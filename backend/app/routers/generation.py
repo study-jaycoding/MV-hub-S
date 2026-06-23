@@ -471,6 +471,19 @@ def _comments_on_server(gen: dict | None) -> bool:
     return _proxy.proxying() and (gen is None or bool(gen.get("shared")))
 
 
+class CommentCountsIn(BaseModel):
+    gen_ids: list[str] = []
+
+
+@router.post("/generations/comment-counts")
+def gen_comment_counts(body: CommentCountsIn, request: Request):
+    """주어진 gen_id 들의 코멘트 수·미확인 여부(배치). 로컬 우선에서 발행본(서버 공유) 카드의
+    코멘트 뱃지를 서버 기준으로 보강할 때 로컬 허브가 이걸 서버로 위임해 받아온다."""
+    if _proxy.proxying():
+        return _proxy.proxy_json("POST", "/api/generations/comment-counts", body=body.model_dump())
+    return repo.generation_comment_counts(body.gen_ids, actor_id(request))
+
+
 @router.get("/generations/{gen_id}/comments")
 def list_gen_comments(gen_id: str, request: Request):
     """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신)."""

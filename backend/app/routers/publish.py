@@ -290,15 +290,15 @@ class PublishToSharedIn(BaseModel):
     gen_ids: list[str]
 
 
-@router.post("/publish-to-shared")
-def publish_to_shared(body: PublishToSharedIn):
-    """고른 생성물만 공유 서버로 발행. 기존 번들 직렬화(export_bundle)를 그대로 HTTP 전송.
-    성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
+def publish_bundle_to_server(gen_ids: list[str]) -> dict:
+    """고른 로컬 생성물을 번들(export_bundle)로 공유 서버에 발행 + 로컬 share 표식.
+    publish-to-shared 엔드포인트와 finalize(골드 동반 발행)가 공유한다.
+    반환: {published, remote}. 토큰 없음=401, 서버 오류=502."""
     url = repo.get_setting(_K_URL) or _effective_url()
     token = repo.get_setting(_K_TOKEN)
     if not token:
         raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
-    gen_ids = [g for g in (body.gen_ids or []) if g]
+    gen_ids = [g for g in (gen_ids or []) if g]
     if not gen_ids:
         raise HTTPException(status_code=400, detail="발행할 항목을 선택하세요")
     bundle = repo.export_bundle(gen_ids=gen_ids)
@@ -323,7 +323,14 @@ def publish_to_shared(body: PublishToSharedIn):
         except Exception:  # noqa: BLE001
             pass
     return {
-        "ok": True,
         "published": published,
         "remote": {k: resp.get(k) for k in ("inserted", "updated", "unchanged", "skipped")},
     }
+
+
+@router.post("/publish-to-shared")
+def publish_to_shared(body: PublishToSharedIn):
+    """고른 생성물만 공유 서버로 발행. 기존 번들 직렬화(export_bundle)를 그대로 HTTP 전송.
+    성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
+    r = publish_bundle_to_server(body.gen_ids)
+    return {"ok": True, **r}

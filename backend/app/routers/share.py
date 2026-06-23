@@ -80,8 +80,24 @@ def _finalizer_uid(request: Request) -> str | None:
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)
 def finalize(gen_id: str, request: Request):
     """생성본을 최종(골드)으로 지정 — 그 프로젝트의 Supervisor 만(검수권). AUTH off 면 통과.
-    최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유)."""
+    최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
+    로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
+    finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다."""
     gen = repo.get_generation(gen_id)
+    if _proxy.proxying():
+        # 내 비공개 로컬 항목이면 먼저 번들 발행(서버에 올라가야 팀이 보고 골드도 거기 남음).
+        if gen is not None and not gen.get("shared"):
+            if gen["status"] != "done":
+                raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
+            from .publish import publish_bundle_to_server
+
+            publish_bundle_to_server([gen_id])
+        out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/finalize")
+        if gen is not None:  # 내 로컬 카드에도 골드 미러(tab=my 즉시 반영)
+            repo.set_final(gen_id, True, _finalizer_uid(request))
+            repo.write_my_share_file()
+        return out
+    # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     if gen["status"] != "done":
@@ -102,6 +118,11 @@ def finalize(gen_id: str, request: Request):
 def unfinalize(gen_id: str, request: Request):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만."""
     gen = repo.get_generation(gen_id)
+    if _proxy.proxying():
+        out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unfinalize")
+        if gen is not None:
+            repo.set_final(gen_id, False)
+        return out
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     if gen.get("project_id"):

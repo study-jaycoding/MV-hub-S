@@ -80,7 +80,7 @@ def list_generations(
         )
         if not read_all:
             team_member_projects = repo.my_member_projects(account_uid or "\x00")
-    return repo.list_generations(
+    result = repo.list_generations(
         tab=tab,
         team_member_projects=team_member_projects,
         worker_id=worker_id,
@@ -105,6 +105,24 @@ def list_generations(
         cursor_ts=cursor_ts,
         cursor_id=cursor_id,
     )
+    # 발행본(서버 공유) 카드의 코멘트 뱃지는 로컬 카운트가 아니라 '서버 스레드' 기준으로 보강한다
+    # (팀원이 단 새 코멘트가 카드 C 뱃지에 바로 반영되도록). 공유 표식이 있는 카드만 1회 배치 조회.
+    if _proxy.proxying():
+        shared_ids = [g["id"] for g in result if g.get("shared")]
+        if shared_ids:
+            try:
+                counts = _proxy.proxy_json(
+                    "POST", "/api/generations/comment-counts", body={"gen_ids": shared_ids}
+                )
+                if isinstance(counts, dict):
+                    for g in result:
+                        c = counts.get(g["id"])
+                        if isinstance(c, dict):
+                            g["comment_count"] = c.get("comment_count", g.get("comment_count"))
+                            g["has_unread"] = c.get("has_unread", g.get("has_unread"))
+            except Exception:  # noqa: BLE001 — 보강 실패는 로컬 값 유지(치명적 아님)
+                pass
+    return result
 
 
 @router.get("/generations-stats")

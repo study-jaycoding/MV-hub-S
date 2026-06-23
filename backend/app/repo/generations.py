@@ -1151,6 +1151,35 @@ def list_generations(
         return _attach_children(conn, rows, viewer_uid=account_uid)
 
 
+def generation_comment_counts(
+    gen_ids: list[str], viewer_uid: Optional[str] = None
+) -> dict[str, dict[str, Any]]:
+    """주어진 gen_id 들의 코멘트 수 + 미확인(has_unread) 여부 — 배치. 로컬 우선에서 '발행본'(서버
+    공유) 카드의 코멘트 뱃지를 서버 기준으로 보강(enrich)하는 데 쓴다(_attach_children 와 동일 규칙).
+    뷰어=로그인 viewer_uid(seen 기록과 동일 신원이어야 뱃지가 꺼짐)."""
+    ids = [g for g in (gen_ids or []) if g]
+    out: dict[str, dict[str, Any]] = {g: {"comment_count": 0, "has_unread": False} for g in ids}
+    if not ids:
+        return out
+    ph = ",".join("?" * len(ids))
+    cviewer = viewer_uid if viewer_uid is not None else DEFAULT_WORKER_ID
+    with get_connection() as conn:
+        for r in conn.execute(
+            f"SELECT gen_id, COUNT(*) AS cnt FROM generation_comment "
+            f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
+            ids,
+        ).fetchall():
+            out[r["gen_id"]]["comment_count"] = r["cnt"]
+        for r in conn.execute(
+            f"SELECT DISTINCT c.gen_id FROM generation_comment c "
+            f"{ALERT_COMMENT_JOINS} "
+            f"WHERE c.gen_id IN ({ph}) AND {ALERT_COMMENT_PREDICATE}",
+            [cviewer, *ids, cviewer, cviewer, cviewer],
+        ).fetchall():
+            out[r["gen_id"]]["has_unread"] = True
+    return out
+
+
 def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
     """전역 파생값 — 무한 스크롤로 전량 로드를 안 하므로 클라이언트 대신 서버가 계산.
       · failed_count: 실패·차단 등 비정상(휴지통 제외) 건수('실패 정리' 버튼용, 전역)

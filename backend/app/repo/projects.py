@@ -130,6 +130,50 @@ def rename_project(pid: str, name: str) -> bool:
         return cur.rowcount > 0
 
 
+def cache_projects(projects: list[dict[str, Any]]) -> None:
+    """서버 프로젝트 정의(id·이름·보관)를 로컬 project 테이블에 미러 — 로컬 우선에서 (1) assign 검증,
+    (2) 생성 카드의 project_name 해석이 로컬에서 되게 한다. 멱등 upsert(없으면 추가, 있으면 갱신)."""
+    if not projects:
+        return
+    with get_connection() as conn:
+        for p in projects:
+            pid = p.get("id") if isinstance(p, dict) else None
+            if not pid:
+                continue
+            conn.execute(
+                "INSERT INTO project(id, name, kind, created_by, archived) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived",
+                (
+                    pid,
+                    p.get("name") or "",
+                    p.get("kind") or "team",
+                    p.get("created_by"),
+                    1 if p.get("archived") else 0,
+                ),
+            )
+
+
+def local_project_counts() -> dict[str, int]:
+    """로컬 DB 의 프로젝트별 생성물 수(휴지통 제외). 로컬 우선에서 사이드바 카운트는 '내 로컬 작업'
+    기준이어야 하므로(서버 발행분이 아니라) — 로컬은 전부 내 작업이라 creator 필터 없이 센다."""
+    with get_connection() as conn:
+        return {
+            r["pid"]: r["c"]
+            for r in conn.execute(
+                "SELECT project_id pid, COUNT(*) c FROM generation "
+                "WHERE project_id IS NOT NULL AND deleted_at IS NULL GROUP BY project_id"
+            ).fetchall()
+        }
+
+
+def local_unassigned_count() -> int:
+    """로컬 미분류(프로젝트 없음) 생성물 수 — 사이드바 '미분류' 카운트(로컬 기준)."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE project_id IS NULL AND deleted_at IS NULL"
+        ).fetchone()[0]
+
+
 def reorder_projects(ordered_ids: list[str]) -> None:
     """관리자 탭에서 정한 프로젝트 표시 순서를 sort_order(0,1,2,…)로 저장.
     목록에 없는(보관 등) 프로젝트는 건드리지 않는다(NULL 유지 → 뒤로 폴백)."""
