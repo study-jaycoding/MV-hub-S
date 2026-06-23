@@ -371,16 +371,16 @@ export default function App() {
   useEffect(() => {
     if (!account?.email) return;
     const prev = localStorage.getItem("ch.activeAccount");
-    if (prev && prev !== account.email) {
-      // 실제 계정 전환 — localStorage 만 비우면 이미 마운트된 인메모리 state(필터·색·태그 등)에
-      // 이전 사용자 값이 남는다. 새 계정 기준으로 확실히 리셋하려고 한 번 새로고침(토큰은 보존).
+    // ★서버 모드(auth_enabled)에서만 새로고침 기반 전환. 로컬 허브는 me() 가 account 를 채우므로
+    //   여기서 reload 하면 마운트→me()→reload 무한루프가 난다(로컬은 localStorage 만 갱신).
+    if (prev && prev !== account.email && authConfig?.auth_enabled) {
       clearPersonalSettings();
       localStorage.setItem("ch.activeAccount", account.email);
       window.location.reload();
       return;
     }
     localStorage.setItem("ch.activeAccount", account.email);
-  }, [account?.email]);
+  }, [account?.email, authConfig?.auth_enabled]);
 
   // 내가 최종 지정 가능한 프로젝트(supervisor/PM) 로드 → 카드 더블클릭(최종) 활성 판단.
   useEffect(() => {
