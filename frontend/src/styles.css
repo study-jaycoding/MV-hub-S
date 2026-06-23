@@ -2031,7 +2031,9 @@ select optgroup {
 
 /* ── 폴더 등록(MountManager) ── */
 /* Assets 좌상단 타이틀에서 열리므로 좌측에 띄운다(기본 manage-float 은 우측). */
-.mount-float { width: min(440px, 94vw); left: 14px; right: auto; }
+/* ★ z-index 를 info-catcher(230) 위로 — 안 그러면 바깥클릭 catcher 가 모달을 덮어
+   마우스 클릭이 전부 닫기로 새어 모달이 사라진다(키보드는 포커스 입력으로 가 안 닫힘). */
+.mount-float { width: min(440px, 94vw); left: 14px; right: auto; z-index: 240; }
 .mount-form { display: flex; flex-direction: column; gap: 8px; }
 .mount-form-row { display: flex; gap: 8px; }
 .mount-input {
