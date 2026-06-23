@@ -213,7 +213,9 @@ export default function App() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const reload = useCallback(async () => {
+  // silent=true 면 '로딩…' 표시 없이 조용히 데이터만 갱신(백그라운드 폴링·WS·탭복귀용).
+  // → 사용자가 직접 한 조회(필터변경·최초로드)만 로딩을 보여 깜빡임을 없앤다.
+  const reload = useCallback(async (silent = false) => {
     // 인증 게이트: 로그인 필요한데 아직 미로그인이면 조회하지 않는다(401 소음 방지).
     if (!authReadyRef.current) return;
     // 구성 탭은 라이브러리 조회가 아니라 보드 작업 공간이므로 로드 생략.
@@ -221,7 +223,7 @@ export default function App() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       // 휴지통 모드(지운 것만 보기)면 별도 DB(/api/trash)에서, 아니면 메인에서 첫 페이지.
       const trashMode = !!filtersRef.current.deleted_only;
@@ -244,7 +246,7 @@ export default function App() {
     } catch (e) {
       flash("로드 실패: " + String(e));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -420,7 +422,7 @@ export default function App() {
       (m) => {
         // 주기 동기화로 다른 기기/웹 잡이 들어옴 → 전체 새로고침
         if (m.type === "synced") {
-          reload();
+          reload(true); // 백그라운드 갱신 — '로딩…' 깜빡임 없이
           bumpBoard(); // 구성탭 트리도 따라잡기
           setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
           return;
@@ -445,11 +447,11 @@ export default function App() {
               )
               .catch(() => {});
           }
-          reload();
+          reload(true);
           bumpBoard(); // 구성탭 트리에 완성된 결과 반영
         }
       },
-      () => reload(), // (재)연결 시 동기화
+      () => reload(true), // (재)연결 시 동기화
     );
     return off;
   }, [reload, bumpBoard]);
@@ -459,7 +461,7 @@ export default function App() {
   const hasActiveJob = gens.some((g) => g.status === "pending" || g.status === "running");
   useEffect(() => {
     if (!hasActiveJob) return;
-    const id = setInterval(() => reload(), 4000);
+    const id = setInterval(() => reload(true), 4000);
     return () => clearInterval(id);
   }, [hasActiveJob, reload]);
 
@@ -467,7 +469,7 @@ export default function App() {
   // 생성)를 따라잡는다. 다른 탭에서 작업하다 돌아오면 항상 최신을 보장(WS 끊김 안전망).
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") reload();
+      if (document.visibilityState === "visible") reload(true);
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);

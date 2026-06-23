@@ -121,12 +121,17 @@ async def lifespan(app: FastAPI):
             print(f"[startup] 썸네일 사전 생성 건너뜀: {e}")
 
     threading.Thread(target=_prewarm, daemon=True, name="thumb-prewarm").start()
-    periodic_sync.start()  # 힉스필드 주기 동기화(실시간) — 다른 기기/웹 잡 자동 반영
+    # 주기 동기화는 서버 직결 로컬 허브(AUTH off)에선 끈다 — 데이터는 서버가 정답이고 적재는
+    # 에이전트(push)가 한다. 로컬에서 20초마다 CLI 동기화+broadcast 하면 라이브러리가 계속
+    # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
+    if AUTH_ENABLED:
+        periodic_sync.start()
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
     yield
     # 종료: 주기 백업 + 주기 동기화 정리
     await periodic_backup.stop()
-    await periodic_sync.stop()
+    if AUTH_ENABLED:
+        await periodic_sync.stop()
 
 
 app = FastAPI(title="Millionvolt Hub", version="0.1.0", lifespan=lifespan)
