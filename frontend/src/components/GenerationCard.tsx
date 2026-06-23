@@ -10,6 +10,7 @@ import { download, downloadName } from "../lib/download";
 import { buildPromptParts, refSrc } from "../lib/promptParts";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
+import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
 
 const ME = "me"; // 현재 작업자(DEFAULT_WORKER_ID) — 팀 탭에서 내 것/남의 것 구분
 
@@ -561,8 +562,11 @@ export function GenerationCard({
 
 // ── 헬퍼 ──
 // "seedance_2_0" → "Seedance 2.0", "seedance_2_0_fast" → "Seedance 2.0 Fast"
+// 카탈로그 표시명이 따로 있는 모델(나노바나나 등)은 그 이름을 우선 — 선택 드롭다운과 일치시킨다.
 function modelLabel(m: string | null): string {
   if (!m) return "—";
+  const known = MODEL_DISPLAY_NAMES[m];
+  if (known) return known;
   const words: string[] = [];
   let nums: string[] = [];
   for (const part of m.split("_")) {

@@ -13,6 +13,18 @@ export const ALLOWED: Record<"image" | "video", string[]> = {
   image: ["nano_banana_flash", "nano_banana_2", "gpt_image_2"],
   video: ["seedance_2_0"],
 };
+
+// 생성 카드 모델 라벨 — raw job_set_type 휴머나이즈가 CLI 카탈로그 표시명과 어긋나는 모델을
+// 카탈로그 이름으로 교정한다. 힉스필드는 nano_banana_flash 를 "Nano Banana 2", nano_banana_2 를
+// "Nano Banana Pro" 로 부른다(혼동 주의) — 휴머나이즈하면 "Nano Banana Flash"/"Nano Banana 2"로
+// 어긋나 카드와 선택 드롭다운이 달라 보인다. 목록 밖 모델은 modelLabel 휴머나이즈 폴백.
+export const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  nano_banana_flash: "Nano Banana 2",
+  nano_banana_2: "Nano Banana Pro",
+  nano_banana: "Nano Banana",
+  gpt_image_2: "GPT Image 2", // 휴머나이즈는 "Gpt Image 2"(소문자 pt)라 표기 교정
+  seedance_2_0: "Seedance 2.0",
+};
 // 동적 옵션에서 제외(프롬프트·미디어·내부용)
 //  · batch_size: "한 번에 N장"은 앱 레벨 count(1/4)로 일원화 → UI 에서 숨김(중복·곱셈 함정 제거).
 //    숨기면 init/카드복원/body 어디서도 안 실리고 CLI 기본값(1)로 처리된다(gpt_image_2 default=1).
@@ -58,7 +70,7 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
       whenEquals: "fast",
       param: "resolution",
       allow: ["480p", "720p"],
-      note: "Fast 모드는 1080p를 지원하지 않습니다 (최대 720p).",
+      note: "Fast 모드는 720p 초과 해상도(1080p·4k)를 지원하지 않습니다 (최대 720p).",
     },
   ],
   gpt_image_2: [
