@@ -271,6 +271,18 @@ def mark_generation_comments_read(worker_id: str, gen_id: str) -> None:
         )
 
 
+def generation_comment_exists(comment_id: str) -> bool:
+    """이 코멘트가 로컬 DB에 있나 — 로컬우선에서 by-id 코멘트 연산(수정/삭제/확인)을
+    로컬에서 처리할지(내 비공개 작업) 서버로 위임할지(공유본) 가르는 데 쓴다."""
+    with get_connection() as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM generation_comment WHERE id=?", (comment_id,)
+            ).fetchone()
+            is not None
+        )
+
+
 def mark_generation_comment_seen(worker_id: str, comment_id: str) -> None:
     """코멘트 한 건을 확인 처리(패널에서 NEW 코멘트를 클릭). 멱등."""
     with get_connection() as conn:

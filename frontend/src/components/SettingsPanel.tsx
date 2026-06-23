@@ -64,6 +64,8 @@ export function SettingsPanel({
   const [msg, setMsg] = useState("");
   const [uploading, setUploading] = useState(false); // 백필 파일 업로드 적재 중
   const [scOpen, setScOpen] = useState(false); // 단축키 변경 플로팅 창
+  const [dbBusy, setDbBusy] = useState(false); // 내 DB 가져오기 중
+  const [dbMsg, setDbMsg] = useState("");
 
   // 과거 전체(100건 밖) 백필 지시 — .md 문서로 받아 Claude 세션에 파일째 첨부해 주면 됨.
   //  서버 코드·DB 접근 없이 허브 로그인만으로 /api/ingest/mcp 에 직접 적재(멱등). origin·이메일 자동 주입.
@@ -141,6 +143,28 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
       setMsg("적재 실패: " + String(e));
     } finally {
       setUploading(false);
+    }
+  };
+
+  // 내 DB 가져오기(통째 교체) — 성공하면 라이브러리를 새로 읽도록 전체 새로고침.
+  const importDb = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (
+      !window.confirm(
+        "현재 로컬 DB를 이 파일로 통째 교체합니다. (현재 DB는 자동 백업)\n계속할까요?",
+      )
+    )
+      return;
+    setDbBusy(true);
+    setDbMsg("가져오는 중…");
+    try {
+      await api.importDb(file);
+      setDbMsg("가져오기 완료 — 라이브러리를 새로고침합니다…");
+      setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setDbBusy(false);
     }
   };
 
@@ -290,6 +314,37 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
               Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 멱등으로 적재됩니다(중복 안 생김).
             </p>
             {msg && <p className="manage-msg">{msg}</p>}
+          </section>
+
+          {/* 내 메타데이터(작업 연속성) — 로컬 DB 통째 내보내기/가져오기. 다른 PC에서 이어 작업. */}
+          <section className="settings-section">
+            <h4>{t("내 메타데이터 (작업 연속성)")}</h4>
+            <p className="settings-hint">
+              내 라이브러리·태그·컬러·계보가 담긴 <b>로컬 DB</b>를 파일로 내보내, 다른 PC의 허브에
+              <b> 가져오기</b>로 넣으면 그대로 이어서 작업할 수 있습니다(미디어는 자동 로드).
+            </p>
+            <a className="settings-action" href="/api/db/export" download="MV-hub-mydb.db">
+              ⬇ 내 DB 내보내기
+            </a>
+            <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
+              {dbBusy ? "가져오는 중…" : "⬆ DB 가져오기 (통째 교체)"}
+              <input
+                type="file"
+                accept=".db,application/octet-stream"
+                style={{ display: "none" }}
+                disabled={dbBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  importDb(f);
+                }}
+              />
+            </label>
+            <p className="settings-hint">
+              ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
+              작업자=1PC라 한 번에 한 PC에서만 쓰세요.
+            </p>
+            {dbMsg && <p className="manage-msg">{dbMsg}</p>}
           </section>
         </div>
       </div>

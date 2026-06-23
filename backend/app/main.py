@@ -39,6 +39,7 @@ from .routers import (
     _proxy,
     assets,
     auth,
+    db_transfer,
     gen_requests,
     generation,
     ingest,
@@ -155,6 +156,7 @@ app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
 app.include_router(auth.router)
+app.include_router(db_transfer.router)
 
 
 # ── 인증 enforcement 미들웨어 (로드맵 §4-6 '서버가 매번 검증') ─────────────────

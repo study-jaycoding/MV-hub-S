@@ -465,10 +465,18 @@ class GenCommentReadIn(BaseModel):
     worker_id: str | None = None
 
 
+# 로컬 우선에서 '공유 코멘트'는 팀이 한 스레드를 봐야 하므로 서버에 둔다 — 발행된(shared) 내
+# 생성물이거나, 로컬에 없는 팀 항목이면 코멘트는 서버로 위임한다. 비공개(미발행) 로컬 작업만 로컬.
+def _comments_on_server(gen: dict | None) -> bool:
+    return _proxy.proxying() and (gen is None or bool(gen.get("shared")))
+
+
 @router.get("/generations/{gen_id}/comments")
 def list_gen_comments(gen_id: str, request: Request):
     """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신)."""
     gen = repo.get_generation(gen_id)
+    if _comments_on_server(gen):
+        return _proxy.proxy_get(f"/api/generations/{gen_id}/comments", request)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
@@ -478,6 +486,10 @@ def list_gen_comments(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/comments")
 def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     gen = repo.get_generation(gen_id)
+    if _comments_on_server(gen):
+        return _proxy.proxy_json(
+            "POST", f"/api/generations/{gen_id}/comments", body=body.model_dump()
+        )
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 볼 수 있는 것(공유/본인)에만 코멘트 작성
@@ -492,11 +504,21 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     return {"id": cid}
 
 
+# by-id 코멘트 연산(수정/삭제/확인): 로컬에 있으면 내 비공개 작업 코멘트 → 로컬,
+# 로컬에 없으면 공유본(서버) 코멘트 → 서버로 위임(로컬우선 공유 코멘트 단일 스레드).
+def _comment_local(comment_id: str) -> bool:
+    return not _proxy.proxying() or repo.generation_comment_exists(comment_id)
+
+
 @router.put("/generation-comments/{comment_id}")
 def edit_gen_comment(comment_id: str, body: GenCommentEditIn, request: Request):
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
+    if not _comment_local(comment_id):
+        return _proxy.proxy_json(
+            "PUT", f"/api/generation-comments/{comment_id}", body=body.model_dump()
+        )
     try:
         repo.edit_generation_comment(comment_id, actor_id(request), text)
     except PermissionError as e:
@@ -508,6 +530,8 @@ def edit_gen_comment(comment_id: str, body: GenCommentEditIn, request: Request):
 
 @router.delete("/generation-comments/{comment_id}")
 def delete_gen_comment(comment_id: str, request: Request):
+    if not _comment_local(comment_id):
+        return _proxy.proxy_json("DELETE", f"/api/generation-comments/{comment_id}")
     try:
         repo.delete_generation_comment(comment_id, actor_id(request))
     except PermissionError as e:
@@ -518,6 +542,10 @@ def delete_gen_comment(comment_id: str, request: Request):
 @router.post("/generations/{gen_id}/comments/read")
 def read_gen_comments(gen_id: str, body: GenCommentReadIn, request: Request):
     gen = repo.get_generation(gen_id)
+    if _comments_on_server(gen):
+        return _proxy.proxy_json(
+            "POST", f"/api/generations/{gen_id}/comments/read", body=body.model_dump()
+        )
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)
@@ -528,6 +556,8 @@ def read_gen_comments(gen_id: str, body: GenCommentReadIn, request: Request):
 @router.post("/generation-comments/{comment_id}/seen")
 def seen_gen_comment(comment_id: str, request: Request):
     """코멘트 한 건 확인 처리(패널에서 NEW 코멘트 클릭). 개인 상태라 멱등·가벼운 처리."""
+    if not _comment_local(comment_id):  # 공유본(서버) 코멘트 확인은 서버 seen 으로
+        return _proxy.proxy_json("POST", f"/api/generation-comments/{comment_id}/seen")
     repo.mark_generation_comment_seen(actor_id(request), comment_id)
     return {"ok": True}
 

@@ -136,6 +136,7 @@ _LOCAL_PREFIXES = (
     "/api/sources",        # 내 소스 라이브러리(로컬)
     "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
     "/api/trash",          # 내 휴지통(로컬)
+    "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
 )
 _LOCAL_EXACT = frozenset(
     {

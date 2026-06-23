@@ -752,6 +752,26 @@ export const api = {
     return res.json() as Promise<{ saved: string[]; skipped: string[] }>;
   },
 
+  // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db). 현재 DB는 자동 백업됨.
+  importDb: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/db/import", { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = await res.json();
+        let d = j?.detail ?? j;
+        if (typeof d !== "string") d = JSON.stringify(d);
+        detail = d || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
   // OS 파일 탐색기에서 원본 위치 열기(해당 파일 선택)
   revealAsset: (project: string, path: string) =>
     jsonFetch<{ ok: boolean }>(`/api/assets/reveal`, {
