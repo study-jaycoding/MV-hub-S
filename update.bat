@@ -30,15 +30,8 @@ git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and 
 echo [2/4] Updating backend dependencies...
 where python >nul 2>nul && (python -m pip install -r "%ROOT%backend\requirements.txt" || goto :err)
 
-echo [3/4] Updating Higgsfield CLI to the latest version...
-where npm >nul 2>nul
-if errorlevel 1 (
-  echo     npm not found - skipping CLI update.
-) else (
-  REM @latest installs the newest; if already latest this is a no-op, if older it upgrades.
-  call npm install -g @higgsfield/cli@latest
-  if errorlevel 1 (echo     [warn] CLI update failed ^(network/permission^) - continuing.) else (echo     Higgsfield CLI is up to date.)
-)
+echo [3/4] Checking Higgsfield CLI version ^(update only if a newer one exists^)...
+call :updatecli
 
 echo [4/4] Building frontend...
 cd /d "%ROOT%frontend" || goto :err
@@ -54,6 +47,25 @@ echo        - shared server PC:  run run-server.bat again
 echo        - worker PC:         run MV_agent.bat again
 pause
 exit /b 0
+
+REM ── Higgsfield CLI: check version, install if missing, update only if outdated ──
+:updatecli
+where npm >nul 2>nul || (echo     npm not found - skipping CLI check. & goto :eof)
+where higgsfield >nul 2>nul
+if errorlevel 1 (
+  echo     Higgsfield CLI not installed - installing latest...
+  call npm install -g @higgsfield/cli@latest || echo     [warn] CLI install failed - continuing.
+  goto :eof
+)
+REM npm outdated exits 1 when a newer version is available, 0 when already current.
+npm outdated -g @higgsfield/cli >nul 2>nul
+if errorlevel 1 (
+  echo     New version available - updating Higgsfield CLI...
+  call npm install -g @higgsfield/cli@latest || echo     [warn] CLI update failed - continuing.
+) else (
+  echo     Higgsfield CLI is already the latest version - skip.
+)
+goto :eof
 
 :err
 echo.
