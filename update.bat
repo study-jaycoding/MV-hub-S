@@ -24,13 +24,23 @@ if not exist "%ROOT%.git" (
 )
 
 echo.
-echo [1/3] Pulling latest ^(git pull^)...
+echo [1/4] Pulling latest ^(git pull^)...
 git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & pause & exit /b 1)
 
-echo [2/3] Updating backend dependencies...
+echo [2/4] Updating backend dependencies...
 where python >nul 2>nul && (python -m pip install -r "%ROOT%backend\requirements.txt" || goto :err)
 
-echo [3/3] Building frontend...
+echo [3/4] Updating Higgsfield CLI to the latest version...
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo     npm not found - skipping CLI update.
+) else (
+  REM @latest installs the newest; if already latest this is a no-op, if older it upgrades.
+  call npm install -g @higgsfield/cli@latest
+  if errorlevel 1 (echo     [warn] CLI update failed ^(network/permission^) - continuing.) else (echo     Higgsfield CLI is up to date.)
+)
+
+echo [4/4] Building frontend...
 cd /d "%ROOT%frontend" || goto :err
 if not exist node_modules (
   echo     node_modules missing - running npm install ^(first time, a few minutes^)
