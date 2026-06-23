@@ -831,19 +831,36 @@ export function HistoryBoard({
                   {/* 호버 오버레이 액션(그리드 카드와 동일): 재사용 드래그·정보·다운로드·재생성·공유 */}
                   <div className="linb-ov" onMouseDown={(e) => e.stopPropagation()}>
                     <div className="linb-ov-top">
-                      <span
-                        className="linb-ov-btn linb-ov-drag"
-                        draggable
-                        title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData("application/x-ch-gen", g.id);
-                          e.dataTransfer.effectAllowed = "copy";
-                        }}
-                      >
-                        ⠿
-                      </span>
+                      {/* S(공유/최종) — 그리드 카드와 동일하게 좌상단 원래 위치로 */}
+                      {g.status === "done" && (
+                        <button
+                          className={
+                            "linb-ov-btn" +
+                            (g.shared ? " on" : "") +
+                            (g.is_final ? " final" : "")
+                          }
+                          title={
+                            g.is_final
+                              ? "최종(골드) · 더블클릭=최종 해제"
+                              : g.shared
+                                ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정"
+                                : "팀에 공유 (클릭) · 공유 후 더블클릭=최종 지정"
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNodeSClick(g);
+                          }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            onNodeSDouble(g);
+                          }}
+                        >
+                          {g.is_final ? "★" : "S"}
+                        </button>
+                      )}
                       <button
                         className="linb-ov-btn"
+                        style={{ marginLeft: "auto" }} // 정보는 항상 우상단(S 유무 무관)
                         title="정보"
                         onClick={(e) =>
                           onInfo({ kind: "generation", gen: g, x: e.clientX, y: e.clientY })
@@ -852,6 +869,18 @@ export function HistoryBoard({
                         ⓘ
                       </button>
                     </div>
+                    {/* 좌상단 드래그 그립(S 버튼 밑) — 끌어서 프롬프트에 레퍼런스로 추가(누적) */}
+                    <span
+                      className="linb-ov-btn linb-ov-drag linb-ov-grip"
+                      draggable
+                      title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData("application/x-ch-gen", g.id);
+                        e.dataTransfer.effectAllowed = "copy";
+                      }}
+                    >
+                      ⠿
+                    </span>
                     <div className="linb-ov-bot">
                       {a && (
                         <button
@@ -881,33 +910,6 @@ export function HistoryBoard({
                       >
                         ↻
                       </button>
-                      {g.status === "done" && (
-                        <button
-                          className={
-                            "linb-ov-btn" +
-                            (g.shared ? " on" : "") +
-                            (g.is_final ? " final" : "")
-                          }
-                          title={
-                            g.is_final
-                              ? "최종(골드) · 더블클릭=최종 해제"
-                              : g.shared
-                                ? "팀 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정"
-                                : "팀에 공유 (클릭) · 공유 후 더블클릭=최종 지정"
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onNodeSClick(g);
-                          }}
-                          onDoubleClick={(e) => {
-                            // 노드 onDoubleClick(미리보기)로 버블링 막기 — 더블클릭은 최종 확인만.
-                            e.stopPropagation();
-                            onNodeSDouble(g);
-                          }}
-                        >
-                          {g.is_final ? "★" : "S"}
-                        </button>
-                      )}
                     </div>
                   </div>
                   {sConfirm?.id === g.id && (

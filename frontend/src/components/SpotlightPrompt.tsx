@@ -379,7 +379,8 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
         type: a.type,
         // @Image1, @Image2 … — 현재 칩 수 기준으로 다음 슬롯(드롭마다 누적)
         role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
-        name: g.source_name || g.prompt?.slice(0, 20) || "ref",
+        // 칩 이름: 소스명(등록 시) 우선, 없으면 짧은 고유 ID(프롬프트 조각이 지저분하게 들어가던 문제 해결)
+        name: g.source_name || `${isVid ? "vid" : "img"}-${g.id.slice(0, 4)}`,
         thumb: a.thumbnail_path || a.file_path,
         source_gen_id: g.id, // 출처 generation → 히스토리 reference 엣지
       };
