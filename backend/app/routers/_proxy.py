@@ -162,7 +162,6 @@ _LOCAL_EXACT = frozenset(
         "/api/cost",          # CLI 비용 추정
         "/api/account",       # CLI 계정 상태(워크스페이스/크레딧 원천)
         "/api/sync",          # CLI 수동 동기화
-        "/api/reveal-media",  # OS 탐색기 열기(로컬 미디어)
         "/api/media-thumb",   # 로컬 보관 미디어 썸네일
         "/api/publish-to-shared",  # 자체적으로 서버와 통신(이중 프록시 방지)
         "/api/backups",

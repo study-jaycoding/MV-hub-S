@@ -30,6 +30,7 @@ export function TopBar({
   onTab,
   onSearch,
   onWorkspaceSwitched,
+  onImported,
   onOpenAssets,
   onOpenAdmin,
   account,
@@ -100,6 +101,7 @@ export function TopBar({
         onProviderUpdated={setProvider}
         onLogout={onLogout}
         onWorkspaceSwitched={onWorkspaceSwitched}
+        onImported={onImported}
       />
     </header>
   );

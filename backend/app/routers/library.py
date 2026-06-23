@@ -160,26 +160,10 @@ def list_trash(
     )
 
 
-@router.get("/trash-count")
-def trash_count(request: Request):
-    return {"count": repo.trash_count(account_uid=_account_uid(request))}
-
-
 @router.delete("/trash/{gen_id}")
 def purge_trashed_item(gen_id: str, request: Request):
     """휴지통에서 영구 삭제(복원 불가) — 본인 것만."""
     return {"purged": repo.purge_trashed_item(gen_id, account_uid=_account_uid(request))}
-
-
-class EmptyTrashIn(BaseModel):
-    before_days: Optional[int] = None  # 주면 그보다 오래된 것만, 없으면 전부
-
-
-@router.post("/trash/empty")
-def empty_trash(request: Request, body: EmptyTrashIn | None = None):
-    """휴지통 비우기 — before_days 면 그보다 오래된 것만, 없으면 전부. 본인 것만 영구 삭제."""
-    days = body.before_days if body else None
-    return {"purged": repo.empty_trash(before_days=days, account_uid=_account_uid(request))}
 
 
 @router.get("/generations/{gen_id}", response_model=GenerationOut)

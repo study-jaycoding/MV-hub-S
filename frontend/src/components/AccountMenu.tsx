@@ -22,12 +22,14 @@ export function AccountMenu({
   onProviderUpdated,
   onLogout,
   onWorkspaceSwitched,
+  onImported,
 }: {
   provider: Provider | null;
   account?: Account | null;
   onProviderUpdated: (p: Provider) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: () => void;
+  onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -36,6 +38,7 @@ export function AccountMenu({
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
+  const [hfMsg, setHfMsg] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
 
@@ -50,6 +53,19 @@ export function AccountMenu({
       setSyncMsg("실패");
     }
     setTimeout(() => setSyncMsg(""), 2500);
+  };
+
+  // '힉스필드 삭제물 검토' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다(무료 점검).
+  const reviewHfDeleted = async () => {
+    setHfMsg("힉스필드 점검 중…");
+    try {
+      const r = await api.trashHfMissing();
+      setHfMsg(r.trashed > 0 ? `✓ ${r.trashed}건 휴지통으로` : `삭제물 없음 (${r.checked}건 점검)`);
+      if (r.trashed > 0) onImported?.(`힉스필드 삭제물 ${r.trashed}건을 휴지통으로 보냈습니다.`);
+    } catch {
+      setHfMsg("실패");
+    }
+    setTimeout(() => setHfMsg(""), 2800);
   };
 
   // 로그인 계정(jay 포함 모두) → 그 계정 에이전트가 보고한 '검증된 내 힉스필드 신원'(읽기전용).
@@ -188,6 +204,10 @@ export function AccountMenu({
                 📤 {syncMsg || "외부 생성물 올리기"}
               </button>
               <p className="acct-hint acct-hint-sm">허브 밖에서 만든 결과물을 올립니다(허브 생성물은 자동).</p>
+              <button className="acct-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
+                🗑 {hfMsg || "힉스필드 삭제물 검토"}
+              </button>
+              <p className="acct-hint acct-hint-sm">힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.</p>
             </>
           )}
 

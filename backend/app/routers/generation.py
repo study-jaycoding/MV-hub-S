@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -17,7 +15,7 @@ from pydantic import BaseModel
 
 from . import _proxy
 from .. import rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_DIR
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_global_roles,
     actor_id,
@@ -38,38 +36,8 @@ from ..models import (
 import asyncio
 
 from ..services import cli_bridge, media_cache, syncer
-from .assets import _safe_resolve
 
 router = APIRouter(prefix="/api", tags=["generation"])
-
-
-class RevealMediaIn(BaseModel):
-    path: str  # /media/<file> 형태(로컬 보관된 결과물/소스)
-
-
-@router.post("/reveal-media")
-def reveal_media(body: RevealMediaIn):
-    """로컬 보관된 결과물·소스(/media/...)의 원본 위치를 탐색기에서 열고 선택."""
-    rel = body.path.split("?", 1)[0]
-    if rel.startswith("/media/"):
-        rel = rel[len("/media/"):]
-    rel = rel.lstrip("/")
-    if not rel:
-        raise HTTPException(status_code=400, detail="로컬 보관 파일이 아닙니다(원격 URL)")
-    target = _safe_resolve(MEDIA_DIR, rel)
-    if not target or not target.exists():
-        raise HTTPException(status_code=404, detail="로컬 파일 없음")
-    try:
-        if sys.platform == "win32":
-            # explorer 는 성공해도 종료코드 1 을 반환하므로 검사하지 않음
-            subprocess.Popen(["explorer", f"/select,{target}"])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(target)])
-        else:
-            subprocess.Popen(["xdg-open", str(target.parent)])
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"탐색기 열기 실패: {e}")
-    return {"ok": True}
 
 
 # ── 계정 무관 공유 메타데이터(서버 CLI 제공) — 모델 목록·params·비용. 모두에게 동일한
@@ -319,10 +287,11 @@ def clear_failed():
     return {"removed": repo.delete_failed_orphans()}
 
 
-@router.post("/generations/verify-higgsfield")
-async def verify_higgsfield():
-    """job_id 가진 모든 generation 을 generate get 으로 검증 → 힉스필드에서 삭제된 것
-    (hf_missing=1) 표시. '로컬 보기'/흐림 처리에 반영. 무료 호출(생성 아님)."""
+@router.post("/generations/trash-hf-missing")
+async def trash_hf_missing():
+    """내 생성물 중 힉스필드에서 삭제된 것(generate get 실패)을 찾아 휴지통으로 보낸다.
+    무료 호출(생성 아님). 확인 불가(None)는 건드리지 않는다 — 일시적 오류로 멀쩡한 걸 지우지 않게.
+    재등장한 항목은 흐림(hf_missing) 표시만 해제. 반환: {checked, trashed}."""
     gens = repo.gens_with_job_id()
     sem = asyncio.Semaphore(8)  # 동시 CLI 호출 제한
 
@@ -332,14 +301,16 @@ async def verify_higgsfield():
             return gen_id, exists  # True/False/None(확인불가)
 
     results = await asyncio.gather(*(check(g, j) for g, j in gens))
-    missing = 0
+    trashed = 0
     for gen_id, exists in results:
         if exists is None:
-            continue  # 확인 불가 → 상태 변경 안 함
-        repo.set_hf_missing(gen_id, not exists)
-        if not exists:
-            missing += 1
-    return {"checked": len(gens), "missing": missing}
+            continue  # 확인 불가 → 그대로 둠
+        if exists:
+            repo.set_hf_missing(gen_id, False)  # 재등장 → 흐림 해제
+        else:
+            repo.delete_generation(gen_id)  # 힉스에서 삭제됨 → 휴지통행(soft delete)
+            trashed += 1
+    return {"checked": len(gens), "trashed": trashed}
 
 
 @router.delete("/generations/{gen_id}")

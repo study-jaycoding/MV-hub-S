@@ -422,6 +422,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  // 힉스필드에서 삭제된 내 생성물을 찾아 휴지통으로 보냄(무료 점검 — generate get)
+  trashHfMissing: () =>
+    jsonFetch<{ checked: number; trashed: number }>("/api/generations/trash-hf-missing", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   // generation 1건 삭제(로컬 기록만)
   deleteGeneration: (id: string) =>
     jsonFetch<{ deleted: boolean }>(`/api/generations/${id}`, { method: "DELETE" }),
