@@ -1183,9 +1183,14 @@ select optgroup {
 }
 .proj-row:hover { background: rgba(255,255,255,0.06); }
 .proj-row.on { background: var(--grad-soft); color: var(--accent); font-weight: 700; }
-.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .proj-count { font-size: 11px; color: var(--muted); flex: none; }
 .proj-row.on .proj-count { color: var(--accent); }
+/* 사이드바 프로젝트 순서 드래그 — 그립은 평소 숨기고 행 호버 때만 살짝 보인다(깔끔한 룩 유지). */
+.proj-row .proj-drag-handle { opacity: 0; margin-right: 2px; font-size: 11px; flex: none; }
+.proj-row:hover .proj-drag-handle { opacity: 0.5; }
+.proj-row.row-dragging { opacity: 0.4; }
+.proj-row.row-dragover { box-shadow: inset 0 2px 0 0 var(--accent); }
 .proj-unassigned, .proj-trash { color: var(--muted); font-style: italic; }
 .proj-edit {
   background: transparent; border: none; cursor: pointer; color: var(--muted);
@@ -1309,8 +1314,15 @@ select optgroup {
 .admin-pactions button:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 .admin-pactions button.on { color: var(--accent-ink); background: var(--accent); }
 .admin-pactions button.admin-pact-archive { font-size: 16px; padding: 3px 7px; }
-.admin-pactions button.admin-pact-move { font-weight: 900; font-size: 13px; }
 .admin-pactions button:disabled { opacity: 0.25; cursor: default; background: transparent; color: var(--muted); }
+/* 프로젝트 순서 드래그 — 폴더 앞 그립(⠿)을 잡고 끌어 옮긴다. */
+.proj-drag-handle {
+  display: inline-block; cursor: grab; color: var(--muted); user-select: none;
+  margin-right: 8px; font-size: 13px; vertical-align: middle; letter-spacing: -1px;
+}
+.proj-drag-handle:active { cursor: grabbing; }
+tr.row-dragging { opacity: 0.4; }
+tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 
 /* v02 RBAC — 전역 역할 복수 토글 칩 + 프로젝트 역할 편집기 */
 .admin-note-sub { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: -3px 0 9px; }

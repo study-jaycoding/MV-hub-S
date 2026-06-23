@@ -24,6 +24,24 @@ function ProjectSection({
   onViewDeleted: () => void; // '지운 것 보기' 선택
 }) {
   const tr = useT();
+  // 순서 드래그 — 그립(⠿)을 잡고 끌어 옮긴다. 낙관적 로컬 순서 + 서버 저장(App reload 가 재동기).
+  const [order, setOrder] = useState<Project[]>(projects);
+  useEffect(() => setOrder(projects), [projects]);
+  const [dragArmed, setDragArmed] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const dropAt = async (toIdx: number) => {
+    const from = dragIdx;
+    setDragArmed(false);
+    setDragIdx(null);
+    setOverIdx(null);
+    if (from === null || from === toIdx) return;
+    const next = order.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(toIdx, 0, moved);
+    setOrder(next);
+    api.reorderProjects(next.map((x) => x.id)).catch(() => {}); // 실패해도 App reload 가 서버 순서로 보정
+  };
   // 보관(archived) 프로젝트는 **펼칠 때만** 불러온다(지연 로딩) — 보관할수록 평소 로드가 가벼워짐.
   const [archived, setArchived] = useState<Project[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -84,14 +102,47 @@ function ProjectSection({
       <section>
         <h4 className="auto-tag-head">{tr("프로젝트")}</h4>
         <div className="proj-list">
-          {projects.length === 0 && <span className="muted">{tr("없음")}</span>}
-          {projects.map((p) => (
+          {order.length === 0 && <span className="muted">{tr("없음")}</span>}
+          {order.map((p, idx) => (
             <button
               key={p.id}
-              className={"proj-row" + (activeId === p.id && !deletedOnly ? " on" : "")}
+              className={
+                "proj-row" +
+                (activeId === p.id && !deletedOnly ? " on" : "") +
+                (dragIdx === idx ? " row-dragging" : "") +
+                (overIdx === idx && dragIdx !== idx ? " row-dragover" : "")
+              }
               onClick={() => onFilter(activeId === p.id ? undefined : p.id)}
               title={p.name}
+              draggable={dragArmed}
+              onDragStart={(e) => {
+                setDragIdx(idx);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(e) => {
+                if (dragIdx === null) return;
+                e.preventDefault();
+                if (overIdx !== idx) setOverIdx(idx);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                dropAt(idx);
+              }}
+              onDragEnd={() => {
+                setDragArmed(false);
+                setDragIdx(null);
+                setOverIdx(null);
+              }}
             >
+              <span
+                className="proj-drag-handle"
+                title="드래그해서 순서 변경"
+                onMouseDown={() => setDragArmed(true)}
+                onMouseUp={() => setDragArmed(false)}
+                onClick={(e) => e.stopPropagation()}
+              >
+                ⠿
+              </span>
               <span className="proj-name">{p.name}</span>
               <span className="proj-count">{p.count}</span>
             </button>

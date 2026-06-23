@@ -382,12 +382,19 @@ export function AdminWindow({
     await api.updateProject(p.id, { archived: !p.archived });
     loadProjects();
   };
-  // 프로젝트 표시 순서 위/아래 한 칸 이동 — 낙관적 반영 후 서버에 전체 순서 저장.
-  const moveProject = async (idx: number, dir: -1 | 1) => {
-    const j = idx + dir;
-    if (j < 0 || j >= projects.length) return;
+  // 프로젝트 표시 순서 — 그립(⠿)을 잡고 드래그해 바꾼다. 낙관적 반영 후 서버에 전체 순서 저장.
+  const [dragArmed, setDragArmed] = useState(false); // 그립 누름 → 그때만 행 draggable
+  const [dragIdx, setDragIdx] = useState<number | null>(null); // 집은 행
+  const [overIdx, setOverIdx] = useState<number | null>(null); // 위에 끌고 있는 행(드롭 위치)
+  const dropProjectAt = async (toIdx: number) => {
+    const from = dragIdx;
+    setDragArmed(false);
+    setDragIdx(null);
+    setOverIdx(null);
+    if (from === null || from === toIdx) return;
     const next = projects.slice();
-    [next[idx], next[j]] = [next[j], next[idx]];
+    const [moved] = next.splice(from, 1);
+    next.splice(toIdx, 0, moved);
     setProjects(next);
     try {
       await api.reorderProjects(next.map((x) => x.id));
@@ -716,8 +723,41 @@ export function AdminWindow({
                   <tbody>
                     {projects.map((p, idx) => (
                       <Fragment key={p.id}>
-                        <tr className={p.archived ? "archived" : ""}>
+                        <tr
+                          className={
+                            (p.archived ? "archived" : "") +
+                            (dragIdx === idx ? " row-dragging" : "") +
+                            (overIdx === idx && dragIdx !== idx ? " row-dragover" : "")
+                          }
+                          draggable={dragArmed}
+                          onDragStart={(e) => {
+                            setDragIdx(idx);
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                          onDragOver={(e) => {
+                            if (dragIdx === null) return;
+                            e.preventDefault();
+                            if (overIdx !== idx) setOverIdx(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            dropProjectAt(idx);
+                          }}
+                          onDragEnd={() => {
+                            setDragArmed(false);
+                            setDragIdx(null);
+                            setOverIdx(null);
+                          }}
+                        >
                           <td className="admin-pname">
+                            <span
+                              className="proj-drag-handle"
+                              title="드래그해서 순서 변경"
+                              onMouseDown={() => setDragArmed(true)}
+                              onMouseUp={() => setDragArmed(false)}
+                            >
+                              ⠿
+                            </span>
                             {p.name}
                             {p.archived && <span className="admin-badge">보관됨</span>}
                           </td>
@@ -734,22 +774,6 @@ export function AdminWindow({
                             </span>
                           </td>
                           <td className="admin-pactions">
-                            <button
-                              className="admin-pact-move"
-                              onClick={() => moveProject(idx, -1)}
-                              disabled={idx === 0}
-                              title="위로"
-                            >
-                              ↑
-                            </button>
-                            <button
-                              className="admin-pact-move"
-                              onClick={() => moveProject(idx, 1)}
-                              disabled={idx === projects.length - 1}
-                              title="아래로"
-                            >
-                              ↓
-                            </button>
                             <button
                               className={openProjs.has(p.id) ? "on" : ""}
                               onClick={() => toggleProjRoles(p.id)}
