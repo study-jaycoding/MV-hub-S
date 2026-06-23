@@ -2060,6 +2060,7 @@ select optgroup {
 .mount-del {
   flex: none; width: 24px; height: 24px; border-radius: 7px; border: none; cursor: pointer;
   background: rgba(255,255,255,0.06); color: var(--muted); font-weight: 900; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;
 }
 .mount-del:hover { background: rgba(255,107,107,0.18); color: #ff6b6b; }
 .assets-project {
