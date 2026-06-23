@@ -87,24 +87,6 @@ def list_creators(
     return repo.list_creators(account_uid=account_uid, tab=tab, project_id=project_id)
 
 
-class CreatorNameIn(BaseModel):
-    name: str
-
-
-@router.put("/creators/{uid}")
-def rename_creator(uid: str, body: CreatorNameIn):
-    """생성자 uid 에 이름 부여(CLI 가 uid→이름을 안 주므로 직접 라벨)."""
-    repo.set_creator_name(uid, body.name)
-    return {"ok": True}
-
-
-@router.post("/creators/{uid}/claim")
-def claim_creator(uid: str):
-    """이 생성자 uid 를 '나'로 지정 — 이후 그 작성자의 작업이 내 작업(is_mine)으로 잡히고
-    제공자 이름이 표시된다. 팀 워크스페이스 동기화 데이터만으론 내 작업을 못 가르므로 1회 지정."""
-    return repo.set_my_creator(uid)
-
-
 def _require_house(request: Request) -> None:
     """워크스페이스 전환은 서버 CLI(=하우스 계정) 전역 상태만 바꾼다 → 다른 사용자가 토글하면
     하우스 컨텍스트가 바뀐다. 그래서 로그인 계정의 creator_uid 가 서버 힉스필드(my_creator_uid)와

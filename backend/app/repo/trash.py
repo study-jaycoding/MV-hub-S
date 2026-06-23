@@ -269,15 +269,6 @@ def list_trash(
         return [_to_generation_out(json.loads(r["payload"])) for r in rows]
 
 
-def trash_count(account_uid: Optional[str] = None) -> int:
-    with _with_trash() as conn:
-        if account_uid:
-            return conn.execute(
-                "SELECT COUNT(*) FROM trash.trashed WHERE creator_uid=?", (account_uid,)
-            ).fetchone()[0]
-        return conn.execute("SELECT COUNT(*) FROM trash.trashed").fetchone()[0]
-
-
 def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통에서 영구 삭제(복원 불가). account_uid 가 있으면 본인 것만 — 남의 삭제물 영구삭제 방지.
     미디어 파일은 공유·내용주소라 건드리지 않음."""
@@ -293,20 +284,3 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
         return conn.execute(
             "DELETE FROM trash.trashed WHERE id=?", (gen_id,)
         ).rowcount > 0
-
-
-def empty_trash(
-    before_days: Optional[int] = None, account_uid: Optional[str] = None
-) -> int:
-    """휴지통 비우기 — before_days 주면 그보다 오래된 것만, 없으면 전부.
-    account_uid 가 있으면 본인 것만(남의 삭제물 영구삭제 방지)."""
-    with _with_trash() as conn:
-        conds, args = [], []
-        if account_uid:
-            conds.append("creator_uid = ?")
-            args.append(account_uid)
-        if before_days is not None:
-            conds.append("trashed_at < datetime('now', ?)")
-            args.append(f"-{int(before_days)} days")
-        clause = (" WHERE " + " AND ".join(conds)) if conds else ""
-        return conn.execute(f"DELETE FROM trash.trashed{clause}", args).rowcount
