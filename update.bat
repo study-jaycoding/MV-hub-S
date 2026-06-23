@@ -10,6 +10,9 @@ REM
 REM  Requires: this folder must be a git clone (git clone <repo>).
 REM ============================================================================
 setlocal
+REM Force Python/pip to UTF-8 so reading files (e.g. requirements.txt) never hits the
+REM Korean Windows cp949 codec (UnicodeDecodeError on non-ASCII bytes).
+set "PYTHONUTF8=1"
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 

@@ -23,6 +23,8 @@ REM
 REM  Stop: close this window (agent stops). Close the hub window too to fully quit.
 REM ============================================================================
 setlocal
+REM Force Python/pip to UTF-8 (avoid Korean Windows cp949 UnicodeDecodeError on pip install).
+set "PYTHONUTF8=1"
 set "ROOT=%~dp0"
 if "%PORT%"=="" set "PORT=8010"
 REM Local hub backend has no login of its own; the team-server login gate guards the UI.

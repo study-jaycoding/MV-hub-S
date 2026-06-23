@@ -1,7 +1,7 @@
-# Content Hub 백엔드 (Phase 2/3)
+# Content Hub backend (Phase 2/3)
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
 websockets>=12
 python-multipart>=0.0.9
-Pillow>=10            # assets 라우터 썸네일 생성(PIL.Image) — 미선언 시 기동 실패
+Pillow>=10            # thumbnail generation in assets router (PIL.Image) - required or startup fails
