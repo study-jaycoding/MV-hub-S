@@ -61,6 +61,15 @@ async def lifespan(app: FastAPI):
     init_db()
     ensure_dirs()
     repo.ensure_default_worker()
+    # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
+    # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
+    if AUTH_ENABLED:
+        import os as _os
+
+        _ae = (_os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
+        _ap = _os.environ.get("CONTENT_HUB_ADMIN_PASSWORD") or "admin1985"
+        if repo.ensure_admin_account(_ae, _ap):
+            print(f"[startup] 부트스트랩 관리자 자동 생성: {_ae}")
     # 미디어 디렉터리 샤딩(1회 이전, 멱등) — 평면 /media/<sha> → /media/<2>/<sha>. 핫 폴더 비대화 방지.
     from .services import media_cache
 

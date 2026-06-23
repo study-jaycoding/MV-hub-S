@@ -69,6 +69,30 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
         return _row(conn, email)
 
 
+def ensure_admin_account(email: str, password: str) -> bool:
+    """부트스트랩 관리자 계정 보장 — 없으면 생성(admin+product_manager·approved). 멱등.
+    이미 있으면 절대 건드리지 않는다(비밀번호·역할 보존). 서버(AUTH on) 시작 시 호출해서
+    '관리자 계정을 따로 안 만들어도 처음부터 있게' 한다. True=새로 만듦."""
+    email = (email or "").strip().lower()
+    if not email or "@" not in email or not password or len(password) < 6:
+        return False
+    with get_connection() as conn:
+        if conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
+            return False  # 이미 있음 — 보존
+        conn.execute(
+            "INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
+            "VALUES(?,?,?,?,?,datetime('now'))",
+            (
+                email,
+                "admin",
+                auth.hash_password(password),
+                "approved",
+                f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}",
+            ),
+        )
+    return True
+
+
 def authenticate(email: str, password: str) -> Optional[dict[str, Any]]:
     """이메일+비밀번호 검증. 성공 시 계정(공개필드) 반환, 실패 시 None.
     status 와 무관하게 비밀번호만 검증(승인 여부는 호출측에서 판단)."""
