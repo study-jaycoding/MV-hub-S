@@ -211,10 +211,13 @@ def assign_to_project(generation_ids: list[str], project_id: Optional[str]) -> i
             "SELECT 1 FROM project WHERE id = ?", (project_id,)
         ).fetchone():
             raise ValueError(f"없는 프로젝트: {project_id}")
+        # id 또는 job_id 로 매칭 — 팀 공유 탭의 카드 id 는 서버 앵커(=로컬 job_id)라 로컬 primary id
+        # 와 다르다. 둘 다 받아야 어느 탭에서 골랐든 같은 로컬 행에 귀속된다.
         placeholders = ",".join("?" for _ in generation_ids)
         cur = conn.execute(
-            f"UPDATE generation SET project_id = ? WHERE id IN ({placeholders})",
-            [project_id, *generation_ids],
+            f"UPDATE generation SET project_id = ? "
+            f"WHERE id IN ({placeholders}) OR job_id IN ({placeholders})",
+            [project_id, *generation_ids, *generation_ids],
         )
         return cur.rowcount
 

@@ -227,7 +227,7 @@ export function AdminWindow({
 
   const loadProjects = () =>
     api
-      .projects(true)
+      .projects("my", true)
       .then((r) => {
         setProjects(r.projects);
         // 모든 프로젝트 멤버를 1회 일괄 prefetch → 펼칠 때 즉시 표시(요청 N→1).

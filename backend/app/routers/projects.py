@@ -32,19 +32,20 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
 @router.get("", response_model=ProjectsOut)
-def list_projects(request: Request, include_archived: bool = False):
-    # 로컬 우선 하이브리드: 프로젝트 '정의'(이름·보관·전체수)는 팀 공유라 서버에서 가져오되,
-    # 사이드바 '내 작업 카운트'·'미분류'는 내 로컬 DB 기준으로 덮어쓴다(서버 발행분이 아니라).
+def list_projects(request: Request, include_archived: bool = False, tab: str = "my"):
+    # 로컬 우선 하이브리드: 프로젝트 '정의'는 서버(팀 공유). 카운트 기준은 탭마다 다르다 —
+    #  · 내 작업(my): 내 로컬 DB 기준(내 미분류·내 프로젝트 수). 서버 정의에 로컬 카운트를 덮어씀.
+    #  · 팀 공유(team): 팀 공유물의 프로젝트 귀속은 서버에 있으므로 서버 카운트를 그대로 쓴다.
     if _proxy.proxying():
         data = _proxy.proxy_get("/api/projects", request)
         if isinstance(data, dict):
-            projs = data.get("projects") or []
-            repo.cache_projects(projs)  # 서버 정의 로컬 미러(assign 검증·카드 project_name 해석)
-            counts = repo.local_project_counts()
-            for p in projs:
-                if isinstance(p, dict):
-                    p["count"] = counts.get(p.get("id"), 0)
-            data["unassigned"] = repo.local_unassigned_count()
+            repo.cache_projects(data.get("projects") or [])  # 정의 미러(assign 검증·project_name 해석)
+            if tab != "team":  # 내 작업 탭만 로컬 카운트로 덮어씀
+                counts = repo.local_project_counts()
+                for p in data.get("projects") or []:
+                    if isinstance(p, dict):
+                        p["count"] = counts.get(p.get("id"), 0)
+                data["unassigned"] = repo.local_unassigned_count()
         return data
     # 가시성(§5-3): 전역 read_all(admin·PM·PD)은 전체 프로젝트, 그 외(일반 멤버)는 배정된 것만.
     # AUTH off 면 enforcement 없이 전체(기존 동작).
@@ -127,10 +128,13 @@ def delete_project(pid: str, request: Request):
 
 
 @router.post("/assign")
-def assign_project(body: AssignProjectIn, request: Request):
-    """결과물들을 프로젝트에 귀속(project_id=None 이면 미분류로 해제). 로컬 우선: 귀속은 내 로컬
-    생성물의 project_id 를 바꾸는 로컬 작업. 단, 프로젝트 정의는 서버에 있으므로 검증 통과를 위해
-    먼저 서버 정의를 로컬에 미러(캐시)한다."""
+def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
+    """결과물들을 프로젝트에 귀속(project_id=None 이면 미분류로 해제).
+    탭 인지: 팀 공유(team) 탭의 항목은 서버에 사는 팀 공유물이라 서버에 위임해야 팀 전체에 반영되고
+    팀 탭 카운트·필터가 맞는다. 내 작업(my)은 내 로컬 생성물의 project_id 를 바꾸는 로컬 작업."""
+    if _proxy.proxying() and tab == "team":
+        return _proxy.proxy_json("POST", "/api/projects/assign", body=body.model_dump())
+    # 내 작업(로컬) 귀속 — 프로젝트 정의는 서버에 있으므로 검증 통과를 위해 먼저 미러(캐시).
     if _proxy.proxying() and body.project_id:
         try:
             data = _proxy.proxy_json("GET", "/api/projects")

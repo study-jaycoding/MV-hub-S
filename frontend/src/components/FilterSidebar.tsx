@@ -48,7 +48,7 @@ function ProjectSection({
   const [archivedLoaded, setArchivedLoaded] = useState(false);
   const loadArchived = () =>
     api
-      .projects(true)
+      .projects("my", true)
       .then((r) => {
         setArchived(r.projects.filter((p) => p.archived));
         setArchivedLoaded(true);

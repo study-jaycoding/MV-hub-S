@@ -232,7 +232,7 @@ export default function App() {
           : api.listGenerations(genQueryRef.current, null), // 첫 페이지(커서 없음)
         api.generationStats(), // 실패 수·미확인(전역 파생값)
         api.facets(filtersRef.current.tab === "team" ? "team" : "my"), // my=로컬, team=서버
-        api.projects(),
+        api.projects(filtersRef.current.tab === "team" ? "team" : "my"), // 카운트도 탭 기준
       ]);
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
@@ -286,7 +286,9 @@ export default function App() {
     const ids = [...selectedRef.current];
     if (ids.length === 0) return;
     try {
-      const r = await api.assignProject(ids, projectId);
+      const r = await api.assignProject(
+        ids, projectId, filtersRef.current.tab === "team" ? "team" : "my",
+      );
       await reload();
       flash(`${r.updated}개를 ${projectId ? "프로젝트에 담음" : "미분류로 뺌"}`);
     } catch (e) {
@@ -943,7 +945,9 @@ export default function App() {
     const ids = sel.map((g) => g.id);
     if (!ids.length) return;
     try {
-      const r = await api.assignProject(ids, projectId);
+      const r = await api.assignProject(
+        ids, projectId, filtersRef.current.tab === "team" ? "team" : "my",
+      );
       await reload();
       bumpBoard();
       flash(`${r.updated}개를 ${projectId ? "프로젝트에 담음" : "미분류로 뺌"}`);

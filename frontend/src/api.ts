@@ -195,10 +195,12 @@ export const api = {
     ),
 
   // ── 프로젝트(작업 묶음) — 공유·이동의 단위 ─────────────────────────────
-  projects: (includeArchived = false) =>
-    jsonFetch<ProjectsResponse>(
-      `/api/projects${includeArchived ? "?include_archived=true" : ""}`,
-    ),
+  // tab=my → 내 로컬 카운트, tab=team → 서버 카운트(팀 공유물의 프로젝트 귀속은 서버)
+  projects: (tab: "my" | "team" = "my", includeArchived = false) => {
+    const p = new URLSearchParams({ tab });
+    if (includeArchived) p.set("include_archived", "true");
+    return jsonFetch<ProjectsResponse>(`/api/projects?${p.toString()}`);
+  },
   // 내가 최종(골드) 지정 가능한 project_id 목록(supervisor/PM). '*' = 전역 모드(전체 가능)
   myFinalizeRoles: () =>
     jsonFetch<{ project_ids: string[] }>("/api/projects/my-finalize-roles"),
@@ -220,9 +222,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ project_ids: ids }),
     }),
-  // 결과물들을 프로젝트에 귀속(project_id=null 이면 미분류로 해제)
-  assignProject: (generationIds: string[], projectId: string | null) =>
-    jsonFetch<{ ok: boolean; updated: number }>("/api/projects/assign", {
+  // 결과물들을 프로젝트에 귀속(project_id=null 이면 미분류로 해제). 팀 탭은 서버에 위임(tab).
+  assignProject: (
+    generationIds: string[],
+    projectId: string | null,
+    tab: "my" | "team" = "my",
+  ) =>
+    jsonFetch<{ ok: boolean; updated: number }>(`/api/projects/assign?tab=${tab}`, {
       method: "POST",
       body: JSON.stringify({ generation_ids: generationIds, project_id: projectId }),
     }),
