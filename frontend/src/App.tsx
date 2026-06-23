@@ -466,7 +466,9 @@ export default function App() {
               )
               .catch(() => {});
           }
-          reload(true);
+          // 완료 1건: 서버 결과를 먼저 채운 뒤(reload) 그 placeholder 만 빠지게 pollActive →
+          // 4장 동시 생성에서도 끝나는 즉시 한 건씩 그 자리에서 결과로 바뀐다(빈틈·일괄 등장 없음).
+          reload(true).then(() => pollActive());
           bumpBoard(); // 구성탭 트리에 완성된 결과 반영
         }
       },

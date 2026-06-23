@@ -11,8 +11,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 
+from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import require_view_generation
@@ -135,6 +138,20 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     err = g.get("error") if status == "failed" else None
     repo.set_status(gen_id, status, err)
     repo.mark_request(rid, "done" if status != "failed" else "failed", err)
+
+    # 서버 직결 모드: 완료된 그 잡을 '즉시' 서버로 push(배치 push_once 를 안 기다림) → 4장 동시
+    # 생성 때도 완료되는 즉시 한 건씩 서버에 떠, 프론트가 그 자리에서 한 건씩 결과로 교체한다.
+    # 멱등(job_id PK)이라 뒤따르는 주기 push_once 와 중복 안 됨. 실패는 무시(주기 push 가 안전망).
+    if status != "failed" and _proxy.proxying():
+        try:
+            await asyncio.to_thread(
+                _proxy.proxy_json,
+                "POST",
+                "/api/ingest",
+                body={"jobs": [body.job], "creator_uid": None, "account_status": None},
+            )
+        except Exception:  # noqa: BLE001 — 즉시 push 실패는 무시(주기 push_once 가 보완)
+            pass
 
     await manager.broadcast(
         {
