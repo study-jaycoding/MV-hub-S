@@ -482,9 +482,10 @@ export default function App() {
     pollActive();
   }, [pollActive]);
 
-  // 폴링 폴백: 진행중 잡이 있으면 주기적으로 reload(서버 완료분 따라잡기) + 로컬 진행중 갱신.
+  // 폴링 폴백: '진행중(pending/running)' 잡이 있을 때만 주기 폴링한다. localActive 의 failed 카드는
+  // 보여주되 폴링을 유발하지 않는다(실패가 30분간 머물며 3초마다 폴링하는 낭비 방지).
   const hasActiveJob =
-    localActive.length > 0 ||
+    localActive.some((g) => g.status === "pending" || g.status === "running") ||
     gens.some((g) => g.status === "pending" || g.status === "running");
   useEffect(() => {
     if (!hasActiveJob) return;

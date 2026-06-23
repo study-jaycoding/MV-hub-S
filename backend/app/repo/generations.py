@@ -1152,16 +1152,17 @@ def list_generations(
 
 
 def list_active_generations(account_uid: Optional[str] = None) -> list[dict[str, Any]]:
-    """진행중(pending/running) 로컬 생성물 — 서버 직결 모드에서 '생성중' 카드를 띄우기 위함.
-    완료분만 서버로 push 되므로, 로컬 허브가 자기 DB 의 미완료 placeholder 를 그대로 반환한다
-    (완료되면 status 가 done 이 되어 여기서 빠지고, 동시에 서버로 push 되어 라이브러리에 나타남).
+    """내 '최근 로컬 생성물'(진행중 pending/running + 실패 failed) — 서버 직결 모드에서 화면이
+    서버 DB 를 읽기 때문에, 내 로컬 결과(특히 진행중·실패)가 즉시 안 보이는 걸 보완한다.
+    로컬 허브 자기 DB 를 그대로 반환해 프론트가 서버 라이브러리 위에 머지한다.
+      · pending/running → '생성중' 카드(완료되면 done 이 되어 빠지고, 서버 push 본이 그 자리를 채움)
+      · failed → '실패' 카드(실패 잡은 서버로 push 안 하므로 로컬에서만 보임 → 안 그러면 영영 안 보임)
 
-    ※ '최근(30분)' 것만 반환 — 에이전트가 안 집었거나 이전 세션에서 끊긴 고아 pending 이 로컬 DB
-      에 남아 완료 후에도 '생성중'으로 뜬금없이 떠 있는 걸 막는다(부팅 시 fail_orphaned_jobs 가
-      정리하지만 세션 중 생긴 것·재시작 전까진 남으므로 조회에서도 시간 제한). 30분이면 느린
-      영상 생성도 보호하면서, 이전 세션 고아(보통 그보다 오래됨)는 가린다."""
+    ※ '최근(30분)' 것만 — 이전 세션 고아 pending 이 '생성중'으로 뜬금없이 떠 있는 걸 막고(부팅 시
+      fail_orphaned_jobs 가 정리하지만 세션 중 생긴 건 남음), 30분이면 느린 영상 생성도 보호한다.
+      실패도 30분 내엔 보여 사용자가 보고 재생성할 수 있다."""
     where = [
-        "g.status IN ('pending','running')",
+        "g.status IN ('pending','running','failed')",
         "g.deleted_at IS NULL",
         "g.created_at >= datetime('now', '-30 minutes')",  # 오래된 고아 placeholder 제외
     ]
