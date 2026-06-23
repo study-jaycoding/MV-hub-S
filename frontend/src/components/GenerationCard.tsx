@@ -260,6 +260,21 @@ export function GenerationCard({
           C
         </button>
       </div>
+      {/* 좌상단 드래그 그립(S 버튼 밑) — 끌어서 프롬프트에 '레퍼런스로 추가'(히스토리 카드와 동일 UX) */}
+      <span
+        className="card-drag-grip"
+        draggable
+        title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onDragStart={(e) => {
+          e.stopPropagation();
+          e.dataTransfer.setData("application/x-ch-gen", gen.id);
+          e.dataTransfer.effectAllowed = "copy";
+        }}
+      >
+        ⠿
+      </span>
       {/* 가계(히스토리)는 좌상단 뱃지 대신 호버 오버레이의 '가계 보기' 버튼(공유 자리)으로 연다. */}
       {isVideo && <span className="play-badge">▶</span>}
       {/* 미디어가 있을 때만 하단 상태 라벨 — 미디어 없으면 placeholder가 이미 표시(중복 방지) */}
@@ -321,6 +336,17 @@ export function GenerationCard({
               ⤓
             </button>
           )}
+          {/* 프롬프트 재사용 — 모든 탭(내 작업·팀 공유)에서 제공: 이 프롬프트·옵션을 입력바로 불러옴 */}
+          <button
+            className="ov-icon"
+            title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: gen.id }));
+            }}
+          >
+            ✎
+          </button>
           {tab === "team"
             ? // 다른 작업자의 생성물 → 내 워크스페이스로 가져오기(내 것은 공유 해제 버튼 제거 — S로 조작)
               gen.worker_id !== ME && (
@@ -328,25 +354,11 @@ export function GenerationCard({
                   ⬇
                 </button>
               )
-            : // 생성탭 → 프롬프트 재사용(입력바로 불러오기) + 재생성
+            : // 생성탭 → 재생성
               (
-                <>
-                  <button
-                    className="ov-icon"
-                    title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      window.dispatchEvent(
-                        new CustomEvent("ch:reuse-prompt", { detail: gen.id }),
-                      );
-                    }}
-                  >
-                    ✎
-                  </button>
-                  <button className="ov-icon" title="재생성" onClick={() => onRegenerate(gen)}>
-                    ↻
-                  </button>
-                </>
+                <button className="ov-icon" title="재생성" onClick={() => onRegenerate(gen)}>
+                  ↻
+                </button>
               )}
           {/* 팀 공유/해제는 S 버튼으로 조작하므로 오버레이엔 '가계 보기'(히스토리)를 둔다.
               원래 좌상단에 있던 라임 가계 뱃지를 이 자리(공유 버튼 자리)로 옮긴 것. */}

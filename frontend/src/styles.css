@@ -669,6 +669,21 @@ select optgroup {
   background: #f5a623; color: #2a1500; border-color: #ffc04d; opacity: 1; pointer-events: auto;
   box-shadow: 0 0 9px rgba(245,166,35,0.55);
 }
+/* 좌상단 드래그 그립 — card-tl(S·C) 한 줄 바로 아래(top: 7+26+6=39px). 끌어서 레퍼런스로 추가. */
+.card-drag-grip {
+  position: absolute; top: 39px; left: 7px; z-index: 4;
+  width: 26px; height: 26px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(12,13,17,0.82); border: 1px solid var(--border);
+  color: var(--muted2); font-size: 14px; line-height: 1;
+  cursor: grab; opacity: 0; pointer-events: none;
+  transition: opacity 0.12s, background 0.12s, transform 0.12s;
+  backdrop-filter: blur(6px);
+}
+.card:hover .card-drag-grip { opacity: 1; pointer-events: auto; }
+.card-drag-grip:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
+.card-drag-grip:active { cursor: grabbing; }
+
 .status-running { color: #ffd24a; }
 .status-pending { color: var(--muted); }
 /* 생성중 — 글씨 대신 회전 스피너 아이콘(색은 status-running 골드 상속) + 작은 캡션 */
@@ -1026,10 +1041,11 @@ select optgroup {
 }
 .card-thumb:hover .thumb-overlay, .card.selected .thumb-overlay { opacity: 1; }
 .ov-top { display: flex; align-items: flex-start; justify-content: space-between; }
-.ov-bottom { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+/* 작은 카드에서도 버튼이 안 잘리게: 줄바꿈 허용(넘치면 윗줄로) + 우측 정렬 유지 */
+.ov-bottom { display: flex; align-items: center; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 .thumb-overlay button, .thumb-overlay .ov-check { pointer-events: auto; }
 .ov-icon {
-  width: 30px; height: 30px; border-radius: 8px;
+  width: 28px; height: 28px; border-radius: 8px; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
   border: 1px solid rgba(255,255,255,0.16); color: #fff; font-size: 14px;
@@ -2843,7 +2859,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 }
 .linb-node:hover .linb-ov { opacity: 1; }
 .linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; }
-.linb-ov-bot { display: flex; gap: 4px; justify-content: center; }
+.linb-ov-bot { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
 .linb-ov-drag { cursor: grab; }
 .linb-ov-drag:active { cursor: grabbing; }
 .linb-ov-btn {
