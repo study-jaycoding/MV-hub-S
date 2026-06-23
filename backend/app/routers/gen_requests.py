@@ -11,11 +11,8 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, HTTPException, Request
 
-from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import require_view_generation
@@ -86,15 +83,6 @@ def create_gen_request(body: GenRequestIn, request: Request):
     return gen
 
 
-@router.get("/gen-requests/active", response_model=list[GenerationOut])
-def active_gen_requests(request: Request):
-    """진행중(pending/running) 내 로컬 생성물 — '생성중' 카드 표시용(서버 직결 모드).
-    로컬 실행 큐라 프록시되지 않고 이 허브 자기 DB 를 본다. 프론트가 주기적으로 받아 서버
-    라이브러리 위에 머지한다(완료되면 done 이 되어 빠지고 서버 push 본이 그 자리를 채움)."""
-    acc = _require_account(request)
-    return repo.list_active_generations(acc.get("creator_uid"))
-
-
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
 async def pending_gen_requests(request: Request, limit: int = 16):
     """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
@@ -138,20 +126,8 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     err = g.get("error") if status == "failed" else None
     repo.set_status(gen_id, status, err)
     repo.mark_request(rid, "done" if status != "failed" else "failed", err)
-
-    # 서버 직결 모드: 완료된 그 잡을 '즉시' 서버로 push(배치 push_once 를 안 기다림) → 4장 동시
-    # 생성 때도 완료되는 즉시 한 건씩 서버에 떠, 프론트가 그 자리에서 한 건씩 결과로 교체한다.
-    # 멱등(job_id PK)이라 뒤따르는 주기 push_once 와 중복 안 됨. 실패는 무시(주기 push 가 안전망).
-    if status != "failed" and _proxy.proxying():
-        try:
-            await asyncio.to_thread(
-                _proxy.proxy_json,
-                "POST",
-                "/api/ingest",
-                body={"jobs": [body.job], "creator_uid": None, "account_status": None},
-            )
-        except Exception:  # noqa: BLE001 — 즉시 push 실패는 무시(주기 push_once 가 보완)
-            pass
+    # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
+    # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
 
     await manager.broadcast(
         {

@@ -16,6 +16,7 @@ from collections import Counter
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
+from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, BACKEND_DIR, DEFAULT_WORKER_ID
 from ..models import IngestIn, IngestMcpIn, IngestOut
@@ -56,8 +57,10 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # 같아야 그 계정 작업으로 확정한다. 다르면 남의 힉스필드 신원을 내 계정에 잘못 귀속시키는
     # 것이라 거부(self-report 무조건 신뢰 → 이메일 일치 '검증'으로 격상). 옛 에이전트는 email 을
     # 안 줄 수 있어 그땐 검사 생략(하위호환).
+    # 이메일 검증은 서버(AUTH on)에서만 — 로컬 허브(AUTH off)는 내 PC·내 에이전트라 acc.email 이
+    # 'local' 이라 검증 대상이 아니다(검증은 크레딧 보고를 서버로 전달할 때 서버가 수행).
     reported_email = ((account_status or {}).get("email") or "").strip().lower()
-    if reported_email and reported_email != (acc.get("email") or "").strip().lower():
+    if AUTH_ENABLED and reported_email and reported_email != (acc.get("email") or "").strip().lower():
         raise HTTPException(
             status_code=409,
             detail=(
@@ -108,17 +111,29 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
 
 @router.post("/ingest", response_model=IngestOut)
 def ingest(body: IngestIn, request: Request):
-    """로컬 `generate list` 원본 묶음(최신분)을 적재 — push_agent 가 호출."""
-    return _ingest_core(_acc(request), body.jobs, body.creator_uid, body.account_status)
+    """로컬 `generate list` 원본 묶음(최신분)을 내 로컬 DB 에 적재 — push_agent 가 호출.
+    로컬 우선: 생성물은 로컬에만 남고(공유는 선택 발행으로만), 팀 크레딧 집계를 위해
+    account_status(잔액/플랜)만 서버로 전달한다(서버가 이메일 일치 검증 + 집계)."""
+    out = _ingest_core(_agent_acc(request), body.jobs, body.creator_uid, body.account_status)
+    if _proxy.proxying() and body.account_status:
+        try:
+            _proxy.proxy_json(
+                "POST",
+                "/api/ingest",
+                body={"jobs": [], "account_status": body.account_status, "creator_uid": body.creator_uid},
+            )
+        except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
+            pass
+    return out
 
 
 @router.post("/ingest/mcp", response_model=IngestOut)
 def ingest_mcp(body: IngestMcpIn, request: Request):
-    """과거 전체 백필 — MCP `show_generations` 원시 아이템(100개 밖)을 적재. 멱등.
+    """과거 전체 백필 — MCP `show_generations` 원시 아이템(100개 밖)을 내 로컬 DB 에 적재. 멱등.
     흐름: Claude 가 그 사용자 세션으로 show_generations 를 next_cursor 끝까지 순회하며 각 페이지를
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
     jobs = [mcp_item_to_cli(it) for it in body.items if isinstance(it, dict)]
-    return _ingest_core(_acc(request), jobs, None, body.account_status)
+    return _ingest_core(_agent_acc(request), jobs, None, body.account_status)
 
 
 @router.get("/credits")

@@ -17,7 +17,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from .. import db
+from . import _proxy
+from .. import db, repo
 from ..repo import identity
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
@@ -97,3 +98,35 @@ async def import_db(file: UploadFile = File(...)):
     db.init_db()
     identity._MY_UID_CACHE[0] = None
     return {"ok": True}
+
+
+@router.post("/migrate-from-server")
+def migrate_from_server():
+    """서버 직결 기간 동안 서버에만 쌓였던 내 '개인 메타'(컬러/태그/소스/프로젝트/최종)를 로컬로 1회
+    가져온다. 생성물 자체는 에이전트의 `generate list` 동기화로 로컬에 재구축되므로(먼저 동기화 권장),
+    여기선 로컬에 같은 id 가 있는 항목에 메타 오버레이만 적용한다(없으면 missing 으로 집계)."""
+    if not _proxy.proxying():
+        raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
+    items = _proxy.proxy_json("GET", "/api/generations", params={"tab": "my", "limit": 2000})
+    items = items if isinstance(items, list) else []
+    applied = 0
+    missing = 0
+    for it in items:
+        gid = it.get("id") if isinstance(it, dict) else None
+        if not gid:
+            continue
+        if not repo.get_generation(gid):
+            missing += 1  # 로컬에 아직 없음 → 에이전트 동기화 후 다시 시도
+            continue
+        if it.get("color") is not None:
+            repo.set_color(gid, it.get("color"))
+        if it.get("is_source"):
+            repo.set_source(gid, it.get("source_name"), True)
+        if it.get("tags"):
+            repo.set_tags(gid, it.get("tags"))
+        if it.get("project_id"):
+            repo.assign_to_project([gid], it.get("project_id"))
+        if it.get("is_final"):
+            repo.set_final(gid, True, it.get("final_by"))
+        applied += 1
+    return {"applied": applied, "missing": missing, "total": len(items)}

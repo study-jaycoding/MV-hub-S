@@ -168,6 +168,22 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
     }
   };
 
+  // 서버 직결 기간 개인 메타 1회 가져오기.
+  const migrateFromServer = async () => {
+    setDbBusy(true);
+    setDbMsg("서버에서 가져오는 중…");
+    try {
+      const r = await api.migrateFromServer();
+      setDbMsg(
+        `메타 적용 ${r.applied}건 · 로컬에 아직 없음 ${r.missing}건(에이전트 동기화 후 다시) · 총 ${r.total}건`,
+      );
+    } catch (e) {
+      setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -343,6 +359,13 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             <p className="settings-hint">
               ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
               작업자=1PC라 한 번에 한 PC에서만 쓰세요.
+            </p>
+            <button className="settings-action" onClick={migrateFromServer} disabled={dbBusy}>
+              ↺ 서버에서 내 메타 가져오기 (1회)
+            </button>
+            <p className="settings-hint">
+              서버 직결 시절 서버에만 남았던 내 <b>컬러·태그·소스·프로젝트·최종</b> 표식을 로컬로
+              가져옵니다(생성물은 에이전트가 자동 동기화). 에이전트로 동기화가 끝난 뒤 한 번 누르세요.
             </p>
             {dbMsg && <p className="manage-msg">{dbMsg}</p>}
           </section>

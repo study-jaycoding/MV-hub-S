@@ -486,10 +486,6 @@ export const api = {
       body: JSON.stringify({ kind: "regenerate", source_gen_id: id, regenerate: body }),
     }),
 
-  // 진행중(pending/running) 내 로컬 생성물 — '생성중' 카드 표시용. 로컬 큐라 프록시 안 됨(이 허브 DB).
-  // 서버 직결 모드에선 서버에 완료분만 오므로, 이걸 받아 서버 라이브러리 위에 머지한다.
-  activeGenRequests: () => jsonFetch<Generation[]>("/api/gen-requests/active"),
-
   setTags: (id: string, tags: string[]) =>
     jsonFetch<Generation>(`/api/generations/${id}/tags`, {
       method: "PUT",
@@ -771,6 +767,13 @@ export const api = {
     }
     return res.json() as Promise<{ ok: boolean }>;
   },
+
+  // 서버 직결 기간 개인 메타(컬러/태그/소스/프로젝트/최종)를 로컬로 1회 마이그레이션
+  migrateFromServer: () =>
+    jsonFetch<{ applied: number; missing: number; total: number }>(
+      "/api/db/migrate-from-server",
+      { method: "POST" },
+    ),
 
   // OS 파일 탐색기에서 원본 위치 열기(해당 파일 선택)
   revealAsset: (project: string, path: string) =>

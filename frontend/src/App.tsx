@@ -74,9 +74,6 @@ export default function App() {
     return { tab: "my" };
   });
   const [gens, setGens] = useState<Generation[]>([]);
-  // 진행중(생성중) 로컬 placeholder — 서버엔 완료분만 오므로 따로 받아 그리드 위에 머지한다.
-  // reload 가 gens 를 서버본으로 갈아끼워도 '생성중' 카드가 사라지지 않게 별도 상태로 둔다.
-  const [localActive, setLocalActive] = useState<Generation[]>([]);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const [boardFocusId, setBoardFocusId] = useState<string | null>(null); // 구성탭 히스토리 트리 포커스
@@ -417,27 +414,15 @@ export default function App() {
     if (authReady) reload();
   }, [authReady, reload]);
 
-  // 진행중(생성중) 로컬 placeholder 폴링 — 서버 직결 모드에선 서버 라이브러리에 완료분만 오므로,
-  // 로컬 허브의 미완료 생성물을 따로 받아 그리드 위에 머지한다(완료되면 done 이 되어 빠지고,
-  // 동시에 서버로 push 되어 reload 가 그 자리를 채운다). WS 핸들러보다 위에 정의(참조 순서).
-  const pollActive = useCallback(async () => {
-    try {
-      setLocalActive(await api.activeGenRequests());
-    } catch {
-      /* 무시 — active 엔드포인트 없거나(미업데이트) 일시 오류 → 빈 채로 두어 '생성중' 박힘 방지 */
-    }
-  }, []);
-
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신.
   // 끊겼다 재연결되면 reload 로 놓친 전이를 따라잡는다(백엔드 재시작 대비).
+  // ★로컬 우선: 내 작업(tab=my)은 로컬 DB 를 읽으므로 진행중·완료·실패가 그대로 보인다 →
+  //   별도 머지/폴 없이 reload 만으로 충분하다(생성중 카드가 그 자리에서 결과로 교체).
   useEffect(() => {
     const off = connectProgress(
       (m) => {
-        // 주기 동기화/서버 push 완료(프록시 notify_mutation) → 전체 새로고침 + 진행중 목록 갱신
         if (m.type === "synced") {
-          // 서버 결과를 먼저 채운 뒤(reload) '생성중' placeholder 를 뺀다(pollActive) → 빈틈 없이
-          // 그 자리에서 결과로 교체(순서 뒤집히면 잠깐 사라졌다 나타남).
-          reload(true).then(() => pollActive());
+          reload(true);
           bumpBoard(); // 구성탭 트리도 따라잡기
           setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
           return;
@@ -448,53 +433,26 @@ export default function App() {
             g.id === m.generation_id ? { ...g, status: m.status! } : g,
           ),
         );
-        // ※ '생성중' placeholder 를 여기서 바로 빼지 않는다 — 완료(local done)는 떴어도 서버 push
-        //   직후라 라이브러리(서버본)엔 아직 그 결과가 없을 수 있다. 지금 빼면 '빈틈'이 생겨 카드가
-        //   사라졌다가 다시 나타난다. 대신 push 가 끝나 'synced' 가 오면(아래) reload→pollActive 순서로
-        //   서버 결과를 먼저 채운 뒤 placeholder 를 빼 그 자리에서 매끄럽게 교체한다.
-        // 완료되면 전체 새로고침으로 asset/썸네일 반영
+        // 완료되면 전체 새로고침으로 asset/썸네일 반영(로컬 DB 에서 같은 카드가 결과로 채워짐).
         if (m.status === "done") {
-          // 구성탭에선 reload 가 라이브러리 조회를 생략하므로, 완료된 잡 1건을 직접 머지해
-          // my work 로 돌아갔을 때 asset/썸네일이 즉시 보이게 한다(완료 반영 지연 제거).
-          if (m.generation_id) {
-            api
-              .getGeneration(m.generation_id)
-              .then((g) =>
-                setGens((prev) =>
-                  prev.some((x) => x.id === g.id) ? prev.map((x) => (x.id === g.id ? g : x)) : prev,
-                ),
-              )
-              .catch(() => {});
-          }
-          // 완료 1건: 서버 결과를 먼저 채운 뒤(reload) 그 placeholder 만 빠지게 pollActive →
-          // 4장 동시 생성에서도 끝나는 즉시 한 건씩 그 자리에서 결과로 바뀐다(빈틈·일괄 등장 없음).
-          reload(true).then(() => pollActive());
+          reload(true);
           bumpBoard(); // 구성탭 트리에 완성된 결과 반영
         }
       },
       () => reload(true), // (재)연결 시 동기화
     );
     return off;
-  }, [reload, bumpBoard, pollActive]);
+  }, [reload, bumpBoard]);
 
-  // 시작 시 1회(새로고침 도중에도 진행중이면 즉시 '생성중' 복원).
-  useEffect(() => {
-    pollActive();
-  }, [pollActive]);
-
-  // 폴링 폴백: '진행중(pending/running)' 잡이 있을 때만 주기 폴링한다. localActive 의 failed 카드는
-  // 보여주되 폴링을 유발하지 않는다(실패가 30분간 머물며 3초마다 폴링하는 낭비 방지).
-  const hasActiveJob =
-    localActive.some((g) => g.status === "pending" || g.status === "running") ||
-    gens.some((g) => g.status === "pending" || g.status === "running");
+  // 폴링 폴백: 진행중(pending/running) 잡이 있으면 주기적으로 reload(로컬 DB 갱신 따라잡기).
+  const hasActiveJob = gens.some(
+    (g) => g.status === "pending" || g.status === "running",
+  );
   useEffect(() => {
     if (!hasActiveJob) return;
-    const id = setInterval(() => {
-      // 서버 결과를 먼저 채운 뒤 진행중 목록 갱신(순서 유지 → 완료분이 빈틈 없이 교체).
-      reload(true).then(() => pollActive());
-    }, 3000);
+    const id = setInterval(() => reload(true), 3000);
     return () => clearInterval(id);
-  }, [hasActiveJob, reload, pollActive]);
+  }, [hasActiveJob, reload]);
 
   // 탭 재포커스 시 즉시 새로고침 — 백그라운드 탭 throttling 으로 놓친 WS 'synced'(웹/타기기
   // 생성)를 따라잡는다. 다른 탭에서 작업하다 돌아오면 항상 최신을 보장(WS 끊김 안전망).
@@ -674,16 +632,9 @@ export default function App() {
     }
   };
 
-  // 서버가 모든 필터를 이미 적용했으므로 로드된 페이지가 곧 화면 결과(클라이언트 재필터 없음).
-  // 단, 진행중(생성중) 로컬 placeholder 는 서버 라이브러리에 아직 없으므로 위에 머지한다.
-  //  · '내 작업' 탭에서만(팀 공유·히스토리엔 생성중을 안 띄움)
-  //  · 이미 gens 에 같은 id 가 있으면(낙관적 추가분) 중복 방지로 제외
-  const visibleGens = (() => {
-    if (filters.tab !== "my" || localActive.length === 0) return gens;
-    const ids = new Set(gens.map((g) => g.id));
-    const extra = localActive.filter((g) => !ids.has(g.id));
-    return extra.length ? [...extra, ...gens] : gens;
-  })();
+  // 로컬 우선: 내 작업(tab=my)은 로컬 DB 를 그대로 읽으므로 로드된 페이지가 곧 화면 결과
+  // (진행중·실패 placeholder 포함). 별도 머지 불필요.
+  const visibleGens = gens;
 
   // 미확인 코멘트 여부·실패 수는 전역 파생값 → 서버 stats 에서(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -1500,11 +1451,15 @@ export default function App() {
             ) : undefined
           }
           onCreated={async (created, dragParentId) => {
-            // '생성중' 카드는 localActive(백엔드 active 목록=진실)로만 띄운다 — gens 에 낙관적으로
-            // 넣으면 직후 reload 가 gens 를 서버본으로 갈아끼우며 그 카드를 지웠다가 폴링이 다시
-            // 넣어 '사라졌다 나타나는' 깜빡임이 생긴다. 폴링 한 곳으로만 띄워 한 번 떠 자리를 지킨다.
-            // active 가 없거나(미업데이트) 실패하면 '생성중'이 안 뜰지언정 영구히 박히지 않는다.
-            if (created?.length) pollActive();
+            // 즉시 '생성중' 카드 표시(optimistic). 로컬 우선이라 직후 reload 도 로컬 DB 에서 같은
+            // placeholder(같은 id)를 돌려주므로 카드가 사라지지 않고 그 자리를 지킨다(깜빡임 없음).
+            if (created?.length) {
+              setGens((prev) => {
+                const ids = new Set(prev.map((g) => g.id));
+                const fresh = created.filter((g) => !ids.has(g.id));
+                return fresh.length ? [...fresh, ...prev] : prev;
+              });
+            }
             flash("생성 잡을 시작했습니다.");
             // 자동 히스토리(원본→파생) 부모 모으기(합집합):
             //  · 드래그해서 불러온 원본(dragParentId)은 **어느 탭에서든** 부모로 — '드래그→수정→생성'이

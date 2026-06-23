@@ -137,6 +137,7 @@ _LOCAL_PREFIXES = (
     "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
     "/api/trash",          # 내 휴지통(로컬)
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
+    "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달
 )
 _LOCAL_EXACT = frozenset(
     {

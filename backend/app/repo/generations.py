@@ -1151,39 +1151,6 @@ def list_generations(
         return _attach_children(conn, rows, viewer_uid=account_uid)
 
 
-def list_active_generations(account_uid: Optional[str] = None) -> list[dict[str, Any]]:
-    """내 '최근 로컬 생성물'(진행중 pending/running + 실패 failed) — 서버 직결 모드에서 화면이
-    서버 DB 를 읽기 때문에, 내 로컬 결과(특히 진행중·실패)가 즉시 안 보이는 걸 보완한다.
-    로컬 허브 자기 DB 를 그대로 반환해 프론트가 서버 라이브러리 위에 머지한다.
-      · pending/running → '생성중' 카드(완료되면 done 이 되어 빠지고, 서버 push 본이 그 자리를 채움)
-      · failed → '실패' 카드(실패 잡은 서버로 push 안 하므로 로컬에서만 보임 → 안 그러면 영영 안 보임)
-
-    ※ '최근(30분)' 것만 — 이전 세션 고아 pending 이 '생성중'으로 뜬금없이 떠 있는 걸 막고(부팅 시
-      fail_orphaned_jobs 가 정리하지만 세션 중 생긴 건 남음), 30분이면 느린 영상 생성도 보호한다.
-      실패도 30분 내엔 보여 사용자가 보고 재생성할 수 있다."""
-    where = [
-        "g.status IN ('pending','running','failed')",
-        "g.deleted_at IS NULL",
-        "g.created_at >= datetime('now', '-30 minutes')",  # 오래된 고아 placeholder 제외
-    ]
-    args: list[Any] = []
-    if account_uid:
-        where.append("g.creator_uid = ?")
-        args.append(account_uid)
-    sql = (
-        "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
-        "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-        "g.comment, g.error, g.creator_uid, g.project_id, g.deleted_at, "
-        "g.is_final, g.final_by, "
-        "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-        "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
-        "WHERE " + " AND ".join(where) + " ORDER BY g.sort_ts DESC, g.id DESC LIMIT 50"
-    )
-    with get_connection() as conn:
-        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
-        return _attach_children(conn, rows, viewer_uid=account_uid)
-
-
 def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
     """전역 파생값 — 무한 스크롤로 전량 로드를 안 하므로 클라이언트 대신 서버가 계산.
       · failed_count: 실패·차단 등 비정상(휴지통 제외) 건수('실패 정리' 버튼용, 전역)
