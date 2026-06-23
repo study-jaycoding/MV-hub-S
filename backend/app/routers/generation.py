@@ -104,42 +104,6 @@ async def account_status():
     return await cli_bridge.get_account_status()
 
 
-@router.post("/import-jobs")
-def import_jobs(jobs: list[dict[str, Any]]):
-    """외부 JSON(다른 작업자의 generate list export)을 가져와 업서트.
-    UUID 키로 중복 없이 병합 + result_url 의 user_<id> 로 생성자 자동 구분.
-    팀 공유(각자 json export 교환) 모델의 핵심 입구."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0}
-    for j in jobs:
-        if not isinstance(j, dict) or not j.get("id"):
-            counts["skipped"] += 1
-            continue
-        parsed = cli_bridge.parse_job(j)
-        counts[repo.upsert_synced_generation(parsed, DEFAULT_WORKER_ID)] += 1
-    return counts
-
-
-@router.get("/export-bundle")
-def export_bundle(creator_uid: str | None = None, mine: bool = False):
-    """로컬 DB 를 '사실 + 오버레이' 번들로 내보낸다(팀 공유 입구, >100 제약 우회).
-    mine=true 면 내 생성자(creator_uid) 것만. 받는 쪽은 /import-bundle 로 병합."""
-    uid = creator_uid
-    if mine and not uid:
-        uid = repo.get_my_uid()
-    return repo.export_bundle(creator_uid=uid)
-
-
-@router.post("/import-bundle")
-def import_bundle(bundle: dict[str, Any]):
-    """content-hub 번들(사실 + 오버레이)을 가져와 병합.
-    사실은 uuid 멱등 upsert, 태그 union, 코멘트 id dedup append, 레퍼런스 위치 보존."""
-    if not isinstance(bundle.get("generations"), list):
-        raise HTTPException(status_code=400, detail="번들 형식 오류: generations 배열 없음")
-    # import_bundle_payload 로 위임 — provider/creators 이름 맵까지 적용(작성자가 user_xxx 아닌
-    # 이름으로 뜨게). 파일 가져오기(import_share_file)와 동일 경로 → 표기 일관성 보장.
-    return repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID)
-
-
 @router.get("/creators")
 def list_creators(
     request: Request,

@@ -132,16 +132,9 @@ export const api = {
     p.set("offset", String(offset));
     return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`);
   },
-  trashCount: () => jsonFetch<{ count: number }>("/api/trash-count"),
   // 휴지통에서 영구 삭제(복원 불가)
   purgeTrashed: (id: string) =>
     jsonFetch<{ purged: boolean }>(`/api/trash/${id}`, { method: "DELETE" }),
-  // 휴지통 비우기 — beforeDays 면 그보다 오래된 것만, 없으면 전부
-  emptyTrash: (beforeDays?: number) =>
-    jsonFetch<{ purged: number }>("/api/trash/empty", {
-      method: "POST",
-      body: JSON.stringify(beforeDays != null ? { before_days: beforeDays } : {}),
-    }),
 
   getGeneration: (id: string) =>
     jsonFetch<Generation>(`/api/generations/${id}`),
@@ -194,38 +187,11 @@ export const api = {
       "/api/account",
     ),
 
-  // 외부 JSON(다른 작업자의 generate list export) 가져오기 — UUID 병합 + 생성자 자동 구분
-  importJobs: (jobs: unknown[]) =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number }>(
-      "/api/import-jobs",
-      { method: "POST", body: JSON.stringify(jobs) },
-    ),
-
-  // content-hub 번들 내보내기(사실 + 오버레이: 레퍼런스 위치·태그·코멘트·생성자).
-  // mine=true 면 내 생성자 것만. >100 제약을 누적 DB 로 우회해 전부 공유.
-  exportBundle: (mine = false) =>
-    jsonFetch<{ format: string; version: number; generations: unknown[] }>(
-      `/api/export-bundle${mine ? "?mine=true" : ""}`,
-    ),
-
-  // content-hub 번들 가져오기 — uuid 멱등 병합(태그 union, 코멘트 dedup append)
-  importBundle: (bundle: unknown) =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number }>(
-      "/api/import-bundle",
-      { method: "POST", body: JSON.stringify(bundle) },
-    ),
-
-  // ── 제공자 신원 (공유 파일명·작성자 표기 기준) ──────────────────────────
+  // ── 제공자 신원 (작성자 표기 기준) ──────────────────────────
   // {uid(불변 앵커), name(편집 가능 표시이름), email}. CLI 이메일에서 기본값을 잡음.
   provider: () =>
     jsonFetch<{ uid: string | null; name: string | null; email: string | null }>(
       "/api/provider",
-    ),
-  // 표시이름 변경 → 이후 공유 파일명·작성자 표기에 반영(uid 는 그대로라 병합 안 깨짐)
-  setProviderName: (name: string) =>
-    jsonFetch<{ uid: string | null; name: string | null; email: string | null }>(
-      "/api/provider",
-      { method: "PATCH", body: JSON.stringify({ name }) },
     ),
 
   // ── 프로젝트(작업 묶음) — 공유·이동의 단위 ─────────────────────────────
@@ -339,13 +305,6 @@ export const api = {
       `/api/auth/accounts/${encodeURIComponent(email)}/hidden`,
       { method: "PATCH", body: JSON.stringify({ hidden }) },
     ),
-  // v02 전역 역할(복수) 부여(enforcement 가 읽는 축)
-  setAccountGlobalRoles: (email: string, global_roles: string[]) =>
-    jsonFetch<import("./types").Account>(
-      `/api/auth/accounts/${encodeURIComponent(email)}/global-roles`,
-      { method: "PATCH", body: JSON.stringify({ global_roles }) },
-    ),
-
   // ── 멤버·전역역할(복수) — 관리자 창 ────────────────────────────────────
   members: () => jsonFetch<Member[]>("/api/members"),
   // v02 전역 역할(복수) 부여 → 갱신된 멤버 목록
@@ -376,53 +335,12 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  // ── 팀 공유 파일(data/shared) ──────────────────────────────────────────
-  // 내 share 파일을 현재 share-set(공유 표시된 것들)으로 강제 재생성
-  rebuildShare: () =>
-    jsonFetch<{ path: string | null; count: number }>("/api/share/rebuild", {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
-  // shared 폴더에서 받은(남의) share 파일 요약 목록 — in 뷰
-  receivedShares: () =>
-    jsonFetch<{
-      items: {
-        filename: string;
-        provider: { uid: string | null; name: string | null; email: string | null };
-        count: number;
-      }[];
-    }>("/api/share/received"),
-  // 받은 share 파일 1개를 내 라이브러리로 병합(받기)
-  importReceived: (filename: string) =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number }>(
-      "/api/share/received/import",
-      { method: "POST", body: JSON.stringify({ filename }) },
-    ),
-  // shared 폴더의 받은 share 파일 전부 일괄 병합
-  importReceivedAll: () =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number }>(
-      "/api/share/received/import-all",
-      { method: "POST", body: JSON.stringify({}) },
-    ),
-
-  // 생성자(팀 워크스페이스 작성자) — 목록·이름붙이기
+  // 생성자(팀 워크스페이스 작성자) — 목록
   creators: (tab: "my" | "team" = "my", projectId?: string) => {
     const p = new URLSearchParams({ tab });
     if (projectId) p.set("project_id", projectId);
     return jsonFetch<Creator[]>(`/api/creators?${p.toString()}`);
   },
-  renameCreator: (uid: string, name: string) =>
-    jsonFetch<{ ok: boolean }>(`/api/creators/${encodeURIComponent(uid)}`, {
-      method: "PUT",
-      body: JSON.stringify({ name }),
-    }),
-  // 이 생성자를 '나'로 지정 → 그 작업이 내 작업(is_mine)으로 잡히고 제공자 이름 표시.
-  // 팀 워크스페이스에선 CLI 가 내 user_<id> 를 안 줘서 1회 지정 필요(초기화 후엔 다시).
-  claimCreator: (uid: string) =>
-    jsonFetch<{ my_creator_uid: string | null; name: string | null }>(
-      `/api/creators/${encodeURIComponent(uid)}/claim`,
-      { method: "POST", body: JSON.stringify({}) },
-    ),
 
   // 워크스페이스(팀 공유 UUID 공간) — 목록·선택·해제
   workspaces: () => jsonFetch<Workspace[]>("/api/workspaces"),
@@ -498,13 +416,6 @@ export const api = {
       method: "DELETE",
     }),
 
-  // 힉스필드 존재 검증(generate get) → 삭제된 것 hf_missing 표시. 로컬 보기/흐림에 반영
-  verifyHiggsfield: () =>
-    jsonFetch<{ checked: number; missing: number }>(
-      "/api/generations/verify-higgsfield",
-      { method: "POST", body: JSON.stringify({}) },
-    ),
-
   // 힉스필드에 안 올라간 로컬 유령 실패(failed+job_id 없음) 일괄 삭제
   clearFailed: () =>
     jsonFetch<{ removed: number }>("/api/generations/clear-failed", {
@@ -543,12 +454,6 @@ export const api = {
       body: JSON.stringify({ name, is_source }),
     }),
 
-  setComment: (id: string, comment: string | null) =>
-    jsonFetch<Generation>(`/api/generations/${id}/comment`, {
-      method: "PUT",
-      body: JSON.stringify({ comment }),
-    }),
-
   // 생성본 코멘트 스레드(공유, 에셋과 별개) — 글·답글. 팀 공유 대상.
   // 코멘트 스레드 — 캐시에 채우며 반환(호버 prefetch + stale-while-revalidate 용)
   genComments: (genId: string) =>
@@ -584,11 +489,6 @@ export const api = {
     }),
   deleteGenComment: (commentId: string) =>
     jsonFetch<{ ok: boolean }>(`/api/generation-comments/${commentId}`, { method: "DELETE" }),
-  markGenCommentsRead: (genId: string) =>
-    jsonFetch<{ ok: boolean }>(
-      `/api/generations/${encodeURIComponent(genId)}/comments/read`,
-      { method: "POST", body: JSON.stringify({}) },
-    ),
   // 코멘트 한 건 확인(패널에서 NEW 코멘트 클릭) → 그 행만 seen 처리. 전부 seen 이면 카드 C 뱃지 꺼짐.
   markGenCommentSeen: (commentId: string) =>
     jsonFetch<{ ok: boolean }>(`/api/generation-comments/${commentId}/seen`, {
@@ -606,12 +506,6 @@ export const api = {
     if (assetDir) q.set("asset_dir", assetDir);
     return jsonFetch<Generation[]>(`/api/sources?${q.toString()}`);
   },
-
-  publish: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${id}/publish`, {
-      method: "POST",
-      body: JSON.stringify({ visibility: "team" }),
-    }),
 
   // 팀 공유 해제(내가 공유한 것 되돌리기). ⚠️ 최종(골드)이면 409
   unpublish: (id: string) =>
@@ -782,13 +676,6 @@ export const api = {
       body: JSON.stringify({ project, path }),
     }),
 
-  // 로컬 보관된 결과물/소스(/media/...)의 원본 위치를 탐색기에서 열기
-  revealMedia: (path: string) =>
-    jsonFetch<{ ok: boolean }>(`/api/reveal-media`, {
-      method: "POST",
-      body: JSON.stringify({ path }),
-    }),
-
   // 분리 창 파일별 메타데이터 (미확인 뱃지는 코멘트별 muted 플래그를 따름)
   assetMeta: (project: string) =>
     jsonFetch<Record<string, AssetMeta>>(
@@ -832,11 +719,6 @@ export const api = {
     jsonFetch(`/api/assets/tags`, {
       method: "PUT",
       body: JSON.stringify({ project, path, tags }),
-    }),
-  setAssetComment: (project: string, path: string, comment: string | null) =>
-    jsonFetch(`/api/assets/comment`, {
-      method: "PUT",
-      body: JSON.stringify({ project, path, comment }),
     }),
   setAssetColor: (project: string, path: string, color: string | null) =>
     jsonFetch(`/api/assets/color`, {

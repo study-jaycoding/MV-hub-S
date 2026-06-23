@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from ..config import DEFAULT_WORKER_ID, SHARED_DIR
+from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from . import generations, identity, tags
 from ._common import (
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
     _remote_url,
-    _sanitize_filename,
     new_id,
 )
 
@@ -334,96 +332,3 @@ def import_bundle_payload(
             continue
         counts[import_bundle_item(it, worker_id, shared_by)] += 1
     return counts
-
-
-# ── 팀 공유 파일(data/shared 폴더) ────────────────────────────────────────
-# 한 사람이 만드는 산출물은 딱 하나 = 자기 share 파일(제공자명 태그). "받은 것"은 따로
-# 만드는 게 아니라 남의 share 파일을 가져온 것일 뿐. 그래서 파일은 share_<제공자>.json 하나뿐이고,
-# 내 신원과 일치하는 파일 = 내가 만든 것(편집·재push 대상), 나머지 = 받은 것(읽기).
-def list_my_share_gen_ids() -> list[str]:
-    """공유 표시(share-set)된 생성본 id 목록. share 테이블이 진실원천(추가=publish/제거=unpublish)."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT generation_id FROM share"
-        ).fetchall()
-    return [r["generation_id"] for r in rows]
-
-
-def my_share_path() -> Path:
-    """내 share 파일 경로 — share_<제공자명>.json. 제공자명은 사람이 읽을 라벨(불변 앵커는 번들 내부 uid)."""
-    name = _sanitize_filename(identity.get_provider().get("name") or "me")
-    return SHARED_DIR / f"share_{name}.json"
-
-
-def export_my_share_bundle() -> dict[str, Any]:
-    """내 share-set(공유 표시된 것들)만 추출한 번들 — 사실+오버레이+provider."""
-    return export_bundle(gen_ids=list_my_share_gen_ids())
-
-
-def write_my_share_file() -> dict[str, Any]:
-    """현재 share-set 을 share_<제공자>.json 으로 디스크에 기록(추가/제거 시마다 호출 → 재push 원본).
-    share-set 이 비면 파일을 제거(공유 0건이면 서버에 빈 파일 안 남김). 반환: {path, count, error?}.
-
-    ⚠️ best-effort: 파일 쓰기/삭제 실패(잠김·권한·디스크)는 호출자(publish/unpublish)의 DB 커밋을
-    되돌리지 않는다. 디스크 I/O 실패가 발행/해제 자체를 500 으로 깨지 않게 예외를 삼키고 error 로 반환.
-    파일은 share-set 의 투영일 뿐이라 /share/rebuild 로 언제든 재생성 가능."""
-    try:
-        SHARED_DIR.mkdir(parents=True, exist_ok=True)
-        bundle = export_my_share_bundle()
-        path = my_share_path()
-        count = len(bundle.get("generations") or [])
-        if count == 0:
-            if path.exists():
-                path.unlink()
-            return {"path": None, "count": 0}
-        path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"path": str(path), "count": count}
-    except OSError as e:
-        print(f"[share] share 파일 쓰기 실패(무시, /share/rebuild 로 재시도 가능): {e}")
-        return {"path": None, "count": -1, "error": str(e)}
-
-
-def _read_share_file(path: Path) -> Optional[dict[str, Any]]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict) or data.get("format") != BUNDLE_FORMAT:
-        return None
-    return data
-
-
-def list_received_shares() -> list[dict[str, Any]]:
-    """shared 폴더의 받은 share 파일 요약 목록(내 신원 파일은 제외).
-    [{filename, provider, count, mine}]. 내것 판정은 파일명이 아니라 번들 내부 provider.uid 로."""
-    me = identity.get_provider()
-    my_uid = me.get("uid")
-    out: list[dict[str, Any]] = []
-    if not SHARED_DIR.exists():
-        return out
-    for path in sorted(SHARED_DIR.glob("*.json")):
-        data = _read_share_file(path)
-        if data is None:
-            continue
-        prov = data.get("provider") or {}
-        is_mine = bool(my_uid and prov.get("uid") == my_uid)
-        if is_mine:
-            continue  # 내가 만든 share 파일은 받은 목록에 안 보임
-        out.append(
-            {
-                "filename": path.name,
-                "provider": prov,
-                "count": len(data.get("generations") or []),
-            }
-        )
-    return out
-
-
-def import_share_file(filename: str, worker_id: str = DEFAULT_WORKER_ID) -> dict[str, int]:
-    """shared 폴더의 특정 share 파일을 내 라이브러리로 병합(받기). 경로 탈출 방지."""
-    safe = Path(filename).name  # 디렉터리 성분 제거(../ 차단)
-    path = SHARED_DIR / safe
-    data = _read_share_file(path)
-    if data is None:
-        return {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "error": 1}
-    return import_bundle_payload(data, worker_id)

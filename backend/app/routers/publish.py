@@ -317,11 +317,6 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
         if gen and gen.get("status") == "done":
             repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
             published += 1
-    if published:
-        try:
-            repo.write_my_share_file()
-        except Exception:  # noqa: BLE001
-            pass
     return {
         "published": published,
         "remote": {k: resp.get(k) for k in ("inserted", "updated", "unchanged", "skipped")},

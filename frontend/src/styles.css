@@ -193,20 +193,6 @@ select optgroup {
 .acct-hint { font-size: 11px; color: var(--muted2); line-height: 1.5; padding: 6px 10px; }
 .acct-hint code { font-size: 10.5px; background: rgba(127,127,127,0.14); padding: 1px 4px; border-radius: 4px; }
 .acct-hint-sm { padding: 4px 10px 2px; }
-/* 에이전트 실행 명령 — 복사 가능한 코드 박스 */
-.agent-cmd {
-  display: flex; align-items: stretch; gap: 6px; margin-top: 9px;
-}
-.agent-cmd code {
-  flex: 1; min-width: 0; font-size: 11px; line-height: 1.5; padding: 8px 10px;
-  background: rgba(127,127,127,0.12); border-radius: 8px; overflow-x: auto;
-  white-space: nowrap; user-select: all;
-}
-.agent-copy {
-  flex: none; font-size: 11px; padding: 0 12px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--surface2, rgba(127,127,127,0.1)); color: var(--text);
-}
-.agent-copy:hover { background: var(--grad-soft); }
 /* 폴백(Mac/Linux·고급) 접이식 */
 .agent-adv { margin-top: 11px; }
 .agent-adv summary { font-size: 11px; color: var(--muted2); cursor: pointer; padding: 2px 0; }
@@ -214,11 +200,6 @@ select optgroup {
 /* 읽기전용 워크스페이스(보고값) — 클릭 불가, 커서/호버 없음 */
 .acct-item.readonly { cursor: default; opacity: 0.92; }
 .acct-item.readonly:hover { background: none; }
-/* 내 에이전트 연결 상태 */
-.agent-row { display: flex; align-items: center; gap: 7px; padding: 6px 10px 2px; }
-.agent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted2); }
-.agent-dot.on { background: #36d36b; box-shadow: 0 0 0 3px rgba(54,211,107,0.18); }
-.agent-row-txt { font-size: 11.5px; color: var(--muted); }
 .acct-sec-label {
   font-size: 10.5px; color: var(--muted2); text-transform: uppercase;
   letter-spacing: 0.5px; padding: 4px 8px 2px;
@@ -1296,11 +1277,10 @@ select optgroup {
 .admin-mname { font-weight: 600; }
 .admin-muid { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-count { color: var(--muted); text-align: right; width: 56px; }
-.admin-role, .admin-table select {
+.admin-table select {
   padding: 4px 7px; border-radius: 7px; font-size: 12px;
   background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text);
 }
-.admin-role:hover { border-color: var(--accent); }
 .admin-pname { font-weight: 500; }
 .admin-badge {
   margin-left: 7px; font-size: 10px; padding: 1px 6px; border-radius: 6px;
@@ -1348,7 +1328,6 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .proj-role-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .proj-role-name { flex: 1; font-weight: 500; font-size: 12.5px; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-role-line .admin-role { min-width: 200px; }
 .proj-role-x {
   background: transparent; border: none; cursor: pointer; color: var(--muted);
   font-size: 12px; padding: 3px 6px; border-radius: 6px; flex: none;
@@ -1497,25 +1476,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 
 /* 로그인 계정 섹션(관리자 창) */
 .acct-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
-.acct-pending { color: #fbbf24; background: rgba(251,191,36,0.13); }
-.acct-approved { color: #4ade80; background: rgba(74,222,128,0.13); }
-.acct-rejected { color: #f87171; background: rgba(248,113,113,0.13); }
 .acct-actions { text-align: right; white-space: nowrap; display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
-.acct-approve, .acct-reject {
-  font-size: 11.5px; font-weight: 600; padding: 4px 10px; border-radius: 7px; cursor: pointer;
-  border: 1px solid var(--border); background: rgba(255,255,255,0.05);
-}
-.acct-approve { color: #4ade80; } .acct-approve:hover { border-color: #4ade80; }
-.acct-reject { color: #f87171; } .acct-reject:hover { border-color: #f87171; }
-
-/* 상단바 로그인 계정 칩 */
-.account-chip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 9px;
-  font-size: 12.5px; font-weight: 600; cursor: pointer;
-  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
-}
-.account-chip:hover { border-color: var(--accent); }
-.account-logout { color: var(--muted); }
 
 /* ── 로그인/가입 화면 (AUTH 모드) ── */
 .login-screen {
