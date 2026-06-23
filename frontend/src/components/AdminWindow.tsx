@@ -122,8 +122,9 @@ export function AdminWindow({
 
   // 임시 관리자 권한(열쇠) — 본인 계정 유지한 채 admin 비번으로 '승인 절차' 권한만 일시 획득.
   const [elevOpen, setElevOpen] = useState(false);
-  const [elevEmail, setElevEmail] = useState("admin@millionvolt.com");
-  const [elevPw, setElevPw] = useState("");
+  // 기본값 admin / admin1985 — 짧은 id "admin" 은 백엔드가 관리자 이메일로 매핑한다.
+  const [elevEmail, setElevEmail] = useState("admin");
+  const [elevPw, setElevPw] = useState("admin1985");
   const [elevMsg, setElevMsg] = useState("");
   const [elevBusy, setElevBusy] = useState(false);
   const doElevate = async () => {

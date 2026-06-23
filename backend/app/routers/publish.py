@@ -48,6 +48,9 @@ def _clear_elevation() -> None:
 # 숨긴다(작업자가 매번 안 적게). admin 은 관리자 창 '공유 서버' 탭에서 이 값을 바꿀 수 있다.
 _DEFAULT_URL = (os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
 
+# 임시 관리자 권한(elevation) 기본 관리자 계정 — 모달이 짧은 id "admin" 을 받으면 이 이메일로 매핑.
+_ADMIN_EMAIL = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
+
 
 def _effective_url() -> str:
     return (repo.get_setting(_K_URL) or _DEFAULT_URL).rstrip("/")
@@ -241,9 +244,14 @@ def shared_server_elevate(body: ElevateIn):
     """임시 관리자 권한 — 본인 로그인은 유지한 채 admin 계정 비번을 검증해 '승인 절차' 권한만
     일시 획득한다. 검증된 admin 토큰을 elev 슬롯에 저장하고, _proxy 가 계정관리(/api/auth/accounts*)
     호출에만 그 토큰을 쓴다. 로그아웃·계정전환 시 해제(다른 사람이 로그인하면 권한도 넘어감)."""
+    # 짧은 관리자 id("admin")는 설정된 관리자 이메일로 매핑(기본 admin@millionvolt.com,
+    # env CONTENT_HUB_ADMIN_EMAIL 로 변경). 작업자가 매번 전체 이메일을 안 적어도 되게.
+    email = (body.email or "").strip()
+    if "@" not in email:
+        email = _ADMIN_EMAIL
     url = _effective_url()
     status, resp = _http_json(
-        "POST", f"{url}/api/auth/login", body={"email": body.email, "password": body.password}
+        "POST", f"{url}/api/auth/login", body={"email": email, "password": body.password}
     )
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
         detail = resp.get("detail") if isinstance(resp, dict) else resp
@@ -255,9 +263,9 @@ def shared_server_elevate(body: ElevateIn):
     if "admin" not in roles:
         raise HTTPException(status_code=403, detail="관리자(admin) 계정이 아닙니다")
     repo.set_setting(_K_ELEV_TOKEN, resp["token"])
-    repo.set_setting(_K_ELEV_EMAIL, body.email)
-    repo.set_setting(_K_ELEV_NAME, acc.get("name") or body.email)
-    return {"ok": True, "elevated_as": body.email, **_shared_status()}
+    repo.set_setting(_K_ELEV_EMAIL, email)
+    repo.set_setting(_K_ELEV_NAME, acc.get("name") or email)
+    return {"ok": True, "elevated_as": email, **_shared_status()}
 
 
 @router.post("/shared-server/de-elevate")
