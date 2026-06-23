@@ -52,6 +52,10 @@ echo [2/5] Checking backend dependencies...
 python -m pip install -r "%ROOT%backend\requirements.txt" >nul 2>nul
 
 echo [3/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
+REM Stop any hub left running on this port from a previous launch. Without this, an old
+REM backend process keeps the port and the freshly-updated code never takes effect
+REM (symptom: code updates do not apply until the machine reboots).
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":%PORT%"') do taskkill /f /pid %%p >nul 2>nul
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.
 cd /d "%ROOT%backend"

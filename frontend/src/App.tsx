@@ -417,14 +417,26 @@ export default function App() {
     if (authReady) reload();
   }, [authReady, reload]);
 
+  // 진행중(생성중) 로컬 placeholder 폴링 — 서버 직결 모드에선 서버 라이브러리에 완료분만 오므로,
+  // 로컬 허브의 미완료 생성물을 따로 받아 그리드 위에 머지한다(완료되면 done 이 되어 빠지고,
+  // 동시에 서버로 push 되어 reload 가 그 자리를 채운다). WS 핸들러보다 위에 정의(참조 순서).
+  const pollActive = useCallback(async () => {
+    try {
+      setLocalActive(await api.activeGenRequests());
+    } catch {
+      /* 무시 — active 엔드포인트 없거나(미업데이트) 일시 오류 → 빈 채로 두어 '생성중' 박힘 방지 */
+    }
+  }, []);
+
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신.
   // 끊겼다 재연결되면 reload 로 놓친 전이를 따라잡는다(백엔드 재시작 대비).
   useEffect(() => {
     const off = connectProgress(
       (m) => {
-        // 주기 동기화로 다른 기기/웹 잡이 들어옴 → 전체 새로고침
+        // 주기 동기화/서버 push 완료(프록시 notify_mutation) → 전체 새로고침 + 진행중 목록 갱신
         if (m.type === "synced") {
           reload(true); // 백그라운드 갱신 — '로딩…' 깜빡임 없이
+          pollActive(); // 진행중(생성중) 목록도 즉시 재조회 → 완료분 즉시 제거
           bumpBoard(); // 구성탭 트리도 따라잡기
           setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
           return;
@@ -435,6 +447,13 @@ export default function App() {
             g.id === m.generation_id ? { ...g, status: m.status! } : g,
           ),
         );
+        // 완료/실패 즉시 '생성중' placeholder 제거(3초 폴링을 기다리지 않고 실시간 반영).
+        if (m.status === "done" || m.status === "failed" || m.status === "nsfw") {
+          if (m.generation_id) {
+            setLocalActive((prev) => prev.filter((g) => g.id !== m.generation_id));
+          }
+          pollActive(); // 로컬 진행중 목록도 재동기(다른 잡 상태 반영)
+        }
         // 완료되면 전체 새로고침으로 asset/썸네일 반영
         if (m.status === "done") {
           // 구성탭에선 reload 가 라이브러리 조회를 생략하므로, 완료된 잡 1건을 직접 머지해
@@ -456,18 +475,8 @@ export default function App() {
       () => reload(true), // (재)연결 시 동기화
     );
     return off;
-  }, [reload, bumpBoard]);
+  }, [reload, bumpBoard, pollActive]);
 
-  // 진행중(생성중) 로컬 placeholder 폴링 — 서버 직결 모드에선 서버 라이브러리에 완료분만 오므로,
-  // 로컬 허브의 미완료 생성물을 따로 받아 그리드 위에 머지한다(완료되면 done 이 되어 빠지고,
-  // 동시에 서버로 push 되어 reload 가 그 자리를 채운다).
-  const pollActive = useCallback(async () => {
-    try {
-      setLocalActive(await api.activeGenRequests());
-    } catch {
-      /* 무시 — 다음 주기 재시도 */
-    }
-  }, []);
   // 시작 시 1회(새로고침 도중에도 진행중이면 즉시 '생성중' 복원).
   useEffect(() => {
     pollActive();
@@ -1499,13 +1508,10 @@ export default function App() {
                 const fresh = created.filter((g) => !ids.has(g.id));
                 return fresh.length ? [...fresh, ...prev] : prev;
               });
-              // 진행중 placeholder 도 별도 상태에 즉시 넣어 '생성중'을 바로 띄운다(reload 가 gens 를
-              // 서버본으로 갈아끼워도 사라지지 않게). 완료되면 폴링이 done 을 빼고 서버본이 그 자리를 채움.
-              setLocalActive((prev) => {
-                const ids = new Set(prev.map((g) => g.id));
-                const fresh = created.filter((g) => !ids.has(g.id));
-                return fresh.length ? [...fresh, ...prev] : prev;
-              });
+              // '생성중' 카드는 localActive 로 띄우되, 낙관적으로 박아두지 않고 즉시 폴링해
+              // **백엔드 active 목록(진실)**으로만 채운다 → 완료되면 폴링이 빼고, active 엔드포인트가
+              // 없거나(미업데이트) 실패하면 '생성중'이 안 뜰지언정 영구히 박히지 않는다.
+              pollActive();
               // 무자산 pending 카드는 visibleGens 가 타입필터와 무관하게 보여주므로 필터를
               // 건드리지 않는다(사용자가 고른 image/video 필터 보존).
             }
