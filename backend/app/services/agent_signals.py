@@ -8,7 +8,13 @@ push 에이전트는 표준 라이브러리만 써서 WebSocket 을 못 쓴다. 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Optional
+
+# 마지막 에이전트 호출 후 이 시간(초)까지는 '연결됨'으로 본다. 에이전트는 생성 실행 중
+# /api/gen-requests/pending 를 ~1초마다, 유휴 시 롱폴을 ~25초마다 친다 → 40초면 둘 다 커버.
+# (생성 중엔 롱폴을 못 해 _waiters=0 이 되어도, 이 윈도우 덕에 '꺼짐'으로 깜빡이지 않는다.)
+_CONNECTED_WINDOW = 40.0
 
 
 class AgentSignals:
@@ -16,6 +22,7 @@ class AgentSignals:
         self._events: dict[str, asyncio.Event] = {}
         self._reason: dict[str, str] = {}
         self._waiters: dict[str, int] = {}
+        self._last_seen: dict[str, float] = {}  # 계정별 마지막 에이전트 접촉 시각(monotonic)
 
     def _norm(self, email: str) -> str:
         return (email or "").strip().lower()
@@ -36,9 +43,16 @@ class AgentSignals:
         self._reason[email] = reason
         self._ev(email).set()
 
+    def touch(self, email: str) -> None:
+        """에이전트가 살아 활동 중임을 기록(연결 표시용). 에이전트가 치는 엔드포인트에서 호출."""
+        email = self._norm(email)
+        if email:
+            self._last_seen[email] = time.monotonic()
+
     async def wait(self, email: str, timeout: float = 25.0) -> Optional[str]:
         """이벤트가 올 때까지(최대 timeout) 대기. 반환=reason(깨움) 또는 None(타임아웃)."""
         email = self._norm(email)
+        self.touch(email)
         ev = self._ev(email)
         # 이미 set 돼 있으면(작업 중에 들어온 신호) 즉시 처리. 아니면 clear 후 대기.
         if not ev.is_set():
@@ -54,8 +68,14 @@ class AgentSignals:
             self._waiters[email] = max(0, self._waiters.get(email, 1) - 1)
 
     def connected(self, email: str) -> bool:
-        """그 계정의 에이전트가 현재 wait(대기) 중인가 — UI 연결 표시용."""
-        return self._waiters.get(self._norm(email), 0) > 0
+        """그 계정의 에이전트가 연결돼 있나 — UI 표시용. 롱폴 대기 중이거나(유휴),
+        최근 _CONNECTED_WINDOW 안에 활동했으면(생성 실행 중) True. 후자가 없으면 생성하는
+        동안 롱폴을 못 해 '꺼짐'으로 깜빡이던 문제가 생긴다."""
+        email = self._norm(email)
+        if self._waiters.get(email, 0) > 0:
+            return True
+        ts = self._last_seen.get(email)
+        return ts is not None and (time.monotonic() - ts) < _CONNECTED_WINDOW
 
 
 # 앱 전역 단일 인스턴스

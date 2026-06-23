@@ -83,6 +83,15 @@ def create_gen_request(body: GenRequestIn, request: Request):
     return gen
 
 
+@router.get("/gen-requests/active", response_model=list[GenerationOut])
+def active_gen_requests(request: Request):
+    """진행중(pending/running) 내 로컬 생성물 — '생성중' 카드 표시용(서버 직결 모드).
+    로컬 실행 큐라 프록시되지 않고 이 허브 자기 DB 를 본다. 프론트가 주기적으로 받아 서버
+    라이브러리 위에 머지한다(완료되면 done 이 되어 빠지고 서버 push 본이 그 자리를 채움)."""
+    acc = _require_account(request)
+    return repo.list_active_generations(acc.get("creator_uid"))
+
+
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
 async def pending_gen_requests(request: Request, limit: int = 16):
     """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
@@ -90,6 +99,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
     완료될 때까지 '생성중'이 안 보였음). limit=에이전트의 빈 병렬 슬롯 수(연속 풀이 그만큼만 집음)."""
     acc = _require_account(request)
+    agent_signals.touch(acc["email"])  # 생성 실행 중 ~1초마다 폴링 → '연결됨' 유지(꺼짐 깜빡임 방지)
     claimed = repo.claim_pending_requests(acc["email"], limit=max(1, min(limit, 16)))
     for c in claimed:
         repo.set_status(c["gen_id"], "running", None)
@@ -103,6 +113,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
 async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     """에이전트가 로컬 실행 완료 후 호출 — 결과(raw 잡)를 placeholder 에 채우고 done 표시."""
     acc = _require_account(request)
+    agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
@@ -144,6 +155,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
 async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실행 실패"):
     """에이전트가 로컬 실행 실패를 보고 — 요청·placeholder 모두 failed."""
     acc = _require_account(request)
+    agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")

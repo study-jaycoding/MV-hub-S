@@ -1151,6 +1151,29 @@ def list_generations(
         return _attach_children(conn, rows, viewer_uid=account_uid)
 
 
+def list_active_generations(account_uid: Optional[str] = None) -> list[dict[str, Any]]:
+    """진행중(pending/running) 로컬 생성물 — 서버 직결 모드에서 '생성중' 카드를 띄우기 위함.
+    완료분만 서버로 push 되므로, 로컬 허브가 자기 DB 의 미완료 placeholder 를 그대로 반환한다
+    (완료되면 status 가 done 이 되어 여기서 빠지고, 동시에 서버로 push 되어 라이브러리에 나타남)."""
+    where = ["g.status IN ('pending','running')", "g.deleted_at IS NULL"]
+    args: list[Any] = []
+    if account_uid:
+        where.append("g.creator_uid = ?")
+        args.append(account_uid)
+    sql = (
+        "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
+        "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
+        "g.comment, g.error, g.creator_uid, g.project_id, g.deleted_at, "
+        "g.is_final, g.final_by, "
+        "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
+        "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
+        "WHERE " + " AND ".join(where) + " ORDER BY g.sort_ts DESC, g.id DESC LIMIT 50"
+    )
+    with get_connection() as conn:
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+        return _attach_children(conn, rows, viewer_uid=account_uid)
+
+
 def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
     """전역 파생값 — 무한 스크롤로 전량 로드를 안 하므로 클라이언트 대신 서버가 계산.
       · failed_count: 실패·차단 등 비정상(휴지통 제외) 건수('실패 정리' 버튼용, 전역)

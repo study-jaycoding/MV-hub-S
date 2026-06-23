@@ -485,6 +485,10 @@ export const api = {
       body: JSON.stringify({ kind: "regenerate", source_gen_id: id, regenerate: body }),
     }),
 
+  // 진행중(pending/running) 내 로컬 생성물 — '생성중' 카드 표시용. 로컬 큐라 프록시 안 됨(이 허브 DB).
+  // 서버 직결 모드에선 서버에 완료분만 오므로, 이걸 받아 서버 라이브러리 위에 머지한다.
+  activeGenRequests: () => jsonFetch<Generation[]>("/api/gen-requests/active"),
+
   setTags: (id: string, tags: string[]) =>
     jsonFetch<Generation>(`/api/generations/${id}/tags`, {
       method: "PUT",

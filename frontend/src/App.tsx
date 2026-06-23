@@ -74,6 +74,9 @@ export default function App() {
     return { tab: "my" };
   });
   const [gens, setGens] = useState<Generation[]>([]);
+  // 진행중(생성중) 로컬 placeholder — 서버엔 완료분만 오므로 따로 받아 그리드 위에 머지한다.
+  // reload 가 gens 를 서버본으로 갈아끼워도 '생성중' 카드가 사라지지 않게 별도 상태로 둔다.
+  const [localActive, setLocalActive] = useState<Generation[]>([]);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const [boardFocusId, setBoardFocusId] = useState<string | null>(null); // 구성탭 히스토리 트리 포커스
@@ -455,14 +458,33 @@ export default function App() {
     return off;
   }, [reload, bumpBoard]);
 
-  // 폴링 폴백: 진행중(pending/running) 잡이 있으면 4초마다 reload.
-  // WS 메시지를 놓쳐도 워커가 DB 를 갱신하면 UI 가 결국 따라잡는다.
-  const hasActiveJob = gens.some((g) => g.status === "pending" || g.status === "running");
+  // 진행중(생성중) 로컬 placeholder 폴링 — 서버 직결 모드에선 서버 라이브러리에 완료분만 오므로,
+  // 로컬 허브의 미완료 생성물을 따로 받아 그리드 위에 머지한다(완료되면 done 이 되어 빠지고,
+  // 동시에 서버로 push 되어 reload 가 그 자리를 채운다).
+  const pollActive = useCallback(async () => {
+    try {
+      setLocalActive(await api.activeGenRequests());
+    } catch {
+      /* 무시 — 다음 주기 재시도 */
+    }
+  }, []);
+  // 시작 시 1회(새로고침 도중에도 진행중이면 즉시 '생성중' 복원).
+  useEffect(() => {
+    pollActive();
+  }, [pollActive]);
+
+  // 폴링 폴백: 진행중 잡이 있으면 주기적으로 reload(서버 완료분 따라잡기) + 로컬 진행중 갱신.
+  const hasActiveJob =
+    localActive.length > 0 ||
+    gens.some((g) => g.status === "pending" || g.status === "running");
   useEffect(() => {
     if (!hasActiveJob) return;
-    const id = setInterval(() => reload(true), 4000);
+    const id = setInterval(() => {
+      reload(true);
+      pollActive();
+    }, 3000);
     return () => clearInterval(id);
-  }, [hasActiveJob, reload]);
+  }, [hasActiveJob, reload, pollActive]);
 
   // 탭 재포커스 시 즉시 새로고침 — 백그라운드 탭 throttling 으로 놓친 WS 'synced'(웹/타기기
   // 생성)를 따라잡는다. 다른 탭에서 작업하다 돌아오면 항상 최신을 보장(WS 끊김 안전망).
@@ -643,7 +665,15 @@ export default function App() {
   };
 
   // 서버가 모든 필터를 이미 적용했으므로 로드된 페이지가 곧 화면 결과(클라이언트 재필터 없음).
-  const visibleGens = gens;
+  // 단, 진행중(생성중) 로컬 placeholder 는 서버 라이브러리에 아직 없으므로 위에 머지한다.
+  //  · '내 작업' 탭에서만(팀 공유·히스토리엔 생성중을 안 띄움)
+  //  · 이미 gens 에 같은 id 가 있으면(낙관적 추가분) 중복 방지로 제외
+  const visibleGens = (() => {
+    if (filters.tab !== "my" || localActive.length === 0) return gens;
+    const ids = new Set(gens.map((g) => g.id));
+    const extra = localActive.filter((g) => !ids.has(g.id));
+    return extra.length ? [...extra, ...gens] : gens;
+  })();
 
   // 미확인 코멘트 여부·실패 수는 전역 파생값 → 서버 stats 에서(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -1465,6 +1495,13 @@ export default function App() {
             // 같은 id 라 이후 reload·WS 가 자연스럽게 같은 카드를 갱신(중복 없음).
             if (created?.length) {
               setGens((prev) => {
+                const ids = new Set(prev.map((g) => g.id));
+                const fresh = created.filter((g) => !ids.has(g.id));
+                return fresh.length ? [...fresh, ...prev] : prev;
+              });
+              // 진행중 placeholder 도 별도 상태에 즉시 넣어 '생성중'을 바로 띄운다(reload 가 gens 를
+              // 서버본으로 갈아끼워도 사라지지 않게). 완료되면 폴링이 done 을 빼고 서버본이 그 자리를 채움.
+              setLocalActive((prev) => {
                 const ids = new Set(prev.map((g) => g.id));
                 const fresh = created.filter((g) => !ids.has(g.id));
                 return fresh.length ? [...fresh, ...prev] : prev;
