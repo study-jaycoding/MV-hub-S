@@ -14,8 +14,8 @@ import { MediaThumbnail } from "./MediaThumbnail";
 const ME = "me"; // 현재 작업자(DEFAULT_WORKER_ID) — 팀 탭에서 내 것/남의 것 구분
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "로컬 대기",
-  running: "로컬 생성중",
+  pending: "생성중",
+  running: "생성중",
   done: "완료",
   failed: "실패",
   nsfw: "NSFW 차단",
@@ -188,11 +188,11 @@ export function GenerationCard({
                   : undefined
             }
           >
-            {gen.status === "running" ? (
-              // 생성중 — 글씨 대신 스피너 아이콘으로 표현(작은 캡션만 보조).
+            {gen.status === "running" || gen.status === "pending" ? (
+              // 생성중(대기·실행 모두) — 글씨 대신 스피너 아이콘 + '생성중' 캡션.
               <span className="gen-generating">
                 <span className="gen-spinner" aria-hidden />
-                <span className="gen-generating-label">Generating</span>
+                <span className="gen-generating-label">생성중</span>
               </span>
             ) : (
               STATUS_LABEL[gen.status] || gen.status

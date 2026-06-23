@@ -1154,8 +1154,17 @@ def list_generations(
 def list_active_generations(account_uid: Optional[str] = None) -> list[dict[str, Any]]:
     """진행중(pending/running) 로컬 생성물 — 서버 직결 모드에서 '생성중' 카드를 띄우기 위함.
     완료분만 서버로 push 되므로, 로컬 허브가 자기 DB 의 미완료 placeholder 를 그대로 반환한다
-    (완료되면 status 가 done 이 되어 여기서 빠지고, 동시에 서버로 push 되어 라이브러리에 나타남)."""
-    where = ["g.status IN ('pending','running')", "g.deleted_at IS NULL"]
+    (완료되면 status 가 done 이 되어 여기서 빠지고, 동시에 서버로 push 되어 라이브러리에 나타남).
+
+    ※ '최근(30분)' 것만 반환 — 에이전트가 안 집었거나 이전 세션에서 끊긴 고아 pending 이 로컬 DB
+      에 남아 완료 후에도 '생성중'으로 뜬금없이 떠 있는 걸 막는다(부팅 시 fail_orphaned_jobs 가
+      정리하지만 세션 중 생긴 것·재시작 전까진 남으므로 조회에서도 시간 제한). 30분이면 느린
+      영상 생성도 보호하면서, 이전 세션 고아(보통 그보다 오래됨)는 가린다."""
+    where = [
+        "g.status IN ('pending','running')",
+        "g.deleted_at IS NULL",
+        "g.created_at >= datetime('now', '-30 minutes')",  # 오래된 고아 placeholder 제외
+    ]
     args: list[Any] = []
     if account_uid:
         where.append("g.creator_uid = ?")
