@@ -53,15 +53,17 @@ def unpublish(gen_id: str, request: Request):
         raise HTTPException(
             status_code=409, detail="최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
         )
-    repo.unpublish(gen_id)
-    repo.write_my_share_file()  # share-set 변화 → 파일 갱신
-    # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로, 해제도 서버에 전파해 팀 탭에서 사라지게 한다.
-    # (번들이 같은 gen_id 를 앵커로 보존하므로 서버에서 같은 id 로 해제 가능. 실패는 무시.)
+    # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로 '서버 해제'가 진실이다. 서버를 먼저 호출해
+    # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
+    # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
     if _proxy.proxying():
         try:
             _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unpublish")
-        except Exception:  # noqa: BLE001 — 서버 전파 실패는 로컬 해제를 막지 않음
-            pass
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise  # 서버 전파 실패 → 로컬도 해제하지 않아 상태 불일치를 막는다
+    repo.unpublish(gen_id)
+    repo.write_my_share_file()  # share-set 변화 → 파일 갱신
     return repo.get_generation(gen_id)
 
 
@@ -86,13 +88,27 @@ def finalize(gen_id: str, request: Request):
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
         # 내 비공개 로컬 항목이면 먼저 번들 발행(서버에 올라가야 팀이 보고 골드도 거기 남음).
+        newly_published = False
         if gen is not None and not gen.get("shared"):
             if gen["status"] != "done":
                 raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
             from .publish import publish_bundle_to_server
 
             publish_bundle_to_server([gen_id])
-        out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/finalize")
+            newly_published = True
+        try:
+            out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/finalize")
+        except Exception:
+            # 부분 실패 보상: 이번 finalize 때문에 '새로' 공유한 거라면 되돌려 비공개를 유지한다
+            # (골드는 안 됐는데 공유만 새어 나가는 누수 방지). 원래 공유 상태였으면 건드리지 않음.
+            if newly_published:
+                try:
+                    _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unpublish")
+                except Exception:  # noqa: BLE001
+                    pass
+                repo.unpublish(gen_id)
+                repo.write_my_share_file()
+            raise
         if gen is not None:  # 내 로컬 카드에도 골드 미러(tab=my 즉시 반영)
             repo.set_final(gen_id, True, _finalizer_uid(request))
             repo.write_my_share_file()

@@ -283,6 +283,20 @@ def generation_comment_exists(comment_id: str) -> bool:
         )
 
 
+def comment_gen_shared(comment_id: str) -> Optional[bool]:
+    """이 코멘트가 달린 generation 의 공유 여부. None = 로컬에 그 코멘트가 없음(=서버 전용 공유본).
+    로컬우선 by-id 코멘트 라우팅용: 발행 시 번들이 코멘트를 '같은 id'로 서버에도 심으므로,
+    공유본에 달린 코멘트는 로컬에도 같은 id 가 있어도 서버 단일 스레드가 정답 → 서버로 보내야 한다.
+    (id 존재만 보면 공유본 수정이 로컬로 새고, 패널이 보는 서버본은 안 바뀐다.)"""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM share s WHERE s.generation_id=c.gen_id) AS shared "
+            "FROM generation_comment c WHERE c.id=?",
+            (comment_id,),
+        ).fetchone()
+    return bool(row["shared"]) if row else None
+
+
 def mark_generation_comment_seen(worker_id: str, comment_id: str) -> None:
     """코멘트 한 건을 확인 처리(패널에서 NEW 코멘트를 클릭). 멱등."""
     with get_connection() as conn:

@@ -517,10 +517,13 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     return {"id": cid}
 
 
-# by-id 코멘트 연산(수정/삭제/확인): 로컬에 있으면 내 비공개 작업 코멘트 → 로컬,
-# 로컬에 없으면 공유본(서버) 코멘트 → 서버로 위임(로컬우선 공유 코멘트 단일 스레드).
+# by-id 코멘트 연산(수정/삭제/확인) 라우팅: 공유본(share 있음)에 달린 코멘트는 — 로컬에 같은 id 가
+# 있어도(발행 번들이 같은 id 로 서버에 심음) — 서버 단일 스레드가 정답이므로 서버로 위임한다.
+# 내 비공개 작업 코멘트(share 없음)만 로컬에서 처리. comment_gen_shared: None=서버전용/True=공유본/False=비공개.
 def _comment_local(comment_id: str) -> bool:
-    return not _proxy.proxying() or repo.generation_comment_exists(comment_id)
+    if not _proxy.proxying():
+        return True
+    return repo.comment_gen_shared(comment_id) is False
 
 
 @router.put("/generation-comments/{comment_id}")

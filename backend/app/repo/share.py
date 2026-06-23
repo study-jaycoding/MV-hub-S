@@ -76,7 +76,7 @@ def export_bundle(
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         grows = conn.execute(
             "SELECT g.id, g.job_id, g.prompt, g.display_prompt, g.model, g.params, "
-            "g.status, g.created_at, g.sort_ts, g.creator_uid "
+            "g.status, g.created_at, g.sort_ts, g.creator_uid, g.project_id "
             f"FROM generation g{clause} ORDER BY g.sort_ts DESC, g.created_at DESC",
             args,
         ).fetchall()
@@ -191,6 +191,9 @@ def export_bundle(
                     "created_at": g["created_at"],
                     "sort_ts": g["sort_ts"],
                     "creator_uid": g["creator_uid"],
+                    # 프로젝트 귀속 — 서버 finalize 가 require_project_role(검수 게이트)를 적용하려면
+                    # 서버 사본도 project_id 를 알아야 한다(누락 시 소유자 체크로 떨어져 게이트 우회).
+                    "project_id": g["project_id"],
                 },
                 "asset": g["_asset"],
                 "references": g["_references"],
@@ -265,6 +268,7 @@ def import_bundle_item(
             "created_at": g.get("created_at") or "",
             "sort_ts": g.get("sort_ts"),
             "creator_uid": g.get("creator_uid"),
+            "project_id": g.get("project_id"),
         },
         "asset": item.get("asset"),
         "references": item.get("references") or [],
@@ -279,6 +283,12 @@ def import_bundle_item(
                 conn.execute(
                     "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
                     (dp, gid),
+                )
+            pid = g.get("project_id")
+            if pid:  # 프로젝트 귀속 보존 — 기존 배정은 침범 않게 COALESCE(서버 finalize 게이트용)
+                conn.execute(
+                    "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
+                    (pid, gid),
                 )
             tags._add_tags(conn, gid, item.get("tags") or [])
             tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
