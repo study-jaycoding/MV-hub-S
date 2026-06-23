@@ -247,6 +247,12 @@ export const api = {
     }),
   deleteProject: (id: string) =>
     jsonFetch<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
+  // 관리자 탭에서 정한 프로젝트 표시 순서 저장(위→아래 순서대로의 id 목록)
+  reorderProjects: (ids: string[]) =>
+    jsonFetch<{ ok: boolean }>("/api/projects/reorder", {
+      method: "POST",
+      body: JSON.stringify({ project_ids: ids }),
+    }),
   // 결과물들을 프로젝트에 귀속(project_id=null 이면 미분류로 해제)
   assignProject: (generationIds: string[], projectId: string | null) =>
     jsonFetch<{ ok: boolean; updated: number }>("/api/projects/assign", {

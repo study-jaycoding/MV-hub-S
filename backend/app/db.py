@@ -230,6 +230,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     gc_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_comment)")}
     if gc_cols and "muted" not in gc_cols:
         conn.execute("ALTER TABLE generation_comment ADD COLUMN muted INTEGER NOT NULL DEFAULT 0")
+    # 프로젝트 수동 정렬 순서(관리자 탭 ↑/↓) — NULL=미지정(생성물 순 폴백).
+    proj_cols = {row[1] for row in conn.execute("PRAGMA table_info(project)")}
+    if proj_cols and "sort_order" not in proj_cols:
+        conn.execute("ALTER TABLE project ADD COLUMN sort_order INTEGER")
     # ── 전역 태그(auto_tag) 계정별 소유화 — 옛 전역 UNIQUE(name) → UNIQUE(owner_uid, name) ──
     # 이름이 전역 유일이라 다른 계정이 같은 태그를 못 만들던 충돌(409)을 없앤다. 컬럼 추가만으론
     # UNIQUE 제약을 못 바꾸므로 테이블을 재구성(id 보존 → gen_auto_tag FK 유지). 레거시 행은

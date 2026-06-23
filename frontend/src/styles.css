@@ -1309,6 +1309,8 @@ select optgroup {
 .admin-pactions button:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 .admin-pactions button.on { color: var(--accent-ink); background: var(--accent); }
 .admin-pactions button.admin-pact-archive { font-size: 16px; padding: 3px 7px; }
+.admin-pactions button.admin-pact-move { font-weight: 900; font-size: 13px; }
+.admin-pactions button:disabled { opacity: 0.25; cursor: default; background: transparent; color: var(--muted); }
 
 /* v02 RBAC — 전역 역할 복수 토글 칩 + 프로젝트 역할 편집기 */
 .admin-note-sub { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: -3px 0 9px; }

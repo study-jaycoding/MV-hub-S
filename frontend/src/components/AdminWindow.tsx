@@ -171,17 +171,41 @@ export function AdminWindow({
     }
   };
 
-  // 현재 사용자의 전역 역할(복수). 라이브 멤버 목록의 '나'를 우선(자기 역할 변경 시 탭 즉시 반영),
-  // 없으면 로그인 계정, 그것도 없으면(미로그인·AUTH off) 소유자=admin 으로 간주(빈 창 방지).
-  const mineRoles = members.find((m) => m.is_mine)?.global_roles;
+  // 현재 사용자의 전역 역할(복수) 판정.
+  // ⚠️ 서버 직결(프록시) 모드에선 멤버 목록의 is_mine 은 '서버 PC 신원'이라 내가 아니다 —
+  //    그래서 로그인 계정(account)의 email/creator_uid 로 내 멤버 행을 직접 찾는다(없으면 is_mine 폴백).
+  const myMember =
+    (account &&
+      members.find(
+        (m) =>
+          (!!account.creator_uid && m.uid === account.creator_uid) ||
+          (!!account.email &&
+            !!m.email &&
+            m.email.toLowerCase() === account.email.toLowerCase()),
+      )) ||
+    members.find((m) => m.is_mine);
   const viewerRoles =
-    mineRoles && mineRoles.length
-      ? mineRoles
+    myMember?.global_roles && myMember.global_roles.length
+      ? myMember.global_roles
       : account?.global_roles && account.global_roles.length
         ? account.global_roles
         : account
           ? ["member"] // 로그인됐는데 역할 정보가 비면 최소 권한(member) — admin 탭 노출 방지
           : ["admin"]; // 미로그인(AUTH off · 개인 모드)만 소유자=admin
+
+  // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
+  // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
+  const SYSTEM_EMAILS = new Set(["admin@millionvolt.com"]);
+  const isSystemEmail = (email?: string | null) =>
+    !!email && SYSTEM_EMAILS.has(email.toLowerCase());
+  // 이메일이 없는 곳(프로젝트 멤버)에서도 가리려면 admin 의 uid 가 필요 → 멤버 목록에서 역추적.
+  const systemUids = new Set(
+    members.filter((m) => isSystemEmail(m.email)).map((m) => m.uid),
+  );
+  const isSystemMember = (m: { uid: string; email?: string | null }) =>
+    isSystemEmail(m.email) || systemUids.has(m.uid);
+  const visibleMembers = members.filter((m) => !isSystemMember(m));
+  const visibleAccounts = accounts.filter((a) => !isSystemEmail(a.email));
   // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_director.
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") || elevated },
@@ -327,11 +351,13 @@ export function AdminWindow({
   // 프로젝트별 역할 인원 수(PM/Sup/Creator) — 한 사람이 복수 역할이면 각각 셈.
   const projRoleCounts = (pid: string) => {
     const c = { project_manager: 0, supervisor: 0, creator: 0 };
-    (projMembersMap[pid] || []).forEach((m) =>
-      (m.roles || []).forEach((r) => {
-        if (r in c) c[r as keyof typeof c] += 1;
-      }),
-    );
+    (projMembersMap[pid] || [])
+      .filter((m) => !systemUids.has(m.uid))
+      .forEach((m) =>
+        (m.roles || []).forEach((r) => {
+          if (r in c) c[r as keyof typeof c] += 1;
+        }),
+      );
     return c;
   };
   const memberName = (uid: string) => {
@@ -355,6 +381,19 @@ export function AdminWindow({
   const toggleArchive = async (p: Project) => {
     await api.updateProject(p.id, { archived: !p.archived });
     loadProjects();
+  };
+  // 프로젝트 표시 순서 위/아래 한 칸 이동 — 낙관적 반영 후 서버에 전체 순서 저장.
+  const moveProject = async (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= projects.length) return;
+    const next = projects.slice();
+    [next[idx], next[j]] = [next[j], next[idx]];
+    setProjects(next);
+    try {
+      await api.reorderProjects(next.map((x) => x.id));
+    } catch {
+      loadProjects(); // 실패 시 서버 순서로 되돌림
+    }
   };
   const deleteProject = async (p: Project) => {
     if (!window.confirm(`프로젝트 '${p.name}' 삭제? 결과물은 미분류로 돌아갑니다.`)) return;
@@ -465,7 +504,7 @@ export function AdminWindow({
                     숨긴 계정 보기
                   </label>
                   {actMsg && <div className="admin-act-msg">{actMsg}</div>}
-                  {accounts.length === 0 && <div className="admin-empty">계정 없음</div>}
+                  {visibleAccounts.length === 0 && <div className="admin-empty">계정 없음</div>}
                   <table className="admin-table">
                     <thead>
                       <tr>
@@ -475,7 +514,7 @@ export function AdminWindow({
                       </tr>
                     </thead>
                     <tbody>
-                      {accounts.map((a) => (
+                      {visibleAccounts.map((a) => (
                         <tr key={a.email} className={a.hidden ? "admin-row-hidden" : ""}>
                           <td>
                             <div className="admin-member">
@@ -622,7 +661,7 @@ export function AdminWindow({
                     </tr>
                   </thead>
                   <tbody>
-                    {members
+                    {visibleMembers
                       .filter((m) => {
                         const q = memberQuery.trim().toLowerCase();
                         if (!q) return true;
@@ -675,7 +714,7 @@ export function AdminWindow({
                 {projects.length === 0 && <div className="admin-empty">없음</div>}
                 <table className="admin-table">
                   <tbody>
-                    {projects.map((p) => (
+                    {projects.map((p, idx) => (
                       <Fragment key={p.id}>
                         <tr className={p.archived ? "archived" : ""}>
                           <td className="admin-pname">
@@ -695,6 +734,22 @@ export function AdminWindow({
                             </span>
                           </td>
                           <td className="admin-pactions">
+                            <button
+                              className="admin-pact-move"
+                              onClick={() => moveProject(idx, -1)}
+                              disabled={idx === 0}
+                              title="위로"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              className="admin-pact-move"
+                              onClick={() => moveProject(idx, 1)}
+                              disabled={idx === projects.length - 1}
+                              title="아래로"
+                            >
+                              ↓
+                            </button>
                             <button
                               className={openProjs.has(p.id) ? "on" : ""}
                               onClick={() => toggleProjRoles(p.id)}
@@ -724,12 +779,17 @@ export function AdminWindow({
                                 {projMembersMap[p.id] === undefined && (
                                   <div className="admin-empty">불러오는 중…</div>
                                 )}
-                                {projMembersMap[p.id]?.length === 0 && (
-                                  <div className="admin-empty">
-                                    아직 멤버가 없습니다. ‘+ 멤버 추가’로 넣으세요.
-                                  </div>
-                                )}
-                                {(projMembersMap[p.id] || []).map((m) => (
+                                {projMembersMap[p.id] !== undefined &&
+                                  (projMembersMap[p.id] || []).filter(
+                                    (m) => !systemUids.has(m.uid),
+                                  ).length === 0 && (
+                                    <div className="admin-empty">
+                                      아직 멤버가 없습니다. ‘+ 멤버 추가’로 넣으세요.
+                                    </div>
+                                  )}
+                                {(projMembersMap[p.id] || [])
+                                  .filter((m) => !systemUids.has(m.uid))
+                                  .map((m) => (
                                   <div key={m.uid} className="proj-role-line">
                                     <span className="admin-dot" />
                                     <span className="proj-role-name">
@@ -767,7 +827,7 @@ export function AdminWindow({
                                       {(() => {
                                         const q = (addQuery[p.id] || "").trim().toLowerCase();
                                         const cur = projMembersMap[p.id] || [];
-                                        const avail = members
+                                        const avail = visibleMembers
                                           .filter(
                                             (m) => !cur.some((pm) => pm.uid === m.uid),
                                           )

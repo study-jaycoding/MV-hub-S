@@ -24,6 +24,7 @@ from ..models import (
     ProjectRolesIn,
     ProjectsOut,
     ProjectUpdate,
+    ReorderProjectsIn,
 )
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -66,6 +67,14 @@ def create_project(body: ProjectCreate, request: Request):
         return repo.create_project(body.name, kind=body.kind)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/reorder")
+def reorder_projects(body: ReorderProjectsIn, request: Request):
+    """관리자 탭에서 정한 프로젝트 표시 순서를 저장(create_project 역량 = product_manager/admin)."""
+    require_global_cap(request, "create_project")
+    repo.reorder_projects(body.project_ids)
+    return {"ok": True}
 
 
 @router.patch("/{pid}", response_model=ProjectOut)

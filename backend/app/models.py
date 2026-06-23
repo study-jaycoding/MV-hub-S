@@ -254,6 +254,12 @@ class ProjectUpdate(BaseModel):
     archived: Optional[bool] = None
 
 
+class ReorderProjectsIn(BaseModel):
+    """프로젝트 표시 순서 — 관리자 탭 ↑/↓. 위→아래 순서대로의 project id 목록."""
+
+    project_ids: list[str] = Field(default_factory=list)
+
+
 class AssignProjectIn(BaseModel):
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제)."""
 

@@ -122,7 +122,8 @@ CREATE TABLE IF NOT EXISTS project (
     kind       TEXT NOT NULL DEFAULT 'team',      -- 'team' | 'personal'
     created_by TEXT,                              -- 만든 사람(provider/creator uid). 로그인 전엔 제공자
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    archived   INTEGER NOT NULL DEFAULT 0         -- 보관(목록에서 숨김, 데이터는 보존)
+    archived   INTEGER NOT NULL DEFAULT 0,        -- 보관(목록에서 숨김, 데이터는 보존)
+    sort_order INTEGER                            -- 관리자 수동 정렬 순서(작을수록 위). NULL=미지정(생성물 순 폴백)
 );
 
 -- 프로젝트 멤버(전방 호환) — 등급·로그인 단계에서 가시성 enforcement 의 근거가 된다.

@@ -99,7 +99,11 @@ def list_projects(
         "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL) AS total "
         "FROM project p"
     )
-    sql = f"{select}{clause} ORDER BY count DESC, p.name COLLATE NOCASE"
+    # 정렬: 관리자가 수동 지정한 순서(sort_order) 우선, 미지정은 뒤로 가서 생성물 많은 순 → 이름.
+    sql = (
+        f"{select}{clause} ORDER BY COALESCE(p.sort_order, 1000000), "
+        "count DESC, p.name COLLATE NOCASE"
+    )
     # 미분류 수 — 동일하게 viewer 의 것만.
     un_cond = "project_id IS NULL AND deleted_at IS NULL"
     un_args: list[Any] = []
@@ -124,6 +128,14 @@ def rename_project(pid: str, name: str) -> bool:
     with get_connection() as conn:
         cur = conn.execute("UPDATE project SET name = ? WHERE id = ?", (name, pid))
         return cur.rowcount > 0
+
+
+def reorder_projects(ordered_ids: list[str]) -> None:
+    """관리자 탭에서 정한 프로젝트 표시 순서를 sort_order(0,1,2,…)로 저장.
+    목록에 없는(보관 등) 프로젝트는 건드리지 않는다(NULL 유지 → 뒤로 폴백)."""
+    with get_connection() as conn:
+        for i, pid in enumerate(ordered_ids):
+            conn.execute("UPDATE project SET sort_order = ? WHERE id = ?", (i, pid))
 
 
 def set_archived(pid: str, archived: bool) -> bool:
