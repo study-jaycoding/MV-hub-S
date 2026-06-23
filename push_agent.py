@@ -426,6 +426,10 @@ def main() -> None:
                 if reason == "gen-request":
                     print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
                     execute_pending(server, token, cli)  # 연속 풀 — 16칸 채우고 다 비울 때까지
+                    # ★ 실행 결과를 서버로 올린다(서버 직결: fulfill 은 로컬 DB 라 UI 에 안 보임 —
+                    #    완료된 잡을 generate list→/api/ingest 로 push 해야 서버 DB 에 들어가 보인다).
+                    if not args.no_push:
+                        push_once(server, token, cli, args.size)
                 elif reason == "sync":
                     if args.no_push:
                         print("[이벤트] 동기화 요청 — 생성 전용 모드라 건너뜀(공유는 '선택 발행')")
