@@ -1,0 +1,20 @@
+# 백엔드 — 데이터는 data/ 한 폴더로 분리(db·media·shared)
+backend/data/
+backend/data_backup_*/
+# 구버전 경로(재시작 시 data/ 로 자동 이전되지만, 이전 전 보호용으로 유지)
+backend/content_hub.db
+backend/content_hub.db-wal
+backend/content_hub.db-shm
+backend/media/
+# 백필 스크래치·로그·샘플(영구 자료 아님)
+backend/_bf_*
+backend/*.log
+backend/sample_real.json
+__pycache__/
+*.pyc
+.venv/
+
+# 프론트엔드
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

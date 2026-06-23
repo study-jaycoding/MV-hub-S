@@ -1,0 +1,294 @@
+// 정보 팝업 — 이미지/동영상 휠(중간)클릭 시 뜨는 플로팅 글래스 창.
+// (예전 Assets 플로팅 패널의 '구성'을 이 정보 팝업에 재사용)
+// 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
+import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
+import { buildPromptParts, refSrc } from "../lib/promptParts";
+import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
+
+interface Props {
+  target: InfoTarget;
+  onClose: () => void;
+  onPreview: (t: PreviewTarget) => void; // 소스/칩 클릭 → 크게 보기
+  projects?: Project[]; // 프로젝트 이름 표시용(목록에서 uuid→이름 매핑)
+  onOpenInBoard?: (g: Generation) => void; // 구성탭에서 원본→파생 트리로 보기
+}
+
+const POP_W = 380;
+
+function clampStart(x: number, y: number) {
+  const left = Math.min(Math.max(8, x + 8), window.innerWidth - POP_W - 8);
+  const top = Math.min(Math.max(8, y + 8), window.innerHeight - 200);
+  return { x: left, y: top };
+}
+
+// 프롬프트 행 — 소스가 쓰였으면 칩 자리에 인라인 썸네일을 끼워 "어디에 들어갔는지" 보이게 한다.
+// 매칭되는 칩이 없으면(옛 생성 등) display_prompt/prompt 를 평범한 텍스트로.
+function renderPrompt(
+  displayPrompt: string | null,
+  prompt: string,
+  references: Reference[],
+  onPreview: (t: PreviewTarget) => void,
+): React.ReactNode {
+  const parts = displayPrompt ? buildPromptParts(displayPrompt, references) : [];
+  if (parts.some((p) => p.t === "chip")) {
+    return (
+      <span className="info-prompt">
+        {parts.map((p, i) =>
+          p.t === "text" ? (
+            <span key={i}>{p.v}</span>
+          ) : (
+            <button
+              key={i}
+              type="button"
+              className="inline-ref inline-ref-static inline-ref-btn"
+              title={`${p.ref.name} — 크게 보기`}
+              onClick={() =>
+                onPreview({
+                  url: refSrc(p.ref.file_path) || p.ref.thumb,
+                  type: p.ref.type,
+                  name: p.ref.name,
+                })
+              }
+            >
+              {p.ref.thumb && <img src={p.ref.thumb} alt="" />}
+              <span className="inline-ref-name">{p.ref.name}</span>
+            </button>
+          ),
+        )}
+      </span>
+    );
+  }
+  return <span className="info-prompt">{displayPrompt || prompt}</span>;
+}
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  if (value == null || value === "") return null;
+  return (
+    <div className="info-row">
+      <span className="info-label">{label}</span>
+      <span className="info-value">{value}</span>
+    </div>
+  );
+}
+
+export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard }: Props) {
+  // 레퍼런스(소스) → 크게 보기. 원본(asset 토큰/URL/로컬) 우선, 없으면 썸네일.
+  const openSource = (r: Reference) => {
+    const url = refSrc(r.file_path) || refSrc(r.thumbnail_path) || refSrc(r.source_url);
+    if (url) onPreview({ url, type: r.type, name: r.role || "source" });
+  };
+  const [pos, setPos] = useState(() => clampStart(target.x, target.y));
+  const [dim, setDim] = useState<string>("");
+  const [credits, setCredits] = useState<number | null>(null);
+  const drag = useRef<{ dx: number; dy: number } | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // 크레딧 — 모델+옵션 기준 비용 조회(무료 /api/cost). gen 에 별도 저장 안 함.
+  useEffect(() => {
+    if (target.kind !== "generation") return;
+    setCredits(null);
+    const g = target.gen;
+    api
+      .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
+      .then((r) => setCredits(r.credits))
+      .catch(() => setCredits(null));
+  }, [target]);
+
+  const onDragStart = (e: React.PointerEvent) => {
+    drag.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", onDragEnd);
+  };
+  const onDragMove = (e: PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    setPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
+  };
+  const onDragEnd = () => {
+    drag.current = null;
+    window.removeEventListener("pointermove", onDragMove);
+    window.removeEventListener("pointerup", onDragEnd);
+  };
+
+  // ── 대상별 미리보기 URL / 제목 / 정보 행 ──
+  let title = "";
+  let previewUrl: string | null = null;
+  let isVideo = false;
+  let rows: React.ReactNode = null;
+  let sources: React.ReactNode = null;
+
+  if (target.kind === "generation") {
+    const g = target.gen;
+    const asset = g.assets[0];
+    isVideo = asset?.type === "video";
+    previewUrl = asset ? asset.thumbnail_path || asset.file_path : null;
+    title = g.prompt.slice(0, 60) || "(제목 없음)";
+    const params = (g.params || {}) as Record<string, unknown>;
+    rows = (
+      <>
+        <Row label="모델" value={g.model} />
+        {g.status === "failed" && (
+          <div className="info-error">
+            <span className="info-error-label">⚠ 실패 사유</span>
+            <span className="info-error-text">{g.error || "사유 정보 없음 (옛 생성)"}</span>
+          </div>
+        )}
+        <Row label="비율" value={params.aspect_ratio as string} />
+        <Row label="해상도" value={params.resolution as string} />
+        <Row label="크레딧" value={credits != null ? `${credits} credits` : "조회 중…"} />
+        <Row label="생성일" value={g.created_at} />
+        {/* 이 생성물이 실제 속한 프로젝트만 표시(전체 목록 드롭다운 제거) */}
+        <Row
+          label="프로젝트"
+          value={
+            g.project_id
+              ? (projects || []).find((p) => p.id === g.project_id)?.name ||
+                g.project_name ||
+                "(이름 없음)" // 내부 식별자(uuid)는 절대 노출하지 않는다
+              : "미분류"
+          }
+        />
+        <Row
+          label="생성자"
+          // 표시이름만 노출(uid·이메일·worker 식별자는 절대 안 보임). 이름 미정이면 나/팀원.
+          value={g.creator_name || (g.is_mine ? "나" : "팀원")}
+        />
+        {/* 적용된 태그(#) · 전역 태그 — 이 생성물에 붙은 것만 */}
+        <Row
+          label="태그"
+          value={g.tags.length ? g.tags.map((t) => `#${t}`).join("  ") : null}
+        />
+        <Row
+          label="전역 태그"
+          value={g.auto_tags?.length ? g.auto_tags.map((t) => `#${t}`).join("  ") : null}
+        />
+        <Row label="프롬프트" value={renderPrompt(g.display_prompt, g.prompt, g.references, onPreview)} />
+      </>
+    );
+    // 사용된 소스(레퍼런스) — 출처를 한눈에. 재사용·변형의 핵심.
+    if (g.references.length) {
+      sources = (
+        <div className="info-sources">
+          <div className="info-sources-head">
+            사용된 소스 {g.references.length}개
+          </div>
+          <div className="info-sources-grid">
+            {g.references.map((r) => (
+              <button
+                type="button"
+                className="info-source"
+                key={r.id}
+                title={`${r.role || "소스"} — 크게 보기`}
+                onClick={() => openSource(r)}
+              >
+                {r.type === "video" ? (
+                  <video src={refSrc(r.thumbnail_path || r.file_path)} muted preload="metadata" />
+                ) : (
+                  <img src={refSrc(r.thumbnail_path || r.file_path)} alt={r.role || "source"} />
+                )}
+                <span className="info-source-role">{r.role || "@"}</span>
+                {r.cached && <span className="info-source-dot" title="로컬 보관됨" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+  } else {
+    const { project, node, meta } = target;
+    previewUrl = api.assetFileUrl(project, node.path);
+    isVideo = node.type === "video";
+    title = node.name;
+    const typeLabel = node.type === "video" ? "영상" : node.type === "audio" ? "오디오" : "이미지";
+    rows = (
+      <>
+        <Row label="프로젝트" value={project} />
+        <Row label="타입" value={typeLabel} />
+        <Row
+          label="경로"
+          value={
+            <button
+              className="info-path-btn"
+              title="원본 위치 열기 (탐색기)"
+              onClick={() => {
+                api.revealAsset(project, node.path).catch((e) => alert(`원본 위치 열기 실패: ${e}`));
+              }}
+            >
+              <span className="info-path">{node.path}</span>
+              <span className="info-path-icon">↗</span>
+            </button>
+          }
+        />
+        <Row label="해상도" value={dim || null} />
+        <Row
+          label="소스"
+          value={meta?.is_source ? `@${meta.source_name || node.name.replace(/\.[^.]+$/, "")}` : null}
+        />
+        <Row label="태그" value={meta?.tags?.length ? meta.tags.join(", ") : null} />
+        <Row
+          label="컬러"
+          value={
+            meta?.color ? (
+              <span className="info-color">
+                <span className="info-swatch" style={{ background: meta.color }} />
+                {meta.color}
+              </span>
+            ) : null
+          }
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="info-catcher" onMouseDown={onClose} />
+      <div className="info-popup" style={{ left: pos.x, top: pos.y, width: POP_W }}>
+        <header className="info-head" onPointerDown={onDragStart}>
+          <span className="info-title" title={title}>
+            {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}
+          </span>
+          {target.kind === "generation" && onOpenInBoard && (
+            <button
+              className="info-board-btn"
+              title="구성탭에서 원본 → 파생 트리로 보기"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onOpenInBoard(target.gen)}
+            >
+              ⧉ 구성에서 보기
+            </button>
+          )}
+          <button className="assets-x" onClick={onClose} title="닫기">
+            ✕
+          </button>
+        </header>
+        <div className="info-body">
+          {previewUrl && (
+            <div className="info-preview">
+              {isVideo ? (
+                <video src={previewUrl} muted controls preload="metadata" />
+              ) : (
+                <img
+                  src={previewUrl}
+                  alt={title}
+                  onLoad={(e) => {
+                    const im = e.currentTarget;
+                    if (im.naturalWidth) setDim(`${im.naturalWidth}×${im.naturalHeight}`);
+                  }}
+                />
+              )}
+            </div>
+          )}
+          <div className="info-rows">{rows}</div>
+          {sources}
+        </div>
+      </div>
+    </>
+  );
+}

@@ -1,0 +1,28 @@
+# content-hub-server 앞단 리버스 프록시 (Caddy 버전 — Phase 2 미디어 분리 서빙)
+# 실행: caddy run --config Caddyfile
+# 접속: http://<이 PC>:8080  (백엔드 8010 은 Caddy 뒤로 숨김)
+#
+# nginx.conf 와 동일한 의도: /media·정적은 Caddy 가 디스크에서 직접, /api·/ws 만 백엔드로.
+# ⚠️ 인증(CONTENT_HUB_AUTH=1)이면 /media 직접 서빙이 세션 보호를 우회 — README 참고.
+
+:8080 {
+	# WebSocket(진행률) + API 는 백엔드로 프록시
+	@backend path /api/* /ws
+	reverse_proxy @backend 127.0.0.1:8010 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	# 결과물·소스 미디어 — Caddy 가 디스크에서 직접(샤딩 /media/<2>/<sha>.ext)
+	handle_path /media/* {
+		root * D:/ClaudeCode/content-hub-server/backend/data/media
+		header Cache-Control "public, immutable, max-age=2592000"
+		file_server
+	}
+
+	# SPA(정적 번들 + 클라이언트 라우팅)
+	handle {
+		root * D:/ClaudeCode/content-hub-server/frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

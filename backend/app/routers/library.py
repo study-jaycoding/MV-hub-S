@@ -1,0 +1,209 @@
+"""라이브러리 조회 라우터 (Phase 2) — 로컬 탐색·필터.
+
+CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는다(전부 로컬 DB).
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+from .. import rbac, repo
+from ..config import AUTH_ENABLED
+from ..deps import account_global_roles, require_view_generation
+from ..models import FacetsOut, GenerationOut
+from ..services import thumbs
+
+router = APIRouter(prefix="/api", tags=["library"])
+
+
+@router.get("/media-thumb")
+def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)):
+    """생성 미디어(/media/<2>/<sha>.ext) 썸네일 — 리사이즈+디스크 캐시(공용 thumbs 헬퍼).
+    그리드가 풀해상도 원본(수 MP) 대신 작은 이미지를 디코딩하게 해 렉을 없앤다.
+    src 는 /media/ 로 시작하는 로컬 경로만(원격 URL·경로 이탈은 거부 → 호출부가 원본으로 폴백)."""
+    target = thumbs._media_target(src)
+    if not target:
+        raise HTTPException(status_code=400, detail="로컬 /media 경로만 지원")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="파일 없음")
+    cache = thumbs.ensure_thumb(target, w)
+    if not cache:
+        raise HTTPException(status_code=415, detail="썸네일 생성 불가(이미지 아님 등)")
+    return FileResponse(
+        cache, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=2592000"}
+    )
+
+
+@router.get("/generations", response_model=list[GenerationOut])
+def list_generations(
+    request: Request,
+    tab: str = Query("my", pattern="^(my|team)$"),
+    worker_id: Optional[str] = None,
+    color: Optional[str] = None,
+    tag: Optional[str] = None,
+    share_dir: Optional[str] = Query(None, pattern="^(mine|received)$"),
+    local_only: bool = False,
+    creator_uid: Optional[str] = None,
+    project_id: Optional[str] = None,
+    search: Optional[str] = None,
+    include_deleted: bool = False,
+    deleted_only: bool = False,
+    # 서버사이드 인스턴트 필터(무한 스크롤이 서버에서 거름)
+    media_type: Optional[str] = Query(None, pattern="^(image|video|audio)$"),
+    colors: list[str] = Query(default=[]),
+    tags: list[str] = Query(default=[]),
+    auto_tags: list[str] = Query(default=[]),
+    shared_only: bool = False,
+    comment_only: bool = False,
+    final_only: bool = False,
+    limit: int = Query(500, ge=1, le=2000),
+    # 키셋 커서(직전 페이지 마지막 행) — 무한 스크롤이 다음 묶음을 받을 때 전달. OFFSET 대체.
+    cursor_ts: Optional[float] = None,
+    cursor_id: Optional[str] = None,
+):
+    # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
+    account_uid = _account_uid(request)
+    # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).
+    team_member_projects = None
+    if tab == "team":
+        read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+            account_global_roles(request), "read_all"
+        )
+        if not read_all:
+            team_member_projects = repo.my_member_projects(account_uid or "\x00")
+    return repo.list_generations(
+        tab=tab,
+        team_member_projects=team_member_projects,
+        worker_id=worker_id,
+        color=color,
+        tag=tag,
+        share_dir=share_dir,
+        local_only=local_only,
+        creator_uid=creator_uid,
+        account_uid=account_uid,
+        project_id=project_id,
+        search=search,
+        include_deleted=include_deleted,
+        deleted_only=deleted_only,
+        media_type=media_type,
+        colors=colors or None,
+        tags=tags or None,
+        auto_tags=auto_tags or None,
+        shared_only=shared_only,
+        comment_only=comment_only,
+        final_only=final_only,
+        limit=limit,
+        cursor_ts=cursor_ts,
+        cursor_id=cursor_id,
+    )
+
+
+@router.get("/generations-stats")
+def generation_stats(request: Request):
+    """전역 파생값(실패 수·미확인 코멘트 여부) — 무한 스크롤 모드에서 클라이언트 전량 로드 대체.
+    미확인 여부는 로그인 계정(creator_uid) 기준 — 패널 seen 기록과 동일 신원이어야 알림이 꺼진다."""
+    uid = _account_uid(request)
+    return repo.generation_stats(viewer_id=uid) if uid else repo.generation_stats()
+
+
+# ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ───────────────────────────
+def _account_uid(request: Request) -> Optional[str]:
+    """로그인 계정의 creator_uid. None = 단독 모드(AUTH off, 전체 가시).
+    ⚠️ AUTH on 인데 creator_uid 미링크면 불가능 값('\\x00')으로 스코프 —
+    None 폴백 시 '내 작업/내 facet' 필터가 풀려 남의 컬러·태그·생성물이 전부 노출되는 구멍을 막는다."""
+    acc = getattr(request.state, "account", None)
+    if not acc:
+        return None
+    uid = acc.get("creator_uid")
+    if AUTH_ENABLED and not uid:
+        return "\x00"
+    return uid
+
+
+@router.get("/trash", response_model=list[GenerationOut])
+def list_trash(
+    request: Request,
+    search: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+):
+    """휴지통 항목 목록(최근 삭제순). 내 휴지통만(다른 사람 삭제물 열람 방지)."""
+    return repo.list_trash(
+        search=search, limit=limit, offset=offset, account_uid=_account_uid(request)
+    )
+
+
+@router.get("/trash-count")
+def trash_count(request: Request):
+    return {"count": repo.trash_count(account_uid=_account_uid(request))}
+
+
+@router.delete("/trash/{gen_id}")
+def purge_trashed_item(gen_id: str, request: Request):
+    """휴지통에서 영구 삭제(복원 불가) — 본인 것만."""
+    return {"purged": repo.purge_trashed_item(gen_id, account_uid=_account_uid(request))}
+
+
+class EmptyTrashIn(BaseModel):
+    before_days: Optional[int] = None  # 주면 그보다 오래된 것만, 없으면 전부
+
+
+@router.post("/trash/empty")
+def empty_trash(request: Request, body: EmptyTrashIn | None = None):
+    """휴지통 비우기 — before_days 면 그보다 오래된 것만, 없으면 전부. 본인 것만 영구 삭제."""
+    days = body.before_days if body else None
+    return {"purged": repo.empty_trash(before_days=days, account_uid=_account_uid(request))}
+
+
+@router.get("/generations/{gen_id}", response_model=GenerationOut)
+def get_generation(gen_id: str, request: Request):
+    account_uid = _account_uid(request)
+    gen = repo.get_generation(gen_id, account_uid=account_uid)
+    if not gen:
+        raise HTTPException(status_code=404, detail="generation 없음")
+    # 비공개는 본인만, 공유된 것만 남이 열람(원칙). 권한 없으면 404(존재 자체를 숨김).
+    require_view_generation(request, gen)
+    return gen
+
+
+@router.get("/facets", response_model=FacetsOut)
+def facets(request: Request):
+    # 컬러/태그/자동태그 facet 은 '내 생성물에 쓰인 것'만 — 개인 설정(다른 사람 것 안 보임).
+    return repo.get_facets(account_uid=_account_uid(request))
+
+
+# ── 자동 태그(별도 네임스페이스) — 필터 사이드바에서만 관리 ────────────────
+class AutoTagIn(BaseModel):
+    name: str
+
+
+def _tag_owner(request: Request) -> Optional[str]:
+    """전역 태그(auto_tag) 소유자 = 로그인 계정 creator_uid. 단독(AUTH off)이면 제공자 my_uid 로
+    폴백 → 레거시 태그가 그 소유로 이관됐으므로 단독 사용자도 자기 태그를 그대로 본다."""
+    uid = _account_uid(request)
+    return uid if uid is not None else repo.get_my_uid()
+
+
+@router.get("/auto-tags")
+def list_auto_tags(request: Request):
+    return {"auto_tags": repo.list_auto_tags(_tag_owner(request))}
+
+
+@router.post("/auto-tags")
+def create_auto_tag(body: AutoTagIn, request: Request):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="빈 이름")
+    created = repo.create_auto_tag(name, _tag_owner(request))
+    if not created:
+        raise HTTPException(status_code=409, detail=f"이미 있는 전역 태그: {name}")
+    return {"ok": True, "name": name}
+
+
+@router.delete("/auto-tags/{name}")
+def delete_auto_tag(name: str, request: Request):
+    return {"removed": repo.delete_auto_tag(name, _tag_owner(request))}
