@@ -60,6 +60,36 @@ def _qs(params: Optional[dict[str, Any]]) -> str:
     return ("?" + urllib.parse.urlencode(flat, doseq=True)) if flat else ""
 
 
+def raw_request(
+    method: str,
+    url: str,
+    *,
+    token: Optional[str] = None,
+    body: Optional[Any] = None,
+    timeout: int = 60,
+) -> tuple[int, Any]:
+    """공유 서버로 보내는 저수준 stdlib HTTP(새 의존성 0). `(status, parsed|text)` 반환.
+    연결 실패만 502 로 올리고, 4xx/5xx 는 (code, 본문)으로 돌려준다(호출자가 해석).
+    proxy_json(raise 계약)과 publish._http_json(tuple 계약) 양쪽의 단일 구현."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method.upper())
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        detail: Any = e.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(detail)
+        except (ValueError, TypeError):
+            pass
+        return e.code, detail
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+
+
 def proxy_json(
     method: str,
     path: str,
@@ -83,32 +113,18 @@ def proxy_json(
 
     qs = ("?" + raw_query) if raw_query else _qs(params)
     url = base_url() + path + qs
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method.upper())
-    req.add_header("Content-Type", "application/json")
-    if tok:
-        req.add_header("Authorization", f"Bearer {tok}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read().decode() or "null"
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        detail: Any = e.read().decode("utf-8", "replace")
+    status, parsed = raw_request(method, url, token=tok, body=body, timeout=timeout)
+    if 200 <= status < 300:
+        return parsed
+    detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else parsed
+    if status == 401:
+        # 토큰 만료/무효 → 다음 status 조회가 게이트를 다시 띄우게 토큰을 비운다.
         try:
-            parsed = json.loads(detail)
-            detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else parsed
-        except (ValueError, TypeError):
+            repo.set_setting(_K_TOKEN, None)
+        except Exception:  # noqa: BLE001
             pass
-        if e.code == 401:
-            # 토큰 만료/무효 → 다음 status 조회가 게이트를 다시 띄우게 토큰을 비운다.
-            try:
-                repo.set_setting(_K_TOKEN, None)
-            except Exception:  # noqa: BLE001
-                pass
-            raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인)")
-        raise HTTPException(status_code=e.code, detail=detail)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인)")
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def proxy_get(path: str, request: Request) -> Any:

@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from . import _proxy
 from .. import repo
 from ..config import DEFAULT_WORKER_ID
 
@@ -73,24 +72,16 @@ def _http_json(
     method: str, url: str, token: Optional[str] = None, body: Optional[dict] = None,
     timeout: int = 60,
 ) -> tuple[int, Any]:
-    """공유 서버로 보내는 stdlib HTTP(새 의존성 0). (status, parsed|text) 반환."""
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read().decode() or "null")
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        try:
-            detail = json.loads(detail)
-        except (ValueError, TypeError):
-            pass
-        return e.code, detail
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
+    """공유 서버로 보내는 stdlib HTTP(새 의존성 0). (status, parsed|text) 반환.
+    저수준 구현은 _proxy.raw_request 와 공유(중복 제거) — 로그인/가입/elevate 가 status 를 직접 본다."""
+    return _proxy.raw_request(method, url, token=token, body=body, timeout=timeout)
+
+
+def _flatten_detail(resp: Any) -> str:
+    """서버 응답에서 사람이 읽을 detail 문자열을 뽑는다. dict/list(422 배열 등)면 JSON 으로 평탄화 —
+    그대로 두면 프론트에서 '[object Object]' 로 보인다."""
+    detail = resp.get("detail") if isinstance(resp, dict) else resp
+    return detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
 
 
 # ── 공유 서버(수신 측) ──────────────────────────────────────────────────────
@@ -161,12 +152,7 @@ def shared_server_login(body: SharedLoginIn):
         "POST", f"{url}/api/auth/login", body={"email": body.email, "password": body.password}
     )
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
-        detail = resp.get("detail") if isinstance(resp, dict) else resp
-        # detail 이 dict/list(서버 422 배열 등)면 문자열로 평탄화 — 그대로 두면 프론트에서
-        # "[object Object]" 로 보인다.
-        if not isinstance(detail, str):
-            detail = json.dumps(detail, ensure_ascii=False)
-        raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {detail}")
+        raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
     repo.set_setting(_K_URL, url)
     repo.set_setting(_K_EMAIL, body.email)
@@ -198,11 +184,9 @@ def shared_server_register(body: SharedRegisterIn):
         body={"email": body.email, "password": body.password, "name": body.name},
     )
     if status != 200 or not isinstance(resp, dict):
-        detail = resp.get("detail") if isinstance(resp, dict) else resp
-        if not isinstance(detail, str):
-            detail = json.dumps(detail, ensure_ascii=False)
         raise HTTPException(
-            status_code=status if status >= 400 else 502, detail=f"공유 서버 가입 실패: {detail}"
+            status_code=status if status >= 400 else 502,
+            detail=f"공유 서버 가입 실패: {_flatten_detail(resp)}",
         )
     acc = resp.get("account") or {}
     token = resp.get("token")
@@ -254,10 +238,7 @@ def shared_server_elevate(body: ElevateIn):
         "POST", f"{url}/api/auth/login", body={"email": email, "password": body.password}
     )
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
-        detail = resp.get("detail") if isinstance(resp, dict) else resp
-        if not isinstance(detail, str):
-            detail = json.dumps(detail, ensure_ascii=False)
-        raise HTTPException(status_code=400, detail=f"권한 부여 실패: {detail}")
+        raise HTTPException(status_code=400, detail=f"권한 부여 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
     roles = acc.get("global_roles") or []
     if "admin" not in roles:
