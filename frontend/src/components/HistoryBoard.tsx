@@ -834,7 +834,7 @@ export function HistoryBoard({
                       <span
                         className="linb-ov-btn linb-ov-drag"
                         draggable
-                        title="프롬프트로 끌어 재사용(이 프롬프트·옵션 그대로 불러오기)"
+                        title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
                         onDragStart={(e) => {
                           e.dataTransfer.setData("application/x-ch-gen", g.id);
                           e.dataTransfer.effectAllowed = "copy";
@@ -862,6 +862,18 @@ export function HistoryBoard({
                           ⤓
                         </button>
                       )}
+                      <button
+                        className="linb-ov-btn"
+                        title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.dispatchEvent(
+                            new CustomEvent("ch:reuse-prompt", { detail: g.id }),
+                          );
+                        }}
+                      >
+                        ✎
+                      </button>
                       <button
                         className="linb-ov-btn"
                         title="재생성 — 이 결과물에서 파생본 만들기"

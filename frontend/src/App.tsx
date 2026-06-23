@@ -488,6 +488,13 @@ export default function App() {
     if (promptVisible) window.dispatchEvent(new CustomEvent("ch:focus-prompt"));
   }, [promptVisible]);
 
+  // 카드의 '프롬프트 재사용' 버튼 → 프롬프트 바가 숨겨져 있으면 펼친다(복원은 SpotlightPrompt 가 처리).
+  useEffect(() => {
+    const show = () => setPromptVisible(true);
+    window.addEventListener("ch:reuse-prompt", show);
+    return () => window.removeEventListener("ch:reuse-prompt", show);
+  }, []);
+
   // 마지막으로 보던 상태 저장 → 다음에 열 때 복원
   useEffect(() => LS.set("filters", JSON.stringify(filters)), [filters]);
   useEffect(() => LS.set("typeFilter", typeFilter), [typeFilter]);

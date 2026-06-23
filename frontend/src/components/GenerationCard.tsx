@@ -328,11 +328,25 @@ export function GenerationCard({
                   ⬇
                 </button>
               )
-            : // 생성탭 → 재생성
+            : // 생성탭 → 프롬프트 재사용(입력바로 불러오기) + 재생성
               (
-                <button className="ov-icon" title="재생성" onClick={() => onRegenerate(gen)}>
-                  ↻
-                </button>
+                <>
+                  <button
+                    className="ov-icon"
+                    title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.dispatchEvent(
+                        new CustomEvent("ch:reuse-prompt", { detail: gen.id }),
+                      );
+                    }}
+                  >
+                    ✎
+                  </button>
+                  <button className="ov-icon" title="재생성" onClick={() => onRegenerate(gen)}>
+                    ↻
+                  </button>
+                </>
               )}
           {/* 팀 공유/해제는 S 버튼으로 조작하므로 오버레이엔 '가계 보기'(히스토리)를 둔다.
               원래 좌상단에 있던 라임 가계 뱃지를 이 자리(공유 버튼 자리)로 옮긴 것. */}

@@ -189,6 +189,18 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
     return () => window.removeEventListener("ch:focus-prompt", focus);
   }, []);
 
+  // 카드의 '프롬프트 재사용' 버튼 → 그 생성물의 프롬프트+옵션을 입력바로 불러옴(드래그=레퍼런스와 분리).
+  useEffect(() => {
+    const onReuse = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (id) void reusePromptFromGen(id);
+    };
+    window.addEventListener("ch:reuse-prompt", onReuse);
+    return () => window.removeEventListener("ch:reuse-prompt", onReuse);
+    // model 의존: reusePromptFromGen 내부 useModel===model 분기를 최신 모델로 평가
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
+
   // 에셋 파트(분리창) 프로젝트 변경 알림 → 컨텍스트 갱신.
   // 값이 실제로 바뀐 경우에만 갱신(스크롤 저장 등 다른 ch.assets.* 쓰기로 인한 재요청 폭주 방지).
   useEffect(() => {
@@ -300,20 +312,12 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
 
   const clearTagFilter = () => setTagFilter(null);
 
-  // ── 카드 → 프롬프트 드롭: 그 생성의 프롬프트+옵션 그대로 불러와 재사용 ──
-  const onPanelDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes("application/x-ch-gen")) {
-      e.preventDefault(); // drop 허용 + contentEditable 기본 삽입 차단
-      e.dataTransfer.dropEffect = "copy";
-    }
-  };
-  const onPanelDrop = async (e: React.DragEvent) => {
-    const id = e.dataTransfer.getData("application/x-ch-gen");
-    if (!id) return;
-    e.preventDefault();
+  // ── 프롬프트 재사용(명시적): 그 생성의 프롬프트+옵션을 입력바로 그대로 불러옴 ──
+  //    카드 오버레이의 '프롬프트 재사용' 버튼(ch:reuse-prompt 이벤트)이 호출. 드래그와 분리.
+  const reusePromptFromGen = async (id: string) => {
     try {
       const g = await api.getGeneration(id);
-      // 드래그한 원본 → 다음 생성의 자동 히스토리 부모(원본→파생). 재드래그 시 최신값으로 갱신.
+      // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
       dragParentRef.current = id;
       const t: "image" | "video" = g.assets[0]?.type === "video" ? "video" : "image";
       // 원래 모델이 화이트리스트에 있으면 유지, 아니면 타입 기본(첫째)로 클램프
@@ -344,7 +348,7 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
       }
       const ed = editorRef.current;
       if (ed) {
-        restoreParts(ed, parts);
+        restoreParts(ed, parts); // 재사용은 '교체' — 입력바를 그 프롬프트로 채움
         updatePlaceholder();
         ed.focus();
       }
@@ -353,6 +357,44 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
     } catch (err) {
       setError(String(err));
     }
+  };
+
+  // ── 카드 → 프롬프트 드롭: 그 생성물을 '레퍼런스로 추가'(누적). 여러 개 드롭하면 칩이 쌓인다 ──
+  //    (예전엔 드롭=프롬프트 재사용이었으나, 재사용은 버튼으로 분리하고 드래그는 레퍼런스 전용으로 변경)
+  const onPanelDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("application/x-ch-gen")) {
+      e.preventDefault(); // drop 허용 + contentEditable 기본 삽입 차단
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+  const addRefFromGen = async (id: string) => {
+    try {
+      const g = await api.getGeneration(id);
+      const a = g.assets[0];
+      const ed = editorRef.current;
+      if (!a || !ed) return;
+      const isVid = a.type === "video";
+      const ref: ChipRef = {
+        file_path: a.source_url || a.file_path,
+        type: a.type,
+        // @Image1, @Image2 … — 현재 칩 수 기준으로 다음 슬롯(드롭마다 누적)
+        role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
+        name: g.source_name || g.prompt?.slice(0, 20) || "ref",
+        thumb: a.thumbnail_path || a.file_path,
+        source_gen_id: g.id, // 출처 generation → 히스토리 reference 엣지
+      };
+      insertChip(ed, ref); // 기존 칩 유지하고 추가
+      updatePlaceholder();
+      ed.focus();
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+  const onPanelDrop = (e: React.DragEvent) => {
+    const id = e.dataTransfer.getData("application/x-ch-gen");
+    if (!id) return;
+    e.preventDefault();
+    void addRefFromGen(id); // 드롭 = 레퍼런스 추가
   };
 
   const submit = async () => {

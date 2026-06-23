@@ -120,22 +120,35 @@ def list_creators(
       · account_uid 없음(비로그인/단독) → 전체(기존 동작 유지)."""
     my = account_uid or get_my_uid()
     if project_id:
-        # 프로젝트 참여 인원(배정된 멤버 전부) — 이름은 creator→account→로컬파트 폴백(uid 노출 금지).
+        # 프로젝트 생성자 = 배정 멤버 ∪ 그 프로젝트에 실제로 생성물을 만든 작성자.
+        # (예전엔 project_member 만 봐서, 멤버 미배정 프로젝트는 생성자 섹션이 통째로 사라졌다.)
+        # 이름은 creator→account→로컬파트 폴백(uid 노출 금지).
         share_cond = (
             " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
             if tab == "team"
             else ""
         )
+        gen_share = (
+            " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g2.id)"
+            if tab == "team"
+            else ""
+        )
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT m.creator_uid uid, "
+                "SELECT uid, "
                 "(SELECT COUNT(*) FROM generation g WHERE g.project_id=? "
-                f"AND g.creator_uid=m.creator_uid AND g.deleted_at IS NULL{share_cond}) cnt "
-                "FROM project_member m WHERE m.project_id = ? ORDER BY cnt DESC",
-                (project_id, project_id),
+                f"AND g.creator_uid=uid AND g.deleted_at IS NULL{share_cond}) cnt "
+                "FROM ("
+                "  SELECT creator_uid uid FROM project_member "
+                "  WHERE project_id=? AND creator_uid IS NOT NULL "
+                "  UNION "
+                "  SELECT DISTINCT g2.creator_uid uid FROM generation g2 "
+                f"  WHERE g2.project_id=? AND g2.creator_uid IS NOT NULL AND g2.deleted_at IS NULL{gen_share}"
+                ") ORDER BY cnt DESC",
+                (project_id, project_id, project_id),
             ).fetchall()
             names = resolve_display_names(conn, [r["uid"] for r in rows])
-            return [
+            result = [
                 {
                     "uid": r["uid"],
                     "name": names.get(r["uid"]),
@@ -144,6 +157,13 @@ def list_creators(
                 }
                 for r in rows
             ]
+            # 라이브러리와 일관: '내 작업' 경로에선 멤버·생성물이 없어도 '나'는 항상 보인다.
+            if account_uid and tab != "team" and not any(r["uid"] == account_uid for r in result):
+                sname = resolve_display_names(conn, [account_uid]).get(account_uid)
+                result.insert(
+                    0, {"uid": account_uid, "name": sname, "count": 0, "is_mine": account_uid == my}
+                )
+            return result
     where = ["g.creator_uid IS NOT NULL", "g.deleted_at IS NULL"]
     args: list[Any] = []
     if tab == "team":
