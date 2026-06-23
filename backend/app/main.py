@@ -284,7 +284,12 @@ if FRONTEND_DIST.is_dir():
             and str(candidate).startswith(str(FRONTEND_DIST))
         ):
             return FileResponse(str(candidate))
-        return FileResponse(str(FRONTEND_DIST / "index.html"))
+        # index.html 은 캐시 금지 — 빌드 때 바뀐 해시 자산(특히 CSS)을 가리키는데, 브라우저가
+        # 옛 index.html 을 캐시하면 지워진 옛 CSS 를 요청해 404 → 디자인 깨짐(자산은 해시라 영구캐시 OK).
+        return FileResponse(
+            str(FRONTEND_DIST / "index.html"),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 else:
     print(f"[startup] 프론트엔드 dist 없음 → API 전용 모드 ({FRONTEND_DIST})")
 
