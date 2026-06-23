@@ -122,9 +122,10 @@ export function AdminWindow({
 
   // 임시 관리자 권한(열쇠) — 본인 계정 유지한 채 admin 비번으로 '승인 절차' 권한만 일시 획득.
   const [elevOpen, setElevOpen] = useState(false);
-  // 기본값 admin / admin1985 — 짧은 id "admin" 은 백엔드가 관리자 이메일로 매핑한다.
+  // id 만 "admin" 으로 기본 채움(짧은 id 는 백엔드가 관리자 이메일로 매핑). 비밀번호는 보안상
+  // 미리 채우지 않는다 — 매번 직접 입력.
   const [elevEmail, setElevEmail] = useState("admin");
-  const [elevPw, setElevPw] = useState("admin1985");
+  const [elevPw, setElevPw] = useState("");
   const [elevMsg, setElevMsg] = useState("");
   const [elevBusy, setElevBusy] = useState(false);
   const doElevate = async () => {
