@@ -14,8 +14,6 @@ interface Props {
   filters: Filters;
   onTab: (tab: "my" | "team" | "compose") => void;
   onSearch: (q?: string) => void;
-  onSync: () => void;
-  syncing: boolean;
   onCache: () => void; // (서버 모드 미사용 — App 호환 위해 prop 유지)
   caching: boolean;
   onWorkspaceSwitched: () => void;
@@ -31,7 +29,6 @@ export function TopBar({
   filters,
   onTab,
   onSearch,
-  onSync,
   onWorkspaceSwitched,
   onOpenAssets,
   onOpenAdmin,
@@ -103,7 +100,6 @@ export function TopBar({
         onProviderUpdated={setProvider}
         onLogout={onLogout}
         onWorkspaceSwitched={onWorkspaceSwitched}
-        onFullSync={onSync}
       />
     </header>
   );

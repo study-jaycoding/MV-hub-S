@@ -2,7 +2,7 @@
 //  · 강조색 팔레트(프리셋 → CSS 변수 즉시 적용·영속)
 //  · 언어 한글/English (선택 영속 — 전체 번역은 단계 적용)
 //  · 단축키(변경은 별도 플로팅 창 ShortcutsWindow)
-//  · 생성물 전체 가져오기(지금 동기화 = 최신 100. 100 밖은 MCP backfill 안내)
+//  · 과거 생성물 가져오기(100건 밖 과거 전체를 MCP 백필 .md→파일 업로드로 서버에 적재)
 import { useEffect, useState } from "react";
 import {
   ACCENT_PRESETS,
@@ -17,7 +17,6 @@ import { setLang, useT } from "../lib/i18n";
 import { downloadText } from "../lib/download";
 import { api } from "../api";
 import { ShortcutsWindow } from "./ShortcutsWindow";
-import type { Account } from "../types";
 
 // 업로드 파일 → MCP 아이템 배열. JSON 배열 / {items|generations|data:[...]} / JSONL(줄마다 객체) 허용.
 //  (backfill_import.py load_items + JSONL 폴백과 동일 규칙 — 통째 JSON 먼저, 실패 시 줄단위.)
@@ -52,12 +51,8 @@ function parseMcpItems(text: string): Record<string, unknown>[] {
 
 export function SettingsPanel({
   onClose,
-  onFullSync,
-  account,
 }: {
   onClose: () => void;
-  onFullSync?: () => Promise<void> | void;
-  account?: Account | null;
 }) {
   const t = useT();
   const [accent, setAccent] = useState(loadAccent());
@@ -66,35 +61,10 @@ export function SettingsPanel({
   );
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
-  const [copied, setCopied] = useState(false);
   const [msg, setMsg] = useState("");
-  const [syncing, setSyncing] = useState(false);
   const [uploading, setUploading] = useState(false); // 백필 파일 업로드 적재 중
   const [scOpen, setScOpen] = useState(false); // 단축키 변경 플로팅 창
 
-  // 팀 서버 로그인 상태 — 로그아웃(계정 전환/만료 재로그인)용.
-  const [conn, setConn] = useState<{ email: string | null; name: string | null; has_token: boolean } | null>(null);
-  useEffect(() => {
-    api
-      .sharedServerStatus()
-      .then((s) => setConn({ email: s.email, name: s.name, has_token: s.has_token }))
-      .catch(() => {});
-  }, []);
-  const logoutShared = async () => {
-    await api.sharedServerLogout().catch(() => {});
-    window.dispatchEvent(new CustomEvent("ch:shared-changed")); // App 게이트가 로그인 화면으로 복귀
-  };
-
-  // 내 PC에서 에이전트를 띄울 실행 명령(서버=지금 접속한 주소, 이메일=로그인 계정).
-  const agentCmd = `python push_agent.py --server ${window.location.origin} --email ${
-    account?.email || "<내 이메일>"
-  } --watch 30`;
-  const copyCmd = () => {
-    navigator.clipboard?.writeText(agentCmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
   // 과거 전체(100건 밖) 백필 지시 — .md 문서로 받아 Claude 세션에 파일째 첨부해 주면 됨.
   //  서버 코드·DB 접근 없이 허브 로그인만으로 /api/ingest/mcp 에 직접 적재(멱등). origin·이메일 자동 주입.
   //  코드블록은 4칸 들여쓰기로 표현(백틱 없이) — 템플릿 리터럴 이스케이프 회피.
@@ -110,7 +80,7 @@ export function SettingsPanel({
 2. 모든 페이지의 items 를 한 파일로 저장합니다(손타이핑 금지 — 코드로 덤프):
    - my_history.jsonl  (한 줄에 아이템 1개)   또는
    - my_history.json   (아이템 배열 [ ... ])
-3. 허브 웹에서 설정 > "생성물 전체 가져오기" > "② 만든 파일 올려서 적용" 에 그 파일을 업로드합니다. 끝.
+3. 허브 웹에서 설정 > "과거 생성물 가져오기" > "② 만든 파일 올려서 적용" 에 그 파일을 업로드합니다. 끝.
 
 ## 저장할 아이템 키 (이대로 담으면 출처까지 보존됨)
        {
@@ -188,20 +158,6 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
     setLangState(l);
     setLang(l); // 즉시 UI 리렌더 + 영속(<html lang> 포함)
   };
-  const fullSync = async () => {
-    if (!onFullSync) return;
-    setSyncing(true);
-    setMsg("");
-    try {
-      await onFullSync();
-      setMsg("최신 동기화 완료. 100건 밖 과거 전체는 Claude에게 “전체 가져와줘”라고 요청하세요.");
-    } catch (e) {
-      setMsg("동기화 실패: " + String(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   return (
     <>
       <div className="info-catcher" onMouseDown={onClose} />
@@ -301,89 +257,40 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             </p>
           </section>
 
-          {/* 내 힉스필드 연결 — 단축키 아래, 전체 가져오기 위 */}
+          {/* 과거 생성물 가져오기(백필) — 단축키 아래. 허브 밖(MCP)에서 만든 과거 전체를 서버에 적재.
+              ※ 허브 안 작업과 push_agent --watch 가 최신분은 자동으로 올리므로, 여기선 100건 밖 과거만. */}
           <section className="settings-section">
-            <h4>{t("내 힉스필드 연결 (에이전트)")}</h4>
-            <a className="settings-action" href="/api/agent/run-bat" download="MV_agent.bat">
-              ⬇ MV_agent.bat 받기 (Windows · 원클릭)
-            </a>
+            <h4>{t("과거 생성물 가져오기")}</h4>
             <p className="settings-hint">
-              내 PC에 켜두면 내 작업을 허브에 올리고, 허브 생성·재생성을 내 CLI로 실행합니다.
-              더블클릭 → 없으면 <b>Python·Node·CLI 자동 설치 → 로그인 1회 → 허브 자동 열림 + 작동</b>.{" "}
-              (처음 설치 시 창 닫고 한 번 더 더블클릭)
+              허브에서 만든 결과물과 최신분은 <b>자동으로</b> 올라갑니다. 여기서는 CLI가 못 가져오는{" "}
+              <b>100건 밖 과거 전체</b>만 보충합니다.
             </p>
-
-            {/* 폴백 — Mac/Linux·고급: 스크립트 직접 받기 + 명령 복사 */}
-            <details className="agent-adv">
-              <summary>Mac/Linux · 직접 실행</summary>
-              <a className="settings-action" href="/api/agent/download" download="push_agent.py">
-                ⬇ push_agent.py 직접 받기
-              </a>
-              <div className="agent-cmd">
-                <code>{agentCmd}</code>
-                <button className="agent-copy" onClick={copyCmd} title="명령 복사">
-                  {copied ? "✓ 복사됨" : "복사"}
-                </button>
-              </div>
-            </details>
-
-            {/* 생성물 전체 가져오기 — Mac/Linux 직접실행 바로 밑, 같은 접이식 형태(같은 섹션 안). 펼치면 MCP 지시문 복사 + 최신100 동기화. */}
-            <details className="agent-adv import-fold">
-              <summary>{t("생성물 전체 가져오기")}</summary>
-
-              <button className="settings-action" onClick={downloadBackfillMd}>
-                ① ⬇ History 지시문 .md 받기
-              </button>
-              <p className="settings-hint">
-                받은 <b>.md</b>를 <b>힉스필드 MCP가 붙은 Claude</b>에 주면, Claude가 전체 이력을{" "}
-                <b>파일</b>로 만들어 줍니다(허브 접속·명령어 불필요).
-              </p>
-              <label className={"settings-action" + (uploading ? " is-busy" : "")}>
-                {uploading ? "적재 중…" : "② ⬆ 만든 파일 올려서 적용"}
-                <input
-                  type="file"
-                  accept=".json,.jsonl,.txt,application/json"
-                  style={{ display: "none" }}
-                  disabled={uploading}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    e.target.value = ""; // 같은 파일 재선택 가능하게 초기화
-                    onBackfillFile(f);
-                  }}
-                />
-              </label>
-              <p className="settings-hint">
-                Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 이 허브가 직접 적재합니다(멱등). CLI는 최신
-                100건까지만이라 <b>100건 밖 과거 전체</b>는 이 경로로 채웁니다.
-              </p>
-            </details>
-
-            {/* 최신 100건만 빠른 동기화(CLI) — 위 둘(Mac/Linux·생성물 전체)과 같은 레벨(섹션 직속) */}
-            <details className="agent-adv">
-              <summary>최신 100건 동기화</summary>
-              <button className="settings-action" onClick={fullSync} disabled={syncing || !onFullSync}>
-                {syncing ? t("가져오는 중…") : t("↺ 최신 100건 동기화")}
-              </button>
-              <p className="settings-hint">
-                지금 즉시 <b>최신 100건</b>을 불러옵니다.
-              </p>
-            </details>
-
+            <button className="settings-action" onClick={downloadBackfillMd}>
+              ① ⬇ History 지시문 .md 받기
+            </button>
+            <p className="settings-hint">
+              받은 <b>.md</b>를 <b>힉스필드 MCP가 붙은 Claude</b>에 주면, Claude가 전체 이력을{" "}
+              <b>파일</b>로 만들어 줍니다(허브 접속·명령어 불필요).
+            </p>
+            <label className={"settings-action" + (uploading ? " is-busy" : "")}>
+              {uploading ? "적재 중…" : "② ⬆ 만든 파일 올려서 적용"}
+              <input
+                type="file"
+                accept=".json,.jsonl,.txt,application/json"
+                style={{ display: "none" }}
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = ""; // 같은 파일 재선택 가능하게 초기화
+                  onBackfillFile(f);
+                }}
+              />
+            </label>
+            <p className="settings-hint">
+              Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 멱등으로 적재됩니다(중복 안 생김).
+            </p>
             {msg && <p className="manage-msg">{msg}</p>}
           </section>
-
-          {/* 팀 서버 로그인 — 로그아웃(계정 전환/만료 재로그인). 로컬 허브 전용. */}
-          {conn?.has_token && (
-            <section className="settings-section">
-              <h4>{t("팀 서버 계정")}</h4>
-              <p className="settings-hint">
-                로그인됨: <b>{conn.name || conn.email}</b>
-              </p>
-              <button className="settings-action" onClick={logoutShared}>
-                로그아웃 (계정 전환)
-              </button>
-            </section>
-          )}
         </div>
       </div>
 

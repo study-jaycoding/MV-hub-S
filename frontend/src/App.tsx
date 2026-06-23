@@ -91,7 +91,6 @@ export default function App() {
   boardFocusIdRef.current = boardFocusId;
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [caching, setCaching] = useState(false);
   const [info, setInfo] = useState<InfoTarget | null>(null); // 휠클릭 정보 팝업
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
@@ -748,19 +747,6 @@ export default function App() {
     await reload();
   };
 
-  const onSync = async () => {
-    setSyncing(true);
-    try {
-      const r = await api.sync();
-      flash(`동기화 완료: ${r.fetched}건 (신규 ${r.inserted})`);
-      await reload();
-    } catch (e) {
-      flash("동기화 실패: " + String(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   // Assets 를 분리된 브라우저 창으로 연다(project-viewer 의 ?embed 방식).
   //  ⚠️ 같은 이름("contenthub-assets")의 창은 브라우저가 재사용만 하고 새로고침을 안 해
   //     옛 빌드(CSS)가 남는다 → URL 에 버전값을 붙여 매번 최신 index.html(=최신 CSS 해시)을 받게 한다.
@@ -1179,8 +1165,6 @@ export default function App() {
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
-        onSync={onSync}
-        syncing={syncing}
         onCache={onCache}
         caching={caching}
         onWorkspaceSwitched={async () => {

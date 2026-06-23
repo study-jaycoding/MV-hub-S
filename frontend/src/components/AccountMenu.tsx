@@ -22,14 +22,12 @@ export function AccountMenu({
   onProviderUpdated,
   onLogout,
   onWorkspaceSwitched,
-  onFullSync,
 }: {
   provider: Provider | null;
   account?: Account | null;
   onProviderUpdated: (p: Provider) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: () => void;
-  onFullSync?: () => Promise<void> | void; // 설정 → 전체 가져오기(= 지금 동기화)
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -236,7 +234,7 @@ export function AccountMenu({
       )}
 
       {settingsOpen && (
-        <SettingsPanel onClose={() => setSettingsOpen(false)} onFullSync={onFullSync} account={account} />
+        <SettingsPanel onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   );
