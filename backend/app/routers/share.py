@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from . import _proxy
 from .. import rbac, repo
 from ..config import DEFAULT_WORKER_ID
 from ..deps import current_account, require_edit_generation, require_project_role
@@ -54,6 +55,13 @@ def unpublish(gen_id: str, request: Request):
         )
     repo.unpublish(gen_id)
     repo.write_my_share_file()  # share-set 변화 → 파일 갱신
+    # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로, 해제도 서버에 전파해 팀 탭에서 사라지게 한다.
+    # (번들이 같은 gen_id 를 앵커로 보존하므로 서버에서 같은 id 로 해제 가능. 실패는 무시.)
+    if _proxy.proxying():
+        try:
+            _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unpublish")
+        except Exception:  # noqa: BLE001 — 서버 전파 실패는 로컬 해제를 막지 않음
+            pass
     return repo.get_generation(gen_id)
 
 

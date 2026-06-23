@@ -68,18 +68,21 @@ def proxy_json(
     params: Optional[dict[str, Any]] = None,
     require_token: bool = True,
     timeout: int = 60,
+    raw_query: Optional[str] = None,
 ) -> Any:
     """공유 서버 {base}{path} 로 위임하고 성공 본문(parsed JSON)을 반환.
 
     - 토큰이 없고 require_token 이면 401(로그인 유도).
     - 서버가 비-2xx 면 그 status·detail 을 그대로 HTTPException 으로 재발생.
     - 연결 실패는 502.
+    - raw_query: 원 요청의 쿼리스트링을 그대로 붙일 때(다중값 colors/tags 보존). params 보다 우선.
     """
     tok = token()
     if require_token and not tok:
         raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
 
-    url = base_url() + path + _qs(params)
+    qs = ("?" + raw_query) if raw_query else _qs(params)
+    url = base_url() + path + qs
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method.upper())
     req.add_header("Content-Type", "application/json")
@@ -108,6 +111,12 @@ def proxy_json(
         raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
 
 
+def proxy_get(path: str, request: Request) -> Any:
+    """현재 GET 요청을 쿼리스트링 그대로 공유 서버에 위임하고 parsed JSON 반환.
+    로컬우선 모델에서 'tab=team 목록'이나 '팀(서버) 항목 상세'를 조회할 때 핸들러가 호출한다."""
+    return proxy_json("GET", path, raw_query=request.url.query or None)
+
+
 # ── 중앙 데이터-프록시 미들웨어 ──────────────────────────────────────────────
 # 로컬 허브(위임 모드)에서 '데이터' 요청을 통째로 공유 서버로 중계한다. 라우터 40여 개를 개별
 # 수정하지 않고 한 곳에서 처리 — 로컬-전용(파일 I/O·CLI·에이전트연결·실행큐)만 allow-list 로
@@ -121,6 +130,12 @@ _LOCAL_PREFIXES = (
     "/api/models",         # CLI 모델 목록·params
     "/api/workspaces",     # CLI 워크스페이스
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
+    # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.
+    "/api/generations",    # 목록·상세·히스토리·코멘트·태그·컬러·소스·발행 등(내 것=로컬, 팀=핸들러가 프록시)
+    "/api/creators",       # 생성자 목록(my=로컬, team=핸들러 프록시)
+    "/api/sources",        # 내 소스 라이브러리(로컬)
+    "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
+    "/api/trash",          # 내 휴지통(로컬)
 )
 _LOCAL_EXACT = frozenset(
     {
@@ -133,6 +148,7 @@ _LOCAL_EXACT = frozenset(
         "/api/publish-to-shared",  # 자체적으로 서버와 통신(이중 프록시 방지)
         "/api/backups",
         "/api/backup",
+        "/api/facets",     # 필터 facet(컬러/태그/생성자) — my=로컬, team=핸들러 프록시
         # ★ /api/auth/config 만 로컬(게이트가 auth_enabled 로 ServerLoginScreen 판정).
         #   나머지 /api/auth/*(accounts·me·global-roles·status·password 등)는 서버 계정을
         #   다루므로 프록시 — 안 그러면 관리자탭이 빈 로컬 계정을 조회한다.

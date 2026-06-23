@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED
 from ..deps import account_global_roles, require_view_generation
@@ -65,6 +66,10 @@ def list_generations(
     cursor_ts: Optional[float] = None,
     cursor_id: Optional[str] = None,
 ):
+    # 로컬 우선: 내 작업(tab=my)은 이 허브 로컬 DB가 정답 → 즉시·서버무관. 팀 공유(tab=team)만
+    # 서버 DB로 위임(모두의 발행물이 거기 있음).
+    if tab == "team" and _proxy.proxying():
+        return _proxy.proxy_get("/api/generations", request)
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
     # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).
@@ -164,6 +169,9 @@ def get_generation(gen_id: str, request: Request):
     account_uid = _account_uid(request)
     gen = repo.get_generation(gen_id, account_uid=account_uid)
     if not gen:
+        # 로컬에 없으면 팀(서버) 항목일 수 있음 → 서버로 폴백 조회(로컬우선 + 팀 폴백).
+        if _proxy.proxying():
+            return _proxy.proxy_get(f"/api/generations/{gen_id}", request)
         raise HTTPException(status_code=404, detail="generation 없음")
     # 비공개는 본인만, 공유된 것만 남이 열람(원칙). 권한 없으면 404(존재 자체를 숨김).
     require_view_generation(request, gen)
@@ -171,8 +179,10 @@ def get_generation(gen_id: str, request: Request):
 
 
 @router.get("/facets", response_model=FacetsOut)
-def facets(request: Request):
-    # 컬러/태그/자동태그 facet 은 '내 생성물에 쓰인 것'만 — 개인 설정(다른 사람 것 안 보임).
+def facets(request: Request, tab: str = Query("my", pattern="^(my|team)$")):
+    # 컬러/태그/자동태그 facet — my=내 로컬 생성물 기준, team=서버(팀 공유물) 기준.
+    if tab == "team" and _proxy.proxying():
+        return _proxy.proxy_get("/api/facets", request)
     return repo.get_facets(account_uid=_account_uid(request))
 
 

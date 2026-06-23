@@ -234,7 +234,7 @@ export default function App() {
           ? api.listTrash(genQueryRef.current.search, 0)
           : api.listGenerations(genQueryRef.current, null), // 첫 페이지(커서 없음)
         api.generationStats(), // 실패 수·미확인(전역 파생값)
-        api.facets(),
+        api.facets(filtersRef.current.tab === "team" ? "team" : "my"), // my=로컬, team=서버
         api.projects(),
       ]);
       setGens(g);
@@ -752,19 +752,18 @@ export default function App() {
   // 공유 라우팅 — 서버 직결: '공유' = 서버 생성물의 visibility=team 토글(프록시가 서버 DB로 위임).
   // 번들 발행·share 파일 없음. 남의 공유물은 'team' 탭이 서버에서 자동으로 가져온다.
   // '공유' 동작 전부(카드·선택바·구성탭)가 이 한 곳을 거친다 → 별도 발행 버튼 불필요.
+  // 로컬 우선 발행: 내 로컬 생성물을 번들로 서버에 push(모두가 봄) + 로컬에 '공유됨' 표식.
+  // (서버 visibility 토글이 아니라 — 내 작업은 서버에 없으니 번들로 올려야 팀 탭에 뜬다.)
   const pushShare = async (ids: string[]): Promise<number> => {
     if (!ids.length) return 0;
-    let n = 0;
-    for (const id of ids) {
-      try {
-        await api.publish(id);
-        n++;
-      } catch {
-        /* skip */
-      }
+    try {
+      const r = await api.publishToShared(ids);
+      flash(`${r.published}개 팀에 공유.`);
+      return r.published;
+    } catch (e) {
+      flash("공유 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      return 0;
     }
-    flash(`${n}개 팀에 공유.`);
-    return n;
   };
 
   // 선택 항목 일괄 팀 공유 (내 작업 · 완료 · 미공유만)

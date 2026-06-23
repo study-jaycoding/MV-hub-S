@@ -170,7 +170,8 @@ export const api = {
       body: JSON.stringify({ parent_ids: parentIds }),
     }),
 
-  facets: () => jsonFetch<Facets>("/api/facets"),
+  facets: (tab: "my" | "team" = "my") =>
+    jsonFetch<Facets>(`/api/facets?tab=${tab}`),
 
   models: () => jsonFetch<ModelInfo[]>("/api/models"),
 

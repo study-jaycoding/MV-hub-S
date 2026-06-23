@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MEDIA_DIR
 from ..deps import (
@@ -146,6 +147,9 @@ def list_creators(
     project_id: str | None = None,
 ):
     """생성자 목록 — project_id 가 오면 그 프로젝트 참여 인원(멤버), 아니면 My=본인/Team=공유물 작성자."""
+    # 로컬 우선: team 생성자(공유물 작성자)는 서버에 있으므로 위임.
+    if tab == "team" and _proxy.proxying():
+        return _proxy.proxy_get("/api/creators", request)
     acc = getattr(request.state, "account", None)
     account_uid = acc.get("creator_uid") if acc else None
     return repo.list_creators(account_uid=account_uid, tab=tab, project_id=project_id)
@@ -259,6 +263,8 @@ def get_history(gen_id: str, request: Request):
     """한 결과물의 가계(재료⬆/파생⬇/사용처/약한형제) — 카드 히스토리 뱃지 클릭 시 패널 표시용."""
     gen = repo.get_generation(gen_id)
     if not gen:
+        if _proxy.proxying():  # 로컬에 없으면 팀(서버) 항목 → 서버 가계 위임
+            return _proxy.proxy_get(f"/api/generations/{gen_id}/history", request)
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # GET /{id} 와 동일 가시성(비공개는 본인/공유만)
     viewer_uid, read_all = _viewer_scope(request)
@@ -273,6 +279,8 @@ def get_history_tree(gen_id: str, request: Request):
     """연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리 렌더용."""
     gen = repo.get_generation(gen_id)
     if not gen:
+        if _proxy.proxying():
+            return _proxy.proxy_get(f"/api/generations/{gen_id}/history-tree", request)
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)
     viewer_uid, read_all = _viewer_scope(request)
