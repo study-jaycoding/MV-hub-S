@@ -20,7 +20,7 @@ REM  Team shared-server address has a baked-in default (admins can change it in
 REM  the hub's admin window). To override here, uncomment and edit:
 REM  set "CONTENT_HUB_SHARED_URL=http://192.168.1.199:8010"
 REM
-REM  Stop: close this window (agent stops). Close the hub window too to fully quit.
+REM  Stop: close this one window - both the hub and the agent stop.
 REM ============================================================================
 setlocal
 REM Force Python/pip to UTF-8 (avoid Korean Windows cp949 UnicodeDecodeError on pip install).
@@ -51,8 +51,12 @@ if not exist dist (
 echo [2/5] Checking backend dependencies...
 python -m pip install -r "%ROOT%backend\requirements.txt" >nul 2>nul
 
-echo [3/5] Starting local hub ^(new window^)  %HUB%
-start "MV Hub (local)" /d "%ROOT%backend" cmd /k python serve.py
+echo [3/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
+REM Run the hub in the background of THIS window (no separate window). Its log goes to a
+REM file so this one window stays clean and shows the agent. Closing this window stops both.
+cd /d "%ROOT%backend"
+start "" /b cmd /c "python serve.py > hub.log 2>&1"
+cd /d "%ROOT%"
 
 echo     Waiting for the hub to come up...
 set /a _tries=0
@@ -93,7 +97,7 @@ start "" "%HUB%"
 echo.
 python "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
 echo.
-echo [stopped] agent stopped. Close the hub window too to fully quit.
+echo [stopped] agent stopped. Closing this window stops the hub too.
 pause
 exit /b 0
 
