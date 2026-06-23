@@ -435,8 +435,9 @@ export default function App() {
       (m) => {
         // 주기 동기화/서버 push 완료(프록시 notify_mutation) → 전체 새로고침 + 진행중 목록 갱신
         if (m.type === "synced") {
-          reload(true); // 백그라운드 갱신 — '로딩…' 깜빡임 없이
-          pollActive(); // 진행중(생성중) 목록도 즉시 재조회 → 완료분 즉시 제거
+          // 서버 결과를 먼저 채운 뒤(reload) '생성중' placeholder 를 뺀다(pollActive) → 빈틈 없이
+          // 그 자리에서 결과로 교체(순서 뒤집히면 잠깐 사라졌다 나타남).
+          reload(true).then(() => pollActive());
           bumpBoard(); // 구성탭 트리도 따라잡기
           setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
           return;
@@ -447,13 +448,10 @@ export default function App() {
             g.id === m.generation_id ? { ...g, status: m.status! } : g,
           ),
         );
-        // 완료/실패 즉시 '생성중' placeholder 제거(3초 폴링을 기다리지 않고 실시간 반영).
-        if (m.status === "done" || m.status === "failed" || m.status === "nsfw") {
-          if (m.generation_id) {
-            setLocalActive((prev) => prev.filter((g) => g.id !== m.generation_id));
-          }
-          pollActive(); // 로컬 진행중 목록도 재동기(다른 잡 상태 반영)
-        }
+        // ※ '생성중' placeholder 를 여기서 바로 빼지 않는다 — 완료(local done)는 떴어도 서버 push
+        //   직후라 라이브러리(서버본)엔 아직 그 결과가 없을 수 있다. 지금 빼면 '빈틈'이 생겨 카드가
+        //   사라졌다가 다시 나타난다. 대신 push 가 끝나 'synced' 가 오면(아래) reload→pollActive 순서로
+        //   서버 결과를 먼저 채운 뒤 placeholder 를 빼 그 자리에서 매끄럽게 교체한다.
         // 완료되면 전체 새로고침으로 asset/썸네일 반영
         if (m.status === "done") {
           // 구성탭에선 reload 가 라이브러리 조회를 생략하므로, 완료된 잡 1건을 직접 머지해
@@ -489,8 +487,8 @@ export default function App() {
   useEffect(() => {
     if (!hasActiveJob) return;
     const id = setInterval(() => {
-      reload(true);
-      pollActive();
+      // 서버 결과를 먼저 채운 뒤 진행중 목록 갱신(순서 유지 → 완료분이 빈틈 없이 교체).
+      reload(true).then(() => pollActive());
     }, 3000);
     return () => clearInterval(id);
   }, [hasActiveJob, reload, pollActive]);
@@ -1500,21 +1498,11 @@ export default function App() {
             ) : undefined
           }
           onCreated={async (created, dragParentId) => {
-            // 즉시 '대기' 카드 표시(optimistic) — DB 라운드트립/WS 기다리지 않고 바로 뜬다.
-            // 같은 id 라 이후 reload·WS 가 자연스럽게 같은 카드를 갱신(중복 없음).
-            if (created?.length) {
-              setGens((prev) => {
-                const ids = new Set(prev.map((g) => g.id));
-                const fresh = created.filter((g) => !ids.has(g.id));
-                return fresh.length ? [...fresh, ...prev] : prev;
-              });
-              // '생성중' 카드는 localActive 로 띄우되, 낙관적으로 박아두지 않고 즉시 폴링해
-              // **백엔드 active 목록(진실)**으로만 채운다 → 완료되면 폴링이 빼고, active 엔드포인트가
-              // 없거나(미업데이트) 실패하면 '생성중'이 안 뜰지언정 영구히 박히지 않는다.
-              pollActive();
-              // 무자산 pending 카드는 visibleGens 가 타입필터와 무관하게 보여주므로 필터를
-              // 건드리지 않는다(사용자가 고른 image/video 필터 보존).
-            }
+            // '생성중' 카드는 localActive(백엔드 active 목록=진실)로만 띄운다 — gens 에 낙관적으로
+            // 넣으면 직후 reload 가 gens 를 서버본으로 갈아끼우며 그 카드를 지웠다가 폴링이 다시
+            // 넣어 '사라졌다 나타나는' 깜빡임이 생긴다. 폴링 한 곳으로만 띄워 한 번 떠 자리를 지킨다.
+            // active 가 없거나(미업데이트) 실패하면 '생성중'이 안 뜰지언정 영구히 박히지 않는다.
+            if (created?.length) pollActive();
             flash("생성 잡을 시작했습니다.");
             // 자동 히스토리(원본→파생) 부모 모으기(합집합):
             //  · 드래그해서 불러온 원본(dragParentId)은 **어느 탭에서든** 부모로 — '드래그→수정→생성'이
