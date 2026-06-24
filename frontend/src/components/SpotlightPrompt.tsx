@@ -367,7 +367,7 @@ export function SpotlightPrompt({
         // 모델 동일 → [model] effect 안 돎. 옵션을 직접 병합.
         setOptionValues((prev) => ({ ...prev, ...opts }));
       } else {
-        pendingOptsRef.current = opts; // effect 가 기본값 위에 덮어 적용
+        pendingOptsRef.current = { model: useModel, opts }; // 그 모델 로드 때 기본값 위에 덮음(model 스탬프)
         setModel(useModel);
       }
       const ed = editorRef.current;

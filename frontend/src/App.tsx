@@ -1,9 +1,16 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, connectProgress, setAuthToken, getAuthToken, GEN_PAGE } from "./api";
-import { AdminWindow } from "./components/AdminWindow";
-import { CompareModal } from "./components/CompareModal";
-import { HistoryBoard } from "./components/HistoryBoard";
+// 코드 스플리팅 — 드물게 여는 큰 컴포넌트(관리자·비교·구성보드)는 지연 로드해 초기 번들에서 분리.
+const AdminWindow = lazy(() =>
+  import("./components/AdminWindow").then((m) => ({ default: m.AdminWindow })),
+);
+const CompareModal = lazy(() =>
+  import("./components/CompareModal").then((m) => ({ default: m.CompareModal })),
+);
+const HistoryBoard = lazy(() =>
+  import("./components/HistoryBoard").then((m) => ({ default: m.HistoryBoard })),
+);
 import { LoginScreen } from "./components/LoginScreen";
 import { ServerLoginScreen } from "./components/ServerLoginScreen";
 import { FilterSidebar } from "./components/FilterSidebar";
@@ -61,6 +68,16 @@ function clearPersonalSettings() {
     if (k && k.startsWith("ch.") && !KEEP.has(k)) remove.push(k);
   }
   remove.forEach((k) => localStorage.removeItem(k));
+  // 분리된 Assets 팝업은 별도 창이라 옛 계정의 프로젝트·선택·드래그를 메모리에 들고 있다 →
+  // 재로드시켜 새 계정 상태로 다시 초기화(안 그러면 옛 계정 project 로 ch.assets.drag 를 다시 써
+  // 교차계정 레퍼런스가 섞일 수 있다).
+  try {
+    const bc = new BroadcastChannel("ch-assets");
+    bc.postMessage({ type: "session-reset" });
+    bc.close();
+  } catch {
+    /* BroadcastChannel 미지원 무시 */
+  }
 }
 
 export default function App() {
@@ -464,9 +481,16 @@ export default function App() {
             g.id === m.generation_id ? { ...g, status: m.status! } : g,
           ),
         );
-        // 완료되면 전체 새로고침으로 asset/썸네일 반영(로컬 DB 에서 같은 카드가 결과로 채워짐).
-        if (m.status === "done") {
-          reload(true);
+        // 완료 카드만 다시 받아 그 자리에 채운다(asset/썸네일 반영) — 전체 reload(200건 교체+전 카드
+        // 재렌더) 대신 그 한 장만 patch. 목록에 없으면(브랜뉴) 다음 synced/폴링이 따라잡는다.
+        if (m.status === "done" && m.generation_id) {
+          const doneId = m.generation_id;
+          api
+            .getGeneration(doneId)
+            .then((fresh) =>
+              setGens((prev) => prev.map((g) => (g.id === fresh.id ? fresh : g))),
+            )
+            .catch(() => reload(true, true)); // 실패 시 가벼운 폴백
           bumpBoard(); // 구성탭 트리에 완성된 결과 반영
         }
       },
@@ -1290,6 +1314,7 @@ export default function App() {
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
               boardMode
             />
+            <Suspense fallback={null}>
             <HistoryBoard
               focusId={boardFocusId}
               reloadSignal={boardSignal}
@@ -1314,6 +1339,7 @@ export default function App() {
               commentOnly={commentOnly}
               finalOnly={finalOnly}
             />
+            </Suspense>
           </main>
         ) : (
           <>
@@ -1611,16 +1637,20 @@ export default function App() {
         />
       )}
       {adminOpen && (
-        <AdminWindow
-          account={account}
-          onClose={() => {
-            closeOverlay(); // 히스토리 뒤로 → 관리자 창 닫힘 반영
-            reload(); // 등급·프로젝트 변경이 라이브러리/필터에 반영되게
-          }}
-        />
+        <Suspense fallback={null}>
+          <AdminWindow
+            account={account}
+            onClose={() => {
+              closeOverlay(); // 히스토리 뒤로 → 관리자 창 닫힘 반영
+              reload(); // 등급·프로젝트 변경이 라이브러리/필터에 반영되게
+            }}
+          />
+        </Suspense>
       )}
       {compareGens && (
-        <CompareModal gens={compareGens} onClose={() => setCompareGens(null)} />
+        <Suspense fallback={null}>
+          <CompareModal gens={compareGens} onClose={() => setCompareGens(null)} />
+        </Suspense>
       )}
       {history && (
         <HistoryPanel

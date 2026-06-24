@@ -213,8 +213,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 분리창이라 storage 이벤트도 메인에 전달되지만, BroadcastChannel 로 즉시성 보강.
   const assetBcRef = useRef<BroadcastChannel | null>(null);
   useEffect(() => {
-    if ("BroadcastChannel" in window) assetBcRef.current = new BroadcastChannel("ch-assets");
-    return () => assetBcRef.current?.close();
+    if (!("BroadcastChannel" in window)) return;
+    const bc = new BroadcastChannel("ch-assets");
+    assetBcRef.current = bc;
+    // 메인 창의 계정 전환/로그아웃 → 이 팝업의 옛 계정 상태(프로젝트·선택·드래그)를 버리고 재로드.
+    bc.onmessage = (e) => {
+      if (e.data && e.data.type === "session-reset") window.location.reload();
+    };
+    return () => bc.close();
   }, []);
   useEffect(() => {
     assetBcRef.current?.postMessage({ project, dir });

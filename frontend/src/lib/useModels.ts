@@ -182,7 +182,12 @@ export function useModels(onError: (msg: string) => void) {
   const [cost, setCost] = useState<number | null>(null);
   const [costLoading, setCostLoading] = useState(false);
   // 카드 드롭 복원 시: 모델 변경 effect 가 기본값으로 옵션을 덮어쓰기 전, 복원할 옵션을 임시 보관.
-  const pendingOptsRef = useRef<Record<string, string | number | boolean> | null>(null);
+  // 드롭/재사용이 '이 모델로 바꾼 뒤 이 옵션을 덮어라'를 예약. model 스탬프로 — 빠른 연속 재사용 시
+  // 다른 생성물의 옵션이 엉뚱한 모델에 적용되던 경쟁을 막는다(model 일치할 때만 소비).
+  const pendingOptsRef = useRef<{
+    model: string;
+    opts: Record<string, string | number | boolean>;
+  } | null>(null);
   // 모델별 파라미터 캐시 — 이미지/비디오 토글 시 재요청(네트워크) 없이 즉시 전환.
   const paramsCacheRef = useRef<Record<string, ModelParamsOut>>({});
   // cost(예상 크레딧) 결과 캐시 — 키=model+옵션값. 같은 조합 재방문 시 CLI/디바운스 없이 즉시 표시.
@@ -223,8 +228,10 @@ export function useModels(onError: (msg: string) => void) {
     const apply = (r: ModelParamsOut) => {
       setParams(r.params);
       const init = defaultOptions(r.params); // 실효 기본값(오버라이드 반영)
-      if (pendingOptsRef.current) {
-        setOptionValues({ ...init, ...pendingOptsRef.current });
+      // 이 모델용 예약 옵션일 때만 덮는다(다른 모델용이면 그 모델 로드 때 적용되도록 보존).
+      const pend = pendingOptsRef.current;
+      if (pend && pend.model === model) {
+        setOptionValues({ ...init, ...pend.opts });
         pendingOptsRef.current = null;
       } else {
         setOptionValues(init);
