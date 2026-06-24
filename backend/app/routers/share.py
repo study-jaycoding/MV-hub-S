@@ -88,6 +88,9 @@ def finalize(gen_id: str, request: Request):
     finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다."""
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
+        # 로컬 id ↔ 서버 id(번들 앵커=job_id)가 다르다 → 변환.
+        # 내 작업·히스토리(로컬 id)로 finalize 하면 서버는 job_id 로 알기에 그대로 위임 시 404 가 났다.
+        local_id, server_id = repo.finalize_id_map(gen_id)
         # 내 비공개 로컬 항목이면 먼저 번들 발행(서버에 올라가야 팀이 보고 골드도 거기 남음).
         newly_published = False
         if gen is not None and not gen.get("shared"):
@@ -95,22 +98,23 @@ def finalize(gen_id: str, request: Request):
                 raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
             from .publish import publish_bundle_to_server
 
-            publish_bundle_to_server([gen_id])
+            publish_bundle_to_server([local_id or gen_id])
             newly_published = True
         try:
-            out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/finalize")
+            out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")
         except Exception:
             # 부분 실패 보상: 이번 finalize 때문에 '새로' 공유한 거라면 되돌려 비공개를 유지한다
             # (골드는 안 됐는데 공유만 새어 나가는 누수 방지). 원래 공유 상태였으면 건드리지 않음.
             if newly_published:
                 try:
-                    _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unpublish")
+                    _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
                 except Exception:  # noqa: BLE001
                     pass
-                repo.unpublish(gen_id)
+                if local_id:
+                    repo.unpublish(local_id)
             raise
-        if gen is not None:  # 내 로컬 카드에도 골드 미러(tab=my 즉시 반영)
-            repo.set_final(gen_id, True, _finalizer_uid(request))
+        if local_id:  # 내 로컬 카드에도 골드 미러(tab=my·히스토리 즉시 반영)
+            repo.set_final(local_id, True, _finalizer_uid(request))
         return out
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
@@ -136,9 +140,10 @@ def unfinalize(gen_id: str, request: Request):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만."""
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
-        out = _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unfinalize")
-        if gen is not None:
-            repo.set_final(gen_id, False)
+        local_id, server_id = repo.finalize_id_map(gen_id)
+        out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
+        if local_id:
+            repo.set_final(local_id, False)
         return out
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")

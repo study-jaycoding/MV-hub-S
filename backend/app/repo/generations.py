@@ -1216,6 +1216,25 @@ def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[d
         return _attach_children(conn, [dict(row)], viewer_uid=account_uid)[0]
 
 
+def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
+    """(local_id, server_id) 해석.
+
+    공유 번들은 job_id 를 앵커 id 로 쓴다([repo/share.py] export_bundle) → 서버의 generation id =
+    job_id, 로컬 id = 별도 uuid 라 서로 다르다. 그래서 finalize/unfinalize 위임 시 변환이 필요:
+      · server_id = 그 로컬 행의 job_id(없으면 로컬 id) — 서버가 아는 id.
+      · local_id  = 로컬 generation.id — 골드 미러용.
+    any_id 가 로컬 id 든(내 작업·히스토리) 서버 job_id 든(팀 탭) 모두 같은 행을 찾는다.
+    로컬에 없으면 (None, any_id) — 서버 위임은 받은 id 그대로."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? LIMIT 1",
+            (any_id, any_id),
+        ).fetchone()
+    if not row:
+        return None, any_id
+    return row["id"], (row["job_id"] or row["id"])
+
+
 _GEN_SELECT_COLS = (
     "g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
     "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
