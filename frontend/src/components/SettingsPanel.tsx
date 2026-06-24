@@ -324,29 +324,29 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
               허브에서 만든 결과물과 최신분은 <b>자동으로</b> 올라갑니다. 여기서는 CLI가 못 가져오는{" "}
               <b>100건 밖 과거 전체</b>만 보충합니다.
             </p>
-            <button className="settings-action" onClick={downloadBackfillMd}>
-              ① ⬇ History 지시문 .md 받기
-            </button>
+            <div className="settings-row">
+              <button className="settings-action" onClick={downloadBackfillMd}>
+                ① ⬇ History 지시문 .md 받기
+              </button>
+              <label className={"settings-action" + (uploading ? " is-busy" : "")}>
+                {uploading ? "적재 중…" : "② ⬆ 만든 파일 올려서 적용"}
+                <input
+                  type="file"
+                  accept=".json,.jsonl,.txt,application/json"
+                  style={{ display: "none" }}
+                  disabled={uploading}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = ""; // 같은 파일 재선택 가능하게 초기화
+                    onBackfillFile(f);
+                  }}
+                />
+              </label>
+            </div>
             <p className="settings-hint">
-              받은 <b>.md</b>를 <b>힉스필드 MCP가 붙은 Claude</b>에 주면, Claude가 전체 이력을{" "}
-              <b>파일</b>로 만들어 줍니다(허브 접속·명령어 불필요).
-            </p>
-            <label className={"settings-action" + (uploading ? " is-busy" : "")}>
-              {uploading ? "적재 중…" : "② ⬆ 만든 파일 올려서 적용"}
-              <input
-                type="file"
-                accept=".json,.jsonl,.txt,application/json"
-                style={{ display: "none" }}
-                disabled={uploading}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  e.target.value = ""; // 같은 파일 재선택 가능하게 초기화
-                  onBackfillFile(f);
-                }}
-              />
-            </label>
-            <p className="settings-hint">
-              Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 멱등으로 적재됩니다(중복 안 생김).
+              <b>①</b> 받은 <b>.md</b>를 <b>힉스필드 MCP가 붙은 Claude</b>에 주면 전체 이력을{" "}
+              <b>파일</b>로 만들어 줍니다(허브 접속·명령어 불필요).{" "}
+              <b>②</b> Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 멱등으로 적재됩니다(중복 안 생김).
             </p>
             {msg && <p className="manage-msg">{msg}</p>}
           </section>
