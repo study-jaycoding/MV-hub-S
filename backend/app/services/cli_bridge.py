@@ -27,11 +27,29 @@ import asyncio
 import json
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 # ── CLI 경로 해석 (셰임 함정 회피) ────────────────────────────────────────
 _CLI_PATH: Optional[str] = None
+
+# ── 짧은 TTL 호출 캐시 ────────────────────────────────────────────────────
+# 모델 목록·파라미터 스키마는 사실상 불변, 계정상태는 잦은 조회용. 매 요청 subprocess(콜드스타트
+# 수백 ms~초)를 새로 띄우는 대신 메모이즈한다. CLI 가 바인딩하는 힉스필드 계정은 프로세스 수명 동안
+# 고정(서버=하우스, 로컬=그 PC) — 허브 로그인/DB 전환은 CLI 계정을 안 바꾸므로 전역 캐시가 안전하다.
+_CALL_CACHE: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str, ttl: float) -> Any:
+    hit = _CALL_CACHE.get(key)
+    if hit and (time.monotonic() - hit[0]) < ttl:
+        return hit[1]
+    return None
+
+
+def _cache_put(key: str, value: Any) -> None:
+    _CALL_CACHE[key] = (time.monotonic(), value)
 
 
 class CLIError(RuntimeError):
@@ -249,7 +267,10 @@ async def list_jobs(timeout: float = 60.0, size: int = 100) -> list[dict[str, An
 
 
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
-    """생성 모달용 모델 목록 [{display_name, job_set_type, type}]."""
+    """생성 모달용 모델 목록 [{display_name, job_set_type, type}]. 5분 TTL 캐시(거의 불변)."""
+    cached = _cache_get("models", 300.0)
+    if cached is not None:
+        return cached
     data = await _run_json("model", "list", timeout=timeout)
     if not isinstance(data, list):
         return []
@@ -264,20 +285,29 @@ async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
                 "type": m.get("type") or "image",
             }
         )
+    if out:  # 성공(비어있지 않음)만 캐시 — 일시 실패([])를 5분 고정하지 않게
+        _cache_put("models", out)
     return out
 
 
 async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str, Any]:
-    """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json."""
+    """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json. 1시간 TTL 캐시(불변)."""
+    ckey = f"params:{job_set_type}"
+    cached = _cache_get(ckey, 3600.0)
+    if cached is not None:
+        return cached
     data = await _run_json("model", "get", job_set_type, timeout=timeout)
     if not isinstance(data, dict):
         return {"job_set_type": job_set_type, "type": "image", "params": []}
-    return {
+    result = {
         "display_name": data.get("display_name"),
         "job_set_type": data.get("job_set_type") or job_set_type,
         "type": data.get("type") or "image",
         "params": data.get("params") or [],
     }
+    if result["params"]:  # 파라미터를 실제로 받았을 때만 캐시(폴백 빈 스키마는 캐시 안 함)
+        _cache_put(ckey, result)
+    return result
 
 
 # 모델별 허용 파라미터 이름 캐시(프로세스 수명). 동기화/재사용 시 힉스필드가 채운
@@ -363,7 +393,11 @@ async def estimate_cost(
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
-    """계정 상태(연결·크레딧·이메일·플랜) — account status --json. 하단 상태줄 수동 확인용."""
+    """계정 상태(연결·크레딧·이메일·플랜) — account status --json. 하단 상태줄 수동 확인용.
+    10초 TTL 캐시 — 연타·여러 탭에서 동시 조회해도 subprocess 폭주를 막는다(크레딧은 약간 지연 OK)."""
+    cached = _cache_get("account_status", 10.0)
+    if cached is not None:
+        return cached
     try:
         data = await _run_json("account", "status", timeout=timeout)
     except CLIError:
@@ -377,12 +411,14 @@ async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
         credits_val = float(credits) if credits is not None else None
     except (TypeError, ValueError):
         credits_val = None
-    return {
+    result = {
         "connected": True,
         "credits": credits_val,
         "email": data.get("email", ""),
         "plan": data.get("subscription_plan_type", ""),
     }
+    _cache_put("account_status", result)  # 10초 TTL — 상태줄 연타 시 subprocess 폭주 방지
+    return result
 
 
 # ── 워크스페이스(팀 공유 UUID 공간) ───────────────────────────────────────
