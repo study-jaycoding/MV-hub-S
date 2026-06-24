@@ -325,11 +325,32 @@ def asset_meta(request: Request, project: str = Query(...)):
     """파일별 메타(+ comment_count·has_unread). 미확인은 코멘트별 muted 플래그를 따른다.
     읽음 기준 신원은 로그인 계정(actor_id) — 작성·읽음추적이 같은 신원이라 일관.
 
-    서버 직결: 메타는 순수 데이터라 서버 DB 가 단일 정답 → 위임. (디스크 검증 없음 — 서버엔
-    이 마운트가 없고, 메타는 (project,path) 키로만 식별)."""
+    ★개인 메타(소스/태그/컬러/노트)는 **로컬 계정 DB** 가 정답이다 — 생성탭 @/# 피커
+    (/api/sources)도 같은 로컬 asset_meta 를 읽으므로, 여기서 통째로 서버에 위임하면 둘이 다른
+    DB 를 봐서 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 코멘트
+    스레드만 공유(서버)라, 프록시 중이면 서버에서 코멘트 뱃지(comment_count·has_unread)만 가져와
+    로컬 개인 메타에 머지한다."""
+    local = repo.get_asset_meta(project, actor_id(request))
     if _proxying():
-        return _proxy.proxy_json("GET", "/api/assets/meta", params={"project": project})
-    return repo.get_asset_meta(project, actor_id(request))
+        try:
+            remote = _proxy.proxy_json("GET", "/api/assets/meta", params={"project": project})
+        except Exception:  # noqa: BLE001 — 코멘트 뱃지는 부가정보, 실패해도 개인 메타는 보여준다
+            remote = None
+        if isinstance(remote, dict):
+            for path, rm in remote.items():
+                if not isinstance(rm, dict):
+                    continue
+                slot = local.get(path)
+                if slot is None:  # 개인 메타는 없지만 공유 코멘트가 달린 파일 → 뱃지만 채운다
+                    slot = {
+                        "is_source": False, "source_name": None, "tags": [],
+                        "comment": None, "color": None,
+                        "comment_count": 0, "has_unread": False,
+                    }
+                    local[path] = slot
+                slot["comment_count"] = rm.get("comment_count", 0)
+                slot["has_unread"] = rm.get("has_unread", False)
+    return local
 
 
 class CommentAddIn(BaseModel):
@@ -413,12 +434,12 @@ def read_comments(body: CommentReadIn, request: Request):
     return {"ok": True}
 
 
-# 메타 쓰기(소스/태그/코멘트/컬러) — 모두 순수 데이터라 서버 DB 가 단일 정답 → 위임.
-# 디스크 검증(_require_project) 없음: 서버엔 워커의 마운트가 없고, 메타는 (project,path,owner) 키로만 식별.
+# 메타 쓰기(소스/태그/컬러/개인 노트) — 계정별 개인화라 **로컬 계정 DB** 에 저장한다(서버로
+# 위임하지 않는다). 생성탭 @/# 피커(/api/sources)가 같은 로컬 asset_meta 를 읽으므로 여기서
+# 서버로 새면 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 디스크
+# 검증(_require_project) 없음: 메타는 (project,path,owner) 키로만 식별.
 @router.put("/source")
 def asset_set_source(body: AssetSourceIn, request: Request):
-    if _proxying():
-        return _proxy.proxy_json("PUT", "/api/assets/source", body=body.model_dump())
     # 에셋 메타는 계정별 개인화 — 내(actor_id) 설정만 만들고 바꾼다(남의 것과 안 섞임).
     repo.set_asset_source(body.project, body.path, body.name, body.is_source, actor_id(request))
     return {"ok": True}
@@ -426,24 +447,18 @@ def asset_set_source(body: AssetSourceIn, request: Request):
 
 @router.put("/tags")
 def asset_set_tags(body: AssetTagsIn, request: Request):
-    if _proxying():
-        return _proxy.proxy_json("PUT", "/api/assets/tags", body=body.model_dump())
     repo.set_asset_tags(body.project, body.path, body.tags, actor_id(request))
     return {"ok": True}
 
 
 @router.put("/comment")
 def asset_set_comment(body: AssetCommentIn, request: Request):
-    if _proxying():
-        return _proxy.proxy_json("PUT", "/api/assets/comment", body=body.model_dump())
     repo.set_asset_comment(body.project, body.path, body.comment, actor_id(request))
     return {"ok": True}
 
 
 @router.put("/color")
 def asset_set_color(body: AssetColorIn, request: Request):
-    if _proxying():
-        return _proxy.proxy_json("PUT", "/api/assets/color", body=body.model_dump())
     repo.set_asset_color(body.project, body.path, body.color, actor_id(request))
     return {"ok": True}
 

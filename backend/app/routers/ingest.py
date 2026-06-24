@@ -68,6 +68,26 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
                 "같은 계정으로 로그인해야 내 작업으로 정확히 귀속됩니다."
             ),
         )
+    # 로컬 허브(AUTH off, 프록시 로그인)도 같은 검증을 해야 한다 — 안 그러면 이 PC 의 CLI 계정이
+    # 만든 생성물이 '지금 허브에 로그인한 다른 계정'의 격리 DB 로 적재되어(로그인 시 에이전트 재동기화),
+    # 그 계정 '내 작업'에 남의 작업이 섞이고 creator 이름까지 그 로그인 이름으로 덮어써진다
+    # (실측: CLI=제이인 PC 에서 jiwon 으로 로그인 → jiwon DB 에 제이 생성물 100건, 이름은 '오지짱').
+    # acc.email 은 로컬에선 'local' 이라 비교 대상이 아니므로, 활성 계정 DB 의 주인 이메일
+    # (active.json = 지금 로그인한 계정)과 CLI 보고 이메일을 비교한다. 미로그인이면 hub_email 이
+    # None 이라 검사 생략(단독 사용 = 레거시 단일 DB).
+    if not AUTH_ENABLED and reported_email:
+        from ..active_account import account_key
+
+        hub_email = (account_key() or "").strip().lower()
+        if hub_email and reported_email != hub_email:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"이 PC 의 CLI 계정({reported_email})이 허브 로그인({hub_email})과 다릅니다. "
+                    "허브를 CLI 와 같은 계정으로 로그인하거나 cli-login.bat 으로 CLI 계정을 바꾸세요 "
+                    "— 다른 계정 DB 오염(남의 작업이 내 작업으로 섞임)을 막습니다."
+                ),
+            )
     cur_uid = acc.get("creator_uid")
     linked_real = bool(cur_uid) and not str(cur_uid).startswith("acct:")
     own_uid = creator_uid or (cur_uid if linked_real else None)
