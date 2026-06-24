@@ -446,19 +446,8 @@ export function SpotlightPrompt({
           { ...ref, uid: `t${trayUidRef.current++}`, role: isVid ? "@Video" : "@Image" },
         ]);
       } else {
-        // 접힘 = 인라인 칩으로 누적. 같은 출처 칩 중복 방지(같은 카드 두 번).
-        const dup = Array.from(ed.querySelectorAll<HTMLElement>("[data-ref]")).some((el) => {
-          try {
-            return JSON.parse(el.dataset.ref || "{}").source_gen_id === g.id;
-          } catch {
-            return false;
-          }
-        });
-        if (dup) {
-          ed.focus();
-          return;
-        }
-        insertChip(ed, ref); // 기존 칩 유지하고 추가
+        // 접힘 = 인라인 칩으로 누적. 중복 허용 — '레퍼런스로 사용'을 누를 때마다 같은 생성물도 다시 추가.
+        insertChip(ed, ref);
         updatePlaceholder();
         ed.focus();
       }

@@ -524,8 +524,8 @@ export default function App() {
     if (promptVisible) window.dispatchEvent(new CustomEvent("ch:focus-prompt"));
   }, [promptVisible]);
 
-  // 카드의 '프롬프트 재사용'(끌어내림/↻확장) 또는 '레퍼런스로 사용'(@) → 프롬프트 바가 숨겨져
-  // 있으면 펼친다(실제 복원/추가는 SpotlightPrompt 가 처리).
+  // 카드의 '프롬프트 재사용'(끌어내림) 또는 '레퍼런스로 사용'(@) → 프롬프트 바가 숨겨져 있으면
+  // 펼친다(실제 복원/추가는 SpotlightPrompt 가 처리).
   useEffect(() => {
     const show = () => setPromptVisible(true);
     window.addEventListener("ch:reuse-prompt", show);
@@ -922,14 +922,8 @@ export default function App() {
   const onOpenInBoardFromPreview = (genId: string) => enterBoard(genId);
 
   const onRegenerate = async (g: Generation) => {
-    // 입력바가 '확장(+)' 상태면 바로 재생성하지 않고 그 생성물을 입력바로 불러온다 —
-    // 레퍼런스는 위 트레이로, 프롬프트는 아래 박스로 채워져(SpotlightPrompt 가 확장이라 분기)
-    // 사용자가 편집 후 Generate. 확장이 아니면 기존처럼 곧바로 재생성 잡 등록.
-    if (composerExpanded) {
-      setPromptVisible(true);
-      window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: g.id }));
-      return;
-    }
+    // 재생성(↻) = 항상 곧바로 재생성 잡 등록(확장 여부와 무관). 프롬프트를 입력바로 불러오려면
+    // 카드를 끌어내리고(=재사용), 레퍼런스로 쓰려면 @ 버튼을 쓴다 — ↻ 는 가로채지 않는다.
     try {
       // 무장된 자동태그를 재생성 결과물에도 적용(생성 흐름과 동일).
       await api.regenerate(g.id, { auto_tags: [...armedAutoTags] });
