@@ -111,6 +111,12 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
+    if req.get("status") in ("done", "failed"):
+        # 이미 종결된 요청 → 멱등 무시(에이전트 재시작·중복 보고로 done↔failed 뒤집힘 방지).
+        gen = repo.get_generation(req["gen_id"])
+        if not gen:
+            raise HTTPException(status_code=500, detail="결과 조회 실패")
+        return gen
 
     gen_id = req["gen_id"]
     parsed = cli_bridge.parse_job(body.job)
@@ -156,6 +162,8 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
+    if req.get("status") in ("done", "failed"):
+        return {"ok": True}  # 이미 종결 — 멱등 무시(완료된 것을 실패로 뒤집지 않음)
     repo.set_status(req["gen_id"], "failed", reason)
     repo.mark_request(rid, "failed", reason)
     await manager.broadcast(

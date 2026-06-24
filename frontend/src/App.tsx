@@ -214,6 +214,7 @@ export default function App() {
 
   // silent=true 면 '로딩…' 표시 없이 조용히 데이터만 갱신(백그라운드 폴링·WS·탭복귀용).
   // → 사용자가 직접 한 조회(필터변경·최초로드)만 로딩을 보여 깜빡임을 없앤다.
+  const reloadSeqRef = useRef(0);
   const reload = useCallback(async (silent = false) => {
     // 인증 게이트: 로그인 필요한데 아직 미로그인이면 조회하지 않는다(401 소음 방지).
     if (!authReadyRef.current) return;
@@ -223,6 +224,9 @@ export default function App() {
       return;
     }
     if (!silent) setLoading(true);
+    // 시퀀스 가드: WS·3초폴·포커스 reload 가 겹쳐 응답이 순서 꼬여 도착해도 '가장 최신' 것만 반영
+    // (옛 응답이 새 데이터를 덮어 잠깐 되돌아가는 깜빡임 방지).
+    const seq = ++reloadSeqRef.current;
     try {
       // 휴지통 모드(지운 것만 보기)면 별도 DB(/api/trash)에서, 아니면 메인에서 첫 페이지.
       const trashMode = !!filtersRef.current.deleted_only;
@@ -234,6 +238,7 @@ export default function App() {
         api.facets(filtersRef.current.tab === "team" ? "team" : "my"), // my=로컬, team=서버
         api.projects(filtersRef.current.tab === "team" ? "team" : "my"), // 카운트도 탭 기준
       ]);
+      if (seq !== reloadSeqRef.current) return; // 더 최신 reload 진행 중 → 이 응답은 폐기
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
       setStats(st);
@@ -243,9 +248,9 @@ export default function App() {
       setArchivedCount(pr.archived_count ?? 0);
       projectsLoadedRef.current = true;
     } catch (e) {
-      flash("로드 실패: " + String(e));
+      if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && seq === reloadSeqRef.current) setLoading(false);
     }
   }, []);
 
