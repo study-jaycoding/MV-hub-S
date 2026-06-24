@@ -72,11 +72,20 @@ def _install_db(tmp: Path) -> dict:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:  # noqa: BLE001
             pass
+        # ★백업이 실패하면 덮어쓰기를 '중단'한다 — 예전엔 except: pass 로 삼키고 그대로 move 해,
+        # "현재 DB 를 .bak 으로 백업한다"는 약속이 거짓이 되고(백업 없음) 가져온 DB 가 불량이면 원본을
+        # 복구할 길이 없었다. 디스크 가득·권한 등으로 백업 못 하면 원본을 지키려 교체를 안 한다.
         bak = path.with_name(f"{path.stem}.bak-{int(time.time())}.db")
         try:
             shutil.copy2(path, bak)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"현재 DB 백업 실패로 가져오기를 중단했습니다(원본 보호): {e}. "
+                    "디스크 여유·쓰기 권한을 확인하세요."
+                ),
+            )
     for suf in ("-wal", "-shm"):
         Path(str(path) + suf).unlink(missing_ok=True)
     shutil.move(str(tmp), str(path))
