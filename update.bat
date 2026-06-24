@@ -21,7 +21,9 @@ cd /d "%ROOT%"
 where git >nul 2>nul || (echo [ERROR] git not found - install from git-scm.com and retry. & pause & exit /b 1)
 if not exist "%ROOT%.git" (
   echo [ERROR] this folder is not a git clone ^(no .git^).
-  echo         Get it with:  git clone ^<repository-url^>
+  echo         Get it ^(code only, skips docs/^):
+  echo           git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
+  echo           cd MV-hub-S ^&^& git sparse-checkout set backend frontend
   pause & exit /b 1
 )
 
