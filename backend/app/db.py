@@ -92,12 +92,27 @@ def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
 
 
 def _legacy_owner(legacy: Path) -> Optional[str]:
-    """레거시 DB 의 my_creator_uid 설정값(소유자 판별용). 없으면 None."""
+    """레거시 DB 의 소유자 creator_uid 판별(get_my_uid 와 동일 추론):
+    ① my_creator_uid 설정 ② 로컬 생성본(id<>job_id)의 creator_uid ③ 최다 creator_uid.
+    단독 사용자 DB 는 보통 설정이 비어 있어(None) 추론으로 떨어진다 — 그래서 첫 계정 로그인 때
+    그 DB 의 실제 주인과만 매칭돼 이관된다(엉뚱한 계정엔 빈 DB)."""
     try:
         c = sqlite3.connect(str(legacy))
         try:
             row = c.execute(
                 "SELECT value FROM app_setting WHERE key='my_creator_uid'"
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+            row = c.execute(
+                "SELECT creator_uid FROM generation "
+                "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+            row = c.execute(
+                "SELECT creator_uid FROM generation WHERE creator_uid IS NOT NULL "
+                "GROUP BY creator_uid ORDER BY COUNT(*) DESC LIMIT 1"
             ).fetchone()
             return row[0] if row and row[0] else None
         finally:
