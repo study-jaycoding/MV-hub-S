@@ -124,7 +124,8 @@ export function ThumbnailGrid(props: Props) {
     setEditTarget({ id: g.id, field });
   const editDone = useCallback(() => setEditTarget(null), []);
   const dragRef = useRef<{
-    x: number; y: number; base: Set<string>; additive: boolean; moved: boolean; cellId: string | null;
+    x: number; y: number; base: Set<string>; additive: boolean; range: boolean;
+    anchor: number; moved: boolean; cellId: string | null;
   } | null>(null);
 
   // 목록 길이가 줄면 포커스 인덱스를 범위 내로 클램프(매 렌더 리셋 방지 — 길이 변할 때만).
@@ -154,7 +155,7 @@ export function ThumbnailGrid(props: Props) {
       w: x1 - x0,
       h: y1 - y0,
     });
-    const hit = new Set<string>(d.additive ? d.base : []);
+    const hit = new Set<string>(d.additive || d.range ? d.base : []);
     grid.querySelectorAll(".gen-cell").forEach((el) => {
       const r = (el as HTMLElement).getBoundingClientRect();
       if (r.right >= x0 && r.left <= x1 && r.bottom >= y0 && r.top <= y1) {
@@ -174,16 +175,23 @@ export function ThumbnailGrid(props: Props) {
     if (!d || d.moved) return;
     // 드래그 없이 클릭만 → 선택 처리(+ 방향키 앵커 갱신)
     if (d.cellId) {
-      setFocusIdx(opsRef.current.generations.findIndex((g) => g.id === d.cellId));
-      if (d.additive) {
+      const gens = opsRef.current.generations;
+      const clickedIdx = gens.findIndex((g) => g.id === d.cellId);
+      if (d.range && d.anchor >= 0 && clickedIdx >= 0) {
+        // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커는 유지 → 연속 Shift-클릭으로 범위 조정).
+        const lo = Math.min(d.anchor, clickedIdx), hi = Math.max(d.anchor, clickedIdx);
+        opsRef.current.onSelectedChange(new Set(gens.slice(lo, hi + 1).map((g) => g.id)));
+      } else if (d.additive) {
+        setFocusIdx(clickedIdx);
         const n = new Set(d.base);
         if (n.has(d.cellId)) n.delete(d.cellId);
         else n.add(d.cellId);
         opsRef.current.onSelectedChange(n);
       } else {
+        setFocusIdx(clickedIdx);
         opsRef.current.onSelectedChange(new Set([d.cellId]));
       }
-    } else if (!d.additive) {
+    } else if (!d.additive && !d.range) {
       setFocusIdx(-1);
       opsRef.current.onSelectedChange(new Set());
     }
@@ -319,7 +327,9 @@ export function ThumbnailGrid(props: Props) {
       x: e.clientX,
       y: e.clientY,
       base: new Set(selectedIds),
-      additive: e.shiftKey || e.ctrlKey || e.metaKey,
+      additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
+      range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
+      anchor: focusIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
       moved: false,
       cellId: cellEl?.dataset.id ?? null,
     };
@@ -356,24 +366,51 @@ export function ThumbnailGrid(props: Props) {
     return (
       <div className="grid-wrap">
         <div className="gen-list">
-          {visible.map((g) => (
-            <div
-              className="gen-cell list"
-              data-id={g.id}
-              key={g.id}
-              style={{ height: Math.round(300 * scale) }}
-            >
-              <GenerationCard
-                {...props}
-                gen={g}
-                layout="list"
-                selected={selectedIds.has(g.id)}
-                editingField={editTarget?.id === g.id ? editTarget.field : null}
-                onRequestEdit={requestEdit}
-                onEditDone={editDone}
-              />
-            </div>
-          ))}
+          {(() => {
+            // 그리드와 동일하게 날짜 구분 모드면 날짜가 바뀔 때 섹션 헤더를 끼워넣는다.
+            const out: React.ReactNode[] = [];
+            let lastDay: string | null = null;
+            visible.forEach((g) => {
+              if (groupByDate) {
+                const { key, label } = dayInfo(g.created_at);
+                if (key !== lastDay) {
+                  lastDay = key;
+                  const ids = dateGroups.get(key)?.ids ?? [];
+                  const allSel = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+                  out.push(
+                    <label className="gen-date-header" key={"h-" + key}>
+                      <input
+                        type="checkbox"
+                        checked={allSel}
+                        onChange={() => toggleDate(ids, allSel)}
+                      />
+                      <span className="gen-date-label">{label}</span>
+                      <span className="gen-date-count">{ids.length}</span>
+                    </label>,
+                  );
+                }
+              }
+              out.push(
+                <div
+                  className="gen-cell list"
+                  data-id={g.id}
+                  key={g.id}
+                  style={{ height: Math.round(300 * scale) }}
+                >
+                  <GenerationCard
+                    {...props}
+                    gen={g}
+                    layout="list"
+                    selected={selectedIds.has(g.id)}
+                    editingField={editTarget?.id === g.id ? editTarget.field : null}
+                    onRequestEdit={requestEdit}
+                    onEditDone={editDone}
+                  />
+                </div>,
+              );
+            });
+            return out;
+          })()}
           {hasMore && (
             <div ref={sentinelRef} className="grid-sentinel">
               더 불러오는 중… ({visible.length}/{generations.length})

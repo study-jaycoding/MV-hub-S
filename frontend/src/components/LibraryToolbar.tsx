@@ -335,9 +335,15 @@ export function LibraryToolbar({
         {!boardMode && (
         <div className="layout-toggle">
           <button
-            className={layout === "list" ? "on" : ""}
-            onClick={() => onLayout("list")}
-            title={t("리스트")}
+            className={(layout === "list" ? "on" : "") + (layout === "list" && groupByDate ? " grouped" : "")}
+            onClick={() => (layout === "list" ? onToggleGroupByDate() : onLayout("list"))}
+            title={
+              layout === "list"
+                ? groupByDate
+                  ? t("날짜 구분 끄기 (한 번 더)")
+                  : t("리스트")
+                : t("리스트")
+            }
           >
             <svg
               viewBox="0 0 24 24"
@@ -360,7 +366,7 @@ export function LibraryToolbar({
               layout === "grid"
                 ? groupByDate
                   ? t("날짜 구분 끄기 (한 번 더)")
-                  : t("힉스필드 날짜별로 구분")
+                  : t("그리드")
                 : t("그리드")
             }
           >

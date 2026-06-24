@@ -364,7 +364,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const [focusIdx, setFocusIdx] = useState(-1);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const dragRef = useRef<{
-    x: number; y: number; base: Set<number>; additive: boolean; moved: boolean; cellIdx: number;
+    x: number; y: number; base: Set<number>; additive: boolean; range: boolean;
+    anchor: number; moved: boolean; cellIdx: number;
   } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -394,7 +395,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       w: x1 - x0,
       h: y1 - y0,
     });
-    const hit = new Set<number>(d.additive ? d.base : []);
+    const hit = new Set<number>(d.additive || d.range ? d.base : []);
     grid.querySelectorAll(".asset-cell").forEach((el) => {
       const r = (el as HTMLElement).getBoundingClientRect();
       if (r.right >= x0 && r.left <= x1 && r.bottom >= y0 && r.top <= y1)
@@ -413,8 +414,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (!d.moved) {
       // 드래그 없이 클릭만 → 선택 처리
       if (d.cellIdx >= 0) {
-        setFocusIdx(d.cellIdx);
-        if (d.additive) {
+        if (d.range && d.anchor >= 0) {
+          // Shift-클릭 = 앵커~클릭 사이 전부 선택(앵커 유지 → 연속 Shift-클릭으로 범위 조정).
+          const lo = Math.min(d.anchor, d.cellIdx), hi = Math.max(d.anchor, d.cellIdx);
+          const r = new Set<number>();
+          for (let i = lo; i <= hi; i++) r.add(i);
+          setSelected(r);
+        } else if (d.additive) {
+          setFocusIdx(d.cellIdx);
           setSelected((prev) => {
             const n = new Set(prev);
             if (n.has(d.cellIdx)) n.delete(d.cellIdx);
@@ -422,9 +429,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             return n;
           });
         } else {
+          setFocusIdx(d.cellIdx);
           setSelected(new Set([d.cellIdx]));
         }
-      } else if (!d.additive) {
+      } else if (!d.additive && !d.range) {
         // 빈 공간 클릭 → 선택 + 포커스 링 모두 해제(생성탭과 동일)
         setFocusIdx(-1);
         setSelected(new Set());
@@ -531,7 +539,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       x: e.clientX,
       y: e.clientY,
       base: new Set(selected),
-      additive: e.shiftKey || e.ctrlKey || e.metaKey,
+      additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
+      range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
+      anchor: focusIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
       moved: false,
       cellIdx,
     };
@@ -913,7 +923,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
 
-  // 그리드용: 날짜 구분 모드면 날짜가 바뀔 때마다 섹션 헤더를 끼워넣는다(아니면 셀 그대로).
+  // 그리드·리스트 공용: 날짜 구분 모드면 날짜가 바뀔 때마다 섹션 헤더를 끼워넣는다(아니면 셀 그대로).
   const buildGridCells = (): React.ReactNode[] => {
     if (!groupByDate) return cellEls;
     const out: React.ReactNode[] = [];
@@ -1321,9 +1331,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               </div>
               <div className="layout-toggle">
                 <button
-                  className={layout === "list" ? "on" : ""}
-                  onClick={() => setLayout("list")}
-                  title="리스트"
+                  className={
+                    (layout === "list" ? "on" : "") +
+                    (layout === "list" && groupByDate ? " grouped" : "")
+                  }
+                  onClick={() =>
+                    layout === "list" ? setGroupByDate((v) => !v) : setLayout("list")
+                  }
+                  title={
+                    layout === "list"
+                      ? groupByDate
+                        ? t("날짜 구분 끄기 (한 번 더)")
+                        : t("리스트")
+                      : t("리스트")
+                  }
                 >
                   <ListIcon />
                 </button>
@@ -1339,7 +1360,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
                     layout === "grid"
                       ? groupByDate
                         ? t("날짜 구분 끄기 (한 번 더)")
-                        : t("파일 날짜별로 구분")
+                        : t("그리드")
                       : t("그리드")
                   }
                 >
@@ -1407,7 +1428,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>
           ) : layout === "list" ? (
             <div className="assets-list" onScroll={onContentScroll} {...gridHandlers}>
-              {cellEls}
+              {buildGridCells()}
               {marqueeEl}
             </div>
           ) : (
