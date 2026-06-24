@@ -15,6 +15,12 @@ import {
 } from "../lib/theme";
 import { setLang, useT } from "../lib/i18n";
 import { downloadText } from "../lib/download";
+import {
+  clearDownloadDir,
+  downloadDirName,
+  fsaSupported,
+  pickDownloadDir,
+} from "../lib/downloadDir";
 import { api } from "../api";
 import { ShortcutsWindow } from "./ShortcutsWindow";
 
@@ -70,6 +76,25 @@ export function SettingsPanel({
   const [dbMsg, setDbMsg] = useState("");
   const [syncMsg, setSyncMsg] = useState(""); // 외부 생성물 올리기 결과
   const [hfMsg, setHfMsg] = useState(""); // 힉스필드 삭제물 검토 결과
+  // 다운로드 위치(폴더 자동저장) — File System Access. 보안 컨텍스트에서만.
+  const [dlDir, setDlDir] = useState<string | null>(null);
+  const [dlErr, setDlErr] = useState("");
+  useEffect(() => {
+    downloadDirName().then(setDlDir).catch(() => {});
+  }, []);
+  const pickDir = async () => {
+    setDlErr("");
+    try {
+      setDlDir(await pickDownloadDir());
+    } catch (e) {
+      // 사용자가 선택 취소(AbortError)면 조용히 무시, 그 외만 안내.
+      if ((e as DOMException)?.name !== "AbortError") setDlErr(String((e as Error)?.message || e));
+    }
+  };
+  const clearDir = async () => {
+    await clearDownloadDir().catch(() => {});
+    setDlDir(null);
+  };
 
   // '외부 생성물 올리기' — 내 에이전트를 깨워 허브 밖(Claude·웹·CLI)에서 만든 결과물을 push.
   const syncMine = async () => {
@@ -332,6 +357,35 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             <p className="settings-hint">
               {t("ON이면 최종(골드) 카드의 흐르는 빛 같은 장식 애니메이션이 재생되고, OFF면 멈춥니다.")}
             </p>
+          </section>
+
+          {/* 다운로드 위치 — 폴더를 지정하면 매번 묻지 않고 그곳에 바로 저장(File System Access) */}
+          <section className="settings-section">
+            <h4>{t("다운로드 위치")}</h4>
+            {fsaSupported() ? (
+              <>
+                <div className="settings-row">
+                  <button className="settings-action" onClick={pickDir}>
+                    📁 {dlDir ? t("폴더 변경") : t("폴더 선택")}
+                  </button>
+                  {dlDir && (
+                    <button className="settings-action ghost" onClick={clearDir}>
+                      {t("해제")}
+                    </button>
+                  )}
+                </div>
+                <p className="settings-hint">
+                  {dlDir
+                    ? `${t("저장 위치")}: ${dlDir} — ${t("이제 다운로드가 묻지 않고 이 폴더에 바로 저장됩니다.")}`
+                    : t("폴더를 지정하면 다운로드 때마다 묻지 않고 그 폴더에 바로 저장됩니다(미지정 시 브라우저 기본).")}
+                </p>
+              </>
+            ) : (
+              <p className="settings-hint">
+                {t("이 접속에서는 폴더 자동저장을 쓸 수 없습니다(localhost 또는 HTTPS 필요). 브라우저 다운로드 설정을 사용하세요.")}
+              </p>
+            )}
+            {dlErr && <p className="settings-hint" style={{ color: "#f5a623" }}>{dlErr}</p>}
           </section>
 
           {/* 단축키 — 변경은 별도 플로팅 창으로 */}

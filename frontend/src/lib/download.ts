@@ -1,5 +1,6 @@
 // 결과물 다운로드 공용 헬퍼 — 카드 그리드·히스토리 보드·에셋 셀이 똑같이 복붙하던 것.
 import type { Generation } from "../types";
+import { saveToDownloadDir } from "./downloadDir";
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
 // (cloudfront 등)은 cross-origin 이라 a[download] 가 무시되지만, 힉스필드 CDN 이 CORS(*)를 허용하므로
@@ -18,39 +19,41 @@ function _anchor(href: string, name?: string, newTab = false) {
   a.remove();
 }
 
-async function _saveBlob(res: Response, name: string) {
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const blobUrl = URL.createObjectURL(await res.blob());
-  _anchor(blobUrl, name);
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+// bytes 를 Blob 으로 받는다(실패 시 null). 로컬(/...)은 쿠키 동봉·직접, 원격은 CDN CORS(*)로 직접
+// 받고, CORS 막힌 호스트면 같은 오리진 서버 프록시(/api/download)로 재시도.
+async function _fetchBlob(url: string, name: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
+    if (res.ok) return await res.blob();
+  } catch {
+    /* 직접 실패 → 프록시 시도(로컬 제외) */
+  }
+  if (url.startsWith("/")) return null;
+  try {
+    const res = await fetch(
+      `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`,
+      { credentials: "include" },
+    );
+    if (res.ok) return await res.blob();
+  } catch {
+    /* 프록시도 실패 */
+  }
+  return null;
 }
 
 export async function download(url: string, name: string) {
-  // 1) 직접 fetch — 로컬(/...)은 쿠키 동봉, 원격은 CDN CORS(*)로 그대로 받는다.
-  try {
-    await _saveBlob(await fetch(url, url.startsWith("/") ? { credentials: "include" } : {}), name);
-    return;
-  } catch {
-    /* 로컬 실패 → 직접 다운로드, 원격 CORS 실패 → 프록시 시도 */
-  }
-  if (url.startsWith("/")) {
-    _anchor(url, name);
+  const blob = await _fetchBlob(url, name);
+  if (blob) {
+    // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
+    if (await saveToDownloadDir(name, blob)) return;
+    const blobUrl = URL.createObjectURL(blob);
+    _anchor(blobUrl, name);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     return;
   }
-  // 2) 원격 CORS 가 막힌 경우 — 같은 오리진 서버 프록시(/api/download)로 받아 저장.
-  try {
-    await _saveBlob(
-      await fetch(`/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`, {
-        credentials: "include",
-      }),
-      name,
-    );
-    return;
-  } catch {
-    /* 프록시도 실패 → 최후로 새 탭 */
-  }
-  // 3) 최후 폴백 — 새 탭(다운로드 실패 메시지보다 낫다).
-  _anchor(url, undefined, true);
+  // bytes 를 못 받음 — 최후 폴백(로컬=직접 다운로드, 원격=새 탭).
+  if (url.startsWith("/")) _anchor(url, name);
+  else _anchor(url, undefined, true);
 }
 
 // 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL.

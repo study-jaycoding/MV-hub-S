@@ -343,6 +343,12 @@ select optgroup {
 /* 서버 백업/가져오기 — 두 버튼 나란히. 파일 방식은 <details> 로 접어 보조 노출. */
 .settings-row { display: flex; gap: 8px; }
 .settings-row .settings-action { margin-top: 8px; }
+/* 보조(해제 등) 버튼 — 가로폭 자동·차분한 톤 */
+.settings-action.ghost {
+  width: auto; flex: 0 0 auto; padding: 9px 14px;
+  background: transparent; color: var(--muted); border-color: var(--border2);
+}
+.settings-action.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); color: var(--text); }
 .settings-details { margin-top: 8px; }
 .settings-details > summary { margin-bottom: 4px; }
 .settings-details[open] > summary { margin-bottom: 8px; }
