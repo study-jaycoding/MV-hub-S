@@ -376,6 +376,22 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setFocusIdx(-1);
   }, [dir, project, query, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate]);
 
+  // 선택이 바뀔 때마다 '라이브 선택 전체'를 같은 오리진 공유 localStorage 로 — 본창 프롬프트 드롭이
+  // 드래그 시점 selection 캡처가 어긋나도(크로스윈도우 dataTransfer 한 건만 전달 등) 이 값으로 다중을
+  // 복구한다. 이미지/영상만(레퍼런스 대상).
+  useEffect(() => {
+    try {
+      const items = [...selected]
+        .sort((a, b) => a - b)
+        .map((i) => files[i])
+        .filter((f) => f && (f.type === "image" || f.type === "video"))
+        .map((f) => ({ project, path: f.path, name: f.name, type: f.type }));
+      localStorage.setItem("ch.assets.selection", JSON.stringify(items));
+    } catch {
+      /* localStorage 불가 시 무시(드래그 페이로드 폴백) */
+    }
+  }, [selected, files, project]);
+
   const onDragMove = useCallback((e: MouseEvent) => {
     const d = dragRef.current;
     if (!d) return;

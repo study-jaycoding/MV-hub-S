@@ -574,13 +574,29 @@ export function SpotlightPrompt({
   // (일부 브라우저가 팝업↔본창 크로스윈도우 드래그에서 dataTransfer 커스텀 배열을 한 건만 전달하는
   // 문제 우회). 없으면 dataTransfer 폴백. 호출 전 반드시 x-ch-asset 타입 존재를 확인할 것(스테일 방지).
   const readAssetPayload = (e: React.DragEvent): string => {
+    let drag = "";
     try {
-      const ls = localStorage.getItem("ch.assets.drag");
-      if (ls) return ls;
+      drag = localStorage.getItem("ch.assets.drag") || "";
     } catch {
       /* ignore */
     }
-    return e.dataTransfer.getData("application/x-ch-asset");
+    if (!drag) drag = e.dataTransfer.getData("application/x-ch-asset");
+    // 드래그 페이로드가 한 건인데, 그 항목이 '라이브 다중선택'에 들어 있으면 다중선택을 끌어온
+    // 것으로 보고 선택 전체를 쓴다(드래그 시점 selection 캡처가 어긋나는 경우까지 복구).
+    try {
+      const arr = drag ? JSON.parse(drag) : [];
+      const list = Array.isArray(arr) ? arr : [arr];
+      if (list.length <= 1) {
+        const selRaw = localStorage.getItem("ch.assets.selection");
+        const sel = selRaw ? JSON.parse(selRaw) : [];
+        const dragged = list[0]?.path;
+        if (Array.isArray(sel) && sel.length > 1 && (!dragged || sel.some((s) => s.path === dragged)))
+          return selRaw as string;
+      }
+    } catch {
+      /* 파싱 실패 시 원래 페이로드 사용 */
+    }
+    return drag;
   };
   const onTrayDrop = (e: React.DragEvent) => {
     e.preventDefault();
