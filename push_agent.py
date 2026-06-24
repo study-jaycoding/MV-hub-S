@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 
 def _dominant_uid(jobs: list) -> str | None:
@@ -174,12 +174,14 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     _http("POST", f"{server}/api/gen-requests/{rid}/fail?reason={quote(reason)}", token=token)
 
 
-def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int = 180):
-    """레퍼런스 파일을 허브 인증으로 받아 임시파일로 저장 → 경로 반환(실패 시 None).
+def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int = 180, auth: bool = True):
+    """레퍼런스 파일을 받아 임시파일로 저장 → 경로 반환(실패 시 None).
     asset:/상대경로 레퍼런스는 허브 로그인이 필요해 CLI 가 직접 못 받는다 → 에이전트가 받아
-    로컬 파일로 CLI 에 넘긴다(higgsfield 가 로컬 파일을 자동 업로드)."""
+    로컬 파일로 CLI 에 넘긴다(higgsfield 가 로컬 파일을 자동 업로드).
+    auth=False 면 Authorization 헤더를 안 붙인다(외부 공개 CDN URL 에 허브 토큰 노출 방지)."""
     req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {token}")
+    if auth:
+        req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             fd, tmp = tempfile.mkstemp(prefix="chref_", suffix=suffix or ".bin")
@@ -193,7 +195,9 @@ def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int =
 
 def _resolve_ref(server: str, token: str, val: str):
     """레퍼런스 값 → (CLI 에 넘길 값, 정리할 임시파일경로 | None).
-    · http(s) 공개 URL → 그대로(CLI 가 직접 받음). cmd 메타문자(|) 없음.
+    · http(s) 공개 URL → 바이트로 받아 로컬 임시파일(CLI 의 --image 등은 미디어 UUID·로컬 파일만
+      받고 원격 URL 은 "Media <url> is neither a UUID nor an existing file path" 로 거부한다 →
+      재생성 시 원본 cloudfront URL 을 레퍼런스로 넘기면 실패. 공개 CDN 이라 토큰 없이 받는다).
     · asset:{project}|{path} → 허브 인증으로 받아 로컬 임시파일(토큰의 | 가 cmd 를 깨뜨리던 문제 해소).
     · /상대경로(/api/...,/media/...) → 서버 기준 인증 다운로드 → 로컬 임시파일.
     · 그 외(해석 불가) → (None, None) → 호출측이 잘못 생성 대신 명확히 실패시킨다."""
@@ -201,7 +205,9 @@ def _resolve_ref(server: str, token: str, val: str):
         return None, None
     low = val.lower()
     if low.startswith(("http://", "https://")):
-        return val, None
+        suffix = os.path.splitext(urlparse(val).path)[1]
+        tmp = _download_ref(server, token, val, suffix, auth=False)
+        return (tmp, tmp) if tmp else (None, None)
     if val.startswith("asset:"):
         body = val[len("asset:"):]
         if "|" not in body:
