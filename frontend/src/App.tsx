@@ -207,9 +207,11 @@ export default function App() {
   const loadingMoreRef = useRef(false);
   const [stats, setStats] = useState<GenStats>({ failed_count: 0, has_unread: false });
 
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flash = (m: string) => {
     setToast(m);
-    setTimeout(() => setToast(null), 2500);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current); // 이전 타이머 취소(연속 토스트가 서로를 일찍 지우지 않게)
+    flashTimerRef.current = setTimeout(() => setToast(null), 2500);
   };
 
   // silent=true 면 '로딩…' 표시 없이 조용히 데이터만 갱신(백그라운드 폴링·WS·탭복귀용).
@@ -460,6 +462,15 @@ export default function App() {
     const id = setInterval(() => reload(true), 3000);
     return () => clearInterval(id);
   }, [hasActiveJob, reload]);
+
+  // 팀 공유 탭은 '서버 상태'라 내 로컬 WS 로는 팀원의 새 공유·골드를 알 수 없다(내 변경만 옴).
+  // 그 탭을 보는 동안만 서버를 주기적으로 다시 읽어 (준)실시간으로 반영한다. 내 작업/구성 탭은
+  // 로컬 DB 라 불필요. (백그라운드 탭은 브라우저가 알아서 throttle + 포커스 시 즉시 reload 가 보완.)
+  useEffect(() => {
+    if (filters.tab !== "team") return;
+    const id = setInterval(() => reload(true), 8000);
+    return () => clearInterval(id);
+  }, [filters.tab, reload]);
 
   // 탭 재포커스 시 즉시 새로고침 — 백그라운드 탭 throttling 으로 놓친 WS 'synced'(웹/타기기
   // 생성)를 따라잡는다. 다른 탭에서 작업하다 돌아오면 항상 최신을 보장(WS 끊김 안전망).

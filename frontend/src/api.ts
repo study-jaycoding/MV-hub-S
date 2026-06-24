@@ -765,9 +765,14 @@ export function connectProgress(
         /* ignore */
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (ping) clearInterval(ping);
       if (closed) return;
+      if (ev.code === 1008) {
+        // 세션 만료/무효 → 서버가 정책 위반(1008)으로 닫음. 재연결해도 또 거부되니 무한
+        // 재시도(폭주)를 멈춘다. 프론트 인증 게이트가 401 등으로 재로그인을 유도한다.
+        return;
+      }
       backoff = Math.min(backoff * 1.6, 15000);
       retry = setTimeout(connect, backoff); // 백엔드 재시작/네트워크 끊김 → 재연결
     };
