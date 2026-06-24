@@ -86,18 +86,19 @@ async def lifespan(app: FastAPI):
     dups = repo.reconcile_duplicates()
     if dups:
         print(f"[startup] 중복 동기화본 {dups}개를 병합 정리")
+    # 옛 소프트삭제(deleted_at) 잔존 → 새 휴지통 DB 로 이전(1회, 멱등). 카운트 유령 제거.
+    legacy = repo.migrate_legacy_soft_deleted()
+    if legacy:
+        print(f"[startup] 옛 소프트삭제 {legacy}개를 휴지통 DB 로 이전")
     # 크래시로 휴지통 이동/복원이 한쪽 DB 에만 반영돼 같은 id 가 메인·휴지통에 둘 다 남은 흔적 정리
-    # (메인 본을 정답으로 두고 휴지통 복사본 제거 — 데이터 손실 없음).
+    # (메인 본을 정답으로 두고 휴지통 복사본 제거 — 데이터 손실 없음). ★위 legacy 이전이 만든 중복까지
+    # 같은 부팅에서 잡도록 migrate_legacy_soft_deleted '뒤'에 둔다.
     try:
         td = repo.reconcile_with_main()
         if td:
             print(f"[startup] 휴지통 중복(크래시 흔적) {td}개 정리")
     except Exception as e:  # noqa: BLE001 — 정리 실패가 부팅을 막지 않게
         print(f"[startup] 휴지통 정리 건너뜀: {e}")
-    # 옛 소프트삭제(deleted_at) 잔존 → 새 휴지통 DB 로 이전(1회, 멱등). 카운트 유령 제거.
-    legacy = repo.migrate_legacy_soft_deleted()
-    if legacy:
-        print(f"[startup] 옛 소프트삭제 {legacy}개를 휴지통 DB 로 이전")
     # 생성자 식별자(result_url user_<id>) 백필 — 팀 워크스페이스 작성자 구분
     cu = repo.backfill_creator_uids()
     if cu:

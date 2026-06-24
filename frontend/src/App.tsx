@@ -356,9 +356,12 @@ export default function App() {
   // 모든 필터(project_id·컬러·태그·타입 포함)가 서버 쿼리에 들어가므로, 무엇이 바뀌든
   // 첫 페이지부터 다시 받는다(무한 스크롤 누적 초기화). 서버가 거르니 누락 없이 정확.
   const serverFilterKey = useMemo(() => JSON.stringify(genQuery), [genQuery]);
+  // 필터 변경 또는 인증 준비(로그인 완료/차단 off) 시 데이터 로드. 한 effect 로 합쳐 마운트 시
+  // 중복 reload(예전엔 이 effect + 별도 authReady effect 가 둘 다 발화 → 2회) 제거. reload 내부가
+  // authReadyRef 로 게이트하므로 authReady 가 false 면 no-op, true 로 바뀌면 여기서 다시 발화해 로드.
   useEffect(() => {
     reload();
-  }, [serverFilterKey, reload]);
+  }, [serverFilterKey, authReady, reload]);
 
   // 인증 부트스트랩: 서버 모드(auth_enabled) 확인 + 기존 토큰으로 세션 복원.
   useEffect(() => {
@@ -452,10 +455,6 @@ export default function App() {
     // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
     (!g.project_id && !!g.is_mine);
 
-  // 인증 게이트를 통과(로그인 완료/차단 off)하면 데이터 로드 시작.
-  useEffect(() => {
-    if (authReady) reload();
-  }, [authReady, reload]);
 
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신.
   // 끊겼다 재연결되면 reload 로 놓친 전이를 따라잡는다(백엔드 재시작 대비).
@@ -489,9 +488,15 @@ export default function App() {
           const doneId = m.generation_id;
           api
             .getGeneration(doneId)
-            .then((fresh) =>
-              setGens((prev) => prev.map((g) => (g.id === fresh.id ? fresh : g))),
-            )
+            .then((fresh) => {
+              // 목록에 이미 있으면 그 한 장만 patch, 없으면(다른 기기/탭·즉시 완료 잡) 현재 필터로
+              // 재조회해 따라잡는다 — 예전엔 map 이 매칭 못 해 새 결과가 다음 synced 까지 안 보였다.
+              if (gensRef.current.some((g) => g.id === fresh.id)) {
+                setGens((prev) => prev.map((g) => (g.id === fresh.id ? fresh : g)));
+              } else {
+                reload(true, true);
+              }
+            })
             .catch(() => reload(true, true)); // 실패 시 가벼운 폴백
           bumpBoard(); // 구성탭 트리에 완성된 결과 반영
         }

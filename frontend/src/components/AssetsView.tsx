@@ -57,7 +57,23 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 내 신원(로그인 계정 creator_uid, 단독이면 'me') — 코멘트 '내 것' 판별용. 독립 창이라 자체 조회.
   const [myId, setMyId] = useState("me");
   useEffect(() => {
-    api.me().then((a) => setMyId(a?.creator_uid || "me")).catch(() => {});
+    // 독립 창이라 자체 조회. ★재시도: 로그인 직후 run-agent 로 팝업이 바로 열리면 me() 프록시가 아직
+    // 정착 안 돼 실패할 수 있는데, 그때 'me'로 굳으면 내 코멘트를 '남의 것'으로 오판한다 → 몇 번 재시도.
+    let cancelled = false;
+    const fetchId = (tries: number) => {
+      api
+        .me()
+        .then((a) => {
+          if (!cancelled) setMyId(a?.creator_uid || "me");
+        })
+        .catch(() => {
+          if (!cancelled && tries > 0) setTimeout(() => fetchId(tries - 1), 1500);
+        });
+    };
+    fetchId(3);
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const [projects, setProjects] = useState<string[]>([]);
   const [project, setProject] = useState<string>("");

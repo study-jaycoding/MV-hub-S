@@ -357,6 +357,11 @@ def import_bundle_payload(
     if shared_by and shared_by != worker_id:
         with get_connection() as conn:
             identity.ensure_worker(conn, shared_by, prov.get("name") or shared_by, "team")
+        # creator_uid 가 shared_by 로 폴백된 항목(user_<id> 없는 영상 등)이 받는 쪽에서 '팀원' 대신
+        # 공유자 이름으로 뜨도록 creator 이름도 보강한다 — resolve_display_names 는 worker 가 아니라
+        # creator/account 테이블을 보므로 ensure_worker 만으론 부족했다(overwrite=False: 내 명명 보존).
+        if prov.get("name"):
+            identity.set_creator_name(shared_by, prov["name"], overwrite=False)
     else:
         shared_by = None
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0}
