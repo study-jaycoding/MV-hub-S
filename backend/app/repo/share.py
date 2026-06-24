@@ -175,6 +175,36 @@ def export_bundle(
             ).fetchall():
                 creator_names[r["uid"]] = r["name"]
 
+        # 계보(history) 엣지 — 받는 쪽(서버)이 공유물 사이 계보를 보이게. 엣지 양끝을 서버 앵커(job_id)로
+        # 변환한다(번들 밖 부모/자식도 그 job_id 로). 서버는 양끝이 다 있을 때만 넣는다(import 쪽 FK 보호).
+        history_edges: list[dict[str, Any]] = []
+        job_map = {g["id"]: (g["job_id"] or g["id"]) for g in gens}
+        erows = conn.execute(
+            f"SELECT parent_gen_id, child_gen_id, relation FROM history "
+            f"WHERE child_gen_id IN ({ph}) OR parent_gen_id IN ({ph})",
+            [*ids, *ids],
+        ).fetchall()
+        need = {
+            x
+            for e in erows
+            for x in (e["parent_gen_id"], e["child_gen_id"])
+            if x not in job_map
+        }
+        if need:
+            nph = ",".join("?" * len(need))
+            for r in conn.execute(
+                f"SELECT id, job_id FROM generation WHERE id IN ({nph})", list(need)
+            ).fetchall():
+                job_map[r["id"]] = r["job_id"] or r["id"]
+        for e in erows:
+            history_edges.append(
+                {
+                    "parent": job_map.get(e["parent_gen_id"], e["parent_gen_id"]),
+                    "child": job_map.get(e["child_gen_id"], e["child_gen_id"]),
+                    "relation": e["relation"],
+                }
+            )
+
     items: list[dict[str, Any]] = []
     for g in gens:
         items.append(
@@ -212,6 +242,7 @@ def export_bundle(
         "provider": provider,
         "creators": creator_names,
         "generations": items,
+        "history": history_edges,  # 공유물 사이 계보 엣지(job_id 앵커) — 받는 쪽이 계보 표시
     }
 
 
@@ -331,4 +362,24 @@ def import_bundle_payload(
             counts["skipped"] += 1
             continue
         counts[import_bundle_item(it, worker_id, shared_by)] += 1
+    # 계보 엣지 — 생성물 import 후에 넣는다. 양끝(parent·child)이 모두 서버에 실재할 때만(FK 보호,
+    # 멱등). 공유된 조상끼리만 연결돼 팀원이 공유물 사이 계보를 본다(미공유 조상은 자동 생략).
+    for e in bundle.get("history") or []:
+        if not isinstance(e, dict):
+            continue
+        p, c, rel = e.get("parent"), e.get("child"), e.get("relation") or "derived"
+        if not p or not c or p == c:
+            continue
+        with get_connection() as conn:
+            both = conn.execute(
+                "SELECT (SELECT 1 FROM generation WHERE id=?) IS NOT NULL "
+                "AND (SELECT 1 FROM generation WHERE id=?) IS NOT NULL",
+                (p, c),
+            ).fetchone()
+            if both and both[0]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO history(id, parent_gen_id, child_gen_id, relation) "
+                    "VALUES(?,?,?,?)",
+                    (new_id(), p, c, rel),
+                )
     return counts
