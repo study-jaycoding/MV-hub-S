@@ -218,7 +218,7 @@ function CreatorSection({
               className="creator-dot"
               style={{ background: c.is_mine ? "var(--accent)" : "#4ade80" }}
             />
-            <span className="creator-name">{c.is_mine ? "나" : c.name || "팀원"}</span>
+            <span className="creator-name">{c.name || (c.is_mine ? "나" : "팀원")}</span>
             <span className="creator-count">{c.count}</span>
           </button>
         </div>

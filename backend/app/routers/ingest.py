@@ -102,7 +102,14 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     #   '팀원'으로 뜬다(동기화 잡은 id==job_id 라 id<>job_id 추론도 안 됨). set-if-empty 라 멱등,
     #   계정별 DB 라 각 계정 DB 가 자기 uid 만 학습. 서버(AUTH on)는 하우스 신원이라 학습 안 함.
     if not AUTH_ENABLED and (own_uid or linked):
-        repo.learn_my_creator_uid(own_uid or linked)
+        my_uid = own_uid or linked
+        repo.learn_my_creator_uid(my_uid)
+        # ★내 표시이름을 내 creator 에 붙인다 — 사이드바·생성정보·카드의 '생성자'가 '나'/'팀원'
+        #   대신 내 계정 표시이름(로그인 시 보관한 provider 이름)으로 뜨게 한다. resolve_display_names
+        #   가 creator.name 을 1순위로 보므로, 이게 있어야 로컬에서도 내 이름이 해석된다.
+        pname = (repo.get_provider() or {}).get("name")
+        if pname:
+            repo.set_creator_name(my_uid, pname)
     if account_status:
         repo.record_account_status(acc["email"], account_status)
 
