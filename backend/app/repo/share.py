@@ -371,15 +371,14 @@ def import_bundle_payload(
         if not p or not c or p == c:
             continue
         with get_connection() as conn:
-            both = conn.execute(
-                "SELECT (SELECT 1 FROM generation WHERE id=?) IS NOT NULL "
-                "AND (SELECT 1 FROM generation WHERE id=?) IS NOT NULL",
-                (p, c),
-            ).fetchone()
-            if both and both[0]:
+            # 양끝을 실제 로컬 행 id 로 해석(id OR job_id) — sync 서버처럼 id≠job_id 인 행이어도
+            # 엣지가 누락되지 않게. 둘 다 실재할 때만 넣는다(FK 보호, 멱등).
+            pid = _find_id_by_job(conn, p)
+            cid = _find_id_by_job(conn, c)
+            if pid and cid and pid != cid:
                 conn.execute(
                     "INSERT OR IGNORE INTO history(id, parent_gen_id, child_gen_id, relation) "
                     "VALUES(?,?,?,?)",
-                    (new_id(), p, c, rel),
+                    (new_id(), pid, cid, rel),
                 )
     return counts

@@ -548,17 +548,21 @@ async def cache_generation_media(gen: dict) -> dict[str, int]:
 
 
 @router.post("/generations/{gen_id}/cache")
-async def cache_one(gen_id: str):
+async def cache_one(gen_id: str, request: Request):
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
+    require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
     res = await cache_generation_media(gen)
     res["generation"] = repo.get_generation(gen_id)
     return res
 
 
 @router.post("/cache-all")
-async def cache_all():
+async def cache_all(request: Request):
+    from ..deps import require_admin
+
+    require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
     """모든 generation 의 소스·결과물을 로컬로 보관(미보관분만). 출처 영속화 일괄.
     gen 단위로 병렬 처리(동시성 캡)해 일괄 보관 속도를 높인다 — 각 gen 내부 미디어도 gather."""
     total = {"cached": 0, "failed": 0, "generations": 0}

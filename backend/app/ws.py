@@ -80,6 +80,13 @@ class ConnectionManager:
         self._pending_accounts = set()
         for a in accounts:
             await self.broadcast({"type": "synced"}, account_uid=None if a == _ALL else a)
+        # broadcast 가 await 하는 동안 새로 쌓인 알림은 notify_mutation 이 (이 태스크가 아직 done 이
+        # 아니라) 새 태스크를 안 만든다 → 여기서 직접 재예약해 누락(다른 탭이 reload 못 받음) 방지.
+        if self._pending_accounts:
+            try:
+                self._pending_notify = asyncio.create_task(self._debounced_notify())
+            except RuntimeError:
+                pass
 
 
 # 앱 전역 단일 인스턴스

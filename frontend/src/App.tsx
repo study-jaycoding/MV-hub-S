@@ -213,6 +213,12 @@ export default function App() {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current); // 이전 타이머 취소(연속 토스트가 서로를 일찍 지우지 않게)
     flashTimerRef.current = setTimeout(() => setToast(null), 2500);
   };
+  useEffect(
+    () => () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current); // 언마운트 시 잔여 타이머 정리
+    },
+    [],
+  );
 
   // silent=true 면 '로딩…' 표시 없이 조용히 데이터만 갱신(백그라운드 폴링·WS·탭복귀용).
   // → 사용자가 직접 한 조회(필터변경·최초로드)만 로딩을 보여 깜빡임을 없앤다.
