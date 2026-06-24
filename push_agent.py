@@ -422,21 +422,22 @@ def main() -> None:
             print(f"[경고] 초기 처리 오류(무시): {e}")
         while True:
             reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
+            # 사유가 콤마로 합쳐 올 수 있다(gen-request 와 sync 가 함께 쌓인 경우) → 멤버십으로 검사.
+            reasons = set((reason or "").split(",")) if reason else set()
             try:
-                if reason == "gen-request":
+                if "gen-request" in reasons:
                     print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
                     execute_pending(server, token, cli)  # 연속 풀 — 16칸 채우고 다 비울 때까지
-                    # ★ 실행 결과를 서버로 올린다(서버 직결: fulfill 은 로컬 DB 라 UI 에 안 보임 —
-                    #    완료된 잡을 generate list→/api/ingest 로 push 해야 서버 DB 에 들어가 보인다).
-                    if not args.no_push:
-                        push_once(server, token, cli, args.size)
-                elif reason == "sync":
+                # gen-request·sync 어느 쪽이든 결과를 서버로 올린다(no_push 모드 제외).
+                if reasons & {"gen-request", "sync"}:
                     if args.no_push:
-                        print("[이벤트] 동기화 요청 — 생성 전용 모드라 건너뜀(공유는 '선택 발행')")
+                        if "sync" in reasons and "gen-request" not in reasons:
+                            print("[이벤트] 동기화 요청 — 생성 전용 모드라 건너뜀(공유는 '선택 발행')")
                     else:
-                        print("[이벤트] 내 작업 올리기 요청")
+                        if "sync" in reasons and "gen-request" not in reasons:
+                            print("[이벤트] 내 작업 올리기 요청")
                         push_once(server, token, cli, args.size)
-                # reason None = 타임아웃(idle) → 조용히 재대기
+                # reason None/타임아웃(idle) → 조용히 재대기
             except SystemExit:
                 raise
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지

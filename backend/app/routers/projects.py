@@ -104,9 +104,10 @@ def reorder_projects(body: ReorderProjectsIn, request: Request):
 
 
 @router.patch("/{pid}", response_model=ProjectOut)
-def update_project(pid: str, body: ProjectUpdate):
+def update_project(pid: str, body: ProjectUpdate, request: Request):
     if _proxy.proxying():
         return _proxy.proxy_json("PATCH", f"/api/projects/{pid}", body=body.model_dump())
+    require_global_cap(request, "create_project")  # 이름변경·보관도 생성/삭제와 같은 역량으로 게이트
     if not repo.get_project(pid):
         raise HTTPException(status_code=404, detail="없는 프로젝트")
     try:

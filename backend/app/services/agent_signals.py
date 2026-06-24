@@ -20,7 +20,10 @@ _CONNECTED_WINDOW = 40.0
 class AgentSignals:
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
-        self._reason: dict[str, str] = {}
+        # 계정별 누적 이벤트 사유(set) — 연속 신호(gen-request 후 sync 등)가 덮어써져 유실되던
+        # 문제 방지. wait 가 콤마로 합쳐 반환 → 에이전트가 둘 다 처리(생성요청이 sync 에 묻혀
+        # '생성중'에 멈추던 버그 수정).
+        self._reasons: dict[str, set[str]] = {}
         self._waiters: dict[str, int] = {}
         self._last_seen: dict[str, float] = {}  # 계정별 마지막 에이전트 접촉 시각(monotonic)
 
@@ -40,7 +43,7 @@ class AgentSignals:
         email = self._norm(email)
         if not email:
             return
-        self._reason[email] = reason
+        self._reasons.setdefault(email, set()).add(reason)
         self._ev(email).set()
 
     def touch(self, email: str) -> None:
@@ -61,7 +64,8 @@ class AgentSignals:
         try:
             await asyncio.wait_for(ev.wait(), timeout)
             ev.clear()
-            return self._reason.pop(email, "event")
+            reasons = self._reasons.pop(email, None)
+            return ",".join(sorted(reasons)) if reasons else "event"
         except asyncio.TimeoutError:
             return None
         finally:

@@ -241,18 +241,22 @@ def health():
 
 
 @app.get("/api/backups")
-def list_backups():
-    """보관 중인 DB 백업 목록(최신순). 운영/관리자용."""
+def list_backups(request: Request):
+    """보관 중인 DB 백업 목록(최신순). 운영/관리자용 — AUTH on 이면 admin 만."""
+    from .deps import require_admin
     from .services.backup import list_backups_info
 
+    require_admin(request)
     return list_backups_info()
 
 
 @app.post("/api/backup")
-async def trigger_backup():
-    """수동 DB 백업 즉시 실행(회전 포함). 관리자/운영용."""
+async def trigger_backup(request: Request):
+    """수동 DB 백업 즉시 실행(회전 포함). 관리자/운영용 — AUTH on 이면 admin 만."""
+    from .deps import require_admin
     from .services.backup import backup_now
 
+    require_admin(request)
     path = await asyncio.to_thread(backup_now)
     return {"ok": path is not None, "file": path.name if path else None}
 
