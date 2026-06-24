@@ -2961,10 +2961,20 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .linb-tag.root-tag { background: #ffd24a; color: #3a2c00; }
 /* 최종(골드) 노드 — 금색 테두리 강조(구성탭) */
 .linb-node.final { border-color: #ffcf33; box-shadow: 0 0 0 3px #f5c542, 0 0 18px rgba(245,197,66,0.6); }
-.linb-final {
-  position: absolute; top: 4px; right: 4px; font-size: 24px; line-height: 1;
-  color: #ffd24a; text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px #000;
+/* 공유/최종 상시 배지 — 좌상단(오버레이 S 버튼과 같은 자리), card-sf 와 동형.
+   공유=라임 'S', 최종=골드 '★'. 호버하면 오버레이의 S/★ 버튼이 대신하므로 숨긴다(중복 방지). */
+.linb-sf {
+  position: absolute; top: 5px; left: 5px; z-index: 4; pointer-events: none;
+  width: 26px; height: 26px; border-radius: 7px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; transition: opacity 0.12s;
 }
+.linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 14px; }
+.linb-sf.final {
+  background: rgba(20,22,28,0.82); border: 1px solid #f5c542; color: #ffd24a; font-size: 16px;
+  text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px #000;
+}
+.linb-node:hover .linb-sf { opacity: 0; }
 /* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */
 .linb-node.mainline { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(196,232,74,0.5), 0 3px 12px rgba(0,0,0,0.45); }
 /* 생성 순번 뱃지 — 좌상단 원형(원본 태그와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink). */

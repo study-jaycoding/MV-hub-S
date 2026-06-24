@@ -818,7 +818,16 @@ export function HistoryBoard({
                   {a?.type === "video" && <span className="linb-vid">▶</span>}
                   {isRoot && <span className="linb-tag root-tag">원본</span>}
                   {/* 생성 순번 숫자 뱃지 제거 — 그래프 연결로 히스토리를 확인할 수 있어 불필요. */}
-                  {g.is_final && <span className="linb-final">★</span>}
+                  {/* 상시 배지 — 메인 라이브러리 card-sf 와 동형: 공유=라임 S, 최종=골드 ★(우상단
+                      정적 별 대신 S 자리에서 ★ 로 바뀜). 호버하면 오버레이 S/★ 버튼이 대신한다. */}
+                  {(g.shared || g.is_final) && (
+                    <span
+                      className={"linb-sf" + (g.is_final ? " final" : " shared")}
+                      title={g.is_final ? "최종(골드)" : "팀 공유됨"}
+                    >
+                      {g.is_final ? "★" : "S"}
+                    </span>
+                  )}
                   <span className="linb-cap">{g.prompt.slice(0, 22) || "(제목 없음)"}</span>
                   {/* 하단 컬러바 — 카드와 동일. 최종이면 골드 + 빛 흐름, 그 외엔 r/g/b 컬러. */}
                   {(g.color || g.is_final) && (
