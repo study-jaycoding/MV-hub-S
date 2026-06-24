@@ -691,13 +691,6 @@ export const api = {
       method: "POST",
     }),
 
-  // 서버 직결 기간 개인 메타(컬러/태그/소스/프로젝트/최종)를 로컬로 1회 마이그레이션
-  migrateFromServer: () =>
-    jsonFetch<{ applied: number; missing: number; total: number }>(
-      "/api/db/migrate-from-server",
-      { method: "POST" },
-    ),
-
   // OS 파일 탐색기에서 원본 위치 열기(해당 파일 선택)
   revealAsset: (project: string, path: string) =>
     jsonFetch<{ ok: boolean }>(`/api/assets/reveal`, {

@@ -271,65 +271,6 @@ def server_restore(request: Request):
     return _install_db(tmp)
 
 
-@router.post("/migrate-from-server")
-def migrate_from_server():
-    """서버 직결 기간 동안 서버에만 쌓였던 내 '개인 메타'(컬러/태그/소스/프로젝트/최종)를 로컬로 1회
-    가져온다. 생성물 자체는 에이전트의 `generate list` 동기화로 로컬에 재구축되므로(먼저 동기화 권장),
-    여기선 로컬에 같은 id 가 있는 항목에 메타 오버레이만 적용한다(없으면 missing 으로 집계)."""
-    if not _proxy.proxying():
-        raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
-    # assign 검증을 위해 서버 프로젝트 정의를 먼저 로컬에 캐시한다(없으면 assign_to_project 가
-    # ValueError → 항목 적용이 중간에 깨진다).
-    try:
-        pdata = _proxy.proxy_json("GET", "/api/projects")
-        repo.cache_projects(pdata.get("projects") or [] if isinstance(pdata, dict) else [])
-    except Exception:  # noqa: BLE001 — 프로젝트 캐시 실패는 메타 적용을 막지 않음(아래서 per-item 보호)
-        pass
-    applied = missing = errors = total = 0
-    cursor_ts: float | None = None
-    cursor_id: str | None = None
-    seen: set[str] = set()
-    LIMIT = 500
-    # 키셋 커서로 끝까지 순회 — 2000건 단일 페이지로는 큰 라이브러리가 조용히 잘린다.
-    while True:
-        params: dict = {"tab": "my", "limit": LIMIT}
-        if cursor_ts is not None and cursor_id:
-            params["cursor_ts"] = cursor_ts
-            params["cursor_id"] = cursor_id
-        items = _proxy.proxy_json("GET", "/api/generations", params=params)
-        items = items if isinstance(items, list) else []
-        if not items:
-            break
-        total += len(items)
-        for it in items:
-            sid = it.get("id") if isinstance(it, dict) else None
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            # 서버 id(번들 앵커=job_id) → 로컬 id 해석. 안 그러면 로컬 uuid 와 달라 메타가 적용 안 됐다.
-            gid, _ = repo.finalize_id_map(sid)
-            if not gid or not repo.get_generation(gid):
-                missing += 1  # 로컬에 아직 없음 → 에이전트 동기화 후 다시 시도
-                continue
-            try:  # 한 건 실패(예: 누락 프로젝트)가 전체 순회를 멈추지 않게 — 부분 적용 방지
-                if it.get("color") is not None:
-                    repo.set_color(gid, it.get("color"))
-                if it.get("is_source"):
-                    repo.set_source(gid, it.get("source_name"), True)
-                if it.get("tags"):
-                    repo.set_tags(gid, it.get("tags"))
-                if it.get("project_id"):
-                    repo.assign_to_project([gid], it.get("project_id"))
-                if it.get("is_final"):
-                    repo.set_final(gid, True, it.get("final_by"))
-                applied += 1
-            except Exception:  # noqa: BLE001
-                errors += 1
-        if len(items) < LIMIT:
-            break
-        last = items[-1]
-        cursor_ts = last.get("sort_ts")
-        cursor_id = last.get("id")
-        if cursor_ts is None or not cursor_id:
-            break  # 커서 키 없음 → 무한 루프 방지로 중단
-    return {"applied": applied, "missing": missing, "errors": errors, "total": total}
+# (구) /migrate-from-server 제거 — '서버 직결 시절' 서버에만 남은 개인 메타를 로컬로 1회 끌어오던
+# 이행용 엔드포인트. 로컬 우선 전환 + 전체 DB 초기화로 더는 가져올 레거시 메타가 없어 폐기.
+# 교차 PC/복원은 서버 계정별 백업(server-backup/server-restore)이 정식 경로다.
