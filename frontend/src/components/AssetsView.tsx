@@ -7,6 +7,7 @@ import { api } from "../api";
 import { buildCommentTree } from "../lib/commentTree";
 import { fmtWhen } from "../lib/format";
 import { useT } from "../lib/i18n";
+import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import type { AssetComment, AssetMeta, AssetNode, InfoTarget, PreviewTarget } from "../types";
@@ -408,22 +409,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (d.cellIdx >= 0) return;
     const grid = gridRef.current;
     if (!grid) return;
-    const gr = grid.getBoundingClientRect();
-    const x0 = Math.min(d.x, e.clientX), y0 = Math.min(d.y, e.clientY);
-    const x1 = Math.max(d.x, e.clientX), y1 = Math.max(d.y, e.clientY);
-    setMarquee({
-      l: x0 - gr.left + grid.scrollLeft,
-      t: y0 - gr.top + grid.scrollTop,
-      w: x1 - x0,
-      h: y1 - y0,
-    });
-    const hit = new Set<number>(d.additive || d.range ? d.base : []);
-    grid.querySelectorAll(".asset-cell").forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect();
-      if (r.right >= x0 && r.left <= x1 && r.bottom >= y0 && r.top <= y1)
-        hit.add(Number((el as HTMLElement).dataset.idx));
-    });
-    setSelected(hit);
+    const { rect, b } = computeMarquee(grid, d, e);
+    setMarquee(rect);
+    const base = d.additive || d.range ? d.base : [];
+    setSelected(marqueeHits<number>(grid, ".asset-cell", b, base, (el) => Number(el.dataset.idx)));
   }, []);
 
   const onDragUp = useCallback(() => {
