@@ -468,7 +468,7 @@ export default function App() {
   // 로컬 DB 라 불필요. (백그라운드 탭은 브라우저가 알아서 throttle + 포커스 시 즉시 reload 가 보완.)
   useEffect(() => {
     if (filters.tab !== "team") return;
-    const id = setInterval(() => reload(true), 8000);
+    const id = setInterval(() => reload(true), 3000);
     return () => clearInterval(id);
   }, [filters.tab, reload]);
 
