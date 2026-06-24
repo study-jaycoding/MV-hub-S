@@ -893,15 +893,15 @@ export function HistoryBoard({
                       )}
                       <button
                         className="linb-ov-btn"
-                        title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
+                        title="레퍼런스로 사용 — 이 생성물을 @레퍼런스로 추가 (끌어내리면 프롬프트 재사용)"
                         onClick={(e) => {
                           e.stopPropagation();
                           window.dispatchEvent(
-                            new CustomEvent("ch:reuse-prompt", { detail: g.id }),
+                            new CustomEvent("ch:add-reference", { detail: g.id }),
                           );
                         }}
                       >
-                        ✎
+                        @
                       </button>
                       <button
                         className="linb-ov-btn"

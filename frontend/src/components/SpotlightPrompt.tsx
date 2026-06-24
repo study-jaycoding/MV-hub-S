@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
-import { buildPromptParts, refsToChips } from "../lib/promptParts";
+import { buildPromptParts, refsToChips, refSrc } from "../lib/promptParts";
 import {
   countImageChips,
   detectMention,
@@ -39,6 +39,9 @@ interface Props {
   expanded: boolean; // '+' 확장 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유.
   onToggleExpand: () => void; // '+' 버튼 토글
 }
+
+// 트레이 항목 = 레퍼런스(ChipRef) + 고유키(uid). 같은 파일 중복 허용이라 file_path 를 key 로 못 쓴다.
+type TrayRef = ChipRef & { uid: string };
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
 // useModels 훅으로 추출. onPanelDrop 에서 쓰는 상수만 훅 모듈에서 import 해 재사용.
@@ -173,8 +176,10 @@ export function SpotlightPrompt({
   const [hIdx, setHIdx] = useState(0);
   const [assetCtx, setAssetCtx] = useState(readAssetCtx);
   // ── 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 순서 = 생성 --image 순서 ──
-  const [trayRefs, setTrayRefs] = useState<ChipRef[]>([]);
+  // uid: 같은 파일을 중복으로 넣을 수 있어 file_path 가 겹치므로 React key·재정렬용 고유키.
+  const [trayRefs, setTrayRefs] = useState<TrayRef[]>([]);
   const trayDragIdx = useRef<number | null>(null); // 트레이 내부 재정렬 시작 인덱스
+  const trayUidRef = useRef(0); // 트레이 항목 고유키 카운터(중복 허용)
   const editorRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
@@ -209,9 +214,22 @@ export function SpotlightPrompt({
     };
     window.addEventListener("ch:reuse-prompt", onReuse);
     return () => window.removeEventListener("ch:reuse-prompt", onReuse);
-    // model 의존: reusePromptFromGen 내부 useModel===model 분기를 최신 모델로 평가
+    // model + expanded 의존: reusePromptFromGen 이 model(분기)·expanded(트레이 vs 인라인 칩) 를
+    // 최신 값으로 평가하도록 재구독한다(확장만 켜고 재사용하면 stale 로 인라인 칩 되던 버그 수정).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model]);
+  }, [model, expanded]);
+
+  // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
+  useEffect(() => {
+    const onAddRef = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (id) void addRefFromGen(id);
+    };
+    window.addEventListener("ch:add-reference", onAddRef);
+    return () => window.removeEventListener("ch:add-reference", onAddRef);
+    // expanded 의존: addRefFromGen 이 트레이 vs 인라인 칩을 최신 확장상태로 분기(stale 방지)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
 
   // 에셋 파트(분리창) 프로젝트 변경 알림 → 컨텍스트 갱신.
   // 값이 실제로 바뀐 경우에만 갱신(스크롤 저장 등 다른 ch.assets.* 쓰기로 인한 재요청 폭주 방지).
@@ -356,7 +374,11 @@ export function SpotlightPrompt({
       if (expanded) {
         // 확장(+) 상태 = 레퍼런스는 위 트레이로, 프롬프트 텍스트는 아래 박스로 분리해 채운다.
         setTrayRefs(
-          refsToChips(g.references).flatMap((p) => (p.t === "chip" ? [p.ref as ChipRef] : [])),
+          refsToChips(g.references).flatMap((p) =>
+            p.t === "chip"
+              ? [{ ...(p.ref as ChipRef), uid: `t${trayUidRef.current++}` }]
+              : [],
+          ),
         );
         const ptext = g.prompt && g.prompt !== "(no text)" ? g.prompt : "";
         if (ed) {
@@ -384,10 +406,14 @@ export function SpotlightPrompt({
     }
   };
 
-  // ── 카드 → 프롬프트 드롭: 그 생성물을 '레퍼런스로 추가'(누적). 여러 개 드롭하면 칩이 쌓인다 ──
-  //    (예전엔 드롭=프롬프트 재사용이었으나, 재사용은 버튼으로 분리하고 드래그는 레퍼런스 전용으로 변경)
+  // ── 카드 상호작용(맞바꿈) ──────────────────────────────────────────────
+  //  · 카드를 프롬프트로 끌어내림(드롭) = '프롬프트 재사용'(그 프롬프트·옵션을 입력바로 불러옴)
+  //  · 카드의 '@' 버튼(ch:add-reference) = 그 생성물을 '레퍼런스로 추가'(확장이면 트레이, 아니면 칩)
+  //    (이전엔 드롭=레퍼런스, ✎=재사용이었다 — 사용자 요청으로 서로 교환)
   const onPanelDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes("application/x-ch-gen")) {
+    const tps = e.dataTransfer.types;
+    // 카드(x-ch-gen)=재사용 · 에셋(x-ch-asset)=레퍼런스 추가. 둘 다 프롬프트로 끌어내려 받는다.
+    if (tps.includes("application/x-ch-gen") || tps.includes("application/x-ch-asset")) {
       e.preventDefault(); // drop 허용 + contentEditable 기본 삽입 차단
       e.dataTransfer.dropEffect = "copy";
     }
@@ -403,69 +429,139 @@ export function SpotlightPrompt({
         setError("이 항목엔 사용할 미디어가 없습니다 (생성중/실패).");
         return;
       }
-      // 같은 출처를 이미 칩으로 넣었으면 중복 추가 방지(같은 카드 두 번 드래그).
-      const dup = Array.from(ed.querySelectorAll<HTMLElement>("[data-ref]")).some((el) => {
-        try {
-          return JSON.parse(el.dataset.ref || "{}").source_gen_id === g.id;
-        } catch {
-          return false;
-        }
-      });
-      if (dup) {
-        ed.focus();
-        return;
-      }
       const isVid = a.type === "video";
       const ref: ChipRef = {
         file_path: a.source_url || a.file_path,
         type: a.type,
-        // @Image1, @Image2 … — 현재 칩 수 기준으로 다음 슬롯(드롭마다 누적)
         role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
         // 칩 이름: 소스명(등록 시) 우선, 없으면 고유 ID(앞 8자리 — 4자리는 충돌 가능)
         name: g.source_name || `${isVid ? "vid" : "img"}-${g.id.slice(0, 8)}`,
         thumb: a.thumbnail_path || a.file_path,
         source_gen_id: g.id, // 출처 generation → 히스토리 reference 엣지
       };
-      insertChip(ed, ref); // 기존 칩 유지하고 추가
-      updatePlaceholder();
-      ed.focus();
+      if (expanded) {
+        // 확장(+) 상태 = 위 트레이에 레퍼런스로 추가(번호순). 중복 허용 — 같은 생성물도 여러 번.
+        setTrayRefs((prev) => [
+          ...prev,
+          { ...ref, uid: `t${trayUidRef.current++}`, role: isVid ? "@Video" : "@Image" },
+        ]);
+      } else {
+        // 접힘 = 인라인 칩으로 누적. 같은 출처 칩 중복 방지(같은 카드 두 번).
+        const dup = Array.from(ed.querySelectorAll<HTMLElement>("[data-ref]")).some((el) => {
+          try {
+            return JSON.parse(el.dataset.ref || "{}").source_gen_id === g.id;
+          } catch {
+            return false;
+          }
+        });
+        if (dup) {
+          ed.focus();
+          return;
+        }
+        insertChip(ed, ref); // 기존 칩 유지하고 추가
+        updatePlaceholder();
+        ed.focus();
+      }
     } catch (err) {
       setError(String(err));
     }
   };
   const onPanelDrop = (e: React.DragEvent) => {
-    const id = e.dataTransfer.getData("application/x-ch-gen");
-    if (!id) return;
-    e.preventDefault();
-    void addRefFromGen(id); // 드롭 = 레퍼런스 추가
+    const gen = e.dataTransfer.getData("application/x-ch-gen");
+    if (gen) {
+      e.preventDefault();
+      void reusePromptFromGen(gen); // 카드 끌어내림 = 프롬프트 재사용(불러오기)
+      return;
+    }
+    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
+      e.preventDefault();
+      addAssetRefs(readAssetPayload(e)); // 에셋 끌어내림 = 레퍼런스(확장=트레이, 접힘=인라인 칩) · 다중 일괄
+    }
   };
 
   // ── 레퍼런스 트레이(확장 모드) — 에셋 폴더 드래그로 추가 + 드래그로 재정렬 ──
-  // 에셋 셀 dragstart 가 심은 application/x-ch-asset({project,path,name,type}) 만 받는다(카드·@ 아님).
+  // 에셋 셀 dragstart 가 심은 application/x-ch-asset 만 받는다(카드·@ 아님). 값은 항상 배열 —
+  // 다중선택을 그리드 순서대로 한 번에 받는다(옛 단건 객체도 하위호환으로 수용).
   const addAssetToTray = (raw: string) => {
     try {
-      const d = JSON.parse(raw) as { project: string; path: string; name: string; type: string };
-      if (d.type !== "image" && d.type !== "video") return; // 오디오/폴더는 레퍼런스 아님
-      const fp = `asset:${d.project}|${d.path}`;
-      setTrayRefs((prev) => {
-        if (prev.some((r) => r.file_path === fp)) return prev; // 같은 파일 중복 방지
+      const parsed = JSON.parse(raw);
+      const list = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
+        project: string;
+        path: string;
+        name: string;
+        type: string;
+      }>;
+      // 중복 허용(같은 파일도 여러 번) — dedup 안 함. uid 로 구분. 다중선택은 배열로 한 번에 추가.
+      const additions: TrayRef[] = list
+        .filter((d) => d.type === "image" || d.type === "video") // 오디오/폴더 제외
+        .map((d) => {
+          const isVid = d.type === "video";
+          return {
+            uid: `t${trayUidRef.current++}`,
+            file_path: `asset:${d.project}|${d.path}`, // 에이전트가 받아 로컬 파일로 CLI 에 전달
+            type: isVid ? "video" : "image",
+            role: isVid ? "@Video" : "@Image", // 제출 시 순서대로 재번호
+            name: d.name,
+            thumb: isVid
+              ? api.assetFileUrl(d.project, d.path)
+              : api.assetThumbUrl(d.project, d.path, 256),
+          };
+        });
+      if (additions.length) setTrayRefs((prev) => [...prev, ...additions]);
+    } catch {
+      /* 잘못된 드래그 데이터 무시 */
+    }
+  };
+  // 에셋 드롭 공용(프롬프트 패널/트레이): 확장이면 트레이로, 접힘이면 인라인 칩으로 — 다중선택 일괄.
+  const addAssetRefs = (raw: string) => {
+    if (expanded) {
+      addAssetToTray(raw); // 트레이(배열 그대로 — 중복 허용)
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      const list = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
+        project: string;
+        path: string;
+        name: string;
+        type: string;
+      }>;
+      const ed = editorRef.current;
+      if (!ed) return;
+      let added = false;
+      for (const d of list) {
+        if (d.type !== "image" && d.type !== "video") continue; // 오디오/폴더 제외
         const isVid = d.type === "video";
-        const ref: ChipRef = {
-          file_path: fp, // 에이전트가 asset:proj|path 를 받아 로컬 파일로 CLI 에 전달
+        insertChip(ed, {
+          file_path: `asset:${d.project}|${d.path}`,
           type: isVid ? "video" : "image",
-          role: isVid ? "@Video" : `@Image${prev.length + 1}`, // 제출 시 순서대로 재번호
+          role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`, // 칩마다 다음 슬롯
           name: d.name,
           thumb: isVid
             ? api.assetFileUrl(d.project, d.path)
             : api.assetThumbUrl(d.project, d.path, 256),
-        };
-        return [...prev, ref];
-      });
+        });
+        added = true;
+      }
+      if (added) {
+        updatePlaceholder();
+        ed.focus();
+      }
     } catch {
       /* 잘못된 드래그 데이터 무시 */
     }
   };
   const removeTrayRef = (i: number) => setTrayRefs((prev) => prev.filter((_, j) => j !== i));
+  // 트레이에 포커스를 둔 채 Shift+Backspace = 레퍼런스만 전체 삭제(프롬프트는 그대로).
+  const onTrayKeyDown = (e: React.KeyboardEvent) => {
+    const isBackspace =
+      e.key === "Backspace" || e.code === "Backspace" || (e.nativeEvent as KeyboardEvent).keyCode === 8;
+    if (isBackspace && e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      setTrayRefs([]);
+    }
+  };
   const onTrayDragOver = (e: React.DragEvent) => {
     const tps = e.dataTransfer.types;
     if (tps.includes("application/x-ch-asset") || tps.includes("application/x-ch-trayidx")) {
@@ -474,11 +570,23 @@ export function SpotlightPrompt({
       e.dataTransfer.dropEffect = trayDragIdx.current !== null ? "move" : "copy";
     }
   };
+  // 에셋 드래그 페이로드 — 에셋창이 dragstart 에 localStorage 로 넘긴 '전체 선택'을 우선 읽는다
+  // (일부 브라우저가 팝업↔본창 크로스윈도우 드래그에서 dataTransfer 커스텀 배열을 한 건만 전달하는
+  // 문제 우회). 없으면 dataTransfer 폴백. 호출 전 반드시 x-ch-asset 타입 존재를 확인할 것(스테일 방지).
+  const readAssetPayload = (e: React.DragEvent): string => {
+    try {
+      const ls = localStorage.getItem("ch.assets.drag");
+      if (ls) return ls;
+    } catch {
+      /* ignore */
+    }
+    return e.dataTransfer.getData("application/x-ch-asset");
+  };
   const onTrayDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const asset = e.dataTransfer.getData("application/x-ch-asset");
-    if (asset) addAssetToTray(asset); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
+    if (e.dataTransfer.types.includes("application/x-ch-asset"))
+      addAssetToTray(readAssetPayload(e)); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
   };
   const onTrayItemDragStart = (i: number) => (e: React.DragEvent) => {
     trayDragIdx.current = i;
@@ -488,9 +596,8 @@ export function SpotlightPrompt({
   const onTrayItemDrop = (i: number) => (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const asset = e.dataTransfer.getData("application/x-ch-asset");
-    if (asset) {
-      addAssetToTray(asset); // 항목 위에 에셋 떨어뜨려도 추가
+    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
+      addAssetToTray(readAssetPayload(e)); // 항목 위에 에셋 떨어뜨려도 추가
       trayDragIdx.current = null;
       return;
     }
@@ -586,7 +693,8 @@ export function SpotlightPrompt({
   }, [open]);
 
   const onEditorKeyDown = (e: React.KeyboardEvent) => {
-    // Shift+Backspace: 프롬프트 전체 비우기(PV). 한글 조합 중에도 무조건 — 조합 가드보다 먼저.
+    // Shift+Backspace(프롬프트 포커스): 프롬프트 텍스트·인라인 칩만 비운다(트레이 레퍼런스는 유지 —
+    // 트레이는 그 영역에 포커스 두고 Shift+Backspace 로 따로 비운다). 한글 조합 중에도 무조건.
     const isBackspace =
       e.key === "Backspace" || e.code === "Backspace" || e.nativeEvent.keyCode === 8;
     if (isBackspace && e.shiftKey) {
@@ -790,7 +898,19 @@ export function SpotlightPrompt({
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
           {expanded && (
-            <div className="sl-reftray" onDragOver={onTrayDragOver} onDrop={onTrayDrop}>
+            <div
+              className="sl-reftray"
+              tabIndex={0}
+              onDragOver={onTrayDragOver}
+              onDrop={onTrayDrop}
+              onKeyDown={onTrayKeyDown}
+              onMouseDown={(e) => {
+                // 레퍼런스 영역을 누르면 트레이에 포커스를 줘 Shift+Backspace 로 전체 삭제 가능.
+                // ×버튼 등 버튼 클릭은 제외(그 동작 보존).
+                if (!(e.target as HTMLElement).closest("button"))
+                  (e.currentTarget as HTMLElement).focus();
+              }}
+            >
               {trayRefs.length === 0 ? (
                 <div className="sl-reftray-empty">
                   에셋 창에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
@@ -798,7 +918,7 @@ export function SpotlightPrompt({
               ) : (
                 trayRefs.map((r, i) => (
                   <div
-                    key={r.file_path}
+                    key={r.uid}
                     className="sl-reftray-item"
                     draggable
                     onDragStart={onTrayItemDragStart(i)}
@@ -807,7 +927,20 @@ export function SpotlightPrompt({
                     title={`${i + 1}. ${r.name}`}
                   >
                     <span className="sl-reftray-num">{i + 1}</span>
-                    {r.thumb ? <img src={r.thumb} alt="" /> : <span className="sl-reftray-ph" />}
+                    {r.type === "video" ? (
+                      // 영상은 포스터 thumb 가 없을 수 있어(에셋 영상은 thumb 엔드포인트 미지원)
+                      // 레퍼런스 실제 파일을 <video> 로 띄워 첫 프레임을 보여준다(깨짐 방지).
+                      <video
+                        src={refSrc(r.file_path)}
+                        muted
+                        preload="metadata"
+                        playsInline
+                      />
+                    ) : r.thumb ? (
+                      <img src={r.thumb} alt="" />
+                    ) : (
+                      <span className="sl-reftray-ph" />
+                    )}
                     <span className="sl-reftray-name">{r.name}</span>
                     <button
                       className="sl-reftray-x"

@@ -271,11 +271,11 @@ export function GenerationCard({
           C
         </button>
       </div>
-      {/* 좌상단 드래그 그립(S 버튼 밑) — 끌어서 프롬프트에 '레퍼런스로 추가'(히스토리 카드와 동일 UX) */}
+      {/* 좌상단 드래그 그립(S 버튼 밑) — 끌어내려 프롬프트 재사용(불러오기). 레퍼런스로 쓰려면 @ 버튼. */}
       <span
         className="card-drag-grip"
         draggable
-        title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
+        title="프롬프트로 끌어내려 재사용(프롬프트·옵션 불러오기) · 레퍼런스로는 @ 버튼"
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
         onDragStart={(e) => {
@@ -347,16 +347,17 @@ export function GenerationCard({
               ⤓
             </button>
           )}
-          {/* 프롬프트 재사용 — 모든 탭(내 작업·팀 공유)에서 제공: 이 프롬프트·옵션을 입력바로 불러옴 */}
+          {/* 레퍼런스로 사용 — 이 생성물을 레퍼런스로 추가(확장 트레이 또는 인라인 칩).
+              ※ 끌어내림(드롭)=프롬프트 재사용 과 맞바꾼 동작(사용자 요청). */}
           <button
             className="ov-icon"
-            title="프롬프트 재사용 — 이 프롬프트·옵션을 입력바로 불러오기"
+            title="레퍼런스로 사용 — 이 생성물을 @레퍼런스로 추가 (끌어내리면 프롬프트 재사용)"
             onClick={(e) => {
               e.stopPropagation();
-              window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: gen.id }));
+              window.dispatchEvent(new CustomEvent("ch:add-reference", { detail: gen.id }));
             }}
           >
-            ✎
+            @
           </button>
           {tab === "team"
             ? // 다른 작업자의 생성물 → 내 워크스페이스로 가져오기(내 것은 공유 해제 버튼 제거 — S로 조작)

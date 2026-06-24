@@ -459,12 +459,33 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     const sel = [...selectedRef.current]
       .map((i) => filesRef.current[i]?.path)
       .filter(Boolean) as string[];
-    if (sel.length > 1 && sel.includes(path)) {
+    const multi = sel.length > 1 && sel.includes(path);
+    if (multi) {
       setZipDrag(dt, proj, sel);
     } else {
       const name =
         filesRef.current.find((f) => f.path === path)?.name || path.split("/").pop() || path;
       setSingleFileDrag(dt, proj, path, name);
+    }
+    // 본창 프롬프트 레퍼런스 트레이로 드래그(같은 오리진 팝업↔본창)에서 읽을 커스텀 타입.
+    // 다중선택에 포함되면 선택 전체를(그리드 순서 보존), 아니면 그 파일 하나만 배열로 싣는다 →
+    // 트레이가 한 번에 여러 개를 번호순으로 추가한다.
+    const idxs = multi
+      ? [...selectedRef.current].sort((a, b) => a - b)
+      : [filesRef.current.findIndex((f) => f.path === path)];
+    const items = idxs
+      .map((i) => filesRef.current[i])
+      .filter(Boolean)
+      .map((f) => ({ project: proj, path: f.path, name: f.name, type: f.type }));
+    const payload = JSON.stringify(items);
+    // dataTransfer 커스텀 타입은 '드롭 허용 플래그'로만 둔다 — 일부 브라우저가 팝업↔본창
+    // 크로스윈도우 드래그에서 커스텀 배열을 한 건만 전달하는 문제가 있어, 전체 선택은 같은 오리진이
+    // 공유하는 localStorage 로 넘긴다(본창 드롭이 이 키를 우선 읽는다). dragstart 마다 덮어써 항상 최신.
+    dt.setData("application/x-ch-asset", payload);
+    try {
+      localStorage.setItem("ch.assets.drag", payload);
+    } catch {
+      /* localStorage 불가 시 dataTransfer 폴백 */
     }
   }, [onDragMove, onDragUp]);
 
