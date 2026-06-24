@@ -965,7 +965,11 @@ export function SpotlightPrompt({
               className="sl-prompt"
               contentEditable
               suppressContentEditableWarning
-              data-placeholder="Describe the scene you imagine --- @Source, #Tag"
+              data-placeholder={
+                expanded
+                  ? "Describe the scene you imagine ---"
+                  : "Describe the scene you imagine --- @Source, #Tag"
+              }
               onInput={onEditorInput}
               onKeyUp={onCaretMove}
               onClick={onCaretMove}
