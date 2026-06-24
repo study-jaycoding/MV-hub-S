@@ -1668,9 +1668,10 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   content: attr(data-placeholder);
   color: var(--muted2); pointer-events: none;
 }
-/* 확장(레퍼런스 트레이 펼침) 시 프롬프트 입력 영역을 ~3줄 더 크게(30→112px). 위 레퍼런스 트레이
-   (.sl-reftray)는 현 크기 유지 — 여기선 .sl-prompt 만 키운다. */
-.sl-panel.expanded .sl-prompt { min-height: 112px; }
+/* 확장(레퍼런스 트레이 펼침) 시 프롬프트 입력 영역을 ~3줄 더 크게(행 높이 112px). 위 레퍼런스
+   트레이(.sl-reftray)는 현 크기 유지. 에디터에 높이를 주는 대신 '행'에 높이를 주고 가운데 정렬해,
+   −버튼·플레이스홀더 글씨가 박스 위가 아니라 세로 가운데(첫 열 가운데)에 오게 한다. */
+.sl-panel.expanded .sl-prompt-row { min-height: 112px; align-items: center; }
 
 /* ── 확장(+) 버튼 + 레퍼런스 트레이(에셋 드래그 전용, 번호 = 생성 --image 순서) ── */
 .sl-expand-btn {
