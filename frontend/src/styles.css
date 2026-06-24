@@ -2935,16 +2935,23 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .linb-ov-drag { cursor: grab; }
 .linb-ov-drag:active { cursor: grabbing; }
 /* 드래그 그립 — 좌상단 S 버튼 바로 밑(top: 5+26+4). 끌어서 레퍼런스로 추가. */
-.linb-ov-grip { position: absolute; top: 35px; left: 5px; z-index: 5; }
+.linb-ov-grip { position: absolute; top: 37px; left: 5px; z-index: 5; }
+/* 그리드 카드 .ov-icon 과 동일한 룩(전역 일관) */
 .linb-ov-btn {
-  width: 26px; height: 26px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.25);
-  background: rgba(20,22,28,0.82); color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
+  color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
   display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
 /* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */
 .linb-node:hover .linb-ov-btn { pointer-events: auto; }
 .linb-ov-btn:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
-.linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); }
+.linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
+/* 최종(골드) 버튼 — 그리드 card-sf.final 톤(금색 그라데이션) */
+.linb-ov-btn.final {
+  background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;
+  border-color: #ffd966; font-size: 16px;
+}
 .linb-check { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; background: var(--grad); color: var(--accent-ink); font-size: 12px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
 .linb-node.sel.root .linb-tag { display: none; } /* 선택 체크와 원본 태그 겹침 방지 */
 .linb-selinfo { display: inline-flex; align-items: center; gap: 6px; }
@@ -2965,14 +2972,16 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
    공유=라임 'S', 최종=골드 '★'. 호버하면 오버레이의 S/★ 버튼이 대신하므로 숨긴다(중복 방지). */
 .linb-sf {
   position: absolute; top: 5px; left: 5px; z-index: 4; pointer-events: none;
-  width: 26px; height: 26px; border-radius: 7px; line-height: 1;
+  width: 26px; height: 26px; border-radius: 8px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 800; transition: opacity 0.12s;
+  font-weight: 900; transition: opacity 0.12s; backdrop-filter: blur(6px);
 }
-.linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 14px; }
+/* 그리드 카드 .card-sf.on / .card-sf.final 과 동일한 룩 — 공유=라임 S, 최종=골드 그라데이션 ★ */
+.linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 13px; }
 .linb-sf.final {
-  background: rgba(20,22,28,0.82); border: 1px solid #f5c542; color: #ffd24a; font-size: 16px;
-  text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px #000;
+  background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;
+  border: 1px solid #ffd966; font-size: 16px;
+  box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
 }
 .linb-node:hover .linb-sf { opacity: 0; }
 /* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */

@@ -52,7 +52,9 @@ def download_media(url: str = Query(...), name: str = Query("download")):
         raise HTTPException(status_code=400, detail="http(s) URL 만 받을 수 있습니다")
     _reject_internal_host(url)
     try:
-        upstream = urllib.request.urlopen(url, timeout=60)  # noqa: S310 — http(s) 검증 완료
+        # User-Agent 부여 — 일부 CDN 이 UA 없는 요청을 403 으로 막는다(브라우저 흉내).
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (MV-hub media proxy)"})
+        upstream = urllib.request.urlopen(req, timeout=60)  # noqa: S310 — http(s) 검증 완료
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"원격 미디어 다운로드 실패: {e}")
     ctype = upstream.headers.get_content_type() or "application/octet-stream"

@@ -1,20 +1,39 @@
 // 결과물 다운로드 공용 헬퍼 — 카드 그리드·히스토리 보드·에셋 셀이 똑같이 복붙하던 것.
 import type { Generation } from "../types";
 
-// 로컬 보관본(/...)은 같은 오리진이라 a[download] 로 바로 받는다. 원격 URL(cloudfront 등)은
-// 브라우저가 cross-origin 에서 download 속성을 무시해 '다운로드' 대신 새 탭으로 열리므로,
-// 같은 오리진 프록시(/api/download)로 받아 attachment 로 내려받게 한다 → 크롬 다운로드 목록에 표시.
-export function download(url: string, name: string) {
+// 다운로드 — 항상 같은 오리진에서 bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드
+// 목록 표시). 원격 URL(cloudfront 등)은 cross-origin 이라 a[download] 가 무시되므로 서버 프록시
+// (/api/download)로 받는다. 프록시가 없거나(미배포) 실패하면 폴백: 원격은 새 탭, 로컬은 직접 다운로드
+// — '사이트를 사용할 수 없음' 같은 실패 메시지 대신 최소 동작을 보장한다.
+function _anchor(href: string, name?: string, newTab = false) {
   const a = document.createElement("a");
-  if (url.startsWith("/")) {
-    a.href = url;
-  } else {
-    a.href = `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+  a.href = href;
+  if (name) a.download = name;
+  if (newTab) {
+    a.target = "_blank";
+    a.rel = "noopener";
   }
-  a.download = name; // 프록시도 같은 오리진이라 download 속성이 동작(+서버 Content-Disposition)
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+export async function download(url: string, name: string) {
+  const src = url.startsWith("/")
+    ? url
+    : `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+  try {
+    const res = await fetch(src, { credentials: "include" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    _anchor(blobUrl, name);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  } catch {
+    // 폴백: 로컬은 직접 a[download], 원격은 새 탭(다운로드 실패 메시지보다 낫다).
+    if (url.startsWith("/")) _anchor(url, name);
+    else _anchor(url, undefined, true);
+  }
 }
 
 // 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL.
