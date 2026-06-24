@@ -56,6 +56,13 @@ export function AccountMenu({
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+  // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
+  // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
+  useEffect(() => {
+    if (!open) return;
+    if (liveMode) api.workspaces().then(setList).catch(() => {});
+    else api.accountHf().then(setReported).catch(() => {});
+  }, [open, liveMode]);
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
