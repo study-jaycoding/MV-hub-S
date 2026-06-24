@@ -144,6 +144,12 @@ def list_creators(
                 }
                 for r in rows
             ]
+            # ★공유(team) 탭에서 프로젝트를 보면 '그 프로젝트에 실제로 공유한 사람'만 보여야 한다.
+            # project_member UNION 때문에, 그 프로젝트엔 공유한 적 없고 배정만 됐거나 다른 곳(미분류)에만
+            # 작업이 있는 멤버가 count 0 으로 섞여 보이던 버그 → team 탭은 기여자(cnt>0)만 남긴다.
+            # ('내 작업' 탭은 배정 멤버 표시가 의미 있어 그대로 둔다.)
+            if tab == "team":
+                result = [r for r in result if r["count"] > 0]
             # 라이브러리와 일관: '내 작업' 경로에선 멤버·생성물이 없어도 '나'는 항상 보인다.
             if account_uid and tab != "team" and not any(r["uid"] == account_uid for r in result):
                 sname = resolve_display_names(conn, [account_uid]).get(account_uid)
