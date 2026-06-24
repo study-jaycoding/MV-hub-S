@@ -82,10 +82,9 @@ if errorlevel 1 (
   set "HF=higgsfield"
 )
 call %HF% account status >nul 2>nul
-if errorlevel 1 (
-  echo     Login required - follow the prompts to sign in to your Higgsfield account.
-  call %HF% auth login
-)
+if errorlevel 1 goto :hf_login
+
+:hf_show
 echo.
 echo  ===========================================================================
 echo   YOUR HIGGSFIELD CLI ACCOUNT (verify FIRST) - shown below.
@@ -94,6 +93,20 @@ echo   team server under that account; a different hub login will be REJECTED.
 echo  ===========================================================================
 call %HF% account status
 echo  ===========================================================================
+set "_sw="
+set /p "_sw=  Switch to a DIFFERENT Higgsfield account? (y/N): "
+if /i "%_sw%"=="y" goto :hf_switch
+goto :hf_ok
+
+:hf_switch
+echo     Logging out the current account...
+call %HF% auth logout >nul 2>nul
+:hf_login
+echo     Sign in to your Higgsfield account (a browser window will open)...
+call %HF% auth login
+goto :hf_show
+
+:hf_ok
 echo.
 
 echo [5/5] Opening the hub + keeping the generation agent running ^(closing this window stops it^)
