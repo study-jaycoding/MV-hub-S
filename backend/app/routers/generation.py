@@ -397,7 +397,14 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
     """주어진 gen_id 들의 코멘트 수·미확인 여부(배치). 로컬 우선에서 발행본(서버 공유) 카드의
     코멘트 뱃지를 서버 기준으로 보강할 때 로컬 허브가 이걸 서버로 위임해 받아온다."""
     if _proxy.proxying():
-        return _proxy.proxy_json("POST", "/api/generations/comment-counts", body=body.model_dump())
+        # 로컬 id ↔ 서버 id(job_id) 변환: 요청은 서버 id 로 보내고 응답 키를 로컬 id 로 되돌린다
+        # (로컬 카드 id 로 그대로 위임하면 서버가 못 찾아 공유본 C 뱃지가 0 으로 떴다).
+        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in (body.gen_ids or [])}
+        local_of = {sid: gid for gid, sid in srv_of.items()}
+        resp = _proxy.proxy_json(
+            "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
+        )
+        return {local_of.get(k, k): v for k, v in (resp or {}).items()}
     return repo.generation_comment_counts(body.gen_ids, actor_id(request))
 
 
@@ -406,7 +413,8 @@ def list_gen_comments(gen_id: str, request: Request):
     """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신)."""
     gen = repo.get_generation(gen_id)
     if _comments_on_server(gen):
-        return _proxy.proxy_get(f"/api/generations/{gen_id}/comments", request)
+        _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
+        return _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
@@ -417,8 +425,9 @@ def list_gen_comments(gen_id: str, request: Request):
 def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     gen = repo.get_generation(gen_id)
     if _comments_on_server(gen):
+        _, server_id = repo.finalize_id_map(gen_id)
         return _proxy.proxy_json(
-            "POST", f"/api/generations/{gen_id}/comments", body=body.model_dump()
+            "POST", f"/api/generations/{server_id}/comments", body=body.model_dump()
         )
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -476,8 +485,9 @@ def delete_gen_comment(comment_id: str, request: Request):
 def read_gen_comments(gen_id: str, body: GenCommentReadIn, request: Request):
     gen = repo.get_generation(gen_id)
     if _comments_on_server(gen):
+        _, server_id = repo.finalize_id_map(gen_id)
         return _proxy.proxy_json(
-            "POST", f"/api/generations/{gen_id}/comments/read", body=body.model_dump()
+            "POST", f"/api/generations/{server_id}/comments/read", body=body.model_dump()
         )
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")

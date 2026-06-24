@@ -59,8 +59,11 @@ def unpublish(gen_id: str, request: Request):
     # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
     # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
     if _proxy.proxying():
+        # 서버는 번들 앵커(job_id)로 안다 → 로컬 id 그대로 위임하면 항상 404 가 떠
+        # "서버에 이미 없음=성공"으로 오인, 로컬만 해제되고 팀엔 노출이 남는 누수가 났다.
+        local_id, server_id = repo.finalize_id_map(gen_id)
         try:
-            _proxy.proxy_json("POST", f"/api/generations/{gen_id}/unpublish")
+            _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
         except HTTPException as e:
             if e.status_code != 404:
                 raise  # 서버 전파 실패 → 로컬도 해제하지 않아 상태 불일치를 막는다
@@ -169,6 +172,13 @@ def get_provider() -> dict[str, Any]:
 def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history."""
     src = repo.get_generation(gen_id)
+    if not src and _proxy.proxying():
+        # 팀 탭은 서버 id(job_id)로 표시 → 내 로컬 항목이면 job_id 로 재해석해 찾는다.
+        # (남의 공유본은 로컬에 원본이 없어 여전히 404 — 그건 별개 사안.)
+        local_id, _ = repo.finalize_id_map(gen_id)
+        if local_id and local_id != gen_id:
+            gen_id = local_id
+            src = repo.get_generation(gen_id)
     if not src:
         raise HTTPException(status_code=404, detail="원본 generation 없음")
     if not src["shared"]:
