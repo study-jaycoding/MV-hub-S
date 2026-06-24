@@ -462,12 +462,19 @@ export default function App() {
   // ★로컬 우선: 내 작업(tab=my)은 로컬 DB 를 읽으므로 진행중·완료·실패가 그대로 보인다 →
   //   별도 머지/폴 없이 reload 만으로 충분하다(생성중 카드가 그 자리에서 결과로 교체).
   useEffect(() => {
+    let syncedTimer: ReturnType<typeof setTimeout> | null = null;
     const off = connectProgress(
       (m) => {
         if (m.type === "synced") {
-          reload(true);
-          bumpBoard(); // 구성탭 트리도 따라잡기
-          setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
+          // 디바운스: 배치 생성·팀 동기화로 synced 가 연달아 오면 풀 reload(list+stats+facets+projects)가
+          // 중첩돼 폭주한다 → 400ms 코얼레스로 마지막 1회만 reload.
+          if (syncedTimer) clearTimeout(syncedTimer);
+          syncedTimer = setTimeout(() => {
+            syncedTimer = null;
+            reload(true);
+            bumpBoard(); // 구성탭 트리도 따라잡기
+            setSyncTick((t) => t + 1); // 열린 코멘트 패널이 스레드를 다시 불러오게(새 글·삭제 즉시 반영)
+          }, 400);
           return;
         }
         if (!m.status) return;
@@ -491,7 +498,10 @@ export default function App() {
       },
       () => reload(true), // (재)연결 시 동기화
     );
-    return off;
+    return () => {
+      if (syncedTimer) clearTimeout(syncedTimer); // 디바운스 타이머 정리(언마운트/재구독 시 stray reload 방지)
+      off();
+    };
   }, [reload, bumpBoard]);
 
   // 폴링 폴백(단일 인터벌): 진행중(pending/running) 잡이 있거나 팀 탭을 보는 동안만 주기적으로
@@ -563,7 +573,9 @@ export default function App() {
     // 병렬 실행(순차 await 제거) + 실패는 조용히 삼키지 말고 집계해 보고.
     const results = await Promise.allSettled(ids.map((id) => api.setColor(id, next)));
     const failed = results.filter((r) => r.status === "rejected").length;
-    await reload();
+    // light reload — 컬러는 고정 팔레트(r/g/b)라 facets/projects 가 안 변한다(연속 토글 시 불필요한
+    // facet·project 재조회 제거). 태그/소스는 facet 이 바뀔 수 있어 light 안 함.
+    await reload(false, true);
     if (failed) flash(`컬러 적용 ${failed}/${ids.length}건 실패`);
   };
 
