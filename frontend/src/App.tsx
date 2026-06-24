@@ -235,7 +235,9 @@ export default function App() {
   // silent=true 면 '로딩…' 표시 없이 조용히 데이터만 갱신(백그라운드 폴링·WS·탭복귀용).
   // → 사용자가 직접 한 조회(필터변경·최초로드)만 로딩을 보여 깜빡임을 없앤다.
   const reloadSeqRef = useRef(0);
-  const reload = useCallback(async (silent = false) => {
+  // light=true(폴링·포커스): listGenerations + stats 만 새로 받고 facets·projects 는 생략(거의 안
+  // 바뀌는데 매 3초 4-요청·전체 교체는 낭비). 사용자 동작/탭전환의 일반 reload 에서 facets 갱신.
+  const reload = useCallback(async (silent = false, light = false) => {
     // 인증 게이트: 로그인 필요한데 아직 미로그인이면 조회하지 않는다(401 소음 방지).
     if (!authReadyRef.current) return;
     // 구성 탭은 라이브러리 조회가 아니라 보드 작업 공간이므로 로드 생략.
@@ -255,18 +257,20 @@ export default function App() {
           ? api.listTrash(genQueryRef.current.search, 0)
           : api.listGenerations(genQueryRef.current, null), // 첫 페이지(커서 없음)
         api.generationStats(), // 실패 수·미확인(전역 파생값)
-        api.facets(filtersRef.current.tab === "team" ? "team" : "my"), // my=로컬, team=서버
-        api.projects(filtersRef.current.tab === "team" ? "team" : "my"), // 카운트도 탭 기준
+        light ? Promise.resolve(null) : api.facets(filtersRef.current.tab === "team" ? "team" : "my"),
+        light ? Promise.resolve(null) : api.projects(filtersRef.current.tab === "team" ? "team" : "my"),
       ]);
       if (seq !== reloadSeqRef.current) return; // 더 최신 reload 진행 중 → 이 응답은 폐기
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
       setStats(st);
-      setFacets(f);
-      setProjects(pr.projects);
-      setUnassignedCount(pr.unassigned);
-      setArchivedCount(pr.archived_count ?? 0);
-      projectsLoadedRef.current = true;
+      if (f) setFacets(f); // light 면 null → 기존 facets 유지
+      if (pr) {
+        setProjects(pr.projects);
+        setUnassignedCount(pr.unassigned);
+        setArchivedCount(pr.archived_count ?? 0);
+        projectsLoadedRef.current = true;
+      }
     } catch (e) {
       if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
     } finally {
@@ -471,30 +475,23 @@ export default function App() {
     return off;
   }, [reload, bumpBoard]);
 
-  // 폴링 폴백: 진행중(pending/running) 잡이 있으면 주기적으로 reload(로컬 DB 갱신 따라잡기).
+  // 폴링 폴백(단일 인터벌): 진행중(pending/running) 잡이 있거나 팀 탭을 보는 동안만 주기적으로
+  // 가벼운 reload(list+stats). 둘 다 참이어도 인터벌은 하나만 돈다(예전엔 별개 2개가 중첩돼 ~1.5초마다
+  // 4-요청·전체 그리드 재렌더였다). 팀 탭=서버 상태 따라잡기, 내 작업=로컬 잡 진행 반영.
   const hasActiveJob = gens.some(
     (g) => g.status === "pending" || g.status === "running",
   );
   useEffect(() => {
-    if (!hasActiveJob) return;
-    const id = setInterval(() => reload(true), 3000);
+    if (!hasActiveJob && filters.tab !== "team") return;
+    const id = setInterval(() => reload(true, true), 3000); // light: facets/projects 생략
     return () => clearInterval(id);
-  }, [hasActiveJob, reload]);
-
-  // 팀 공유 탭은 '서버 상태'라 내 로컬 WS 로는 팀원의 새 공유·골드를 알 수 없다(내 변경만 옴).
-  // 그 탭을 보는 동안만 서버를 주기적으로 다시 읽어 (준)실시간으로 반영한다. 내 작업/구성 탭은
-  // 로컬 DB 라 불필요. (백그라운드 탭은 브라우저가 알아서 throttle + 포커스 시 즉시 reload 가 보완.)
-  useEffect(() => {
-    if (filters.tab !== "team") return;
-    const id = setInterval(() => reload(true), 3000);
-    return () => clearInterval(id);
-  }, [filters.tab, reload]);
+  }, [hasActiveJob, filters.tab, reload]);
 
   // 탭 재포커스 시 즉시 새로고침 — 백그라운드 탭 throttling 으로 놓친 WS 'synced'(웹/타기기
   // 생성)를 따라잡는다. 다른 탭에서 작업하다 돌아오면 항상 최신을 보장(WS 끊김 안전망).
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") reload(true);
+      if (document.visibilityState === "visible") reload(true, true);
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);

@@ -120,9 +120,41 @@ export function ThumbnailGrid(props: Props) {
   // 카드 인라인 편집(S 이름·# 태그) — 버튼/단축키 공통 진실원. 한 번에 한 카드.
   // (C 코멘트는 인라인이 아니라 공유 스레드 패널 → onOpenComments)
   const [editTarget, setEditTarget] = useState<{ id: string; field: "source" | "tag" } | null>(null);
-  const requestEdit = (g: Generation, field: "source" | "tag") =>
-    setEditTarget({ id: g.id, field });
+  const requestEdit = useCallback(
+    (g: Generation, field: "source" | "tag") => setEditTarget({ id: g.id, field }),
+    [],
+  );
   const editDone = useCallback(() => setEditTarget(null), []);
+
+  // 카드에 넘기는 콜백을 '안정 참조'로 — App(갓-컴포넌트)이 매 렌더 새 콜백을 줘도, 카드가 받는
+  // 콜백 prop 의 identity 는 고정돼 React.memo(GenerationCard)가 불필요한 재렌더를 건너뛴다.
+  // 항상 최신 props 콜백을 ref 경유로 호출하므로 stale 클로저는 없다(선택/포커스/편집 시 전체
+  // 카드 재렌더 → 변경된 카드만 재렌더로 축소).
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  const cb = useMemo(
+    () => ({
+      onToggleSelect: (id: string) => propsRef.current.onToggleSelect(id),
+      onSetSource: (g: Generation, n: string | null, s: boolean) =>
+        propsRef.current.onSetSource(g, n, s),
+      onSetTags: (g: Generation, tg: string[]) => propsRef.current.onSetTags(g, tg),
+      onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
+      onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),
+      onPublish: (g: Generation) => propsRef.current.onPublish(g),
+      onUnpublish: (g: Generation) => propsRef.current.onUnpublish(g),
+      onFinalize: (g: Generation) => propsRef.current.onFinalize(g),
+      onUnfinalize: (g: Generation) => propsRef.current.onUnfinalize(g),
+      onImport: (g: Generation) => propsRef.current.onImport(g),
+      onRestore: (g: Generation) => propsRef.current.onRestore(g),
+      onColor: (g: Generation, c: string | null) => propsRef.current.onColor(g, c),
+      onTags: (g: Generation) => propsRef.current.onTags(g),
+      onInfo: (target: InfoTarget) => propsRef.current.onInfo(target),
+      onPreview: (target: PreviewTarget) => propsRef.current.onPreview(target),
+      onShowHistory: (g: Generation) => propsRef.current.onShowHistory?.(g),
+      canFinalize: (g: Generation) => propsRef.current.canFinalize?.(g) ?? true,
+    }),
+    [],
+  );
   const dragRef = useRef<{
     x: number; y: number; base: Set<string>; additive: boolean; range: boolean;
     anchor: number; moved: boolean; cellId: string | null;
@@ -398,13 +430,32 @@ export function ThumbnailGrid(props: Props) {
                   style={{ height: Math.round(300 * scale) }}
                 >
                   <GenerationCard
-                    {...props}
                     gen={g}
+                    tab={props.tab}
                     layout="list"
+                    fill={props.fill}
+                    dimDeleted={props.dimDeleted}
                     selected={selectedIds.has(g.id)}
                     editingField={editTarget?.id === g.id ? editTarget.field : null}
                     onRequestEdit={requestEdit}
                     onEditDone={editDone}
+                    onToggleSelect={cb.onToggleSelect}
+                    onSetSource={cb.onSetSource}
+                    onSetTags={cb.onSetTags}
+                    onOpenComments={cb.onOpenComments}
+                    onRegenerate={cb.onRegenerate}
+                    onPublish={cb.onPublish}
+                    onUnpublish={cb.onUnpublish}
+                    onFinalize={cb.onFinalize}
+                    onUnfinalize={cb.onUnfinalize}
+                    canFinalize={cb.canFinalize}
+                    onImport={cb.onImport}
+                    onRestore={cb.onRestore}
+                    onColor={cb.onColor}
+                    onTags={cb.onTags}
+                    onInfo={cb.onInfo}
+                    onPreview={cb.onPreview}
+                    onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
                   />
                 </div>,
               );
@@ -465,13 +516,32 @@ export function ThumbnailGrid(props: Props) {
                 key={g.id}
               >
                 <GenerationCard
-                  {...props}
                   gen={g}
+                  tab={props.tab}
                   layout="grid"
+                  fill={props.fill}
+                  dimDeleted={props.dimDeleted}
                   selected={selectedIds.has(g.id)}
                   editingField={editTarget?.id === g.id ? editTarget.field : null}
                   onRequestEdit={requestEdit}
                   onEditDone={editDone}
+                  onToggleSelect={cb.onToggleSelect}
+                  onSetSource={cb.onSetSource}
+                  onSetTags={cb.onSetTags}
+                  onOpenComments={cb.onOpenComments}
+                  onRegenerate={cb.onRegenerate}
+                  onPublish={cb.onPublish}
+                  onUnpublish={cb.onUnpublish}
+                  onFinalize={cb.onFinalize}
+                  onUnfinalize={cb.onUnfinalize}
+                  canFinalize={cb.canFinalize}
+                  onImport={cb.onImport}
+                  onRestore={cb.onRestore}
+                  onColor={cb.onColor}
+                  onTags={cb.onTags}
+                  onInfo={cb.onInfo}
+                  onPreview={cb.onPreview}
+                  onShowHistory={props.onShowHistory ? cb.onShowHistory : undefined}
                 />
               </div>,
             );

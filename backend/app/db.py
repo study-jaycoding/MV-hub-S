@@ -447,6 +447,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_generation_keyset "
         "ON generation(sort_ts DESC, id DESC)"
     )
+    # ★계정별 '내 작업' 핫패스 — tab='my'·facets·projects 가 creator_uid 로 스코프하면서 sort_ts/id 로
+    # 정렬·키셋한다. 이 복합 인덱스가 범위(creator_uid)+정렬(sort_ts,id)을 한 인덱스로 만족시켜
+    # 전체 스캔+filesort 를 없앤다(단일 idx_generation_keyset 는 creator_uid 필터를 못 살림).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_creator_sort "
+        "ON generation(creator_uid, sort_ts DESC, id DESC)"
+    )
     # facets 의 SELECT DISTINCT color 가 전체 generation 스캔이 되지 않게(캐싱 대신 인덱스 — staleness 0).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_color ON generation(color)")
     # 실패 정리·media 필터 등 status 조건 가속.

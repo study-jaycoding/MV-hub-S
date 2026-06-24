@@ -3,7 +3,7 @@
 //  · 미디어 위 호버 오버레이 액션(정보·다운로드·미리보기·재생성·공유/가져오기)
 //  · 좌상단 선택 체크박스(다중 선택 → 상단 일괄 작업 바)
 // 그리드 모드 = 세로 카드, 리스트 모드 = 좌측 큰 썸네일 + 우측 상세 패널.
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { download, downloadName } from "../lib/download";
@@ -56,7 +56,7 @@ interface Props {
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 클릭 → 가계 패널
 }
 
-export function GenerationCard({
+function GenerationCardImpl({
   gen,
   tab,
   layout,
@@ -680,4 +680,9 @@ function BranchIcon() {
     </svg>
   );
 }
+
+// React.memo — 콜백을 ThumbnailGrid 가 안정 참조로 넘기므로(props 스프레드 제거), 선택/포커스/편집
+// 등 '다른 카드' 상태 변경 때 이 카드의 props(gen·selected·editingField…)가 안 바뀌면 재렌더를
+// 건너뛴다. gen 객체가 새로 오면(reload) 재렌더되는 건 정상(데이터 변경).
+export const GenerationCard = memo(GenerationCardImpl);
 
