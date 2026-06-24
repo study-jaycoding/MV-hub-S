@@ -201,9 +201,15 @@ def delete_project(pid: str) -> bool:
         return cur.rowcount > 0
 
 
-def assign_to_project(generation_ids: list[str], project_id: Optional[str]) -> int:
+def assign_to_project(
+    generation_ids: list[str],
+    project_id: Optional[str],
+    account_uid: Optional[str] = None,
+) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
-    project_id 가 실재하는지 검증(없으면 ValueError)."""
+    project_id 가 실재하는지 검증(없으면 ValueError).
+    account_uid 지정(AUTH on)이면 내 생성물만 이동 — 공유 DB 에서 추측한 남의 id 로 남의 작업물을
+    다른 프로젝트로 옮기거나 미분류화하는 사고를 막는다. None(단독)이면 제약 없음(기존 동작)."""
     if not generation_ids:
         return 0
     with get_connection() as conn:
@@ -214,10 +220,14 @@ def assign_to_project(generation_ids: list[str], project_id: Optional[str]) -> i
         # id 또는 job_id 로 매칭 — 팀 공유 탭의 카드 id 는 서버 앵커(=로컬 job_id)라 로컬 primary id
         # 와 다르다. 둘 다 받아야 어느 탭에서 골랐든 같은 로컬 행에 귀속된다.
         placeholders = ",".join("?" for _ in generation_ids)
+        scope = " AND creator_uid = ?" if account_uid is not None else ""
+        params: list[Any] = [project_id, *generation_ids, *generation_ids]
+        if account_uid is not None:
+            params.append(account_uid)
         cur = conn.execute(
             f"UPDATE generation SET project_id = ? "
-            f"WHERE id IN ({placeholders}) OR job_id IN ({placeholders})",
-            [project_id, *generation_ids, *generation_ids],
+            f"WHERE (id IN ({placeholders}) OR job_id IN ({placeholders})){scope}",
+            params,
         )
         return cur.rowcount
 

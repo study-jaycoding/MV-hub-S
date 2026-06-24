@@ -81,7 +81,14 @@ def _install_db(tmp: Path) -> dict:
         Path(str(path) + suf).unlink(missing_ok=True)
     shutil.move(str(tmp), str(path))
     db.init_db()
+    # DB 파일을 같은 경로에 통째 교체했다 → 풀 커넥션이 옛 파일을 계속 잡고 있지 않게 전 스레드 무효화.
+    db.flush_pool()
     identity._MY_UID_CACHE[0] = None
+    # FTS 존재 여부도 새 DB 기준으로 재확인(경로 동일이라 자동 재검출 안 됨 → 명시 리셋).
+    from ..repo import generations as _gens
+
+    _gens._FTS_READY = None
+    _gens._FTS_READY_PATH = None
     # 활성 계정 포인터 해제 — 가져온 DB 의 실제 소유자를 신뢰할 수 없으므로(다른 계정 export 본일 수
     # 있음), 옛 계정으로 '로그인된 것처럼' 그 데이터를 보는 교차계정 오염을 막는다. 재로그인이 올바른
     # 계정→DB 매핑을 다시 세운다(_switch_account_db). 공유 서버(AUTH on)는 active.json 미사용이라 무관.

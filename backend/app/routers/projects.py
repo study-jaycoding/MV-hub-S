@@ -12,6 +12,7 @@ from . import _proxy
 from .. import rbac, repo
 from ..deps import (
     account_global_roles,
+    account_scope_uid,
     current_account,
     project_roles_of,
     require_global_cap,
@@ -147,7 +148,10 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
         except Exception:  # noqa: BLE001
             pass
     try:
-        n = repo.assign_to_project(body.generation_ids, body.project_id)
+        # AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
+        n = repo.assign_to_project(
+            body.generation_ids, body.project_id, account_uid=account_scope_uid(request)
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "updated": n}

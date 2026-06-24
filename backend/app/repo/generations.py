@@ -17,20 +17,24 @@ from ._common import (
     new_id,
 )
 
-# FTS5(generation_fts) 존재 여부 — 검색 경로 선택용. 1회 확인 후 메모이즈.
+# FTS5(generation_fts) 존재 여부 — 검색 경로 선택용. DB 경로별로 1회 확인 후 메모이즈.
+# ★경로로 키잉: 계정 전환·DB 이관으로 활성 DB 가 바뀌면 재확인한다(예전엔 전역 bool 로 1회만 확인해,
+#   FTS 있는 DB 로 시작 후 FTS 없는 DB 로 전환하면 없는 테이블에 MATCH 를 던져 검색이 500 났다).
 _FTS_READY: Optional[bool] = None
+_FTS_READY_PATH: Optional[str] = None
 
 
 def _fts_ready() -> bool:
-    """FTS5 검색 인덱스가 준비됐는지(없으면 LIKE 폴백). 첫 호출 때만 DB 확인.
+    """FTS5 검색 인덱스가 준비됐는지(없으면 LIKE 폴백). 활성 DB 경로가 바뀔 때만 재확인.
     PostgreSQL 백엔드면 FTS5 미사용 → False(검색은 ILIKE, pg_trgm GIN 인덱스가 가속)."""
-    global _FTS_READY
-    if _FTS_READY is None:
-        from ..db import DB_BACKEND
+    global _FTS_READY, _FTS_READY_PATH
+    from ..db import DB_BACKEND, get_db_path
 
-        if DB_BACKEND == "postgres":
-            _FTS_READY = False
-            return _FTS_READY
+    if DB_BACKEND == "postgres":
+        return False
+    path = str(get_db_path())
+    if _FTS_READY is None or _FTS_READY_PATH != path:
+        _FTS_READY_PATH = path
         with get_connection() as conn:
             _FTS_READY = bool(
                 conn.execute(
@@ -653,13 +657,20 @@ def restore_generation(gen_id: str, account_uid: Optional[str] = None) -> bool:
     return trash.restore_from_trash(gen_id, account_uid)
 
 
-def gens_with_job_id() -> list[tuple[str, str]]:
-    """job_id 를 가진 generation [(id, job_id)] — 힉스필드 존재 검증 대상."""
+def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]:
+    """job_id 를 가진 generation [(id, job_id)] — 힉스필드 존재 검증 대상.
+    account_uid 지정(AUTH on)이면 내 것만 — 공유 DB 에서 남의 잡을 (다른 신원의) 하우스 CLI 로
+    조회·오판해 휴지통 보내는 사고를 막는다. None(단독)이면 전체(기존 동작)."""
+    where = "job_id IS NOT NULL AND job_id<>''"
+    args: list[Any] = []
+    if account_uid is not None:
+        where += " AND creator_uid=?"
+        args.append(account_uid)
     with get_connection() as conn:
         return [
             (r["id"], r["job_id"])
             for r in conn.execute(
-                "SELECT id, job_id FROM generation WHERE job_id IS NOT NULL AND job_id<>''"
+                f"SELECT id, job_id FROM generation WHERE {where}", args
             ).fetchall()
         ]
 
@@ -722,17 +733,23 @@ def reconcile_duplicates() -> int:
         return merged
 
 
-def delete_failed_orphans() -> int:
+def delete_failed_orphans(account_uid: Optional[str] = None) -> int:
     """완료(done)도 진행중(pending/running)도 아닌 비정상 종료 생성물을 모두 **휴지통 DB 로 이동**.
     failed·nsfw(NSFW 차단)는 물론, 향후 새로 생길 차단/오류 status 도 자동 포함된다 —
     '실패'를 특정 값으로 한정하지 않고 '성공/진행중이 아닌 것'으로 일반화. 휴지통에서 복구 가능,
-    힉스필드 원본엔 영향 없음."""
+    힉스필드 원본엔 영향 없음.
+    account_uid 지정(AUTH on)이면 내 것만 — 공유 DB 에서 남의 실패본까지 쓸어 담는 사고를 막는다."""
     from . import trash
+    where = "status NOT IN ('done','pending','running')"
+    args: list[Any] = []
+    if account_uid is not None:
+        where += " AND creator_uid=?"
+        args.append(account_uid)
     with get_connection() as conn:
         ids = [
             r["id"]
             for r in conn.execute(
-                "SELECT id FROM generation WHERE status NOT IN ('done','pending','running')"
+                f"SELECT id FROM generation WHERE {where}", args
             ).fetchall()
         ]
     return sum(1 for gid in ids if trash.move_to_trash(gid))

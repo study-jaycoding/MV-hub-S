@@ -113,9 +113,23 @@ def _gather(conn: sqlite3.Connection, gen_id: str, gen: sqlite3.Row) -> dict[str
             "SELECT * FROM generation_comment WHERE gen_id=?", (gen_id,)).fetchall()],
         "comment_reads": [_row(r) for r in conn.execute(
             "SELECT * FROM generation_comment_read WHERE gen_id=?", (gen_id,)).fetchall()],
+        # 코멘트단위 seen(comment_id 기준) — 빠뜨리면 복원 시 모든 코멘트가 다시 NEW 로 떠 재알림 폭주.
+        "comment_seen": _gather_comment_seen(conn, gen_id),
         "shares": [_row(r) for r in conn.execute(
             "SELECT * FROM share WHERE generation_id=?", (gen_id,)).fetchall()],
     }
+
+
+def _gather_comment_seen(conn: sqlite3.Connection, gen_id: str) -> list[dict[str, Any]]:
+    """이 gen 의 코멘트들에 대한 seen 행. 구버전 DB 에 테이블이 없을 수 있어 가드."""
+    try:
+        return [_row(r) for r in conn.execute(
+            "SELECT s.* FROM generation_comment_seen s "
+            "JOIN generation_comment c ON c.id = s.comment_id WHERE c.gen_id=?",
+            (gen_id,),
+        ).fetchall()]
+    except Exception:  # noqa: BLE001 — 테이블 미존재(레거시)
+        return []
 
 
 def move_to_trash(gen_id: str) -> bool:
@@ -184,12 +198,25 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         tags._set_tags(conn, gen_id, p.get("tags", []))
         tags._set_auto_tags(conn, gen_id, p.get("auto_tags", []))
         # 옛 휴지통 payload 는 "lineage" 키였다 → 둘 다 읽어 하위호환(테이블은 history 로 통일).
+        # ⚠️ history.parent/child_gen_id 는 NOT NULL FK(generation). 상대 끝이 아직 휴지통/영구삭제면
+        # INSERT OR IGNORE 도 FK 위반은 못 무시해 복원 트랜잭션 전체가 롤백된다(복원 자체가 실패).
+        # → 양 끝이 메인에 실재하는 엣지만 복원(나머지는 드롭하되 본체 복원은 진행). 상대를 나중에
+        # 복원하면 그쪽 payload 에서 엣지가 재생성된다.
         for l in p.get("history") or p.get("lineage") or []:
-            _insert_row(conn, "history", l, or_ignore=True)
+            pid, cid = l.get("parent_gen_id"), l.get("child_gen_id")
+            if not pid or not cid:
+                continue
+            if (
+                conn.execute("SELECT 1 FROM generation WHERE id=?", (pid,)).fetchone()
+                and conn.execute("SELECT 1 FROM generation WHERE id=?", (cid,)).fetchone()
+            ):
+                _insert_row(conn, "history", l, or_ignore=True)
         for c in p.get("comments", []):
             _insert_row(conn, "generation_comment", c, or_ignore=True)
         for rd in p.get("comment_reads", []):
             _insert_row(conn, "generation_comment_read", rd, or_ignore=True)
+        for sn in p.get("comment_seen", []):  # 코멘트 seen 복원(없으면 전부 NEW 로 재등장)
+            _insert_row(conn, "generation_comment_seen", sn, or_ignore=True)
         for s in p.get("shares", []):
             _insert_row(conn, "share", s, or_ignore=True)
         conn.execute("DELETE FROM trash.trashed WHERE id=?", (gen_id,))

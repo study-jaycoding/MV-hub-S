@@ -39,7 +39,12 @@ def _rl_key(request: Request, email: str) -> str:
 def _rl_check(key: str) -> None:
     now = time.monotonic()
     hits = [t for t in _rl_fails.get(key, []) if now - t < _RL_WINDOW]
-    _rl_fails[key] = hits
+    # 빈 리스트는 키 자체를 제거 — 안 그러면 (IP|email) 조합마다 빈 항목이 영구히 쌓여(성공 시에만
+    # 제거됨) 이메일/IP 를 돌리는 공격에 dict 가 무한히 커진다(느린 메모리 누수).
+    if hits:
+        _rl_fails[key] = hits
+    else:
+        _rl_fails.pop(key, None)
     if len(hits) >= _RL_MAX:
         raise HTTPException(
             status_code=429,

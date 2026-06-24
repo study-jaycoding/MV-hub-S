@@ -261,23 +261,24 @@ def set_tags(gen_id: str, body: TagsIn, request: Request):
 
 
 @router.delete("/tags/{tag}")
-def delete_tag(tag: str):
-    """태그를 모든 generation 에서 전역 삭제(에셋 T 패널 ✕ 와 동일)."""
-    return {"removed": repo.delete_tag_everywhere(tag)}
+def delete_tag(tag: str, request: Request):
+    """태그를 generation 에서 삭제(에셋 T 패널 ✕ 와 동일). AUTH on 이면 내 생성물에서만(남의 태그 보존)."""
+    return {"removed": repo.delete_tag_everywhere(tag, account_uid=account_scope_uid(request))}
 
 
 @router.post("/generations/clear-failed")
-def clear_failed():
-    """힉스필드에 안 올라간 로컬 유령 실패(failed + job_id 없음)만 일괄 삭제."""
-    return {"removed": repo.delete_failed_orphans()}
+def clear_failed(request: Request):
+    """비정상 종료(성공/진행중 아님) 생성물을 휴지통으로. AUTH on 이면 내 것만(남의 실패본 보존)."""
+    return {"removed": repo.delete_failed_orphans(account_uid=account_scope_uid(request))}
 
 
 @router.post("/generations/trash-hf-missing")
-async def trash_hf_missing():
+async def trash_hf_missing(request: Request):
     """내 생성물 중 힉스필드에서 삭제된 것(generate get 실패)을 찾아 휴지통으로 보낸다.
     무료 호출(생성 아님). 확인 불가(None)는 건드리지 않는다 — 일시적 오류로 멀쩡한 걸 지우지 않게.
-    재등장한 항목은 흐림(hf_missing) 표시만 해제. 반환: {checked, trashed}."""
-    gens = repo.gens_with_job_id()
+    재등장한 항목은 흐림(hf_missing) 표시만 해제. 반환: {checked, trashed}.
+    AUTH on 이면 내 생성물만 검증 대상(남의 잡을 다른 신원 CLI 로 오판·삭제 방지)."""
+    gens = repo.gens_with_job_id(account_uid=account_scope_uid(request))
     sem = asyncio.Semaphore(8)  # 동시 CLI 호출 제한
 
     async def check(gen_id: str, job_id: str):

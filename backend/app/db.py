@@ -211,14 +211,17 @@ def get_connection(db_path: Path | None = None):
 # 가능성이 있어 폐기하고 다음 요청이 새로 열게 한다. CONTENT_HUB_DB_POOL=0 으로 끌 수 있다(안전장치).
 _POOL_ENABLED = os.environ.get("CONTENT_HUB_DB_POOL", "1").strip() != "0"
 _tls = threading.local()
+# 풀 에폭 — 올리면 모든 스레드의 풀 커넥션이 다음 사용 때 강제 재오픈된다(키에 포함). DB 파일을
+# 같은 경로에 통째 교체(import/복원)하면 경로 문자열은 그대로라 재오픈이 안 되므로 에폭으로 무효화한다.
+_pool_epoch = 0
 
 
 def _pooled_conn(db_path: Path) -> sqlite3.Connection:
-    key = str(db_path)
+    key = (str(db_path), _pool_epoch)
     conn = getattr(_tls, "conn", None)
     if conn is not None and getattr(_tls, "path", None) == key:
         return conn
-    if conn is not None:  # 경로 변경 → 옛 것 닫고 교체
+    if conn is not None:  # 경로/에폭 변경 → 옛 것 닫고 교체
         try:
             conn.close()
         except sqlite3.Error:
@@ -227,6 +230,15 @@ def _pooled_conn(db_path: Path) -> sqlite3.Connection:
     _tls.conn = conn
     _tls.path = key
     return conn
+
+
+def flush_pool() -> None:
+    """모든 스레드의 풀 커넥션을 무효화 — 다음 사용 때 새 파일로 재오픈한다. DB 파일을 같은 경로에
+    교체(import/복원)한 직후 호출: 경로 문자열이 그대로라 _pooled_conn 이 옛 파일(이미 교체됨)을 계속
+    돌려주는 걸 막는다. 에폭을 올려 캐시 키를 어긋나게 하고, 호출 스레드 것은 즉시 닫는다."""
+    global _pool_epoch
+    _pool_epoch += 1
+    _discard_pooled_conn()
 
 
 def _discard_pooled_conn() -> None:

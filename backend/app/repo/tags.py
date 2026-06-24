@@ -115,14 +115,27 @@ def set_tags(gen_id: str, tags: Iterable[str]) -> None:
         _set_tags(conn, gen_id, tags)
 
 
-def delete_tag_everywhere(name: str) -> int:
-    """태그를 모든 generation 에서 제거(전역 삭제) + 고아 태그 행 정리. 제거된 링크 수 반환.
-    에셋 파트 T 패널의 '모든 파일에서 삭제'와 동일한 동작을 생성 파트에 제공."""
+def delete_tag_everywhere(name: str, account_uid: Optional[str] = None) -> int:
+    """태그를 generation 에서 제거 + 고아 태그 행 정리. 제거된 링크 수 반환.
+    account_uid=None(단독/AUTH off): 전역 삭제(기존 동작). account_uid 지정(AUTH on): 내 생성물의
+    링크만 제거하고 남의 링크는 보존 — 공유 DB 에서 한 사용자가 모두의 태그를 지우는 사고를 막는다.
+    내 링크 제거 후 그 태그를 쓰는 링크가 하나도 안 남으면 태그 행도 정리."""
     with get_connection() as conn:
         row = conn.execute("SELECT id FROM tag WHERE name=?", (name,)).fetchone()
         if not row:
             return 0
         tid = row["id"]
+        if account_uid is not None:
+            cur = conn.execute(
+                "DELETE FROM gen_tag WHERE tag_id=? AND generation_id IN "
+                "(SELECT id FROM generation WHERE creator_uid=?)",
+                (tid, account_uid),
+            )
+            if not conn.execute(
+                "SELECT 1 FROM gen_tag WHERE tag_id=? LIMIT 1", (tid,)
+            ).fetchone():
+                conn.execute("DELETE FROM tag WHERE id=?", (tid,))
+            return cur.rowcount
         cur = conn.execute("DELETE FROM gen_tag WHERE tag_id=?", (tid,))
         conn.execute("DELETE FROM tag WHERE id=?", (tid,))
         return cur.rowcount
