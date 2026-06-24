@@ -372,15 +372,32 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
       const g = await api.getGeneration(id);
       const a = g.assets[0];
       const ed = editorRef.current;
-      if (!a || !ed) return;
+      if (!ed) return;
+      if (!a) {
+        // 생성중·실패·NSFW 등 미디어 없는 카드 → 조용히 무시하지 말고 이유를 알린다.
+        setError("이 항목엔 사용할 미디어가 없습니다 (생성중/실패).");
+        return;
+      }
+      // 같은 출처를 이미 칩으로 넣었으면 중복 추가 방지(같은 카드 두 번 드래그).
+      const dup = Array.from(ed.querySelectorAll<HTMLElement>("[data-ref]")).some((el) => {
+        try {
+          return JSON.parse(el.dataset.ref || "{}").source_gen_id === g.id;
+        } catch {
+          return false;
+        }
+      });
+      if (dup) {
+        ed.focus();
+        return;
+      }
       const isVid = a.type === "video";
       const ref: ChipRef = {
         file_path: a.source_url || a.file_path,
         type: a.type,
         // @Image1, @Image2 … — 현재 칩 수 기준으로 다음 슬롯(드롭마다 누적)
         role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`,
-        // 칩 이름: 소스명(등록 시) 우선, 없으면 짧은 고유 ID(프롬프트 조각이 지저분하게 들어가던 문제 해결)
-        name: g.source_name || `${isVid ? "vid" : "img"}-${g.id.slice(0, 4)}`,
+        // 칩 이름: 소스명(등록 시) 우선, 없으면 고유 ID(앞 8자리 — 4자리는 충돌 가능)
+        name: g.source_name || `${isVid ? "vid" : "img"}-${g.id.slice(0, 8)}`,
         thumb: a.thumbnail_path || a.file_path,
         source_gen_id: g.id, // 출처 generation → 히스토리 reference 엣지
       };
@@ -484,6 +501,7 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
         ed.blur(); // 조합 강제 종료 후 clear — IME 잔존 방지
         ed.innerHTML = "";
         composingRef.current = false;
+        dragParentRef.current = null; // 입력 비우면 '재사용 원본' 부모 참조도 폐기(엉뚱한 계보 방지)
         updatePlaceholder();
         setMention(null);
         histIdxRef.current = -1;
