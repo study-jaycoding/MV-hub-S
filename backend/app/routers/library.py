@@ -5,10 +5,12 @@ CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는
 
 from __future__ import annotations
 
+import urllib.parse
+import urllib.request
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import _proxy
@@ -19,6 +21,59 @@ from ..models import FacetsOut, GenerationOut
 from ..services import thumbs
 
 router = APIRouter(prefix="/api", tags=["library"])
+
+
+def _reject_internal_host(url: str) -> None:
+    """SSRF 기본 방어 — 내부/사설/루프백 호스트 미디어는 받지 않는다(원격 공개 CDN 만 의도)."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    blocked = host in ("localhost", "0.0.0.0", "::1") or host.startswith(
+        ("127.", "10.", "192.168.", "169.254.")
+    )
+    if host.startswith("172."):  # 사설 172.16~172.31
+        try:
+            if 16 <= int(host.split(".")[1]) <= 31:
+                blocked = True
+        except (IndexError, ValueError):
+            pass
+    if blocked:
+        raise HTTPException(status_code=400, detail="내부 호스트 미디어는 받을 수 없습니다")
+
+
+@router.get("/download")
+def download_media(url: str = Query(...), name: str = Query("download")):
+    """원격 미디어(cloudfront 등)를 서버가 받아 attachment 로 스트리밍한다.
+
+    원격 URL 은 브라우저의 a[download] 가 무시돼 '다운로드' 대신 새 탭으로 열린다. 같은 오리진
+    프록시(이 엔드포인트)로 받으면 Content-Disposition: attachment 로 '진짜 다운로드'(크롬 다운로드
+    목록)가 된다. http(s) 만 허용 + 내부 호스트 차단(기본 SSRF 방어). 로컬 보관본(/media·/api)은
+    프론트가 직접 a[download] 로 받으므로 여기로 오지 않는다."""
+    low = url.strip().lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        raise HTTPException(status_code=400, detail="http(s) URL 만 받을 수 있습니다")
+    _reject_internal_host(url)
+    try:
+        upstream = urllib.request.urlopen(url, timeout=60)  # noqa: S310 — http(s) 검증 완료
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"원격 미디어 다운로드 실패: {e}")
+    ctype = upstream.headers.get_content_type() or "application/octet-stream"
+    # 파일명 위생 — 헤더 인젝션·경로문자 제거.
+    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+
+    def _stream():
+        try:
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        _stream(),
+        media_type=ctype,
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
 
 
 @router.get("/media-thumb")

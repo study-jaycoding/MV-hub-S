@@ -163,6 +163,7 @@ _LOCAL_EXACT = frozenset(
         "/api/account",       # CLI 계정 상태(워크스페이스/크레딧 원천)
         "/api/sync",          # CLI 수동 동기화
         "/api/media-thumb",   # 로컬 보관 미디어 썸네일
+        "/api/download",      # 원격 미디어 → attachment 스트리밍(이 PC 가 직접 받아 브라우저로)
         "/api/publish-to-shared",  # 자체적으로 서버와 통신(이중 프록시 방지)
         "/api/backups",
         "/api/backup",

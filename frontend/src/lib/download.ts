@@ -1,17 +1,17 @@
 // 결과물 다운로드 공용 헬퍼 — 카드 그리드·히스토리 보드·에셋 셀이 똑같이 복붙하던 것.
 import type { Generation } from "../types";
 
-// 같은 출처(/...) 로컬 보관본은 실제 파일로 내려받고, 원격 URL 은 download 속성이 무시되므로
-// 새 탭으로 연다(앱 이탈 방지).
+// 로컬 보관본(/...)은 같은 오리진이라 a[download] 로 바로 받는다. 원격 URL(cloudfront 등)은
+// 브라우저가 cross-origin 에서 download 속성을 무시해 '다운로드' 대신 새 탭으로 열리므로,
+// 같은 오리진 프록시(/api/download)로 받아 attachment 로 내려받게 한다 → 크롬 다운로드 목록에 표시.
 export function download(url: string, name: string) {
   const a = document.createElement("a");
-  a.href = url;
   if (url.startsWith("/")) {
-    a.download = name;
+    a.href = url;
   } else {
-    a.target = "_blank";
-    a.rel = "noopener";
+    a.href = `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
   }
+  a.download = name; // 프록시도 같은 오리진이라 download 속성이 동작(+서버 Content-Disposition)
   document.body.appendChild(a);
   a.click();
   a.remove();
