@@ -252,16 +252,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL LIMIT 1"
             ).fetchone()
             my_uid = grow[0] if grow else None
-        conn.execute(
-            "CREATE TABLE auto_tag_new (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-            "owner_uid TEXT, UNIQUE(owner_uid, name))"
-        )
-        conn.execute(
-            "INSERT INTO auto_tag_new(id, name, owner_uid) SELECT id, name, ? FROM auto_tag",
-            (my_uid,),
-        )
-        conn.execute("DROP TABLE auto_tag")
-        conn.execute("ALTER TABLE auto_tag_new RENAME TO auto_tag")
+        # 원자성: CREATE→INSERT→DROP→RENAME 를 한 트랜잭션으로 — 중간에 죽으면 auto_tag 가
+        # 사라진 채(또는 RENAME 전) 남아 복구불가가 되던 위험 차단. autocommit 연결이라 명시 BEGIN.
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "CREATE TABLE auto_tag_new (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "owner_uid TEXT, UNIQUE(owner_uid, name))"
+            )
+            conn.execute(
+                "INSERT INTO auto_tag_new(id, name, owner_uid) SELECT id, name, ? FROM auto_tag",
+                (my_uid,),
+            )
+            conn.execute("DROP TABLE auto_tag")
+            conn.execute("ALTER TABLE auto_tag_new RENAME TO auto_tag")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     # ── 에셋 파일 메타(asset_meta) 계정별 개인화 — PK (project,path) → (project,path,owner_uid) ──
     # 같은 파일에 각자 자기 소스/태그/컬러를 가져 남의 설정과 안 섞이게. 컬럼만으론 PK 를 못 바꾸므로
     # 재구성. 레거시 행(소유자 없음)은 단독 시절 것이라 제공자(my_creator_uid) 소유로 이관.
@@ -277,20 +285,27 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL LIMIT 1"
             ).fetchone()
             my_uid = grow[0] if grow else None
-        conn.execute(
-            "CREATE TABLE asset_meta_new (project TEXT NOT NULL, path TEXT NOT NULL, "
-            "owner_uid TEXT NOT NULL DEFAULT '', is_source INTEGER NOT NULL DEFAULT 0, "
-            "source_name TEXT, tags TEXT, comment TEXT, color TEXT, "
-            "PRIMARY KEY(project, path, owner_uid))"
-        )
-        conn.execute(
-            "INSERT INTO asset_meta_new(project, path, owner_uid, is_source, source_name, "
-            "tags, comment, color) SELECT project, path, COALESCE(?, ''), is_source, "
-            "source_name, tags, comment, color FROM asset_meta",
-            (my_uid,),
-        )
-        conn.execute("DROP TABLE asset_meta")
-        conn.execute("ALTER TABLE asset_meta_new RENAME TO asset_meta")
+        # 원자성: 위 auto_tag 와 동일 이유로 한 트랜잭션으로 묶는다.
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "CREATE TABLE asset_meta_new (project TEXT NOT NULL, path TEXT NOT NULL, "
+                "owner_uid TEXT NOT NULL DEFAULT '', is_source INTEGER NOT NULL DEFAULT 0, "
+                "source_name TEXT, tags TEXT, comment TEXT, color TEXT, "
+                "PRIMARY KEY(project, path, owner_uid))"
+            )
+            conn.execute(
+                "INSERT INTO asset_meta_new(project, path, owner_uid, is_source, source_name, "
+                "tags, comment, color) SELECT project, path, COALESCE(?, ''), is_source, "
+                "source_name, tags, comment, color FROM asset_meta",
+                (my_uid,),
+            )
+            conn.execute("DROP TABLE asset_meta")
+            conn.execute("ALTER TABLE asset_meta_new RENAME TO asset_meta")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     # v02 히스토리 타입드 엣지 — 'derived'(재생성/가져오기·강한 1-부모) / 'reference'(@소스 생성·약한 다-부모)
     # (테이블명 lineage→history 리네임은 _pre_migrate 가 executescript 이전에 처리 → 여기선 history 보장)
     hist_cols = {row[1] for row in conn.execute("PRAGMA table_info(history)")}

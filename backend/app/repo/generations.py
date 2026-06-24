@@ -620,6 +620,16 @@ def _delete_generation(conn: sqlite3.Connection, gen_id: str) -> bool:
     conn.execute(
         "DELETE FROM history WHERE parent_gen_id=? OR child_gen_id=?", (gen_id, gen_id)
     )
+    # 코멘트 seen(comment_id 기준)은 generation_comment 삭제 전에 먼저 정리 — 안 그러면 고아로 남아
+    # 무한 누적되고, comment_id 충돌(복원 등) 시 새 코멘트가 '이미 확인됨'으로 잘못 표시될 수 있다.
+    try:
+        conn.execute(
+            "DELETE FROM generation_comment_seen WHERE comment_id IN "
+            "(SELECT id FROM generation_comment WHERE gen_id=?)",
+            (gen_id,),
+        )
+    except Exception:  # noqa: BLE001 — 구버전 DB 에 테이블이 없을 수 있음
+        pass
     conn.execute("DELETE FROM generation_comment WHERE gen_id=?", (gen_id,))
     conn.execute("DELETE FROM generation_comment_read WHERE gen_id=?", (gen_id,))
     conn.execute("DELETE FROM gen_tag WHERE generation_id=?", (gen_id,))
