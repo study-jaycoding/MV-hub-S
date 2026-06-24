@@ -31,6 +31,7 @@ def ensure_default_worker() -> None:
 
 # ── 생성자(팀 워크스페이스 작성자) ────────────────────────────────────────
 _MY_UID_CACHE: list[Any] = [None]  # [value] — None=미확정(매번 재조회), non-None=확정 캐시
+_MY_UID_PATH: list[Any] = [None]  # 캐시가 어느 DB 경로 기준인지 — 경로가 바뀌면 자동 무효화
 
 
 def get_my_uid() -> Optional[str]:
@@ -39,6 +40,15 @@ def get_my_uid() -> Optional[str]:
     로컬 생성본이 완료되는 즉시 is_mine 이 반영되게 한다.
     ※ 영속화(setting 쓰기)는 여기서 하지 않는다 — 학습은 생성 완료 시점에 learn_my_creator_uid()
       가 명시적으로 수행(읽기 경로에 쓰기 부작용을 두지 않기 위함)."""
+    # ★경로 키잉: 계정 전환·DB 이관으로 활성 DB 가 바뀌면 캐시를 자동 무효화한다 — 예전엔 전환마다
+    # _MY_UID_CACHE[0]=None 수동 리셋에만 의존해, 새 전환 경로가 리셋을 빠뜨리면 옛 계정 uid 로
+    # is_mine 을 오판할 위험이 있었다(기존 수동 리셋들은 방어적 중복으로 그대로 둠).
+    from ..db import get_db_path
+
+    path = str(get_db_path())
+    if _MY_UID_PATH[0] != path:
+        _MY_UID_CACHE[0] = None
+        _MY_UID_PATH[0] = path
     if _MY_UID_CACHE[0] is not None:
         return _MY_UID_CACHE[0]
     uid = get_setting("my_creator_uid")

@@ -302,6 +302,21 @@ def list_trash(
         return [_to_generation_out(json.loads(r["payload"])) for r in rows]
 
 
+def reconcile_with_main() -> int:
+    """크래시(전원/OS 손실)로 휴지통 이동/복원이 한쪽 DB 에만 반영돼 같은 id 가 메인과 휴지통에 '둘 다'
+    남은 경우를 정리한다. 정상 운영에선 둘은 상호배타(이동=메인삭제, 복원=휴지통삭제)라, 겹치면 중단된
+    작업의 흔적이다(WAL+ATTACH 는 두 파일을 원자적으로 커밋하지 못함 — 평소엔 단일 트랜잭션이라 무해하나
+    전원 손실 + synchronous=NORMAL 의 드문 경우에 발생 가능).
+
+    안전 규칙: 살아있는 메인 본을 정답으로 보고 휴지통 복사본만 제거한다 → 데이터 손실 없음(중단된
+    이동이면 삭제가 되돌려져 사용자가 재삭제, 중단된 복원이면 복원이 완결된다). 부팅 시 1회 호출."""
+    with _with_trash() as conn:
+        cur = conn.execute(
+            "DELETE FROM trash.trashed WHERE id IN (SELECT id FROM generation)"
+        )
+        return cur.rowcount
+
+
 def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통에서 영구 삭제(복원 불가). account_uid 가 있으면 본인 것만 — 남의 삭제물 영구삭제 방지.
     미디어 파일은 공유·내용주소라 건드리지 않음."""
