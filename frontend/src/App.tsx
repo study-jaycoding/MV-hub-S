@@ -560,14 +560,11 @@ export default function App() {
     const sel = gensRef.current.filter((g) => idSet.has(g.id));
     const allSame = sel.length > 0 && sel.every((g) => g.color === color);
     const next = allSame ? null : color;
-    for (const id of ids) {
-      try {
-        await api.setColor(id, next);
-      } catch {
-        /* skip */
-      }
-    }
+    // 병렬 실행(순차 await 제거) + 실패는 조용히 삼키지 말고 집계해 보고.
+    const results = await Promise.allSettled(ids.map((id) => api.setColor(id, next)));
+    const failed = results.filter((r) => r.status === "rejected").length;
     await reload();
+    if (failed) flash(`컬러 적용 ${failed}/${ids.length}건 실패`);
   };
 
   useEffect(() => {

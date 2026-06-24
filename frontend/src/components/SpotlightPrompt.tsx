@@ -258,6 +258,9 @@ export function SpotlightPrompt({
   useEffect(() => {
     if (!mention) return;
     let alive = true;
+    // 프로젝트 전환 시 이전 프로젝트 소스를 즉시 비운다 — 안 그러면 새 응답 도착 전까지 다른
+    // 프로젝트의 소스가 보이고, 그 순간 Enter 로 엉뚱한 소스를 고를 수 있다.
+    setAllSources([]);
     api
       .searchSources(undefined, undefined, assetCtx.project)
       .then((r) => alive && setAllSources(r))
