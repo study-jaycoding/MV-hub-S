@@ -6,7 +6,7 @@ REM
 REM  Pulls the latest program from git and refreshes only what actually changed:
 REM  backend deps are reinstalled only when requirements.txt changed (or missing),
 REM  the frontend is rebuilt only when frontend/ changed (or no build exists yet).
-REM  The Higgsfield CLI check is delegated to update-cli.bat.
+REM  The Higgsfield CLI is NOT touched here - manage it with update-cli.bat when needed.
 REM
 REM  After this:  server PC -> run-server.bat,  worker PC -> MV_agent.bat
 REM  Requires: this folder must be a git clone (git clone <repo>).
@@ -32,7 +32,7 @@ set "BEFORE="
 for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "BEFORE=%%i"
 
 echo.
-echo [1/4] Pulling latest ^(git pull^)...
+echo [1/3] Pulling latest ^(git pull^)...
 git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & pause & exit /b 1)
 
 set "AFTER="
@@ -54,7 +54,7 @@ if "!BEFORE!"=="!AFTER!" (
   )
 )
 
-echo [2/4] Backend dependencies...
+echo [2/3] Backend dependencies...
 REM Resolve a REAL Python (ignore the Microsoft Store stub that prints "Python" and exits).
 REM Prefer the 'py' launcher (never shadowed by the Store alias); else a real python3.
 set "PY="
@@ -77,10 +77,7 @@ if defined REQ_CHANGED (
 )
 :after_deps
 
-echo [3/4] Checking Higgsfield CLI ^(via update-cli.bat^)...
-call "%ROOT%update-cli.bat" nopause
-
-echo [4/4] Frontend...
+echo [3/3] Frontend...
 cd /d "%ROOT%frontend" || goto :err
 if not exist node_modules (
   echo     node_modules missing - running npm install ^(first time, a few minutes^)
@@ -100,6 +97,7 @@ echo.
 echo [done] updated to the latest version.
 echo        - shared server PC:  run run-server.bat again
 echo        - worker PC:         run MV_agent.bat again
+echo        - Higgsfield CLI:    run update-cli.bat separately if you want to update it
 pause
 exit /b 0
 
