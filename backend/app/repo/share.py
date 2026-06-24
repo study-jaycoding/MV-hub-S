@@ -296,7 +296,10 @@ def import_bundle_item(
             "status": g.get("status") or "done",
             "created_at": g.get("created_at") or "",
             "sort_ts": g.get("sort_ts"),
-            "creator_uid": g.get("creator_uid"),
+            # ★생성자 없으면 공유자(shared_by)로 귀속 — 공유에선 '누가 만들었나'가 핵심이라,
+            # creator_uid 가 비면(예: user_<id> 없는 영상) 받는 쪽 화면에 '나'로 오표시되지 않게
+            # 발신자(공유한 사람)를 생성자로 넣는다. resolve_display_names 가 그 사람 이름으로 표시.
+            "creator_uid": g.get("creator_uid") or shared_by,
             "project_id": g.get("project_id"),
         },
         "asset": item.get("asset"),
