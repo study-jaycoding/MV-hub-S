@@ -41,6 +41,7 @@ interface Props {
   hasMore?: boolean; // 서버에 더 받을 페이지가 있나
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
 }
 
 // created_at(UTC, "YYYY-MM-DD HH:MM:SS") → 로컬 날짜 그룹 키 + 표시 라벨("June 11, 2026").
@@ -89,6 +90,12 @@ export function ThumbnailGrid(props: Props) {
   // 없으면 서버 다음 페이지를 요청(onLoadMore) → 무한 스크롤이 클라이언트·서버 양쪽으로 작동.
   const PAGE = 60;
   const [shown, setShown] = useState(120);
+  // 필터/정렬이 바뀌면(=새 첫 페이지로 교체) 점진 렌더를 초기값으로 되돌린다 — 스크롤로 커진 shown 이
+  // 그대로면 새 목록 전체가 한꺼번에 마운트된다. 단순 prepend/append(목록 추가)는 resetKey 가 안 바뀌어
+  // 영향 없다(스크롤 위치·노출량 보존).
+  useEffect(() => {
+    setShown(120);
+  }, [props.resetKey]);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const moreToShow = shown < generations.length; // 로드된 것 중 아직 안 그린 게 있나
   const showSentinel = moreToShow || !!props.hasMore;

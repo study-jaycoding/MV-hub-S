@@ -383,6 +383,30 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setFocusIdx(-1);
   }, [dir, project, query, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate]);
 
+  // files 가 (메타 편집 등 위 필터 deps 외 이유로) 재정렬/재필터되면 인덱스 기반 선택이 다른 파일을
+  // 가리킨다 → path 로 재매핑해 '같은 파일'이 선택된 상태를 유지하고, 필터로 빠진 파일은 선택 해제한다.
+  // (안 그러면 stale 인덱스로 ch.assets.selection 에 엉뚱한 파일이 쓰여 잘못된 레퍼런스가 삽입됨.)
+  // 필터 변경 시엔 위 리셋이 먼저 빈 집합으로 만들므로 여기선 no-op.
+  const selFilesRef = useRef(files);
+  useEffect(() => {
+    const prev = selFilesRef.current;
+    selFilesRef.current = files;
+    if (prev === files) return;
+    setSelected((sel) => {
+      if (!sel.size) return sel;
+      const paths = new Set<string>();
+      sel.forEach((i) => {
+        const p = prev[i]?.path;
+        if (p) paths.add(p);
+      });
+      const next = new Set<number>();
+      files.forEach((f, i) => {
+        if (paths.has(f.path)) next.add(i);
+      });
+      return next;
+    });
+  }, [files]);
+
   // 선택이 바뀔 때마다 '라이브 선택 전체'를 같은 오리진 공유 localStorage 로 — 본창 프롬프트 드롭이
   // 드래그 시점 selection 캡처가 어긋나도(크로스윈도우 dataTransfer 한 건만 전달 등) 이 값으로 다중을
   // 복구한다. 이미지/영상만(레퍼런스 대상).

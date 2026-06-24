@@ -1424,6 +1424,7 @@ export default function App() {
                 hasMore={hasMore}
                 loadingMore={loadingMore}
                 onLoadMore={loadMore}
+                resetKey={serverFilterKey}
               />
             </main>
           </>
