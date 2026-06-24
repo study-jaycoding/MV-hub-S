@@ -92,10 +92,14 @@ def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
 
 
 def _legacy_owner(legacy: Path) -> Optional[str]:
-    """레거시 DB 의 소유자 creator_uid 판별(get_my_uid 와 동일 추론):
-    ① my_creator_uid 설정 ② 로컬 생성본(id<>job_id)의 creator_uid ③ 최다 creator_uid.
-    단독 사용자 DB 는 보통 설정이 비어 있어(None) 추론으로 떨어진다 — 그래서 첫 계정 로그인 때
-    그 DB 의 실제 주인과만 매칭돼 이관된다(엉뚱한 계정엔 빈 DB)."""
+    """레거시 DB 의 소유자 creator_uid 판별 — **강한 소유 신호만** 사용:
+    ① my_creator_uid 설정 ② 로컬 생성본(id<>job_id = 이 허브가 직접 만든 것)의 creator_uid.
+
+    ⚠️ '최다 creator_uid' 다수결은 일부러 쓰지 않는다 — 남의 공유 번들을 많이 동기화한 DB 라면
+    그 남(teammate)의 uid 가 최다라서, 그 사람이 같은 PC 로 로그인하면 이 PC 주인의 사적 작업까지
+    그 사람 계정 DB 로 복사되는 '교차 계정 누출'이 난다. id<>job_id 는 '이 PC 가 직접 생성' 한
+    것이라 기계 주인의 확실한 표식이다(동기화본 id==job_id 와 구분). 둘 다 못 정하면 None(이관 안 함
+    = 빈 DB 가 더 안전하다 — 잘못된 계정으로의 이관보다)."""
     try:
         c = sqlite3.connect(str(legacy))
         try:
@@ -107,12 +111,6 @@ def _legacy_owner(legacy: Path) -> Optional[str]:
             row = c.execute(
                 "SELECT creator_uid FROM generation "
                 "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL LIMIT 1"
-            ).fetchone()
-            if row and row[0]:
-                return row[0]
-            row = c.execute(
-                "SELECT creator_uid FROM generation WHERE creator_uid IS NOT NULL "
-                "GROUP BY creator_uid ORDER BY COUNT(*) DESC LIMIT 1"
             ).fetchone()
             return row[0] if row and row[0] else None
         finally:

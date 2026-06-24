@@ -30,10 +30,15 @@ router = APIRouter(prefix="/api/db", tags=["db-transfer"])
 
 _SQLITE_MAGIC = b"SQLite format 3"
 
-# 업로드 전/복원 후 비울 세션·보안 키 — 토큰·임시권한·서명키. 가져온 DB 가 남의 토큰으로 서버에
-# proxy 하거나 위장 로그인되는 것을 막는다(서버 주소·표시이름은 무해해 남긴다).
+# 업로드 전/복원 후 비울 세션·보안·신원 키. 가져온 DB 가 남의 토큰으로 서버에 proxy 하거나 위장
+# 로그인되는 것을 막고, 남의 .db 를 파일 가져오기 했을 때 그 사람의 로그인 신원·역할(admin 뱃지)이
+# 남지 않게 한다(서버 주소 shared_server_url 만 무해해 남긴다). ★email/name/roles 도 비운다 —
+# 안 그러면 가져온 DB 주인이 admin 이었으면 가져온 사람 화면에 admin 탭이 (재로그인 전까지) 뜬다.
 _SESSION_KEYS = (
     "shared_server_token",
+    "shared_server_email",
+    "shared_server_name",
+    "shared_server_roles",
     "shared_server_elev_token",
     "shared_server_elev_email",
     "shared_server_elev_name",
@@ -244,12 +249,15 @@ def server_restore(request: Request):
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="받은 파일이 SQLite DB 가 아닙니다")
     ok = None
+    integrity = None
     try:
         c = sqlite3.connect(str(tmp))
         try:
             ok = c.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation'"
             ).fetchone()
+            # 라이브 DB 를 덮어쓰는 경로라 데이터 페이지 무결성까지 확인(다운로드 중 손상 방지).
+            integrity = c.execute("PRAGMA quick_check").fetchone()
         finally:
             c.close()
     except sqlite3.DatabaseError:
@@ -257,6 +265,9 @@ def server_restore(request: Request):
     if not ok:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="허브 DB 형식이 아닙니다(generation 테이블 없음)")
+    if not integrity or integrity[0] != "ok":
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="받은 백업이 손상되었습니다(무결성 검사 실패)")
     return _install_db(tmp)
 
 

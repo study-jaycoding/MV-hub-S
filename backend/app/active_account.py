@@ -34,11 +34,15 @@ _override: ContextVar[Optional[str]] = ContextVar("active_key_override", default
 _cache: list = [False, None]
 
 
-def _slug(email: str) -> str:
-    """이메일 → 폴더 안전 슬러그. 가독성(치환) + 충돌 방지(짧은 해시) 둘 다."""
+def slug(email: str) -> str:
+    """이메일 → 폴더 안전 슬러그. 가독성(치환) + 충돌 방지(짧은 해시) 둘 다.
+    DB 폴더·백업 폴더 등 계정별 경로에서 공통으로 쓴다(같은 계정=같은 슬러그)."""
     base = _SAFE.sub("_", (email or "").strip().lower())[:40]
     h = hashlib.sha1((email or "").strip().lower().encode("utf-8")).hexdigest()[:8]
     return f"{base}-{h}"
+
+
+_slug = slug  # 하위호환 별칭
 
 
 def _read_pointer() -> Optional[dict]:
@@ -55,7 +59,11 @@ def _read_pointer() -> Optional[dict]:
 
 
 def account_key() -> Optional[str]:
-    """현재 활성 계정의 DB 폴더 키(이메일). 오버라이드 > 머신 포인터 > None(레거시 DB)."""
+    """현재 활성 계정의 DB 폴더 키(이메일). 오버라이드 > 머신 포인터 > None(레거시 DB).
+    ★공유 서버(AUTH on)는 계정별 DB 를 쓰지 않는다 — 같은 data 폴더가 예전 로컬 실행의
+    active.json 을 갖고 있어도 무시하고 항상 None(레거시 단일 DB)을 반환한다."""
+    if config.AUTH_ENABLED:
+        return None
     ov = _override.get()
     if ov is not None:
         return ov or None  # "" = 명시적 미로그인

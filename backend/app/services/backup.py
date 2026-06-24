@@ -42,10 +42,20 @@ _STARTUP_SKIP_IF_YOUNGER = min(BACKUP_INTERVAL, 3600.0)
 _PREFIX = "content_hub_"
 
 
+def _backup_dir() -> Path:
+    """백업 폴더 — **활성 계정별**로 분리(계정 전환 시 서로의 백업을 회전-삭제하지 않게).
+    로그인하면 backups/<email-slug>/, 미로그인/단독·공유서버면 레거시 평면 폴더(기존 그대로)."""
+    from ..active_account import account_key, slug
+
+    key = account_key()
+    return (BACKUP_DIR / slug(key)) if key else BACKUP_DIR
+
+
 def _list_backups() -> list[Path]:
-    if not BACKUP_DIR.is_dir():
+    d = _backup_dir()
+    if not d.is_dir():
         return []
-    return sorted(BACKUP_DIR.glob(f"{_PREFIX}*.db"))
+    return sorted(d.glob(f"{_PREFIX}*.db"))
 
 
 def _newest_age_seconds() -> Optional[float]:
@@ -87,9 +97,10 @@ def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
     src = get_db_path()
     if not src.exists():
         return None
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    d = _backup_dir()
+    d.mkdir(parents=True, exist_ok=True)
     stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest_path = BACKUP_DIR / f"{_PREFIX}{stamp}.db"
+    dest_path = d / f"{_PREFIX}{stamp}.db"
 
     src_conn = sqlite3.connect(str(src))
     try:

@@ -1147,7 +1147,9 @@ export default function App() {
     // 다시 뜬다. 로컬 auth 로그아웃(api.logout)은 AUTH-off 에선 무효라 화면이 안 바뀜.
     if (!authConfig?.auth_enabled) {
       await api.sharedServerLogout().catch(() => {});
-      loadSharedSrv(); // has_token=false → 로그인 화면 재노출
+      // 전체 리로드 — 이전 계정의 React 상태(목록·필터·열린 패널)를 깨끗이 비우고 로그인 화면으로.
+      // (개인 설정 정리는 다음 로그인에서 계정이 바뀔 때 onProxyConnected 가 수행.)
+      window.location.reload();
       return;
     }
     api.logout().catch(() => {});

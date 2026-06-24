@@ -234,6 +234,12 @@ def shared_server_logout():
     if not AUTH_ENABLED:
         active_account.clear_active()
         identity._MY_UID_CACHE[0] = None
+        # 방어: 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로
+        # 보일 수 있다 → 레거시 토큰도 비워 확실히 로그인 화면이 뜨게 한다(이제 active=레거시).
+        try:
+            repo.set_setting(_K_TOKEN, None)
+        except Exception:  # noqa: BLE001
+            pass
     return {"ok": True, **_shared_status()}
 
 

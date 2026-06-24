@@ -65,12 +65,13 @@ _THUMB_DIR = MEDIA_DIR / ".thumbs"  # 썸네일 디스크 캐시
 
 def _mounts_file() -> Path:
     """등록된 외부 폴더(마운트) 영속 파일 — **활성 계정 DB 폴더 안**(계정별 격리).
-    로그인하면 data/db/acct/<uid>/asset_mounts.json, 미로그인/단독이면 레거시 위치
-    data/asset_mounts.json(기존 그대로). 계정마다 자기 폴더 목록만 갖게 한다."""
-    from ..active_account import account_dir, active_uid
+    ★DB·마이그레이션과 동일하게 계정 키=이메일(account_key)을 써야 같은 폴더를 가리킨다.
+    (예전엔 uid 를 써서 DB 는 email 폴더, 마운트는 uid 폴더로 갈려 로그인 후 마운트가 사라졌다.)
+    로그인하면 data/db/acct/<email-slug>/asset_mounts.json, 미로그인/단독이면 레거시 위치."""
+    from ..active_account import account_dir, account_key
 
-    uid = active_uid()
-    return (account_dir(uid) / "asset_mounts.json") if uid else (DATA_DIR / "asset_mounts.json")
+    key = account_key()
+    return (account_dir(key) / "asset_mounts.json") if key else (DATA_DIR / "asset_mounts.json")
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
