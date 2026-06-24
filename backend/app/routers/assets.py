@@ -333,7 +333,10 @@ def asset_meta(request: Request, project: str = Query(...)):
     local = repo.get_asset_meta(project, actor_id(request))
     if _proxying():
         try:
-            remote = _proxy.proxy_json("GET", "/api/assets/meta", params={"project": project})
+            remote = _proxy.proxy_json(
+                "GET", "/api/assets/meta", params={"project": project},
+                timeout=5,  # 비핵심 보강(코멘트 뱃지만) — 서버 지연/다운에 메타 응답을 60초씩 막지 않게
+            )
         except Exception:  # noqa: BLE001 — 코멘트 뱃지는 부가정보, 실패해도 개인 메타는 보여준다
             remote = None
         if isinstance(remote, dict):

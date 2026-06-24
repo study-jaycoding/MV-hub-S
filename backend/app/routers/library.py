@@ -203,6 +203,7 @@ def list_generations(
                 counts = _proxy.proxy_json(
                     "POST", "/api/generations/comment-counts",
                     body={"gen_ids": list(srv_of.values())},
+                    timeout=5,  # 비핵심 보강 — 서버가 느리거나 다운이면 목록을 60초씩 막지 말고 빨리 포기(로컬값 유지)
                 )
                 if isinstance(counts, dict):
                     for g in result:
