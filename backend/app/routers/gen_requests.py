@@ -122,17 +122,22 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     parsed = cli_bridge.parse_job(body.job)
     g = parsed.get("generation") or {}
     asset = parsed.get("asset")
-    if asset:
-        thumb = asset["file_path"] if asset["type"] == "image" else None
-        repo.add_asset(gen_id, asset["type"], asset["file_path"], thumb)
-    if g.get("id"):
-        repo.set_job_id(gen_id, g["id"])
-    repo.set_generation_timestamp(gen_id, g.get("created_at"), g.get("sort_ts"))
-
     status = g.get("status") or "done"
     err = g.get("error") if status == "failed" else None
-    repo.set_status(gen_id, status, err)
-    repo.mark_request(rid, "done" if status != "failed" else "failed", err)
+    # ★원자 적용: 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로(부분 상태 노출 창 제거).
+    repo.apply_local_fulfillment(
+        gen_id,
+        rid,
+        asset_type=asset["type"] if asset else None,
+        asset_path=asset["file_path"] if asset else None,
+        asset_thumb=(asset["file_path"] if asset and asset["type"] == "image" else None),
+        job_id=g.get("id"),
+        created_at=g.get("created_at"),
+        sort_ts=g.get("sort_ts"),
+        status=status,
+        error=err,
+        request_status="done" if status != "failed" else "failed",
+    )
     # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
     # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
 

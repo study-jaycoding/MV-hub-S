@@ -47,6 +47,12 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     wid = worker_id or DEFAULT_WORKER_ID
     counts = await asyncio.to_thread(repo.apply_synced_jobs, jobs, wid)
     counts["fetched"] = len(jobs)
+    # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
+    # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
+    # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
+    if counts.get("inserted"):
+        with contextlib.suppress(Exception):
+            counts["reconciled"] = await asyncio.to_thread(repo.reconcile_duplicates)
     # 워터마크 초과 = 누락 위험. 100개를 꽉 채워 가져왔는데 대부분이 신규면 더 의심.
     counts["gap_warning"] = 1 if (
         counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100

@@ -108,6 +108,10 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     counts = {"inserted": 0, "updated": 0, "unchanged": 0}
     skipped = 0
     uid_votes: Counter[str] = Counter()
+    # 1차: 파싱 + URL 유래 uid 표만 먼저 모은다 — 보강 기준 uid 를 잡 루프 '전에' 확정하기 위함.
+    # (최초 ingest 라 own_uid 가 아직 None 이어도, 잡들의 URL user_<id> 다수결로 '나'를 알아낼 수 있다.
+    #  예전엔 own_uid 로만 보강해, 첫 ingest 의 uid 없는 잡이 NULL 로 남았다가 다음 재시작에야 구제됐다.)
+    staged = []
     for raw in jobs:
         if not isinstance(raw, dict):
             skipped += 1
@@ -117,10 +121,18 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         if not g.get("id"):
             skipped += 1
             continue
-        if not g.get("creator_uid") and own_uid:  # uid 없을 때만 내 uid 로 보강(남의 건 보존)
-            g["creator_uid"] = own_uid
         if g.get("creator_uid"):
             uid_votes[g["creator_uid"]] += 1
+        staged.append(parsed)
+
+    # 보강 기준 uid 선결정: 명시 creator_uid / 링크된 계정 uid(own_uid) > 잡 다수결(URL user_<id>).
+    boost_uid = own_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
+
+    # 2차: uid 없는 잡을 boost_uid 로 보강하며 적재(남의 uid 가진 잡은 그대로 보존).
+    for parsed in staged:
+        g = parsed["generation"]
+        if not g.get("creator_uid") and boost_uid:
+            g["creator_uid"] = boost_uid
         result = repo.upsert_synced_generation(parsed, DEFAULT_WORKER_ID)
         counts[result] = counts.get(result, 0) + 1
 
@@ -134,8 +146,9 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     #   안 하면 my_creator_uid 미설정 → get_my_uid()=None → 내 생성물조차 is_mine=false 라 전부
     #   '팀원'으로 뜬다(동기화 잡은 id==job_id 라 id<>job_id 추론도 안 됨). set-if-empty 라 멱등,
     #   계정별 DB 라 각 계정 DB 가 자기 uid 만 학습. 서버(AUTH on)는 하우스 신원이라 학습 안 함.
-    if not AUTH_ENABLED and (own_uid or linked):
-        my_uid = own_uid or linked
+    #   boost_uid 가 잡 루프 전에 확정되므로 첫 ingest 부터 올바른 uid 로 학습된다.
+    if not AUTH_ENABLED and (boost_uid or linked):
+        my_uid = boost_uid or linked
         repo.learn_my_creator_uid(my_uid)
         # ★내 표시이름을 내 creator 에 붙인다 — 사이드바·생성정보·카드의 '생성자'가 '나'/'팀원'
         #   대신 내 계정 표시이름(로그인 시 보관한 provider 이름)으로 뜨게 한다. resolve_display_names

@@ -552,6 +552,54 @@ def add_asset(
     return aid
 
 
+def apply_local_fulfillment(
+    gen_id: str,
+    rid: str,
+    *,
+    asset_type: Optional[str],
+    asset_path: Optional[str],
+    asset_thumb: Optional[str],
+    job_id: Optional[str],
+    created_at: Optional[str],
+    sort_ts: Optional[float],
+    status: str,
+    error: Optional[str],
+    request_status: str,
+) -> None:
+    """gen-request fulfill 의 다단계 쓰기(에셋 추가·job_id 병합·타임스탬프·상태·요청표시)를 한
+    트랜잭션으로 묶는다 — 예전엔 5개 분리 커밋이라 중간에 주기 동기화가 끼면 부분 상태(예: job_id 만
+    반영되고 status 는 아직 옛값)를 보는 창이 있었다. BEGIN IMMEDIATE 로 전부 한 번에 커밋."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if asset_type and asset_path:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
+                "VALUES(?,?,?,?,?)",
+                (new_id(), gen_id, asset_type, asset_path, asset_thumb),
+            )
+        if job_id:
+            # 레이스 병합: 동기화가 같은 잡을 동기화본(id==job_id)으로 먼저 넣었으면 그 중복본 제거.
+            dup = conn.execute(
+                "SELECT id FROM generation WHERE id=? AND id<>?", (job_id, gen_id)
+            ).fetchone()
+            if dup:
+                _delete_generation(conn, job_id)
+            conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
+        if sort_ts is not None:
+            conn.execute(
+                "UPDATE generation SET sort_ts=?, created_at=COALESCE(?, created_at) WHERE id=?",
+                (sort_ts, created_at, gen_id),
+            )
+        conn.execute(
+            "UPDATE generation SET status=?, error=? WHERE id=?",
+            (status, error if status == "failed" else None, gen_id),
+        )
+        conn.execute(
+            "UPDATE gen_request SET status=?, error=?, updated_at=datetime('now') WHERE id=?",
+            (request_status, error, rid),
+        )
+
+
 def set_color(gen_id: str, color: Optional[str]) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE generation SET color=? WHERE id=?", (color, gen_id))

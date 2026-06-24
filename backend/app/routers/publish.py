@@ -240,14 +240,21 @@ def shared_server_logout():
     _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
     # ★활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태). 다음 로그인이 다시 전환.
     if not AUTH_ENABLED:
+        # 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로 보일 수
+        # 있다 → 레거시 토큰을 비운다. ★단, active 를 레거시로 전환(clear_active)한 '뒤'에 지우면 그 사이
+        # 창에서 다른 요청이 잔존 토큰으로 위임 모드를 오판한다 → 전환 '전에' 레거시 DB 를 직접 열어 비운다.
+        if db.DEFAULT_DB_PATH.exists():
+            try:
+                with db.get_connection(db_path=db.DEFAULT_DB_PATH) as conn:
+                    conn.execute(
+                        "INSERT INTO app_setting(key, value) VALUES(?, NULL) "
+                        "ON CONFLICT(key) DO UPDATE SET value=NULL",
+                        (_K_TOKEN,),
+                    )
+            except Exception:  # noqa: BLE001 — 레거시에 스키마/테이블 없으면 비울 토큰도 없음
+                pass
         active_account.clear_active()
         identity._MY_UID_CACHE[0] = None
-        # 방어: 레거시 DB(리팩터 이전 단독 DB)에 옛 토큰이 남아 있으면 로그아웃 후에도 로그인된 것으로
-        # 보일 수 있다 → 레거시 토큰도 비워 확실히 로그인 화면이 뜨게 한다(이제 active=레거시).
-        try:
-            repo.set_setting(_K_TOKEN, None)
-        except Exception:  # noqa: BLE001
-            pass
     return {"ok": True, **_shared_status()}
 
 
