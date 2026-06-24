@@ -62,9 +62,15 @@ def _require_mount_manager(request: Request) -> None:
 
 _THUMB_DIR = MEDIA_DIR / ".thumbs"  # 썸네일 디스크 캐시
 
-# 등록된 외부 폴더(마운트) — 임의 경로 폴더에 이름을 붙여 프로젝트처럼 브라우즈.
-# 서버 디스크 기준 경로라 서버 전역(모든 팀원 공유). data/asset_mounts.json 에 영속.
-_MOUNTS_FILE = DATA_DIR / "asset_mounts.json"
+
+def _mounts_file() -> Path:
+    """등록된 외부 폴더(마운트) 영속 파일 — **활성 계정 DB 폴더 안**(계정별 격리).
+    로그인하면 data/db/acct/<uid>/asset_mounts.json, 미로그인/단독이면 레거시 위치
+    data/asset_mounts.json(기존 그대로). 계정마다 자기 폴더 목록만 갖게 한다."""
+    from ..active_account import account_dir, active_uid
+
+    uid = active_uid()
+    return (account_dir(uid) / "asset_mounts.json") if uid else (DATA_DIR / "asset_mounts.json")
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -88,7 +94,7 @@ def _load_mounts() -> list[dict[str, str]]:
     """등록된 외부 폴더 [{name, path, owner}]. owner=등록한 계정(creator_uid) — 계정별 개인 목록.
     레거시(소유자 없는) 항목은 첫 로드 때 제공자(get_my_uid) 소유로 이관·재저장(멱등)."""
     try:
-        data = json.loads(_MOUNTS_FILE.read_text("utf-8"))
+        data = json.loads(_mounts_file().read_text("utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return []
     out: list[dict[str, str]] = []
@@ -112,10 +118,9 @@ def _load_mounts() -> list[dict[str, str]]:
 
 
 def _save_mounts(mounts: list[dict[str, str]]) -> None:
-    _MOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _MOUNTS_FILE.write_text(
-        json.dumps({"mounts": mounts}, ensure_ascii=False, indent=2), "utf-8"
-    )
+    f = _mounts_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"mounts": mounts}, ensure_ascii=False, indent=2), "utf-8")
 
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:

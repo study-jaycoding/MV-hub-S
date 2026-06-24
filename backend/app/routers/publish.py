@@ -20,10 +20,22 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from . import _proxy
-from .. import repo
-from ..config import DEFAULT_WORKER_ID
+from .. import active_account, db, repo
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..repo import identity
 
 router = APIRouter(prefix="/api", tags=["publish"])
+
+
+def _switch_account_db(email: str, uid: Optional[str]) -> None:
+    """로컬 프록시 로그인/전환 — 활성 계정 포인터를 이 계정으로 바꾸고 그 계정 전용 DB 를 준비한다.
+    이후 모든 set_setting/get_setting·읽기쓰기가 그 계정 DB 로 향해 다른 계정과 데이터가 섞이지 않는다.
+    공유 서버(AUTH on)에선 계정별 DB 를 쓰지 않으므로 아무것도 하지 않는다(이 메커니즘은 로컬 전용)."""
+    if AUTH_ENABLED:
+        return
+    active_account.set_active(email, uid)
+    db.ensure_account_db(email, uid)
+    identity._MY_UID_CACHE[0] = None  # 새 DB 기준으로 is_mine 재계산
 
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
 _K_URL = "shared_server_url"
@@ -154,6 +166,8 @@ def shared_server_login(body: SharedLoginIn):
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
         raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
+    # ★계정별 DB 로 전환 — 이후 set_setting 들이 이 계정 DB 에 기록된다(다른 계정과 격리).
+    _switch_account_db(body.email, acc.get("creator_uid"))
     repo.set_setting(_K_URL, url)
     repo.set_setting(_K_EMAIL, body.email)
     repo.set_setting(_K_TOKEN, resp["token"])
@@ -191,6 +205,7 @@ def shared_server_register(body: SharedRegisterIn):
     acc = resp.get("account") or {}
     token = resp.get("token")
     if token:  # 첫 계정=admin 자동승인 → 바로 로그인 상태로 저장
+        _switch_account_db(body.email, acc.get("creator_uid"))  # 계정별 DB 로 전환
         repo.set_setting(_K_URL, url)
         repo.set_setting(_K_EMAIL, body.email)
         repo.set_setting(_K_TOKEN, token)
@@ -215,6 +230,10 @@ def shared_server_logout():
     for k in (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES):
         repo.set_setting(k, None)
     _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
+    # ★활성 계정 포인터 해제 → 이후 읽기쓰기는 레거시 단일 DB(미로그인 상태). 다음 로그인이 다시 전환.
+    if not AUTH_ENABLED:
+        active_account.clear_active()
+        identity._MY_UID_CACHE[0] = None
     return {"ok": True, **_shared_status()}
 
 

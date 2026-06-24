@@ -29,7 +29,7 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 from . import config
 
@@ -48,9 +48,75 @@ DB_BACKEND = os.environ.get("CONTENT_HUB_DB_BACKEND", "sqlite").strip().lower()
 
 
 def get_db_path() -> Path:
-    """현재 사용할 DB 파일 경로. 환경변수 CONTENT_HUB_DB 가 있으면 우선."""
+    """현재 사용할 DB 파일 경로.
+
+    우선순위: ① 환경변수 CONTENT_HUB_DB ② 활성 계정(로컬 프록시 로그인 계정)의 전용 DB
+    ③ 레거시 단일 DB(미로그인/단독·공유 서버). ②가 계정별 격리의 핵심 — 로그인 계정마다
+    data/db/acct/<uid>/content_hub.db 로 갈라 다른 계정 데이터가 섞이지 않게 한다."""
     env = os.environ.get("CONTENT_HUB_DB")
-    return Path(env).expanduser().resolve() if env else DEFAULT_DB_PATH
+    if env:
+        return Path(env).expanduser().resolve()
+    from .active_account import account_db_path, account_key
+
+    key = account_key()
+    return account_db_path(key) if key else DEFAULT_DB_PATH
+
+
+def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
+    """그 계정(email) 전용 DB 가 없으면 만든다(현재 스키마로 init). 레거시 단일 DB 의 주인
+    (my_creator_uid == owner_uid)이면 1회 통째 이관(휴지통·마운트 동반) — 기존 단독 사용자의
+    데이터가 첫 계정 전환 때 그 계정 DB 로 자연스럽게 옮겨가게 한다. 멱등."""
+    from .active_account import account_db_path
+
+    path = account_db_path(email)
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = DEFAULT_DB_PATH
+    if legacy.is_file() and owner_uid and _legacy_owner(legacy) == owner_uid:
+        # 레거시 → 계정 DB 통째 이관(WAL 접은 일관 스냅샷). 휴지통도 같은 폴더로 복사.
+        _copy_sqlite(legacy, path)
+        legacy_trash = legacy.parent / "content_hub_trash.db"
+        if legacy_trash.is_file():
+            _copy_sqlite(legacy_trash, path.parent / "content_hub_trash.db")
+        # 에셋 마운트(레거시 단일 파일)도 그 주인 계정 폴더로 이관 — 폴더 목록 보존.
+        legacy_mounts = config.DATA_DIR / "asset_mounts.json"
+        if legacy_mounts.is_file():
+            try:
+                shutil.copy2(legacy_mounts, path.parent / "asset_mounts.json")
+            except OSError:
+                pass
+        print(f"[migrate] 레거시 DB → 계정 DB 이관: {legacy} → {path}")
+    init_db(path)  # 빈 DB든 이관본이든 현재 스키마로 보강(멱등)
+    return path
+
+
+def _legacy_owner(legacy: Path) -> Optional[str]:
+    """레거시 DB 의 my_creator_uid 설정값(소유자 판별용). 없으면 None."""
+    try:
+        c = sqlite3.connect(str(legacy))
+        try:
+            row = c.execute(
+                "SELECT value FROM app_setting WHERE key='my_creator_uid'"
+            ).fetchone()
+            return row[0] if row and row[0] else None
+        finally:
+            c.close()
+    except sqlite3.DatabaseError:
+        return None
+
+
+def _copy_sqlite(src: Path, dst: Path) -> None:
+    """sqlite backup API 로 일관 복사(WAL 상태 무관 완전 스냅샷)."""
+    s = sqlite3.connect(str(src))
+    try:
+        d = sqlite3.connect(str(dst))
+        try:
+            s.backup(d)
+        finally:
+            d.close()
+    finally:
+        s.close()
 
 
 def _migrate_db_location(path: Path) -> None:

@@ -142,6 +142,17 @@ export default function App() {
     return () => window.removeEventListener("ch:shared-changed", onChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // 프록시 로그인 성공(로컬 허브) — 백엔드가 이미 계정별 DB 로 전환했으므로, 이전 계정의 개인 설정
+  // (에셋 폴더·필터)이 새지 않게 정리하고 전체 리로드해 새 계정 데이터로 깨끗이 시작한다.
+  // 계정이 실제로 바뀐 경우에만 개인 설정을 비운다(같은 계정 재로그인은 보존).
+  const onProxyConnected = async () => {
+    const st = await api.sharedServerStatus().catch(() => null);
+    const newEmail = st?.email || "";
+    const prev = localStorage.getItem("ch.activeAccount");
+    if (newEmail && prev && prev !== newEmail) clearPersonalSettings();
+    if (newEmail) localStorage.setItem("ch.activeAccount", newEmail);
+    window.location.reload();
+  };
   // 에셋 파트와 동일한 인스턴트 필터(툴바) — 로드된 gens 를 클라이언트 측에서 즉시 거른다.
   const [colorFilter, setColorFilter] = useState<Set<string>>(() => LS.loadSet("colorFilter"));
   const [sharedOnly, setSharedOnly] = useState(() => LS.get("sharedOnly", "0") === "1");
@@ -1158,7 +1169,7 @@ export default function App() {
   if (!authConfig?.auth_enabled) {
     if (sharedSrv === null) return null; // 연결 상태 로딩 중 — 깜빡임 방지
     if (!sharedSrv.has_token) {
-      return <ServerLoginScreen url={sharedSrv.url} onConnected={loadSharedSrv} />;
+      return <ServerLoginScreen url={sharedSrv.url} onConnected={onProxyConnected} />;
     }
   }
 
