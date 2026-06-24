@@ -16,6 +16,7 @@ import { ProjectAssignMenu } from "./components/ProjectAssignMenu";
 import { SpotlightPrompt } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { TopBar } from "./components/TopBar";
+import { downloadName, downloadMany } from "./lib/download";
 import { useT } from "./lib/i18n";
 import { useAskPrompt } from "./lib/prompt";
 import { matchShortcut } from "./lib/shortcuts";
@@ -787,6 +788,21 @@ export default function App() {
     await reload();
   };
 
+  // 선택 일괄 다운로드 — 각 생성물의 첫 미디어를 레퍼런스 이름 규칙으로 순차 저장(브라우저가
+  // 여러 파일을 함께 받는다 — 첫 1회 '다중 다운로드 허용' 후 전부 저장). 미디어 없는 건은 건너뜀.
+  const bulkDownload = async (list: Generation[]) => {
+    const items = list.flatMap((g) => {
+      const a = g.assets?.[0];
+      return a ? [{ url: a.file_path, name: downloadName(g, a.type) }] : [];
+    });
+    if (!items.length) {
+      flash("다운로드할 미디어가 없습니다(생성중/실패 제외).");
+      return;
+    }
+    flash(`${items.length}개 다운로드 시작…`);
+    await downloadMany(items);
+  };
+
   // Assets 를 분리된 브라우저 창으로 연다(project-viewer 의 ?embed 방식).
   //  ⚠️ 같은 이름("contenthub-assets")의 창은 브라우저가 재사용만 하고 새로고침을 안 해
   //     옛 빌드(CSS)가 남는다 → URL 에 버전값을 붙여 매번 최신 index.html(=최신 CSS 해시)을 받게 한다.
@@ -1428,6 +1444,12 @@ export default function App() {
                   <button onClick={() => boardShare(boardSelected)}>
                     {t("↗ 팀에 공유")}
                   </button>
+                  <button
+                    onClick={() => bulkDownload(boardSelected)}
+                    title="선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)"
+                  >
+                    ⤓ 다운로드
+                  </button>
                   {boardSelected.length >= 2 && (
                     <button
                       onClick={() => setCompareGens(boardSelected)}
@@ -1457,6 +1479,18 @@ export default function App() {
                 {filters.tab === "my" && (
                   <button onClick={bulkPublish}>{t("↗ 팀에 공유")}</button>
                 )}
+                <button
+                  onClick={() =>
+                    bulkDownload(
+                      [...selected]
+                        .map((id) => gens.find((g) => g.id === id))
+                        .filter(Boolean) as Generation[],
+                    )
+                  }
+                  title="선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)"
+                >
+                  ⤓ 다운로드
+                </button>
                 {selected.size >= 2 && (
                   <button
                     onClick={() => {
