@@ -17,7 +17,12 @@ from fastapi import APIRouter, HTTPException, Request
 from . import _proxy
 from .. import rbac, repo
 from ..config import DEFAULT_WORKER_ID
-from ..deps import current_account, require_edit_generation, require_project_role
+from ..deps import (
+    account_global_roles,
+    current_account,
+    require_edit_generation,
+    require_project_role,
+)
 from ..models import GenerationOut, ImportIn, PublishIn
 
 router = APIRouter(prefix="/api", tags=["share"])
@@ -113,7 +118,10 @@ def finalize(gen_id: str, request: Request):
     if gen["status"] != "done":
         raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
     if gen.get("project_id"):
-        require_project_role(request, gen["project_id"], rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
+        # 골드(최종) 결정권 = 그 프로젝트의 SUPERVISOR 만(PM 은 생성·멤버배치 역할이라 제외).
+        # 전역 admin 은 최상위 관리자라 예외로 통과.
+        if not rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
+            require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
     else:
         # 프로젝트 미배정 → 검수자(Supervisor) 개념이 없다. 본인/admin 만(남의 비공개 강제 공유 차단).
         require_edit_generation(request, gen)
@@ -135,7 +143,10 @@ def unfinalize(gen_id: str, request: Request):
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     if gen.get("project_id"):
-        require_project_role(request, gen["project_id"], rbac.SUPERVISOR, rbac.PROJECT_MANAGER)
+        # 골드(최종) 결정권 = 그 프로젝트의 SUPERVISOR 만(PM 은 생성·멤버배치 역할이라 제외).
+        # 전역 admin 은 최상위 관리자라 예외로 통과.
+        if not rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
+            require_project_role(request, gen["project_id"], rbac.SUPERVISOR)
     else:
         require_edit_generation(request, gen)  # 미배정 → 본인/admin 만
     repo.set_final(gen_id, False)

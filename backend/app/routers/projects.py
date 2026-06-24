@@ -63,8 +63,9 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
 
 @router.get("/my-finalize-roles")
 def my_finalize_roles(request: Request):
-    """내가 최종(골드) 지정 가능한 project_id 목록 — 그 프로젝트의 supervisor/PM 인 것.
-    프론트가 카드 더블클릭(최종) 활성 여부를 판단한다. AUTH off(전역 모드)면 ['*'](전체 가능)."""
+    """내가 최종(골드) 지정 가능한 project_id 목록 — 그 프로젝트의 SUPERVISOR 인 것(PM 제외).
+    전역 admin 은 ['*'](전체 가능). 프론트가 카드 더블클릭(최종) 활성 여부를 판단한다.
+    AUTH off(전역 모드)면 ['*']."""
     if _proxy.proxying():  # 역할은 서버가 가짐
         return _proxy.proxy_get("/api/projects/my-finalize-roles", request)
     if not AUTH_ENABLED:
@@ -73,7 +74,10 @@ def my_finalize_roles(request: Request):
     uid = acc.get("creator_uid") if acc else None
     if not uid:
         return {"project_ids": []}
-    return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR, rbac.PROJECT_MANAGER])}
+    # 전역 admin 은 모든 항목 골드 가능. 그 외에는 SUPERVISOR 인 프로젝트만(PM 은 생성·배치 역할).
+    if rbac.has_any_global_role(rbac.parse_roles(acc.get("global_role")), rbac.ADMIN):
+        return {"project_ids": ["*"]}
+    return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR])}
 
 
 @router.post("", response_model=ProjectOut)
