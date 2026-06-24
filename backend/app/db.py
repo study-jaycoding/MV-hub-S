@@ -27,6 +27,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -184,8 +185,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000;")
     # 정렬/임시 B-tree(ORDER BY·GROUP BY)를 디스크 대신 메모리에서 — 목록 정렬 가속.
     conn.execute("PRAGMA temp_store = MEMORY;")
-    # 페이지 캐시 64MB(음수 = KiB 단위) — 반복 조회 시 디스크 재접근 감소.
-    conn.execute("PRAGMA cache_size = -65536;")
+    # 페이지 캐시 32MB(음수 = KiB 단위) — 반복 조회 시 디스크 재접근 감소. 풀로 커넥션이 스레드별
+    # 장수명이 되어 합산 메모리가 커질 수 있으므로 64→32MB 로 낮춰 상한을 묶는다(핫 페이지는 충분).
+    conn.execute("PRAGMA cache_size = -32768;")
     # 메모리맵 읽기 256MB — read 시스템콜 대신 매핑으로 큰 폭 가속(읽기 위주 워크로드).
     conn.execute("PRAGMA mmap_size = 268435456;")
     # journal_mode=WAL 은 DB 파일에 영속(init_db 가 1회 설정)되므로 커넥션마다 재설정하지 않는다 —
@@ -202,22 +204,67 @@ def get_connection(db_path: Path | None = None):
     return _get_connection_sqlite(db_path)
 
 
+# ── 스레드별 커넥션 풀(요청 경로) ──────────────────────────────────────────────
+# 매 요청 새 커넥션 + 6개 PRAGMA(특히 mmap 256MB) 재설정 비용을 없앤다. FastAPI 동기 엔드포인트는
+# anyio 스레드풀에서 돌고, SQLite 커넥션은 '스레드당 하나'면 안전하다(한 스레드는 요청을 순차 처리).
+# DB 경로가 바뀌면(계정 전환 → active.json) 옛 커넥션을 닫고 새로 연다. 예외가 난 커넥션은 손상
+# 가능성이 있어 폐기하고 다음 요청이 새로 열게 한다. CONTENT_HUB_DB_POOL=0 으로 끌 수 있다(안전장치).
+_POOL_ENABLED = os.environ.get("CONTENT_HUB_DB_POOL", "1").strip() != "0"
+_tls = threading.local()
+
+
+def _pooled_conn(db_path: Path) -> sqlite3.Connection:
+    key = str(db_path)
+    conn = getattr(_tls, "conn", None)
+    if conn is not None and getattr(_tls, "path", None) == key:
+        return conn
+    if conn is not None:  # 경로 변경 → 옛 것 닫고 교체
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    conn = _connect(db_path)
+    _tls.conn = conn
+    _tls.path = key
+    return conn
+
+
+def _discard_pooled_conn() -> None:
+    conn = getattr(_tls, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    _tls.conn = None
+    _tls.path = None
+
+
 @contextmanager
 def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     """트랜잭션 단위 커넥션 컨텍스트(SQLite).
 
-    블록이 정상 종료되면 commit, 예외가 나면 rollback 후 항상 close.
+    요청 경로(db_path=None)면 스레드별 풀 커넥션을 재사용(닫지 않음, 예외 시 폐기). 명시 경로나
+    풀 비활성(CONTENT_HUB_DB_POOL=0)이면 1회용으로 열고 항상 닫는다. 정상 종료=commit, 예외=rollback.
     """
-    conn = _connect(db_path or get_db_path())
+    pooled = db_path is None and _POOL_ENABLED
+    conn = _pooled_conn(get_db_path()) if pooled else _connect(db_path or get_db_path())
     try:
         yield conn
-        conn.execute("COMMIT;") if conn.in_transaction else None
-    except Exception:
         if conn.in_transaction:
-            conn.execute("ROLLBACK;")
+            conn.execute("COMMIT;")
+    except Exception:
+        try:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK;")
+        except sqlite3.Error:
+            pass
+        if pooled:
+            _discard_pooled_conn()  # 손상 가능 → 다음 요청이 새로 연다
         raise
     finally:
-        conn.close()
+        if not pooled:
+            conn.close()
 
 
 def init_db(db_path: Path | None = None) -> Path:
