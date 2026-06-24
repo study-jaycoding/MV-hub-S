@@ -160,11 +160,13 @@ def migrate_from_server():
             break
         total += len(items)
         for it in items:
-            gid = it.get("id") if isinstance(it, dict) else None
-            if not gid or gid in seen:
+            sid = it.get("id") if isinstance(it, dict) else None
+            if not sid or sid in seen:
                 continue
-            seen.add(gid)
-            if not repo.get_generation(gid):
+            seen.add(sid)
+            # 서버 id(번들 앵커=job_id) → 로컬 id 해석. 안 그러면 로컬 uuid 와 달라 메타가 적용 안 됐다.
+            gid, _ = repo.finalize_id_map(sid)
+            if not gid or not repo.get_generation(gid):
                 missing += 1  # 로컬에 아직 없음 → 에이전트 동기화 후 다시 시도
                 continue
             try:  # 한 건 실패(예: 누락 프로젝트)가 전체 순회를 멈추지 않게 — 부분 적용 방지

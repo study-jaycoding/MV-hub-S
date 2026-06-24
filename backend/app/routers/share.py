@@ -117,7 +117,22 @@ def finalize(gen_id: str, request: Request):
                     repo.unpublish(local_id)
             raise
         if local_id:  # 내 로컬 카드에도 골드 미러(tab=my·히스토리 즉시 반영)
-            repo.set_final(local_id, True, _finalizer_uid(request))
+            try:
+                repo.set_final(local_id, True, _finalizer_uid(request))
+            except Exception:
+                # 미러 실패 → "서버는 골드, 로컬은 아님" 어긋남(+ unpublish 가드 우회) 방지:
+                # 서버 골드를 되돌리고(필요시 새 공유도 해제) 에러를 알린다.
+                try:
+                    _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
+                except Exception:  # noqa: BLE001
+                    pass
+                if newly_published:
+                    try:
+                        _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    repo.unpublish(local_id)
+                raise
         return out
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
@@ -146,7 +161,10 @@ def unfinalize(gen_id: str, request: Request):
         local_id, server_id = repo.finalize_id_map(gen_id)
         out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
         if local_id:
-            repo.set_final(local_id, False)
+            try:
+                repo.set_final(local_id, False)
+            except Exception:
+                repo.set_final(local_id, False)  # 1회 재시도(보통 일시적 DB 락) — 실패 시 전파해 알림
         return out
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")

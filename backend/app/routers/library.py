@@ -108,15 +108,20 @@ def list_generations(
     # 발행본(서버 공유) 카드의 코멘트 뱃지는 로컬 카운트가 아니라 '서버 스레드' 기준으로 보강한다
     # (팀원이 단 새 코멘트가 카드 C 뱃지에 바로 반영되도록). 공유 표식이 있는 카드만 1회 배치 조회.
     if _proxy.proxying():
-        shared_ids = [g["id"] for g in result if g.get("shared")]
-        if shared_ids:
+        # 서버는 공유본을 번들 앵커(job_id)로 안다 → 로컬 id ↔ server id 변환:
+        # 요청은 server id 로 보내고 응답(서버 id 키)을 로컬 id 로 되매핑한다. (로컬 id 로 그대로
+        # 위임하면 서버가 못 찾아 공유본 C 뱃지가 항상 0 으로 떴다 — 엔드포인트와 동일한 수정.)
+        srv_of = {g["id"]: repo.finalize_id_map(g["id"])[1] for g in result if g.get("shared")}
+        if srv_of:
             try:
                 counts = _proxy.proxy_json(
-                    "POST", "/api/generations/comment-counts", body={"gen_ids": shared_ids}
+                    "POST", "/api/generations/comment-counts",
+                    body={"gen_ids": list(srv_of.values())},
                 )
                 if isinstance(counts, dict):
                     for g in result:
-                        c = counts.get(g["id"])
+                        sid = srv_of.get(g["id"])
+                        c = counts.get(sid) if sid else None
                         if isinstance(c, dict):
                             g["comment_count"] = c.get("comment_count", g.get("comment_count"))
                             g["has_unread"] = c.get("has_unread", g.get("has_unread"))
