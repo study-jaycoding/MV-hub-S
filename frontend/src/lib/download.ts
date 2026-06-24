@@ -1,6 +1,7 @@
 // 결과물 다운로드 공용 헬퍼 — 카드 그리드·히스토리 보드·에셋 셀이 똑같이 복붙하던 것.
 import type { Generation } from "../types";
 import { saveToDownloadDir } from "./downloadDir";
+import { flashMsg } from "./flash";
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
 // (cloudfront 등)은 cross-origin 이라 a[download] 가 무시되지만, 힉스필드 CDN 이 CORS(*)를 허용하므로
@@ -41,19 +42,27 @@ async function _fetchBlob(url: string, name: string): Promise<Blob | null> {
   return null;
 }
 
-export async function download(url: string, name: string) {
+// true = 파일명대로 디스크에 깔끔히 저장됨. false = 직접 저장 실패 → 새 탭 폴백(파일명 미적용·에러
+// 페이지/팝업차단 가능). 예전엔 fire-and-forget 라 실패해도 사용자가 '저장됨'으로 오인했다.
+export async function download(url: string, name: string): Promise<boolean> {
   const blob = await _fetchBlob(url, name);
   if (blob) {
     // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
-    if (await saveToDownloadDir(name, blob)) return;
+    if (await saveToDownloadDir(name, blob)) return true;
     const blobUrl = URL.createObjectURL(blob);
     _anchor(blobUrl, name);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    return;
+    return true;
   }
-  // bytes 를 못 받음 — 최후 폴백(로컬=직접 다운로드, 원격=새 탭).
-  if (url.startsWith("/")) _anchor(url, name);
-  else _anchor(url, undefined, true);
+  // bytes 를 못 받음 — 로컬(/...)은 a[download] 가 동작하므로 저장 성공, 원격은 새 탭(저장 보장
+  // 안 됨)이라 '실패'로 보고해 호출측·사용자가 알게 한다.
+  if (url.startsWith("/")) {
+    _anchor(url, name);
+    return true;
+  }
+  _anchor(url, undefined, true);
+  flashMsg(`다운로드 직접 저장 실패 — 새 탭에서 열었습니다: ${name}`);
+  return false;
 }
 
 // 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL(_anchor 재사용).
@@ -75,9 +84,15 @@ export function downloadName(gen: Generation, type: string): string {
 
 // 여러 건 일괄 다운로드 — 고친 download() 를 순차 호출. 각 건이 fetch→blob 으로 완전히 받아
 // 저장된 뒤 다음으로 넘어가고, 짧은 스태거로 브라우저의 '다중 다운로드 차단'을 회피한다.
-export async function downloadMany(items: { url: string; name: string }[]) {
+export async function downloadMany(
+  items: { url: string; name: string }[],
+): Promise<{ ok: number; failed: number }> {
+  let ok = 0;
+  let failed = 0;
   for (const it of items) {
-    await download(it.url, it.name);
+    if (await download(it.url, it.name)) ok++;
+    else failed++;
     await new Promise((r) => setTimeout(r, 250));
   }
+  return { ok, failed };
 }

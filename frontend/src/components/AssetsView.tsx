@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { buildCommentTree } from "../lib/commentTree";
+import { flashMsg } from "../lib/flash";
 import { fmtWhen } from "../lib/format";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
@@ -743,13 +744,19 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     });
   const reconcile = () =>
     api.assetMeta(project).then(setMeta).catch(() => {});
+  // 메타 변경(컬러/태그/소스) 실패 핸들러 — 서버 상태로 되돌리고(self-heal) 실패를 명시적으로 알린다.
+  // 예전엔 .catch(reconcile)만 있어 화면은 곧 정정됐지만 '왜 되돌아갔는지' 통지가 없어 거짓처럼 보였다.
+  const metaFail = () => {
+    reconcile();
+    flashMsg("변경 적용 실패 — 서버 상태로 되돌렸습니다");
+  };
 
   const colorAssets = (paths: string[], color: string) => {
     // 이미 모두 그 색이면 해제(토글) — r 준 뒤 r 다시 누르면 컬러 제거
     const allSame = paths.every((p) => metaRef.current[p]?.color === color);
     const next = allSame ? null : color;
     patchMeta(paths, { color: next });
-    Promise.all(paths.map((p) => api.setAssetColor(project, p, next))).catch(reconcile);
+    Promise.all(paths.map((p) => api.setAssetColor(project, p, next))).catch(metaFail);
   };
   // 소스는 파일 이름으로 자동 등록(확장자 제외) — 프롬프트 없음.
   const fileBaseName = (p: string) => {
@@ -765,12 +772,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         n[p] = { ...(n[p] || EMPTY_META), is_source: true, source_name: name };
       return n;
     });
-    Promise.all(named.map(({ p, name }) => api.setAssetSource(project, p, name, true))).catch(reconcile);
+    Promise.all(named.map(({ p, name }) => api.setAssetSource(project, p, name, true))).catch(metaFail);
   };
   const toggleSource = (path: string) => {
     if (metaRef.current[path]?.is_source) {
       patchMeta([path], { is_source: false, source_name: null });
-      api.setAssetSource(project, path, null, false).catch(reconcile);
+      api.setAssetSource(project, path, null, false).catch(metaFail);
     } else {
       sourceAssets([path]);
     }
@@ -795,7 +802,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         const merged = Array.from(new Set([...(metaRef.current[p]?.tags || []), ...add]));
         return api.setAssetTags(project, p, merged);
       }),
-    ).catch(reconcile);
+    ).catch(metaFail);
   };
   // # 버튼 태그 목록에서 ✕ 로 개별 태그 제거(해당 카드만)
   const removeAssetTag = (path: string, tag: string) => {
@@ -806,7 +813,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
     const next = (metaRef.current[path]?.tags || []).filter((t) => t !== tag);
-    api.setAssetTags(project, path, next).catch(reconcile);
+    api.setAssetTags(project, path, next).catch(metaFail);
   };
 
   // T 패널: 토글(닫으면 태그 필터도 해제 — S 처럼). 바깥 클릭으로 닫히지 않음.
@@ -861,7 +868,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       affected.map((p) =>
         api.setAssetTags(project, p, (metaRef.current[p]?.tags || []).filter((t) => t !== tag)),
       ),
-    ).catch(reconcile);
+    ).catch(metaFail);
     if (activeTags.has(tag))
       setActiveTags((prev) => {
         const n = new Set(prev);
@@ -895,7 +902,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       .addAssetComment(project, commentPath, t, parentId, muteOwnRef.current)
       .then(refreshComments)
       .then(reconcile)
-      .catch(() => {});
+      // 실패를 삼키면 사용자는 코멘트를 남겼다고 오인 → 명시적으로 알린다.
+      .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));
   };
   const editComment = (id: string, text: string) => {
     const t = text.trim();

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { buildCommentTree } from "../lib/commentTree";
+import { flashMsg } from "../lib/flash";
 import { fmtWhen } from "../lib/format";
 import { loadJSON } from "../lib/storage";
 import type { GenComment } from "../types";
@@ -88,7 +89,10 @@ export function GenCommentPanel({
     api
       .markGenCommentSeen(c.id)
       .then(onChanged)
-      .catch(() => {});
+      // 실패 시 롤백 — 서버는 미확인인데 화면만 읽음으로 두면 거짓(새로고침·타 PC 서 NEW 부활).
+      .catch(() =>
+        setComments((prev) => prev.map((x) => (x.id === c.id ? { ...x, unread: true } : x))),
+      );
   };
 
   const sendComment = (text: string, parentId?: string | null) => {
@@ -99,7 +103,8 @@ export function GenCommentPanel({
       .addGenComment(genId, t, parentId)
       .then(refresh)
       .then(onChanged)
-      .catch(() => {});
+      // 실패를 삼키면 사용자는 코멘트를 남겼다고 오인 → 명시적으로 알린다.
+      .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));
   };
   const editComment = (id: string, text: string) => {
     const t = text.trim();

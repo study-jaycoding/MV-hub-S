@@ -398,6 +398,13 @@ export default function App() {
     api.me().then(setAccount).catch(() => {});
   });
 
+  // 전역 토스트 — lib(download 등)이 직접 flash 를 못 부르므로 이벤트로 알린다(단일 카드 다운로드
+  // 실패 등 fire-and-forget 액션의 실패가 사용자에게 보이도록).
+  useCustomEvent("ch:flash", (e) => {
+    const msg = (e as CustomEvent<string>).detail;
+    if (msg) flash(msg);
+  });
+
   // ★단일 신원: 로컬 허브(AUTH off)에서도 팀서버 토큰이 있으면 그 서버 계정을 account 로 채운다.
   // me() 는 프록시되어 서버의 '살아있는' 계정(creator_uid·이름·역할)을 돌려준다 → 표시이름·역할·
   // "내 것"(코멘트/생성물) 판별이 전부 이 한 출처로 통일된다. 토큰 없으면 비운다(stale provider 폐기).
@@ -821,7 +828,8 @@ export default function App() {
       return;
     }
     flash(`${items.length}개 다운로드 시작…`);
-    await downloadMany(items);
+    const { ok, failed } = await downloadMany(items);
+    if (failed) flash(`다운로드 완료 ${ok}개 · 직접 저장 실패 ${failed}개(새 탭)`);
   };
 
   // Assets 를 분리된 브라우저 창으로 연다(project-viewer 의 ?embed 방식).
@@ -1072,6 +1080,16 @@ export default function App() {
   };
 
   // 휴지통(soft delete) — 우리 카탈로그에서만 숨김. 힉스필드 원본엔 영향 없음.
+  // 일괄 작업 공용 — Promise.all 은 한 건만 실패해도 전체가 throw 돼 "전부 실패"로 위장하고 성공분이
+  // reload 에 안 잡힌다. allSettled 로 실패 수만 집계하고, 호출측이 항상 reload + 정확히 보고하게 한다.
+  const runBulk = async (
+    ids: string[],
+    fn: (id: string) => Promise<unknown>,
+  ): Promise<number> => {
+    const r = await Promise.allSettled(ids.map(fn));
+    return r.filter((x) => x.status === "rejected").length;
+  };
+
   const bulkDelete = async () => {
     const ids = [...selected];
     if (!ids.length) return;
@@ -1083,27 +1101,25 @@ export default function App() {
       )
     )
       return;
-    try {
-      await Promise.all(ids.map((id) => api.deleteGeneration(id)));
-      clearSelect();
-      await reload();
-      flash(`${ids.length}개를 휴지통으로 보냈습니다.`);
-    } catch (e) {
-      flash("삭제 실패: " + String(e));
-    }
+    const failed = await runBulk(ids, (id) => api.deleteGeneration(id));
+    clearSelect();
+    await reload();
+    flash(
+      failed
+        ? `${ids.length - failed}개 휴지통 이동 · ${failed}개 실패`
+        : `${ids.length}개를 휴지통으로 보냈습니다.`,
+    );
   };
 
   const bulkRestore = async () => {
     const ids = [...selected];
     if (!ids.length) return;
-    try {
-      await Promise.all(ids.map((id) => api.restoreGeneration(id)));
-      clearSelect();
-      await reload();
-      flash(`${ids.length}개를 복구했습니다.`);
-    } catch (e) {
-      flash("복구 실패: " + String(e));
-    }
+    const failed = await runBulk(ids, (id) => api.restoreGeneration(id));
+    clearSelect();
+    await reload();
+    flash(
+      failed ? `${ids.length - failed}개 복구 · ${failed}개 실패` : `${ids.length}개를 복구했습니다.`,
+    );
   };
 
   // 휴지통에서 영구 삭제(복원 불가). 휴지통 DB 에서 완전히 제거.
@@ -1118,14 +1134,14 @@ export default function App() {
       )
     )
       return;
-    try {
-      await Promise.all(ids.map((id) => api.purgeTrashed(id)));
-      clearSelect();
-      await reload();
-      flash(`${ids.length}개를 영구 삭제했습니다.`);
-    } catch (e) {
-      flash("영구 삭제 실패: " + String(e));
-    }
+    const failed = await runBulk(ids, (id) => api.purgeTrashed(id));
+    clearSelect();
+    await reload();
+    flash(
+      failed
+        ? `${ids.length - failed}개 영구 삭제 · ${failed}개 실패`
+        : `${ids.length}개를 영구 삭제했습니다.`,
+    );
   };
 
   const onRestore = async (g: Generation) => {
