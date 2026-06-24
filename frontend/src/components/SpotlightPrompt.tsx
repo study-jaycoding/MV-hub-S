@@ -23,6 +23,7 @@ import {
   HIST_MAX,
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry } from "../lib/promptEditor";
+import { flashMsg } from "../lib/flash";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useModels, ALLOWED, HIDDEN_PARAMS, effectiveDefault, numericRange } from "../lib/useModels";
@@ -309,6 +310,20 @@ export function SpotlightPrompt({
     histIdxRef.current = -1;
     updatePlaceholder();
     setMention(composingRef.current ? null : detectMention(ed));
+  };
+  // 프롬프트 전체를 클립보드로 복사 — @소스명 토큰을 포함한 표시 프롬프트(화면 그대로).
+  const copyPrompt = () => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const txt = partsText(serializeParts(ed)) || serialize(ed).text;
+    if (!txt) {
+      flashMsg("복사할 프롬프트가 없습니다");
+      return;
+    }
+    navigator.clipboard?.writeText(txt).then(
+      () => flashMsg("프롬프트를 복사했습니다"),
+      () => flashMsg("복사 실패"),
+    );
   };
   // 캐럿 이동(keyup/click) — 멘션만 재감지(기록 탐색·placeholder 는 건드리지 않음).
   const onCaretMove = () => {
@@ -961,6 +976,19 @@ export function SpotlightPrompt({
                 onEditorInput();
               }}
             />
+            {/* 우측 상단 — 프롬프트 전체 복사 */}
+            <button
+              type="button"
+              className="sl-copy-btn"
+              title="프롬프트 전체 복사"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={copyPrompt}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
           </div>
 
           {/* 컨트롤 행 */}
