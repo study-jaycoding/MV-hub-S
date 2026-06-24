@@ -23,6 +23,7 @@ from . import _proxy
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..repo import identity
+from ..services import agent_signals
 
 router = APIRouter(prefix="/api", tags=["publish"])
 
@@ -36,6 +37,13 @@ def _switch_account_db(email: str, uid: Optional[str]) -> None:
     active_account.set_active(email, uid)
     db.ensure_account_db(email, uid)
     identity._MY_UID_CACHE[0] = None  # 새 DB 기준으로 is_mine 재계산
+    # 에이전트를 깨워 이 계정 DB 로 재동기화·계정상태 재보고 — 로그인 전(레거시 DB)에 보고된 워크스페이스
+    # 상태가 새 계정 DB 엔 없어 '미연결'로 보이던 것을 곧 채운다(+ 로컬 생성물도 이 DB 로 다시 적재).
+    # 로컬 에이전트는 AUTH-off 라 'local' 신원으로 대기한다(_agent_acc 폴백과 동일).
+    try:
+        agent_signals.signal("local", "sync")
+    except Exception:  # noqa: BLE001 — 에이전트 미가동이어도 로그인은 진행
+        pass
 
 # app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
 _K_URL = "shared_server_url"
