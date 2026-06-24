@@ -127,6 +127,12 @@ export function GenerationCard({
     gen.is_final ? onUnfinalize(gen) : onFinalize(gen);
   };
 
+  // S/★ 버튼 노출 판정 — 본인 카드뿐 아니라:
+  //  · 최종 권한자(그 프로젝트 supervisor/global admin)는 '공유된' 남의 카드에도 S 가 보여 최종 지정 가능
+  //  · 최종(골드) 카드는 누구에게나 ★ 가 보인다(권한 없으면 읽기전용 표식 — 더블클릭은 무반응)
+  const mayFinalize = canFinalize ? canFinalize(gen) : true;
+  const showSF = gen.is_mine || gen.is_final || (gen.shared && mayFinalize);
+
   const params = (gen.params || {}) as Record<string, unknown>;
 
   const previewName = gen.prompt.slice(0, 50) || "(제목 없음)";
@@ -216,18 +222,23 @@ export function GenerationCard({
           👤 {gen.creator_name || "팀원"}
         </span>
       )}
-      {/* 좌상단 액션 — S(공유/최종, 내 카드만)·C(코멘트). 비활성=호버 시에만 보임.
-          S: 공유/최종이면 항상 떠 있음. C: 미확인 코멘트가 있으면 항상 떠 있다가, 확인(열기)하면 다시 숨김. */}
+      {/* 좌상단 액션 — S(공유/최종)·C(코멘트). 비활성=호버 시에만 보임.
+          S: 본인 카드는 공유/최종 토글, 최종 권한자(supervisor/admin)는 남의 공유본도 최종 지정.
+          ★: 최종(골드)이면 누구에게나 표시. C: 미확인 코멘트가 있으면 항상 떠 있다가 확인하면 숨김. */}
       <div className="card-tl">
-        {gen.is_mine && (
+        {showSF && (
           <button
             className={"card-sf" + (gen.shared ? " on" : "") + (gen.is_final ? " final" : "")}
             title={
               gen.is_final
-                ? "최종(골드) — 더블클릭=최종 해제 (공유 잠금)"
-                : gen.shared
-                  ? "팀에 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)"
-                  : "팀에 공유 (클릭) · 최종 지정은 공유 후 더블클릭"
+                ? mayFinalize
+                  ? "최종(골드) — 더블클릭=최종 해제 (공유 잠금)"
+                  : "최종(골드)"
+                : gen.is_mine
+                  ? gen.shared
+                    ? "팀에 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)"
+                    : "팀에 공유 (클릭) · 최종 지정은 공유 후 더블클릭"
+                  : "더블클릭=최종 지정(Supervisor)"
             }
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
