@@ -265,34 +265,56 @@ export function HistoryBoard({
   const layoutPosRef = useRef<Record<string, XY>>({}); // 최신 자동 레이아웃 위치(드래그 시작점 계산용)
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [dragging, setDragging] = useState(false); // 위치 드래그 중(전환 끄기 — 끌 때 즉시 따라오게)
-  const [zoom, setZoom] = useState(1); // 마우스 휠 확대/축소
-  const [pan, setPan] = useState({ x: 0, y: 0 }); // 화면 이동(translate) — 사방 자유 이동
-  const zoomRef = useRef(1);
-  zoomRef.current = zoom;
-  // 캔버스 transform 은 scale(zoom * scale) 이므로 좌표 환산엔 둘을 곱한 총배율을 써야 한다.
+  // ── pan/zoom 은 '명령형' — 휠/드래그/슬라이더가 React state 가 아니라 ref 를 바꾸고 캔버스
+  //    transform 을 직접 갱신한다. 매 프레임 setState→전체 노드 재렌더하던 비용 제거(이 보드의 가장
+  //    큰 상호작용 비용). 보고용 onStats 만 디바운스로 가끔 부른다.
+  const zoomRef = useRef(1); // 휠 줌 (source of truth)
+  const panPosRef = useRef({ x: 0, y: 0 }); // 화면 이동 (source of truth)
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
-  const panStateRef = useRef(pan);
-  panStateRef.current = pan;
 
-  // 노드 수(현재 타입필터 기준)·줌%·이동여부를 App(→LibraryToolbar)에 보고 — 값이 실제로 바뀔 때만
-  // (pan 드래그 중엔 viewMoved 가 이미 true 라 재호출 안 됨 → 불필요한 App 리렌더 방지).
+  const applyTransform = useCallback(() => {
+    const c = canvasRef.current;
+    if (c)
+      c.style.transform = `translate(${panPosRef.current.x}px, ${panPosRef.current.y}px) scale(${
+        zoomRef.current * scaleRef.current
+      })`;
+  }, []);
+  // 매 렌더 후 transform 재적용 — 선택·그래프변경 등 다른 재렌더가 style 을 건드려도 ref 기준 복원.
+  useLayoutEffect(applyTransform);
+
+  // 줌%·이동여부·노드수를 App(→툴바)에 보고 — ref 기준. 휠은 디바운스, 드래그/슬라이더는 즉시.
   const statsRef = useRef("");
-  // useLayoutEffect — 줌 변경 시 페인트 전에 슬라이더 값(boardStats.zoomPct)을 갱신해 떨림 방지.
-  useLayoutEffect(() => {
-    if (!onStats) return;
-    const count = graph
-      ? graph.nodes.filter(
-          (g) => typeFilter === "all" || g.assets[0]?.type === typeFilter,
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const typeFilterRef = useRef(typeFilter);
+  typeFilterRef.current = typeFilter;
+  const onStatsRef = useRef(onStats);
+  onStatsRef.current = onStats;
+  const reportView = useCallback(() => {
+    const g = graphRef.current;
+    const count = g
+      ? g.nodes.filter(
+          (n) => typeFilterRef.current === "all" || n.assets[0]?.type === typeFilterRef.current,
         ).length
       : 0;
-    const zoomPct = Math.round(zoom * 100);
-    const viewMoved = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
+    const zoomPct = Math.round(zoomRef.current * 100);
+    const viewMoved =
+      zoomRef.current !== 1 || panPosRef.current.x !== 0 || panPosRef.current.y !== 0;
     const key = `${count}|${zoomPct}|${viewMoved}`;
     if (key === statsRef.current) return;
     statsRef.current = key;
-    onStats({ count, zoomPct, viewMoved });
-  }, [graph, typeFilter, zoom, pan, onStats]);
+    onStatsRef.current?.({ count, zoomPct, viewMoved });
+  }, []);
+  const reportTimer = useRef<number | undefined>(undefined);
+  const scheduleReport = useCallback(() => {
+    if (reportTimer.current) window.clearTimeout(reportTimer.current);
+    reportTimer.current = window.setTimeout(reportView, 120);
+  }, [reportView]);
+  // 그래프/타입필터 바뀌면 노드수 보고(즉시).
+  useLayoutEffect(() => {
+    reportView();
+  }, [graph, typeFilter, reportView]);
 
   // 상단 크기 슬라이더가 보드 줌을 직접 조절 — 줌을 v 로 맞추고 화면은 홈(pan 0)으로 정렬.
   // (휠 줌은 커서 기준 앵커링 유지, 슬라이더 줌은 중심/홈 기준 — 슬라이더로 pan 도 함께 리셋되는 효과.)
@@ -300,8 +322,10 @@ export function HistoryBoard({
     if (!controlRef) return;
     controlRef.current = {
       zoomTo: (v: number) => {
-        setZoom(Math.min(2.5, Math.max(0.3, v)));
-        setPan({ x: 0, y: 0 });
+        zoomRef.current = Math.min(2.5, Math.max(0.3, v));
+        panPosRef.current = { x: 0, y: 0 }; // 슬라이더 줌은 홈으로 정렬
+        applyTransform();
+        reportView();
       },
     };
     return () => {
@@ -322,8 +346,11 @@ export function HistoryBoard({
       const nz = Math.min(2.5, Math.max(0.3, prev * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
       if (nz === prev) return;
       const ratio = nz / prev;
-      setZoom(nz);
-      setPan((p) => ({ x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio }));
+      const p = panPosRef.current;
+      zoomRef.current = nz;
+      panPosRef.current = { x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio };
+      applyTransform(); // 즉시 반영(재렌더 없음)
+      scheduleReport(); // 슬라이더 값은 휠 멈춘 뒤 갱신
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -414,22 +441,24 @@ export function HistoryBoard({
     }
     // 실제 이동이 시작될 때만 패닝 모드(손모양·상호작용 잠금) — 클릭만이면 노드 정보(auxclick) 보존.
     scrollRef.current?.classList.add("panning");
-    setPan({ x: p.px + (e.clientX - p.x), y: p.py + (e.clientY - p.y) });
-  }, []);
+    panPosRef.current = { x: p.px + (e.clientX - p.x), y: p.py + (e.clientY - p.y) };
+    applyTransform(); // 드래그 중 즉시 반영(재렌더 없음)
+  }, [applyTransform]);
   const onPanUpRef = useRef<() => void>(() => {});
   const onPanUp = useCallback(() => {
     panRef.current = null;
     scrollRef.current?.classList.remove("panning");
     window.removeEventListener("mousemove", onPanMove);
     window.removeEventListener("mouseup", onPanUp);
-  }, [onPanMove]);
+    reportView(); // 패닝 끝 — 이동여부 보고
+  }, [onPanMove, reportView]);
   onPanUpRef.current = onPanUp; // onPanMove 안전장치가 부를 최신 cleanup
 
   const onBoardMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       // 미들 버튼 → 패닝 시작(이동 없이 클릭만이면 노드 onAuxClick 이 정보 팝업을 띄움)
       e.preventDefault();
-      const cur = panStateRef.current;
+      const cur = panPosRef.current;
       panRef.current = { x: e.clientX, y: e.clientY, px: cur.x, py: cur.y };
       // panning 클래스는 실제 이동(onPanMove) 시에만 — 정지 클릭은 노드 정보(auxclick)가 떠야 하므로.
       window.addEventListener("mousemove", onPanMove);
@@ -665,7 +694,8 @@ export function HistoryBoard({
             style={{
               width: dims.w,
               height: dims.h,
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom * scale})`,
+              // transform 은 applyTransform(명령형)이 매 렌더 후 ref 기준으로 적용 — 여기 두면 state
+              // 의존이 되살아나 휠/드래그마다 전체 재렌더된다(이번 최적화의 핵심).
               transformOrigin: "0 0",
             }}
           >
