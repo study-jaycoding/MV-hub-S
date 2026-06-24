@@ -39,6 +39,17 @@ const loadPos = (): Record<string, XY> => {
   }
 };
 
+// 카드별 카메라(zoom/pan) — 탭 이동 후 같은 카드의 히스토리로 재진입하면 보던 화면 그대로 복원.
+const VIEW_KEY = "ch.history.view";
+type View = { z: number; x: number; y: number };
+const loadViews = (): Record<string, View> => {
+  try {
+    return JSON.parse(localStorage.getItem(VIEW_KEY) || "{}") as Record<string, View>;
+  } catch {
+    return {};
+  }
+};
+
 const BOXW = 124;
 const BOXH = 124;
 const GAPX = 78; // 열(세대) 간격
@@ -273,6 +284,26 @@ export function HistoryBoard({
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
 
+  // 카드별 카메라 저장 — 현재 focusId 의 zoom/pan 을 localStorage 에. focusIdRef 로 stable.
+  const focusIdRef = useRef(focusId);
+  focusIdRef.current = focusId;
+  const saveView = useCallback(() => {
+    const fid = focusIdRef.current;
+    if (!fid) return;
+    try {
+      const all = loadViews();
+      all[fid] = { z: zoomRef.current, x: panPosRef.current.x, y: panPosRef.current.y };
+      localStorage.setItem(VIEW_KEY, JSON.stringify(all));
+    } catch {
+      /* localStorage 불가 무시 */
+    }
+  }, []);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const scheduleSaveView = useCallback(() => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(saveView, 250);
+  }, [saveView]);
+
   const applyTransform = useCallback(() => {
     const c = canvasRef.current;
     if (c)
@@ -316,6 +347,22 @@ export function HistoryBoard({
     reportView();
   }, [graph, typeFilter, reportView]);
 
+  // ★카드별 카메라 복원 — 같은 카드의 히스토리로 재진입(언마운트 후 재마운트·focusId 전환)하면
+  // 이전에 보던 zoom/pan 을 그대로 되살린다. 저장 없는 카드는 기본(zoom 1·pan 0).
+  useLayoutEffect(() => {
+    if (!focusId) return;
+    const v = loadViews()[focusId];
+    zoomRef.current = v ? v.z : 1;
+    panPosRef.current = v ? { x: v.x, y: v.y } : { x: 0, y: 0 };
+    applyTransform();
+    reportView();
+  }, [focusId, applyTransform, reportView]);
+
+  // 언마운트(탭 이동 등) 시 현재 카메라를 마지막으로 저장 — 디바운스 저장이 아직 안 떴어도 보존.
+  useEffect(() => {
+    return () => saveView();
+  }, [saveView]);
+
   // 상단 크기 슬라이더가 보드 줌을 직접 조절 — 줌을 v 로 맞추고 화면은 홈(pan 0)으로 정렬.
   // (휠 줌은 커서 기준 앵커링 유지, 슬라이더 줌은 중심/홈 기준 — 슬라이더로 pan 도 함께 리셋되는 효과.)
   useEffect(() => {
@@ -326,6 +373,7 @@ export function HistoryBoard({
         panPosRef.current = { x: 0, y: 0 }; // 슬라이더 줌은 홈으로 정렬
         applyTransform();
         reportView();
+        saveView();
       },
     };
     return () => {
@@ -351,6 +399,7 @@ export function HistoryBoard({
       panPosRef.current = { x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio };
       applyTransform(); // 즉시 반영(재렌더 없음)
       scheduleReport(); // 슬라이더 값은 휠 멈춘 뒤 갱신
+      scheduleSaveView(); // 휠 멈춘 뒤 카메라 저장
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -451,7 +500,8 @@ export function HistoryBoard({
     window.removeEventListener("mousemove", onPanMove);
     window.removeEventListener("mouseup", onPanUp);
     reportView(); // 패닝 끝 — 이동여부 보고
-  }, [onPanMove, reportView]);
+    saveView(); // 패닝 끝 — 카메라 저장(재진입 시 복원)
+  }, [onPanMove, reportView, saveView]);
   onPanUpRef.current = onPanUp; // onPanMove 안전장치가 부를 최신 cleanup
 
   const onBoardMouseDown = (e: React.MouseEvent) => {
