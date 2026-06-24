@@ -97,6 +97,12 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         linked = creator_uid or (uid_votes.most_common(1)[0][0] if uid_votes else None)
         if linked:
             repo.set_account_hf_creator(acc["email"], linked)
+    # ★로컬 허브(AUTH off): 이 허브는 내 PC·내 것이라, 에이전트가 올린 내 CLI uid 를 '나'로 학습한다.
+    #   안 하면 my_creator_uid 미설정 → get_my_uid()=None → 내 생성물조차 is_mine=false 라 전부
+    #   '팀원'으로 뜬다(동기화 잡은 id==job_id 라 id<>job_id 추론도 안 됨). set-if-empty 라 멱등,
+    #   계정별 DB 라 각 계정 DB 가 자기 uid 만 학습. 서버(AUTH on)는 하우스 신원이라 학습 안 함.
+    if not AUTH_ENABLED and (own_uid or linked):
+        repo.learn_my_creator_uid(own_uid or linked)
     if account_status:
         repo.record_account_status(acc["email"], account_status)
 

@@ -345,26 +345,6 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             </p>
           </section>
 
-          {/* 동기화 · 점검 — 계정 메뉴에서 이동. 허브 밖 결과물 수동 push + 힉스필드 삭제물 정리. */}
-          <section className="settings-section">
-            <h4>{t("동기화 · 점검")}</h4>
-            <p className="settings-hint">
-              허브에서 만든 결과물·최신분은 <b>자동</b>으로 올라갑니다. 아래는 수동 동기화·점검용입니다.
-            </p>
-            <div className="settings-row">
-              <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
-                📤 {syncMsg || "외부 생성물 올리기"}
-              </button>
-              <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
-                🗑 {hfMsg || "힉스필드 삭제물 검토"}
-              </button>
-            </div>
-            <p className="settings-hint">
-              <b>외부 생성물 올리기</b> — 허브 밖(Claude·웹·CLI)에서 만든 결과물을 지금 올립니다.{" "}
-              <b>힉스필드 삭제물 검토</b> — 힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.
-            </p>
-          </section>
-
           {/* 과거 생성물 가져오기(백필) — 단축키 아래. 허브 밖(MCP)에서 만든 과거 전체를 서버에 적재.
               ※ 허브 안 작업과 push_agent --watch 가 최신분은 자동으로 올리므로, 여기선 100건 밖 과거만. */}
           <section className="settings-section">
@@ -446,6 +426,26 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             </p>
             </details>
             {dbMsg && <p className="manage-msg">{dbMsg}</p>}
+          </section>
+
+          {/* 동기화 · 점검 — 계정 메뉴에서 이동. 맨 밑(부차적 운영 도구). */}
+          <section className="settings-section">
+            <h4>{t("동기화 · 점검")}</h4>
+            <p className="settings-hint">
+              허브에서 만든 결과물·최신분은 <b>자동</b>으로 올라갑니다. 아래는 수동 동기화·점검용입니다.
+            </p>
+            <div className="settings-row">
+              <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
+                📤 {syncMsg || "외부 생성물 올리기"}
+              </button>
+              <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
+                🗑 {hfMsg || "힉스필드 삭제물 검토"}
+              </button>
+            </div>
+            <p className="settings-hint">
+              <b>외부 생성물 올리기</b> — 허브 밖(Claude·웹·CLI)에서 만든 결과물을 지금 올립니다.{" "}
+              <b>힉스필드 삭제물 검토</b> — 힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.
+            </p>
           </section>
         </div>
       </div>
