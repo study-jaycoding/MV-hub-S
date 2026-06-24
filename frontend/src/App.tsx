@@ -505,6 +505,9 @@ export default function App() {
 
   // 프롬프트 입력바 표시/숨김 — Ctrl/⌘+K 토글. 입력 내용 보존 위해 언마운트 대신 display 토글.
   const [promptVisible, setPromptVisible] = useState(true);
+  // 프롬프트 입력바 '확장(+)' 상태 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유해
+  // 재생성(↻) 라우팅이 확장 여부를 알 수 있게 한다(확장이면 입력바로 불러오기, 아니면 직접 재생성).
+  const [composerExpanded, setComposerExpanded] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (matchShortcut(e, "focusPrompt")) {
@@ -914,6 +917,14 @@ export default function App() {
   const onOpenInBoardFromPreview = (genId: string) => enterBoard(genId);
 
   const onRegenerate = async (g: Generation) => {
+    // 입력바가 '확장(+)' 상태면 바로 재생성하지 않고 그 생성물을 입력바로 불러온다 —
+    // 레퍼런스는 위 트레이로, 프롬프트는 아래 박스로 채워져(SpotlightPrompt 가 확장이라 분기)
+    // 사용자가 편집 후 Generate. 확장이 아니면 기존처럼 곧바로 재생성 잡 등록.
+    if (composerExpanded) {
+      setPromptVisible(true);
+      window.dispatchEvent(new CustomEvent("ch:reuse-prompt", { detail: g.id }));
+      return;
+    }
     try {
       // 무장된 자동태그를 재생성 결과물에도 적용(생성 흐름과 동일).
       await api.regenerate(g.id, { auto_tags: [...armedAutoTags] });
@@ -1398,6 +1409,8 @@ export default function App() {
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존) */}
       <div style={promptVisible ? undefined : { display: "none" }}>
         <SpotlightPrompt
+          expanded={composerExpanded}
+          onToggleExpand={() => setComposerExpanded((v) => !v)}
           armedAutoTags={[...armedAutoTags]}
           activeProjectId={
             filters.project_id && filters.project_id !== "none"

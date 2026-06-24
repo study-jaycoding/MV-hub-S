@@ -77,7 +77,13 @@ export const AssetCell = memo(function AssetCell({
   // OS·외부 앱으로 카드를 끌어다 놓으면 파일이 그 위치에 그대로 저장됨(브라우저 네이티브 다운로드 드래그).
   // 단일/다중(zip) 판단은 현재 선택을 아는 부모가 처리. 이미지 표시는 썸네일이지만 내보내는 건 항상 원본.
   const onMediaDragStart = (e: React.DragEvent) => {
-    onExportDrag(node.path, e.dataTransfer);
+    onExportDrag(node.path, e.dataTransfer); // OS·외부 앱 내보내기(DownloadURL) 유지
+    // 본창 프롬프트의 레퍼런스 트레이로 드래그(같은 오리진 팝업↔본창)에서 읽을 커스텀 타입.
+    // 트레이는 이 타입만 받아 asset:proj|path 레퍼런스로 추가한다(생성 --image 입력).
+    e.dataTransfer.setData(
+      "application/x-ch-asset",
+      JSON.stringify({ project, path: node.path, name: node.name, type: node.type }),
+    );
   };
 
   // 좌상단 액션 — S(소스)·C(코멘트). 생성파트와 동일 위치/스타일(card-tl/card-sf/card-cm).

@@ -36,6 +36,8 @@ interface Props {
   armedAutoTags: string[]; // 무장된 자동 태그 — 생성 시 결과물에 자동 적용(별도 네임스페이스)
   topSlot?: ReactNode; // 도크 상단(프롬프트 바로 위)에 끼우는 슬롯 — 멀티 선택 바
   activeProjectId?: string; // 현재 보고 있는 프로젝트 — 생성 시 자동 귀속(로드맵 §0-4)
+  expanded: boolean; // '+' 확장 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유.
+  onToggleExpand: () => void; // '+' 버튼 토글
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -126,7 +128,14 @@ function OptIcon({ name }: { name: string }) {
   return <svg {...p}><path d="M5 8h14M5 16h14" /><circle cx="10" cy="8" r="2.4" fill="currentColor" stroke="none" /><circle cx="15" cy="16" r="2.4" fill="currentColor" stroke="none" /></svg>;
 }
 
-export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProjectId }: Props) {
+export function SpotlightPrompt({
+  onCreated,
+  armedAutoTags,
+  topSlot,
+  activeProjectId,
+  expanded,
+  onToggleExpand,
+}: Props) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, pendingOptsRef, setOpenRef } =
@@ -163,6 +172,9 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [hIdx, setHIdx] = useState(0);
   const [assetCtx, setAssetCtx] = useState(readAssetCtx);
+  // ── 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 순서 = 생성 --image 순서 ──
+  const [trayRefs, setTrayRefs] = useState<ChipRef[]>([]);
+  const trayDragIdx = useRef<number | null>(null); // 트레이 내부 재정렬 시작 인덱스
   const editorRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
@@ -340,17 +352,30 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
         pendingOptsRef.current = opts; // effect 가 기본값 위에 덮어 적용
         setModel(useModel);
       }
-      // 프롬프트(칩+텍스트) 복원. display_prompt 로 칩 위치를 살리되,
-      // 매칭 칩이 하나도 없고 레퍼런스가 있으면(옛 생성) 말미에 칩으로 붙인다.
-      let parts = buildPromptParts(g.display_prompt || g.prompt || "", g.references);
-      if (!parts.some((p) => p.t === "chip") && g.references.length) {
-        parts = [...parts, ...refsToChips(g.references)];
-      }
       const ed = editorRef.current;
-      if (ed) {
-        restoreParts(ed, parts); // 재사용은 '교체' — 입력바를 그 프롬프트로 채움
-        updatePlaceholder();
-        ed.focus();
+      if (expanded) {
+        // 확장(+) 상태 = 레퍼런스는 위 트레이로, 프롬프트 텍스트는 아래 박스로 분리해 채운다.
+        setTrayRefs(
+          refsToChips(g.references).flatMap((p) => (p.t === "chip" ? [p.ref as ChipRef] : [])),
+        );
+        const ptext = g.prompt && g.prompt !== "(no text)" ? g.prompt : "";
+        if (ed) {
+          restoreParts(ed, ptext ? [{ t: "text" as const, v: ptext }] : []); // 칩 없이 텍스트만
+          updatePlaceholder();
+          ed.focus();
+        }
+      } else {
+        // 일반(접힘) — 프롬프트(칩+텍스트) 인라인 복원. display_prompt 로 칩 위치를 살리되,
+        // 매칭 칩이 하나도 없고 레퍼런스가 있으면(옛 생성) 말미에 칩으로 붙인다.
+        let parts = buildPromptParts(g.display_prompt || g.prompt || "", g.references);
+        if (!parts.some((p) => p.t === "chip") && g.references.length) {
+          parts = [...parts, ...refsToChips(g.references)];
+        }
+        if (ed) {
+          restoreParts(ed, parts); // 재사용은 '교체' — 입력바를 그 프롬프트로 채움
+          updatePlaceholder();
+          ed.focus();
+        }
       }
       setMention(null);
       histIdxRef.current = -1;
@@ -415,11 +440,82 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
     void addRefFromGen(id); // 드롭 = 레퍼런스 추가
   };
 
+  // ── 레퍼런스 트레이(확장 모드) — 에셋 폴더 드래그로 추가 + 드래그로 재정렬 ──
+  // 에셋 셀 dragstart 가 심은 application/x-ch-asset({project,path,name,type}) 만 받는다(카드·@ 아님).
+  const addAssetToTray = (raw: string) => {
+    try {
+      const d = JSON.parse(raw) as { project: string; path: string; name: string; type: string };
+      if (d.type !== "image" && d.type !== "video") return; // 오디오/폴더는 레퍼런스 아님
+      const fp = `asset:${d.project}|${d.path}`;
+      setTrayRefs((prev) => {
+        if (prev.some((r) => r.file_path === fp)) return prev; // 같은 파일 중복 방지
+        const isVid = d.type === "video";
+        const ref: ChipRef = {
+          file_path: fp, // 에이전트가 asset:proj|path 를 받아 로컬 파일로 CLI 에 전달
+          type: isVid ? "video" : "image",
+          role: isVid ? "@Video" : `@Image${prev.length + 1}`, // 제출 시 순서대로 재번호
+          name: d.name,
+          thumb: isVid
+            ? api.assetFileUrl(d.project, d.path)
+            : api.assetThumbUrl(d.project, d.path, 256),
+        };
+        return [...prev, ref];
+      });
+    } catch {
+      /* 잘못된 드래그 데이터 무시 */
+    }
+  };
+  const removeTrayRef = (i: number) => setTrayRefs((prev) => prev.filter((_, j) => j !== i));
+  const onTrayDragOver = (e: React.DragEvent) => {
+    const tps = e.dataTransfer.types;
+    if (tps.includes("application/x-ch-asset") || tps.includes("application/x-ch-trayidx")) {
+      e.preventDefault();
+      e.stopPropagation(); // 패널의 카드-드롭 핸들러로 번지지 않게(트레이는 에셋 전용)
+      e.dataTransfer.dropEffect = trayDragIdx.current !== null ? "move" : "copy";
+    }
+  };
+  const onTrayDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const asset = e.dataTransfer.getData("application/x-ch-asset");
+    if (asset) addAssetToTray(asset); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
+  };
+  const onTrayItemDragStart = (i: number) => (e: React.DragEvent) => {
+    trayDragIdx.current = i;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("application/x-ch-trayidx", String(i));
+  };
+  const onTrayItemDrop = (i: number) => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const asset = e.dataTransfer.getData("application/x-ch-asset");
+    if (asset) {
+      addAssetToTray(asset); // 항목 위에 에셋 떨어뜨려도 추가
+      trayDragIdx.current = null;
+      return;
+    }
+    const from = trayDragIdx.current;
+    trayDragIdx.current = null;
+    if (from === null || from === i) return;
+    setTrayRefs((prev) => {
+      const arr = [...prev];
+      const [m] = arr.splice(from, 1);
+      arr.splice(i, 0, m); // from → i 위치로 이동
+      return arr;
+    });
+  };
+
   const submit = async () => {
     setError(null);
     const ed = editorRef.current;
     if (!ed) return;
-    const { text, refs } = serialize(ed);
+    const { text, refs: inlineRefs } = serialize(ed);
+    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호
+    // (@Image1..N). 이 순서가 곧 생성 시 CLI --image 전달 순서다.
+    let imgN = 0;
+    const refs = [...trayRefs, ...inlineRefs].map((r) =>
+      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: "@Video" },
+    );
     if (!text && refs.length === 0) {
       setError("프롬프트를 입력하세요.");
       ed.focus();
@@ -618,7 +714,11 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
     <div className={"sl-dockbar" + (agentOn === false ? " sl-offline" : "")}>
       <div className="sl-dock">
         {topSlot}
-        <div className="sl-panel" onDragOver={onPanelDragOver} onDrop={onPanelDrop}>
+        <div
+          className={"sl-panel" + (expanded ? " expanded" : "")}
+          onDragOver={onPanelDragOver}
+          onDrop={onPanelDrop}
+        >
           {/* @/# 피커 드롭다운 */}
           {mention && (
             <div className="sl-mention">
@@ -688,8 +788,50 @@ export function SpotlightPrompt({ onCreated, armedAutoTags, topSlot, activeProje
             </div>
           )}
 
+          {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
+          {expanded && (
+            <div className="sl-reftray" onDragOver={onTrayDragOver} onDrop={onTrayDrop}>
+              {trayRefs.length === 0 ? (
+                <div className="sl-reftray-empty">
+                  에셋 창에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
+                </div>
+              ) : (
+                trayRefs.map((r, i) => (
+                  <div
+                    key={r.file_path}
+                    className="sl-reftray-item"
+                    draggable
+                    onDragStart={onTrayItemDragStart(i)}
+                    onDragOver={onTrayDragOver}
+                    onDrop={onTrayItemDrop(i)}
+                    title={`${i + 1}. ${r.name}`}
+                  >
+                    <span className="sl-reftray-num">{i + 1}</span>
+                    {r.thumb ? <img src={r.thumb} alt="" /> : <span className="sl-reftray-ph" />}
+                    <span className="sl-reftray-name">{r.name}</span>
+                    <button
+                      className="sl-reftray-x"
+                      title="제거"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => removeTrayRef(i)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
           {/* 프롬프트 행 */}
           <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "")}>
+            <button
+              className={"sl-expand-btn" + (expanded ? " on" : "")}
+              title={expanded ? "레퍼런스 트레이 접기" : "레퍼런스 트레이 펼치기 (에셋 드래그)"}
+              onClick={onToggleExpand}
+            >
+              {expanded ? "−" : "+"}
+            </button>
             {tagFilter && (
               <span className="sl-tag-badge" title="태그 필터 (Esc 또는 × 로 해제)">
                 #{tagFilter}
