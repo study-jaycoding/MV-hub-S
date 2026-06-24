@@ -166,7 +166,10 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         ).fetchone()
         if not row:
             return False
-        if account_uid is not None and row["creator_uid"] not in (account_uid, None):
+        # 일반 계정(account_uid 지정)은 '정확히 본인 것'만. 소유자 NULL 인 레거시(단독 시절) 항목은
+        # 일반 계정이 복구 못 하게 막는다 — admin 은 호출부에서 account_uid=None 으로 들어와 전부 통과,
+        # 단독 모드(AUTH off)도 account_uid=None 이라 통과하므로 레거시가 잠기지 않는다.
+        if account_uid is not None and row["creator_uid"] != account_uid:
             raise PermissionError("본인 휴지통 항목만 복구할 수 있습니다")
         p = json.loads(row["payload"])
         conn.execute("BEGIN")
