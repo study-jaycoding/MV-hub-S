@@ -70,6 +70,7 @@ def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
 
     path = account_db_path(email)
     if path.exists():
+        _seed_default_worker(path)  # 이전 버전이 안 넣은 기존 계정 DB 도 로그인 때 보강(멱등)
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     legacy = DEFAULT_DB_PATH
@@ -88,7 +89,28 @@ def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
                 pass
         print(f"[migrate] 레거시 DB → 계정 DB 이관: {legacy} → {path}")
     init_db(path)  # 빈 DB든 이관본이든 현재 스키마로 보강(멱등)
+    _seed_default_worker(path)  # ★기본 작업자('me') 시드 — 없으면 첫 적재가 FK 로 깨진다
     return path
+
+
+def _seed_default_worker(path: Path) -> None:
+    """새 계정 DB 에 기본 작업자('me') 행을 넣는다(멱등). generation.worker_id 는
+    worker(id) 를 NOT NULL 참조하므로, 이 행이 없으면 첫 generation INSERT 가
+    'FOREIGN KEY constraint failed'(500) 로 깨진다. startup 의 ensure_default_worker 는
+    그 시점 활성 DB 에만 적용돼, 로그인 때 새로 만든 계정 DB 는 비어 있었다."""
+    try:
+        c = sqlite3.connect(str(path))
+        try:
+            c.execute(
+                "INSERT INTO worker(id, name, account_type) VALUES(?,?,?) "
+                "ON CONFLICT(id) DO NOTHING",
+                (config.DEFAULT_WORKER_ID, config.DEFAULT_WORKER_NAME, "personal"),
+            )
+            c.commit()
+        finally:
+            c.close()
+    except sqlite3.DatabaseError:
+        pass
 
 
 def _legacy_owner(legacy: Path) -> Optional[str]:
