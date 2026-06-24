@@ -1667,11 +1667,17 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 /* 프롬프트 입력부 우측 상단 — 전체 복사 버튼 */
 .sl-copy-btn {
   position: absolute; top: 8px; right: 24px; z-index: 3;
-  width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
   background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 7px;
   color: #aab0bd; cursor: pointer; transition: color .12s, border-color .12s, background .12s;
 }
-.sl-copy-btn svg { display: block; }
+/* 순수 CSS 복사 아이콘 — 두 겹친 사각형(앞 페이지가 배경으로 뒤 페이지를 가림). SVG/폰트 무의존. */
+.sl-copy-btn::before, .sl-copy-btn::after {
+  content: ""; position: absolute; box-sizing: border-box;
+  width: 9px; height: 11px; border: 1.6px solid currentColor; border-radius: 2.5px;
+}
+.sl-copy-btn::before { top: 5px; left: 6px; }   /* 뒤 페이지(좌상) */
+.sl-copy-btn::after { top: 9px; left: 10px; background: var(--panel2); }  /* 앞 페이지(우하) */
 .sl-copy-btn:hover { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.08); }
 /* contentEditable placeholder — data-empty 속성을 JS 가 토글 */
 .sl-prompt[data-empty]::before {

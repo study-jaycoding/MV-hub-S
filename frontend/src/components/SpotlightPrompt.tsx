@@ -967,7 +967,7 @@ export function SpotlightPrompt({
               suppressContentEditableWarning
               data-placeholder={
                 expanded
-                  ? "Describe the scene you imagine ---"
+                  ? "Describe the scene you imagine"
                   : "Describe the scene you imagine --- @Source, #Tag"
               }
               onInput={onEditorInput}
@@ -980,21 +980,16 @@ export function SpotlightPrompt({
                 onEditorInput();
               }}
             />
-            {/* 우측 상단 — 프롬프트 전체 복사 */}
+            {/* 우측 상단 — 프롬프트 전체 복사. 아이콘은 순수 CSS(::before/::after 겹친 사각형)로
+                그려 SVG/폰트 렌더 이슈를 피한다. */}
             <button
               type="button"
               className="sl-copy-btn"
               title="프롬프트 전체 복사"
+              aria-label="프롬프트 전체 복사"
               onMouseDown={(e) => e.preventDefault()}
               onClick={copyPrompt}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
-                />
-              </svg>
-            </button>
+            />
           </div>
 
           {/* 컨트롤 행 */}
