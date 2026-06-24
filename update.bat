@@ -55,16 +55,24 @@ if "!BEFORE!"=="!AFTER!" (
 )
 
 echo [2/4] Backend dependencies...
-where python >nul 2>nul || (echo     python not found - skipping backend deps. & goto :after_deps)
+REM Resolve a REAL Python (ignore the Microsoft Store stub that prints "Python" and exits).
+REM Prefer the 'py' launcher (never shadowed by the Store alias); else a real python3.
+set "PY="
+py -3 --version >nul 2>nul && set "PY=py -3"
+if defined PY goto :py_resolved
+python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY=python"
+:py_resolved
+if not defined PY (echo     real Python not found - skipping backend deps ^(run setup_and_clone_mvhub.bat to install it^). & goto :after_deps)
+echo     Using Python: !PY!
 if defined REQ_CHANGED (
   echo     requirements.txt changed - installing...
-  python -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
+  !PY! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
 ) else (
-  python -c "import fastapi, uvicorn" 2>nul && (
+  !PY! -c "import fastapi, uvicorn" 2>nul && (
     echo     unchanged - skip.
   ) || (
     echo     deps missing - installing...
-    python -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
+    !PY! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
   )
 )
 :after_deps

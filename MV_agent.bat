@@ -33,7 +33,22 @@ set "CONTENT_HUB_HOST=127.0.0.1"
 set "CONTENT_HUB_PORT=%PORT%"
 set "HUB=http://127.0.0.1:%PORT%"
 
-where python >nul 2>nul || (echo [ERROR] Python not found - install from python.org and retry. & pause & exit /b 1)
+REM Resolve a REAL Python. The Microsoft Store "python.exe" is a fake stub that just
+REM prints "Python" and exits - it makes serve.py and the agent silently do nothing.
+REM Prefer the 'py' launcher (never shadowed by the Store alias); else a real python3.
+set "PY="
+py -3 --version >nul 2>nul && set "PY=py -3"
+if defined PY goto :py_resolved
+python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY=python"
+:py_resolved
+if not defined PY (
+  echo [ERROR] No real Python found ^(the Microsoft Store stub does not count^).
+  echo         Fix: run setup_and_clone_mvhub.bat, or install Python from python.org
+  echo         and turn OFF Settings ^> Apps ^> App execution aliases ^> python.exe / python3.exe
+  pause
+  exit /b 1
+)
+echo     Using Python: %PY%
 where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & pause & exit /b 1)
 
 echo.
@@ -49,7 +64,7 @@ if not exist dist (
 )
 
 echo [2/5] Checking backend dependencies...
-python -m pip install -r "%ROOT%backend\requirements.txt" >nul 2>nul
+%PY% -m pip install -r "%ROOT%backend\requirements.txt" >nul 2>nul
 
 echo [3/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
 REM Stop any hub left running on this port from a previous launch. Without this, an old
@@ -59,7 +74,7 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":%POR
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.
 cd /d "%ROOT%backend"
-start "" /b cmd /c "python serve.py > hub.log 2>&1"
+start "" /b cmd /c "%PY% serve.py > hub.log 2>&1"
 cd /d "%ROOT%"
 
 echo     Waiting for the hub to come up...
@@ -99,7 +114,7 @@ echo.
 echo [5/5] Opening the hub + keeping the generation agent running ^(closing this window stops it^)
 start "" "%HUB%"
 echo.
-python "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
+%PY% "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
 echo.
 echo [stopped] agent stopped. Closing this window stops the hub too.
 pause
