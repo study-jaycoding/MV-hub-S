@@ -5,6 +5,7 @@
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
+import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { matchShortcut } from "../lib/shortcuts";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { GenerationCard } from "./GenerationCard";
@@ -178,24 +179,12 @@ export function ThumbnailGrid(props: Props) {
     if (d.cellId) return;
     const grid = gridRef.current;
     if (!grid) return;
-    const gr = grid.getBoundingClientRect();
-    const x0 = Math.min(d.x, e.clientX), y0 = Math.min(d.y, e.clientY);
-    const x1 = Math.max(d.x, e.clientX), y1 = Math.max(d.y, e.clientY);
-    setMarquee({
-      l: x0 - gr.left + grid.scrollLeft,
-      t: y0 - gr.top + grid.scrollTop,
-      w: x1 - x0,
-      h: y1 - y0,
-    });
-    const hit = new Set<string>(d.additive || d.range ? d.base : []);
-    grid.querySelectorAll(".gen-cell").forEach((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect();
-      if (r.right >= x0 && r.left <= x1 && r.bottom >= y0 && r.top <= y1) {
-        const id = (el as HTMLElement).dataset.id;
-        if (id) hit.add(id);
-      }
-    });
-    opsRef.current.onSelectedChange(hit);
+    const { rect, b } = computeMarquee(grid, d, e);
+    setMarquee(rect);
+    const base = d.additive || d.range ? d.base : [];
+    opsRef.current.onSelectedChange(
+      marqueeHits<string>(grid, ".gen-cell", b, base, (el) => el.dataset.id || null),
+    );
   }, []);
 
   const onDragUp = useCallback(() => {

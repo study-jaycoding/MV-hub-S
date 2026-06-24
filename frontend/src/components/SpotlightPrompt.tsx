@@ -24,6 +24,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry } from "../lib/promptEditor";
 import { useAccountStatus } from "../lib/useAccountStatus";
+import { useCustomEvent } from "../lib/useCustomEvent";
 import { useModels, ALLOWED, HIDDEN_PARAMS, effectiveDefault, numericRange } from "../lib/useModels";
 import type { Generation } from "../types";
 
@@ -223,26 +224,17 @@ export function SpotlightPrompt({
   }, []);
 
   // Ctrl/⌘+K(또는 툴바 버튼) → 프롬프트로 포커스만.
-  useEffect(() => {
-    const focus = () => editorRef.current?.focus();
-    window.addEventListener("ch:focus-prompt", focus);
-    return () => window.removeEventListener("ch:focus-prompt", focus);
-  }, []);
+  useCustomEvent("ch:focus-prompt", () => editorRef.current?.focus());
 
   // (프롬프트 재사용은 카드를 입력바로 드래그-드롭하면 동작 — onPanelDrop→reusePromptFromGen 직접
   //  호출. 이벤트(ch:reuse-prompt) 경로는 디스패처가 없어 제거함.)
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
-  useEffect(() => {
-    const onAddRef = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      if (id) void addRefFromGen(id);
-    };
-    window.addEventListener("ch:add-reference", onAddRef);
-    return () => window.removeEventListener("ch:add-reference", onAddRef);
-    // expanded 의존: addRefFromGen 이 트레이 vs 인라인 칩을 최신 확장상태로 분기(stale 방지)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded]);
+  // useCustomEvent 가 항상 최신 addRefFromGen(최신 expanded)을 호출 → stale 분기 버그 없음.
+  useCustomEvent("ch:add-reference", (e) => {
+    const id = (e as CustomEvent<string>).detail;
+    if (id) void addRefFromGen(id);
+  });
 
   // 에셋 파트(분리창) 프로젝트 변경 알림 → 컨텍스트 갱신.
   // 값이 실제로 바뀐 경우에만 갱신(스크롤 저장 등 다른 ch.assets.* 쓰기로 인한 재요청 폭주 방지).

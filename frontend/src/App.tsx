@@ -24,6 +24,7 @@ import { SpotlightPrompt } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { TopBar } from "./components/TopBar";
 import { downloadName, downloadMany } from "./lib/download";
+import { useCustomEvent } from "./lib/useCustomEvent";
 import { useT } from "./lib/i18n";
 import { useAskPrompt } from "./lib/prompt";
 import { matchShortcut } from "./lib/shortcuts";
@@ -384,21 +385,15 @@ export default function App() {
 
   // 401(세션 만료/무효·서버 계정 삭제) → 로그인 화면으로. 로컬 허브는 게이트가 sharedSrv.has_token
   // 을 보므로, 프록시가 401 때 토큰을 비운 뒤 status 를 재조회해 게이트(ServerLoginScreen)를 띄운다.
-  useEffect(() => {
-    const onAuthReq = () => {
-      setAccount(null);
-      if (!authConfig?.auth_enabled) loadSharedSrv();
-    };
-    window.addEventListener("ch:auth-required", onAuthReq);
-    return () => window.removeEventListener("ch:auth-required", onAuthReq);
-  }, [authConfig?.auth_enabled]);
+  useCustomEvent("ch:auth-required", () => {
+    setAccount(null);
+    if (!authConfig?.auth_enabled) loadSharedSrv();
+  });
 
   // 표시이름 등 내 계정 변경 → account 재조회(전체 UI 의 표시이름 반영).
-  useEffect(() => {
-    const onUpd = () => api.me().then(setAccount).catch(() => {});
-    window.addEventListener("ch:account-updated", onUpd);
-    return () => window.removeEventListener("ch:account-updated", onUpd);
-  }, []);
+  useCustomEvent("ch:account-updated", () => {
+    api.me().then(setAccount).catch(() => {});
+  });
 
   // ★단일 신원: 로컬 허브(AUTH off)에서도 팀서버 토큰이 있으면 그 서버 계정을 account 로 채운다.
   // me() 는 프록시되어 서버의 '살아있는' 계정(creator_uid·이름·역할)을 돌려준다 → 표시이름·역할·
@@ -547,11 +542,7 @@ export default function App() {
   }, [promptVisible]);
 
   // 카드의 '레퍼런스로 사용'(@) → 프롬프트 바가 숨겨져 있으면 펼친다(추가는 SpotlightPrompt 가 처리).
-  useEffect(() => {
-    const show = () => setPromptVisible(true);
-    window.addEventListener("ch:add-reference", show);
-    return () => window.removeEventListener("ch:add-reference", show);
-  }, []);
+  useCustomEvent("ch:add-reference", () => setPromptVisible(true));
 
   // 마지막으로 보던 상태 저장 → 다음에 열 때 복원
   useEffect(() => LS.set("filters", JSON.stringify(filters)), [filters]);
