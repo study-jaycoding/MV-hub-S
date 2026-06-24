@@ -2953,7 +2953,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   border-color: #ffd966; font-size: 16px;
 }
 .linb-check { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; background: var(--grad); color: var(--accent-ink); font-size: 12px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
-.linb-node.sel.root .linb-tag { display: none; } /* 선택 체크와 원본 태그 겹침 방지 */
+/* 원본 태그는 우상단으로 옮겨 좌상단 선택 체크와 안 겹치므로, 선택 시에도 그대로 보인다. */
 .linb-selinfo { display: inline-flex; align-items: center; gap: 6px; }
 .linb-selcount { font-size: 12px; font-weight: 700; color: var(--accent); }
 .linb-cmp { font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 9px; border: 1px solid var(--accent); background: var(--grad); color: var(--accent-ink); cursor: pointer; }
@@ -2964,8 +2964,11 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .linb-selclear { font-size: 12px; padding: 3px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; }
 .linb-selclear:hover { color: var(--text); }
 .linb-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
-.linb-tag { position: absolute; top: 5px; left: 5px; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 8px; }
-.linb-tag.root-tag { background: #ffd24a; color: #3a2c00; }
+.linb-tag { position: absolute; top: 5px; left: 5px; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 8px; transition: opacity 0.12s; }
+/* 원본 태그 — 좌상단 S 배지와 겹쳐 가려지므로 우상단으로(정보 ⓘ 자리). 호버하면 오버레이 ⓘ 가
+   대신하므로 숨긴다. */
+.linb-tag.root-tag { background: #ffd24a; color: #3a2c00; left: auto; right: 5px; }
+.linb-node:hover .linb-tag.root-tag { opacity: 0; }
 /* 최종(골드) 노드 — 금색 테두리 강조(구성탭) */
 .linb-node.final { border-color: #ffcf33; box-shadow: 0 0 0 3px #f5c542, 0 0 18px rgba(245,197,66,0.6); }
 /* 공유/최종 상시 배지 — 좌상단(오버레이 S 버튼과 같은 자리), card-sf 와 동형.
