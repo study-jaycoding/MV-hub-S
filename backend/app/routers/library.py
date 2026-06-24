@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED
-from ..deps import account_global_roles, require_view_generation
+from ..deps import account_global_roles, account_scope_uid, require_view_generation
 from ..models import FacetsOut, GenerationOut
 from ..services import thumbs
 
@@ -226,16 +226,8 @@ def generation_stats(request: Request):
 
 # ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ───────────────────────────
 def _account_uid(request: Request) -> Optional[str]:
-    """로그인 계정의 creator_uid. None = 단독 모드(AUTH off, 전체 가시).
-    ⚠️ AUTH on 인데 creator_uid 미링크면 불가능 값('\\x00')으로 스코프 —
-    None 폴백 시 '내 작업/내 facet' 필터가 풀려 남의 컬러·태그·생성물이 전부 노출되는 구멍을 막는다."""
-    acc = getattr(request.state, "account", None)
-    if not acc:
-        return None
-    uid = acc.get("creator_uid")
-    if AUTH_ENABLED and not uid:
-        return "\x00"
-    return uid
+    """deps.account_scope_uid 위임 — '내 작업/내 facet' 쿼리 스코프(미링크 AUTH-on 은 '\\x00')."""
+    return account_scope_uid(request)
 
 
 @router.get("/trash", response_model=list[GenerationOut])

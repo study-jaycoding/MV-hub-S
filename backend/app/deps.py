@@ -46,6 +46,21 @@ def current_account(request: Request) -> Optional[dict[str, Any]]:
     return getattr(request.state, "account", None)
 
 
+def account_scope_uid(request: Request) -> Optional[str]:
+    """'내 작업/내 facet/내 생성자' 쿼리를 스코프할 creator_uid. None = 단독 모드(AUTH off, 전체 가시).
+    ⚠️ AUTH on 인데 creator_uid 미링크면 불가능 값('\\x00')으로 스코프한다 — None 폴백 시 필터가 풀려
+    남의 생성자·컬러·태그·생성물이 전부 노출되는 구멍을 막는다(미링크 계정은 첫 ingest 때 링크됨).
+    ★'쿼리 스코프' 전용 — 조건/권한/actor 신원에는 plain creator_uid(None 폴백)를 쓸 것(\\x00 은
+    actor 로 쓰면 본인 것에도 안 맞아 깨진다)."""
+    acc = current_account(request)
+    if not acc:
+        return None
+    uid = acc.get("creator_uid")
+    if AUTH_ENABLED and not uid:
+        return "\x00"
+    return uid
+
+
 def account_global_roles(request: Request) -> list[str]:
     """현재 계정이 보유한 전역 역할들(복수). 미들웨어가 채운 account 의 CSV 를 파싱."""
     acc = current_account(request)

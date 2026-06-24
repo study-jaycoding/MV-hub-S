@@ -18,6 +18,7 @@ from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_global_roles,
+    account_scope_uid,
     actor_id,
     require_edit_generation,
     require_view_generation,
@@ -82,9 +83,11 @@ def list_creators(
     # 로컬 우선: team 생성자(공유물 작성자)는 서버에 있으므로 위임.
     if tab == "team" and _proxy.proxying():
         return _proxy.proxy_get("/api/creators", request)
-    acc = getattr(request.state, "account", None)
-    account_uid = acc.get("creator_uid") if acc else None
-    return repo.list_creators(account_uid=account_uid, tab=tab, project_id=project_id)
+    # ★스코프 가드: tab='my' 에서 account_uid 가 None 이면 list_creators 가 필터를 안 걸어 '전체
+    # 생성자'(팀 전원 이름)를 노출한다. 미링크 AUTH-on 계정은 '\x00' 로 스코프해 빈 목록이 되게 한다.
+    return repo.list_creators(
+        account_uid=account_scope_uid(request), tab=tab, project_id=project_id
+    )
 
 
 def _require_house(request: Request) -> None:
