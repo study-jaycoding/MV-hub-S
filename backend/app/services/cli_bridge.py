@@ -248,16 +248,6 @@ async def list_jobs(timeout: float = 60.0, size: int = 100) -> list[dict[str, An
     return [parse_job(j) for j in data if isinstance(j, dict)]
 
 
-async def get_job(job_id: str, timeout: float = 60.0) -> Optional[dict[str, Any]]:
-    """단일 잡 조회(정규화된 구조)."""
-    data = await _run_json("generate", "get", job_id, timeout=timeout)
-    if isinstance(data, list):
-        data = data[0] if data else None
-    if not isinstance(data, dict):
-        return None
-    return parse_job(data)
-
-
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
     """생성 모달용 모델 목록 [{display_name, job_set_type, type}]."""
     data = await _run_json("model", "list", timeout=timeout)
@@ -416,45 +406,5 @@ async def unset_workspace(timeout: float = 30.0) -> None:
     await _run("workspace", "unset", timeout=timeout)
 
 
-async def create_job(
-    model: str,
-    prompt: str,
-    params: Optional[dict[str, Any]] = None,
-    media: Optional[list[tuple[str, str]]] = None,
-    timeout: float = 600.0,
-) -> dict[str, Any]:
-    """생성 잡을 만든다 (⚠️ 실제 크레딧이 소모되는 유료 호출).
-
-    media: [(flag, value)] 예) [("--image", "/path.png"), ("--start-image", "<uuid>")].
-    --wait 로 완료까지 블록하고 결과를 파싱해 반환한다.
-    잡 큐(jobs.py)의 워커에서만 호출한다.
-    """
-    args: list[str] = ["generate", "create", model, "--prompt", prompt, "--wait"]
-    args += await _param_args(model, params)
-    for flag, value in media or []:
-        args += [flag, value]
-
-    # stdout/stderr 를 함께 잡아 소프트 실패(rc=0·status=failed) 사유를 stderr 에서 살린다.
-    # ⚠️ --json 필수: 없으면 CLI 가 결과 URL 을 평문으로 출력 → JSON 파싱 실패로 오인됨.
-    stdout, stderr, rc = await _run_capture(*args, "--json", timeout=timeout)
-    if rc != 0:
-        # 하드 실패(검증·파라미터·네트워크 등) — stderr 가 실제 사유.
-        raise CLIError(
-            f"higgsfield {' '.join(args)} 실패(rc={rc}): {stderr.strip()}"
-        )
-    raw = stdout.strip()
-    try:
-        data = json.loads(raw) if raw else {}
-    except json.JSONDecodeError as e:
-        raise CLIError(f"JSON 파싱 실패: {raw[:200]}") from e
-    # create --wait 출력은 잡 객체(또는 배열). 정규화해서 반환.
-    if isinstance(data, list):
-        data = data[0] if data else {}
-    if not isinstance(data, dict):
-        data = {}
-    parsed = parse_job(data)
-    # 소프트 실패인데 힉스필드가 구조화 사유를 안 줬으면 stderr 라도 사유로 보강(best-effort).
-    g = parsed["generation"]
-    if g.get("status") == "failed" and not g.get("error"):
-        g["error"] = stderr.strip() or None
-    return parsed
+# (create_job/get_job 제거 — 푸시 모델에선 서버가 CLI 로 직접 생성하지 않는다. 생성은 각 PC 의
+#  push_agent 가 로컬 CLI 로 수행하고 결과만 ingest 로 올린다. 미사용 사장 코드였음.)

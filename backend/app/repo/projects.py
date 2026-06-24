@@ -249,16 +249,6 @@ def remove_project_member(pid: str, creator_uid: str) -> bool:
         return cur.rowcount > 0
 
 
-def get_project_roles(pid: str, creator_uid: str) -> str:
-    """그 프로젝트에서 이 uid 의 역할들(CSV, 멤버 아님→'')."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT project_role FROM project_member WHERE project_id=? AND creator_uid=?",
-            (pid, creator_uid),
-        ).fetchone()
-    return (row["project_role"] if row else None) or ""
-
-
 def my_member_projects(creator_uid: str) -> list[str]:
     """이 계정이 멤버(역할 무관)인 모든 project_id — Team 탭 공유물을 내 프로젝트로 한정하는 데 쓴다."""
     with get_connection() as conn:

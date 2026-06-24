@@ -271,18 +271,6 @@ def mark_generation_comments_read(worker_id: str, gen_id: str) -> None:
         )
 
 
-def generation_comment_exists(comment_id: str) -> bool:
-    """이 코멘트가 로컬 DB에 있나 — 로컬우선에서 by-id 코멘트 연산(수정/삭제/확인)을
-    로컬에서 처리할지(내 비공개 작업) 서버로 위임할지(공유본) 가르는 데 쓴다."""
-    with get_connection() as conn:
-        return (
-            conn.execute(
-                "SELECT 1 FROM generation_comment WHERE id=?", (comment_id,)
-            ).fetchone()
-            is not None
-        )
-
-
 def comment_gen_shared(comment_id: str) -> Optional[bool]:
     """이 코멘트가 달린 generation 의 공유 여부. None = 로컬에 그 코멘트가 없음(=서버 전용 공유본).
     로컬우선 by-id 코멘트 라우팅용: 발행 시 번들이 코멘트를 '같은 id'로 서버에도 심으므로,

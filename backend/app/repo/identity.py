@@ -29,14 +29,6 @@ def ensure_default_worker() -> None:
         ensure_worker(conn, DEFAULT_WORKER_ID, DEFAULT_WORKER_NAME, "personal")
 
 
-def list_workers() -> list[dict[str, Any]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, name, account_type FROM worker ORDER BY name"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 # ── 생성자(팀 워크스페이스 작성자) ────────────────────────────────────────
 _MY_UID_CACHE: list[Any] = [None]  # [value] — None=미확정(매번 재조회), non-None=확정 캐시
 
@@ -69,21 +61,6 @@ def learn_my_creator_uid(uid: Optional[str]) -> None:
         return
     set_setting("my_creator_uid", uid)
     _MY_UID_CACHE[0] = None  # 다음 get_my_uid 가 새 값 반영
-
-
-def set_my_creator(uid: str) -> dict[str, Optional[str]]:
-    """이 생성자 uid 를 '나'로 지정 — is_mine 판정 기준이 되고, 제공자 이름을 그 uid 에 붙인다.
-    팀 워크스페이스 동기화 데이터만으로는 내 작업을 못 가르므로 사용자가 한 번 지정해 고정.
-    초기화로 DB 가 비면 다시 지정 필요(허브로 직접 생성 시엔 자동 학습됨)."""
-    uid = (uid or "").strip()
-    if not uid:
-        return {"my_creator_uid": None, "name": None}
-    set_setting("my_creator_uid", uid)
-    name = get_provider().get("name")
-    if name:
-        set_creator_name(uid, name)  # 카드·사이드바에 '팀원' 대신 내 이름 표시
-    _MY_UID_CACHE[0] = None  # is_mine 재계산(다음 get_my_uid 에서 새 값 반영)
-    return {"my_creator_uid": uid, "name": name}
 
 
 def backfill_creator_uids() -> int:
