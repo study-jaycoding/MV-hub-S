@@ -340,6 +340,12 @@ select optgroup {
 .settings-input:focus { outline: none; border-color: var(--accent); }
 /* 파일 업로드 라벨(label 은 :disabled 가 없어 클래스로) — 적재 중 비활성 표시 + 재클릭 차단 */
 .settings-action.is-busy { opacity: 0.6; cursor: default; pointer-events: none; }
+/* 서버 백업/가져오기 — 두 버튼 나란히. 파일 방식은 <details> 로 접어 보조 노출. */
+.settings-row { display: flex; gap: 8px; }
+.settings-row .settings-action { margin-top: 8px; }
+.settings-details { margin-top: 8px; }
+.settings-details > summary { margin-bottom: 4px; }
+.settings-details[open] > summary { margin-bottom: 8px; }
 
 /* 단축키 변경 플로팅 창 — 설정창 위에 확실히 띄운다(자기 catcher 위, 클릭 가능). */
 .sc-catcher { z-index: 320; }

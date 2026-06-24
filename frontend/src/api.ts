@@ -674,6 +674,23 @@ export const api = {
     return res.json() as Promise<{ ok: boolean }>;
   },
 
+  // ☁ 서버에 백업 — 내 계정 DB(메타데이터)를 공유 서버에 올린다(계정별 보관).
+  serverBackup: () =>
+    jsonFetch<{ ok: boolean; name: string; size: number; count: number }>(
+      "/api/db/server-backup",
+      { method: "POST" },
+    ),
+  // 서버에 있는 내 계정 백업 버전 목록(최신순)
+  serverBackups: () =>
+    jsonFetch<{ backups: { name: string; size: number; mtime: number }[] }>(
+      "/api/db/server-backups",
+    ),
+  // ⬇ 서버에서 가져오기 — 서버의 내 최신 백업으로 로컬 DB 통째 교체(복원 후 재로그인).
+  serverRestore: () =>
+    jsonFetch<{ ok: boolean; relogin_required: boolean }>("/api/db/server-restore", {
+      method: "POST",
+    }),
+
   // 서버 직결 기간 개인 메타(컬러/태그/소스/프로젝트/최종)를 로컬로 1회 마이그레이션
   migrateFromServer: () =>
     jsonFetch<{ applied: number; missing: number; total: number }>(

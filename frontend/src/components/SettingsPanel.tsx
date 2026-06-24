@@ -168,6 +168,41 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
     }
   };
 
+  // ☁ 서버에 백업 — 내 계정 DB 를 공유 서버에 올린다(계정별 보관).
+  const serverBackup = async () => {
+    setDbBusy(true);
+    setDbMsg("서버에 백업 중…");
+    try {
+      const r = await api.serverBackup();
+      setDbMsg(`✓ 서버에 백업 완료 (보관 ${r.count}개)`);
+    } catch (e) {
+      setDbMsg("백업 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  // ⬇ 서버에서 가져오기 — 서버의 내 최신 백업으로 로컬 DB 통째 교체(복원 후 재로그인).
+  const serverRestore = async () => {
+    if (
+      !window.confirm(
+        "서버에 백업해둔 내 계정 DB로 현재 로컬을 통째 교체합니다.\n(현재 DB는 자동 백업, 복원 후 재로그인)\n계속할까요?",
+      )
+    )
+      return;
+    setDbBusy(true);
+    setDbMsg("서버에서 가져오는 중…");
+    try {
+      await api.serverRestore();
+      setDbMsg("복원 완료 — 다시 로그인해 주세요…");
+      setTimeout(() => window.location.reload(), 900);
+    } catch (e) {
+      setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
   // 서버 직결 기간 개인 메타 1회 가져오기.
   const migrateFromServer = async () => {
     setDbBusy(true);
@@ -336,9 +371,25 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
           <section className="settings-section">
             <h4>{t("내 메타데이터 (작업 연속성)")}</h4>
             <p className="settings-hint">
-              내 라이브러리·태그·컬러·계보가 담긴 <b>로컬 DB</b>를 파일로 내보내, 다른 PC의 허브에
-              <b> 가져오기</b>로 넣으면 그대로 이어서 작업할 수 있습니다(미디어는 자동 로드).
+              내 라이브러리·태그·컬러·계보가 담긴 <b>로컬 DB</b>를 <b>서버에 백업</b>해두고, 다른
+              PC에서 내 계정으로 로그인해 <b>서버에서 가져오기</b>로 그대로 이어 작업합니다(계정별 보관).
             </p>
+            <div className="settings-row">
+              <button className="settings-action" onClick={serverBackup} disabled={dbBusy}>
+                ☁ 서버에 백업
+              </button>
+              <button className="settings-action" onClick={serverRestore} disabled={dbBusy}>
+                ⬇ 서버에서 가져오기
+              </button>
+            </div>
+            <p className="settings-hint">
+              백업은 <b>내 계정으로만</b> 저장·복원됩니다(남의 백업은 안 보임). 토큰 등 민감정보는
+              올리기 전에 제거되며, 가져오기는 현재 로컬 DB를 통째 교체(자동 백업) 후 재로그인합니다.
+            </p>
+            <details className="settings-details">
+              <summary className="settings-hint" style={{ cursor: "pointer" }}>
+                서버 없이 파일로 직접 주고받기 (고급)
+              </summary>
             <a className="settings-action" href="/api/db/export" download="MV-hub-mydb.db">
               ⬇ 내 DB 내보내기
             </a>
@@ -360,6 +411,7 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
               ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
               작업자=1PC라 한 번에 한 PC에서만 쓰세요.
             </p>
+            </details>
             <button className="settings-action" onClick={migrateFromServer} disabled={dbBusy}>
               ↺ 서버에서 내 메타 가져오기 (1회)
             </button>
