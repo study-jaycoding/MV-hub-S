@@ -1662,6 +1662,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   background: transparent; border: none; outline: none;
   color: var(--text); font: inherit; font-size: 16px; line-height: 1.7;
   padding: 4px 34px 4px 6px; white-space: pre-wrap; word-break: break-word;
+  text-align: left; /* 입력란은 항상 왼쪽 정렬(플레이스홀더·입력 텍스트) — 가운데로 쏠리지 않게 명시 */
 }
 /* 프롬프트 입력부 우측 상단 — 전체 복사 버튼 */
 .sl-copy-btn {
