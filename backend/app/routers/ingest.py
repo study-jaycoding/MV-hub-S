@@ -75,19 +75,32 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # acc.email 은 로컬에선 'local' 이라 비교 대상이 아니므로, 활성 계정 DB 의 주인 이메일
     # (active.json = 지금 로그인한 계정)과 CLI 보고 이메일을 비교한다. 미로그인이면 hub_email 이
     # None 이라 검사 생략(단독 사용 = 레거시 단일 DB).
-    if not AUTH_ENABLED and reported_email:
+    if not AUTH_ENABLED:
         from ..active_account import account_key
 
         hub_email = (account_key() or "").strip().lower()
-        if hub_email and reported_email != hub_email:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"이 PC 의 CLI 계정({reported_email})이 허브 로그인({hub_email})과 다릅니다. "
-                    "허브를 CLI 와 같은 계정으로 로그인하거나 cli-login.bat 으로 CLI 계정을 바꾸세요 "
-                    "— 다른 계정 DB 오염(남의 작업이 내 작업으로 섞임)을 막습니다."
-                ),
-            )
+        if hub_email:  # 프록시 로그인 상태 — 반드시 CLI 신원을 검증해야 한다.
+            if not reported_email:
+                # 옛 에이전트는 account_status.email 을 안 줘 검증이 불가능 → 적재 거부(예전엔 검증을
+                # 건너뛰고 그대로 uid 를 '나'로 학습해 오귀속 위험). 에이전트 업데이트 유도.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "에이전트가 CLI 계정 이메일을 보고하지 않았습니다(옛 버전). update-cli.bat / "
+                        "MV_agent.bat 으로 에이전트를 갱신하세요 — 신원 검증 없이 적재하면 남의 작업으로 "
+                        "오귀속될 수 있어 막습니다."
+                    ),
+                )
+            if reported_email != hub_email:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"이 PC 의 CLI 계정({reported_email})이 허브 로그인({hub_email})과 다릅니다. "
+                        "허브를 CLI 와 같은 계정으로 로그인하거나 cli-login.bat 으로 CLI 계정을 바꾸세요 "
+                        "— 다른 계정 DB 오염(남의 작업이 내 작업으로 섞임)을 막습니다."
+                    ),
+                )
+        # hub_email 없음(미로그인 단독 사용) → 검증 생략(레거시 단일 DB).
     cur_uid = acc.get("creator_uid")
     linked_real = bool(cur_uid) and not str(cur_uid).startswith("acct:")
     own_uid = creator_uid or (cur_uid if linked_real else None)

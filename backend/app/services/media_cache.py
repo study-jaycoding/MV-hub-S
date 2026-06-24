@@ -48,11 +48,15 @@ def is_cached(url: str) -> bool:
 
 
 def _download(url: str, target: Path) -> None:
+    # 청크 스트리밍 — 큰 mp4 를 통째로 메모리에 read 하지 않는다(동시 다운로드 시 메모리 스파이크 방지).
     req = urllib.request.Request(url, headers={"User-Agent": "content-hub/0.1"})
-    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        data = resp.read()
     tmp = target.with_suffix(target.suffix + ".part")
-    tmp.write_bytes(data)
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            f.write(chunk)
     tmp.replace(target)  # 원자적 교체(부분 파일 방지)
 
 

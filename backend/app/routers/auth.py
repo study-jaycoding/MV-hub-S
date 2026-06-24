@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -21,6 +22,37 @@ from ..services import auth
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _COOKIE_MAX_AGE = 14 * 24 * 3600  # 토큰 TTL 과 동일(2주)
+
+# ── 비밀번호 무차별 대입 방어(인메모리) ────────────────────────────────────────
+# IP+이메일별 최근 실패 시각을 모아, 창(WINDOW) 안에서 MAX 회 넘으면 잠시 429 로 막는다.
+# 키에 IP 를 넣어 한 공격자가 남의 계정을 잠가버리는 lockout-DoS 를 줄인다(다른 IP 는 영향 없음).
+_RL_WINDOW = 300.0  # 5분
+_RL_MAX = 8
+_rl_fails: dict[str, list[float]] = {}
+
+
+def _rl_key(request: Request, email: str) -> str:
+    ip = request.client.host if request.client else "?"
+    return f"{ip}|{(email or '').strip().lower()}"
+
+
+def _rl_check(key: str) -> None:
+    now = time.monotonic()
+    hits = [t for t in _rl_fails.get(key, []) if now - t < _RL_WINDOW]
+    _rl_fails[key] = hits
+    if len(hits) >= _RL_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="로그인 시도가 너무 많습니다. 잠시 후(몇 분) 다시 시도하세요.",
+        )
+
+
+def _rl_fail(key: str) -> None:
+    _rl_fails.setdefault(key, []).append(time.monotonic())
+
+
+def _rl_ok(key: str) -> None:
+    _rl_fails.pop(key, None)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -86,30 +118,38 @@ def register(body: RegisterIn, response: Response):
 
 
 @router.post("/login")
-def login(body: LoginIn, response: Response):
+def login(body: LoginIn, response: Response, request: Request):
+    key = _rl_key(request, body.email)
+    _rl_check(key)
     acc = repo.authenticate(body.email, body.password)
     if not acc:
+        _rl_fail(key)
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
     if acc["status"] == "pending":
         raise HTTPException(status_code=403, detail="관리자 승인 대기 중입니다")
     if acc["status"] != "approved":
         raise HTTPException(status_code=403, detail="접근이 거부된 계정입니다")
+    _rl_ok(key)
     token = auth.make_token(acc["email"])
     _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
     return {"account": acc, "token": token}
 
 
 @router.post("/access")
-def access(body: RegisterIn, response: Response):
+def access(body: RegisterIn, response: Response, request: Request):
     """로그인=가입 통합 — 힉스필드 이메일+비밀번호 하나로. 처음 보는 이메일이면 자동 등록(승인 대기),
     이미 있으면 로그인. 별도 '가입' 단계를 없앤다(계정 식별자 = 힉스필드 이메일). push_agent 는 여전히
     /login 사용. 반환: {account, token(승인 전이면 null), pending}."""
     email = (body.email or "").strip().lower()
+    key = _rl_key(request, email)
+    _rl_check(key)
     existing = repo.get_account(email)
     if existing:
         acc = repo.authenticate(email, body.password)
         if not acc:
+            _rl_fail(key)
             raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다")
+        _rl_ok(key)
         if acc["status"] != "approved":  # 승인 전(거부 포함) — 토큰 없이 상태만
             return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
         token = auth.make_token(acc["email"])
