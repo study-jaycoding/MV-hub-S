@@ -7,18 +7,20 @@
 
 from __future__ import annotations
 
+import secrets
 import shutil
 import sqlite3
 import tempfile
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from . import _proxy
 from .. import db, repo
+from ..deps import require_admin
 from ..repo import identity
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
@@ -27,8 +29,10 @@ _SQLITE_MAGIC = b"SQLite format 3"
 
 
 @router.get("/export")
-def export_db():
-    """내 로컬 DB 를 단일 .db 파일로 내려준다(일관 스냅샷). 다른 PC에서 '가져오기'로 넣으면 됨."""
+def export_db(request: Request):
+    """내 로컬 DB 를 단일 .db 파일로 내려준다(일관 스냅샷). 다른 PC에서 '가져오기'로 넣으면 됨.
+    AUTH on(공유 서버)에선 admin 만 — 전체 DB(비밀번호 해시 포함) 유출 방지. AUTH off(로컬)면 통과."""
+    require_admin(request)
     path = db.get_db_path()
     if not path.is_file():
         raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
@@ -52,9 +56,11 @@ def export_db():
 
 
 @router.post("/import")
-async def import_db(file: UploadFile = File(...)):
+async def import_db(request: Request, file: UploadFile = File(...)):
     """업로드한 .db 로 내 로컬 DB 를 통째 교체(병합 아님). 현재 DB는 .bak 으로 자동 백업.
-    가져온 DB는 현재 스키마로 마이그레이션하고 신원 캐시를 리셋한다."""
+    가져온 DB는 현재 스키마로 마이그레이션하고 신원 캐시를 리셋한다.
+    AUTH on(공유 서버)에선 admin 만 — 임의 DB 로 서버를 덮어쓰는 행위 차단. AUTH off(로컬)면 통과."""
+    require_admin(request)
     data = await file.read()
     if data[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
         raise HTTPException(status_code=400, detail="SQLite DB 파일이 아닙니다")
@@ -114,6 +120,12 @@ async def import_db(file: UploadFile = File(...)):
             repo.set_setting(k, None)
         except Exception:  # noqa: BLE001
             pass
+    # 보안: 가져온 DB 의 토큰 서명키(auth_secret)를 새로 발급한다. 안 그러면 가져온 DB 주인이
+    # 예전에 그 DB 로 발급한 세션 토큰이 이 서버에서 그대로 검증돼 위장 로그인이 가능하다.
+    try:
+        repo.set_setting("auth_secret", secrets.token_hex(32))
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True, "relogin_required": True}
 
 

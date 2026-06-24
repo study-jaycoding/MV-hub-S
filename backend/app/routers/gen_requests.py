@@ -95,7 +95,8 @@ async def pending_gen_requests(request: Request, limit: int = 16):
     for c in claimed:
         repo.set_status(c["gen_id"], "running", None)
         await manager.broadcast(
-            {"type": "progress", "generation_id": c["gen_id"], "status": "running"}
+            {"type": "progress", "generation_id": c["gen_id"], "status": "running"},
+            account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만(남에게 진행률 누출 방지)
         )
     return claimed
 
@@ -136,7 +137,8 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
             "status": status,
             "result_url": asset["file_path"] if asset else None,
             "error": err,
-        }
+        },
+        account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만
     )
     gen = repo.get_generation(gen_id)
     if not gen:
@@ -157,6 +159,7 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
     repo.set_status(req["gen_id"], "failed", reason)
     repo.mark_request(rid, "failed", reason)
     await manager.broadcast(
-        {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason}
+        {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason},
+        account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만
     )
     return {"ok": True}

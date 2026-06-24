@@ -157,14 +157,17 @@ def _insert_row(
     )
 
 
-def restore_from_trash(gen_id: str) -> bool:
-    """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False."""
+def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
+    """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
+    account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
     with _with_trash() as conn:
         row = conn.execute(
-            "SELECT payload FROM trash.trashed WHERE id=?", (gen_id,)
+            "SELECT payload, creator_uid FROM trash.trashed WHERE id=?", (gen_id,)
         ).fetchone()
         if not row:
             return False
+        if account_uid is not None and row["creator_uid"] not in (account_uid, None):
+            raise PermissionError("본인 휴지통 항목만 복구할 수 있습니다")
         p = json.loads(row["payload"])
         conn.execute("BEGIN")
         _insert_row(conn, "generation", p["generation"])

@@ -210,7 +210,10 @@ async def mutation_notify(request: Request, call_next):
             and not path.startswith(_NOTIFY_EXCLUDE)
             and response.status_code < 400
         ):
-            manager.notify_mutation()
+            # 변경한 계정의 탭/기기에만 알림(AUTH off 면 account 없음 → 전체). 남의 비공개
+            # 변경에 전원이 reload 하던 폭주를 막는다.
+            acc = getattr(request.state, "account", None)
+            manager.notify_mutation(acc.get("creator_uid") if acc else None)
     except Exception:  # noqa: BLE001 — 알림 실패가 응답을 막지 않게
         pass
     return response
@@ -257,6 +260,7 @@ async def trigger_backup():
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """생성 진행률 push 채널. AUTH_ENABLED 면 세션 쿠키(또는 ?token=)로 인증 후 수락."""
+    account_uid: str | None = None
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE
 
@@ -266,7 +270,8 @@ async def websocket_endpoint(ws: WebSocket):
         if not acc or acc["status"] != "approved":
             await ws.close(code=1008)  # policy violation
             return
-    await manager.connect(ws)
+        account_uid = acc.get("creator_uid")  # 이 소켓이 받을 진행률·알림을 이 계정으로 한정
+    await manager.connect(ws, account_uid)
     try:
         while True:
             # 클라이언트 → 서버 메시지는 현재 쓰지 않지만 연결 유지를 위해 수신.

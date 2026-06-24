@@ -637,10 +637,10 @@ def delete_generation(gen_id: str) -> bool:
     return trash.move_to_trash(gen_id)
 
 
-def restore_generation(gen_id: str) -> bool:
-    """휴지통 DB 에서 메인으로 복원(자식 전부 재생성)."""
+def restore_generation(gen_id: str, account_uid: Optional[str] = None) -> bool:
+    """휴지통 DB 에서 메인으로 복원(자식 전부 재생성). account_uid 주면 본인 것만(소유권 게이트)."""
     from . import trash
-    return trash.restore_from_trash(gen_id)
+    return trash.restore_from_trash(gen_id, account_uid)
 
 
 def gens_with_job_id() -> list[tuple[str, str]]:
@@ -1615,6 +1615,13 @@ def search_sources(
     # 재사용 가능하면 안 됨(하드삭제 때와 동일한 가시성 유지).
     where = ["g.is_source = 1", "g.deleted_at IS NULL"]
     args: list[Any] = []
+    if owner_uid:
+        # 가시성: 내 것 또는 공유된 것만 — 다계정(AUTH on) 서버에서 남의 '비공개' 소스
+        # (프롬프트·모델·params·URL)가 @ 피커로 유출되던 구멍 차단. owner_uid 없으면(AUTH off/단독) 전체.
+        where.append(
+            "(g.creator_uid = ? OR EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id))"
+        )
+        args.append(owner_uid)
     if query:
         where.append("(g.source_name LIKE ? OR g.prompt LIKE ?)")
         args += [f"%{query}%", f"%{query}%"]

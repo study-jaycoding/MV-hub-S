@@ -307,11 +307,19 @@ def delete_generation(gen_id: str, request: Request):
 
 @router.post("/generations/{gen_id}/restore")
 def restore_generation(gen_id: str, request: Request):
-    """휴지통에서 복구 — 카탈로그에 정상 표시로 되돌림."""
+    """휴지통에서 복구 — 카탈로그에 정상 표시로 되돌림. 본인(또는 admin)만.
+    휴지통 항목은 메인 DB 에 없어 require_edit 가 통하지 않으므로, 복구 함수에 소유권 게이트를 건다."""
     gen = repo.get_generation(gen_id)
-    if gen:
+    if gen:  # 드물게 메인에 있으면 기존 편집 가드
         require_edit_generation(request, gen)
-    return {"restored": repo.restore_generation(gen_id)}
+        return {"restored": repo.restore_generation(gen_id)}
+    # 휴지통 항목: AUTH off 또는 admin → 게이트 없음, 그 외엔 본인 것만(남의 삭제물 복구 차단).
+    is_admin = rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN)
+    owner = None if (not AUTH_ENABLED or is_admin) else actor_id(request)
+    try:
+        return {"restored": repo.restore_generation(gen_id, account_uid=owner)}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 @router.put("/generations/{gen_id}/color", response_model=GenerationOut)
