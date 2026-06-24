@@ -103,6 +103,29 @@ function readAssetCtx(): { project: string; dir: string } {
   }
 }
 
+// 에셋 드래그 페이로드(application/x-ch-asset) 파싱 — 항상 배열로 정규화(옛 단건 객체 하위호환),
+// 이미지/영상만(오디오·폴더 제외). 잘못된 데이터는 빈 배열. 트레이/인라인 드롭 공용.
+type AssetDragItem = { project: string; path: string; name: string; type: string };
+function parseAssetItems(raw: string): AssetDragItem[] {
+  try {
+    const parsed = JSON.parse(raw);
+    const list = (Array.isArray(parsed) ? parsed : [parsed]) as AssetDragItem[];
+    return list.filter((d) => d && (d.type === "image" || d.type === "video"));
+  } catch {
+    return [];
+  }
+}
+// 에셋 항목 → ChipRef 공통 필드(role/uid 는 호출측이 채움). thumb: 영상은 파일URL(<video>), 이미지는 썸네일.
+function assetRefBase(d: AssetDragItem): Omit<ChipRef, "role"> {
+  const isVid = d.type === "video";
+  return {
+    file_path: `asset:${d.project}|${d.path}`, // 에이전트가 받아 로컬 파일로 CLI 에 전달
+    type: isVid ? "video" : "image",
+    name: d.name,
+    thumb: isVid ? api.assetFileUrl(d.project, d.path) : api.assetThumbUrl(d.project, d.path, 256),
+  };
+}
+
 // 모델 옵션 칩 라벨 → 아이콘(텍스트 라벨이 길어 두 줄 되는 것 방지). 이름 키워드로 매칭, 폴백=슬라이더.
 function OptIcon({ name }: { name: string }) {
   const n = name.toLowerCase();
@@ -206,18 +229,8 @@ export function SpotlightPrompt({
     return () => window.removeEventListener("ch:focus-prompt", focus);
   }, []);
 
-  // 카드의 '프롬프트 재사용' 버튼 → 그 생성물의 프롬프트+옵션을 입력바로 불러옴(드래그=레퍼런스와 분리).
-  useEffect(() => {
-    const onReuse = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      if (id) void reusePromptFromGen(id);
-    };
-    window.addEventListener("ch:reuse-prompt", onReuse);
-    return () => window.removeEventListener("ch:reuse-prompt", onReuse);
-    // model + expanded 의존: reusePromptFromGen 이 model(분기)·expanded(트레이 vs 인라인 칩) 를
-    // 최신 값으로 평가하도록 재구독한다(확장만 켜고 재사용하면 stale 로 인라인 칩 되던 버그 수정).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, expanded]);
+  // (프롬프트 재사용은 카드를 입력바로 드래그-드롭하면 동작 — onPanelDrop→reusePromptFromGen 직접
+  //  호출. 이벤트(ch:reuse-prompt) 경로는 디스패처가 없어 제거함.)
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
   useEffect(() => {
@@ -472,34 +485,13 @@ export function SpotlightPrompt({
   // 에셋 셀 dragstart 가 심은 application/x-ch-asset 만 받는다(카드·@ 아님). 값은 항상 배열 —
   // 다중선택을 그리드 순서대로 한 번에 받는다(옛 단건 객체도 하위호환으로 수용).
   const addAssetToTray = (raw: string) => {
-    try {
-      const parsed = JSON.parse(raw);
-      const list = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
-        project: string;
-        path: string;
-        name: string;
-        type: string;
-      }>;
-      // 중복 허용(같은 파일도 여러 번) — dedup 안 함. uid 로 구분. 다중선택은 배열로 한 번에 추가.
-      const additions: TrayRef[] = list
-        .filter((d) => d.type === "image" || d.type === "video") // 오디오/폴더 제외
-        .map((d) => {
-          const isVid = d.type === "video";
-          return {
-            uid: `t${trayUidRef.current++}`,
-            file_path: `asset:${d.project}|${d.path}`, // 에이전트가 받아 로컬 파일로 CLI 에 전달
-            type: isVid ? "video" : "image",
-            role: isVid ? "@Video" : "@Image", // 제출 시 순서대로 재번호
-            name: d.name,
-            thumb: isVid
-              ? api.assetFileUrl(d.project, d.path)
-              : api.assetThumbUrl(d.project, d.path, 256),
-          };
-        });
-      if (additions.length) setTrayRefs((prev) => [...prev, ...additions]);
-    } catch {
-      /* 잘못된 드래그 데이터 무시 */
-    }
+    // 중복 허용(같은 파일도 여러 번) — dedup 안 함. uid 로 구분. 다중선택은 배열로 한 번에 추가.
+    const additions: TrayRef[] = parseAssetItems(raw).map((d) => ({
+      ...assetRefBase(d),
+      uid: `t${trayUidRef.current++}`,
+      role: d.type === "video" ? "@Video" : "@Image", // 제출 시 순서대로 재번호
+    }));
+    if (additions.length) setTrayRefs((prev) => [...prev, ...additions]);
   };
   // 에셋 드롭 공용(프롬프트 패널/트레이): 확장이면 트레이로, 접힘이면 인라인 칩으로 — 다중선택 일괄.
   const addAssetRefs = (raw: string) => {
@@ -507,37 +499,19 @@ export function SpotlightPrompt({
       addAssetToTray(raw); // 트레이(배열 그대로 — 중복 허용)
       return;
     }
-    try {
-      const parsed = JSON.parse(raw);
-      const list = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
-        project: string;
-        path: string;
-        name: string;
-        type: string;
-      }>;
-      const ed = editorRef.current;
-      if (!ed) return;
-      let added = false;
-      for (const d of list) {
-        if (d.type !== "image" && d.type !== "video") continue; // 오디오/폴더 제외
-        const isVid = d.type === "video";
-        insertChip(ed, {
-          file_path: `asset:${d.project}|${d.path}`,
-          type: isVid ? "video" : "image",
-          role: isVid ? "@Video" : `@Image${countImageChips(ed) + 1}`, // 칩마다 다음 슬롯
-          name: d.name,
-          thumb: isVid
-            ? api.assetFileUrl(d.project, d.path)
-            : api.assetThumbUrl(d.project, d.path, 256),
-        });
-        added = true;
-      }
-      if (added) {
-        updatePlaceholder();
-        ed.focus();
-      }
-    } catch {
-      /* 잘못된 드래그 데이터 무시 */
+    const ed = editorRef.current;
+    if (!ed) return;
+    let added = false;
+    for (const d of parseAssetItems(raw)) {
+      insertChip(ed, {
+        ...assetRefBase(d),
+        role: d.type === "video" ? "@Video" : `@Image${countImageChips(ed) + 1}`, // 칩마다 다음 슬롯
+      });
+      added = true;
+    }
+    if (added) {
+      updatePlaceholder();
+      ed.focus();
     }
   };
   const removeTrayRef = (i: number) => setTrayRefs((prev) => prev.filter((_, j) => j !== i));

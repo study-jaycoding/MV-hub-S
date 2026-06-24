@@ -56,17 +56,11 @@ export async function download(url: string, name: string) {
   else _anchor(url, undefined, true);
 }
 
-// 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL.
+// 메모리에서 만든 텍스트(예: .md 지시문)를 파일로 저장 — Blob+object URL(_anchor 재사용).
 export function downloadText(filename: string, text: string, mime = "text/plain") {
-  const blob = new Blob([text], { type: mime + ";charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  const url = URL.createObjectURL(new Blob([text], { type: mime + ";charset=utf-8" }));
+  _anchor(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // 다운로드 파일명 = 레퍼런스로 추가할 때 쓰는 이름(addRefFromGen 과 동일 규칙):

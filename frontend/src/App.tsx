@@ -546,16 +546,11 @@ export default function App() {
     if (promptVisible) window.dispatchEvent(new CustomEvent("ch:focus-prompt"));
   }, [promptVisible]);
 
-  // 카드의 '프롬프트 재사용'(끌어내림) 또는 '레퍼런스로 사용'(@) → 프롬프트 바가 숨겨져 있으면
-  // 펼친다(실제 복원/추가는 SpotlightPrompt 가 처리).
+  // 카드의 '레퍼런스로 사용'(@) → 프롬프트 바가 숨겨져 있으면 펼친다(추가는 SpotlightPrompt 가 처리).
   useEffect(() => {
     const show = () => setPromptVisible(true);
-    window.addEventListener("ch:reuse-prompt", show);
     window.addEventListener("ch:add-reference", show);
-    return () => {
-      window.removeEventListener("ch:reuse-prompt", show);
-      window.removeEventListener("ch:add-reference", show);
-    };
+    return () => window.removeEventListener("ch:add-reference", show);
   }, []);
 
   // 마지막으로 보던 상태 저장 → 다음에 열 때 복원

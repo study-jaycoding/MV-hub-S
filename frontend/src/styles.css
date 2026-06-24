@@ -508,7 +508,7 @@ select optgroup {
 
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .main-head { padding: 12px 20px 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
-/* 하단 패딩으로 항상 떠 있는 프롬프트 도크 공간 확보(react-window 높이가 그만큼 줄어 마지막 행이 도크 위로 스크롤됨) */
+/* 하단 패딩으로 항상 떠 있는 프롬프트 도크 공간 확보(마지막 행이 도크 위로 스크롤됨) */
 .grid-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .empty { padding: 56px; color: var(--muted); text-align: center; line-height: 1.8; }
 .empty b { color: var(--text); }
@@ -1657,19 +1657,6 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 
 /* 프롬프트 행 */
 .sl-prompt-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; }
-.sl-add {
-  width: 34px; height: 34px; flex-shrink: 0;
-  border-radius: 50%; font-size: 17px; font-weight: 300;
-  background: rgba(255, 255, 255, 0.05); border: 1.5px solid var(--border);
-  color: var(--muted); display: flex; align-items: center; justify-content: center;
-}
-.sl-add:hover { color: var(--text); border-color: var(--border2); }
-.sl-add.on { background: var(--grad-soft); border-color: var(--accent); color: #fff; }
-.sl-ref-count {
-  font-size: 11px; color: #fff; font-weight: 700; flex-shrink: 0;
-  background: var(--grad-soft); padding: 3px 9px; border-radius: 11px;
-  border: 1px solid var(--accent);
-}
 .sl-prompt {
   flex: 1; min-height: 30px; max-height: 200px; overflow-y: auto;
   background: transparent; border: none; outline: none;
@@ -1773,19 +1760,6 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 }
 .sl-tag-count { margin-left: auto; font-size: 12px; color: var(--muted); }
 
-/* 참조 슬롯(펼침) */
-.sl-refs {
-  display: flex; flex-direction: column; gap: 8px;
-  margin: 0 8px 8px; padding: 10px;
-  background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 12px;
-}
-.sl-refs .ref-add { display: flex; gap: 7px; }
-.sl-refs select, .sl-refs input {
-  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
-  border-radius: 9px; color: var(--text); padding: 7px 9px; font: inherit;
-}
-.sl-refs input { flex: 1; }
-
 /* 컨트롤 행 */
 .sl-controls {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -1816,13 +1790,7 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .sl-chip:hover { border-color: var(--border2); }
 .sl-chip.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196, 232, 74, 0.16); }
 .sl-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
-.sl-chip-svg { color: var(--muted); flex-shrink: 0; }
 .sl-caret { color: var(--muted); font-size: 16px; }
-/* 동적 옵션 칩 — 라벨(파라미터명) + 값 */
-.sl-opt-label {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
-  color: var(--muted); text-transform: uppercase;
-}
 /* 옵션 칩 라벨을 아이콘으로 — 텍스트 라벨 길이로 줄바꿈되던 것 해소(한 줄 유지) */
 .sl-opt-ic { display: inline-flex; align-items: center; color: var(--muted); }
 /* 듀레이션 슬라이더 칩 — 아이콘 + 레인지 + 값(s) */
