@@ -69,6 +69,11 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
     email = (account_email or "").strip().lower()
     out: list[dict[str, Any]] = []
     with get_connection() as conn:
+        # ★원자 claim: 커넥션이 autocommit(isolation_level=None)이라 SELECT→UPDATE 사이에 트랜잭션
+        # 경계가 없으면, 같은 계정의 에이전트/폴 둘이 동시에 같은 pending 행을 SELECT→둘 다 running 으로
+        # 표시→로컬 CLI 가 두 번 실행돼 크레딧이 이중 소모된다. BEGIN IMMEDIATE 로 즉시 쓰기락을 잡아
+        # SELECT+UPDATE 를 한 트랜잭션으로 직렬화한다(둘째 폴은 busy_timeout 대기 후 running 을 보고 건너뜀).
+        conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
             "WHERE account_email=? AND status='pending' ORDER BY created_at LIMIT ?",
