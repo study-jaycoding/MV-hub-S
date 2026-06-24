@@ -51,8 +51,10 @@ function parseMcpItems(text: string): Record<string, unknown>[] {
 
 export function SettingsPanel({
   onClose,
+  onImported,
 }: {
   onClose: () => void;
+  onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
 }) {
   const t = useT();
   const [accent, setAccent] = useState(loadAccent());
@@ -66,6 +68,33 @@ export function SettingsPanel({
   const [scOpen, setScOpen] = useState(false); // 단축키 변경 플로팅 창
   const [dbBusy, setDbBusy] = useState(false); // 내 DB 가져오기 중
   const [dbMsg, setDbMsg] = useState("");
+  const [syncMsg, setSyncMsg] = useState(""); // 외부 생성물 올리기 결과
+  const [hfMsg, setHfMsg] = useState(""); // 힉스필드 삭제물 검토 결과
+
+  // '외부 생성물 올리기' — 내 에이전트를 깨워 허브 밖(Claude·웹·CLI)에서 만든 결과물을 push.
+  const syncMine = async () => {
+    setSyncMsg("요청 보냄…");
+    try {
+      const r = await api.agentSync();
+      setSyncMsg(r.connected ? "✓ 에이전트에 전달됨" : "에이전트가 꺼져 있어요");
+    } catch {
+      setSyncMsg("실패");
+    }
+    setTimeout(() => setSyncMsg(""), 2500);
+  };
+
+  // '힉스필드 삭제물 검토' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다(무료 점검).
+  const reviewHfDeleted = async () => {
+    setHfMsg("힉스필드 점검 중…");
+    try {
+      const r = await api.trashHfMissing();
+      setHfMsg(r.trashed > 0 ? `✓ ${r.trashed}건 휴지통으로` : `삭제물 없음 (${r.checked}건 점검)`);
+      if (r.trashed > 0) onImported?.(`힉스필드 삭제물 ${r.trashed}건을 휴지통으로 보냈습니다.`);
+    } catch {
+      setHfMsg("실패");
+    }
+    setTimeout(() => setHfMsg(""), 2800);
+  };
 
   // 과거 전체(100건 밖) 백필 지시 — .md 문서로 받아 Claude 세션에 파일째 첨부해 주면 됨.
   //  서버 코드·DB 접근 없이 허브 로그인만으로 /api/ingest/mcp 에 직접 적재(멱등). origin·이메일 자동 주입.
@@ -313,6 +342,26 @@ show_generations 가 id/type/status/model/url/createdAt 만 주고 prompt·param
             </button>
             <p className="settings-hint">
               {t("지정된 단축키를 보고 원하는 키로 바꿀 수 있습니다.")}
+            </p>
+          </section>
+
+          {/* 동기화 · 점검 — 계정 메뉴에서 이동. 허브 밖 결과물 수동 push + 힉스필드 삭제물 정리. */}
+          <section className="settings-section">
+            <h4>{t("동기화 · 점검")}</h4>
+            <p className="settings-hint">
+              허브에서 만든 결과물·최신분은 <b>자동</b>으로 올라갑니다. 아래는 수동 동기화·점검용입니다.
+            </p>
+            <div className="settings-row">
+              <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
+                📤 {syncMsg || "외부 생성물 올리기"}
+              </button>
+              <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
+                🗑 {hfMsg || "힉스필드 삭제물 검토"}
+              </button>
+            </div>
+            <p className="settings-hint">
+              <b>외부 생성물 올리기</b> — 허브 밖(Claude·웹·CLI)에서 만든 결과물을 지금 올립니다.{" "}
+              <b>힉스필드 삭제물 검토</b> — 힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.
             </p>
           </section>
 

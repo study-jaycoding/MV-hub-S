@@ -37,36 +37,8 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [syncMsg, setSyncMsg] = useState("");
-  const [hfMsg, setHfMsg] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
-
-  // '외부 생성물 올리기' — 내 에이전트를 깨워 허브 밖에서 만든 결과물을 push. 연결 표시는
-  // 생성 프롬프트 푸터로 통합(여기선 결과 메시지만).
-  const syncMine = async () => {
-    setSyncMsg("요청 보냄…");
-    try {
-      const r = await api.agentSync();
-      setSyncMsg(r.connected ? "✓ 에이전트에 전달됨" : "에이전트가 꺼져 있어요");
-    } catch {
-      setSyncMsg("실패");
-    }
-    setTimeout(() => setSyncMsg(""), 2500);
-  };
-
-  // '힉스필드 삭제물 검토' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다(무료 점검).
-  const reviewHfDeleted = async () => {
-    setHfMsg("힉스필드 점검 중…");
-    try {
-      const r = await api.trashHfMissing();
-      setHfMsg(r.trashed > 0 ? `✓ ${r.trashed}건 휴지통으로` : `삭제물 없음 (${r.checked}건 점검)`);
-      if (r.trashed > 0) onImported?.(`힉스필드 삭제물 ${r.trashed}건을 휴지통으로 보냈습니다.`);
-    } catch {
-      setHfMsg("실패");
-    }
-    setTimeout(() => setHfMsg(""), 2800);
-  };
 
   // 로그인 계정(jay 포함 모두) → 그 계정 에이전트가 보고한 '검증된 내 힉스필드 신원'(읽기전용).
   // 검증된 이메일 기준이라 남의 크레딧과 안 겹친다. 비로그인(AUTH off, 로컬 개발)만 서버 CLI
@@ -195,22 +167,7 @@ export function AccountMenu({
             <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 전환은 내 로컬 CLI에서</div>
           )}
 
-          {/* 외부 생성물 올리기 — 허브 밖(Claude/웹/CLI)에서 만든 결과물을 지금 push.
-              (허브 생성/재생성 결과는 자동 반영. 연결 표시는 생성 프롬프트 푸터로 통합됨.) */}
-          {account && (
-            <>
-              <div className="acct-sep" />
-              <button className="acct-action" onClick={syncMine} disabled={!!syncMsg}>
-                📤 {syncMsg || "외부 생성물 올리기"}
-              </button>
-              <p className="acct-hint acct-hint-sm">허브 밖에서 만든 결과물을 올립니다(허브 생성물은 자동).</p>
-              <button className="acct-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
-                🗑 {hfMsg || "힉스필드 삭제물 검토"}
-              </button>
-              <p className="acct-hint acct-hint-sm">힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.</p>
-            </>
-          )}
-
+          {/* '외부 생성물 올리기'·'힉스필드 삭제물 검토'는 설정 패널로 이동(중복 제거). */}
           <div className="acct-sep" />
           <button
             className="acct-action"
@@ -254,7 +211,10 @@ export function AccountMenu({
       )}
 
       {settingsOpen && (
-        <SettingsPanel onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          onImported={onImported}
+        />
       )}
     </div>
   );
