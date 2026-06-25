@@ -346,7 +346,7 @@ def _cli_account_email(cli: str) -> str | None:
 
 def offer_cli_relogin(cli: str, detail: str) -> bool:
     """계정 불일치(409)일 때, 이 PC 의 CLI 를 허브와 '같은 계정'으로 다시 로그인하도록 즉석 제안한다.
-    cli-login.bat 을 따로 띄울 필요 없이 MV_agent(에이전트) 창에서 바로 CLI 계정을 바꾼다.
+    별도 배치 파일 없이 MV_agent(에이전트) 창에서 바로 CLI 계정을 바꾼다.
     재로그인을 실제로 했으면 True. 비대화형(자동화·리다이렉트)에선 프롬프트 없이 False(안내만)."""
     if not (sys.stdin and sys.stdin.isatty()):
         return False
@@ -366,7 +366,7 @@ def offer_cli_relogin(cli: str, detail: str) -> bool:
         return False
     if ans != "y":
         _relogin_state["declined_email"] = cur
-        print("  유지합니다. 나중에 이 창에서 다시 시도하거나 cli-login.bat 을 쓰세요.")
+        print("  유지합니다. 나중에 이 창에서 다시 묻거나, 직접 `hf auth login` 으로 바꿀 수 있습니다.")
         print("  ------------------------------------------------------------------")
         return False
     print("  현재 계정 로그아웃...")
@@ -432,7 +432,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             except (ValueError, AttributeError):
                 detail = body
         print(f"[보류] 적재 실패(status={status}): {detail}")
-        # 계정 불일치(409) → cli-login.bat 없이 이 에이전트 창에서 바로 CLI 재로그인 제안 후 즉시 재시도.
+        # 계정 불일치(409) → 별도 배치 없이 이 에이전트 창에서 바로 CLI 재로그인 제안 후 즉시 재시도.
         if status == 409 and _allow_relogin and offer_cli_relogin(cli, str(detail)):
             print("[재시도] CLI 재로그인 완료 — 지금 바로 다시 push 합니다.")
             return push_once(server, token, cli, size, _allow_relogin=False)

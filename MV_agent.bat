@@ -107,7 +107,7 @@ echo   YOUR HIGGSFIELD CLI ACCOUNT (verify FIRST) - shown below.
 echo   Log in to the hub with the SAME email. Your generations are pushed to the
 echo   team server under that account; a different hub login will be REJECTED.
 echo   If they differ, the running agent will OFFER to switch the CLI account
-echo   for you (answer y) - no need to run cli-login.bat separately.
+echo   for you (answer y) - no separate login script needed.
 echo  ===========================================================================
 call %HF% account status
 echo  ===========================================================================
