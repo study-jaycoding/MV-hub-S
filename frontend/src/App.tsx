@@ -767,6 +767,12 @@ export default function App() {
   // 회색 버튼 ON → 비활성(회색)으로 표시된 카드를 그리드에서 제외(숨김). 색 dot 과 반대 방향 필터.
   // (비활성은 로컬 시각 상태라 서버가 모름 → 클라이언트 측에서 거른다.)
   const gridGens = grayOn ? visibleGens.filter((g) => !disabledGen.has(g.id)) : visibleGens;
+  // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
+  // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
+  // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
+  useEffect(() => {
+    if (grayOn && gridGens.length === 0 && hasMore && !loadingMore) loadMore();
+  }, [grayOn, gridGens.length, hasMore, loadingMore, loadMore]);
 
   // 미확인 코멘트 여부·실패 수는 전역 파생값 → 서버 stats 에서(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
