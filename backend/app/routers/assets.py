@@ -38,15 +38,6 @@ from ..config import (
 from ..deps import actor_id
 
 
-def _proxying() -> bool:
-    """이 프로세스가 '로컬 허브'(데이터를 공유 서버에 위임)인가?
-
-    서버 직결 하이브리드(plan): 파일 I/O·CLI 는 로컬에서, 순수 데이터(메타/코멘트)는 서버로 위임.
-    공유 서버 토큰이 있으면(=로그인한 로컬 허브) 위임 모드. 서버 본체(AUTH on)는 토큰이 없으니
-    자기 repo 로 처리한다. 같은 코드가 양쪽에서 돌아도 모드로 갈린다."""
-    return not AUTH_ENABLED and bool(_proxy.token())
-
-
 def _require_mount_manager(request: Request) -> None:
     """외부 폴더 등록/해제 권한. 폴더 등록은 **계정별 개인 목록**이라(각자 자기 것만 보고·지움)
     로그인한 사용자는 누구나 자기 폴더를 직접 관리한다.
@@ -337,7 +328,7 @@ def asset_meta(request: Request, project: str = Query(...)):
     스레드만 공유(서버)라, 프록시 중이면 서버에서 코멘트 뱃지(comment_count·has_unread)만 가져와
     로컬 개인 메타에 머지한다."""
     local = repo.get_asset_meta(project, actor_id(request))
-    if _proxying():
+    if _proxy.proxying():
         try:
             remote = _proxy.proxy_json(
                 "GET", "/api/assets/meta", params={"project": project},
@@ -385,7 +376,7 @@ class CommentReadIn(BaseModel):
 @router.get("/comments")
 def list_comments(request: Request, project: str = Query(...), path: str = Query(...)):
     """파일 코멘트 스레드(작성자·시각 포함, 오래된→최신). 스레드 자체는 팀 공유."""
-    if _proxying():
+    if _proxy.proxying():
         return _proxy.proxy_json(
             "GET", "/api/assets/comments", params={"project": project, "path": path}
         )
@@ -394,7 +385,7 @@ def list_comments(request: Request, project: str = Query(...), path: str = Query
 
 @router.post("/comments")
 def add_comment(body: CommentAddIn, request: Request):
-    if _proxying():
+    if _proxy.proxying():
         return _proxy.proxy_json("POST", "/api/assets/comments", body=body.model_dump())
     text = (body.text or "").strip()
     if not text:
@@ -408,7 +399,7 @@ def add_comment(body: CommentAddIn, request: Request):
 
 @router.put("/comments/{comment_id}")
 def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
-    if _proxying():
+    if _proxy.proxying():
         return _proxy.proxy_json(
             "PUT", f"/api/assets/comments/{comment_id}", body=body.model_dump()
         )
@@ -426,7 +417,7 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
 
 @router.delete("/comments/{comment_id}")
 def delete_comment(comment_id: str, request: Request):
-    if _proxying():
+    if _proxy.proxying():
         return _proxy.proxy_json("DELETE", f"/api/assets/comments/{comment_id}")
     try:
         repo.delete_asset_comment(comment_id, actor_id(request))
@@ -437,7 +428,7 @@ def delete_comment(comment_id: str, request: Request):
 
 @router.post("/comments/read")
 def read_comments(body: CommentReadIn, request: Request):
-    if _proxying():
+    if _proxy.proxying():
         return _proxy.proxy_json("POST", "/api/assets/comments/read", body=body.model_dump())
     repo.mark_asset_comments_read(actor_id(request), body.project, body.path)
     return {"ok": True}

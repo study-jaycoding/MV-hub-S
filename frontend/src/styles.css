@@ -2863,7 +2863,17 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   position: absolute; border-radius: 12px; overflow: hidden; cursor: grab;
   border: 2px solid var(--border2); background: #0c0d11; box-shadow: 0 3px 12px rgba(0,0,0,0.4);
   transition: left 0.25s ease, top 0.25s ease, transform 0.12s ease; /* l 자동정렬 시 부드럽게 — 드래그 중엔 끔 */
+  /* 가상화: pan 으로 화면 밖에 나간 노드는 페인트 스킵(최대 300노드 대형 계보의 줌/드래그 부담↓).
+     DOM·inline width/height 는 유지돼 드래그·선택·querySelector 좌표 계산은 그대로 동작(무위험). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
 }
+/* content-visibility 의 paint containment 가 선택·포커스·루트·경로 노드의 box-shadow 링을 자른다
+   → 그 노드만 containment 해제(.gen-cell 선택 셀과 동일 처리). 보통 화면 중앙이라 비용 무시. */
+.linb-node.sel,
+.linb-node.focus,
+.linb-node.root,
+.linb-node.onpath { content-visibility: visible; }
 .linb-canvas.dragging .linb-node { transition: none; }
 .linb-node:active { cursor: grabbing; }
 .linb-node img,
