@@ -58,7 +58,6 @@ class MediaCacheTests(unittest.TestCase):
     def test_html_response_is_rejected(self):
         with self.assertRaises(media_cache.MediaCachePermanentError):
             media_cache._validate_response(
-                "https://cdn.example.com/result.mp4",
                 "text/html; charset=utf-8",
                 b"<!doctype html><html>expired</html>",
             )

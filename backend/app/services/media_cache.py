@@ -102,7 +102,7 @@ def _ensure_disk_space(path: Path, incoming_bytes: int = 0) -> None:
         )
 
 
-def _validate_response(url: str, content_type: str, head: bytes) -> None:
+def _validate_response(content_type: str, head: bytes) -> None:
     ctype = (content_type or "").split(";", 1)[0].strip().lower()
     if ctype in _TEXT_ERROR_TYPES or ctype.startswith("text/"):
         raise MediaCachePermanentError(f"unexpected content-type for media: {content_type or '(missing)'}")
@@ -138,7 +138,7 @@ def _download_once(url: str, target: Path) -> None:
                 if not chunk:
                     break
                 if not saw_head:
-                    _validate_response(url, content_type, chunk[:512])
+                    _validate_response(content_type, chunk[:512])
                     saw_head = True
                 written += len(chunk)
                 if written > _MAX_BYTES:
