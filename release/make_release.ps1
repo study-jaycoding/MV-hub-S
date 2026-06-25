@@ -198,6 +198,9 @@ if (-not $SkipPythonRuntime) {
     if ($LASTEXITCODE -ne 0) {
         throw "pip install into bundled runtime failed"
     }
+
+    $RequirementsHash = (Get-FileHash -LiteralPath (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath (Join-Path $Stage "backend\.deps_installed") -Value $RequirementsHash -Encoding ASCII
 }
 else {
     Write-Host "[4/8] Skipping bundled Python runtime."
@@ -262,22 +265,9 @@ $Latest = [ordered]@{
 $LatestPath = Join-Path $OutputDir "latest.json"
 $Latest | ConvertTo-Json | Set-Content -LiteralPath $LatestPath -Encoding UTF8
 
-# The worker bootstrap .bat pulls the installer logic from the release folder
-# before anything is installed, so MV_agent_bootstrap.ps1 must sit next to
-# latest.json on the server.
-$BootstrapSrc = Join-Path $PSScriptRoot "MV_agent_bootstrap.ps1"
-$BootstrapDst = Join-Path $OutputDir "MV_agent_bootstrap.ps1"
-if (Test-Path -LiteralPath $BootstrapSrc) {
-    Copy-Item -LiteralPath $BootstrapSrc -Destination $BootstrapDst -Force
-}
-else {
-    Write-Warning "MV_agent_bootstrap.ps1 not found next to make_release.ps1; workers cannot bootstrap."
-}
-
 Write-Host ""
 Write-Host "Release ready:"
 Write-Host "  $ZipPath"
 Write-Host "  $LatestPath"
-Write-Host "  $BootstrapDst"
 Write-Host ""
-Write-Host "Upload all three files to your company server release folder."
+Write-Host "Upload latest.json and the zip file to your company server packages folder."
