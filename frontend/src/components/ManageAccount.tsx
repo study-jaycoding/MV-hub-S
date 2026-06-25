@@ -11,11 +11,17 @@ export function ManageAccount({
   provider,
   account,
   onClose,
+  plan,
+  credits,
 }: {
   provider: Provider | null;
   account?: Account | null;
   onClose: () => void;
   onProviderUpdated: (p: Provider) => void; // (유지 — 호출 안 함; 표시이름은 계정별 account.name 기준)
+  // ★플랜/크레딧은 '활성 워크스페이스' 기준(AccountMenu 가 계산해 내려줌). account status 의 계정
+  //   구독 플랜(항상 team)·계정 크레딧이 아니라, 지금 선택된 워크스페이스 값이라 전환에 따라 바뀐다.
+  plan?: string | null;
+  credits?: number | null;
 }) {
   // 표시이름은 계정별(account.name) — 전역 provider 가 아니다. 없으면 이메일 로컬파트로.
   const initialName =
@@ -27,15 +33,7 @@ export function ManageAccount({
   const [pw, setPw] = useState("");
   const [pwSaving, setPwSaving] = useState(false);
   const [pwMsg, setPwMsg] = useState("");
-  const [acct, setAcct] = useState<{
-    credits: number | null;
-    plan: string;
-    email: string;
-  } | null>(null);
 
-  useEffect(() => {
-    api.account().then(setAcct).catch(() => {});
-  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -81,7 +79,7 @@ export function ManageAccount({
     }
   };
 
-  const email = account?.email || provider?.email || acct?.email || "—";
+  const email = account?.email || provider?.email || "—";
 
   return (
     <>
@@ -175,12 +173,12 @@ export function ManageAccount({
               />
             )}
             {account && <Row label="로그인 상태" value={account.status} />}
-            <Row label="플랜" value={acct?.plan || "—"} />
+            <Row label="플랜" value={plan || "—"} />
             <Row
               label="크레딧"
               value={
-                acct?.credits != null
-                  ? `${Math.round(acct.credits).toLocaleString()} 남음`
+                credits != null
+                  ? `${Math.round(credits).toLocaleString()} 남음`
                   : "조회 중…"
               }
             />

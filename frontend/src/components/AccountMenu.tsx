@@ -218,6 +218,8 @@ export function AccountMenu({
           account={account}
           onClose={() => setManageOpen(false)}
           onProviderUpdated={onProviderUpdated}
+          plan={activeWs?.plan_type ?? null}
+          credits={activeCredits}
         />
       )}
 
