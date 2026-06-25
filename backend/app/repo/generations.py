@@ -1371,8 +1371,10 @@ def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
     로컬에 없으면 (None, any_id) — 서버 위임은 받은 id 그대로."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? LIMIT 1",
-            (any_id, any_id),
+            # 중복(레이스 잔재)이 잠시 있어도 결정적으로: id 직접 일치 > 로컬본 > 그 외. (P1-D)
+            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? "
+            "ORDER BY (id=?) DESC, (origin='local') DESC LIMIT 1",
+            (any_id, any_id, any_id),
         ).fetchone()
     if not row:
         return None, any_id
@@ -1404,8 +1406,10 @@ def resolve_and_get(
     (미러용) finalize_id_map 을 따로 호출하며 커넥션을 3~5번 열던 중복을 1번으로 합친다."""
     with get_connection() as conn:
         idrow = conn.execute(
-            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? LIMIT 1",
-            (any_id, any_id),
+            # 결정적 선택: id 직접 일치 > 로컬본 > 그 외(중복 잔재 시 권위 행에 적용). (P1-D)
+            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? "
+            "ORDER BY (id=?) DESC, (origin='local') DESC LIMIT 1",
+            (any_id, any_id, any_id),
         ).fetchone()
         if not idrow:
             return None, None, any_id

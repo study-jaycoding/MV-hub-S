@@ -2868,12 +2868,13 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   content-visibility: auto;
   contain-intrinsic-size: auto 160px;
 }
-/* content-visibility 의 paint containment 가 선택·포커스·루트·경로 노드의 box-shadow 링을 자른다
-   → 그 노드만 containment 해제(.gen-cell 선택 셀과 동일 처리). 보통 화면 중앙이라 비용 무시. */
+/* content-visibility 의 paint containment 가 box-shadow 링을 자른다 → 링 있는 노드만 containment
+   해제(.gen-cell 선택 셀과 동일). ★보드 JSX 가 실제 붙이는 클래스는 sel/root/mainline/final 이다
+   (focus·onpath 는 이 보드에서 미사용) — 그래서 mainline/final 의 강조 링이 잘리던 버그(P5-2). */
 .linb-node.sel,
-.linb-node.focus,
 .linb-node.root,
-.linb-node.onpath { content-visibility: visible; }
+.linb-node.mainline,
+.linb-node.final { content-visibility: visible; }
 .linb-canvas.dragging .linb-node { transition: none; }
 .linb-node:active { cursor: grabbing; }
 .linb-node img,

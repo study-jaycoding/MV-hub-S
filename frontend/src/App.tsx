@@ -230,9 +230,11 @@ export default function App() {
       include_deleted: filters.include_deleted,
       deleted_only: filters.deleted_only,
       media_type: typeFilter === "all" ? undefined : typeFilter,
-      colors: [...colorFilter],
-      tags: [...tagFilter],
-      auto_tags: [...armedAutoTags],
+      // .sort() — Set 반복 순서(삽입순)는 토글 재구성 시 달라져, 같은 필터인데 serverFilterKey(JSON)가
+      // 바뀌어 불필요한 reload·스크롤 리셋을 유발했다. 정렬해 순서 무관 안정 키로(P5-3).
+      colors: [...colorFilter].sort(),
+      tags: [...tagFilter].sort(),
+      auto_tags: [...armedAutoTags].sort(),
       shared_only: sharedOnly || undefined,
       comment_only: commentOnly || undefined,
       final_only: finalOnly || undefined,
