@@ -299,9 +299,15 @@ def get_generation(gen_id: str, request: Request):
 
 @router.get("/facets", response_model=FacetsOut)
 def facets(request: Request, tab: str = Query("my", pattern="^(my|team)$")):
-    # 컬러/태그/자동태그 facet — my=내 로컬 생성물 기준, team=서버(팀 공유물) 기준.
+    # 컬러/태그 facet — my=내 로컬 생성물 기준, team=서버(팀 공유물) 기준.
     if tab == "team" and _proxy.proxying():
-        return _proxy.proxy_get("/api/facets", request)
+        srv = _proxy.proxy_get("/api/facets", request)
+        # 전역 태그(auto_tag)는 로컬 개인 데이터라 서버 facet 엔 없다 → 내 작업 탭과 같은 목록을
+        # 보이도록 로컬 owner 의 auto_tags 로 덮어쓴다. (안 그러면 팀 탭에선 안 보이는데 생성하면
+        # '이미 있음'으로 뜨는 불일치. 생성·목록·부여 모두 로컬 /api/auto-tags 라 owner 동일.)
+        if isinstance(srv, dict):
+            srv["auto_tags"] = repo.list_auto_tags(_tag_owner(request))
+        return srv
     return repo.get_facets(account_uid=_account_uid(request))
 
 
