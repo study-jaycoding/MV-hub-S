@@ -210,6 +210,7 @@ def get_history_tree(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/history", response_model=HistoryOut, status_code=201)
 def add_history(gen_id: str, body: HistoryEdgeIn, request: Request):
     """수동 히스토리 연결 — 이 결과물(gen_id)의 부모를 손으로 지정(동기화 잡 등). 갱신된 가계 반환."""
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -224,6 +225,7 @@ def add_history(gen_id: str, body: HistoryEdgeIn, request: Request):
 @router.delete("/generations/{gen_id}/history/{parent_gen_id}", response_model=HistoryOut)
 def remove_history(gen_id: str, parent_gen_id: str, request: Request):
     """히스토리 엣지 해제 — 이 결과물과 그 부모의 연결을 푼다. 갱신된 가계 반환."""
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -241,6 +243,7 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
     """생성 직후 파생 부모(들)를 'derived' 엣지로 일괄 기록 — **전이 축소** 적용.
     후보 중 다른 후보(또는 child)의 조상인 것은 잉여(자손을 거쳐 도달)라 빼고 가장 가까운 부모만 남긴다.
     (드래그 부모 + 보드 포커스/선택이 합쳐져 들어와도 원본→중간→자식 체인이 평탄해지지 않게 한다.)"""
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -252,6 +255,7 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
 
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
 def set_tags(gen_id: str, body: TagsIn, request: Request):
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -303,6 +307,7 @@ async def trash_hf_missing(request: Request):
 def delete_generation(gen_id: str, request: Request):
     """generation 1건 휴지통행(soft delete). 우리 카탈로그에서만 숨김 —
     힉스필드 원본엔 영향 없음. '지운 생성물 보기' 토글로 흐리게 재표시·복구 가능."""
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if gen:
         require_edit_generation(request, gen)  # 본인/admin 만 삭제
@@ -313,6 +318,7 @@ def delete_generation(gen_id: str, request: Request):
 def restore_generation(gen_id: str, request: Request):
     """휴지통에서 복구 — 카탈로그에 정상 표시로 되돌림. 본인(또는 admin)만.
     휴지통 항목은 메인 DB 에 없어 require_edit 가 통하지 않으므로, 복구 함수에 소유권 게이트를 건다."""
+    gen_id = repo.resolve_local_id(gen_id)  # 메인에 있으면 로컬 행으로 정규화(휴지통 id 는 그대로)
     gen = repo.get_generation(gen_id)
     if gen:  # 드물게 메인에 있으면 기존 편집 가드
         require_edit_generation(request, gen)
@@ -328,6 +334,7 @@ def restore_generation(gen_id: str, request: Request):
 
 @router.put("/generations/{gen_id}/color", response_model=GenerationOut)
 def set_color(gen_id: str, body: ColorIn, request: Request):
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -339,6 +346,7 @@ def set_color(gen_id: str, body: ColorIn, request: Request):
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)
 def set_source(gen_id: str, body: SourceIn, request: Request):
     """소스 라이브러리 등록/해제(@이름). 등록하면 @ 피커에 노출된다."""
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -369,6 +377,7 @@ def list_sources(
 
 @router.put("/generations/{gen_id}/comment", response_model=GenerationOut)
 def set_comment(gen_id: str, body: CommentIn, request: Request):
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -553,6 +562,7 @@ async def cache_generation_media(gen: dict) -> dict[str, int]:
 
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
+    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")

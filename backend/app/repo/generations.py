@@ -1332,6 +1332,16 @@ def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
     return row["id"], (row["job_id"] or row["id"])
 
 
+def resolve_local_id(any_id: str) -> str:
+    """any_id(로컬 id 또는 서버 job_id) → 로컬 generation.id. 로컬에 없으면 그대로.
+
+    팀 탭 카드는 서버 번들 앵커(job_id)로 표시돼 로컬 id 와 다르다. 로컬에서 직접 처리하는
+    핸들러(color/tags/source/comment/delete/history/cache 등)가 진입부에서 이걸 불러 정규화하면,
+    내 카드는 올바른 로컬 행에 적용되고(404 해소), 남의 팀 카드(로컬 행 없음)는 원본 id 그대로 둬
+    이어지는 require_edit_generation 이 정상 차단한다."""
+    return finalize_id_map(any_id)[0] or any_id
+
+
 _GEN_SELECT_COLS = (
     "g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
     "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
