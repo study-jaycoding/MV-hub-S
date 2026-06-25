@@ -52,7 +52,19 @@
 
 ## 5. 단계별 롤아웃
 
-- **Phase 0 (저위험·선착수)**: `job_id` UNIQUE 인덱스 보장 + **동기화/`set_job_id` 가 더는 `id==job_id` 행을 만들지 않게**(새 uuid id + job_id 속성). → *새 데이터는 깨끗*. 옛 데이터·변환 기계는 그대로 두어 호환. **독립 배포 가능.**
+> ⚠️ **정정(코드 재검토 후)**: 아래 Phase 0 은 당초 '저위험'으로 적었으나 실제론 그렇지 않다.
+> `id==job_id` 는 단순 코딩 관습이 아니라 **"동기화본 vs 로컬본" 판별자로 load-bearing** 하다:
+> - `reconcile_duplicates`(generations.py:829-830): `synced = job_id==id`, `local = job_id!=id`.
+> - `set_job_id`/`apply_local_fulfillment` dup 탐지: `WHERE id=job_id`.
+> 따라서 동기화 행을 uuid 로 바꾸려면 이 판별을 **명시 마커(origin)** 로 교체하는 선행 단계가
+> 필요하고, 그건 중복방지(가시적·데이터 영향) 경로라 레이스 테스트가 필수다.
+
+- **Phase 0a (안전·선행)**: 명시 컬럼 `origin`(또는 `synced` bool) 추가 + 백필(`id==job_id` ⟺ synced).
+  reconcile/set_job_id 의 판별을 `id==job_id` → `origin='synced'` 로 교체(현재는 둘이 동치라 **동작
+  무변화**, 테스트로 동치 확인). 이로써 동기화/로컬 구분이 id 값과 **분리**된다(id 플립의 선결).
+- **Phase 0b**: `upsert_synced`/`set_job_id` 가 동기화 행을 `새 uuid + job_id 속성 + origin='synced'`
+  로 생성. 매칭은 `WHERE job_id=?`. `job_id` UNIQUE 인덱스. **여기서부터 새 데이터가 uuid 로 깨끗.**
+  (레이스 4종 테스트: local→sync, sync→local, double-sync, reconcile.)
 - **Phase 1**: 백필 마이그레이션 — 레거시 `id==job_id` 행을 uuid id 로 재작성 + FK 재지정(트랜잭션·백업). 로컬·서버 동시 또는 호환 윈도우로.
 - **Phase 2**: export/import/finalize 앵커를 uuid 로 전환. import 의 `id=? OR job_id=?` 만 구 번들 호환으로 플래그 뒤에 유지.
 - **Phase 3**: 변환 기계(finalize_id_map job_id 분기·overlay 키잉·comment-counts 되매핑 등) 제거.
