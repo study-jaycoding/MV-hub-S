@@ -48,6 +48,27 @@ def unpublish(gen_id: str, request: Request):
     """팀 공유 해제 — share 행을 제거한다(내가 공유한 것을 되돌림).
     ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제)."""
     gen = repo.get_generation(gen_id)
+    # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로 '서버 해제'가 진실이다. 서버를 먼저 호출해
+    # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
+    # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
+    if _proxy.proxying():
+        # 팀 탭 카드는 서버 번들 앵커(job_id)로 식별 → 로컬 generation.id 와 다르다(내 카드라도
+        # job_id≠로컬id). 그래서 위 get_generation(gen_id) 이 None 이어도 404 로 막으면 안 된다 —
+        # finalize_id_map 으로 변환해 서버에 위임한다(권한·골드 가드는 서버가 가진다. finalize 와 동형).
+        local_id, server_id = repo.finalize_id_map(gen_id)
+        try:
+            out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise  # 서버 전파 실패(권한 403·골드 409·연결 502 등) → 로컬도 해제 안 함(불일치 차단)
+            out = None
+        if local_id:  # 내 로컬 카드도 미러 해제(tab=my·히스토리 즉시 반영)
+            repo.unpublish(local_id)
+            return repo.get_generation(local_id)
+        if out is not None:
+            return out  # 남의 항목(로컬 행 없음) — 서버 응답 그대로
+        raise HTTPException(status_code=404, detail="generation 없음")  # 서버·로컬 모두 없음
+    # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 공유 해제는 본인(또는 admin)만
@@ -55,18 +76,6 @@ def unpublish(gen_id: str, request: Request):
         raise HTTPException(
             status_code=409, detail="최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
         )
-    # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로 '서버 해제'가 진실이다. 서버를 먼저 호출해
-    # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
-    # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
-    if _proxy.proxying():
-        # 서버는 번들 앵커(job_id)로 안다 → 로컬 id 그대로 위임하면 항상 404 가 떠
-        # "서버에 이미 없음=성공"으로 오인, 로컬만 해제되고 팀엔 노출이 남는 누수가 났다.
-        local_id, server_id = repo.finalize_id_map(gen_id)
-        try:
-            _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
-        except HTTPException as e:
-            if e.status_code != 404:
-                raise  # 서버 전파 실패 → 로컬도 해제하지 않아 상태 불일치를 막는다
     repo.unpublish(gen_id)
     return repo.get_generation(gen_id)
 
