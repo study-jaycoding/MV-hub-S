@@ -1749,7 +1749,15 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   vertical-align: middle; margin: 0 2px;
   padding: 2px 6px 2px 3px; border-radius: 9px;
   background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border2);
-  user-select: none;
+  user-select: none; cursor: grab;
+}
+.inline-ref:active { cursor: grabbing; }
+.inline-ref.ref-dragging { opacity: 0.4; }
+/* 칩 재배치 드롭 위치 표시 막대(세로선) — body 에 fixed */
+.ch-chip-dropbar {
+  position: fixed; width: 2px; background: var(--accent); border-radius: 1px;
+  z-index: 200; pointer-events: none; display: none;
+  box-shadow: 0 0 6px rgba(196, 232, 74, 0.7);
 }
 .inline-ref img {
   width: 20px; height: 20px; border-radius: 5px; object-fit: cover; display: block;

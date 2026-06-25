@@ -10,15 +10,18 @@ import {
   countImageChips,
   detectMention,
   hasContent,
+  hideChipDropBar,
   insertChip,
   insertTextAtCaret,
   loadHistory,
+  moveChipToPoint,
   partsText,
   placeCaretAtEnd,
   restoreParts,
   saveHistory,
   serialize,
   serializeParts,
+  showChipDropBar,
   stripQuery,
   HIST_MAX,
 } from "../lib/promptEditor";
@@ -978,6 +981,26 @@ export function SpotlightPrompt({
               onCompositionEnd={() => {
                 composingRef.current = false;
                 onEditorInput();
+              }}
+              // 레퍼런스 칩(x-ch-chip)을 글자 사이로 끌어 재배치 — 카드/에셋 드롭과 타입으로 격리.
+              onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes("application/x-ch-chip")) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                showChipDropBar(e.clientX, e.clientY);
+              }}
+              onDrop={(e) => {
+                if (!e.dataTransfer.types.includes("application/x-ch-chip")) return;
+                e.preventDefault();
+                e.stopPropagation();
+                hideChipDropBar();
+                const ed = editorRef.current;
+                if (ed && moveChipToPoint(ed, e.clientX, e.clientY)) onEditorInput();
+              }}
+              onDragLeave={(e) => {
+                // 에디터 밖으로 진짜 나갈 때만 표시막대 숨김(자식으로 이동 시 깜박임 방지)
+                if (!editorRef.current?.contains(e.relatedTarget as Node)) hideChipDropBar();
               }}
             />
             {/* 우측 상단 — 프롬프트 전체 복사. 아이콘은 순수 CSS(::before/::after 겹친 사각형)로

@@ -78,14 +78,22 @@ export function insertTextAtCaret(editor: HTMLElement, text: string) {
   sel?.addRange(nr);
 }
 
+// 에디터 내에서 재배치(드래그) 중인 칩 — 모듈 스코프로 추적(드롭 시 moveChipToPoint 가 사용).
+let _draggingChip: HTMLElement | null = null;
+export function chipDragging(): boolean {
+  return !!_draggingChip;
+}
+
 export function buildChipEl(ref: ChipRef): HTMLElement {
   const chip = document.createElement("span");
   chip.className = "inline-ref";
   chip.contentEditable = "false";
   chip.dataset.ref = JSON.stringify(ref);
+  chip.draggable = true; // 글자 사이로 끌어 재배치
   const img = document.createElement("img");
   img.src = ref.thumb;
   img.alt = "";
+  img.draggable = false; // 이미지 자체 네이티브 드래그 방지(칩 단위로만 드래그)
   const nm = document.createElement("span");
   nm.className = "inline-ref-name";
   nm.textContent = ref.name;
@@ -99,8 +107,98 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
     e.stopPropagation();
     chip.remove();
   });
+  // 칩 재배치 드래그 — 커스텀 타입(x-ch-chip)으로 격리해 카드/에셋 드롭 핸들러와 안 섞이게.
+  chip.addEventListener("dragstart", (e) => {
+    _draggingChip = chip;
+    chip.classList.add("ref-dragging");
+    try {
+      e.dataTransfer?.setData("application/x-ch-chip", "1");
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    } catch {
+      /* ignore */
+    }
+  });
+  chip.addEventListener("dragend", () => {
+    chip.classList.remove("ref-dragging");
+    _draggingChip = null;
+    hideChipDropBar();
+  });
   chip.append(img, nm, rm);
   return chip;
+}
+
+// 드롭 지점(x,y)의 글자 사이 캐럿 위치 → Range. Chromium=caretRangeFromPoint, FF=caretPositionFromPoint.
+function caretRangeAtPoint(x: number, y: number): Range | null {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  if (doc.caretRangeFromPoint) return doc.caretRangeFromPoint(x, y);
+  if (doc.caretPositionFromPoint) {
+    const p = doc.caretPositionFromPoint(x, y);
+    if (!p) return null;
+    const r = document.createRange();
+    r.setStart(p.offsetNode, p.offset);
+    r.collapse(true);
+    return r;
+  }
+  return null;
+}
+
+// node 에서 위로 올라가며 가장 가까운 .inline-ref 칩(editor 안). 없으면 null.
+function closestChip(node: Node | null, editor: HTMLElement): HTMLElement | null {
+  let n: Node | null = node;
+  while (n && n !== editor) {
+    if (n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).classList?.contains("inline-ref"))
+      return n as HTMLElement;
+    n = n.parentNode;
+  }
+  return null;
+}
+
+// 드래그 중인 칩을 드롭 지점의 글자 사이로 이동. editor 밖·자기 자신 위면 무시(true=이동함).
+export function moveChipToPoint(editor: HTMLElement, x: number, y: number): boolean {
+  const chip = _draggingChip;
+  if (!chip || !editor.contains(chip)) return false;
+  const range = caretRangeAtPoint(x, y);
+  if (!range || !editor.contains(range.startContainer)) return false;
+  if (chip.contains(range.startContainer) || range.startContainer === chip) return false; // 제자리
+  const host = closestChip(range.startContainer, editor); // 다른 칩 위면 그 뒤로
+  chip.remove();
+  if (host && host !== chip) host.parentNode!.insertBefore(chip, host.nextSibling);
+  else range.insertNode(chip);
+  // 칩 뒤에 공백 보장(다음 글자와 붙지 않게) + 캐럿을 칩 뒤로.
+  const after = chip.nextSibling;
+  if (!(after && after.nodeType === Node.TEXT_NODE && /^\s/.test(after.textContent || ""))) {
+    chip.parentNode!.insertBefore(document.createTextNode(" "), chip.nextSibling);
+  }
+  const nr = document.createRange();
+  nr.setStartAfter(chip.nextSibling || chip);
+  nr.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(nr);
+  return true;
+}
+
+// 드롭 위치 표시 막대(세로선) — body 에 fixed 로 1개 재사용.
+let _dropBar: HTMLElement | null = null;
+export function showChipDropBar(x: number, y: number): void {
+  const range = caretRangeAtPoint(x, y);
+  if (!range) return;
+  const rect = range.getBoundingClientRect();
+  if (!_dropBar) {
+    _dropBar = document.createElement("div");
+    _dropBar.className = "ch-chip-dropbar";
+    document.body.appendChild(_dropBar);
+  }
+  _dropBar.style.left = `${rect.left}px`;
+  _dropBar.style.top = `${rect.top}px`;
+  _dropBar.style.height = `${rect.height || 22}px`;
+  _dropBar.style.display = "block";
+}
+export function hideChipDropBar(): void {
+  if (_dropBar) _dropBar.style.display = "none";
 }
 
 // @query 를 칩으로 치환 + 뒤에 공백 + 캐럿 이동.
