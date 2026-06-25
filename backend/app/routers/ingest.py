@@ -96,8 +96,8 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
                     status_code=409,
                     detail=(
                         f"이 PC 의 CLI 계정({reported_email})이 허브 로그인({hub_email})과 다릅니다. "
-                        "허브를 CLI 와 같은 계정으로 로그인하거나 cli-login.bat 으로 CLI 계정을 바꾸세요 "
-                        "— 다른 계정 DB 오염(남의 작업이 내 작업으로 섞임)을 막습니다."
+                        "MV_agent 창에서 'CLI 계정 바꾸기' 제안에 y 를 누르거나(권장), 허브를 CLI 와 "
+                        "같은 계정으로 로그인하세요 — 다른 계정 DB 오염(남의 작업이 내 작업으로 섞임)을 막습니다."
                     ),
                 )
         # hub_email 없음(미로그인 단독 사용) → 검증 생략(레거시 단일 DB).

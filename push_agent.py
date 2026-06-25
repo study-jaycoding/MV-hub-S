@@ -335,7 +335,60 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     return total
 
 
-def push_once(server: str, token: str, cli: str, size: int) -> None:
+# 같은 CLI 계정에 대해 한 번 '아니오' 하면 매 사이클 재질문하지 않도록 기억(스팸 방지).
+_relogin_state = {"declined_email": None}
+
+
+def _cli_account_email(cli: str) -> str | None:
+    acct = _cli_json(cli, "account", "status")
+    return acct.get("email") if isinstance(acct, dict) else None
+
+
+def offer_cli_relogin(cli: str, detail: str) -> bool:
+    """계정 불일치(409)일 때, 이 PC 의 CLI 를 허브와 '같은 계정'으로 다시 로그인하도록 즉석 제안한다.
+    cli-login.bat 을 따로 띄울 필요 없이 MV_agent(에이전트) 창에서 바로 CLI 계정을 바꾼다.
+    재로그인을 실제로 했으면 True. 비대화형(자동화·리다이렉트)에선 프롬프트 없이 False(안내만)."""
+    if not (sys.stdin and sys.stdin.isatty()):
+        return False
+    cur = _cli_account_email(cli)
+    if cur and cur == _relogin_state["declined_email"]:
+        return False  # 같은 계정에 이미 '아니오' → 재질문 안 함
+    print()
+    print("  ------------------------------------------------------------------")
+    print("  [계정 바꾸기] 이 PC 의 CLI 계정과 허브 로그인이 다릅니다.")
+    if cur:
+        print(f"               현재 CLI 계정: {cur}")
+    print("  CLI 를 허브와 '같은 이메일'로 다시 로그인하면 push 가 자동 재개됩니다.")
+    try:
+        ans = input("  지금 CLI 계정을 바꿀까요? 브라우저 로그인 창이 열립니다 (y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if ans != "y":
+        _relogin_state["declined_email"] = cur
+        print("  유지합니다. 나중에 이 창에서 다시 시도하거나 cli-login.bat 을 쓰세요.")
+        print("  ------------------------------------------------------------------")
+        return False
+    print("  현재 계정 로그아웃...")
+    try:
+        subprocess.run([cli, "auth", "logout"], timeout=60)
+    except Exception as e:  # noqa: BLE001 — 로그아웃 실패해도 로그인 시도는 진행
+        print(f"  (로그아웃 경고: {e})")
+    print("  브라우저에서 허브와 '같은 이메일'로 로그인하세요...")
+    try:
+        subprocess.run([cli, "auth", "login"], timeout=300)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [오류] CLI 로그인 실행 실패: {e}")
+        print("  ------------------------------------------------------------------")
+        return False
+    new = _cli_account_email(cli)
+    _relogin_state["declined_email"] = None  # 계정이 바뀌었으니 거절 기억 리셋
+    print(f"  CLI 계정: {new or '(확인 실패)'}")
+    print("  ------------------------------------------------------------------")
+    return bool(new)
+
+
+def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True) -> None:
     # 1) 서버가 이미 가진 내 job_id
     status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
     known_ids = set(known.get("job_ids") or []) if isinstance(known, dict) else set()
@@ -370,8 +423,19 @@ def push_once(server: str, token: str, cli: str, size: int) -> None:
         # 적재 실패로 watch 루프를 죽이지 않는다(소프트 보류) — 로그인 전(401·인증 필요)이나
         # 계정 불일치(409·CLI≠허브로그인)는 사용자가 올바른 계정으로 로그인하면 다음 사이클에
         # 자동 성공한다. 메시지는 그대로 보여 원인(특히 409 불일치)을 알게 한다.
-        detail = body.get("detail") if isinstance(body, dict) else body
+        detail = body
+        if isinstance(body, dict):
+            detail = body.get("detail")
+        elif isinstance(body, str):
+            try:  # _http 는 에러 본문을 JSON 텍스트로 준다 → detail 만 깔끔히 추출
+                detail = json.loads(body).get("detail", body)
+            except (ValueError, AttributeError):
+                detail = body
         print(f"[보류] 적재 실패(status={status}): {detail}")
+        # 계정 불일치(409) → cli-login.bat 없이 이 에이전트 창에서 바로 CLI 재로그인 제안 후 즉시 재시도.
+        if status == 409 and _allow_relogin and offer_cli_relogin(cli, str(detail)):
+            print("[재시도] CLI 재로그인 완료 — 지금 바로 다시 push 합니다.")
+            return push_once(server, token, cli, size, _allow_relogin=False)
         print("       올바른 계정으로 허브에 로그인하면 자동으로 다시 시도합니다.")
         return
     print(
