@@ -121,17 +121,21 @@ def list_creators(
             else ""
         )
         with get_connection() as conn:
+            # 생성자(배정 멤버 ∪ 실제 작성자) 한 명마다 COUNT 서브쿼리를 돌리던 N+1 을 LEFT JOIN +
+            # GROUP BY 1쿼리로(팀 규모만큼 generation 풀스캔하던 비용 제거). LEFT JOIN 이라 기여 0인
+            # 배정 멤버도 cnt=0 으로 남고(아래 team 필터가 걸러냄), 매칭 생성물 수가 cnt 가 된다.
             rows = conn.execute(
-                "SELECT uid, "
-                "(SELECT COUNT(*) FROM generation g WHERE g.project_id=? "
-                f"AND g.creator_uid=uid AND g.deleted_at IS NULL{share_cond}) cnt "
+                "SELECT u.uid uid, COUNT(g.id) cnt "
                 "FROM ("
                 "  SELECT creator_uid uid FROM project_member "
                 "  WHERE project_id=? AND creator_uid IS NOT NULL "
                 "  UNION "
                 "  SELECT DISTINCT g2.creator_uid uid FROM generation g2 "
                 f"  WHERE g2.project_id=? AND g2.creator_uid IS NOT NULL AND g2.deleted_at IS NULL{gen_share}"
-                ") ORDER BY cnt DESC",
+                ") u "
+                "LEFT JOIN generation g "
+                f"  ON g.creator_uid = u.uid AND g.project_id=? AND g.deleted_at IS NULL{share_cond} "
+                "GROUP BY u.uid ORDER BY cnt DESC",
                 (project_id, project_id, project_id),
             ).fetchall()
             names = resolve_display_names(conn, [r["uid"] for r in rows])

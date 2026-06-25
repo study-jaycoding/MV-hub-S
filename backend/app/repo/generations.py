@@ -1296,21 +1296,22 @@ def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
     return {"failed_count": int(failed), "has_unread": bool(unread)}
 
 
+def _fetch_generation(
+    conn: sqlite3.Connection, gen_id: str, account_uid: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """주어진 커넥션에서 generation 한 건 직렬화(자식 첨부 포함). 없으면 None.
+    get_generation / resolve_and_get 가 공유 — 같은 요청에서 커넥션을 재사용해 중복 오픈을 막는다."""
+    row = conn.execute(
+        f"SELECT {_GEN_SELECT_COLS} WHERE g.id = ?", (gen_id,)
+    ).fetchone()
+    if not row:
+        return None
+    return _attach_children(conn, [dict(row)], viewer_uid=account_uid)[0]
+
+
 def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
-            "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-            "g.comment, g.error, g.creator_uid, g.project_id, g.deleted_at, "
-            "g.is_final, g.final_by, "
-            "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-            "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
-            "WHERE g.id = ?",
-            (gen_id,),
-        ).fetchone()
-        if not row:
-            return None
-        return _attach_children(conn, [dict(row)], viewer_uid=account_uid)[0]
+        return _fetch_generation(conn, gen_id, account_uid)
 
 
 def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
@@ -1338,8 +1339,33 @@ def resolve_local_id(any_id: str) -> str:
     팀 탭 카드는 서버 번들 앵커(job_id)로 표시돼 로컬 id 와 다르다. 로컬에서 직접 처리하는
     핸들러(color/tags/source/comment/delete/history/cache 등)가 진입부에서 이걸 불러 정규화하면,
     내 카드는 올바른 로컬 행에 적용되고(404 해소), 남의 팀 카드(로컬 행 없음)는 원본 id 그대로 둬
-    이어지는 require_edit_generation 이 정상 차단한다."""
+    이어지는 require_edit_generation 이 정상 차단한다.
+
+    ※ 행 데이터까지 필요하면 resolve_and_get 을 써라 — 해석+조회를 단일 커넥션으로 합친다."""
     return finalize_id_map(any_id)[0] or any_id
+
+
+def resolve_and_get(
+    any_id: str, account_uid: Optional[str] = None
+) -> tuple[Optional[dict[str, Any]], Optional[str], str]:
+    """(gen, local_id, server_id) 를 단일 커넥션·단일 해석으로 반환.
+
+    any_id 가 로컬 id 든 서버 job_id(팀 탭 카드)든 같은 행을 찾는다.
+      · gen       = 직렬화된 generation(없으면 None)
+      · local_id  = 로컬 generation.id(없으면 None — 남의 팀 카드)
+      · server_id = 그 행의 job_id(없으면 로컬 id; 행 자체가 없으면 any_id 그대로)
+    로컬에서 직접 처리하는 핸들러가 진입부에서 한 번 부르면 — resolve_local_id + get_generation +
+    (미러용) finalize_id_map 을 따로 호출하며 커넥션을 3~5번 열던 중복을 1번으로 합친다."""
+    with get_connection() as conn:
+        idrow = conn.execute(
+            "SELECT id, job_id FROM generation WHERE id=? OR job_id=? LIMIT 1",
+            (any_id, any_id),
+        ).fetchone()
+        if not idrow:
+            return None, None, any_id
+        local_id = idrow["id"]
+        server_id = idrow["job_id"] or local_id
+        return _fetch_generation(conn, local_id, account_uid), local_id, server_id
 
 
 _GEN_SELECT_COLS = (

@@ -210,8 +210,7 @@ def get_history_tree(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/history", response_model=HistoryOut, status_code=201)
 def add_history(gen_id: str, body: HistoryEdgeIn, request: Request):
     """수동 히스토리 연결 — 이 결과물(gen_id)의 부모를 손으로 지정(동기화 잡 등). 갱신된 가계 반환."""
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
+    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 히스토리 수정은 본인/admin 만
@@ -225,8 +224,7 @@ def add_history(gen_id: str, body: HistoryEdgeIn, request: Request):
 @router.delete("/generations/{gen_id}/history/{parent_gen_id}", response_model=HistoryOut)
 def remove_history(gen_id: str, parent_gen_id: str, request: Request):
     """히스토리 엣지 해제 — 이 결과물과 그 부모의 연결을 푼다. 갱신된 가계 반환."""
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
+    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 히스토리 수정은 본인/admin 만
@@ -243,8 +241,7 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
     """생성 직후 파생 부모(들)를 'derived' 엣지로 일괄 기록 — **전이 축소** 적용.
     후보 중 다른 후보(또는 child)의 조상인 것은 잉여(자손을 거쳐 도달)라 빼고 가장 가까운 부모만 남긴다.
     (드래그 부모 + 보드 포커스/선택이 합쳐져 들어와도 원본→중간→자식 체인이 평탄해지지 않게 한다.)"""
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
+    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 — 계보 기록도 수정 가드와 동일
@@ -253,35 +250,29 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
     return repo.get_history(gen_id, viewer_uid=viewer_uid, read_all=read_all)
 
 
-def _mirror_shared_meta(
-    gen: dict, gen_id: str, method: str, suffix: str, body: dict | None
-) -> None:
-    """공유본의 개인 메타(색·태그·소스·코멘트) 변경을 서버에도 반영한다.
+def _set_meta(gen_id, request, apply, suffix: str, mirror_body):
+    """color/tags/source/comment 개인메타 setter 공통 셰이프.
 
-    팀 탭 목록은 서버 데이터를 프록시해 그리므로, 로컬에만 쓰면 내 공유 카드의 변경이 팀 탭에
-    즉시 안 보인다(서버는 옛 값). 공유본이면 서버에도 같은 변경을 미러해 '보이는 건 실시간'을 만족.
-    비공유(내 로컬 작업)면 no-op — 그건 내 탭(로컬)에서 이미 즉시 반영된다.
-    404(서버에 아직 그 항목 없음)는 무시 — 로컬 변경은 이미 끝났고 다음 발행이 따라잡는다."""
-    if not (_proxy.proxying() and gen.get("shared")):
-        return
-    _, server_id = repo.finalize_id_map(gen_id)  # 서버는 번들 앵커(job_id)로 안다
-    try:
-        _proxy.proxy_json(method, f"/api/generations/{server_id}/{suffix}", body=body)
-    except HTTPException as e:
-        if e.status_code != 404:
-            raise
+    팀 탭 카드는 서버 job_id 로 표시되므로 resolve_and_get 으로 한 번에 로컬 행을 해석(단일 커넥션)
+    → 404/권한 → 로컬 적용 → 공유본이면 서버에도 미러(팀 탭은 서버 데이터를 그리므로 '보이는 건
+    실시간'을 만족). 비공유/비프록시면 미러는 no-op, 404(서버에 아직 없음)는 무시."""
+    gen, local_id, server_id = repo.resolve_and_get(gen_id)
+    if not gen:
+        raise HTTPException(status_code=404, detail="generation 없음")
+    require_edit_generation(request, gen)  # 본인/admin 만 수정
+    apply(local_id)
+    if _proxy.proxying() and gen.get("shared"):
+        try:
+            _proxy.proxy_json("PUT", f"/api/generations/{server_id}/{suffix}", body=mirror_body)
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise
+    return repo.get_generation(local_id)
 
 
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
 def set_tags(gen_id: str, body: TagsIn, request: Request):
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 본인/admin 만 수정
-    repo.set_tags(gen_id, body.tags)
-    _mirror_shared_meta(gen, gen_id, "PUT", "tags", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
-    return repo.get_generation(gen_id)
+    return _set_meta(gen_id, request, lambda i: repo.set_tags(i, body.tags), "tags", body.model_dump())
 
 
 @router.delete("/tags/{tag}")
@@ -327,8 +318,8 @@ async def trash_hf_missing(request: Request):
 def delete_generation(gen_id: str, request: Request):
     """generation 1건 휴지통행(soft delete). 우리 카탈로그에서만 숨김 —
     힉스필드 원본엔 영향 없음. '지운 생성물 보기' 토글로 흐리게 재표시·복구 가능."""
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
+    gen, local_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
+    gen_id = local_id or gen_id  # 못 찾으면 원본 유지(서버 id no-op 동작 보존)
     if gen:
         require_edit_generation(request, gen)  # 본인/admin 만 삭제
     return {"deleted": repo.delete_generation(gen_id)}
@@ -338,8 +329,8 @@ def delete_generation(gen_id: str, request: Request):
 def restore_generation(gen_id: str, request: Request):
     """휴지통에서 복구 — 카탈로그에 정상 표시로 되돌림. 본인(또는 admin)만.
     휴지통 항목은 메인 DB 에 없어 require_edit 가 통하지 않으므로, 복구 함수에 소유권 게이트를 건다."""
-    gen_id = repo.resolve_local_id(gen_id)  # 메인에 있으면 로컬 행으로 정규화(휴지통 id 는 그대로)
-    gen = repo.get_generation(gen_id)
+    gen, local_id, _ = repo.resolve_and_get(gen_id)  # 메인에 있으면 로컬 행(단일 커넥션), 휴지통 id 는 그대로
+    gen_id = local_id or gen_id
     if gen:  # 드물게 메인에 있으면 기존 편집 가드
         require_edit_generation(request, gen)
         return {"restored": repo.restore_generation(gen_id)}
@@ -354,27 +345,15 @@ def restore_generation(gen_id: str, request: Request):
 
 @router.put("/generations/{gen_id}/color", response_model=GenerationOut)
 def set_color(gen_id: str, body: ColorIn, request: Request):
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 본인/admin 만 수정
-    repo.set_color(gen_id, body.color)
-    _mirror_shared_meta(gen, gen_id, "PUT", "color", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
-    return repo.get_generation(gen_id)
+    return _set_meta(gen_id, request, lambda i: repo.set_color(i, body.color), "color", body.model_dump())
 
 
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)
 def set_source(gen_id: str, body: SourceIn, request: Request):
     """소스 라이브러리 등록/해제(@이름). 등록하면 @ 피커에 노출된다."""
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 본인/admin 만 수정
-    repo.set_source(gen_id, body.name, body.is_source)
-    _mirror_shared_meta(gen, gen_id, "PUT", "source", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
-    return repo.get_generation(gen_id)
+    return _set_meta(
+        gen_id, request, lambda i: repo.set_source(i, body.name, body.is_source), "source", body.model_dump()
+    )
 
 
 @router.get("/sources", response_model=list[GenerationOut])
@@ -399,14 +378,8 @@ def list_sources(
 
 @router.put("/generations/{gen_id}/comment", response_model=GenerationOut)
 def set_comment(gen_id: str, body: CommentIn, request: Request):
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
-    if not gen:
-        raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # gen 자체 코멘트 필드 수정 — 본인/admin 만
-    repo.set_comment(gen_id, body.comment)
-    _mirror_shared_meta(gen, gen_id, "PUT", "comment", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
-    return repo.get_generation(gen_id)
+    """gen 자체 코멘트 필드 수정 — 본인/admin 만(스레드 코멘트와 별개)."""
+    return _set_meta(gen_id, request, lambda i: repo.set_comment(i, body.comment), "comment", body.model_dump())
 
 
 # ── 생성본 코멘트 스레드(공유, 에셋과 별개) ───────────────────────────────
@@ -585,8 +558,7 @@ async def cache_generation_media(gen: dict) -> dict[str, int]:
 
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
-    gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
-    gen = repo.get_generation(gen_id)
+    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
