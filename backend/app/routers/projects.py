@@ -55,8 +55,19 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
         account_global_roles(request), "read_all"
     )
-    # 가시성: read_all 은 전체 프로젝트, 그 외(일반 멤버)는 배정된 것만. 카운트는 항상 내 작업만.
     member_uid = None if read_all else (viewer_uid or "\x00")  # 신원 없으면 매칭 0 → 빈 목록
+    if tab == "team":
+        # 팀 공유 탭(서버 본체·단독 모두): 카운트 모집단 = '공유물'(EXISTS share) — 그리드와 동일.
+        # 생성자(viewer) 스코프를 풀어 팀 전체 공유물을 센다(미분류·프로젝트별). 가시성만 멤버십 제한.
+        # 예전엔 viewer 본인 작업물을 세 미분류·프로젝트 수가 화면의 공유물과 어긋났다.
+        data = repo.list_projects(
+            include_archived=include_archived, member_uid=member_uid,
+            viewer_uid=None, shared_only=True,
+        )
+        if not read_all:
+            data["unassigned"] = 0  # 일반 멤버는 프로젝트 없는 공유물을 그리드에서 못 봄 → 미분류 0
+        return data
+    # 내 작업(my): 카운트는 항상 내 작업만(viewer 스코프).
     return repo.list_projects(
         include_archived=include_archived, member_uid=member_uid, viewer_uid=viewer_uid
     )
@@ -139,7 +150,10 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
     탭 인지: 팀 공유(team) 탭의 항목은 서버에 사는 팀 공유물이라 서버에 위임해야 팀 전체에 반영되고
     팀 탭 카운트·필터가 맞는다. 내 작업(my)은 내 로컬 생성물의 project_id 를 바꾸는 로컬 작업."""
     if _proxy.proxying() and tab == "team":
-        return _proxy.proxy_json("POST", "/api/projects/assign", body=body.model_dump())
+        # 팀 귀속은 서버에 위임 — tab=team 을 그대로 넘겨 서버가 '공유물 조직' 모드로 처리하게 한다.
+        return _proxy.proxy_json(
+            "POST", "/api/projects/assign", params={"tab": "team"}, body=body.model_dump()
+        )
     # 내 작업(로컬) 귀속 — 프로젝트 정의는 서버에 있으므로 검증 통과를 위해 먼저 미러(캐시).
     if _proxy.proxying() and body.project_id:
         try:
@@ -148,10 +162,23 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
         except Exception:  # noqa: BLE001
             pass
     try:
-        # AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
-        n = repo.assign_to_project(
-            body.generation_ids, body.project_id, account_uid=account_scope_uid(request)
-        )
+        if tab == "team":
+            # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
+            # 은 생성자 무관하게 묶을 수 있게 스코프를 풀되, shared_only 로 '공유물'만 건드린다(남의
+            # 사적 작업물은 불가). 일반 멤버는 기존대로 본인 공유물만.
+            read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+                account_global_roles(request), "read_all"
+            )
+            account_uid = None if read_all else account_scope_uid(request)
+            n = repo.assign_to_project(
+                body.generation_ids, body.project_id,
+                account_uid=account_uid, shared_only=True,
+            )
+        else:
+            # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
+            n = repo.assign_to_project(
+                body.generation_ids, body.project_id, account_uid=account_scope_uid(request)
+            )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "updated": n}

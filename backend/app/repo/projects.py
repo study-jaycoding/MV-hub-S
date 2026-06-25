@@ -69,15 +69,20 @@ def list_projects(
     include_archived: bool = False,
     member_uid: Optional[str] = None,
     viewer_uid: Optional[str] = None,
+    *,
+    shared_only: bool = False,
 ) -> dict[str, Any]:
     """프로젝트 목록 + 미분류 수 + 보관 개수. 결과물 많은 순 → 이름 순.
     반환: {"projects": [...], "unassigned": N, "archived_count": M}.
 
-    역할이 다른 두 필터:
+    역할이 다른 세 필터:
       · member_uid — 가시성: 주어지면(전역 read_all 없는 일반 멤버) 그 계정이 멤버인 프로젝트만.
         read_all(admin·PM·PD) 보유자는 호출측에서 member_uid=None(전체)로 부른다(§5-3).
       · viewer_uid — 카운트: 주어지면 프로젝트 count·미분류 수를 '내 생성물'만 센다(My Work 사이드바).
-        없으면(AUTH off/단독) 전체를 센다. → 다른 계정에 내 미분류/카운트가 새지 않게 한다."""
+        없으면(AUTH off/단독) 전체를 센다. → 다른 계정에 내 미분류/카운트가 새지 않게 한다.
+      · shared_only — 모집단: True(팀 공유 탭)면 카운트를 '공유물(EXISTS share)'만으로 한정한다.
+        팀 그리드는 공유물만 보여주므로, 그리드와 같은 모집단으로 세야 사이드바 수가 화면과 맞는다
+        (예전엔 viewer 본인 전체를 세 미분류가 화면의 공유물 수와 달랐다)."""
     conds: list[str] = []
     args: list[Any] = []
     if not include_archived:
@@ -88,6 +93,8 @@ def list_projects(
     clause = (" WHERE " + " AND ".join(conds)) if conds else ""
     # 프로젝트 count — viewer_uid 가 있으면 그 계정 생성물만(내 작업 기준).
     gen_cond = "g.project_id = p.id AND g.deleted_at IS NULL"
+    if shared_only:  # 팀 공유 탭: 공유물만(그리드와 동일 모집단)
+        gen_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
     count_args: list[Any] = []
     if viewer_uid:
         gen_cond += " AND g.creator_uid = ?"
@@ -104,8 +111,10 @@ def list_projects(
         f"{select}{clause} ORDER BY COALESCE(p.sort_order, 1000000), "
         "count DESC, p.name COLLATE NOCASE"
     )
-    # 미분류 수 — 동일하게 viewer 의 것만.
+    # 미분류 수 — 동일하게 viewer 의 것만(+팀 탭이면 공유물만).
     un_cond = "project_id IS NULL AND deleted_at IS NULL"
+    if shared_only:
+        un_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
     un_args: list[Any] = []
     if viewer_uid:
         un_cond += " AND creator_uid = ?"
@@ -205,11 +214,15 @@ def assign_to_project(
     generation_ids: list[str],
     project_id: Optional[str],
     account_uid: Optional[str] = None,
+    *,
+    shared_only: bool = False,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
     project_id 가 실재하는지 검증(없으면 ValueError).
     account_uid 지정(AUTH on)이면 내 생성물만 이동 — 공유 DB 에서 추측한 남의 id 로 남의 작업물을
-    다른 프로젝트로 옮기거나 미분류화하는 사고를 막는다. None(단독)이면 제약 없음(기존 동작)."""
+    다른 프로젝트로 옮기거나 미분류화하는 사고를 막는다. None(단독)이면 제약 없음(기존 동작).
+    shared_only(팀 공유 탭) 면 '공유물'만 이동 대상으로 한정한다 — 팀 조직(read_all)이 account_uid
+    스코프 없이 남의 공유물을 프로젝트로 묶더라도, 공유 안 된 남의 사적 작업물은 절대 못 건드리게."""
     if not generation_ids:
         return 0
     with get_connection() as conn:
@@ -221,6 +234,8 @@ def assign_to_project(
         # 와 다르다. 둘 다 받아야 어느 탭에서 골랐든 같은 로컬 행에 귀속된다.
         placeholders = ",".join("?" for _ in generation_ids)
         scope = " AND creator_uid = ?" if account_uid is not None else ""
+        if shared_only:
+            scope += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
         params: list[Any] = [project_id, *generation_ids, *generation_ids]
         if account_uid is not None:
             params.append(account_uid)
