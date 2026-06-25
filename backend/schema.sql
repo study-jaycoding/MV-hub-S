@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS reference (
     file_path      TEXT NOT NULL,                    -- 로컬 캐시 경로(/media/..) 또는 원격 URL
     thumbnail_path TEXT,
     source         TEXT,                             -- 'uploaded' | 'from_generation'
-    source_url     TEXT                              -- 원본 원격 URL 보존(소스 재사용 영속성)
+    source_url     TEXT,                             -- 원본 원격 URL 보존(소스 재사용 영속성)
+    share_url      TEXT                              -- ★공유 전용: 힉스필드 공개 URL. 로컬 동작엔 미사용
+                                                     --   (로컬은 file_path 토큰 그대로, 번들 export 만 이걸 씀)
 );
 
 -- generation ↔ reference 다대다 연결. role 에 @Image/@Video 슬롯 저장

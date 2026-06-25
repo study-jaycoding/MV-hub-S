@@ -201,6 +201,28 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
                 )
                 _link_reference(conn, target_id, rid, ref.get("role"))
 
+        # ★공유 전용 share_url 백필 — 로컬 토큰 레퍼런스(asset:캡쳐 등)에도 힉스필드 공개 URL 을 보관해
+        # 두면, 팀에 공유했을 때 받는 쪽이 내 PC 파일 없이도 그 소스를 쓸 수 있다. 로컬 동작(file_path/
+        # source_url)은 절대 안 건드린다(번들 export 만 share_url 을 씀).
+        # 동기화 medias 의 공개 URL 과 로컬 레퍼런스를 '개수 일치 시 순서'로만 매칭(오매칭 방지).
+        synced_urls = [
+            r["file_path"]
+            for r in parsed.get("references", [])
+            if r.get("file_path") and str(r["file_path"]).startswith("http")
+        ]
+        if synced_urls:
+            local_refs = conn.execute(
+                "SELECT gr.reference_id FROM gen_reference gr WHERE gr.generation_id=? "
+                "ORDER BY gr.role",
+                (target_id,),
+            ).fetchall()
+            if len(local_refs) == len(synced_urls):
+                for lr, url in zip(local_refs, synced_urls):
+                    conn.execute(
+                        "UPDATE reference SET share_url=COALESCE(share_url, ?) WHERE id=?",
+                        (url, lr["reference_id"]),
+                    )
+
     return result
 
 

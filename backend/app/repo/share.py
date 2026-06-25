@@ -109,7 +109,8 @@ def export_bundle(
 
         # 레퍼런스 위치(role = @Image1/@Video 슬롯) — 프롬프트 내 레퍼런스 위치 필터정보의 핵심.
         for r in conn.execute(
-            f"SELECT gr.generation_id, gr.role, r.id, r.type, r.file_path, r.source, r.source_url "
+            f"SELECT gr.generation_id, gr.role, r.id, r.type, r.file_path, r.source, "
+            f"r.source_url, r.share_url "
             f"FROM gen_reference gr JOIN reference r ON r.id = gr.reference_id "
             f"WHERE gr.generation_id IN ({ph}) ORDER BY gr.rowid",
             ids,
@@ -118,7 +119,9 @@ def export_bundle(
                 {
                     "id": r["id"],
                     "type": r["type"],
-                    "file_path": _remote_url(r["file_path"], r["source_url"]),
+                    # ★공유 전용 힉스필드 공개 URL(share_url) 우선 — 로컬 캡쳐 토큰(asset:...)도 받는 쪽이
+                    # 원본을 받을 수 있게. 없으면 기존 규칙(source_url 우선, 그다음 http file_path).
+                    "file_path": r["share_url"] or _remote_url(r["file_path"], r["source_url"]),
                     "role": r["role"],
                     # @소스명(칩 이름) — 받는 쪽 buildPromptParts 가 display_prompt 토큰과
                     # 매칭해 인라인 소스 위치를 복원하는 키. 누락 시 'uploaded' 로 떨어져 위치 손실.

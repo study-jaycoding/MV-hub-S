@@ -335,6 +335,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if "source_url" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN source_url TEXT")
+    # 공유 전용 힉스필드 공개 URL(로컬 동작엔 미사용) — 캡쳐 등 로컬 토큰 레퍼런스를 팀에 공유해도
+    # 받는 쪽이 원본을 받을 수 있게.
+    ref_cols = {row[1] for row in conn.execute("PRAGMA table_info(reference)")}
+    if "share_url" not in ref_cols:
+        conn.execute("ALTER TABLE reference ADD COLUMN share_url TEXT")
 
     gen_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation)")}
     if "job_id" not in gen_cols:
