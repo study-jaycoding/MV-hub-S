@@ -1394,6 +1394,43 @@ def _fetch_gens(
     return {g["id"]: g for g in _attach_children(conn, rows, viewer_uid=viewer_uid)}
 
 
+def personal_meta_by_anchor(
+    anchor_ids: list[str], owner_uid: str
+) -> dict[str, dict[str, Any]]:
+    """앵커 id(로컬 id 또는 서버 job_id) → 내 로컬 개인메타({color, tags, auto_tags}).
+
+    color/tags 는 작성자 전용(마스킹 대상)이라 서버에 미러하지 않고 로컬에만 둔다. 그래서 팀 탭은
+    서버 데이터를 그리지만 '내 카드'의 개인 색·태그는 안 실린다 → 로컬 허브가 이 함수로 자기 DB에서
+    가져와 프록시 응답에 덧입힌다(오버레이). id·job_id 양쪽 키로 매핑해 서버 앵커가 어느 쪽이든 잡힌다.
+    owner_uid 가 작성자인 행만(남의 카드는 건드리지 않음)."""
+    if not anchor_ids or not owner_uid:
+        return {}
+    with get_connection() as conn:
+        ph = ",".join("?" * len(anchor_ids))
+        idrows = conn.execute(
+            f"SELECT id, job_id FROM generation "
+            f"WHERE creator_uid=? AND (id IN ({ph}) OR job_id IN ({ph}))",
+            [owner_uid, *anchor_ids, *anchor_ids],
+        ).fetchall()
+        if not idrows:
+            return {}
+        full = _fetch_gens(conn, [r["id"] for r in idrows], viewer_uid=owner_uid)
+    out: dict[str, dict[str, Any]] = {}
+    for r in idrows:
+        g = full.get(r["id"])
+        if not g:
+            continue
+        meta = {
+            "color": g.get("color"),
+            "tags": g.get("tags", []),
+            "auto_tags": g.get("auto_tags", []),
+        }
+        out[r["id"]] = meta
+        if r["job_id"]:
+            out[r["job_id"]] = meta
+    return out
+
+
 def _gen_row_visible(
     g: Optional[dict[str, Any]], viewer_uid: Optional[str], read_all: bool
 ) -> bool:

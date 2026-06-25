@@ -250,20 +250,23 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
     return repo.get_history(gen_id, viewer_uid=viewer_uid, read_all=read_all)
 
 
-def _set_meta(gen_id, request, apply, suffix: str, mirror_body):
+def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirror_body=None):
     """color/tags/source/comment 개인메타 setter 공통 셰이프.
 
     팀 탭 카드는 서버 job_id 로 표시되므로 resolve_and_get 으로 한 번에 로컬 행을 해석(단일 커넥션)
-    → 404/권한 → 로컬 적용 → 공유본이면 서버에도 미러(팀 탭은 서버 데이터를 그리므로 '보이는 건
-    실시간'을 만족). 비공유/비프록시면 미러는 no-op, 404(서버에 아직 없음)는 무시."""
+    → 404/권한 → 로컬 적용 → (지정 시) 공유본이면 서버에도 미러.
+
+    ★ 미러는 '팀이 보는' 공유 필드(source/comment)만 한다. color/tags 는 작성자 전용(마스킹 대상)이라
+    서버에 두지 않고 로컬 전용으로 두며, 팀 탭에는 허브가 오버레이(library._overlay_personal_meta)로
+    합친다 — 개인 메타를 공유 컬럼에 미러하던 dual-storage 불일치(미러 실패·낙관 레이스)를 원천 제거."""
     gen, local_id, server_id = repo.resolve_and_get(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
     apply(local_id)
-    if _proxy.proxying() and gen.get("shared"):
+    if mirror_suffix and _proxy.proxying() and gen.get("shared"):
         try:
-            _proxy.proxy_json("PUT", f"/api/generations/{server_id}/{suffix}", body=mirror_body)
+            _proxy.proxy_json("PUT", f"/api/generations/{server_id}/{mirror_suffix}", body=mirror_body)
         except HTTPException as e:
             if e.status_code != 404:
                 raise
@@ -272,7 +275,7 @@ def _set_meta(gen_id, request, apply, suffix: str, mirror_body):
 
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
 def set_tags(gen_id: str, body: TagsIn, request: Request):
-    return _set_meta(gen_id, request, lambda i: repo.set_tags(i, body.tags), "tags", body.model_dump())
+    return _set_meta(gen_id, request, lambda i: repo.set_tags(i, body.tags))  # 개인 전용 — 미러 안 함
 
 
 @router.delete("/tags/{tag}")
@@ -345,14 +348,16 @@ def restore_generation(gen_id: str, request: Request):
 
 @router.put("/generations/{gen_id}/color", response_model=GenerationOut)
 def set_color(gen_id: str, body: ColorIn, request: Request):
-    return _set_meta(gen_id, request, lambda i: repo.set_color(i, body.color), "color", body.model_dump())
+    return _set_meta(gen_id, request, lambda i: repo.set_color(i, body.color))  # 개인 전용 — 미러 안 함
 
 
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)
 def set_source(gen_id: str, body: SourceIn, request: Request):
     """소스 라이브러리 등록/해제(@이름). 등록하면 @ 피커에 노출된다."""
+    # source 는 공유 필드(마스킹 안 함) → 공유본이면 서버에도 미러.
     return _set_meta(
-        gen_id, request, lambda i: repo.set_source(i, body.name, body.is_source), "source", body.model_dump()
+        gen_id, request, lambda i: repo.set_source(i, body.name, body.is_source),
+        mirror_suffix="source", mirror_body=body.model_dump(),
     )
 
 
@@ -379,7 +384,11 @@ def list_sources(
 @router.put("/generations/{gen_id}/comment", response_model=GenerationOut)
 def set_comment(gen_id: str, body: CommentIn, request: Request):
     """gen 자체 코멘트 필드 수정 — 본인/admin 만(스레드 코멘트와 별개)."""
-    return _set_meta(gen_id, request, lambda i: repo.set_comment(i, body.comment), "comment", body.model_dump())
+    # comment 는 공유 필드(마스킹 안 함) → 공유본이면 서버에도 미러.
+    return _set_meta(
+        gen_id, request, lambda i: repo.set_comment(i, body.comment),
+        mirror_suffix="comment", mirror_body=body.model_dump(),
+    )
 
 
 # ── 생성본 코멘트 스레드(공유, 에셋과 별개) ───────────────────────────────

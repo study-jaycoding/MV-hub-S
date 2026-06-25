@@ -25,6 +25,34 @@ from ..services import thumbs
 router = APIRouter(prefix="/api", tags=["library"])
 
 
+def _overlay_personal_meta(data, request: Request):
+    """팀 목록/단건(서버 데이터)에 내 로컬 개인메타(color/tags/auto_tags)를 '내 카드'에만 덧입힌다.
+
+    color/tags 는 작성자 전용이라 서버에 미러하지 않고 로컬에만 둔다(개인 메타). 팀 탭은 서버 데이터를
+    그리므로 내 개인 색·태그가 빠져 있어, 허브가 자기 로컬 DB에서 가져와 합친다. 남의 카드는 안 건드림.
+    data 가 리스트(목록)면 in-place 수정 후 반환, dict([단건] 래핑) 호출은 부수효과만 쓴다."""
+    rows = data if isinstance(data, list) else None
+    if rows is None:
+        return data
+    my = account_scope_uid(request)
+    if not my:
+        return data
+    mine = [
+        g["id"]
+        for g in rows
+        if isinstance(g, dict) and g.get("id") and g.get("creator_uid") == my
+    ]
+    meta = repo.personal_meta_by_anchor(mine, my)
+    if meta:
+        for g in rows:
+            m = meta.get(g.get("id")) if isinstance(g, dict) else None
+            if m:
+                g["color"] = m["color"]
+                g["tags"] = m["tags"]
+                g["auto_tags"] = m["auto_tags"]
+    return data
+
+
 def _reject_internal_host(url: str) -> None:
     """SSRF 방어 — 호스트를 **실제 IP 로 해석**해 사설/루프백/링크로컬/예약 대역이면 거부한다.
     문자열 prefix 검사만으론 10진수 IP(2130706433=127.0.0.1)·IPv6·단축형을 못 막으므로 ipaddress 로
@@ -155,7 +183,9 @@ def list_generations(
     # 로컬 우선: 내 작업(tab=my)은 이 허브 로컬 DB가 정답 → 즉시·서버무관. 팀 공유(tab=team)만
     # 서버 DB로 위임(모두의 발행물이 거기 있음).
     if tab == "team" and _proxy.proxying():
-        return _proxy.proxy_get("/api/generations", request)
+        # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
+        # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
+        return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
     # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).
@@ -257,7 +287,10 @@ def get_generation(gen_id: str, request: Request):
     if not gen:
         # 로컬에 없으면 팀(서버) 항목일 수 있음 → 서버로 폴백 조회(로컬우선 + 팀 폴백).
         if _proxy.proxying():
-            return _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+            srv = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+            if isinstance(srv, dict):
+                _overlay_personal_meta([srv], request)  # 내 카드면 로컬 개인메타 덧입힘(목록과 동일)
+            return srv
         raise HTTPException(status_code=404, detail="generation 없음")
     # 비공개는 본인만, 공유된 것만 남이 열람(원칙). 권한 없으면 404(존재 자체를 숨김).
     require_view_generation(request, gen)

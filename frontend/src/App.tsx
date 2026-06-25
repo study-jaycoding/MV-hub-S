@@ -588,6 +588,13 @@ export default function App() {
   // ── 선택 항목 대상 단축키 작업 (s=소스 / #=태그 / r·g·b=컬러) ──
   // 색 토글 reload 디바운스용 — r→g→b 연타 시 매번 light reload 하던 직렬화를 마지막 1회로 합친다.
   const colorReloadTimer = useRef<number | null>(null);
+  // 언마운트/계정전환 시 잔여 디바운스 타이머 정리 — 옛 컨텍스트로 stray reload 방지(synced 타이머와 대칭).
+  useEffect(
+    () => () => {
+      if (colorReloadTimer.current) clearTimeout(colorReloadTimer.current);
+    },
+    [],
+  );
   const colorSelected = async (ids: string[], color: string) => {
     // 토글: 선택한 카드가 모두 이미 그 색이면 해제(null), 아니면 그 색으로 지정.
     const idSet = new Set(ids);
