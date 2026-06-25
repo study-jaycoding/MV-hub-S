@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS generation (
     creator_uid TEXT,                                -- 생성자 식별자(result_url 의 user_<id>). 팀 워크스페이스에서 누가 만들었나
     is_final   INTEGER NOT NULL DEFAULT 0,           -- v02 CMS: Supervisor 가 지정한 최종(골드). 1=최종
     final_by   TEXT,                                 -- 최종 지정자 creator_uid(누가 골드 찍었나)
-    final_at   TEXT                                  -- 최종 지정 시각
+    final_at   TEXT,                                 -- 최종 지정 시각
+    origin     TEXT                                  -- 행 출생: 'synced'(동기화본) | 'local'(내 생성/가져오기). 동기화↔로컬 판별을 id==job_id 좌표에서 분리(id 통일 리팩터 0a)
 );
 
 -- 생성자(워크스페이스 멤버) uid → 사용자 지정 이름. CLI 가 uid→이름을 안 주므로 직접 라벨링.

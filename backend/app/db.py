@@ -377,6 +377,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE generation ADD COLUMN final_by TEXT")
     if "final_at" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN final_at TEXT")
+    # 행 출생 마커 — '동기화본 vs 로컬'을 id==job_id 좌표가 아니라 명시 컬럼으로 판별(id 통일 리팩터 0a).
+    # 백필: 기존 판별 규약(job_id==id ⇒ 동기화본)을 그대로 옮겨 담아 동작 동치를 보장.
+    if "origin" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN origin TEXT")
+        conn.execute(
+            "UPDATE generation SET origin = "
+            "CASE WHEN job_id IS NOT NULL AND job_id=id THEN 'synced' ELSE 'local' END "
+            "WHERE origin IS NULL"
+        )
     # 정렬용 정밀 epoch — 힉스필드 created_at(sub-second) 순서를 그대로 재현
     if "sort_ts" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN sort_ts REAL")

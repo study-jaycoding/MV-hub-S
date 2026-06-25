@@ -134,7 +134,8 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, model, params, color, status, created_at, sort_ts, "
                 # sort_ts 누락 시 created_at 에서 파생 — 키셋 페이지네이션이 이 행을 놓치지 않게(NULL 금지).
-                "creator_uid, job_id) VALUES(?,?,?,?,?,?,?,?,COALESCE(?, strftime('%s', ?)),?,?)",
+                # origin='synced' — 순수 동기화본(판별을 id==job_id 좌표가 아닌 명시 마커로).
+                "creator_uid, job_id, origin) VALUES(?,?,?,?,?,?,?,?,COALESCE(?, strftime('%s', ?)),?,?, 'synced')",
                 (
                     job_id,
                     worker_id,
@@ -303,8 +304,8 @@ def create_local_generation(
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?)",
+            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid, origin) "
+            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
             (
                 gen_id,
                 worker_id,
@@ -527,11 +528,13 @@ def set_job_id(gen_id: str, job_id: str) -> None:
     이미 IMMEDIATE 로 막은 것과 동일)를 set_job_id 경로에서도 닫는다."""
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        # 동기화 중복본(origin='synced' 이고 같은 job_id)을 찾는다 — id==job_id 좌표가 아닌 마커로(0a).
         dup = conn.execute(
-            "SELECT id FROM generation WHERE id=? AND id<>?", (job_id, gen_id)
+            "SELECT id FROM generation WHERE job_id=? AND id<>? AND origin='synced'",
+            (job_id, gen_id),
         ).fetchone()
         if dup:
-            _delete_generation(conn, job_id)  # 레이스로 생긴 동기화 중복본 제거
+            _delete_generation(conn, dup["id"])  # 레이스로 생긴 동기화 중복본 제거
         conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
 
 
@@ -620,12 +623,13 @@ def apply_local_fulfillment(
                 (new_id(), gen_id, asset_type, asset_path, asset_thumb),
             )
         if job_id:
-            # 레이스 병합: 동기화가 같은 잡을 동기화본(id==job_id)으로 먼저 넣었으면 그 중복본 제거.
+            # 레이스 병합: 동기화가 같은 잡을 동기화본으로 먼저 넣었으면 그 중복본 제거(origin 마커로 판별).
             dup = conn.execute(
-                "SELECT id FROM generation WHERE id=? AND id<>?", (job_id, gen_id)
+                "SELECT id FROM generation WHERE job_id=? AND id<>? AND origin='synced'",
+                (job_id, gen_id),
             ).fetchone()
             if dup:
-                _delete_generation(conn, job_id)
+                _delete_generation(conn, dup["id"])
             conn.execute("UPDATE generation SET job_id=? WHERE id=?", (job_id, gen_id))
         if sort_ts is not None:
             conn.execute(
@@ -820,14 +824,15 @@ def reconcile_duplicates() -> int:
                 r
                 for r in (
                     conn.execute(
-                        "SELECT id, job_id FROM generation WHERE id=?", (gid,)
+                        "SELECT id, job_id, origin FROM generation WHERE id=?", (gid,)
                     ).fetchone()
                     for gid in ids
                 )
                 if r
             ]
-            synced = [r for r in rows if r["job_id"] and r["job_id"] == r["id"]]
-            local = [r for r in rows if not (r["job_id"] and r["job_id"] == r["id"])]
+            # 동기화본 vs 로컬: id==job_id 좌표가 아니라 명시 마커(origin)로 판별(0a). NULL=레거시→local.
+            synced = [r for r in rows if (r["origin"] or "local") == "synced"]
+            local = [r for r in rows if (r["origin"] or "local") != "synced"]
             if len(local) != 1 or not synced:
                 continue  # 예상 모양(로컬 1 + 동기화 N) 아님 → 안전하게 건너뜀
             keep = local[0]
@@ -902,8 +907,8 @@ def import_generation(
         my_uid = creator_uid or identity.get_my_uid()
         conn.execute(
             "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?)",
+            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid, origin) "
+            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
             (
                 child_id,
                 worker_id,
