@@ -31,6 +31,19 @@ router = APIRouter(prefix="/api/db", tags=["db-transfer"])
 
 _SQLITE_MAGIC = b"SQLite format 3"
 
+_LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def _require_local_when_open(request: Request) -> None:
+    """AUTH off(차단 비활성) 상태에선 로컬(loopback) 접속만 허용 — 0.0.0.0 바인딩 + 무인증 조합에서
+    LAN 의 누구나 DB 내보내기(해시 유출)·통째교체(파괴)를 호출하던 구멍을 막는다.
+    공식 로컬 허브(MV_agent.bat)는 127.0.0.1 바인딩이라 통과. AUTH on 이면 require_admin 이 가드."""
+    if AUTH_ENABLED:
+        return
+    host = (request.client.host if request.client else "") or ""
+    if host not in _LOOPBACK:
+        raise HTTPException(status_code=403, detail="이 작업은 로컬에서만 가능합니다")
+
 # 업로드 전/복원 후 비울 세션·보안·신원 키. 가져온 DB 가 남의 토큰으로 서버에 proxy 하거나 위장
 # 로그인되는 것을 막고, 남의 .db 를 파일 가져오기 했을 때 그 사람의 로그인 신원·역할(admin 뱃지)이
 # 남지 않게 한다(서버 주소 shared_server_url 만 무해해 남긴다). ★email/name/roles 도 비운다 —
@@ -165,6 +178,7 @@ def export_db(request: Request):
     """내 로컬 DB 를 단일 .db 파일로 내려준다(일관 스냅샷). 다른 PC에서 '가져오기'로 넣으면 됨.
     AUTH on(공유 서버)에선 admin 만 — 전체 DB(비밀번호 해시 포함) 유출 방지. AUTH off(로컬)면 통과."""
     require_admin(request)
+    _require_local_when_open(request)
     path = db.get_db_path()
     if not path.is_file():
         raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
@@ -193,6 +207,7 @@ async def import_db(request: Request, file: UploadFile = File(...)):
     가져온 DB는 현재 스키마로 마이그레이션하고 신원 캐시를 리셋한다.
     AUTH on(공유 서버)에선 admin 만 — 임의 DB 로 서버를 덮어쓰는 행위 차단. AUTH off(로컬)면 통과."""
     require_admin(request)
+    _require_local_when_open(request)
     data = await file.read()
     if data[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
         raise HTTPException(status_code=400, detail="SQLite DB 파일이 아닙니다")
@@ -261,6 +276,7 @@ def server_backups(request: Request):
 def server_restore(request: Request):
     """서버에 백업해둔 내 계정 DB 를 내려받아 활성 계정 DB 로 통째 교체. 복원 후 재로그인 강제."""
     require_admin(request)
+    _require_local_when_open(request)
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
     tmp = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{int(time.time())}.db"

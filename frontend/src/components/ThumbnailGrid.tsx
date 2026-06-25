@@ -13,6 +13,7 @@ import { GenerationCard } from "./GenerationCard";
 interface Props {
   generations: Generation[];
   tab: "my" | "team";
+  myCreatorUid?: string | null; // 내 creator_uid — 팀 탭 가져오기 버튼 노출 판별에 카드로 전달
   scale: number; // 카드 크기 배율 (그리드 모드)
   fill: boolean; // 썸네일 cover(꽉) ↔ contain(비율)
   layout: "grid" | "list";
@@ -428,6 +429,7 @@ export function ThumbnailGrid(props: Props) {
                   <GenerationCard
                     gen={g}
                     tab={props.tab}
+                    myCreatorUid={props.myCreatorUid}
                     layout="list"
                     fill={props.fill}
                     dimDeleted={props.dimDeleted}
@@ -514,6 +516,7 @@ export function ThumbnailGrid(props: Props) {
                 <GenerationCard
                   gen={g}
                   tab={props.tab}
+                  myCreatorUid={props.myCreatorUid}
                   layout="grid"
                   fill={props.fill}
                   dimDeleted={props.dimDeleted}

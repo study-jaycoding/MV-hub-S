@@ -1461,6 +1461,7 @@ export default function App() {
               <ThumbnailGrid
                     generations={visibleGens}
                     tab={filters.tab}
+                    myCreatorUid={account?.creator_uid ?? null}
                     scale={scale}
                     fill={fill}
                     layout={layout}

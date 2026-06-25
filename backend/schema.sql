@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS account (
     global_role   TEXT,                           -- v02 전역 역할 CSV(복수 가능, enforcement 가 읽는 축)
     creator_uid   TEXT,                           -- 선택: 생성자 식별자 연결(작성자 매핑)
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    approved_at   TEXT
+    approved_at   TEXT,
+    password_changed_at TEXT                       -- 설정되면 그 이전 발급된 세션 토큰 무효(비번 변경/리셋 시 갱신)
 );
 
 -- 발행 기록(누가, 언제, 공개 범위)

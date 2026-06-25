@@ -572,6 +572,10 @@ def _migrate_rbac(conn: sqlite3.Connection, cr_cols: set) -> None:
     # 계정 숨김(관리자가 옛/테스트 계정을 목록에서 가림) — NULL/0=보임, 1=숨김. '숨긴 계정 보기'로 재표시.
     if ac_cols and "hidden" not in ac_cols:
         conn.execute("ALTER TABLE account ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+    # 비번 변경/리셋 시점 — 토큰에 박힌 스탬프와 다르면 그 토큰 거부(탈취 대응). NULL=한 번도 안 바꿈
+    # → 검사 생략(배포 시 기존 세션 일괄 로그아웃 방지).
+    if ac_cols and "password_changed_at" not in ac_cols:
+        conn.execute("ALTER TABLE account ADD COLUMN password_changed_at TEXT")
     # creator.global_role — 멤버 목록(관리자 창이 보여주고 고치는 축)
     if cr_cols and "global_role" not in cr_cols:
         conn.execute("ALTER TABLE creator ADD COLUMN global_role TEXT")

@@ -87,13 +87,16 @@ def _sign(payload_b64: str) -> str:
     ).hexdigest()
 
 
-def make_token(email: str, ttl: int = _TOKEN_TTL) -> str:
-    payload = _b64e(json.dumps({"e": email, "x": int(time.time()) + ttl}).encode())
+def make_token(email: str, ttl: int = _TOKEN_TTL, pwd_stamp: Optional[str] = None) -> str:
+    body = {"e": email, "x": int(time.time()) + ttl}
+    if pwd_stamp:
+        body["p"] = pwd_stamp  # 발급 시점의 account.password_changed_at — 비번 변경 후 옛 토큰 거부에 사용
+    payload = _b64e(json.dumps(body).encode())
     return f"{payload}.{_sign(payload)}"
 
 
-def verify_token(token: Optional[str]) -> Optional[str]:
-    """유효하면 email 반환, 아니면 None(서명 불일치·만료·형식오류)."""
+def _decode_verified(token: Optional[str]) -> Optional[dict]:
+    """서명·만료 검증을 통과한 payload dict 반환, 아니면 None."""
     if not token or "." not in token:
         return None
     payload_b64, sig = token.rsplit(".", 1)
@@ -105,4 +108,16 @@ def verify_token(token: Optional[str]) -> Optional[str]:
         return None
     if int(data.get("x", 0)) < int(time.time()):
         return None  # 만료
-    return data.get("e")
+    return data
+
+
+def verify_token(token: Optional[str]) -> Optional[str]:
+    """유효하면 email 반환, 아니면 None(서명 불일치·만료·형식오류)."""
+    data = _decode_verified(token)
+    return data.get("e") if data else None
+
+
+def token_password_stamp(token: Optional[str]) -> Optional[str]:
+    """토큰에 박힌 비번-스탬프(발급 시점의 password_changed_at). 구버전 토큰이면 None."""
+    data = _decode_verified(token)
+    return data.get("p") if data else None

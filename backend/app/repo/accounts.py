@@ -14,7 +14,7 @@ from .. import rbac
 from ..db import get_connection
 from ..services import auth
 
-_PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, COALESCE(hidden,0) AS hidden"
+_PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
 
 
 def _row(conn, email: str) -> Optional[dict[str, Any]]:
@@ -142,8 +142,9 @@ def set_password(email: str, new_password: str) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
             return None
+        # password_changed_at 갱신 → 이 변경 이전에 발급된 토큰은 전부 무효(탈취/공유 대응).
         conn.execute(
-            "UPDATE account SET password_hash=? WHERE email=?",
+            "UPDATE account SET password_hash=?, password_changed_at=datetime('now') WHERE email=?",
             (auth.hash_password(new_password), email),
         )
         return _row(conn, email)

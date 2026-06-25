@@ -12,8 +12,6 @@ import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
 
-const ME = "me"; // 현재 작업자(DEFAULT_WORKER_ID) — 팀 탭에서 내 것/남의 것 구분
-
 const STATUS_LABEL: Record<string, string> = {
   pending: "생성중",
   running: "생성중",
@@ -29,6 +27,7 @@ const LOCAL_EXEC_HINT =
 interface Props {
   gen: Generation;
   tab: "my" | "team";
+  myCreatorUid?: string | null; // 내 creator_uid — 팀 탭 '내 것/남의 것' 판별(worker_id 는 서버에서 항상 'me')
   layout?: "grid" | "list";
   fill?: boolean;
   selected?: boolean;
@@ -59,6 +58,7 @@ interface Props {
 function GenerationCardImpl({
   gen,
   tab,
+  myCreatorUid,
   layout,
   fill = true,
   selected = false,
@@ -360,8 +360,10 @@ function GenerationCardImpl({
             @
           </button>
           {tab === "team"
-            ? // 다른 작업자의 생성물 → 내 워크스페이스로 가져오기(내 것은 공유 해제 버튼 제거 — S로 조작)
-              gen.worker_id !== ME && (
+            ? // 다른 작업자의 생성물 → 내 워크스페이스로 가져오기(내 것은 공유 해제 버튼 제거 — S로 조작).
+              // ★worker_id 는 서버에서 항상 'me'(작업 워크스테이션) → creator_uid 로 '남의 것'을 판별해야
+              //   팀 탭 카드에서 ⬇ 가 정상 노출된다(worker_id 기준이면 전부 숨던 버그).
+              gen.creator_uid !== myCreatorUid && (
                 <button className="ov-icon" title="내 워크스페이스로 가져오기" onClick={() => onImport(gen)}>
                   ⬇
                 </button>

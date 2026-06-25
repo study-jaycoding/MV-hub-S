@@ -116,7 +116,7 @@ def register(body: RegisterIn, response: Response):
     repo.link_accounts_to_creators()
     acc = repo.get_account(acc["email"]) or acc
     # 첫 계정(부트스트랩 관리자)은 즉시 승인 → 바로 토큰 발급(자동 로그인) + 쿠키.
-    token = auth.make_token(acc["email"]) if acc["status"] == "approved" else None
+    token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)
     return {"account": acc, "token": token}
@@ -135,7 +135,7 @@ def login(body: LoginIn, response: Response, request: Request):
     if acc["status"] != "approved":
         raise HTTPException(status_code=403, detail="접근이 거부된 계정입니다")
     _rl_ok(key)
-    token = auth.make_token(acc["email"])
+    token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
     _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
     return {"account": acc, "token": token}
 
@@ -157,7 +157,7 @@ def access(body: RegisterIn, response: Response, request: Request):
         _rl_ok(key)
         if acc["status"] != "approved":  # 승인 전(거부 포함) — 토큰 없이 상태만
             return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
-        token = auth.make_token(acc["email"])
+        token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
         _set_session_cookie(response, token)
         return {"account": acc, "token": token, "pending": False}
     # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
@@ -167,7 +167,7 @@ def access(body: RegisterIn, response: Response, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     repo.link_accounts_to_creators()  # 멤버 목록·프로젝트 후보에 바로 뜨게
     acc = repo.get_account(acc["email"]) or acc
-    token = auth.make_token(acc["email"]) if acc["status"] == "approved" else None
+    token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)
     return {"account": acc, "token": token, "pending": acc["status"] == "pending"}

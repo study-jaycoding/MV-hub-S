@@ -67,11 +67,20 @@ async def lifespan(app: FastAPI):
     # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
     if AUTH_ENABLED:
         import os as _os
+        import secrets as _secrets
 
         _ae = (_os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
-        _ap = _os.environ.get("CONTENT_HUB_ADMIN_PASSWORD") or "admin1985"
+        # ★고정 기본 비번 폐지(보안) — env 미지정이면 1회용 랜덤을 생성해 '이번 부팅에만' 출력한다.
+        # 누구나 아는 admin1985 로 LAN 서버 관리자에 바로 로그인되던 구멍 제거.
+        _ap = _os.environ.get("CONTENT_HUB_ADMIN_PASSWORD")
+        _ap_generated = not _ap
+        if _ap_generated:
+            _ap = _secrets.token_urlsafe(12)
         if repo.ensure_admin_account(_ae, _ap):
             print(f"[startup] 부트스트랩 관리자 자동 생성: {_ae}")
+            if _ap_generated:
+                print(f"[startup] ★1회용 관리자 비밀번호(이번에만 표시): {_ap}")
+                print("[startup]   로그인 후 즉시 변경하거나 CONTENT_HUB_ADMIN_PASSWORD 로 고정하세요.")
     # 미디어 디렉터리 샤딩(1회 이전, 멱등) — 평면 /media/<sha> → /media/<2>/<sha>. 핫 폴더 비대화 방지.
     from .services import media_cache
 
@@ -190,7 +199,11 @@ async def auth_enforcement(request: Request, call_next):
         if email:
             acc = repo.get_account(email)
             if acc and acc["status"] == "approved":
-                request.state.account = acc
+                # 비번 변경/리셋 후엔 그 이전 발급 토큰을 거부(탈취 대응). 스탬프 없는 계정
+                # (한 번도 안 바꿈)은 검사 생략 → 배포 시 기존 세션 일괄 로그아웃 방지.
+                pcat = acc.get("password_changed_at")
+                if not pcat or auth_svc.token_password_stamp(token) == pcat:
+                    request.state.account = acc
     if not AUTH_ENABLED:
         return await call_next(request)
     # 보호: /api/*(로그인·가입·헬스 제외) + /media/*. 정적 SPA·/ws 는 여기서 제외.
