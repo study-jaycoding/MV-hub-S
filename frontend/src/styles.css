@@ -818,6 +818,8 @@ select optgroup {
 
 /* 인라인 태그 에디터(#): 위=기존 일반태그 칩(×해제) / 입력 / 아래=전역태그(# 한 번 더, 조금 큼) */
 .tag-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; z-index: 1; }
+/* 다중선택 시 '추가는 선택 전체에' 안내 — 라임 배경엔 검은 글씨(--accent-ink) */
+.te-multi { align-self: flex-start; background: var(--accent); color: var(--accent-ink); font-size: 10.5px; font-weight: 800; border-radius: 999px; padding: 1px 9px; }
 .te-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .te-chip {
   display: inline-flex; align-items: center; gap: 2px;

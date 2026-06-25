@@ -16,12 +16,16 @@ export interface TagEditorGlobal {
 export function TagEditor({
   tags,
   onChange,
+  onBulkAdd,
+  selectedCount = 1,
   global = null,
   onClose,
   placeholder,
 }: {
   tags: string[];
-  onChange: (next: string[]) => void; // 교체(에디터가 전체 목록 소유 — 부모 reload 지연/레이스 무관)
+  onChange: (next: string[]) => void; // 교체(에디터가 전체 목록 소유 — 부모 reload 지연/레이스 무관). 이 카드 전용.
+  onBulkAdd?: (names: string[]) => void; // 다중선택 시 '추가'를 다른 선택 카드에도 적용(이 카드 제외)
+  selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N. >1 이면 추가가 N개 전체에 적용됨을 표시.
   global?: TagEditorGlobal | null;
   onClose: () => void;
   placeholder?: string;
@@ -30,6 +34,7 @@ export function TagEditor({
   const [assigned, setAssigned] = useState<string[]>(global?.assigned ?? []);
   const [draft, setDraft] = useState("");
   const [globalMode, setGlobalMode] = useState(false);
+  const multi = selectedCount > 1;
 
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
   const keepFocus = (e: React.MouseEvent) => e.preventDefault(); // 입력 blur 방지
@@ -41,7 +46,10 @@ export function TagEditor({
   const commitDraft = () => {
     const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
     const fresh = add.filter((t) => !chips.includes(t));
-    if (fresh.length) applyTags([...chips, ...fresh]);
+    if (fresh.length) {
+      applyTags([...chips, ...fresh]); // 이 카드(표시 + 영속)
+      if (multi) onBulkAdd?.(fresh); // 나머지 선택 카드에도 일괄 추가
+    }
     setDraft("");
   };
   const removeChip = (t: string) => applyTags(chips.filter((x) => x !== t));
@@ -60,6 +68,11 @@ export function TagEditor({
       onMouseDown={stop}
       onDoubleClick={stop}
     >
+      {multi && (
+        <div className="te-multi" title="추가는 선택한 카드 전체에, ×(해제)는 이 카드만">
+          선택한 {selectedCount}개에 적용
+        </div>
+      )}
       {chips.length > 0 && (
         <div className="te-chips">
           {chips.map((t) => (

@@ -16,11 +16,13 @@ export const AssetCell = memo(function AssetCell({
   selected,
   focused,
   deactivated,
+  selectedCount,
   meta,
   editingTag,
   onS,
   onC,
   onTagsReplace,
+  onBulkTagAdd,
   onTagCancel,
   onInfo,
   onExportDrag,
@@ -34,11 +36,13 @@ export const AssetCell = memo(function AssetCell({
   selected: boolean;
   focused: boolean;
   deactivated?: boolean; // 비활성(회색) 표시 — d 키. 색만 회색, 크기 유지(히스토리와 달리 축소 안 함)
+  selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
   meta: AssetMeta;
   editingTag: boolean;
   onS: (path: string) => void;
   onC: (path: string) => void;
   onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
+  onBulkTagAdd: (path: string, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
   onTagCancel: () => void;
   onInfo: (t: InfoTarget) => void;
   // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
@@ -131,6 +135,8 @@ export const AssetCell = memo(function AssetCell({
       <TagEditor
         tags={meta.tags}
         onChange={(next) => onTagsReplace(node.path, next)}
+        onBulkAdd={(names) => onBulkTagAdd(node.path, names)}
+        selectedCount={selectedCount}
         onClose={onTagCancel}
       />
     </div>

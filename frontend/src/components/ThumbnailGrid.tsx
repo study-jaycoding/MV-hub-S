@@ -24,6 +24,7 @@ interface Props {
   onToggleSelect: (id: string) => void; // 리스트 모드 체크박스
   onSetSource: (g: Generation, name: string | null, isSource: boolean) => void;
   onSetTags: (g: Generation, tags: string[]) => void;
+  onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터 # 두 번 모드
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
@@ -150,6 +151,8 @@ export function ThumbnailGrid(props: Props) {
       onSetSource: (g: Generation, n: string | null, s: boolean) =>
         propsRef.current.onSetSource(g, n, s),
       onSetTags: (g: Generation, tg: string[]) => propsRef.current.onSetTags(g, tg),
+      onBulkAddTags: (g: Generation, names: string[]) =>
+        propsRef.current.onBulkAddTags?.(g, names),
       onSetAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onSetAutoTags?.(g, names),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
@@ -445,6 +448,8 @@ export function ThumbnailGrid(props: Props) {
                     onToggleSelect={cb.onToggleSelect}
                     onSetSource={cb.onSetSource}
                     onSetTags={cb.onSetTags}
+                    onBulkAddTags={cb.onBulkAddTags}
+                    selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                     autoTagOptions={props.autoTagOptions}
                     onSetAutoTags={cb.onSetAutoTags}
                     onOpenComments={cb.onOpenComments}
@@ -538,6 +543,8 @@ export function ThumbnailGrid(props: Props) {
                   onToggleSelect={cb.onToggleSelect}
                   onSetSource={cb.onSetSource}
                   onSetTags={cb.onSetTags}
+                  onBulkAddTags={cb.onBulkAddTags}
+                  selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                   autoTagOptions={props.autoTagOptions}
                   onSetAutoTags={cb.onSetAutoTags}
                   onOpenComments={cb.onOpenComments}

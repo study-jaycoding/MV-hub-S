@@ -56,6 +56,8 @@ interface Props {
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 클릭 → 가계 패널
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터에서 # 한 번 더로 카드에 부여/해제
   onSetAutoTags?: (g: Generation, names: string[]) => void;
+  onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
+  selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
 }
 
 function GenerationCardImpl({
@@ -70,6 +72,8 @@ function GenerationCardImpl({
   onSetTags,
   autoTagOptions,
   onSetAutoTags,
+  onBulkAddTags,
+  selectedCount,
   onOpenComments,
   editingField,
   onEditDone,
@@ -418,6 +422,8 @@ function GenerationCardImpl({
       <TagEditor
         tags={gen.tags}
         onChange={(next) => onSetTags(gen, next)}
+        onBulkAdd={(names) => onBulkAddTags?.(gen, names)}
+        selectedCount={selectedCount}
         global={
           onSetAutoTags
             ? {
