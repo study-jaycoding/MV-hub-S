@@ -654,6 +654,15 @@ export const api = {
     return res.json() as Promise<{ saved: string[]; skipped: string[] }>;
   },
 
+  // 클립보드 캡쳐(이미지 blob)를 내장 'captures' 폴더에 저장 → 레퍼런스용 asset 정보 반환.
+  uploadCapture: async (blob: Blob) => {
+    const fd = new FormData();
+    fd.append("file", blob, "capture.png");
+    const res = await fetch("/api/assets/capture", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`${res.status}: 캡쳐 업로드 실패`);
+    return res.json() as Promise<{ project: string; path: string; name: string; type: string }>;
+  },
+
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db). 현재 DB는 자동 백업됨.
   importDb: async (file: File) => {
     const fd = new FormData();

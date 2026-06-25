@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -210,6 +211,11 @@ def list_projects(request: Request):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
+    # 내장 'captures' 폴더(화면 캡쳐 붙여넣기 저장소)는 파일이 있으면 프로젝트로 노출 →
+    # Assets 에서 탐색·태그·소스지정(@이름)까지 가능(붙여넣은 캡쳐를 '소스처럼' 재사용).
+    cap_dir = ASSETS_ROOT / "captures"
+    if cap_dir.is_dir() and "captures" not in projects and any(cap_dir.iterdir()):
+        projects.append("captures")
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
     return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
@@ -556,6 +562,24 @@ async def upload_assets(
         saved.append(target.relative_to(proj_dir).as_posix())
 
     return {"saved": saved, "skipped": skipped}
+
+
+@router.post("/capture")
+async def upload_capture(request: Request, file: UploadFile = File(...)):
+    """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
+    저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
+    captures 는 내장 ASSETS_ROOT/captures 폴더(마운트 아님)라 owner 무관하게 thumb/file 서빙됨."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="빈 캡쳐")
+    cap_dir = (ASSETS_ROOT / "captures").resolve()
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    base = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    name, i = f"{base}.png", 2
+    while (cap_dir / name).exists():  # 같은 초 다중 캡쳐 충돌 회피
+        name, i = f"{base}-{i}.png", i + 1
+    (cap_dir / name).write_bytes(raw)
+    return {"project": "captures", "path": name, "name": name, "type": "image"}
 
 
 @router.get("/zip")

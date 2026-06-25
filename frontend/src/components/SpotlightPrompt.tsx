@@ -314,6 +314,28 @@ export function SpotlightPrompt({
     updatePlaceholder();
     setMention(composingRef.current ? null : detectMention(ed));
   };
+  // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
+  // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지.
+  const onEditorPaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    let blob: File | null = null;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith("image/")) {
+        blob = items[i].getAsFile();
+        break;
+      }
+    }
+    if (!blob) return; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
+    e.preventDefault();
+    api
+      .uploadCapture(blob)
+      .then((r) =>
+        addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }])),
+      )
+      .catch((err) => flashMsg("캡쳐 추가 실패: " + String(err)));
+  };
+
   // 프롬프트 전체를 클립보드로 복사 — @소스명 토큰을 포함한 표시 프롬프트(화면 그대로).
   const copyPrompt = () => {
     const ed = editorRef.current;
@@ -977,6 +999,7 @@ export function SpotlightPrompt({
               onKeyUp={onCaretMove}
               onClick={onCaretMove}
               onKeyDown={onEditorKeyDown}
+              onPaste={onEditorPaste}
               onCompositionStart={() => (composingRef.current = true)}
               onCompositionEnd={() => {
                 composingRef.current = false;
