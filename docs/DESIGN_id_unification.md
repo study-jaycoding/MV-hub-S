@@ -59,12 +59,16 @@
 > 따라서 동기화 행을 uuid 로 바꾸려면 이 판별을 **명시 마커(origin)** 로 교체하는 선행 단계가
 > 필요하고, 그건 중복방지(가시적·데이터 영향) 경로라 레이스 테스트가 필수다.
 
-- **Phase 0a (안전·선행)**: 명시 컬럼 `origin`(또는 `synced` bool) 추가 + 백필(`id==job_id` ⟺ synced).
-  reconcile/set_job_id 의 판별을 `id==job_id` → `origin='synced'` 로 교체(현재는 둘이 동치라 **동작
-  무변화**, 테스트로 동치 확인). 이로써 동기화/로컬 구분이 id 값과 **분리**된다(id 플립의 선결).
-- **Phase 0b**: `upsert_synced`/`set_job_id` 가 동기화 행을 `새 uuid + job_id 속성 + origin='synced'`
-  로 생성. 매칭은 `WHERE job_id=?`. `job_id` UNIQUE 인덱스. **여기서부터 새 데이터가 uuid 로 깨끗.**
-  (레이스 4종 테스트: local→sync, sync→local, double-sync, reconcile.)
+- **Phase 0a ✅완료**: 명시 컬럼 `origin('synced'|'local')` 추가 + 백필(`id==job_id` ⟺ synced).
+  reconcile/set_job_id/apply_local_fulfillment 의 판별을 `id==job_id` → `origin='synced'` 로 교체
+  (동작 동치 — 테스트 PASS). 동기화/로컬 구분이 id 값과 **분리**됨.
+- **Phase 0b ✅완료**: `upsert_synced` 의 INSERT 가 동기화/번들수신 행을 `uuid id + job_id 속성`으로
+  생성(더는 `id==job_id` 아님). 멱등 매칭=`job_id` 컬럼, 번들 계보=`_find_id_by_job(job_id)→uuid`.
+  **새 데이터는 id 이중성 없음.** 레거시 `id==job_id` 행은 update 분기로 그대로 호환.
+  (검증: 단일DB 4시나리오 + 번들 export→import 라운드트립 계보 PASS.) `job_id` UNIQUE 인덱스는
+  전이 중 중복 허용 레이스와 충돌해 보류(현 동작은 origin 기반 사후 reconcile 로 충분).
+- **남음 — Phase 1~3**: 레거시 `id==job_id` 행을 uuid 로 마이그레이션(FK 재지정·백업) → export/import
+  앵커를 uuid 로 → `finalize_id_map` 등 변환기계 제거. 변환기계는 레거시 호환 위해 그때까지 유지.
 - **Phase 1**: 백필 마이그레이션 — 레거시 `id==job_id` 행을 uuid id 로 재작성 + FK 재지정(트랜잭션·백업). 로컬·서버 동시 또는 호환 윈도우로.
 - **Phase 2**: export/import/finalize 앵커를 uuid 로 전환. import 의 `id=? OR job_id=?` 만 구 번들 호환으로 플래그 뒤에 유지.
 - **Phase 3**: 변환 기계(finalize_id_map job_id 분기·overlay 키잉·comment-counts 되매핑 등) 제거.
