@@ -55,6 +55,30 @@ class MediaCacheTests(unittest.TestCase):
             self.assertEqual(results[0], results[1])
             self.assertEqual(calls, 1)
 
+    def test_lock_table_is_emptied_after_use(self):
+        # rel 별 락을 쓰고 나면 _LOCKS/_LOCK_REFS 에 잔재가 없어야 한다(장기구동 메모리 누적 방지).
+        with tempfile.TemporaryDirectory() as td:
+            old_media_dir = media_cache.MEDIA_DIR
+            media_cache.MEDIA_DIR = Path(td)
+
+            def ok_download(url: str, target: Path) -> None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"media")
+
+            async def scenario():
+                with mock.patch.object(media_cache, "_download", side_effect=ok_download):
+                    await media_cache.cache_url("https://cdn.example.com/keep.mp4")
+                # 실패 경로도 동일하게 정리되어야 함
+                with mock.patch.object(media_cache, "_download", side_effect=RuntimeError("boom")):
+                    await media_cache.cache_url("https://cdn.example.com/fail.mp4")
+
+            try:
+                asyncio.run(scenario())
+                self.assertEqual(media_cache._LOCKS, {})
+                self.assertEqual(media_cache._LOCK_REFS, {})
+            finally:
+                media_cache.MEDIA_DIR = old_media_dir
+
     def test_html_response_is_rejected(self):
         with self.assertRaises(media_cache.MediaCachePermanentError):
             media_cache._validate_response(

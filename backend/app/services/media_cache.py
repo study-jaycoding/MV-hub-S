@@ -44,6 +44,7 @@ _TEXT_ERROR_TYPES = {
 }
 _HTMLISH_PREFIXES = (b"<!doctype", b"<html", b"<?xml")
 _LOCKS: dict[str, asyncio.Lock] = {}
+_LOCK_REFS: dict[str, int] = {}  # rel -> 사용 중 코루틴 수. 0 이 되면 _LOCKS 에서 제거(락 누적 방지).
 _LOCKS_GUARD = asyncio.Lock()
 
 
@@ -111,13 +112,27 @@ def _validate_response(content_type: str, head: bytes) -> None:
         raise MediaCachePermanentError("response body looks like HTML/XML, not media")
 
 
-async def _lock_for(rel: str) -> asyncio.Lock:
+async def _acquire_lock(rel: str) -> asyncio.Lock:
+    # rel 별 직렬화 락을 얻고 참조수 +1. 참조수>0 인 동안 항목이 유지되므로 같은 URL
+    # 동시 호출자는 반드시 같은 Lock 객체를 공유한다(가드 안에서 get→증가 사이 await 없음 = 원자적).
     async with _LOCKS_GUARD:
         lock = _LOCKS.get(rel)
         if lock is None:
             lock = asyncio.Lock()
             _LOCKS[rel] = lock
+        _LOCK_REFS[rel] = _LOCK_REFS.get(rel, 0) + 1
         return lock
+
+
+async def _release_lock(rel: str) -> None:
+    # 참조수 -1. 0 이 되면 더 기다리는 코루틴이 없으므로 락을 제거한다(메모리 누적 방지).
+    async with _LOCKS_GUARD:
+        remaining = _LOCK_REFS.get(rel, 0) - 1
+        if remaining <= 0:
+            _LOCK_REFS.pop(rel, None)
+            _LOCKS.pop(rel, None)
+        else:
+            _LOCK_REFS[rel] = remaining
 
 
 def _download_once(url: str, target: Path) -> None:
@@ -190,17 +205,20 @@ async def cache_url(url: Optional[str]) -> Optional[str]:
     target = _local_path(rel)
     if target.exists():
         return rel
-    lock = await _lock_for(rel)
-    async with lock:
-        if target.exists():
-            return rel
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)  # 샤딩 서브디렉터리(/media/<2>/) 보장
-            await asyncio.to_thread(_download, url, target)
-            return rel
-        except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
-            log.warning("media cache download failed url=%s target=%s reason=%s", _safe_url_for_log(url), target, e)
-            return None
+    lock = await _acquire_lock(rel)
+    try:
+        async with lock:
+            if target.exists():
+                return rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)  # 샤딩 서브디렉터리(/media/<2>/) 보장
+                await asyncio.to_thread(_download, url, target)
+                return rel
+            except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
+                log.warning("media cache download failed url=%s target=%s reason=%s", _safe_url_for_log(url), target, e)
+                return None
+    finally:
+        await _release_lock(rel)
 
 
 def migrate_sharding() -> int:
