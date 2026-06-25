@@ -467,6 +467,7 @@ export function ThumbnailGrid(props: Props) {
                     autoTagOptions={props.autoTagOptions}
                     onSetAutoTags={cb.onSetAutoTags}
                     onBulkAddAutoTags={cb.onBulkAddAutoTags}
+                    onBulkRemoveAutoTags={cb.onBulkRemoveAutoTags}
                     tagEditing={tagEditing}
                     tagGlobalMode={tagGlobalMode}
                     onGlobalModeChange={setTagGlobalMode}
@@ -566,6 +567,7 @@ export function ThumbnailGrid(props: Props) {
                   autoTagOptions={props.autoTagOptions}
                   onSetAutoTags={cb.onSetAutoTags}
                   onBulkAddAutoTags={cb.onBulkAddAutoTags}
+                  onBulkRemoveAutoTags={cb.onBulkRemoveAutoTags}
                   tagEditing={tagEditing}
                   tagGlobalMode={tagGlobalMode}
                   onGlobalModeChange={setTagGlobalMode}
