@@ -23,6 +23,7 @@ export function AccountMenu({
   onLogout,
   onWorkspaceSwitched,
   onImported,
+  localHub,
 }: {
   provider: Provider | null;
   account?: Account | null;
@@ -30,6 +31,7 @@ export function AccountMenu({
   onLogout?: () => void;
   onWorkspaceSwitched: () => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
+  localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -40,10 +42,12 @@ export function AccountMenu({
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
 
-  // 로그인 계정(jay 포함 모두) → 그 계정 에이전트가 보고한 '검증된 내 힉스필드 신원'(읽기전용).
-  // 검증된 이메일 기준이라 남의 크레딧과 안 겹친다. 비로그인(AUTH off, 로컬 개발)만 서버 CLI
-  // 라이브(전환 가능). 브라우저는 남의 CLI 직접 접근 불가 → 보고값이 유일한 '내 데이터'.
-  const liveMode = !account;
+  // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
+  //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
+  //  · 로컬 허브(localHub: MV_agent, AUTH off)에서 팀서버 로그인한 경우도 CLI 가 이 PC 에 있으니
+  //    라이브 — /api/workspaces(목록·select)가 로컬 CLI 를 직접 호출하므로 클릭 전환이 그대로 작동.
+  //  · 공유 서버 본체(AUTH on): CLI 가 내 것이 아닐 수 있어 읽기전용(에이전트 보고값 표시).
+  const liveMode = !account || !!localHub;
   useEffect(() => {
     if (liveMode) api.workspaces().then(setList).catch(() => {});
     else api.accountHf().then(setReported).catch(() => setReported(null));

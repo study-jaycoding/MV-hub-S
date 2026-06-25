@@ -1316,6 +1316,7 @@ export default function App() {
         onOpenAdmin={openAdmin}
         account={hubAccount}
         onLogout={onLogout}
+        localHub={!authConfig?.auth_enabled}
       />
       <div className="body">
         {filters.tab === "compose" ? (

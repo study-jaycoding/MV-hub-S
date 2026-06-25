@@ -23,6 +23,7 @@ interface Props {
   onOpenAdmin: () => void; // 좌측 상단 로고 클릭 → 관리자 창(로드맵 §4-5)
   account?: import("../types").Account | null; // 로그인 계정(AUTH 모드)
   onLogout?: () => void;
+  localHub?: boolean; // 로컬 허브(AUTH off) — 워크스페이스 클릭 전환 허용 신호(AccountMenu 로 전달)
 }
 
 export function TopBar({
@@ -35,6 +36,7 @@ export function TopBar({
   onOpenAdmin,
   account,
   onLogout,
+  localHub,
 }: Props) {
   const t = useT();
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
@@ -102,6 +104,7 @@ export function TopBar({
         onLogout={onLogout}
         onWorkspaceSwitched={onWorkspaceSwitched}
         onImported={onImported}
+        localHub={localHub}
       />
     </header>
   );
