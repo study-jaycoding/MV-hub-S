@@ -83,6 +83,7 @@ export interface HistoryGraph {
   edges: HistoryEdge[];
   root_ids: string[]; // 원본(부모 없는 노드)
   focus_id: string; // 진입(포커스)한 결과물
+  truncated?: boolean; // 안전상한(limit)에 닿아 계보 일부가 생략됨(무음 절단 방지 표식)
 }
 
 // 프로젝트(작업 묶음) — 공유·이동의 단위. Assets 패널의 폴더(ProjectsInfo)와 별개.

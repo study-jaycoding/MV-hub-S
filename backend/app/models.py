@@ -114,6 +114,7 @@ class HistoryGraphOut(BaseModel):
     edges: list[HistoryEdgeOut] = Field(default_factory=list)
     root_ids: list[str] = Field(default_factory=list)  # 원본(부모 없는 노드)
     focus_id: str  # 진입(포커스)한 결과물 — 하이라이트용
+    truncated: bool = False  # BFS 안전상한(limit)에 닿아 계보 일부가 생략됐는가(무음 절단 방지 표식)
 
 
 class FacetsOut(BaseModel):

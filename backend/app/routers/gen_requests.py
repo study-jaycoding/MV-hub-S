@@ -124,8 +124,9 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     asset = parsed.get("asset")
     status = g.get("status") or "done"
     err = g.get("error") if status == "failed" else None
-    # ★원자 적용: 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로(부분 상태 노출 창 제거).
-    repo.apply_local_fulfillment(
+    # ★원자 적용(+CAS): 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로. 동시 fulfill/fail 로
+    # 이미 종결됐으면 False → 멱등 반환(완료를 덮어쓰지 않음·중복 브로드캐스트 안 함).
+    applied = repo.apply_local_fulfillment(
         gen_id,
         rid,
         asset_type=asset["type"] if asset else None,
@@ -138,6 +139,11 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         error=err,
         request_status="done" if status != "failed" else "failed",
     )
+    if not applied:
+        gen = repo.get_generation(gen_id)
+        if not gen:
+            raise HTTPException(status_code=500, detail="결과 조회 실패")
+        return gen
     # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
     # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
 
@@ -169,8 +175,10 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         return {"ok": True}  # 이미 종결 — 멱등 무시(완료된 것을 실패로 뒤집지 않음)
-    repo.set_status(req["gen_id"], "failed", reason)
-    repo.mark_request(rid, "failed", reason)
+    # 원자·CAS 적용 — 동시 fulfill 이 라우터 밖 status 검사를 함께 통과해 done 을 failed 로 뒤집던
+    # TOCTOU 를 닫는다. 이미 종결됐으면 False → 멱등 반환(브로드캐스트 안 함).
+    if not repo.apply_local_failure(req["gen_id"], rid, reason):
+        return {"ok": True}
     await manager.broadcast(
         {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason},
         account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만

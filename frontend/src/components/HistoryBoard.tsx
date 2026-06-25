@@ -736,6 +736,12 @@ export function HistoryBoard({
     <div className="linb">
       {/* 범례/제목 바 제거(사용자 요청) — 줌·필터는 상단 LibraryToolbar 가 담당, 로딩은 토스트/툴바로 표시. */}
       {err && <div className="linb-err">{err}</div>}
+      {/* 무음 절단 방지: 계보가 안전상한에 닿아 일부 노드가 생략됐으면 명시한다(가짜 '완전한 계보' 오인 차단). */}
+      {graph?.truncated && (
+        <div className="linb-err" style={{ background: "#3a2e0a", color: "#ffd24a" }}>
+          계보가 커서 일부만 표시됩니다(상한 도달) — 보이지 않는 상위/하위 노드가 더 있을 수 있습니다.
+        </div>
+      )}
       <div className="linb-scroll" ref={scrollRef} onMouseDown={onBoardMouseDown}>
         {layout && (
           <div

@@ -517,8 +517,13 @@ def set_job_id(gen_id: str, job_id: str) -> None:
 
     레이스 병합: 로컬 생성이 끝나기 전에 주기 동기화가 같은 잡을 먼저 동기화본
     (id == job_id)으로 INSERT 했을 수 있다. 그 경우 사용자 메타(display_prompt·@소스명·
-    태그·컬러)가 없는 동기화본은 버리고 로컬을 남긴다(병합)."""
+    태그·컬러)가 없는 동기화본은 버리고 로컬을 남긴다(병합).
+
+    ★ SELECT dup → delete → UPDATE 를 BEGIN IMMEDIATE 로 직렬화한다 — autocommit 단발이면
+    그 사이 동기화가 같은 잡을 INSERT 해 중복 2행이 살아남던 레이스(apply_local_fulfillment 는
+    이미 IMMEDIATE 로 막은 것과 동일)를 set_job_id 경로에서도 닫는다."""
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         dup = conn.execute(
             "SELECT id FROM generation WHERE id=? AND id<>?", (job_id, gen_id)
         ).fetchone()
@@ -587,12 +592,24 @@ def apply_local_fulfillment(
     status: str,
     error: Optional[str],
     request_status: str,
-) -> None:
+) -> bool:
     """gen-request fulfill 의 다단계 쓰기(에셋 추가·job_id 병합·타임스탬프·상태·요청표시)를 한
     트랜잭션으로 묶는다 — 예전엔 5개 분리 커밋이라 중간에 주기 동기화가 끼면 부분 상태(예: job_id 만
-    반영되고 status 는 아직 옛값)를 보는 창이 있었다. BEGIN IMMEDIATE 로 전부 한 번에 커밋."""
+    반영되고 status 는 아직 옛값)를 보는 창이 있었다. BEGIN IMMEDIATE 로 전부 한 번에 커밋.
+
+    ★ 멱등 CAS: 요청표시 UPDATE 를 `WHERE status NOT IN ('done','failed')` 로 먼저 시도해
+    rowcount 0(이미 종결)이면 ROLLBACK 하고 False 반환 — 동시 fulfill/fail 이 라우터의 트랜잭션
+    밖 status 검사를 동시 통과해 done↔failed 가 뒤집히던 TOCTOU 를 닫는다. 적용했으면 True."""
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute(
+            "UPDATE gen_request SET status=?, error=?, updated_at=datetime('now') "
+            "WHERE id=? AND status NOT IN ('done','failed')",
+            (request_status, error, rid),
+        )
+        if cur.rowcount == 0:  # 이미 종결된 요청 → 아무 것도 안 함(멱등)
+            conn.execute("ROLLBACK")
+            return False
         if asset_type and asset_path:
             conn.execute(
                 "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
@@ -616,10 +633,27 @@ def apply_local_fulfillment(
             "UPDATE generation SET status=?, error=? WHERE id=?",
             (status, error if status == "failed" else None, gen_id),
         )
-        conn.execute(
-            "UPDATE gen_request SET status=?, error=?, updated_at=datetime('now') WHERE id=?",
-            (request_status, error, rid),
+    return True
+
+
+def apply_local_failure(gen_id: str, rid: str, reason: str) -> bool:
+    """gen-request fail 을 원자·CAS 로 적용 — 요청표시와 generation 상태를 한 트랜잭션에.
+    요청이 이미 종결(done/failed)이면 ROLLBACK·False(완료를 실패로 뒤집지 않음 — fulfill 과 대칭).
+    예전엔 set_status + mark_request 2개 분리 커밋이라 그 사이 fulfill 이 끼면 split 상태가 났다."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute(
+            "UPDATE gen_request SET status='failed', error=?, updated_at=datetime('now') "
+            "WHERE id=? AND status NOT IN ('done','failed')",
+            (reason, rid),
         )
+        if cur.rowcount == 0:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute(
+            "UPDATE generation SET status='failed', error=? WHERE id=?", (reason, gen_id)
+        )
+    return True
 
 
 def set_color(gen_id: str, color: Optional[str]) -> None:
@@ -1614,6 +1648,7 @@ def get_history_graph(
             "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
         ).fetchone()
         focus_owned = bool(viewer_uid) and frow and frow["creator_uid"] == viewer_uid
+        truncated = False
         if read_all or focus_owned:
             # 연결 컴포넌트 BFS(부모·자식 양방향). 명시 history 엣지만(약한형제 제외).
             node_ids: set[str] = {gen_id}
@@ -1630,10 +1665,21 @@ def get_history_graph(
                 ]
                 frontier = [n for n in neigh if n not in node_ids]
                 node_ids.update(frontier)
+            truncated = bool(frontier)  # 확장할 이웃이 남았는데 limit 에서 멈췄다 → 일부 생략됨
         else:
             node_ids = _directed_lineage(conn, gen_id, limit)
+            truncated = len(node_ids) >= limit
         ids = list(node_ids)
         iph = ",".join("?" * len(ids))
+        # 절단 경계 가짜 루트 방지: '전체 history 기준 부모 엣지가 있는' 노드 집합. BFS 가 limit 에서
+        # 잘리면 경계 노드의 실제 부모가 ids 밖에 있어 안쪽 엣지엔 안 잡혀 가짜 '원본'으로 표시됐다.
+        # 전체 history 로 부모 유무를 판정해 루트에서 제외(부모가 마스킹/절단으로 안 보여도 원본 아님).
+        parented = {
+            r["c"]
+            for r in conn.execute(
+                f"SELECT DISTINCT child_gen_id c FROM history WHERE child_gen_id IN ({iph})", ids
+            ).fetchall()
+        }
         edges = [
             {"parent_gen_id": r["parent_gen_id"], "child_gen_id": r["child_gen_id"], "relation": r["relation"]}
             for r in conn.execute(
@@ -1660,12 +1706,12 @@ def get_history_graph(
         if e["parent_gen_id"] in gens and e["child_gen_id"] in gens
     ]
     ids = list(gens.keys())
-    # 루트 = 컴포넌트 안에서 부모 엣지를 받지 않는 노드(원본). 시간 오름차순으로.
-    has_parent = {e["child_gen_id"] for e in edges}
+    # 루트 = 전체 history 에 부모가 없는 진짜 원본. 안쪽 엣지 유무가 아니라 parented(전체 기준)로
+    # 판정 → 절단/마스킹으로 부모가 안 보이는 경계 노드가 가짜 원본으로 표시되지 않는다.
     roots = [
         gens[i]
         for i in sorted(ids, key=lambda x: gens[x].get("sort_ts") or 0)
-        if i not in has_parent and i in gens
+        if i not in parented
     ]
     nodes = sorted(gens.values(), key=lambda g: g.get("sort_ts") or 0)
     return {
@@ -1673,6 +1719,7 @@ def get_history_graph(
         "edges": edges,
         "root_ids": [r["id"] for r in roots],
         "focus_id": gen_id,
+        "truncated": truncated,
     }
 
 
