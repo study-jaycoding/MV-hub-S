@@ -160,6 +160,7 @@ Copy-RoboChecked `
 
 $RootFiles = @(
     "MV_agent.bat",
+    "MVHub_Update.bat",
     "run-server.bat",
     "cli-login.bat",
     "update-cli.bat",
