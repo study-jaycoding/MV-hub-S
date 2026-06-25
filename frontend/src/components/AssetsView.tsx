@@ -828,6 +828,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta(next);
     Promise.allSettled(others.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
   };
+  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(path)는 onTagsReplace 가 처리, 나머지 선택 카드에서 제거(공통이면 사라짐).
+  const bulkTagRemove = (path: string, names: string[]) => {
+    const others = selPaths().filter((p) => p !== path);
+    if (!others.length) return;
+    const drop = new Set(names);
+    const next = { ...metaRef.current };
+    for (const p of others) {
+      const cur = next[p] || EMPTY_META;
+      next[p] = { ...cur, tags: cur.tags.filter((t) => !drop.has(t)) };
+    }
+    metaRef.current = next;
+    setMeta(next);
+    Promise.allSettled(others.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
+  };
 
   // T 패널: 토글(닫으면 태그 필터도 해제 — S 처럼). 바깥 클릭으로 닫히지 않음.
   const toggleTagPanel = () => {
@@ -963,8 +977,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // 셀에 넘기는 핸들러를 안정 참조로 고정(React.memo 가 변화 없는 셀을 건너뛰게).
   // ref 로 항상 최신 클로저를 가리켜 stale selection/meta(특히 다중선택 태그)를 방지.
-  const cellOpsRef = useRef({ toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, removeAssetTag });
-  cellOpsRef.current = { toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, removeAssetTag };
+  const cellOpsRef = useRef({ toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag });
+  cellOpsRef.current = { toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag };
   const cellOnS = useCallback((p: string) => cellOpsRef.current.toggleSource(p), []);
   const cellOnC = useCallback((p: string) => cellOpsRef.current.openComments(p), []);
   const cellOnTagsReplace = useCallback(
@@ -973,6 +987,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   );
   const cellOnBulkTagAdd = useCallback(
     (p: string, names: string[]) => cellOpsRef.current.bulkTagAdd(p, names),
+    [],
+  );
+  const cellOnBulkTagRemove = useCallback(
+    (p: string, names: string[]) => cellOpsRef.current.bulkTagRemove(p, names),
     [],
   );
   const cellOnTagCancel = useCallback(() => setTagEditPath(null), []);
@@ -1000,6 +1018,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       onC={cellOnC}
       onTagsReplace={cellOnTagsReplace}
       onBulkTagAdd={cellOnBulkTagAdd}
+      onBulkTagRemove={cellOnBulkTagRemove}
       onTagCancel={cellOnTagCancel}
       onInfo={onInfo}
       onExportDrag={exportDrag}

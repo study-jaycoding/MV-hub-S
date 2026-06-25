@@ -1301,6 +1301,21 @@ export default function App() {
     flash(`선택한 ${others.length + 1}개에 태그 적용`);
   };
 
+  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(g)는 onSetTags 가 처리, 나머지 선택 카드에서 제거(공통이면 사라짐).
+  const onBulkRemoveTags = (g: Generation, names: string[]) => {
+    const others = [...selectedRef.current].filter((id) => id !== g.id);
+    if (!others.length) return;
+    const idSet = new Set(others);
+    const drop = new Set(names);
+    const next = gensRef.current.map((x) =>
+      idSet.has(x.id) ? { ...x, tags: x.tags.filter((t) => !drop.has(t)) } : x,
+    );
+    applyGens(next);
+    Promise.allSettled(next.filter((x) => idSet.has(x.id)).map((x) => api.setTags(x.id, x.tags)))
+      .then(scheduleTagReload)
+      .catch(() => {});
+  };
+
   // 다중선택 전역(auto) 태그 일괄 부여 — 편집 카드(g)는 onSetAutoTags 가 처리, 나머지 선택 카드에 union.
   const onBulkAddAutoTags = (g: Generation, names: string[]) => {
     const others = [...selectedRef.current].filter((id) => id !== g.id);
@@ -1578,6 +1593,7 @@ export default function App() {
                     onSetSource={onSetSource}
                     onSetTags={onSetTags}
                     onBulkAddTags={onBulkAddTags}
+                    onBulkRemoveTags={onBulkRemoveTags}
                     autoTagOptions={facets.auto_tags}
                     onSetAutoTags={onSetAutoTags}
                     onBulkAddAutoTags={onBulkAddAutoTags}

@@ -25,6 +25,7 @@ interface Props {
   onSetSource: (g: Generation, name: string | null, isSource: boolean) => void;
   onSetTags: (g: Generation, tags: string[]) => void;
   onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
+  onBulkRemoveTags?: (g: Generation, names: string[]) => void; // 다중선택 시 ×해제를 선택 전체에(공통 삭제)
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터 # 두 번 모드
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
@@ -163,6 +164,8 @@ export function ThumbnailGrid(props: Props) {
       onSetTags: (g: Generation, tg: string[]) => propsRef.current.onSetTags(g, tg),
       onBulkAddTags: (g: Generation, names: string[]) =>
         propsRef.current.onBulkAddTags?.(g, names),
+      onBulkRemoveTags: (g: Generation, names: string[]) =>
+        propsRef.current.onBulkRemoveTags?.(g, names),
       onSetAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onSetAutoTags?.(g, names),
       onBulkAddAutoTags: (g: Generation, names: string[]) =>
@@ -463,6 +466,7 @@ export function ThumbnailGrid(props: Props) {
                     onSetSource={cb.onSetSource}
                     onSetTags={cb.onSetTags}
                     onBulkAddTags={cb.onBulkAddTags}
+                    onBulkRemoveTags={cb.onBulkRemoveTags}
                     selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                     autoTagOptions={props.autoTagOptions}
                     onSetAutoTags={cb.onSetAutoTags}
@@ -563,6 +567,7 @@ export function ThumbnailGrid(props: Props) {
                   onSetSource={cb.onSetSource}
                   onSetTags={cb.onSetTags}
                   onBulkAddTags={cb.onBulkAddTags}
+                  onBulkRemoveTags={cb.onBulkRemoveTags}
                   selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                   autoTagOptions={props.autoTagOptions}
                   onSetAutoTags={cb.onSetAutoTags}

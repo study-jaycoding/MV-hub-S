@@ -21,6 +21,7 @@ export function TagEditor({
   tags,
   onChange,
   onBulkAdd,
+  onBulkRemove,
   selectedCount = 1,
   global = null,
   onGlobalModeChange,
@@ -32,6 +33,7 @@ export function TagEditor({
   tags: string[];
   onChange: (next: string[]) => void; // 이 카드의 일반 태그 교체
   onBulkAdd?: (names: string[]) => void; // 다중선택 시 추가를 다른 선택 카드에도(이 카드 제외)
+  onBulkRemove?: (names: string[]) => void; // 다중선택 시 ×해제를 다른 선택 카드에도(공통 태그 일괄 삭제)
   selectedCount?: number; // 다중선택에 포함될 때 N. >1 이면 '선택된 카드 …' 배지.
   global?: TagEditorGlobal | null;
   onGlobalModeChange?: (on: boolean) => void; // 전역 모드 토글을 부모로 보고(다른 선택 카드 표시 동기화)
@@ -67,7 +69,10 @@ export function TagEditor({
     }
     setDraft("");
   };
-  const removeChip = (t: string) => applyTags(baseTags.filter((x) => x !== t)); // 이 카드만
+  const removeChip = (t: string) => {
+    applyTags(baseTags.filter((x) => x !== t)); // 이 카드
+    if (multi) onBulkRemove?.([t]); // 포커스 카드면 다른 선택 카드에서도(공통이면 일괄 삭제). 비포커스는 콜백 없어 개별.
+  };
   const setMode = (on: boolean) => {
     setInternalGlobalMode(on);
     onGlobalModeChange?.(on);

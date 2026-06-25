@@ -24,6 +24,7 @@ export const AssetCell = memo(function AssetCell({
   onC,
   onTagsReplace,
   onBulkTagAdd,
+  onBulkTagRemove,
   onTagCancel,
   onInfo,
   onExportDrag,
@@ -45,6 +46,7 @@ export const AssetCell = memo(function AssetCell({
   onC: (path: string) => void;
   onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
   onBulkTagAdd: (path: string, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
+  onBulkTagRemove: (path: string, names: string[]) => void; // 다중선택 시 ×해제를 선택 전체에(공통 삭제)
   onTagCancel: () => void;
   onInfo: (t: InfoTarget) => void;
   // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
@@ -138,6 +140,7 @@ export const AssetCell = memo(function AssetCell({
         tags={meta.tags}
         onChange={(next) => onTagsReplace(node.path, next)}
         onBulkAdd={(names) => onBulkTagAdd(node.path, names)}
+        onBulkRemove={(names) => onBulkTagRemove(node.path, names)}
         selectedCount={selectedCount}
         onClose={onTagCancel}
       />

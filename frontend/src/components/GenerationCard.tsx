@@ -57,6 +57,7 @@ interface Props {
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터에서 # 한 번 더로 카드에 부여/해제
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
+  onBulkRemoveTags?: (g: Generation, names: string[]) => void; // 다중선택 시 ×해제를 선택 전체에(공통 삭제)
   onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
   onBulkRemoveAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 해제를 선택 전체에
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
@@ -78,6 +79,7 @@ function GenerationCardImpl({
   autoTagOptions,
   onSetAutoTags,
   onBulkAddTags,
+  onBulkRemoveTags,
   onBulkAddAutoTags,
   onBulkRemoveAutoTags,
   selectedCount,
@@ -433,6 +435,7 @@ function GenerationCardImpl({
         tags={gen.tags}
         onChange={(next) => onSetTags(gen, next)}
         onBulkAdd={(names) => onBulkAddTags?.(gen, names)}
+        onBulkRemove={(names) => onBulkRemoveTags?.(gen, names)}
         selectedCount={selectedCount}
         onGlobalModeChange={onGlobalModeChange}
         global={
