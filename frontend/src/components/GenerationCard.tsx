@@ -11,7 +11,7 @@ import { buildPromptParts, refSrc } from "../lib/promptParts";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
-import { TagEditor } from "./TagEditor";
+import { TagEditor, TagStrip } from "./TagEditor";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "생성중",
@@ -57,7 +57,11 @@ interface Props {
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터에서 # 한 번 더로 카드에 부여/해제
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
+  onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
+  tagEditing?: boolean; // 다중선택 태그 편집 활성(편집 카드가 선택에 포함). 선택된 비포커스 카드에 스트립 표시
+  tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
+  onGlobalModeChange?: (on: boolean) => void; // 포커스 에디터의 전역모드 토글 보고
 }
 
 function GenerationCardImpl({
@@ -73,7 +77,11 @@ function GenerationCardImpl({
   autoTagOptions,
   onSetAutoTags,
   onBulkAddTags,
+  onBulkAddAutoTags,
   selectedCount,
+  tagEditing,
+  tagGlobalMode,
+  onGlobalModeChange,
   onOpenComments,
   editingField,
   onEditDone,
@@ -424,12 +432,14 @@ function GenerationCardImpl({
         onChange={(next) => onSetTags(gen, next)}
         onBulkAdd={(names) => onBulkAddTags?.(gen, names)}
         selectedCount={selectedCount}
+        onGlobalModeChange={onGlobalModeChange}
         global={
           onSetAutoTags
             ? {
                 all: autoTagOptions ?? [],
                 assigned: gen.auto_tags ?? [],
                 onChange: (next) => onSetAutoTags(gen, next),
+                onBulkAdd: (names) => onBulkAddAutoTags?.(gen, names),
               }
             : null
         }
@@ -459,6 +469,19 @@ function GenerationCardImpl({
           }
         }}
         onBlur={onEditDone}
+      />
+    </div>
+  ) : tagEditing && selected ? (
+    // 다중선택 편집 중 — 포커스가 아닌 선택 카드: 입력 없이 '적용 대상' 배지 + 이 카드의 기존 태그.
+    <div
+      className="card-status"
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <TagStrip
+        tags={gen.tags}
+        globalTags={gen.auto_tags}
+        badge={tagGlobalMode ? "선택된 카드 전역 적용" : "선택된 카드 태그 적용"}
       />
     </div>
   ) : !isList && (gen.color || gen.is_final) ? (

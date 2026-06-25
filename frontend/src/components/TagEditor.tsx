@@ -10,7 +10,8 @@ import { useState } from "react";
 export interface TagEditorGlobal {
   all: string[]; // 내 전역(auto) 태그 목록(사이드바에서 만든 것)
   assigned: string[]; // 이 카드에 부여된 전역 태그
-  onChange: (next: string[]) => void; // 교체(부여/해제 결과 전체)
+  onChange: (next: string[]) => void; // 교체(부여/해제 결과 전체) — 이 카드
+  onBulkAdd?: (names: string[]) => void; // 다중선택 시 전역 '부여'를 다른 선택 카드에도(이 카드 제외)
 }
 
 export function TagEditor({
@@ -19,6 +20,7 @@ export function TagEditor({
   onBulkAdd,
   selectedCount = 1,
   global = null,
+  onGlobalModeChange,
   onClose,
   placeholder,
 }: {
@@ -27,6 +29,7 @@ export function TagEditor({
   onBulkAdd?: (names: string[]) => void; // 다중선택 시 '추가'를 다른 선택 카드에도 적용(이 카드 제외)
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N. >1 이면 추가가 N개 전체에 적용됨을 표시.
   global?: TagEditorGlobal | null;
+  onGlobalModeChange?: (on: boolean) => void; // 전역 모드 토글을 부모로 보고(다른 선택 카드 배지 전환용)
   onClose: () => void;
   placeholder?: string;
 }) {
@@ -53,12 +56,17 @@ export function TagEditor({
     setDraft("");
   };
   const removeChip = (t: string) => applyTags(chips.filter((x) => x !== t));
+  const setMode = (on: boolean) => {
+    setGlobalMode(on);
+    onGlobalModeChange?.(on);
+  };
   const toggleGlobal = (name: string) => {
     if (!global) return;
     const has = assigned.includes(name);
     const next = has ? assigned.filter((x) => x !== name) : [...assigned, name];
     setAssigned(next);
-    global.onChange(next);
+    global.onChange(next); // 이 카드
+    if (!has && multi) global.onBulkAdd?.([name]); // 부여(추가)일 때만 다른 선택 카드에도. 해제는 이 카드만.
   };
 
   return (
@@ -70,7 +78,7 @@ export function TagEditor({
     >
       {multi && (
         <div className="te-multi" title="추가는 선택한 카드 전체에, ×(해제)는 이 카드만">
-          선택한 {selectedCount}개에 적용
+          {globalMode ? "선택된 카드 전역 적용" : "선택된 카드 태그 적용"}
         </div>
       )}
       {chips.length > 0 && (
@@ -100,7 +108,7 @@ export function TagEditor({
           } else if (e.key === "#" && global && draft === "") {
             // 입력이 비어 있을 때만 전역 모드 토글(태그 안에 # 입력은 허용)
             e.preventDefault();
-            setGlobalMode((v) => !v);
+            setMode(!globalMode);
           }
         }}
         onBlur={onClose}
@@ -126,6 +134,43 @@ export function TagEditor({
               );
             })
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 읽기전용 스트립 — 다중선택 편집 중, 포커스가 아닌 '선택된' 카드에 표시. 입력 없이 배지 + 그 카드의
+// 기존 태그(일반 칩 + 전역 칩)만 보여 '이 카드도 적용 대상'임과 현재 태그를 함께 보인다.
+export function TagStrip({
+  tags,
+  globalTags,
+  badge,
+}: {
+  tags: string[];
+  globalTags?: string[];
+  badge: string;
+}) {
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  return (
+    <div className="tag-editor tag-strip" onClick={stop} onMouseDown={stop} onDoubleClick={stop}>
+      <div className="te-multi">{badge}</div>
+      {tags.length > 0 && (
+        <div className="te-chips">
+          {tags.map((t) => (
+            <span className="te-chip ro" key={t}>
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+      {globalTags && globalTags.length > 0 && (
+        <div className="te-global ro">
+          {globalTags.map((t) => (
+            <span className="te-gchip ro on" key={t}>
+              {t}
+            </span>
+          ))}
         </div>
       )}
     </div>

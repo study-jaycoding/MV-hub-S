@@ -27,6 +27,7 @@ interface Props {
   onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터 # 두 번 모드
   onSetAutoTags?: (g: Generation, names: string[]) => void;
+  onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
   onRegenerate: (g: Generation) => void;
   onPublish: (g: Generation) => void;
@@ -138,6 +139,14 @@ export function ThumbnailGrid(props: Props) {
     [],
   );
   const editDone = useCallback(() => setEditTarget(null), []);
+  // 다중선택 태그 편집 중: 포커스가 아닌 '선택된' 카드에도 읽기전용 스트립을 보여 '적용 대상'임을 표시.
+  // tagGlobalMode = 포커스 에디터가 전역 모드인지(다른 카드 배지를 '전역 적용'으로 전환). 편집 대상이 바뀌면 리셋.
+  const [tagGlobalMode, setTagGlobalMode] = useState(false);
+  useEffect(() => setTagGlobalMode(false), [editTarget?.id]);
+  // 편집 카드가 다중선택에 포함될 때만 '적용 대상' 스트립을 띄운다(비선택 카드 편집 땐 안 띄움 — 오해 방지).
+  const tagEditing =
+    editTarget?.field === "tag" && editTarget.id != null &&
+    selectedIds.has(editTarget.id) && selectedIds.size > 1;
 
   // 카드에 넘기는 콜백을 '안정 참조'로 — App(갓-컴포넌트)이 매 렌더 새 콜백을 줘도, 카드가 받는
   // 콜백 prop 의 identity 는 고정돼 React.memo(GenerationCard)가 불필요한 재렌더를 건너뛴다.
@@ -155,6 +164,8 @@ export function ThumbnailGrid(props: Props) {
         propsRef.current.onBulkAddTags?.(g, names),
       onSetAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onSetAutoTags?.(g, names),
+      onBulkAddAutoTags: (g: Generation, names: string[]) =>
+        propsRef.current.onBulkAddAutoTags?.(g, names),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
       onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),
       onPublish: (g: Generation) => propsRef.current.onPublish(g),
@@ -452,6 +463,10 @@ export function ThumbnailGrid(props: Props) {
                     selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                     autoTagOptions={props.autoTagOptions}
                     onSetAutoTags={cb.onSetAutoTags}
+                    onBulkAddAutoTags={cb.onBulkAddAutoTags}
+                    tagEditing={tagEditing}
+                    tagGlobalMode={tagGlobalMode}
+                    onGlobalModeChange={setTagGlobalMode}
                     onOpenComments={cb.onOpenComments}
                     onRegenerate={cb.onRegenerate}
                     onPublish={cb.onPublish}
@@ -547,6 +562,10 @@ export function ThumbnailGrid(props: Props) {
                   selectedCount={selectedIds.has(g.id) && selectedIds.size > 1 ? selectedIds.size : 1}
                   autoTagOptions={props.autoTagOptions}
                   onSetAutoTags={cb.onSetAutoTags}
+                  onBulkAddAutoTags={cb.onBulkAddAutoTags}
+                  tagEditing={tagEditing}
+                  tagGlobalMode={tagGlobalMode}
+                  onGlobalModeChange={setTagGlobalMode}
                   onOpenComments={cb.onOpenComments}
                   onRegenerate={cb.onRegenerate}
                   onPublish={cb.onPublish}

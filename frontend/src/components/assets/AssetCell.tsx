@@ -3,7 +3,7 @@
 import { memo, useRef } from "react";
 import { api } from "../../api";
 import { download } from "../../lib/download";
-import { TagEditor } from "../TagEditor";
+import { TagEditor, TagStrip } from "../TagEditor";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -19,6 +19,7 @@ export const AssetCell = memo(function AssetCell({
   selectedCount,
   meta,
   editingTag,
+  tagEditing,
   onS,
   onC,
   onTagsReplace,
@@ -39,6 +40,7 @@ export const AssetCell = memo(function AssetCell({
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
   meta: AssetMeta;
   editingTag: boolean;
+  tagEditing?: boolean; // 다중선택 태그 편집 활성 — 선택된 비포커스 카드에 읽기전용 스트립 표시
   onS: (path: string) => void;
   onC: (path: string) => void;
   onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
@@ -139,6 +141,14 @@ export const AssetCell = memo(function AssetCell({
         selectedCount={selectedCount}
         onClose={onTagCancel}
       />
+    </div>
+  ) : tagEditing && selected ? (
+    <div
+      className="card-status"
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <TagStrip tags={meta.tags} badge="선택된 카드 태그 적용" />
     </div>
   ) : !isList && meta.color ? (
     <div className="card-colorbar" style={{ background: meta.color }} title="컬러 마커" />

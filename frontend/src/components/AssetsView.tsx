@@ -987,6 +987,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const cellOnTagCancel = useCallback(() => setTagEditPath(null), []);
 
   // 그리드/리스트가 공유하는 셀 목록(중복 제거). layout 한 값으로 둘 중 하나만 렌더된다.
+  // 다중선택 태그 편집 활성(편집 카드가 선택에 포함 + 2개 이상) — 선택된 비포커스 카드에 스트립 표시.
+  const tagEditingMulti = tagEditPath != null && selected.size > 1 && selPaths().includes(tagEditPath);
   const cellEls = files.map((f, i) => (
     <AssetCell
       key={f.path}
@@ -1000,6 +1002,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       focused={focusIdx === i}
       deactivated={disabledAssets.has(f.path)}
       selectedCount={selected.has(i) && selected.size > 1 ? selected.size : 1}
+      tagEditing={tagEditingMulti}
       meta={meta[f.path] || EMPTY_META}
       editingTag={tagEditPath === f.path}
       onS={cellOnS}
