@@ -108,6 +108,15 @@ export default function App() {
   const boardControl = useRef<{ zoomTo: (v: number) => void } | null>(null);
   const boardFocusIdRef = useRef<string | null>(null); // 진입(포커스) 카드 — 선택 없을 때 기본 부모
   boardFocusIdRef.current = boardFocusId;
+  // ★마지막으로 본 카드의 히스토리 — 다른 탭 갔다가 히스토리 탭으로 돌아오면 빈 화면 대신 이걸 복원.
+  // (다른 카드의 히스토리를 보기 전까지 유지. 재시작에도 살아남게 localStorage 에도 보관.)
+  const lastBoardFocusRef = useRef<string | null>(LS.get("boardFocusId", "") || null);
+  useEffect(() => {
+    if (boardFocusId) {
+      lastBoardFocusRef.current = boardFocusId;
+      LS.set("boardFocusId", boardFocusId);
+    }
+  }, [boardFocusId]);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
   const [caching, setCaching] = useState(false);
@@ -933,7 +942,9 @@ export default function App() {
     (tab: Filters["tab"]) =>
       navigate({
         tab,
-        focusId: tab === "compose" ? viewRef.current.focusId : null,
+        // 히스토리(compose) 탭으로 갈 때, 현재 focusId 가 비었으면(다른 탭에 다녀와 비워진 경우)
+        // 마지막으로 보던 카드로 복원 → 빈 히스토리 대신 직전 카드가 계속 보인다.
+        focusId: tab === "compose" ? viewRef.current.focusId || lastBoardFocusRef.current : null,
         ov: null,
         key: 0,
       }),
