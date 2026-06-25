@@ -22,6 +22,7 @@ from ..deps import (
     current_account,
     require_edit_generation,
     require_project_role,
+    require_view_generation,
 )
 from ..models import GenerationOut, ImportIn, PublishIn
 
@@ -208,6 +209,7 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
             src = repo.get_generation(gen_id)
     if not src:
         raise HTTPException(status_code=404, detail="원본 generation 없음")
+    require_view_generation(request, src)  # ⑥: 볼 수 있는 것만 가져올 수 있다(멤버십 경계 일치)
     if not src["shared"]:
         raise HTTPException(status_code=409, detail="공유되지 않은 항목은 가져올 수 없음")
     # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).

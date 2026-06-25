@@ -132,16 +132,27 @@ def require_admin(request: Request) -> None:
 
 # ── 생성물 단위 가시성/편집 가드 (원칙: 내 정보 DB 는 나만, 내가 공유해야 남이 열람) ──────
 def can_view_generation(request: Request, gen: dict[str, Any]) -> bool:
-    """열람 권한 — 비공개는 본인만, 공유(shared)된 것은 누구나, 전역 read_all(admin·PM·PD)은 전체."""
+    """열람 권한 — 비공개는 본인만, 전역 read_all(admin·PM·PD)은 전체, 공유물은 **list(team 탭)와
+    동일 경계**(내가 멤버인 프로젝트의 공유물만; 미분류·비멤버 프로젝트 제외).
+
+    ★⑥: 예전엔 shared 면 누구나 통과라, 목록엔 멤버십으로 가려진 공유물을 id 만 알면 단건/코멘트/
+    import 로 열람하던 우회가 있었다. 단건 가시성을 list 와 일치시켜 그 간극을 닫는다."""
     if not AUTH_ENABLED:
-        return True
-    if gen.get("shared"):
         return True
     acc = current_account(request)
     uid = acc.get("creator_uid") if acc else None
     if uid and gen.get("creator_uid") == uid:
-        return True
-    return rbac.has_global_cap(account_global_roles(request), "read_all")
+        return True  # 내 것
+    if rbac.has_global_cap(account_global_roles(request), "read_all"):
+        return True  # admin·PM·PD 전체
+    if gen.get("shared"):
+        pid = gen.get("project_id")
+        if pid and uid:
+            from . import repo  # 지역 import(순환 회피)
+
+            return pid in set(repo.my_member_projects(uid))
+        return False  # 미분류(프로젝트 없음) 공유물은 비멤버에게 안 보임(list 와 동일)
+    return False
 
 
 def require_view_generation(request: Request, gen: dict[str, Any]) -> None:
