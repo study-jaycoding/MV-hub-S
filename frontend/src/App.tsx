@@ -586,19 +586,32 @@ export default function App() {
   useEffect(() => LS.set("composerExpanded", composerExpanded ? "1" : "0"), [composerExpanded]);
 
   // ── 선택 항목 대상 단축키 작업 (s=소스 / #=태그 / r·g·b=컬러) ──
+  // 색 토글 reload 디바운스용 — r→g→b 연타 시 매번 light reload 하던 직렬화를 마지막 1회로 합친다.
+  const colorReloadTimer = useRef<number | null>(null);
   const colorSelected = async (ids: string[], color: string) => {
     // 토글: 선택한 카드가 모두 이미 그 색이면 해제(null), 아니면 그 색으로 지정.
     const idSet = new Set(ids);
     const sel = gensRef.current.filter((g) => idSet.has(g.id));
     const allSame = sel.length > 0 && sel.every((g) => g.color === color);
     const next = allSame ? null : color;
+    // 옵티미스틱: 화면(로컬 gens)에 즉시 반영 — 연타해도 바로 보이고 서버 왕복을 기다리지 않는다.
+    setGens((prev) => prev.map((g) => (idSet.has(g.id) ? { ...g, color: next } : g)));
     // 병렬 실행(순차 await 제거) + 실패는 조용히 삼키지 말고 집계해 보고.
     const results = await Promise.allSettled(ids.map((id) => api.setColor(id, next)));
     const failed = results.filter((r) => r.status === "rejected").length;
-    // light reload — 컬러는 고정 팔레트(r/g/b)라 facets/projects 가 안 변한다(연속 토글 시 불필요한
-    // facet·project 재조회 제거). 태그/소스는 facet 이 바뀔 수 있어 light 안 함.
-    await reload(false, true);
-    if (failed) flash(`컬러 적용 ${failed}/${ids.length}건 실패`);
+    if (colorReloadTimer.current) clearTimeout(colorReloadTimer.current);
+    if (failed) {
+      // 실패 → 옵티미스틱이 틀렸을 수 있으니 즉시 서버 기준으로 reconcile + 보고.
+      colorReloadTimer.current = null;
+      await reload(false, true);
+      flash(`컬러 적용 ${failed}/${ids.length}건 실패`);
+      return;
+    }
+    // 성공 → light reload 를 디바운스(컬러는 고정 팔레트라 facets/projects 불변, 마지막 1회만 reconcile).
+    colorReloadTimer.current = window.setTimeout(() => {
+      colorReloadTimer.current = null;
+      reload(false, true);
+    }, 350);
   };
 
   useEffect(() => {
