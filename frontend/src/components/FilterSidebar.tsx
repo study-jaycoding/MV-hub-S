@@ -241,6 +241,8 @@ interface Props {
   onToggleColor: (hex: string) => void;
   finalOnly?: boolean; // 골드 필터: 최종(골드)만 (툴바와 상태 공유)
   onToggleFinal?: () => void;
+  grayOn?: boolean; // 회색 필터: 비활성(회색) 카드 숨기기(툴바와 상태 공유)
+  onToggleGray?: () => void;
   armedAutoTags: Set<string>; // 무장된 전역 태그(다음 생성에 자동 적용)
   onToggleAutoTag: (t: string) => void;
   onAddAutoTag: () => void;
@@ -257,6 +259,8 @@ export function FilterSidebar({
   onToggleColor,
   finalOnly = false,
   onToggleFinal,
+  grayOn = false,
+  onToggleGray,
   armedAutoTags,
   onToggleAutoTag,
   onAddAutoTag,
@@ -287,6 +291,14 @@ export function FilterSidebar({
       <section>
         <h4>{tr("컬러")}</h4>
         <div className="color-dots">
+          {/* 회색 dot — 맨 앞(골드 좌측). 누르면 비활성(회색) 카드만 숨김(다른 dot 과 반대). */}
+          {onToggleGray && (
+            <button
+              className={"af-dot af-dot-gray" + (grayOn ? " on" : "")}
+              title="비활성화(회색)된 카드만 숨기기 (다른 dot 과 반대)"
+              onClick={onToggleGray}
+            />
+          )}
           {/* 골드 dot — 레드 앞. 누르면 최종(골드) 지정된 것만 필터(툴바 골드 dot 과 동일 상태). */}
           {onToggleFinal && (
             <button

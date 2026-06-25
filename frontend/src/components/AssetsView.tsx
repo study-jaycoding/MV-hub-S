@@ -13,6 +13,7 @@ import { makeStore } from "../lib/storage";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import type { AssetComment, AssetMeta, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
+import { loadDisabledAssets, toggleDisabledAssets, DISABLED_EVENT } from "../lib/deactivated";
 import { FolderTree } from "./assets/FolderTree";
 import { MountManager } from "./assets/MountManager";
 import { setSingleFileDrag, setZipDrag } from "./assets/exportDrag";
@@ -135,6 +136,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }
   });
   const [sourceOnly, setSourceOnly] = useState(() => LS.get("sourceOnly", "0") === "1");
+  // 회색(비활성) — 에셋은 path 기준. grayOn=ON 이면 비활성 카드 숨김(다른 dot 과 반대).
+  const [disabledAssets, setDisabledAssets] = useState<Set<string>>(loadDisabledAssets);
+  const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
   // C 필터: 새(미확인) 코멘트가 있는 파일만 보기
   const [commentOnly, setCommentOnly] = useState(() => LS.get("commentOnly", "0") === "1");
   // 태그 필터(다중 — Shift/Ctrl+클릭으로 중복 선택, 합집합). 구버전 단일 키에서 마이그레이션.
@@ -255,6 +259,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 검색/필터도 저장 → 보던 화면 그대로 복원
   useEffect(() => LS.set("query", query), [query]);
   useEffect(() => LS.set("colors", JSON.stringify([...activeColors])), [activeColors]);
+  useEffect(() => LS.set("grayOn", grayOn ? "1" : "0"), [grayOn]);
+  // 비활성(회색) 집합은 lib/deactivated 가 영속·전파. 다른 화면에서 토글돼도 갱신.
+  useEffect(() => {
+    const h = () => setDisabledAssets(loadDisabledAssets());
+    window.addEventListener(DISABLED_EVENT, h);
+    return () => window.removeEventListener(DISABLED_EVENT, h);
+  }, []);
   useEffect(() => LS.set("sourceOnly", sourceOnly ? "1" : "0"), [sourceOnly]);
   useEffect(() => LS.set("commentOnly", commentOnly ? "1" : "0"), [commentOnly]);
   useEffect(() => LS.set("activeTags", JSON.stringify([...activeTags])), [activeTags]);
@@ -329,11 +340,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }
     // 타입 모드(이미지/영상/오디오)는 폴더·검색 결과 위에 결합 — 그 타입만 남긴다.
     if (typeFilter) result = result.filter((f) => f.type === typeFilter);
+    // 회색 버튼 ON → 비활성(회색) 카드 제외(숨김). 색 dot 과 반대 방향.
+    if (grayOn) result = result.filter((f) => !disabledAssets.has(f.path));
     // 날짜별 구분 모드: 폴더 순(알파벳) 대신 파일 날짜 내림차순으로 정렬 → 같은 날짜가 연속.
     if (groupByDate)
       result = [...result].sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
     return result;
-  }, [tree, dir, query, meta, searchActive, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate]);
+  }, [tree, dir, query, meta, searchActive, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate, grayOn, disabledAssets]);
 
   // 날짜별 그룹(인덱스 기준) — 헤더 체크박스가 그 날짜의 모든 파일을 한 번에 선택.
   const dateGroups = useMemo(() => {
@@ -730,6 +743,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       else if (k === "r") { e.preventDefault(); colorAssets(paths, ASSET_COLORS.r); }
       else if (k === "g") { e.preventDefault(); colorAssets(paths, ASSET_COLORS.g); }
       else if (k === "b") { e.preventDefault(); colorAssets(paths, ASSET_COLORS.b); }
+      else if (k === "d") { e.preventDefault(); toggleDisabledAssets(paths); } // 비활성(회색) 토글
     }
   };
 
@@ -977,6 +991,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       fit={fit}
       selected={selected.has(i)}
       focused={focusIdx === i}
+      deactivated={disabledAssets.has(f.path)}
       meta={meta[f.path] || EMPTY_META}
       editingTag={tagEditPath === f.path}
       onS={cellOnS}
@@ -1337,6 +1352,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             <div className="assets-tools">
               {/* 필터: 컬러 dot · S(소스만) · T(태그 패널) — 슬라이더 왼쪽 */}
               <div className="assets-filters">
+                {/* 회색 dot — 맨 앞(r 좌측). 다른 dot 과 반대: ON 이면 비활성(회색) 카드를 숨김. */}
+                <button
+                  className={"af-dot af-dot-gray" + (grayOn ? " on" : "")}
+                  title="비활성화(회색)된 카드만 숨기기 (다른 dot 과 반대)"
+                  onClick={() => setGrayOn((v) => !v)}
+                />
                 {(["r", "g", "b"] as const).map((k) => {
                   const c = ASSET_COLORS[k];
                   const on = activeColors.has(c);

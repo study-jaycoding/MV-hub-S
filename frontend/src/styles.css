@@ -1103,6 +1103,12 @@ select optgroup {
 }
 
 /* 휴지통(soft delete) — '지운 생성물 보기' 시 흐리게. 호버하면 조금 또렷(복구 액션 보이게). */
+/* 비활성(회색) — d 키 토글. 히스토리(보드)는 흑백+70%축소지만, 여기(생성/공유)는 크기 유지·색만 회색. */
+.gen-cell.deactivated .card { filter: grayscale(1) brightness(0.55); }
+.gen-cell.deactivated .card:hover { filter: grayscale(0.3) brightness(0.85); }
+/* 에셋 셀도 동일 — 색만 회색, 크기 유지. */
+.asset-cell.deactivated .asset-media { filter: grayscale(1) brightness(0.55); }
+.asset-cell.deactivated:hover .asset-media { filter: grayscale(0.3) brightness(0.85); }
 .card.deleted { opacity: 0.3; filter: grayscale(0.35); }
 .card.deleted:hover { opacity: 0.6; filter: none; }
 .card.deleted.selected { opacity: 0.85; filter: none; }
@@ -2288,6 +2294,15 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .af-dot-gold.on {
   filter: brightness(1.15) saturate(1.2); opacity: 1; border-color: #fff;
   box-shadow: 0 0 0 2px #ffcf33, 0 0 11px #ffcf33;
+}
+/* 회색 dot — 골드 좌측(맨 앞). 다른 dot 과 반대: ON 이면 비활성(회색) 카드를 '숨김'. */
+.af-dot-gray {
+  background: linear-gradient(135deg, #8a8f98, #555a62);
+  filter: brightness(0.7); opacity: 0.85; border-color: rgba(0,0,0,0.4);
+}
+.af-dot-gray.on {
+  filter: brightness(1.2); opacity: 1; border-color: #fff;
+  box-shadow: 0 0 0 2px #9aa0a8, 0 0 11px rgba(154,160,168,0.8);
 }
 .af-btn {
   min-width: 26px; height: 24px; padding: 0 7px; border-radius: 7px;

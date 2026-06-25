@@ -8,23 +8,13 @@ import { download, downloadName } from "../lib/download";
 import { thumbOf } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { matchShortcut } from "../lib/shortcuts";
+import { loadDisabledGen, toggleDisabledGen, DISABLED_EVENT } from "../lib/deactivated";
 import { MediaThumbnail } from "./MediaThumbnail";
 import type { Generation, HistoryGraph, InfoTarget, PreviewTarget } from "../types";
 
 const edgeKey = (parent: string, child: string) => parent + ">" + child;
 
-// 비활성화(회색) 표시 — 시각 전용(로컬). gen id 기준 전역 영속(어느 트리에서 봐도 동일).
-// 옛 키(ch.lineage.*)에서 1회 폴백 읽기 — 리네임 전 저장값 보존.
-const DIS_KEY = "ch.history.disabled";
-const DIS_KEY_OLD = "ch.lineage.disabled";
-const loadDisabled = (): Set<string> => {
-  try {
-    const raw = localStorage.getItem(DIS_KEY) ?? localStorage.getItem(DIS_KEY_OLD) ?? "[]";
-    return new Set(JSON.parse(raw) as string[]);
-  } catch {
-    return new Set();
-  }
-};
+// 비활성화(회색) 표시는 lib/deactivated 로 이동(생성/공유 라이브러리와 한 소스 공유).
 
 // 수동 위치(드래그로 옮긴 카드) — gen id 기준 전역 영속. 없으면 자동 레이아웃 위치 사용.
 const POS_KEY = "ch.history.pos";
@@ -118,7 +108,7 @@ export function HistoryBoard({
   const [, setLoading] = useState(false); // 로딩 표시 바 제거 — 상태만 유지(요청 진행 추적)
   const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set()); // 다중 선택(비교용)
-  const [disabled, setDisabled] = useState<Set<string>>(loadDisabled); // 비활성화(회색) 표시
+  const [disabled, setDisabled] = useState<Set<string>>(loadDisabledGen); // 비활성화(회색) 표시
   const [manualPos, setManualPos] = useState<Record<string, XY>>(loadPos); // 드래그로 옮긴 위치
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -162,10 +152,12 @@ export function HistoryBoard({
     setSelected(new Set());
   }, [focusId]);
 
-  // 비활성화 상태 영속(새로고침해도 유지)
+  // 비활성화 상태는 lib/deactivated 가 영속·전파. 다른 화면(라이브러리)에서 토글되면 여기도 갱신.
   useEffect(() => {
-    localStorage.setItem(DIS_KEY, JSON.stringify([...disabled]));
-  }, [disabled]);
+    const h = () => setDisabled(loadDisabledGen());
+    window.addEventListener(DISABLED_EVENT, h);
+    return () => window.removeEventListener(DISABLED_EVENT, h);
+  }, []);
 
   // 단축키 d — 선택한 노드의 비활성화(회색) 토글. 입력 중엔 무시. 구성탭(focusId) 볼 때만.
   useEffect(() => {
@@ -178,12 +170,7 @@ export function HistoryBoard({
         const ids = [...selectedRef.current];
         if (!ids.length) return;
         e.preventDefault();
-        setDisabled((prev) => {
-          const next = new Set(prev);
-          const allOff = ids.every((id) => next.has(id));
-          ids.forEach((id) => (allOff ? next.delete(id) : next.add(id))); // 전부 꺼져있으면 켜기, 아니면 끄기
-          return next;
-        });
+        toggleDisabledGen(ids); // 토글 + 영속 + 전파(리스너가 setDisabled 갱신)
       } else if (matchShortcut(e, "boardArrange")) {
         // 자동 정렬 — 선택 카드의 수동 위치를 지워 기본 레이아웃(같은 레벨=세로, 연결=우측)으로 복귀.
         // 선택이 없으면 전체를 자동 정렬.

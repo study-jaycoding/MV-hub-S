@@ -18,6 +18,7 @@ import { GenCommentPanel } from "./components/GenCommentPanel";
 import { InfoPopup } from "./components/InfoPopup";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LibraryToolbar } from "./components/LibraryToolbar";
+import { loadDisabledGen, toggleDisabledGen, DISABLED_EVENT } from "./lib/deactivated";
 import { MediaPreview } from "./components/MediaPreview";
 import { ProjectAssignMenu } from "./components/ProjectAssignMenu";
 import { SpotlightPrompt } from "./components/SpotlightPrompt";
@@ -188,6 +189,10 @@ export default function App() {
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
   const [commentOnly, setCommentOnly] = useState(() => LS.get("commentOnly", "0") === "1"); // C 필터: 미확인 코멘트만
   const [finalOnly, setFinalOnly] = useState(() => LS.get("finalOnly", "0") === "1"); // 골드 필터: 최종(골드)만
+  // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn=ON 이면 비활성 카드를 목록에서 제외.
+  // 다른 색 dot 과 반대: 색 dot=그 색만 보임(포함), 회색=비활성만 숨김(제외).
+  const [disabledGen, setDisabledGen] = useState<Set<string>>(loadDisabledGen);
+  const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
   // 전역 태그 — 사이드바에서 '무장'한 것들. 다음 생성에 자동 적용(별도 네임스페이스).
   const [armedAutoTags, setArmedAutoTags] = useState<Set<string>>(() => LS.loadSet("armedAutoTags"));
   // 프로젝트(작업 묶음) — App 단일 소스. 사이드바 필터 + 선택바 귀속이 공유.
@@ -652,6 +657,12 @@ export default function App() {
       } else if (matchShortcut(e, "colorBlue")) {
         e.preventDefault();
         colorSelected(ids, KEY_COLORS.b);
+      } else if (matchShortcut(e, "boardDisable")) {
+        // d = 비활성화(회색) 토글. 구성탭(보드)에서는 보드가 직접 처리하므로 중복 방지 위해 제외.
+        if (filtersRef.current.tab !== "compose") {
+          e.preventDefault();
+          toggleDisabledGen(ids);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -707,6 +718,13 @@ export default function App() {
   useEffect(() => LS.set("sharedOnly", sharedOnly ? "1" : "0"), [sharedOnly]);
   useEffect(() => LS.set("commentOnly", commentOnly ? "1" : "0"), [commentOnly]);
   useEffect(() => LS.set("finalOnly", finalOnly ? "1" : "0"), [finalOnly]);
+  useEffect(() => LS.set("grayOn", grayOn ? "1" : "0"), [grayOn]);
+  // 비활성(회색) 집합은 lib/deactivated 가 영속·전파. 보드/라이브러리 어디서 토글돼도 여기서 재조회.
+  useEffect(() => {
+    const h = () => setDisabledGen(loadDisabledGen());
+    window.addEventListener(DISABLED_EVENT, h);
+    return () => window.removeEventListener(DISABLED_EVENT, h);
+  }, []);
   useEffect(() => LS.set("tagFilter", JSON.stringify([...tagFilter])), [tagFilter]);
   useEffect(() => LS.set("armedAutoTags", JSON.stringify([...armedAutoTags])), [armedAutoTags]);
 
@@ -746,6 +764,9 @@ export default function App() {
   // 로컬 우선: 내 작업(tab=my)은 로컬 DB 를 그대로 읽으므로 로드된 페이지가 곧 화면 결과
   // (진행중·실패 placeholder 포함). 별도 머지 불필요.
   const visibleGens = gens;
+  // 회색 버튼 ON → 비활성(회색)으로 표시된 카드를 그리드에서 제외(숨김). 색 dot 과 반대 방향 필터.
+  // (비활성은 로컬 시각 상태라 서버가 모름 → 클라이언트 측에서 거른다.)
+  const gridGens = grayOn ? visibleGens.filter((g) => !disabledGen.has(g.id)) : visibleGens;
 
   // 미확인 코멘트 여부·실패 수는 전역 파생값 → 서버 stats 에서(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
@@ -1408,6 +1429,8 @@ export default function App() {
                 onToggleColor={toggleColorFilter}
                 finalOnly={finalOnly}
                 onToggleFinal={() => setFinalOnly((v) => !v)}
+                grayOn={grayOn}
+                onToggleGray={() => setGrayOn((v) => !v)}
                 armedAutoTags={armedAutoTags}
                 onToggleAutoTag={toggleArmedAutoTag}
                 onAddAutoTag={addAutoTag}
@@ -1432,8 +1455,10 @@ export default function App() {
                 onToggleGroupByDate={() => setGroupByDate((v) => !v)}
                 filtersOpen={showFilters}
                 onToggleFilters={() => setShowFilters((v) => !v)}
-                count={visibleGens.length}
+                count={gridGens.length}
                 countMore={hasMore}
+                grayOn={grayOn}
+                onToggleGray={() => setGrayOn((v) => !v)}
                 loading={loading}
                 failedCount={failedCount}
                 onClearFailed={clearFailed}
@@ -1460,7 +1485,8 @@ export default function App() {
                 onToggleTagPanel={toggleTagPanel}
               />
               <ThumbnailGrid
-                    generations={visibleGens}
+                    generations={gridGens}
+                    disabledIds={disabledGen}
                     tab={filters.tab}
                     myCreatorUid={account?.creator_uid ?? null}
                     scale={scale}

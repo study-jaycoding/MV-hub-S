@@ -12,6 +12,7 @@ import { GenerationCard } from "./GenerationCard";
 
 interface Props {
   generations: Generation[];
+  disabledIds?: Set<string>; // 비활성(회색)으로 표시된 gen id — 카드를 회색 처리(크기는 유지)
   tab: "my" | "team";
   myCreatorUid?: string | null; // 내 creator_uid — 팀 탭 가져오기 버튼 노출 판별에 카드로 전달
   scale: number; // 카드 크기 배율 (그리드 모드)
@@ -421,7 +422,7 @@ export function ThumbnailGrid(props: Props) {
               }
               out.push(
                 <div
-                  className="gen-cell list"
+                  className={"gen-cell list" + (props.disabledIds?.has(g.id) ? " deactivated" : "")}
                   data-id={g.id}
                   key={g.id}
                   style={{ height: Math.round(300 * scale) }}
@@ -508,7 +509,11 @@ export function ThumbnailGrid(props: Props) {
             }
             out.push(
               <div
-                className={"gen-cell" + (i === focusIdx ? " focused" : "")}
+                className={
+                  "gen-cell" +
+                  (i === focusIdx ? " focused" : "") +
+                  (props.disabledIds?.has(g.id) ? " deactivated" : "")
+                }
                 data-id={g.id}
                 data-idx={i}
                 key={g.id}

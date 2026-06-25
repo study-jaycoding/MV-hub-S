@@ -14,6 +14,7 @@ export const AssetCell = memo(function AssetCell({
   fit,
   selected,
   focused,
+  deactivated,
   meta,
   editingTag,
   onS,
@@ -31,6 +32,7 @@ export const AssetCell = memo(function AssetCell({
   fit: "cover" | "contain";
   selected: boolean;
   focused: boolean;
+  deactivated?: boolean; // 비활성(회색) 표시 — d 키. 색만 회색, 크기 유지(히스토리와 달리 축소 안 함)
   meta: AssetMeta;
   editingTag: boolean;
   onS: (path: string) => void;
@@ -155,7 +157,8 @@ export const AssetCell = memo(function AssetCell({
         "asset-cell" +
         (isList ? " list" : "") +
         (selected ? " selected" : "") +
-        (focused ? " focused" : "")
+        (focused ? " focused" : "") +
+        (deactivated ? " deactivated" : "")
       }
       style={cellStyle}
       data-idx={idx}
