@@ -77,6 +77,27 @@ def add_auto_tags(gen_id: str, names: Iterable[str]) -> None:
         _set_auto_tags(conn, gen_id, names)
 
 
+def set_gen_auto_tags(gen_id: str, names: Iterable[str]) -> None:
+    """이 결과물의 전역(auto) 태그를 정확히 이 집합으로 교체(기존 제거 후 부여). 카드의 # 피커가
+    호출 — 작성자(creator_uid)가 '이미 가진' 전역 태그만 부여하고, 모르는 이름은 조용히 무시한다
+    (전역 태그 '생성'은 사이드바 전용 — 여기서 새 auto_tag 를 만들지 않는다)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()
+        owner_uid = row["creator_uid"] if row else None
+        conn.execute("DELETE FROM gen_auto_tag WHERE generation_id=?", (gen_id,))
+        for name in {t.strip() for t in names if t and t.strip()}:
+            r = conn.execute(
+                "SELECT id FROM auto_tag WHERE name=? AND owner_uid IS ?", (name, owner_uid)
+            ).fetchone()
+            if r:
+                conn.execute(
+                    "INSERT OR IGNORE INTO gen_auto_tag(generation_id, auto_tag_id) VALUES(?,?)",
+                    (gen_id, r["id"]),
+                )
+
+
 def create_auto_tag(name: str, owner_uid: Optional[str] = None) -> bool:
     """전역 태그 추가(+버튼) — 그 계정(owner_uid) 네임스페이스에. 같은 계정에 이미 있으면 False.
     다른 계정이 같은 이름을 갖고 있어도 충돌하지 않는다(계정별 소유)."""

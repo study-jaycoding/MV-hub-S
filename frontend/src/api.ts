@@ -416,6 +416,13 @@ export const api = {
       body: JSON.stringify({ tags }),
     }),
 
+  // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
+  setGenAutoTags: (id: string, auto_tags: string[]) =>
+    jsonFetch<Generation>(`/api/generations/${id}/auto-tags`, {
+      method: "PUT",
+      body: JSON.stringify({ auto_tags }),
+    }),
+
   // 태그 전역 삭제(모든 생성본에서 제거) — 에셋 T 패널 ✕ 와 동일
   deleteTag: (tag: string) =>
     jsonFetch<{ removed: number }>(`/api/tags/${encodeURIComponent(tag)}`, {

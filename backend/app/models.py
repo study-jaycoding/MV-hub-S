@@ -201,6 +201,10 @@ class TagsIn(BaseModel):
     tags: list[str]
 
 
+class AutoTagsIn(BaseModel):
+    auto_tags: list[str]
+
+
 class ColorIn(BaseModel):
     color: Optional[str] = None
 

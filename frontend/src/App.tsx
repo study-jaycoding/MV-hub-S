@@ -1259,6 +1259,15 @@ export default function App() {
     }
   };
 
+  const onSetAutoTags = async (g: Generation, names: string[]) => {
+    try {
+      await api.setGenAutoTags(g.id, names);
+      reload();
+    } catch (e) {
+      flash("전역 태그 변경 실패: " + String(e));
+    }
+  };
+
   const onLogout = async () => {
     setGens([]); // 로그아웃 즉시 데이터 비우기
     // 로컬 허브(AUTH off): 신원은 '팀서버 토큰'이라, 그걸 지워야 게이트(ServerLoginScreen)가
@@ -1498,6 +1507,8 @@ export default function App() {
                     onToggleSelect={toggleSelect}
                     onSetSource={onSetSource}
                     onSetTags={onSetTags}
+                    autoTagOptions={facets.auto_tags}
+                    onSetAutoTags={onSetAutoTags}
                     onOpenComments={(g) => openComment(g.id)}
                     onRegenerate={onRegenerate}
                     onPublish={onPublish}

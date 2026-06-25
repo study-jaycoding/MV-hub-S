@@ -24,6 +24,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import (
+    AutoTagsIn,
     ColorIn,
     CommentIn,
     GenerationOut,
@@ -279,6 +280,13 @@ def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirro
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
 def set_tags(gen_id: str, body: TagsIn, request: Request):
     return _set_meta(gen_id, request, lambda i: repo.set_tags(i, body.tags))  # 개인 전용 — 미러 안 함
+
+
+@router.put("/generations/{gen_id}/auto-tags", response_model=GenerationOut)
+def set_gen_auto_tags(gen_id: str, body: AutoTagsIn, request: Request):
+    # 전역(auto) 태그를 카드에 부여/해제 — 일반태그와 동형(개인 전용, 미러 안 함).
+    # repo 가 작성자 소유의 '기존' 전역 태그만 부여(신규 생성은 사이드바 전용).
+    return _set_meta(gen_id, request, lambda i: repo.set_gen_auto_tags(i, body.auto_tags))
 
 
 @router.delete("/tags/{tag}")

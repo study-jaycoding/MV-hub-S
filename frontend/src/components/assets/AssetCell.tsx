@@ -3,6 +3,7 @@
 import { memo, useRef } from "react";
 import { api } from "../../api";
 import { download } from "../../lib/download";
+import { TagEditor } from "../TagEditor";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -19,7 +20,7 @@ export const AssetCell = memo(function AssetCell({
   editingTag,
   onS,
   onC,
-  onTagCommit,
+  onTagsReplace,
   onTagCancel,
   onInfo,
   onExportDrag,
@@ -37,7 +38,7 @@ export const AssetCell = memo(function AssetCell({
   editingTag: boolean;
   onS: (path: string) => void;
   onC: (path: string) => void;
-  onTagCommit: (path: string, tags: string[]) => void;
+  onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
   onTagCancel: () => void;
   onInfo: (t: InfoTarget) => void;
   // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
@@ -127,23 +128,10 @@ export const AssetCell = memo(function AssetCell({
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     >
-      <input
-        className="cs-tag-input"
-        autoFocus
-        placeholder="태그 입력(쉼표) ⏎"
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          if (e.key === "Enter") {
-            const add = (e.target as HTMLInputElement).value
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean);
-            onTagCommit(node.path, add);
-          } else if (e.key === "Escape") {
-            onTagCancel();
-          }
-        }}
-        onBlur={onTagCancel}
+      <TagEditor
+        tags={meta.tags}
+        onChange={(next) => onTagsReplace(node.path, next)}
+        onClose={onTagCancel}
       />
     </div>
   ) : !isList && meta.color ? (

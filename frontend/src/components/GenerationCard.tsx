@@ -11,6 +11,7 @@ import { buildPromptParts, refSrc } from "../lib/promptParts";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
+import { TagEditor } from "./TagEditor";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "생성중",
@@ -53,6 +54,8 @@ interface Props {
   onInfo: (t: InfoTarget) => void;
   onPreview: (t: PreviewTarget) => void;
   onShowHistory?: (g: Generation) => void; // 히스토리 뱃지 클릭 → 가계 패널
+  autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터에서 # 한 번 더로 카드에 부여/해제
+  onSetAutoTags?: (g: Generation, names: string[]) => void;
 }
 
 function GenerationCardImpl({
@@ -65,6 +68,8 @@ function GenerationCardImpl({
   onToggleSelect,
   onSetSource, // (생성탭 S는 공유로 전환 — 소스 편집 경로는 사용 안 함, 에디터 호환용으로만 유지)
   onSetTags,
+  autoTagOptions,
+  onSetAutoTags,
   onOpenComments,
   editingField,
   onEditDone,
@@ -403,7 +408,29 @@ function GenerationCardImpl({
   // 하단 영역: 모든 버튼(S·T·C)·작업자 표시가 카드 위(좌상단 card-tl / 우상단 creator-badge)로 이전됨.
   //  → 평소엔 하단 바를 두지 않고, (1) 소스/태그 인라인 편집 중이거나 (2) r/g/b 컬러가 있을 때만 표시.
   //  편집 중 = 입력 바, 컬러만 = 얇은 컬러 마커 스트립(그리드). 리스트는 자체 list-color-bar 가 색 담당.
-  const statusBar = editingField ? (
+  const statusBar = editingField === "tag" ? (
+    <div
+      className="card-status"
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <TagEditor
+        tags={gen.tags}
+        onChange={(next) => onSetTags(gen, next)}
+        global={
+          onSetAutoTags
+            ? {
+                all: autoTagOptions ?? [],
+                assigned: gen.auto_tags ?? [],
+                onChange: (next) => onSetAutoTags(gen, next),
+              }
+            : null
+        }
+        onClose={onEditDone}
+      />
+    </div>
+  ) : editingField === "source" ? (
     <div
       className="card-status"
       onClick={(e) => e.stopPropagation()}
@@ -413,14 +440,13 @@ function GenerationCardImpl({
       <input
         className="cs-tag-input"
         autoFocus
-        defaultValue={editingField === "source" ? gen.source_name || "" : gen.tags.join(", ")}
-        placeholder={editingField === "source" ? "소스 이름 @이름 ⏎" : "태그(쉼표 구분) ⏎"}
+        defaultValue={gen.source_name || ""}
+        placeholder="소스 이름 @이름 ⏎"
         onKeyDown={(e) => {
           e.stopPropagation();
           const v = (e.target as HTMLInputElement).value;
           if (e.key === "Enter") {
-            if (editingField === "source") onSetSource(gen, v.trim() || null, true);
-            else onSetTags(gen, v.split(",").map((s) => s.trim()).filter(Boolean));
+            onSetSource(gen, v.trim() || null, true);
             onEditDone();
           } else if (e.key === "Escape") {
             onEditDone();

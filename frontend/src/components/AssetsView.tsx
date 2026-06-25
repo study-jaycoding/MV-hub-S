@@ -798,26 +798,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   };
   // 태그 추가: 키보드 # → 포커스 카드에 인라인 입력 → Enter 커밋.
   // 다중선택 상태면 선택된 카드 모두에 적용.
-  const commitTags = (path: string, add: string[]) => {
-    setTagEditPath(null);
-    if (!add.length) return;
-    const sel = selPaths();
-    const targets = sel.includes(path) ? sel : [path];
-    setMeta((prev) => {
-      const n = { ...prev };
-      for (const p of targets) {
-        const cur = n[p] || EMPTY_META;
-        n[p] = { ...cur, tags: Array.from(new Set([...cur.tags, ...add])) };
-      }
-      return n;
-    });
-    Promise.all(
-      targets.map((p) => {
-        const merged = Array.from(new Set([...(metaRef.current[p]?.tags || []), ...add]));
-        return api.setAssetTags(project, p, merged);
-      }),
-    ).catch(metaFail);
-  };
   // # 버튼 태그 목록에서 ✕ 로 개별 태그 제거(해당 카드만)
   const removeAssetTag = (path: string, tag: string) => {
     setMeta((prev) => {
@@ -827,6 +807,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
     const next = (metaRef.current[path]?.tags || []).filter((t) => t !== tag);
+    api.setAssetTags(project, path, next).catch(metaFail);
+  };
+  // 태그 에디터(칩 추가/×해제) — 이 카드의 태그를 정확히 next 로 교체(낙관 반영 + 영속).
+  const setAssetTagsReplace = (path: string, next: string[]) => {
+    setMeta((prev) => ({ ...prev, [path]: { ...(prev[path] || EMPTY_META), tags: next } }));
     api.setAssetTags(project, path, next).catch(metaFail);
   };
 
@@ -969,12 +954,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
   // 셀에 넘기는 핸들러를 안정 참조로 고정(React.memo 가 변화 없는 셀을 건너뛰게).
   // ref 로 항상 최신 클로저를 가리켜 stale selection/meta(특히 다중선택 태그)를 방지.
-  const cellOpsRef = useRef({ toggleSource, openComments, commitTags, removeAssetTag });
-  cellOpsRef.current = { toggleSource, openComments, commitTags, removeAssetTag };
+  const cellOpsRef = useRef({ toggleSource, openComments, setAssetTagsReplace, removeAssetTag });
+  cellOpsRef.current = { toggleSource, openComments, setAssetTagsReplace, removeAssetTag };
   const cellOnS = useCallback((p: string) => cellOpsRef.current.toggleSource(p), []);
   const cellOnC = useCallback((p: string) => cellOpsRef.current.openComments(p), []);
-  const cellOnTagCommit = useCallback(
-    (p: string, tags: string[]) => cellOpsRef.current.commitTags(p, tags),
+  const cellOnTagsReplace = useCallback(
+    (p: string, tags: string[]) => cellOpsRef.current.setAssetTagsReplace(p, tags),
     [],
   );
   const cellOnTagCancel = useCallback(() => setTagEditPath(null), []);
@@ -996,7 +981,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       editingTag={tagEditPath === f.path}
       onS={cellOnS}
       onC={cellOnC}
-      onTagCommit={cellOnTagCommit}
+      onTagsReplace={cellOnTagsReplace}
       onTagCancel={cellOnTagCancel}
       onInfo={onInfo}
       onExportDrag={exportDrag}

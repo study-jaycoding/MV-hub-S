@@ -816,6 +816,33 @@ select optgroup {
   position: relative; z-index: 1;
 }
 
+/* 인라인 태그 에디터(#): 위=기존 일반태그 칩(×해제) / 입력 / 아래=전역태그(# 한 번 더, 조금 큼) */
+.tag-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; z-index: 1; }
+.te-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.te-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: #16171c; border: 1px solid var(--border2); border-radius: 999px;
+  padding: 1px 4px 1px 9px; font-size: 11px; color: var(--text); line-height: 1.7;
+}
+.te-x {
+  border: none; background: transparent; color: var(--muted2); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.te-x:hover { color: #ff6b6b; }
+.te-global {
+  display: flex; flex-wrap: wrap; gap: 5px; max-height: 104px; overflow: auto;
+  padding-top: 4px; border-top: 1px dashed var(--border);
+}
+.te-gchip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #1b1d24; border: 1px solid var(--border2); border-radius: 999px;
+  padding: 3px 12px; font-size: 13px; font-weight: 700; color: var(--muted2); cursor: pointer;
+}
+.te-gchip:hover { color: var(--text); border-color: var(--accent); }
+.te-gchip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.te-gx { font-size: 13px; line-height: 1; }
+.te-empty { font-size: 11px; color: var(--muted); padding: 2px 0; }
+
 /* # 버튼 토글 시 카드 위로 떠오르는 태그 목록 플로팅 팝업 */
 .cs-btn.t.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 /* T 자리의 생성자(누가 만들었는지) 칩 — 팀원 카드에만. 버튼 아니고 라벨(녹색, creator-badge 톤). */

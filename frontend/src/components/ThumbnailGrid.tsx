@@ -24,6 +24,8 @@ interface Props {
   onToggleSelect: (id: string) => void; // 리스트 모드 체크박스
   onSetSource: (g: Generation, name: string | null, isSource: boolean) => void;
   onSetTags: (g: Generation, tags: string[]) => void;
+  autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터 # 두 번 모드
+  onSetAutoTags?: (g: Generation, names: string[]) => void;
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
   onRegenerate: (g: Generation) => void;
   onPublish: (g: Generation) => void;
@@ -148,6 +150,8 @@ export function ThumbnailGrid(props: Props) {
       onSetSource: (g: Generation, n: string | null, s: boolean) =>
         propsRef.current.onSetSource(g, n, s),
       onSetTags: (g: Generation, tg: string[]) => propsRef.current.onSetTags(g, tg),
+      onSetAutoTags: (g: Generation, names: string[]) =>
+        propsRef.current.onSetAutoTags?.(g, names),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
       onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),
       onPublish: (g: Generation) => propsRef.current.onPublish(g),
@@ -441,6 +445,8 @@ export function ThumbnailGrid(props: Props) {
                     onToggleSelect={cb.onToggleSelect}
                     onSetSource={cb.onSetSource}
                     onSetTags={cb.onSetTags}
+                    autoTagOptions={props.autoTagOptions}
+                    onSetAutoTags={cb.onSetAutoTags}
                     onOpenComments={cb.onOpenComments}
                     onRegenerate={cb.onRegenerate}
                     onPublish={cb.onPublish}
@@ -532,6 +538,8 @@ export function ThumbnailGrid(props: Props) {
                   onToggleSelect={cb.onToggleSelect}
                   onSetSource={cb.onSetSource}
                   onSetTags={cb.onSetTags}
+                  autoTagOptions={props.autoTagOptions}
+                  onSetAutoTags={cb.onSetAutoTags}
                   onOpenComments={cb.onOpenComments}
                   onRegenerate={cb.onRegenerate}
                   onPublish={cb.onPublish}
