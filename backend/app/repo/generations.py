@@ -211,9 +211,12 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
             if r.get("file_path") and str(r["file_path"]).startswith("http")
         ]
         if synced_urls:
+            # 제출(parsed) 순서와 맞추려면 gr.rowid(삽입=제출 순서) 로 정렬해야 한다. gr.role 알파벳순은
+            # @Image10<@Image2·@Video 위치가 어긋나 엉뚱한 URL 이 엉뚱한 ref 에 박히고 COALESCE 로
+            # 영구 고정됐다(_link_reference 가 parsed 순서대로 INSERT 하므로 rowid 가 곧 제출 순서).
             local_refs = conn.execute(
                 "SELECT gr.reference_id FROM gen_reference gr WHERE gr.generation_id=? "
-                "ORDER BY gr.role",
+                "ORDER BY gr.rowid",
                 (target_id,),
             ).fetchall()
             if len(local_refs) == len(synced_urls):

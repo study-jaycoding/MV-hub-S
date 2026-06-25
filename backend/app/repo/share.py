@@ -245,14 +245,16 @@ def export_bundle(
         # ★브리지(간접) 엣지 — 공유물 사이에 '비공유' 파생 단계가 끼어 직접 엣지가 import 때 드롭되면
         # 계보가 끊긴다(공유본 히스토리가 비어 보이던 문제). 비공유를 건너뛰어 가장 가까운 '공유' derived
         # 조상과 직접 잇는다. 양끝 모두 공유(job_map 에 있음)라 수신측에 살아남는다.
+        # 단 그 쌍을 잇는 실엣지가 이미 있으면(예: reference) 브리지 derived 를 더하지 않는다 —
+        # 같은 (parent,child)에 relation 만 다른 두 엣지가 공존해 '이중 표기'되던 모순을 막는다.
+        existing_pairs = {(e["parent"], e["child"]) for e in history_edges}
         for parent_id, child_id in _bridge_derived_edges(conn, ids, set(ids)):
-            history_edges.append(
-                {
-                    "parent": job_map.get(parent_id, parent_id),
-                    "child": job_map.get(child_id, child_id),
-                    "relation": "derived",
-                }
-            )
+            p = job_map.get(parent_id, parent_id)
+            c = job_map.get(child_id, child_id)
+            if (p, c) in existing_pairs:
+                continue
+            existing_pairs.add((p, c))
+            history_edges.append({"parent": p, "child": c, "relation": "derived"})
 
     items: list[dict[str, Any]] = []
     for g in gens:
