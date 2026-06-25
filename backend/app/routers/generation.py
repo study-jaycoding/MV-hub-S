@@ -263,13 +263,16 @@ def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirro
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
-    apply(local_id)
+    # 공유 필드(source/comment)는 팀이 보는 값이라 서버가 진실 → 서버 먼저. 실패(권한 403·서버 502
+    # 등)면 로컬도 안 바꿔 "로컬만 바뀌고 팀엔 옛값"인 무음 불일치를 막는다(unpublish 와 동형).
+    # 404(서버에 아직 항목 없음)는 목표상 무해 → 삼키고 로컬 적용(로컬이 유일 보관처).
     if mirror_suffix and _proxy.proxying() and gen.get("shared"):
         try:
             _proxy.proxy_json("PUT", f"/api/generations/{server_id}/{mirror_suffix}", body=mirror_body)
         except HTTPException as e:
             if e.status_code != 404:
                 raise
+    apply(local_id)
     return repo.get_generation(local_id)
 
 
