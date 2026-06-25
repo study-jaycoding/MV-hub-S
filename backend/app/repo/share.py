@@ -41,6 +41,41 @@ def unpublish(gen_id: str) -> int:
         return cur.rowcount
 
 
+def _bridge_derived_edges(
+    conn: sqlite3.Connection, shared_ids: list[str], shared_set: set[str], limit: int = 60
+) -> list[tuple[str, str]]:
+    """공유물 사이에 '비공유' 파생(derived) 단계가 끼어 있으면, 그 비공유를 건너뛰어 공유 child 를
+    가장 가까운 '공유' derived 조상과 직접 잇는 (parent_id, child_id) 목록을 만든다(브리지=간접).
+    수신측엔 양끝이 모두 공유(존재)라 import 때 엣지가 드롭되지 않아 계보가 끊기지 않는다.
+    비공유 중간노드의 내용(프롬프트·이미지)은 전송하지 않으므로 프라이버시는 유지된다."""
+    bridges: list[tuple[str, str]] = []
+
+    def _dparents(node: str) -> list[str]:
+        return [
+            r["p"]
+            for r in conn.execute(
+                "SELECT parent_gen_id p FROM history WHERE child_gen_id=? AND relation='derived'",
+                (node,),
+            ).fetchall()
+        ]
+
+    for child in shared_ids:
+        seen: set[str] = set()
+        stack = [(p, False) for p in _dparents(child)]  # (노드, 비공유를 거쳤나)
+        while stack and len(seen) < limit:
+            node, crossed = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if node in shared_set:
+                if crossed:  # 비공유를 거쳐 도달한 공유 조상 → 간접 직접엣지로 잇는다
+                    bridges.append((node, child))
+                continue  # 공유 조상에서 멈춤(직접 부모면 일반 export 가 이미 처리)
+            for p in _dparents(node):  # 비공유 → 위로 계속(이 노드를 거치므로 crossed=True)
+                stack.append((p, True))
+    return bridges
+
+
 def export_bundle(
     creator_uid: Optional[str] = None,
     gen_ids: Optional[list[str]] = None,
@@ -205,6 +240,17 @@ def export_bundle(
                     "parent": job_map.get(e["parent_gen_id"], e["parent_gen_id"]),
                     "child": job_map.get(e["child_gen_id"], e["child_gen_id"]),
                     "relation": e["relation"],
+                }
+            )
+        # ★브리지(간접) 엣지 — 공유물 사이에 '비공유' 파생 단계가 끼어 직접 엣지가 import 때 드롭되면
+        # 계보가 끊긴다(공유본 히스토리가 비어 보이던 문제). 비공유를 건너뛰어 가장 가까운 '공유' derived
+        # 조상과 직접 잇는다. 양끝 모두 공유(job_map 에 있음)라 수신측에 살아남는다.
+        for parent_id, child_id in _bridge_derived_edges(conn, ids, set(ids)):
+            history_edges.append(
+                {
+                    "parent": job_map.get(parent_id, parent_id),
+                    "child": job_map.get(child_id, child_id),
+                    "relation": "derived",
                 }
             )
 
