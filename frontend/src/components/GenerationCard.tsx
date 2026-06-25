@@ -11,7 +11,7 @@ import { buildPromptParts, refSrc } from "../lib/promptParts";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
-import { TagEditor, TagStrip } from "./TagEditor";
+import { TagEditor } from "./TagEditor";
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "생성중",
@@ -472,16 +472,28 @@ function GenerationCardImpl({
       />
     </div>
   ) : tagEditing && selected ? (
-    // 다중선택 편집 중 — 포커스가 아닌 선택 카드: 입력 없이 '적용 대상' 배지 + 이 카드의 기존 태그.
+    // 다중선택 편집 중 — 포커스가 아닌 선택 카드: 입력 없이 그 카드의 칩(× 해제) + 전역 picker(부여/해제).
+    // 추가(타이핑)는 포커스 카드에서만. 전역 picker 표시는 포커스 카드의 모드(tagGlobalMode)를 따른다.
     <div
       className="card-status"
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <TagStrip
+      <TagEditor
         tags={gen.tags}
-        globalTags={gen.auto_tags}
-        badge={tagGlobalMode ? "선택된 카드 전역 적용" : "선택된 카드 태그 적용"}
+        onChange={(next) => onSetTags(gen, next)}
+        selectedCount={selectedCount}
+        showInput={false}
+        forcedGlobalMode={tagGlobalMode}
+        global={
+          onSetAutoTags
+            ? {
+                all: autoTagOptions ?? [],
+                assigned: gen.auto_tags ?? [],
+                onChange: (next) => onSetAutoTags(gen, next),
+              }
+            : null
+        }
       />
     </div>
   ) : !isList && (gen.color || gen.is_final) ? (

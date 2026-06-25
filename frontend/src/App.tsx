@@ -595,6 +595,16 @@ export default function App() {
   // ── 선택 항목 대상 단축키 작업 (s=소스 / #=태그 / r·g·b=컬러) ──
   // 색 토글 reload 디바운스용 — r→g→b 연타 시 매번 light reload 하던 직렬화를 마지막 1회로 합친다.
   const colorReloadTimer = useRef<number | null>(null);
+  // 태그 reload 디바운스 — 연속 태그 입력 중 매 입력마다 reload 하면, 아직 저장 안 끝난 옵티미스틱
+  // 상태를 옛 서버값으로 덮어써 '방금 넣은 태그가 사라지는' 레이스가 난다. 마지막 입력 후 1회만 reconcile.
+  const tagReloadTimer = useRef<number | null>(null);
+  const scheduleTagReload = () => {
+    if (tagReloadTimer.current) clearTimeout(tagReloadTimer.current);
+    tagReloadTimer.current = window.setTimeout(() => {
+      tagReloadTimer.current = null;
+      reload(false, true);
+    }, 600);
+  };
   // 언마운트/계정전환 시 잔여 디바운스 타이머 정리 — 옛 컨텍스트로 stray reload 방지(synced 타이머와 대칭).
   useEffect(
     () => () => {
@@ -1256,39 +1266,37 @@ export default function App() {
       flash("소스 변경 실패: " + String(e));
     }
   };
-  const onSetTags = async (g: Generation, tags: string[]) => {
-    try {
-      await api.setTags(g.id, tags);
-      reload();
-    } catch (e) {
-      flash("태그 변경 실패: " + String(e));
-    }
+  // gensRef 를 '동기로' 갱신하고 화면도 갱신 — 연속 입력 사이에 다음 핸들러가 신선한 값을 읽게 한다.
+  // (gensRef.current 는 렌더 시점에만 gens 로 동기화되므로, 연타 시 stale 을 읽어 api 페이로드가 옛
+  //  목록이 되던 게 '태그 사라짐'의 원인이었다.) 다음 렌더에서 gensRef.current=gens(=next) 로 동일.
+  const applyGens = (next: Generation[]) => {
+    gensRef.current = next;
+    setGens(next);
+  };
+  const onSetTags = (g: Generation, tags: string[]) => {
+    applyGens(gensRef.current.map((x) => (x.id === g.id ? { ...x, tags } : x)));
+    api.setTags(g.id, tags).then(scheduleTagReload).catch((e) => flash("태그 변경 실패: " + String(e)));
   };
 
-  const onSetAutoTags = async (g: Generation, names: string[]) => {
-    try {
-      await api.setGenAutoTags(g.id, names);
-      reload();
-    } catch (e) {
-      flash("전역 태그 변경 실패: " + String(e));
-    }
+  const onSetAutoTags = (g: Generation, names: string[]) => {
+    applyGens(gensRef.current.map((x) => (x.id === g.id ? { ...x, auto_tags: names } : x)));
+    api.setGenAutoTags(g.id, names)
+      .then(scheduleTagReload)
+      .catch((e) => flash("전역 태그 변경 실패: " + String(e)));
   };
 
   // 다중선택 태그 일괄 추가 — 편집한 카드(g)는 onSetTags 가 처리하므로, 나머지 선택 카드에 union 추가.
+  // api 페이로드는 stale ref 가 아니라 방금 만든 next 에서 뽑아 '사라짐' 레이스를 없앤다.
   const onBulkAddTags = (g: Generation, names: string[]) => {
     const others = [...selectedRef.current].filter((id) => id !== g.id);
     if (!others.length) return;
     const idSet = new Set(others);
-    setGens((prev) =>
-      prev.map((x) =>
-        idSet.has(x.id) ? { ...x, tags: Array.from(new Set([...x.tags, ...names])) } : x,
-      ),
+    const next = gensRef.current.map((x) =>
+      idSet.has(x.id) ? { ...x, tags: Array.from(new Set([...x.tags, ...names])) } : x,
     );
-    const targets = gensRef.current.filter((x) => idSet.has(x.id));
-    Promise.allSettled(
-      targets.map((x) => api.setTags(x.id, Array.from(new Set([...x.tags, ...names])))),
-    )
-      .then(() => reload(false, true))
+    applyGens(next);
+    Promise.allSettled(next.filter((x) => idSet.has(x.id)).map((x) => api.setTags(x.id, x.tags)))
+      .then(scheduleTagReload)
       .catch(() => {});
     flash(`선택한 ${others.length + 1}개에 태그 적용`);
   };
@@ -1298,20 +1306,16 @@ export default function App() {
     const others = [...selectedRef.current].filter((id) => id !== g.id);
     if (!others.length) return;
     const idSet = new Set(others);
-    setGens((prev) =>
-      prev.map((x) =>
-        idSet.has(x.id)
-          ? { ...x, auto_tags: Array.from(new Set([...(x.auto_tags || []), ...names])) }
-          : x,
-      ),
+    const next = gensRef.current.map((x) =>
+      idSet.has(x.id)
+        ? { ...x, auto_tags: Array.from(new Set([...(x.auto_tags || []), ...names])) }
+        : x,
     );
-    const targets = gensRef.current.filter((x) => idSet.has(x.id));
+    applyGens(next);
     Promise.allSettled(
-      targets.map((x) =>
-        api.setGenAutoTags(x.id, Array.from(new Set([...(x.auto_tags || []), ...names]))),
-      ),
+      next.filter((x) => idSet.has(x.id)).map((x) => api.setGenAutoTags(x.id, x.auto_tags || [])),
     )
-      .then(() => reload(false, true))
+      .then(scheduleTagReload)
       .catch(() => {});
     flash(`선택한 ${others.length + 1}개에 전역 태그 적용`);
   };

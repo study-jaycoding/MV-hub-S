@@ -3,7 +3,7 @@
 import { memo, useRef } from "react";
 import { api } from "../../api";
 import { download } from "../../lib/download";
-import { TagEditor, TagStrip } from "../TagEditor";
+import { TagEditor } from "../TagEditor";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -148,7 +148,12 @@ export const AssetCell = memo(function AssetCell({
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <TagStrip tags={meta.tags} badge="선택된 카드 태그 적용" />
+      <TagEditor
+        tags={meta.tags}
+        onChange={(next) => onTagsReplace(node.path, next)}
+        selectedCount={selectedCount}
+        showInput={false}
+      />
     </div>
   ) : !isList && meta.color ? (
     <div className="card-colorbar" style={{ background: meta.color }} title="컬러 마커" />

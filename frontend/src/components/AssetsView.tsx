@@ -818,19 +818,15 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const bulkTagAdd = (path: string, names: string[]) => {
     const others = selPaths().filter((p) => p !== path);
     if (!others.length) return;
-    setMeta((prev) => {
-      const n = { ...prev };
-      for (const p of others) {
-        const cur = n[p] || EMPTY_META;
-        n[p] = { ...cur, tags: Array.from(new Set([...cur.tags, ...names])) };
-      }
-      return n;
-    });
-    Promise.allSettled(
-      others.map((p) =>
-        api.setAssetTags(project, p, Array.from(new Set([...(metaRef.current[p]?.tags || []), ...names]))),
-      ),
-    ).catch(metaFail);
+    // metaRef 를 동기로 갱신 + api 페이로드를 그 next 에서 뽑는다(stale 병합으로 옛 목록 저장 방지).
+    const next = { ...metaRef.current };
+    for (const p of others) {
+      const cur = next[p] || EMPTY_META;
+      next[p] = { ...cur, tags: Array.from(new Set([...cur.tags, ...names])) };
+    }
+    metaRef.current = next;
+    setMeta(next);
+    Promise.allSettled(others.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
   };
 
   // T 패널: 토글(닫으면 태그 필터도 해제 — S 처럼). 바깥 클릭으로 닫히지 않음.
