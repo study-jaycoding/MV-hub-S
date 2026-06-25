@@ -33,38 +33,75 @@ set "CONTENT_HUB_HOST=127.0.0.1"
 set "CONTENT_HUB_PORT=%PORT%"
 set "HUB=http://127.0.0.1:%PORT%"
 
-REM Resolve a REAL Python. The Microsoft Store "python.exe" is a fake stub that just
-REM prints "Python" and exits - it makes serve.py and the agent silently do nothing.
-REM Prefer the 'py' launcher (never shadowed by the Store alias); else a real python3.
-set "PY="
-py -3 --version >nul 2>nul && set "PY=py -3"
-if defined PY goto :py_resolved
-python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY=python"
+REM Prefer tools bundled with the release package. This keeps worker PCs close to
+REM zero-install: no Git, no system Python, no system Node needed for normal use.
+if exist "%ROOT%runtime\node\node.exe" set "PATH=%ROOT%runtime\node;%PATH%"
+if exist "%ROOT%runtime\higgsfield\higgsfield.cmd" set "PATH=%ROOT%runtime\higgsfield;%PATH%"
+
+REM Resolve a REAL Python. Release packages may include runtime\python so workers do
+REM not need to install Python. The Microsoft Store "python.exe" fake stub is ignored.
+set "PY_EXE="
+set "PY_ARGS="
+if exist "%ROOT%runtime\python\python.exe" (
+  set "PY_EXE=%ROOT%runtime\python\python.exe"
+  goto :py_resolved
+)
+py -3 --version >nul 2>nul && (set "PY_EXE=py" & set "PY_ARGS=-3")
+if defined PY_EXE goto :py_resolved
+python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY_EXE=python"
 :py_resolved
-if not defined PY (
+if not defined PY_EXE (
   echo [ERROR] No real Python found ^(the Microsoft Store stub does not count^).
-  echo         Fix: run setup_and_clone_mvhub.bat, or install Python from python.org
+  echo         Fix: download the latest MV Hub release, or install Python from python.org
   echo         and turn OFF Settings ^> Apps ^> App execution aliases ^> python.exe / python3.exe
   pause
   exit /b 1
 )
-echo     Using Python: %PY%
-where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & pause & exit /b 1)
+echo     Using Python: "%PY_EXE%" %PY_ARGS%
+
+set "HAVE_NPM="
+set "NPM_CMD="
+where npm.cmd >nul 2>nul && (set "HAVE_NPM=1" & set "NPM_CMD=npm.cmd")
 
 echo.
 echo [1/5] Preparing frontend...
 cd /d "%ROOT%frontend" || goto :err
-if not exist node_modules (
-  echo     node_modules missing - running npm install ^(first time, a few minutes^)
-  call npm install || goto :err
-)
 if not exist dist (
+  if not defined HAVE_NPM (
+    echo [ERROR] frontend\dist is missing and Node.js/npm is not installed.
+    echo         Release packages should already contain frontend\dist.
+    pause
+    exit /b 1
+  )
+  if not exist node_modules (
+    echo     node_modules missing - running npm install ^(first time, a few minutes^)
+    call %NPM_CMD% install || goto :err
+  )
   echo     dist missing - building once. ^(Use update.bat to refresh later.^)
-  call npm run build || goto :err
+  call %NPM_CMD% run build || goto :err
+  goto :frontend_ready
 )
+:frontend_ready
 
 echo [2/5] Checking backend dependencies...
-%PY% -m pip install -r "%ROOT%backend\requirements.txt" >nul 2>nul
+REM Install when EITHER a package is missing OR requirements.txt changed since the last
+REM successful install. The import-only check is a fast path, but it cannot see version
+REM drift: after a release update bumps requirements.txt, old packages still import fine
+REM and the hub would silently run on stale versions. The hash marker closes that gap.
+set "REQ=%ROOT%backend\requirements.txt"
+set "DEP_MARK=%ROOT%backend\.deps_installed"
+set "REQ_HASH="
+for /f "skip=1 delims=" %%h in ('certutil -hashfile "%REQ%" MD5 2^>nul') do if not defined REQ_HASH set "REQ_HASH=%%h"
+set "OLD_HASH="
+if exist "%DEP_MARK%" set /p OLD_HASH=<"%DEP_MARK%"
+set "NEED_DEPS="
+"%PY_EXE%" %PY_ARGS% -c "import fastapi, uvicorn, pydantic, websockets, multipart, PIL" >nul 2>nul || set "NEED_DEPS=1"
+if not "%REQ_HASH%"=="%OLD_HASH%" set "NEED_DEPS=1"
+if defined NEED_DEPS (
+  echo     Installing/updating backend Python packages...
+  "%PY_EXE%" %PY_ARGS% -m pip install -r "%REQ%" || goto :err
+  if defined REQ_HASH (> "%DEP_MARK%" echo %REQ_HASH%)
+)
 
 echo [3/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
 REM Stop any hub left running on this port from a previous launch. Without this, an old
@@ -74,7 +111,7 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":%POR
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.
 cd /d "%ROOT%backend"
-start "" /b cmd /c "%PY% serve.py > hub.log 2>&1"
+start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% serve.py > hub.log 2>&1"
 cd /d "%ROOT%"
 
 echo     Waiting for the hub to come up...
@@ -88,13 +125,26 @@ goto :waitloop
 :hubup
 
 echo [4/5] Checking Higgsfield CLI login...
+set "RUN_AGENT=1"
 set "HF=higgsfield"
 where higgsfield >nul 2>nul || set "HF=hf"
 where %HF% >nul 2>nul
 if errorlevel 1 (
-  echo     Higgsfield CLI not installed - installing via npm...
-  call npm install -g @higgsfield/cli || (echo [warn] CLI install failed - generation off, but browsing/Assets still work.)
-  set "HF=higgsfield"
+  if defined HAVE_NPM (
+    echo     Higgsfield CLI not installed - installing via npm...
+    call %NPM_CMD% install -g @higgsfield/cli
+    if errorlevel 1 (
+      echo [warn] CLI install failed - generation off, but browsing/Assets still work.
+      set "RUN_AGENT=0"
+      goto :skip_higgsfield
+    )
+    set "HF=higgsfield"
+  ) else (
+    echo [warn] Higgsfield CLI not found, and Node.js/npm is not installed.
+    echo        Browsing/Assets will work, but generation sync is off until Higgsfield CLI is installed.
+    set "RUN_AGENT=0"
+    goto :skip_higgsfield
+  )
 )
 call %HF% account status >nul 2>nul
 if errorlevel 1 (
@@ -113,10 +163,17 @@ call %HF% account status
 echo  ===========================================================================
 echo.
 
+:skip_higgsfield
 echo [5/5] Opening the hub + keeping the generation agent running ^(closing this window stops it^)
 start "" "%HUB%"
 echo.
-%PY% "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
+if "%RUN_AGENT%"=="1" (
+  "%PY_EXE%" %PY_ARGS% "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
+) else (
+  echo [info] Generation agent is not running because Higgsfield CLI is not available.
+  echo [info] The local hub is open. Close this window to stop the local hub.
+  pause
+)
 echo.
 echo [stopped] agent stopped. Closing this window stops the hub too.
 pause

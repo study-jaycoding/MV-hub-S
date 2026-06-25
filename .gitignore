@@ -10,6 +10,8 @@ backend/media/
 backend/_bf_*
 backend/*.log
 backend/sample_real.json
+# 의존성 설치 마커(런처가 requirements.txt 해시 기록 — 머신 로컬 상태)
+backend/.deps_installed
 __pycache__/
 *.pyc
 .venv/
@@ -18,3 +20,8 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+
+# 릴리즈 산출물
+release/packages/
+release/_staging/
+release/*.zip
