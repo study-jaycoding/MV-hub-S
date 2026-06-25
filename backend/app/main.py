@@ -32,7 +32,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import repo
-from .config import AUTH_ENABLED, CORS_ORIGINS, FRONTEND_DIST, MEDIA_DIR, ensure_dirs
+from .config import (
+    ALLOW_REMOTE_AUTH_OFF,
+    AUTH_ENABLED,
+    CORS_ORIGINS,
+    FRONTEND_DIST,
+    MEDIA_DIR,
+    ensure_dirs,
+)
 from .db import init_db
 from .deps import session_token
 from .routers import (
@@ -179,6 +186,14 @@ app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
 
 
+# ── AUTH off 원격 차단 ─────────────────────────────────────────────────────
+# 인증을 끈 개인/개발 모드는 로컬 PC 전용이다. HOST 를 실수로 0.0.0.0 으로 열어도 LAN 에서
+# 라이브러리·에셋 파일·DB 작업을 무인증으로 호출하지 못하게 HTTP 전체를 막는다.
+# ★실제 미들웨어 등록은 data_proxy '뒤'에서 한다(가장 마지막 등록=최외곽) — 프록시가 데이터
+#   경로를 서버로 단락시키기 '전에' 원격을 차단해야 프록시 GET 까지 막힌다. 아래 data_proxy 다음 참조.
+_LOOPBACK_CLIENTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 # ── 인증 enforcement 미들웨어 (로드맵 §4-6 '서버가 매번 검증') ─────────────────
 # AUTH_ENABLED 일 때만 작동. 보호 경로(/api/* 와 /media/*)는 승인된 세션을 요구한다.
 # 토큰은 Authorization: Bearer <token> 또는 세션 쿠키(ch_session — img/태그·WS 용).
@@ -251,6 +266,22 @@ async def mutation_notify(request: Request, call_next):
 async def data_proxy(request: Request, call_next):
     return await _proxy.data_proxy_middleware(request, call_next)
 
+
+# ★최외곽 가드(가장 마지막 등록 = 가장 먼저 실행) — AUTH off 인데 LAN 에 노출된 경우, data_proxy
+# 가 데이터 경로를 서버로 단락시키기 전에 원격 요청을 전부 차단한다. 프록시보다 바깥에 있어야
+# 프록시 데이터 GET(팀 목록 등)까지 막힌다(안쪽에 두면 프록시 단락에 가려져 새던 허점 정정).
+@app.middleware("http")
+async def auth_off_remote_guard(request: Request, call_next):
+    if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
+        host = (request.client.host if request.client else "") or ""
+        if host not in _LOOPBACK_CLIENTS:
+            return JSONResponse(
+                {"detail": "AUTH off 모드는 로컬에서만 접근할 수 있습니다"},
+                status_code=403,
+            )
+    return await call_next(request)
+
+
 # 로컬에 받아둔 미디어 원본 서빙(현재는 원격 URL 직접 사용, 향후 byte-cache 용).
 # StaticFiles 는 마운트 시점에 디렉터리가 있어야 하므로 먼저 생성한다.
 ensure_dirs()
@@ -289,13 +320,20 @@ async def trigger_backup(request: Request):
 async def websocket_endpoint(ws: WebSocket):
     """생성 진행률 push 채널. AUTH_ENABLED 면 세션 쿠키(또는 ?token=)로 인증 후 수락."""
     account_uid: str | None = None
+    if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
+        host = (ws.client.host if ws.client else "") or ""
+        if host not in _LOOPBACK_CLIENTS:
+            await ws.close(code=1008)
+            return
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE
 
         token = ws.cookies.get(SESSION_COOKIE) or ws.query_params.get("token")
         email = auth_svc.verify_token(token) if token else None
         acc = repo.get_account(email) if email else None
-        if not acc or acc["status"] != "approved":
+        pcat = acc.get("password_changed_at") if acc else None
+        stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
+        if not acc or acc["status"] != "approved" or stale_password_token:
             await ws.close(code=1008)  # policy violation
             return
         account_uid = acc.get("creator_uid")  # 이 소켓이 받을 진행률·알림을 이 계정으로 한정

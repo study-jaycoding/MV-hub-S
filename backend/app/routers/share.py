@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from . import _proxy
 from .. import rbac, repo
 from ..config import DEFAULT_WORKER_ID
+from ..db import get_connection
 from ..deps import (
     account_global_roles,
     current_account,
@@ -196,6 +197,90 @@ def get_provider() -> dict[str, Any]:
     return repo.get_provider()
 
 
+def _remote_media_url(item: dict[str, Any]) -> str | None:
+    """서버 GenerationOut 의 미디어 경로를 번들 import 가 먹을 수 있는 URL 로 정규화."""
+    raw = item.get("source_url") or item.get("file_path")
+    url = str(raw).strip() if raw else ""
+    return url or None
+
+
+def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
+    """프록시로 받은 서버 generation 1건을 로컬 import_bundle_item 입력 형태로 변환."""
+    assets = remote.get("assets") or []
+    asset = None
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        url = _remote_media_url(a)
+        if url:
+            asset = {"type": a.get("type") or "image", "file_path": url}
+            break
+
+    refs: list[dict[str, Any]] = []
+    for r in remote.get("references") or []:
+        if not isinstance(r, dict):
+            continue
+        url = _remote_media_url(r)
+        if not url:
+            continue
+        refs.append(
+            {
+                "id": r.get("id"),
+                "type": r.get("type") or "image",
+                "file_path": url,
+                "role": r.get("role"),
+                "source": r.get("source") or "uploaded",
+            }
+        )
+
+    return {
+        "generation": {
+            "id": remote.get("id"),
+            "prompt": remote.get("prompt") or "",
+            "display_prompt": remote.get("display_prompt"),
+            "model": remote.get("model"),
+            "params": remote.get("params") or {},
+            "status": remote.get("status") or "done",
+            "created_at": remote.get("created_at") or "",
+            "sort_ts": remote.get("sort_ts"),
+            "creator_uid": remote.get("creator_uid"),
+            "project_id": remote.get("project_id"),
+        },
+        "asset": asset,
+        "references": refs,
+        "tags": remote.get("tags") or [],
+        "auto_tags": remote.get("auto_tags") or [],
+        "comments": [],
+    }
+
+
+def _materialize_remote_shared(gen_id: str, request: Request) -> tuple[dict[str, Any] | None, str | None]:
+    """로컬 프록시 모드에서 서버에만 있는 팀 공유 항목을 로컬 DB 에 먼저 심는다.
+
+    가져오기(import_generation)는 로컬 DB 행을 원본으로 삼아 프롬프트·레퍼런스·히스토리를 복제하므로,
+    팀 탭의 남의 카드처럼 로컬에 아직 없는 항목은 서버에서 단건 조회 후 동기화본으로 물질화한다.
+    """
+    if not _proxy.proxying():
+        return None, None
+    remote = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+    if not isinstance(remote, dict) or not remote.get("id"):
+        return None, None
+    if not remote.get("shared"):
+        raise HTTPException(status_code=409, detail="공유되지 않은 항목은 가져올 수 없음")
+
+    shared_by = str(remote.get("creator_uid") or remote.get("worker_id") or "team").strip()
+    if not shared_by or shared_by == DEFAULT_WORKER_ID:
+        shared_by = "team"
+    shared_name = remote.get("creator_name") or remote.get("worker_name") or shared_by
+    with get_connection() as conn:
+        repo.ensure_worker(conn, shared_by, shared_name, "team")
+
+    repo.import_bundle_item(_remote_generation_item(remote), DEFAULT_WORKER_ID, shared_by)
+    local_id, _ = repo.finalize_id_map(str(remote["id"]))
+    source_id = local_id or str(remote["id"])
+    return repo.get_generation(source_id), source_id
+
+
 @router.post("/generations/{gen_id}/import", response_model=GenerationOut, status_code=201)
 def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history."""
@@ -207,6 +292,10 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
         if local_id and local_id != gen_id:
             gen_id = local_id
             src = repo.get_generation(gen_id)
+        if not src:
+            src, materialized_id = _materialize_remote_shared(gen_id, request)
+            if materialized_id:
+                gen_id = materialized_id
     if not src:
         raise HTTPException(status_code=404, detail="원본 generation 없음")
     require_view_generation(request, src)  # ⑥: 볼 수 있는 것만 가져올 수 있다(멤버십 경계 일치)
@@ -215,6 +304,10 @@ def import_to_workspace(gen_id: str, body: ImportIn, request: Request):
     # 복제본은 가져온 계정 소유로 — house uid 로 떨어지면 내 작업에 안 잡힘(격리 일관성).
     acc = current_account(request)
     creator_uid = acc.get("creator_uid") if acc else None
+    if not creator_uid and _proxy.proxying():
+        from ..active_account import active_uid
+
+        creator_uid = active_uid()
     worker_id = body.worker_id or DEFAULT_WORKER_ID
     child_id = repo.import_generation(gen_id, worker_id, creator_uid=creator_uid)
     child = repo.get_generation(child_id)

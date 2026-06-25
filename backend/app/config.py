@@ -59,15 +59,27 @@ FRONTEND_DIST = Path(
     os.environ.get("CONTENT_HUB_FRONTEND_DIST", BACKEND_DIR.parent / "frontend" / "dist")
 ).resolve()
 
-# 서버 바인딩 — 0.0.0.0 이면 LAN/실서버 어디서든 접속 가능(실행 스크립트가 참조).
-HOST = os.environ.get("CONTENT_HUB_HOST", "0.0.0.0")
-PORT = int(os.environ.get("CONTENT_HUB_PORT", "8000"))
-
 # ── 인증 enforcement 스위치 ──────────────────────────────────────────────────
 # 기본 off — 로드맵 "식별 먼저, 차단은 나중(진짜 막을 게 생겼을 때)". 1/true 면 로그인 필수:
 #   모든 /api/*(인증·헬스 제외)가 승인된 세션을 요구하고, 관리자 작업은 C0/C1 만 허용.
 # 끄면(기본) 현재처럼 누구나 접근(개인 PC·개발). 팀 서버에서 막고 싶을 때 켠다.
 AUTH_ENABLED = os.environ.get("CONTENT_HUB_AUTH", "0").lower() in ("1", "true", "yes", "on")
+
+# 서버 바인딩 — 인증이 꺼진 개인/개발 모드는 기본적으로 로컬에만 묶는다. 공유 서버 스크립트는
+# CONTENT_HUB_AUTH=1 + CONTENT_HUB_HOST=0.0.0.0 을 명시하므로 LAN 공개 동작은 그대로 유지된다.
+HOST = os.environ.get(
+    "CONTENT_HUB_HOST",
+    "0.0.0.0" if AUTH_ENABLED else "127.0.0.1",
+)
+PORT = int(os.environ.get("CONTENT_HUB_PORT", "8000"))
+
+# 특별한 운영 사유로 AUTH off 서버를 LAN 에 열어야 할 때만 명시 허용. 기본은 차단.
+ALLOW_REMOTE_AUTH_OFF = os.environ.get("CONTENT_HUB_ALLOW_REMOTE_AUTH_OFF", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 
 def migrate_storage_layout() -> None:

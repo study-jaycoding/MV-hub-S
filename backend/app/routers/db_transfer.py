@@ -242,6 +242,7 @@ async def import_db(request: Request, file: UploadFile = File(...)):
 def server_backup(request: Request):
     """내 활성 계정 DB 를 공유 서버에 백업. 일관 스냅샷 → 민감정보 제거 → 멀티파트 업로드."""
     require_admin(request)  # AUTH off 로컬이면 통과(서버 직결 admin 가드는 유지)
+    _require_local_when_open(request)
     if not _proxy.proxying():
         raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
     path = db.get_db_path()
@@ -264,6 +265,7 @@ def server_backup(request: Request):
 @router.get("/server-backups")
 def server_backups(request: Request):
     """서버에 있는 내 계정 백업 버전 목록(없거나 미로그인이면 빈 목록)."""
+    _require_local_when_open(request)
     if not _proxy.proxying():
         return {"backups": []}
     status, body = _proxy.raw_request(
