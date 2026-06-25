@@ -58,6 +58,7 @@ interface Props {
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onBulkAddTags?: (g: Generation, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
   onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
+  onBulkRemoveAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 해제를 선택 전체에
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
   tagEditing?: boolean; // 다중선택 태그 편집 활성(편집 카드가 선택에 포함). 선택된 비포커스 카드에 스트립 표시
   tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
@@ -78,6 +79,7 @@ function GenerationCardImpl({
   onSetAutoTags,
   onBulkAddTags,
   onBulkAddAutoTags,
+  onBulkRemoveAutoTags,
   selectedCount,
   tagEditing,
   tagGlobalMode,
@@ -440,6 +442,7 @@ function GenerationCardImpl({
                 assigned: gen.auto_tags ?? [],
                 onChange: (next) => onSetAutoTags(gen, next),
                 onBulkAdd: (names) => onBulkAddAutoTags?.(gen, names),
+                onBulkRemove: (names) => onBulkRemoveAutoTags?.(gen, names),
               }
             : null
         }

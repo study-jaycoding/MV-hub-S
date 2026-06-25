@@ -28,6 +28,7 @@ interface Props {
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — 태그 에디터 # 두 번 모드
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
+  onBulkRemoveAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 해제를 선택 전체에
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
   onRegenerate: (g: Generation) => void;
   onPublish: (g: Generation) => void;
@@ -166,6 +167,8 @@ export function ThumbnailGrid(props: Props) {
         propsRef.current.onSetAutoTags?.(g, names),
       onBulkAddAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onBulkAddAutoTags?.(g, names),
+      onBulkRemoveAutoTags: (g: Generation, names: string[]) =>
+        propsRef.current.onBulkRemoveAutoTags?.(g, names),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
       onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),
       onPublish: (g: Generation) => propsRef.current.onPublish(g),

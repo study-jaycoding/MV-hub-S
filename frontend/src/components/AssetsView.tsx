@@ -865,23 +865,18 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
 
-  // T 패널: 태그를 모든 파일에서 완전 삭제
+  // T 패널: 태그를 모든 파일에서 완전 삭제 — 확인창 없이 바로. metaRef 동기 갱신 + payload 를 그
+  // next 에서 뽑아(stale 방지) 확실히 지운다.
   const deleteTag = (tag: string) => {
     const affected = Object.entries(metaRef.current)
       .filter(([, m]) => m.tags.includes(tag))
       .map(([p]) => p);
-    if (!window.confirm(`태그 "#${tag}" 를 ${affected.length}개 파일에서 삭제할까요?`)) return;
-    setMeta((prev) => {
-      const n = { ...prev };
-      for (const p of affected)
-        n[p] = { ...n[p], tags: n[p].tags.filter((t) => t !== tag) };
-      return n;
-    });
-    Promise.all(
-      affected.map((p) =>
-        api.setAssetTags(project, p, (metaRef.current[p]?.tags || []).filter((t) => t !== tag)),
-      ),
-    ).catch(metaFail);
+    if (!affected.length) return;
+    const next = { ...metaRef.current };
+    for (const p of affected) next[p] = { ...next[p], tags: next[p].tags.filter((t) => t !== tag) };
+    metaRef.current = next;
+    setMeta(next);
+    Promise.all(affected.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
     if (activeTags.has(tag))
       setActiveTags((prev) => {
         const n = new Set(prev);

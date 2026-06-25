@@ -14,6 +14,7 @@ export interface TagEditorGlobal {
   assigned: string[]; // 이 카드에 부여된 전역 태그
   onChange: (next: string[]) => void; // 교체(부여/해제 결과 전체) — 이 카드
   onBulkAdd?: (names: string[]) => void; // 다중선택 시 전역 '부여'를 다른 선택 카드에도(이 카드 제외)
+  onBulkRemove?: (names: string[]) => void; // 다중선택 시 전역 '해제'를 다른 선택 카드에도(이 카드 제외)
 }
 
 export function TagEditor({
@@ -77,7 +78,12 @@ export function TagEditor({
     const next = has ? baseAssigned.filter((x) => x !== name) : [...baseAssigned, name];
     if (showInput) setAssignedLocal(next);
     global.onChange(next); // 이 카드
-    if (!has && multi) global.onBulkAdd?.([name]); // 부여(추가)일 때만 다른 선택 카드에도(있으면)
+    // 포커스 카드(onBulkAdd/onBulkRemove 보유)는 부여·해제 모두 선택 전체에. 비포커스 카드는
+    // 이 콜백들이 없어 자기 카드만(개별) 토글된다.
+    if (multi) {
+      if (has) global.onBulkRemove?.([name]);
+      else global.onBulkAdd?.([name]);
+    }
   };
 
   return (

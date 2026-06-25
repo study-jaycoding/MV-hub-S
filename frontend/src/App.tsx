@@ -1320,6 +1320,24 @@ export default function App() {
     flash(`선택한 ${others.length + 1}개에 전역 태그 적용`);
   };
 
+  // 다중선택 전역(auto) 태그 일괄 해제 — 편집 카드(g)는 onSetAutoTags 가 처리, 나머지 선택 카드에서 제거.
+  const onBulkRemoveAutoTags = (g: Generation, names: string[]) => {
+    const others = [...selectedRef.current].filter((id) => id !== g.id);
+    if (!others.length) return;
+    const idSet = new Set(others);
+    const drop = new Set(names);
+    const next = gensRef.current.map((x) =>
+      idSet.has(x.id) ? { ...x, auto_tags: (x.auto_tags || []).filter((t) => !drop.has(t)) } : x,
+    );
+    applyGens(next);
+    Promise.allSettled(
+      next.filter((x) => idSet.has(x.id)).map((x) => api.setGenAutoTags(x.id, x.auto_tags || [])),
+    )
+      .then(scheduleTagReload)
+      .catch(() => {});
+    flash(`선택한 ${others.length + 1}개에서 전역 태그 해제`);
+  };
+
   const onLogout = async () => {
     setGens([]); // 로그아웃 즉시 데이터 비우기
     // 로컬 허브(AUTH off): 신원은 '팀서버 토큰'이라, 그걸 지워야 게이트(ServerLoginScreen)가
@@ -1563,6 +1581,7 @@ export default function App() {
                     autoTagOptions={facets.auto_tags}
                     onSetAutoTags={onSetAutoTags}
                     onBulkAddAutoTags={onBulkAddAutoTags}
+                    onBulkRemoveAutoTags={onBulkRemoveAutoTags}
                     onOpenComments={(g) => openComment(g.id)}
                     onRegenerate={onRegenerate}
                     onPublish={onPublish}
