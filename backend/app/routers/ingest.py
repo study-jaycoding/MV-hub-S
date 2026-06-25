@@ -112,6 +112,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # (최초 ingest 라 own_uid 가 아직 None 이어도, 잡들의 URL user_<id> 다수결로 '나'를 알아낼 수 있다.
     #  예전엔 own_uid 로만 보강해, 첫 ingest 의 uid 없는 잡이 NULL 로 남았다가 다음 재시작에야 구제됐다.)
     staged = []
+    seen_job_ids: set[str] = set()
     for raw in jobs:
         if not isinstance(raw, dict):
             skipped += 1
@@ -121,6 +122,11 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         if not g.get("id"):
             skipped += 1
             continue
+        job_key = str(g["id"])
+        if job_key in seen_job_ids:
+            skipped += 1
+            continue
+        seen_job_ids.add(job_key)
         if g.get("creator_uid"):
             uid_votes[g["creator_uid"]] += 1
         staged.append(parsed)
