@@ -546,7 +546,7 @@ export default function App() {
   const [promptVisible, setPromptVisible] = useState(true);
   // 프롬프트 입력바 '확장(+)' 상태 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유해
   // 재생성(↻) 라우팅이 확장 여부를 알 수 있게 한다(확장이면 입력바로 불러오기, 아니면 직접 재생성).
-  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerExpanded, setComposerExpanded] = useState(() => LS.get("composerExpanded", "0") === "1");
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (matchShortcut(e, "focusPrompt")) {
@@ -574,6 +574,7 @@ export default function App() {
   useEffect(() => LS.set("layout", layout), [layout]);
   useEffect(() => LS.set("showFilters", showFilters ? "1" : "0"), [showFilters]);
   useEffect(() => LS.set("groupByDate", groupByDate ? "1" : "0"), [groupByDate]);
+  useEffect(() => LS.set("composerExpanded", composerExpanded ? "1" : "0"), [composerExpanded]);
 
   // ── 선택 항목 대상 단축키 작업 (s=소스 / #=태그 / r·g·b=컬러) ──
   const colorSelected = async (ids: string[], color: string) => {
