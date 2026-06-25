@@ -253,6 +253,25 @@ def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
     return repo.get_history(gen_id, viewer_uid=viewer_uid, read_all=read_all)
 
 
+def _mirror_shared_meta(
+    gen: dict, gen_id: str, method: str, suffix: str, body: dict | None
+) -> None:
+    """공유본의 개인 메타(색·태그·소스·코멘트) 변경을 서버에도 반영한다.
+
+    팀 탭 목록은 서버 데이터를 프록시해 그리므로, 로컬에만 쓰면 내 공유 카드의 변경이 팀 탭에
+    즉시 안 보인다(서버는 옛 값). 공유본이면 서버에도 같은 변경을 미러해 '보이는 건 실시간'을 만족.
+    비공유(내 로컬 작업)면 no-op — 그건 내 탭(로컬)에서 이미 즉시 반영된다.
+    404(서버에 아직 그 항목 없음)는 무시 — 로컬 변경은 이미 끝났고 다음 발행이 따라잡는다."""
+    if not (_proxy.proxying() and gen.get("shared")):
+        return
+    _, server_id = repo.finalize_id_map(gen_id)  # 서버는 번들 앵커(job_id)로 안다
+    try:
+        _proxy.proxy_json(method, f"/api/generations/{server_id}/{suffix}", body=body)
+    except HTTPException as e:
+        if e.status_code != 404:
+            raise
+
+
 @router.put("/generations/{gen_id}/tags", response_model=GenerationOut)
 def set_tags(gen_id: str, body: TagsIn, request: Request):
     gen_id = repo.resolve_local_id(gen_id)  # 팀 탭 카드(서버 job_id) → 로컬 행으로 정규화
@@ -261,6 +280,7 @@ def set_tags(gen_id: str, body: TagsIn, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
     repo.set_tags(gen_id, body.tags)
+    _mirror_shared_meta(gen, gen_id, "PUT", "tags", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
     return repo.get_generation(gen_id)
 
 
@@ -340,6 +360,7 @@ def set_color(gen_id: str, body: ColorIn, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
     repo.set_color(gen_id, body.color)
+    _mirror_shared_meta(gen, gen_id, "PUT", "color", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
     return repo.get_generation(gen_id)
 
 
@@ -352,6 +373,7 @@ def set_source(gen_id: str, body: SourceIn, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
     repo.set_source(gen_id, body.name, body.is_source)
+    _mirror_shared_meta(gen, gen_id, "PUT", "source", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
     return repo.get_generation(gen_id)
 
 
@@ -383,6 +405,7 @@ def set_comment(gen_id: str, body: CommentIn, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # gen 자체 코멘트 필드 수정 — 본인/admin 만
     repo.set_comment(gen_id, body.comment)
+    _mirror_shared_meta(gen, gen_id, "PUT", "comment", body.model_dump())  # 공유본→서버 미러(팀 탭 실시간)
     return repo.get_generation(gen_id)
 
 
