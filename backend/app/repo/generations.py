@@ -129,7 +129,11 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
                 ),
             )
         else:
-            target_id = job_id
+            # ★Phase 0b: 동기화 행도 id 는 uuid, job_id 는 속성으로만(더는 id==job_id 아님). 이로써
+            # 새 데이터의 id 이중성이 사라진다 — 식별은 항상 uuid, job_id 는 동기화 멱등 키. 멱등 매칭은
+            # 위 existing 조회의 `job_id=?` 가, 번들 import 의 계보·코멘트는 _find_id_by_job(job_id)→uuid
+            # 가 처리하므로(id==job_id 가정 없음) 다운스트림 무변. 레거시 id==job_id 행은 그대로 호환.
+            target_id = new_id()
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, model, params, color, status, created_at, sort_ts, "
@@ -137,7 +141,7 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
                 # origin='synced' — 순수 동기화본(판별을 id==job_id 좌표가 아닌 명시 마커로).
                 "creator_uid, job_id, origin) VALUES(?,?,?,?,?,?,?,?,COALESCE(?, strftime('%s', ?)),?,?, 'synced')",
                 (
-                    job_id,
+                    target_id,
                     worker_id,
                     g["prompt"],
                     g["model"],
