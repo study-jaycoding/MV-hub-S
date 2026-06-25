@@ -202,6 +202,18 @@ export const AssetCell = memo(function AssetCell({
           </div>
           <div className="ov-bottom">
             {!isList && <span className="ov-name">{node.name}</span>}
+            <button
+              className="ov-icon"
+              title="원본 위치 열기 (탐색기)"
+              onClick={(e) => {
+                e.stopPropagation();
+                api
+                  .revealAsset(project, node.path)
+                  .catch((err) => alert(`원본 위치 열기 실패: ${err}`));
+              }}
+            >
+              📂
+            </button>
             <button className="ov-icon" title="다운로드" onClick={() => download(url, node.name)}>
               ⤓
             </button>
