@@ -33,18 +33,13 @@ _LEGACY_MEDIA_DIR = BACKEND_DIR / "media"
 DEFAULT_WORKER_ID = os.environ.get("CONTENT_HUB_WORKER_ID", "me")
 DEFAULT_WORKER_NAME = os.environ.get("CONTENT_HUB_WORKER_NAME", "나")
 
-# Assets(구성) 패널 — project-viewer 의 PROJECTS_DIR 와 같은 폴더를 브라우즈한다.
-# 프로젝트 = 이 루트 아래의 한 폴더. 기본 테스트 폴더는 DEFAULT_PROJECT.
-# ★경로 결정 우선순위(어느 PC 에서도 에러 없이 동작하도록 — 하드코딩 절대경로 의존 제거):
-#   ① CONTENT_HUB_ASSETS_DIR 환경변수(명시 지정 시 최우선)
-#   ② 레거시 개발 경로 D:/ClaudeCode-data/projects 가 '실제로 존재하면' 그대로(기존 셋업 보존)
-#   ③ 그 외엔 설치 폴더 기준 DATA_DIR/assets (포터블 — D 드라이브 없어도 동작, captures 도 여기로)
-_assets_env = os.environ.get("CONTENT_HUB_ASSETS_DIR")
-if _assets_env:
-    ASSETS_ROOT = Path(_assets_env).resolve()
-else:
-    _legacy_assets = Path("D:/ClaudeCode-data/projects")
-    ASSETS_ROOT = (_legacy_assets if _legacy_assets.is_dir() else (DATA_DIR / "assets")).resolve()
+# Assets(구성) 패널 — 비마운트 프로젝트·캡쳐의 기본 저장 루트. 등록(마운트)한 외부 폴더는 각자
+# 자기 절대경로를 쓰므로 이 값과 무관하다(영향 없음).
+# 기본은 설치 폴더 기준 DATA_DIR/assets — 하드코딩 절대경로 없이 어느 PC 에서도 동작(포터블).
+# 특정 폴더를 쓰고 싶으면 CONTENT_HUB_ASSETS_DIR 환경변수로 지정.
+ASSETS_ROOT = Path(
+    os.environ.get("CONTENT_HUB_ASSETS_DIR", str(DATA_DIR / "assets"))
+).resolve()
 ASSETS_ROOT.mkdir(parents=True, exist_ok=True)  # 없으면 만들어 캡쳐 등 쓰기가 항상 성공하게
 DEFAULT_PROJECT = os.environ.get("CONTENT_HUB_DEFAULT_PROJECT", "v001")
 
