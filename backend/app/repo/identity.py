@@ -428,11 +428,15 @@ def list_members() -> list[dict[str, Any]]:
                     "status": a["status"],
                 }
             )
-        # ② 계정 없는 외부 생성자(가져온 번들 작성자 등)도 목록 유지
+        # ② 계정 없는 외부 생성자(가져온 번들 작성자 등)도 목록 유지. 단, '숨긴 계정'에 연결된 uid 는
+        #    제외한다 — 생성물이 있는 계정은 ①에서 숨겨도 여기서 다시 들어와('숨기기'가 멤버·프로젝트
+        #    후보에서 안 먹던 버그). 계정 없는 순수 외부 생성자(account 에 없음)는 그대로 유지된다.
         for r in conn.execute(
             "SELECT g.creator_uid uid, COUNT(*) cnt, c.name name, c.global_role grole "
             "FROM generation g LEFT JOIN creator c ON c.uid=g.creator_uid "
             "WHERE g.creator_uid IS NOT NULL "
+            "AND g.creator_uid NOT IN ("
+            "  SELECT creator_uid FROM account WHERE COALESCE(hidden,0)=1 AND creator_uid IS NOT NULL) "
             "GROUP BY g.creator_uid, c.name, c.global_role"
         ).fetchall():
             if r["uid"] in seen:
