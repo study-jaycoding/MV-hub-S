@@ -65,16 +65,137 @@ function usesSeedanceMediaRefs(model: string): boolean {
   return model.startsWith("seedance");
 }
 
+type SeedanceTokenKind = "image" | "start" | "end" | "video" | "audio";
+type SeedanceTrayRole = "omni" | "start" | "end" | "video";
+type SeedanceTokenRoles = Map<number, Set<SeedanceTokenKind>>;
+
+function seedanceTokenRoles(text: string): SeedanceTokenRoles {
+  const roles: SeedanceTokenRoles = new Map();
+  const re = /<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const rawKind = m[1].toLowerCase();
+    const idx = Number(m[2]);
+    if (!Number.isFinite(idx) || idx < 1) continue;
+    const kind: SeedanceTokenKind =
+      rawKind === "simage"
+        ? "start"
+        : rawKind === "eimage"
+          ? "end"
+          : rawKind === "vedio"
+            ? "video"
+            : (rawKind as SeedanceTokenKind);
+    const set = roles.get(idx) || new Set<SeedanceTokenKind>();
+    set.add(kind);
+    roles.set(idx, set);
+  }
+  return roles;
+}
+
+function seedanceTrayRole(ref: Pick<ChipRef, "type">, index: number, roles: SeedanceTokenRoles): SeedanceTrayRole {
+  const marked = roles.get(index + 1);
+  if (ref.type === "video") return "video";
+  if (marked?.has("start")) return "start";
+  if (marked?.has("end")) return "end";
+  return "omni";
+}
+
+function seedanceTrayBadge(role: SeedanceTrayRole): string {
+  if (role === "start") return "S";
+  if (role === "end") return "E";
+  if (role === "video") return "V";
+  return "O";
+}
+
+function seedanceTrayBadgeTitle(role: SeedanceTrayRole): string {
+  if (role === "start") return "첫 프레임";
+  if (role === "end") return "끝 프레임";
+  if (role === "video") return "비디오 레퍼런스";
+  return "옴니 레퍼런스";
+}
+
+function validateSeedanceTokenRoles(trayRefs: TrayRef[], roles: SeedanceTokenRoles): string | null {
+  let starts = 0;
+  let ends = 0;
+  for (const [idx, kinds] of roles) {
+    const ref = trayRefs[idx - 1];
+    if (!ref) return `Seedance 레퍼런스 ${idx}번이 트레이에 없습니다.`;
+    if (kinds.has("audio")) {
+      return "audio 토큰은 아직 트레이/에셋 타입 확장이 필요합니다. 우선 image/video 레퍼런스로 생성해 주세요.";
+    }
+    const usesImageToken = kinds.has("image") || kinds.has("start") || kinds.has("end");
+    if (usesImageToken && ref.type !== "image") {
+      return `${idx}번 레퍼런스는 이미지가 아니어서 image/simage/eimage 토큰으로 쓸 수 없습니다.`;
+    }
+    if (kinds.has("video") && ref.type !== "video") {
+      return `${idx}번 레퍼런스는 비디오가 아니어서 video 토큰으로 쓸 수 없습니다.`;
+    }
+    if (kinds.has("start") && kinds.has("end")) {
+      return `${idx}번 레퍼런스를 첫 프레임과 끝 프레임으로 동시에 지정할 수 없습니다.`;
+    }
+    if ((kinds.has("start") || kinds.has("end")) && kinds.has("image")) {
+      return `${idx}번 레퍼런스는 옴니와 첫/끝 프레임 중 하나로만 지정해 주세요.`;
+    }
+    if (ref.type === "image") {
+      const role = seedanceTrayRole(ref, idx - 1, roles);
+      if (role === "start") starts += 1;
+      if (role === "end") ends += 1;
+    }
+  }
+  if (starts > 1) return "Seedance 시작 프레임은 1장만 지정할 수 있습니다.";
+  if (ends > 1) return "Seedance 끝 프레임은 1장만 지정할 수 있습니다.";
+  return null;
+}
+
+function seedanceOmniImageIndexMap(trayRefs: TrayRef[], roles: SeedanceTokenRoles): Map<number, number> {
+  const map = new Map<number, number>();
+  let n = 0;
+  trayRefs.forEach((ref, i) => {
+    if (ref.type === "image" && seedanceTrayRole(ref, i, roles) === "omni") {
+      map.set(i + 1, ++n);
+    }
+  });
+  return map;
+}
+
+function seedanceVideoIndexMap(trayRefs: TrayRef[]): Map<number, number> {
+  const map = new Map<number, number>();
+  let n = 0;
+  trayRefs.forEach((ref, i) => {
+    if (ref.type === "video") map.set(i + 1, ++n);
+  });
+  return map;
+}
+
+function normalizeSeedancePromptTokens(
+  text: string,
+  imageIndexMap?: Map<number, number>,
+  videoIndexMap?: Map<number, number>,
+): string {
+  return text.replace(/<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi, (_m, rawKind, n) => {
+    const kind = String(rawKind).toLowerCase();
+    if (kind === "simage") return "첫 프레임";
+    if (kind === "eimage") return "끝 프레임";
+    if (kind === "image") return `<<<image${imageIndexMap?.get(Number(n)) || n}>>>`;
+    if (kind === "video" || kind === "vedio") return `<<<video${videoIndexMap?.get(Number(n)) || n}>>>`;
+    return `<<<${kind}${n}>>>`;
+  });
+}
+
 function seedancePromptText(
   parts: ReturnType<typeof serializeParts>,
   trayImageCount: number,
+  imageIndexMap?: Map<number, number>,
+  trayVideoCount = 0,
+  videoIndexMap?: Map<number, number>,
 ): string {
   let imgN = trayImageCount;
+  let videoN = trayVideoCount;
   return parts
     .map((p) => {
-      if (p.t === "text") return p.v;
+      if (p.t === "text") return normalizeSeedancePromptTokens(p.v, imageIndexMap, videoIndexMap);
       if (p.ref?.type === "image") return `<<<image${++imgN}>>>`;
-      if (p.ref?.type === "video") return "<<<video>>>";
+      if (p.ref?.type === "video") return `<<<video${++videoN}>>>`;
       return "";
     })
     .join("")
@@ -227,6 +348,7 @@ export function SpotlightPrompt({
   // ── 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 순서 = 생성 --image 순서 ──
   // uid: 같은 파일을 중복으로 넣을 수 있어 file_path 가 겹치므로 React key·재정렬용 고유키.
   const [trayRefs, setTrayRefs] = useState<TrayRef[]>([]);
+  const [promptTick, setPromptTick] = useState(0); // contentEditable 텍스트 변경 신호(트레이 역할 배지 갱신)
   const trayDragIdx = useRef<number | null>(null); // 트레이 내부 재정렬 시작 인덱스
   const trayUidRef = useRef(0); // 트레이 항목 고유키 카운터(중복 허용)
   const editorRef = useRef<HTMLDivElement>(null);
@@ -334,7 +456,14 @@ export function SpotlightPrompt({
     histIdxRef.current = -1;
     updatePlaceholder();
     setMention(composingRef.current ? null : detectMention(ed));
+    setPromptTick((n) => n + 1);
   };
+
+  const liveSeedanceRoles = useMemo(() => {
+    const ed = editorRef.current;
+    return seedanceTokenRoles(ed ? serialize(ed).text : "");
+  }, [promptTick, trayRefs]);
+
   // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
   // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지.
   const onEditorPaste = (e: React.ClipboardEvent) => {
@@ -383,6 +512,7 @@ export function SpotlightPrompt({
       stripQuery(ed, "#");
       insertTextAtCaret(ed, "@"); // 그 태그로 필터된 @ 소스 피커 자동 오픈
       updatePlaceholder();
+      setPromptTick((n) => n + 1);
     }
     setTagFilter(tag);
     setMention({ kind: "@", query: "" });
@@ -405,6 +535,7 @@ export function SpotlightPrompt({
     };
     insertChip(ed, ref);
     updatePlaceholder();
+    setPromptTick((n) => n + 1);
     setMention(null);
     ed.focus();
   };
@@ -453,6 +584,7 @@ export function SpotlightPrompt({
         if (ed) {
           restoreParts(ed, ptext ? [{ t: "text" as const, v: ptext }] : []); // 칩 없이 텍스트만
           updatePlaceholder();
+          setPromptTick((n) => n + 1);
           ed.focus();
         }
       } else {
@@ -465,6 +597,7 @@ export function SpotlightPrompt({
         if (ed) {
           restoreParts(ed, parts); // 재사용은 '교체' — 입력바를 그 프롬프트로 채움
           updatePlaceholder();
+          setPromptTick((n) => n + 1);
           ed.focus();
         }
       }
@@ -518,6 +651,7 @@ export function SpotlightPrompt({
         // 접힘 = 인라인 칩으로 누적. 중복 허용 — '레퍼런스로 사용'을 누를 때마다 같은 생성물도 다시 추가.
         insertChip(ed, ref);
         updatePlaceholder();
+        setPromptTick((n) => n + 1);
         ed.focus();
       }
     } catch (err) {
@@ -567,6 +701,7 @@ export function SpotlightPrompt({
     }
     if (added) {
       updatePlaceholder();
+      setPromptTick((n) => n + 1);
       ed.focus();
     }
   };
@@ -652,13 +787,7 @@ export function SpotlightPrompt({
     const ed = editorRef.current;
     if (!ed) return;
     const { text, refs: inlineRefs } = serialize(ed);
-    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호.
-    // 에이전트가 모델에 맞춰 일반 모델은 --image, Seedance 는 --medias 로 넘긴다.
-    let imgN = 0;
-    const refs = [...trayRefs, ...inlineRefs].map((r) =>
-      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: "@Video" },
-    );
-    if (!text && refs.length === 0) {
+    if (!text && trayRefs.length + inlineRefs.length === 0) {
       setError("프롬프트를 입력하세요.");
       ed.focus();
       return;
@@ -667,11 +796,41 @@ export function SpotlightPrompt({
       setError("모델을 선택하세요.");
       return;
     }
+    const seedanceMode = usesSeedanceMediaRefs(model);
+    const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : new Map<number, Set<SeedanceTokenKind>>();
+    if (seedanceMode) {
+      const tokenError = validateSeedanceTokenRoles(trayRefs, tokenRoles);
+      if (tokenError) {
+        setError(tokenError);
+        return;
+      }
+    }
+    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호.
+    // Seedance 트레이 이미지는 <<<simageN>>>/<<<eimageN>>> 로 첫/끝 프레임을 지정할 수 있다.
+    let imgN = 0;
+    const trayWithRoles = trayRefs.map((r, i) => {
+      if (r.type !== "image") return { ...r, role: "@Video" };
+      const role = seedanceMode ? seedanceTrayRole(r, i, tokenRoles) : "omni";
+      if (role === "start") return { ...r, role: "@Start" };
+      if (role === "end") return { ...r, role: "@End" };
+      return { ...r, role: `@Image${++imgN}` };
+    });
+    const inlineWithRoles = inlineRefs.map((r) =>
+      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: "@Video" },
+    );
+    const refs = [...trayWithRoles, ...inlineWithRoles];
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.
     const parts = serializeParts(ed);
     const displayPrompt = partsText(parts);
-    const promptText = usesSeedanceMediaRefs(model)
-      ? seedancePromptText(parts, trayRefs.filter((r) => r.type === "image").length) || text
+    const imageIndexMap = seedanceMode ? seedanceOmniImageIndexMap(trayRefs, tokenRoles) : undefined;
+    const videoIndexMap = seedanceMode ? seedanceVideoIndexMap(trayRefs) : undefined;
+    const trayOmniImageCount = seedanceMode
+      ? trayRefs.filter((r, i) => r.type === "image" && seedanceTrayRole(r, i, tokenRoles) === "omni").length
+      : trayRefs.filter((r) => r.type === "image").length;
+    const trayVideoCount = seedanceMode ? trayRefs.filter((r) => r.type === "video").length : 0;
+    const promptText = seedanceMode
+      ? seedancePromptText(parts, trayOmniImageCount, imageIndexMap, trayVideoCount, videoIndexMap) ||
+        normalizeSeedancePromptTokens(text, imageIndexMap, videoIndexMap)
       : text;
     setBusy(true);
     try {
@@ -785,6 +944,7 @@ export function SpotlightPrompt({
           if (ed) {
             restoreParts(ed, hist[idx].parts);
             updatePlaceholder();
+            setPromptTick((n) => n + 1);
           }
           return;
         }
@@ -798,12 +958,14 @@ export function SpotlightPrompt({
               ed.innerHTML = "";
               updatePlaceholder();
               placeCaretAtEnd(ed);
+              setPromptTick((n) => n + 1);
             }
           } else {
             histIdxRef.current = idx;
             if (ed) {
               restoreParts(ed, hist[idx].parts);
               updatePlaceholder();
+              setPromptTick((n) => n + 1);
             }
           }
           return;
@@ -954,42 +1116,52 @@ export function SpotlightPrompt({
                   에셋 창에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
                 </div>
               ) : (
-                trayRefs.map((r, i) => (
-                  <div
-                    key={r.uid}
-                    className="sl-reftray-item"
-                    draggable
-                    onDragStart={onTrayItemDragStart(i)}
-                    onDragOver={onTrayDragOver}
-                    onDrop={onTrayItemDrop(i)}
-                    title={`${i + 1}. ${r.name}`}
-                  >
-                    <span className="sl-reftray-num">{i + 1}</span>
-                    {r.type === "video" ? (
-                      // 영상은 포스터 thumb 가 없을 수 있어(에셋 영상은 thumb 엔드포인트 미지원)
-                      // 레퍼런스 실제 파일을 <video> 로 띄워 첫 프레임을 보여준다(깨짐 방지).
-                      <video
-                        src={refSrc(r.file_path)}
-                        muted
-                        preload="metadata"
-                        playsInline
-                      />
-                    ) : r.thumb ? (
-                      <img src={r.thumb} alt="" />
-                    ) : (
-                      <span className="sl-reftray-ph" />
-                    )}
-                    <span className="sl-reftray-name">{r.name}</span>
-                    <button
-                      className="sl-reftray-x"
-                      title="제거"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => removeTrayRef(i)}
+                trayRefs.map((r, i) => {
+                  const badgeRole = seedanceTrayRole(r, i, liveSeedanceRoles);
+                  const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
+                  const showRoleBadge = usesSeedanceMediaRefs(model) || liveSeedanceRoles.size > 0;
+                  return (
+                    <div
+                      key={r.uid}
+                      className="sl-reftray-item"
+                      draggable
+                      onDragStart={onTrayItemDragStart(i)}
+                      onDragOver={onTrayDragOver}
+                      onDrop={onTrayItemDrop(i)}
+                      title={`${i + 1}. ${r.name} · ${badgeTitle}`}
                     >
-                      ×
-                    </button>
-                  </div>
-                ))
+                      <span className="sl-reftray-num">{i + 1}</span>
+                      {r.type === "video" ? (
+                        // 영상은 포스터 thumb 가 없을 수 있어(에셋 영상은 thumb 엔드포인트 미지원)
+                        // 레퍼런스 실제 파일을 <video> 로 띄워 첫 프레임을 보여준다(깨짐 방지).
+                        <video
+                          src={refSrc(r.file_path)}
+                          muted
+                          preload="metadata"
+                          playsInline
+                        />
+                      ) : r.thumb ? (
+                        <img src={r.thumb} alt="" />
+                      ) : (
+                        <span className="sl-reftray-ph" />
+                      )}
+                      {showRoleBadge && (
+                        <span className={`sl-reftray-role ${badgeRole}`} title={badgeTitle}>
+                          {seedanceTrayBadge(badgeRole)}
+                        </span>
+                      )}
+                      <span className="sl-reftray-name">{r.name}</span>
+                      <button
+                        className="sl-reftray-x"
+                        title="제거"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => removeTrayRef(i)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}

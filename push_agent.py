@@ -151,13 +151,38 @@ def _uses_single_start_image(model: str) -> bool:
     return (model or "").startswith("seedance")
 
 
+def _role_key(ref: dict) -> str:
+    return (ref.get("role") or "").lower()
+
+
 def _is_image_ref(ref: dict) -> bool:
-    role = (ref.get("role") or "").lower()
-    return ref.get("type") == "image" or role.startswith("@image") or role.startswith("@start")
+    role = _role_key(ref)
+    return ref.get("type") == "image" or role.startswith(("@image", "@start", "@end"))
 
 
 def _is_start_ref(ref: dict) -> bool:
-    return (ref.get("role") or "").lower().startswith("@start")
+    return _role_key(ref).startswith("@start")
+
+
+def _is_end_ref(ref: dict) -> bool:
+    return _role_key(ref).startswith("@end")
+
+
+def _is_omni_media_ref(ref: dict) -> bool:
+    role = _role_key(ref)
+    if _is_start_ref(ref) or _is_end_ref(ref):
+        return False
+    return role.startswith(("@image", "@video", "@audio")) or ref.get("type") in ("image", "video", "audio")
+
+
+def _media_role(ref: dict) -> str:
+    role = _role_key(ref)
+    typ = ref.get("type")
+    if role.startswith("@video") or typ == "video":
+        return "video"
+    if role.startswith("@audio") or typ == "audio":
+        return "audio"
+    return "image"
 
 
 def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
@@ -165,8 +190,11 @@ def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
         return refs, None
     image_refs = [ref for ref in refs if isinstance(ref, dict) and _is_image_ref(ref)]
     start_refs = [ref for ref in image_refs if _is_start_ref(ref)]
+    end_refs = [ref for ref in image_refs if _is_end_ref(ref)]
     if len(start_refs) > 1:
         return [], "Seedance 영상은 시작 이미지 1장만 지원합니다."
+    if len(end_refs) > 1:
+        return [], "Seedance 영상은 끝 이미지 1장만 지원합니다."
     return [ref for ref in refs if isinstance(ref, dict)], None
 
 
@@ -421,27 +449,28 @@ def _execute_one(
     unresolved: list = []
     upload_failed: list = []
     seedance_medias: list = []
-    seedance_media_paths: list[str] = []
+    seedance_media_inputs: list[tuple[str, str]] = []
     seedance_used_cached_media = False
     for ref in refs:
         val = ref.get("file_path")
         if not val:
             continue
-        seedance_img = _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)
+        seedance_media = _uses_single_start_image(model) and _is_omni_media_ref(ref)
         resolved = ref_cache.get(val)
         if not resolved:
             unresolved.append(val)
             continue
-        if seedance_img:
-            # Seedance 의 일반 image 레퍼런스는 --image 로 넘기면 start_image 로 오해된다.
+        if seedance_media:
+            # Seedance 의 일반 옴니 레퍼런스는 --image 로 넘기면 start_image 로 오해된다.
             # 항상 upload create 로 media_input id 를 만든 뒤 --medias 로 넘긴다.
             data, from_cache = _upload_for_media(cli, resolved, upload_cache, upload_lock)
             if not data:
                 upload_failed.append(val)
                 continue
-            seedance_media_paths.append(resolved)
+            media_role = _media_role(ref)
+            seedance_media_inputs.append((resolved, media_role))
             seedance_used_cached_media = seedance_used_cached_media or from_cache
-            seedance_medias.append({"data": data, "role": "image"})
+            seedance_medias.append({"data": data, "role": media_role})
             continue
         args += [_role_flag(ref.get("role")), resolved]
     if unresolved:
@@ -461,20 +490,20 @@ def _execute_one(
     if (
         not job
         and cli_error
-        and seedance_media_paths
+        and seedance_media_inputs
         and seedance_used_cached_media
         and any(s in cli_error.lower() for s in ("media", "medias", "upload", "uuid", "input"))
     ):
         print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
         retry_medias: list = []
         retry_failed = False
-        for path in seedance_media_paths:
+        for path, media_role in seedance_media_inputs:
             _invalidate_upload_cache(upload_cache, path, upload_lock)
             data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
             if not data:
                 retry_failed = True
                 break
-            retry_medias.append({"data": data, "role": "image"})
+            retry_medias.append({"data": data, "role": media_role})
         if not retry_failed:
             retry_args = list(args)
             media_idx = retry_args.index("--medias") + 1
