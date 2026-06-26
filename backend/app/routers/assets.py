@@ -84,6 +84,34 @@ def _media_type(name: str) -> Optional[str]:
     return None
 
 
+def _sha256_bytes(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]:
+    try:
+        entries = list(dest.iterdir())
+    except OSError:
+        return None
+    for p in entries:
+        if not p.is_file() or _media_type(p.name) != media_type:
+            continue
+        if _sha256_file(p) == digest:
+            return p
+    return None
+
+
 def _load_mounts() -> list[dict[str, str]]:
     """등록된 외부 폴더 [{name, path, owner}]. owner=등록한 계정(creator_uid) — 계정별 개인 목록.
     레거시(소유자 없는) 항목은 첫 로드 때 제공자(get_my_uid) 소유로 이관·재저장(멱등)."""
@@ -575,14 +603,37 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
 
 
 @router.post("/reference-import")
-async def upload_reference_import(request: Request, files: list[UploadFile] = File(...)):
+async def upload_reference_import(
+    request: Request,
+    project: str = Form(""),
+    dir: str = Form(""),
+    files: list[UploadFile] = File(...),
+):
     """프롬프트/레퍼런스 트레이에 외부 파일을 직접 드롭할 때 쓰는 내장 가져오기.
-    이미지/영상만 저장해 즉시 asset:{project}|{path} 레퍼런스로 쓸 수 있게 한다."""
-    dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
-    try:
-        dest.relative_to(ASSETS_ROOT)
-    except ValueError:
-        raise HTTPException(status_code=500, detail="imports 경로 오류")
+    선택된 에셋 폴더가 있으면 그 안의 import/에 저장하고, 같은 파일은 해시로 재사용한다."""
+    owner = actor_id(request)
+    project = (project or "").strip()
+    dir = (dir or "").strip().strip("/")
+
+    out_project = _PROMPT_IMPORT_PROJECT
+    rel_base = ""
+    project_dir: Optional[Path] = None
+    if project and project != "captures":
+        project_dir = _safe_project_dir(project, owner)
+        if project_dir:
+            import_rel = f"{dir}/import" if dir else "import"
+            dest = _safe_resolve(project_dir, import_rel)
+            if dest:
+                out_project = project
+                rel_base = import_rel
+            else:
+                project_dir = None
+    if not project_dir:
+        dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
+        try:
+            dest.relative_to(ASSETS_ROOT)
+        except ValueError:
+            raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
 
     saved: list[dict[str, str]] = []
@@ -594,6 +645,26 @@ async def upload_reference_import(request: Request, files: list[UploadFile] = Fi
         mt = _media_type(raw)
         if mt not in ("image", "video"):
             skipped.append(raw)
+            continue
+        data = await up.read()
+        if not data:
+            skipped.append(raw)
+            continue
+        digest = _sha256_bytes(data)
+        existing = _find_same_media(dest, digest, mt)
+        if existing:
+            rel = (
+                existing.relative_to(project_dir).as_posix()
+                if project_dir
+                else existing.name
+            )
+            saved.append({
+                "project": out_project,
+                "path": rel,
+                "name": existing.name,
+                "type": mt,
+                "reused": "true",
+            })
             continue
         target = _safe_resolve(dest, raw)
         if not target:
@@ -608,14 +679,18 @@ async def upload_reference_import(request: Request, files: list[UploadFile] = Fi
                     break
                 i += 1
         try:
-            target.write_bytes(await up.read())
+            target.write_bytes(data)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
-        name = target.name
+        rel = (
+            target.relative_to(project_dir).as_posix()
+            if project_dir
+            else target.name
+        )
         saved.append({
-            "project": _PROMPT_IMPORT_PROJECT,
-            "path": name,
-            "name": name,
+            "project": out_project,
+            "path": rel,
+            "name": target.name,
             "type": mt,
         })
 
