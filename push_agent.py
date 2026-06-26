@@ -139,6 +139,35 @@ def _role_flag(role: str) -> str:
     return "--image"
 
 
+def _uses_single_start_image(model: str) -> bool:
+    return (model or "").startswith("seedance")
+
+
+def _is_image_ref(ref: dict) -> bool:
+    role = (ref.get("role") or "").lower()
+    return ref.get("type") == "image" or role.startswith("@image") or role.startswith("@start")
+
+
+def _is_start_ref(ref: dict) -> bool:
+    return (ref.get("role") or "").lower().startswith("@start")
+
+
+def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
+    if not _uses_single_start_image(model):
+        return refs, None
+    image_refs = [ref for ref in refs if isinstance(ref, dict) and _is_image_ref(ref)]
+    implicit_images = [ref for ref in image_refs if not _is_start_ref(ref)]
+    if implicit_images:
+        return [], (
+            "현재 Higgsfield CLI는 Seedance의 @Image 레퍼런스를 엘리먼트가 아니라 "
+            "시작 이미지로 처리합니다. 시작 프레임 없이 쓰려면 이미지 칩을 삭제하고 "
+            "프롬프트 텍스트로 작성하세요."
+        )
+    if len(image_refs) > 1:
+        return [], "Seedance 영상은 시작 이미지 1장만 지원합니다."
+    return [ref for ref in refs if isinstance(ref, dict)], None
+
+
 _PARAM_NAMES_CACHE: dict = {}  # model → 허용 param 이름 집합(빈 집합=스키마 못 받음 → 필터 안 함)
 
 
@@ -243,9 +272,14 @@ def _execute_one(server: str, token: str, cli: str, r: dict, ref_cache: dict) ->
         return
     args = ["generate", "create", model, "--prompt", prompt, "--wait"]
     args += _param_flags(r.get("params") or {}, _allowed_params(cli, model))
+    refs, ref_error = _refs_for_cli(model, r.get("references") or [])
+    if ref_error:
+        _fail(server, token, rid, ref_error)
+        print(f"  ✗ {model}: {ref_error}")
+        return
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
-    for ref in r.get("references") or []:
+    for ref in refs:
         val = ref.get("file_path")
         if not val:
             continue

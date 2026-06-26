@@ -61,6 +61,10 @@ function durRange(model: string, def: number): { min: number; max: number } {
   return DURATION_RANGE[model] || { min: 1, max: Math.max(12, def * 2) };
 }
 
+function usesSingleStartImage(model: string): boolean {
+  return model.startsWith("seedance");
+}
+
 // 컨트롤 행 정리(칸 부족 해소): 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고,
 // 그 외(모드·비트레이트·장르 등 값만으론 의미가 모호한 것)는 '⚙ 고급' 팝오버로 모은다.
 // 모델 비종속 — 모델이 파라미터를 추가해도 자동으로 고급으로 흡수된다.
@@ -645,6 +649,16 @@ export function SpotlightPrompt({
     if (!model) {
       setError("모델을 선택하세요.");
       return;
+    }
+    if (type === "video" && usesSingleStartImage(model)) {
+      const imageRefs = refs.filter((r) => r.type === "image");
+      if (imageRefs.length > 0) {
+        setError(
+          "현재 Higgsfield CLI는 Seedance의 이미지 칩을 엘리먼트 레퍼런스가 아니라 시작 이미지로 처리합니다. 시작 프레임 없이 쓰려면 이미지 칩을 삭제하고 프롬프트 텍스트로 작성하세요.",
+        );
+        ed.focus();
+        return;
+      }
     }
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.
     const parts = serializeParts(ed);
