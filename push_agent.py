@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -58,24 +59,30 @@ def _cli() -> str:
     return found
 
 
-def _cli_json(cli: str, *args: str, timeout: int = 120):
-    """higgsfield CLI 를 --json 으로 실행하고 파싱 결과 반환(실패 시 None)."""
+def _run_cli_json(cli: str, *args: str, timeout: int = 120):
+    """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
         out = subprocess.run(
             [cli, *args, "--json"],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        print(f"[경고] CLI 타임아웃: {' '.join(args)}")
-        return None
+        return None, f"CLI 타임아웃: {' '.join(args)}"
     if out.returncode != 0:
-        print(f"[경고] CLI 실패({' '.join(args)}): {out.stderr.strip()[:200]}")
-        return None
+        msg = (out.stderr or out.stdout or "").strip()
+        return None, f"CLI 실패({' '.join(args)}): {msg[:700]}"
     try:
-        return json.loads(out.stdout)
+        return json.loads(out.stdout), None
     except json.JSONDecodeError:
-        print(f"[경고] CLI JSON 파싱 실패: {' '.join(args)}")
-        return None
+        return None, f"CLI JSON 파싱 실패: {' '.join(args)}"
+
+
+def _cli_json(cli: str, *args: str, timeout: int = 120):
+    """higgsfield CLI 를 --json 으로 실행하고 파싱 결과 반환(실패 시 None)."""
+    data, err = _run_cli_json(cli, *args, timeout=timeout)
+    if err:
+        print(f"[경고] {err}")
+    return data
 
 
 def _http(method: str, url: str, token: str | None = None, body: dict | None = None, timeout: int = 60):
@@ -163,24 +170,134 @@ def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
     return [ref for ref in refs if isinstance(ref, dict)], None
 
 
-def _upload_for_media(cli: str, path: str, upload_cache: dict, upload_lock: Lock) -> dict | None:
-    """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 medias[].data 형태로 반환."""
+def _upload_cache_path() -> str:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return os.path.join(base, "MVHub", "higgsfield_upload_cache.json")
+    return os.path.join(os.path.expanduser("~"), ".mvhub", "higgsfield_upload_cache.json")
+
+
+def _load_upload_cache(namespace: str | None) -> dict:
+    path = _upload_cache_path()
+    items = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+            if isinstance(raw, dict) and isinstance(raw.get("items"), dict):
+                items = raw["items"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"_path": path, "_namespace": namespace or "unknown", "_items": items, "_memory": {}}
+
+
+def _save_upload_cache(upload_cache: dict) -> None:
+    path = upload_cache.get("_path")
+    items = upload_cache.get("_items")
+    if not path or not isinstance(items, dict):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ranked = sorted(
+            items.items(),
+            key=lambda kv: (kv[1].get("updated_at") or kv[1].get("created_at") or 0)
+            if isinstance(kv[1], dict)
+            else 0,
+            reverse=True,
+        )
+        payload = {"version": 1, "items": dict(ranked[:800])}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"[경고] 업로드 캐시 저장 실패: {e}")
+
+
+def _file_fingerprint(path: str) -> tuple[str, int] | None:
+    try:
+        size = os.path.getsize(path)
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return "sha256:" + h.hexdigest(), size
+    except OSError as e:
+        print(f"[경고] 레퍼런스 해시 계산 실패({path}): {e}")
+        return None
+
+
+def _upload_cache_key(upload_cache: dict, digest: str) -> str:
+    return f"{upload_cache.get('_namespace') or 'unknown'}|{digest}"
+
+
+def _invalidate_upload_cache(upload_cache: dict, path: str, upload_lock: Lock) -> None:
+    if "_items" not in upload_cache:
+        with upload_lock:
+            upload_cache.pop(path, None)
+        return
+    fp = _file_fingerprint(path)
+    if not fp:
+        return
+    digest, _ = fp
+    key = _upload_cache_key(upload_cache, digest)
     with upload_lock:
-        cached = upload_cache.get(path)
-        if cached is not None:
-            return cached
+        upload_cache.get("_memory", {}).pop(key, None)
+        upload_cache.get("_items", {}).pop(key, None)
+        _save_upload_cache(upload_cache)
+
+
+def _upload_for_media(
+    cli: str,
+    path: str,
+    upload_cache: dict,
+    upload_lock: Lock,
+    force: bool = False,
+) -> tuple[dict | None, bool]:
+    """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환."""
+    if "_items" not in upload_cache:
+        with upload_lock:
+            cached = upload_cache.get(path)
+            if cached is not None and not force:
+                return cached, True
+    else:
+        fp = _file_fingerprint(path)
+        if not fp:
+            return None, False
+        digest, size = fp
+        key = _upload_cache_key(upload_cache, digest)
+        with upload_lock:
+            if not force:
+                cached = upload_cache.get("_memory", {}).get(key)
+                if cached is not None:
+                    return cached, True
+                entry = upload_cache.get("_items", {}).get(key)
+                data = entry.get("data") if isinstance(entry, dict) else None
+                if isinstance(data, dict) and data.get("id"):
+                    upload_cache.setdefault("_memory", {})[key] = data
+                    return data, True
     up = _cli_json(cli, "upload", "create", path, timeout=300)
     if isinstance(up, list):
         up = up[0] if up else None
     if not isinstance(up, dict) or not up.get("id"):
         print(f"[경고] 레퍼런스 업로드 실패: {path}")
-        return None
+        return None, False
     data = {"id": up.get("id"), "type": "media_input"}
     if up.get("url"):
         data["url"] = up.get("url")
+    if "_items" not in upload_cache:
+        with upload_lock:
+            upload_cache[path] = data
+        return data, False
     with upload_lock:
-        upload_cache[path] = data
-    return data
+        upload_cache.setdefault("_memory", {})[key] = data
+        upload_cache.setdefault("_items", {})[key] = {
+            "data": data,
+            "size": size,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        _save_upload_cache(upload_cache)
+    return data, False
 
 
 _PARAM_NAMES_CACHE: dict = {}  # model → 허용 param 이름 집합(빈 집합=스키마 못 받음 → 필터 안 함)
@@ -304,28 +421,26 @@ def _execute_one(
     unresolved: list = []
     upload_failed: list = []
     seedance_medias: list = []
+    seedance_media_paths: list[str] = []
+    seedance_used_cached_media = False
     for ref in refs:
         val = ref.get("file_path")
         if not val:
             continue
-        seedance_img = (
-            _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)
-        )
-        # seedance 일반 image 레퍼런스 + 공개 URL → 다운로드·업로드 없이 medias.data.url 직결.
-        # (medias 파라미터는 --image 와 달리 원격 URL 을 그대로 받는다 — 검증 완료.)
-        if seedance_img and val.lower().startswith(("http://", "https://")):
-            seedance_medias.append({"data": {"url": val}, "role": "image"})
-            continue
+        seedance_img = _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)
         resolved = ref_cache.get(val)
         if not resolved:
             unresolved.append(val)
             continue
         if seedance_img:
-            # 비공개(asset 등 허브 전용) URL → CLI 가 원격으로 못 받으므로 업로드해 medias.data{id,url}.
-            data = _upload_for_media(cli, resolved, upload_cache, upload_lock)
+            # Seedance 의 일반 image 레퍼런스는 --image 로 넘기면 start_image 로 오해된다.
+            # 항상 upload create 로 media_input id 를 만든 뒤 --medias 로 넘긴다.
+            data, from_cache = _upload_for_media(cli, resolved, upload_cache, upload_lock)
             if not data:
                 upload_failed.append(val)
                 continue
+            seedance_media_paths.append(resolved)
+            seedance_used_cached_media = seedance_used_cached_media or from_cache
             seedance_medias.append({"data": data, "role": "image"})
             continue
         args += [_role_flag(ref.get("role")), resolved]
@@ -342,9 +457,35 @@ def _execute_one(
     if seedance_medias:
         args += ["--medias", json.dumps(seedance_medias, separators=(",", ":"))]
     print(f"  → {model}: {prompt[:40]}")
-    job = _cli_json(cli, *args, timeout=900)
+    job, cli_error = _run_cli_json(cli, *args, timeout=900)
+    if (
+        not job
+        and cli_error
+        and seedance_media_paths
+        and seedance_used_cached_media
+        and any(s in cli_error.lower() for s in ("media", "medias", "upload", "uuid", "input"))
+    ):
+        print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
+        retry_medias: list = []
+        retry_failed = False
+        for path in seedance_media_paths:
+            _invalidate_upload_cache(upload_cache, path, upload_lock)
+            data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
+            if not data:
+                retry_failed = True
+                break
+            retry_medias.append({"data": data, "role": "image"})
+        if not retry_failed:
+            retry_args = list(args)
+            media_idx = retry_args.index("--medias") + 1
+            retry_args[media_idx] = json.dumps(retry_medias, separators=(",", ":"))
+            job, cli_error = _run_cli_json(cli, *retry_args, timeout=900)
     if not job:
-        _fail(server, token, rid, "로컬 CLI 실행 실패")
+        reason = "로컬 CLI 실행 실패"
+        if cli_error:
+            reason = f"{reason}: {cli_error[:500]}"
+            print(f"[경고] {cli_error}")
+        _fail(server, token, rid, reason)
         return
     if isinstance(job, list):
         job = job[0] if job else None
@@ -360,23 +501,8 @@ def _execute_one(
 _MAX_CONCURRENCY = 16
 
 
-def _needs_local_file(val: str, reqs: list) -> bool:
-    """이 레퍼런스 값이 '로컬 파일'로 필요한가 — 어느 요청에서든 --image/start/end 등 단축 플래그로
-    쓰이면 True. seedance 의 비-start image 레퍼런스로'만' 쓰이면 False(공개 URL 직결 가능 →
-    다운로드·업로드 생략). medias.data.url 은 원격 URL 을 그대로 받지만, --image 단축은 못 받기 때문."""
-    for r in reqs:
-        model = r.get("model")
-        for ref in (r.get("references") or []):
-            if ref.get("file_path") != val:
-                continue
-            if not (_uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)):
-                return True
-    return False
-
-
 def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
     """이 묶음의 고유 레퍼런스를 한 번씩만 받아 캐시 구성(같은 레퍼런스 N번 다운로드 방지).
-    공개 URL 이고 seedance image 레퍼런스로만 쓰이면 다운로드 생략(_execute_one 이 URL 직결).
     반환: (ref_cache={값→해석값}, 정리할 임시파일 리스트)."""
     ref_cache: dict = {}
     ref_temps: list = []
@@ -386,9 +512,6 @@ def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
         for ref in (r.get("references") or [])
         if ref.get("file_path")
     }:
-        if val.lower().startswith(("http://", "https://")) and not _needs_local_file(val, reqs):
-            ref_cache[val] = None  # _execute_one 이 val(URL)을 medias.data.url 로 직결 — 다운로드 불필요
-            continue
         resolved, tmp = _resolve_ref(server, token, val)
         ref_cache[val] = resolved
         if tmp:
@@ -403,7 +526,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     실행은 유료(내 크레딧). 반환: 이번에 처리한 요청 수."""
     in_flight: set = set()
     ref_temps_all: list = []
-    upload_cache: dict = {}
+    upload_cache: dict = _load_upload_cache(_cli_account_email(cli))
     upload_lock = Lock()
     total = 0
     printed = False
