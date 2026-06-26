@@ -308,11 +308,20 @@ def _execute_one(
         val = ref.get("file_path")
         if not val:
             continue
+        seedance_img = (
+            _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)
+        )
+        # seedance 일반 image 레퍼런스 + 공개 URL → 다운로드·업로드 없이 medias.data.url 직결.
+        # (medias 파라미터는 --image 와 달리 원격 URL 을 그대로 받는다 — 검증 완료.)
+        if seedance_img and val.lower().startswith(("http://", "https://")):
+            seedance_medias.append({"data": {"url": val}, "role": "image"})
+            continue
         resolved = ref_cache.get(val)
         if not resolved:
             unresolved.append(val)
             continue
-        if _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref):
+        if seedance_img:
+            # 비공개(asset 등 허브 전용) URL → CLI 가 원격으로 못 받으므로 업로드해 medias.data{id,url}.
             data = _upload_for_media(cli, resolved, upload_cache, upload_lock)
             if not data:
                 upload_failed.append(val)
@@ -351,8 +360,23 @@ def _execute_one(
 _MAX_CONCURRENCY = 16
 
 
+def _needs_local_file(val: str, reqs: list) -> bool:
+    """이 레퍼런스 값이 '로컬 파일'로 필요한가 — 어느 요청에서든 --image/start/end 등 단축 플래그로
+    쓰이면 True. seedance 의 비-start image 레퍼런스로'만' 쓰이면 False(공개 URL 직결 가능 →
+    다운로드·업로드 생략). medias.data.url 은 원격 URL 을 그대로 받지만, --image 단축은 못 받기 때문."""
+    for r in reqs:
+        model = r.get("model")
+        for ref in (r.get("references") or []):
+            if ref.get("file_path") != val:
+                continue
+            if not (_uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref)):
+                return True
+    return False
+
+
 def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
     """이 묶음의 고유 레퍼런스를 한 번씩만 받아 캐시 구성(같은 레퍼런스 N번 다운로드 방지).
+    공개 URL 이고 seedance image 레퍼런스로만 쓰이면 다운로드 생략(_execute_one 이 URL 직결).
     반환: (ref_cache={값→해석값}, 정리할 임시파일 리스트)."""
     ref_cache: dict = {}
     ref_temps: list = []
@@ -362,6 +386,9 @@ def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
         for ref in (r.get("references") or [])
         if ref.get("file_path")
     }:
+        if val.lower().startswith(("http://", "https://")) and not _needs_local_file(val, reqs):
+            ref_cache[val] = None  # _execute_one 이 val(URL)을 medias.data.url 로 직결 — 다운로드 불필요
+            continue
         resolved, tmp = _resolve_ref(server, token, val)
         ref_cache[val] = resolved
         if tmp:
