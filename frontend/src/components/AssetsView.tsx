@@ -814,33 +814,34 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta((prev) => ({ ...prev, [path]: { ...(prev[path] || EMPTY_META), tags: next } }));
     api.setAssetTags(project, path, next).catch(metaFail);
   };
-  // 다중선택 태그 일괄 추가 — 편집 카드(path)는 onTagsReplace 가 처리, 나머지 선택 카드에 union 추가.
+  // 다중선택 태그 일괄 추가 — 편집 카드(path)까지 포함한 '선택 전체'에 union 추가.
+  // (편집 카드를 빼고 onTagsReplace 단독에 맡기면 그 한 장만 어긋나 빠지는 'N-1' 버그. 추가는 멱등.)
   const bulkTagAdd = (path: string, names: string[]) => {
-    const others = selPaths().filter((p) => p !== path);
-    if (!others.length) return;
+    const targets = Array.from(new Set([...selPaths(), path]));
+    if (!targets.length) return;
     // metaRef 를 동기로 갱신 + api 페이로드를 그 next 에서 뽑는다(stale 병합으로 옛 목록 저장 방지).
     const next = { ...metaRef.current };
-    for (const p of others) {
+    for (const p of targets) {
       const cur = next[p] || EMPTY_META;
       next[p] = { ...cur, tags: Array.from(new Set([...cur.tags, ...names])) };
     }
     metaRef.current = next;
     setMeta(next);
-    Promise.allSettled(others.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
+    Promise.allSettled(targets.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
   };
-  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(path)는 onTagsReplace 가 처리, 나머지 선택 카드에서 제거(공통이면 사라짐).
+  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(path) 포함 선택 전체에서 제거(공통이면 한꺼번에 사라짐).
   const bulkTagRemove = (path: string, names: string[]) => {
-    const others = selPaths().filter((p) => p !== path);
-    if (!others.length) return;
+    const targets = Array.from(new Set([...selPaths(), path]));
+    if (!targets.length) return;
     const drop = new Set(names);
     const next = { ...metaRef.current };
-    for (const p of others) {
+    for (const p of targets) {
       const cur = next[p] || EMPTY_META;
       next[p] = { ...cur, tags: cur.tags.filter((t) => !drop.has(t)) };
     }
     metaRef.current = next;
     setMeta(next);
-    Promise.allSettled(others.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
+    Promise.allSettled(targets.map((p) => api.setAssetTags(project, p, next[p].tags))).catch(metaFail);
   };
 
   // T 패널: 토글(닫으면 태그 필터도 해제 — S 처럼). 바깥 클릭으로 닫히지 않음.

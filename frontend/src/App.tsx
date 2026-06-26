@@ -717,6 +717,23 @@ export default function App() {
     });
   const clearSelect = () => setSelected(new Set());
 
+  // 바깥 클릭으로 선택 해제 — 그리드는 자기 배경 클릭에서만 풀던 걸, 그리드 '밖'(툴바·사이드바·여백 등)
+  // 어디를 눌러도 풀리게 한다. 단, '선택을 소비하는' 곳은 제외:
+  //   .gen-cell  = 카드(그리드가 클릭선택을 직접 처리)
+  //   .gen-grid  = 그리드 배경(가산 마퀴 등 자체 로직 — 중복/조기 해제 방지)
+  //   .select-bar= 선택 일괄작업 툴바(공유/다운로드/비교/프로젝트할당/삭제) + 그 안의 할당 메뉴
+  //   .proj-assign = 프로젝트 할당 드롭다운(혹시 분리 렌더돼도 안전)
+  useEffect(() => {
+    const onDocDown = (e: MouseEvent) => {
+      if (selectedRef.current.size === 0) return;
+      const t = e.target as HTMLElement | null;
+      if (!t || t.closest(".gen-cell, .gen-grid, .select-bar, .proj-assign")) return;
+      setSelected(new Set());
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, []);
+
   // 필터/검색/서브탭이 바뀌면(목록이 달라지면) 선택 초기화 — 에셋 파트와 동일.
   useEffect(() => {
     setSelected(new Set());
@@ -1285,12 +1302,13 @@ export default function App() {
       .catch((e) => flash("전역 태그 변경 실패: " + String(e)));
   };
 
-  // 다중선택 태그 일괄 추가 — 편집한 카드(g)는 onSetTags 가 처리하므로, 나머지 선택 카드에 union 추가.
+  // 다중선택 태그 일괄 추가 — 편집 카드(g)까지 포함한 '선택 전체'에 union 추가.
+  // (편집 카드를 제외하고 onSetTags 단독 경로에 맡기면, 그 한 장만 reload 와 어긋나 빠지는 'N-1' 버그가
+  //  난다. 추가는 멱등이라 편집 카드를 bulk 에 포함해도 안전 — 편집 카드는 onChange+bulk 둘 다 같은 값.)
   // api 페이로드는 stale ref 가 아니라 방금 만든 next 에서 뽑아 '사라짐' 레이스를 없앤다.
   const onBulkAddTags = (g: Generation, names: string[]) => {
-    const others = [...selectedRef.current].filter((id) => id !== g.id);
-    if (!others.length) return;
-    const idSet = new Set(others);
+    const idSet = new Set([...selectedRef.current, g.id]);
+    if (!idSet.size) return;
     const next = gensRef.current.map((x) =>
       idSet.has(x.id) ? { ...x, tags: Array.from(new Set([...x.tags, ...names])) } : x,
     );
@@ -1298,14 +1316,13 @@ export default function App() {
     Promise.allSettled(next.filter((x) => idSet.has(x.id)).map((x) => api.setTags(x.id, x.tags)))
       .then(scheduleTagReload)
       .catch(() => {});
-    flash(`선택한 ${others.length + 1}개에 태그 적용`);
+    flash(`선택한 ${idSet.size}개에 태그 적용`);
   };
 
-  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(g)는 onSetTags 가 처리, 나머지 선택 카드에서 제거(공통이면 사라짐).
+  // 다중선택 일반 태그 일괄 삭제 — 편집 카드(g) 포함 선택 전체에서 제거(공통이면 한꺼번에 사라짐).
   const onBulkRemoveTags = (g: Generation, names: string[]) => {
-    const others = [...selectedRef.current].filter((id) => id !== g.id);
-    if (!others.length) return;
-    const idSet = new Set(others);
+    const idSet = new Set([...selectedRef.current, g.id]);
+    if (!idSet.size) return;
     const drop = new Set(names);
     const next = gensRef.current.map((x) =>
       idSet.has(x.id) ? { ...x, tags: x.tags.filter((t) => !drop.has(t)) } : x,
@@ -1316,11 +1333,10 @@ export default function App() {
       .catch(() => {});
   };
 
-  // 다중선택 전역(auto) 태그 일괄 부여 — 편집 카드(g)는 onSetAutoTags 가 처리, 나머지 선택 카드에 union.
+  // 다중선택 전역(auto) 태그 일괄 부여 — 편집 카드(g) 포함 선택 전체에 union.
   const onBulkAddAutoTags = (g: Generation, names: string[]) => {
-    const others = [...selectedRef.current].filter((id) => id !== g.id);
-    if (!others.length) return;
-    const idSet = new Set(others);
+    const idSet = new Set([...selectedRef.current, g.id]);
+    if (!idSet.size) return;
     const next = gensRef.current.map((x) =>
       idSet.has(x.id)
         ? { ...x, auto_tags: Array.from(new Set([...(x.auto_tags || []), ...names])) }
@@ -1332,14 +1348,13 @@ export default function App() {
     )
       .then(scheduleTagReload)
       .catch(() => {});
-    flash(`선택한 ${others.length + 1}개에 전역 태그 적용`);
+    flash(`선택한 ${idSet.size}개에 전역 태그 적용`);
   };
 
-  // 다중선택 전역(auto) 태그 일괄 해제 — 편집 카드(g)는 onSetAutoTags 가 처리, 나머지 선택 카드에서 제거.
+  // 다중선택 전역(auto) 태그 일괄 해제 — 편집 카드(g) 포함 선택 전체에서 제거.
   const onBulkRemoveAutoTags = (g: Generation, names: string[]) => {
-    const others = [...selectedRef.current].filter((id) => id !== g.id);
-    if (!others.length) return;
-    const idSet = new Set(others);
+    const idSet = new Set([...selectedRef.current, g.id]);
+    if (!idSet.size) return;
     const drop = new Set(names);
     const next = gensRef.current.map((x) =>
       idSet.has(x.id) ? { ...x, auto_tags: (x.auto_tags || []).filter((t) => !drop.has(t)) } : x,
@@ -1350,7 +1365,7 @@ export default function App() {
     )
       .then(scheduleTagReload)
       .catch(() => {});
-    flash(`선택한 ${others.length + 1}개에서 전역 태그 해제`);
+    flash(`선택한 ${idSet.size}개에서 전역 태그 해제`);
   };
 
   const onLogout = async () => {
