@@ -61,8 +61,25 @@ function durRange(model: string, def: number): { min: number; max: number } {
   return DURATION_RANGE[model] || { min: 1, max: Math.max(12, def * 2) };
 }
 
-function usesSingleStartImage(model: string): boolean {
+function usesSeedanceMediaRefs(model: string): boolean {
   return model.startsWith("seedance");
+}
+
+function seedancePromptText(
+  parts: ReturnType<typeof serializeParts>,
+  trayImageCount: number,
+): string {
+  let imgN = trayImageCount;
+  return parts
+    .map((p) => {
+      if (p.t === "text") return p.v;
+      if (p.ref?.type === "image") return `<<<image${++imgN}>>>`;
+      if (p.ref?.type === "video") return "<<<video>>>";
+      return "";
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // 컨트롤 행 정리(칸 부족 해소): 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고,
@@ -635,8 +652,8 @@ export function SpotlightPrompt({
     const ed = editorRef.current;
     if (!ed) return;
     const { text, refs: inlineRefs } = serialize(ed);
-    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호
-    // (@Image1..N). 이 순서가 곧 생성 시 CLI --image 전달 순서다.
+    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호.
+    // 에이전트가 모델에 맞춰 일반 모델은 --image, Seedance 는 --medias 로 넘긴다.
     let imgN = 0;
     const refs = [...trayRefs, ...inlineRefs].map((r) =>
       r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: "@Video" },
@@ -650,23 +667,16 @@ export function SpotlightPrompt({
       setError("모델을 선택하세요.");
       return;
     }
-    if (type === "video" && usesSingleStartImage(model)) {
-      const imageRefs = refs.filter((r) => r.type === "image");
-      if (imageRefs.length > 0) {
-        setError(
-          "현재 Higgsfield CLI는 Seedance의 이미지 칩을 엘리먼트 레퍼런스가 아니라 시작 이미지로 처리합니다. 시작 프레임 없이 쓰려면 이미지 칩을 삭제하고 프롬프트 텍스트로 작성하세요.",
-        );
-        ed.focus();
-        return;
-      }
-    }
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.
     const parts = serializeParts(ed);
     const displayPrompt = partsText(parts);
+    const promptText = usesSeedanceMediaRefs(model)
+      ? seedancePromptText(parts, trayRefs.filter((r) => r.type === "image").length) || text
+      : text;
     setBusy(true);
     try {
       const body = {
-        prompt: text || "(no text)",
+        prompt: promptText || "(no text)",
         display_prompt: displayPrompt || undefined,
         model,
         params: optionValues,

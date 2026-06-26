@@ -35,6 +35,7 @@ import urllib.request
 import webbrowser
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
+from threading import Lock
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -156,16 +157,30 @@ def _refs_for_cli(model: str, refs: list) -> tuple[list, str | None]:
     if not _uses_single_start_image(model):
         return refs, None
     image_refs = [ref for ref in refs if isinstance(ref, dict) and _is_image_ref(ref)]
-    implicit_images = [ref for ref in image_refs if not _is_start_ref(ref)]
-    if implicit_images:
-        return [], (
-            "현재 Higgsfield CLI는 Seedance의 @Image 레퍼런스를 엘리먼트가 아니라 "
-            "시작 이미지로 처리합니다. 시작 프레임 없이 쓰려면 이미지 칩을 삭제하고 "
-            "프롬프트 텍스트로 작성하세요."
-        )
-    if len(image_refs) > 1:
+    start_refs = [ref for ref in image_refs if _is_start_ref(ref)]
+    if len(start_refs) > 1:
         return [], "Seedance 영상은 시작 이미지 1장만 지원합니다."
     return [ref for ref in refs if isinstance(ref, dict)], None
+
+
+def _upload_for_media(cli: str, path: str, upload_cache: dict, upload_lock: Lock) -> dict | None:
+    """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 medias[].data 형태로 반환."""
+    with upload_lock:
+        cached = upload_cache.get(path)
+        if cached is not None:
+            return cached
+    up = _cli_json(cli, "upload", "create", path, timeout=300)
+    if isinstance(up, list):
+        up = up[0] if up else None
+    if not isinstance(up, dict) or not up.get("id"):
+        print(f"[경고] 레퍼런스 업로드 실패: {path}")
+        return None
+    data = {"id": up.get("id"), "type": "media_input"}
+    if up.get("url"):
+        data["url"] = up.get("url")
+    with upload_lock:
+        upload_cache[path] = data
+    return data
 
 
 _PARAM_NAMES_CACHE: dict = {}  # model → 허용 param 이름 집합(빈 집합=스키마 못 받음 → 필터 안 함)
@@ -262,7 +277,15 @@ def _cleanup(paths: list) -> None:
             pass
 
 
-def _execute_one(server: str, token: str, cli: str, r: dict, ref_cache: dict) -> None:
+def _execute_one(
+    server: str,
+    token: str,
+    cli: str,
+    r: dict,
+    ref_cache: dict,
+    upload_cache: dict,
+    upload_lock: Lock,
+) -> None:
     """대기 요청 1건을 내 로컬 CLI 로 실행 → fulfill/fail. 스레드에서 호출되므로 예외를
     바깥으로 던지지 않는다(한 건 실패가 다른 건 실행을 막지 않게).
     레퍼런스는 배치 시작 때 한 번씩만 받아둔 `ref_cache`(값→해석값) 를 조회만 한다(중복 다운로드 방지)."""
@@ -279,6 +302,8 @@ def _execute_one(server: str, token: str, cli: str, r: dict, ref_cache: dict) ->
         return
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
+    upload_failed: list = []
+    seedance_medias: list = []
     for ref in refs:
         val = ref.get("file_path")
         if not val:
@@ -287,6 +312,13 @@ def _execute_one(server: str, token: str, cli: str, r: dict, ref_cache: dict) ->
         if not resolved:
             unresolved.append(val)
             continue
+        if _uses_single_start_image(model) and _is_image_ref(ref) and not _is_start_ref(ref):
+            data = _upload_for_media(cli, resolved, upload_cache, upload_lock)
+            if not data:
+                upload_failed.append(val)
+                continue
+            seedance_medias.append({"data": data, "role": "image"})
+            continue
         args += [_role_flag(ref.get("role")), resolved]
     if unresolved:
         # 레퍼런스를 못 가져오면 그대로 생성 시 입력 이미지 없이 엉뚱하게 나오고 크레딧만
@@ -294,6 +326,12 @@ def _execute_one(server: str, token: str, cli: str, r: dict, ref_cache: dict) ->
         _fail(server, token, rid, f"레퍼런스를 가져올 수 없습니다({len(unresolved)}개): {unresolved[0]}")
         print(f"  ✗ 레퍼런스 해석 불가 — 실행 안 함: {unresolved[0]}")
         return
+    if upload_failed:
+        _fail(server, token, rid, f"레퍼런스를 업로드할 수 없습니다({len(upload_failed)}개): {upload_failed[0]}")
+        print(f"  ✗ 레퍼런스 업로드 실패 — 실행 안 함: {upload_failed[0]}")
+        return
+    if seedance_medias:
+        args += ["--medias", json.dumps(seedance_medias, separators=(",", ":"))]
     print(f"  → {model}: {prompt[:40]}")
     job = _cli_json(cli, *args, timeout=900)
     if not job:
@@ -338,6 +376,8 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     실행은 유료(내 크레딧). 반환: 이번에 처리한 요청 수."""
     in_flight: set = set()
     ref_temps_all: list = []
+    upload_cache: dict = {}
+    upload_lock = Lock()
     total = 0
     printed = False
     with ThreadPoolExecutor(max_workers=_MAX_CONCURRENCY) as ex:
@@ -359,7 +399,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                 for m in {r.get("model") for r in claimed if r.get("model")}:
                     _allowed_params(cli, m)  # 모델 param 스키마 미리 캐시(동시 model get 낭비 방지)
                 for r in claimed:
-                    in_flight.add(ex.submit(_execute_one, server, token, cli, r, ref_cache))
+                    in_flight.add(ex.submit(_execute_one, server, token, cli, r, ref_cache, upload_cache, upload_lock))
                     total += 1
                 continue  # 곧장 남은 슬롯도 채우러
             if not in_flight:
