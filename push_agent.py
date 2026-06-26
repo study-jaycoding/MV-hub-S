@@ -32,6 +32,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from urllib.parse import quote, urlencode, urlparse
@@ -338,6 +339,11 @@ def execute_pending(server: str, token: str, cli: str) -> int:
 # 같은 CLI 계정에 대해 한 번 '아니오' 하면 매 사이클 재질문하지 않도록 기억(스팸 방지).
 _relogin_state = {"declined_email": None}
 
+# CLI(`hf auth logout`)는 로컬 토큰만 지운다 — 브라우저 웹 세션은 그대로라, 이어서 `hf auth login`
+# 하면 device 승인 페이지가 '같은 계정'으로 자동 승인돼 계정이 안 바뀌고 409 가 반복된다(이미지1 증상).
+# 그래서 계정을 정말 바꾸려면 브라우저에서도 '로그아웃(signout)' 하게 안내·유도하는 동선이 필요하다.
+_HF_SITE = "https://higgsfield.ai/"
+
 
 def _cli_account_email(cli: str) -> str | None:
     acct = _cli_json(cli, "account", "status")
@@ -369,23 +375,58 @@ def offer_cli_relogin(cli: str, detail: str) -> bool:
         print("  유지합니다. 나중에 이 창에서 다시 묻거나, 직접 `hf auth login` 으로 바꿀 수 있습니다.")
         print("  ------------------------------------------------------------------")
         return False
-    print("  현재 계정 로그아웃...")
+    # signout 동선 — CLI 로그아웃만으론 웹 세션이 남아 같은 계정으로 재로그인된다(409 루프).
+    # 브라우저 로그아웃까지 거쳐 '다른 계정'으로 갈 수 있게 한 뒤 로그인. 같은 계정으로 돌아오면
+    # 이벤트를 기다릴 필요 없이 그 자리에서 '웹 로그아웃 후 재시도'를 반복(무한루프 방지 상한 5회).
+    new = cur
+    for _ in range(5):
+        new = _signout_and_relogin(cli)
+        if not new or not cur or new != cur:
+            break  # 확인 실패거나 계정이 실제로 바뀜 → 종료
+        print("  [경고] 계정이 그대로입니다 — 브라우저 웹 세션이 남아 같은 계정으로 로그인됐습니다.")
+        print(f"         {_HF_SITE} 에서 '로그아웃' 했는지 확인하세요.")
+        try:
+            again = input("  브라우저 로그아웃 후 다시 시도할까요? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            again = "n"
+        if again != "y":
+            break
+    switched = bool(new) and new != cur
+    # 바뀌었으면 거절 기억 리셋(다음 사이클 정상). 같은 계정이면 매 사이클 자동 재질문은 막되
+    # (스팸 방지), 사용자가 직접 y 로 다시 부를 수 있게 둔다.
+    _relogin_state["declined_email"] = None if switched else cur
+    print(f"  CLI 계정: {new or '(확인 실패)'}")
+    print("  ------------------------------------------------------------------")
+    return switched  # 정말 바뀌었을 때만 즉시 재시도(같은 계정이면 또 409 → 무한루프 방지)
+
+
+def _signout_and_relogin(cli: str) -> str | None:
+    """CLI + 브라우저(웹) 양쪽 로그아웃을 거친 뒤 다시 로그인 — '다른 계정'으로 전환 가능하게.
+    반환: 재로그인 후의 CLI 계정 이메일(확인 실패면 None)."""
+    print("  현재 CLI 계정 로그아웃...")
     try:
         subprocess.run([cli, "auth", "logout"], timeout=60)
     except Exception as e:  # noqa: BLE001 — 로그아웃 실패해도 로그인 시도는 진행
         print(f"  (로그아웃 경고: {e})")
+    # 웹 세션 로그아웃 안내 — 이게 없으면 device 승인이 같은 계정으로 자동 통과돼 전환이 안 된다.
+    print("  [signout] 다른 계정으로 바꾸려면 브라우저에서도 '로그아웃'이 필요합니다.")
+    print(f"            브라우저로 {_HF_SITE} 를 엽니다 — 우측 상단 계정 메뉴에서 '로그아웃' 하세요.")
+    try:
+        webbrowser.open(_HF_SITE)
+    except Exception:  # noqa: BLE001 — 브라우저 자동 오픈 실패해도 수동 안내로 진행
+        pass
+    try:
+        input("            웹에서 로그아웃했으면 Enter — 허브와 '같은 계정'으로 로그인 창을 엽니다: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
     print("  브라우저에서 허브와 '같은 이메일'로 로그인하세요...")
     try:
         subprocess.run([cli, "auth", "login"], timeout=300)
     except Exception as e:  # noqa: BLE001
         print(f"  [오류] CLI 로그인 실행 실패: {e}")
-        print("  ------------------------------------------------------------------")
-        return False
-    new = _cli_account_email(cli)
-    _relogin_state["declined_email"] = None  # 계정이 바뀌었으니 거절 기억 리셋
-    print(f"  CLI 계정: {new or '(확인 실패)'}")
-    print("  ------------------------------------------------------------------")
-    return bool(new)
+        return None
+    return _cli_account_email(cli)
 
 
 def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True) -> None:
