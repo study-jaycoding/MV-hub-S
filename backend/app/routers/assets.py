@@ -70,6 +70,7 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 _IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 _VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 _AUDIO_EXT = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac")
+_PROMPT_IMPORT_PROJECT = "imports"
 
 
 def _media_type(name: str) -> Optional[str]:
@@ -202,11 +203,11 @@ def list_projects(request: Request):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
-    # 내장 'captures' 폴더(화면 캡쳐 붙여넣기 저장소)는 파일이 있으면 프로젝트로 노출 →
-    # Assets 에서 탐색·태그·소스지정(@이름)까지 가능(붙여넣은 캡쳐를 '소스처럼' 재사용).
-    cap_dir = ASSETS_ROOT / "captures"
-    if cap_dir.is_dir() and "captures" not in projects and any(cap_dir.iterdir()):
-        projects.append("captures")
+    # 내장 폴더는 파일이 있으면 프로젝트로 노출 → Assets 에서 탐색·태그·소스지정(@이름) 가능.
+    for built_in in ("captures", _PROMPT_IMPORT_PROJECT):
+        p = ASSETS_ROOT / built_in
+        if p.is_dir() and built_in not in projects and any(p.iterdir()):
+            projects.append(built_in)
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
     return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
@@ -571,6 +572,54 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         name, i = f"{base}-{i}.png", i + 1
     (cap_dir / name).write_bytes(raw)
     return {"project": "captures", "path": name, "name": name, "type": "image"}
+
+
+@router.post("/reference-import")
+async def upload_reference_import(request: Request, files: list[UploadFile] = File(...)):
+    """프롬프트/레퍼런스 트레이에 외부 파일을 직접 드롭할 때 쓰는 내장 가져오기.
+    이미지/영상만 저장해 즉시 asset:{project}|{path} 레퍼런스로 쓸 수 있게 한다."""
+    dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
+    try:
+        dest.relative_to(ASSETS_ROOT)
+    except ValueError:
+        raise HTTPException(status_code=500, detail="imports 경로 오류")
+    dest.mkdir(parents=True, exist_ok=True)
+
+    saved: list[dict[str, str]] = []
+    skipped: list[str] = []
+    for up in files:
+        raw = os.path.basename((up.filename or "").replace("\\", "/"))
+        if not raw:
+            continue
+        mt = _media_type(raw)
+        if mt not in ("image", "video"):
+            skipped.append(raw)
+            continue
+        target = _safe_resolve(dest, raw)
+        if not target:
+            skipped.append(raw)
+            continue
+        if target.exists():
+            stem, ext, i = target.stem, target.suffix, 2
+            while True:
+                cand = dest / f"{stem}_{i}{ext}"
+                if not cand.exists():
+                    target = cand
+                    break
+                i += 1
+        try:
+            target.write_bytes(await up.read())
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
+        name = target.name
+        saved.append({
+            "project": _PROMPT_IMPORT_PROJECT,
+            "path": name,
+            "name": name,
+            "type": mt,
+        })
+
+    return {"saved": saved, "skipped": skipped}
 
 
 @router.get("/zip")

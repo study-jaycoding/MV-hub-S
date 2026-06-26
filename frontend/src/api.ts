@@ -72,6 +72,10 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+function authFormHeaders(): HeadersInit | undefined {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : undefined;
+}
+
 // 무한 스크롤 페이지 크기. 한 페이지가 이 크기 미만이면 마지막 페이지.
 export const GEN_PAGE = 200;
 
@@ -645,7 +649,7 @@ export const api = {
     fd.append("project", project);
     fd.append("dir", dir);
     for (const f of files) fd.append("files", f);
-    const res = await fetch("/api/assets/upload", { method: "POST", body: fd });
+    const res = await fetch("/api/assets/upload", { method: "POST", body: fd, headers: authFormHeaders() });
     if (!res.ok) {
       let detail = res.statusText;
       try {
@@ -665,9 +669,36 @@ export const api = {
   uploadCapture: async (blob: Blob) => {
     const fd = new FormData();
     fd.append("file", blob, "capture.png");
-    const res = await fetch("/api/assets/capture", { method: "POST", body: fd });
+    const res = await fetch("/api/assets/capture", { method: "POST", body: fd, headers: authFormHeaders() });
     if (!res.ok) throw new Error(`${res.status}: 캡쳐 업로드 실패`);
     return res.json() as Promise<{ project: string; path: string; name: string; type: string }>;
+  },
+
+  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → 내장 imports 폴더에 저장.
+  uploadReferenceFiles: async (files: File[]) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    const res = await fetch("/api/assets/reference-import", {
+      method: "POST",
+      body: fd,
+      headers: authFormHeaders(),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = await res.json();
+        let d = j?.detail ?? j;
+        if (typeof d !== "string") d = JSON.stringify(d);
+        detail = d || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    return res.json() as Promise<{
+      saved: { project: string; path: string; name: string; type: string }[];
+      skipped: string[];
+    }>;
   },
 
   // 내 로컬 DB(메타데이터) 가져오기 — 통째 교체(다른 PC에서 내보낸 .db). 현재 DB는 자동 백업됨.

@@ -253,6 +253,32 @@ function readAssetCtx(): { project: string; dir: string } {
 // 에셋 드래그 페이로드(application/x-ch-asset) 파싱 — 항상 배열로 정규화(옛 단건 객체 하위호환),
 // 이미지/영상만(오디오·폴더 제외). 잘못된 데이터는 빈 배열. 트레이/인라인 드롭 공용.
 type AssetDragItem = { project: string; path: string; name: string; type: string };
+type RefDropType = "image" | "video";
+
+const IMAGE_FILE_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+const VIDEO_FILE_RE = /\.(mp4|mov|webm|mkv|avi)$/i;
+
+function refDropTypeFromName(name: string): RefDropType | null {
+  if (IMAGE_FILE_RE.test(name)) return "image";
+  if (VIDEO_FILE_RE.test(name)) return "video";
+  return null;
+}
+
+function refDropTypeFromFile(file: File): RefDropType | null {
+  const mt = (file.type || "").toLowerCase();
+  if (mt.startsWith("image/")) return "image";
+  if (mt.startsWith("video/")) return "video";
+  return refDropTypeFromName(file.name);
+}
+
+function hasExternalFiles(e: React.DragEvent): boolean {
+  return Array.from(e.dataTransfer.types).includes("Files");
+}
+
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 function parseAssetItems(raw: string): AssetDragItem[] {
   try {
     const parsed = JSON.parse(raw);
@@ -614,8 +640,8 @@ export function SpotlightPrompt({
   //    (이전엔 드롭=레퍼런스, ✎=재사용이었다 — 사용자 요청으로 서로 교환)
   const onPanelDragOver = (e: React.DragEvent) => {
     const tps = e.dataTransfer.types;
-    // 카드(x-ch-gen)=재사용 · 에셋(x-ch-asset)=레퍼런스 추가. 둘 다 프롬프트로 끌어내려 받는다.
-    if (tps.includes("application/x-ch-gen") || tps.includes("application/x-ch-asset")) {
+    // 카드(x-ch-gen)=재사용 · 에셋/외부 파일=레퍼런스 추가. 둘 다 프롬프트로 끌어내려 받는다.
+    if (tps.includes("application/x-ch-gen") || tps.includes("application/x-ch-asset") || hasExternalFiles(e)) {
       e.preventDefault(); // drop 허용 + contentEditable 기본 삽입 차단
       e.dataTransfer.dropEffect = "copy";
     }
@@ -658,6 +684,51 @@ export function SpotlightPrompt({
       setError(String(err));
     }
   };
+
+  const importExternalFilesAsRefs = async (files: File[]) => {
+    const accepted = files.filter((f) => refDropTypeFromFile(f));
+    const ignored = files.length - accepted.length;
+    if (!accepted.length) {
+      setError("이미지/영상 파일만 레퍼런스로 추가할 수 있습니다.");
+      return;
+    }
+    setError(null);
+    try {
+      const ctx = readAssetCtx();
+      let items: AssetDragItem[] = [];
+      let skipped: string[] = [];
+      if (ctx.project) {
+        try {
+          const res = await api.uploadAssets(ctx.project, ctx.dir, accepted);
+          skipped = res.skipped || [];
+          items = (res.saved || []).flatMap((path) => {
+            const type = refDropTypeFromName(path);
+            return type ? [{ project: ctx.project, path, name: baseName(path), type }] : [];
+          });
+        } catch {
+          const res = await api.uploadReferenceFiles(accepted);
+          skipped = res.skipped || [];
+          items = res.saved || [];
+          flashMsg("현재 에셋 폴더 대신 imports에 저장했습니다");
+        }
+      } else {
+        const res = await api.uploadReferenceFiles(accepted);
+        skipped = res.skipped || [];
+        items = res.saved || [];
+      }
+      if (items.length) {
+        addAssetRefs(JSON.stringify(items));
+        flashMsg(`${items.length}개 외부 파일을 레퍼런스로 추가했습니다`);
+      }
+      const skippedCount = ignored + skipped.length;
+      if (!items.length && skippedCount > 0) {
+        setError("이미지/영상 파일만 레퍼런스로 추가할 수 있습니다.");
+      }
+    } catch (err) {
+      setError("외부 파일 가져오기 실패: " + String(err));
+    }
+  };
+
   const onPanelDrop = (e: React.DragEvent) => {
     const gen = e.dataTransfer.getData("application/x-ch-gen");
     if (gen) {
@@ -668,6 +739,11 @@ export function SpotlightPrompt({
     if (e.dataTransfer.types.includes("application/x-ch-asset")) {
       e.preventDefault();
       addAssetRefs(readAssetPayload(e)); // 에셋 끌어내림 = 레퍼런스(확장=트레이, 접힘=인라인 칩) · 다중 일괄
+      return;
+    }
+    if (hasExternalFiles(e)) {
+      e.preventDefault();
+      void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
     }
   };
 
@@ -718,7 +794,7 @@ export function SpotlightPrompt({
   };
   const onTrayDragOver = (e: React.DragEvent) => {
     const tps = e.dataTransfer.types;
-    if (tps.includes("application/x-ch-asset") || tps.includes("application/x-ch-trayidx")) {
+    if (tps.includes("application/x-ch-asset") || tps.includes("application/x-ch-trayidx") || hasExternalFiles(e)) {
       e.preventDefault();
       e.stopPropagation(); // 패널의 카드-드롭 핸들러로 번지지 않게(트레이는 에셋 전용)
       e.dataTransfer.dropEffect = trayDragIdx.current !== null ? "move" : "copy";
@@ -755,8 +831,13 @@ export function SpotlightPrompt({
   const onTrayDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.types.includes("application/x-ch-asset"))
+    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
       addAssetToTray(readAssetPayload(e)); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
+      return;
+    }
+    if (hasExternalFiles(e)) {
+      void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
+    }
   };
   const onTrayItemDragStart = (i: number) => (e: React.DragEvent) => {
     trayDragIdx.current = i;
@@ -768,6 +849,11 @@ export function SpotlightPrompt({
     e.stopPropagation();
     if (e.dataTransfer.types.includes("application/x-ch-asset")) {
       addAssetToTray(readAssetPayload(e)); // 항목 위에 에셋 떨어뜨려도 추가
+      trayDragIdx.current = null;
+      return;
+    }
+    if (hasExternalFiles(e)) {
+      void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
       trayDragIdx.current = null;
       return;
     }
@@ -1114,7 +1200,7 @@ export function SpotlightPrompt({
             >
               {trayRefs.length === 0 ? (
                 <div className="sl-reftray-empty">
-                  에셋 창에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
+                  에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
                 </div>
               ) : (
                 trayRefs.map((r, i) => {
