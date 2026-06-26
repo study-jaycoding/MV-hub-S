@@ -808,15 +808,16 @@ export function SpotlightPrompt({
     // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호.
     // Seedance 트레이 이미지는 <<<simageN>>>/<<<eimageN>>> 로 첫/끝 프레임을 지정할 수 있다.
     let imgN = 0;
+    let videoN = 0;
     const trayWithRoles = trayRefs.map((r, i) => {
-      if (r.type !== "image") return { ...r, role: "@Video" };
+      if (r.type !== "image") return { ...r, role: `@Video${++videoN}` };
       const role = seedanceMode ? seedanceTrayRole(r, i, tokenRoles) : "omni";
       if (role === "start") return { ...r, role: "@Start" };
       if (role === "end") return { ...r, role: "@End" };
       return { ...r, role: `@Image${++imgN}` };
     });
     const inlineWithRoles = inlineRefs.map((r) =>
-      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: "@Video" },
+      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: `@Video${++videoN}` },
     );
     const refs = [...trayWithRoles, ...inlineWithRoles];
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.

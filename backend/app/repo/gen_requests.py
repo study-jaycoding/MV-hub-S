@@ -26,7 +26,8 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
         refs = conn.execute(
             "SELECT r.type type, COALESCE(r.source_url, r.file_path) url, gr.role role "
             "FROM gen_reference gr JOIN reference r ON r.id=gr.reference_id "
-            "WHERE gr.generation_id=?",
+            "WHERE gr.generation_id=? "
+            "ORDER BY gr.rowid",
             (gen_id,),
         ).fetchall()
     try:
