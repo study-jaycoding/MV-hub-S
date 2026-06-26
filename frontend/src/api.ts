@@ -674,9 +674,11 @@ export const api = {
     return res.json() as Promise<{ project: string; path: string; name: string; type: string }>;
   },
 
-  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → 내장 imports 폴더에 저장.
-  uploadReferenceFiles: async (files: File[]) => {
+  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → 선택 폴더/import 또는 내장 imports 폴더에 저장.
+  uploadReferenceFiles: async (files: File[], project = "", dir = "") => {
     const fd = new FormData();
+    fd.append("project", project);
+    fd.append("dir", dir);
     for (const f of files) fd.append("files", f);
     const res = await fetch("/api/assets/reference-import", {
       method: "POST",
@@ -696,7 +698,7 @@ export const api = {
       throw new Error(`${res.status}: ${detail}`);
     }
     return res.json() as Promise<{
-      saved: { project: string; path: string; name: string; type: string }[];
+      saved: { project: string; path: string; name: string; type: string; reused?: boolean }[];
       skipped: string[];
     }>;
   },

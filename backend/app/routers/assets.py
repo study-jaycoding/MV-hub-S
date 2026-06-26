@@ -616,16 +616,14 @@ async def upload_reference_import(
     dir = (dir or "").strip().strip("/")
 
     out_project = _PROMPT_IMPORT_PROJECT
-    rel_base = ""
     project_dir: Optional[Path] = None
-    if project and project != "captures":
+    if project and project not in ("captures", _PROMPT_IMPORT_PROJECT):
         project_dir = _safe_project_dir(project, owner)
         if project_dir:
             import_rel = f"{dir}/import" if dir else "import"
             dest = _safe_resolve(project_dir, import_rel)
             if dest:
                 out_project = project
-                rel_base = import_rel
             else:
                 project_dir = None
     if not project_dir:
@@ -636,7 +634,7 @@ async def upload_reference_import(
             raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
 
-    saved: list[dict[str, str]] = []
+    saved: list[dict[str, Any]] = []
     skipped: list[str] = []
     for up in files:
         raw = os.path.basename((up.filename or "").replace("\\", "/"))
@@ -663,7 +661,7 @@ async def upload_reference_import(
                 "path": rel,
                 "name": existing.name,
                 "type": mt,
-                "reused": "true",
+                "reused": True,
             })
             continue
         target = _safe_resolve(dest, raw)

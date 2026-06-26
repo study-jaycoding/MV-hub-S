@@ -241,9 +241,19 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     // 메인 창의 계정 전환/로그아웃 → 이 팝업의 옛 계정 상태(프로젝트·선택·드래그)를 버리고 재로드.
     bc.onmessage = (e) => {
       if (e.data && e.data.type === "session-reset") window.location.reload();
+      if (e.data && e.data.type === "assets-updated") {
+        const ps = Array.isArray(e.data.projects) ? e.data.projects : [];
+        reloadProjects(true);
+        if (!project || (ps.length && !ps.includes(project))) return;
+        api.assetTree(project).then((t) => setTree(t.children)).catch(() => {});
+        api.assetMeta(project).then(setMeta).catch(() => {});
+      }
     };
-    return () => bc.close();
-  }, []);
+    return () => {
+      if (assetBcRef.current === bc) assetBcRef.current = null;
+      bc.close();
+    };
+  }, [project, reloadProjects]);
   useEffect(() => {
     assetBcRef.current?.postMessage({ project, dir });
   }, [project, dir]);

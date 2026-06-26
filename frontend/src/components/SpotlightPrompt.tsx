@@ -275,8 +275,16 @@ function hasExternalFiles(e: React.DragEvent): boolean {
   return Array.from(e.dataTransfer.types).includes("Files");
 }
 
-function baseName(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
+function notifyAssetsChanged(items: AssetDragItem[]): void {
+  if (!items.length || !("BroadcastChannel" in window)) return;
+  try {
+    const bc = new BroadcastChannel("ch-assets");
+    const projects = [...new Set(items.map((item) => item.project).filter(Boolean))];
+    bc.postMessage({ type: "assets-updated", projects });
+    bc.close();
+  } catch {
+    /* ignore */
+  }
 }
 
 function parseAssetItems(raw: string): AssetDragItem[] {
@@ -695,30 +703,20 @@ export function SpotlightPrompt({
     setError(null);
     try {
       const ctx = readAssetCtx();
-      let items: AssetDragItem[] = [];
-      let skipped: string[] = [];
-      if (ctx.project) {
-        try {
-          const res = await api.uploadAssets(ctx.project, ctx.dir, accepted);
-          skipped = res.skipped || [];
-          items = (res.saved || []).flatMap((path) => {
-            const type = refDropTypeFromName(path);
-            return type ? [{ project: ctx.project, path, name: baseName(path), type }] : [];
-          });
-        } catch {
-          const res = await api.uploadReferenceFiles(accepted);
-          skipped = res.skipped || [];
-          items = res.saved || [];
-          flashMsg("현재 에셋 폴더 대신 imports에 저장했습니다");
-        }
-      } else {
-        const res = await api.uploadReferenceFiles(accepted);
-        skipped = res.skipped || [];
-        items = res.saved || [];
-      }
+      const res = await api.uploadReferenceFiles(accepted, ctx.project, ctx.dir);
+      const items: AssetDragItem[] = res.saved || [];
+      const skipped = res.skipped || [];
       if (items.length) {
         addAssetRefs(JSON.stringify(items));
-        flashMsg(`${items.length}개 외부 파일을 레퍼런스로 추가했습니다`);
+        const reused = (res.saved || []).filter((item) => item.reused).length;
+        const imported = items.length - reused;
+        const label = reused && imported
+          ? `${imported}개 가져오고 ${reused}개 재사용했습니다`
+          : reused
+            ? `${reused}개 기존 파일을 재사용했습니다`
+            : `${items.length}개 외부 파일을 레퍼런스로 추가했습니다`;
+        flashMsg(label);
+        notifyAssetsChanged(items);
       }
       const skippedCount = ignored + skipped.length;
       if (!items.length && skippedCount > 0) {
