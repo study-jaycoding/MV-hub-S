@@ -12,7 +12,7 @@ import urllib.request
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import _proxy
@@ -20,7 +20,7 @@ from .. import rbac, repo
 from ..config import AUTH_ENABLED
 from ..deps import account_global_roles, account_scope_uid, require_view_generation
 from ..models import FacetsOut, GenerationOut
-from ..services import thumbs
+from ..services import media_cache, thumbs
 
 router = APIRouter(prefix="/api", tags=["library"])
 
@@ -136,17 +136,32 @@ def download_media(url: str = Query(...), name: str = Query("download")):
 
 
 @router.get("/media-thumb")
-def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)):
-    """생성 미디어(/media/<2>/<sha>.ext) 썸네일 — 리사이즈+디스크 캐시(공용 thumbs 헬퍼).
+async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)):
+    """생성 미디어 썸네일 — 리사이즈+디스크 캐시(공용 thumbs 헬퍼).
     그리드가 풀해상도 원본(수 MP) 대신 작은 이미지를 디코딩하게 해 렉을 없앤다.
-    src 는 /media/ 로 시작하는 로컬 경로만(원격 URL·경로 이탈은 거부 → 호출부가 원본으로 폴백)."""
-    target = thumbs._media_target(src)
+
+    src:
+    - /media/<2>/<sha>.ext  → 로컬 보관 미디어(내 작업물).
+    - http(s) URL           → 공유받은(team) 항목은 file_path 가 원격 URL(Higgsfield)이라
+                              그대로면 썸네일을 못 거쳐 풀해상도 원본을 디코딩 → 표시 지연.
+                              media_cache 로 바이트를 로컬화한 뒤 동일 썸네일을 만든다.
+    다운로드 실패·비이미지(비디오 등)는 원본 URL 로 리다이렉트해 깨짐을 막는다."""
+    is_remote = src.startswith(("http://", "https://"))
+    if is_remote:
+        rel = await media_cache.cache_url(src)
+        if not rel:
+            return RedirectResponse(src)  # 캐시 실패 → 원본 그대로(최소 깨짐 방지)
+        target = thumbs._media_target(rel)
+    else:
+        target = thumbs._media_target(src)
     if not target:
-        raise HTTPException(status_code=400, detail="로컬 /media 경로만 지원")
+        raise HTTPException(status_code=400, detail="로컬 /media 경로 또는 http(s) URL만 지원")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     cache = thumbs.ensure_thumb(target, w)
     if not cache:
+        if is_remote:
+            return RedirectResponse(src)  # 비이미지(비디오 등) → 원본으로 폴백
         raise HTTPException(status_code=415, detail="썸네일 생성 불가(이미지 아님 등)")
     return FileResponse(
         cache, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=2592000"}

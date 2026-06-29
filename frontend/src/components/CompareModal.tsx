@@ -3,6 +3,7 @@
 // 계보 무관 — 아무거나 골라 비교(로드맵 결정사항). 데이터는 이미 클라이언트에 있어 서버 호출 없음.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { useModelDisplayName } from "../lib/modelCatalog";
 import { refSrc } from "../lib/promptParts";
 import type { Generation, MediaType, Reference } from "../types";
 
@@ -88,7 +89,7 @@ function paramValue(g: Generation, key: string): string {
 
 function mediaThumb(path: string | null | undefined, w: number): string | null {
   if (!path) return null;
-  return path.startsWith("/media/") ? api.genThumbUrl(path, w) : path;
+  return api.thumbOrRaw(path, w);
 }
 
 export function CompareModal({
@@ -98,6 +99,7 @@ export function CompareModal({
   gens: Generation[];
   onClose: () => void;
 }) {
+  const modelName = useModelDisplayName();
   const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값만 보기 토글
   const [promptOnly, setPromptOnly] = useState(false); // 프롬프트만 보기(이미지·파라미터 숨김)
   // 소스(참조) 원본 미리보기 — 비교 모달 위에 뜨는 자체 라이트박스(전역 미리보기는 z-index 가 낮아 가림).
@@ -284,7 +286,7 @@ export function CompareModal({
                         )}
                         {g.is_final && <span className="cmp-final-badge">★ 최종</span>}
                       </div>
-                      <div className="cmp-model">{g.model || "—"}</div>
+                      <div className="cmp-model">{modelName(g.model)}</div>
                     </>
                   )}
                   {/* 입력 참조(소스) — '프롬프트만 보기'에서도 프롬프트와 함께 표시 */}

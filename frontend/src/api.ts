@@ -639,9 +639,17 @@ export const api = {
   assetThumbUrl: (project: string, path: string, w = 512) =>
     `/api/assets/thumb?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}&w=${w}`,
 
-  // 생성 미디어 썸네일 URL(로컬 /media 이미지 전용) — 풀해상도 원본 대신 작은 이미지 디코딩.
+  // 생성 미디어 썸네일 URL — 풀해상도 원본 대신 작은 이미지 디코딩. 로컬 /media 와
+  // 공유받은 항목의 원격 http(s) URL 모두 백엔드가 로컬화 후 리사이즈해 서빙한다.
   genThumbUrl: (mediaPath: string, w = 512) =>
     `/api/media-thumb?src=${encodeURIComponent(mediaPath)}&w=${w}`,
+
+  // raw 경로가 썸네일화 가능(로컬 /media 또는 원격 http)이면 리사이즈 URL, 아니면 원본 그대로.
+  // 가드가 호출부마다 흩어져 원격 URL 이 최적화에서 빠지던 버그를 한 곳으로 통합한다.
+  thumbOrRaw: (raw: string, w = 512) =>
+    raw && (raw.startsWith("/media/") || raw.startsWith("http"))
+      ? `/api/media-thumb?src=${encodeURIComponent(raw)}&w=${w}`
+      : raw,
 
   // 외부 파일 가져오기(드롭 업로드) → 현재 폴더(dir)에 저장. multipart 라 jsonFetch 미사용.
   uploadAssets: async (project: string, dir: string, files: File[]) => {

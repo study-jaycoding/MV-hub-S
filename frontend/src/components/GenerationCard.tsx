@@ -10,7 +10,7 @@ import { download, downloadName } from "../lib/download";
 import { buildPromptParts, refSrc } from "../lib/promptParts";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
-import { MODEL_DISPLAY_NAMES } from "../lib/useModels";
+import { useModelDisplayName } from "../lib/modelCatalog";
 import { TagEditor } from "./TagEditor";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -102,12 +102,12 @@ function GenerationCardImpl({
   onPreview,
   onShowHistory,
 }: Props) {
+  const modelName = useModelDisplayName();
   const asset = gen.assets[0];
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
-  // 로컬 /media 이미지면 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 원격 URL 은 원본 그대로.
-  const thumb =
-    rawThumb && rawThumb.startsWith("/media/") ? api.genThumbUrl(rawThumb, 512) : rawThumb;
+  // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.
+  const thumb = rawThumb ? api.thumbOrRaw(rawThumb, 512) : rawThumb;
   const isList = layout === "list";
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.
@@ -560,10 +560,7 @@ function GenerationCardImpl({
     const aspect = typeof params.aspect_ratio === "string" ? params.aspect_ratio : undefined;
     const ref = gen.references[0];
     const rawRefThumb = ref?.thumbnail_path || ref?.file_path;
-    const refThumb =
-      rawRefThumb && rawRefThumb.startsWith("/media/")
-        ? api.genThumbUrl(rawRefThumb, 256)
-        : rawRefThumb;
+    const refThumb = rawRefThumb ? api.thumbOrRaw(rawRefThumb, 256) : rawRefThumb;
     // 프롬프트의 @소스 토큰을 레퍼런스 썸네일 칩으로 치환(InfoPopup 과 동일 로직)
     const promptParts = buildPromptParts(gen.display_prompt || "", gen.references);
     const promptHasInlineRefs = promptParts.some((p) => p.t === "chip");
@@ -586,7 +583,7 @@ function GenerationCardImpl({
         <div className="card-detail">
           <div className="cd-model">
             <ModelIcon />
-            {modelLabel(gen.model)}
+            {modelName(gen.model)}
           </div>
           {promptHasInlineRefs ? (
             // 프롬프트의 @소스 자리를 실제 레퍼런스 썸네일로 인라인 표시(어떤 이미지가 어디 들어갔는지)
@@ -673,29 +670,7 @@ function GenerationCardImpl({
   );
 }
 
-// ── 헬퍼 ──
-// "seedance_2_0" → "Seedance 2.0", "seedance_2_0_fast" → "Seedance 2.0 Fast"
-// 카탈로그 표시명이 따로 있는 모델(나노바나나 등)은 그 이름을 우선 — 선택 드롭다운과 일치시킨다.
-function modelLabel(m: string | null): string {
-  if (!m) return "—";
-  const known = MODEL_DISPLAY_NAMES[m];
-  if (known) return known;
-  const words: string[] = [];
-  let nums: string[] = [];
-  for (const part of m.split("_")) {
-    if (/^\d+$/.test(part)) {
-      nums.push(part);
-    } else {
-      if (nums.length) {
-        words.push(nums.join("."));
-        nums = [];
-      }
-      words.push(part.charAt(0).toUpperCase() + part.slice(1));
-    }
-  }
-  if (nums.length) words.push(nums.join("."));
-  return words.join(" ");
-}
+// (모델 표시명은 lib/modelCatalog 의 공유 헬퍼로 일원화 — 카드·비교·정보팝업이 같은 이름을 쓴다)
 
 function fmtDate(s: string): string {
   const d = new Date(s.replace(" ", "T"));
