@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -51,6 +51,29 @@ def _overlay_personal_meta(data, request: Request):
                 g["tags"] = m["tags"]
                 g["auto_tags"] = m["auto_tags"]
     return data
+
+
+def _remote_thumb_urls(data) -> list[str]:
+    """팀 목록 응답에서 카드 대표 썸네일로 쓰일 원격(http) URL 들을 모은다(순서보존·중복제거).
+
+    프론트(GenerationCard)와 동일 규칙: assets[0] 의 thumbnail_path, 이미지면 file_path 도.
+    비디오 file_path(.mp4)는 썸네일 대상이 아니므로 제외(원본 통째 다운로드 방지)."""
+    if not isinstance(data, list):
+        return []
+    seen: dict[str, None] = {}
+    for g in data:
+        if not isinstance(g, dict):
+            continue
+        assets = g.get("assets") or []
+        if not assets or not isinstance(assets[0], dict):
+            continue
+        a = assets[0]
+        raw = a.get("thumbnail_path") or (
+            a.get("file_path") if a.get("type") != "video" else None
+        )
+        if isinstance(raw, str) and raw.startswith(("http://", "https://")):
+            seen.setdefault(raw, None)
+    return list(seen.keys())
 
 
 def _reject_internal_host(url: str) -> None:
@@ -171,6 +194,7 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
 @router.get("/generations", response_model=list[GenerationOut])
 def list_generations(
     request: Request,
+    background: BackgroundTasks,
     tab: str = Query("my", pattern="^(my|team)$"),
     worker_id: Optional[str] = None,
     color: Optional[str] = None,
@@ -200,7 +224,13 @@ def list_generations(
     if tab == "team" and _proxy.proxying():
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
-        return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+        data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+        # 백그라운드 prewarm: 팀 항목 미디어는 원격 URL 이라 첫 표시 때 보는 PC 가 받아 리사이즈 → 느림.
+        # 목록을 받자마자 뒤에서 미리 캐시+썸네일링하면 실제 스크롤 시점엔 디스크 캐시 히트로 즉시 뜬다.
+        urls = _remote_thumb_urls(data)
+        if urls:
+            background.add_task(thumbs.prewarm_remote_thumbs, urls)
+        return data
     # 로그인 계정이면 그 계정의 생성자 uid 로 '내 작업'을 한정(계정별 분리). 비로그인은 전체.
     account_uid = _account_uid(request)
     # Team 탭: 내가 멤버인 프로젝트의 공유물만(read_all=admin/PM/PD 와 단독 모드는 전체).

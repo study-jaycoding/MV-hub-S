@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from pathlib import Path
@@ -73,4 +74,33 @@ def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:
                 made += 1
             if throttle:
                 time.sleep(throttle)
+    return made
+
+
+async def prewarm_remote_thumbs(urls: list[str], width: int = 512, concurrency: int = 4) -> int:
+    """원격 미디어 URL 목록을 로컬 캐시 + 썸네일로 미리 구워둔다(team 목록 응답 직후 백그라운드).
+
+    공유받은(team) 항목은 미디어가 원격 URL(Higgsfield cloudfront)이라, 첫 표시 때마다 보는 PC가
+    원본을 받아 리사이즈한다 → 첫 스크롤이 느리다. 목록을 받자마자 뒤에서 미리 받아 캐시해 두면
+    실제 표시 시점엔 디스크 캐시 히트로 즉시 뜬다. 이미 캐시된 건 즉시 통과(멱등) → 매 스크롤
+    재호출이 싸다. 동시 다운로드는 cloudfront 부하·메모리 스파이크 방지로 제한한다. 생성 수 반환."""
+    from . import media_cache  # 지연 import(순환 방지)
+
+    sem = asyncio.Semaphore(concurrency)
+    made = 0
+
+    async def _one(url: str) -> None:
+        nonlocal made
+        async with sem:
+            rel = await media_cache.cache_url(url)  # 이미 캐시면 즉시 반환
+            if not rel:
+                return
+            target = _media_target(rel)
+            if not target:
+                return
+            cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
+            if cache:
+                made += 1
+
+    await asyncio.gather(*(_one(u) for u in urls), return_exceptions=True)
     return made
