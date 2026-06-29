@@ -1875,6 +1875,9 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   accent-color: var(--accent); background: transparent; cursor: pointer;
 }
 .sl-opt-val { font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 22px; }
+/* 오디오 토글 칩(하단 바) — 아이콘 + ON/OFF 세그먼트. 고급 패널의 sl-adv-opt 재사용하되 칩 안에서 한 줄 유지 */
+.sl-opt-audio { gap: 8px; }
+.sl-opt-audio .sl-adv-opts { flex-wrap: nowrap; gap: 4px; }
 .sl-opt-num { gap: 6px; }
 .sl-opt-num input {
   width: 46px; height: 22px; border: none; outline: none;
@@ -2124,6 +2127,206 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .assets-window {
   height: 100vh; display: flex; flex-direction: column;
 }
+
+/* ── PM 대시보드 독립 창 (embed=manage, 분리형 모듈) ── */
+.manage-window { height: 100vh; overflow: auto; }
+.manage-dash { max-width: 1100px; margin: 0 auto; padding: 22px 26px 44px; }
+.manage-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px;
+}
+.manage-head h1 { font-size: 20px; font-weight: 800; margin: 0; }
+.manage-refresh {
+  font-family: inherit; border: 1px solid var(--border); background: transparent;
+  color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+.manage-refresh:hover { border-color: var(--accent); color: var(--accent); }
+.manage-refresh:disabled { opacity: .5; cursor: default; }
+.manage-cards {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 26px;
+}
+.manage-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.manage-card-label { font-size: 12px; opacity: .7; margin-bottom: 6px; }
+.manage-card-value { font-size: 24px; font-weight: 800; line-height: 1.1; }
+.manage-card-sub { font-size: 12px; opacity: .6; margin-top: 4px; }
+.manage-types { display: flex; gap: 8px; flex-wrap: wrap; margin: -10px 0 22px; }
+.manage-type-chip {
+  font-size: 12px; padding: 5px 12px; border: 1px solid var(--border);
+  border-radius: 999px; opacity: .85;
+}
+.manage-type-chip b { color: var(--accent); margin-left: 2px; }
+.manage-section { margin-bottom: 26px; }
+.manage-section h2 { font-size: 14px; font-weight: 700; margin: 0 0 10px; opacity: .85; }
+.manage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.manage-table th, .manage-table td {
+  text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.manage-table th:first-child, .manage-table td:first-child { text-align: left; }
+.manage-table th { font-weight: 600; opacity: .6; font-size: 12px; }
+.manage-name { font-weight: 600; }
+.manage-empty, .manage-empty-row { opacity: .6; text-align: center; padding: 40px; }
+.manage-foot {
+  font-size: 11px; opacity: .55; line-height: 1.6;
+  border-top: 1px solid var(--border); padding-top: 14px; margin-top: 8px;
+}
+.manage-link {
+  font-family: inherit; background: none; border: none; color: var(--accent);
+  cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 6px;
+}
+.manage-link:hover { text-decoration: underline; }
+.manage-muted { opacity: .4; }
+.manage-over { color: #e5484d; font-weight: 700; }       /* 예산 초과 */
+.manage-overdue { color: #e5484d; font-weight: 700; }    /* 마감 초과 */
+
+/* 일정·예산 편집 모달 */
+.manage-modal-back {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center; z-index: 300;
+}
+.manage-modal {
+  width: min(380px, 92vw); background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.4);
+}
+.manage-modal h3 { margin: 0 0 4px; font-size: 15px; font-weight: 800; }
+.manage-field { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.manage-field > span { width: 92px; opacity: .7; flex: none; }
+.manage-field input, .manage-field select {
+  flex: 1; font-family: inherit; font-size: 13px; color: var(--text);
+  background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 9px;
+}
+.manage-field input:focus, .manage-field select:focus { outline: none; border-color: var(--accent); }
+.manage-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.manage-modal-actions button {
+  font-family: inherit; font-size: 13px; border: 1px solid var(--border);
+  background: transparent; color: var(--text); border-radius: 8px; padding: 7px 14px; cursor: pointer;
+}
+.manage-modal-actions button:disabled { opacity: .5; cursor: default; }
+.manage-primary { background: var(--accent) !important; color: var(--accent-ink) !important; border-color: var(--accent) !important; font-weight: 700; }
+
+/* 탭 */
+.manage-tabs {
+  display: flex; gap: 4px; padding: 10px 26px 0; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg); z-index: 5;
+}
+.manage-tabs button {
+  font-family: inherit; font-size: 13px; font-weight: 600; border: none; background: none;
+  color: var(--text); opacity: .55; cursor: pointer; padding: 9px 14px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.manage-tabs button:hover { opacity: .85; }
+.manage-tabs button.on { opacity: 1; border-bottom-color: var(--accent); }
+
+/* 셀렉트·토글 */
+.manage-proj-select, .manage-field select {
+  font-family: inherit; font-size: 13px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+}
+.manage-toggles { display: flex; align-items: center; gap: 4px; }
+.manage-toggles button {
+  font-family: inherit; font-size: 12px; border: 1px solid var(--border); background: transparent;
+  color: var(--text); border-radius: 8px; padding: 5px 11px; cursor: pointer; opacity: .7;
+}
+.manage-toggles button.on { opacity: 1; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.manage-tog-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+
+/* 칸반 */
+.kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
+.kanban-col { border: 1px solid var(--border); border-radius: 12px; padding: 10px; min-height: 120px; }
+.kanban-col-head { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; gap: 6px; align-items: center; }
+.kanban-count { font-size: 11px; opacity: .55; }
+.kanban-card { border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; margin-bottom: 8px; background: rgba(127,127,127,.05); }
+.kanban-card-name { font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+.kanban-card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.kanban-card-meta select { flex: 1; font-family: inherit; font-size: 11px; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 3px 5px; }
+.kanban-gen { font-size: 11px; opacity: .7; white-space: nowrap; }
+.kanban-card-actions { display: flex; gap: 4px; }
+.kanban-card-actions button {
+  font-family: inherit; font-size: 11px; border: 1px solid var(--border); background: transparent;
+  color: var(--text); border-radius: 6px; padding: 2px 8px; cursor: pointer;
+}
+.kanban-card-actions button:disabled { opacity: .3; cursor: default; }
+.kanban-del { margin-left: auto; }
+.kanban-del:hover { color: #e5484d; border-color: #e5484d; }
+.kanban-add input {
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
+  background: transparent; border: 1px dashed var(--border); border-radius: 8px; padding: 7px 9px;
+}
+.kanban-add input:focus { outline: none; border-color: var(--accent); border-style: solid; }
+
+/* ── 작업(Work) 보드/테이블 공통 ── */
+.work-head-ctl { display: flex; align-items: center; gap: 10px; }
+.work-filterbar { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; flex-wrap: wrap; }
+.work-filterbar select {
+  font-family: inherit; font-size: 12px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px;
+}
+.work-mine { font-size: 12px; opacity: .85; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.work-panel-toggle {
+  margin-left: auto; font-family: inherit; font-size: 12px; color: var(--text);
+  background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+}
+/* 생성물(컷 드래그 소스) 패널 */
+.work-gen-panel { border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; margin-bottom: 16px; }
+.work-gen-hint { font-size: 11px; opacity: .5; }
+.work-gen-strip { display: flex; gap: 6px; overflow-x: auto; padding-top: 6px; }
+.work-gen-item { flex: none; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); cursor: grab; background: rgba(127,127,127,.06); }
+.work-gen-item img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.work-gen-item:active { cursor: grabbing; }
+.work-gen-ph { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 9px; opacity: .5; }
+.work-gen-empty { font-size: 12px; opacity: .5; padding: 12px; }
+
+/* 보드 카드(작업) */
+.kanban-col.drop { border-color: var(--accent); background: rgba(127,127,127,.04); }
+.work-card { cursor: grab; }
+.work-card:active { cursor: grabbing; }
+.work-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.work-card-top .kanban-card-name { flex: 1; }
+.work-card-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.work-seq, .work-cell-sel {
+  font-family: inherit; font-size: 11px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
+}
+.work-creators { font-size: 11px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.work-cut-drop { border: 1px dashed var(--border); border-radius: 8px; padding: 5px; margin: 6px 0; min-height: 30px; }
+.work-cut-empty { font-size: 10px; opacity: .4; }
+.work-cut-thumbs { display: flex; gap: 4px; flex-wrap: wrap; }
+.work-cut { position: relative; width: 38px; height: 38px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+.work-cut img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.work-cut-ph { width: 100%; height: 100%; display: block; background: rgba(127,127,127,.12); }
+.work-cut-x {
+  position: absolute; top: 0; right: 0; width: 14px; height: 14px; line-height: 12px; font-size: 9px;
+  border: none; background: rgba(0,0,0,.6); color: #fff; cursor: pointer; border-radius: 0 0 0 5px;
+}
+.work-card-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; opacity: .75; margin-top: 4px; }
+.work-card-desc { font-size: 11px; opacity: .6; margin-top: 4px; white-space: pre-wrap; }
+
+/* 테이블 뷰 */
+.work-table td, .work-table th { vertical-align: middle; }
+.work-cell-in {
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
+  background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px;
+}
+.work-cell-in:hover { border-color: var(--border); }
+.work-cell-in:focus { outline: none; border-color: var(--accent); }
+.work-cut-cell { min-width: 90px; }
+.work-cut-cell .work-cut { width: 32px; height: 32px; }
+.work-newrow input {
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
+  background: transparent; border: 1px dashed var(--border); border-radius: 8px; padding: 7px 9px;
+}
+.work-newrow input:focus { outline: none; border-color: var(--accent); border-style: solid; }
+
+/* 추이 차트(CSS 막대) */
+.chart { display: flex; align-items: flex-end; gap: 6px; height: 180px; padding: 8px 4px 0; overflow-x: auto; }
+.chart-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 26px; }
+.chart-bar { width: 18px; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; transition: height .2s; }
+.chart-x { font-size: 9px; opacity: .5; margin-top: 4px; white-space: nowrap; }
+
+/* 매트릭스 */
+.manage-table-wrap { overflow-x: auto; }
+.manage-matrix th, .manage-matrix td { white-space: nowrap; }
 
 /* ── Assets(구성) 뷰 ── */
 .assets-view {

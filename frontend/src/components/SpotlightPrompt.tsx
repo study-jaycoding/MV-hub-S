@@ -52,10 +52,11 @@ type TrayRef = ChipRef & { uid: string };
 // useModels 훅으로 추출. onPanelDrop 에서 쓰는 상수만 훅 모듈에서 import 해 재사용.
 
 // duration 초 범위 — CLI 스키마(model get)에 min/max 가 없어 모델 스펙(models_explore)으로 보강.
-//  seedance_2_0: 힉스필드 공식 스펙 duration_range = {min:4, max:15}.
+//  seedance_2_0 / seedance_2_0_mini: 힉스필드 공식 스펙 duration_range = {min:4, max:15} (동일).
 //    (generate cost 는 선형 계산기라 16s·60s 도 에러 없이 값을 내므로 한도 검증에 못 씀.)
 const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   seedance_2_0: { min: 4, max: 15 },
+  seedance_2_0_mini: { min: 4, max: 15 },
 };
 function durRange(model: string, def: number): { min: number; max: number } {
   return DURATION_RANGE[model] || { min: 1, max: Math.max(12, def * 2) };
@@ -331,6 +332,8 @@ function OptIcon({ name }: { name: string }) {
     return <svg {...p}><rect x="4" y="4" width="16" height="16" rx="3" /><circle cx="9" cy="9" r="1" /><circle cx="15" cy="15" r="1" /></svg>;
   if (n.includes("mode"))
     return <svg {...p}><circle cx="8" cy="8" r="2" /><circle cx="16" cy="16" r="2" /><path d="M8 10v8M16 6v8" /></svg>;
+  if (n.includes("audio") || n.includes("sound") || n.includes("voice"))
+    return <svg {...p}><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 6a9 9 0 0 1 0 12" /></svg>;
   // 폴백: 슬라이더(일반 설정)
   return <svg {...p}><path d="M5 8h14M5 16h14" /><circle cx="10" cy="8" r="2.4" fill="currentColor" stroke="none" /><circle cx="15" cy="16" r="2.4" fill="currentColor" stroke="none" /></svg>;
 }
@@ -1470,11 +1473,47 @@ export function SpotlightPrompt({
                 ) : null;
               })}
 
+              {/* 오디오 — 자주 켜고 끄므로 고급에서 빼 하단 바에 직접 노출(밖에서 관리).
+                  seedance 계열만 generate_audio 를 가지므로, 그 파라미터가 있을 때만 칩을 띄운다. */}
+              {(() => {
+                const ap = tunable.find((p) => p.name === "generate_audio");
+                if (!ap) return null;
+                const on =
+                  optionValues.generate_audio === true ||
+                  String(optionValues.generate_audio).toLowerCase() === "true";
+                return (
+                  <div className="sl-chip sl-opt-audio" title="오디오 생성 (켜기/끄기)">
+                    <span className="sl-opt-ic"><OptIcon name="generate_audio" /></span>
+                    <div className="sl-adv-opts">
+                      <button
+                        className={"sl-adv-opt" + (on ? " sel" : "")}
+                        onClick={() =>
+                          setOptionValues((prev) => ({ ...prev, generate_audio: true }))
+                        }
+                        title="오디오 켜기"
+                      >
+                        ON
+                      </button>
+                      <button
+                        className={"sl-adv-opt" + (!on ? " sel" : "")}
+                        onClick={() =>
+                          setOptionValues((prev) => ({ ...prev, generate_audio: false }))
+                        }
+                        title="오디오 끄기"
+                      >
+                        OFF
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ⚙ 고급 — 비주요 파라미터(mode·bitrate·genre 등)를 풀 라벨로 모아 한 줄을 비운다.
                   값이 기본과 다르면(=커스터마이즈됨) 칩을 강조해 '뭔가 바꿨음'을 알린다. */}
               {(() => {
                 const adv = tunable
-                  .filter((p) => !PRIMARY_PARAMS.has(p.name))
+                  // generate_audio 는 자주 토글하므로 고급에서 빼 하단 바에 직접 노출(아래 전용 칩).
+                  .filter((p) => !PRIMARY_PARAMS.has(p.name) && p.name !== "generate_audio")
                   .sort((a, b) => advRank(a.name) - advRank(b.name)); // 모드→장르→비트레이트
                 if (!adv.length) return null;
                 const dirty = adv.some((p) => {
