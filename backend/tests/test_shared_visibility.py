@@ -118,6 +118,39 @@ class SharedVisibilityTests(unittest.TestCase):
         self.assertEqual(counts["p_member"], 1)
         self.assertEqual(counts["p_other"], 1)
 
+    def test_team_creator_counts_match_visible_shared_items(self):
+        rows = repo.list_generations(
+            tab="team",
+            team_member_projects=["p_member"],
+            account_uid="user_river",
+            limit=50,
+        )
+        creators = repo.list_creators(
+            account_uid="user_river",
+            tab="team",
+            team_member_projects=["p_member"],
+        )
+        counts = {c["uid"]: c["count"] for c in creators}
+
+        expected: dict[str, int] = {}
+        for row in rows:
+            uid = row["creator_uid"]
+            expected[uid] = expected.get(uid, 0) + 1
+
+        self.assertEqual(counts, expected)
+        self.assertEqual(counts["user_river"], 2)
+        self.assertEqual(counts["user_other"], 1)
+
+    def test_project_creator_counts_respect_visible_team_scope(self):
+        creators = repo.list_creators(
+            account_uid="user_river",
+            tab="team",
+            project_id="p_other",
+            team_member_projects=["p_member"],
+        )
+
+        self.assertEqual({c["uid"]: c["count"] for c in creators}, {"user_river": 1})
+
     def test_legacy_acct_share_rows_link_account_to_real_creator_uid(self):
         with db.get_connection() as conn:
             conn.execute(

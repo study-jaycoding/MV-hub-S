@@ -86,8 +86,19 @@ def list_creators(
         return _proxy.proxy_get("/api/creators", request)
     # ★스코프 가드: tab='my' 에서 account_uid 가 None 이면 list_creators 가 필터를 안 걸어 '전체
     # 생성자'(팀 전원 이름)를 노출한다. 미링크 AUTH-on 계정은 '\x00' 로 스코프해 빈 목록이 되게 한다.
+    account_uid = account_scope_uid(request)
+    team_member_projects = None
+    if tab == "team":
+        read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+            account_global_roles(request), "read_all"
+        )
+        if not read_all:
+            team_member_projects = repo.my_member_projects(account_uid or "\x00")
     return repo.list_creators(
-        account_uid=account_scope_uid(request), tab=tab, project_id=project_id
+        account_uid=account_uid,
+        tab=tab,
+        project_id=project_id,
+        team_member_projects=team_member_projects,
     )
 
 

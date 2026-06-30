@@ -94,7 +94,10 @@ def backfill_creator_uids() -> int:
 
 
 def list_creators(
-    account_uid: Optional[str] = None, tab: str = "my", project_id: Optional[str] = None
+    account_uid: Optional[str] = None,
+    tab: str = "my",
+    project_id: Optional[str] = None,
+    team_member_projects: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """생성자 목록 [{uid, name, count, is_mine}] — 사이드바 필터 + 이름붙이기.
 
@@ -103,10 +106,51 @@ def list_creators(
       · project_id → 그 프로젝트에 **참여한 인원(멤버) 전부**. 클릭 시 팀공유 탭에서 그 사람으로 필터.
         count 는 그 프로젝트에서 그 멤버의 생성물(tab='team'이면 공유된 것)만 센다.
       · tab='my' + account_uid → 로그인 계정 본인 것만(보통 1명 → 사이드바가 자동 숨김).
-      · tab='team' → 공유된 결과물의 작성자들.
+      · tab='team' → 현재 사용자가 볼 수 있는 공유 결과물의 작성자들.
       · account_uid 없음(비로그인/단독) → 전체(기존 동작 유지)."""
     my = account_uid or get_my_uid()
     if project_id:
+        if tab == "team":
+            where = [
+                "g.creator_uid IS NOT NULL",
+                "g.deleted_at IS NULL",
+                "g.project_id = ?",
+                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)",
+            ]
+            args: list[Any] = [project_id]
+            actor_uid = account_uid if account_uid and account_uid != "\x00" else None
+            if team_member_projects is not None:
+                if team_member_projects:
+                    ph = ",".join("?" * len(team_member_projects))
+                    if actor_uid:
+                        where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
+                        args.append(actor_uid)
+                    else:
+                        where.append(f"g.project_id IN ({ph})")
+                    args += list(team_member_projects)
+                elif actor_uid:
+                    where.append("g.creator_uid = ?")
+                    args.append(actor_uid)
+                else:
+                    where.append("1=0")
+            with get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT g.creator_uid uid, COUNT(*) cnt "
+                    "FROM generation g "
+                    f"WHERE {' AND '.join(where)} "
+                    "GROUP BY g.creator_uid ORDER BY cnt DESC",
+                    args,
+                ).fetchall()
+                names = resolve_display_names(conn, [r["uid"] for r in rows])
+                return [
+                    {
+                        "uid": r["uid"],
+                        "name": names.get(r["uid"]),
+                        "count": r["cnt"],
+                        "is_mine": r["uid"] == my,
+                    }
+                    for r in rows
+                ]
         # 프로젝트 생성자 = 배정 멤버 ∪ 그 프로젝트에 실제로 생성물을 만든 작성자.
         # (예전엔 project_member 만 봐서, 멤버 미배정 프로젝트는 생성자 섹션이 통째로 사라졌다.)
         # 이름은 creator→account→로컬파트 폴백(uid 노출 금지).
@@ -165,6 +209,21 @@ def list_creators(
     args: list[Any] = []
     if tab == "team":
         where.append("EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)")
+        actor_uid = account_uid if account_uid and account_uid != "\x00" else None
+        if team_member_projects is not None:
+            if team_member_projects:
+                ph = ",".join("?" * len(team_member_projects))
+                if actor_uid:
+                    where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
+                    args.append(actor_uid)
+                else:
+                    where.append(f"g.project_id IN ({ph})")
+                args += list(team_member_projects)
+            elif actor_uid:
+                where.append("g.creator_uid = ?")
+                args.append(actor_uid)
+            else:
+                where.append("1=0")
     elif account_uid:
         where.append("g.creator_uid = ?")
         args.append(account_uid)
