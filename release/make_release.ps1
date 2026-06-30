@@ -133,8 +133,11 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Write-Host "[2/8] Building frontend dist..."
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
-    if (-not (Test-Path -LiteralPath "node_modules")) {
-        & npm.cmd install
+    $TscCmd = Join-Path $PWD "node_modules\.bin\tsc.cmd"
+    $ViteCmd = Join-Path $PWD "node_modules\.bin\vite.cmd"
+    if ((-not (Test-Path -LiteralPath $TscCmd)) -or (-not (Test-Path -LiteralPath $ViteCmd))) {
+        Write-Host "      frontend build tools missing - running npm install"
+        & npm.cmd install --include=dev
         if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
     }
     & npm.cmd run build
