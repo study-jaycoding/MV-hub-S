@@ -2565,6 +2565,10 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 /* 브레드크럼 링크용 hover 밑줄(text-decoration)이 툴바 버튼까지 묻는 것 제거 → 생성 탭과 동일 */
 .assets-tools button:hover { text-decoration: none; }
 .assets-tools .af-dot { padding: 0; }
+/* 회색 dot 복구 — '.assets-crumb button'(background:transparent) 포괄 규칙이 CSS-only 배경
+   (.af-dot-gray)을 덮어써 어셋창에서만 안 보이던 버그. r/g/b 는 inline background 라 안 덮였다.
+   .assets-tools 스코프(우선순위 ↑)로 본래 회색 배경을 되살린다(생성 툴바와 동일하게). */
+.assets-tools .af-dot-gray { background: linear-gradient(135deg, #8a8f98, #555a62); }
 .assets-tools .af-btn {
   padding: 0 7px; background: rgba(255,255,255,0.05);
   border: 1px solid var(--border); color: var(--muted2);
