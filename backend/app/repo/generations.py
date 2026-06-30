@@ -1155,6 +1155,7 @@ def list_generations(
     """
     where: list[str] = []
     args: list[Any] = []
+    actor_uid = account_uid if account_uid and account_uid != "\x00" else None
 
     if deleted_only:
         where.append("g.deleted_at IS NOT NULL")  # 휴지통 전용 뷰 — 지운 것만
@@ -1162,13 +1163,22 @@ def list_generations(
         where.append("g.deleted_at IS NULL")  # 휴지통 제외(기본)
     if tab == "team":
         where.append("EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)")
-        # 공유물은 내가 멤버인 프로젝트에 속한 것만(미분류·비멤버 프로젝트 공유물 제외).
+        # 공유물은 내가 만든 것 또는 내가 멤버인 프로젝트에 속한 것만.
+        # 작성자 본인 예외를 둬야 프로젝트 미배정/비멤버 프로젝트로 정리된 내 공유물이
+        # 관리자에게만 보이고 정작 본인에게 숨는 일을 막을 수 있다.
         # team_member_projects=None 이면(read_all·단독) 전체 공유물.
         if team_member_projects is not None:
             if team_member_projects:
                 ph = ",".join("?" * len(team_member_projects))
-                where.append(f"g.project_id IN ({ph})")
+                if actor_uid:
+                    where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
+                    args.append(actor_uid)
+                else:
+                    where.append(f"g.project_id IN ({ph})")
                 args += list(team_member_projects)
+            elif actor_uid:
+                where.append("g.creator_uid = ?")
+                args.append(actor_uid)
             else:
                 where.append("1=0")  # 멤버인 프로젝트 없음 → 공유물 0건
     elif account_uid:
@@ -1182,19 +1192,33 @@ def list_generations(
         where.append("g.color = ?")
         args.append(color)
     if share_dir == "mine":
-        # 공유한 것 — 내가 공유(발행)한 결과물
-        where.append(
-            "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id AND s.shared_by = ?)"
-        )
-        args.append(DEFAULT_WORKER_ID)
+        # 공유한 것 — 계정 모드에선 creator_uid 기준, 레거시 로컬 표식(me)은 내 생성물일 때만 인정.
+        if actor_uid:
+            where.append(
+                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id "
+                "AND (s.shared_by = ? OR (s.shared_by = ? AND g.creator_uid = ?)))"
+            )
+            args += [actor_uid, DEFAULT_WORKER_ID, actor_uid]
+        else:
+            where.append(
+                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id AND s.shared_by = ?)"
+            )
+            args.append(DEFAULT_WORKER_ID)
     elif share_dir == "received":
         # 공유 받은 것 — 제공자(나 아닌 누군가)를 발신자로 한 share 행이 있는 결과물.
         # worker_id(작업 워크스테이션=항상 'me')가 아니라 shared_by 로 판별 — 가져온 번들은
         # worker_id='me' 로 들어오므로(import_bundle_payload), shared_by<>'me' 가 올바른 기준.
-        where.append(
-            "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id AND s.shared_by <> ?)"
-        )
-        args.append(DEFAULT_WORKER_ID)
+        if actor_uid:
+            where.append(
+                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id "
+                "AND s.shared_by <> ? AND NOT (s.shared_by = ? AND g.creator_uid = ?))"
+            )
+            args += [actor_uid, DEFAULT_WORKER_ID, actor_uid]
+        else:
+            where.append(
+                "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id AND s.shared_by <> ?)"
+            )
+            args.append(DEFAULT_WORKER_ID)
     if local_only:
         # 힉스필드에 없음 = job_id 미보유(한 번도 안 감) 또는 검증으로 삭제 확인됨
         where.append("(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1)")

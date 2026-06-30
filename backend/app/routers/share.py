@@ -20,6 +20,7 @@ from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from ..deps import (
     account_global_roles,
+    actor_id,
     current_account,
     require_edit_generation,
     require_project_role,
@@ -40,7 +41,7 @@ def publish(gen_id: str, body: PublishIn, request: Request):
     require_edit_generation(request, gen)  # 공유는 본인(또는 admin)만 — 남의 작업 공유 불가
     if gen["status"] != "done":
         raise HTTPException(status_code=409, detail="완료된 생성만 발행할 수 있음")
-    shared_by = body.shared_by or gen["worker_id"] or DEFAULT_WORKER_ID
+    shared_by = body.shared_by or actor_id(request)
     repo.publish(gen_id, shared_by, body.visibility)
     return repo.get_generation(gen_id)
 
@@ -159,7 +160,7 @@ def finalize(gen_id: str, request: Request):
         # 프로젝트 미배정 → 검수자(Supervisor) 개념이 없다. 본인/admin 만(남의 비공개 강제 공유 차단).
         require_edit_generation(request, gen)
     if not gen.get("shared"):  # 최종 = 후보 확정 → 공유 동반(잠금은 unpublish 가드)
-        repo.publish(gen_id, gen["worker_id"] or DEFAULT_WORKER_ID, "team")
+        repo.publish(gen_id, actor_id(request), "team")
     repo.set_final(gen_id, True, _finalizer_uid(request))
     return repo.get_generation(gen_id)
 

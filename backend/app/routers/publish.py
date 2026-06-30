@@ -109,6 +109,22 @@ class PublishBundleIn(BaseModel):
     bundle: dict[str, Any]
 
 
+def _single_bundle_creator_uid(bundle: dict[str, Any]) -> Optional[str]:
+    """발행 번들 안의 실제 Higgsfield 작성자 uid가 단일하면 반환.
+    계정이 아직 acct:<email> 상태일 때 이 uid로 연결해 '내 공유물' 판별을 맞춘다."""
+    uids: set[str] = set()
+    for item in bundle.get("generations") or []:
+        if not isinstance(item, dict):
+            continue
+        gen = item.get("generation") or {}
+        uid = (gen.get("creator_uid") or "").strip()
+        if uid:
+            uids.add(uid)
+        if len(uids) > 1:
+            return None
+    return next(iter(uids), None)
+
+
 @router.post("/share/publish-bundle")
 def receive_published_bundle(body: PublishBundleIn, request: Request):
     """공유 서버 입구 — 로컬 허브가 보낸 번들을 받아 병합(받은 공유로 표식). 멱등(uuid 앵커).
@@ -119,6 +135,11 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
         raise HTTPException(status_code=400, detail="번들 형식이 올바르지 않습니다")
     acc = getattr(request.state, "account", None)
     if acc:
+        bundle_uid = _single_bundle_creator_uid(bundle)
+        acc_uid = acc.get("creator_uid")
+        if bundle_uid and (not acc_uid or str(acc_uid).startswith("acct:")):
+            repo.set_account_hf_creator(acc["email"], bundle_uid)
+            acc = repo.get_account(acc["email"]) or {**acc, "creator_uid": bundle_uid}
         bundle = {
             **bundle,
             "provider": {

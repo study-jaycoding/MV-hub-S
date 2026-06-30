@@ -71,6 +71,7 @@ def list_projects(
     viewer_uid: Optional[str] = None,
     *,
     shared_only: bool = False,
+    own_shared_uid: Optional[str] = None,
 ) -> dict[str, Any]:
     """프로젝트 목록 + 미분류 수 + 보관 개수. 결과물 많은 순 → 이름 순.
     반환: {"projects": [...], "unassigned": N, "archived_count": M}.
@@ -82,21 +83,39 @@ def list_projects(
         없으면(AUTH off/단독) 전체를 센다. → 다른 계정에 내 미분류/카운트가 새지 않게 한다.
       · shared_only — 모집단: True(팀 공유 탭)면 카운트를 '공유물(EXISTS share)'만으로 한정한다.
         팀 그리드는 공유물만 보여주므로, 그리드와 같은 모집단으로 세야 사이드바 수가 화면과 맞는다
-        (예전엔 viewer 본인 전체를 세 미분류가 화면의 공유물 수와 달랐다)."""
+        (예전엔 viewer 본인 전체를 세 미분류가 화면의 공유물 수와 달랐다).
+      · own_shared_uid — 팀 공유 탭에서 일반 멤버도 '본인이 만든 공유물'은 프로젝트 멤버십과 무관하게
+        볼 수 있게 하는 예외. 관리자(read_all)는 member_uid=None 이므로 이 값이 있어도 제한하지 않는다."""
     conds: list[str] = []
     args: list[Any] = []
+    own_uid = own_shared_uid if own_shared_uid and own_shared_uid != "\x00" else None
     if not include_archived:
         conds.append("p.archived = 0")
     if member_uid is not None:
-        conds.append("p.id IN (SELECT project_id FROM project_member WHERE creator_uid = ?)")
-        args.append(member_uid)
+        if shared_only and own_uid:
+            conds.append(
+                "(p.id IN (SELECT project_id FROM project_member WHERE creator_uid = ?) "
+                "OR p.id IN (SELECT g.project_id FROM generation g "
+                "WHERE g.creator_uid = ? AND g.project_id IS NOT NULL AND g.deleted_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)))"
+            )
+            args += [member_uid, own_uid]
+        else:
+            conds.append("p.id IN (SELECT project_id FROM project_member WHERE creator_uid = ?)")
+            args.append(member_uid)
     clause = (" WHERE " + " AND ".join(conds)) if conds else ""
     # 프로젝트 count — viewer_uid 가 있으면 그 계정 생성물만(내 작업 기준).
     gen_cond = "g.project_id = p.id AND g.deleted_at IS NULL"
     if shared_only:  # 팀 공유 탭: 공유물만(그리드와 동일 모집단)
         gen_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
     count_args: list[Any] = []
-    if viewer_uid:
+    if shared_only and member_uid is not None and own_uid:
+        gen_cond += (
+            " AND (g.creator_uid = ? OR p.id IN "
+            "(SELECT project_id FROM project_member WHERE creator_uid = ?))"
+        )
+        count_args += [own_uid, member_uid]
+    elif viewer_uid:
         gen_cond += " AND g.creator_uid = ?"
         count_args.append(viewer_uid)
     # count = viewer 의 것(사이드바 My Work), total = 프로젝트 전체(관리자 탭에서 표시).
@@ -116,7 +135,10 @@ def list_projects(
     if shared_only:
         un_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
     un_args: list[Any] = []
-    if viewer_uid:
+    if shared_only and member_uid is not None and own_uid:
+        un_cond += " AND creator_uid = ?"
+        un_args.append(own_uid)
+    elif viewer_uid:
         un_cond += " AND creator_uid = ?"
         un_args.append(viewer_uid)
     with get_connection() as conn:

@@ -63,9 +63,8 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
         data = repo.list_projects(
             include_archived=include_archived, member_uid=member_uid,
             viewer_uid=None, shared_only=True,
+            own_shared_uid=None if read_all else viewer_uid,
         )
-        if not read_all:
-            data["unassigned"] = 0  # 일반 멤버는 프로젝트 없는 공유물을 그리드에서 못 봄 → 미분류 0
         return data
     # 내 작업(my): 카운트는 항상 내 작업만(viewer 스코프).
     return repo.list_projects(

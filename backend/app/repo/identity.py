@@ -255,6 +255,26 @@ def account_creator_uid(email: str, owner_email: Optional[str], my_uid: Optional
     return "acct:" + email
 
 
+def _single_shared_creator_uid(conn, account_uid: str) -> Optional[str]:
+    """acct:<email> 공유 표식이 가리키는 실제 generation.creator_uid 가 하나뿐이면 반환.
+    과거 발행 경로는 share.shared_by=acct:<email> 인데 generation.creator_uid=user_... 로 저장해,
+    계정이 실제 uid 로 전환되지 못하면 작성자 본인도 팀 공유탭에서 자기 공유물을 못 봤다."""
+    if not account_uid:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT g.creator_uid uid "
+            "FROM share s JOIN generation g ON g.id = s.generation_id "
+            "WHERE s.shared_by = ? AND g.creator_uid IS NOT NULL AND g.creator_uid <> '' "
+            "AND g.creator_uid NOT LIKE 'acct:%'",
+            (account_uid,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    uids = {r["uid"] for r in rows if r["uid"]}
+    return next(iter(uids), None) if len(uids) == 1 else None
+
+
 def link_accounts_to_creators() -> int:
     """각 account 에 creator_uid 를 보장하고 creator 행 이름·역할을 account 기준으로 맞춘다(멱등).
     이래야 신규 로그인 계정이 멤버 목록·프로젝트 배정 후보에 뜨고(생성물 0이어도),
@@ -268,11 +288,25 @@ def link_accounts_to_creators() -> int:
         ).fetchall()
         for r in rows:
             uid = r["creator_uid"] or account_creator_uid(r["email"], owner_email, my_uid)
-            if not r["creator_uid"]:
+            updated_account = False
+            if uid and str(uid).startswith("acct:"):
+                inferred = _single_shared_creator_uid(conn, uid)
+                if inferred and inferred != uid:
+                    ensure_worker(conn, inferred, (r["name"] or "").strip() or inferred, "team")
+                    conn.execute(
+                        "UPDATE account SET creator_uid=? WHERE email=?", (inferred, r["email"])
+                    )
+                    remap_creator_uid(conn, uid, inferred)
+                    uid = inferred
+                    updated_account = True
+                    n += 1
+            if not r["creator_uid"] and not updated_account:
                 conn.execute(
                     "UPDATE account SET creator_uid=? WHERE email=?", (uid, r["email"])
                 )
                 n += 1
+            display_name = (r["name"] or "").strip() or r["email"] or uid
+            ensure_worker(conn, uid, display_name, "team")
             # creator 행 보장 + 전역역할 미러. 계정에 연결된 creator 의 표시이름은 **계정 이름이
             # 우선**(authoritative) — 계정은 허브 신원이고 사용자가 정한 이름이라, 과거 잘못 박힌
             # 라벨(relink 사고로 남의 이름이 stick)을 시작 시 자동 교정한다. 계정명이 비면 기존 보존.
@@ -302,6 +336,7 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
         if not row:
             return False
         old_uid = row["creator_uid"]
+        ensure_worker(conn, uid, (row["name"] or "").strip() or email or uid, "team")
         if old_uid != uid:
             conn.execute(
                 "UPDATE account SET creator_uid=? WHERE email=?", (uid, email)
