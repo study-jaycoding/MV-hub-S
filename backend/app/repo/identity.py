@@ -301,7 +301,8 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
         ).fetchone()
         if not row:
             return False
-        if row["creator_uid"] != uid:
+        old_uid = row["creator_uid"]
+        if old_uid != uid:
             conn.execute(
                 "UPDATE account SET creator_uid=? WHERE email=?", (uid, email)
             )
@@ -310,27 +311,161 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
             "ON CONFLICT(uid) DO UPDATE SET name=COALESCE(excluded.name, creator.name)",
             (uid, (row["name"] or "").strip() or None),
         )
+        # ★재발 차단: 전환과 같은 트랜잭션에서, 그 계정이 acct: 시절 박아둔 과거 데이터를
+        #   전 테이블(_REMAP_PLAN) user_ 로 정합한다. 조기 반환하지 않음(account 만 user_ 였던
+        #   부분 전환도 이때 복구). acct: 가 아니면 remap 은 멱등 0 — 무해.
+        if old_uid and str(old_uid).startswith("acct:"):
+            remap_creator_uid(conn, old_uid, uid)
     _MY_UID_CACHE[0] = None
     return True
 
 
-# 계정이 자기 creator_uid 로 기록하는 모든 (테이블, 컬럼) — acct:<email> 잔재가 남을 수 있는 곳.
+# 계정이 자기 creator_uid 로 기록하는 모든 (테이블, 컬럼, 충돌전략) — acct:<email> 잔재 지점.
 # set_account_hf_creator(acct:→user_ 대체)가 account/creator 만 바꾸므로, push 전 활동이 여기 acct: 로
-# 남는다. dry-run(plan)으로 현황을 실측하고, apply 단계에서 일괄 정합한다. (worker_id 류는 actor 가
-# creator_uid 를 그 컬럼에 넣는 읽음/seen — acct: 가 들어갈 수 있어 함께 스캔만 한다.)
-_REMAP_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("generation", "creator_uid"),
-    ("generation", "final_by"),
-    ("project_member", "creator_uid"),
-    ("auto_tag", "owner_uid"),
-    ("asset_meta", "owner_uid"),
-    ("asset_comment", "author"),
-    ("generation_comment", "author"),
-    ("gen_request", "creator_uid"),
-    ("asset_comment_read", "worker_id"),
-    ("generation_comment_read", "worker_id"),
-    ("generation_comment_seen", "worker_id"),
+# 남는다. remap_creator_uid 가 전환 시·부팅 시 이 표 전체를 user_ 로 정합한다.
+# 전략: plain=단순 UPDATE(PK/UNIQUE 에 uid 없음) / member=역할 합집합 병합(PK project_id,creator_uid)
+#       autotag=UNIQUE(owner,name) 충돌 시 태그연결 이관 / assetmeta=PK(project,path,owner) 충돌 시 old 우선
+#       ignore_del=읽음·seen(PK 에 uid) 충돌 시 무시 후 잔여 삭제(상태라 손실 무방).
+# (read/seen 의 worker_id 는 컬럼명만 worker_id 이고 값은 actor=creator_uid 라 리맵 대상이 맞다.
+#  반면 generation.worker_id 는 워크스테이션('me') 축이라 제외. — 신원완전성 검토 반영.)
+# share.shared_by·project.created_by·credit_txn.owner_uid·project_task.assignee_uid 4개는
+# 검토에서 새로 발견된 누락분(credit_txn·project_task 는 manage 동적 테이블이라 미존재 시 자동 skip).
+_REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
+    ("generation", "creator_uid", "plain"),
+    ("generation", "final_by", "plain"),
+    ("project_member", "creator_uid", "member"),
+    ("auto_tag", "owner_uid", "autotag"),
+    ("asset_meta", "owner_uid", "assetmeta"),
+    ("asset_comment", "author", "plain"),
+    ("generation_comment", "author", "plain"),
+    ("gen_request", "creator_uid", "plain"),
+    ("asset_comment_read", "worker_id", "ignore_del"),
+    ("generation_comment_read", "worker_id", "ignore_del"),
+    ("generation_comment_seen", "worker_id", "ignore_del"),
+    ("share", "shared_by", "plain"),
+    ("project", "created_by", "plain"),
+    ("credit_txn", "owner_uid", "plain"),
+    ("project_task", "assignee_uid", "plain"),
 )
+
+
+def _col_exists(conn, table: str, col: str) -> bool:
+    """동적 테이블(credit_txn·project_task)·구버전 DB 안전 가드 — 컬럼 있을 때만 리맵."""
+    try:
+        return col in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.OperationalError:
+        return False
+
+
+def _remap_member(conn, old: str, new: str) -> int:
+    """project_member: PK(project_id,creator_uid). 새 uid 행이 있으면 역할 합집합 병합 후 옛 행 삭제."""
+    from .. import rbac
+
+    c = 0
+    for r in conn.execute(
+        "SELECT project_id pid, project_role role FROM project_member WHERE creator_uid=?", (old,)
+    ).fetchall():
+        pid = r["pid"]
+        ex = conn.execute(
+            "SELECT project_role FROM project_member WHERE project_id=? AND creator_uid=?", (pid, new)
+        ).fetchone()
+        if ex is not None:
+            roles = set(rbac.parse_project_roles(ex["project_role"])) | set(
+                rbac.parse_project_roles(r["role"])
+            )
+            conn.execute(
+                "UPDATE project_member SET project_role=? WHERE project_id=? AND creator_uid=?",
+                (rbac.project_roles_to_str(sorted(roles)) or None, pid, new),
+            )
+            conn.execute(
+                "DELETE FROM project_member WHERE project_id=? AND creator_uid=?", (pid, old)
+            )
+        else:
+            conn.execute(
+                "UPDATE project_member SET creator_uid=? WHERE project_id=? AND creator_uid=?",
+                (new, pid, old),
+            )
+        c += 1
+    return c
+
+
+def _remap_autotag(conn, old: str, new: str) -> int:
+    """auto_tag: UNIQUE(owner_uid,name). 같은 이름이 새 uid 로도 있으면 그 태그의 gen 연결을 이관 후 옛 태그 삭제."""
+    c = 0
+    for r in conn.execute(
+        "SELECT id, name FROM auto_tag WHERE owner_uid=?", (old,)
+    ).fetchall():
+        ex = conn.execute(
+            "SELECT id FROM auto_tag WHERE owner_uid=? AND name=?", (new, r["name"])
+        ).fetchone()
+        if ex is not None:
+            conn.execute(
+                "UPDATE OR IGNORE gen_auto_tag SET auto_tag_id=? WHERE auto_tag_id=?",
+                (ex["id"], r["id"]),
+            )
+            conn.execute("DELETE FROM gen_auto_tag WHERE auto_tag_id=?", (r["id"],))
+            conn.execute("DELETE FROM auto_tag WHERE id=?", (r["id"],))
+        else:
+            conn.execute("UPDATE auto_tag SET owner_uid=? WHERE id=?", (new, r["id"]))
+        c += 1
+    return c
+
+
+def _remap_assetmeta(conn, old: str, new: str) -> int:
+    """asset_meta: PK(project,path,owner_uid). 충돌 시 old(acct: 시절 실제 설정) 우선 — new 삭제 후 이관."""
+    c = 0
+    for r in conn.execute(
+        "SELECT project, path FROM asset_meta WHERE owner_uid=?", (old,)
+    ).fetchall():
+        ex = conn.execute(
+            "SELECT 1 FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+            (r["project"], r["path"], new),
+        ).fetchone()
+        if ex is not None:
+            conn.execute(
+                "DELETE FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+                (r["project"], r["path"], new),
+            )
+        conn.execute(
+            "UPDATE asset_meta SET owner_uid=? WHERE project=? AND path=? AND owner_uid=?",
+            (new, r["project"], r["path"], old),
+        )
+        c += 1
+    return c
+
+
+def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> int:
+    """한 계정의 옛 신원(old=acct:<email>)을 새 신원(new=user_<id>)으로 _REMAP_PLAN 전 테이블 리맵.
+
+    ★set_account_hf_creator 와 '같은 conn'(= 같은 트랜잭션)에서 호출해야 원자적이다 — 중간 실패 시
+    account 만 user_, 데이터는 acct: 로 남는 부분 전환을 막는다. 멱등(old 행 없으면 무변화)이라
+    재호출·부팅 배치 안전. PK/UNIQUE 충돌은 컬럼별 전략으로 손실 없이 병합/정리. 변경 행 수 반환."""
+    if not old_uid or not new_uid or old_uid == new_uid:
+        return 0
+    n = 0
+    for table, col, strat in _REMAP_PLAN:
+        if not _col_exists(conn, table, col):
+            continue
+        if strat == "plain":
+            n += conn.execute(
+                f"UPDATE {table} SET {col}=? WHERE {col}=?",  # noqa: S608 — 상수 화이트리스트
+                (new_uid, old_uid),
+            ).rowcount
+        elif strat == "ignore_del":
+            conn.execute(
+                f"UPDATE OR IGNORE {table} SET {col}=? WHERE {col}=?",  # noqa: S608
+                (new_uid, old_uid),
+            )
+            n += conn.execute(
+                f"DELETE FROM {table} WHERE {col}=?", (old_uid,)  # noqa: S608
+            ).rowcount
+        elif strat == "member":
+            n += _remap_member(conn, old_uid, new_uid)
+        elif strat == "autotag":
+            n += _remap_autotag(conn, old_uid, new_uid)
+        elif strat == "assetmeta":
+            n += _remap_assetmeta(conn, old_uid, new_uid)
+    return n
 
 
 def creator_uid_remap_plan() -> dict[str, Any]:
@@ -354,14 +489,14 @@ def creator_uid_remap_plan() -> dict[str, Any]:
         changes: list[dict[str, Any]] = []
         unmapped: dict[str, int] = {}
         total = 0
-        for table, col in _REMAP_COLUMNS:
+        for table, col, _strat in _REMAP_PLAN:
             try:
                 rows = conn.execute(
                     f"SELECT {col} AS v, COUNT(*) AS n FROM {table} "  # noqa: S608 — 상수 화이트리스트
                     f"WHERE {col} LIKE 'acct:%' GROUP BY {col}"
                 ).fetchall()
             except sqlite3.OperationalError:
-                continue  # 구버전 DB: 테이블/컬럼 없음 → 건너뜀
+                continue  # 구버전 DB·동적 테이블 미존재 → 건너뜀
             for r in rows:
                 v, n = r["v"], r["n"]
                 total += n
@@ -377,6 +512,22 @@ def creator_uid_remap_plan() -> dict[str, Any]:
         "total_acct_rows": total,
         "unmapped": unmapped,
     }
+
+
+def migrate_all_acct_to_creator_uid() -> int:
+    """부팅 1회·멱등: account_map(acct:<email>→user_) 기준 모든 계정의 과거 acct: 잔재를 user_ 로 일괄 정합.
+
+    앞으로의 전환은 set_account_hf_creator 가 push 시점에 자동 정합하므로, 이 배치는 '과거에 쌓인'
+    잔재(전환 자동화 이전 데이터)를 청소하는 용도다. account 에 대응 없는 고아 acct: 는 account_map 에
+    없어 자동 제외(plan 의 unmapped) — 손대지 않는다. 통합한 행 수 반환."""
+    amap = creator_uid_remap_plan()["account_map"]
+    if not amap:
+        return 0
+    total = 0
+    with get_connection() as conn:
+        for old, new in amap.items():
+            total += remap_creator_uid(conn, old, new)
+    return total
 
 
 def record_account_status(email: str, status: dict[str, Any]) -> None:

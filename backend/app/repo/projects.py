@@ -274,58 +274,6 @@ def remove_project_member(pid: str, creator_uid: str) -> bool:
         return cur.rowcount > 0
 
 
-def migrate_member_acct_to_creator_uid() -> int:
-    """project_member 의 옛 식별자(acct:<email>)를 account.creator_uid(user_<id>)로 통합.
-
-    uid 체계 전환(acct:email → 힉스필드 user_<id>) 때 마이그레이션 안 된 옛 멤버십을 정리한다.
-    이 잔재가 있으면 ① 같은 사람이 옛/새 uid 로 멤버 목록에 2번 뜨고(중복 표시), ② 옛 uid 로만
-    등록된 멤버는 로그인 계정의 creator_uid(새 uid)와 안 맞아 my_member_projects 매칭이 0 →
-    자기가 멤버인 프로젝트가 team 탭에 안 보인다.
-
-    - 같은 (project, 새 uid) 행이 이미 있으면 역할을 합집합으로 병합 후 옛 행 삭제
-    - 없으면 옛 행의 creator_uid 를 새 uid 로 치환
-    멱등: acct: 잔재가 없으면 즉시 통과(매 부팅 빠름). 통합한 행 수 반환."""
-    from .. import rbac
-
-    changed = 0
-    with get_connection() as conn:
-        # acct:<email> 형식이며, 그 이메일 account 가 실제 creator_uid(user_)를 가진 멤버 행.
-        rows = conn.execute(
-            "SELECT m.project_id pid, m.creator_uid old_uid, m.project_role old_role, "
-            "       a.creator_uid new_uid "
-            "FROM project_member m "
-            "JOIN account a ON ('acct:' || a.email) = m.creator_uid "
-            "WHERE m.creator_uid LIKE 'acct:%' "
-            "  AND a.creator_uid IS NOT NULL AND a.creator_uid <> ''"
-        ).fetchall()
-        for r in rows:
-            pid, old_uid, new_uid = r["pid"], r["old_uid"], r["new_uid"]
-            existing = conn.execute(
-                "SELECT project_role FROM project_member WHERE project_id=? AND creator_uid=?",
-                (pid, new_uid),
-            ).fetchone()
-            if existing is not None:
-                # 새 uid 행이 이미 있음 → 역할 합집합 병합 후 옛 행 삭제(PK 충돌 회피).
-                roles = set(rbac.parse_project_roles(existing["project_role"])) | set(
-                    rbac.parse_project_roles(r["old_role"])
-                )
-                conn.execute(
-                    "UPDATE project_member SET project_role=? WHERE project_id=? AND creator_uid=?",
-                    (rbac.project_roles_to_str(sorted(roles)) or None, pid, new_uid),
-                )
-                conn.execute(
-                    "DELETE FROM project_member WHERE project_id=? AND creator_uid=?",
-                    (pid, old_uid),
-                )
-            else:
-                conn.execute(
-                    "UPDATE project_member SET creator_uid=? WHERE project_id=? AND creator_uid=?",
-                    (new_uid, pid, old_uid),
-                )
-            changed += 1
-    return changed
-
-
 def my_member_projects(creator_uid: str) -> list[str]:
     """이 계정이 멤버(역할 무관)인 모든 project_id — Team 탭 공유물을 내 프로젝트로 한정하는 데 쓴다."""
     with get_connection() as conn:

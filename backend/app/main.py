@@ -122,11 +122,11 @@ async def lifespan(app: FastAPI):
                 )
     except Exception as _e:  # noqa: BLE001 — 진단 로그라 실패해도 부팅 막지 않음
         print(f"[startup][dry-run] remap plan 스킵: {_e}")
-    # 옛 멤버십 식별자(acct:email) → account.creator_uid(user_id) 통합(1회, 멱등).
-    # 멤버 목록 2중 표시·옛 uid 멤버의 프로젝트 미표시 버그를 정리(검증된 안전 범위).
-    member_uids = repo.migrate_member_acct_to_creator_uid()
-    if member_uids:
-        print(f"[startup] 옛 멤버 식별자 {member_uids}개를 계정 uid 로 통합")
+    # 과거 acct:<email> 잔재를 account.creator_uid(user_) 로 전 테이블 일괄 정합(1회·멱등).
+    # 앞으로의 전환은 set_account_hf_creator 가 push 시점에 자동 정합하므로 재발 없음.
+    remapped = repo.migrate_all_acct_to_creator_uid()
+    if remapped:
+        print(f"[startup] 옛 신원(acct:) {remapped}행을 계정 uid 로 통합")
     # 옛 소프트삭제(deleted_at) 잔존 → 새 휴지통 DB 로 이전(1회, 멱등). 카운트 유령 제거.
     legacy = repo.migrate_legacy_soft_deleted()
     if legacy:
