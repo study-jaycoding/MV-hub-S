@@ -314,6 +314,71 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
     return True
 
 
+# 계정이 자기 creator_uid 로 기록하는 모든 (테이블, 컬럼) — acct:<email> 잔재가 남을 수 있는 곳.
+# set_account_hf_creator(acct:→user_ 대체)가 account/creator 만 바꾸므로, push 전 활동이 여기 acct: 로
+# 남는다. dry-run(plan)으로 현황을 실측하고, apply 단계에서 일괄 정합한다. (worker_id 류는 actor 가
+# creator_uid 를 그 컬럼에 넣는 읽음/seen — acct: 가 들어갈 수 있어 함께 스캔만 한다.)
+_REMAP_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("generation", "creator_uid"),
+    ("generation", "final_by"),
+    ("project_member", "creator_uid"),
+    ("auto_tag", "owner_uid"),
+    ("asset_meta", "owner_uid"),
+    ("asset_comment", "author"),
+    ("generation_comment", "author"),
+    ("gen_request", "creator_uid"),
+    ("asset_comment_read", "worker_id"),
+    ("generation_comment_read", "worker_id"),
+    ("generation_comment_seen", "worker_id"),
+)
+
+
+def creator_uid_remap_plan() -> dict[str, Any]:
+    """DRY-RUN(읽기 전용·변경 없음): acct:<email> 식별자가 남아있는 전 테이블/컬럼을 스캔해
+    '무엇을 어디로 바꿀지' 계획만 만든다. 실제 리맵 전, 서버에서 한번 돌려 오염 규모와
+    account 매핑 정확성을 실측하기 위함.
+
+    - account_map: acct:<email> → 그 계정의 실제 creator_uid(user_). account.creator_uid 가
+      이미 user_ 인 계정만(acct: 인 계정은 매핑 소스가 못 됨).
+    - changes: (table, col, old=acct:, count, new=user_ 또는 None). new=None 이면 매핑 불가(고아).
+    - unmapped: account 에 대응 없는 acct: — ★자동 리맵 대상에서 제외(손대면 안 됨)."""
+    amap: dict[str, str] = {}
+    with get_connection() as conn:
+        for r in conn.execute(
+            "SELECT email, creator_uid FROM account "
+            "WHERE creator_uid IS NOT NULL AND creator_uid <> ''"
+        ).fetchall():
+            cuid = str(r["creator_uid"])
+            if not cuid.startswith("acct:"):
+                amap["acct:" + (r["email"] or "").strip().lower()] = cuid
+        changes: list[dict[str, Any]] = []
+        unmapped: dict[str, int] = {}
+        total = 0
+        for table, col in _REMAP_COLUMNS:
+            try:
+                rows = conn.execute(
+                    f"SELECT {col} AS v, COUNT(*) AS n FROM {table} "  # noqa: S608 — 상수 화이트리스트
+                    f"WHERE {col} LIKE 'acct:%' GROUP BY {col}"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue  # 구버전 DB: 테이블/컬럼 없음 → 건너뜀
+            for r in rows:
+                v, n = r["v"], r["n"]
+                total += n
+                tgt = amap.get(v)
+                changes.append(
+                    {"table": table, "col": col, "old": v, "count": n, "new": tgt}
+                )
+                if tgt is None:
+                    unmapped[v] = unmapped.get(v, 0) + n
+    return {
+        "account_map": amap,
+        "changes": changes,
+        "total_acct_rows": total,
+        "unmapped": unmapped,
+    }
+
+
 def record_account_status(email: str, status: dict[str, Any]) -> None:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
     생성정보엔 크레딧이 없으므로, 팀 전체/구성원별 크레딧 집계는 이 '마지막 보고값'으로 한다."""

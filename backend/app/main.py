@@ -103,8 +103,27 @@ async def lifespan(app: FastAPI):
     dups = repo.reconcile_duplicates()
     if dups:
         print(f"[startup] 중복 동기화본 {dups}개를 병합 정리")
+    # DRY-RUN(읽기 전용): acct:<email> 잔재가 어느 테이블에 얼마나 남았는지 실측 로그.
+    # 실제 전면 리맵 전, 오염 규모·매핑 정확성을 눈으로 확인하기 위함(변경 없음).
+    try:
+        plan = repo.creator_uid_remap_plan()
+        if plan["total_acct_rows"]:
+            print(
+                f"[startup][dry-run] acct: 잔재 총 {plan['total_acct_rows']}행 "
+                f"({len(plan['changes'])} 항목) — 전면 리맵 후보:"
+            )
+            for c in plan["changes"]:
+                tgt = ("→ " + c["new"]) if c["new"] else "✗ 매핑없음(고아·자동제외)"
+                print(f"           {c['table']}.{c['col']}  {c['old']} x{c['count']}  {tgt}")
+            if plan["unmapped"]:
+                print(
+                    f"[startup][dry-run] ★account 에 대응 없는 acct: {len(plan['unmapped'])}종 "
+                    f"— 자동 리맵 제외(수동 확인 필요)"
+                )
+    except Exception as _e:  # noqa: BLE001 — 진단 로그라 실패해도 부팅 막지 않음
+        print(f"[startup][dry-run] remap plan 스킵: {_e}")
     # 옛 멤버십 식별자(acct:email) → account.creator_uid(user_id) 통합(1회, 멱등).
-    # 멤버 목록 2중 표시·옛 uid 멤버의 프로젝트 미표시 버그를 정리.
+    # 멤버 목록 2중 표시·옛 uid 멤버의 프로젝트 미표시 버그를 정리(검증된 안전 범위).
     member_uids = repo.migrate_member_acct_to_creator_uid()
     if member_uids:
         print(f"[startup] 옛 멤버 식별자 {member_uids}개를 계정 uid 로 통합")
