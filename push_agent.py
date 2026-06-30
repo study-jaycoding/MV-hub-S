@@ -85,6 +85,18 @@ def _cli_json(cli: str, *args: str, timeout: int = 120):
     return data
 
 
+def _cli_version(cli: str) -> str | None:
+    """CLI 빌드 버전 문자열(예: '0.2.3'). `higgsfield version` 은 JSON 이 아니라 평문이라 직접 파싱.
+    실패해도 None — 버전 보고는 부가정보(없어도 push 진행)."""
+    try:
+        out = subprocess.run([cli, "version"], capture_output=True, text=True, timeout=30)
+        txt = (out.stdout or out.stderr or "").strip()
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r"\d+\.\d+\.\d+", txt)
+    return m.group(0) if m else (txt[:40] or None)
+
+
 def _http(method: str, url: str, token: str | None = None, body: dict | None = None, timeout: int = 60):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -697,6 +709,13 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     if isinstance(acct, dict):
         ws = _cli_json(cli, "workspace", "list")
         acct["workspaces"] = ws if isinstance(ws, list) else []
+        acct["cli_version"] = _cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
+
+    # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
+    # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
+    txns = _cli_json(cli, "account", "transactions", "--size", "100")
+    if not isinstance(txns, list):
+        txns = []
 
     # 3) 새 것만 추림(서버에 없는 job_id)
     fresh = [j for j in jobs if isinstance(j, dict) and j.get("id") and j["id"] not in known_ids]
@@ -711,7 +730,8 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 4) 서버로 push (메타데이터만 — 미디어는 공개 URL 그대로, 토큰 안 보냄)
     status, body = _http(
         "POST", f"{server}/api/ingest", token=token,
-        body={"jobs": fresh, "creator_uid": my_uid, "account_status": acct},
+        body={"jobs": fresh, "creator_uid": my_uid, "account_status": acct,
+              "account_transactions": txns},
     )
     if status != 200 or not isinstance(body, dict):
         # 적재 실패로 watch 루프를 죽이지 않는다(소프트 보류) — 로그인 전(401·인증 필요)이나

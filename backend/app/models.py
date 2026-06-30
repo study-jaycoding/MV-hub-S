@@ -298,6 +298,7 @@ class IngestIn(BaseModel):
     jobs: list[dict] = Field(default_factory=list)
     creator_uid: Optional[str] = None  # 명시하면 그 uid 로 귀속(없으면 자동 추출)
     account_status: Optional[dict] = None  # {email, credits, plan, workspaces} — 크레딧 집계용
+    account_transactions: Optional[list] = None  # PM: account transactions 원본(실제 차감액 매칭용). 선택.
 
 
 class IngestMcpIn(BaseModel):

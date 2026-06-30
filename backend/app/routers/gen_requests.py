@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED
 from ..deps import require_view_generation
 from ..models import (
     FulfillIn,
@@ -30,6 +30,20 @@ from ..ws import manager
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
 
+def _pm(action) -> None:
+    """PM 메트릭 best-effort 실행(분리형). MANAGE_ENABLED off 거나 실패해도 생성 흐름·응답에
+    영향 0 — 메트릭 수집은 절대 생성을 막지 않는다(안전 검토 PM_DASHBOARD_DESIGN.md §6-1).
+    action 은 manage 모듈을 받는 콜러블."""
+    if not MANAGE_ENABLED:
+        return
+    try:
+        from ..repo import manage as _m
+
+        action(_m)
+    except Exception:  # noqa: BLE001 — 메트릭 실패가 생성을 막지 않게
+        pass
+
+
 def _require_account(request: Request) -> dict:
     acc = getattr(request.state, "account", None)
     if acc:
@@ -42,7 +56,7 @@ def _require_account(request: Request) -> dict:
 
 
 @router.post("/gen-requests", response_model=GenerationOut, status_code=201)
-def create_gen_request(body: GenRequestIn, request: Request):
+async def create_gen_request(body: GenRequestIn, request: Request):
     """버튼이 호출 — placeholder 카드 즉시 생성 + 로컬 실행요청 큐잉. placeholder 반환."""
     acc = _require_account(request)
     creator_uid = acc.get("creator_uid")
@@ -77,6 +91,21 @@ def create_gen_request(body: GenRequestIn, request: Request):
     # 요청자 에이전트를 즉시 깨움(이벤트 방식) — 30초 폴링 대기 없이 바로 실행.
     agent_signals.signal(acc["email"], "gen-request")
 
+    # PM 메트릭: 요청 시점 requested_at + 견적 박제. 서버에 CLI 있을 때만 견적(없으면 NULL —
+    # 실제값은 후속 단계의 거래 매칭으로 채움). 견적 0/실패는 미상(NULL)로 둔다(진짜 0 과 구분 불가).
+    if MANAGE_ENABLED:
+        est = None
+        try:
+            if cli_bridge.cli_available():
+                cc = await cli_bridge.estimate_cost(
+                    payload.get("model"), payload.get("params"), payload.get("prompt") or ""
+                )
+                v = (cc or {}).get("credits")
+                est = int(v) if v else None
+        except Exception:  # noqa: BLE001 — 견적 실패가 생성을 막지 않게
+            est = None
+        _pm(lambda _m: _m.record_request(gen_id, est_credits=est))
+
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
@@ -94,6 +123,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
     claimed = repo.claim_pending_requests(acc["email"], limit=max(1, min(limit, 16)))
     for c in claimed:
         repo.set_status(c["gen_id"], "running", None)
+        _pm(lambda _m: _m.record_started(c["gen_id"]))  # PM 메트릭: started_at
         await manager.broadcast(
             {"type": "progress", "generation_id": c["gen_id"], "status": "running"},
             account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만(남에게 진행률 누출 방지)
@@ -144,6 +174,8 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         if not gen:
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
+    # PM 메트릭: completed_at + elapsed(started_at 대비). applied=True 일 때만 → 멱등(중복 보고 무영향).
+    _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
     # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
     # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
 
@@ -179,6 +211,7 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
     # TOCTOU 를 닫는다. 이미 종결됐으면 False → 멱등 반환(브로드캐스트 안 함).
     if not repo.apply_local_failure(req["gen_id"], rid, reason):
         return {"ok": True}
+    _pm(lambda _m: _m.record_completed(req["gen_id"]))  # PM 메트릭: 실패도 종료시각 기록
     await manager.broadcast(
         {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason},
         account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만

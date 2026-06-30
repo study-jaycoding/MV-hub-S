@@ -65,6 +65,11 @@ FRONTEND_DIST = Path(
 # 끄면(기본) 현재처럼 누구나 접근(개인 PC·개발). 팀 서버에서 막고 싶을 때 켠다.
 AUTH_ENABLED = os.environ.get("CONTENT_HUB_AUTH", "0").lower() in ("1", "true", "yes", "on")
 
+# ── PM 대시보드(매니징먼트) 모듈 스위치 ───────────────────────────────────────
+# 기본 off. 분리형 사이드카 기능(routers/manage·repo/manage). off 면 라우터 미등록 +
+# 사이드카 테이블 미생성 → 운영 동작에 영향 0. 켜면 /api/manage/* 활성(설계: PM_DASHBOARD_DESIGN.md).
+MANAGE_ENABLED = os.environ.get("CONTENT_HUB_MANAGE", "0").lower() in ("1", "true", "yes", "on")
+
 # 서버 바인딩 — 인증이 꺼진 개인/개발 모드는 기본적으로 로컬에만 묶는다. 공유 서버 스크립트는
 # CONTENT_HUB_AUTH=1 + CONTENT_HUB_HOST=0.0.0.0 을 명시하므로 LAN 공개 동작은 그대로 유지된다.
 HOST = os.environ.get(
