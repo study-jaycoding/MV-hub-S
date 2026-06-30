@@ -37,6 +37,7 @@ from .config import (
     AUTH_ENABLED,
     CORS_ORIGINS,
     FRONTEND_DIST,
+    MANAGE_ENABLED,
     MEDIA_DIR,
     ensure_dirs,
 )
@@ -102,6 +103,11 @@ async def lifespan(app: FastAPI):
     dups = repo.reconcile_duplicates()
     if dups:
         print(f"[startup] 중복 동기화본 {dups}개를 병합 정리")
+    # 옛 멤버십 식별자(acct:email) → account.creator_uid(user_id) 통합(1회, 멱등).
+    # 멤버 목록 2중 표시·옛 uid 멤버의 프로젝트 미표시 버그를 정리.
+    member_uids = repo.migrate_member_acct_to_creator_uid()
+    if member_uids:
+        print(f"[startup] 옛 멤버 식별자 {member_uids}개를 계정 uid 로 통합")
     # 옛 소프트삭제(deleted_at) 잔존 → 새 휴지통 DB 로 이전(1회, 멱등). 카운트 유령 제거.
     legacy = repo.migrate_legacy_soft_deleted()
     if legacy:
@@ -184,6 +190,14 @@ app.include_router(publish.router)
 app.include_router(auth.router)
 app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
+
+# ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
+# 기본 off: import 자체를 안 해 라우터·사이드카 테이블이 전혀 생기지 않는다(운영 무영향).
+# 켜면 /api/manage/* 활성. 설계: PM_DASHBOARD_DESIGN.md.
+if MANAGE_ENABLED:
+    from .routers import manage
+
+    app.include_router(manage.router)
 
 
 # ── AUTH off 원격 차단 ─────────────────────────────────────────────────────
