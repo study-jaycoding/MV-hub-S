@@ -28,7 +28,7 @@ class IngestCoreTests(unittest.TestCase):
             mock.patch.object(ingest, "AUTH_ENABLED", True),
             mock.patch.object(ingest.repo, "upsert_synced_generation", return_value="inserted") as upsert,
         ):
-            out = ingest._ingest_core(acc, jobs, None, None)
+            out = ingest._ingest_core(acc, jobs, None, {"email": "artist@example.com"})
 
         self.assertEqual(out.inserted, 1)
         self.assertEqual(out.skipped, 1)

@@ -33,6 +33,7 @@ from ..config import (
     AUTH_ENABLED,
     DATA_DIR,
     DEFAULT_PROJECT,
+    DEFAULT_WORKER_ID,
     MEDIA_DIR,
 )
 from ..deps import actor_id
@@ -114,28 +115,19 @@ def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]
 
 def _load_mounts() -> list[dict[str, str]]:
     """등록된 외부 폴더 [{name, path, owner}]. owner=등록한 계정(creator_uid) — 계정별 개인 목록.
-    레거시(소유자 없는) 항목은 첫 로드 때 제공자(get_my_uid) 소유로 이관·재저장(멱등)."""
+    레거시(소유자 없는) 항목은 _owner_mounts(owner) 에서 현재 요청 계정 소유로 1회 이관한다."""
     try:
         data = json.loads(_mounts_file().read_text("utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return []
     out: list[dict[str, str]] = []
-    migrated = False
-    prov: Optional[str] = None
     for m in data.get("mounts", []) if isinstance(data, dict) else []:
         name = str(m.get("name", "")).strip()
         path = str(m.get("path", "")).strip()
         if not (name and path):
             continue
         owner = str(m.get("owner", "")).strip()
-        if not owner:
-            if prov is None:
-                prov = repo.get_my_uid() or ""
-            owner = prov
-            migrated = True
         out.append({"name": name, "path": path, "owner": owner})
-    if migrated:
-        _save_mounts(out)  # 레거시 → 제공자 소유로 1회 이관
     return out
 
 
@@ -147,7 +139,20 @@ def _save_mounts(mounts: list[dict[str, str]]) -> None:
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
-    return [m for m in _load_mounts() if m.get("owner", "") == owner]
+    mounts = _load_mounts()
+    migrated = False
+    out: list[dict[str, str]] = []
+    for m in mounts:
+        m_owner = m.get("owner", "")
+        if m_owner == owner:
+            out.append(m)
+        elif m_owner in ("", DEFAULT_WORKER_ID):
+            m["owner"] = owner
+            migrated = True
+            out.append(m)
+    if migrated:
+        _save_mounts(mounts)
+    return out
 
 
 def _mount_dir(name: str, owner: str) -> Optional[Path]:

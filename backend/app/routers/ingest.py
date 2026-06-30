@@ -60,7 +60,17 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # 이메일 검증은 서버(AUTH on)에서만 — 로컬 허브(AUTH off)는 내 PC·내 에이전트라 acc.email 이
     # 'local' 이라 검증 대상이 아니다(검증은 크레딧 보고를 서버로 전달할 때 서버가 수행).
     reported_email = ((account_status or {}).get("email") or "").strip().lower()
-    if AUTH_ENABLED and reported_email and reported_email != (acc.get("email") or "").strip().lower():
+    acc_email = (acc.get("email") or "").strip().lower()
+    if AUTH_ENABLED and (jobs or account_status) and not reported_email:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "에이전트가 CLI 계정 이메일을 보고하지 않았습니다(옛 버전). "
+                "MV_agent.bat 또는 update-cli.bat 으로 에이전트를 갱신하세요 — "
+                "신원 검증 없이 적재하면 다른 사람 작업으로 오귀속될 수 있어 막습니다."
+            ),
+        )
+    if AUTH_ENABLED and reported_email and reported_email != acc_email:
         raise HTTPException(
             status_code=409,
             detail=(

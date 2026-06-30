@@ -18,15 +18,32 @@ from .config import AUTH_ENABLED, DEFAULT_WORKER_ID
 SESSION_COOKIE = "ch_session"
 
 
-def actor_id(request: Request) -> str:
-    """현재 요청 행위자의 안정 신원 — 로그인 계정이면 그 creator_uid, 아니면 기본 작업자('me').
+def account_actor_uid(request: Request) -> Optional[str]:
+    """로그인 계정의 권한/소유권용 uid.
 
-    코멘트 작성자·소유권·읽음추적에 쓴다. 멀티계정 서버에서 모든 코멘트가 'me' 로 뭉쳐
-    누구나 남의 코멘트를 수정·삭제하던 문제를 막는다(각자 제 신원으로 귀속). AUTH off(단독)
-    면 'me' 로 떨어져 기존 동작 유지. creator_uid 로 저장하므로 표시이름 변경도 그대로 전파."""
+    계정 모드(AUTH on)에서는 절대 DEFAULT_WORKER_ID('me')로 떨어지지 않는다. 실제 Higgsfield
+    creator_uid가 아직 없으면 임시 uid(acct:<email>)를 쓰고, 나중에 실제 user_...가 확인되면
+    identity.remap_creator_uid가 전 테이블을 리맵한다."""
     acc = current_account(request)
-    uid = acc.get("creator_uid") if acc else None
-    return uid or DEFAULT_WORKER_ID
+    if not acc:
+        return None
+    uid = (acc.get("creator_uid") or "").strip()
+    if uid:
+        return uid
+    if AUTH_ENABLED:
+        email = (acc.get("email") or "").strip().lower()
+        if email:
+            return f"acct:{email}"
+        raise HTTPException(status_code=409, detail="계정 신원(creator_uid)을 확인할 수 없습니다")
+    return None
+
+
+def actor_id(request: Request) -> str:
+    """현재 요청 행위자의 안정 신원.
+
+    AUTH on: creator_uid 또는 acct:<email>. AUTH off: 단독/레거시 호환용 DEFAULT_WORKER_ID('me').
+    name/표시이름은 절대 권한 판단에 쓰지 않는다."""
+    return account_actor_uid(request) or DEFAULT_WORKER_ID
 
 
 def bearer_token(request: Request) -> Optional[str]:
@@ -57,7 +74,8 @@ def account_scope_uid(request: Request) -> Optional[str]:
         return None
     uid = acc.get("creator_uid")
     if AUTH_ENABLED and not uid:
-        return "\x00"
+        email = (acc.get("email") or "").strip().lower()
+        return f"acct:{email}" if email else "\x00"
     return uid
 
 
@@ -90,8 +108,7 @@ def require_global_cap(request: Request, cap: str) -> None:
 
 def project_roles_of(request: Request, project_id: str) -> str:
     """현재 계정이 그 프로젝트에서 가진 역할들(CSV, 복수 가능; 멤버 아님→''). creator_uid 로 조회."""
-    acc = current_account(request)
-    uid = acc.get("creator_uid") if acc else None
+    uid = account_actor_uid(request)
     if not uid:
         return ""
     from .db import get_connection
@@ -139,8 +156,7 @@ def can_view_generation(request: Request, gen: dict[str, Any]) -> bool:
     import 로 열람하던 우회가 있었다. 단건 가시성을 list 와 일치시켜 그 간극을 닫는다."""
     if not AUTH_ENABLED:
         return True
-    acc = current_account(request)
-    uid = acc.get("creator_uid") if acc else None
+    uid = account_actor_uid(request)
     if uid and gen.get("creator_uid") == uid:
         return True  # 내 것
     if rbac.has_global_cap(account_global_roles(request), "read_all"):
@@ -165,8 +181,7 @@ def require_edit_generation(request: Request, gen: dict[str, Any]) -> None:
     """수정/삭제 가드 — 본인 또는 admin(system)만. 공유물이라도 남이 수정 불가."""
     if not AUTH_ENABLED:
         return
-    acc = current_account(request)
-    uid = acc.get("creator_uid") if acc else None
+    uid = account_actor_uid(request)
     if uid and gen.get("creator_uid") == uid:
         return
     if rbac.has_global_cap(account_global_roles(request), "system"):

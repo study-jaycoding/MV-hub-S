@@ -131,7 +131,12 @@ def list_accounts(
             "created_at DESC",
             tuple(args),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            normalized = _row(conn, r["email"])
+            if normalized:
+                out.append(normalized)
+        return out
 
 
 def set_password(email: str, new_password: str) -> Optional[dict[str, Any]]:

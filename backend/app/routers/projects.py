@@ -11,11 +11,12 @@ from fastapi import APIRouter, HTTPException, Request
 from . import _proxy
 from .. import rbac, repo
 from ..deps import (
+    account_actor_uid,
     account_global_roles,
     account_scope_uid,
-    current_account,
     project_roles_of,
     require_global_cap,
+    require_project_role,
 )
 from ..config import AUTH_ENABLED
 from ..models import (
@@ -30,6 +31,23 @@ from ..models import (
 )
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+_PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
+
+
+def _has_read_all(request: Request) -> bool:
+    return (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
+
+
+def _require_project_read(request: Request, pid: str) -> None:
+    require_project_role(request, pid, *_PROJECT_READ_ROLES, read_only=True)
+
+
+def _require_assign_target(request: Request, pid: str | None) -> None:
+    if not pid or _has_read_all(request):
+        return
+    _require_project_read(request, pid)
 
 
 @router.get("", response_model=ProjectsOut)
@@ -50,11 +68,8 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
         return data
     # 가시성(§5-3): 전역 read_all(admin·PM·PD)은 전체 프로젝트, 그 외(일반 멤버)는 배정된 것만.
     # AUTH off 면 enforcement 없이 전체(기존 동작).
-    acc = getattr(request.state, "account", None)
-    viewer_uid = acc.get("creator_uid") if acc else None  # 카운트(미분류·프로젝트 수)를 내 작업 기준으로
-    read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
-        account_global_roles(request), "read_all"
-    )
+    viewer_uid = account_scope_uid(request)  # 카운트(미분류·프로젝트 수)를 내 작업 기준으로
+    read_all = _has_read_all(request)
     member_uid = None if read_all else (viewer_uid or "\x00")  # 신원 없으면 매칭 0 → 빈 목록
     if tab == "team":
         # 팀 공유 탭(서버 본체·단독 모두): 카운트 모집단 = '공유물'(EXISTS share) — 그리드와 동일.
@@ -81,12 +96,11 @@ def my_finalize_roles(request: Request):
         return _proxy.proxy_get("/api/projects/my-finalize-roles", request)
     if not AUTH_ENABLED:
         return {"project_ids": ["*"]}
-    acc = current_account(request)
-    uid = acc.get("creator_uid") if acc else None
+    uid = account_actor_uid(request)
     if not uid:
         return {"project_ids": []}
     # 전역 admin 은 모든 항목 골드 가능. 그 외에는 SUPERVISOR 인 프로젝트만(PM 은 생성·배치 역할).
-    if rbac.has_any_global_role(rbac.parse_roles(acc.get("global_role")), rbac.ADMIN):
+    if rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
         return {"project_ids": ["*"]}
     return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR])}
 
@@ -160,6 +174,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             repo.cache_projects(data.get("projects") or [] if isinstance(data, dict) else [])
         except Exception:  # noqa: BLE001
             pass
+    _require_assign_target(request, body.project_id)
     try:
         if tab == "team":
             # 팀 공유 탭 귀속(서버 본체): 공유물을 프로젝트로 조직하는 팀 작업이다. read_all(admin·PM·PD)
@@ -199,6 +214,7 @@ def list_all_members(request: Request):
     """모든 프로젝트의 멤버를 한 번에 {pid: [...]} — 관리자 창이 1회로 prefetch."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/projects/members-all", request)
+    require_global_cap(request, "read_all")
     return repo.list_all_project_members()
 
 
@@ -209,6 +225,7 @@ def list_members(pid: str, request: Request):
         return _proxy.proxy_get(f"/api/projects/{pid}/members", request)
     if not repo.get_project(pid):
         raise HTTPException(status_code=404, detail="없는 프로젝트")
+    _require_project_read(request, pid)
     return repo.list_project_members(pid)
 
 
