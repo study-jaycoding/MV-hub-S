@@ -399,3 +399,7 @@
 .export-history-when { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; }
 .export-history-path { flex: 1 1 auto; word-break: break-all; opacity: .85; }
 .export-history-gone { flex: 0 0 auto; color: #d98a4a; font-weight: 700; }
+
+/* 완료 탭 — 저장 불가 대상(사유) */
+.export-blocked { margin: 2px 0 0; padding-left: 18px; list-style: disc; font-size: 12px; opacity: .8; display: flex; flex-direction: column; gap: 3px; }
+.export-blocked code { padding: 0 4px; border-radius: 3px; background: rgba(127,127,127,.18); }

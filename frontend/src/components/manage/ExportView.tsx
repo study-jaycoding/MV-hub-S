@@ -48,7 +48,9 @@ export function ExportView() {
 
   const renderPath = status?.render_path || "";
   const targets = status?.targets ?? [];
-  const pending = targets.filter((t) => !t.saved).length;
+  const pending = targets.filter((t) => !t.saved && !t.reason).length; // 새로 저장 가능
+  const alreadySaved = targets.filter((t) => t.saved && !t.reason).length;
+  const blocked = targets.filter((t) => t.reason); // 저장 불가(사유 있음)
   const canSave = !!pid && !!renderPath && !status?.error && !busy;
 
   const onSave = async () => {
@@ -111,10 +113,27 @@ export function ExportView() {
           {targets.length > 0 && (
             <>
               {" "}
-              — 새로 저장 <b>{pending}</b> · 이미 저장 <b>{targets.length - pending}</b>
+              — 새로 저장 <b>{pending}</b> · 이미 저장 <b>{alreadySaved}</b>
+              {blocked.length > 0 && (
+                <>
+                  {" "}
+                  · 저장 불가 <b>{blocked.length}</b>
+                </>
+              )}
             </>
           )}
         </div>
+
+        {blocked.length > 0 && (
+          <ul className="export-blocked">
+            {blocked.map((t) => (
+              <li key={t.gen_id}>
+                <code>{t.gen_id.slice(0, 8)}</code>
+                {t.folder_path ? ` (${t.folder_path})` : ""} — {t.reason}
+              </li>
+            ))}
+          </ul>
+        )}
 
         <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
           {busy

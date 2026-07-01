@@ -237,13 +237,29 @@ def save_finals_status(project_id: str, request: Request):
     for f in repo_manage.finals_to_export(project_id):
         fp = f.get("folder_path")
         file_path = f.get("file_path")
-        filename, saved = "", False
-        if fp and file_path and render is not None:
+        filename, saved, reason = "", False, None
+        # 저장 불가 사유를 미리 알려 헛클릭 방지(POST 와 같은 판정 순서).
+        if not fp:
+            reason = "폴더 경로 없음"
+        elif not file_path:
+            reason = "원본 파일 없음"
+        elif render is None:
+            reason = "렌더 폴더 미연결"
+        else:
             filename = project_folders.export_filename(fp, f["gen_id"], file_path, f.get("media_type"))
             dest = project_folders.safe_dest(render, fp, filename)
-            saved = bool(dest and dest.exists())
+            if dest is None:
+                reason = "경로 안전성 위반"
+            else:
+                saved = bool(dest.exists())
         targets.append(
-            {"gen_id": f["gen_id"], "folder_path": fp, "filename": filename, "saved": saved}
+            {
+                "gen_id": f["gen_id"],
+                "folder_path": fp,
+                "filename": filename,
+                "saved": saved,
+                "reason": reason,  # None=저장 가능, 값 있으면 저장 불가 사유
+            }
         )
     history = [
         {**e, "exists": Path(e["dest_path"]).exists()}

@@ -64,7 +64,14 @@ export function ProjectAssignMenu({
     api
       .projectFolder(expandedPid)
       .then((st) => alive && setFolderState((prev) => ({ ...prev, [expandedPid]: st })))
-      .catch(() => {});
+      .catch(() => {
+        // 조용히 삼키지 않고 사유 표시(아래 렌더가 st.error 를 보여줌).
+        if (alive)
+          setFolderState((prev) => ({
+            ...prev,
+            [expandedPid]: { error: "폴더 정보를 불러오지 못했습니다" } as ProjectFolderState,
+          }));
+      });
     return () => {
       alive = false;
     };

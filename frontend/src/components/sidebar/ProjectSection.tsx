@@ -173,7 +173,14 @@ export function ProjectSection({
               seedProjectExpansion(pid, state);
               setFolders((prev) => ({ ...prev, [pid]: state }));
             })
-            .catch(() => {})
+            .catch(() => {
+              // 조용히 삼키지 않고 트리에 사유 표시(SidebarFolderTree 가 state.error 렌더).
+              if (alive)
+                setFolders((prev) => ({
+                  ...prev,
+                  [pid]: { ...prev[pid], error: "폴더 정보를 불러오지 못했습니다" },
+                }));
+            })
             .finally(() => {
               if (alive) setFolderLoading((prev) => ({ ...prev, [pid]: false }));
             });

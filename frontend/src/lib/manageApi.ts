@@ -65,6 +65,7 @@ export interface SaveFinalsTarget {
   folder_path: string | null;
   filename: string;
   saved: boolean; // 이미 렌더폴더에 존재
+  reason: string | null; // null=저장 가능, 값 있으면 저장 불가 사유
 }
 
 export interface SaveFinalsHistory {
