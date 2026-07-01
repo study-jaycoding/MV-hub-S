@@ -1,10 +1,8 @@
 // 테이블 뷰 — Notion 데이터베이스식. 셀 인라인 편집(상태·시퀀스·작업명·마감·설명),
 // 컷 셀은 생성물 드롭 타깃, 생성자·크레딧·시간·코멘트는 읽기전용(파생).
-import { useState } from "react";
 import { useT } from "../../lib/i18n";
 import { CutThumbs } from "./CutThumbs";
 import {
-  DEFAULT_STATUS,
   GEN_MIME,
   STATUSES,
   statusColor,
@@ -21,9 +19,8 @@ function fmtDur(sec?: number): string {
 }
 
 export function TableView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, onCreate, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 토글 시 상태 라벨 리렌더
-  const [newName, setNewName] = useState("");
 
   const commitText = (t: Task, key: "name" | "description", value: string) => {
     if ((t[key] || "") !== value) onPatch(t.id, { [key]: value } as Partial<Task>);
@@ -139,21 +136,6 @@ export function TableView(props: WorkViewProps) {
               </td>
             </tr>
           ))}
-          <tr className="work-newrow">
-            <td colSpan={11}>
-              <input
-                value={newName}
-                placeholder="+ 새 행 (작업명 입력 후 Enter)"
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && newName.trim()) {
-                    onCreate(DEFAULT_STATUS, newName);
-                    setNewName("");
-                  }
-                }}
-              />
-            </td>
-          </tr>
         </tbody>
       </table>
     </div>

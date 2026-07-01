@@ -123,7 +123,6 @@ export const STATUSES: StatusDef[] = [
   { v: "done", ko: "완료", en: "Done", color: "#3f9d6b", group: "완료" },
   { v: "omit", ko: "생략", en: "Omit", color: "#787c82", group: "완료" },
 ];
-export const DEFAULT_STATUS = "not_started";
 export function statusDef(v?: string | null): StatusDef | undefined {
   return STATUSES.find((s) => s.v === v);
 }
@@ -147,7 +146,6 @@ export interface WorkViewProps {
   tasks: Task[];
   seqOptions: string[];
   thumb: (path?: string | null) => string | undefined;
-  onCreate: (status: string, name: string) => void;
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;

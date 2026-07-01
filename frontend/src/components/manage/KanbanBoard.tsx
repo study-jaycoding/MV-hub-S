@@ -18,17 +18,9 @@ import {
 const BOARD_HIDDEN_STATUSES = new Set(["not_started", "pending"]);
 
 export function BoardView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, onCreate, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
-  const [draft, setDraft] = useState<Record<string, string>>({});
   const [dragOver, setDragOver] = useState<string | null>(null);
-
-  const add = (status: string) => {
-    const name = (draft[status] || "").trim();
-    if (!name) return;
-    onCreate(status, name);
-    setDraft((d) => ({ ...d, [status]: "" }));
-  };
 
   const renderColumn = (col: (typeof STATUSES)[number]) => {
     const items = tasks.filter((t) => t.status === col.v);
@@ -121,16 +113,6 @@ export function BoardView(props: WorkViewProps) {
                 {t.description && <div className="work-card-desc">{t.description}</div>}
               </div>
             ))}
-            <div className="kanban-add">
-              <input
-                value={draft[col.v] || ""}
-                placeholder="+ 작업 추가"
-                onChange={(e) => setDraft((d) => ({ ...d, [col.v]: e.target.value }))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") add(col.v);
-                }}
-              />
-            </div>
           </div>
     );
   };

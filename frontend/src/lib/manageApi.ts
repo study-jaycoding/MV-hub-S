@@ -20,8 +20,6 @@ export const manageApi = {
     }),
   listTasks: (projectId: string) =>
     jsonFetch<Task[]>(withQuery("/api/manage/tasks", { project_id: projectId })),
-  createTask: (body: Partial<Task> & { project_id: string; name: string }) =>
-    jsonFetch<Task>("/api/manage/tasks", { method: "POST", body: jsonBody(body) }),
   updateTask: (tid: string, body: Partial<Task>) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",

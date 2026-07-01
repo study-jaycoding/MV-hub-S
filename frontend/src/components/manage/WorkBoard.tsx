@@ -129,11 +129,6 @@ export function WorkBoard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
 
-  const onCreate = async (status: string, name: string) => {
-    if (!name.trim() || !pid) return;
-    await manageApi.createTask({ project_id: pid, name: name.trim(), status });
-    loadTasks(pid);
-  };
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
     // '생략'으로 옮기면 그 작업의 컷(생성물)을 모두 비활성화(d 누른 효과) — 라이브러리에 회색 반영.
@@ -182,7 +177,6 @@ export function WorkBoard() {
     tasks: filtered,
     seqOptions,
     thumb: taskThumb,
-    onCreate,
     onPatch,
     onDelete,
     onLinkGen,
