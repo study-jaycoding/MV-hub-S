@@ -3,15 +3,17 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { AnalyticsView } from "./manage/AnalyticsView";
+import { ExportView } from "./manage/ExportView";
 import { ProjectDashboard } from "./manage/ProjectDashboard";
 import { WorkBoard } from "./manage/WorkBoard";
 
-type Tab = "summary" | "tasks" | "analytics";
+type Tab = "summary" | "tasks" | "analytics" | "export";
 
 const TABS: { v: Tab; label: string }[] = [
   { v: "summary", label: "요약" },
   { v: "tasks", label: "작업" },
   { v: "analytics", label: "분석" },
+  { v: "export", label: "완료" },
 ];
 
 export function ManageWindow() {
@@ -69,6 +71,7 @@ export function ManageWindow() {
       {tab === "summary" && <ProjectDashboard />}
       {tab === "tasks" && <WorkBoard />}
       {tab === "analytics" && <AnalyticsView />}
+      {tab === "export" && <ExportView />}
     </div>
   );
 }

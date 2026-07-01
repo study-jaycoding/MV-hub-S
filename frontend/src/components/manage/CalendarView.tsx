@@ -34,8 +34,10 @@ export function CalendarView({ tasks, onPatch }: WorkViewProps) {
   const barFor = (t: Task): { left: number; width: number } | null => {
     const due = parseYMD(t.due_date);
     const start = parseYMD(t.start_date) || due;
-    const s = start || due;
-    const e = due || start;
+    // 마감/시작일 없는 자동 작업은 연결 컷 최초 생성일(derived_date)로 단일 날짜 표시.
+    const fallback = !start && !due ? parseYMD(t.derived_date) : null;
+    const s = start || due || fallback;
+    const e = due || start || fallback;
     if (!s || !e) return null;
     const monthStart = new Date(anchor.y, anchor.m, 1).getTime();
     const monthEnd = new Date(anchor.y, anchor.m, daysInMonth).getTime();

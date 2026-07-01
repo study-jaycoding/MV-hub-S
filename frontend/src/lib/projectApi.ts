@@ -36,6 +36,11 @@ export const projectApi = {
     jsonFetch<import("../types").ProjectFolderState>(
       `/api/manage/project-folders/${pathPart(id)}`,
     ),
+  // 프로젝트의 폴더별 생성물 개수 {folder_path: n} — 사이드바 트리 뱃지·필터 표시용.
+  projectFolderCounts: (id: string, tab: "my" | "team" = "my") =>
+    jsonFetch<{ counts: Record<string, number> }>(
+      `/api/projects/${pathPart(id)}/folder-counts?tab=${tab}`,
+    ),
   setProjectFolder: (
     id: string,
     body: { root_path?: string; selected_path?: string },
@@ -51,10 +56,15 @@ export const projectApi = {
     generationIds: string[],
     projectId: string | null,
     tab: "my" | "team" = "my",
+    folderPath?: string | null, // 담을 때 함께 지정하는 폴더(렌더 루트 상대 경로)
   ) =>
     jsonFetch<{ ok: boolean; updated: number }>(`/api/projects/assign?tab=${tab}`, {
       method: "POST",
-      body: jsonBody({ generation_ids: generationIds, project_id: projectId }),
+      body: jsonBody({
+        generation_ids: generationIds,
+        project_id: projectId,
+        folder_path: folderPath ?? null,
+      }),
     }),
 
   // 멤버·전역역할(복수) — 관리자 창

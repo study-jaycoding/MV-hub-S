@@ -118,6 +118,10 @@ export default function App() {
   const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
   // 전역 태그 — 사이드바에서 '무장'한 것들. 다음 생성에 자동 적용(별도 네임스페이스).
   const [armedAutoTags, setArmedAutoTags] = useState<Set<string>>(() => LS.loadSet("armedAutoTags"));
+  // 무장 폴더 — 사이드바에서 고른 프로젝트 폴더. 그 프로젝트로 생성 시 folder_path 로 자동 적용(전역변수식).
+  const [armedFolder, setArmedFolder] = useState<{ projectId: string; path: string } | null>(
+    () => LS.loadJSON<{ projectId: string; path: string }>("armedFolder") ?? null,
+  );
   const [adminOpen, setAdminOpen] = useState(false); // 관리자 창(로고 클릭)
   const askPrompt = useAskPrompt(); // 플로팅 입력(네이티브 prompt 대체)
   const {
@@ -198,8 +202,14 @@ export default function App() {
   } = useGenerationLibraryData({ authReady, filters, flash, genQuery });
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
 
-  const { assignSelectedToProject, boardAssign, boardCreateAssign, createAndAssign } =
-    useGenerationProjectActions({ bumpBoard, filtersRef, flash, reload, selectedRef });
+  const {
+    assignSelectedToProject,
+    boardAssign,
+    boardCreateAssign,
+    createAndAssign,
+    dropOnFolder,
+    dropUnassign,
+  } = useGenerationProjectActions({ bumpBoard, filtersRef, flash, reload, selectedRef });
 
   // 모든 필터(project_id·컬러·태그·타입 포함)가 서버 쿼리에 들어가므로, 무엇이 바뀌든
   // 첫 페이지부터 다시 받는다(무한 스크롤 누적 초기화). 서버가 거르니 누락 없이 정확.
@@ -230,6 +240,7 @@ export default function App() {
 
   useLibraryPersistence({
     armedAutoTags,
+    armedFolder,
     colorFilter,
     commentOnly,
     fill,
@@ -562,6 +573,15 @@ export default function App() {
                 onToggleAutoTag={toggleArmedAutoTag}
                 onAddAutoTag={addAutoTag}
                 onDeleteAutoTag={removeAutoTag}
+                onArmFolder={(projectId, path) => {
+                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터
+                  setArmedFolder(path ? { projectId, path } : null);
+                  patch({ project_id: projectId, folder_path: path || undefined });
+                }}
+                onDropToFolder={(projectId, path, genId) =>
+                  dropOnFolder(genId, projectId, path)
+                }
+                onDropToUnassigned={(genId) => dropUnassign(genId)}
                 onCreatorChanged={reload}
                 projects={projects}
                 unassignedCount={unassignedCount}
@@ -662,6 +682,7 @@ export default function App() {
           expanded={composerExpanded}
           onToggleExpand={toggleComposerExpanded}
           armedAutoTags={[...armedAutoTags]}
+          armedFolder={armedFolder}
           activeProjectId={
             filters.project_id && filters.project_id !== "none"
               ? filters.project_id

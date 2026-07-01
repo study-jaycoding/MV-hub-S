@@ -21,6 +21,7 @@ export function useGenerationProjectActions({
     ids: string[],
     projectId: string | null,
     refreshBoard: boolean,
+    folderPath?: string | null,
   ) => {
     if (!ids.length) return;
     try {
@@ -28,17 +29,26 @@ export function useGenerationProjectActions({
         ids,
         projectId,
         filtersRef.current.tab === "team" ? "team" : "my",
+        folderPath,
       );
       await reload();
       if (refreshBoard) bumpBoard();
-      flash(`${r.updated}개를 ${projectId ? "프로젝트에 담음" : "미분류로 뺌"}`);
+      const where = projectId
+        ? folderPath
+          ? `폴더(${folderPath})에 담음`
+          : "프로젝트에 담음"
+        : "미분류로 뺌";
+      flash(`${r.updated}개를 ${where}`);
     } catch (e) {
       flash("귀속 실패: " + String(e));
     }
   };
 
-  const assignSelectedToProject = async (projectId: string | null) => {
-    await assignIdsToProject([...selectedRef.current], projectId, false);
+  const assignSelectedToProject = async (
+    projectId: string | null,
+    folderPath?: string | null,
+  ) => {
+    await assignIdsToProject([...selectedRef.current], projectId, false, folderPath);
   };
 
   const createAndAssign = async (name: string) => {
@@ -63,5 +73,27 @@ export function useGenerationProjectActions({
     }
   };
 
-  return { assignSelectedToProject, boardAssign, boardCreateAssign, createAndAssign };
+  // 카드를 사이드바 폴더로 드래그해 담기. 드래그한 카드가 현재 선택에 포함되면 선택 전체를,
+  // 아니면 그 카드 1개만 그 프로젝트+폴더로 귀속한다.
+  const dropOnFolder = async (genId: string, projectId: string, folderPath: string) => {
+    const sel = selectedRef.current;
+    const ids = sel.has(genId) ? [...sel] : [genId];
+    await assignIdsToProject(ids, projectId, false, folderPath);
+  };
+
+  // 카드를 '미분류'로 드래그 — 프로젝트+폴더 귀속 해제(project_id=null → 폴더도 함께 해제).
+  const dropUnassign = async (genId: string) => {
+    const sel = selectedRef.current;
+    const ids = sel.has(genId) ? [...sel] : [genId];
+    await assignIdsToProject(ids, null, false);
+  };
+
+  return {
+    assignSelectedToProject,
+    boardAssign,
+    boardCreateAssign,
+    createAndAssign,
+    dropOnFolder,
+    dropUnassign,
+  };
 }

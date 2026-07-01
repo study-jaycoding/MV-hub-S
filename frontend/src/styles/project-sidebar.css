@@ -18,8 +18,21 @@
 /* 사이드바 프로젝트 순서 드래그 — 그립은 평소 숨기고 행 호버 때만 살짝 보인다(깔끔한 룩 유지). */
 .proj-row .proj-drag-handle { opacity: 0; margin-right: 2px; font-size: 11px; flex: none; }
 .proj-row:hover .proj-drag-handle { opacity: 0.5; }
+/* 고정핀 — 평소 흐림, 켜면(고정) 선명. 호버 시 노출 */
+.proj-pin {
+  flex: none; background: transparent; border: none; cursor: pointer;
+  font-size: 11px; padding: 0 2px; margin-right: 1px; opacity: 0;
+  filter: grayscale(1); transition: opacity 0.12s, filter 0.12s;
+}
+.proj-row:hover .proj-pin { opacity: 0.55; }
+.proj-pin.on { opacity: 1; filter: none; }
 .proj-row.row-dragging { opacity: 0.4; }
 .proj-row.row-dragover { box-shadow: inset 0 2px 0 0 var(--accent); }
+/* 카드를 미분류로 드래그해 올렸을 때 강조 */
+.proj-row.drop-over {
+  background: rgba(198,255,0,0.18);
+  outline: 1px dashed var(--accent, #c6ff00); outline-offset: -1px;
+}
 .proj-unassigned, .proj-trash { color: var(--muted); font-style: italic; }
 .proj-edit {
   background: transparent; border: none; cursor: pointer; color: var(--muted);
@@ -58,6 +71,11 @@
   font-family: inherit;
 }
 .folder-tree-row:hover { background: rgba(255,255,255,0.06); }
+/* 카드를 드래그해 올렸을 때 드롭 타깃 폴더 강조 */
+.folder-tree-row.drop-over {
+  background: rgba(198,255,0,0.22);
+  outline: 1px dashed var(--accent, #c6ff00); outline-offset: -1px;
+}
 .folder-tree-row.selected {
   background: rgba(255,79,138,0.2);
   color: #ffd6e5; font-weight: 700;
@@ -131,4 +149,16 @@
 .pam-new { color: var(--accent) !important; font-weight: 600 !important; }
 .pam-clear { color: var(--muted) !important; }
 .pam-sep { height: 1px; background: var(--border); margin: 3px 0; }
+/* 프로젝트 행 + 폴더 펼침 토글 */
+.pam-proj-row { display: flex; align-items: center; gap: 2px; }
+.pam-proj-main { flex: 1 1 auto; min-width: 0; }
+.pam-fold-toggle {
+  flex: 0 0 auto !important; width: 26px !important; justify-content: center !important;
+  color: var(--muted) !important; font-size: 11px !important;
+  transition: transform 0.12s;
+}
+.pam-fold-toggle.on { transform: rotate(90deg); color: var(--accent) !important; }
+/* 담기 메뉴 안 폴더 트리 — 프로젝트 행 아래에 들여쓰기 인라인 표시 */
+.pam-folders { padding: 2px 0 4px 8px; max-height: 220px; overflow-y: auto; }
+.pam-folders .folder-tree { min-width: 0; }
 

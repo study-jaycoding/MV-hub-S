@@ -29,6 +29,7 @@ export function buildGenerationQuery({
     local_only: filters.local_only,
     creator_uid: filters.creator_uid,
     project_id: filters.project_id,
+    folder_path: filters.folder_path,
     search: filters.search,
     include_deleted: filters.include_deleted,
     deleted_only: filters.deleted_only,

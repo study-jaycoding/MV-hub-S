@@ -159,7 +159,9 @@ export interface Cut {
   status: string;
   creator_uid?: string | null;
   creator_name?: string | null;
-  thumb?: string | null;
+  thumb?: string | null; // 포스터/이미지 경로(비디오는 poster 없으면 null)
+  media_type?: string | null; // 'image' | 'video' | ... — 비디오면 <video> 로 렌더
+  file_path?: string | null; // 원본 파일 경로(비디오 첫 프레임 표시용)
   is_final?: number | boolean; // 최종(골드)
   shared?: number | boolean; // 팀 공유됨
   linked?: number | boolean; // 수동 드래그 링크(✕ 해제 가능). 시퀀스 자동 귀속은 false
@@ -177,11 +179,13 @@ export interface Task {
   due_date?: string | null;
   sort_order?: number | null;
   note?: string | null;
-  sequence?: string | null; // 전역 태그명
+  sequence?: string | null; // 전역 태그명 또는 폴더 2단계(자동 작업)
   description?: string | null;
+  folder_path?: string | null; // 렌더 루트 상대 경로(예 ep001/c0010) — 폴더 자동 작업
   created_at: string;
   // 파생(연결 생성물에서)
   gen_count?: number;
+  derived_date?: string | null; // 마감/시작일 없을 때 캘린더가 쓰는 폴백(연결 컷 최초 생성일)
   cuts?: Cut[];
   creators?: string[];
   credits?: number;

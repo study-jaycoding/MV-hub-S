@@ -44,4 +44,15 @@ export const manageApi = {
   timeseries: (bucket: "day" | "week" = "day") =>
     jsonFetch<TimePoint[]>(withQuery("/api/manage/timeseries", { bucket })),
   matrix: () => jsonFetch<MatrixData>("/api/manage/matrix"),
+  // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
+  saveFinals: (projectId: string) =>
+    jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals", { project_id: projectId }), {
+      method: "POST",
+    }),
 };
+
+export interface SaveFinalsResult {
+  saved: number;
+  skipped: number;
+  errors: { gen_id: string; reason: string }[];
+}

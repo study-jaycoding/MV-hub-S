@@ -366,6 +366,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 프로젝트(작업 묶음) 귀속 — NULL = 미분류. 로드맵 §0-4/§4-4.
     if "project_id" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN project_id TEXT")
+    # 폴더 경로(렌더 루트 기준 상대, 예 'ep001/c0010') — 관리탭 작업/시퀀스 자동 파생·완료본 저장 경로.
+    # NULL = 미지정. 무장 폴더(armedFolder)로 생성 시 라벨링.
+    if "folder_path" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN folder_path TEXT")
     # 휴지통(soft delete) — 우리 카탈로그에서만 숨김. NULL=정상, 시각=지운 때.
     # 힉스필드 원본엔 영향 없음(우리 DB 기록만). '지운 생성물 보기' 토글로 흐리게 재표시.
     if "deleted_at" not in gen_cols:
@@ -500,6 +504,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_job ON generation(job_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_source ON generation(is_source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_project ON generation(project_id)")
+    # 폴더 자동 파생(관리탭)·완료본 저장이 project_id+folder_path 로 조회 → 그 순서 인덱스.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_folder ON generation(project_id, folder_path)"
+    )
     # 목록 정렬 키(sort_ts DESC, created_at DESC) — 모든 list 조회의 ORDER BY 와 일치 →
     # 매 조회 전체 정렬(filesort) 제거. 인덱스를 그 순서로 읽어 LIMIT 만큼만 본다.
     conn.execute(

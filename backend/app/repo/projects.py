@@ -13,7 +13,7 @@ import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
-from ._common import new_id
+from ._common import clean_folder_path as _clean_folder_path, new_id
 
 _SELECT = (
     "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, "
@@ -238,6 +238,7 @@ def assign_to_project(
     account_uid: Optional[str] = None,
     *,
     shared_only: bool = False,
+    folder_path: Optional[str] = None,
 ) -> int:
     """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제). 변경 행수 반환.
     project_id 가 실재하는지 검증(없으면 ValueError).
@@ -258,15 +259,46 @@ def assign_to_project(
         scope = " AND creator_uid = ?" if account_uid is not None else ""
         if shared_only:
             scope += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
-        params: list[Any] = [project_id, *generation_ids, *generation_ids]
+        # 폴더 처리(안전한 tri-state):
+        #  · 미분류로 빼기(project_id=None) → 폴더도 함께 해제(NULL).
+        #  · 폴더를 명시 선택(folder_path 있음) → 그 폴더로 갱신.
+        #  · 프로젝트명만 담기(folder_path 없음) → 기존 폴더 보존(건드리지 않음).
+        fpath = _clean_folder_path(folder_path)
+        set_cols = ["project_id = ?"]
+        set_args: list[Any] = [project_id]
+        if project_id is None:
+            set_cols.append("folder_path = NULL")
+        elif fpath is not None:
+            set_cols.append("folder_path = ?")
+            set_args.append(fpath)
+        params: list[Any] = [*set_args, *generation_ids, *generation_ids]
         if account_uid is not None:
             params.append(account_uid)
         cur = conn.execute(
-            f"UPDATE generation SET project_id = ? "
+            f"UPDATE generation SET {', '.join(set_cols)} "
             f"WHERE (id IN ({placeholders}) OR job_id IN ({placeholders})){scope}",
             params,
         )
         return cur.rowcount
+
+
+def folder_counts(project_id: str, account_uid: Optional[str] = None) -> dict[str, int]:
+    """프로젝트의 폴더별(정확 경로) 생성물 개수 — {folder_path: n}. deleted 제외.
+    account_uid 지정(내 작업 탭)이면 내 생성물만 센다. 프론트가 하위 누적은 클라이언트에서 합산."""
+    with get_connection() as conn:
+        where = (
+            "project_id = ? AND folder_path IS NOT NULL AND folder_path <> '' "
+            "AND deleted_at IS NULL"
+        )
+        args: list[Any] = [project_id]
+        if account_uid and account_uid != "\x00":
+            where += " AND creator_uid = ?"
+            args.append(account_uid)
+        rows = conn.execute(
+            f"SELECT folder_path, COUNT(*) AS c FROM generation WHERE {where} GROUP BY folder_path",
+            args,
+        ).fetchall()
+        return {r["folder_path"]: r["c"] for r in rows}
 
 
 def set_project_roles(pid: str, creator_uid: str, project_roles) -> bool:

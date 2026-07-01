@@ -105,6 +105,16 @@ def my_finalize_roles(request: Request):
     return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR])}
 
 
+@router.get("/{pid}/folder-counts")
+def project_folder_counts(pid: str, request: Request, tab: str = "my"):
+    """프로젝트의 폴더별 생성물 개수 {counts: {folder_path: n}} — 사이드바 폴더 트리 뱃지·필터용.
+    내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시)."""
+    if _proxy.proxying() and tab == "team":
+        return _proxy.proxy_get(f"/api/projects/{pid}/folder-counts", request)
+    account_uid = account_scope_uid(request) if tab == "my" else None
+    return {"counts": repo.folder_counts(pid, account_uid=account_uid)}
+
+
 @router.post("", response_model=ProjectOut)
 def create_project(body: ProjectCreate, request: Request):
     # 프로젝트 정의는 팀 공유 → 서버에서 생성·관리(로컬 우선에서도 프로젝트는 서버 권위).
@@ -187,11 +197,13 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             n = repo.assign_to_project(
                 body.generation_ids, body.project_id,
                 account_uid=account_uid, shared_only=True,
+                folder_path=body.folder_path,
             )
         else:
             # 내 작업: AUTH on 이면 내 생성물만 귀속(남의 작업물 이동 차단). 단독/AUTH off 는 None → 제약 없음.
             n = repo.assign_to_project(
-                body.generation_ids, body.project_id, account_uid=account_scope_uid(request)
+                body.generation_ids, body.project_id,
+                account_uid=account_scope_uid(request), folder_path=body.folder_path,
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

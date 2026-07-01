@@ -10,6 +10,43 @@ def hidden_folder(name: str) -> bool:
     return name.startswith((".", "_"))
 
 
+_EXT_BY_TYPE = {"video": ".mp4", "image": ".png", "audio": ".mp3", "3d": ".glb"}
+
+
+def export_filename(folder_path: str, gen_id: str, file_path: str, media_type: str | None) -> str:
+    """저장 파일명(결정적) — <시퀀스>_<gen 앞8자>.<확장자>. 재실행 시 같은 이름 → 멱등."""
+    segs = [s for s in folder_path.replace("\\", "/").split("/") if s]
+    seq = segs[-1] if segs else "cut"
+    src = (file_path or "").split("?", 1)[0]
+    ext = ""
+    dot = src.rfind(".")
+    if dot != -1 and 1 <= len(src) - dot - 1 <= 5:
+        ext = src[dot:]
+    if not ext:
+        ext = _EXT_BY_TYPE.get((media_type or "").lower(), ".bin")
+    # gen_id 앞 12자 — 프로젝트 규모가 커져도 파일명 충돌(→ 멱등 오판) 여지 축소(코덱스 #5).
+    return f"{seq}_{gen_id[:12]}{ext}"
+
+
+def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
+    """render_root/<folder_path>/<filename> 을 검증해 반환. 트래버설·절대경로·드라이브문자 거부."""
+    render = render.resolve()
+    fp = (folder_path or "").strip().replace("\\", "/")
+    segs = [s for s in fp.split("/") if s]
+    if not segs or any(s in ("..", ".") for s in segs):
+        return None
+    if ":" in fp or fp.startswith("/"):  # 드라이브문자(Z:)·절대경로 거부
+        return None
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    dest = (render / Path(*segs) / filename).resolve()
+    try:
+        dest.relative_to(render)
+    except ValueError:
+        return None
+    return dest
+
+
 def render_root(root: Path) -> Path | None:
     """Return the Render folder inside root, or root itself when it is Render."""
     if root.name.lower() == "render":

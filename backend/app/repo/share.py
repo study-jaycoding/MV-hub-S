@@ -109,7 +109,7 @@ def export_bundle(
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         grows = conn.execute(
             "SELECT g.id, g.job_id, g.prompt, g.display_prompt, g.model, g.params, "
-            "g.status, g.created_at, g.sort_ts, g.creator_uid, g.project_id "
+            "g.status, g.created_at, g.sort_ts, g.creator_uid, g.project_id, g.folder_path "
             f"FROM generation g{clause} ORDER BY g.sort_ts DESC, g.created_at DESC",
             args,
         ).fetchall()
@@ -273,6 +273,8 @@ def export_bundle(
                     # 프로젝트 귀속 — 서버 finalize 가 require_project_role(검수 게이트)를 적용하려면
                     # 서버 사본도 project_id 를 알아야 한다(누락 시 소유자 체크로 떨어져 게이트 우회).
                     "project_id": g["project_id"],
+                    # 폴더 경로 — 받는 쪽 관리탭 자동 작업/시퀀스 파생·완료본 저장 경로에 필요.
+                    "folder_path": g["folder_path"],
                 },
                 "asset": g["_asset"],
                 "references": g["_references"],
@@ -352,6 +354,7 @@ def import_bundle_item(
             # 발신자(공유한 사람)를 생성자로 넣는다. resolve_display_names 가 그 사람 이름으로 표시.
             "creator_uid": g.get("creator_uid") or shared_by,
             "project_id": g.get("project_id"),
+            "folder_path": g.get("folder_path"),
         },
         "asset": item.get("asset"),
         "references": item.get("references") or [],
@@ -372,6 +375,12 @@ def import_bundle_item(
                 conn.execute(
                     "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
                     (pid, gid),
+                )
+            fpath = g.get("folder_path")
+            if fpath:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
+                conn.execute(
+                    "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
+                    (fpath, gid),
                 )
             tags._add_tags(conn, gid, item.get("tags") or [])
             tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])

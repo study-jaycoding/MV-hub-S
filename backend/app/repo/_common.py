@@ -20,6 +20,16 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+def clean_folder_path(path: Optional[str]) -> Optional[str]:
+    """폴더 경로를 저장용으로 정규화 — 백슬래시→슬래시, 앞뒤/중복 슬래시 제거, '.'/'..'·빈 조각 제거.
+    빈 값이면 None(미지정). 저장 시점의 가벼운 정리이며, 물리 저장의 트래버설 검증은 별도."""
+    if not path:
+        return None
+    parts = [seg.strip() for seg in str(path).replace("\\", "/").split("/")]
+    parts = [seg for seg in parts if seg and seg not in (".", "..")]
+    return "/".join(parts) or None
+
+
 # ── 생성본 코멘트 '미확인 알림' 공통 SQL 조각 ─────────────────────────────
 # 카드 C 뱃지(_attach_children)·전역 통계(generation_stats)·패널 NEW(list_generation_comments)가
 # 똑같은 알림 규칙을 쓰도록 한곳에서 관리한다. 규칙을 바꾸면 세 경로가 자동으로 일치한다.

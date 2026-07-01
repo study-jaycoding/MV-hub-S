@@ -4,7 +4,7 @@ import type { Generation, Project } from "../../types";
 
 type AssignHandlers = {
   projects: Project[];
-  onAssign: (projectId: string | null) => void;
+  onAssign: (projectId: string | null, folderPath?: string | null) => void;
   onCreateAndAssign: (name: string) => void;
 };
 

@@ -64,6 +64,8 @@ interface Props {
   // dragParentId: 카드를 드래그해 불러와 만든 경우 그 원본 gen id → 자동 히스토리(원본→파생) 부모.
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
   armedAutoTags: string[]; // 무장된 자동 태그 — 생성 시 결과물에 자동 적용(별도 네임스페이스)
+  // 무장된 폴더 — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링(전역변수식). 프로젝트 불일치면 미적용.
+  armedFolder?: { projectId: string; path: string } | null;
   topSlot?: ReactNode; // 도크 상단(프롬프트 바로 위)에 끼우는 슬롯 — 멀티 선택 바
   activeProjectId?: string; // 현재 보고 있는 프로젝트 — 생성 시 자동 귀속(로드맵 §0-4)
   expanded: boolean; // '+' 확장 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유.
@@ -77,6 +79,7 @@ interface Props {
 export function SpotlightPrompt({
   onCreated,
   armedAutoTags,
+  armedFolder,
   topSlot,
   activeProjectId,
   expanded,
@@ -549,6 +552,9 @@ export function SpotlightPrompt({
       optionValues,
       armedAutoTags,
       activeProjectId,
+      // 무장 폴더가 현재 프로젝트와 일치할 때만 folder_path 로 라벨링(전역변수 가드).
+      folderPath:
+        armedFolder && armedFolder.projectId === activeProjectId ? armedFolder.path : undefined,
     });
     if (bodyError || !body) {
       setError(bodyError || "생성 요청을 만들 수 없습니다.");

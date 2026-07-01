@@ -2,6 +2,7 @@
 // 데이터·핸들러를 소유하고 BoardView/TableView 에 주입한다.
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
+import { addDisabledGen } from "../../lib/deactivated";
 import { manageApi } from "../../lib/manageApi";
 import { thumbOf as generationThumbOf, thumbUrl } from "../../lib/media";
 import type { Generation } from "../../types";
@@ -76,6 +77,12 @@ export function WorkBoard() {
   };
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
+    // '생략'으로 옮기면 그 작업의 컷(생성물)을 모두 비활성화(d 누른 효과) — 라이브러리에 회색 반영.
+    if (patch.status === "omit") {
+      const t = tasks.find((x) => x.id === tid);
+      const ids = (t?.cuts || []).map((c) => c.id);
+      addDisabledGen(ids);
+    }
     loadTasks(pid);
   };
   const onDelete = async (tid: string) => {

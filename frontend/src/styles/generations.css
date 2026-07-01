@@ -542,7 +542,12 @@
   padding: 4px 9px; border-radius: 8px;
 }
 .cd-chip svg { color: var(--muted2); }
-.cd-foot { margin-top: auto; display: flex; align-items: center; }
+.cd-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+/* 폴더 경로 브레드크럼(프로젝트 › ep001 › c0010) — 길면 말줄임 */
+.cd-folder {
+  font-size: 11px; color: var(--muted2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
+}
 .cd-actions { display: flex; gap: 5px; opacity: 0; transition: opacity 0.14s; }
 .card.list:hover .cd-actions { opacity: 1; }
 .cd-actions button {

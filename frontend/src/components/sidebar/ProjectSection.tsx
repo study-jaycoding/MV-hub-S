@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import { api } from "../../api";
+import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useT } from "../../lib/i18n";
+import { loadJSON, saveJSON } from "../../lib/storage";
 import {
   collectExpandableProjectFolders,
   loadProjectFolderExpansion,
@@ -9,27 +11,62 @@ import {
   type ProjectFolderEntry,
 } from "../../lib/projectFolderTree";
 import type { Project, ProjectFolderState } from "../../types";
-import { FolderTreeView } from "../common/FolderTreeView";
+import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
+
+// 트리의 전체 폴더 노드 수(모든 하위 포함) — 스크롤 여부 판단용.
+function countFolderNodes(nodes: FolderTreeItem[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    n += 1 + (node.children ? countFolderNodes(node.children) : 0);
+  }
+  return n;
+}
+
+// 폴더별 생성물 개수(정확 경로)를 트리 노드에 누적 반영 — 노드 count = 자신 + 하위 전부의 합.
+// 디스크 파일 수 대신 '이 폴더에 담긴 생성물 수'를 보여준다(사용자 요청).
+function overlayFolderCounts(
+  nodes: FolderTreeItem[],
+  counts: Record<string, number>,
+): FolderTreeItem[] {
+  return nodes.map((n) => {
+    let sum = 0;
+    for (const key in counts) {
+      if (key === n.path || key.startsWith(n.path + "/")) sum += counts[key];
+    }
+    return {
+      ...n,
+      count: sum,
+      children: n.children ? overlayFolderCounts(n.children, counts) : n.children,
+    };
+  });
+}
 
 function SidebarFolderTree({
   state,
   loading,
+  counts,
   expanded,
   onToggle,
   onSelect,
+  onDropFolder,
 }: {
   state?: ProjectFolderEntry;
   loading?: boolean;
+  counts?: Record<string, number>;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onDropFolder?: (path: string, e: DragEvent) => void;
 }) {
   if (!state?.root_path) return null;
   if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;
   if (state.error) return <div className="side-folder-note error">{state.error}</div>;
   if (!state.tree) return null;
-  const roots = visibleProjectFolderRoots(state.tree);
+  let roots: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
   if (!roots.length) return null;
+  if (counts) roots = overlayFolderCounts(roots, counts);
+  // 폴더가 15개를 넘을 때만 스크롤(max-height) 적용 — 적을 땐 스크롤바가 깜빡이지 않게.
+  const scroll = countFolderNodes(roots) > 15;
   return (
     <div title={state.render_path || state.root_path}>
       <FolderTreeView
@@ -38,7 +75,8 @@ function SidebarFolderTree({
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
-        scroll
+        onDropFolder={onDropFolder}
+        scroll={scroll}
       />
       {state.truncated && <div className="side-folder-note">일부만 표시</div>}
     </div>
@@ -53,6 +91,9 @@ export function ProjectSection({
   deletedOnly,
   onFilter,
   onViewDeleted,
+  onArmFolder,
+  onDropToFolder,
+  onDropToUnassigned,
 }: {
   projects: Project[];
   unassignedCount: number;
@@ -61,12 +102,32 @@ export function ProjectSection({
   deletedOnly: boolean;
   onFilter: (projectId?: string) => void;
   onViewDeleted: () => void;
+  // 폴더 선택 시 무장(전역변수) — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링
+  onArmFolder?: (projectId: string, path: string) => void;
+  // 카드를 폴더로 드래그해 담기 — 그 프로젝트+폴더로 귀속
+  onDropToFolder?: (projectId: string, path: string, genId: string) => void;
+  // 카드를 '미분류'로 드래그 — 귀속 해제
+  onDropToUnassigned?: (genId: string) => void;
 }) {
   const tr = useT();
   const [order, setOrder] = useState<Project[]>(projects);
   useEffect(() => setOrder(projects), [projects]);
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>({});
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
+  const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
+  // 고정핀 — 켠 프로젝트는 활성이 아니어도 폴더 트리를 계속 보여준다(드래그 담기 상시 가능). 영속.
+  const [pinned, setPinned] = useState<Set<string>>(
+    () => new Set(loadJSON<string[]>("ch.pinnedProjects") || []),
+  );
+  const togglePin = (pid: string) => {
+    setPinned((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      saveJSON("ch.pinnedProjects", [...next]);
+      return next;
+    });
+  };
   const [expandedFolders, setExpandedFolders] =
     useState<Record<string, Set<string>>>(loadProjectFolderExpansion);
   const projectKey = projects.map((project) => project.id).join("|");
@@ -123,10 +184,29 @@ export function ProjectSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey]);
 
+  // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). 진입·리로드 시 최신화.
+  useEffect(() => {
+    let alive = true;
+    const ids = new Set<string>(pinned);
+    if (activeId && activeId !== "none") ids.add(activeId);
+    ids.forEach((pid) => {
+      api
+        .projectFolderCounts(pid)
+        .then((r) => alive && setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} })))
+        .catch(() => {});
+    });
+    return () => {
+      alive = false;
+    };
+    // projects 는 라이브러리 리로드(생성·담기 후)마다 새 배열 → 개수 최신화 트리거.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, projects, pinned]);
+
   const selectFolder = async (pid: string, path: string) => {
     const cur = folders[pid];
     if (!cur?.root_path) return;
     onFilter(pid);
+    onArmFolder?.(pid, path); // 무장: 이 폴더로 생성하면 folder_path 자동 라벨링
     setFolders((prev) => ({ ...prev, [pid]: { ...cur, selected_path: path } }));
     try {
       const state = await api.setProjectFolder(pid, {
@@ -153,6 +233,7 @@ export function ProjectSection({
   const [dragArmed, setDragArmed] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [unassignOver, setUnassignOver] = useState(false); // 카드를 '미분류'로 드래그 중 강조
   const dropAt = async (toIdx: number) => {
     const from = dragIdx;
     setDragArmed(false);
@@ -200,10 +281,33 @@ export function ProjectSection({
           </button>
           <button
             className={
-              "proj-row proj-unassigned" + (activeId === "none" && !deletedOnly ? " on" : "")
+              "proj-row proj-unassigned" +
+              (activeId === "none" && !deletedOnly ? " on" : "") +
+              (unassignOver ? " drop-over" : "")
             }
             onClick={() => onFilter(activeId === "none" ? undefined : "none")}
-            title="아직 프로젝트에 담기지 않은 결과물"
+            title="아직 프로젝트에 담기지 않은 결과물 — 카드를 여기로 끌어놓으면 귀속 해제"
+            onDragOver={
+              onDropToUnassigned
+                ? (e) => {
+                    if (e.dataTransfer.types.includes(DRAG_TYPES.generation)) {
+                      e.preventDefault();
+                      if (!unassignOver) setUnassignOver(true);
+                    }
+                  }
+                : undefined
+            }
+            onDragLeave={() => setUnassignOver(false)}
+            onDrop={
+              onDropToUnassigned
+                ? (e) => {
+                    e.preventDefault();
+                    setUnassignOver(false);
+                    const genId = e.dataTransfer.getData(DRAG_TYPES.generation);
+                    if (genId) onDropToUnassigned(genId);
+                  }
+                : undefined
+            }
           >
             <span className="proj-name">{tr("미분류")}</span>
             <span className="proj-count">{unassignedCount}</span>
@@ -224,10 +328,12 @@ export function ProjectSection({
           {order.length === 0 && <span className="muted">{tr("없음")}</span>}
           {order.map((project, index) => {
             const projectActive = activeId === project.id && !deletedOnly;
+            const isPinned = pinned.has(project.id);
+            const showTree = projectActive || isPinned;
             return (
               <div
                 key={project.id}
-                className={"proj-tree-wrap" + (projectActive ? " on" : "")}
+                className={"proj-tree-wrap" + (projectActive ? " on" : "") + (isPinned ? " pinned" : "")}
               >
                 <div
                   role="button"
@@ -263,6 +369,16 @@ export function ProjectSection({
                     setOverIdx(null);
                   }}
                 >
+                  <button
+                    className={"proj-pin" + (isPinned ? " on" : "")}
+                    title={isPinned ? "고정 해제 — 폴더 상시 표시 끄기" : "고정 — 폴더를 항상 보이게(드래그 담기 상시)"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePin(project.id);
+                    }}
+                  >
+                    📌
+                  </button>
                   <span
                     className="proj-drag-handle"
                     title="드래그해서 순서 변경"
@@ -275,13 +391,22 @@ export function ProjectSection({
                   <span className="proj-name">{project.name}</span>
                   <span className="proj-count">{project.count}</span>
                 </div>
-                {projectActive && (
+                {showTree && (
                   <SidebarFolderTree
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
+                    counts={folderCounts[project.id]}
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}
+                    onDropFolder={
+                      onDropToFolder
+                        ? (path, e) => {
+                            const genId = e.dataTransfer.getData(DRAG_TYPES.generation);
+                            if (genId) onDropToFolder(project.id, path, genId);
+                          }
+                        : undefined
+                    }
                   />
                 )}
               </div>

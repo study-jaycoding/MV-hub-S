@@ -252,12 +252,19 @@
   font-family: inherit; font-size: 11px; color: var(--text); background: transparent;
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
 }
+/* 폴더 자동 작업의 시퀀스(폴더명) — 읽기전용 칩 */
+.work-seq-static {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--accent, #c6ff00); font-weight: 600;
+  background: rgba(198,255,0,0.1); border: 1px solid rgba(198,255,0,0.3);
+  border-radius: 6px; padding: 3px 7px; white-space: nowrap;
+}
 .work-creators { font-size: 11px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .work-cut-drop { border: 1px dashed var(--border); border-radius: 8px; padding: 5px; margin: 6px 0; min-height: 30px; }
 .work-cut-empty { font-size: 10px; opacity: .4; }
 .work-cut-thumbs { display: flex; gap: 4px; flex-wrap: wrap; }
 .work-cut { position: relative; width: 38px; height: 38px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
-.work-cut img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.work-cut img, .work-cut video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .work-cut-ph { width: 100%; height: 100%; display: block; background: rgba(127,127,127,.12); }
 .work-cut-x {
   position: absolute; top: 0; right: 0; width: 14px; height: 14px; line-height: 12px; font-size: 9px;
@@ -351,3 +358,29 @@
 .work-cal-bar-txt { font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.35); }
 .work-cal-hint { font-size: 11px; opacity: .5; padding-left: 2px; }
 
+
+/* 완료 탭 — 완료본 렌더폴더 저장 */
+.export-body { padding: 16px 20px; max-width: 760px; display: flex; flex-direction: column; gap: 14px; }
+.export-desc { font-size: 13px; line-height: 1.6; opacity: .85; margin: 0; }
+.export-desc code { padding: 1px 5px; border-radius: 4px; background: rgba(127,127,127,.15); font-size: 12px; }
+.export-target { display: flex; flex-direction: column; gap: 5px; }
+.export-target-label { font-size: 12px; font-weight: 700; opacity: .6; }
+.export-target-path {
+  padding: 8px 10px; border-radius: 6px; background: rgba(127,127,127,.12);
+  font-size: 12.5px; word-break: break-all;
+}
+.export-target-err { font-size: 12.5px; color: #d98a4a; }
+.export-btn {
+  align-self: flex-start; padding: 10px 20px; border: none; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink); font-size: 14px; font-weight: 800; cursor: pointer;
+}
+.export-btn:disabled { opacity: .4; cursor: not-allowed; }
+.export-err { font-size: 13px; color: #e06666; }
+.export-result {
+  padding: 12px 14px; border-radius: 8px; background: rgba(127,127,127,.10);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.export-result-line { font-size: 14px; }
+.export-result-line b { color: var(--accent); }
+.export-err-list { margin: 0; padding-left: 18px; font-size: 12px; opacity: .8; display: flex; flex-direction: column; gap: 3px; }
+.export-err-list code { padding: 0 4px; border-radius: 3px; background: rgba(127,127,127,.18); }

@@ -85,6 +85,13 @@ _SCHEMA = (
         gen_id  TEXT NOT NULL,
         PRIMARY KEY (task_id, gen_id)
     )""",
+    # 완료본 렌더폴더 저장 대장(멱등) — "완료만 저장하기"가 저장한 생성물·목적지 기록.
+    # gen_id 당 1행. 실제 파일 존재 여부로 멱등 판정(기록만 있고 파일 없으면 재복사).
+    """CREATE TABLE IF NOT EXISTS final_export (
+        gen_id      TEXT PRIMARY KEY,
+        dest_path   TEXT NOT NULL,
+        exported_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
     # 매칭 스캔(미귀속 spend)용 부분 인덱스 — 누적된 거래에서 대상만 빠르게.
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
@@ -101,9 +108,14 @@ def _ensure_schema(conn) -> None:
         conn.execute(stmt)
     # 기존 project_task 에 Notion 스타일 확장 컬럼 멱등 보강(db.py _migrate 패턴).
     cols = {r[1] for r in conn.execute("PRAGMA table_info(project_task)")}
-    for col in ("sequence", "description"):
+    for col in ("sequence", "description", "folder_path"):
         if col not in cols:
             conn.execute(f"ALTER TABLE project_task ADD COLUMN {col} TEXT")
+    # 폴더 자동 작업의 멱등 키 — 프로젝트+폴더당 1개. 수동 작업(folder_path NULL)은 제약 없음(부분 인덱스).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder "
+        "ON project_task(project_id, folder_path) WHERE folder_path IS NOT NULL"
+    )
     # credit_txn.model 멱등 보강(옛 DB엔 없음) — 모델 가드 매칭용.
     tcols = {r[1] for r in conn.execute("PRAGMA table_info(credit_txn)")}
     if "model" not in tcols:
@@ -401,35 +413,77 @@ def task_project_id(tid: str) -> Optional[str]:
         return row["project_id"] if row else None
 
 
-def _task_gen_rows(conn, tid: str, project_id: str, sequence: Optional[str]):
-    """작업에 귀속된 생성물 — ① 시퀀스(전역 태그명) 자동 귀속 ∪ ② 수동 드래그 링크(task_generation).
-    정렬은 최종(is_final) → 공유(share) → 일반, 각 최신순(sort_ts DESC). 한 생성물이 여러 경로로
-    잡혀도 DISTINCT(g.id)로 1번만. linked=수동 링크 여부(✕ 해제 가능 표시용)."""
+def _task_gen_rows(
+    conn, tid: str, project_id: str, sequence: Optional[str], folder_path: Optional[str]
+):
+    """작업에 귀속된 생성물 — 컷 매칭을 2레인으로 분리(전역변수 2종이 안 섞이게):
+      · 폴더 자동 작업(folder_path 있음) → g.project_id=? AND g.folder_path=? 로만.
+      · 수동 작업(folder_path NULL) → 시퀀스(전역 태그명) 자동 매칭.
+    두 경우 모두 ② 수동 드래그 링크(task_generation)는 항상 포함(명시적 사용자 행동).
+    정렬은 최종(is_final) → 공유(share) → 일반, 각 최신순(sort_ts DESC). linked=수동 링크 여부."""
     seq = (sequence or "").strip() or None
+    fpath = (folder_path or "").strip() or None
+    # 폴더 작업이면 시퀀스 레인 비활성(seq=None), 수동 작업이면 폴더 레인 비활성(fpath 이미 None).
+    if fpath is not None:
+        seq = None
     return conn.execute(
         "SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
-        "  g.is_final AS is_final, "
+        "  g.is_final AS is_final, g.created_at AS created_at, "
         "  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
         "  EXISTS(SELECT 1 FROM task_generation tg WHERE tg.task_id=? AND tg.gen_id=g.id) AS linked, "
-        "  (SELECT COALESCE(a.thumbnail_path, a.file_path) FROM asset a "
-        "   WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb "
+        # 썸네일: poster(thumbnail_path) 우선. 비디오는 file_path(영상)를 이미지 썸네일로 못 써 깨지므로
+        # poster 없으면 NULL(프론트가 <video> 로 첫 프레임 표시). 이미지는 file_path 그대로.
+        "  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
+        "   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
+        # 비디오 컷은 poster 가 없어도 <video preload=metadata> 로 첫 프레임을 보여주게 원본·타입을 준다.
+        "  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
+        "  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
         "FROM generation g "
         "WHERE g.deleted_at IS NULL AND ("
         "   g.id IN (SELECT gen_id FROM task_generation WHERE task_id=?) "
-        "   OR (? IS NOT NULL AND g.project_id=? AND g.id IN ("
+        "   OR (? IS NOT NULL AND g.project_id=? AND g.folder_path=?) "  # 폴더 레인
+        "   OR (? IS NOT NULL AND g.project_id=? AND g.id IN ("          # 시퀀스 레인
         "        SELECT gat.generation_id FROM gen_auto_tag gat "
         "        JOIN auto_tag at ON at.id=gat.auto_tag_id WHERE at.name=?)) "
         ") "
         "ORDER BY g.is_final DESC, shared DESC, g.sort_ts DESC",
-        (tid, tid, seq, project_id, seq),
+        (tid, tid, fpath, project_id, fpath, seq, project_id, seq),
     ).fetchall()
+
+
+def sync_folder_tasks(conn, project_id: str) -> None:
+    """폴더로 라벨링된 생성물에서 작업 카드를 자동 생성(create-only, 멱등).
+
+    프로젝트의 distinct folder_path 마다 project_task 1개를 보장 — name=1단계(예 ep001),
+    sequence=2단계(예 c0010), folder_path=전체 경로. INSERT OR IGNORE + (project_id, folder_path)
+    유니크 인덱스로 이미 있으면 건너뜀 → PM 이 편집한 status/일정/설명을 절대 덮어쓰지 않는다.
+    폴더/생성물이 사라져도 자동 작업을 삭제하지 않는다(편집 정보 유실 방지)."""
+    fps = conn.execute(
+        "SELECT DISTINCT folder_path FROM generation "
+        "WHERE project_id=? AND folder_path IS NOT NULL AND folder_path<>'' AND deleted_at IS NULL",
+        (project_id,),
+    ).fetchall()
+    for row in fps:
+        fp = row["folder_path"]
+        parts = [seg for seg in fp.split("/") if seg]
+        if not parts:
+            continue
+        name = parts[0]
+        sequence = parts[1] if len(parts) > 1 else None
+        conn.execute(
+            "INSERT OR IGNORE INTO project_task"
+            "(id, project_id, name, status, sequence, folder_path) VALUES(?,?,?,?,?,?)",
+            (new_id(), project_id, name, "not_started", sequence, fp),
+        )
 
 
 def list_tasks(project_id: str) -> list[dict[str, Any]]:
     """작업 목록 + 귀속 생성물 파생(컷 썸네일·생성자·크레딧·제작시간·코멘트수).
-    귀속=시퀀스(전역 태그) 자동 ∪ 수동 링크. 보드/테이블/캘린더가 같은 이 데이터를 쓴다."""
+    귀속=폴더/시퀀스 자동(2레인) ∪ 수동 링크. 보드/테이블/캘린더가 같은 이 데이터를 쓴다.
+    조회 전에 폴더 자동 작업을 멱등 동기화(create-only)한다."""
     with get_connection() as conn:
         _ensure_schema(conn)
+        sync_folder_tasks(conn, project_id)  # 폴더로 만든 생성물 → 작업 카드 자동 생성(멱등)
         rows = conn.execute(
             "SELECT * FROM project_task WHERE project_id=? "
             "ORDER BY COALESCE(sort_order, 1000000), created_at",
@@ -440,7 +494,10 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
         per_task_cuts: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             tid = r["id"]
-            gens = [dict(c) for c in _task_gen_rows(conn, tid, project_id, r["sequence"])]
+            gens = [
+                dict(c)
+                for c in _task_gen_rows(conn, tid, project_id, r["sequence"], r["folder_path"])
+            ]
             per_task_cuts[tid] = gens
             gen_ids = [g["id"] for g in gens]
             for g in gens:
@@ -467,6 +524,20 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
             d["credits"] = credits
             d["elapsed"] = elapsed
             d["comment_count"] = cc
+            # 캘린더 폴백 날짜 — 마감/시작일 없는 자동 작업을 연결 컷의 최초 생성일로 표시.
+            dates = [g["created_at"] for g in gens if g.get("created_at")]
+            d["derived_date"] = min(dates) if dates else None
+            # 폴더 자동 작업은 컷 상태로 열(상태)을 자동 배치: 최종→완료, 공유→게시, 생성물→진행.
+            # 단 사용자가 '생략'으로 옮긴 건 수동 종결이라 그대로 둔다(그때 컷 비활성화는 프론트 처리).
+            if r["folder_path"] and r["status"] != "omit":
+                if any(g["is_final"] for g in gens):
+                    d["status"] = "done"
+                elif any(g["shared"] for g in gens):
+                    d["status"] = "publish"
+                elif gens:
+                    d["status"] = "in_progress"
+                else:
+                    d["status"] = "not_started"
             out.append(d)
         # 작성자 이름 일괄 해석 후 작업별 distinct 생성자명 부착(정렬 순서 유지).
         names = resolve_display_names(conn, list(all_creator_uids)) if all_creator_uids else {}
@@ -521,6 +592,49 @@ def delete_task(tid: str) -> bool:
         conn.execute("DELETE FROM task_generation WHERE task_id=?", (tid,))
         cur = conn.execute("DELETE FROM project_task WHERE id=?", (tid,))
         return cur.rowcount > 0
+
+
+# ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
+def finals_to_export(project_id: str) -> list[dict[str, Any]]:
+    """저장 대상 = 완료(done) 작업의 최종본(is_final)이면서 생성 잡도 완료(status=done)인 컷.
+    list_tasks 의 파생 상태를 그대로 재사용해 '생략(omit)' 수동 종결은 자동 제외된다.
+    반환: [{gen_id, folder_path, file_path, media_type}] — folder_path 로 저장 위치를 정한다."""
+    tasks = list_tasks(project_id)
+    gen_ids: set[str] = set()
+    for t in tasks:
+        if t.get("status") != "done":
+            continue
+        for c in t.get("cuts", []):
+            if c.get("is_final") and c.get("status") == "done":
+                gen_ids.add(c["id"])
+    if not gen_ids:
+        return []
+    ids = list(gen_ids)
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        ph = ",".join("?" * len(ids))
+        # ★project_id 재제한 — 타 프로젝트 컷이 수동 링크로 done 작업에 끼어도
+        #   이 프로젝트 렌더 루트로 새어 저장되지 않게(코덱스 지적 #6).
+        rows = conn.execute(
+            f"SELECT g.id AS gen_id, g.folder_path AS folder_path, "
+            f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path, "
+            f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type "
+            f"FROM generation g WHERE g.id IN ({ph}) AND g.project_id=? AND g.deleted_at IS NULL",
+            ids + [project_id],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_export(gen_id: str, dest_path: str) -> None:
+    """저장 대장에 기록(멱등) — 목적지 경로·시각 갱신."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO final_export(gen_id, dest_path, exported_at) VALUES(?,?, datetime('now')) "
+            "ON CONFLICT(gen_id) DO UPDATE SET "
+            "  dest_path=excluded.dest_path, exported_at=excluded.exported_at",
+            (gen_id, dest_path),
+        )
 
 
 # ── 메트릭 수집(생성 생명주기 훅) ─────────────────────────────────────────────

@@ -174,6 +174,7 @@ _LOCAL_EXACT = frozenset(
         "/api/backups",
         "/api/backup",
         "/api/facets",     # 필터 facet(컬러/태그/생성자) — my=로컬, team=핸들러 프록시
+        "/api/manage/save-finals",  # 완료본을 이 PC 렌더 폴더(Z:\…)에 저장 — 반드시 로컬 실행(서버엔 디스크 없음)
         # ★ /api/auth/config 만 로컬(게이트가 auth_enabled 로 ServerLoginScreen 판정).
         #   나머지 /api/auth/*(accounts·me·global-roles·status·password 등)는 서버 계정을
         #   다루므로 프록시 — 안 그러면 관리자탭이 빈 로컬 계정을 조회한다.

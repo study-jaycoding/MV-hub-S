@@ -25,6 +25,7 @@ export interface SpotlightCreateBody {
     source_gen_id?: string;
   }[];
   project_id?: string;
+  folder_path?: string;
 }
 
 interface Params {
@@ -37,6 +38,7 @@ interface Params {
   optionValues: Record<string, unknown>;
   armedAutoTags: string[];
   activeProjectId?: string;
+  folderPath?: string; // 무장 폴더(렌더 루트 상대 경로) — 생성물 folder_path 로 저장
 }
 
 export function buildSpotlightCreateBody({
@@ -49,6 +51,7 @@ export function buildSpotlightCreateBody({
   optionValues,
   armedAutoTags,
   activeProjectId,
+  folderPath,
 }: Params): { body: SpotlightCreateBody | null; error: string | null } {
   const seedanceMode = usesSeedanceMediaRefs(model);
   const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : new Map();
@@ -99,6 +102,7 @@ export function buildSpotlightCreateBody({
         source_gen_id: ref.source_gen_id,
       })),
       project_id: activeProjectId,
+      folder_path: folderPath || undefined,
     },
   };
 }

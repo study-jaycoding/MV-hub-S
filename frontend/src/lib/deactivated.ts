@@ -38,6 +38,13 @@ function toggle(load: () => Set<string>, save: (s: Set<string>) => void, keys: s
 export const loadDisabledGen = (): Set<string> => read(GEN_KEY, GEN_KEY_OLD);
 export const saveDisabledGen = (s: Set<string>): void => write(GEN_KEY, s);
 export const toggleDisabledGen = (ids: string[]): void => toggle(loadDisabledGen, saveDisabledGen, ids);
+// 강제 비활성화(토글 아님) — '생략'으로 옮긴 작업의 컷을 모두 회색 처리할 때. 이미 꺼진 건 유지.
+export const addDisabledGen = (ids: string[]): void => {
+  if (!ids.length) return;
+  const s = loadDisabledGen();
+  ids.forEach((id) => s.add(id));
+  saveDisabledGen(s);
+};
 
 export const loadDisabledAssets = (): Set<string> => read(ASSET_KEY);
 export const saveDisabledAssets = (s: Set<string>): void => write(ASSET_KEY, s);

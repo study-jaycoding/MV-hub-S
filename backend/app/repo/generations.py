@@ -15,6 +15,7 @@ from ._common import (
     ALERT_COMMENT_JOINS,
     ALERT_COMMENT_PREDICATE,
     _cached_or_remote,
+    clean_folder_path as _clean_folder_path,
     new_id,
 )
 
@@ -309,8 +310,8 @@ def create_local_generation(
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid, origin) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
+            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
+            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
             (
                 gen_id,
                 worker_id,
@@ -321,6 +322,7 @@ def create_local_generation(
                 data.get("color"),
                 time.time(),  # 정렬키 — 동기화되면 힉스필드 정밀 epoch 으로 갱신됨
                 data.get("project_id"),  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
+                _clean_folder_path(data.get("folder_path")),  # 무장 폴더(렌더 루트 상대 경로)
                 my_uid,  # 내 생성자 신원(있으면) — 로컬 생성물 = 내 작업
             ),
         )
@@ -899,7 +901,7 @@ def import_generation(
     """
     with get_connection() as conn:
         src = conn.execute(
-            "SELECT prompt, display_prompt, model, params, color, project_id "
+            "SELECT prompt, display_prompt, model, params, color, project_id, folder_path "
             "FROM generation WHERE id=?",
             (source_gen_id,),
         ).fetchone()
@@ -912,8 +914,8 @@ def import_generation(
         my_uid = creator_uid or identity.get_my_uid()
         conn.execute(
             "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, creator_uid, origin) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
+            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
+            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
             (
                 child_id,
                 worker_id,
@@ -924,6 +926,7 @@ def import_generation(
                 src["color"],
                 time.time(),  # 재생성/임포트 직후 맨 위에 보이게(완료 시 힉스필드 시각으로 갱신)
                 src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
+                src["folder_path"],  # 재생성본은 부모와 같은 폴더에 귀속(일관성)
                 my_uid,  # 내 생성자 신원 — 자식은 내 작업
             ),
         )
@@ -1133,6 +1136,7 @@ def list_generations(
     account_uid: Optional[str] = None,  # 로그인 계정의 생성자 uid — tab='my' 를 이 계정 것만으로 한정
     team_member_projects: Optional[list[str]] = None,  # tab='team' 일 때 내가 멤버인 프로젝트의 공유물만(None=전체)
     project_id: Optional[str] = None,  # 프로젝트 귀속 필터. 'none'=미분류(NULL), 그 외=해당 프로젝트
+    folder_path: Optional[str] = None,  # 폴더 접두사 필터 — 그 폴더 + 하위 전부(prefix). 없으면 미적용
     search: Optional[str] = None,
     include_deleted: bool = False,  # 휴지통(soft delete) 포함 여부. 기본은 제외(정상만)
     deleted_only: bool = False,  # 지운 것만 보기(휴지통 전용 뷰). include_deleted 보다 우선
@@ -1239,6 +1243,11 @@ def list_generations(
                 "(g.project_id IS NULL OR g.project_id NOT IN "
                 "(SELECT id FROM project WHERE archived = 1))"
             )
+    if folder_path:
+        # 접두사 필터 — 그 폴더 자신 + 하위 전부(ep001 → ep001, ep001/c0010, …). LIKE 특수문자 이스케이프.
+        esc = folder_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(g.folder_path = ? OR g.folder_path LIKE ? ESCAPE '\\')")
+        args += [folder_path, esc + "/%"]
     if tag:
         where.append(
             "EXISTS (SELECT 1 FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
@@ -1305,7 +1314,7 @@ def list_generations(
     sql = (
         "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
         "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-        "g.comment, g.error, g.creator_uid, g.project_id, g.deleted_at, "
+        "g.comment, g.error, g.creator_uid, g.project_id, g.folder_path, g.deleted_at, "
         "g.is_final, g.final_by, "
         "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
         "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id"
@@ -1446,7 +1455,7 @@ def resolve_and_get(
 _GEN_SELECT_COLS = (
     "g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
     "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-    "g.comment, g.error, g.creator_uid, g.project_id, g.deleted_at, g.is_final, g.final_by, "
+    "g.comment, g.error, g.creator_uid, g.project_id, g.folder_path, g.deleted_at, g.is_final, g.final_by, "
     "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
     "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id"
 )

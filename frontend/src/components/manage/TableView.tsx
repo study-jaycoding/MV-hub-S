@@ -51,18 +51,25 @@ export function TableView(props: WorkViewProps) {
           {tasks.map((t) => (
             <tr key={t.id}>
               <td>
-                <select
-                  className="work-cell-sel"
-                  value={t.sequence || ""}
-                  onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
-                >
-                  <option value="">—</option>
-                  {seqOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                {t.folder_path ? (
+                  // 폴더 자동 작업 — 시퀀스는 폴더명(2단계). 읽기전용.
+                  <span className="work-seq-static" title={t.folder_path}>
+                    📁 {t.sequence || t.name}
+                  </span>
+                ) : (
+                  <select
+                    className="work-cell-sel"
+                    value={t.sequence || ""}
+                    onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
+                  >
+                    <option value="">—</option>
+                    {seqOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </td>
               <td
                 className="work-cut-cell"

@@ -443,6 +443,14 @@ function GenerationCardImpl({
           </div>
           <div className="cd-foot">
             <span className="cd-date">{formatGenerationDate(gen.created_at)}</span>
+            {(gen.project_name || gen.folder_path) && (
+              <span
+                className="cd-folder"
+                title={[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
+              >
+                📁 {[gen.project_name, gen.folder_path].filter(Boolean).join(" › ")}
+              </span>
+            )}
           </div>
           {statusBar}
         </div>

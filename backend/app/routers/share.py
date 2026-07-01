@@ -246,6 +246,7 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
             "sort_ts": remote.get("sort_ts"),
             "creator_uid": remote.get("creator_uid"),
             "project_id": remote.get("project_id"),
+            "folder_path": remote.get("folder_path"),
         },
         "asset": asset,
         "references": refs,

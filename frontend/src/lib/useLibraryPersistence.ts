@@ -5,6 +5,7 @@ import type { Filters } from "../types";
 
 interface UseLibraryPersistenceArgs {
   armedAutoTags: Set<string>;
+  armedFolder: { projectId: string; path: string } | null;
   colorFilter: Set<string>;
   commentOnly: boolean;
   fill: boolean;
@@ -23,6 +24,7 @@ interface UseLibraryPersistenceArgs {
 
 export function useLibraryPersistence({
   armedAutoTags,
+  armedFolder,
   colorFilter,
   commentOnly,
   fill,
@@ -52,4 +54,6 @@ export function useLibraryPersistence({
   useEffect(() => store.set("grayOn", grayOn ? "1" : "0"), [grayOn, store]);
   useEffect(() => store.setSet("tagFilter", tagFilter), [store, tagFilter]);
   useEffect(() => store.setSet("armedAutoTags", armedAutoTags), [armedAutoTags, store]);
+  // null 도 저장 → loadJSON 이 그대로 null 로 복원(해제 상태 영속).
+  useEffect(() => store.setJSON("armedFolder", armedFolder), [armedFolder, store]);
 }

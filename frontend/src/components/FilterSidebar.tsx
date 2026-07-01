@@ -26,6 +26,9 @@ interface Props {
   onAddAutoTag: () => void;
   onDeleteAutoTag: (t: string) => void;
   onCreatorChanged: () => void; // 생성자 '나 지정'/이름변경 후 라이브러리 새로고침
+  onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
+  onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
+  onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
 }
 
 export function FilterSidebar({
@@ -44,6 +47,9 @@ export function FilterSidebar({
   onAddAutoTag,
   onDeleteAutoTag,
   onCreatorChanged,
+  onArmFolder,
+  onDropToFolder,
+  onDropToUnassigned,
   projects,
   unassignedCount,
   archivedCount,
@@ -59,11 +65,19 @@ export function FilterSidebar({
         deletedOnly={!!filters.deleted_only}
         // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)
         onFilter={(pid) =>
-          onChange({ project_id: pid, deleted_only: undefined, include_deleted: undefined })
+          onChange({
+            project_id: pid,
+            folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제 → 전체 보기
+            deleted_only: undefined,
+            include_deleted: undefined,
+          })
         }
         onViewDeleted={() =>
           onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
         }
+        onArmFolder={onArmFolder}
+        onDropToFolder={onDropToFolder}
+        onDropToUnassigned={onDropToUnassigned}
       />
 
       <section>

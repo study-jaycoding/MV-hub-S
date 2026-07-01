@@ -7,13 +7,16 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import rbac, repo
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
     account_global_roles,
     account_scope_uid,
@@ -23,7 +26,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..repo import manage as repo_manage
-from ..services import cli_bridge, project_folders
+from ..services import cli_bridge, media_cache, project_folders
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
 
@@ -217,6 +220,80 @@ def unlink_generation(tid: str, gen_id: str, request: Request):
     """컷(생성물) 연결 해제 — 드래그로 뺀 컷 제거."""
     _require_project_manage(request, _task_project_or_404(tid))
     return {"ok": repo_manage.unlink_generation(tid, gen_id)}
+
+
+# ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
+@router.post("/save-finals")
+async def save_finals(project_id: str, request: Request):
+    """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
+    로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…)."""
+    _require_project_manage(request, project_id)
+    state = project_folders.project_folder_state(project_id)
+    if state.get("error"):
+        raise HTTPException(status_code=400, detail=state["error"])
+    render_path = state.get("render_path")
+    if not render_path:
+        raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
+    render = Path(render_path)
+
+    finals = repo_manage.finals_to_export(project_id)
+    media_root = MEDIA_DIR.resolve()
+    saved, skipped = 0, 0
+    errors: list[dict[str, str]] = []
+    for f in finals:
+        gen_id = f["gen_id"]
+        # 파일 1건 처리 전체를 격리 — 한 건 실패(경로/DB/OS)가 나머지 저장을 막지 않게(코덱스 #7).
+        try:
+            folder_path = f.get("folder_path")
+            file_path = f.get("file_path")
+            if not folder_path:
+                errors.append({"gen_id": gen_id, "reason": "폴더 경로 없음(저장 위치 불명)"})
+                continue
+            if not file_path:
+                errors.append({"gen_id": gen_id, "reason": "원본 파일 없음"})
+                continue
+            filename = project_folders.export_filename(folder_path, gen_id, file_path, f.get("media_type"))
+            dest = project_folders.safe_dest(render, folder_path, filename)
+            if dest is None:
+                errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
+                continue
+            # 멱등: 목적지 파일이 이미 있으면 skip(사용자가 지웠으면 재복사 — 자기치유).
+            if dest.exists():
+                repo_manage.record_export(gen_id, str(dest))
+                skipped += 1
+                continue
+            rel = await media_cache.cache_url(file_path)
+            if not rel:
+                errors.append({"gen_id": gen_id, "reason": "원본 다운로드 실패"})
+                continue
+            # 원본도 MEDIA_DIR 밖으로 나가지 못하게 검증(코덱스 #3 — /media/../.. 방어).
+            src = (MEDIA_DIR / rel.removeprefix("/media/")).resolve()
+            try:
+                src.relative_to(media_root)
+            except ValueError:
+                errors.append({"gen_id": gen_id, "reason": "원본 경로 안전성 위반"})
+                continue
+            if not src.exists():
+                errors.append({"gen_id": gen_id, "reason": "로컬 원본 없음"})
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # 원자적 저장(코덱스 #2) — 임시 .part 로 복사 후 교체. 복사 중 크래시/드라이브 끊김이
+            # 나도 불완전 파일이 목적지에 남아 영구 skip 되는 일이 없다.
+            tmp = dest.with_name(dest.name + ".part")
+            try:
+                shutil.copy2(src, tmp)
+                os.replace(tmp, dest)
+            except OSError:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+            repo_manage.record_export(gen_id, str(dest))
+            saved += 1
+        except Exception as e:  # noqa: BLE001 — 파일 1건 실패 격리(위 주석)
+            errors.append({"gen_id": gen_id, "reason": str(e)})
+    return {"saved": saved, "skipped": skipped, "errors": errors}
 
 
 # ── 분석(시각화) ──────────────────────────────────────────────────────────────

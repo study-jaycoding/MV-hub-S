@@ -43,6 +43,7 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   if (q.local_only) p.set("local_only", "true");
   if (q.creator_uid) p.set("creator_uid", q.creator_uid);
   if (q.project_id) p.set("project_id", q.project_id); // 서버사이드 — 누락 없이 정확
+  if (q.folder_path) p.set("folder_path", q.folder_path); // 폴더 접두사 필터
   if (q.search) p.set("search", q.search);
   if (q.include_deleted) p.set("include_deleted", "true");
   if (q.deleted_only) p.set("deleted_only", "true");
@@ -197,6 +198,7 @@ export const api = {
       source_gen_id?: string; // 출처 generation → 히스토리 reference 엣지
     }[];
     project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
+    folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
   }) =>
     // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
     // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.

@@ -68,19 +68,26 @@ export function BoardView(props: WorkViewProps) {
                 </div>
 
                 <div className="work-card-row">
-                  <select
-                    className="work-seq"
-                    value={t.sequence || ""}
-                    onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
-                    title="시퀀스(전역 태그)"
-                  >
-                    <option value="">시퀀스</option>
-                    {seqOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
+                  {t.folder_path ? (
+                    // 폴더 자동 작업 — 시퀀스는 폴더명(2단계, 예 c0010). 읽기전용 칩.
+                    <span className="work-seq work-seq-static" title={t.folder_path}>
+                      📁 {t.sequence || t.name}
+                    </span>
+                  ) : (
+                    <select
+                      className="work-seq"
+                      value={t.sequence || ""}
+                      onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
+                      title="시퀀스(전역 태그)"
+                    >
+                      <option value="">시퀀스</option>
+                      {seqOptions.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   {!!t.creators?.length && (
                     <span className="work-creators" title="생성자">
                       👤 {t.creators.join(", ")}

@@ -78,6 +78,7 @@ class GenerationOut(BaseModel):
     is_mine: bool = True  # 내 생성물인가(아니면 팀원)
     project_id: Optional[str] = None  # 귀속 프로젝트(작업 묶음·내부 식별자). NULL=미분류
     project_name: Optional[str] = None  # 프로젝트 표시 이름 — UI 는 이것만 보여준다(uuid 노출 금지)
+    folder_path: Optional[str] = None  # 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). NULL=미지정
     deleted: bool = False  # 휴지통(soft delete) — 우리 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
     is_final: bool = False  # v02 CMS: Supervisor 가 지정한 최종(골드)
     final_by: Optional[str] = None  # 최종 지정자 creator_uid
@@ -156,6 +157,7 @@ class GenerationCreate(BaseModel):
     references: list[ReferenceIn] = Field(default_factory=list)
     worker_id: Optional[str] = None  # 없으면 기본 작업자
     project_id: Optional[str] = None  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
+    folder_path: Optional[str] = None  # 생성 시 무장된 폴더(렌더 루트 기준 상대 경로). 없으면 미지정
 
 
 class RegenerateIn(BaseModel):
@@ -266,10 +268,12 @@ class ReorderProjectsIn(BaseModel):
 
 
 class AssignProjectIn(BaseModel):
-    """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제)."""
+    """결과물들을 프로젝트에 귀속(또는 project_id=None 으로 미분류 해제).
+    folder_path: 담을 때 함께 지정하는 폴더(렌더 루트 상대 경로). None=폴더 미지정(루트)."""
 
     generation_ids: list[str] = Field(default_factory=list)
     project_id: Optional[str] = None
+    folder_path: Optional[str] = None
 
 
 # ── 멤버 전역 역할(복수) — v02 RBAC PART 1 ────────────────────────────────

@@ -56,6 +56,7 @@ export interface Generation {
   is_mine: boolean; // 내 생성물인가(아니면 팀원)
   project_id: string | null; // 귀속 프로젝트(작업 묶음·내부 식별자). null=미분류
   project_name?: string | null; // 프로젝트 표시 이름 — UI 는 이것만 보여준다(uuid 노출 금지)
+  folder_path?: string | null; // 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). null=미지정
   deleted: boolean; // 휴지통(soft delete) — 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
   is_final?: boolean; // v02 CMS: Supervisor 가 지정한 최종(골드)
   final_by?: string | null; // 최종 지정자 creator_uid
@@ -272,6 +273,7 @@ export interface Filters {
   local_only?: boolean; // 로컬 보기 — 힉스필드에 없고 로컬에만 있는 것
   creator_uid?: string; // 특정 생성자(팀원)만 보기
   project_id?: string; // 프로젝트 필터. 특정 id 또는 'none'(미분류)
+  folder_path?: string; // 폴더 필터(접두사) — 그 폴더 + 하위 전부. 프로젝트 선택 시 해제
   search?: string;
   include_deleted?: boolean; // 휴지통(지운 생성물) 함께 보기 — 정상+지운것, 지운건 흐리게
   deleted_only?: boolean; // 지운 것만 보기(휴지통 전용 뷰)
