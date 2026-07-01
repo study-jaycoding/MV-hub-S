@@ -228,7 +228,7 @@ def save_finals_status(project_id: str, request: Request):
     """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
     targets: 저장 대상 컷(이미 저장됐는지 saved 로 표시). history: 대장(파일 존재 exists)."""
     _require_project_read(request, project_id)
-    state = project_folders.project_folder_state(project_id)
+    state = project_folders.render_root_state(project_id)
     render_path = state.get("render_path") or ""
     render = Path(render_path) if render_path else None
     targets: list[dict] = []
@@ -255,7 +255,7 @@ async def save_finals(project_id: str, request: Request):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
     로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…)."""
     _require_project_manage(request, project_id)
-    state = project_folders.project_folder_state(project_id)
+    state = project_folders.render_root_state(project_id)
     if state.get("error"):
         raise HTTPException(status_code=400, detail=state["error"])
     render_path = state.get("render_path")

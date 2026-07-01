@@ -103,6 +103,22 @@ def folder_tree_node(
     return {"name": path.name, "path": rel, "count": count, "children": children}, count
 
 
+def render_root_state(pid: str) -> dict[str, Any]:
+    """렌더 루트 경로/에러만 반환 — 폴더 트리 재귀 스캔 없이(save-finals 상태·저장용).
+    UNC 공유에서 트리 전체 순회는 비싸므로, 존재/Render 감지만 가볍게 한다."""
+    meta = repo_manage.get_project_folder(pid)
+    root_raw = (meta.get("root_path") or "").strip()
+    if not root_raw:
+        return {"render_path": "", "error": None}
+    root = Path(root_raw).expanduser().resolve()
+    if not root.is_dir():
+        return {"render_path": "", "error": f"폴더가 없습니다: {root}"}
+    render = render_root(root)
+    if not render:
+        return {"render_path": "", "error": f"Render 폴더가 없습니다: {root}"}
+    return {"render_path": str(render), "error": None}
+
+
 def project_folder_state(pid: str) -> dict[str, Any]:
     meta = repo_manage.get_project_folder(pid)
     root_raw = (meta.get("root_path") or "").strip()

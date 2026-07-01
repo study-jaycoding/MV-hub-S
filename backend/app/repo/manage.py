@@ -457,10 +457,16 @@ def sync_folder_tasks(conn, project_id: str) -> None:
     프로젝트의 distinct folder_path 마다 project_task 1개를 보장 — name=1단계(예 ep001),
     sequence=2단계(예 c0010), folder_path=전체 경로. INSERT OR IGNORE + (project_id, folder_path)
     유니크 인덱스로 이미 있으면 건너뜀 → PM 이 편집한 status/일정/설명을 절대 덮어쓰지 않는다.
-    폴더/생성물이 사라져도 자동 작업을 삭제하지 않는다(편집 정보 유실 방지)."""
+    폴더/생성물이 사라져도 자동 작업을 삭제하지 않는다(편집 정보 유실 방지).
+
+    ★읽기(list_tasks)마다 호출되므로, 이미 작업이 있는 folder_path 는 아예 제외해
+    불필요한 INSERT 시도를 없앤다(NOT EXISTS). 새 폴더가 없으면 write 0회."""
     fps = conn.execute(
-        "SELECT DISTINCT folder_path FROM generation "
-        "WHERE project_id=? AND folder_path IS NOT NULL AND folder_path<>'' AND deleted_at IS NULL",
+        "SELECT DISTINCT g.folder_path FROM generation g "
+        "WHERE g.project_id=? AND g.folder_path IS NOT NULL AND g.folder_path<>'' "
+        "  AND g.deleted_at IS NULL "
+        "  AND NOT EXISTS (SELECT 1 FROM project_task t "
+        "                  WHERE t.project_id=g.project_id AND t.folder_path=g.folder_path)",
         (project_id,),
     ).fetchall()
     for row in fps:
@@ -491,7 +497,9 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
         ).fetchall()
         out = []
         all_creator_uids: set[str] = set()
+        all_gen_ids: set[str] = set()
         per_task_cuts: dict[str, list[dict[str, Any]]] = {}
+        # 1차: 작업별 컷만 확보하고 전체 gen_id 를 모은다(크레딧·코멘트는 아래서 1회 배치 조회).
         for r in rows:
             tid = r["id"]
             gens = [
@@ -499,26 +507,37 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 for c in _task_gen_rows(conn, tid, project_id, r["sequence"], r["folder_path"])
             ]
             per_task_cuts[tid] = gens
-            gen_ids = [g["id"] for g in gens]
             for g in gens:
                 if g["creator_uid"]:
                     all_creator_uids.add(g["creator_uid"])
-            # 크레딧·제작시간·코멘트 — 귀속 생성물 집합에서 합산.
-            if gen_ids:
-                ph = ",".join("?" * len(gen_ids))
-                agg = conn.execute(
-                    f"SELECT COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)),0) AS credits, "
-                    f"  COALESCE(SUM(m.elapsed_seconds),0) AS elapsed "
-                    f"FROM generation_metrics m WHERE m.gen_id IN ({ph})",
-                    gen_ids,
-                ).fetchone()
-                cc = conn.execute(
-                    f"SELECT COUNT(*) FROM generation_comment WHERE gen_id IN ({ph})",
-                    gen_ids,
-                ).fetchone()[0]
-                credits, elapsed = agg["credits"], agg["elapsed"]
-            else:
-                credits, elapsed, cc = 0, 0, 0
+                all_gen_ids.add(g["id"])
+        # ★배치 집계 — 작업 P개마다 반복하던 metrics/comment 쿼리(≈2P회)를 전체 gen_id 로 1회씩.
+        metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed)
+        comments_by_gen: dict[str, int] = {}    # gen_id -> 코멘트 수
+        if all_gen_ids:
+            idlist = list(all_gen_ids)
+            ph = ",".join("?" * len(idlist))
+            for m in conn.execute(
+                f"SELECT gen_id, COALESCE(real_credits, est_credits) AS credits, "
+                f"  COALESCE(elapsed_seconds, 0) AS elapsed "
+                f"FROM generation_metrics WHERE gen_id IN ({ph})",
+                idlist,
+            ):
+                metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"] or 0)
+            for c in conn.execute(
+                f"SELECT gen_id, COUNT(*) AS c FROM generation_comment "
+                f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
+                idlist,
+            ):
+                comments_by_gen[c["gen_id"]] = c["c"]
+        # 2차: 배치 결과를 작업별로 합산해 조립(집계 의미는 기존과 동일).
+        for r in rows:
+            tid = r["id"]
+            gens = per_task_cuts[tid]
+            gen_ids = [g["id"] for g in gens]
+            credits = sum(metrics_by_gen.get(gid, (0, 0))[0] for gid in gen_ids)
+            elapsed = sum(metrics_by_gen.get(gid, (0, 0))[1] for gid in gen_ids)
+            cc = sum(comments_by_gen.get(gid, 0) for gid in gen_ids)
             d = dict(r)
             d["gen_count"] = len(gen_ids)
             d["credits"] = credits
@@ -637,16 +656,17 @@ def record_export(gen_id: str, dest_path: str) -> None:
         )
 
 
-def list_exports(project_id: str) -> list[dict[str, Any]]:
-    """이 프로젝트의 저장 이력(대장) — 최근순. dest 파일 실제 존재 여부는 라우터가 덧붙인다."""
+def list_exports(project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """이 프로젝트의 저장 이력(대장) — 최근 limit 개만. dest 파일 존재 확인(UNC stat)은
+    라우터가 이 범위에서만 수행한다(이력이 쌓여도 네트워크 stat 폭주 방지)."""
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
             "SELECT fe.gen_id, fe.dest_path, fe.exported_at FROM final_export fe "
             "JOIN generation g ON g.id=fe.gen_id "
             "WHERE g.project_id=? AND g.deleted_at IS NULL "
-            "ORDER BY fe.exported_at DESC",
-            (project_id,),
+            "ORDER BY fe.exported_at DESC LIMIT ?",
+            (project_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
