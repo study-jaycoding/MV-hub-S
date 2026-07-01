@@ -24,6 +24,17 @@ function taskThumb(path?: string | null): string | undefined {
   return thumbUrl(path, 256) ?? undefined;
 }
 
+// 서버가 변형 없이 저장만 하는 필드 — 이것만 담긴 PATCH 는 로컬 상태 갱신으로 끝내고 재호출 생략.
+// (status=파생 재계산, sequence=컷 재매칭, assignee=이름 해석 → 여기 없음 → 재호출 유지)
+const SIMPLE_PATCH_FIELDS = new Set([
+  "name",
+  "note",
+  "description",
+  "start_date",
+  "due_date",
+  "sort_order",
+]);
+
 export function WorkBoard() {
   useT(); // 언어 토글 시 필터·라벨 리렌더
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
@@ -83,7 +94,16 @@ export function WorkBoard() {
       const ids = (t?.cuts || []).map((c) => c.id);
       addDisabledGen(ids);
     }
-    loadTasks(pid);
+    // 서버가 값을 '그대로 저장만' 하는 단순 필드면 로컬 상태만 갱신하고 전체 재호출 생략(빠름).
+    // 상태·시퀀스·컷연결은 서버가 파생/재매칭하므로 재호출(폴더 자동 상태와 어긋나지 않게). 애매하면 재호출.
+    const keys = Object.keys(patch);
+    const simpleOnly =
+      keys.length > 0 && keys.every((k) => SIMPLE_PATCH_FIELDS.has(k));
+    if (simpleOnly) {
+      setTasks((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)));
+    } else {
+      loadTasks(pid);
+    }
   };
   const onDelete = async (tid: string) => {
     await manageApi.deleteTask(tid);
