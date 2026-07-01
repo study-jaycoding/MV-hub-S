@@ -49,10 +49,34 @@ export const manageApi = {
     jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals", { project_id: projectId }), {
       method: "POST",
     }),
+  // 저장 대상 미리보기 + 이력(읽기 전용, 다운로드 없음).
+  saveFinalsStatus: (projectId: string) =>
+    jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),
 };
 
 export interface SaveFinalsResult {
   saved: number;
   skipped: number;
   errors: { gen_id: string; reason: string }[];
+}
+
+export interface SaveFinalsTarget {
+  gen_id: string;
+  folder_path: string | null;
+  filename: string;
+  saved: boolean; // 이미 렌더폴더에 존재
+}
+
+export interface SaveFinalsHistory {
+  gen_id: string;
+  dest_path: string;
+  exported_at: string;
+  exists: boolean; // 대장 기록의 실제 파일 존재 여부
+}
+
+export interface SaveFinalsStatus {
+  render_path: string;
+  error: string | null;
+  targets: SaveFinalsTarget[];
+  history: SaveFinalsHistory[];
 }

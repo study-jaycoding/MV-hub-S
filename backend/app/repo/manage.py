@@ -637,6 +637,20 @@ def record_export(gen_id: str, dest_path: str) -> None:
         )
 
 
+def list_exports(project_id: str) -> list[dict[str, Any]]:
+    """이 프로젝트의 저장 이력(대장) — 최근순. dest 파일 실제 존재 여부는 라우터가 덧붙인다."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT fe.gen_id, fe.dest_path, fe.exported_at FROM final_export fe "
+            "JOIN generation g ON g.id=fe.gen_id "
+            "WHERE g.project_id=? AND g.deleted_at IS NULL "
+            "ORDER BY fe.exported_at DESC",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # ── 메트릭 수집(생성 생명주기 훅) ─────────────────────────────────────────────
 # 서버가 통제하는 시점에 generation_metrics 행을 채운다(에이전트 무변경).
 #   create  → record_request   (requested_at + 견적 est_credits)

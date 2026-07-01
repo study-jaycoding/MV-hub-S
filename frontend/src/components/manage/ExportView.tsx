@@ -3,14 +3,16 @@
 // 저장은 로컬 전용(이 PC 디스크). 이미 저장된 건 건너뛴다(멱등).
 import { useEffect, useState } from "react";
 import { api } from "../../api";
-import { manageApi, type SaveFinalsResult } from "../../lib/manageApi";
-import { projectApi } from "../../lib/projectApi";
-import type { ProjectFolderState } from "../../types";
+import {
+  manageApi,
+  type SaveFinalsResult,
+  type SaveFinalsStatus,
+} from "../../lib/manageApi";
 
 export function ExportView() {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [pid, setPid] = useState("");
-  const [folder, setFolder] = useState<ProjectFolderState | null>(null);
+  const [status, setStatus] = useState<SaveFinalsStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SaveFinalsResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -26,21 +28,28 @@ export function ExportView() {
       .catch((e) => setErr(String(e?.message || e)));
   }, []);
 
+  const loadStatus = (p: string) => {
+    if (!p) {
+      setStatus(null);
+      return;
+    }
+    manageApi
+      .saveFinalsStatus(p)
+      .then(setStatus)
+      .catch((e) => setErr(String(e?.message || e)));
+  };
+
   useEffect(() => {
     setResult(null);
     setErr(null);
-    if (!pid) {
-      setFolder(null);
-      return;
-    }
-    projectApi
-      .projectFolder(pid)
-      .then(setFolder)
-      .catch((e) => setErr(String(e?.message || e)));
+    loadStatus(pid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
 
-  const renderPath = folder?.render_path || "";
-  const canSave = !!pid && !!renderPath && !folder?.error && !busy;
+  const renderPath = status?.render_path || "";
+  const targets = status?.targets ?? [];
+  const pending = targets.filter((t) => !t.saved).length;
+  const canSave = !!pid && !!renderPath && !status?.error && !busy;
 
   const onSave = async () => {
     if (!canSave) return;
@@ -50,6 +59,7 @@ export function ExportView() {
     try {
       const r = await manageApi.saveFinals(pid);
       setResult(r);
+      loadStatus(pid); // 저장 후 대상·이력 갱신
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -85,8 +95,8 @@ export function ExportView() {
 
         <div className="export-target">
           <span className="export-target-label">저장 위치</span>
-          {folder?.error ? (
-            <span className="export-target-err">⚠ {folder.error}</span>
+          {status?.error ? (
+            <span className="export-target-err">⚠ {status.error}</span>
           ) : renderPath ? (
             <code className="export-target-path">{renderPath}</code>
           ) : (
@@ -96,8 +106,18 @@ export function ExportView() {
           )}
         </div>
 
-        <button className="export-btn" disabled={!canSave} onClick={onSave}>
-          {busy ? "저장 중…" : "완료만 저장하기"}
+        <div className="export-preview">
+          저장 대상 최종본 <b>{targets.length}</b>건
+          {targets.length > 0 && (
+            <>
+              {" "}
+              — 새로 저장 <b>{pending}</b> · 이미 저장 <b>{targets.length - pending}</b>
+            </>
+          )}
+        </div>
+
+        <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
+          {busy ? "저장 중…" : pending === 0 ? "새로 저장할 최종본 없음" : `완료만 저장하기 (${pending})`}
         </button>
 
         {err && <div className="export-err">저장 실패: {err}</div>}
@@ -122,6 +142,21 @@ export function ExportView() {
                 ))}
               </ul>
             )}
+          </div>
+        )}
+
+        {status && status.history.length > 0 && (
+          <div className="export-history">
+            <div className="export-history-head">저장 이력 ({status.history.length})</div>
+            <ul className="export-history-list">
+              {status.history.map((h) => (
+                <li key={h.gen_id} className={h.exists ? "" : "missing"}>
+                  <span className="export-history-when">{h.exported_at}</span>
+                  <code className="export-history-path">{h.dest_path}</code>
+                  {!h.exists && <span className="export-history-gone">파일 없음</span>}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

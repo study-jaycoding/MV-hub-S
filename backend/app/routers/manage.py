@@ -223,6 +223,33 @@ def unlink_generation(tid: str, gen_id: str, request: Request):
 
 
 # ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
+@router.get("/save-finals")
+def save_finals_status(project_id: str, request: Request):
+    """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
+    targets: 저장 대상 컷(이미 저장됐는지 saved 로 표시). history: 대장(파일 존재 exists)."""
+    _require_project_read(request, project_id)
+    state = project_folders.project_folder_state(project_id)
+    render_path = state.get("render_path") or ""
+    render = Path(render_path) if render_path else None
+    targets: list[dict] = []
+    for f in repo_manage.finals_to_export(project_id):
+        fp = f.get("folder_path")
+        file_path = f.get("file_path")
+        filename, saved = "", False
+        if fp and file_path and render is not None:
+            filename = project_folders.export_filename(fp, f["gen_id"], file_path, f.get("media_type"))
+            dest = project_folders.safe_dest(render, fp, filename)
+            saved = bool(dest and dest.exists())
+        targets.append(
+            {"gen_id": f["gen_id"], "folder_path": fp, "filename": filename, "saved": saved}
+        )
+    history = [
+        {**e, "exists": Path(e["dest_path"]).exists()}
+        for e in repo_manage.list_exports(project_id)
+    ]
+    return {"render_path": render_path, "error": state.get("error"), "targets": targets, "history": history}
+
+
 @router.post("/save-finals")
 async def save_finals(project_id: str, request: Request):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).

@@ -384,3 +384,18 @@
 .export-result-line b { color: var(--accent); }
 .export-err-list { margin: 0; padding-left: 18px; font-size: 12px; opacity: .8; display: flex; flex-direction: column; gap: 3px; }
 .export-err-list code { padding: 0 4px; border-radius: 3px; background: rgba(127,127,127,.18); }
+
+/* 완료 탭 — 대상 프리뷰 + 저장 이력 */
+.export-preview { font-size: 13px; opacity: .9; }
+.export-preview b { color: var(--accent); }
+.export-history { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.export-history-head { font-size: 12px; font-weight: 700; opacity: .6; }
+.export-history-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.export-history-list li {
+  display: flex; align-items: center; gap: 10px; font-size: 12px;
+  padding: 6px 10px; border-radius: 6px; background: rgba(127,127,127,.08);
+}
+.export-history-list li.missing { opacity: .6; }
+.export-history-when { flex: 0 0 auto; opacity: .6; font-variant-numeric: tabular-nums; }
+.export-history-path { flex: 1 1 auto; word-break: break-all; opacity: .85; }
+.export-history-gone { flex: 0 0 auto; color: #d98a4a; font-weight: 700; }
