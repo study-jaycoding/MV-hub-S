@@ -62,6 +62,7 @@ export function FilterSidebar({
         unassignedCount={unassignedCount}
         archivedCount={archivedCount}
         activeId={filters.project_id}
+        tab={filters.tab === "team" ? "team" : "my"}
         deletedOnly={!!filters.deleted_only}
         // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)
         onFilter={(pid) =>

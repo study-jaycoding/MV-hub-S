@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -306,9 +308,11 @@ async def save_finals(project_id: str, request: Request):
             dest.parent.mkdir(parents=True, exist_ok=True)
             # 원자적 저장(코덱스 #2) — 임시 .part 로 복사 후 교체. 복사 중 크래시/드라이브 끊김이
             # 나도 불완전 파일이 목적지에 남아 영구 skip 되는 일이 없다.
-            tmp = dest.with_name(dest.name + ".part")
+            # 임시명에 uuid — 동시 실행/재실행 시 같은 .part 를 두 요청이 다투지 않게.
+            # 대용량·NAS 복사는 to_thread 로 오프로딩해 이벤트 루프(백엔드 응답성)를 막지 않는다.
+            tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
             try:
-                shutil.copy2(src, tmp)
+                await asyncio.to_thread(shutil.copy2, src, tmp)
                 os.replace(tmp, dest)
             except OSError:
                 try:

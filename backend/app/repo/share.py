@@ -13,6 +13,7 @@ from ._common import (
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
     _remote_url,
+    clean_folder_path,
     new_id,
 )
 
@@ -340,6 +341,9 @@ def import_bundle_item(
     job_id = g.get("id")
     if not job_id:
         return "skipped"
+    # 공유 import 도 로컬 생성과 같은 정규화 적용 — 안 하면 ep001\c0010·ep001//c0010/ 같은
+    # 값이 그대로 저장돼 자동작업/카운트/필터가 갈라진다(생성은 이미 clean_folder_path 적용).
+    folder_path = clean_folder_path(g.get("folder_path"))
     parsed = {
         "generation": {
             "id": job_id,
@@ -354,7 +358,7 @@ def import_bundle_item(
             # 발신자(공유한 사람)를 생성자로 넣는다. resolve_display_names 가 그 사람 이름으로 표시.
             "creator_uid": g.get("creator_uid") or shared_by,
             "project_id": g.get("project_id"),
-            "folder_path": g.get("folder_path"),
+            "folder_path": folder_path,
         },
         "asset": item.get("asset"),
         "references": item.get("references") or [],
@@ -376,11 +380,10 @@ def import_bundle_item(
                     "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
                     (pid, gid),
                 )
-            fpath = g.get("folder_path")
-            if fpath:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
+            if folder_path:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
                 conn.execute(
                     "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
-                    (fpath, gid),
+                    (folder_path, gid),
                 )
             tags._add_tags(conn, gid, item.get("tags") or [])
             tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])

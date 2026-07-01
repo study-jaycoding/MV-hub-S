@@ -88,6 +88,7 @@ export function ProjectSection({
   unassignedCount,
   archivedCount,
   activeId,
+  tab = "my",
   deletedOnly,
   onFilter,
   onViewDeleted,
@@ -99,6 +100,7 @@ export function ProjectSection({
   unassignedCount: number;
   archivedCount: number;
   activeId?: string;
+  tab?: "my" | "team"; // 폴더 개수 뱃지를 현재 라이브러리 탭 기준으로 조회
   deletedOnly: boolean;
   onFilter: (projectId?: string) => void;
   onViewDeleted: () => void;
@@ -191,7 +193,7 @@ export function ProjectSection({
     if (activeId && activeId !== "none") ids.add(activeId);
     ids.forEach((pid) => {
       api
-        .projectFolderCounts(pid)
+        .projectFolderCounts(pid, tab)
         .then((r) => alive && setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} })))
         .catch(() => {});
     });
@@ -199,8 +201,9 @@ export function ProjectSection({
       alive = false;
     };
     // projects 는 라이브러리 리로드(생성·담기 후)마다 새 배열 → 개수 최신화 트리거.
+    // 탭(my/team) 전환 시에도 재조회 → 팀 탭에서 팀 기준 개수 표시.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projects, pinned]);
+  }, [activeId, projects, pinned, tab]);
 
   const selectFolder = async (pid: string, path: string) => {
     const cur = folders[pid];
