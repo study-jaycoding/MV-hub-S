@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 from datetime import datetime
 from typing import Any, Optional
@@ -85,6 +86,9 @@ _SCHEMA = (
         PRIMARY KEY (task_id, gen_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
+    # 매칭 스캔(미귀속 spend)용 부분 인덱스 — 누적된 거래에서 대상만 빠르게.
+    "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
+    "WHERE action='spend' AND matched_gen_id IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_project_task_proj ON project_task(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_gen_gen ON task_generation(gen_id)",
 )
@@ -735,25 +739,30 @@ def match_transactions(owner_uid: Optional[str]) -> int:
         if not gens:
             return 0
 
-        # (거리, 거래idx, 생성물idx) 전 쌍 중 윈도우 내만 모아 거리순 그리디 — 가장 가까운 쌍부터 확정.
+        # 후보쌍을 거리순 그리디로 확정. 각 거래는 시각 ±윈도우 안 생성물만 이분탐색으로 훑는다
+        # → O(T·G) 전체쌍 대신 O(T·logG + 후보수)(누적 백필에서 반복비용 급증 방지).
         # 가드(둘 다 "양쪽 값을 다 알 때만" 스킵 → 미연결/옛 데이터는 시간매칭 폴백, 회귀 없음):
         #   (1)소유자 — 거래 owner_uid·생성물 creator_uid 둘 다 있고 다르면 스킵(전역 호출 시 남의 것 오염 차단).
         #   (2)모델 — 거래·생성물 양쪽 model 을 다 알고 다르면 스킵(옛 에이전트 NULL 이면 시간매칭 폴백).
+        order = sorted(range(len(gens)), key=lambda gi: gens[gi]["sort_ts"])
+        gts = [gens[gi]["sort_ts"] for gi in order]
         pairs: list[tuple[float, int, int]] = []
         tepochs = [_epoch(t["created_at"]) for t in txns]
         for ti, te in enumerate(tepochs):
             if te is None:
                 continue
             t = txns[ti]
-            for gi, g in enumerate(gens):
+            lo = bisect.bisect_left(gts, te - _MATCH_WINDOW)
+            hi = bisect.bisect_right(gts, te + _MATCH_WINDOW)
+            for k in range(lo, hi):
+                gi = order[k]
+                g = gens[gi]
                 if t["owner_uid"] and g["creator_uid"] and t["owner_uid"] != g["creator_uid"]:
                     continue
                 tm, gm = t["model"], g["model"]
                 if tm and gm and tm != gm:
                     continue
-                d = abs(g["sort_ts"] - te)
-                if d <= _MATCH_WINDOW:
-                    pairs.append((d, ti, gi))
+                pairs.append((abs(g["sort_ts"] - te), ti, gi))
         pairs.sort()
         used_t: set[int] = set()
         used_g: set[int] = set()
