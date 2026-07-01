@@ -660,7 +660,7 @@ def matrix() -> dict[str, Any]:
 # 검증(PM_DASHBOARD_DESIGN.md §3): 같은 계정 안에서 거래 시각 ↔ 생성물 sort_ts 오차 <0.3초,
 # 윈도우 밖(생성물 없는 옛 거래)은 미귀속으로 안전하게 남는다. 모델 표시명↔job_set_type 사전이
 # 서버에 늘 있진 않으므로(공유 서버 CLI 부재) 모델 검증은 생략하고 시각+소유자로만 매칭한다.
-_MATCH_WINDOW = 90.0  # 초 — 검증상 실제 매칭은 1초 이내, 비매칭은 수백 초라 분리 여유 충분
+_MATCH_WINDOW = 60.0  # 초 — 설계(§3) 기준값. 검증상 실제 매칭은 1초 이내, 비매칭은 수백 초라 여유 충분
 
 
 def _epoch(iso: Optional[str]) -> Optional[float]:
