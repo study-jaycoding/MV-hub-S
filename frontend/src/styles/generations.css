@@ -9,11 +9,15 @@
   padding: 10px 14px 124px; display: flex; flex-direction: column; gap: 6px; /* 에셋 리스트와 동일 간격 */
 }
 /* ── 가상 스크롤(virtua) 모드 — .gen-grid 를 순수 스크롤 컨테이너로. 레이아웃은 행 단위로 위임 ── */
-.gen-grid.gen-grid-virtual { display: block; padding: 0; } /* grid/padding 제거 → startMargin·행 padding·tail 로 대체 */
-.gen-vrow-grid { display: grid; gap: 12px; padding: 0 16px 12px; } /* 카드 행(반응형 컬럼은 인라인 style) */
-.gen-vrow-list { padding: 0 14px 6px; }
-.gen-grid-virtual .gen-date-header { padding-left: 18px; padding-right: 18px; } /* 컨테이너 padding 0 보정 */
+/* 좌우 padding 은 "컨테이너"에 둔다 → 컬럼 측정(clientWidth 기준)이 실제 카드 행 폭과 일치. */
+.gen-grid.gen-grid-virtual { display: block; padding: 0 16px; }
+.gen-grid-virtual.as-list { padding: 0 14px; }
+.gen-vrow-grid { display: grid; gap: 12px; padding-bottom: 12px; } /* 반응형 컬럼은 인라인 style */
+.gen-vrow-list { padding-bottom: 6px; }
 .gen-grid-tail { height: 124px; } /* 하단 프롬프트 독 여백(옛 컨테이너 하단 padding 대체) */
+/* 가상화가 오프스크린을 언마운트하므로 content-visibility(추정높이 240px)는 불필요하고,
+   버퍼 행에 추정치가 잡히면 스케일/컬럼 변경 때 스크롤 점프를 유발 → 가상 그리드 안에선 끈다. */
+.gen-grid-virtual .gen-cell { content-visibility: visible; contain-intrinsic-size: auto; }
 /* 날짜별 구분 헤더(그리드 한 줄 전체 차지) — 그 날짜 전체 선택 체크박스 포함 */
 .gen-date-header {
   grid-column: 1 / -1;

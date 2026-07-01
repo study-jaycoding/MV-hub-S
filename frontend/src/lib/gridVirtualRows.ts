@@ -16,15 +16,15 @@ export interface GridRowModel {
 }
 
 // 컬럼 수 = 반응형 그리드가 실제로 만들 열 개수. CSS repeat(auto-fill, minmax(minCellPx,1fr)) 와
-// 같은 공식으로 계산해 시각 밀도를 일치시킨다. gap·좌우 padding 을 실측한다.
-export function computeGridColumns(el: HTMLElement, minCellPx: number): number {
+// 같은 공식으로 계산해 시각 밀도를 일치시킨다. 좌우 padding 은 컨테이너에서 실측하고, gap 은 카드 행
+// (.gen-vrow-grid)의 값이라 컨테이너(block)에선 못 읽으므로 인자로 받는다.
+export function computeGridColumns(el: HTMLElement, minCellPx: number, gapPx: number): number {
   const style = getComputedStyle(el);
   const padL = parseFloat(style.paddingLeft) || 0;
   const padR = parseFloat(style.paddingRight) || 0;
-  const gap = parseFloat(style.columnGap || style.gap || "0") || 0;
   const content = el.clientWidth - padL - padR;
   if (content <= 0 || minCellPx <= 0) return 1;
-  return Math.max(1, Math.floor((content + gap) / (minCellPx + gap)));
+  return Math.max(1, Math.floor((content + gapPx) / (minCellPx + gapPx)));
 }
 
 export function buildGridRows(

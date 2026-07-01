@@ -95,7 +95,7 @@ export function ThumbnailGrid(props: Props) {
       setColumns(1);
       return;
     }
-    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale)));
+    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .gen-vrow-grid
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -107,6 +107,18 @@ export function ThumbnailGrid(props: Props) {
     () => buildGridRows(generations, isList ? 1 : columns, groupByDate),
     [generations, isList, columns, groupByDate],
   );
+
+  // underfill 보정 — 첫 화면이 뷰포트를 못 채우면 스크롤바가 없어 onScroll 이 안 오고 다음 페이지를
+  // 못 당긴다. 렌더 후 높이를 재보고 안 채워졌으면 서버 다음 페이지 요청.
+  useEffect(() => {
+    if (!props.hasMore || props.loadingMore) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      if (el.scrollHeight <= el.clientHeight + 40) props.onLoadMore?.();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [rowModel, props.hasMore, props.loadingMore, props.onLoadMore]);
 
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [focusIdx, setFocusIdx] = useState(-1); // 방향키 네비 앵커(그리드 포커스 시)
