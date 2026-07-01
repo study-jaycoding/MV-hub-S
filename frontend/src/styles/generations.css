@@ -8,6 +8,12 @@
   flex: 1; min-height: 0; overflow-y: auto;
   padding: 10px 14px 124px; display: flex; flex-direction: column; gap: 6px; /* 에셋 리스트와 동일 간격 */
 }
+/* ── 가상 스크롤(virtua) 모드 — .gen-grid 를 순수 스크롤 컨테이너로. 레이아웃은 행 단위로 위임 ── */
+.gen-grid.gen-grid-virtual { display: block; padding: 0; } /* grid/padding 제거 → startMargin·행 padding·tail 로 대체 */
+.gen-vrow-grid { display: grid; gap: 12px; padding: 0 16px 12px; } /* 카드 행(반응형 컬럼은 인라인 style) */
+.gen-vrow-list { padding: 0 14px 6px; }
+.gen-grid-virtual .gen-date-header { padding-left: 18px; padding-right: 18px; } /* 컨테이너 padding 0 보정 */
+.gen-grid-tail { height: 124px; } /* 하단 프롬프트 독 여백(옛 컨테이너 하단 padding 대체) */
 /* 날짜별 구분 헤더(그리드 한 줄 전체 차지) — 그 날짜 전체 선택 체크박스 포함 */
 .gen-date-header {
   grid-column: 1 / -1;

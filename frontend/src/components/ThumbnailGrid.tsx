@@ -3,21 +3,25 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dayInfoFromUtcString, type DayInfo } from "../lib/dateGroups";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
   buildGenerationDateGroups,
   previewTargetFromGenerations,
   toggleGenerationDateSelection,
 } from "../lib/generationGrid";
-import { nearestCellIndex } from "../lib/gridNavigation";
+import {
+  buildGridRows,
+  computeGridColumns,
+  navigateGrid,
+  type VirtualRow,
+} from "../lib/gridVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { GenerationCard } from "./GenerationCard";
-import { useIncrementalGenerationRender } from "./generation/useIncrementalGenerationRender";
 
 interface Props {
   generations: Generation[];
@@ -72,30 +76,37 @@ export function ThumbnailGrid(props: Props) {
     () => (groupByDate ? buildGenerationDateGroups(generations) : null),
     [generations, groupByDate],
   );
-  // 렌더 루프용 gen.id→DayInfo 캐시 — 재렌더(선택·포커스·마퀴)마다 항목별 Intl(toLocaleDateString)
-  // 재계산하던 것을 generations 바뀔 때 한 번만 계산하도록.
-  const dayInfoById = useMemo(() => {
-    if (!groupByDate) return null;
-    const m = new Map<string, DayInfo>();
-    for (const g of generations) m.set(g.id, dayInfoFromUtcString(g.created_at));
-    return m;
-  }, [generations, groupByDate]);
 
   // 날짜 헤더 체크박스 — 그 날짜의 모든 항목을 한 번에 선택/해제(토글).
   const toggleDate = (ids: string[], allSelected: boolean) => {
     onSelectedChange(toggleGenerationDateSelection(selectedIds, ids, allSelected));
   };
 
-  const gridRef = useRef<HTMLDivElement>(null);
-  // 점진 렌더 — 로드된 데이터(generations)를 DOM 에는 보이는 만큼만. 바닥에서 더 보여줄 게
-  // 없으면 서버 다음 페이지를 요청(onLoadMore) → 무한 스크롤이 클라이언트·서버 양쪽으로 작동.
-  const { visible, hasMoreToRender: hasMore, sentinelRef } = useIncrementalGenerationRender({
-    items: generations,
-    resetKey: props.resetKey,
-    hasMore: props.hasMore,
-    loadingMore: props.loadingMore,
-    onLoadMore: props.onLoadMore,
-  });
+  const gridRef = useRef<HTMLDivElement>(null); // 스크롤 컨테이너(가상화 대상)
+  const vRef = useRef<VirtualizerHandle>(null);
+  // 반응형 컬럼 수 — CSS auto-fill 과 같은 공식으로 실측. 가상 행 모델이 이 값으로 카드 행을 자른다.
+  // hasRows 를 의존성에 포함: 로딩(빈 상태)엔 .gen-grid 가 없어 측정 불가 → 데이터 도착해 그리드가
+  // 실제로 마운트될 때 재측정해야 함(안 그러면 컬럼 1 로 고정됨). useLayoutEffect = 첫 페인트 전 측정.
+  const [columns, setColumns] = useState(1);
+  const hasRows = generations.length > 0;
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el || isList) {
+      setColumns(1);
+      return;
+    }
+    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale)));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scale, isList, hasRows]);
+
+  // 가상 행 모델(헤더 행 + 카드 행) — virtua 가 이 rows 를 행 단위로 가상화한다(뷰포트+오버스캔만 마운트).
+  const rowModel = useMemo(
+    () => buildGridRows(generations, isList ? 1 : columns, groupByDate),
+    [generations, isList, columns, groupByDate],
+  );
 
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [focusIdx, setFocusIdx] = useState(-1); // 방향키 네비 앵커(그리드 포커스 시)
@@ -317,7 +328,8 @@ export function ThumbnailGrid(props: Props) {
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       const cur = focusIdx < 0 ? 0 : focusIdx;
-      const nxt = focusIdx < 0 ? 0 : nearestCellIndex(gridRef.current, ".gen-cell", cur, e.key);
+      // 가상화: DOM 기하 대신 행렬 모델로 이웃 계산(오프스크린 셀도 정확).
+      const nxt = focusIdx < 0 ? 0 : navigateGrid(rowModel, cur, e.key);
       if (nxt == null) return;
       setFocusIdx(nxt);
       const nxtId = generations[nxt]?.id;
@@ -330,11 +342,11 @@ export function ThumbnailGrid(props: Props) {
       } else if (nxtId) {
         onSelectedChange(new Set([nxtId]));
       }
-      requestAnimationFrame(() =>
-        gridRef.current
-          ?.querySelector(`.gen-cell[data-idx="${nxt}"]`)
-          ?.scrollIntoView({ block: "nearest" }),
-      );
+      // 타깃 행으로 스크롤(언마운트 상태여도 virtua 가 마운트하며 이동).
+      const navRow = rowModel.posByGen[nxt]?.navRow;
+      if (navRow != null) {
+        vRef.current?.scrollToIndex(rowModel.rowIndexOfNavRow[navRow], { align: "nearest" });
+      }
     } else if (e.key === "Enter") {
       e.preventDefault();
       const g = generations[focusIdx];
@@ -409,90 +421,78 @@ export function ThumbnailGrid(props: Props) {
     );
   }
 
-  if (isList) {
+  const focusGenId = focusIdx >= 0 ? generations[focusIdx]?.id : undefined;
+  // 편집(태그/소스) 중인 카드는 스크롤로 언마운트되면 입력 draft 가 사라짐 → 그 행은 항상 마운트 유지.
+  const editingRow = (() => {
+    if (!editTarget?.id) return undefined;
+    const gi = generations.findIndex((g) => g.id === editTarget.id);
+    const navRow = gi >= 0 ? rowModel.posByGen[gi]?.navRow : undefined;
+    return navRow == null ? undefined : rowModel.rowIndexOfNavRow[navRow];
+  })();
+  const keepMounted = editingRow == null ? undefined : [editingRow];
+
+  const renderVirtualRow = (row: VirtualRow) => {
+    if (row.type === "header") return renderDateHeader(row.dayKey, row.label);
     return (
-      <div className="grid-wrap">
-        <div className="gen-list">
-          {(() => {
-            // 그리드와 동일하게 날짜 구분 모드면 날짜가 바뀔 때 섹션 헤더를 끼워넣는다.
-            const out: React.ReactNode[] = [];
-            let lastDay: string | null = null;
-            visible.forEach((g) => {
-              if (groupByDate) {
-                const { key, label } = dayInfoById?.get(g.id) ?? dayInfoFromUtcString(g.created_at);
-                if (key !== lastDay) {
-                  lastDay = key;
-                  out.push(renderDateHeader(key, label));
-                }
-              }
-              out.push(
-                <div
-                  className={"gen-cell list" + (props.disabledIds?.has(g.id) ? " deactivated" : "")}
-                  data-id={g.id}
-                  key={g.id}
-                  style={{ height: Math.round(300 * scale) }}
-                >
-                  {renderGenerationCard(g, "list")}
-                </div>,
-              );
-            });
-            return out;
-          })()}
-          {hasMore && (
-            <div ref={sentinelRef} className="grid-sentinel">
-              더 불러오는 중… ({visible.length}/{generations.length})
-            </div>
-          )}
-        </div>
+      <div
+        key={row.key}
+        className={isList ? "gen-vrow-list" : "gen-vrow-grid"}
+        style={isList ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      >
+        {row.items.map((g) => (
+          <div
+            className={
+              "gen-cell" +
+              (isList ? " list" : "") +
+              (g.id === focusGenId ? " focused" : "") +
+              (props.disabledIds?.has(g.id) ? " deactivated" : "")
+            }
+            data-id={g.id}
+            key={g.id}
+            style={isList ? { height: Math.round(300 * scale) } : undefined}
+          >
+            {renderGenerationCard(g, isList ? "list" : "grid")}
+          </div>
+        ))}
       </div>
     );
-  }
+  };
+
+  // 바닥 근처면 서버 다음 페이지 요청 — 가상화 후 sentinel 대신 스크롤 메트릭 기반.
+  const onGridScroll = () => {
+    const el = gridRef.current;
+    if (!el || !props.hasMore || props.loadingMore) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) props.onLoadMore?.();
+  };
 
   return (
     <div className="grid-wrap">
       <div
         ref={gridRef}
-        className={"gen-grid" + (props.fill ? "" : " fit-contain")}
+        className={
+          "gen-grid gen-grid-virtual" +
+          (props.fill ? "" : " fit-contain") +
+          (isList ? " as-list" : "")
+        }
         tabIndex={0}
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(180 * scale)}px, 1fr))` }}
         onMouseDown={onGridMouseDown}
         onDoubleClick={onGridDblClick}
         onDragStart={onGridDragStart}
         onKeyDown={onGridKeyDown}
+        onScroll={onGridScroll}
       >
-        {(() => {
-          const out: React.ReactNode[] = [];
-          let lastDay: string | null = null;
-          visible.forEach((g, i) => {
-            if (groupByDate) {
-              const { key, label } = dayInfoById?.get(g.id) ?? dayInfoFromUtcString(g.created_at);
-              if (key !== lastDay) {
-                lastDay = key;
-                out.push(renderDateHeader(key, label));
-              }
-            }
-            out.push(
-              <div
-                className={
-                  "gen-cell" +
-                  (i === focusIdx ? " focused" : "") +
-                  (props.disabledIds?.has(g.id) ? " deactivated" : "")
-                }
-                data-id={g.id}
-                data-idx={i}
-                key={g.id}
-              >
-                {renderGenerationCard(g, "grid")}
-              </div>,
-            );
-          });
-          return out;
-        })()}
-        {hasMore && (
-          <div ref={sentinelRef} className="grid-sentinel">
-            더 불러오는 중… ({visible.length}/{generations.length})
-          </div>
-        )}
+        <Virtualizer
+          ref={vRef}
+          scrollRef={gridRef}
+          data={rowModel.rows}
+          bufferSize={800}
+          startMargin={isList ? 10 : 14}
+          keepMounted={keepMounted}
+        >
+          {(row: VirtualRow) => renderVirtualRow(row)}
+        </Virtualizer>
+        <div className="gen-grid-tail" />
+        {props.loadingMore && <div className="grid-sentinel">더 불러오는 중…</div>}
         {marquee && (
           <div
             className="assets-marquee"
