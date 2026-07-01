@@ -44,7 +44,8 @@ _SCHEMA = (
         credits       REAL,                  -- 부호 있음(음수=차감)
         action        TEXT,                  -- spend | refund | grant
         created_at    TEXT,                  -- 거래 시각(UTC ISO)
-        matched_gen_id TEXT                  -- 귀속한 생성물(NULL=미귀속)
+        matched_gen_id TEXT,                 -- 귀속한 생성물(NULL=미귀속)
+        model         TEXT                   -- 모델 키(job_set_type). 에이전트가 display_name→key 변환 태깅(NULL=옛 에이전트)
     )""",
     # 프로젝트 일정/예산(스케줄 사이드카). 코어 project 에 컬럼 추가하지 않음 → 깔끔히 제거 가능.
     """CREATE TABLE IF NOT EXISTS project_planning (
@@ -99,6 +100,10 @@ def _ensure_schema(conn) -> None:
     for col in ("sequence", "description"):
         if col not in cols:
             conn.execute(f"ALTER TABLE project_task ADD COLUMN {col} TEXT")
+    # credit_txn.model 멱등 보강(옛 DB엔 없음) — 모델 가드 매칭용.
+    tcols = {r[1] for r in conn.execute("PRAGMA table_info(credit_txn)")}
+    if "model" not in tcols:
+        conn.execute("ALTER TABLE credit_txn ADD COLUMN model TEXT")
     # 상태 세분화 마이그레이션(멱등) — 구 단계 → Notion 세분. 대상 행 없으면 무동작.
     # retake 폐지: 진행 중으로 되돌림. todo→시작전, review→게시.
     for old, new in (("todo", "not_started"), ("review", "publish"), ("retake", "in_progress")):
@@ -690,13 +695,14 @@ def record_transactions(
             credits = t.get("credits")
             action = t.get("action")
             dn = t.get("display_name")
+            model = t.get("model")  # 에이전트가 display_name→job_set_type 변환해 태깅(옛 에이전트는 없음)
             raw = f"{owner_uid}|{created}|{credits}|{action}|{dn}"
             tid = hashlib.sha1(raw.encode("utf-8")).hexdigest()
             cur = conn.execute(
                 "INSERT OR IGNORE INTO credit_txn"
-                "(id, owner_uid, account_email, display_name, credits, action, created_at) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (tid, owner_uid, account_email, dn, credits, action, created),
+                "(id, owner_uid, account_email, display_name, credits, action, created_at, model) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (tid, owner_uid, account_email, dn, credits, action, created, model),
             )
             inserted += cur.rowcount
     matched = match_transactions(owner_uid)
@@ -710,7 +716,7 @@ def match_transactions(owner_uid: Optional[str]) -> int:
     with get_connection() as conn:
         _ensure_schema(conn)
         txns = conn.execute(
-            "SELECT id, credits, created_at FROM credit_txn "
+            "SELECT id, credits, created_at, owner_uid, model FROM credit_txn "
             "WHERE action='spend' AND matched_gen_id IS NULL "
             "AND (owner_uid IS ? OR ? IS NULL)",
             (owner_uid, owner_uid),
@@ -718,7 +724,8 @@ def match_transactions(owner_uid: Optional[str]) -> int:
         if not txns:
             return 0
         gens = conn.execute(
-            "SELECT g.id AS id, g.sort_ts AS sort_ts FROM generation g "
+            "SELECT g.id AS id, g.sort_ts AS sort_ts, g.creator_uid AS creator_uid, "
+            "  g.model AS model FROM generation g "
             "LEFT JOIN generation_metrics m ON m.gen_id = g.id "
             "WHERE g.sort_ts IS NOT NULL AND g.deleted_at IS NULL "
             "AND (g.creator_uid = ? OR ? IS NULL) "
@@ -729,12 +736,21 @@ def match_transactions(owner_uid: Optional[str]) -> int:
             return 0
 
         # (거리, 거래idx, 생성물idx) 전 쌍 중 윈도우 내만 모아 거리순 그리디 — 가장 가까운 쌍부터 확정.
+        # 가드(둘 다 "양쪽 값을 다 알 때만" 스킵 → 미연결/옛 데이터는 시간매칭 폴백, 회귀 없음):
+        #   (1)소유자 — 거래 owner_uid·생성물 creator_uid 둘 다 있고 다르면 스킵(전역 호출 시 남의 것 오염 차단).
+        #   (2)모델 — 거래·생성물 양쪽 model 을 다 알고 다르면 스킵(옛 에이전트 NULL 이면 시간매칭 폴백).
         pairs: list[tuple[float, int, int]] = []
         tepochs = [_epoch(t["created_at"]) for t in txns]
         for ti, te in enumerate(tepochs):
             if te is None:
                 continue
+            t = txns[ti]
             for gi, g in enumerate(gens):
+                if t["owner_uid"] and g["creator_uid"] and t["owner_uid"] != g["creator_uid"]:
+                    continue
+                tm, gm = t["model"], g["model"]
+                if tm and gm and tm != gm:
+                    continue
                 d = abs(g["sort_ts"] - te)
                 if d <= _MATCH_WINDOW:
                     pairs.append((d, ti, gi))

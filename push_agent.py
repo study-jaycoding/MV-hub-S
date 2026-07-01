@@ -716,6 +716,18 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     txns = _cli_json(cli, "account", "transactions", "--size", "100")
     if not isinstance(txns, list):
         txns = []
+    # 거래 표시명(display_name)을 모델 키(job_set_type)로 변환해 태깅 → 서버가 모델 가드로 정확 매칭.
+    # best-effort: model list 실패/미태깅 거래는 서버가 시간+소유자 매칭으로 폴백(하위호환).
+    models = _cli_json(cli, "model", "list")
+    if isinstance(models, list):
+        dn2key = {
+            m.get("display_name"): m.get("job_set_type")
+            for m in models
+            if isinstance(m, dict) and m.get("display_name") and m.get("job_set_type")
+        }
+        for t in txns:
+            if isinstance(t, dict) and t.get("display_name") in dn2key:
+                t["model"] = dn2key[t["display_name"]]
 
     # 3) 새 것만 추림(서버에 없는 job_id)
     fresh = [j for j in jobs if isinstance(j, dict) and j.get("id") and j["id"] not in known_ids]
