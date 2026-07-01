@@ -117,7 +117,11 @@ export function ExportView() {
         </div>
 
         <button className="export-btn" disabled={!canSave || pending === 0} onClick={onSave}>
-          {busy ? "저장 중…" : pending === 0 ? "새로 저장할 최종본 없음" : `완료만 저장하기 (${pending})`}
+          {busy
+            ? `저장 중… (최대 ${pending}개)`
+            : pending === 0
+              ? "새로 저장할 최종본 없음"
+              : `완료만 저장하기 (${pending})`}
         </button>
 
         {err && <div className="export-err">저장 실패: {err}</div>}
