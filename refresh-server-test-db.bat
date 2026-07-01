@@ -14,8 +14,8 @@ REM
 REM  Run this BEFORE run-server-test.bat, and again whenever you want fresh data.
 REM ============================================================================
 set "ROOT=%~dp0"
-REM --- LIVE (production) data folder. Change if your server path differs. ---
-set "SRC=\\192.168.1.199\MV-hub-S\backend\data"
+REM --- LIVE (production) data folder on THIS server. Change if it differs. ---
+set "SRC=E:\MV-hub-S\backend\data"
 REM --- TEST target = this clone's own backend\data ---
 set "DST=%ROOT%backend\data"
 set "PORT=8011"
