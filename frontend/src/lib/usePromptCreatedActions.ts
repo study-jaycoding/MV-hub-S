@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
+import { postLibraryChanged } from "./libraryBroadcast";
 import type { Filters, Generation } from "../types";
 
 interface UsePromptCreatedActionsArgs {
@@ -50,6 +51,7 @@ export function usePromptCreatedActions({
     }
     void reload();
     bumpBoard();
+    postLibraryChanged(); // 새 생성물(폴더 라벨 포함)이 관리탭 보드에 즉시 뜨게
   };
 
   return { handlePromptCreated };

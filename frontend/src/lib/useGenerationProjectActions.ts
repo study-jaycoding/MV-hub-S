@@ -1,5 +1,6 @@
 import type { MutableRefObject } from "react";
 import { api } from "../api";
+import { postLibraryChanged } from "./libraryBroadcast";
 import type { Filters, Generation } from "../types";
 
 interface UseGenerationProjectActionsArgs {
@@ -33,6 +34,7 @@ export function useGenerationProjectActions({
       );
       await reload();
       if (refreshBoard) bumpBoard();
+      postLibraryChanged(); // 관리탭(별도 창)이 즉시 재조회 — 담기/폴더이동/미분류 반영
       const where = projectId
         ? folderPath
           ? `폴더(${folderPath})에 담음`

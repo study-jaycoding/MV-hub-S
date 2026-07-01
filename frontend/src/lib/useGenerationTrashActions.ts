@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
+import { postLibraryChanged } from "./libraryBroadcast";
 import type { Generation } from "../types";
 import {
   bulkResultText,
@@ -54,6 +55,7 @@ export function useGenerationTrashActions({
       setBoardSelected([]);
       await reload();
       bumpBoard();
+      postLibraryChanged();
       flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
     } catch (e) {
       flash("삭제 실패: " + String(e));
@@ -67,6 +69,7 @@ export function useGenerationTrashActions({
     const failed = await runGenerationBulk(ids, (id) => api.deleteGeneration(id));
     clearSelect();
     await reload();
+    postLibraryChanged();
     flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
   };
 
@@ -76,6 +79,7 @@ export function useGenerationTrashActions({
     const failed = await runGenerationBulk(ids, (id) => api.restoreGeneration(id));
     clearSelect();
     await reload();
+    postLibraryChanged();
     flash(bulkResultText(ids.length, failed, "복구했습니다.", "복구"));
   };
 
@@ -93,6 +97,7 @@ export function useGenerationTrashActions({
     try {
       await api.restoreGeneration(g.id);
       await reload();
+      postLibraryChanged();
       flash("복구했습니다.");
     } catch (e) {
       flash("복구 실패: " + String(e));

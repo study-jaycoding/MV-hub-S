@@ -11,6 +11,8 @@ export const APP_EVENTS = {
 
 export const BROADCAST_CHANNELS = {
   assets: "ch-assets",
+  // 생성물 변경(담기/폴더·최종·공유·삭제) 창 간 알림 — 관리탭(별도 창)이 즉시 재조회.
+  generations: "ch-generations",
 } as const;
 
 export const ASSET_CHANNEL_MESSAGES = {

@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { postLibraryChanged } from "./libraryBroadcast";
 import type { Filters, Generation } from "../types";
 
 type AskPrompt = (
@@ -30,6 +31,7 @@ export function useGenerationCardActions({
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();
+      postLibraryChanged();
     } catch (e) {
       flash("재생성 실패: " + String(e));
     }
@@ -41,6 +43,7 @@ export function useGenerationCardActions({
       flash("팀 공유를 해제했습니다.");
       await reload();
       bumpBoard();
+      postLibraryChanged();
     } catch (e) {
       flash("공유 해제 실패: " + String(e));
     }
@@ -51,6 +54,7 @@ export function useGenerationCardActions({
       await api.finalize(g.id);
       flash("최종(골드)으로 지정했습니다.");
       await reload();
+      postLibraryChanged();
     } catch (e) {
       flash("최종 지정 실패: " + String(e));
     }
@@ -61,6 +65,7 @@ export function useGenerationCardActions({
       await api.unfinalize(g.id);
       flash("최종 지정을 해제했습니다.");
       await reload();
+      postLibraryChanged();
     } catch (e) {
       flash("최종 해제 실패: " + String(e));
     }
@@ -71,6 +76,7 @@ export function useGenerationCardActions({
       await api.importToWorkspace(g.id);
       flash("내 워크스페이스로 가져왔습니다 (history 기록).");
       navTab("my");
+      postLibraryChanged();
     } catch (e) {
       flash("가져오기 실패: " + String(e));
     }

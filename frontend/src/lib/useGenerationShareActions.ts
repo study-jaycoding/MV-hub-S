@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { postLibraryChanged } from "./libraryBroadcast";
 import type { Generation } from "../types";
 import {
   shareableGenerationIds,
@@ -27,6 +28,7 @@ export function useGenerationShareActions({
     try {
       const r = await api.publishToShared(ids);
       flash(`${r.published}개 팀에 공유.`);
+      if (r.published) postLibraryChanged(); // 관리탭 즉시 재조회(공유→게시 상태 반영)
       return r.published;
     } catch (e) {
       flash("공유 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));

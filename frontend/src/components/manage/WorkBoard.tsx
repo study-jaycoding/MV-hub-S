@@ -1,8 +1,9 @@
 // 작업 탭 컨테이너 — 프로젝트 선택 · 보드/테이블 뷰 전환 · 필터 · 생성물(컷 드래그 소스) 패널.
 // 데이터·핸들러를 소유하고 BoardView/TableView 에 주입한다.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import { addDisabledGen } from "../../lib/deactivated";
+import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
 import { thumbOf as generationThumbOf, thumbUrl } from "../../lib/media";
 import type { Generation } from "../../types";
@@ -63,21 +64,68 @@ export function WorkBoard() {
     api.provider().then((p) => setMyUid(p.uid || null)).catch(() => {});
   }, []);
 
+  // 현재 pid — 폴링/브로드캐스트로 여러 요청이 겹칠 때, 느린 이전 프로젝트 응답이
+  // 뒤늦게 도착해 현재 화면을 덮지 않도록 응답 시점에 pid 를 대조한다.
+  const pidRef = useRef(pid);
+  useEffect(() => {
+    pidRef.current = pid;
+  }, [pid]);
   const loadTasks = (p: string) => {
-    if (p) manageApi.listTasks(p).then(setTasks).catch((e) => setErr(String(e?.message || e)));
+    if (!p) return;
+    manageApi
+      .listTasks(p)
+      .then((r) => {
+        if (pidRef.current === p) setTasks(r);
+      })
+      .catch((e) => setErr(String(e?.message || e)));
   };
   const loadGens = (p: string) => {
-    if (p)
-      api
-        .listGenerations({ tab: "my", project_id: p }, null, 200)
-        .then(setGens)
-        .catch(() => setGens([]));
+    if (!p) return;
+    api
+      .listGenerations({ tab: "my", project_id: p }, null, 200)
+      .then((r) => {
+        if (pidRef.current === p) setGens(r);
+      })
+      .catch(() => {
+        if (pidRef.current === p) setGens([]);
+      });
   };
   useEffect(() => {
     if (pid) {
       loadTasks(pid);
       loadGens(pid);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid]);
+
+  // 실시간 반영 — 내 조작은 즉시(브로드캐스트), 팀원(다른 PC) 변경은 폴링으로.
+  useEffect(() => {
+    if (!pid) return;
+    let debounce: number | undefined;
+    const reload = () => {
+      if (debounce) clearTimeout(debounce);
+      debounce = window.setTimeout(() => {
+        loadTasks(pid);
+        loadGens(pid);
+      }, 300);
+    };
+    // 팀원 변경 폴링 — 관리탭이 화면에 보일 때만(숨겨진 창은 부하 안 줌).
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") reload();
+    }, 12000);
+    // 창이 다시 보이면 즉시 최신화(폴링 주기 안 기다리게).
+    const onVis = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    // 내 조작 즉시 반영 — 생성탭(다른 창)에서 담기/폴더·최종·공유·삭제 시 신호.
+    const offBroadcast = onLibraryChanged(reload);
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVis);
+      offBroadcast();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
 
