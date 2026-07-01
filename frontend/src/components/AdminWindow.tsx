@@ -3,81 +3,43 @@
 // 실제 접근 차단은 CONTENT_HUB_AUTH=1 일 때. 지금은 누구나 열 수 있다(2겹 차단은 나중).
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../api";
-import { useAskPrompt } from "../lib/prompt";
+import { ApprovalTab, type AdminConfirmState } from "./admin/ApprovalTab";
+import { MemberRolesTab } from "./admin/MemberRolesTab";
 import {
-  GLOBAL_ROLE_LABEL,
-  GLOBAL_ROLES,
-  PROJECT_ROLE_LABEL,
-  PROJECT_ROLES,
-  hasGlobalCap,
+  adminMemberDisplayName,
+  projectRoleCounts,
+  systemMemberUids,
+  viewerGlobalRoles,
+  visibleAdminAccounts,
+  visibleAdminMembers,
+} from "../lib/accountIdentity";
+import { useEscapeClose } from "../lib/useEscapeClose";
+import type { ProjectFolderEntry } from "../lib/projectFolderTree";
+import { ProjectRenderTree } from "./admin/ProjectRenderTree";
+import {
+  ProjectRolePicker,
+  memberRoleRank,
+} from "./admin/RolePickers";
+import { hasGlobalCap } from "../types";
+import type {
+  Account,
+  Member,
+  Project,
+  ProjectFolderState,
+  ProjectMember,
 } from "../types";
-import type { Account, Member, Project, ProjectMember } from "../types";
 
 type AdminTab = "approve" | "roles" | "projects" | "server";
-
-// 전역 역할 우선순위(작을수록 위) — admin > product_director > production_director > member.
-// 멤버는 복수 역할 가능 → 가장 높은(작은) 순위로 정렬한다.
-function memberRoleRank(roles: string[] | undefined): number {
-  const ranks = (roles || []).map((r) => GLOBAL_ROLES.indexOf(r as never));
-  const valid = ranks.filter((i) => i >= 0);
-  return valid.length ? Math.min(...valid) : GLOBAL_ROLES.length;
-}
-
-// 전역 역할 복수 선택 — 4역할을 토글 칩으로. 한 사람이 여러 역할 동시 보유 가능.
-function GlobalRolePicker({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (roles: string[]) => void;
-}) {
-  const has = (r: string) => value.includes(r);
-  const toggle = (r: string) =>
-    onChange(has(r) ? value.filter((x) => x !== r) : [...value, r]);
-  return (
-    <div className="role-chips">
-      {GLOBAL_ROLES.map((r) => (
-        <button
-          key={r}
-          type="button"
-          className={"role-chip role-" + r + (has(r) ? " on" : "")}
-          title={GLOBAL_ROLE_LABEL[r]}
-          onClick={() => toggle(r)}
-        >
-          {GLOBAL_ROLE_LABEL[r].split(" · ")[0]}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// 프로젝트 역할 복수 선택 — 한 사람이 한 프로젝트에서 여러 역할(예: Supervisor + Creator) 보유 가능.
-function ProjectRolePicker({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (roles: string[]) => void;
-}) {
-  const has = (r: string) => value.includes(r);
-  const toggle = (r: string) =>
-    onChange(has(r) ? value.filter((x) => x !== r) : [...value, r]);
-  return (
-    <div className="role-chips">
-      {PROJECT_ROLES.map((r) => (
-        <button
-          key={r}
-          type="button"
-          className={"role-chip role-" + r + (has(r) ? " on" : "")}
-          title={PROJECT_ROLE_LABEL[r]}
-          onClick={() => toggle(r)}
-        >
-          {PROJECT_ROLE_LABEL[r].split(" · ")[0]}
-        </button>
-      ))}
-    </div>
-  );
-}
+type ProjectDialogState =
+  | { mode: "create"; name: string; rootPath: string; busy?: boolean; error?: string }
+  | {
+      mode: "rename";
+      project: Project;
+      name: string;
+      rootPath: string;
+      busy?: boolean;
+      error?: string;
+    };
 
 export function AdminWindow({
   account,
@@ -90,13 +52,15 @@ export function AdminWindow({
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showHidden, setShowHidden] = useState(false); // '숨긴 계정 보기' 토글
-  const [confirm, setConfirm] = useState<
-    { kind: "reset" | "hide" | "unhide"; email: string; name: string } | null
-  >(null);
+  const [confirm, setConfirm] = useState<AdminConfirmState>(null);
   const [actMsg, setActMsg] = useState("");
   const [memberQuery, setMemberQuery] = useState(""); // 멤버 탭 검색어
   const [loading, setLoading] = useState(true);
-  const askPrompt = useAskPrompt();
+  const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
+  const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
+  const [openFolderTrees, setOpenFolderTrees] = useState<Set<string>>(new Set());
+  const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
+  const [manageEnabled, setManageEnabled] = useState(false);
 
   // 공유 서버 주소 관리(admin 전용) — 로컬 허브가 어느 서버로 발행·로그인하는지.
   const [shared, setShared] = useState<{
@@ -118,6 +82,20 @@ export function AdminWindow({
   useEffect(() => {
     refreshShared();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    api
+      .authConfig()
+      .then((config) => {
+        if (alive) setManageEnabled(!!config.manage_enabled);
+      })
+      .catch(() => {
+        if (alive) setManageEnabled(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // 임시 관리자 권한(열쇠) — 본인 계정 유지한 채 admin 비번으로 '승인 절차' 권한만 일시 획득.
@@ -174,38 +152,14 @@ export function AdminWindow({
   // 현재 사용자의 전역 역할(복수) 판정.
   // ⚠️ 서버 직결(프록시) 모드에선 멤버 목록의 is_mine 은 '서버 PC 신원'이라 내가 아니다 —
   //    그래서 로그인 계정(account)의 email/creator_uid 로 내 멤버 행을 직접 찾는다(없으면 is_mine 폴백).
-  const myMember =
-    (account &&
-      members.find(
-        (m) =>
-          (!!account.creator_uid && m.uid === account.creator_uid) ||
-          (!!account.email &&
-            !!m.email &&
-            m.email.toLowerCase() === account.email.toLowerCase()),
-      )) ||
-    members.find((m) => m.is_mine);
-  const viewerRoles =
-    myMember?.global_roles && myMember.global_roles.length
-      ? myMember.global_roles
-      : account?.global_roles && account.global_roles.length
-        ? account.global_roles
-        : account
-          ? ["member"] // 로그인됐는데 역할 정보가 비면 최소 권한(member) — admin 탭 노출 방지
-          : ["admin"]; // 미로그인(AUTH off · 개인 모드)만 소유자=admin
+  const viewerRoles = viewerGlobalRoles(account, members);
 
   // 시스템 부트스트랩 계정(admin@millionvolt.com) — 관리 UI 어디에도 노출하지 않는다.
   // (열쇠 임시권한 로그인엔 여전히 admin 으로 인증 가능 — 목록에서만 가린다.)
-  const SYSTEM_EMAILS = new Set(["admin@millionvolt.com"]);
-  const isSystemEmail = (email?: string | null) =>
-    !!email && SYSTEM_EMAILS.has(email.toLowerCase());
   // 이메일이 없는 곳(프로젝트 멤버)에서도 가리려면 admin 의 uid 가 필요 → 멤버 목록에서 역추적.
-  const systemUids = new Set(
-    members.filter((m) => isSystemEmail(m.email)).map((m) => m.uid),
-  );
-  const isSystemMember = (m: { uid: string; email?: string | null }) =>
-    isSystemEmail(m.email) || systemUids.has(m.uid);
-  const visibleMembers = members.filter((m) => !isSystemMember(m));
-  const visibleAccounts = accounts.filter((a) => !isSystemEmail(a.email));
+  const systemUids = systemMemberUids(members);
+  const visibleMembers = visibleAdminMembers(members, systemUids);
+  const visibleAccounts = visibleAdminAccounts(accounts);
   // 역량에 따라 보이는 탭이 다르다(로드맵 §1): 승인·전역역할=admin, 프로젝트=product_director.
   const tabDefs: { key: AdminTab; label: string; visible: boolean }[] = [
     { key: "approve", label: "승인", visible: hasGlobalCap(viewerRoles, "approve_signup") || elevated },
@@ -225,11 +179,48 @@ export function AdminWindow({
   // 선택 탭이 권한 변화로 사라지면 첫 가용 탭으로 폴백(빈 화면 방지).
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0]?.key;
 
+  const loadProjectFolderTree = async (pid: string) => {
+    setFolderLoading((prev) => ({ ...prev, [pid]: true }));
+    try {
+      const state = await api.projectFolder(pid);
+      setProjFolders((prev) => {
+        const next = { ...prev };
+        if (state.root_path) next[pid] = state;
+        else delete next[pid];
+        return next;
+      });
+      return state;
+    } catch {
+      return null;
+    } finally {
+      setFolderLoading((prev) => ({ ...prev, [pid]: false }));
+    }
+  };
+
   const loadProjects = () =>
     api
       .projects("my", true)
       .then((r) => {
         setProjects(r.projects);
+        api
+          .projectFolderLinks()
+          .then((res) => {
+            setProjFolders((prev) => {
+              const next: Record<string, ProjectFolderEntry> = {};
+              for (const [pid, link] of Object.entries(res.links || {})) {
+                next[pid] = { ...prev[pid], ...link };
+              }
+              return next;
+            });
+            const linkedIds = Object.keys(res.links || {}).filter(
+              (pid) => !!res.links[pid]?.root_path,
+            );
+            setOpenFolderTrees(new Set(linkedIds));
+            linkedIds.forEach((pid) => {
+              loadProjectFolderTree(pid);
+            });
+          })
+          .catch(() => {});
         // 모든 프로젝트 멤버를 1회 일괄 prefetch → 펼칠 때 즉시 표시(요청 N→1).
         api
           .projectMembersAll()
@@ -286,11 +277,7 @@ export function AdminWindow({
       alert("처리 실패: " + String(e));
     }
   };
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeClose(onClose);
 
   const changeMemberGlobalRoles = async (uid: string, roles: string[]) => {
     try {
@@ -349,34 +336,122 @@ export function AdminWindow({
   const projRolesOf = (pid: string, uid: string) =>
     (projMembersMap[pid] || []).find((m) => m.uid === uid)?.roles || [];
   // 프로젝트별 역할 인원 수(PM/Sup/Creator) — 한 사람이 복수 역할이면 각각 셈.
-  const projRoleCounts = (pid: string) => {
-    const c = { project_manager: 0, supervisor: 0, creator: 0 };
-    (projMembersMap[pid] || [])
-      .filter((m) => !systemUids.has(m.uid))
-      .forEach((m) =>
-        (m.roles || []).forEach((r) => {
-          if (r in c) c[r as keyof typeof c] += 1;
-        }),
-      );
-    return c;
-  };
+  const projRoleCounts = (pid: string) => projectRoleCounts(projMembersMap[pid] || [], systemUids);
   const memberName = (uid: string) => {
     // UI 는 절대 uid 를 보이지 않는다 — 표시이름이 없으면 '팀원'으로(식별자 노출 금지).
-    const m = members.find((x) => x.uid === uid);
-    return m ? (m.is_mine ? "나" : m.name || "팀원") : "팀원";
+    return adminMemberDisplayName(members, uid);
   };
 
-  const createProject = async () => {
-    const name = (await askPrompt("새 프로젝트 이름", "", "프로젝트 이름 ⏎"))?.trim();
-    if (!name) return;
-    await api.createProject(name);
-    loadProjects();
+  const createProject = () => {
+    setProjectDialog({ mode: "create", name: "", rootPath: "" });
   };
   const renameProject = async (p: Project) => {
-    const name = (await askPrompt("프로젝트 이름", p.name, "프로젝트 이름 ⏎"))?.trim();
-    if (!name) return;
-    await api.updateProject(p.id, { name });
-    loadProjects();
+    let folder: ProjectFolderEntry | ProjectFolderState | undefined = manageEnabled
+      ? projFolders[p.id]
+      : undefined;
+    if (manageEnabled && !folder) {
+      const loaded = await loadProjectFolderTree(p.id);
+      folder = loaded || undefined;
+    }
+    setProjectDialog({
+      mode: "rename",
+      project: p,
+      name: p.name,
+      rootPath: folder?.root_path || "",
+    });
+  };
+  const saveProjectFolderLink = async (
+    pid: string,
+    rootPath: string,
+    selectedPath: string,
+  ) => {
+    try {
+      const state = await api.setProjectFolder(pid, {
+        root_path: rootPath,
+        selected_path: rootPath ? selectedPath : "",
+      });
+      setProjFolders((cur) => {
+        const next = { ...cur };
+        if (state.root_path) next[pid] = state;
+        else delete next[pid];
+        return next;
+      });
+      setOpenFolderTrees((prevSet) => {
+        const next = new Set(prevSet);
+        if (state.root_path) next.add(pid);
+        else next.delete(pid);
+        return next;
+      });
+      return state;
+    } catch (e) {
+      setActMsg(
+        `프로젝트는 저장됐지만 렌더 폴더 경로는 저장하지 못했습니다. ${String(e).replace(/^Error:\s*/, "")}`,
+      );
+      return null;
+    }
+  };
+  const saveProjectDialog = async () => {
+    if (!projectDialog || projectDialog.busy) return;
+    const name = projectDialog.name.trim();
+    const rootPath = projectDialog.rootPath.trim();
+    if (!name) {
+      setProjectDialog({ ...projectDialog, error: "프로젝트 이름을 입력하세요." });
+      return;
+    }
+    setProjectDialog({ ...projectDialog, busy: true, error: "" });
+    try {
+      if (projectDialog.mode === "create") {
+        const created = await api.createProject(name);
+        if (manageEnabled && rootPath) {
+          await saveProjectFolderLink(created.id, rootPath, "");
+        }
+      } else {
+        await api.updateProject(projectDialog.project.id, { name });
+        const prev = projFolders[projectDialog.project.id];
+        if (manageEnabled && (rootPath || prev?.root_path)) {
+          await saveProjectFolderLink(
+            projectDialog.project.id,
+            rootPath,
+            rootPath ? prev?.selected_path || "" : "",
+          );
+        }
+      }
+      setProjectDialog(null);
+      loadProjects();
+    } catch (e) {
+      setProjectDialog({
+        ...projectDialog,
+        busy: false,
+        error: String(e).replace(/^Error:\s*/, ""),
+      });
+    }
+  };
+  const toggleFolderTree = (pid: string) => {
+    if (openFolderTrees.has(pid)) {
+      setOpenFolderTrees((prev) => {
+        const next = new Set(prev);
+        next.delete(pid);
+        return next;
+      });
+      return;
+    }
+    setOpenFolderTrees((prev) => new Set(prev).add(pid));
+    if (!projFolders[pid]?.tree) loadProjectFolderTree(pid);
+  };
+  const selectProjectFolder = async (pid: string, path: string) => {
+    const cur = projFolders[pid];
+    if (!cur?.root_path) return;
+    const optimistic = { ...cur, selected_path: path };
+    setProjFolders((prev) => ({ ...prev, [pid]: optimistic }));
+    try {
+      const state = await api.setProjectFolder(pid, {
+        root_path: cur.root_path,
+        selected_path: path,
+      });
+      setProjFolders((prev) => ({ ...prev, [pid]: state }));
+    } catch {
+      loadProjectFolderTree(pid);
+    }
   };
   const toggleArchive = async (p: Project) => {
     await api.updateProject(p.id, { archived: !p.archived });
@@ -472,6 +547,64 @@ export function AdminWindow({
           </div>
         )}
 
+        {projectDialog && (
+          <div className="admin-confirm-backdrop" onMouseDown={() => setProjectDialog(null)}>
+            <div
+              className="admin-confirm admin-project-dialog"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <p className="admin-confirm-q">
+                {projectDialog.mode === "create" ? "새 프로젝트" : "프로젝트 설정"}
+              </p>
+              <label className="admin-field">
+                <span>프로젝트 이름</span>
+                <input
+                  className="settings-input"
+                  placeholder="프로젝트 이름"
+                  value={projectDialog.name}
+                  onChange={(e) =>
+                    setProjectDialog({ ...projectDialog, name: e.target.value, error: "" })
+                  }
+                  onKeyDown={(e) => e.key === "Enter" && saveProjectDialog()}
+                  autoFocus
+                />
+              </label>
+              {manageEnabled && (
+                <>
+                  <label className="admin-field">
+                    <span>렌더 폴더 경로</span>
+                    <input
+                      className="settings-input"
+                      placeholder="예: D:\\Project\\Act_01"
+                      value={projectDialog.rootPath}
+                      onChange={(e) =>
+                        setProjectDialog({ ...projectDialog, rootPath: e.target.value, error: "" })
+                      }
+                      onKeyDown={(e) => e.key === "Enter" && saveProjectDialog()}
+                    />
+                  </label>
+                  <div className="admin-note-sub">
+                    경로를 넣으면 그 안의 Render 폴더 구조가 프로젝트 아래에 표시됩니다.
+                  </div>
+                </>
+              )}
+              {projectDialog.error && <div className="login-error">{projectDialog.error}</div>}
+              <div className="admin-confirm-actions">
+                <button
+                  className="admin-confirm-yes"
+                  onClick={saveProjectDialog}
+                  disabled={projectDialog.busy}
+                >
+                  {projectDialog.busy ? "저장 중…" : "확인"}
+                </button>
+                <button className="admin-confirm-no" onClick={() => setProjectDialog(null)}>
+                  취소
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {visibleTabs.length > 1 && (
           <div className="admin-tabs">
             {visibleTabs.map((tdef) => (
@@ -497,126 +630,16 @@ export function AdminWindow({
           ) : (
             <>
               {activeTab === "approve" && (
-                <section className="admin-section">
-                  <div className="admin-note-sub">
-                    가입 신청을 승인/거부하고 로그인 계정의 전역 역할을 부여합니다(Admin 전용).
-                  </div>
-                  <h4>승인 절차</h4>
-                  <label className="admin-hidden-toggle">
-                    <input
-                      type="checkbox"
-                      checked={showHidden}
-                      onChange={(e) => setShowHidden(e.target.checked)}
-                    />
-                    숨긴 계정 보기
-                  </label>
-                  {actMsg && <div className="admin-act-msg">{actMsg}</div>}
-                  {visibleAccounts.length === 0 && <div className="admin-empty">계정 없음</div>}
-                  <table className="admin-table">
-                    <thead>
-                      <tr>
-                        <th>계정</th>
-                        <th className="th-center">상태 (클릭하여 변경)</th>
-                        <th className="th-right">관리</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleAccounts.map((a) => (
-                        <tr key={a.email} className={a.hidden ? "admin-row-hidden" : ""}>
-                          <td>
-                            <div className="admin-member">
-                              <span className="admin-mname">{a.name || a.email}</span>
-                              <span className="admin-muid" title={a.email}>
-                                {a.email}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="td-center">
-                            <div className="acct-status-seg">
-                              {(
-                                [
-                                  ["approved", "승인"],
-                                  ["pending", "대기"],
-                                  ["rejected", "차단"],
-                                ] as const
-                              ).map(([st, label]) => (
-                                <button
-                                  key={st}
-                                  className={
-                                    "acct-seg acct-seg-" +
-                                    st +
-                                    (a.status === st ? " on" : "")
-                                  }
-                                  onClick={() => a.status !== st && approve(a, st)}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="td-right">
-                            <div className="admin-acct-actions">
-                              <button
-                                className="admin-mini-btn"
-                                onClick={() =>
-                                  setConfirm({ kind: "reset", email: a.email, name: a.name || a.email })
-                                }
-                              >
-                                비밀번호 초기화
-                              </button>
-                              <button
-                                className="admin-mini-btn"
-                                onClick={() =>
-                                  setConfirm({
-                                    kind: a.hidden ? "unhide" : "hide",
-                                    email: a.email,
-                                    name: a.name || a.email,
-                                  })
-                                }
-                              >
-                                {a.hidden ? "숨김 해제" : "숨기기"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div className="admin-note-sub">
-                    전역 역할은 <b>멤버 · 전역 역할</b> 탭에서 부여합니다.
-                  </div>
-
-                  {confirm && (
-                    <div
-                      className="admin-confirm-backdrop"
-                      onMouseDown={() => setConfirm(null)}
-                    >
-                      <div
-                        className="admin-confirm"
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <p className="admin-confirm-q">
-                          {confirm.kind === "reset"
-                            ? `${confirm.name} 비밀번호를 111111 로 정말 초기화하시겠습니까?`
-                            : confirm.kind === "hide"
-                              ? `${confirm.name} 계정을 정말 숨기시겠습니까?`
-                              : `${confirm.name} 숨김을 해제하시겠습니까?`}
-                        </p>
-                        <div className="admin-confirm-actions">
-                          <button className="admin-confirm-yes" onClick={runConfirm}>
-                            예
-                          </button>
-                          <button
-                            className="admin-confirm-no"
-                            onClick={() => setConfirm(null)}
-                          >
-                            아니오
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </section>
+                <ApprovalTab
+                  accounts={visibleAccounts}
+                  showHidden={showHidden}
+                  setShowHidden={setShowHidden}
+                  actMsg={actMsg}
+                  confirm={confirm}
+                  setConfirm={setConfirm}
+                  runConfirm={runConfirm}
+                  approve={approve}
+                />
               )}
 
               {activeTab === "server" && (
@@ -645,65 +668,13 @@ export function AdminWindow({
               )}
 
               {activeTab === "roles" && (
-              <section className="admin-section">
-                <h4>멤버 · 전역 역할 설정</h4>
-                <div className="admin-note-sub">
-                  전역 역할은 사람 단위 권한입니다(복수 가능). 프로젝트 안 역할(작업·검수)은
-                  프로젝트 탭에서 부여하세요.
-                </div>
-                <div className="proj-add-search member-search">
-                  <span className="proj-add-search-icn">🔍</span>
-                  <input
-                    value={memberQuery}
-                    onChange={(e) => setMemberQuery(e.target.value)}
-                    placeholder="멤버 검색"
-                  />
-                </div>
-                <table className="admin-table">
-                  <thead>
-                    <tr>
-                      <th>멤버</th>
-                      <th>생성물</th>
-                      <th>전역 역할</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleMembers
-                      .filter((m) => {
-                        const q = memberQuery.trim().toLowerCase();
-                        if (!q) return true;
-                        const nm = (m.is_mine ? "나" : m.name || "팀원").toLowerCase();
-                        return (
-                          nm.includes(q) ||
-                          m.uid.toLowerCase().includes(q) ||
-                          (m.email || "").toLowerCase().includes(q)
-                        );
-                      })
-                      .map((m) => (
-                      <tr key={m.uid}>
-                        <td>
-                          <div className="admin-member">
-                            <span className={"admin-dot" + (m.is_mine ? " mine" : "")} />
-                            <span className="admin-mname">
-                              {m.is_mine ? "나" : m.name || "팀원"}
-                            </span>
-                            <span className="admin-muid" title={m.uid}>
-                              {m.email || shortUid(m.uid)}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="admin-count">{m.count}</td>
-                        <td>
-                          <GlobalRolePicker
-                            value={m.global_roles}
-                            onChange={(roles) => changeMemberGlobalRoles(m.uid, roles)}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </section>
+                <MemberRolesTab
+                  members={visibleMembers}
+                  memberQuery={memberQuery}
+                  setMemberQuery={setMemberQuery}
+                  shortUid={shortUid}
+                  onChangeRoles={changeMemberGlobalRoles}
+                />
               )}
 
               {activeTab === "projects" && (
@@ -758,8 +729,13 @@ export function AdminWindow({
                             >
                               ⠿
                             </span>
-                            {p.name}
+                            <span className="admin-pname-text">{p.name}</span>
                             {p.archived && <span className="admin-badge">보관됨</span>}
+                            {projFolders[p.id]?.root_path && (
+                              <span className="proj-folder-path" title={projFolders[p.id]?.root_path}>
+                                {projFolders[p.id]?.root_path}
+                              </span>
+                            )}
                           </td>
                           <td className="admin-count proj-count-cell">
                             <span className="proj-gencount" title="생성물 수(프로젝트 전체)">{p.total ?? p.count}</span>
@@ -781,6 +757,18 @@ export function AdminWindow({
                             >
                               👥
                             </button>
+                            <button
+                              className={openFolderTrees.has(p.id) ? "on" : ""}
+                              onClick={() => toggleFolderTree(p.id)}
+                              disabled={!projFolders[p.id]?.root_path}
+                              title={
+                                projFolders[p.id]?.root_path
+                                  ? "Render 폴더 구조 보기"
+                                  : "이름 변경에서 렌더 폴더 경로를 먼저 지정하세요"
+                              }
+                            >
+                              🗂
+                            </button>
                             <button onClick={() => renameProject(p)} title="이름 변경">
                               ✎
                             </button>
@@ -796,6 +784,17 @@ export function AdminWindow({
                             </button>
                           </td>
                         </tr>
+                        {openFolderTrees.has(p.id) && projFolders[p.id]?.root_path && (
+                          <tr className="proj-folder-row">
+                            <td colSpan={3}>
+                              <ProjectRenderTree
+                                state={projFolders[p.id]}
+                                loading={folderLoading[p.id]}
+                                onSelect={(path) => selectProjectFolder(p.id, path)}
+                              />
+                            </td>
+                          </tr>
+                        )}
                         {openProjs.has(p.id) && (
                           <tr className="proj-roles-row">
                             <td colSpan={3}>

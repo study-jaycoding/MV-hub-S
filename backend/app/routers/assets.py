@@ -27,16 +27,21 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import _proxy
-from .. import repo
+from .. import rbac, repo
 from ..config import (
     ASSETS_ROOT,
     AUTH_ENABLED,
     DATA_DIR,
     DEFAULT_PROJECT,
     DEFAULT_WORKER_ID,
+    MANAGE_ENABLED,
     MEDIA_DIR,
 )
-from ..deps import actor_id
+from ..db import get_connection
+from ..deps import account_global_roles, account_scope_uid, actor_id
+from ..services.media_types import asset_media_type
+from ..services.project_folders import hidden_folder
+from ..services.request_guards import require_loopback_request
 
 
 def _require_mount_manager(request: Request) -> None:
@@ -49,9 +54,7 @@ def _require_mount_manager(request: Request) -> None:
         if getattr(request.state, "account", None) is None:
             raise HTTPException(status_code=401, detail="로그인이 필요합니다")
         return
-    host = request.client.host if request.client else ""
-    if host not in ("127.0.0.1", "::1"):
-        raise HTTPException(status_code=403, detail="폴더 등록은 서버 로컬에서만 가능합니다")
+    require_loopback_request(request, "폴더 등록은 서버 로컬에서만 가능합니다")
 
 _THUMB_DIR = MEDIA_DIR / ".thumbs"  # 썸네일 디스크 캐시
 
@@ -68,21 +71,11 @@ def _mounts_file() -> Path:
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
-_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
-_VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
-_AUDIO_EXT = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac")
 _PROMPT_IMPORT_PROJECT = "imports"
 
 
 def _media_type(name: str) -> Optional[str]:
-    low = name.lower()
-    if low.endswith(_IMAGE_EXT):
-        return "image"
-    if low.endswith(_VIDEO_EXT):
-        return "video"
-    if low.endswith(_AUDIO_EXT):
-        return "audio"
-    return None
+    return asset_media_type(name, include_audio=True)
 
 
 def _sha256_bytes(raw: bytes) -> str:
@@ -164,17 +157,85 @@ def _mount_dir(name: str, owner: str) -> Optional[Path]:
     return None
 
 
-def _safe_project_dir(project: str, owner: str) -> Optional[Path]:
+def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
+    """PM 프로젝트 설정의 root_path 를 Assets 자동 마운트로 노출한다.
+
+    수동 asset_mounts.json 에 쓰지 않고 매번 읽어 합친다. 프로젝트 설정을 바꾸면
+    에셋창도 다음 로드부터 그대로 따라가게 하기 위해서다.
+    """
+    if not MANAGE_ENABLED:
+        return []
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT project_id, root_path FROM project_folder_link"
+            ).fetchall()
+        links = {str(r["project_id"]): {"root_path": r["root_path"]} for r in rows}
+    except Exception:  # noqa: BLE001 - PM 테이블이 아직 없으면 자동 마운트만 비활성
+        return []
+    if not links:
+        return []
+
+    read_all = (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
+    member_uid = None if read_all else (account_scope_uid(request) or "\x00")
+    try:
+        visible = repo.list_projects(include_archived=False, member_uid=member_uid).get("projects") or []
+    except Exception:  # noqa: BLE001
+        visible = []
+
+    out: list[dict[str, str]] = []
+    used: set[str] = set()
+    for p in visible:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("id") or "")
+        name = str(p.get("name") or "").strip()
+        link = links.get(pid) or {}
+        root = str(link.get("root_path") or "").strip()
+        if not (pid and name and root) or name in used:
+            continue
+        try:
+            path = Path(root).expanduser().resolve()
+        except OSError:
+            path = Path(root).expanduser()
+        used.add(name)
+        out.append({"name": name, "path": str(path), "owner": "project"})
+    return out
+
+
+def _auto_mount_dir(name: str, request: Request) -> Optional[Path]:
+    for m in _auto_project_mounts(request):
+        if m["name"] == name:
+            p = Path(m["path"]).resolve()
+            return p if p.is_dir() else None
+    return None
+
+
+def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bool]]:
+    """프로젝트 이름 → 실제 폴더 + 자동 PM 경로 여부.
+
+    두 번째 값이 True 면 PM 프로젝트 설정에서 온 경로다. 이 경우 Assets 트리에서
+    Render 폴더는 숨기고, 나머지 제작 폴더만 보여준다.
+    """
+    owner = actor_id(request)
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
-        return md
+        return md, False
+    auto = _auto_mount_dir(project, request)
+    if auto:
+        return auto, True
     cand = (ASSETS_ROOT / project).resolve()
     try:
         cand.relative_to(ASSETS_ROOT)
     except ValueError:
         return None
-    return cand if cand.is_dir() else None
+    return (cand, False) if cand.is_dir() else None
+
+
+def _safe_project_dir(project: str, request: Request) -> Optional[Path]:
+    info = _project_dir_info(project, request)
+    return info[0] if info else None
 
 
 def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
@@ -188,10 +249,15 @@ def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
 
 def _hidden(name: str) -> bool:
     # 시스템/ledger 파일·placeholder 숨김 (PV 와 동일한 취지)
-    return name.startswith((".", "_")) or name.lower() == "readme.md"
+    return hidden_folder(name) or name.lower() == "readme.md"
 
 
-def _build_tree(directory: Path, rel_prefix: str) -> list[dict[str, Any]]:
+def _build_tree(
+    directory: Path,
+    rel_prefix: str,
+    *,
+    hidden_names: Optional[set[str]] = None,
+) -> list[dict[str, Any]]:
     """디렉터리를 재귀 순회 — 폴더 우선, 미디어 파일만 포함."""
     try:
         entries = sorted(
@@ -204,6 +270,8 @@ def _build_tree(directory: Path, rel_prefix: str) -> list[dict[str, Any]]:
     for entry in entries:
         if _hidden(entry.name):
             continue
+        if hidden_names and entry.name.lower() in hidden_names:
+            continue
         rel = f"{rel_prefix}{entry.name}"
         if entry.is_dir():
             out.append(
@@ -211,7 +279,7 @@ def _build_tree(directory: Path, rel_prefix: str) -> list[dict[str, Any]]:
                     "name": entry.name,
                     "type": "dir",
                     "path": rel,
-                    "children": _build_tree(entry, rel + "/"),
+                    "children": _build_tree(entry, rel + "/", hidden_names=hidden_names),
                 }
             )
         else:
@@ -236,6 +304,9 @@ def list_projects(request: Request):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
+    for m in _auto_project_mounts(request):
+        if m["name"] not in projects:
+            projects.append(m["name"])
     # 내장 폴더는 파일이 있으면 프로젝트로 노출 → Assets 에서 탐색·태그·소스지정(@이름) 가능.
     for built_in in ("captures", _PROMPT_IMPORT_PROJECT):
         p = ASSETS_ROOT / built_in
@@ -255,12 +326,17 @@ class MountIn(BaseModel):
 @router.get("/mounts")
 def list_mounts(request: Request):
     """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
-    return {
-        "mounts": [
-            {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
-            for m in _owner_mounts(actor_id(request))
-        ]
-    }
+    manual = [
+        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
+        for m in _owner_mounts(actor_id(request))
+    ]
+    names = {m["name"] for m in manual}
+    auto = [
+        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir(), "auto": True}
+        for m in _auto_project_mounts(request)
+        if m["name"] not in names
+    ]
+    return {"mounts": manual + auto}
 
 
 @router.post("/mounts", dependencies=[Depends(_require_mount_manager)])
@@ -310,13 +386,18 @@ def del_mount(name: str, request: Request):
 @router.get("/tree")
 def project_tree(request: Request, project: str = Query(...)):
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석."""
-    proj_dir = _safe_project_dir(project, actor_id(request))
-    if not proj_dir:
+    info = _project_dir_info(project, request)
+    if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+    proj_dir, auto_project = info
     return {
         "project": project,
         "name": proj_dir.name,
-        "children": _build_tree(proj_dir, ""),
+        "children": _build_tree(
+            proj_dir,
+            "",
+            hidden_names={"render"} if auto_project else None,
+        ),
     }
 
 
@@ -346,8 +427,8 @@ class AssetColorIn(BaseModel):
     color: Optional[str] = None
 
 
-def _require_project(project: str, owner: str) -> None:
-    if not _safe_project_dir(project, owner):
+def _require_project(project: str, request: Request) -> None:
+    if not _safe_project_dir(project, request):
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
 
 
@@ -500,7 +581,7 @@ def asset_set_color(body: AssetColorIn, request: Request):
 @router.get("/file")
 def get_file(request: Request, project: str = Query(...), path: str = Query(...)):
     """프로젝트 내 파일 서빙(경로 보안) — 내가 등록한 마운트 안에서만(img 요청은 쿠키로 인증)."""
-    proj_dir = _safe_project_dir(project, actor_id(request))
+    proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     target = _safe_resolve(proj_dir, path)
@@ -518,7 +599,7 @@ def get_thumb(
 ):
     """이미지 썸네일(리사이즈+디스크 캐시) — 그리드/리스트 스크롤 성능용.
     원본 풀해상도(수 MP) 대신 작은 이미지를 디코딩하게 해 렉을 없앤다."""
-    proj_dir = _safe_project_dir(project, actor_id(request))
+    proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     target = _safe_resolve(proj_dir, path)
@@ -552,7 +633,7 @@ async def upload_assets(
     """외부 파일을 현재 폴더(dir, 비면 프로젝트 루트)로 가져오기(드롭 업로드).
     파일명은 basename 만 사용(경로 traversal 차단), 미디어가 아닌 파일은 제외,
     이름 충돌은 _2, _3… 으로 회피(덮어쓰기 안 함)."""
-    proj_dir = _safe_project_dir(project, actor_id(request))
+    proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
@@ -616,14 +697,13 @@ async def upload_reference_import(
 ):
     """프롬프트/레퍼런스 트레이에 외부 파일을 직접 드롭할 때 쓰는 내장 가져오기.
     선택된 에셋 폴더가 있으면 그 안의 import/에 저장하고, 같은 파일은 해시로 재사용한다."""
-    owner = actor_id(request)
     project = (project or "").strip()
     dir = (dir or "").strip().strip("/")
 
     out_project = _PROMPT_IMPORT_PROJECT
     project_dir: Optional[Path] = None
     if project and project not in ("captures", _PROMPT_IMPORT_PROJECT):
-        project_dir = _safe_project_dir(project, owner)
+        project_dir = _safe_project_dir(project, request)
         if project_dir:
             import_rel = f"{dir}/import" if dir else "import"
             dest = _safe_resolve(project_dir, import_rel)
@@ -707,7 +787,7 @@ def export_zip(
     """선택한 여러 파일을 zip 으로 묶어 스트리밍(OS 드래그 다중 내보내기용).
     네이티브 DownloadURL 드래그는 1건만 지원하므로, 다중선택은 이 zip 한 건으로 내보낸다.
     zip 내부는 파일명만으로 평탄화하고 동일 이름은 _2, _3… 으로 회피한다."""
-    proj_dir = _safe_project_dir(project, actor_id(request))
+    proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     if not paths:
@@ -759,7 +839,7 @@ class RevealIn(BaseModel):
 @router.post("/reveal")
 def reveal_file(body: RevealIn, request: Request):
     """OS 파일 탐색기에서 원본 위치를 열고 해당 파일을 선택(로컬 전용)."""
-    proj_dir = _safe_project_dir(body.project, actor_id(request))
+    proj_dir = _safe_project_dir(body.project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {body.project}")
     target = _safe_resolve(proj_dir, body.path)

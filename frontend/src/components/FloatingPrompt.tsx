@@ -1,5 +1,6 @@
 // 플로팅 입력창 — 네이티브 window.prompt 대체. 화면을 가리지 않는 작은 떠 있는 입력.
 import { useEffect, useRef, useState } from "react";
+import { useEscapeClose } from "../lib/useEscapeClose";
 
 export function FloatingPrompt({
   title,
@@ -21,13 +22,7 @@ export function FloatingPrompt({
     ref.current?.focus();
     ref.current?.select();
   }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  useEscapeClose(onCancel);
 
   return (
     <>

@@ -61,6 +61,7 @@ from .routers import (
 )
 from .services import auth as auth_svc
 from .services.backup import periodic_backup
+from .services.request_guards import is_loopback_host
 from .services.syncer import periodic_sync
 from .ws import manager
 
@@ -222,11 +223,6 @@ if MANAGE_ENABLED:
 # ── AUTH off 원격 차단 ─────────────────────────────────────────────────────
 # 인증을 끈 개인/개발 모드는 로컬 PC 전용이다. HOST 를 실수로 0.0.0.0 으로 열어도 LAN 에서
 # 라이브러리·에셋 파일·DB 작업을 무인증으로 호출하지 못하게 HTTP 전체를 막는다.
-# ★실제 미들웨어 등록은 data_proxy '뒤'에서 한다(가장 마지막 등록=최외곽) — 프록시가 데이터
-#   경로를 서버로 단락시키기 '전에' 원격을 차단해야 프록시 GET 까지 막힌다. 아래 data_proxy 다음 참조.
-_LOOPBACK_CLIENTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-
-
 # ── 인증 enforcement 미들웨어 (로드맵 §4-6 '서버가 매번 검증') ─────────────────
 # AUTH_ENABLED 일 때만 작동. 보호 경로(/api/* 와 /media/*)는 승인된 세션을 요구한다.
 # 토큰은 Authorization: Bearer <token> 또는 세션 쿠키(ch_session — img/태그·WS 용).
@@ -307,7 +303,7 @@ async def data_proxy(request: Request, call_next):
 async def auth_off_remote_guard(request: Request, call_next):
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (request.client.host if request.client else "") or ""
-        if host not in _LOOPBACK_CLIENTS:
+        if not is_loopback_host(host):
             return JSONResponse(
                 {"detail": "AUTH off 모드는 로컬에서만 접근할 수 있습니다"},
                 status_code=403,
@@ -355,7 +351,7 @@ async def websocket_endpoint(ws: WebSocket):
     account_uid: str | None = None
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (ws.client.host if ws.client else "") or ""
-        if host not in _LOOPBACK_CLIENTS:
+        if not is_loopback_host(host):
             await ws.close(code=1008)
             return
     if AUTH_ENABLED:

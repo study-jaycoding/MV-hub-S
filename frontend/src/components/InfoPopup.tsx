@@ -3,8 +3,12 @@
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { buildPromptParts, refSrc } from "../lib/promptParts";
+import { useModelDisplayName } from "../lib/modelCatalog";
+import { refSrc } from "../lib/promptParts";
+import { useEscapeClose } from "../lib/useEscapeClose";
+import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget, Project, Reference } from "../types";
+import { InlinePromptRefs } from "./common/InlinePromptRefs";
 
 interface Props {
   target: InfoTarget;
@@ -20,46 +24,6 @@ function clampStart(x: number, y: number) {
   const left = Math.min(Math.max(8, x + 8), window.innerWidth - POP_W - 8);
   const top = Math.min(Math.max(8, y + 8), window.innerHeight - 200);
   return { x: left, y: top };
-}
-
-// 프롬프트 행 — 소스가 쓰였으면 칩 자리에 인라인 썸네일을 끼워 "어디에 들어갔는지" 보이게 한다.
-// 매칭되는 칩이 없으면(옛 생성 등) display_prompt/prompt 를 평범한 텍스트로.
-function renderPrompt(
-  displayPrompt: string | null,
-  prompt: string,
-  references: Reference[],
-  onPreview: (t: PreviewTarget) => void,
-): React.ReactNode {
-  const parts = displayPrompt ? buildPromptParts(displayPrompt, references) : [];
-  if (parts.some((p) => p.t === "chip")) {
-    return (
-      <span className="info-prompt">
-        {parts.map((p, i) =>
-          p.t === "text" ? (
-            <span key={i}>{p.v}</span>
-          ) : (
-            <button
-              key={i}
-              type="button"
-              className="inline-ref inline-ref-static inline-ref-btn"
-              title={`${p.ref.name} — 크게 보기`}
-              onClick={() =>
-                onPreview({
-                  url: refSrc(p.ref.file_path) || p.ref.thumb,
-                  type: p.ref.type,
-                  name: p.ref.name,
-                })
-              }
-            >
-              {p.ref.thumb && <img src={p.ref.thumb} alt="" />}
-              <span className="inline-ref-name">{p.ref.name}</span>
-            </button>
-          ),
-        )}
-      </span>
-    );
-  }
-  return <span className="info-prompt">{displayPrompt || prompt}</span>;
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -81,13 +45,10 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
   const [pos, setPos] = useState(() => clampStart(target.x, target.y));
   const [dim, setDim] = useState<string>("");
   const [credits, setCredits] = useState<number | null>(null);
+  const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeClose(onClose);
 
   // 크레딧 — 모델+옵션 기준 비용 조회(무료 /api/cost). gen 에 별도 저장 안 함.
   useEffect(() => {
@@ -102,8 +63,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
 
   const onDragStart = (e: React.PointerEvent) => {
     drag.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
-    window.addEventListener("pointermove", onDragMove);
-    window.addEventListener("pointerup", onDragEnd);
+    addWindowPointerDrag(onDragMove, onDragEnd);
   };
   const onDragMove = (e: PointerEvent) => {
     const d = drag.current;
@@ -112,8 +72,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
   };
   const onDragEnd = () => {
     drag.current = null;
-    window.removeEventListener("pointermove", onDragMove);
-    window.removeEventListener("pointerup", onDragEnd);
+    removeWindowPointerDrag(onDragMove, onDragEnd);
   };
 
   // ── 대상별 미리보기 URL / 제목 / 정보 행 ──
@@ -132,7 +91,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
     const params = (g.params || {}) as Record<string, unknown>;
     rows = (
       <>
-        <Row label="모델" value={g.model} />
+        <Row label="모델" value={modelName(g.model)} />
         {g.status === "failed" && (
           <div className="info-error">
             <span className="info-error-label">⚠ 실패 사유</span>
@@ -168,7 +127,17 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
           label="전역 태그"
           value={g.auto_tags?.length ? g.auto_tags.map((t) => `#${t}`).join("  ") : null}
         />
-        <Row label="프롬프트" value={renderPrompt(g.display_prompt, g.prompt, g.references, onPreview)} />
+        <Row
+          label="프롬프트"
+          value={
+            <InlinePromptRefs
+              displayPrompt={g.display_prompt}
+              prompt={g.prompt}
+              references={g.references}
+              onPreview={onPreview}
+            />
+          }
+        />
       </>
     );
     // 사용된 소스(레퍼런스) — 출처를 한눈에. 재사용·변형의 핵심.

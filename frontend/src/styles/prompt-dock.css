@@ -1,0 +1,418 @@
+﻿/* ── 스포트라이트 (project-viewer 형태 — 하단 도킹 바) ── */
+/* 항상 떠 있는 하단 도크 — 화면을 가리지 않게 pointer-events 는 도크에만. */
+.sl-dockbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  display: flex; justify-content: center;
+  padding: 0 24px 18px;
+  pointer-events: none;
+}
+.sl-dock {
+  width: 100%; max-width: 1200px; /* PV(millionvolt) 프롬프트 바와 동일 너비 */
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: auto;
+}
+@keyframes sl-rise {
+  from { opacity: 0; transform: translateY(24px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.sl-panel {
+  position: relative;
+  background: var(--glass);
+  backdrop-filter: blur(26px) saturate(1.3);
+  border: 1px solid var(--border2);
+  border-radius: 18px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65), var(--glow);
+  padding: 6px;
+  transition: filter 0.2s ease, opacity 0.2s ease;
+}
+/* 에이전트 미연결(agentOn=false) — 프롬프트 바를 회색 처리해 '연결 안 됨'을 즉시 인지.
+   연결되면(또는 확인 전 null) 원래 라임 컬러로 복귀. 입력은 가능하게 유지(비활성 아님). */
+.sl-dockbar.sl-offline .sl-panel {
+  filter: grayscale(1);
+  opacity: 0.78;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(160, 160, 160, 0.35);
+}
+
+/* @/# 소스 피커 드롭다운 (프롬프트 위로 띄움) */
+.sl-mention {
+  position: absolute; left: 8px; bottom: calc(100% + 8px);
+  width: 340px; max-width: calc(100% - 16px); /* PV 피커처럼 좌측 고정 너비(전체폭 안 채움) */
+  background: #14151a; border: 1px solid var(--border2);
+  border-radius: 14px; overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+}
+.sl-mention-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; font-size: 12px; font-weight: 700; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.sl-mention-hint { font-weight: 500; color: var(--muted2); font-size: 11px; }
+/* 최대 15개까지 스크롤 없이 보이게(항목 ≈ 50px). 화면 높이는 넘지 않게 cap. */
+.sl-mention-list { max-height: min(760px, calc(100vh - 150px)); overflow-y: auto; padding: 4px; }
+.sl-mention-empty { padding: 16px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.sl-mention-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 6px 8px; border-radius: 9px; background: transparent; border: none;
+  text-align: left;
+}
+.sl-mention-item.on { background: var(--grad-soft); }
+.sl-mention-item img, .sl-mention-ph {
+  width: 38px; height: 38px; border-radius: 8px; object-fit: cover;
+  background: #050608; flex: 0 0 auto;
+}
+.sl-mention-name { font-size: 13px; font-weight: 600; color: #fff; flex: 0 0 auto; }
+.sl-mention-tags { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; }
+.sl-mention-tag { font-size: 10px; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 7px; border-radius: 10px; }
+
+/* 프롬프트 행 */
+.sl-prompt-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; position: relative; }
+.sl-prompt {
+  flex: 1; min-height: 30px; max-height: 200px; overflow-y: auto;
+  background: transparent; border: none; outline: none;
+  color: var(--text); font: inherit; font-size: 16px; line-height: 1.7;
+  padding: 4px 52px 4px 6px; white-space: pre-wrap; word-break: break-word;
+  text-align: left; /* 입력란은 항상 왼쪽 정렬(플레이스홀더·입력 텍스트) — 가운데로 쏠리지 않게 명시 */
+}
+/* 프롬프트 입력부 우측 상단 — 전체 복사 버튼 */
+.sl-copy-btn {
+  position: absolute; top: 8px; right: 24px; z-index: 3;
+  width: 26px; height: 26px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 7px;
+  color: #aab0bd; cursor: pointer; transition: color .12s, border-color .12s, background .12s;
+}
+/* 순수 CSS 복사 아이콘 — 두 겹친 사각형(앞 페이지가 배경으로 뒤 페이지를 가림). SVG/폰트 무의존. */
+.sl-copy-btn::before, .sl-copy-btn::after {
+  content: ""; position: absolute; box-sizing: border-box;
+  width: 9px; height: 11px; border: 1.6px solid currentColor; border-radius: 2.5px;
+}
+.sl-copy-btn::before { top: 5px; left: 6px; }   /* 뒤 페이지(좌상) */
+.sl-copy-btn::after { top: 9px; left: 10px; background: var(--panel2); }  /* 앞 페이지(우하) */
+.sl-copy-btn:hover { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.08); }
+/* contentEditable placeholder — data-empty 속성을 JS 가 토글 */
+.sl-prompt[data-empty]::before {
+  content: attr(data-placeholder);
+  color: var(--muted2); pointer-events: none;
+}
+/* 확장(레퍼런스 트레이 펼침) 시 프롬프트 입력 영역을 ~3줄 더 크게(행 높이 112px). 위 레퍼런스
+   트레이(.sl-reftray)는 현 크기 유지. 에디터에 높이를 주는 대신 '행'에 높이를 주고 가운데 정렬해,
+   −버튼·플레이스홀더 글씨가 박스 위가 아니라 세로 가운데(첫 열 가운데)에 오게 한다. */
+.sl-panel.expanded .sl-prompt-row { min-height: 112px; align-items: center; }
+
+/* ── 확장(+) 버튼 + 레퍼런스 트레이(에셋 드래그 전용, 번호 = 생성 --image 순서) ── */
+.sl-expand-btn {
+  width: 30px; height: 30px; flex: 0 0 auto; margin-top: 2px;
+  border-radius: 50%; font-size: 18px; line-height: 1; font-weight: 400;
+  background: rgba(255, 255, 255, 0.06); border: 1.5px solid var(--border2);
+  color: var(--muted); display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.sl-expand-btn:hover { color: var(--text); border-color: var(--accent); }
+/* 라임 배경 위 라벨은 검은색(--accent-ink) — 흰색 금지 */
+.sl-expand-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+.sl-reftray {
+  display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 10px 10px 8px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  min-height: 86px; outline: none;
+}
+/* 레퍼런스 영역 포커스(클릭) — 여기서 Shift+Backspace 면 레퍼런스만 전체 삭제됨을 시각화 */
+.sl-reftray:focus { border-bottom-color: var(--accent); box-shadow: inset 0 -2px 0 -1px var(--accent); }
+.sl-reftray-empty {
+  display: flex; align-items: center; justify-content: center; width: 100%;
+  color: var(--muted2); font-size: 12.5px; text-align: center;
+  border: 1.5px dashed var(--border2); border-radius: 12px; padding: 14px;
+}
+.sl-reftray-item {
+  position: relative; flex: 0 0 auto; width: 66px;
+  display: flex; flex-direction: column; gap: 3px; align-items: center;
+  cursor: grab; user-select: none;
+}
+.sl-reftray-item:active { cursor: grabbing; }
+.sl-reftray-item img, .sl-reftray-item video, .sl-reftray-ph {
+  width: 66px; height: 66px; border-radius: 10px; object-fit: cover;
+  background: #050608; border: 1px solid var(--border2); display: block;
+}
+.sl-reftray-num {
+  position: absolute; top: -5px; left: -5px; z-index: 2;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 9px; background: var(--accent); color: var(--accent-ink);
+  font-size: 11px; font-weight: 800; line-height: 18px; text-align: center;
+}
+.sl-reftray-role {
+  position: absolute; right: -4px; bottom: 17px; z-index: 2;
+  min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; border: 1px solid rgba(255, 255, 255, 0.36);
+  background: #1f232b; color: #fff;
+  font-size: 10px; font-weight: 900; line-height: 16px; text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.sl-reftray-role.omni { background: #3d5afe; }
+.sl-reftray-role.start { background: #00a7b5; }
+.sl-reftray-role.end { background: #d86c2f; }
+.sl-reftray-role.video { background: #7c4dff; }
+.sl-reftray-x {
+  position: absolute; top: -6px; right: -6px; z-index: 2;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #14151a; border: 1px solid var(--border2); color: var(--muted);
+  font-size: 12px; line-height: 1; cursor: pointer; display: none; padding: 0;
+}
+.sl-reftray-item:hover .sl-reftray-x { display: block; }
+.sl-reftray-x:hover { color: #fff; border-color: var(--accent); }
+.sl-reftray-name {
+  max-width: 66px; font-size: 10.5px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+}
+/* 인라인 소스 칩(썸네일+이름+×) */
+.inline-ref {
+  display: inline-flex; align-items: center; gap: 5px;
+  vertical-align: middle; margin: 0 2px;
+  padding: 2px 6px 2px 3px; border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border2);
+  user-select: none; cursor: grab;
+}
+.inline-ref:active { cursor: grabbing; }
+.inline-ref.ref-dragging { opacity: 0.4; }
+/* 칩 재배치 드롭 위치 표시 막대(세로선) — body 에 fixed */
+.ch-chip-dropbar {
+  position: fixed; width: 2px; background: var(--accent); border-radius: 1px;
+  z-index: 200; pointer-events: none; display: none;
+  box-shadow: 0 0 6px rgba(196, 232, 74, 0.7);
+}
+.inline-ref img {
+  width: 20px; height: 20px; border-radius: 5px; object-fit: cover; display: block;
+}
+.inline-ref-name { font-size: 13px; font-weight: 600; color: #fff; }
+.inline-ref-remove {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer; padding: 0 1px;
+}
+.inline-ref-remove:hover { color: #fff; }
+/* 활성 태그 필터 배지 */
+.sl-tag-badge {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 3px; padding: 3px 6px 3px 9px; border-radius: 11px;
+  font-size: 12px; font-weight: 700; color: #fff;
+  background: var(--grad-soft); border: 1px solid var(--accent);
+}
+.sl-tag-badge button {
+  border: none; background: transparent; color: #fff; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0;
+}
+/* # 태그 목록 아이템 */
+.sl-tag-item { gap: 9px; }
+.sl-tag-hash {
+  width: 30px; height: 30px; flex: 0 0 auto; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.06); color: var(--accent); font-weight: 700;
+}
+.sl-tag-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+/* 컨트롤 행 */
+.sl-controls {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 10px 8px; border-top: 1px solid var(--border);
+}
+.sl-left { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+/* Image/Video 토글 */
+.sl-type {
+  display: inline-flex; height: 34px; padding: 3px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); border-radius: 20px;
+}
+.sl-type-btn {
+  height: 100%; padding: 0 14px; border: none; border-radius: 18px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.sl-type-btn:hover { color: var(--text); }
+.sl-type-btn.active { background: var(--grad); color: var(--accent-ink); font-weight: 700; box-shadow: 0 3px 12px rgba(196, 232, 74, 0.35); }
+
+/* 칩 (모델/비율) */
+.sl-chip-wrap { position: relative; }
+.sl-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px;
+  padding: 0 12px; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+  color: var(--text); font-size: 12.5px; font-weight: 500;
+}
+.sl-chip:hover { border-color: var(--border2); }
+.sl-chip.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196, 232, 74, 0.16); }
+.sl-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.sl-caret { color: var(--muted); font-size: 16px; }
+/* 옵션 칩 라벨을 아이콘으로 — 텍스트 라벨 길이로 줄바꿈되던 것 해소(한 줄 유지) */
+.sl-opt-ic { display: inline-flex; align-items: center; color: var(--muted); }
+/* 듀레이션 슬라이더 칩 — 아이콘 + 레인지 + 값(s) */
+.sl-opt-slider { gap: 8px; }
+.sl-opt-slider input[type="range"] {
+  width: 70px; height: 4px; margin: 0; padding: 0;
+  accent-color: var(--accent); background: transparent; cursor: pointer;
+}
+.sl-opt-val { font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 22px; }
+/* 오디오 토글 칩(하단 바) — 아이콘 + ON/OFF 세그먼트. 고급 패널의 sl-adv-opt 재사용하되 칩 안에서 한 줄 유지 */
+.sl-opt-audio { gap: 8px; }
+.sl-opt-audio .sl-adv-opts { flex-wrap: nowrap; gap: 4px; }
+.sl-opt-num { gap: 6px; }
+.sl-opt-num input {
+  width: 46px; height: 22px; border: none; outline: none;
+  background: rgba(255, 255, 255, 0.06); border-radius: 6px;
+  color: var(--text); font: inherit; font-size: 12.5px; text-align: center;
+  -moz-appearance: textfield;
+}
+.sl-opt-num input::-webkit-outer-spin-button,
+.sl-opt-num input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* 배치 카운트(1/4) — 한 번에 N장 */
+.sl-count {
+  display: inline-flex; align-items: center; gap: 2px; height: 34px;
+  padding: 0 4px; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+}
+.sl-count-btn {
+  width: 24px; height: 24px; border: none; border-radius: 50%;
+  background: transparent; color: var(--text); font-size: 16px; line-height: 1;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.sl-count-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+.sl-count-btn:disabled { color: var(--muted); cursor: default; opacity: 0.4; }
+.sl-count-val {
+  min-width: 30px; text-align: center; font-size: 12.5px; font-weight: 600;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+/* 정보팝업 프롬프트 안의 정적 칩(× 없음) */
+.info-prompt .inline-ref-static { cursor: default; }
+/* 인라인 칩(버튼) — 클릭하면 소스 크게 보기 */
+.inline-ref-btn {
+  cursor: pointer; font: inherit; color: inherit;
+  transition: border-color 0.12s, background 0.12s;
+}
+.inline-ref-btn:hover { border-color: var(--accent); background: rgba(196, 232, 74, 0.18); }
+/* Generate 버튼 예상 크레딧 배지 */
+.sl-cost {
+  display: inline-flex; align-items: center; min-width: 18px; height: 18px;
+  padding: 0 6px; margin-left: 6px; border-radius: 9px;
+  background: rgba(0, 0, 0, 0.28); color: #fff; font-size: 11px; font-weight: 800;
+}
+.sl-cost.loading { font-weight: 400; letter-spacing: 1px; }
+.sl-dot {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, #57d97e, #4ade80);
+}
+
+/* 칩 위로 펼쳐지는 드롭다운 */
+.sl-dropdown {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 75;
+  min-width: 200px; max-width: 280px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+.sl-dd-title { padding: 6px 10px 4px; font-size: 11px; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.6px; }
+.sl-dd-scroll { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+/* PV 스타일 옵션 행 — 좌측 체크박스 + 선택 시 accent 채움 + 우측 ✓ */
+.sl-dd-item {
+  position: relative;
+  text-align: left; padding: 9px 28px 9px 34px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text); font-size: 13px; white-space: nowrap;
+}
+.sl-dd-item::before {
+  content: ""; position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px; border-radius: 4px; box-sizing: border-box;
+  border: 1.5px solid var(--muted); transition: border-color 0.12s, background 0.12s;
+}
+.sl-dd-item:hover { background: rgba(255, 255, 255, 0.06); }
+.sl-dd-item.sel {
+  color: #fff; font-weight: 600;
+  background: rgba(196, 232, 74, 0.12); box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sl-dd-item.sel::before { border-color: var(--accent); background: var(--accent); }
+.sl-dd-item.sel::after {
+  content: "✓"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--accent); font-size: 13px; font-weight: 700;
+}
+
+/* ⚙ 고급 옵션 칩 — 커스터마이즈(기본값과 다름) 시 강조 + 점 */
+.sl-chip.dirty { border-color: var(--accent); color: #fff; }
+.sl-adv-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 6px rgba(196, 232, 74, 0.8); margin-left: 2px;
+}
+/* 고급 팝오버 — 파라미터별 풀 라벨 + 값 버튼(값만으론 의미 모호한 것 해소) */
+.sl-adv-pop { min-width: 260px; max-width: 340px; }
+.sl-adv-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 8px; border-radius: 8px;
+}
+.sl-adv-row + .sl-adv-row { border-top: 1px solid var(--border); }
+.sl-adv-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap;
+}
+.sl-adv-opts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.sl-adv-opt {
+  padding: 4px 9px; border-radius: 14px; border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05); color: var(--muted);
+  font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.sl-adv-opt:hover { border-color: var(--border2); color: var(--text); }
+.sl-adv-opt.sel {
+  border-color: var(--accent); background: var(--accent); color: var(--accent-ink);
+}
+.sl-adv-num {
+  width: 64px; height: 26px; border: 1px solid var(--border); outline: none;
+  background: rgba(255, 255, 255, 0.06); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 12.5px; text-align: center;
+}
+/* 조합 제약으로 막힌 값 — 비활성 + 취소선(예: Fast 모드의 1080p) */
+.sl-adv-opt.blocked,
+.sl-dd-item.blocked {
+  opacity: 0.4; cursor: not-allowed; text-decoration: line-through;
+}
+.sl-adv-opt.blocked:hover,
+.sl-dd-item.blocked:hover { background: transparent; color: var(--muted); }
+.sl-dd-lock { font-size: 10px; opacity: 0.8; }
+.sl-dd-note {
+  padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--muted2); line-height: 1.4;
+}
+
+/* Generate 버튼 */
+.sl-gen {
+  height: 40px; padding: 0 22px; border: none; border-radius: 22px;
+  background: var(--grad); color: var(--accent-ink); font-size: 14px; font-weight: 800;
+  display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+  box-shadow: 0 6px 22px rgba(196, 232, 74, 0.35);
+}
+.sl-gen:hover:not(:disabled) { box-shadow: 0 8px 28px rgba(196, 232, 74, 0.45); }
+.sl-gen:active { transform: scale(0.97); }
+.sl-gen:disabled { opacity: 0.55; }
+.sl-sparkle { font-size: 12px; }
+
+.sl-error { color: #ff6b6b; font-size: 13px; padding: 0 6px; }
+
+/* 상태바 — Generate 버튼 아래(우측)에 정렬 */
+.sl-status {
+  align-self: flex-end;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 13px; border-radius: 10px;
+  background: var(--glass); backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  font-size: 12px; color: var(--muted);
+  cursor: pointer; transition: border-color 0.12s, color 0.12s;
+}
+.sl-status:hover { border-color: var(--border2); color: var(--text); }
+.sl-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted2); }
+.sl-status-dot.on { background: #57d97e; box-shadow: 0 0 8px rgba(87, 217, 126, 0.6); }
+.sl-status-sep { color: var(--muted2); }
+.sl-status-credits { color: #ffce8f; font-weight: 700; }
+.sl-status-user { color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.spotlight-spacer { flex: 1; }
+
+.ref-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.ref-chip {
+  font-size: 11px; background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 3px 8px; display: flex; align-items: center; gap: 5px;
+}
+.ref-chip button { padding: 0 4px; border: none; background: transparent; }
+.error { color: #ff6b6b; font-size: 13px; }
+

@@ -26,13 +26,10 @@ from .. import db, repo
 from ..config import AUTH_ENABLED
 from ..deps import require_admin
 from ..repo import identity
+from ..services.request_guards import require_loopback_request
+from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
-
-_SQLITE_MAGIC = b"SQLite format 3"
-
-_LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-
 
 def _require_local_when_open(request: Request) -> None:
     """AUTH off(차단 비활성) 상태에선 로컬(loopback) 접속만 허용 — 0.0.0.0 바인딩 + 무인증 조합에서
@@ -40,9 +37,7 @@ def _require_local_when_open(request: Request) -> None:
     공식 로컬 허브(MV_agent.bat)는 127.0.0.1 바인딩이라 통과. AUTH on 이면 require_admin 이 가드."""
     if AUTH_ENABLED:
         return
-    host = (request.client.host if request.client else "") or ""
-    if host not in _LOOPBACK:
-        raise HTTPException(status_code=403, detail="이 작업은 로컬에서만 가능합니다")
+    require_loopback_request(request, "이 작업은 로컬에서만 가능합니다")
 
 # 업로드 전/복원 후 비울 세션·보안·신원 키. 가져온 DB 가 남의 토큰으로 서버에 proxy 하거나 위장
 # 로그인되는 것을 막고, 남의 .db 를 파일 가져오기 했을 때 그 사람의 로그인 신원·역할(admin 뱃지)이
@@ -173,6 +168,10 @@ def _download_to(url: str, token: str | None, dst: Path) -> int:
         raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
 
 
+def _raise_validation_error(exc: HubDbValidationError, *, downloaded: bool = False) -> None:
+    raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc, downloaded=downloaded))
+
+
 @router.get("/export")
 def export_db(request: Request):
     """내 로컬 DB 를 단일 .db 파일로 내려준다(일관 스냅샷). 다른 PC에서 '가져오기'로 넣으면 됨.
@@ -184,15 +183,7 @@ def export_db(request: Request):
         raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
     # sqlite backup API 로 임시파일에 일관 복사 — WAL 상태와 무관하게 완전한 스냅샷.
     tmp = Path(tempfile.gettempdir()) / f"mvhub-export-{int(time.time())}.db"
-    src = sqlite3.connect(str(path))
-    try:
-        dst = sqlite3.connect(str(tmp))
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
+    db._copy_sqlite(path, tmp)
     return FileResponse(
         tmp,
         filename="MV-hub-mydb.db",
@@ -209,25 +200,14 @@ async def import_db(request: Request, file: UploadFile = File(...)):
     require_admin(request)
     _require_local_when_open(request)
     data = await file.read()
-    if data[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
-        raise HTTPException(status_code=400, detail="SQLite DB 파일이 아닙니다")
     # 임시파일에 받아 유효성(generation 테이블 존재) 검증.
     tmp = Path(tempfile.gettempdir()) / f"mvhub-import-{int(time.time())}.db"
     tmp.write_bytes(data)
-    ok = None
     try:
-        c = sqlite3.connect(str(tmp))
-        try:
-            ok = c.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation'"
-            ).fetchone()
-        finally:
-            c.close()
-    except sqlite3.DatabaseError:
-        ok = None
-    if not ok:
+        validate_hub_db(tmp)
+    except HubDbValidationError as exc:
         tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="허브 DB 형식이 아닙니다(generation 테이블 없음)")
+        _raise_validation_error(exc)
 
     # 검증 통과 → 현재 활성 DB 로 통째 교체 + 보안 리셋(import/복원 공용 헬퍼).
     return _install_db(tmp)
@@ -289,30 +269,12 @@ def server_restore(request: Request):
     if status != 200:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=502, detail=f"서버에서 백업을 받지 못했습니다(status={status})")
-    # 받은 파일 검증(SQLite + generation 테이블)
-    if tmp.read_bytes()[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="받은 파일이 SQLite DB 가 아닙니다")
-    ok = None
-    integrity = None
+    # 받은 파일 검증(SQLite + generation 테이블 + 무결성)
     try:
-        c = sqlite3.connect(str(tmp))
-        try:
-            ok = c.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation'"
-            ).fetchone()
-            # 라이브 DB 를 덮어쓰는 경로라 데이터 페이지 무결성까지 확인(다운로드 중 손상 방지).
-            integrity = c.execute("PRAGMA quick_check").fetchone()
-        finally:
-            c.close()
-    except sqlite3.DatabaseError:
-        ok = None
-    if not ok:
+        validate_hub_db(tmp, require_integrity=True)
+    except HubDbValidationError as exc:
         tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="허브 DB 형식이 아닙니다(generation 테이블 없음)")
-    if not integrity or integrity[0] != "ok":
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="받은 백업이 손상되었습니다(무결성 검사 실패)")
+        _raise_validation_error(exc, downloaded=True)
     return _install_db(tmp)
 
 

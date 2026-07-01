@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import MEDIA_DIR
+from .media_types import IMAGE_EXTENSIONS
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
-_IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 
 
 def cache_path(target: Path, w: int) -> Path:
@@ -27,7 +27,7 @@ def cache_path(target: Path, w: int) -> Path:
 
 def ensure_thumb(target: Path, w: int) -> Optional[Path]:
     """target 의 w 폭 썸네일을 보장(없으면 생성). 이미지가 아니거나 실패면 None."""
-    if target.suffix.lower() not in _IMG_EXT or not target.is_file():
+    if target.suffix.lower() not in IMAGE_EXTENSIONS or not target.is_file():
         return None
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
     cache = cache_path(target, w)

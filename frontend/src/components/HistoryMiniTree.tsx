@@ -2,15 +2,12 @@
 // viewBox SVG 라 영역에 맞춰 자동 축소된다. 클릭=크게 보기 · 미들클릭=정보. 편집은 '구성에서 보기'(보드)에서.
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { HISTORY_MINI_LAYOUT, buildHistoryLayout } from "../lib/historyGraphLayout";
 import { thumbOf } from "../lib/media";
-import type { Generation, HistoryGraph, InfoTarget, PreviewTarget } from "../types";
+import type { HistoryGraph, InfoTarget, PreviewTarget } from "../types";
 
 // SVG 좌표(유저 단위) — preserveAspectRatio 로 실제 픽셀은 컨테이너에 맞춰 스케일.
-const NW = 84;
-const NH = 84;
-const GX = 46; // 열(세대) 간격
-const GY = 22; // 행 간격(현재 라벨이 위로 들어갈 여유)
-const PAD = 20; // 가장자리 여백(현재 라벨 클립 방지)
+const { nodeW: NW, nodeH: NH } = HISTORY_MINI_LAYOUT;
 
 export function HistoryMiniTree({
   focusId,
@@ -42,49 +39,8 @@ export function HistoryMiniTree({
     };
   }, [focusId, version, graphProp]);
 
-  // 깊이(최장경로) 기준 열 배치 + 부모 무게중심 정렬(보드 트리와 동일 알고리즘의 경량판).
-  const layout = useMemo(() => {
-    if (!graph || !graph.nodes.length) return null;
-    const byId: Record<string, Generation> = {};
-    graph.nodes.forEach((n) => (byId[n.id] = n));
-    const parentsOf: Record<string, string[]> = {};
-    for (const e of graph.edges) {
-      if (!byId[e.parent_gen_id] || !byId[e.child_gen_id]) continue;
-      (parentsOf[e.child_gen_id] ||= []).push(e.parent_gen_id);
-    }
-    const depthMemo: Record<string, number> = {};
-    const depthOf = (id: string, guard: Set<string> = new Set()): number => {
-      if (id in depthMemo) return depthMemo[id];
-      const ps = parentsOf[id] || [];
-      if (!ps.length || guard.has(id)) return (depthMemo[id] = 0);
-      guard.add(id);
-      const d = 1 + Math.max(...ps.map((p) => depthOf(p, guard)));
-      guard.delete(id);
-      return (depthMemo[id] = d);
-    };
-    const ts = (id: string) => byId[id]?.sort_ts || 0;
-    const maxCol = Math.max(0, ...graph.nodes.map((n) => depthOf(n.id)));
-    const columns: string[][] = Array.from({ length: maxCol + 1 }, () => []);
-    graph.nodes.forEach((n) => columns[depthOf(n.id)].push(n.id));
-    const pos: Record<string, { x: number; y: number; row: number }> = {};
-    columns.forEach((ids, c) => {
-      const bary = (id: string) => {
-        const prs = (parentsOf[id] || [])
-          .map((p) => pos[p]?.row)
-          .filter((r): r is number => r != null);
-        return prs.length ? prs.reduce((s, r) => s + r, 0) / prs.length : ts(id) / 1e9;
-      };
-      if (c === 0) ids.sort((a, b) => ts(a) - ts(b));
-      else ids.sort((a, b) => bary(a) - bary(b) || ts(a) - ts(b));
-      ids.forEach((id, row) => {
-        pos[id] = { row, x: PAD + c * (NW + GX), y: PAD + row * (NH + GY) };
-      });
-    });
-    const maxRows = Math.max(1, ...columns.map((c) => c.length));
-    const w = PAD * 2 + (maxCol + 1) * NW + maxCol * GX;
-    const h = PAD * 2 + maxRows * NH + (maxRows - 1) * GY;
-    return { byId, pos, w, h, edges: graph.edges };
-  }, [graph]);
+  // 깊이(최장경로) 기준 열 배치 + 부모 무게중심 정렬(보드 트리와 동일 알고리즘).
+  const layout = useMemo(() => buildHistoryLayout(graph, HISTORY_MINI_LAYOUT), [graph]);
 
   return (
     <div className="lin-tree">
@@ -105,7 +61,7 @@ export function HistoryMiniTree({
       ) : (
         <svg
           className="lin-tree-svg"
-          viewBox={`0 0 ${layout.w} ${layout.h}`}
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
           preserveAspectRatio="xMidYMid meet"
         >
           {/* 엣지 — 실선=derived, 점선=reference(@소스) */}

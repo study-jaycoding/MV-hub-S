@@ -2,116 +2,12 @@
 // 이 패널 안에서 조작이 끝난다(창을 닫지 않음):
 //   클릭 = 선택(하나) · Shift+클릭 = 복수 선택(→ 비교) · 더블클릭 = 크게 보기 · 미들클릭 = 카드 정보.
 //   이전 카드의 '해제' → 흑백으로 남아 '연결'로 되돌릴 수 있음. 본격 편집은 '구성에서 보기'(보드).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { thumbOf } from "../lib/media";
 import { matchShortcut } from "../lib/shortcuts";
 import { HistoryMiniTree } from "./HistoryMiniTree";
-import { MediaThumbnail } from "./MediaThumbnail";
+import { HistoryNode } from "./history/HistoryNode";
 import type { Generation, History, HistoryGraph, InfoTarget, PreviewTarget } from "../types";
-
-function Node({
-  g,
-  isTarget,
-  selected,
-  grayed,
-  seq,
-  onSelect,
-  onPreview,
-  onInfo,
-  onConnect,
-  onUnlink,
-}: {
-  g: Generation;
-  isTarget?: boolean;
-  selected?: boolean;
-  grayed?: boolean; // 해제된 카드 — 흑백 처리
-  seq?: number; // 구성 카드 전용: 생성 순서 번호(여기서만 표시)
-  onSelect: (g: Generation, additive: boolean) => void; // 클릭=선택 · Shift+클릭=복수
-  onPreview: (t: PreviewTarget) => void;
-  onInfo: (g: Generation, x: number, y: number) => void; // 미들클릭=정보
-  onConnect?: (g: Generation) => void; // 해제된 것 되돌리기(연결)
-  onUnlink?: (g: Generation) => void; // 해제
-}) {
-  const thumb = thumbOf(g);
-  const a = g.assets[0];
-  // 단일 클릭(=선택)을 살짝 지연시켜 더블클릭(=미리보기)이 가로챌 수 있게 한다.
-  const clickTimer = useRef<number | null>(null);
-  return (
-    <div
-      className={
-        "lin-node" +
-        (isTarget ? " target" : "") +
-        (selected ? " sel" : "") +
-        (grayed ? " grayed" : "")
-      }
-      onAuxClick={(e) => {
-        if (e.button === 1) {
-          e.preventDefault();
-          onInfo(g, e.clientX, e.clientY);
-        }
-      }}
-      onMouseDown={(e) => e.button === 1 && e.preventDefault()} // 미들클릭 자동스크롤 방지
-    >
-      <button
-        className="lin-thumb"
-        title={`${g.prompt.slice(0, 80)}\n클릭=선택 · Shift+클릭=복수 선택 · 더블클릭=크게 보기 · 미들클릭=정보`}
-        onMouseEnter={(e) => {
-          const v = e.currentTarget.querySelector("video") as HTMLVideoElement | null;
-          if (v) v.play().catch(() => {});
-        }}
-        onMouseLeave={(e) => {
-          const v = e.currentTarget.querySelector("video") as HTMLVideoElement | null;
-          if (v) {
-            v.pause();
-            v.currentTime = 0;
-          }
-        }}
-        onClick={(e) => {
-          const additive = e.shiftKey;
-          if (clickTimer.current) window.clearTimeout(clickTimer.current);
-          clickTimer.current = window.setTimeout(() => {
-            clickTimer.current = null;
-            onSelect(g, additive);
-          }, 220);
-        }}
-        onDoubleClick={() => {
-          if (clickTimer.current) {
-            window.clearTimeout(clickTimer.current);
-            clickTimer.current = null;
-          }
-          if (a)
-            onPreview({ url: a.file_path, type: a.type, name: g.prompt.slice(0, 50), genId: g.id });
-        }}
-      >
-        <MediaThumbnail
-          thumb={thumb}
-          isVideo={a?.type === "video"}
-          src={a?.file_path}
-          fallback={<span className={"lin-thumb-ph status-" + g.status}>{g.status}</span>}
-        />
-        {seq != null && <span className="lin-seq">{seq}</span>}
-        {a?.type === "video" && <span className="lin-vid">▶</span>}
-        {g.is_final && <span className="lin-final">★</span>}
-      </button>
-      <span className="lin-cap">{g.prompt.slice(0, 24) || "(제목 없음)"}</span>
-      {(onConnect || onUnlink) && (
-        <div className="lin-node-actions">
-          {onConnect && (
-            <button className="lin-act" title="이 카드를 다시 연결" onClick={() => onConnect(g)}>
-              ＋ 연결
-            </button>
-          )}
-          {onUnlink && (
-            <button className="lin-act lin-act-del" title="이 연결 해제" onClick={() => onUnlink(g)}>
-              ✕ 해제
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function HistoryPanel({
   history,
@@ -278,7 +174,7 @@ export function HistoryPanel({
             </div>
             <div className="lin-strip">
               {linkChain.map((g, i) => (
-                <Node
+                <HistoryNode
                   key={g.id}
                   g={g}
                   seq={i + 1}
@@ -297,7 +193,7 @@ export function HistoryPanel({
             </div>
             <div className="lin-strip">
               {directParent && (
-                <Node
+                <HistoryNode
                   key={directParent.id}
                   g={directParent}
                   selected={selected.has(directParent.id)}
@@ -308,7 +204,7 @@ export function HistoryPanel({
                 />
               )}
               {unlinkedDerived.map((g) => (
-                <Node
+                <HistoryNode
                   key={g.id}
                   g={g}
                   grayed
@@ -325,7 +221,7 @@ export function HistoryPanel({
           <div className="lin-row">
             <div className="lin-row-label lin-row-target">현재 카드</div>
             <div className="lin-strip">
-              <Node
+              <HistoryNode
                 g={target}
                 isTarget
                 selected={selected.has(target.id)}
@@ -342,7 +238,7 @@ export function HistoryPanel({
             </div>
             <div className="lin-strip">
               {children.map((g) => (
-                <Node
+                <HistoryNode
                   key={g.id}
                   g={g}
                   selected={selected.has(g.id)}

@@ -24,6 +24,7 @@ from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ..config import MEDIA_DIR
+from .media_types import CACHE_MEDIA_EXTENSIONS
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,6 @@ _ATTEMPTS = 3
 _RETRY_BACKOFF = 0.4
 _MAX_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
 _MIN_FREE_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
-_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".webm")
 _TEXT_ERROR_TYPES = {
     "application/json",
     "application/problem+json",
@@ -58,7 +58,7 @@ class MediaCachePermanentError(MediaCacheError):
 
 def _ext_of(url: str) -> str:
     path = url.split("?", 1)[0]
-    for e in _EXTS:
+    for e in CACHE_MEDIA_EXTENSIONS:
         if path.lower().endswith(e):
             return e
     return ".bin"

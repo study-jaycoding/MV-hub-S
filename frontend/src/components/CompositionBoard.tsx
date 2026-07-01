@@ -3,6 +3,9 @@
 // 보드 레이아웃은 localStorage 에 저장돼 새로고침해도 유지된다(로컬 우선).
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { loadJSON, saveJSON } from "../lib/storage";
+import { STORAGE_KEYS } from "../lib/storageKeys";
+import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { Generation } from "../types";
 
 interface BoardItem {
@@ -17,12 +20,11 @@ interface BoardItem {
   z: number;
 }
 
-const LS_KEY = "content-hub-board";
+const LS_KEY = STORAGE_KEYS.compositionBoard;
 
 function loadBoard(): BoardItem[] {
   try {
-    const raw = localStorage.getItem(LS_KEY);
-    return raw ? (JSON.parse(raw) as BoardItem[]) : [];
+    return loadJSON<BoardItem[]>(LS_KEY) || [];
   } catch {
     return [];
   }
@@ -57,7 +59,7 @@ export function CompositionBoard() {
 
   // 레이아웃 영속
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify(items));
+    saveJSON(LS_KEY, items);
   }, [items]);
 
   const bringFront = (id: string) =>
@@ -114,8 +116,7 @@ export function CompositionBoard() {
       origW: it.w,
       origH: it.h,
     };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    addWindowPointerDrag(onPointerMove, onPointerUp);
   };
 
   const onPointerMove = (e: PointerEvent) => {
@@ -140,8 +141,7 @@ export function CompositionBoard() {
 
   const onPointerUp = () => {
     drag.current = null;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
+    removeWindowPointerDrag(onPointerMove, onPointerUp);
   };
 
   return (

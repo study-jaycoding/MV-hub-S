@@ -1,0 +1,374 @@
+﻿/* 정보 팝업 — 소속 프로젝트 변경 셀렉트 */
+.info-proj-select {
+  max-width: 200px; padding: 3px 6px; border-radius: 6px; font-size: 12px;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text);
+}
+.info-proj-select:hover { border-color: var(--accent); }
+
+/* ── 관리자 창 (로드맵 §4-5) ── */
+.admin-backdrop {
+  position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px);
+}
+.admin-window {
+  position: fixed; z-index: 201; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(620px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--panel, #1b1b20); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.6);
+}
+.admin-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 16px; border-bottom: 1px solid var(--border);
+}
+.admin-title { font-weight: 700; font-size: 15px; }
+.admin-key {
+  margin-left: auto; margin-right: 8px; background: none; border: none; cursor: pointer;
+  font-size: 15px; line-height: 1; opacity: 0.55; padding: 4px 7px; border-radius: 7px;
+}
+.admin-key:hover { opacity: 1; background: rgba(255,255,255,0.07); }
+.admin-key.on { opacity: 1; background: var(--accent); }
+.admin-elev { min-width: 300px; }
+.admin-elev .settings-input { width: 100%; margin-bottom: 9px; }
+.admin-note {
+  margin: 12px 16px 0; padding: 9px 12px; border-radius: 9px; font-size: 12px; line-height: 1.5;
+  color: var(--muted); background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+}
+.admin-tabs {
+  display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--border);
+}
+.admin-tab {
+  padding: 8px 14px; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+  background: transparent; color: var(--muted); font-size: 13px; font-weight: 600;
+  border-radius: 7px 7px 0 0;
+}
+.admin-tab:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+.admin-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.admin-body { overflow-y: auto; padding: 14px 16px 18px; }
+.admin-loading, .admin-empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
+.admin-section { margin-bottom: 22px; }
+.admin-section h4 { margin: 0 0 9px; font-size: 13px; color: var(--text); }
+.admin-sec-head { display: flex; align-items: center; justify-content: space-between; }
+.admin-add {
+  font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  color: var(--accent); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+}
+.admin-add:hover { border-color: var(--accent); }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.admin-table th {
+  text-align: left; font-weight: 600; color: var(--muted); font-size: 11px;
+  padding: 4px 8px; border-bottom: 1px solid var(--border);
+}
+.admin-table td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
+.admin-table tr.archived { opacity: 0.5; }
+.admin-member { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.admin-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex: none; }
+.admin-dot.mine { background: var(--accent); }
+.admin-mname { font-weight: 600; }
+.admin-muid { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-count { color: var(--muted); text-align: right; width: 56px; }
+.admin-table select {
+  padding: 4px 7px; border-radius: 7px; font-size: 12px;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text);
+}
+.admin-pname { font-weight: 500; min-width: 170px; }
+.admin-pname-text { display: inline-block; vertical-align: middle; }
+.admin-badge {
+  margin-left: 7px; font-size: 10px; padding: 1px 6px; border-radius: 6px;
+  color: var(--muted); background: rgba(255,255,255,0.08);
+}
+.proj-folder-path {
+  display: block; max-width: 260px; margin: 3px 0 0 20px;
+  color: var(--muted2); font-size: 10.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-pactions { text-align: right; white-space: nowrap; }
+.admin-pactions button {
+  background: transparent; border: none; cursor: pointer; color: var(--muted);
+  font-size: 12px; padding: 3px 5px; border-radius: 6px;
+}
+.admin-pactions button:hover { color: var(--text); background: rgba(255,255,255,0.1); }
+.admin-pactions button.on { color: var(--accent-ink); background: var(--accent); }
+.admin-pactions button.admin-pact-archive { font-size: 16px; padding: 3px 7px; }
+.admin-pactions button:disabled { opacity: 0.25; cursor: default; background: transparent; color: var(--muted); }
+/* 프로젝트 순서 드래그 — 폴더 앞 그립(⠿)을 잡고 끌어 옮긴다. */
+.proj-drag-handle {
+  display: inline-block; cursor: grab; color: var(--muted); user-select: none;
+  margin-right: 8px; font-size: 13px; vertical-align: middle; letter-spacing: -1px;
+}
+.proj-drag-handle:active { cursor: grabbing; }
+tr.row-dragging { opacity: 0.4; }
+tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
+
+/* v02 RBAC — 전역 역할 복수 토글 칩 + 프로젝트 역할 편집기 */
+.admin-note-sub { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: -3px 0 9px; }
+.role-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.role-chip {
+  padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: pointer;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--muted);
+  white-space: nowrap;
+}
+.role-chip:hover { border-color: var(--border2); color: var(--text); }
+.role-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* 역할별 색 — 헷갈리지 않게(전역 4역할 + 프로젝트 3역할 각각 구분) */
+.role-chip.role-admin.on { background: #c0392b; border-color: #e05a4c; color: #fff; }
+.role-chip.role-product_manager.on { background: #2d6cdf; border-color: #5a8ef0; color: #fff; }
+.role-chip.role-production_director.on { background: #14a08e; border-color: #36c4b1; color: #fff; }
+.role-chip.role-member.on { background: #6b7280; border-color: #8b93a1; color: #fff; }
+.role-chip.role-project_manager.on { background: #8e44ad; border-color: #ad6bc8; color: #fff; }
+.role-chip.role-supervisor.on { background: #e08a1e; border-color: #f0a945; color: #2a1d00; }
+.role-chip.role-creator.on { background: #3a9d4a; border-color: #5bbf6b; color: #fff; }
+.proj-roles-row td { background: rgba(255,255,255,0.025); padding: 0 8px 10px; }
+.proj-roles { padding: 4px 2px 2px; }
+.proj-roles-head { font-size: 11.5px; color: var(--muted); margin: 6px 0 8px; }
+.proj-role-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.proj-role-name { flex: 1; font-weight: 500; font-size: 12.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-role-x {
+  background: transparent; border: none; cursor: pointer; color: var(--muted);
+  font-size: 12px; padding: 3px 6px; border-radius: 6px; flex: none;
+}
+.proj-role-x:hover { color: #ff6b6b; background: rgba(255,107,107,0.12); }
+.proj-add { margin-top: 8px; position: relative; }
+.proj-add-pick {
+  margin-top: 6px; padding: 8px; border-radius: 9px; background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+}
+.proj-add-search {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+  padding: 5px 9px; border-radius: 8px; background: #16171c; border: 1px solid var(--border);
+}
+.proj-add-search-icn { font-size: 12px; opacity: 0.7; }
+.proj-add-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--text); font-size: 12.5px;
+}
+.proj-add-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.member-search { max-width: 320px; margin: 0 0 10px; }
+.proj-add-item {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.proj-add-item:hover { border-color: var(--accent); color: var(--accent); }
+
+.proj-folder-row td {
+  background: rgba(255,255,255,0.018);
+  padding: 0 8px 11px 36px;
+}
+.proj-folder-panel {
+  margin-top: 2px;
+  max-height: 360px;
+  overflow: auto;
+  border-left: 1px solid rgba(255,255,255,0.08);
+}
+.proj-folder-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px 5px;
+  color: var(--muted); font-size: 11px; font-weight: 800;
+}
+.proj-folder-head b { color: #ffbd7a; font-size: 10px; font-weight: 800; }
+.proj-folder-empty,
+.proj-folder-error {
+  padding: 9px 8px; font-size: 12px; color: var(--muted);
+}
+.proj-folder-error { color: #ff8a8a; }
+
+/* 승인 상태 세그먼트(승인/대기/차단) — 클릭으로 즉시 적용 */
+.acct-status-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.acct-seg {
+  padding: 5px 12px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;
+  background: transparent; color: var(--muted); border-right: 1px solid var(--border);
+}
+.acct-seg:last-child { border-right: none; }
+.acct-seg:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+.acct-seg.on.acct-seg-approved { background: #2e9e54; color: #fff; }
+.acct-seg.on.acct-seg-pending { background: #f2c200; color: #2a1d00; }
+.acct-seg.on.acct-seg-rejected { background: #e0463c; color: #fff; }
+
+/* 계정 숨김 토글 · 계정별 작업(비번 초기화·숨기기) · 확인 플로팅 */
+.admin-hidden-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: 2px 0 8px; cursor: pointer; }
+.admin-act-msg { font-size: 12px; color: var(--accent); margin-bottom: 6px; }
+.admin-row-hidden { opacity: 0.45; }
+/* 상태·관리 헤더와 버튼을 같은 좌측 기준으로 정렬 */
+.admin-table .th-center, .admin-table .td-center { text-align: left; }
+.admin-table .th-right, .admin-table .td-right { text-align: left; }
+/* 프로젝트 생성물 수 + 역할 인원 — 한 줄, 생성물 다음 좀 떨어뜨려 표시 */
+.proj-count-cell { width: auto; text-align: left; white-space: nowrap; }
+/* 생성물 수는 고정폭 우측정렬 → 자릿수 달라도 다음 역할 글씨가 행마다 같은 x에서 시작(줄 맞춤) */
+.proj-gencount { display: inline-block; min-width: 22px; text-align: right; font-weight: 700; }
+.proj-rolecount { display: inline-block; font-size: 11px; color: var(--muted); margin-left: 14px; white-space: nowrap; }
+.admin-acct-actions { display: inline-flex; gap: 6px; }
+.admin-mini-btn {
+  padding: 4px 9px; border-radius: 7px; border: 1px solid var(--border); cursor: pointer;
+  background: rgba(255,255,255,0.04); color: var(--muted); font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.admin-mini-btn:hover { color: var(--text); background: rgba(255,255,255,0.08); }
+.admin-confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 300; display: flex; align-items: center; justify-content: center; }
+.admin-confirm {
+  background: #1c1c1e; border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px;
+  width: min(340px, 88vw); box-shadow: 0 24px 70px rgba(0,0,0,0.6);
+}
+.admin-project-dialog { width: min(460px, 92vw); }
+.admin-field { display: block; margin: 0 0 10px; }
+.admin-field span {
+  display: block; margin: 0 0 5px; color: var(--muted); font-size: 11.5px; font-weight: 700;
+}
+.admin-field .settings-input { width: 100%; }
+.admin-confirm-q { font-size: 14px; color: var(--text); margin: 0 0 16px; line-height: 1.5; }
+.admin-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.admin-confirm-yes, .admin-confirm-no {
+  padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 700;
+}
+.admin-confirm-yes { background: var(--grad); color: var(--accent-ink); }
+.admin-confirm-no { background: rgba(255,255,255,0.08); color: var(--text); }
+
+/* v02 DAM — 버전 비교 모달 */
+.cmp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 230; }
+.cmp-modal {
+  position: fixed; top: 4vh; left: 50%; transform: translateX(-50%);
+  width: min(94vw, 1100px); max-height: 92vh; z-index: 231;
+  display: flex; flex-direction: column; border-radius: 14px;
+  background: var(--panel, #16171c); border: 1px solid var(--border2);
+  box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+}
+.cmp-note {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border);
+}
+.cmp-toggles { display: flex; align-items: center; gap: 16px; }
+.cmp-onlydiff { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; color: var(--text); }
+.cmp-onlydiff input { cursor: pointer; }
+.cmp-onlydiff input:disabled { cursor: default; }
+/* 프롬프트만 보기 — 전체 펼침(높이 제한 해제) */
+.cmp-prompt.full { max-height: none; font-size: 13px; }
+.cmp-refs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; margin: 7px 0 4px; }
+.cmp-ref-btn { position: relative; padding: 0; border: none; background: none; cursor: pointer; line-height: 0; }
+.cmp-ref { width: 38px; height: 38px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); transition: transform 0.1s; }
+.cmp-ref-btn:hover .cmp-ref { border-color: var(--accent); }
+/* 다르게 들어간 소스 — 약간 크게 + 강조 테두리 + '다름' 뱃지 */
+.cmp-ref-btn.diff .cmp-ref { width: 42px; height: 42px; border-color: #f5c542; box-shadow: 0 0 0 2px #f5c542; }
+
+/* 소스 원본 라이트박스(비교 모달 위) */
+.cmp-srcbox {
+  position: fixed; inset: 0; z-index: 220; background: rgba(0,0,0,0.93);
+  display: flex; align-items: center; justify-content: center; padding: 4vh;
+}
+.cmp-srcbox-inner { position: relative; max-width: 92vw; max-height: 92vh; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.cmp-srcbox-inner img, .cmp-srcbox-inner video { max-width: 90vw; max-height: 84vh; border-radius: 10px; box-shadow: 0 16px 48px rgba(0,0,0,0.6); }
+.cmp-srcbox-x {
+  position: absolute; top: -12px; right: -12px; width: 30px; height: 30px; border-radius: 50%;
+  background: #1b1d24; border: 1px solid var(--border2); color: var(--text); cursor: pointer; font-size: 13px;
+}
+.cmp-srcbox-name { font-size: 12.5px; color: var(--muted2); }
+.cmp-empty { color: var(--muted); font-size: 13px; padding: 16px 2px; }
+.cmp-body { overflow: auto; padding: 14px 16px 18px; }
+.cmp-cols { display: grid; gap: 12px; margin-bottom: 16px; }
+.cmp-col { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: rgba(255,255,255,0.02); }
+.cmp-col.final { border-color: #e8b62c; box-shadow: 0 0 0 1px #e8b62c; }
+.cmp-thumb { position: relative; aspect-ratio: 1/1; border-radius: 8px; overflow: hidden; background: #0e0f13; }
+.cmp-thumb img, .cmp-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; background: #0e0f13; }
+.cmp-thumb-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 12px; }
+.cmp-final-badge { position: absolute; top: 6px; left: 6px; font-size: 10px; font-weight: 800;
+  background: #e8b62c; color: #2a1d00; padding: 2px 6px; border-radius: 6px; }
+.cmp-model { margin: 7px 0 4px; font-size: 11px; font-weight: 700; color: var(--muted2); }
+.cmp-prompt {
+  font-size: 12px; line-height: 1.55; color: var(--text); word-break: break-word;
+  max-height: 150px; overflow-y: auto; padding: 7px 8px; margin-top: 4px;
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px;
+}
+/* 이 이미지에 붙는 정보 — InfoPopup 스타일(라벨·값 정렬). 다른 값은 .cmp-diff 로 노란색 */
+.cmp-info { display: flex; flex-direction: column; margin-top: 9px; }
+.cmp-info-row {
+  display: flex; gap: 8px; font-size: 12px; padding: 5px 2px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.cmp-info-label { flex: 0 0 108px; color: var(--muted2); word-break: break-word; }
+.cmp-info-value { flex: 1; color: var(--text); word-break: break-word; text-align: right; }
+.cmp-info-value.cmp-diff { font-weight: 600; }
+.cmp-diff { background: rgba(245,197,66,0.28); color: #ffe08a; border-radius: 3px; padding: 0 2px; font-weight: 600; }
+/* 프롬프트에서 바뀐(다른) 부분 — 녹색 */
+.cmp-diff-g { background: rgba(74,222,128,0.26); color: #9ff0b5; border-radius: 3px; padding: 0 2px; font-weight: 600; }
+.cmp-params { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cmp-params th, .cmp-params td {
+  text-align: left; padding: 6px 9px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top;
+}
+.cmp-params th { color: var(--muted); font-weight: 600; font-size: 11px; }
+.cmp-key { color: var(--muted2); font-weight: 600; white-space: nowrap; }
+.cmp-row-diff { background: rgba(245,197,66,0.06); }
+.cmp-diff-cell { color: #ffe08a; font-weight: 600; }
+
+/* 로그인 계정 섹션(관리자 창) */
+.acct-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+.acct-actions { text-align: right; white-space: nowrap; display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+
+/* ── 로그인/가입 화면 (AUTH 모드) ── */
+.login-screen {
+  position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 120% at 50% 0%, #1a1a22 0%, #101015 70%);
+}
+.login-card {
+  display: flex; flex-direction: column; gap: 11px; width: min(360px, 90vw);
+  padding: 30px 28px; border-radius: 16px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.5);
+}
+.login-brand {
+  font-weight: 800; font-size: 24px; letter-spacing: -0.4px; text-align: center;
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.login-sub { text-align: center; color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 4px; }
+.login-hint { color: var(--muted); font-size: 12px; margin-top: -6px; padding-left: 2px; }
+.login-tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.04); padding: 3px; border-radius: 10px; }
+.login-tabs button {
+  flex: 1; padding: 7px; border-radius: 8px; border: none; cursor: pointer;
+  background: transparent; color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.login-tabs button.on { background: var(--grad-soft); color: #fff; }
+.login-card input {
+  padding: 11px 13px; border-radius: 9px; font-size: 14px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.login-card input:focus { outline: none; border-color: var(--accent); }
+.login-error { color: #f87171; font-size: 12.5px; text-align: center; }
+.login-info { color: #4ade80; font-size: 12.5px; text-align: center; }
+.login-submit {
+  margin-top: 4px; padding: 11px; border-radius: 9px; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 800; color: var(--accent-ink); background: var(--grad);
+}
+.login-submit:disabled { opacity: 0.6; cursor: default; }
+.login-notice { color: #4ade80; font-size: 12.5px; text-align: center; }
+.login-toggle {
+  margin-top: 2px; padding: 6px; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 12.5px; text-decoration: underline;
+}
+.login-toggle:hover { color: var(--text); }
+.login-toggle:disabled { opacity: 0.6; cursor: default; }
+
+/* ── How it works (자리표시자) ── */
+.how-it-works { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px; }
+.how-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.how-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden;
+}
+.how-media {
+  position: relative; aspect-ratio: 16 / 10;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--grad-soft);
+  border-bottom: 1px dashed var(--border2);
+}
+.how-media.video { background: linear-gradient(135deg, rgba(196,232,74,0.18), rgba(196,232,74,0.14)); }
+.how-media-tag {
+  position: absolute; top: 8px; left: 8px;
+  font-size: 11px; font-weight: 600; color: #fff;
+  background: rgba(8,9,12,0.7); padding: 3px 8px; border-radius: 20px;
+  border: 1px solid var(--border);
+}
+.how-media-ph { color: var(--muted2); font-size: 12px; letter-spacing: 1px; }
+.how-body { padding: 12px 14px; }
+.how-title { font-size: 14px; font-weight: 700; }
+.how-desc { margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.how-note { margin-top: 16px; font-size: 12px; color: var(--muted2); }
+

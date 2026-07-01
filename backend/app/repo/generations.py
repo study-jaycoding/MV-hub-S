@@ -9,6 +9,7 @@ from typing import Any, Iterable, Optional
 
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
+from ..services.media_types import asset_media_type
 from . import identity, tags
 from ._common import (
     ALERT_COMMENT_JOINS,
@@ -1763,18 +1764,9 @@ def get_history_graph(
     }
 
 
-# 에셋 소스 합성용 — 레퍼런스 타입은 image|video 만(오디오 등 제외)
-_ASSET_IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
-_ASSET_VID_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
-
-
 def _asset_media_type(name: str) -> Optional[str]:
-    low = name.lower()
-    if low.endswith(_ASSET_IMG_EXT):
-        return "image"
-    if low.endswith(_ASSET_VID_EXT):
-        return "video"
-    return None
+    # 에셋 소스 합성용 — 레퍼런스 타입은 image|video 만(오디오 등 제외)
+    return asset_media_type(name)
 
 
 def _asset_sources(

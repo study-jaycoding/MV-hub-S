@@ -1,17 +1,15 @@
 // 라이브러리 툴바 (힉스필드식): History(미디어 타입 필터) + 필터 토글 +
 // 썸네일 크기 조절 슬라이더 + List/Grid 레이아웃 토글.
-import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
-import { loadJSON } from "../lib/storage";
+import type { MediaFilter } from "../lib/mediaTypes";
+import { MEDIA_FILTER_OPTIONS } from "../lib/mediaTypes";
+import { makeStore } from "../lib/storage";
+import { useFloatingPanel } from "../lib/useFloatingPanel";
+import { ColorFilterDots } from "./common/ColorFilterDots";
+import { TagFilterPanel } from "./common/TagFilterPanel";
+import { ViewControls } from "./common/ViewControls";
 
-type MediaFilter = "all" | "image" | "video" | "audio";
-
-const MEDIA_OPTS: { v: MediaFilter; label: string }[] = [
-  { v: "all", label: "전체" },
-  { v: "image", label: "이미지" },
-  { v: "video", label: "영상" },
-  { v: "audio", label: "오디오" },
-];
+const LIB_LS = makeStore("ch.lib.");
 
 interface Props {
   typeFilter: MediaFilter;
@@ -101,51 +99,16 @@ export function LibraryToolbar({
   boardMode = false,
 }: Props) {
   const t = useT();
-  const typeLabel = MEDIA_OPTS.find((o) => o.v === typeFilter)?.label ?? "전체";
-  const typeIndex = Math.max(0, MEDIA_OPTS.findIndex((o) => o.v === typeFilter));
+  const typeLabel = MEDIA_FILTER_OPTIONS.find((o) => o.v === typeFilter)?.label ?? "전체";
+  const typeIndex = Math.max(0, MEDIA_FILTER_OPTIONS.findIndex((o) => o.v === typeFilter));
 
   // 태그 패널 — 에셋 파트와 동일: 플로팅(헤더 드래그 이동) + CSS resize + 위치·크기 영속.
-  const [tagPos, setTagPos] = useState<{ x: number; y: number } | null>(() =>
-    loadJSON("ch.lib.tagPos"),
-  );
-  const [tagSize, setTagSize] = useState<{ w: number; h: number } | null>(() =>
-    loadJSON("ch.lib.tagSize"),
-  );
-  const tagDragRef = useRef<{ dx: number; dy: number } | null>(null);
-  const tagPanelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (tagPos) localStorage.setItem("ch.lib.tagPos", JSON.stringify(tagPos));
-  }, [tagPos]);
-  useEffect(() => {
-    if (tagSize) localStorage.setItem("ch.lib.tagSize", JSON.stringify(tagSize));
-  }, [tagSize]);
-  // 크기조절(CSS resize) → offset 측정해 영속.
-  useEffect(() => {
-    if (!tagPanelOpen) return;
-    const el = tagPanelRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setTagSize({ w: el.offsetWidth, h: el.offsetHeight }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [tagPanelOpen]);
-
-  const onTagDrag = useCallback((e: MouseEvent) => {
-    const d = tagDragRef.current;
-    if (!d) return;
-    setTagPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
-  }, []);
-  const onTagDragUp = useCallback(() => {
-    tagDragRef.current = null;
-    window.removeEventListener("mousemove", onTagDrag);
-    window.removeEventListener("mouseup", onTagDragUp);
-  }, [onTagDrag]);
-  const onTagHeadDown = (e: React.MouseEvent) => {
-    const pos = tagPos || { x: 180, y: 150 };
-    tagDragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
-    window.addEventListener("mousemove", onTagDrag);
-    window.addEventListener("mouseup", onTagDragUp);
-  };
+  const {
+    pos: tagPos,
+    size: tagSize,
+    panelRef: tagPanelRef,
+    onHeadMouseDown: onTagHeadDown,
+  } = useFloatingPanel(LIB_LS, "tagPos", "tagSize", tagPanelOpen);
   return (
     <div className="lib-toolbar">
       {/* 필터 사이드바 토글 — 열림=▢(사각), 닫힘=▷(삼각). 보드 모드(히스토리)에선 사이드바가 없어 숨김. */}
@@ -163,7 +126,7 @@ export function LibraryToolbar({
         <span className="lib-hist-label">{t(typeLabel)}</span>
         <div className="lib-hist-range">
           <div className="lib-hist-ticks">
-            {MEDIA_OPTS.map((o, i) => (
+            {MEDIA_FILTER_OPTIONS.map((o, i) => (
               <button
                 key={o.v}
                 type="button"
@@ -176,10 +139,10 @@ export function LibraryToolbar({
           <input
             type="range"
             min={0}
-            max={MEDIA_OPTS.length - 1}
+            max={MEDIA_FILTER_OPTIONS.length - 1}
             step={1}
             value={typeIndex}
-            onChange={(e) => onTypeFilter(MEDIA_OPTS[Number(e.target.value)].v)}
+            onChange={(e) => onTypeFilter(MEDIA_FILTER_OPTIONS[Number(e.target.value)].v)}
           />
         </div>
       </div>
@@ -200,39 +163,15 @@ export function LibraryToolbar({
       <div className="lib-tools">
         {/* 인스턴트 필터: 골드(최종만) · 컬러 dot · S(팀 공유만) · T(태그) · C(코멘트) */}
         <div className="assets-filters">
-          {/* 골드 dot — 레드 앞. 누르면 최종(골드) 지정된 것만 필터. */}
-          {onToggleGray && (
-            <button
-              className={"af-dot af-dot-gray" + (grayOn ? " on" : "")}
-              title="비활성화(회색)된 카드만 숨기기 (다른 dot 과 반대)"
-              onClick={onToggleGray}
-            />
-          )}
-          {onToggleFinal && (
-            <button
-              className={"af-dot af-dot-gold" + (finalOnly ? " on" : "")}
-              title="최종(골드)으로 지정된 것만 보기"
-              onClick={onToggleFinal}
-            />
-          )}
-          {colorDots.map(({ k, hex }) => {
-            const on = colorFilter.has(hex);
-            return (
-              <button
-                key={k}
-                className={"af-dot" + (on ? " on" : "")}
-                style={{
-                  background: hex,
-                  filter: on ? "brightness(1.2) saturate(1.25)" : "brightness(0.45) saturate(0.7)",
-                  opacity: on ? 1 : 0.85,
-                  borderColor: on ? "#fff" : "rgba(0,0,0,0.4)",
-                  boxShadow: on ? `0 0 0 2px ${hex}, 0 0 11px ${hex}` : "none",
-                }}
-                title={`${k.toUpperCase()} 컬러만 보기`}
-                onClick={() => onToggleColor(hex)}
-              />
-            );
-          })}
+          <ColorFilterDots
+            colorDots={colorDots}
+            activeColors={colorFilter}
+            onToggleColor={onToggleColor}
+            grayOn={grayOn}
+            onToggleGray={onToggleGray}
+            finalOnly={finalOnly}
+            onToggleFinal={onToggleFinal}
+          />
           <button
             className={"af-btn" + (sharedOnly ? " on" : "")}
             title="팀에 공유된 것만 보기"
@@ -263,142 +202,35 @@ export function LibraryToolbar({
             C
           </button>
           {tagPanelOpen && (
-            <div
-              className="tag-panel"
-              ref={tagPanelRef}
-              style={{
-                left: (tagPos || { x: 180, y: 150 }).x,
-                top: (tagPos || { x: 180, y: 150 }).y,
-                width: tagSize?.w,
-                height: tagSize?.h,
-              }}
-            >
-              <div className="tag-panel-head" onMouseDown={onTagHeadDown}>
-                <span>
-                  등록된 태그 <span className="muted">({tags.length})</span>
-                </span>
-                {tagFilter.size > 0 && (
-                  <button
-                    className="tag-panel-clear"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={onClearTags}
-                  >
-                    필터 해제
-                  </button>
-                )}
-              </div>
-              <div className="tag-panel-list">
-                {tags.length === 0 && (
-                  <div className="tag-panel-empty">등록된 태그가 없습니다.</div>
-                )}
-                {tags.map((t) => (
-                  <span key={t} className={"tag-pill" + (tagFilter.has(t) ? " on" : "")}>
-                    <button
-                      className="tag-pill-name"
-                      title="클릭=이 태그만 · Shift/Ctrl+클릭=다중 선택"
-                      onClick={(e) => onSelectTag(t, e.shiftKey || e.ctrlKey || e.metaKey)}
-                    >
-                      #{t}
-                    </button>
-                    <button
-                      className="tag-pill-x"
-                      title="이 태그를 모든 생성본에서 삭제"
-                      onClick={() => onDeleteTag(t)}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
+            <TagFilterPanel
+              tags={tags}
+              activeTags={tagFilter}
+              panelRef={tagPanelRef}
+              pos={tagPos}
+              size={tagSize}
+              onHeadMouseDown={onTagHeadDown}
+              onClear={onClearTags}
+              onSelectTag={onSelectTag}
+              onDeleteTag={onDeleteTag}
+            />
           )}
         </div>
 
-        {/* 썸네일 꽉 채움(cover ▣) ↔ 비율 유지(contain ▢) 토글 — 에셋 파트와 동일 */}
-        <button
-          className={"fit-toggle" + (!fill ? " on" : "")}
-          onClick={onToggleFill}
-          title={
-            fill
-              ? "꽉 채우기(크롭) — 클릭 시 전체 보기"
-              : "전체 보기(블랙바) — 클릭 시 꽉 채우기"
-          }
-        >
-          {fill ? "▣" : "▢"}
-        </button>
-
-        {/* 크기 조절 바 — 구성탭(onZoomValue)이면 보드 줌(0.3~2.5)을 직접 제어(휠 확대/축소와 연동),
-            그 외 탭은 카드 크기(scale, 0.7~1.7). */}
-        <div className="size-slider" title={onZoomValue ? "화면 확대/축소" : "카드 크기"}>
-          <input
-            type="range"
-            min={onZoomValue ? 0.3 : 0.7}
-            max={onZoomValue ? 2.5 : 1.7}
-            step={0.05}
-            value={onZoomValue ? (zoomValue ?? 1) : scale}
-            onChange={(e) =>
-              onZoomValue ? onZoomValue(Number(e.target.value)) : onScale(Number(e.target.value))
-            }
-          />
-        </div>
-
-        {/* List / Grid 토글 — 보드 모드(히스토리 그래프)에선 의미 없어 숨김. */}
-        {!boardMode && (
-        <div className="layout-toggle">
-          <button
-            className={(layout === "list" ? "on" : "") + (layout === "list" && groupByDate ? " grouped" : "")}
-            onClick={() => (layout === "list" ? onToggleGroupByDate() : onLayout("list"))}
-            title={
-              layout === "list"
-                ? groupByDate
-                  ? t("날짜 구분 끄기 (한 번 더)")
-                  : t("리스트")
-                : t("리스트")
-            }
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <rect x="3" y="4" width="18" height="16" rx="2" />
-              <line x1="9" y1="4" x2="9" y2="20" />
-            </svg>
-          </button>
-          <button
-            className={(layout === "grid" ? "on" : "") + (layout === "grid" && groupByDate ? " grouped" : "")}
-            onClick={() => (layout === "grid" ? onToggleGroupByDate() : onLayout("grid"))}
-            title={
-              layout === "grid"
-                ? groupByDate
-                  ? t("날짜 구분 끄기 (한 번 더)")
-                  : t("그리드")
-                : t("그리드")
-            }
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <rect x="3" y="3" width="7" height="7" rx="1.5" />
-              <rect x="14" y="3" width="7" height="7" rx="1.5" />
-              <rect x="3" y="14" width="7" height="7" rx="1.5" />
-              <rect x="14" y="14" width="7" height="7" rx="1.5" />
-            </svg>
-          </button>
-        </div>
-        )}
+        <ViewControls
+          fitContain={!fill}
+          onToggleFit={onToggleFill}
+          scale={onZoomValue ? (zoomValue ?? 1) : scale}
+          onScale={(v) => (onZoomValue ? onZoomValue(v) : onScale(v))}
+          scaleMin={onZoomValue ? 0.3 : 0.7}
+          scaleMax={onZoomValue ? 2.5 : 1.7}
+          sizeTitle={onZoomValue ? "화면 확대/축소" : "카드 크기"}
+          layout={layout}
+          groupByDate={groupByDate}
+          onSelectLayout={onLayout}
+          onToggleGroupByDate={onToggleGroupByDate}
+          showLayout={!boardMode}
+          t={t}
+        />
       </div>
     </div>
   );

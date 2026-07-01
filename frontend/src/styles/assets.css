@@ -1,0 +1,611 @@
+﻿/* ── Assets(구성) 뷰 ── */
+.assets-view {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+}
+.assets-view-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.assets-title {
+  display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px;
+  background: none; border: none; color: var(--text); cursor: pointer; padding: 4px 8px 4px 0;
+  border-radius: 8px; font-family: inherit;
+}
+.assets-title:hover { color: var(--accent); }
+
+/* ── 폴더 등록(MountManager) ── */
+/* Assets 좌상단 타이틀에서 열리므로 좌측에 띄운다(기본 manage-float 은 우측). */
+/* ★ z-index 를 info-catcher(230) 위로 — 안 그러면 바깥클릭 catcher 가 모달을 덮어
+   마우스 클릭이 전부 닫기로 새어 모달이 사라진다(키보드는 포커스 입력으로 가 안 닫힘). */
+.mount-float { width: min(440px, 94vw); left: 14px; right: auto; z-index: 240; }
+.mount-form { display: flex; flex-direction: column; gap: 8px; }
+.mount-form-row { display: flex; gap: 8px; }
+.mount-input {
+  flex: 1; min-width: 0; padding: 9px 11px; border-radius: 9px; font-size: 13px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.mount-input:focus { outline: none; border-color: var(--accent); }
+.mount-name { flex: 1; }
+.mount-form-row .settings-action { width: auto; flex: none; white-space: nowrap; }
+.manage-msg.err { color: #ff6b6b; }
+.mount-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mount-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 9px;
+}
+.mount-item.missing { border-color: rgba(255,107,107,0.5); }
+.mount-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mount-item-name {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 700; color: var(--text);
+}
+.mount-auto {
+  font-size: 10px; line-height: 1;
+  padding: 3px 6px; border-radius: 999px;
+  color: var(--accent); background: var(--grad-soft);
+  border: 1px solid rgba(190,255,64,0.35);
+}
+.mount-item-path {
+  font-size: 11px; color: var(--muted2); font-family: ui-monospace, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mount-warn { color: #ff6b6b; font-size: 15px; flex: none; }
+.mount-del {
+  flex: none; width: 24px; height: 24px; border-radius: 7px; border: none; cursor: pointer;
+  background: rgba(255,255,255,0.06); color: var(--muted); font-weight: 900; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;
+}
+.mount-del:hover { background: rgba(255,107,107,0.18); color: #ff6b6b; }
+.mount-lock {
+  flex: none; font-size: 10px; font-weight: 800;
+  color: var(--muted); padding: 5px 7px;
+  border-radius: 7px; background: rgba(255,255,255,0.05);
+}
+.assets-project {
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); padding: 5px 8px; font: inherit; font-size: 12px;
+  cursor: pointer;
+  color-scheme: dark; /* 네이티브 드롭다운을 다크 테마로 */
+}
+/* 드롭다운 옵션 시인성(흰 배경+흰 글씨 방지) */
+.assets-project option {
+  background: #16171b;
+  color: var(--text);
+}
+.assets-x {
+  width: 28px; height: 28px; padding: 0; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+}
+
+.assets-body { flex: 1; display: flex; min-height: 0; }
+.assets-tree {
+  width: 200px; flex: 0 0 200px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 8px 6px;
+}
+/* 사이드바 상단 검색바 (파일명 / #태그) */
+.assets-search {
+  display: flex; align-items: center; gap: 6px;
+  margin: 2px 4px 10px; padding: 6px 9px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.assets-search:focus-within { border-color: var(--border2); background: rgba(255,255,255,0.07); }
+/* 사이드바로 옮긴 프롬프트·태그 검색 — 사이드바 폭에 꽉 차게(상단 배치) */
+.sidebar .sidebar-search { margin: 0 0 12px; }
+.assets-search .as-icon { color: var(--muted2); font-size: 15px; }
+.assets-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--text); font: inherit; font-size: 13px;
+}
+.assets-search input::placeholder { color: var(--muted2); }
+.assets-search .as-clear {
+  background: transparent; border: none; color: var(--muted2);
+  font-size: 12px; padding: 0 2px; cursor: pointer;
+}
+.assets-search .as-clear:hover { color: var(--text); }
+.crumb-search { color: var(--muted); }
+.crumb-search b { color: var(--text); font-weight: 700; }
+
+.assets-loading, .assets-empty { color: var(--muted); font-size: 13px; padding: 14px; }
+
+/* 타입별 필터(이미지/영상/오디오) */
+.type-filter {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.type-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; color: var(--text-1, var(--text));
+}
+.type-row:hover { background: rgba(255, 255, 255, 0.05); }
+.type-row.active { background: var(--grad-soft); color: var(--accent); font-weight: 700; }
+.type-icon { width: 16px; text-align: center; flex-shrink: 0; }
+.type-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.type-count {
+  margin-left: auto; flex-shrink: 0;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.type-row.active .type-count { color: var(--accent); }
+.type-row.zero { cursor: default; opacity: 0.45; }
+.type-row.zero:hover { background: transparent; }
+
+.assets-grid-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+
+/* 외부 파일 드롭 가져오기 오버레이 */
+.assets-dropzone {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 16, 0.55);
+  border: 2.5px dashed var(--accent); border-radius: 10px;
+  backdrop-filter: blur(2px); pointer-events: none;
+}
+.assets-dropzone-card {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 22px 30px; border-radius: 12px;
+  background: rgba(20, 24, 32, 0.92); border: 1px solid var(--border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.adz-icon { font-size: 30px; color: var(--accent); line-height: 1; }
+.adz-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.adz-sub { font-size: 12px; color: var(--muted); }
+.assets-importing {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 41;
+  padding: 6px 14px; border-radius: 16px;
+  background: rgba(20, 24, 32, 0.95); border: 1px solid var(--border);
+  font-size: 12px; color: var(--text); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.assets-crumb {
+  display: flex; align-items: center; gap: 2px;
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--muted);
+}
+.assets-crumb button {
+  background: transparent; border: none; color: var(--accent);
+  padding: 2px 4px; font: inherit; font-size: 12px;
+}
+.assets-crumb button:hover { text-decoration: underline; }
+/* ⚠️ 위 '.assets-crumb button' 포괄 규칙(accent 색·font:inherit·hover 밑줄)이 그 안에 든
+   '등록된 태그' 패널 칩 버튼까지 물들여 생성탭과 다르게(초록·밑줄·폰트변형) 보이던 누수 차단 →
+   태그 칩은 공용 .tag-pill 스타일로 복구(생성탭과 동일). */
+.assets-crumb .tag-pill-name { color: var(--text); font-size: 12px; font-weight: 400; }
+.assets-crumb .tag-pill-name:hover { text-decoration: none; }
+.assets-crumb .tag-pill-x { color: var(--muted2); font-size: 10px; }
+.assets-crumb .tag-pill-x:hover { color: #ff6b6b; text-decoration: none; }
+.crumb-sep { color: var(--muted2); }
+.crumb-count { margin-left: 6px; color: var(--muted2); }
+.assets-tools { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+
+/* 좌측 필터(컬러 dot · S · T) */
+.assets-filters { position: relative; display: flex; align-items: center; gap: 7px; margin-right: 10px; }
+/* 색·상태(밝기·글로우)는 인라인 style 로 직접 지정(팝업에서도 확실히 보이게) */
+.af-dot {
+  width: 16px; height: 16px; border-radius: 50%; padding: 0;
+  border: 1px solid rgba(0,0,0,0.35); cursor: pointer;
+  transition: filter 0.12s, box-shadow 0.12s, border-color 0.12s;
+}
+/* 골드 dot(최종만 필터) — 레드 앞. 비활성은 어둡게, 활성이면 밝은 골드 + 글로우. */
+.af-dot-gold {
+  background: linear-gradient(135deg, #ffcf33, #e0a316);
+  filter: brightness(0.5) saturate(0.7); opacity: 0.85; border-color: rgba(0,0,0,0.4);
+}
+.af-dot-gold.on {
+  filter: brightness(1.15) saturate(1.2); opacity: 1; border-color: #fff;
+  box-shadow: 0 0 0 2px #ffcf33, 0 0 11px #ffcf33;
+}
+/* 회색 dot — 골드 좌측(맨 앞). 다른 dot 과 반대: ON 이면 비활성(회색) 카드를 '숨김'. */
+.af-dot-gray {
+  background: linear-gradient(135deg, #8a8f98, #555a62);
+  filter: brightness(0.7); opacity: 0.85; border-color: rgba(0,0,0,0.4);
+}
+.af-dot-gray.on {
+  filter: brightness(1.2); opacity: 1; border-color: #fff;
+  box-shadow: 0 0 0 2px #9aa0a8, 0 0 11px rgba(154,160,168,0.8);
+}
+.af-btn {
+  min-width: 26px; height: 24px; padding: 0 7px; border-radius: 7px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  color: var(--muted2); font-size: 12px; font-weight: 800;
+}
+.af-btn:hover { color: var(--text); }
+/* 눌림(활성) — 또렷한 색 변화(솔리드 accent) */
+.af-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* C 자동 알림: 새(미확인) 코멘트가 있으면 필터 off 라도 앰버로 강조 */
+.af-c.alert { background: rgba(255,176,84,0.16); border-color: #ffb054; color: #ffce8f; }
+
+/* ⚠️ '.assets-crumb button'(포괄 규칙: 투명·accent색)이 툴바 버튼 외형을 덮어써서
+   생성 툴바보다 시인성이 떨어졌다. .assets-tools 스코프(우선순위 ↑)로 본래 박스/색 복구
+   → 두 툴바 버튼이 동일하게 보이게. */
+/* 브레드크럼 링크용 hover 밑줄(text-decoration)이 툴바 버튼까지 묻는 것 제거 → 생성 탭과 동일 */
+.assets-tools button:hover { text-decoration: none; }
+.assets-tools .af-dot { padding: 0; }
+/* 회색 dot 복구 — '.assets-crumb button'(background:transparent) 포괄 규칙이 CSS-only 배경
+   (.af-dot-gray)을 덮어써 어셋창에서만 안 보이던 버그. r/g/b 는 inline background 라 안 덮였다.
+   .assets-tools 스코프(우선순위 ↑)로 본래 회색 배경을 되살린다(생성 툴바와 동일하게). */
+.assets-tools .af-dot-gray { background: linear-gradient(135deg, #8a8f98, #555a62); }
+.assets-tools .af-btn {
+  padding: 0 7px; background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border); color: var(--muted2);
+  /* crumb 의 'font: inherit' 가 두께/크기를 풀어버림 → af-btn 본래 값(800/12px) 복구 */
+  font-size: 12px; font-weight: 800; text-decoration: none;
+}
+.assets-tools .af-btn:hover { color: var(--text); }
+.assets-tools .af-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.assets-tools .af-c.alert { background: rgba(255,176,84,0.16); border-color: #ffb054; color: #ffce8f; }
+.assets-tools .fit-toggle { color: var(--muted); font-size: 15px; }
+.assets-tools .fit-toggle:hover { color: var(--text); }
+.assets-tools .fit-toggle.on { color: #fff; }
+.assets-tools .layout-toggle button { color: var(--muted); }
+.assets-tools .layout-toggle button:hover { color: var(--text); }
+.assets-tools .layout-toggle button.on { color: #fff; }
+
+/* T 태그 패널(플로팅 — 헤더로 이동, 모서리로 크기조절) */
+.tag-panel {
+  position: fixed; z-index: 80;
+  width: 290px; height: 300px; min-width: 200px; min-height: 150px;
+  resize: both; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: #14151a; border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+}
+.tag-panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12.5px; font-weight: 700;
+  cursor: move; user-select: none;
+}
+.tag-panel-clear { margin-left: auto; background: transparent; border: none; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+.tag-panel-list {
+  flex: 1; padding: 10px; overflow-y: auto;
+  display: flex; flex-wrap: wrap; gap: 7px; align-content: flex-start;
+}
+
+/* 코멘트 창(공유 스레드 — 플로팅, 이동·크기조절) */
+.cmt-panel {
+  position: fixed; z-index: 82;
+  width: 320px; height: 380px; min-width: 240px; min-height: 220px;
+  resize: both; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: #14151a; border: 1px solid var(--border2); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+}
+.cmt-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12.5px; font-weight: 700; cursor: move; user-select: none;
+}
+.cmt-title { flex: 0 0 auto; }
+.cmt-file {
+  flex: 1; min-width: 0; color: var(--muted2); font-weight: 500; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmt-x { background: transparent; border: none; color: var(--muted2); font-size: 12px; cursor: pointer; }
+.cmt-x:hover { color: var(--text); }
+.cmt-thread {
+  flex: 1; overflow-y: auto; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 11px;
+}
+.cmt-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 14px; }
+.cmt-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.cmt-author { font-size: 12px; font-weight: 700; color: var(--text); }
+.cmt-when { font-size: 10.5px; color: var(--muted2); }
+.cmt-acts { margin-left: auto; display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity 0.12s; }
+.cmt-item:hover > .cmt-meta > .cmt-acts { opacity: 1; }
+.cmt-acts button { background: transparent; border: none; color: var(--muted2); font-size: 11px; padding: 0; cursor: pointer; }
+.cmt-acts button:hover { color: var(--text); }
+.cmt-lock { font-size: 11px; opacity: 0.7; }
+.cmt-text { font-size: 13px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.cmt-mini { display: flex; gap: 5px; margin-top: 4px; }
+.cmt-mini input {
+  flex: 1; min-width: 0; height: 26px; border-radius: 7px;
+  background: #16171c; border: 1px solid var(--accent); color: var(--text);
+  padding: 0 9px; font-size: 12px; outline: none;
+}
+.cmt-mini button {
+  padding: 0 9px; border-radius: 7px; background: rgba(255,255,255,0.08);
+  border: 1px solid var(--border); color: var(--text); font-size: 11px;
+}
+.cmt-group { display: flex; flex-direction: column; gap: 10px; }
+/* 답글은 깊이와 무관하게 1단만 들여쓰기(무한 들여쓰기 방지) */
+.cmt-item.reply { margin-left: 14px; padding-left: 10px; border-left: 2px solid var(--border); }
+.cmt-replyto { font-size: 10.5px; color: var(--accent); font-weight: 600; }
+/* 미확인(NEW) 코멘트 — 액센트 강조 + 클릭해 확인 유도 */
+.cmt-item.unread {
+  cursor: pointer;
+  border-radius: 8px;
+  margin: -4px -6px; padding: 4px 6px;
+  background: rgba(177, 75, 244, 0.10);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.cmt-item.unread.reply { margin-left: 8px; }
+.cmt-item.unread:hover { background: rgba(177, 75, 244, 0.16); }
+.cmt-new {
+  font-size: 9.5px; font-weight: 800; letter-spacing: 0.04em;
+  color: var(--accent-ink); background: var(--accent);
+  padding: 1px 5px; border-radius: 999px; line-height: 1.5;
+}
+.cmt-input { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.cmt-input input {
+  flex: 1; min-width: 0; height: 30px; border-radius: 8px;
+  background: #16171c; border: 1px solid var(--border); color: var(--text);
+  padding: 0 10px; font-size: 12.5px; outline: none;
+}
+.cmt-input input:focus { border-color: var(--accent); }
+.cmt-input button {
+  padding: 0 12px; border-radius: 8px; background: var(--grad-soft);
+  border: 1px solid var(--accent); color: #fff; font-size: 12px; font-weight: 600;
+}
+.cmt-opt {
+  display: flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); user-select: none;
+}
+.cmt-opt input { accent-color: var(--accent); }
+.tag-panel-empty { color: var(--muted); font-size: 12.5px; padding: 6px; }
+.tag-pill {
+  display: inline-flex; align-items: center; overflow: hidden;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 16px;
+}
+/* '등록된 태그' 패널 활성(선택) 칩 — 칩 배경은 중립(회색), 선택 표시는 '글씨를 테마색'으로. */
+.tag-pill.on { background: rgba(255, 255, 255, 0.12); border-color: var(--border2); }
+/* 선택되면 흰 글씨 → 테마색(accent). 어셋 패널의 흰색 강제(.assets-crumb .tag-pill-name)보다 뒤라 우선. */
+.tag-pill.on .tag-pill-name { color: var(--accent); }
+.assets-crumb .tag-pill.on .tag-pill-name { color: var(--accent); }
+.tag-pill-name { background: transparent; border: none; color: var(--text); font-size: 12px; padding: 5px 4px 5px 11px; cursor: pointer; }
+.tag-pill-x { background: transparent; border: none; color: var(--muted2); font-size: 10px; padding: 5px 9px 5px 5px; cursor: pointer; }
+.tag-pill-x:hover { color: #ff6b6b; }
+
+/* ── 메이슨리(핀터레스트형) 그리드 ── */
+.assets-masonry {
+  flex: 1; overflow-y: auto; position: relative;
+  display: grid; gap: 12px; align-content: start;
+  grid-auto-rows: max-content; /* 행이 콘텐츠보다 작게 분배되지 않게(많을 때 납작해짐 방지) */
+  padding: 14px 16px;
+  user-select: none; outline: none;
+}
+.asset-cell {
+  border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  background: var(--panel);
+  /* 성능: 화면 밖 카드는 렌더/페인트 스킵(많은 파일 스크롤 렉 해결).
+     auto = 한 번 렌더되면 실제 크기를 기억 → 스크롤바 정확. 리스트는 명시 높이가 우선. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.asset-cell.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.asset-cell.focused { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--accent); }
+
+/* 드래그 마퀴(선택 사각형) */
+.assets-marquee {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: rgba(196, 232, 74, 0.16);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+}
+.asset-media {
+  position: relative; overflow: hidden;
+  background: #050608; cursor: pointer; display: block;
+}
+.asset-media img, .asset-media video {
+  width: 100%; height: auto; display: block; background: #050608;
+}
+/* 그리드(균일 카드): 정사각 박스를 padding-bottom 트릭(definite 높이)으로 강제.
+   min-content 가 0 이 아니라 항상 '너비만큼'이라 항목이 많아도 납작해지지 않음. */
+.assets-masonry .asset-media {
+  width: 100%; height: 0; padding-bottom: 100%; box-sizing: content-box;
+}
+.assets-masonry .asset-media img,
+.assets-masonry .asset-media video,
+.assets-masonry .asset-media .audio-tile {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: cover;
+}
+/* 전체 보기 모드: 잘림 없이 전체 이미지 + 블랙바(letterbox) */
+.assets-masonry.fit-contain .asset-media img,
+.assets-masonry.fit-contain .asset-media video {
+  object-fit: contain;
+}
+.asset-media:hover .thumb-overlay { opacity: 1; }
+.asset-media:hover .play-badge { opacity: 0; }
+.asset-type-tag {
+  font-size: 13px; padding: 1px 6px; border-radius: 6px;
+  background: rgba(8,9,12,0.6); backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,0.14);
+}
+/* 오디오 카드: 썸네일 없는 음악 글리프 타일 */
+.audio-tile {
+  width: 100%; aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #1b1d27, #0b0c11);
+}
+.audio-glyph { font-size: 40px; opacity: 0.75; }
+.audio-tile audio { display: none; }
+
+.asset-media .ov-top { justify-content: flex-end; }
+.asset-media .ov-bottom { justify-content: flex-start; }
+.ov-name {
+  flex: 1; min-width: 0; align-self: center;
+  font-size: 11px; color: #fff; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+}
+
+/* ── 리스트 모드 ── */
+.assets-list {
+  flex: 1; overflow-y: auto; padding: 10px 14px; position: relative;
+  display: flex; flex-direction: column; gap: 6px;
+  user-select: none; outline: none;
+}
+/* 리스트 카드 = 메인 라이브러리 List 와 동일: 좌측 큰 정사각 썸네일 + 우측 상세 패널 + 하단 S/T/C */
+.asset-cell.list {
+  flex: 0 0 auto; /* ★ 줄어들지 않게 → 많아도 압축 안 되고 본래 높이 유지(스크롤) */
+  position: relative;
+  display: flex; align-items: stretch; gap: 0;
+  padding: 0; margin-bottom: 0;
+  border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  background: var(--panel);
+}
+/* 컬러 표시: 썸네일 바로 오른쪽 세로 바 */
+.list-color-bar { flex: 0 0 auto; align-self: stretch; width: 12px; }
+.asset-cell.list:hover { background: rgba(255,255,255,0.03); }
+/* 리스트 썸네일: 행 높이(rowH)를 꽉 채우는 정사각(이미지2처럼 아래 안 빔) */
+.asset-cell.list .asset-media { flex: 0 0 auto; background: #050608; }
+.asset-cell.list .card-detail { padding: 14px 18px; gap: 8px; overflow: hidden; }
+/* S/T/C 는 컴팩트하게(1/3 크기) — 좌측 정렬 */
+.asset-cell.list .card-status {
+  border-top: none; padding: 0; margin-top: auto;
+  align-self: flex-start; width: 100%; max-width: 96px;
+}
+.asset-cell.list .asset-media img, .asset-cell.list .asset-media video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.asset-cell.list .audio-tile { width: 100%; height: 100%; aspect-ratio: auto; }
+.cd-type-ic { font-size: 14px; }
+.cd-path { max-width: 100%; }
+.cd-path .info-path { font-size: 12.5px; }
+
+.crumb-hint { margin-left: auto; color: var(--muted2); font-size: 11px; }
+
+/* ── 정보 팝업 (휠클릭) — 예전 플로팅 패널 구성 재사용 ── */
+.info-catcher { position: fixed; inset: 0; z-index: 230; }
+.info-popup {
+  position: fixed; z-index: 231;
+  display: flex; flex-direction: column; max-height: 80vh;
+  background: var(--glass);
+  backdrop-filter: blur(26px) saturate(1.3);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.7), var(--glow);
+  overflow: hidden;
+  animation: sl-rise 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.info-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 11px; border-bottom: 1px solid var(--border);
+  cursor: grab; user-select: none;
+}
+.info-head:active { cursor: grabbing; }
+.info-title { font-weight: 700; font-size: 13px; }
+.preview-count { font-weight: 600; font-size: 12px; opacity: 0.6; }
+/* 미리보기 헤더의 '구성에서 보기' — 제목 옆 오른쪽 끝(닫기 버튼 앞)에 배치 */
+.preview-board-btn { margin-left: auto; white-space: nowrap; }
+.info-board-btn {
+  margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12));
+  color: var(--accent); cursor: pointer; white-space: nowrap;
+}
+.info-board-btn:hover { background: var(--grad); color: var(--accent-ink); }
+.info-body { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.info-preview {
+  border-radius: 10px; overflow: hidden; background: #050608;
+  border: 1px solid var(--border);
+}
+.info-preview img, .info-preview video {
+  width: 100%; max-height: 240px; object-fit: contain; display: block; background: #050608;
+}
+.info-rows { display: flex; flex-direction: column; gap: 6px; }
+.info-row { display: flex; gap: 10px; font-size: 12.5px; }
+.info-label { flex: 0 0 64px; color: var(--muted2); }
+.info-value { flex: 1; color: var(--text); word-break: break-word; }
+.info-value a { color: var(--accent); }
+.info-prompt { white-space: pre-wrap; line-height: 1.5; }
+/* 실패 사유 콜아웃 */
+.info-error {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 2px 0; padding: 8px 10px;
+  background: rgba(255, 86, 86, 0.1); border: 1px solid rgba(255, 86, 86, 0.35);
+  border-radius: 8px;
+}
+.info-error-label { font-size: 11px; font-weight: 700; color: #ff8a8a; }
+.info-error-text {
+  font-size: 12px; line-height: 1.45; color: #ffd5d5;
+  word-break: break-word; white-space: pre-wrap;
+  max-height: 160px; overflow-y: auto;
+}
+.info-path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); }
+/* 경로 클릭 → 탐색기에서 원본 위치 열기 */
+.info-path-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: none; background: transparent; cursor: pointer;
+  text-align: left; max-width: 100%;
+}
+.info-path-btn:hover .info-path { color: var(--accent); text-decoration: underline; }
+.info-path-icon { color: var(--accent); font-size: 11px; flex-shrink: 0; }
+.info-color { display: inline-flex; align-items: center; gap: 6px; }
+.info-swatch { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.4); }
+.info-cached { color: #57d97e; font-weight: 600; }
+.info-uncached { color: #ffb454; }
+/* '로컬 보관됨' → 클릭 시 탐색기로 원본 위치 열기 */
+.info-reveal-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: none; background: transparent; padding: 0; cursor: pointer; font: inherit;
+}
+.info-reveal-btn:hover { text-decoration: underline; }
+.info-reveal-btn .info-path-icon { color: #57d97e; }
+
+/* 사용된 소스 갤러리 (출처) */
+.info-sources { border-top: 1px solid var(--border); padding-top: 10px; }
+.info-sources-head { font-size: 11px; color: var(--muted2); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+.info-sources-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.info-source {
+  position: relative; aspect-ratio: 1/1; border-radius: 8px; overflow: hidden;
+  background: #050608; border: 1px solid var(--border);
+  padding: 0; cursor: pointer; transition: border-color 0.12s, transform 0.12s;
+}
+.info-source:hover { border-color: var(--accent); transform: translateY(-2px); }
+.info-source img, .info-source video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.info-source-role {
+  position: absolute; left: 0; bottom: 0; right: 0;
+  background: rgba(8,9,12,0.72); color: #fff; font-size: 9px; font-weight: 600;
+  padding: 1px 4px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.info-source-dot {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: #57d97e; box-shadow: 0 0 6px rgba(87,217,126,0.7);
+}
+
+/* ── 미디어 미리보기 (클릭) — 새 탭 대신 떠오르는 창 ── */
+.preview-backdrop {
+  position: fixed; inset: 0; z-index: 232;
+  background: rgba(4, 5, 8, 0.55);
+  backdrop-filter: blur(4px);
+}
+.media-preview {
+  position: fixed; top: 50%; left: 50%;
+  display: flex; flex-direction: column;
+  max-width: 82vw; max-height: 86vh;
+  background: var(--glass);
+  backdrop-filter: blur(26px) saturate(1.3);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.75), var(--glow);
+  overflow: hidden;
+}
+.media-preview-body {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 0; padding: 10px; background: #050608;
+}
+.media-preview-body img, .media-preview-body video {
+  max-width: 78vw; max-height: 74vh; object-fit: contain;
+  display: block; border-radius: 6px;
+}
+
+/* ── 토스트 ── */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--glass); backdrop-filter: blur(18px);
+  border: 1px solid var(--border2);
+  padding: 11px 20px; border-radius: 12px; z-index: 80;
+  font-weight: 500;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), var(--glow);
+}
+
+/* 스크롤바 */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); background-clip: padding-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+

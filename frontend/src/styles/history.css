@@ -1,0 +1,333 @@
+﻿/* ── 히스토리(가계) ── */
+/* 카드 히스토리 뱃지 — 우상단(정보 오버레이와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink) */
+.lineage-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 4;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; font-weight: 800; line-height: 1;
+  padding: 4px 7px; border-radius: 20px; border: 1px solid var(--border2);
+  background: var(--grad); color: var(--accent-ink); cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+}
+.lineage-badge svg { display: block; opacity: 0.65; }
+.lineage-count { font-size: 11px; font-weight: 800; }
+.lineage-badge:hover { filter: brightness(1.12) saturate(1.1); }
+/* 팀원 카드(생성자 뱃지 👤)가 좌상단에 있으면 히스토리는 그 아래로 — 겹침 방지 */
+.creator-badge ~ .lineage-badge { top: 36px; }
+
+/* 가계 점프 하이라이트(잠깐 번쩍) */
+.lin-flash { animation: linFlash 1.2s ease; }
+@keyframes linFlash {
+  0%, 100% { box-shadow: none; }
+  20%, 60% { box-shadow: 0 0 0 3px var(--accent), 0 0 18px var(--accent); }
+}
+
+.lin-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 210; display: flex; align-items: center; justify-content: center; }
+.lin-panel {
+  width: min(92vw, 920px); max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--panel, #16171c); border: 1px solid var(--border2); border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.65);
+}
+.lin-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.lin-title { font-size: 14px; font-weight: 800; color: var(--text); }
+.lin-busy { color: var(--accent); font-weight: 800; }
+.lin-close { margin-left: auto; background: none; border: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.lin-close:hover { color: var(--text); }
+.lin-err { padding: 8px 16px; color: #ff8a8a; font-size: 12px; background: rgba(255,80,80,0.08); border-bottom: 1px solid var(--border); }
+/* 가계 패널: 섹션을 세로 컬럼으로 나란히(세로 점선 구분), 각 컬럼 안에서 카드는 세로로 쌓임 */
+.lin-body { display: flex; flex-direction: row; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 1; min-height: 0; padding: 0; }
+.lin-row { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; min-width: 150px; min-height: 0; border-right: 1px dashed rgba(255,255,255,0.08); }
+.lin-row:last-child { border-right: none; }
+.lin-row-label { flex: none; font-size: 12px; font-weight: 700; color: var(--muted); }
+.lin-row-label.lin-row-target { color: var(--accent); }
+.lin-row-n { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,0.08); color: var(--text); font-size: 11px; text-align: center; }
+.lin-strip { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-x: hidden; align-items: center; flex: 1; min-height: 0; padding-right: 2px; }
+.lin-node { display: flex; flex-direction: column; align-items: center; gap: 5px; flex: none; width: 112px; transition: transform 0.12s ease; }
+/* 선택 카드 — 살짝 확대(시인성) */
+.lin-node.sel { transform: scale(1.08); }
+.lin-thumb {
+  position: relative; width: 104px; height: 104px; border-radius: 10px; overflow: hidden;
+  border: 2px solid var(--border2); background: #0c0d11; cursor: pointer; padding: 0;
+}
+.lin-node.target .lin-thumb { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.22); }
+/* 선택(클릭=단일, Shift+클릭=복수) — 라임 테두리 강조 */
+.lin-node.sel .lin-thumb { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); }
+/* 해제된 카드 — 흑백 처리(연결로 되돌릴 수 있음) */
+.lin-node.grayed .lin-thumb { filter: grayscale(1) brightness(0.62); border-color: #4a4d54; }
+.lin-node.grayed .lin-cap { color: #9aa; }
+.lin-node.grayed.sel .lin-thumb { filter: none; } /* 선택하면 원래 색으로 확인 */
+/* 같은 소스 컬럼의 깊이별 소제목 */
+.lin-depth-label {
+  align-self: stretch; margin-top: 2px; padding: 2px 4px;
+  font-size: 10px; font-weight: 800; color: var(--muted2);
+  border-top: 1px dashed rgba(255,255,255,0.1);
+}
+.lin-strip > .lin-depth-label:first-child { border-top: none; margin-top: 0; }
+/* 우측 간략 트리(이 카드의 연결된 가계) */
+.lin-tree { flex: 1 1 320px; min-width: 280px; display: flex; flex-direction: column; padding: 12px 14px; border-left: 1px solid var(--border2); min-height: 0; }
+.lin-tree-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 8px; }
+.lin-tree-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.lin-tree-svg { flex: 1; width: 100%; min-height: 0; }
+.lin-tedge { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 2.5; }
+.lin-tedge.ref { stroke-dasharray: 5 4; stroke: rgba(196,232,74,0.5); }
+.lin-tnode { cursor: pointer; }
+.lin-tph { fill: #0c0d11; }
+.lin-tframe { stroke: var(--border2); stroke-width: 2; }
+.lin-tnode:hover .lin-tframe { stroke: var(--accent); }
+.lin-tnode.root .lin-tframe { stroke: #ffd24a; stroke-width: 2.5; }
+.lin-tnode.focus .lin-tframe { stroke: var(--accent); stroke-width: 4; }
+.lin-tnode.final .lin-tframe { stroke: #ffcf33; stroke-width: 3; }
+.lin-tstar { fill: #ffd24a; font-size: 18px; font-weight: 900; }
+/* 현재 카드 위치 강조 — 라임 글로우 링 + '현재' 라벨 */
+.lin-tnow-ring { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 6px rgba(196,232,74,0.85)); }
+.lin-tnow-bg { fill: var(--accent); }
+.lin-tnow { fill: var(--accent-ink); font-size: 11px; font-weight: 900; }
+/* 헤더의 선택/비교 바 */
+.lin-selbar { display: inline-flex; align-items: center; gap: 8px; }
+.lin-selcount { font-size: 12px; font-weight: 700; color: var(--accent); }
+.lin-cmp {
+  font-size: 12px; font-weight: 800; padding: 4px 12px; border-radius: 9px;
+  border: 1px solid var(--accent); background: var(--grad); color: var(--accent-ink); cursor: pointer;
+}
+.lin-cmp:hover { filter: brightness(1.1); }
+.lin-cmp:disabled { opacity: 0.4; cursor: default; filter: none; }
+.lin-selclear {
+  font-size: 12px; padding: 3px 9px; border-radius: 8px;
+  border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer;
+}
+.lin-selclear:hover { color: var(--text); }
+.lin-thumb img,
+.lin-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lin-thumb:hover { border-color: var(--accent); }
+/* 영상 표시 뱃지 — 좌하단 ▶ */
+.lin-vid {
+  position: absolute; left: 4px; bottom: 4px; z-index: 2;
+  width: 17px; height: 17px; border-radius: 50%;
+  background: rgba(8,9,12,0.78); color: #fff;
+  font-size: 9px; line-height: 17px; text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6); pointer-events: none;
+}
+.lin-thumb-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
+/* 구성 카드 번호 뱃지(좌상단) — 라임 배경엔 검은 글씨(--accent-ink) */
+.lin-seq {
+  position: absolute; top: 4px; left: 4px; z-index: 3;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 10px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 11px; font-weight: 900; line-height: 18px; text-align: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.55);
+}
+/* 구성 카드 로딩 안내 */
+.lin-mini-empty { font-size: 11px; color: var(--muted); padding: 8px 2px; }
+.lin-final { position: absolute; top: 4px; right: 4px; font-size: 20px; line-height: 1; color: #ffd24a; text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px #000; }
+.lin-cap { font-size: 11px; color: var(--muted); text-align: center; max-width: 108px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lin-node-actions { display: flex; gap: 4px; }
+.lin-act { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 8px; border: 1px solid var(--border2); background: var(--grad-soft, rgba(196,232,74,0.12)); color: var(--accent); cursor: pointer; }
+.lin-act:hover { background: var(--grad); color: var(--accent-ink); }
+.lin-act-del { color: #ff8a8a; background: rgba(255,80,80,0.08); }
+.lin-act-del:hover { background: rgba(255,80,80,0.85); color: #fff; }
+.lin-empty { padding: 14px 16px; color: var(--muted); font-size: 13px; }
+.lin-foot { padding: 10px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.lin-board-btn {
+  margin-left: auto; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 9px;
+  border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12)); color: var(--accent); cursor: pointer;
+}
+.lin-board-btn:hover { background: var(--grad); color: var(--accent-ink); }
+.lin-head .lin-close { margin-left: 8px; }
+
+/* ── 구성탭 히스토리 트리(HistoryBoard) ── */
+.linb { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1; }
+.linb-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.linb-title { font-size: 14px; font-weight: 800; color: var(--text); }
+.linb-count { font-size: 12px; color: var(--muted); }
+.linb-busy { font-size: 12px; color: var(--accent); }
+.linb-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.linb-leg { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--muted); margin: 0 2px 0 10px; }
+.linb-leg.solid { border-top-style: solid; border-color: var(--accent); }
+.linb-leg.dashed { border-top-style: dashed; border-color: #8ea0ff; }
+.linb-err { padding: 8px 16px; color: #ff8a8a; font-size: 12px; }
+.linb-scroll { flex: 1; min-height: 0; overflow: hidden; padding: 0; position: relative; background:
+  radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0) 0 0 / 22px 22px; }
+.linb-scroll.panning { cursor: grabbing; }
+.linb-scroll.panning * { cursor: grabbing !important; pointer-events: none; } /* 패닝 중 노드 커서/상호작용 잠금 */
+.linb-zoomwrap { position: relative; }
+.linb-canvas { position: relative; user-select: none; }
+.linb-zoombtn { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; }
+.linb-zoombtn:hover { color: var(--text); border-color: var(--accent); }
+.linb-marquee {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: rgba(196, 232, 74, 0.16);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+}
+.linb-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.linb-edge { fill: none; stroke-width: 2.2; transition: opacity 0.12s; }
+.linb-edge.der { stroke: var(--accent); opacity: 0.7; }
+.linb-edge.ref { stroke: #8ea0ff; opacity: 0.7; stroke-dasharray: 5 4; }
+.linb-edge.dim { opacity: 0.12; }
+/* 메인 라인(원본→최신 파생): 굵은 강조선 — 선택과 무관하게 항상 표시(생성 순서 한눈에) */
+.linb-edge.main { stroke: var(--accent); stroke-width: 3.6; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(196,232,74,0.5)); }
+/* 선택 → 원본 경로: 두꺼운 흰 선(메인 라인보다 위에 그려져 선택이 가장 잘 보임) */
+.linb-edge.hl { stroke: #fff; stroke-width: 5; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 3px rgba(255,255,255,0.6)); }
+/* 비활성(회색) — 노드/엣지 모두. hl(흰선)보다 우선해야 하므로 !important */
+.linb-edge.disabled { stroke: #5a5e66 !important; opacity: 0.4 !important; stroke-dasharray: none !important; filter: none !important; }
+.linb-node {
+  position: absolute; border-radius: 12px; overflow: hidden; cursor: grab;
+  border: 2px solid var(--border2); background: #0c0d11; box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+  transition: left 0.25s ease, top 0.25s ease, transform 0.12s ease; /* l 자동정렬 시 부드럽게 — 드래그 중엔 끔 */
+  /* 가상화: pan 으로 화면 밖에 나간 노드는 페인트 스킵(최대 300노드 대형 계보의 줌/드래그 부담↓).
+     DOM·inline width/height 는 유지돼 드래그·선택·querySelector 좌표 계산은 그대로 동작(무위험). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+}
+/* content-visibility 의 paint containment 가 box-shadow 링을 자른다 → 링 있는 노드만 containment
+   해제(.gen-cell 선택 셀과 동일). ★보드 JSX 가 실제 붙이는 클래스는 sel/root/mainline/final 이다
+   (focus·onpath 는 이 보드에서 미사용) — 그래서 mainline/final 의 강조 링이 잘리던 버그(P5-2). */
+.linb-node.sel,
+.linb-node.root,
+.linb-node.mainline,
+.linb-node.final { content-visibility: visible; }
+.linb-canvas.dragging .linb-node { transition: none; }
+.linb-node:active { cursor: grabbing; }
+.linb-node img,
+.linb-node video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 툴바 fill=false(전체보기): 비율 유지 + 검은 여백(블랙바) — 그리드의 fill 토글과 동일 동작 */
+.linb-node.fit-contain { background: #050608; }
+.linb-node.fit-contain img,
+.linb-node.fit-contain video { object-fit: contain; }
+/* 영상 표시 뱃지 — 좌하단 ▶(캡션과 안 겹치게 살짝 위) */
+.linb-vid {
+  position: absolute; left: 5px; bottom: 22px; z-index: 2;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: rgba(8,9,12,0.78); color: #fff;
+  font-size: 9px; line-height: 18px; text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+/* r/g/b 카드 컬러 마커 — 좌측 세로 바(그리드 list-color-bar 와 동일 개념). 색 지정한 노드만 표시. */
+/* 노드 하단 컬러바 — 카드(.card-colorbar)와 동일. 색은 인라인, 최종이면 골드 + 빛 흐름. */
+.linb-colorbar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 9px; z-index: 4;
+  box-shadow: inset 0 1px 0 rgba(0,0,0,0.35);
+}
+.linb-colorbar.final {
+  background: linear-gradient(105deg, #ffcf33 0%, #ffe7a0 38%, #fff8df 50%, #ffe7a0 62%, #ffcf33 100%);
+  background-size: 240% 100%;
+  animation: goldSheen 2.3s linear infinite;
+}
+/* 컬러바가 있으면 캡션을 그 위로 올림(겹침 방지) */
+.linb-node.has-cbar .linb-cap { bottom: 9px; }
+/* 툴바 필터에 안 맞는 노드는 흐리게(그래프 구조는 유지).
+   ※ !important: .offline/.unshared 가 :not(.sel) 로 특이도가 더 높아 dim 을 덮어쓰던 버그
+      (라인 밖·비공유 노드가 필터에 반응 안 하던 문제) 차단 — 필터 미스매치는 무조건 흐리게. */
+.linb-node.dimmed { opacity: 0.12 !important; }
+.linb-node.dimmed:hover { opacity: 0.6 !important; }
+.linb-node:hover { border-color: var(--accent); }
+/* S 확인 오버레이 — 카드/노드 '전체'를 덮는 공용 오버레이(그리드 카드·보드 노드 공통).
+   내부 질문/버튼은 .cs-final-* 스타일 재사용(통일된 모양). */
+.sconfirm {
+  position: absolute; inset: 0; z-index: 6; border-radius: inherit;
+  display: flex; flex-direction: column; justify-content: center; gap: 9px; padding: 10px;
+  background: rgba(8,9,12,0.92); backdrop-filter: blur(2px);
+}
+.linb-node.root { border-color: #ffd24a; }
+.linb-node.focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.3), 0 3px 14px rgba(0,0,0,0.5); }
+/* 선택 카드 — 라임 테두리 + 살짝 확대(시인성). 위로 떠오르게 z-index. */
+.linb-node.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); transform: scale(1.14); z-index: 7; }
+/* 선택 경로 위의 노드(조상) — 흰 테두리로 강조, 나머지는 흐리게 */
+.linb-node.onpath { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.85); }
+.linb-node.faded { opacity: 0.32; }
+.linb-node.faded:hover { opacity: 0.7; }
+/* 공유 안 됐고 내 것도 아닌(계보로만 보이는) 노드 — 약간 작고 투명하게 표시(공유물과 구분).
+   선택 시엔 원래 크기·불투명으로 복원(자세히 보려는 의도 존중). */
+.linb-node.unshared:not(.sel) { transform: scale(0.9); opacity: 0.5; }
+.linb-node.unshared:not(.sel):hover { opacity: 0.85; }
+/* 선택/포커스의 직계 라인 밖 노드 — 조금 더 작게(라인에 집중). 선택하면 원래 크기로. */
+.linb-node.offline:not(.sel) { transform: scale(0.84); opacity: 0.8; }
+.linb-node.offline:not(.sel):hover { opacity: 1; }
+/* 비활성(회색) — d 키로 토글. 비활성처럼 보이게 흑백+어둡게 + 70% 크기로 축소(unshared/offline 과
+   같은 패턴). 선택 중엔 자세히 보려는 의도라 원래 크기 유지(:not(.sel)). */
+.linb-node.disabled { filter: grayscale(1) brightness(0.5); border-color: #4a4d54; }
+.linb-node.disabled:not(.sel) { transform: scale(0.7); }
+.linb-node.disabled .linb-cap { color: #9aa; }
+.linb-node.disabled .linb-tag.root-tag { background: #6b6f78; color: #1a1c20; }
+/* 호버 오버레이 액션(그리드 카드와 동일) */
+.linb-ov {
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between;
+  padding: 5px; opacity: 0; transition: opacity 0.12s; pointer-events: none;
+  background: linear-gradient(rgba(0,0,0,0.35), transparent 30%, transparent 60%, rgba(0,0,0,0.55));
+}
+.linb-node:hover .linb-ov { opacity: 1; }
+.linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.linb-ov-bot { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
+.linb-ov-drag { cursor: grab; }
+.linb-ov-drag:active { cursor: grabbing; }
+/* 드래그 그립 — 좌상단 S 버튼 바로 밑(top: 5+26+4). 끌어서 레퍼런스로 추가. */
+.linb-ov-grip { position: absolute; top: 37px; left: 5px; z-index: 5; }
+/* 그리드 카드 .ov-icon 과 동일한 룩(전역 일관) */
+.linb-ov-btn {
+  width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
+  color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+/* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */
+.linb-node:hover .linb-ov-btn { pointer-events: auto; }
+.linb-ov-btn:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
+.linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
+/* 최종(골드) 버튼 — 그리드 card-sf.final 톤(금색 그라데이션) */
+.linb-ov-btn.final {
+  background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;
+  border-color: #ffd966; font-size: 16px;
+}
+.linb-check { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 50%; background: var(--grad); color: var(--accent-ink); font-size: 12px; font-weight: 900; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+/* 원본 태그는 우상단으로 옮겨 좌상단 선택 체크와 안 겹치므로, 선택 시에도 그대로 보인다. */
+.linb-selinfo { display: inline-flex; align-items: center; gap: 6px; }
+.linb-selcount { font-size: 12px; font-weight: 700; color: var(--accent); }
+.linb-cmp { font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 9px; border: 1px solid var(--accent); background: var(--grad); color: var(--accent-ink); cursor: pointer; }
+.linb-cmp:hover { filter: brightness(1.1); }
+/* 선택바 삭제(파괴적) — 빨강(그리드 .sb-del 과 동일 톤) */
+.linb-cmp.linb-seldel { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); color: var(--text); }
+.linb-cmp.linb-seldel:hover { background: rgba(244,63,94,0.32); filter: none; }
+.linb-selclear { font-size: 12px; padding: 3px 7px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer; }
+.linb-selclear:hover { color: var(--text); }
+.linb-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
+.linb-tag { position: absolute; top: 5px; left: 5px; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 8px; transition: opacity 0.12s; }
+/* 원본 태그 — 좌상단 S 배지와 겹쳐 가려지므로 우상단으로(정보 ⓘ 자리). 호버하면 오버레이 ⓘ 가
+   대신하므로 숨긴다. */
+.linb-tag.root-tag { background: #ffd24a; color: #3a2c00; left: auto; right: 5px; }
+.linb-node:hover .linb-tag.root-tag { opacity: 0; }
+/* 최종(골드) 노드 — 금색 테두리 강조(구성탭) */
+.linb-node.final { border-color: #ffcf33; box-shadow: 0 0 0 3px #f5c542, 0 0 18px rgba(245,197,66,0.6); }
+/* 공유/최종 상시 배지 — 좌상단(오버레이 S 버튼과 같은 자리), card-sf 와 동형.
+   공유=라임 'S', 최종=골드 '★'. 호버하면 오버레이의 S/★ 버튼이 대신하므로 숨긴다(중복 방지). */
+.linb-sf {
+  position: absolute; top: 5px; left: 5px; z-index: 4; pointer-events: none;
+  width: 26px; height: 26px; border-radius: 8px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; transition: opacity 0.12s; backdrop-filter: blur(6px);
+}
+/* 그리드 카드 .card-sf.on / .card-sf.final 과 동일한 룩 — 공유=라임 S, 최종=골드 그라데이션 ★ */
+.linb-sf.shared { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); font-size: 13px; }
+.linb-sf.final {
+  background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;
+  border: 1px solid #ffd966; font-size: 16px;
+  box-shadow: 0 0 0 1px #ffd966, 0 0 10px rgba(245,197,66,0.55);
+}
+.linb-node:hover .linb-sf { opacity: 0; }
+/* 메인 라인 위의 노드 — 절제된 accent 글로우(생성 순서 강조). 선택/포커스(더 강한 강조)는 그대로 우선. */
+.linb-node.mainline { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(196,232,74,0.5), 0 3px 12px rgba(0,0,0,0.45); }
+/* 생성 순번 뱃지 — 좌상단 원형(원본 태그와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink). */
+.linb-seq {
+  position: absolute; top: 5px; left: 5px; z-index: 2;
+  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 10px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 11px; font-weight: 900; line-height: 18px; text-align: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.55);
+}
+/* 원본(루트) 태그가 있으면 순번 뱃지는 그 아래로 — 겹침 방지 */
+.linb-node.root .linb-seq { top: 28px; }
+.linb-cap {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px; font-size: 10px; color: #fff;
+  background: linear-gradient(transparent, rgba(0,0,0,0.78)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.linb-empty { display: flex; align-items: center; justify-content: center; height: 100%; flex: 1; padding: 24px; }
+.linb-empty-card { max-width: 440px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.linb-empty-title { font-size: 16px; font-weight: 800; color: var(--text); margin-bottom: 8px; }

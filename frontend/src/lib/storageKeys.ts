@@ -1,0 +1,18 @@
+export const STORAGE_KEYS = {
+  activeAccount: "ch.activeAccount",
+  authToken: "ch.auth.token",
+  assetsDir: "ch.assets.dir",
+  assetsDisabled: "ch.assets.disabled",
+  assetsDrag: "ch.assets.drag",
+  assetsProject: "ch.assets.project",
+  assetsSelection: "ch.assets.selection",
+  compositionBoard: "content-hub-board",
+  historyDisabled: "ch.history.disabled",
+  historyDisabledLegacy: "ch.lineage.disabled",
+  historyPos: "ch.history.pos",
+  historyPosLegacy: "ch.lineage.pos",
+  historyView: "ch.history.view",
+  projectFolderExpanded: "ch.projects.folderExpanded",
+  promptHistory: "ch.promptHistory",
+  shortcuts: "ch.shortcuts",
+} as const;

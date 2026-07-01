@@ -1,0 +1,430 @@
+﻿/* ── 상단 바 (글래스) ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  background: var(--glass);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.brand {
+  font-weight: 800;
+  font-size: 19px;
+  letter-spacing: -0.3px;
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--muted); /* '팀 공유' 비활성 탭과 같은 차분한 회색 */
+  border: none; cursor: pointer; padding: 2px 4px; border-radius: 8px;
+}
+.brand:hover { color: var(--text); }
+.brand:hover { filter: brightness(1.15); }
+/* 상단 탭 — 텍스트 전용(힉스필드 Studio 메뉴 스타일): 비활성=회색, 활성=라임, 호버=색 변화 */
+.tabs { display: flex; gap: 18px; align-items: center; }
+.tabs button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 6px 2px;
+  color: var(--muted);
+  font-size: 14.5px;
+  font-weight: 600;
+  transition: color 0.12s;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button.on {
+  color: var(--accent);
+  background: transparent;
+  box-shadow: none;
+  font-weight: 700;
+}
+.search {
+  flex: 1;
+  max-width: 420px;
+  padding: 9px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+}
+.search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.18); }
+.topbar .sync { margin-left: auto; background: rgba(255,255,255,0.05); }
+
+/* 동기화 아이콘(축소) — 자동 주기 동기화가 돌고 있어 작게. margin-left:auto 는 상속 유지 */
+.topbar .sync-icon { width: 36px; padding: 8px 0; text-align: center; font-size: 15px; }
+.topbar .sync-icon.on { color: var(--accent); }
+/* 상단바 "⋯ 공유" 드롭다운 — 자주 안 쓰는 공유·보관 동작 묶음 */
+.topbar-menu { position: relative; }
+.topbar-menu .sync { margin-left: 0; } /* 메뉴 버튼은 아이콘 바로 옆에(추가 auto 밀림 방지) */
+.topbar-menu-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  min-width: 172px; display: flex; flex-direction: column; gap: 2px; padding: 5px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+.topbar-menu-pop button {
+  text-align: left; padding: 8px 11px; border-radius: 7px; font-size: 12.5px; font-weight: 500;
+  background: transparent; border: none; color: var(--text); white-space: nowrap; cursor: pointer;
+}
+.topbar-menu-pop button:hover { background: rgba(255,255,255,0.1); }
+.topbar-menu-pop button:disabled { opacity: 0.5; cursor: default; }
+.tm-sep { height: 1px; background: var(--border); margin: 3px 0; }
+
+/* 상단바 검색 — Assets 서치바(.assets-search) 스타일을 컴팩트하게, 우측 pill */
+.topbar-spacer { flex: 1; } /* 좌(로고·탭) ↔ 우(동기화·검색·Assets·계정) 분리 */
+.topbar .topbar-search { margin: 0; width: 240px; max-width: 26vw; padding: 6px 12px; border-radius: 999px; }
+.topbar .topbar-search input { font-size: 12.5px; }
+.topbar .topbar-search .as-icon { font-size: 14px; }
+
+/* 계정·워크스페이스 통합 메뉴(Assets 옆) */
+.acct-menu { position: relative; }
+.acct-avatar {
+  width: 34px; height: 34px; border-radius: 50%; cursor: pointer; flex: none;
+  border: 1px solid var(--border); color: var(--accent-ink); font-weight: 800; font-size: 14px;
+  background: var(--grad); display: inline-flex; align-items: center; justify-content: center;
+}
+.acct-avatar:hover { filter: brightness(1.12); }
+.acct-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 70;
+  width: 264px; padding: 8px; border-radius: 12px;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border);
+  box-shadow: 0 16px 44px rgba(0,0,0,0.55);
+}
+.acct-head { display: flex; align-items: center; gap: 10px; padding: 8px 8px 12px; }
+.acct-av-lg {
+  width: 40px; height: 40px; border-radius: 50%; flex: none;
+  background: var(--grad); color: var(--accent-ink); font-weight: 800; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.acct-id { min-width: 0; }
+.acct-name { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 역할은 별도 줄 — 여러 줄 허용으로 "Admin/Product Manager" 가 잘리지 않게 */
+.acct-role { font-size: 11px; color: var(--accent); line-height: 1.35; margin-top: 1px; white-space: normal; word-break: keep-all; }
+/* 비-하우스 안내(에이전트 미연결 / 마지막 동기화 기준) */
+.acct-hint { font-size: 11px; color: var(--muted2); line-height: 1.5; padding: 6px 10px; }
+.acct-hint code { font-size: 10.5px; background: rgba(127,127,127,0.14); padding: 1px 4px; border-radius: 4px; }
+.acct-hint-sm { padding: 4px 10px 2px; }
+/* 폴백(Mac/Linux·고급) 접이식 */
+.agent-adv { margin-top: 11px; }
+.agent-adv summary { font-size: 11px; color: var(--muted2); cursor: pointer; padding: 2px 0; }
+.agent-adv .settings-action { margin-top: 8px; }
+/* 읽기전용 워크스페이스(보고값) — 클릭 불가, 커서/호버 없음 */
+.acct-item.readonly { cursor: default; opacity: 0.92; }
+.acct-item.readonly:hover { background: none; }
+.acct-sec-label {
+  font-size: 10.5px; color: var(--muted2); text-transform: uppercase;
+  letter-spacing: 0.5px; padding: 4px 8px 2px;
+}
+.acct-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 7px 9px; border-radius: 8px; background: transparent; border: none;
+  cursor: pointer; color: var(--text);
+}
+.acct-item:hover { background: rgba(255,255,255,0.07); }
+.acct-item.on { background: var(--grad-soft); }
+.acct-item:disabled { opacity: 0.6; cursor: default; }
+.acct-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.acct-item-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-item-meta { font-size: 10.5px; color: var(--muted); }
+.acct-check { color: var(--accent); font-weight: 700; flex: none; }
+.acct-sep { height: 1px; background: var(--border); margin: 7px 4px; }
+.acct-action {
+  display: block; width: 100%; text-align: left; padding: 8px 9px; border-radius: 8px;
+  background: transparent; border: none; cursor: pointer; color: var(--text);
+  font-size: 12.5px; font-weight: 500;
+}
+.acct-action:hover { background: rgba(255,255,255,0.07); }
+.acct-signout { color: #f87171; }
+.acct-signout:hover { background: rgba(248,113,113,0.12); }
+
+/* 플로팅 입력창 (네이티브 prompt 대체) */
+.fp-catcher { position: fixed; inset: 0; z-index: 300; }
+.fp-panel {
+  position: fixed; z-index: 301; top: 24%; left: 50%; transform: translateX(-50%);
+  width: min(380px, 90vw); padding: 16px; border-radius: 14px;
+  background: var(--panel, #14161c); border: 1px solid var(--border2);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.65);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.fp-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+.fp-input {
+  padding: 11px 13px; border-radius: 9px; font-size: 14px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.fp-input:focus { outline: none; border-color: var(--accent); }
+.fp-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.fp-actions button {
+  padding: 8px 18px; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--border);
+}
+.fp-cancel { background: rgba(255,255,255,0.05); color: var(--muted); }
+.fp-cancel:hover { color: var(--text); }
+.fp-ok { background: var(--grad); color: var(--accent-ink); font-weight: 700; border: none; }
+.fp-ok:hover { filter: brightness(1.1); }
+/* 잔여 크레딧 행 */
+.acct-credits {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 9px; margin-top: 4px; border-radius: 8px; background: rgba(255,255,255,0.03);
+}
+.acct-credits-label { font-size: 12px; color: var(--muted); }
+.acct-credits-val { font-size: 13px; font-weight: 700; color: var(--text); }
+
+/* 내 계정 관리 — 플로팅 패널(우측 상단, 모달 아님). 불투명 배경으로 시인성 확보 */
+.manage-float {
+  position: fixed; z-index: 85; top: 56px; right: 14px;
+  width: min(380px, 92vw); max-height: 82vh; overflow-y: auto;
+  display: flex; flex-direction: column;
+  background: var(--panel, #1b1b22); backdrop-filter: blur(12px);
+  border: 1px solid var(--border2); border-radius: 14px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75);
+}
+.manage-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+.manage-name-row { display: flex; gap: 8px; }
+.manage-name-row input {
+  flex: 1; padding: 9px 11px; border-radius: 9px; font-size: 14px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.manage-name-row input:focus { outline: none; border-color: var(--accent); }
+.manage-save {
+  padding: 0 16px; border-radius: 9px; border: none; cursor: pointer;
+  background: var(--grad); color: var(--accent-ink); font-weight: 800; font-size: 13px;
+}
+.manage-save:disabled { opacity: 0.5; cursor: default; }
+.manage-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin: 8px 0 0; }
+.manage-msg { font-size: 12px; color: #4ade80; margin: 6px 0 0; }
+
+/* ── 설정 패널(SettingsPanel) ── */
+.settings-float { width: min(330px, 92vw); }
+.settings-section { padding: 14px 0; border-bottom: 1px solid var(--border); }
+.settings-section:last-child { border-bottom: none; }
+.settings-section h4 { margin: 0 0 10px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.settings-hint { font-size: 11px; color: var(--muted2); line-height: 1.5; margin: 9px 0 0; }
+/* 팀 크레딧 집계 */
+.team-credits { display: flex; flex-direction: column; gap: 2px; }
+.tc-total { display: flex; justify-content: space-between; align-items: baseline;
+  padding: 7px 10px; margin-bottom: 4px; border-radius: 8px; background: var(--grad-soft); }
+.tc-total-label { font-size: 12px; font-weight: 700; }
+.tc-total-val { font-size: 14px; font-weight: 800; }
+.tc-row { display: flex; justify-content: space-between; padding: 5px 10px; font-size: 12px; }
+.tc-row:nth-child(odd) { background: rgba(127,127,127,0.05); border-radius: 6px; }
+.tc-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.tc-cr { color: var(--muted); font-variant-numeric: tabular-nums; }
+.accent-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.accent-swatch {
+  width: 30px; height: 30px; border-radius: 50%; padding: 0; border: 2px solid transparent;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.12s;
+}
+.accent-swatch:hover { transform: scale(1.12); }
+.accent-swatch.on { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,0.22); }
+.accent-check { color: #fff; font-size: 13px; font-weight: 900; text-shadow: 0 1px 2px rgba(0,0,0,0.65); }
+/* 커스텀 컬러 칸 — 미선택 시 무지개(피커 표시), 선택 시 그 색. 숨긴 input[type=color] 가 피커를 연다. */
+.accent-custom { position: relative; overflow: hidden;
+  background: conic-gradient(#ff5e5e, #ffd24a, #c4e84a, #22d3ee, #4a9eff, #b14bf4, #ff5e8a, #ff5e5e); }
+.accent-custom input[type="color"] {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; padding: 0; border: none; cursor: pointer;
+}
+.accent-custom .accent-check { position: relative; pointer-events: none; }
+.lang-toggle {
+  display: flex; gap: 4px; background: rgba(255,255,255,0.04);
+  padding: 3px; border-radius: 10px; width: fit-content;
+}
+.lang-toggle button {
+  padding: 6px 18px; border-radius: 8px; background: transparent; border: none;
+  color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.lang-toggle button.on { background: var(--grad); color: var(--accent-ink); font-weight: 800; }
+.settings-action {
+  display: block; box-sizing: border-box; text-align: center; text-decoration: none;
+  width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--accent);
+  background: var(--grad-soft); color: var(--accent); font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.settings-action:hover:not(:disabled) { background: var(--grad); color: var(--accent-ink); }
+.settings-action:disabled { opacity: 0.6; cursor: default; }
+.settings-input {
+  display: block; box-sizing: border-box; width: 100%; margin-top: 8px;
+  padding: 8px 11px; border-radius: 8px; font-size: 12.5px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.settings-input::placeholder { color: var(--muted2); }
+.settings-input:focus { outline: none; border-color: var(--accent); }
+/* 파일 업로드 라벨(label 은 :disabled 가 없어 클래스로) — 적재 중 비활성 표시 + 재클릭 차단 */
+.settings-action.is-busy { opacity: 0.6; cursor: default; pointer-events: none; }
+/* 서버 백업/가져오기 — 두 버튼 나란히. 파일 방식은 <details> 로 접어 보조 노출. */
+.settings-row { display: flex; gap: 8px; }
+.settings-row .settings-action { margin-top: 8px; }
+/* 보조(해제 등) 버튼 — 가로폭 자동·차분한 톤 */
+.settings-action.ghost {
+  width: auto; flex: 0 0 auto; padding: 9px 14px;
+  background: transparent; color: var(--muted); border-color: var(--border2);
+}
+.settings-action.ghost:hover:not(:disabled) { background: rgba(255,255,255,0.05); color: var(--text); }
+.settings-details { margin-top: 8px; }
+.settings-details > summary { margin-bottom: 4px; }
+.settings-details[open] > summary { margin-bottom: 8px; }
+
+/* 단축키 변경 플로팅 창 — 설정창 위에 확실히 띄운다(자기 catcher 위, 클릭 가능). */
+.sc-catcher { z-index: 320; }
+.sc-float { z-index: 330; }
+.sc-warn { color: var(--accent); }
+
+/* 단축키 목록 */
+.sc-list { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.sc-group { font-size: 10.5px; font-weight: 700; color: var(--muted2); letter-spacing: .04em;
+  text-transform: uppercase; margin: 8px 0 2px; }
+.sc-group:first-child { margin-top: 0; }
+.sc-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px;
+  background: var(--panel2, rgba(255,255,255,.03)); }
+.sc-row.capturing { outline: 1px solid var(--accent); background: var(--grad-soft); }
+.sc-label { flex: 1; font-size: 12px; color: var(--text); }
+.sc-key { min-width: 78px; text-align: center; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: rgba(0,0,0,.25); font-size: 11px; font-weight: 700;
+  color: var(--muted); font-family: inherit; }
+.sc-row.capturing .sc-key { color: var(--accent); border-color: var(--accent); }
+.sc-edit { padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; }
+.sc-edit:hover { border-color: var(--accent); color: var(--accent); }
+.sc-reset { width: 26px; padding: 3px 0; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: var(--muted2); font-size: 13px; cursor: pointer; }
+.sc-reset:hover:not(:disabled) { color: var(--accent); }
+.sc-reset:disabled { opacity: 0.25; cursor: default; }
+.manage-info { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.manage-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 13px; }
+.manage-row-label { color: var(--muted); flex: none; }
+.manage-row-value { color: var(--text); font-weight: 500; text-align: right; word-break: break-all; }
+.manage-row-value.mono { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted2); }
+
+/* 제공자 신원 칩 — 클릭하면 표시이름 변경(공유 파일명·작성자 표기 기준) */
+.provider-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.provider-chip:hover { color: var(--text); border-color: var(--accent); }
+
+/* 스포트라이트 트리거 (커맨드 바) */
+.spotlight-trigger {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 13px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+.spotlight-trigger:hover { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px rgba(196,232,74,0.14); }
+.spotlight-trigger .st-icon {
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  font-size: 15px;
+}
+.spotlight-trigger .st-label { font-size: 13px; font-weight: 500; }
+.spotlight-trigger kbd {
+  font-size: 10px; font-family: inherit;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 2px 6px; color: var(--muted);
+}
+
+/* Assets(구성) 버튼 — image1 형태(초록 썸네일 + 라벨) */
+.assets-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px 5px 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+}
+.assets-btn:hover { border-color: var(--border2); }
+.assets-btn.on { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196, 232, 74, 0.16); }
+.assets-thumb {
+  width: 26px; height: 22px; border-radius: 6px; flex-shrink: 0;
+  background: linear-gradient(135deg, #5fae6e, #3f7a4b);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.assets-thumb.sm { width: 20px; height: 16px; border-radius: 5px; }
+.assets-label { font-size: 13px; font-weight: 500; }
+
+/* ── 본문 레이아웃 ── */
+.body { flex: 1; display: flex; min-height: 0; }
+.sidebar {
+  width: 200px; flex: 0 0 200px; /* 에셋 파트(.assets-tree)와 동일 너비 */
+  padding: 18px 14px;
+  background: var(--glass);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.sidebar h4 {
+  margin: 18px 0 10px; font-size: 11px; font-weight: 700;
+  color: var(--muted2); text-transform: uppercase; letter-spacing: 1px;
+}
+.sidebar section:first-child h4 { margin-top: 0; }
+
+.color-dots { display: flex; flex-wrap: wrap; gap: 9px; }
+/* 사이드바 컬러 dot — 툴바 af-dot 과 동일 동작(어둡게↔밝게)이되 사이드바라 약간 크게 */
+.sidebar .color-dots .af-dot { width: 22px; height: 22px; }
+.color-dot {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid transparent; padding: 0;
+}
+.color-dot.on { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font-size: 12px; padding: 4px 10px; border-radius: 20px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+}
+.chip.on { background: var(--grad-soft); border-color: var(--accent); color: #fff; }
+/* 자동 태그 섹션 — 헤더 옆 +버튼, 칩(클릭=무장 토글, ✕=삭제) */
+.auto-tag-head { display: flex; align-items: center; justify-content: space-between; }
+.auto-tag-add {
+  width: 20px; height: 20px; border-radius: 6px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; color: var(--muted);
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+}
+.auto-tag-add:hover { color: #fff; border-color: var(--accent); }
+.auto-tag-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 12px; border-radius: 20px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+}
+.auto-tag-chip.on { background: var(--grad-soft); border-color: var(--accent); }
+.auto-tag-name {
+  padding: 4px 4px 4px 10px; color: inherit;
+  /* 전역 button 리셋(배경·테두리·라운드)을 무효화 — 칩 안에 박스가 보이던 문제 수정 */
+  background: transparent; border: none; border-radius: 0; outline: none;
+}
+.auto-tag-chip.on .auto-tag-name { color: var(--accent); font-weight: 700; }
+.auto-tag-x {
+  padding: 2px 8px 2px 2px; font-size: 10px; color: var(--muted2);
+  background: transparent; border: none; outline: none;
+}
+.auto-tag-x:hover { color: #ff6b6b; }
+.toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); cursor: pointer; }
+/* 체크박스·라디오 마커 숨김 — 선택은 글씨색(라임)으로만 표시(사용자 요청) */
+.toggle input { display: none; }
+.toggle:has(input:checked) { color: var(--accent); font-weight: 600; }
+/* 휴지통 비우기(영구) — 위험 동작이라 살짝 붉게 */
+.trash-empty {
+  margin-top: 8px; width: 100%; font-size: 12px; padding: 5px 8px; border-radius: 7px;
+  color: #ff6b6b; background: rgba(255,80,80,0.08); border: 1px solid rgba(255,80,80,0.25);
+  cursor: pointer;
+}
+.trash-empty:hover { background: rgba(255,80,80,0.16); border-color: rgba(255,80,80,0.5); }
+
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.main-head { padding: 12px 20px 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
+/* 하단 패딩으로 항상 떠 있는 프롬프트 도크 공간 확보(마지막 행이 도크 위로 스크롤됨) */
+.grid-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.empty { padding: 56px; color: var(--muted); text-align: center; line-height: 1.8; }
+.empty b { color: var(--text); }
+

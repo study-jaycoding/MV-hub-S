@@ -104,6 +104,27 @@ export interface ProjectsResponse {
   archived_count?: number; // 보관된 프로젝트 수(보관함 지연 로딩 판단용)
 }
 
+export interface ProjectFolderNode {
+  name: string;
+  path: string; // Render 폴더 기준 상대 경로. 루트 Render 는 빈 문자열.
+  count: number; // 하위 전체 파일 수
+  children: ProjectFolderNode[];
+}
+
+export interface ProjectFolderLink {
+  project_id: string;
+  root_path: string;
+  selected_path: string;
+  updated_at?: string | null;
+}
+
+export interface ProjectFolderState extends ProjectFolderLink {
+  render_path: string;
+  tree: ProjectFolderNode | null;
+  error: string | null;
+  truncated: boolean;
+}
+
 // 멤버(=생성자) + 전역 역할(복수). 관리자 창. v02 RBAC PART 1.
 export interface Member {
   uid: string;
@@ -137,6 +158,7 @@ export interface ProjectMember {
 export interface AuthConfig {
   auth_enabled: boolean;
   has_accounts: boolean;
+  manage_enabled?: boolean; // PM 대시보드(분리형) 활성 여부 — 버튼 노출 게이트
 }
 
 // 팀 크레딧 집계 — 각 계정 에이전트가 보고한 마지막 잔액(실시간 아님).
@@ -299,6 +321,7 @@ export interface AssetMount {
   name: string;
   path: string;
   exists?: boolean;
+  auto?: boolean; // PM 프로젝트 설정에서 자동으로 노출된 읽기 전용 마운트
 }
 
 // 분리 창 파일별 메타데이터(소스/태그/코멘트/컬러)

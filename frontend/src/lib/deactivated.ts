@@ -3,28 +3,27 @@
 //   생성물 키는 보드(HistoryBoard)가 쓰던 키와 동일 → 보드에서 끄든 라이브러리에서 끄든 한 소스 공유.
 //   어디서 토글하든 DISABLED_EVENT 를 쏘아 다른 화면(App·보드·에셋뷰)이 즉시 재조회한다.
 
-const GEN_KEY = "ch.history.disabled";
-const GEN_KEY_OLD = "ch.lineage.disabled"; // 리네임 전 저장값 1회 폴백
-const ASSET_KEY = "ch.assets.disabled";
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { loadJSON, saveJSON } from "./storage";
+import { STORAGE_KEYS } from "./storageKeys";
 
-export const DISABLED_EVENT = "ch:disabled-changed";
+const GEN_KEY = STORAGE_KEYS.historyDisabled;
+const GEN_KEY_OLD = STORAGE_KEYS.historyDisabledLegacy; // 리네임 전 저장값 1회 폴백
+const ASSET_KEY = STORAGE_KEYS.assetsDisabled;
+
+export const DISABLED_EVENT = APP_EVENTS.disabledChanged;
 
 function read(key: string, oldKey?: string): Set<string> {
   try {
-    const raw = localStorage.getItem(key) ?? (oldKey ? localStorage.getItem(oldKey) : null) ?? "[]";
-    return new Set(JSON.parse(raw) as string[]);
+    return new Set(loadJSON<string[]>(key) ?? (oldKey ? loadJSON<string[]>(oldKey) : null) ?? []);
   } catch {
     return new Set();
   }
 }
 
 function write(key: string, s: Set<string>): void {
-  try {
-    localStorage.setItem(key, JSON.stringify([...s]));
-  } catch {
-    /* ignore */
-  }
-  window.dispatchEvent(new CustomEvent(DISABLED_EVENT));
+  saveJSON(key, [...s]);
+  dispatchAppEvent(DISABLED_EVENT);
 }
 
 // 선택 항목 일괄 토글: 전부 켜져 있으면 끄기, 아니면 켜기(보드의 기존 동작과 동일).

@@ -31,6 +31,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from .media_types import media_type_from_url
+
 # ── CLI 경로 해석 (셰임 함정 회피) ────────────────────────────────────────
 _CLI_PATH: Optional[str] = None
 
@@ -161,23 +163,11 @@ _STATUS_MAP = {
     "nsfw": "nsfw",  # 콘텐츠 차단(결과 없음) — 터미널 상태로 그대로 보존
 }
 
-_VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv", ".avi")
-
-
 def normalize_status(raw: Optional[str]) -> str:
     """CLI status → 로컬 status. 모르는 값은 그대로 통과(방어적)."""
     if not raw:
         return "pending"
     return _STATUS_MAP.get(raw.lower(), raw.lower())
-
-
-def media_type_from_url(url: Optional[str]) -> str:
-    if not url:
-        return "image"
-    low = url.lower().split("?", 1)[0]
-    return "video" if low.endswith(_VIDEO_EXT) else "image"
-
-
 def epoch_to_iso(value: Any) -> str:
     """epoch(float/int) → 'YYYY-MM-DD HH:MM:SS' (UTC). 실패 시 현재시각."""
     try:

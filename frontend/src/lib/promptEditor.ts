@@ -1,3 +1,7 @@
+import { DRAG_TYPES } from "./dragTypes";
+import { loadJSON, saveJSON } from "./storage";
+import { STORAGE_KEYS } from "./storageKeys";
+
 export interface ChipRef {
   file_path: string; // 레퍼런스 값(asset:proj|path 토큰 또는 원격 URL) — 백엔드가 resolve
   type: "image" | "video";
@@ -112,7 +116,7 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
     _draggingChip = chip;
     chip.classList.add("ref-dragging");
     try {
-      e.dataTransfer?.setData("application/x-ch-chip", "1");
+      e.dataTransfer?.setData(DRAG_TYPES.chip, "1");
       if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
     } catch {
       /* ignore */
@@ -125,6 +129,15 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
   });
   chip.append(img, nm, rm);
   return chip;
+}
+
+function chipRefOf(el: Element): ChipRef | null {
+  try {
+    const raw = (el as HTMLElement).dataset.ref;
+    return raw ? (JSON.parse(raw) as ChipRef) : null;
+  } catch {
+    return null;
+  }
 }
 
 // 드롭 지점(x,y)의 글자 사이 캐럿 위치 → Range. Chromium=caretRangeFromPoint, FF=caretPositionFromPoint.
@@ -234,11 +247,7 @@ export function insertChip(editor: HTMLElement, ref: ChipRef) {
 export function countImageChips(editor: HTMLElement): number {
   let n = 0;
   editor.querySelectorAll(".inline-ref").forEach((el) => {
-    try {
-      if (JSON.parse((el as HTMLElement).dataset.ref || "{}").type === "image") n++;
-    } catch {
-      /* ignore */
-    }
+    if (chipRefOf(el)?.type === "image") n++;
   });
   return n;
 }
@@ -258,11 +267,8 @@ export function serialize(editor: HTMLElement): { text: string; refs: ChipRef[] 
   editor.childNodes.forEach(walk);
   const refs: ChipRef[] = [];
   editor.querySelectorAll(".inline-ref").forEach((el) => {
-    try {
-      refs.push(JSON.parse((el as HTMLElement).dataset.ref || "{}"));
-    } catch {
-      /* ignore */
-    }
+    const ref = chipRefOf(el);
+    if (ref) refs.push(ref);
   });
   return { text: text.replace(/ /g, " ").replace(/​/g, "").trim(), refs };
 }
@@ -273,7 +279,7 @@ export function hasContent(editor: HTMLElement): boolean {
 }
 
 // ── 프롬프트 기록(쉘식 ↑↓) — 제출한 프롬프트를 텍스트+칩 구조로 localStorage 에 보관 ──
-export const HIST_KEY = "ch.promptHistory";
+export const HIST_KEY = STORAGE_KEYS.promptHistory;
 export const HIST_MAX = 20; // 최근 20개만 기억
 export type PromptPart = { t: "text"; v: string } | { t: "chip"; ref: ChipRef };
 export interface HistEntry {
@@ -283,18 +289,14 @@ export interface HistEntry {
 
 export function loadHistory(): HistEntry[] {
   try {
-    const r = JSON.parse(localStorage.getItem(HIST_KEY) || "[]");
+    const r = loadJSON<HistEntry[]>(HIST_KEY) || [];
     return Array.isArray(r) ? r : [];
   } catch {
     return [];
   }
 }
 export function saveHistory(h: HistEntry[]) {
-  try {
-    localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(-HIST_MAX)));
-  } catch {
-    /* ignore */
-  }
+  saveJSON(HIST_KEY, h.slice(-HIST_MAX));
 }
 // 에디터 → 순서 보존 파트 목록(텍스트/칩) — 복원 시 칩 위치까지 그대로.
 export function serializeParts(editor: HTMLElement): PromptPart[] {
@@ -306,11 +308,8 @@ export function serializeParts(editor: HTMLElement): PromptPart[] {
     } else if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement;
       if (el.classList?.contains("inline-ref")) {
-        try {
-          parts.push({ t: "chip", ref: JSON.parse(el.dataset.ref || "{}") });
-        } catch {
-          /* ignore */
-        }
+        const ref = chipRefOf(el);
+        if (ref) parts.push({ t: "chip", ref });
         return;
       }
       if (el.tagName === "BR") parts.push({ t: "text", v: "\n" });

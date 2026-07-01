@@ -3,6 +3,10 @@
 // 로 조회하므로 리스너를 다시 바인딩하지 않아도 변경이 즉시 반영된다. 설정창에서 현재 키를 보여주고
 // '변경'(다음 키 캡처)으로 재지정한다. 방향키·Enter·Space·Esc 같은 네비/편집 기본키는 비대상(고정).
 
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { loadJSON, saveJSON } from "./storage";
+import { STORAGE_KEYS } from "./storageKeys";
+
 export type ShortcutId =
   | "focusPrompt"
   | "colorRed"
@@ -35,7 +39,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "boardArrange", label: "자동 정렬", group: "구성 보드", def: "l" },
 ];
 
-const LS_KEY = "ch.shortcuts";
+const LS_KEY = STORAGE_KEYS.shortcuts;
 const DEFAULTS = SHORTCUTS.reduce(
   (m, s) => {
     m[s.id] = s.def;
@@ -45,22 +49,14 @@ const DEFAULTS = SHORTCUTS.reduce(
 );
 
 function load(): Partial<Record<ShortcutId, string>> {
-  try {
-    return JSON.parse(localStorage.getItem(LS_KEY) || "{}") || {};
-  } catch {
-    return {};
-  }
+  return loadJSON<Partial<Record<ShortcutId, string>>>(LS_KEY) || {};
 }
 let overrides = load();
 
 function persist() {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(overrides));
-  } catch {
-    /* ignore */
-  }
+  saveJSON(LS_KEY, overrides);
   // 다른 컴포넌트(설정창 등)가 즉시 갱신되도록 알림(핸들러는 조회식이라 별도 갱신 불필요).
-  window.dispatchEvent(new CustomEvent("ch:shortcuts-changed"));
+  dispatchAppEvent(APP_EVENTS.shortcutsChanged);
 }
 
 export function getBinding(id: ShortcutId): string {

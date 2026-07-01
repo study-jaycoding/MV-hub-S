@@ -2,6 +2,7 @@
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
+import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
 
 interface Props {
@@ -44,8 +45,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
 
   const onDragStart = (e: React.PointerEvent) => {
     drag.current = { ox: pos.x, oy: pos.y, sx: e.clientX, sy: e.clientY };
-    window.addEventListener("pointermove", onDragMove);
-    window.addEventListener("pointerup", onDragEnd);
+    addWindowPointerDrag(onDragMove, onDragEnd);
   };
   const onDragMove = (e: PointerEvent) => {
     const d = drag.current;
@@ -54,8 +54,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   };
   const onDragEnd = () => {
     drag.current = null;
-    window.removeEventListener("pointermove", onDragMove);
-    window.removeEventListener("pointerup", onDragEnd);
+    removeWindowPointerDrag(onDragMove, onDragEnd);
   };
 
   return (

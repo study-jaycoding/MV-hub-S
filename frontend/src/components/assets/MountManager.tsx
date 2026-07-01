@@ -3,6 +3,7 @@
 //  · 등록된 이름은 프로젝트 드롭다운에 그대로 뜬다(서버 전역, 모든 팀원 공유)
 import { useEffect, useState } from "react";
 import { api } from "../../api";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import type { AssetMount } from "../../types";
 
 export function MountManager({
@@ -23,10 +24,8 @@ export function MountManager({
 
   useEffect(() => {
     reload();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
+  useEscapeClose(onClose);
 
   const add = async () => {
     const p = path.trim();
@@ -113,19 +112,28 @@ export function MountManager({
                 {mounts.map((m) => (
                   <li key={m.name} className={"mount-item" + (m.exists ? "" : " missing")}>
                     <div className="mount-item-main">
-                      <span className="mount-item-name">{m.name}</span>
+                      <span className="mount-item-name">
+                        {m.name}
+                        {m.auto && <span className="mount-auto">프로젝트</span>}
+                      </span>
                       <span className="mount-item-path" title={m.path}>
                         {m.path}
                       </span>
                     </div>
                     {!m.exists && <span className="mount-warn" title="폴더를 찾을 수 없음">⚠</span>}
-                    <button
-                      className="mount-del"
-                      title="등록 해제"
-                      onClick={() => remove(m.name)}
-                    >
-                      ✕
-                    </button>
+                    {m.auto ? (
+                      <span className="mount-lock" title="관리자 프로젝트 설정에서 자동 등록됨">
+                        자동
+                      </span>
+                    ) : (
+                      <button
+                        className="mount-del"
+                        title="등록 해제"
+                        onClick={() => remove(m.name)}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>

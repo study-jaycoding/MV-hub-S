@@ -2,6 +2,7 @@
 import type { Generation } from "../types";
 import { saveToDownloadDir } from "./downloadDir";
 import { flashMsg } from "./flash";
+import { withQuery } from "./url";
 
 // 다운로드 — bytes 를 받아 blob 으로 저장한다(파일명 보장 + 크롬 다운로드 목록 표시). 원격 URL
 // (cloudfront 등)은 cross-origin 이라 a[download] 가 무시되지만, 힉스필드 CDN 이 CORS(*)를 허용하므로
@@ -32,7 +33,7 @@ async function _fetchBlob(url: string, name: string): Promise<Blob | null> {
   if (url.startsWith("/")) return null;
   try {
     const res = await fetch(
-      `/api/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`,
+      withQuery("/api/download", { url, name }),
       { credentials: "include" },
     );
     if (res.ok) return await res.blob();
@@ -80,6 +81,13 @@ export function downloadName(gen: Generation, type: string): string {
     .replace(/[\\/:*?"<>|]+/g, "_")
     .trim();
   return `${base || gen.id}.${isVid ? "mp4" : "png"}`;
+}
+
+export function downloadItemsForGenerations(gens: Generation[]): { url: string; name: string }[] {
+  return gens.flatMap((g) => {
+    const asset = g.assets?.[0];
+    return asset ? [{ url: asset.file_path, name: downloadName(g, asset.type) }] : [];
+  });
 }
 
 // 여러 건 일괄 다운로드 — 고친 download() 를 순차 호출. 각 건이 fetch→blob 으로 완전히 받아

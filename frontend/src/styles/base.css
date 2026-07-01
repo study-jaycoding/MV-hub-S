@@ -1,0 +1,85 @@
+﻿/* ════════════════════════════════════════════════════════════════
+   Content Hub — Higgsfield 비주얼 (현행: 라임 그린 액센트)
+   거의 블랙 배경 · 시그니처 라임 그린(#c4e84a) 단색 액센트 · 글래스 패널
+   · 둥근 pill 컨트롤 · 미디어 풀블리드 카드 · 호버 시 컨트롤 노출
+   구조는 그대로, 스타일 레이어만 교체. (DESIGN.md §4 비주얼 가이드)
+   ════════════════════════════════════════════════════════════════ */
+:root {
+  --bg: #08090a;
+  --bg2: #0c0e10;
+  --panel: #121316;
+  --panel2: #181a1e;
+  --glass: rgba(16, 17, 20, 0.74);
+  --border: rgba(255, 255, 255, 0.08);
+  --border2: rgba(255, 255, 255, 0.13);
+  --text: #f3f4f6;
+  --muted: #8b909c;
+  --muted2: #5f6573;
+
+  /* 시그니처 라임 그린 — 힉스필드 현행 액센트(거의 단색, 미세 그라데이션) */
+  --grad: linear-gradient(120deg, #d2ef5e 0%, #c4e84a 50%, #aedb33 100%);
+  --grad-soft: linear-gradient(120deg, rgba(196, 232, 74, 0.15), rgba(174, 219, 51, 0.15));
+  --accent: #c4e84a;
+  --accent-ink: #131806; /* 라임 위에 얹는 어두운 텍스트(버튼 라벨 등) */
+  --pink: #c4e84a; /* 레거시 변수명 — 라임으로 통일(핑크 강조 제거) */
+  --glow: 0 0 0 1px rgba(196, 232, 74, 0.5), 0 8px 30px rgba(196, 232, 74, 0.22);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 스튜디오 글로우 배경 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(60% 50% at 20% -5%, rgba(196, 232, 74, 0.10), transparent 60%),
+    radial-gradient(50% 45% at 100% 0%, rgba(174, 219, 51, 0.07), transparent 55%),
+    radial-gradient(55% 50% at 80% 105%, rgba(196, 232, 74, 0.06), transparent 60%),
+    var(--bg);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 12px;
+  transition: border-color 0.12s, background 0.12s, transform 0.08s, box-shadow 0.12s;
+}
+button:hover { border-color: var(--border2); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary {
+  background: var(--grad);
+  border: none;
+  color: var(--accent-ink); /* 라임 위 어두운 라벨(힉스필드 Generate 버튼) */
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  box-shadow: 0 6px 22px rgba(196, 232, 74, 0.28);
+}
+button.primary:hover { box-shadow: 0 8px 28px rgba(196, 232, 74, 0.42); }
+button.on { border-color: transparent; }
+
+/* 모든 드롭다운(select) — 네이티브 option 목록이 흰바탕/흐린글씨로 보이던 문제 방지.
+   다크 배경 + 밝은 글씨로 전역 통일해 앞으로 어떤 select 든 시인성 확보. */
+select { font: inherit; color: var(--text); background-color: var(--panel2); }
+select option,
+select optgroup {
+  background-color: #161922;
+  color: var(--text);
+}
+
+.app { height: 100%; display: flex; flex-direction: column; }
+.muted { color: var(--muted); font-size: 12px; }
+

@@ -1,11 +1,16 @@
 // 내 계정 관리 — AccountMenu의 "Manage Account"로 열린다.
 // 계정 정보(이메일·등급·플랜·크레딧) 표시 + 표시이름 변경(여기서 직접 수정).
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
-import { GLOBAL_ROLE_LABEL } from "../types";
+import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
+import {
+  accountEmail,
+  accountUid,
+  roleLabelList,
+  type ProviderIdentity,
+} from "../lib/accountIdentity";
+import { useEscapeClose } from "../lib/useEscapeClose";
 import type { Account } from "../types";
-
-type Provider = { uid: string | null; name: string | null; email: string | null };
 
 export function ManageAccount({
   provider,
@@ -14,10 +19,10 @@ export function ManageAccount({
   plan,
   credits,
 }: {
-  provider: Provider | null;
+  provider: ProviderIdentity | null;
   account?: Account | null;
   onClose: () => void;
-  onProviderUpdated: (p: Provider) => void; // (유지 — 호출 안 함; 표시이름은 계정별 account.name 기준)
+  onProviderUpdated: (p: ProviderIdentity) => void; // (유지 — 호출 안 함; 표시이름은 계정별 account.name 기준)
   // ★플랜/크레딧은 '활성 워크스페이스' 기준(AccountMenu 가 계산해 내려줌). account status 의 계정
   //   구독 플랜(항상 team)·계정 크레딧이 아니라, 지금 선택된 워크스페이스 값이라 전환에 따라 바뀐다.
   plan?: string | null;
@@ -34,11 +39,7 @@ export function ManageAccount({
   const [pwSaving, setPwSaving] = useState(false);
   const [pwMsg, setPwMsg] = useState("");
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeClose(onClose);
 
   const save = async () => {
     const n = name.trim();
@@ -47,7 +48,7 @@ export function ManageAccount({
     setMsg("");
     try {
       await api.setMyName(n); // 계정별 account.name 변경(+creator.name 미러)
-      window.dispatchEvent(new CustomEvent("ch:account-updated")); // App 이 account 재조회
+      dispatchAppEvent(APP_EVENTS.accountUpdated); // App 이 account 재조회
       setMsg("저장되었습니다.");
     } catch (e) {
       setMsg("변경 실패: " + String(e));
@@ -79,7 +80,7 @@ export function ManageAccount({
     }
   };
 
-  const email = account?.email || provider?.email || "—";
+  const email = accountEmail(account, provider);
 
   return (
     <>
@@ -167,9 +168,7 @@ export function ManageAccount({
             {account?.global_roles && account.global_roles.length > 0 && (
               <Row
                 label="전역 역할"
-                value={account.global_roles
-                  .map((r) => (GLOBAL_ROLE_LABEL[r] || r).split(" · ")[0])
-                  .join(", ")}
+                value={roleLabelList(account.global_roles)}
               />
             )}
             {account && <Row label="로그인 상태" value={account.status} />}
@@ -182,7 +181,7 @@ export function ManageAccount({
                   : "조회 중…"
               }
             />
-            <Row label="계정 식별자" value={account?.creator_uid || provider?.uid || "—"} mono />
+            <Row label="계정 식별자" value={accountUid(account, provider)} mono />
           </section>
         </div>
       </div>

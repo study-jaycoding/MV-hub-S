@@ -2,6 +2,7 @@
 // InfoPopup(인라인 칩 렌더)과 SpotlightPrompt 드롭 복원에서 공용으로 쓴다.
 //  · 참조는 제출 순서대로 저장되고(repo ORDER BY gr.rowid), display_prompt 의
 //    @이름 토큰도 같은 순서이므로 references 를 큐로 소비하며 위치를 매칭한다.
+import { assetFileUrl } from "./assetUrls";
 import type { Reference } from "../types";
 
 // 에셋 소스 레퍼런스(asset:proj|path 토큰)를 서빙 가능한 URL 로 변환(옛 생성 썸네일 구제).
@@ -10,7 +11,7 @@ export function refSrc(s: string | null | undefined): string | undefined {
   if (s.startsWith("asset:")) {
     const [proj, path] = s.slice(6).split("|");
     if (proj && path) {
-      return `/api/assets/file?project=${encodeURIComponent(proj)}&path=${encodeURIComponent(path)}`;
+      return assetFileUrl(proj, path);
     }
   }
   return s;

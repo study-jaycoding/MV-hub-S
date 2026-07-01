@@ -13,21 +13,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import re
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from ..active_account import slug
 from ..config import DATA_DIR
 from ..deps import current_account
+from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
 
 router = APIRouter(prefix="/api/db-backup", tags=["db-backup"])
 
-_SQLITE_MAGIC = b"SQLite format 3\x00"
-_SAFE = re.compile(r"[^A-Za-z0-9_-]")
 _KEEP = 10  # 계정별 보관 버전 수(오래된 것부터 정리)
 _MAX_BYTES = 512 * 1024 * 1024  # 업로드 상한 512MB(메타 DB 는 보통 수 MB)
 
@@ -39,14 +37,8 @@ def _acct(request: Request) -> dict:
     return acc
 
 
-def _slug(email: str) -> str:
-    base = _SAFE.sub("_", (email or "").strip().lower())[:40]
-    h = hashlib.sha1((email or "").strip().lower().encode("utf-8")).hexdigest()[:8]
-    return f"{base}-{h}"
-
-
 def _dir(email: str) -> Path:
-    return DATA_DIR / "db-backups" / _slug(email)
+    return DATA_DIR / "db-backups" / slug(email)
 
 
 @router.post("")
@@ -56,14 +48,19 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
     data = await file.read()
     if len(data) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
-    if data[: len(_SQLITE_MAGIC)] != _SQLITE_MAGIC:
-        raise HTTPException(status_code=400, detail="SQLite DB 파일이 아닙니다")
     d = _dir(acc["email"])
     d.mkdir(parents=True, exist_ok=True)
     # 초 단위 충돌 방지를 위해 ns 접미사. (서버 런타임 시간 — Workflow 가 아니라 일반 코드라 무관)
     name = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000:03d}.db"
     path = d / name
-    path.write_bytes(data)
+    tmp = d / f".upload-{time.time_ns()}.tmp"
+    tmp.write_bytes(data)
+    try:
+        validate_hub_db(tmp)
+    except HubDbValidationError as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
+    tmp.replace(path)
     # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
     backups = sorted(d.glob("*.db"))
     for old in backups[:-_KEEP]:

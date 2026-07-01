@@ -6,24 +6,22 @@
 import { memo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
-import { download, downloadName } from "../lib/download";
-import { buildPromptParts, refSrc } from "../lib/promptParts";
+import { DRAG_TYPES } from "../lib/dragTypes";
+import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import { useModelDisplayName } from "../lib/modelCatalog";
-import { TagEditor } from "./TagEditor";
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "생성중",
-  running: "생성중",
-  done: "완료",
-  failed: "실패",
-  nsfw: "NSFW 차단",
-};
-
-// pending/running 카드는 '내 PC 에이전트가 실행'하는 로컬 생성 — 에이전트가 떠 있어야 완료된다.
-const LOCAL_EXEC_HINT =
-  "내 PC의 에이전트가 로컬 CLI로 생성 중입니다. 에이전트(push_agent --watch)가 떠 있어야 완료됩니다.";
+import {
+  formatGenerationDate,
+  generationListMeta,
+  generationStatusLabel,
+  generationStatusTitle,
+} from "../lib/generationDisplay";
+import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
+import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay";
+import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
+import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
+import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
 
 interface Props {
   gen: Generation;
@@ -107,7 +105,7 @@ function GenerationCardImpl({
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
   // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.
-  const thumb = rawThumb ? api.thumbOrRaw(rawThumb, 512) : rawThumb;
+  const thumb = thumbUrl(rawThumb, 512);
   const isList = layout === "list";
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.
@@ -163,7 +161,7 @@ function GenerationCardImpl({
   };
   // 카드를 프롬프트로 드래그 → 그 프롬프트+옵션 재사용(SpotlightPrompt 드롭). gen id 만 실음.
   const onCardDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData("application/x-ch-gen", gen.id);
+    e.dataTransfer.setData(DRAG_TYPES.generation, gen.id);
     e.dataTransfer.effectAllowed = "copy";
   };
   const onEnter = () => {
@@ -209,11 +207,7 @@ function GenerationCardImpl({
           <div
             className={`thumb-placeholder status-${gen.status}`}
             title={
-              gen.status === "failed" && gen.error
-                ? gen.error
-                : gen.status === "pending" || gen.status === "running"
-                  ? LOCAL_EXEC_HINT
-                  : undefined
+              generationStatusTitle(gen.status, gen.error)
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
@@ -223,7 +217,7 @@ function GenerationCardImpl({
                 <span className="gen-generating-label">생성중</span>
               </span>
             ) : (
-              STATUS_LABEL[gen.status] || gen.status
+              generationStatusLabel(gen.status)
             )}
           </div>
         }
@@ -301,7 +295,7 @@ function GenerationCardImpl({
         onClick={(e) => e.stopPropagation()}
         onDragStart={(e) => {
           e.stopPropagation();
-          e.dataTransfer.setData("application/x-ch-gen", gen.id);
+          e.dataTransfer.setData(DRAG_TYPES.generation, gen.id);
           e.dataTransfer.effectAllowed = "copy";
         }}
       >
@@ -314,256 +308,77 @@ function GenerationCardImpl({
         <span
           className={`status-pill status-${gen.status}`}
           title={
-            gen.status === "failed" && gen.error
-              ? gen.error
-              : gen.status === "pending" || gen.status === "running"
-                ? LOCAL_EXEC_HINT
-                : undefined
+            generationStatusTitle(gen.status, gen.error)
           }
         >
-          {STATUS_LABEL[gen.status] || gen.status}
+          {generationStatusLabel(gen.status)}
         </span>
       )}
 
-      {/* 호버 오버레이 액션 */}
-      <div className="thumb-overlay" onClick={(e) => e.stopPropagation()}>
-        <div className="ov-top">
-          {onToggleSelect && isList && (
-            <label className="ov-check" title="선택">
-              <input
-                type="checkbox"
-                checked={selected}
-                onChange={() => onToggleSelect(gen.id)}
-              />
-            </label>
-          )}
-          <button
-            className="ov-icon"
-            style={{ marginLeft: "auto" }} // 정보 버튼은 항상 우측 상단(체크박스 유무 무관)
-            title="정보"
-            onClick={(e) =>
-              onInfo({ kind: "generation", gen, x: e.clientX, y: e.clientY })
-            }
-          >
-            ⓘ
-          </button>
-        </div>
-        <div className="ov-bottom">
-          {gen.deleted && (
-            // 휴지통 상태 — 복구가 최우선 액션
-            <button
-              className="ov-icon ov-icon-on"
-              title="휴지통에서 복구"
-              onClick={() => onRestore(gen)}
-            >
-              ↺
-            </button>
-          )}
-          {asset && (
-            <button
-              className="ov-icon"
-              title="다운로드"
-              onClick={() => download(asset.file_path, downloadName(gen, asset.type))}
-            >
-              ⤓
-            </button>
-          )}
-          {/* 레퍼런스로 사용 — 이 생성물을 레퍼런스로 추가(확장 트레이 또는 인라인 칩).
-              ※ 끌어내림(드롭)=프롬프트 재사용 과 맞바꾼 동작(사용자 요청). */}
-          <button
-            className="ov-icon"
-            title="레퍼런스로 사용 — 이 생성물을 @레퍼런스로 추가 (끌어내리면 프롬프트 재사용)"
-            onClick={(e) => {
-              e.stopPropagation();
-              window.dispatchEvent(new CustomEvent("ch:add-reference", { detail: gen.id }));
-            }}
-          >
-            @
-          </button>
-          {tab === "team"
-            ? // 다른 작업자의 생성물 → 내 워크스페이스로 가져오기(내 것은 공유 해제 버튼 제거 — S로 조작).
-              // ★worker_id 는 서버에서 항상 'me'(작업 워크스테이션) → creator_uid 로 '남의 것'을 판별해야
-              //   팀 탭 카드에서 ⬇ 가 정상 노출된다(worker_id 기준이면 전부 숨던 버그).
-              gen.creator_uid !== myCreatorUid && (
-                <button className="ov-icon" title="내 워크스페이스로 가져오기" onClick={() => onImport(gen)}>
-                  ⬇
-                </button>
-              )
-            : // 생성탭 → 재생성
-              (
-                <button className="ov-icon" title="재생성" onClick={() => onRegenerate(gen)}>
-                  ↻
-                </button>
-              )}
-          {/* 팀 공유/해제는 S 버튼으로 조작하므로 오버레이엔 '가계 보기'(히스토리)를 둔다.
-              원래 좌상단에 있던 라임 가계 뱃지를 이 자리(공유 버튼 자리)로 옮긴 것. */}
-          {onShowHistory && (
-            <button
-              className="ov-icon ov-icon-on ov-lineage"
-              title={
-                (gen.child_count || 0) > 0
-                  ? `가계 보기 · 이 결과물에서 파생·사용 ${gen.child_count}개`
-                  : "가계 보기 (히스토리)"
-              }
-              onClick={(e) => {
-                e.stopPropagation();
-                onShowHistory(gen);
-              }}
-            >
-              <BranchIcon />
-              {(gen.child_count || 0) > 0 && (
-                <span className="lineage-count">{gen.child_count}</span>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
+      <GenerationThumbOverlay
+        asset={asset}
+        gen={gen}
+        isList={isList}
+        myCreatorUid={myCreatorUid}
+        selected={selected}
+        tab={tab}
+        onInfo={onInfo}
+        onImport={onImport}
+        onRegenerate={onRegenerate}
+        onRestore={onRestore}
+        onShowHistory={onShowHistory}
+        onToggleSelect={onToggleSelect}
+      />
     </div>
   );
 
   // 하단 영역: 모든 버튼(S·T·C)·작업자 표시가 카드 위(좌상단 card-tl / 우상단 creator-badge)로 이전됨.
   //  → 평소엔 하단 바를 두지 않고, (1) 소스/태그 인라인 편집 중이거나 (2) r/g/b 컬러가 있을 때만 표시.
   //  편집 중 = 입력 바, 컬러만 = 얇은 컬러 마커 스트립(그리드). 리스트는 자체 list-color-bar 가 색 담당.
-  const statusBar = editingField === "tag" ? (
-    <div
-      className="card-status"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-    >
-      <TagEditor
-        tags={gen.tags}
-        onChange={(next) => onSetTags(gen, next)}
-        onBulkAdd={(names) => onBulkAddTags?.(gen, names)}
-        onBulkRemove={(names) => onBulkRemoveTags?.(gen, names)}
-        selectedCount={selectedCount}
-        onGlobalModeChange={onGlobalModeChange}
-        global={
-          onSetAutoTags
-            ? {
-                all: autoTagOptions ?? [],
-                assigned: gen.auto_tags ?? [],
-                onChange: (next) => onSetAutoTags(gen, next),
-                onBulkAdd: (names) => onBulkAddAutoTags?.(gen, names),
-                onBulkRemove: (names) => onBulkRemoveAutoTags?.(gen, names),
-              }
-            : null
-        }
-        onClose={onEditDone}
-      />
-    </div>
-  ) : editingField === "source" ? (
-    <div
-      className="card-status"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-    >
-      <input
-        className="cs-tag-input"
-        autoFocus
-        defaultValue={gen.source_name || ""}
-        placeholder="소스 이름 @이름 ⏎"
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          const v = (e.target as HTMLInputElement).value;
-          if (e.key === "Enter") {
-            onSetSource(gen, v.trim() || null, true);
-            onEditDone();
-          } else if (e.key === "Escape") {
-            onEditDone();
-          }
-        }}
-        onBlur={onEditDone}
-      />
-    </div>
-  ) : tagEditing && selected ? (
-    // 다중선택 편집 중 — 포커스가 아닌 선택 카드: 입력 없이 그 카드의 칩(× 해제) + 전역 picker(부여/해제).
-    // 추가(타이핑)는 포커스 카드에서만. 전역 picker 표시는 포커스 카드의 모드(tagGlobalMode)를 따른다.
-    <div
-      className="card-status"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <TagEditor
-        tags={gen.tags}
-        onChange={(next) => onSetTags(gen, next)}
-        selectedCount={selectedCount}
-        showInput={false}
-        forcedGlobalMode={tagGlobalMode}
-        global={
-          onSetAutoTags
-            ? {
-                all: autoTagOptions ?? [],
-                assigned: gen.auto_tags ?? [],
-                onChange: (next) => onSetAutoTags(gen, next),
-              }
-            : null
-        }
-      />
-    </div>
-  ) : !isList && (gen.color || gen.is_final) ? (
-    // 최종(골드)이면 컬러바가 골드 + 빛 흐름(테두리 대신 여기로). 그 외엔 r/g/b 컬러.
-    <div
-      className={"card-colorbar" + (gen.is_final ? " final" : "")}
-      style={gen.is_final ? undefined : { background: gen.color || undefined }}
-      title={gen.is_final ? "최종(골드)" : "카드 컬러 마커"}
+  const statusBar = (
+    <GenerationCardStatusBar
+      gen={gen}
+      isList={isList}
+      selected={selected}
+      editingField={editingField}
+      selectedCount={selectedCount}
+      tagEditing={tagEditing}
+      tagGlobalMode={tagGlobalMode}
+      autoTagOptions={autoTagOptions}
+      onSetSource={onSetSource}
+      onSetTags={onSetTags}
+      onSetAutoTags={onSetAutoTags}
+      onBulkAddTags={onBulkAddTags}
+      onBulkRemoveTags={onBulkRemoveTags}
+      onBulkAddAutoTags={onBulkAddAutoTags}
+      onBulkRemoveAutoTags={onBulkRemoveAutoTags}
+      onGlobalModeChange={onGlobalModeChange}
+      onEditDone={onEditDone}
     />
-  ) : null;
+  );
 
   // 공유/최종 확인 — 카드 '전체'를 덮는 오버레이(보드 노드와 동일한 .sconfirm 모양으로 통일).
   const cardConfirm = (confirmShare || confirmFinal) && (
-    <div
-      className="sconfirm"
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-    >
-      <span className="cs-final-q">
-        {confirmFinal
-          ? gen.is_final
-            ? "최종 지정을 해제할까요?"
-            : "최종(골드)으로 지정할까요?"
-          : gen.shared
-            ? "공유 해제 할까요?"
-            : "공유 하시겠습니까?"}
-      </span>
-      <div className="cs-final-actions">
-        <button
-          className="cs-final-yes"
-          onClick={confirmFinal ? confirmFinalYes : confirmShareYes}
-        >
-          Yes
-        </button>
-        <button
-          className="cs-final-no"
-          onClick={() => {
-            setConfirmFinal(false);
-            setConfirmShare(false);
-          }}
-        >
-          No
-        </button>
-      </div>
-    </div>
+    <GenerationConfirmOverlay
+      mode={confirmFinal ? "final" : "share"}
+      shared={gen.shared}
+      isFinal={!!gen.is_final}
+      onYes={confirmFinal ? confirmFinalYes : confirmShareYes}
+      onNo={() => {
+        setConfirmFinal(false);
+        setConfirmShare(false);
+      }}
+    />
   );
 
   // ── 리스트 모드 ──
   if (isList) {
-    const resolution = typeof params.resolution === "string" ? params.resolution : undefined;
-    const duration =
-      typeof params.duration === "number"
-        ? `${params.duration.toFixed(1)}s`
-        : typeof params.duration === "string"
-          ? params.duration
-          : undefined;
-    const aspect = typeof params.aspect_ratio === "string" ? params.aspect_ratio : undefined;
+    const { resolution, duration, aspect } = generationListMeta(params);
     const ref = gen.references[0];
     const rawRefThumb = ref?.thumbnail_path || ref?.file_path;
-    const refThumb = rawRefThumb ? api.thumbOrRaw(rawRefThumb, 256) : rawRefThumb;
+    const refThumb = thumbUrl(rawRefThumb, 256);
     // 프롬프트의 @소스 토큰을 레퍼런스 썸네일 칩으로 치환(InfoPopup 과 동일 로직)
-    const promptParts = buildPromptParts(gen.display_prompt || "", gen.references);
-    const promptHasInlineRefs = promptParts.some((p) => p.t === "chip");
+    const promptHasInlineRefs = hasInlinePromptRefs(gen.display_prompt, gen.references);
 
     return (
       <div
@@ -588,29 +403,14 @@ function GenerationCardImpl({
           {promptHasInlineRefs ? (
             // 프롬프트의 @소스 자리를 실제 레퍼런스 썸네일로 인라인 표시(어떤 이미지가 어디 들어갔는지)
             <div className="cd-prompt cd-prompt-rich" title={gen.display_prompt || gen.prompt}>
-              {promptParts.map((p, i) =>
-                p.t === "text" ? (
-                  <span key={i}>{p.v}</span>
-                ) : (
-                  <button
-                    key={i}
-                    type="button"
-                    className="inline-ref inline-ref-static inline-ref-btn"
-                    title={`${p.ref.name} — 크게 보기`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onPreview({
-                        url: refSrc(p.ref.file_path) || p.ref.thumb,
-                        type: p.ref.type,
-                        name: p.ref.name,
-                      });
-                    }}
-                  >
-                    {p.ref.thumb && <img src={p.ref.thumb} alt="" />}
-                    <span className="inline-ref-name">{p.ref.name}</span>
-                  </button>
-                ),
-              )}
+              <InlinePromptRefs
+                displayPrompt={gen.display_prompt}
+                prompt={gen.prompt}
+                references={gen.references}
+                onPreview={onPreview}
+                className="cd-prompt-inline"
+                stopPropagation
+              />
             </div>
           ) : (
             <>
@@ -642,7 +442,7 @@ function GenerationCardImpl({
             )}
           </div>
           <div className="cd-foot">
-            <span className="cd-date">{fmtDate(gen.created_at)}</span>
+            <span className="cd-date">{formatGenerationDate(gen.created_at)}</span>
           </div>
           {statusBar}
         </div>
@@ -672,67 +472,7 @@ function GenerationCardImpl({
 
 // (모델 표시명은 lib/modelCatalog 의 공유 헬퍼로 일원화 — 카드·비교·정보팝업이 같은 이름을 쓴다)
 
-function fmtDate(s: string): string {
-  const d = new Date(s.replace(" ", "T"));
-  if (isNaN(d.getTime())) return s.slice(0, 10);
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-}
-
-const ICON = {
-  viewBox: "0 0 24 24",
-  width: 13,
-  height: 13,
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-function ModelIcon() {
-  return (
-    <svg {...ICON} width={14} height={14}>
-      <line x1="6" y1="20" x2="6" y2="13" />
-      <line x1="12" y1="20" x2="12" y2="8" />
-      <line x1="18" y1="20" x2="18" y2="4" />
-    </svg>
-  );
-}
-function GemIcon() {
-  return (
-    <svg {...ICON}>
-      <polygon points="12 3 19 9 12 21 5 9 12 3" />
-    </svg>
-  );
-}
-function ClockIcon() {
-  return (
-    <svg {...ICON}>
-      <circle cx="12" cy="12" r="9" />
-      <polyline points="12 7 12 12 15 14" />
-    </svg>
-  );
-}
-function FrameIcon() {
-  return (
-    <svg {...ICON}>
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-    </svg>
-  );
-}
-// 파생본(히스토리) 아이콘 — git branch 스타일(원본에서 갈라진 가지)
-function BranchIcon() {
-  return (
-    <svg {...ICON} width={14} height={14}>
-      <line x1="6" y1="3" x2="6" y2="15" />
-      <circle cx="18" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
-
 // React.memo — 콜백을 ThumbnailGrid 가 안정 참조로 넘기므로(props 스프레드 제거), 선택/포커스/편집
 // 등 '다른 카드' 상태 변경 때 이 카드의 props(gen·selected·editingField…)가 안 바뀌면 재렌더를
 // 건너뛴다. gen 객체가 새로 오면(reload) 재렌더되는 건 정상(데이터 변경).
 export const GenerationCard = memo(GenerationCardImpl);
-

@@ -1,7 +1,8 @@
 // 선택한 결과물들을 프로젝트(작업 묶음)에 담는 드롭다운. 선택바(select-bar)에 표시.
 // 로드맵 §0-4: 프로젝트로 귀속 = 공유·이동의 단위로 묶기.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useAskPrompt } from "../lib/prompt";
+import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import type { Project } from "../types";
 
 export function ProjectAssignMenu({
@@ -18,16 +19,10 @@ export function ProjectAssignMenu({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const askPrompt = useAskPrompt();
+  const closeMenu = useCallback(() => setOpen(false), []);
 
   // 바깥 클릭 시 닫기
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+  useOutsideMouseDown(ref, closeMenu, open);
 
   const pick = (projectId: string | null) => {
     onAssign(projectId);

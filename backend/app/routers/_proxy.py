@@ -49,7 +49,12 @@ def proxying() -> bool:
     """이 프로세스가 '로컬 허브'(데이터를 공유 서버에 위임)인가?
 
     서버 직결 하이브리드: 공유 서버 토큰이 있는 AUTH-off 허브면 위임 모드. 서버 본체(AUTH on)는
-    토큰이 없으니 자기 repo 로 처리한다(같은 코드가 양쪽에서 돌아도 모드로 갈림)."""
+    토큰이 없으니 자기 repo 로 처리한다(같은 코드가 양쪽에서 돌아도 모드로 갈림).
+
+    ★CONTENT_HUB_NO_PROXY=1: 위임을 강제 OFF — 저장된 공유서버 토큰이 있어도 모든 요청을
+    로컬에서 직접 처리한다. 격리 테스트(run-test.bat)가 운영 공유서버에 전혀 안 닿게 하는 스위치."""
+    if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
+        return False
     return not AUTH_ENABLED and bool(token())
 
 
@@ -155,6 +160,7 @@ _LOCAL_PREFIXES = (
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
     "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달
     "/api/projects",       # 목록=하이브리드(서버 정의+로컬 카운트)·assign=로컬, 생성/역할 등 관리는 핸들러가 프록시
+    "/api/manage",         # PM 사이드카. 로컬/테스트 백엔드가 직접 처리(폴더 트리는 이 PC/테스트 DB 기준).
 )
 _LOCAL_EXACT = frozenset(
     {

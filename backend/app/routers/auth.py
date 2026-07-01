@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from .. import repo
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..deps import SESSION_COOKIE, require_admin, require_global_cap
 from ..services import auth
 
@@ -103,7 +103,11 @@ class HiddenIn(BaseModel):
 @router.get("/config")
 def auth_config():
     """프론트가 로그인 화면 표시 여부·부트스트랩 안내를 결정하는 데 쓴다."""
-    return {"auth_enabled": AUTH_ENABLED, "has_accounts": repo.count_accounts() > 0}
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "has_accounts": repo.count_accounts() > 0,
+        "manage_enabled": MANAGE_ENABLED,  # PM 대시보드 버튼 노출 여부(분리형)
+    }
 
 
 @router.post("/register")

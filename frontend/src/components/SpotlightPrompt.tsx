@@ -5,7 +5,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
-import { buildPromptParts, refsToChips, refSrc } from "../lib/promptParts";
+import { APP_EVENTS } from "../lib/appEvents";
+import { openAssetBroadcast } from "../lib/assetBroadcast";
+import { DRAG_TYPES } from "../lib/dragTypes";
+import { buildPromptParts, refsToChips } from "../lib/promptParts";
 import {
   countImageChips,
   detectMention,
@@ -27,9 +30,31 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
+import { dataTransferHasFiles } from "../lib/media";
+import { seedanceTokenRoles } from "../lib/seedancePrompt";
+import { buildSpotlightCreateBody } from "../lib/spotlightSubmit";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
-import { useModels, ALLOWED, HIDDEN_PARAMS, effectiveDefault, numericRange } from "../lib/useModels";
+import { useSpotlightAgentStatus } from "../lib/useSpotlightAgentStatus";
+import {
+  useSpotlightMentionSources,
+  type SpotlightMention,
+} from "../lib/useSpotlightMentionSources";
+import { useModels, ALLOWED, HIDDEN_PARAMS } from "../lib/useModels";
+import {
+  notifySpotlightAssetsChanged,
+  parseSpotlightAssetItems,
+  readSpotlightAssetPayload,
+  readSpotlightAssetCtx,
+  referenceDropTypeFromFile,
+  spotlightAssetRefBase,
+  type SpotlightAssetDragItem,
+} from "../lib/spotlightAssetRefs";
+import { SpotlightOptionsBar } from "./spotlight/SpotlightOptionsBar";
+import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls";
+import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
+import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
+import { SpotlightRefTray, type SpotlightTrayRef } from "./spotlight/SpotlightRefTray";
 import type { Generation } from "../types";
 
 const MAX_COUNT = 4; // 한 번에 생성할 최대 장수(배치)
@@ -45,298 +70,9 @@ interface Props {
   onToggleExpand: () => void; // '+' 버튼 토글
 }
 
-// 트레이 항목 = 레퍼런스(ChipRef) + 고유키(uid). 같은 파일 중복 허용이라 file_path 를 key 로 못 쓴다.
-type TrayRef = ChipRef & { uid: string };
-
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
 // useModels 훅으로 추출. onPanelDrop 에서 쓰는 상수만 훅 모듈에서 import 해 재사용.
 
-// duration 초 범위 — CLI 스키마(model get)에 min/max 가 없어 모델 스펙(models_explore)으로 보강.
-//  seedance_2_0 / seedance_2_0_mini: 힉스필드 공식 스펙 duration_range = {min:4, max:15} (동일).
-//    (generate cost 는 선형 계산기라 16s·60s 도 에러 없이 값을 내므로 한도 검증에 못 씀.)
-const DURATION_RANGE: Record<string, { min: number; max: number }> = {
-  seedance_2_0: { min: 4, max: 15 },
-  seedance_2_0_mini: { min: 4, max: 15 },
-};
-function durRange(model: string, def: number): { min: number; max: number } {
-  return DURATION_RANGE[model] || { min: 1, max: Math.max(12, def * 2) };
-}
-
-function usesSeedanceMediaRefs(model: string): boolean {
-  return model.startsWith("seedance");
-}
-
-type SeedanceTokenKind = "image" | "start" | "end" | "video" | "audio";
-type SeedanceTrayRole = "omni" | "start" | "end" | "video";
-type SeedanceTokenRoles = Map<number, Set<SeedanceTokenKind>>;
-
-function seedanceTokenRoles(text: string): SeedanceTokenRoles {
-  const roles: SeedanceTokenRoles = new Map();
-  const re = /<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const rawKind = m[1].toLowerCase();
-    const idx = Number(m[2]);
-    if (!Number.isFinite(idx) || idx < 1) continue;
-    const kind: SeedanceTokenKind =
-      rawKind === "simage"
-        ? "start"
-        : rawKind === "eimage"
-          ? "end"
-          : rawKind === "vedio"
-            ? "video"
-            : (rawKind as SeedanceTokenKind);
-    const set = roles.get(idx) || new Set<SeedanceTokenKind>();
-    set.add(kind);
-    roles.set(idx, set);
-  }
-  return roles;
-}
-
-function seedanceTrayRole(ref: Pick<ChipRef, "type">, index: number, roles: SeedanceTokenRoles): SeedanceTrayRole {
-  const marked = roles.get(index + 1);
-  if (ref.type === "video") return "video";
-  if (marked?.has("start")) return "start";
-  if (marked?.has("end")) return "end";
-  return "omni";
-}
-
-function seedanceTrayBadge(role: SeedanceTrayRole): string {
-  if (role === "start") return "S";
-  if (role === "end") return "E";
-  if (role === "video") return "V";
-  return "O";
-}
-
-function seedanceTrayBadgeTitle(role: SeedanceTrayRole): string {
-  if (role === "start") return "첫 프레임";
-  if (role === "end") return "끝 프레임";
-  if (role === "video") return "비디오 레퍼런스";
-  return "옴니 레퍼런스";
-}
-
-function validateSeedanceTokenRoles(trayRefs: TrayRef[], roles: SeedanceTokenRoles): string | null {
-  let starts = 0;
-  let ends = 0;
-  for (const [idx, kinds] of roles) {
-    const ref = trayRefs[idx - 1];
-    if (!ref) return `Seedance 레퍼런스 ${idx}번이 트레이에 없습니다.`;
-    if (kinds.has("audio")) {
-      return "audio 토큰은 아직 트레이/에셋 타입 확장이 필요합니다. 우선 image/video 레퍼런스로 생성해 주세요.";
-    }
-    const usesImageToken = kinds.has("image") || kinds.has("start") || kinds.has("end");
-    if (usesImageToken && ref.type !== "image") {
-      return `${idx}번 레퍼런스는 이미지가 아니어서 image/simage/eimage 토큰으로 쓸 수 없습니다.`;
-    }
-    if (kinds.has("video") && ref.type !== "video") {
-      return `${idx}번 레퍼런스는 비디오가 아니어서 video 토큰으로 쓸 수 없습니다.`;
-    }
-    if (kinds.has("start") && kinds.has("end")) {
-      return `${idx}번 레퍼런스를 첫 프레임과 끝 프레임으로 동시에 지정할 수 없습니다.`;
-    }
-    if ((kinds.has("start") || kinds.has("end")) && kinds.has("image")) {
-      return `${idx}번 레퍼런스는 옴니와 첫/끝 프레임 중 하나로만 지정해 주세요.`;
-    }
-    if (ref.type === "image") {
-      const role = seedanceTrayRole(ref, idx - 1, roles);
-      if (role === "start") starts += 1;
-      if (role === "end") ends += 1;
-    }
-  }
-  if (starts > 1) return "Seedance 시작 프레임은 1장만 지정할 수 있습니다.";
-  if (ends > 1) return "Seedance 끝 프레임은 1장만 지정할 수 있습니다.";
-  return null;
-}
-
-function seedanceOmniImageIndexMap(trayRefs: TrayRef[], roles: SeedanceTokenRoles): Map<number, number> {
-  const map = new Map<number, number>();
-  let n = 0;
-  trayRefs.forEach((ref, i) => {
-    if (ref.type === "image" && seedanceTrayRole(ref, i, roles) === "omni") {
-      map.set(i + 1, ++n);
-    }
-  });
-  return map;
-}
-
-function seedanceVideoIndexMap(trayRefs: TrayRef[]): Map<number, number> {
-  const map = new Map<number, number>();
-  let n = 0;
-  trayRefs.forEach((ref, i) => {
-    if (ref.type === "video") map.set(i + 1, ++n);
-  });
-  return map;
-}
-
-function normalizeSeedancePromptTokens(
-  text: string,
-  imageIndexMap?: Map<number, number>,
-  videoIndexMap?: Map<number, number>,
-): string {
-  return text.replace(/<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi, (_m, rawKind, n) => {
-    const kind = String(rawKind).toLowerCase();
-    if (kind === "simage") return "첫 프레임";
-    if (kind === "eimage") return "끝 프레임";
-    if (kind === "image") return `<<<image${imageIndexMap?.get(Number(n)) || n}>>>`;
-    if (kind === "video" || kind === "vedio") return `<<<video${videoIndexMap?.get(Number(n)) || n}>>>`;
-    return `<<<${kind}${n}>>>`;
-  });
-}
-
-function seedancePromptText(
-  parts: ReturnType<typeof serializeParts>,
-  trayImageCount: number,
-  imageIndexMap?: Map<number, number>,
-  trayVideoCount = 0,
-  videoIndexMap?: Map<number, number>,
-): string {
-  let imgN = trayImageCount;
-  let videoN = trayVideoCount;
-  return parts
-    .map((p) => {
-      if (p.t === "text") return normalizeSeedancePromptTokens(p.v, imageIndexMap, videoIndexMap);
-      if (p.ref?.type === "image") return `<<<image${++imgN}>>>`;
-      if (p.ref?.type === "video") return `<<<video${++videoN}>>>`;
-      return "";
-    })
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// 컨트롤 행 정리(칸 부족 해소): 자주 바꾸는 핵심 파라미터만 인라인 칩으로 두고,
-// 그 외(모드·비트레이트·장르 등 값만으론 의미가 모호한 것)는 '⚙ 고급' 팝오버로 모은다.
-// 모델 비종속 — 모델이 파라미터를 추가해도 자동으로 고급으로 흡수된다.
-const PRIMARY_PARAMS = new Set(["aspect_ratio", "resolution", "duration"]);
-
-// 고급 팝오버 표시 순서(요청: 모드 → 장르 → 비트레이트). 목록에 없는 건 뒤에 원래 순서로.
-const ADV_ORDER = ["mode", "genre", "bitrate_mode"];
-const advRank = (name: string): number => {
-  const i = ADV_ORDER.indexOf(name);
-  return i === -1 ? ADV_ORDER.length : i;
-};
-
-// 파라미터 풀 라벨(고급 팝오버·툴팁용) — 값만 보여선 뭔지 모르는 문제 해소.
-const PARAM_LABEL: Record<string, string> = {
-  aspect_ratio: "비율",
-  resolution: "해상도",
-  duration: "길이",
-  bitrate_mode: "비트레이트",
-  genre: "장르",
-  mode: "모드",
-  quality: "품질",
-  // batch_size 는 UI 에서 숨김(앱 레벨 count=1/4 로 일원화). 라벨 불필요.
-};
-const paramLabel = (name: string): string => PARAM_LABEL[name] || name;
-
-// 일부 값에 의미 라벨(원값 + 한글 힌트) — 그 외는 원값 그대로.
-const VALUE_LABEL: Record<string, string> = {
-  std: "표준(std)",
-  fast: "빠름(fast)",
-  standard: "표준(standard)",
-  high: "고화질(high)",
-  auto: "자동(auto)",
-};
-const valueLabel = (v: string): string => VALUE_LABEL[v] || v;
-
-// 에셋 파트(분리창)가 localStorage 에 쓴 현재 프로젝트/폴더 — 생성 피커 소스 스코프.
-function readAssetCtx(): { project: string; dir: string } {
-  try {
-    return {
-      project: localStorage.getItem("ch.assets.project") || "",
-      dir: localStorage.getItem("ch.assets.dir") || "",
-    };
-  } catch {
-    return { project: "", dir: "" };
-  }
-}
-
-// 에셋 드래그 페이로드(application/x-ch-asset) 파싱 — 항상 배열로 정규화(옛 단건 객체 하위호환),
-// 이미지/영상만(오디오·폴더 제외). 잘못된 데이터는 빈 배열. 트레이/인라인 드롭 공용.
-type AssetDragItem = { project: string; path: string; name: string; type: string };
-type RefDropType = "image" | "video";
-
-const IMAGE_FILE_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
-const VIDEO_FILE_RE = /\.(mp4|mov|webm|mkv|avi)$/i;
-
-function refDropTypeFromName(name: string): RefDropType | null {
-  if (IMAGE_FILE_RE.test(name)) return "image";
-  if (VIDEO_FILE_RE.test(name)) return "video";
-  return null;
-}
-
-function refDropTypeFromFile(file: File): RefDropType | null {
-  const mt = (file.type || "").toLowerCase();
-  if (mt.startsWith("image/")) return "image";
-  if (mt.startsWith("video/")) return "video";
-  return refDropTypeFromName(file.name);
-}
-
-function hasExternalFiles(e: React.DragEvent): boolean {
-  return Array.from(e.dataTransfer.types).includes("Files");
-}
-
-function notifyAssetsChanged(items: AssetDragItem[]): void {
-  if (!items.length || !("BroadcastChannel" in window)) return;
-  try {
-    const bc = new BroadcastChannel("ch-assets");
-    const projects = [...new Set(items.map((item) => item.project).filter(Boolean))];
-    bc.postMessage({ type: "assets-updated", projects });
-    bc.close();
-  } catch {
-    /* ignore */
-  }
-}
-
-function parseAssetItems(raw: string): AssetDragItem[] {
-  try {
-    const parsed = JSON.parse(raw);
-    const list = (Array.isArray(parsed) ? parsed : [parsed]) as AssetDragItem[];
-    return list.filter((d) => d && (d.type === "image" || d.type === "video"));
-  } catch {
-    return [];
-  }
-}
-// 에셋 항목 → ChipRef 공통 필드(role/uid 는 호출측이 채움). thumb: 영상은 파일URL(<video>), 이미지는 썸네일.
-function assetRefBase(d: AssetDragItem): Omit<ChipRef, "role"> {
-  const isVid = d.type === "video";
-  return {
-    file_path: `asset:${d.project}|${d.path}`, // 에이전트가 받아 로컬 파일로 CLI 에 전달
-    type: isVid ? "video" : "image",
-    name: d.name,
-    thumb: isVid ? api.assetFileUrl(d.project, d.path) : api.assetThumbUrl(d.project, d.path, 256),
-  };
-}
-
-// 모델 옵션 칩 라벨 → 아이콘(텍스트 라벨이 길어 두 줄 되는 것 방지). 이름 키워드로 매칭, 폴백=슬라이더.
-function OptIcon({ name }: { name: string }) {
-  const n = name.toLowerCase();
-  const p = {
-    width: 13, height: 13, viewBox: "0 0 24 24", fill: "none",
-    stroke: "currentColor", strokeWidth: 2,
-    strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
-  };
-  if (n.includes("aspect") || n.includes("ratio") || n.includes("frame"))
-    return <svg {...p}><rect x="3" y="5" width="18" height="14" rx="2" /></svg>;
-  if (n.includes("duration") || n.includes("time") || n.includes("length") || n.includes("second"))
-    return <svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>;
-  if (n.includes("resolution") || n.includes("quality") || n.includes("size"))
-    return <svg {...p}><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4" /></svg>;
-  if (n.includes("genre") || n.includes("style") || n.includes("preset"))
-    return <svg {...p}><path d="M3 7l9-4 9 4-9 4-9-4z" /><path d="M3 12l9 4 9-4" /></svg>;
-  if (n.includes("bitrate") || n.includes("bit_rate"))
-    return <svg {...p}><path d="M3 17l5-5 4 4 8-8" /><path d="M16 4h5v5" /></svg>;
-  if (n.includes("fps") || n.includes("motion") || n.includes("frame_rate"))
-    return <svg {...p}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 5v14M17 5v14" /></svg>;
-  if (n.includes("seed"))
-    return <svg {...p}><rect x="4" y="4" width="16" height="16" rx="3" /><circle cx="9" cy="9" r="1" /><circle cx="15" cy="15" r="1" /></svg>;
-  if (n.includes("mode"))
-    return <svg {...p}><circle cx="8" cy="8" r="2" /><circle cx="16" cy="16" r="2" /><path d="M8 10v8M16 6v8" /></svg>;
-  if (n.includes("audio") || n.includes("sound") || n.includes("voice"))
-    return <svg {...p}><path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 6a9 9 0 0 1 0 12" /></svg>;
-  // 폴백: 슬라이더(일반 설정)
-  return <svg {...p}><path d="M5 8h14M5 16h14" /><circle cx="10" cy="8" r="2.4" fill="currentColor" stroke="none" /><circle cx="15" cy="16" r="2.4" fill="currentColor" stroke="none" /></svg>;
-}
 
 export function SpotlightPrompt({
   onCreated,
@@ -358,33 +94,16 @@ export function SpotlightPrompt({
   setOpenRef.current = setOpen;
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
   const { account, checkAccount } = useAccountStatus();
-  // 에이전트 연결 — push 모델에서 생성/재생성은 내 PC 에이전트가 떠 있어야 실행되므로,
-  // 푸터의 '연결됨' 점은 (서버 CLI 가 아니라) 내 에이전트 연결 = '생성 가능' 여부를 가리킨다.
-  // 폴링은 서버 메모리 상태(agent_signals)만 읽어 가볍다(CLI 비용 없음).
-  const [agentOn, setAgentOn] = useState<boolean | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const check = () =>
-      api
-        .agentStatus()
-        .then((s) => alive && setAgentOn(s.connected))
-        .catch(() => alive && setAgentOn(null));
-    check();
-    const id = window.setInterval(check, 12000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, []);
+  const agentOn = useSpotlightAgentStatus();
   // @/# 피커
-  const [mention, setMention] = useState<{ kind: "@" | "#"; query: string } | null>(null);
-  const [allSources, setAllSources] = useState<Generation[]>([]);
-  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [mention, setMention] = useState<SpotlightMention>(null);
   const [hIdx, setHIdx] = useState(0);
-  const [assetCtx, setAssetCtx] = useState(readAssetCtx);
+  const [assetCtx, setAssetCtx] = useState(readSpotlightAssetCtx);
+  const { allSources, sourceList, tagCounts, tagFilter, tagList, setTagFilter } =
+    useSpotlightMentionSources(mention, assetCtx.project);
   // ── 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 순서 = 생성 --image 순서 ──
   // uid: 같은 파일을 중복으로 넣을 수 있어 file_path 가 겹치므로 React key·재정렬용 고유키.
-  const [trayRefs, setTrayRefs] = useState<TrayRef[]>([]);
+  const [trayRefs, setTrayRefs] = useState<SpotlightTrayRef[]>([]);
   const [promptTick, setPromptTick] = useState(0); // contentEditable 텍스트 변경 신호(트레이 역할 배지 갱신)
   const trayDragIdx = useRef<number | null>(null); // 트레이 내부 재정렬 시작 인덱스
   const trayUidRef = useRef(0); // 트레이 항목 고유키 카운터(중복 허용)
@@ -408,14 +127,14 @@ export function SpotlightPrompt({
   }, []);
 
   // Ctrl/⌘+K(또는 툴바 버튼) → 프롬프트로 포커스만.
-  useCustomEvent("ch:focus-prompt", () => editorRef.current?.focus());
+  useCustomEvent(APP_EVENTS.focusPrompt, () => editorRef.current?.focus());
 
   // (프롬프트 재사용은 카드를 입력바로 드래그-드롭하면 동작 — onPanelDrop→reusePromptFromGen 직접
   //  호출. 이벤트(ch:reuse-prompt) 경로는 디스패처가 없어 제거함.)
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
   // useCustomEvent 가 항상 최신 addRefFromGen(최신 expanded)을 호출 → stale 분기 버그 없음.
-  useCustomEvent("ch:add-reference", (e) => {
+  useCustomEvent(APP_EVENTS.addReference, (e) => {
     const id = (e as CustomEvent<string>).detail;
     if (id) void addRefFromGen(id);
   });
@@ -425,10 +144,10 @@ export function SpotlightPrompt({
   useEffect(() => {
     const update = () =>
       setAssetCtx((prev) => {
-        const next = readAssetCtx();
+        const next = readSpotlightAssetCtx();
         return next.project === prev.project && next.dir === prev.dir ? prev : next;
       });
-    const bc = "BroadcastChannel" in window ? new BroadcastChannel("ch-assets") : null;
+    const bc = openAssetBroadcast();
     bc?.addEventListener("message", update);
     window.addEventListener("storage", update);
     return () => {
@@ -437,44 +156,6 @@ export function SpotlightPrompt({
       window.removeEventListener("storage", update);
     };
   }, []);
-
-  // 피커가 열리면 현재 에셋 프로젝트의 모든 S 소스를 로드(폴더 무관 — 클라서 이름/태그 필터).
-  useEffect(() => {
-    if (!mention) return;
-    let alive = true;
-    // 프로젝트 전환 시 이전 프로젝트 소스를 즉시 비운다 — 안 그러면 새 응답 도착 전까지 다른
-    // 프로젝트의 소스가 보이고, 그 순간 Enter 로 엉뚱한 소스를 고를 수 있다.
-    setAllSources([]);
-    api
-      .searchSources(undefined, undefined, assetCtx.project)
-      .then((r) => alive && setAllSources(r))
-      .catch(() => alive && setAllSources([]));
-    return () => {
-      alive = false;
-    };
-  }, [mention?.kind, assetCtx.project]);
-
-  // 태그 목록(개수 포함) — # 피커. mention.query 로 필터.
-  const tagCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const s of allSources) for (const t of s.tags) m.set(t, (m.get(t) || 0) + 1);
-    return m;
-  }, [allSources]);
-  const tagList = useMemo(() => {
-    let tags = [...tagCounts.keys()];
-    const q = mention?.kind === "#" ? mention.query.toLowerCase() : "";
-    if (q) tags = tags.filter((t) => t.toLowerCase().includes(q));
-    return tags.sort((a, b) => a.localeCompare(b));
-  }, [tagCounts, mention]);
-
-  // 소스 목록 — @ 피커. tagFilter 로 거른 뒤 이름 필터.
-  const sourceList = useMemo(() => {
-    let base = allSources;
-    if (tagFilter) base = base.filter((s) => s.tags.includes(tagFilter));
-    const q = mention?.kind === "@" ? mention.query.toLowerCase() : "";
-    if (q) base = base.filter((s) => (s.source_name || "").toLowerCase().includes(q));
-    return base;
-  }, [allSources, tagFilter, mention]);
 
   // 멘션/리스트 바뀌면 하이라이트 0 으로.
   useEffect(() => setHIdx(0), [mention?.kind, mention?.query, tagFilter, allSources]);
@@ -652,7 +333,7 @@ export function SpotlightPrompt({
   const onPanelDragOver = (e: React.DragEvent) => {
     const tps = e.dataTransfer.types;
     // 카드(x-ch-gen)=재사용 · 에셋/외부 파일=레퍼런스 추가. 둘 다 프롬프트로 끌어내려 받는다.
-    if (tps.includes("application/x-ch-gen") || tps.includes("application/x-ch-asset") || hasExternalFiles(e)) {
+    if (tps.includes(DRAG_TYPES.generation) || tps.includes(DRAG_TYPES.asset) || dataTransferHasFiles(e.dataTransfer)) {
       e.preventDefault(); // drop 허용 + contentEditable 기본 삽입 차단
       e.dataTransfer.dropEffect = "copy";
     }
@@ -697,7 +378,7 @@ export function SpotlightPrompt({
   };
 
   const importExternalFilesAsRefs = async (files: File[]) => {
-    const accepted = files.filter((f) => refDropTypeFromFile(f));
+    const accepted = files.filter((f) => referenceDropTypeFromFile(f));
     const ignored = files.length - accepted.length;
     if (!accepted.length) {
       setError("이미지/영상 파일만 레퍼런스로 추가할 수 있습니다.");
@@ -705,9 +386,9 @@ export function SpotlightPrompt({
     }
     setError(null);
     try {
-      const ctx = readAssetCtx();
+      const ctx = readSpotlightAssetCtx();
       const res = await api.uploadReferenceFiles(accepted, ctx.project, ctx.dir);
-      const items: AssetDragItem[] = res.saved || [];
+      const items: SpotlightAssetDragItem[] = res.saved || [];
       const skipped = res.skipped || [];
       if (items.length) {
         addAssetRefs(JSON.stringify(items));
@@ -719,7 +400,7 @@ export function SpotlightPrompt({
             ? `${reused}개 기존 파일을 재사용했습니다`
             : `${items.length}개 외부 파일을 레퍼런스로 추가했습니다`;
         flashMsg(label);
-        notifyAssetsChanged(items);
+        notifySpotlightAssetsChanged(items);
       }
       const skippedCount = ignored + skipped.length;
       if (!items.length && skippedCount > 0) {
@@ -731,18 +412,18 @@ export function SpotlightPrompt({
   };
 
   const onPanelDrop = (e: React.DragEvent) => {
-    const gen = e.dataTransfer.getData("application/x-ch-gen");
+    const gen = e.dataTransfer.getData(DRAG_TYPES.generation);
     if (gen) {
       e.preventDefault();
       void reusePromptFromGen(gen); // 카드 끌어내림 = 프롬프트 재사용(불러오기)
       return;
     }
-    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
+    if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
       e.preventDefault();
-      addAssetRefs(readAssetPayload(e)); // 에셋 끌어내림 = 레퍼런스(확장=트레이, 접힘=인라인 칩) · 다중 일괄
+      addAssetRefs(readSpotlightAssetPayload(e.dataTransfer)); // 에셋 끌어내림 = 레퍼런스(확장=트레이, 접힘=인라인 칩) · 다중 일괄
       return;
     }
-    if (hasExternalFiles(e)) {
+    if (dataTransferHasFiles(e.dataTransfer)) {
       e.preventDefault();
       void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
     }
@@ -753,8 +434,8 @@ export function SpotlightPrompt({
   // 다중선택을 그리드 순서대로 한 번에 받는다(옛 단건 객체도 하위호환으로 수용).
   const addAssetToTray = (raw: string) => {
     // 중복 허용(같은 파일도 여러 번) — dedup 안 함. uid 로 구분. 다중선택은 배열로 한 번에 추가.
-    const additions: TrayRef[] = parseAssetItems(raw).map((d) => ({
-      ...assetRefBase(d),
+    const additions: SpotlightTrayRef[] = parseSpotlightAssetItems(raw).map((d) => ({
+      ...spotlightAssetRefBase(d),
       uid: `t${trayUidRef.current++}`,
       role: d.type === "video" ? "@Video" : "@Image", // 제출 시 순서대로 재번호
     }));
@@ -769,9 +450,9 @@ export function SpotlightPrompt({
     const ed = editorRef.current;
     if (!ed) return;
     let added = false;
-    for (const d of parseAssetItems(raw)) {
+    for (const d of parseSpotlightAssetItems(raw)) {
       insertChip(ed, {
-        ...assetRefBase(d),
+        ...spotlightAssetRefBase(d),
         role: d.type === "video" ? "@Video" : `@Image${countImageChips(ed) + 1}`, // 칩마다 다음 슬롯
       });
       added = true;
@@ -795,65 +476,37 @@ export function SpotlightPrompt({
   };
   const onTrayDragOver = (e: React.DragEvent) => {
     const tps = e.dataTransfer.types;
-    if (tps.includes("application/x-ch-asset") || tps.includes("application/x-ch-trayidx") || hasExternalFiles(e)) {
+    if (tps.includes(DRAG_TYPES.asset) || tps.includes(DRAG_TYPES.trayIndex) || dataTransferHasFiles(e.dataTransfer)) {
       e.preventDefault();
       e.stopPropagation(); // 패널의 카드-드롭 핸들러로 번지지 않게(트레이는 에셋 전용)
       e.dataTransfer.dropEffect = trayDragIdx.current !== null ? "move" : "copy";
     }
   };
-  // 에셋 드래그 페이로드 — 에셋창이 dragstart 에 localStorage 로 넘긴 '전체 선택'을 우선 읽는다
-  // (일부 브라우저가 팝업↔본창 크로스윈도우 드래그에서 dataTransfer 커스텀 배열을 한 건만 전달하는
-  // 문제 우회). 없으면 dataTransfer 폴백. 호출 전 반드시 x-ch-asset 타입 존재를 확인할 것(스테일 방지).
-  const readAssetPayload = (e: React.DragEvent): string => {
-    let drag = "";
-    try {
-      drag = localStorage.getItem("ch.assets.drag") || "";
-    } catch {
-      /* ignore */
-    }
-    if (!drag) drag = e.dataTransfer.getData("application/x-ch-asset");
-    // 드래그 페이로드가 한 건인데, 그 항목이 '라이브 다중선택'에 들어 있으면 다중선택을 끌어온
-    // 것으로 보고 선택 전체를 쓴다(드래그 시점 selection 캡처가 어긋나는 경우까지 복구).
-    try {
-      const arr = drag ? JSON.parse(drag) : [];
-      const list = Array.isArray(arr) ? arr : [arr];
-      if (list.length <= 1) {
-        const selRaw = localStorage.getItem("ch.assets.selection");
-        const sel = selRaw ? JSON.parse(selRaw) : [];
-        const dragged = list[0]?.path;
-        if (Array.isArray(sel) && sel.length > 1 && (!dragged || sel.some((s) => s.path === dragged)))
-          return selRaw as string;
-      }
-    } catch {
-      /* 파싱 실패 시 원래 페이로드 사용 */
-    }
-    return drag;
-  };
   const onTrayDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
-      addAssetToTray(readAssetPayload(e)); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
+    if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
+      addAssetToTray(readSpotlightAssetPayload(e.dataTransfer)); // 빈 영역 = 끝에 추가(재정렬은 항목에서)
       return;
     }
-    if (hasExternalFiles(e)) {
+    if (dataTransferHasFiles(e.dataTransfer)) {
       void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
     }
   };
   const onTrayItemDragStart = (i: number) => (e: React.DragEvent) => {
     trayDragIdx.current = i;
     e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("application/x-ch-trayidx", String(i));
+    e.dataTransfer.setData(DRAG_TYPES.trayIndex, String(i));
   };
   const onTrayItemDrop = (i: number) => (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.types.includes("application/x-ch-asset")) {
-      addAssetToTray(readAssetPayload(e)); // 항목 위에 에셋 떨어뜨려도 추가
+    if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
+      addAssetToTray(readSpotlightAssetPayload(e.dataTransfer)); // 항목 위에 에셋 떨어뜨려도 추가
       trayDragIdx.current = null;
       return;
     }
-    if (hasExternalFiles(e)) {
+    if (dataTransferHasFiles(e.dataTransfer)) {
       void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
       trayDragIdx.current = null;
       return;
@@ -883,61 +536,26 @@ export function SpotlightPrompt({
       setError("모델을 선택하세요.");
       return;
     }
-    const seedanceMode = usesSeedanceMediaRefs(model);
-    const tokenRoles = seedanceMode ? seedanceTokenRoles(text) : new Map<number, Set<SeedanceTokenKind>>();
-    if (seedanceMode) {
-      const tokenError = validateSeedanceTokenRoles(trayRefs, tokenRoles);
-      if (tokenError) {
-        setError(tokenError);
-        return;
-      }
-    }
-    // 확장 트레이 레퍼런스(순서) + 인라인 @칩 레퍼런스를 합치고 image role 을 순서대로 재번호.
-    // Seedance 트레이 이미지는 <<<simageN>>>/<<<eimageN>>> 로 첫/끝 프레임을 지정할 수 있다.
-    let imgN = 0;
-    let videoN = 0;
-    const trayWithRoles = trayRefs.map((r, i) => {
-      if (r.type !== "image") return { ...r, role: `@Video${++videoN}` };
-      const role = seedanceMode ? seedanceTrayRole(r, i, tokenRoles) : "omni";
-      if (role === "start") return { ...r, role: "@Start" };
-      if (role === "end") return { ...r, role: "@End" };
-      return { ...r, role: `@Image${++imgN}` };
-    });
-    const inlineWithRoles = inlineRefs.map((r) =>
-      r.type === "image" ? { ...r, role: `@Image${++imgN}` } : { ...r, role: `@Video${++videoN}` },
-    );
-    const refs = [...trayWithRoles, ...inlineWithRoles];
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.
     const parts = serializeParts(ed);
     const displayPrompt = partsText(parts);
-    const imageIndexMap = seedanceMode ? seedanceOmniImageIndexMap(trayRefs, tokenRoles) : undefined;
-    const videoIndexMap = seedanceMode ? seedanceVideoIndexMap(trayRefs) : undefined;
-    const trayOmniImageCount = seedanceMode
-      ? trayRefs.filter((r, i) => r.type === "image" && seedanceTrayRole(r, i, tokenRoles) === "omni").length
-      : trayRefs.filter((r) => r.type === "image").length;
-    const trayVideoCount = seedanceMode ? trayRefs.filter((r) => r.type === "video").length : 0;
-    const promptText = seedanceMode
-      ? seedancePromptText(parts, trayOmniImageCount, imageIndexMap, trayVideoCount, videoIndexMap) ||
-        normalizeSeedancePromptTokens(text, imageIndexMap, videoIndexMap)
-      : text;
+    const { body, error: bodyError } = buildSpotlightCreateBody({
+      text,
+      inlineRefs,
+      trayRefs,
+      parts,
+      displayPrompt,
+      model,
+      optionValues,
+      armedAutoTags,
+      activeProjectId,
+    });
+    if (bodyError || !body) {
+      setError(bodyError || "생성 요청을 만들 수 없습니다.");
+      return;
+    }
     setBusy(true);
     try {
-      const body = {
-        prompt: promptText || "(no text)",
-        display_prompt: displayPrompt || undefined,
-        model,
-        params: optionValues,
-        auto_tags: armedAutoTags, // 무장된 자동 태그를 결과물에 자동 적용
-        references: refs.map((r) => ({
-          file_path: r.file_path,
-          type: r.type,
-          role: r.role,
-          name: r.name, // 칩 이름(@소스명) — 정보팝업 인라인 칩 매칭
-          thumbnail: r.thumb, // 표시용 썸네일(에셋 소스도 정보팝업에서 이미지로 보이게)
-          source_gen_id: r.source_gen_id, // 출처 generation → 히스토리 reference 엣지
-        })),
-        project_id: activeProjectId, // 보던 프로젝트로 자동 귀속(없으면 미분류)
-      };
       // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡).
       const created = await Promise.all(
         Array.from({ length: Math.max(1, count) }, () => api.create(body)),
@@ -1106,6 +724,36 @@ export function SpotlightPrompt({
     }
   };
 
+  const onPromptCompositionStart = () => {
+    composingRef.current = true;
+  };
+  const onPromptCompositionEnd = () => {
+    composingRef.current = false;
+    onEditorInput();
+  };
+  const onPromptChipDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(DRAG_TYPES.chip)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    showChipDropBar(e.clientX, e.clientY);
+  };
+  const onPromptChipDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(DRAG_TYPES.chip)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    hideChipDropBar();
+    const ed = editorRef.current;
+    if (ed && moveChipToPoint(ed, e.clientX, e.clientY)) onEditorInput();
+  };
+  const onPromptChipDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!editorRef.current?.contains(e.relatedTarget as Node)) hideChipDropBar();
+  };
+  const onClearTagMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    clearTagFilter();
+  };
+
   return (
     <div className={"sl-dockbar" + (agentOn === false ? " sl-offline" : "")}>
       <div className="sl-dock">
@@ -1117,594 +765,81 @@ export function SpotlightPrompt({
         >
           {/* @/# 피커 드롭다운 */}
           {mention && (
-            <div className="sl-mention">
-              <div className="sl-mention-head">
-                {mention.kind === "@" ? "소스 (@이름)" : "태그 (#)"}
-                <span className="sl-mention-hint">↑↓ 이동 · Enter 선택 · Esc 닫기</span>
-              </div>
-              <div className="sl-mention-list" ref={listRef}>
-                {mention.kind === "#" ? (
-                  tagList.length === 0 ? (
-                    <div className="sl-mention-empty">
-                      {assetCtx.project ? "태그가 없습니다" : "에셋 창을 열어 프로젝트를 선택하세요"}
-                    </div>
-                  ) : (
-                    tagList.map((t, i) => (
-                      <button
-                        key={t}
-                        className={"sl-mention-item sl-tag-item" + (i === hIdx ? " on" : "")}
-                        onMouseEnter={() => setHIdx(i)}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          selectTag(t);
-                        }}
-                      >
-                        <span className="sl-tag-hash">#</span>
-                        <span className="sl-mention-name">{t}</span>
-                        <span className="sl-tag-count">{tagCounts.get(t)}</span>
-                      </button>
-                    ))
-                  )
-                ) : sourceList.length === 0 ? (
-                  <div className="sl-mention-empty">
-                    {assetCtx.project
-                      ? tagFilter
-                        ? `'#${tagFilter}' 소스가 없습니다`
-                        : "소스가 없습니다 (에셋/그리드에서 S 등록)"
-                      : "에셋 창을 열어 프로젝트를 선택하세요"}
-                  </div>
-                ) : (
-                  sourceList.map((s, i) => {
-                    const a = s.assets[0];
-                    const thumb = a?.thumbnail_path || a?.file_path;
-                    return (
-                      <button
-                        key={s.id}
-                        className={"sl-mention-item" + (i === hIdx ? " on" : "")}
-                        onMouseEnter={() => setHIdx(i)}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          selectSource(s);
-                        }}
-                      >
-                        {thumb ? <img src={thumb} alt="" /> : <span className="sl-mention-ph" />}
-                        <span className="sl-mention-name">@{s.source_name || "source"}</span>
-                        <span className="sl-mention-tags">
-                          {s.tags.map((t) => (
-                            <span key={t} className="sl-mention-tag">
-                              #{t}
-                            </span>
-                          ))}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+            <SpotlightMentionPicker
+              mention={mention}
+              tagList={tagList}
+              tagCounts={tagCounts}
+              sourceList={sourceList}
+              activeIndex={hIdx}
+              listRef={listRef}
+              assetProject={assetCtx.project}
+              tagFilter={tagFilter}
+              onHoverIndex={setHIdx}
+              onSelectTag={selectTag}
+              onSelectSource={selectSource}
+            />
           )}
 
           {/* 확장(+) 레퍼런스 트레이 — 에셋 폴더 드래그 전용. 번호 = 생성 --image 순서 */}
           {expanded && (
-            <div
-              className="sl-reftray"
-              tabIndex={0}
+            <SpotlightRefTray
+              trayRefs={trayRefs}
+              model={model}
+              liveSeedanceRoles={liveSeedanceRoles}
               onDragOver={onTrayDragOver}
               onDrop={onTrayDrop}
               onKeyDown={onTrayKeyDown}
-              onMouseDown={(e) => {
-                // 레퍼런스 영역을 누르면 트레이에 포커스를 줘 Shift+Backspace 로 전체 삭제 가능.
-                // ×버튼 등 버튼 클릭은 제외(그 동작 보존).
-                if (!(e.target as HTMLElement).closest("button"))
-                  (e.currentTarget as HTMLElement).focus();
-              }}
-            >
-              {trayRefs.length === 0 ? (
-                <div className="sl-reftray-empty">
-                  에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 — 번호 순서대로 레퍼런스가 됩니다
-                </div>
-              ) : (
-                trayRefs.map((r, i) => {
-                  const badgeRole = seedanceTrayRole(r, i, liveSeedanceRoles);
-                  const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
-                  const showRoleBadge = usesSeedanceMediaRefs(model) || liveSeedanceRoles.size > 0;
-                  return (
-                    <div
-                      key={r.uid}
-                      className="sl-reftray-item"
-                      draggable
-                      onDragStart={onTrayItemDragStart(i)}
-                      onDragOver={onTrayDragOver}
-                      onDrop={onTrayItemDrop(i)}
-                      title={`${i + 1}. ${r.name} · ${badgeTitle}`}
-                    >
-                      <span className="sl-reftray-num">{i + 1}</span>
-                      {r.type === "video" ? (
-                        // 영상은 포스터 thumb 가 없을 수 있어(에셋 영상은 thumb 엔드포인트 미지원)
-                        // 레퍼런스 실제 파일을 <video> 로 띄워 첫 프레임을 보여준다(깨짐 방지).
-                        <video
-                          src={refSrc(r.file_path)}
-                          muted
-                          preload="metadata"
-                          playsInline
-                        />
-                      ) : r.thumb ? (
-                        <img src={r.thumb} alt="" />
-                      ) : (
-                        <span className="sl-reftray-ph" />
-                      )}
-                      {showRoleBadge && (
-                        <span className={`sl-reftray-role ${badgeRole}`} title={badgeTitle}>
-                          {seedanceTrayBadge(badgeRole)}
-                        </span>
-                      )}
-                      <span className="sl-reftray-name">{r.name}</span>
-                      <button
-                        className="sl-reftray-x"
-                        title="제거"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => removeTrayRef(i)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+              onItemDragStart={onTrayItemDragStart}
+              onItemDrop={onTrayItemDrop}
+              onRemove={removeTrayRef}
+            />
           )}
 
           {/* 프롬프트 행 */}
-          <div className={"sl-prompt-row" + (tagFilter ? " tag-active" : "")}>
-            <button
-              className={"sl-expand-btn" + (expanded ? " on" : "")}
-              title={expanded ? "레퍼런스 트레이 접기" : "레퍼런스 트레이 펼치기 (에셋 드래그)"}
-              onClick={onToggleExpand}
-            >
-              {expanded ? "−" : "+"}
-            </button>
-            {tagFilter && (
-              <span className="sl-tag-badge" title="태그 필터 (Esc 또는 × 로 해제)">
-                #{tagFilter}
-                <button onMouseDown={(e) => { e.preventDefault(); clearTagFilter(); }}>×</button>
-              </span>
-            )}
-            <div
-              ref={editorRef}
-              className="sl-prompt"
-              contentEditable
-              suppressContentEditableWarning
-              data-placeholder={
-                expanded
-                  ? "Describe the scene you imagine"
-                  : "Describe the scene you imagine --- @Source, #Tag"
-              }
-              onInput={onEditorInput}
-              onKeyUp={onCaretMove}
-              onClick={onCaretMove}
-              onKeyDown={onEditorKeyDown}
-              onPaste={onEditorPaste}
-              onCompositionStart={() => (composingRef.current = true)}
-              onCompositionEnd={() => {
-                composingRef.current = false;
-                onEditorInput();
-              }}
-              // 레퍼런스 칩(x-ch-chip)을 글자 사이로 끌어 재배치 — 카드/에셋 드롭과 타입으로 격리.
-              onDragOver={(e) => {
-                if (!e.dataTransfer.types.includes("application/x-ch-chip")) return;
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = "move";
-                showChipDropBar(e.clientX, e.clientY);
-              }}
-              onDrop={(e) => {
-                if (!e.dataTransfer.types.includes("application/x-ch-chip")) return;
-                e.preventDefault();
-                e.stopPropagation();
-                hideChipDropBar();
-                const ed = editorRef.current;
-                if (ed && moveChipToPoint(ed, e.clientX, e.clientY)) onEditorInput();
-              }}
-              onDragLeave={(e) => {
-                // 에디터 밖으로 진짜 나갈 때만 표시막대 숨김(자식으로 이동 시 깜박임 방지)
-                if (!editorRef.current?.contains(e.relatedTarget as Node)) hideChipDropBar();
-              }}
-            />
-            {/* 우측 상단 — 프롬프트 전체 복사. 아이콘은 순수 CSS(::before/::after 겹친 사각형)로
-                그려 SVG/폰트 렌더 이슈를 피한다. */}
-            <button
-              type="button"
-              className="sl-copy-btn"
-              title="프롬프트 전체 복사"
-              aria-label="프롬프트 전체 복사"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={copyPrompt}
-            />
-          </div>
+          <SpotlightPromptRow
+            expanded={expanded}
+            tagFilter={tagFilter}
+            editorRef={editorRef}
+            onToggleExpand={onToggleExpand}
+            onClearTagFilter={onClearTagMouseDown}
+            onInput={onEditorInput}
+            onCaretMove={onCaretMove}
+            onKeyDown={onEditorKeyDown}
+            onPaste={onEditorPaste}
+            onCompositionStart={onPromptCompositionStart}
+            onCompositionEnd={onPromptCompositionEnd}
+            onDragOver={onPromptChipDragOver}
+            onDrop={onPromptChipDrop}
+            onDragLeave={onPromptChipDragLeave}
+            onCopyPrompt={copyPrompt}
+          />
 
           {/* 컨트롤 행 */}
-          <div className="sl-controls">
-            <div className="sl-left">
-              <div className="sl-type">
-                <button
-                  className={"sl-type-btn" + (type === "image" ? " active" : "")}
-                  onClick={() => setType("image")}
-                >
-                  Image
-                </button>
-                <button
-                  className={"sl-type-btn" + (type === "video" ? " active" : "")}
-                  onClick={() => setType("video")}
-                >
-                  Video
-                </button>
-              </div>
-
-              <div className="sl-chip-wrap">
-                <button
-                  className={"sl-chip" + (open === "model" ? " active" : "")}
-                  onClick={() => setOpen(open === "model" ? null : "model")}
-                >
-                  <span className="sl-dot" />
-                  <span className="sl-chip-label">{modelName}</span>
-                  <span className="sl-caret">›</span>
-                </button>
-                {open === "model" && (
-                  <div className="sl-dropdown">
-                    <div className="sl-dd-title">{type === "video" ? "영상" : "이미지"} 모델</div>
-                    <div className="sl-dd-scroll">
-                      {typeModels.map((m) => (
-                        <button
-                          key={m.job_set_type}
-                          className={"sl-dd-item" + (m.job_set_type === model ? " sel" : "")}
-                          onClick={() => {
-                            setModel(m.job_set_type);
-                            setOpen(null);
-                          }}
-                        >
-                          {m.display_name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* 주요 옵션(자주 바꿈)만 인라인 — duration=슬라이더, enum=드롭다운, 정수=숫자 입력.
-                  그 외(mode·bitrate·genre 등)는 아래 '⚙ 고급' 팝오버로. */}
-              {tunable.filter((p) => PRIMARY_PARAMS.has(p.name)).map((p) => {
-                // 듀레이션 → 슬라이더(enum 이면 그 값들에 스냅, 정수면 1..최댓값 범위)
-                if (/duration|length/i.test(p.name)) {
-                  if (p.enum?.length) {
-                    const vals = p.enum;
-                    const cur = String(optionValues[p.name] ?? p.default ?? vals[0]);
-                    const idx = Math.max(0, vals.indexOf(cur));
-                    return (
-                      <div className="sl-chip sl-opt-slider" key={p.name} title={p.name}>
-                        <span className="sl-opt-ic"><OptIcon name={p.name} /></span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={vals.length - 1}
-                          step={1}
-                          value={idx}
-                          onChange={(e) => setOpt(p.name, vals[Number(e.target.value)])}
-                        />
-                        <span className="sl-opt-val">{cur}s</span>
-                      </div>
-                    );
-                  }
-                  const def = Number(p.default) || 5;
-                  const { min: dmin, max: dmax } = durRange(model, def);
-                  const raw = Number(optionValues[p.name] ?? def) || def;
-                  const cur = Math.min(dmax, Math.max(dmin, raw)); // 범위 밖 값 클램프
-                  return (
-                    <div className="sl-chip sl-opt-slider" key={p.name} title={`${p.name} (${dmin}~${dmax}s)`}>
-                      <span className="sl-opt-ic"><OptIcon name={p.name} /></span>
-                      <input
-                        type="range"
-                        min={dmin}
-                        max={dmax}
-                        step={1}
-                        value={cur}
-                        onChange={(e) =>
-                          setOptionValues((prev) => ({ ...prev, [p.name]: Number(e.target.value) }))
-                        }
-                      />
-                      <span className="sl-opt-val">{cur}s</span>
-                    </div>
-                  );
-                }
-                return p.enum?.length ? (
-                  <div className="sl-chip-wrap" key={p.name}>
-                    <button
-                      className={"sl-chip sl-opt-chip" + (open === p.name ? " active" : "")}
-                      onClick={() => setOpen(open === p.name ? null : p.name)}
-                      title={p.name}
-                    >
-                      <span className="sl-opt-ic"><OptIcon name={p.name} /></span>
-                      <span>{String(optionValues[p.name] ?? p.default ?? "")}</span>
-                      <span className="sl-caret">›</span>
-                    </button>
-                    {open === p.name && (
-                      <div className="sl-dropdown">
-                        <div className="sl-dd-scroll">
-                          {p.enum.map((v) => {
-                            const con = constraints[p.name];
-                            const blocked = !!con && !con.allow.has(v);
-                            return (
-                              <button
-                                key={v}
-                                className={
-                                  "sl-dd-item" +
-                                  (optionValues[p.name] === v ? " sel" : "") +
-                                  (blocked ? " blocked" : "")
-                                }
-                                disabled={blocked}
-                                onClick={() => !blocked && setOpt(p.name, v)}
-                                title={blocked ? con!.note : undefined}
-                              >
-                                {v}
-                                {blocked && <span className="sl-dd-lock"> 🔒</span>}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {constraints[p.name] && (
-                          <div className="sl-dd-note">{constraints[p.name].note}</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : p.type === "integer" ? (
-                  <label className="sl-chip sl-opt-num" key={p.name} title={p.name}>
-                    <span className="sl-opt-ic"><OptIcon name={p.name} /></span>
-                    <input
-                      type="number"
-                      value={String(optionValues[p.name] ?? p.default ?? "")}
-                      onChange={(e) =>
-                        setOptionValues((prev) => ({
-                          ...prev,
-                          [p.name]: e.target.value === "" ? "" : Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </label>
-                ) : null;
-              })}
-
-              {/* 오디오 — 자주 켜고 끄므로 고급에서 빼 하단 바에 직접 노출(밖에서 관리).
-                  seedance 계열만 generate_audio 를 가지므로, 그 파라미터가 있을 때만 칩을 띄운다. */}
-              {(() => {
-                const ap = tunable.find((p) => p.name === "generate_audio");
-                if (!ap) return null;
-                const on =
-                  optionValues.generate_audio === true ||
-                  String(optionValues.generate_audio).toLowerCase() === "true";
-                return (
-                  <div className="sl-chip sl-opt-audio" title="오디오 생성 (켜기/끄기)">
-                    <span className="sl-opt-ic"><OptIcon name="generate_audio" /></span>
-                    <div className="sl-adv-opts">
-                      <button
-                        className={"sl-adv-opt" + (on ? " sel" : "")}
-                        onClick={() =>
-                          setOptionValues((prev) => ({ ...prev, generate_audio: true }))
-                        }
-                        title="오디오 켜기"
-                      >
-                        ON
-                      </button>
-                      <button
-                        className={"sl-adv-opt" + (!on ? " sel" : "")}
-                        onClick={() =>
-                          setOptionValues((prev) => ({ ...prev, generate_audio: false }))
-                        }
-                        title="오디오 끄기"
-                      >
-                        OFF
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* ⚙ 고급 — 비주요 파라미터(mode·bitrate·genre 등)를 풀 라벨로 모아 한 줄을 비운다.
-                  값이 기본과 다르면(=커스터마이즈됨) 칩을 강조해 '뭔가 바꿨음'을 알린다. */}
-              {(() => {
-                const adv = tunable
-                  // generate_audio 는 자주 토글하므로 고급에서 빼 하단 바에 직접 노출(아래 전용 칩).
-                  .filter((p) => !PRIMARY_PARAMS.has(p.name) && p.name !== "generate_audio")
-                  .sort((a, b) => advRank(a.name) - advRank(b.name)); // 모드→장르→비트레이트
-                if (!adv.length) return null;
-                const dirty = adv.some((p) => {
-                  const cur = optionValues[p.name];
-                  return (
-                    cur != null &&
-                    cur !== "" &&
-                    String(cur) !== String(effectiveDefault(p) ?? "")
-                  );
-                });
-                return (
-                  <div className="sl-chip-wrap">
-                    <button
-                      className={
-                        "sl-chip sl-opt-chip" +
-                        (open === "advanced" ? " active" : "") +
-                        (dirty ? " dirty" : "")
-                      }
-                      onClick={() => setOpen(open === "advanced" ? null : "advanced")}
-                      title="고급 옵션 (모드·비트레이트·장르 등)"
-                    >
-                      <span className="sl-opt-ic">
-                        <svg
-                          width={13}
-                          height={13}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth={2}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <circle cx="12" cy="12" r="3" />
-                          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                        </svg>
-                      </span>
-                      <span>고급</span>
-                      {dirty && <span className="sl-adv-dot" aria-hidden />}
-                      <span className="sl-caret">›</span>
-                    </button>
-                    {open === "advanced" && (
-                      <div className="sl-dropdown sl-adv-pop">
-                        <div className="sl-dd-title">고급 옵션</div>
-                        {adv.map((p) => {
-                          const cur =
-                            optionValues[p.name] ?? p.default ?? (p.enum ? p.enum[0] : "");
-                          return (
-                            <div className="sl-adv-row" key={p.name}>
-                              <div className="sl-adv-label">
-                                <span className="sl-opt-ic"><OptIcon name={p.name} /></span>
-                                {paramLabel(p.name)}
-                              </div>
-                              {p.enum?.length ? (
-                                <div className="sl-adv-opts">
-                                  {p.enum.map((v) => {
-                                    const con = constraints[p.name];
-                                    const blocked = !!con && !con.allow.has(v);
-                                    return (
-                                      <button
-                                        key={v}
-                                        className={
-                                          "sl-adv-opt" +
-                                          (String(cur) === v ? " sel" : "") +
-                                          (blocked ? " blocked" : "")
-                                        }
-                                        disabled={blocked}
-                                        onClick={() => !blocked && setOpt(p.name, v)}
-                                        title={blocked ? con!.note : valueLabel(v)}
-                                      >
-                                        {valueLabel(v)}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ) : p.type === "boolean" || typeof p.default === "boolean" ? (
-                                // 불리언(예: generate_audio) — true/false 직접 입력 대신 ON/OFF 토글.
-                                // 값은 불리언으로 저장(백엔드 직렬화·DB 형식과 동일).
-                                (() => {
-                                  const on =
-                                    cur === true || String(cur).toLowerCase() === "true";
-                                  return (
-                                    <div className="sl-adv-opts">
-                                      <button
-                                        className={"sl-adv-opt" + (on ? " sel" : "")}
-                                        onClick={() =>
-                                          setOptionValues((prev) => ({ ...prev, [p.name]: true }))
-                                        }
-                                        title="켜기"
-                                      >
-                                        ON
-                                      </button>
-                                      <button
-                                        className={"sl-adv-opt" + (!on ? " sel" : "")}
-                                        onClick={() =>
-                                          setOptionValues((prev) => ({ ...prev, [p.name]: false }))
-                                        }
-                                        title="끄기"
-                                      >
-                                        OFF
-                                      </button>
-                                    </div>
-                                  );
-                                })()
-                              ) : p.type === "integer" ? (
-                                (() => {
-                                  const rg = numericRange(model, p.name);
-                                  return (
-                                    <input
-                                      className="sl-adv-num"
-                                      type="number"
-                                      min={rg?.min}
-                                      max={rg?.max}
-                                      title={rg ? `허용 범위 ${rg.min}~${rg.max}` : undefined}
-                                      value={String(optionValues[p.name] ?? p.default ?? "")}
-                                      onChange={(e) => {
-                                        const raw = e.target.value;
-                                        setOptionValues((prev) => ({
-                                          ...prev,
-                                          [p.name]:
-                                            raw === ""
-                                              ? ""
-                                              : rg
-                                                ? Math.min(rg.max, Math.max(rg.min, Number(raw)))
-                                                : Number(raw),
-                                        }));
-                                      }}
-                                    />
-                                  );
-                                })()
-                              ) : (
-                                <input
-                                  className="sl-adv-num"
-                                  type="text"
-                                  value={String(optionValues[p.name] ?? p.default ?? "")}
-                                  onChange={(e) =>
-                                    setOptionValues((prev) => ({
-                                      ...prev,
-                                      [p.name]: e.target.value,
-                                    }))
-                                  }
-                                />
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* 배치(장수): 한 번에 N장 — 모든 모델 공통. 각 장은 별도 잡=별도 카드. */}
-              <div className="sl-count" title={`한 번에 생성할 장수 (최대 ${MAX_COUNT}, 각 장이 별도 카드)`}>
-                <button
-                  className="sl-count-btn"
-                  onClick={() => setCount((c) => Math.max(1, c - 1))}
-                  disabled={count <= 1}
-                >
-                  −
-                </button>
-                <span className="sl-count-val">
-                  {count}/{MAX_COUNT}
-                </span>
-                <button
-                  className="sl-count-btn"
-                  onClick={() => setCount((c) => Math.min(MAX_COUNT, c + 1))}
-                  disabled={count >= MAX_COUNT}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <button className="sl-gen" disabled={busy} onClick={submit}>
-              {busy ? "생성 중…" : count > 1 ? `Generate ${count}` : "Generate"}{" "}
-              <span className="sl-sparkle">✦</span>
-              {costLoading ? (
-                <span className="sl-cost loading">…</span>
-              ) : (
-                cost != null &&
-                cost > 0 && (
-                  <span
-                    className="sl-cost"
-                    title={`예상 크레딧 ${cost}${count > 1 ? ` × ${count}장 = ${cost * count}` : ""} (해상도·길이·모드에 따라 변동)`}
-                  >
-                    {count > 1 ? `${cost}×${count}=${cost * count}` : cost * count}
-                  </span>
-                )
-              )}
-            </button>
-          </div>
+          <SpotlightGenerateControls
+            count={count}
+            maxCount={MAX_COUNT}
+            setCount={setCount}
+            busy={busy}
+            cost={cost}
+            costLoading={costLoading}
+            onSubmit={submit}
+          >
+              <SpotlightOptionsBar
+                type={type}
+                setType={setType}
+                model={model}
+                setModel={setModel}
+                modelName={modelName}
+                typeModels={typeModels}
+                tunable={tunable}
+                constraints={constraints}
+                optionValues={optionValues}
+                setOptionValues={setOptionValues}
+                setOpt={setOpt}
+                open={open}
+                setOpen={setOpen}
+              />
+          </SpotlightGenerateControls>
         </div>
 
         {error && <div className="sl-error">{error}</div>}

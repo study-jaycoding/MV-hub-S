@@ -4,11 +4,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Filters } from "../types";
+import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
 import { AccountMenu } from "./AccountMenu";
 import { SearchBox } from "./SearchBox";
-
-type Provider = { uid: string | null; name: string | null; email: string | null };
 
 interface Props {
   filters: Filters;
@@ -20,6 +19,7 @@ interface Props {
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
   onOpenSpotlight: () => void; // (App 호환)
   onOpenAssets: () => void;
+  onOpenManage?: () => void; // PM 대시보드(분리형) — 별도 창. 플래그 off 면 미전달(버튼 숨김)
   onOpenAdmin: () => void; // 좌측 상단 로고 클릭 → 관리자 창(로드맵 §4-5)
   account?: import("../types").Account | null; // 로그인 계정(AUTH 모드)
   onLogout?: () => void;
@@ -33,6 +33,7 @@ export function TopBar({
   onWorkspaceSwitched,
   onImported,
   onOpenAssets,
+  onOpenManage,
   onOpenAdmin,
   account,
   onLogout,
@@ -40,7 +41,7 @@ export function TopBar({
 }: Props) {
   const t = useT();
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
-  const [provider, setProvider] = useState<Provider | null>(null);
+  const [provider, setProvider] = useState<ProviderIdentity | null>(null);
   useEffect(() => {
     api.provider().then(setProvider).catch(() => {});
   }, []);
@@ -95,6 +96,13 @@ export function TopBar({
         <span className="assets-thumb" />
         <span className="assets-label">Assets ⧉</span>
       </button>
+
+      {/* PM 대시보드(분리형) — 플래그 on(onOpenManage 전달) 일 때만 노출 */}
+      {onOpenManage && (
+        <button className="assets-btn" onClick={onOpenManage} title={t("프로젝트 관리 — 별도 창")}>
+          <span className="assets-label">관리 ⧉</span>
+        </button>
+      )}
 
       {/* 계정·워크스페이스 통합 메뉴 */}
       <AccountMenu

@@ -23,10 +23,26 @@ if "%PORT%"=="" set "PORT=8010"
 REM Shared server: login required (each member signs in / publishes). Set 0 to disable.
 if "%CONTENT_HUB_AUTH%"=="" set "CONTENT_HUB_AUTH=1"
 
-where python >nul 2>nul || (echo [ERROR] Python not found - install from python.org and retry. & pause & exit /b 1)
+if "%PYEXE%"=="" (
+  if exist "%ROOT%runtime\python\python.exe" set "PYEXE=%ROOT%runtime\python\python.exe"
+)
+if "%PYEXE%"=="" (
+  for /f "delims=" %%p in ('dir /b /s "%ROOT%release\_staging\MVHub-*\runtime\python\python.exe" 2^>nul') do set "PYEXE=%%p"
+)
+if "%PYEXE%"=="" (
+  for /f "delims=" %%p in ('where python 2^>nul') do (
+    echo %%p | findstr /i "\\WindowsApps\\python.exe" >nul || if not defined PYEXE set "PYEXE=%%p"
+  )
+)
+if "%PYEXE%"=="" (
+  echo [ERROR] Python not found - install from python.org and retry.
+  pause
+  exit /b 1
+)
 where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & pause & exit /b 1)
 
 echo.
+echo [python] %PYEXE%
 echo [1/2] Building frontend (dist)...
 cd /d "%ROOT%frontend" || goto :err
 if not exist node_modules (
@@ -46,7 +62,7 @@ echo.
 
 :serverloop
 REM Do NOT use --reload (breaks the CLI subprocess). serve.py = IPv4/IPv6 dual-stack.
-python serve.py
+"%PYEXE%" serve.py
 echo.
 echo [restart] server exited ^(code %errorlevel%^) - relaunching in 3s... ^(full stop: Ctrl+C^)
 timeout /t 3 /nobreak >nul

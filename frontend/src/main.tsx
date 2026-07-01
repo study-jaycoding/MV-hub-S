@@ -1,6 +1,7 @@
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptProvider } from "./lib/prompt";
+import { EMBED_MODES } from "./lib/popupWindows";
 import { applyAccent, applyReduceMotion, loadAccent, loadLang, loadReduceMotion } from "./lib/theme";
 import "./styles.css";
 
@@ -9,6 +10,10 @@ import "./styles.css";
 const App = lazy(() => import("./App"));
 const AssetsWindow = lazy(() =>
   import("./components/AssetsWindow").then((m) => ({ default: m.AssetsWindow })),
+);
+// PM 대시보드(분리형) — `?embed=manage` 전용 청크. 메인 앱 코드와 분리.
+const ManageWindow = lazy(() =>
+  import("./components/ManageWindow").then((m) => ({ default: m.ManageWindow })),
 );
 
 // 저장된 강조색·언어·모션설정을 렌더 전에 적용(FOUC 방지)
@@ -22,7 +27,15 @@ const embed = new URLSearchParams(window.location.search).get("embed");
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <PromptProvider>
-      <Suspense fallback={null}>{embed === "assets" ? <AssetsWindow /> : <App />}</Suspense>
+      <Suspense fallback={null}>
+        {embed === EMBED_MODES.assets ? (
+          <AssetsWindow />
+        ) : embed === EMBED_MODES.manage ? (
+          <ManageWindow />
+        ) : (
+          <App />
+        )}
+      </Suspense>
     </PromptProvider>
   </StrictMode>,
 );

@@ -1,0 +1,47 @@
+﻿// PM 대시보드 API 클라이언트 — 인증/에러 처리는 공용 jsonFetch 를 재사용한다.
+import { jsonBody, jsonFetch } from "./http";
+import { pathPart, withQuery } from "./url";
+import type {
+  ManageSummary,
+  MatrixData,
+  Planning,
+  Task,
+  TimePoint,
+} from "../components/manage/types";
+
+export const manageApi = {
+  summary: () => jsonFetch<ManageSummary>("/api/manage/summary"),
+  getPlanning: (pid: string) =>
+    jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`),
+  setPlanning: (pid: string, body: Partial<Planning>) =>
+    jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`, {
+      method: "PUT",
+      body: jsonBody(body),
+    }),
+  listTasks: (projectId: string) =>
+    jsonFetch<Task[]>(withQuery("/api/manage/tasks", { project_id: projectId })),
+  createTask: (body: Partial<Task> & { project_id: string; name: string }) =>
+    jsonFetch<Task>("/api/manage/tasks", { method: "POST", body: jsonBody(body) }),
+  updateTask: (tid: string, body: Partial<Task>) =>
+    jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
+      method: "PATCH",
+      body: jsonBody(body),
+    }),
+  deleteTask: (tid: string) =>
+    jsonFetch<{ ok: boolean }>(`/api/manage/tasks/${pathPart(tid)}`, {
+      method: "DELETE",
+    }),
+  linkGenerations: (tid: string, genIds: string[]) =>
+    jsonFetch<{ linked: number }>(`/api/manage/tasks/${pathPart(tid)}/generations`, {
+      method: "POST",
+      body: jsonBody({ gen_ids: genIds }),
+    }),
+  unlinkGeneration: (tid: string, genId: string) =>
+    jsonFetch<{ ok: boolean }>(
+      `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
+      { method: "DELETE" },
+    ),
+  timeseries: (bucket: "day" | "week" = "day") =>
+    jsonFetch<TimePoint[]>(withQuery("/api/manage/timeseries", { bucket })),
+  matrix: () => jsonFetch<MatrixData>("/api/manage/matrix"),
+};

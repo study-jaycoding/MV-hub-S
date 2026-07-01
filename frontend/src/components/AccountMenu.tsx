@@ -1,20 +1,17 @@
 // 계정·워크스페이스 통합 메뉴 — 힉스필드 사이트의 계정 드롭다운처럼.
 // 워크스페이스 전환 + 표시이름 변경 + 로그인 정보/로그아웃을 한 곳에서 관리. Assets 버튼 옆.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import {
+  accountDisplayName,
+  accountRoleText,
+  type ProviderIdentity,
+} from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
+import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
-import { GLOBAL_ROLE_LABEL } from "../types";
 import type { Account, ReportedHfStatus, Workspace } from "../types";
-
-// 전역 역할(복수) → 짧은 라벨. 예: "Admin/Product Manager"
-function roleText(account?: Account | null): string {
-  const roles = account?.global_roles || [];
-  return roles.map((r) => (GLOBAL_ROLE_LABEL[r] || r).split(" · ")[0]).join("/");
-}
-
-type Provider = { uid: string | null; name: string | null; email: string | null };
 
 export function AccountMenu({
   provider,
@@ -25,9 +22,9 @@ export function AccountMenu({
   onImported,
   localHub,
 }: {
-  provider: Provider | null;
+  provider: ProviderIdentity | null;
   account?: Account | null;
-  onProviderUpdated: (p: Provider) => void;
+  onProviderUpdated: (p: ProviderIdentity) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: () => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
@@ -41,6 +38,7 @@ export function AccountMenu({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
+  const closeMenu = useCallback(() => setOpen(false), []);
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
   //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
@@ -52,14 +50,7 @@ export function AccountMenu({
     if (liveMode) api.workspaces().then(setList).catch(() => {});
     else api.accountHf().then(setReported).catch(() => setReported(null));
   }, [liveMode]);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
+  useOutsideMouseDown(ref, closeMenu, open);
   // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
@@ -76,7 +67,8 @@ export function AccountMenu({
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   const activeCredits = liveMode ? activeWs?.credits ?? null : reported?.credits ?? null;
   // 로그인 계정이면 그 계정 이름이 우선(가입 시 설정한 표시이름). 비로그인이면 제공자 이름.
-  const displayName = account?.name || account?.email || provider?.name || "사용자";
+  const displayName = accountDisplayName(account, provider);
+  const roleText = accountRoleText(account);
   const initial = (displayName[0] || "?").toUpperCase();
 
   const switchTo = async (id: string | null) => {
@@ -97,7 +89,7 @@ export function AccountMenu({
       <button
         className="acct-avatar"
         onClick={() => setOpen((v) => !v)}
-        title={`${displayName}${account ? ` · ${roleText(account)}` : ""}\n워크스페이스·계정 관리`}
+        title={`${displayName}${account && roleText ? ` · ${roleText}` : ""}\n워크스페이스·계정 관리`}
       >
         {initial}
       </button>
@@ -116,8 +108,8 @@ export function AccountMenu({
                     ? `${current.plan_type} workspace`
                     : provider?.email || "로컬 계정"}
               </div>
-              {account && roleText(account) && (
-                <div className="acct-role">{roleText(account)}</div>
+              {account && roleText && (
+                <div className="acct-role">{roleText}</div>
               )}
             </div>
           </div>
