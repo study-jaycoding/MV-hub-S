@@ -188,7 +188,8 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
 def ingest(body: IngestIn, request: Request):
     """로컬 `generate list` 원본 묶음(최신분)을 내 로컬 DB 에 적재 — push_agent 가 호출.
     로컬 우선: 생성물은 로컬에만 남고(공유는 선택 발행으로만), 팀 크레딧 집계를 위해
-    account_status(잔액/플랜)만 서버로 전달한다(서버가 이메일 일치 검증 + 집계)."""
+    account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
+    (서버가 이메일 일치 검증 + 서버 PM DB 에 집계)."""
     acc = _agent_acc(request)
     out = _ingest_core(acc, body.jobs, body.creator_uid, body.account_status)
     # PM: 실제 차감액 수집·매칭(분리형). 플래그 게이트 + best-effort — 실패해도 적재엔 무영향.
@@ -200,12 +201,17 @@ def ingest(body: IngestIn, request: Request):
             _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions)
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
-    if _proxy.proxying() and body.account_status:
+    if _proxy.proxying() and (body.account_status or body.account_transactions):
         try:
             _proxy.proxy_json(
                 "POST",
                 "/api/ingest",
-                body={"jobs": [], "account_status": body.account_status, "creator_uid": body.creator_uid},
+                body={
+                    "jobs": [],
+                    "account_status": body.account_status,
+                    "account_transactions": body.account_transactions,
+                    "creator_uid": body.creator_uid,
+                },
             )
         except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
             pass

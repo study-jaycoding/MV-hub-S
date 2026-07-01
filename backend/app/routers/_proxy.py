@@ -160,7 +160,7 @@ _LOCAL_PREFIXES = (
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
     "/api/ingest",         # 에이전트→내 로컬 DB 동기화(generate list·mcp·known-jobs). 팀크레딧만 서버로 전달
     "/api/projects",       # 목록=하이브리드(서버 정의+로컬 카운트)·assign=로컬, 생성/역할 등 관리는 핸들러가 프록시
-    "/api/manage",         # PM 사이드카. 로컬/테스트 백엔드가 직접 처리(폴더 트리는 이 PC/테스트 DB 기준).
+    "/api/manage/project-folders",  # PM 폴더 트리만 로컬(이 PC/테스트 DB 기준). 나머지 manage(작업·일정·크레딧·통계)는 팀 공유라 서버로 프록시.
 )
 _LOCAL_EXACT = frozenset(
     {
