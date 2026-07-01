@@ -38,12 +38,11 @@ export function WorkBoard() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    manageApi
-      .summary()
-      .then((s) => {
-        const ps = s.projects
-          .filter((p) => p.pid)
-          .map((p) => ({ pid: p.pid as string, name: p.name }));
+    // 프로젝트 목록만 필요 → 무거운 summary()(전체 생성물 scan) 대신 가벼운 프로젝트 목록 API.
+    api
+      .projects("team")
+      .then((r) => {
+        const ps = r.projects.map((p) => ({ pid: p.id, name: p.name }));
         setProjects(ps);
         setPid((cur) => cur || (ps[0]?.pid ?? ""));
       })
