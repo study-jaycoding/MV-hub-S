@@ -37,6 +37,7 @@ export function useGenerationLibraryData({
   const loadingMoreRef = useRef(false);
   const projectsLoadedRef = useRef(false);
   const reloadSeqRef = useRef(0);
+  const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
 
   const reload = useCallback(async (silent = false, light = false) => {
     if (!authReadyRef.current) return;
@@ -48,18 +49,24 @@ export function useGenerationLibraryData({
     const seq = ++reloadSeqRef.current;
     try {
       const trashMode = !!filtersRef.current.deleted_only;
+      // stats(실패수·안읽음 배지)는 전역 집계라 비쌈 — 3초 폴링(light)마다 재계산하지 않고 10초 스로틀.
+      const now = Date.now();
+      const wantStats = !light || now - lastStatsAtRef.current > 10000;
       const [g, st, f, pr] = await Promise.all([
         trashMode
           ? api.listTrash(genQueryRef.current.search, 0)
           : api.listGenerations(genQueryRef.current, null),
-        api.generationStats(),
+        wantStats ? api.generationStats() : Promise.resolve(null),
         light ? Promise.resolve(null) : api.facets(filtersRef.current.tab === "team" ? "team" : "my"),
         light ? Promise.resolve(null) : api.projects(filtersRef.current.tab === "team" ? "team" : "my"),
       ]);
       if (seq !== reloadSeqRef.current) return;
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
-      setStats(st);
+      if (st) {
+        setStats(st);
+        lastStatsAtRef.current = now;
+      }
       if (f) setFacets(f);
       if (pr) {
         setProjects(pr.projects);

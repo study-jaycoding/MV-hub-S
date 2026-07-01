@@ -4,7 +4,7 @@
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dayInfoFromUtcString } from "../lib/dateGroups";
+import { dayInfoFromUtcString, type DayInfo } from "../lib/dateGroups";
 import {
   buildGenerationDateGroups,
   previewTargetFromGenerations,
@@ -67,7 +67,19 @@ export function ThumbnailGrid(props: Props) {
   const t = useT();
 
   // 날짜별 그룹(전체 기준) — 헤더 체크박스가 화면에 안 뜬 항목까지 포함해 그 날짜 전체를 선택.
-  const dateGroups = useMemo(() => buildGenerationDateGroups(generations), [generations]);
+  // groupByDate 꺼져 있으면 헤더가 없어 불필요 → 계산 생략.
+  const dateGroups = useMemo(
+    () => (groupByDate ? buildGenerationDateGroups(generations) : null),
+    [generations, groupByDate],
+  );
+  // 렌더 루프용 gen.id→DayInfo 캐시 — 재렌더(선택·포커스·마퀴)마다 항목별 Intl(toLocaleDateString)
+  // 재계산하던 것을 generations 바뀔 때 한 번만 계산하도록.
+  const dayInfoById = useMemo(() => {
+    if (!groupByDate) return null;
+    const m = new Map<string, DayInfo>();
+    for (const g of generations) m.set(g.id, dayInfoFromUtcString(g.created_at));
+    return m;
+  }, [generations, groupByDate]);
 
   // 날짜 헤더 체크박스 — 그 날짜의 모든 항목을 한 번에 선택/해제(토글).
   const toggleDate = (ids: string[], allSelected: boolean) => {
@@ -144,7 +156,7 @@ export function ThumbnailGrid(props: Props) {
     [],
   );
   const renderDateHeader = (dayKey: string, label: string) => {
-    const ids = dateGroups.get(dayKey)?.ids ?? [];
+    const ids = dateGroups?.get(dayKey)?.ids ?? [];
     const allSel = ids.length > 0 && ids.every((id) => selectedIds.has(id));
     return (
       <label className="gen-date-header" key={"h-" + dayKey}>
@@ -213,15 +225,16 @@ export function ThumbnailGrid(props: Props) {
   const opsRef = useRef({ generations, onSelectedChange, onPreview: props.onPreview });
   opsRef.current = { generations, onSelectedChange, onPreview: props.onPreview };
 
-  const onDragMove = useCallback((e: MouseEvent) => {
+  // 마퀴 히트 계산을 프레임당 1회로 코얼레스(러버밴드 드래그의 mousemove 폭주 → 셀 전체
+  // querySelectorAll+getBoundingClientRect 반복을 프레임당 한 번으로).
+  const marqueeRafRef = useRef<number | null>(null);
+  const lastMoveRef = useRef<MouseEvent | null>(null);
+  const flushMarquee = useCallback(() => {
+    marqueeRafRef.current = null;
+    const e = lastMoveRef.current;
     const d = dragRef.current;
-    if (!d) return;
-    if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return;
-    d.moved = true;
-    // 카드 위에서 시작한 드래그는 마퀴 안 만듦(클릭선택 판정 또는 카드 네이티브 드래그=프롬프트 재사용).
-    if (d.cellId) return;
     const grid = gridRef.current;
-    if (!grid) return;
+    if (!e || !d || d.cellId || !grid) return;
     const { rect, b } = computeMarquee(grid, d, e);
     setMarquee(rect);
     const base = d.additive || d.range ? d.base : [];
@@ -230,7 +243,25 @@ export function ThumbnailGrid(props: Props) {
     );
   }, []);
 
+  const onDragMove = useCallback(
+    (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return;
+      d.moved = true;
+      // 카드 위에서 시작한 드래그는 마퀴 안 만듦(클릭선택 판정 또는 카드 네이티브 드래그=프롬프트 재사용).
+      if (d.cellId) return;
+      lastMoveRef.current = e;
+      if (marqueeRafRef.current == null) marqueeRafRef.current = requestAnimationFrame(flushMarquee);
+    },
+    [flushMarquee],
+  );
+
   const onDragUp = useCallback(() => {
+    if (marqueeRafRef.current != null) {
+      cancelAnimationFrame(marqueeRafRef.current);
+      marqueeRafRef.current = null;
+    }
     const d = dragRef.current;
     dragRef.current = null;
     removeWindowMouseDrag(onDragMove, onDragUp);
@@ -388,7 +419,7 @@ export function ThumbnailGrid(props: Props) {
             let lastDay: string | null = null;
             visible.forEach((g) => {
               if (groupByDate) {
-                const { key, label } = dayInfoFromUtcString(g.created_at);
+                const { key, label } = dayInfoById?.get(g.id) ?? dayInfoFromUtcString(g.created_at);
                 if (key !== lastDay) {
                   lastDay = key;
                   out.push(renderDateHeader(key, label));
@@ -434,7 +465,7 @@ export function ThumbnailGrid(props: Props) {
           let lastDay: string | null = null;
           visible.forEach((g, i) => {
             if (groupByDate) {
-              const { key, label } = dayInfoFromUtcString(g.created_at);
+              const { key, label } = dayInfoById?.get(g.id) ?? dayInfoFromUtcString(g.created_at);
               if (key !== lastDay) {
                 lastDay = key;
                 out.push(renderDateHeader(key, label));
