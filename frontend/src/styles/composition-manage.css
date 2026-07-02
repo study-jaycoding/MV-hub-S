@@ -195,7 +195,7 @@
 .kanban-group { display: flex; flex-direction: column; gap: 8px; }
 .kanban-group-head { font-size: 11px; font-weight: 800; letter-spacing: .04em; opacity: .6; text-transform: uppercase; padding: 0 2px; display: flex; gap: 6px; align-items: center; }
 .kanban-group-cols { display: flex; gap: 10px; align-items: start; }
-.kanban-grouped .kanban-col { width: 196px; flex: 0 0 196px; border-top: 2px solid var(--status-color, var(--border)); }
+.kanban-grouped .kanban-col { width: 248px; flex: 0 0 248px; border-top: 2px solid var(--status-color, var(--border)); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 /* 테이블 상태 셀의 색 원 — 시인성 위해 크게 */
 .status-dot.lg { width: 13px; height: 13px; box-shadow: 0 0 0 2px rgba(127,127,127,.15); }
@@ -203,8 +203,10 @@
 .kanban-col-head { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; gap: 6px; align-items: center; }
 .kanban-count { font-size: 11px; opacity: .55; }
 .kanban-card { border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; margin-bottom: 8px; background: rgba(127,127,127,.05); }
-.kanban-card-name { font-size: 13px; font-weight: 600; margin-bottom: 7px; }
-.kanban-card-proj { opacity: .55; font-weight: 500; } /* 프로젝트/에피소드 표시 */
+.kanban-card-name {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+  font-size: 13px; font-weight: 600; margin-bottom: 7px;
+}
 .kanban-card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .kanban-card-meta select { flex: 1; font-family: inherit; font-size: 11px; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 3px 5px; }
 .kanban-gen { font-size: 11px; opacity: .7; white-space: nowrap; }

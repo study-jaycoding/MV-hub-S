@@ -16,8 +16,7 @@ import {
 } from "./types";
 
 export function BoardView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, disabled, colorMap, onPatch, onDelete, onLinkGen, onUnlinkGen } =
-    props;
+  const { tasks, seqOptions, thumb, disabled, colorMap, onPatch, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
   const [dragOver, setDragOver] = useState<string | null>(null);
 
@@ -55,47 +54,41 @@ export function BoardView(props: WorkViewProps) {
                   e.dataTransfer.effectAllowed = "move";
                 }}
               >
+                {/* 프로젝트 · 에피소드 · 시퀀스 한 줄(구분자 없음, X 없음) */}
                 <div className="work-card-top">
                   <span className="kanban-card-name" title={t.folder_path || t.name}>
                     {t.project_name && (
-                      <>
-                        <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
-                        <span className="kanban-card-proj">/</span>
-                      </>
+                      <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
                     )}
                     <ColorTag field="episode" value={t.name} colorMap={colorMap} />
+                    {t.folder_path ? (
+                      <ColorTag
+                        field="sequence"
+                        value={t.sequence || t.name}
+                        colorMap={colorMap}
+                        plainClass="work-seq work-seq-static"
+                        title={t.folder_path}
+                      />
+                    ) : (
+                      <select
+                        className="work-seq"
+                        value={t.sequence || ""}
+                        onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
+                        title="시퀀스(전역 태그)"
+                      >
+                        <option value="">시퀀스</option>
+                        {seqOptions.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </span>
-                  <button className="kanban-del" title="삭제" onClick={() => onDelete(t.id)}>
-                    ✕
-                  </button>
                 </div>
 
-                <div className="work-card-row">
-                  {t.folder_path ? (
-                    // 폴더 자동 작업 — 시퀀스(색 지정 시 색 라벨, 없으면 기본 칩).
-                    <ColorTag
-                      field="sequence"
-                      value={t.sequence || t.name}
-                      colorMap={colorMap}
-                      plainClass="work-seq work-seq-static"
-                      title={t.folder_path}
-                    />
-                  ) : (
-                    <select
-                      className="work-seq"
-                      value={t.sequence || ""}
-                      onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
-                      title="시퀀스(전역 태그)"
-                    >
-                      <option value="">시퀀스</option>
-                      {seqOptions.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {!!t.creators?.length && (
+                {!!t.creators?.length && (
+                  <div className="work-card-row">
                     <span className="work-creators" title="생성자">
                       👤{" "}
                       {t.creators.map((c, i) => (
@@ -105,8 +98,8 @@ export function BoardView(props: WorkViewProps) {
                         </span>
                       ))}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 <div
                   className="work-cut-drop"
