@@ -87,20 +87,6 @@ export function BoardView(props: WorkViewProps) {
                   </span>
                 </div>
 
-                {!!t.creators?.length && (
-                  <div className="work-card-row">
-                    <span className="work-creators" title="생성자">
-                      👤{" "}
-                      {t.creators.map((c, i) => (
-                        <span key={c}>
-                          {i > 0 && " "}
-                          <ColorTag field="creator" value={c} colorMap={colorMap} />
-                        </span>
-                      ))}
-                    </span>
-                  </div>
-                )}
-
                 <div
                   className="work-cut-drop"
                   onDragOver={(e) => {
@@ -113,6 +99,20 @@ export function BoardView(props: WorkViewProps) {
                 >
                   <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </div>
+
+                {!!t.creators?.length && (
+                  <div className="work-card-row work-creators-row">
+                    <span className="work-creators" title="생성자">
+                      👤{" "}
+                      {t.creators.map((c, i) => (
+                        <span key={c}>
+                          {i > 0 && " "}
+                          <ColorTag field="creator" value={c} colorMap={colorMap} />
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
 
                 <div className="work-card-meta">
                   {!!t.credits && <span title="크레딧">◆ {t.credits.toLocaleString()}</span>}
