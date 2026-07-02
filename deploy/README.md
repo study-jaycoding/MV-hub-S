@@ -1,6 +1,6 @@
 # 배포 — 앞단 리버스 프록시(선택, Phase 2 미디어 분리 서빙)
 
-평소엔 `run-server.bat` 하나로 충분하다(백엔드가 프론트·미디어·API 를 한 오리진에서 서빙).
+평소엔 `MV_server.bat` 하나로 충분하다(백엔드가 프론트·미디어·API 를 한 오리진에서 서빙).
 **미디어가 수만 건으로 늘고 동시 다운로드가 많아질 때**만 앞단에 nginx/Caddy 를 두어
 정적 파일(/media·번들)을 분리 서빙하면 uvicorn 이 정적 전송에 안 막힌다.
 
@@ -11,7 +11,7 @@
 
 ## nginx
 1. [nginx.conf](nginx.conf) 의 경로(`D:/ClaudeCode/...`)를 실제 위치로 확인.
-2. `run-server.bat` 로 백엔드는 8010 에 그대로 띄운다.
+2. `MV_server.bat` 로 백엔드는 8010 에 그대로 띄운다.
 3. `nginx -c <nginx.conf 절대경로>` 실행.
 4. 접속: `http://<이 PC>:8080` (8010 은 nginx 뒤로 숨김).
 

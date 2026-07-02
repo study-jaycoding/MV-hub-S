@@ -14,8 +14,8 @@
 필요: 이 PC에 higgsfield CLI 설치 + `higgsfield auth login` 완료. Python 3.9+ (표준 라이브러리만).
 
 예시:
-  python push_agent.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com
-  python push_agent.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com --watch 60
+  python agent_push.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com
+  python agent_push.py --server http://192.168.0.10:8010 --email oz1@millionvolt.com --watch 60
 """
 
 from __future__ import annotations

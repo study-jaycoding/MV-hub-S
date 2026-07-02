@@ -23,7 +23,7 @@ zip 안에는 실행에 필요한 portable runtime과 로컬 업데이트 파일
 
 ```text
 MV_agent.bat          # 평소 실행
-MVHub_Update.bat      # 설치 후 업데이트만
+update_release.bat      # 설치 후 업데이트만
 runtime\python        # 백엔드 실행용 Python
 runtime\node          # Node.js/npm
 runtime\higgsfield    # Higgsfield CLI
@@ -67,11 +67,11 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 업데이트만:
 
 ```text
-%USERPROFILE%\Desktop\MV-hub-S\MVHub_Update.bat
+%USERPROFILE%\Desktop\MV-hub-S\update_release.bat
 ```
 
 처음 설치하면 `INSTALL_SOURCE.txt`에 서버 `packages` 경로가 저장됩니다. 이후 업데이트는 작업자 PC 안의
-`MVHub_Update.bat`가 이 값을 읽어서 진행하므로, 작업자가 서버 폴더를 다시 찾을 필요가 없습니다.
+`update_release.bat`가 이 값을 읽어서 진행하므로, 작업자가 서버 폴더를 다시 찾을 필요가 없습니다.
 
 업데이트 중 기존 MV Hub가 실행 중이면 설치 폴더 안의 Python/Node 프로세스를 먼저 종료하고 파일을 교체합니다.
 그래서 작업자는 가능하면 MV Agent 창을 닫고 업데이트하는 것이 가장 깔끔합니다.
@@ -80,7 +80,7 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 
 1. 관리자가 `make_release.bat`로 새 zip 생성
 2. 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 복사
-3. 작업자는 로컬 `Desktop\MV-hub-S\MVHub_Update.bat` 실행
+3. 작업자는 로컬 `Desktop\MV-hub-S\update_release.bat` 실행
 4. 버전이 다르면 자동 다운로드/검증/설치
 5. 업데이트 후 필요할 때 `MV_agent.bat` 실행
 

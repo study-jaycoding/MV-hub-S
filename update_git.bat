@@ -6,9 +6,9 @@ REM
 REM  Pulls the latest program from git and refreshes only what actually changed:
 REM  backend deps are reinstalled only when requirements.txt changed (or missing),
 REM  the frontend is rebuilt only when frontend/ changed (or no build exists yet).
-REM  The Higgsfield CLI is NOT touched here - manage it with update-cli.bat when needed.
+REM  The Higgsfield CLI is NOT touched here - manage it with update_cli.bat when needed.
 REM
-REM  After this:  server PC -> run-server.bat,  worker PC -> MV_agent.bat
+REM  After this:  server PC -> MV_server.bat,  worker PC -> MV_agent.bat
 REM  Requires: this folder must be a git clone (git clone <repo>).
 REM ============================================================================
 setlocal enabledelayedexpansion
@@ -62,7 +62,7 @@ py -3 --version >nul 2>nul && set "PY=py -3"
 if defined PY goto :py_resolved
 python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY=python"
 :py_resolved
-if not defined PY (echo     real Python not found - skipping backend deps ^(run setup_and_clone_mvhub.bat to install it^). & goto :after_deps)
+if not defined PY (echo     real Python not found - skipping backend deps ^(run setup_clone_git.bat to install it^). & goto :after_deps)
 echo     Using Python: !PY!
 if defined REQ_CHANGED (
   echo     requirements.txt changed - installing...
@@ -95,9 +95,9 @@ cd /d "%ROOT%"
 
 echo.
 echo [done] updated to the latest version.
-echo        - shared server PC:  run run-server.bat again
+echo        - shared server PC:  run MV_server.bat again
 echo        - worker PC:         run MV_agent.bat again
-echo        - Higgsfield CLI:    run update-cli.bat separately if you want to update it
+echo        - Higgsfield CLI:    run update_cli.bat separately if you want to update it
 pause
 exit /b 0
 

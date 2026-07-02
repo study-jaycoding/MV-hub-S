@@ -227,7 +227,7 @@ if MANAGE_ENABLED:
 # AUTH_ENABLED 일 때만 작동. 보호 경로(/api/* 와 /media/*)는 승인된 세션을 요구한다.
 # 토큰은 Authorization: Bearer <token> 또는 세션 쿠키(ch_session — img/태그·WS 용).
 # 검증되면 request.state.account 에 계정을 싣는다. 정적 SPA 는 공개, /ws 는 핸들러에서 검증.
-# /api/agent/download(push_agent.py)은 공개 — MV_agent.bat 이 인증 없이 curl 로 받게.
+# /api/agent/download(agent_push.py)은 공개 — MV_agent.bat 이 인증 없이 curl 로 받게.
 # 스크립트엔 비밀이 없다(클라이언트 코드일 뿐, 실제 push 는 여전히 허브 로그인 필요).
 _AUTH_PUBLIC_PREFIXES = ("/api/auth/", "/api/health", "/api/agent/download")
 

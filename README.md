@@ -21,7 +21,7 @@ git sparse-checkout set backend frontend
 
 ## 실행
 
-- **공유 서버**(팀의 단일 DB, 로그인 필요): `run-server.bat` → http://localhost:8010
+- **공유 서버**(팀의 단일 DB, 로그인 필요): `MV_server.bat` → http://localhost:8010
 - **내 PC 허브 + 에이전트**(로컬 생성·push): `MV_agent.bat`
 
 최초 1회는 자동으로 `npm install` + 프론트 빌드가 돌아 몇 분 걸립니다(이후엔 빠름).
@@ -29,8 +29,8 @@ git sparse-checkout set backend frontend
 ## 업데이트
 
 ```sh
-update.bat       # git pull --ff-only 후 바뀐 부분만 갱신 (sparse-checkout 유지됨)
-update-cli.bat   # higgsfield CLI 업데이트(선택)
+update_git.bat       # git pull --ff-only 후 바뀐 부분만 갱신 (sparse-checkout 유지됨)
+update_cli.bat   # higgsfield CLI 업데이트(선택)
 ```
 
 ## 도커로 실행(선택)

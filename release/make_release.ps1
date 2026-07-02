@@ -163,11 +163,11 @@ Copy-RoboChecked `
 
 $RootFiles = @(
     "MV_agent.bat",
-    "MVHub_Update.bat",
-    "run-server.bat",
+    "update_release.bat",
+    "MV_server.bat",
     "cli-login.bat",
-    "update-cli.bat",
-    "push_agent.py",
+    "update_cli.bat",
+    "agent_push.py",
     "README.md"
 )
 foreach ($Name in $RootFiles) {

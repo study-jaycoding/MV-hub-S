@@ -11,7 +11,7 @@ REM  Uses a consistent SQLite snapshot (safe even while live is running).
 REM  Assets / media / backups are skipped (DB files only). The LIVE data is
 REM  only READ - never modified.
 REM
-REM  Run this BEFORE TEST_run-server.bat, and again whenever you want fresh data.
+REM  Run this BEFORE test_run-server.bat, and again whenever you want fresh data.
 REM ============================================================================
 set "ROOT=%~dp0"
 REM --- LIVE (production) data folder on THIS server. Change if it differs. ---
@@ -63,6 +63,6 @@ if errorlevel 1 (
 
 echo.
 echo [OK] Test DB refreshed from live.
-echo      Now start TEST_run-server.bat, then open http://192.168.1.199:%PORT%
+echo      Now start test_run-server.bat, then open http://192.168.1.199:%PORT%
 echo.
 pause

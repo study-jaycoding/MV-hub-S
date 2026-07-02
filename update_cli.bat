@@ -7,10 +7,10 @@ REM  Checks the Higgsfield CLI: installs it if missing, updates it only when a
 REM  newer version exists, and does nothing when already current.
 REM
 REM  Usage:
-REM    update-cli.bat            run directly (pauses at the end)
-REM    update-cli.bat nopause    called by another script (no pause, best-effort)
+REM    update_cli.bat            run directly (pauses at the end)
+REM    update_cli.bat nopause    called by another script (no pause, best-effort)
 REM
-REM  update.bat calls this with "nopause" so the CLI logic lives in one place.
+REM  update_git.bat calls this with "nopause" so the CLI logic lives in one place.
 REM ============================================================================
 setlocal
 set "QUIET=0"

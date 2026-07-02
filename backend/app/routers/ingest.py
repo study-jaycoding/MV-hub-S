@@ -24,8 +24,8 @@ from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 
-# push_agent.py — 저장소 최상단(content-hub-server/). 팀원이 허브에서 받아 자기 PC에서 실행.
-_AGENT_PATH = BACKEND_DIR.parent / "push_agent.py"
+# agent_push.py — 저장소 최상단(content-hub-server/). 팀원이 허브에서 받아 자기 PC에서 실행.
+_AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
@@ -66,7 +66,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
             status_code=409,
             detail=(
                 "에이전트가 CLI 계정 이메일을 보고하지 않았습니다(옛 버전). "
-                "MV_agent.bat 또는 update-cli.bat 으로 에이전트를 갱신하세요 — "
+                "MV_agent.bat 또는 update_cli.bat 으로 에이전트를 갱신하세요 — "
                 "신원 검증 없이 적재하면 다른 사람 작업으로 오귀속될 수 있어 막습니다."
             ),
         )
@@ -96,7 +96,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "에이전트가 CLI 계정 이메일을 보고하지 않았습니다(옛 버전). update-cli.bat / "
+                        "에이전트가 CLI 계정 이메일을 보고하지 않았습니다(옛 버전). update_cli.bat / "
                         "MV_agent.bat 으로 에이전트를 갱신하세요 — 신원 검증 없이 적재하면 남의 작업으로 "
                         "오귀속될 수 있어 막습니다."
                     ),
@@ -237,19 +237,19 @@ def team_credits(request: Request):
 
 @router.get("/agent/download")
 def download_agent():
-    """push_agent.py 다운로드 — 공개(미들웨어 _AUTH_PUBLIC_PREFIXES). MV_agent.bat 이 인증 없이
+    """agent_push.py 다운로드 — 공개(미들웨어 _AUTH_PUBLIC_PREFIXES). MV_agent.bat 이 인증 없이
     curl 로 받게 한다. 스크립트엔 비밀이 없다(실제 push 는 여전히 허브 로그인 필요)."""
     if not _AGENT_PATH.is_file():
-        raise HTTPException(status_code=404, detail="push_agent.py 를 찾을 수 없습니다")
+        raise HTTPException(status_code=404, detail="agent_push.py 를 찾을 수 없습니다")
     return FileResponse(
-        _AGENT_PATH, filename="push_agent.py", media_type="text/x-python"
+        _AGENT_PATH, filename="agent_push.py", media_type="text/x-python"
     )
 
 
 @router.get("/agent/run-bat")
 def run_agent_bat(request: Request):
     """원클릭 실행용 MV_agent.bat — 서버 주소·로그인 이메일을 채워 반환. 더블클릭하면
-    push_agent.py 를 자동으로 받아(curl) 상시(--watch) 실행한다. 로그인 필수(이메일 필요)."""
+    agent_push.py 를 자동으로 받아(curl) 상시(--watch) 실행한다. 로그인 필수(이메일 필요)."""
     acc = _agent_acc(request)
     server = str(request.base_url).rstrip("/")
     email = acc["email"]
@@ -267,10 +267,10 @@ echo ============================================================
 echo  Content Hub 에이전트 - 자동 설치 + 실행
 echo ============================================================
 
-echo [0/5] push_agent.py 최신본 받는 중...
-curl -fsSL -o "%~dp0push_agent.py.new" "{server}/api/agent/download" 2>nul || powershell -NoProfile -Command "Invoke-WebRequest -Uri '{server}/api/agent/download' -OutFile 'push_agent.py.new'" 2>nul
-if exist "%~dp0push_agent.py.new" move /y "%~dp0push_agent.py.new" "%~dp0push_agent.py" >nul
-if not exist "%~dp0push_agent.py" (echo [오류] push_agent.py 다운로드 실패 - 서버 주소를 확인하세요. & pause & exit /b 1)
+echo [0/5] agent_push.py 최신본 받는 중...
+curl -fsSL -o "%~dp0agent_push.py.new" "{server}/api/agent/download" 2>nul || powershell -NoProfile -Command "Invoke-WebRequest -Uri '{server}/api/agent/download' -OutFile 'agent_push.py.new'" 2>nul
+if exist "%~dp0agent_push.py.new" move /y "%~dp0agent_push.py.new" "%~dp0agent_push.py" >nul
+if not exist "%~dp0agent_push.py" (echo [오류] agent_push.py 다운로드 실패 - 서버 주소를 확인하세요. & pause & exit /b 1)
 
 set "NEEDREOPEN=0"
 
@@ -322,7 +322,7 @@ if errorlevel 1 (
 echo [5/5] 허브 열기 + 에이전트 실행 - 켜두면 작동, 창을 닫으면 멈춥니다.
 rem 기본 브라우저로 허브(우리 프로그램) 자동 열기. 그 뒤 에이전트는 이 창에서 상주.
 start "" "{server}"
-%PY% push_agent.py --server {server} --email {email} --watch 30
+%PY% agent_push.py --server {server} --email {email} --watch 30
 pause
 exit /b 0
 

@@ -2,11 +2,11 @@
 REM ============================================================================
 REM  MV Hub - OPEN TEST   (run on YOUR LOCAL PC)
 REM
-REM  Opens the TEST server (running on the server via TEST_run-server.bat)
+REM  Opens the TEST server (running on the server via test_run-server.bat)
 REM  in your browser:  http://<SERVER_IP>:<PORT>
 REM
 REM  This does NOT start anything locally - it only opens the remote test URL.
-REM  If it does not load: make sure TEST_run-server.bat is running on the
+REM  If it does not load: make sure test_run-server.bat is running on the
 REM  server, the server firewall allows port 8011, and SERVER_IP below is right.
 REM ============================================================================
 setlocal

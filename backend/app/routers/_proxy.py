@@ -52,7 +52,7 @@ def proxying() -> bool:
     토큰이 없으니 자기 repo 로 처리한다(같은 코드가 양쪽에서 돌아도 모드로 갈림).
 
     ★CONTENT_HUB_NO_PROXY=1: 위임을 강제 OFF — 저장된 공유서버 토큰이 있어도 모든 요청을
-    로컬에서 직접 처리한다. 격리 테스트(TEST_run-server.bat)가 운영 공유서버에 전혀 안 닿게 하는 스위치."""
+    로컬에서 직접 처리한다. 격리 테스트(test_run-server.bat)가 운영 공유서버에 전혀 안 닿게 하는 스위치."""
     if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
         return False
     return not AUTH_ENABLED and bool(token())

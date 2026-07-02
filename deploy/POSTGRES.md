@@ -31,7 +31,7 @@ DSN 기본값: `postgresql://ch:chpass@127.0.0.1:55432/content_hub`
    - 끝에 테이블별 행수를 SQLite vs PG 로 대조해 무결성을 보고한다.
 2. **백엔드 전환** — 서버를 PG 백엔드로 띄운다:
    ```sh
-   set CONTENT_HUB_DB_BACKEND=postgres   &  run-server.bat   (Windows)
+   set CONTENT_HUB_DB_BACKEND=postgres   &  MV_server.bat   (Windows)
    CONTENT_HUB_DB_BACKEND=postgres python serve.py            (그 외)
    ```
    시작 시 `init_db` 가 schema_pg.sql 적용 + pg_trgm + 성능 인덱스를 멱등 보장한다.

@@ -77,7 +77,7 @@ if not exist dist (
     echo     node_modules missing - running npm install ^(first time, a few minutes^)
     call %NPM_CMD% install || goto :err
   )
-  echo     dist missing - building once. ^(Use update.bat to refresh later.^)
+  echo     dist missing - building once. ^(Use update_git.bat to refresh later.^)
   call %NPM_CMD% run build || goto :err
   goto :frontend_ready
 )
@@ -168,7 +168,7 @@ echo [5/5] Opening the hub + keeping the generation agent running ^(closing this
 start "" "%HUB%"
 echo.
 if "%RUN_AGENT%"=="1" (
-  "%PY_EXE%" %PY_ARGS% "%ROOT%push_agent.py" --server %HUB% --token local --watch 30
+  "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30
 ) else (
   echo [info] Generation agent is not running because Higgsfield CLI is not available.
   echo [info] The local hub is open. Close this window to stop the local hub.

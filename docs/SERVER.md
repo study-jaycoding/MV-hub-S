@@ -23,7 +23,7 @@
 ## 실행
 
 ```bat
-run-server.bat
+MV_server.bat
 ```
 
 하는 일: ① 프론트 의존성 확인(최초 1회 `npm install`) → ② `npm run build`(dist 생성)
@@ -32,7 +32,7 @@ run-server.bat
 - 같은 PC:        http://localhost:8000
 - 같은 네트워크:  http://<이 PC IP>:8000   (현재 개발 PC: http://192.168.1.38:8000)
 
-포트/바인딩 변경: `set PORT=9000 & run-server.bat`, 또는 환경변수
+포트/바인딩 변경: `set PORT=9000 & MV_server.bat`, 또는 환경변수
 `CONTENT_HUB_PORT` / `CONTENT_HUB_HOST`.
 
 ## 설정 (모두 환경변수, 하드코딩 없음)
@@ -82,7 +82,7 @@ run-server.bat
 1. 이 폴더 전체를 서버로 복사(`node_modules`·`dist`·`__pycache__` 제외 — 서버에서 재생성).
 2. `pip install -r backend/requirements.txt`, Node 설치.
 3. 데이터 경로를 서버 디스크에 맞춰 `CONTENT_HUB_DATA` 지정(권장: 영속 볼륨).
-4. `run-server.bat`(Windows) 또는 동등한 쉘에서
+4. `MV_server.bat`(Windows) 또는 동등한 쉘에서
    `npm run build` → `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`.
 5. 방화벽에서 해당 포트 인바운드 허용.
 6. Higgsfield CLI 는 **각 사용자 개인 PC**에서 본인 계정으로 — 서버엔 토큰을 두지 않는다

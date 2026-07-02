@@ -44,7 +44,7 @@ if not "%INSTALL_EXIT%"=="0" (
 echo.
 echo [done] MV Hub is installed.
 echo        Run: "%TARGET_DIR%\MV_agent.bat"
-echo        Update later: "%TARGET_DIR%\MVHub_Update.bat"
+echo        Update later: "%TARGET_DIR%\update_release.bat"
 if not "%MVHUB_NO_PAUSE%"=="1" pause
 exit /b 0
 

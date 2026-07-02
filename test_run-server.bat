@@ -4,19 +4,19 @@ REM ============================================================================
 REM  MV Hub - SERVER TEST launcher   (run ON THE SERVER, inside the test clone)
 REM
 REM  Starts the TEST server on port 8011, bound to ALL interfaces so your
-REM  local PC can open it at  http://<server-ip>:8011  (use TEST_open.bat).
+REM  local PC can open it at  http://<server-ip>:8011  (use test_open.bat).
 REM
 REM  Isolated from the live service (which stays on 8010):
 REM    - PORT 8011
 REM    - data = THIS folder's backend\data  (a COPY of live; use
-REM             TEST_refresh-db.bat to snapshot the live DB into here)
+REM             test_refresh-db.bat to snapshot the live DB into here)
 REM    - NO_PROXY = fully standalone (never forwards to the live server)
 REM    - MANAGE   = 1 (PM dashboard ON for testing)
 REM    - AUTH     = 1 (login required; the copied DB has the real accounts)
 REM
 REM  Steps on the server:
-REM    1) TEST_refresh-db.bat   (copy live DB -> this test DB)
-REM    2) TEST_run-server.bat   (this file)   -> serves 8011
+REM    1) test_refresh-db.bat   (copy live DB -> this test DB)
+REM    2) test_run-server.bat   (this file)   -> serves 8011
 REM  Stop: Ctrl+C then Y.
 REM ============================================================================
 setlocal
@@ -34,8 +34,8 @@ set "CONTENT_HUB_NO_PROXY=1"
 echo.
 echo [SERVER TEST] host=%HOST% port=%PORT% auth=%CONTENT_HUB_AUTH% manage=1 proxy=off
 echo             data = %~dp0backend\data   (copy of live; refresh to update)
-echo             open from your PC: http://^<server-ip^>:%PORT%   (or use TEST_open.bat)
+echo             open from your PC: http://^<server-ip^>:%PORT%   (or use test_open.bat)
 echo.
 
 REM Reuse the shared server launcher (builds frontend, auto-restart, serve.py).
-call "%~dp0run-server.bat"
+call "%~dp0MV_server.bat"
