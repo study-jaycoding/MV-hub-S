@@ -12,6 +12,7 @@ export const STORAGE_KEYS = {
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",
+  manageColorTags: "ch.manage.colorTags",
   manageWorkFilters: "ch.manage.workFilters",
   manageWorkView: "ch.manage.workView",
   projectFolderExpanded: "ch.projects.folderExpanded",

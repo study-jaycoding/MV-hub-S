@@ -2,6 +2,7 @@
 // 옵션 값은 현재 작업 목록에서 뽑는다. 전부 클라이언트 필터(백엔드 무관). 값 매칭은 '포함'(OR),
 // 서로 다른 칩끼리는 AND.
 import { useMemo, useState } from "react";
+import { COLOR_OPTIONS, type ColorMap, colorKeyOf } from "./manageColors";
 import {
   SELECTABLE_STATUSES,
   statusLabel,
@@ -42,10 +43,14 @@ export function WorkFilterBar({
   tasks,
   filters,
   onChange,
+  colorMap,
+  onSetColor,
 }: {
   tasks: Task[];
   filters: WorkFilters;
   onChange: (f: WorkFilters) => void;
+  colorMap: ColorMap;
+  onSetColor: (field: string, value: string, key: string) => void;
 }) {
   const [openField, setOpenField] = useState<WorkFilterField | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -91,9 +96,12 @@ export function WorkFilterBar({
             </button>
             {openField === f && (
               <WorkFilterPopup
+                field={f}
                 opts={optionsFor(f, tasks)}
                 selected={sel}
+                colorMap={colorMap}
                 onToggle={(v) => toggleValue(f, v)}
+                onSetColor={(v, key) => onSetColor(f, v, key)}
                 onClear={() => onChange({ ...filters, values: { ...filters.values, [f]: [] } })}
                 onClose={() => setOpenField(null)}
               />
@@ -144,19 +152,27 @@ export function WorkFilterBar({
 }
 
 function WorkFilterPopup({
+  field,
   opts,
   selected,
+  colorMap,
   onToggle,
+  onSetColor,
   onClear,
   onClose,
 }: {
+  field: WorkFilterField;
   opts: Opt[];
   selected: string[];
+  colorMap: ColorMap;
   onToggle: (v: string) => void;
+  onSetColor: (v: string, key: string) => void;
   onClear: () => void;
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
+  const [colorFor, setColorFor] = useState<string | null>(null); // 색 메뉴 열린 값
+  const canColor = field !== "status"; // 상태는 자체 색이라 제외
   const shown = useMemo(
     () => (q ? opts.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : opts),
     [opts, q],
@@ -174,17 +190,59 @@ function WorkFilterPopup({
         />
         <div className="work-pop-list">
           {!shown.length && <div className="work-pop-empty">값 없음</div>}
-          {shown.map((o) => (
-            <label key={o.value} className="work-pop-opt">
-              <input
-                type="checkbox"
-                checked={selected.includes(o.value)}
-                onChange={() => onToggle(o.value)}
-              />
-              {o.color && <span className="status-dot" style={{ background: o.color }} />}
-              <span className="work-pop-opt-txt">{o.label}</span>
-            </label>
-          ))}
+          {shown.map((o) => {
+            const cur = colorMap[colorKeyOf(field, o.value)];
+            const curHex = COLOR_OPTIONS.find((c) => c.key === cur)?.hex;
+            return (
+              <div key={o.value} className="work-pop-optrow">
+                <label className="work-pop-opt">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(o.value)}
+                    onChange={() => onToggle(o.value)}
+                  />
+                  {o.color && <span className="status-dot" style={{ background: o.color }} />}
+                  {canColor && curHex && (
+                    <span className="status-dot" style={{ background: curHex }} />
+                  )}
+                  <span className="work-pop-opt-txt">{o.label}</span>
+                </label>
+                {canColor && (
+                  <button
+                    className="work-pop-dots"
+                    title="색 지정"
+                    onClick={() => setColorFor((v) => (v === o.value ? null : o.value))}
+                  >
+                    ⋯
+                  </button>
+                )}
+                {canColor && colorFor === o.value && (
+                  <div className="work-color-menu">
+                    {COLOR_OPTIONS.map((c) => (
+                      <button
+                        key={c.key}
+                        className="work-color-item"
+                        onClick={() => {
+                          onSetColor(o.value, c.key);
+                          setColorFor(null);
+                        }}
+                      >
+                        <span
+                          className="work-color-sw"
+                          style={{
+                            background: c.hex || "transparent",
+                            borderColor: c.hex || "var(--border)",
+                          }}
+                        />
+                        {c.label}
+                        {(cur || "default") === c.key && <span className="work-color-chk">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
         {selected.length > 0 && (
           <button className="work-pop-clear" onClick={onClear}>

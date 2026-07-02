@@ -1,6 +1,7 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
 import { useT } from "../../lib/i18n";
+import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
@@ -36,6 +37,7 @@ export function TableView(props: WorkViewProps) {
     seqOptions,
     thumb,
     disabled,
+    colorMap,
     selected,
     onToggleSelect,
     onToggleSelectAll,
@@ -114,20 +116,28 @@ export function TableView(props: WorkViewProps) {
                   />
                 </td>
                 <td>
-                  <span className="work-proj-static">{t.project_name || "—"}</span>
+                  <ColorTag field="project" value={t.project_name} colorMap={colorMap} plainClass="work-proj-static" />
                 </td>
                 <td>
                   {/* 에피소드(작업명) — 폴더 구조에서 받아온 정보라 읽기전용. */}
-                  <span className="work-name-static" title={t.folder_path || t.name}>
-                    {t.name}
-                  </span>
+                  <ColorTag
+                    field="episode"
+                    value={t.name}
+                    colorMap={colorMap}
+                    plainClass="work-name-static"
+                    title={t.folder_path || t.name}
+                  />
                 </td>
                 <td>
                   {t.folder_path ? (
-                    // 시퀀스도 프로젝트/에피소드처럼 평문 표시(칩 아님).
-                    <span className="work-seq-plain" title={t.folder_path}>
-                      {t.sequence || t.name}
-                    </span>
+                    // 시퀀스도 프로젝트/에피소드처럼 평문(색 지정 시 색 라벨).
+                    <ColorTag
+                      field="sequence"
+                      value={t.sequence || t.name}
+                      colorMap={colorMap}
+                      plainClass="work-seq-plain"
+                      title={t.folder_path}
+                    />
                   ) : (
                     <select
                       className="work-cell-sel"
@@ -155,7 +165,16 @@ export function TableView(props: WorkViewProps) {
                 >
                   <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </td>
-                <td className="work-creators">{t.creators?.join(", ") || "—"}</td>
+                <td className="work-creators">
+                  {t.creators?.length
+                    ? t.creators.map((c, i) => (
+                        <span key={c}>
+                          {i > 0 && " "}
+                          <ColorTag field="creator" value={c} colorMap={colorMap} />
+                        </span>
+                      ))
+                    : "—"}
+                </td>
                 <td>
                   {/* 상태 — 색 원만(글자 제거). hover 로 이름 확인. */}
                   <span className="work-status-cell" title={statusLabel(t.status)}>

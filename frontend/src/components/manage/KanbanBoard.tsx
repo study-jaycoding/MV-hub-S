@@ -2,6 +2,7 @@
 // 데이터·핸들러는 WorkBoard 가 주입(WorkViewProps). 프레젠테이션 전용.
 import { useState } from "react";
 import { useT } from "../../lib/i18n";
+import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
@@ -15,7 +16,8 @@ import {
 } from "./types";
 
 export function BoardView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, disabled, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, disabled, colorMap, onPatch, onDelete, onLinkGen, onUnlinkGen } =
+    props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
   const [dragOver, setDragOver] = useState<string | null>(null);
 
@@ -55,8 +57,13 @@ export function BoardView(props: WorkViewProps) {
               >
                 <div className="work-card-top">
                   <span className="kanban-card-name" title={t.folder_path || t.name}>
-                    {t.project_name && <span className="kanban-card-proj">{t.project_name}/</span>}
-                    {t.name}
+                    {t.project_name && (
+                      <>
+                        <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
+                        <span className="kanban-card-proj">/</span>
+                      </>
+                    )}
+                    <ColorTag field="episode" value={t.name} colorMap={colorMap} />
                   </span>
                   <button className="kanban-del" title="삭제" onClick={() => onDelete(t.id)}>
                     ✕
@@ -65,10 +72,14 @@ export function BoardView(props: WorkViewProps) {
 
                 <div className="work-card-row">
                   {t.folder_path ? (
-                    // 폴더 자동 작업 — 시퀀스는 폴더명(2단계, 예 c0010). 읽기전용 칩.
-                    <span className="work-seq work-seq-static" title={t.folder_path}>
-                      📁 {t.sequence || t.name}
-                    </span>
+                    // 폴더 자동 작업 — 시퀀스(색 지정 시 색 라벨, 없으면 기본 칩).
+                    <ColorTag
+                      field="sequence"
+                      value={t.sequence || t.name}
+                      colorMap={colorMap}
+                      plainClass="work-seq work-seq-static"
+                      title={t.folder_path}
+                    />
                   ) : (
                     <select
                       className="work-seq"
@@ -86,7 +97,13 @@ export function BoardView(props: WorkViewProps) {
                   )}
                   {!!t.creators?.length && (
                     <span className="work-creators" title="생성자">
-                      👤 {t.creators.join(", ")}
+                      👤{" "}
+                      {t.creators.map((c, i) => (
+                        <span key={c}>
+                          {i > 0 && " "}
+                          <ColorTag field="creator" value={c} colorMap={colorMap} />
+                        </span>
+                      ))}
                     </span>
                   )}
                 </div>

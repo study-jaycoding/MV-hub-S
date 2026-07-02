@@ -15,6 +15,7 @@ import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
+import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
@@ -96,6 +97,18 @@ export function WorkBoard() {
   const [err, setErr] = useState<string | null>(null);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
+  // 값별 색 라벨(프로젝트/에피소드/시퀀스/생성자) — localStorage 기억, 창 간 동기.
+  const [colorMap, setColorMap] = useState<ColorMap>(loadColorMap);
+  const setColor = (field: string, value: string, key: string) => {
+    setColorMap((prev) => {
+      const next = { ...prev };
+      const k = `${field}::${value}`;
+      if (key === "default") delete next[k];
+      else next[k] = key;
+      saveColorMap(next);
+      return next;
+    });
+  };
   // 테이블 행 다중선택(하단 선택바에서 일괄 삭제). 뷰 전환 시 초기화.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   useEffect(() => setSelected(new Set()), [view]);
@@ -122,6 +135,7 @@ export function WorkBoard() {
     const refresh = () => setDisabled(loadDisabledGen());
     const onStorage = (e: StorageEvent) => {
       if (e.key === STORAGE_KEYS.historyDisabled || e.key === null) refresh();
+      if (e.key === STORAGE_KEYS.manageColorTags || e.key === null) setColorMap(loadColorMap());
     };
     window.addEventListener(DISABLED_EVENT, refresh);
     window.addEventListener("storage", onStorage);
@@ -275,6 +289,7 @@ export function WorkBoard() {
     seqOptions,
     thumb: taskThumb,
     disabled,
+    colorMap,
     selected,
     onToggleSelect: toggleSelect,
     onToggleSelectAll: toggleSelectAll,
@@ -307,7 +322,13 @@ export function WorkBoard() {
         </div>
       </header>
 
-      <WorkFilterBar tasks={effective} filters={filters} onChange={setFilters} />
+      <WorkFilterBar
+        tasks={effective}
+        filters={filters}
+        onChange={setFilters}
+        colorMap={colorMap}
+        onSetColor={setColor}
+      />
 
       {!projects.length ? (
         <div className="manage-empty">프로젝트를 먼저 만들어 생성물을 귀속하세요.</div>

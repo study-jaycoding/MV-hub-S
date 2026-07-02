@@ -294,6 +294,32 @@
 .work-pop-clear:hover { border-color: var(--accent); }
 .work-proj-static { font-size: 12px; opacity: .8; }
 .work-seq-plain { font-size: 12px; opacity: .9; }
+.work-cell-txt { font-size: 12px; }
+/* 값 색 라벨(색 지정 시) */
+.work-color-tag {
+  display: inline-flex; align-items: center; font-size: 12px; line-height: 1.4;
+  padding: 1px 8px; border-radius: 5px; border: 1px solid transparent; font-weight: 600;
+}
+/* 필터 팝업 값 행 + 색 지정(⋯) */
+.work-pop-optrow { display: flex; align-items: center; flex-wrap: wrap; border-radius: 6px; }
+.work-pop-optrow .work-pop-opt { flex: 1 1 auto; }
+.work-pop-dots {
+  border: none; background: transparent; color: var(--text); opacity: .5; cursor: pointer;
+  font-size: 14px; padding: 0 6px; border-radius: 6px; flex: 0 0 auto;
+}
+.work-pop-dots:hover { opacity: 1; background: rgba(127,127,127,.12); }
+.work-color-menu {
+  width: 100%; margin: 2px 2px 4px; padding: 4px; background: rgba(127,127,127,.06);
+  border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column;
+}
+.work-color-item {
+  display: flex; align-items: center; gap: 8px; font-family: inherit; font-size: 12px;
+  color: var(--text); background: transparent; border: none; border-radius: 6px;
+  padding: 5px 7px; cursor: pointer; text-align: left;
+}
+.work-color-item:hover { background: rgba(127,127,127,.14); }
+.work-color-sw { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--border); flex: 0 0 auto; }
+.work-color-chk { margin-left: auto; color: var(--accent); }
 
 /* 엑셀식 격자선 테이블 */
 .work-table-grid { border-collapse: collapse; }
