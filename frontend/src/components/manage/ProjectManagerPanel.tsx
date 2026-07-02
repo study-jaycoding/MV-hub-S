@@ -358,7 +358,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                       )}
                       {caps.createProject && (
                         <>
-                          <button onClick={() => renameProject(p)} title="이름 변경">
+                          <button onClick={() => renameProject(p)} title="프로젝트 설정">
                             ✎
                           </button>
                           <button

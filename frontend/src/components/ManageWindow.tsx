@@ -2,6 +2,8 @@
 // 요약 / 작업(칸반) / 분석 탭으로 구성. AssetsWindow 와 동일한 분리형 모듈 패턴.
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { loadString, saveString } from "../lib/storage";
+import { STORAGE_KEYS } from "../lib/storageKeys";
 import { AnalyticsView } from "./manage/AnalyticsView";
 import { ExportView } from "./manage/ExportView";
 import { ProjectDashboard } from "./manage/ProjectDashboard";
@@ -17,8 +19,12 @@ const TABS: { v: Tab; label: string }[] = [
 ];
 
 export function ManageWindow() {
-  const [tab, setTab] = useState<Tab>("summary");
+  // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업.
+  const [tab, setTab] = useState<Tab>(
+    () => (loadString(STORAGE_KEYS.manageTab, "summary") as Tab) || "summary",
+  );
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
 
   useEffect(() => {
     document.title = "Millionvolt Hub — 프로젝트 관리";
