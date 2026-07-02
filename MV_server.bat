@@ -45,10 +45,11 @@ echo.
 echo [python] %PYEXE%
 echo [1/2] Building frontend (dist)...
 cd /d "%ROOT%frontend" || goto :err
-if not exist node_modules (
-  echo     node_modules missing - running npm install ^(first time, a few minutes^)
-  call npm install || goto :err
-)
+REM Always sync packages first. Checking only "node_modules exists" would skip
+REM install after package.json adds a new dependency, breaking the build.
+REM npm install is fast (a few seconds) when everything is already up to date.
+echo     Syncing frontend packages ^(npm install^)...
+call npm install || goto :err
 call npm run build || goto :err
 
 cd /d "%ROOT%backend" || goto :err

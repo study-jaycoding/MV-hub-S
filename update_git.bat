@@ -79,13 +79,13 @@ if defined REQ_CHANGED (
 
 echo [3/3] Frontend...
 cd /d "%ROOT%frontend" || goto :err
-if not exist node_modules (
-  echo     node_modules missing - running npm install ^(first time, a few minutes^)
-  call npm install || goto :err
-  set "FE_CHANGED=1"
-)
+if not exist node_modules set "FE_CHANGED=1"
 if not exist "%ROOT%frontend\dist\index.html" set "FE_CHANGED=1"
 if defined FE_CHANGED (
+  REM Sync packages before building. package.json may have added a new dependency,
+  REM so building without npm install would fail. npm install is fast when in sync.
+  echo     syncing packages ^(npm install^)...
+  call npm install || goto :err
   echo     building frontend...
   call npm run build || goto :err
 ) else (
