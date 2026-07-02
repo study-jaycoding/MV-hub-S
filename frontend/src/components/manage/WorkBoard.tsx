@@ -2,7 +2,12 @@
 // 데이터·핸들러를 소유하고 BoardView/TableView 에 주입한다.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
-import { addDisabledGen, DISABLED_EVENT, loadDisabledGen } from "../../lib/deactivated";
+import {
+  addDisabledGen,
+  DISABLED_EVENT,
+  loadDisabledGen,
+  removeDisabledGen,
+} from "../../lib/deactivated";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
 import { thumbOf as generationThumbOf, thumbUrl } from "../../lib/media";
@@ -149,11 +154,20 @@ export function WorkBoard() {
 
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
-    // '생략'으로 옮기면 그 작업의 컷(생성물)을 모두 비활성화(d 누른 효과) — 라이브러리에 회색 반영.
-    if (patch.status === "omit") {
+    // 상태 이동과 컷 활성화 동기화(대칭):
+    //  · '생략'으로 옮기면 그 작업의 컷을 모두 비활성화(d 누른 효과) — 라이브러리에 회색 반영.
+    //  · '생략'에서 빼내면(수동/effective 생략 모두) 컷을 다시 켜 화면(effective 생략)이 안 어긋나게.
+    if (patch.status) {
       const t = tasks.find((x) => x.id === tid);
       const ids = (t?.cuts || []).map((c) => c.id);
-      addDisabledGen(ids);
+      if (patch.status === "omit") {
+        addDisabledGen(ids);
+      } else {
+        const dset = loadDisabledGen();
+        const wasOmit =
+          t?.status === "omit" || (ids.length > 0 && ids.every((id) => dset.has(id)));
+        if (wasOmit) removeDisabledGen(ids);
+      }
     }
     // 서버가 값을 '그대로 저장만' 하는 단순 필드면 로컬 상태만 갱신하고 전체 재호출 생략(빠름).
     // 상태·시퀀스·컷연결은 서버가 파생/재매칭하므로 재호출(폴더 자동 상태와 어긋나지 않게). 애매하면 재호출.
@@ -179,33 +193,24 @@ export function WorkBoard() {
     loadTasks(pid);
   };
 
-  // 자동 생략 — 작업의 컷이 전부 비활성화(d)되면(컷 1개면 그게 꺼질 때 포함) 그 작업을 '생략'으로.
-  // omitReqRef 로 in-flight 중복 요청을 막는다(patch→addDisabledGen→이벤트→재실행 순간 이중 호출 방지).
-  const omitReqRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!disabled.size) return;
-    for (const t of tasks) {
-      const cuts = t.cuts || [];
-      const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
-      if (t.status === "omit" || !allOff) {
-        omitReqRef.current.delete(t.id); // 이미 생략됐거나 조건 해제 → 재요청 가능 상태로
-        continue;
-      }
-      if (omitReqRef.current.has(t.id)) continue; // 이미 요청 중
-      omitReqRef.current.add(t.id);
-      onPatch(t.id, { status: "omit" });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, disabled]);
-
+  // effective 상태 — 작업의 컷이 전부 비활성화(d)면(컷 1개면 그게 꺼질 때 포함) 화면에서만 '생략'으로
+  // 표시한다(서버 미기록). 재활성화하면 자동으로 원래 파생 상태로 돌아온다(생략 sticky 문제 없음).
+  // 수동 생략(서버 status=omit)은 그대로 유지. 필터도 이 effective 상태 기준.
   const filtered = useMemo(
     () =>
-      tasks.filter((t) => {
-        if (fStatus && t.status !== fStatus) return false;
-        if (fMine && myUid && !(t.cuts || []).some((c) => c.creator_uid === myUid)) return false;
-        return true;
-      }),
-    [tasks, fStatus, fMine, myUid],
+      tasks
+        .map((t) => {
+          if (t.status === "omit" || !disabled.size) return t;
+          const cuts = t.cuts || [];
+          const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
+          return allOff ? { ...t, status: "omit" } : t;
+        })
+        .filter((t) => {
+          if (fStatus && t.status !== fStatus) return false;
+          if (fMine && myUid && !(t.cuts || []).some((c) => c.creator_uid === myUid)) return false;
+          return true;
+        }),
+    [tasks, fStatus, fMine, myUid, disabled],
   );
 
   if (err) return <div className="manage-empty">불러오기 실패: {err}</div>;

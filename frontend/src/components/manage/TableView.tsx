@@ -1,21 +1,31 @@
-// 테이블 뷰 — Notion 데이터베이스식. 셀 인라인 편집(상태·시퀀스·마감·설명),
-// 컷 셀은 생성물 드롭 타깃, 작업명·생성자·크레딧·시간·코멘트는 읽기전용(파생).
+// 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
+// 에피소드(작업명)·상태·생성자·크레딧·생성시간·코멘트는 읽기전용(파생 정보 표시).
 import { useT } from "../../lib/i18n";
 import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
-  SELECTABLE_STATUSES,
   statusColor,
-  statusText,
+  statusLabel,
   type Task,
   type WorkViewProps,
 } from "./types";
 
+// 생성시간(제작 소요) — 1d2h10s 식으로 0인 단위는 생략해 압축 표기.
 function fmtDur(sec?: number): string {
   if (!sec || sec <= 0) return "—";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return m ? `${m}분 ${s}초` : `${s}초`;
+  let rest = Math.floor(sec);
+  const d = Math.floor(rest / 86400);
+  rest %= 86400;
+  const h = Math.floor(rest / 3600);
+  rest %= 3600;
+  const m = Math.floor(rest / 60);
+  const s = rest % 60;
+  let out = "";
+  if (d) out += `${d}d`;
+  if (h) out += `${h}h`;
+  if (m) out += `${m}m`;
+  if (s || !out) out += `${s}s`;
+  return out;
 }
 
 export function TableView(props: WorkViewProps) {
@@ -31,14 +41,14 @@ export function TableView(props: WorkViewProps) {
       <table className="manage-table work-table">
         <thead>
           <tr>
-            <th>작업명</th>
+            <th>에피소드</th>
             <th>시퀀스</th>
-            <th>생성물</th>
             <th>상태</th>
+            <th>생성물</th>
             <th>생성자</th>
-            <th>마감일</th>
             <th>크레딧</th>
-            <th>제작시간</th>
+            <th>생성시간</th>
+            <th>마감일</th>
             <th>설명</th>
             <th>코멘트</th>
             <th>삭제</th>
@@ -48,7 +58,7 @@ export function TableView(props: WorkViewProps) {
           {tasks.map((t) => (
             <tr key={t.id}>
               <td>
-                {/* 작업명 — 폴더 구조에서 받아온 정보라 읽기전용(수정 불필요). */}
+                {/* 에피소드(작업명) — 폴더 구조에서 받아온 정보라 읽기전용. */}
                 <span className="work-name-static" title={t.folder_path || t.name}>
                   {t.name}
                 </span>
@@ -74,6 +84,13 @@ export function TableView(props: WorkViewProps) {
                   </select>
                 )}
               </td>
+              <td>
+                {/* 상태 — 폴더 작업은 컷에서 파생되므로 표시 전용(편집 없음). 색 원은 크게. */}
+                <span className="work-status-cell" title={statusLabel(t.status)}>
+                  <span className="status-dot lg" style={{ background: statusColor(t.status) }} />
+                  {statusLabel(t.status)}
+                </span>
+              </td>
               <td
                 className="work-cut-cell"
                 onDragOver={(e) => {
@@ -86,23 +103,9 @@ export function TableView(props: WorkViewProps) {
               >
                 <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
               </td>
-              <td>
-                <span className="work-status-cell">
-                  <span className="status-dot" style={{ background: statusColor(t.status) }} />
-                  <select
-                    className="work-cell-sel"
-                    value={t.status}
-                    onChange={(e) => onPatch(t.id, { status: e.target.value })}
-                  >
-                    {SELECTABLE_STATUSES.map((s) => (
-                      <option key={s.v} value={s.v}>
-                        {statusText(s)}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-              </td>
               <td className="work-creators">{t.creators?.join(", ") || "—"}</td>
+              <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
+              <td>{fmtDur(t.elapsed)}</td>
               <td>
                 <input
                   className="work-cell-in"
@@ -111,8 +114,6 @@ export function TableView(props: WorkViewProps) {
                   onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
                 />
               </td>
-              <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
-              <td>{fmtDur(t.elapsed)}</td>
               <td>
                 <input
                   className="work-cell-in"

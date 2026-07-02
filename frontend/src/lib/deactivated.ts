@@ -45,6 +45,16 @@ export const addDisabledGen = (ids: string[]): void => {
   ids.forEach((id) => s.add(id));
   saveDisabledGen(s);
 };
+// 강제 재활성화(토글 아님) — '생략'에서 빼낸 작업의 컷을 다시 켤 때. 실제로 바뀐 게 있을 때만 저장.
+export const removeDisabledGen = (ids: string[]): void => {
+  if (!ids.length) return;
+  const s = loadDisabledGen();
+  let changed = false;
+  ids.forEach((id) => {
+    if (s.delete(id)) changed = true;
+  });
+  if (changed) saveDisabledGen(s);
+};
 
 export const loadDisabledAssets = (): Set<string> => read(ASSET_KEY);
 export const saveDisabledAssets = (s: Set<string>): void => write(ASSET_KEY, s);

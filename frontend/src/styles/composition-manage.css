@@ -197,6 +197,8 @@
 .kanban-group-cols { display: flex; gap: 10px; align-items: start; }
 .kanban-grouped .kanban-col { width: 196px; flex: 0 0 196px; border-top: 2px solid var(--status-color, var(--border)); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+/* 테이블 상태 셀의 색 원 — 시인성 위해 크게 */
+.status-dot.lg { width: 13px; height: 13px; box-shadow: 0 0 0 2px rgba(127,127,127,.15); }
 .work-status-cell { display: inline-flex; align-items: center; gap: 6px; }
 .kanban-col-head { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; gap: 6px; align-items: center; }
 .kanban-count { font-size: 11px; opacity: .55; }
