@@ -224,13 +224,14 @@
 /* ── 작업(Work) 보드/테이블 공통 ── */
 .work-head-ctl { display: flex; align-items: center; gap: 10px; }
 
-/* ── 노션식 필터 바(칩 좌측 · 검색+필터 우측) ── */
-.work-filterbar { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 14px; }
-.work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
-.work-filter-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
+/* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
+.work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }
+.work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 1 auto; }
+.work-add-wrap { flex: 0 0 auto; }
 .work-search {
-  display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
-  border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05); width: 200px;
+  display: flex; align-items: center; gap: 5px; border: 1px solid var(--border);
+  border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05);
+  flex: 1 1 auto; min-width: 160px;
 }
 .work-search-ic { font-size: 11px; opacity: .55; }
 .work-search input {

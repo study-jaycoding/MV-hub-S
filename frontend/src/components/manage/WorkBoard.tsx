@@ -11,6 +11,7 @@ import {
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
 import { thumbUrl } from "../../lib/media";
+import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
@@ -21,8 +22,25 @@ import {
   emptyWorkFilters,
   type Task,
   type WorkFilters,
+  WORK_FILTER_FIELDS,
   type WorkViewProps,
 } from "./types";
+
+type WorkView = "board" | "table" | "calendar";
+
+// 저장된 필터 복원 — 모양이 깨져도 안전하게 기본값과 병합(값은 필드별 배열 보장).
+function loadFilters(): WorkFilters {
+  const base = emptyWorkFilters();
+  const saved = loadJSON<WorkFilters>(STORAGE_KEYS.manageWorkFilters);
+  if (!saved) return base;
+  return {
+    active: Array.isArray(saved.active)
+      ? saved.active.filter((f) => WORK_FILTER_FIELDS.includes(f))
+      : [],
+    values: { ...base.values, ...(saved.values || {}) },
+    search: typeof saved.search === "string" ? saved.search : "",
+  };
+}
 
 function taskThumb(path?: string | null): string | undefined {
   return thumbUrl(path, 256) ?? undefined;
@@ -71,8 +89,10 @@ export function WorkBoard() {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
-  const [view, setView] = useState<"board" | "table" | "calendar">("table");
-  const [filters, setFilters] = useState<WorkFilters>(emptyWorkFilters);
+  const [view, setView] = useState<WorkView>(
+    () => (loadString(STORAGE_KEYS.manageWorkView, "table") as WorkView) || "table",
+  );
+  const [filters, setFilters] = useState<WorkFilters>(loadFilters);
   const [err, setErr] = useState<string | null>(null);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
@@ -92,6 +112,10 @@ export function WorkBoard() {
       return n;
     });
   const clearSel = () => setSelected(new Set());
+
+  // 필터·뷰 영속 — 창을 닫았다 와도 마지막 설정을 기억한다(localStorage).
+  useEffect(() => saveJSON(STORAGE_KEYS.manageWorkFilters, filters), [filters]);
+  useEffect(() => saveString(STORAGE_KEYS.manageWorkView, view), [view]);
 
   // 비활성화 집합 최신화 — 같은 창은 DISABLED_EVENT, 다른 창(별도 생성탭)은 storage 이벤트.
   useEffect(() => {
