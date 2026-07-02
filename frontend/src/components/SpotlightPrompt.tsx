@@ -224,7 +224,15 @@ export function SpotlightPrompt({
   // 캐럿 이동(keyup/click) — 멘션만 재감지(기록 탐색·placeholder 는 건드리지 않음).
   const onCaretMove = () => {
     const ed = editorRef.current;
-    if (ed && !composingRef.current) setMention(detectMention(ed));
+    if (!ed || composingRef.current) return;
+    const next = detectMention(ed);
+    // 내용이 같으면 이전 참조를 유지한다. 방향키 keyup 도 이 핸들러를 타는데(onKeyUp),
+    // 매번 새 객체로 setMention 하면 소스 목록이 재로드되며 하이라이트(hIdx)가 0 으로 리셋돼
+    // 피커에서 ↑↓ 이동이 안 먹힌다.
+    setMention((prev) => {
+      if (prev && next && prev.kind === next.kind && prev.query === next.query) return prev;
+      return prev === next ? prev : next;
+    });
   };
 
   const selectTag = (tag: string) => {
