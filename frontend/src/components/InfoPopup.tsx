@@ -117,22 +117,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
         )}
         <Row label="비율" value={params.aspect_ratio as string} />
         <Row label="해상도" value={params.resolution as string} />
-        {/* 이 생성물이 실제 속한 프로젝트만 표시(전체 목록 드롭다운 제거) */}
-        <Row
-          label="프로젝트"
-          value={
-            g.project_id
-              ? (projects || []).find((p) => p.id === g.project_id)?.name ||
-                g.project_name ||
-                "(이름 없음)" // 내부 식별자(uuid)는 절대 노출하지 않는다
-              : "미분류"
-          }
-        />
-        <Row
-          label="생성자"
-          // 표시이름만 노출(uid·이메일·worker 식별자는 절대 안 보임). 이름 미정이면 나/팀원.
-          value={g.creator_name || (g.is_mine ? "나" : "팀원")}
-        />
+        <Row label="생성일" value={g.created_at} />
         <Row
           label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
           value={
@@ -146,7 +131,22 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
         {metrics?.elapsed_seconds != null && (
           <Row label="생성 시간" value={formatElapsed(metrics.elapsed_seconds)} />
         )}
-        <Row label="생성일" value={g.created_at} />
+        <Row
+          label="생성자"
+          // 표시이름만 노출(uid·이메일·worker 식별자는 절대 안 보임). 이름 미정이면 나/팀원.
+          value={g.creator_name || (g.is_mine ? "나" : "팀원")}
+        />
+        {/* 이 생성물이 실제 속한 프로젝트만 표시(전체 목록 드롭다운 제거) */}
+        <Row
+          label="프로젝트"
+          value={
+            g.project_id
+              ? (projects || []).find((p) => p.id === g.project_id)?.name ||
+                g.project_name ||
+                "(이름 없음)" // 내부 식별자(uuid)는 절대 노출하지 않는다
+              : "미분류"
+          }
+        />
         {/* 적용된 태그(#) · 전역 태그 — 이 생성물에 붙은 것만 */}
         <Row
           label="태그"
