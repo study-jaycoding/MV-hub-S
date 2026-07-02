@@ -810,18 +810,6 @@ def set_hf_missing(gen_id: str, missing: bool) -> None:
         )
 
 
-def mark_present_by_job_ids(job_ids: Iterable[str]) -> None:
-    """동기화 목록에 나타난 잡 = 힉스필드에 존재 → hf_missing 해제(재등장 항목 흐림 해제)."""
-    ids = [j for j in job_ids if j]
-    if not ids:
-        return
-    with get_connection() as conn:
-        ph = ",".join("?" * len(ids))
-        conn.execute(
-            f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", ids
-        )
-
-
 def reconcile_duplicates() -> int:
     """create/sync 레이스로 생긴 중복(같은 결과 URL 을 가진 로컬+동기화 행) 정리.
     로컬(id<>job_id, 사용자 메타 보존)을 남기고 동기화본(id==job_id)의 권위 job_id 를

@@ -25,21 +25,3 @@ export function dayInfoFromEpochSeconds(mtime?: number | null): DayInfo {
   const info = localDayInfo(new Date(mtime * 1000), "날짜 없음");
   return info.key === "날짜 없음" ? { key: "none", label: "날짜 없음" } : info;
 }
-
-export function buildDateGroups<T, K>(
-  items: T[],
-  dayOf: (item: T) => DayInfo,
-  keyOf: (item: T, index: number) => K,
-): Map<string, { label: string; keys: K[] }> {
-  const groups = new Map<string, { label: string; keys: K[] }>();
-  items.forEach((item, index) => {
-    const { key, label } = dayOf(item);
-    let group = groups.get(key);
-    if (!group) {
-      group = { label, keys: [] };
-      groups.set(key, group);
-    }
-    group.keys.push(keyOf(item, index));
-  });
-  return groups;
-}

@@ -84,10 +84,6 @@ export function insertTextAtCaret(editor: HTMLElement, text: string) {
 
 // 에디터 내에서 재배치(드래그) 중인 칩 — 모듈 스코프로 추적(드롭 시 moveChipToPoint 가 사용).
 let _draggingChip: HTMLElement | null = null;
-export function chipDragging(): boolean {
-  return !!_draggingChip;
-}
-
 export function buildChipEl(ref: ChipRef): HTMLElement {
   const chip = document.createElement("span");
   chip.className = "inline-ref";
