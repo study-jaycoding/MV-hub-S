@@ -21,6 +21,7 @@ interface Props {
   onItemDragStart: (index: number) => (event: DragEvent<HTMLElement>) => void;
   onItemDrop: (index: number) => (event: DragEvent<HTMLElement>) => void;
   onRemove: (index: number) => void;
+  onClearAll: () => void;
 }
 
 export function SpotlightRefTray({
@@ -33,6 +34,7 @@ export function SpotlightRefTray({
   onItemDragStart,
   onItemDrop,
   onRemove,
+  onClearAll,
 }: Props) {
   return (
     <div
@@ -50,7 +52,8 @@ export function SpotlightRefTray({
           에셋 창 또는 탐색기에서 파일을 여기로 드래그하세요 - 번호 순서대로 레퍼런스가 됩니다
         </div>
       ) : (
-        trayRefs.map((ref, index) => {
+        <>
+        {trayRefs.map((ref, index) => {
           const badgeRole = seedanceTrayRole(ref, index, liveSeedanceRoles);
           const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
           const showRoleBadge = usesSeedanceMediaRefs(model) || liveSeedanceRoles.size > 0;
@@ -93,7 +96,18 @@ export function SpotlightRefTray({
               </button>
             </div>
           );
-        })
+        })}
+        {/* 레퍼런스 전체 비우기 — 생성 후에도 트레이는 남으므로(연속 변형용) 한 번에 초기화 */}
+        <button
+          className="sl-reftray-clear"
+          title="레퍼런스 전체 비우기"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onClearAll}
+        >
+          <span className="sl-reftray-clear-ic" aria-hidden>⌫</span>
+          비우기
+        </button>
+        </>
       )}
     </div>
   );

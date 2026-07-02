@@ -806,6 +806,7 @@ export function SpotlightPrompt({
               onItemDragStart={onTrayItemDragStart}
               onItemDrop={onTrayItemDrop}
               onRemove={removeTrayRef}
+              onClearAll={() => setTrayRefs([])}
             />
           )}
 
