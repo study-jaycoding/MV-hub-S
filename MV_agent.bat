@@ -29,6 +29,9 @@ set "ROOT=%~dp0"
 if "%PORT%"=="" set "PORT=8010"
 REM Local hub backend has no login of its own; the team-server login gate guards the UI.
 set "CONTENT_HUB_AUTH=0"
+REM Show the manage (PM dashboard) button on the local hub too. Manage DATA is proxied
+REM to the shared server; access is still gated by each account's global role. Set 0 to hide.
+if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
 set "CONTENT_HUB_HOST=127.0.0.1"
 set "CONTENT_HUB_PORT=%PORT%"
 set "HUB=http://127.0.0.1:%PORT%"
