@@ -226,8 +226,9 @@
 
 /* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
 .work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }
-.work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 1 auto; }
-.work-add-wrap { flex: 0 0 auto; margin-left: auto; } /* +필터는 우측 끝 */
+/* 칩은 좌측에서 남는 폭을 차지 → 검색창+필터는 우측에 붙는다(검색창이 +필터 바로 왼쪽). */
+.work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.work-add-wrap { flex: 0 0 auto; }
 .work-search {
   display: flex; align-items: center; gap: 5px; border: 1px solid var(--border);
   border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05);
