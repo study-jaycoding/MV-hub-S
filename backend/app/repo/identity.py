@@ -389,27 +389,36 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
     if not email or not uid:
         return False
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT name, creator_uid FROM account WHERE email=?", (email,)
-        ).fetchone()
-        if not row:
-            return False
-        old_uid = row["creator_uid"]
-        ensure_worker(conn, uid, (row["name"] or "").strip() or email or uid, "team")
-        if old_uid != uid:
+        # 계정 uid 전환(account/creator)과 과거 데이터 리맵을 한 트랜잭션으로 — 중간 실패 시
+        # account 만 user_ 로 바뀌고 데이터는 acct: 로 남는 부분 전환을 막는다(주석의 '같은
+        # 트랜잭션' 계약을 실제 BEGIN 으로 보장). IMMEDIATE=즉시 쓰기락(동시 전환 경쟁 차단).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT name, creator_uid FROM account WHERE email=?", (email,)
+            ).fetchone()
+            if not row:
+                conn.execute("ROLLBACK")
+                return False
+            old_uid = row["creator_uid"]
+            ensure_worker(conn, uid, (row["name"] or "").strip() or email or uid, "team")
+            if old_uid != uid:
+                conn.execute(
+                    "UPDATE account SET creator_uid=? WHERE email=?", (uid, email)
+                )
             conn.execute(
-                "UPDATE account SET creator_uid=? WHERE email=?", (uid, email)
+                "INSERT INTO creator(uid, name) VALUES(?,?) "
+                "ON CONFLICT(uid) DO UPDATE SET name=COALESCE(excluded.name, creator.name)",
+                (uid, (row["name"] or "").strip() or None),
             )
-        conn.execute(
-            "INSERT INTO creator(uid, name) VALUES(?,?) "
-            "ON CONFLICT(uid) DO UPDATE SET name=COALESCE(excluded.name, creator.name)",
-            (uid, (row["name"] or "").strip() or None),
-        )
-        # ★재발 차단: 전환과 같은 트랜잭션에서, 그 계정이 acct: 시절 박아둔 과거 데이터를
-        #   전 테이블(_REMAP_PLAN) user_ 로 정합한다. 조기 반환하지 않음(account 만 user_ 였던
-        #   부분 전환도 이때 복구). acct: 가 아니면 remap 은 멱등 0 — 무해.
-        if old_uid and str(old_uid).startswith("acct:"):
-            remap_creator_uid(conn, old_uid, uid)
+            # ★재발 차단: 그 계정이 acct: 시절 박아둔 과거 데이터를 전 테이블(_REMAP_PLAN) user_ 로
+            #   정합한다(account 만 user_ 였던 부분 전환도 복구). acct: 가 아니면 remap 은 멱등 0.
+            if old_uid and str(old_uid).startswith("acct:"):
+                remap_creator_uid(conn, old_uid, uid)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     _MY_UID_CACHE[0] = None
     return True
 

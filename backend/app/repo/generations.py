@@ -429,17 +429,26 @@ def add_history_edge(
     if not parent_gen_id or parent_gen_id == child_gen_id:
         raise ValueError("자기 자신을 부모로 지정할 수 없습니다.")
     with get_connection() as conn:
-        if not conn.execute(
-            "SELECT 1 FROM generation WHERE id=?", (child_gen_id,)
-        ).fetchone():
-            raise ValueError(f"없는 generation: {child_gen_id}")
-        if not conn.execute(
-            "SELECT 1 FROM generation WHERE id=?", (parent_gen_id,)
-        ).fetchone():
-            raise ValueError(f"없는 부모 generation: {parent_gen_id}")
-        if parent_gen_id in _descendants(conn, child_gen_id):
-            raise ValueError("순환이 생깁니다(그 부모는 이 결과물의 자손입니다).")
-        return _record_history(conn, parent_gen_id, child_gen_id, relation)
+        # 순환 검사(자손 조회)와 엣지 삽입을 한 트랜잭션으로 — 그 사이 다른 요청이 반대 방향
+        # 엣지를 넣어 사이클이 생기는 경쟁을 IMMEDIATE(즉시 쓰기락)로 막는다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM generation WHERE id=?", (child_gen_id,)
+            ).fetchone():
+                raise ValueError(f"없는 generation: {child_gen_id}")
+            if not conn.execute(
+                "SELECT 1 FROM generation WHERE id=?", (parent_gen_id,)
+            ).fetchone():
+                raise ValueError(f"없는 부모 generation: {parent_gen_id}")
+            if parent_gen_id in _descendants(conn, child_gen_id):
+                raise ValueError("순환이 생깁니다(그 부모는 이 결과물의 자손입니다).")
+            ok = _record_history(conn, parent_gen_id, child_gen_id, relation)
+            conn.execute("COMMIT")
+            return ok
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def record_derived_parents(child_id: str, parent_ids: list[str]) -> list[str]:

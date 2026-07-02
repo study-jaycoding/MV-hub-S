@@ -491,6 +491,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     am_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(asset_meta)")}
     if "content_sha" not in am_cols2:
         conn.execute("ALTER TABLE asset_meta ADD COLUMN content_sha TEXT")
+    # share: generation 당 공유 1개 — 기존 non-unique 인덱스를 중복 정리 후 UNIQUE 로 전환한다
+    # (동시 publish 가 같은 gen 의 share 를 2개 만들던 것을 스키마 차원에서 차단).
+    srow = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_share_gen'"
+    ).fetchone()
+    if not (srow and srow[0] and "UNIQUE" in str(srow[0]).upper()):
+        # 삽입순(rowid) 최소 = 가장 먼저 만든 share 를 남긴다 — 그 행의 shared_by(첫 발행자)가
+        # '내가 공유/받은' 분류에 쓰이므로, uuid MIN(id)로 임의 행을 남기지 않는다.
+        conn.execute(
+            "DELETE FROM share WHERE rowid NOT IN "
+            "(SELECT MIN(rowid) FROM share GROUP BY generation_id)"
+        )
+        conn.execute("DROP INDEX IF EXISTS idx_share_gen")
+        conn.execute("CREATE UNIQUE INDEX idx_share_gen ON share(generation_id)")
     # v02 히스토리 타입드 엣지 — 'derived'(재생성/가져오기·강한 1-부모) / 'reference'(@소스 생성·약한 다-부모)
     # (테이블명 lineage→history 리네임은 _pre_migrate 가 executescript 이전에 처리 → 여기선 history 보장)
     hist_cols = {row[1] for row in conn.execute("PRAGMA table_info(history)")}

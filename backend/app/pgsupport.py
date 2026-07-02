@@ -71,6 +71,8 @@ def _conflict(verb: str, table: str, cols_str: str) -> str:
 
 
 def _translate(sql: str) -> str:
+    # BEGIN IMMEDIATE(SQLite 의 즉시 쓰기락) → PG 엔 IMMEDIATE 문법이 없으므로 BEGIN 으로.
+    sql = re.sub(r"\bBEGIN\s+IMMEDIATE\b", "BEGIN", sql, flags=re.IGNORECASE)
     conflict = ""
     m = _INSERT_OR.search(sql)
     if m:
@@ -207,7 +209,8 @@ def ensure_indexes(raw: psycopg.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_generation_project ON generation(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_gentag_tag ON gen_tag(tag_id, generation_id)",
         "CREATE INDEX IF NOT EXISTS idx_genautotag_tag ON gen_auto_tag(auto_tag_id, generation_id)",
-        "CREATE INDEX IF NOT EXISTS idx_share_gen ON share(generation_id)",
+        # generation 당 1개 + ON CONFLICT(generation_id) 대상
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen ON share(generation_id)",
         # 부분일치 검색 가속(FTS5 trigram 대체) — ILIKE '%..%' 를 GIN trgm 인덱스가 받침.
         "CREATE INDEX IF NOT EXISTS idx_generation_prompt_trgm ON generation USING gin (prompt gin_trgm_ops)",
         "CREATE INDEX IF NOT EXISTS idx_generation_srcname_trgm ON generation USING gin (source_name gin_trgm_ops)",

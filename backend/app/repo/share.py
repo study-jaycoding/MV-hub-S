@@ -20,19 +20,20 @@ from ._common import (
 
 # ── 공유 / 가져오기 (Phase 5, 로컬) ──────────────────────────────────────
 def publish(gen_id: str, shared_by: str, visibility: str = "team") -> str:
+    # UNIQUE(generation_id) + ON CONFLICT 로 동시 publish 중복을 막는다(예전 SELECT-후-INSERT 는
+    # 두 요청이 같은 gen 을 동시에 보고 share 를 2개 만들 수 있었다). 삽입 후 실제 행 id 를 되읽어,
+    # 내가 넣었든 남이 먼저 넣었든 항상 하나의 share id 를 돌려준다.
     with get_connection() as conn:
+        sid = new_id()
+        conn.execute(
+            "INSERT INTO share(id, generation_id, shared_by, visibility) VALUES(?,?,?,?) "
+            "ON CONFLICT(generation_id) DO NOTHING",
+            (sid, gen_id, shared_by, visibility),
+        )
         row = conn.execute(
             "SELECT id FROM share WHERE generation_id=?", (gen_id,)
         ).fetchone()
-        if row:
-            return row["id"]
-        sid = new_id()
-        conn.execute(
-            "INSERT INTO share(id, generation_id, shared_by, visibility) "
-            "VALUES(?,?,?,?)",
-            (sid, gen_id, shared_by, visibility),
-        )
-    return sid
+    return row["id"] if row else sid
 
 
 def unpublish(gen_id: str) -> int:
@@ -388,16 +389,14 @@ def import_bundle_item(
             tags._add_tags(conn, gid, item.get("tags") or [])
             tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
             _merge_comments(conn, gid, item.get("comments") or [])
-            # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등: 이미 있으면 건너뜀).
+            # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
+            # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
             if shared_by and shared_by != DEFAULT_WORKER_ID:
-                if not conn.execute(
-                    "SELECT 1 FROM share WHERE generation_id=? LIMIT 1", (gid,)
-                ).fetchone():
-                    conn.execute(
-                        "INSERT INTO share(id, generation_id, shared_by, visibility) "
-                        "VALUES(?,?,?,?)",
-                        (new_id(), gid, shared_by, "team"),
-                    )
+                conn.execute(
+                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                    "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
+                    (new_id(), gid, shared_by, "team"),
+                )
     return result
 
 
