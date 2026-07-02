@@ -186,18 +186,32 @@ export const GLOBAL_ROLES = [
 ] as const;
 export const GLOBAL_ROLE_LABEL: Record<string, string> = {
   admin: "Admin · 시스템·가입·전역인사",
-  product_manager: "Product Manager · 프로젝트 생성·역할부여",
-  production_director: "Production Director · 제작·전체읽기",
+  product_manager: "Manager · 프로젝트 생성·역할부여",
+  production_director: "Director · 제작총괄·전체읽기",
   member: "Member · 기본 작업자",
 };
 
 // v02 프로젝트 역할(그 프로젝트 안) — 로드맵 §1-2.
 export const PROJECT_ROLES = ["project_manager", "supervisor", "creator"] as const;
 export const PROJECT_ROLE_LABEL: Record<string, string> = {
-  project_manager: "Project Manager · 운영·멤버관리",
+  project_manager: "PM · 운영·멤버관리",
   supervisor: "Supervisor · 작업+검수(최종선택)",
   creator: "Creator · 작업",
 };
+
+// 프로젝트 배치 시 자동 기본 역할(백엔드 rbac.GLOBAL_TO_PROJECT_DEFAULT 미러). 복수면 합집합.
+export const GLOBAL_TO_PROJECT_DEFAULT: Record<string, string[]> = {
+  admin: ["project_manager", "supervisor", "creator"],
+  product_manager: ["project_manager"],
+  production_director: ["supervisor", "creator"],
+  member: ["creator"],
+};
+export function defaultProjectRoles(globalRoles: string[] | undefined): string[] {
+  const acc = new Set<string>();
+  for (const r of globalRoles || [])
+    (GLOBAL_TO_PROJECT_DEFAULT[r] || ["creator"]).forEach((x) => acc.add(x));
+  return (PROJECT_ROLES as readonly string[]).filter((r) => acc.has(r));
+}
 
 // 전역 역량 매트릭스 — 백엔드 rbac.GLOBAL_CAPS 미러(관리자 창 탭 노출 판정에 사용).
 export const GLOBAL_CAPS: Record<string, string[]> = {

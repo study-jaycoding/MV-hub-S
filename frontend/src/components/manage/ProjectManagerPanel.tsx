@@ -14,6 +14,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
 import { ProjectRolePicker, memberRoleRank } from "../admin/RolePickers";
+import { defaultProjectRoles } from "../../types";
 import type { Member, Project, ProjectFolderState, ProjectMember } from "../../types";
 
 type ProjectDialogState =
@@ -113,7 +114,10 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   };
   const addProjMember = async (pid: string, uid: string) => {
     try {
-      setPM(pid, await api.setProjectRoles(pid, uid, ["creator"]));
+      // 배치 시 전역 역할 기반 기본 프로젝트 역할 자동 부여(이후 아래 역할 칩으로 수동 조정 가능).
+      const gRoles = members.find((m) => m.uid === uid)?.global_roles;
+      const roles = defaultProjectRoles(gRoles);
+      setPM(pid, await api.setProjectRoles(pid, uid, roles.length ? roles : ["creator"]));
       setAddQuery((qq) => ({ ...qq, [pid]: "" }));
     } catch (e) {
       alert("멤버 추가 실패: " + String(e));

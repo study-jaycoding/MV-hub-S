@@ -55,6 +55,24 @@ PROJECT_CAPS: dict[str, set[str]] = {
     CREATOR: {"create_work", "read"},
 }
 
+# ── 프로젝트 배치 시 자동 기본 역할 ────────────────────────────────────────
+# 프로젝트에 멤버로 배치하면 전역 역할에 따라 기본 프로젝트 역할이 자동 부여된다(이후 수동 조정 가능).
+# 복수 전역역할이면 합집합. (표시명: manager=product_manager, director=production_director, pm=project_manager)
+GLOBAL_TO_PROJECT_DEFAULT: dict[str, set[str]] = {
+    ADMIN: {PROJECT_MANAGER, SUPERVISOR, CREATOR},   # 모두 활성화
+    PRODUCT_MANAGER: {PROJECT_MANAGER},              # manager → pm
+    PRODUCTION_DIRECTOR: {SUPERVISOR, CREATOR},      # director → supervisor + creator
+    MEMBER: {CREATOR},                               # member → creator
+}
+
+
+def default_project_roles(global_value: RolesInput) -> list[str]:
+    """전역 역할(복수 가능)로부터 배치 시 기본 프로젝트 역할(합집합, PROJECT_ROLES 순서)."""
+    acc: set[str] = set()
+    for r in effective_roles(global_value):
+        acc |= GLOBAL_TO_PROJECT_DEFAULT.get(r, {CREATOR})
+    return [r for r in PROJECT_ROLES if r in acc]
+
 # ── 복수 전역 역할 — CSV 문자열 ↔ 리스트 ───────────────────────────────────
 # 사람의 전역 역할은 0개 이상. 저장은 "product_director,production_director" 같은 CSV.
 RolesInput = Union[str, Iterable[str], None]
