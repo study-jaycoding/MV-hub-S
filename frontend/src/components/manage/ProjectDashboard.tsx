@@ -1,6 +1,8 @@
 // PM 대시보드 본문 — 요약 카드 + 프로젝트별(일정·예산 편집) + 작업자별. 허브 스타일 재사용.
 import { useEffect, useState } from "react";
 import { manageApi } from "../../lib/manageApi";
+import { useManageCaps } from "../../lib/useManageCaps";
+import { ProjectManagerPanel } from "./ProjectManagerPanel";
 import type { ManageProject, ManageSummary, Planning } from "./types";
 
 function fmtDur(sec: number): string {
@@ -57,6 +59,9 @@ export function ProjectDashboard() {
   const [data, setData] = useState<ManageSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이
+  const caps = useManageCaps();
+  const canManageProjects = caps.createProject || caps.grantRole;
 
   // 일정·예산 편집 상태
   const [editPid, setEditPid] = useState<string | null>(null);
@@ -113,10 +118,26 @@ export function ProjectDashboard() {
     <div className="manage-dash">
       <header className="manage-head">
         <h1>프로젝트 관리</h1>
-        <button className="manage-refresh" onClick={load} disabled={loading}>
-          {loading ? "…" : "새로고침"}
-        </button>
+        <div className="manage-head-actions">
+          {canManageProjects && (
+            <button className="manage-refresh manage-create" onClick={() => setShowPanel(true)}>
+              ＋ 프로젝트
+            </button>
+          )}
+          <button className="manage-refresh" onClick={load} disabled={loading}>
+            {loading ? "…" : "새로고침"}
+          </button>
+        </div>
       </header>
+
+      {showPanel && (
+        <ProjectManagerPanel
+          onClose={() => {
+            setShowPanel(false);
+            load(); // 프로젝트 변경 반영
+          }}
+        />
+      )}
 
       <section className="manage-cards">
         <Card label="총 생성물" value={String(t.gen_count)} sub={`완료 ${t.done_count}`} />

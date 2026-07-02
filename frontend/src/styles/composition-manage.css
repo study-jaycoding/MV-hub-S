@@ -97,6 +97,24 @@
 }
 .manage-refresh:hover { border-color: var(--accent); color: var(--accent); }
 .manage-refresh:disabled { opacity: .5; cursor: default; }
+.manage-head-actions { display: flex; align-items: center; gap: 8px; }
+.manage-create { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+
+/* 프로젝트 관리 오버레이(패널) */
+.manage-proj-overlay {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.55);
+  display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto;
+}
+.manage-proj-modal {
+  width: 100%; max-width: 760px; background: var(--panel, #141414); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,.5); padding: 18px 20px;
+}
+.manage-proj-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.manage-proj-head h2 { font-size: 17px; font-weight: 800; margin: 0; }
+.manage-proj-close {
+  border: none; background: transparent; color: var(--text); opacity: .6; cursor: pointer; font-size: 16px;
+}
+.manage-proj-close:hover { opacity: 1; }
 .manage-cards {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 26px;
 }
