@@ -247,54 +247,78 @@ def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
     return cand
 
 
-def _find_media_by_sha(project_dir: Path, sha: str, limit: int = 5000) -> Optional[Path]:
-    """폴더 안 미디어 파일 중 내용 지문(sha256)이 일치하는 첫 파일 — 폴더 이동/개명 자가 치유용.
-    원경로에서 소스 파일을 못 찾았을 때만 호출된다(정상 조회엔 스캔 없음)."""
+def _index_by_sha(
+    project_dir: Path, wanted: set[str], limit: int = 100000
+) -> tuple[dict[str, str], bool]:
+    """project_dir 안 미디어 파일을 훑어 wanted(내용 지문 sha256) 에 해당하는 sha→상대경로 인덱스.
+    (index, scanned_all) 반환 — limit 초과로 중단되면 scanned_all=False(=끝까지 못 봐 불확실).
+    폴더를 한 번만 스캔하고, 필요한 지문을 다 찾으면 조기 종료한다. 재매칭 버튼에서만 호출."""
+    index: dict[str, str] = {}
+    if not wanted:
+        return index, True
     count = 0
     try:
         for p in project_dir.rglob("*"):
-            if not p.is_file() or _hidden(p.name) or not _media_type(p.name):
+            if not p.is_file() or not _media_type(p.name):
                 continue
-            # symlink 등으로 폴더 밖을 가리키는 파일 차단 — 해시 계산 전에 실제 경로가
-            # project_dir 안인지 검증(_safe_resolve 와 동일한 보안 모델).
+            # symlink 등으로 폴더 밖을 가리키는 파일 차단(_safe_resolve 와 동일 보안 모델).
             try:
                 rp = p.resolve()
-                rp.relative_to(project_dir)
+                rel = rp.relative_to(project_dir)
             except (OSError, ValueError):
+                continue
+            # 숨김 파일/폴더(부모 포함)는 트리에서 안 보이므로 재매칭 대상에서도 제외.
+            if any(_hidden(part) for part in rel.parts):
                 continue
             count += 1
             if count > limit:
-                break
-            if _sha256_file(rp) == sha:
-                return rp
+                return index, False
+            digest = _sha256_file(rp)
+            if digest and digest in wanted and digest not in index:
+                index[digest] = rel.as_posix()
+                if len(index) == len(wanted):
+                    break  # 필요한 지문을 모두 찾음 → 조기 종료
     except OSError:
-        return None
-    return None
+        return index, False
+    return index, True
 
 
-def _resolve_asset_target(
-    request: Request, project: str, project_dir: Path, path: str
-) -> Optional[Path]:
-    """소스 파일의 실제 경로 해석. 원경로에 있으면 그대로 쓰고, 없으면 저장해둔 내용 지문으로
-    같은 폴더를 뒤져 찾은 뒤 asset_meta 의 경로를 자동 갱신(자가 치유)한다."""
-    target = _safe_resolve(project_dir, path)
-    if target and target.is_file():
-        return target
-    # 원경로 실패 → 내용 지문으로 재매칭(지문이 기록된 소스만 가능)
+def _resolve_broken_sources(request: Request, prune: bool) -> tuple[int, list[str]]:
+    """원경로에서 사라진 내 소스를 내용 지문으로 재매칭해 다시 잇는다(자가 치유).
+    prune=True 면, 재매칭도 실패하고 '폴더를 끝까지 훑어 확실히 없는' 소스만 소스 지정을 해제한다
+    (스캔이 limit 로 잘려 불확실하면 보류 — 있는 파일을 실수로 해제하지 않기 위함).
+    프로젝트(마운트)별로 폴더를 한 번만 스캔한다."""
     owner = actor_id(request)
-    sha = repo.get_asset_content_sha(project, path, owner)
-    if not sha:
-        return target
-    found = _find_media_by_sha(project_dir, sha)
-    if not found:
-        return None
-    try:
-        new_rel = found.relative_to(project_dir).as_posix()
-    except ValueError:
-        return None
-    if new_rel != path:
-        repo.relink_asset_path(project, path, new_rel, owner)
-    return found
+    by_project: dict[str, list[tuple[str, Optional[str]]]] = {}
+    for project, path, sha in repo.list_source_metas(owner):
+        by_project.setdefault(project, []).append((path, sha))
+
+    relinked = 0
+    pruned: list[str] = []
+    for project, items in by_project.items():
+        proj_dir = _safe_project_dir(project, request)
+        if not proj_dir:
+            continue
+        broken: list[tuple[str, Optional[str]]] = []
+        for path, sha in items:
+            cur = _safe_resolve(proj_dir, path)
+            if cur and cur.is_file():
+                continue  # 원경로에서 이미 열림 → 손댈 필요 없음
+            broken.append((path, sha))
+        if not broken:
+            continue
+        wanted = {sha for _, sha in broken if sha}
+        index, scanned_all = _index_by_sha(proj_dir, wanted)
+        for path, sha in broken:
+            new_rel = index.get(sha) if sha else None
+            if new_rel and new_rel != path:
+                repo.relink_asset_path(project, path, new_rel, owner)
+                relinked += 1
+            elif prune and scanned_all:
+                # 지문이 없거나(옛 소스) 폴더를 끝까지 훑어도 못 찾음 → 원본이 정말 없음 → 해제.
+                repo.set_asset_source(project, path, None, False, owner)
+                pruned.append(f"{project}/{path}")
+    return relinked, pruned
 
 
 def _hidden(name: str) -> bool:
@@ -618,35 +642,17 @@ def asset_set_source(body: AssetSourceIn, request: Request):
 def relink_broken_sources(request: Request):
     """원경로에서 사라진 내 Assets 소스를, 저장해둔 내용 지문(sha256)으로 같은 폴더를 뒤져 찾아
     경로를 다시 잇는다(자가 치유). 필요할 때만 도는 일괄 작업 — 평소 파일 조회엔 스캔이 없다."""
-    owner = actor_id(request)
-    relinked = 0
-    for project, path in repo.list_source_metas(owner):
-        proj_dir = _safe_project_dir(project, request)
-        if not proj_dir:
-            continue
-        cur = _safe_resolve(proj_dir, path)
-        if cur and cur.is_file():
-            continue  # 원경로 정상 → 스캔·재연결 불필요
-        found = _resolve_asset_target(request, project, proj_dir, path)  # 지문 재매칭 + 경로 갱신
-        if found and found.is_file():
-            relinked += 1
+    relinked, _ = _resolve_broken_sources(request, prune=False)
     return {"relinked": relinked}
 
 
 @router.post("/sources/prune")
 def prune_broken_sources(request: Request):
-    """원본 파일을 찾을 수 없는(원경로에도 없고 내용 지문 재매칭도 실패한) 내 Assets 소스의
-    소스 지정을 해제한다(is_source=0). 파일이 실제로 있는 소스는 건드리지 않으며, 태그·컬러 등
-    다른 메타와 행 자체는 보존한다."""
-    owner = actor_id(request)
-    pruned: list[str] = []
-    for project, path in repo.list_source_metas(owner):
-        proj_dir = _safe_project_dir(project, request)
-        target = _resolve_asset_target(request, project, proj_dir, path) if proj_dir else None
-        if not target or not target.is_file():
-            repo.set_asset_source(project, path, None, False, owner)
-            pruned.append(f"{project}/{path}")
-    return {"pruned": len(pruned), "items": pruned}
+    """원본 파일을 확실히 찾을 수 없는 내 Assets 소스의 소스 지정을 해제한다(is_source=0).
+    먼저 지문으로 재매칭을 시도해 찾을 수 있으면 다시 잇고, 폴더를 끝까지 훑어도 못 찾은 것만
+    해제한다(스캔이 잘려 불확실하면 보류). 파일이 있는 소스와 태그·컬러 등 메타는 보존한다."""
+    relinked, pruned = _resolve_broken_sources(request, prune=True)
+    return {"pruned": len(pruned), "relinked": relinked, "items": pruned}
 
 
 @router.put("/tags")

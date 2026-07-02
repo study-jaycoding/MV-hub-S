@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS asset_meta (
   tags text,
   comment text,
   color text,
+  content_sha text,
   PRIMARY KEY (project, path)
 );
 

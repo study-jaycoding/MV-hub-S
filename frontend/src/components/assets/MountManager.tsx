@@ -81,7 +81,8 @@ export function MountManager({
     try {
       const r = await api.pruneBrokenSources();
       onChanged();
-      window.alert(`정리 완료: 깨진 소스 ${r.pruned}개의 지정을 해제했습니다.`);
+      const relinkedMsg = r.relinked > 0 ? ` (재연결 ${r.relinked}개는 유지)` : "";
+      window.alert(`정리 완료: 깨진 소스 ${r.pruned}개의 지정을 해제했습니다.${relinkedMsg}`);
     } catch (e) {
       setErr(String(e).replace(/^Error:\s*/, ""));
     } finally {

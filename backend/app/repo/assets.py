@@ -328,34 +328,27 @@ def set_asset_source(
             )
 
 
-def list_source_metas(owner_uid: str = "") -> list[tuple[str, str]]:
-    """내(owner_uid) Assets 소스(is_source=1)의 (project, path) 목록 — 깨진 소스 정리용."""
+def list_source_metas(owner_uid: str = "") -> list[tuple[str, str, Optional[str]]]:
+    """내(owner_uid) Assets 소스(is_source=1)의 (project, path, content_sha) 목록.
+    지문을 함께 반환해 재매칭·정리 시 소스마다 따로 DB 를 조회하지 않게 한다."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT project, path FROM asset_meta WHERE is_source=1 AND owner_uid=?",
+            "SELECT project, path, content_sha FROM asset_meta WHERE is_source=1 AND owner_uid=?",
             (owner_uid,),
         ).fetchall()
-    return [(r["project"], r["path"]) for r in rows]
-
-
-def get_asset_content_sha(project: str, path: str, owner_uid: str = "") -> Optional[str]:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT content_sha FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
-            (project, path, owner_uid),
-        ).fetchone()
-    return row["content_sha"] if row and row["content_sha"] else None
+    return [(r["project"], r["path"], r["content_sha"]) for r in rows]
 
 
 def relink_asset_path(project: str, old_path: str, new_path: str, owner_uid: str = "") -> None:
     """소스 파일을 새 경로에서 찾으면 asset_meta 의 path 를 갱신(자가 치유).
-    새 경로 행이 이미 있으면(그 파일에 태그·컬러만 달아둔 경우 등) 그 행을 지우지 않고
-    소스 필드(is_source·source_name·content_sha)만 병합해 PK 충돌을 피하면서 소스를 보존한다."""
+    새 경로 행이 이미 있으면(그 파일에 태그·컬러만 달아둔 경우 등) 그 행을 지우지 않고, 옛 행의
+    소스·메타를 보완 병합(새 행에 없는 값만 옛 값으로)해 PK 충돌을 피하면서 소스를 보존한다.
+    UPDATE+DELETE 는 한 트랜잭션으로 묶어 중간 실패 시 양쪽이 어긋나지 않게 한다."""
     if old_path == new_path:
         return
     with get_connection() as conn:
         old = conn.execute(
-            "SELECT is_source, source_name, content_sha FROM asset_meta "
+            "SELECT is_source, source_name, content_sha, tags, comment, color FROM asset_meta "
             "WHERE project=? AND path=? AND owner_uid=?",
             (project, old_path, owner_uid),
         ).fetchone()
@@ -365,21 +358,30 @@ def relink_asset_path(project: str, old_path: str, new_path: str, owner_uid: str
             "SELECT 1 FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
             (project, new_path, owner_uid),
         ).fetchone()
-        if exists:
-            conn.execute(
-                "UPDATE asset_meta SET is_source=?, source_name=?, content_sha=? "
-                "WHERE project=? AND path=? AND owner_uid=?",
-                (old["is_source"], old["source_name"], old["content_sha"], project, new_path, owner_uid),
-            )
-            conn.execute(
-                "DELETE FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
-                (project, old_path, owner_uid),
-            )
-        else:
-            conn.execute(
-                "UPDATE asset_meta SET path=? WHERE project=? AND path=? AND owner_uid=?",
-                (new_path, project, old_path, owner_uid),
-            )
+        conn.execute("BEGIN")
+        try:
+            if exists:
+                # 새 경로 행 유지 + 옛 행의 소스는 덮어쓰고, 태그·코멘트·컬러는 새 행이 비어있을 때만 보완.
+                conn.execute(
+                    "UPDATE asset_meta SET is_source=?, source_name=?, content_sha=?, "
+                    "tags=COALESCE(tags, ?), comment=COALESCE(comment, ?), color=COALESCE(color, ?) "
+                    "WHERE project=? AND path=? AND owner_uid=?",
+                    (old["is_source"], old["source_name"], old["content_sha"],
+                     old["tags"], old["comment"], old["color"], project, new_path, owner_uid),
+                )
+                conn.execute(
+                    "DELETE FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+                    (project, old_path, owner_uid),
+                )
+            else:
+                conn.execute(
+                    "UPDATE asset_meta SET path=? WHERE project=? AND path=? AND owner_uid=?",
+                    (new_path, project, old_path, owner_uid),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def set_asset_tags(project: str, path: str, tags: list[str], owner_uid: str = "") -> None:
