@@ -9,12 +9,14 @@ safe_project_dir / safe_resolve 가드를 그대로 따른다.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +42,7 @@ from ..deps import account_global_roles, account_scope_uid, actor_id
 from ..services.media_types import asset_media_type
 from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request
-from ..services import thumbs
+from ..services import media_cache, thumbs
 from ..services.path_safety import safe_join
 
 
@@ -89,10 +91,6 @@ def _media_type(name: str) -> Optional[str]:
     return asset_media_type(name, include_audio=True)
 
 
-def _sha256_bytes(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
-
-
 def _sha256_file(path: Path) -> Optional[str]:
     try:
         h = hashlib.sha256()
@@ -115,6 +113,79 @@ def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]
         if _sha256_file(p) == digest:
             return p
     return None
+
+
+# ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
+_UPLOAD_CHUNK_SIZE = media_cache._CHUNK_SIZE
+_UPLOAD_MAX_BYTES = int(os.getenv("CONTENT_HUB_UPLOAD_MAX_BYTES", str(media_cache._MAX_BYTES)))
+
+
+class _UploadTooLarge(Exception):
+    """업로드가 크기 상한(_UPLOAD_MAX_BYTES)을 넘음."""
+
+
+async def _stream_upload_tmp(up: UploadFile, dest_dir: Path) -> tuple[Path, int, str]:
+    """업로드를 dest_dir 안 temp(.part)로 청크 스트리밍 — 전체를 메모리에 올리지 않는다.
+    함께 sha256 을 계산해 (tmp, 바이트수, sha256hex) 반환. 상한 초과면 _UploadTooLarge.
+    실패 시 temp 를 정리하고 예외를 다시 던진다."""
+    tmp = dest_dir / f".upload-{uuid.uuid4().hex}.part"
+    h = hashlib.sha256()
+    written = 0
+    try:
+        with tmp.open("xb") as f:
+            while True:
+                chunk = await up.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _UPLOAD_MAX_BYTES:
+                    raise _UploadTooLarge()
+                h.update(chunk)
+                await asyncio.to_thread(f.write, chunk)
+        return tmp, written, h.hexdigest()
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
+    """temp 를 최종 파일명으로 원자적 확정(덮어쓰기 안 함). 이름 충돌은 _2, _3… 로 회피하되,
+    os.link(하드링크)로 '없을 때만 생성'을 원자화해 동일 이름 동시 업로드 race 를 막는다.
+    하드링크 불가 파일시스템은 O_EXCL 로 최종 이름을 선점한 뒤 replace 로 폴백."""
+    stem, ext = Path(raw_name).stem, Path(raw_name).suffix
+    i = 1
+    while True:
+        name = raw_name if i == 1 else f"{stem}_{i}{ext}"
+        target = safe_join(dest_dir, name)
+        if target is None:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="안전하지 않은 파일명")
+        try:
+            os.link(tmp, target)
+            tmp.unlink(missing_ok=True)
+            return target
+        except FileExistsError:
+            i += 1
+            continue
+        except OSError:
+            # 하드링크 미지원 파일시스템 → 최종 이름을 배타 생성으로 선점 후 replace
+            try:
+                fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+            except FileExistsError:
+                i += 1
+                continue
+            try:
+                os.replace(tmp, target)
+            except Exception:
+                # replace 실패 → 방금 선점한 0바이트 파일과 tmp 를 정리(잔재 방지)
+                try:
+                    os.unlink(target)
+                except OSError:
+                    pass
+                tmp.unlink(missing_ok=True)
+                raise
+            return target
 
 
 def _load_mounts() -> list[dict[str, str]]:
@@ -742,22 +813,18 @@ async def upload_assets(
         if _media_type(raw) is None:  # 미디어(이미지/영상/오디오)만 — 그 외는 제외
             skipped.append(raw)
             continue
-        target = _safe_resolve(dest, raw)
-        if not target:
-            skipped.append(raw)
-            continue
-        if target.exists():  # 덮어쓰기 방지
-            stem, ext, i = target.stem, target.suffix, 2
-            while True:
-                cand = dest / f"{stem}_{i}{ext}"
-                if not cand.exists():
-                    target = cand
-                    break
-                i += 1
         try:
-            target.write_bytes(await up.read())
+            tmp, size, _ = await _stream_upload_tmp(up, dest)  # 청크 스트리밍 + 크기 상한
+        except _UploadTooLarge:
+            skipped.append(raw)  # 상한 초과 파일은 건너뛰고 나머지는 저장
+            continue
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
+        if size == 0:
+            tmp.unlink(missing_ok=True)
+            skipped.append(raw)
+            continue
+        target = _commit_unique_tmp(tmp, dest, raw)  # 원자적 확정(덮어쓰기·race 방지)
         saved.append(target.relative_to(proj_dir).as_posix())
 
     return {"saved": saved, "skipped": skipped}
@@ -768,17 +835,18 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
     저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
     captures 는 내장 ASSETS_ROOT/captures 폴더(마운트 아님)라 owner 무관하게 thumb/file 서빙됨."""
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="빈 캡쳐")
     cap_dir = (ASSETS_ROOT / "captures").resolve()
     cap_dir.mkdir(parents=True, exist_ok=True)
-    base = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    name, i = f"{base}.png", 2
-    while (cap_dir / name).exists():  # 같은 초 다중 캡쳐 충돌 회피
-        name, i = f"{base}-{i}.png", i + 1
-    (cap_dir / name).write_bytes(raw)
-    return {"project": "captures", "path": name, "name": name, "type": "image"}
+    try:
+        tmp, size, _ = await _stream_upload_tmp(file, cap_dir)
+    except _UploadTooLarge:
+        raise HTTPException(status_code=413, detail="캡쳐가 너무 큽니다")
+    if size == 0:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="빈 캡쳐")
+    name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
+    target = _commit_unique_tmp(tmp, cap_dir, name)
+    return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
 
 
 @router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
@@ -822,13 +890,20 @@ async def upload_reference_import(
         if mt not in ("image", "video"):
             skipped.append(raw)
             continue
-        data = await up.read()
-        if not data:
+        try:
+            tmp, size, digest = await _stream_upload_tmp(up, dest)  # 스트리밍 + sha 동시 계산
+        except _UploadTooLarge:
             skipped.append(raw)
             continue
-        digest = _sha256_bytes(data)
-        existing = _find_same_media(dest, digest, mt)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
+        if size == 0:
+            tmp.unlink(missing_ok=True)
+            skipped.append(raw)
+            continue
+        existing = _find_same_media(dest, digest, mt)  # 같은 내용 이미 있으면 재사용(중복 저장 안 함)
         if existing:
+            tmp.unlink(missing_ok=True)
             rel = (
                 existing.relative_to(project_dir).as_posix()
                 if project_dir
@@ -842,22 +917,7 @@ async def upload_reference_import(
                 "reused": True,
             })
             continue
-        target = _safe_resolve(dest, raw)
-        if not target:
-            skipped.append(raw)
-            continue
-        if target.exists():
-            stem, ext, i = target.stem, target.suffix, 2
-            while True:
-                cand = dest / f"{stem}_{i}{ext}"
-                if not cand.exists():
-                    target = cand
-                    break
-                i += 1
-        try:
-            target.write_bytes(data)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"저장 실패({raw}): {e}")
+        target = _commit_unique_tmp(tmp, dest, raw)
         rel = (
             target.relative_to(project_dir).as_posix()
             if project_dir
