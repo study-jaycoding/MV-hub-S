@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from . import _proxy
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
-from ..deps import actor_id
+from ..deps import actor_id, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals
 
@@ -379,9 +379,14 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
         published = 0
         for gid in body.gen_ids or []:
             gen = repo.get_generation(gid)
-            if gen and gen.get("status") == "done" and not gen.get("shared"):
-                repo.publish(gid, actor_id(request), "team")
-                published += 1
+            if not (gen and gen.get("status") == "done" and not gen.get("shared")):
+                continue
+            try:
+                require_edit_generation(request, gen)  # 본인(또는 admin)만 — 남의 작업 공유 차단
+            except HTTPException:
+                continue  # 권한 없는 항목은 건너뜀(벌크 전체를 막지 않음)
+            repo.publish(gid, actor_id(request), "team")
+            published += 1
         return {"ok": True, "published": published, "remote": {}}
     r = publish_bundle_to_server(body.gen_ids)
     return {"ok": True, **r}
