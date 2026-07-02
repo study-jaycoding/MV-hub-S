@@ -211,10 +211,16 @@ function GenerationCardImpl({
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
-              // 생성중(대기·실행 모두) — 글씨 대신 스피너 아이콘 + '생성중' 캡션.
+              // 생성중(대기·실행 모두) — 오디오 이퀄라이저식 웨이브 막대 5개 + 'Generating' 캡션.
               <span className="gen-generating">
-                <span className="gen-spinner" aria-hidden />
-                <span className="gen-generating-label">생성중</span>
+                <span className="gen-wave" aria-hidden>
+                  <span className="gen-wave-bar" />
+                  <span className="gen-wave-bar" />
+                  <span className="gen-wave-bar" />
+                  <span className="gen-wave-bar" />
+                  <span className="gen-wave-bar" />
+                </span>
+                <span className="gen-generating-label">Generating</span>
               </span>
             ) : (
               generationStatusLabel(gen.status)

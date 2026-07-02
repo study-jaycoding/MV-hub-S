@@ -194,20 +194,28 @@
 .card-drag-grip:hover { color: #fff; border-color: var(--border2); transform: scale(1.08); }
 .card-drag-grip:active { cursor: grabbing; }
 
-.status-running { color: #ffd24a; }
+.status-running { color: #E7A93C; }
 .status-pending { color: var(--muted); }
-/* 생성중 — 글씨 대신 회전 스피너 아이콘(색은 status-running 골드 상속) + 작은 캡션 */
+/* 생성중 — 오디오 이퀄라이저식 웨이브 막대 5개(색은 status-running 앰버 상속) + 작은 캡션 */
 .gen-generating { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.gen-spinner {
-  width: 30px; height: 30px; border-radius: 50%;
-  border: 3px solid rgba(255,255,255,0.14); border-top-color: currentColor;
-  animation: gen-spin 0.8s linear infinite;
+.gen-wave { display: flex; align-items: center; gap: 3px; height: 26px; }
+.gen-wave-bar {
+  width: 4px; height: 100%; border-radius: 2px;
+  background: currentColor; /* running=앰버 / pending=muted 상속 유지 */
+  transform: scaleY(0.35);
+  animation: gen-wave 1s ease-in-out infinite;
 }
+/* 막대별 시차 → 위아래로 춤추는 물결 */
+.gen-wave-bar:nth-child(1) { animation-delay: 0s; }
+.gen-wave-bar:nth-child(2) { animation-delay: 0.12s; }
+.gen-wave-bar:nth-child(3) { animation-delay: 0.24s; }
+.gen-wave-bar:nth-child(4) { animation-delay: 0.36s; }
+.gen-wave-bar:nth-child(5) { animation-delay: 0.48s; }
 .gen-generating-label { font-size: 11px; opacity: 0.85; }
-@keyframes gen-spin { to { transform: rotate(360deg); } }
-/* 모션 끄기(OS·앱) — 회전 정지(정적 링 + 캡션으로 상태 전달) */
-@media (prefers-reduced-motion: reduce) { .gen-spinner { animation: none; } }
-.reduce-motion .gen-spinner { animation: none; }
+@keyframes gen-wave { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+/* 모션 끄기(OS·앱) — 애니메이션 정지 + 막대는 중간 높이로 고정(상태는 전달) */
+@media (prefers-reduced-motion: reduce) { .gen-wave-bar { animation: none; transform: scaleY(0.6); } }
+.reduce-motion .gen-wave-bar { animation: none; transform: scaleY(0.6); }
 .status-failed { color: #ff6b6b; }
 .status-nsfw { color: #ff6b6b; }
 /* 하단 상태 라벨도 실패·차단이면 빨강 강조 */
