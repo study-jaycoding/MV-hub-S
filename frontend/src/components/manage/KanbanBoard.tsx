@@ -54,7 +54,10 @@ export function BoardView(props: WorkViewProps) {
                 }}
               >
                 <div className="work-card-top">
-                  <span className="kanban-card-name">{t.name}</span>
+                  <span className="kanban-card-name" title={t.folder_path || t.name}>
+                    {t.project_name && <span className="kanban-card-proj">{t.project_name}/</span>}
+                    {t.name}
+                  </span>
                   <button className="kanban-del" title="삭제" onClick={() => onDelete(t.id)}>
                     ✕
                   </button>

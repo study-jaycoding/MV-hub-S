@@ -191,7 +191,7 @@
 .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
 .kanban-col { border: 1px solid var(--border); border-radius: 12px; padding: 10px; min-height: 120px; }
 /* Notion식 3그룹(할 일·진행 중·완료) × 7세분 상태 보드 — 그룹 띠로 묶고 가로 스크롤 */
-.kanban-grouped { display: flex; grid-template-columns: none; gap: 16px; overflow-x: auto; padding-bottom: 8px; align-items: start; }
+.kanban-grouped { display: flex; grid-template-columns: none; gap: 16px; overflow-x: auto; padding-bottom: 8px; align-items: start; justify-content: safe center; }
 .kanban-group { display: flex; flex-direction: column; gap: 8px; }
 .kanban-group-head { font-size: 11px; font-weight: 800; letter-spacing: .04em; opacity: .6; text-transform: uppercase; padding: 0 2px; display: flex; gap: 6px; align-items: center; }
 .kanban-group-cols { display: flex; gap: 10px; align-items: start; }
@@ -204,6 +204,7 @@
 .kanban-count { font-size: 11px; opacity: .55; }
 .kanban-card { border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; margin-bottom: 8px; background: rgba(127,127,127,.05); }
 .kanban-card-name { font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+.kanban-card-proj { opacity: .55; font-weight: 500; } /* 프로젝트/에피소드 표시 */
 .kanban-card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
 .kanban-card-meta select { flex: 1; font-family: inherit; font-size: 11px; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 3px 5px; }
 .kanban-gen { font-size: 11px; opacity: .7; white-space: nowrap; }
@@ -381,8 +382,9 @@
 .work-cell-in:focus { outline: none; border-color: var(--accent); }
 .work-cut-cell { min-width: 90px; }
 .work-cut-cell .work-cut { width: 32px; height: 32px; }
-/* 테이블에선 +N 이 아래로 안 접히게 한 줄 유지(행 높이 고정) */
-.work-cut-cell .work-cut-thumbs { flex-wrap: nowrap; }
+/* 테이블·보드 모두 +N 이 아래로 안 접히게 한 줄 유지(우측 표시) */
+.work-cut-cell .work-cut-thumbs,
+.work-cut-drop .work-cut-thumbs { flex-wrap: nowrap; }
 .work-newrow input {
   width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
   background: transparent; border: 1px dashed var(--border); border-radius: 8px; padding: 7px 9px;
