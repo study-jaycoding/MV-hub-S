@@ -7,10 +7,12 @@ import { CUT_THUMB_MAX, type Task, type WorkViewProps } from "./types";
 export function CutThumbs({
   task,
   thumb,
+  disabled,
   onUnlinkGen,
 }: {
   task: Task;
   thumb: WorkViewProps["thumb"];
+  disabled?: Set<string>; // d 로 비활성화된 컷 → 회색 표시
   onUnlinkGen: WorkViewProps["onUnlinkGen"];
 }) {
   const cuts = task.cuts || [];
@@ -22,13 +24,16 @@ export function CutThumbs({
       {shown.map((c) => {
         const th = thumb(c.thumb);
         const isVideo = c.media_type === "video";
+        const off = disabled?.has(c.id);
         const cls =
-          "work-cut" + (c.is_final ? " final" : c.shared ? " shared" : "");
+          "work-cut" +
+          (c.is_final ? " final" : c.shared ? " shared" : "") +
+          (off ? " deactivated" : "");
         return (
           <span
             key={c.id}
             className={cls}
-            title={c.is_final ? "최종" : c.shared ? "공유됨" : undefined}
+            title={off ? "비활성화됨" : c.is_final ? "최종" : c.shared ? "공유됨" : undefined}
           >
             <MediaThumbnail
               thumb={th}

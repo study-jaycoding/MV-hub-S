@@ -6,6 +6,7 @@ import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
   groupLabel,
+  HIDDEN_STATUSES,
   STATUS_GROUPS,
   STATUSES,
   statusText,
@@ -13,12 +14,8 @@ import {
   type WorkViewProps,
 } from "./types";
 
-// 보드에서 숨길 상태(컬럼) — 폴더 자동 작업은 생성물이 있어 '진행' 이상이라 이 칸에 올 일이 없다.
-// (테이블 뷰엔 남으므로 데이터가 사라지는 건 아니다.)
-const BOARD_HIDDEN_STATUSES = new Set(["not_started", "pending"]);
-
 export function BoardView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, disabled, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
   const [dragOver, setDragOver] = useState<string | null>(null);
 
@@ -101,7 +98,7 @@ export function BoardView(props: WorkViewProps) {
                     if (gid) onLinkGen(t.id, gid);
                   }}
                 >
-                  <CutThumbs task={t} thumb={thumb} onUnlinkGen={onUnlinkGen} />
+                  <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </div>
 
                 <div className="work-card-meta">
@@ -121,7 +118,7 @@ export function BoardView(props: WorkViewProps) {
     <div className="kanban kanban-grouped">
       {STATUS_GROUPS.map((group) => {
         const cols = STATUSES.filter(
-          (s) => s.group === group && !BOARD_HIDDEN_STATUSES.has(s.v),
+          (s) => s.group === group && !HIDDEN_STATUSES.has(s.v),
         );
         if (!cols.length) return null; // 시작 전만 있던 '할 일' 그룹 등은 통째로 숨김
         const total = tasks.filter((t) => cols.some((c) => c.v === t.status)).length;

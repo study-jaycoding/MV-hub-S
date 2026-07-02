@@ -140,12 +140,17 @@ export function statusLabel(v?: string | null): string {
 export function statusColor(v?: string | null): string {
   return statusDef(v)?.color ?? "#787c82";
 }
+// 폴더 자동 작업은 생성물이 있어 '진행' 이상이라 '시작 전/대기'에 올 일이 없다 → 보드 열·상태
+// 드롭다운·필터에서 숨긴다(데이터 모델에는 존재, 표시만 제외). 보드/테이블/필터 단일 소스.
+export const HIDDEN_STATUSES = new Set(["not_started", "pending"]);
+export const SELECTABLE_STATUSES = STATUSES.filter((s) => !HIDDEN_STATUSES.has(s.v));
 
 // 보드/테이블 뷰가 공유하는 props(WorkBoard 가 데이터·핸들러 주입)
 export interface WorkViewProps {
   tasks: Task[];
   seqOptions: string[];
   thumb: (path?: string | null) => string | undefined;
+  disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -163,6 +168,7 @@ export interface Cut {
   is_final?: number | boolean; // 최종(골드)
   shared?: number | boolean; // 팀 공유됨
   linked?: number | boolean; // 수동 드래그 링크(✕ 해제 가능). 시퀀스 자동 귀속은 false
+  created_at?: string | null; // 생성일 — 캘린더(생성자별 활동) 날짜 배치용
 }
 // 카드 썸네일 노출 한도 — 최종→공유→일반 순(백엔드 정렬)에서 앞 3장.
 export const CUT_THUMB_MAX = 3;

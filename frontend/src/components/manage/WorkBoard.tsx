@@ -2,10 +2,11 @@
 // 데이터·핸들러를 소유하고 BoardView/TableView 에 주입한다.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
-import { addDisabledGen } from "../../lib/deactivated";
+import { addDisabledGen, DISABLED_EVENT, loadDisabledGen } from "../../lib/deactivated";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
 import { thumbOf as generationThumbOf, thumbUrl } from "../../lib/media";
+import { STORAGE_KEYS } from "../../lib/storageKeys";
 import type { Generation } from "../../types";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
@@ -14,10 +15,10 @@ import { useT } from "../../lib/i18n";
 import {
   GEN_MIME,
   groupLabel,
+  SELECTABLE_STATUSES,
   STATUS_GROUPS,
-  STATUSES,
-  statusText,
   type Task,
+  statusText,
   type WorkViewProps,
 } from "./types";
 
@@ -49,6 +50,23 @@ export function WorkBoard() {
   const [fMine, setFMine] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + 자동 생략 판정에 쓴다.
+  const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
+
+  // 비활성화 집합 최신화 — 같은 창(생성탭이 같은 페이지)은 DISABLED_EVENT, 다른 창(별도 생성탭
+  // 창)은 storage 이벤트로 감지한다(둘 다 같은 localStorage 를 본다).
+  useEffect(() => {
+    const refresh = () => setDisabled(loadDisabledGen());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEYS.historyDisabled || e.key === null) refresh();
+    };
+    window.addEventListener(DISABLED_EVENT, refresh);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(DISABLED_EVENT, refresh);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   useEffect(() => {
     // 프로젝트 목록만 필요 → 무거운 summary()(전체 생성물 scan) 대신 가벼운 프로젝트 목록 API.
@@ -161,6 +179,25 @@ export function WorkBoard() {
     loadTasks(pid);
   };
 
+  // 자동 생략 — 작업의 컷이 전부 비활성화(d)되면(컷 1개면 그게 꺼질 때 포함) 그 작업을 '생략'으로.
+  // omitReqRef 로 in-flight 중복 요청을 막는다(patch→addDisabledGen→이벤트→재실행 순간 이중 호출 방지).
+  const omitReqRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!disabled.size) return;
+    for (const t of tasks) {
+      const cuts = t.cuts || [];
+      const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
+      if (t.status === "omit" || !allOff) {
+        omitReqRef.current.delete(t.id); // 이미 생략됐거나 조건 해제 → 재요청 가능 상태로
+        continue;
+      }
+      if (omitReqRef.current.has(t.id)) continue; // 이미 요청 중
+      omitReqRef.current.add(t.id);
+      onPatch(t.id, { status: "omit" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, disabled]);
+
   const filtered = useMemo(
     () =>
       tasks.filter((t) => {
@@ -177,6 +214,7 @@ export function WorkBoard() {
     tasks: filtered,
     seqOptions,
     thumb: taskThumb,
+    disabled,
     onPatch,
     onDelete,
     onLinkGen,
@@ -216,15 +254,19 @@ export function WorkBoard() {
       <div className="work-filterbar">
         <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
           <option value="">상태 전체</option>
-          {STATUS_GROUPS.map((g) => (
-            <optgroup key={g} label={groupLabel(g)}>
-              {STATUSES.filter((s) => s.group === g).map((s) => (
-                <option key={s.v} value={s.v}>
-                  {statusText(s)}
-                </option>
-              ))}
-            </optgroup>
-          ))}
+          {STATUS_GROUPS.map((g) => {
+            const opts = SELECTABLE_STATUSES.filter((s) => s.group === g);
+            if (!opts.length) return null; // '시작 전'만 있던 그룹은 통째로 숨김
+            return (
+              <optgroup key={g} label={groupLabel(g)}>
+                {opts.map((s) => (
+                  <option key={s.v} value={s.v}>
+                    {statusText(s)}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
         </select>
         <label className="work-mine">
           <input type="checkbox" checked={fMine} onChange={(e) => setFMine(e.target.checked)} /> 내

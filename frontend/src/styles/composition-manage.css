@@ -279,6 +279,8 @@
 }
 .work-cut-badge.final { color: #ffd84d; }
 .work-cut-badge.shared { color: var(--accent); }
+/* d 로 비활성화된 컷 — 회색 처리(생성탭과 동일한 로컬 비활성화 상태 반영) */
+.work-cut.deactivated { opacity: .4; filter: grayscale(1); }
 /* 4장 이상일 때 +N 칩 */
 .work-cut-more {
   align-self: center; font-size: 10px; font-weight: 700; opacity: .65;
@@ -289,8 +291,9 @@
 .work-card-desc { font-size: 11px; opacity: .6; margin-top: 4px; white-space: pre-wrap; }
 
 /* 테이블 뷰 */
-.work-table td, .work-table th { vertical-align: middle; }
+.work-table td, .work-table th { vertical-align: middle; white-space: nowrap; }
 .work-table th { text-align: left; font-weight: 700; opacity: .7; }
+.work-name-static { font-weight: 600; font-size: 13px; }
 .work-cell-in {
   width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
   background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px;
@@ -337,6 +340,7 @@
 }
 .work-cal-namehead { font-size: 12px; font-weight: 700; opacity: .7; }
 .work-cal-name-txt { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-cal-name-count { margin-left: auto; font-size: 11px; opacity: .55; }
 .work-cal-track { position: relative; display: flex; min-height: 40px; }
 .work-cal-daycell {
   flex: 0 0 auto; text-align: center; font-size: 11px; line-height: 28px; opacity: .6;
@@ -344,18 +348,18 @@
 }
 .work-cal-daycell.weekend { opacity: .35; }
 .work-cal-daycell.today { color: var(--accent); opacity: 1; font-weight: 800; }
-.work-cal-slot {
-  flex: 0 0 auto; padding: 0; background: transparent; border: none;
-  border-right: 1px solid rgba(127,127,127,.10); cursor: pointer;
+/* 생성자별 생성물 셀 — 그날 만든 컷 미니 썸네일 */
+.work-cal-gencell {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  border-right: 1px solid rgba(127,127,127,.10);
 }
-.work-cal-slot:hover { background: rgba(127,127,127,.08); }
-.work-cal-slot.weekend { background: rgba(127,127,127,.04); }
-.work-cal-slot.today { background: rgba(127,127,127,.07); }
-.work-cal-bar {
-  position: absolute; top: 7px; height: 24px; border-radius: 6px; display: flex; align-items: center;
-  padding: 0 8px; box-shadow: 0 1px 3px rgba(0,0,0,.3); pointer-events: none; overflow: hidden;
+.work-cal-gencell.weekend { background: rgba(127,127,127,.04); }
+.work-cal-gencell.today { background: rgba(127,127,127,.07); }
+.work-cal-gencell .work-cut { width: 34px; height: 34px; }
+.work-cal-gen-more {
+  position: absolute; right: 0; bottom: 0; font-size: 9px; line-height: 12px; padding: 0 3px;
+  background: rgba(0,0,0,.7); color: #fff; border-radius: 5px 0 0 0;
 }
-.work-cal-bar-txt { font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.35); }
 .work-cal-hint { font-size: 11px; opacity: .5; padding-left: 2px; }
 
 

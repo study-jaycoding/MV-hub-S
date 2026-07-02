@@ -1,10 +1,10 @@
-// 테이블 뷰 — Notion 데이터베이스식. 셀 인라인 편집(상태·시퀀스·작업명·마감·설명),
-// 컷 셀은 생성물 드롭 타깃, 생성자·크레딧·시간·코멘트는 읽기전용(파생).
+// 테이블 뷰 — Notion 데이터베이스식. 셀 인라인 편집(상태·시퀀스·마감·설명),
+// 컷 셀은 생성물 드롭 타깃, 작업명·생성자·크레딧·시간·코멘트는 읽기전용(파생).
 import { useT } from "../../lib/i18n";
 import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
-  STATUSES,
+  SELECTABLE_STATUSES,
   statusColor,
   statusText,
   type Task,
@@ -19,11 +19,11 @@ function fmtDur(sec?: number): string {
 }
 
 export function TableView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, disabled, onPatch, onDelete, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 토글 시 상태 라벨 리렌더
 
-  const commitText = (t: Task, key: "name" | "description", value: string) => {
-    if ((t[key] || "") !== value) onPatch(t.id, { [key]: value } as Partial<Task>);
+  const commitText = (t: Task, value: string) => {
+    if ((t.description || "") !== value) onPatch(t.id, { description: value });
   };
 
   return (
@@ -31,9 +31,9 @@ export function TableView(props: WorkViewProps) {
       <table className="manage-table work-table">
         <thead>
           <tr>
+            <th>작업명</th>
             <th>시퀀스</th>
             <th>생성물</th>
-            <th>작업명</th>
             <th>상태</th>
             <th>생성자</th>
             <th>마감일</th>
@@ -47,6 +47,12 @@ export function TableView(props: WorkViewProps) {
         <tbody>
           {tasks.map((t) => (
             <tr key={t.id}>
+              <td>
+                {/* 작업명 — 폴더 구조에서 받아온 정보라 읽기전용(수정 불필요). */}
+                <span className="work-name-static" title={t.folder_path || t.name}>
+                  {t.name}
+                </span>
+              </td>
               <td>
                 {t.folder_path ? (
                   // 폴더 자동 작업 — 시퀀스는 폴더명(2단계). 읽기전용.
@@ -78,17 +84,7 @@ export function TableView(props: WorkViewProps) {
                   if (gid) onLinkGen(t.id, gid);
                 }}
               >
-                <CutThumbs task={t} thumb={thumb} onUnlinkGen={onUnlinkGen} />
-              </td>
-              <td>
-                <input
-                  className="work-cell-in"
-                  defaultValue={t.name}
-                  onBlur={(e) => commitText(t, "name", e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  }}
-                />
+                <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
               </td>
               <td>
                 <span className="work-status-cell">
@@ -98,7 +94,7 @@ export function TableView(props: WorkViewProps) {
                     value={t.status}
                     onChange={(e) => onPatch(t.id, { status: e.target.value })}
                   >
-                    {STATUSES.map((s) => (
+                    {SELECTABLE_STATUSES.map((s) => (
                       <option key={s.v} value={s.v}>
                         {statusText(s)}
                       </option>
@@ -122,7 +118,7 @@ export function TableView(props: WorkViewProps) {
                   className="work-cell-in"
                   defaultValue={t.description || ""}
                   placeholder="설명"
-                  onBlur={(e) => commitText(t, "description", e.target.value)}
+                  onBlur={(e) => commitText(t, e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   }}

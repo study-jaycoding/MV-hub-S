@@ -1,21 +1,20 @@
-// 캘린더(타임라인) 뷰 — Notion 타임라인식. 왼쪽 작업명 + 가로 날짜축, 작업의
-// start_date~due_date 를 상태색 막대로 표시. 날짜 없는 작업은 날짜 칸 클릭으로 바로 배치(due_date).
-import { useState } from "react";
+// 캘린더(생성자별 활동) 뷰 — 왼쪽=생성자, 가로 날짜축. 그 생성자가 만든 생성물(컷)을 생성일에
+// 미니 썸네일로 표시한다(최종/공유/일반 테두리색, d 비활성화는 회색). 작업 타임라인이 아니라
+// "누가 언제 무엇을 만들었나"를 보는 뷰.
+import { useMemo, useState } from "react";
 import { useT } from "../../lib/i18n";
-import { statusColor, statusLabel, type Task, type WorkViewProps } from "./types";
+import { MediaThumbnail } from "../MediaThumbnail";
+import type { Cut, WorkViewProps } from "./types";
 
-const CELL = 36; // 하루 칸 너비(px)
+const CELL = 40; // 하루 칸 너비(px)
 
 function parseYMD(s?: string | null): { y: number; m: number; d: number } | null {
   if (!s) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   return m ? { y: +m[1], m: +m[2] - 1, d: +m[3] } : null;
 }
-function pad(n: number): string {
-  return String(n).padStart(2, "0");
-}
 
-export function CalendarView({ tasks, onPatch }: WorkViewProps) {
+export function CalendarView({ tasks, thumb, disabled }: WorkViewProps) {
   useT();
   const today = new Date();
   const [anchor, setAnchor] = useState({ y: today.getFullYear(), m: today.getMonth() });
@@ -30,28 +29,34 @@ export function CalendarView({ tasks, onPatch }: WorkViewProps) {
   const next = () => setAnchor((a) => (a.m === 11 ? { y: a.y + 1, m: 0 } : { y: a.y, m: a.m + 1 }));
   const goToday = () => setAnchor({ y: today.getFullYear(), m: today.getMonth() });
 
-  // 작업의 막대 위치(anchor 월과 교차하는 구간만). 날짜 없으면 null.
-  const barFor = (t: Task): { left: number; width: number } | null => {
-    const due = parseYMD(t.due_date);
-    const start = parseYMD(t.start_date) || due;
-    // 마감/시작일 없는 자동 작업은 연결 컷 최초 생성일(derived_date)로 단일 날짜 표시.
-    const fallback = !start && !due ? parseYMD(t.derived_date) : null;
-    const s = start || due || fallback;
-    const e = due || start || fallback;
-    if (!s || !e) return null;
-    const monthStart = new Date(anchor.y, anchor.m, 1).getTime();
-    const monthEnd = new Date(anchor.y, anchor.m, daysInMonth).getTime();
-    const sT = new Date(s.y, s.m, s.d).getTime();
-    const eT = new Date(e.y, e.m, e.d).getTime();
-    if (eT < monthStart || sT > monthEnd) return null; // 이 달과 안 겹침
-    const startDay = sT < monthStart ? 1 : s.d;
-    const endDay = eT > monthEnd ? daysInMonth : e.d;
-    return { left: (startDay - 1) * CELL, width: (endDay - startDay + 1) * CELL };
-  };
-
-  // 날짜 칸 클릭 → 그 날을 due_date 로(빠른 배치)
-  const setDay = (t: Task, d: number) =>
-    onPatch(t.id, { due_date: `${anchor.y}-${pad(anchor.m + 1)}-${pad(d)}` });
+  // 모든 작업의 컷을 생성자별로 모은다(중복 컷 id 제거 — 여러 작업에 걸칠 수 있음).
+  const creators = useMemo(() => {
+    const map = new Map<string, { name: string; cuts: Cut[]; seen: Set<string> }>();
+    for (const t of tasks) {
+      for (const c of t.cuts || []) {
+        const key = c.creator_uid || c.creator_name || "미상";
+        let e = map.get(key);
+        if (!e) {
+          e = { name: c.creator_name || "미상", cuts: [], seen: new Set() };
+          map.set(key, e);
+        }
+        if (!e.seen.has(c.id)) {
+          e.seen.add(c.id);
+          e.cuts.push(c);
+        }
+      }
+    }
+    // 생성자별로 이 달의 날짜(1..N) → 그날 만든 컷 목록으로 인덱싱.
+    return [...map.values()].map((e) => {
+      const byDay: Record<number, Cut[]> = {};
+      for (const c of e.cuts) {
+        const ymd = parseYMD(c.created_at);
+        if (!ymd || ymd.y !== anchor.y || ymd.m !== anchor.m) continue;
+        (byDay[ymd.d] ||= []).push(c);
+      }
+      return { name: e.name, byDay, total: e.cuts.length };
+    });
+  }, [tasks, anchor.y, anchor.m]);
 
   const trackWidth = daysInMonth * CELL;
 
@@ -76,7 +81,7 @@ export function CalendarView({ tasks, onPatch }: WorkViewProps) {
         <div className="work-cal-table">
           {/* 날짜 헤더 행 */}
           <div className="work-cal-row work-cal-headrow">
-            <div className="work-cal-name work-cal-namehead">Name</div>
+            <div className="work-cal-name work-cal-namehead">생성자</div>
             <div className="work-cal-track" style={{ width: trackWidth }}>
               {days.map((d) => (
                 <div
@@ -94,50 +99,54 @@ export function CalendarView({ tasks, onPatch }: WorkViewProps) {
             </div>
           </div>
 
-          {/* 작업 행 */}
-          {tasks.map((t) => {
-            const bar = barFor(t);
-            return (
-              <div key={t.id} className="work-cal-row">
-                <div className="work-cal-name" title={t.name}>
-                  <span className="status-dot" style={{ background: statusColor(t.status) }} />
-                  <span className="work-cal-name-txt">{t.name}</span>
-                </div>
-                <div className="work-cal-track" style={{ width: trackWidth }}>
-                  {days.map((d) => (
-                    <button
-                      key={d}
-                      className={
-                        "work-cal-slot" +
-                        (isToday(d) ? " today" : "") +
-                        (dow(d) === 0 || dow(d) === 6 ? " weekend" : "")
-                      }
-                      style={{ width: CELL }}
-                      title={`${anchor.m + 1}/${d} 로 마감 지정`}
-                      onClick={() => setDay(t, d)}
-                    />
-                  ))}
-                  {bar && (
-                    <div
-                      className="work-cal-bar"
-                      style={{
-                        left: bar.left,
-                        width: bar.width,
-                        background: statusColor(t.status),
-                      }}
-                      title={`${t.name} · ${statusLabel(t.status)}`}
-                    >
-                      <span className="work-cal-bar-txt">{t.name}</span>
-                    </div>
-                  )}
-                </div>
+          {/* 생성자 행 */}
+          {creators.map((cr) => (
+            <div key={cr.name} className="work-cal-row">
+              <div className="work-cal-name" title={cr.name}>
+                <span className="work-cal-name-txt">👤 {cr.name}</span>
+                <span className="work-cal-name-count">{cr.total}</span>
               </div>
-            );
-          })}
-          {!tasks.length && <div className="manage-empty">작업이 없습니다.</div>}
+              <div className="work-cal-track" style={{ width: trackWidth }}>
+                {days.map((d) => {
+                  const cuts = cr.byDay[d] || [];
+                  const first = cuts[0];
+                  const off = first ? disabled.has(first.id) : false;
+                  const cls =
+                    "work-cal-gencell" +
+                    (isToday(d) ? " today" : "") +
+                    (dow(d) === 0 || dow(d) === 6 ? " weekend" : "");
+                  return (
+                    <div key={d} className={cls} style={{ width: CELL }}>
+                      {first && (
+                        <span
+                          className={
+                            "work-cut" +
+                            (first.is_final ? " final" : first.shared ? " shared" : "") +
+                            (off ? " deactivated" : "")
+                          }
+                          title={`${cr.name} · ${anchor.m + 1}/${d} · ${cuts.length}개`}
+                        >
+                          <MediaThumbnail
+                            thumb={thumb(first.thumb)}
+                            isVideo={first.media_type === "video"}
+                            src={first.media_type === "video" ? first.file_path ?? undefined : undefined}
+                            fallback={<span className="work-cut-ph" />}
+                          />
+                          {cuts.length > 1 && (
+                            <span className="work-cal-gen-more">+{cuts.length - 1}</span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {!creators.length && <div className="manage-empty">생성물이 없습니다.</div>}
         </div>
       </div>
-      <div className="work-cal-hint">날짜 칸을 클릭하면 그 작업의 마감일이 지정됩니다.</div>
+      <div className="work-cal-hint">생성자별로 그날 만든 생성물이 표시됩니다(생성일 기준).</div>
     </div>
   );
 }
