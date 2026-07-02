@@ -29,3 +29,7 @@ release/*.zip
 # 테스트 소스 지정값(머신마다 다른 로컬 상태 — refresh 배치가 매 실행 시 다시 씀)
 # .example 만 추적하고 실제 파일은 각자 로컬에서 생성한다.
 pm_test_source_data.txt
+
+# 로컬 테스트 실행이 만드는 임시 폴더(비면 껍데기만 남는다 — 추적 안 함)
+/_pm_test_data/
+.tmp-*-test-data/
