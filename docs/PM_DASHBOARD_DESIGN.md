@@ -1,5 +1,8 @@
 # PM 대시보드 설계 (Project Management Dashboard)
 
+> ⚠️ **초기 설계 문서** — 착수 시점의 계획이며, 현재 구현과 다를 수 있다.
+> 실제 동작은 코드(backend/app/repo/manage.py, frontend/src/components/manage/)를 기준으로 판단할 것.
+
 > 작업자별·프로젝트별 **크레딧 사용량 / 제작시간 / 일정**을 한눈에 보는 관리 뷰.
 > 에셋 파트(Assets 분리창)와 동일한 **분리형 모듈** 패턴으로 만든다.
 
