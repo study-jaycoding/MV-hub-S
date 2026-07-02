@@ -94,13 +94,21 @@ export function TopBar({
       {/* Assets(구성) 버튼 — 분리된 브라우저 창으로 연다 */}
       <button className="assets-btn" onClick={onOpenAssets} title={t("Assets (구성) — 별도 창")}>
         <span className="assets-thumb" />
-        <span className="assets-label">Assets ⧉</span>
+        <span className="assets-label">Assets</span>
       </button>
 
-      {/* PM 대시보드(분리형) — 플래그 on(onOpenManage 전달) 일 때만 노출 */}
+      {/* PM 대시보드(분리형) — 플래그 on(onOpenManage 전달) 일 때만 노출. 보드 아이콘 버튼 */}
       {onOpenManage && (
-        <button className="assets-btn" onClick={onOpenManage} title={t("프로젝트 관리 — 별도 창")}>
-          <span className="assets-label">관리 ⧉</span>
+        <button
+          className="assets-btn manage-btn-icon"
+          onClick={onOpenManage}
+          title={t("프로젝트 관리 — 별도 창")}
+          aria-label={t("프로젝트 관리 — 별도 창")}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <rect x="2" y="2.5" width="4.6" height="11" rx="1.3" fill="currentColor" />
+            <rect x="9.4" y="2.5" width="4.6" height="7" rx="1.3" fill="currentColor" />
+          </svg>
         </button>
       )}
 

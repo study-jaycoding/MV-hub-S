@@ -352,6 +352,10 @@
 }
 .assets-thumb.sm { width: 20px; height: 16px; border-radius: 5px; }
 .assets-label { font-size: 13px; font-weight: 500; }
+/* 관리(PM) 아이콘 버튼 — 텍스트 없이 보드 아이콘만, 정사각형 */
+.manage-btn-icon { padding: 6px; justify-content: center; }
+.manage-btn-icon svg { display: block; opacity: 0.85; }
+.manage-btn-icon:hover svg { opacity: 1; }
 
 /* ── 본문 레이아웃 ── */
 .body { flex: 1; display: flex; min-height: 0; }
