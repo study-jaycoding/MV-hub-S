@@ -22,6 +22,8 @@ if "%HOST%"=="" set "HOST=0.0.0.0"
 if "%PORT%"=="" set "PORT=8010"
 REM Shared server: login required (each member signs in / publishes). Set 0 to disable.
 if "%CONTENT_HUB_AUTH%"=="" set "CONTENT_HUB_AUTH=1"
+REM Enable the PM / manage dashboard (board icon in the top bar). Set 0 to disable.
+if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
 
 if "%PYEXE%"=="" (
   if exist "%ROOT%runtime\python\python.exe" set "PYEXE=%ROOT%runtime\python\python.exe"
