@@ -293,6 +293,7 @@
 }
 .work-pop-clear:hover { border-color: var(--accent); }
 .work-proj-static { font-size: 12px; opacity: .8; }
+.work-seq-plain { font-size: 12px; opacity: .9; }
 
 /* 엑셀식 격자선 테이블 */
 .work-table-grid { border-collapse: collapse; }

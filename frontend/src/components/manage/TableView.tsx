@@ -124,8 +124,9 @@ export function TableView(props: WorkViewProps) {
                 </td>
                 <td>
                   {t.folder_path ? (
-                    <span className="work-seq-static" title={t.folder_path}>
-                      📁 {t.sequence || t.name}
+                    // 시퀀스도 프로젝트/에피소드처럼 평문 표시(칩 아님).
+                    <span className="work-seq-plain" title={t.folder_path}>
+                      {t.sequence || t.name}
                     </span>
                   ) : (
                     <select
@@ -156,10 +157,9 @@ export function TableView(props: WorkViewProps) {
                 </td>
                 <td className="work-creators">{t.creators?.join(", ") || "—"}</td>
                 <td>
-                  {/* 상태 — 컷에서 파생되므로 표시 전용. 색 원은 크게. */}
+                  {/* 상태 — 색 원만(글자 제거). hover 로 이름 확인. */}
                   <span className="work-status-cell" title={statusLabel(t.status)}>
                     <span className="status-dot lg" style={{ background: statusColor(t.status) }} />
-                    {statusLabel(t.status)}
                   </span>
                 </td>
                 <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
