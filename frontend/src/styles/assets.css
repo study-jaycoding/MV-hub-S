@@ -92,6 +92,8 @@
   border-radius: 9px;
 }
 .assets-search:focus-within { border-color: var(--border2); background: rgba(255,255,255,0.07); }
+/* 상단 헤더로 옮긴 검색바 — 헤더 폭에서 넓게(가운데 신축), 사이드바용 여백 제거 */
+.assets-view-head .assets-search { margin: 0; flex: 1; max-width: 420px; }
 /* 사이드바로 옮긴 프롬프트·태그 검색 — 사이드바 폭에 꽉 차게(상단 배치) */
 .sidebar .sidebar-search { margin: 0 0 12px; }
 .assets-search .as-icon { color: var(--muted2); font-size: 15px; }

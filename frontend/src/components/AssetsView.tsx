@@ -579,6 +579,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             </option>
           ))}
         </select>
+        {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체 */}
+        <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
+          <span className="as-icon">⌕</span>
+          <input
+            value={query}
+            placeholder="Search · Tag"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {query && (
+            <button className="as-clear" title={t("지우기")} onClick={() => setQuery("")}>
+              ✕
+            </button>
+          )}
+        </div>
         <span className="muted">{t("MV 라이브러리")}</span>
       </div>
 
@@ -592,13 +606,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       <div className="assets-body">
         <AssetsSidebar
           project={project}
-          query={query}
-          onQueryChange={setQuery}
           typeFilter={typeFilter}
           typeCounts={typeCounts}
           onTypeFilterChange={setTypeFilter}
           dir={dir}
-          searchActive={searchActive}
           onRoot={() => {
             setQuery("");
             setDir("");

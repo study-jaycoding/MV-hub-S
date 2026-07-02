@@ -79,9 +79,11 @@ export function filterAssetFiles({
   groupByDate: boolean;
 }): AssetNode[] {
   const q = query.trim();
-  let result: AssetNode[];
+  // 검색·필터는 현재 선택한 폴더(및 하위) 안에서만 — 폴더 미선택(루트)이면 프로젝트 전체.
+  // (이전에는 검색 시 항상 전체 프로젝트를 뒤졌다.)
+  const scope = dir ? findFolder(tree, dir) : tree;
+  let result = flattenFiles(scope);
   if (searchActive) {
-    result = flattenFiles(tree);
     if (q.startsWith("#")) {
       const tag = q.slice(1).toLowerCase();
       if (tag)
@@ -101,9 +103,6 @@ export function filterAssetFiles({
     if (commentOnly) result = result.filter((f) => meta[f.path]?.has_unread);
     if (activeTags.size)
       result = result.filter((f) => (meta[f.path]?.tags || []).some((t) => activeTags.has(t)));
-  } else {
-    const children = dir ? findFolder(tree, dir) : tree;
-    result = flattenFiles(children);
   }
 
   if (typeFilter) result = result.filter((f) => f.type === typeFilter);

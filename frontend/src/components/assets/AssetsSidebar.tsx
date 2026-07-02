@@ -10,13 +10,10 @@ const TYPE_ROWS: Array<[Exclude<AssetTypeFilter, null>, string, string]> = [
 
 export function AssetsSidebar({
   project,
-  query,
-  onQueryChange,
   typeFilter,
   typeCounts,
   onTypeFilterChange,
   dir,
-  searchActive,
   onRoot,
   loading,
   tree,
@@ -25,13 +22,10 @@ export function AssetsSidebar({
   onSelectDir,
 }: {
   project: string;
-  query: string;
-  onQueryChange: (value: string) => void;
   typeFilter: AssetTypeFilter;
   typeCounts: { image: number; video: number; audio: number };
   onTypeFilterChange: (value: AssetTypeFilter) => void;
   dir: string;
-  searchActive: boolean;
   onRoot: () => void;
   loading: boolean;
   tree: AssetNode[];
@@ -42,20 +36,6 @@ export function AssetsSidebar({
   const total = typeCounts.image + typeCounts.video + typeCounts.audio;
   return (
     <aside className="assets-tree">
-      <div className="assets-search">
-        <span className="as-icon">⌕</span>
-        <input
-          value={query}
-          placeholder="Search · Tag"
-          onChange={(e) => onQueryChange(e.target.value)}
-        />
-        {query && (
-          <button className="as-clear" title="지우기" onClick={() => onQueryChange("")}>
-            ✕
-          </button>
-        )}
-      </div>
-
       <div className="type-filter">
         <div
           className={"type-row type-all" + (!typeFilter ? " active" : "")}
@@ -88,8 +68,7 @@ export function AssetsSidebar({
       <button
         type="button"
         className={
-          "folder-tree-row root assets-root-row" +
-          (dir === "" && !searchActive ? " selected" : "")
+          "folder-tree-row root assets-root-row" + (dir === "" ? " selected" : "")
         }
         onClick={onRoot}
       >
@@ -102,7 +81,7 @@ export function AssetsSidebar({
       ) : (
         <FolderTree
           nodes={tree}
-          current={searchActive ? "" : dir}
+          current={dir}
           onSelect={onSelectDir}
           expanded={expanded}
           onToggle={onToggleDir}
