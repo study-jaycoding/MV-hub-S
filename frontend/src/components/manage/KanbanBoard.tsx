@@ -56,9 +56,24 @@ export function BoardView(props: WorkViewProps) {
               >
                 {/* 프로젝트(윗줄) · 에피소드+시퀀스(아랫줄), X 없음 */}
                 <div className="work-card-top">
-                  {t.project_name && (
+                  {(t.project_name || !!t.creators?.length) && (
                     <div className="kanban-card-projline">
-                      <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
+                      {t.project_name ? (
+                        <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
+                      ) : (
+                        <span />
+                      )}
+                      {!!t.creators?.length && (
+                        <span className="work-creators" title="생성자">
+                          👤{" "}
+                          {t.creators.map((c, i) => (
+                            <span key={c}>
+                              {i > 0 && " "}
+                              <ColorTag field="creator" value={c} colorMap={colorMap} />
+                            </span>
+                          ))}
+                        </span>
+                      )}
                     </div>
                   )}
                   <span className="kanban-card-name" title={t.folder_path || t.name}>
@@ -101,20 +116,6 @@ export function BoardView(props: WorkViewProps) {
                 >
                   <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </div>
-
-                {!!t.creators?.length && (
-                  <div className="work-card-row work-creators-row">
-                    <span className="work-creators" title="생성자">
-                      👤{" "}
-                      {t.creators.map((c, i) => (
-                        <span key={c}>
-                          {i > 0 && " "}
-                          <ColorTag field="creator" value={c} colorMap={colorMap} />
-                        </span>
-                      ))}
-                    </span>
-                  </div>
-                )}
 
                 <div className="work-card-meta">
                   {!!t.credits && <span title="크레딧">◆ {t.credits.toLocaleString()}</span>}
