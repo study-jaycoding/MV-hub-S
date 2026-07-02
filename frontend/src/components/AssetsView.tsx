@@ -579,12 +579,13 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             </option>
           ))}
         </select>
-        {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체 */}
+        <span className="muted">{t("MV 라이브러리")}</span>
+        {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
         <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
           <span className="as-icon">⌕</span>
           <input
             value={query}
-            placeholder="Search · Tag"
+            placeholder="Search"
             onChange={(e) => setQuery(e.target.value)}
           />
           {query && (
@@ -593,7 +594,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             </button>
           )}
         </div>
-        <span className="muted">{t("MV 라이브러리")}</span>
       </div>
 
       {mountOpen && (
