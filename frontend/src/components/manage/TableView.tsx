@@ -69,9 +69,9 @@ export function TableView(props: WorkViewProps) {
             <th>프로젝트</th>
             <th>에피소드</th>
             <th>시퀀스</th>
-            <th>상태</th>
             <th>생성물</th>
             <th>생성자</th>
+            <th>상태</th>
             <th>크레딧</th>
             <th>생성시간</th>
             <th>마감일</th>
@@ -142,13 +142,6 @@ export function TableView(props: WorkViewProps) {
                     </select>
                   )}
                 </td>
-                <td>
-                  {/* 상태 — 컷에서 파생되므로 표시 전용. 색 원은 크게. */}
-                  <span className="work-status-cell" title={statusLabel(t.status)}>
-                    <span className="status-dot lg" style={{ background: statusColor(t.status) }} />
-                    {statusLabel(t.status)}
-                  </span>
-                </td>
                 <td
                   className="work-cut-cell"
                   onDragOver={(e) => {
@@ -162,6 +155,13 @@ export function TableView(props: WorkViewProps) {
                   <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </td>
                 <td className="work-creators">{t.creators?.join(", ") || "—"}</td>
+                <td>
+                  {/* 상태 — 컷에서 파생되므로 표시 전용. 색 원은 크게. */}
+                  <span className="work-status-cell" title={statusLabel(t.status)}>
+                    <span className="status-dot lg" style={{ background: statusColor(t.status) }} />
+                    {statusLabel(t.status)}
+                  </span>
+                </td>
                 <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
                 <td>{fmtDur(t.elapsed)}</td>
                 <td>
