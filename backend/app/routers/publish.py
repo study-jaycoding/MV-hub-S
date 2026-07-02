@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from . import _proxy
 from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..deps import actor_id
 from ..repo import identity
 from ..services import agent_signals
 
@@ -366,8 +367,21 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
 
 
 @router.post("/publish-to-shared")
-def publish_to_shared(body: PublishToSharedIn):
-    """고른 생성물만 공유 서버로 발행. 기존 번들 직렬화(export_bundle)를 그대로 HTTP 전송.
+def publish_to_shared(body: PublishToSharedIn, request: Request):
+    """고른 생성물만 공유 서버로 발행.
+
+    - 로컬 허브(프록시 모드): 기존 번들 직렬화(export_bundle)를 공유 서버로 HTTP 전송.
+    - 서버 본체/단독/테스트(프록시 아님): 이미 이 DB에 있는 항목이므로 밖으로 밀지 않고
+      이 DB에 바로 공유 표식만 남긴다(외부 서버 로그인 불필요 → 로그인창으로 튀지 않음).
+      finalize 가 비프록시에서 로컬 repo.publish 로 처리하는 것과 동형.
     성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
+    if not _proxy.proxying():
+        published = 0
+        for gid in body.gen_ids or []:
+            gen = repo.get_generation(gid)
+            if gen and gen.get("status") == "done" and not gen.get("shared"):
+                repo.publish(gid, actor_id(request), "team")
+                published += 1
+        return {"ok": True, "published": published, "remote": {}}
     r = publish_bundle_to_server(body.gen_ids)
     return {"ok": True, **r}
