@@ -614,6 +614,25 @@ def asset_set_source(body: AssetSourceIn, request: Request):
     return {"ok": True}
 
 
+@router.post("/sources/relink")
+def relink_broken_sources(request: Request):
+    """원경로에서 사라진 내 Assets 소스를, 저장해둔 내용 지문(sha256)으로 같은 폴더를 뒤져 찾아
+    경로를 다시 잇는다(자가 치유). 필요할 때만 도는 일괄 작업 — 평소 파일 조회엔 스캔이 없다."""
+    owner = actor_id(request)
+    relinked = 0
+    for project, path in repo.list_source_metas(owner):
+        proj_dir = _safe_project_dir(project, request)
+        if not proj_dir:
+            continue
+        cur = _safe_resolve(proj_dir, path)
+        if cur and cur.is_file():
+            continue  # 원경로 정상 → 스캔·재연결 불필요
+        found = _resolve_asset_target(request, project, proj_dir, path)  # 지문 재매칭 + 경로 갱신
+        if found and found.is_file():
+            relinked += 1
+    return {"relinked": relinked}
+
+
 @router.post("/sources/prune")
 def prune_broken_sources(request: Request):
     """원본 파일을 찾을 수 없는(원경로에도 없고 내용 지문 재매칭도 실패한) 내 Assets 소스의
@@ -654,7 +673,7 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _resolve_asset_target(request, project, proj_dir, path)
+    target = _safe_resolve(proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     return FileResponse(target)
@@ -672,7 +691,7 @@ def get_thumb(
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _resolve_asset_target(request, project, proj_dir, path)
+    target = _safe_resolve(proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     if _media_type(target.name) != "image":

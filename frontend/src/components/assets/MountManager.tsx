@@ -18,6 +18,7 @@ export function MountManager({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [pruning, setPruning] = useState(false);
+  const [relinking, setRelinking] = useState(false);
   const [err, setErr] = useState("");
 
   const reload = () =>
@@ -47,6 +48,24 @@ export function MountManager({
       setErr(String(e).replace(/^Error:\s*/, ""));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const relink = async () => {
+    setRelinking(true);
+    setErr("");
+    try {
+      const r = await api.relinkBrokenSources();
+      onChanged();
+      window.alert(
+        r.relinked > 0
+          ? `다시 연결 완료: 깨진 소스 ${r.relinked}개를 찾아 이었습니다.`
+          : "다시 연결할 소스가 없습니다(모두 정상이거나 원본을 못 찾음).",
+      );
+    } catch (e) {
+      setErr(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setRelinking(false);
     }
   };
 
@@ -162,12 +181,18 @@ export function MountManager({
           </section>
 
           <section className="settings-section">
-            <h4>깨진 소스 정리</h4>
-            <button className="settings-action" onClick={prune} disabled={pruning}>
-              {pruning ? "정리 중…" : "파일 없는 소스 해제"}
-            </button>
+            <h4>깨진 소스 관리</h4>
+            <div className="mount-form-row">
+              <button className="settings-action" onClick={relink} disabled={relinking}>
+                {relinking ? "찾는 중…" : "깨진 파일 다시 연결"}
+              </button>
+              <button className="settings-action" onClick={prune} disabled={pruning}>
+                {pruning ? "정리 중…" : "파일 없는 소스 해제"}
+              </button>
+            </div>
             <p className="settings-hint">
-              원본 파일을 못 찾는 소스의 지정을 해제합니다. 파일이 있는 소스는 그대로 둡니다.
+              폴더가 바뀌었으면 <b>다시 연결</b>로 내용이 같은 파일을 찾아 잇습니다. 그래도 못 찾는
+              (원본을 지운) 소스는 <b>해제</b>로 정리합니다. 파일이 있는 소스는 건드리지 않습니다.
             </p>
           </section>
         </div>
