@@ -2,6 +2,7 @@
 import { jsonBody, jsonFetch } from "./http";
 import { pathPart, withQuery } from "./url";
 import type {
+  BreakdownData,
   ManageSummary,
   MatrixData,
   Planning,
@@ -39,11 +40,17 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
       { method: "DELETE" },
     ),
-  timeseries: (bucket: "day" | "week" = "day", projectId?: string) =>
+  timeseries: (bucket: "day" | "week" = "day", projectId?: string, creatorUid?: string) =>
     jsonFetch<TimePoint[]>(
-      withQuery("/api/manage/timeseries", { bucket, project_id: projectId }),
+      withQuery("/api/manage/timeseries", {
+        bucket,
+        project_id: projectId,
+        creator_uid: creatorUid,
+      }),
     ),
   matrix: () => jsonFetch<MatrixData>("/api/manage/matrix"),
+  breakdown: (projectId: string) =>
+    jsonFetch<BreakdownData>(withQuery("/api/manage/breakdown", { project_id: projectId })),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
   saveFinals: (projectId: string) =>
     jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals", { project_id: projectId }), {

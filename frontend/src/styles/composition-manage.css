@@ -116,6 +116,63 @@
 .manage-analytics-head { display: flex; align-items: center; justify-content: space-between; }
 .manage-proj-analytics { border-top: 2px solid var(--accent); }
 .manage-sub-h { font-size: 13px; font-weight: 700; opacity: .8; margin: 12px 0 6px; }
+.manage-sub-h2 { font-size: 12px; font-weight: 600; opacity: .7; margin: 10px 0 4px; }
+
+/* 세부 분석 — 도넛 */
+.donut-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donut { flex: 0 0 auto; transform: rotate(-90deg); }
+.donut-track { fill: none; stroke: rgba(255,255,255,.08); stroke-width: 14; }
+.donut-seg { fill: none; stroke-width: 14; cursor: pointer; transition: opacity .15s, stroke-width .15s; }
+.donut-seg:hover { stroke-width: 16; }
+.donut-seg.dim { opacity: .28; }
+.donut-center-n, .donut-center-l { transform: rotate(90deg); transform-origin: 60px 60px; text-anchor: middle; fill: var(--text, #eee); }
+.donut-center-n { font-size: 16px; font-weight: 700; }
+.donut-center-l { font-size: 8px; opacity: .5; }
+.donut-legend { list-style: none; margin: 0; padding: 0; flex: 1 1 220px; min-width: 200px; }
+.donut-leg { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.donut-leg:hover { background: rgba(255,255,255,.05); }
+.donut-leg.on { background: rgba(255,255,255,.09); }
+.donut-sw { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+.donut-leg-name { flex: 1; font-size: 13px; }
+.donut-leg-val { font-size: 13px; font-variant-numeric: tabular-nums; }
+.donut-leg-val em { opacity: .55; font-style: normal; font-size: 12px; }
+
+/* 퍼널 */
+.manage-worker-detail { border-left: 2px solid var(--accent); padding-left: 12px; margin: 10px 0; }
+.funnel { display: flex; flex-direction: column; gap: 5px; max-width: 460px; }
+.funnel-row { display: flex; align-items: center; gap: 8px; }
+.funnel-lbl { width: 34px; font-size: 12px; opacity: .7; }
+.funnel-track { flex: 1; height: 16px; background: rgba(255,255,255,.06); border-radius: 4px; overflow: hidden; }
+.funnel-bar { height: 100%; border-radius: 4px; transition: width .25s; }
+.funnel-bar.gen { background: #4b9de1; }
+.funnel-bar.pub { background: #3f9d6b; }
+.funnel-bar.done { background: #c79320; }
+.funnel-val { width: 70px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.funnel-pct { opacity: .55; font-style: normal; }
+
+/* 에피소드별 진척 */
+.ep-progress { display: flex; flex-direction: column; gap: 6px; }
+.ep-row { display: flex; align-items: center; gap: 10px; }
+.ep-name { width: 90px; font-size: 13px; font-weight: 600; }
+.ep-bars { flex: 1; display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: rgba(255,255,255,.05); }
+.ep-seg { display: block; }
+.ep-seg.gen { background: #4b9de1; }
+.ep-seg.pub { background: #3f9d6b; }
+.ep-seg.done { background: #c79320; }
+.ep-rest { background: transparent; }
+.ep-nums { width: 90px; text-align: right; font-size: 12px; opacity: .7; font-variant-numeric: tabular-nums; }
+.ep-legend { display: flex; gap: 14px; margin-top: 4px; font-size: 11px; opacity: .65; }
+.ep-legend span { display: flex; align-items: center; gap: 4px; }
+.ep-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.ep-dot.gen { background: #4b9de1; }
+.ep-dot.pub { background: #3f9d6b; }
+.ep-dot.done { background: #c79320; }
+
+/* 시퀀스 완료율 */
+.rate-cell { display: flex; align-items: center; gap: 8px; }
+.rate-track { flex: 1; min-width: 60px; height: 8px; background: rgba(255,255,255,.08); border-radius: 4px; overflow: hidden; }
+.rate-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.rate-pct { width: 38px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* 프로젝트 관리 오버레이(패널) */
 .manage-proj-overlay {

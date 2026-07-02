@@ -91,6 +91,23 @@ export interface MatrixData {
   cells: Record<string, Record<string, MatrixCell>>;
 }
 
+// 프로젝트 세부 분석 — (folder_path × 작업자)별 플랫 행
+export interface BreakdownRow {
+  folder_path: string;
+  episode: string; // 1단계 세그먼트(예 ep001), 미지정은 "(미지정)"
+  sequence: string; // 2단계 세그먼트(예 c0010), 없으면 ""
+  uid: string;
+  name: string;
+  count: number;
+  shared_count: number;
+  final_count: number;
+  credits: number;
+}
+
+export interface BreakdownData {
+  rows: BreakdownRow[];
+}
+
 // 드래그 dataTransfer 키 — 생성물(컷)을 작업에 드롭 연결
 export const GEN_MIME = DRAG_TYPES.generation;
 // 보드 카드 상태 이동 드래그 키
