@@ -323,9 +323,10 @@ class MountIn(BaseModel):
     path: str
 
 
-@router.get("/mounts")
-def list_mounts(request: Request):
-    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
+def _mounts_payload(request: Request) -> dict:
+    """마운트 목록 응답(수동 + 프로젝트 자동, 이름 중복 제거) — GET/POST/DELETE 공통.
+    셋이 같은 스키마를 돌려줘야 등록/삭제 직후와 새로고침 목록이 어긋나지 않는다
+    (auto 폴더가 사라졌다 되살아나 보이는 현상 방지)."""
     manual = [
         {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
         for m in _owner_mounts(actor_id(request))
@@ -337,6 +338,12 @@ def list_mounts(request: Request):
         if m["name"] not in names
     ]
     return {"mounts": manual + auto}
+
+
+@router.get("/mounts")
+def list_mounts(request: Request):
+    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
+    return _mounts_payload(request)
 
 
 @router.post("/mounts", dependencies=[Depends(_require_mount_manager)])
@@ -359,13 +366,7 @@ def add_mount(body: MountIn, request: Request):
     mounts = [m for m in _load_mounts() if not (m["name"] == name and m.get("owner", "") == owner)]
     mounts.append({"name": name, "path": str(p), "owner": owner})
     _save_mounts(mounts)
-    return {
-        "mounts": [
-            {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
-            for m in mounts
-            if m.get("owner", "") == owner
-        ]
-    }
+    return _mounts_payload(request)
 
 
 @router.delete("/mounts/{name}", dependencies=[Depends(_require_mount_manager)])
@@ -374,13 +375,7 @@ def del_mount(name: str, request: Request):
     owner = actor_id(request)
     mounts = [m for m in _load_mounts() if not (m["name"] == name and m.get("owner", "") == owner)]
     _save_mounts(mounts)
-    return {
-        "mounts": [
-            {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
-            for m in mounts
-            if m.get("owner", "") == owner
-        ]
-    }
+    return _mounts_payload(request)
 
 
 @router.get("/tree")
