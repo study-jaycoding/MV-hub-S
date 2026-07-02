@@ -1,6 +1,7 @@
 param(
     [string]$Version = (Get-Date -Format "yyyy.MM.dd-HHmm"),
     [string]$OutputDir = (Join-Path $PSScriptRoot "packages"),
+    [string]$PublishDir = "",
     [string]$PythonExe = "",
     [string]$NodeRoot = "",
     [string]$HiggsfieldRoot = "",
@@ -274,4 +275,32 @@ Write-Host "Release ready:"
 Write-Host "  $ZipPath"
 Write-Host "  $LatestPath"
 Write-Host ""
-Write-Host "Upload latest.json and the zip file to your company server packages folder."
+
+# ── Auto-publish to the server packages folder (optional) ──────────────────
+# Destination comes from -PublishDir, else from publish_target.txt (machine-local,
+# git-ignored). If set and reachable, copy the zip FIRST and latest.json LAST so a
+# worker never sees a latest.json that points to a not-yet-copied zip.
+$PublishTarget = $PublishDir
+if (-not $PublishTarget) {
+    $TargetFile = Join-Path $PSScriptRoot "publish_target.txt"
+    if (Test-Path -LiteralPath $TargetFile) {
+        $PublishTarget = (Get-Content -LiteralPath $TargetFile -Raw).Trim()
+    }
+}
+if (-not $PublishTarget) {
+    Write-Host "Upload latest.json and the zip file to your company server packages folder."
+    Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
+}
+elseif ($PublishTarget -match "^https?://") {
+    Write-Host "[publish] '$PublishTarget' is an http URL - auto-copy not supported. Upload manually."
+}
+elseif (-not (Test-Path -LiteralPath $PublishTarget)) {
+    Write-Host "[publish] target folder not found: $PublishTarget"
+    Write-Host "          Check the network drive / permissions, or copy the two files manually."
+}
+else {
+    Write-Host "[publish] copying to server: $PublishTarget"
+    Copy-Item -LiteralPath $ZipPath -Destination $PublishTarget -Force
+    Copy-Item -LiteralPath $LatestPath -Destination $PublishTarget -Force
+    Write-Host "[publish] done - team can now update via update_release.bat."
+}

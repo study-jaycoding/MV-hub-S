@@ -25,6 +25,8 @@ frontend/*.tsbuildinfo
 release/packages/
 release/_staging/
 release/*.zip
+# 배포 대상 서버 경로(머신별 로컬 — .example 만 추적)
+release/publish_target.txt
 
 # 테스트 실행이 만드는 임시 폴더(비면 껍데기만 남는다 — 추적 안 함)
 /_pm_test_data/

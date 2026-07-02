@@ -19,6 +19,18 @@ release\packages\
   MVHub-<버전>.zip
 ```
 
+### 서버로 자동 복사
+
+`release\publish_target.txt`에 서버 `packages` 폴더 경로가 있으면, `make_release.bat`이 빌드 후
+**zip과 latest.json을 그 폴더로 자동 복사**합니다(수동 복사 불필요). latest.json을 맨 나중에 복사해
+작업자가 배포 중간본을 받는 일이 없습니다. 경로 파일이 없으면 기존처럼 수동 안내만 뜹니다.
+
+```text
+release\publish_target.txt   ← 예: Z:\mvutil\MV_hub_S\packages  (머신별 로컬, git 제외)
+```
+
+처음 한 번 `publish_target.txt.example`을 복사해 자기 서버 경로를 넣어두면 됩니다.
+
 zip 안에는 실행에 필요한 portable runtime과 로컬 업데이트 파일이 같이 들어갑니다.
 
 ```text
@@ -78,8 +90,8 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 
 ## 업데이트 흐름
 
-1. 관리자가 `make_release.bat`로 새 zip 생성
-2. 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 복사
+1. 관리자가 `make_release.bat`로 새 zip 생성 (→ `publish_target.txt` 설정 시 서버 `packages`로 자동 복사)
+2. (자동 복사 안 쓰면) 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 수동 복사
 3. 작업자는 로컬 `Desktop\MV-hub-S\update_release.bat` 실행
 4. 버전이 다르면 자동 다운로드/검증/설치
 5. 업데이트 후 필요할 때 `MV_agent.bat` 실행
