@@ -364,40 +364,49 @@ def import_bundle_item(
         "asset": item.get("asset"),
         "references": item.get("references") or [],
     }
-    result = generations.upsert_synced_generation(parsed, worker_id)
-    # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
+    # item 전체(fact upsert + overlay 병합)를 한 트랜잭션으로 — upsert 성공 후 overlay 중 실패해도
+    # 반쪽(fact 만 있고 overlay 빠짐)이 남지 않게. 내부 함수라 wrapper 가 아닌 _upsert_synced(conn)
+    # 를 직접 호출해 중첩 BEGIN 을 피한다(오버레이 헬퍼는 모두 conn 참여형).
     with get_connection() as conn:
-        gid = _find_id_by_job(conn, job_id)
-        if gid:
-            dp = g.get("display_prompt")
-            if dp:
-                conn.execute(
-                    "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
-                    (dp, gid),
-                )
-            pid = g.get("project_id")
-            if pid:  # 프로젝트 귀속 보존 — 기존 배정은 침범 않게 COALESCE(서버 finalize 게이트용)
-                conn.execute(
-                    "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
-                    (pid, gid),
-                )
-            if folder_path:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
-                conn.execute(
-                    "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
-                    (folder_path, gid),
-                )
-            tags._add_tags(conn, gid, item.get("tags") or [])
-            tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
-            _merge_comments(conn, gid, item.get("comments") or [])
-            # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
-            # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
-            if shared_by and shared_by != DEFAULT_WORKER_ID:
-                conn.execute(
-                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
-                    "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
-                    (new_id(), gid, shared_by, "team"),
-                )
-    return result
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = generations._upsert_synced(conn, parsed, worker_id)
+            # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
+            gid = _find_id_by_job(conn, job_id)
+            if gid:
+                dp = g.get("display_prompt")
+                if dp:
+                    conn.execute(
+                        "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
+                        (dp, gid),
+                    )
+                pid = g.get("project_id")
+                if pid:  # 프로젝트 귀속 보존 — 기존 배정은 침범 않게 COALESCE(서버 finalize 게이트용)
+                    conn.execute(
+                        "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
+                        (pid, gid),
+                    )
+                if folder_path:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
+                    conn.execute(
+                        "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
+                        (folder_path, gid),
+                    )
+                tags._add_tags(conn, gid, item.get("tags") or [])
+                tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
+                _merge_comments(conn, gid, item.get("comments") or [])
+                # 받은 공유 표식 — 제공자를 발신자로 한 share 행 1개(멱등·race-safe: UNIQUE(generation_id)
+                # + ON CONFLICT DO NOTHING. 동시 import 두 개가 같은 gid 를 처리해도 IntegrityError 없이 통과).
+                if shared_by and shared_by != DEFAULT_WORKER_ID:
+                    conn.execute(
+                        "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                        "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
+                        (new_id(), gid, shared_by, "team"),
+                    )
+            conn.execute("COMMIT")
+            return result
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def import_bundle_payload(
