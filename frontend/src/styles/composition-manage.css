@@ -98,6 +98,13 @@
 .manage-refresh:hover { border-color: var(--accent); color: var(--accent); }
 .manage-refresh:disabled { opacity: .5; cursor: default; }
 .manage-head-actions { display: flex; align-items: center; gap: 8px; }
+.manage-icon-btn {
+  font-family: inherit; border: 1px solid var(--border); background: transparent; color: var(--text);
+  border-radius: 8px; width: 34px; height: 34px; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 17px; line-height: 1; cursor: pointer;
+}
+.manage-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.manage-icon-btn:disabled { opacity: .5; cursor: default; }
 .manage-create { border-color: var(--accent); color: var(--accent); font-weight: 700; }
 
 /* 프로젝트 관리 오버레이(패널) */

@@ -120,12 +120,21 @@ export function ProjectDashboard() {
         <h1>프로젝트 관리</h1>
         <div className="manage-head-actions">
           {canManageProjects && (
-            <button className="manage-refresh manage-create" onClick={() => setShowPanel(true)}>
-              ＋ 프로젝트
+            <button
+              className="manage-icon-btn manage-create"
+              onClick={() => setShowPanel(true)}
+              title="프로젝트 관리"
+            >
+              ＋
             </button>
           )}
-          <button className="manage-refresh" onClick={load} disabled={loading}>
-            {loading ? "…" : "새로고침"}
+          <button
+            className="manage-icon-btn"
+            onClick={load}
+            disabled={loading}
+            title="새로고침"
+          >
+            {loading ? "…" : "↻"}
           </button>
         </div>
       </header>
@@ -239,7 +248,6 @@ export function ProjectDashboard() {
               <tr>
                 <th>워크스페이스</th>
                 <th>플랜</th>
-                <th>역할</th>
                 <th>잔여 크레딧</th>
               </tr>
             </thead>
@@ -248,7 +256,6 @@ export function ProjectDashboard() {
                 <tr key={w.id}>
                   <td className="manage-name">{w.name}</td>
                   <td>{w.plan_type ?? "—"}</td>
-                  <td>{w.user_role ?? "—"}</td>
                   <td>{w.credits != null ? fmtCredits(w.credits) : "—"}</td>
                 </tr>
               ))}
@@ -257,36 +264,6 @@ export function ProjectDashboard() {
         </section>
       )}
 
-      <section className="manage-section">
-        <h2>작업자별</h2>
-        <table className="manage-table">
-          <thead>
-            <tr>
-              <th>작업자</th>
-              <th>생성</th>
-              <th>크레딧</th>
-              <th>제작시간</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.workers.map((w) => (
-              <tr key={w.uid ?? "none"}>
-                <td className="manage-name">{w.name}</td>
-                <td>{w.gen_count}</td>
-                <td>{fmtCredits(w.credits)}</td>
-                <td>{fmtDur(w.elapsed_total)}</td>
-              </tr>
-            ))}
-            {!data.workers.length && (
-              <tr>
-                <td colSpan={4} className="manage-empty-row">
-                  데이터 없음
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
 
       <footer className="manage-foot">
         ※ 크레딧은 실제 차감액(거래 매칭) 우선, 미매칭은 견적. 제작시간은 허브 생성물의 AI 생성
