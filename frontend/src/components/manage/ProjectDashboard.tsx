@@ -159,6 +159,7 @@ export function ProjectDashboard() {
             <tr>
               <th>프로젝트</th>
               <th>생성</th>
+              <th>게시</th>
               <th>완료</th>
               <th>크레딧</th>
               <th>예산</th>
@@ -175,7 +176,8 @@ export function ProjectDashboard() {
                 <tr key={p.pid ?? "none"}>
                   <td className="manage-name">{p.name}</td>
                   <td>{p.gen_count}</td>
-                  <td>{p.done_count}</td>
+                  <td>{p.shared_count}</td>
+                  <td>{p.final_count}</td>
                   <td>{fmtCredits(p.credits)}</td>
                   <td className={over ? "manage-over" : ""}>
                     {budget != null ? `${fmtCredits(p.credits)}/${fmtCredits(budget)}` : "—"}
@@ -199,38 +201,7 @@ export function ProjectDashboard() {
             })}
             {!data.projects.length && (
               <tr>
-                <td colSpan={8} className="manage-empty-row">
-                  데이터 없음
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="manage-section">
-        <h2>작업자별</h2>
-        <table className="manage-table">
-          <thead>
-            <tr>
-              <th>작업자</th>
-              <th>생성</th>
-              <th>크레딧</th>
-              <th>제작시간</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.workers.map((w) => (
-              <tr key={w.uid ?? "none"}>
-                <td className="manage-name">{w.name}</td>
-                <td>{w.gen_count}</td>
-                <td>{fmtCredits(w.credits)}</td>
-                <td>{fmtDur(w.elapsed_total)}</td>
-              </tr>
-            ))}
-            {!data.workers.length && (
-              <tr>
-                <td colSpan={4} className="manage-empty-row">
+                <td colSpan={9} className="manage-empty-row">
                   데이터 없음
                 </td>
               </tr>
@@ -264,6 +235,37 @@ export function ProjectDashboard() {
           </table>
         </section>
       )}
+
+      <section className="manage-section">
+        <h2>작업자별</h2>
+        <table className="manage-table">
+          <thead>
+            <tr>
+              <th>작업자</th>
+              <th>생성</th>
+              <th>크레딧</th>
+              <th>제작시간</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.workers.map((w) => (
+              <tr key={w.uid ?? "none"}>
+                <td className="manage-name">{w.name}</td>
+                <td>{w.gen_count}</td>
+                <td>{fmtCredits(w.credits)}</td>
+                <td>{fmtDur(w.elapsed_total)}</td>
+              </tr>
+            ))}
+            {!data.workers.length && (
+              <tr>
+                <td colSpan={4} className="manage-empty-row">
+                  데이터 없음
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
 
       <footer className="manage-foot">
         ※ 크레딧은 실제 차감액(거래 매칭) 우선, 미매칭은 견적. 제작시간은 허브 생성물의 AI 생성

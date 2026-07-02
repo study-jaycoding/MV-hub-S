@@ -208,6 +208,9 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
             """SELECT g.project_id AS pid, p.name AS name,
                       COUNT(*) AS gen_count,
                       SUM(CASE WHEN g.status='done' THEN 1 ELSE 0 END) AS done_count,
+                      SUM(CASE WHEN g.is_final=1 THEN 1 ELSE 0 END) AS final_count,
+                      SUM(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id)
+                               THEN 1 ELSE 0 END) AS shared_count,
                       COALESCE(SUM(m.real_credits), 0) AS real_credits,
                       COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
                       COUNT(m.gen_id) AS metric_count,
@@ -284,6 +287,8 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
             "name": rp["name"] or pid,
             "gen_count": s["gen_count"] if s else 0,
             "done_count": s["done_count"] if s else 0,
+            "shared_count": s["shared_count"] if s else 0,
+            "final_count": s["final_count"] if s else 0,
             "real_credits": s["real_credits"] if s else 0,
             "credits": s["credits"] if s else 0,
             "metric_count": s["metric_count"] if s else 0,

@@ -31,6 +31,8 @@ export interface ManageProject {
   name: string;
   gen_count: number;
   done_count: number;
+  shared_count: number; // 게시(공유)된 생성물 수
+  final_count: number; // 완료(최종선택·골드) 생성물 수
   real_credits: number;
   credits: number; // COALESCE(실제, 견적)
   metric_count: number;
