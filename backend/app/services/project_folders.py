@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .path_safety import safe_join
 from ..repo import manage as repo_manage
 
 
@@ -39,12 +40,7 @@ def safe_dest(render: Path, folder_path: str, filename: str) -> Path | None:
         return None
     if not filename or "/" in filename or "\\" in filename or ".." in filename:
         return None
-    dest = (render / Path(*segs) / filename).resolve()
-    try:
-        dest.relative_to(render)
-    except ValueError:
-        return None
-    return dest
+    return safe_join(render, Path(*segs) / filename)
 
 
 def render_root(root: Path) -> Path | None:

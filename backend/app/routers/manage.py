@@ -29,6 +29,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..services import cli_bridge, media_cache, project_folders
+from ..services.path_safety import safe_join
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
 
@@ -282,7 +283,6 @@ async def save_finals(project_id: str, request: Request):
     render = Path(render_path)
 
     finals = repo_manage.finals_to_export(project_id)
-    media_root = MEDIA_DIR.resolve()
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     for f in finals:
@@ -312,10 +312,8 @@ async def save_finals(project_id: str, request: Request):
                 errors.append({"gen_id": gen_id, "reason": "원본 다운로드 실패"})
                 continue
             # 원본도 MEDIA_DIR 밖으로 나가지 못하게 검증(코덱스 #3 — /media/../.. 방어).
-            src = (MEDIA_DIR / rel.removeprefix("/media/")).resolve()
-            try:
-                src.relative_to(media_root)
-            except ValueError:
+            src = safe_join(MEDIA_DIR, rel.removeprefix("/media/"))
+            if src is None:
                 errors.append({"gen_id": gen_id, "reason": "원본 경로 안전성 위반"})
                 continue
             if not src.exists():

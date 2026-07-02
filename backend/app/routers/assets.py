@@ -41,6 +41,7 @@ from ..services.media_types import asset_media_type
 from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request
 from ..services import thumbs
+from ..services.path_safety import safe_join
 
 
 def _require_mount_manager(request: Request) -> None:
@@ -249,12 +250,7 @@ def _safe_project_dir(project: str, request: Request) -> Optional[Path]:
 
 
 def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
-    cand = (project_dir / rel).resolve()
-    try:
-        cand.relative_to(project_dir)
-    except ValueError:
-        return None
-    return cand
+    return safe_join(project_dir, rel)  # 경로 이탈 차단은 공용 path_safety.safe_join 으로 단일화
 
 
 def _index_by_sha(

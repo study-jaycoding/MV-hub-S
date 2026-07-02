@@ -14,6 +14,7 @@ from typing import Optional
 
 from ..config import MEDIA_DIR
 from .media_types import IMAGE_EXTENSIONS
+from .path_safety import safe_join
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
 
@@ -49,12 +50,7 @@ def _media_target(rel_or_media_path: str) -> Optional[Path]:
     """'/media/<2>/<sha>.ext' → 안전한 절대경로(경로 이탈 차단). 아니면 None."""
     if not rel_or_media_path.startswith("/media/") or "\\" in rel_or_media_path:
         return None
-    try:
-        target = (MEDIA_DIR / rel_or_media_path[len("/media/"):]).resolve()
-        target.relative_to(MEDIA_DIR.resolve())
-    except (ValueError, OSError):
-        return None
-    return target
+    return safe_join(MEDIA_DIR, rel_or_media_path[len("/media/"):])
 
 
 def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:

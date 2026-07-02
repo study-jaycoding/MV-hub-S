@@ -62,6 +62,7 @@ from .routers import (
 from .services import auth as auth_svc
 from .services.backup import periodic_backup
 from .services.request_guards import is_loopback_host
+from .services.path_safety import safe_join
 from .services.syncer import periodic_sync
 from .ws import manager
 
@@ -392,13 +393,9 @@ if FRONTEND_DIST.is_dir():
         알 수 없는 /api·/ws·/media 요청은 200(index.html)으로 삼키지 않고 404 로."""
         if full_path.startswith(("api/", "ws", "media/")):
             raise HTTPException(status_code=404, detail="Not Found")
-        candidate = (FRONTEND_DIST / full_path).resolve()
-        # 경로 탈출 방지: dist 바깥을 가리키면 거부
-        if (
-            full_path
-            and candidate.is_file()
-            and str(candidate).startswith(str(FRONTEND_DIST))
-        ):
+        # 경로 탈출 방지: dist 바깥을 가리키면 거부(문자열 prefix 대신 safe_join=relative_to 검증)
+        candidate = safe_join(FRONTEND_DIST, full_path)
+        if candidate and candidate.is_file():
             return FileResponse(str(candidate))
         # index.html 은 캐시 금지 — 빌드 때 바뀐 해시 자산(특히 CSS)을 가리키는데, 브라우저가
         # 옛 index.html 을 캐시하면 지워진 옛 CSS 를 요청해 404 → 디자인 깨짐(자산은 해시라 영구캐시 OK).
