@@ -614,6 +614,22 @@ def asset_set_source(body: AssetSourceIn, request: Request):
     return {"ok": True}
 
 
+@router.post("/sources/prune")
+def prune_broken_sources(request: Request):
+    """원본 파일을 찾을 수 없는(원경로에도 없고 내용 지문 재매칭도 실패한) 내 Assets 소스의
+    소스 지정을 해제한다(is_source=0). 파일이 실제로 있는 소스는 건드리지 않으며, 태그·컬러 등
+    다른 메타와 행 자체는 보존한다."""
+    owner = actor_id(request)
+    pruned: list[str] = []
+    for project, path in repo.list_source_metas(owner):
+        proj_dir = _safe_project_dir(project, request)
+        target = _resolve_asset_target(request, project, proj_dir, path) if proj_dir else None
+        if not target or not target.is_file():
+            repo.set_asset_source(project, path, None, False, owner)
+            pruned.append(f"{project}/{path}")
+    return {"pruned": len(pruned), "items": pruned}
+
+
 @router.put("/tags")
 def asset_set_tags(body: AssetTagsIn, request: Request):
     repo.set_asset_tags(body.project, body.path, body.tags, actor_id(request))

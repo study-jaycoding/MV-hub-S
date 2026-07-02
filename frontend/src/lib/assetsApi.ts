@@ -31,6 +31,12 @@ export const assetsApi = {
       method: "DELETE",
     }),
 
+  // 파일을 못 찾는 소스(깨진 소스)의 소스 지정 해제 — 파일 있는 소스는 그대로 둔다.
+  pruneBrokenSources: () =>
+    jsonFetch<{ pruned: number; items: string[] }>("/api/assets/sources/prune", {
+      method: "POST",
+    }),
+
   assetTree: (project: string) => jsonFetch<AssetTree>(assetTreeUrl(project)),
 
   // 파일 URL (원본/미리보기). 프록시를 통해 백엔드가 서빙.

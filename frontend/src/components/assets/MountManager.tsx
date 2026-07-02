@@ -17,6 +17,7 @@ export function MountManager({
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pruning, setPruning] = useState(false);
   const [err, setErr] = useState("");
 
   const reload = () =>
@@ -46,6 +47,26 @@ export function MountManager({
       setErr(String(e).replace(/^Error:\s*/, ""));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const prune = async () => {
+    if (
+      !window.confirm(
+        "원본 파일을 못 찾는 소스의 지정을 해제합니다. 파일이 있는 소스는 그대로 둡니다. 진행할까요?",
+      )
+    )
+      return;
+    setPruning(true);
+    setErr("");
+    try {
+      const r = await api.pruneBrokenSources();
+      onChanged();
+      window.alert(`정리 완료: 깨진 소스 ${r.pruned}개의 지정을 해제했습니다.`);
+    } catch (e) {
+      setErr(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setPruning(false);
     }
   };
 
@@ -138,6 +159,16 @@ export function MountManager({
                 ))}
               </ul>
             )}
+          </section>
+
+          <section className="settings-section">
+            <h4>깨진 소스 정리</h4>
+            <button className="settings-action" onClick={prune} disabled={pruning}>
+              {pruning ? "정리 중…" : "파일 없는 소스 해제"}
+            </button>
+            <p className="settings-hint">
+              원본 파일을 못 찾는 소스의 지정을 해제합니다. 파일이 있는 소스는 그대로 둡니다.
+            </p>
           </section>
         </div>
       </div>

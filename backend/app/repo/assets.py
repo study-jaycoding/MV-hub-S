@@ -328,6 +328,16 @@ def set_asset_source(
             )
 
 
+def list_source_metas(owner_uid: str = "") -> list[tuple[str, str]]:
+    """내(owner_uid) Assets 소스(is_source=1)의 (project, path) 목록 — 깨진 소스 정리용."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT project, path FROM asset_meta WHERE is_source=1 AND owner_uid=?",
+            (owner_uid,),
+        ).fetchall()
+    return [(r["project"], r["path"]) for r in rows]
+
+
 def get_asset_content_sha(project: str, path: str, owner_uid: str = "") -> Optional[str]:
     with get_connection() as conn:
         row = conn.execute(
