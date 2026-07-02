@@ -305,7 +305,12 @@ def _ensure_asset_meta(
 
 
 def set_asset_source(
-    project: str, path: str, name: Optional[str], is_source: bool, owner_uid: str = ""
+    project: str,
+    path: str,
+    name: Optional[str],
+    is_source: bool,
+    owner_uid: str = "",
+    content_sha: Optional[str] = None,
 ) -> None:
     with get_connection() as conn:
         _ensure_asset_meta(conn, project, path, owner_uid)
@@ -314,6 +319,57 @@ def set_asset_source(
             "WHERE project=? AND path=? AND owner_uid=?",
             (1 if is_source else 0, (name or None) if is_source else None, project, path, owner_uid),
         )
+        # 소스로 켤 때 파일 내용 지문(sha256)도 기록 — 폴더 이동/개명으로 원경로가 어긋나도
+        # 같은 내용의 파일을 다시 찾아 잇기 위한 것. 해제(is_source=0) 시엔 건드리지 않는다.
+        if is_source and content_sha:
+            conn.execute(
+                "UPDATE asset_meta SET content_sha=? WHERE project=? AND path=? AND owner_uid=?",
+                (content_sha, project, path, owner_uid),
+            )
+
+
+def get_asset_content_sha(project: str, path: str, owner_uid: str = "") -> Optional[str]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT content_sha FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+            (project, path, owner_uid),
+        ).fetchone()
+    return row["content_sha"] if row and row["content_sha"] else None
+
+
+def relink_asset_path(project: str, old_path: str, new_path: str, owner_uid: str = "") -> None:
+    """소스 파일을 새 경로에서 찾으면 asset_meta 의 path 를 갱신(자가 치유).
+    새 경로 행이 이미 있으면(그 파일에 태그·컬러만 달아둔 경우 등) 그 행을 지우지 않고
+    소스 필드(is_source·source_name·content_sha)만 병합해 PK 충돌을 피하면서 소스를 보존한다."""
+    if old_path == new_path:
+        return
+    with get_connection() as conn:
+        old = conn.execute(
+            "SELECT is_source, source_name, content_sha FROM asset_meta "
+            "WHERE project=? AND path=? AND owner_uid=?",
+            (project, old_path, owner_uid),
+        ).fetchone()
+        if not old:
+            return
+        exists = conn.execute(
+            "SELECT 1 FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+            (project, new_path, owner_uid),
+        ).fetchone()
+        if exists:
+            conn.execute(
+                "UPDATE asset_meta SET is_source=?, source_name=?, content_sha=? "
+                "WHERE project=? AND path=? AND owner_uid=?",
+                (old["is_source"], old["source_name"], old["content_sha"], project, new_path, owner_uid),
+            )
+            conn.execute(
+                "DELETE FROM asset_meta WHERE project=? AND path=? AND owner_uid=?",
+                (project, old_path, owner_uid),
+            )
+        else:
+            conn.execute(
+                "UPDATE asset_meta SET path=? WHERE project=? AND path=? AND owner_uid=?",
+                (new_path, project, old_path, owner_uid),
+            )
 
 
 def set_asset_tags(project: str, path: str, tags: list[str], owner_uid: str = "") -> None:

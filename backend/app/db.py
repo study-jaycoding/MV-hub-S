@@ -486,6 +486,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+    # content_sha: 파일 내용 지문. 소스 파일이 폴더 이동/개명으로 원경로에서 사라져도 같은 내용을
+    # 다시 찾아 잇기 위한 컬럼(위 재구성 후일 수 있으니 현재 컬럼을 다시 조회해 판단).
+    am_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(asset_meta)")}
+    if "content_sha" not in am_cols2:
+        conn.execute("ALTER TABLE asset_meta ADD COLUMN content_sha TEXT")
     # v02 히스토리 타입드 엣지 — 'derived'(재생성/가져오기·강한 1-부모) / 'reference'(@소스 생성·약한 다-부모)
     # (테이블명 lineage→history 리네임은 _pre_migrate 가 executescript 이전에 처리 → 여기선 history 보장)
     hist_cols = {row[1] for row in conn.execute("PRAGMA table_info(history)")}

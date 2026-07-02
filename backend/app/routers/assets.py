@@ -247,6 +247,56 @@ def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
     return cand
 
 
+def _find_media_by_sha(project_dir: Path, sha: str, limit: int = 5000) -> Optional[Path]:
+    """폴더 안 미디어 파일 중 내용 지문(sha256)이 일치하는 첫 파일 — 폴더 이동/개명 자가 치유용.
+    원경로에서 소스 파일을 못 찾았을 때만 호출된다(정상 조회엔 스캔 없음)."""
+    count = 0
+    try:
+        for p in project_dir.rglob("*"):
+            if not p.is_file() or _hidden(p.name) or not _media_type(p.name):
+                continue
+            # symlink 등으로 폴더 밖을 가리키는 파일 차단 — 해시 계산 전에 실제 경로가
+            # project_dir 안인지 검증(_safe_resolve 와 동일한 보안 모델).
+            try:
+                rp = p.resolve()
+                rp.relative_to(project_dir)
+            except (OSError, ValueError):
+                continue
+            count += 1
+            if count > limit:
+                break
+            if _sha256_file(rp) == sha:
+                return rp
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_asset_target(
+    request: Request, project: str, project_dir: Path, path: str
+) -> Optional[Path]:
+    """소스 파일의 실제 경로 해석. 원경로에 있으면 그대로 쓰고, 없으면 저장해둔 내용 지문으로
+    같은 폴더를 뒤져 찾은 뒤 asset_meta 의 경로를 자동 갱신(자가 치유)한다."""
+    target = _safe_resolve(project_dir, path)
+    if target and target.is_file():
+        return target
+    # 원경로 실패 → 내용 지문으로 재매칭(지문이 기록된 소스만 가능)
+    owner = actor_id(request)
+    sha = repo.get_asset_content_sha(project, path, owner)
+    if not sha:
+        return target
+    found = _find_media_by_sha(project_dir, sha)
+    if not found:
+        return None
+    try:
+        new_rel = found.relative_to(project_dir).as_posix()
+    except ValueError:
+        return None
+    if new_rel != path:
+        repo.relink_asset_path(project, path, new_rel, owner)
+    return found
+
+
 def _hidden(name: str) -> bool:
     # 시스템/ledger 파일·placeholder 숨김 (PV 와 동일한 취지)
     return hidden_folder(name) or name.lower() == "readme.md"
@@ -551,7 +601,16 @@ def read_comments(body: CommentReadIn, request: Request):
 @router.put("/source")
 def asset_set_source(body: AssetSourceIn, request: Request):
     # 에셋 메타는 계정별 개인화 — 내(actor_id) 설정만 만들고 바꾼다(남의 것과 안 섞임).
-    repo.set_asset_source(body.project, body.path, body.name, body.is_source, actor_id(request))
+    # 소스로 켤 때 파일 내용 지문(sha256)을 함께 기록해, 이후 폴더가 바뀌어도 재매칭되게 한다.
+    content_sha: Optional[str] = None
+    if body.is_source:
+        proj_dir = _safe_project_dir(body.project, request)
+        target = _safe_resolve(proj_dir, body.path) if proj_dir else None
+        if target and target.is_file():
+            content_sha = _sha256_file(target)
+    repo.set_asset_source(
+        body.project, body.path, body.name, body.is_source, actor_id(request), content_sha
+    )
     return {"ok": True}
 
 
@@ -579,7 +638,7 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _resolve_asset_target(request, project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     return FileResponse(target)
@@ -597,7 +656,7 @@ def get_thumb(
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _resolve_asset_target(request, project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     if _media_type(target.name) != "image":

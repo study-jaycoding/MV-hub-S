@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS asset_meta (
     tags        TEXT,                              -- JSON 배열 문자열
     comment     TEXT,
     color       TEXT,
+    content_sha TEXT,                              -- 파일 내용 지문(sha256). 폴더/파일명 바뀌어도 소스 재매칭용
     PRIMARY KEY (project, path, owner_uid)
 );
 
