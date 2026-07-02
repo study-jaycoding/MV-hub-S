@@ -1,6 +1,6 @@
 # 테스트 실행 가이드
 
-테스트용 런처는 파일명 앞에 **`TEST_`**가 붙는다. 나머지 `MV_server.bat`·`MV_agent.bat` 등은 운영/실사용이다.
+테스트용 런처는 파일명 앞에 **`test_`**가 붙는다. 나머지 `MV_server.bat`·`MV_agent.bat` 등은 운영/실사용이다.
 테스트는 서버의 **테스트 클론**에서 8011 포트 + 복사된 DB로 돌아가며, 운영(8010)과 데이터가 분리된다.
 
 ## 런처 한눈에 보기
@@ -12,6 +12,22 @@
 | `test_open.bat` | 내 PC | 브라우저로 `http://<서버IP>:8011` 열기 (아무것도 실행 안 함, URL만 엶) |
 
 참고 — 운영(테스트 아님): `MV_server.bat`(공유 서버 8010), `MV_agent.bat`(각 PC 로컬 허브), `update*.bat`.
+
+## 테스트 클론 최초 만들기 (서버에서, git)
+
+테스트 클론은 **`backend frontend tools` 3개**를 sparse-checkout 해야 한다.
+`tools/`가 빠지면 `test_refresh-db.bat`이 쓰는 `tools\refresh_pm_test_data.py`가 없어 DB 복사가 실패한다.
+(worker용 `setup_clone_git.bat`은 tools가 필요없어 `backend frontend`만 받으므로, 테스트 클론은 별도로 tools를 포함해야 한다.)
+
+```powershell
+cd E:\
+git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git MV-hub-test2
+cd E:\MV-hub-test2
+git sparse-checkout set backend frontend tools
+git checkout feature/pm-dashboard
+```
+
+이후 업데이트는 그 폴더에서 `git pull` 한 줄.
 
 ## 표준 순서 (서버에서)
 
