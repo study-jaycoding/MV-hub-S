@@ -255,7 +255,15 @@ def upsert_synced_generation(parsed: dict[str, Any], worker_id: str) -> str:
     재동기는 멱등. 기존 사용자 메타(태그/컬러/display_prompt/명명 레퍼런스)는 보존한다.
     여러 건을 한 번에 처리할 땐 apply_synced_jobs(한 트랜잭션·fsync 1회)를 쓴다."""
     with get_connection() as conn:
-        return _upsert_synced(conn, parsed, worker_id)
+        # generation + asset 캐시 + reference 링크를 한 트랜잭션으로 — 중간 실패 시 반쪽 데이터 방지.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = _upsert_synced(conn, parsed, worker_id)
+            conn.execute("COMMIT")
+            return result
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, int]:
@@ -266,29 +274,33 @@ def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, i
     ⚠️ 동기 블로킹 — 호출측(syncer.sync_now)이 asyncio.to_thread 로 워커 스레드에서 돌린다."""
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "errors": 0}
     with get_connection() as conn:
-        conn.execute("BEGIN")  # 명시적 트랜잭션 — 전체 묶음을 1회 커밋(컨텍스트가 COMMIT)
-        for parsed in jobs:
-            # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
-            # 견고성 + 성능 둘 다: 여전히 커밋(fsync)은 마지막 1회.
-            conn.execute("SAVEPOINT j")
-            try:
-                counts[_upsert_synced(conn, parsed, worker_id)] += 1
-            except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
-                conn.execute("ROLLBACK TO j")
-                counts["errors"] += 1
-                print(f"[sync] 잡 1건 건너뜀: {e}")
-            finally:
-                conn.execute("RELEASE j")
-        ids = [
-            p["generation"]["id"]
-            for p in jobs
-            if p.get("generation") and p["generation"].get("id")
-        ]
-        if ids:
-            ph = ",".join("?" * len(ids))
-            conn.execute(
-                f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", ids
-            )
+        conn.execute("BEGIN IMMEDIATE")  # 전체 묶음을 1회 커밋(fsync 1회) + 즉시 쓰기락
+        try:
+            for parsed in jobs:
+                # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
+                conn.execute("SAVEPOINT j")
+                try:
+                    counts[_upsert_synced(conn, parsed, worker_id)] += 1
+                except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
+                    conn.execute("ROLLBACK TO j")
+                    counts["errors"] += 1
+                    print(f"[sync] 잡 1건 건너뜀: {e}")
+                finally:
+                    conn.execute("RELEASE j")
+            ids = [
+                p["generation"]["id"]
+                for p in jobs
+                if p.get("generation") and p["generation"].get("id")
+            ]
+            if ids:
+                ph = ",".join("?" * len(ids))
+                conn.execute(
+                    f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", ids
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return counts
 
 
@@ -308,45 +320,53 @@ def create_local_generation(
     # 로그인 계정이면 그 계정 uid, 아니면 제공자 my_uid(없으면 NULL → 단독 사용자 취급).
     my_uid = creator_uid or identity.get_my_uid()
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
-            (
-                gen_id,
-                worker_id,
-                data["prompt"],
-                data.get("display_prompt"),
-                data.get("model"),
-                json.dumps(data.get("params") or {}, ensure_ascii=False),
-                data.get("color"),
-                time.time(),  # 정렬키 — 동기화되면 힉스필드 정밀 epoch 으로 갱신됨
-                data.get("project_id"),  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
-                _clean_folder_path(data.get("folder_path")),  # 무장 폴더(렌더 루트 상대 경로)
-                my_uid,  # 내 생성자 신원(있으면) — 로컬 생성물 = 내 작업
-            ),
-        )
-        tags._set_tags(conn, gen_id, data.get("tags") or [])
-        tags._set_auto_tags(conn, gen_id, data.get("auto_tags") or [])
-        src_gen_ids: set[str] = set()
-        for ref in data.get("references") or []:
-            rid = _upsert_reference(
-                conn,
-                ref_id=None,
-                type_=ref.get("type", "image"),
-                file_path=ref["file_path"],
-                thumbnail_path=ref.get("thumbnail"),  # 표시용(에셋 소스 썸네일)
-                source=ref.get("name") or "uploaded",  # 칩 이름(@소스명) — 인라인 칩 복원 키
-                source_url=ref.get("source_url"),
+        # generation + 태그 + 레퍼런스 + 히스토리 엣지를 한 트랜잭션으로 — 중간 실패 시
+        # generation 만 있고 태그·레퍼런스·계보가 빠진 반쪽 데이터가 생기지 않게.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO generation"
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
+                (
+                    gen_id,
+                    worker_id,
+                    data["prompt"],
+                    data.get("display_prompt"),
+                    data.get("model"),
+                    json.dumps(data.get("params") or {}, ensure_ascii=False),
+                    data.get("color"),
+                    time.time(),  # 정렬키 — 동기화되면 힉스필드 정밀 epoch 으로 갱신됨
+                    data.get("project_id"),  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
+                    _clean_folder_path(data.get("folder_path")),  # 무장 폴더(렌더 루트 상대 경로)
+                    my_uid,  # 내 생성자 신원(있으면) — 로컬 생성물 = 내 작업
+                ),
             )
-            _link_reference(conn, gen_id, rid, ref.get("role"))
-            sgid = ref.get("source_gen_id")
-            if sgid and sgid != gen_id:
-                src_gen_ids.add(sgid)
-        # @소스로 만든 결과물 → 그 소스를 부모로 한 'reference' 엣지(provenance). 멱등.
-        for sgid in src_gen_ids:
-            _record_history(conn, sgid, gen_id, "reference")
-    return gen_id
+            tags._set_tags(conn, gen_id, data.get("tags") or [])
+            tags._set_auto_tags(conn, gen_id, data.get("auto_tags") or [])
+            src_gen_ids: set[str] = set()
+            for ref in data.get("references") or []:
+                rid = _upsert_reference(
+                    conn,
+                    ref_id=None,
+                    type_=ref.get("type", "image"),
+                    file_path=ref["file_path"],
+                    thumbnail_path=ref.get("thumbnail"),  # 표시용(에셋 소스 썸네일)
+                    source=ref.get("name") or "uploaded",  # 칩 이름(@소스명) — 인라인 칩 복원 키
+                    source_url=ref.get("source_url"),
+                )
+                _link_reference(conn, gen_id, rid, ref.get("role"))
+                sgid = ref.get("source_gen_id")
+                if sgid and sgid != gen_id:
+                    src_gen_ids.add(sgid)
+            # @소스로 만든 결과물 → 그 소스를 부모로 한 'reference' 엣지(provenance). 멱등.
+            for sgid in src_gen_ids:
+                _record_history(conn, sgid, gen_id, "reference")
+            conn.execute("COMMIT")
+            return gen_id
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _record_history(
@@ -896,61 +916,68 @@ def import_generation(
     DESIGN.md §3-6/7, CLAUDE.md 원칙 3·4. 새 gen_id 반환.
     creator_uid: 로그인 계정 신원(있으면 그 계정 작업으로 귀속). 없으면 제공자 my_uid 폴백.
     """
+    # 내 신원 해석은 트랜잭션 전에 — identity.get_my_uid()가 내부에서 커넥션을 열 수 있어
+    # BEGIN IMMEDIATE 안에서 부르면 중첩/별도 커넥션 문제가 된다.
+    my_uid = creator_uid or identity.get_my_uid()
     with get_connection() as conn:
-        src = conn.execute(
-            "SELECT prompt, display_prompt, model, params, color, project_id, folder_path "
-            "FROM generation WHERE id=?",
-            (source_gen_id,),
-        ).fetchone()
-        if not src:
-            raise ValueError(f"원본 generation 없음: {source_gen_id}")
+        # 자식 generation + 레퍼런스·태그 복제 + 계보 엣지를 한 트랜잭션으로(반쪽 복제 방지).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            src = conn.execute(
+                "SELECT prompt, display_prompt, model, params, color, project_id, folder_path "
+                "FROM generation WHERE id=?",
+                (source_gen_id,),
+            ).fetchone()
+            if not src:
+                raise ValueError(f"원본 generation 없음: {source_gen_id}")
 
-        child_id = new_id()
-        # 재생성·가져오기 모두 '내 워크스페이스에 내가 새로 만드는' 자식 → 내 신원으로 귀속
-        # (pending 상태에서 팀원으로 오표시되지 않게). 로그인 계정이면 그 계정 uid 로.
-        my_uid = creator_uid or identity.get_my_uid()
-        conn.execute(
-            "INSERT INTO generation"
-            "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-            "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
-            (
-                child_id,
-                worker_id,
-                src["prompt"],
-                src["display_prompt"],  # @소스명 위치 보존 → 인라인 칩 정상 표시
-                src["model"],
-                src["params"],
-                src["color"],
-                time.time(),  # 재생성/임포트 직후 맨 위에 보이게(완료 시 힉스필드 시각으로 갱신)
-                src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
-                src["folder_path"],  # 재생성본은 부모와 같은 폴더에 귀속(일관성)
-                my_uid,  # 내 생성자 신원 — 자식은 내 작업
-            ),
-        )
-        # 레퍼런스 연결 복제(원본 reference 레코드는 공유)
-        refs = conn.execute(
-            "SELECT reference_id, role FROM gen_reference WHERE generation_id=?",
-            (source_gen_id,),
-        ).fetchall()
-        for r in refs:
-            _link_reference(conn, child_id, r["reference_id"], r["role"])
-        # 태그 복제
-        tag_rows = conn.execute(
-            "SELECT t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
-            "WHERE gt.generation_id=?",
-            (source_gen_id,),
-        ).fetchall()
-        tags._set_tags(conn, child_id, [t["name"] for t in tag_rows])
-        # 자동 태그 복제(일반 태그와 동일하게 — 재생성 시 부모 자동태그 유지)
-        auto = conn.execute(
-            "SELECT at.name FROM gen_auto_tag gat JOIN auto_tag at ON at.id=gat.auto_tag_id "
-            "WHERE gat.generation_id=?",
-            (source_gen_id,),
-        ).fetchall()
-        tags._set_auto_tags(conn, child_id, [a["name"] for a in auto])
-        # history 기록 — 재생성/가져오기는 '강한' 파생(derived)
-        _record_history(conn, source_gen_id, child_id, "derived")
-    return child_id
+            child_id = new_id()
+            conn.execute(
+                "INSERT INTO generation"
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
+                (
+                    child_id,
+                    worker_id,
+                    src["prompt"],
+                    src["display_prompt"],  # @소스명 위치 보존 → 인라인 칩 정상 표시
+                    src["model"],
+                    src["params"],
+                    src["color"],
+                    time.time(),  # 재생성/임포트 직후 맨 위에 보이게(완료 시 힉스필드 시각으로 갱신)
+                    src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
+                    src["folder_path"],  # 재생성본은 부모와 같은 폴더에 귀속(일관성)
+                    my_uid,  # 내 생성자 신원 — 자식은 내 작업
+                ),
+            )
+            # 레퍼런스 연결 복제(원본 reference 레코드는 공유)
+            refs = conn.execute(
+                "SELECT reference_id, role FROM gen_reference WHERE generation_id=?",
+                (source_gen_id,),
+            ).fetchall()
+            for r in refs:
+                _link_reference(conn, child_id, r["reference_id"], r["role"])
+            # 태그 복제
+            tag_rows = conn.execute(
+                "SELECT t.name FROM gen_tag gt JOIN tag t ON t.id=gt.tag_id "
+                "WHERE gt.generation_id=?",
+                (source_gen_id,),
+            ).fetchall()
+            tags._set_tags(conn, child_id, [t["name"] for t in tag_rows])
+            # 자동 태그 복제(일반 태그와 동일하게 — 재생성 시 부모 자동태그 유지)
+            auto = conn.execute(
+                "SELECT at.name FROM gen_auto_tag gat JOIN auto_tag at ON at.id=gat.auto_tag_id "
+                "WHERE gat.generation_id=?",
+                (source_gen_id,),
+            ).fetchall()
+            tags._set_auto_tags(conn, child_id, [a["name"] for a in auto])
+            # history 기록 — 재생성/가져오기는 '강한' 파생(derived)
+            _record_history(conn, source_gen_id, child_id, "derived")
+            conn.execute("COMMIT")
+            return child_id
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 # ── 조회 / 직렬화 ────────────────────────────────────────────────────────
