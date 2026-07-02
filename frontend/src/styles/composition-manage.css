@@ -353,8 +353,9 @@
 .kanban-col.drop { border-color: var(--accent); background: rgba(127,127,127,.04); }
 .work-card { cursor: grab; }
 .work-card:active { cursor: grabbing; }
-.work-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.work-card-top { display: flex; flex-direction: column; gap: 5px; }
 .work-card-top .kanban-card-name { flex: 1; }
+.kanban-card-projline { display: flex; } /* 프로젝트는 윗줄 단독 */
 .work-card-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
 .work-creators-row { justify-content: flex-end; } /* 생성자는 컷 아래 우측 정렬 */
 .work-seq, .work-cell-sel {

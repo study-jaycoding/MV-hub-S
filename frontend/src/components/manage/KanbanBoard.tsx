@@ -54,12 +54,14 @@ export function BoardView(props: WorkViewProps) {
                   e.dataTransfer.effectAllowed = "move";
                 }}
               >
-                {/* 프로젝트 · 에피소드 · 시퀀스 한 줄(구분자 없음, X 없음) */}
+                {/* 프로젝트(윗줄) · 에피소드+시퀀스(아랫줄), X 없음 */}
                 <div className="work-card-top">
-                  <span className="kanban-card-name" title={t.folder_path || t.name}>
-                    {t.project_name && (
+                  {t.project_name && (
+                    <div className="kanban-card-projline">
                       <ColorTag field="project" value={t.project_name} colorMap={colorMap} />
-                    )}
+                    </div>
+                  )}
+                  <span className="kanban-card-name" title={t.folder_path || t.name}>
                     <ColorTag field="episode" value={t.name} colorMap={colorMap} />
                     {t.folder_path ? (
                       <ColorTag
