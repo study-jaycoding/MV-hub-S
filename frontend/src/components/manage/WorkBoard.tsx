@@ -71,7 +71,7 @@ export function WorkBoard() {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
-  const [view, setView] = useState<"board" | "table" | "calendar">("board");
+  const [view, setView] = useState<"board" | "table" | "calendar">("table");
   const [filters, setFilters] = useState<WorkFilters>(emptyWorkFilters);
   const [err, setErr] = useState<string | null>(null);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
@@ -267,11 +267,11 @@ export function WorkBoard() {
         <h1>작업</h1>
         <div className="work-head-ctl">
           <div className="manage-toggles">
-            <button className={view === "board" ? "on" : ""} onClick={() => setView("board")}>
-              보드
-            </button>
             <button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>
               테이블
+            </button>
+            <button className={view === "board" ? "on" : ""} onClick={() => setView("board")}>
+              보드
             </button>
             <button
               className={view === "calendar" ? "on" : ""}
