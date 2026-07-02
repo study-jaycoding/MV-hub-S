@@ -101,14 +101,21 @@ export function HistoryBoard({
   // S 버튼 확인 플로팅(공유/해제 단일클릭 · 최종 더블클릭) — 보드 단위 1개만 열림.
   const [sConfirm, setSConfirm] = useState<{ id: string; kind: "share" | "final" } | null>(null);
   const sClick = useClickSeparation(220); // 단일(공유)/더블(최종) 분리
-  const onNodeSClick = (g: Generation) => {
+  // 노드에 넘기는 S 핸들러를 안정 참조로 고정(빈 deps useCallback, 최신 값은 ref 로 읽음) —
+  // HistoryBoardNode(memo)가 마퀴 드래그(setSelected 매 프레임) 중 불필요하게 재렌더되지 않게.
+  const cbRef = useRef({ sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize });
+  cbRef.current = { sClick, canFinalize, onPublish, onUnpublish, onFinalize, onUnfinalize };
+  const sConfirmRef = useRef(sConfirm);
+  sConfirmRef.current = sConfirm;
+  const onNodeSClick = useCallback((g: Generation) => {
     if (!g.is_mine) return; // 공유/해제는 본인 것만
-    sClick.onClick(() => {
+    cbRef.current.sClick.onClick(() => {
       if (g.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
       setSConfirm({ id: g.id, kind: "share" });
     });
-  };
-  const onNodeSDouble = (g: Generation) =>
+  }, []);
+  const onNodeSDouble = useCallback((g: Generation) => {
+    const { sClick, canFinalize, onPublish } = cbRef.current;
     sClick.onDouble(() => {
       const may = canFinalize ? canFinalize(g) : true;
       if (!may) {
@@ -119,13 +126,16 @@ export function HistoryBoard({
       if (g.shared || g.is_final) setSConfirm({ id: g.id, kind: "final" });
       else onPublish(g);
     });
-  const onNodeSConfirmYes = (g: Generation) => {
-    const c = sConfirm;
+  }, []);
+  const onNodeSConfirmYes = useCallback((g: Generation) => {
+    const c = sConfirmRef.current;
     setSConfirm(null);
     if (!c) return;
+    const { onFinalize, onUnfinalize, onPublish, onUnpublish } = cbRef.current;
     if (c.kind === "final") g.is_final ? onUnfinalize(g) : onFinalize(g);
     else g.shared ? onUnpublish(g) : onPublish(g);
-  };
+  }, []);
+  const onNodeSConfirmNo = useCallback(() => setSConfirm(null), []);
 
   // 진입(focusId)이 바뀌면 선택을 비운다 — 테두리(선택 표시)는 오직 수동 선택에만 켜지고,
   // 아무것도 선택 안 했을 땐 포커스 카드를 중심으로 한 '연결된 라인'만 굵게 표현한다.
@@ -554,7 +564,7 @@ export function HistoryBoard({
                   onSClick={onNodeSClick}
                   onSDouble={onNodeSDouble}
                   onSConfirmYes={onNodeSConfirmYes}
-                  onSConfirmNo={() => setSConfirm(null)}
+                  onSConfirmNo={onNodeSConfirmNo}
                   onPreview={onPreview}
                   onInfo={onInfo}
                   onRegenerate={onRegenerate}

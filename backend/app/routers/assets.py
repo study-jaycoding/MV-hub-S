@@ -22,7 +22,6 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -35,13 +34,13 @@ from ..config import (
     DEFAULT_PROJECT,
     DEFAULT_WORKER_ID,
     MANAGE_ENABLED,
-    MEDIA_DIR,
 )
 from ..db import get_connection
 from ..deps import account_global_roles, account_scope_uid, actor_id
 from ..services.media_types import asset_media_type
 from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request
+from ..services import thumbs
 
 
 def _require_mount_manager(request: Request) -> None:
@@ -68,7 +67,6 @@ def _require_local_assets(request: Request) -> None:
     if AUTH_ENABLED:
         require_loopback_request(request, "Assets 파일 기능은 로컬 허브에서만 사용할 수 있습니다")
 
-_THUMB_DIR = MEDIA_DIR / ".thumbs"  # 썸네일 디스크 캐시
 
 
 def _mounts_file() -> Path:
@@ -714,19 +712,11 @@ def get_thumb(
         raise HTTPException(status_code=404, detail="파일 없음")
     if _media_type(target.name) != "image":
         raise HTTPException(status_code=415, detail="썸네일은 이미지만 지원")
-
-    mtime = int(target.stat().st_mtime)
-    key = hashlib.sha1(f"{target}|{mtime}|{w}".encode("utf-8")).hexdigest()
-    _THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    cache = _THUMB_DIR / f"{key}.jpg"
-    if not cache.exists():
-        try:
-            with Image.open(target) as im:
-                im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
-                im.thumbnail((w, w), Image.LANCZOS)
-                im.save(cache, "JPEG", quality=82)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"썸네일 생성 실패: {e}")
+    # 썸네일 생성·캐시키는 thumbs 서비스로 단일화 — 엔드포인트와 pre-warm 이 같은 키를 써야
+    # 미리 구운 캐시를 엔드포인트가 읽는다(예전엔 여기서 별도 재구현해 계약이 갈릴 위험이 있었다).
+    cache = thumbs.ensure_thumb(target, w)
+    if not cache:
+        raise HTTPException(status_code=500, detail="썸네일 생성 실패")
     return FileResponse(cache, media_type="image/jpeg")
 
 

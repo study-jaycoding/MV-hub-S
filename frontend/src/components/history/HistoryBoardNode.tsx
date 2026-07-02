@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { download, downloadName } from "../../lib/download";
@@ -35,7 +36,7 @@ interface Props {
   onRegenerate: (generation: Generation) => void;
 }
 
-export function HistoryBoardNode({
+export const HistoryBoardNode = memo(function HistoryBoardNode({
   generation,
   x,
   y,
@@ -247,4 +248,4 @@ export function HistoryBoardNode({
       )}
     </div>
   );
-}
+});

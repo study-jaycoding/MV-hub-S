@@ -209,8 +209,7 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                       COUNT(*) AS gen_count,
                       SUM(CASE WHEN g.status='done' THEN 1 ELSE 0 END) AS done_count,
                       SUM(CASE WHEN g.is_final=1 THEN 1 ELSE 0 END) AS final_count,
-                      SUM(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id)
-                               THEN 1 ELSE 0 END) AS shared_count,
+                      SUM(CASE WHEN s.generation_id IS NOT NULL THEN 1 ELSE 0 END) AS shared_count,
                       COALESCE(SUM(m.real_credits), 0) AS real_credits,
                       COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
                       COUNT(m.gen_id) AS metric_count,
@@ -218,6 +217,7 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                FROM generation g
                LEFT JOIN project p ON p.id = g.project_id
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
+               LEFT JOIN share s ON s.generation_id = g.id
                WHERE g.deleted_at IS NULL
                GROUP BY g.project_id
                ORDER BY gen_count DESC"""
@@ -249,8 +249,11 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
         per_gen = conn.execute(
             """SELECT g.project_id AS pid, g.model AS model,
                       json_extract(g.params, '$.duration') AS duration,
-                      (SELECT a.type FROM asset a WHERE a.generation_id = g.id LIMIT 1) AS asset_type
+                      a.type AS asset_type
                FROM generation g
+               LEFT JOIN (
+                   SELECT generation_id, MIN(type) AS type FROM asset GROUP BY generation_id
+               ) a ON a.generation_id = g.id
                WHERE g.deleted_at IS NULL"""
         ).fetchall()
         # 환불·지급 — credit_txn 의 action 별 합(절대값). spend 는 실매칭으로 이미 잡힘.
