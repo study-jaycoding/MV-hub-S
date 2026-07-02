@@ -119,8 +119,8 @@ export const STATUSES: StatusDef[] = [
   { v: "not_started", ko: "시작 전", en: "Not started", color: "#9aa0a6", group: "할 일" },
   { v: "pending", ko: "대기", en: "Pending", color: "#c2557a", group: "진행 중" },
   { v: "in_progress", ko: "진행", en: "In progress", color: "#3b7bd4", group: "진행 중" },
-  { v: "publish", ko: "게시", en: "Publish", color: "#c79320", group: "진행 중" },
-  { v: "done", ko: "완료", en: "Done", color: "#3f9d6b", group: "완료" },
+  { v: "publish", ko: "게시", en: "Publish", color: "#3f9d6b", group: "진행 중" },
+  { v: "done", ko: "완료", en: "Done", color: "#c79320", group: "완료" },
   { v: "omit", ko: "생략", en: "Omit", color: "#787c82", group: "완료" },
 ];
 export function statusDef(v?: string | null): StatusDef | undefined {
