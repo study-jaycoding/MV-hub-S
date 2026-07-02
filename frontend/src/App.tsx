@@ -61,6 +61,13 @@ import type {
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
 
+// 3색(빨강·초록·파랑) 필터 도트 — 툴바 여러 곳에 같은 값이라 모듈 상수로(매 렌더 배열 재생성 제거).
+const COLOR_DOTS = [
+  { k: "r", hex: KEY_COLORS.r },
+  { k: "g", hex: KEY_COLORS.g },
+  { k: "b", hex: KEY_COLORS.b },
+];
+
 export default function App() {
   const [filters, setFilters] = useState<Filters>(() => {
     return LS.loadJSON<Filters>("filters") ?? { tab: "my" };
@@ -499,11 +506,7 @@ export default function App() {
               loading={loading}
               failedCount={failedCount}
               onClearFailed={clearFailed}
-              colorDots={[
-                { k: "r", hex: KEY_COLORS.r },
-                { k: "g", hex: KEY_COLORS.g },
-                { k: "b", hex: KEY_COLORS.b },
-              ]}
+              colorDots={COLOR_DOTS}
               colorFilter={colorFilter}
               onToggleColor={toggleColorFilter}
               sharedOnly={sharedOnly}
@@ -558,11 +561,7 @@ export default function App() {
                 facets={facets}
                 filters={filters}
                 onChange={patch}
-                colorDots={[
-                  { k: "r", hex: KEY_COLORS.r },
-                  { k: "g", hex: KEY_COLORS.g },
-                  { k: "b", hex: KEY_COLORS.b },
-                ]}
+                colorDots={COLOR_DOTS}
                 colorFilter={colorFilter}
                 onToggleColor={toggleColorFilter}
                 finalOnly={finalOnly}
@@ -609,11 +608,7 @@ export default function App() {
                 loading={loading}
                 failedCount={failedCount}
                 onClearFailed={clearFailed}
-                colorDots={[
-                  { k: "r", hex: KEY_COLORS.r },
-                  { k: "g", hex: KEY_COLORS.g },
-                  { k: "b", hex: KEY_COLORS.b },
-                ]}
+                colorDots={COLOR_DOTS}
                 colorFilter={colorFilter}
                 onToggleColor={toggleColorFilter}
                 sharedOnly={sharedOnly}

@@ -16,6 +16,14 @@
 
 행 객체(_HybridRow): sqlite3.Row 처럼 row[0](정수)·row["col"](문자열)·.keys()·dict(row) 모두 지원.
 트랜잭션: autocommit=True + 명시 BEGIN/COMMIT/ROLLBACK → SQLite isolation_level=None 과 동일 흐름.
+
+★ 상태(2026-07 전면검토 P1-6): PG 백엔드는 현재 **미완·미사용**이다. schema_pg.sql 의 asset_meta 에
+owner_uid·content_sha, account.password_changed_at, generation.folder_path/final_at/origin 등 최신
+스키마가 반영돼 있지 않다(SQLite 만 _migrate 로 갱신되고, PG 는 init_db 로 schema_pg.sql 만 적용).
+또한 BEGIN IMMEDIATE 를 BEGIN 으로 번역하므로 SQLite 의 즉시 쓰기락(경쟁 방지) 의미가 PG 에선
+사라진다(cycle/identity/credit 매칭 경쟁 미방지). 기본·주력 백엔드는 SQLite. PG 를 실제로 쓰려면
+schema.sql 기준으로 schema_pg.sql·PG 마이그레이션을 재작성하고, FOR UPDATE/advisory lock 등 별도
+동시성 장치를 붙여야 한다.
 """
 
 from __future__ import annotations
