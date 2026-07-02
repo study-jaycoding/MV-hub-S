@@ -182,6 +182,10 @@
   border: 1px solid var(--border2); border-radius: 14px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.75);
 }
+/* 내 계정 패널의 .manage-field 는 라벨을 입력 위에 두는 블록 레이아웃.
+   (PM 모달용 composition-manage.css 의 .manage-field{display:flex} 가 전역으로 새어들어와
+   라벨이 세로로 쪼개지던 것을 admin-body 스코프로 복원) */
+.admin-body .manage-field { display: block; }
 .manage-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
 .manage-name-row { display: flex; gap: 8px; }
 .manage-name-row input {
