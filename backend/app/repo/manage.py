@@ -757,9 +757,15 @@ def unlink_generation(task_id: str, gen_id: str) -> bool:
 
 
 # ── 분석(시각화) — 추이·매트릭스 ──────────────────────────────────────────────
-def timeseries(bucket: str = "day") -> list[dict[str, Any]]:
-    """일/주별 생성수·크레딧 추이. 크레딧=COALESCE(실제,견적). created_at(UTC 문자열) 기준."""
+def timeseries(bucket: str = "day", project_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """일/주별 생성수·크레딧 추이. 크레딧=COALESCE(실제,견적). created_at(UTC 문자열) 기준.
+    project_id 를 주면 그 프로젝트 생성물만 집계(프로젝트별 분석)."""
     fmt = "%Y-%W" if bucket == "week" else "%Y-%m-%d"
+    where = "g.deleted_at IS NULL AND g.created_at IS NOT NULL"
+    params: list[Any] = []
+    if project_id:
+        where += " AND g.project_id = ?"
+        params.append(project_id)
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
@@ -768,8 +774,9 @@ def timeseries(bucket: str = "day") -> list[dict[str, Any]]:
                        COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits
                 FROM generation g
                 LEFT JOIN generation_metrics m ON m.gen_id = g.id
-                WHERE g.deleted_at IS NULL AND g.created_at IS NOT NULL
-                GROUP BY bucket ORDER BY bucket"""
+                WHERE {where}
+                GROUP BY bucket ORDER BY bucket""",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 

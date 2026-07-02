@@ -345,10 +345,12 @@ async def save_finals(project_id: str, request: Request):
 
 # ── 분석(시각화) ──────────────────────────────────────────────────────────────
 @router.get("/timeseries")
-def timeseries(request: Request, bucket: str = "day"):
-    """일/주별 생성수·크레딧 추이(추이 차트용)."""
+def timeseries(request: Request, bucket: str = "day", project_id: str | None = None):
+    """일/주별 생성수·크레딧 추이(추이 차트용). project_id 주면 그 프로젝트만."""
     _require_manage_read(request)
-    return repo_manage.timeseries("week" if bucket == "week" else "day")
+    return repo_manage.timeseries(
+        "week" if bucket == "week" else "day", project_id=project_id or None
+    )
 
 
 @router.get("/matrix")

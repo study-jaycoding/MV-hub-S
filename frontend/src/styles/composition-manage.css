@@ -106,6 +106,16 @@
 .manage-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
 .manage-icon-btn:disabled { opacity: .5; cursor: default; }
 .manage-create { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+/* 프로젝트명 클릭 → 인라인 분석 */
+.manage-proj-link {
+  font-family: inherit; font-size: inherit; font-weight: 600; color: var(--text);
+  background: transparent; border: none; padding: 0; cursor: pointer; border-bottom: 1px dashed transparent;
+}
+.manage-proj-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.manage-proj-link.on { color: var(--accent); border-bottom-color: var(--accent); }
+.manage-analytics-head { display: flex; align-items: center; justify-content: space-between; }
+.manage-proj-analytics { border-top: 2px solid var(--accent); }
+.manage-sub-h { font-size: 13px; font-weight: 700; opacity: .8; margin: 12px 0 6px; }
 
 /* 프로젝트 관리 오버레이(패널) */
 .manage-proj-overlay {

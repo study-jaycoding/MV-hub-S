@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { manageApi } from "../../lib/manageApi";
 import { useManageCaps } from "../../lib/useManageCaps";
+import { ProjectAnalyticsPanel } from "./ProjectAnalyticsPanel";
 import { ProjectManagerPanel } from "./ProjectManagerPanel";
 import type { ManageProject, ManageSummary, Planning } from "./types";
 
@@ -60,6 +61,7 @@ export function ProjectDashboard() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPanel, setShowPanel] = useState(false); // 프로젝트 관리 오버레이
+  const [analyticsPid, setAnalyticsPid] = useState<string | null>(null); // 인라인 분석 프로젝트
   const caps = useManageCaps();
   const canManageProjects = caps.createProject || caps.grantRole;
 
@@ -204,7 +206,21 @@ export function ProjectDashboard() {
               const over = budget != null && p.credits > budget;
               return (
                 <tr key={p.pid ?? "none"}>
-                  <td className="manage-name">{p.name}</td>
+                  <td className="manage-name">
+                    {p.pid ? (
+                      <button
+                        className={"manage-proj-link" + (analyticsPid === p.pid ? " on" : "")}
+                        onClick={() =>
+                          setAnalyticsPid((cur) => (cur === p.pid ? null : p.pid))
+                        }
+                        title="클릭 — 이 프로젝트 분석 보기"
+                      >
+                        {p.name}
+                      </button>
+                    ) : (
+                      p.name
+                    )}
+                  </td>
                   <td>{p.gen_count}</td>
                   <td>{p.shared_count}</td>
                   <td>{p.final_count}</td>
@@ -264,6 +280,12 @@ export function ProjectDashboard() {
         </section>
       )}
 
+      {analyticsPid && (
+        <ProjectAnalyticsPanel
+          pid={analyticsPid}
+          name={data.projects.find((p) => p.pid === analyticsPid)?.name || ""}
+        />
+      )}
 
       <footer className="manage-foot">
         ※ 크레딧은 실제 차감액(거래 매칭) 우선, 미매칭은 견적. 제작시간은 허브 생성물의 AI 생성

@@ -4,25 +4,24 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
-import { AnalyticsView } from "./manage/AnalyticsView";
 import { ExportView } from "./manage/ExportView";
 import { ProjectDashboard } from "./manage/ProjectDashboard";
 import { WorkBoard } from "./manage/WorkBoard";
 
-type Tab = "summary" | "tasks" | "analytics" | "export";
+type Tab = "summary" | "tasks" | "export";
 
 const TABS: { v: Tab; label: string }[] = [
   { v: "summary", label: "요약" },
   { v: "tasks", label: "작업" },
-  { v: "analytics", label: "분석" },
   { v: "export", label: "완료" },
 ];
 
 export function ManageWindow() {
-  // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업.
-  const [tab, setTab] = useState<Tab>(
-    () => (loadString(STORAGE_KEYS.manageTab, "summary") as Tab) || "summary",
-  );
+  // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업(없어진 탭이면 요약으로).
+  const [tab, setTab] = useState<Tab>(() => {
+    const saved = loadString(STORAGE_KEYS.manageTab, "summary") as Tab;
+    return TABS.some((t) => t.v === saved) ? saved : "summary";
+  });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
 
@@ -76,7 +75,6 @@ export function ManageWindow() {
       </nav>
       {tab === "summary" && <ProjectDashboard />}
       {tab === "tasks" && <WorkBoard />}
-      {tab === "analytics" && <AnalyticsView />}
       {tab === "export" && <ExportView />}
     </div>
   );
