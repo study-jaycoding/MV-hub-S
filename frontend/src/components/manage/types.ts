@@ -81,6 +81,8 @@ export interface TimePoint {
 export interface MatrixCell {
   count: number;
   credits: number;
+  shared_count?: number;
+  final_count?: number;
 }
 
 export interface MatrixData {

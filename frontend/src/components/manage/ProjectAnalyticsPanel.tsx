@@ -80,7 +80,9 @@ export function ProjectAnalyticsPanel({ pid, name }: { pid: string; name: string
           <thead>
             <tr>
               <th>작업자</th>
-              <th>건수</th>
+              <th>생성</th>
+              <th>게시</th>
+              <th>완료</th>
               <th>크레딧</th>
             </tr>
           </thead>
@@ -89,6 +91,8 @@ export function ProjectAnalyticsPanel({ pid, name }: { pid: string; name: string
               <tr key={r.name}>
                 <td className="manage-name">{r.name}</td>
                 <td>{r.cell?.count ?? 0}</td>
+                <td>{r.cell?.shared_count ?? 0}</td>
+                <td>{r.cell?.final_count ?? 0}</td>
                 <td>{(r.cell?.credits ?? 0).toLocaleString()}</td>
               </tr>
             ))}

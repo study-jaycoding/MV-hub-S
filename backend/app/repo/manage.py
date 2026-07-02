@@ -787,7 +787,11 @@ def matrix() -> dict[str, Any]:
         _ensure_schema(conn)
         rows = conn.execute(
             """SELECT g.creator_uid AS uid, g.project_id AS pid, COUNT(*) AS count,
-                      COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits
+                      COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
+                      SUM(CASE WHEN g.is_final = 1 THEN 1 ELSE 0 END) AS final_count,
+                      SUM(CASE WHEN EXISTS(
+                            SELECT 1 FROM share s WHERE s.generation_id = g.id
+                          ) THEN 1 ELSE 0 END) AS shared_count
                FROM generation g
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
                WHERE g.deleted_at IS NULL
@@ -806,7 +810,12 @@ def matrix() -> dict[str, Any]:
     for r in rows:
         u = r["uid"] or ""
         pkey = r["pid"] or ""
-        cells.setdefault(u, {})[pkey] = {"count": r["count"], "credits": r["credits"]}
+        cells.setdefault(u, {})[pkey] = {
+            "count": r["count"],
+            "credits": r["credits"],
+            "shared_count": r["shared_count"] or 0,
+            "final_count": r["final_count"] or 0,
+        }
         if pkey not in seen:
             seen.add(pkey)
             proj_order.append(pkey)
