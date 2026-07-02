@@ -56,9 +56,9 @@ export function SpotlightGenerateControls({
           cost > 0 && (
             <span
               className="sl-cost"
-              title={`예상 크레딧 ${cost}${count > 1 ? ` × ${count}장 = ${cost * count}` : ""} (해상도·길이·모드에 따라 변동)`}
+              title={`예상 크레딧 ${cost * count}${count > 1 ? ` (${count}장)` : ""} — 해상도·길이·모드에 따라 변동`}
             >
-              {count > 1 ? `${cost}×${count}=${cost * count}` : cost * count}
+              {cost * count}
             </span>
           )
         )}

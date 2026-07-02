@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from ..config import DATA_DIR
 from .media_types import media_type_from_url
 
 # ── CLI 경로 해석 (셰임 함정 회피) ────────────────────────────────────────
@@ -341,14 +343,51 @@ async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]
 # 비용은 (모델 + 옵션)에 대해 결정적(프롬프트·계정 무관) → 한 번 받은 값은 캐시해 CLI 재호출을
 # 없앤다. 옵션 토글로 오갈 때, 정보팝업으로 같은 설정의 생성물을 볼 때 즉시 응답(딜레이 제거).
 # 설정 조합 수는 적어 사실상 무한 증가 없음(안전상 소프트 캡).
-_COST_CACHE: dict[tuple, dict[str, int]] = {}
-_COST_CACHE_MAX = 1024
+# 비용 견적 영속 캐시 — 파일(DATA_DIR/cost_cache.json)에 (모델+옵션)→(크레딧, 저장시각)을 보관.
+# 재시작·새 탭·재방문 시 CLI 재호출 없이 즉시. TTL 이 지난 항목은 다음 조회 때 CLI 로 재확인해
+# 힉스필드 가격 변동을 자동 반영한다(bat·수동 갱신 불필요).
+_COST_CACHE_FILE = DATA_DIR / "cost_cache.json"
+_COST_CACHE: dict[str, tuple[int, float]] = {}  # key → (credits, saved_epoch)
+_COST_CACHE_MAX = 4096
+_COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7일(가격 변동 자동 반영)
+_cost_loaded = False
 
 
-def _cost_key(model: str, params: Optional[dict[str, Any]]) -> tuple:
-    # 값 타입(4 vs "4")이 달라도 같은 키가 되도록 문자열 정규화. 프롬프트는 비용 무관 → 제외.
-    items = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
-    return (model, items)
+def _cost_key(model: str, params: Optional[dict[str, Any]]) -> str:
+    # 값 타입(4 vs "4") 무시 + 프롬프트 무관. JSON 파일 키로 쓰려 문자열로.
+    items = sorted((str(k), str(v)) for k, v in (params or {}).items())
+    return model + "|" + ";".join(f"{k}={v}" for k, v in items)
+
+
+def _load_cost_cache() -> None:
+    """부팅 후 최초 조회 때 파일에서 캐시를 1회 로드한다(멱등)."""
+    global _cost_loaded
+    if _cost_loaded:
+        return
+    _cost_loaded = True
+    try:
+        raw = json.loads(_COST_CACHE_FILE.read_text("utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(raw, dict):
+        return
+    for k, v in raw.items():
+        if isinstance(v, list) and len(v) == 2:
+            try:
+                _COST_CACHE[k] = (int(v[0]), float(v[1]))
+            except (TypeError, ValueError):
+                pass
+
+
+def _save_cost_cache() -> None:
+    try:
+        _COST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _COST_CACHE_FILE.write_text(
+            json.dumps({k: [c, t] for k, (c, t) in _COST_CACHE.items()}, ensure_ascii=False),
+            "utf-8",
+        )
+    except OSError:
+        pass
 
 
 async def estimate_cost(
@@ -360,26 +399,28 @@ async def estimate_cost(
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
+    _load_cost_cache()
     key = _cost_key(model, params)
-    cached = _COST_CACHE.get(key)
-    if cached is not None:
-        return cached
+    entry = _COST_CACHE.get(key)
+    if entry is not None and (time.time() - entry[1]) < _COST_TTL:
+        return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
     args: list[str] = ["generate", "cost", model, "--prompt", prompt or "preview"]
     args += await _param_args(model, params)
     data = await _run_json(*args, timeout=timeout)
     if not isinstance(data, dict):
-        return {"credits": 0}  # 비정상 응답은 캐시 안 함(다음에 재시도)
+        return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
     credits = data.get("credits_exact")
     if credits is None:
         credits = data.get("credits", 0)
     try:
-        result = {"credits": int(round(float(credits)))}
+        credits_int = int(round(float(credits)))
     except (TypeError, ValueError):
-        return {"credits": 0}  # 파싱 실패도 캐시 안 함
+        return {"credits": entry[0]} if entry else {"credits": 0}
     if len(_COST_CACHE) >= _COST_CACHE_MAX:
-        _COST_CACHE.clear()  # 소프트 캡(드묾) — 단순 비움
-    _COST_CACHE[key] = result
-    return result
+        _COST_CACHE.clear()  # 소프트 캡(드묾)
+    _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
+    _save_cost_cache()
+    return {"credits": credits_int}
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
