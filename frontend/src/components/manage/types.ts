@@ -184,6 +184,11 @@ export interface WorkViewProps {
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
   onUnlinkGen: (tid: string, genId: string) => void;
+  // 테이블 전용(선택·순서) — 보드/캘린더는 사용 안 함(옵션).
+  selected?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleSelectAll?: (ids: string[], on: boolean) => void;
+  onReorder?: (draggedId: string, targetId: string) => void;
 }
 
 export interface Cut {

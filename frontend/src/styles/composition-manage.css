@@ -224,11 +224,13 @@
 /* ── 작업(Work) 보드/테이블 공통 ── */
 .work-head-ctl { display: flex; align-items: center; gap: 10px; }
 
-/* ── 노션식 필터 바(칩 + 검색) ── */
-.work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; flex-wrap: wrap; }
+/* ── 노션식 필터 바(칩 좌측 · 검색+필터 우측) ── */
+.work-filterbar { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 14px; }
+.work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.work-filter-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: 0 0 auto; }
 .work-search {
   display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
-  border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05); min-width: 240px;
+  border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05); width: 200px;
 }
 .work-search-ic { font-size: 11px; opacity: .55; }
 .work-search input {
@@ -262,6 +264,7 @@
   background: var(--panel, #1a1a1a); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.4); padding: 6px; display: flex; flex-direction: column; gap: 4px;
 }
+.work-pop-right { left: auto; right: 0; } /* 우측 +필터 메뉴는 오른쪽 정렬(화면 밖 방지) */
 .work-pop-head { font-size: 11px; font-weight: 700; opacity: .6; padding: 3px 6px; }
 .work-pop-search {
   font-family: inherit; font-size: 12px; color: var(--text); background: rgba(127,127,127,.08);
@@ -287,6 +290,32 @@
 }
 .work-pop-clear:hover { border-color: var(--accent); }
 .work-proj-static { font-size: 12px; opacity: .8; }
+
+/* 엑셀식 격자선 테이블 */
+.work-table-grid { border-collapse: collapse; }
+.work-table-grid th, .work-table-grid td { border: 1px solid var(--border); }
+/* 선택/드래그 열 */
+.work-sel-col { width: 1%; white-space: nowrap; text-align: center; }
+.work-row-handle { cursor: grab; opacity: .4; margin-right: 4px; user-select: none; }
+.work-row-handle:hover { opacity: .8; }
+.work-row-handle:active { cursor: grabbing; }
+.work-row-sel { background: rgba(127,127,127,.12); }
+
+/* 선택 액션 바(생성탭 방식) — 하단 중앙 플로팅 */
+.work-selbar {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 50;
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  background: var(--panel, #1b1b1b); border: 1px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45);
+}
+.work-selbar-count { font-size: 13px; font-weight: 700; }
+.work-selbar-btn {
+  font-family: inherit; font-size: 12px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+}
+.work-selbar-btn:hover { border-color: var(--accent); }
+.work-selbar-btn.danger { color: #ff6b6b; border-color: rgba(255,107,107,.4); }
+.work-selbar-btn.danger:hover { border-color: #ff6b6b; background: rgba(255,107,107,.1); }
 
 /* 보드 카드(작업) */
 .kanban-col.drop { border-color: var(--accent); background: rgba(127,127,127,.04); }

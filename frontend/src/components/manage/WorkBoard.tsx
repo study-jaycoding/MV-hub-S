@@ -38,6 +38,15 @@ const SIMPLE_PATCH_FIELDS = new Set([
   "sort_order",
 ]);
 
+// 병합 뷰의 표시 순서 — 수동 지정(sort_order) 우선, 없으면 생성일. 드래그 순서변경이 전 프로젝트에
+// 걸쳐 일관되게 유지되도록 병합 후 전역 정렬한다.
+function bySort(a: Task, b: Task): number {
+  const sa = a.sort_order ?? 1e9;
+  const sb = b.sort_order ?? 1e9;
+  if (sa !== sb) return sa - sb;
+  return (a.created_at || "").localeCompare(b.created_at || "");
+}
+
 // 칩 필터 + 검색 매칭 — 같은 필드 값끼리 OR(포함), 서로 다른 필드끼리 AND. status 는 effective 반영본.
 function matchTask(t: Task, f: WorkFilters): boolean {
   const v = f.values;
@@ -67,6 +76,22 @@ export function WorkBoard() {
   const [err, setErr] = useState<string | null>(null);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
+  // 테이블 행 다중선택(하단 선택바에서 일괄 삭제). 뷰 전환 시 초기화.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => setSelected(new Set()), [view]);
+  const toggleSelect = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  const toggleSelectAll = (ids: string[], on: boolean) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      ids.forEach((id) => (on ? n.add(id) : n.delete(id)));
+      return n;
+    });
+  const clearSel = () => setSelected(new Set());
 
   // 비활성화 집합 최신화 — 같은 창은 DISABLED_EVENT, 다른 창(별도 생성탭)은 storage 이벤트.
   useEffect(() => {
@@ -101,7 +126,7 @@ export function WorkBoard() {
           .catch(() => [] as Task[]),
       ),
     ).then((all) => {
-      if (reqRef.current === my) setTasks(all.flat());
+      if (reqRef.current === my) setTasks(all.flat().sort(bySort));
     });
   };
 
@@ -191,6 +216,34 @@ export function WorkBoard() {
   );
   const filtered = useMemo(() => effective.filter((t) => matchTask(t, filters)), [effective, filters]);
 
+  // 드래그 순서변경 — 표시 순서에서 draggedId 를 targetId 앞으로 옮기고 sort_order 를 재부여(전역 유지).
+  const onReorder = (draggedId: string, targetId: string) => {
+    const ids = filtered.map((t) => t.id);
+    if (draggedId === targetId || !ids.includes(draggedId) || !ids.includes(targetId)) return;
+    const [moved] = ids.splice(ids.indexOf(draggedId), 1);
+    ids.splice(ids.indexOf(targetId), 0, moved); // 제거 후 대상 위치를 다시 찾아 그 앞에 삽입
+    const orderMap = new Map(ids.map((id, i) => [id, i * 10]));
+    setTasks((prev) =>
+      prev.map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t)).sort(bySort),
+    );
+    ids.forEach((id) => {
+      const cur = tasks.find((x) => x.id === id);
+      const so = orderMap.get(id)!;
+      if (cur && cur.sort_order !== so) manageApi.updateTask(id, { sort_order: so });
+    });
+  };
+
+  // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때
+  // 다시 생성됨 — 실질 삭제는 생성탭에서 생성물 자체를 지워야 함. 여기선 정리용.)
+  const bulkDelete = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!window.confirm(`선택한 작업 ${ids.length}개를 삭제할까요?`)) return;
+    await Promise.all(ids.map((id) => manageApi.deleteTask(id).catch(() => {})));
+    clearSel();
+    loadAll();
+  };
+
   if (err) return <div className="manage-empty">불러오기 실패: {err}</div>;
 
   const viewProps: WorkViewProps = {
@@ -198,6 +251,10 @@ export function WorkBoard() {
     seqOptions,
     thumb: taskThumb,
     disabled,
+    selected,
+    onToggleSelect: toggleSelect,
+    onToggleSelectAll: toggleSelectAll,
+    onReorder,
     onPatch,
     onDelete,
     onLinkGen,
@@ -236,6 +293,18 @@ export function WorkBoard() {
         <TableView {...viewProps} />
       ) : (
         <CalendarView {...viewProps} />
+      )}
+
+      {selected.size > 0 && (
+        <div className="work-selbar">
+          <span className="work-selbar-count">{selected.size}개 선택</span>
+          <button className="work-selbar-btn" onClick={clearSel}>
+            선택 해제
+          </button>
+          <button className="work-selbar-btn danger" onClick={bulkDelete}>
+            🗑 삭제
+          </button>
+        </div>
       )}
     </div>
   );

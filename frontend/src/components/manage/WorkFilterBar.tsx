@@ -73,20 +73,7 @@ export function WorkFilterBar({
 
   return (
     <div className="work-filterbar">
-      <div className="work-search">
-        <span className="work-search-ic">🔍</span>
-        <input
-          value={filters.search}
-          placeholder="검색(에피소드·시퀀스·설명·생성자…)"
-          onChange={(e) => onChange({ ...filters, search: e.target.value })}
-        />
-        {filters.search && (
-          <button className="work-search-x" title="지우기" onClick={() => onChange({ ...filters, search: "" })}>
-            ✕
-          </button>
-        )}
-      </div>
-
+      <div className="work-chips">
       {filters.active.map((f) => {
         const sel = filters.values[f];
         return (
@@ -114,27 +101,44 @@ export function WorkFilterBar({
           </div>
         );
       })}
+      </div>
 
-      {inactive.length > 0 && (
-        <div className="work-chip-wrap">
-          <button className="work-chip work-chip-add" onClick={() => setAddOpen((o) => !o)}>
-            + 필터
-          </button>
-          {addOpen && (
-            <>
-              <div className="work-pop-backdrop" onClick={() => setAddOpen(false)} />
-              <div className="work-pop work-pop-add">
-                <div className="work-pop-head">필터 기준</div>
-                {inactive.map((f) => (
-                  <button key={f} className="work-pop-item" onClick={() => addField(f)}>
-                    {WORK_FILTER_LABELS[f]}
-                  </button>
-                ))}
-              </div>
-            </>
+      {/* 검색 + 필터 추가 — 우측 정렬 */}
+      <div className="work-filter-right">
+        <div className="work-search">
+          <span className="work-search-ic">🔍</span>
+          <input
+            value={filters.search}
+            placeholder="검색"
+            onChange={(e) => onChange({ ...filters, search: e.target.value })}
+          />
+          {filters.search && (
+            <button className="work-search-x" title="지우기" onClick={() => onChange({ ...filters, search: "" })}>
+              ✕
+            </button>
           )}
         </div>
-      )}
+        {inactive.length > 0 && (
+          <div className="work-chip-wrap">
+            <button className="work-chip work-chip-add" onClick={() => setAddOpen((o) => !o)}>
+              + 필터
+            </button>
+            {addOpen && (
+              <>
+                <div className="work-pop-backdrop" onClick={() => setAddOpen(false)} />
+                <div className="work-pop work-pop-add work-pop-right">
+                  <div className="work-pop-head">필터 기준</div>
+                  {inactive.map((f) => (
+                    <button key={f} className="work-pop-item" onClick={() => addField(f)}>
+                      {WORK_FILTER_LABELS[f]}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
