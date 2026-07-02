@@ -5,9 +5,6 @@ CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는
 
 from __future__ import annotations
 
-import ipaddress
-import socket
-import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -21,6 +18,7 @@ from ..config import AUTH_ENABLED
 from ..deps import account_global_roles, account_scope_uid, require_view_generation
 from ..models import FacetsOut, GenerationOut
 from ..services import media_cache, thumbs
+from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
 router = APIRouter(prefix="/api", tags=["library"])
 
@@ -76,45 +74,6 @@ def _remote_thumb_urls(data) -> list[str]:
     return list(seen.keys())
 
 
-def _reject_internal_host(url: str) -> None:
-    """SSRF 방어 — 호스트를 **실제 IP 로 해석**해 사설/루프백/링크로컬/예약 대역이면 거부한다.
-    문자열 prefix 검사만으론 10진수 IP(2130706433=127.0.0.1)·IPv6·단축형을 못 막으므로 ipaddress 로
-    판정한다(클라우드 메타데이터 169.254.169.254·내부망 차단). DNS 리바인딩은 잔여 위험(연결 시점
-    재해석) — 내부 도구 수준에서 수용."""
-    host = (urllib.parse.urlparse(url).hostname or "").strip().lower()
-    if not host:
-        raise HTTPException(status_code=400, detail="URL 호스트가 없습니다")
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        raise HTTPException(status_code=400, detail="호스트를 해석할 수 없습니다")
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        # IPv4-mapped IPv6(::ffff:127.0.0.1) 도 펼쳐 검사
-        if ip.version == 6 and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            raise HTTPException(status_code=400, detail="내부/사설 호스트 미디어는 받을 수 없습니다")
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """리다이렉트 차단 — urlopen 이 3xx 를 따라가 검증 통과 후 내부망으로 우회(SSRF)하는 것을 막는다.
-    공개 미디어 CDN(cloudfront 등)은 직접 200 을 주므로 리다이렉트가 필요 없다."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
-        raise HTTPException(status_code=502, detail="리다이렉트 미디어는 받을 수 없습니다")
-
-
 @router.get("/download")
 def download_media(url: str = Query(...), name: str = Query("download")):
     """원격 미디어(cloudfront 등)를 서버가 받아 attachment 로 스트리밍한다.
@@ -123,18 +82,20 @@ def download_media(url: str = Query(...), name: str = Query("download")):
     프록시(이 엔드포인트)로 받으면 Content-Disposition: attachment 로 '진짜 다운로드'(크롬 다운로드
     목록)가 된다. http(s) 만 허용 + 내부 호스트 차단(기본 SSRF 방어). 로컬 보관본(/media·/api)은
     프론트가 직접 a[download] 로 받으므로 여기로 오지 않는다."""
-    low = url.strip().lower()
-    if not (low.startswith("http://") or low.startswith("https://")):
-        raise HTTPException(status_code=400, detail="http(s) URL 만 받을 수 있습니다")
-    _reject_internal_host(url)
+    try:
+        assert_public_http_url(url)  # http(s) + 내부/사설 대역 차단(SSRF 방어)
+    except BlockedURLError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         # User-Agent 부여 — 일부 CDN 이 UA 없는 요청을 403 으로 막는다(브라우저 흉내).
         # 리다이렉트 차단 opener — 3xx 우회(SSRF) 방지.
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (MV-hub media proxy)"})
-        opener = urllib.request.build_opener(_NoRedirect)
+        opener = guarded_opener()
         upstream = opener.open(req, timeout=60)  # noqa: S310 — http(s)+IP 검증 완료
     except HTTPException:
         raise
+    except BlockedURLError as e:
+        raise HTTPException(status_code=502, detail=str(e))  # 리다이렉트로 내부망 우회 시도 차단
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"원격 미디어 다운로드 실패: {e}")
     ctype = upstream.headers.get_content_type() or "application/octet-stream"

@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..config import MEDIA_DIR
 from .media_types import CACHE_MEDIA_EXTENSIONS
+from .net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
 log = logging.getLogger(__name__)
 
@@ -136,12 +137,18 @@ async def _release_lock(rel: str) -> None:
 
 
 def _download_once(url: str, target: Path) -> None:
+    # SSRF 방어 — 내부/사설 대역·리다이렉트 우회 차단(공개 CDN 만 허용). 차단은 영구 오류(재시도 안 함).
+    try:
+        assert_public_http_url(url)
+    except BlockedURLError as e:
+        raise MediaCachePermanentError(str(e))
     # 청크 스트리밍 — 큰 mp4 를 통째로 메모리에 read 하지 않는다(동시 다운로드 시 메모리 스파이크 방지).
     req = urllib.request.Request(url, headers={"User-Agent": "content-hub/0.1"})
+    opener = guarded_opener()  # 3xx 리다이렉트로 내부망 우회 방지
     tmp = target.with_suffix(target.suffix + f".{uuid.uuid4().hex}.part")
     written = 0
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
+        with opener.open(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
             length = _content_length(resp)
             if length is not None and length > _MAX_BYTES:
                 raise MediaCachePermanentError(f"media too large: content_length={length}, max={_MAX_BYTES}")
@@ -178,8 +185,8 @@ def _download(url: str, target: Path) -> None:
         try:
             _download_once(url, target)
             return
-        except MediaCachePermanentError:
-            raise
+        except (MediaCachePermanentError, BlockedURLError):
+            raise  # 내부망/사설·리다이렉트 차단은 영구 오류 — 재시도해도 소용없다
         except Exception as e:  # noqa: BLE001 — 네트워크/CloudFront 일시 오류는 재시도 후 최종 로깅
             last = e
             if attempt < _ATTEMPTS:

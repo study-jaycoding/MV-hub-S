@@ -53,8 +53,20 @@ def _require_mount_manager(request: Request) -> None:
     if AUTH_ENABLED:
         if getattr(request.state, "account", None) is None:
             raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+        # 공유 서버(AUTH on)에서도 폴더 등록은 로컬(loopback)만 — LAN 사용자가 서버 디스크를
+        # 임의 경로로 mount 하는 것을 막는다(Assets 는 각 워커 로컬 허브 전용).
+        require_loopback_request(request, "폴더 등록은 로컬 허브에서만 가능합니다")
         return
     require_loopback_request(request, "폴더 등록은 서버 로컬에서만 가능합니다")
+
+
+def _require_local_assets(request: Request) -> None:
+    """Assets 파일 I/O(트리·읽기·썸네일·업로드·zip·reveal·재매칭)는 로컬 허브(loopback) 전용.
+    공유 서버(AUTH on)에서는 LAN 사용자가 서버 디스크를 열람·기록·탐색하지 못하게 막는다
+    (설계상 Assets 는 각 워커의 로컬 허브에서만 동작한다). 로컬 허브는 AUTH off + 127.0.0.1
+    바인드라 그대로 통과한다."""
+    if AUTH_ENABLED:
+        require_loopback_request(request, "Assets 파일 기능은 로컬 허브에서만 사용할 수 있습니다")
 
 _THUMB_DIR = MEDIA_DIR / ".thumbs"  # 썸네일 디스크 캐시
 
@@ -452,7 +464,7 @@ def del_mount(name: str, request: Request):
     return _mounts_payload(request)
 
 
-@router.get("/tree")
+@router.get("/tree", dependencies=[Depends(_require_local_assets)])
 def project_tree(request: Request, project: str = Query(...)):
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석."""
     info = _project_dir_info(project, request)
@@ -622,7 +634,7 @@ def read_comments(body: CommentReadIn, request: Request):
 # 위임하지 않는다). 생성탭 @/# 피커(/api/sources)가 같은 로컬 asset_meta 를 읽으므로 여기서
 # 서버로 새면 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 디스크
 # 검증(_require_project) 없음: 메타는 (project,path,owner) 키로만 식별.
-@router.put("/source")
+@router.put("/source", dependencies=[Depends(_require_local_assets)])
 def asset_set_source(body: AssetSourceIn, request: Request):
     # 에셋 메타는 계정별 개인화 — 내(actor_id) 설정만 만들고 바꾼다(남의 것과 안 섞임).
     # 소스로 켤 때 파일 내용 지문(sha256)을 함께 기록해, 이후 폴더가 바뀌어도 재매칭되게 한다.
@@ -638,7 +650,7 @@ def asset_set_source(body: AssetSourceIn, request: Request):
     return {"ok": True}
 
 
-@router.post("/sources/relink")
+@router.post("/sources/relink", dependencies=[Depends(_require_local_assets)])
 def relink_broken_sources(request: Request):
     """원경로에서 사라진 내 Assets 소스를, 저장해둔 내용 지문(sha256)으로 같은 폴더를 뒤져 찾아
     경로를 다시 잇는다(자가 치유). 필요할 때만 도는 일괄 작업 — 평소 파일 조회엔 스캔이 없다."""
@@ -646,7 +658,7 @@ def relink_broken_sources(request: Request):
     return {"relinked": relinked}
 
 
-@router.post("/sources/prune")
+@router.post("/sources/prune", dependencies=[Depends(_require_local_assets)])
 def prune_broken_sources(request: Request):
     """원본 파일을 확실히 찾을 수 없는 내 Assets 소스의 소스 지정을 해제한다(is_source=0).
     먼저 지문으로 재매칭을 시도해 찾을 수 있으면 다시 잇고, 폴더를 끝까지 훑어도 못 찾은 것만
@@ -673,7 +685,7 @@ def asset_set_color(body: AssetColorIn, request: Request):
     return {"ok": True}
 
 
-@router.get("/file")
+@router.get("/file", dependencies=[Depends(_require_local_assets)])
 def get_file(request: Request, project: str = Query(...), path: str = Query(...)):
     """프로젝트 내 파일 서빙(경로 보안) — 내가 등록한 마운트 안에서만(img 요청은 쿠키로 인증)."""
     proj_dir = _safe_project_dir(project, request)
@@ -685,7 +697,7 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     return FileResponse(target)
 
 
-@router.get("/thumb")
+@router.get("/thumb", dependencies=[Depends(_require_local_assets)])
 def get_thumb(
     request: Request,
     project: str = Query(...),
@@ -718,7 +730,7 @@ def get_thumb(
     return FileResponse(cache, media_type="image/jpeg")
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(_require_local_assets)])
 async def upload_assets(
     request: Request,
     project: str = Form(...),
@@ -765,7 +777,7 @@ async def upload_assets(
     return {"saved": saved, "skipped": skipped}
 
 
-@router.post("/capture")
+@router.post("/capture", dependencies=[Depends(_require_local_assets)])
 async def upload_capture(request: Request, file: UploadFile = File(...)):
     """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
     저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
@@ -783,7 +795,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     return {"project": "captures", "path": name, "name": name, "type": "image"}
 
 
-@router.post("/reference-import")
+@router.post("/reference-import", dependencies=[Depends(_require_local_assets)])
 async def upload_reference_import(
     request: Request,
     project: str = Form(""),
@@ -875,7 +887,7 @@ async def upload_reference_import(
     return {"saved": saved, "skipped": skipped}
 
 
-@router.get("/zip")
+@router.get("/zip", dependencies=[Depends(_require_local_assets)])
 def export_zip(
     request: Request, project: str = Query(...), paths: list[str] = Query(default=[])
 ):
@@ -931,7 +943,7 @@ class RevealIn(BaseModel):
     path: str
 
 
-@router.post("/reveal")
+@router.post("/reveal", dependencies=[Depends(_require_local_assets)])
 def reveal_file(body: RevealIn, request: Request):
     """OS 파일 탐색기에서 원본 위치를 열고 해당 파일을 선택(로컬 전용)."""
     proj_dir = _safe_project_dir(body.project, request)

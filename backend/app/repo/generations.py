@@ -1329,7 +1329,10 @@ def list_generations(
 
 
 def generation_comment_counts(
-    gen_ids: list[str], viewer_uid: Optional[str] = None
+    gen_ids: list[str],
+    viewer_uid: Optional[str] = None,
+    read_all: bool = False,
+    member_projects: Optional[list[str]] = None,
 ) -> dict[str, dict[str, Any]]:
     """주어진 gen_id 들의 코멘트 수 + 미확인(has_unread) 여부 — 배치. 로컬 우선에서 '발행본'(서버
     공유) 카드의 코멘트 뱃지를 서버 기준으로 보강(enrich)하는 데 쓴다(_attach_children 와 동일 규칙).
@@ -1338,9 +1341,28 @@ def generation_comment_counts(
     out: dict[str, dict[str, Any]] = {g: {"comment_count": 0, "has_unread": False} for g in ids}
     if not ids:
         return out
-    ph = ",".join("?" * len(ids))
     cviewer = viewer_uid if viewer_uid is not None else DEFAULT_WORKER_ID
     with get_connection() as conn:
+        # 가시성 필터 — can_view 와 동일 경계(내 것/내가 멤버인 프로젝트의 공유물/read_all). 안 보이는
+        # id 는 count 0 으로 남겨 존재·코멘트 수가 id 추측으로 새지 않게 한다.
+        if viewer_uid and not read_all:
+            iph = ",".join("?" * len(ids))
+            mp = [p for p in (member_projects or []) if p]
+            if mp:
+                pph = ",".join("?" * len(mp))
+                vq = (
+                    f"SELECT id FROM generation WHERE id IN ({iph}) AND "
+                    f"(creator_uid = ? OR (project_id IN ({pph}) "
+                    f"AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)))"
+                )
+                visible = {r["id"] for r in conn.execute(vq, [*ids, viewer_uid, *mp]).fetchall()}
+            else:
+                vq = f"SELECT id FROM generation WHERE id IN ({iph}) AND creator_uid = ?"
+                visible = {r["id"] for r in conn.execute(vq, [*ids, viewer_uid]).fetchall()}
+            ids = [i for i in ids if i in visible]
+            if not ids:
+                return out
+        ph = ",".join("?" * len(ids))
         for r in conn.execute(
             f"SELECT gen_id, COUNT(*) AS cnt FROM generation_comment "
             f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
@@ -1863,6 +1885,8 @@ def search_sources(
     asset_project: Optional[str] = None,
     asset_dir: Optional[str] = None,
     owner_uid: str = "",
+    read_all: bool = False,
+    member_projects: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """소스 등록된 생성본을 @이름/프롬프트(query) 또는 #태그(tag)로 검색.
 
@@ -1873,13 +1897,23 @@ def search_sources(
     # 재사용 가능하면 안 됨(하드삭제 때와 동일한 가시성 유지).
     where = ["g.is_source = 1", "g.deleted_at IS NULL"]
     args: list[Any] = []
-    if owner_uid:
-        # 가시성: 내 것 또는 공유된 것만 — 다계정(AUTH on) 서버에서 남의 '비공개' 소스
-        # (프롬프트·모델·params·URL)가 @ 피커로 유출되던 구멍 차단. owner_uid 없으면(AUTH off/단독) 전체.
-        where.append(
-            "(g.creator_uid = ? OR EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id))"
-        )
-        args.append(owner_uid)
+    if owner_uid and not read_all:
+        # 가시성 — can_view_generation(deps) 과 동일 경계: 내 것, 또는 **내가 멤버인 프로젝트**의 공유물만.
+        # shared 라고 무조건 노출하면 비멤버 프로젝트 소스의 프롬프트·모델·params·URL 이 @ 피커로 샌다
+        # (목록/단건은 멤버십으로 가리는데 여기만 뚫려 있던 우회). read_all(admin·PM·PD) 이면 전체.
+        mp = [p for p in (member_projects or []) if p]
+        if mp:
+            pph = ",".join("?" * len(mp))
+            where.append(
+                f"(g.creator_uid = ? OR (g.project_id IN ({pph}) "
+                f"AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)))"
+            )
+            args.append(owner_uid)
+            args.extend(mp)
+        else:
+            where.append("g.creator_uid = ?")  # 멤버인 프로젝트가 없으면 내 것만
+            args.append(owner_uid)
+    # owner_uid 없음(AUTH off/단독) 또는 read_all → 필터 없이 전체.
     if query:
         where.append("(g.source_name LIKE ? OR g.prompt LIKE ?)")
         args += [f"%{query}%", f"%{query}%"]

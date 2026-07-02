@@ -398,12 +398,16 @@ def list_sources(
     """스포트라이트 @/# 피커: 소스 등록된 생성본을 이름/태그로 검색.
     asset_project 가 오면 에셋 파트 소스(현재 폴더 asset_dir 로 스코프)도 함께 반환.
     에셋 소스는 계정별 개인화라 내(actor_id) 것만 합류한다."""
+    viewer_uid, read_all = _viewer_scope(request)
+    member = repo.my_member_projects(viewer_uid) if (viewer_uid and not read_all) else []
     return repo.search_sources(
         query=query,
         tag=tag,
         asset_project=asset_project,
         asset_dir=asset_dir,
         owner_uid=actor_id(request),
+        read_all=read_all,
+        member_projects=member,
     )
 
 
@@ -457,7 +461,11 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
             "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
         )
         return {local_of.get(k, k): v for k, v in (resp or {}).items()}
-    return repo.generation_comment_counts(body.gen_ids, actor_id(request))
+    viewer_uid, read_all = _viewer_scope(request)
+    member = repo.my_member_projects(viewer_uid) if (viewer_uid and not read_all) else []
+    return repo.generation_comment_counts(
+        body.gen_ids, actor_id(request), read_all=read_all, member_projects=member
+    )
 
 
 @router.get("/generations/{gen_id}/comments")
