@@ -63,19 +63,11 @@ export interface ManageTotals {
   net_credits?: number;
 }
 
-export interface Agent {
-  label: string;
-  cli_version?: string | null;
-  plan?: string | null;
-  credits?: number | null;
-}
-
 export interface ManageSummary {
   projects: ManageProject[];
   workers: ManageWorker[];
   totals: ManageTotals;
   workspaces?: Workspace[];
-  agents?: Agent[];
 }
 
 export interface TimePoint {

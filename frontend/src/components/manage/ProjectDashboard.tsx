@@ -265,32 +265,6 @@ export function ProjectDashboard() {
         </section>
       )}
 
-      {!!data.agents?.length && (
-        <section className="manage-section">
-          <h2>에이전트 · CLI 버전</h2>
-          <table className="manage-table">
-            <thead>
-              <tr>
-                <th>계정</th>
-                <th>CLI 버전</th>
-                <th>플랜</th>
-                <th>잔여 크레딧</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.agents.map((a) => (
-                <tr key={a.label}>
-                  <td className="manage-name">{a.label}</td>
-                  <td>{a.cli_version ?? "—"}</td>
-                  <td>{a.plan ?? "—"}</td>
-                  <td>{a.credits != null ? fmtCredits(a.credits) : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-
       <footer className="manage-foot">
         ※ 크레딧은 실제 차감액(거래 매칭) 우선, 미매칭은 견적. 제작시간은 허브 생성물의 AI 생성
         소요시간(요청→완료). 측정 커버리지가 낮으면 동기화·과거 생성물이 섞인 것입니다.

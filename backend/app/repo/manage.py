@@ -219,6 +219,11 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                GROUP BY g.project_id
                ORDER BY gen_count DESC"""
         ).fetchall()
+        # 설정된 프로젝트(레지스트리) — 미분류(null) 제외, 보관 제외. 생성물이 없어도 0으로 표시.
+        reg = conn.execute(
+            "SELECT id, name FROM project WHERE archived = 0 "
+            "ORDER BY COALESCE(sort_order, 1000000), created_at"
+        ).fetchall()
         workers = conn.execute(
             """SELECT g.creator_uid AS uid,
                       COUNT(*) AS gen_count,
@@ -268,13 +273,25 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
             except (ValueError, TypeError):
                 pass
 
+    # 표시 프로젝트 = 설정된 프로젝트(레지스트리). 생성물 통계는 pid 로 매칭(없으면 0).
+    stats_by_pid = {r["pid"]: r for r in proj}
     projects = []
-    for r in proj:
-        d = dict(r)
-        d["name"] = d["name"] or ("미분류" if d["pid"] is None else d["pid"])
-        d["planning"] = planning.get(d["pid"])
-        d["types"] = type_by_pid.get(d["pid"], {k: 0 for k in _TYPE_KEYS})
-        d["video_seconds"] = round(dur_by_pid.get(d["pid"], 0.0), 1)
+    for rp in reg:
+        pid = rp["id"]
+        s = stats_by_pid.get(pid)
+        d = {
+            "pid": pid,
+            "name": rp["name"] or pid,
+            "gen_count": s["gen_count"] if s else 0,
+            "done_count": s["done_count"] if s else 0,
+            "real_credits": s["real_credits"] if s else 0,
+            "credits": s["credits"] if s else 0,
+            "metric_count": s["metric_count"] if s else 0,
+            "elapsed_total": s["elapsed_total"] if s else 0,
+            "planning": planning.get(pid),
+            "types": type_by_pid.get(pid, {k: 0 for k in _TYPE_KEYS}),
+            "video_seconds": round(dur_by_pid.get(pid, 0.0), 1),
+        }
         projects.append(d)
     worker_list = []
     for w in workers:
@@ -283,13 +300,14 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
         worker_list.append(d)
 
     io = {r["action"]: r["amt"] for r in io_rows}
+    # 합계는 전체 생성물 기준(미분류 포함) — 표시 프로젝트 목록은 미분류를 빼지만 '총 생성물'은 전부.
     totals = {
-        "gen_count": sum(p["gen_count"] for p in projects),
-        "done_count": sum(p["done_count"] for p in projects),
-        "credits": sum(p["credits"] for p in projects),
-        "real_credits": sum(p["real_credits"] for p in projects),
-        "elapsed_total": sum(p["elapsed_total"] for p in projects),
-        "metric_count": sum(p["metric_count"] for p in projects),
+        "gen_count": sum(p["gen_count"] for p in proj),
+        "done_count": sum(p["done_count"] for p in proj),
+        "credits": sum(p["credits"] for p in proj),
+        "real_credits": sum(p["real_credits"] for p in proj),
+        "elapsed_total": sum(p["elapsed_total"] for p in proj),
+        "metric_count": sum(p["metric_count"] for p in proj),
         "types": type_totals,
         "video_seconds": round(video_seconds_total, 1),
         # 실제 거래 기준 입출(절대값). net = 지출 - 환불.
@@ -303,32 +321,7 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
         "workers": worker_list,
         "totals": totals,
         "workspaces": _workspace_credits(),
-        "agents": _agent_versions(),
     }
-
-
-def _agent_versions() -> list[dict[str, Any]]:
-    """계정(에이전트)별 CLI 버전·플랜·잔액 — 팀 CLI 버전 skew 진단용. 에이전트가 account status
-    올릴 때 함께 보고한 cli_version(hf_status:*)을 모은다(이미 수집된 데이터 활용)."""
-    from .identity import list_account_statuses
-
-    out: list[dict[str, Any]] = []
-    try:
-        statuses = list_account_statuses()
-    except Exception:  # noqa: BLE001
-        return []
-    for email, st in (statuses or {}).items():
-        if not isinstance(st, dict):
-            continue
-        out.append(
-            {
-                "label": email.split("@")[0] if email else "?",
-                "cli_version": st.get("cli_version"),
-                "plan": st.get("plan") or st.get("subscription_plan_type"),
-                "credits": st.get("credits"),
-            }
-        )
-    return sorted(out, key=lambda a: a["label"])
 
 
 def _workspace_credits() -> list[dict[str, Any]]:
@@ -346,6 +339,9 @@ def _workspace_credits() -> list[dict[str, Any]]:
             continue
         for ws in st.get("workspaces") or []:
             if not isinstance(ws, dict) or not ws.get("id"):
+                continue
+            # 팀 과금 풀만 — 개인(free/personal) 플랜은 제외(PM 관점에서 팀 크레딧만 의미).
+            if (ws.get("plan_type") or "").lower() != "team":
                 continue
             out[ws["id"]] = {
                 "id": ws.get("id"),
