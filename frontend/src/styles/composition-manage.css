@@ -227,11 +227,11 @@
 /* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
 .work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }
 .work-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 1 auto; }
-.work-add-wrap { flex: 0 0 auto; }
+.work-add-wrap { flex: 0 0 auto; margin-left: auto; } /* +필터는 우측 끝 */
 .work-search {
   display: flex; align-items: center; gap: 5px; border: 1px solid var(--border);
   border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05);
-  flex: 1 1 auto; min-width: 160px;
+  flex: 0 0 auto; width: 220px;
 }
 .work-search-ic { font-size: 11px; opacity: .55; }
 .work-search input {
@@ -367,9 +367,9 @@
 .work-card-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; opacity: .75; margin-top: 4px; }
 .work-card-desc { font-size: 11px; opacity: .6; margin-top: 4px; white-space: pre-wrap; }
 
-/* 테이블 뷰 — 좌측 정렬, 헤더는 본문보다 크고 진하게(시인성 구분) */
+/* 테이블 뷰 — 좌측 정렬, 헤더는 본문보다 살짝 크게(과하지 않게) */
 .work-table td, .work-table th { vertical-align: middle; white-space: nowrap; text-align: left; }
-.work-table th { font-size: 14px; font-weight: 800; opacity: 1; }
+.work-table th { font-size: 13px; font-weight: 700; opacity: .72; }
 .work-table td { font-size: 12px; opacity: .9; }
 .work-name-static { font-weight: 600; font-size: 13px; }
 .work-cell-in {
@@ -380,6 +380,8 @@
 .work-cell-in:focus { outline: none; border-color: var(--accent); }
 .work-cut-cell { min-width: 90px; }
 .work-cut-cell .work-cut { width: 32px; height: 32px; }
+/* 테이블에선 +N 이 아래로 안 접히게 한 줄 유지(행 높이 고정) */
+.work-cut-cell .work-cut-thumbs { flex-wrap: nowrap; }
 .work-newrow input {
   width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px; color: var(--text);
   background: transparent; border: 1px dashed var(--border); border-radius: 8px; padding: 7px 9px;
