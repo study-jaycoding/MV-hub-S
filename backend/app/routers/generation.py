@@ -205,6 +205,18 @@ def get_history(gen_id: str, request: Request):
     return data
 
 
+@router.get("/generations/{gen_id}/metrics")
+def gen_metrics(gen_id: str, request: Request):
+    """생성물의 실제 크레딧·소요시간(정보 팝업용). 로컬에 없으면 팀(서버) 항목이라 위임한다."""
+    gen, local_id, server_id = repo.resolve_and_get(gen_id)
+    if not gen:
+        if _proxy.proxying():
+            return _proxy.proxy_get(f"/api/generations/{server_id}/metrics", request)
+        return {}
+    require_view_generation(request, gen)  # GET /{id} 와 동일 가시성
+    return repo.get_generation_metrics(local_id) or {}
+
+
 @router.get("/generations/{gen_id}/history-tree", response_model=HistoryGraphOut)
 def get_history_tree(gen_id: str, request: Request):
     """연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리 렌더용."""

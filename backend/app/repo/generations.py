@@ -1440,6 +1440,29 @@ def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[d
         return _fetch_generation(conn, gen_id, account_uid)
 
 
+def get_generation_metrics(gen_id: str) -> Optional[dict[str, Any]]:
+    """생성물의 실제 크레딧·소요시간(generation_metrics). 매니지/인제스트 전이라 테이블이 없거나
+    행이 없으면 None. real_credits=account transactions 매칭 실제값(NULL=미상),
+    elapsed_seconds=허브가 기록한 생성 소요시간(초, hub-originated 만)."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT est_credits, real_credits, credit_source, elapsed_seconds "
+                "FROM generation_metrics WHERE gen_id=?",
+                (gen_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    return {
+        "est_credits": row["est_credits"],
+        "real_credits": row["real_credits"],
+        "credit_source": row["credit_source"],
+        "elapsed_seconds": row["elapsed_seconds"],
+    }
+
+
 def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
     """(local_id, server_id) 해석.
 

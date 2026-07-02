@@ -26,6 +26,14 @@ function clampStart(x: number, y: number) {
   return { x: left, y: top };
 }
 
+function formatElapsed(sec: number): string {
+  const s = Math.round(sec);
+  if (s < 60) return `${s}초`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}분 ${rem}초` : `${m}분`;
+}
+
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   if (value == null || value === "") return null;
   return (
@@ -44,21 +52,30 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
   };
   const [pos, setPos] = useState(() => clampStart(target.x, target.y));
   const [dim, setDim] = useState<string>("");
-  const [credits, setCredits] = useState<number | null>(null);
+  const [credits, setCredits] = useState<number | null>(null); // 견적(폴백)
+  const [metrics, setMetrics] = useState<{
+    est_credits: number | null;
+    real_credits: number | null;
+    credit_source: string | null;
+    elapsed_seconds: number | null;
+  } | null>(null); // 실제 크레딧·소요시간(있으면 우선)
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
   useEscapeClose(onClose);
 
-  // 크레딧 — 모델+옵션 기준 비용 조회(무료 /api/cost). gen 에 별도 저장 안 함.
+  // 크레딧 — 실제 사용값(generation_metrics.real_credits) 우선, 없으면 모델+옵션 견적(/api/cost) 폴백.
+  // 소요시간(elapsed_seconds)도 metrics 에서 함께 받는다.
   useEffect(() => {
     if (target.kind !== "generation") return;
     setCredits(null);
+    setMetrics(null);
     const g = target.gen;
     api
       .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
       .then((r) => setCredits(r.credits))
       .catch(() => setCredits(null));
+    api.generationMetrics(g.id).then(setMetrics).catch(() => setMetrics(null));
   }, [target]);
 
   const onDragStart = (e: React.PointerEvent) => {
@@ -100,7 +117,19 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
         )}
         <Row label="비율" value={params.aspect_ratio as string} />
         <Row label="해상도" value={params.resolution as string} />
-        <Row label="크레딧" value={credits != null ? `${credits} credits` : "조회 중…"} />
+        <Row
+          label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
+          value={
+            metrics?.real_credits != null
+              ? `${metrics.real_credits} credits`
+              : credits != null
+                ? `${credits} credits`
+                : "조회 중…"
+          }
+        />
+        {metrics?.elapsed_seconds != null && (
+          <Row label="생성 시간" value={formatElapsed(metrics.elapsed_seconds)} />
+        )}
         <Row label="생성일" value={g.created_at} />
         {/* 이 생성물이 실제 속한 프로젝트만 표시(전체 목록 드롭다운 제거) */}
         <Row

@@ -97,6 +97,15 @@ export const api = {
   // 연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리용
   historyTree: (id: string) => jsonFetch<HistoryGraph>(`/api/generations/${pathPart(id)}/history-tree`),
 
+  // 생성물의 실제 크레딧·소요시간(정보 팝업) — generation_metrics(매칭 실제값·허브 소요시간)
+  generationMetrics: (id: string) =>
+    jsonFetch<{
+      est_credits: number | null;
+      real_credits: number | null;
+      credit_source: string | null;
+      elapsed_seconds: number | null;
+    }>(`/api/generations/${pathPart(id)}/metrics`),
+
   // 수동 히스토리 연결 — id 의 부모를 parentId 로 지정(동기화 잡 등 자동 히스토리 없는 것 묶기)
   addHistory: (id: string, parentId: string, relation: "derived" | "reference" = "derived") =>
     jsonFetch<History>(`/api/generations/${pathPart(id)}/history`, {
