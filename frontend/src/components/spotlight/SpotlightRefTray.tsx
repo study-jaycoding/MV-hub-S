@@ -105,7 +105,6 @@ export function SpotlightRefTray({
           onClick={onClearAll}
         >
           <span className="sl-reftray-clear-ic" aria-hidden>⌫</span>
-          비우기
         </button>
         </>
       )}

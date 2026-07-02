@@ -164,13 +164,13 @@
   max-width: 66px; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
 }
-/* 레퍼런스 전체 비우기 버튼 — 썸네일들 끝에 붙는 고스트 타일(있을 때만 렌더) */
+/* 레퍼런스 전체 비우기 버튼 — 썸네일들 끝에 붙는 아이콘 버튼(있을 때만 렌더) */
 .sl-reftray-clear {
   flex: 0 0 auto; align-self: center;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  width: 52px; height: 66px; border-radius: 10px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px; padding: 0;
   background: rgba(255, 255, 255, 0.04); border: 1px dashed var(--border2);
-  color: var(--muted); font-size: 11px; cursor: pointer;
+  color: var(--muted); cursor: pointer;
 }
 .sl-reftray-clear:hover {
   color: #ff9a9a; border-color: rgba(255, 91, 91, 0.5); background: rgba(54, 12, 17, 0.4);
