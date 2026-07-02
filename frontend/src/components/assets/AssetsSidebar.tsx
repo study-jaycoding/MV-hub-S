@@ -1,4 +1,4 @@
-import type { AssetNode } from "../../types";
+import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTree } from "./FolderTree";
 import type { AssetTypeFilter } from "./assetsViewModel";
 
@@ -14,6 +14,8 @@ export function AssetsSidebar({
   typeCounts,
   onTypeFilterChange,
   dir,
+  meta,
+  sourceOnly,
   onRoot,
   loading,
   tree,
@@ -26,6 +28,8 @@ export function AssetsSidebar({
   typeCounts: { image: number; video: number; audio: number };
   onTypeFilterChange: (value: AssetTypeFilter) => void;
   dir: string;
+  meta: Record<string, AssetMeta>;
+  sourceOnly: boolean;
   onRoot: () => void;
   loading: boolean;
   tree: AssetNode[];
@@ -86,6 +90,8 @@ export function AssetsSidebar({
           expanded={expanded}
           onToggle={onToggleDir}
           typeFilter={typeFilter}
+          meta={meta}
+          sourceOnly={sourceOnly}
         />
       )}
     </aside>

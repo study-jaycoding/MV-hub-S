@@ -610,6 +610,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           typeCounts={typeCounts}
           onTypeFilterChange={setTypeFilter}
           dir={dir}
+          meta={meta}
+          sourceOnly={sourceOnly}
           onRoot={() => {
             setQuery("");
             setDir("");
@@ -665,7 +667,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onToggleColor={toggleColor}
             grayOn={grayOn}
             onToggleGray={() => setGrayOn((v) => !v)}
-            onToggleSourceOnly={() => setSourceOnly((v) => !v)}
+            onToggleSourceOnly={() => {
+              const next = !sourceOnly;
+              setSourceOnly(next);
+              if (next) setDir(""); // 소스 필터 켜면 루트로 → 프로젝트 전체 소스 표시(생성탭 @피커와 동일 범위)
+            }}
             tagFilterActive={tagPanelOpen || activeTags.size > 0}
             onToggleTagPanel={toggleTagPanel}
             commentOnly={commentOnly}
