@@ -514,7 +514,7 @@
 }
 .info-rows { display: flex; flex-direction: column; gap: 6px; }
 .info-row { display: flex; gap: 10px; font-size: 12.5px; }
-.info-label { flex: 0 0 64px; color: var(--muted2); }
+.info-label { flex: 0 0 80px; color: var(--muted2); white-space: nowrap; }
 .info-value { flex: 1; color: var(--text); word-break: break-word; }
 .info-value a { color: var(--accent); }
 .info-prompt { white-space: pre-wrap; line-height: 1.5; }
