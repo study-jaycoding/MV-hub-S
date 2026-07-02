@@ -223,25 +223,70 @@
 
 /* ── 작업(Work) 보드/테이블 공통 ── */
 .work-head-ctl { display: flex; align-items: center; gap: 10px; }
-.work-filterbar { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; flex-wrap: wrap; }
-.work-filterbar select {
-  font-family: inherit; font-size: 12px; color: var(--text); background: transparent;
-  border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px;
+
+/* ── 노션식 필터 바(칩 + 검색) ── */
+.work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; flex-wrap: wrap; }
+.work-search {
+  display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
+  border-radius: 8px; padding: 3px 8px; background: rgba(127,127,127,.05); min-width: 240px;
 }
-.work-mine { font-size: 12px; opacity: .85; display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.work-panel-toggle {
-  margin-left: auto; font-family: inherit; font-size: 12px; color: var(--text);
-  background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+.work-search-ic { font-size: 11px; opacity: .55; }
+.work-search input {
+  flex: 1; border: none; background: transparent; color: var(--text); font-family: inherit;
+  font-size: 12px; outline: none; padding: 3px 0;
 }
-/* 생성물(컷 드래그 소스) 패널 */
-.work-gen-panel { border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; margin-bottom: 16px; }
-.work-gen-hint { font-size: 11px; opacity: .5; }
-.work-gen-strip { display: flex; gap: 6px; overflow-x: auto; padding-top: 6px; }
-.work-gen-item { flex: none; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); cursor: grab; background: rgba(127,127,127,.06); }
-.work-gen-item img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
-.work-gen-item:active { cursor: grabbing; }
-.work-gen-ph { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 9px; opacity: .5; }
-.work-gen-empty { font-size: 12px; opacity: .5; padding: 12px; }
+.work-search-x, .work-chip-x {
+  border: none; background: transparent; color: var(--text); opacity: .5; cursor: pointer;
+  font-size: 11px; padding: 0 3px;
+}
+.work-search-x:hover, .work-chip-x:hover { opacity: 1; }
+.work-chip-wrap { position: relative; display: inline-flex; align-items: center; }
+.work-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-family: inherit; font-size: 12px;
+  color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 9px; cursor: pointer;
+}
+.work-chip:hover { border-color: var(--accent); }
+.work-chip.on { border-color: var(--accent); background: rgba(127,127,127,.08); }
+.work-chip-count {
+  font-size: 10px; font-weight: 700; background: var(--accent); color: var(--accent-ink, #111);
+  border-radius: 9px; padding: 0 5px; min-width: 15px; text-align: center;
+}
+.work-chip-caret { font-size: 9px; opacity: .55; }
+.work-chip-add { border-style: dashed; opacity: .85; }
+
+/* 필터 팝업(값 다중선택 / 필터 추가) */
+.work-pop-backdrop { position: fixed; inset: 0; z-index: 40; }
+.work-pop {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 200px; max-width: 280px;
+  background: var(--panel, #1a1a1a); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4); padding: 6px; display: flex; flex-direction: column; gap: 4px;
+}
+.work-pop-head { font-size: 11px; font-weight: 700; opacity: .6; padding: 3px 6px; }
+.work-pop-search {
+  font-family: inherit; font-size: 12px; color: var(--text); background: rgba(127,127,127,.08);
+  border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; outline: none;
+}
+.work-pop-search:focus { border-color: var(--accent); }
+.work-pop-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; }
+.work-pop-empty { font-size: 12px; opacity: .5; padding: 10px; text-align: center; }
+.work-pop-opt {
+  display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 5px 6px; border-radius: 6px;
+  cursor: pointer;
+}
+.work-pop-opt:hover { background: rgba(127,127,127,.1); }
+.work-pop-opt-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-pop-item {
+  text-align: left; font-family: inherit; font-size: 12px; color: var(--text); background: transparent;
+  border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer;
+}
+.work-pop-item:hover { background: rgba(127,127,127,.1); }
+.work-pop-clear {
+  font-family: inherit; font-size: 11px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 8px; cursor: pointer; margin-top: 2px;
+}
+.work-pop-clear:hover { border-color: var(--accent); }
+.work-proj-static { font-size: 12px; opacity: .8; }
 
 /* 보드 카드(작업) */
 .kanban-col.drop { border-color: var(--accent); background: rgba(127,127,127,.04); }

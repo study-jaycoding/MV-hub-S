@@ -145,6 +145,35 @@ export function statusColor(v?: string | null): string {
 export const HIDDEN_STATUSES = new Set(["not_started", "pending"]);
 export const SELECTABLE_STATUSES = STATUSES.filter((s) => !HIDDEN_STATUSES.has(s.v));
 
+// 작업탭 노션식 필터 — 다중선택 칩 5종 + 자유 검색. 전부 클라이언트에서 적용(백엔드 무관).
+export type WorkFilterField = "project" | "episode" | "sequence" | "status" | "creator";
+export const WORK_FILTER_FIELDS: WorkFilterField[] = [
+  "project",
+  "episode",
+  "sequence",
+  "status",
+  "creator",
+];
+export const WORK_FILTER_LABELS: Record<WorkFilterField, string> = {
+  project: "프로젝트",
+  episode: "에피소드",
+  sequence: "시퀀스",
+  status: "상태",
+  creator: "생성자",
+};
+export interface WorkFilters {
+  active: WorkFilterField[]; // 추가된 칩(표시 순서 유지)
+  values: Record<WorkFilterField, string[]>; // 필드별 선택값(빈 배열=조건 없음, 포함 매칭)
+  search: string; // 자유 검색어(에피소드·시퀀스·설명·프로젝트·생성자 대상)
+}
+export function emptyWorkFilters(): WorkFilters {
+  return {
+    active: [],
+    values: { project: [], episode: [], sequence: [], status: [], creator: [] },
+    search: "",
+  };
+}
+
 // 보드/테이블 뷰가 공유하는 props(WorkBoard 가 데이터·핸들러 주입)
 export interface WorkViewProps {
   tasks: Task[];
@@ -186,6 +215,7 @@ export interface Task {
   sequence?: string | null; // 전역 태그명 또는 폴더 2단계(자동 작업)
   description?: string | null;
   folder_path?: string | null; // 렌더 루트 상대 경로(예 ep001/c0010) — 폴더 자동 작업
+  project_name?: string | null; // 소속 프로젝트명(전체 프로젝트 병합 뷰에서 프론트가 부착)
   created_at: string;
   // 파생(연결 생성물에서)
   gen_count?: number;

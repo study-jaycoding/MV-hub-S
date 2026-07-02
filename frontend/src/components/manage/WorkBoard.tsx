@@ -1,5 +1,5 @@
-// 작업 탭 컨테이너 — 프로젝트 선택 · 보드/테이블 뷰 전환 · 필터 · 생성물(컷 드래그 소스) 패널.
-// 데이터·핸들러를 소유하고 BoardView/TableView 에 주입한다.
+// 작업 탭 컨테이너 — 전체 프로젝트의 작업을 병합해 보여주고, 노션식 칩 필터(프로젝트/에피소드/
+// 시퀀스/상태/생성자)+검색으로 좁힌다. 보드/테이블/캘린더에 데이터·핸들러를 주입한다.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import {
@@ -10,20 +10,17 @@ import {
 } from "../../lib/deactivated";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
-import { thumbOf as generationThumbOf, thumbUrl } from "../../lib/media";
+import { thumbUrl } from "../../lib/media";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
-import type { Generation } from "../../types";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { TableView } from "./TableView";
+import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
 import {
-  GEN_MIME,
-  groupLabel,
-  SELECTABLE_STATUSES,
-  STATUS_GROUPS,
+  emptyWorkFilters,
   type Task,
-  statusText,
+  type WorkFilters,
   type WorkViewProps,
 } from "./types";
 
@@ -32,7 +29,6 @@ function taskThumb(path?: string | null): string | undefined {
 }
 
 // 서버가 변형 없이 저장만 하는 필드 — 이것만 담긴 PATCH 는 로컬 상태 갱신으로 끝내고 재호출 생략.
-// (status=파생 재계산, sequence=컷 재매칭, assignee=이름 해석 → 여기 없음 → 재호출 유지)
 const SIMPLE_PATCH_FIELDS = new Set([
   "name",
   "note",
@@ -42,24 +38,37 @@ const SIMPLE_PATCH_FIELDS = new Set([
   "sort_order",
 ]);
 
+// 칩 필터 + 검색 매칭 — 같은 필드 값끼리 OR(포함), 서로 다른 필드끼리 AND. status 는 effective 반영본.
+function matchTask(t: Task, f: WorkFilters): boolean {
+  const v = f.values;
+  if (v.project.length && !v.project.includes(t.project_name || "")) return false;
+  if (v.episode.length && !v.episode.includes(t.name)) return false;
+  if (v.sequence.length && !v.sequence.includes(t.sequence || "")) return false;
+  if (v.status.length && !v.status.includes(t.status)) return false;
+  if (v.creator.length && !(t.creators || []).some((c) => v.creator.includes(c))) return false;
+  const q = f.search.trim().toLowerCase();
+  if (q) {
+    const hay = [t.name, t.sequence, t.description, t.project_name, ...(t.creators || [])]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
 export function WorkBoard() {
-  useT(); // 언어 토글 시 필터·라벨 리렌더
+  useT(); // 언어 토글 시 라벨 리렌더
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
-  const [pid, setPid] = useState("");
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [gens, setGens] = useState<Generation[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
   const [view, setView] = useState<"board" | "table" | "calendar">("board");
-  const [myUid, setMyUid] = useState<string | null>(null);
-  const [fStatus, setFStatus] = useState("");
-  const [fMine, setFMine] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [filters, setFilters] = useState<WorkFilters>(emptyWorkFilters);
   const [err, setErr] = useState<string | null>(null);
-  // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + 자동 생략 판정에 쓴다.
+  // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
 
-  // 비활성화 집합 최신화 — 같은 창(생성탭이 같은 페이지)은 DISABLED_EVENT, 다른 창(별도 생성탭
-  // 창)은 storage 이벤트로 감지한다(둘 다 같은 localStorage 를 본다).
+  // 비활성화 집합 최신화 — 같은 창은 DISABLED_EVENT, 다른 창(별도 생성탭)은 storage 이벤트.
   useEffect(() => {
     const refresh = () => setDisabled(loadDisabledGen());
     const onStorage = (e: StorageEvent) => {
@@ -73,75 +82,56 @@ export function WorkBoard() {
     };
   }, []);
 
+  // 전체 프로젝트 작업 병합 로드 — 프로젝트별 listTasks 를 병렬 호출해 합친다(project_name 부착).
+  // reqRef 로 늦게 온 이전 요청이 최신 화면을 덮지 않게 한다(폴링/브로드캐스트 중첩 대비).
+  const projectsRef = useRef(projects);
+  const reqRef = useRef(0);
+  const loadAll = () => {
+    const ps = projectsRef.current;
+    if (!ps.length) {
+      setTasks([]);
+      return;
+    }
+    const my = ++reqRef.current;
+    Promise.all(
+      ps.map((p) =>
+        manageApi
+          .listTasks(p.pid)
+          .then((r) => r.map((t) => ({ ...t, project_name: p.name })))
+          .catch(() => [] as Task[]),
+      ),
+    ).then((all) => {
+      if (reqRef.current === my) setTasks(all.flat());
+    });
+  };
+
   useEffect(() => {
-    // 프로젝트 목록만 필요 → 무거운 summary()(전체 생성물 scan) 대신 가벼운 프로젝트 목록 API.
     api
       .projects("team")
       .then((r) => {
         const ps = r.projects.map((p) => ({ pid: p.id, name: p.name }));
+        projectsRef.current = ps;
         setProjects(ps);
-        setPid((cur) => cur || (ps[0]?.pid ?? ""));
+        loadAll();
       })
       .catch((e) => setErr(String(e?.message || e)));
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
-    api.provider().then((p) => setMyUid(p.uid || null)).catch(() => {});
   }, []);
-
-  // 현재 pid — 폴링/브로드캐스트로 여러 요청이 겹칠 때, 느린 이전 프로젝트 응답이
-  // 뒤늦게 도착해 현재 화면을 덮지 않도록 응답 시점에 pid 를 대조한다.
-  const pidRef = useRef(pid);
-  useEffect(() => {
-    pidRef.current = pid;
-  }, [pid]);
-  const loadTasks = (p: string) => {
-    if (!p) return;
-    manageApi
-      .listTasks(p)
-      .then((r) => {
-        if (pidRef.current === p) setTasks(r);
-      })
-      .catch((e) => setErr(String(e?.message || e)));
-  };
-  const loadGens = (p: string) => {
-    if (!p) return;
-    api
-      .listGenerations({ tab: "my", project_id: p }, null, 200)
-      .then((r) => {
-        if (pidRef.current === p) setGens(r);
-      })
-      .catch(() => {
-        if (pidRef.current === p) setGens([]);
-      });
-  };
-  useEffect(() => {
-    if (pid) {
-      loadTasks(pid);
-      loadGens(pid);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid]);
 
   // 실시간 반영 — 내 조작은 즉시(브로드캐스트), 팀원(다른 PC) 변경은 폴링으로.
   useEffect(() => {
-    if (!pid) return;
     let debounce: number | undefined;
     const reload = () => {
       if (debounce) clearTimeout(debounce);
-      debounce = window.setTimeout(() => {
-        loadTasks(pid);
-        loadGens(pid);
-      }, 300);
+      debounce = window.setTimeout(loadAll, 300);
     };
-    // 팀원 변경 폴링 — 관리탭이 화면에 보일 때만(숨겨진 창은 부하 안 줌).
     const poll = window.setInterval(() => {
       if (document.visibilityState === "visible") reload();
     }, 12000);
-    // 창이 다시 보이면 즉시 최신화(폴링 주기 안 기다리게).
     const onVis = () => {
       if (document.visibilityState === "visible") reload();
     };
     document.addEventListener("visibilitychange", onVis);
-    // 내 조작 즉시 반영 — 생성탭(다른 창)에서 담기/폴더·최종·공유·삭제 시 신호.
     const offBroadcast = onLibraryChanged(reload);
     return () => {
       if (debounce) clearTimeout(debounce);
@@ -150,13 +140,11 @@ export function WorkBoard() {
       offBroadcast();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid]);
+  }, []);
 
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
-    // 상태 이동과 컷 활성화 동기화(대칭):
-    //  · '생략'으로 옮기면 그 작업의 컷을 모두 비활성화(d 누른 효과) — 라이브러리에 회색 반영.
-    //  · '생략'에서 빼내면(수동/effective 생략 모두) 컷을 다시 켜 화면(effective 생략)이 안 어긋나게.
+    // 상태 이동과 컷 활성화 동기화(대칭): 생략→컷 비활성화, 생략에서 빼면→컷 재활성화.
     if (patch.status) {
       const t = tasks.find((x) => x.id === tid);
       const ids = (t?.cuts || []).map((c) => c.id);
@@ -169,49 +157,39 @@ export function WorkBoard() {
         if (wasOmit) removeDisabledGen(ids);
       }
     }
-    // 서버가 값을 '그대로 저장만' 하는 단순 필드면 로컬 상태만 갱신하고 전체 재호출 생략(빠름).
-    // 상태·시퀀스·컷연결은 서버가 파생/재매칭하므로 재호출(폴더 자동 상태와 어긋나지 않게). 애매하면 재호출.
     const keys = Object.keys(patch);
-    const simpleOnly =
-      keys.length > 0 && keys.every((k) => SIMPLE_PATCH_FIELDS.has(k));
+    const simpleOnly = keys.length > 0 && keys.every((k) => SIMPLE_PATCH_FIELDS.has(k));
     if (simpleOnly) {
       setTasks((prev) => prev.map((t) => (t.id === tid ? { ...t, ...patch } : t)));
     } else {
-      loadTasks(pid);
+      loadAll();
     }
   };
   const onDelete = async (tid: string) => {
     await manageApi.deleteTask(tid);
-    loadTasks(pid);
+    loadAll();
   };
   const onLinkGen = async (tid: string, genId: string) => {
     await manageApi.linkGenerations(tid, [genId]);
-    loadTasks(pid);
+    loadAll();
   };
   const onUnlinkGen = async (tid: string, genId: string) => {
     await manageApi.unlinkGeneration(tid, genId);
-    loadTasks(pid);
+    loadAll();
   };
 
-  // effective 상태 — 작업의 컷이 전부 비활성화(d)면(컷 1개면 그게 꺼질 때 포함) 화면에서만 '생략'으로
-  // 표시한다(서버 미기록). 재활성화하면 자동으로 원래 파생 상태로 돌아온다(생략 sticky 문제 없음).
-  // 수동 생략(서버 status=omit)은 그대로 유지. 필터도 이 effective 상태 기준.
-  const filtered = useMemo(
+  // effective 상태 — 컷이 전부 비활성화(d)면 화면에서만 '생략'으로. 재활성화 시 자동 복귀(서버 미기록).
+  const effective = useMemo(
     () =>
-      tasks
-        .map((t) => {
-          if (t.status === "omit" || !disabled.size) return t;
-          const cuts = t.cuts || [];
-          const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
-          return allOff ? { ...t, status: "omit" } : t;
-        })
-        .filter((t) => {
-          if (fStatus && t.status !== fStatus) return false;
-          if (fMine && myUid && !(t.cuts || []).some((c) => c.creator_uid === myUid)) return false;
-          return true;
-        }),
-    [tasks, fStatus, fMine, myUid, disabled],
+      tasks.map((t) => {
+        if (t.status === "omit" || !disabled.size) return t;
+        const cuts = t.cuts || [];
+        const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
+        return allOff ? { ...t, status: "omit" } : t;
+      }),
+    [tasks, disabled],
   );
+  const filtered = useMemo(() => effective.filter((t) => matchTask(t, filters)), [effective, filters]);
 
   if (err) return <div className="manage-empty">불러오기 실패: {err}</div>;
 
@@ -231,14 +209,6 @@ export function WorkBoard() {
       <header className="manage-head">
         <h1>작업</h1>
         <div className="work-head-ctl">
-          <select className="manage-proj-select" value={pid} onChange={(e) => setPid(e.target.value)}>
-            {!projects.length && <option value="">(프로젝트 없음)</option>}
-            {projects.map((p) => (
-              <option key={p.pid} value={p.pid}>
-                {p.name}
-              </option>
-            ))}
-          </select>
           <div className="manage-toggles">
             <button className={view === "board" ? "on" : ""} onClick={() => setView("board")}>
               보드
@@ -256,59 +226,9 @@ export function WorkBoard() {
         </div>
       </header>
 
-      <div className="work-filterbar">
-        <select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-          <option value="">상태 전체</option>
-          {STATUS_GROUPS.map((g) => {
-            const opts = SELECTABLE_STATUSES.filter((s) => s.group === g);
-            if (!opts.length) return null; // '시작 전'만 있던 그룹은 통째로 숨김
-            return (
-              <optgroup key={g} label={groupLabel(g)}>
-                {opts.map((s) => (
-                  <option key={s.v} value={s.v}>
-                    {statusText(s)}
-                  </option>
-                ))}
-              </optgroup>
-            );
-          })}
-        </select>
-        <label className="work-mine">
-          <input type="checkbox" checked={fMine} onChange={(e) => setFMine(e.target.checked)} /> 내
-          작업만
-        </label>
-        <button className="work-panel-toggle" onClick={() => setPanelOpen((o) => !o)}>
-          {panelOpen ? "생성물 패널 ▲" : "생성물 패널 ▼"}
-        </button>
-      </div>
+      <WorkFilterBar tasks={effective} filters={filters} onChange={setFilters} />
 
-      {panelOpen && (
-        <div className="work-gen-panel">
-          <span className="work-gen-hint">↓ 컷으로 드래그해 연결</span>
-          <div className="work-gen-strip">
-            {gens.map((g) => {
-              const th = generationThumbOf(g, 256);
-              return (
-                <div
-                  key={g.id}
-                  className="work-gen-item"
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData(GEN_MIME, g.id);
-                    e.dataTransfer.effectAllowed = "copy";
-                  }}
-                  title={g.prompt || g.id}
-                >
-                  {th ? <img src={th} alt="" loading="lazy" /> : <div className="work-gen-ph">{g.status}</div>}
-                </div>
-              );
-            })}
-            {!gens.length && <div className="work-gen-empty">이 프로젝트 생성물 없음</div>}
-          </div>
-        </div>
-      )}
-
-      {!pid ? (
+      {!projects.length ? (
         <div className="manage-empty">프로젝트를 먼저 만들어 생성물을 귀속하세요.</div>
       ) : view === "board" ? (
         <BoardView {...viewProps} />

@@ -41,6 +41,7 @@ export function TableView(props: WorkViewProps) {
       <table className="manage-table work-table">
         <thead>
           <tr>
+            <th>프로젝트</th>
             <th>에피소드</th>
             <th>시퀀스</th>
             <th>상태</th>
@@ -57,6 +58,10 @@ export function TableView(props: WorkViewProps) {
         <tbody>
           {tasks.map((t) => (
             <tr key={t.id}>
+              <td>
+                {/* 프로젝트 — 전체 병합 뷰에서 소속 표시(읽기전용). */}
+                <span className="work-proj-static">{t.project_name || "—"}</span>
+              </td>
               <td>
                 {/* 에피소드(작업명) — 폴더 구조에서 받아온 정보라 읽기전용. */}
                 <span className="work-name-static" title={t.folder_path || t.name}>
