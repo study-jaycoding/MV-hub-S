@@ -808,7 +808,7 @@ def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]
     """job_id 를 가진 generation [(id, job_id)] — 힉스필드 존재 검증 대상.
     account_uid 지정(AUTH on)이면 내 것만 — 공유 DB 에서 남의 잡을 (다른 신원의) 하우스 CLI 로
     조회·오판해 휴지통 보내는 사고를 막는다. None(단독)이면 전체(기존 동작)."""
-    where = "job_id IS NOT NULL AND job_id<>''"
+    where = "job_id IS NOT NULL AND job_id<>'' AND deleted_at IS NULL"
     args: list[Any] = []
     if account_uid is not None:
         where += " AND creator_uid=?"
@@ -820,6 +820,16 @@ def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]
                 f"SELECT id, job_id FROM generation WHERE {where}", args
             ).fetchall()
         ]
+
+
+def get_generation_identity(gen_id: str) -> tuple[Optional[str], Optional[str]]:
+    """서버 재검증용 (creator_uid, job_id) — 공개 get_generation dict 엔 job_id 가 없어 직접 조회한다.
+    HF 삭제 검토 적용 시 '내 것이고 job_id 일치'를 확인하는 데 쓴다. 없으면 (None, None)."""
+    with get_connection() as conn:
+        r = conn.execute(
+            "SELECT creator_uid, job_id FROM generation WHERE id=?", (gen_id,)
+        ).fetchone()
+        return (r["creator_uid"], r["job_id"]) if r else (None, None)
 
 
 def set_hf_missing(gen_id: str, missing: bool) -> None:

@@ -128,8 +128,9 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
     from ..manage_db import upsert_facts
 
     items = [it.model_dump() for it in body.items]
-    n = upsert_facts(acc.get("email") or "local", acc.get("creator_uid"), items)
-    return {"upserted": n}
+    n, skipped = upsert_facts(acc.get("email") or "local", acc.get("creator_uid"), items)
+    # skipped = 서버가 반영 안 한 항목(미링크 전체·남의 것). 클라가 이것만 재시도로 남기고 나머지는 정리.
+    return {"upserted": n, "skipped": skipped}
 
 
 @router.get("/team-overview")
@@ -205,14 +206,14 @@ def hf_missing_apply(body: HfMissingApplyIn, request: Request):
         return {"trashed": 0}
     trashed = 0
     for r in body.results:
-        g = repo.get_generation(r.gen_id)
-        # ★재검증: 내 것이고 job_id 가 일치할 때만(로컬이 보낸 값을 그대로 믿지 않음)
-        if not g or g.get("creator_uid") != my_uid or (g.get("job_id") or "") != r.job_id:
+        # ★재검증: 내 것이고 job_id 가 일치할 때만(로컬이 보낸 값을 그대로 믿지 않음).
+        # get_generation 공개 dict 엔 job_id 가 없어 identity 를 직접 조회한다(코덱스).
+        creator_uid, job_id = repo.get_generation_identity(r.gen_id)
+        if creator_uid != my_uid or (job_id or "") != r.job_id:
             continue
         if r.exists:
             repo.set_hf_missing(r.gen_id, False)  # 재등장 → 흐림 해제
-        else:
-            repo.delete_generation(r.gen_id)  # HF 삭제 확정 → 서버 휴지통(soft delete)
+        elif repo.delete_generation(r.gen_id):  # HF 삭제 확정 → 서버 휴지통(soft delete)
             trashed += 1
     return {"trashed": trashed}
 
