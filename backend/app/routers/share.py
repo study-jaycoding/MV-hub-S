@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from . import _proxy
 from .. import rbac, repo
-from ..config import DEFAULT_WORKER_ID
+from ..config import DEFAULT_WORKER_ID, MANAGE_ENABLED
 from ..db import get_connection
 from ..deps import (
     account_global_roles,
@@ -31,6 +31,19 @@ from ..models import GenerationOut, ImportIn, PublishIn
 router = APIRouter(prefix="/api", tags=["share"])
 
 
+def _touch_telemetry(gen_id: str | None) -> None:
+    """공유/최종 상태가 바뀐 내 로컬 생성물을 텔레메트리 dirty 표시(is_shared·is_final 차원 갱신).
+    best-effort·플래그 게이트 — 실패해도 공유/최종 흐름엔 무영향. 전송은 다음 ingest drain 이 처리."""
+    if not MANAGE_ENABLED or not gen_id:
+        return
+    try:
+        from ..repo import manage as _m
+
+        _m.mark_telemetry_dirty([gen_id])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
@@ -43,6 +56,7 @@ def publish(gen_id: str, body: PublishIn, request: Request):
         raise HTTPException(status_code=409, detail="완료된 생성만 발행할 수 있음")
     shared_by = body.shared_by or actor_id(request)
     repo.publish(gen_id, shared_by, body.visibility)
+    _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
 
 
@@ -67,6 +81,7 @@ def unpublish(gen_id: str, request: Request):
             out = None
         if local_id:  # 내 로컬 카드도 미러 해제(tab=my·히스토리 즉시 반영)
             repo.unpublish(local_id)
+            _touch_telemetry(local_id)
             return repo.get_generation(local_id)
         if out is not None:
             return out  # 남의 항목(로컬 행 없음) — 서버 응답 그대로
@@ -80,6 +95,7 @@ def unpublish(gen_id: str, request: Request):
             status_code=409, detail="최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
         )
     repo.unpublish(gen_id)
+    _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
 
 
@@ -145,6 +161,7 @@ def finalize(gen_id: str, request: Request):
                         pass
                     repo.unpublish(local_id)
                 raise
+        _touch_telemetry(local_id)
         return out
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
@@ -162,6 +179,7 @@ def finalize(gen_id: str, request: Request):
     if not gen.get("shared"):  # 최종 = 후보 확정 → 공유 동반(잠금은 unpublish 가드)
         repo.publish(gen_id, actor_id(request), "team")
     repo.set_final(gen_id, True, _finalizer_uid(request))
+    _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
 
 
@@ -177,6 +195,7 @@ def unfinalize(gen_id: str, request: Request):
                 repo.set_final(local_id, False)
             except Exception:
                 repo.set_final(local_id, False)  # 1회 재시도(보통 일시적 DB 락) — 실패 시 전파해 알림
+        _touch_telemetry(local_id)
         return out
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -188,6 +207,7 @@ def unfinalize(gen_id: str, request: Request):
     else:
         require_edit_generation(request, gen)  # 미배정 → 본인/admin 만
     repo.set_final(gen_id, False)
+    _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
 
 

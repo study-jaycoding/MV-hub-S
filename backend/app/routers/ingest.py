@@ -175,6 +175,16 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     if account_status:
         repo.record_account_status(acc["email"], account_status)
 
+    # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
+    # 실제 서버 전송은 ingest 엔드포인트가 _drain_telemetry 로 처리한다.
+    if MANAGE_ENABLED and seen_job_ids:
+        try:
+            from ..repo import manage as _m
+
+            _m.mark_ingested_dirty(list(seen_job_ids), boost_uid or linked)
+        except Exception:  # noqa: BLE001 — 텔레메트리 표시 실패가 적재를 막지 않게
+            pass
+
     return IngestOut(
         inserted=counts["inserted"],
         updated=counts["updated"],
@@ -182,6 +192,25 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         skipped=skipped,
         linked_uid=linked,
     )
+
+
+def _drain_telemetry() -> None:
+    """dirty 텔레메트리를 서버 매니징 저장소로 push(best-effort). 프록시(서버 연결) 있을 때만 —
+    서버 없으면 outbox 에 쌓였다 다음 기회에 전송(오프라인 큐). 순수 클라이언트 측 드레이너."""
+    if not _proxy.proxying():
+        return
+    from ..repo import manage as _m
+
+    ids = _m.list_dirty_telemetry(500)
+    if not ids:
+        return
+    facts = _m.build_telemetry_facts(gen_ids=ids, my_uid=repo.get_my_uid())
+    try:
+        _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": facts})
+        # 성공: 선택한 id 전부 pushed 처리(내것 아니라 안 빌드된 것도 정리 → 무한 dirty 방지).
+        _m.mark_telemetry_pushed(ids)
+    except Exception as e:  # noqa: BLE001 — 전송 실패는 재시도(다음 drain)로 회복
+        _m.mark_telemetry_failed(ids, str(e))
 
 
 @router.post("/ingest", response_model=IngestOut)
@@ -214,6 +243,12 @@ def ingest(body: IngestIn, request: Request):
                 },
             )
         except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
+            pass
+    # 팀 매니징: dirty 텔레메트리를 서버로 flush(신규 적재분 + 이전 실패분 재시도). best-effort.
+    if MANAGE_ENABLED:
+        try:
+            _drain_telemetry()
+        except Exception:  # noqa: BLE001
             pass
     return out
 

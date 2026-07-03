@@ -18,7 +18,7 @@ from ..deps import (
     require_global_cap,
     require_project_role,
 )
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..models import (
     AssignProjectIn,
     ProjectCreate,
@@ -207,6 +207,14 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # 팀 매니징: 귀속(프로젝트·폴더)이 바뀐 내 생성물을 텔레메트리 dirty 표시 → 다음 drain 에 반영.
+    if MANAGE_ENABLED and tab != "team":
+        try:
+            from ..repo import manage as _m
+
+            _m.mark_telemetry_dirty(body.generation_ids)
+        except Exception:  # noqa: BLE001
+            pass
     # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
     # 반영해 팀 공유 뷰가 안 어긋나게 한다. best-effort — 실패해도 로컬 이동은 유효(team_synced=False).
     team_synced: Optional[bool] = None

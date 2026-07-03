@@ -1071,18 +1071,45 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
         for gid in ids:
             conn.execute(
                 "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) VALUES(?, datetime('now')) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now')",
+                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now'), pushed_at=NULL",
                 (gid,),
             )
 
 
-def list_dirty_telemetry(limit: int = 200) -> list[str]:
-    """push 가 필요한 local_gen_id 목록(미전송 또는 마지막 push 후 다시 dirty). 오래된 것 먼저."""
+def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
+    """적재된 잡(job_id)들을 내 로컬 generation.id 로 역매핑해 outbox 에 dirty 표시. 반환=표시 수.
+    동기화본은 id==job_id, placeholder 채움본은 job_id 로 매칭 → (id IN OR job_id IN) 둘 다 커버.
+    my_uid 지정 시 내 생성물만(남의 공유본 제외)."""
+    ids = [j for j in (job_ids or []) if j]
+    if not ids:
+        return 0
+    ph = ",".join("?" for _ in ids)
+    where = f"(id IN ({ph}) OR job_id IN ({ph}))"
+    args: list[Any] = ids + ids
+    if my_uid:
+        where += " AND creator_uid = ?"
+        args.append(my_uid)
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT local_gen_id FROM telemetry_outbox "
-            "WHERE pushed_at IS NULL OR dirty_at > pushed_at "
+            f"SELECT id FROM generation WHERE {where} AND deleted_at IS NULL", args
+        ).fetchall()
+        local_ids = [r["id"] for r in rows]
+        for gid in local_ids:
+            conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) VALUES(?, datetime('now')) "
+                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now'), pushed_at=NULL",
+                (gid,),
+            )
+    return len(local_ids)
+
+
+def list_dirty_telemetry(limit: int = 200) -> list[str]:
+    """push 가 필요한 local_gen_id 목록(pushed_at IS NULL = 미전송/재큐잉). 오래된 것 먼저."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT local_gen_id FROM telemetry_outbox WHERE pushed_at IS NULL "
             "ORDER BY dirty_at ASC LIMIT ?",
             (limit,),
         ).fetchall()
