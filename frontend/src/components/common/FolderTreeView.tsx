@@ -1,5 +1,5 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
-import { useState, type DragEvent } from "react";
+import { useState, type DragEvent, type KeyboardEvent } from "react";
 
 export interface FolderTreeItem {
   name: string;
@@ -15,6 +15,8 @@ export function FolderTreeView({
   onToggle,
   onSelect,
   onDropFolder,
+  isDisabled,
+  onRowKeyDown,
   scroll = false,
   className = "",
 }: {
@@ -25,6 +27,10 @@ export function FolderTreeView({
   onSelect: (path: string) => void;
   // 카드를 이 폴더로 드래그해 놓으면 호출(드롭). 지정 시 폴더 행이 드롭 타깃이 된다.
   onDropFolder?: (path: string, e: DragEvent) => void;
+  // 이 폴더가 비활성(생략)인가 — true 면 회색 표시.
+  isDisabled?: (path: string) => boolean;
+  // 폴더 행 포커스 상태에서 키 입력(예: d 로 비활성 토글).
+  onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
   scroll?: boolean;
   className?: string;
 }) {
@@ -41,6 +47,8 @@ export function FolderTreeView({
           onToggle={onToggle}
           onSelect={onSelect}
           onDropFolder={onDropFolder}
+          isDisabled={isDisabled}
+          onRowKeyDown={onRowKeyDown}
         />
       ))}
     </div>
@@ -55,6 +63,8 @@ function FolderTreeRow({
   onToggle,
   onSelect,
   onDropFolder,
+  isDisabled,
+  onRowKeyDown,
 }: {
   node: FolderTreeItem;
   depth: number;
@@ -63,6 +73,8 @@ function FolderTreeRow({
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
+  isDisabled?: (path: string) => boolean;
+  onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
   const children = node.children || [];
   const hasChildren = children.length > 0;
@@ -70,6 +82,7 @@ function FolderTreeRow({
   const controlled = !!expanded && !!onToggle;
   const open = !hasChildren || (controlled ? expanded.has(node.path) : true);
   const selected = selectedPath === node.path;
+  const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
   const [dropOver, setDropOver] = useState(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
@@ -97,6 +110,7 @@ function FolderTreeRow({
           "folder-tree-row" +
           (depth === 0 ? " root" : "") +
           (selected ? " selected" : "") +
+          (disabled ? " disabled" : "") +
           (dropOver ? " drop-over" : "")
         }
         style={{ paddingLeft: 6 + depth * 14 }}
@@ -105,6 +119,14 @@ function FolderTreeRow({
           e.stopPropagation();
           onSelect(node.path);
         }}
+        onKeyDown={
+          onRowKeyDown
+            ? (e) => {
+                e.stopPropagation(); // 전역 카드선택 단축키(d 등)와 충돌 방지
+                onRowKeyDown(node.path, e);
+              }
+            : undefined
+        }
         {...dropProps}
       >
         <span
@@ -134,6 +156,8 @@ function FolderTreeRow({
             onToggle={onToggle}
             onSelect={onSelect}
             onDropFolder={onDropFolder}
+            isDisabled={isDisabled}
+            onRowKeyDown={onRowKeyDown}
           />
         ))}
     </div>

@@ -1,5 +1,7 @@
-import { useEffect, useState, type DragEvent } from "react";
+import { useEffect, useState, type DragEvent, type KeyboardEvent } from "react";
 import { api } from "../../api";
+import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
+import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
@@ -49,6 +51,8 @@ function SidebarFolderTree({
   onToggle,
   onSelect,
   onDropFolder,
+  isDisabled,
+  onRowKeyDown,
 }: {
   state?: ProjectFolderEntry;
   loading?: boolean;
@@ -57,6 +61,8 @@ function SidebarFolderTree({
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
+  isDisabled?: (path: string) => boolean;
+  onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
   if (!state?.root_path) return null;
   if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;
@@ -76,6 +82,8 @@ function SidebarFolderTree({
         onToggle={onToggle}
         onSelect={onSelect}
         onDropFolder={onDropFolder}
+        isDisabled={isDisabled}
+        onRowKeyDown={onRowKeyDown}
         scroll={scroll}
       />
       {state.truncated && <div className="side-folder-note">일부만 표시</div>}
@@ -112,6 +120,7 @@ export function ProjectSection({
   onDropToUnassigned?: (genId: string) => void;
 }) {
   const tr = useT();
+  const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
   const [order, setOrder] = useState<Project[]>(projects);
   useEffect(() => setOrder(projects), [projects]);
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>({});
@@ -417,6 +426,14 @@ export function ProjectSection({
                           }
                         : undefined
                     }
+                    isDisabled={(path) => isFolderDisabled(disabledFolders, project.id, path)}
+                    onRowKeyDown={(path, e) => {
+                      // d = 이 폴더(및 하위) 비활성(생략) 토글. 그 폴더 생성물이 회색·관리창 생략 연동.
+                      if (e.key === "d" || e.key === "D") {
+                        e.preventDefault();
+                        toggleDisabledFolder(project.id, path);
+                      }
+                    }}
                   />
                 )}
               </div>

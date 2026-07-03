@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   compositionBoard: "content-hub-board",
   historyDisabled: "ch.history.disabled",
   historyDisabledLegacy: "ch.lineage.disabled",
+  disabledFolders: "ch.lib.disabledFolders", // 폴더 단위 비활성화(생략) — projectId→폴더경로[]
+
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",

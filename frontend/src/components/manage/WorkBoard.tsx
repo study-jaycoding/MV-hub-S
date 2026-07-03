@@ -5,6 +5,8 @@ import { api } from "../../api";
 import {
   addDisabledGen,
   DISABLED_EVENT,
+  isFolderDisabled,
+  loadDisabledFolders,
   loadDisabledGen,
   removeDisabledGen,
 } from "../../lib/deactivated";
@@ -97,6 +99,7 @@ export function WorkBoard() {
   const [err, setErr] = useState<string | null>(null);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
+  const [disabledFolders, setDisabledFolders] = useState(() => loadDisabledFolders()); // 폴더 단위 비활성
   // 값별 색 라벨(프로젝트/에피소드/시퀀스/생성자) — localStorage 기억, 창 간 동기.
   const [colorMap, setColorMap] = useState<ColorMap>(loadColorMap);
   const setColor = (field: string, value: string, key: string) => {
@@ -132,9 +135,17 @@ export function WorkBoard() {
 
   // 비활성화 집합 최신화 — 같은 창은 DISABLED_EVENT, 다른 창(별도 생성탭)은 storage 이벤트.
   useEffect(() => {
-    const refresh = () => setDisabled(loadDisabledGen());
+    const refresh = () => {
+      setDisabled(loadDisabledGen());
+      setDisabledFolders(loadDisabledFolders());
+    };
     const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.historyDisabled || e.key === null) refresh();
+      if (
+        e.key === STORAGE_KEYS.historyDisabled ||
+        e.key === STORAGE_KEYS.disabledFolders ||
+        e.key === null
+      )
+        refresh();
       if (e.key === STORAGE_KEYS.manageColorTags || e.key === null) setColorMap(loadColorMap());
     };
     window.addEventListener(DISABLED_EVENT, refresh);
@@ -212,7 +223,9 @@ export function WorkBoard() {
       const t = tasks.find((x) => x.id === tid);
       const ids = (t?.cuts || []).map((c) => c.id);
       if (patch.status === "omit") {
-        addDisabledGen(ids);
+        // 폴더 단위로 이미 생략된 작업이면 id store 를 건드리지 않는다 — 폴더를 다시 켤 때
+        // 컷 비활성이 잔류해 계속 생략으로 남는 오염 방지(폴더 store 가 단일 소스).
+        if (!isFolderDisabled(disabledFolders, t?.project_id, t?.folder_path)) addDisabledGen(ids);
       } else {
         const dset = loadDisabledGen();
         const wasOmit =
@@ -241,17 +254,32 @@ export function WorkBoard() {
     loadAll();
   };
 
-  // effective 상태 — 컷이 전부 비활성화(d)면 화면에서만 '생략'으로. 재활성화 시 자동 복귀(서버 미기록).
+  // effective 상태 — 화면에서만 '생략'으로(서버 미기록, 재활성화 시 자동 복귀):
+  //   (1) 이 작업의 폴더가 폴더 단위 비활성이면 생략, 또는 (2) 컷이 전부 비활성화(d)면 생략.
   const effective = useMemo(
     () =>
       tasks.map((t) => {
-        if (t.status === "omit" || !disabled.size) return t;
+        if (t.status === "omit") return t;
+        if (isFolderDisabled(disabledFolders, t.project_id, t.folder_path))
+          return { ...t, status: "omit" };
+        if (!disabled.size) return t;
         const cuts = t.cuts || [];
         const allOff = cuts.length > 0 && cuts.every((c) => disabled.has(c.id));
         return allOff ? { ...t, status: "omit" } : t;
       }),
-    [tasks, disabled],
+    [tasks, disabled, disabledFolders],
   );
+  // 컷 회색용 확장 집합 — id 직접 비활성 + 폴더 비활성 작업의 컷 전부(컷엔 folder_path 가 없으므로
+  // 작업의 폴더 판정으로 파생). CutThumbs·CalendarView 가 이 집합으로 컷을 회색 처리.
+  const disabledCuts = useMemo(() => {
+    if (!Object.keys(disabledFolders).length) return disabled;
+    const s = new Set(disabled);
+    for (const t of tasks) {
+      if (isFolderDisabled(disabledFolders, t.project_id, t.folder_path))
+        (t.cuts || []).forEach((c) => s.add(c.id));
+    }
+    return s;
+  }, [tasks, disabled, disabledFolders]);
   const filtered = useMemo(() => effective.filter((t) => matchTask(t, filters)), [effective, filters]);
 
   // 드래그 순서변경 — 표시 순서에서 draggedId 를 targetId 앞으로 옮기고 sort_order 를 재부여(전역 유지).
@@ -288,7 +316,7 @@ export function WorkBoard() {
     tasks: filtered,
     seqOptions,
     thumb: taskThumb,
-    disabled,
+    disabled: disabledCuts,
     colorMap,
     selected,
     onToggleSelect: toggleSelect,

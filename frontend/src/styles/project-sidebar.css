@@ -80,6 +80,10 @@
   background: rgba(255,79,138,0.2);
   color: #ffd6e5; font-weight: 700;
 }
+/* 폴더 단위 비활성(생략) — d 로 토글. 회색+취소선으로 '이 폴더는 뺐다'를 표시. */
+.folder-tree-row.disabled { opacity: 0.4; }
+.folder-tree-row.disabled .folder-tree-name { text-decoration: line-through; }
+.folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); }
 .folder-tree-caret {
   width: 9px; flex: none; color: var(--muted); font-size: 10px;
 }

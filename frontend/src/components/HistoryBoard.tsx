@@ -9,7 +9,8 @@ import { useClickSeparation } from "../lib/useClickSeparation";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useDebouncedCallback } from "../lib/useDebouncedCallback";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
-import { loadDisabledGen, DISABLED_EVENT } from "../lib/deactivated";
+import { loadDisabledGen, loadDisabledFolders, DISABLED_EVENT } from "../lib/deactivated";
+import { expandDisabledGenerationIds } from "../lib/generationDisplay";
 import {
   HISTORY_BOARD_LAYOUT,
   buildHistoryLayout,
@@ -94,7 +95,8 @@ export function HistoryBoard({
 }) {
   const { err, graph } = useHistoryGraph(focusId, reloadSignal);
   const [selected, setSelected] = useState<Set<string>>(new Set()); // 다중 선택(비교용)
-  const [disabled, setDisabled] = useState<Set<string>>(loadDisabledGen); // 비활성화(회색) 표시
+  const [disabled, setDisabled] = useState<Set<string>>(loadDisabledGen); // 비활성화(회색) 표시(id 직접)
+  const [disabledFolders, setDisabledFolders] = useState(loadDisabledFolders); // 폴더 단위 비활성
   const { manualPos, setManualPos } = useHistoryManualPositions(graph, arrangeSignal);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -144,8 +146,17 @@ export function HistoryBoard({
     setSelected(new Set());
   }, [focusId]);
 
-  // 비활성화 상태는 lib/deactivated 가 영속·전파. 다른 화면(라이브러리)에서 토글되면 여기도 갱신.
-  useCustomEvent(DISABLED_EVENT, () => setDisabled(loadDisabledGen()));
+  // 비활성화 상태는 lib/deactivated 가 영속·전파. 다른 화면(라이브러리·사이드바)에서 토글되면 여기도 갱신.
+  useCustomEvent(DISABLED_EVENT, () => {
+    setDisabled(loadDisabledGen());
+    setDisabledFolders(loadDisabledFolders());
+  });
+
+  // id 직접 비활성 + 폴더 비활성을 합친 확장 집합 — 노드·엣지 모두 이걸로 회색 판정(엣지는 id만 있으므로).
+  const disabledIds = useMemo(
+    () => expandDisabledGenerationIds(graph?.nodes || [], disabled, disabledFolders),
+    [graph, disabled, disabledFolders],
+  );
 
   useHistoryBoardShortcuts({ focusId, selectedRef, setManualPos });
 
@@ -532,7 +543,7 @@ export function HistoryBoard({
               hasCenter={hasCenter}
               highlight={highlight}
               whiteEdges={whiteEdges}
-              disabled={disabled}
+              disabled={disabledIds}
             />
             {graph!.nodes.map((g) => {
               const p = posOf(g.id);
@@ -553,7 +564,7 @@ export function HistoryBoard({
                   onLine={onLine}
                   offLine={hasCenter && !onLine}
                   fill={fill}
-                  disabled={disabled.has(g.id)}
+                  disabled={disabledIds.has(g.id)}
                   typeFilter={typeFilter}
                   colorFilter={colorFilter}
                   tagFilter={tagFilter}

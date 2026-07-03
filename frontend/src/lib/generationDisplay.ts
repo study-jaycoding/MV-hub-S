@@ -1,3 +1,4 @@
+import { isFolderDisabled, type DisabledFolders } from "./deactivated";
 import type { Generation } from "../types";
 
 export const GENERATION_STATUS_LABEL: Record<string, string> = {
@@ -55,6 +56,30 @@ export function filterDisabledGenerations(
   hideDisabled: boolean,
 ): Generation[] {
   return hideDisabled ? gens.filter((g) => !disabledIds.has(g.id)) : gens;
+}
+
+// 생성물 1개가 비활성인가 — id 직접 비활성(d) OR 그 folder_path 가 비활성 폴더(및 하위)에 걸림.
+export function isGenerationDisabled(
+  g: Pick<Generation, "id" | "project_id" | "folder_path">,
+  disabledIds: Set<string>,
+  disabledFolders: DisabledFolders,
+): boolean {
+  return disabledIds.has(g.id) || isFolderDisabled(disabledFolders, g.project_id, g.folder_path);
+}
+
+// id 만 받는 소비자(엣지·썸네일그리드·보드노드)에 넘길 '확장된 비활성 id 집합'.
+// 폴더 규칙이 없으면 기존 id 집합을 그대로 돌려줘 불필요한 순회를 피한다.
+export function expandDisabledGenerationIds(
+  gens: Pick<Generation, "id" | "project_id" | "folder_path">[],
+  disabledIds: Set<string>,
+  disabledFolders: DisabledFolders,
+): Set<string> {
+  if (!Object.keys(disabledFolders).length) return disabledIds;
+  const s = new Set(disabledIds);
+  for (const g of gens) {
+    if (isFolderDisabled(disabledFolders, g.project_id, g.folder_path)) s.add(g.id);
+  }
+  return s;
 }
 
 export function canFinalizeGeneration(g: Generation, finalizeProjects: Set<string>): boolean {

@@ -44,8 +44,10 @@ import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
 import type { MediaFilter } from "./lib/mediaTypes";
 import {
   canFinalizeGeneration,
+  expandDisabledGenerationIds,
   filterDisabledGenerations,
 } from "./lib/generationDisplay";
+import { useDisabledFolders } from "./lib/useDisabledFolders";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
 import { hasGlobalCap } from "./types";
@@ -122,6 +124,7 @@ export default function App() {
   // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn=ON 이면 비활성 카드를 목록에서 제외.
   // 다른 색 dot 과 반대: 색 dot=그 색만 보임(포함), 회색=비활성만 숨김(제외).
   const disabledGen = useDisabledGenerations();
+  const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
   const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
   // 전역 태그 — 사이드바에서 '무장'한 것들. 다음 생성에 자동 적용(별도 네임스페이스).
   const [armedAutoTags, setArmedAutoTags] = useState<Set<string>>(() => LS.loadSet("armedAutoTags"));
@@ -313,7 +316,12 @@ export default function App() {
   const visibleGens = gens;
   // 회색 버튼 ON → 비활성(회색)으로 표시된 카드를 그리드에서 제외(숨김). 색 dot 과 반대 방향 필터.
   // (비활성은 로컬 시각 상태라 서버가 모름 → 클라이언트 측에서 거른다.)
-  const gridGens = filterDisabledGenerations(visibleGens, disabledGen, grayOn);
+  // id 직접 비활성(d) + 폴더 비활성을 합친 '확장 집합' — 라이브러리 회색/숨김, 썸네일그리드에 공통 사용.
+  const effectiveDisabled = useMemo(
+    () => expandDisabledGenerationIds(visibleGens, disabledGen, disabledFolders),
+    [visibleGens, disabledGen, disabledFolders],
+  );
+  const gridGens = filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn);
   // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
@@ -628,7 +636,7 @@ export default function App() {
               />
               <ThumbnailGrid
                     generations={gridGens}
-                    disabledIds={disabledGen}
+                    disabledIds={effectiveDisabled}
                     tab={filters.tab}
                     myCreatorUid={account?.creator_uid ?? null}
                     scale={scale}
