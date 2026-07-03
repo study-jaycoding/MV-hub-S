@@ -118,6 +118,8 @@ def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]
 # ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
 _UPLOAD_CHUNK_SIZE = media_cache._CHUNK_SIZE
 _UPLOAD_MAX_BYTES = int(os.getenv("CONTENT_HUB_UPLOAD_MAX_BYTES", str(media_cache._MAX_BYTES)))
+_UPLOAD_MAX_FILES = 500  # 한 요청당 파일 수 상한(요청 총량 방어 — 파일별 상한과 별개)
+_ZIP_MAX_FILES = 1000    # zip 한 건에 담을 최대 파일 수(중복 요청·거대 묶음 방어)
 
 
 class _UploadTooLarge(Exception):
@@ -403,13 +405,26 @@ def _hidden(name: str) -> bool:
     return hidden_folder(name) or name.lower() == "readme.md"
 
 
+# 트리 스캔 방어 한도 — 심볼릭링크/정션이 만든 순환·거대 폴더가 요청을 무한히 잡지 않게.
+_TREE_MAX_DEPTH = 24
+_TREE_MAX_NODES = 20000
+
+
 def _build_tree(
     directory: Path,
     rel_prefix: str,
     *,
     hidden_names: Optional[set[str]] = None,
+    _depth: int = 0,
+    _budget: Optional[list[int]] = None,
 ) -> list[dict[str, Any]]:
-    """디렉터리를 재귀 순회 — 폴더 우선, 미디어 파일만 포함."""
+    """디렉터리를 재귀 순회 — 폴더 우선, 미디어 파일만 포함.
+    심볼릭링크/정션은 따라가지 않는다(등록 폴더 밖으로 새는 디렉터리 목록 노출·순환 방지).
+    깊이·노드 상한으로 거대/순환 트리가 이벤트 스레드를 무한히 잡는 것을 막는다."""
+    if _budget is None:
+        _budget = [_TREE_MAX_NODES]
+    if _depth > _TREE_MAX_DEPTH or _budget[0] <= 0:
+        return []
     try:
         entries = sorted(
             directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
@@ -419,23 +434,43 @@ def _build_tree(
 
     out: list[dict[str, Any]] = []
     for entry in entries:
+        if _budget[0] <= 0:
+            break
         if _hidden(entry.name):
             continue
         if hidden_names and entry.name.lower() in hidden_names:
             continue
+        # 심볼릭링크/정션은 등록 폴더 밖(예: C:\Users)을 가리킬 수 있어 목록에서 제외한다.
+        # (파일 본문은 safe_join 이 막지만 디렉터리 listing 은 여기서만 막힌다.)
+        # ★Windows 정션(mklink /J)은 is_symlink()에 안 걸리므로 is_junction()도 함께 차단
+        # (Path.is_junction 은 3.12+; 구버전 대비 getattr 방어).
+        try:
+            is_reparse = entry.is_symlink()
+            junction_check = getattr(entry, "is_junction", None)
+            if junction_check and junction_check():
+                is_reparse = True
+            if is_reparse:
+                continue
+        except OSError:
+            continue
         rel = f"{rel_prefix}{entry.name}"
         if entry.is_dir():
+            _budget[0] -= 1
             out.append(
                 {
                     "name": entry.name,
                     "type": "dir",
                     "path": rel,
-                    "children": _build_tree(entry, rel + "/", hidden_names=hidden_names),
+                    "children": _build_tree(
+                        entry, rel + "/", hidden_names=hidden_names,
+                        _depth=_depth + 1, _budget=_budget,
+                    ),
                 }
             )
         else:
             mt = _media_type(entry.name)
             if mt:
+                _budget[0] -= 1
                 try:
                     mtime = entry.stat().st_mtime  # 파일 날짜(에셋 날짜별 구분용)
                 except OSError:
@@ -803,6 +838,8 @@ async def upload_assets(
     dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
     if not dest or not dest.is_dir():
         raise HTTPException(status_code=400, detail="대상 폴더 없음")
+    if len(files) > _UPLOAD_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
 
     saved: list[str] = []
     skipped: list[str] = []
@@ -879,6 +916,8 @@ async def upload_reference_import(
         except ValueError:
             raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
+    if len(files) > _UPLOAD_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -901,7 +940,8 @@ async def upload_reference_import(
             tmp.unlink(missing_ok=True)
             skipped.append(raw)
             continue
-        existing = _find_same_media(dest, digest, mt)  # 같은 내용 이미 있으면 재사용(중복 저장 안 함)
+        # 폴더 내 기존 파일 전수 sha256 비교 — 동기 파일 IO 라 스레드로 오프로딩(이벤트 루프 보호).
+        existing = await asyncio.to_thread(_find_same_media, dest, digest, mt)
         if existing:
             tmp.unlink(missing_ok=True)
             rel = (
@@ -945,17 +985,24 @@ def export_zip(
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     if not paths:
         raise HTTPException(status_code=400, detail="내보낼 파일이 없음")
+    if len(paths) > _ZIP_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_ZIP_MAX_FILES}개까지 내보낼 수 있습니다")
 
     tmp = tempfile.NamedTemporaryFile(prefix="ch-export-", suffix=".zip", delete=False)
     tmp_path = tmp.name
     tmp.close()
     used: set[str] = set()
+    seen_targets: set[str] = set()  # 같은 파일 반복 요청을 _2,_3… 으로 부풀리지 않게 dedup
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for rel in paths:
                 target = _safe_resolve(proj_dir, rel)
                 if not target or not target.is_file():
                     continue
+                key = str(target).lower()
+                if key in seen_targets:
+                    continue  # 동일 실경로 중복 — 한 번만 담는다
+                seen_targets.add(key)
                 arc = target.name  # 폴더 구조 평탄화 — 파일명만
                 if arc in used:  # 이름 충돌 회피
                     stem, dot, ext = arc.rpartition(".")

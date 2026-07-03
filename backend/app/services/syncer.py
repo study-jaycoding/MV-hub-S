@@ -91,12 +91,14 @@ class PeriodicSync:
                         f"[periodic-sync] ⚠ 갭 경보: 신규 {c['inserted']}건 — "
                         f"100-window 밖으로 밀린 잡이 있을 수 있음. web/타 소스 export 로 보완 필요."
                     )
-                    await manager.broadcast(
+                    # 전체 reload 신호(데이터 아님) — AUTH on 다계정 서버에서도 전원이 받아야 하므로
+                    # 계정 스코프 broadcast 가 아니라 broadcast_all 을 쓴다(ws.broadcast 는 이제 정확 스코프).
+                    await manager.broadcast_all(
                         {"type": "gap_warning", "inserted": c["inserted"]}
                     )
                 # 신규/상태변동이 있으면 프론트에 새로고침 신호.
                 if c["inserted"] or c["updated"]:
-                    await manager.broadcast({"type": "synced"})
+                    await manager.broadcast_all({"type": "synced"})
             except asyncio.CancelledError:
                 raise
             except cli_bridge.CLIError:

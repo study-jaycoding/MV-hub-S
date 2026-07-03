@@ -65,7 +65,9 @@ def _gens_of(conn: sqlite3.Connection, uid: str) -> list[sqlite3.Row]:
 
 
 def _delete_generation(conn: sqlite3.Connection, gen_id: str) -> bool:
-    """app/repo/generations.py::_delete_generation 과 동일한 연쇄 정리(복붙 이식)."""
+    """app/repo/generations.py::_delete_generation 과 동일한 연쇄 정리(복붙 이식).
+    ★이 스크립트는 '표준 라이브러리만' 원칙이라 앱 모듈을 import 하지 않는다 — 대신
+    본가(_delete_generation)에 child 테이블이 추가되면 여기도 같이 고쳐야 한다(본가 docstring 에 상호 표기)."""
     conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
     conn.execute("DELETE FROM history WHERE parent_gen_id=? OR child_gen_id=?", (gen_id, gen_id))
     try:
@@ -101,6 +103,7 @@ def main() -> None:
         sys.exit(f"[오류] DB 를 찾을 수 없습니다: {db}")
     print(f"[DB] {db}")
     conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row  # _gens_of 결과를 r["id"] 식으로 읽으므로 필수(없으면 --uid 경로 크래시)
     conn.execute("PRAGMA foreign_keys=ON")
 
     orphans = _orphans(conn)

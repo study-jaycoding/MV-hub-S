@@ -318,7 +318,8 @@ class IngestOut(BaseModel):
     inserted: int = 0
     updated: int = 0
     unchanged: int = 0
-    skipped: int = 0
+    skipped: int = 0  # 파싱 불가·중복 등 데이터 사유로 스테이징에서 걸러진 것
+    errors: int = 0   # 업서트 중 예외로 반영 못 한 것(SAVEPOINT 롤백) — skipped 와 구분
     linked_uid: Optional[str] = None  # 이 계정에 연결된 힉스필드 생성자 uid
 
 

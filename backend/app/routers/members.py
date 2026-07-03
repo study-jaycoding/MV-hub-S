@@ -8,18 +8,37 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from .. import repo
-from ..deps import require_global_cap
+from .. import rbac, repo
+from ..config import AUTH_ENABLED
+from ..deps import account_global_roles, require_global_cap
 from ..models import GlobalRolesIn, MemberOut
 
 router = APIRouter(prefix="/api/members", tags=["members"])
 
 
+def _can_see_account_details(request: Request) -> bool:
+    """계정 상세(email·status·전역역할)를 볼 자격 — 관리(grant_global=admin)·PM(grant_project_role).
+    AUTH off(단독 모드)는 보안 경계가 없어 항상 True."""
+    if not AUTH_ENABLED:
+        return True
+    roles = account_global_roles(request)
+    return rbac.has_global_cap(roles, "grant_global") or rbac.has_global_cap(
+        roles, "grant_project_role"
+    )
+
+
 @router.get("", response_model=list[MemberOut])
 def list_members(request: Request):
-    # 멤버 목록(이름·역할)은 모든 로그인 사용자가 조회 가능 — 프로젝트 팀원 검색·배정에 필요.
-    # (민감정보 아님. 실제 역할 '부여'는 PATCH 쪽 권한 가드로 막는다.)
-    return repo.list_members()
+    """멤버 목록. 이름·uid·생성물수는 모두에게(팀원 검색·배정용). 계정 상세(email·status·전역역할)는
+    관리/PM 권한자에게만 — 일반 사용자에겐 마스킹(누가 admin/PM인지, 이메일·가입상태를 감춘다).
+    프론트는 email 없으면 shortUid 폴백, 자기 권한은 /api/me 로 계산하므로 무변경."""
+    members = repo.list_members()
+    if not _can_see_account_details(request):
+        for m in members:
+            m["email"] = None
+            m["status"] = None
+            m["global_roles"] = []
+    return members
 
 
 @router.patch("/{uid}/global-roles", response_model=list[MemberOut])

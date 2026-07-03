@@ -17,24 +17,31 @@ from ..services import auth
 _PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
 
 
+def _my_creator_uid(conn) -> Optional[str]:
+    """서버 힉스필드 신원(하우스 계정 판별 기준) — 목록에선 1회만 조회해 행마다 재조회하지 않게 분리."""
+    r = conn.execute("SELECT value FROM app_setting WHERE key='my_creator_uid'").fetchone()
+    return r["value"] if r else None
+
+
+def _shape_row(r, my_uid: Optional[str]) -> dict[str, Any]:
+    """account row → 공개 dict(파생 필드 부착). my_uid 를 인자로 받아 목록에서 재조회를 피한다."""
+    d = dict(r)
+    # global_role 은 CSV(복수). 응답엔 리스트(global_roles)도 함께 실어 프론트가 바로 쓰게.
+    d["global_roles"] = rbac.effective_roles(d.get("global_role"))
+    # 하우스 계정 = 서버 힉스필드(my_creator_uid)에 연결된 계정 = 워크스페이스 전환·생성 등
+    # '서버 CLI 행위'의 주체. 프론트가 이 플래그로 워크스페이스 스위처 노출을 가린다.
+    d["is_house"] = bool(d.get("creator_uid")) and d["creator_uid"] == my_uid
+    d["hidden"] = bool(d.get("hidden"))
+    return d
+
+
 def _row(conn, email: str) -> Optional[dict[str, Any]]:
     r = conn.execute(
         f"SELECT {_PUBLIC} FROM account WHERE email=?", (email.lower(),)
     ).fetchone()
     if not r:
         return None
-    d = dict(r)
-    # global_role 은 CSV(복수). 응답엔 리스트(global_roles)도 함께 실어 프론트가 바로 쓰게.
-    d["global_roles"] = rbac.effective_roles(d.get("global_role"))
-    # 하우스 계정 = 서버 힉스필드(my_creator_uid)에 연결된 계정 = 워크스페이스 전환·생성 등
-    # '서버 CLI 행위'의 주체. 프론트가 이 플래그로 워크스페이스 스위처 노출을 가린다.
-    myrow = conn.execute(
-        "SELECT value FROM app_setting WHERE key='my_creator_uid'"
-    ).fetchone()
-    my_uid = myrow["value"] if myrow else None
-    d["is_house"] = bool(d.get("creator_uid")) and d["creator_uid"] == my_uid
-    d["hidden"] = bool(d.get("hidden"))
-    return d
+    return _shape_row(r, _my_creator_uid(conn))
 
 
 def count_accounts() -> int:
@@ -58,14 +65,14 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
         # 첫 계정(소유자)은 admin + product_manager 둘 다 — 사람 관리와 프로젝트 생성·관리를
         # 처음부터 할 수 있게(둘을 분리해 둔 탓에 admin 단독이면 프로젝트를 못 만드는 데드락 방지).
         global_role = f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}" if first else rbac.MEMBER
+        # approved 면 approved_at 을 같은 INSERT 로 — 별도 UPDATE 2단계는 중간 크래시 시
+        # approved 인데 approved_at NULL 인 반쪽 상태를 남긴다(ensure_admin_account 와 패턴 통일).
+        approved_at = "datetime('now')" if first else "NULL"
         conn.execute(
-            "INSERT INTO account(email, name, password_hash, status, global_role) VALUES(?,?,?,?,?)",
+            f"INSERT INTO account(email, name, password_hash, status, global_role, approved_at) "
+            f"VALUES(?,?,?,?,?,{approved_at})",
             (email, (name or "").strip() or None, auth.hash_password(password), status, global_role),
         )
-        if first:
-            conn.execute(
-                "UPDATE account SET approved_at=datetime('now') WHERE email=?", (email,)
-            )
         return _row(conn, email)
 
 
@@ -131,12 +138,9 @@ def list_accounts(
             "created_at DESC",
             tuple(args),
         ).fetchall()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            normalized = _row(conn, r["email"])
-            if normalized:
-                out.append(normalized)
-        return out
+        # my_uid 1회 조회 + 이미 뽑은 rows 재사용 — 기존엔 행마다 _row 로 계정·설정을 재조회(1+2N).
+        my_uid = _my_creator_uid(conn)
+        return [_shape_row(r, my_uid) for r in rows]
 
 
 def set_password(email: str, new_password: str) -> Optional[dict[str, Any]]:

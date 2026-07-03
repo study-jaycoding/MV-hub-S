@@ -46,7 +46,13 @@ def create_project(
     if not name:
         raise ValueError("빈 프로젝트 이름")
     kind = kind if kind in ("team", "personal") else "team"
+    # ★_provider_uid() 는 내부에서 별도 get_connection() 을 연다 — 아래 BEGIN IMMEDIATE '안'에서
+    # 부르면 같은 풀 커넥션이 그 컨텍스트 종료 시 내 트랜잭션을 조기 COMMIT 해 직렬화가 깨진다.
+    # 트랜잭션 밖에서 미리 계산한다.
+    creator = created_by or _provider_uid()
     with get_connection() as conn:
+        # SELECT→INSERT 를 즉시 쓰기락으로 직렬화 — 동시 생성이 같은 이름 프로젝트 2개를 만들지 않게.
+        conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
             "SELECT id FROM project WHERE name = ? AND archived = 0", (name,)
         ).fetchone()
@@ -55,7 +61,7 @@ def create_project(
         pid = new_id()
         conn.execute(
             "INSERT INTO project(id, name, kind, created_by) VALUES(?,?,?,?)",
-            (pid, name, kind, created_by or _provider_uid()),
+            (pid, name, kind, creator),
         )
         return _row(conn, pid)  # type: ignore[return-value]
 

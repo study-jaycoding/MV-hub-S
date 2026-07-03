@@ -248,6 +248,24 @@ def known_job_ids(creator_uid: str) -> list[str]:
     return [r["job_id"] for r in rows]
 
 
+def unknown_job_ids(job_ids: list[str], creator_uid: Optional[str] = None) -> list[str]:
+    """받은 job_id 중 서버에 아직 없는 것만 — POST known-jobs 차집합용(전량 응답 대체).
+    creator_uid 를 주면 그 계정 소유분만 known 으로 봐 GET known_job_ids 와 같은 경계를 유지한다
+    (남 계정 job 존재 여부 oracle 방지). 잡 id 는 힉스필드 전역 유일이라 스코프해도 판정은 정확."""
+    ids = [j for j in (job_ids or []) if j]
+    if not ids:
+        return []
+    ph = ",".join("?" * len(ids))
+    sql = f"SELECT job_id FROM generation WHERE job_id IN ({ph})"
+    args: list[Any] = list(ids)
+    if creator_uid:
+        sql += " AND creator_uid = ?"
+        args.append(creator_uid)
+    with get_connection() as conn:
+        known = {r["job_id"] for r in conn.execute(sql, args).fetchall()}
+    return [j for j in ids if j not in known]
+
+
 def upsert_synced_generation(parsed: dict[str, Any], worker_id: str) -> str:
     """cli_bridge.parse_job 결과를 로컬 DB 에 업서트(단건, 자체 커넥션).
 
@@ -536,21 +554,6 @@ def fail_orphaned_jobs() -> int:
         return cur.rowcount
 
 
-def set_generation_timestamp(
-    gen_id: str, created_at: Optional[str], sort_ts: Optional[float]
-) -> None:
-    """힉스필드가 부여한 created_at/sort_ts 를 로컬 생성본에 즉시 반영 — 주기 동기화를
-    기다리지 않고 생성 완료 시점에 바로 '제자리'(정확한 순서)를 잡게 한다.
-    sort_ts 가 없으면(응답에 created_at 없음) 로컬 시각 유지 → 다음 동기화가 채택."""
-    if sort_ts is None:
-        return
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE generation SET sort_ts=?, created_at=COALESCE(?, created_at) WHERE id=?",
-            (sort_ts, created_at, gen_id),
-        )
-
-
 def set_job_id(gen_id: str, job_id: str) -> None:
     """로컬 생성본에 실제 Higgsfield 잡 id 를 기록 — 이후 동기화가 이 행을
     중복 생성 없이 갱신하도록(중복 방지의 핵심).
@@ -606,19 +609,6 @@ def all_generation_ids() -> list[str]:
                 "SELECT id FROM generation ORDER BY created_at DESC"
             ).fetchall()
         ]
-
-
-def add_asset(
-    gen_id: str, type_: str, file_path: str, thumbnail_path: Optional[str] = None
-) -> str:
-    aid = new_id()
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
-            "VALUES(?,?,?,?,?)",
-            (aid, gen_id, type_, file_path, thumbnail_path),
-        )
-    return aid
 
 
 def apply_local_fulfillment(
@@ -766,7 +756,9 @@ def override_prompt_model(
 def _delete_generation(conn: sqlite3.Connection, gen_id: str) -> bool:
     """generation + 모든 자식 행을 한 트랜잭션에서 제거.
     share·history 는 ON DELETE CASCADE 가 없고, generation_comment(_read) 는 FK 자체가
-    없어 본체만 지우면 FK 에러나 고아 행이 남는다 → 명시적으로 전부 정리."""
+    없어 본체만 지우면 FK 에러나 고아 행이 남는다 → 명시적으로 전부 정리.
+    ★child 테이블을 추가하면 backend/cleanup_orphan_creators.py 의 복사본도 같이 고칠 것
+    (그 스크립트는 표준 라이브러리만 쓰는 독립 도구라 이 함수를 import 하지 않는다)."""
     conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
     conn.execute(
         "DELETE FROM history WHERE parent_gen_id=? OR child_gen_id=?", (gen_id, gen_id)

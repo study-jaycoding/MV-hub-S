@@ -370,7 +370,25 @@ def import_bundle_item(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            result = generations._upsert_synced(conn, parsed, worker_id)
+            # ★fact 갱신은 작성자 권위 — 기존 행의 작성자가 발행자(shared_by)와 다르면
+            # 사실(프롬프트·상태·에셋)은 덮지 않는다(남의 것을 재공유한 번들이 원본을 못 바꿈).
+            # 아래 위치(project/folder) 병합의 is_owner 규칙을 fact 층까지 확장한 것.
+            # shared_by 미상(레거시 로컬 흐름)은 기존 동작 보존.
+            existing = conn.execute(
+                "SELECT id, creator_uid FROM generation WHERE id=? OR job_id=? LIMIT 1",
+                (job_id, job_id),
+            ).fetchone()
+            fact_blocked = bool(
+                existing
+                and existing["creator_uid"]
+                and shared_by
+                and shared_by != DEFAULT_WORKER_ID
+                and existing["creator_uid"] != shared_by
+            )
+            if fact_blocked:
+                result = "unchanged"
+            else:
+                result = generations._upsert_synced(conn, parsed, worker_id)
             # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
             gid = _find_id_by_job(conn, job_id)
             if gid:

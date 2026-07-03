@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 from typing import Any, Optional
 
-from ..db import get_connection
+from ..db import get_connection, get_db_path, pool_epoch
 from ._common import new_id
 from .identity import resolve_display_names
 
@@ -117,9 +117,18 @@ _SCHEMA = (
 )
 
 
+# (DB 경로, 풀 에폭)별 1회 실행 가드 — 요청마다 DDL 십수 개+PRAGMA+UPDATE 를 재실행하지 않게.
+# 계정 전환은 경로가 바뀌고, 같은 경로 파일 교체(import/복원)는 flush_pool 이 에폭을 올리므로
+# 두 경우 모두 키가 어긋나 자동으로 다시 보장된다.
+_SCHEMA_ENSURED: set[tuple[str, int]] = set()
+
+
 def _ensure_schema(conn) -> None:
-    """사이드카 테이블·인덱스 보장(멱등). CREATE IF NOT EXISTS 라 매 호출 비용은 미미하고,
-    계정별 분리 DB 마다 각자 만들어져야 하므로 모듈 전역 가드 없이 호출마다 실행한다."""
+    """사이드카 테이블·인덱스 보장(멱등). 계정별 분리 DB 마다 각자 만들어져야 하므로
+    (DB 경로, 풀 에폭)당 1회만 실행한다. isolation_level=None(자동커밋)이라 DDL 은 즉시 커밋됨."""
+    key = (str(get_db_path()), pool_epoch())
+    if key in _SCHEMA_ENSURED:
+        return
     for stmt in _SCHEMA:
         conn.execute(stmt)
     # 기존 project_task 에 Notion 스타일 확장 컬럼 멱등 보강(db.py _migrate 패턴).
@@ -150,6 +159,10 @@ def _ensure_schema(conn) -> None:
     # retake 폐지: 진행 중으로 되돌림. todo→시작전, review→게시.
     for old, new in (("todo", "not_started"), ("review", "publish"), ("retake", "in_progress")):
         conn.execute("UPDATE project_task SET status=? WHERE status=?", (new, old))
+    # 명시 트랜잭션 중이 아닐 때만 완료 표시 — 혹시 호출자가 BEGIN 후 불렀다가 롤백하면
+    # DDL 도 함께 되돌아가므로, 그 경우엔 다음 호출이 다시 보장하게 남겨둔다.
+    if not conn.in_transaction:
+        _SCHEMA_ENSURED.add(key)
 
 
 def list_project_folders() -> dict[str, dict[str, Any]]:
@@ -1004,27 +1017,6 @@ def record_transactions(
         except Exception:  # noqa: BLE001
             pass
     return {"inserted": inserted, "matched": len(matched_ids), "matched_ids": matched_ids}
-
-
-def match_transactions(owner_uid: Optional[str]) -> int:
-    """미귀속 spend 거래 ↔ 미측정 생성물을 (소유자+시각 최근접, 윈도우 내) 전역 그리디 매칭.
-    한 거래는 한 생성물에만(역도 동일). 매칭되면 generation_metrics.real_credits(양수=사용액) 채우고
-    credit_txn.matched_gen_id 표시. 반환: 새로 귀속한 건수."""
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            matched_ids = _match_transactions(conn, owner_uid)
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-    if matched_ids:
-        try:
-            mark_telemetry_dirty(matched_ids)
-        except Exception:  # noqa: BLE001
-            pass
-    return len(matched_ids)
 
 
 def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:

@@ -79,6 +79,21 @@ def account_scope_uid(request: Request) -> Optional[str]:
     return uid
 
 
+def realtime_scope(acc: Optional[dict[str, Any]]) -> Optional[str]:
+    """실시간 WS 채널 스코프 키 — '누가 이 progress/synced 를 받을지'를 로그인 계정(email)으로 정한다.
+
+    ★creator_uid 가 아니라 email 을 쓰는 이유: acct:→user_ 리맵(신원 정합) 중에도 스코프가 안 바뀌어
+    열린 WS 가 계속 자기 알림을 받는다(creator_uid 로 스코프하면 리맵 순간 옛 소켓이 미수신).
+    또 creator_uid 가 NULL 인 계정끼리 같은 None 버킷을 공유해 progress·result_url 이 섞이던 것도 닫는다.
+
+    AUTH off(단독/로컬 모드) 또는 미로그인 → None(스코프 없음 = 그 모드의 전체). 계정 격리가 없는 모드라 맞다.
+    ws.broadcast(None) 은 a==None 소켓(=AUTH off 소켓 전부)에만 가므로 단독 모드의 모든 탭이 받는다."""
+    if not AUTH_ENABLED or not acc:
+        return None
+    email = (acc.get("email") or "").strip().lower()
+    return f"acct:{email}" if email else None
+
+
 def account_global_roles(request: Request) -> list[str]:
     """현재 계정이 보유한 전역 역할들(복수). 미들웨어가 채운 account 의 CSV 를 파싱."""
     acc = current_account(request)

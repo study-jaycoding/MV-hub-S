@@ -43,13 +43,24 @@ class ConnectionManager:
     async def broadcast(
         self, message: dict[str, Any], account_uid: Optional[str] = None
     ) -> None:
-        """account_uid 가 주어지면 그 계정의 소켓에만, None 이면 전체에 보낸다."""
+        """정확히 같은 스코프의 소켓에만 보낸다(a == account_uid).
+        ★account_uid=None 은 '전체'가 아니라 '스코프 없음(AUTH off 소켓)'만 뜻한다 — 예전엔
+        None 을 전체로 취급해, 계정 스코프 호출의 uid 가 우연히 None(레거시/미이행 creator_uid)
+        이면 남의 소켓에 result_url 포함 progress 가 새는 누출이 있었다. AUTH off 는 모든 소켓이
+        a=None 이라 여전히 전원 수신(정당), AUTH on 은 uid 로 정확히 격리된다."""
         async with self._lock:
-            targets = [
-                ws
-                for ws, a in self._active.items()
-                if account_uid is None or a == account_uid
-            ]
+            targets = [ws for ws, a in self._active.items() if a == account_uid]
+        await self._send_to(targets, message)
+
+    async def broadcast_all(self, message: dict[str, Any]) -> None:
+        """스코프 무관 전 소켓에 보낸다(진짜 '전체'). 데이터가 아니라 reload 신호(synced·gap_warning)
+        전용 — 주기 동기화(syncer)가 AUTH on 다계정 서버에서도 모두에게 '새로고침해' 알릴 때 쓴다.
+        (account_uid 스코프 broadcast 는 진행률·result_url 같은 개인 데이터라 절대 여기로 보내지 않는다.)"""
+        async with self._lock:
+            targets = list(self._active.keys())
+        await self._send_to(targets, message)
+
+    async def _send_to(self, targets: list[WebSocket], message: dict[str, Any]) -> None:
         dead: list[WebSocket] = []
         for ws in targets:
             try:
@@ -79,7 +90,10 @@ class ConnectionManager:
         accounts = self._pending_accounts
         self._pending_accounts = set()
         for a in accounts:
-            await self.broadcast({"type": "synced"}, account_uid=None if a == _ALL else a)
+            if a == _ALL:
+                await self.broadcast_all({"type": "synced"})  # 계정 불명 mutation → 전체 reload 신호
+            else:
+                await self.broadcast({"type": "synced"}, account_uid=a)
         # broadcast 가 await 하는 동안 새로 쌓인 알림은 notify_mutation 이 (이 태스크가 아직 done 이
         # 아니라) 새 태스크를 안 만든다 → 여기서 직접 재예약해 누락(다른 탭이 reload 못 받음) 방지.
         if self._pending_accounts:

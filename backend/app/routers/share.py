@@ -63,7 +63,9 @@ def publish(gen_id: str, body: PublishIn, request: Request):
     require_edit_generation(request, gen)  # 공유는 본인(또는 admin)만 — 남의 작업 공유 불가
     if gen["status"] != "done":
         raise HTTPException(status_code=409, detail="완료된 생성만 발행할 수 있음")
-    shared_by = body.shared_by or actor_id(request)
+    # 공유자는 항상 인증된 본인 — body.shared_by 는 신뢰하지 않는다(위장 방지).
+    # 프론트는 이 필드를 보내지 않으므로 동작 변화 없음(필드는 하위호환용으로만 남김).
+    shared_by = actor_id(request)
     repo.publish(gen_id, shared_by, body.visibility)
     _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)

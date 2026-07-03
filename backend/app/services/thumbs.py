@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -36,13 +37,21 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
         return cache
     from PIL import Image  # 지연 import
 
+    # 임시파일 → 원자적 교체: 같은 캐시 미스가 동시에 들어와도(요청 스레드 + prewarm)
+    # 반쯤 쓰인 .jpg 를 다른 쪽이 읽는 일이 없다. 파일명에 스레드별 고유 접미사.
+    tmp = cache.with_suffix(f".{threading.get_ident()}.tmp")
     try:
         with Image.open(target) as im:
             im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
             im.thumbnail((w, w), Image.LANCZOS)
-            im.save(cache, "JPEG", quality=82)
+            im.save(tmp, "JPEG", quality=82)
+        tmp.replace(cache)
         return cache
     except Exception:
+        try:
+            tmp.unlink(missing_ok=True)  # 실패 잔재 정리(없으면 무시)
+        except OSError:
+            pass
         return None
 
 

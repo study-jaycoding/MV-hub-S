@@ -13,9 +13,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import repo
+from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED
-from ..deps import require_view_generation
+from ..deps import (
+    account_actor_uid,
+    realtime_scope,
+    require_project_role,
+    require_view_generation,
+)
 from ..models import (
     FulfillIn,
     GenerationOut,
@@ -59,12 +64,27 @@ def _require_account(request: Request) -> dict:
 async def create_gen_request(body: GenRequestIn, request: Request):
     """버튼이 호출 — placeholder 카드 즉시 생성 + 로컬 실행요청 큐잉. placeholder 반환."""
     acc = _require_account(request)
-    creator_uid = acc.get("creator_uid")
+    # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
+    # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
+    # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
+    creator_uid = account_actor_uid(request) if AUTH_ENABLED else acc.get("creator_uid")
 
     if body.kind == "create":
         if not body.create:
             raise HTTPException(status_code=400, detail="create 본문이 필요합니다")
         data = body.create.model_dump()
+        # project_id 검증(AUTH on) — 남의 프로젝트 id 를 넣어 그 팀 영역에 작업을 주입하거나
+        # 존재하지 않는 project_id 로 귀속시키는 것을 막는다. read_only=True 라 그 프로젝트 멤버이거나
+        # 전역 read_all(admin·PM·PD)이면 통과. 로컬 허브(AUTH off)는 가드가 즉시 통과(개인 모드 보존).
+        pid = (data.get("project_id") or "").strip()
+        if pid == "none":
+            data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
+        elif pid:
+            if not repo.get_project(pid):
+                raise HTTPException(status_code=400, detail="없는 프로젝트에는 생성할 수 없습니다")
+            require_project_role(
+                request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            )
         worker_id = body.create.worker_id or DEFAULT_WORKER_ID
         gen_id = repo.create_local_generation(data, worker_id, creator_uid=creator_uid)
     else:  # regenerate
@@ -75,6 +95,14 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             raise HTTPException(status_code=404, detail="원본 generation 없음")
         # 비공개·공유 안 된 남의 원본을 id 만 알고 재생성(=프롬프트·소스 복제)하는 우회 차단.
         require_view_generation(request, parent)
+        # 재생성본은 부모 project_id 를 상속(import_generation) — 부모가 프로젝트에 속하면 그 프로젝트
+        # 접근권도 확인한다. 안 하면 '옛날엔 그 프로젝트 멤버였다가 빠진' 사용자가 자기 옛 생성물을
+        # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
+        ppid = (parent.get("project_id") or "").strip()
+        if ppid and ppid != "none":
+            require_project_role(
+                request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            )
         reg = body.regenerate or RegenerateIn()
         worker_id = reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID
         gen_id = repo.import_generation(body.source_gen_id, worker_id, creator_uid=creator_uid)
@@ -126,7 +154,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
         _pm(lambda _m: _m.record_started(c["gen_id"]))  # PM 메트릭: started_at
         await manager.broadcast(
             {"type": "progress", "generation_id": c["gen_id"], "status": "running"},
-            account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만(남에게 진행률 누출 방지)
+            account_uid=realtime_scope(acc),  # 그 계정 소켓에만(남에게 진행률 누출 방지)
         )
     return claimed
 
@@ -187,7 +215,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
             "result_url": asset["file_path"] if asset else None,
             "error": err,
         },
-        account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만
+        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
     )
     gen = repo.get_generation(gen_id)
     if not gen:
@@ -214,6 +242,6 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
     _pm(lambda _m: _m.record_completed(req["gen_id"]))  # PM 메트릭: 실패도 종료시각 기록
     await manager.broadcast(
         {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason},
-        account_uid=acc.get("creator_uid"),  # 그 계정 소켓에만
+        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
     )
     return {"ok": True}

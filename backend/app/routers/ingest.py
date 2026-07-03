@@ -16,10 +16,12 @@ from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 
 from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, BACKEND_DIR, DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..deps import account_scope_uid
 from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
@@ -150,8 +152,15 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         g = parsed["generation"]
         if not g.get("creator_uid") and boost_uid:
             g["creator_uid"] = boost_uid
-        result = repo.upsert_synced_generation(parsed, DEFAULT_WORKER_ID)
-        counts[result] = counts.get(result, 0) + 1
+    # 배치 업서트(한 트랜잭션·fsync 1회) — 잡별 개별 커밋은 대량 첫 push(수백 건)에서 fsync
+    # 버스트를 만든다(syncer 가 같은 이유로 배치화한 것과 통일). 잡별 SAVEPOINT 라 1건 실패해도
+    # 나머지는 반영되고, 실패분은 skipped 와 구분해 errors 로 응답(코덱스: 계약 명시).
+    errors = 0
+    if staged:
+        bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID)
+        for k in ("inserted", "updated", "unchanged"):
+            counts[k] += bcounts.get(k, 0)
+        errors = bcounts.get("errors", 0)
 
     if linked_real:
         linked = cur_uid
@@ -191,6 +200,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
         updated=counts["updated"],
         unchanged=counts["unchanged"],
         skipped=skipped,
+        errors=errors,
         linked_uid=linked,
     )
 
@@ -232,7 +242,9 @@ def _drain_telemetry() -> None:
                 **snap,
                 "local_gen_id": d["local_gen_id"],
                 "job_id": snap.get("job_id") or d.get("tomb_job_id"),
-                "creator_uid": snap.get("creator_uid") or d.get("tomb_creator_uid") or my_uid,
+                # tomb_creator_uid(컬럼)를 snapshot JSON 보다 우선 — 컬럼은 remap(acct:→user_)되지만
+                # snapshot JSON 은 stale acct: 로 남을 수 있어, 컬럼 우선이라야 전환 후 삭제반영이 정합.
+                "creator_uid": d.get("tomb_creator_uid") or snap.get("creator_uid") or my_uid,
                 "is_deleted": True,
             }
         )
@@ -485,9 +497,29 @@ def my_hf_status(request: Request):
 @router.get("/ingest/known-jobs")
 def known_jobs(request: Request):
     """이 계정(힉스필드 uid)으로 이미 서버에 있는 job_id 목록 — 에이전트가 새 것만 보내게.
-    인증 필수. account.creator_uid 기준."""
+    인증 필수. account.creator_uid 기준. (구버전 에이전트 호환용 — 신버전은 POST 차집합 사용.)"""
     acc = getattr(request.state, "account", None)
     if not acc:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-    uid = acc.get("creator_uid")
+    # account_scope_uid: creator_uid, 미링크면 acct:email 또는 '\x00'(불가능값) — None 으로 떨어져
+    # 전역 검색(남의 job 존재 oracle)이 되지 않게 한다.
+    uid = account_scope_uid(request)
     return {"creator_uid": uid, "job_ids": repo.known_job_ids(uid) if uid else []}
+
+
+class KnownJobsIn(BaseModel):
+    job_ids: list[str] = []
+
+
+@router.post("/ingest/known-jobs")
+def known_jobs_diff(body: KnownJobsIn, request: Request):
+    """에이전트의 로컬 job_id 목록(≤ --size 개)을 받아 서버에 '없는 것'만 돌려준다 —
+    GET(서버 보유 전량 응답)은 라이브러리가 커질수록 매 사이클 왕복이 무거워져 차집합으로 교체.
+    응답 payload 가 요청 크기로 유한해진다. 인증 필수."""
+    acc = getattr(request.state, "account", None)
+    if not acc:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    ids = [str(j) for j in (body.job_ids or []) if j][:1000]  # 방어적 상한
+    # account_scope_uid 로 스코프 — 미링크 계정도 acct:email/'\x00' 이라 전역 검색(남의 job 존재
+    # oracle)이 되지 않는다. GET 경로와 동일 기준.
+    return {"unknown": repo.unknown_job_ids(ids, creator_uid=account_scope_uid(request))}

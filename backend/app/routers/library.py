@@ -5,6 +5,7 @@ CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는
 
 from __future__ import annotations
 
+import asyncio
 import urllib.request
 from typing import Optional
 
@@ -142,7 +143,9 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
         raise HTTPException(status_code=400, detail="로컬 /media 경로 또는 http(s) URL만 지원")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
-    cache = thumbs.ensure_thumb(target, w)
+    # PIL 디코드+리사이즈는 동기 CPU 작업 — async 라우트에서 직접 부르면 캐시 미스마다
+    # 이벤트 루프 전체가 멈춘다(prewarm 경로와 동일하게 스레드로 오프로딩).
+    cache = await asyncio.to_thread(thumbs.ensure_thumb, target, w)
     if not cache:
         if is_remote:
             return RedirectResponse(src)  # 비이미지(비디오 등) → 원본으로 폴백

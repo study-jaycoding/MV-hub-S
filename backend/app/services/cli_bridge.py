@@ -90,6 +90,11 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
         proc.kill()
+        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
     if proc.returncode != 0:
         msg = (err or b"").decode("utf-8", "replace").strip()
@@ -129,6 +134,11 @@ async def _run_capture(*args: str, timeout: float = 600.0) -> tuple[str, str, in
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
         proc.kill()
+        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
     return (
         (out or b"").decode("utf-8", "replace"),
@@ -204,7 +214,9 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     result_url = job.get("result_url")
 
     references: list[dict[str, Any]] = []
-    _m = re.search(r"(user_[A-Za-z0-9]+)", result_url or "")
+    from ..repo._common import _UID_RE  # 생성자 uid 패턴 단일 정의(중복 하드코딩 방지)
+
+    _m = _UID_RE.search(result_url or "")
     creator_uid = _m.group(1) if _m else None  # 결과 URL 경로의 생성자 식별자
     for m in params.get("medias") or []:
         data = (m or {}).get("data") or {}

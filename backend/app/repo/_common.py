@@ -58,13 +58,6 @@ def _email_localpart(email: Optional[str]) -> Optional[str]:
     return email or None
 
 
-def _sanitize_filename(text: str) -> str:
-    """파일명 안전화 — 경로 구분자·제어문자 제거, 공백→_. 한글·영숫자는 보존."""
-    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", text or "").strip()
-    cleaned = re.sub(r"\s+", "_", cleaned)
-    return cleaned or "me"
-
-
 def _cached_or_remote(url: str, is_image: bool) -> tuple[str, Optional[str], Optional[str]]:
     """원격 URL 이 이미 로컬에 보관돼 있으면 (로컬경로, 썸네일, 원본URL) 을,
     아니면 (원격URL, 원격썸네일, None) 을 반환. 재동기 시 캐시 보존용."""

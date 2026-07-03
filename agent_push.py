@@ -97,6 +97,27 @@ def _cli_version(cli: str) -> str | None:
     return m.group(0) if m else (txt[:40] or None)
 
 
+# 사이클 간 사실상 불변인 CLI 조회 캐시 — watch 모드에서 이벤트마다 subprocess 를 다시 띄우지 않게.
+# model list 는 10분 TTL(신모델 반영 여지), version 은 프로세스 수명 동안 고정(CLI 교체=재시작).
+_CLI_INFO_CACHE: dict = {}
+
+
+def _cached_models(cli: str):
+    ent = _CLI_INFO_CACHE.get("models")
+    if ent and time.time() - ent[0] < 600:
+        return ent[1]
+    models = _cli_json(cli, "model", "list")
+    if isinstance(models, list):
+        _CLI_INFO_CACHE["models"] = (time.time(), models)
+    return models
+
+
+def _cached_cli_version(cli: str) -> str | None:
+    if "version" not in _CLI_INFO_CACHE:
+        _CLI_INFO_CACHE["version"] = _cli_version(cli)
+    return _CLI_INFO_CACHE["version"]
+
+
 def _http(method: str, url: str, token: str | None = None, body: dict | None = None, timeout: int = 60):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -109,8 +130,15 @@ def _http(method: str, url: str, token: str | None = None, body: dict | None = N
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         return e.code, detail
-    except urllib.error.URLError as e:
-        sys.exit(f"[오류] 서버 연결 실패({url}): {e}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # ★일시 네트워크 오류로 에이전트를 죽이지 않는다 — 롱폴(_wait_event)은 관대하게 재대기하면서
+        # 정작 작업 경로(push/claim/보고)는 sys.exit 로 종료하던 비대칭이, 와이파이 순단·서버 재시작
+        # 한 번에 팀원 PC 의 에이전트를 조용히 죽였다. 호출부는 전부 status!=200 을 소프트 실패로
+        # 처리하므로 0 을 돌려주면 다음 사이클/롱폴에서 자동 재시도된다.
+        # (read timeout 은 URLError 가 아니라 socket.timeout=OSError 로 올 수 있어 함께 잡는다 —
+        #  _wait_event 의 except 와 동일 집합.)
+        print(f"[경고] 서버 연결 실패({url.split('?')[0]}): {e} — 다음 사이클에 재시도")
+        return 0, str(e)
 
 
 def _wait_event(server: str, token: str, timeout: int = 35):
@@ -125,7 +153,9 @@ def _wait_event(server: str, token: str, timeout: int = 35):
             return d.get("reason") if isinstance(d, dict) and d.get("wake") else None
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            sys.exit("[오류] 세션 만료/인증 실패 — 에이전트를 다시 실행하세요.")
+            # 세션 만료 — 즉시 종료하지 않고 호출자(main 루프)가 자동 재로그인을 시도하게 알린다.
+            # (며칠 상주하다 만료되면 수동 재시작이 필요하던 것을 자가 복구로.)
+            return "__reauth__"
         return None
     except (urllib.error.URLError, TimeoutError, OSError):
         time.sleep(3)  # 서버 일시 불가/타임아웃 → 잠깐 쉬고 재대기(폭주 방지)
@@ -595,8 +625,9 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                 continue  # 곧장 남은 슬롯도 채우러
             if not in_flight:
                 break  # claim할 것도, 실행 중인 것도 없음 → 종료
-            # 슬롯이 다 찼거나 새 요청 없음 → 하나라도 끝나면(또는 1s마다) 다시 채우러
-            _, in_flight = futures_wait(in_flight, timeout=1.0, return_when=FIRST_COMPLETED)
+            # 슬롯이 다 찼거나 새 요청 없음 → 하나라도 끝나면(또는 3s마다) 다시 채우러.
+            # (1s 틱은 장시간 생성 1건 동안 pending GET 을 초당 1회 반복 — 3s 로도 슬롯 충원 체감 동일)
+            _, in_flight = futures_wait(in_flight, timeout=3.0, return_when=FIRST_COMPLETED)
     _cleanup(ref_temps_all)  # 공유 임시파일은 전부 끝난 뒤 한 번에 삭제
     return total
 
@@ -695,21 +726,33 @@ def _signout_and_relogin(cli: str) -> str | None:
 
 
 def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True) -> None:
-    # 1) 서버가 이미 가진 내 job_id
-    status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
-    known_ids = set(known.get("job_ids") or []) if isinstance(known, dict) else set()
-
-    # 2) 로컬 생성물(내 CLI·내 계정) + 크레딧·워크스페이스 상태
+    # 1) 로컬 생성물(내 CLI·내 계정) + 크레딧·워크스페이스 상태
     jobs = _cli_json(cli, "generate", "list", "--size", str(size)) or []
     if not isinstance(jobs, list):
         jobs = []
+
+    # 2) 서버에 없는 잡 판별 — 내 로컬 목록(≤size)을 보내 차집합만 받는다(POST).
+    # GET(서버 보유 전량 응답)은 라이브러리가 수천 건으로 커지면 매 사이클 왕복이 무거워진다.
+    # 구버전 서버(POST 미지원 404/405)면 기존 GET 전량 방식으로 폴백.
+    local_ids = [j["id"] for j in jobs if isinstance(j, dict) and j.get("id")]
+    fresh_ids: set | None = None
+    if local_ids:
+        st, diff = _http(
+            "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
+        )
+        if st == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
+            fresh_ids = set(diff["unknown"])
+    if fresh_ids is None:
+        status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
+        known_ids = set(known.get("job_ids") or []) if isinstance(known, dict) else set()
+        fresh_ids = {j for j in local_ids if j not in known_ids}
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
     acct = _cli_json(cli, "account", "status")
     if isinstance(acct, dict):
         ws = _cli_json(cli, "workspace", "list")
         acct["workspaces"] = ws if isinstance(ws, list) else []
-        acct["cli_version"] = _cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
+        acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
@@ -718,7 +761,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         txns = []
     # 거래 표시명(display_name)을 모델 키(job_set_type)로 변환해 태깅 → 서버가 모델 가드로 정확 매칭.
     # best-effort: model list 실패/미태깅 거래는 서버가 시간+소유자 매칭으로 폴백(하위호환).
-    models = _cli_json(cli, "model", "list")
+    models = _cached_models(cli)
     if isinstance(models, list):
         dn2key = {
             m.get("display_name"): m.get("job_set_type")
@@ -730,11 +773,11 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
                 t["model"] = dn2key[t["display_name"]]
 
     # 3) 새 것만 추림(서버에 없는 job_id)
-    fresh = [j for j in jobs if isinstance(j, dict) and j.get("id") and j["id"] not in known_ids]
+    fresh = [j for j in jobs if isinstance(j, dict) and j.get("id") and j["id"] in fresh_ids]
     # 내 힉스필드 uid = 내 전체 목록의 최다 user_<id>(= 내 본인 것). fresh 만 보면 남의 레퍼런스에
     # 오염될 수 있으므로 반드시 '전체 목록' 기준으로 산출해 명시 전송 → 서버가 올바르게 연결.
     my_uid = _dominant_uid(jobs)
-    print(f"[로컬] 잡 {len(jobs)}개 중 새 잡 {len(fresh)}개 (서버 보유 {len(known_ids)}개) · 내 uid={my_uid}")
+    print(f"[로컬] 잡 {len(jobs)}개 중 새 잡 {len(fresh)}개 · 내 uid={my_uid}")
     if not fresh and not acct:
         print("[완료] 올릴 새 결과물이 없습니다.")
         return
@@ -769,6 +812,8 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         f"변동없음 {body.get('unchanged')} · 건너뜀 {body.get('skipped')} · "
         f"연결 uid={body.get('linked_uid')}"
     )
+    if body.get("errors"):
+        print(f"[경고] 서버 반영 실패 {body['errors']}건 — 서버 로그 확인 필요(다음 push 에서 재시도됨)")
 
 
 def main() -> None:
@@ -793,6 +838,7 @@ def main() -> None:
 
     server = args.server.rstrip("/")
     cli = _cli()
+    creds: dict | None = None  # 세션 만료 시 자동 재로그인용(메모리에만 유지, 저장 안 함)
     if args.token:
         token = args.token  # AUTH off 로컬 허브는 토큰을 검증하지 않으므로 더미('local')도 됨
         print(f"[토큰] 전달된 세션 토큰 사용({args.email or '로컬'})")
@@ -801,6 +847,7 @@ def main() -> None:
             sys.exit("[오류] --email 또는 --token 중 하나는 필요합니다.")
         password = args.password or getpass.getpass(f"{args.email} 허브 비밀번호: ")
         token = login(server, args.email, password)
+        creds = {"email": args.email, "password": password}
 
     def cycle() -> None:
         # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
@@ -818,6 +865,14 @@ def main() -> None:
             print(f"[경고] 초기 처리 오류(무시): {e}")
         while True:
             reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
+            if reason == "__reauth__":
+                # 세션 만료 → 자동 재로그인(자격이 메모리에 있을 때만). 실패하면 login 이 종료한다
+                # (비밀번호 변경/계정 정지 등 — 무한 재시도 루프 방지).
+                if not creds:
+                    sys.exit("[오류] 세션 만료/인증 실패 — 에이전트를 다시 실행하세요.")
+                print("[세션] 만료 감지 — 자동 재로그인")
+                token = login(server, creds["email"], creds["password"])
+                continue
             # 사유가 콤마로 합쳐 올 수 있다(gen-request 와 sync 가 함께 쌓인 경우) → 멤버십으로 검사.
             reasons = set((reason or "").split(",")) if reason else set()
             try:

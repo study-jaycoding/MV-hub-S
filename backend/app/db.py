@@ -232,6 +232,11 @@ def _pooled_conn(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def pool_epoch() -> int:
+    """현재 풀 에폭 — DB 파일 교체(import/복원)를 감지해야 하는 캐시 키에 쓴다(repo.manage 스키마 가드 등)."""
+    return _pool_epoch
+
+
 def flush_pool() -> None:
     """모든 스레드의 풀 커넥션을 무효화 — 다음 사용 때 새 파일로 재오픈한다. DB 파일을 같은 경로에
     교체(import/복원)한 직후 호출: 경로 문자열이 그대로라 _pooled_conn 이 옛 파일(이미 교체됨)을 계속
@@ -565,6 +570,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_genautotag_tag "
         "ON gen_auto_tag(auto_tag_id, generation_id)"
+    )
+    # ── 2차 최적화(배포 전 점검): 필터+정렬 복합·역조회 인덱스 ─────────────────
+    # 프로젝트 진입 목록 — project_id 범위 + (sort_ts,id) 키셋을 한 인덱스로(filesort 제거).
+    # 단독 idx_generation_project 는 정렬을 못 살리고, keyset 인덱스는 project 필터를 못 살린다.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_project_sort "
+        "ON generation(project_id, sort_ts DESC, id DESC)"
+    )
+    # '내가 공유한 것' 조회(share_dir=mine·identity 통계)가 shared_by 로 스코프 — 역방향 인덱스.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_share_shared_by ON share(shared_by, generation_id)"
+    )
+    # 동기화 URL 매칭(adoption)·에셋 역조회 — file_path/source_url 로 asset 을 찾는 경로.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_file_path ON asset(file_path)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_source_url ON asset(source_url)")
+    # 약한 형제(같은 입력 소스) 역조회 — 쿼리의 COALESCE(source_url, file_path) 식과 동일한 표현식 인덱스
+    # + reference→generation 역방향(gen_reference PK 는 generation_id 선행이라 역조회를 못 탄다).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reference_key "
+        "ON reference(COALESCE(source_url, file_path))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_genref_ref "
+        "ON gen_reference(reference_id, generation_id)"
     )
     # ── 생성본 코멘트 '개별 확인(seen)' 시드(1회) ─────────────────────────────
     # 기존 gen 단위 read_at 을 코멘트 단위 seen 으로 승격: 과거에 패널을 열어 read_at 이 박힌

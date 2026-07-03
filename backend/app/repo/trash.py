@@ -139,13 +139,15 @@ def move_to_trash(gen_id: str) -> bool:
 
     tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
+        # ★스냅샷(_gather)과 삭제를 같은 트랜잭션으로 — BEGIN 을 스냅샷 뒤에 열면
+        # 그 사이 끼어든 변경(태그·코멘트 등)이 스냅샷에 빠진 채 삭제돼 복구 시 유실된다.
+        conn.execute("BEGIN IMMEDIATE")
         gen = conn.execute("SELECT * FROM generation WHERE id=?", (gen_id,)).fetchone()
         if not gen:
             return False
         payload = _gather(conn, gen_id, gen)
         if MANAGE_ENABLED:  # 삭제 전 매니징 스냅샷 캡처(비용·프로젝트 등) — 자식 삭제 전이라야 조회 가능
             tomb = _telemetry_snapshot(conn, gen_id, gen)
-        conn.execute("BEGIN")
         conn.execute(
             "INSERT OR REPLACE INTO trash.trashed"
             "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, payload) "
@@ -230,6 +232,59 @@ def _insert_row(
     )
 
 
+def _account_alias_uids(conn, account_uid: str) -> set[str]:
+    """account_uid 로 소유 판정할 때 함께 인정할 신원 표현 — 자신 + (user_ 계정이면) 그 계정의
+    acct:<email> 옛 별칭. acct:→user_ 전환 후에도 옛 신원으로 삭제한 항목을 목록/복원/영구삭제에서
+    놓치지 않게 한다(휴지통 DB의 creator_uid 는 remap 대상 밖이라 stale acct: 로 남을 수 있음)."""
+    aliases = {account_uid}
+    for r in conn.execute(
+        "SELECT email FROM account WHERE creator_uid=?", (account_uid,)
+    ).fetchall():
+        email = (r["email"] or "").strip().lower()
+        if email:
+            aliases.add("acct:" + email)
+    return aliases
+
+
+def _acct_remap(conn) -> dict[str, str]:
+    """payload 안 stale acct:<email> → 실제 user_ 매핑(user_ 확보된 계정만). 복원 시 payload 신원을
+    치환해 메인 DB 로 옛 acct: 가 재유입되는 것을 막는다(admin·단독 복원 포함 항상 적용)."""
+    m: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT email, creator_uid FROM account WHERE creator_uid IS NOT NULL"
+    ).fetchall():
+        cuid = r["creator_uid"]
+        email = (r["email"] or "").strip().lower()
+        if email and cuid and str(cuid).startswith("user_"):
+            m["acct:" + email] = cuid
+    return m
+
+
+def _rewrite_payload_identities(p: dict[str, Any], remap: dict[str, str]) -> None:
+    """payload 안 작성자 축 신원(acct:→user_)을 치환. generation.worker_id 는 워크스테이션 축이라 제외."""
+    if not remap:
+        return
+    def sub(v):
+        return remap.get(v, v)
+    g = p.get("generation") or {}
+    if g.get("creator_uid"):
+        g["creator_uid"] = sub(g["creator_uid"])
+    if g.get("final_by"):
+        g["final_by"] = sub(g["final_by"])
+    for c in p.get("comments") or []:
+        if c.get("author"):
+            c["author"] = sub(c["author"])
+    for rd in p.get("comment_reads") or []:
+        if rd.get("worker_id"):  # 컬럼명은 worker_id 지만 값은 actor(creator_uid) — 치환 대상
+            rd["worker_id"] = sub(rd["worker_id"])
+    for sn in p.get("comment_seen") or []:
+        if sn.get("worker_id"):
+            sn["worker_id"] = sub(sn["worker_id"])
+    for s in p.get("shares") or []:
+        if s.get("shared_by"):
+            s["shared_by"] = sub(s["shared_by"])
+
+
 def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
     account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
@@ -239,12 +294,16 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         ).fetchone()
         if not row:
             return False
-        # 일반 계정(account_uid 지정)은 '정확히 본인 것'만. 소유자 NULL 인 레거시(단독 시절) 항목은
-        # 일반 계정이 복구 못 하게 막는다 — admin 은 호출부에서 account_uid=None 으로 들어와 전부 통과,
-        # 단독 모드(AUTH off)도 account_uid=None 이라 통과하므로 레거시가 잠기지 않는다.
-        if account_uid is not None and row["creator_uid"] != account_uid:
+        # 일반 계정(account_uid 지정)은 '본인 것(옛 acct: 별칭 포함)'만. 소유자 NULL 인 레거시(단독 시절)
+        # 항목은 일반 계정이 복구 못 하게 막는다 — admin 은 호출부에서 account_uid=None 으로 들어와 전부
+        # 통과, 단독 모드(AUTH off)도 account_uid=None 이라 통과하므로 레거시가 잠기지 않는다.
+        if account_uid is not None and row["creator_uid"] not in _account_alias_uids(
+            conn, account_uid
+        ):
             raise PermissionError("본인 휴지통 항목만 복구할 수 있습니다")
         p = json.loads(row["payload"])
+        # payload 안 stale acct: 신원을 user_ 로 치환(재유입 차단) — admin·단독 복원 포함 항상.
+        _rewrite_payload_identities(p, _acct_remap(conn))
         conn.execute("BEGIN")
         _insert_row(conn, "generation", p["generation"])
         for a in p.get("assets", []):
@@ -358,8 +417,10 @@ def list_trash(
     with _with_trash() as conn:
         where, args = [], []
         if account_uid:
-            where.append("creator_uid = ?")
-            args.append(account_uid)
+            # 옛 acct: 별칭까지 포함 — 전환 후에도 내가 지운 항목을 휴지통 목록에서 보게 한다.
+            aliases = _account_alias_uids(conn, account_uid)
+            where.append(f"creator_uid IN ({','.join('?' * len(aliases))})")
+            args += list(aliases)
         if search:
             where.append("(prompt LIKE ? OR source_name LIKE ?)")
             args += [f"%{search}%", f"%{search}%"]
@@ -392,10 +453,12 @@ def purge_trashed_item(gen_id: str, account_uid: Optional[str] = None) -> bool:
     미디어 파일은 공유·내용주소라 건드리지 않음."""
     with _with_trash() as conn:
         if account_uid:
+            aliases = _account_alias_uids(conn, account_uid)  # 옛 acct: 별칭 포함 — 전환 후에도 영구삭제 가능
             return (
                 conn.execute(
-                    "DELETE FROM trash.trashed WHERE id=? AND creator_uid=?",
-                    (gen_id, account_uid),
+                    f"DELETE FROM trash.trashed WHERE id=? AND creator_uid IN "
+                    f"({','.join('?' * len(aliases))})",
+                    [gen_id, *aliases],
                 ).rowcount
                 > 0
             )

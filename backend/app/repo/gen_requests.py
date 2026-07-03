@@ -75,6 +75,27 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
         # 표시→로컬 CLI 가 두 번 실행돼 크레딧이 이중 소모된다. BEGIN IMMEDIATE 로 즉시 쓰기락을 잡아
         # SELECT+UPDATE 를 한 트랜잭션으로 직렬화한다(둘째 폴은 busy_timeout 대기 후 running 을 보고 건너뜀).
         conn.execute("BEGIN IMMEDIATE")
+        # ★stale running 회수 — 에이전트가 claim 후 죽으면(프로세스 종료·보고 유실) running 이
+        # 영영 남는다(부팅 정리는 generation 만 다룸). CLI create 타임아웃(900s)+여유를 넘긴
+        # running 은 실패로 종결해 카드가 '생성중'에 멈추지 않게 한다. 재큐잉(pending 복귀)은
+        # 원본이 실제로 완료됐는데 보고만 유실된 경우 이중 과금이라 하지 않는다 — 사용자가 재시도.
+        for stale in conn.execute(
+            "SELECT id, gen_id FROM gen_request WHERE account_email=? AND status='running' "
+            "AND updated_at < datetime('now','-30 minutes')",
+            (email,),
+        ).fetchall():
+            conn.execute(
+                "UPDATE gen_request SET status='failed', "
+                "error='에이전트 응답 없음(30분 초과) — 에이전트 상태 확인 후 다시 시도하세요', "
+                "updated_at=datetime('now') WHERE id=?",
+                (stale["id"],),
+            )
+            if stale["gen_id"]:
+                conn.execute(
+                    "UPDATE generation SET status='failed', "
+                    "error='에이전트 응답 없음(30분 초과)' WHERE id=? AND status IN ('pending','running')",
+                    (stale["gen_id"],),
+                )
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
             "WHERE account_email=? AND status='pending' ORDER BY created_at LIMIT ?",
@@ -85,21 +106,23 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
                 "UPDATE gen_request SET status='running', updated_at=datetime('now') WHERE id=?",
                 (r["id"],),
             )
-            try:
-                p = json.loads(r["payload"]) if r["payload"] else {}
-            except (ValueError, TypeError):
-                p = {}
-            out.append(
-                {
-                    "id": r["id"],
-                    "gen_id": r["gen_id"],
-                    "kind": r["kind"],
-                    "model": p.get("model"),
-                    "prompt": p.get("prompt"),
-                    "params": p.get("params") or {},
-                    "references": p.get("references") or [],
-                }
-            )
+    # payload 파싱은 트랜잭션(쓰기락) 밖에서 — 락 보유 시간을 SELECT+UPDATE 만으로 최소화.
+    for r in rows:
+        try:
+            p = json.loads(r["payload"]) if r["payload"] else {}
+        except (ValueError, TypeError):
+            p = {}
+        out.append(
+            {
+                "id": r["id"],
+                "gen_id": r["gen_id"],
+                "kind": r["kind"],
+                "model": p.get("model"),
+                "prompt": p.get("prompt"),
+                "params": p.get("params") or {},
+                "references": p.get("references") or [],
+            }
+        )
     return out
 
 

@@ -56,7 +56,9 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
     tmp = d / f".upload-{time.time_ns()}.tmp"
     tmp.write_bytes(data)
     try:
-        validate_hub_db(tmp)
+        # 백업 보관본은 복원의 마지막 보루 — 깨진 파일을 받아두면 복원 시점에야 터진다.
+        # quick_check 까지 통과해야 저장(수 MB 메타 DB 라 비용 미미).
+        validate_hub_db(tmp, require_integrity=True)
     except HubDbValidationError as exc:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))

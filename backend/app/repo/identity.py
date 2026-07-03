@@ -380,6 +380,19 @@ def link_accounts_to_creators() -> int:
     return n
 
 
+def uid_owner_email(uid: str) -> Optional[str]:
+    """이 실제 uid(user_*)에 이미 연결된 계정 이메일(없으면 None) — 신원 바인딩 가드용.
+    발행 번들의 creator_uid 로 계정을 연결하기 전에, 그 uid 가 남의 계정에 묶여 있지 않은지 확인한다."""
+    uid = (uid or "").strip()
+    if not uid:
+        return None
+    with get_connection() as conn:
+        r = conn.execute(
+            "SELECT email FROM account WHERE creator_uid=? LIMIT 1", (uid,)
+        ).fetchone()
+    return r["email"] if r else None
+
+
 def set_account_hf_creator(email: str, uid: str) -> bool:
     """push 시 계정을 '실제 힉스필드 생성자 uid'에 연결(합성 acct: uid 를 대체).
     이래야 그 계정 '내 작업'이 자기 힉스필드 생성물(creator_uid=uid)로 채워진다.
@@ -449,6 +462,9 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("project", "created_by", "plain"),
     ("credit_txn", "owner_uid", "plain"),
     ("project_task", "assignee_uid", "plain"),
+    # 텔레메트리 삭제 스냅샷 신원(동적 사이드카 — _col_exists 가드로 없으면 스킵). drain 이 이 컬럼을
+    # snapshot JSON 보다 우선하므로(ingest._drain_telemetry), 컬럼만 remap 하면 삭제반영이 정합된다.
+    ("telemetry_outbox", "tomb_creator_uid", "plain"),
 )
 
 

@@ -40,14 +40,19 @@ def assert_public_http_url(url: str) -> None:
         # IPv4-mapped IPv6(::ffff:127.0.0.1) 도 펼쳐 검사
         if ip.version == 6 and ip.ipv4_mapped:
             ip = ip.ipv4_mapped
-        if (
-            ip.is_private
+        # is_global=False 를 기본 차단 — is_private/loopback 열거는 CGNAT(100.64.0.0/10,
+        # Tailscale/통신사 내부망)·6to4·기타 비공개 대역을 놓친다. 공개 IP 만 통과시킨다.
+        # (IPv6 는 is_global 이 없는 파이썬 버전 대비 열거 검사도 함께 유지.)
+        blocked = (
+            not getattr(ip, "is_global", True)
+            or ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
-        ):
+        )
+        if blocked:
             raise BlockedURLError("내부/사설 호스트 미디어는 받을 수 없습니다")
 
 

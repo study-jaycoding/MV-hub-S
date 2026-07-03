@@ -18,6 +18,8 @@ def hub_db_validation_detail(exc: HubDbValidationError, *, downloaded: bool = Fa
         return "받은 파일이 SQLite DB 가 아닙니다" if downloaded else "SQLite DB 파일이 아닙니다"
     if exc.reason == "integrity":
         return "받은 백업이 손상되었습니다(무결성 검사 실패)"
+    if exc.reason == "unreadable":
+        return "파일을 읽을 수 없습니다(손상되었거나 열 수 없는 파일)"
     return "허브 DB 형식이 아닙니다(generation 테이블 없음)"
 
 

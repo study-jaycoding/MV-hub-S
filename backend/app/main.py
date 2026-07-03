@@ -156,7 +156,8 @@ async def lifespan(app: FastAPI):
     try:
         from .services import cli_bridge
 
-        status = await cli_bridge.get_account_status()
+        # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
+        status = await cli_bridge.get_account_status(timeout=8.0)
         repo.capture_provider_identity(status.get("email") or None)
     except Exception as e:  # noqa: BLE001 — 신원 캡처 실패가 부팅을 막지 않게
         print(f"[startup] 제공자 신원 캡처 건너뜀: {e}")
@@ -286,8 +287,10 @@ async def mutation_notify(request: Request, call_next):
         ):
             # 변경한 계정의 탭/기기에만 알림(AUTH off 면 account 없음 → 전체). 남의 비공개
             # 변경에 전원이 reload 하던 폭주를 막는다.
+            from .deps import realtime_scope
+
             acc = getattr(request.state, "account", None)
-            manager.notify_mutation(acc.get("creator_uid") if acc else None)
+            manager.notify_mutation(realtime_scope(acc))  # email 기반 스코프(연결·progress 와 일관)
     except Exception:  # noqa: BLE001 — 알림 실패가 응답을 막지 않게
         pass
     return response
@@ -361,7 +364,7 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.close(code=1008)
             return
     if AUTH_ENABLED:
-        from .deps import SESSION_COOKIE
+        from .deps import SESSION_COOKIE, realtime_scope
 
         token = ws.cookies.get(SESSION_COOKIE) or ws.query_params.get("token")
         email = auth_svc.verify_token(token) if token else None
@@ -371,12 +374,31 @@ async def websocket_endpoint(ws: WebSocket):
         if not acc or acc["status"] != "approved" or stale_password_token:
             await ws.close(code=1008)  # policy violation
             return
-        account_uid = acc.get("creator_uid")  # 이 소켓이 받을 진행률·알림을 이 계정으로 한정
+        # email 기반 스코프(progress·mutation 과 동일 규칙) — creator_uid NULL·리맵에도 안정.
+        account_uid = realtime_scope(acc)
     await manager.connect(ws, account_uid)
     try:
         while True:
             # 클라이언트 → 서버 메시지는 현재 쓰지 않지만 연결 유지를 위해 수신.
-            await ws.receive_text()
+            # 프론트가 25초마다 ping 을 보내므로 그 주기로 깨어난다. 수신이 없어도 45초마다
+            # 재검증하도록 타임아웃을 건다(연결 후 계정 정지·비번 변경 시 소켓을 끊기 위함).
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=45)
+            except asyncio.TimeoutError:
+                pass
+            # ★연결 시점에만 인증하면, 그 뒤 관리자가 계정을 정지(rejected/pending)하거나 비번을
+            # 리셋해도 기존 소켓은 계속 진행률·알림을 받는다 → 주기 재검증으로 끊는다.
+            if AUTH_ENABLED:
+                acc2 = repo.get_account(email) if email else None
+                pcat2 = acc2.get("password_changed_at") if acc2 else None
+                if (
+                    not acc2
+                    or acc2["status"] != "approved"
+                    or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
+                ):
+                    await ws.close(code=1008)
+                    await manager.disconnect(ws)
+                    return
     except WebSocketDisconnect:
         await manager.disconnect(ws)
     except Exception:

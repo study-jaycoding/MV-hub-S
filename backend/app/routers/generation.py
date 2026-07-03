@@ -36,6 +36,7 @@ from ..models import (
     TagsIn,
 )
 import asyncio
+import logging
 
 from ..services import cli_bridge, media_cache, syncer
 
@@ -360,9 +361,11 @@ async def trash_hf_missing(request: Request):
     server_trashed = 0
     if _proxy.proxying():
         try:
-            cands = (_proxy.proxy_json("GET", "/api/manage/hf-missing-candidates") or {}).get(
-                "candidates", []
-            )
+            # proxy_json 은 동기 urllib(최대 60s) — async 라우트에서 직접 부르면 루프 블로킹.
+            cands = (
+                await asyncio.to_thread(_proxy.proxy_json, "GET", "/api/manage/hf-missing-candidates")
+                or {}
+            ).get("candidates", [])
             server_checked = len(cands)
 
             async def scheck(c):
@@ -376,12 +379,12 @@ async def trash_hf_missing(request: Request):
             sres = await asyncio.gather(*(scheck(c) for c in cands if c.get("job_id")))
             payload = [r for r in sres if r["exists"] is not None]  # 확인불가(None)는 안 보냄
             if payload:
-                resp = _proxy.proxy_json(
-                    "POST", "/api/manage/hf-missing-apply", body={"results": payload}
+                resp = await asyncio.to_thread(
+                    _proxy.proxy_json, "POST", "/api/manage/hf-missing-apply", body={"results": payload}
                 )
                 server_trashed = (resp or {}).get("trashed", 0)
-        except Exception:  # noqa: BLE001 — 서버 검토 실패는 로컬 검토 결과를 막지 않음
-            pass
+        except Exception as e:  # noqa: BLE001 — 서버 검토 실패는 로컬 검토 결과를 막지 않음
+            logging.getLogger(__name__).warning("서버측 hf-missing 검토 실패(로컬 결과는 정상): %s", e)
 
     return {
         "checked": len(gens),

@@ -297,6 +297,10 @@ def set_member_roles(pid: str, body: ProjectRolesIn, request: Request):
         raise HTTPException(status_code=404, detail="없는 프로젝트")
     if not _can_manage_members(request, pid):
         raise HTTPException(status_code=403, detail="멤버 역할을 관리할 권한이 없습니다")
+    # 역할을 보냈는데 하나도 유효하지 않으면(구 역할명·오타) 400 — 조용히 '역할 없는 멤버'로
+    # 저장되던 것을 막는다. 빈 리스트([])는 '역할만 비운 채 멤버 유지'라는 명시 의도라 통과.
+    if body.project_roles and not rbac.parse_project_roles(body.project_roles):
+        raise HTTPException(status_code=400, detail=f"알 수 없는 프로젝트 역할: {body.project_roles}")
     try:
         repo.set_project_roles(pid, body.creator_uid, body.project_roles)
     except ValueError as e:
