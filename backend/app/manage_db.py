@@ -196,3 +196,85 @@ def upsert_facts(
             )
             n += 1
     return n
+
+
+# ── 팀 집계 조회(manage-T4) — manage_hub.db 를 읽어 매니저 대시보드에 낸다 ──────────
+# 크레딧은 실제(real_credits) 우선, 없으면 견적(est_credits) 폴백. 소요시간은 초 → 시간 환산은 프론트.
+# tombstone(is_deleted=1)도 '쓴 크레딧·들인 노력'이라 집계에 포함한다(삭제돼도 비용은 발생).
+_CREDIT = "COALESCE(real_credits, est_credits, 0)"
+
+
+def _agg_where(
+    date_from: Optional[str], date_to: Optional[str],
+    project_id: Optional[str], creator_uid: Optional[str],
+) -> tuple[str, list[Any]]:
+    where: list[str] = []
+    args: list[Any] = []
+    if date_from:
+        where.append("created_at >= ?")
+        args.append(date_from)
+    if date_to:
+        where.append("created_at <= ?")
+        args.append(date_to)
+    if project_id:
+        where.append("project_id = ?")
+        args.append(project_id)
+    if creator_uid:
+        where.append("creator_uid = ?")
+        args.append(creator_uid)
+    return (("WHERE " + " AND ".join(where)) if where else ""), args
+
+
+def team_overview(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    project_id: Optional[str] = None, creator_uid: Optional[str] = None,
+) -> dict[str, Any]:
+    """대시보드 한 방 — 전체 합계 + 작업자별 + 프로젝트별 + 작업자×프로젝트 매트릭스."""
+    where, args = _agg_where(date_from, date_to, project_id, creator_uid)
+    with get_connection() as conn:
+        totals = dict(conn.execute(
+            f"SELECT COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+            f"SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END) AS estimated_count, "
+            f"SUM(is_final) AS final_count, "
+            f"COUNT(DISTINCT creator_uid) AS workers, COUNT(DISTINCT project_id) AS projects "
+            f"FROM team_generation_fact {where}", args,
+        ).fetchone())
+        by_worker = [dict(r) for r in conn.execute(
+            f"SELECT creator_uid, MAX(creator_name) AS creator_name, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+            f"SUM(is_final) AS final_count "
+            f"FROM team_generation_fact {where} GROUP BY creator_uid ORDER BY credits DESC", args,
+        ).fetchall()]
+        by_project = [dict(r) for r in conn.execute(
+            f"SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+            f"SUM(is_final) AS final_count "
+            f"FROM team_generation_fact {where} GROUP BY project_id ORDER BY credits DESC", args,
+        ).fetchall()]
+        matrix = [dict(r) for r in conn.execute(
+            f"SELECT creator_uid, MAX(creator_name) AS creator_name, project_id, "
+            f"MAX(project_name) AS project_name, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits "
+            f"FROM team_generation_fact {where} GROUP BY creator_uid, project_id", args,
+        ).fetchall()]
+    return {"totals": totals, "by_worker": by_worker, "by_project": by_project, "matrix": matrix}
+
+
+def team_timeseries(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    project_id: Optional[str] = None, creator_uid: Optional[str] = None,
+    bucket: str = "day",
+) -> list[dict[str, Any]]:
+    """기간별 추이 — 일(day)/주(week)/월(month) 버킷별 크레딧·건수. created_at(생성일) 기준."""
+    fmt = {"week": "%Y-W%W", "month": "%Y-%m"}.get(bucket, "%Y-%m-%d")
+    where, args = _agg_where(date_from, date_to, project_id, creator_uid)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT strftime('{fmt}', created_at) AS bucket, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds "
+            f"FROM team_generation_fact {where} "
+            f"{'AND' if where else 'WHERE'} created_at IS NOT NULL "
+            f"GROUP BY bucket ORDER BY bucket ASC", args,
+        ).fetchall()
+    return [dict(r) for r in rows]

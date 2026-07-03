@@ -131,6 +131,42 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
     return {"upserted": n}
 
 
+@router.get("/team-overview")
+def team_overview(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    project_id: Optional[str] = None,
+    creator_uid: Optional[str] = None,
+):
+    """팀 전체 집계(합계+작업자별+프로젝트별+매트릭스). 집계는 서버 manage_hub.db 에 있으므로
+    로컬 허브는 서버로 위임(프록시), 서버 본체는 로컬 manage_hub.db 를 읽는다. 권한=read_all(매니저)."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/team-overview", request)
+    _require_manage_read(request)
+    from ..manage_db import team_overview as _ov
+
+    return _ov(date_from, date_to, project_id, creator_uid)
+
+
+@router.get("/team-timeseries")
+def team_timeseries(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    project_id: Optional[str] = None,
+    creator_uid: Optional[str] = None,
+    bucket: str = "day",
+):
+    """팀 전체 기간별 추이(일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/team-timeseries", request)
+    _require_manage_read(request)
+    from ..manage_db import team_timeseries as _ts
+
+    return {"buckets": _ts(date_from, date_to, project_id, creator_uid, bucket)}
+
+
 @router.get("/summary")
 async def summary(request: Request):
     """프로젝트별·작업자별 생성수·크레딧·시간 + 출력타입·영상길이·환불·워크스페이스 요약.
