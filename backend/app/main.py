@@ -72,6 +72,11 @@ async def lifespan(app: FastAPI):
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
+    # 팀 매니징 텔레메트리 저장소(manage_hub.db) — 콘텐츠 DB와 분리된 별도 파일. MANAGE 켰을 때만.
+    if MANAGE_ENABLED:
+        from .manage_db import init_manage_db
+
+        init_manage_db()
     repo.ensure_default_worker()
     # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
     # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
