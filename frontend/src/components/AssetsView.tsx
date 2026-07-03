@@ -502,7 +502,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     (p: string, names: string[]) => cellOpsRef.current.bulkTagRemove(p, names),
     [],
   );
-  const cellOnTagCancel = useCallback(() => setTagEditPath(null), []);
+  // 태그모드 종료 시 그리드로 포커스 복원 — 안 그러면 사라진 input 에 포커스가 남아 바로 이어지는
+  // r/g/b(컬러)·s 등 단축키가 그리드 keydown 에 안 들어간다(재선택해야 먹던 버그).
+  const cellOnTagCancel = useCallback(() => {
+    setTagEditPath(null);
+    requestAnimationFrame(() => gridRef.current?.focus({ preventScroll: true }));
+  }, []);
 
   // 그리드/리스트가 공유하는 셀 목록(중복 제거). layout 한 값으로 둘 중 하나만 렌더된다.
   // 다중선택 태그 편집 활성(편집 카드가 선택에 포함 + 2개 이상) — 선택된 비포커스 카드에 스트립 표시.
