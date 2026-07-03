@@ -244,14 +244,26 @@ def _drain_telemetry() -> None:
         return
     try:
         resp = _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": all_facts})
-        upserted = (resp or {}).get("upserted", 0) if isinstance(resp, dict) else 0
-        if upserted >= len(all_facts):
-            _m.mark_telemetry_pushed(sent)  # 서버가 다 받음 → 정리(CAS)
+        resp = resp if isinstance(resp, dict) else {}
+        if "skipped" in resp:
+            # 정밀 처리: 서버가 '실제로 스킵한 것'만 재시도로 남기고, 반영된 나머지는 정리한다.
+            # (개수만 보고 성공분까지 통째로 failed 처리해 재전송하던 낭비·attempts 부풀림 제거.)
+            skipped_ids = set(resp.get("skipped") or [])
+            pushed = [d for d in sent if d["local_gen_id"] not in skipped_ids]
+            failed = [d["local_gen_id"] for d in sent if d["local_gen_id"] in skipped_ids]
+            if pushed:
+                _m.mark_telemetry_pushed(pushed)  # 반영됨 → 정리(CAS)
+            if failed:
+                _m.mark_telemetry_failed(failed, "server skipped (unlinked/foreign)")
         else:
-            # 서버가 일부/전부 스킵(미링크 계정 등) → 재시도 대상으로 남김.
-            _m.mark_telemetry_failed(
-                [d["local_gen_id"] for d in sent], f"server upserted {upserted}/{len(all_facts)}"
-            )
+            # 구 서버(skipped 미지원) 폴백: 개수 기반 전량 판정(기존 동작).
+            upserted = resp.get("upserted", 0)
+            if upserted >= len(all_facts):
+                _m.mark_telemetry_pushed(sent)  # 서버가 다 받음 → 정리(CAS)
+            else:
+                _m.mark_telemetry_failed(
+                    [d["local_gen_id"] for d in sent], f"server upserted {upserted}/{len(all_facts)}"
+                )
     except Exception as e:  # noqa: BLE001 — 전송 실패는 재시도(다음 drain)로 회복
         _m.mark_telemetry_failed([d["local_gen_id"] for d in sent], str(e))
 
@@ -302,7 +314,16 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     흐름: Claude 가 그 사용자 세션으로 show_generations 를 next_cursor 끝까지 순회하며 각 페이지를
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
     jobs = [mcp_item_to_cli(it) for it in body.items if isinstance(it, dict)]
-    return _ingest_core(_agent_acc(request), jobs, None, body.account_status)
+    out = _ingest_core(_agent_acc(request), jobs, None, body.account_status)
+    # 팀 매니징: 백필도 일반 ingest 와 동일하게 dirty 텔레메트리를 flush 한다. MCP 백필은 페이지를
+    # 여러 번 POST 하고 '마지막 페이지' 신호가 없어, 매 페이지 drain 해야 백필만 한 사용자도 대시보드가
+    # 밀리지 않는다. drain 은 프록시 없으면 no-op, 실패분은 큐에 남아 재시도. best-effort.
+    if MANAGE_ENABLED:
+        try:
+            _drain_telemetry()
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 @router.get("/credits")

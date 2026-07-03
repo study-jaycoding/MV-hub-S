@@ -21,12 +21,26 @@ from pydantic import BaseModel
 
 from . import _proxy
 from .. import active_account, db, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals
 
 router = APIRouter(prefix="/api", tags=["publish"])
+
+
+def _touch_telemetry(gen_id: str | None) -> None:
+    """발행으로 is_shared 가 바뀐 내 로컬 생성물을 텔레메트리 dirty 표시 — 다음 ingest drain 이 서버로
+    갱신한다. share.py._touch_telemetry 와 동형(발행 경로가 여기라 서버 팩트가 is_shared 로 안 오르던
+    누락을 메움). best-effort·MANAGE 게이트 — 실패해도 발행 흐름엔 무영향."""
+    if not MANAGE_ENABLED or not gen_id:
+        return
+    try:
+        from ..repo import manage as _m
+
+        _m.mark_telemetry_dirty([gen_id])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _switch_account_db(email: str, uid: Optional[str]) -> None:
@@ -359,6 +373,7 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
         gen = repo.get_generation(gid)
         if gen and gen.get("status") == "done":
             repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
+            _touch_telemetry(gid)
             published += 1
     return {
         "published": published,
@@ -386,6 +401,7 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
             except HTTPException:
                 continue  # 권한 없는 항목은 건너뜀(벌크 전체를 막지 않음)
             repo.publish(gid, actor_id(request), "team")
+            _touch_telemetry(gid)
             published += 1
         return {"ok": True, "published": published, "remote": {}}
     r = publish_bundle_to_server(body.gen_ids)

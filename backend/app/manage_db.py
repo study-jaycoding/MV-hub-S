@@ -140,8 +140,8 @@ def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now:
 
 def upsert_facts(
     account_email: str, my_uid: Optional[str], items: list[dict[str, Any]]
-) -> int:
-    """작업자 메타 팩트를 팀 저장소에 멱등 upsert. 반환=반영된 행수.
+) -> tuple[int, list[str]]:
+    """작업자 메타 팩트를 팀 저장소에 멱등 upsert. 반환=(반영된 행수, 스킵된 local_gen_id 목록).
 
     ★작성자 검증(코덱스): payload 의 작성자를 그대로 믿지 않는다. 인증 세션의 my_uid 와 다른
     creator_uid 를 가진 항목(= 내 로컬에 있는 남의 공유본)은 팀 팩트로 올리지 않는다. account_email 도
@@ -149,11 +149,17 @@ def upsert_facts(
 
     ★미링크 계정 방어(코덱스): my_uid 가 없으면(서버 계정이 아직 힉스필드 uid 에 연결 안 됨) 팀 집계로
     받지 않는다(0 반환) — 클라이언트는 실패로 보고 재시도해 링크 후 올린다. 미링크 상태에서 payload
-    creator_uid 를 그대로 믿는 구멍을 막는다."""
+    creator_uid 를 그대로 믿는 구멍을 막는다.
+
+    ★스킵 목록 반환: 어떤 항목이 반영 안 됐는지(미링크 전체·남의 것)를 돌려줘, 클라 드레이너가
+    '실제로 스킵된 것만' 재시도로 남기고 나머지는 정리하게 한다(성공분까지 재전송하는 낭비 제거)."""
     if not my_uid:
-        return 0
+        # 미링크 → 전부 미반영. 클라가 재시도(링크 후)하도록 스킵 목록에 다 담는다.
+        skipped_all = [g for it in items if (g := (it.get("local_gen_id") or "").strip())]
+        return 0, skipped_all
     now = _utcnow()
     n = 0
+    skipped: list[str] = []
     placeholders = ",".join("?" for _ in _FACT_COLS)
     sql = (
         f"INSERT INTO team_generation_fact({','.join(_FACT_COLS)}) VALUES({placeholders}) "
@@ -166,6 +172,7 @@ def upsert_facts(
                 continue
             cu = it.get("creator_uid") or my_uid
             if cu != my_uid:
+                skipped.append(gid)
                 continue  # 남의 것 — 팀 팩트에 올리지 않음(누출·오귀속 방지)
             # job_id 중복 정리(코덱스): 같은 잡이 다른 local_gen_id 로 재적재(계정 DB 이관·재생성)되면
             # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다. tombstone 도 동일.
@@ -190,7 +197,7 @@ def upsert_facts(
                 continue
             conn.execute(sql, _fact_values(account_email, cu, gid, it, now))
             n += 1
-    return n
+    return n, skipped
 
 
 # ── 팀 집계 조회(manage-T4) — manage_hub.db 를 읽어 매니저 대시보드에 낸다 ──────────

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -168,8 +169,14 @@ def move_to_trash(gen_id: str) -> bool:
             from . import manage as _m
 
             _m.mark_telemetry_tombstone(gen_id, tomb)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 — 삭제 자체는 성공, 텔레메트리는 사이드카(별 DB)
+            # 단, 여기 실패는 스냅샷이 사라져(본체 이미 삭제) 서버 팩트가 is_deleted 로 영영 안 넘어가는
+            # 영구 왜곡이 될 수 있어 silent 로 두지 않고 남긴다(진단용). 삭제 흐름은 계속 진행.
+            logging.getLogger(__name__).warning(
+                "텔레메트리 tombstone 기록 실패(gen_id=%s) — 팀 집계에서 삭제 반영 누락 가능",
+                gen_id,
+                exc_info=True,
+            )
     return True
 
 
