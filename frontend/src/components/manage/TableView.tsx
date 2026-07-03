@@ -31,6 +31,13 @@ function fmtDur(sec?: number): string {
   return out;
 }
 
+// YYYY-MM-DD → M/D(월/일). 기간 표시용 짧은 포맷.
+function fmtMD(d?: string | null): string {
+  if (!d) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  return m ? `${+m[2]}/${+m[3]}` : d;
+}
+
 export function TableView(props: WorkViewProps) {
   const {
     tasks,
@@ -184,12 +191,20 @@ export function TableView(props: WorkViewProps) {
                 <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
                 <td>{fmtDur(t.elapsed)}</td>
                 <td>
+                  {/* 마감일 — PM 입력값 우선, 없으면 연결 생성물의 최종 생성일 자동 표시.
+                      아래에 시작~끝(생성일 범위) 기간을 함께 보여 시퀀스 진행 폭을 파악. */}
                   <input
                     className="work-cell-in"
                     type="date"
-                    value={t.due_date || ""}
+                    value={t.due_date || t.derived_due || ""}
                     onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
                   />
+                  {t.derived_start && t.derived_due && (
+                    <div className="work-period" title="연결 생성물의 생성일 범위">
+                      {fmtMD(t.derived_start)}
+                      {t.derived_start !== t.derived_due ? ` ~ ${fmtMD(t.derived_due)}` : ""}
+                    </div>
+                  )}
                 </td>
                 <td>
                   <input

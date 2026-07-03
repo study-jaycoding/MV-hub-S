@@ -200,6 +200,32 @@ def upsert_facts(
     return n, skipped
 
 
+# ── 콘텐츠 작업탭 보조 — 생성 소요시간(elapsed) 폴백 조회 ─────────────────────────
+# 콘텐츠 push(/api/ingest ← CLI generate list)는 elapsed 를 안 실어서 콘텐츠 DB 의
+# generation_metrics.elapsed_seconds 가 NULL 이다. 반면 텔레메트리 push 는 로컬에서 잰
+# elapsed 를 team_generation_fact 에 보존한다. 그래서 작업탭 list_tasks 가 값이 없을 때
+# 여기서 job_id 로 끌어와 채운다(읽기 전용, 앱단 병합 — 크로스-DB 조인 아님).
+def elapsed_by_job_ids(job_ids: list[str]) -> dict[str, float]:
+    """job_id → 생성 소요시간(초). manage_hub.db 가 없거나(구버전·MANAGE off) 조회 실패해도
+    작업탭이 깨지지 않게 예외를 삼키고 {} 를 돌린다. 같은 job_id 가 여러 계정 행에 있을 수
+    있어(계정별 유니크) MAX 로 결정적으로 합친다. elapsed 없는 행은 제외."""
+    ids = sorted({j for j in job_ids if j})  # 중복·빈값 제거
+    if not ids:
+        return {}
+    try:
+        with get_connection() as conn:
+            ph = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"SELECT job_id, MAX(elapsed_seconds) AS e FROM team_generation_fact "
+                f"WHERE job_id IN ({ph}) AND elapsed_seconds IS NOT NULL "
+                f"GROUP BY job_id",
+                ids,
+            ).fetchall()
+        return {r["job_id"]: r["e"] for r in rows if r["e"] is not None}
+    except sqlite3.DatabaseError:
+        return {}
+
+
 # ── 팀 집계 조회(manage-T4) — manage_hub.db 를 읽어 매니저 대시보드에 낸다 ──────────
 # 크레딧은 실제(real_credits) 우선, 없으면 견적(est_credits) 폴백. 소요시간은 초 → 시간 환산은 프론트.
 # tombstone(is_deleted=1)도 '쓴 크레딧·들인 노력'이라 집계에 포함한다(삭제돼도 비용은 발생).

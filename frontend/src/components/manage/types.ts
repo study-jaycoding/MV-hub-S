@@ -239,6 +239,8 @@ export interface Task {
   // 파생(연결 생성물에서)
   gen_count?: number;
   derived_date?: string | null; // 마감/시작일 없을 때 캘린더가 쓰는 폴백(연결 컷 최초 생성일)
+  derived_start?: string | null; // 연결 컷 최초 생성일(YYYY-MM-DD) — PM 미설정 시 시작일 파생
+  derived_due?: string | null; // 연결 컷 최종 생성일(YYYY-MM-DD) — PM 미설정 시 마감일 파생
   cuts?: Cut[];
   creators?: string[];
   credits?: number;

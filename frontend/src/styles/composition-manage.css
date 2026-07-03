@@ -502,6 +502,8 @@
 }
 .work-cell-in:hover { border-color: var(--border); }
 .work-cell-in:focus { outline: none; border-color: var(--accent); }
+/* 마감일 아래 생성일 범위(시작~끝) — 자동 파생 기간 표시. */
+.work-period { font-size: 10px; opacity: .5; padding: 0 6px; margin-top: 1px; white-space: nowrap; }
 .work-cut-cell { min-width: 90px; }
 .work-cut-cell .work-cut { width: 32px; height: 32px; }
 /* 테이블·보드 모두 +N 이 아래로 안 접히게 한 줄 유지(우측 표시) */
@@ -566,6 +568,49 @@
   background: rgba(0,0,0,.7); color: #fff; border-radius: 5px 0 0 0;
 }
 .work-cal-hint { font-size: 11px; opacity: .5; padding-left: 2px; }
+
+/* 캘린더 모드 토글(월간/생성자별) */
+.work-cal-modes { display: flex; gap: 4px; }
+.work-cal-modes button {
+  font-family: inherit; font-size: 12px; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 12px; cursor: pointer;
+}
+.work-cal-modes button:hover { border-color: var(--accent); }
+.work-cal-modes button.on {
+  background: var(--accent); color: var(--accent-ink, #111); border-color: var(--accent); font-weight: 700;
+}
+
+/* ── 월간 작업 캘린더(달력 그리드) ── */
+.mcal { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.mcal-dow { display: grid; grid-template-columns: repeat(7, 1fr); background: var(--panel, #161616); }
+.mcal-dowcell {
+  text-align: center; font-size: 11px; font-weight: 700; opacity: .6; padding: 6px 0;
+  border-right: 1px solid rgba(127,127,127,.12);
+}
+.mcal-dowcell:last-child { border-right: none; }
+.mcal-dowcell.weekend { opacity: .4; }
+.mcal-grid { display: flex; flex-direction: column; }
+.mcal-week { position: relative; border-top: 1px solid var(--border); }
+.mcal-daycells { display: grid; grid-template-columns: repeat(7, 1fr); height: 100%; position: absolute; inset: 0; }
+.mcal-day {
+  border-right: 1px solid rgba(127,127,127,.10); padding: 3px 5px;
+}
+.mcal-day:last-child { border-right: none; }
+.mcal-day.out { background: rgba(127,127,127,.04); }
+.mcal-day.out .mcal-daynum { opacity: .3; }
+.mcal-day.weekend .mcal-daynum { opacity: .5; }
+.mcal-day.today { background: rgba(127,127,127,.08); }
+.mcal-day.today .mcal-daynum { color: var(--accent); font-weight: 800; opacity: 1; }
+.mcal-daynum { font-size: 11px; opacity: .7; }
+.mcal-bars { position: relative; }
+.mcal-bar {
+  position: absolute; height: 17px; border-radius: 4px; padding: 0 5px; overflow: hidden;
+  display: flex; align-items: center; cursor: default;
+}
+.mcal-bar-txt {
+  font-size: 10px; line-height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+}
 
 
 /* 완료 탭 — 완료본 렌더폴더 저장 */

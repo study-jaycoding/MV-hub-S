@@ -458,7 +458,7 @@ def _task_gen_rows(
         seq = None
     return conn.execute(
         "SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
-        "  g.is_final AS is_final, g.created_at AS created_at, "
+        "  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
         "  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
         "  EXISTS(SELECT 1 FROM task_generation tg WHERE tg.task_id=? AND tg.gen_id=g.id) AS linked, "
         # 썸네일: poster(thumbnail_path) 우선. 비디오는 file_path(영상)를 이미지 썸네일로 못 써 깨지므로
@@ -542,40 +542,64 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                     all_creator_uids.add(g["creator_uid"])
                 all_gen_ids.add(g["id"])
         # ★배치 집계 — 작업 P개마다 반복하던 metrics/comment 쿼리(≈2P회)를 전체 gen_id 로 1회씩.
-        metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed)
+        # elapsed 는 raw(NULL 유지) — '없음(NULL)'과 '0초'를 구분해야 manage_hub 폴백이 가능(코덱스).
+        metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed|None)
         comments_by_gen: dict[str, int] = {}    # gen_id -> 코멘트 수
         if all_gen_ids:
             idlist = list(all_gen_ids)
             ph = ",".join("?" * len(idlist))
             for m in conn.execute(
                 f"SELECT gen_id, COALESCE(real_credits, est_credits) AS credits, "
-                f"  COALESCE(elapsed_seconds, 0) AS elapsed "
+                f"  elapsed_seconds AS elapsed "
                 f"FROM generation_metrics WHERE gen_id IN ({ph})",
                 idlist,
             ):
-                metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"] or 0)
+                metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"])
             for c in conn.execute(
                 f"SELECT gen_id, COUNT(*) AS c FROM generation_comment "
                 f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
                 idlist,
             ):
                 comments_by_gen[c["gen_id"]] = c["c"]
+        # ★생성 소요시간 폴백 — 콘텐츠 DB elapsed 가 없는(NULL) 컷은 manage_hub.db(텔레메트리로
+        # 보존된 elapsed)에서 job_id 로 끌어온다. 콘텐츠 push 경로가 elapsed 를 버려서 작업탭이
+        # "—" 로 뜨던 문제를 데이터 그대로(허브 큐 생성분만 존재) 채운다. 실패해도 {} 라 안전.
+        elapsed_by_job: dict[str, float] = {}
+        need_job_ids = [
+            g["job_id"]
+            for gens in per_task_cuts.values()
+            for g in gens
+            if g.get("job_id") and metrics_by_gen.get(g["id"], (0, None))[1] is None
+        ]
+        if need_job_ids:
+            from .. import manage_db
+            elapsed_by_job = manage_db.elapsed_by_job_ids(need_job_ids)
         # 2차: 배치 결과를 작업별로 합산해 조립(집계 의미는 기존과 동일).
         for r in rows:
             tid = r["id"]
             gens = per_task_cuts[tid]
             gen_ids = [g["id"] for g in gens]
-            credits = sum(metrics_by_gen.get(gid, (0, 0))[0] for gid in gen_ids)
-            elapsed = sum(metrics_by_gen.get(gid, (0, 0))[1] for gid in gen_ids)
+            credits = sum(metrics_by_gen.get(gid, (0, None))[0] for gid in gen_ids)
+            # 컷별 elapsed: 콘텐츠 값 우선, NULL 이면 job_id 로 manage_hub 폴백, 그래도 없으면 0.
+            elapsed = 0.0
+            for g in gens:
+                e = metrics_by_gen.get(g["id"], (0, None))[1]
+                if e is None and g.get("job_id"):
+                    e = elapsed_by_job.get(g["job_id"])
+                elapsed += e or 0
             cc = sum(comments_by_gen.get(gid, 0) for gid in gen_ids)
             d = dict(r)
             d["gen_count"] = len(gen_ids)
             d["credits"] = credits
             d["elapsed"] = elapsed
             d["comment_count"] = cc
-            # 캘린더 폴백 날짜 — 마감/시작일 없는 자동 작업을 연결 컷의 최초 생성일로 표시.
-            dates = [g["created_at"] for g in gens if g.get("created_at")]
-            d["derived_date"] = min(dates) if dates else None
+            # 기간 파생 — 자동 작업의 시작~마감을 연결 컷의 생성일 범위로 표시(DB 미기록, 반환값만).
+            # start_date/due_date 는 PM 입력값 그대로 두고, 별도 derived_* 로 내려 프론트가
+            # 'PM값 ?? 파생값'으로 표시(코덱스). created_at 은 시각 포함이라 앞 10자리(날짜)만 쓴다.
+            days = sorted(g["created_at"][:10] for g in gens if g.get("created_at"))
+            d["derived_start"] = days[0] if days else None
+            d["derived_due"] = days[-1] if days else None
+            d["derived_date"] = days[0] if days else None  # 기존 캘린더 폴백 호환
             # 폴더 자동 작업은 컷 상태로 열(상태)을 자동 배치: 최종→완료, 공유→게시, 생성물→진행.
             # 단 사용자가 '생략'으로 옮긴 건 수동 종결이라 그대로 둔다(그때 컷 비활성화는 프론트 처리).
             if r["folder_path"] and r["status"] != "omit":
@@ -587,6 +611,16 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                     d["status"] = "in_progress"
                 else:
                     d["status"] = "not_started"
+            # ★빈 자동 작업 숨김 — 생성물을 휴지통으로 보내면 folder_path 작업 행은 남아(create-only,
+            # 삭제 안 함) gen_count=0 유령 카드가 된다. PM 이 손대지 않은(일정·메모·담당·설명·생략
+            # 없음) 빈 자동 작업만 목록에서 제외(행은 보존 → 생성물 돌아오면 재등장). 코덱스: sort_order
+            # 는 드래그로 찍힐 수 있어 편집 기준에서 제외.
+            pm_edited = bool(
+                r["start_date"] or r["due_date"] or r["note"]
+                or r["assignee_uid"] or r["description"] or r["status"] == "omit"
+            )
+            if r["folder_path"] and d["gen_count"] == 0 and not pm_edited:
+                continue
             out.append(d)
         # 작성자 이름 일괄 해석 후 작업별 distinct 생성자명 부착(정렬 순서 유지).
         names = resolve_display_names(conn, list(all_creator_uids)) if all_creator_uids else {}
@@ -597,6 +631,7 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 if nm and nm not in seen:
                     seen.append(nm)
                 c["creator_name"] = nm
+                c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen
         return out
