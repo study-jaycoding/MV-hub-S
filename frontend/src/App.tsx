@@ -347,13 +347,14 @@ export default function App() {
     setTagPanelOpen,
   });
 
-  const { boardShare, bulkPublish, onPublish } = useGenerationShareActions({
+  const { boardShare, bulkPublish, bulkFinalize, onPublish } = useGenerationShareActions({
     bumpBoard,
     clearSelect,
     flash,
     generations: gens,
     reload,
     selected,
+    canFinalize,
   });
   const { boardDelete, bulkDelete, bulkPurge, bulkRestore, clearFailed, onRestore } =
     useGenerationTrashActions({
@@ -713,6 +714,7 @@ export default function App() {
                 tab={filters.tab}
                 projects={projects}
                 onPublish={bulkPublish}
+                onFinalize={bulkFinalize}
                 onDownload={bulkDownload}
                 onCompare={(items) => {
                   if (items.length >= 2) setCompareGens(items);
