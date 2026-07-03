@@ -92,6 +92,17 @@ _SCHEMA = (
         dest_path   TEXT NOT NULL,
         exported_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
+    # 팀 매니징 텔레메트리 발신 큐(로컬 전용, manage-T2). 내 생성물이 생기거나 바뀌면 여기 dirty 로
+    # 표시하고, 드레이너가 팩트를 만들어 서버 manage_hub.db 로 push 후 pushed_at 을 찍는다.
+    # 재푸시 대상 판정: pushed_at IS NULL 또는 dirty_at > pushed_at.
+    """CREATE TABLE IF NOT EXISTS telemetry_outbox (
+        local_gen_id TEXT PRIMARY KEY,
+        dirty_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        pushed_at    TEXT,
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        last_error   TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
     # 매칭 스캔(미귀속 spend)용 부분 인덱스 — 누적된 거래에서 대상만 빠르게.
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
@@ -1042,3 +1053,111 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> int:
         used_g.add(gi)
         applied += 1
     return applied
+
+
+# ── 팀 매니징 텔레메트리 발신(manage-T2) ───────────────────────────────────────
+# 로컬 outbox 는 '내 생성물 중 서버에 올려야 할 것'만 추적한다. 실제 팩트(메타)는 build 로 그때그때
+# 로컬 generation+metrics 에서 뽑아 만든다(중복 저장 안 함). 드레이너(T3)가 이 함수들을 엮어 push 한다.
+
+
+def mark_telemetry_dirty(gen_ids: list[str]) -> None:
+    """내 생성물이 생기거나(프로젝트·폴더·상태·크레딧) 바뀌면 outbox 에 dirty 표시(멱등).
+    사이드카라 코어 트랜잭션과 분리 — best-effort 로 호출(실패해도 코어 동작 무영향)."""
+    ids = [g for g in (gen_ids or []) if g]
+    if not ids:
+        return
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for gid in ids:
+            conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) VALUES(?, datetime('now')) "
+                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now')",
+                (gid,),
+            )
+
+
+def list_dirty_telemetry(limit: int = 200) -> list[str]:
+    """push 가 필요한 local_gen_id 목록(미전송 또는 마지막 push 후 다시 dirty). 오래된 것 먼저."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT local_gen_id FROM telemetry_outbox "
+            "WHERE pushed_at IS NULL OR dirty_at > pushed_at "
+            "ORDER BY dirty_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r["local_gen_id"] for r in rows]
+
+
+def build_telemetry_facts(
+    gen_ids: Optional[list[str]] = None, my_uid: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """로컬 generation+metrics 에서 매니징 팩트(메타만)를 만든다. 프롬프트·미디어·레퍼런스 제외.
+    my_uid 지정 시 '내 생성물'만(남의 공유본은 팀 팩트로 안 올림). gen_ids 지정 시 그 집합만."""
+    where = ["g.deleted_at IS NULL"]
+    args: list[Any] = []
+    if my_uid:
+        where.append("g.creator_uid = ?")
+        args.append(my_uid)
+    if gen_ids is not None:
+        ids = [g for g in gen_ids if g]
+        if not ids:
+            return []
+        where.append(f"g.id IN ({','.join('?' for _ in ids)})")
+        args.extend(ids)
+    sql = (
+        "SELECT g.id AS local_gen_id, g.job_id, g.creator_uid, c.name AS creator_name, "
+        "g.project_id, p.name AS project_name, g.folder_path, g.model, "
+        "(SELECT a.type FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS output_type, "
+        "g.status, g.created_at, g.sort_ts, g.is_final, "
+        "(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) THEN 1 ELSE 0 END) AS is_shared, "
+        "m.real_credits, m.est_credits, m.credit_source, m.elapsed_seconds, "
+        "m.started_at, m.completed_at "
+        "FROM generation g "
+        "LEFT JOIN generation_metrics m ON m.gen_id=g.id "
+        "LEFT JOIN creator c ON c.uid=g.creator_uid "
+        "LEFT JOIN project p ON p.id=g.project_id "
+        f"WHERE {' AND '.join(where)}"
+    )
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(sql, args).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["is_final"] = bool(d.get("is_final"))
+        d["is_shared"] = bool(d.get("is_shared"))
+        d["is_deleted"] = False
+        d["deleted_at"] = None
+        out.append(d)
+    return out
+
+
+def mark_telemetry_pushed(gen_ids: list[str]) -> None:
+    """push 성공한 id 들에 pushed_at 을 찍는다(재푸시 대상에서 빠짐). 마지막 오류도 지운다."""
+    ids = [g for g in (gen_ids or []) if g]
+    if not ids:
+        return
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for gid in ids:
+            conn.execute(
+                "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
+                "attempts=attempts+1, last_error=NULL WHERE local_gen_id=?",
+                (gid,),
+            )
+
+
+def mark_telemetry_failed(gen_ids: list[str], err: str) -> None:
+    """push 실패 기록(재시도 카운트+오류). pushed_at 은 그대로 두어 다음에 다시 대상이 된다."""
+    ids = [g for g in (gen_ids or []) if g]
+    if not ids:
+        return
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for gid in ids:
+            conn.execute(
+                "UPDATE telemetry_outbox SET attempts=attempts+1, last_error=? "
+                "WHERE local_gen_id=?",
+                (err[:500], gid),
+            )

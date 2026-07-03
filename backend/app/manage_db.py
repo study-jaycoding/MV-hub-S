@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, Optional
 
 from .config import DATA_DIR
 
@@ -92,3 +94,90 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# upsert 시 갱신할 컬럼들. real_credits·credit_source 는 COALESCE(늦게 채워지는 값이 NULL 로 덮이지
+# 않게) — 나머지는 최신 값으로 덮는다(프로젝트·폴더·상태 이동 반영).
+_UPSERT_SET = (
+    "creator_uid=excluded.creator_uid, creator_name=excluded.creator_name, "
+    "job_id=excluded.job_id, project_id=excluded.project_id, project_name=excluded.project_name, "
+    "folder_path=excluded.folder_path, model=excluded.model, output_type=excluded.output_type, "
+    "status=excluded.status, "
+    "real_credits=COALESCE(excluded.real_credits, team_generation_fact.real_credits), "
+    "est_credits=COALESCE(excluded.est_credits, team_generation_fact.est_credits), "
+    "credit_source=COALESCE(excluded.credit_source, team_generation_fact.credit_source), "
+    "elapsed_seconds=excluded.elapsed_seconds, created_at=excluded.created_at, "
+    "started_at=excluded.started_at, completed_at=excluded.completed_at, sort_ts=excluded.sort_ts, "
+    "is_final=excluded.is_final, is_shared=excluded.is_shared, is_deleted=excluded.is_deleted, "
+    "deleted_at=excluded.deleted_at, last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at"
+)
+
+_FACT_COLS = (
+    "id", "account_email", "creator_uid", "creator_name", "local_gen_id", "job_id",
+    "project_id", "project_name", "folder_path", "model", "output_type", "status",
+    "real_credits", "est_credits", "credit_source", "elapsed_seconds",
+    "created_at", "started_at", "completed_at", "sort_ts",
+    "is_final", "is_shared", "is_deleted", "deleted_at", "last_seen_at", "updated_at",
+)
+
+
+def upsert_facts(
+    account_email: str, my_uid: Optional[str], items: list[dict[str, Any]]
+) -> int:
+    """작업자 메타 팩트를 팀 저장소에 멱등 upsert. 반환=반영된 행수.
+
+    ★작성자 검증(코덱스): payload 의 작성자를 그대로 믿지 않는다. 인증 세션의 my_uid 와 다른
+    creator_uid 를 가진 항목(= 내 로컬에 있는 남의 공유본)은 팀 팩트로 올리지 않는다. account_email 도
+    payload 가 아니라 인증 세션 값으로 강제한다. 멱등 키는 (account_email, local_gen_id)."""
+    now = _utcnow()
+    n = 0
+    placeholders = ",".join("?" for _ in _FACT_COLS)
+    sql = (
+        f"INSERT INTO team_generation_fact({','.join(_FACT_COLS)}) VALUES({placeholders}) "
+        f"ON CONFLICT(account_email, local_gen_id) DO UPDATE SET {_UPSERT_SET}"
+    )
+    with get_connection() as conn:
+        for it in items:
+            gid = (it.get("local_gen_id") or "").strip()
+            if not gid:
+                continue
+            cu = it.get("creator_uid") or my_uid
+            if my_uid and cu and cu != my_uid:
+                continue  # 남의 것 — 팀 팩트에 올리지 않음(누출·오귀속 방지)
+            conn.execute(
+                sql,
+                (
+                    uuid.uuid4().hex,       # id (신규행에만 쓰임, 충돌 시 기존 id 유지)
+                    account_email,          # ★세션값 강제
+                    cu,
+                    it.get("creator_name"),
+                    gid,
+                    it.get("job_id"),
+                    it.get("project_id"),
+                    it.get("project_name"),
+                    it.get("folder_path"),
+                    it.get("model"),
+                    it.get("output_type"),
+                    it.get("status"),
+                    it.get("real_credits"),
+                    it.get("est_credits"),
+                    it.get("credit_source"),
+                    it.get("elapsed_seconds"),
+                    it.get("created_at"),
+                    it.get("started_at"),
+                    it.get("completed_at"),
+                    it.get("sort_ts"),
+                    1 if it.get("is_final") else 0,
+                    1 if it.get("is_shared") else 0,
+                    1 if it.get("is_deleted") else 0,
+                    it.get("deleted_at"),
+                    now,                    # last_seen_at
+                    now,                    # updated_at
+                ),
+            )
+            n += 1
+    return n

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
@@ -73,6 +73,62 @@ def _task_project_or_404(tid: str) -> str:
     if not pid:
         raise HTTPException(status_code=404, detail="없는 작업")
     return pid
+
+
+# ── 팀 매니징 텔레메트리(manage-T2) — 요청 모델 인라인(models.py 무수정 → 격리) ──────
+class TelemetryFactIn(BaseModel):
+    """작업자 로컬 생성물 1건의 매니징 메타(미디어·프롬프트 없음). 로컬이 만들어 서버로 push.
+    account_email·creator_uid 는 서버가 인증 세션값으로 강제/검증한다(payload 값 불신)."""
+
+    local_gen_id: str
+    job_id: Optional[str] = None
+    creator_uid: Optional[str] = None  # 서버가 세션 uid 와 대조(다르면 스킵)
+    creator_name: Optional[str] = None
+    project_id: Optional[str] = None
+    project_name: Optional[str] = None
+    folder_path: Optional[str] = None
+    model: Optional[str] = None
+    output_type: Optional[str] = None
+    status: Optional[str] = None
+    real_credits: Optional[float] = None
+    est_credits: Optional[float] = None
+    credit_source: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    sort_ts: Optional[float] = None
+    is_final: bool = False
+    is_shared: bool = False
+    is_deleted: bool = False
+    deleted_at: Optional[str] = None
+
+
+class TelemetryPushIn(BaseModel):
+    items: list[TelemetryFactIn] = Field(default_factory=list)
+
+
+def _push_acc(request: Request) -> dict:
+    """텔레메트리 push 신원 — 인증 세션 계정. AUTH off 로컬 허브에선 내 신원으로 폴백
+    (ingest._agent_acc 와 동일 계약). 반환 {email, creator_uid}."""
+    acc = getattr(request.state, "account", None)
+    if acc:
+        return acc
+    if not AUTH_ENABLED:
+        return {"email": "local", "creator_uid": repo.get_my_uid()}
+    raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+
+
+@router.post("/telemetry/push")
+def telemetry_push(body: TelemetryPushIn, request: Request):
+    """작업자 로컬 → 팀 매니징 저장소(manage_hub.db) 메타 upsert. 순수 수신자(재프록시 안 함) —
+    보낼 곳 결정은 클라이언트(로컬 드레이너)가 한다. 작성자=세션 신원으로 강제/검증."""
+    acc = _push_acc(request)
+    from ..manage_db import upsert_facts
+
+    items = [it.model_dump() for it in body.items]
+    n = upsert_facts(acc.get("email") or "local", acc.get("creator_uid"), items)
+    return {"upserted": n}
 
 
 @router.get("/summary")
