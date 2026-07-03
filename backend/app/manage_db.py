@@ -154,6 +154,23 @@ def upsert_facts(
             cu = it.get("creator_uid") or my_uid
             if cu != my_uid:
                 continue  # 남의 것 — 팀 팩트에 올리지 않음(누출·오귀속 방지)
+            # tombstone(삭제 통보, T5): is_deleted 만 세팅하고 나머지 차원(프로젝트·모델·크레딧)은 보존한다.
+            # 일반 upsert 는 전체 덮어쓰기라, 필드가 빈 tombstone 을 그대로 upsert 하면 기존 값이 지워진다.
+            if it.get("is_deleted"):
+                cur = conn.execute(
+                    "UPDATE team_generation_fact SET is_deleted=1, deleted_at=?, "
+                    "last_seen_at=?, updated_at=? WHERE account_email=? AND local_gen_id=?",
+                    (now, now, now, account_email, gid),
+                )
+                if cur.rowcount == 0:  # 팩트가 아직 없음(생성 즉시 삭제 등) → 최소 tombstone 행 삽입
+                    conn.execute(
+                        "INSERT OR IGNORE INTO team_generation_fact"
+                        "(id, account_email, creator_uid, local_gen_id, job_id, is_deleted, "
+                        " deleted_at, last_seen_at, updated_at) VALUES(?,?,?,?,?,1,?,?,?)",
+                        (uuid.uuid4().hex, account_email, cu, gid, it.get("job_id"), now, now, now),
+                    )
+                n += 1
+                continue
             # job_id 중복 정리(코덱스): 같은 잡이 다른 local_gen_id 로 재적재(계정 DB 이관·재생성)되면
             # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다.
             jid = it.get("job_id")

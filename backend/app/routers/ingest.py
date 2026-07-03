@@ -207,27 +207,43 @@ def _drain_telemetry() -> None:
         return
     from ..repo import manage as _m
 
-    dirty = _m.list_dirty_telemetry(500)  # [{local_gen_id, dirty_at}]
+    dirty = _m.list_dirty_telemetry(500)  # [{local_gen_id, dirty_at, is_tombstone, tomb_*}]
     if not dirty:
         return
-    ids = [d["local_gen_id"] for d in dirty]
-    facts = _m.build_telemetry_facts(gen_ids=ids, my_uid=repo.get_my_uid())
+    my_uid = repo.get_my_uid()
+    tomb_rows = [d for d in dirty if d.get("is_tombstone")]
+    normal_rows = [d for d in dirty if not d.get("is_tombstone")]
+    normal_ids = [d["local_gen_id"] for d in normal_rows]
+    # 일반: 살아있는 로컬 gen 에서 팩트 빌드(내것만). tombstone: gen 이 사라졌으므로 저장해둔 값으로 직접 구성.
+    facts = _m.build_telemetry_facts(gen_ids=normal_ids, my_uid=my_uid) if normal_ids else []
     built_ids = {f["local_gen_id"] for f in facts}
-    built = [d for d in dirty if d["local_gen_id"] in built_ids]
-    non_built = [d for d in dirty if d["local_gen_id"] not in built_ids]
-    _m.mark_telemetry_pushed(non_built)  # 내것 아님 → 무조건 큐 정리(CAS)
+    tomb_facts = [
+        {
+            "local_gen_id": d["local_gen_id"],
+            "job_id": d.get("tomb_job_id"),
+            "creator_uid": d.get("tomb_creator_uid") or my_uid,
+            "is_deleted": True,
+        }
+        for d in tomb_rows
+    ]
+    all_facts = facts + tomb_facts
+    sent = [d for d in normal_rows if d["local_gen_id"] in built_ids] + tomb_rows
+    non_sent = [d for d in normal_rows if d["local_gen_id"] not in built_ids]
+    _m.mark_telemetry_pushed(non_sent)  # 내것 아님 → 무조건 큐 정리(CAS)
+    if not all_facts:
+        return
     try:
-        resp = _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": facts})
+        resp = _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": all_facts})
         upserted = (resp or {}).get("upserted", 0) if isinstance(resp, dict) else 0
-        if upserted >= len(facts):
-            _m.mark_telemetry_pushed(built)  # 서버가 다 받음 → 정리(CAS)
+        if upserted >= len(all_facts):
+            _m.mark_telemetry_pushed(sent)  # 서버가 다 받음 → 정리(CAS)
         else:
             # 서버가 일부/전부 스킵(미링크 계정 등) → 재시도 대상으로 남김.
             _m.mark_telemetry_failed(
-                [b["local_gen_id"] for b in built], f"server upserted {upserted}/{len(facts)}"
+                [d["local_gen_id"] for d in sent], f"server upserted {upserted}/{len(all_facts)}"
             )
     except Exception as e:  # noqa: BLE001 — 전송 실패는 재시도(다음 drain)로 회복
-        _m.mark_telemetry_failed([b["local_gen_id"] for b in built], str(e))
+        _m.mark_telemetry_failed([d["local_gen_id"] for d in sent], str(e))
 
 
 @router.post("/ingest", response_model=IngestOut)

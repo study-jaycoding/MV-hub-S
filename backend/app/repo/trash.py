@@ -134,6 +134,7 @@ def _gather_comment_seen(conn: sqlite3.Connection, gen_id: str) -> list[dict[str
 
 def move_to_trash(gen_id: str) -> bool:
     """generation 1건을 휴지통 DB 로 원자 이동(메인에서 제거). 없으면 False."""
+    tomb: Optional[tuple[Optional[str], Optional[str]]] = None
     with _with_trash() as conn:
         gen = conn.execute("SELECT * FROM generation WHERE id=?", (gen_id,)).fetchone()
         if not gen:
@@ -156,7 +157,20 @@ def move_to_trash(gen_id: str) -> bool:
         )
         _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
         conn.execute("COMMIT")
-        return True
+        tomb = (gen["job_id"], gen["creator_uid"])  # 삭제 통보용(생성물이 사라지므로 미리 캡처)
+    # T5: 팀 매니징 텔레메트리에 삭제 tombstone 을 남긴다 — 서버 집계에서 이 생성물을 is_deleted 로
+    # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort·플래그 게이트.
+    if tomb is not None:
+        try:
+            from ..config import MANAGE_ENABLED
+
+            if MANAGE_ENABLED:
+                from . import manage as _m
+
+                _m.mark_telemetry_tombstone(gen_id, tomb[0], tomb[1])
+        except Exception:  # noqa: BLE001
+            pass
+    return True
 
 
 # ── 복원 ─────────────────────────────────────────────────────────────────

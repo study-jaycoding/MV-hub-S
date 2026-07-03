@@ -96,11 +96,14 @@ _SCHEMA = (
     # 표시하고, 드레이너가 팩트를 만들어 서버 manage_hub.db 로 push 후 pushed_at 을 찍는다.
     # 재푸시 대상 판정: pushed_at IS NULL 또는 dirty_at > pushed_at.
     """CREATE TABLE IF NOT EXISTS telemetry_outbox (
-        local_gen_id TEXT PRIMARY KEY,
-        dirty_at     TEXT NOT NULL DEFAULT (datetime('now')),
-        pushed_at    TEXT,
-        attempts     INTEGER NOT NULL DEFAULT 0,
-        last_error   TEXT
+        local_gen_id     TEXT PRIMARY KEY,
+        dirty_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        pushed_at        TEXT,
+        attempts         INTEGER NOT NULL DEFAULT 0,
+        last_error       TEXT,
+        is_tombstone     INTEGER NOT NULL DEFAULT 0,  -- 1=삭제 통보(생성물이 메인에서 사라짐)
+        tomb_job_id      TEXT,                        -- 삭제 시 캡처한 job_id(팩트 못 만드므로 저장)
+        tomb_creator_uid TEXT                         -- 삭제된 생성물의 작성자(내 것)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
@@ -131,6 +134,14 @@ def _ensure_schema(conn) -> None:
     tcols = {r[1] for r in conn.execute("PRAGMA table_info(credit_txn)")}
     if "model" not in tcols:
         conn.execute("ALTER TABLE credit_txn ADD COLUMN model TEXT")
+    # telemetry_outbox tombstone 컬럼 멱등 보강(T5 이전 생성 DB엔 없음).
+    ocols = {r[1] for r in conn.execute("PRAGMA table_info(telemetry_outbox)")}
+    if "is_tombstone" not in ocols:
+        conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0")
+    if "tomb_job_id" not in ocols:
+        conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_job_id TEXT")
+    if "tomb_creator_uid" not in ocols:
+        conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_creator_uid TEXT")
     # 상태 세분화 마이그레이션(멱등) — 구 단계 → Notion 세분. 대상 행 없으면 무동작.
     # retake 폐지: 진행 중으로 되돌림. todo→시작전, review→게시.
     for old, new in (("todo", "not_started"), ("review", "publish"), ("retake", "in_progress")):
@@ -941,12 +952,19 @@ def record_transactions(
                     (tid, owner_uid, account_email, dn, credits, action, created, model),
                 )
                 inserted += cur.rowcount
-            matched = _match_transactions(conn, owner_uid)
+            matched_ids = _match_transactions(conn, owner_uid)
             conn.execute("COMMIT")
-            return {"inserted": inserted, "matched": matched}
         except Exception:
             conn.execute("ROLLBACK")
             raise
+    # T5: 실제 크레딧이 방금 채워진 생성물을 텔레메트리 재push 대상으로(이미 pushed 된 과거 잡의 크레딧
+    # 보정 반영). 위 with(풀 커넥션)를 빠져나온 뒤 별도로 호출 — 커넥션 중첩 회피. best-effort.
+    if matched_ids:
+        try:
+            mark_telemetry_dirty(matched_ids)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"inserted": inserted, "matched": len(matched_ids), "matched_ids": matched_ids}
 
 
 def match_transactions(owner_uid: Optional[str]) -> int:
@@ -957,16 +975,21 @@ def match_transactions(owner_uid: Optional[str]) -> int:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            applied = _match_transactions(conn, owner_uid)
+            matched_ids = _match_transactions(conn, owner_uid)
             conn.execute("COMMIT")
-            return applied
         except Exception:
             conn.execute("ROLLBACK")
             raise
+    if matched_ids:
+        try:
+            mark_telemetry_dirty(matched_ids)
+        except Exception:  # noqa: BLE001
+            pass
+    return len(matched_ids)
 
 
-def _match_transactions(conn, owner_uid: Optional[str]) -> int:
-    """매칭 본문 — caller 가 BEGIN IMMEDIATE 를 연 뒤 같은 conn 으로 호출한다.
+def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
+    """매칭 본문 — caller 가 BEGIN IMMEDIATE 를 연 뒤 같은 conn 으로 호출한다. 반환=방금 매칭된 gen id 목록.
     각 쌍은 SAVEPOINT + CAS(조건부 UPDATE)로 확정해, 동시 실행이 같은 거래/생성물을 이중 매칭하지 못하게 한다."""
     txns = conn.execute(
         "SELECT id, credits, created_at, owner_uid, model FROM credit_txn "
@@ -975,7 +998,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> int:
         (owner_uid, owner_uid),
     ).fetchall()
     if not txns:
-        return 0
+        return []
     gens = conn.execute(
         "SELECT g.id AS id, g.sort_ts AS sort_ts, g.creator_uid AS creator_uid, "
         "  g.model AS model FROM generation g "
@@ -986,7 +1009,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> int:
         (owner_uid, owner_uid),
     ).fetchall()
     if not gens:
-        return 0
+        return []
 
     # 후보쌍을 거리순 그리디로 확정. 각 거래는 시각 ±윈도우 안 생성물만 이분탐색으로 훑는다
     # → O(T·G) 전체쌍 대신 O(T·logG + 후보수)(누적 백필에서 반복비용 급증 방지).
@@ -1015,7 +1038,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> int:
     pairs.sort()
     used_t: set[int] = set()
     used_g: set[int] = set()
-    applied = 0
+    matched_ids: list[str] = []
     for d, ti, gi in pairs:
         if ti in used_t or gi in used_g:
             continue
@@ -1051,8 +1074,8 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> int:
         # 매칭될 기회를 남긴다(동시 매칭 경계에서 덜 매칭되던 문제 방지).
         used_t.add(ti)
         used_g.add(gi)
-        applied += 1
-    return applied
+        matched_ids.append(g["id"])  # T5: 실제 크레딧이 방금 채워진 생성물 — 텔레메트리 재push 대상
+    return matched_ids
 
 
 # ── 팀 매니징 텔레메트리 발신(manage-T2) ───────────────────────────────────────
@@ -1076,6 +1099,27 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL",
                 (gid,),
             )
+
+
+def mark_telemetry_tombstone(
+    gen_id: str, job_id: Optional[str], creator_uid: Optional[str]
+) -> None:
+    """생성물이 삭제(휴지통 이동)됐다 — 서버 팩트를 is_deleted 로 넘길 tombstone 을 큐에 넣는다.
+    생성물이 메인에서 사라져 build 로 팩트를 못 만들므로, job_id·creator_uid 를 여기 저장해 둔다.
+    같은 local_gen_id 의 대기 중 일반 push 는 tombstone 으로 덮인다(삭제가 최종 상태)."""
+    if not gen_id:
+        return
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO telemetry_outbox"
+            "(local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid) "
+            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, ?, ?) "
+            "ON CONFLICT(local_gen_id) DO UPDATE SET "
+            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=1, "
+            "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid",
+            (gen_id, job_id, creator_uid),
+        )
 
 
 def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
@@ -1115,11 +1159,11 @@ def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT local_gen_id, dirty_at FROM telemetry_outbox WHERE pushed_at IS NULL "
-            "ORDER BY dirty_at ASC LIMIT ?",
+            "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid "
+            "FROM telemetry_outbox WHERE pushed_at IS NULL ORDER BY dirty_at ASC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [{"local_gen_id": r["local_gen_id"], "dirty_at": r["dirty_at"]} for r in rows]
+        return [dict(r) for r in rows]
 
 
 def build_telemetry_facts(
