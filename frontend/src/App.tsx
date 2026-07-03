@@ -16,7 +16,6 @@ import {
   BoardSelectionActionBar,
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
-import { APP_EVENTS, dispatchAppEvent } from "./lib/appEvents";
 import { KEY_COLORS } from "./lib/appConstants";
 import { buildGenerationQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds } from "./lib/generationTags";
@@ -101,7 +100,6 @@ export default function App() {
       LS.set("boardFocusId", boardFocusId);
     }
   }, [boardFocusId]);
-  const [caching, setCaching] = useState(false);
   const [info, setInfo] = useState<InfoTarget | null>(null); // 휠클릭 정보 팝업
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
@@ -257,7 +255,6 @@ export default function App() {
   const {
     composerExpanded,
     promptVisible,
-    setPromptVisible,
     toggleComposerExpanded,
   } = usePromptDock(LS);
 
@@ -334,7 +331,11 @@ export default function App() {
     () => expandDisabledGenerationIds(visibleGens, disabledGen, disabledFolders),
     [visibleGens, disabledGen, disabledFolders],
   );
-  const gridGens = filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn);
+  // memo — App 은 진행률·토스트 등으로 자주 리렌더되므로 매번 전량 filter 하지 않게.
+  const gridGens = useMemo(
+    () => filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn),
+    [visibleGens, effectiveDisabled, grayOn],
+  );
   // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
@@ -362,11 +363,8 @@ export default function App() {
 
   const { boardShare, onPublish } = useGenerationShareActions({
     bumpBoard,
-    clearSelect,
     flash,
-    generations: gens,
     reload,
-    selected,
   });
   const { boardDelete, bulkDelete, bulkPurge, bulkRestore, clearFailed, onRestore } =
     useGenerationTrashActions({
@@ -401,15 +399,12 @@ export default function App() {
   });
   const {
     bulkDownload,
-    onCache,
     onShowHistory,
     openAssetsWindow,
     openManageWindow,
   } = useGenerationUtilityActions({
     flash,
     openOverlay,
-    reload,
-    setCaching,
   });
   const { handlePromptCreated } = usePromptCreatedActions({
     boardFocusIdRef,
@@ -484,8 +479,6 @@ export default function App() {
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
-        onCache={onCache}
-        caching={caching}
         onWorkspaceSwitched={async () => {
           await reload();
           flash("워크스페이스 전환 — 라이브러리를 갱신했습니다.");
@@ -493,10 +486,6 @@ export default function App() {
         onImported={async (msg) => {
           await reload();
           flash(msg);
-        }}
-        onOpenSpotlight={() => {
-          setPromptVisible(true); // 숨겨져 있으면 다시 보이기(보이면 그대로) + 포커스
-          dispatchAppEvent(APP_EVENTS.focusPrompt);
         }}
         onOpenAssets={openAssetsWindow}
         onOpenManage={canOpenManage ? openManageWindow : undefined}
@@ -752,7 +741,12 @@ export default function App() {
         account={account}
         adminOpen={adminOpen}
         commentGenId={commentGenId}
-        commentLabel={(gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"}
+        commentLabel={
+          // 패널이 열렸을 때만 조회 — 닫힌 상태(null)에서 매 렌더 전량 find 방지.
+          commentGenId
+            ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
+            : "생성본"
+        }
         compareGens={compareGens}
         history={history}
         info={info}

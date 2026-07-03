@@ -160,6 +160,7 @@ export function WorkBoard() {
   // reqRef 로 늦게 온 이전 요청이 최신 화면을 덮지 않게 한다(폴링/브로드캐스트 중첩 대비).
   const projectsRef = useRef(projects);
   const reqRef = useRef(0);
+  const loadingRef = useRef(false);
   const loadAll = () => {
     const ps = projectsRef.current;
     if (!ps.length) {
@@ -167,6 +168,7 @@ export function WorkBoard() {
       return;
     }
     const my = ++reqRef.current;
+    loadingRef.current = true;
     Promise.all(
       ps.map((p) =>
         manageApi
@@ -174,9 +176,13 @@ export function WorkBoard() {
           .then((r) => r.map((t) => ({ ...t, project_name: p.name })))
           .catch(() => [] as Task[]),
       ),
-    ).then((all) => {
-      if (reqRef.current === my) setTasks(all.flat().sort(bySort));
-    });
+    )
+      .then((all) => {
+        if (reqRef.current === my) setTasks(all.flat().sort(bySort));
+      })
+      .finally(() => {
+        if (reqRef.current === my) loadingRef.current = false;
+      });
   };
 
   useEffect(() => {
@@ -199,9 +205,11 @@ export function WorkBoard() {
       if (debounce) clearTimeout(debounce);
       debounce = window.setTimeout(loadAll, 300);
     };
+    // 팀원 변경 안전망 폴링 — 내 조작은 브로드캐스트로 즉시 오므로 주기는 느슨하게(30초).
+    // 프로젝트 수만큼 listTasks fan-out 이라 이전 라운드가 진행 중이면 건너뛴다.
     const poll = window.setInterval(() => {
-      if (document.visibilityState === "visible") reload();
-    }, 12000);
+      if (document.visibilityState === "visible" && !loadingRef.current) reload();
+    }, 30000);
     const onVis = () => {
       if (document.visibilityState === "visible") reload();
     };

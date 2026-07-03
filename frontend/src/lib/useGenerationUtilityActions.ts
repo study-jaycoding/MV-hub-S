@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
 import type { Generation, History } from "../types";
 import { downloadItemsForGenerations, downloadMany } from "./download";
@@ -7,15 +6,11 @@ import { EMBED_MODES, openEmbedWindow } from "./popupWindows";
 interface UseGenerationUtilityActionsArgs {
   flash: (message: string) => void;
   openOverlay: (overlay: "history", payload: History) => void;
-  reload: () => Promise<void>;
-  setCaching: Dispatch<SetStateAction<boolean>>;
 }
 
 export function useGenerationUtilityActions({
   flash,
   openOverlay,
-  reload,
-  setCaching,
 }: UseGenerationUtilityActionsArgs) {
   const bulkDownload = async (list: Generation[]) => {
     const items = downloadItemsForGenerations(list);
@@ -36,19 +31,6 @@ export function useGenerationUtilityActions({
     openEmbedWindow(EMBED_MODES.manage);
   };
 
-  const onCache = async () => {
-    setCaching(true);
-    try {
-      const r = await api.cacheAll();
-      flash(`로컬 보관 완료: ${r.cached}개 파일 (${r.generations}개 생성물)${r.failed ? ` · 실패 ${r.failed}` : ""}`);
-      await reload();
-    } catch (e) {
-      flash("보관 실패: " + String(e));
-    } finally {
-      setCaching(false);
-    }
-  };
-
   const onShowHistory = async (g: Generation) => {
     try {
       const history = await api.history(g.id);
@@ -58,5 +40,5 @@ export function useGenerationUtilityActions({
     }
   };
 
-  return { bulkDownload, onCache, onShowHistory, openAssetsWindow, openManageWindow };
+  return { bulkDownload, onShowHistory, openAssetsWindow, openManageWindow };
 }

@@ -4,16 +4,6 @@ import { pathPart } from "./url";
 export const authApi = {
   // 인증/계정(보안)
   authConfig: () => jsonFetch<import("../types").AuthConfig>("/api/auth/config"),
-  register: (email: string, password: string, name?: string) =>
-    jsonFetch<{ account: import("../types").Account; token: string | null }>(
-      "/api/auth/register",
-      { method: "POST", body: jsonBody({ email, password, name }) },
-    ),
-  login: (email: string, password: string) =>
-    jsonFetch<{ account: import("../types").Account; token: string }>("/api/auth/login", {
-      method: "POST",
-      body: jsonBody({ email, password }),
-    }),
   access: (email: string, password: string) =>
     jsonFetch<{ account: import("../types").Account; token: string | null; pending: boolean }>(
       "/api/auth/access",

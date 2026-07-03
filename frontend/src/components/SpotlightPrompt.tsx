@@ -181,6 +181,9 @@ export function SpotlightPrompt({
   };
 
   const liveSeedanceRoles = useMemo(() => {
+    // 트레이 배지 전용 — 트레이가 비어 있으면(레퍼런스 미사용) 소비처가 없으니
+    // 키 입력마다 에디터 DOM 직렬화+정규식 스캔을 하지 않는다.
+    if (!trayRefs.length) return new Map() as ReturnType<typeof seedanceTokenRoles>;
     const ed = editorRef.current;
     return seedanceTokenRoles(ed ? serialize(ed).text : "");
   }, [promptTick, trayRefs]);

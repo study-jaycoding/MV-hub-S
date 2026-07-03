@@ -63,8 +63,6 @@ export function useHubAuth() {
     loadSharedSrv();
   }, [loadSharedSrv]);
 
-  useCustomEvent(APP_EVENTS.sharedChanged, () => loadSharedSrv());
-
   const onProxyConnected = useCallback(async () => {
     const st = await api.sharedServerStatus().catch(() => null);
     const newEmail = st?.email || "";

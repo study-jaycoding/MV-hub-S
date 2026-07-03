@@ -13,11 +13,8 @@ interface Props {
   filters: Filters;
   onTab: (tab: "my" | "team" | "compose") => void;
   onSearch: (q?: string) => void;
-  onCache: () => void; // (서버 모드 미사용 — App 호환 위해 prop 유지)
-  caching: boolean;
   onWorkspaceSwitched: () => void;
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
-  onOpenSpotlight: () => void; // (App 호환)
   onOpenAssets: () => void;
   onOpenManage?: () => void; // PM 대시보드(분리형) — 별도 창. 플래그 off 면 미전달(버튼 숨김)
   onOpenAdmin: () => void; // 좌측 상단 로고 클릭 → 관리자 창(로드맵 §4-5)

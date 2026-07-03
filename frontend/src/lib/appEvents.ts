@@ -5,7 +5,6 @@ export const APP_EVENTS = {
   disabledChanged: "ch:disabled-changed",
   flash: "ch:flash",
   focusPrompt: "ch:focus-prompt",
-  sharedChanged: "ch:shared-changed",
   shortcutsChanged: "ch:shortcuts-changed",
 } as const;
 

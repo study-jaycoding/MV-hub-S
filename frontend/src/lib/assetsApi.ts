@@ -52,10 +52,6 @@ export const assetsApi = {
   // 리사이즈 썸네일 URL(이미지 전용) — 그리드/리스트 스크롤 성능용. 디스크 캐시.
   assetThumbUrl: buildAssetThumbUrl,
 
-  // 생성 미디어 썸네일 URL — 풀해상도 원본 대신 작은 이미지 디코딩.
-  genThumbUrl: (mediaPath: string, w = 512) =>
-    withQuery("/api/media-thumb", { src: mediaPath, w }),
-
   // raw 경로가 썸네일화 가능하면 리사이즈 URL, 아니면 원본 그대로.
   thumbOrRaw: (raw: string, w = 512) =>
     raw && (raw.startsWith("/media/") || raw.startsWith("http"))
@@ -122,10 +118,6 @@ export const assetsApi = {
     jsonFetch<{ ok: boolean; name: string; size: number; count: number }>(
       "/api/db/server-backup",
       { method: "POST" },
-    ),
-  serverBackups: () =>
-    jsonFetch<{ backups: { name: string; size: number; mtime: number }[] }>(
-      "/api/db/server-backups",
     ),
   serverRestore: () =>
     jsonFetch<{ ok: boolean; relogin_required: boolean }>("/api/db/server-restore", {

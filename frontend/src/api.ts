@@ -176,18 +176,6 @@ export const api = {
     ),
 
   ...authApi,
-  sync: () =>
-    jsonFetch<{ fetched: number; inserted: number; updated: number }>(
-      "/api/sync",
-      { method: "POST" },
-    ),
-
-  // 출처 영속화: 소스·결과물을 로컬로 보관(원격 URL 만료 무관하게 재사용 가능)
-  cacheAll: () =>
-    jsonFetch<{ cached: number; failed: number; generations: number }>(
-      "/api/cache-all",
-      { method: "POST" },
-    ),
 
   create: (body: {
     prompt: string;

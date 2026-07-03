@@ -80,10 +80,6 @@ export const projectApi = {
     jsonFetch<import("../types").ProjectMember[]>(
       `/api/projects/${pathPart(pid)}/members`,
     ),
-  projectMembersAll: () =>
-    jsonFetch<Record<string, import("../types").ProjectMember[]>>(
-      "/api/projects/members-all",
-    ),
   setProjectRoles: (pid: string, creator_uid: string, project_roles: string[]) =>
     jsonFetch<import("../types").ProjectMember[]>(
       `/api/projects/${pathPart(pid)}/members`,

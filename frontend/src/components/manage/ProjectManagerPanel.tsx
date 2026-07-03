@@ -34,8 +34,6 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const [projMembersMap, setProjMembersMap] = useState<Record<string, ProjectMember[]>>({});
   const [addQuery, setAddQuery] = useState<Record<string, string>>({});
   const [actMsg, setActMsg] = useState("");
-  const manageEnabled = true; // 이 패널은 관리 창(manage 활성)에서만 렌더된다.
-
   const systemUids = systemMemberUids(members);
   const visibleMembers = visibleAdminMembers(members, systemUids);
 
@@ -346,20 +344,18 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                           👥
                         </button>
                       )}
-                      {manageEnabled && (
-                        <button
-                          className={openFolderTrees.has(p.id) ? "on" : ""}
-                          onClick={() => toggleFolderTree(p.id)}
-                          disabled={!projFolders[p.id]?.root_path}
-                          title={
-                            projFolders[p.id]?.root_path
-                              ? "Render 폴더 구조 보기"
-                              : "이름 변경에서 렌더 폴더 경로를 먼저 지정하세요"
-                          }
-                        >
-                          🗂
-                        </button>
-                      )}
+                      <button
+                        className={openFolderTrees.has(p.id) ? "on" : ""}
+                        onClick={() => toggleFolderTree(p.id)}
+                        disabled={!projFolders[p.id]?.root_path}
+                        title={
+                          projFolders[p.id]?.root_path
+                            ? "Render 폴더 구조 보기"
+                            : "이름 변경에서 렌더 폴더 경로를 먼저 지정하세요"
+                        }
+                      >
+                        🗂
+                      </button>
                       {caps.createProject && (
                         <>
                           <button onClick={() => renameProject(p)} title="프로젝트 설정">

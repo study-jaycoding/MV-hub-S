@@ -5,11 +5,8 @@ import { shareableGenerations } from "./generationDisplay";
 
 interface UseGenerationShareActionsArgs {
   bumpBoard: () => void;
-  clearSelect: () => void;
   flash: (message: string) => void;
-  generations: Generation[];
   reload: () => Promise<void>;
-  selected: Set<string>;
 }
 
 export function useGenerationShareActions({

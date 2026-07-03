@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type DragEvent, type KeyboardEvent } from "react";
 import { api } from "../../api";
 import { isFolderDisabled, normalizeFolderPath, toggleDisabledFolder } from "../../lib/deactivated";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
@@ -115,16 +115,23 @@ function SidebarFolderTree({
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
+  // 트리 파생(정규화→가상폴더 합성→카운트 오버레이)은 O(노드수×counts키수)라 매 렌더 재계산이
+  // 아깝다 — 드래그/확장 등 잦은 부모 리렌더에서 tree·counts 가 그대로면 이전 결과 재사용.
+  // (훅 규칙상 아래 early return 들보다 먼저 호출)
+  const roots = useMemo(() => {
+    if (!state?.tree) return [] as FolderTreeItem[];
+    let r: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
+    const normCounts = counts ? normalizeCounts(counts) : undefined;
+    // 팀 데이터의 folder_path 중 내 디스크에 없는 것을 가상 노드로 합성(팀원 공통 폴더 표시).
+    if (normCounts && Object.keys(normCounts).length) r = mergeVirtualFolders(r, normCounts);
+    if (normCounts && r.length) r = overlayFolderCounts(r, normCounts);
+    return r;
+  }, [state?.tree, counts]);
   if (!state?.root_path) return null;
   if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;
   if (state.error) return <div className="side-folder-note error">{state.error}</div>;
   if (!state.tree) return null;
-  let roots: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
-  const normCounts = counts ? normalizeCounts(counts) : undefined;
-  // 팀 데이터의 folder_path 중 내 디스크에 없는 것을 가상 노드로 합성(팀원 공통 폴더 표시).
-  if (normCounts && Object.keys(normCounts).length) roots = mergeVirtualFolders(roots, normCounts);
   if (!roots.length) return null; // 합성 후에도 비면(디스크·데이터 모두 없음) 트리 숨김
-  if (normCounts) roots = overlayFolderCounts(roots, normCounts);
   // 폴더가 15개를 넘을 때만 스크롤(max-height) 적용 — 적을 땐 스크롤바가 깜빡이지 않게.
   const scroll = countFolderNodes(roots) > 15;
   return (

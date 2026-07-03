@@ -58,15 +58,6 @@ export function filterDisabledGenerations(
   return hideDisabled ? gens.filter((g) => !disabledIds.has(g.id)) : gens;
 }
 
-// 생성물 1개가 비활성인가 — id 직접 비활성(d) OR 그 folder_path 가 비활성 폴더(및 하위)에 걸림.
-export function isGenerationDisabled(
-  g: Pick<Generation, "id" | "project_id" | "folder_path">,
-  disabledIds: Set<string>,
-  disabledFolders: DisabledFolders,
-): boolean {
-  return disabledIds.has(g.id) || isFolderDisabled(disabledFolders, g.project_id, g.folder_path);
-}
-
 // id 만 받는 소비자(엣지·썸네일그리드·보드노드)에 넘길 '확장된 비활성 id 집합'.
 // 폴더 규칙이 없으면 기존 id 집합을 그대로 돌려줘 불필요한 순회를 피한다.
 export function expandDisabledGenerationIds(
@@ -88,13 +79,6 @@ export function canFinalizeGeneration(g: Generation, finalizeProjects: Set<strin
     (!!g.project_id && finalizeProjects.has(g.project_id)) ||
     (!g.project_id && !!g.is_mine)
   );
-}
-
-export function shareableGenerationIds(gens: Generation[], selectedIds: Iterable<string>): string[] {
-  return [...selectedIds].filter((id) => {
-    const g = gens.find((x) => x.id === id);
-    return !!g && !g.shared && g.status === "done";
-  });
 }
 
 export function shareableGenerations(gens: Generation[]): Generation[] {

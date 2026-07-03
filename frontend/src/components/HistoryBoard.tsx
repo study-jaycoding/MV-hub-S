@@ -571,7 +571,7 @@ export function HistoryBoard({
                   sharedOnly={sharedOnly}
                   commentOnly={commentOnly}
                   finalOnly={finalOnly}
-                  sConfirm={sConfirm}
+                  sConfirm={sConfirm?.id === g.id ? sConfirm : null}
                   onSClick={onNodeSClick}
                   onSDouble={onNodeSDouble}
                   onSConfirmYes={onNodeSConfirmYes}
