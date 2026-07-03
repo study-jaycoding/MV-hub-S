@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request
@@ -217,15 +218,24 @@ def _drain_telemetry() -> None:
     # 일반: 살아있는 로컬 gen 에서 팩트 빌드(내것만). tombstone: gen 이 사라졌으므로 저장해둔 값으로 직접 구성.
     facts = _m.build_telemetry_facts(gen_ids=normal_ids, my_uid=my_uid) if normal_ids else []
     built_ids = {f["local_gen_id"] for f in facts}
-    tomb_facts = [
-        {
-            "local_gen_id": d["local_gen_id"],
-            "job_id": d.get("tomb_job_id"),
-            "creator_uid": d.get("tomb_creator_uid") or my_uid,
-            "is_deleted": True,
-        }
-        for d in tomb_rows
-    ]
+    tomb_facts = []
+    for d in tomb_rows:
+        snap: dict = {}
+        if d.get("tomb_snapshot"):
+            try:
+                snap = json.loads(d["tomb_snapshot"]) or {}
+            except Exception:  # noqa: BLE001
+                snap = {}
+        # 스냅샷(비용·프로젝트 포함) 위에 삭제 표시를 얹는다 — 서버에 팩트가 없던(미전송) 것도 비용 집계.
+        tomb_facts.append(
+            {
+                **snap,
+                "local_gen_id": d["local_gen_id"],
+                "job_id": snap.get("job_id") or d.get("tomb_job_id"),
+                "creator_uid": snap.get("creator_uid") or d.get("tomb_creator_uid") or my_uid,
+                "is_deleted": True,
+            }
+        )
     all_facts = facts + tomb_facts
     sent = [d for d in normal_rows if d["local_gen_id"] in built_ids] + tomb_rows
     non_sent = [d for d in normal_rows if d["local_gen_id"] not in built_ids]

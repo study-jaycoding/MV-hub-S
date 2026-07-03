@@ -134,12 +134,16 @@ def _gather_comment_seen(conn: sqlite3.Connection, gen_id: str) -> list[dict[str
 
 def move_to_trash(gen_id: str) -> bool:
     """generation 1건을 휴지통 DB 로 원자 이동(메인에서 제거). 없으면 False."""
-    tomb: Optional[tuple[Optional[str], Optional[str]]] = None
+    from ..config import MANAGE_ENABLED
+
+    tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
         gen = conn.execute("SELECT * FROM generation WHERE id=?", (gen_id,)).fetchone()
         if not gen:
             return False
         payload = _gather(conn, gen_id, gen)
+        if MANAGE_ENABLED:  # 삭제 전 매니징 스냅샷 캡처(비용·프로젝트 등) — 자식 삭제 전이라야 조회 가능
+            tomb = _telemetry_snapshot(conn, gen_id, gen)
         conn.execute("BEGIN")
         conn.execute(
             "INSERT OR REPLACE INTO trash.trashed"
@@ -157,20 +161,54 @@ def move_to_trash(gen_id: str) -> bool:
         )
         _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
         conn.execute("COMMIT")
-        tomb = (gen["job_id"], gen["creator_uid"])  # 삭제 통보용(생성물이 사라지므로 미리 캡처)
     # T5: 팀 매니징 텔레메트리에 삭제 tombstone 을 남긴다 — 서버 집계에서 이 생성물을 is_deleted 로
-    # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort·플래그 게이트.
+    # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort.
     if tomb is not None:
         try:
-            from ..config import MANAGE_ENABLED
+            from . import manage as _m
 
-            if MANAGE_ENABLED:
-                from . import manage as _m
-
-                _m.mark_telemetry_tombstone(gen_id, tomb[0], tomb[1])
+            _m.mark_telemetry_tombstone(gen_id, tomb)
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def _telemetry_snapshot(conn, gen_id: str, gen) -> dict[str, Any]:
+    """삭제 직전 매니징 팩트 스냅샷(비용·프로젝트·모델 등). 자식 삭제 전에 호출해야 asset·metrics 조회 가능.
+    서버에 아직 팩트가 없던(미전송) 생성물의 tombstone 도 이 값으로 비용이 집계되게 한다."""
+    snap: dict[str, Any] = {
+        "job_id": gen["job_id"],
+        "creator_uid": gen["creator_uid"],
+        "project_id": gen["project_id"],
+        "folder_path": gen["folder_path"],
+        "model": gen["model"],
+        "status": gen["status"],
+        "created_at": gen["created_at"],
+        "sort_ts": gen["sort_ts"],
+        "is_final": gen["is_final"],
+    }
+    try:
+        if gen["project_id"]:
+            pr = conn.execute("SELECT name FROM project WHERE id=?", (gen["project_id"],)).fetchone()
+            snap["project_name"] = pr["name"] if pr else None
+        if gen["creator_uid"]:
+            cr = conn.execute("SELECT name FROM creator WHERE uid=?", (gen["creator_uid"],)).fetchone()
+            snap["creator_name"] = cr["name"] if cr else None
+        at = conn.execute("SELECT type FROM asset WHERE generation_id=? LIMIT 1", (gen_id,)).fetchone()
+        snap["output_type"] = at["type"] if at else None
+        m = conn.execute(
+            "SELECT real_credits, est_credits, credit_source, elapsed_seconds, started_at, completed_at "
+            "FROM generation_metrics WHERE gen_id=?", (gen_id,)
+        ).fetchone()
+        if m:
+            snap.update(
+                real_credits=m["real_credits"], est_credits=m["est_credits"],
+                credit_source=m["credit_source"], elapsed_seconds=m["elapsed_seconds"],
+                started_at=m["started_at"], completed_at=m["completed_at"],
+            )
+    except Exception:  # noqa: BLE001 — 사이드카 테이블 미존재 등은 무시(최소 스냅샷이라도 남긴다)
+        pass
+    return snap
 
 
 # ── 복원 ─────────────────────────────────────────────────────────────────
@@ -235,7 +273,18 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
             _insert_row(conn, "share", s, or_ignore=True)
         conn.execute("DELETE FROM trash.trashed WHERE id=?", (gen_id,))
         conn.execute("COMMIT")
-        return True
+    # T5: 복원되면 삭제가 취소된 것 — 텔레메트리를 일반 dirty 로 다시 찍어 tombstone 을 해제(is_tombstone=0)
+    # 하고 살아있는 팩트로 재전송되게 한다. with 밖에서 별 커넥션으로, best-effort·플래그 게이트.
+    try:
+        from ..config import MANAGE_ENABLED
+
+        if MANAGE_ENABLED:
+            from . import manage as _m
+
+            _m.mark_telemetry_dirty([gen_id])
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 # ── 목록 / 검색 / 영구삭제 ────────────────────────────────────────────────

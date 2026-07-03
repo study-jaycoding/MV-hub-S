@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import json
 from datetime import datetime
 from typing import Any, Optional
 
@@ -103,7 +104,8 @@ _SCHEMA = (
         last_error       TEXT,
         is_tombstone     INTEGER NOT NULL DEFAULT 0,  -- 1=삭제 통보(생성물이 메인에서 사라짐)
         tomb_job_id      TEXT,                        -- 삭제 시 캡처한 job_id(팩트 못 만드므로 저장)
-        tomb_creator_uid TEXT                         -- 삭제된 생성물의 작성자(내 것)
+        tomb_creator_uid TEXT,                        -- 삭제된 생성물의 작성자(내 것)
+        tomb_snapshot    TEXT                         -- 삭제 직전 팩트 스냅샷(JSON) — 미전송분도 비용·프로젝트 보존
     )""",
     "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
@@ -142,6 +144,8 @@ def _ensure_schema(conn) -> None:
         conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_job_id TEXT")
     if "tomb_creator_uid" not in ocols:
         conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_creator_uid TEXT")
+    if "tomb_snapshot" not in ocols:
+        conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_snapshot TEXT")
     # 상태 세분화 마이그레이션(멱등) — 구 단계 → Notion 세분. 대상 행 없으면 무동작.
     # retake 폐지: 진행 중으로 되돌림. todo→시작전, review→게시.
     for old, new in (("todo", "not_started"), ("review", "publish"), ("retake", "in_progress")):
@@ -1096,16 +1100,15 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
                 "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
                 "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
-                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL",
+                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=0",
                 (gid,),
             )
 
 
-def mark_telemetry_tombstone(
-    gen_id: str, job_id: Optional[str], creator_uid: Optional[str]
-) -> None:
+def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
     """생성물이 삭제(휴지통 이동)됐다 — 서버 팩트를 is_deleted 로 넘길 tombstone 을 큐에 넣는다.
-    생성물이 메인에서 사라져 build 로 팩트를 못 만들므로, job_id·creator_uid 를 여기 저장해 둔다.
+    생성물이 메인에서 사라져 build 로 팩트를 못 만들므로, 삭제 직전 스냅샷(비용·프로젝트·모델 포함)을
+    JSON 으로 저장해 둔다. 서버에 아직 팩트가 없던(미전송) 생성물도 이 스냅샷으로 비용이 집계된다.
     같은 local_gen_id 의 대기 중 일반 push 는 tombstone 으로 덮인다(삭제가 최종 상태)."""
     if not gen_id:
         return
@@ -1113,12 +1116,14 @@ def mark_telemetry_tombstone(
         _ensure_schema(conn)
         conn.execute(
             "INSERT INTO telemetry_outbox"
-            "(local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid) "
-            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, ?, ?) "
+            "(local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid, tomb_snapshot) "
+            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, ?, ?, ?) "
             "ON CONFLICT(local_gen_id) DO UPDATE SET "
             "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=1, "
-            "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid",
-            (gen_id, job_id, creator_uid),
+            "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
+            "tomb_snapshot=excluded.tomb_snapshot",
+            (gen_id, snapshot.get("job_id"), snapshot.get("creator_uid"),
+             json.dumps(snapshot, ensure_ascii=False)),
         )
 
 
@@ -1146,7 +1151,7 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
                 "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
                 "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
-                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL",
+                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=0",
                 (gid,),
             )
     return len(local_ids)
@@ -1159,7 +1164,7 @@ def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid "
+            "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid, tomb_snapshot "
             "FROM telemetry_outbox WHERE pushed_at IS NULL ORDER BY dirty_at ASC LIMIT ?",
             (limit,),
         ).fetchall()

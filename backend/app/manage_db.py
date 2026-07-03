@@ -125,6 +125,19 @@ _FACT_COLS = (
 )
 
 
+def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now: str) -> tuple:
+    """_FACT_COLS 순서에 맞춘 INSERT 값 튜플. 일반 upsert·tombstone 신규행이 공용."""
+    return (
+        uuid.uuid4().hex, account_email, cu, it.get("creator_name"), gid, it.get("job_id"),
+        it.get("project_id"), it.get("project_name"), it.get("folder_path"), it.get("model"),
+        it.get("output_type"), it.get("status"), it.get("real_credits"), it.get("est_credits"),
+        it.get("credit_source"), it.get("elapsed_seconds"), it.get("created_at"),
+        it.get("started_at"), it.get("completed_at"), it.get("sort_ts"),
+        1 if it.get("is_final") else 0, 1 if it.get("is_shared") else 0,
+        1 if it.get("is_deleted") else 0, it.get("deleted_at"), now, now,
+    )
+
+
 def upsert_facts(
     account_email: str, my_uid: Optional[str], items: list[dict[str, Any]]
 ) -> int:
@@ -154,25 +167,8 @@ def upsert_facts(
             cu = it.get("creator_uid") or my_uid
             if cu != my_uid:
                 continue  # 남의 것 — 팀 팩트에 올리지 않음(누출·오귀속 방지)
-            # tombstone(삭제 통보, T5): is_deleted 만 세팅하고 나머지 차원(프로젝트·모델·크레딧)은 보존한다.
-            # 일반 upsert 는 전체 덮어쓰기라, 필드가 빈 tombstone 을 그대로 upsert 하면 기존 값이 지워진다.
-            if it.get("is_deleted"):
-                cur = conn.execute(
-                    "UPDATE team_generation_fact SET is_deleted=1, deleted_at=?, "
-                    "last_seen_at=?, updated_at=? WHERE account_email=? AND local_gen_id=?",
-                    (now, now, now, account_email, gid),
-                )
-                if cur.rowcount == 0:  # 팩트가 아직 없음(생성 즉시 삭제 등) → 최소 tombstone 행 삽입
-                    conn.execute(
-                        "INSERT OR IGNORE INTO team_generation_fact"
-                        "(id, account_email, creator_uid, local_gen_id, job_id, is_deleted, "
-                        " deleted_at, last_seen_at, updated_at) VALUES(?,?,?,?,?,1,?,?,?)",
-                        (uuid.uuid4().hex, account_email, cu, gid, it.get("job_id"), now, now, now),
-                    )
-                n += 1
-                continue
             # job_id 중복 정리(코덱스): 같은 잡이 다른 local_gen_id 로 재적재(계정 DB 이관·재생성)되면
-            # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다.
+            # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다. tombstone 도 동일.
             jid = it.get("job_id")
             if jid:
                 conn.execute(
@@ -180,37 +176,19 @@ def upsert_facts(
                     "AND local_gen_id<>?",
                     (account_email, jid, gid),
                 )
-            conn.execute(
-                sql,
-                (
-                    uuid.uuid4().hex,       # id (신규행에만 쓰임, 충돌 시 기존 id 유지)
-                    account_email,          # ★세션값 강제
-                    cu,
-                    it.get("creator_name"),
-                    gid,
-                    it.get("job_id"),
-                    it.get("project_id"),
-                    it.get("project_name"),
-                    it.get("folder_path"),
-                    it.get("model"),
-                    it.get("output_type"),
-                    it.get("status"),
-                    it.get("real_credits"),
-                    it.get("est_credits"),
-                    it.get("credit_source"),
-                    it.get("elapsed_seconds"),
-                    it.get("created_at"),
-                    it.get("started_at"),
-                    it.get("completed_at"),
-                    it.get("sort_ts"),
-                    1 if it.get("is_final") else 0,
-                    1 if it.get("is_shared") else 0,
-                    1 if it.get("is_deleted") else 0,
-                    it.get("deleted_at"),
-                    now,                    # last_seen_at
-                    now,                    # updated_at
-                ),
-            )
+            # tombstone(삭제 통보, T5): 기존 팩트가 있으면 is_deleted 만 세팅하고 차원(프로젝트·모델·크레딧)은
+            # 보존한다(전체 덮어쓰기 금지). 없으면 스냅샷 기반으로 신규행 삽입 → 미전송 삭제분도 비용 집계.
+            if it.get("is_deleted"):
+                cur = conn.execute(
+                    "UPDATE team_generation_fact SET is_deleted=1, deleted_at=?, "
+                    "last_seen_at=?, updated_at=? WHERE account_email=? AND local_gen_id=?",
+                    (now, now, now, account_email, gid),
+                )
+                if cur.rowcount == 0:  # 팩트 없음 → 스냅샷으로 전체행 삽입(is_deleted=1 포함)
+                    conn.execute(sql, _fact_values(account_email, cu, gid, it, now))
+                n += 1
+                continue
+            conn.execute(sql, _fact_values(account_email, cu, gid, it, now))
             n += 1
     return n
 
@@ -227,11 +205,13 @@ def _agg_where(
 ) -> tuple[str, list[Any]]:
     where: list[str] = []
     args: list[Any] = []
+    # date() 로 감싸 날짜만 비교 — created_at 은 'YYYY-MM-DDTHH:MM:SSZ'(시각 포함)이라 문자열 비교하면
+    # 종료일 당일이 통째로 빠진다('...T12:00Z' <= '2026-07-03' = false). date_from/to 는 YYYY-MM-DD.
     if date_from:
-        where.append("created_at >= ?")
+        where.append("date(created_at) >= ?")
         args.append(date_from)
     if date_to:
-        where.append("created_at <= ?")
+        where.append("date(created_at) <= ?")
         args.append(date_to)
     if project_id:
         where.append("project_id = ?")
@@ -252,21 +232,21 @@ def team_overview(
         totals = dict(conn.execute(
             f"SELECT COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
             f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END) AS estimated_count, "
-            f"SUM(is_final) AS final_count, "
+            f"COALESCE(SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END),0) AS estimated_count, "
+            f"COALESCE(SUM(is_final),0) AS final_count, "
             f"COUNT(DISTINCT creator_uid) AS workers, COUNT(DISTINCT project_id) AS projects "
             f"FROM team_generation_fact {where}", args,
         ).fetchone())
         by_worker = [dict(r) for r in conn.execute(
             f"SELECT creator_uid, MAX(creator_name) AS creator_name, COUNT(*) AS count, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"SUM(is_final) AS final_count "
+            f"COALESCE(SUM(is_final),0) AS final_count "
             f"FROM team_generation_fact {where} GROUP BY creator_uid ORDER BY credits DESC", args,
         ).fetchall()]
         by_project = [dict(r) for r in conn.execute(
             f"SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS count, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
-            f"SUM(is_final) AS final_count "
+            f"COALESCE(SUM(is_final),0) AS final_count "
             f"FROM team_generation_fact {where} GROUP BY project_id ORDER BY credits DESC", args,
         ).fetchall()]
         matrix = [dict(r) for r in conn.execute(
