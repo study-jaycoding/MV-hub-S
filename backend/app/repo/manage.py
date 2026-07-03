@@ -511,6 +511,18 @@ def sync_folder_tasks(conn, project_id: str) -> None:
             "(id, project_id, name, status, sequence, folder_path) VALUES(?,?,?,?,?,?)",
             (new_id(), project_id, name, "not_started", sequence, fp),
         )
+    # 유령 자동작업 정리: 폴더 자동작업(folder_path 있음)인데 ①매칭 생성물이 하나도 없고 ②PM 이 손대지
+    # 않은(status='not_started') ③수동으로 링크한 생성물도 없는 것은 지운다 — 생성물을 삭제했는데 작업
+    # 카드만 남는 유령을 자동 제거. PM 이 상태·일정·설명을 바꾼 작업은 status≠not_started 라 보존된다.
+    conn.execute(
+        "DELETE FROM project_task WHERE project_id=? AND folder_path IS NOT NULL "
+        "  AND status='not_started' "
+        "  AND NOT EXISTS (SELECT 1 FROM generation g "
+        "                  WHERE g.project_id=project_task.project_id "
+        "                    AND g.folder_path=project_task.folder_path AND g.deleted_at IS NULL) "
+        "  AND NOT EXISTS (SELECT 1 FROM task_generation tg WHERE tg.task_id=project_task.id)",
+        (project_id,),
+    )
 
 
 def list_tasks(project_id: str) -> list[dict[str, Any]]:
