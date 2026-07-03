@@ -84,6 +84,15 @@
 .folder-tree-row.disabled { opacity: 0.4; }
 .folder-tree-row.disabled .folder-tree-name { text-decoration: line-through; }
 .folder-tree-row.disabled .folder-tree-icon { filter: grayscale(1); }
+/* 가상 폴더 — 팀 데이터의 folder_path지만 내 디스크엔 없는 논리 폴더. 점선 아이콘 + 이탤릭으로 구분.
+   .folder-tree 선행자로 특정성을 올려 :not(.root)/.selected 아이콘 배경 규칙을 확실히 덮는다. */
+.folder-tree .folder-tree-row.virtual .folder-tree-name { font-style: italic; color: var(--muted); }
+.folder-tree .folder-tree-row.virtual .folder-tree-icon {
+  background: transparent;
+  background-image: none;
+  border: 1px dashed var(--muted2);
+  box-shadow: none;
+}
 .folder-tree-caret {
   width: 9px; flex: none; color: var(--muted); font-size: 10px;
 }

@@ -6,6 +6,7 @@ export interface FolderTreeItem {
   path: string;
   count?: number | null;
   children?: FolderTreeItem[];
+  virtual?: boolean; // 디스크에 없는 논리 폴더(팀 데이터의 folder_path로 합성) — 표식만 다르게
 }
 
 export function FolderTreeView({
@@ -111,10 +112,11 @@ function FolderTreeRow({
           (depth === 0 ? " root" : "") +
           (selected ? " selected" : "") +
           (disabled ? " disabled" : "") +
+          (node.virtual ? " virtual" : "") +
           (dropOver ? " drop-over" : "")
         }
         style={{ paddingLeft: 6 + depth * 14 }}
-        title={node.path || node.name}
+        title={node.virtual ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)` : node.path || node.name}
         onClick={(e) => {
           e.stopPropagation();
           onSelect(node.path);

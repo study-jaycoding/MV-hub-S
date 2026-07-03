@@ -1,6 +1,6 @@
 import { useEffect, useState, type DragEvent, type KeyboardEvent } from "react";
 import { api } from "../../api";
-import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
+import { isFolderDisabled, normalizeFolderPath, toggleDisabledFolder } from "../../lib/deactivated";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { useT } from "../../lib/i18n";
@@ -22,6 +22,57 @@ function countFolderNodes(nodes: FolderTreeItem[]): number {
     n += 1 + (node.children ? countFolderNodes(node.children) : 0);
   }
   return n;
+}
+
+// counts 키 정규화(레거시 DB 의 `/ep001//c0010/`·역슬래시·. 등 방어) + 정규화 후 중복 합산.
+function normalizeCounts(counts: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k in counts) {
+    const p = normalizeFolderPath(k);
+    if (p) out[p] = (out[p] || 0) + counts[k];
+  }
+  return out;
+}
+
+// 디스크 트리에 없는 folder_path(팀원이 쓴 경로 등)를 가상 노드로 합성 — counts 키 기준.
+// 부모 체인도 함께 만들고 virtual 표식을 단다. 팀 공유의 공통 폴더 구조가 내 디스크에 없어도 보이게.
+function mergeVirtualFolders(
+  roots: FolderTreeItem[],
+  counts: Record<string, number>,
+): FolderTreeItem[] {
+  const clone = (nodes: FolderTreeItem[]): FolderTreeItem[] =>
+    nodes.map((n) => ({ ...n, children: n.children ? clone(n.children) : n.children }));
+  const out = clone(roots);
+  const byPath = new Map<string, FolderTreeItem>();
+  const index = (nodes: FolderTreeItem[]) =>
+    nodes.forEach((n) => {
+      byPath.set(n.path, n);
+      if (n.children) index(n.children);
+    });
+  index(out);
+  const ensure = (path: string): FolderTreeItem => {
+    const existing = byPath.get(path);
+    if (existing) return existing;
+    const segs = path.split("/");
+    const node: FolderTreeItem = {
+      name: segs[segs.length - 1],
+      path,
+      count: 0,
+      children: [],
+      virtual: true,
+    };
+    byPath.set(path, node);
+    if (segs.length === 1) {
+      out.push(node);
+    } else {
+      const parent = ensure(segs.slice(0, -1).join("/"));
+      parent.children = parent.children || [];
+      parent.children.push(node);
+    }
+    return node;
+  };
+  for (const key of Object.keys(counts)) if (key) ensure(key);
+  return out;
 }
 
 // 폴더별 생성물 개수(정확 경로)를 트리 노드에 누적 반영 — 노드 count = 자신 + 하위 전부의 합.
@@ -69,8 +120,11 @@ function SidebarFolderTree({
   if (state.error) return <div className="side-folder-note error">{state.error}</div>;
   if (!state.tree) return null;
   let roots: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
-  if (!roots.length) return null;
-  if (counts) roots = overlayFolderCounts(roots, counts);
+  const normCounts = counts ? normalizeCounts(counts) : undefined;
+  // 팀 데이터의 folder_path 중 내 디스크에 없는 것을 가상 노드로 합성(팀원 공통 폴더 표시).
+  if (normCounts && Object.keys(normCounts).length) roots = mergeVirtualFolders(roots, normCounts);
+  if (!roots.length) return null; // 합성 후에도 비면(디스크·데이터 모두 없음) 트리 숨김
+  if (normCounts) roots = overlayFolderCounts(roots, normCounts);
   // 폴더가 15개를 넘을 때만 스크롤(max-height) 적용 — 적을 땐 스크롤바가 깜빡이지 않게.
   const scroll = countFolderNodes(roots) > 15;
   return (
