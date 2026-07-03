@@ -102,8 +102,11 @@ async def job_exists(job_id: str, timeout: float = 30.0) -> Optional[bool]:
     True=있음, False=삭제됨('Job not found'), None=확인불가(타임아웃/네트워크/모르는 출력 → 상태 변경 금지)."""
     try:
         raw = (await _run("generate", "get", job_id, "--json", timeout=timeout)).strip()
-    except CLIError:
-        return None  # 실행 실패 → 모름(섣불리 삭제로 판정하지 않음)
+    except CLIError as e:
+        # 삭제된 잡은 CLI 가 비정상종료 + stderr "Job not found" 로 알린다(rc≠0 → _run 이 CLIError).
+        # 그 에러 메시지에 not-found 신호가 있으면 삭제로 확정. 그 외(타임아웃·네트워크·PATH 등)는
+        # 확인불가(None) 로 두어 일시 오류로 멀쩡한 걸 지우지 않게 한다.
+        return False if "job not found" in str(e).lower() else None
     if "job not found" in raw.lower():
         return False
     try:
