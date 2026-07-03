@@ -1070,8 +1070,10 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
         _ensure_schema(conn)
         for gid in ids:
             conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) VALUES(?, datetime('now')) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now'), pushed_at=NULL",
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "ON CONFLICT(local_gen_id) DO UPDATE SET "
+                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL",
                 (gid,),
             )
 
@@ -1097,23 +1099,27 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
         local_ids = [r["id"] for r in rows]
         for gid in local_ids:
             conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) VALUES(?, datetime('now')) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET dirty_at=datetime('now'), pushed_at=NULL",
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "ON CONFLICT(local_gen_id) DO UPDATE SET "
+                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL",
                 (gid,),
             )
     return len(local_ids)
 
 
-def list_dirty_telemetry(limit: int = 200) -> list[str]:
-    """push 가 필요한 local_gen_id 목록(pushed_at IS NULL = 미전송/재큐잉). 오래된 것 먼저."""
+def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
+    """push 가 필요한 항목 목록 [{local_gen_id, dirty_at}] (pushed_at IS NULL). 오래된 것 먼저.
+    dirty_at 을 함께 반환 — 드레이너가 mark_telemetry_pushed 에 되돌려 CAS(그 사이 재dirty 된 건 안
+    비움) 하기 위함."""
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT local_gen_id FROM telemetry_outbox WHERE pushed_at IS NULL "
+            "SELECT local_gen_id, dirty_at FROM telemetry_outbox WHERE pushed_at IS NULL "
             "ORDER BY dirty_at ASC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [r["local_gen_id"] for r in rows]
+        return [{"local_gen_id": r["local_gen_id"], "dirty_at": r["dirty_at"]} for r in rows]
 
 
 def build_telemetry_facts(
@@ -1160,18 +1166,23 @@ def build_telemetry_facts(
     return out
 
 
-def mark_telemetry_pushed(gen_ids: list[str]) -> None:
-    """push 성공한 id 들에 pushed_at 을 찍는다(재푸시 대상에서 빠짐). 마지막 오류도 지운다."""
-    ids = [g for g in (gen_ids or []) if g]
-    if not ids:
-        return
+def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
+    """push 성공한 항목에 pushed_at 을 찍는다(재푸시 대상에서 빠짐).
+    ★CAS(코덱스): list_dirty 때 읽은 dirty_at 과 지금 dirty_at 이 같을 때만 비운다. drain 도중
+    프로젝트·공유·최종이 바뀌어 재dirty(dirty_at 갱신+pushed_at=NULL) 됐다면 이 UPDATE 는 매칭되지
+    않아 큐에 남는다 → 그 변경이 유실되지 않고 다음 drain 에 다시 전송된다.
+    items = list_dirty_telemetry 가 준 [{local_gen_id, dirty_at}] 그대로."""
     with get_connection() as conn:
         _ensure_schema(conn)
-        for gid in ids:
+        for it in items or []:
+            gid = it.get("local_gen_id")
+            if not gid:
+                continue
             conn.execute(
                 "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
-                "attempts=attempts+1, last_error=NULL WHERE local_gen_id=?",
-                (gid,),
+                "attempts=attempts+1, last_error=NULL "
+                "WHERE local_gen_id=? AND dirty_at=? AND pushed_at IS NULL",
+                (gid, it.get("dirty_at")),
             )
 
 

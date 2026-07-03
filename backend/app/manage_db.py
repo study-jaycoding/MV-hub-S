@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS team_generation_fact (
     created_at      TEXT,                    -- 생성일
     started_at      TEXT,
     completed_at    TEXT,
-    sort_ts         TEXT,
+    sort_ts         REAL,                    -- 정렬용 에포크(숫자) — TEXT 면 affinity 로 문자화되어 정렬 깨짐
     is_final        INTEGER DEFAULT 0,
     is_shared       INTEGER DEFAULT 0,
     is_deleted      INTEGER DEFAULT 0,       -- tombstone(비용 이력 보존)
@@ -132,7 +132,13 @@ def upsert_facts(
 
     ★작성자 검증(코덱스): payload 의 작성자를 그대로 믿지 않는다. 인증 세션의 my_uid 와 다른
     creator_uid 를 가진 항목(= 내 로컬에 있는 남의 공유본)은 팀 팩트로 올리지 않는다. account_email 도
-    payload 가 아니라 인증 세션 값으로 강제한다. 멱등 키는 (account_email, local_gen_id)."""
+    payload 가 아니라 인증 세션 값으로 강제한다. 멱등 키는 (account_email, local_gen_id).
+
+    ★미링크 계정 방어(코덱스): my_uid 가 없으면(서버 계정이 아직 힉스필드 uid 에 연결 안 됨) 팀 집계로
+    받지 않는다(0 반환) — 클라이언트는 실패로 보고 재시도해 링크 후 올린다. 미링크 상태에서 payload
+    creator_uid 를 그대로 믿는 구멍을 막는다."""
+    if not my_uid:
+        return 0
     now = _utcnow()
     n = 0
     placeholders = ",".join("?" for _ in _FACT_COLS)
@@ -146,8 +152,17 @@ def upsert_facts(
             if not gid:
                 continue
             cu = it.get("creator_uid") or my_uid
-            if my_uid and cu and cu != my_uid:
+            if cu != my_uid:
                 continue  # 남의 것 — 팀 팩트에 올리지 않음(누출·오귀속 방지)
+            # job_id 중복 정리(코덱스): 같은 잡이 다른 local_gen_id 로 재적재(계정 DB 이관·재생성)되면
+            # 이중 집계된다. 같은 계정+job_id 의 다른 행을 지워 최신 local_gen_id 로 수렴시킨다.
+            jid = it.get("job_id")
+            if jid:
+                conn.execute(
+                    "DELETE FROM team_generation_fact WHERE account_email=? AND job_id=? "
+                    "AND local_gen_id<>?",
+                    (account_email, jid, gid),
+                )
             conn.execute(
                 sql,
                 (

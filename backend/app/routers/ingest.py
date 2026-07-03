@@ -196,21 +196,38 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
 
 def _drain_telemetry() -> None:
     """dirty 텔레메트리를 서버 매니징 저장소로 push(best-effort). 프록시(서버 연결) 있을 때만 —
-    서버 없으면 outbox 에 쌓였다 다음 기회에 전송(오프라인 큐). 순수 클라이언트 측 드레이너."""
+    서버 없으면 outbox 에 쌓였다 다음 기회에 전송(오프라인 큐). 순수 클라이언트 측 드레이너.
+
+    정합성(코덱스):
+      · dirty 중 내것(build 됨)과 내것 아님(build 에서 빠짐)을 나눈다.
+      · 내것 아님 → 큐에서 정리(다시 build 될 일 없음).
+      · 내것 → 서버가 실제로 받은 수(upserted)가 보낸 수 이상일 때만 정리, 아니면(미링크·스킵) 실패
+        처리해 재시도. mark_pushed 는 dirty_at CAS 라 drain 도중 재dirty 된 건 자동으로 남는다."""
     if not _proxy.proxying():
         return
     from ..repo import manage as _m
 
-    ids = _m.list_dirty_telemetry(500)
-    if not ids:
+    dirty = _m.list_dirty_telemetry(500)  # [{local_gen_id, dirty_at}]
+    if not dirty:
         return
+    ids = [d["local_gen_id"] for d in dirty]
     facts = _m.build_telemetry_facts(gen_ids=ids, my_uid=repo.get_my_uid())
+    built_ids = {f["local_gen_id"] for f in facts}
+    built = [d for d in dirty if d["local_gen_id"] in built_ids]
+    non_built = [d for d in dirty if d["local_gen_id"] not in built_ids]
+    _m.mark_telemetry_pushed(non_built)  # 내것 아님 → 무조건 큐 정리(CAS)
     try:
-        _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": facts})
-        # 성공: 선택한 id 전부 pushed 처리(내것 아니라 안 빌드된 것도 정리 → 무한 dirty 방지).
-        _m.mark_telemetry_pushed(ids)
+        resp = _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": facts})
+        upserted = (resp or {}).get("upserted", 0) if isinstance(resp, dict) else 0
+        if upserted >= len(facts):
+            _m.mark_telemetry_pushed(built)  # 서버가 다 받음 → 정리(CAS)
+        else:
+            # 서버가 일부/전부 스킵(미링크 계정 등) → 재시도 대상으로 남김.
+            _m.mark_telemetry_failed(
+                [b["local_gen_id"] for b in built], f"server upserted {upserted}/{len(facts)}"
+            )
     except Exception as e:  # noqa: BLE001 — 전송 실패는 재시도(다음 drain)로 회복
-        _m.mark_telemetry_failed(ids, str(e))
+        _m.mark_telemetry_failed([b["local_gen_id"] for b in built], str(e))
 
 
 @router.post("/ingest", response_model=IngestOut)
