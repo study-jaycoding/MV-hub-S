@@ -12,9 +12,10 @@ interface Props {
   alt?: string; // 이미지 대체 텍스트
   videoRef?: Ref<HTMLVideoElement>; // 호버 재생용 ref(필요 없으면 생략)
   fallback: ReactNode; // 썸네일·영상 둘 다 없을 때 보일 사이트별 상태 플레이스홀더
+  onError?: () => void; // 미디어 로드 실패(원본 URL 죽음 등) — 카드가 '원본 없음' 표시에 사용
 }
 
-export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallback }: Props) {
+export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallback, onError }: Props) {
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   if (thumb && isVideo)
     return (
@@ -27,11 +28,14 @@ export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallba
         playsInline
         preload="none"
         draggable={false}
+        onError={onError}
       />
     );
   // 이미지(또는 영상의 정지 썸네일).
   if (thumb)
-    return <img src={thumb} loading="lazy" decoding="async" alt={alt} draggable={false} />;
+    return (
+      <img src={thumb} loading="lazy" decoding="async" alt={alt} draggable={false} onError={onError} />
+    );
   // 영상인데 썸네일 없음: 첫 프레임을 메타데이터로 띄워 'done' 대신 내용이 보이게.
   if (isVideo && src)
     return (
@@ -43,6 +47,7 @@ export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallba
         playsInline
         preload="metadata"
         draggable={false}
+        onError={onError}
       />
     );
   // 둘 다 없음 → 사이트별 플레이스홀더.

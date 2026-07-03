@@ -112,6 +112,16 @@
 .thumb-placeholder.status-nsfw::before {
   content: "⚠"; font-size: 46px; line-height: 1; color: #ff5b5b; margin-bottom: 2px;
 }
+/* 원본 미디어 로드 실패(HF 삭제 등) — 카드 위 흐림 오버레이 + '원본 없음'. 클릭은 통과(pointer-events:none). */
+.thumb-broken {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: rgba(10, 11, 14, 0.72);
+  color: #ffb84d; font-size: 12px; font-weight: 700;
+  pointer-events: none;
+}
+.thumb-broken-ic { font-size: 26px; line-height: 1; }
+.thumb-broken-label { letter-spacing: 0.3px; }
 .color-marker {
   position: absolute; top: 8px; left: 8px;
   width: 14px; height: 14px; border-radius: 50%;

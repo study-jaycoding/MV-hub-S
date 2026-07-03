@@ -3,7 +3,7 @@
 //  · 미디어 위 호버 오버레이 액션(정보·다운로드·미리보기·재생성·공유/가져오기)
 //  · 좌상단 선택 체크박스(다중 선택 → 상단 일괄 작업 바)
 // 그리드 모드 = 세로 카드, 리스트 모드 = 좌측 큰 썸네일 + 우측 상세 패널.
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
@@ -115,6 +115,10 @@ function GenerationCardImpl({
   // v02 CMS — S 더블클릭 → 최종(골드) 확인 플로팅. 단일클릭(공유 토글)과 충돌 방지용 타이머.
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [confirmShare, setConfirmShare] = useState(false); // S 단일클릭 → 공유/해제 확인(최종과 동일 UX)
+  // 미디어 로드 실패(원본 URL 죽음 = 힉스필드에서 삭제 등) → '원본 없음' 흐림 표시(즉시 감지 신호).
+  // 소스가 바뀌면(리로드로 캐시 URL 전환 등) 초기화해 다시 시도.
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [asset?.file_path, thumb]);
   const sClick = useClickSeparation(220); // 단일(공유)/더블(최종) 분리
   // 다중선택 중(이 카드도 포함)이면 S 는 선택 전체에 등급 규칙으로 적용(개별 확인 UI 대신 인앱 모달).
   const isMultiGrade = selected && (selectedCount ?? 1) > 1 && !!onBulkGradeStep;
@@ -217,6 +221,7 @@ function GenerationCardImpl({
         src={asset?.file_path}
         alt={gen.prompt}
         videoRef={videoRef}
+        onError={() => setBroken(true)}
         fallback={
           <div
             className={`thumb-placeholder status-${gen.status}`}
@@ -242,6 +247,15 @@ function GenerationCardImpl({
           </div>
         }
       />
+      {broken && gen.status === "done" && (
+        <div
+          className="thumb-broken"
+          title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 '힉스필드 삭제물 검토'로 정리하세요."
+        >
+          <span className="thumb-broken-ic">⚠</span>
+          <span className="thumb-broken-label">원본 없음</span>
+        </div>
+      )}
 
       {gen.is_source && (
         <span className="source-badge" title="소스로 등록됨">
