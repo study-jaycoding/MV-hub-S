@@ -51,6 +51,26 @@ export const manageApi = {
   matrix: () => jsonFetch<MatrixData>("/api/manage/matrix"),
   breakdown: (projectId: string) =>
     jsonFetch<BreakdownData>(withQuery("/api/manage/breakdown", { project_id: projectId })),
+  // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.
+  teamOverview: (f: TeamFilters = {}) =>
+    jsonFetch<TeamOverview>(
+      withQuery("/api/manage/team-overview", {
+        date_from: f.dateFrom,
+        date_to: f.dateTo,
+        project_id: f.projectId,
+        creator_uid: f.creatorUid,
+      }),
+    ),
+  teamTimeseries: (bucket: "day" | "week" | "month" = "day", f: TeamFilters = {}) =>
+    jsonFetch<{ buckets: TeamBucket[] }>(
+      withQuery("/api/manage/team-timeseries", {
+        bucket,
+        date_from: f.dateFrom,
+        date_to: f.dateTo,
+        project_id: f.projectId,
+        creator_uid: f.creatorUid,
+      }),
+    ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
   saveFinals: (projectId: string) =>
     jsonFetch<SaveFinalsResult>(withQuery("/api/manage/save-finals", { project_id: projectId }), {
@@ -60,6 +80,64 @@ export const manageApi = {
   saveFinalsStatus: (projectId: string) =>
     jsonFetch<SaveFinalsStatus>(withQuery("/api/manage/save-finals", { project_id: projectId })),
 };
+
+export interface TeamFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  projectId?: string;
+  creatorUid?: string;
+}
+
+export interface TeamTotals {
+  count: number;
+  credits: number;
+  elapsed_seconds: number;
+  estimated_count: number; // 실제크레딧 미매칭(견적으로 대체된) 건수
+  final_count: number;
+  workers: number;
+  projects: number;
+}
+
+export interface TeamWorkerRow {
+  creator_uid: string | null;
+  creator_name: string | null;
+  count: number;
+  credits: number;
+  elapsed_seconds: number;
+  final_count: number;
+}
+
+export interface TeamProjectRow {
+  project_id: string | null;
+  project_name: string | null;
+  count: number;
+  credits: number;
+  elapsed_seconds: number;
+  final_count: number;
+}
+
+export interface TeamMatrixCell {
+  creator_uid: string | null;
+  creator_name: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  count: number;
+  credits: number;
+}
+
+export interface TeamOverview {
+  totals: TeamTotals;
+  by_worker: TeamWorkerRow[];
+  by_project: TeamProjectRow[];
+  matrix: TeamMatrixCell[];
+}
+
+export interface TeamBucket {
+  bucket: string;
+  count: number;
+  credits: number;
+  elapsed_seconds: number;
+}
 
 export interface SaveFinalsResult {
   saved: number;

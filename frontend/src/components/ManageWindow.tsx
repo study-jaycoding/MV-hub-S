@@ -6,14 +6,16 @@ import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { ExportView } from "./manage/ExportView";
 import { ProjectDashboard } from "./manage/ProjectDashboard";
+import { TeamOverview } from "./manage/TeamOverview";
 import { WorkBoard } from "./manage/WorkBoard";
 
-type Tab = "summary" | "tasks" | "export";
+type Tab = "summary" | "tasks" | "export" | "team";
 
 const TABS: { v: Tab; label: string }[] = [
   { v: "summary", label: "요약" },
   { v: "tasks", label: "작업" },
   { v: "export", label: "완료" },
+  { v: "team", label: "팀 전체" },
 ];
 
 export function ManageWindow() {
@@ -76,6 +78,7 @@ export function ManageWindow() {
       {tab === "summary" && <ProjectDashboard />}
       {tab === "tasks" && <WorkBoard />}
       {tab === "export" && <ExportView />}
+      {tab === "team" && <TeamOverview />}
     </div>
   );
 }
