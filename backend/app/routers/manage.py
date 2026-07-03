@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
