@@ -511,20 +511,6 @@ def sync_folder_tasks(conn, project_id: str) -> None:
             "(id, project_id, name, status, sequence, folder_path) VALUES(?,?,?,?,?,?)",
             (new_id(), project_id, name, "not_started", sequence, fp),
         )
-    # 유령 자동작업 정리: 폴더 자동작업(folder_path 있음)인데 ①매칭 생성물이 하나도 없고 ②수동 링크도
-    # 없고 ③PM 이 실제 계획 데이터(마감·시작일·메모·설명·담당)를 넣지 않은 것은 지운다 — 생성물을
-    # 삭제했는데 카드만 남는 유령을 제거. status 는 보드 드래그로도 바뀌므로 보존 기준에서 뺀다(상태만
-    # 바뀐 빈 카드도 유령). PM 이 일정·메모 등 실제 계획을 넣은 작업은 그 값이 있어 보존된다.
-    conn.execute(
-        "DELETE FROM project_task WHERE project_id=? AND folder_path IS NOT NULL "
-        "  AND due_date IS NULL AND start_date IS NULL AND note IS NULL "
-        "  AND description IS NULL AND assignee_uid IS NULL "
-        "  AND NOT EXISTS (SELECT 1 FROM generation g "
-        "                  WHERE g.project_id=project_task.project_id "
-        "                    AND g.folder_path=project_task.folder_path AND g.deleted_at IS NULL) "
-        "  AND NOT EXISTS (SELECT 1 FROM task_generation tg WHERE tg.task_id=project_task.id)",
-        (project_id,),
-    )
 
 
 def list_tasks(project_id: str) -> list[dict[str, Any]]:
