@@ -44,6 +44,15 @@ def _touch_telemetry(gen_id: str | None) -> None:
         pass
 
 
+def _local_id_from_out(out) -> str | None:
+    """프록시 응답(out)의 job_id 앵커로 로컬 행 id 를 되찾는다. 팀 탭 카드는 서버 UUID(id≠job_id, Phase 0b)라
+    finalize_id_map(gen_id) 이 로컬을 못 찾아 local_id=None 이 된다 → 서버가 돌려준 job_id 로 로컬 미러
+    대상을 확정해, 팀 탭에서 공유해제/최종해도 내작업이 함께 갱신되게 한다."""
+    if isinstance(out, dict) and out.get("job_id"):
+        return repo.finalize_id_map(out["job_id"])[0]
+    return None
+
+
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
@@ -64,6 +73,7 @@ def publish(gen_id: str, body: PublishIn, request: Request):
 def unpublish(gen_id: str, request: Request):
     """팀 공유 해제 — share 행을 제거한다(내가 공유한 것을 되돌림).
     ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제)."""
+    gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로 '서버 해제'가 진실이다. 서버를 먼저 호출해
     # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
@@ -79,6 +89,8 @@ def unpublish(gen_id: str, request: Request):
             if e.status_code != 404:
                 raise  # 서버 전파 실패(권한 403·골드 409·연결 502 등) → 로컬도 해제 안 함(불일치 차단)
             out = None
+        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
+            local_id = _local_id_from_out(out)
         if local_id:  # 내 로컬 카드도 미러 해제(tab=my·히스토리 즉시 반영)
             repo.unpublish(local_id)
             _touch_telemetry(local_id)
@@ -117,6 +129,7 @@ def finalize(gen_id: str, request: Request):
     최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
     로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
     finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다."""
+    gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
         # 로컬 id ↔ 서버 id(번들 앵커=job_id)가 다르다 → 변환.
@@ -144,6 +157,8 @@ def finalize(gen_id: str, request: Request):
                 if local_id:
                     repo.unpublish(local_id)
             raise
+        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
+            local_id = _local_id_from_out(out)
         if local_id:  # 내 로컬 카드에도 골드 미러(tab=my·히스토리 즉시 반영)
             try:
                 repo.set_final(local_id, True, _finalizer_uid(request))
@@ -186,10 +201,13 @@ def finalize(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/unfinalize", response_model=GenerationOut)
 def unfinalize(gen_id: str, request: Request):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만."""
+    gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
         local_id, server_id = repo.finalize_id_map(gen_id)
         out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
+        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
+            local_id = _local_id_from_out(out)
         if local_id:
             try:
                 repo.set_final(local_id, False)

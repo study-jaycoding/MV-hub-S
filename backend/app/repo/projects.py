@@ -299,9 +299,20 @@ def assign_to_project(
         return cur.rowcount
 
 
-def folder_counts(project_id: str, account_uid: Optional[str] = None) -> dict[str, int]:
+def folder_counts(
+    project_id: str,
+    account_uid: Optional[str] = None,
+    shared_only: bool = False,
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+) -> dict[str, int]:
     """프로젝트의 폴더별(정확 경로) 생성물 개수 — {folder_path: n}. deleted 제외.
-    account_uid 지정(내 작업 탭)이면 내 생성물만 센다. 프론트가 하위 누적은 클라이언트에서 합산."""
+    account_uid 지정(내 작업 탭)이면 내 생성물만 센다. 프론트가 하위 누적은 클라이언트에서 합산.
+    shared_only(팀 탭)면 공유된 것만 센다 — 팀 목록(EXISTS share)과 일치시켜, 공유해제 시 카운트가
+    함께 내려가게 한다(share 만 지워지고 generation 은 남아 카운트가 안 빠지던 문제 해소).
+    team_member_projects/actor_uid: 팀 목록과 동일한 가시성(내 공유물 or 내가 멤버인 프로젝트)을 카운트에도
+    적용해, 볼 수 없는 카드가 카운트에 새지 않게 한다. None=read_all·단독(전체 공유물). list_generations
+    의 tab='team' 클로즈와 동일 규약(generations.py)."""
     with get_connection() as conn:
         where = (
             "project_id = ? AND folder_path IS NOT NULL AND folder_path <> '' "
@@ -311,6 +322,25 @@ def folder_counts(project_id: str, account_uid: Optional[str] = None) -> dict[st
         if account_uid and account_uid != "\x00":
             where += " AND creator_uid = ?"
             args.append(account_uid)
+        if shared_only:
+            where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
+            # 팀 목록과 동일 가시성 필터(generations.py list_generations tab='team' 과 동형).
+            # 센티넬 "\x00" 은 목록과 동일하게 actor 없음으로 정규화(generations.py:1197).
+            actor = actor_uid if actor_uid and actor_uid != "\x00" else None
+            if team_member_projects is not None:
+                if team_member_projects:
+                    ph = ",".join("?" * len(team_member_projects))
+                    if actor:
+                        where += f" AND (creator_uid = ? OR project_id IN ({ph}))"
+                        args.append(actor)
+                    else:
+                        where += f" AND project_id IN ({ph})"
+                    args += list(team_member_projects)
+                elif actor:
+                    where += " AND creator_uid = ?"
+                    args.append(actor)
+                else:
+                    where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
         rows = conn.execute(
             f"SELECT folder_path, COUNT(*) AS c FROM generation WHERE {where} GROUP BY folder_path",
             args,

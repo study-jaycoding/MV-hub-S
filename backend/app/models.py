@@ -82,6 +82,7 @@ class GenerationOut(BaseModel):
     deleted: bool = False  # 휴지통(soft delete) — 우리 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
     is_final: bool = False  # v02 CMS: Supervisor 가 지정한 최종(골드)
     final_by: Optional[str] = None  # 최종 지정자 creator_uid
+    job_id: Optional[str] = None  # 힉스필드 잡 앵커 — 팀 카드(서버 UUID)↔로컬 행 미러 매핑용(단건 응답만 채움)
 
 
 class HistoryOut(BaseModel):

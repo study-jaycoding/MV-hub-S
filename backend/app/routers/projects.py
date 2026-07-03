@@ -112,7 +112,26 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my"):
     if _proxy.proxying() and tab == "team":
         return _proxy.proxy_get(f"/api/projects/{pid}/folder-counts", request)
     account_uid = account_scope_uid(request) if tab == "my" else None
-    return {"counts": repo.folder_counts(pid, account_uid=account_uid)}
+    # 팀 탭은 목록(EXISTS share + 멤버십 가시성)과 동일하게 센다 — 서버가 이 경로로 집계(위 프록시가 위임).
+    # read_all(admin/PM/PD·단독)은 전체 공유물, 아니면 내 공유물+내 멤버 프로젝트만(목록 규약과 동일).
+    team_member_projects = None
+    actor_uid = None
+    if tab == "team":
+        read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+            account_global_roles(request), "read_all"
+        )
+        if not read_all:
+            actor_uid = account_scope_uid(request)
+            team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    return {
+        "counts": repo.folder_counts(
+            pid,
+            account_uid=account_uid,
+            shared_only=(tab == "team"),
+            team_member_projects=team_member_projects,
+            actor_uid=actor_uid,
+        )
+    }
 
 
 @router.post("", response_model=ProjectOut)

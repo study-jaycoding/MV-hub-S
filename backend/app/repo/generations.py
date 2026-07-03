@@ -1535,6 +1535,10 @@ _GEN_SELECT_COLS = (
     "g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
     "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
     "g.comment, g.error, g.creator_uid, g.project_id, g.folder_path, g.deleted_at, g.is_final, g.final_by, "
+    # 이 컬럼셋은 단건 조회(_fetch_generation)·_fetch_gens 가 공유한다. job_id 필드를 가진 응답 모델은
+    # GenerationOut(단건 액션 응답)뿐이라 API 노출은 단건에 그친다(목록 SELECT·HistoryOut 엔 job_id 없음).
+    # 로컬↔서버 미러가 이 앵커로 팀 카드(서버 UUID)↔로컬 행을 잇는다.
+    "g.job_id, "
     "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
     "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id"
 )
