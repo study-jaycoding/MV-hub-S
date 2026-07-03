@@ -218,6 +218,24 @@
 .reduce-motion .gen-wave-bar { animation: none; transform: scaleY(0.6); }
 .status-failed { color: #ff6b6b; }
 .status-nsfw { color: #ff6b6b; }
+/* 등급 S 다중선택 확인 모달 — 브라우저 confirm 대신 인앱 중앙 팝업 */
+.gradestep-catcher { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45); }
+.gradestep-modal {
+  position: fixed; z-index: 61; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+  background: var(--panel, #16181d); border: 1px solid var(--border2);
+  border-radius: 14px; padding: 18px 18px 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+.gradestep-title { font-size: 15px; font-weight: 800; margin-bottom: 8px; color: var(--text); }
+.gradestep-body { font-size: 13px; line-height: 1.6; color: var(--muted); margin-bottom: 16px; }
+.gradestep-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.gradestep-btn {
+  padding: 7px 16px; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer;
+  border: 1px solid var(--border2); background: rgba(255, 255, 255, 0.05); color: var(--text);
+}
+.gradestep-btn.confirm { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.gradestep-btn:disabled { opacity: 0.6; cursor: default; }
 /* 하단 상태 라벨도 실패·차단이면 빨강 강조 */
 .status-pill.status-failed,
 .status-pill.status-nsfw {

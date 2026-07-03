@@ -48,6 +48,9 @@ import {
   filterDisabledGenerations,
 } from "./lib/generationDisplay";
 import { useDisabledFolders } from "./lib/useDisabledFolders";
+import { useGradeStep } from "./lib/useGradeStep";
+import type { GradeMode } from "./lib/gradeStep";
+import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
 import { hasGlobalCap } from "./types";
@@ -234,6 +237,16 @@ export default function App() {
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
 
+  // 등급 S 다중선택 — 카드 S(단일/더블)를 선택 전체에 한 칸씩 적용(공유/최종). 인앱 확인 모달.
+  const grade = useGradeStep({
+    canFinalize,
+    reload: async () => {
+      await reload();
+    },
+    flash,
+  });
+  const onBulkGradeStep = (mode: GradeMode) => grade.requestGradeStep(selectedGenerations, mode);
+
 
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신하고, 놓친 전이는 reload 로 따라잡는다.
   useGenerationProgress({ gensRef, setGens, reload, bumpBoard, setSyncTick });
@@ -347,14 +360,13 @@ export default function App() {
     setTagPanelOpen,
   });
 
-  const { boardShare, bulkPublish, bulkFinalize, onPublish } = useGenerationShareActions({
+  const { boardShare, onPublish } = useGenerationShareActions({
     bumpBoard,
     clearSelect,
     flash,
     generations: gens,
     reload,
     selected,
-    canFinalize,
   });
   const { boardDelete, bulkDelete, bulkPurge, bulkRestore, clearFailed, onRestore } =
     useGenerationTrashActions({
@@ -638,6 +650,7 @@ export default function App() {
               <ThumbnailGrid
                     generations={gridGens}
                     disabledIds={effectiveDisabled}
+                    onBulkGradeStep={onBulkGradeStep}
                     tab={filters.tab}
                     myCreatorUid={account?.creator_uid ?? null}
                     scale={scale}
@@ -711,10 +724,7 @@ export default function App() {
               <LibrarySelectionActionBar
                 selectedCount={selected.size}
                 selectedGenerations={selectedGenerations}
-                tab={filters.tab}
                 projects={projects}
-                onPublish={bulkPublish}
-                onFinalize={bulkFinalize}
                 onDownload={bulkDownload}
                 onCompare={(items) => {
                   if (items.length >= 2) setCompareGens(items);
@@ -730,6 +740,14 @@ export default function App() {
           onCreated={handlePromptCreated}
         />
       </div>
+      {grade.pending && (
+        <GradeStepModal
+          pending={grade.pending}
+          busy={grade.busy}
+          onConfirm={grade.confirm}
+          onCancel={grade.cancel}
+        />
+      )}
       <AppOverlays
         account={account}
         adminOpen={adminOpen}

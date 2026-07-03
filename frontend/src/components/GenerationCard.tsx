@@ -7,6 +7,7 @@ import { memo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
+import type { GradeMode } from "../lib/gradeStep";
 import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
@@ -59,6 +60,7 @@ interface Props {
   onBulkAddAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 부여를 선택 전체에
   onBulkRemoveAutoTags?: (g: Generation, names: string[]) => void; // 다중선택 시 전역 해제를 선택 전체에
   selectedCount?: number; // 이 카드가 다중선택에 포함될 때 N(에디터에 '선택 N개에 적용' 표시)
+  onBulkGradeStep?: (mode: GradeMode) => void; // 다중선택 시 S(단일/더블)를 선택 전체에 등급 규칙으로 적용
   tagEditing?: boolean; // 다중선택 태그 편집 활성(편집 카드가 선택에 포함). 선택된 비포커스 카드에 스트립 표시
   tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
   onGlobalModeChange?: (on: boolean) => void; // 포커스 에디터의 전역모드 토글 보고
@@ -81,6 +83,7 @@ function GenerationCardImpl({
   onBulkAddAutoTags,
   onBulkRemoveAutoTags,
   selectedCount,
+  onBulkGradeStep,
   tagEditing,
   tagGlobalMode,
   onGlobalModeChange,
@@ -113,7 +116,13 @@ function GenerationCardImpl({
   const [confirmFinal, setConfirmFinal] = useState(false);
   const [confirmShare, setConfirmShare] = useState(false); // S 단일클릭 → 공유/해제 확인(최종과 동일 UX)
   const sClick = useClickSeparation(220); // 단일(공유)/더블(최종) 분리
+  // 다중선택 중(이 카드도 포함)이면 S 는 선택 전체에 등급 규칙으로 적용(개별 확인 UI 대신 인앱 모달).
+  const isMultiGrade = selected && (selectedCount ?? 1) > 1 && !!onBulkGradeStep;
   const onSClick = () => {
+    if (isMultiGrade) {
+      sClick.onClick(() => onBulkGradeStep!("single"));
+      return;
+    }
     if (!gen.is_mine) return; // 공유/해제는 본인 생성물만 — 다른 사람은 S 를 눌러도 무반응
     sClick.onClick(() => {
       if (gen.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
@@ -124,7 +133,11 @@ function GenerationCardImpl({
     setConfirmShare(false);
     gen.shared ? onUnpublish(gen) : onPublish(gen);
   };
-  const onSDouble = () =>
+  const onSDouble = () => {
+    if (isMultiGrade) {
+      sClick.onDouble(() => onBulkGradeStep!("double"));
+      return;
+    }
     sClick.onDouble(() => {
       setConfirmShare(false); // 더블클릭(최종)이면 공유 확인은 닫는다
       // 최종(골드) 지정/해제는 그 프로젝트 supervisor/PM 만 — 권한 없으면 확인창을 띄우지 않는다.
@@ -141,6 +154,7 @@ function GenerationCardImpl({
         onPublish(gen);
       }
     });
+  };
   const confirmFinalYes = () => {
     setConfirmFinal(false);
     gen.is_final ? onUnfinalize(gen) : onFinalize(gen);

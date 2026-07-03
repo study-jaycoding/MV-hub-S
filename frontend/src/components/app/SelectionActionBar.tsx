@@ -64,10 +64,7 @@ export function BoardSelectionActionBar({
 export function LibrarySelectionActionBar({
   selectedCount,
   selectedGenerations,
-  tab,
   projects,
-  onPublish,
-  onFinalize,
   onDownload,
   onCompare,
   onAssign,
@@ -78,9 +75,6 @@ export function LibrarySelectionActionBar({
 }: {
   selectedCount: number;
   selectedGenerations: Generation[];
-  tab: string;
-  onPublish: () => void;
-  onFinalize: () => void;
   onDownload: (selected: Generation[]) => void;
   onCompare: (selected: Generation[]) => void;
   onDelete: () => void;
@@ -99,12 +93,6 @@ export function LibrarySelectionActionBar({
         {selectedCount}
         {t("개 선택")}
       </span>
-      {tab === "my" && <button onClick={onPublish}>{t("↗ 팀에 공유")}</button>}
-      {hasActive && (
-        <button onClick={onFinalize} title="선택한 결과물을 최종(골드) 확정 — 팀 공유 겸함">
-          ★ {t("최종 확정")}
-        </button>
-      )}
       <button
         onClick={() => onDownload(selectedGenerations)}
         title="선택한 결과물 일괄 다운로드(레퍼런스 이름으로 저장)"
