@@ -87,8 +87,9 @@ export function SettingsPanel({
     setHfMsg("힉스필드 점검 중…");
     try {
       const r = await api.trashHfMissing();
-      setHfMsg(r.trashed > 0 ? `✓ ${r.trashed}건 휴지통으로` : `삭제물 없음 (${r.checked}건 점검)`);
-      if (r.trashed > 0) onImported?.(`힉스필드 삭제물 ${r.trashed}건을 휴지통으로 보냈습니다.`);
+      const total = r.trashed + (r.server_trashed || 0); // 로컬 + 서버 공유본 삭제물 합
+      setHfMsg(total > 0 ? `✓ ${total}건 휴지통으로` : `삭제물 없음 (${r.checked}건 점검)`);
+      if (total > 0) onImported?.(`힉스필드 삭제물 ${total}건을 휴지통으로 보냈습니다.`);
     } catch {
       setHfMsg("실패");
     }

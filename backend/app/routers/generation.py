@@ -352,7 +352,43 @@ async def trash_hf_missing(request: Request):
         else:
             repo.delete_generation(gen_id)  # 힉스에서 삭제됨 → 휴지통행(soft delete)
             trashed += 1
-    return {"checked": len(gens), "trashed": trashed}
+
+    # ★서버 공유본까지 검토(로컬 우선 확장): 공유했다가 원 작성자 HF 에서 삭제된 건 서버에만 남아
+    # 로컬 검토망에 안 걸린다. 프록시(서버 연결) 있으면 서버 후보를 받아 '내 것'만 CLI 로 검증하고,
+    # 삭제 확정만 서버가 휴지통으로 보내게 결과를 올린다(서버엔 CLI 없음 → 로컬이 검증 주체).
+    server_checked = 0
+    server_trashed = 0
+    if _proxy.proxying():
+        try:
+            cands = (_proxy.proxy_json("GET", "/api/manage/hf-missing-candidates") or {}).get(
+                "candidates", []
+            )
+            server_checked = len(cands)
+
+            async def scheck(c):
+                async with sem:
+                    return {
+                        "gen_id": c["gen_id"],
+                        "job_id": c["job_id"],
+                        "exists": await cli_bridge.job_exists(c["job_id"]),
+                    }
+
+            sres = await asyncio.gather(*(scheck(c) for c in cands if c.get("job_id")))
+            payload = [r for r in sres if r["exists"] is not None]  # 확인불가(None)는 안 보냄
+            if payload:
+                resp = _proxy.proxy_json(
+                    "POST", "/api/manage/hf-missing-apply", body={"results": payload}
+                )
+                server_trashed = (resp or {}).get("trashed", 0)
+        except Exception:  # noqa: BLE001 — 서버 검토 실패는 로컬 검토 결과를 막지 않음
+            pass
+
+    return {
+        "checked": len(gens),
+        "trashed": trashed,
+        "server_checked": server_checked,
+        "server_trashed": server_trashed,
+    }
 
 
 @router.delete("/generations/{gen_id}")

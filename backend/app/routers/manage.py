@@ -168,6 +168,55 @@ def team_timeseries(
     return {"buckets": _ts(date_from, date_to, project_id, creator_uid, bucket)}
 
 
+# ── 서버 공유본 HF 삭제 검토(서버가 CLI 없이, 로컬이 검증 결과를 올린다) ──────────────
+class HfCheckResult(BaseModel):
+    gen_id: str
+    job_id: str
+    exists: bool  # 로컬 CLI 판정(True=존재, False=HF 삭제됨). None(확인불가)은 로컬이 안 보냄.
+
+
+class HfMissingApplyIn(BaseModel):
+    results: list[HfCheckResult] = Field(default_factory=list)
+
+
+@router.get("/hf-missing-candidates")
+def hf_missing_candidates(request: Request):
+    """내 서버 공유본 중 job_id 있는 것(HF 삭제 검증 후보). 서버는 CLI 가 없으므로 목록만 주고,
+    로컬 허브(원 작성자 CLI 보유)가 각 job_id 를 검증한다. 내 creator_uid 것만 반환(남의 잡 오판 방지).
+    /api/manage/* 는 미들웨어가 로컬→서버로 프록시하므로, 이 핸들러는 서버에서 실행된다."""
+    acc = _push_acc(request)
+    uid = acc.get("creator_uid")
+    if not uid:
+        return {"candidates": []}
+    return {
+        "candidates": [
+            {"gen_id": gid, "job_id": jid} for gid, jid in repo.gens_with_job_id(account_uid=uid)
+        ]
+    }
+
+
+@router.post("/hf-missing-apply")
+def hf_missing_apply(body: HfMissingApplyIn, request: Request):
+    """로컬 CLI 검증 결과 반영 — exists=False(HF 삭제 확정)만 서버 휴지통으로. 작성자·job_id 를 서버가
+    재검증해 남의 것/불일치는 건드리지 않는다. exists=True 면 흐림(hf_missing) 해제. 반환 {trashed}."""
+    acc = _push_acc(request)
+    my_uid = acc.get("creator_uid")
+    if not my_uid:
+        return {"trashed": 0}
+    trashed = 0
+    for r in body.results:
+        g = repo.get_generation(r.gen_id)
+        # ★재검증: 내 것이고 job_id 가 일치할 때만(로컬이 보낸 값을 그대로 믿지 않음)
+        if not g or g.get("creator_uid") != my_uid or (g.get("job_id") or "") != r.job_id:
+            continue
+        if r.exists:
+            repo.set_hf_missing(r.gen_id, False)  # 재등장 → 흐림 해제
+        else:
+            repo.delete_generation(r.gen_id)  # HF 삭제 확정 → 서버 휴지통(soft delete)
+            trashed += 1
+    return {"trashed": trashed}
+
+
 @router.get("/summary")
 async def summary(request: Request):
     """프로젝트별·작업자별 생성수·크레딧·시간 + 출력타입·영상길이·환불·워크스페이스 요약.
