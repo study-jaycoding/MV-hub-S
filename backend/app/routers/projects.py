@@ -207,7 +207,26 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, "updated": n}
+    # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
+    # 반영해 팀 공유 뷰가 안 어긋나게 한다. best-effort — 실패해도 로컬 이동은 유효(team_synced=False).
+    team_synced: Optional[bool] = None
+    if tab != "team" and _proxy.proxying():
+        anchors = repo.shared_generation_anchors(body.generation_ids)
+        if anchors:
+            try:
+                resp = _proxy.proxy_json(
+                    "POST", "/api/projects/assign", params={"tab": "team"},
+                    body={
+                        "generation_ids": anchors,  # 서버 앵커(job_id) — 로컬 uuid 아님
+                        "project_id": body.project_id,
+                        "folder_path": body.folder_path,
+                    },
+                )
+                # 서버가 실제로 매칭·반영했는지(updated>0)까지 확인해야 진짜 동기 성공.
+                team_synced = ((resp or {}).get("updated") or 0) > 0
+            except Exception:  # noqa: BLE001 — 서버 미연결·오프라인 시 로컬만 반영(추후 재동기 필요)
+                team_synced = False
+    return {"ok": True, "updated": n, "team_synced": team_synced}
 
 
 # ── 프로젝트 멤버·역할 (v02 RBAC PART 1) ───────────────────────────────────

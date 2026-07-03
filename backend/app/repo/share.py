@@ -380,17 +380,28 @@ def import_bundle_item(
                         "UPDATE generation SET display_prompt=COALESCE(display_prompt, ?) WHERE id=?",
                         (dp, gid),
                     )
-                pid = g.get("project_id")
-                if pid:  # 프로젝트 귀속 보존 — 기존 배정은 침범 않게 COALESCE(서버 finalize 게이트용)
+                # 위치(project_id·folder_path) 권위 = 작성자의 로컬. 소유자(=발행자)가 올린 것이면
+                # 로컬 값으로 덮어쓴다(미분류=NULL 반영 포함) → 한쪽에서 옮기면 발행 때 팀에도 반영.
+                # 남의 것을 재공유(creator≠shared_by)면 기존 서버값 보존(COALESCE, 침범 금지).
+                creator = g.get("creator_uid")
+                is_owner = (not creator) or (creator == shared_by)
+                if is_owner:
                     conn.execute(
-                        "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
-                        (pid, gid),
+                        "UPDATE generation SET project_id=?, folder_path=? WHERE id=?",
+                        (g.get("project_id"), folder_path, gid),
                     )
-                if folder_path:  # 폴더 경로 보존 — 관리탭 자동 파생·완료본 저장 경로(기존값 침범 않게 COALESCE)
-                    conn.execute(
-                        "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
-                        (folder_path, gid),
-                    )
+                else:
+                    pid = g.get("project_id")
+                    if pid:
+                        conn.execute(
+                            "UPDATE generation SET project_id=COALESCE(project_id, ?) WHERE id=?",
+                            (pid, gid),
+                        )
+                    if folder_path:
+                        conn.execute(
+                            "UPDATE generation SET folder_path=COALESCE(folder_path, ?) WHERE id=?",
+                            (folder_path, gid),
+                        )
                 tags._add_tags(conn, gid, item.get("tags") or [])
                 tags._set_auto_tags(conn, gid, item.get("auto_tags") or [])
                 _merge_comments(conn, gid, item.get("comments") or [])

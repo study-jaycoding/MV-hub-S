@@ -40,7 +40,11 @@ export function useGenerationProjectActions({
           ? `폴더(${folderPath})에 담음`
           : "프로젝트에 담음"
         : "미분류로 뺌";
-      flash(`${r.updated}개를 ${where}`);
+      // 공유물 이동이 서버(팀 공유)에 반영 실패하면 경고 — 로컬만 바뀌고 팀 뷰는 stale.
+      flash(
+        `${r.updated}개를 ${where}` +
+          (r.team_synced === false ? " · ⚠ 팀 공유 반영 실패(서버 미연결) — 재동기 필요" : ""),
+      );
     } catch (e) {
       flash("귀속 실패: " + String(e));
     }

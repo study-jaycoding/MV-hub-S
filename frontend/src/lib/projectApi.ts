@@ -58,7 +58,7 @@ export const projectApi = {
     tab: "my" | "team" = "my",
     folderPath?: string | null, // 담을 때 함께 지정하는 폴더(렌더 루트 상대 경로)
   ) =>
-    jsonFetch<{ ok: boolean; updated: number }>(`/api/projects/assign?tab=${tab}`, {
+    jsonFetch<{ ok: boolean; updated: number; team_synced?: boolean | null }>(`/api/projects/assign?tab=${tab}`, {
       method: "POST",
       body: jsonBody({
         generation_ids: generationIds,

@@ -232,6 +232,23 @@ def delete_project(pid: str) -> bool:
         return cur.rowcount > 0
 
 
+def shared_generation_anchors(generation_ids: list[str]) -> list[str]:
+    """주어진 로컬 생성물 중 '공유된'(share 행 존재) 것의 **서버 앵커**(job_id or id)를 반환.
+    서버는 발행 때 앵커를 job_id 로 저장하고 id 는 새 uuid 를 부여하므로, 서버 /assign 매칭엔
+    로컬 id 가 아니라 이 앵커를 보내야 한다(안 그러면 서버에서 0건 매칭)."""
+    if not generation_ids:
+        return []
+    with get_connection() as conn:
+        ph = ",".join("?" for _ in generation_ids)
+        rows = conn.execute(
+            f"SELECT DISTINCT COALESCE(g.job_id, g.id) AS anchor FROM generation g "
+            f"JOIN share s ON s.generation_id = g.id "
+            f"WHERE g.id IN ({ph}) OR g.job_id IN ({ph})",
+            [*generation_ids, *generation_ids],
+        ).fetchall()
+        return [r["anchor"] for r in rows]
+
+
 def assign_to_project(
     generation_ids: list[str],
     project_id: Optional[str],
