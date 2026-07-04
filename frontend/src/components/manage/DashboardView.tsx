@@ -2,7 +2,7 @@
 // (2단계에서 우측 참여자 3축 패널 + 하단 추이 + 경고 추가 예정)
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
-import { manageApi } from "../../lib/manageApi";
+import { manageApi, type TeamBucket, type TeamOverview } from "../../lib/manageApi";
 import {
   buildHierarchy,
   findNode,
@@ -11,7 +11,9 @@ import {
   type Participant,
   type StatusDist,
 } from "./dashboardModel";
-import type { TimePoint, Task } from "./types";
+import type { ManageSummary, Task } from "./types";
+
+const TODAY = new Date().toISOString().slice(0, 10);
 
 function fmtDur(sec: number): string {
   if (!sec || sec <= 0) return "—";
@@ -125,7 +127,9 @@ export function DashboardView() {
   const [err, setErr] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [trend, setTrend] = useState<TimePoint[]>([]);
+  const [trend, setTrend] = useState<TeamBucket[]>([]);
+  const [summary, setSummary] = useState<ManageSummary | null>(null);
+  const [team, setTeam] = useState<TeamOverview | null>(null);
 
   useEffect(() => {
     api
@@ -151,10 +155,13 @@ export function DashboardView() {
         setErr(String(e?.message || e));
         setLoading(false);
       });
-    // 팀 크레딧 추이(서버 집계·프록시) — 실패/미연결이면 빈 값(하단 추이 숨김)
+    // 예산·마감·프로젝트 크레딧(로컬 summary) — 예산 대비·마감 경고용
+    manageApi.summary().then(setSummary).catch(() => setSummary(null));
+    // 팀 전체 집계·추이(서버·프록시) — 미연결이면 숨김
+    manageApi.teamOverview().then(setTeam).catch(() => setTeam(null));
     manageApi
       .teamTimeseries("week")
-      .then((t) => setTrend(Array.isArray(t) ? t : []))
+      .then((r) => setTrend(r.buckets || [])) // ★{buckets} 구조(배열 아님)
       .catch(() => setTrend([]));
   }, []);
 
@@ -170,9 +177,33 @@ export function DashboardView() {
     ? `${selNode.kind === "project" ? "프로젝트" : selNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${selNode.label}`
     : "전체";
 
-  // 경고 — 담당·예정 없는 작업, 시간 미측정 커버리지
+  // 예산 대비(로컬 summary 기준 — 프로젝트 전체 생성물 크레딧 vs planning.budget)
+  const budget = useMemo(() => {
+    let total = 0, actual = 0, over = 0;
+    for (const p of summary?.projects || []) {
+      const b = p.planning?.budget_credits;
+      if (b) {
+        total += b;
+        actual += p.credits;
+        if (p.credits > b) over += 1;
+      }
+    }
+    return { total, actual, over, pct: total ? actual / total : 0 };
+  }, [summary]);
+
+  // 경고 — 예산초과·마감지남(로컬 summary) + 담당없음·미측정·예정≠생성(작업 롤업)
   const alerts = useMemo(() => {
     const a: { sev: "crit" | "warn"; msg: string }[] = [];
+    for (const p of summary?.projects || []) {
+      const b = p.planning?.budget_credits;
+      if (b && p.credits > b) a.push({ sev: "crit", msg: `예산 초과 — ${p.name} (${Math.round(p.credits).toLocaleString()}/${b.toLocaleString()})` });
+      if (p.planning?.due_date && p.planning.due_date < TODAY && p.planning.status !== "done")
+        a.push({ sev: "crit", msg: `프로젝트 마감 지남 — ${p.name} (${p.planning.due_date})` });
+    }
+    const overdue = tasks.filter(
+      (t) => t.due_date && t.due_date < TODAY && t.status !== "done" && t.status !== "omit",
+    ).length;
+    if (overdue) a.push({ sev: "crit", msg: `작업 마감 지남 ${overdue}건` });
     const noOwner = tasks.filter(
       (t) => !t.assignee_uid && !(t.planned_creators?.length) && (t.status || "not_started") !== "done",
     ).length;
@@ -186,7 +217,7 @@ export function DashboardView() {
     }).length;
     if (mismatch) a.push({ sev: "warn", msg: `예정≠생성 불일치 ${mismatch}건(다른 사람이 만듦)` });
     return a;
-  }, [tasks, totals]);
+  }, [tasks, totals, summary]);
 
   const trendMax = useMemo(() => Math.max(1, ...trend.map((p) => p.credits)), [trend]);
 
@@ -203,27 +234,51 @@ export function DashboardView() {
 
   return (
     <div className="dash-view">
-      {/* 상단 KPI */}
+      {/* 상단 KPI — 관리(작업 롤업) 기준 + 예산 */}
       <div className="dash-kpis">
-        <div className="dash-kpi">
-          <div className="lab">총 크레딧</div>
-          <div className="big tnum">{fmtCr(totals.credits)}</div>
-        </div>
-        <div className="dash-kpi">
-          <div className="lab">총 제작 시간</div>
-          <div className="big tnum">{fmtDur(totals.elapsed)}</div>
-          <div className="sub">측정 {totals.elapsedKnown}/{totals.taskCount} 작업</div>
-        </div>
         <div className="dash-kpi">
           <div className="lab">진척률 (작업상태)</div>
           <div className="big tnum">{Math.round(totals.progress * 100)}%</div>
           <StackBar dist={totals.dist} />
         </div>
         <div className="dash-kpi">
-          <div className="lab">작업 수</div>
-          <div className="big tnum">{totals.taskCount}</div>
+          <div className="lab">작업 크레딧</div>
+          <div className="big tnum">{fmtCr(totals.credits)}</div>
+          <div className="sub">작업 롤업 기준</div>
         </div>
+        <div className="dash-kpi">
+          <div className="lab">작업 제작 시간</div>
+          <div className="big tnum">{fmtDur(totals.elapsed)}</div>
+          <div className="sub">측정 {totals.elapsedKnown}/{totals.taskCount} 작업</div>
+        </div>
+        {budget.total ? (
+          <div className="dash-kpi">
+            <div className="lab">예산 대비</div>
+            <div className="big tnum">{Math.round(budget.pct * 100)}%</div>
+            <div className="sub">
+              {fmtCr(budget.actual)} / {fmtCr(budget.total)}
+              {budget.over ? <span className="over"> · 초과 {budget.over}건</span> : null}
+            </div>
+          </div>
+        ) : (
+          <div className="dash-kpi">
+            <div className="lab">작업 수</div>
+            <div className="big tnum">{totals.taskCount}</div>
+          </div>
+        )}
       </div>
+
+      {/* 팀 전체(서버 집계) — 로컬 관리 기준과 분리 표시. 미연결이면 숨김 */}
+      {team && team.totals.count > 0 ? (
+        <div className="dash-team-line">
+          <span className="tl-lab">팀 전체(서버)</span>
+          <span>생성물 <b className="tnum">{team.totals.count}</b></span>
+          <span>크레딧 <b className="tnum">{fmtCr(team.totals.credits)}</b></span>
+          <span>제작시간 <b className="tnum">{fmtDur(team.totals.elapsed_seconds)}</b></span>
+          <span>작업자 <b className="tnum">{team.totals.workers}</b></span>
+          <span>프로젝트 <b className="tnum">{team.totals.projects}</b></span>
+        </div>
+      ) : null}
 
       {/* 중앙 계층 트리 + 우측 참여자 */}
       <div className="dash-cols">

@@ -783,3 +783,9 @@ table.dash-tree td.l { text-align: left; }
 .dash-bar-l { font-size: 9px; color: var(--text-faint, #6b6b6b); }
 .dash-bar-v { font-size: 9px; color: var(--text-dim, #9a9a9a); }
 @media (max-width: 820px) { .dash-cols { grid-template-columns: 1fr; } .dash-kpis { grid-template-columns: repeat(2,1fr); } }
+
+/* 팀 전체 요약 줄(로컬 관리와 분리) */
+.dash-team-line { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 8px 14px; background: rgba(127,209,255,0.06); border: 1px solid rgba(127,209,255,0.2); border-radius: 8px; font-size: 12px; color: var(--text-dim, #9a9a9a); }
+.dash-team-line .tl-lab { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #7fd1ff; font-weight: 700; }
+.dash-team-line b { color: var(--text, #e8e8e8); font-weight: 600; }
+.dash-kpi .sub .over { color: #ff6b5e; }
