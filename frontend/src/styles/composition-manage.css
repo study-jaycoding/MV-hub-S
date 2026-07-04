@@ -789,3 +789,8 @@ table.dash-tree td.l { text-align: left; }
 .dash-team-line .tl-lab { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #7fd1ff; font-weight: 700; }
 .dash-team-line b { color: var(--text, #e8e8e8); font-weight: 600; }
 .dash-kpi .sub .over { color: #ff6b5e; }
+
+/* 트리 담당·마감 컬럼 */
+.dash-asgn { font-size: 12px; color: var(--text-dim, #9a9a9a); }
+.dash-due { font-size: 12px; color: var(--text-dim, #9a9a9a); font-variant-numeric: tabular-nums; }
+.dash-due.overdue { color: #ff6b5e; font-weight: 600; }

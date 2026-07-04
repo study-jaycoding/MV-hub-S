@@ -85,6 +85,10 @@ function TreeRow({
             <span className="dash-pct tnum">{Math.round(node.progress * 100)}%</span>
           </span>
         </td>
+        <td className="l dash-asgn">{node.assigneeLabel}</td>
+        <td className={node.dueDate && node.dueDate < TODAY ? "dash-due overdue" : "dash-due"}>
+          {node.dueDate ? node.dueDate.slice(5) : "—"}
+        </td>
         <td className="tnum">{node.taskCount}</td>
         <td className="tnum">{fmtCr(node.credits)}</td>
         <td className="tnum">
@@ -293,6 +297,8 @@ export function DashboardView() {
                 <tr>
                   <th className="l">이름</th>
                   <th className="l">상태·진척</th>
+                  <th className="l">담당</th>
+                  <th>마감</th>
                   <th>작업</th>
                   <th>크레딧</th>
                   <th>제작시간</th>

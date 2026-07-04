@@ -27,6 +27,8 @@ export interface DashNode {
   elapsedKnown: number; // elapsed>0 인 작업 수(커버리지)
   progress: number; // 0~1 가중 진척
   dist: StatusDist; // 상태 분포(스택바)
+  assigneeLabel: string; // 담당(대표 외 N)
+  dueDate: string | null; // 임박 마감(미완료 중 min)
   children?: DashNode[];
   tasks: Task[]; // 이 노드에 속한 원본 작업(참여자·상세용)
 }
@@ -52,17 +54,21 @@ function addToDist(d: StatusDist, status?: string | null): void {
   // omit 은 어디에도 안 셈(분모 제외)
 }
 
-// 작업들의 롤업 지표 계산(진척·크레딧·시간·상태분포).
+// 작업들의 롤업 지표 계산(진척·크레딧·시간·상태분포 + 담당·임박 마감).
 function rollup(tasks: Task[]): {
   credits: number;
   elapsed: number;
   elapsedKnown: number;
   progress: number;
   dist: StatusDist;
+  assigneeLabel: string;
+  dueDate: string | null;
 } {
   let credits = 0, elapsed = 0, elapsedKnown = 0;
   let wSum = 0, wCount = 0;
   const dist = emptyDist();
+  const asgn = new Map<string, string>(); // 담당 uid→name(중복 제거)
+  let dueDate: string | null = null; // 미완료 작업 중 가장 임박한 마감(min)
   for (const t of tasks) {
     credits += t.credits || 0;
     if (t.elapsed && t.elapsed > 0) {
@@ -75,8 +81,15 @@ function rollup(tasks: Task[]): {
       wCount += 1;
     }
     addToDist(dist, st);
+    if (t.assignee_uid) asgn.set(t.assignee_uid, t.assignee_name || t.assignee_uid);
+    if (st !== "done" && st !== "omit") {
+      const d = t.due_date || t.derived_due;
+      if (d && (!dueDate || d < dueDate)) dueDate = d;
+    }
   }
-  return { credits, elapsed, elapsedKnown, progress: wCount ? wSum / wCount : 0, dist };
+  const names = [...asgn.values()];
+  const assigneeLabel = names.length === 0 ? "—" : names.length === 1 ? names[0] : `${names[0]} 외 ${names.length - 1}`;
+  return { credits, elapsed, elapsedKnown, progress: wCount ? wSum / wCount : 0, dist, assigneeLabel, dueDate };
 }
 
 // list_tasks 결과(전 프로젝트 병합)를 프로젝트▸에피소드▸시퀀스 트리로.
