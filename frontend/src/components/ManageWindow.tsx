@@ -1,28 +1,27 @@
 // PM 대시보드 독립 창 (embed 모드) — `/?embed=manage` 분리 브라우저 창.
-// 요약 / 작업(칸반) / 분석 탭으로 구성. AssetsWindow 와 동일한 분리형 모듈 패턴.
+// 대시보드(요약+팀전체 통합) / 작업(칸반) / 완료 탭. AssetsWindow 와 동일한 분리형 모듈 패턴.
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
+import { DashboardView } from "./manage/DashboardView";
 import { ExportView } from "./manage/ExportView";
-import { ProjectDashboard } from "./manage/ProjectDashboard";
-import { TeamOverview } from "./manage/TeamOverview";
 import { WorkBoard } from "./manage/WorkBoard";
 
-type Tab = "summary" | "tasks" | "export" | "team";
+type Tab = "dashboard" | "tasks" | "export";
 
 const TABS: { v: Tab; label: string }[] = [
-  { v: "summary", label: "요약" },
+  { v: "dashboard", label: "대시보드" },
   { v: "tasks", label: "작업" },
   { v: "export", label: "완료" },
-  { v: "team", label: "팀 전체" },
 ];
 
 export function ManageWindow() {
-  // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업(없어진 탭이면 요약으로).
+  // 마지막 본 탭 기억 — 창을 껐다 켜도 그 화면으로 이어서 작업(없어진 탭이면 대시보드로).
   const [tab, setTab] = useState<Tab>(() => {
-    const saved = loadString(STORAGE_KEYS.manageTab, "summary") as Tab;
-    return TABS.some((t) => t.v === saved) ? saved : "summary";
+    let saved = loadString(STORAGE_KEYS.manageTab, "dashboard");
+    if (saved === "summary" || saved === "team") saved = "dashboard"; // 구 탭(요약·팀전체) → 통합
+    return TABS.some((t) => t.v === saved) ? (saved as Tab) : "dashboard";
   });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
@@ -75,10 +74,9 @@ export function ManageWindow() {
           </button>
         ))}
       </nav>
-      {tab === "summary" && <ProjectDashboard />}
+      {tab === "dashboard" && <DashboardView />}
       {tab === "tasks" && <WorkBoard />}
       {tab === "export" && <ExportView />}
-      {tab === "team" && <TeamOverview />}
     </div>
   );
 }
