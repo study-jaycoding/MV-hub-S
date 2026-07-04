@@ -80,6 +80,11 @@ export const projectApi = {
     jsonFetch<import("../types").ProjectMember[]>(
       `/api/projects/${pathPart(pid)}/members`,
     ),
+  // 전 프로젝트 멤버를 {pid: [...]} 한 번에 — 관리 창 prefetch(요청 N→1)
+  allProjectMembers: () =>
+    jsonFetch<Record<string, import("../types").ProjectMember[]>>(
+      "/api/projects/members-all",
+    ),
   setProjectRoles: (pid: string, creator_uid: string, project_roles: string[]) =>
     jsonFetch<import("../types").ProjectMember[]>(
       `/api/projects/${pathPart(pid)}/members`,

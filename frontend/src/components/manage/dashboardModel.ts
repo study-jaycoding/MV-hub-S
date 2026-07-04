@@ -187,6 +187,7 @@ export interface Participant {
   assign: boolean; // PM 배정 리드
   planned: boolean; // self-assign 예정
   create: boolean; // 실제 생성
+  roles?: string[]; // 프로젝트 역할(PM/감독/제작) — 프로젝트 노드에서만 채움
 }
 export function participantsOf(node: DashNode): Participant[] {
   const map = new Map<string, Participant>();
@@ -206,5 +207,45 @@ export function participantsOf(node: DashNode): Participant[] {
   // 배정·예정·생성 순으로 정렬
   return [...map.values()].sort(
     (a, b) => Number(b.assign) - Number(a.assign) || Number(b.planned) - Number(a.planned),
+  );
+}
+
+// 역할 우선순위(PM>감독>제작>없음) — 프로젝트 노드 참여자 정렬용.
+function roleRank(roles?: string[]): number {
+  if (!roles?.length) return 0;
+  if (roles.includes("project_manager")) return 3;
+  if (roles.includes("supervisor")) return 2;
+  return 1;
+}
+
+// 프로젝트 노드에서만: 3축 참여자에 프로젝트 멤버(역할)를 합침.
+// 배정·예정·생성이 아직 없어도 소속 멤버는 명단에 노출(역할 배지 부여).
+export function mergeProjectMembers(
+  participants: Participant[],
+  members: { uid: string; name: string | null; roles: string[] }[],
+): Participant[] {
+  const map = new Map<string, Participant>(participants.map((p) => [p.uid, { ...p }]));
+  for (const m of members) {
+    const ex = map.get(m.uid);
+    if (ex) {
+      ex.roles = m.roles;
+      if ((!ex.name || ex.name === ex.uid) && m.name) ex.name = m.name;
+    } else {
+      map.set(m.uid, {
+        uid: m.uid,
+        name: m.name || m.uid,
+        assign: false,
+        planned: false,
+        create: false,
+        roles: m.roles,
+      });
+    }
+  }
+  // 역할 → 배정 → 예정 순으로 정렬
+  return [...map.values()].sort(
+    (a, b) =>
+      roleRank(b.roles) - roleRank(a.roles) ||
+      Number(b.assign) - Number(a.assign) ||
+      Number(b.planned) - Number(a.planned),
   );
 }

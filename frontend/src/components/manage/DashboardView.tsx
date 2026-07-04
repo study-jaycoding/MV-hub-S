@@ -3,15 +3,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import { manageApi, type TeamBucket, type TeamOverview } from "../../lib/manageApi";
+import { projectApi } from "../../lib/projectApi";
+import { PROJECT_ROLE_LABEL, type ProjectMember } from "../../types";
 import {
   buildHierarchy,
   findNode,
+  mergeProjectMembers,
   participantsOf,
   type DashNode,
   type Participant,
   type StatusDist,
 } from "./dashboardModel";
 import type { ManageSummary, Task } from "./types";
+
+// 역할 배지 짧은 라벨(PROJECT_ROLE_LABEL 앞부분만)
+function roleShort(role: string): string {
+  return (PROJECT_ROLE_LABEL[role] || role).split(" · ")[0];
+}
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -114,10 +122,13 @@ function TreeRow({
   );
 }
 
-// 참여자 배지(배정/예정/생성)
+// 참여자 배지(역할 + 배정/예정/생성)
 function Badges({ p }: { p: Participant }) {
   return (
     <span className="dash-badges">
+      {(p.roles || []).map((r) => (
+        <span key={r} className={`dash-bdg role ${r}`}>{roleShort(r)}</span>
+      ))}
       {p.assign ? <span className="dash-bdg assign">배정</span> : null}
       {p.planned ? <span className="dash-bdg planned">예정</span> : null}
       {p.create ? <span className="dash-bdg create">생성</span> : null}
@@ -134,20 +145,26 @@ export function DashboardView() {
   const [trend, setTrend] = useState<TeamBucket[]>([]);
   const [summary, setSummary] = useState<ManageSummary | null>(null);
   const [team, setTeam] = useState<TeamOverview | null>(null);
+  const [members, setMembers] = useState<Map<string, ProjectMember[]>>(new Map());
 
   useEffect(() => {
     api
       .projects("team")
-      .then((r) =>
-        Promise.all(
+      .then((r) => {
+        // 전 프로젝트 멤버(역할)를 한 번에 prefetch — 참여자 패널의 소속 멤버·역할 노출용
+        projectApi
+          .allProjectMembers()
+          .then((byPid) => setMembers(new Map(Object.entries(byPid))))
+          .catch(() => setMembers(new Map()));
+        return Promise.all(
           r.projects.map((p) =>
             manageApi
               .listTasks(p.id)
               .then((ts) => ts.map((t) => ({ ...t, project_name: p.name })))
               .catch(() => [] as Task[]),
           ),
-        ),
-      )
+        );
+      })
       .then((all) => {
         const flat = all.flat();
         setTasks(flat);
@@ -173,10 +190,14 @@ export function DashboardView() {
 
   // 우측 참여자 — 선택 노드(없으면 전체) 기준 3축 집계
   const selNode = useMemo(() => findNode(tree, selectedKey), [tree, selectedKey]);
-  const participants = useMemo(
-    () => participantsOf(selNode || { tasks } as DashNode),
-    [selNode, tasks],
-  );
+  const participants = useMemo(() => {
+    const base = participantsOf(selNode || ({ tasks } as DashNode));
+    // 프로젝트 노드에서만 소속 멤버·역할 병합(에피소드·시퀀스는 3축만)
+    if (selNode?.kind === "project") {
+      return mergeProjectMembers(base, members.get(selNode.projectId) || []);
+    }
+    return base;
+  }, [selNode, tasks, members]);
   const scopeLabel = selNode
     ? `${selNode.kind === "project" ? "프로젝트" : selNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${selNode.label}`
     : "전체";
@@ -345,7 +366,9 @@ export function DashboardView() {
             <div className="dash-part-empty">참여자 없음 — 담당 배정·예정 생성자 지정 필요</div>
           )}
           <div className="dash-part-note">
-            배정(PM 지정) · 예정(내가 할 작업) · 생성(실제 만듦). 행을 선택하면 그 범위로 좁혀집니다.
+            {selNode?.kind === "project"
+              ? "PM·감독·제작(역할) + 배정(PM 지정)·예정(내가 할 작업)·생성(실제 만듦). 프로젝트 소속 멤버는 작업이 없어도 표시됩니다."
+              : "배정(PM 지정) · 예정(내가 할 작업) · 생성(실제 만듦). 프로젝트 행을 선택하면 소속 멤버·역할까지 보입니다."}
           </div>
         </div>
       </div>
