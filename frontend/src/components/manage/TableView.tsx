@@ -133,7 +133,14 @@ export function TableView(props: WorkViewProps) {
         // N셀 복사 → N셀에 순서대로
         items = targets.map((t, i) => ({ task_id: t.id, creator_uids: clip[i] }));
       }
-      if (items) props.onBulkSetPlanned(items, "replace");
+      if (items) {
+        // 복사 내용이 '나'뿐이면 add(일반 멤버도 여러 작업에 자기 지정 가능 — 서버 권한 read).
+        // 남이 섞였거나 빈 목록(비우기)이면 replace(PM 권한 필요).
+        const onlyMe =
+          !!props.myUid &&
+          items.every((it) => it.creator_uids.length && it.creator_uids.every((u) => u === props.myUid));
+        props.onBulkSetPlanned(items, onlyMe ? "add" : "replace");
+      }
       e.preventDefault();
     } else if (e.key === "Escape") {
       setCellSel({ anchor: null, ids: new Set() });

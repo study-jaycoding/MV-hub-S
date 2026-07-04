@@ -412,6 +412,8 @@ def bulk_set_planned_creators(body: BulkPlannedIn, request: Request):
     """엑셀식 셀 붙여넣기 — 여러 작업의 예정 생성자를 한 번에 설정.
     권한: 'add' 이면서 모든 대상이 '나(actor)'뿐이면 프로젝트 read(일반 작업자가 여러 작업에 자기 지정).
     그 외(replace, 또는 남 포함)는 프로젝트 manage(PM)."""
+    if body.mode not in ("replace", "add"):
+        raise HTTPException(status_code=400, detail="mode 는 replace 또는 add")
     items = (body.items or [])[:500]
     if not items:
         return {"ok": True, "count": 0}
