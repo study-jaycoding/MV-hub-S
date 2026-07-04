@@ -1,5 +1,6 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
+import { useEffect, useRef, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -62,8 +63,85 @@ export function TableView(props: WorkViewProps) {
   const allIds = tasks.map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
 
+  // ── 엑셀식 생성자 셀 선택/복사/붙여넣기 (생성자 컬럼 전용) ──────────────────
+  const [cellSel, setCellSel] = useState<{ anchor: string | null; ids: Set<string> }>({
+    anchor: null,
+    ids: new Set(),
+  });
+  const clipRef = useRef<string[][] | null>(null); // 복사한 예정 생성자 uid(셀별, 화면 순서)
+  const draggingRef = useRef(false);
+  const idxOf = (id: string) => tasks.findIndex((t) => t.id === id);
+  const rangeIds = (aId: string, bId: string): Set<string> => {
+    const a = idxOf(aId), b = idxOf(bId);
+    if (a < 0 || b < 0) return new Set([bId]);
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    return new Set(tasks.slice(lo, hi + 1).map((t) => t.id));
+  };
+  const selectCell = (id: string, e: React.MouseEvent) => {
+    if (e.shiftKey && cellSel.anchor) {
+      setCellSel({ anchor: cellSel.anchor, ids: rangeIds(cellSel.anchor, id) });
+    } else if (e.ctrlKey || e.metaKey) {
+      const s = new Set(cellSel.ids);
+      s.has(id) ? s.delete(id) : s.add(id);
+      setCellSel({ anchor: id, ids: s });
+    } else {
+      setCellSel({ anchor: id, ids: new Set([id]) });
+    }
+  };
+  const onCellMouseDown = (id: string, e: React.MouseEvent) => {
+    if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return; // 키조합은 onClick 처리
+    // 셀 안 버튼(+나·×)·태그 클릭은 선택/드래그 시작 안 함
+    if ((e.target as HTMLElement).closest("button, a, .work-creators .tag")) return;
+    draggingRef.current = true;
+    setCellSel({ anchor: id, ids: new Set([id]) });
+    e.preventDefault(); // 드래그 중 텍스트 선택 방지
+  };
+  const onCellMouseEnter = (id: string) => {
+    if (!draggingRef.current || !cellSel.anchor) return;
+    setCellSel((prev) => ({ anchor: prev.anchor, ids: rangeIds(prev.anchor!, id) }));
+  };
+  useEffect(() => {
+    const up = () => {
+      draggingRef.current = false;
+    };
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  }, []);
+  const onTableKeyDown = (e: React.KeyboardEvent) => {
+    const tag = (e.target as HTMLElement).tagName;
+    if (["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(tag)) return; // 편집 중엔 기본 동작
+    if (!cellSel.ids.size) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "c" || e.key === "C")) {
+      // 복사 — 선택 셀들의 예정 생성자 uid(화면 순서). 클립보드엔 사람 읽기용 이름.
+      const sel = tasks.filter((t) => cellSel.ids.has(t.id));
+      clipRef.current = sel.map((t) => (t.planned_creators || []).map((p) => p.uid));
+      const text = sel
+        .map((t) => (t.planned_creators || []).map((p) => p.name || p.uid).join(", "))
+        .join("\n");
+      navigator.clipboard?.writeText(text).catch(() => {});
+      e.preventDefault();
+    } else if (mod && (e.key === "v" || e.key === "V")) {
+      if (!clipRef.current || !props.onBulkSetPlanned) return;
+      const targets = tasks.filter((t) => cellSel.ids.has(t.id));
+      const clip = clipRef.current;
+      let items: { task_id: string; creator_uids: string[] }[] | null = null;
+      if (clip.length === 1) {
+        // 1셀 복사 → 선택 전체에 같은 값
+        items = targets.map((t) => ({ task_id: t.id, creator_uids: clip[0] }));
+      } else if (clip.length === targets.length) {
+        // N셀 복사 → N셀에 순서대로
+        items = targets.map((t, i) => ({ task_id: t.id, creator_uids: clip[i] }));
+      }
+      if (items) props.onBulkSetPlanned(items, "replace");
+      e.preventDefault();
+    } else if (e.key === "Escape") {
+      setCellSel({ anchor: null, ids: new Set() });
+    }
+  };
+
   return (
-    <div className="manage-table-wrap">
+    <div className="manage-table-wrap" tabIndex={0} onKeyDown={onTableKeyDown}>
       <table className="manage-table work-table work-table-grid">
         <thead>
           <tr>
@@ -192,7 +270,13 @@ export function TableView(props: WorkViewProps) {
                     t.assignee_name || "—"
                   )}
                 </td>
-                <td className="work-creators">
+                <td
+                  className={`work-creators cell-selectable${cellSel.ids.has(t.id) ? " cell-sel" : ""}`}
+                  onMouseDown={(e) => onCellMouseDown(t.id, e)}
+                  onMouseEnter={() => onCellMouseEnter(t.id)}
+                  onClick={(e) => selectCell(t.id, e)}
+                  title="클릭 선택 · Shift/드래그 범위 · Ctrl+C 복사 · Ctrl+V 붙여넣기"
+                >
                   {/* 예정 생성자(수동 self-assign) — '예정' 파란 배지. 내 것은 × 로 해제. */}
                   {t.planned_creators?.map((pc) => (
                     <span key={pc.uid} className="planned-tag" title="예정 생성자(내가 할 작업)">
@@ -201,7 +285,11 @@ export function TableView(props: WorkViewProps) {
                         <button
                           className="planned-x"
                           title="예정에서 빼기"
-                          onClick={() => props.onRemovePlanned!(t.id, pc.uid)}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            props.onRemovePlanned!(t.id, pc.uid);
+                          }}
                         >
                           ×
                         </button>
@@ -220,7 +308,15 @@ export function TableView(props: WorkViewProps) {
                   {/* + 나 (self-assign) — 이미 예정에 있으면 숨김 */}
                   {props.onAddMePlanned &&
                   !t.planned_creators?.some((p) => p.uid === props.myUid) ? (
-                    <button className="add-me" title="내가 할 작업으로 지정" onClick={() => props.onAddMePlanned!(t.id)}>
+                    <button
+                      className="add-me"
+                      title="내가 할 작업으로 지정"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        props.onAddMePlanned!(t.id);
+                      }}
+                    >
                       + 나
                     </button>
                   ) : null}

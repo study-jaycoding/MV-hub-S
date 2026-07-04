@@ -200,6 +200,11 @@ export interface WorkViewProps {
   myUid?: string | null; // 현재 로그인 uid — 예정 생성자에서 '나' 판별·삭제 노출
   onAddMePlanned?: (tid: string) => void; // 생성자 셀 '+ 나' — self-assign
   onRemovePlanned?: (tid: string, uid: string) => void; // 예정 생성자 배지 삭제
+  // 엑셀식 셀 붙여넣기 — 여러 작업 예정 생성자 일괄 설정
+  onBulkSetPlanned?: (
+    items: { task_id: string; creator_uids: string[] }[],
+    mode: "replace" | "add",
+  ) => void;
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;

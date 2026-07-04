@@ -706,6 +706,36 @@ def remove_planned_creator(task_id: str, creator_uid: str) -> bool:
         return cur.rowcount > 0
 
 
+def bulk_set_planned_creators(
+    items: list[dict[str, Any]], mode: str, added_by: Optional[str]
+) -> int:
+    """엑셀식 붙여넣기 — 여러 작업의 예정 생성자를 한 트랜잭션으로 설정.
+    mode='replace'(그 작업 예정 전체 교체) | 'add'(추가만, 중복 무시). items=[{task_id, creator_uids}].
+    한 번에 전부 성공/실패(원자). 권한은 라우터가 프로젝트별로 검사한 뒤 호출한다."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for it in items:
+                tid = it.get("task_id")
+                if not tid:
+                    continue
+                uids = [(u or "").strip() for u in (it.get("creator_uids") or []) if (u or "").strip()]
+                if mode == "replace":
+                    conn.execute("DELETE FROM task_planned_creator WHERE task_id=?", (tid,))
+                for u in uids:
+                    conn.execute(
+                        "INSERT INTO task_planned_creator(task_id, creator_uid, added_by) "
+                        "VALUES(?,?,?) ON CONFLICT(task_id, creator_uid) DO NOTHING",
+                        (tid, u, added_by),
+                    )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return len(items)
+
+
 def create_task(project_id: str, name: str, **kw: Any) -> dict[str, Any]:
     tid = new_id()
     with get_connection() as conn:

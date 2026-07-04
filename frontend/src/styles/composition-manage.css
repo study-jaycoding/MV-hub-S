@@ -477,6 +477,10 @@
   border: 1px dashed rgba(198,255,0,0.4); border-radius: 5px; padding: 1px 6px; margin-left: 3px; cursor: pointer;
 }
 .add-me:hover { background: rgba(198,255,0,0.1); }
+/* 엑셀식 생성자 셀 선택 — 클릭/드래그/범위 선택 시각화 */
+.cell-selectable { cursor: cell; user-select: none; }
+.cell-sel { outline: 2px solid rgba(127,209,255,0.7); outline-offset: -2px; background: rgba(127,209,255,0.08); }
+.manage-table-wrap:focus { outline: none; }
 .work-cut-drop { border: 1px dashed var(--border); border-radius: 8px; padding: 5px; margin: 6px 0; min-height: 30px; }
 .work-cut-empty { font-size: 10px; opacity: .4; }
 .work-cut-thumbs { display: flex; gap: 4px; flex-wrap: wrap; }

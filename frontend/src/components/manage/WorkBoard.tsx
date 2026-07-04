@@ -290,6 +290,17 @@ export function WorkBoard() {
     else await manageApi.removePlanned(tid, uid); // 남은 PM 권한(서버가 검증)
     loadAll();
   };
+  const onBulkSetPlanned = async (
+    items: { task_id: string; creator_uids: string[] }[],
+    mode: "replace" | "add",
+  ) => {
+    try {
+      await manageApi.bulkSetPlanned(items, mode);
+    } catch (e) {
+      setErr(String((e as Error)?.message || e)); // 권한 부족(403) 등 — 붙여넣기 실패 표시
+    }
+    loadAll();
+  };
 
   // effective 상태 — 화면에서만 '생략'으로(서버 미기록, 재활성화 시 자동 복귀):
   //   (1) 이 작업의 폴더가 폴더 단위 비활성이면 생략, 또는 (2) 컷이 전부 비활성화(d)면 생략.
@@ -356,6 +367,7 @@ export function WorkBoard() {
     myUid,
     onAddMePlanned,
     onRemovePlanned,
+    onBulkSetPlanned,
     thumb: taskThumb,
     disabled: disabledCuts,
     colorMap,

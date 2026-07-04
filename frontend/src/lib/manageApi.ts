@@ -56,6 +56,15 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/planned-creators/${pathPart(uid)}`,
       { method: "DELETE" },
     ),
+  // 엑셀식 붙여넣기 — 여러 작업 예정 생성자 일괄 설정. mode: replace(교체) | add(추가)
+  bulkSetPlanned: (
+    items: { task_id: string; creator_uids: string[] }[],
+    mode: "replace" | "add",
+  ) =>
+    jsonFetch<{ ok: boolean; count: number }>(
+      "/api/manage/tasks/planned-creators/bulk",
+      { method: "PATCH", body: jsonBody({ mode, items }) },
+    ),
   timeseries: (bucket: "day" | "week" = "day", projectId?: string, creatorUid?: string) =>
     jsonFetch<TimePoint[]>(
       withQuery("/api/manage/timeseries", {

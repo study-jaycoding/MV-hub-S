@@ -402,6 +402,41 @@ def remove_planned_creator(tid: str, uid: str, request: Request):
     return {"removed": repo_manage.remove_planned_creator(tid, uid)}
 
 
+class BulkPlannedIn(BaseModel):
+    mode: str = "replace"  # replace | add
+    items: list[dict] = Field(default_factory=list)  # [{task_id, creator_uids:[]}]
+
+
+@router.patch("/tasks/planned-creators/bulk")
+def bulk_set_planned_creators(body: BulkPlannedIn, request: Request):
+    """엑셀식 셀 붙여넣기 — 여러 작업의 예정 생성자를 한 번에 설정.
+    권한: 'add' 이면서 모든 대상이 '나(actor)'뿐이면 프로젝트 read(일반 작업자가 여러 작업에 자기 지정).
+    그 외(replace, 또는 남 포함)는 프로젝트 manage(PM)."""
+    items = (body.items or [])[:500]
+    if not items:
+        return {"ok": True, "count": 0}
+    actor = account_actor_uid(request) or actor_id(request)
+    # 방어적 상한 — 작업당 예정 생성자 20명.
+    for it in items:
+        it["creator_uids"] = [u for u in (it.get("creator_uids") or [])][:20]
+    only_me = body.mode == "add" and all(
+        all(u == actor for u in it.get("creator_uids", [])) for it in items
+    )
+    # 프로젝트별 1회만 권한 검사(중복 조회 방지).
+    checked: set[str] = set()
+    for it in items:
+        pid = _task_project_or_404(it["task_id"])
+        if pid in checked:
+            continue
+        checked.add(pid)
+        if only_me:
+            _require_project_read(request, pid)
+        else:
+            _require_project_manage(request, pid)
+    n = repo_manage.bulk_set_planned_creators(items, body.mode, actor)
+    return {"ok": True, "count": n}
+
+
 @router.delete("/tasks/{tid}/generations/{gen_id}")
 def unlink_generation(tid: str, gen_id: str, request: Request):
     """컷(생성물) 연결 해제 — 드래그로 뺀 컷 제거."""
