@@ -153,3 +153,45 @@ export function buildHierarchy(tasks: Task[]): { tree: DashNode[]; totals: DashT
     totals: { credits: tr.credits, elapsed: tr.elapsed, elapsedKnown: tr.elapsedKnown, taskCount: tasks.length, progress: tr.progress, dist: tr.dist },
   };
 }
+
+// 키로 트리 노드 찾기(선택 → 참여자 패널 연동).
+export function findNode(tree: DashNode[], key: string | null): DashNode | null {
+  if (!key) return null;
+  for (const n of tree) {
+    if (n.key === key) return n;
+    if (n.children) {
+      const f = findNode(n.children, key);
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
+// 신원 3축 참여자 — 배정(assignee)·예정(planned)·생성(cut creator)을 사람별로 합침.
+export interface Participant {
+  uid: string;
+  name: string;
+  assign: boolean; // PM 배정 리드
+  planned: boolean; // self-assign 예정
+  create: boolean; // 실제 생성
+}
+export function participantsOf(node: DashNode): Participant[] {
+  const map = new Map<string, Participant>();
+  const ensure = (uid: string, name?: string | null): Participant => {
+    let p = map.get(uid);
+    if (!p) {
+      p = { uid, name: name || uid, assign: false, planned: false, create: false };
+      map.set(uid, p);
+    } else if (name && p.name === p.uid) p.name = name; // 이름 늦게 확보되면 갱신
+    return p;
+  };
+  for (const t of node.tasks) {
+    if (t.assignee_uid) ensure(t.assignee_uid, t.assignee_name).assign = true;
+    for (const p of t.planned_creators || []) ensure(p.uid, p.name).planned = true;
+    for (const c of t.cuts || []) if (c.creator_uid) ensure(c.creator_uid, c.creator_name).create = true;
+  }
+  // 배정·예정·생성 순으로 정렬
+  return [...map.values()].sort(
+    (a, b) => Number(b.assign) - Number(a.assign) || Number(b.planned) - Number(a.planned),
+  );
+}

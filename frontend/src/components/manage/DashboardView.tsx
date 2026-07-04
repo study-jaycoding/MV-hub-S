@@ -3,8 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import { manageApi } from "../../lib/manageApi";
-import { buildHierarchy, type DashNode, type StatusDist } from "./dashboardModel";
-import type { Task } from "./types";
+import {
+  buildHierarchy,
+  findNode,
+  participantsOf,
+  type DashNode,
+  type Participant,
+  type StatusDist,
+} from "./dashboardModel";
+import type { TimePoint, Task } from "./types";
 
 function fmtDur(sec: number): string {
   if (!sec || sec <= 0) return "—";
@@ -101,12 +108,24 @@ function TreeRow({
   );
 }
 
+// 참여자 배지(배정/예정/생성)
+function Badges({ p }: { p: Participant }) {
+  return (
+    <span className="dash-badges">
+      {p.assign ? <span className="dash-bdg assign">배정</span> : null}
+      {p.planned ? <span className="dash-bdg planned">예정</span> : null}
+      {p.create ? <span className="dash-bdg create">생성</span> : null}
+    </span>
+  );
+}
+
 export function DashboardView() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [trend, setTrend] = useState<TimePoint[]>([]);
 
   useEffect(() => {
     api
@@ -132,9 +151,44 @@ export function DashboardView() {
         setErr(String(e?.message || e));
         setLoading(false);
       });
+    // 팀 크레딧 추이(서버 집계·프록시) — 실패/미연결이면 빈 값(하단 추이 숨김)
+    manageApi
+      .teamTimeseries("week")
+      .then((t) => setTrend(Array.isArray(t) ? t : []))
+      .catch(() => setTrend([]));
   }, []);
 
   const { tree, totals } = useMemo(() => buildHierarchy(tasks), [tasks]);
+
+  // 우측 참여자 — 선택 노드(없으면 전체) 기준 3축 집계
+  const selNode = useMemo(() => findNode(tree, selectedKey), [tree, selectedKey]);
+  const participants = useMemo(
+    () => participantsOf(selNode || { tasks } as DashNode),
+    [selNode, tasks],
+  );
+  const scopeLabel = selNode
+    ? `${selNode.kind === "project" ? "프로젝트" : selNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${selNode.label}`
+    : "전체";
+
+  // 경고 — 담당·예정 없는 작업, 시간 미측정 커버리지
+  const alerts = useMemo(() => {
+    const a: { sev: "crit" | "warn"; msg: string }[] = [];
+    const noOwner = tasks.filter(
+      (t) => !t.assignee_uid && !(t.planned_creators?.length) && (t.status || "not_started") !== "done",
+    ).length;
+    if (noOwner) a.push({ sev: "warn", msg: `담당·예정 없는 미완료 작업 ${noOwner}건` });
+    const lowCov = totals.taskCount - totals.elapsedKnown;
+    if (lowCov > 0) a.push({ sev: "warn", msg: `제작시간 미측정 ${lowCov}/${totals.taskCount}건` });
+    const mismatch = tasks.filter((t) => {
+      const planned = new Set((t.planned_creators || []).map((p) => p.uid));
+      const created = new Set((t.cuts || []).map((c) => c.creator_uid).filter(Boolean));
+      return planned.size && created.size && ![...created].some((u) => planned.has(u as string));
+    }).length;
+    if (mismatch) a.push({ sev: "warn", msg: `예정≠생성 불일치 ${mismatch}건(다른 사람이 만듦)` });
+    return a;
+  }, [tasks, totals]);
+
+  const trendMax = useMemo(() => Math.max(1, ...trend.map((p) => p.credits)), [trend]);
 
   const toggle = (k: string) =>
     setExpanded((prev) => {
@@ -171,46 +225,103 @@ export function DashboardView() {
         </div>
       </div>
 
-      {/* 중앙 계층 트리 */}
-      <div className="dash-tree-card">
-        <div className="hd">
-          <h2>프로젝트 ▸ 에피소드 ▸ 시퀀스</h2>
-          <span className="meta">행 클릭 · ▸ 펼치기</span>
+      {/* 중앙 계층 트리 + 우측 참여자 */}
+      <div className="dash-cols">
+        <div className="dash-tree-card">
+          <div className="hd">
+            <h2>프로젝트 ▸ 에피소드 ▸ 시퀀스</h2>
+            <span className="meta">행 클릭 · ▸ 펼치기</span>
+          </div>
+          <div className="dash-tbl-scroll">
+            <table className="dash-tree">
+              <thead>
+                <tr>
+                  <th className="l">이름</th>
+                  <th className="l">상태·진척</th>
+                  <th>작업</th>
+                  <th>크레딧</th>
+                  <th>제작시간</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tree.map((n) => (
+                  <TreeRow
+                    key={n.key}
+                    node={n}
+                    depth={0}
+                    expanded={expanded}
+                    onToggle={toggle}
+                    selectedKey={selectedKey}
+                    onSelect={(node) => setSelectedKey(node.key)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="dash-legend">
+            <span><i className="s-done" /> 완료</span>
+            <span><i className="s-pub" /> 게시</span>
+            <span><i className="s-prog" /> 진행중</span>
+            <span><i className="s-idle" /> 시작전</span>
+            <span className="dim">· 진척 막대 = 작업상태 분포</span>
+          </div>
         </div>
-        <div className="dash-tbl-scroll">
-          <table className="dash-tree">
-            <thead>
-              <tr>
-                <th className="l">이름</th>
-                <th className="l">상태·진척</th>
-                <th>작업</th>
-                <th>크레딧</th>
-                <th>제작시간</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tree.map((n) => (
-                <TreeRow
-                  key={n.key}
-                  node={n}
-                  depth={0}
-                  expanded={expanded}
-                  onToggle={toggle}
-                  selectedKey={selectedKey}
-                  onSelect={(node) => setSelectedKey(node.key)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="dash-legend">
-          <span><i className="s-done" /> 완료</span>
-          <span><i className="s-pub" /> 게시</span>
-          <span><i className="s-prog" /> 진행중</span>
-          <span><i className="s-idle" /> 시작전</span>
-          <span className="dim">· 진척 막대 = 작업상태 분포</span>
+
+        {/* 우측 참여자 패널 — 배정/예정/생성 3축 */}
+        <div className="dash-side">
+          <div className="hd">
+            <h2>참여자</h2>
+            <span className="meta">{scopeLabel}</span>
+          </div>
+          {participants.length ? (
+            participants.map((p) => (
+              <div className="dash-part" key={p.uid}>
+                <span className="dash-part-nm">{p.name}</span>
+                <Badges p={p} />
+              </div>
+            ))
+          ) : (
+            <div className="dash-part-empty">참여자 없음 — 담당 배정·예정 생성자 지정 필요</div>
+          )}
+          <div className="dash-part-note">
+            배정(PM 지정) · 예정(내가 할 작업) · 생성(실제 만듦). 행을 선택하면 그 범위로 좁혀집니다.
+          </div>
         </div>
       </div>
+
+      {/* 경고 */}
+      {alerts.length ? (
+        <div className="dash-alerts">
+          {alerts.map((a, i) => (
+            <span key={i} className={`dash-alert ${a.sev}`}>
+              ⚠ {a.msg}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {/* 하단 추이 (팀 크레딧, 서버 집계) */}
+      {trend.length ? (
+        <div className="dash-tree-card">
+          <div className="hd">
+            <h2>기간별 크레딧 (팀)</h2>
+            <span className="meta">주간</span>
+          </div>
+          <div className="dash-bars">
+            {trend.map((p) => (
+              <div className="dash-bar-col" key={p.bucket}>
+                <div className="dash-bar-v tnum">{p.credits ? Math.round(p.credits).toLocaleString() : ""}</div>
+                <div
+                  className="dash-bar"
+                  style={{ height: `${(p.credits / trendMax) * 100}%` }}
+                  title={`${p.bucket}: ${Math.round(p.credits)} cr`}
+                />
+                <div className="dash-bar-l">{p.bucket.slice(5)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
