@@ -635,8 +635,10 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
             if r["folder_path"] and d["gen_count"] == 0 and not pm_edited:
                 continue
             out.append(d)
-        # 작성자 이름 일괄 해석 후 작업별 distinct 생성자명 부착(정렬 순서 유지).
-        names = resolve_display_names(conn, list(all_creator_uids)) if all_creator_uids else {}
+        # 작성자·담당자 이름 일괄 해석(단일 해석기) 후 작업별 부착.
+        assignee_uids = {d.get("assignee_uid") for d in out if d.get("assignee_uid")}
+        to_resolve = set(all_creator_uids) | assignee_uids
+        names = resolve_display_names(conn, list(to_resolve)) if to_resolve else {}
         for d in out:
             seen: list[str] = []
             for c in per_task_cuts[d["id"]]:
@@ -647,6 +649,8 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen
+            # 담당(배정) — 생성자(누가 만듦)와 별개 축. UI 가 배정↔생성 분리·매칭에 사용.
+            d["assignee_name"] = names.get(d.get("assignee_uid")) if d.get("assignee_uid") else None
         return out
 
 

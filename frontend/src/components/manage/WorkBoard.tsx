@@ -92,6 +92,9 @@ export function WorkBoard() {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
+  const [assigneeOptions, setAssigneeOptions] = useState<
+    Record<string, { creator_uid: string; name?: string | null }[]>
+  >({});
   const [view, setView] = useState<WorkView>(
     () => (loadString(STORAGE_KEYS.manageWorkView, "table") as WorkView) || "table",
   );
@@ -193,6 +196,15 @@ export function WorkBoard() {
         projectsRef.current = ps;
         setProjects(ps);
         loadAll();
+        // 프로젝트별 배정 후보(멤버) 로드 — 담당 셀 select 옵션. 실패한 프로젝트는 빈 목록.
+        Promise.all(
+          ps.map((p) =>
+            api
+              .projectMembers(p.pid)
+              .then((ms) => [p.pid, ms.map((m) => ({ creator_uid: m.uid, name: m.name }))] as const)
+              .catch(() => [p.pid, []] as const),
+          ),
+        ).then((pairs) => setAssigneeOptions(Object.fromEntries(pairs)));
       })
       .catch((e) => setErr(String(e?.message || e)));
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
@@ -323,6 +335,7 @@ export function WorkBoard() {
   const viewProps: WorkViewProps = {
     tasks: filtered,
     seqOptions,
+    assigneeOptions,
     thumb: taskThumb,
     disabled: disabledCuts,
     colorMap,

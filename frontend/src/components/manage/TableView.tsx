@@ -79,6 +79,7 @@ export function TableView(props: WorkViewProps) {
             <th>에피소드</th>
             <th>시퀀스</th>
             <th>생성물</th>
+            <th>담당</th>
             <th>생성자</th>
             <th>상태</th>
             <th>크레딧</th>
@@ -172,6 +173,25 @@ export function TableView(props: WorkViewProps) {
                 >
                   <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
                 </td>
+                <td className="work-assignee">
+                  {/* 담당(배정) — 프로젝트 멤버 중 선택. 생성자(누가 만듦)와 별개 축. */}
+                  {props.assigneeOptions ? (
+                    <select
+                      className="work-cell-sel"
+                      value={t.assignee_uid || ""}
+                      onChange={(e) => onPatch(t.id, { assignee_uid: e.target.value || null })}
+                    >
+                      <option value="">담당 없음</option>
+                      {(props.assigneeOptions[t.project_id] || []).map((m) => (
+                        <option key={m.creator_uid} value={m.creator_uid}>
+                          {m.name || m.creator_uid}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    t.assignee_name || "—"
+                  )}
+                </td>
                 <td className="work-creators">
                   {t.creators?.length
                     ? t.creators.map((c, i) => (
@@ -181,6 +201,10 @@ export function TableView(props: WorkViewProps) {
                         </span>
                       ))
                     : "—"}
+                  {/* 배정 ≠ 생성 신호 — 담당이 있는데 그 사람이 생성 목록에 없으면 표시(관리상 중요). */}
+                  {t.assignee_name && t.creators?.length && !t.creators.includes(t.assignee_name) ? (
+                    <span className="work-mismatch" title="담당과 실제 생성자가 다릅니다">↔</span>
+                  ) : null}
                 </td>
                 <td>
                   {/* 상태 — 색 원만(글자 제거). hover 로 이름 확인. */}

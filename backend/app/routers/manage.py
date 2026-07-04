@@ -338,7 +338,9 @@ def create_task(body: TaskIn, request: Request):
 @router.patch("/tasks/{tid}")
 def patch_task(tid: str, body: TaskPatch, request: Request):
     _require_project_manage(request, _task_project_or_404(tid))
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    # exclude_unset: 보낸 필드만 반영 — 명시적 null(예: assignee_uid=null)로 담당 해제 가능.
+    # (기존 'v is not None' 은 null 을 버려 담당 해제가 안 됐다.)
+    fields = body.model_dump(exclude_unset=True)
     r = repo_manage.update_task(tid, fields)
     if not r:
         raise HTTPException(status_code=404, detail="없는 작업(또는 변경 필드 없음)")

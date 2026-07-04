@@ -153,9 +153,10 @@ export function statusLabel(v?: string | null): string {
 export function statusColor(v?: string | null): string {
   return statusDef(v)?.color ?? "#787c82";
 }
-// 폴더 자동 작업은 생성물이 있어 '진행' 이상이라 '시작 전/대기'에 올 일이 없다 → 보드 열·상태
-// 드롭다운·필터에서 숨긴다(데이터 모델에는 존재, 표시만 제외). 보드/테이블/필터 단일 소스.
-export const HIDDEN_STATUSES = new Set(["not_started", "pending"]);
+// '시작 전'은 수동 작업·생성물 없는 계획 작업에 의미가 있어 보드 열·드롭다운·필터에 노출한다.
+// (폴더 자동 작업은 생성물이 있으면 백엔드가 진행 이상으로 파생하므로 자연히 안 걸린다.)
+// 'pending'(대기)만 현재 워크플로에서 미사용이라 숨김. 보드/테이블/필터 단일 소스.
+export const HIDDEN_STATUSES = new Set(["pending"]);
 export const SELECTABLE_STATUSES = STATUSES.filter((s) => !HIDDEN_STATUSES.has(s.v));
 
 // 작업탭 노션식 필터 — 다중선택 칩 5종 + 자유 검색. 전부 클라이언트에서 적용(백엔드 무관).
@@ -194,6 +195,8 @@ export interface WorkViewProps {
   thumb: (path?: string | null) => string | undefined;
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
+  // 프로젝트별 배정 후보(멤버) — 담당 셀 select 옵션. 없으면 담당은 읽기전용(이름만).
+  assigneeOptions?: Record<string, { creator_uid: string; name?: string | null }[]>;
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
