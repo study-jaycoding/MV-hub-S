@@ -130,7 +130,7 @@ HTTP 요청
 | `backup.py` | SQLite 온라인 백업 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
-| `jobs.py` | 옛 서버측 잡 큐(현재 미사용 경로, 무해 잔존) |
+| ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
 
 ### 4.5 보조 스크립트 (`backend/`)
 

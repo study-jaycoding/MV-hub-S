@@ -1,5 +1,10 @@
 # Content Hub — 설계 명세
 
+> ⚠️ **구(舊) 명세 주의**: 이 문서는 개인용 `content-hub` 시절(서버가 직접 생성) 명세다.
+> 현행은 **push 모델**(각자 로컬 CLI + 선택 발행)로 전환됨 — 최신 기준은
+> `docs/ARCHITECTURE.md` · `docs/AI_CONTEXT.md` · `docs/신원과_모드_가이드.md` 를 본다.
+> 이 문서의 생성 흐름·엔티티 모델은 초기 의도 참고용이며 현행과 다르다(예: 서버측 잡 큐 `services/jobs.py` 는 제거됨).
+
 Higgsfield CLI 기반 콘텐츠 생성·공유 툴의 상세 설계.
 규칙·스택은 CLAUDE.md 참조. 이 문서는 "무엇을 어떻게 만드는가"를 정의한다.
 

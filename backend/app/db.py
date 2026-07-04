@@ -44,8 +44,21 @@ DEFAULT_DB_PATH = config.DATA_DIR / "db" / "content_hub.db"
 # 구버전 경로(backend 루트 직속) — 재시작 시 새 위치로 1회 자동 이전.
 _LEGACY_DB_PATH = BACKEND_DIR / "content_hub.db"
 
-# 백엔드 스위치 — 기본 sqlite(무변경). postgres 면 pgsupport 로 위임(Phase 3, 옵트인).
+# 백엔드 스위치 — 현재 sqlite 만 지원. postgres 스택(pgsupport.py)은 미완(스키마·락 미갱신)이라
+# 런타임 진입에서 명시 차단한다. 파일은 미래 복구용으로 보존하되, 옵트인처럼 조용히 실행되지 않게 한다.
 DB_BACKEND = os.environ.get("CONTENT_HUB_DB_BACKEND", "sqlite").strip().lower()
+_UNSUPPORTED_BACKEND = (
+    "CONTENT_HUB_DB_BACKEND=%s 는 현재 미지원입니다 — sqlite 를 쓰세요. "
+    "PostgreSQL 지원은 스키마·동시성(락) 갱신 전까지 보류 상태입니다(pgsupport.py 미완)."
+)
+
+
+def _assert_supported_backend() -> None:
+    """모든 DB 접근 진입(get_connection·init_db)에서 호출 — sqlite 아닌 백엔드를 즉시 차단.
+    startup 뿐 아니라 테스트·관리 스크립트·백업/복원도 get_connection 을 직접 쓰므로 여기서 막는다.
+    나중에 PG 완성 시 이 가드만 풀면 복구된다."""
+    if DB_BACKEND != "sqlite":
+        raise RuntimeError(_UNSUPPORTED_BACKEND % DB_BACKEND)
 
 
 def get_db_path() -> Path:
@@ -196,11 +209,8 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def get_connection(db_path: Path | None = None):
-    """트랜잭션 단위 커넥션 컨텍스트(백엔드 무관). postgres 면 pgsupport 로 위임."""
-    if DB_BACKEND == "postgres":
-        from . import pgsupport
-
-        return pgsupport.get_connection()
+    """트랜잭션 단위 커넥션 컨텍스트(sqlite). 미지원 백엔드면 진입에서 차단."""
+    _assert_supported_backend()
     return _get_connection_sqlite(db_path)
 
 
@@ -286,11 +296,7 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
 
 def init_db(db_path: Path | None = None) -> Path:
     """schema.sql 을 적용해 DB 를 초기화한다(멱등). 적용된 DB 경로를 반환."""
-    if DB_BACKEND == "postgres":
-        from . import pgsupport
-
-        pgsupport.init_db()
-        return SCHEMA_PATH  # 반환값은 사용처에서 무시됨(PG 는 DSN 기반)
+    _assert_supported_backend()
     path = db_path or get_db_path()
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(f"스키마 파일을 찾을 수 없음: {SCHEMA_PATH}")

@@ -64,8 +64,9 @@ def get_my_uid() -> Optional[str]:
 
 
 def learn_my_creator_uid(uid: Optional[str]) -> None:
-    """허브 생성 완료 시점에 내 user_<id> 를 영속화(이미 정해져 있으면 무시).
-    읽기 경로(get_my_uid)가 아니라 생성 완료(jobs._process)에서 명시적으로 호출한다."""
+    """내 user_<id> 를 영속화(이미 정해져 있으면 무시).
+    읽기 경로(get_my_uid)가 아니라 push 적재(ingest._ingest_core)에서 학습된 uid 로 명시 호출한다
+    (옛 서버측 생성 jobs._process 경로는 push 모델 전환으로 제거됨)."""
     uid = (uid or "").strip()
     if not uid or get_setting("my_creator_uid"):
         return

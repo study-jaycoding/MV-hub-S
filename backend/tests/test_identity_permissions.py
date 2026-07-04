@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from fastapi import HTTPException
 
 from app import db, repo
 from app import deps as deps_mod
+from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
 from app.routers import projects as projects_router
 
@@ -27,6 +29,7 @@ def auth_on():
     stack.enter_context(mock.patch.object(deps_mod, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(projects_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(ingest_router, "AUTH_ENABLED", True))
+    stack.enter_context(mock.patch.object(gen_requests_router, "AUTH_ENABLED", True))
     return stack
 
 
@@ -124,6 +127,43 @@ class IdentityPermissionTests(unittest.TestCase):
         with auth_on(), self.assertRaises(HTTPException) as ctx:
             ingest_router._ingest_core(acc, jobs, None, None)
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_gen_request_create_rejects_foreign_project(self):
+        # p_river 는 river 만 멤버. 비멤버(other)가 그 project_id 로 생성요청 → 403(팀영역 주입 차단).
+        from app.models import GenerationCreate, GenRequestIn
+
+        req = DummyRequest(
+            {
+                "email": "other@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_other",
+            }
+        )
+        body = GenRequestIn(
+            kind="create",
+            create=GenerationCreate(prompt="x", model="seedance_2_0", project_id="p_river"),
+        )
+        with auth_on(), self.assertRaises(HTTPException) as ctx:
+            asyncio.run(gen_requests_router.create_gen_request(body, req))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_known_jobs_diff_scopes_by_account_not_global(self):
+        # 미링크 계정(creator_uid=None)도 acct:email 로 스코프 — None 전역 job 존재 oracle 방지.
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": None,
+            }
+        )
+        body = ingest_router.KnownJobsIn(job_ids=["j1", "j2"])
+        with auth_on(), mock.patch.object(
+            ingest_router.repo, "unknown_job_ids", return_value=[]
+        ) as m:
+            ingest_router.known_jobs_diff(body, req)
+        self.assertEqual(m.call_args.kwargs.get("creator_uid"), "acct:river@example.com")
 
 
 if __name__ == "__main__":
