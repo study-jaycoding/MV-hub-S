@@ -40,6 +40,22 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
       { method: "DELETE" },
     ),
+  // 예정 생성자(self-assign) — '나'는 서버가 신원 계산(uid 안 보냄)
+  addMePlanned: (tid: string) =>
+    jsonFetch<{ ok: boolean; uid: string }>(
+      `/api/manage/tasks/${pathPart(tid)}/planned-creators/me`,
+      { method: "POST" },
+    ),
+  removeMePlanned: (tid: string) =>
+    jsonFetch<{ removed: boolean }>(
+      `/api/manage/tasks/${pathPart(tid)}/planned-creators/me`,
+      { method: "DELETE" },
+    ),
+  removePlanned: (tid: string, uid: string) =>
+    jsonFetch<{ removed: boolean }>(
+      `/api/manage/tasks/${pathPart(tid)}/planned-creators/${pathPart(uid)}`,
+      { method: "DELETE" },
+    ),
   timeseries: (bucket: "day" | "week" = "day", projectId?: string, creatorUid?: string) =>
     jsonFetch<TimePoint[]>(
       withQuery("/api/manage/timeseries", {

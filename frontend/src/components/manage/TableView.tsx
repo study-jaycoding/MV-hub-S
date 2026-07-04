@@ -193,6 +193,22 @@ export function TableView(props: WorkViewProps) {
                   )}
                 </td>
                 <td className="work-creators">
+                  {/* 예정 생성자(수동 self-assign) — '예정' 파란 배지. 내 것은 × 로 해제. */}
+                  {t.planned_creators?.map((pc) => (
+                    <span key={pc.uid} className="planned-tag" title="예정 생성자(내가 할 작업)">
+                      {pc.name || pc.uid}
+                      {props.onRemovePlanned && pc.uid === props.myUid ? (
+                        <button
+                          className="planned-x"
+                          title="예정에서 빼기"
+                          onClick={() => props.onRemovePlanned!(t.id, pc.uid)}
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </span>
+                  ))}
+                  {/* 실제 생성자(연결 컷 파생) */}
                   {t.creators?.length
                     ? t.creators.map((c, i) => (
                         <span key={c}>
@@ -200,7 +216,14 @@ export function TableView(props: WorkViewProps) {
                           <ColorTag field="creator" value={c} colorMap={colorMap} />
                         </span>
                       ))
-                    : "—"}
+                    : !t.planned_creators?.length && "—"}
+                  {/* + 나 (self-assign) — 이미 예정에 있으면 숨김 */}
+                  {props.onAddMePlanned &&
+                  !t.planned_creators?.some((p) => p.uid === props.myUid) ? (
+                    <button className="add-me" title="내가 할 작업으로 지정" onClick={() => props.onAddMePlanned!(t.id)}>
+                      + 나
+                    </button>
+                  ) : null}
                   {/* 배정 ≠ 생성 신호 — 담당이 있는데 그 사람이 생성 목록에 없으면 표시(관리상 중요). */}
                   {t.assignee_name && t.creators?.length && !t.creators.includes(t.assignee_name) ? (
                     <span className="work-mismatch" title="담당과 실제 생성자가 다릅니다">↔</span>

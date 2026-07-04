@@ -21,8 +21,10 @@ from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
+    account_actor_uid,
     account_global_roles,
     account_scope_uid,
+    actor_id,
     project_roles_of,
     require_global_cap,
     require_project_role,
@@ -361,6 +363,43 @@ def link_generations(tid: str, body: TaskLinkIn, request: Request):
         if gen:
             require_view_generation(request, gen)
     return {"linked": repo_manage.link_generations(tid, body.gen_ids)}
+
+
+@router.post("/tasks/{tid}/planned-creators/me")
+def add_me_as_planned(tid: str, request: Request):
+    """작업 예정 생성자에 '나' 추가(self-assign) — 내가 이 작업을 하겠다고 정한다.
+    ★uid 는 서버가 account_actor_uid 로 계산(신원 위조 방지). 프로젝트 접근권만 있으면 가능."""
+    pid = _task_project_or_404(tid)
+    _require_project_read(request, pid)
+    uid = account_actor_uid(request) or actor_id(request)
+    repo_manage.add_planned_creator(tid, uid, uid)
+    return {"ok": True, "uid": uid}
+
+
+@router.delete("/tasks/{tid}/planned-creators/me")
+def remove_me_from_planned(tid: str, request: Request):
+    """작업 예정 생성자에서 '나' 제거."""
+    pid = _task_project_or_404(tid)
+    _require_project_read(request, pid)
+    uid = account_actor_uid(request) or actor_id(request)
+    return {"removed": repo_manage.remove_planned_creator(tid, uid)}
+
+
+@router.post("/tasks/{tid}/planned-creators/{uid}")
+def add_planned_creator(tid: str, uid: str, request: Request):
+    """PM/관리가 다른 멤버를 예정 생성자로 지정. 남을 넣는 건 manage 권한 필요."""
+    pid = _task_project_or_404(tid)
+    _require_project_manage(request, pid)
+    repo_manage.add_planned_creator(tid, uid, actor_id(request))
+    return {"ok": True}
+
+
+@router.delete("/tasks/{tid}/planned-creators/{uid}")
+def remove_planned_creator(tid: str, uid: str, request: Request):
+    """예정 생성자에서 특정 멤버 제거 — manage 권한."""
+    pid = _task_project_or_404(tid)
+    _require_project_manage(request, pid)
+    return {"removed": repo_manage.remove_planned_creator(tid, uid)}
 
 
 @router.delete("/tasks/{tid}/generations/{gen_id}")

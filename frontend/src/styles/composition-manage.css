@@ -464,6 +464,19 @@
 .work-assignee { font-size: 11px; }
 /* 담당 ≠ 실제 생성자 신호 — 관리상 확인용 마커 */
 .work-mismatch { color: var(--accent, #c6ff00); font-weight: 700; margin-left: 4px; cursor: help; }
+/* 예정 생성자(수동 self-assign) — 실제 생성자와 구분되는 파란 배지 */
+.planned-tag {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600;
+  color: #7fd1ff; background: rgba(127,209,255,0.12); border: 1px solid rgba(127,209,255,0.3);
+  border-radius: 5px; padding: 1px 5px; margin-right: 3px; white-space: nowrap;
+}
+.planned-x { background: none; border: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0 0 0 2px; opacity: .7; }
+.planned-x:hover { opacity: 1; }
+.add-me {
+  font-size: 10px; font-weight: 600; color: var(--accent, #c6ff00); background: transparent;
+  border: 1px dashed rgba(198,255,0,0.4); border-radius: 5px; padding: 1px 6px; margin-left: 3px; cursor: pointer;
+}
+.add-me:hover { background: rgba(198,255,0,0.1); }
 .work-cut-drop { border: 1px dashed var(--border); border-radius: 8px; padding: 5px; margin: 6px 0; min-height: 30px; }
 .work-cut-empty { font-size: 10px; opacity: .4; }
 .work-cut-thumbs { display: flex; gap: 4px; flex-wrap: wrap; }

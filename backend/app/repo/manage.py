@@ -86,6 +86,15 @@ _SCHEMA = (
         gen_id  TEXT NOT NULL,
         PRIMARY KEY (task_id, gen_id)
     )""",
+    # 작업 '예정 생성자'(수동) — 작업자가 "내가 할게" self-assign. 실제 생성자(task_generation→
+    # generation.creator_uid 파생)와 별개 축. creator_uid 는 신원(acct:→user_ remap 대상).
+    """CREATE TABLE IF NOT EXISTS task_planned_creator (
+        task_id     TEXT NOT NULL,
+        creator_uid TEXT NOT NULL,
+        added_by    TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (task_id, creator_uid)
+    )""",
     # 완료본 렌더폴더 저장 대장(멱등) — "완료만 저장하기"가 저장한 생성물·목적지 기록.
     # gen_id 당 1행. 실제 파일 존재 여부로 멱등 판정(기록만 있고 파일 없으면 재복사).
     """CREATE TABLE IF NOT EXISTS final_export (
@@ -114,6 +123,7 @@ _SCHEMA = (
     "WHERE action='spend' AND matched_gen_id IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_project_task_proj ON project_task(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_gen_gen ON task_generation(gen_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_planned_uid ON task_planned_creator(creator_uid, task_id)",
 )
 
 
@@ -554,6 +564,18 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 if g["creator_uid"]:
                     all_creator_uids.add(g["creator_uid"])
                 all_gen_ids.add(g["id"])
+        # 예정 생성자(수동 self-assign) 배치 조회 — 실제 생성자(per_task_cuts)와 별개 축.
+        task_ids = [r["id"] for r in rows]
+        planned_by_task: dict[str, list[str]] = {}
+        if task_ids:
+            ph_t = ",".join("?" * len(task_ids))
+            for pr in conn.execute(
+                f"SELECT task_id, creator_uid FROM task_planned_creator "
+                f"WHERE task_id IN ({ph_t}) ORDER BY created_at",
+                task_ids,
+            ).fetchall():
+                planned_by_task.setdefault(pr["task_id"], []).append(pr["creator_uid"])
+                all_creator_uids.add(pr["creator_uid"])
         # ★배치 집계 — 작업 P개마다 반복하던 metrics/comment 쿼리(≈2P회)를 전체 gen_id 로 1회씩.
         # elapsed 는 raw(NULL 유지) — '없음(NULL)'과 '0초'를 구분해야 manage_hub 폴백이 가능(코덱스).
         metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed|None)
@@ -648,10 +670,40 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 c["creator_name"] = nm
                 c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
-            d["creators"] = seen
+            d["creators"] = seen  # 실제 생성자(연결 컷 파생) — 기존 필터·캘린더 호환 유지
             # 담당(배정) — 생성자(누가 만듦)와 별개 축. UI 가 배정↔생성 분리·매칭에 사용.
             d["assignee_name"] = names.get(d.get("assignee_uid")) if d.get("assignee_uid") else None
+            # 예정 생성자(수동 self-assign) — {uid, name}. UI 가 '예정' 배지로 실제와 구분 표시.
+            d["planned_creators"] = [
+                {"uid": u, "name": names.get(u)} for u in planned_by_task.get(d["id"], [])
+            ]
         return out
+
+
+def add_planned_creator(task_id: str, creator_uid: str, added_by: Optional[str]) -> bool:
+    """작업 '예정 생성자'에 추가(멱등). self-assign('나') 또는 PM 이 남을 지정할 때."""
+    creator_uid = (creator_uid or "").strip()
+    if not creator_uid:
+        return False
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO task_planned_creator(task_id, creator_uid, added_by) VALUES(?,?,?) "
+            "ON CONFLICT(task_id, creator_uid) DO NOTHING",
+            (task_id, creator_uid, added_by),
+        )
+    return True
+
+
+def remove_planned_creator(task_id: str, creator_uid: str) -> bool:
+    """작업 '예정 생성자'에서 제거."""
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        cur = conn.execute(
+            "DELETE FROM task_planned_creator WHERE task_id=? AND creator_uid=?",
+            (task_id, (creator_uid or "").strip()),
+        )
+        return cur.rowcount > 0
 
 
 def create_task(project_id: str, name: str, **kw: Any) -> dict[str, Any]:

@@ -95,6 +95,13 @@ export function WorkBoard() {
   const [assigneeOptions, setAssigneeOptions] = useState<
     Record<string, { creator_uid: string; name?: string | null }[]>
   >({});
+  const [myUid, setMyUid] = useState<string | null>(null); // 현재 로그인 uid — 예정 생성자 '내 것' 판별
+  useEffect(() => {
+    api
+      .me()
+      .then((a) => setMyUid(a?.creator_uid || null))
+      .catch(() => setMyUid(null)); // AUTH off/미로그인 — '나'는 서버가 계산
+  }, []);
   const [view, setView] = useState<WorkView>(
     () => (loadString(STORAGE_KEYS.manageWorkView, "table") as WorkView) || "table",
   );
@@ -273,6 +280,16 @@ export function WorkBoard() {
     await manageApi.unlinkGeneration(tid, genId);
     loadAll();
   };
+  // 예정 생성자 self-assign('+ 나') / 배지 삭제
+  const onAddMePlanned = async (tid: string) => {
+    await manageApi.addMePlanned(tid);
+    loadAll();
+  };
+  const onRemovePlanned = async (tid: string, uid: string) => {
+    if (uid === myUid) await manageApi.removeMePlanned(tid);
+    else await manageApi.removePlanned(tid, uid); // 남은 PM 권한(서버가 검증)
+    loadAll();
+  };
 
   // effective 상태 — 화면에서만 '생략'으로(서버 미기록, 재활성화 시 자동 복귀):
   //   (1) 이 작업의 폴더가 폴더 단위 비활성이면 생략, 또는 (2) 컷이 전부 비활성화(d)면 생략.
@@ -336,6 +353,9 @@ export function WorkBoard() {
     tasks: filtered,
     seqOptions,
     assigneeOptions,
+    myUid,
+    onAddMePlanned,
+    onRemovePlanned,
     thumb: taskThumb,
     disabled: disabledCuts,
     colorMap,

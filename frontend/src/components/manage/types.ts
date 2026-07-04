@@ -197,6 +197,9 @@ export interface WorkViewProps {
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
   // 프로젝트별 배정 후보(멤버) — 담당 셀 select 옵션. 없으면 담당은 읽기전용(이름만).
   assigneeOptions?: Record<string, { creator_uid: string; name?: string | null }[]>;
+  myUid?: string | null; // 현재 로그인 uid — 예정 생성자에서 '나' 판별·삭제 노출
+  onAddMePlanned?: (tid: string) => void; // 생성자 셀 '+ 나' — self-assign
+  onRemovePlanned?: (tid: string, uid: string) => void; // 예정 생성자 배지 삭제
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -245,7 +248,8 @@ export interface Task {
   derived_start?: string | null; // 연결 컷 최초 생성일(YYYY-MM-DD) — PM 미설정 시 시작일 파생
   derived_due?: string | null; // 연결 컷 최종 생성일(YYYY-MM-DD) — PM 미설정 시 마감일 파생
   cuts?: Cut[];
-  creators?: string[];
+  creators?: string[]; // 실제 생성자(연결 컷 파생)
+  planned_creators?: { uid: string; name?: string | null }[]; // 예정 생성자(수동 self-assign)
   credits?: number;
   elapsed?: number;
   comment_count?: number;
