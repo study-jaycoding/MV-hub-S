@@ -15,6 +15,7 @@ export const STORAGE_KEYS = {
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",
   manageColorTags: "ch.manage.colorTags",
+  manageFolderTrees: "ch.manage.folderTrees", // 프로젝트관리에서 렌더폴더 트리를 펼친 프로젝트 id 목록
   manageTab: "ch.manage.tab",
   manageWorkFilters: "ch.manage.workFilters",
   manageWorkView: "ch.manage.workView",

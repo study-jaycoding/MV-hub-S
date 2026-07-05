@@ -139,7 +139,8 @@ export function BoardView(props: WorkViewProps) {
         if (!cols.length) return null; // 시작 전만 있던 '할 일' 그룹 등은 통째로 숨김
         const total = tasks.filter((t) => cols.some((c) => c.v === t.status)).length;
         return (
-          <div key={group} className="kanban-group">
+          // 그룹 폭을 컬럼 수에 비례시켜 모든 컬럼이 균등 폭으로 화면에 한 번에 들어오게 한다.
+          <div key={group} className="kanban-group" style={{ flexGrow: cols.length, flexBasis: 0 }}>
             <div className="kanban-group-head">
               {groupLabel(group)} <span className="kanban-count">{total}</span>
             </div>

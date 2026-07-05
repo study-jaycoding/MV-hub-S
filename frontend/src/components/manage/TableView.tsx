@@ -84,7 +84,7 @@ export function TableView(props: WorkViewProps) {
             <th>상태</th>
             <th>크레딧</th>
             <th>생성시간</th>
-            <th>마감일</th>
+            <th>생성기간</th>
             <th>설명</th>
             <th>코멘트</th>
           </tr>

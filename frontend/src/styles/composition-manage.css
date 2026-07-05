@@ -243,7 +243,10 @@
   flex: 1; font-family: inherit; font-size: 13px; color: var(--text);
   background: transparent; border: 1px solid var(--border); border-radius: 8px;
   padding: 7px 9px;
+  color-scheme: dark; /* date 입력의 달력 아이콘·팝업을 다크로(안 보이던 문제) */
 }
+/* date 입력의 달력 아이콘을 밝게(다크 배경에서 안 보이던 문제) — 클릭 영역 확보 */
+.manage-field input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); cursor: pointer; }
 .manage-field input:focus, .manage-field select:focus { outline: none; border-color: var(--accent); }
 .manage-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .manage-modal-actions button {
@@ -282,12 +285,12 @@
 /* 칸반 */
 .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
 .kanban-col { border: 1px solid var(--border); border-radius: 12px; padding: 10px; min-height: 120px; }
-/* Notion식 3그룹(할 일·진행 중·완료) × 7세분 상태 보드 — 그룹 띠로 묶고 가로 스크롤 */
-.kanban-grouped { display: flex; grid-template-columns: none; gap: 16px; overflow-x: auto; padding-bottom: 8px; align-items: start; justify-content: safe center; }
-.kanban-group { display: flex; flex-direction: column; gap: 8px; }
+/* Notion식 3그룹(할 일·진행 중·완료) × 세분 상태 보드 — 그룹·컬럼을 유연 폭으로 화면에 한 번에 */
+.kanban-grouped { display: flex; grid-template-columns: none; gap: 14px; padding-bottom: 8px; align-items: stretch; }
+.kanban-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; } /* flex-grow=컬럼수(인라인) */
 .kanban-group-head { font-size: 11px; font-weight: 800; letter-spacing: .04em; opacity: .6; text-transform: uppercase; padding: 0 2px; display: flex; gap: 6px; align-items: center; }
-.kanban-group-cols { display: flex; gap: 10px; align-items: start; }
-.kanban-grouped .kanban-col { width: 248px; flex: 0 0 248px; border-top: 2px solid var(--status-color, var(--border)); }
+.kanban-group-cols { display: flex; gap: 8px; align-items: stretch; }
+.kanban-grouped .kanban-col { flex: 1 1 0; min-width: 0; border-top: 2px solid var(--status-color, var(--border)); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 /* 테이블 상태 셀의 색 원 — 시인성 위해 크게 */
 .status-dot.lg { width: 13px; height: 13px; box-shadow: 0 0 0 2px rgba(127,127,127,.15); }
@@ -724,8 +727,8 @@
 .dash-stack { display: inline-flex; width: 88px; height: 9px; border-radius: 5px; overflow: hidden; background: rgba(255,255,255,0.06); flex: none; vertical-align: middle; }
 .dash-kpi .dash-stack { width: 100%; margin-top: 8px; }
 .dash-stack i { height: 100%; display: block; }
-.dash-stack .s-done { background: #6fdc8c; } .dash-stack .s-pub { background: #52d3d8; }
-.dash-stack .s-prog { background: #f2b543; } .dash-stack .s-idle { background: #565a45; }
+.dash-stack .s-done { background: #f2b543; } .dash-stack .s-pub { background: #52d3d8; }
+.dash-stack .s-prog { background: #6fdc8c; } .dash-stack .s-idle { background: #565a45; }
 /* 계층 트리 */
 .dash-tree-card { background: var(--panel, #1a1a1a); border: 1px solid var(--border, #2b2b2b); border-radius: 10px; overflow: hidden; }
 .dash-tree-card > .hd { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-bottom: 1px solid var(--border, #2b2b2b); }
@@ -752,8 +755,8 @@ table.dash-tree td.l { text-align: left; }
 .dash-legend { display: flex; gap: 12px; flex-wrap: wrap; padding: 10px 14px; font-size: 11px; color: var(--text-faint, #6b6b6b); border-top: 1px solid var(--border, #2b2b2b); }
 .dash-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .dash-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-.dash-legend .s-done { background: #6fdc8c; } .dash-legend .s-pub { background: #52d3d8; }
-.dash-legend .s-prog { background: #f2b543; } .dash-legend .s-idle { background: #565a45; }
+.dash-legend .s-done { background: #f2b543; } .dash-legend .s-pub { background: #52d3d8; }
+.dash-legend .s-prog { background: #6fdc8c; } .dash-legend .s-idle { background: #565a45; }
 .dash-legend .dim { color: var(--text-faint, #6b6b6b); }
 
 /* 대시보드 2단(트리+참여자) */
