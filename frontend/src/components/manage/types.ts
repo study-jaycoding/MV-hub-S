@@ -183,6 +183,7 @@ export interface Cut {
   shared?: number | boolean; // 팀 공유됨
   linked?: number | boolean; // 수동 드래그 링크(✕ 해제 가능). 시퀀스 자동 귀속은 false
   created_at?: string | null; // 생성일 — 캘린더(생성자별 활동) 날짜 배치용
+  credits?: number; // 이 컷의 크레딧(참여자별 집계용)
 }
 // 카드 썸네일 노출 한도 — 최종→공유→일반 순(백엔드 정렬)에서 앞 3장.
 export const CUT_THUMB_MAX = 3;

@@ -765,17 +765,28 @@ table.dash-tree td.l { text-align: left; }
 .dash-side > .hd { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-bottom: 1px solid var(--border, #2b2b2b); }
 .dash-side > .hd h2 { font-size: 12px; font-weight: 600; margin: 0; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim, #9a9a9a); }
 .dash-side > .hd .meta { font-size: 11px; color: var(--accent, #c6ff00); }
-.dash-part { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.dash-part { display: block; padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.dash-part-top { display: flex; align-items: center; gap: 6px; }
 .dash-part-nm { font-size: 13px; font-weight: 600; }
-.dash-badges { display: inline-flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; }
+.dash-part-stat { margin: 3px 0 0 28px; font-size: 11px; color: var(--text-dim, #9a9a9a); font-variant-numeric: tabular-nums; }
+.dash-part-stat b { color: var(--text, #e8e8e8); font-weight: 700; }
 .dash-bdg { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
-.dash-bdg.assign { background: rgba(242,181,67,0.16); color: #f2b543; }
-.dash-bdg.planned { background: rgba(127,209,255,0.16); color: #7fd1ff; }
-.dash-bdg.create { background: rgba(111,220,140,0.16); color: #6fdc8c; }
-/* 프로젝트 역할 배지 — PM은 라임 채움(잉크 검정), 감독·제작은 은은한 톤 */
+.dash-bdg.noassign { margin-left: auto; background: rgba(255,107,94,0.14); color: #ff8f84; }
+/* 프로젝트 역할 배지(P/S/C) — PM은 라임 채움(잉크 검정), 감독·제작은 은은한 톤 */
+.dash-bdg.role { min-width: 15px; text-align: center; padding: 1px 5px; }
 .dash-bdg.role.project_manager { background: var(--accent, #c6f24e); color: var(--accent-ink, #14210a); }
 .dash-bdg.role.supervisor { background: rgba(182,140,255,0.18); color: #c3a6ff; }
 .dash-bdg.role.creator { background: rgba(255,255,255,0.08); color: var(--text-dim, #9a9a9a); }
+/* 이름 첫 글자 아바타 */
+.dash-av { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 700; color: #fff; flex: 0 0 auto; }
+.dash-av.sm { width: 18px; height: 18px; font-size: 10px; }
+.dash-avs { display: inline-flex; gap: 3px; }
+/* 에피소드 행 상태 배지(완료=노랑·진행중=초록·보류·시작전) — 스택바 색 정합 */
+.dash-stbadge { font-size: 10.5px; font-weight: 700; padding: 1px 9px; border-radius: 999px; }
+.dash-stbadge.done { background: rgba(242,181,67,0.16); color: #f2b543; }
+.dash-stbadge.prog { background: rgba(111,220,140,0.16); color: #6fdc8c; }
+.dash-stbadge.hold { background: rgba(255,107,94,0.14); color: #ff8f84; }
+.dash-stbadge.idle { background: rgba(255,255,255,0.06); color: var(--text-dim, #9a9a9a); }
 .dash-part-empty { padding: 14px; font-size: 12px; color: var(--text-faint, #6b6b6b); }
 .dash-part-note { padding: 10px 14px; font-size: 10.5px; color: var(--text-faint, #6b6b6b); border-top: 1px solid var(--border, #2b2b2b); line-height: 1.5; }
 /* 경고 */

@@ -188,25 +188,7 @@ export interface Participant {
   create: boolean; // 실제 생성
   roles?: string[]; // 프로젝트 역할(PM/감독/제작) — 프로젝트 노드에서만 채움
 }
-export function participantsOf(node: DashNode): Participant[] {
-  const map = new Map<string, Participant>();
-  const ensure = (uid: string, name?: string | null): Participant => {
-    let p = map.get(uid);
-    if (!p) {
-      p = { uid, name: name || uid, assign: false, create: false };
-      map.set(uid, p);
-    } else if (name && p.name === p.uid) p.name = name; // 이름 늦게 확보되면 갱신
-    return p;
-  };
-  for (const t of node.tasks) {
-    for (const a of t.assigned_creators || []) ensure(a.uid, a.name).assign = true;
-    for (const c of t.cuts || []) if (c.creator_uid) ensure(c.creator_uid, c.creator_name).create = true;
-  }
-  // 배정·생성 순으로 정렬
-  return [...map.values()].sort((a, b) => Number(b.assign) - Number(a.assign));
-}
-
-// 역할 우선순위(PM>감독>제작>없음) — 프로젝트 노드 참여자 정렬용.
+// 역할 우선순위(PM>감독>제작>없음) — 참여자 정렬용.
 function roleRank(roles?: string[]): number {
   if (!roles?.length) return 0;
   if (roles.includes("project_manager")) return 3;
@@ -214,13 +196,42 @@ function roleRank(roles?: string[]): number {
   return 1;
 }
 
-// 프로젝트 노드에서만: 2축 참여자에 프로젝트 멤버(역할)를 합침.
-// 배정·생성이 아직 없어도 소속 멤버는 명단에 노출(역할 배지 부여).
-export function mergeProjectMembers(
-  participants: Participant[],
-  members: { uid: string; name: string | null; roles: string[] }[],
-): Participant[] {
-  const map = new Map<string, Participant>(participants.map((p) => [p.uid, { ...p }]));
+// 참여자 세부 통계 — 담당(배정) 작업 수·생성 컷 수·크레딧까지. 프로젝트 멤버(역할)도 합친다.
+export interface ParticipantStat extends Participant {
+  assignCount: number; // 담당(배정)한 작업(시퀀스) 수
+  cutCount: number; // 실제 생성한 컷 수
+  credits: number; // 생성 컷 크레딧 합
+}
+export function participantStats(
+  node: DashNode,
+  members: { uid: string; name: string | null; roles: string[] }[] = [],
+): ParticipantStat[] {
+  const map = new Map<string, ParticipantStat>();
+  const ensure = (uid: string, name?: string | null): ParticipantStat => {
+    let p = map.get(uid);
+    if (!p) {
+      p = { uid, name: name || uid, assign: false, create: false, assignCount: 0, cutCount: 0, credits: 0 };
+      map.set(uid, p);
+    } else if (name && p.name === p.uid) p.name = name;
+    return p;
+  };
+  // 같은 컷(gen)이 여러 작업에 연결될 수 있어(폴더 자동+수동 링크) 컷은 1회만 센다(이중계산 방지).
+  const seenCut = new Set<string>();
+  for (const t of node.tasks) {
+    for (const a of t.assigned_creators || []) {
+      const p = ensure(a.uid, a.name);
+      p.assign = true;
+      p.assignCount += 1;
+    }
+    for (const c of t.cuts || []) {
+      if (!c.creator_uid || seenCut.has(c.id)) continue;
+      seenCut.add(c.id);
+      const p = ensure(c.creator_uid, c.creator_name);
+      p.create = true;
+      p.cutCount += 1;
+      p.credits += c.credits || 0;
+    }
+  }
   for (const m of members) {
     const ex = map.get(m.uid);
     if (ex) {
@@ -233,11 +244,19 @@ export function mergeProjectMembers(
         assign: false,
         create: false,
         roles: m.roles,
+        assignCount: 0,
+        cutCount: 0,
+        credits: 0,
       });
     }
   }
-  // 역할 → 배정 순으로 정렬
+  // 역할 → 담당 → 크레딧 → 이름 순 정렬(마지막 이름 tie-break 로 순서 안정화).
   return [...map.values()].sort(
-    (a, b) => roleRank(b.roles) - roleRank(a.roles) || Number(b.assign) - Number(a.assign),
+    (a, b) =>
+      roleRank(b.roles) - roleRank(a.roles) ||
+      Number(b.assign) - Number(a.assign) ||
+      b.credits - a.credits ||
+      (a.name || "").localeCompare(b.name || ""),
   );
 }
+

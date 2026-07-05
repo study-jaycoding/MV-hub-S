@@ -10,10 +10,9 @@ import { PROJECT_ROLE_LABEL, type ProjectMember } from "../../types";
 import {
   buildHierarchy,
   findNode,
-  mergeProjectMembers,
-  participantsOf,
+  participantStats,
   type DashNode,
-  type Participant,
+  type ParticipantStat,
   type StatusDist,
 } from "./dashboardModel";
 import { ProjectManagerPanel } from "./ProjectManagerPanel";
@@ -58,8 +57,44 @@ function fmtDur(sec: number): string {
 function fmtCr(n: number): string {
   return n ? Math.round(n).toLocaleString() : "—";
 }
+// 역할 한 글자(P/S/C) — 간결 배지. 전체 이름은 title 로.
 function roleShort(role: string): string {
+  return role === "project_manager" ? "P" : role === "supervisor" ? "S" : role === "creator" ? "C" : "?";
+}
+function roleFull(role: string): string {
   return (PROJECT_ROLE_LABEL[role] || role).split(" · ")[0];
+}
+
+// 이름 첫 글자 아바타 — 이름 해시로 색 결정(일관).
+function hashHue(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+}
+function Avatar({ name, uid, size }: { name?: string | null; uid: string; size?: "sm" }) {
+  const label = (name || uid || "?").trim().charAt(0).toUpperCase();
+  return (
+    <span
+      className={`dash-av${size === "sm" ? " sm" : ""}`}
+      style={{ background: `hsl(${hashHue(name || uid)} 42% 42%)` }}
+      title={name || uid}
+    >
+      {label}
+    </span>
+  );
+}
+// 노드에 배정된 사람(중복 제거) — 시퀀스 담당 아이콘용.
+function assignedOf(node: DashNode): { uid: string; name?: string | null }[] {
+  const m = new Map<string, { uid: string; name?: string | null }>();
+  for (const t of node.tasks) for (const a of t.assigned_creators || []) if (!m.has(a.uid)) m.set(a.uid, a);
+  return [...m.values()];
+}
+// 에피소드/프로젝트 행 상태 배지 — 프로젝트가 보류면 보류, 아니면 진척으로 파생.
+function nodeStatus(progress: number, projStatus?: string | null): { text: string; cls: string } {
+  if (projStatus === "hold") return { text: "보류", cls: "hold" };
+  if (progress >= 1) return { text: "완료", cls: "done" };
+  if (progress > 0) return { text: "진행중", cls: "prog" };
+  return { text: "시작전", cls: "idle" };
 }
 
 const STATUS_OPTS: { v: string; label: string }[] = [
@@ -75,11 +110,11 @@ function StackBar({ dist }: { dist: StatusDist }) {
   const total = dist.done + dist.publish + dist.prog + dist.idle || 1;
   const pct = (n: number) => `${(n / total) * 100}%`;
   return (
-    <span className="dash-stack" title={`완료 ${dist.done}·게시 ${dist.publish}·진행 ${dist.prog}·시작전 ${dist.idle}`}>
-      <i className="s-done" style={{ width: pct(dist.done) }} />
-      <i className="s-pub" style={{ width: pct(dist.publish) }} />
-      <i className="s-prog" style={{ width: pct(dist.prog) }} />
+    <span className="dash-stack" title={`시작전 ${dist.idle}·진행 ${dist.prog}·게시 ${dist.publish}·완료 ${dist.done}`}>
       <i className="s-idle" style={{ width: pct(dist.idle) }} />
+      <i className="s-prog" style={{ width: pct(dist.prog) }} />
+      <i className="s-pub" style={{ width: pct(dist.publish) }} />
+      <i className="s-done" style={{ width: pct(dist.done) }} />
     </span>
   );
 }
@@ -92,6 +127,7 @@ function TreeRow({
   onToggle,
   selectedKey,
   onSelect,
+  projStatus,
 }: {
   node: DashNode;
   depth: number;
@@ -99,9 +135,12 @@ function TreeRow({
   onToggle: (k: string) => void;
   selectedKey: string | null;
   onSelect: (n: DashNode) => void;
+  projStatus?: string | null;
 }) {
   const hasChildren = !!node.children?.length;
   const open = expanded.has(node.key);
+  const assignees = node.kind === "sequence" ? assignedOf(node) : [];
+  const st = nodeStatus(node.progress, projStatus);
   return (
     <>
       <tr
@@ -132,7 +171,26 @@ function TreeRow({
             <span className="dash-pct tnum">{Math.round(node.progress * 100)}%</span>
           </span>
         </td>
-        <td className="l dash-asgn">{node.assigneeLabel}</td>
+        <td className="l dash-asgn">
+          {node.kind === "sequence" ? (
+            assignees.length ? (
+              <span className="dash-avs">
+                {assignees.map((a) => (
+                  <Avatar key={a.uid} name={a.name} uid={a.uid} size="sm" />
+                ))}
+              </span>
+            ) : (
+              <span className="dim">—</span>
+            )
+          ) : (
+            <span
+              className={`dash-stbadge ${st.cls}`}
+              title={st.cls === "hold" ? "프로젝트가 보류 상태입니다" : "에피소드 진척 기준"}
+            >
+              {st.text}
+            </span>
+          )}
+        </td>
         <td className={node.dueDate && node.dueDate < TODAY ? "dash-due overdue" : "dash-due"}>
           {node.dueDate ? node.dueDate.slice(5) : "—"}
         </td>
@@ -155,22 +213,30 @@ function TreeRow({
             onToggle={onToggle}
             selectedKey={selectedKey}
             onSelect={onSelect}
+            projStatus={projStatus}
           />
         ))}
     </>
   );
 }
 
-// 참여자 배지(역할 + 담당/생성)
-function Badges({ p }: { p: Participant }) {
+// 참여자 한 줄 — 아바타·이름·역할(P/S/C) + 담당N·생성N컷·크레딧 세부.
+function ParticipantRow({ p }: { p: ParticipantStat }) {
   return (
-    <span className="dash-badges">
-      {(p.roles || []).map((r) => (
-        <span key={r} className={`dash-bdg role ${r}`}>{roleShort(r)}</span>
-      ))}
-      {p.assign ? <span className="dash-bdg assign">담당</span> : null}
-      {p.create ? <span className="dash-bdg create">생성</span> : null}
-    </span>
+    <div className="dash-part">
+      <div className="dash-part-top">
+        <Avatar name={p.name} uid={p.uid} />
+        <span className="dash-part-nm">{p.name}</span>
+        {(p.roles || []).map((r) => (
+          <span key={r} className={`dash-bdg role ${r}`} title={roleFull(r)}>{roleShort(r)}</span>
+        ))}
+        {p.assignCount === 0 ? <span className="dash-bdg noassign">배정 없음</span> : null}
+      </div>
+      <div className="dash-part-stat">
+        담당 <b>{p.assignCount}</b> · 생성 <b>{p.cutCount}</b>컷
+        {p.credits ? <> · <b>{Math.round(p.credits).toLocaleString()}</b>cr</> : null}
+      </div>
+    </div>
   );
 }
 
@@ -180,6 +246,7 @@ function ProjectDetail({
   node,
   members,
   projName,
+  projStatus,
   canManage,
   onAssign,
   onUnassign,
@@ -188,6 +255,7 @@ function ProjectDetail({
   node: DashNode | null;
   members: ProjectMember[];
   projName: string;
+  projStatus?: string | null;
   canManage: boolean;
   onAssign: (taskIds: string[], uid: string) => void;
   onUnassign: (taskIds: string[], uid: string) => void;
@@ -210,9 +278,10 @@ function ProjectDetail({
   }
   // 빈 프로젝트(작업 0개)면 node 가 없다 — 트리는 '작업 없음', 참여자는 멤버·역할만 표시.
   const subNode = node && subKey ? findNode(node.children || [], subKey) : null;
-  const participants = subNode
-    ? participantsOf(subNode)
-    : mergeProjectMembers(node ? participantsOf(node) : [], members);
+  const participants = participantStats(
+    subNode || node || ({ tasks: [] } as unknown as DashNode),
+    subNode ? [] : members, // 프로젝트 전체일 때만 멤버(역할) 합침
+  );
   const scopeLabel = subNode
     ? `${subNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${subNode.label}`
     : `프로젝트 · ${projName}`;
@@ -260,6 +329,7 @@ function ProjectDetail({
                     onToggle={toggle}
                     selectedKey={subKey}
                     onSelect={(n) => setSubKey((cur) => (cur === n.key ? null : n.key))}
+                    projStatus={projStatus}
                   />
                 ))}
               </tbody>
@@ -273,10 +343,10 @@ function ProjectDetail({
           </div>
         )}
         <div className="dash-legend">
-          <span><i className="s-done" /> 완료</span>
-          <span><i className="s-pub" /> 게시</span>
-          <span><i className="s-prog" /> 진행중</span>
           <span><i className="s-idle" /> 시작전</span>
+          <span><i className="s-prog" /> 진행중</span>
+          <span><i className="s-pub" /> 게시</span>
+          <span><i className="s-done" /> 완료</span>
           <span className="dim">· 크레딧·시간은 작업 연결 컷 기준</span>
         </div>
       </div>
@@ -325,19 +395,14 @@ function ProjectDetail({
           </div>
         ) : null}
         {participants.length ? (
-          participants.map((p) => (
-            <div className="dash-part" key={p.uid}>
-              <span className="dash-part-nm">{p.name}</span>
-              <Badges p={p} />
-            </div>
-          ))
+          participants.map((p) => <ParticipantRow key={p.uid} p={p} />)
         ) : (
-          <div className="dash-part-empty">참여자 없음 — 담당 배정·예정 생성자 지정 필요</div>
+          <div className="dash-part-empty">참여자 없음 — 시퀀스를 골라 담당자를 배정하세요.</div>
         )}
         <div className="dash-part-note">
           {subNode
             ? "담당(대시보드 배정) · 생성(실제 만듦). 시퀀스를 고르면 위에서 담당자를 배정할 수 있습니다."
-            : "PM·감독·제작(역할) + 담당·생성. 소속 멤버는 작업이 없어도 표시됩니다."}
+            : "P·S·C = PM·감독·제작(역할). 담당 0 이면 '배정 없음'. 담당·생성 컷·크레딧은 이 프로젝트 기준."}
         </div>
       </div>
     </div>
@@ -434,7 +499,9 @@ export function DashboardView() {
   const trendMax = useMemo(() => Math.max(1, ...trend.map((p) => p.credits)), [trend]);
 
   const selNode = selectedPid ? treeByPid.get(selectedPid) || null : null;
-  const selName = summary?.projects.find((p) => p.pid === selectedPid)?.name || "";
+  const selProj = summary?.projects.find((p) => p.pid === selectedPid);
+  const selName = selProj?.name || "";
+  const selStatus = selProj?.planning?.status || null;
   const selMembers = (selectedPid && members.get(selectedPid)) || [];
 
   // 담당 배정/해제 — 선택 시퀀스의 작업(들)에 적용 후 재로딩. PM(manage) 권한은 백엔드가 강제.
@@ -629,6 +696,7 @@ export function DashboardView() {
         node={selNode}
         members={selMembers}
         projName={selName}
+        projStatus={selStatus}
         canManage={canManageProjects}
         onAssign={assign}
         onUnassign={unassign}

@@ -689,6 +689,8 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 if nm and nm not in seen:
                     seen.append(nm)
                 c["creator_name"] = nm
+                # 컷별 크레딧 — 참여자별 크레딧 집계(대시보드 참여자 세부)에 쓴다.
+                c["credits"] = metrics_by_gen.get(c["id"], (0, None))[0]
                 c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen  # 실제 생성자(연결 컷 파생) — 기존 필터·캘린더 호환 유지
