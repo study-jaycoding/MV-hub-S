@@ -798,3 +798,19 @@ table.dash-tree td.l { text-align: left; }
 .dash-asgn { font-size: 12px; color: var(--text-dim, #9a9a9a); }
 .dash-due { font-size: 12px; color: var(--text-dim, #9a9a9a); font-variant-numeric: tabular-nums; }
 .dash-due.overdue { color: #ff6b5e; font-weight: 600; }
+
+/* 프로젝트 요약 테이블(회사 전체) */
+.dash-sum-actions { display: inline-flex; align-items: center; gap: 12px; }
+.dash-newproj { background: var(--accent, #c6f24e); color: var(--accent-ink, #14210a); border: none; border-radius: 7px; padding: 5px 11px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.dash-newproj:hover { filter: brightness(1.06); }
+.dash-summary .dash-row.clickable { cursor: pointer; }
+.dash-summary .dash-row.clickable:hover { background: rgba(255,255,255,0.03); }
+.dash-summary .dash-row.sel { background: rgba(198,242,78,0.08); }
+.dash-sched { font-size: 12px; color: var(--text-dim, #9a9a9a); font-variant-numeric: tabular-nums; }
+.dash-over { color: #ff6b5e; font-weight: 600; }
+.dash-link { background: none; border: 1px solid var(--border, #2b2b2b); color: var(--text-dim, #9a9a9a); border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+.dash-link:hover { border-color: var(--accent, #c6f24e); color: var(--text, #e8e8e8); }
+.dash-view .dim { color: var(--text-faint, #6b6b6b); }
+/* 상세 안내(프로젝트 미선택) */
+.dash-detail-empty { padding: 22px 16px; text-align: center; font-size: 13px; color: var(--text-faint, #6b6b6b); background: var(--panel, #1a1a1a); border: 1px dashed var(--border, #2b2b2b); border-radius: 10px; }
+.dash-detail-empty b { color: var(--accent, #c6f24e); }
