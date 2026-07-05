@@ -438,14 +438,22 @@ export function DashboardView() {
   const selMembers = (selectedPid && members.get(selectedPid)) || [];
 
   // 담당 배정/해제 — 선택 시퀀스의 작업(들)에 적용 후 재로딩. PM(manage) 권한은 백엔드가 강제.
+  // 추가는 bulk API(원자), 실패해도 reload 로 실제 상태를 화면에 맞춘다.
   const assign = (taskIds: string[], uid: string) =>
-    Promise.all(taskIds.map((t) => manageApi.addAssignee(t, uid)))
+    manageApi
+      .bulkSetAssignments(taskIds.map((t) => ({ task_id: t, assignee_uids: [uid] })), "add")
       .then(reload)
-      .catch((e) => alert("배정 실패: " + String(e?.message || e)));
+      .catch((e) => {
+        alert("배정 실패: " + String(e?.message || e));
+        reload();
+      });
   const unassign = (taskIds: string[], uid: string) =>
     Promise.all(taskIds.map((t) => manageApi.removeAssignee(t, uid)))
       .then(reload)
-      .catch((e) => alert("배정 해제 실패: " + String(e?.message || e)));
+      .catch((e) => {
+        alert("배정 해제 실패: " + String(e?.message || e));
+        reload();
+      });
 
   // 편집 모달
   const openEdit = (p: ManageProject) => {
