@@ -2,12 +2,9 @@
 import { jsonBody, jsonFetch } from "./http";
 import { pathPart, withQuery } from "./url";
 import type {
-  BreakdownData,
   ManageSummary,
-  MatrixData,
   Planning,
   Task,
-  TimePoint,
 } from "../components/manage/types";
 
 export const manageApi = {
@@ -65,17 +62,6 @@ export const manageApi = {
       "/api/manage/tasks/planned-creators/bulk",
       { method: "PATCH", body: jsonBody({ mode, items }) },
     ),
-  timeseries: (bucket: "day" | "week" = "day", projectId?: string, creatorUid?: string) =>
-    jsonFetch<TimePoint[]>(
-      withQuery("/api/manage/timeseries", {
-        bucket,
-        project_id: projectId,
-        creator_uid: creatorUid,
-      }),
-    ),
-  matrix: () => jsonFetch<MatrixData>("/api/manage/matrix"),
-  breakdown: (projectId: string) =>
-    jsonFetch<BreakdownData>(withQuery("/api/manage/breakdown", { project_id: projectId })),
   // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.
   teamOverview: (f: TeamFilters = {}) =>
     jsonFetch<TeamOverview>(
