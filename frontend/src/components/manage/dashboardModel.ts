@@ -67,7 +67,7 @@ function rollup(tasks: Task[]): {
   let credits = 0, elapsed = 0, elapsedKnown = 0;
   let wSum = 0, wCount = 0;
   const dist = emptyDist();
-  const asgn = new Map<string, string>(); // 담당 uid→name(중복 제거)
+  const asgn = new Map<string, string>(); // 담당 uid→name(중복 제거, 복수 배정)
   let dueDate: string | null = null; // 미완료 작업 중 가장 임박한 마감(min)
   for (const t of tasks) {
     credits += t.credits || 0;
@@ -81,7 +81,7 @@ function rollup(tasks: Task[]): {
       wCount += 1;
     }
     addToDist(dist, st);
-    if (t.assignee_uid) asgn.set(t.assignee_uid, t.assignee_name || t.assignee_uid);
+    for (const a of t.assigned_creators || []) asgn.set(a.uid, a.name || a.uid);
     if (st !== "done" && st !== "omit") {
       const d = t.due_date || t.derived_due;
       if (d && (!dueDate || d < dueDate)) dueDate = d;
@@ -180,12 +180,11 @@ export function findNode(tree: DashNode[], key: string | null): DashNode | null 
   return null;
 }
 
-// 신원 3축 참여자 — 배정(assignee)·예정(planned)·생성(cut creator)을 사람별로 합침.
+// 신원 2축 참여자 — 배정(담당)·생성(cut creator)을 사람별로 합침.
 export interface Participant {
   uid: string;
   name: string;
-  assign: boolean; // PM 배정 리드
-  planned: boolean; // self-assign 예정
+  assign: boolean; // 담당(배정) — 대시보드에서 지정
   create: boolean; // 실제 생성
   roles?: string[]; // 프로젝트 역할(PM/감독/제작) — 프로젝트 노드에서만 채움
 }
@@ -194,20 +193,17 @@ export function participantsOf(node: DashNode): Participant[] {
   const ensure = (uid: string, name?: string | null): Participant => {
     let p = map.get(uid);
     if (!p) {
-      p = { uid, name: name || uid, assign: false, planned: false, create: false };
+      p = { uid, name: name || uid, assign: false, create: false };
       map.set(uid, p);
     } else if (name && p.name === p.uid) p.name = name; // 이름 늦게 확보되면 갱신
     return p;
   };
   for (const t of node.tasks) {
-    if (t.assignee_uid) ensure(t.assignee_uid, t.assignee_name).assign = true;
-    for (const p of t.planned_creators || []) ensure(p.uid, p.name).planned = true;
+    for (const a of t.assigned_creators || []) ensure(a.uid, a.name).assign = true;
     for (const c of t.cuts || []) if (c.creator_uid) ensure(c.creator_uid, c.creator_name).create = true;
   }
-  // 배정·예정·생성 순으로 정렬
-  return [...map.values()].sort(
-    (a, b) => Number(b.assign) - Number(a.assign) || Number(b.planned) - Number(a.planned),
-  );
+  // 배정·생성 순으로 정렬
+  return [...map.values()].sort((a, b) => Number(b.assign) - Number(a.assign));
 }
 
 // 역할 우선순위(PM>감독>제작>없음) — 프로젝트 노드 참여자 정렬용.
@@ -218,8 +214,8 @@ function roleRank(roles?: string[]): number {
   return 1;
 }
 
-// 프로젝트 노드에서만: 3축 참여자에 프로젝트 멤버(역할)를 합침.
-// 배정·예정·생성이 아직 없어도 소속 멤버는 명단에 노출(역할 배지 부여).
+// 프로젝트 노드에서만: 2축 참여자에 프로젝트 멤버(역할)를 합침.
+// 배정·생성이 아직 없어도 소속 멤버는 명단에 노출(역할 배지 부여).
 export function mergeProjectMembers(
   participants: Participant[],
   members: { uid: string; name: string | null; roles: string[] }[],
@@ -235,17 +231,13 @@ export function mergeProjectMembers(
         uid: m.uid,
         name: m.name || m.uid,
         assign: false,
-        planned: false,
         create: false,
         roles: m.roles,
       });
     }
   }
-  // 역할 → 배정 → 예정 순으로 정렬
+  // 역할 → 배정 순으로 정렬
   return [...map.values()].sort(
-    (a, b) =>
-      roleRank(b.roles) - roleRank(a.roles) ||
-      Number(b.assign) - Number(a.assign) ||
-      Number(b.planned) - Number(a.planned),
+    (a, b) => roleRank(b.roles) - roleRank(a.roles) || Number(b.assign) - Number(a.assign),
   );
 }

@@ -37,29 +37,24 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
       { method: "DELETE" },
     ),
-  // 예정 생성자(self-assign) — '나'는 서버가 신원 계산(uid 안 보냄)
-  addMePlanned: (tid: string) =>
-    jsonFetch<{ ok: boolean; uid: string }>(
-      `/api/manage/tasks/${pathPart(tid)}/planned-creators/me`,
+  // 담당(배정) — 대시보드에서 PM 이 작업자를 배정(=컷 분배). 모두 PM(manage) 권한.
+  addAssignee: (tid: string, uid: string) =>
+    jsonFetch<{ ok: boolean }>(
+      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
       { method: "POST" },
     ),
-  removeMePlanned: (tid: string) =>
+  removeAssignee: (tid: string, uid: string) =>
     jsonFetch<{ removed: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/planned-creators/me`,
+      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
       { method: "DELETE" },
     ),
-  removePlanned: (tid: string, uid: string) =>
-    jsonFetch<{ removed: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/planned-creators/${pathPart(uid)}`,
-      { method: "DELETE" },
-    ),
-  // 엑셀식 붙여넣기 — 여러 작업 예정 생성자 일괄 설정. mode: replace(교체) | add(추가)
-  bulkSetPlanned: (
-    items: { task_id: string; creator_uids: string[] }[],
+  // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가)
+  bulkSetAssignments: (
+    items: { task_id: string; assignee_uids: string[] }[],
     mode: "replace" | "add",
   ) =>
     jsonFetch<{ ok: boolean; count: number }>(
-      "/api/manage/tasks/planned-creators/bulk",
+      "/api/manage/tasks/assignees/bulk",
       { method: "PATCH", body: jsonBody({ mode, items }) },
     ),
   // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.

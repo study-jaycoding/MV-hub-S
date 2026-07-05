@@ -161,15 +161,14 @@ function TreeRow({
   );
 }
 
-// 참여자 배지(역할 + 배정/예정/생성)
+// 참여자 배지(역할 + 담당/생성)
 function Badges({ p }: { p: Participant }) {
   return (
     <span className="dash-badges">
       {(p.roles || []).map((r) => (
         <span key={r} className={`dash-bdg role ${r}`}>{roleShort(r)}</span>
       ))}
-      {p.assign ? <span className="dash-bdg assign">배정</span> : null}
-      {p.planned ? <span className="dash-bdg planned">예정</span> : null}
+      {p.assign ? <span className="dash-bdg assign">담당</span> : null}
       {p.create ? <span className="dash-bdg create">생성</span> : null}
     </span>
   );
@@ -181,11 +180,17 @@ function ProjectDetail({
   node,
   members,
   projName,
+  canManage,
+  onAssign,
+  onUnassign,
 }: {
   pid: string | null;
   node: DashNode | null;
   members: ProjectMember[];
   projName: string;
+  canManage: boolean;
+  onAssign: (taskIds: string[], uid: string) => void;
+  onUnassign: (taskIds: string[], uid: string) => void;
 }) {
   // 상세 내부 선택(시퀀스 클릭 → 참여자 좁힘)
   const [subKey, setSubKey] = useState<string | null>(null);
@@ -211,6 +216,11 @@ function ProjectDetail({
   const scopeLabel = subNode
     ? `${subNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${subNode.label}`
     : `프로젝트 · ${projName}`;
+  // 담당 배정 — 시퀀스 선택 시 그 시퀀스 작업(들)에 배정. 대상 task_id·현재 담당·후보 멤버.
+  const assignSeq = subNode?.kind === "sequence" ? subNode : null;
+  const subTaskIds = assignSeq ? assignSeq.tasks.map((t) => t.id) : [];
+  const assignedList = assignSeq ? participants.filter((p) => p.assign) : [];
+  const assignedSet = new Set(assignedList.map((p) => p.uid));
 
   const toggle = (k: string) =>
     setExpanded((prev) => {
@@ -276,6 +286,44 @@ function ProjectDetail({
           <h2>참여자</h2>
           <span className="meta">{scopeLabel}</span>
         </div>
+        {/* 담당 배정 — 시퀀스 선택 + PM 권한일 때. 여기서 배정하면 그 컷들이 작업자에게 분배된다. */}
+        {canManage && assignSeq ? (
+          <div className="dash-assign">
+            <div className="dash-assign-hd">담당 배정 — {assignSeq.label}</div>
+            <div className="dash-assign-chips">
+              {assignedList.length ? (
+                assignedList.map((a) => (
+                  <span key={a.uid} className="dash-assign-chip">
+                    {a.name}
+                    <button
+                      className="dash-assign-x"
+                      title="담당 해제"
+                      onClick={() => onUnassign(subTaskIds, a.uid)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))
+              ) : (
+                <span className="dim">담당 없음</span>
+              )}
+            </div>
+            <select
+              className="dash-assign-add"
+              value=""
+              onChange={(e) => {
+                if (e.target.value) onAssign(subTaskIds, e.target.value);
+              }}
+            >
+              <option value="">+ 담당자 추가</option>
+              {members
+                .filter((m) => !assignedSet.has(m.uid))
+                .map((m) => (
+                  <option key={m.uid} value={m.uid}>{m.name || m.uid}</option>
+                ))}
+            </select>
+          </div>
+        ) : null}
         {participants.length ? (
           participants.map((p) => (
             <div className="dash-part" key={p.uid}>
@@ -288,8 +336,8 @@ function ProjectDetail({
         )}
         <div className="dash-part-note">
           {subNode
-            ? "배정(PM 지정) · 예정(내가 할 작업) · 생성(실제 만듦). 선택한 행을 다시 누르면 프로젝트 전체로."
-            : "PM·감독·제작(역할) + 배정·예정·생성. 소속 멤버는 작업이 없어도 표시됩니다."}
+            ? "담당(대시보드 배정) · 생성(실제 만듦). 시퀀스를 고르면 위에서 담당자를 배정할 수 있습니다."
+            : "PM·감독·제작(역할) + 담당·생성. 소속 멤버는 작업이 없어도 표시됩니다."}
         </div>
       </div>
     </div>
@@ -388,6 +436,16 @@ export function DashboardView() {
   const selNode = selectedPid ? treeByPid.get(selectedPid) || null : null;
   const selName = summary?.projects.find((p) => p.pid === selectedPid)?.name || "";
   const selMembers = (selectedPid && members.get(selectedPid)) || [];
+
+  // 담당 배정/해제 — 선택 시퀀스의 작업(들)에 적용 후 재로딩. PM(manage) 권한은 백엔드가 강제.
+  const assign = (taskIds: string[], uid: string) =>
+    Promise.all(taskIds.map((t) => manageApi.addAssignee(t, uid)))
+      .then(reload)
+      .catch((e) => alert("배정 실패: " + String(e?.message || e)));
+  const unassign = (taskIds: string[], uid: string) =>
+    Promise.all(taskIds.map((t) => manageApi.removeAssignee(t, uid)))
+      .then(reload)
+      .catch((e) => alert("배정 해제 실패: " + String(e?.message || e)));
 
   // 편집 모달
   const openEdit = (p: ManageProject) => {
@@ -558,7 +616,15 @@ export function DashboardView() {
       </div>
 
       {/* ── 상세: 선택 프로젝트 한 개 */}
-      <ProjectDetail pid={selectedPid} node={selNode} members={selMembers} projName={selName} />
+      <ProjectDetail
+        pid={selectedPid}
+        node={selNode}
+        members={selMembers}
+        projName={selName}
+        canManage={canManageProjects}
+        onAssign={assign}
+        onUnassign={unassign}
+      />
 
       {/* 하단 추이 (팀 크레딧, 서버 집계) */}
       {trend.length ? (

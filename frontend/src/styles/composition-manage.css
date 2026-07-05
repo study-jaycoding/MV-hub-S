@@ -814,3 +814,17 @@ table.dash-tree td.l { text-align: left; }
 /* 상세 안내(프로젝트 미선택) */
 .dash-detail-empty { padding: 22px 16px; text-align: center; font-size: 13px; color: var(--text-faint, #6b6b6b); background: var(--panel, #1a1a1a); border: 1px dashed var(--border, #2b2b2b); border-radius: 10px; }
 .dash-detail-empty b { color: var(--accent, #c6f24e); }
+
+/* 담당 배정 박스(시퀀스 선택 시, 참여자 패널 상단) */
+.dash-assign { padding: 10px 14px; border-bottom: 1px solid var(--border, #2b2b2b); background: rgba(198,242,78,0.05); }
+.dash-assign-hd { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent, #c6f24e); font-weight: 700; margin-bottom: 8px; }
+.dash-assign-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.dash-assign-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 999px; background: rgba(242,181,67,0.16); color: #f2b543; font-size: 11px; font-weight: 600; }
+.dash-assign-x { background: none; border: none; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+.dash-assign-x:hover { color: #ff6b5e; }
+.dash-assign-add { width: 100%; background: var(--panel-2, #232323); border: 1px solid var(--border, #2b2b2b); color: var(--text, #e8e8e8); border-radius: 6px; padding: 5px 8px; font-size: 12px; cursor: pointer; }
+
+/* 작업탭 '내 배분만' 토글 */
+.work-mine-toggle { background: var(--panel-2, #232323); border: 1px solid var(--border, #2b2b2b); color: var(--text-dim, #9a9a9a); border-radius: 7px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; margin-right: 8px; }
+.work-mine-toggle:hover { border-color: var(--accent, #c6f24e); }
+.work-mine-toggle.on { background: var(--accent, #c6f24e); color: var(--accent-ink, #14210a); border-color: var(--accent, #c6f24e); }

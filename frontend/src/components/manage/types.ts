@@ -159,16 +159,7 @@ export interface WorkViewProps {
   thumb: (path?: string | null) => string | undefined;
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
-  // 프로젝트별 배정 후보(멤버) — 담당 셀 select 옵션. 없으면 담당은 읽기전용(이름만).
-  assigneeOptions?: Record<string, { creator_uid: string; name?: string | null }[]>;
-  myUid?: string | null; // 현재 로그인 uid — 예정 생성자에서 '나' 판별·삭제 노출
-  onAddMePlanned?: (tid: string) => void; // 생성자 셀 '+ 나' — self-assign
-  onRemovePlanned?: (tid: string, uid: string) => void; // 예정 생성자 배지 삭제
-  // 엑셀식 셀 붙여넣기 — 여러 작업 예정 생성자 일괄 설정
-  onBulkSetPlanned?: (
-    items: { task_id: string; creator_uids: string[] }[],
-    mode: "replace" | "add",
-  ) => void;
+  myUid?: string | null; // 현재 로그인 uid — '내 배분' 필터·표시용
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -201,7 +192,6 @@ export interface Task {
   project_id: string;
   name: string;
   status: string; // not_started|pending|in_progress|publish|retake|omit|done
-  assignee_uid?: string | null;
   start_date?: string | null;
   due_date?: string | null;
   sort_order?: number | null;
@@ -218,9 +208,8 @@ export interface Task {
   derived_due?: string | null; // 연결 컷 최종 생성일(YYYY-MM-DD) — PM 미설정 시 마감일 파생
   cuts?: Cut[];
   creators?: string[]; // 실제 생성자(연결 컷 파생)
-  planned_creators?: { uid: string; name?: string | null }[]; // 예정 생성자(수동 self-assign)
+  assigned_creators?: { uid: string; name?: string | null }[]; // 담당(배정, 복수) — 대시보드에서 지정
   credits?: number;
   elapsed?: number;
   comment_count?: number;
-  assignee_name?: string | null;
 }

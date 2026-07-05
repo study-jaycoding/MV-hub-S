@@ -92,15 +92,13 @@ export function WorkBoard() {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
-  const [assigneeOptions, setAssigneeOptions] = useState<
-    Record<string, { creator_uid: string; name?: string | null }[]>
-  >({});
-  const [myUid, setMyUid] = useState<string | null>(null); // 현재 로그인 uid — 예정 생성자 '내 것' 판별
+  const [myUid, setMyUid] = useState<string | null>(null); // 현재 로그인 uid — '내 배분' 필터
+  const [mineOnly, setMineOnly] = useState(false); // 내게 배정된 작업만 보기(작업자 관점)
   useEffect(() => {
     api
       .me()
       .then((a) => setMyUid(a?.creator_uid || null))
-      .catch(() => setMyUid(null)); // AUTH off/미로그인 — '나'는 서버가 계산
+      .catch(() => setMyUid(null));
   }, []);
   const [view, setView] = useState<WorkView>(
     () => (loadString(STORAGE_KEYS.manageWorkView, "table") as WorkView) || "table",
@@ -203,15 +201,6 @@ export function WorkBoard() {
         projectsRef.current = ps;
         setProjects(ps);
         loadAll();
-        // 프로젝트별 배정 후보(멤버) 로드 — 담당 셀 select 옵션. 실패한 프로젝트는 빈 목록.
-        Promise.all(
-          ps.map((p) =>
-            api
-              .projectMembers(p.pid)
-              .then((ms) => [p.pid, ms.map((m) => ({ creator_uid: m.uid, name: m.name }))] as const)
-              .catch(() => [p.pid, []] as const),
-          ),
-        ).then((pairs) => setAssigneeOptions(Object.fromEntries(pairs)));
       })
       .catch((e) => setErr(String(e?.message || e)));
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
@@ -280,28 +269,6 @@ export function WorkBoard() {
     await manageApi.unlinkGeneration(tid, genId);
     loadAll();
   };
-  // 예정 생성자 self-assign('+ 나') / 배지 삭제
-  const onAddMePlanned = async (tid: string) => {
-    await manageApi.addMePlanned(tid);
-    loadAll();
-  };
-  const onRemovePlanned = async (tid: string, uid: string) => {
-    if (uid === myUid) await manageApi.removeMePlanned(tid);
-    else await manageApi.removePlanned(tid, uid); // 남은 PM 권한(서버가 검증)
-    loadAll();
-  };
-  const onBulkSetPlanned = async (
-    items: { task_id: string; creator_uids: string[] }[],
-    mode: "replace" | "add",
-  ) => {
-    try {
-      await manageApi.bulkSetPlanned(items, mode);
-    } catch (e) {
-      setErr(String((e as Error)?.message || e)); // 권한 부족(403) 등 — 붙여넣기 실패 표시
-    }
-    loadAll();
-  };
-
   // effective 상태 — 화면에서만 '생략'으로(서버 미기록, 재활성화 시 자동 복귀):
   //   (1) 이 작업의 폴더가 폴더 단위 비활성이면 생략, 또는 (2) 컷이 전부 비활성화(d)면 생략.
   const effective = useMemo(
@@ -328,7 +295,15 @@ export function WorkBoard() {
     }
     return s;
   }, [tasks, disabled, disabledFolders]);
-  const filtered = useMemo(() => effective.filter((t) => matchTask(t, filters)), [effective, filters]);
+  const filtered = useMemo(
+    () =>
+      effective.filter(
+        (t) =>
+          matchTask(t, filters) &&
+          (!mineOnly || (t.assigned_creators || []).some((a) => a.uid === myUid)),
+      ),
+    [effective, filters, mineOnly, myUid],
+  );
 
   // 드래그 순서변경 — 표시 순서에서 draggedId 를 targetId 앞으로 옮기고 sort_order 를 재부여(전역 유지).
   const onReorder = (draggedId: string, targetId: string) => {
@@ -363,11 +338,7 @@ export function WorkBoard() {
   const viewProps: WorkViewProps = {
     tasks: filtered,
     seqOptions,
-    assigneeOptions,
     myUid,
-    onAddMePlanned,
-    onRemovePlanned,
-    onBulkSetPlanned,
     thumb: taskThumb,
     disabled: disabledCuts,
     colorMap,
@@ -386,6 +357,16 @@ export function WorkBoard() {
       <header className="manage-head">
         <h1>작업</h1>
         <div className="work-head-ctl">
+          {/* 내 배분 — 대시보드에서 나에게 배정된 작업만(작업자 관점). myUid 없으면 숨김. */}
+          {myUid ? (
+            <button
+              className={"work-mine-toggle" + (mineOnly ? " on" : "")}
+              onClick={() => setMineOnly((v) => !v)}
+              title="나에게 배정된 작업만 보기"
+            >
+              내 배분만
+            </button>
+          ) : null}
           <div className="manage-toggles">
             <button className={view === "table" ? "on" : ""} onClick={() => setView("table")}>
               테이블
