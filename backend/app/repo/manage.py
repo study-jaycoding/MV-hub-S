@@ -473,7 +473,7 @@ def set_planning(
 
 # ── 작업(Task) ────────────────────────────────────────────────────────────────
 _TASK_FIELDS = (
-    "name", "status", "assignee_uid", "start_date", "due_date", "sort_order", "note",
+    "name", "status", "start_date", "due_date", "sort_order", "note",
     "sequence", "description",
 )
 
@@ -776,12 +776,12 @@ def create_task(project_id: str, name: str, **kw: Any) -> dict[str, Any]:
         _ensure_schema(conn)
         conn.execute(
             "INSERT INTO project_task"
-            "(id, project_id, name, status, assignee_uid, start_date, due_date, sort_order, "
+            "(id, project_id, name, status, start_date, due_date, sort_order, "
             " note, sequence, description) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 tid, project_id, name, kw.get("status") or "not_started",
-                kw.get("assignee_uid"), kw.get("start_date"), kw.get("due_date"),
+                kw.get("start_date"), kw.get("due_date"),
                 kw.get("sort_order"), kw.get("note"),
                 kw.get("sequence"), kw.get("description"),
             ),

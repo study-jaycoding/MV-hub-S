@@ -340,9 +340,9 @@ def create_task(body: TaskIn, request: Request):
 def patch_task(tid: str, body: TaskPatch, request: Request):
     pid = _task_project_or_404(tid)
     fields = body.model_dump(exclude_unset=True)
-    # 배정된 작업자는 자기 배분 작업을 '진행'(상태·메모)할 수 있다. 그 외 관리 필드는 PM(manage) 권한.
+    # 배정된 작업자는 자기 배분 작업을 '진행'(상태·설명·메모)할 수 있다. 그 외 관리 필드는 PM 권한.
     actor = account_actor_uid(request) or actor_id(request)
-    if fields and set(fields) <= {"status", "note"} and repo_manage.is_assignee(tid, actor):
+    if fields and set(fields) <= {"status", "note", "description"} and repo_manage.is_assignee(tid, actor):
         _require_project_read(request, pid)
     else:
         _require_project_manage(request, pid)
