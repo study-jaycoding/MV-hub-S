@@ -466,8 +466,10 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # 텔레메트리 삭제 스냅샷 신원(동적 사이드카 — _col_exists 가드로 없으면 스킵). drain 이 이 컬럼을
     # snapshot JSON 보다 우선하므로(ingest._drain_telemetry), 컬럼만 remap 하면 삭제반영이 정합된다.
     ("telemetry_outbox", "tomb_creator_uid", "plain"),
-    # 작업 예정 생성자(수동 self-assign) 신원 — acct:→user_ 전환 시 함께 정합(안 하면 내 예정이 끊김).
+    # [DEPRECATED] 옛 예정 생성자(self-assign) — 담당 모델로 대체됐지만, 잔존 데이터 신원 정합 위해 유지.
     ("task_planned_creator", "creator_uid", "ignore_del"),
+    # 작업 담당(배정) 신원 — acct:→user_ 전환 시 함께 정합(안 하면 내 배분 작업이 끊김).
+    ("task_assignment", "assignee_uid", "ignore_del"),
 )
 
 

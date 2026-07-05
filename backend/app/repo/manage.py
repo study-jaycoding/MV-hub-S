@@ -86,14 +86,24 @@ _SCHEMA = (
         gen_id  TEXT NOT NULL,
         PRIMARY KEY (task_id, gen_id)
     )""",
-    # 작업 '예정 생성자'(수동) — 작업자가 "내가 할게" self-assign. 실제 생성자(task_generation→
-    # generation.creator_uid 파생)와 별개 축. creator_uid 는 신원(acct:→user_ remap 대상).
+    # [DEPRECATED] 옛 '예정 생성자'(self-assign) — 담당(배정) 모델로 대체됨(폐기). 기존 DB 호환 위해
+    # 테이블만 남기고 코드는 더 쓰지 않는다. 신규 배정은 아래 task_assignment 를 쓴다.
     """CREATE TABLE IF NOT EXISTS task_planned_creator (
         task_id     TEXT NOT NULL,
         creator_uid TEXT NOT NULL,
         added_by    TEXT,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (task_id, creator_uid)
+    )""",
+    # 작업 '담당(배정)' — PM 이 대시보드에서 작업자(복수)를 배정 = 컷 분배. 배정된 작업자는
+    # 작업탭에서 자기 배분 작업을 확인·진행한다. 단일 project_task.assignee_uid(legacy)를 이 테이블로
+    # 이관(멱등)하고 옛 self-assign(task_planned_creator)은 폐지했다. assignee_uid 는 신원 remap 대상.
+    """CREATE TABLE IF NOT EXISTS task_assignment (
+        task_id      TEXT NOT NULL,
+        assignee_uid TEXT NOT NULL,
+        added_by     TEXT,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (task_id, assignee_uid)
     )""",
     # 완료본 렌더폴더 저장 대장(멱등) — "완료만 저장하기"가 저장한 생성물·목적지 기록.
     # gen_id 당 1행. 실제 파일 존재 여부로 멱등 판정(기록만 있고 파일 없으면 재복사).
@@ -124,6 +134,7 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_project_task_proj ON project_task(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_gen_gen ON task_generation(gen_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_planned_uid ON task_planned_creator(creator_uid, task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_assignment_uid ON task_assignment(assignee_uid, task_id)",
 )
 
 
@@ -169,6 +180,17 @@ def _ensure_schema(conn) -> None:
     # retake 폐지: 진행 중으로 되돌림. todo→시작전, review→게시.
     for old, new in (("todo", "not_started"), ("review", "publish"), ("retake", "in_progress")):
         conn.execute("UPDATE project_task SET status=? WHERE status=?", (new, old))
+    # 단일 담당(assignee_uid) → 복수 담당(task_assignment) 1회 이관(멱등). 값 있는 것만 옮기고
+    # 원 컬럼을 비운다 → 재실행 시 대상 없음(부활 방지). 대시보드에서 담당을 지우면 그대로 유지된다.
+    conn.execute(
+        "INSERT INTO task_assignment(task_id, assignee_uid, added_by) "
+        "SELECT id, assignee_uid, 'migrate' FROM project_task "
+        "WHERE assignee_uid IS NOT NULL AND assignee_uid<>'' "
+        "ON CONFLICT(task_id, assignee_uid) DO NOTHING"
+    )
+    conn.execute(
+        "UPDATE project_task SET assignee_uid=NULL WHERE assignee_uid IS NOT NULL AND assignee_uid<>''"
+    )
     # 명시 트랜잭션 중이 아닐 때만 완료 표시 — 혹시 호출자가 BEGIN 후 불렀다가 롤백하면
     # DDL 도 함께 되돌아가므로, 그 경우엔 다음 호출이 다시 보장하게 남겨둔다.
     if not conn.in_transaction:
@@ -564,18 +586,18 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 if g["creator_uid"]:
                     all_creator_uids.add(g["creator_uid"])
                 all_gen_ids.add(g["id"])
-        # 예정 생성자(수동 self-assign) 배치 조회 — 실제 생성자(per_task_cuts)와 별개 축.
+        # 담당(배정) 배치 조회 — 실제 생성자(per_task_cuts)와 별개 축. PM 이 대시보드에서 배정한다.
         task_ids = [r["id"] for r in rows]
-        planned_by_task: dict[str, list[str]] = {}
+        assigned_by_task: dict[str, list[str]] = {}
         if task_ids:
             ph_t = ",".join("?" * len(task_ids))
             for pr in conn.execute(
-                f"SELECT task_id, creator_uid FROM task_planned_creator "
+                f"SELECT task_id, assignee_uid FROM task_assignment "
                 f"WHERE task_id IN ({ph_t}) ORDER BY created_at",
                 task_ids,
             ).fetchall():
-                planned_by_task.setdefault(pr["task_id"], []).append(pr["creator_uid"])
-                all_creator_uids.add(pr["creator_uid"])
+                assigned_by_task.setdefault(pr["task_id"], []).append(pr["assignee_uid"])
+                all_creator_uids.add(pr["assignee_uid"])
         # ★배치 집계 — 작업 P개마다 반복하던 metrics/comment 쿼리(≈2P회)를 전체 gen_id 로 1회씩.
         # elapsed 는 raw(NULL 유지) — '없음(NULL)'과 '0초'를 구분해야 manage_hub 폴백이 가능(코덱스).
         metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed|None)
@@ -652,15 +674,14 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
             # 는 드래그로 찍힐 수 있어 편집 기준에서 제외.
             pm_edited = bool(
                 r["start_date"] or r["due_date"] or r["note"]
-                or r["assignee_uid"] or r["description"] or r["status"] == "omit"
+                or assigned_by_task.get(r["id"]) or r["description"] or r["status"] == "omit"
             )
             if r["folder_path"] and d["gen_count"] == 0 and not pm_edited:
                 continue
             out.append(d)
         # 작성자·담당자 이름 일괄 해석(단일 해석기) 후 작업별 부착.
-        assignee_uids = {d.get("assignee_uid") for d in out if d.get("assignee_uid")}
-        to_resolve = set(all_creator_uids) | assignee_uids
-        names = resolve_display_names(conn, list(to_resolve)) if to_resolve else {}
+        # all_creator_uids 에 담당(assignee)도 이미 포함(위 배치 조회에서 add).
+        names = resolve_display_names(conn, list(all_creator_uids)) if all_creator_uids else {}
         for d in out:
             seen: list[str] = []
             for c in per_task_cuts[d["id"]]:
@@ -671,46 +692,59 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
                 c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen  # 실제 생성자(연결 컷 파생) — 기존 필터·캘린더 호환 유지
-            # 담당(배정) — 생성자(누가 만듦)와 별개 축. UI 가 배정↔생성 분리·매칭에 사용.
-            d["assignee_name"] = names.get(d.get("assignee_uid")) if d.get("assignee_uid") else None
-            # 예정 생성자(수동 self-assign) — {uid, name}. UI 가 '예정' 배지로 실제와 구분 표시.
-            d["planned_creators"] = [
-                {"uid": u, "name": names.get(u)} for u in planned_by_task.get(d["id"], [])
+            # 담당(배정, 복수) — {uid, name}. 대시보드에서 지정, 작업탭 '내 배분' 필터·표시에 사용.
+            d["assigned_creators"] = [
+                {"uid": u, "name": names.get(u)} for u in assigned_by_task.get(d["id"], [])
             ]
         return out
 
 
-def add_planned_creator(task_id: str, creator_uid: str, added_by: Optional[str]) -> bool:
-    """작업 '예정 생성자'에 추가(멱등). self-assign('나') 또는 PM 이 남을 지정할 때."""
-    creator_uid = (creator_uid or "").strip()
-    if not creator_uid:
+def add_assignment(task_id: str, assignee_uid: str, added_by: Optional[str]) -> bool:
+    """작업에 담당(배정) 추가(멱등). PM 이 대시보드에서 작업자를 배정할 때."""
+    assignee_uid = (assignee_uid or "").strip()
+    if not assignee_uid:
         return False
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute(
-            "INSERT INTO task_planned_creator(task_id, creator_uid, added_by) VALUES(?,?,?) "
-            "ON CONFLICT(task_id, creator_uid) DO NOTHING",
-            (task_id, creator_uid, added_by),
+            "INSERT INTO task_assignment(task_id, assignee_uid, added_by) VALUES(?,?,?) "
+            "ON CONFLICT(task_id, assignee_uid) DO NOTHING",
+            (task_id, assignee_uid, added_by),
         )
     return True
 
 
-def remove_planned_creator(task_id: str, creator_uid: str) -> bool:
-    """작업 '예정 생성자'에서 제거."""
+def remove_assignment(task_id: str, assignee_uid: str) -> bool:
+    """작업 담당(배정)에서 제거."""
     with get_connection() as conn:
         _ensure_schema(conn)
         cur = conn.execute(
-            "DELETE FROM task_planned_creator WHERE task_id=? AND creator_uid=?",
-            (task_id, (creator_uid or "").strip()),
+            "DELETE FROM task_assignment WHERE task_id=? AND assignee_uid=?",
+            (task_id, (assignee_uid or "").strip()),
         )
         return cur.rowcount > 0
 
 
-def bulk_set_planned_creators(
+def is_assignee(task_id: str, uid: str) -> bool:
+    """그 작업에 배정된 작업자인가 — 배정 작업자의 '진행'(제한적 patch) 권한 판정용."""
+    uid = (uid or "").strip()
+    if not uid:
+        return False
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM task_assignment WHERE task_id=? AND assignee_uid=?",
+                (task_id, uid),
+            ).fetchone()
+        )
+
+
+def bulk_set_assignments(
     items: list[dict[str, Any]], mode: str, added_by: Optional[str]
 ) -> int:
-    """엑셀식 붙여넣기 — 여러 작업의 예정 생성자를 한 트랜잭션으로 설정.
-    mode='replace'(그 작업 예정 전체 교체) | 'add'(추가만, 중복 무시). items=[{task_id, creator_uids}].
+    """여러 작업의 담당(배정)을 한 트랜잭션으로 설정.
+    mode='replace'(그 작업 배정 전체 교체) | 'add'(추가만, 중복 무시). items=[{task_id, assignee_uids}].
     한 번에 전부 성공/실패(원자). 권한은 라우터가 프로젝트별로 검사한 뒤 호출한다."""
     with get_connection() as conn:
         _ensure_schema(conn)
@@ -720,13 +754,13 @@ def bulk_set_planned_creators(
                 tid = it.get("task_id")
                 if not tid:
                     continue
-                uids = [(u or "").strip() for u in (it.get("creator_uids") or []) if (u or "").strip()]
+                uids = [(u or "").strip() for u in (it.get("assignee_uids") or []) if (u or "").strip()]
                 if mode == "replace":
-                    conn.execute("DELETE FROM task_planned_creator WHERE task_id=?", (tid,))
+                    conn.execute("DELETE FROM task_assignment WHERE task_id=?", (tid,))
                 for u in uids:
                     conn.execute(
-                        "INSERT INTO task_planned_creator(task_id, creator_uid, added_by) "
-                        "VALUES(?,?,?) ON CONFLICT(task_id, creator_uid) DO NOTHING",
+                        "INSERT INTO task_assignment(task_id, assignee_uid, added_by) "
+                        "VALUES(?,?,?) ON CONFLICT(task_id, assignee_uid) DO NOTHING",
                         (tid, u, added_by),
                     )
             conn.execute("COMMIT")
@@ -773,6 +807,7 @@ def delete_task(tid: str) -> bool:
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("DELETE FROM task_generation WHERE task_id=?", (tid,))
+        conn.execute("DELETE FROM task_assignment WHERE task_id=?", (tid,))
         cur = conn.execute("DELETE FROM project_task WHERE id=?", (tid,))
         return cur.rowcount > 0
 

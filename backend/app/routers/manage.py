@@ -294,7 +294,6 @@ class TaskIn(BaseModel):
     project_id: str
     name: str
     status: Optional[str] = None
-    assignee_uid: Optional[str] = None
     start_date: Optional[str] = None
     due_date: Optional[str] = None
     sort_order: Optional[int] = None
@@ -304,9 +303,9 @@ class TaskIn(BaseModel):
 
 
 class TaskPatch(BaseModel):
+    # 담당(assignee)은 여기서 다루지 않는다 — 대시보드의 /tasks/{tid}/assignees 로 배정한다.
     name: Optional[str] = None
     status: Optional[str] = None
-    assignee_uid: Optional[str] = None
     start_date: Optional[str] = None
     due_date: Optional[str] = None
     sort_order: Optional[int] = None
@@ -339,10 +338,14 @@ def create_task(body: TaskIn, request: Request):
 
 @router.patch("/tasks/{tid}")
 def patch_task(tid: str, body: TaskPatch, request: Request):
-    _require_project_manage(request, _task_project_or_404(tid))
-    # exclude_unset: 보낸 필드만 반영 — 명시적 null(예: assignee_uid=null)로 담당 해제 가능.
-    # (기존 'v is not None' 은 null 을 버려 담당 해제가 안 됐다.)
+    pid = _task_project_or_404(tid)
     fields = body.model_dump(exclude_unset=True)
+    # 배정된 작업자는 자기 배분 작업을 '진행'(상태·메모)할 수 있다. 그 외 관리 필드는 PM(manage) 권한.
+    actor = account_actor_uid(request) or actor_id(request)
+    if fields and set(fields) <= {"status", "note"} and repo_manage.is_assignee(tid, actor):
+        _require_project_read(request, pid)
+    else:
+        _require_project_manage(request, pid)
     r = repo_manage.update_task(tid, fields)
     if not r:
         raise HTTPException(status_code=404, detail="없는 작업(또는 변경 필드 없음)")
@@ -365,65 +368,40 @@ def link_generations(tid: str, body: TaskLinkIn, request: Request):
     return {"linked": repo_manage.link_generations(tid, body.gen_ids)}
 
 
-@router.post("/tasks/{tid}/planned-creators/me")
-def add_me_as_planned(tid: str, request: Request):
-    """작업 예정 생성자에 '나' 추가(self-assign) — 내가 이 작업을 하겠다고 정한다.
-    ★uid 는 서버가 account_actor_uid 로 계산(신원 위조 방지). 프로젝트 접근권만 있으면 가능."""
-    pid = _task_project_or_404(tid)
-    _require_project_read(request, pid)
-    uid = account_actor_uid(request) or actor_id(request)
-    repo_manage.add_planned_creator(tid, uid, uid)
-    return {"ok": True, "uid": uid}
-
-
-@router.delete("/tasks/{tid}/planned-creators/me")
-def remove_me_from_planned(tid: str, request: Request):
-    """작업 예정 생성자에서 '나' 제거."""
-    pid = _task_project_or_404(tid)
-    _require_project_read(request, pid)
-    uid = account_actor_uid(request) or actor_id(request)
-    return {"removed": repo_manage.remove_planned_creator(tid, uid)}
-
-
-@router.post("/tasks/{tid}/planned-creators/{uid}")
-def add_planned_creator(tid: str, uid: str, request: Request):
-    """PM/관리가 다른 멤버를 예정 생성자로 지정. 남을 넣는 건 manage 권한 필요."""
+@router.post("/tasks/{tid}/assignees/{uid}")
+def add_assignee(tid: str, uid: str, request: Request):
+    """작업에 담당(배정) 추가 — PM 이 대시보드에서 작업자를 배정(=컷 분배). manage 권한."""
     pid = _task_project_or_404(tid)
     _require_project_manage(request, pid)
-    repo_manage.add_planned_creator(tid, uid, actor_id(request))
+    repo_manage.add_assignment(tid, uid, actor_id(request))
     return {"ok": True}
 
 
-@router.delete("/tasks/{tid}/planned-creators/{uid}")
-def remove_planned_creator(tid: str, uid: str, request: Request):
-    """예정 생성자에서 특정 멤버 제거 — manage 권한."""
+@router.delete("/tasks/{tid}/assignees/{uid}")
+def remove_assignee(tid: str, uid: str, request: Request):
+    """작업 담당(배정)에서 특정 작업자 제거 — manage 권한."""
     pid = _task_project_or_404(tid)
     _require_project_manage(request, pid)
-    return {"removed": repo_manage.remove_planned_creator(tid, uid)}
+    return {"removed": repo_manage.remove_assignment(tid, uid)}
 
 
-class BulkPlannedIn(BaseModel):
+class BulkAssignIn(BaseModel):
     mode: str = "replace"  # replace | add
-    items: list[dict] = Field(default_factory=list)  # [{task_id, creator_uids:[]}]
+    items: list[dict] = Field(default_factory=list)  # [{task_id, assignee_uids:[]}]
 
 
-@router.patch("/tasks/planned-creators/bulk")
-def bulk_set_planned_creators(body: BulkPlannedIn, request: Request):
-    """엑셀식 셀 붙여넣기 — 여러 작업의 예정 생성자를 한 번에 설정.
-    권한: 'add' 이면서 모든 대상이 '나(actor)'뿐이면 프로젝트 read(일반 작업자가 여러 작업에 자기 지정).
-    그 외(replace, 또는 남 포함)는 프로젝트 manage(PM)."""
+@router.patch("/tasks/assignees/bulk")
+def bulk_set_assignments(body: BulkAssignIn, request: Request):
+    """여러 작업의 담당(배정)을 한 번에 설정 — 전부 PM(manage) 권한."""
     if body.mode not in ("replace", "add"):
         raise HTTPException(status_code=400, detail="mode 는 replace 또는 add")
     items = (body.items or [])[:500]
     if not items:
         return {"ok": True, "count": 0}
-    actor = account_actor_uid(request) or actor_id(request)
-    # 방어적 상한 — 작업당 예정 생성자 20명.
+    actor = actor_id(request)
+    # 방어적 상한 — 작업당 담당 20명.
     for it in items:
-        it["creator_uids"] = [u for u in (it.get("creator_uids") or [])][:20]
-    only_me = body.mode == "add" and all(
-        all(u == actor for u in it.get("creator_uids", [])) for it in items
-    )
+        it["assignee_uids"] = [u for u in (it.get("assignee_uids") or [])][:20]
     # 프로젝트별 1회만 권한 검사(중복 조회 방지).
     checked: set[str] = set()
     for it in items:
@@ -431,11 +409,8 @@ def bulk_set_planned_creators(body: BulkPlannedIn, request: Request):
         if pid in checked:
             continue
         checked.add(pid)
-        if only_me:
-            _require_project_read(request, pid)
-        else:
-            _require_project_manage(request, pid)
-    n = repo_manage.bulk_set_planned_creators(items, body.mode, actor)
+        _require_project_manage(request, pid)
+    n = repo_manage.bulk_set_assignments(items, body.mode, actor)
     return {"ok": True, "count": n}
 
 
