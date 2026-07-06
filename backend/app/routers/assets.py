@@ -256,9 +256,9 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
             ).fetchall()
         links = {str(r["project_id"]): {"root_path": r["root_path"]} for r in rows}
     except Exception:  # noqa: BLE001 - PM 테이블이 아직 없으면 자동 마운트만 비활성
-        return []
-    if not links:
-        return []
+        links = {}
+    # 로컬 링크가 비어도 진행한다 — 팀 공유 렌더 루트(p.render_root_path)만 있는 PC 에서도
+    # 프로젝트가 Assets 자동 마운트로 잡히게 한다(아래 루프에서 render_root_path 우선).
 
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
     member_uid = None if read_all else (account_scope_uid(request) or "\x00")
@@ -275,7 +275,8 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
         pid = str(p.get("id") or "")
         name = str(p.get("name") or "").strip()
         link = links.get(pid) or {}
-        root = str(link.get("root_path") or "").strip()
+        # 팀 공유 렌더경로(project.render_root_path) 우선, 없으면 레거시 로컬 링크.
+        root = str(p.get("render_root_path") or link.get("root_path") or "").strip()
         if not (pid and name and root) or name in used:
             continue
         try:

@@ -169,6 +169,8 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
             repo.rename_project(pid, body.name)
         if body.archived is not None:
             repo.set_archived(pid, body.archived)
+        if body.render_root_path is not None:
+            repo.set_render_root(pid, body.render_root_path)  # 팀 공유 렌더 폴더 경로
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return repo.get_project(pid)

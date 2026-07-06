@@ -253,14 +253,30 @@ class ProjectFolderIn(BaseModel):
 
 @router.get("/project-folders")
 def project_folder_links(request: Request):
-    links = repo_manage.list_project_folders()
-    if not AUTH_ENABLED or rbac.has_global_cap(account_global_roles(request), "read_all"):
+    links = repo_manage.list_project_folders()  # 로컬 링크(selected_path·레거시 root)
+    read_all = not AUTH_ENABLED or rbac.has_global_cap(account_global_roles(request), "read_all")
+    if read_all:
+        projects = repo.list_projects(include_archived=True).get("projects") or []
+    else:
+        uid = account_scope_uid(request)
+        if not uid:
+            return {"links": {}}
+        projects = repo.list_projects(include_archived=True, member_uid=uid).get("projects") or []
+    # 팀 공유 렌더 루트(project.render_root_path)를 병합 — 로컬 링크가 없어도 '연결됨'으로 노출해
+    # 다른 PC(로컬 링크 없음)에서도 폴더가 보이게 한다. selected_path 는 로컬 것(개인) 유지.
+    for p in projects:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id")
+        shared = (p.get("render_root_path") or "").strip()
+        if pid and shared:
+            cur = links.get(pid) or {
+                "project_id": pid, "root_path": "", "selected_path": "", "updated_at": None,
+            }
+            links[pid] = {**cur, "root_path": shared}  # 공유 루트 우선
+    if read_all:
         return {"links": links}
-    uid = account_scope_uid(request)
-    if not uid:
-        return {"links": {}}
-    visible = repo.list_projects(include_archived=True, member_uid=uid).get("projects") or []
-    visible_ids = {p.get("id") for p in visible if isinstance(p, dict)}
+    visible_ids = {p.get("id") for p in projects if isinstance(p, dict)}
     return {"links": {pid: link for pid, link in links.items() if pid in visible_ids}}
 
 
@@ -273,7 +289,20 @@ def get_project_folder(pid: str, request: Request):
 @router.put("/project-folders/{pid}")
 def put_project_folder(pid: str, body: ProjectFolderIn, request: Request):
     _require_project_manage(request, pid)
-    repo_manage.set_project_folder(pid, body.root_path, body.selected_path)
+    # 렌더 루트 경로는 팀 공유(서버 프로젝트 정의). selected_path(내가 보는 하위폴더)는 개인 로컬.
+    # ★루트가 '실제로 바뀔 때만' 서버에 저장한다 — 하위폴더만 클릭(selected 변경)해도 프론트가 같은
+    # root_path 를 함께 보내는데, 매번 서버 PATCH 를 쏘면 (1) 불필요한 쓰기 (2) create_project 없는
+    # 매니저가 폴더 탐색만 해도 403 이 난다. 값이 같으면 서버를 건드리지 않는다.
+    if body.root_path is not None:
+        new_root = body.root_path.strip()
+        if new_root != project_folders.effective_root_path(pid):  # 루트가 실제 변경됨
+            # 위임 모드: 공유 서버에 먼저 저장(실패 시 예외 전파 → 로컬 미변경으로 불일치 방지) → 로컬 미러.
+            if _proxy.proxying():
+                _proxy.proxy_json(
+                    "PATCH", f"/api/projects/{pid}", body={"render_root_path": new_root}
+                )
+            repo.set_render_root(pid, new_root)  # 로컬 미러(즉시 반영) / 서버 본체면 이게 진실
+    repo_manage.set_project_folder(pid, body.root_path, body.selected_path)  # selected(개인)+레거시 로컬 root
     return project_folders.project_folder_state(pid)
 
 

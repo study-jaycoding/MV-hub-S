@@ -178,16 +178,33 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
             if not pid:
                 continue
             conn.execute(
-                "INSERT INTO project(id, name, kind, created_by, archived) VALUES(?,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived",
+                "INSERT INTO project(id, name, kind, created_by, archived, render_root_path) "
+                "VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived, "
+                "render_root_path=excluded.render_root_path",  # 공유 렌더경로를 로컬로 미러(팀 공통)
                 (
                     pid,
                     p.get("name") or "",
                     p.get("kind") or "team",
                     p.get("created_by"),
                     1 if p.get("archived") else 0,
+                    (p.get("render_root_path") or None),
                 ),
             )
+
+
+def get_render_root(pid: str) -> str:
+    """프로젝트의 팀 공유 렌더 폴더 경로(로컬 미러 기준). 없으면 빈 문자열."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT render_root_path FROM project WHERE id=?", (pid,)).fetchone()
+        return (row["render_root_path"] if row and row["render_root_path"] else "") or ""
+
+
+def set_render_root(pid: str, path: Optional[str]) -> None:
+    """프로젝트의 팀 공유 렌더 폴더 경로 저장(서버 본체·비프록시). 빈 값=연결 해제(NULL)."""
+    p = (path or "").strip()
+    with get_connection() as conn:
+        conn.execute("UPDATE project SET render_root_path=? WHERE id=?", (p or None, pid))
 
 
 def local_project_counts() -> dict[str, int]:

@@ -5,10 +5,21 @@ from typing import Any
 
 from .path_safety import safe_join
 from ..repo import manage as repo_manage
+from ..repo import projects as repo_projects
 
 
 def hidden_folder(name: str) -> bool:
     return name.startswith((".", "_"))
+
+
+def effective_root_path(pid: str) -> str:
+    """이 프로젝트의 렌더 루트 경로 — 팀 공유값(서버 project.render_root_path, 로컬 미러) 우선,
+    없으면 레거시 로컬 링크(project_folder_link.root_path). 공유값이 있으면 팀 전원이 같은 경로를
+    각자 PC 디스크에서 읽는다(경로 문자열만 공유, 파일은 로컬). 드라이브 매핑은 팀 공통(Z:) 전제."""
+    shared = repo_projects.get_render_root(pid).strip()
+    if shared:
+        return shared
+    return (repo_manage.get_project_folder(pid).get("root_path") or "").strip()
 
 
 _EXT_BY_TYPE = {"video": ".mp4", "image": ".png", "audio": ".mp3", "3d": ".glb"}
@@ -102,8 +113,7 @@ def folder_tree_node(
 def render_root_state(pid: str) -> dict[str, Any]:
     """렌더 루트 경로/에러만 반환 — 폴더 트리 재귀 스캔 없이(save-finals 상태·저장용).
     UNC 공유에서 트리 전체 순회는 비싸므로, 존재/Render 감지만 가볍게 한다."""
-    meta = repo_manage.get_project_folder(pid)
-    root_raw = (meta.get("root_path") or "").strip()
+    root_raw = effective_root_path(pid)
     if not root_raw:
         return {"render_path": "", "error": None}
     root = Path(root_raw).expanduser().resolve()
@@ -117,11 +127,11 @@ def render_root_state(pid: str) -> dict[str, Any]:
 
 def project_folder_state(pid: str) -> dict[str, Any]:
     meta = repo_manage.get_project_folder(pid)
-    root_raw = (meta.get("root_path") or "").strip()
+    root_raw = effective_root_path(pid)  # 공유(서버) 우선, 없으면 로컬 링크
     state: dict[str, Any] = {
         "project_id": pid,
         "root_path": root_raw,
-        "selected_path": meta.get("selected_path") or "",
+        "selected_path": meta.get("selected_path") or "",  # selected 는 개인(로컬) 유지
         "render_path": "",
         "tree": None,
         "error": None,
