@@ -155,6 +155,7 @@ _LOCAL_PREFIXES = (
     "/api/generations",    # 목록·상세·히스토리·코멘트·태그·컬러·소스·발행 등(내 것=로컬, 팀=핸들러가 프록시)
     "/api/creators",       # 생성자 목록(my=로컬, team=핸들러 프록시)
     "/api/sources",        # 내 소스 라이브러리(로컬)
+    "/api/tags",           # 태그 삭제(개인 로컬 메타 — 읽기가 로컬이라 삭제도 로컬이어야 정합)
     "/api/auto-tags",      # 전역 태그(계정별 owner_uid, 로컬)
     "/api/trash",          # 내 휴지통(로컬)
     "/api/db/",            # 내 로컬 DB 내보내기/가져오기(교차 PC 연속성, 서버 무관)
