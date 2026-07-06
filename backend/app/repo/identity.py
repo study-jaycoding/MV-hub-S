@@ -732,11 +732,16 @@ def credit_summary() -> dict[str, Any]:
     return {"total": round(total, 2), "accounts": rows}
 
 
-def list_members() -> list[dict[str, Any]]:
+def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:
     """멤버 목록 [{uid, name, global_roles, is_mine, count, email, status}].
     관리자 창·프로젝트 배정 후보용. ① 모든 로그인 계정(생성물 0이어도 포함) +
-    ② 계정 없는 외부 생성자(가져온 작업의 작성자)도 표기 유지."""
-    my = get_my_uid()
+    ② 계정 없는 외부 생성자(가져온 작업의 작성자)도 표기 유지.
+
+    ★viewer_uid = '나' 판정 기준(요청 계정). None(단독/AUTH off·미지정)이면 provider 로 폴백.
+    provider(get_my_uid) 는 역할 기본값(_effective_globals) 판단에만 쓴다 — 공유 서버에서 이 둘을
+    섞으면(is_mine 을 provider 로) 모든 사용자가 서버 provider 를 '나'로 보게 된다(멤버탭 오표시 버그)."""
+    provider = get_my_uid()
+    my = viewer_uid if viewer_uid is not None else provider
     link_accounts_to_creators()  # 계정↔creator 연결 보장(멱등) — 신규 계정 즉시 후보화
     with get_connection() as conn:
         counts = {
@@ -761,7 +766,7 @@ def list_members() -> list[dict[str, Any]]:
                 {
                     "uid": uid,
                     "name": (a["name"] or "").strip() or _email_localpart(a["email"]),
-                    "global_roles": _effective_globals(a["global_role"], uid == my),
+                    "global_roles": _effective_globals(a["global_role"], uid == provider),
                     "is_mine": uid == my,
                     "count": counts.get(uid, 0),
                     "email": a["email"],
@@ -786,7 +791,7 @@ def list_members() -> list[dict[str, Any]]:
                 {
                     "uid": r["uid"],
                     "name": r["name"],
-                    "global_roles": _effective_globals(r["grole"], r["uid"] == my),
+                    "global_roles": _effective_globals(r["grole"], r["uid"] == provider),
                     "is_mine": r["uid"] == my,
                     "count": r["cnt"],
                     "email": None,

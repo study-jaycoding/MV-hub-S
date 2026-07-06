@@ -52,7 +52,6 @@ import type { GradeMode } from "./lib/gradeStep";
 import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
-import { hasGlobalCap } from "./types";
 import type {
   Filters,
   GenQuery,
@@ -462,12 +461,9 @@ export default function App() {
     }
   }
 
-  const canOpenManage =
-    !!authConfig?.manage_enabled &&
-    !!hubAccount &&
-    (hasGlobalCap(hubAccount.global_roles, "read_all") ||
-      hasGlobalCap(hubAccount.global_roles, "create_project") ||
-      hasGlobalCap(hubAccount.global_roles, "grant_project_role"));
+  // 관리창(관리탭)은 로그인 사용자 모두에게 연다 — 작업/완료 탭은 전원 접근. 대시보드 탭만
+  // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
+  const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
 
   return (
     <div className="app">

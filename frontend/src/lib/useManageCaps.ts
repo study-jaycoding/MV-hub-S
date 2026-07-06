@@ -10,9 +10,16 @@ export interface ManageCaps {
   authOff: boolean;
   createProject: boolean; // 생성/편집/폴더/삭제
   grantRole: boolean; // 멤버 프로젝트 역할 부여
+  readAll: boolean; // 전체 열람(대시보드·팀 집계) — admin/PM/PD. 대시보드 탭 노출 기준
 }
 
-const NONE: ManageCaps = { loaded: false, authOff: false, createProject: false, grantRole: false };
+const NONE: ManageCaps = {
+  loaded: false,
+  authOff: false,
+  createProject: false,
+  grantRole: false,
+  readAll: false,
+};
 
 export function useManageCaps(): ManageCaps {
   const [caps, setCaps] = useState<ManageCaps>(NONE);
@@ -23,7 +30,14 @@ export function useManageCaps(): ManageCaps {
         const cfg = await api.authConfig();
         if (!cfg.auth_enabled) {
           // 인증 off — 단독/로컬 모드는 누구나(백엔드도 통과).
-          if (alive) setCaps({ loaded: true, authOff: true, createProject: true, grantRole: true });
+          if (alive)
+            setCaps({
+              loaded: true,
+              authOff: true,
+              createProject: true,
+              grantRole: true,
+              readAll: true,
+            });
           return;
         }
         const [account, members] = await Promise.all([
@@ -37,9 +51,17 @@ export function useManageCaps(): ManageCaps {
             authOff: false,
             createProject: hasGlobalCap(roles, "create_project"),
             grantRole: hasGlobalCap(roles, "grant_project_role"),
+            readAll: hasGlobalCap(roles, "read_all"),
           });
       } catch {
-        if (alive) setCaps({ loaded: true, authOff: false, createProject: false, grantRole: false });
+        if (alive)
+          setCaps({
+            loaded: true,
+            authOff: false,
+            createProject: false,
+            grantRole: false,
+            readAll: false,
+          });
       }
     })();
     return () => {

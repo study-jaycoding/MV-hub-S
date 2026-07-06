@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
+import { useManageCaps } from "../lib/useManageCaps";
 import { DashboardView } from "./manage/DashboardView";
 import { ExportView } from "./manage/ExportView";
 import { WorkBoard } from "./manage/WorkBoard";
@@ -24,6 +25,15 @@ export function ManageWindow() {
     return TABS.some((t) => t.v === saved) ? (saved as Tab) : "dashboard";
   });
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  // 대시보드 탭은 read_all(admin/PM/PD)만 — 백엔드 대시보드 집계 API 가 read_all 을 요구한다.
+  // 비매니저는 작업/완료만 보이고, 저장된 탭이 dashboard 여도 렌더 전에 tasks 로 보정한다
+  // (안 그러면 DashboardView 가 권한 없이 집계 API 를 먼저 호출).
+  const caps = useManageCaps();
+  const canDash = caps.authOff || caps.readAll;
+  const visibleTabs = TABS.filter((t) => t.v !== "dashboard" || canDash);
+  useEffect(() => {
+    if (caps.loaded && !canDash && tab === "dashboard") setTab("tasks");
+  }, [caps.loaded, canDash, tab]);
   useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
 
   useEffect(() => {
@@ -64,7 +74,7 @@ export function ManageWindow() {
   return (
     <div className="manage-window">
       <nav className="manage-tabs">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.v}
             className={tab === t.v ? "on" : ""}
@@ -74,7 +84,7 @@ export function ManageWindow() {
           </button>
         ))}
       </nav>
-      {tab === "dashboard" && <DashboardView />}
+      {tab === "dashboard" && canDash && <DashboardView />}
       {tab === "tasks" && <WorkBoard />}
       {tab === "export" && <ExportView />}
     </div>
