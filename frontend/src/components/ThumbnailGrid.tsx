@@ -326,10 +326,15 @@ export function ThumbnailGrid(props: Props) {
     // 태그(#)·코멘트(c) — 포커스 카드에서 인라인 편집·코멘트(에셋 파트와 동일). 단축키 레지스트리로
     // 매칭(사용자 변경 가능). s 는 생성탭에선 비활성(공유는 카드 S 클릭/오버레이/선택바로만).
     const fgen = generations[focusIdx];
-    if (fgen && matchShortcut(e, "tag")) {
-      e.preventDefault();
-      setEditTarget({ id: fgen.id, field: "tag" });
-      return;
+    // 태그(#): 포커스 카드 우선, 없으면 첫 선택 카드로 폴백(에셋과 동일) — 선택만 하고
+    // 포커스가 없을 때(범위선택·체크박스 등)도 태그 입력이 열리게 한다.
+    if (matchShortcut(e, "tag")) {
+      const tagTarget = fgen || generations.find((g) => selectedIds.has(g.id));
+      if (tagTarget) {
+        e.preventDefault();
+        setEditTarget({ id: tagTarget.id, field: "tag" });
+        return;
+      }
     }
     if (fgen && matchShortcut(e, "comment")) {
       e.preventDefault();

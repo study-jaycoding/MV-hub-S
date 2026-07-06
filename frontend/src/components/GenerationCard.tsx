@@ -89,6 +89,7 @@ function GenerationCardImpl({
   onGlobalModeChange,
   onOpenComments,
   editingField,
+  onRequestEdit,
   onEditDone,
   onRegenerate,
   onPublish,
@@ -302,6 +303,21 @@ function GenerationCardImpl({
             {gen.is_final ? "★" : "S"}
           </button>
         )}
+        <button
+          className={"card-cm" + (gen.tags.length ? " on" : "")}
+          title={
+            gen.tags.length
+              ? `태그: ${gen.tags.join(", ")} · 클릭=태그 편집 (#)`
+              : "태그 입력 (#)"
+          }
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRequestEdit(gen, "tag");
+          }}
+        >
+          T
+        </button>
         <button
           className={"card-cm" + (gen.has_unread ? " alert" : "")}
           title={

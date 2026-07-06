@@ -189,6 +189,8 @@
   background: #f5a623; color: #2a1500; border-color: #ffc04d; opacity: 1; pointer-events: auto;
   box-shadow: 0 0 9px rgba(245,166,35,0.55);
 }
+/* T 태그 — 태그가 붙어 있으면 항상 표시(라임, 검은 잉크). 없으면 호버 전용(S·C 와 동일). */
+.card-cm.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); opacity: 1; pointer-events: auto; }
 /* 좌상단 드래그 그립 — card-tl(S·C) 한 줄 바로 아래(top: 7+26+6=39px). 끌어서 레퍼런스로 추가. */
 .card-drag-grip {
   position: absolute; top: 39px; left: 7px; z-index: 4;
