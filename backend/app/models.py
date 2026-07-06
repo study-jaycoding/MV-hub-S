@@ -244,6 +244,7 @@ class ProjectOut(BaseModel):
     archived: bool = False
     count: int = 0  # 내 작업(viewer) 기준 결과물 수 — 사이드바 My Work 용
     total: int = 0  # 프로젝트 전체 결과물 수(작성자 무관) — 관리자 탭에서 표시
+    render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로(각 PC 가 자기 디스크에서 읽음)
 
 
 class ProjectsOut(BaseModel):
@@ -260,6 +261,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     archived: Optional[bool] = None
+    render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로 설정(빈 문자열=연결 해제)
 
 
 class ReorderProjectsIn(BaseModel):

@@ -16,7 +16,7 @@ from ..db import get_connection
 from ._common import clean_folder_path as _clean_folder_path, new_id
 
 _SELECT = (
-    "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, "
+    "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
     # 그리드와 동일 기준(삭제분 제외) — 안 그러면 옛 소프트삭제 잔존이 카운트만 부풀린다.
     "(SELECT COUNT(*) FROM generation g WHERE g.project_id = p.id AND g.deleted_at IS NULL) AS count "
     "FROM project p"
@@ -126,7 +126,7 @@ def list_projects(
         count_args.append(viewer_uid)
     # count = viewer 의 것(사이드바 My Work), total = 프로젝트 전체(관리자 탭에서 표시).
     select = (
-        "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, "
+        "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
         f"(SELECT COUNT(*) FROM generation g WHERE {gen_cond}) AS count, "
         "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL) AS total "
         "FROM project p"
