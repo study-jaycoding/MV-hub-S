@@ -196,7 +196,11 @@ async def _forward(request: Request) -> Response:
     """원 요청(메서드·경로·쿼리·바디)을 공유 서버로 그대로 중계하고 응답을 verbatim 반환."""
     body = await request.body()
     qs = request.url.query
-    url = base_url() + request.url.path + (("?" + qs) if qs else "")
+    # ★raw_path(퍼센트 인코딩 원본)를 쓴다. request.url.path 는 디코딩돼서 한글 태그 등이
+    # 그대로 들어가면 urllib 이 URL 을 ascii 로 인코딩하다 터진다(태그 삭제 500의 원인).
+    raw = request.scope.get("raw_path")
+    path = raw.decode("latin-1") if raw else request.url.path
+    url = base_url() + path + (("?" + qs) if qs else "")
     # 계정관리(/api/auth/accounts*)는 임시 관리자(elev) 토큰이 있으면 그걸로 — 본인이 admin 아니어도 승인 가능.
     used_elev = request.url.path.startswith("/api/auth/accounts") and bool(elevation_token())
     tok = elevation_token() if used_elev else token()
