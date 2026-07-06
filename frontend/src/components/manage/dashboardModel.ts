@@ -205,6 +205,7 @@ export interface ParticipantStat extends Participant {
 export function participantStats(
   node: DashNode,
   members: { uid: string; name: string | null; roles: string[] }[] = [],
+  addMembers = true, // false 면 멤버를 목록에 새로 추가하진 않고 역할만 주입(시퀀스 범위)
 ): ParticipantStat[] {
   const map = new Map<string, ParticipantStat>();
   const ensure = (uid: string, name?: string | null): ParticipantStat => {
@@ -235,9 +236,9 @@ export function participantStats(
   for (const m of members) {
     const ex = map.get(m.uid);
     if (ex) {
-      ex.roles = m.roles;
+      ex.roles = m.roles; // 이미 목록에 있으면 역할만 주입(담당자·생성자에 배지)
       if ((!ex.name || ex.name === ex.uid) && m.name) ex.name = m.name;
-    } else {
+    } else if (addMembers) {
       map.set(m.uid, {
         uid: m.uid,
         name: m.name || m.uid,
