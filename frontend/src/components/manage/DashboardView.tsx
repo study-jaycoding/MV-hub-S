@@ -278,10 +278,12 @@ function ProjectDetail({
   }
   // 빈 프로젝트(작업 0개)면 node 가 없다 — 트리는 '작업 없음', 참여자는 멤버·역할만 표시.
   const subNode = node && subKey ? findNode(node.children || [], subKey) : null;
+  // 담당(배정) 또는 프로젝트 역할(멤버)이 있는 사람만 표시 — 담당·역할 없이 컷만 만든 '순수 생성자'는
+  // 숨긴다(시퀀스마다 배정 없음으로 계속 뜨던 문제). 프로젝트 전체에선 멤버(역할)라 표시됨.
   const participants = participantStats(
     subNode || node || ({ tasks: [] } as unknown as DashNode),
     subNode ? [] : members, // 프로젝트 전체일 때만 멤버(역할) 합침
-  );
+  ).filter((p) => p.assign || (p.roles?.length ?? 0) > 0);
   const scopeLabel = subNode
     ? `${subNode.kind === "episode" ? "에피소드" : "시퀀스"} · ${subNode.label}`
     : `프로젝트 · ${projName}`;
