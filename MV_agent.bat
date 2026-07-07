@@ -174,9 +174,10 @@ if errorlevel 1 (
   call "%HF%" auth login
 )
 REM CLI 1.x requires a selected workspace; generate fails (rc!=0) without one.
-REM Auto-select when there is EXACTLY ONE workspace (safe: no ambiguity). With multiple, the
-REM user must choose below - auto-picking then could bill/attribute to the wrong workspace.
-"%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; (len(ws)==1 and not any(w.get('is_selected') for w in ws)) and subprocess.run([hf,'workspace','set',ws[0]['id']])" "%HF%" >nul 2>nul
+REM When NONE is selected, default to the team workspace (this is a team tool). Only kicks in
+REM if nothing is chosen yet - an existing choice (incl. personal) is respected. Falls back to
+REM the single workspace when there's no team. Multiple teams -> ask below (avoid wrong billing).
+"%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); teams=[w for w in ws if w.get('plan_type')=='team']; pick=(teams[0] if len(teams)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
 call "%HF%" account status >nul 2>nul
 if errorlevel 1 (
   echo.

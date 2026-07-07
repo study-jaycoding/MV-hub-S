@@ -142,7 +142,9 @@ export function AccountMenu({
                 <button
                   key={w.id}
                   className={"acct-item" + (selected ? " on" : "")}
-                  onClick={() => switchTo(isPersonal ? null : w.id)}
+                  // 개인 워크스페이스도 실제 id 로 select 한다(CLI 1.x). 예전엔 개인=unselect 였는데,
+                  // 1.x 는 unset 이면 account status 실패=생성 꺼짐 → 개인 id 로 set 해야 생성 유지.
+                  onClick={() => switchTo(w.id)}
                   disabled={busy}
                 >
                   {inner}

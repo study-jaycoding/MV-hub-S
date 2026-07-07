@@ -442,9 +442,10 @@ if errorlevel 1 (
   echo     로그인이 필요합니다 - 브라우저 안내에 따라 내 힉스필드 계정으로 로그인하세요.
   call %HF% auth login
 )
-rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 워크스페이스가 '정확히 1개'면
-rem 자동 선택한다(모호성 없어 안전). 여러 개면 임의선택이 위험(엉뚱한 워크스페이스 청구/귀속)하므로 안내만.
-%PY% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; (len(ws)==1 and not any(w.get('is_selected') for w in ws)) and subprocess.run([hf,'workspace','set',ws[0]['id']])" "%HF%" >nul 2>nul
+rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 선택 안 돼 있으면 팀 워크스페이스를
+rem 기본 선택(팀 도구). 이미 고른 게 있으면(개인 포함) 존중, 팀이 없으면 단일 워크스페이스로 폴백.
+rem 팀이 여러 개면 임의선택이 위험(엉뚱한 워크스페이스 청구)하므로 아래 안내만.
+%PY% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); teams=[w for w in ws if w.get('plan_type')=='team']; pick=(teams[0] if len(teams)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
 call %HF% account status >nul 2>nul
 if errorlevel 1 (
   echo.
