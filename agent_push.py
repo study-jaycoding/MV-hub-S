@@ -189,6 +189,21 @@ def _role_flag(role: str) -> str:
     return "--image"
 
 
+# CLI 1.x: Seedance 는 옛 --medias 를 제거하고 역할별 references 플래그(반복)를 받는다.
+_MEDIA_ROLE_TO_REF_FLAG = {
+    "image": "--image-references", "video": "--video-references", "audio": "--audio-references",
+}
+
+
+def _seedance_ref_args(media_ids: list) -> list:
+    """[(role, upload_id)] → [--image-references, id, --video-references, id, ...].
+    역할별 *-references 플래그는 upload id(또는 파일경로)를 받고, 여러 개는 반복 전달한다."""
+    out: list = []
+    for role, mid in media_ids:
+        out += [_MEDIA_ROLE_TO_REF_FLAG.get(role, "--image-references"), mid]
+    return out
+
+
 def _uses_single_start_image(model: str) -> bool:
     return (model or "").startswith("seedance")
 
@@ -490,7 +505,7 @@ def _execute_one(
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
     upload_failed: list = []
-    seedance_medias: list = []
+    seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
     seedance_media_inputs: list[tuple[str, str]] = []
     seedance_used_cached_media = False
     for ref in refs:
@@ -503,8 +518,9 @@ def _execute_one(
             unresolved.append(val)
             continue
         if seedance_media:
-            # Seedance 의 일반 옴니 레퍼런스는 --image 로 넘기면 start_image 로 오해된다.
-            # 항상 upload create 로 media_input id 를 만든 뒤 --medias 로 넘긴다.
+            # Seedance 옴니 레퍼런스는 --image 로 넘기면 start_image 로 오해된다. upload create 로
+            # id 를 만들어(업로드 캐시 재사용) 역할별 --*-references 플래그로 넘긴다.
+            # 옛 --medias 는 CLI 1.x 에서 제거됨("Unknown params: medias").
             data, from_cache = _upload_for_media(cli, resolved, upload_cache, upload_lock)
             if not data:
                 upload_failed.append(val)
@@ -512,7 +528,7 @@ def _execute_one(
             media_role = _media_role(ref)
             seedance_media_inputs.append((resolved, media_role))
             seedance_used_cached_media = seedance_used_cached_media or from_cache
-            seedance_medias.append({"data": data, "role": media_role})
+            seedance_media_ids.append((media_role, data["id"]))
             continue
         args += [_role_flag(ref.get("role")), resolved]
     if unresolved:
@@ -525,8 +541,8 @@ def _execute_one(
         _fail(server, token, rid, f"레퍼런스를 업로드할 수 없습니다({len(upload_failed)}개): {upload_failed[0]}")
         print(f"  ✗ 레퍼런스 업로드 실패 — 실행 안 함: {upload_failed[0]}")
         return
-    if seedance_medias:
-        args += ["--medias", json.dumps(seedance_medias, separators=(",", ":"))]
+    seedance_ref_args = _seedance_ref_args(seedance_media_ids)
+    args += seedance_ref_args
     print(f"  → {model}: {prompt[:40]}")
     job, cli_error = _run_cli_json(cli, *args, timeout=900)
     if (
@@ -534,10 +550,10 @@ def _execute_one(
         and cli_error
         and seedance_media_inputs
         and seedance_used_cached_media
-        and any(s in cli_error.lower() for s in ("media", "medias", "upload", "uuid", "input"))
+        and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
     ):
         print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
-        retry_medias: list = []
+        retry_ids: list = []
         retry_failed = False
         for path, media_role in seedance_media_inputs:
             _invalidate_upload_cache(upload_cache, path, upload_lock)
@@ -545,11 +561,11 @@ def _execute_one(
             if not data:
                 retry_failed = True
                 break
-            retry_medias.append({"data": data, "role": media_role})
+            retry_ids.append((media_role, data["id"]))
         if not retry_failed:
-            retry_args = list(args)
-            media_idx = retry_args.index("--medias") + 1
-            retry_args[media_idx] = json.dumps(retry_medias, separators=(",", ":"))
+            # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
+            base_args = args[:len(args) - len(seedance_ref_args)]
+            retry_args = base_args + _seedance_ref_args(retry_ids)
             job, cli_error = _run_cli_json(cli, *retry_args, timeout=900)
     if not job:
         reason = "로컬 CLI 실행 실패"

@@ -187,23 +187,22 @@ def main() -> int:
         record(PASS if ("credits_exact" in gc or "credits" in gc) else FAIL,
                "generate cost 에 credits_exact|credits", f"키={list(gc)}")
 
-    # 8) Seedance --medias 제거 감지 — 우리 agent_push 는 seedance omni 를 --medias 로 보냄
+    # 8) Seedance media 계약 — 1.x 는 medias 제거, 역할별 image_references 사용.
+    #    agent_push 는 upload id 를 --image-references(반복)로 넘긴다(재작성 완료). 스키마로 확인.
     sd, err = run_json(cli, "model", "get", "seedance_2_0")
     if not err and isinstance(sd, dict):
         names = [p.get("name") for p in (sd.get("params") or []) if isinstance(p, dict)]
+        record(PASS if "image_references" in names else FAIL,
+               "seedance: image_references param 존재", f"agent_push 가 --image-references 사용; params={names}")
         if "medias" in names:
-            record(PASS, "seedance: medias param 유지", "")
-        else:
-            record(WARN, "seedance: medias param 없음(1.x)",
-                   f"agent_push 의 --medias 경로 재작성 필요. 현재 params={names}")
+            record(WARN, "seedance: medias param 재등장?", "코드는 references 로 전환됨 — medias 부활 시 재검토")
 
     # 9) generate create --help — 코드(agent_push _role_flag)가 쓰는 media flag 전부 존재?
     help_txt = run_text(cli, "generate", "create", "--help")
-    for flag in ("--image", "--video", "--audio", "--start-image", "--end-image"):
+    for flag in ("--image", "--video", "--audio", "--start-image", "--end-image",
+                 "--image-references", "--video-references", "--audio-references"):
         record(PASS if flag in help_txt else FAIL, f"generate create: {flag} 존재",
-               "" if flag in help_txt else "agent_push _role_flag 가 쓰는 플래그 — 사라지면 참조 전달 실패")
-    if "--medias" not in help_txt:
-        record(WARN, "generate create: --medias 없음", "seedance omni(--medias) 경로 영향(위 8 참조) — seedance 쓰면 릴리스 차단 취급")
+               "" if flag in help_txt else "agent_push 가 쓰는 미디어 플래그 — 사라지면 참조 전달 실패")
 
     # ── 리포트 ──
     order = {FAIL: 0, WARN: 1, PASS: 2}
