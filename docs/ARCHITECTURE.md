@@ -123,7 +123,7 @@ HTTP 요청
 
 | 서비스 | 담당 |
 |---|---|
-| `cli_bridge.py` | Higgsfield CLI 래퍼(parse_job·create_job·generate list·account status·workspace). ⚠️ Windows 셰임/Proactor 함정 처리 |
+| `cli_bridge.py` | Higgsfield CLI 래퍼(parse_job·list_jobs·list_models·estimate_cost·account status·workspace). ⚠️ Windows 셰임/Proactor 함정. ★CLI 는 `hf_cli_version.txt` 로 pin, 1.x 필드개명은 `x.get(new) or x.get(old)` 폴백(→`HF_CLI_UPGRADE.md`). 서버측 create_job 은 제거됨(push 모델) |
 | `syncer.py` | 주기 동기화(과도기: 서버 PC 로컬 결과 흡수) |
 | `media_cache.py` | 원격 URL → 로컬 샤딩 캐시 |
 | `thumbs.py` | 썸네일 사전생성·리사이즈 |
@@ -171,7 +171,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 - **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·로컬 대기/생성중 라벨·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
-- **계보(구성탭)**: `HistoryBoard`(원본→파생 가로 트리·무한 캔버스)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`·`CompareModal`·`CompositionBoard`.
+- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`/`SceneBar`(자유 배치 씬 — 카드·연결·태그, localStorage)와 계보 뷰 `HistoryBoard`(원본→파생 가로 트리·무한 캔버스)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`·`CompareModal`.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
 - **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`).
