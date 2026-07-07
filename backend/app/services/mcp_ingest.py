@@ -47,12 +47,18 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
             if isinstance(img, dict) and img.get("url")
         ]
 
+    # 영상 포스터(있으면) — MCP 원본에 썸네일 필드가 오면 parse_job 이 asset.thumbnail_path 로 쓴다.
+    # ★MCP 실샘플 미확보라 필드명은 best-effort(없으면 None = 기존과 동일, 무해).
+    thumb_url = None
+    _res_obj = results if isinstance(results, dict) else (results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {})
+    thumb_url = _res_obj.get("thumbnailUrl") or _res_obj.get("thumbUrl") or _res_obj.get("posterUrl")
     return {
         "id": item.get("id"),
         "status": item.get("status"),
         "job_set_type": item.get("model"),
         "display_name": item.get("model"),
         "result_url": raw_url,
+        "thumbnail_url": thumb_url,
         "created_at": item.get("createdAt"),
         "params": params,
     }

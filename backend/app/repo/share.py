@@ -136,13 +136,19 @@ def export_bundle(
 
         # 결과물(asset) — generation 당 1개. 원격 URL 보존.
         for r in conn.execute(
-            f"SELECT generation_id, type, file_path, source_url FROM asset "
+            f"SELECT generation_id, type, file_path, thumbnail_path, source_url FROM asset "
             f"WHERE generation_id IN ({ph})",
             ids,
         ).fetchall():
             url = _remote_url(r["file_path"], r["source_url"])
             if url and by_id[r["generation_id"]]["_asset"] is None:
-                by_id[r["generation_id"]]["_asset"] = {"type": r["type"], "file_path": url}
+                a = {"type": r["type"], "file_path": url}
+                # 영상 포스터(CLI thumbnail_url) 등 원격 URL 썸네일만 공유 — 받는 쪽 _upsert_synced 가
+                # thumbnail_url 을 asset.thumbnail_path 로 복원(로컬 썸네일 경로는 남이 못 여니 제외).
+                thumb = r["thumbnail_path"]
+                if thumb and thumb.startswith("http"):
+                    a["thumbnail_url"] = thumb
+                by_id[r["generation_id"]]["_asset"] = a
 
         # 레퍼런스 위치(role = @Image1/@Video 슬롯) — 프롬프트 내 레퍼런스 위치 필터정보의 핵심.
         for r in conn.execute(

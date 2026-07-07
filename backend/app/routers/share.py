@@ -255,6 +255,10 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
         url = _remote_media_url(a)
         if url:
             asset = {"type": a.get("type") or "image", "file_path": url}
+            # 영상 포스터(원격 http 썸네일)도 보존 → _upsert_synced 가 thumbnail_path 로 복원.
+            thumb = a.get("thumbnail_path")
+            if thumb and thumb.startswith("http"):
+                asset["thumbnail_url"] = thumb
             break
 
     refs: list[dict[str, Any]] = []

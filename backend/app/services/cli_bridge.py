@@ -243,7 +243,14 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
 
     asset = None
     if result_url:
-        asset = {"type": media_type_from_url(result_url), "file_path": result_url}
+        asset = {
+            "type": media_type_from_url(result_url),
+            "file_path": result_url,
+            # CLI 1.x: 영상 잡은 thumbnail_url(정적 포스터 이미지)을 준다. 이미지는 file_path 자체가
+            # 썸네일이라 None. 영상 asset 의 thumbnail_path 로 써서 그리드/팝업에 가벼운 포스터를 붙인다
+            # (우리 썸네일러 thumbs.ensure_thumb 은 영상 미지원 → 이게 유일한 영상 포스터 출처).
+            "thumbnail_url": job.get("thumbnail_url"),
+        }
 
     return {
         "generation": {

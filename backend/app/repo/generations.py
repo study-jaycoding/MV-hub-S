@@ -164,6 +164,7 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
             a = parsed["asset"]
             is_img = a["type"] == "image"
             fp, thumb, src = _cached_or_remote(a["file_path"], is_img)
+            thumb = thumb or a.get("thumbnail_url")  # 영상: CLI 정적 포스터(우리 썸네일러가 영상 미지원)
             # 성능: 이미 같은 asset 1개가 있으면 재기록 생략(주기 동기화의 '변동 없음' 케이스에서
             # 매번 DELETE+INSERT 하던 쓰기를 제거 → WAL 쓰기·fsync 급감). 다르면(또는 0/복수면) 교체.
             cur_assets = conn.execute(
@@ -582,8 +583,10 @@ def update_asset_cache(
 ) -> None:
     """asset 을 로컬 캐시 경로로 전환하고 원본 URL 을 source_url 에 보존."""
     with get_connection() as conn:
+        # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 캐시는 thumb=None 이라, 무조건
+        # 덮으면 CLI 정적 포스터(thumbnail_url)가 지워진다. 이미지는 local 경로(non-None)라 정상 갱신.
         conn.execute(
-            "UPDATE asset SET file_path=?, thumbnail_path=?, "
+            "UPDATE asset SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
             "source_url=COALESCE(source_url, ?) WHERE id=?",
             (file_path, thumbnail_path, source_url, asset_id),
         )
@@ -594,8 +597,9 @@ def update_reference_cache(
 ) -> None:
     """reference 를 로컬 캐시 경로로 전환하고 원본 URL 을 source_url 에 보존."""
     with get_connection() as conn:
+        # thumbnail_path 는 새 값이 있을 때만 갱신(COALESCE) — 영상 포스터 보존(update_asset_cache 와 동일).
         conn.execute(
-            "UPDATE reference SET file_path=?, thumbnail_path=?, "
+            "UPDATE reference SET file_path=?, thumbnail_path=COALESCE(?, thumbnail_path), "
             "source_url=COALESCE(source_url, ?) WHERE id=?",
             (file_path, thumbnail_path, source_url, ref_id),
         )

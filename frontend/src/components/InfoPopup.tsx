@@ -95,6 +95,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
   // ── 대상별 미리보기 URL / 제목 / 정보 행 ──
   let title = "";
   let previewUrl: string | null = null;
+  let posterUrl: string | null = null; // 영상 포스터(CLI 정적 썸네일) — <video poster> 용
   let isVideo = false;
   let rows: React.ReactNode = null;
   let sources: React.ReactNode = null;
@@ -103,7 +104,14 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
     const g = target.gen;
     const asset = g.assets[0];
     isVideo = asset?.type === "video";
-    previewUrl = asset ? asset.thumbnail_path || asset.file_path : null;
+    // 영상: 실제 영상이 <video> src, thumbnail_path(CLI 정적 포스터)는 poster 로 분리(포스터를 src 로
+    // 쓰면 영상이 안 나온다). 이미지: thumbnail_path(썸네일) 우선, 없으면 원본.
+    if (isVideo) {
+      previewUrl = asset ? asset.file_path : null;
+      posterUrl = asset?.thumbnail_path || null;
+    } else {
+      previewUrl = asset ? asset.thumbnail_path || asset.file_path : null;
+    }
     title = g.prompt.slice(0, 60) || "(제목 없음)";
     const params = (g.params || {}) as Record<string, unknown>;
     rows = (
@@ -186,7 +194,12 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
                 onClick={() => openSource(r)}
               >
                 {r.type === "video" ? (
-                  <video src={refSrc(r.thumbnail_path || r.file_path)} muted preload="metadata" />
+                  <video
+                    src={refSrc(r.file_path)}
+                    poster={refSrc(r.thumbnail_path) || undefined}
+                    muted
+                    preload="metadata"
+                  />
                 ) : (
                   <img src={refSrc(r.thumbnail_path || r.file_path)} alt={r.role || "source"} />
                 )}
@@ -270,7 +283,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
           {previewUrl && (
             <div className="info-preview">
               {isVideo ? (
-                <video src={previewUrl} muted controls preload="metadata" />
+                <video src={previewUrl} poster={posterUrl || undefined} muted controls preload="metadata" />
               ) : (
                 <img
                   src={previewUrl}

@@ -184,7 +184,10 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         rid,
         asset_type=asset["type"] if asset else None,
         asset_path=asset["file_path"] if asset else None,
-        asset_thumb=(asset["file_path"] if asset and asset["type"] == "image" else None),
+        asset_thumb=(
+            asset["file_path"] if asset and asset["type"] == "image"
+            else (asset.get("thumbnail_url") if asset else None)  # 영상: CLI 정적 포스터
+        ),
         job_id=g.get("id"),
         created_at=g.get("created_at"),
         sort_ts=g.get("sort_ts"),
