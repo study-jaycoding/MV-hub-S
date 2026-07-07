@@ -246,10 +246,12 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         asset = {
             "type": media_type_from_url(result_url),
             "file_path": result_url,
-            # CLI 1.x: 영상 잡은 thumbnail_url(정적 포스터 이미지)을 준다. 이미지는 file_path 자체가
-            # 썸네일이라 None. 영상 asset 의 thumbnail_path 로 써서 그리드/팝업에 가벼운 포스터를 붙인다
-            # (우리 썸네일러 thumbs.ensure_thumb 은 영상 미지원 → 이게 유일한 영상 포스터 출처).
+            # CLI 1.x: 영상 잡은 thumbnail_url(정적 포스터 이미지)을 준다. 영상 asset 의 thumbnail_path
+            # 로 써서 그리드/팝업에 가벼운 포스터를 붙인다(우리 썸네일러는 영상 미지원).
             "thumbnail_url": job.get("thumbnail_url"),
+            # 이미지 잡은 min_result_url(경량 축소본)을 준다. 원격 이미지 썸네일로 이걸 쓰면 팀 browse
+            # 시 원본 full 을 통째로 받지 않아 디스크를 아낀다(원본 보존은 완료 저장이 선별로 담당).
+            "min_result_url": job.get("min_result_url"),
         }
 
     return {

@@ -52,6 +52,8 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
     thumb_url = None
     _res_obj = results if isinstance(results, dict) else (results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {})
     thumb_url = _res_obj.get("thumbnailUrl") or _res_obj.get("thumbUrl") or _res_obj.get("posterUrl")
+    # 이미지 경량 썸네일(minUrl) — parse_job 이 원격 이미지 thumbnail_path 로 써서 원본 full 다운로드 회피.
+    min_url = _res_obj.get("minUrl") or _res_obj.get("min_result_url")
     return {
         "id": item.get("id"),
         "status": item.get("status"),
@@ -59,6 +61,7 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
         "display_name": item.get("model"),
         "result_url": raw_url,
         "thumbnail_url": thumb_url,
+        "min_result_url": min_url,
         "created_at": item.get("createdAt"),
         "params": params,
     }

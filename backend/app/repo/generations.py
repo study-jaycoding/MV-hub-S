@@ -164,7 +164,16 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
             a = parsed["asset"]
             is_img = a["type"] == "image"
             fp, thumb, src = _cached_or_remote(a["file_path"], is_img)
-            thumb = thumb or a.get("thumbnail_url")  # 영상: CLI 정적 포스터(우리 썸네일러가 영상 미지원)
+            if is_img:
+                # 로컬 캐시된 이미지(fp=/media): thumb=로컬경로 → 자체 리사이즈(공짜·고화질).
+                # 원격(미캐시) 이미지: 원본 full 대신 CLI 경량 썸네일(min_result_url)을 thumbnail_path 로
+                # 써서 팀 browse 로 원본을 통째 받지 않게 한다(원본 보존은 완료 저장이 선별로 담당).
+                # thumbnail_url 폴백: 공유받은 이미지는 min-url 이 thumbnail_url 로 실려온다(share.py 가
+                # http 썸네일을 그 키로 보존) → 이걸 무시하면 수신측이 원본 full 을 다시 캐시하게 된다.
+                if not fp.startswith("/media/"):
+                    thumb = a.get("min_result_url") or a.get("thumbnail_url") or thumb
+            else:
+                thumb = thumb or a.get("thumbnail_url")  # 영상: CLI 정적 포스터(우리 썸네일러가 영상 미지원)
             # 성능: 이미 같은 asset 1개가 있으면 재기록 생략(주기 동기화의 '변동 없음' 케이스에서
             # 매번 DELETE+INSERT 하던 쓰기를 제거 → WAL 쓰기·fsync 급감). 다르면(또는 0/복수면) 교체.
             cur_assets = conn.execute(

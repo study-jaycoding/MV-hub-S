@@ -105,12 +105,13 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
     const asset = g.assets[0];
     isVideo = asset?.type === "video";
     // 영상: 실제 영상이 <video> src, thumbnail_path(CLI 정적 포스터)는 poster 로 분리(포스터를 src 로
-    // 쓰면 영상이 안 나온다). 이미지: thumbnail_path(썸네일) 우선, 없으면 원본.
+    // 쓰면 영상이 안 나온다). 이미지: 상세 뷰는 원본(file_path) 우선 — thumbnail_path 가 경량 min-url
+    // 이면 확대 시 흐려지므로. 브라우저가 CDN 에서 직접 로드(서버 캐시 안 함), 없을 때만 썸네일 폴백.
     if (isVideo) {
       previewUrl = asset ? asset.file_path : null;
       posterUrl = asset?.thumbnail_path || null;
     } else {
-      previewUrl = asset ? asset.thumbnail_path || asset.file_path : null;
+      previewUrl = asset ? asset.file_path || asset.thumbnail_path : null;
     }
     title = g.prompt.slice(0, 60) || "(제목 없음)";
     const params = (g.params || {}) as Record<string, unknown>;
