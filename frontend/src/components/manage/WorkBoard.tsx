@@ -177,16 +177,18 @@ export function WorkBoard() {
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
-    Promise.all(
-      ps.map((p) =>
-        manageApi
-          .listTasks(p.pid)
-          .then((r) => r.map((t) => ({ ...t, project_name: p.name })))
-          .catch(() => [] as Task[]),
-      ),
-    )
-      .then((all) => {
-        if (reqRef.current === my) setTasks(all.flat().sort(bySort));
+    // 프로젝트별 fan-out 대신 1요청(tasks-batch). 서버가 pid 별 read 게이트를 적용해 {pid: tasks} 반환.
+    manageApi
+      .listTasksBatch(ps.map((p) => p.pid))
+      .then((byPid) => {
+        if (reqRef.current !== my) return;
+        const all = ps.flatMap((p) =>
+          (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name })),
+        );
+        setTasks(all.sort(bySort));
+      })
+      .catch(() => {
+        if (reqRef.current === my) setTasks([]);
       })
       .finally(() => {
         if (reqRef.current === my) loadingRef.current = false;

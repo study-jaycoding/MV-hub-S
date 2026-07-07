@@ -348,6 +348,26 @@ def list_tasks(project_id: str, request: Request):
     return repo_manage.list_tasks(project_id)
 
 
+class TasksBatchIn(BaseModel):
+    project_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/tasks-batch")
+def list_tasks_batch(body: TasksBatchIn, request: Request):
+    """여러 프로젝트의 작업을 한 번에 반환 — WorkBoard 가 프로젝트 수만큼 GET /tasks 하던 fan-out 을
+    1요청으로. pid 별로 기존 read 게이트(_require_project_read)를 그대로 적용해 **접근 가능한
+    프로젝트만** 포함한다(새 권한 로직 없음). 반환 {pid: [tasks]}. 접근불가/없는 pid 는 생략
+    (기존 fan-out 의 per-project catch 와 동일 의미)."""
+    out: dict[str, list] = {}
+    for pid in list(dict.fromkeys(body.project_ids))[:500]:  # 중복제거·순서보존·소프트캡
+        try:
+            _require_project_read(request, pid)
+        except HTTPException:
+            continue
+        out[pid] = repo_manage.list_tasks(pid)
+    return out
+
+
 @router.post("/tasks", status_code=201)
 def create_task(body: TaskIn, request: Request):
     _require_project_manage(request, body.project_id)
