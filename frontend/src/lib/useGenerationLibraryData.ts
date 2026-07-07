@@ -41,43 +41,49 @@ export function useGenerationLibraryData({
 
   const reload = useCallback(async (silent = false, light = false) => {
     if (!authReadyRef.current) return;
-    if (filtersRef.current.tab === "compose") {
+    // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref 가 다른 탭 값으로 바뀌어 있어도 안전.
+    const tab = filtersRef.current.tab;
+    if (tab === "compose") {
       setLoading(false);
       return;
     }
     if (!silent) setLoading(true);
     const seq = ++reloadSeqRef.current;
+    const query = genQueryRef.current;
+    const trashMode = !!filtersRef.current.deleted_only;
+    const scope = tab === "team" ? "team" : "my";
+    // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
     try {
-      const trashMode = !!filtersRef.current.deleted_only;
-      // stats(실패수·안읽음 배지)는 전역 집계라 비쌈 — 3초 폴링(light)마다 재계산하지 않고 10초 스로틀.
-      const now = Date.now();
-      const wantStats = !light || now - lastStatsAtRef.current > 10000;
-      const [g, st, f, pr] = await Promise.all([
-        trashMode
-          ? api.listTrash(genQueryRef.current.search, 0)
-          : api.listGenerations(genQueryRef.current, null),
-        wantStats ? api.generationStats() : Promise.resolve(null),
-        light ? Promise.resolve(null) : api.facets(filtersRef.current.tab === "team" ? "team" : "my"),
-        light ? Promise.resolve(null) : api.projects(filtersRef.current.tab === "team" ? "team" : "my"),
-      ]);
+      const g = trashMode
+        ? await api.listTrash(query.search, 0)
+        : await api.listGenerations(query, null);
       if (seq !== reloadSeqRef.current) return;
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
-      if (st) {
-        setStats(st);
-        lastStatsAtRef.current = now;
-      }
-      if (f) setFacets(f);
-      if (pr) {
-        setProjects(pr.projects);
-        setUnassignedCount(pr.unassigned);
-        setArchivedCount(pr.archived_count ?? 0);
-        projectsLoadedRef.current = true;
-      }
     } catch (e) {
       if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
     } finally {
       if (!silent && seq === reloadSeqRef.current) setLoading(false);
+    }
+    // 2) 메타(실패수·안읽음 배지·facets·projects)는 뒤따라 — 실패해도 그리드 표시엔 영향 없음.
+    const now = Date.now();
+    const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats 는 비싸 10초 스로틀
+    const [st, f, pr] = await Promise.all([
+      wantStats ? api.generationStats().catch(() => null) : Promise.resolve(null),
+      light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
+      light ? Promise.resolve(null) : api.projects(scope).catch(() => null),
+    ]);
+    if (seq !== reloadSeqRef.current) return;
+    if (st) {
+      setStats(st);
+      lastStatsAtRef.current = now;
+    }
+    if (f) setFacets(f);
+    if (pr) {
+      setProjects(pr.projects);
+      setUnassignedCount(pr.unassigned);
+      setArchivedCount(pr.archived_count ?? 0);
+      projectsLoadedRef.current = true;
     }
   }, [flash]);
 

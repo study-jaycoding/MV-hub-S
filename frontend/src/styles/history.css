@@ -169,6 +169,36 @@
 .linb-edge.hl { stroke: #fff; stroke-width: 5; opacity: 1; stroke-linecap: round; filter: drop-shadow(0 0 3px rgba(255,255,255,0.6)); }
 /* 비활성(회색) — 노드/엣지 모두. hl(흰선)보다 우선해야 하므로 !important */
 .linb-edge.disabled { stroke: #5a5e66 !important; opacity: 0.4 !important; stroke-dasharray: none !important; filter: none !important; }
+/* 원본 입력 레퍼런스 노드(왼쪽 lane) — 원본에 무엇이 쓰였는지 순서대로 표시 */
+.linb-edge.refinput { stroke: #8ea0ff; opacity: 0.85; stroke-dasharray: 5 4; }
+.linb-refnode {
+  position: absolute; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column;
+  border: 2px dashed var(--border2); background: #0c0d11; box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+  transition: left 0.25s ease, top 0.25s ease;
+}
+.linb-canvas.dragging .linb-refnode { transition: none; }
+.linb-refnode:hover { border-color: #8ea0ff; }
+.linb-refnode-hd {
+  flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; color: var(--accent);
+  padding: 3px 7px; background: rgba(196, 232, 74, 0.10); border-bottom: 1px solid var(--border2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.linb-refnode-body {
+  flex: 1; display: flex; flex-wrap: wrap; gap: 3px; padding: 4px; align-content: flex-start; overflow: hidden;
+}
+.linb-refthumb {
+  flex: 1 1 44px; min-width: 44px; max-height: 100%; aspect-ratio: 1;
+  position: relative; border-radius: 5px; overflow: hidden; background: #05060a;
+}
+.linb-refthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.linb-refthumb-ph {
+  display: block; width: 100%; height: 100%;
+  background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
+}
+.linb-refnum {
+  position: absolute; left: 2px; top: 1px; font-size: 8px; font-weight: 800;
+  background: rgba(0,0,0,0.6); color: #fff; padding: 0 3px; border-radius: 3px; line-height: 1.4;
+}
 .linb-node {
   position: absolute; border-radius: 12px; overflow: hidden; cursor: grab;
   border: 2px solid var(--border2); background: #0c0d11; box-shadow: 0 3px 12px rgba(0,0,0,0.4);
@@ -193,14 +223,16 @@
 .linb-node.fit-contain { background: #050608; }
 .linb-node.fit-contain img,
 .linb-node.fit-contain video { object-fit: contain; }
-/* 영상 표시 뱃지 — 좌하단 ▶(캡션과 안 겹치게 살짝 위) */
+/* 영상 표시 뱃지 — 카드 중앙 ▶(라이브러리 play-badge 와 동일 개념)로 확실히 영상임을 표시.
+   호버하면 자동재생되므로 그때는 숨긴다. */
 .linb-vid {
-  position: absolute; left: 5px; bottom: 22px; z-index: 2;
-  width: 18px; height: 18px; border-radius: 50%;
-  background: rgba(8,9,12,0.78); color: #fff;
-  font-size: 9px; line-height: 18px; text-align: center;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
+  width: 34px; height: 34px; border-radius: 50%; padding-left: 2px; pointer-events: none;
+  display: grid; place-items: center; font-size: 13px; color: #fff;
+  background: rgba(15,16,20,0.5); border: 1px solid rgba(255,255,255,0.18);
+  backdrop-filter: blur(4px); transition: opacity 0.15s;
 }
+.linb-node:hover .linb-vid { opacity: 0; }
 /* r/g/b 카드 컬러 마커 — 좌측 세로 바(그리드 list-color-bar 와 동일 개념). 색 지정한 노드만 표시. */
 /* 노드 하단 컬러바 — 카드(.card-colorbar)와 동일. 색은 인라인, 최종이면 골드 + 빛 흐름. */
 .linb-colorbar {

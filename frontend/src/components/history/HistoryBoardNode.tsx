@@ -135,7 +135,6 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
           {generation.is_final ? "★" : "S"}
         </span>
       )}
-      <span className="linb-cap">{generation.prompt.slice(0, 22) || "(제목 없음)"}</span>
       {(generation.color || generation.is_final) && (
         <span
           className={"linb-colorbar" + (generation.is_final ? " final" : "")}

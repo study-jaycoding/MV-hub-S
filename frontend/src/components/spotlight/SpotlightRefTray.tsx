@@ -74,9 +74,12 @@ export function SpotlightRefTray({
                   muted
                   preload="metadata"
                   playsInline
+                  draggable={false}
                 />
               ) : ref.thumb ? (
-                <img src={ref.thumb} alt="" />
+                // draggable=false: 썸네일 자체가 네이티브 이미지 드래그가 되면 크롬이 합성 파일을
+                // 만들어 순서변경이 '외부 파일 추가'로 처리된다. 드래그 주체는 항상 바깥 항목 div.
+                <img src={ref.thumb} alt="" draggable={false} />
               ) : (
                 <span className="sl-reftray-ph" />
               )}
