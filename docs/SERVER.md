@@ -12,7 +12,7 @@
 작동**한다. CORS 도 필요 없다(같은 오리진).
 
 ```
-[브라우저] ──http──> [FastAPI :8000]
+[브라우저] ──http──> [FastAPI :8010]
                        ├─ /            → frontend/dist/index.html (SPA)
                        ├─ /assets/*    → 빌드된 JS/CSS
                        ├─ /api/*        → REST
@@ -26,11 +26,14 @@
 MV_server.bat
 ```
 
-하는 일: ① 프론트 의존성 확인(최초 1회 `npm install`) → ② `npm run build`(dist 생성)
-→ ③ 백엔드를 `0.0.0.0:8000` 으로 기동(빌드된 dist 서빙).
+하는 일: ① 프론트 의존성 확인·동기화(`npm install`) → ② `npm run build`(dist 생성)
+→ ③ 백엔드를 `0.0.0.0:8010` 으로 기동(빌드된 dist 서빙). 프로세스가 죽으면 3초 뒤 자동 재기동.
 
-- 같은 PC:        http://localhost:8000
-- 같은 네트워크:  http://<이 PC IP>:8000   (현재 개발 PC: http://192.168.1.38:8000)
+MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로그인 필수)·
+`CONTENT_HUB_MANAGE=1`(관리 대시보드 on). 끄려면 실행 전 해당 환경변수를 0 으로 설정.
+
+- 같은 PC:        http://localhost:8010
+- 같은 네트워크:  http://<이 PC IP>:8010   (IP 는 `ipconfig` 로 확인)
 
 포트/바인딩 변경: `set PORT=9000 & MV_server.bat`, 또는 환경변수
 `CONTENT_HUB_PORT` / `CONTENT_HUB_HOST`.
@@ -40,7 +43,7 @@ MV_server.bat
 | 변수 | 기본값 | 용도 |
 |------|--------|------|
 | `CONTENT_HUB_HOST` | `0.0.0.0` | 바인딩 주소 |
-| `CONTENT_HUB_PORT` | `8000` | 포트 |
+| `CONTENT_HUB_PORT` | `8000`(코드) · **MV_server.bat=8010** | 포트 |
 | `CONTENT_HUB_DATA` | `backend/data` | DB·미디어·공유 루트 |
 | `CONTENT_HUB_FRONTEND_DIST` | `frontend/dist` | 서빙할 빌드 산출물(없으면 API 전용) |
 | `CONTENT_HUB_ASSETS_DIR` | `D:/ClaudeCode-data/projects` | Assets(구성) 패널 루트 |
@@ -48,13 +51,14 @@ MV_server.bat
 | `CONTENT_HUB_BACKUP_DIR` | `<DATA>/backups` | DB 백업 보관 폴더(실서버: 다른 디스크/NAS 권장) |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `86400`(하루) | 백업 주기(초). 0 이하 = 비활성 |
 | `CONTENT_HUB_BACKUP_KEEP` | `7` | 백업 보관 개수(회전) |
-| `CONTENT_HUB_AUTH` | `0`(off) | 로그인 인증 enforcement. 1 이면 로그인 필수 |
+| `CONTENT_HUB_AUTH` | `0`(코드) · **MV_server.bat=1** | 로그인 인증 enforcement. 1 이면 로그인 필수 |
+| `CONTENT_HUB_MANAGE` | `1`(on) | PM/관리 대시보드(상단 보드 아이콘). 0 이면 숨김 |
 | `CONTENT_HUB_AUTH_SECRET` | (자동생성) | 토큰 서명 시크릿. 미지정 시 DB에 1회 생성·영속 |
 
 ## 로그인/계정 승인 보안 (CONTENT_HUB_AUTH=1)
 
-기본은 **off** — 개인 PC·개발에선 인증 없이 그대로 쓴다(로드맵: 식별 먼저, 차단은 켤 때).
-팀 서버에서 접근을 막으려면 `set CONTENT_HUB_AUTH=1`.
+코드 기본은 off 지만 **MV_server.bat 은 `CONTENT_HUB_AUTH=1`(로그인 필수) 로 켜서 기동**한다
+(팀 서버 용도). 개인 PC·개발에서 인증 없이 쓰려면 실행 전 `set CONTENT_HUB_AUTH=0`.
 
 켜면:
 - 모든 `/api/*`(로그인·헬스 제외)가 **승인된 세션**을 요구(미들웨어가 매 요청 검증).
@@ -83,7 +87,8 @@ MV_server.bat
 2. `pip install -r backend/requirements.txt`, Node 설치.
 3. 데이터 경로를 서버 디스크에 맞춰 `CONTENT_HUB_DATA` 지정(권장: 영속 볼륨).
 4. `MV_server.bat`(Windows) 또는 동등한 쉘에서
-   `npm run build` → `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+   `npm run build` → `python serve.py`(IPv4/IPv6 듀얼스택, `--reload` 금지). 직접 uvicorn 이면
+   `python -m uvicorn app.main:app --host 0.0.0.0 --port 8010`.
 5. 방화벽에서 해당 포트 인바운드 허용.
 6. Higgsfield CLI 는 **각 사용자 개인 PC**에서 본인 계정으로 — 서버엔 토큰을 두지 않는다
    (로드맵 보안 원칙). 서버는 데이터 수집(`/sync`)·보관·서빙만 담당.
