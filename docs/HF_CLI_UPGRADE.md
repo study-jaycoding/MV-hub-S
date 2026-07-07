@@ -13,6 +13,23 @@
   서버 생성 bat(`backend/app/routers/ingest.py`)·초기설치(`setup_clone_git.bat`)가 모두 읽어
   **정확히 이 버전**을 설치/검증한다. `MV_agent.bat` 은 매 실행 때 설치본이 pin 과 다르면 교정한다.
 
+## 선제 준비 (새 버전이 오기 전에)
+
+CLI 소스는 비공개고, `higgsfield-ai/cli` GitHub 의 **릴리스 노트 본문은 비어 있다**(확인됨) —
+노트로는 변경을 못 안다. 대신 버전 태그별 `MODELS.md`(모델·파라미터 스키마)·`README.md`가
+상세하니, **pin ↔ 최신 diff** 로 param/플래그/모델 변경을 설치 전에 미리 본다.
+
+```
+python tools/hf_cli_check_update.py
+```
+
+- 새 버전이 있으면 `MODELS.md`/`README.md` 의 pin→최신 diff 를 출력한다(예: seedance
+  `medias`→`image_references` 같은 변화가 여기서 잡힌다).
+- **한계**: 출력 JSON 형식 변경(job_type/created_at/transactions 등)은 문서에 안 나온다 →
+  설치 후 스모크로 확정한다(아래).
+- **무료 알림**: GitHub `higgsfield-ai/cli` 를 Watch → Custom → Releases 로 구독하면 새 버전
+  릴리스 시 이메일이 온다(코드 0).
+
 ## 버전 올리는 절차 (bump)
 
 1. 새 CLI 를 한 PC 에 설치: `npm install -g @higgsfield/cli@<새버전>`
