@@ -183,21 +183,30 @@ def normalize_status(raw: Optional[str]) -> str:
     if not raw:
         return "pending"
     return _STATUS_MAP.get(raw.lower(), raw.lower())
-def epoch_to_iso(value: Any) -> str:
-    """epoch(float/int) → 'YYYY-MM-DD HH:MM:SS' (UTC). 실패 시 현재시각."""
-    try:
-        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError, OverflowError):
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
 def _to_epoch(value: Any) -> Optional[float]:
-    """원시 created_at(float epoch) → float. 정렬용(sub-second 보존). 실패 시 None."""
+    """원시 created_at → epoch float(sub-second 보존). 정렬키용. 실패 시 None.
+    CLI 0.x 는 float epoch, CLI 1.x 는 ISO8601 문자열('...Z')로 준다 — 둘 다 처리."""
+    if value is None:
+        return None
     try:
-        return float(value)
+        return float(value)  # 0.x: epoch(float/int) 또는 숫자문자열
+    except (TypeError, ValueError):
+        pass
+    try:  # 1.x: ISO8601 (예: '2026-07-07T05:00:02.667612Z')
+        return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00")).timestamp()
     except (TypeError, ValueError):
         return None
+
+
+def epoch_to_iso(value: Any) -> str:
+    """created_at(epoch float 또는 1.x ISO 문자열) → 'YYYY-MM-DD HH:MM:SS' (UTC). 실패 시 현재시각."""
+    ep = _to_epoch(value)
+    if ep is not None:
+        try:
+            return datetime.fromtimestamp(ep, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        except (OverflowError, OSError, ValueError):
+            pass
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def parse_job(job: dict[str, Any]) -> dict[str, Any]:

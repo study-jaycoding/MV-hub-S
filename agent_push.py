@@ -757,6 +757,9 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
     txns = _cli_json(cli, "account", "transactions", "--size", "100")
+    # CLI 1.x 는 거래를 {cursor, items} 로 감싼다(0.x 는 bare list). items 를 꺼낸다.
+    if isinstance(txns, dict):
+        txns = txns.get("items") or []
     if not isinstance(txns, list):
         txns = []
     # 거래 표시명(display_name)을 모델 키(job_set_type)로 변환해 태깅 → 서버가 모델 가드로 정확 매칭.
