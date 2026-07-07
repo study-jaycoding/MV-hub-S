@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, BACKEND_DIR, DEFAULT_WORKER_ID, MANAGE_ENABLED
-from ..deps import account_scope_uid
+from ..deps import account_scope_uid, require_agent_account
 from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
@@ -41,15 +41,8 @@ def _acc(request: Request) -> dict:
 
 
 def _agent_acc(request: Request) -> dict:
-    """에이전트·계정상태용 신원 — gen_requests._require_account 와 동일한 AUTH-off 폴백.
-    AUTH 꺼진 '로컬 허브'(개인 PC)에서는 미들웨어가 account 를 안 채우므로, 로그인 없이도
-    내 에이전트가 롱폴·생성요청을 받게 제공자(나) 신원으로 폴백한다. AUTH on 에선 그대로 401."""
-    acc = getattr(request.state, "account", None)
-    if acc:
-        return acc
-    if not AUTH_ENABLED:
-        return {"email": "local", "creator_uid": repo.get_my_uid()}
-    raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    """에이전트·계정상태용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
+    return require_agent_account(request)
 
 
 def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:

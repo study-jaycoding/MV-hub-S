@@ -26,6 +26,7 @@ from ..deps import (
     account_scope_uid,
     actor_id,
     project_roles_of,
+    require_agent_account,
     require_global_cap,
     require_project_role,
     require_view_generation,
@@ -112,14 +113,8 @@ class TelemetryPushIn(BaseModel):
 
 
 def _push_acc(request: Request) -> dict:
-    """텔레메트리 push 신원 — 인증 세션 계정. AUTH off 로컬 허브에선 내 신원으로 폴백
-    (ingest._agent_acc 와 동일 계약). 반환 {email, creator_uid}."""
-    acc = getattr(request.state, "account", None)
-    if acc:
-        return acc
-    if not AUTH_ENABLED:
-        return {"email": "local", "creator_uid": repo.get_my_uid()}
-    raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    """텔레메트리 push 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
+    return require_agent_account(request)
 
 
 @router.post("/telemetry/push")

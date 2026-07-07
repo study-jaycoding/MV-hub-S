@@ -38,6 +38,23 @@ def account_actor_uid(request: Request) -> Optional[str]:
     return None
 
 
+def require_agent_account(request: Request) -> dict:
+    """에이전트·텔레메트리·생성요청 공용 신원 폴백(단일 출처).
+
+    인증 세션 계정이 있으면 그대로 사용. AUTH off '로컬 허브'(개인 PC)에선 미들웨어가 account 를
+    안 채우므로 제공자(나) 신원 `{email:'local', creator_uid}` 으로 폴백해 로그인 없이도 내 에이전트가
+    롱폴·생성요청·텔레메트리를 받게 한다. AUTH on 에선 401. (ingest._agent_acc·gen_requests._require_account·
+    manage._push_acc 3중복을 단일화 — 신원 규칙이 분산되면 한 곳 누락이 권한 버그가 된다.)"""
+    acc = getattr(request.state, "account", None)
+    if acc:
+        return acc
+    if not AUTH_ENABLED:
+        from . import repo  # 지역 import(순환 회피)
+
+        return {"email": "local", "creator_uid": repo.get_my_uid()}
+    raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+
+
 def actor_id(request: Request) -> str:
     """현재 요청 행위자의 안정 신원.
 
