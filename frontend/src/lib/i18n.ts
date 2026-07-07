@@ -9,9 +9,11 @@ import { type Lang, loadLang, saveLang } from "./theme";
 const EN: Record<string, string> = {
   // 상단바·탭
   "내 작업": "My Work",
-  "팀 공유": "Team Work",
+  "팀 작업": "Team Work",
   "히스토리": "History",
-  "히스토리 — 원본 → 파생 순서": "History — origin → derivations order",
+  "캔버스": "Canvas",
+  "캔버스 — 씬 캔버스 · 히스토리 뷰": "Canvas — scene canvas & History view",
+  "히스토리 보기": "History view",
   "관리자 — 멤버 등급·프로젝트 관리": "Admin — roles & projects",
   "Assets (구성) — 별도 창": "Assets — separate window",
   // 설정
