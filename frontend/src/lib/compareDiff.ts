@@ -13,10 +13,22 @@ export function tokenizePrompt(text: string): string[] {
   return (text || "").split(/(\s+)/).filter((token) => token.trim().length > 0);
 }
 
+// 엘리먼트(<<<x>>>)를 먼저 떼어낸 뒤 남은 텍스트만 토큰화 — 조사가 엘리먼트에 붙어(예: '<<<image1>>>과')
+// 있어도 렌더(renderPrompt)와 동일하게 '과'를 독립 토큰으로 보게 한다. 두 경로의 토큰화가 어긋나면
+// 완전히 같은 프롬프트인데도 조사가 '바뀐 단어(노란색)'로 오인된다. 엘리먼트 자체는 commonPromptElements 로 따로 비교.
+export function promptTextTokens(text: string): string[] {
+  const out: string[] = [];
+  for (const part of (text || "").split(ELEMENT_SPLIT_RE)) {
+    if (!part || ELEMENT_RE.test(part)) continue;
+    out.push(...tokenizePrompt(part));
+  }
+  return out;
+}
+
 // 모든 열에 공통으로 들어간 단어 집합(소문자) — 여기 없는 단어가 '바뀐 단어'.
 export function commonPromptTokens(prompts: string[]): Set<string> {
   const sets = prompts.map((prompt) =>
-    new Set(tokenizePrompt(prompt).map((token) => token.toLowerCase())),
+    new Set(promptTextTokens(prompt).map((token) => token.toLowerCase())),
   );
   if (sets.length === 0) return new Set();
   let common = sets[0];
