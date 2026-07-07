@@ -177,19 +177,27 @@ export function WorkBoard() {
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
-    // 프로젝트별 fan-out 대신 1요청(tasks-batch). 서버가 pid 별 read 게이트를 적용해 {pid: tasks} 반환.
+    const finish = (tasks: Task[]) => {
+      if (reqRef.current === my) setTasks(tasks.sort(bySort));
+    };
+    // 프로젝트별 fan-out(폴백) — 배치 실패(예: 롤아웃 중 구 공유서버에 tasks-batch 없음) 시
+    // 프로젝트별 개별 조회로 부분성공 유지(하나 실패해도 나머지는 표시).
+    const fanout = () =>
+      Promise.all(
+        ps.map((p) =>
+          manageApi
+            .listTasks(p.pid)
+            .then((r) => r.map((t) => ({ ...t, project_name: p.name })))
+            .catch(() => [] as Task[]),
+        ),
+      ).then((all) => finish(all.flat()));
+    // 우선 1요청(tasks-batch). 서버가 pid 별 read 게이트를 적용해 {pid: tasks} 반환.
     manageApi
       .listTasksBatch(ps.map((p) => p.pid))
       .then((byPid) => {
-        if (reqRef.current !== my) return;
-        const all = ps.flatMap((p) =>
-          (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name })),
-        );
-        setTasks(all.sort(bySort));
+        finish(ps.flatMap((p) => (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name }))));
       })
-      .catch(() => {
-        if (reqRef.current === my) setTasks([]);
-      })
+      .catch(() => fanout().catch(() => finish([])))
       .finally(() => {
         if (reqRef.current === my) loadingRef.current = false;
       });

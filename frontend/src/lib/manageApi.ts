@@ -18,12 +18,12 @@ export const manageApi = {
     }),
   listTasks: (projectId: string) =>
     jsonFetch<Task[]>(withQuery("/api/manage/tasks", { project_id: projectId })),
-  // 여러 프로젝트 작업을 1요청으로(WorkBoard fan-out 제거). 반환 {pid: Task[]}, 접근불가 pid 는 생략.
+  // 여러 프로젝트 작업을 1요청으로(WorkBoard fan-out 제거). GET(읽기)이라 mutation 알림 없음.
+  // 반환 {pid: Task[]}, 접근불가/오류 pid 는 생략(부분성공).
   listTasksBatch: (projectIds: string[]) =>
-    jsonFetch<Record<string, Task[]>>("/api/manage/tasks-batch", {
-      method: "POST",
-      body: jsonBody({ project_ids: projectIds }),
-    }),
+    jsonFetch<Record<string, Task[]>>(
+      withQuery("/api/manage/tasks-batch", { project_id: projectIds }),
+    ),
   updateTask: (tid: string, body: Partial<Task>) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",
