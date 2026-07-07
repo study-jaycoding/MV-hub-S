@@ -8,6 +8,9 @@ REM  installs that exact version if missing or different, does nothing if alread
 REM  matching. Never @latest - Higgsfield ships breaking changes; bump the pin file
 REM  to roll the whole team forward on a version we tested.
 REM
+REM  To BUMP the pinned CLI version safely, follow docs/HF_CLI_UPGRADE.md
+REM  (bump pin -> run tools/hf_cli_contract_smoke.py -> fix any FAIL -> release).
+REM
 REM  Usage:
 REM    update_cli.bat            run directly (pauses at the end)
 REM    update_cli.bat nopause    called by another script (no pause, best-effort)

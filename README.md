@@ -30,8 +30,12 @@ git sparse-checkout set backend frontend
 
 ```sh
 update_git.bat       # git pull --ff-only 후 바뀐 부분만 갱신 (sparse-checkout 유지됨)
-update_cli.bat   # higgsfield CLI 업데이트(선택)
+update_cli.bat   # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로 맞춤
 ```
+
+> **CLI 버전을 올릴 때**는 [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) 절차를 따르세요
+> (pin 올림 → `python tools/hf_cli_contract_smoke.py` 로 계약 검증 → FAIL 고친 뒤 릴리스).
+> CLI 는 필드/플래그를 조용히 바꾸므로 스모크 없이 올리면 데이터가 조용히 깨질 수 있습니다.
 
 ## 도커로 실행(선택)
 

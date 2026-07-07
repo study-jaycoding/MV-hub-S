@@ -135,29 +135,57 @@ def main() -> int:
     else:
         record(PASS if "id" in w0 else FAIL, "workspace list: id", f"키={list(w0)}")
 
-    # 7) generate list — parse_job 이 result_url/created_at/status/params/id 의존
+    # 7) generate list — 코드(cli_bridge.list_jobs, agent_push)는 bare list 만 받고,
+    #    parse_job 은 result_url(asset·creator uid 추출)을 이 키로만 읽는다.
+    #    스모크는 코드보다 관대하면 안 된다(통과해도 코드가 깨지는 오탐 방지) → 코드와 동일하게 엄격.
     gl, err = run_json(cli, "generate", "list", "--size", "1")
-    g0 = _first(gl)
     if err or gl is None:
         record(WARN, "generate list 조회", err or "None")
-    elif g0 is None:
-        record(WARN, "generate list 비어있음", "생성 이력이 없어 필드 검증 스킵")
     else:
-        for f in ("id", "status", "params", "created_at"):
-            record(PASS if f in g0 else FAIL, f"generate list 항목에 {f}", f"키={list(g0)}")
-        record(PASS if (("job_type" in g0) or ("job_set_type" in g0)) else FAIL,
-               "generate list 항목에 job_type|job_set_type", f"키={list(g0)}")
-        record(PASS if (g0.get("result_url") or g0.get("min_result_url")) else FAIL,
-               "generate list 항목에 result_url|min_result_url", f"result_url={bool(g0.get('result_url'))}")
-        # created_at 이 우리 파서(_to_epoch)로 해석되는지 — ISO/epoch 둘 다여야
-        try:
-            sys.path.insert(0, str(ROOT / "backend"))
-            from app.services.cli_bridge import _to_epoch  # type: ignore
-            ep = _to_epoch(g0.get("created_at"))
-            record(PASS if ep else FAIL, "created_at → epoch 파싱(_to_epoch)",
-                   f"created_at={g0.get('created_at')!r} → {ep}")
-        except Exception as e:  # noqa: BLE001
-            record(WARN, "created_at 파싱 검사", f"cli_bridge import 실패: {e}")
+        record(PASS if isinstance(gl, list) else FAIL,
+               "generate list = bare JSON 배열", f"type={type(gl).__name__} (코드가 list 만 받음; {{items}} 래퍼면 코드 깨짐)")
+        g0 = gl[0] if isinstance(gl, list) and gl else None
+        if g0 is None:
+            record(WARN, "generate list 비어있음", "생성 이력이 없어 항목 필드 검증 스킵")
+        else:
+            for f in ("id", "status", "params", "created_at"):
+                record(PASS if f in g0 else FAIL, f"generate list 항목에 {f}", f"키={list(g0)}")
+            record(PASS if (("job_type" in g0) or ("job_set_type" in g0)) else FAIL,
+                   "generate list 항목에 job_type|job_set_type", f"키={list(g0)}")
+            record(PASS if g0.get("result_url") else FAIL,
+                   "generate list 항목에 result_url", f"result_url={bool(g0.get('result_url'))} min_result_url={bool(g0.get('min_result_url'))} (코드가 result_url 로만 asset·uid 추출)")
+            # result_url 에서 user_ uid 를 뽑는다(_dominant_uid). 패턴 유지 확인.
+            ru = g0.get("result_url") or ""
+            record(PASS if "user_" in ru else WARN, "result_url 에 user_<id> 패턴",
+                   "creator uid 추출용" if "user_" in ru else f"패턴 없음 → creator 연결 확인 필요: {ru[:60]}")
+            # created_at 이 우리 파서(_to_epoch)로 해석되는지 — ISO/epoch 둘 다여야
+            try:
+                sys.path.insert(0, str(ROOT / "backend"))
+                from app.services.cli_bridge import _to_epoch  # type: ignore
+                ep = _to_epoch(g0.get("created_at"))
+                record(PASS if ep else FAIL, "created_at → epoch 파싱(_to_epoch)",
+                       f"created_at={g0.get('created_at')!r} → {ep}")
+            except Exception as e:  # noqa: BLE001
+                record(WARN, "created_at 파싱 검사", f"cli_bridge import 실패: {e}")
+
+    # 7b) account transactions item 필드 — PM 매칭(_match_transactions)이 의존
+    tx_item = _first(tx)
+    if isinstance(tx_item, dict):
+        for f in ("created_at", "credits"):
+            record(PASS if f in tx_item else WARN, f"transactions item 에 {f}", f"키={list(tx_item)}")
+
+    # 7c) workspace item 필드 — UI/PM 이 is_selected/credits/plan_type 사용
+    if isinstance(w0, dict):
+        for f in ("is_selected", "credits", "plan_type"):
+            record(PASS if f in w0 else WARN, f"workspace item 에 {f}", f"키={list(w0)}")
+
+    # 7d) generate cost — estimate_cost 가 credits_exact|credits 숫자 의존(무료 견적)
+    gc, err = run_json(cli, "generate", "cost", "nano_banana_flash", "--prompt", "smoke test")
+    if err or not isinstance(gc, dict):
+        record(WARN, "generate cost = JSON dict", err or f"type={type(gc).__name__}")
+    else:
+        record(PASS if ("credits_exact" in gc or "credits" in gc) else FAIL,
+               "generate cost 에 credits_exact|credits", f"키={list(gc)}")
 
     # 8) Seedance --medias 제거 감지 — 우리 agent_push 는 seedance omni 를 --medias 로 보냄
     sd, err = run_json(cli, "model", "get", "seedance_2_0")
@@ -169,14 +197,13 @@ def main() -> int:
             record(WARN, "seedance: medias param 없음(1.x)",
                    f"agent_push 의 --medias 경로 재작성 필요. 현재 params={names}")
 
-    # 9) generate create --help — 코드가 쓰는 media flag 존재
+    # 9) generate create --help — 코드(agent_push _role_flag)가 쓰는 media flag 전부 존재?
     help_txt = run_text(cli, "generate", "create", "--help")
-    if "--image" in help_txt:
-        record(PASS, "generate create: --image 별칭 존재", "")
-    else:
-        record(FAIL, "generate create: --image 별칭", "미디어 참조 플래그 확인 필요")
+    for flag in ("--image", "--video", "--audio", "--start-image", "--end-image"):
+        record(PASS if flag in help_txt else FAIL, f"generate create: {flag} 존재",
+               "" if flag in help_txt else "agent_push _role_flag 가 쓰는 플래그 — 사라지면 참조 전달 실패")
     if "--medias" not in help_txt:
-        record(WARN, "generate create: --medias 없음", "seedance omni 경로 영향(위 8 참조)")
+        record(WARN, "generate create: --medias 없음", "seedance omni(--medias) 경로 영향(위 8 참조) — seedance 쓰면 릴리스 차단 취급")
 
     # ── 리포트 ──
     order = {FAIL: 0, WARN: 1, PASS: 2}
