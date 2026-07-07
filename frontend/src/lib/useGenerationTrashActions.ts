@@ -62,6 +62,26 @@ export function useGenerationTrashActions({
     }
   };
 
+  // 씬 팝업 전용 — 삭제에 성공한 id 만 돌려준다(취소/실패 시 씬 카드가 잘못 정리되지 않게).
+  const deleteReturningIds = async (sel: Generation[]): Promise<string[]> => {
+    const ids = sel.map((g) => g.id);
+    if (!ids.length) return [];
+    if (!window.confirm(trashConfirmText(ids.length, false))) return [];
+    const results = await Promise.allSettled(ids.map((id) => api.deleteGeneration(id)));
+    const done = ids.filter((_, i) => results[i].status === "fulfilled");
+    const failed = ids.length - done.length;
+    // 실제 삭제된 id 는 항상 돌려준다 — 후처리(reload) 실패로 호출자(씬 정리)가 막히지 않게.
+    try {
+      await reload();
+      bumpBoard();
+      postLibraryChanged();
+    } catch {
+      /* 라이브러리 갱신 실패는 무시 — 삭제 자체는 성공 */
+    }
+    flash(bulkResultText(ids.length, failed, "휴지통으로 보냈습니다.", "휴지통 이동"));
+    return done;
+  };
+
   const bulkDelete = async () => {
     const ids = [...selected];
     if (!ids.length) return;
@@ -104,5 +124,13 @@ export function useGenerationTrashActions({
     }
   };
 
-  return { boardDelete, bulkDelete, bulkPurge, bulkRestore, clearFailed, onRestore };
+  return {
+    boardDelete,
+    bulkDelete,
+    bulkPurge,
+    bulkRestore,
+    clearFailed,
+    deleteReturningIds,
+    onRestore,
+  };
 }

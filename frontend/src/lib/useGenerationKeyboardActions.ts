@@ -71,6 +71,8 @@ export function useGenerationKeyboardActions({
         return;
       }
       if (ids.length === 0) return;
+      // 구성(compose=계보/씬)에선 색·비활성을 보드/씬이 자체 처리 — 라이브러리 선택 잔재로 이중 실행 방지.
+      if (filtersRef.current.tab === "compose") return;
       if (matchShortcut(e, "colorRed")) {
         e.preventDefault();
         void colorSelected(ids, KEY_COLORS.r);
@@ -80,7 +82,7 @@ export function useGenerationKeyboardActions({
       } else if (matchShortcut(e, "colorBlue")) {
         e.preventDefault();
         void colorSelected(ids, KEY_COLORS.b);
-      } else if (matchShortcut(e, "boardDisable") && filtersRef.current.tab !== "compose") {
+      } else if (matchShortcut(e, "boardDisable")) {
         e.preventDefault();
         toggleDisabledGen(ids);
       }

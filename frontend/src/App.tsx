@@ -11,6 +11,8 @@ import { LibraryToolbar } from "./components/LibraryToolbar";
 import { SpotlightPrompt } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { TopBar } from "./components/TopBar";
+import { SceneBar } from "./components/scene/SceneBar";
+import { SceneBoard } from "./components/scene/SceneBoard";
 import { AppOverlays } from "./components/app/AppOverlays";
 import {
   BoardSelectionActionBar,
@@ -20,6 +22,17 @@ import { KEY_COLORS } from "./lib/appConstants";
 import { buildGenerationQuery, generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
+import {
+  createScene,
+  deleteScene as removeScene,
+  getActiveSceneId,
+  listScenes,
+  setActiveSceneId as persistActiveScene,
+  updateScene,
+  variantIds,
+  type Scene,
+  type SceneRef,
+} from "./lib/scenes";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useGenerationAutoTagActions } from "./lib/useGenerationAutoTagActions";
@@ -79,6 +92,33 @@ export default function App() {
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const [boardFocusId, setBoardFocusId] = useState<string | null>(null); // 구성탭 히스토리 트리 포커스
   const [boardSignal, setBoardSignal] = useState(0); // 구성탭 트리 refetch 신호(생성·재생성·동기화 시 ++)
+  // Canvas 씬(빈 캔버스) — 구성 탭에서 '계보'(히스토리) 대신 씬을 열어 레퍼런스/생성 작업. S1: 프로젝트 무관 전역.
+  const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
+  const activeScene = scenes.find((s) => s.id === activeSceneId) || null;
+  // 씬의 생성 카드 1개 선택 시 그 카드(id+레퍼런스)를 하단 프롬프트에 바인딩. SceneBoard 가 통지.
+  const [sceneBinding, setSceneBinding] = useState<{ cardId: string; refs: SceneRef[] } | null>(null);
+  // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바(구성탭과 동일 자리). 삭제는 명령형 핸들로.
+  const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
+  const sceneActionRef = useRef<{ deleteSelected: () => void } | null>(null);
+  const selectScene = (id: string | null) => {
+    setActiveSceneId(id);
+    persistActiveScene(null, id);
+  };
+  const addScene = () => {
+    const s = createScene(null);
+    setScenes(listScenes(null));
+    selectScene(s.id);
+  };
+  const renameScene = (id: string, name: string) => {
+    updateScene(null, id, { name });
+    setScenes(listScenes(null));
+  };
+  const removeSceneById = (id: string) => {
+    removeScene(null, id);
+    setScenes(listScenes(null));
+    if (activeSceneId === id) selectScene(null);
+  };
   const bumpBoard = useCallback(() => setBoardSignal((s) => s + 1), []);
   const [boardArrange, setBoardArrange] = useState(0); // '구성에서 보기' 진입 시 자동 정렬(히스토리 패널 미니 트리와 동일 배치)
   const [boardSelected, setBoardSelected] = useState<Generation[]>([]); // 구성탭 선택 노드(부모·선택바용)
@@ -227,9 +267,11 @@ export default function App() {
   // 필터 변경 또는 인증 준비(로그인 완료/차단 off) 시 데이터 로드. 한 effect 로 합쳐 마운트 시
   // 중복 reload(예전엔 이 effect + 별도 authReady effect 가 둘 다 발화 → 2회) 제거. reload 내부가
   // authReadyRef 로 게이트하므로 authReady 가 false 면 no-op, true 로 바뀌면 여기서 다시 발화해 로드.
+  // filters.tab 도 의존성에 포함 — compose 는 서버 쿼리상 'my' 로 합쳐져 serverFilterKey 가 같으므로,
+  // 이게 없으면 compose→내작업 전환 때 즉시 reload 가 안 돌고 3초 폴링이 뒤늦게 채운다(전환 딜레이 원인).
   useEffect(() => {
     reload();
-  }, [serverFilterKey, authReady, reload]);
+  }, [serverFilterKey, filters.tab, authReady, reload]);
 
   // 프로젝트 미배정 = Supervisor 개념이 없음 → 본인 것이면 최종 가능(백엔드 require_edit 와 일치).
   const canFinalize = (g: Generation) => canFinalizeGeneration(g, finalizeProjects);
@@ -365,8 +407,15 @@ export default function App() {
     flash,
     reload,
   });
-  const { boardDelete, bulkDelete, bulkPurge, bulkRestore, clearFailed, onRestore } =
-    useGenerationTrashActions({
+  const {
+    boardDelete,
+    bulkDelete,
+    bulkPurge,
+    bulkRestore,
+    clearFailed,
+    deleteReturningIds,
+    onRestore,
+  } = useGenerationTrashActions({
       bumpBoard,
       clearSelect,
       failedCount,
@@ -414,6 +463,51 @@ export default function App() {
     reload,
     setGens,
   });
+  // ── Canvas 씬 모드 ── 구성 탭에서 씬 생성 카드 1개를 선택하면 하단 프롬프트가 그 카드에 바인딩된다.
+  const sceneMode = filters.tab === "compose" && !!activeScene && !!sceneBinding;
+  const trayBinding =
+    sceneMode && activeScene && sceneBinding
+      ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs }
+      : null;
+  // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
+  const setSceneCardRefs = (refs: SceneRef[]) => {
+    if (!activeScene || !sceneBinding) return;
+    const nextCards = activeScene.cards.map((c) =>
+      c.id === sceneBinding.cardId ? { ...c, refs } : c,
+    );
+    updateScene(null, activeScene.id, { cards: nextCards });
+    setScenes(listScenes(null));
+  };
+  // 생성 완료 → 결과 gen id 를 선택 카드에 바인딩(카드에 썸네일 표시). 씬 모드에선 구성보드 부모 자동연결은 건너뜀.
+  const onPromptCreated = async (created?: Generation[], dragParentId?: string | null) => {
+    if (sceneMode && activeScene && sceneBinding) {
+      const newIds = (created || []).map((x) => x.id); // 복수 생성이면 여러 장 → 카드에 모두 누적
+      if (newIds.length) {
+        // 최신 씬을 다시 읽어(생성 대기 중 편집분 보존) 해당 카드에만 변형 append — 덮어쓰지 않는다.
+        const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
+        const nextCards = cards.map((c) => {
+          if (c.id !== sceneBinding.cardId) return c;
+          const genIds = [...variantIds(c)]; // legacy genId + 기존 genIds 병합(누락 방지)
+          for (const id of newIds) if (!genIds.includes(id)) genIds.push(id);
+          return { ...c, genId: newIds[0], genIds, status: "pending" as const }; // 첫 장을 대표로 표시
+        });
+        updateScene(null, activeScene.id, { cards: nextCards });
+        setScenes(listScenes(null));
+      }
+      if (created?.length) {
+        setGens((prev) => {
+          const ids = new Set(prev.map((x) => x.id));
+          const fresh = created.filter((x) => !ids.has(x.id));
+          return fresh.length ? [...fresh, ...prev] : prev;
+        });
+      }
+      flash("생성 잡을 시작했습니다.");
+      void reload();
+      bumpBoard();
+      return;
+    }
+    return handlePromptCreated(created, dragParentId);
+  };
   const {
     onColor,
     onFinalize,
@@ -509,6 +603,8 @@ export default function App() {
               filtersOpen={showFilters}
               onToggleFilters={() => setShowFilters((v) => !v)}
               count={boardStats.count}
+              grayOn={grayOn}
+              onToggleGray={() => setGrayOn((v) => !v)}
               loading={loading}
               failedCount={failedCount}
               onClearFailed={clearFailed}
@@ -533,6 +629,55 @@ export default function App() {
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
               boardMode
             />
+            <SceneBar
+              scenes={scenes}
+              activeId={activeSceneId}
+              onSelect={selectScene}
+              onAdd={addScene}
+              onRename={renameScene}
+              onDelete={removeSceneById}
+            />
+            {activeScene ? (
+              <SceneBoard
+                scene={activeScene}
+                onChange={(patch) => {
+                  updateScene(null, activeScene.id, patch);
+                  setScenes(listScenes(null));
+                }}
+                onBindingChange={setSceneBinding}
+                onCameraChange={(camera) => {
+                  updateScene(null, activeScene.id, { camera });
+                  setScenes(listScenes(null)); // 세션 중 씬 전환했다 돌아와도 복원되게 상태도 갱신
+                }}
+                onPreview={openPreview}
+                onInfo={setInfo}
+                onRegenerate={onRegenerate}
+                onPublish={onPublish}
+                onUnpublish={onUnpublish}
+                onFinalize={onFinalize}
+                onUnfinalize={onUnfinalize}
+                canFinalize={canFinalize}
+                projects={projects}
+                onVariantShare={boardShare}
+                onVariantDownload={bulkDownload}
+                onVariantCompare={setCompareGens}
+                onVariantAssign={boardAssign}
+                onVariantCreateAssign={boardCreateAssign}
+                onVariantDelete={deleteReturningIds}
+                onSelectionGens={setSceneSelGens}
+                actionRef={sceneActionRef}
+                grayOn={grayOn}
+                typeFilter={typeFilter}
+                colorFilter={colorFilter}
+                tagFilter={tagFilter}
+                sharedOnly={sharedOnly}
+                commentOnly={commentOnly}
+                finalOnly={finalOnly}
+                onSetTags={onSetTags}
+                onSetAutoTags={onSetAutoTags}
+                autoTagOptions={facets.auto_tags}
+              />
+            ) : (
             <Suspense fallback={null}>
             <HistoryBoard
               focusId={boardFocusId}
@@ -559,6 +704,7 @@ export default function App() {
               finalOnly={finalOnly}
             />
             </Suspense>
+            )}
           </main>
         ) : (
           <>
@@ -681,8 +827,10 @@ export default function App() {
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존) */}
       <div style={promptVisible ? undefined : { display: "none" }}>
         <SpotlightPrompt
-          expanded={composerExpanded}
+          expanded={composerExpanded || sceneMode}
           onToggleExpand={toggleComposerExpanded}
+          trayBinding={trayBinding}
+          onTrayBindingRefsChange={setSceneCardRefs}
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={
@@ -692,8 +840,21 @@ export default function App() {
           }
           topSlot={
             filters.tab === "compose" ? (
-              // 구성탭(히스토리 보드) 선택바도 다른 탭처럼 프롬프트 위에 — 보드 선택 노드 기준.
-              boardSelected.length > 0 ? (
+              // 씬(캔버스)이 열려 있으면 씬 선택 결과카드 기준, 아니면 히스토리 보드 선택 노드 기준.
+              activeScene ? (
+                sceneSelGens.length > 0 ? (
+                  <BoardSelectionActionBar
+                    selected={sceneSelGens}
+                    projects={projects}
+                    onShare={boardShare}
+                    onDownload={bulkDownload}
+                    onCompare={(items) => setCompareGens(items)}
+                    onAssign={(pid) => boardAssign(sceneSelGens, pid)}
+                    onCreateAndAssign={(name) => boardCreateAssign(sceneSelGens, name)}
+                    onDelete={() => sceneActionRef.current?.deleteSelected()}
+                  />
+                ) : undefined
+              ) : boardSelected.length > 0 ? (
                 <BoardSelectionActionBar
                   selected={boardSelected}
                   projects={projects}
@@ -722,7 +883,7 @@ export default function App() {
               />
             ) : undefined
           }
-          onCreated={handlePromptCreated}
+          onCreated={onPromptCreated}
         />
       </div>
       {grade.pending && (

@@ -23,6 +23,7 @@ import {
 } from "../lib/historyGraphLayout";
 import { HistoryBoardEdges } from "./history/HistoryBoardEdges";
 import { HistoryBoardNode } from "./history/HistoryBoardNode";
+import { HistoryRefNode } from "./history/HistoryRefNode";
 import { useHistoryBoardShortcuts } from "./history/useHistoryBoardShortcuts";
 import { useHistoryGraph } from "./history/useHistoryGraph";
 import { useHistoryManualPositions } from "./history/useHistoryManualPositions";
@@ -41,6 +42,8 @@ const loadViews = (): Record<string, HistoryView> => {
 };
 
 const { nodeW: BOXW, nodeH: BOXH, gapX: GAPX, gapY: GAPY } = HISTORY_BOARD_LAYOUT;
+// 원본 왼쪽에 확보할 레퍼런스 노드 lane 폭(노드 1칸 + 간격).
+const REF_LANE = BOXW + GAPX;
 
 export function HistoryBoard({
   focusId,
@@ -457,9 +460,28 @@ export function HistoryBoard({
   // (옛 '메인 라인=최신 파생 체인 항상 굵게'는 포커스를 안 지나가 혼란 → 제거.
   //  굵은 라인은 이제 center(선택/포커스) 기준 highlight 로만 그린다.)
 
-  // 자동 레이아웃 위치를 ref 로 노출(드래그 시작점 계산), 최종 위치 = 수동 우선.
-  layoutPosRef.current = layout?.pos || {};
-  const posOf = (id: string): XY => manualPos[id] || layout?.pos[id] || { x: 0, y: 0 };
+  // ── 원본(root)의 입력 레퍼런스를 왼쪽 lane 에 노드로 표시(원본에 연결) ──
+  // 데이터는 이미 graph 노드마다 references 로 들어와 있어 백엔드 변경 없이 렌더만 추가한다.
+  const refRoots = useMemo(() => {
+    if (!graph) return [] as { genId: string; refs: Generation["references"] }[];
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    return graph.root_ids
+      .map((id) => ({ genId: id, refs: byId.get(id)?.references || [] }))
+      .filter((r) => r.refs.length > 0);
+  }, [graph]);
+  // 레퍼런스 노드가 하나라도 있으면 전체 배치를 오른쪽으로 lane 만큼 밀어 원본 왼쪽에 자리를 만든다.
+  const lane = refRoots.length ? REF_LANE : 0;
+
+  // 자동 레이아웃 위치(레퍼런스 lane 반영) — ref 로 노출(드래그 시작점 계산), 최종 위치 = 수동 우선.
+  const shiftedPos = useMemo(() => {
+    const src = layout?.pos || {};
+    if (!lane) return src as Record<string, XY>;
+    const out: Record<string, XY> = {};
+    for (const id in src) out[id] = { x: src[id].x + lane, y: src[id].y };
+    return out;
+  }, [layout, lane]);
+  layoutPosRef.current = shiftedPos;
+  const posOf = (id: string): XY => manualPos[id] || shiftedPos[id] || { x: 0, y: 0 };
 
   // 새로 생성된 카드 배치: 부모(선택 카드)가 수동 위치면 그 '우측'에 붙인다(부모를 옮겨도 자식이 따라옴).
   // 부모가 자동 위치면 자동 레이아웃이 이미 우측 세대에 두므로 손대지 않는다.
@@ -493,10 +515,10 @@ export function HistoryBoard({
     });
   }, [graph]);
   // 캔버스 크기 — 수동으로 옮긴 카드까지 포함해 스크롤 범위 확장.
-  const dims = useMemo(
-    () => expandHistoryDims(layout, manualPos, HISTORY_BOARD_LAYOUT),
-    [layout, manualPos],
-  );
+  const dims = useMemo(() => {
+    const base = expandHistoryDims(layout, manualPos, HISTORY_BOARD_LAYOUT);
+    return { w: base.w + lane, h: base.h }; // 레퍼런스 lane 만큼 캔버스 폭 확장
+  }, [layout, manualPos, lane]);
 
   if (!focusId) {
     return (
@@ -545,6 +567,31 @@ export function HistoryBoard({
               whiteEdges={whiteEdges}
               disabled={disabledIds}
             />
+            {/* 원본 → 레퍼런스 노드 연결선(왼쪽 lane) */}
+            {refRoots.length > 0 && (
+              <svg
+                className="linb-svg"
+                width={dims.w}
+                height={dims.h}
+                viewBox={`0 0 ${dims.w} ${dims.h}`}
+              >
+                {refRoots.map(({ genId }) => {
+                  const gp = posOf(genId);
+                  const x1 = gp.x - REF_LANE + BOXW;
+                  const y1 = gp.y + BOXH / 2;
+                  const x2 = gp.x;
+                  const y2 = gp.y + BOXH / 2;
+                  const mx = (x1 + x2) / 2;
+                  return (
+                    <path
+                      key={"refe:" + genId}
+                      className="linb-edge refinput"
+                      d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`}
+                    />
+                  );
+                })}
+              </svg>
+            )}
             {graph!.nodes.map((g) => {
               const p = posOf(g.id);
               if (!p) return null;
@@ -579,6 +626,20 @@ export function HistoryBoard({
                   onPreview={onPreview}
                   onInfo={onInfo}
                   onRegenerate={onRegenerate}
+                />
+              );
+            })}
+            {/* 원본 왼쪽 레퍼런스 노드(순서대로 표시, 원본에 연결) */}
+            {refRoots.map(({ genId, refs }) => {
+              const gp = posOf(genId);
+              return (
+                <HistoryRefNode
+                  key={"ref:" + genId}
+                  refs={refs}
+                  x={gp.x - REF_LANE}
+                  y={gp.y}
+                  width={BOXW}
+                  height={BOXH}
                 />
               );
             })}
