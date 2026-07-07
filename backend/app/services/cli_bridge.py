@@ -240,7 +240,9 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
         "generation": {
             "id": job.get("id"),
             "prompt": params.get("prompt") or "(제목 없음)",
-            "model": job.get("job_set_type"),
+            # CLI 1.x 는 generate 출력의 모델키를 job_set_type → job_type 로 개명. 둘 다 수용
+            # (구버전 job_set_type / 신버전 job_type). 내부 표준 필드명은 계속 model=job_set_type.
+            "model": job.get("job_set_type") or job.get("job_type"),
             "display_name": job.get("display_name"),
             "params": params,
             "status": normalize_status(job.get("status")),
@@ -285,10 +287,12 @@ async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
     for m in data:
         if not isinstance(m, dict):
             continue
+        # CLI 1.x model list 는 job_set_type → job_type 로 개명. 둘 다 수용(빈 모델키 방지 = 모델선택 깨짐 방지).
+        jst = m.get("job_set_type") or m.get("job_type")
         out.append(
             {
-                "display_name": m.get("display_name") or m.get("job_set_type") or "?",
-                "job_set_type": m.get("job_set_type") or "",
+                "display_name": m.get("display_name") or jst or "?",
+                "job_set_type": jst or "",
                 "type": m.get("type") or "image",
             }
         )

@@ -169,6 +169,7 @@ $RootFiles = @(
     "cli-login.bat",
     "update_cli.bat",
     "agent_push.py",
+    "hf_cli_version.txt",
     "README.md"
 )
 foreach ($Name in $RootFiles) {
@@ -229,6 +230,21 @@ else {
 if (-not $SkipHiggsfieldCli) {
     Write-Host "[6/8] Copying bundled Higgsfield CLI..."
     $Higgsfield = Resolve-HiggsfieldCli -PreferredRoot $HiggsfieldRoot
+
+    # The bundle must match the pinned version (hf_cli_version.txt). Otherwise a stale
+    # build machine would ship a CLI the launcher then has to reinstall on first run,
+    # or worse, a version we never tested. Fail loudly instead of shipping a mismatch.
+    $HfPinFile = Join-Path $ProjectRoot "hf_cli_version.txt"
+    if (-not (Test-Path -LiteralPath $HfPinFile)) {
+        throw "hf_cli_version.txt not found at repo root - cannot verify the bundled CLI version."
+    }
+    $HfPin = (Get-Content -LiteralPath $HfPinFile -TotalCount 1).Trim()
+    $BundledVer = (Get-Content -LiteralPath (Join-Path $Higgsfield.Package "package.json") -Raw | ConvertFrom-Json).version
+    if ($BundledVer -ne $HfPin) {
+        throw "Higgsfield CLI to bundle is $BundledVer but hf_cli_version.txt pins $HfPin. Fix: npm install -g @higgsfield/cli@$HfPin then re-run (or update the pin file)."
+    }
+    Write-Host "      Bundling pinned Higgsfield CLI $HfPin"
+
     $HfDest = Join-Path $Stage "runtime\higgsfield"
     $HfPackageDest = Join-Path $HfDest "node_modules\@higgsfield\cli"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $HfPackageDest) | Out-Null

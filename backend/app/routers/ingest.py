@@ -364,6 +364,35 @@ def run_agent_bat(request: Request):
     acc = _agent_acc(request)
     server = str(request.base_url).rstrip("/")
     email = acc["email"]
+    # CLI 버전 고정(pin): 서버 저장소 루트의 hf_cli_version.txt 를 읽어 그 버전으로 설치·교정한다.
+    # @latest 금지(힉스필드가 파괴적 변경을 자주 냄). 파일이 없으면 unpinned 폴백.
+    try:
+        _pin = (BACKEND_DIR.parent / "hf_cli_version.txt").read_text("utf-8").strip().splitlines()[0].strip()
+    except Exception:  # noqa: BLE001
+        _pin = ""
+    if _pin:
+        cli_ensure = f"""echo [3/5] 힉스필드 CLI 확인(고정 {_pin})...
+set "HF=higgsfield"
+where higgsfield >nul 2>nul || set "HF=hf"
+set "CURVER="
+where %HF% >nul 2>nul && for /f "tokens=2" %%v in ('%HF% version 2^>nul') do if not defined CURVER set "CURVER=%%v"
+if not "%CURVER%"=="{_pin}" (
+  echo     힉스필드 CLI 고정 버전 {_pin} 설치/교정...
+  call npm install -g @higgsfield/cli@{_pin} || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
+  call :refreshpath
+  set "HF=higgsfield"
+)"""
+    else:
+        cli_ensure = """echo [3/5] 힉스필드 CLI 확인...
+set "HF=higgsfield"
+where higgsfield >nul 2>nul || set "HF=hf"
+where %HF% >nul 2>nul
+if errorlevel 1 (
+  echo     힉스필드 CLI 미설치 - npm 으로 설치...
+  call npm install -g @higgsfield/cli || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
+  call :refreshpath
+  set "HF=higgsfield"
+)"""
     # 자동 설치형 .bat — 없으면 winget(Python·Node)·npm(@higgsfield/cli)로 자동 설치 후 실행.
     #  · winget/npm 설치분은 현재 콘솔 PATH 에 즉시 안 잡혀(레지스트리에만 반영) → :refreshpath 로
     #    재읽기(베스트에포트), 그래도 안 잡히면 '새 창에서 다시 실행' 안내로 수렴.
@@ -412,22 +441,25 @@ where python >nul 2>nul || set "PY=py"
 where %PY% >nul 2>nul || (echo. & echo [안내] Python 설치는 완료됐지만 현재 창에 PATH 가 반영되지 않았습니다. & echo        이 창을 닫고 MV_agent.bat 을 다시 더블클릭하세요. & pause & exit /b 0)
 where npm >nul 2>nul || (echo. & echo [안내] Node.js 설치는 완료됐지만 현재 창에 PATH 가 반영되지 않았습니다. & echo        이 창을 닫고 MV_agent.bat 을 다시 더블클릭하세요. & pause & exit /b 0)
 
-echo [3/5] 힉스필드 CLI 확인...
-set "HF=higgsfield"
-where higgsfield >nul 2>nul || set "HF=hf"
-where %HF% >nul 2>nul
-if errorlevel 1 (
-  echo     힉스필드 CLI 미설치 - npm 으로 설치...
-  call npm install -g @higgsfield/cli || (echo [오류] CLI 설치 실패 - 인터넷/npm 권한을 확인하세요. & pause & exit /b 1)
-  call :refreshpath
-  set "HF=higgsfield"
-)
+{cli_ensure}
 
-echo [4/5] 힉스필드 로그인 확인...
+echo [4/5] 힉스필드 로그인 + workspace 확인...
+call %HF% auth token >nul 2>nul
+if errorlevel 1 (
+  echo     로그인이 필요합니다 - 브라우저 안내에 따라 내 힉스필드 계정으로 로그인하세요.
+  call %HF% auth login
+)
+rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 자동선택은 크레딧/소속이
+rem 바뀌어 위험하므로 안내만 하고 에이전트는 실행하지 않는다(실패 요청으로 큐 소모 방지).
 call %HF% account status >nul 2>nul
 if errorlevel 1 (
-  echo     로그인이 필요합니다 - 안내에 따라 내 힉스필드 계정으로 로그인하세요.
-  call %HF% auth login
+  echo.
+  echo  [조치 필요] 힉스필드 workspace 가 선택되지 않아 생성이 꺼집니다. 한 번만 설정하세요:
+  call %HF% workspace list
+  echo     실행:  higgsfield workspace set ^<id^>   그다음 이 창을 닫고 다시 실행하세요.
+  echo.
+  pause
+  exit /b 0
 )
 
 echo [5/5] 허브 열기 + 에이전트 실행 - 켜두면 작동, 창을 닫으면 멈춥니다.

@@ -761,12 +761,13 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         txns = []
     # 거래 표시명(display_name)을 모델 키(job_set_type)로 변환해 태깅 → 서버가 모델 가드로 정확 매칭.
     # best-effort: model list 실패/미태깅 거래는 서버가 시간+소유자 매칭으로 폴백(하위호환).
+    # CLI 1.x model list 는 모델키를 job_set_type → job_type 로 개명. 둘 다 수용(구/신 호환).
     models = _cached_models(cli)
     if isinstance(models, list):
         dn2key = {
-            m.get("display_name"): m.get("job_set_type")
+            m.get("display_name"): (m.get("job_set_type") or m.get("job_type"))
             for m in models
-            if isinstance(m, dict) and m.get("display_name") and m.get("job_set_type")
+            if isinstance(m, dict) and m.get("display_name") and (m.get("job_set_type") or m.get("job_type"))
         }
         for t in txns:
             if isinstance(t, dict) and t.get("display_name") in dn2key:
