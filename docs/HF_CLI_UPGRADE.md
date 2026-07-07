@@ -2,7 +2,9 @@
 
 우리 앱은 `@higgsfield/cli` 를 로컬에서 실행해 생성물을 만들고 수집한다. **CLI 는
 필드명·플래그·출력 형식을 조용히 바꾼다**(실제 사례: 0.2.x→1.x 에서 `job_set_type→job_type`,
-`created_at` epoch→ISO, `account transactions` list→`{items}`, seedance `--medias` 제거).
+`created_at` epoch→ISO, `account transactions` list→`{items}`, seedance 단일 `--medias` →
+역할별 `--image/video/audio-references`·`--start/end-image` 로 분리, boolean 파라미터 엄격검증
+(`--generate_audio True` 거부 → 소문자 `true`)).
 그래서 CLI 버전은 **의도적으로 pin** 하고, **올릴 때마다 계약 스모크로 검증**한다. `@latest`
 자동설치는 쓰지 않는다(HF 가 breaking 을 자주 낸다).
 
@@ -52,12 +54,17 @@ python tools/hf_cli_check_update.py
 
 - `backend/app/services/cli_bridge.py` — `parse_job`(model/result_url/created_at/status/params),
   `list_models`, `get_model_params`, `estimate_cost`, 상태 정규화(`_STATUS_MAP`).
-- `agent_push.py` — 생성 실행 인자 조립(`_role_flag`·`--image`·seedance `--medias`),
+- `agent_push.py` — 생성 실행 인자 조립(`_role_flag`·`--image`·seedance `--*-references`),
   `model list`/`model get` 캐시, `account transactions` 소비, `result_url` 의 `user_<id>` 추출.
+  boolean 파라미터는 `_param_flags`/`_param_args` 가 소문자 `true`/`false` 로 직렬화(1.x 엄격검증).
 - 원칙: **raw CLI 출력 필드는 단일 키로 읽지 말고 `x.get(new) or x.get(old)` 폴백**으로 읽어
   개명에 견디게 한다. 내부 표준 필드명(model=job_set_type 등)은 유지한다.
 - `agent_push.py` 는 서버가 팀원에게 배포하는 **단독 스크립트**라 backend 를 import 하지 못한다 —
   같은 폴백 로직을 복제하되 주석으로 "cli_bridge 와 동기" 를 남긴다.
+- **프론트 `frontend/src/lib/useModels.ts` `HIDDEN_PARAMS`** — CLI 가 model 스키마에 미디어/참조
+  param 을 새 이름으로 노출하면(예: `medias`→`image_references`/`video_references`/`audio_references`/
+  `start_image`/`end_image`) 옵션 UI 가 정체불명 텍스트칸으로 렌더한다. 참조는 '참조 픽커'가
+  담당하므로 새 이름을 이 숨김목록에 추가한다(generate_audio 같은 스칼라 옵션은 노출 유지).
 
 ## 스모크가 검증하는 것 (`tools/hf_cli_contract_smoke.py`)
 
@@ -65,7 +72,8 @@ version==pin, `model list`(job_type|job_set_type·display_name), `model get`(par
 `account status`(email·credits), `account transactions`(list|{items} + item 의 created_at/credits),
 `workspace list`(id·is_selected·credits·plan_type), `generate list`(bare list·result_url·created_at
 파싱·id/status/params·user_ 패턴), `generate cost`(credits), `generate create --help`(media flags·
---medias 소멸 경고), seedance `medias` param 소멸 경고.
+--medias 소멸 경고), seedance `medias` param 소멸 경고, **boolean 직렬화 계약**(`--generate_audio True`
+거부·소문자 `true` 통과 = 우리의 소문자 직렬화가 필수임을 확인).
 
 스모크는 **코드보다 관대하면 안 된다**(통과했는데 코드가 깨지는 오탐 방지). CLI 출력을 새로
 읽는 코드가 생기면 스모크에도 그 계약 검증을 추가한다.

@@ -31,7 +31,14 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
 //  · batch_size: "한 번에 N장"은 앱 레벨 count(1/4)로 일원화 → UI 에서 숨김(중복·곱셈 함정 제거).
 //    숨기면 init/카드복원/body 어디서도 안 실리고 CLI 기본값(1)로 처리된다(gpt_image_2 default=1).
 //    ※ 한 generation = asset 1개 파이프라인이라 batch_size>1 은 첫 장만 남고 나머지는 버려짐 — count 로만 N장.
-export const HIDDEN_PARAMS = new Set(["prompt", "medias", "input_images", "folder_id", "batch_size"]);
+// CLI 1.x 는 seedance 의 옛 단일 `medias` 를 역할별 참조 param(image/video/audio_references,
+// start/end_image)으로 쪼개 model 스키마에 노출한다. 이들은 '참조 픽커'가 담당하는 미디어라
+// 옵션(스칼라) UI 에 뜨면 안 된다 — 안 숨기면 정체불명 텍스트칸으로 렌더돼 오입력 함정이 된다.
+// (generate_audio 는 boolean 토글로 정상 노출 — 숨기지 않는다.)
+export const HIDDEN_PARAMS = new Set([
+  "prompt", "medias", "input_images", "folder_id", "batch_size",
+  "image_references", "video_references", "audio_references", "start_image", "end_image",
+]);
 
 // 기본값 오버라이드 — 모델 스키마 기본값 대신 우리가 쓸 기본값.
 //  · bitrate_mode: 힉스필드 네이티브 UI 와 동일하게 'high' 를 기본으로(검증결과 high 가 standard 와
