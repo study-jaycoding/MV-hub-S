@@ -256,10 +256,10 @@ export function SceneBoard({
     if (!ids.length) return;
     let alive = true;
     let timer: number | undefined;
-    const tick = async () => {
+    const tick = async (pollIds: string[]) => {
       // id 별로 성공/삭제(404·410)/일시오류를 구분 — 삭제는 '없음' 표시, 일시오류는 그대로 둔다.
       const rs = await Promise.all(
-        ids.map(async (id) => {
+        pollIds.map(async (id) => {
           try {
             return { id, gen: await api.getGeneration(id), gone: false };
           } catch (e) {
@@ -285,12 +285,13 @@ export function SceneBoard({
         }
         return changed ? next : prev;
       });
-      const pending = rs.some(
-        (r) => r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status)),
-      );
-      if (pending) timer = window.setTimeout(tick, 2500);
+      // 재폴은 '아직 진행 중'인 id 만 — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
+      const stillPending = rs
+        .filter((r) => r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status)))
+        .map((r) => r.id);
+      if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
     };
-    void tick();
+    void tick(ids); // 1회차만 전체 조회(상태 파악), 이후엔 진행 중인 것만
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
@@ -939,7 +940,10 @@ export function SceneBoard({
   }, [applyTransform]);
   useEffect(() => () => { if (camSaveTimer.current) clearTimeout(camSaveTimer.current); }, []);
 
-  const cardById = (id: string) => cards.find((c) => c.id === id);
+  // 엣지 계산·렌더에서 카드를 id 로 매우 자주 조회한다(E×C). 선형 find 대신 Map(O(1))로 —
+  // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
+  const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);
+  const cardById = (id: string) => cardsById.get(id);
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
   const hiddenIds = new Set(
     grayOn
