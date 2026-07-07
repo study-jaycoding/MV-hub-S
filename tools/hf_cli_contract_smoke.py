@@ -204,6 +204,20 @@ def main() -> int:
         record(PASS if flag in help_txt else FAIL, f"generate create: {flag} 존재",
                "" if flag in help_txt else "agent_push 가 쓰는 미디어 플래그 — 사라지면 참조 전달 실패")
 
+    # 10) boolean 직렬화 계약 — CLI 1.x 는 boolean 을 소문자 true/false 로만 받는다(무료 cost 로 확인).
+    #     우리 코드(_param_flags/_param_args)가 str(True)="True" 를 넘겨 seedance 전멸했음(실측).
+    #     대문자 거부·소문자 통과여야 우리의 소문자 직렬화가 필수임이 유지된다.
+    up = run_text(cli, "generate", "cost", "seedance_2_0", "--prompt", "smoke", "--generate_audio", "True")
+    lo = run_text(cli, "generate", "cost", "seedance_2_0", "--prompt", "smoke", "--generate_audio", "true")
+    lower_ok = "credit" in lo.lower()
+    upper_rejected = "invalid types" in up.lower() or "should be boolean" in up.lower()
+    if lower_ok and upper_rejected:
+        record(PASS, "boolean=소문자 true/false 필수", "코드가 bool→lowercase 직렬화(cli_bridge/agent_push 확정)")
+    elif not lower_ok:
+        record(FAIL, "boolean 소문자 true 수용", f"소문자도 거부됨 — bool 직렬화 재검토: {lo[:80]}")
+    else:
+        record(WARN, "boolean 대문자 True 거부 안 됨", "CLI 가 관대해짐 — 소문자 직렬화는 여전히 안전")
+
     # ── 리포트 ──
     order = {FAIL: 0, WARN: 1, PASS: 2}
     results.sort(key=lambda r: order[r[0]])

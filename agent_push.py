@@ -410,7 +410,12 @@ def _param_flags(params: dict, allowed: set) -> list[str]:
             continue
         if allowed and k not in allowed:  # 스키마 밖(동기화 잔여값). 스키마 못 받았으면 통과.
             continue
-        out += [f"--{k}", str(v)]
+        # sync: cli_bridge._param_args 와 동일. CLI 1.x 는 boolean 을 소문자 true/false 로만 받는다
+        # (str(True)="True" → "Invalid types: ... should be boolean, got string" 로 seedance 등 실패).
+        if isinstance(v, bool):
+            out += [f"--{k}", "true" if v else "false"]
+        else:
+            out += [f"--{k}", str(v)]
     return out
 
 

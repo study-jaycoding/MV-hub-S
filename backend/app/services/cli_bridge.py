@@ -364,7 +364,12 @@ async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]
             continue
         if allowed and k not in allowed:  # 스키마 밖(동기화/잔여값). 단, 스키마 못 받았으면 통과
             continue
-        out += [f"--{k}", str(v)]
+        # CLI 1.x 는 타입을 엄격 검증한다: boolean 은 반드시 소문자 true/false.
+        # 파이썬 str(True)="True" 를 그대로 넘기면 "Invalid types: ... should be boolean, got string".
+        if isinstance(v, bool):
+            out += [f"--{k}", "true" if v else "false"]
+        else:
+            out += [f"--{k}", str(v)]
     return out
 
 
