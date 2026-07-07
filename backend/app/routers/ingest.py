@@ -442,8 +442,9 @@ if errorlevel 1 (
   echo     로그인이 필요합니다 - 브라우저 안내에 따라 내 힉스필드 계정으로 로그인하세요.
   call %HF% auth login
 )
-rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 자동선택은 크레딧/소속이
-rem 바뀌어 위험하므로 안내만 하고 에이전트는 실행하지 않는다(실패 요청으로 큐 소모 방지).
+rem CLI 1.x 는 workspace 미선택 시 generate 가 실패(rc!=0)한다. 워크스페이스가 '정확히 1개'면
+rem 자동 선택한다(모호성 없어 안전). 여러 개면 임의선택이 위험(엉뚱한 워크스페이스 청구/귀속)하므로 안내만.
+%PY% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; (len(ws)==1 and not any(w.get('is_selected') for w in ws)) and subprocess.run([hf,'workspace','set',ws[0]['id']])" "%HF%" >nul 2>nul
 call %HF% account status >nul 2>nul
 if errorlevel 1 (
   echo.

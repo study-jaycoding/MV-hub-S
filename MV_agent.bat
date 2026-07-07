@@ -173,8 +173,10 @@ if errorlevel 1 (
   echo     Login required - a browser window will open to sign in to Higgsfield.
   call "%HF%" auth login
 )
-REM CLI 1.x requires a selected workspace; generate fails (rc!=0) without one. Block the
-REM agent until the user sets one (do NOT auto-pick - it changes credit/ownership).
+REM CLI 1.x requires a selected workspace; generate fails (rc!=0) without one.
+REM Auto-select when there is EXACTLY ONE workspace (safe: no ambiguity). With multiple, the
+REM user must choose below - auto-picking then could bill/attribute to the wrong workspace.
+"%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; (len(ws)==1 and not any(w.get('is_selected') for w in ws)) and subprocess.run([hf,'workspace','set',ws[0]['id']])" "%HF%" >nul 2>nul
 call "%HF%" account status >nul 2>nul
 if errorlevel 1 (
   echo.
