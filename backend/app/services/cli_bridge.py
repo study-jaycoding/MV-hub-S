@@ -386,10 +386,14 @@ _COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7
 _cost_loaded = False
 
 
-def _cost_key(model: str, params: Optional[dict[str, Any]]) -> str:
-    # 값 타입(4 vs "4") 무시 + 프롬프트 무관. JSON 파일 키로 쓰려 문자열로.
-    items = sorted((str(k), str(v)) for k, v in (params or {}).items())
-    return model + "|" + ";".join(f"{k}={v}" for k, v in items)
+def _cost_key(model: str, param_args: list[str]) -> str:
+    # 키는 '실제 CLI 로 나가는 인자'(_param_args 결과)만으로 만든다 — 스키마 밖 잔여값
+    # (medias/prompt/width/height …)은 CLI 호출에서 걸러지므로 키에도 없어야 비용이 같은 조합의
+    # 캐시가 쪼개지지 않는다(키↔호출 일치). 순서 무관하게 (플래그,값) 쌍을 정렬.
+    pairs = sorted(
+        (param_args[i], param_args[i + 1]) for i in range(0, len(param_args) - 1, 2)
+    )
+    return model + "|" + ";".join(f"{k}={v}" for k, v in pairs)
 
 
 def _load_cost_cache() -> None:
@@ -433,12 +437,15 @@ async def estimate_cost(
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
     _load_cost_cache()
-    key = _cost_key(model, params)
+    # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
+    # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
+    param_args = await _param_args(model, params)
+    key = _cost_key(model, param_args)
     entry = _COST_CACHE.get(key)
     if entry is not None and (time.time() - entry[1]) < _COST_TTL:
         return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
     args: list[str] = ["generate", "cost", model, "--prompt", prompt or "preview"]
-    args += await _param_args(model, params)
+    args += param_args
     data = await _run_json(*args, timeout=timeout)
     if not isinstance(data, dict):
         return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백

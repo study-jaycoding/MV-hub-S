@@ -36,7 +36,7 @@ import urllib.request
 import webbrowser
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
-from threading import Lock
+from threading import Event, Lock
 from urllib.parse import quote, urlencode, urlparse
 
 
@@ -338,8 +338,14 @@ def _upload_for_media(
     upload_lock: Lock,
     force: bool = False,
 ) -> tuple[dict | None, bool]:
-    """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환."""
-    if "_items" not in upload_cache:
+    """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환.
+    in-flight 잠금: 같은 파일을 여러 스레드가 동시에 올리면 한 스레드만 업로드하고 나머지는 그 결과를
+    기다린다(벌크 seedance 에서 같은 캐릭터/스토리보드 참조가 16병렬로 겹쳐 중복 업로드되던 것 방지)."""
+    key = None
+    size = 0
+    my_ev = None
+    legacy = "_items" not in upload_cache
+    if legacy:  # 플랫 dict 캐시 — 실사용 경로 아님(_load_upload_cache 는 항상 _items 생성). 그대로 둔다.
         with upload_lock:
             cached = upload_cache.get(path)
             if cached is not None and not force:
@@ -350,39 +356,56 @@ def _upload_for_media(
             return None, False
         digest, size = fp
         key = _upload_cache_key(upload_cache, digest)
+        while True:  # 캐시 재확인 + in-flight 조정 루프
+            wait_ev = None
+            with upload_lock:
+                if not force:
+                    cached = upload_cache.get("_memory", {}).get(key)
+                    if cached is not None:
+                        return cached, True
+                    entry = upload_cache.get("_items", {}).get(key)
+                    data = entry.get("data") if isinstance(entry, dict) else None
+                    if isinstance(data, dict) and data.get("id"):
+                        upload_cache.setdefault("_memory", {})[key] = data
+                        return data, True
+                inflight = upload_cache.setdefault("_inflight", {})
+                ev = inflight.get(key)
+                if ev is None or force:  # 내가 업로드 담당(또는 force 재업로드) — 자리표로 대기자에 알림
+                    my_ev = Event()
+                    inflight[key] = my_ev
+                    break
+                wait_ev = ev  # 다른 스레드가 올리는 중 — 대기 후 처음으로(성공 시 캐시히트로 반환)
+            wait_ev.wait(timeout=300)  # 업로더 완료(또는 실패)까지 대기. 실패면 재확인 후 내가 승격.
+    try:
+        up = _cli_json(cli, "upload", "create", path, timeout=300)
+        if isinstance(up, list):
+            up = up[0] if up else None
+        if not isinstance(up, dict) or not up.get("id"):
+            print(f"[경고] 레퍼런스 업로드 실패: {path}")
+            return None, False
+        data = {"id": up.get("id"), "type": "media_input"}
+        if up.get("url"):
+            data["url"] = up.get("url")
+        if legacy:
+            with upload_lock:
+                upload_cache[path] = data
+            return data, False
         with upload_lock:
-            if not force:
-                cached = upload_cache.get("_memory", {}).get(key)
-                if cached is not None:
-                    return cached, True
-                entry = upload_cache.get("_items", {}).get(key)
-                data = entry.get("data") if isinstance(entry, dict) else None
-                if isinstance(data, dict) and data.get("id"):
-                    upload_cache.setdefault("_memory", {})[key] = data
-                    return data, True
-    up = _cli_json(cli, "upload", "create", path, timeout=300)
-    if isinstance(up, list):
-        up = up[0] if up else None
-    if not isinstance(up, dict) or not up.get("id"):
-        print(f"[경고] 레퍼런스 업로드 실패: {path}")
-        return None, False
-    data = {"id": up.get("id"), "type": "media_input"}
-    if up.get("url"):
-        data["url"] = up.get("url")
-    if "_items" not in upload_cache:
-        with upload_lock:
-            upload_cache[path] = data
+            upload_cache.setdefault("_memory", {})[key] = data
+            upload_cache.setdefault("_items", {})[key] = {
+                "data": data,
+                "size": size,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+            }
+            _save_upload_cache(upload_cache)
         return data, False
-    with upload_lock:
-        upload_cache.setdefault("_memory", {})[key] = data
-        upload_cache.setdefault("_items", {})[key] = {
-            "data": data,
-            "size": size,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
-        _save_upload_cache(upload_cache)
-    return data, False
+    finally:
+        if my_ev is not None:  # 자리표 정리 + 대기자 깨우기(성공/실패 무관)
+            with upload_lock:
+                if upload_cache.get("_inflight", {}).get(key) is my_ev:
+                    upload_cache["_inflight"].pop(key, None)
+            my_ev.set()
 
 
 _PARAM_NAMES_CACHE: dict = {}  # model → 허용 param 이름 집합(빈 집합=스키마 못 받음 → 필터 안 함)
