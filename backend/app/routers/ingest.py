@@ -456,7 +456,7 @@ if errorlevel 1 (
   echo.
   echo  [조치 필요] 힉스필드 workspace 가 선택되지 않아 생성이 꺼집니다. 한 번만 설정하세요:
   call %HF% workspace list
-  echo     실행:  higgsfield workspace set ^<id^>   그다음 이 창을 닫고 다시 실행하세요.
+  echo     실행:  higgsfield workspace set [id]   그다음 이 창을 닫고 다시 실행하세요.
   echo.
   pause
   exit /b 0
