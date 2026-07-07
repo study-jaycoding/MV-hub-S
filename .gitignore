@@ -1,6 +1,11 @@
 # 백엔드 — 데이터는 data/ 한 폴더로 분리(db·media·shared)
 backend/data/
 backend/data_backup_*/
+# 격리 테스트 에이전트(test_agent.bat)의 별도 데이터 폴더 — 로컬 전용, 추적 안 함
+backend/data_test/
+# 테스트 데이터 이동/스냅샷 산출물(계정 DB·미디어 포함) — 로컬 전용, 절대 추적 금지
+backend/.data_test-incoming-*/
+backend/_pm_test_data_snapshots/
 # 구버전 경로(재시작 시 data/ 로 자동 이전되지만, 이전 전 보호용으로 유지)
 backend/content_hub.db
 backend/content_hub.db-wal
