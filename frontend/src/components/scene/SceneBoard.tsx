@@ -7,7 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from "react";
 import { api } from "../../api";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
-import { download, downloadName } from "../../lib/download";
+import { downloadName, downloadOne } from "../../lib/download";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { DISABLED_EVENT, loadDisabledFolders, loadDisabledGen, toggleDisabledGen } from "../../lib/deactivated";
 import { expandDisabledGenerationIds } from "../../lib/generationDisplay";
@@ -1440,7 +1440,7 @@ export function SceneBoard({
                                   onMouseDown={(e) => e.stopPropagation()}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    download(a.file_path, downloadName(gg, a.type));
+                                    downloadOne(a.file_path, downloadName(gg, a.type));
                                   }}
                                 >
                                   ⤓

@@ -602,7 +602,7 @@
 
 /* ── 토스트 ── */
 .toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
   background: var(--glass); backdrop-filter: blur(18px);
   border: 1px solid var(--border2);
   padding: 11px 20px; border-radius: 12px; z-index: 80;

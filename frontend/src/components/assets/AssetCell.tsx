@@ -2,7 +2,7 @@
 // 핸들러는 path 인자를 받는 안정 참조로만 받아 React.memo 가 변화 없는 셀을 건너뛴다.
 import { memo, useRef } from "react";
 import { api } from "../../api";
-import { download } from "../../lib/download";
+import { downloadOne } from "../../lib/download";
 import { TagEditor } from "../TagEditor";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
@@ -229,7 +229,7 @@ export const AssetCell = memo(function AssetCell({
             >
               📂
             </button>
-            <button className="ov-icon" title="다운로드" onClick={() => download(url, node.name)}>
+            <button className="ov-icon" title="다운로드" onClick={() => downloadOne(url, node.name)}>
               ⤓
             </button>
           </div>
