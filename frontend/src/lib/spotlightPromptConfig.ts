@@ -4,6 +4,7 @@
 const DURATION_RANGE: Record<string, { min: number; max: number }> = {
   seedance_2_0: { min: 4, max: 15 },
   seedance_2_0_mini: { min: 4, max: 15 },
+  gemini_omni: { min: 4, max: 10 }, // 실측(generate cost): 4 미만/10 초과 거부
 };
 
 export function durationRange(model: string, fallback: number): { min: number; max: number } {

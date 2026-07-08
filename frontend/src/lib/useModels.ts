@@ -7,13 +7,13 @@ import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2(gpt_image_2)
-//  비디오: Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p)
+//  비디오: Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p) · Gemini Omni Flash(gemini_omni, duration 4~10s)
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
 export const ALLOWED: Record<"image" | "video", string[]> = {
   image: ["nano_banana_flash", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2"],
-  video: ["seedance_2_0", "seedance_2_0_mini"],
+  video: ["seedance_2_0", "seedance_2_0_mini", "gemini_omni"],
 };
 
 // 생성 카드 모델 라벨 — raw job_set_type 휴머나이즈가 CLI 카탈로그 표시명과 어긋나는 모델을
@@ -47,8 +47,8 @@ export const HIDDEN_PARAMS = new Set([
 // 기본값 오버라이드 — 모델 스키마 기본값 대신 우리가 쓸 기본값.
 //  · bitrate_mode: 힉스필드 네이티브 UI 와 동일하게 'high' 를 기본으로(검증결과 high 가 standard 와
 //    크레딧 동일 → 화질만 올라가는 '공짜' 개선). 해당 enum 에 그 값이 있을 때만 적용(타 모델 안전).
-//  · duration: 비디오 기본 길이를 4s 로(스키마/CLI 기본 5s 대신 — 최소·최저 크레딧). 현재 duration
-//    파라미터는 seedance_2_0(min 4s)만 가지며, enum 없는 수치라 그 모델에만 적용된다.
+//  · duration: 비디오 기본 길이를 4s 로(스키마/CLI 기본 5s 대신 — 최소·최저 크레딧). duration 파라미터를
+//    가진 비디오 모델(seedance_2_0·seedance_2_0_mini·gemini_omni, 모두 min 4s)에 적용된다. enum 없는 수치.
 export const DEFAULT_OVERRIDE: Record<string, string> = { bitrate_mode: "high", duration: "4" };
 
 // 파라미터의 '실효 기본값' — 오버라이드(enum 에 존재할 때) > 스키마 default > enum 첫값.

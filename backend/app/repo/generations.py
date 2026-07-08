@@ -564,6 +564,28 @@ def fail_orphaned_jobs() -> int:
         return cur.rowcount
 
 
+def list_stuck_synced_active(older_than_seconds: float = 300.0) -> list[tuple[str, str]]:
+    """유령 '생성중' 카드 후보 [(id, job_id)] — 힉스필드에 제출됐다 사라진(rejected) 잡이
+    동기화본 pending/running 으로 남아 세션 내내 '생성중'에 멈춘 것. 오살 방지로 좁게 겨냥:
+      · origin='synced' + gen_request 없음 → 로컬 생성 진행중(정상)·요청 있는 행은 제외
+      · job_id 보유 → generate get 으로 검증 가능한 것만
+      · sort_ts 가 older_than 초과 → 방금 제출돼 아직 get API 에 전파 안 된 잡의 일시 not-found 오판 방지
+    실제 삭제 판정은 호출측이 generate get(job_exists=False) 로 확정한다(존재·확인불가는 안 건드림)."""
+    cutoff = time.time() - older_than_seconds
+    with get_connection() as conn:
+        return [
+            (r["id"], r["job_id"])
+            for r in conn.execute(
+                "SELECT g.id, g.job_id FROM generation g "
+                "WHERE g.origin='synced' AND g.status IN ('pending','running') "
+                "AND g.job_id IS NOT NULL AND g.job_id<>'' AND g.deleted_at IS NULL "
+                "AND g.sort_ts IS NOT NULL AND g.sort_ts < ? "
+                "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id)",
+                (cutoff,),
+            ).fetchall()
+        ]
+
+
 def set_job_id(gen_id: str, job_id: str) -> None:
     """로컬 생성본에 실제 Higgsfield 잡 id 를 기록 — 이후 동기화가 이 행을
     중복 생성 없이 갱신하도록(중복 방지의 핵심).

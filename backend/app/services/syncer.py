@@ -35,6 +35,12 @@ SYNC_INTERVAL = float(os.environ.get("CONTENT_HUB_SYNC_INTERVAL", "20"))
 # 받는 즉시 더 끌어올 방법은 없으므로 경보만 남기고, 사용자가 web/타 소스 export 로 보완.
 SYNC_WATERMARK = int(os.environ.get("CONTENT_HUB_SYNC_WATERMARK", "85"))
 
+# 유령 '생성중' 카드 자동 정리 age 가드(초). 힉스필드에서 사라진(rejected/expired) 잡이 동기화본
+# pending/running 으로 남아 세션 내내 '생성중'에 멈추는 것을 정리한다(gen_request 없는 synced active
+# 만 좁게 겨냥). 방금 제출된 잡의 일시 not-found 오판을 피하려 이 시간(기본 5분) 이상 된 것만
+# 검증·정리 대상으로 삼는다. 실제 삭제는 generate get 이 '없음' 확정한 것만.
+STUCK_SYNCED_AGE = float(os.environ.get("CONTENT_HUB_STUCK_SYNCED_AGE", "300"))
+
 
 async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     """CLI 에서 최근 생성 이력을 끌어와 업서트. 카운트 반환.
@@ -58,6 +64,23 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
         counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100
     ) else 0
     return counts
+
+
+async def reconcile_stuck_synced() -> int:
+    """유령 '생성중' 카드(힉스필드에서 사라진 잡의 pending/running 동기화본)를 자동 정리.
+    좁은 후보만 generate get 으로 검증해, '삭제됨(False)' 확정된 것만 휴지통으로 보낸다.
+    확인불가(None)·존재(True)는 절대 안 건드린다 → 진짜 진행중 잡 오살 방지. 반환: 정리 건수.
+    정상 시 후보 0건이라 CLI 호출도 0(사실상 무비용)."""
+    cands = await asyncio.to_thread(repo.list_stuck_synced_active, STUCK_SYNCED_AGE)
+    if not cands:
+        return 0
+    trashed = 0
+    for gen_id, job_id in cands:
+        exists = await cli_bridge.job_exists(job_id)
+        if exists is False:  # 힉스필드에서 사라짐 확정 → 유령 카드 휴지통행(soft delete, 복구 가능)
+            if await asyncio.to_thread(repo.delete_generation, gen_id):
+                trashed += 1
+    return trashed
 
 
 class PeriodicSync:
@@ -98,6 +121,11 @@ class PeriodicSync:
                     )
                 # 신규/상태변동이 있으면 프론트에 새로고침 신호.
                 if c["inserted"] or c["updated"]:
+                    await manager.broadcast_all({"type": "synced"})
+                # 유령 '생성중' 카드(힉스필드에서 사라진 잡) 자동 정리 — 후보 없으면 무비용.
+                stuck = await reconcile_stuck_synced()
+                if stuck:
+                    print(f"[periodic-sync] 유령 '생성중' 카드 {stuck}건 정리(힉스필드에서 사라진 잡)")
                     await manager.broadcast_all({"type": "synced"})
             except asyncio.CancelledError:
                 raise

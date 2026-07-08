@@ -59,6 +59,42 @@ def _cli() -> str:
     return found
 
 
+def _parse_cli_json(stdout: str):
+    """CLI stdout → 파싱값(실패 시 None). `--json` 단일 JSON 이면 그대로.
+    `generate create --wait` 처럼 진행줄+최종 JSON 이 섞여 whole 파싱이 안 되면, 뒤에서부터
+    마지막 JSON 을 복구한다(JSONL 이든 여러 줄 pretty-print 든). ★생성 결과 오인식 방지는
+    호출측(_execute_one)이 job.id 필수 검증으로 담당 — 여기선 '파싱되는 JSON' 만 돌려준다."""
+    s = stdout or ""
+    if not s.strip():
+        return None
+    # 1) 정상 단일 JSON(배열 포함) — list/model get/upload/account status 등은 여기서 끝(영향 없음).
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # 2) JSONL/진행줄 — 뒤에서부터 한 줄씩 파싱해 마지막으로 성공하는 값을 채택.
+    for line in reversed(s.splitlines()):
+        t = line.strip()
+        if t[:1] in ("{", "["):
+            try:
+                return json.loads(t)
+            except json.JSONDecodeError:
+                continue
+    # 3) 여러 줄 pretty-print 최종 JSON — 줄머리가 여는 괄호인 위치에서 raw_decode(뒤→앞).
+    dec = json.JSONDecoder()
+    starts, pos = [], 0
+    for line in s.splitlines(keepends=True):
+        if line.lstrip()[:1] in ("{", "["):
+            starts.append(pos + (len(line) - len(line.lstrip())))
+        pos += len(line)
+    for st in reversed(starts):
+        try:
+            return dec.raw_decode(s[st:])[0]
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
@@ -71,10 +107,14 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     if out.returncode != 0:
         msg = (out.stderr or out.stdout or "").strip()
         return None, f"CLI 실패({' '.join(args)}): {msg[:700]}"
-    try:
-        return json.loads(out.stdout), None
-    except json.JSONDecodeError:
-        return None, f"CLI JSON 파싱 실패: {' '.join(args)}"
+    parsed = _parse_cli_json(out.stdout)
+    if parsed is not None:
+        return parsed, None
+    # exit 0 인데 파싱 불가 — 실제 출력을 담아 원인 규명이 되게 한다(예전엔 args 만 찍어 원인을 잃었다).
+    # 제어문자 제거·800자 제한.
+    raw = (out.stdout or "").strip() or (out.stderr or "").strip()
+    raw = "".join(ch for ch in raw if ch == "\n" or ch >= " ")[:800]
+    return None, f"CLI JSON 파싱 실패(비-JSON 출력): {raw or ' '.join(args)}"
 
 
 def _cli_json(cli: str, *args: str, timeout: int = 120):
@@ -604,8 +644,10 @@ def _execute_one(
         return
     if isinstance(job, list):
         job = job[0] if job else None
-    if not isinstance(job, dict):
-        _fail(server, token, rid, "결과 파싱 실패")
+    # ★job.id 필수 — _parse_cli_json 이 --wait 진행줄에서 잡아온 조각({"status":"running"} 등)을
+    #   결과로 오인해 잘못 fulfill 하는 것을 막는다(정상 결과는 항상 id 를 가진다).
+    if not isinstance(job, dict) or not job.get("id"):
+        _fail(server, token, rid, "결과 파싱 실패(잡 id 없음)")
         return
     st, body = _http("POST", f"{server}/api/gen-requests/{rid}/fulfill", token=token, body={"job": job})
     print(f"  ✓ 완료 보고(status={st})" if st == 200 else f"  ✗ 보고 실패: {body}")
