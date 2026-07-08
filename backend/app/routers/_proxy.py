@@ -45,6 +45,17 @@ def elevation_token() -> Optional[str]:
     return repo.get_setting(_K_ELEV_TOKEN)
 
 
+def is_worker_hub() -> bool:
+    """이 프로세스가 워커의 로컬 허브인가 — proxying() 과 달리 **토큰을 요구하지 않는다**.
+
+    버전 게이트(/api/cli-check)용: 아직 허브 로그인 전(토큰 없음)인 워커도 공개 /api/health 로
+    서버 버전을 확인해 stale 코드가 게이트를 우회하지 못하게 한다(코덱스 리뷰). 서버 본체(AUTH on)·
+    격리 테스트(NO_PROXY)면 False — 서버는 자기 자신을 조회할 필요 없고, 테스트는 운영서버에 안 닿는다."""
+    if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
+        return False
+    return not AUTH_ENABLED
+
+
 def proxying() -> bool:
     """이 프로세스가 '로컬 허브'(데이터를 공유 서버에 위임)인가?
 
@@ -166,6 +177,7 @@ _LOCAL_PREFIXES = (
 _LOCAL_EXACT = frozenset(
     {
         "/api/health",
+        "/api/cli-check",     # 코드핀 vs 서버 버전 게이트 — 로컬 허브가 서버를 대신 조회해 대조(프록시 금지)
         "/api/cost",          # CLI 비용 추정
         "/api/account",       # CLI 계정 상태(워크스페이스/크레딧 원천)
         "/api/sync",          # CLI 수동 동기화

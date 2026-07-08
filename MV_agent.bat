@@ -166,6 +166,25 @@ timeout /t 1 /nobreak >nul
 goto :waitloop
 :hubup
 
+REM --- Code/CLI version gate (after hub up so the proxying hub can reach the shared server). ---
+REM The hub compares our code pin (hf_cli_version.txt) to the server's expected CLI version. If they
+REM differ, our CODE is behind the team server; updating only the CLI would break stale code (1.x
+REM renamed flags), so generation stays OFF until the code is updated. Server unreachable / standalone
+REM / old hub without the endpoint -> empty output -> proceed (offline-safe).
+"%PY_EXE%" %PY_ARGS% -c "import urllib.request,json,sys; d=json.loads(urllib.request.urlopen(sys.argv[1]+'/api/cli-check',timeout=10).read().decode()); print(d.get('status',''))" "%HUB%" > "%TEMP%\mvhub_clichk.txt" 2>nul
+set "_CLICHK="
+if exist "%TEMP%\mvhub_clichk.txt" set /p _CLICHK=<"%TEMP%\mvhub_clichk.txt"
+del "%TEMP%\mvhub_clichk.txt" >nul 2>nul
+if /i "%_CLICHK%"=="code_stale" (
+  echo.
+  echo  [action needed] Your code is behind the team server ^(it expects a different CLI version^).
+  echo  Generation is OFF until you update your code. Run:  update_git.bat   then re-run MV_agent.bat.
+  echo  ^(Updating only the CLI is unsafe - old code can break on a newer CLI.^)
+  echo.
+  set "RUN_AGENT=0"
+  goto :agent_stage
+)
+
 REM --- Higgsfield login + workspace (AFTER the hub is up; interactive). ---
 if not defined HF goto :agent_stage
 call "%HF%" auth token >nul 2>nul
@@ -207,7 +226,7 @@ echo.
 if "%RUN_AGENT%"=="1" (
   "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30
 ) else (
-  echo [info] Generation agent is not running ^(Higgsfield CLI missing or no workspace selected^).
+  echo [info] Generation agent is not running - see the reason shown above.
   echo [info] The local hub is open. Close this window to stop the local hub.
   pause
 )

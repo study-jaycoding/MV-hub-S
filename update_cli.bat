@@ -22,6 +22,11 @@ set "QUIET=0"
 if /i "%~1"=="nopause" set "QUIET=1"
 set "ROOT=%~dp0"
 
+REM NOTE: MV_agent.bat now auto-checks the pinned CLI at startup and compares your code to the
+REM team server, so running this by hand is usually unnecessary. Kept as a manual/standalone updater
+REM (and still called by update_git.bat). Running it directly only pins the LOCAL CLI to hf_cli_version.txt.
+if "%QUIET%"=="0" echo     [note] MV_agent.bat now auto-checks CLI version at startup - running this by hand is optional.
+
 where npm >nul 2>nul
 if errorlevel 1 (
   echo     npm not found - install Node.js from nodejs.org, then retry.

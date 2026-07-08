@@ -35,6 +35,7 @@ from . import repo
 from .config import (
     ALLOW_REMOTE_AUTH_OFF,
     AUTH_ENABLED,
+    BACKEND_DIR,
     CORS_ORIGINS,
     FRONTEND_DIST,
     MANAGE_ENABLED,
@@ -326,11 +327,53 @@ ensure_dirs()
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 
+def _pinned_cli_version() -> str | None:
+    """이 코드가 핀한 Higgsfield CLI 버전(hf_cli_version.txt 첫 줄). 없거나 못 읽으면 None.
+    utf-8-sig: Windows 편집기가 붙인 BOM(\\ufeff)이 버전 문자열에 섞여 false mismatch 나는 것 방지(코덱스)."""
+    try:
+        txt = (BACKEND_DIR.parent / "hf_cli_version.txt").read_text("utf-8-sig")
+        return txt.strip().splitlines()[0].strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @app.get("/api/health")
 def health():
     from .services import cli_bridge
 
-    return {"status": "ok", "cli_available": cli_bridge.cli_available()}
+    return {
+        "status": "ok",
+        "cli_available": cli_bridge.cli_available(),
+        # 이 프로세스의 코드가 핀한 CLI 버전 — 워커 배치가 서버 값과 대조하는 버전 게이트용.
+        "cli_version": _pinned_cli_version(),
+    }
+
+
+@app.get("/api/cli-check")
+def cli_check():
+    """워커 코드가 공유 서버와 최신으로 맞는지 확인 — 로컬 코드핀(hf_cli_version.txt) vs 서버 기대버전.
+
+    프록시(로컬 허브)면 공유 서버 /api/health.cli_version 을 대신 조회해 대조한다(배치는 서버 URL 을
+    모르므로, URL 을 아는 허브가 대신 확인). 등가성만 판단: 서버 버전이 있고 코드핀과 다르면
+    code_stale(서버가 먼저 업데이트된 배포 중간 상태 등) → 배치가 생성을 끈다. 서버 없음/불통/형식이상
+    이면 ok(로컬 핀 신뢰, 오프라인·단독 안전). CLI 만 올리면 낡은 코드가 새 CLI 에서 깨지므로
+    '코드 업데이트'가 정답 — 여기선 CLI 자동설치가 아니라 코드-서버 정합만 본다."""
+    pin = _pinned_cli_version()
+    server: str | None = None
+    # 워커 로컬 허브면 토큰 유무와 무관하게 서버 버전 확인(코덱스: 토큰 없는 첫 실행 워커 우회 차단).
+    # /api/health 는 공개라 로그인 전에도 조회 가능. base_url() 은 DB 설정 없으면 env/기본값으로 폴백.
+    if _proxy.is_worker_hub():
+        try:
+            status, body = _proxy.raw_request(
+                "GET", f"{_proxy.base_url()}/api/health", token=_proxy.token(), timeout=8
+            )
+            if status == 200 and isinstance(body, dict):
+                v = body.get("cli_version")
+                server = v.strip() if isinstance(v, str) and v.strip() else None
+        except Exception:  # noqa: BLE001
+            server = None
+    stale = bool(server and pin and server != pin)
+    return {"pin": pin, "server": server, "status": "code_stale" if stale else "ok"}
 
 
 @app.get("/api/backups")
