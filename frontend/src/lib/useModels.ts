@@ -6,22 +6,26 @@ import { api } from "../api";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
-//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana Pro(nano_banana_2) · GPT Image 2(gpt_image_2)
+//  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2(gpt_image_2)
 //  비디오: Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p)
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
+// ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
+//   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
 export const ALLOWED: Record<"image" | "video", string[]> = {
-  image: ["nano_banana_flash", "nano_banana_2", "gpt_image_2"],
+  image: ["nano_banana_flash", "nano_banana_2_lite", "nano_banana_pro", "gpt_image_2"],
   video: ["seedance_2_0", "seedance_2_0_mini"],
 };
 
 // 생성 카드 모델 라벨 — raw job_set_type 휴머나이즈가 CLI 카탈로그 표시명과 어긋나는 모델을
-// 카탈로그 이름으로 교정한다. 힉스필드는 nano_banana_flash 를 "Nano Banana 2", nano_banana_2 를
-// "Nano Banana Pro" 로 부른다(혼동 주의) — 휴머나이즈하면 "Nano Banana Flash"/"Nano Banana 2"로
+// 카탈로그 이름으로 교정한다. 힉스필드는 nano_banana_flash 를 "Nano Banana 2", nano_banana_pro 를
+// "Nano Banana Pro" 로 부른다(혼동 주의) — 휴머나이즈하면 "Nano Banana Flash"/"Nano Banana Pro"로
 // 어긋나 카드와 선택 드롭다운이 달라 보인다. 이 맵은 lib/modelCatalog 의 폴백으로 쓰인다
 // (우선순위: CLI 카탈로그 display_name > 이 교정맵 > 휴머나이즈). 모든 화면이 modelCatalog 로 일원화.
 export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   nano_banana_flash: "Nano Banana 2",
-  nano_banana_2: "Nano Banana Pro",
+  nano_banana_2_lite: "Nano Banana 2 Lite",
+  nano_banana_pro: "Nano Banana Pro",
+  nano_banana_2: "Nano Banana Pro", // 레거시(개명 전 코드)로 만든 과거 카드 표시용 — CLI 목록엔 더 없음
   nano_banana: "Nano Banana",
   gpt_image_2: "GPT Image 2", // 휴머나이즈는 "Gpt Image 2"(소문자 pt)라 표기 교정
   seedance_2_0: "Seedance 2.0",
