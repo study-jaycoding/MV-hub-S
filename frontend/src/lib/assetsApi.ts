@@ -86,7 +86,8 @@ export const assetsApi = {
     return res.json() as Promise<{ project: string; path: string; name: string; type: string }>;
   },
 
-  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → 선택 폴더/import 또는 내장 imports 폴더에 저장.
+  // 프롬프트/레퍼런스 트레이 외부 드롭 파일 → captures 처럼 항상 내장 imports 폴더에 저장.
+  // (project/dir 은 하위호환으로 보내되 서버가 무시 — 예전엔 선택 폴더 안에 흩어졌다.)
   uploadReferenceFiles: async (files: File[], project = "", dir = "") => {
     const fd = new FormData();
     fd.append("project", project);

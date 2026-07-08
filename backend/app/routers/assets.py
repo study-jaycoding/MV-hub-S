@@ -895,27 +895,16 @@ async def upload_reference_import(
     files: list[UploadFile] = File(...),
 ):
     """프롬프트/레퍼런스 트레이에 외부 파일을 직접 드롭할 때 쓰는 내장 가져오기.
-    선택된 에셋 폴더가 있으면 그 안의 import/에 저장하고, 같은 파일은 해시로 재사용한다."""
-    project = (project or "").strip()
-    dir = (dir or "").strip().strip("/")
-
+    captures 처럼 **항상 전용 imports 폴더 하나**로 모은다(같은 파일은 해시로 재사용).
+    project/dir 폼 인자는 하위호환으로 받되 무시 — 예전엔 '선택된 폴더 안 {dir}/import'로 저장해
+    실제 프로젝트 폴더를 오염시켰다(CH/import, CH/import/import ...). 이제 흩뿌리지 않는다."""
     out_project = _PROMPT_IMPORT_PROJECT
-    project_dir: Optional[Path] = None
-    if project and project not in ("captures", _PROMPT_IMPORT_PROJECT):
-        project_dir = _safe_project_dir(project, request)
-        if project_dir:
-            import_rel = f"{dir}/import" if dir else "import"
-            dest = _safe_resolve(project_dir, import_rel)
-            if dest:
-                out_project = project
-            else:
-                project_dir = None
-    if not project_dir:
-        dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
-        try:
-            dest.relative_to(ASSETS_ROOT)
-        except ValueError:
-            raise HTTPException(status_code=500, detail="imports 경로 오류")
+    project_dir: Optional[Path] = None  # 항상 None → 저장 경로가 flat(파일명만, captures 와 동일)
+    dest = (ASSETS_ROOT / _PROMPT_IMPORT_PROJECT).resolve()
+    try:
+        dest.relative_to(ASSETS_ROOT)
+    except ValueError:
+        raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
     if len(files) > _UPLOAD_MAX_FILES:
         raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
