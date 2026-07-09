@@ -182,11 +182,13 @@ export function assetPreviewTarget(
   files: AssetNode[],
   target: AssetNode,
 ): PreviewTarget | null {
-  if (target.type !== "image" && target.type !== "video") return null;
-  const media = files.filter((file) => file.type === "image" || file.type === "video");
+  if (target.type !== "image" && target.type !== "video" && target.type !== "audio") return null;
+  const media = files.filter(
+    (file) => file.type === "image" || file.type === "video" || file.type === "audio",
+  );
   const items = media.map((file) => ({
     url: assetFileUrl(project, file.path),
-    type: file.type as "image" | "video",
+    type: file.type as "image" | "video" | "audio",
     name: file.name,
   }));
   const index = media.findIndex((file) => file.path === target.path);

@@ -66,7 +66,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
       >
         <header className="info-head" onPointerDown={onDragStart}>
           <span className="info-title" title={cur.name}>
-            {cur.type === "video" ? "▶ " : "🖼 "}
+            {cur.type === "video" ? "▶ " : cur.type === "audio" ? "🎵 " : "🖼 "}
             {cur.name}
             {items && items.length > 1 && (
               <span className="preview-count">
@@ -91,6 +91,8 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         <div className="media-preview-body">
           {cur.type === "video" ? (
             <video src={cur.url} controls autoPlay loop />
+          ) : cur.type === "audio" ? (
+            <audio src={cur.url} controls autoPlay />
           ) : (
             <img src={cur.url} alt={cur.name} draggable={false} />
           )}

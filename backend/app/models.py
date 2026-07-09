@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 
 # ── 공통 타입 ────────────────────────────────────────────────────────────
 MediaType = Literal["image", "video"]
+# 레퍼런스(입력)는 오디오도 받는다 — 생성물 출력(AssetOut)은 image/video 유지, 레퍼런스만 확장.
+ReferenceMediaType = Literal["image", "video", "audio"]
 GenStatus = Literal["pending", "running", "done", "failed"]
 AccountType = Literal["personal", "team"]
 
@@ -35,7 +37,7 @@ class AssetOut(BaseModel):
 
 class ReferenceOut(BaseModel):
     id: str
-    type: MediaType
+    type: ReferenceMediaType
     file_path: str
     thumbnail_path: Optional[str] = None
     source: Optional[str] = None
@@ -139,7 +141,7 @@ class ReferenceIn(BaseModel):
     """생성 모달의 레퍼런스 슬롯(@Image/@Video)."""
 
     file_path: str  # 로컬 경로/업로드 UUID 또는 asset:proj|path 토큰
-    type: MediaType = "image"
+    type: ReferenceMediaType = "image"
     role: str = "@Image1"
     name: Optional[str] = None  # 칩 표시 이름(@소스명) — 프롬프트 인라인 칩 복원/매칭용
     thumbnail: Optional[str] = None  # 표시용 썸네일 URL(에셋 소스 칩의 썸네일)

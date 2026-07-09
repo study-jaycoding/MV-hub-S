@@ -916,7 +916,7 @@ async def upload_reference_import(
         if not raw:
             continue
         mt = _media_type(raw)
-        if mt not in ("image", "video"):
+        if mt not in ("image", "video", "audio"):
             skipped.append(raw)
             continue
         try:

@@ -15,7 +15,7 @@ export interface Asset {
 
 export interface Reference {
   id: string;
-  type: MediaType;
+  type: "image" | "video" | "audio";
   file_path: string;
   thumbnail_path: string | null;
   source: string | null;
@@ -370,13 +370,13 @@ export type InfoTarget =
 // 클릭 시 떠오르는 미디어 미리보기(이미지 표시 / 영상 재생)
 export interface PreviewItem {
   url: string;
-  type: MediaType;
+  type: "image" | "video" | "audio";
   name: string;
   genId?: string; // 결과물 미리보기면 그 generation id('구성에서 보기'용). 에셋(파일)이면 없음.
 }
 export interface PreviewTarget {
   url: string;
-  type: MediaType;
+  type: "image" | "video" | "audio";
   name: string;
   genId?: string; // 결과물 미리보기면 그 generation id('구성에서 보기'용). 에셋(파일)이면 없음.
   // 같은 목록(그리드/폴더)의 이미지·영상 — 있으면 ←/→ 방향키로 이전·다음 이동(생성·에셋 공통).

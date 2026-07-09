@@ -20,7 +20,7 @@ export function refSrc(s: string | null | undefined): string | undefined {
 // SpotlightPrompt 의 ChipRef 와 동일 구조(구조적 호환).
 export interface PartChipRef {
   file_path: string;
-  type: "image" | "video";
+  type: "image" | "video" | "audio";
   role: string;
   name: string;
   thumb: string;
@@ -33,7 +33,8 @@ function chipFromRef(ref: Reference, name: string): PartChipRef {
     type: ref.type,
     role: ref.role || "@Image1",
     name,
-    thumb: refSrc(ref.thumbnail_path || ref.file_path) || "",
+    // 오디오는 썸네일이 없어 file_path 를 img 로 폴백하면 깨진다 → 빈 값(플레이스홀더 표시).
+    thumb: ref.type === "audio" ? "" : refSrc(ref.thumbnail_path || ref.file_path) || "",
   };
 }
 

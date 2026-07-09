@@ -39,7 +39,9 @@ export function parseSpotlightAssetItems(raw: string): SpotlightAssetDragItem[] 
   try {
     const parsed = JSON.parse(raw);
     const list = (Array.isArray(parsed) ? parsed : [parsed]) as SpotlightAssetDragItem[];
-    return list.filter((item) => item && (item.type === "image" || item.type === "video"));
+    return list.filter(
+      (item) => item && (item.type === "image" || item.type === "video" || item.type === "audio"),
+    );
   } catch {
     return [];
   }
@@ -75,15 +77,19 @@ export function readSpotlightAssetPayload(dataTransfer: DataTransfer): string {
   return drag;
 }
 
-// 에셋 항목 → ChipRef 공통 필드(role/uid 는 호출측이 채움). thumb: 영상은 파일URL, 이미지는 썸네일.
+// 에셋 항목 → ChipRef 공통 필드(role/uid 는 호출측이 채움).
+// thumb: 영상은 파일URL, 이미지는 썸네일, 오디오는 썸네일이 없어 빈 문자열(트레이가 A 플레이스홀더 표시).
 export function spotlightAssetRefBase(item: SpotlightAssetDragItem): Omit<ChipRef, "role"> {
-  const isVideo = item.type === "video";
+  const type = item.type === "video" ? "video" : item.type === "audio" ? "audio" : "image";
   return {
     file_path: `asset:${item.project}|${item.path}`,
-    type: isVideo ? "video" : "image",
+    type,
     name: item.name,
-    thumb: isVideo
-      ? api.assetFileUrl(item.project, item.path)
-      : api.assetThumbUrl(item.project, item.path, 256),
+    thumb:
+      type === "video"
+        ? api.assetFileUrl(item.project, item.path)
+        : type === "audio"
+          ? ""
+          : api.assetThumbUrl(item.project, item.path, 256),
   };
 }

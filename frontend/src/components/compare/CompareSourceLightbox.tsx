@@ -1,6 +1,4 @@
-import type { MediaType } from "../../types";
-
-export type CompareSourcePreview = { url: string; type: MediaType; name: string };
+export type CompareSourcePreview = { url: string; type: "image" | "video" | "audio"; name: string };
 
 export function CompareSourceLightbox({
   preview,
@@ -19,6 +17,8 @@ export function CompareSourceLightbox({
         </button>
         {preview.type === "video" ? (
           <video src={preview.url} controls autoPlay muted loop playsInline />
+        ) : preview.type === "audio" ? (
+          <audio src={preview.url} controls autoPlay />
         ) : (
           <img src={preview.url} alt={preview.name} />
         )}

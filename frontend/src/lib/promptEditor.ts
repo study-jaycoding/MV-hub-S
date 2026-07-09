@@ -4,7 +4,7 @@ import { STORAGE_KEYS } from "./storageKeys";
 
 export interface ChipRef {
   file_path: string; // 레퍼런스 값(asset:proj|path 토큰 또는 원격 URL) — 백엔드가 resolve
-  type: "image" | "video";
+  type: "image" | "video" | "audio";
   role: string; // @Image1 / @Video …
   name: string; // 칩 표시 이름(@소스명)
   thumb: string; // 칩 썸네일 URL
@@ -90,10 +90,20 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
   chip.contentEditable = "false";
   chip.dataset.ref = JSON.stringify(ref);
   chip.draggable = true; // 글자 사이로 끌어 재배치
-  const img = document.createElement("img");
-  img.src = ref.thumb;
-  img.alt = "";
-  img.draggable = false; // 이미지 자체 네이티브 드래그 방지(칩 단위로만 드래그)
+  // 썸네일 있으면 img, 없으면(오디오 등) 플레이스홀더 — 빈 src img 의 재요청/깨진이미지 방지.
+  let media: HTMLElement;
+  if (ref.thumb) {
+    const img = document.createElement("img");
+    img.src = ref.thumb;
+    img.alt = "";
+    img.draggable = false; // 이미지 자체 네이티브 드래그 방지(칩 단위로만 드래그)
+    media = img;
+  } else {
+    const ph = document.createElement("span");
+    ph.className = "inline-ref-ph";
+    ph.textContent = ref.type === "audio" ? "🎵" : "▦";
+    media = ph;
+  }
   const nm = document.createElement("span");
   nm.className = "inline-ref-name";
   nm.textContent = ref.name;
@@ -123,7 +133,7 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
     _draggingChip = null;
     hideChipDropBar();
   });
-  chip.append(img, nm, rm);
+  chip.append(media, nm, rm);
   return chip;
 }
 

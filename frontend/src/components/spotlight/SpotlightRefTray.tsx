@@ -1,10 +1,13 @@
 import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
 import { refSrc } from "../../lib/promptParts";
 import type { ChipRef } from "../../lib/promptEditor";
+import type { PreviewTarget } from "../../types";
 import {
+  seedanceHasTokenRoles,
   seedanceTrayBadge,
   seedanceTrayBadgeTitle,
   seedanceTrayRole,
+  seedanceTrayTypeIndex,
   usesSeedanceMediaRefs,
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
@@ -22,6 +25,7 @@ interface Props {
   onItemDrop: (index: number) => (event: DragEvent<HTMLElement>) => void;
   onRemove: (index: number) => void;
   onClearAll: () => void;
+  onPreview?: (target: PreviewTarget) => void; // 항목 더블클릭 → 원본 크게 보기
 }
 
 export function SpotlightRefTray({
@@ -35,6 +39,7 @@ export function SpotlightRefTray({
   onItemDrop,
   onRemove,
   onClearAll,
+  onPreview,
 }: Props) {
   return (
     <div
@@ -54,9 +59,12 @@ export function SpotlightRefTray({
       ) : (
         <>
         {trayRefs.map((ref, index) => {
-          const badgeRole = seedanceTrayRole(ref, index, liveSeedanceRoles);
+          const seedanceVisible = usesSeedanceMediaRefs(model) || seedanceHasTokenRoles(liveSeedanceRoles);
+          const badgeRole = seedanceTrayRole(trayRefs, index, liveSeedanceRoles);
           const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
-          const showRoleBadge = usesSeedanceMediaRefs(model) || liveSeedanceRoles.size > 0;
+          const showRoleBadge = seedanceVisible;
+          // 타입별 순번 표시 — 보이는 번호 = 프롬프트에 쓰는 번호(<<<image2>>>, <<<video1>>> …).
+          const displayIndex = seedanceVisible ? seedanceTrayTypeIndex(trayRefs, index) : index + 1;
           return (
             <div
               key={ref.uid}
@@ -65,9 +73,16 @@ export function SpotlightRefTray({
               onDragStart={onItemDragStart(index)}
               onDragOver={onDragOver}
               onDrop={onItemDrop(index)}
-              title={`${index + 1}. ${ref.name} · ${badgeTitle}`}
+              onDoubleClick={() =>
+                onPreview?.({
+                  url: refSrc(ref.file_path) || ref.thumb,
+                  type: ref.type,
+                  name: ref.name,
+                })
+              }
+              title={`${displayIndex}. ${ref.name} · ${badgeTitle} · 더블클릭=크게 보기`}
             >
-              <span className="sl-reftray-num">{index + 1}</span>
+              <span className="sl-reftray-num">{displayIndex}</span>
               {ref.type === "video" ? (
                 <video
                   src={refSrc(ref.file_path)}
@@ -76,6 +91,8 @@ export function SpotlightRefTray({
                   playsInline
                   draggable={false}
                 />
+              ) : (ref.type as string) === "audio" ? (
+                <span className="sl-reftray-ph">A</span>
               ) : ref.thumb ? (
                 // draggable=false: 썸네일 자체가 네이티브 이미지 드래그가 되면 크롬이 합성 파일을
                 // 만들어 순서변경이 '외부 파일 추가'로 처리된다. 드래그 주체는 항상 바깥 항목 div.

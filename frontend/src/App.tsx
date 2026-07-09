@@ -829,6 +829,7 @@ export default function App() {
         <SpotlightPrompt
           expanded={composerExpanded || sceneMode}
           onToggleExpand={toggleComposerExpanded}
+          onPreview={openPreview}
           trayBinding={trayBinding}
           onTrayBindingRefsChange={setSceneCardRefs}
           armedAutoTags={[...armedAutoTags]}

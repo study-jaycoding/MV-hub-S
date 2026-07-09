@@ -31,7 +31,7 @@ import {
 import type { ChipRef, HistEntry } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
 import { dataTransferHasFiles } from "../lib/media";
-import { seedanceTokenRoles } from "../lib/seedancePrompt";
+import { emptySeedanceTokenRoles, seedanceTokenRoles } from "../lib/seedancePrompt";
 import { buildSpotlightCreateBody } from "../lib/spotlightSubmit";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
@@ -56,7 +56,7 @@ import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
 import { SpotlightRefTray, type SpotlightTrayRef } from "./spotlight/SpotlightRefTray";
 import { sceneRefFingerprint, type SceneRef } from "../lib/scenes";
-import type { Generation } from "../types";
+import type { Generation, PreviewTarget } from "../types";
 
 const MAX_COUNT = 4; // 한 번에 생성할 최대 장수(배치)
 
@@ -76,6 +76,7 @@ interface Props {
   //  트레이에서 순서변경/추가/삭제하면 onTrayBindingRefsChange 로 씬 카드에 되돌린다. null=일반 모드.
   trayBinding?: { key: string; refs: SceneRef[] } | null;
   onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
+  onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -92,6 +93,7 @@ export function SpotlightPrompt({
   onToggleExpand,
   trayBinding,
   onTrayBindingRefsChange,
+  onPreview,
 }: Props) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
@@ -148,8 +150,8 @@ export function SpotlightPrompt({
     setBoundTrayRefs(
       bindingRefs.map((r) => ({
         file_path: r.file_path,
-        type: r.type === "video" ? "video" : "image",
-        role: r.type === "video" ? "@Video" : "@Image",
+        type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
+        role: r.type === "video" ? "@Video" : r.type === "audio" ? "@Audio" : "@Image",
         name: r.name ?? "",
         thumb: r.thumb ?? "",
         source_gen_id: r.source_gen_id ?? undefined,
@@ -244,7 +246,7 @@ export function SpotlightPrompt({
   const liveSeedanceRoles = useMemo(() => {
     // 트레이 배지 전용 — 트레이가 비어 있으면(레퍼런스 미사용) 소비처가 없으니
     // 키 입력마다 에디터 DOM 직렬화+정규식 스캔을 하지 않는다.
-    if (!trayRefs.length) return new Map() as ReturnType<typeof seedanceTokenRoles>;
+    if (!trayRefs.length) return emptySeedanceTokenRoles();
     const ed = editorRef.current;
     return seedanceTokenRoles(ed ? serialize(ed).text : "");
   }, [promptTick, trayRefs]);
@@ -456,7 +458,7 @@ export function SpotlightPrompt({
     const accepted = files.filter((f) => referenceDropTypeFromFile(f));
     const ignored = files.length - accepted.length;
     if (!accepted.length) {
-      setError("이미지/영상 파일만 레퍼런스로 추가할 수 있습니다.");
+      setError("이미지/영상/오디오 파일만 레퍼런스로 추가할 수 있습니다.");
       return;
     }
     setError(null);
@@ -479,7 +481,7 @@ export function SpotlightPrompt({
       }
       const skippedCount = ignored + skipped.length;
       if (!items.length && skippedCount > 0) {
-        setError("이미지/영상 파일만 레퍼런스로 추가할 수 있습니다.");
+        setError("이미지/영상/오디오 파일만 레퍼런스로 추가할 수 있습니다.");
       }
     } catch (err) {
       setError("외부 파일 가져오기 실패: " + String(err));
@@ -883,6 +885,7 @@ export function SpotlightPrompt({
               onItemDrop={onTrayItemDrop}
               onRemove={removeTrayRef}
               onClearAll={() => setTrayRefs([])}
+              onPreview={onPreview}
             />
           )}
 

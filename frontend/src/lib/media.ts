@@ -2,10 +2,11 @@
 import { api } from "../api";
 import type { Generation } from "../types";
 
-export type ReferenceMediaType = "image" | "video";
+export type ReferenceMediaType = "image" | "video" | "audio";
 
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
 export const VIDEO_EXTENSIONS = ["mp4", "mov", "webm", "mkv", "avi"] as const;
+export const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "flac", "m4a", "aac"] as const;
 
 const MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
@@ -39,6 +40,7 @@ export function referenceMediaTypeFromName(name: string): ReferenceMediaType | n
   const ext = extOf(name);
   if ((IMAGE_EXTENSIONS as readonly string[]).includes(ext)) return "image";
   if ((VIDEO_EXTENSIONS as readonly string[]).includes(ext)) return "video";
+  if ((AUDIO_EXTENSIONS as readonly string[]).includes(ext)) return "audio";
   return null;
 }
 
@@ -46,6 +48,7 @@ export function referenceMediaTypeFromFile(file: File): ReferenceMediaType | nul
   const mt = (file.type || "").toLowerCase();
   if (mt.startsWith("image/")) return "image";
   if (mt.startsWith("video/")) return "video";
+  if (mt.startsWith("audio/")) return "audio";
   return referenceMediaTypeFromName(file.name);
 }
 
