@@ -95,6 +95,11 @@ def _parse_cli_json(stdout: str):
     return None
 
 
+# exit 0 인데 --json 출력이 파싱 안 될 때의 오류 prefix. 복구(_recover_created_job)는 이 케이스에만
+# 적용한다 — 진짜 CLI 실패 메시지("CLI 실패(...)") 안의 UUID 를 잘못 복구하지 않도록 게이트.
+_PARSE_FAIL_PREFIX = "CLI JSON 파싱 실패(비-JSON 출력): "
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
@@ -114,7 +119,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     # 제어문자 제거·800자 제한.
     raw = (out.stdout or "").strip() or (out.stderr or "").strip()
     raw = "".join(ch for ch in raw if ch == "\n" or ch >= " ")[:800]
-    return None, f"CLI JSON 파싱 실패(비-JSON 출력): {raw or ' '.join(args)}"
+    return None, f"{_PARSE_FAIL_PREFIX}{raw or ' '.join(args)}"
 
 
 def _cli_json(cli: str, *args: str, timeout: int = 120):
@@ -123,6 +128,50 @@ def _cli_json(cli: str, *args: str, timeout: int = 120):
     if err:
         print(f"[경고] {err}")
     return data
+
+
+# 잡 id(UUID) 추출용 — generate create 가 --wait 조합에서 JSON 대신 평문(잡 id 또는 결과 URL)만
+# 내보낸 경우를 대비해, 출력에서 잡 id 를 되찾는다.
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _recover_created_job(cli: str, raw: str):
+    """generate create 가 (--wait 조합에서) job JSON 대신 job id/결과 URL 평문만 뱉어 파싱이
+    실패했을 때, 출력에 박힌 job id 로 `generate get <id> --json` 을 호출해 진짜 잡을 되찾는다.
+    실제 생성은 성공했는데 파싱만 실패해 '가짜 실패 + 유령 카드' 가 나던 문제를 근본에서 막는다.
+    되찾은 값은 정상 잡(dict + id)일 때만 반환 — 존재하지 않는 id 면 get 이 실패해 None."""
+    ids = _UUID_RE.findall(raw or "")
+    if not ids:
+        return None
+    # 마지막 UUID = 방금 만든 잡 id(평문 id 든 결과 URL 에 박힌 id 든 동일). get 으로 권위 있는 잡 확보.
+    job, _ = _run_cli_json(cli, "generate", "get", ids[-1], timeout=120)
+    return job if isinstance(job, dict) and job.get("id") else None
+
+
+# 생성된 잡에 실제로 붙은 입력 이미지 개수 — 모델별 스키마 차이를 모두 커버(pro=params.input_images,
+# flash/lite=params.medias[role=image], 스펙명 image_references). 레퍼런스를 붙여 실행했는데 여기서 0 이면
+# 힉스필드가 입력 이미지를 안 받은 것(=레퍼런스 미적용 → 엉뚱한 결과)이라, fulfill 전에 방어 실패시킨다.
+def _job_image_input_count(job: dict) -> int:
+    params = job.get("params") if isinstance(job, dict) else None
+    if not isinstance(params, dict):
+        return 0
+    count = 0
+    for key in ("input_images", "image_references"):
+        v = params.get(key)
+        if isinstance(v, list):
+            count += sum(1 for x in v if x)
+        elif v:
+            count += 1
+    for m in params.get("medias") or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").lower()
+        typ = str(m.get("type") or "").lower()
+        if typ == "image" or role.startswith(("image", "@image", "start", "@start", "end", "@end")):
+            count += 1
+    return count
 
 
 def _cli_version(cli: str) -> str | None:
@@ -576,6 +625,7 @@ def _execute_one(
     seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
     seedance_media_inputs: list[tuple[str, str]] = []
     seedance_used_cached_media = False
+    expected_image_inputs = 0  # 우리가 실제로 CLI 에 넣은 입력 이미지 개수(사후 부착 검증용)
     for ref in refs:
         val = ref.get("file_path")
         if not val:
@@ -597,8 +647,13 @@ def _execute_one(
             seedance_media_inputs.append((resolved, media_role))
             seedance_used_cached_media = seedance_used_cached_media or from_cache
             seedance_media_ids.append((media_role, data["id"]))
+            if media_role == "image":
+                expected_image_inputs += 1
             continue
-        args += [_role_flag(ref.get("role")), resolved]
+        flag = _role_flag(ref.get("role"))
+        args += [flag, resolved]
+        if flag in ("--image", "--start-image", "--end-image"):
+            expected_image_inputs += 1
     if unresolved:
         # 레퍼런스를 못 가져오면 그대로 생성 시 입력 이미지 없이 엉뚱하게 나오고 크레딧만
         # 소모된다 → 실행하지 않고 명확한 사유로 실패시킨다.
@@ -635,20 +690,41 @@ def _execute_one(
             base_args = args[:len(args) - len(seedance_ref_args)]
             retry_args = base_args + _seedance_ref_args(retry_ids)
             job, cli_error = _run_cli_json(cli, *retry_args, timeout=900)
-    if not job:
-        reason = "로컬 CLI 실행 실패"
+    if isinstance(job, list):
+        job = job[0] if job else None
+    # ★job.id 필수 — 정상 결과는 항상 id 를 가진다. 실제 생성은 성공했는데 --wait --json 이 JSON 대신
+    #   평문 id/URL 만 뱉어(파싱만 실패) '가짜 실패 + 유령 카드' 가 나던 경우에 한해, 출력에 박힌 job id 로
+    #   진짜 잡을 되찾아 복구한다. 게이트: 파싱 실패(비-JSON) prefix 일 때만 — 진짜 CLI 실패 메시지 안의
+    #   UUID(예: "job <id> ended with status failed")를 잘못 복구하지 않도록.
+    if (
+        not (isinstance(job, dict) and job.get("id"))
+        and cli_error
+        and cli_error.startswith(_PARSE_FAIL_PREFIX)
+    ):
+        recovered = _recover_created_job(cli, cli_error[len(_PARSE_FAIL_PREFIX):])
+        if recovered:
+            print(f"  ↻ 평문 출력에서 job 복구: {recovered['id'][:8]}")
+            job, cli_error = recovered, None
+    if not (isinstance(job, dict) and job.get("id")):
+        # cli_error None = 파서가 id 없는 조각을 잡은 경우(진행줄 등). 원인 파악용으로 메시지 구분.
+        reason = "결과 파싱 실패(잡 id 없음)" if cli_error is None else "로컬 CLI 실행 실패"
         if cli_error:
             reason = f"{reason}: {cli_error[:500]}"
             print(f"[경고] {cli_error}")
         _fail(server, token, rid, reason)
         return
-    if isinstance(job, list):
-        job = job[0] if job else None
-    # ★job.id 필수 — _parse_cli_json 이 --wait 진행줄에서 잡아온 조각({"status":"running"} 등)을
-    #   결과로 오인해 잘못 fulfill 하는 것을 막는다(정상 결과는 항상 id 를 가진다).
-    if not isinstance(job, dict) or not job.get("id"):
-        _fail(server, token, rid, "결과 파싱 실패(잡 id 없음)")
-        return
+    # 방어 — 레퍼런스를 실제로 붙여 실행했는데(expected_image_inputs>0) 생성된 잡에 입력 이미지가 0개면
+    #   레퍼런스가 적용 안 된 것(엉뚱한 이미지). 조용히 fulfill 하지 말고 실패로 보고해 눈에 보이게 한다.
+    #   현재 job 이 이미 붙어 있으면(count>0) 통과, 0 이면 create 응답이 최소필드였을 수 있어 권위 있는
+    #   generate get 으로 1회 재확인 후 판정(부착 정상 시엔 추가 호출 없음).
+    if expected_image_inputs > 0 and _job_image_input_count(job) <= 0:
+        full, _ = _run_cli_json(cli, "generate", "get", job["id"], timeout=120)
+        if isinstance(full, dict) and full.get("id"):
+            job = full
+        if _job_image_input_count(job) <= 0:
+            _fail(server, token, rid, "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요")
+            print(f"  ✗ 레퍼런스 미부착 감지 — fulfill 안 함: {job['id'][:8]}")
+            return
     st, body = _http("POST", f"{server}/api/gen-requests/{rid}/fulfill", token=token, body={"job": job})
     print(f"  ✓ 완료 보고(status={st})" if st == 200 else f"  ✗ 보고 실패: {body}")
 
