@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import threading
 import time
 from pathlib import Path
@@ -18,6 +19,11 @@ from .media_types import IMAGE_EXTENSIONS
 from .path_safety import safe_join
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
+
+# 썸네일 캐시(.thumbs) 총 용량 상한. 넘으면 오래된 것부터 삭제(LRU). 썸네일은 원본 URL 로 언제든 다시
+# 구울 수 있어 삭제해도 안전하다 — 이 상한은 .thumbs(재생성 가능 캐시)에만 적용하고 MEDIA_DIR 의
+# 원본(특히 최종본 보존본)은 절대 건드리지 않는다. 기본 1GB(≈ 3만 장), 런처 환경변수로 조절.
+THUMB_CACHE_MAX_BYTES = int(os.environ.get("CONTENT_HUB_THUMB_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
 
 
 def cache_path(target: Path, w: int) -> Path:
@@ -55,6 +61,43 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
         return None
 
 
+def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
+    """.thumbs 총 용량이 max_bytes 를 넘으면 오래된 것(mtime = 생성/교체 시각)부터 삭제해 상한 이하로.
+    엄밀히는 접근시각 LRU 가 아니라 생성시각 FIFO — 지워져도 원본 URL 로 즉시 다시 굽는다(무해).
+    ★.thumbs(재생성 가능한 512 리사이즈 캐시)만 대상 — MEDIA_DIR 의 원본·최종 보존본은 안 건드린다.
+    쓰는 중(.tmp)이나 .jpg 아닌 파일은 건너뛴다(반쯤 쓰인 파일 삭제 방지). 삭제 개수를 반환."""
+    if not THUMB_DIR.exists() or THUMB_DIR.is_symlink():  # 심링크/정션이면 원본 밖을 지울 위험 → 거부
+        return 0
+    try:
+        entries: list[tuple[float, int, Path]] = []
+        total = 0
+        for p in THUMB_DIR.iterdir():
+            if p.suffix != ".jpg" or not p.is_file():  # .tmp(생성 중)·기타 제외
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            entries.append((st.st_mtime, st.st_size, p))
+            total += st.st_size
+        if total <= max_bytes:
+            return 0
+        entries.sort(key=lambda e: e[0])  # 오래된 것(작은 mtime) 먼저
+        removed = 0
+        for _mtime, size, p in entries:
+            if total <= max_bytes:
+                break
+            try:
+                p.unlink()
+                total -= size
+                removed += 1
+            except OSError:
+                continue  # 다른 스레드가 방금 지웠거나 잠김 — 건너뜀
+        return removed
+    except OSError:
+        return 0
+
+
 def _media_target(rel_or_media_path: str) -> Optional[Path]:
     """'/media/<2>/<sha>.ext' → 안전한 절대경로(경로 이탈 차단). 아니면 None."""
     if not rel_or_media_path.startswith("/media/") or "\\" in rel_or_media_path:
@@ -79,6 +122,8 @@ def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:
                 made += 1
             if throttle:
                 time.sleep(throttle)
+    if made:
+        evict_thumb_cache()  # 새로 구운 만큼 상한 점검(초과 시 오래된 것부터 삭제)
     return made
 
 
@@ -103,9 +148,12 @@ async def prewarm_remote_thumbs(urls: list[str], width: int = 512, concurrency: 
             target = _media_target(rel)
             if not target:
                 return
+            existed = cache_path(target, width).exists()  # 이미 있으면 새로 만든 게 아님
             cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
-            if cache:
+            if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
                 made += 1
 
     await asyncio.gather(*(_one(u) for u in urls), return_exceptions=True)
+    if made:
+        await asyncio.to_thread(evict_thumb_cache)  # 새로 구운 만큼 상한 점검(디스크 IO → 스레드)
     return made

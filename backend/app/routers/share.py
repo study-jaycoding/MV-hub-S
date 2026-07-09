@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from . import _proxy
 from .. import rbac, repo
@@ -125,8 +125,24 @@ def _finalizer_uid(request: Request) -> str | None:
         return None
 
 
+async def _preserve_final_media(local_id: str) -> None:
+    """최종(골드) 지정 시 그 생성물의 원본을 로컬로 byte-cache 한다 — 힉스필드 CDN URL 이 나중에 죽어도
+    최종본은 로컬 보존본으로 남는다(선택 보존). best-effort: 실패해도 finalize 결과엔 영향 없음.
+    ★썸네일 LRU 삭제는 .thumbs 만 대상이라, 여기서 MEDIA_DIR 에 받은 원본 보존본은 지워지지 않는다."""
+    try:
+        from .generation import cache_generation_media  # 지연 import(라우터 간 순환 방지)
+
+        gen = repo.get_generation(local_id)
+        # 백그라운드 실행 사이 최종 해제/삭제됐으면 보존 안 함 — '최종본만 원본 보존' 정책 유지.
+        if not gen or not gen.get("is_final"):
+            return
+        await cache_generation_media(gen)
+    except Exception:  # noqa: BLE001 — 보존 실패는 비핵심(원격 URL 폴백 유지)
+        pass
+
+
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)
-def finalize(gen_id: str, request: Request):
+def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     """생성본을 최종(골드)으로 지정 — 그 프로젝트의 Supervisor 만(검수권). AUTH off 면 통과.
     최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
     로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
@@ -179,6 +195,8 @@ def finalize(gen_id: str, request: Request):
                     repo.unpublish(local_id)
                 raise
         _touch_telemetry(local_id)
+        if local_id:
+            background.add_task(_preserve_final_media, local_id)  # 최종본 원본 로컬 보존
         return out
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
@@ -197,6 +215,7 @@ def finalize(gen_id: str, request: Request):
         repo.publish(gen_id, actor_id(request), "team")
     repo.set_final(gen_id, True, _finalizer_uid(request))
     _touch_telemetry(gen_id)
+    background.add_task(_preserve_final_media, gen_id)  # 최종본 원본 로컬 보존
     return repo.get_generation(gen_id)
 
 

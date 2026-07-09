@@ -255,6 +255,11 @@ def list_generations(
                             g["has_unread"] = c.get("has_unread", g.get("has_unread"))
             except Exception:  # noqa: BLE001 — 보강 실패는 로컬 값 유지(치명적 아님)
                 pass
+    # 내 라이브러리도 대표 썸네일이 원격 URL 이면 뒤에서 미리 캐시(팀 탭과 동일) — 첫 스크롤 지연 제거.
+    # 이미 캐시된 건 즉시 통과(멱등)라 매 목록 요청 재호출이 싸다.
+    own_urls = _remote_thumb_urls(result)
+    if own_urls:
+        background.add_task(thumbs.prewarm_remote_thumbs, own_urls)
     return result
 
 
