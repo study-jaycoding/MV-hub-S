@@ -33,12 +33,8 @@ export function ViewControls({
   showLayout = true,
   t = (text) => text,
 }: Props) {
-  const layoutTitle = (mode: LayoutMode) =>
-    layout === mode
-      ? groupByDate
-        ? t("날짜 구분 끄기 (한 번 더)")
-        : t(mode === "list" ? "리스트" : "그리드")
-      : t(mode === "list" ? "리스트" : "그리드");
+  // 툴팁은 항상 뷰 이름(그리드/리스트)만 — 날짜 구분 상태와 무관(라이브러리·에셋 공통).
+  const layoutTitle = (mode: LayoutMode) => t(mode === "list" ? "리스트" : "그리드");
 
   return (
     <>
