@@ -8,6 +8,8 @@ import {
   groupAssetsByDate,
   hasUnreadAssetMeta,
   isAssetSearchActive,
+  type AssetSortDir,
+  type AssetSortField,
   type AssetTypeFilter,
 } from "./assetsViewModel";
 
@@ -21,6 +23,8 @@ export function useAssetViewData({
   groupByDate,
   meta,
   query,
+  sortDir,
+  sortField,
   sourceOnly,
   tree,
   typeFilter,
@@ -34,6 +38,8 @@ export function useAssetViewData({
   groupByDate: boolean;
   meta: Record<string, AssetMeta>;
   query: string;
+  sortDir: AssetSortDir;
+  sortField: AssetSortField;
   sourceOnly: boolean;
   tree: AssetNode[];
   typeFilter: AssetTypeFilter;
@@ -64,6 +70,8 @@ export function useAssetViewData({
         grayOn,
         disabledAssets,
         groupByDate,
+        sortField,
+        sortDir,
       }),
     [
       tree,
@@ -79,6 +87,8 @@ export function useAssetViewData({
       groupByDate,
       grayOn,
       disabledAssets,
+      sortField,
+      sortDir,
     ],
   );
   const dateGroups = useMemo(() => groupAssetsByDate(files), [files]);

@@ -15,6 +15,38 @@ export const EMPTY_ASSET_META: AssetMeta = {
 
 export type AssetTypeFilter = "image" | "video" | "audio" | null;
 
+// 정렬 — 파일 정렬 기준(이름/날짜/유형)과 방향(오름/내림). 에셋 목록은 전부 로컬(클라이언트)이라
+// 여기서 바로 정렬한다(생성물과 달리 서버 정렬·페이지네이션 아님).
+export type AssetSortField = "name" | "date" | "type";
+export type AssetSortDir = "asc" | "desc";
+
+// 유형 정렬 순서 — 폴더 없이 파일만 오지만(flattenFiles) 안전하게 dir 도 둔다. 이미지→영상→오디오.
+const ASSET_TYPE_RANK: Record<string, number> = { dir: 0, image: 1, video: 2, audio: 3 };
+
+function _byName(a: AssetNode, b: AssetNode): number {
+  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function compareAssetsBy(
+  a: AssetNode,
+  b: AssetNode,
+  field: AssetSortField,
+  dir: AssetSortDir,
+): number {
+  let r = 0;
+  if (field === "name") r = _byName(a, b);
+  else if (field === "type") {
+    r = (ASSET_TYPE_RANK[a.type] ?? 9) - (ASSET_TYPE_RANK[b.type] ?? 9);
+    if (r === 0) r = _byName(a, b); // 같은 유형끼리는 이름순
+  } else r = (a.mtime ?? 0) - (b.mtime ?? 0); // date
+  if (dir === "desc") r = -r;
+  if (r === 0) {
+    r = _byName(a, b); // 같은 값이면 이름 오름차순
+    if (r === 0) r = a.path < b.path ? -1 : a.path > b.path ? 1 : 0; // 이름도 동률이면 경로로 결정적 순서
+  }
+  return r;
+}
+
 export function hasUnreadAssetMeta(meta: Record<string, AssetMeta>): boolean {
   return Object.values(meta).some((m) => m?.has_unread);
 }
@@ -63,6 +95,8 @@ export function filterAssetFiles({
   grayOn,
   disabledAssets,
   groupByDate,
+  sortField,
+  sortDir,
 }: {
   tree: AssetNode[];
   dir: string;
@@ -77,6 +111,8 @@ export function filterAssetFiles({
   grayOn: boolean;
   disabledAssets: Set<string>;
   groupByDate: boolean;
+  sortField: AssetSortField;
+  sortDir: AssetSortDir;
 }): AssetNode[] {
   const q = query.trim();
   // 검색·필터는 현재 선택한 폴더(및 하위) 안에서만 — 폴더 미선택(루트)이면 프로젝트 전체.
@@ -107,7 +143,31 @@ export function filterAssetFiles({
 
   if (typeFilter) result = result.filter((f) => f.type === typeFilter);
   if (grayOn) result = result.filter((f) => !disabledAssets.has(f.path));
-  if (groupByDate) result = [...result].sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+
+  // 선택한 기준(이름/날짜/유형)·방향으로 항상 정렬(정렬 버튼). 예전엔 날짜구분 켰을 때만 mtime 내림차순이었다.
+  result = [...result].sort((a, b) => compareAssetsBy(a, b, sortField, sortDir));
+  if (groupByDate) {
+    // 날짜 구분이 켜지면 같은 날짜끼리 붙어야 섹션이 이어진다 → 일(day) 버킷으로 '안정' 재정렬(Array.sort
+    // 는 안정 정렬이라 같은 날 안에서는 위 정렬 순서가 그대로 유지된다). 그룹(날짜) 자체의 순서는
+    // 정렬기준이 '날짜'면 방향을 따르고, 이름/유형 정렬일 때는 최신 날짜 그룹을 위로 둔다.
+    // ★일 버킷은 '숫자'(로컬 자정 timestamp)로 비교한다 — 그룹 key 문자열('2026-10-1')은 0-padding 이
+    //  없어 문자열 비교 시 10월이 9월보다 앞서는 등 월/일 순서가 어긋난다. '날짜 없음'은 어느 방향이든 맨 끝.
+    const dayDir: AssetSortDir = sortField === "date" ? sortDir : "desc";
+    const NO_DATE = dayDir === "asc" ? Number.MAX_SAFE_INTEGER : Number.MIN_SAFE_INTEGER;
+    const dayNum = new Map<AssetNode, number>();
+    for (const f of result) {
+      const s = f.mtime ?? 0;
+      if (!s) dayNum.set(f, NO_DATE);
+      else {
+        const d = new Date(s * 1000);
+        dayNum.set(f, Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); // 로컬 날짜의 자정
+      }
+    }
+    result.sort((a, b) => {
+      const c = (dayNum.get(a) ?? 0) - (dayNum.get(b) ?? 0);
+      return dayDir === "asc" ? c : -c;
+    });
+  }
   return result;
 }
 

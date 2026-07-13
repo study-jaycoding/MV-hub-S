@@ -3,7 +3,8 @@ import { useT } from "../../lib/i18n";
 import { ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { TagFilterPanel } from "../common/TagFilterPanel";
 import { ViewControls } from "../common/ViewControls";
-import type { AssetTypeFilter } from "./assetsViewModel";
+import { AssetSortMenu } from "./AssetSortMenu";
+import type { AssetSortDir, AssetSortField, AssetTypeFilter } from "./assetsViewModel";
 
 type LayoutMode = "grid" | "list";
 
@@ -45,6 +46,10 @@ export function AssetsCrumbBar({
   groupByDate,
   onSelectLayout,
   onToggleGroupByDate,
+  sortField,
+  sortDir,
+  onSortField,
+  onSortDir,
 }: {
   tagPanelOpen: boolean;
   allTags: string[];
@@ -83,6 +88,10 @@ export function AssetsCrumbBar({
   groupByDate: boolean;
   onSelectLayout: (layout: LayoutMode) => void;
   onToggleGroupByDate: () => void;
+  sortField: AssetSortField;
+  sortDir: AssetSortDir;
+  onSortField: (field: AssetSortField) => void;
+  onSortDir: (dir: AssetSortDir) => void;
 }) {
   const t = useT();
   return (
@@ -192,6 +201,13 @@ export function AssetsCrumbBar({
           onSelectLayout={onSelectLayout}
           onToggleGroupByDate={onToggleGroupByDate}
           t={t}
+        />
+
+        <AssetSortMenu
+          field={sortField}
+          dir={sortDir}
+          onField={onSortField}
+          onDir={onSortDir}
         />
       </div>
     </div>

@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import type { AssetNode } from "../../types";
-import type { AssetTypeFilter } from "./assetsViewModel";
+import type { AssetSortDir, AssetSortField, AssetTypeFilter } from "./assetsViewModel";
 
 interface UseAssetSelectionPersistenceArgs {
   activeColors: Set<string>;
@@ -17,6 +17,8 @@ interface UseAssetSelectionPersistenceArgs {
   selected: Set<number>;
   setFocusIdx: Dispatch<SetStateAction<number>>;
   setSelected: Dispatch<SetStateAction<Set<number>>>;
+  sortDir: AssetSortDir;
+  sortField: AssetSortField;
   sourceOnly: boolean;
   typeFilter: AssetTypeFilter;
 }
@@ -33,13 +35,17 @@ export function useAssetSelectionPersistence({
   selected,
   setFocusIdx,
   setSelected,
+  sortDir,
+  sortField,
   sourceOnly,
   typeFilter,
 }: UseAssetSelectionPersistenceArgs) {
   useEffect(() => {
+    // 정렬(sortField/sortDir)이 바뀌면 files 순서가 재배치돼 인덱스 기반 focusIdx 가 엉뚱한 파일을
+    // 가리키므로, 날짜구분 토글과 동일하게 선택·포커스를 초기화한다(포커스 stale 방지).
     setSelected(new Set());
     setFocusIdx(-1);
-  }, [dir, project, query, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate, setFocusIdx, setSelected]);
+  }, [dir, project, query, activeColors, sourceOnly, commentOnly, activeTags, typeFilter, groupByDate, sortField, sortDir, setFocusIdx, setSelected]);
 
   const selFilesRef = useRef(files);
   useEffect(() => {

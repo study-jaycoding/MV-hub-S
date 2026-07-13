@@ -250,6 +250,30 @@
 .assets-tools .layout-toggle button:hover { color: var(--text); }
 .assets-tools .layout-toggle button.on { color: #fff; }
 
+/* 정렬 버튼(⇅) + 드롭다운 — 그리드 토글 옆. 이름/날짜/유형 · 오름/내림(윈도우 탐색기식) */
+.asset-sort { position: relative; display: inline-flex; }
+.asort-btn { font-size: 13px; }
+.asort-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 90;
+  min-width: 148px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--glass, #1b1d21); border: 1px solid var(--border2);
+  border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+  backdrop-filter: blur(20px) saturate(1.2);
+}
+/* '.assets-crumb button' 포괄 규칙(투명·accent·font inherit)을 덮도록 2-클래스 스코프로 명시 */
+.asort-menu .asort-item {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 9px; border-radius: 7px; border: none; background: transparent;
+  color: var(--text); font-size: 13px; font-weight: 600; text-align: left;
+  cursor: pointer; white-space: nowrap; text-decoration: none;
+}
+.asort-menu .asort-item:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+.asort-menu .asort-item.sel { color: var(--accent); font-weight: 800; }
+.asort-bullet {
+  width: 11px; display: inline-block; text-align: center; font-size: 9px; color: var(--accent);
+}
+.asort-sep { height: 1px; margin: 4px 3px; background: var(--border); }
+
 /* T 태그 패널(플로팅 — 헤더로 이동, 모서리로 크기조절) */
 .tag-panel {
   position: fixed; z-index: 80;

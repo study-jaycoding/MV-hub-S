@@ -24,6 +24,8 @@ import {
   assetDragItemsForPath,
   assetPreviewTarget,
   toggleAssetDateSelection,
+  type AssetSortDir,
+  type AssetSortField,
   type AssetTypeFilter,
 } from "./assets/assetsViewModel";
 import { ASSET_COLOR_BY_KEY } from "./common/ColorFilterDots";
@@ -97,6 +99,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const [fit, setFit] = useState<"cover" | "contain">(() =>
     LS.get("fit", "cover") === "contain" ? "contain" : "cover",
   );
+  // 정렬 기준·방향(정렬 버튼) — 기본은 날짜 내림차순(최신 먼저), 마지막 선택 복원.
+  const [sortField, setSortField] = useState<AssetSortField>(() => {
+    const v = LS.get("sortField", "date");
+    return v === "name" || v === "type" ? v : "date";
+  });
+  const [sortDir, setSortDir] = useState<AssetSortDir>(() =>
+    LS.get("sortDir", "desc") === "asc" ? "asc" : "desc",
+  );
   const metaRef = useRef(meta);
   metaRef.current = meta;
   const [tagEditPath, setTagEditPath] = useState<string | null>(null); // 인라인 태그 입력 중인 파일
@@ -118,7 +128,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     return old ? new Set<string>([old]) : current;
   });
   // 그리드/리스트 스크롤 위치(보던 위치) — 폴더·레이아웃·검색별로 복원. 스크롤 컨테이너는 gridRef 재사용.
-  const scrollKey = `${project}|${dir}|${layout}|${query}|${typeFilter ?? ""}`;
+  const scrollKey = `${project}|${dir}|${layout}|${query}|${typeFilter ?? ""}|${sortField}|${sortDir}`;
   const [tagPanelOpen, setTagPanelOpen] = useState(false);
   // 태그창 위치·크기를 마지막 상태로 기억(localStorage)
   const {
@@ -160,6 +170,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     query,
     scale,
     setDisabledAssets,
+    sortDir,
+    sortField,
     sourceOnly,
     store: LS,
     typeFilter,
@@ -187,6 +199,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       groupByDate,
       meta,
       query,
+      sortDir,
+      sortField,
       sourceOnly,
       tree,
       typeFilter,
@@ -226,6 +240,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     selected,
     setFocusIdx,
     setSelected,
+    sortDir,
+    sortField,
     sourceOnly,
     typeFilter,
   });
@@ -690,6 +706,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             groupByDate={groupByDate}
             onSelectLayout={setLayout}
             onToggleGroupByDate={() => setGroupByDate((v) => !v)}
+            sortField={sortField}
+            sortDir={sortDir}
+            onSortField={setSortField}
+            onSortDir={setSortDir}
           />
 
           {commentPath && (

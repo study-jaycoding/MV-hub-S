@@ -3,7 +3,7 @@ import type { MutableRefObject } from "react";
 import { DISABLED_EVENT, loadDisabledAssets } from "../../lib/deactivated";
 import type { Store } from "../../lib/storage";
 import { useCustomEvent } from "../../lib/useCustomEvent";
-import type { AssetTypeFilter } from "./assetsViewModel";
+import type { AssetSortDir, AssetSortField, AssetTypeFilter } from "./assetsViewModel";
 
 interface UseAssetViewPersistenceArgs {
   activeColors: Set<string>;
@@ -20,6 +20,8 @@ interface UseAssetViewPersistenceArgs {
   query: string;
   scale: number;
   setDisabledAssets: (assets: Set<string>) => void;
+  sortDir: AssetSortDir;
+  sortField: AssetSortField;
   sourceOnly: boolean;
   store: Store;
   typeFilter: AssetTypeFilter;
@@ -40,6 +42,8 @@ export function useAssetViewPersistence({
   query,
   scale,
   setDisabledAssets,
+  sortDir,
+  sortField,
   sourceOnly,
   store,
   typeFilter,
@@ -64,4 +68,6 @@ export function useAssetViewPersistence({
   useEffect(() => store.set("sourceOnly", sourceOnly ? "1" : "0"), [sourceOnly, store]);
   useEffect(() => store.set("commentOnly", commentOnly ? "1" : "0"), [commentOnly, store]);
   useEffect(() => store.setSet("activeTags", activeTags), [activeTags, store]);
+  useEffect(() => store.set("sortField", sortField), [sortField, store]);
+  useEffect(() => store.set("sortDir", sortDir), [sortDir, store]);
 }
