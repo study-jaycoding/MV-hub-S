@@ -23,8 +23,11 @@ export type AssetSortDir = "asc" | "desc";
 // 유형 정렬 순서 — 폴더 없이 파일만 오지만(flattenFiles) 안전하게 dir 도 둔다. 이미지→영상→오디오.
 const ASSET_TYPE_RANK: Record<string, number> = { dir: 0, image: 1, video: 2, audio: 3 };
 
+// 이름 비교기 — 큰 목록에서 정렬 호출마다 localeCompare 옵션을 새로 파싱하지 않도록 Collator 1개 재사용.
+const _nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 function _byName(a: AssetNode, b: AssetNode): number {
-  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  return _nameCollator.compare(a.name, b.name);
 }
 
 function compareAssetsBy(

@@ -38,16 +38,16 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   // 제거). 원본 화질 그대로 보여주되(다운로드는 필요할 때만), 디스크엔 안 쌓이고 브라우저 임시 캐시만 쓴다.
   useEffect(() => {
     if (!items || items.length < 2) return;
-    const imgs: HTMLImageElement[] = [];
     for (const j of [idx + 1, idx - 1, idx + 2, idx - 2]) {
       const it = items[j];
       if (it && it.type === "image" && it.url) {
         const im = new Image();
+        im.fetchPriority = "low"; // 지금 보는 이미지보다 낮은 우선순위 — 현재 표시와 대역폭 경쟁 방지
         im.src = it.url; // 원본 URL — 실제 표시와 같은 것이라 그때 캐시 히트로 즉시 뜬다
-        imgs.push(im);
       }
     }
-    return () => imgs.forEach((im) => (im.src = "")); // 넘기면 필요없어진 프리페치 중단
+    // cleanup 없음 — img.src="" 는 진행 중 요청을 못 멈추고 오히려 문서 URL 재요청을 유발할 수 있어 뺀다.
+    // 프리페치는 곧 볼 이미지라 완료돼도 낭비가 아니다(브라우저 캐시로 재사용). Image 객체는 곧 GC 된다.
   }, [items, idx]);
 
   useEffect(() => {

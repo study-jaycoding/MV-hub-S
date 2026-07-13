@@ -216,6 +216,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollKey, files.length]);
 
+  // scrollKey 가 바뀌면(폴더·레이아웃·검색·정렬 변경) 아직 안 터진 스크롤 저장 타이머를 취소한다.
+  // 안 그러면 옛 클로저 타이머가 150ms 뒤 '옛 key + 변경 후 위치'를 저장해 복원이 어긋난다.
+  useEffect(() => {
+    return () => {
+      if (scrollSaveTimer.current) {
+        clearTimeout(scrollSaveTimer.current);
+        scrollSaveTimer.current = null;
+      }
+    };
+  }, [scrollKey]);
+
   // ── 선택 시스템(클릭/마퀴/키보드) ──
   const gridRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
