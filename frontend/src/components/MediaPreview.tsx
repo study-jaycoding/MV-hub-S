@@ -34,6 +34,22 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   }, [target]);
   const cur = items && items[idx] ? items[idx] : target;
 
+  // 이웃(앞뒤) 이미지를 미리 브라우저 캐시에 받아둔다 → ←/→ 로 넘길 때 이미 받아둬서 즉시 표시(딜레이
+  // 제거). 원본 화질 그대로 보여주되(다운로드는 필요할 때만), 디스크엔 안 쌓이고 브라우저 임시 캐시만 쓴다.
+  useEffect(() => {
+    if (!items || items.length < 2) return;
+    const imgs: HTMLImageElement[] = [];
+    for (const j of [idx + 1, idx - 1, idx + 2, idx - 2]) {
+      const it = items[j];
+      if (it && it.type === "image" && it.url) {
+        const im = new Image();
+        im.src = it.url; // 원본 URL — 실제 표시와 같은 것이라 그때 캐시 히트로 즉시 뜬다
+        imgs.push(im);
+      }
+    }
+    return () => imgs.forEach((im) => (im.src = "")); // 넘기면 필요없어진 프리페치 중단
+  }, [items, idx]);
+
   useEffect(() => {
     // 크게 보기는 정보팝업/그리드 위에 떠 있으므로 키를 캡처 단계에서 먼저 가로챈다.
     // Esc → 자기만 닫기(stopPropagation). ←/→ → 목록 내 이동(뒤 그리드 포커스 이동과 충돌 방지).
