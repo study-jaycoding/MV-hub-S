@@ -496,8 +496,9 @@
 .info-head:active { cursor: grabbing; }
 .info-title { font-weight: 700; font-size: 13px; }
 .preview-count { font-weight: 600; font-size: 12px; opacity: 0.6; }
-/* 미리보기 헤더의 '구성에서 보기' — 제목 옆 오른쪽 끝(닫기 버튼 앞)에 배치 */
-.preview-board-btn { margin-left: auto; white-space: nowrap; }
+/* 미리보기 헤더 우측 버튼 그룹 — [다운로드][구성에서 보기] 를 한 덩어리로 우측 정렬(닫기 앞) */
+.preview-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.preview-head-actions .lin-board-btn { margin-left: 0; white-space: nowrap; }
 .info-board-btn {
   margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
   border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12));

@@ -2,6 +2,7 @@
 // 새 브라우저 탭을 열지 않고 이 창에서 보여주고, 영상은 재생한다.
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
+import { downloadOne } from "../lib/download";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
 import type { PreviewTarget } from "../types";
 
@@ -9,6 +10,16 @@ interface Props {
   target: PreviewTarget;
   onClose: () => void;
   onOpenInBoard?: (genId: string) => void; // 결과물이면 '구성에서 보기'(구성탭 히스토리 트리)
+}
+
+// 크게 보기에서 받는 파일명 — 에셋은 이름에 이미 확장자가 있으니 그대로 쓰고, 생성물은 프롬프트
+// 조각(확장자 없음)이라 URL 경로(쿼리 제거) 또는 타입 기본값으로 확장자를 붙인다. 경로 금지문자는 _.
+function previewDownloadName(url: string, name: string, type: string): string {
+  const base = (name || "download").replace(/[\\/:*?"<>|]+/g, "_").trim() || "download";
+  if (/\.[a-z0-9]{2,4}$/i.test(base)) return base; // 에셋 파일명 — 확장자 있음
+  const m = url.split("?")[0].match(/\.([a-z0-9]{2,4})$/i);
+  const ext = m ? m[1] : type === "video" ? "mp4" : type === "audio" ? "mp3" : "png";
+  return `${base}.${ext}`;
 }
 
 export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
@@ -75,15 +86,24 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
               </span>
             )}
           </span>
-          {onOpenInBoard && cur.genId && (
+          <div className="preview-head-actions">
             <button
-              className="lin-board-btn preview-board-btn"
-              title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
-              onClick={() => onOpenInBoard(cur.genId!)}
+              className="lin-board-btn preview-dl-btn"
+              title="원본 다운로드"
+              onClick={() => downloadOne(cur.url, previewDownloadName(cur.url, cur.name, cur.type))}
             >
-              ⧉ 구성에서 보기
+              ⤓ 다운로드
             </button>
-          )}
+            {onOpenInBoard && cur.genId && (
+              <button
+                className="lin-board-btn preview-board-btn"
+                title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
+                onClick={() => onOpenInBoard(cur.genId!)}
+              >
+                ⧉ 구성에서 보기
+              </button>
+            )}
+          </div>
           <button className="assets-x" onClick={onClose} title="닫기">
             ✕
           </button>
