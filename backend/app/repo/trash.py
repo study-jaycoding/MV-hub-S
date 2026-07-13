@@ -34,7 +34,7 @@ _IS_PG = DB_BACKEND == "postgres"
 _TRASHED_DDL = (
     "CREATE TABLE IF NOT EXISTS trash.trashed("
     "id TEXT PRIMARY KEY, trashed_at TEXT NOT NULL, project_id TEXT, "
-    "creator_uid TEXT, status TEXT, prompt TEXT, source_name TEXT, payload TEXT NOT NULL)"
+    "creator_uid TEXT, status TEXT, prompt TEXT, source_name TEXT, job_id TEXT, payload TEXT NOT NULL)"
 )
 
 
@@ -48,14 +48,47 @@ def _ensure_trash_schema(conn) -> None:
     if _IS_PG:
         conn.execute("CREATE SCHEMA IF NOT EXISTS trash")
         conn.execute(_TRASHED_DDL)
+        _ensure_trash_job_id_col(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trashed_at ON trash.trashed(trashed_at DESC, id DESC)"
         )
     else:
         conn.execute(_TRASHED_DDL)
+        _ensure_trash_job_id_col(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS trash.idx_trashed_at ON trashed(trashed_at DESC, id DESC)"
         )
+
+
+def _ensure_trash_job_id_col(conn) -> None:
+    """구버전 휴지통 DB 에 job_id 컬럼 보강 + payload 에서 1회 백필(멱등).
+    job_id 는 동기화(apply_synced_jobs)가 '삭제된 잡'을 되살리지 않도록 거르는 키다 — 없으면
+    지운 생성물이 CLI 100-window 에 남아 있는 한 다음 동기화에 그대로 재등장한다."""
+    if _IS_PG:  # 신규 PG 는 DDL 로 이미 보유. 레거시 PG 만 add(중복이면 무시).
+        try:
+            conn.execute("ALTER TABLE trash.trashed ADD COLUMN job_id TEXT")
+        except Exception:  # noqa: BLE001 — 이미 존재(정상)
+            pass
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA trash.table_info(trashed)")}
+    if "job_id" not in cols:
+        conn.execute("ALTER TABLE trash.trashed ADD COLUMN job_id TEXT")
+        # 레거시 행 백필 — payload.generation.job_id 를 컬럼으로(json_extract=sqlite JSON1 기본 탑재).
+        conn.execute(
+            "UPDATE trash.trashed SET job_id = json_extract(payload, '$.generation.job_id') "
+            "WHERE job_id IS NULL"
+        )
+
+
+def trashed_job_ids() -> set[str]:
+    """휴지통에 있는 항목들의 힉스필드 job_id 집합. 동기화 업서트가 이 잡들을 건너뛰어(_upsert_synced),
+    삭제한 생성물이 CLI 목록에 남아 있어도 다음 동기화에 되살아나지 않게 한다. 복원하면 휴지통에서
+    빠지므로 자동으로 다시 동기화 대상이 된다."""
+    with _with_trash() as conn:
+        rows = conn.execute(
+            "SELECT job_id FROM trash.trashed WHERE job_id IS NOT NULL AND job_id <> ''"
+        ).fetchall()
+    return {r["job_id"] for r in rows}
 
 
 @contextmanager
@@ -150,8 +183,8 @@ def move_to_trash(gen_id: str) -> bool:
             tomb = _telemetry_snapshot(conn, gen_id, gen)
         conn.execute(
             "INSERT OR REPLACE INTO trash.trashed"
-            "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, payload) "
-            "VALUES(?, datetime('now'), ?, ?, ?, ?, ?, ?)",
+            "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, job_id, payload) "
+            "VALUES(?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)",
             (
                 gen_id,
                 gen["project_id"],
@@ -159,6 +192,7 @@ def move_to_trash(gen_id: str) -> bool:
                 gen["status"],
                 gen["prompt"],
                 gen["source_name"],
+                gen["job_id"],  # 동기화가 이 잡을 되살리지 않도록 거르는 키(삭제 표식)
                 json.dumps(payload, ensure_ascii=False),
             ),
         )

@@ -78,9 +78,15 @@ def _link_reference(
 
 
 # ── 동기화 업서트 (CLI → 로컬) ───────────────────────────────────────────
-def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
+def _upsert_synced(
+    conn, parsed: dict[str, Any], worker_id: str, tombstoned: Optional[set[str]] = None
+) -> str:
     """업서트 본체 — 주어진 커넥션에서 실행(트랜잭션 제어는 호출측). apply_synced_jobs 가
-    한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다."""
+    한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다.
+
+    tombstoned: 휴지통에 든 잡 id 집합. 여기 포함된 잡은 재적재하지 않는다 — 없으면 사용자가 지운
+    생성물이 CLI 목록에 남아 있는 한 다음 동기화마다 새 행으로 되살아난다(삭제 후 재등장 버그).
+    트랜잭션 안에서는 휴지통 DB 를 ATTACH 조회할 수 없어(sqlite 제약), 호출측이 미리 넘겨준다."""
     g = parsed["generation"]
     job_id = g["id"]
     if not job_id:
@@ -131,6 +137,11 @@ def _upsert_synced(conn, parsed: dict[str, Any], worker_id: str) -> str:
                 ),
             )
         else:
+            # 삭제(휴지통)된 잡은 새 행으로 되살리지 않는다 — 여기(existing 없음=신규 INSERT 직전)에서만
+            # 거른다. 위 existing 분기(id/job_id/URL 매칭된 live 행)는 정상 갱신되게 둔다(같은 job_id 가
+            # 메인에 살아있는데도 갱신이 막히던 문제 방지 — 코덱스 리뷰 #2). 없으면 삭제물이 재등장한다.
+            if tombstoned and job_id in tombstoned:
+                return "unchanged"
             # ★Phase 0b: 동기화 행도 id 는 uuid, job_id 는 속성으로만(더는 id==job_id 아님). 이로써
             # 새 데이터의 id 이중성이 사라진다 — 식별은 항상 uuid, job_id 는 동기화 멱등 키. 멱등 매칭은
             # 위 existing 조회의 `job_id=?` 가, 번들 import 의 계보·코멘트는 _find_id_by_job(job_id)→uuid
@@ -282,11 +293,14 @@ def upsert_synced_generation(parsed: dict[str, Any], worker_id: str) -> str:
     반환: 'inserted'(신규) | 'updated'(상태 변동) | 'unchanged'. job id 를 PK 로 써서
     재동기는 멱등. 기존 사용자 메타(태그/컬러/display_prompt/명명 레퍼런스)는 보존한다.
     여러 건을 한 번에 처리할 땐 apply_synced_jobs(한 트랜잭션·fsync 1회)를 쓴다."""
+    from . import trash  # 지연 import(순환 회피)
+
+    tombstoned = trash.trashed_job_ids()  # 삭제(휴지통)된 잡 재적재 방지 — 트랜잭션 밖에서 조회
     with get_connection() as conn:
         # generation + asset 캐시 + reference 링크를 한 트랜잭션으로 — 중간 실패 시 반쪽 데이터 방지.
         conn.execute("BEGIN IMMEDIATE")
         try:
-            result = _upsert_synced(conn, parsed, worker_id)
+            result = _upsert_synced(conn, parsed, worker_id, tombstoned)
             conn.execute("COMMIT")
             return result
         except Exception:
@@ -300,6 +314,10 @@ def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, i
     이전엔 잡마다 커넥션을 새로 열고(autocommit) execute 마다 fsync 가 일어나, 100건 동기화가
     수백 fsync + 커넥션 100회로 버스트를 만들었다. 묶으면 fsync 1회로 줄어 경합이 급감한다.
     ⚠️ 동기 블로킹 — 호출측(syncer.sync_now)이 asyncio.to_thread 로 워커 스레드에서 돌린다."""
+    from . import trash  # 지연 import(순환 회피)
+
+    # 삭제(휴지통)된 잡은 재적재하지 않도록 미리 조회 — 아래 BEGIN 트랜잭션 밖에서(휴지통 DB ATTACH 제약).
+    tombstoned = trash.trashed_job_ids()
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "errors": 0}
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")  # 전체 묶음을 1회 커밋(fsync 1회) + 즉시 쓰기락
@@ -308,7 +326,7 @@ def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, i
                 # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
                 conn.execute("SAVEPOINT j")
                 try:
-                    counts[_upsert_synced(conn, parsed, worker_id)] += 1
+                    counts[_upsert_synced(conn, parsed, worker_id, tombstoned)] += 1
                 except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
                     conn.execute("ROLLBACK TO j")
                     counts["errors"] += 1
