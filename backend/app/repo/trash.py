@@ -52,12 +52,15 @@ def _ensure_trash_schema(conn) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trashed_at ON trash.trashed(trashed_at DESC, id DESC)"
         )
+        # job_id 인덱스 — tombstoned_among 의 IN 조회와 백필 가드의 IS NULL 스캔을 전체스캔 없이(휴지통 커도 빠르게).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trashed_job ON trash.trashed(job_id)")
     else:
         conn.execute(_TRASHED_DDL)
         _ensure_trash_job_id_col(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS trash.idx_trashed_at ON trashed(trashed_at DESC, id DESC)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS trash.idx_trashed_job ON trashed(job_id)")
 
 
 def _ensure_trash_job_id_col(conn) -> None:
@@ -73,21 +76,52 @@ def _ensure_trash_job_id_col(conn) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA trash.table_info(trashed)")}
     if "job_id" not in cols:
         conn.execute("ALTER TABLE trash.trashed ADD COLUMN job_id TEXT")
-        # 레거시 행 백필 — payload.generation.job_id 를 컬럼으로(json_extract=sqlite JSON1 기본 탑재).
+    # 백필: 'payload 에서 job_id 를 뽑을 수 있는데 컬럼은 NULL' 인 행이 있을 때만 UPDATE(값싼 read 선확인).
+    # ★조건에 json_extract IS NOT NULL 을 넣는 이유 — local-only 삭제물은 job_id 가 원래 NULL(payload 도
+    #   NULL)이라, 단순 'job_id IS NULL' 가드면 매 호출 UPDATE 가 반복돼(수렴 안 함) 쓰기락 경합을 만든다.
+    #   추출 가능한 legacy 행만 대상으로 하면 그 행을 다 채운 뒤엔 대상 0건이 되어 수렴한다. 재시도 안전.
+    _NULL_BACKFILL = (
+        "job_id IS NULL AND json_extract(payload, '$.generation.job_id') IS NOT NULL"
+    )
+    if conn.execute(f"SELECT 1 FROM trash.trashed WHERE {_NULL_BACKFILL} LIMIT 1").fetchone():
         conn.execute(
-            "UPDATE trash.trashed SET job_id = json_extract(payload, '$.generation.job_id') "
-            "WHERE job_id IS NULL"
+            f"UPDATE trash.trashed SET job_id = json_extract(payload, '$.generation.job_id') "
+            f"WHERE {_NULL_BACKFILL}"
         )
 
 
-def trashed_job_ids() -> set[str]:
-    """휴지통에 있는 항목들의 힉스필드 job_id 집합. 동기화 업서트가 이 잡들을 건너뛰어(_upsert_synced),
-    삭제한 생성물이 CLI 목록에 남아 있어도 다음 동기화에 되살아나지 않게 한다. 복원하면 휴지통에서
-    빠지므로 자동으로 다시 동기화 대상이 된다."""
-    with _with_trash() as conn:
-        rows = conn.execute(
-            "SELECT job_id FROM trash.trashed WHERE job_id IS NOT NULL AND job_id <> ''"
-        ).fetchall()
+def attach_trash(conn) -> None:
+    """주어진 커넥션에 휴지통 DB 를 ATTACH + 스키마 보장. 반드시 트랜잭션 '밖'에서 호출(sqlite ATTACH 제약).
+    호출측이 BEGIN IMMEDIATE 를 열고 그 안에서 tombstoned_among 으로 최신 삭제상태를 조회한 뒤,
+    끝나면 detach_trash 로 뗀다. (동기화가 삭제-경합에서도 방금 삭제된 잡을 보게 하는 경로)."""
+    if not _IS_PG:
+        conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
+    _ensure_trash_schema(conn)
+
+
+def detach_trash(conn) -> None:
+    """attach_trash 로 붙인 휴지통 DB 를 뗀다(트랜잭션 종료 후, best-effort).
+    안 붙었거나 이미 닫힌 커넥션이면 무해하므로 예외를 삼킨다(상위에서 풀 커넥션을 폐기)."""
+    if _IS_PG:
+        return
+    try:
+        conn.execute("DETACH DATABASE trash")
+    except Exception:  # noqa: BLE001 — 미부착/닫힘 등
+        pass
+
+
+def tombstoned_among(conn, job_ids) -> set[str]:
+    """job_ids 중 휴지통에 있는(=삭제된) job_id 만. conn 은 attach_trash 로 휴지통이 붙어 있어야 한다.
+    ★쓰기 트랜잭션(BEGIN IMMEDIATE) '안'에서 호출하면 쓰기락 획득 이후의 최신 커밋된 삭제까지 본다
+    → 삭제↔동기화 경합에서 방금 삭제된 잡을 놓치지 않는다(재등장 차단). 들어온 잡만 IN 조회라
+    휴지통이 커져도 스캔 비용이 늘지 않는다."""
+    ids = [j for j in (job_ids or []) if j]
+    if not ids:
+        return set()
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT job_id FROM trash.trashed WHERE job_id IN ({ph})", ids
+    ).fetchall()
     return {r["job_id"] for r in rows}
 
 

@@ -295,17 +295,23 @@ def upsert_synced_generation(parsed: dict[str, Any], worker_id: str) -> str:
     여러 건을 한 번에 처리할 땐 apply_synced_jobs(한 트랜잭션·fsync 1회)를 쓴다."""
     from . import trash  # 지연 import(순환 회피)
 
-    tombstoned = trash.trashed_job_ids()  # 삭제(휴지통)된 잡 재적재 방지 — 트랜잭션 밖에서 조회
+    job_id = (parsed.get("generation") or {}).get("id")
     with get_connection() as conn:
-        # generation + asset 캐시 + reference 링크를 한 트랜잭션으로 — 중간 실패 시 반쪽 데이터 방지.
-        conn.execute("BEGIN IMMEDIATE")
+        trash.attach_trash(conn)  # 휴지통 ATTACH(트랜잭션 밖)
         try:
-            result = _upsert_synced(conn, parsed, worker_id, tombstoned)
-            conn.execute("COMMIT")
-            return result
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+            # generation + asset 캐시 + reference 링크를 한 트랜잭션으로 — 중간 실패 시 반쪽 데이터 방지.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 쓰기락 획득 후 tombstone 조회(삭제 경합 차단) — apply_synced_jobs 와 동일 원리.
+                tombstoned = trash.tombstoned_among(conn, [job_id] if job_id else [])
+                result = _upsert_synced(conn, parsed, worker_id, tombstoned)
+                conn.execute("COMMIT")
+                return result
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            trash.detach_trash(conn)
 
 
 def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, int]:
@@ -316,37 +322,42 @@ def apply_synced_jobs(jobs: list[dict[str, Any]], worker_id: str) -> dict[str, i
     ⚠️ 동기 블로킹 — 호출측(syncer.sync_now)이 asyncio.to_thread 로 워커 스레드에서 돌린다."""
     from . import trash  # 지연 import(순환 회피)
 
-    # 삭제(휴지통)된 잡은 재적재하지 않도록 미리 조회 — 아래 BEGIN 트랜잭션 밖에서(휴지통 DB ATTACH 제약).
-    tombstoned = trash.trashed_job_ids()
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "errors": 0}
+    job_ids = [
+        p["generation"]["id"]
+        for p in jobs
+        if p.get("generation") and p["generation"].get("id")
+    ]
     with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")  # 전체 묶음을 1회 커밋(fsync 1회) + 즉시 쓰기락
+        trash.attach_trash(conn)  # 휴지통 ATTACH(트랜잭션 밖) — 아래 BEGIN 안에서 최신 삭제상태 조회
         try:
-            for parsed in jobs:
-                # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
-                conn.execute("SAVEPOINT j")
-                try:
-                    counts[_upsert_synced(conn, parsed, worker_id, tombstoned)] += 1
-                except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
-                    conn.execute("ROLLBACK TO j")
-                    counts["errors"] += 1
-                    print(f"[sync] 잡 1건 건너뜀: {e}")
-                finally:
-                    conn.execute("RELEASE j")
-            ids = [
-                p["generation"]["id"]
-                for p in jobs
-                if p.get("generation") and p["generation"].get("id")
-            ]
-            if ids:
-                ph = ",".join("?" * len(ids))
-                conn.execute(
-                    f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", ids
-                )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+            conn.execute("BEGIN IMMEDIATE")  # 전체 묶음을 1회 커밋(fsync 1회) + 즉시 쓰기락
+            try:
+                # ★쓰기락 획득 '후' tombstone 조회 → 삭제 직후 동기화 경합에서도 방금 삭제된 잡을 본다
+                #  (재등장 차단). 들어온 잡만 IN 조회라 휴지통이 커져도 스캔 비용이 안 늘어난다.
+                tombstoned = trash.tombstoned_among(conn, job_ids)
+                for parsed in jobs:
+                    # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
+                    conn.execute("SAVEPOINT j")
+                    try:
+                        counts[_upsert_synced(conn, parsed, worker_id, tombstoned)] += 1
+                    except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
+                        conn.execute("ROLLBACK TO j")
+                        counts["errors"] += 1
+                        print(f"[sync] 잡 1건 건너뜀: {e}")
+                    finally:
+                        conn.execute("RELEASE j")
+                if job_ids:
+                    ph = ",".join("?" * len(job_ids))
+                    conn.execute(
+                        f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", job_ids
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            trash.detach_trash(conn)  # 성공/실패 무관 반드시 뗀다(풀 커넥션 재사용 대비)
     return counts
 
 
