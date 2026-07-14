@@ -1,6 +1,7 @@
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
   emptySeedanceTokenRoles,
+  normalizeMediaRefTokensBasic,
   normalizeSeedancePromptTokens,
   seedanceAudioIndexMap,
   seedanceOmniImageIndexMap,
@@ -8,6 +9,7 @@ import {
   seedanceTokenRoles,
   seedanceTrayRole,
   seedanceVideoIndexMap,
+  usesMediaRefTokens,
   usesSeedanceMediaRefs,
   validateSeedanceTokenRoles,
   type SeedanceRefType,
@@ -94,12 +96,17 @@ export function buildSpotlightCreateBody({
   const promptText = seedanceMode
     ? seedancePromptText(parts, trayOmniImageCount, imageIndexMap, trayVideoCount, videoIndexMap, trayAudioCount, audioIndexMap) ||
       normalizeSeedancePromptTokens(text, imageIndexMap, videoIndexMap, audioIndexMap)
-    : text;
+    : usesMediaRefTokens(model)
+      ? normalizeMediaRefTokensBasic(text) // 이미지 모델 등: 알약(@imageN)을 CLI 용 <<<imageN>>> 원형으로(바이트 동일)
+      : text;
+  // ★CLI 프롬프트는 반드시 한 줄 — 프롬프트에 줄바꿈이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여
+  //  '엉뚱한 결과물'이 나온다(실측). 줄바꿈은 display_prompt 에만 남긴다. seedance/비-seedance 두 경로 모두 커버.
+  const cliPrompt = (promptText || "").replace(/[^\S\n]*\n[^\S\n]*/g, " ").replace(/[^\S\n]+/g, " ").trim();
 
   return {
     error: null,
     body: {
-      prompt: promptText || "(no text)",
+      prompt: cliPrompt || "(no text)",
       display_prompt: displayPrompt || undefined,
       model,
       params: optionValues,

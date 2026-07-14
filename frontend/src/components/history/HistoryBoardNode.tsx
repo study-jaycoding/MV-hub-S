@@ -93,7 +93,10 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
       title={`${generation.prompt.slice(0, 80)}\n클릭=선택 · 드래그=위치 이동(다중선택 시 함께) · 배경 드래그=복수 선택 · 더블클릭=미리보기 · 휠클릭=정보 · d=비활성 · l=자동 정렬`}
       onMouseEnter={(e) => {
         const video = e.currentTarget.querySelector("video") as HTMLVideoElement | null;
-        if (video) video.play().catch(() => {});
+        if (video) {
+          video.muted = true; // React <video muted> 반영 버그 → 재생 직전 무음 강제(썸네일 호버 무음)
+          video.play().catch(() => {});
+        }
       }}
       onMouseLeave={(e) => {
         const video = e.currentTarget.querySelector("video") as HTMLVideoElement | null;

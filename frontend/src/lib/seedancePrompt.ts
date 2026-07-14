@@ -4,6 +4,20 @@ export function usesSeedanceMediaRefs(model: string): boolean {
   return model.startsWith("seedance");
 }
 
+// 레퍼런스 토큰(<<<imageN>>> · @imageN)을 쓰는 모델인가 — 현재 이미지·영상 모델 전부 레퍼런스를 쓴다.
+// 이 게이트는 '알약 시각화·@피커·클릭편집·자동 알약화·기본 정규화'를 켠다(이미지 모델도 포함).
+// seedance 전용 로직(시작/끝 프레임·검증·역할 배지·번호 remapping)은 usesSeedanceMediaRefs 로 별도 게이트.
+// 알약은 제출 시 <<<imageN>>> 원형으로 정규화돼 CLI 로 나가므로 어느 모델이든 왕복이 바이트 단위로 안전하다.
+export function usesMediaRefTokens(model: string): boolean {
+  return !!model;
+}
+
+// 이 텍스트가 레퍼런스 토큰(<<<imageN>>> · @imageN)을 담고 있나 — 재사용 시 '트레이-토큰 방식' 생성물을
+// 가려내는 데 쓴다(토큰이 있으면 레퍼런스를 트레이로, 없으면 인라인 소스칩으로 복원).
+export function hasMediaRefTokens(text: string): boolean {
+  return new RegExp(SEEDANCE_TOKEN_SRC, "i").test(text || "");
+}
+
 export type SeedanceRefType = ChipRef["type"] | "audio";
 export type SeedanceRefLike = { type: string };
 export type SeedanceTokenKind = "image" | "start" | "end" | "video" | "audio";
@@ -38,13 +52,38 @@ function addImageRole(roles: SeedanceTokenRoles, idx: number, kind: SeedanceImag
   roles.image.set(idx, set);
 }
 
+// 트레이 레퍼런스 토큰 — 두 문법 + 선택 언더바를 모두 인식한다:
+//   · <<<image1>>> / <<<image_1>>> (공백 허용)   · @image1 / @image_1 (붙여쓰기)
+// 그룹1/2 = <<<>>> 형태(kind, num), 그룹3/4 = @ 형태(kind, num). 둘 다 제출 시 CLI용 <<<>>> 로 정규화된다.
+// @ 형태는 앞뒤 경계를 둔다: 앞이 영문/숫자/밑줄이면 토큰 아님(예: foo@image1 은 이메일 등으로 오인 방지),
+// 뒤에 영문/숫자/밑줄이 붙어도 토큰 아님(@image1x, @image1_ 거절).
+export const SEEDANCE_TOKEN_SRC =
+  "<<<\\s*(simage|eimage|image|video|vedio|audio)\\s*_?\\s*(\\d+)\\s*>>>" +
+  "|(?<![A-Za-z0-9_])@(simage|eimage|image|video|vedio|audio)_?(\\d+)(?![A-Za-z0-9_])";
+
+// 토큰 원종류 → 색/아이콘용 분류(이미지/시작/끝/비디오/오디오).
+export function seedanceAtTokenKind(raw: string): "image" | "start" | "end" | "video" | "audio" {
+  const k = raw.toLowerCase();
+  if (k === "simage") return "start";
+  if (k === "eimage") return "end";
+  if (k === "video" || k === "vedio") return "video";
+  if (k === "audio") return "audio";
+  return "image";
+}
+
+// 알약 표시/삽입용 정규 토큰(@kindN) — <<<>>>·언더바·vedio 오타를 @image1 형태로 통일(둘 다 like @).
+export function seedanceCanonToken(raw: string, n: string | number): string {
+  const k = raw.toLowerCase();
+  return "@" + (k === "vedio" ? "video" : k) + n;
+}
+
 export function seedanceTokenRoles(text: string): SeedanceTokenRoles {
   const roles = emptySeedanceTokenRoles();
-  const re = /<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi;
+  const re = new RegExp(SEEDANCE_TOKEN_SRC, "gi");
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
-    const rawKind = m[1].toLowerCase();
-    const idx = Number(m[2]);
+    const rawKind = (m[1] || m[3]).toLowerCase();
+    const idx = Number(m[2] || m[4]);
     if (!Number.isFinite(idx) || idx < 1) continue;
     if (rawKind === "simage") addImageRole(roles, idx, "start");
     else if (rawKind === "eimage") addImageRole(roles, idx, "end");
@@ -64,6 +103,15 @@ export function seedanceTrayTypeIndex(trayRefs: SeedanceRefLike[], index: number
     if (seedanceRefType(trayRefs[i]) === targetType) n += 1;
   }
   return n;
+}
+
+// 트레이 항목을 가리키는 @ 토큰 문자열(@image1 / @video1 / @audio1) — @ 피커에서 항목을 고르면 이걸
+// 프롬프트에 넣는다(<<<imageN>>> 과 동일하게 해석됨). 번호 = 뱃지에 보이는 타입별 순번.
+export function seedanceTrayToken(trayRefs: SeedanceRefLike[], index: number): string {
+  const type = seedanceRefType(trayRefs[index]);
+  const n = seedanceTrayTypeIndex(trayRefs, index);
+  const kind = type === "video" ? "video" : type === "audio" ? "audio" : "image";
+  return `@${kind}${n}`;
 }
 
 // 이미지 그룹 내 순번(1-based) — simage/eimage/image 토큰의 N 과 매칭하는 좌표.
@@ -183,14 +231,28 @@ export function normalizeSeedancePromptTokens(
   videoIndexMap?: Map<number, number>,
   audioIndexMap?: Map<number, number>,
 ): string {
-  return text.replace(/<<<\s*(simage|eimage|image|video|vedio|audio)\s*(\d+)\s*>>>/gi, (_m, rawKind, n) => {
-    const kind = String(rawKind).toLowerCase();
+  return text.replace(new RegExp(SEEDANCE_TOKEN_SRC, "gi"), (_m, k1, n1, k2, n2) => {
+    const kind = String(k1 || k2).toLowerCase();
+    const n = n1 || n2; // <<<>>> 또는 @ 어느 형태든 같은 CLI 토큰(<<<>>>)으로 출력
     const idx = Number(n);
     if (kind === "simage") return "첫 프레임";
     if (kind === "eimage") return "끝 프레임";
     if (kind === "image") return `<<<image${imageIndexMap?.get(idx) || n}>>>`;
     if (kind === "video" || kind === "vedio") return `<<<video${videoIndexMap?.get(idx) || n}>>>`;
     if (kind === "audio") return `<<<audio${audioIndexMap?.get(idx) || n}>>>`;
+    return `<<<${kind}${n}>>>`;
+  });
+}
+
+// 비-seedance 모델용 단순 정규화 — @imageN·<<<image_N>>> 등을 CLI 용 <<<kindN>>> 원형으로만 바꾼다.
+// 번호 remapping·시작/끝 프레임(simage/eimage) 개념은 seedance 전용이라 여기선 image 로 취급한다.
+// 알약이 @imageN 으로 serialize 돼도 이 정규화로 <<<imageN>>> 이 나가므로, 손으로 <<<imageN>>> 을 친 경우와
+// 바이트 단위로 동일한 CLI 프롬프트가 된다(생성 영향 0).
+export function normalizeMediaRefTokensBasic(text: string): string {
+  return text.replace(new RegExp(SEEDANCE_TOKEN_SRC, "gi"), (_m, k1, n1, k2, n2) => {
+    const raw = String(k1 || k2).toLowerCase();
+    const n = n1 || n2;
+    const kind = raw === "vedio" ? "video" : raw === "simage" || raw === "eimage" ? "image" : raw;
     return `<<<${kind}${n}>>>`;
   });
 }
@@ -217,6 +279,8 @@ export function seedancePromptText(
       return "";
     })
     .join("")
+    // ★CLI 프롬프트는 한 줄이어야 한다 — 줄바꿈이 들어가면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙인다(실측).
+    //  줄바꿈 보존은 display_prompt(partsDisplay)에서만. 여기서 접어야 생성이 정상 동작한다.
     .replace(/\s+/g, " ")
     .trim();
 }

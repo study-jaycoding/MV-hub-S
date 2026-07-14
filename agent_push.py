@@ -153,6 +153,30 @@ def _recover_created_job(cli: str, raw: str):
 # 생성된 잡에 실제로 붙은 입력 이미지 개수 — 모델별 스키마 차이를 모두 커버(pro=params.input_images,
 # flash/lite=params.medias[role=image], 스펙명 image_references). 레퍼런스를 붙여 실행했는데 여기서 0 이면
 # 힉스필드가 입력 이미지를 안 받은 것(=레퍼런스 미적용 → 엉뚱한 결과)이라, fulfill 전에 방어 실패시킨다.
+# 레퍼런스 토큰 → CLI 용 <<<kindN>>>. 두 형태 모두 정규화한다:
+#  · @imageN(알약 serialize 형태) — 앞뒤 경계로 foo@image1 오인 방지
+#  · <<<image_1>>>/<<<IMAGE1>>>/<<< image 1 >>> 등 변형 — 언더바·대소문자·공백 정리
+_MEDIA_REF_AT = re.compile(
+    r"(?<![A-Za-z0-9_])@(simage|eimage|image|video|vedio|audio)_?(\d+)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_MEDIA_REF_ANGLE = re.compile(
+    r"<<<\s*(simage|eimage|image|video|vedio|audio)\s*_?\s*(\d+)\s*>>>",
+    re.IGNORECASE,
+)
+
+
+def _canon_kind(raw: str) -> str:
+    raw = raw.lower()
+    return "video" if raw == "vedio" else ("image" if raw in ("simage", "eimage") else raw)
+
+
+def _canon_media_ref_tokens(text: str) -> str:
+    text = _MEDIA_REF_ANGLE.sub(lambda m: f"<<<{_canon_kind(m.group(1))}{m.group(2)}>>>", text)
+    text = _MEDIA_REF_AT.sub(lambda m: f"<<<{_canon_kind(m.group(1))}{m.group(2)}>>>", text)
+    return text
+
+
 def _job_image_input_count(job: dict) -> int:
     params = job.get("params") if isinstance(job, dict) else None
     if not isinstance(params, dict):
@@ -387,6 +411,53 @@ def _save_upload_cache(upload_cache: dict) -> None:
         print(f"[경고] 업로드 캐시 저장 실패: {e}")
 
 
+_SUPPRESSED_JOBS: "set[str] | None" = None  # 미부착 등으로 '카드화 금지'한 고아 job id (지연 로드)
+
+
+def _suppress_path() -> str:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return os.path.join(base, "MVHub", "higgsfield_suppressed_jobs.json")
+    return os.path.join(os.path.expanduser("~"), ".mvhub", "higgsfield_suppressed_jobs.json")
+
+
+def _load_suppressed() -> "set[str]":
+    global _SUPPRESSED_JOBS
+    if _SUPPRESSED_JOBS is not None:
+        return _SUPPRESSED_JOBS
+    ids: set = set()
+    try:
+        with open(_suppress_path(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+            if isinstance(raw, dict) and isinstance(raw.get("job_ids"), list):
+                ids = {j for j in raw["job_ids"] if isinstance(j, str)}
+    except (OSError, json.JSONDecodeError):
+        pass
+    _SUPPRESSED_JOBS = ids
+    return ids
+
+
+def _suppress_job(job_id: "str | None") -> None:
+    """레퍼런스 미부착으로 실패한 고아 잡을 '카드화 금지' 목록에 넣는다 — 다음 push 사이클의
+    generate list 에 남아 있어도 서버로 올리지 않는다(실패는 실패로 끝, 엉뚱한 카드가 안 생긴다)."""
+    if not job_id:
+        return
+    ids = _load_suppressed()
+    if job_id in ids:
+        return
+    ids.add(job_id)
+    try:
+        path = _suppress_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = {"version": 1, "job_ids": list(ids)[-2000:]}  # 무한 증식 방지(최근 2000개)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"[경고] 억제목록 저장 실패: {e}")
+
+
 def _file_fingerprint(path: str) -> tuple[str, int] | None:
     try:
         size = os.path.getsize(path)
@@ -612,6 +683,13 @@ def _execute_one(
     if not model:
         _fail(server, token, rid, "모델 없음")
         return
+    # ★CLI 프롬프트는 반드시 한 줄 — 개행이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여 '엉뚱한
+    #  결과물'이 나온다(실측). 프론트 신규·재사용·재생성·직접 API·옛 DB 데이터 어느 경로로 왔든 최종 관문인
+    #  여기서 한 번에 접는다(display_prompt 는 서버가 별도 보관하므로 표시·재사용 줄바꿈은 영향 없음).
+    prompt = re.sub(r"\s+", " ", prompt).strip()
+    # 레퍼런스 토큰 @imageN 은 알약이 serialize 한 형태다. CLI 는 <<<imageN>>> 를 받아야 하므로 여기서도 되돌린다
+    #  (재생성·옛 데이터 등 프론트 정규화를 우회한 경로 방어). simage/eimage→image, vedio→video.
+    prompt = _canon_media_ref_tokens(prompt)
     args = ["generate", "create", model, "--prompt", prompt, "--wait"]
     args += _param_flags(r.get("params") or {}, _allowed_params(cli, model))
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
@@ -722,8 +800,9 @@ def _execute_one(
         if isinstance(full, dict) and full.get("id"):
             job = full
         if _job_image_input_count(job) <= 0:
+            _suppress_job(job.get("id"))  # 이 고아 잡은 카드로 만들지 않는다(실패는 실패로 끝)
             _fail(server, token, rid, "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요")
-            print(f"  ✗ 레퍼런스 미부착 감지 — fulfill 안 함: {job['id'][:8]}")
+            print(f"  ✗ 레퍼런스 미부착 감지 — fulfill 안 함(카드화 금지): {job['id'][:8]}")
             return
     st, body = _http("POST", f"{server}/api/gen-requests/{rid}/fulfill", token=token, body={"job": job})
     print(f"  ✓ 완료 보고(status={st})" if st == 200 else f"  ✗ 보고 실패: {body}")
@@ -938,12 +1017,19 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             if isinstance(t, dict) and t.get("display_name") in dn2key:
                 t["model"] = dn2key[t["display_name"]]
 
-    # 3) 새 것만 추림(서버에 없는 job_id)
-    fresh = [j for j in jobs if isinstance(j, dict) and j.get("id") and j["id"] in fresh_ids]
+    # 3) 새 것만 추림(서버에 없는 job_id) — 단, 미부착으로 실패한 고아 잡은 카드로 안 올린다.
+    suppressed = _load_suppressed()
+    fresh = [
+        j
+        for j in jobs
+        if isinstance(j, dict) and j.get("id") and j["id"] in fresh_ids and j["id"] not in suppressed
+    ]
+    n_suppressed = sum(1 for j in jobs if isinstance(j, dict) and j.get("id") in suppressed and j.get("id") in (fresh_ids or set()))
     # 내 힉스필드 uid = 내 전체 목록의 최다 user_<id>(= 내 본인 것). fresh 만 보면 남의 레퍼런스에
     # 오염될 수 있으므로 반드시 '전체 목록' 기준으로 산출해 명시 전송 → 서버가 올바르게 연결.
     my_uid = _dominant_uid(jobs)
-    print(f"[로컬] 잡 {len(jobs)}개 중 새 잡 {len(fresh)}개 · 내 uid={my_uid}")
+    skip_note = f" · 미부착 억제 {n_suppressed}개" if n_suppressed else ""
+    print(f"[로컬] 잡 {len(jobs)}개 중 새 잡 {len(fresh)}개{skip_note} · 내 uid={my_uid}")
     if not fresh and not acct:
         print("[완료] 올릴 새 결과물이 없습니다.")
         return

@@ -185,7 +185,12 @@ function GenerationCardImpl({
   };
   const onEnter = () => {
     const v = videoRef.current;
-    if (v) v.play().catch(() => {});
+    // React 의 <video muted> 속성은 DOM 프로퍼티로 안 붙는 알려진 버그 → 재생 직전 명령형으로 무음 강제.
+    // (소리는 더블클릭 크게보기(MediaPreview)에서만 나야 한다. 썸네일 호버는 무음.)
+    if (v) {
+      v.muted = true;
+      v.play().catch(() => {});
+    }
     // 코멘트가 있는 카드면 호버 시 미리 불러둔다 → 클릭하면 즉시 표시(체감 딜레이 제거).
     if (gen.comment_count) api.prefetchGenComments(gen.id);
   };

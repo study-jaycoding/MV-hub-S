@@ -2,22 +2,25 @@
 //  · contentEditable 프롬프트 + 선택 소스를 인라인 이미지 칩으로 삽입
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
 import { openAssetBroadcast } from "../lib/assetBroadcast";
 import { DRAG_TYPES } from "../lib/dragTypes";
-import { buildPromptParts, refsToChips } from "../lib/promptParts";
+import { buildPromptParts, refSrc, refsToChips } from "../lib/promptParts";
 import {
+  unwrapTokenPill,
   countImageChips,
   detectMention,
   hasContent,
   hideChipDropBar,
   insertChip,
+  insertRefToken,
   insertTextAtCaret,
   loadHistory,
   moveChipToPoint,
+  partsDisplay,
   partsText,
   placeCaretAtEnd,
   restoreParts,
@@ -26,12 +29,19 @@ import {
   serializeParts,
   showChipDropBar,
   stripQuery,
+  wrapRefTokens,
   HIST_MAX,
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
 import { dataTransferHasFiles } from "../lib/media";
-import { emptySeedanceTokenRoles, seedanceTokenRoles } from "../lib/seedancePrompt";
+import {
+  emptySeedanceTokenRoles,
+  hasMediaRefTokens,
+  seedanceTokenRoles,
+  seedanceTrayToken,
+  usesMediaRefTokens,
+} from "../lib/seedancePrompt";
 import { buildSpotlightCreateBody } from "../lib/spotlightSubmit";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
@@ -110,6 +120,8 @@ export function SpotlightPrompt({
   const agentOn = useSpotlightAgentStatus();
   // @/# 피커
   const [mention, setMention] = useState<SpotlightMention>(null);
+  // 알약을 클릭해 텍스트로 풀어 이름 편집 중인 노드 — 그 안에서는 @가 멘션으로 재감지되지 않게 한다.
+  const editingTokenNodeRef = useRef<Node | null>(null);
   const [hIdx, setHIdx] = useState(0);
   const [assetCtx, setAssetCtx] = useState(readSpotlightAssetCtx);
   const { allSources, sourceList, tagCounts, tagFilter, tagList, setTagFilter } =
@@ -239,8 +251,9 @@ export function SpotlightPrompt({
     if (!ed) return;
     histIdxRef.current = -1;
     updatePlaceholder();
-    setMention(composingRef.current ? null : detectMention(ed));
+    setMention(composingRef.current ? null : detectMention(ed, editingTokenNodeRef.current));
     setPromptTick((n) => n + 1);
+    scheduleLiveWrap(); // 손으로 친 토큰을 곧(디바운스) 알약으로 — blur 까지 안 기다림
   };
 
   const liveSeedanceRoles = useMemo(() => {
@@ -250,6 +263,23 @@ export function SpotlightPrompt({
     const ed = editorRef.current;
     return seedanceTokenRoles(ed ? serialize(ed).text : "");
   }, [promptTick, trayRefs]);
+
+  // @ 피커에 얹을 '트레이 항목' 목록 — seedance 모드에서만(@imageN 토큰이 그때만 해석됨). 고르면
+  // @image1 같은 텍스트 토큰을 넣는다(소스=시각적 칩과 구분). 입력한 @뒤 질의로 필터(빈 질의=전체).
+  const trayMentionList = useMemo(() => {
+    if (mention?.kind !== "@" || !usesMediaRefTokens(model) || !trayRefs.length) return [];
+    const q = mention.query.toLowerCase();
+    return trayRefs
+      .map((ref, index) => ({
+        index,
+        token: seedanceTrayToken(trayRefs, index),
+        type: ref.type as string,
+        name: ref.name,
+        // 비디오는 파일 URL(→<video>), 그 외는 썸네일. 오디오는 빈 값(아이콘 폴백).
+        media: ref.type === "video" ? refSrc(ref.file_path) || "" : ref.thumb || "",
+      }))
+      .filter((it) => !q || it.token.slice(1).toLowerCase().includes(q));
+  }, [mention, model, trayRefs]);
 
   // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
   // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지.
@@ -288,10 +318,21 @@ export function SpotlightPrompt({
     );
   };
   // 캐럿 이동(keyup/click) — 멘션만 재감지(기록 탐색·placeholder 는 건드리지 않음).
-  const onCaretMove = () => {
+  const onCaretMove = (e?: React.SyntheticEvent) => {
     const ed = editorRef.current;
     if (!ed || composingRef.current) return;
-    const next = detectMention(ed);
+    // 클릭 시: 알약을 눌렀으면 텍스트로 풀어 이름 편집(이동/blur 시 재알약화). 다른 곳을 눌렀으면
+    // 앞서 풀어둔 토큰이 있을 수 있으니 디바운스 재알약화를 예약(캐럿 있는 노드는 skip).
+    if (e && e.type === "click" && usesMediaRefTokens(model)) {
+      const clickedPill = (e.target as HTMLElement).closest<HTMLElement>(".sl-tok");
+      if (clickedPill) {
+        editingTokenNodeRef.current = unwrapTokenPill(clickedPill); // 이 노드 안에선 멘션 감지 끔
+        setPromptTick((n) => n + 1);
+        return; // 편집 진입 — 멘션 감지 스킵
+      }
+      scheduleLiveWrap();
+    }
+    const next = detectMention(ed, editingTokenNodeRef.current);
     // 내용이 같으면 이전 참조를 유지한다. 방향키 keyup 도 이 핸들러를 타는데(onKeyUp),
     // 매번 새 객체로 setMention 하면 소스 목록이 재로드되며 하이라이트(hIdx)가 0 으로 리셋돼
     // 피커에서 ↑↓ 이동이 안 먹힌다.
@@ -335,6 +376,90 @@ export function SpotlightPrompt({
     ed.focus();
   };
 
+  // 트레이 항목을 @토큰(@image1 등) '색 있는 알약'으로 삽입 — 소스(시각적 칩)와 달리 기존 트레이
+  // 레퍼런스를 가리킨다(새 레퍼런스 아님). 텍스트로는 @image1 이라 파싱/제출은 그대로.
+  const selectTrayRef = (index: number) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const item = trayRefs[index];
+    const type = item?.type;
+    const kind = type === "video" ? "video" : type === "audio" ? "audio" : "image";
+    // 비디오는 썸네일이 없어 파일 URL(→<video> 첫 프레임), 그 외는 썸네일 이미지.
+    const media = type === "video" ? refSrc(item?.file_path) : item?.thumb || undefined;
+    insertRefToken(ed, seedanceTrayToken(trayRefs, index), kind, media);
+    updatePlaceholder();
+    setPromptTick((n) => n + 1);
+    setMention(null);
+    ed.focus();
+  };
+
+  // 토큰(@image1/<<<video1>>>)의 종류·번호 → 그 트레이 항목의 썸네일/비디오 URL. 알약에 미디어를 넣는 데 쓴다.
+  const resolveTokenMedia = useCallback(
+    (kind: string, n: number, refsOverride?: SpotlightTrayRef[]): string | undefined => {
+      const type = kind === "video" ? "video" : kind === "audio" ? "audio" : "image";
+      let c = 0;
+      // refsOverride: 재사용 직후 setTrayRefs 가 아직 state 에 반영 전이라, 방금 만든 트레이로 직접 푼다(stale 방지).
+      for (const ref of refsOverride ?? trayRefs) {
+        if (ref.type === type && ++c === n) {
+          return type === "video" ? refSrc(ref.file_path) : ref.thumb || undefined;
+        }
+      }
+      return undefined;
+    },
+    [trayRefs],
+  );
+
+  // ↑↓ 히스토리 항목 복원 — 에디터(파트)뿐 아니라 트레이 레퍼런스도 되살린다(uid 재생성). 토큰 프롬프트가
+  // 레퍼런스 없이 제출되던 문제 해결. 방금 만든 freshTray 로 알약 썸네일을 풀어 stale 방지.
+  const applyHistEntry = (ed: HTMLElement, entry: HistEntry) => {
+    const freshTray: SpotlightTrayRef[] = (entry.trayRefs ?? []).map((r) => ({
+      ...r,
+      uid: `t${trayUidRef.current++}`,
+    }));
+    // 씬 모드에선 트레이가 씬 카드에 바인딩돼 있다 — 히스토리 '미리보기' 스크럽이 씬 카드 레퍼런스를
+    // 덮어쓰지 않도록 트레이는 건드리지 않는다(재사용=확정 로드와 달리 히스토리는 비파괴적).
+    if (!sceneMode) {
+      setTrayRefs(freshTray);
+      if (freshTray.length && !expanded) onToggleExpand(); // 레퍼런스 있으면 트레이 펼쳐 보이게(재사용과 동일)
+    }
+    restoreParts(ed, entry.parts);
+    if (usesMediaRefTokens(model)) wrapRefTokens(ed, (k, n) => resolveTokenMedia(k, n, freshTray));
+    updatePlaceholder();
+    setPromptTick((n) => n + 1);
+  };
+
+  // 입력창을 벗어나면(blur) 손으로 친 토큰(<<<video1>>>·@image1·언더바 변형)을 알약으로 감싼다(썸네일 포함).
+  // 편집 중엔 안 건드리고(포커스 유지), 벗어날 때만 정리 → 캐럿 튐 없이 @처럼 보이게 한다.
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const onBlur = () => {
+      editingTokenNodeRef.current = null; // 편집 종료 — 재알약화되므로 멘션 억제 해제
+      if (!usesMediaRefTokens(model)) return;
+      wrapRefTokens(ed, resolveTokenMedia); // 풀어둔 토큰·손으로 친 토큰을 알약으로 정규화
+      setPromptTick((n) => n + 1);
+    };
+    ed.addEventListener("blur", onBlur);
+    return () => ed.removeEventListener("blur", onBlur);
+  }, [model, resolveTokenMedia]);
+
+  // 라이브 알약화 — 타이핑이 잠깐 멈추면 손으로 친 토큰(<<<video1>>>·@image1)을 바로 알약으로 감싼다.
+  // '지금 입력 중인 토큰'(캐럿이 있는 텍스트 노드)은 건드리지 않아 캐럿이 튀지 않는다(에디터를 벗어날 때
+  // 까지 기다리던 딜레이 제거). 편집 모드(알약 클릭)인 동안엔 쉬어 이름 편집을 방해하지 않는다.
+  const liveWrapTimer = useRef<number | null>(null);
+  const scheduleLiveWrap = useCallback(() => {
+    if (!usesMediaRefTokens(model)) return;
+    if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);
+    liveWrapTimer.current = window.setTimeout(() => {
+      const ed = editorRef.current;
+      if (!ed || composingRef.current) return;
+      wrapRefTokens(ed, resolveTokenMedia, { skipCaretNode: true }); // 입력 중 토큰(캐럿 노드)은 두고 나머지만
+    }, 350);
+  }, [model, resolveTokenMedia]);
+  useEffect(() => () => {
+    if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);
+  }, []);
+
   const clearTagFilter = () => setTagFilter(null);
 
   // ── 프롬프트 재사용(명시적): 그 생성의 프롬프트+옵션을 입력바로 그대로 불러옴 ──
@@ -366,31 +491,41 @@ export function SpotlightPrompt({
         setModel(useModel);
       }
       const ed = editorRef.current;
-      if (expanded) {
-        // 확장(+) 상태 = 레퍼런스는 위 트레이로, 프롬프트 텍스트는 아래 박스로 분리해 채운다.
-        setTrayRefs(
-          refsToChips(g.references).flatMap((p) =>
-            p.t === "chip"
-              ? [{ ...(p.ref as ChipRef), uid: `t${trayUidRef.current++}` }]
-              : [],
-          ),
+      // ★재사용은 '현재 접힘/펼침'이 아니라 '생성물이 토큰 방식인지'로 분기 → 접든 열든 같은 결과가 들어온다.
+      //  · 토큰 방식(<<<imageN>>>·@imageN 이 프롬프트에 있음): 레퍼런스를 트레이로, 프롬프트 토큰은 알약으로.
+      //  · 인라인-칩 방식(@소스명): display_prompt 로 인라인 소스칩 복원(트레이는 비움).
+      // 토큰 감지·복원은 display_prompt 기준(원본 토큰 @image1·@simage1 보존). g.prompt(CLI)는 <<<image1>>>
+      //  또는 시작/끝 프레임의 경우 '첫 프레임/끝 프레임' 텍스트로 정규화돼 있어 토큰이 사라진다.
+      const tokenSrc = g.display_prompt || (g.prompt && g.prompt !== "(no text)" ? g.prompt : "");
+      const tokenMode = hasMediaRefTokens(tokenSrc) && g.references.length > 0;
+      if (tokenMode) {
+        const freshTray: SpotlightTrayRef[] = refsToChips(g.references).flatMap((p) =>
+          p.t === "chip" ? [{ ...(p.ref as ChipRef), uid: `t${trayUidRef.current++}` }] : [],
         );
-        const ptext = g.prompt && g.prompt !== "(no text)" ? g.prompt : "";
+        setTrayRefs(freshTray);
+        if (!expanded) onToggleExpand(); // 토큰 방식은 트레이를 써야 하므로 펼쳐 보인다(접힘/펼침 동일하게)
         if (ed) {
-          restoreParts(ed, ptext ? [{ t: "text" as const, v: ptext }] : []); // 칩 없이 텍스트만
+          restoreParts(ed, tokenSrc ? [{ t: "text" as const, v: tokenSrc }] : []);
+          // 방금 만든 freshTray 로 미디어를 풀어 알약 썸네일이 안 어긋나게(setTrayRefs 는 아직 state 반영 전).
+          if (usesMediaRefTokens(useModel))
+            wrapRefTokens(ed, (k, n) => resolveTokenMedia(k, n, freshTray));
           updatePlaceholder();
           setPromptTick((n) => n + 1);
           ed.focus();
         }
       } else {
-        // 일반(접힘) — 프롬프트(칩+텍스트) 인라인 복원. display_prompt 로 칩 위치를 살리되,
-        // 매칭 칩이 하나도 없고 레퍼런스가 있으면(옛 생성) 말미에 칩으로 붙인다.
+        // 인라인-칩 방식 — display_prompt 로 @소스명 칩을 제자리에 복원. 트레이는 비워 이중표현 방지.
+        setTrayRefs([]);
         let parts = buildPromptParts(g.display_prompt || g.prompt || "", g.references);
-        if (!parts.some((p) => p.t === "chip") && g.references.length) {
-          parts = [...parts, ...refsToChips(g.references)];
+        // 매칭 못한 레퍼런스는 버리지 않고 말미에 칩으로 보충(누락 방지). buildPromptParts 는 큐를 앞에서부터
+        // 소비하므로 매칭된 칩 수만큼이 앞쪽 refs 이고, 그 뒤(막힌 것)가 누락분이다.
+        const matched = parts.filter((p) => p.t === "chip").length;
+        if (matched < g.references.length) {
+          parts = [...parts, ...refsToChips(g.references.slice(matched))];
         }
         if (ed) {
           restoreParts(ed, parts); // 재사용은 '교체' — 입력바를 그 프롬프트로 채움
+          if (usesMediaRefTokens(useModel)) wrapRefTokens(ed, resolveTokenMedia);
           updatePlaceholder();
           setPromptTick((n) => n + 1);
           ed.focus();
@@ -626,9 +761,9 @@ export function SpotlightPrompt({
       setError("모델을 선택하세요.");
       return;
     }
-    // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장.
+    // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장. 줄바꿈 보존(재사용 시 복원).
     const parts = serializeParts(ed);
-    const displayPrompt = partsText(parts);
+    const displayPrompt = partsDisplay(parts);
     const { body, error: bodyError } = buildSpotlightCreateBody({
       text,
       inlineRefs,
@@ -661,7 +796,9 @@ export function SpotlightPrompt({
       const key = displayPrompt; // 텍스트+@칩 까지 반영한 중복 판정 키
       if (key) {
         const filtered = historyRef.current.filter((h) => h.text !== key);
-        filtered.push({ parts, text: key });
+        // 트레이 레퍼런스도 저장(uid 제외) — 토큰 프롬프트를 ↑ 로 불러 제출해도 레퍼런스가 살아있게.
+        const histTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
+        filtered.push({ parts, text: key, trayRefs: histTray.length ? histTray : undefined });
         historyRef.current = filtered.slice(-HIST_MAX);
         saveHistory(historyRef.current);
       }
@@ -739,11 +876,7 @@ export function SpotlightPrompt({
           e.preventDefault();
           const idx = navigating ? Math.max(0, histIdxRef.current - 1) : hist.length - 1;
           histIdxRef.current = idx;
-          if (ed) {
-            restoreParts(ed, hist[idx].parts);
-            updatePlaceholder();
-            setPromptTick((n) => n + 1);
-          }
+          if (ed) applyHistEntry(ed, hist[idx]);
           return;
         }
         // ArrowDown — 기록 탐색 중일 때만(빈 라이브 상태에선 무시)
@@ -754,17 +887,14 @@ export function SpotlightPrompt({
             histIdxRef.current = -1;
             if (ed) {
               ed.innerHTML = "";
+              if (!sceneMode) setTrayRefs([]); // 프롬프트 비우면 트레이도 비움(씬 모드는 씬 카드 보호)
               updatePlaceholder();
               placeCaretAtEnd(ed);
               setPromptTick((n) => n + 1);
             }
           } else {
             histIdxRef.current = idx;
-            if (ed) {
-              restoreParts(ed, hist[idx].parts);
-              updatePlaceholder();
-              setPromptTick((n) => n + 1);
-            }
+            if (ed) applyHistEntry(ed, hist[idx]);
           }
           return;
         }
@@ -790,11 +920,12 @@ export function SpotlightPrompt({
       }
     }
 
-    // @ 소스 피커 네비
-    if (mention?.kind === "@" && sourceList.length) {
+    // @ 피커 네비 — 트레이 항목(앞) + 소스(뒤) 통합 인덱스로 이동/선택.
+    const atLen = trayMentionList.length + sourceList.length;
+    if (mention?.kind === "@" && atLen) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setHIdx((i) => Math.min(i + 1, sourceList.length - 1));
+        setHIdx((i) => Math.min(i + 1, atLen - 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -804,12 +935,22 @@ export function SpotlightPrompt({
       }
       if ((e.key === "Enter" || e.key === "Tab") && !composing) {
         e.preventDefault();
-        selectSource(sourceList[Math.max(0, hIdx)]);
+        const i = Math.max(0, Math.min(hIdx, atLen - 1));
+        if (i < trayMentionList.length) selectTrayRef(trayMentionList[i].index);
+        else selectSource(sourceList[i - trayMentionList.length]);
         return;
       }
     }
 
-    // 평상시 Enter → 생성 (Shift+Enter = 줄바꿈)
+    // Shift+Enter → 줄바꿈. 브라우저 기본은 <div> 블록을 넣기도 하는데, 그러면 serialize 가 \n 을 못 읽어
+    // 재사용에서 한 줄로 뭉개진다. execCommand insertLineBreak 로 <br> 를 확실히 넣어 \n 으로 읽히게 한다.
+    if (e.key === "Enter" && e.shiftKey && !composing && !mention) {
+      e.preventDefault();
+      document.execCommand("insertLineBreak");
+      onEditorInput();
+      return;
+    }
+    // 평상시 Enter → 생성
     if (e.key === "Enter" && !e.shiftKey && !composing && !mention) {
       e.preventDefault();
       if (!busy) submit();
@@ -869,6 +1010,8 @@ export function SpotlightPrompt({
               onHoverIndex={setHIdx}
               onSelectTag={selectTag}
               onSelectSource={selectSource}
+              trayList={trayMentionList}
+              onSelectTrayRef={selectTrayRef}
             />
           )}
 

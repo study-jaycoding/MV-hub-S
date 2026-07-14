@@ -73,6 +73,7 @@ export const AssetCell = memo(function AssetCell({
     : { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit };
 
   const onEnter = () => {
+    if (videoRef.current) videoRef.current.muted = true; // 영상 호버는 무음(React muted 반영 버그 방어). 오디오는 그대로
     (videoRef.current || audioRef.current)?.play().catch(() => {});
   };
   const onLeave = () => {

@@ -51,7 +51,10 @@ export function HistoryNode({
         title={`${g.prompt.slice(0, 80)}\n클릭=선택 · Shift+클릭=복수 선택 · 더블클릭=크게 보기 · 미들클릭=정보`}
         onMouseEnter={(e) => {
           const video = e.currentTarget.querySelector("video") as HTMLVideoElement | null;
-          if (video) video.play().catch(() => {});
+          if (video) {
+            video.muted = true; // React <video muted> 반영 버그 → 재생 직전 무음 강제(썸네일 호버 무음)
+            video.play().catch(() => {});
+          }
         }}
         onMouseLeave={(e) => {
           const video = e.currentTarget.querySelector("video") as HTMLVideoElement | null;

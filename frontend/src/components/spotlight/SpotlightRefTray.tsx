@@ -8,6 +8,7 @@ import {
   seedanceTrayBadgeTitle,
   seedanceTrayRole,
   seedanceTrayTypeIndex,
+  usesMediaRefTokens,
   usesSeedanceMediaRefs,
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
@@ -59,12 +60,14 @@ export function SpotlightRefTray({
       ) : (
         <>
         {trayRefs.map((ref, index) => {
-          const seedanceVisible = usesSeedanceMediaRefs(model) || seedanceHasTokenRoles(liveSeedanceRoles);
+          // 타입 순번(@image1, @video1 …)은 레퍼런스 토큰 쓰는 모든 모델에서 보인다(이미지 모델 포함).
+          const tokenVisible = usesMediaRefTokens(model) || seedanceHasTokenRoles(liveSeedanceRoles);
           const badgeRole = seedanceTrayRole(trayRefs, index, liveSeedanceRoles);
           const badgeTitle = seedanceTrayBadgeTitle(badgeRole);
-          const showRoleBadge = seedanceVisible;
-          // 타입별 순번 표시 — 보이는 번호 = 프롬프트에 쓰는 번호(<<<image2>>>, <<<video1>>> …).
-          const displayIndex = seedanceVisible ? seedanceTrayTypeIndex(trayRefs, index) : index + 1;
+          // 역할 배지(시작/끝/옴니 = S/E/O)는 seedance 전용 개념 → seedance 모델에서만(이미지 모델엔 안 뜸).
+          const showRoleBadge = usesSeedanceMediaRefs(model);
+          // 보이는 번호 = 프롬프트에 쓰는 번호(@image2, @video1 …).
+          const displayIndex = tokenVisible ? seedanceTrayTypeIndex(trayRefs, index) : index + 1;
           return (
             <div
               key={ref.uid}
@@ -87,7 +90,9 @@ export function SpotlightRefTray({
                 <video
                   src={refSrc(ref.file_path)}
                   muted
-                  preload="metadata"
+                  autoPlay
+                  loop
+                  preload="auto"
                   playsInline
                   draggable={false}
                 />

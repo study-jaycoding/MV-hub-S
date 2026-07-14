@@ -50,16 +50,19 @@
 /* 최대 15개까지 스크롤 없이 보이게(항목 ≈ 50px). 화면 높이는 넘지 않게 cap. */
 .sl-mention-list { max-height: min(760px, calc(100vh - 150px)); overflow-y: auto; padding: 4px; }
 .sl-mention-empty { padding: 16px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
+/* @ 피커 섹션 구분(트레이 항목 / 소스) */
+.sl-mention-sub { padding: 6px 10px 3px; font-size: 10.5px; font-weight: 700; color: var(--muted2); letter-spacing: 0.03em; }
 .sl-mention-item {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 6px 8px; border-radius: 9px; background: transparent; border: none;
   text-align: left;
 }
 .sl-mention-item.on { background: var(--grad-soft); }
-.sl-mention-item img, .sl-mention-ph {
+.sl-mention-item img, .sl-mention-item video, .sl-mention-ph {
   width: 38px; height: 38px; border-radius: 8px; object-fit: cover;
   background: #050608; flex: 0 0 auto;
 }
+.sl-mention-ph { display: inline-flex; align-items: center; justify-content: center; font-size: 18px; }
 .sl-mention-name { font-size: 13px; font-weight: 600; color: #fff; flex: 0 0 auto; }
 .sl-mention-tags { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; }
 .sl-mention-tag { font-size: 10px; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 7px; border-radius: 10px; }
@@ -181,9 +184,35 @@
   display: inline-flex; align-items: center; gap: 5px;
   vertical-align: middle; margin: 0 2px;
   padding: 2px 6px 2px 3px; border-radius: 9px;
-  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border2);
+  /* 소스 칩 — 프롬프트 텍스트와 확실히 구분되게 accent 톤 알약(시인성). */
+  background: rgba(196, 232, 74, 0.13); border: 1px solid rgba(196, 232, 74, 0.45);
   user-select: none; cursor: grab;
 }
+
+/* 트레이 레퍼런스 토큰 알약(@image1 등) — 썸네일 + 색으로 '참조'임을 명확히. 타입별 색.
+   ★기본은 원자 카드(contenteditable=false) — 클릭하면 그 알약만 편집 가능해져 @image1→@simage1 로 고칠 수 있다. */
+/* inline-block(inline-flex 아님) — 텍스트 편집 시 캐럿이 안정적. 썸네일/아이콘은 inline 으로 앞에 붙임. */
+.sl-tok {
+  display: inline-block; vertical-align: middle; margin: 0 2px; padding: 1px 7px 1px 5px;
+  border-radius: 8px; font-size: 12.5px; font-weight: 700;
+  border: 1px solid transparent; white-space: nowrap; cursor: pointer; /* 클릭=텍스트로 풀어 이름 편집 */
+}
+/* 썸네일 — 이미지/영상 포스터. 오디오/미보유는 아래 ::before 아이콘. */
+.sl-tok-thumb { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; vertical-align: middle; margin-right: 4px; }
+.sl-tok::before { margin-right: 4px; font-size: 11px; opacity: 0.95; }
+/* 썸네일 있으면 이모지 아이콘 숨김(img 로 대체). 아래 타입별 ::before 보다 우선순위를 높여야
+   순서와 무관하게 확실히 숨겨진다(2-클래스 스코프). */
+.sl-tok.sl-tok-has-thumb::before { content: none; }
+.sl-tok-image { background: rgba(196, 232, 74, 0.16); border-color: rgba(196, 232, 74, 0.5); color: var(--accent); }
+.sl-tok-image::before { content: "🖼"; }
+.sl-tok-start,
+.sl-tok-end { background: rgba(196, 232, 74, 0.16); border-color: rgba(196, 232, 74, 0.5); color: var(--accent); }
+.sl-tok-start::before { content: "⏮"; }
+.sl-tok-end::before { content: "⏭"; }
+.sl-tok-video { background: rgba(96, 165, 250, 0.16); border-color: rgba(96, 165, 250, 0.55); color: #9ec5ff; }
+.sl-tok-video::before { content: "🎬"; }
+.sl-tok-audio { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.55); color: #d8b4fe; }
+.sl-tok-audio::before { content: "🎵"; }
 .inline-ref:active { cursor: grabbing; }
 .inline-ref.ref-dragging { opacity: 0.4; }
 /* 칩 재배치 드롭 위치 표시 막대(세로선) — body 에 fixed */
