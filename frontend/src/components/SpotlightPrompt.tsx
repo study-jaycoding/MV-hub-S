@@ -401,7 +401,8 @@ export function SpotlightPrompt({
       // refsOverride: 재사용 직후 setTrayRefs 가 아직 state 에 반영 전이라, 방금 만든 트레이로 직접 푼다(stale 방지).
       for (const ref of refsOverride ?? trayRefs) {
         if (ref.type === type && ++c === n) {
-          return type === "video" ? refSrc(ref.file_path) : ref.thumb || undefined;
+          // 항목이 존재하면 썸네일이 없어도 "" 를 돌려줘 '존재함'을 알린다(undefined = 트레이에 없음 = missing).
+          return type === "video" ? refSrc(ref.file_path) || "" : ref.thumb || "";
         }
       }
       return undefined;

@@ -213,6 +213,9 @@
 .sl-tok-video::before { content: "🎬"; }
 .sl-tok-audio { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.55); color: #d8b4fe; }
 .sl-tok-audio::before { content: "🎵"; }
+/* 트레이에 없는 번호(@image3 인데 3번 없음) — 타입 색/아이콘을 빨강 경고로 덮어써 시인성 있게(2-클래스 우선). */
+.sl-tok.sl-tok-missing { background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.75); color: #fca5a5; }
+.sl-tok.sl-tok-missing::before { content: "⚠"; }
 .inline-ref:active { cursor: grabbing; }
 .inline-ref.ref-dragging { opacity: 0.4; }
 /* 칩 재배치 드롭 위치 표시 막대(세로선) — body 에 fixed */

@@ -260,13 +260,15 @@ export function insertChip(editor: HTMLElement, ref: ChipRef) {
 //  · ★기본은 '원자 카드'(contenteditable=false) — 다른 곳 클릭해도 카드로 유지, 백스페이스 한 번에 삭제.
 //    이름 변경(@image1→@simage1)은 알약을 클릭했을 때만 unwrapTokenPill 로 텍스트로 풀어 편집한다.
 //  · 썸네일 없으면 타입 아이콘을 CSS ::before(텍스트 노드 아님 → 직렬화 오염 없음)로 표시.
-export function buildRefTokenEl(token: string, kind: string, media?: string): HTMLElement {
+export function buildRefTokenEl(token: string, kind: string, media?: string, missing = false): HTMLElement {
   const el = document.createElement("span");
   el.contentEditable = "false"; // 원자 카드 — 소스 칩(.inline-ref)과 동일. 클릭 시에만 편집 전환.
   // 비디오는 썸네일(이미지)이 없어 파일 URL 이 오므로 <img> 로는 깨진다 → <video> 로 첫 프레임을 보여준다
   // (트레이와 동일). 오디오는 썸네일이 없어 아이콘. 이미지/시작/끝은 <img>.
-  const hasMedia = !!media && kind !== "audio";
-  el.className = "sl-tok sl-tok-" + kind + (hasMedia ? " sl-tok-has-thumb" : "");
+  // missing = 트레이에 그 번호의 레퍼런스가 없음(@image3 인데 3번이 없음) → 경고 스타일로 시인성 있게.
+  const hasMedia = !!media && kind !== "audio" && !missing;
+  el.className = "sl-tok sl-tok-" + kind + (hasMedia ? " sl-tok-has-thumb" : "") + (missing ? " sl-tok-missing" : "");
+  if (missing) el.title = "이 번호의 레퍼런스가 트레이에 없습니다";
   if (hasMedia) {
     let m: HTMLElement;
     if (kind === "video") {
@@ -376,7 +378,12 @@ function wrapTokensInTextNode(
       const raw = m[1] || m[3]; // <<<>>> 형(그룹1) 또는 @ 형(그룹3)
       const num = m[2] || m[4];
       const kind = seedanceAtTokenKind(raw);
-      frag.appendChild(buildRefTokenEl(seedanceCanonToken(raw, num), kind, resolveMedia?.(kind, Number(num))));
+      // resolveMedia 가 undefined 를 주면 = 트레이에 그 번호 항목이 아예 없음(missing). ""(존재하나 썸네일 없음)
+      // 과 구분해야 하므로 resolveTokenMedia 는 존재 항목엔 최소 "" 를 돌려준다. resolveMedia 자체가 없으면(정규화만)
+      // 존재 여부를 알 수 없으니 missing 판단 안 함.
+      const media = resolveMedia?.(kind, Number(num));
+      const missing = !!resolveMedia && media === undefined;
+      frag.appendChild(buildRefTokenEl(seedanceCanonToken(raw, num), kind, media || undefined, missing));
       wrapped++;
     }
     last = mEnd;
