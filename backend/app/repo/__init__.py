@@ -23,6 +23,7 @@ from .tags import *  # noqa: F401,F403
 from .generation_rows import *  # noqa: F401,F403  (조회 응답 보강 _attach_children — generations 앞)
 from .id_resolve import *  # noqa: F401,F403  (id 해석 — generation_rows 뒤: _fetch_generation/_fetch_gens 사용)
 from .lineage import *  # noqa: F401,F403  (generations 앞 — generations 가 lineage private helper 를 import)
+from .history import *  # noqa: F401,F403  (가계 조회 get_history/graph — lineage·generation_rows 헬퍼 사용)
 from .generations import *  # noqa: F401,F403
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)
