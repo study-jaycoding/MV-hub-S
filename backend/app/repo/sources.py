@@ -12,7 +12,7 @@ from typing import Any, Optional
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from ..services.media_types import asset_media_type
-from .generations import _attach_children
+from .generation_rows import _attach_children
 
 
 def _asset_media_type(name: str) -> Optional[str]:

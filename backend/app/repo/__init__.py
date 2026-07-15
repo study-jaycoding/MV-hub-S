@@ -20,6 +20,7 @@ from ._common import (
 # ── 각 모듈 전량 re-export ────────────────────────────────────────────────
 from .identity import *  # noqa: F401,F403
 from .tags import *  # noqa: F401,F403
+from .generation_rows import *  # noqa: F401,F403  (조회 응답 보강 _attach_children — generations 앞)
 from .lineage import *  # noqa: F401,F403  (generations 앞 — generations 가 lineage private helper 를 import)
 from .generations import *  # noqa: F401,F403
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
@@ -34,5 +35,6 @@ from .accounts import *  # noqa: F401,F403
 # ── cross-module/외부에서 쓰일 수 있는 private 명시 re-export ──────────────
 from .identity import _MY_UID_CACHE, ensure_worker, get_setting, set_setting
 from .tags import _add_tags, _set_auto_tags, _set_tags
-from .generations import _attach_children, _delete_generation
+from .generation_rows import _attach_children
+from .generations import _delete_generation
 from .share import import_bundle_item
