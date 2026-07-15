@@ -21,6 +21,7 @@ from ._common import (
 from .identity import *  # noqa: F401,F403
 from .tags import *  # noqa: F401,F403
 from .generations import *  # noqa: F401,F403
+from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .gen_requests import *  # noqa: F401,F403  (generations 뒤 — placeholder gen 을 다룸)
 from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 둘을 import)
 from .assets import *  # noqa: F401,F403
