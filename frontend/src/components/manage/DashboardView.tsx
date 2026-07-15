@@ -447,16 +447,17 @@ export function DashboardView() {
           .allProjectMembers()
           .then((byPid) => setMembers(new Map(Object.entries(byPid))))
           .catch(() => setMembers(new Map()));
-        return Promise.all(
-          r.projects.map((p) =>
-            manageApi
-              .listTasks(p.id)
-              .then((ts) => ts.map((t) => ({ ...t, project_name: p.name })))
-              .catch(() => [] as Task[]),
-          ),
-        );
+        // fan-out(프로젝트마다 listTasks) 대신 tasks-batch 1요청 — 접근불가/오류 pid 는 서버가 생략(부분성공).
+        return manageApi
+          .listTasksBatch(r.projects.map((p) => p.id))
+          .then((byPid) =>
+            r.projects.flatMap((p) =>
+              (byPid[p.id] || []).map((t) => ({ ...t, project_name: p.name })),
+            ),
+          )
+          .catch(() => [] as Task[]);
       })
-      .then((all) => setTasks(all.flat()));
+      .then((all) => setTasks(all));
     Promise.all([summaryP, tasksP])
       .then(() => setErr("")) // 성공하면 이전 에러 화면 해제
       .catch((e) => setErr(String(e?.message || e)))

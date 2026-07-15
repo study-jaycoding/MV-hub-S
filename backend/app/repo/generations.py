@@ -2005,7 +2005,9 @@ def _asset_sources(
 def search_sources(
     query: Optional[str] = None,
     tag: Optional[str] = None,
-    limit: int = 60,
+    # @/# 피커는 소스를 전량 로드해 클라이언트에서 필터한다 → 60 이면 소스가 그보다 많을 때 뒷부분이
+    # 후보에서 누락됐다. 넉넉히 올려 누락을 없앤다(근본적인 서버사이드 검색 전환은 SpotlightPrompt 분해 때).
+    limit: int = 1000,
     asset_project: Optional[str] = None,
     asset_dir: Optional[str] = None,
     owner_uid: str = "",
