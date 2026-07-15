@@ -9,9 +9,7 @@ import { api } from "../../api";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { downloadName, downloadOne } from "../../lib/download";
 import { DRAG_TYPES } from "../../lib/dragTypes";
-import { DISABLED_EVENT, loadDisabledFolders, loadDisabledGen, toggleDisabledGen } from "../../lib/deactivated";
-import { expandDisabledGenerationIds } from "../../lib/generationDisplay";
-import { useCustomEvent } from "../../lib/useCustomEvent";
+import { toggleDisabledGen } from "../../lib/deactivated";
 import { matchShortcut } from "../../lib/shortcuts";
 import { KEY_COLORS } from "../../lib/appConstants";
 import {
@@ -29,6 +27,7 @@ import {
   type SceneRef,
 } from "../../lib/scenes";
 import { classifyEdges, computeBridgeEdges, edgePathXY, fanOffset } from "../../lib/sceneEdges";
+import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { TagEditor } from "../TagEditor";
@@ -120,12 +119,9 @@ export function SceneBoard({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
-  const [genData, setGenData] = useState<Record<string, Generation>>({}); // 바인딩된 genId → 실제 생성물
-  // 각 생성물이 '레퍼런스로 쓴' 부모 gen id(백엔드 history relation='reference'의 materials).
-  //  · 수동 연결선의 색(레퍼런스 점선 vs 계보 실선) 판정 근거 — 씬 로컬 refs 로는 못 잡는 관계.
-  const [refParents, setRefParents] = useState<Record<string, string[]>>({});
-  const refParentsRef = useRef(refParents);
-  refParentsRef.current = refParents;
+  // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
+  //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
+  const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
@@ -235,98 +231,6 @@ export function SceneBoard({
     onBindingRef.current?.(payload);
   }, [selected, cards]);
   useEffect(() => () => onBindingRef.current?.(null), []); // 언마운트(탭·씬 이탈) → 바인딩 해제
-
-  // ── 카드의 모든 변형(genIds) 실제 생성물을 불러오고, 진행 중이면 폴링(팝업 썸네일·현재 표시용) ──
-  const genDataRef = useRef(genData);
-  genDataRef.current = genData;
-  // 외부(라이브러리)에서 삭제(휴지통 이동)돼 404 로 사라진 생성물 id — 카드가 무한 'Generating' 대신 '삭제됨' 표시.
-  const [missingIds, setMissingIds] = useState<Set<string>>(new Set());
-  // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
-  const [disabledTick, setDisabledTick] = useState(0);
-  useCustomEvent(DISABLED_EVENT, () => setDisabledTick((t) => t + 1));
-  const disabledIds = useMemo(
-    () => expandDisabledGenerationIds(Object.values(genData), loadDisabledGen(), loadDisabledFolders()),
-    [genData, disabledTick],
-  );
-  const genIdSig = cards
-    .filter((c) => c.kind === "generation")
-    .flatMap((c) => variantIds(c))
-    .join(",");
-  useEffect(() => {
-    const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
-    if (!ids.length) return;
-    let alive = true;
-    let timer: number | undefined;
-    const tick = async (pollIds: string[]) => {
-      // id 별로 성공/삭제(404·410)/일시오류를 구분 — 삭제는 '없음' 표시, 일시오류는 그대로 둔다.
-      const rs = await Promise.all(
-        pollIds.map(async (id) => {
-          try {
-            return { id, gen: await api.getGeneration(id), gone: false };
-          } catch (e) {
-            return { id, gen: null, gone: /\b(404|410)\b/.test(String(e)) };
-          }
-        }),
-      );
-      if (!alive) return;
-      setGenData((prev) => {
-        const next = { ...prev };
-        for (const r of rs) if (r.gen) next[r.gen.id] = r.gen;
-        return next;
-      });
-      setMissingIds((prev) => {
-        let changed = false;
-        const next = new Set(prev);
-        for (const r of rs) {
-          if (r.gen && next.delete(r.id)) changed = true; // 되살아나면(복원) 해제
-          else if (r.gone && !next.has(r.id)) {
-            next.add(r.id);
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
-      // 재폴은 '아직 진행 중'인 id 만 — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
-      const stillPending = rs
-        .filter((r) => r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status)))
-        .map((r) => r.id);
-      if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
-    };
-    void tick(ids); // 1회차만 전체 조회(상태 파악), 이후엔 진행 중인 것만
-    return () => {
-      alive = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [genIdSig]);
-
-  // 각 생성물의 '레퍼런스 부모'(materials) 조회 — 새로 등장한 id 만(계보는 생성 시 확정, 이후 불변).
-  useEffect(() => {
-    const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
-    const need = ids.filter((id) => !(id in refParentsRef.current));
-    if (!need.length) return;
-    let alive = true;
-    void Promise.all(
-      need.map(async (id) => {
-        try {
-          const h = await api.history(id);
-          return { id, parents: (h.materials || []).map((m) => m.id), store: true };
-        } catch (e) {
-          // 확정적 부재(404/410)만 [] 로 캐시. 일시 오류는 저장하지 않아 다음 변경 때 재조회(false 실선 고정 방지).
-          return { id, parents: [] as string[], store: /\b(404|410)\b/.test(String(e)) };
-        }
-      }),
-    ).then((rs) => {
-      if (!alive) return;
-      setRefParents((prev) => {
-        const next = { ...prev };
-        for (const r of rs) if (r.store) next[r.id] = r.parents;
-        return next;
-      });
-    });
-    return () => {
-      alive = false;
-    };
-  }, [genIdSig]);
 
   // 태그 적용 — App 핸들러(서버 저장 + 라이브러리 목록 + facet 갱신)에 위임하고, 씬 genData 도 낙관적으로 패치.
   //  · 태그는 생성물 레코드에 저장되므로 내 작업/팀 작업/캔버스가 자동으로 같은 값을 공유한다(공용).
