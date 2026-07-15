@@ -13,6 +13,13 @@ import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
 import type { Account, ReportedHfStatus, Workspace } from "../types";
 
+// 힉스필드 팀 플랜 월 크레딧 한도(게이지 분모). CLI 가 총 한도를 안 주므로(account status·
+// workspace list·transactions 모두 잔액/차감만) 힉스필드 웹처럼 비율 게이지를 그리려면
+// 총량이 필요 → Jay 지정 상수. 팀 플랜 기준이며, 바꾸려면 이 값만 고치면 된다.
+const MONTHLY_CREDIT_MAX = 9000;
+// 점 세그먼트 게이지(힉스필드 스타일)의 총 칸 수.
+const DOT_COUNT = 20;
+
 export function AccountMenu({
   provider,
   account,
@@ -66,6 +73,25 @@ export function AccountMenu({
   const activeWs = current || wsList.find((w) => !w.name);
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   const activeCredits = liveMode ? activeWs?.credits ?? null : reported?.credits ?? null;
+  // 게이지 채움 비율 = 남은 크레딧 / 월 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
+  const creditPct =
+    activeCredits != null
+      ? Math.max(0, Math.min(100, (activeCredits / MONTHLY_CREDIT_MAX) * 100))
+      : null;
+  // 켜진 점 개수 = 비율×칸수. 크레딧이 조금이라도 남았으면 최소 1칸은 켠다.
+  const litDots =
+    creditPct != null
+      ? Math.min(
+          DOT_COUNT,
+          Math.max(activeCredits && activeCredits > 0 ? 1 : 0, Math.round((creditPct / 100) * DOT_COUNT)),
+        )
+      : 0;
+  // 아바타 링 배경 — conic 라임 호가 남은 비율(상단바·드롭다운 두 아바타에 공용).
+  const ringStyle =
+    creditPct != null
+      ? { background: `conic-gradient(var(--accent) ${creditPct * 3.6}deg, rgba(255,255,255,0.12) 0)` }
+      : undefined;
+  const ringOn = creditPct != null ? " on" : "";
   // 로그인 계정이면 그 계정 이름이 우선(가입 시 설정한 표시이름). 비로그인이면 제공자 이름.
   const displayName = accountDisplayName(account, provider);
   const roleText = accountRoleText(account);
@@ -86,18 +112,29 @@ export function AccountMenu({
 
   return (
     <div className="acct-menu" ref={ref}>
+      {/* 아바타 링 = 남은 크레딧 비율(힉스필드처럼 테두리로 표시). 크레딧 없으면 링 없이 아바타만. */}
       <button
-        className="acct-avatar"
+        className="acct-avatar-btn"
         onClick={() => setOpen((v) => !v)}
-        title={`${displayName}${account && roleText ? ` · ${roleText}` : ""}\n워크스페이스·계정 관리`}
+        title={
+          `${displayName}${account && roleText ? ` · ${roleText}` : ""}` +
+          (activeCredits != null
+            ? `\nCredits ${Math.round(activeCredits).toLocaleString()} left`
+            : "") +
+          "\n워크스페이스·계정 관리"
+        }
       >
-        {initial}
+        <span className={"acct-ring" + ringOn} style={ringStyle}>
+          <span className="acct-avatar">{initial}</span>
+        </span>
       </button>
 
       {open && (
         <div className="acct-pop">
           <div className="acct-head">
-            <div className="acct-av-lg">{initial}</div>
+            <span className={"acct-ring acct-ring-lg" + ringOn} style={ringStyle}>
+              <span className="acct-av-lg">{initial}</span>
+            </span>
             <div className="acct-id">
               <div className="acct-name">{displayName}</div>
               {/* 이메일은 한 줄(잘림 OK), 역할은 별도 줄에 여러 줄 허용 → "Admin/Product Manager" 안 잘림 */}
@@ -159,13 +196,28 @@ export function AccountMenu({
             })
           )}
 
-          {/* 잔여 크레딧 — 로그인 계정=내 에이전트 보고값(검증), 비로그인=라이브 활성 워크스페이스 */}
-          {activeCredits != null && (
+          {/* 잔여 크레딧(힉스필드 스타일) — "Credits  N left" + 점 세그먼트 게이지(남은 비율).
+              로그인 계정=내 에이전트 보고값(검증), 비로그인=라이브 활성 워크스페이스 */}
+          {activeCredits != null && creditPct != null && (
             <div className="acct-credits">
-              <span className="acct-credits-label">Credits</span>
-              <span className="acct-credits-val">
-                {Math.round(activeCredits).toLocaleString()} left
-              </span>
+              <div className="acct-credits-top">
+                <span className="acct-credits-label">Credits</span>
+                <span className="acct-credits-left">
+                  {Math.round(activeCredits).toLocaleString()} left
+                </span>
+              </div>
+              <div
+                className="acct-dots"
+                role="meter"
+                aria-label="Credits remaining"
+                aria-valuemin={0}
+                aria-valuemax={MONTHLY_CREDIT_MAX}
+                aria-valuenow={Math.round(activeCredits)}
+              >
+                {Array.from({ length: DOT_COUNT }, (_, i) => (
+                  <span key={i} className={"acct-dot" + (i < litDots ? " on" : "")} />
+                ))}
+              </div>
             </div>
           )}
           {!liveMode && reported?.reported && (

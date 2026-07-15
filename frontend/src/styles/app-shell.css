@@ -80,7 +80,19 @@
 .topbar .topbar-search .as-icon { font-size: 14px; }
 
 /* 계정·워크스페이스 통합 메뉴(Assets 옆) */
-.acct-menu { position: relative; }
+.acct-menu { position: relative; display: inline-flex; align-items: center; }
+/* 아바타 버튼(투명 래퍼) — 링을 감싼다 */
+.acct-avatar-btn { background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; flex: none; }
+/* 크레딧 링 — conic-gradient 라임 호(弧)가 남은 비율. 라임 아바타와 겹치지 않게 어두운 간격. */
+.acct-ring {
+  width: 40px; height: 40px; border-radius: 50%; padding: 3px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+.acct-ring.on .acct-avatar { width: 34px; height: 34px; border: 2px solid var(--bg); }
+.acct-avatar-btn:hover .acct-ring.on { filter: brightness(1.08); }
+/* 드롭다운 헤더의 큰 아바타 링 — 간격은 드롭다운 배경(--panel) 기준 */
+.acct-ring-lg { width: 46px; height: 46px; }
+.acct-ring-lg.on .acct-av-lg { width: 40px; height: 40px; border: 2px solid var(--panel); }
 .acct-avatar {
   width: 34px; height: 34px; border-radius: 50%; cursor: pointer; flex: none;
   border: 1px solid var(--border); color: var(--accent-ink); font-weight: 800; font-size: 14px;
@@ -165,13 +177,17 @@
 .fp-cancel:hover { color: var(--text); }
 .fp-ok { background: var(--grad); color: var(--accent-ink); font-weight: 700; border: none; }
 .fp-ok:hover { filter: brightness(1.1); }
-/* 잔여 크레딧 행 */
+/* 잔여 크레딧(힉스필드 스타일) — 드롭다운: "Credits  N left" + 점 세그먼트 게이지 */
 .acct-credits {
-  display: flex; justify-content: space-between; align-items: center;
   padding: 9px; margin-top: 4px; border-radius: 8px; background: rgba(255,255,255,0.03);
 }
+.acct-credits-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .acct-credits-label { font-size: 12px; color: var(--muted); }
-.acct-credits-val { font-size: 13px; font-weight: 700; color: var(--text); }
+.acct-credits-left { font-size: 13px; font-weight: 700; color: var(--text); }
+/* 점 세그먼트 — 켜진 칸(라임)이 남은 비율. 위에 텍스트 없어 라임 위 검은글씨 규칙과 무관 */
+.acct-dots { display: flex; justify-content: space-between; align-items: center; }
+.acct-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.14); flex: none; }
+.acct-dot.on { background: var(--accent); }
 
 /* 내 계정 관리 — 플로팅 패널(우측 상단, 모달 아님). 불투명 배경으로 시인성 확보 */
 .manage-float {
