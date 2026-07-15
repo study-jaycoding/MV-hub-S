@@ -52,6 +52,7 @@ import {
   type SpotlightMention,
 } from "../lib/useSpotlightMentionSources";
 import { useSpotlightTray } from "../lib/useSpotlightTray";
+import { useSpotlightTokenWrap } from "../lib/useSpotlightTokenWrap";
 import { useModels, ALLOWED, HIDDEN_PARAMS } from "../lib/useModels";
 import {
   notifySpotlightAssetsChanged,
@@ -66,7 +67,7 @@ import { SpotlightOptionsBar } from "./spotlight/SpotlightOptionsBar";
 import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls";
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
-import { SpotlightRefTray, type SpotlightTrayRef } from "./spotlight/SpotlightRefTray";
+import { SpotlightRefTray } from "./spotlight/SpotlightRefTray";
 import type { SceneRef } from "../lib/scenes";
 import type { Generation, PreviewTarget } from "../types";
 
@@ -163,6 +164,20 @@ export function SpotlightPrompt({
   const histIdxRef = useRef(-1);
   // 드래그해서 불러온 원본 gen id — 다음 생성의 자동 히스토리(원본→파생) 부모. 제출 시 1회 소모.
   const dragParentRef = useRef<string | null>(null);
+
+  // 트레이 역할 배지 갱신 신호 — 안정된 콜백으로 만들어 토큰 훅 blur effect 가 원본처럼 model/trayRefs 변화 때만 재구독되게 한다.
+  const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
+  // 미디어 레퍼런스 토큰(@image1/<<<video1>>>) → 색 있는 알약 정규화 — useSpotlightTokenWrap 훅으로 추출(동작 보존).
+  //  editingTokenNodeRef 는 멘션 감지와 공유하므로 컴포넌트 소유, 훅엔 주입(blur 에서 null 로만 해제).
+  //  scheduleLiveWrap 은 아래 onEditorInput/onCaretMove 가 (이벤트 시점에) 참조 — 선언 순서상 forward 참조지만 호출은 마운트 후라 안전.
+  const { resolveTokenMedia, scheduleLiveWrap } = useSpotlightTokenWrap({
+    model,
+    trayRefs,
+    editorRef,
+    editingTokenNodeRef,
+    composingRef,
+    onPromptChanged: bumpPromptTick,
+  });
 
   const updatePlaceholder = () => {
     const ed = editorRef.current;
@@ -363,23 +378,6 @@ export function SpotlightPrompt({
     ed.focus();
   };
 
-  // 토큰(@image1/<<<video1>>>)의 종류·번호 → 그 트레이 항목의 썸네일/비디오 URL. 알약에 미디어를 넣는 데 쓴다.
-  const resolveTokenMedia = useCallback(
-    (kind: string, n: number, refsOverride?: SpotlightTrayRef[]): string | undefined => {
-      const type = kind === "video" ? "video" : kind === "audio" ? "audio" : "image";
-      let c = 0;
-      // refsOverride: 재사용 직후 setTrayRefs 가 아직 state 에 반영 전이라, 방금 만든 트레이로 직접 푼다(stale 방지).
-      for (const ref of refsOverride ?? trayRefs) {
-        if (ref.type === type && ++c === n) {
-          // 항목이 존재하면 썸네일이 없어도 "" 를 돌려줘 '존재함'을 알린다(undefined = 트레이에 없음 = missing).
-          return type === "video" ? refSrc(ref.file_path) || "" : ref.thumb || "";
-        }
-      }
-      return undefined;
-    },
-    [trayRefs],
-  );
-
   // ↑↓ 히스토리 항목 복원 — 에디터(파트)뿐 아니라 트레이 레퍼런스도 되살린다(uid 재생성). 토큰 프롬프트가
   // 레퍼런스 없이 제출되던 문제 해결. 방금 만든 freshTray 로 알약 썸네일을 풀어 stale 방지.
   const applyHistEntry = (ed: HTMLElement, entry: HistEntry) => {
@@ -395,38 +393,6 @@ export function SpotlightPrompt({
     updatePlaceholder();
     setPromptTick((n) => n + 1);
   };
-
-  // 입력창을 벗어나면(blur) 손으로 친 토큰(<<<video1>>>·@image1·언더바 변형)을 알약으로 감싼다(썸네일 포함).
-  // 편집 중엔 안 건드리고(포커스 유지), 벗어날 때만 정리 → 캐럿 튐 없이 @처럼 보이게 한다.
-  useEffect(() => {
-    const ed = editorRef.current;
-    if (!ed) return;
-    const onBlur = () => {
-      editingTokenNodeRef.current = null; // 편집 종료 — 재알약화되므로 멘션 억제 해제
-      if (!usesMediaRefTokens(model)) return;
-      wrapRefTokens(ed, resolveTokenMedia); // 풀어둔 토큰·손으로 친 토큰을 알약으로 정규화
-      setPromptTick((n) => n + 1);
-    };
-    ed.addEventListener("blur", onBlur);
-    return () => ed.removeEventListener("blur", onBlur);
-  }, [model, resolveTokenMedia]);
-
-  // 라이브 알약화 — 타이핑이 잠깐 멈추면 손으로 친 토큰(<<<video1>>>·@image1)을 바로 알약으로 감싼다.
-  // '지금 입력 중인 토큰'(캐럿이 있는 텍스트 노드)은 건드리지 않아 캐럿이 튀지 않는다(에디터를 벗어날 때
-  // 까지 기다리던 딜레이 제거). 편집 모드(알약 클릭)인 동안엔 쉬어 이름 편집을 방해하지 않는다.
-  const liveWrapTimer = useRef<number | null>(null);
-  const scheduleLiveWrap = useCallback(() => {
-    if (!usesMediaRefTokens(model)) return;
-    if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);
-    liveWrapTimer.current = window.setTimeout(() => {
-      const ed = editorRef.current;
-      if (!ed || composingRef.current) return;
-      wrapRefTokens(ed, resolveTokenMedia, { skipCaretNode: true }); // 입력 중 토큰(캐럿 노드)은 두고 나머지만
-    }, 350);
-  }, [model, resolveTokenMedia]);
-  useEffect(() => () => {
-    if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);
-  }, []);
 
   const clearTagFilter = () => setTagFilter(null);
 
