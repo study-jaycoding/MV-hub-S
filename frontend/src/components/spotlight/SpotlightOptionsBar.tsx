@@ -175,7 +175,12 @@ export function SpotlightOptionsBar({
             {open === p.name && (
               <div className="sl-dropdown">
                 <div className="sl-dd-scroll">
-                  {p.enum.map((v) => {
+                  {/* aspect_ratio 는 CLI 에 auto 가 없어도 맨 앞에 'auto' 를 합성한다(제출 시 레퍼런스 비율로 치환).
+                      CLI 가 이미 auto 를 주는 모델은 중복 추가하지 않는다. */}
+                  {(p.name === "aspect_ratio" && !p.enum.includes("auto")
+                    ? ["auto", ...p.enum]
+                    : p.enum
+                  ).map((v) => {
                     const con = constraints[p.name];
                     const blocked = !!con && !con.allow.has(v);
                     return (

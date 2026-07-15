@@ -3,6 +3,7 @@
 //  · 모델 로드 실패 시 주입받은 onError 로 보고(기존 setError 자리).
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { autoRatioForCost } from "./aspectAuto";
 import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
@@ -328,7 +329,7 @@ export function useModels(onError: (msg: string) => void) {
     setCostLoading(true);
     const t = window.setTimeout(() => {
       api
-        .estimateCost(model, optionValues)
+        .estimateCost(model, autoRatioForCost(optionValues, params))
         .then(
           (r) =>
             alive &&

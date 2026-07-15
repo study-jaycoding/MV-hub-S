@@ -43,6 +43,7 @@ import {
   usesMediaRefTokens,
 } from "../lib/seedancePrompt";
 import { buildSpotlightCreateBody } from "../lib/spotlightSubmit";
+import { resolveAutoAspectRatio } from "../lib/aspectAuto";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useSpotlightAgentStatus } from "../lib/useSpotlightAgentStatus";
@@ -762,6 +763,7 @@ export function SpotlightPrompt({
   };
 
   const submit = async () => {
+    if (busy) return; // 진행 중(비율 측정 await 포함) 재진입 방지 — 중복 생성 차단
     setError(null);
     const ed = editorRef.current;
     if (!ed) return;
@@ -778,6 +780,11 @@ export function SpotlightPrompt({
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장. 줄바꿈 보존(재사용 시 복원).
     const parts = serializeParts(ed);
     const displayPrompt = partsDisplay(parts);
+    // 비율 측정(auto)·생성 동안 버튼을 비활성화해 중복 제출을 막는다(측정이 최대 몇 초 걸릴 수 있음).
+    setBusy(true);
+    // aspect_ratio 가 'auto'(우리가 합성한 값)면 CLI 로 보내기 전에 레퍼런스 비율로 치환한다(CLI 는 auto 를 거부).
+    // 트레이 + 인라인 칩 이미지를 모두 후보로(접힌 상태의 인라인 이미지도 비율 측정 대상).
+    const resolvedOpts = await resolveAutoAspectRatio(optionValues, tunable, [...trayRefs, ...inlineRefs]);
     const { body, error: bodyError } = buildSpotlightCreateBody({
       text,
       inlineRefs,
@@ -785,7 +792,7 @@ export function SpotlightPrompt({
       parts,
       displayPrompt,
       model,
-      optionValues,
+      optionValues: resolvedOpts,
       armedAutoTags,
       activeProjectId,
       // 무장 폴더가 현재 프로젝트와 일치할 때만 folder_path 로 라벨링(전역변수 가드).
@@ -794,9 +801,9 @@ export function SpotlightPrompt({
     });
     if (bodyError || !body) {
       setError(bodyError || "생성 요청을 만들 수 없습니다.");
+      setBusy(false);
       return;
     }
-    setBusy(true);
     try {
       // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡). 씬 모드도 N장 → 그 카드에 변형으로 누적된다.
       const batch = Math.max(1, count);
