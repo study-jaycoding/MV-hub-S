@@ -26,6 +26,13 @@ export function CompareModal({
   const modelName = useModelDisplayName();
   const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값만 보기 토글
   const [promptOnly, setPromptOnly] = useState(false); // 프롬프트만 보기(이미지·파라미터 숨김)
+  // 이미지 표시 방식 — 전체 보기(contain, 블랙바) ↔ 꽉 채우기(cover, 크롭). 다음에 열어도 유지.
+  const [fitContain, setFitContain] = useState<boolean>(
+    () => localStorage.getItem("cmpFit") === "1",
+  );
+  useEffect(() => {
+    localStorage.setItem("cmpFit", fitContain ? "1" : "0");
+  }, [fitContain]);
   // 소스(참조) 원본 미리보기 — 비교 모달 위에 뜨는 자체 라이트박스(전역 미리보기는 z-index 가 낮아 가림).
   const [srcPreview, setSrcPreview] = useState<CompareSourcePreview | null>(null);
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]); // 영상 동기 재생용
@@ -133,6 +140,17 @@ export function CompareModal({
             선택한 것끼리 비교합니다.
           </span>
           <div className="cmp-toggles">
+            <button
+              className={"fit-toggle" + (fitContain ? " on" : "")}
+              onClick={() => setFitContain((v) => !v)}
+              title={
+                fitContain
+                  ? "전체 보기(블랙바) — 클릭 시 꽉 채우기"
+                  : "꽉 채우기(크롭) — 클릭 시 전체 보기"
+              }
+            >
+              {fitContain ? "▢" : "▣"}
+            </button>
             <label className="cmp-onlydiff">
               <input
                 type="checkbox"
@@ -154,7 +172,7 @@ export function CompareModal({
         </div>
         <div className="cmp-body">
           <div
-            className="cmp-cols"
+            className={"cmp-cols" + (fitContain ? " fit-contain" : "")}
             style={{ gridTemplateColumns: `repeat(${gens.length}, minmax(220px, 1fr))` }}
           >
             {gens.map((generation, idx) => (

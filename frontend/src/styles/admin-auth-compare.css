@@ -266,6 +266,8 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .cmp-col.final { border-color: #e8b62c; box-shadow: 0 0 0 1px #e8b62c; }
 .cmp-thumb { position: relative; aspect-ratio: 1/1; border-radius: 8px; overflow: hidden; background: #0e0f13; }
 .cmp-thumb img, .cmp-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; background: #0e0f13; }
+/* 전체 보기 토글(▢) — 크롭 대신 이미지 전체를 보여준다(위아래/좌우 블랙바). */
+.cmp-cols.fit-contain .cmp-thumb img, .cmp-cols.fit-contain .cmp-thumb video { object-fit: contain; }
 .cmp-thumb-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 12px; }
 .cmp-final-badge { position: absolute; top: 6px; left: 6px; font-size: 10px; font-weight: 800;
   background: #e8b62c; color: #2a1d00; padding: 2px 6px; border-radius: 6px; }
