@@ -108,7 +108,8 @@ export function SpotlightPrompt({
 }: Props) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
-          optionValues, setOptionValues, setOpt, cost, costLoading, pendingOptsRef, setOpenRef } =
+          optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
+          pendingOptsRef, setOpenRef } =
     useModels((msg) => setError(msg));
   const [count, setCount] = useState(1); // 한 번에 N장 생성(배치)
   const [open, setOpen] = useState<string | null>(null); // 열린 드롭다운 키(파라미터명 또는 'model')
@@ -777,34 +778,40 @@ export function SpotlightPrompt({
       setError("모델을 선택하세요.");
       return;
     }
+    // 모델 전환 직후 새 스키마/옵션 로드 전이면 stale 옵션(이전 모델 값·enum)이 섞여 제출될 수 있다 → 잠깐 막는다.
+    if (paramsLoading || paramsModel !== model) {
+      setError("모델 옵션을 불러오는 중입니다. 잠시 후 다시 생성해 주세요.");
+      return;
+    }
     // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장. 줄바꿈 보존(재사용 시 복원).
     const parts = serializeParts(ed);
     const displayPrompt = partsDisplay(parts);
     // 비율 측정(auto)·생성 동안 버튼을 비활성화해 중복 제출을 막는다(측정이 최대 몇 초 걸릴 수 있음).
     setBusy(true);
-    // aspect_ratio 가 'auto'(우리가 합성한 값)면 CLI 로 보내기 전에 레퍼런스 비율로 치환한다(CLI 는 auto 를 거부).
-    // 트레이 + 인라인 칩 이미지를 모두 후보로(접힌 상태의 인라인 이미지도 비율 측정 대상).
-    const resolvedOpts = await resolveAutoAspectRatio(optionValues, tunable, [...trayRefs, ...inlineRefs]);
-    const { body, error: bodyError } = buildSpotlightCreateBody({
-      text,
-      inlineRefs,
-      trayRefs,
-      parts,
-      displayPrompt,
-      model,
-      optionValues: resolvedOpts,
-      armedAutoTags,
-      activeProjectId,
-      // 무장 폴더가 현재 프로젝트와 일치할 때만 folder_path 로 라벨링(전역변수 가드).
-      folderPath:
-        armedFolder && armedFolder.projectId === activeProjectId ? armedFolder.path : undefined,
-    });
-    if (bodyError || !body) {
-      setError(bodyError || "생성 요청을 만들 수 없습니다.");
-      setBusy(false);
-      return;
-    }
     try {
+      // aspect_ratio 가 'auto'(우리가 합성한 값)면 CLI 로 보내기 전에 레퍼런스 비율로 치환한다(CLI 는 auto 를 거부).
+      // 트레이 + 인라인 칩 이미지를 모두 후보로(접힌 상태의 인라인 이미지도 비율 측정 대상).
+      // ★비율 측정·body 생성도 try 안 — 예외가 나도 아래 catch 에서 busy 를 풀어 버튼이 영구 잠기지 않게 한다.
+      const resolvedOpts = await resolveAutoAspectRatio(optionValues, tunable, [...trayRefs, ...inlineRefs]);
+      const { body, error: bodyError } = buildSpotlightCreateBody({
+        text,
+        inlineRefs,
+        trayRefs,
+        parts,
+        displayPrompt,
+        model,
+        optionValues: resolvedOpts,
+        armedAutoTags,
+        activeProjectId,
+        // 무장 폴더가 현재 프로젝트와 일치할 때만 folder_path 로 라벨링(전역변수 가드).
+        folderPath:
+          armedFolder && armedFolder.projectId === activeProjectId ? armedFolder.path : undefined,
+      });
+      if (bodyError || !body) {
+        setError(bodyError || "생성 요청을 만들 수 없습니다.");
+        setBusy(false);
+        return;
+      }
       // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡). 씬 모드도 N장 → 그 카드에 변형으로 누적된다.
       const batch = Math.max(1, count);
       const created = await Promise.all(Array.from({ length: batch }, () => api.create(body)));

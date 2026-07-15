@@ -1,5 +1,7 @@
 import type { ChipRef, PromptPart } from "./promptEditor";
 import {
+  SEEDANCE_TOKEN_SRC,
+  seedanceAtTokenKind,
   emptySeedanceTokenRoles,
   normalizeMediaRefTokensBasic,
   normalizeSeedancePromptTokens,
@@ -46,6 +48,31 @@ interface Params {
   folderPath?: string; // 무장 폴더(렌더 루트 상대 경로) — 생성물 folder_path 로 저장
 }
 
+// 비-seedance 이미지 모델(Nano Banana·GPT Image 2 등): 프롬프트의 레퍼런스 토큰(@image3·<<<image3>>>)이
+// 실제 첨부 refs(트레이+인라인)의 해당 타입 개수를 넘으면 = 트레이에 없는 번호 → CLI 로 가서 크레딧만
+// 쓰고 실패/무시된다. 제출 전에 막는다(seedance 는 validateSeedanceTokenRoles 로 이미 검증).
+function validateMediaRefTokenPresence(text: string, refs: { type: string }[]): string | null {
+  const counts = {
+    image: refs.filter((r) => r.type === "image").length,
+    video: refs.filter((r) => r.type === "video").length,
+    audio: refs.filter((r) => r.type === "audio").length,
+  };
+  const re = new RegExp(SEEDANCE_TOKEN_SRC, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const raw = String(m[1] || m[3] || "");
+    const n = Number(m[2] || m[4]);
+    const kind = seedanceAtTokenKind(raw);
+    const type = kind === "video" ? "video" : kind === "audio" ? "audio" : "image";
+    const label = type === "video" ? "비디오" : type === "audio" ? "오디오" : "이미지";
+    if (!Number.isFinite(n) || n < 1) return `${label} 레퍼런스 토큰 번호가 올바르지 않습니다.`;
+    if (n > counts[type]) {
+      return `${label} 레퍼런스 ${n}번이 없습니다. 빨간 레퍼런스 토큰을 지우거나 레퍼런스를 추가해 주세요.`;
+    }
+  }
+  return null;
+}
+
 export function buildSpotlightCreateBody({
   text,
   inlineRefs,
@@ -84,6 +111,12 @@ export function buildSpotlightCreateBody({
     return { ...ref, role: `@Image${++imgN}` };
   });
   const refs = [...trayWithRoles, ...inlineWithRoles];
+
+  // 없는 번호의 레퍼런스 토큰(빨강 알약)이 섞인 채 제출되면 CLI 가 크레딧만 쓰고 실패한다 → 차단.
+  if (!seedanceMode && usesMediaRefTokens(model)) {
+    const tokenError = validateMediaRefTokenPresence(text, refs);
+    if (tokenError) return { body: null, error: tokenError };
+  }
 
   const imageIndexMap = seedanceMode ? seedanceOmniImageIndexMap(trayRefs, tokenRoles) : undefined;
   const videoIndexMap = seedanceMode ? seedanceVideoIndexMap(trayRefs) : undefined;

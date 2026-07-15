@@ -53,15 +53,19 @@ function measureRatio(url: string): Promise<number | null> {
     }
     const img = new Image();
     let done = false;
+    let timer = 0;
     const finish = (r: number | null) => {
       if (done) return;
       done = true;
+      if (timer) window.clearTimeout(timer); // 성공/실패 시 남은 타이머·핸들러 정리(누수 방지)
+      img.onload = null;
+      img.onerror = null;
       resolve(r);
     };
     img.onload = () =>
       finish(img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : null);
     img.onerror = () => finish(null);
-    window.setTimeout(() => finish(null), 4000); // 안전 타임아웃(로드 지연 시 폴백)
+    timer = window.setTimeout(() => finish(null), 4000); // 안전 타임아웃(로드 지연 시 폴백)
     img.src = url;
   });
 }
@@ -82,8 +86,17 @@ export async function resolveAutoAspectRatio(
   const firstImg = refs.find((r) => r.type === "image");
   let chosen: string | null = null;
   if (firstImg) {
-    const ratio = await measureRatio(refSrc(firstImg.file_path) || firstImg.thumb);
-    if (ratio) chosen = snapToEnum(ratio, enumVals);
+    // 원본 URL 로드 실패(만료·hotlink 차단·타임아웃) 시 썸네일로 재시도 → 폴백(1:1) 확률을 낮춘다.
+    const candidates = [refSrc(firstImg.file_path), firstImg.thumb].filter(
+      (u): u is string => !!u,
+    );
+    for (const url of candidates) {
+      const ratio = await measureRatio(url);
+      if (ratio) {
+        chosen = snapToEnum(ratio, enumVals);
+        break;
+      }
+    }
   }
   return { ...optionValues, aspect_ratio: chosen || fallbackRatio(enumVals) };
 }

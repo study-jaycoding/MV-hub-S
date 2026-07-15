@@ -72,18 +72,24 @@ export function AccountMenu({
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
   const activeWs = current || wsList.find((w) => !w.name);
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
-  const activeCredits = liveMode ? activeWs?.credits ?? null : reported?.credits ?? null;
+  // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
+  const rawCredits = liveMode ? activeWs?.credits : reported?.credits;
+  const parsedCredits =
+    rawCredits == null ? null : typeof rawCredits === "number" ? rawCredits : Number(rawCredits);
+  const activeCredits =
+    parsedCredits != null && Number.isFinite(parsedCredits) ? parsedCredits : null;
+  const gaugeCredits = activeCredits != null ? Math.max(0, activeCredits) : null; // 음수는 0으로(빈 게이지)
   // 게이지 채움 비율 = 남은 크레딧 / 월 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
   const creditPct =
-    activeCredits != null
-      ? Math.max(0, Math.min(100, (activeCredits / MONTHLY_CREDIT_MAX) * 100))
+    gaugeCredits != null && MONTHLY_CREDIT_MAX > 0
+      ? Math.max(0, Math.min(100, (gaugeCredits / MONTHLY_CREDIT_MAX) * 100))
       : null;
   // 켜진 점 개수 = 비율×칸수. 크레딧이 조금이라도 남았으면 최소 1칸은 켠다.
   const litDots =
     creditPct != null
       ? Math.min(
           DOT_COUNT,
-          Math.max(activeCredits && activeCredits > 0 ? 1 : 0, Math.round((creditPct / 100) * DOT_COUNT)),
+          Math.max(gaugeCredits && gaugeCredits > 0 ? 1 : 0, Math.round((creditPct / 100) * DOT_COUNT)),
         )
       : 0;
   // 아바타 링 배경 — conic 라임 호가 남은 비율(상단바·드롭다운 두 아바타에 공용).
@@ -212,7 +218,7 @@ export function AccountMenu({
                 aria-label="Credits remaining"
                 aria-valuemin={0}
                 aria-valuemax={MONTHLY_CREDIT_MAX}
-                aria-valuenow={Math.round(activeCredits)}
+                aria-valuenow={Math.round(gaugeCredits ?? 0)}
               >
                 {Array.from({ length: DOT_COUNT }, (_, i) => (
                   <span key={i} className={"acct-dot" + (i < litDots ? " on" : "")} />

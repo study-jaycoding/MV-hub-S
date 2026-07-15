@@ -27,11 +27,19 @@ export function CompareModal({
   const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값만 보기 토글
   const [promptOnly, setPromptOnly] = useState(false); // 프롬프트만 보기(이미지·파라미터 숨김)
   // 이미지 표시 방식 — 전체 보기(contain, 블랙바) ↔ 꽉 채우기(cover, 크롭). 다음에 열어도 유지.
-  const [fitContain, setFitContain] = useState<boolean>(
-    () => localStorage.getItem("cmpFit") === "1",
-  );
+  const [fitContain, setFitContain] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("cmpFit") === "1";
+    } catch {
+      return false; // 프라이빗 모드·스토리지 차단 환경에서 접근이 막혀도 모달이 크래시하지 않게
+    }
+  });
   useEffect(() => {
-    localStorage.setItem("cmpFit", fitContain ? "1" : "0");
+    try {
+      localStorage.setItem("cmpFit", fitContain ? "1" : "0");
+    } catch {
+      /* 스토리지 차단 환경 — 유지 저장만 건너뛴다 */
+    }
   }, [fitContain]);
   // 소스(참조) 원본 미리보기 — 비교 모달 위에 뜨는 자체 라이트박스(전역 미리보기는 z-index 가 낮아 가림).
   const [srcPreview, setSrcPreview] = useState<CompareSourcePreview | null>(null);

@@ -195,6 +195,10 @@ export function useModels(onError: (msg: string) => void) {
   const [optionValues, setOptionValues] = useState<Record<string, string | number | boolean>>({});
   const [cost, setCost] = useState<number | null>(null);
   const [costLoading, setCostLoading] = useState(false);
+  // 현재 params/optionValues 가 '어느 모델' 것인지 + 로딩 중인지 — 모델 전환 직후 스키마가 바뀌기 전
+  // stale 옵션으로 제출·견적하는 것을 막는다(제출은 paramsModel===model 일 때만).
+  const [paramsModel, setParamsModel] = useState("");
+  const [paramsLoading, setParamsLoading] = useState(false);
   // 카드 드롭 복원 시: 모델 변경 effect 가 기본값으로 옵션을 덮어쓰기 전, 복원할 옵션을 임시 보관.
   // 드롭/재사용이 '이 모델로 바꾼 뒤 이 옵션을 덮어라'를 예약. model 스탬프로 — 빠른 연속 재사용 시
   // 다른 생성물의 옵션이 엉뚱한 모델에 적용되던 경쟁을 막는다(model 일치할 때만 소비).
@@ -236,6 +240,8 @@ export function useModels(onError: (msg: string) => void) {
     if (!model) {
       setParams([]);
       setOptionValues({});
+      setParamsModel("");
+      setParamsLoading(false);
       return;
     }
     // 파라미터 → params + 기본값 옵션 적용. 드롭 복원이 대기 중이면 기본값 위에 덮음.
@@ -250,6 +256,8 @@ export function useModels(onError: (msg: string) => void) {
       } else {
         setOptionValues(init);
       }
+      setParamsModel(model); // 이제 params/optionValues 가 이 model 것으로 정합
+      setParamsLoading(false);
     };
     // 캐시 적중 → 네트워크 없이 즉시 적용(토글 딜레이 제거).
     const cached = paramsCacheRef.current[model];
@@ -257,6 +265,7 @@ export function useModels(onError: (msg: string) => void) {
       apply(cached);
       return;
     }
+    setParamsLoading(true); // 네트워크 로드 시작 — 완료 전까지 옵션/스키마는 이전 모델 것(stale)
     let alive = true;
     api
       .modelParams(model)
@@ -268,6 +277,8 @@ export function useModels(onError: (msg: string) => void) {
         if (alive) {
           setParams([]);
           setOptionValues({});
+          setParamsModel(model); // 실패해도 이 model 처리 종료로 표시(무한 로딩 방지)
+          setParamsLoading(false);
         }
       });
     return () => {
@@ -317,6 +328,12 @@ export function useModels(onError: (msg: string) => void) {
       setCost(null);
       return;
     }
+    // 모델 전환 직후 새 params 로드 전(stale)이면 이전 스키마로 견적하지 않는다 — 로드 완료 시 재실행된다.
+    // 그동안 이전 모델의 cost 가 남아 보이지 않게 '계산 중'으로 둔다(오해 방지).
+    if (paramsModel !== model || paramsLoading) {
+      setCostLoading(true);
+      return;
+    }
     const key = costKey(model, optionValues);
     const hit = costCacheRef.current[key];
     if (hit !== undefined) {
@@ -343,7 +360,7 @@ export function useModels(onError: (msg: string) => void) {
       alive = false;
       clearTimeout(t);
     };
-  }, [model, optionValues]);
+  }, [model, optionValues, paramsModel, paramsLoading]);
 
   // 현재 옵션에서 활성화된 조합 제약(예: fast → resolution 480p/720p 만).
   const constraints = activeConstraints(model, optionValues);
@@ -363,5 +380,6 @@ export function useModels(onError: (msg: string) => void) {
   };
 
   return { models, type, setType, model, setModel, params, tunable, constraints, typeModels, modelName,
-           optionValues, setOptionValues, setOpt, cost, costLoading, pendingOptsRef, setOpenRef };
+           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
+           pendingOptsRef, setOpenRef };
 }
