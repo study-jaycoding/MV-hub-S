@@ -28,6 +28,7 @@ import {
   type SceneEdge,
   type SceneRef,
 } from "../../lib/scenes";
+import { classifyEdges, computeBridgeEdges, edgePathXY, fanOffset } from "../../lib/sceneEdges";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { TagEditor } from "../TagEditor";
@@ -955,39 +956,7 @@ export function SceneBoard({
   const visibleCards = hiddenIds.size ? cards.filter((c) => !hiddenIds.has(c.id)) : cards;
   // 숨긴(회색) 카드가 중간에 있어도 앞뒤 흐름이 끊긴 것처럼 보이지 않게 — 숨김 노드를 건너뛰어
   // 보이는 '앞 카드 → 뒤 카드'로 회색 점선 우회선을 만든다(중간에 뭔가 숨겨져 있다는 표시).
-  const bridgeEdges: { id: string; from: string; to: string }[] = [];
-  if (hiddenIds.size) {
-    const outAdj = new Map<string, string[]>();
-    for (const e of edges) {
-      const arr = outAdj.get(e.from);
-      if (arr) arr.push(e.to);
-      else outAdj.set(e.from, [e.to]);
-    }
-    const made = new Set<string>();
-    for (const v of cards) {
-      if (hiddenIds.has(v.id)) continue; // 보이는 노드에서만 출발
-      const visited = new Set<string>();
-      const queue: { id: string; viaHidden: boolean }[] = (outAdj.get(v.id) || []).map((id) => ({
-        id,
-        viaHidden: false,
-      }));
-      while (queue.length) {
-        const { id, viaHidden } = queue.shift()!;
-        if (visited.has(id)) continue;
-        visited.add(id);
-        if (hiddenIds.has(id)) {
-          for (const t of outAdj.get(id) || []) queue.push({ id: t, viaHidden: true });
-        } else if (viaHidden && id !== v.id) {
-          // 숨김을 1개 이상 지나 도달한 '다른' 보이는 노드 = 우회선 대상(사이클로 자기 자신 복귀는 제외)
-          const key = v.id + ">" + id;
-          if (!made.has(key)) {
-            made.add(key);
-            bridgeEdges.push({ id: "bridge:" + key, from: v.id, to: id });
-          }
-        }
-      }
-    }
-  }
+  const bridgeEdges = computeBridgeEdges(cards, edges, hiddenIds);
   const heightOf = (c: SceneCard) =>
     c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H;
   const edgePath = (from: SceneCard, to: SceneCard) => {
@@ -1004,22 +973,7 @@ export function SceneBoard({
   //      (1) 씬 로컬 refs 에 소스의 source_gen_id 가 들어있거나(@·드래그로 넣은 경우),
   //      (2) 백엔드 history: 타깃이 소스를 레퍼런스 부모(materials)로 실제 사용(수동 연결도 잡힘).
   //  · 그 외 생성→생성은 '단순 계보 연결'(초록 실선).
-  const refCardEdgeIds = new Set<string>();
-  const genRefEdgeIds = new Set<string>();
-  for (const e of edges) {
-    const from = cardById(e.from);
-    const to = cardById(e.to);
-    if (!from || !to) continue;
-    if (from.kind === "reference") {
-      refCardEdgeIds.add(e.id);
-      continue;
-    }
-    const srcGens = variantIds(from);
-    if (!srcGens.length) continue;
-    const byRefs = (to.refs || []).some((r) => r.source_gen_id && srcGens.includes(r.source_gen_id));
-    const byHistory = variantIds(to).some((b) => (refParents[b] || []).some((p) => srcGens.includes(p)));
-    if (byRefs || byHistory) genRefEdgeIds.add(e.id);
-  }
+  const { refCardEdgeIds, genRefEdgeIds } = classifyEdges(edges, cardsById, refParents);
   // 한 포트에 연결이 여러 개면 세로로 펼쳐(fan-out) 끝점이 겹치지 않게 — 선마다 자기 색 점을 갖게 한다.
   // (연결이 1개면 오프셋 0 → 포트 정중앙. 흔한 경우는 그대로.)
   // ★실제로 렌더되는(보이는·유효한) 연결만으로 계산 — 숨긴 형제 연결이 보이는 단일선을 밀지 않게.
@@ -1040,21 +994,12 @@ export function SceneBoard({
   for (const [, list] of outEdges) list.sort((p, q) => yOf(p.to) - yOf(q.to));
   for (const [, list] of inEdges) list.sort((p, q) => yOf(p.from) - yOf(q.from));
   const FAN = 13;
-  const fanOffset = (list: SceneEdge[] | undefined, id: string) => {
-    if (!list || list.length < 2) return 0;
-    const i = list.findIndex((x) => x.id === id);
-    return (i - (list.length - 1) / 2) * FAN;
-  };
   const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => ({
     x1: a.x + CARD_W,
-    y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id),
+    y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
     x2: b.x,
-    y2: b.y + heightOf(b) / 2 + fanOffset(inEdges.get(b.id), e.id),
+    y2: b.y + heightOf(b) / 2 + fanOffset(inEdges.get(b.id), e.id, FAN),
   });
-  const edgePathXY = (x1: number, y1: number, x2: number, y2: number) => {
-    const mx = (x1 + x2) / 2;
-    return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
-  };
 
   return (
     <div
