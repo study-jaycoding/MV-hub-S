@@ -20,6 +20,7 @@ from ._common import (
 # ── 각 모듈 전량 re-export ────────────────────────────────────────────────
 from .identity import *  # noqa: F401,F403
 from .tags import *  # noqa: F401,F403
+from .lineage import *  # noqa: F401,F403  (generations 앞 — generations 가 lineage private helper 를 import)
 from .generations import *  # noqa: F401,F403
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)
