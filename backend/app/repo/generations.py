@@ -10,7 +10,11 @@ from typing import Any, Iterable, Optional
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
 from . import identity, tags
-from .generation_rows import _attach_children  # 조회 응답 보강(분리) — 단방향 import
+from .generation_rows import (  # 조회 응답 보강·행 페치(분리) — 단방향 import
+    _attach_children,
+    _fetch_generation,
+    _fetch_gens,
+)
 from .lineage import (  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
     _derived_depth_batch,
     _directed_lineage,
@@ -1196,19 +1200,6 @@ def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
     return {"failed_count": int(failed), "has_unread": bool(unread)}
 
 
-def _fetch_generation(
-    conn: sqlite3.Connection, gen_id: str, account_uid: Optional[str] = None
-) -> Optional[dict[str, Any]]:
-    """주어진 커넥션에서 generation 한 건 직렬화(자식 첨부 포함). 없으면 None.
-    get_generation / resolve_and_get 가 공유 — 같은 요청에서 커넥션을 재사용해 중복 오픈을 막는다."""
-    row = conn.execute(
-        f"SELECT {_GEN_SELECT_COLS} WHERE g.id = ?", (gen_id,)
-    ).fetchone()
-    if not row:
-        return None
-    return _attach_children(conn, [dict(row)], viewer_uid=account_uid)[0]
-
-
 def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         return _fetch_generation(conn, gen_id, account_uid)
@@ -1293,36 +1284,6 @@ def resolve_and_get(
         local_id = idrow["id"]
         server_id = idrow["job_id"] or local_id
         return _fetch_generation(conn, local_id, account_uid), local_id, server_id
-
-
-_GEN_SELECT_COLS = (
-    "g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
-    "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-    "g.comment, g.error, g.creator_uid, g.project_id, g.folder_path, g.deleted_at, g.is_final, g.final_by, "
-    # 이 컬럼셋은 단건 조회(_fetch_generation)·_fetch_gens 가 공유한다. job_id 필드를 가진 응답 모델은
-    # GenerationOut(단건 액션 응답)뿐이라 API 노출은 단건에 그친다(목록 SELECT·HistoryOut 엔 job_id 없음).
-    # 로컬↔서버 미러가 이 앵커로 팀 카드(서버 UUID)↔로컬 행을 잇는다.
-    "g.job_id, "
-    "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-    "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id"
-)
-
-
-def _fetch_gens(
-    conn: sqlite3.Connection, ids: list[str], viewer_uid: Optional[str] = None
-) -> dict[str, dict[str, Any]]:
-    """id 목록 → {id: 직렬화된 generation dict}. 순서 보존 안 함(호출부가 id 순서로 재구성).
-    viewer_uid 가 있으면 남의 공유물 색/태그를 가린다(_attach_children 규칙)."""
-    if not ids:
-        return {}
-    ph = ",".join("?" * len(ids))
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            f"SELECT {_GEN_SELECT_COLS} WHERE g.id IN ({ph})", ids
-        ).fetchall()
-    ]
-    return {g["id"]: g for g in _attach_children(conn, rows, viewer_uid=viewer_uid)}
 
 
 def personal_meta_by_anchor(
