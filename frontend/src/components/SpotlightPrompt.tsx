@@ -115,6 +115,19 @@ export function SpotlightPrompt({
   const [error, setError] = useState<string | null>(null);
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 훅에 setOpen 등록(open/setOpen 은 UI 상태로 컴포넌트에 잔류).
   setOpenRef.current = setOpen;
+  // 옵션 팝오버(모델·비율·고급 등)가 열린 동안 바깥을 클릭하면 닫는다. 지금까진 값 선택/Escape 로만 닫혀
+  // '바깥 클릭해도 계속 떠 있던' 문제를 보완. 클릭이 어떤 .sl-chip-wrap(칩+팝오버 묶음) 안이면 유지, 밖이면 닫기.
+  // capture 단계라 내부에서 stopPropagation 해도 판정이 먼저 돈다(칩 재클릭 토글은 이후 onClick 이 처리).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest(".sl-chip-wrap")) return;
+      setOpen(null);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [open]);
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
   const { account, checkAccount } = useAccountStatus();
   const agentOn = useSpotlightAgentStatus();
