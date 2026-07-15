@@ -436,6 +436,24 @@ def _save_cost_cache() -> None:
         pass
 
 
+_ZWSP = chr(0x200B)  # zero-width space (U+200B)
+
+
+def _shield_json_prompt(text: str) -> str:
+    """CLI 는 --prompt 값이 통째로 유효한 JSON(object/array)이면 문자열이 아니라 '객체'로 파싱해
+    'prompt should be string, got object' 로 거부한다(힉스 웹은 문자열 그대로 받아 정상 처리).
+    그런 경우 zero-width space 를 앞에 붙여 CLI 가 문자열로 받게 한다(zwsp 는 모델·표시에 안 보여
+    내용은 그대로 보존). agent_push._shield_json_prompt 와 동일 로직(두 모듈은 독립 실행이라 각자 둔다)."""
+    s = text.lstrip()
+    if s[:1] not in ("{", "["):
+        return text
+    try:
+        json.loads(s)
+    except (ValueError, TypeError):
+        return text  # 완전한 JSON 이 아니면 CLI 도 문자열로 보므로 그대로 둔다
+    return _ZWSP + text
+
+
 async def estimate_cost(
     model: str,
     params: Optional[dict[str, Any]] = None,
@@ -453,7 +471,7 @@ async def estimate_cost(
     entry = _COST_CACHE.get(key)
     if entry is not None and (time.time() - entry[1]) < _COST_TTL:
         return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
-    args: list[str] = ["generate", "cost", model, "--prompt", prompt or "preview"]
+    args: list[str] = ["generate", "cost", model, "--prompt", _shield_json_prompt(prompt or "preview")]
     args += param_args
     data = await _run_json(*args, timeout=timeout)
     if not isinstance(data, dict):

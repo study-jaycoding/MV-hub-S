@@ -177,6 +177,24 @@ def _canon_media_ref_tokens(text: str) -> str:
     return text
 
 
+# CLI 는 --prompt 값이 통째로 유효한 JSON(object/array)이면 문자열이 아니라 '객체'로 파싱해
+# "prompt should be string, got object" 로 거부한다(힉스 웹은 문자열 그대로 받아 정상 생성).
+# 작업자가 JSON 형태의 지시서를 프롬프트로 넣는 경우가 있어, 그럴 때 zero-width space 한 글자를
+# 맨 앞에 붙여 CLI 가 문자열로 받게 한다(zwsp 는 모델·표시에 보이지 않아 프롬프트 내용은 그대로 보존).
+_ZWSP = chr(0x200B)  # zero-width space (U+200B)
+
+
+def _shield_json_prompt(text: str) -> str:
+    s = text.lstrip()
+    if s[:1] not in ("{", "["):
+        return text
+    try:
+        json.loads(s)
+    except (ValueError, TypeError):
+        return text  # 완전한 JSON 이 아니면(뒤에 텍스트 등) CLI 도 문자열로 보므로 그대로 둔다
+    return _ZWSP + text
+
+
 def _job_image_input_count(job: dict) -> int:
     params = job.get("params") if isinstance(job, dict) else None
     if not isinstance(params, dict):
@@ -690,6 +708,9 @@ def _execute_one(
     # 레퍼런스 토큰 @imageN 은 알약이 serialize 한 형태다. CLI 는 <<<imageN>>> 를 받아야 하므로 여기서도 되돌린다
     #  (재생성·옛 데이터 등 프론트 정규화를 우회한 경로 방어). simage/eimage→image, vedio→video.
     prompt = _canon_media_ref_tokens(prompt)
+    # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
+    # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
+    prompt = _shield_json_prompt(prompt)
     args = ["generate", "create", model, "--prompt", prompt, "--wait"]
     args += _param_flags(r.get("params") or {}, _allowed_params(cli, model))
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])

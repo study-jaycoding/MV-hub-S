@@ -88,6 +88,13 @@ def _upsert_synced(
     생성물이 CLI 목록에 남아 있는 한 다음 동기화마다 새 행으로 되살아난다(삭제 후 재등장 버그).
     트랜잭션 안에서는 휴지통 DB 를 ATTACH 조회할 수 없어(sqlite 제약), 호출측이 미리 넘겨준다."""
     g = parsed["generation"]
+    # CLI 로 넘길 때 붙인 zero-width space sentinel(통째 JSON 프롬프트를 CLI 가 문자열로 받게 하는 방어)이
+    # generate list 를 통해 되돌아오면 저장 데이터에 안 보이는 문자가 낀다 → sync/ingest/공유 import 가
+    # 모두 지나는 이 공통 관문에서 선행분을 떼어낸다(display_prompt 는 이 경로에서 안 만들어져 제외).
+    if isinstance(g.get("prompt"), str):
+        g["prompt"] = g["prompt"].lstrip(chr(0x200B))
+    if isinstance(g.get("params"), dict) and isinstance(g["params"].get("prompt"), str):
+        g["params"]["prompt"] = g["params"]["prompt"].lstrip(chr(0x200B))
     job_id = g["id"]
     if not job_id:
         return "unchanged"
