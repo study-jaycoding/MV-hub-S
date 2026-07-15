@@ -146,7 +146,7 @@ export function SpotlightPrompt({
   //  외부 파일 임포트(importExternalFilesAsRefs)는 카드/에셋 도메인이라 컴포넌트에 남기고 콜백으로 주입.
   //  화살표로 감싸는 이유: importExternalFilesAsRefs 는 아래(선언 순서상 뒤)에 있어 호출 시점(드롭=마운트 후)에만 참조 → TDZ 회피.
   const {
-    trayRefs, setTrayRefs, sceneMode, trayUidRef,
+    trayRefs, setTrayRefs, sceneMode, withFreshTrayUids,
     addAssetToTray, removeTrayRef, onTrayKeyDown, onTrayDragOver, onTrayDrop,
     onTrayItemDragStart, onTrayItemDrop,
   } = useSpotlightTray({
@@ -383,10 +383,7 @@ export function SpotlightPrompt({
   // ↑↓ 히스토리 항목 복원 — 에디터(파트)뿐 아니라 트레이 레퍼런스도 되살린다(uid 재생성). 토큰 프롬프트가
   // 레퍼런스 없이 제출되던 문제 해결. 방금 만든 freshTray 로 알약 썸네일을 풀어 stale 방지.
   const applyHistEntry = (ed: HTMLElement, entry: HistEntry) => {
-    const freshTray: SpotlightTrayRef[] = (entry.trayRefs ?? []).map((r) => ({
-      ...r,
-      uid: `t${trayUidRef.current++}`,
-    }));
+    const freshTray = withFreshTrayUids(entry.trayRefs ?? []);
     // 씬 모드에선 트레이가 씬 카드에 바인딩돼 있다 — 히스토리 '미리보기' 스크럽이 씬 카드 레퍼런스를
     // 덮어쓰지 않도록 트레이는 건드리지 않는다(재사용=확정 로드와 달리 히스토리는 비파괴적).
     if (!sceneMode) {
@@ -470,9 +467,10 @@ export function SpotlightPrompt({
       const tokenSrc = g.display_prompt || (g.prompt && g.prompt !== "(no text)" ? g.prompt : "");
       const tokenMode = hasMediaRefTokens(tokenSrc) && g.references.length > 0;
       if (tokenMode) {
-        const freshTray: SpotlightTrayRef[] = refsToChips(g.references).flatMap((p) =>
-          p.t === "chip" ? [{ ...(p.ref as ChipRef), uid: `t${trayUidRef.current++}` }] : [],
+        const chipRefs = refsToChips(g.references).flatMap((p) =>
+          p.t === "chip" ? [p.ref as ChipRef] : [],
         );
+        const freshTray = withFreshTrayUids(chipRefs);
         setTrayRefs(freshTray);
         if (!expanded) onToggleExpand(); // 토큰 방식은 트레이를 써야 하므로 펼쳐 보인다(접힘/펼침 동일하게)
         if (ed) {
@@ -544,10 +542,9 @@ export function SpotlightPrompt({
       };
       if (expanded) {
         // 확장(+) 상태 = 위 트레이에 레퍼런스로 추가(번호순). 중복 허용 — 같은 생성물도 여러 번.
-        setTrayRefs((prev) => [
-          ...prev,
-          { ...ref, uid: `t${trayUidRef.current++}`, role: isVid ? "@Video" : "@Image" },
-        ]);
+        // role 은 트레이용(@Video/@Image)으로 먼저 조정한 뒤 uid 부여(role 조정은 호출부 책임).
+        const [trayRef] = withFreshTrayUids([{ ...ref, role: isVid ? "@Video" : "@Image" }]);
+        setTrayRefs((prev) => [...prev, trayRef]);
       } else {
         // 접힘 = 인라인 칩으로 누적. 중복 허용 — '레퍼런스로 사용'을 누를 때마다 같은 생성물도 다시 추가.
         insertChip(ed, ref);

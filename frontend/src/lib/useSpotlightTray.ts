@@ -13,6 +13,7 @@ import {
   spotlightAssetRefBase,
 } from "./spotlightAssetRefs";
 import { sceneRefFingerprint, type SceneRef } from "./scenes";
+import type { ChipRef } from "./promptEditor";
 import type { SpotlightTrayRef } from "../components/spotlight/SpotlightRefTray";
 
 interface Params {
@@ -28,7 +29,8 @@ export interface SpotlightTrayApi {
   trayRefs: SpotlightTrayRef[];
   setTrayRefs: React.Dispatch<React.SetStateAction<SpotlightTrayRef[]>>;
   sceneMode: boolean;
-  trayUidRef: React.MutableRefObject<number>;
+  // refs 배열에 새 트레이 고유키(uid)를 부여한다(순수 — role 등 다른 필드는 호출부 책임). trayUidRef 내부 은닉용.
+  withFreshTrayUids: (refs: ChipRef[]) => SpotlightTrayRef[];
   addAssetToTray: (raw: string) => void;
   removeTrayRef: (i: number) => void;
   onTrayKeyDown: (e: React.KeyboardEvent) => void;
@@ -51,7 +53,10 @@ export function useSpotlightTray({
   const trayRefs = sceneMode ? boundTrayRefs : localTrayRefs;
   const setTrayRefs = sceneMode ? setBoundTrayRefs : setLocalTrayRefs;
   const trayDragIdx = useRef<number | null>(null); // 트레이 내부 재정렬 시작 인덱스
-  const trayUidRef = useRef(0); // 트레이 항목 고유키 카운터(중복 허용)
+  const trayUidRef = useRef(0); // 트레이 항목 고유키 카운터(중복 허용) — 훅 밖으로 노출하지 않는다.
+  // 재사용/히스토리 복원/카드 참조 추가 시 refs 에 새 uid 를 붙여 트레이 항목으로 만든다(순수: uid 만).
+  const withFreshTrayUids = (refs: ChipRef[]): SpotlightTrayRef[] =>
+    refs.map((r) => ({ ...r, uid: `t${trayUidRef.current++}` }));
 
   // ── Canvas 씬 트레이 양방향 동기화 ──────────────────────────────────────
   // lastSyncFp: (A)로드와 (B)통지가 서로의 결과를 되받아 무한 갱신하지 않도록 마지막으로 맞춘 지문.
@@ -188,7 +193,7 @@ export function useSpotlightTray({
     trayRefs,
     setTrayRefs,
     sceneMode,
-    trayUidRef,
+    withFreshTrayUids,
     addAssetToTray,
     removeTrayRef,
     onTrayKeyDown,
