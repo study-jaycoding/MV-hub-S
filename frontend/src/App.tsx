@@ -19,7 +19,7 @@ import {
   LibrarySelectionActionBar,
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
-import { buildGenerationQuery, generationQueryKey } from "./lib/appGenerationQuery";
+import { generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
@@ -50,10 +50,9 @@ import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
 import { useHubAuth } from "./lib/useHubAuth";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
-import { useLibraryPersistence } from "./lib/useLibraryPersistence";
+import { useLibraryFilters } from "./lib/useLibraryFilters";
 import { usePromptDock } from "./lib/usePromptDock";
 import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
-import type { MediaFilter } from "./lib/mediaTypes";
 import {
   canFinalizeGeneration,
   expandDisabledGenerationIds,
@@ -66,8 +65,6 @@ import { GradeStepModal } from "./components/GradeStepModal";
 import { useAskPrompt } from "./lib/prompt";
 import { makeStore } from "./lib/storage";
 import type {
-  Filters,
-  GenQuery,
   Generation,
   History,
   InfoTarget,
@@ -85,9 +82,16 @@ const COLOR_DOTS = [
 ];
 
 export default function App() {
-  const [filters, setFilters] = useState<Filters>(() => {
-    return LS.loadJSON<Filters>("filters") ?? { tab: "my" };
-  });
+  // 라이브러리 필터/뷰 상태 + genQuery/selectionResetKey 파생 + LS 저장(useLibraryPersistence)은 useLibraryFilters 훅으로 추출.
+  const {
+    filters, setFilters, patch,
+    typeFilter, setTypeFilter, scale, setScale, fill, setFill, layout, setLayout,
+    showFilters, setShowFilters, groupByDate, setGroupByDate, colorFilter, setColorFilter,
+    sharedOnly, setSharedOnly, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
+    commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
+    armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
+    genQuery, selectionResetKey,
+  } = useLibraryFilters(LS);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const [boardFocusId, setBoardFocusId] = useState<string | null>(null); // 구성탭 히스토리 트리 포커스
@@ -143,35 +147,9 @@ export default function App() {
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
   const [preview, setPreview] = useState<PreviewTarget | null>(null); // 클릭 미리보기
-  const [typeFilter, setTypeFilter] = useState<MediaFilter>(
-    () => (LS.get("typeFilter", "all") as MediaFilter) || "all",
-  ); // History 버튼: 전체/이미지/영상/음성
-  const [scale, setScale] = useState(() => Number(LS.get("scale", "1")) || 1); // 카드 크기 배율
-  const [fill, setFill] = useState(() => LS.get("fill", "1") !== "0"); // cover ↔ contain
-  const [layout, setLayout] = useState<"grid" | "list">(() =>
-    LS.get("layout", "grid") === "list" ? "list" : "grid",
-  );
-  const [showFilters, setShowFilters] = useState(() => LS.get("showFilters", "1") !== "0");
-  // 그리드에서 힉스필드 날짜별로 구분(섹션 헤더) — 그리드 버튼을 한 번 더 누르면 토글
-  const [groupByDate, setGroupByDate] = useState(() => LS.get("groupByDate", "0") === "1");
-  // 에셋 파트와 동일한 인스턴트 필터(툴바) — 로드된 gens 를 클라이언트 측에서 즉시 거른다.
-  const [colorFilter, setColorFilter] = useState<Set<string>>(() => LS.loadSet("colorFilter"));
-  const [sharedOnly, setSharedOnly] = useState(() => LS.get("sharedOnly", "0") === "1");
-  const [tagFilter, setTagFilter] = useState<Set<string>>(() => LS.loadSet("tagFilter"));
-  const [tagPanelOpen, setTagPanelOpen] = useState(false);
-  const [commentOnly, setCommentOnly] = useState(() => LS.get("commentOnly", "0") === "1"); // C 필터: 미확인 코멘트만
-  const [finalOnly, setFinalOnly] = useState(() => LS.get("finalOnly", "0") === "1"); // 골드 필터: 최종(골드)만
-  // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn=ON 이면 비활성 카드를 목록에서 제외.
-  // 다른 색 dot 과 반대: 색 dot=그 색만 보임(포함), 회색=비활성만 숨김(제외).
+  // 회색(비활성) — 카드별 비활성화 표시(d 키, gen id 기준 로컬). grayOn(useLibraryFilters)=ON 이면 목록에서 제외.
   const disabledGen = useDisabledGenerations();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(그 폴더·하위 생성물 자동 회색)
-  const [grayOn, setGrayOn] = useState(() => LS.get("grayOn", "0") === "1");
-  // 전역 태그 — 사이드바에서 '무장'한 것들. 다음 생성에 자동 적용(별도 네임스페이스).
-  const [armedAutoTags, setArmedAutoTags] = useState<Set<string>>(() => LS.loadSet("armedAutoTags"));
-  // 무장 폴더 — 사이드바에서 고른 프로젝트 폴더. 그 프로젝트로 생성 시 folder_path 로 자동 적용(전역변수식).
-  const [armedFolder, setArmedFolder] = useState<{ projectId: string; path: string } | null>(
-    () => LS.loadJSON<{ projectId: string; path: string }>("armedFolder") ?? null,
-  );
   const [adminOpen, setAdminOpen] = useState(false); // 관리자 창(로고 클릭)
   const askPrompt = useAskPrompt(); // 플로팅 입력(네이티브 prompt 대체)
   const {
@@ -186,49 +164,7 @@ export default function App() {
     setAccount,
     sharedSrv,
   } = useHubAuth();
-  // 흩어진 필터 상태(filters + 인스턴트 필터)를 서버 쿼리 하나로 합친다.
-  // 서버가 모두 거르므로 클라이언트 전량 로드 없이 무한 스크롤로 페이지만 받는다.
-  const genQuery = useMemo<GenQuery>(
-    () =>
-      buildGenerationQuery({
-        filters,
-        typeFilter,
-        colorFilter,
-        tagFilter,
-        armedAutoTags,
-        sharedOnly,
-        commentOnly,
-        finalOnly,
-      }),
-    [filters, typeFilter, colorFilter, tagFilter, armedAutoTags, sharedOnly, commentOnly, finalOnly],
-  );
-  const selectionResetKey = useMemo(
-    () =>
-      JSON.stringify({
-        colorFilter: [...colorFilter].sort(),
-        commentOnly,
-        finalOnly,
-        legacyColor: filters.color,
-        search: filters.search,
-        shareDir: filters.share_dir,
-        sharedOnly,
-        tag: filters.tag,
-        tagFilter: [...tagFilter].sort(),
-        typeFilter,
-      }),
-    [
-      colorFilter,
-      commentOnly,
-      finalOnly,
-      filters.color,
-      filters.search,
-      filters.share_dir,
-      filters.tag,
-      sharedOnly,
-      tagFilter,
-      typeFilter,
-    ],
-  );
+  // genQuery(서버 쿼리)·selectionResetKey 는 useLibraryFilters 훅에서 파생(위 destructure).
   const { clearSelect, selected, selectedRef, setSelected, toggleSelect } = useGenerationSelection({
     resetKey: selectionResetKey,
   });
@@ -299,25 +235,6 @@ export default function App() {
     toggleComposerExpanded,
   } = usePromptDock(LS);
 
-  useLibraryPersistence({
-    armedAutoTags,
-    armedFolder,
-    colorFilter,
-    commentOnly,
-    fill,
-    filters,
-    finalOnly,
-    grayOn,
-    groupByDate,
-    layout,
-    scale,
-    sharedOnly,
-    showFilters,
-    store: LS,
-    tagFilter,
-    typeFilter,
-  });
-
   // 태그 reload 디바운스 — 연속 태그 입력 중 매 입력마다 reload 하면, 아직 저장 안 끝난 옵티미스틱
   // 상태를 옛 서버값으로 덮어써 '방금 넣은 태그가 사라지는' 레이스가 난다. 마지막 입력 후 1회만 reconcile.
   const { run: scheduleTagReload } = useDebouncedCallback(() => void reload(false, true), 600);
@@ -342,7 +259,6 @@ export default function App() {
     setInfo(target);
   };
 
-  const patch = (p: Partial<Filters>) => setFilters((f) => ({ ...f, ...p }));
 
   // stale 프로젝트 필터 자동 해제 — 보던 프로젝트가 (다른 기기/세션에서) 삭제됐는데
   // localStorage 에 id 가 남아 재방문 시 빈 화면이 되는 것 방지. 'none'(미분류)은 항상 유효.
