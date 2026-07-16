@@ -9,6 +9,7 @@ import {
 } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
+import { useSyncStatus } from "../lib/useSyncStatus";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
 import type { Account, ReportedHfStatus, Workspace } from "../types";
@@ -46,6 +47,7 @@ export function AccountMenu({
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
+  const sync = useSyncStatus(); // 로컬 텔레메트리 push 실패 관측(failed>0 때만 경고)
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
   //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
@@ -156,6 +158,13 @@ export function AccountMenu({
               )}
             </div>
           </div>
+
+          {/* 매니징 push 실패 경고 — 조용히 묻히던 텔레메트리 push 실패를 노출(failed>0 때만). pending 은 정상 backlog. */}
+          {sync && sync.failed > 0 && (
+            <div className="acct-sync-warn" title={sync.last_error || undefined}>
+              ⚠ 매니징 동기화 {sync.failed}건 실패 — 다음 동기화 때 재시도{sync.pending > sync.failed ? ` (대기 ${sync.pending})` : ""}
+            </div>
+          )}
 
           {/* 워크스페이스 — 로그인 계정은 내 에이전트가 보고한 검증된 값(읽기전용),
               비로그인(AUTH off)만 서버 CLI 라이브·전환 가능. 전환은 각자 자기 로컬 CLI에서. */}

@@ -165,6 +165,11 @@ export const api = {
 
   // 내 에이전트 연결 상태(롱폴 대기 중인가) — 연결 점 표시용
   agentStatus: () => jsonFetch<{ connected: boolean }>("/api/agent/status"),
+  // 로컬 텔레메트리(매니징) push 대기·실패 상태 — 조용히 묻히던 실패 가시화(read-only)
+  syncStatus: () =>
+    jsonFetch<{ pending: number; failed: number; last_error: string | null; oldest_dirty: string | null }>(
+      "/api/sync-status",
+    ),
   // "내 작업 올리기" — 내 에이전트를 깨워 로컬 결과물을 즉시 push
   agentSync: () =>
     jsonFetch<{ ok: boolean; connected: boolean }>("/api/agent/sync", { method: "POST" }),

@@ -119,6 +119,7 @@
 /* 비-하우스 안내(에이전트 미연결 / 마지막 동기화 기준) */
 .acct-hint { font-size: 11px; color: var(--muted2); line-height: 1.5; padding: 6px 10px; }
 .acct-hint code { font-size: 10.5px; background: rgba(127,127,127,0.14); padding: 1px 4px; border-radius: 4px; }
+.acct-sync-warn { font-size: 11px; color: #e0a23a; background: rgba(224,162,58,0.12); line-height: 1.4; padding: 6px 10px; margin: 2px 8px; border-radius: 6px; }
 .acct-hint-sm { padding: 4px 10px 2px; }
 /* 폴백(Mac/Linux·고급) 접이식 */
 .agent-adv { margin-top: 11px; }
