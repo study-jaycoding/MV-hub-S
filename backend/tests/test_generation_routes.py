@@ -25,10 +25,12 @@ class GenerationReadRouteTests(unittest.TestCase):
         repo.ensure_default_worker()
         # 팀 탭 카드처럼 id != job_id 인 동기화 생성물 시드(로컬 id=loc1, 서버 앵커=srv1).
         with db.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO generation(id, job_id, worker_id, creator_uid, prompt, model, status, created_at, sort_ts) "
-                "VALUES('loc1','srv1','me','user_A','p','m','done','2026-01-01', 1)"
-            )
+            for gid, jid, ts in (("loc1", "srv1", 2), ("par1", "par1", 1)):
+                conn.execute(
+                    "INSERT INTO generation(id, job_id, worker_id, creator_uid, prompt, model, status, created_at, sort_ts) "
+                    "VALUES(?,?,'me','me','p','m','done','2026-01-01', ?)",
+                    (gid, jid, ts),
+                )
         from fastapi.testclient import TestClient
         from app.main import app
 
@@ -81,6 +83,30 @@ class GenerationReadRouteTests(unittest.TestCase):
         # 프록시 off(NO_PROXY) + 로컬에 없음 → 404(기존 동작 고정).
         r = self.client.get("/api/generations/nope/history-tree")
         self.assertEqual(r.status_code, 404)
+
+    # ── write 라우트(add/remove/derive)도 서버 job_id → 로컬 행 해석(ref.local_id) ──
+    def test_add_history_via_server_job_id_targets_local_row(self):
+        r = self.client.post(
+            "/api/generations/srv1/history", json={"parent_gen_id": "par1", "relation": "derived"}
+        )
+        self.assertEqual(r.status_code, 201)
+        # 서버 job_id 로 연결했지만 엣지는 로컬 행(loc1)에 달려야 — loc1 조상에 par1.
+        h = self.client.get("/api/generations/loc1/history")
+        self.assertIn("par1", [a["id"] for a in h.json()["ancestors"]])
+
+    def test_remove_history_via_server_job_id(self):
+        self.client.post(
+            "/api/generations/srv1/history", json={"parent_gen_id": "par1", "relation": "derived"}
+        )
+        r = self.client.delete("/api/generations/srv1/history/par1")
+        self.assertEqual(r.status_code, 200)
+        h = self.client.get("/api/generations/loc1/history")
+        self.assertEqual([a["id"] for a in h.json()["ancestors"]], [])
+
+    def test_derive_from_via_server_job_id(self):
+        r = self.client.post("/api/generations/srv1/derive-from", json={"parent_ids": ["par1"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("par1", [a["id"] for a in r.json()["ancestors"]])
 
 
 if __name__ == "__main__":

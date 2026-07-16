@@ -247,28 +247,26 @@ def get_history_tree(request: Request, ref: ResolvedGen = Depends(resolve_gen_re
 
 
 @router.post("/generations/{gen_id}/history", response_model=HistoryOut, status_code=201)
-def add_history(gen_id: str, body: HistoryEdgeIn, request: Request):
-    """수동 히스토리 연결 — 이 결과물(gen_id)의 부모를 손으로 지정(동기화 잡 등). 갱신된 가계 반환."""
-    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
-    if not gen:
+def add_history(body: HistoryEdgeIn, request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
+    """수동 히스토리 연결 — 이 결과물의 부모를 손으로 지정(동기화 잡 등). 갱신된 가계 반환."""
+    if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 히스토리 수정은 본인/admin 만
+    require_edit_generation(request, ref.gen)  # 히스토리 수정은 본인/admin 만
     try:
-        repo.add_history_edge(body.parent_gen_id, gen_id, body.relation)
+        repo.add_history_edge(body.parent_gen_id, ref.local_id, body.relation)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return repo.get_history(gen_id)
+    return repo.get_history(ref.local_id)
 
 
 @router.delete("/generations/{gen_id}/history/{parent_gen_id}", response_model=HistoryOut)
-def remove_history(gen_id: str, parent_gen_id: str, request: Request):
+def remove_history(parent_gen_id: str, request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
     """히스토리 엣지 해제 — 이 결과물과 그 부모의 연결을 푼다. 갱신된 가계 반환."""
-    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
-    if not gen:
+    if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 히스토리 수정은 본인/admin 만
-    repo.remove_history_edge(parent_gen_id, gen_id)
-    return repo.get_history(gen_id)
+    require_edit_generation(request, ref.gen)  # 히스토리 수정은 본인/admin 만
+    repo.remove_history_edge(parent_gen_id, ref.local_id)
+    return repo.get_history(ref.local_id)
 
 
 class DeriveFromIn(BaseModel):
@@ -276,17 +274,16 @@ class DeriveFromIn(BaseModel):
 
 
 @router.post("/generations/{gen_id}/derive-from", response_model=HistoryOut)
-def derive_from(gen_id: str, body: DeriveFromIn, request: Request):
+def derive_from(body: DeriveFromIn, request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
     """생성 직후 파생 부모(들)를 'derived' 엣지로 일괄 기록 — **전이 축소** 적용.
     후보 중 다른 후보(또는 child)의 조상인 것은 잉여(자손을 거쳐 도달)라 빼고 가장 가까운 부모만 남긴다.
     (드래그 부모 + 보드 포커스/선택이 합쳐져 들어와도 원본→중간→자식 체인이 평탄해지지 않게 한다.)"""
-    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
-    if not gen:
+    if not ref.gen:
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 본인/admin 만 — 계보 기록도 수정 가드와 동일
-    repo.record_derived_parents(gen_id, body.parent_ids)
+    require_edit_generation(request, ref.gen)  # 본인/admin 만 — 계보 기록도 수정 가드와 동일
+    repo.record_derived_parents(ref.local_id, body.parent_ids)
     viewer_uid, read_all = _viewer_scope(request)
-    return repo.get_history(gen_id, viewer_uid=viewer_uid, read_all=read_all)
+    return repo.get_history(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)
 
 
 def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirror_body=None):
