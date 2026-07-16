@@ -164,6 +164,8 @@ _LOCAL_PREFIXES = (
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
     # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.
     "/api/generations",    # 목록·상세·히스토리·코멘트·태그·컬러·소스·발행 등(내 것=로컬, 팀=핸들러가 프록시)
+    "/api/generation-comments/",  # by-id 코멘트 수정/삭제/seen — 핸들러(_comment_local)가 비공개=로컬·공유=서버로 재분기.
+                                  #   (프리픽스에서 빠지면 미들웨어가 먼저 서버로 보내 비공개 로컬 댓글 편집·seen 이 유실됨)
     "/api/creators",       # 생성자 목록(my=로컬, team=핸들러 프록시)
     "/api/sources",        # 내 소스 라이브러리(로컬)
     "/api/tags",           # 태그 삭제(개인 로컬 메타 — 읽기가 로컬이라 삭제도 로컬이어야 정합)
@@ -187,6 +189,7 @@ _LOCAL_EXACT = frozenset(
         "/api/backups",
         "/api/backup",
         "/api/facets",     # 필터 facet(컬러/태그/생성자) — my=로컬, team=핸들러 프록시
+        "/api/cache-all",  # 전 generation 소스·결과물을 이 PC 디스크로 byte-cache(출처 영속화) — 로컬 실행(서버 디스크 대상 아님)
         "/api/manage/save-finals",  # 완료본을 이 PC 렌더 폴더(Z:\…)에 저장 — 반드시 로컬 실행(서버엔 디스크 없음)
         # ★ /api/auth/config 만 로컬(게이트가 auth_enabled 로 ServerLoginScreen 판정).
         #   나머지 /api/auth/*(accounts·me·global-roles·status·password 등)는 서버 계정을
