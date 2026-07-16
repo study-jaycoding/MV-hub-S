@@ -23,14 +23,8 @@ import { generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
-  createScene,
-  deleteScene as removeScene,
-  getActiveSceneId,
   listScenes,
-  setActiveSceneId as persistActiveScene,
-  updateScene,
   variantIds,
-  type Scene,
   type SceneRef,
 } from "./lib/scenes";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
@@ -51,6 +45,7 @@ import { useHubAuth } from "./lib/useHubAuth";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
+import { useSceneCoordination } from "./lib/useSceneCoordination";
 import { usePromptDock } from "./lib/usePromptDock";
 import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
 import {
@@ -96,33 +91,12 @@ export default function App() {
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const [boardFocusId, setBoardFocusId] = useState<string | null>(null); // 구성탭 히스토리 트리 포커스
   const [boardSignal, setBoardSignal] = useState(0); // 구성탭 트리 refetch 신호(생성·재생성·동기화 시 ++)
-  // Canvas 씬(빈 캔버스) — 구성 탭에서 '계보'(히스토리) 대신 씬을 열어 레퍼런스/생성 작업. S1: 프로젝트 무관 전역.
-  const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
-  const [activeSceneId, setActiveSceneId] = useState<string | null>(() => getActiveSceneId(null));
-  const activeScene = scenes.find((s) => s.id === activeSceneId) || null;
-  // 씬의 생성 카드 1개 선택 시 그 카드(id+레퍼런스)를 하단 프롬프트에 바인딩. SceneBoard 가 통지.
-  const [sceneBinding, setSceneBinding] = useState<{ cardId: string; refs: SceneRef[] } | null>(null);
-  // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바(구성탭과 동일 자리). 삭제는 명령형 핸들로.
-  const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
-  const sceneActionRef = useRef<{ deleteSelected: () => void } | null>(null);
-  const selectScene = (id: string | null) => {
-    setActiveSceneId(id);
-    persistActiveScene(null, id);
-  };
-  const addScene = () => {
-    const s = createScene(null);
-    setScenes(listScenes(null));
-    selectScene(s.id);
-  };
-  const renameScene = (id: string, name: string) => {
-    updateScene(null, id, { name });
-    setScenes(listScenes(null));
-  };
-  const removeSceneById = (id: string) => {
-    removeScene(null, id);
-    setScenes(listScenes(null));
-    if (activeSceneId === id) selectScene(null);
-  };
+  // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
+  const {
+    scenes, activeSceneId, activeScene,
+    sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
+    selectScene, addScene, renameScene, removeSceneById, patchActiveScene,
+  } = useSceneCoordination();
   const bumpBoard = useCallback(() => setBoardSignal((s) => s + 1), []);
   const [boardArrange, setBoardArrange] = useState(0); // '구성에서 보기' 진입 시 자동 정렬(히스토리 패널 미니 트리와 동일 배치)
   const [boardSelected, setBoardSelected] = useState<Generation[]>([]); // 구성탭 선택 노드(부모·선택바용)
@@ -391,8 +365,7 @@ export default function App() {
     const nextCards = activeScene.cards.map((c) =>
       c.id === sceneBinding.cardId ? { ...c, refs } : c,
     );
-    updateScene(null, activeScene.id, { cards: nextCards });
-    setScenes(listScenes(null));
+    patchActiveScene({ cards: nextCards });
   };
   // 생성 완료 → 결과 gen id 를 선택 카드에 바인딩(카드에 썸네일 표시). 씬 모드에선 구성보드 부모 자동연결은 건너뜀.
   const onPromptCreated = async (created?: Generation[], dragParentId?: string | null) => {
@@ -407,8 +380,7 @@ export default function App() {
           for (const id of newIds) if (!genIds.includes(id)) genIds.push(id);
           return { ...c, genId: newIds[0], genIds, status: "pending" as const }; // 첫 장을 대표로 표시
         });
-        updateScene(null, activeScene.id, { cards: nextCards });
-        setScenes(listScenes(null));
+        patchActiveScene({ cards: nextCards });
       }
       if (created?.length) {
         setGens((prev) => {
@@ -556,15 +528,10 @@ export default function App() {
             {activeScene ? (
               <SceneBoard
                 scene={activeScene}
-                onChange={(patch) => {
-                  updateScene(null, activeScene.id, patch);
-                  setScenes(listScenes(null));
-                }}
+                onChange={(patch) => patchActiveScene(patch)}
                 onBindingChange={setSceneBinding}
-                onCameraChange={(camera) => {
-                  updateScene(null, activeScene.id, { camera });
-                  setScenes(listScenes(null)); // 세션 중 씬 전환했다 돌아와도 복원되게 상태도 갱신
-                }}
+                // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
+                onCameraChange={(camera) => patchActiveScene({ camera })}
                 onPreview={openPreview}
                 onInfo={setInfo}
                 onRegenerate={onRegenerate}
