@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from . import _proxy
@@ -188,49 +189,58 @@ def _viewer_scope(request: Request) -> tuple[str | None, bool]:
     return viewer_uid, read_all
 
 
-@router.get("/generations/{gen_id}/history", response_model=HistoryOut)
-def get_history(gen_id: str, request: Request):
-    """한 결과물의 가계(재료⬆/파생⬇/사용처/약한형제) — 카드 히스토리 뱃지 클릭 시 패널 표시용."""
-    # 팀 탭 카드·동기화 항목은 focusId 가 서버 job_id 라 get_generation(id 전용)으론 못 찾아 404.
-    # write 라우트와 동일하게 resolve_and_get 으로 id·job_id 둘 다 해석해야 로컬 행을 찾는다.
+# 생성물 id 참조(gen_id) 를 한 번만 해석해 라우트에 주입하는 dependency. 팀 탭 카드·동기화 항목은
+# focusId 가 서버 job_id 라 get_generation(id 전용)으론 못 찾으므로, resolve_and_get 으로 id·job_id 둘 다
+# 해석한다. ★dependency 는 'id 해석'만 — '로컬 처리냐 서버 위임이냐'는 각 라우트가 계속 결정한다.
+@dataclass(frozen=True)
+class ResolvedGen:
+    requested_id: str  # 원 요청 id(로컬 id 또는 서버 job_id)
+    gen: Optional[dict[str, Any]]  # 직렬화된 generation(로컬에 없으면 None)
+    local_id: Optional[str]  # 로컬 generation.id(남의 팀 카드면 None)
+    server_id: str  # 서버 앵커(job_id; 없으면 로컬 id; 행 자체가 없으면 requested_id)
+
+
+def resolve_gen_ref(gen_id: str) -> ResolvedGen:
     gen, local_id, server_id = repo.resolve_and_get(gen_id)
-    if not gen:
+    return ResolvedGen(gen_id, gen, local_id, server_id)
+
+
+@router.get("/generations/{gen_id}/history", response_model=HistoryOut)
+def get_history(request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
+    """한 결과물의 가계(재료⬆/파생⬇/사용처/약한형제) — 카드 히스토리 뱃지 클릭 시 패널 표시용."""
+    if not ref.gen:
         if _proxy.proxying():  # 로컬에 없으면 팀(서버) 항목 → 서버 가계 위임
-            return _proxy.proxy_get(f"/api/generations/{server_id}/history", request)
+            return _proxy.proxy_get(f"/api/generations/{ref.server_id}/history", request)
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)  # GET /{id} 와 동일 가시성(비공개는 본인/공유만)
+    require_view_generation(request, ref.gen)  # GET /{id} 와 동일 가시성(비공개는 본인/공유만)
     viewer_uid, read_all = _viewer_scope(request)
-    data = repo.get_history(local_id, viewer_uid=viewer_uid, read_all=read_all)
+    data = repo.get_history(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)
     if not data:
         raise HTTPException(status_code=404, detail="generation 없음")
     return data
 
 
 @router.get("/generations/{gen_id}/metrics")
-def gen_metrics(gen_id: str, request: Request):
+def gen_metrics(request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
     """생성물의 실제 크레딧·소요시간(정보 팝업용). 로컬에 없으면 팀(서버) 항목이라 위임한다."""
-    gen, local_id, server_id = repo.resolve_and_get(gen_id)
-    if not gen:
+    if not ref.gen:
         if _proxy.proxying():
-            return _proxy.proxy_get(f"/api/generations/{server_id}/metrics", request)
+            return _proxy.proxy_get(f"/api/generations/{ref.server_id}/metrics", request)
         return {}
-    require_view_generation(request, gen)  # GET /{id} 와 동일 가시성
-    return repo.get_generation_metrics(local_id) or {}
+    require_view_generation(request, ref.gen)  # GET /{id} 와 동일 가시성
+    return repo.get_generation_metrics(ref.local_id) or {}
 
 
 @router.get("/generations/{gen_id}/history-tree", response_model=HistoryGraphOut)
-def get_history_tree(gen_id: str, request: Request):
+def get_history_tree(request: Request, ref: ResolvedGen = Depends(resolve_gen_ref)):
     """연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리 렌더용."""
-    # ★히스토리 탭 간헐적 빈 화면 원인: 팀·동기화 항목의 focusId 는 서버 job_id 라 get_generation(id
-    # 전용)이 못 찾아 404 → graph null → 빈 보드. resolve_and_get 으로 id·job_id 둘 다 해석(write 라우트와 통일).
-    gen, local_id, server_id = repo.resolve_and_get(gen_id)
-    if not gen:
+    if not ref.gen:
         if _proxy.proxying():
-            return _proxy.proxy_get(f"/api/generations/{server_id}/history-tree", request)
+            return _proxy.proxy_get(f"/api/generations/{ref.server_id}/history-tree", request)
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_view_generation(request, gen)
+    require_view_generation(request, ref.gen)
     viewer_uid, read_all = _viewer_scope(request)
-    data = repo.get_history_graph(local_id, viewer_uid=viewer_uid, read_all=read_all)
+    data = repo.get_history_graph(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)
     if not data:
         raise HTTPException(status_code=404, detail="generation 없음")
     return data
