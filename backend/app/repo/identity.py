@@ -468,9 +468,20 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("telemetry_outbox", "tomb_creator_uid", "plain"),
     # [DEPRECATED] 옛 예정 생성자(self-assign) — 담당 모델로 대체됐지만, 잔존 데이터 신원 정합 위해 유지.
     ("task_planned_creator", "creator_uid", "ignore_del"),
+    ("task_planned_creator", "added_by", "plain"),  # 배정 기록 actor — audit 컬럼(PK 아님)이라 plain
     # 작업 담당(배정) 신원 — acct:→user_ 전환 시 함께 정합(안 하면 내 배분 작업이 끊김).
     ("task_assignment", "assignee_uid", "ignore_del"),
+    ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
 )
+
+# 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로
+# 전수 커버를 강제한다. 스키마에 새 신원 컬럼을 추가하면 둘 중 하나에 등록해야 테스트가 통과(remap 누락 방지).
+# ※ 별도 DB(휴지통 trash.trashed·매니징 manage_hub.db team_generation_fact)는 content DB 스코프 밖이라
+#   이 registry 대상이 아니다(각자 alias 인식·restore rewrite / 별도 관리로 정합).
+_REMAP_EXEMPT: dict[tuple[str, str], str] = {
+    ("generation", "worker_id"): "PC/워크스테이션 축(사용자 actor 아님) — remap 제외",
+    ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
+}
 
 
 def _col_exists(conn, table: str, col: str) -> bool:
@@ -589,6 +600,9 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
             n += _remap_autotag(conn, old_uid, new_uid)
         elif strat == "assetmeta":
             n += _remap_assetmeta(conn, old_uid, new_uid)
+        else:
+            # 전략 문자열 오타(예: "plian")가 조용히 no-op 되어 신원이 안 옮겨지는 걸 막는다(런타임 방어).
+            raise ValueError(f"_REMAP_PLAN 알 수 없는 전략: {table}.{col} = {strat!r}")
     return n
 
 
