@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..config import DATA_DIR
+from .atomic_io import atomic_write_text
 from .media_types import media_type_from_url
 
 # ── CLI 경로 해석 (셰임 함정 회피) ────────────────────────────────────────
@@ -427,10 +428,9 @@ def _load_cost_cache() -> None:
 
 def _save_cost_cache() -> None:
     try:
-        _COST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _COST_CACHE_FILE.write_text(
+        atomic_write_text(
+            _COST_CACHE_FILE,
             json.dumps({k: [c, t] for k, (c, t) in _COST_CACHE.items()}, ensure_ascii=False),
-            "utf-8",
         )
     except OSError:
         pass

@@ -38,6 +38,7 @@ from ..config import (
     MANAGE_ENABLED,
 )
 from ..db import get_connection
+from ..services.atomic_io import atomic_write_text
 from ..deps import account_global_roles, account_scope_uid, actor_id
 from ..services.media_types import asset_media_type
 from ..services.project_folders import hidden_folder
@@ -209,9 +210,7 @@ def _load_mounts() -> list[dict[str, str]]:
 
 
 def _save_mounts(mounts: list[dict[str, str]]) -> None:
-    f = _mounts_file()
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"mounts": mounts}, ensure_ascii=False, indent=2), "utf-8")
+    atomic_write_text(_mounts_file(), json.dumps({"mounts": mounts}, ensure_ascii=False, indent=2))
 
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:

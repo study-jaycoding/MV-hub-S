@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .services.atomic_io import atomic_write_text
 
 _POINTER = config.DATA_DIR / "active.json"
 _SAFE = re.compile(r"[^A-Za-z0-9_-]")
@@ -93,9 +94,9 @@ def account_dir(email: str) -> Path:
 
 def set_active(email: str, uid: Optional[str] = None) -> None:
     """활성 계정 포인터 기록 — 로컬 프록시 로그인/전환 시 호출."""
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"email": email, "uid": uid}
-    _POINTER.write_text(json.dumps(payload, ensure_ascii=False), "utf-8")
+    # 원자적 저장 — 반쯤 쓰이다 크래시하면 허브가 빈 계정 DB 를 읽는 사고를 막는다.
+    atomic_write_text(_POINTER, json.dumps(payload, ensure_ascii=False))
     _cache[0], _cache[1] = True, payload
 
 
