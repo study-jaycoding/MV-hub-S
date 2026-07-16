@@ -183,6 +183,7 @@ _LOCAL_EXACT = frozenset(
         "/api/cost",          # CLI 비용 추정
         "/api/account",       # CLI 계정 상태(워크스페이스/크레딧 원천)
         "/api/sync",          # CLI 수동 동기화
+        "/api/sync-status",   # 로컬 텔레메트리 outbox 상태(이 허브 자기 상태 — 서버 위임 금지)
         "/api/media-thumb",   # 로컬 보관 미디어 썸네일
         "/api/download",      # 원격 미디어 → attachment 스트리밍(이 PC 가 직접 받아 브라우저로)
         "/api/publish-to-shared",  # 자체적으로 서버와 통신(이중 프록시 방지)

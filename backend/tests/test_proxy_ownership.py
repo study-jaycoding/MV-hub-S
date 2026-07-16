@@ -109,6 +109,7 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/generation-comments/c1/seen",
             "/api/cache-all",
             "/api/generations/g1/comments/read",
+            "/api/sync-status",  # 로컬 허브 자기 상태 — 서버 위임 금지
         ):
             self.assertTrue(is_local_path(p), f"{p} 는 로컬로 들어와 핸들러가 재분기해야 한다(서버 오프록시 금지)")
 

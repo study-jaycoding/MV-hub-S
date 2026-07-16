@@ -1307,6 +1307,38 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
     return len(local_ids)
 
 
+def telemetry_outbox_status() -> dict[str, Any]:
+    """로컬 텔레메트리 outbox 요약(관측성) — 조용히 묻히던 push 대기·실패를 볼 수 있게.
+    · pending  = 아직 서버로 안 올라간 것(pushed_at IS NULL)
+    · failed   = 그중 오류난 적 있는 것(last_error; 성공 시 mark_telemetry_pushed 가 NULL 로 클리어)
+    · last_error / oldest_dirty = 진단용(가장 최근 오류·가장 오래된 대기 시각).
+    ★로컬 허브 자기 상태 — 프록시하지 않는다(_proxy _LOCAL_EXACT)."""
+    empty = {"pending": 0, "failed": 0, "last_error": None, "oldest_dirty": None}
+    with get_connection() as conn:
+        # ★진짜 read-only — _ensure_schema(CREATE/ALTER 부작용) 호출 안 한다. 테이블 없으면(프레시·MANAGE off) 빈 상태.
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetry_outbox'"
+        ).fetchone():
+            return empty
+        row = conn.execute(
+            "SELECT "
+            "  SUM(CASE WHEN pushed_at IS NULL THEN 1 ELSE 0 END) AS pending, "
+            "  SUM(CASE WHEN pushed_at IS NULL AND last_error IS NOT NULL THEN 1 ELSE 0 END) AS failed, "
+            "  MIN(CASE WHEN pushed_at IS NULL THEN dirty_at END) AS oldest_dirty "
+            "FROM telemetry_outbox"
+        ).fetchone()
+        err = conn.execute(
+            "SELECT last_error FROM telemetry_outbox "
+            "WHERE pushed_at IS NULL AND last_error IS NOT NULL ORDER BY dirty_at DESC LIMIT 1"
+        ).fetchone()
+    return {
+        "pending": (row["pending"] if row else 0) or 0,
+        "failed": (row["failed"] if row else 0) or 0,
+        "last_error": err["last_error"] if err else None,
+        "oldest_dirty": row["oldest_dirty"] if row else None,
+    }
+
+
 def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
     """push 가 필요한 항목 목록 [{local_gen_id, dirty_at}] (pushed_at IS NULL). 오래된 것 먼저.
     dirty_at 을 함께 반환 — 드레이너가 mark_telemetry_pushed 에 되돌려 CAS(그 사이 재dirty 된 건 안
