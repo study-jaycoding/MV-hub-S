@@ -54,10 +54,16 @@ class HistoryQueryTests(unittest.TestCase):
         self.assertEqual(h["used_by"], [])
 
     def test_get_history_parent_side(self):
-        # root 입장에서 child(파생) = children, used_by 는 없음.
+        # root 입장에선 직계 파생 자식 mid 가 children, 조상은 없음(root 가 최상위).
         h = repo.get_history("root")
         self.assertEqual([g["id"] for g in h["children"]], ["mid"])
         self.assertEqual(h["ancestors"], [])
+
+    def test_get_history_used_by(self):
+        # src 입장에선 자신을 @소스로 쓴 child 가 used_by(reference 방향), 재료는 없음.
+        h = repo.get_history("src")
+        self.assertEqual([g["id"] for g in h["used_by"]], ["child"])
+        self.assertEqual(h["materials"], [])
 
     def test_get_history_missing_returns_none(self):
         self.assertIsNone(repo.get_history("nope"))

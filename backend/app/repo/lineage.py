@@ -1,8 +1,8 @@
 """히스토리 계보(lineage) — 부모/자식 엣지 기록·제거, 전이축소, 파생깊이, 방향성 라인집합, 노드 가시성.
 
-generations.py 에서 분리(관심사 분리). 여기의 순수/mutation 헬퍼를 generations 가 import 해서 쓴다
-(단방향: generations → lineage). 조회 함수 get_history/get_history_graph 는 _fetch_gens/_attach_children
-(조회 응답 보강)에 묶여 있어 generations 에 남긴다.
+generations.py 에서 분리(관심사 분리). 여기의 순수/mutation 헬퍼를 generations·history 가 import 해서 쓴다
+(단방향: generations → lineage, history → lineage). 공개 조회 함수 get_history/get_history_graph 는
+history.py 에 있고, 여기의 _derived_depth_batch/_directed_lineage/_gen_row_visible 를 가져다 쓴다.
 """
 from __future__ import annotations
 
