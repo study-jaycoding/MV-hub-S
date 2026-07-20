@@ -426,11 +426,22 @@ async def trash_hf_missing(request: Request):
 @router.delete("/generations/{gen_id}")
 def delete_generation(gen_id: str, request: Request):
     """generation 1건 휴지통행(soft delete). 우리 카탈로그에서만 숨김 —
-    힉스필드 원본엔 영향 없음. '지운 생성물 보기' 토글로 흐리게 재표시·복구 가능."""
-    gen, local_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
-    gen_id = local_id or gen_id  # 못 찾으면 원본 유지(서버 id no-op 동작 보존)
+    힉스필드 원본엔 영향 없음. '지운 생성물 보기' 토글로 흐리게 재표시·복구 가능.
+    ★공유 중(팀 발행)인 항목은 삭제 불가 — 팀이 보는 걸 몰래 지우지 못하게. 먼저 공유 해제(S) 후 삭제."""
+    gen, local_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 UUID)→로컬 행(단일 커넥션)
+    if not gen and _proxy.proxying():  # 남의/내 팀 카드(로컬 미해석) — 공유물이라 여기선 삭제 불가
+        raise HTTPException(
+            status_code=403,
+            detail="팀 공유물은 삭제할 수 없습니다. 공유 해제 후 내 작업 탭에서 삭제하세요.",
+        )
+    gen_id = local_id or gen_id  # 못 찾으면 원본 유지(비프록시 no-op 동작 보존)
     if gen:
-        require_edit_generation(request, gen)  # 본인/admin 만 삭제
+        require_edit_generation(request, gen)  # 본인/admin 만 삭제(권한 먼저 — 존재·공유 정보 안 새게)
+        if gen.get("shared"):  # 본인 것이라도 공유 중이면 차단(먼저 공유 해제) — '함부로 안 지워짐'
+            raise HTTPException(
+                status_code=409,
+                detail="공유 중인 항목은 삭제할 수 없습니다. 먼저 공유 해제(S)한 뒤 삭제하세요.",
+            )
     return {"deleted": repo.delete_generation(gen_id)}
 
 

@@ -53,6 +53,23 @@ def _local_id_from_out(out) -> str | None:
     return None
 
 
+def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
+    """공유 해제 권한(B안) — 본인/admin(system), 또는 그 항목 프로젝트의 SUPERVISOR.
+
+    창작자는 자기 공유물을 내릴 수 있고(require_edit_generation 통과), 슈퍼바이저는 팀 전체를
+    내릴 수 있다. 미분류(프로젝트 없음)는 슈퍼바이저 개념이 없어 본인/admin 만."""
+    try:
+        require_edit_generation(request, gen)  # 본인/admin 이면 통과
+        return
+    except HTTPException as e:
+        if e.status_code != 403:
+            raise  # 403(권한 없음)만 슈퍼바이저 체크로 넘어감 — 그 외는 전파
+    pid = (gen.get("project_id") or "").strip()
+    if not (pid and pid != "none"):
+        raise HTTPException(status_code=403, detail="공유 해제 권한이 없습니다")
+    require_project_role(request, pid, rbac.SUPERVISOR)  # 슈퍼바이저 아니면 403
+
+
 @router.post("/generations/{gen_id}/publish", response_model=GenerationOut)
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
@@ -103,7 +120,7 @@ def unpublish(gen_id: str, request: Request):
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
-    require_edit_generation(request, gen)  # 공유 해제는 본인(또는 admin)만
+    _require_unpublish(request, gen)  # 공유 해제 = 본인/admin, 또는 그 프로젝트 슈퍼바이저(B안)
     if gen.get("is_final"):
         raise HTTPException(
             status_code=409, detail="최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
