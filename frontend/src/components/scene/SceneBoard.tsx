@@ -1233,6 +1233,16 @@ export function SceneBoard({
                             (off ? " off" : "")
                           }
                           title={gg?.prompt || ""}
+                          onMouseDown={(e) => {
+                            if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지
+                          }}
+                          onAuxClick={(e) => {
+                            // 휠(중간)클릭 = 정보(계보·메인 라이브러리 카드와 동일)
+                            if (e.button === 1 && gg) {
+                              e.preventDefault();
+                              onInfo?.({ kind: "generation", gen: gg, x: e.clientX, y: e.clientY });
+                            }
+                          }}
                           onClick={(e) => toggleSel(gid, e.ctrlKey || e.shiftKey || e.metaKey)}
                           onDoubleClick={() => a && openPreviewAt(gid)}
                         >
@@ -1303,6 +1313,16 @@ export function SceneBoard({
                                   }}
                                 >
                                   @
+                                </button>
+                                <button
+                                  title="프롬프트 재사용 — 프롬프트·옵션 불러오기"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    dispatchAppEvent(APP_EVENTS.reusePrompt, gg.id);
+                                  }}
+                                >
+                                  ⤶
                                 </button>
                                 <button
                                   title="재생성"

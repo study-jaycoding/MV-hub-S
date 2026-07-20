@@ -37,7 +37,6 @@ import { flashMsg } from "../lib/flash";
 import { dataTransferHasFiles } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
-  hasMediaRefTokens,
   seedanceTokenRoles,
   seedanceTrayToken,
   usesMediaRefTokens,
@@ -192,8 +191,13 @@ export function SpotlightPrompt({
   // Ctrl/⌘+K(또는 툴바 버튼) → 프롬프트로 포커스만.
   useCustomEvent(APP_EVENTS.focusPrompt, () => editorRef.current?.focus());
 
-  // (프롬프트 재사용은 카드를 입력바로 드래그-드롭하면 동작 — onPanelDrop→reusePromptFromGen 직접
-  //  호출. 이벤트(ch:reuse-prompt) 경로는 디스패처가 없어 제거함.)
+  // 카드의 '재사용' 버튼 → 그 생성물의 프롬프트+옵션을 입력바로 불러온다(드래그 없이 버튼으로도).
+  //  (캔버스 생성결과 팝업 등에서 dispatchAppEvent(reusePrompt, id) 로 호출. useCustomEvent 가 항상
+  //   최신 reusePromptFromGen 을 부르므로 stale 없음.)
+  useCustomEvent(APP_EVENTS.reusePrompt, (e) => {
+    const id = (e as CustomEvent<string>).detail;
+    if (id) void reusePromptFromGen(id);
+  });
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
   // useCustomEvent 가 항상 최신 addRefFromGen(최신 expanded)을 호출 → stale 분기 버그 없음.
@@ -441,7 +445,14 @@ export function SpotlightPrompt({
       // 토큰 감지·복원은 display_prompt 기준(원본 토큰 @image1·@simage1 보존). g.prompt(CLI)는 <<<image1>>>
       //  또는 시작/끝 프레임의 경우 '첫 프레임/끝 프레임' 텍스트로 정규화돼 있어 토큰이 사라진다.
       const tokenSrc = g.display_prompt || (g.prompt && g.prompt !== "(no text)" ? g.prompt : "");
-      const tokenMode = hasMediaRefTokens(tokenSrc) && g.references.length > 0;
+      // 트레이 vs 인라인 소스칩 판정 — display_prompt 에 그 소스의 @이름 토큰이 실제로 박혀 있으면
+      // '인라인 소스칩'으로 만든 것(그 자리에 칩 복원). 없으면 트레이 레퍼런스 → 트레이로 복원.
+      // (이미지 모델은 @imageN 토큰을 프롬프트에 안 심어서, 예전엔 토큰 없다는 이유로 트레이 refs 가
+      //  인라인 칩으로 잘못 붙었다 — 캔버스 생성물 재사용이 그 경우였다.)
+      const hasInlineSourceChips = g.references.some(
+        (r) => !!r.source && r.source !== "uploaded" && tokenSrc.includes("@" + r.source),
+      );
+      const tokenMode = g.references.length > 0 && !hasInlineSourceChips;
       if (tokenMode) {
         const chipRefs = refsToChips(g.references).flatMap((p) =>
           p.t === "chip" ? [p.ref as ChipRef] : [],

@@ -161,7 +161,7 @@
 }
 /* wrap: 패널 + 액션바(패널 밖이라 프로젝트 담기 드롭다운이 안 잘린다) */
 .scene-varpop-wrap {
-  width: min(600px, 88%); max-height: 100%; display: flex; flex-direction: column;
+  width: min(880px, 92%); max-height: 100%; display: flex; flex-direction: column;
   align-items: stretch; gap: 10px; min-height: 0;
 }
 .scene-varpop {
@@ -177,8 +177,8 @@
 .scene-varpop-x { border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; }
 .scene-varpop-x:hover { color: var(--text); }
 .scene-varpop-grid {
-  position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px;
-  padding: 12px; overflow: auto; max-height: 52vh; user-select: none;
+  position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px;
+  padding: 14px; overflow: auto; max-height: 66vh; user-select: none;
 }
 /* 팝업 마퀴(배경 드래그 복수선택) */
 .scene-varpop-marq {
@@ -231,18 +231,21 @@
    컨테이너는 pointer-events:none(빈 영역=선택 통과), 버튼만 활성. */
 .scene-varpop-ov {
   position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: 0; transition: opacity 0.12s;
-  display: flex; flex-direction: column; justify-content: space-between; padding: 5px;
-  background: linear-gradient(rgba(0, 0, 0, 0.5) 0%, transparent 32%, transparent 58%, rgba(0, 0, 0, 0.6));
+  display: flex; flex-direction: column; justify-content: space-between; padding: 8px;
+  background: linear-gradient(rgba(0, 0, 0, 0.34) 0%, transparent 28%, transparent 62%, rgba(0, 0, 0, 0.5));
 }
 .scene-varpop-item:hover .scene-varpop-ov { opacity: 1; }
 .scene-varpop-ov-top { display: flex; justify-content: flex-end; }
-.scene-varpop-ov-bot { display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; }
+.scene-varpop-ov-bot { display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 버튼 = 메인 라이브러리 카드 .ov-icon 과 동일 룩(28px · 블러 · 라임 호버) */
 .scene-varpop-ov button {
-  pointer-events: auto; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border2);
-  cursor: pointer; font-size: 11px; line-height: 1; background: rgba(20, 22, 26, 0.9); color: #fff;
-  display: grid; place-items: center; padding: 0;
+  pointer-events: auto; width: 28px; height: 28px; border-radius: 8px; flex: none;
+  cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
+  display: grid; place-items: center; color: #fff;
+  background: rgba(12, 13, 16, 0.6); backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
 }
-.scene-varpop-ov button:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.scene-varpop-ov button:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
 .scene-empty-hint { margin-top: 4px; font-size: 12px; color: var(--muted); opacity: 0.85; }
 .scene-empty {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
