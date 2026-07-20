@@ -24,6 +24,7 @@ import {
   type Scene,
   type SceneCard,
   type SceneEdge,
+  type SceneGroup,
   type SceneRef,
 } from "../../lib/scenes";
 import { classifyEdges, computeBridgeEdges, edgePathXY, fanOffset } from "../../lib/sceneEdges";
@@ -38,6 +39,16 @@ import { useClickSeparation } from "../../lib/useClickSeparation";
 
 const CARD_W = 152;
 const CARD_H = 130;
+
+// 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
+// asset:proj|path 토큰이면 포스터(assetThumbUrl, 백엔드 첫 프레임)로 바꿔 이미지로 표시한다.
+function refThumbSrc(r: SceneRef): string | undefined {
+  if (r.type === "video" && r.file_path.startsWith("asset:")) {
+    const [proj, path] = r.file_path.slice(6).split("|");
+    if (proj && path) return api.assetThumbUrl(proj, path, 256);
+  }
+  return r.thumb || undefined;
+}
 
 interface Props {
   scene: Scene;
@@ -116,6 +127,8 @@ export function SceneBoard({
 }: Props) {
   const [cards, setCards] = useState<SceneCard[]>(scene.cards);
   const [edges, setEdges] = useState<SceneEdge[]>(scene.edges);
+  const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
@@ -125,6 +138,7 @@ export function SceneBoard({
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
+  const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
   const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const varGridRef = useRef<HTMLDivElement>(null);
   useEffect(() => setPopupSel(new Set()), [cardMenu]); // 팝업 열림/카드 전환 시 선택 초기화
@@ -148,7 +162,8 @@ export function SceneBoard({
     }
     setCards(scene.cards);
     setEdges(scene.edges);
-  }, [scene.id, scene.cards, scene.edges]);
+    setGroups(scene.groups || []);
+  }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -158,6 +173,8 @@ export function SceneBoard({
   cardsRef.current = cards;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const onChangeRef = useRef(onChange);
@@ -210,8 +227,12 @@ export function SceneBoard({
     }
   }, [structSig]);
 
-  const persist = (nextCards: SceneCard[], nextEdges: SceneEdge[]) =>
-    onChangeRef.current({ cards: nextCards, edges: nextEdges });
+  // 카드/엣지/그룹을 함께 저장 — 그룹 인자를 안 주면 현재 그룹을 유지(대부분의 호출부는 카드·엣지만 바꿈).
+  const persist = (
+    nextCards: SceneCard[],
+    nextEdges: SceneEdge[],
+    nextGroups: SceneGroup[] = groupsRef.current,
+  ) => onChangeRef.current({ cards: nextCards, edges: nextEdges, groups: nextGroups });
 
   // ── 선택된 단일 생성 카드를 하단 프롬프트에 바인딩(App 에 통지) ──
   // 카드 이동(위치 변경)만으론 다시 안 쏘도록 cardId+레퍼런스 지문으로 변화만 감지.
@@ -397,10 +418,19 @@ export function SceneBoard({
   };
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
-  const addEdge = (from: string, to: string) => {
-    if (from === to) return;
-    if (edgesRef.current.some((e) => e.from === from && e.to === to)) return;
-    const ne = [...edgesRef.current, { id: uid(), from, to }];
+  // 여러 연결을 한 번에 추가(중복·자기연결 제외). 다중 레퍼런스 일괄 연결·c 자동연결에서 재사용.
+  const addEdges = (pairs: Array<[string, string]>) => {
+    const seen = new Set(edgesRef.current.map((e) => e.from + ">" + e.to));
+    const additions: SceneEdge[] = [];
+    for (const [from, to] of pairs) {
+      if (from === to) continue;
+      const k = from + ">" + to;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      additions.push({ id: uid(), from, to });
+    }
+    if (!additions.length) return;
+    const ne = [...edgesRef.current, ...additions];
     const nc = withGenRefs(cardsRef.current, ne);
     setEdges(ne);
     setCards(nc);
@@ -432,7 +462,15 @@ export function SceneBoard({
       const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
       const cardEl = el?.closest(".scene-port.in")?.closest(".scene-card") as HTMLElement | null;
       const toId = cardEl?.dataset.id;
-      if (toId) addEdge(cardId, toId);
+      if (!toId) return;
+      // ① 다중 레퍼런스 일괄 연결 — 드래그한 카드가 선택에 포함돼 있으면, 같은 종류(레퍼런스/생성)로
+      //    선택된 카드 전부를 한 번에 연결한다. 아니면 그 카드 하나만.
+      const sel = selectedRef.current;
+      const srcKind = cardsRef.current.find((c) => c.id === cardId)?.kind;
+      const froms = sel.has(cardId)
+        ? [...sel].filter((id) => cardsRef.current.find((c) => c.id === id)?.kind === srcKind)
+        : [cardId];
+      addEdges(froms.map((f) => [f, toId] as [string, string]));
     };
     beginDrag(move, up);
   };
@@ -516,6 +554,34 @@ export function SceneBoard({
     beginDrag(move, up);
   };
 
+  // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리는 멤버 바운딩박스로 자동, 이름변경·접기 가능 ──
+  // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수).
+  const pruneGroups = (gs: SceneGroup[], removed: Set<string>): SceneGroup[] =>
+    gs
+      .map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => !removed.has(id)) }))
+      .filter((g) => g.cardIds.length > 0);
+  const applyGroups = (next: SceneGroup[]) => {
+    setGroups(next);
+    persist(cardsRef.current, edgesRef.current, next);
+  };
+  const groupSelected = () => {
+    const ids = [...selectedRef.current].filter((id) => cardsRef.current.some((c) => c.id === id));
+    if (!ids.length) return;
+    // 카드는 한 그룹에만 — 선택 카드를 기존 그룹에서 떼고(빈 그룹 제거) 새 그룹으로 묶는다.
+    const stripped = pruneGroups(groupsRef.current, new Set(ids));
+    const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids };
+    applyGroups([...stripped, grp]);
+  };
+  const ungroupSelected = () => {
+    const sel = selectedRef.current;
+    const next = groupsRef.current.filter((g) => !g.cardIds.some((id) => sel.has(id)));
+    if (next.length !== groupsRef.current.length) applyGroups(next);
+  };
+  const renameGroup = (id: string, name: string) =>
+    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, name } : g)));
+  const toggleGroupCollapsed = (id: string) =>
+    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)));
+
   // ── 카드 삭제(선택) — 내 것·미공유·비최종 변형만 휴지통, 공유/최종/남의 것은 라이브러리에 보존 ──
   const deleteCards = (ids: string[]) => {
     if (!ids.length) return;
@@ -540,11 +606,13 @@ export function SceneBoard({
       cardsRef.current.filter((c) => !idset.has(c.id)),
       nextEdges,
     );
+    const nextGroups = pruneGroups(groupsRef.current, idset); // 삭제 카드는 그룹 멤버에서 제거·빈 그룹 정리
     setCards(nextCards);
     setEdges(nextEdges);
+    setGroups(nextGroups);
     setSelected(new Set());
     setCardMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 카드의 팝업은 닫는다
-    persist(nextCards, nextEdges);
+    persist(nextCards, nextEdges, nextGroups);
     for (const gid of toTrash)
       api.deleteGeneration(gid).catch((err) => console.warn("[scene] 생성물 휴지통 이동 실패", gid, err));
   };
@@ -614,6 +682,26 @@ export function SceneBoard({
         return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
       }
       const sel = selectedRef.current;
+      // Ctrl+G = 선택 카드 그룹 · Ctrl+Shift+G = 그룹 해제. (mod+g 라 g=초록색 단축키와 충돌 없음)
+      if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
+        e.preventDefault(); // 브라우저 '다음 찾기' 방지
+        if (e.shiftKey) ungroupSelected();
+        else groupSelected();
+        return;
+      }
+      // c = 선택된 '레퍼런스 카드' 전부를 선택된 '생성 카드' 전부에 자동 연결.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "c" || e.key === "C")) {
+        const selCards = [...sel]
+          .map((id) => cardsRef.current.find((cc) => cc.id === id))
+          .filter((c): c is SceneCard => !!c);
+        const refs = selCards.filter((c) => c.kind === "reference");
+        const gens = selCards.filter((c) => c.kind === "generation");
+        if (refs.length && gens.length) {
+          e.preventDefault();
+          addEdges(refs.flatMap((r) => gens.map((gc) => [r.id, gc.id] as [string, string])));
+          return;
+        }
+      }
       // d: 선택 카드 비활성(회색) 토글 — 계보/라이브러리와 같은 소스. 카드 대표 genId 기준.
       if (matchShortcut(e, "boardDisable")) {
         const gids = [...sel]
@@ -745,6 +833,50 @@ export function SceneBoard({
       return;
     }
     if (e.button !== 0) return;
+    // 그룹 헤더 잡기 → 멤버 카드 전체 이동(드래그) · 제자리 클릭 = 멤버 전체 선택(Shift/Ctrl=토글)
+    const grabEl = (e.target as HTMLElement).closest(".scene-group-grab") as HTMLElement | null;
+    if (grabEl) {
+      const gid = grabEl.dataset.groupId;
+      const grp = gid ? groupsRef.current.find((x) => x.id === gid) : null;
+      if (grp) {
+        e.preventDefault();
+        const gAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
+        const gsx = e.clientX;
+        const gsy = e.clientY;
+        const memberIds = grp.cardIds.filter((id) => cardsRef.current.some((c) => c.id === id));
+        const origins: Record<string, { x: number; y: number }> = {};
+        for (const tid of memberIds) {
+          const c = cardsRef.current.find((cc) => cc.id === tid);
+          if (c) origins[tid] = { x: c.x, y: c.y };
+        }
+        let gMoved = false;
+        const move = (ev: MouseEvent) => {
+          if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
+          gMoved = true;
+          const z = zoomRef.current;
+          const dx = (ev.clientX - gsx) / z;
+          const dy = (ev.clientY - gsy) / z;
+          setCards((prev) =>
+            prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + dx, y: origins[c.id].y + dy } : c)),
+          );
+        };
+        const up = () => {
+          if (gMoved) persist(cardsRef.current, edgesRef.current);
+          else
+            setSelected((prev) => {
+              if (gAdditive) {
+                const n = new Set(prev);
+                const all = memberIds.every((id) => n.has(id));
+                memberIds.forEach((id) => (all ? n.delete(id) : n.add(id)));
+                return n;
+              }
+              return new Set(memberIds);
+            });
+        };
+        beginDrag(move, up);
+        return;
+      }
+    }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     const startX = e.clientX;
@@ -850,19 +982,81 @@ export function SceneBoard({
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);
   const cardById = (id: string) => cardsById.get(id);
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
-  const hiddenIds = new Set(
+  const grayHidden = new Set(
     grayOn
       ? cards
           .filter((c) => c.kind === "generation" && c.genId && disabledIds.has(c.genId))
           .map((c) => c.id)
       : [],
   );
+  // 접힌 그룹의 멤버 카드 → 그 그룹. 접히면 멤버를 숨기고 연결은 그룹 막대로 브릿지한다.
+  const collapsedMemberOf = new Map<string, SceneGroup>();
+  for (const g of groups)
+    if (g.collapsed && g.cardIds.length) for (const id of g.cardIds) collapsedMemberOf.set(id, g);
+  const hiddenIds = new Set<string>([...grayHidden, ...collapsedMemberOf.keys()]);
   const visibleCards = hiddenIds.size ? cards.filter((c) => !hiddenIds.has(c.id)) : cards;
   // 숨긴(회색) 카드가 중간에 있어도 앞뒤 흐름이 끊긴 것처럼 보이지 않게 — 숨김 노드를 건너뛰어
   // 보이는 '앞 카드 → 뒤 카드'로 회색 점선 우회선을 만든다(중간에 뭔가 숨겨져 있다는 표시).
-  const bridgeEdges = computeBridgeEdges(cards, edges, hiddenIds);
+  const bridgeEdges = computeBridgeEdges(cards, edges, grayHidden);
   const heightOf = (c: SceneCard) =>
     c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H;
+
+  // ── 그룹 기하 — 테두리는 멤버 카드 바운딩박스로 자동. 접힘=제목 막대(연결은 막대로 브릿지) ──
+  const GPAD = 16; // 테두리 여백
+  const GHD = 26; // 헤더 높이
+  const GCOLLAPSED_W = 200; // 접힌 막대 너비
+  const memberBounds = (g: SceneGroup) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let n = 0;
+    for (const id of g.cardIds) {
+      const c = cardById(id);
+      if (!c) continue;
+      n++;
+      minX = Math.min(minX, c.x);
+      minY = Math.min(minY, c.y);
+      maxX = Math.max(maxX, c.x + CARD_W);
+      maxY = Math.max(maxY, c.y + heightOf(c));
+    }
+    return n ? { minX, minY, maxX, maxY } : null;
+  };
+  // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
+  const groupViews = groups
+    .map((g) => {
+      const b = memberBounds(g);
+      if (!b) return null;
+      const frame = {
+        x: b.minX - GPAD,
+        y: b.minY - GPAD - GHD,
+        w: b.maxX - b.minX + GPAD * 2,
+        h: b.maxY - b.minY + GPAD * 2 + GHD,
+      };
+      const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
+      return { g, frame, bar };
+    })
+    .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v);
+  const collapsedBarById = new Map(
+    groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const),
+  );
+  // 접힌 그룹 멤버에 닿는 연결선 → 멤버 대신 그룹 막대의 포트로 재연결(브릿지). 내부(같은 그룹끼리)는 숨김.
+  const barOut = (id: string) => {
+    const g = collapsedMemberOf.get(id);
+    if (g) {
+      const bar = collapsedBarById.get(g.id);
+      return bar ? { x: bar.x + bar.w, y: bar.y + bar.h / 2 } : null;
+    }
+    const c = cardById(id);
+    return c ? { x: c.x + CARD_W, y: c.y + heightOf(c) / 2 } : null;
+  };
+  const barIn = (id: string) => {
+    const g = collapsedMemberOf.get(id);
+    if (g) {
+      const bar = collapsedBarById.get(g.id);
+      return bar ? { x: bar.x, y: bar.y + bar.h / 2 } : null;
+    }
+    const c = cardById(id);
+    return c ? { x: c.x, y: c.y + heightOf(c) / 2 } : null;
+  };
+
   const edgePath = (from: SceneCard, to: SceneCard) => {
     const x1 = from.x + CARD_W;
     const y1 = from.y + heightOf(from) / 2;
@@ -905,6 +1099,21 @@ export function SceneBoard({
     y2: b.y + heightOf(b) / 2 + fanOffset(inEdges.get(b.id), e.id, FAN),
   });
 
+  // 접힌 그룹 막대로 재연결되는 브릿지 선 — 멤버가 숨어 visibleEdges 에서 빠진 연결을 막대 포트로 그린다.
+  const groupBridges = collapsedMemberOf.size
+    ? edges.flatMap((e) => {
+        if (grayHidden.has(e.from) || grayHidden.has(e.to)) return [];
+        const fg = collapsedMemberOf.get(e.from);
+        const tg = collapsedMemberOf.get(e.to);
+        if (!fg && !tg) return []; // 둘 다 안 접힘 → 일반선(visibleEdges)이 그림
+        if (fg && tg && fg.id === tg.id) return []; // 같은 접힌 그룹 내부 연결 → 숨김
+        const a = barOut(e.from);
+        const b = barIn(e.to);
+        if (!a || !b) return [];
+        return [{ id: e.id, a, b, ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) }];
+      })
+    : [];
+
   return (
     <div
       className={"scene-board" + (cutHeld ? " cutting" : "")}
@@ -914,6 +1123,68 @@ export function SceneBoard({
       onDrop={onDrop}
     >
       <div className="scene-canvas" ref={canvasRef} style={{ transformOrigin: "0 0" }}>
+        {/* 그룹 프레임(펼침)·막대(접힘) — 카드 뒤(맨 앞 렌더). 헤더만 잡기/이름변경/접기 가능 */}
+        {groupViews.map(({ g, frame, bar }) => {
+          const collapsed = !!g.collapsed;
+          const box = collapsed ? bar : frame;
+          const memberCount = g.cardIds.filter((id) => cardById(id)).length;
+          const editing = editingGroupId === g.id;
+          return (
+            <div
+              key={g.id}
+              className={"scene-group" + (collapsed ? " collapsed" : "")}
+              style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
+            >
+              <div
+                className="scene-group-hd scene-group-grab"
+                data-group-id={g.id}
+                title="끌어서 그룹 이동 · 더블클릭=이름 변경"
+              >
+                <button
+                  className="scene-group-btn"
+                  title={collapsed ? "펼치기" : "접기"}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleGroupCollapsed(g.id);
+                  }}
+                >
+                  {collapsed ? "▸" : "▾"}
+                </button>
+                {editing ? (
+                  <input
+                    className="scene-group-name-input"
+                    autoFocus
+                    defaultValue={g.name}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") {
+                        renameGroup(g.id, (e.target as HTMLInputElement).value.trim() || g.name);
+                        setEditingGroupId(null);
+                      } else if (e.key === "Escape") setEditingGroupId(null);
+                    }}
+                    onBlur={(e) => {
+                      renameGroup(g.id, e.target.value.trim() || g.name);
+                      setEditingGroupId(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="scene-group-name"
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingGroupId(g.id);
+                    }}
+                  >
+                    {g.name}
+                  </span>
+                )}
+                <span className="scene-group-count">{memberCount}</span>
+              </div>
+            </div>
+          );
+        })}
         <svg
           className="scene-edges"
           style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}
@@ -947,6 +1218,26 @@ export function SceneBoard({
             const b = cardById(be.to);
             if (!a || !b) return null;
             return <path key={be.id} className="scene-edge bridge" d={edgePath(a, b)} />;
+          })}
+          {/* 접힌 그룹 브릿지 — 멤버 대신 그룹 막대 포트로 이어 그린다(연결 유지 표시).
+              일반 엣지와 동일하게 hit-path(클릭 삭제) + data-edge(가위 절단) + cut 예고 스타일을 태운다. */}
+          {groupBridges.map((gb) => {
+            const d = edgePathXY(gb.a.x, gb.a.y, gb.b.x, gb.b.y);
+            const cls =
+              "scene-edge" +
+              (gb.ref ? " ref" : gb.refg ? " refg" : "") +
+              (edgesToCut.has(gb.id) ? " cut" : "");
+            return (
+              <g key={gb.id}>
+                <path
+                  className="scene-edge-hit"
+                  data-edge={gb.id}
+                  d={d}
+                  onClick={() => removeEdge(gb.id)}
+                />
+                <path className={cls} d={d} />
+              </g>
+            );
           })}
           {/* 가위 드래그 궤적 */}
           {cutStroke && cutStroke.length > 1 && (
@@ -1000,11 +1291,15 @@ export function SceneBoard({
                     <div className="scene-card-body">
                       {(card.refs || []).map((r, i) => (
                         <div className="scene-refthumb" key={i} title={r.name || `레퍼런스 ${i + 1}`}>
-                          {r.thumb ? (
-                            <img src={r.thumb} alt="" draggable={false} />
-                          ) : (
-                            <span className="scene-refthumb-ph" />
-                          )}
+                          {(() => {
+                            const src = refThumbSrc(r);
+                            return src ? (
+                              <img src={src} alt="" draggable={false} />
+                            ) : (
+                              <span className="scene-refthumb-ph" />
+                            );
+                          })()}
+                          {r.type === "video" && <span className="scene-refthumb-vid">▶</span>}
                           <span className="scene-refnum">{i + 1}</span>
                         </div>
                       ))}
@@ -1198,7 +1493,7 @@ export function SceneBoard({
             });
           return (
             <div
-              className="scene-varpop-backdrop"
+              className={"scene-varpop-backdrop" + (gripDragging ? " drag-through" : "")}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => setCardMenu(null)}
             >
@@ -1282,6 +1577,24 @@ export function SceneBoard({
                             // 컨테이너는 pointer-events:none, 버튼만 활성 → 빈 영역 클릭은 타일 선택으로 통과.
                             <div className="scene-varpop-ov">
                               <div className="scene-varpop-ov-top">
+                                {/* 좌측 상단 = 프롬프트 재사용 그립(⠿) — 메인 카드처럼 프롬프트로 끌어내려 재사용.
+                                    팝업은 유지하되, 드래그 중엔 백드롭을 클릭통과시켜 아래 프롬프트에 드롭되게 한다. */}
+                                <span
+                                  className="scene-varpop-grip"
+                                  draggable
+                                  title="프롬프트로 끌어내려 재사용(프롬프트·옵션 불러오기)"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onDragStart={(e) => {
+                                    e.stopPropagation();
+                                    e.dataTransfer.setData(DRAG_TYPES.generation, gg.id);
+                                    e.dataTransfer.effectAllowed = "copy";
+                                    setGripDragging(true);
+                                  }}
+                                  onDragEnd={() => setGripDragging(false)}
+                                >
+                                  ⠿
+                                </span>
                                 <button
                                   title="정보"
                                   onMouseDown={(e) => e.stopPropagation()}
@@ -1293,6 +1606,7 @@ export function SceneBoard({
                                   ⓘ
                                 </button>
                               </div>
+                              {/* 하단 = 다운로드/레퍼런스/재생성 3개(메인 카드와 동일 구성) */}
                               <div className="scene-varpop-ov-bot">
                                 <button
                                   title="다운로드"
@@ -1315,16 +1629,6 @@ export function SceneBoard({
                                   @
                                 </button>
                                 <button
-                                  title="프롬프트 재사용 — 프롬프트·옵션 불러오기"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    dispatchAppEvent(APP_EVENTS.reusePrompt, gg.id);
-                                  }}
-                                >
-                                  ⤶
-                                </button>
-                                <button
                                   title="재생성"
                                   onMouseDown={(e) => e.stopPropagation()}
                                   onClick={(e) => {
@@ -1333,16 +1637,6 @@ export function SceneBoard({
                                   }}
                                 >
                                   ↻
-                                </button>
-                                <button
-                                  title="크게 보기(방향키로 이동)"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openPreviewAt(gid);
-                                  }}
-                                >
-                                  ⤢
                                 </button>
                               </div>
                             </div>

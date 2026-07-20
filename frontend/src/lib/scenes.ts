@@ -31,11 +31,21 @@ export interface SceneEdge {
   to: string; // 입력 카드 id
 }
 
+// 카드 묶음(그룹) — 테두리는 멤버 카드들의 바운딩박스로 자동 계산(별도 좌표 저장 안 함).
+//  · name: 헤더에 표시(더블클릭 편집)  · collapsed: 접으면 제목 막대로 축소(멤버 숨김·연결은 막대로 브릿지)
+export interface SceneGroup {
+  id: string;
+  name: string;
+  cardIds: string[];
+  collapsed?: boolean;
+}
+
 export interface Scene {
   id: string;
   name: string;
   cards: SceneCard[];
   edges: SceneEdge[];
+  groups?: SceneGroup[]; // 카드 그룹(선택 후 Ctrl+G) — 없으면 그룹 없음
   camera?: { z: number; x: number; y: number };
   created_at: number;
 }
