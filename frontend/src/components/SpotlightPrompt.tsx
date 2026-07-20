@@ -403,7 +403,17 @@ export function SpotlightPrompt({
       const g = await api.getGeneration(id);
       // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
       dragParentRef.current = id;
-      const t: "image" | "video" = g.assets[0]?.type === "video" ? "video" : "image";
+      // 모드 판정 — 출력 자산 타입이 우선(성공작). 단 실패 생성은 자산이 없어 무조건 image 로
+      //  떨어졌다 → 모델이 속한 모드로 폴백(seedance(video) 재사용이 Nano Banana(image)로 깨지던 문제).
+      const assetType = g.assets[0]?.type;
+      const t: "image" | "video" =
+        assetType === "video"
+          ? "video"
+          : assetType === "image"
+            ? "image"
+            : ALLOWED.video.includes(g.model || "")
+              ? "video"
+              : "image";
       // 원래 모델이 화이트리스트에 있으면 유지, 아니면 타입 기본(첫째)로 클램프
       const useModel = ALLOWED[t].includes(g.model || "") ? (g.model as string) : ALLOWED[t][0];
       // 표시 옵션만 추려 임시 보관(프롬프트·미디어 등 내부 파라미터 제외).
