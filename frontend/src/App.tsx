@@ -1,5 +1,5 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
 const HistoryBoard = lazy(() =>
   import("./components/HistoryBoard").then((m) => ({ default: m.HistoryBoard })),
@@ -142,10 +142,21 @@ export default function App() {
     projects,
     projectsLoadedRef,
     reload,
+    setFacets,
     setGens,
     stats,
     unassignedCount,
   } = useGenerationLibraryData({ authReady, filters, flash, genQuery });
+  // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
+  // '등록된 태그' 패널이 탭을 나갔다 와야 갱신되던 문제 → 새 태그 이름을 facets.tags 에 낙관적 병합해 즉시 반영.
+  const mergeFacetTags = useCallback(
+    (names: string[]) =>
+      setFacets((f) => {
+        const add = names.filter((n) => n && !f.tags.includes(n));
+        return add.length ? { ...f, tags: [...f.tags, ...add] } : f;
+      }),
+    [setFacets],
+  );
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
 
   const {
@@ -341,9 +352,14 @@ export default function App() {
   });
   // ── Canvas 씬 모드 ── 구성 탭에서 씬 생성 카드 1개를 선택하면 하단 프롬프트가 그 카드에 바인딩된다.
   const sceneMode = filters.tab === "compose" && !!activeScene && !!sceneBinding;
+  // compose 탭 + 활성 씬이면 트레이는 항상 '캔버스 바인딩' 모드 —
+  //  · 카드 선택 시: 그 카드의 refs 를 트레이에 로드
+  //  · 아무것도 선택 안 함: refs=[] 로 줘서 트레이를 비운다(→ '선택 없음'을 시각적으로 알 수 있게).
   const trayBinding =
-    sceneMode && activeScene && sceneBinding
-      ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs }
+    filters.tab === "compose" && activeScene
+      ? sceneBinding
+        ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs }
+        : { key: `${activeScene.id}:none`, refs: [] as SceneRef[] }
       : null;
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
   const setSceneCardRefs = (refs: SceneRef[]) => {
@@ -359,6 +375,7 @@ export default function App() {
       const newIds = (created || []).map((x) => x.id); // 복수 생성이면 여러 장 → 카드에 모두 누적
       if (newIds.length) {
         // 최신 씬을 다시 읽어(생성 대기 중 편집분 보존) 해당 카드에만 변형 append — 덮어쓰지 않는다.
+        // 재사용이든 아니든 '선택된 카드'에 쌓는다(사용자 결정: 카드 선택 후 재사용 = 그 카드에 누적).
         const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
         const nextCards = cards.map((c) => {
           if (c.id !== sceneBinding.cardId) return c;
@@ -542,7 +559,10 @@ export default function App() {
                 sharedOnly={sharedOnly}
                 commentOnly={commentOnly}
                 finalOnly={finalOnly}
-                onSetTags={onSetTags}
+                onSetTags={(g, tags) => {
+                  mergeFacetTags(tags); // '등록된 태그' 패널 즉시 반영(compose 탭은 reload 가 facets 를 안 불러옴)
+                  onSetTags(g, tags);
+                }}
                 onSetAutoTags={onSetAutoTags}
                 autoTagOptions={facets.auto_tags}
               />

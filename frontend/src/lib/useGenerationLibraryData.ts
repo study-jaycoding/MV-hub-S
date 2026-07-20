@@ -128,6 +128,7 @@ export function useGenerationLibraryData({
     projects,
     projectsLoadedRef,
     reload,
+    setFacets,
     setGens,
     stats,
     unassignedCount,
