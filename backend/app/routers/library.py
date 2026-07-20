@@ -37,15 +37,20 @@ def _overlay_personal_meta(data, request: Request):
     my = account_scope_uid(request)
     if not my:
         return data
-    mine = [
-        g["id"]
-        for g in rows
-        if isinstance(g, dict) and g.get("id") and g.get("creator_uid") == my
-    ]
-    meta = repo.personal_meta_by_anchor(mine, my)
+    # 팀 카드 id 는 서버 UUID(≠ 로컬 id ≠ job_id)라 job_id 로도 앵커를 걸어야 내 개인메타가 잡힌다.
+    anchors: list[str] = []
+    for g in rows:
+        if isinstance(g, dict) and g.get("creator_uid") == my:
+            if g.get("id"):
+                anchors.append(g["id"])
+            if g.get("job_id"):
+                anchors.append(g["job_id"])
+    meta = repo.personal_meta_by_anchor(anchors, my)
     if meta:
         for g in rows:
-            m = meta.get(g.get("id")) if isinstance(g, dict) else None
+            if not isinstance(g, dict):
+                continue
+            m = meta.get(g.get("id")) or meta.get(g.get("job_id"))
             if m:
                 g["color"] = m["color"]
                 g["tags"] = m["tags"]

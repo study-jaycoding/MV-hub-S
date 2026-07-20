@@ -36,6 +36,7 @@ export interface Generation {
   status: GenStatus;
   created_at: string;
   sort_ts?: number | null; // 정렬 정밀 epoch — 무한 스크롤 키셋 커서(다음 페이지 요청에 사용)
+  job_id?: string | null; // 힉스필드 잡 앵커 — 팀 카드(서버 UUID)↔로컬 개인메타 매핑용
   assets: Asset[];
   references: Reference[];
   tags: string[];

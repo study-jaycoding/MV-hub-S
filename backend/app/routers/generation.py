@@ -286,6 +286,28 @@ def derive_from(body: DeriveFromIn, request: Request, ref: ResolvedGen = Depends
     return repo.get_history(ref.local_id, viewer_uid=viewer_uid, read_all=read_all)
 
 
+def _resolve_local_or_reclaim(gen_id, request: Request):
+    """(gen, local_id, server_id) — 로컬 우선, 프록시 팀 카드(서버 UUID)는 서버에서 job_id 로 되찾기.
+
+    Phase 0b 이후 팀 탭 카드 id = 서버 UUID(≠ 로컬 id ≠ job_id)라 resolve_and_get 의 'id/job_id'
+    로컬 매칭이 실패한다. 이때 프록시 모드면 서버 단건을 조회해 그 카드의 job_id 를 얻고, 그 job_id 로
+    로컬 행을 되찾는다([share.py] _local_id_from_out 과 동형). color/tags 처럼 '로컬이 진실'인 개인메타를
+    팀 탭에서 편집할 때 404 를 없앤다. 내 로컬 행이 아니면(남의 카드) 그대로 (None, None, gen_id)."""
+    gen, local_id, server_id = repo.resolve_and_get(gen_id)
+    if gen or not _proxy.proxying():
+        return gen, local_id, server_id
+    try:
+        srv = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+    except HTTPException as e:
+        if e.status_code == 404:
+            return gen, local_id, server_id  # 서버에도 없음 → 원래 결과(404 유발) 유지
+        raise  # 서버 다운·권한·만료(502/403/401)는 그대로 전파(오해 소지 404 로 뭉개지 않음)
+    job_id = srv.get("job_id") if isinstance(srv, dict) else None
+    if job_id:
+        return repo.resolve_and_get(job_id)  # 서버 앵커로 로컬 행 재해석
+    return gen, local_id, server_id
+
+
 def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirror_body=None):
     """color/tags/source/comment 개인메타 setter 공통 셰이프.
 
@@ -295,7 +317,7 @@ def _set_meta(gen_id, request, apply, *, mirror_suffix: str | None = None, mirro
     ★ 미러는 '팀이 보는' 공유 필드(source/comment)만 한다. color/tags 는 작성자 전용(마스킹 대상)이라
     서버에 두지 않고 로컬 전용으로 두며, 팀 탭에는 허브가 오버레이(library._overlay_personal_meta)로
     합친다 — 개인 메타를 공유 컬럼에 미러하던 dual-storage 불일치(미러 실패·낙관 레이스)를 원천 제거."""
-    gen, local_id, server_id = repo.resolve_and_get(gen_id)
+    gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_edit_generation(request, gen)  # 본인/admin 만 수정
@@ -659,7 +681,7 @@ async def cache_generation_media(gen: dict) -> dict[str, int]:
 
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
-    gen, gen_id, _ = repo.resolve_and_get(gen_id)  # 팀 탭 카드(서버 job_id)→로컬 행(단일 커넥션)
+    gen, gen_id, _ = _resolve_local_or_reclaim(gen_id, request)  # 팀 탭 카드(서버 UUID)→로컬 행
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
