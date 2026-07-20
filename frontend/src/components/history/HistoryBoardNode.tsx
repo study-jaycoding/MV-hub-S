@@ -185,7 +185,12 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
         <span
           className="linb-ov-btn linb-ov-drag linb-ov-grip"
           draggable
-          title="프롬프트로 끌어 레퍼런스로 추가(여러 개 끌면 누적)"
+          title="클릭 또는 끌어내려 프롬프트 재사용(프롬프트·옵션 불러오기)"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            dispatchAppEvent(APP_EVENTS.reusePrompt, generation.id); // 클릭만으로도 재사용
+          }}
           onDragStart={(e) => {
             e.dataTransfer.setData(DRAG_TYPES.generation, generation.id);
             e.dataTransfer.effectAllowed = "copy";

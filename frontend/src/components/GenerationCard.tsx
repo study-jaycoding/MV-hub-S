@@ -7,6 +7,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
+import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
 import type { GradeMode } from "../lib/gradeStep";
 import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
@@ -341,13 +342,16 @@ function GenerationCardImpl({
           C
         </button>
       </div>
-      {/* 좌상단 드래그 그립(S 버튼 밑) — 끌어내려 프롬프트 재사용(불러오기). 레퍼런스로 쓰려면 @ 버튼. */}
+      {/* 좌상단 그립(S 버튼 밑) — 클릭 또는 끌어내려 프롬프트 재사용(불러오기). 레퍼런스로 쓰려면 @ 버튼. */}
       <span
         className="card-drag-grip"
         draggable
-        title="프롬프트로 끌어내려 재사용(프롬프트·옵션 불러오기) · 레퍼런스로는 @ 버튼"
+        title="클릭 또는 끌어내려 프롬프트 재사용(프롬프트·옵션 불러오기) · 레퍼런스로는 @ 버튼"
         onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          dispatchAppEvent(APP_EVENTS.reusePrompt, gen.id); // 클릭만으로도 재사용
+        }}
         onDragStart={(e) => {
           e.stopPropagation();
           e.dataTransfer.setData(DRAG_TYPES.generation, gen.id);
