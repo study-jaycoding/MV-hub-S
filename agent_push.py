@@ -111,7 +111,9 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
         return None, f"CLI 타임아웃: {' '.join(args)}"
     if out.returncode != 0:
         msg = (out.stderr or out.stdout or "").strip()
-        return None, f"CLI 실패({' '.join(args)}): {msg[:700]}"
+        # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
+        # 짧게 뒤에 붙인다(예전엔 명령어가 앞이라 하류 500자 컷에 실제 실패 사유가 통째로 잘렸다).
+        return None, f"CLI 실패: {msg[:600]} — cmd: {' '.join(args)[:160]}"
     parsed = _parse_cli_json(out.stdout)
     if parsed is not None:
         return parsed, None
@@ -808,7 +810,7 @@ def _execute_one(
         # cli_error None = 파서가 id 없는 조각을 잡은 경우(진행줄 등). 원인 파악용으로 메시지 구분.
         reason = "결과 파싱 실패(잡 id 없음)" if cli_error is None else "로컬 CLI 실행 실패"
         if cli_error:
-            reason = f"{reason}: {cli_error[:500]}"
+            reason = f"{reason}: {cli_error[:800]}"
             print(f"[경고] {cli_error}")
         _fail(server, token, rid, reason)
         return
