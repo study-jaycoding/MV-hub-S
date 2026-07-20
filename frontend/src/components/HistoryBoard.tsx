@@ -113,7 +113,9 @@ export function HistoryBoard({
   const sConfirmRef = useRef(sConfirm);
   sConfirmRef.current = sConfirm;
   const onNodeSClick = useCallback((g: Generation) => {
-    if (!g.is_mine) return; // 공유/해제는 본인 것만
+    // 공유/해제=본인 것. 추가로 슈퍼바이저는 남의 '공유된' 카드를 해제할 수 있다(B안).
+    const may = cbRef.current.canFinalize ? cbRef.current.canFinalize(g) : true;
+    if (!g.is_mine && !(g.shared && may)) return;
     cbRef.current.sClick.onClick(() => {
       if (g.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
       setSConfirm({ id: g.id, kind: "share" });

@@ -129,10 +129,12 @@ function GenerationCardImpl({
       sClick.onClick(() => onBulkGradeStep!("single"));
       return;
     }
-    if (!gen.is_mine) return; // 공유/해제는 본인 생성물만 — 다른 사람은 S 를 눌러도 무반응
+    // 공유/해제 단일클릭 = 본인 것. 추가로 슈퍼바이저는 남의 '공유된' 카드를 해제할 수 있다(B안).
+    const may = canFinalize ? canFinalize(gen) : true;
+    if (!gen.is_mine && !(gen.shared && may)) return; // 남의 비공유(또는 권한 없음)는 무반응
     sClick.onClick(() => {
       if (gen.is_final) return; // 최종(골드)은 공유 잠금 — 해제는 더블클릭으로만
-      setConfirmShare(true); // 즉시 토글하지 않고 확인 플로팅을 띄운다("공유 하시겠습니까?")
+      setConfirmShare(true); // 확인 플로팅("공유 해제 할까요?")
     });
   };
   const confirmShareYes = () => {
@@ -294,7 +296,9 @@ function GenerationCardImpl({
                   ? gen.shared
                     ? "팀에 공유됨 · 클릭=공유 해제 · 더블클릭=최종 지정(Supervisor)"
                     : "팀에 공유 (클릭) · 최종 지정은 공유 후 더블클릭"
-                  : "더블클릭=최종 지정(Supervisor)"
+                  : gen.shared && mayFinalize
+                    ? "클릭=공유 해제 · 더블클릭=최종 지정 (Supervisor)"
+                    : "더블클릭=최종 지정(Supervisor)"
             }
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {

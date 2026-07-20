@@ -46,7 +46,7 @@ export function computeGradeStep(
     } else if (selected.every((g) => level(g) >= 1)) {
       // 내림은 선택에 일반이 하나도 없을 때만(전부 공유↑) — 밑에 올릴 게 남았으면 안 내린다.
       const down = selected
-        .filter((g) => g.is_mine && level(g) === 1)
+        .filter((g) => (g.is_mine || canFinalize(g)) && level(g) === 1) // 본인 것 + 슈퍼바이저는 남의 공유도 해제(B안)
         .map((g) => ({ gen: g, action: "unpublish" as const }));
       if (down.length) {
         direction = "down";
