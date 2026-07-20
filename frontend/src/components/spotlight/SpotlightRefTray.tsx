@@ -88,9 +88,15 @@ export function SpotlightRefTray({
               <span className="sl-reftray-num">{displayIndex}</span>
               {ref.type === "video" ? (
                 <video
+                  // React <video muted> 는 DOM 프로퍼티로 안 붙는 알려진 버그 → 소리가 새어나온다.
+                  // 재생 직전 명령형으로 muted 를 강제하고 play() 한다(autoPlay 속성 대신).
+                  ref={(el) => {
+                    if (!el) return;
+                    el.muted = true;
+                    el.play().catch(() => {});
+                  }}
                   src={refSrc(ref.file_path)}
                   muted
-                  autoPlay
                   loop
                   preload="auto"
                   playsInline

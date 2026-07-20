@@ -101,7 +101,19 @@ export function SpotlightMentionPicker({
                 }}
               >
                 {item.media && item.type === "video" ? (
-                  <video src={item.media} muted autoPlay loop playsInline preload="auto" />
+                  // React <video muted> DOM 프로퍼티 미반영 버그 → 명령형으로 무음 강제 후 재생.
+                  <video
+                    ref={(el) => {
+                      if (!el) return;
+                      el.muted = true;
+                      el.play().catch(() => {});
+                    }}
+                    src={item.media}
+                    muted
+                    loop
+                    playsInline
+                    preload="auto"
+                  />
                 ) : item.media ? (
                   <img src={item.media} alt="" />
                 ) : (
