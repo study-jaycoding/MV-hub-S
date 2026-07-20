@@ -59,6 +59,44 @@ def _cli() -> str:
     return found
 
 
+# ── Windows .CMD 셰임 우회 ─────────────────────────────────────────────
+# npm 글로벌 CLI 는 `higgsfield.CMD`(배치)로 잡힌다. subprocess 가 이를 실행하면 cmd.exe 를 거치는데,
+# cmd.exe 는 인자 안의 `<` `>` 를 리다이렉션으로 해석한다 → 프롬프트의 `<<<imageN>>>` 토큰이
+# "<< was unexpected at this time." 로 깨진다. 셰임이 부르는 실제 `higgsfield.js` 를 찾아
+# `node <js>` 로 직접 실행하면 cmd.exe 를 우회해 토큰이 그대로 전달된다.
+def _shim_target_js(cmd_path):
+    """`.cmd`/`.bat` 셰임이 실행하는 node .js 경로. 못 찾으면 None."""
+    try:
+        with open(cmd_path, "r", encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    m = re.search(r'"([^"]*?\.js)"', text)
+    if not m:
+        return None
+    dp0 = os.path.dirname(cmd_path)
+    js = m.group(1).replace("%~dp0%", dp0).replace("%dp0%", dp0).replace("%~dp0", dp0)
+    js = os.path.normpath(js)
+    return js if os.path.exists(js) else None
+
+
+_CLI_ARGV_CACHE = {}
+
+
+def _cli_argv(cli):
+    """subprocess 실행용 argv 접두 리스트. Windows .cmd/.bat 셰임이면 node+js 로 풀어 cmd.exe 를 우회."""
+    cached = _CLI_ARGV_CACHE.get(cli)
+    if cached is not None:
+        return cached
+    argv = [cli]
+    if os.name == "nt" and cli.lower().endswith((".cmd", ".bat")):
+        js = _shim_target_js(cli)
+        if js:
+            argv = [shutil.which("node") or "node", js]
+    _CLI_ARGV_CACHE[cli] = argv
+    return argv
+
+
 def _parse_cli_json(stdout: str):
     """CLI stdout → 파싱값(실패 시 None). `--json` 단일 JSON 이면 그대로.
     `generate create --wait` 처럼 진행줄+최종 JSON 이 섞여 whole 파싱이 안 되면, 뒤에서부터
@@ -104,7 +142,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
         out = subprocess.run(
-            [cli, *args, "--json"],
+            [*_cli_argv(cli), *args, "--json"],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -222,7 +260,7 @@ def _cli_version(cli: str) -> str | None:
     """CLI 빌드 버전 문자열(예: '0.2.3'). `higgsfield version` 은 JSON 이 아니라 평문이라 직접 파싱.
     실패해도 None — 버전 보고는 부가정보(없어도 push 진행)."""
     try:
-        out = subprocess.run([cli, "version"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run([*_cli_argv(cli), "version"], capture_output=True, text=True, timeout=30)
         txt = (out.stdout or out.stderr or "").strip()
     except Exception:  # noqa: BLE001
         return None
@@ -966,7 +1004,7 @@ def _signout_and_relogin(cli: str) -> str | None:
     반환: 재로그인 후의 CLI 계정 이메일(확인 실패면 None)."""
     print("  현재 CLI 계정 로그아웃...")
     try:
-        subprocess.run([cli, "auth", "logout"], timeout=60)
+        subprocess.run([*_cli_argv(cli), "auth", "logout"], timeout=60)
     except Exception as e:  # noqa: BLE001 — 로그아웃 실패해도 로그인 시도는 진행
         print(f"  (로그아웃 경고: {e})")
     # 웹 세션 로그아웃 안내 — 이게 없으면 device 승인이 같은 계정으로 자동 통과돼 전환이 안 된다.
@@ -982,7 +1020,7 @@ def _signout_and_relogin(cli: str) -> str | None:
         print()
     print("  브라우저에서 허브와 '같은 이메일'로 로그인하세요...")
     try:
-        subprocess.run([cli, "auth", "login"], timeout=300)
+        subprocess.run([*_cli_argv(cli), "auth", "login"], timeout=300)
     except Exception as e:  # noqa: BLE001
         print(f"  [오류] CLI 로그인 실행 실패: {e}")
         return None
