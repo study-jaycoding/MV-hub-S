@@ -516,6 +516,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const cellOpsRef = useRef({ toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag });
   cellOpsRef.current = { toggleSource, openComments, setAssetTagsReplace, bulkTagAdd, bulkTagRemove, removeAssetTag };
   const cellOnS = useCallback((p: string) => cellOpsRef.current.toggleSource(p), []);
+  const cellOnT = useCallback((p: string) => setTagEditPath(p), []); // 카드 T 클릭 = 인라인 태그 편집(키보드 #와 동일)
   const cellOnC = useCallback((p: string) => cellOpsRef.current.openComments(p), []);
   const cellOnTagsReplace = useCallback(
     (p: string, tags: string[]) => cellOpsRef.current.setAssetTagsReplace(p, tags),
@@ -556,6 +557,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       meta={meta[f.path] || EMPTY_ASSET_META}
       editingTag={tagEditPath === f.path}
       onS={cellOnS}
+      onT={cellOnT}
       onC={cellOnC}
       onTagsReplace={cellOnTagsReplace}
       onBulkTagAdd={cellOnBulkTagAdd}

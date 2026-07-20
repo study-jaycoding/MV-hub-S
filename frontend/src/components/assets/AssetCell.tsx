@@ -21,6 +21,7 @@ export const AssetCell = memo(function AssetCell({
   editingTag,
   tagEditing,
   onS,
+  onT,
   onC,
   onTagsReplace,
   onBulkTagAdd,
@@ -43,6 +44,7 @@ export const AssetCell = memo(function AssetCell({
   editingTag: boolean;
   tagEditing?: boolean; // 다중선택 태그 편집 활성 — 선택된 비포커스 카드에 읽기전용 스트립 표시
   onS: (path: string) => void;
+  onT: (path: string) => void; // 태그 인라인 편집 시작(생성카드 T 버튼과 동일 · 키보드 #와 같은 경로)
   onC: (path: string) => void;
   onTagsReplace: (path: string, tags: string[]) => void; // 이 카드의 태그를 정확히 이 집합으로 교체
   onBulkTagAdd: (path: string, names: string[]) => void; // 다중선택 시 추가를 선택 전체에 적용
@@ -98,9 +100,9 @@ export const AssetCell = memo(function AssetCell({
     onExportDrag(node.path, e.dataTransfer);
   };
 
-  // 좌상단 액션 — S(소스)·C(코멘트). 생성파트와 동일 위치/스타일(card-tl/card-sf/card-cm).
-  //  · 기능은 어셋 고유: S=소스 등록/해제(meta.is_source), C=어셋 코멘트(meta.has_unread). 골드/최종 개념 없음.
-  //  · 평소 숨김(호버 시 표시), S 는 소스이면·C 는 미확인 코멘트면 항상 표시.
+  // 좌상단 액션 — S(소스)·T(태그)·C(코멘트). 생성파트와 동일 위치/스타일(card-tl/card-sf/card-cm).
+  //  · 기능은 어셋 고유: S=소스 등록/해제(meta.is_source), T=태그 인라인 편집(#), C=어셋 코멘트(meta.has_unread). 골드/최종 개념 없음.
+  //  · 평소 숨김(호버 시 표시), S 는 소스이면·T 는 태그 있으면·C 는 미확인 코멘트면 항상 표시.
   const topLeft = (
     <div className="card-tl">
       <button
@@ -113,6 +115,21 @@ export const AssetCell = memo(function AssetCell({
         }}
       >
         S
+      </button>
+      <button
+        className={"card-cm" + (meta.tags.length ? " on" : "")}
+        title={
+          meta.tags.length
+            ? `태그: ${meta.tags.join(", ")} · 클릭=태그 편집 (#)`
+            : "태그 입력 (#)"
+        }
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onT(node.path);
+        }}
+      >
+        T
       </button>
       <button
         className={"card-cm" + (meta.has_unread ? " alert" : "")}
