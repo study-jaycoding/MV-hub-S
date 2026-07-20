@@ -15,6 +15,9 @@
 .gen-vrow-grid { display: grid; gap: 12px; padding-bottom: 12px; } /* 반응형 컬럼은 인라인 style */
 .gen-vrow-list { padding-bottom: 6px; }
 .gen-grid-tail { height: 124px; } /* 하단 프롬프트 독 여백(옛 컨테이너 하단 padding 대체) */
+/* 상단 여백(옛 컨테이너 상단 padding 대체) — 높이는 Virtualizer startMargin(14/10)과 반드시 일치 */
+.gen-grid-head { height: 14px; }
+.gen-grid-virtual.as-list .gen-grid-head { height: 10px; }
 /* 가상화가 오프스크린을 언마운트하므로 content-visibility(추정높이 240px)는 불필요하고,
    버퍼 행에 추정치가 잡히면 스케일/컬럼 변경 때 스크롤 점프를 유발 → 가상 그리드 안에선 끈다. */
 .gen-grid-virtual .gen-cell { content-visibility: visible; contain-intrinsic-size: auto; }

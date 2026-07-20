@@ -502,6 +502,7 @@ export function ThumbnailGrid(props: Props) {
         onKeyDown={onGridKeyDown}
         onScroll={onGridScroll}
       >
+        <div className="gen-grid-head" />
         <Virtualizer
           ref={vRef}
           scrollRef={gridRef}
