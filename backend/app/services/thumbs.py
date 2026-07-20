@@ -9,13 +9,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
+import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from ..config import MEDIA_DIR
-from .media_types import IMAGE_EXTENSIONS
+from .media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from .path_safety import safe_join
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
@@ -24,6 +27,37 @@ THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시
 # 구울 수 있어 삭제해도 안전하다 — 이 상한은 .thumbs(재생성 가능 캐시)에만 적용하고 MEDIA_DIR 의
 # 원본(특히 최종본 보존본)은 절대 건드리지 않는다. 기본 1GB(≈ 3만 장), 런처 환경변수로 조절.
 THUMB_CACHE_MAX_BYTES = int(os.environ.get("CONTENT_HUB_THUMB_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
+_THUMB_LOCKS: dict[str, threading.Lock] = {}
+_THUMB_LOCK_REFS: dict[str, int] = {}
+_THUMB_LOCKS_GUARD = threading.Lock()
+
+
+def _is_complete_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _acquire_thumb_lock(cache: Path) -> tuple[str, threading.Lock]:
+    key = str(cache)
+    with _THUMB_LOCKS_GUARD:
+        lock = _THUMB_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THUMB_LOCKS[key] = lock
+        _THUMB_LOCK_REFS[key] = _THUMB_LOCK_REFS.get(key, 0) + 1
+        return key, lock
+
+
+def _release_thumb_lock(key: str) -> None:
+    with _THUMB_LOCKS_GUARD:
+        remaining = _THUMB_LOCK_REFS.get(key, 0) - 1
+        if remaining <= 0:
+            _THUMB_LOCK_REFS.pop(key, None)
+            _THUMB_LOCKS.pop(key, None)
+        else:
+            _THUMB_LOCK_REFS[key] = remaining
 
 
 def cache_path(target: Path, w: int) -> Path:
@@ -39,26 +73,96 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
         return None
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
     cache = cache_path(target, w)
-    if cache.exists():
+    if _is_complete_file(cache):
         return cache
-    from PIL import Image  # 지연 import
-
-    # 임시파일 → 원자적 교체: 같은 캐시 미스가 동시에 들어와도(요청 스레드 + prewarm)
-    # 반쯤 쓰인 .jpg 를 다른 쪽이 읽는 일이 없다. 파일명에 스레드별 고유 접미사.
-    tmp = cache.with_suffix(f".{threading.get_ident()}.tmp")
+    lock_key, lock = _acquire_thumb_lock(cache)
     try:
-        with Image.open(target) as im:
-            im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
-            im.thumbnail((w, w), Image.LANCZOS)
-            im.save(tmp, "JPEG", quality=82)
-        tmp.replace(cache)
-        return cache
-    except Exception:
-        try:
-            tmp.unlink(missing_ok=True)  # 실패 잔재 정리(없으면 무시)
-        except OSError:
-            pass
+        with lock:
+            if _is_complete_file(cache):
+                return cache
+            from PIL import Image  # 지연 import
+
+            # 임시파일 → 원자적 교체: 같은 캐시 미스가 동시에 들어와도(요청 스레드 + prewarm)
+            # 반쯤 쓰인 .jpg 를 다른 쪽이 읽는 일이 없다. 파일명에 고유 접미사.
+            tmp = cache.with_suffix(f".{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+            try:
+                with Image.open(target) as im:
+                    im = im.convert("RGB")  # JPEG: 알파 제거(어두운 카드 배경이라 무방)
+                    im.thumbnail((w, w), Image.LANCZOS)
+                    im.save(tmp, "JPEG", quality=82)
+                tmp.replace(cache)
+                return cache
+            except Exception:
+                if _is_complete_file(cache):
+                    return cache
+                try:
+                    tmp.unlink(missing_ok=True)  # 실패 잔재 정리(없으면 무시)
+                except OSError:
+                    pass
+                return None
+    finally:
+        _release_thumb_lock(lock_key)
+
+
+_FFMPEG_BIN: Optional[str] = None
+_FFMPEG_LOOKED = False
+# ffmpeg 는 CPU 무거워 동시 실행을 제한한다 — 서로 다른 영상이 콜드로 몰려도(파일별 락은 같은 파일만
+# 직렬화하므로 다른 영상은 못 막음) 프로세스 폭주·CPU 스파이크를 막는다. 런처 환경변수로 조절.
+_FFMPEG_SEM = threading.Semaphore(int(os.environ.get("CONTENT_HUB_FFMPEG_CONCURRENCY", "3")))
+
+
+def _ffmpeg_bin() -> Optional[str]:
+    """ffmpeg 실행 경로(1회 조회 캐시). 없으면 None → 비디오 포스터 생성 불가."""
+    global _FFMPEG_BIN, _FFMPEG_LOOKED
+    if not _FFMPEG_LOOKED:
+        _FFMPEG_BIN = shutil.which("ffmpeg")
+        _FFMPEG_LOOKED = True
+    return _FFMPEG_BIN
+
+
+def ensure_video_poster(target: Path, w: int) -> Optional[Path]:
+    """비디오 target 의 첫 프레임을 w 폭 포스터(JPEG)로 보장(없으면 생성).
+    이미지 썸네일과 같은 .thumbs 디스크 캐시·락·완결성 검사를 재사용한다.
+    ffmpeg 가 없거나 추출 실패면 None → 라우터가 404. (첫 프레임 폴백은 없다 — preload=none 이라
+    포스터만 비게 되는데, <video> 첫 프레임 표시가 원래 불안정해서 포스터를 도입한 것이다.)"""
+    if target.suffix.lower() not in VIDEO_EXTENSIONS or not target.is_file():
         return None
+    ff = _ffmpeg_bin()
+    if not ff:
+        return None
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    cache = cache_path(target, w)  # 키=경로+mtime+폭 (이미지와 동일 규칙, 경로가 달라 충돌 없음)
+    if _is_complete_file(cache):
+        return cache
+    lock_key, lock = _acquire_thumb_lock(cache)
+    try:
+        with lock:
+            if _is_complete_file(cache):
+                return cache
+            # tmp 는 .jpg 로 끝내 ffmpeg 가 형식을 인식하게(+ image2 명시). 고유 접미사로 동시성 충돌 방지.
+            tmp = cache.parent / f"{cache.stem}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp.jpg"
+            try:
+                with _FFMPEG_SEM:  # 동시 ffmpeg 프로세스 수 제한(CPU 스파이크 방지)
+                    subprocess.run(
+                        [ff, "-y", "-loglevel", "error", "-ss", "0", "-i", str(target),
+                         "-frames:v", "1", "-vf", f"scale='min({w},iw)':-2", "-q:v", "3",
+                         "-f", "image2", str(tmp)],
+                        check=True, capture_output=True, timeout=30,
+                    )
+                if not _is_complete_file(tmp):
+                    raise RuntimeError("ffmpeg produced empty output")
+                tmp.replace(cache)
+                return cache
+            except Exception:
+                if _is_complete_file(cache):
+                    return cache
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return None
+    finally:
+        _release_thumb_lock(lock_key)
 
 
 def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
@@ -156,4 +260,36 @@ async def prewarm_remote_thumbs(urls: list[str], width: int = 512, concurrency: 
     await asyncio.gather(*(_one(u) for u in urls), return_exceptions=True)
     if made:
         await asyncio.to_thread(evict_thumb_cache)  # 새로 구운 만큼 상한 점검(디스크 IO → 스레드)
+    return made
+
+
+def prewarm_asset_thumbs(files: list[tuple[Path, str]], width: int = 512) -> int:
+    """로컬 Assets 미디어의 썸네일/포스터를 미리 구워둔다(폴더 트리 로드 직후 백그라운드).
+    이미지=ensure_thumb, 비디오=ensure_video_poster. 이미 캐시면 즉시 통과(멱등)라 재호출이 싸다 →
+    스크롤 시점엔 디스크 캐시 히트로 즉시 뜬다. files=[(디스크경로, 'image'|'video')].
+    비디오 ffmpeg 동시성은 _FFMPEG_SEM 이 제한하므로 워커를 조금 둬도 폭주하지 않는다. 새로 구운 수 반환."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    made = 0
+
+    def _one(item: tuple[Path, str]) -> bool:
+        path, mt = item
+        try:
+            existed = _is_complete_file(cache_path(path, width)) if path.is_file() else False
+        except OSError:
+            existed = False
+        if mt == "image":
+            result = ensure_thumb(path, width)
+        elif mt == "video":
+            result = ensure_video_poster(path, width)
+        else:
+            result = None
+        return bool(result) and not existed  # 새로 구운 것만 True
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for new in ex.map(_one, files):
+            if new:
+                made += 1
+    if made:
+        evict_thumb_cache()  # 새로 구운 만큼 상한 점검
     return made

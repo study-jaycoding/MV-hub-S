@@ -16,13 +16,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -426,35 +427,42 @@ def _build_tree(
     if _depth > _TREE_MAX_DEPTH or _budget[0] <= 0:
         return []
     try:
-        entries = sorted(
-            directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-        )
+        entries: list[tuple[os.DirEntry[str], bool, bool]] = []
+        with os.scandir(directory) as scan:
+            for entry in scan:
+                if _hidden(entry.name):
+                    continue
+                if hidden_names and entry.name.lower() in hidden_names:
+                    continue
+                try:
+                    is_symlink = entry.is_symlink()
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                entries.append((entry, is_dir, is_symlink))
+        entries.sort(key=lambda item: (not item[1], item[0].name.lower()))
     except (PermissionError, OSError):
         return []
 
     out: list[dict[str, Any]] = []
-    for entry in entries:
+    reparse_point_attr = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
+    for entry, is_dir, is_symlink in entries:
         if _budget[0] <= 0:
             break
-        if _hidden(entry.name):
-            continue
-        if hidden_names and entry.name.lower() in hidden_names:
-            continue
         # 심볼릭링크/정션은 등록 폴더 밖(예: C:\Users)을 가리킬 수 있어 목록에서 제외한다.
         # (파일 본문은 safe_join 이 막지만 디렉터리 listing 은 여기서만 막힌다.)
-        # ★Windows 정션(mklink /J)은 is_symlink()에 안 걸리므로 is_junction()도 함께 차단
-        # (Path.is_junction 은 3.12+; 구버전 대비 getattr 방어).
-        try:
-            is_reparse = entry.is_symlink()
-            junction_check = getattr(entry, "is_junction", None)
-            if junction_check and junction_check():
-                is_reparse = True
-            if is_reparse:
-                continue
-        except OSError:
+        # DirEntry 에는 is_junction()이 없으므로 follow_symlinks=False stat 의 reparse-point
+        # 속성으로 Windows 정션/마운트포인트 등 재해석 지점을 보수적으로 차단한다.
+        if is_symlink:
             continue
         rel = f"{rel_prefix}{entry.name}"
-        if entry.is_dir():
+        if is_dir:
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
+                    continue
+            except OSError:
+                continue
             _budget[0] -= 1
             out.append(
                 {
@@ -462,7 +470,7 @@ def _build_tree(
                     "type": "dir",
                     "path": rel,
                     "children": _build_tree(
-                        entry, rel + "/", hidden_names=hidden_names,
+                        Path(entry.path), rel + "/", hidden_names=hidden_names,
                         _depth=_depth + 1, _budget=_budget,
                     ),
                 }
@@ -470,11 +478,14 @@ def _build_tree(
         else:
             mt = _media_type(entry.name)
             if mt:
-                _budget[0] -= 1
                 try:
-                    mtime = entry.stat().st_mtime  # 파일 날짜(에셋 날짜별 구분용)
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
+                        continue
                 except OSError:
-                    mtime = None
+                    continue
+                _budget[0] -= 1
+                mtime = entry_stat.st_mtime  # 파일 날짜(에셋 날짜별 구분용)
                 out.append({"name": entry.name, "type": mt, "path": rel, "mtime": mtime})
     return out
 
@@ -485,8 +496,28 @@ class ProjectsOut(BaseModel):
     root: str
 
 
+# ── 전 프로젝트 썸네일 백그라운드 프리워밍 ──────────────────────────────────
+# 프로젝트를 '열 때(/tree)' 굽는 것만으론 브라우저 첫 요청과 경쟁해 첫 화면이 여전히 콜드다.
+# 앱 로드(/projects) 시 등록된 모든 프로젝트를 미리 통째로 구워두면, 실제로 열 때 캐시가 웜이라 즉시 뜬다.
+# 이미 구운 파일은 ensure_thumb 가 스킵하므로 반복 비용은 트리 훑기뿐. 네트워크 부담을 줄이려 스로틀한다.
+_PREWARM_ALL_AT = 0.0
+_PREWARM_ALL_TTL = 600.0  # 초 — 이 간격 안에는 다시 훑지 않는다(새 파일은 다음 주기에 반영)
+
+
+def _prewarm_projects_bg(dirs: list[tuple[Path, bool]]) -> None:
+    """등록된 프로젝트들의 이미지·영상 썸네일을 순회 생성(캐시된 건 스킵). 백그라운드 전용."""
+    for proj_dir, auto_project in dirs:
+        try:
+            children = _build_tree(proj_dir, "", hidden_names={"render"} if auto_project else None)
+            media = _collect_tree_media(children, proj_dir)
+            if media:
+                thumbs.prewarm_asset_thumbs(media, 512)
+        except Exception:  # noqa: BLE001 — 한 프로젝트 실패가 나머지 프리워밍을 막지 않게
+            continue
+
+
 @router.get("/projects", response_model=ProjectsOut)
-def list_projects(request: Request):
+def list_projects(request: Request, background: BackgroundTasks):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
@@ -498,6 +529,14 @@ def list_projects(request: Request):
         p = ASSETS_ROOT / built_in
         if p.is_dir() and built_in not in projects and any(p.iterdir()):
             projects.append(built_in)
+    # 앱 로드 때 전 프로젝트를 백그라운드로 미리 프리워밍(스로틀) — 첫 열람도 웜 캐시로 즉시 뜨게.
+    global _PREWARM_ALL_AT
+    now = time.monotonic()
+    if projects and (now - _PREWARM_ALL_AT) > _PREWARM_ALL_TTL:
+        _PREWARM_ALL_AT = now
+        dirs = [info for name in projects if (info := _project_dir_info(name, request))]
+        if dirs:
+            background.add_task(_prewarm_projects_bg, dirs)
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
     return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
@@ -564,22 +603,55 @@ def del_mount(name: str, request: Request):
     return _mounts_payload(request)
 
 
+def _collect_tree_media(nodes: list[dict], proj_dir: Path) -> list[tuple[Path, str]]:
+    """트리에서 이미지·영상 파일의 (디스크경로, 타입) 목록 — 프리워밍용(오디오·폴더 제외)."""
+    out: list[tuple[Path, str]] = []
+    for n in nodes:
+        t = n.get("type")
+        if t == "dir":
+            out.extend(_collect_tree_media(n.get("children") or [], proj_dir))
+        elif t in ("image", "video"):
+            target = _safe_resolve(proj_dir, n.get("path") or "")
+            if target and target.is_file():
+                out.append((target, t))
+    return out
+
+
+# 트리 스캔 캐시 — 프로젝트 전환 시 같은 폴더를 매번 다시 훑던 비용 제거(느린/네트워크 드라이브는 2초+).
+# 키=해석된 디스크 경로(사용자별 마운트 반영·같은 폴더는 공유 안전). 짧은 TTL 로 왔다갔다 전환은 즉시,
+# 파일 변경은 곧 반영. 파일 추가(업로드) 시엔 즉시 무효화한다.
+_TREE_CACHE: dict[str, tuple[float, list]] = {}
+_TREE_TTL = 10.0  # 초
+
+
+def _invalidate_tree_cache(proj_dir: Path) -> None:
+    _TREE_CACHE.pop(str(proj_dir), None)
+
+
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
-def project_tree(request: Request, project: str = Query(...)):
+def project_tree(request: Request, background: BackgroundTasks, project: str = Query(...)):
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석."""
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     proj_dir, auto_project = info
-    return {
-        "project": project,
-        "name": proj_dir.name,
-        "children": _build_tree(
-            proj_dir,
-            "",
-            hidden_names={"render"} if auto_project else None,
-        ),
-    }
+    key = str(proj_dir)
+    cached = _TREE_CACHE.get(key)
+    if cached and (time.monotonic() - cached[0]) < _TREE_TTL:
+        # 캐시 히트 — 재훑기·재프리워밍 없이 즉시(직전에 이미 프리워밍 걸었다).
+        return {"project": project, "name": proj_dir.name, "children": cached[1]}
+    children = _build_tree(
+        proj_dir,
+        "",
+        hidden_names={"render"} if auto_project else None,
+    )
+    _TREE_CACHE[key] = (time.monotonic(), children)
+    # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).
+    # 캐시 미스(새로 훑은 경우)에만 — 이미 캐시면 앞서 걸었으니 중복 방지. 비디오 ffmpeg 는 세마포어로 폭주 방지.
+    media = _collect_tree_media(children, proj_dir)
+    if media:
+        background.add_task(thumbs.prewarm_asset_thumbs, media, 512)
+    return {"project": project, "name": proj_dir.name, "children": children}
 
 
 # ── 파일별 메타데이터(소스/태그/코멘트/컬러) ─────────────────────────────
@@ -812,13 +884,20 @@ def get_thumb(
     target = _safe_resolve(proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
-    if _media_type(target.name) != "image":
-        raise HTTPException(status_code=415, detail="썸네일은 이미지만 지원")
     # 썸네일 생성·캐시키는 thumbs 서비스로 단일화 — 엔드포인트와 pre-warm 이 같은 키를 써야
     # 미리 구운 캐시를 엔드포인트가 읽는다(예전엔 여기서 별도 재구현해 계약이 갈릴 위험이 있었다).
-    cache = thumbs.ensure_thumb(target, w)
+    # 이미지=리사이즈, 비디오=ffmpeg 첫 프레임 포스터(내 작업 라이브러리처럼 poster 로 씀).
+    mt = _media_type(target.name)
+    if mt == "image":
+        cache = thumbs.ensure_thumb(target, w)
+    elif mt == "video":
+        cache = thumbs.ensure_video_poster(target, w)
+    else:
+        raise HTTPException(status_code=415, detail="썸네일은 이미지·영상만 지원")
     if not cache:
-        raise HTTPException(status_code=500, detail="썸네일 생성 실패")
+        # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
+        # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
+        raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
     return FileResponse(cache, media_type="image/jpeg")
 
 
@@ -864,6 +943,8 @@ async def upload_assets(
         target = _commit_unique_tmp(tmp, dest, raw)  # 원자적 확정(덮어쓰기·race 방지)
         saved.append(target.relative_to(proj_dir).as_posix())
 
+    if saved:
+        _invalidate_tree_cache(proj_dir)  # 새 파일 반영 — 다음 트리 요청은 다시 훑는다
     return {"saved": saved, "skipped": skipped}
 
 

@@ -60,6 +60,9 @@ export const AssetCell = memo(function AssetCell({
   const isList = layout === "list";
   // 이미지는 리사이즈 썸네일로(풀해상도 디코딩 렉 방지). 영상/오디오는 원본 사용.
   const imgSrc = node.type === "image" ? api.assetThumbUrl(project, node.path, 512) : url;
+  // 영상 포스터 — ffmpeg 첫 프레임(서버 캐시). 내 작업 라이브러리처럼 poster 로 깔면 preload=none 이라
+  // 원본 로딩 없이 선명한 썸네일이 뜬다(포스터 실패 시 poster 만 비고 재생은 정상).
+  const posterSrc = isVideo ? api.assetThumbUrl(project, node.path, 512) : undefined;
 
   // list: 행 높이를 슬라이더로 고정(메인 라이브러리식) → 썸네일이 행 높이를 꽉 채우는 정사각.
   // grid: padding-bottom 트릭으로 정사각.
@@ -186,7 +189,7 @@ export const AssetCell = memo(function AssetCell({
         onMouseLeave={onLeave}
       >
         {isVideo ? (
-          <video ref={videoRef} src={url} muted loop playsInline preload="metadata" draggable={false} style={fillStyle} />
+          <video ref={videoRef} src={url} poster={posterSrc} muted loop playsInline preload="none" draggable={false} style={fillStyle} />
         ) : isAudio ? (
           <div className="audio-tile" style={fillStyle}>
             <span className="audio-glyph">🎵</span>

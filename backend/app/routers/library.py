@@ -19,6 +19,7 @@ from ..config import AUTH_ENABLED
 from ..deps import account_global_roles, account_scope_uid, require_view_generation
 from ..models import FacetsOut, GenerationOut
 from ..services import media_cache, thumbs
+from ..services.media_types import VIDEO_EXTENSIONS
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
 router = APIRouter(prefix="/api", tags=["library"])
@@ -143,13 +144,17 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
         raise HTTPException(status_code=400, detail="로컬 /media 경로 또는 http(s) URL만 지원")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
-    # PIL 디코드+리사이즈는 동기 CPU 작업 — async 라우트에서 직접 부르면 캐시 미스마다
-    # 이벤트 루프 전체가 멈춘다(prewarm 경로와 동일하게 스레드로 오프로딩).
-    cache = await asyncio.to_thread(thumbs.ensure_thumb, target, w)
+    # PIL/ffmpeg 는 동기 CPU 작업 — async 라우트에서 직접 부르면 캐시 미스마다 이벤트 루프가 멈춘다
+    # (prewarm 경로와 동일하게 스레드로 오프로딩). 이미지=리사이즈, 비디오=ffmpeg 첫 프레임 포스터.
+    # 비디오 포스터 지원으로 캔버스 레퍼런스 등 <img> 로 그리던 곳(포스터 없는 원격 영상)도 커버된다.
+    if target.suffix.lower() in VIDEO_EXTENSIONS:
+        cache = await asyncio.to_thread(thumbs.ensure_video_poster, target, w)
+    else:
+        cache = await asyncio.to_thread(thumbs.ensure_thumb, target, w)
     if not cache:
         if is_remote:
-            return RedirectResponse(src)  # 비이미지(비디오 등) → 원본으로 폴백
-        raise HTTPException(status_code=415, detail="썸네일 생성 불가(이미지 아님 등)")
+            return RedirectResponse(src)  # 생성 실패(손상 등) → 원본으로 폴백
+        raise HTTPException(status_code=415, detail="썸네일 생성 불가")
     return FileResponse(
         cache, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=2592000"}
     )

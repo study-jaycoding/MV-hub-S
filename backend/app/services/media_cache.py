@@ -33,6 +33,7 @@ _TIMEOUT = 30
 _CHUNK_SIZE = 65536
 _ATTEMPTS = 3
 _RETRY_BACKOFF = 0.4
+_CONCURRENT_CACHE_WAIT = float(os.getenv("CONTENT_HUB_MEDIA_CACHE_WAIT_SECONDS", "3.0"))
 _MAX_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
 _MIN_FREE_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
 _TEXT_ERROR_TYPES = {
@@ -78,7 +79,14 @@ def _local_path(rel: str) -> Path:
 
 
 def is_cached(url: str) -> bool:
-    return _local_path(local_rel_for(url)).exists()
+    return _is_complete_file(_local_path(local_rel_for(url)))
+
+
+def _is_complete_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -102,6 +110,18 @@ def _ensure_disk_space(path: Path, incoming_bytes: int = 0) -> None:
         raise MediaCachePermanentError(
             f"insufficient free disk space: free={free}, incoming={incoming_bytes}, reserve={_MIN_FREE_BYTES}"
         )
+
+
+async def _wait_for_complete_file(path: Path, timeout: float = _CONCURRENT_CACHE_WAIT) -> bool:
+    """다른 prewarm/워커가 같은 URL 캐시를 완성 중이면 잠깐 기다렸다가 재확인."""
+    if _is_complete_file(path):
+        return True
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if _is_complete_file(path):
+            return True
+    return _is_complete_file(path)
 
 
 def _validate_response(content_type: str, head: bytes) -> None:
@@ -210,18 +230,25 @@ async def cache_url(url: Optional[str]) -> Optional[str]:
 
     rel = local_rel_for(url)
     target = _local_path(rel)
-    if target.exists():
+    if _is_complete_file(target):
         return rel
     lock = await _acquire_lock(rel)
     try:
         async with lock:
-            if target.exists():
+            if _is_complete_file(target):
                 return rel
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)  # 샤딩 서브디렉터리(/media/<2>/) 보장
                 await asyncio.to_thread(_download, url, target)
-                return rel
+                return rel if _is_complete_file(target) else None
             except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
+                if await _wait_for_complete_file(target):
+                    log.info(
+                        "media cache reused concurrently completed file url=%s target=%s",
+                        _safe_url_for_log(url),
+                        target,
+                    )
+                    return rel
                 log.warning("media cache download failed url=%s target=%s reason=%s", _safe_url_for_log(url), target, e)
                 return None
     finally:
