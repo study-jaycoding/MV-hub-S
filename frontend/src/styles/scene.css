@@ -54,6 +54,23 @@
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
 
+/* ── 미니맵(우측 상단 네비게이터) — 화면 밖 카드가 있을 때만 표시(JS 로 display 토글) ── */
+.scene-minimap {
+  position: absolute; top: 10px; right: 10px; z-index: 20;
+  background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2);
+  border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  cursor: pointer; overflow: hidden; backdrop-filter: blur(2px);
+}
+.scene-minimap-card { position: absolute; border-radius: 1px; }
+.scene-minimap-card.gen { background: #40557d; }
+.scene-minimap-card.ref { background: #7fa9ff; }
+.scene-minimap-card.sel { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* 현재 보는 영역 박스 */
+.scene-minimap-view {
+  position: absolute; pointer-events: none;
+  border: 1.5px solid var(--accent); background: rgba(196, 232, 74, 0.12); border-radius: 1px;
+}
+
 /* ── 카드 그룹(Ctrl+G) — 멤버 바운딩박스 테두리 + 헤더(이름·접기). 컨테이너는 클릭 통과, 헤더만 잡힘 ── */
 .scene-group {
   position: absolute; z-index: 0; pointer-events: none;

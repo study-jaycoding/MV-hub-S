@@ -31,6 +31,7 @@ import { classifyEdges, computeBridgeEdges, edgePathXY, fanOffset } from "../../
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
+import { SceneMinimap } from "./SceneMinimap";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
@@ -242,14 +243,76 @@ export function SceneBoard({
     onCameraChangeRef.current?.({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y });
   const cardEls = useRef<Record<string, HTMLDivElement | null>>({});
   const heightsRef = useRef<Record<string, number>>({});
-  const [, bumpHeights] = useState(0);
+  const [heightTick, bumpHeights] = useState(0);
+  // 미니맵(네비게이터)의 뷰포트 박스 갱신 함수 — 팬/줌마다 applyTransform 이 호출(리렌더 없이).
+  const mmUpdateRef = useRef<(() => void) | null>(null);
 
   const applyTransform = useCallback(() => {
     const c = canvasRef.current;
     if (c)
       c.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoomRef.current})`;
+    mmUpdateRef.current?.(); // 팬/줌 반영 즉시 미니맵 뷰포트 박스도 갱신
   }, []);
   useLayoutEffect(applyTransform);
+
+  // ── f 키 프레이밍 · 미니맵 이동 공용 카메라 유틸 ──
+  // 카드 한 장의 바깥 사각형(캔버스 좌표). 레퍼런스는 실제 측정 높이, 생성은 고정.
+  const cardRect = (c: SceneCard) => ({
+    x: c.x,
+    y: c.y,
+    w: CARD_W,
+    h: c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H,
+  });
+  // 주어진 카드 집합이 화면에 꽉 차게(여백 포함) 프레이밍 — 중심 정렬 + 맞춤 줌.
+  const frameCards = (list: SceneCard[], maxZoom: number) => {
+    const vp = scrollRef.current?.getBoundingClientRect();
+    if (!vp || !list.length) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const c of list) {
+      const r = cardRect(c);
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      maxX = Math.max(maxX, r.x + r.w);
+      maxY = Math.max(maxY, r.y + r.h);
+    }
+    const bw = Math.max(1, maxX - minX);
+    const bh = Math.max(1, maxY - minY);
+    const pad = 0.82; // 가장자리 여백
+    let z = Math.min((vp.width * pad) / bw, (vp.height * pad) / bh);
+    z = Math.min(maxZoom, Math.max(0.3, z)); // 줌 한계(휠과 동일 하한)
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    zoomRef.current = z;
+    panRef.current = { x: vp.width / 2 - cx * z, y: vp.height / 2 - cy * z };
+    // 부드럽게 이동 — 잠시 transition 을 걸고 적용 후 해제(이후 팬/줌은 즉시반응 유지).
+    const cv = canvasRef.current;
+    if (cv) {
+      cv.style.transition = "transform 0.25s ease";
+      window.setTimeout(() => {
+        if (canvasRef.current) canvasRef.current.style.transition = "";
+      }, 300);
+    }
+    applyTransform();
+    persistCamera();
+  };
+  // f 키 — 선택 있으면 그 카드(들) 중심, 없으면 전체 카드. 단일 카드는 과확대 방지로 줌 상한을 낮게.
+  const frameView = () => {
+    const sel = selectedRef.current;
+    const list = sel.size
+      ? cardsRef.current.filter((c) => sel.has(c.id))
+      : cardsRef.current;
+    frameCards(list, sel.size ? 1.4 : 1.0);
+  };
+  // 미니맵의 한 지점(캔버스 좌표)을 화면 중앙으로 — 줌은 그대로. commit=드래그 종료 시 저장.
+  const navigateTo = (worldX: number, worldY: number, commit: boolean) => {
+    const vp = scrollRef.current?.getBoundingClientRect();
+    if (!vp) return;
+    const z = zoomRef.current;
+    panRef.current = { x: vp.width / 2 - worldX * z, y: vp.height / 2 - worldY * z };
+    applyTransform();
+    if (commit) persistCamera();
+  };
+
   // 씬을 열 때(전환/첫 진입)만 저장된 카메라를 복원 — 마지막으로 본 화면. scene.camera 를 deps 에서
   // 뺀 이유: 같은 씬에서 카드 편집으로 scene 이 재로드돼도 라이브 카메라를 되돌리지 않기 위함.
   useEffect(() => {
@@ -867,6 +930,12 @@ export function SceneBoard({
         else groupSelected();
         return;
       }
+      // f = 프레이밍. 선택 카드 있으면 그 카드(들) 중심, 없으면 전체 카드가 다 보이게 맞춤.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        frameView();
+        return;
+      }
       // c = 자동 연결. 레퍼런스+생성 → 레퍼런스를 생성에 연결. 생성끼리만 → 왼→오 계보 체인.
       if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "c" || e.key === "C")) {
         const selCards = [...sel]
@@ -1189,6 +1258,8 @@ export function SceneBoard({
       };
       const up = () => {
         setMarquee(null);
+        // 배경을 '그냥 클릭'(드래그 없음·비추가)하면 선택 해제 — 이후 f=전체 프레이밍이 되게.
+        if (!moved && !additive) setSelected(new Set());
       };
       beginDrag(move, up);
     }
@@ -1227,6 +1298,32 @@ export function SceneBoard({
   // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);
   const cardById = (id: string) => cardsById.get(id);
+
+  // ── 미니맵(네비게이터)용 박스·바운즈 — 카드가 바뀔 때만 재계산 ──
+  const mmBoxes = useMemo(
+    () =>
+      cards.map((c) => ({
+        id: c.id,
+        x: c.x,
+        y: c.y,
+        w: CARD_W,
+        h: c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H,
+        kind: c.kind,
+      })),
+    // heightTick: 레퍼런스 카드 높이 측정 후에도 bounds 가 정확하게 갱신되도록.
+    [cards, heightTick],
+  );
+  const mmBounds = useMemo(() => {
+    if (!mmBoxes.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const b of mmBoxes) {
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
+    }
+    return { minX, minY, maxX, maxY };
+  }, [mmBoxes]);
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
   const grayHidden = new Set(
     grayOn
@@ -1719,6 +1816,19 @@ export function SceneBoard({
           })}
         </svg>
       </div>
+
+      {mmBounds && mmBoxes.length > 0 && (
+        <SceneMinimap
+          boxes={mmBoxes}
+          bounds={mmBounds}
+          selected={selected}
+          scrollRef={scrollRef}
+          panRef={panRef}
+          zoomRef={zoomRef}
+          updateRef={mmUpdateRef}
+          onNavigate={navigateTo}
+        />
+      )}
 
       {marquee && (
         <div
