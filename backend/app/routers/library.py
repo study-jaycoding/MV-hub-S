@@ -35,6 +35,11 @@ def _overlay_personal_meta(data, request: Request):
     if rows is None:
         return data
     my = account_scope_uid(request)
+    if not my and _proxy.proxying():
+        # AUTH off 프록시(에이전트, MV_agent)는 request.state.account 가 없어 account_scope_uid=None →
+        # overlay 가 통째로 스킵돼 팀 탭 개인 색·태그가 리로드 후 사라졌다. 활성 계정(서버 로그인)으로 '내 카드' 판정.
+        from ..active_account import active_uid
+        my = active_uid()
     if not my:
         return data
     # 팀 카드 id 는 서버 UUID(≠ 로컬 id ≠ job_id)라 job_id 로도 앵커를 걸어야 내 개인메타가 잡힌다.
