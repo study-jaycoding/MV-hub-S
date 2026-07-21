@@ -22,6 +22,7 @@ export interface SceneCard {
   refs?: SceneRef[]; // 레퍼런스 카드: 담긴 레퍼런스(순서)
   genId?: string | null; // 생성 카드: 현재 표시 중인 generation id(다중이면 그중 하나)
   genIds?: string[]; // 생성 카드: 이 카드에서 만들어진 모든 결과(누적, 오래된→최신). 배지·팝업용.
+  prompt?: string; // 생성 카드: 작성 중인 프롬프트 초안(직렬화 텍스트). 카드 전환 시 이 카드로 복원.
   status?: "empty" | "pending" | "running" | "done" | "failed";
 }
 

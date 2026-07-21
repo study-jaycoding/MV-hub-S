@@ -355,18 +355,31 @@ export default function App() {
   // compose 탭 + 활성 씬이면 트레이는 항상 '캔버스 바인딩' 모드 —
   //  · 카드 선택 시: 그 카드의 refs 를 트레이에 로드
   //  · 아무것도 선택 안 함: refs=[] 로 줘서 트레이를 비운다(→ '선택 없음'을 시각적으로 알 수 있게).
+  // 바인딩된 카드의 저장된 프롬프트 초안(카드 전환 시 입력창에 복원).
+  const boundCardPrompt =
+    activeScene && sceneBinding
+      ? activeScene.cards.find((c) => c.id === sceneBinding.cardId)?.prompt ?? ""
+      : "";
   const trayBinding =
     filters.tab === "compose" && activeScene
       ? sceneBinding
-        ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs }
-        : { key: `${activeScene.id}:none`, refs: [] as SceneRef[] }
+        ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs, prompt: boundCardPrompt }
+        : { key: `${activeScene.id}:none`, refs: [] as SceneRef[], prompt: "" }
       : null;
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
+  // ★refs·prompt 저장이 같은 순간 겹치면(재사용 등) 서로를 덮어쓰지 않게, 렌더 스냅샷 대신
+  //  '최신 씬'을 다시 읽어 그 위에 얹는다(onPromptCreated 와 동일 안전 패턴).
   const setSceneCardRefs = (refs: SceneRef[]) => {
     if (!activeScene || !sceneBinding) return;
-    const nextCards = activeScene.cards.map((c) =>
-      c.id === sceneBinding.cardId ? { ...c, refs } : c,
-    );
+    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
+    const nextCards = cards.map((c) => (c.id === sceneBinding.cardId ? { ...c, refs } : c));
+    patchActiveScene({ cards: nextCards });
+  };
+  // 프롬프트 입력창 편집 → 현재 바인딩된 카드에 초안 저장(카드별 프롬프트 기억).
+  const setSceneCardPrompt = (prompt: string) => {
+    if (!activeScene || !sceneBinding) return;
+    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
+    const nextCards = cards.map((c) => (c.id === sceneBinding.cardId ? { ...c, prompt } : c));
     patchActiveScene({ cards: nextCards });
   };
   // 생성 완료 → 결과 gen id 를 선택 카드에 바인딩(카드에 썸네일 표시). 씬 모드에선 구성보드 부모 자동연결은 건너뜀.
@@ -726,6 +739,7 @@ export default function App() {
           onPreview={openPreview}
           trayBinding={trayBinding}
           onTrayBindingRefsChange={setSceneCardRefs}
+          onTrayBindingPromptChange={setSceneCardPrompt}
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={

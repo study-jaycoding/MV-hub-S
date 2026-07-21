@@ -32,7 +32,7 @@ import {
   wrapRefTokens,
   HIST_MAX,
 } from "../lib/promptEditor";
-import type { ChipRef, HistEntry } from "../lib/promptEditor";
+import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
 import { dataTransferHasFiles } from "../lib/media";
 import {
@@ -86,8 +86,10 @@ interface Props {
   // ── Canvas 씬 연동 ── 씬의 생성 카드 1개를 선택하면 그 카드의 레퍼런스를 이 트레이에 바인딩.
   //  key = `${sceneId}:${cardId}` (카드 바뀜 감지) · refs = 카드에 연결된 레퍼런스(순서).
   //  트레이에서 순서변경/추가/삭제하면 onTrayBindingRefsChange 로 씬 카드에 되돌린다. null=일반 모드.
-  trayBinding?: { key: string; refs: SceneRef[] } | null;
+  //  prompt = 그 카드에 저장된 프롬프트 초안(직렬화 텍스트). 카드 전환 시 입력창에 복원.
+  trayBinding?: { key: string; refs: SceneRef[]; prompt?: string } | null;
   onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
+  onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
   onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
 }
 
@@ -105,6 +107,7 @@ export function SpotlightPrompt({
   onToggleExpand,
   trayBinding,
   onTrayBindingRefsChange,
+  onTrayBindingPromptChange,
   onPreview,
 }: Props) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
@@ -198,6 +201,58 @@ export function SpotlightPrompt({
     const id = (e as CustomEvent<string>).detail;
     if (id) void reusePromptFromGen(id);
   });
+
+  // ── 카드별 프롬프트 초안 동기화 (레퍼런스 트레이 sync 와 같은 fingerprint 방식) ──
+  //  초안은 parts(JSON)로 저장 → 순수 텍스트뿐 아니라 인라인 소스칩까지 왕복 보존.
+  //  (A) 바인딩 전환(카드↔카드, 라이브러리↔씬) 처리 · (B) 편집 시 현재 카드에 저장.
+  const bindingKey = trayBinding?.key ?? null;
+  const bindingPrompt = trayBinding?.prompt ?? ""; // JSON(PromptPart[]) 또는 "" (없음)
+  const lastPromptFpRef = useRef<string>("");
+  const prevBindingKeyRef = useRef<string | null>(null);
+  const libraryDraftRef = useRef<string>(""); // 비-씬(라이브러리) 프롬프트 임시 보관
+  const draftParse = (s: string): PromptPart[] => {
+    if (!s) return [];
+    try {
+      const p = JSON.parse(s);
+      return Array.isArray(p) ? (p as PromptPart[]) : [];
+    } catch {
+      return [{ t: "text", v: s }]; // 옛 순수텍스트 초안 하위호환
+    }
+  };
+  useEffect(() => {
+    const prev = prevBindingKeyRef.current;
+    prevBindingKeyRef.current = bindingKey;
+    const ed = editorRef.current;
+    if (!ed) return;
+    if (bindingKey === null) {
+      // 씬 → 라이브러리 이탈: 보관해둔 라이브러리 프롬프트 복원(직전이 씬이었을 때만).
+      if (prev !== null) {
+        restoreParts(ed, draftParse(libraryDraftRef.current));
+        scheduleLiveWrap();
+        updatePlaceholder();
+        bumpPromptTick();
+      }
+      return;
+    }
+    // 라이브러리 → 씬 진입: 현재(라이브러리) 프롬프트를 보관해 이탈 시 되살린다.
+    if (prev === null) libraryDraftRef.current = JSON.stringify(serializeParts(ed));
+    // 카드 전환마다 그 카드 초안 복원. lastPromptFp 를 맞춰 (B)가 복원을 편집으로 오인해 되-저장하지 않게.
+    lastPromptFpRef.current = bindingPrompt;
+    restoreParts(ed, draftParse(bindingPrompt));
+    scheduleLiveWrap(); // 트레이 refs 정착 후 @토큰 알약화(미디어 해석 타이밍 안전)
+    updatePlaceholder();
+    bumpPromptTick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindingKey]);
+  useEffect(() => {
+    if (!bindingKey) return;
+    const ed = editorRef.current;
+    const json = ed ? JSON.stringify(serializeParts(ed)) : "";
+    if (json === lastPromptFpRef.current) return; // (A)복원 에코면 무시
+    lastPromptFpRef.current = json;
+    onTrayBindingPromptChange?.(json);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptTick]);
 
   // 카드의 '레퍼런스로 사용'(@) 버튼 → 그 생성물을 레퍼런스로 추가(확장이면 트레이, 아니면 인라인 칩).
   // useCustomEvent 가 항상 최신 addRefFromGen(최신 expanded)을 호출 → stale 분기 버그 없음.
@@ -689,6 +744,7 @@ export function SpotlightPrompt({
       // 도크는 항상 떠 있음 — 비우고 연속 생성.
       ed.innerHTML = "";
       updatePlaceholder();
+      bumpPromptTick(); // 생성 후 입력창 비움 → 바인딩 카드의 초안도 비운다(옛 프롬프트 복원 방지)
       setMention(null);
       setBusy(false);
       requestAnimationFrame(() => ed.focus());
@@ -722,6 +778,7 @@ export function SpotlightPrompt({
         composingRef.current = false;
         dragParentRef.current = null; // 입력 비우면 '재사용 원본' 부모 참조도 폐기(엉뚱한 계보 방지)
         updatePlaceholder();
+        bumpPromptTick(); // 수동 비우기(Shift+Backspace)도 바인딩 카드 초안에 반영
         setMention(null);
         histIdxRef.current = -1;
         requestAnimationFrame(() => ed.focus());
