@@ -155,7 +155,7 @@ export function HistoryPanel({
               title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
               onClick={() => onOpenInBoard(target)}
             >
-              ⧉ 구성에서 보기
+              ⧉ 히스토리 보기
             </button>
           )}
           <button className="lin-close" title="닫기" onClick={onClose}>
@@ -258,7 +258,7 @@ export function HistoryPanel({
           />
         </div>
         <div className="lin-foot">
-          클릭=선택 · Shift+클릭=복수 선택(→ 비교) · 더블클릭=크게 보기 · 미들클릭=정보 · 번호=생성 순서 · 편집은 ‘구성에서 보기’
+          클릭=선택 · Shift+클릭=복수 선택(→ 비교) · 더블클릭=크게 보기 · 미들클릭=정보 · 번호=생성 순서 · 편집은 ‘히스토리 보기’
         </div>
       </div>
     </div>

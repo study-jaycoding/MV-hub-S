@@ -116,7 +116,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
                 title="구성탭에서 원본 → 파생 트리로 한눈에 보기"
                 onClick={() => onOpenInBoard(cur.genId!)}
               >
-                ⧉ 구성에서 보기
+                ⧉ 히스토리 보기
               </button>
             )}
           </div>

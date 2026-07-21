@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useModelDisplayName } from "../lib/modelCatalog";
+import { displayThumb } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -197,12 +198,15 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
                 {r.type === "video" ? (
                   <video
                     src={refSrc(r.file_path)}
-                    poster={refSrc(r.thumbnail_path) || undefined}
+                    poster={displayThumb(r.thumbnail_path || r.file_path) || undefined}
                     muted
                     preload="metadata"
                   />
                 ) : (
-                  <img src={refSrc(r.thumbnail_path || r.file_path)} alt={r.role || "source"} />
+                  <img
+                    src={displayThumb(r.thumbnail_path || r.file_path) || undefined}
+                    alt={r.role || "source"}
+                  />
                 )}
                 <span className="info-source-role">{r.role || "@"}</span>
                 {r.cached && <span className="info-source-dot" title="로컬 보관됨" />}
@@ -273,7 +277,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => onOpenInBoard(target.gen)}
             >
-              ⧉ 구성에서 보기
+              ⧉ 히스토리 보기
             </button>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">

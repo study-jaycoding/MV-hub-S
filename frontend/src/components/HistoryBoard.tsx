@@ -528,7 +528,7 @@ export function HistoryBoard({
         <div className="linb-empty-card">
           <div className="linb-empty-title">히스토리 보기</div>
           카드의 히스토리 뱃지(⑂ / ↻)를 눌러 가계 패널을 연 뒤,
-          <b> ‘구성에서 보기’</b>를 누르면 여기에 원본 → 파생 트리가 그려집니다.
+          <b> ‘히스토리 보기’</b>를 누르면 여기에 원본 → 파생 트리가 그려집니다.
         </div>
       </div>
     );
