@@ -34,6 +34,7 @@ export function AppOverlays({
   toast,
   onAdminClose,
   onCloseOverlay,
+  onCommentClose,
   onCompare,
   onCompareClose,
   onHistoryChanged,
@@ -58,6 +59,7 @@ export function AppOverlays({
   toast: string | null;
   onAdminClose: () => void;
   onCloseOverlay: () => void;
+  onCommentClose: () => void;
   onCompare: (generations: Generation[] | null) => void;
   onCompareClose: () => void;
   onHistoryChanged: () => void;
@@ -76,7 +78,7 @@ export function AppOverlays({
           label={commentLabel}
           myId={myId}
           syncTick={syncTick}
-          onClose={onCloseOverlay}
+          onClose={onCommentClose}
           onChanged={onHistoryChanged}
         />
       )}

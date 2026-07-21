@@ -811,6 +811,7 @@ export default function App() {
           reload(); // 등급·프로젝트 변경이 라이브러리/필터에 반영되게
         }}
         onCloseOverlay={closeOverlay}
+        onCommentClose={() => setCommentGenId(null)}
         onCompare={setCompareGens}
         onCompareClose={() => setCompareGens(null)}
         onHistoryChanged={reload}

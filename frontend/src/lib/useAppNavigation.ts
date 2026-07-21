@@ -41,7 +41,7 @@ export function useAppNavigation({
       viewRef.current = v;
       const payload = v.key ? navPayloadsRef.current.get(v.key) : undefined;
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
-      setCommentGenId(v.ov === "comment" ? ((payload as string) ?? null) : null);
+      // 코멘트 패널은 nav 뷰(탭 전환)에 묶지 않는다 — 태그창처럼 X 로 닫을 때까지 유지(독립 상태).
       setHistory(v.ov === "history" ? ((payload as History) ?? null) : null);
       setAdminOpen(v.ov === "admin");
       setInfo(null);
@@ -104,7 +104,8 @@ export function useAppNavigation({
   );
 
   const openPreview = useCallback((target: PreviewTarget) => openOverlay("preview", target), [openOverlay]);
-  const openComment = useCallback((genId: string) => openOverlay("comment", genId), [openOverlay]);
+  // 코멘트는 nav 오버레이가 아니라 독립 상태 — 열면 그대로 두고(탭 전환에도 유지) X 로만 닫는다.
+  const openComment = useCallback((genId: string) => setCommentGenId(genId), [setCommentGenId]);
   const openAdmin = useCallback(() => openOverlay("admin"), [openOverlay]);
 
   useEffect(() => {
