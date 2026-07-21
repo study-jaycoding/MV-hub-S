@@ -492,10 +492,10 @@ def set_color(gen_id: str, body: ColorIn, request: Request):
         return repo.get_generation(local_id)
     if _proxy.proxying():
         # 남의 카드(또는 로컬 행 없는 서버 카드) — 색은 내 로컬 shadow 에만(공유 카드 자체는 안 바꿈).
-        # 조회는 로컬 uuid 가 아닌 서버 앵커(server_id, 없으면 gen_id)로. 앵커도 job_id 우선(읽기와 동일).
-        ref = server_id or gen_id
-        srv = _proxy.proxy_get(f"/api/generations/{ref}", request)
-        anchor = (srv.get("job_id") or srv.get("id") or ref) if isinstance(srv, dict) else ref
+        # ★서버 단건 GET 은 프론트가 준 gen_id(=팀 카드의 서버 UUID)로 — 서버는 이 id 로만 안다.
+        #   server_id(=job_id)로 조회하면 서버가 못 찾아 404 → "generation 없음" 오작동(과거 버그).
+        srv = _proxy.proxy_get(f"/api/generations/{gen_id}", request)
+        anchor = (srv.get("job_id") or srv.get("id") or gen_id) if isinstance(srv, dict) else gen_id
         repo.set_color_overlay(anchor, body.color)
         if isinstance(srv, dict):
             srv["color"] = body.color
