@@ -29,6 +29,7 @@ import {
 } from "./lib/scenes";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
+import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
 import { useGenerationAutoTagActions } from "./lib/useGenerationAutoTagActions";
 import { useGenerationCardActions } from "./lib/useGenerationCardActions";
 import { useGenerationFilterActions } from "./lib/useGenerationFilterActions";
@@ -199,6 +200,14 @@ export default function App() {
 
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
   useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload });
+
+  // 코멘트 배지 실시간 갱신: 공유 카드의 미확인 여부만 가볍게 주기 조회해 제자리 갱신(전 탭).
+  // 새 미확인이 잡히면 syncTick 을 올려 열린 코멘트 패널도 즉시 새로고침.
+  useCommentBadgePoll({
+    generations: gens,
+    setGens,
+    onNewUnread: () => setSyncTick((t) => t + 1),
+  });
 
   const {
     composerExpanded,

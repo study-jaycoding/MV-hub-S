@@ -328,6 +328,13 @@ export const api = {
       method: "POST",
       body: jsonBody({}),
     }),
+  // 여러 카드의 코멘트 배지(수·미확인)만 배치로 가볍게 조회. 목록 전체 reload 없이 배지만
+  // 주기 갱신할 때 쓴다(팀 코멘트 실시간 반영). 프록시 중이면 서버 스레드 기준으로 위임된다.
+  commentCounts: (genIds: string[]) =>
+    jsonFetch<Record<string, { comment_count: number; has_unread: boolean }>>(
+      `/api/generations/comment-counts`,
+      { method: "POST", body: jsonBody({ gen_ids: genIds }) },
+    ),
 
   // 스포트라이트 @/# 피커: 소스를 이름(query) 또는 태그(tag)로 검색.
   // assetProject/assetDir 를 주면 에셋 파트 소스(그 폴더로 스코프)도 합류한다.
