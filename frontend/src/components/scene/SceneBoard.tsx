@@ -149,7 +149,38 @@ export function SceneBoard({
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
   const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const varGridRef = useRef<HTMLDivElement>(null);
-  useEffect(() => setPopupSel(new Set()), [cardMenu]); // 팝업 열림/카드 전환 시 선택 초기화
+  const varpopWrapRef = useRef<HTMLDivElement>(null);
+  // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
+  // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
+  const [tagEditorPos, setTagEditorPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!tagEditGid) {
+      setTagEditorPos(null);
+      return;
+    }
+    const measure = () => {
+      const wrap = varpopWrapRef.current;
+      const tile = varGridRef.current?.querySelector<HTMLElement>(`[data-gid="${tagEditGid}"]`);
+      if (!wrap || !tile) return;
+      const wr = wrap.getBoundingClientRect();
+      const tr = tile.getBoundingClientRect();
+      setTagEditorPos({ left: tr.left - wr.left + tr.width / 2, top: tr.bottom - wr.top + 6 });
+    };
+    measure();
+    const grid = varGridRef.current;
+    grid?.addEventListener("scroll", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      grid?.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [tagEditGid]);
+  useEffect(() => {
+    // 팝업 열림/카드 전환/닫기 시 선택·태그편집 대상 초기화 — 이전 카드의 태그 에디터가 다른 카드
+    // 팝업 위에 stale 위치로 남지 않게.
+    setPopupSel(new Set());
+    setTagEditGid(null);
+  }, [cardMenu]);
   // 팝업이 '모달 레이어'인지·그 선택을 전역 keydown 에서 읽기 위한 ref(빈-deps 핸들러용).
   const cardMenuRef = useRef(cardMenu);
   cardMenuRef.current = cardMenu;
@@ -980,6 +1011,24 @@ export function SceneBoard({
   }, []);
 
   // ── 마우스: 미들=팬 · 카드=이동/선택 · 배경=마퀴 복수선택 ──
+  // 캔버스(카드/배경)를 클릭하면 열려 있던 프롬프트 입력창의 포커스를 해제한다 → 카드 선택 후
+  // r/g/b(색)·n·c·a 등 캔버스 단축키가 프롬프트에 글자로 새지 않게. 프롬프트는 직접 클릭해야 타이핑.
+  // capture 단계라 카드의 stopPropagation 과 무관하게 항상 먼저 잡는다. 캔버스 내부 입력요소(태그 편집
+  // 등)를 클릭한 경우는 제외(그건 그 입력창을 쓰려는 것).
+  const onBoardMouseDownCapture = (e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    if (
+      t.isContentEditable ||
+      t.tagName === "INPUT" ||
+      t.tagName === "TEXTAREA" ||
+      t.closest("input, textarea, [contenteditable='true']")
+    )
+      return;
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && ae !== t && (ae.isContentEditable || ae.tagName === "INPUT" || ae.tagName === "TEXTAREA"))
+      ae.blur();
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 → 화면 이동
     if (e.button === 1) {
@@ -1315,6 +1364,7 @@ export function SceneBoard({
     <div
       className={"scene-board" + (cutHeld ? " cutting" : "")}
       ref={scrollRef}
+      onMouseDownCapture={onBoardMouseDownCapture}
       onMouseDown={onMouseDown}
       onMouseMove={(e) => {
         lastMouseRef.current = { x: e.clientX, y: e.clientY, over: true };
@@ -1732,6 +1782,7 @@ export function SceneBoard({
             >
               <div
                 className="scene-varpop-wrap"
+                ref={varpopWrapRef}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -1993,15 +2044,18 @@ export function SceneBoard({
                     />
                   </div>
                 )}
-                {/* 태그 편집 — 타일은 overflow:hidden 이라 잘리므로 팝업 레벨에 하나만 중앙 렌더. */}
+                {/* 태그 편집 — 타일은 overflow:hidden 이라 잘리므로 팝업 레벨에 절대배치하되, 편집 중인
+                    타일 rect 를 측정해 그 '바로 아래'에 띄운다(카드 밑으로). */}
                 {tagEditGid &&
                   onSetTags &&
                   genData[tagEditGid] &&
+                  tagEditorPos &&
                   (() => {
                     const g = genData[tagEditGid]!;
                     return (
                       <div
                         className="scene-varpop-tageditor"
+                        style={{ left: tagEditorPos.left, top: tagEditorPos.top }}
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
                       >

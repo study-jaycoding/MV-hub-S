@@ -422,6 +422,30 @@ export default function App() {
     }
     return handlePromptCreated(created, dragParentId);
   };
+  // 캔버스에서 '재생성' → 새 결과를 그 생성물이 속한 카드에 변형으로 쌓는다(라이브러리처럼 별도 카드가
+  // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
+  const onSceneRegenerate = async (g: Generation) => {
+    const ng = await onRegenerate(g);
+    if (!ng || !activeScene) return;
+    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
+    const nextCards = cards.map((c) => {
+      if (!variantIds(c).includes(g.id)) return c; // g 가 속한 카드에만
+      const genIds = [...variantIds(c)];
+      if (!genIds.includes(ng.id)) genIds.push(ng.id);
+      return { ...c, genId: ng.id, genIds, status: "pending" as const };
+    });
+    patchActiveScene({ cards: nextCards });
+  };
+  // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
+  // 함께 해제한다 — 안 그러면 폴더 필터를 풀어도 새 생성이 예전 폴더로 저장되던 문제(라이브러리·캔버스 공통).
+  useEffect(() => {
+    if (
+      armedFolder &&
+      (filters.folder_path !== armedFolder.path || filters.project_id !== armedFolder.projectId)
+    ) {
+      setArmedFolder(null);
+    }
+  }, [filters.folder_path, filters.project_id, armedFolder, setArmedFolder]);
   const {
     onColor,
     onFinalize,
@@ -578,7 +602,7 @@ export default function App() {
                 onCameraChange={(camera) => patchActiveScene({ camera })}
                 onPreview={openPreview}
                 onInfo={setInfo}
-                onRegenerate={onRegenerate}
+                onRegenerate={onSceneRegenerate}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
                 onFinalize={onFinalize}
@@ -774,6 +798,7 @@ export default function App() {
           onToggleExpand={toggleComposerExpanded}
           onPreview={openPreview}
           trayBinding={trayBinding}
+          inCompose={filters.tab === "compose"}
           onTrayBindingRefsChange={setSceneCardRefs}
           onTrayBindingPromptChange={setSceneCardPrompt}
           armedAutoTags={[...armedAutoTags]}

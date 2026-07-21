@@ -207,9 +207,10 @@
   width: min(880px, 92%); max-height: 100%; display: flex; flex-direction: column;
   align-items: stretch; gap: 10px; min-height: 0;
 }
-/* 변형 타일 태그 편집 — 타일이 overflow:hidden 이라 잘리므로 팝업 레벨 중앙에 띄운다. */
+/* 변형 타일 태그 편집 — 타일이 overflow:hidden 이라 잘리므로 팝업 레벨에 절대배치. left/top 은
+   편집 중인 타일 바로 아래로 인라인 style 에서 지정(SceneBoard 가 rect 측정). translateX 로 타일 중앙 정렬. */
 .scene-varpop-tageditor {
-  position: absolute; top: 60px; left: 50%; transform: translateX(-50%); z-index: 40;
+  position: absolute; transform: translateX(-50%); z-index: 40;
 }
 .scene-varpop {
   min-height: 0; display: flex; flex-direction: column;

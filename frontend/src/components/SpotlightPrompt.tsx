@@ -91,6 +91,10 @@ interface Props {
   onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
   onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
   onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
+  // 캔버스(구성)탭 여부 — 켜지면 프롬프트를 자동 포커스하지 않는다(카드 선택 후 r/g/b 등 캔버스
+  // 단축키가 글자로 새지 않게). 프롬프트는 직접 클릭해야 타이핑. sceneMode(카드 바인딩)보다 넓게 —
+  // 카드를 아직 안 골랐어도 캔버스에선 자동 포커스 금지.
+  inCompose?: boolean;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -106,6 +110,7 @@ export function SpotlightPrompt({
   expanded,
   onToggleExpand,
   trayBinding,
+  inCompose = false,
   onTrayBindingRefsChange,
   onTrayBindingPromptChange,
   onPreview,
@@ -159,6 +164,10 @@ export function SpotlightPrompt({
   });
   const [promptTick, setPromptTick] = useState(0); // contentEditable 텍스트 변경 신호(트레이 역할 배지 갱신)
   const editorRef = useRef<HTMLDivElement>(null);
+  // 다음 프롬프트 포커스를 허용할지 — 편집창을 직접 클릭(mousedown)했거나, 명시적 포커스 요청
+  // (Ctrl+K·재사용) 직전에 true 로 세운다. 캔버스탭에선 이 플래그 없이 잡힌 포커스(자동·새로고침 복원·
+  // 프로그램)를 focusin 에서 즉시 해제해, 프롬프트가 클릭 없이는 타이핑을 못 받게 한다.
+  const allowFocusRef = useRef(false);
   const listRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   // 프롬프트 기록(쉘식 ↑↓): historyRef=제출 기록(오래된→최신), histIdxRef=탐색 위치(-1=라이브)
@@ -187,12 +196,53 @@ export function SpotlightPrompt({
   };
 
   useEffect(() => {
-    editorRef.current?.focus();
+    // 캔버스(구성)탭에선 자동 포커스하지 않는다 — 카드를 선택해 r/g/b 등 단축키를 쓰려는데 프롬프트가
+    // 포커스를 쥐고 있으면 글자로 새기 때문. 프롬프트는 사용자가 직접 클릭했을 때만 타이핑되게.
+    if (!inCompose) editorRef.current?.focus();
     updatePlaceholder();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Ctrl/⌘+K(또는 툴바 버튼) → 프롬프트로 포커스만.
-  useCustomEvent(APP_EVENTS.focusPrompt, () => editorRef.current?.focus());
+  // 캔버스(구성)탭에선 프롬프트가 '직접 클릭' 없이 포커스를 얻으면 즉시 해제한다 → 카드 선택 후
+  // r/g/b 등 캔버스 단축키가 프롬프트로 새지 않게. 자동 포커스·새로고침 시 브라우저 포커스 복원·
+  // 프로그램 포커스를 모두 focusin 에서 차단. 편집창 클릭(mousedown)이나 명시적 요청(Ctrl+K·재사용)은
+  // allowFocusRef 로 허용. inCompose 가 바뀔 때 재부착.
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const onFocusIn = () => {
+      if (inCompose && !allowFocusRef.current) ed.blur();
+      allowFocusRef.current = false;
+    };
+    const arm = () => {
+      allowFocusRef.current = true;
+    };
+    // 포커스가 빠지면 arm 플래그도 반드시 초기화 — 이미 포커스된 상태에서 재클릭(mousedown 만 발생,
+    // focusin 없음)해 플래그가 남아, 다음 프로그램 포커스가 오탐 허용되던 것 방지.
+    const onFocusOut = () => {
+      allowFocusRef.current = false;
+    };
+    ed.addEventListener("focusin", onFocusIn);
+    ed.addEventListener("focusout", onFocusOut);
+    ed.addEventListener("mousedown", arm);
+    ed.addEventListener("touchstart", arm, { passive: true });
+    return () => {
+      ed.removeEventListener("focusin", onFocusIn);
+      ed.removeEventListener("focusout", onFocusOut);
+      ed.removeEventListener("mousedown", arm);
+      ed.removeEventListener("touchstart", arm);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inCompose]);
+
+  // Ctrl/⌘+K(또는 툴바 버튼)·프롬프트 dock 자동표시 → 포커스 요청. 단 캔버스(구성)탭에선 무시한다 —
+  // dock 이 promptVisible 로 focusPrompt 를 자동 발신하므로, 여기서 허용하면 캔버스에서도 프롬프트가
+  // 포커스를 가져가 단축키가 새기 때문. 캔버스에선 프롬프트를 직접 클릭해야 타이핑.
+  useCustomEvent(APP_EVENTS.focusPrompt, () => {
+    if (inCompose) return;
+    allowFocusRef.current = true;
+    editorRef.current?.focus();
+  });
 
   // 카드의 '재사용' 버튼 → 그 생성물의 프롬프트+옵션을 입력바로 불러온다(드래그 없이 버튼으로도).
   //  (캔버스 생성결과 팝업 등에서 dispatchAppEvent(reusePrompt, id) 로 호출. useCustomEvent 가 항상
@@ -458,6 +508,8 @@ export function SpotlightPrompt({
   // ── 프롬프트 재사용(명시적): 그 생성의 프롬프트+옵션을 입력바로 그대로 불러옴 ──
   //    카드 오버레이의 '프롬프트 재사용' 버튼(ch:reuse-prompt 이벤트)이 호출. 드래그와 분리.
   const reusePromptFromGen = async (id: string) => {
+    // 재사용은 명시적 사용자 행동(카드 재사용 버튼·끌어내림) → 캔버스에서도 프롬프트 포커스 허용.
+    allowFocusRef.current = true;
     try {
       const g = await api.getGeneration(id);
       // 재사용 원본 → 다음 생성의 자동 히스토리 부모(원본→파생).
@@ -747,7 +799,9 @@ export function SpotlightPrompt({
       bumpPromptTick(); // 생성 후 입력창 비움 → 바인딩 카드의 초안도 비운다(옛 프롬프트 복원 방지)
       setMention(null);
       setBusy(false);
-      requestAnimationFrame(() => ed.focus());
+      // 캔버스탭에선 생성 후 프롬프트에 포커스를 되돌리지 않는다(캔버스 단축키가 글자로 새는 것 방지).
+      // 연속 생성하려면 프롬프트를 다시 클릭. 라이브러리 모드는 기존대로 재포커스(연속 입력 편의).
+      if (!inCompose) requestAnimationFrame(() => ed.focus());
     } catch (e) {
       setError(String(e));
       setBusy(false);

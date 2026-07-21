@@ -25,15 +25,18 @@ export function useGenerationCardActions({
   navTab,
   reload,
 }: UseGenerationCardActionsArgs) {
-  const onRegenerate = async (g: Generation) => {
+  // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
+  const onRegenerate = async (g: Generation): Promise<Generation | null> => {
     try {
-      await api.regenerate(g.id, { auto_tags: [...armedAutoTags] });
+      const ng = await api.regenerate(g.id, { auto_tags: [...armedAutoTags] });
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();
       postLibraryChanged();
+      return ng;
     } catch (e) {
       flash("재생성 실패: " + String(e));
+      return null;
     }
   };
 
