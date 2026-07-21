@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState, type DragEvent, type KeyboardEvent } from
 import { api } from "../../api";
 import { isFolderDisabled, normalizeFolderPath, toggleDisabledFolder } from "../../lib/deactivated";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
+import { APP_EVENTS } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
+import { onLibraryChanged } from "../../lib/libraryBroadcast";
+import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import {
@@ -263,7 +266,15 @@ export function ProjectSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey]);
 
-  // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). 진입·리로드 시 최신화.
+  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/생성)를 구독 — countTick 을 올려 폴더 카운트를
+  // 즉시 재조회한다. 캔버스(compose) 탭은 reload 가 early-return 이라 projects 레퍼런스가 안 바뀌어
+  // 아래 카운트 useEffect 가 안 도는데, 이 채널로 드롭 즉시 뱃지 숫자를 최신화한다(라이브러리 탭도 동일).
+  const [countTick, setCountTick] = useState(0);
+  const bumpCount = () => setCountTick((t) => t + 1);
+  useEffect(() => onLibraryChanged(bumpCount), []); // 창 간(다른 창의 변경)
+  useCustomEvent(APP_EVENTS.libraryChanged, bumpCount); // 같은 창(내 담기·생성 즉시 반영)
+
+  // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). 진입·리로드·변경 시 최신화.
   useEffect(() => {
     let alive = true;
     const ids = new Set<string>(pinned);
@@ -279,8 +290,9 @@ export function ProjectSection({
     };
     // projects 는 라이브러리 리로드(생성·담기 후)마다 새 배열 → 개수 최신화 트리거.
     // 탭(my/team) 전환 시에도 재조회 → 팀 탭에서 팀 기준 개수 표시.
+    // countTick = 생성물 변경 브로드캐스트(캔버스 드롭 포함)로 즉시 재조회.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projects, pinned, tab]);
+  }, [activeId, projects, pinned, tab, countTick]);
 
   const selectFolder = async (pid: string, path: string) => {
     const cur = folders[pid];

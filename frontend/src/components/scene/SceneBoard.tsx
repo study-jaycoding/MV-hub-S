@@ -87,6 +87,8 @@ interface Props {
   sharedOnly?: boolean;
   commentOnly?: boolean;
   finalOnly?: boolean;
+  // 사이드바에서 선택한 폴더 — 그 폴더(하위 포함) 밖 완성카드를 딤 처리(어떤 게 들어갔는지 표시).
+  folderSel?: { projectId: string; path: string } | null;
   // 태그 편집(라이브러리와 공용 — 태그는 생성물 레코드에 저장되어 뷰 간 자동 공유).
   onSetTags?: (g: Generation, tags: string[]) => void;
   onSetAutoTags?: (g: Generation, names: string[]) => void;
@@ -123,6 +125,7 @@ export function SceneBoard({
   sharedOnly = false,
   commentOnly = false,
   finalOnly = false,
+  folderSel,
   onSetTags,
   onSetAutoTags,
   autoTagOptions,
@@ -1535,12 +1538,38 @@ export function SceneBoard({
                       sharedOnly={sharedOnly}
                       commentOnly={commentOnly}
                       finalOnly={finalOnly}
+                      folderSel={folderSel}
                       sConfirm={sConfirm?.id === g.id ? sConfirm : null}
                       onSClick={onNodeSClick}
                       onSDouble={onNodeSDouble}
                       onSConfirmYes={onNodeSConfirmYes}
                       onSConfirmNo={onNodeSConfirmNo}
-                      onPreview={onPreview || (() => {})}
+                      onPreview={
+                        onPreview
+                          ? (target) => {
+                              // 카드에 변형(결과)이 여러 개면 큰창에서 ←/→ 로 넘길 수 있게 그 변형들을
+                              // items 로 함께 넘긴다(내작업 그리드/변형 팝업과 동일한 방향키 이동).
+                              const items: PreviewItem[] = [];
+                              for (const id of variantIds(card)) {
+                                const av = genData[id]?.assets?.[0];
+                                if (av)
+                                  items.push({
+                                    url: av.file_path,
+                                    type: av.type,
+                                    name: genData[id]?.prompt?.slice(0, 50) || "결과",
+                                    genId: id,
+                                  });
+                              }
+                              if (items.length > 1) {
+                                const index = Math.max(
+                                  0,
+                                  items.findIndex((it) => it.genId === (target.genId ?? g?.id)),
+                                );
+                                onPreview({ ...target, items, index });
+                              } else onPreview(target);
+                            }
+                          : () => {}
+                      }
                       onInfo={onInfo || (() => {})}
                       onRegenerate={onRegenerate || (() => {})}
                       onTag={onSetTags ? onNodeTag : undefined}
@@ -1721,6 +1750,17 @@ export function SceneBoard({
                       const rep = gid === c.genId; // 대표
                       const on = popupSel.has(gid); // 선택
                       const off = disabledIds.has(gid); // 비활성(회색)
+                      // 선택 폴더(하위 포함) 밖 변형이면 흐리게 — 팝업 안에서 어떤 변형이 그 폴더에
+                      // 들어갔는지 한눈에(캔버스 카드 딤과 동일 규칙). folderSel 없으면 딤 없음.
+                      const folderDim =
+                        !!folderSel &&
+                        !!gg &&
+                        !(
+                          gg.project_id === folderSel.projectId &&
+                          (folderSel.path === "" ||
+                            gg.folder_path === folderSel.path ||
+                            (gg.folder_path?.startsWith(folderSel.path + "/") ?? false))
+                        );
                       return (
                         <div key={gid} className="scene-varpop-cell">
                           {/* 대표 라벨/지정 버튼 — 카드 '밖' 상단(요청). 대표면 라벨, 아니면 지정 버튼. */}
@@ -1745,7 +1785,8 @@ export function SceneBoard({
                             "scene-varpop-item" +
                             (rep ? " rep" : "") +
                             (on ? " on" : "") +
-                            (off ? " off" : "")
+                            (off ? " off" : "") +
+                            (folderDim ? " foldim" : "")
                           }
                           title={gg?.prompt || ""}
                           onMouseDown={(e) => {

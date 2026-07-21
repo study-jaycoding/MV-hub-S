@@ -53,8 +53,11 @@ interface Props {
   // 휠로 확대/축소하면 zoomValue 가 갱신돼 슬라이더가 따라 움직인다. 별도 숫자 표시는 없음.
   zoomValue?: number; // 현재 보드 줌(0.3~2.5)
   onZoomValue?: (v: number) => void; // 슬라이더 드래그 → 보드 줌 설정
-  // 그래프 보드(히스토리/구성) 모드 — 의미 없는 컨트롤(필터 사이드바 토글·리스트/그리드 토글)을 숨긴다.
+  // 그래프 보드(히스토리/구성) 모드 — 의미 없는 컨트롤(리스트/그리드 토글 등)을 숨긴다.
   boardMode?: boolean;
+  // 보드 모드라도 필터 사이드바 토글(▢/▷)을 보인다 — 캔버스는 폴더 사이드바가 있어 열고닫아야 함.
+  // 미지정이면 !boardMode(라이브러리만 표시)를 따른다.
+  showFilterToggle?: boolean;
 }
 
 export function LibraryToolbar({
@@ -97,6 +100,7 @@ export function LibraryToolbar({
   zoomValue,
   onZoomValue,
   boardMode = false,
+  showFilterToggle,
 }: Props) {
   const t = useT();
   const typeLabel = MEDIA_FILTER_OPTIONS.find((o) => o.v === typeFilter)?.label ?? "전체";
@@ -111,8 +115,8 @@ export function LibraryToolbar({
   } = useFloatingPanel(LIB_LS, "tagPos", "tagSize", tagPanelOpen);
   return (
     <div className="lib-toolbar">
-      {/* 필터 사이드바 토글 — 열림=▢(사각), 닫힘=▷(삼각). 보드 모드(히스토리)에선 사이드바가 없어 숨김. */}
-      {!boardMode && (
+      {/* 필터 사이드바 토글 — 열림=▢(사각), 닫힘=▷(삼각). 캔버스는 폴더 사이드바가 있어 표시. */}
+      {(showFilterToggle ?? !boardMode) && (
         <button
           className={"lib-filter lib-filter-ic" + (filtersOpen ? " on" : "")}
           onClick={onToggleFilters}

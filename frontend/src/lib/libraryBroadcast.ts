@@ -1,6 +1,6 @@
 // 생성물 변경을 창 간(같은 브라우저의 다른 창)으로 즉시 알린다 — 관리탭(별도 창)이 바로 재조회.
 // 팀원(다른 PC) 변경은 이 채널로 안 오므로, 받는 쪽은 폴링을 함께 둔다(즉시=내 조작, 지연=팀).
-import { BROADCAST_CHANNELS } from "./appEvents";
+import { APP_EVENTS, BROADCAST_CHANNELS, dispatchAppEvent } from "./appEvents";
 
 const NAME = BROADCAST_CHANNELS.generations;
 
@@ -20,10 +20,12 @@ function getSender(): BroadcastChannel | null {
 // 담기/폴더이동·최종(★)·공유·삭제 등 작업탭에 영향 주는 변경 직후 호출.
 export function postLibraryChanged(): void {
   try {
-    getSender()?.postMessage("changed");
+    getSender()?.postMessage("changed"); // 창 간(관리탭 등)
   } catch {
     // 무시(폴링이 백업).
   }
+  // 같은 창 알림 — BroadcastChannel 자기창 전달이 불안정한 환경에서도 사이드바 등이 확실히 반응.
+  dispatchAppEvent(APP_EVENTS.libraryChanged);
 }
 
 // 관리탭이 구독 — 메시지 오면 cb 실행. 해제 함수 반환.

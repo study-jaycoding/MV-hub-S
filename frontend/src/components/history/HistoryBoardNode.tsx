@@ -26,6 +26,9 @@ interface Props {
   sharedOnly: boolean;
   commentOnly: boolean;
   finalOnly: boolean;
+  // 캔버스에서 폴더를 선택했을 때, 그 폴더(하위 포함) 밖 카드를 흐리게(딤) — 어떤 게 들어갔는지
+  // 한눈에. path==="" 는 프로젝트 루트(전체) 선택이라 프로젝트만 일치하면 됨. 없으면 폴더 딤 없음.
+  folderSel?: { projectId: string; path: string } | null;
   sConfirm: SConfirm;
   onSClick: (generation: Generation) => void;
   onSDouble: (generation: Generation) => void;
@@ -56,6 +59,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   sharedOnly,
   commentOnly,
   finalOnly,
+  folderSel,
   sConfirm,
   onSClick,
   onSDouble,
@@ -75,7 +79,14 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
     (!!tagFilter && tagFilter.size > 0 && !generation.tags.some((tag) => tagFilter.has(tag))) ||
     (sharedOnly && !generation.shared) ||
     (commentOnly && generation.comment_count === 0) ||
-    (finalOnly && !generation.is_final);
+    (finalOnly && !generation.is_final) ||
+    (!!folderSel &&
+      !(
+        generation.project_id === folderSel.projectId &&
+        (folderSel.path === "" ||
+          generation.folder_path === folderSel.path ||
+          (generation.folder_path?.startsWith(folderSel.path + "/") ?? false))
+      ));
 
   return (
     <div

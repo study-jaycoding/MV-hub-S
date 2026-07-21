@@ -5,6 +5,9 @@ export const APP_EVENTS = {
   disabledChanged: "ch:disabled-changed",
   flash: "ch:flash",
   focusPrompt: "ch:focus-prompt",
+  // 생성물 변경(담기/폴더·최종·공유·삭제·새 생성)의 같은 창(same-window) 알림 — 사이드바 폴더 카운트
+  // 즉시 갱신 등. BroadcastChannel(ch-generations)은 창 간 전달용이라, 같은 창 갱신은 이 이벤트로 확실히.
+  libraryChanged: "ch:library-changed",
   reusePrompt: "ch:reuse-prompt",
   shortcutsChanged: "ch:shortcuts-changed",
 } as const;

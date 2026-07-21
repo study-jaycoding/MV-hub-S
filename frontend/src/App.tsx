@@ -7,6 +7,7 @@ const HistoryBoard = lazy(() =>
 import { LoginScreen } from "./components/LoginScreen";
 import { ServerLoginScreen } from "./components/ServerLoginScreen";
 import { FilterSidebar } from "./components/FilterSidebar";
+import { CanvasFolderSidebar } from "./components/sidebar/CanvasFolderSidebar";
 import { LibraryToolbar } from "./components/LibraryToolbar";
 import { SpotlightPrompt } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
@@ -499,6 +500,23 @@ export default function App() {
       />
       <div className="body">
         {filters.tab === "compose" ? (
+          <>
+            {showFilters && (
+              <CanvasFolderSidebar
+                filters={filters}
+                onChange={patch}
+                projects={projects}
+                unassignedCount={unassignedCount}
+                archivedCount={archivedCount}
+                onArmFolder={(projectId, path) => {
+                  // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터
+                  setArmedFolder(path ? { projectId, path } : null);
+                  patch({ project_id: projectId, folder_path: path || undefined });
+                }}
+                onDropToFolder={(projectId, path, genId) => dropOnFolder(genId, projectId, path)}
+                onDropToUnassigned={(genId) => dropUnassign(genId)}
+              />
+            )}
           <main className="main">
             {/* 구성탭에도 라이브러리 툴바 — 타입/컬러/태그/공유/코멘트 필터(노드 dim) +
                 fill(블랙바↔꽉채우기) + scale(보드 확대)을 히스토리 보드에 그대로 적용. */}
@@ -541,6 +559,7 @@ export default function App() {
               zoomValue={boardStats.zoomPct / 100}
               onZoomValue={(v) => boardControl.current?.zoomTo(v)}
               boardMode
+              showFilterToggle
             />
             <SceneBar
               scenes={scenes}
@@ -581,6 +600,13 @@ export default function App() {
                 sharedOnly={sharedOnly}
                 commentOnly={commentOnly}
                 finalOnly={finalOnly}
+                // 사이드바에서 폴더를 선택(project_id+folder_path)했을 때만 그 폴더 밖 카드를 딤.
+                // 프로젝트/라이브러리 선택(folder_path 없음)이면 null → 딤 해제.
+                folderSel={
+                  filters.project_id && filters.project_id !== "none" && filters.folder_path
+                    ? { projectId: filters.project_id, path: filters.folder_path }
+                    : null
+                }
                 onSetTags={(g, tags) => {
                   mergeFacetTags(tags); // '등록된 태그' 패널 즉시 반영(compose 탭은 reload 가 facets 를 안 불러옴)
                   onSetTags(g, tags);
@@ -618,6 +644,7 @@ export default function App() {
             </Suspense>
             )}
           </main>
+          </>
         ) : (
           <>
             {showFilters && (

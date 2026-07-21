@@ -271,6 +271,9 @@
 .scene-varpop-item.off img,
 .scene-varpop-item.off video { filter: grayscale(1) brightness(0.5); }
 .scene-varpop-item.off { opacity: 0.85; }
+/* 선택 폴더 밖 변형 — 흐리게(그 폴더에 든 변형만 부각). 호버하면 확인용으로 다시 선명. */
+.scene-varpop-item.foldim { opacity: 0.3; }
+.scene-varpop-item.foldim:hover { opacity: 1; }
 /* 변형 타일에서도 생성탭 카드의 좌상단 조작(S/T/C)·그립·호버 오버레이를 노출
    — 기본 hover 규칙은 .card/.card-thumb/.asset-cell 스코프라 타일엔 안 걸림. */
 .scene-varpop-item:hover .card-sf,

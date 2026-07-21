@@ -5,6 +5,8 @@
 // 미러 ref(genDataRef/refParentsRef)는 렌더 중 대입해야 한다(useEffect 로 옮기면 한 렌더 늦음). refParentsRef 는 내부 전용.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { APP_EVENTS } from "./appEvents";
+import { onLibraryChanged } from "./libraryBroadcast";
 import { DISABLED_EVENT, loadDisabledFolders, loadDisabledGen } from "./deactivated";
 import { expandDisabledGenerationIds } from "./generationDisplay";
 import { useCustomEvent } from "./useCustomEvent";
@@ -40,6 +42,13 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     .filter((c) => c.kind === "generation")
     .flatMap((c) => variantIds(c))
     .join(",");
+  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/삭제 등)를 구독 → refreshTick 을 올려 현재 카드들의
+  // 생성물을 즉시 재조회한다. 완료 카드는 평소 재폴링을 안 해 folder_path/project_id 가 stale 이었고,
+  // 그래서 캔버스에서 폴더로 담은 직후 그 폴더를 눌러도(탭 왕복 전) 딤이 옛 값으로 잘못 표시되던 버그.
+  const [refreshTick, setRefreshTick] = useState(0);
+  const bumpRefresh = () => setRefreshTick((t) => t + 1);
+  useEffect(() => onLibraryChanged(bumpRefresh), []); // 창 간
+  useCustomEvent(APP_EVENTS.libraryChanged, bumpRefresh); // 같은 창(내 담기·생성 즉시)
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
     if (!ids.length) return;
@@ -85,7 +94,8 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [genIdSig]);
+    // refreshTick = 라이브러리 변경 브로드캐스트 시 전체 재조회(담기 직후 folder_path 최신화).
+  }, [genIdSig, refreshTick]);
 
   // 각 생성물의 '레퍼런스 부모'(materials) 조회 — 새로 등장한 id 만(계보는 생성 시 확정, 이후 불변).
   useEffect(() => {

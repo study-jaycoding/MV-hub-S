@@ -45,6 +45,20 @@ export function useGenerationLibraryData({
     const tab = filtersRef.current.tab;
     if (tab === "compose") {
       setLoading(false);
+      // 캔버스(구성)탭은 그리드를 안 그리지만, 좌측 폴더 사이드바(ProjectSection)엔 projects 가 필요하다.
+      // 예전엔 여기서 전부 return 해, 새로고침 후 캔버스에선 폴더 트리가 비어 보이다가(라이브러리 방문
+      // 전까지) 다른 탭을 왕복해야 떴다. projects/미분류 수만 가볍게 로드한다(그리드·facets 는 스킵).
+      const seq = ++reloadSeqRef.current;
+      api
+        .projects("my")
+        .then((pr) => {
+          if (seq !== reloadSeqRef.current || !pr) return;
+          setProjects(pr.projects);
+          setUnassignedCount(pr.unassigned);
+          setArchivedCount(pr.archived_count ?? 0);
+          projectsLoadedRef.current = true;
+        })
+        .catch(() => {});
       return;
     }
     if (!silent) setLoading(true);
