@@ -423,12 +423,12 @@ def facets(request: Request, tab: str = Query("my", pattern="^(my|team)$")):
         # 보이도록 로컬 owner 의 auto_tags 로 덮어쓴다. (안 그러면 팀 탭에선 안 보이는데 생성하면
         # '이미 있음'으로 뜨는 불일치. 생성·목록·부여 모두 로컬 /api/auto-tags 라 owner 동일.)
         if isinstance(srv, dict):
-            srv["auto_tags"] = repo.list_auto_tags(_tag_owner(request))
-            # 일반 태그·색도 개인메타(로컬 전용)라 서버 facet 엔 없다 → 내 로컬 것으로 대체.
-            # 태그 '등록된 태그' = 내 카드 태그 ∪ 내가 남 카드에 단 shadow 태그. 색은 내 로컬에 쓰인 색.
+            # 일반 태그·색·전역태그 모두 개인메타(로컬 전용)라 서버 facet 엔 없다 → 내 로컬 것으로 대체.
+            # get_facets 가 이미 내 카드 태그 ∪ shadow 태그(통합 레지스트리)를 준다 → 내작업/팀/캔버스 동일.
             my_facets = repo.get_facets(account_uid=_account_uid(request))
-            srv["tags"] = sorted(set(my_facets.get("tags", [])) | set(repo.all_overlay_tags()))
+            srv["tags"] = my_facets.get("tags", [])
             srv["colors"] = my_facets.get("colors", [])
+            srv["auto_tags"] = repo.list_auto_tags(_tag_owner(request))
         return srv
     return repo.get_facets(account_uid=_account_uid(request))
 

@@ -35,6 +35,14 @@ def get_facets(account_uid: Optional[str] = None) -> dict[str, Any]:
                 gen_args,
             ).fetchall()
         ]
+        # 내가 남의 팀 카드에 단 shadow 태그도 같은 레지스트리로 합친다 — 내작업·팀·캔버스 태그 목록 통합
+        # (안 그러면 팀 카드에만 단 태그가 내작업 탭 '등록된 태그'에 안 보여 따로 노는 것처럼 됨).
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_tag_overlay'"
+        ).fetchone():
+            overlay = [r["tag"] for r in conn.execute("SELECT DISTINCT tag FROM gen_tag_overlay").fetchall()]
+            if overlay:
+                tags_list = sorted(set(tags_list) | set(overlay))
         # 전역 태그(auto_tag)는 별도 테이블 — 일반 tags 와 완전 분리(누출 없음). 계정별 소유라
         # **그 계정이 만든 것 전부**를 돌려준다(쓰인 것만이 아니라 — 방금 +로 만든 태그도 즉시 보여
         # 무장·삭제할 수 있게). owner: 로그인 계정 uid, 단독(None)이면 제공자 my_uid 로 폴백.
