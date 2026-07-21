@@ -149,3 +149,52 @@ def color_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, str]:
             f"SELECT anchor, color FROM gen_color_overlay WHERE anchor IN ({ph})", ids
         ).fetchall()
     return {r["anchor"]: r["color"] for r in rows}
+
+
+# ── 남의 팀 카드 태그 오버레이(gen_tag_overlay) ──────────────────────────────
+# 색과 동형이되 태그는 리스트라 (anchor, tag) 다중행. 레지스트리("등록된 태그")는 DISTINCT tag 로 뽑는다.
+def _ensure_tag_overlay(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS gen_tag_overlay "
+        "(anchor TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY(anchor, tag))"
+    )
+
+
+def set_tags_overlay(anchor: str, tags: list[str]) -> None:
+    """남의 팀 카드 '내 로컬 태그' 저장(계정DB 전용, 전체 교체). 빈 리스트면 해제."""
+    if not anchor:
+        return
+    clean = [t.strip() for t in (tags or []) if t and t.strip()]
+    with get_connection() as conn:
+        _ensure_tag_overlay(conn)
+        conn.execute("DELETE FROM gen_tag_overlay WHERE anchor=?", (anchor,))
+        if clean:
+            conn.executemany(
+                "INSERT OR IGNORE INTO gen_tag_overlay(anchor, tag) VALUES(?,?)",
+                [(anchor, t) for t in clean],
+            )
+
+
+def tags_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, list[str]]:
+    """앵커(id/job_id) → 내 로컬 태그 목록. 팀 탭 overlay 가 남의 카드에 태그를 덧입힐 때 쓴다."""
+    ids = [a for a in (anchor_ids or []) if a]
+    if not ids:
+        return {}
+    with get_connection() as conn:
+        _ensure_tag_overlay(conn)
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT anchor, tag FROM gen_tag_overlay WHERE anchor IN ({ph}) ORDER BY tag", ids
+        ).fetchall()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["anchor"], []).append(r["tag"])
+    return out
+
+
+def all_overlay_tags() -> list[str]:
+    """내가 남의 카드에 단 태그 이름 전체(중복 제거) — 팀 '등록된 태그' 레지스트리 보강용."""
+    with get_connection() as conn:
+        _ensure_tag_overlay(conn)
+        rows = conn.execute("SELECT DISTINCT tag FROM gen_tag_overlay ORDER BY tag").fetchall()
+    return [r["tag"] for r in rows]

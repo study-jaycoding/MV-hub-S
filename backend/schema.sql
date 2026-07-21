@@ -268,6 +268,14 @@ CREATE TABLE IF NOT EXISTS gen_color_overlay (
     color  TEXT
 );
 
+-- 남의 팀 카드에 다는 '내 로컬 태그'(개인 뷰) — 색 shadow 와 동형(태그는 리스트라 다중행).
+-- 서버에 미러 안 하는 개인메타. anchor = job_id 우선(없으면 서버 id). 레지스트리는 DISTINCT tag.
+CREATE TABLE IF NOT EXISTS gen_tag_overlay (
+    anchor TEXT NOT NULL,
+    tag    TEXT NOT NULL,
+    PRIMARY KEY (anchor, tag)
+);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

@@ -76,6 +76,23 @@ class TeamColorOverlayTests(unittest.TestCase):
         out = self._overlay(rows)
         self.assertIsNone(out[0]["color"])  # g.color(None) 우선 → shadow 로 부활 안 함
 
+    def test_shadow_tags_on_others_card(self):
+        from app import repo
+
+        repo.set_tags_overlay("jobOther", ["hero", "bg"])
+        rows = [{"id": "srvOther", "job_id": "jobOther", "creator_uid": "other", "color": None, "tags": []}]
+        out = self._overlay(rows)
+        self.assertEqual(sorted(out[0]["tags"]), ["bg", "hero"])  # 남 카드에 내 shadow 태그 표시
+
+    def test_shadow_tags_skip_my_card(self):
+        # 내 카드는 로컬 태그가 진실 → shadow 태그로 안 덮음.
+        from app import repo
+
+        repo.set_tags_overlay("jobMine", ["ghost"])  # 있을 리 없는 stale shadow
+        rows = [{"id": "srvMine", "job_id": "jobMine", "creator_uid": "me", "color": None, "tags": []}]
+        out = self._overlay(rows)  # my="me" → 내 카드(로컬 행 locMine 있음)로 처리, shadow skip
+        self.assertNotIn("ghost", out[0].get("tags") or [])
+
     def test_my_server_card_without_local_row_uses_shadow(self):
         # 내 카드지만 이 허브 로컬 DB 에 행이 없는 경우(교차PC·초기화 등) — 로컬 메타를 못 붙이므로
         # step1 에서 handled 안 됨 → step2 shadow 로 표시돼야 한다(코덱스 지적한 buggy skip 방지).

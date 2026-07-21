@@ -64,8 +64,9 @@ def _overlay_personal_meta(data, request: Request):
                     g["tags"] = m["tags"]
                     g["auto_tags"] = m["auto_tags"]
                     handled.add(id(g))  # 지운 색(None)도 진실 → shadow 부활 방지
-    # (2) shadow 색(gen_color_overlay) — 로컬 개인메타를 못 붙인 카드(남의 카드 + 로컬 행 없는 내 서버 카드).
-    #     계정DB 자체가 스코프라 my 없어도 적용. 앵커는 job_id 우선(없으면 id) '한 개'로 통일(쓰기와 동일 규칙).
+    # (2) shadow 색·태그(gen_color_overlay/gen_tag_overlay) — 로컬 개인메타를 못 붙인 카드
+    #     (남의 카드 + 로컬 행 없는 내 서버 카드). 계정DB 자체가 스코프라 my 없어도 적용.
+    #     앵커는 job_id 우선(없으면 id) '한 개'로 통일(쓰기와 동일 규칙).
     if _proxy.proxying():
         sh: list[str] = []
         for g in rows:
@@ -74,13 +75,18 @@ def _overlay_personal_meta(data, request: Request):
                 if a:
                     sh.append(a)
         cmap = repo.color_overlay_by_anchors(sh)
-        if cmap:
+        tmap = repo.tags_overlay_by_anchors(sh)
+        if cmap or tmap:
             for g in rows:
                 if not isinstance(g, dict) or id(g) in handled:
                     continue
-                c = cmap.get(g.get("job_id") or g.get("id"))
+                anchor = g.get("job_id") or g.get("id")
+                c = cmap.get(anchor)
                 if c is not None:
                     g["color"] = c
+                t = tmap.get(anchor)
+                if t is not None:
+                    g["tags"] = t
     return data
 
 
@@ -418,6 +424,11 @@ def facets(request: Request, tab: str = Query("my", pattern="^(my|team)$")):
         # '이미 있음'으로 뜨는 불일치. 생성·목록·부여 모두 로컬 /api/auto-tags 라 owner 동일.)
         if isinstance(srv, dict):
             srv["auto_tags"] = repo.list_auto_tags(_tag_owner(request))
+            # 일반 태그·색도 개인메타(로컬 전용)라 서버 facet 엔 없다 → 내 로컬 것으로 대체.
+            # 태그 '등록된 태그' = 내 카드 태그 ∪ 내가 남 카드에 단 shadow 태그. 색은 내 로컬에 쓰인 색.
+            my_facets = repo.get_facets(account_uid=_account_uid(request))
+            srv["tags"] = sorted(set(my_facets.get("tags", [])) | set(repo.all_overlay_tags()))
+            srv["colors"] = my_facets.get("colors", [])
         return srv
     return repo.get_facets(account_uid=_account_uid(request))
 
