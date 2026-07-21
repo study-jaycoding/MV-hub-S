@@ -1,6 +1,13 @@
 // 공용 미디어 헬퍼 — History 보드/패널/미니트리에 동일하게 복붙돼 있던 thumbOf 를 통합.
+import type { SyntheticEvent } from "react";
 import { api } from "../api";
 import type { Generation } from "../types";
+
+// 썸네일 로드 실패 시 공용 폴백 — 깨진 이미지 아이콘 대신 조용히 숨겨 컨테이너 배경(플레이스홀더)이 보이게.
+// media-thumb 프록시가 실패 시 원본으로 리다이렉트하는데 그 원본마저 브라우저에서 막히는 최종 케이스 방어.
+export function hideBrokenImg(e: SyntheticEvent<HTMLImageElement>): void {
+  e.currentTarget.style.visibility = "hidden";
+}
 
 export type ReferenceMediaType = "image" | "video" | "audio";
 

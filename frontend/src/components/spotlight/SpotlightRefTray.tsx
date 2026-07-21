@@ -1,5 +1,5 @@
 import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
-import { displayThumb } from "../../lib/media";
+import { displayThumb, hideBrokenImg } from "../../lib/media";
 import { refSrc } from "../../lib/promptParts";
 import type { ChipRef } from "../../lib/promptEditor";
 import type { PreviewTarget } from "../../types";
@@ -108,7 +108,12 @@ export function SpotlightRefTray({
               ) : ref.thumb ? (
                 // draggable=false: 썸네일 자체가 네이티브 이미지 드래그가 되면 크롬이 합성 파일을
                 // 만들어 순서변경이 '외부 파일 추가'로 처리된다. 드래그 주체는 항상 바깥 항목 div.
-                <img src={displayThumb(ref.thumb) || undefined} alt="" draggable={false} />
+                <img
+                  src={displayThumb(ref.thumb) || undefined}
+                  alt=""
+                  draggable={false}
+                  onError={hideBrokenImg}
+                />
               ) : (
                 <span className="sl-reftray-ph" />
               )}

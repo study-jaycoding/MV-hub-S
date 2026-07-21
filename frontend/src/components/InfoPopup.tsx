@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useModelDisplayName } from "../lib/modelCatalog";
-import { displayThumb } from "../lib/media";
+import { displayThumb, hideBrokenImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { addWindowPointerDrag, removeWindowPointerDrag } from "../lib/windowDrag";
@@ -208,6 +208,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
                   <img
                     src={displayThumb(r.thumbnail_path || r.file_path) || undefined}
                     alt={r.role || "source"}
+                    onError={hideBrokenImg}
                   />
                 )}
                 <span className="info-source-role">{r.role || "@"}</span>

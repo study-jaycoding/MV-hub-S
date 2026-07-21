@@ -33,7 +33,7 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { TagEditor } from "../TagEditor";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { displayThumb, thumbOf } from "../../lib/media";
+import { displayThumb, hideBrokenImg, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 
@@ -1296,7 +1296,7 @@ export function SceneBoard({
                           {(() => {
                             const src = refThumbSrc(r);
                             return src ? (
-                              <img src={src} alt="" draggable={false} />
+                              <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
                             ) : (
                               <span className="scene-refthumb-ph" />
                             );
