@@ -6,6 +6,7 @@ CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -81,6 +82,48 @@ def _overlay_personal_meta(data, request: Request):
                 if c is not None:
                     g["color"] = c
     return data
+
+
+def _team_color_filtered(request: Request, want_colors, limit: int, cursor_ts, cursor_id):
+    """팀 탭 색 필터 — 개인색(내 g.color·shadow)은 서버에 없어 서버가 못 거른다.
+    허브가 '색 뺀' 요청으로 서버 목록을 받아 overlay(내 색+shadow) 후 로컬에서 색으로 거른다.
+    무한스크롤(GEN_PAGE)이 조기 종료되지 않게 limit 개가 찰 때까지 서버 페이지를 이어 받는다
+    (키셋 커서 전진, 안전 상한 MAX_FETCHES 로 무한루프 방지)."""
+    want = {c for c in want_colors if c}
+    if not want:
+        return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+    # color(단수)·colors·cursor·limit 만 빼고 나머지 필터(tab=team·media_type·tags·folder 등)는 유지.
+    # ★color 단수도 제거 필수 — 남으면 서버가 먼저 색으로 걸러(개인색 아닌 서버색 기준) 로컬 필터가 무의미.
+    base = [
+        (k, v)
+        for (k, v) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
+        if k not in ("color", "colors", "cursor_ts", "cursor_id", "limit")
+    ]
+    PAGE = 200  # 서버에서 한 번에 당길 양(프론트 GEN_PAGE 와 동일)
+    # 종료는 '서버 소진'(page<PAGE)이 정상 경로 — 정상 팀 규모는 여기서 먼저 끝난다.
+    # MAX_FETCHES 는 서버 버그(커서 안 전진 등)로 인한 runaway 만 막는 안전상한(≈12000행).
+    # 그보다 큰 팀 + 매우 희소한 색이면 상위 ~12000행 내에서만 필터됨(현실적으로 도달 안 함, Jay 인지).
+    MAX_FETCHES = 60
+    matches: list = []
+    cur_ts, cur_id = cursor_ts, cursor_id
+    for _ in range(MAX_FETCHES):
+        pairs = list(base) + [("limit", str(PAGE))]
+        if cur_ts is not None:
+            pairs.append(("cursor_ts", str(cur_ts)))
+        if cur_id is not None:
+            pairs.append(("cursor_id", str(cur_id)))
+        page = _proxy.proxy_json("GET", "/api/generations", raw_query=urllib.parse.urlencode(pairs))
+        if not isinstance(page, list) or not page:
+            break
+        _overlay_personal_meta(page, request)  # 내 색·shadow 덧입힘(in-place)
+        matches.extend(g for g in page if isinstance(g, dict) and g.get("color") in want)
+        if len(matches) >= limit or len(page) < PAGE:
+            break  # 충분히 채웠거나 서버 소진
+        last = page[-1]
+        cur_ts, cur_id = last.get("sort_ts"), last.get("id")
+        if cur_ts is None or cur_id is None:
+            break
+    return matches[:limit]
 
 
 def _remote_thumb_urls(data) -> list[str]:
@@ -224,7 +267,11 @@ def list_generations(
     if tab == "team" and _proxy.proxying():
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
-        data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
+        # 색 필터는 서버가 못 거른다(개인색=로컬 전용) → 허브가 색 뺀 요청으로 받아 overlay 후 로컬 필터.
+        if colors:
+            data = _team_color_filtered(request, colors, limit, cursor_ts, cursor_id)
+        else:
+            data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
         # 백그라운드 prewarm: 팀 항목 미디어는 원격 URL 이라 첫 표시 때 보는 PC 가 받아 리사이즈 → 느림.
         # 목록을 받자마자 뒤에서 미리 캐시+썸네일링하면 실제 스크롤 시점엔 디스크 캐시 히트로 즉시 뜬다.
         urls = _remote_thumb_urls(data)
