@@ -1,6 +1,6 @@
 // Assets 그리드/리스트의 단일 셀(메모이제이션) — 미디어 썸네일 + 호버 오버레이 + S·T·C 상태줄.
 // 핸들러는 path 인자를 받는 안정 참조로만 받아 React.memo 가 변화 없는 셀을 건너뛴다.
-import { memo, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { downloadOne } from "../../lib/download";
 import { TagEditor } from "../TagEditor";
@@ -56,6 +56,7 @@ export const AssetCell = memo(function AssetCell({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const cellRef = useRef<HTMLDivElement>(null);
   const url = api.assetFileUrl(project, node.path);
   const isVideo = node.type === "video";
   const isAudio = node.type === "audio";
@@ -65,6 +66,28 @@ export const AssetCell = memo(function AssetCell({
   // 영상 포스터 — ffmpeg 첫 프레임(서버 캐시). 내 작업 라이브러리처럼 poster 로 깔면 preload=none 이라
   // 원본 로딩 없이 선명한 썸네일이 뜬다(포스터 실패 시 poster 만 비고 재생은 정상).
   const posterSrc = isVideo ? api.assetThumbUrl(project, node.path, 512) : undefined;
+  // 영상 poster 는 <img loading="lazy"> 혜택이 없어 폴더 전환 즉시 전부 요청된다(썸네일 폭주).
+  // → 뷰포트에 들어올 때만 poster 를 붙여 초기 요청을 줄인다(이미지는 이미 lazy 라 대상 아님).
+  const [nearView, setNearView] = useState(false);
+  useEffect(() => {
+    if (!isVideo || nearView) return; // 영상만·한 번 보이면 관찰 종료
+    const el = cellRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setNearView(true); // 미지원 환경은 그냥 즉시 로드(기능 저하 방지)
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setNearView(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: "300px" }, // 화면 300px 전부터 미리 로드(스크롤 시 pop-in 완화)
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [isVideo, nearView]);
 
   // list: 행 높이를 슬라이더로 고정(메인 라이브러리식) → 썸네일이 행 높이를 꽉 채우는 정사각.
   // grid: padding-bottom 트릭으로 정사각.
@@ -186,6 +209,7 @@ export const AssetCell = memo(function AssetCell({
   // 선택/마퀴/키보드는 그리드 컨테이너에서 위임 처리(data-idx 로 식별).
   return (
     <div
+      ref={cellRef}
       className={
         "asset-cell" +
         (isList ? " list" : "") +
@@ -206,7 +230,7 @@ export const AssetCell = memo(function AssetCell({
         onMouseLeave={onLeave}
       >
         {isVideo ? (
-          <video ref={videoRef} src={url} poster={posterSrc} muted loop playsInline preload="none" draggable={false} style={fillStyle} />
+          <video ref={videoRef} src={url} poster={nearView ? posterSrc : undefined} muted loop playsInline preload="none" draggable={false} style={fillStyle} />
         ) : isAudio ? (
           <div className="audio-tile" style={fillStyle}>
             <span className="audio-glyph">🎵</span>
