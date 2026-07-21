@@ -142,24 +142,33 @@ def delete_tag_everywhere(name: str, account_uid: Optional[str] = None) -> int:
     링크만 제거하고 남의 링크는 보존 — 공유 DB 에서 한 사용자가 모두의 태그를 지우는 사고를 막는다.
     내 링크 제거 후 그 태그를 쓰는 링크가 하나도 안 남으면 태그 행도 정리."""
     with get_connection() as conn:
+        removed = 0
         row = conn.execute("SELECT id FROM tag WHERE name=?", (name,)).fetchone()
-        if not row:
-            return 0
-        tid = row["id"]
-        if account_uid is not None:
-            cur = conn.execute(
-                "DELETE FROM gen_tag WHERE tag_id=? AND generation_id IN "
-                "(SELECT id FROM generation WHERE creator_uid=?)",
-                (tid, account_uid),
-            )
-            if not conn.execute(
-                "SELECT 1 FROM gen_tag WHERE tag_id=? LIMIT 1", (tid,)
-            ).fetchone():
+        if row:
+            tid = row["id"]
+            if account_uid is not None:
+                cur = conn.execute(
+                    "DELETE FROM gen_tag WHERE tag_id=? AND generation_id IN "
+                    "(SELECT id FROM generation WHERE creator_uid=?)",
+                    (tid, account_uid),
+                )
+                removed += cur.rowcount
+                if not conn.execute(
+                    "SELECT 1 FROM gen_tag WHERE tag_id=? LIMIT 1", (tid,)
+                ).fetchone():
+                    conn.execute("DELETE FROM tag WHERE id=?", (tid,))
+            else:
+                cur = conn.execute("DELETE FROM gen_tag WHERE tag_id=?", (tid,))
+                removed += cur.rowcount
                 conn.execute("DELETE FROM tag WHERE id=?", (tid,))
-            return cur.rowcount
-        cur = conn.execute("DELETE FROM gen_tag WHERE tag_id=?", (tid,))
-        conn.execute("DELETE FROM tag WHERE id=?", (tid,))
-        return cur.rowcount
+        # 남의 카드에 단 내 로컬 태그(shadow, gen_tag_overlay)도 함께 제거 — '등록된 태그' 통합 삭제.
+        # ★조기반환 제거 필수 — 태그가 tag 테이블엔 없고 shadow 로만 있는 경우(남 카드에만 단 태그)도
+        #   지워져야 하므로. 안 그러면 레지스트리엔 뜨는데 삭제가 안 먹는 버그.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_tag_overlay'"
+        ).fetchone():
+            removed += conn.execute("DELETE FROM gen_tag_overlay WHERE tag=?", (name,)).rowcount
+        return removed
 
 
 def _add_tags(conn: sqlite3.Connection, gen_id: str, tags: Iterable[str]) -> None:
