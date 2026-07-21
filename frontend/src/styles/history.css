@@ -287,7 +287,7 @@
   background: linear-gradient(rgba(0,0,0,0.35), transparent 30%, transparent 60%, rgba(0,0,0,0.55));
 }
 .linb-node:hover .linb-ov { opacity: 1; }
-.linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.linb-ov-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 5px; }
 .linb-ov-bot { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
 .linb-ov-drag { cursor: grab; }
 .linb-ov-drag:active { cursor: grabbing; }
@@ -304,6 +304,11 @@
 .linb-node:hover .linb-ov-btn { pointer-events: auto; }
 .linb-ov-btn:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
 .linb-ov-btn.on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
+/* C 미확인 코멘트(호박색) — 확인 전까지 강조(그리드 .card-cm.alert 톤). */
+.linb-ov-btn.alert {
+  background: #f5a623; color: #2a1500; border-color: #ffc04d;
+  box-shadow: 0 0 9px rgba(245,166,35,0.55); font-weight: 900;
+}
 /* 최종(골드) 버튼 — 그리드 card-sf.final 톤(금색 그라데이션) */
 .linb-ov-btn.final {
   background: linear-gradient(135deg, #f5c542, #e0a316); color: #2a1d00;

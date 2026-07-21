@@ -565,6 +565,7 @@ export default function App() {
                 }}
                 onSetAutoTags={onSetAutoTags}
                 autoTagOptions={facets.auto_tags}
+                onOpenComments={(g) => openComment(g.id)}
               />
             ) : (
             <Suspense fallback={null}>

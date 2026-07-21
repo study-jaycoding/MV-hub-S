@@ -34,6 +34,8 @@ interface Props {
   onPreview: (target: PreviewTarget) => void;
   onInfo: (target: InfoTarget) => void;
   onRegenerate: (generation: Generation) => void;
+  onTag?: (generation: Generation) => void; // T → 태그 편집(있을 때만 버튼 표시)
+  onOpenComments?: (generation: Generation) => void; // C → 코멘트 스레드(있을 때만 버튼 표시)
 }
 
 export const HistoryBoardNode = memo(function HistoryBoardNode({
@@ -62,6 +64,8 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
   onPreview,
   onInfo,
   onRegenerate,
+  onTag,
+  onOpenComments,
 }: Props) {
   const asset = generation.assets[0];
   const thumb = thumbOf(generation);
@@ -171,6 +175,40 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
               }}
             >
               {generation.is_final ? "★" : "S"}
+            </button>
+          )}
+          {onTag && (
+            <button
+              className={"linb-ov-btn" + (generation.tags.length ? " on" : "")}
+              title={
+                generation.tags.length
+                  ? `태그: ${generation.tags.join(", ")} · 클릭=편집`
+                  : "태그 편집"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onTag(generation);
+              }}
+            >
+              T
+            </button>
+          )}
+          {onOpenComments && (
+            <button
+              className={"linb-ov-btn" + (generation.has_unread ? " alert" : "")}
+              title={
+                generation.has_unread
+                  ? `새 코멘트 · 총 ${generation.comment_count}개`
+                  : generation.comment_count
+                    ? `코멘트 ${generation.comment_count}개`
+                    : "코멘트 스레드 열기"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenComments(generation);
+              }}
+            >
+              C
             </button>
           )}
           <button

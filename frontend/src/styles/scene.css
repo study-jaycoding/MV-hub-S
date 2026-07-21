@@ -181,9 +181,10 @@
   background: #1b1e24; border: 1px solid #3a3f48; border-radius: 8px;
   padding: 7px 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
-/* 다중 결과 배지 — 생성 카드 상단 중앙, 항상 표시(클릭=팝업). z-index 는 노드 오버레이보다 위. */
+/* 다중 결과 배지 — 생성 카드 '밖' 상단 중앙(요청). .scene-card 는 클리핑 안 하므로 위로 빼도 안 잘림.
+   bottom:calc(100%+4px) = 카드 상단에서 4px 위. 항상 표시(클릭=팝업). z-index 는 노드 오버레이보다 위. */
 .scene-multi-badge {
-  position: absolute; top: 4px; left: 50%; transform: translateX(-50%); z-index: 12;
+  position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); z-index: 12;
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 11px; border-radius: 999px;
   font-size: 12px; font-weight: 800; line-height: 1.5; cursor: pointer;
   background: var(--accent); color: var(--accent-ink); border: 1px solid rgba(0, 0, 0, 0.25);
@@ -202,8 +203,13 @@
 .scene-varpop-backdrop.drag-through { pointer-events: none; }
 /* wrap: 패널 + 액션바(패널 밖이라 프로젝트 담기 드롭다운이 안 잘린다) */
 .scene-varpop-wrap {
+  position: relative; /* 태그 에디터(중앙 오버레이) 기준 */
   width: min(880px, 92%); max-height: 100%; display: flex; flex-direction: column;
   align-items: stretch; gap: 10px; min-height: 0;
+}
+/* 변형 타일 태그 편집 — 타일이 overflow:hidden 이라 잘리므로 팝업 레벨 중앙에 띄운다. */
+.scene-varpop-tageditor {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%); z-index: 40;
 }
 .scene-varpop {
   min-height: 0; display: flex; flex-direction: column;
@@ -245,56 +251,40 @@
   backdrop-filter: blur(4px); transition: opacity 0.15s;
 }
 .scene-varpop-item:hover .scene-varpop-vid { opacity: 0; }
-.scene-varpop-cur {
-  position: absolute; left: 50%; top: 5px; transform: translateX(-50%);
-  font-size: 12px; font-weight: 800; padding: 3px 12px;
-  border-radius: 999px; background: #ffd24a; color: #1a1c20; z-index: 4;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+/* 셀 래퍼 — 대표 라벨/지정 버튼을 카드 '밖' 상단 스트립에 둔다(요청).
+   배지를 스트립 맨 위(top:0)에 두고 padding 으로 배지 아래 공간을 확보.
+   배지 '위' 공간은 그리드 패딩/행 간격(약 10~14px)이 담당 → 아래도 비슷하게 맞춰 대칭. */
+.scene-varpop-cell { position: relative; padding-top: 35px; }
+/* 대표 라벨(대표면) / 지정 버튼(아니면) — 셀 상단(카드 밖) 중앙. */
+.scene-varpop-cur,
+.scene-varpop-rep {
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 6;
+  padding: 2px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 800; line-height: 1.6;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
-/* 색바(하단) · 공유(S)/최종(★) 뱃지(우상단) · 비활성 회색 — 계보 카드와 같은 정보 */
+.scene-varpop-cur { background: #ffd24a; color: #1a1c20; pointer-events: none; }
+.scene-varpop-rep { border: 0; cursor: pointer; background: rgba(255, 255, 255, 0.09); color: #ffd24a; }
+.scene-varpop-rep:hover { background: #ffd24a; color: #1a1c20; }
+/* 색바(하단) · 비활성 회색 — 계보 카드와 같은 정보. (공유/최종은 좌상단 S 버튼이 겸함) */
 .scene-varpop-colorbar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; z-index: 2; }
-.scene-varpop-sf {
-  position: absolute; right: 4px; top: 4px; z-index: 2; min-width: 16px; height: 16px; padding: 0 4px;
-  display: grid; place-items: center; border-radius: 5px; font-size: 10px; font-weight: 800;
-  background: rgba(0, 0, 0, 0.6); color: var(--accent);
-}
-.scene-varpop-sf.final { color: #ffd24a; }
 .scene-varpop-item.off img,
 .scene-varpop-item.off video { filter: grayscale(1) brightness(0.5); }
 .scene-varpop-item.off { opacity: 0.85; }
-/* ★대표 지정 버튼(대표 아닐 때만) — 상단 중앙, 호버 시 표시. 시인성 위해 크게 */
-.scene-varpop-rep {
-  position: absolute; left: 50%; top: 5px; transform: translateX(-50%);
-  z-index: 4; padding: 3px 12px; border-radius: 999px;
-  border: 0; cursor: pointer; font-size: 12px; font-weight: 800; line-height: 1.4;
-  background: rgba(0, 0, 0, 0.65); color: #ffd24a; opacity: 0; transition: opacity 0.12s;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-}
-.scene-varpop-item:hover .scene-varpop-rep { opacity: 1; }
-.scene-varpop-rep:hover { background: #ffd24a; color: #1a1c20; }
-/* 타일 hover 액션 오버레이 — 계보 카드처럼 상단(정보)/하단(액션) 2줄로 분산해 좁은 타일에서도 안 잘리게.
-   컨테이너는 pointer-events:none(빈 영역=선택 통과), 버튼만 활성. */
-.scene-varpop-ov {
-  position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: 0; transition: opacity 0.12s;
-  display: flex; flex-direction: column; justify-content: space-between; padding: 5px;
-  background: linear-gradient(rgba(0,0,0,0.35), transparent 30%, transparent 60%, rgba(0,0,0,0.55));
-}
-.scene-varpop-item:hover .scene-varpop-ov { opacity: 1; }
-.scene-varpop-ov-top { display: flex; justify-content: space-between; align-items: flex-start; }
-.scene-varpop-ov-bot { display: flex; justify-content: center; align-items: center; gap: 9px; flex-wrap: wrap; }
-/* 팝업 타일이 크므로 버튼도 크게(36px) — 생성탭 카드 버튼이 작은 카드에서 커 보이는 것과 시각 무게를 맞춤 */
-.scene-varpop-ov button,
-.scene-varpop-grip {
-  pointer-events: auto; width: 36px; height: 36px; border-radius: 10px; flex: none;
-  cursor: pointer; font-size: 18px; line-height: 1; padding: 0;
-  display: flex; align-items: center; justify-content: center; color: #fff;
-  background: rgba(12, 13, 16, 0.6); backdrop-filter: blur(6px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-}
-.scene-varpop-grip { cursor: grab; }
-.scene-varpop-grip:active { cursor: grabbing; }
-.scene-varpop-ov button:hover,
-.scene-varpop-grip:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
+/* 변형 타일에서도 생성탭 카드의 좌상단 조작(S/T/C)·그립·호버 오버레이를 노출
+   — 기본 hover 규칙은 .card/.card-thumb/.asset-cell 스코프라 타일엔 안 걸림. */
+.scene-varpop-item:hover .card-sf,
+.scene-varpop-item:hover .card-cm,
+.scene-varpop-item:hover .card-drag-grip { opacity: 1; pointer-events: auto; }
+.scene-varpop-item:hover .thumb-overlay { opacity: 1; }
+/* 하단 액션 버튼 — 타일에서는 하단 '중앙' 정렬(요청). 생성탭 카드(.card 안)는 우측 유지. */
+.scene-varpop-item .ov-bottom { justify-content: center; }
+/* ── 버튼 크기: 생성탭 카드(이미지3) 비율 기준으로 맞춤 ──
+   변형 타일(~205px)은 라이브러리 카드와 폭이 비슷 → 버튼을 26px 로 통일(28/26 혼재 정리). */
+.scene-varpop-item .ov-icon { width: 26px; height: 26px; font-size: 13px; }
+/* 캔버스 카드는 폭이 152px 로 좁아 28px 버튼이 비율상 큼 → 라이브러리 좁은 카드(23px)에 준해 축소.
+   .scene-card 스코프라 구성탭 히스토리 보드에는 영향 없음. */
+.scene-card .linb-ov-btn { width: 22px; height: 22px; font-size: 12px; }
 .scene-empty-hint { margin-top: 4px; font-size: 12px; color: var(--muted); opacity: 0.85; }
 .scene-empty {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
