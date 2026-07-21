@@ -14,12 +14,15 @@ interface Props {
 
 // 크게 보기에서 받는 파일명 — 에셋은 이름에 이미 확장자가 있으니 그대로 쓰고, 생성물은 프롬프트
 // 조각(확장자 없음)이라 URL 경로(쿼리 제거) 또는 타입 기본값으로 확장자를 붙인다. 경로 금지문자는 _.
-function previewDownloadName(url: string, name: string, type: string): string {
+// uniq: 같은 배치의 변형들은 프롬프트(name)가 전부 같아 파일명이 겹친다 → 지정 폴더 저장 시 서로
+// 덮어씀. 생성물엔 고유 id(genId 앞 8자)를 접미사로 붙여 변형마다 다른 파일로 저장한다.
+function previewDownloadName(url: string, name: string, type: string, uniq?: string): string {
   const base = (name || "download").replace(/[\\/:*?"<>|]+/g, "_").trim() || "download";
-  if (/\.[a-z0-9]{2,4}$/i.test(base)) return base; // 에셋 파일명 — 확장자 있음
+  if (/\.[a-z0-9]{2,4}$/i.test(base)) return base; // 에셋 파일명 — 확장자 있음(이미 고유)
   const m = url.split("?")[0].match(/\.([a-z0-9]{2,4})$/i);
   const ext = m ? m[1] : type === "video" ? "mp4" : type === "audio" ? "mp3" : "png";
-  return `${base}.${ext}`;
+  const suffix = uniq ? `-${uniq.slice(0, 8)}` : "";
+  return `${base}${suffix}.${ext}`;
 }
 
 export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
@@ -106,7 +109,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
             <button
               className="lin-board-btn preview-dl-btn"
               title="원본 다운로드"
-              onClick={() => downloadOne(cur.url, previewDownloadName(cur.url, cur.name, cur.type))}
+              onClick={() =>
+                downloadOne(cur.url, previewDownloadName(cur.url, cur.name, cur.type, cur.genId))
+              }
             >
               ⤓ 다운로드
             </button>
