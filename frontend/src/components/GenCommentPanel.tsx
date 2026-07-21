@@ -90,8 +90,10 @@ export function GenCommentPanel({
   };
 
   return (
+    // ★ key={genId} 를 두지 않는다 — 카드 전환 시 패널을 remount 하면 useFloatingPanel 의
+    //   ResizeObserver 가 떨어져 나가는 엘리먼트에서 크기 0 으로 fire 해 저장 크기가 초기화된다.
+    //   remount 없이도 comments 는 genId 변경 시 재조회되고(위 useEffect), 크기/위치가 유지된다.
     <CommentPanel
-      key={genId}
       comments={comments}
       label={label}
       myId={myId}

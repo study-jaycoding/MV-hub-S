@@ -36,7 +36,11 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
     if (!isOpen) return;
     const el = panelRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.offsetWidth, h: el.offsetHeight }));
+    const ro = new ResizeObserver(() => {
+      // 0 크기는 저장하지 않는다 — 패널이 remount/detach 될 때 RO 가 0 으로 fire 해 저장 크기를
+      // 덮어쓰는 것 방어(카드 전환 시 코멘트창 크기 초기화 버그의 안전망).
+      if (el.offsetWidth > 0 && el.offsetHeight > 0) setSize({ w: el.offsetWidth, h: el.offsetHeight });
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, [isOpen]);
