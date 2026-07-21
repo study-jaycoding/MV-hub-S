@@ -107,3 +107,45 @@ def personal_meta_by_anchor(
         if r["job_id"]:
             out[r["job_id"]] = meta
     return out
+
+
+# ── 남의 팀 카드 색 오버레이(gen_color_overlay) ──────────────────────────────
+# 팀 탭은 순수 프록시라 '남이 만든' 카드는 로컬 generation 행이 없다. 그런 카드에 다는 '내 로컬 색'은
+# generation.color 에 못 넣으므로 이 계정별 전용 테이블에 anchor(job_id 우선, 없으면 서버 id)로 담는다.
+# 내 카드 색은 지금처럼 generation.color 가 진실 — 여긴 남의 카드 전용(overlay 가 내 카드는 건너뜀).
+def _ensure_color_overlay(conn) -> None:
+    # 자가치유 — 비활성 계정DB 로 전환 시 ensure_account_db 가 init_db 를 건너뛰어(경로 존재하면)
+    # 마이그레이션이 빠질 수 있어, 접근 시점에 테이블을 보장한다(schema.sql 에도 있음).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS gen_color_overlay (anchor TEXT PRIMARY KEY, color TEXT)"
+    )
+
+
+def set_color_overlay(anchor: str, color: Optional[str]) -> None:
+    """남의 팀 카드 '내 로컬 색' 저장(계정DB 전용). color=None 이면 해제(행 삭제)."""
+    if not anchor:
+        return
+    with get_connection() as conn:
+        _ensure_color_overlay(conn)
+        if color is None:
+            conn.execute("DELETE FROM gen_color_overlay WHERE anchor=?", (anchor,))
+        else:
+            conn.execute(
+                "INSERT INTO gen_color_overlay(anchor, color) VALUES(?,?) "
+                "ON CONFLICT(anchor) DO UPDATE SET color=excluded.color",
+                (anchor, color),
+            )
+
+
+def color_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, str]:
+    """앵커(id/job_id) → 내 로컬 색. 팀 탭 overlay 가 남의 카드에 색을 덧입힐 때 쓴다."""
+    ids = [a for a in (anchor_ids or []) if a]
+    if not ids:
+        return {}
+    with get_connection() as conn:
+        _ensure_color_overlay(conn)
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT anchor, color FROM gen_color_overlay WHERE anchor IN ({ph})", ids
+        ).fetchall()
+    return {r["anchor"]: r["color"] for r in rows}

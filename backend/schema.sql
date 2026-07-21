@@ -261,6 +261,13 @@ CREATE TABLE IF NOT EXISTS generation_comment_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_gen_comment_seen_w ON generation_comment_seen(worker_id);
 
+-- 남의 팀 카드에 다는 '내 로컬 색'(개인 뷰) — 로컬 generation 행이 없는(남이 만든) 카드용.
+-- 색은 서버에 미러 안 하는 개인메타라 계정별 로컬 DB 에만 둔다. anchor = job_id 우선, 없으면 서버 id.
+CREATE TABLE IF NOT EXISTS gen_color_overlay (
+    anchor TEXT PRIMARY KEY,
+    color  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

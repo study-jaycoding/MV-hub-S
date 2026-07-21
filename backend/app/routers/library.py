@@ -26,10 +26,11 @@ router = APIRouter(prefix="/api", tags=["library"])
 
 
 def _overlay_personal_meta(data, request: Request):
-    """팀 목록/단건(서버 데이터)에 내 로컬 개인메타(color/tags/auto_tags)를 '내 카드'에만 덧입힌다.
+    """팀 목록/단건(서버 데이터)에 내 로컬 개인메타를 덧입힌다(2단계).
 
-    color/tags 는 작성자 전용이라 서버에 미러하지 않고 로컬에만 둔다(개인 메타). 팀 탭은 서버 데이터를
-    그리므로 내 개인 색·태그가 빠져 있어, 허브가 자기 로컬 DB에서 가져와 합친다. 남의 카드는 안 건드림.
+    (1) 내 카드(creator_uid==my): 로컬 generation 행의 color/tags/auto_tags.
+    (2) 남의 카드: 내 로컬 shadow 색(gen_color_overlay) — 남이 만든 카드는 로컬 행이 없어 여기 담긴다.
+    개인메타는 서버에 미러하지 않고 로컬 계정DB 에만 둔다(작성자 전용). 각자 로컬이라 색이 서로 안 겹침.
     data 가 리스트(목록)면 in-place 수정 후 반환, dict([단건] 래핑) 호출은 부수효과만 쓴다."""
     rows = data if isinstance(data, list) else None
     if rows is None:
@@ -37,29 +38,48 @@ def _overlay_personal_meta(data, request: Request):
     my = account_scope_uid(request)
     if not my and _proxy.proxying():
         # AUTH off 프록시(에이전트, MV_agent)는 request.state.account 가 없어 account_scope_uid=None →
-        # overlay 가 통째로 스킵돼 팀 탭 개인 색·태그가 리로드 후 사라졌다. 활성 계정(서버 로그인)으로 '내 카드' 판정.
+        # 내 카드 overlay 가 스킵됐었다. 활성 계정(서버 로그인)으로 '내 카드' 판정.
         from ..active_account import active_uid
         my = active_uid()
-    if not my:
-        return data
-    # 팀 카드 id 는 서버 UUID(≠ 로컬 id ≠ job_id)라 job_id 로도 앵커를 걸어야 내 개인메타가 잡힌다.
-    anchors: list[str] = []
-    for g in rows:
-        if isinstance(g, dict) and g.get("creator_uid") == my:
-            if g.get("id"):
-                anchors.append(g["id"])
-            if g.get("job_id"):
-                anchors.append(g["job_id"])
-    meta = repo.personal_meta_by_anchor(anchors, my)
-    if meta:
+    # (1) 내 카드 — 로컬 generation 행의 개인메타(색/태그/auto_tag). creator_uid==my 만.
+    #     팀 카드 id 는 서버 UUID(≠ 로컬 id ≠ job_id)라 job_id 로도 앵커를 건다.
+    handled: set[int] = set()  # 로컬 개인메타를 실제로 붙인 카드 → g.color 가 진실, shadow 로 안 덮음
+    if my:
+        anchors: list[str] = []
         for g in rows:
-            if not isinstance(g, dict):
-                continue
-            m = meta.get(g.get("id")) or meta.get(g.get("job_id"))
-            if m:
-                g["color"] = m["color"]
-                g["tags"] = m["tags"]
-                g["auto_tags"] = m["auto_tags"]
+            if isinstance(g, dict) and g.get("creator_uid") == my:
+                if g.get("id"):
+                    anchors.append(g["id"])
+                if g.get("job_id"):
+                    anchors.append(g["job_id"])
+        meta = repo.personal_meta_by_anchor(anchors, my)
+        if meta:
+            for g in rows:
+                if not isinstance(g, dict) or g.get("creator_uid") != my:
+                    continue
+                m = meta.get(g.get("id")) or meta.get(g.get("job_id"))
+                if m:
+                    g["color"] = m["color"]
+                    g["tags"] = m["tags"]
+                    g["auto_tags"] = m["auto_tags"]
+                    handled.add(id(g))  # 지운 색(None)도 진실 → shadow 부활 방지
+    # (2) shadow 색(gen_color_overlay) — 로컬 개인메타를 못 붙인 카드(남의 카드 + 로컬 행 없는 내 서버 카드).
+    #     계정DB 자체가 스코프라 my 없어도 적용. 앵커는 job_id 우선(없으면 id) '한 개'로 통일(쓰기와 동일 규칙).
+    if _proxy.proxying():
+        sh: list[str] = []
+        for g in rows:
+            if isinstance(g, dict) and id(g) not in handled:
+                a = g.get("job_id") or g.get("id")
+                if a:
+                    sh.append(a)
+        cmap = repo.color_overlay_by_anchors(sh)
+        if cmap:
+            for g in rows:
+                if not isinstance(g, dict) or id(g) in handled:
+                    continue
+                c = cmap.get(g.get("job_id") or g.get("id"))
+                if c is not None:
+                    g["color"] = c
     return data
 
 

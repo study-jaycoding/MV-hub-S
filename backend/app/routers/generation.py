@@ -463,9 +463,44 @@ def restore_generation(gen_id: str, request: Request):
         raise HTTPException(status_code=403, detail=str(e))
 
 
+def _my_uid(request: Request) -> Optional[str]:
+    """'내 카드' 판정용 uid — AUTH on 이면 로그인 계정, AUTH off 프록시(에이전트)면 활성 계정(서버 로그인)."""
+    uid = account_scope_uid(request)
+    if not uid and _proxy.proxying():
+        from ..active_account import active_uid
+        uid = active_uid()
+    return uid
+
+
 @router.put("/generations/{gen_id}/color", response_model=GenerationOut)
 def set_color(gen_id: str, body: ColorIn, request: Request):
-    return _set_meta(gen_id, request, lambda i: repo.set_color(i, body.color))  # 개인 전용 — 미러 안 함
+    """색은 개인 전용(서버 미러 안 함).
+    · 내 카드(로컬 행 있고 내 것) → generation.color 에 저장(기존 동작).
+    · 남의 팀 카드(로컬 행 없거나 내 것 아님, 프록시) → 내 로컬 shadow(gen_color_overlay)에만 저장.
+      공유 카드 자체를 바꾸는 게 아니라 '내 로컬 뷰의 색'이라 require_edit 불필요·서버 미러 없음."""
+    gen, local_id, server_id = _resolve_local_or_reclaim(gen_id, request)
+    my = _my_uid(request)
+    # 남의 카드 = 프록시 + 로컬 행이 '타인 소유'(creator_uid 설정 && ≠my). 로컬 행 없거나(내 서버 카드 포함)
+    # creator_uid 미설정(local-only)이면 남의 카드 아님 → 기존 로컬 g.color 경로(단독 모드도 여기).
+    is_other = (
+        bool(gen) and _proxy.proxying()
+        and bool(gen.get("creator_uid")) and gen.get("creator_uid") != my
+    )
+    if gen and not is_other:
+        require_edit_generation(request, gen)  # 본인/admin 만
+        repo.set_color(local_id, body.color)
+        return repo.get_generation(local_id)
+    if _proxy.proxying():
+        # 남의 카드(또는 로컬 행 없는 서버 카드) — 색은 내 로컬 shadow 에만(공유 카드 자체는 안 바꿈).
+        # 조회는 로컬 uuid 가 아닌 서버 앵커(server_id, 없으면 gen_id)로. 앵커도 job_id 우선(읽기와 동일).
+        ref = server_id or gen_id
+        srv = _proxy.proxy_get(f"/api/generations/{ref}", request)
+        anchor = (srv.get("job_id") or srv.get("id") or ref) if isinstance(srv, dict) else ref
+        repo.set_color_overlay(anchor, body.color)
+        if isinstance(srv, dict):
+            srv["color"] = body.color
+            return srv
+    raise HTTPException(status_code=404, detail="generation 없음")
 
 
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)
