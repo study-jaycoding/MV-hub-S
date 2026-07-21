@@ -678,7 +678,11 @@ export default function App() {
                     layout={layout}
                     groupByDate={groupByDate}
                     selectedIds={selected}
-                    onSelectedChange={setSelected}
+                    onSelectedChange={(next) => {
+                      setSelected(next);
+                      // 코멘트 패널이 열려 있으면 방금 클릭한(단일 선택) 카드로 따라가 그 카드 코멘트를 바로 보여준다.
+                      if (commentGenId != null && next.size === 1) setCommentGenId([...next][0]);
+                    }}
                     onToggleSelect={toggleSelect}
                     onSetSource={onSetSource}
                     onSetTags={onSetTags}
