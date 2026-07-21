@@ -84,25 +84,37 @@ def _overlay_personal_meta(data, request: Request):
     return data
 
 
-def _team_color_filtered(request: Request, want_colors, limit: int, cursor_ts, cursor_id):
-    """팀 탭 색 필터 — 개인색(내 g.color·shadow)은 서버에 없어 서버가 못 거른다.
-    허브가 '색 뺀' 요청으로 서버 목록을 받아 overlay(내 색+shadow) 후 로컬에서 색으로 거른다.
-    무한스크롤(GEN_PAGE)이 조기 종료되지 않게 limit 개가 찰 때까지 서버 페이지를 이어 받는다
-    (키셋 커서 전진, 안전 상한 MAX_FETCHES 로 무한루프 방지)."""
-    want = {c for c in want_colors if c}
-    if not want:
+def _team_local_filtered(request: Request, want_colors, want_tags, want_auto, limit: int, cursor_ts, cursor_id):
+    """팀 탭 개인메타 필터(색/태그/전역태그) — 이들은 로컬 전용(서버 미러 안 함)이라 서버가 못 거른다.
+    허브가 해당 필터를 뺀 요청으로 서버 목록을 받아 overlay(내 색·태그+shadow) 후 로컬에서 거른다.
+    필터 그룹끼리는 AND, 그룹 안에서는 OR(서버 SQL 과 동일 의미). 무한스크롤(GEN_PAGE)이 조기 종료되지
+    않게 limit 개가 찰 때까지 서버 페이지를 이어 받는다(키셋 커서 전진, 안전 상한 MAX_FETCHES)."""
+    cset = {c for c in (want_colors or []) if c}
+    tset = {t for t in (want_tags or []) if t}
+    aset = {a for a in (want_auto or []) if a}
+    if not (cset or tset or aset):
         return _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
-    # color(단수)·colors·cursor·limit 만 빼고 나머지 필터(tab=team·media_type·tags·folder 등)는 유지.
-    # ★color 단수도 제거 필수 — 남으면 서버가 먼저 색으로 걸러(개인색 아닌 서버색 기준) 로컬 필터가 무의미.
+
+    def _match(g: dict) -> bool:
+        if cset and g.get("color") not in cset:
+            return False
+        if tset and not (tset & set(g.get("tags") or [])):
+            return False
+        if aset and not (aset & set(g.get("auto_tags") or [])):
+            return False
+        return True
+
+    # 색·태그·전역태그 파라미터(개인메타)만 빼고 나머지 필터(tab=team·media_type·folder·search 등)는 유지.
+    # ★단수 color/tag 도 제거 — 남으면 서버가 먼저 걸러(개인메타 아닌 서버값 기준) 로컬 필터가 무의미.
     base = [
         (k, v)
         for (k, v) in urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
-        if k not in ("color", "colors", "cursor_ts", "cursor_id", "limit")
+        if k not in ("color", "colors", "tag", "tags", "auto_tags", "cursor_ts", "cursor_id", "limit")
     ]
     PAGE = 200  # 서버에서 한 번에 당길 양(프론트 GEN_PAGE 와 동일)
     # 종료는 '서버 소진'(page<PAGE)이 정상 경로 — 정상 팀 규모는 여기서 먼저 끝난다.
     # MAX_FETCHES 는 서버 버그(커서 안 전진 등)로 인한 runaway 만 막는 안전상한(≈12000행).
-    # 그보다 큰 팀 + 매우 희소한 색이면 상위 ~12000행 내에서만 필터됨(현실적으로 도달 안 함, Jay 인지).
+    # 그보다 큰 팀 + 매우 희소한 필터면 상위 ~12000행 내에서만 필터됨(현실적으로 도달 안 함, Jay 인지).
     MAX_FETCHES = 60
     matches: list = []
     cur_ts, cur_id = cursor_ts, cursor_id
@@ -115,8 +127,8 @@ def _team_color_filtered(request: Request, want_colors, limit: int, cursor_ts, c
         page = _proxy.proxy_json("GET", "/api/generations", raw_query=urllib.parse.urlencode(pairs))
         if not isinstance(page, list) or not page:
             break
-        _overlay_personal_meta(page, request)  # 내 색·shadow 덧입힘(in-place)
-        matches.extend(g for g in page if isinstance(g, dict) and g.get("color") in want)
+        _overlay_personal_meta(page, request)  # 내 색·태그·shadow 덧입힘(in-place)
+        matches.extend(g for g in page if isinstance(g, dict) and _match(g))
         if len(matches) >= limit or len(page) < PAGE:
             break  # 충분히 채웠거나 서버 소진
         last = page[-1]
@@ -267,9 +279,10 @@ def list_generations(
     if tab == "team" and _proxy.proxying():
         # color/tags 는 작성자 전용이라 서버에 미러하지 않는다(개인 메타). 팀 목록은 서버 데이터라
         # '내 카드'의 개인 색·태그가 빠져 있으므로, 허브가 자기 로컬 DB에서 가져와 덧입힌다(A1 오버레이).
-        # 색 필터는 서버가 못 거른다(개인색=로컬 전용) → 허브가 색 뺀 요청으로 받아 overlay 후 로컬 필터.
-        if colors:
-            data = _team_color_filtered(request, colors, limit, cursor_ts, cursor_id)
+        # 색·태그·전역태그는 개인메타(로컬 전용)라 서버가 못 거른다 → 허브가 그 필터 뺀 요청으로 받아
+        # overlay(내 색·태그+shadow) 후 로컬 필터. 나머지(media_type·folder 등)는 서버가 그대로 거름.
+        if colors or tags or auto_tags:
+            data = _team_local_filtered(request, colors, tags, auto_tags, limit, cursor_ts, cursor_id)
         else:
             data = _overlay_personal_meta(_proxy.proxy_get("/api/generations", request), request)
         # 백그라운드 prewarm: 팀 항목 미디어는 원격 URL 이라 첫 표시 때 보는 PC 가 받아 리사이즈 → 느림.
