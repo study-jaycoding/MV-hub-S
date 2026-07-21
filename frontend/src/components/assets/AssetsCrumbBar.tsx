@@ -105,9 +105,11 @@ export function AssetsCrumbBar({
           size={tagPanelSize}
           onHeadMouseDown={onTagHeadMouseDown}
           onClear={onClearTags}
+          onClose={onToggleTagPanel}
           onSelectTag={onSelectTag}
           onDeleteTag={onDeleteTag}
           deleteTitle="이 태그를 모든 파일에서 삭제"
+          orderKey="ch.assets.tagOrder"
         />
       )}
 

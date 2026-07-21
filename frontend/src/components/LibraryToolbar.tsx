@@ -210,8 +210,10 @@ export function LibraryToolbar({
               size={tagSize}
               onHeadMouseDown={onTagHeadDown}
               onClear={onClearTags}
+              onClose={onToggleTagPanel}
               onSelectTag={onSelectTag}
               onDeleteTag={onDeleteTag}
+              orderKey="ch.lib.tagOrder"
             />
           )}
         </div>

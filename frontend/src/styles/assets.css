@@ -290,6 +290,16 @@
   cursor: move; user-select: none;
 }
 .tag-panel-clear { margin-left: auto; background: transparent; border: none; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+/* 제목이 여백을 밀어내 우측 그룹(필터 해제 + 닫기)을 항상 오른쪽에 붙인다. */
+.tag-panel-title { margin-right: auto; }
+/* 창 닫기 ✕ — 필터는 건드리지 않고 패널만 닫는다('필터 해제'는 별도). */
+.tag-panel-close {
+  width: 22px; height: 22px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; border-radius: 6px;
+  color: var(--muted2); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.tag-panel-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
 .tag-panel-list {
   flex: 1; padding: 10px; overflow-y: auto;
   display: flex; flex-wrap: wrap; gap: 7px; align-content: flex-start;
@@ -388,6 +398,11 @@
 .tag-pill-name { background: transparent; border: none; color: var(--text); font-size: 12px; padding: 5px 4px 5px 11px; cursor: pointer; }
 .tag-pill-x { background: transparent; border: none; color: var(--muted2); font-size: 10px; padding: 5px 9px 5px 5px; cursor: pointer; }
 .tag-pill-x:hover { color: #ff6b6b; }
+/* 드래그로 순서 변경 — 잡을 수 있음 표시(grab), 끄는 중 반투명, 놓을 자리 왼쪽에 accent 선. */
+.tag-pill.draggable { cursor: grab; }
+.tag-pill.draggable:active { cursor: grabbing; }
+.tag-pill.dragging { opacity: 0.45; }
+.tag-pill.drop-over { box-shadow: -3px 0 0 -1px var(--accent); }
 
 /* ── 메이슨리(핀터레스트형) 그리드 ── */
 .assets-masonry {
