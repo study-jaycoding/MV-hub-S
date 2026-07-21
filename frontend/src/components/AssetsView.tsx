@@ -89,7 +89,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       return n;
     });
   }, []);
-  const [scale, setScale] = useState(() => Number(LS.get("scale", "1")) || 1);
+  // 생성탭과 동일 범위(0.7~1.7)로 clamp — 예전에 저장된 0.6 이하 값이면 카드가 생성탭보다 작게 떠서 겹침.
+  const [scale, setScale] = useState(() =>
+    Math.min(1.7, Math.max(0.7, Number(LS.get("scale", "1")) || 1)),
+  );
   const [layout, setLayout] = useState<"grid" | "list">(() =>
     LS.get("layout", "grid") === "list" ? "list" : "grid",
   );

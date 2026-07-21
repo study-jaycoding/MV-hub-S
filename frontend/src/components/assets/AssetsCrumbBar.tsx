@@ -193,8 +193,8 @@ export function AssetsCrumbBar({
           onToggleFit={onToggleFit}
           scale={scale}
           onScale={onScale}
-          scaleMin={0.6}
-          scaleMax={1.8}
+          scaleMin={0.7}
+          scaleMax={1.7}
           sizeTitle="크기"
           layout={layout}
           groupByDate={groupByDate}
