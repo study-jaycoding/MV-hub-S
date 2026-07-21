@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { displayThumb } from "../../lib/media";
 import type { Generation } from "../../types";
 
 type Mention = { kind: "@" | "#"; query: string };
@@ -115,7 +116,7 @@ export function SpotlightMentionPicker({
                     preload="auto"
                   />
                 ) : item.media ? (
-                  <img src={item.media} alt="" />
+                  <img src={displayThumb(item.media) || undefined} alt="" />
                 ) : (
                   <span className="sl-mention-ph">{item.type === "audio" ? "🎵" : "🖼"}</span>
                 )}
@@ -141,7 +142,11 @@ export function SpotlightMentionPicker({
                     onSelectSource(source);
                   }}
                 >
-                  {thumb ? <img src={thumb} alt="" /> : <span className="sl-mention-ph" />}
+                  {thumb ? (
+                    <img src={displayThumb(thumb) || undefined} alt="" />
+                  ) : (
+                    <span className="sl-mention-ph" />
+                  )}
                   <span className="sl-mention-name">@{source.source_name || "source"}</span>
                   <span className="sl-mention-tags">
                     {source.tags.map((tag) => (

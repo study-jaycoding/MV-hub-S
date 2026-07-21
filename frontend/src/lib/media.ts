@@ -61,6 +61,31 @@ export function thumbUrl(path: string | null | undefined, size = 256): string | 
   return api.thumbOrRaw(path, size);
 }
 
+// display 전용 썸네일 URL — '볼 때'는 작은 캐시본으로 빠르고 안 깨지게. 저장값(원본)은 그대로 두고
+// 렌더 시점에만 프록시화한다(원칙: display=캐시썸네일 / 실제사용·다운로드=원본).
+//  · asset:proj|path 토큰 → 에셋 썸네일(백엔드 리사이즈, 영상은 첫 프레임 포스터)
+//  · /media·http(s) → media-thumb 프록시(리사이즈+디스크캐시+same-origin) — 원격 만료·교차출처 깨짐 방지
+//  · 이미 프록시(/api/…) URL 이면 그대로(중복 래핑·옛 저장값 호환), 오디오/빈값 → null
+export function displayThumb(pathOrToken: string | null | undefined, size = 256): string | null {
+  if (!pathOrToken) return null;
+  if (pathOrToken.startsWith("asset:")) {
+    const [proj, path] = pathOrToken.slice(6).split("|");
+    return proj && path ? api.assetThumbUrl(proj, path, size) : null;
+  }
+  // /api/assets/file(원본 파일 서빙)는 '이미 프록시'가 아니라 원본 → 에셋 썸네일로 변환(원본 통째 디코딩 방지).
+  if (pathOrToken.startsWith("/api/assets/file")) {
+    try {
+      const u = new URL(pathOrToken, window.location.origin);
+      const proj = u.searchParams.get("project");
+      const path = u.searchParams.get("path");
+      if (proj && path) return api.assetThumbUrl(proj, path, size);
+    } catch {
+      /* 파싱 실패 시 아래 폴백 */
+    }
+  }
+  return thumbUrl(pathOrToken, size); // /media·http → 프록시, /api/assets/thumb·/api/media-thumb 등은 raw 유지
+}
+
 // 생성본의 대표 썸네일 URL(없으면 null). 로컬 /media·공유받은 원격 URL 모두 리사이즈 썸네일로 변환.
 export function thumbOf(g: Generation, size = 256): string | null {
   const a = g.assets[0];

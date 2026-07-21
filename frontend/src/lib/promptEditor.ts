@@ -1,4 +1,5 @@
 import { DRAG_TYPES } from "./dragTypes";
+import { displayThumb } from "./media";
 import { SEEDANCE_TOKEN_SRC, seedanceAtTokenKind, seedanceCanonToken } from "./seedancePrompt";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -99,7 +100,7 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
   let media: HTMLElement;
   if (ref.thumb) {
     const img = document.createElement("img");
-    img.src = ref.thumb;
+    img.src = displayThumb(ref.thumb) || ref.thumb; // display=캐시 썸네일(원격 깨짐 방지), 실패 시 원본
     img.alt = "";
     img.draggable = false; // 이미지 자체 네이티브 드래그 방지(칩 단위로만 드래그)
     media = img;
@@ -282,7 +283,7 @@ export function buildRefTokenEl(token: string, kind: string, media?: string, mis
       m = v;
     } else {
       const img = document.createElement("img");
-      img.src = media!;
+      img.src = displayThumb(media!) || media!; // display=캐시 썸네일, 실패 시 원본
       img.alt = "";
       img.draggable = false;
       m = img;

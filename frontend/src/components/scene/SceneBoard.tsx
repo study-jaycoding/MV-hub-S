@@ -33,7 +33,7 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { TagEditor } from "../TagEditor";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { thumbOf } from "../../lib/media";
+import { displayThumb, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 
@@ -43,11 +43,11 @@ const CARD_H = 130;
 // 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
 // asset:proj|path 토큰이면 포스터(assetThumbUrl, 백엔드 첫 프레임)로 바꿔 이미지로 표시한다.
 function refThumbSrc(r: SceneRef): string | undefined {
-  if (r.type === "video" && r.file_path.startsWith("asset:")) {
-    const [proj, path] = r.file_path.slice(6).split("|");
-    if (proj && path) return api.assetThumbUrl(proj, path, 256);
-  }
-  return r.thumb || undefined;
+  if (r.type === "audio") return undefined; // 오디오는 썸네일이 없다 → placeholder(415 깨짐 방지)
+  // display=캐시 썸네일. 영상은 원본 파일을 넘겨 백엔드가 포스터를 만들고(썸네일이 영상 파일 URL이면
+  // <img>로는 깨짐), 이미지는 썸네일 우선. displayThumb 가 asset 토큰·원격 URL 모두 프록시로 통일.
+  const raw = r.type === "video" ? r.file_path : r.thumb || r.file_path;
+  return displayThumb(raw, 256) ?? undefined;
 }
 
 interface Props {

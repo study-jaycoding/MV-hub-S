@@ -1,3 +1,4 @@
+import { displayThumb } from "../../lib/media";
 import { buildPromptParts, refSrc } from "../../lib/promptParts";
 import type { PreviewTarget, Reference } from "../../types";
 
@@ -46,7 +47,7 @@ export function InlinePromptRefs({
               });
             }}
           >
-            {part.ref.thumb && <img src={part.ref.thumb} alt="" />}
+            {part.ref.thumb && <img src={displayThumb(part.ref.thumb) || undefined} alt="" />}
             <span className="inline-ref-name">{part.ref.name}</span>
           </button>
         ),

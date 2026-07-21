@@ -202,6 +202,8 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
                     muted
                     preload="metadata"
                   />
+                ) : r.type === "audio" ? (
+                  <span className="info-source-ph">🎵</span>
                 ) : (
                   <img
                     src={displayThumb(r.thumbnail_path || r.file_path) || undefined}
