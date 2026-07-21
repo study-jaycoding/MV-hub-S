@@ -179,7 +179,7 @@
 /* ⚠️ 위 '.assets-crumb button' 포괄 규칙(accent 색·font:inherit·hover 밑줄)이 그 안에 든
    '등록된 태그' 패널 칩 버튼까지 물들여 생성탭과 다르게(초록·밑줄·폰트변형) 보이던 누수 차단 →
    태그 칩은 공용 .tag-pill 스타일로 복구(생성탭과 동일). */
-.assets-crumb .tag-pill-name { color: var(--text); font-size: 12px; font-weight: 400; }
+.assets-crumb .tag-pill-name { color: var(--text); font-size: var(--tag-fs, 12px); font-weight: 400; }
 .assets-crumb .tag-pill-name:hover { text-decoration: none; }
 .assets-crumb .tag-pill-x { color: var(--muted2); font-size: 10px; }
 .assets-crumb .tag-pill-x:hover { color: #ff6b6b; text-decoration: none; }
@@ -290,6 +290,14 @@
   cursor: move; user-select: none;
 }
 .tag-panel-clear { margin-left: auto; background: transparent; border: none; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+.tag-fs { flex: 0 0 auto; display: flex; gap: 3px; }
+.tag-fs button {
+  background: transparent; border: 1px solid var(--border2); color: var(--muted2);
+  border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer;
+  padding: 1px 6px; line-height: 1.4;
+}
+.tag-fs button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.tag-fs button:disabled { opacity: 0.35; cursor: default; }
 /* 제목이 여백을 밀어내 우측 그룹(필터 해제 + 닫기)을 항상 오른쪽에 붙인다. */
 .tag-panel-title { margin-right: auto; }
 /* 창 닫기 ✕ — 필터는 건드리지 않고 패널만 닫는다('필터 해제'는 별도). */
@@ -324,6 +332,14 @@
   flex: 1; min-width: 0; color: var(--muted2); font-weight: 500; font-size: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.cmt-fs { flex: 0 0 auto; display: flex; gap: 3px; }
+.cmt-fs button {
+  background: transparent; border: 1px solid var(--border2); color: var(--muted2);
+  border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer;
+  padding: 1px 6px; line-height: 1.4;
+}
+.cmt-fs button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.cmt-fs button:disabled { opacity: 0.35; cursor: default; }
 .cmt-x { background: transparent; border: none; color: var(--muted2); font-size: 12px; cursor: pointer; }
 .cmt-x:hover { color: var(--text); }
 .cmt-thread {
@@ -339,7 +355,7 @@
 .cmt-acts button { background: transparent; border: none; color: var(--muted2); font-size: 11px; padding: 0; cursor: pointer; }
 .cmt-acts button:hover { color: var(--text); }
 .cmt-lock { font-size: 11px; opacity: 0.7; }
-.cmt-text { font-size: 13px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.cmt-text { font-size: var(--cmt-fs, 13px); line-height: 1.5; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 .cmt-mini { display: flex; gap: 5px; margin-top: 4px; }
 .cmt-mini input {
   flex: 1; min-width: 0; height: 26px; border-radius: 7px;
@@ -395,7 +411,7 @@
 /* 선택되면 흰 글씨 → 테마색(accent). 어셋 패널의 흰색 강제(.assets-crumb .tag-pill-name)보다 뒤라 우선. */
 .tag-pill.on .tag-pill-name { color: var(--accent); }
 .assets-crumb .tag-pill.on .tag-pill-name { color: var(--accent); }
-.tag-pill-name { background: transparent; border: none; color: var(--text); font-size: 12px; padding: 5px 4px 5px 11px; cursor: pointer; }
+.tag-pill-name { background: transparent; border: none; color: var(--text); font-size: var(--tag-fs, 12px); padding: 5px 4px 5px 11px; cursor: pointer; }
 .tag-pill-x { background: transparent; border: none; color: var(--muted2); font-size: 10px; padding: 5px 9px 5px 5px; cursor: pointer; }
 .tag-pill-x:hover { color: #ff6b6b; }
 /* 드래그로 순서 변경 — 잡을 수 있음 표시(grab), 끄는 중 반투명, 놓을 자리 왼쪽에 accent 선. */

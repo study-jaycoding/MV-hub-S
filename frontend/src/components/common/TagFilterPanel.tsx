@@ -1,6 +1,21 @@
-import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, Ref } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  MouseEvent as ReactMouseEvent,
+  Ref,
+} from "react";
 import { useMemo, useState } from "react";
 import { loadJSON, saveJSON } from "../../lib/storage";
+
+// 태그 글씨 크기(px) — 사용자별 localStorage 저장, 모든 태그창 공통 적용.
+const FS_KEY = "ch.tag.fontPx";
+const FS_MIN = 10;
+const FS_MAX = 20;
+const FS_DEF = 12;
+function loadFontPx(): number {
+  const v = loadJSON<number>(FS_KEY);
+  return typeof v === "number" && v >= FS_MIN && v <= FS_MAX ? v : FS_DEF;
+}
 
 interface Props {
   tags: string[];
@@ -67,16 +82,26 @@ export function TagFilterPanel({
   };
   const draggable = !!orderKey;
 
+  const [fontPx, setFontPx] = useState<number>(loadFontPx);
+  const setFs = (px: number) => {
+    const n = Math.max(FS_MIN, Math.min(FS_MAX, px));
+    setFontPx(n);
+    saveJSON(FS_KEY, n);
+  };
+
   return (
     <div
       className="tag-panel"
       ref={panelRef}
-      style={{
-        left: panelPos.x,
-        top: panelPos.y,
-        width: size?.w,
-        height: size?.h,
-      }}
+      style={
+        {
+          left: panelPos.x,
+          top: panelPos.y,
+          width: size?.w,
+          height: size?.h,
+          "--tag-fs": `${fontPx}px`,
+        } as CSSProperties
+      }
     >
       <div className="tag-panel-head" onMouseDown={onHeadMouseDown}>
         <span className="tag-panel-title">
@@ -91,6 +116,14 @@ export function TagFilterPanel({
             필터 해제
           </button>
         )}
+        <div className="tag-fs" onMouseDown={(e) => e.stopPropagation()}>
+          <button title="글씨 작게" onClick={() => setFs(fontPx - 1)} disabled={fontPx <= FS_MIN}>
+            A−
+          </button>
+          <button title="글씨 크게" onClick={() => setFs(fontPx + 1)} disabled={fontPx >= FS_MAX}>
+            A+
+          </button>
+        </div>
         {onClose && (
           <button
             className="tag-panel-close"

@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, RefObject } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
+
+// 코멘트 본문 글씨 크기(px) — 사용자별 localStorage 저장, 패널마다 공통 적용.
+const FS_KEY = "ch.cmt.fontPx";
+const FS_MIN = 11;
+const FS_MAX = 24;
+const FS_DEF = 13;
+function loadFontPx(): number {
+  const v = Number(localStorage.getItem(FS_KEY));
+  return v >= FS_MIN && v <= FS_MAX ? v : FS_DEF;
+}
 
 export interface CommentPanelItem {
   id: string;
@@ -48,6 +58,16 @@ export function CommentPanel<T extends CommentPanelItem>({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
+  const [fontPx, setFontPx] = useState<number>(loadFontPx);
+  const setFs = (px: number) => {
+    const n = Math.max(FS_MIN, Math.min(FS_MAX, px));
+    setFontPx(n);
+    try {
+      localStorage.setItem(FS_KEY, String(n));
+    } catch {
+      /* localStorage 불가 환경 무시 */
+    }
+  };
   const { byParent, byId, roots, descendantsOf } = useMemo(
     () => buildCommentTree(comments),
     [comments],
@@ -159,18 +179,29 @@ export function CommentPanel<T extends CommentPanelItem>({
     <div
       className="cmt-panel"
       ref={panelRef}
-      style={{
-        left: (pos || fallbackPos).x,
-        top: (pos || fallbackPos).y,
-        width: size?.w,
-        height: size?.h,
-      }}
+      style={
+        {
+          left: (pos || fallbackPos).x,
+          top: (pos || fallbackPos).y,
+          width: size?.w,
+          height: size?.h,
+          "--cmt-fs": `${fontPx}px`,
+        } as CSSProperties
+      }
     >
       <div className="cmt-head" onMouseDown={(e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
           💬 코멘트 <span className="muted">({comments.length})</span>
         </span>
         <span className="cmt-file">{label}</span>
+        <div className="cmt-fs" onMouseDown={(e) => e.stopPropagation()}>
+          <button title="글씨 작게" onClick={() => setFs(fontPx - 1)} disabled={fontPx <= FS_MIN}>
+            A−
+          </button>
+          <button title="글씨 크게" onClick={() => setFs(fontPx + 1)} disabled={fontPx >= FS_MAX}>
+            A+
+          </button>
+        </div>
         <button className="cmt-x" onMouseDown={(e) => e.stopPropagation()} onClick={onClose}>
           ✕
         </button>
