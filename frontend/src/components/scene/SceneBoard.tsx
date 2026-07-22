@@ -201,7 +201,8 @@ export function SceneBoard({
     if (sceneIdRef.current !== scene.id) {
       sceneIdRef.current = scene.id;
       setSelected(new Set());
-      undoStackRef.current = []; // 다른 씬으로 넘어가면 되돌리기 히스토리도 새로.
+      undoStackRef.current = []; // 다른 씬으로 넘어가면 되돌리기·다시실행 히스토리도 새로.
+      redoStackRef.current = [];
     }
     setCards(scene.cards);
     setEdges(scene.edges);
@@ -228,8 +229,9 @@ export function SceneBoard({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  // ── 되돌리기(Ctrl+Z) 히스토리 ── persist 가 유일한 커밋 지점이라 여기 한 곳에서 직전 상태를 쌓는다.
+  // ── 되돌리기(Ctrl+Z)·다시실행(Ctrl+Shift+Z) 히스토리 ── persist 가 유일한 커밋 지점이라 여기 한 곳에서 쌓는다.
   const undoStackRef = useRef<Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>>([]);
+  const redoStackRef = useRef<Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>>([]);
   const lastCommitRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>({
     cards: scene.cards,
     edges: scene.edges,
@@ -354,19 +356,32 @@ export function SceneBoard({
     // 되돌리기용: 직전 커밋 상태를 스택에 쌓고(상한 200), 이번 상태를 최신 커밋으로 기록.
     undoStackRef.current.push(lastCommitRef.current);
     if (undoStackRef.current.length > 200) undoStackRef.current.shift();
+    redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
     lastCommitRef.current = { cards: nextCards, edges: nextEdges, groups: nextGroups };
     onChangeRef.current({ cards: nextCards, edges: nextEdges, groups: nextGroups });
   };
-  // Ctrl+Z — 직전 커밋 상태로 복원(redo 는 요청 범위 밖이라 없음). undo 자체는 히스토리에 안 쌓는다.
+  // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
+  const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
+    lastCommitRef.current = s;
+    setCards(s.cards);
+    setEdges(s.edges);
+    setGroups(s.groups);
+    setSelected(new Set());
+    onChangeRef.current(s); // 부모(씬 저장)에도 반영
+  };
+  // Ctrl+Z — 직전 커밋으로 복원. 현재 상태는 redo 스택으로 넘겨 Ctrl+Shift+Z 로 되돌릴 수 있게.
   const undo = () => {
     const prev = undoStackRef.current.pop();
     if (!prev) return;
-    lastCommitRef.current = prev;
-    setCards(prev.cards);
-    setEdges(prev.edges);
-    setGroups(prev.groups);
-    setSelected(new Set());
-    onChangeRef.current(prev); // 부모(씬 저장)에도 반영
+    redoStackRef.current.push(lastCommitRef.current);
+    restoreState(prev);
+  };
+  // Ctrl+Shift+Z — 되돌린 것을 다시 실행. 현재 상태는 undo 스택으로 되돌려 다시 Ctrl+Z 가능하게.
+  const redo = () => {
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current.push(lastCommitRef.current);
+    restoreState(next);
   };
 
   // ── 선택된 단일 생성 카드를 하단 프롬프트에 바인딩(App 에 통지) ──
@@ -960,10 +975,11 @@ export function SceneBoard({
         return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
       }
       const sel = selectedRef.current;
-      // Ctrl+Z = 되돌리기. Shift/Alt 조합은 제외(브라우저 redo·기타와 충돌 방지, redo 는 미지원).
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "z" || e.key === "Z")) {
+      // Ctrl+Z = 되돌리기, Ctrl+Shift+Z = 다시 실행(redo). Alt 조합은 제외.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
-        undo();
+        if (e.shiftKey) redo();
+        else undo();
         return;
       }
       // Ctrl+G = 선택 카드 그룹 · Ctrl+Shift+G = 그룹 해제. (mod+g 라 g=초록색 단축키와 충돌 없음)
