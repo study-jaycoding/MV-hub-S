@@ -426,12 +426,16 @@ def _load_cost_cache() -> None:
                 pass
 
 
-def _save_cost_cache() -> None:
+def _serialize_cost_cache() -> str:
+    """메인(호출) 스레드에서 dict 스냅샷을 직렬화 — to_thread 안에서 _COST_CACHE 를 순회하면
+    다른 코루틴의 갱신과 'dict changed during iteration' 경쟁이 날 수 있어 여기서 미리 만든다."""
+    return json.dumps({k: [c, t] for k, (c, t) in _COST_CACHE.items()}, ensure_ascii=False)
+
+
+def _write_cost_cache(payload: str) -> None:
+    """직렬화된 문자열만 디스크에 원자적 저장 — 호출부가 asyncio.to_thread 로 실행(루프 비블로킹)."""
     try:
-        atomic_write_text(
-            _COST_CACHE_FILE,
-            json.dumps({k: [c, t] for k, (c, t) in _COST_CACHE.items()}, ensure_ascii=False),
-        )
+        atomic_write_text(_COST_CACHE_FILE, payload)
     except OSError:
         pass
 
@@ -486,7 +490,8 @@ async def estimate_cost(
     if len(_COST_CACHE) >= _COST_CACHE_MAX:
         _COST_CACHE.clear()  # 소프트 캡(드묾)
     _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
-    _save_cost_cache()
+    payload = _serialize_cost_cache()  # dict 스냅샷은 메인에서(race 방지)
+    await asyncio.to_thread(_write_cost_cache, payload)  # 디스크 쓰기만 스레드로(루프 비블로킹)
     return {"credits": credits_int}
 
 

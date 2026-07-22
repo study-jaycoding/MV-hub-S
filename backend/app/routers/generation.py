@@ -379,15 +379,22 @@ async def trash_hf_missing(request: Request):
             return gen_id, exists  # True/False/None(확인불가)
 
     results = await asyncio.gather(*(check(g, j) for g, j in gens))
-    trashed = 0
-    for gen_id, exists in results:
-        if exists is None:
-            continue  # 확인 불가 → 그대로 둠
-        if exists:
-            repo.set_hf_missing(gen_id, False)  # 재등장 → 흐림 해제
-        else:
-            repo.delete_generation(gen_id)  # 힉스에서 삭제됨 → 휴지통행(soft delete)
-            trashed += 1
+
+    # DB 쓰기(set_hf_missing/delete_generation = BEGIN IMMEDIATE·ATTACH·다테이블)는 동기라
+    # async 라우트 루프에서 직접 돌리면 이벤트루프를 막는다 → 한 번에 스레드로(syncer 와 동일).
+    def _apply_local(rs):
+        n = 0
+        for gid, ex in rs:
+            if ex is None:
+                continue  # 확인 불가 → 그대로 둠
+            if ex:
+                repo.set_hf_missing(gid, False)  # 재등장 → 흐림 해제
+            else:
+                repo.delete_generation(gid)  # 힉스에서 삭제됨 → 휴지통행(soft delete)
+                n += 1
+        return n
+
+    trashed = await asyncio.to_thread(_apply_local, results)
 
     # ★서버 공유본까지 검토(로컬 우선 확장): 공유했다가 원 작성자 HF 에서 삭제된 건 서버에만 남아
     # 로컬 검토망에 안 걸린다. 프록시(서버 연결) 있으면 서버 후보를 받아 '내 것'만 CLI 로 검증하고,

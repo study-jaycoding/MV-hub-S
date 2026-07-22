@@ -780,16 +780,12 @@ def reconcile_duplicates() -> int:
         merged = 0
         for grp in groups:
             ids = [x for x in (grp["ids"] or "").split(",") if x]
-            rows = [
-                r
-                for r in (
-                    conn.execute(
-                        "SELECT id, job_id, origin FROM generation WHERE id=?", (gid,)
-                    ).fetchone()
-                    for gid in ids
-                )
-                if r
-            ]
+            if not ids:
+                continue
+            ph = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"SELECT id, job_id, origin FROM generation WHERE id IN ({ph})", ids
+            ).fetchall()
             # 동기화본 vs 로컬: id==job_id 좌표가 아니라 명시 마커(origin)로 판별(0a). NULL=레거시→local.
             synced = [r for r in rows if (r["origin"] or "local") == "synced"]
             local = [r for r in rows if (r["origin"] or "local") != "synced"]
