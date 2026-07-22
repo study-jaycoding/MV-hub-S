@@ -305,11 +305,14 @@ export function SceneBoard({
   }, []);
   useLayoutEffect(applyTransform);
 
-  // 카드 크기(캔버스 좌표). 레퍼런스는 고정폭·측정높이(내용에 맞춤), 그 외(생성/텍스트/모델/리스트)는
-  // 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
-  const widthOf = (c: SceneCard) => (c.kind === "reference" ? CARD_W : c.w ?? CARD_W);
+  // 카드 크기(캔버스 좌표). 레퍼런스·Input·Output 은 고정폭·측정높이(내용에 맞춰 컴팩트, 리사이즈 없음),
+  // 그 외(생성/텍스트/모델/리스트)는 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
+  const isAutoCard = (c: SceneCard) =>
+    c.kind === "reference" || c.kind === "output" || c.kind === "input";
+  const widthOf = (c: SceneCard) =>
+    c.kind === "reference" ? CARD_W : c.kind === "output" || c.kind === "input" ? 150 : c.w ?? CARD_W;
   const heightOf = (c: SceneCard) =>
-    c.kind === "reference" ? heightsRef.current[c.id] || CARD_H : c.h ?? CARD_H;
+    isAutoCard(c) ? heightsRef.current[c.id] || CARD_H : c.h ?? CARD_H;
 
   // ── f 키 프레이밍 · 미니맵 이동 공용 카메라 유틸 ──
   // 카드 한 장의 바깥 사각형(캔버스 좌표). 레퍼런스는 실제 측정 높이, 생성은 고정.
@@ -884,9 +887,9 @@ export function SceneBoard({
             : kind === "view"
               ? { ...base, kind: "view" }
               : kind === "output"
-                ? { ...base, kind: "output", text: "", w: 140, h: 74 }
+                ? { ...base, kind: "output", text: "" }
                 : kind === "input"
-                  ? { ...base, kind: "input", w: 140, h: 74 }
+                  ? { ...base, kind: "input" }
                   : kind === "head"
                     ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
                     : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
@@ -2156,6 +2159,7 @@ export function SceneBoard({
         {visibleCards.map((card) => {
           const sel = selected.has(card.id);
           const isRef = card.kind === "reference";
+          const autoH = isAutoCard(card); // 레퍼런스·Input·Output = 내용에 맞춘 자동 높이(고정 height 미지정)
           const isGen = card.kind === "generation";
           const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
@@ -2178,7 +2182,7 @@ export function SceneBoard({
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
-              style={{ left: card.x, top: card.y, width: widthOf(card), ...(isRef ? {} : { height: heightOf(card) }) }}
+              style={{ left: card.x, top: card.y, width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }}
               // 레퍼런스=refs 팝업, View=재생. (모델 더블클릭 모달은 후속 단계) 생성 카드는 각자 처리.
               onDoubleClick={
                 isRef

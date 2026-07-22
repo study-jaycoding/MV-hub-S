@@ -582,11 +582,16 @@
 .scene-portnode-body {
   flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 6px 8px; min-width: 0;
 }
-/* 본문 = 입력된 값(채널 이름)만. 타입은 색(헤더·틴트)으로만 구분. */
+/* 본문 = 입력된 값(채널 이름) 라벨(알약). Output=왼쪽(입력 포트 쪽)·Input=오른쪽(출력 포트 쪽)으로 흐름 방향 직관화. */
 .scene-portnode-val {
-  font-size: 14px; font-weight: 800; color: var(--text); text-align: center;
+  display: inline-flex; align-items: center; max-width: 100%;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 13px; font-weight: 800; color: var(--text);
+  background: color-mix(in srgb, var(--oc) 22%, transparent); border: 1px solid var(--oc);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.scene-portnode.out .scene-portnode-val { align-self: flex-start; }
+.scene-portnode.in .scene-portnode-val { align-self: flex-end; }
 .scene-portnode-valph { color: var(--muted); font-weight: 600; font-size: 12px; }
 /* 카드 아래 편집 툴바(선택 시) — 이름 입력/출력 드롭다운. 생성카드 Generate 툴바와 같은 위치·스타일. */
 .scene-portedit {
