@@ -8,6 +8,7 @@ import {
   resolveEdgeRole,
   collectListInputs,
   collectViewGenCardIds,
+  collectViewTexts,
   canConnect,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -105,10 +106,10 @@ describe("resolveEdgeRole", () => {
     const e: SceneEdge = { id: "e", from: "R", to: "G" };
     expect(resolveEdgeRole(e, byId(cards), {})).toBe("ref");
   });
-  it("타깃이 list 노드 → 'list'", () => {
-    const cards = [node("G", "generation"), node("L", "list")];
-    const e: SceneEdge = { id: "e", from: "G", to: "L" };
-    expect(resolveEdgeRole(e, byId(cards), {})).toBe("list");
+  it("생성물 → list = 'list', 텍스트 → list = 'text'(소스색 우선=보라)", () => {
+    const cards = [node("G", "generation"), node("T", "text"), node("L", "list")];
+    expect(resolveEdgeRole({ id: "e1", from: "G", to: "L" }, byId(cards), {})).toBe("list");
+    expect(resolveEdgeRole({ id: "e2", from: "T", to: "L" }, byId(cards), {})).toBe("text");
   });
   it("생성물을 ref 로 사용한 gen→gen → 'ref', 아니면 'lineage'", () => {
     const S = gen("S");
@@ -221,7 +222,7 @@ describe("collectViewGenCardIds", () => {
     ];
     expect(collectViewGenCardIds("V", cards, edges)).toEqual(["G1", "G2", "G3"]);
   });
-  it("text-list 는 무시(View 는 미디어 전용)", () => {
+  it("text-list 는 미디어 수집에서 무시(collectViewGenCardIds 는 생성물만)", () => {
     const cards = byId([
       node("V", "view"),
       node("L", "list"),
@@ -232,6 +233,42 @@ describe("collectViewGenCardIds", () => {
       { id: "e2", from: "T", to: "L" },
     ];
     expect(collectViewGenCardIds("V", cards, edges)).toEqual([]);
+  });
+});
+
+describe("collectViewTexts", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("text 직접 연결 + text-list 를 순서대로 수집", () => {
+    const cards = byId([
+      node("V", "view"),
+      node("T1", "text", { y: 0, text: "hello" }),
+      node("L", "list", { y: 10 }),
+      node("T2", "text", { y: 100, text: "a" }),
+      node("T3", "text", { y: 200, text: "b" }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "T1", to: "V" },
+      { id: "e2", from: "L", to: "V" },
+      { id: "e3", from: "T2", to: "L" },
+      { id: "e4", from: "T3", to: "L" },
+    ];
+    expect(collectViewTexts("V", cards, edges)).toEqual(["hello", "a\nb"]);
+  });
+  it("생성물/빈 텍스트는 제외", () => {
+    const cards = byId([node("V", "view"), node("G", "generation"), node("T", "text", { text: "  " })]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G", to: "V" },
+      { id: "e2", from: "T", to: "V" },
+    ];
+    expect(collectViewTexts("V", cards, edges)).toEqual([]);
   });
 });
 
@@ -251,11 +288,12 @@ describe("canConnect", () => {
     expect(canConnect(c("T", "text"), L)).toBe(true);
     expect(canConnect(c("M", "model"), L)).toBe(false);
   });
-  it("view 는 generation/list 만", () => {
+  it("view 는 generation/list/text (미디어+텍스트 뷰어)", () => {
     const V = c("V", "view");
     expect(canConnect(c("G", "generation"), V)).toBe(true);
     expect(canConnect(c("L", "list"), V)).toBe(true);
-    expect(canConnect(c("T", "text"), V)).toBe(false);
+    expect(canConnect(c("T", "text"), V)).toBe(true);
+    expect(canConnect(c("M", "model"), V)).toBe(false);
   });
   it("text/model/reference 는 입력 없음, 자기연결 금지", () => {
     expect(canConnect(c("A", "generation"), c("B", "text"))).toBe(false);

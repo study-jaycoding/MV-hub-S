@@ -14,7 +14,7 @@ export function canConnect(from: SceneCard, to: SceneCard): boolean {
     case "list":
       return from.kind === "generation" || from.kind === "text";
     case "view":
-      return from.kind === "generation" || from.kind === "list";
+      return from.kind === "generation" || from.kind === "list" || from.kind === "text";
     default:
       return false;
   }
@@ -93,6 +93,30 @@ export function collectViewGenCardIds(
   return out;
 }
 
+// View 노드가 표시할 텍스트 블록들(순서 보존) — text 노드 직접 연결 + text-list 를 통해 들어온 것.
+// 미디어(생성물)와 별개로 수집한다. View 는 생성물이 있으면 재생, 텍스트가 있으면 텍스트를 보여준다.
+export function collectViewTexts(
+  viewId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): string[] {
+  const srcs = edges
+    .filter((e) => e.to === viewId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => !!c)
+    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  const out: string[] = [];
+  for (const c of srcs) {
+    if (c.kind === "text") {
+      if ((c.text || "").trim()) out.push(c.text || "");
+    } else if (c.kind === "list") {
+      const li = collectListInputs(c.id, cardsById, edges);
+      if (li.kind === "text" && li.text.trim()) out.push(li.text);
+    }
+  }
+  return out;
+}
+
 // 연결의 역할 판정(순수) — 생성카드 입력 레인·엣지 색의 단일 근거. edge.role 이 명시돼 있으면 그대로,
 // 아니면 소스/타깃 kind 로 추론(기존 저장분 하위호환). gen→gen 은 refParents/refs 로 'ref 사용'과 '계보'를 구분.
 //  · model 노드 → 'model'(주황)  · text 노드 → 'text'(노랑)  · reference 카드 → 'ref'(파랑)
@@ -105,10 +129,11 @@ export function resolveEdgeRole(
   if (edge.role) return edge.role;
   const from = cardsById.get(edge.from);
   const to = cardsById.get(edge.to);
-  if (to?.kind === "list") return "list";
+  // 소스 종류를 먼저 본다 — 텍스트→리스트여도 '텍스트'(보라)로. 모델/텍스트/레퍼런스는 소스색 우선.
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "reference") return "ref";
+  if (to?.kind === "list") return "list"; // 생성물 → 리스트 수집
   if (from?.kind === "generation" && to) {
     const srcGens = variantIds(from);
     const byRefs = (to.refs || []).some((r) => r.source_gen_id && srcGens.includes(r.source_gen_id));

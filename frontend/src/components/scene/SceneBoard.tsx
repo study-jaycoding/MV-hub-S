@@ -34,6 +34,7 @@ import {
   classifyEdges,
   collectListInputs,
   collectViewGenCardIds,
+  collectViewTexts,
   computeBridgeEdges,
   edgePathXY,
   fanOffset,
@@ -168,6 +169,7 @@ export function SceneBoard({
   const nodePickerRef = useRef(false);
   nodePickerRef.current = !!nodePicker;
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
+  const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
@@ -902,6 +904,16 @@ export function SceneBoard({
         });
     }
     if (items.length) onPreviewRef.current?.({ ...items[0], items, index: 0 });
+  };
+  // View 열기(더블클릭·버튼 공용) — 생성물이 있으면 재생, 없고 텍스트가 있으면 텍스트 보기.
+  const openView = (viewId: string) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    if (collectViewGenCardIds(viewId, byId, edgesRef.current).length) {
+      playView(viewId);
+      return;
+    }
+    const texts = collectViewTexts(viewId, byId, edgesRef.current);
+    if (texts.length) setViewTextModal(texts);
   };
 
   // ── 색/비활성은 '대상 gid 배열'만 받는 command — 캔버스/팝업 두 레이어가 같은 로직 재사용 ──
@@ -2049,7 +2061,7 @@ export function SceneBoard({
                 isRef
                   ? () => setRefMenu(card.id)
                   : card.kind === "view"
-                    ? () => playView(card.id)
+                    ? () => openView(card.id)
                     : card.kind === "model"
                       ? () => setModelModalId(card.id)
                       : undefined
@@ -2288,26 +2300,46 @@ export function SceneBoard({
                 })()
               ) : card.kind === "view" ? (
                 (() => {
-                  // 재생 끝점 — 연결된 생성물(직접+generation-list)을 모아 미리보기로 순차 재생.
+                  // 뷰어 끝점 — 생성물(직접+generation-list)은 미리보기로 재생, 텍스트(text·text-list)는 표시.
                   const genIds = collectViewGenCardIds(card.id, cardsById, edges);
+                  const texts = collectViewTexts(card.id, cardsById, edges);
+                  const hasMedia = genIds.length > 0;
+                  const hasText = texts.length > 0;
                   return (
                     <>
                       <div className="scene-card-inner scene-viewnode">
                         <div className="scene-card-hd view">View</div>
-                        <div className="scene-viewnode-body">생성물 {genIds.length}개</div>
-                        <button
-                          className="scene-view-play"
-                          disabled={!genIds.length}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            playView(card.id);
-                          }}
-                        >
-                          ▶ 재생
-                        </button>
+                        <div className="scene-viewnode-body">
+                          {hasMedia && <div>생성물 {genIds.length}개</div>}
+                          {hasText && <div>텍스트 {texts.length}개</div>}
+                          {!hasMedia && !hasText && <div>생성물/텍스트를 연결</div>}
+                        </div>
+                        {hasMedia ? (
+                          <button
+                            className="scene-view-play"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              playView(card.id);
+                            }}
+                          >
+                            ▶ 재생
+                          </button>
+                        ) : (
+                          <button
+                            className="scene-view-play"
+                            disabled={!hasText}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewTextModal(texts);
+                            }}
+                          >
+                            📄 텍스트 보기
+                          </button>
+                        )}
                       </div>
-                      <span className="scene-port in" title="생성 카드 / 리스트를 연결" />
+                      <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트를 연결" />
                       <span
                         className="scene-resize"
                         onMouseDown={(e) => onResizeDown(e, card.id)}
@@ -2551,6 +2583,41 @@ export function SceneBoard({
             />
           );
         })()}
+
+      {/* View 텍스트 보기 모달 — 연결된 텍스트 블록들을 순서대로 표시(+전체 복사). */}
+      {viewTextModal && (
+        <div className="scene-modelmodal-backdrop" onMouseDown={() => setViewTextModal(null)}>
+          <div className="scene-textview" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="scene-modelmodal-hd">
+              <span>텍스트</span>
+              <button
+                className="scene-modelmodal-x"
+                onClick={() => setViewTextModal(null)}
+                title="닫기"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="scene-textview-body">
+              {viewTextModal.map((t, i) => (
+                <div key={i} className="scene-textview-block">
+                  {t}
+                </div>
+              ))}
+            </div>
+            <div className="scene-modelmodal-ft">
+              <button
+                onClick={() => void navigator.clipboard?.writeText(viewTextModal.join("\n\n"))}
+              >
+                전체 복사
+              </button>
+              <button className="primary" onClick={() => setViewTextModal(null)}>
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
           ★대표 지정, 더블클릭 크게보기(방향키). .scene-board 직계(줌/팬 밖). 배경클릭/Esc 닫기. */}
