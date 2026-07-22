@@ -551,6 +551,7 @@ export default function App() {
                 projects={projects}
                 unassignedCount={unassignedCount}
                 archivedCount={archivedCount}
+                armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 계보 보드 필터
                   setArmedFolder(path ? { projectId, path } : null);
@@ -702,6 +703,7 @@ export default function App() {
                 onToggleAutoTag={toggleArmedAutoTag}
                 onAddAutoTag={addAutoTag}
                 onDeleteAutoTag={removeAutoTag}
+                armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터
                   setArmedFolder(path ? { projectId, path } : null);

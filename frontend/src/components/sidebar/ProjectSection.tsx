@@ -101,6 +101,7 @@ function SidebarFolderTree({
   state,
   loading,
   counts,
+  selectedPath,
   expanded,
   onToggle,
   onSelect,
@@ -111,6 +112,9 @@ function SidebarFolderTree({
   state?: ProjectFolderEntry;
   loading?: boolean;
   counts?: Record<string, number>;
+  // 빨간 하이라이트 = 실제 생성 목적지(armedFolder). 서버 저장 selected_path 가 아니라 이걸 쓴다
+  // — 무장이 풀리면(기본 라이브러리로 감) 하이라이트도 사라져 '어디로 생성되는지'와 정확히 일치.
+  selectedPath?: string;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
@@ -141,7 +145,7 @@ function SidebarFolderTree({
     <div title={state.render_path || state.root_path}>
       <FolderTreeView
         nodes={roots}
-        selectedPath={state.selected_path || ""}
+        selectedPath={selectedPath || ""}
         expanded={expanded}
         onToggle={onToggle}
         onSelect={onSelect}
@@ -162,6 +166,7 @@ export function ProjectSection({
   activeId,
   tab = "my",
   deletedOnly,
+  armedFolder,
   onFilter,
   onViewDeleted,
   onArmFolder,
@@ -174,6 +179,8 @@ export function ProjectSection({
   activeId?: string;
   tab?: "my" | "team"; // 폴더 개수 뱃지를 현재 라이브러리 탭 기준으로 조회
   deletedOnly: boolean;
+  // 실제 생성 목적지(무장 폴더). 폴더 트리의 빨간 하이라이트를 이것에 연동 — 서버 selected_path 아님.
+  armedFolder?: { projectId: string; path: string } | null;
   onFilter: (projectId?: string) => void;
   onViewDeleted: () => void;
   // 폴더 선택 시 무장(전역변수) — 그 프로젝트로 생성 시 folder_path 로 자동 라벨링
@@ -488,6 +495,10 @@ export function ProjectSection({
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
                     counts={folderCounts[project.id]}
+                    // 무장 폴더가 이 프로젝트일 때만 빨간 하이라이트. 아니면 없음(=기본 라이브러리로 생성).
+                    selectedPath={
+                      armedFolder?.projectId === project.id ? armedFolder.path : ""
+                    }
                     expanded={expandedFolders[project.id] || new Set()}
                     onToggle={(path) => toggleProjectFolderNode(project.id, path)}
                     onSelect={(path) => selectFolder(project.id, path)}

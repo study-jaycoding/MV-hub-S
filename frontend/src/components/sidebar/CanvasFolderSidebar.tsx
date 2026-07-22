@@ -11,6 +11,7 @@ export function CanvasFolderSidebar({
   projects,
   unassignedCount,
   archivedCount,
+  armedFolder,
   onArmFolder,
   onDropToFolder,
   onDropToUnassigned,
@@ -20,6 +21,7 @@ export function CanvasFolderSidebar({
   projects: Project[];
   unassignedCount: number;
   archivedCount: number;
+  armedFolder?: { projectId: string; path: string } | null;
   onArmFolder?: (projectId: string, path: string) => void;
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
   onDropToUnassigned?: (genId: string) => void;
@@ -35,6 +37,7 @@ export function CanvasFolderSidebar({
         activeId={filters.project_id}
         tab={filters.tab === "team" ? "team" : "my"}
         deletedOnly={!!filters.deleted_only}
+        armedFolder={armedFolder}
         onFilter={(pid) =>
           onChange({
             project_id: pid,
