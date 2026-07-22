@@ -180,7 +180,9 @@ export function SceneBoard({
   nodePickerRef.current = !!nodePicker;
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
-  const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트 노드(그 외엔 @토큰 알약 미리보기)
+  const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
+  const editTextIdRef = useRef<string | null>(null);
+  editTextIdRef.current = editTextId;
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
@@ -882,9 +884,9 @@ export function SceneBoard({
             : kind === "view"
               ? { ...base, kind: "view" }
               : kind === "output"
-                ? { ...base, kind: "output", text: "" }
+                ? { ...base, kind: "output", text: "", w: 150, h: 78 }
                 : kind === "input"
-                  ? { ...base, kind: "input" }
+                  ? { ...base, kind: "input", w: 150, h: 78 }
                   : kind === "head"
                     ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
                     : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
@@ -1179,6 +1181,8 @@ export function SceneBoard({
           t.isContentEditable)
       )
         return;
+      // 텍스트/제목 노드 편집 중이면(포커스가 새어도) 캔버스 단축키(m/l/t/o/i/h 등)를 무시 — 글자가 노드 생성으로 새지 않게.
+      if (editTextIdRef.current && e.key !== "Escape") return;
       if (e.key === "Escape") {
         if (nodePickerRef.current) setNodePicker(null); // 노드 피커 닫기(우선)
         else if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
@@ -2292,6 +2296,7 @@ export function SceneBoard({
                             className="scene-textview-inline"
                             onMouseDown={(e) => {
                               e.stopPropagation();
+                              e.preventDefault(); // ★기본 포커스 이동 차단 — textarea 로 바뀐 뒤 autoFocus 가 body 로 뺏기지 않게
                               setSelected(new Set([card.id]));
                               setEditTextId(card.id); // 클릭하면 편집으로 전환
                             }}
