@@ -385,14 +385,15 @@
 /* 카드 포트(원) — 연결점. 평소 숨김(pointer-events 없음), 카드를 선택할 때만 카드 밖으로 떨어져 나와 잡힌다.
    ★위치: 카드 가장자리에서 PORT_GAP(12px)+반지름(9px)=21px 밖 → 끝점 좌표(edgeEnds)와 동심(원 안 점이 중앙). */
 .scene-port {
-  position: absolute; width: 18px; height: 18px; border-radius: 50%;
-  top: 50%; transform: translateY(-50%); background: #14161a; border: 2.5px solid #5a616e;
+  position: absolute; width: 13px; height: 13px; border-radius: 50%;
+  top: 50%; transform: translateY(-50%); background: transparent; border: 2px solid transparent;
   z-index: 8; opacity: 0; pointer-events: none; transition: opacity 0.08s;
 }
-/* 보이지 않는 넓은 잡기 영역 — 실제 원보다 크게 잡혀 연결이 수월하다(마우스다운·elementFromPoint 모두 이 원소로 판정). */
-.scene-port::before { content: ""; position: absolute; inset: -10px; border-radius: 50%; }
-.scene-port.out { right: -21px; cursor: crosshair; }
-.scene-port.in { left: -21px; }
+/* 보이지 않는 넓은 잡기 영역 — 작은 점이라도 넉넉히 잡히게(마우스다운·elementFromPoint 모두 이 원소로 판정). */
+.scene-port::before { content: ""; position: absolute; inset: -12px; border-radius: 50%; }
+/* 끝점 좌표(edgeEnds=카드밖 PORT_GAP 12px)와 점 중심이 겹치게: 반지름 6.5 → 12+6.5≈18px */
+.scene-port.out { right: -18px; cursor: crosshair; }
+.scene-port.in { left: -18px; }
 /* 노드 종류별 포트 색(--pc) — 선택 시 포트가 그 노드 고유색으로 채워진다. 테두리(선택 링)는 라임 유지. */
 .scene-card-gen { --pc: var(--accent); }
 .scene-card-model { --pc: #ffb84d; }
@@ -402,17 +403,16 @@
 .scene-card-view { --pc: #61eaff; }
 .scene-card-output,
 .scene-card-input { --pc: #8aa0bf; }
-/* 카드 선택 시 — 포트가 나타나고(잡힘) 커지며 노드 고유색으로 채워진다. */
+/* 카드 선택 시 — 큰 원 없이 '엔드포인트 점'처럼만 보인다(노드 고유색 채움 + 어두운 링). 연결선 끝점 점과 동심으로 겹친다. */
 .scene-card.sel .scene-port {
   opacity: 1; pointer-events: auto; z-index: 15;
-  transform: translateY(-50%) scale(1.25); box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.55);
-  background: var(--pc, var(--accent)); border-color: var(--pc, var(--accent));
+  background: var(--pc, var(--accent)); border-color: #14161a;
 }
 /* 생성카드 입력은 레인별 색으로(위=모델 주황·중간=레퍼런스 파랑·아래=텍스트 보라) — 어떤 입력인지 구분. */
-.scene-card-gen.sel .scene-port.in.lane-model { background: #ffb84d; border-color: #ffb84d; }
-.scene-card-gen.sel .scene-port.in.lane-ref { background: #7fa9ff; border-color: #7fa9ff; }
-.scene-card-gen.sel .scene-port.in.lane-text { background: #b57aff; border-color: #b57aff; }
-.scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.5); }
+.scene-card-gen.sel .scene-port.in.lane-model { background: #ffb84d; }
+.scene-card-gen.sel .scene-port.in.lane-ref { background: #7fa9ff; }
+.scene-card-gen.sel .scene-port.in.lane-text { background: #b57aff; }
+.scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* 연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 드러내 어디든 놓을 수 있게(비선택 대상도 드롭 가능). */
 .scene-board.wiring .scene-card .scene-port.in { opacity: 0.85; pointer-events: auto; }
 /* 연결선 끝점 색 점 — 한 포트에 여러 연결이 겹칠 때 선마다 끝점을 분리(fan-out).
