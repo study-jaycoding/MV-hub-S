@@ -10,7 +10,7 @@ export interface SceneModelCfg {
   type?: string; // 'image' | 'video' 등
   model?: string; // 모델 id
   modelName?: string; // 표시용 이름
-  params?: Record<string, unknown>; // 주요 파라미터(표시용)
+  params?: Record<string, string | number | boolean>; // 주요 파라미터(표시·복원용)
 }
 
 // 카드가 담는 레퍼런스 — 하단 프롬프트의 레퍼런스와 호환되는 최소 필드.

@@ -43,6 +43,7 @@ import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
+import { SceneModelModal } from "./SceneModelModal";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
@@ -166,6 +167,7 @@ export function SceneBoard({
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
   const nodePickerRef = useRef(false);
   nodePickerRef.current = !!nodePicker;
+  const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
@@ -1964,7 +1966,9 @@ export function SceneBoard({
                   ? () => setRefMenu(card.id)
                   : card.kind === "view"
                     ? () => playView(card.id)
-                    : undefined
+                    : card.kind === "model"
+                      ? () => setModelModalId(card.id)
+                      : undefined
               }
             >
               {isRef ? (
@@ -2359,6 +2363,27 @@ export function SceneBoard({
           </div>
         </>
       )}
+
+      {/* 모델 노드 더블클릭 → 모델 설정 모달(하단 프롬프트 모델 UI 재사용). 저장 시 modelCfg 스냅샷. */}
+      {modelModalId &&
+        (() => {
+          const c = cards.find((x) => x.id === modelModalId);
+          if (!c) return null;
+          return (
+            <SceneModelModal
+              key={modelModalId}
+              initial={c.modelCfg}
+              onClose={() => setModelModalId(null)}
+              onSave={(cfg) => {
+                const next = cardsRef.current.map((x) =>
+                  x.id === modelModalId ? { ...x, modelCfg: cfg } : x,
+                );
+                setCards(next);
+                persist(next, edgesRef.current);
+              }}
+            />
+          );
+        })()}
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
           ★대표 지정, 더블클릭 크게보기(방향키). .scene-board 직계(줌/팬 밖). 배경클릭/Esc 닫기. */}
