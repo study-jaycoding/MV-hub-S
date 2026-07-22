@@ -1143,26 +1143,38 @@ export function SceneBoard({
         frameView();
         return;
       }
-      // c = 자동 연결. 레퍼런스+생성 → 레퍼런스를 생성에 연결. 생성끼리만 → 왼→오 계보 체인.
+      // c = 자동 연결(모든 노드 종류 공통, canConnect 규칙 적용).
+      //  ① 순수 소스(레퍼런스/모델/텍스트, 출력만) + 흐름 노드(생성/리스트/View) 함께 선택 →
+      //     각 소스를 연결 가능한 각 흐름 노드에 연결(기존 레퍼런스→생성과 동일 방식).
+      //  ② 흐름 노드끼리만 → 화면 왼→오 인접 체인(생성 계보 + 생성→리스트→View 등).
       if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "c" || e.key === "C")) {
         const selCards = [...sel]
           .map((id) => cardsRef.current.find((cc) => cc.id === id))
           .filter((c): c is SceneCard => !!c);
-        const refs = selCards.filter((c) => c.kind === "reference");
-        const gens = selCards.filter((c) => c.kind === "generation");
-        if (refs.length && gens.length) {
-          // 레퍼런스 → 생성: 각 레퍼런스를 각 생성 카드에 연결(기존).
-          e.preventDefault();
-          addEdges(refs.flatMap((r) => gens.map((gc) => [r.id, gc.id] as [string, string])));
-          return;
+        const isSource = (c: SceneCard) =>
+          c.kind === "reference" || c.kind === "model" || c.kind === "text";
+        const isFlow = (c: SceneCard) =>
+          c.kind === "generation" || c.kind === "list" || c.kind === "view";
+        const sources = selCards.filter(isSource);
+        const flow = selCards.filter(isFlow);
+        if (sources.length && flow.length) {
+          const pairs = sources.flatMap((s) =>
+            flow.filter((f) => canConnect(s, f)).map((f) => [s.id, f.id] as [string, string]),
+          );
+          if (pairs.length) {
+            e.preventDefault();
+            addEdges(pairs);
+            return;
+          }
         }
-        if (gens.length >= 2) {
-          // 생성 카드끼리: 화면 왼→오 순서로 계보 체인 연결(왼쪽=부모, 오른쪽=자식).
+        if (flow.length >= 2) {
+          // 흐름 노드 왼→오 인접 체인 — canConnect 되는 쌍만(예: 생성→생성, 생성→리스트, 리스트→View).
           e.preventDefault();
-          const sorted = [...gens].sort((a, b) => a.x - b.x);
+          const sorted = [...flow].sort((a, b) => a.x - b.x);
           const pairs: Array<[string, string]> = [];
-          for (let i = 0; i < sorted.length - 1; i++) pairs.push([sorted[i].id, sorted[i + 1].id]);
-          addEdges(pairs);
+          for (let i = 0; i < sorted.length - 1; i++)
+            if (canConnect(sorted[i], sorted[i + 1])) pairs.push([sorted[i].id, sorted[i + 1].id]);
+          if (pairs.length) addEdges(pairs);
           return;
         }
       }
