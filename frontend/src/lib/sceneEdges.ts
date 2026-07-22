@@ -15,6 +15,9 @@ export function canConnect(from: SceneCard, to: SceneCard): boolean {
       return from.kind === "generation" || from.kind === "text";
     case "view":
       return from.kind === "generation" || from.kind === "list" || from.kind === "text";
+    case "text":
+      // 텍스트 노드는 레퍼런스 입력만 받는다(레퍼런스 카드·생성물을 @레퍼런스로).
+      return from.kind === "reference" || from.kind === "generation";
     default:
       return false;
   }
@@ -131,6 +134,7 @@ export function resolveEdgeRole(
   const from = cardsById.get(edge.from);
   const to = cardsById.get(edge.to);
   // 소스 종류를 먼저 본다 — 텍스트→리스트여도 '텍스트'(보라)로. 모델/텍스트/레퍼런스는 소스색 우선.
+  if (to?.kind === "text") return "ref"; // 무엇이든 텍스트 노드 입력 = 레퍼런스(파랑)
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "reference") return "ref";

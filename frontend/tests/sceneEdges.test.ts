@@ -309,8 +309,10 @@ describe("canConnect", () => {
     expect(canConnect(c("T", "text"), V)).toBe(true);
     expect(canConnect(c("M", "model"), V)).toBe(false);
   });
-  it("text/model/reference 는 입력 없음, 자기연결 금지", () => {
-    expect(canConnect(c("A", "generation"), c("B", "text"))).toBe(false);
+  it("text 는 reference/generation 입력만(레퍼런스), model/reference 는 입력 없음, 자기연결 금지", () => {
+    expect(canConnect(c("R", "reference"), c("T", "text"))).toBe(true);
+    expect(canConnect(c("G", "generation"), c("T", "text"))).toBe(true);
+    expect(canConnect(c("T2", "text"), c("T", "text"))).toBe(false);
     expect(canConnect(c("A", "generation"), c("B", "model"))).toBe(false);
     expect(canConnect(c("X", "generation"), c("X", "generation"))).toBe(false);
   });

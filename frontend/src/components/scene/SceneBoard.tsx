@@ -2106,44 +2106,91 @@ export function SceneBoard({
                   />
                 </>
               ) : card.kind === "text" ? (
-                <>
-                  {/* 텍스트 노드 — 상단 헤더(잡아서 이동) + 검정/흰 textarea. 우측하단 복사·리사이즈. */}
-                  <div className="scene-card-inner">
-                    <div className="scene-card-hd text">텍스트</div>
-                    <textarea
-                      className="scene-textnode"
-                      value={card.text || ""}
-                      placeholder="텍스트 입력..."
-                      spellCheck={false}
-                      onMouseDown={(e) => {
-                        e.stopPropagation(); // 카드 이동 드래그는 막되
-                        setSelected(new Set([card.id])); // 입력창 클릭도 카드 선택으로 처리
-                      }}
-                      onChange={(e) => setNodeText(card.id, e.target.value)}
-                    />
-                  </div>
-                  <button
-                    className="scene-copy-btn"
-                    title="텍스트 전체 복사"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void navigator.clipboard?.writeText(card.text || "");
-                    }}
-                  >
-                    ⧉
-                  </button>
-                  <span
-                    className="scene-port out"
-                    onMouseDown={(e) => onOutPortDown(e, card.id)}
-                    title="드래그해 생성 카드 텍스트 입력에 연결(보라)"
-                  />
-                  <span
-                    className="scene-resize"
-                    onMouseDown={(e) => onResizeDown(e, card.id)}
-                    title="드래그해 크기 조절"
-                  />
-                </>
+                (() => {
+                  // 텍스트로 들어온 레퍼런스 연결(레퍼런스 카드 refs + 생성물) → 상단 @레퍼런스 알약(직관 확인용).
+                  const refSrcs = edges
+                    .filter((e) => e.to === card.id)
+                    .map((e) => cardsById.get(e.from))
+                    .filter((c): c is SceneCard => !!c)
+                    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+                  const counters: Record<string, number> = {};
+                  const nextLabel = (type?: string) => {
+                    const t = type === "video" ? "video" : type === "audio" ? "audio" : "image";
+                    counters[t] = (counters[t] || 0) + 1;
+                    return `@${t}${counters[t]}`;
+                  };
+                  const pills: { key: string; thumb?: string; label: string }[] = [];
+                  for (const s of refSrcs) {
+                    if (s.kind === "reference")
+                      (s.refs || []).forEach((r, i) =>
+                        pills.push({ key: s.id + ":" + i, thumb: refThumbSrc(r), label: nextLabel(r.type) }),
+                      );
+                    else if (s.kind === "generation") {
+                      const gid = s.genId || variantIds(s)[0];
+                      const gen = gid ? genData[gid] : undefined;
+                      pills.push({
+                        key: s.id,
+                        thumb: gen ? thumbOf(gen, 128) || undefined : undefined,
+                        label: nextLabel(gen?.assets?.[0]?.type),
+                      });
+                    }
+                  }
+                  return (
+                    <>
+                      {/* 상단 헤더(이동) + @레퍼런스 알약(연결된 레퍼런스) + 검정/흰 textarea. */}
+                      <div className="scene-card-inner">
+                        <div className="scene-card-hd text">텍스트</div>
+                        {pills.length > 0 && (
+                          <div className="scene-textrefs">
+                            {pills.map((p) => (
+                              <span className="scene-textref" key={p.key} title={p.label}>
+                                {p.thumb ? (
+                                  <img src={p.thumb} alt="" draggable={false} onError={hideBrokenImg} />
+                                ) : (
+                                  <span className="scene-textref-ph" />
+                                )}
+                                <span className="scene-textref-label">{p.label}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <textarea
+                          className="scene-textnode"
+                          value={card.text || ""}
+                          placeholder="텍스트 입력..."
+                          spellCheck={false}
+                          onMouseDown={(e) => {
+                            e.stopPropagation(); // 카드 이동 드래그는 막되
+                            setSelected(new Set([card.id])); // 입력창 클릭도 카드 선택으로 처리
+                          }}
+                          onChange={(e) => setNodeText(card.id, e.target.value)}
+                        />
+                      </div>
+                      <button
+                        className="scene-copy-btn"
+                        title="텍스트 전체 복사"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void navigator.clipboard?.writeText(card.text || "");
+                        }}
+                      >
+                        ⧉
+                      </button>
+                      <span className="scene-port in" title="레퍼런스 연결(레퍼런스 카드·생성물)" />
+                      <span
+                        className="scene-port out"
+                        onMouseDown={(e) => onOutPortDown(e, card.id)}
+                        title="드래그해 생성 카드 텍스트 입력에 연결(보라)"
+                      />
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
               ) : card.kind === "model" ? (
                 <>
                   {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
