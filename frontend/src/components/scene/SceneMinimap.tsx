@@ -153,9 +153,7 @@ export function SceneMinimap({
         <div
           key={b.id}
           className={
-            "scene-minimap-card" +
-            (b.kind === "reference" ? " ref" : " gen") +
-            (selected.has(b.id) ? " sel" : "")
+            "scene-minimap-card k-" + b.kind + (selected.has(b.id) ? " sel" : "")
           }
           style={{
             left: (b.x - wMinX) * scale,

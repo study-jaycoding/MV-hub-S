@@ -61,9 +61,17 @@
   border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   cursor: pointer; overflow: hidden; backdrop-filter: blur(2px);
 }
-.scene-minimap-card { position: absolute; border-radius: 1px; }
-.scene-minimap-card.gen { background: #40557d; }
-.scene-minimap-card.ref { background: #7fa9ff; }
+/* 미니맵 카드 — 종류별 색(캔버스 노드 색과 맞춰 직관성↑). 선택은 라임으로 덮어쓴다. */
+.scene-minimap-card { position: absolute; border-radius: 1px; background: #40557d; }
+.scene-minimap-card.k-reference { background: #7fa9ff; }
+.scene-minimap-card.k-generation { background: #40557d; }
+.scene-minimap-card.k-model { background: #ffb84d; }
+.scene-minimap-card.k-text { background: #b57aff; }
+.scene-minimap-card.k-list { background: var(--accent); }
+.scene-minimap-card.k-view { background: #61eaff; }
+.scene-minimap-card.k-output,
+.scene-minimap-card.k-input { background: #7f8a9c; }
+.scene-minimap-card.k-head { background: #e8c341; }
 .scene-minimap-card.sel { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 /* 현재 보는 영역 박스 */
 .scene-minimap-view {
@@ -389,6 +397,21 @@
 .scene-port.in.lane-ref { border-color: #7fa9ff; }
 .scene-port.in.lane-text { border-color: #b57aff; }
 .scene-port:hover { transform: translateY(-50%) scale(1.3); box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.14); }
+/* ★카드를 선택하면 포트가 커지고 색이 차서 입력/출력 구멍이 또렷하게 보인다(연결 편의). 비선택 시엔 은은. */
+.scene-card:not(.sel) .scene-port { opacity: 0.5; }
+.scene-card:not(.sel) .scene-port:hover { opacity: 1; }
+.scene-card.sel .scene-port {
+  transform: translateY(-50%) scale(1.35); box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5); z-index: 9;
+}
+.scene-card.sel .scene-port.out { background: var(--accent); border-color: var(--accent); }
+.scene-card.sel .scene-port.in.lane-model { background: #ffb84d; border-color: #ffb84d; }
+.scene-card.sel .scene-port.in.lane-ref { background: #7fa9ff; border-color: #7fa9ff; }
+.scene-card.sel .scene-port.in.lane-text { background: #b57aff; border-color: #b57aff; }
+/* 단일 입력 포트(리스트/뷰/텍스트/출력 노드)는 선택 시 파랑으로 채워 또렷하게 */
+.scene-card.sel .scene-port.in:not(.lane-model):not(.lane-ref):not(.lane-text) {
+  background: #7fa9ff; border-color: #7fa9ff;
+}
+.scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.6); }
 /* 연결선 끝점 색 점 — 한 포트에 여러 연결이 겹칠 때 선마다 끝점을 분리(fan-out).
    레퍼런스 카드 연결만 파랑, 나머지(계보·생성물레퍼런스)는 초록. */
 .scene-dot { fill: var(--accent); stroke: #14161a; stroke-width: 2; } /* 초록 */
