@@ -4,7 +4,7 @@
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
+import type { CSSProperties, MutableRefObject } from "react";
 import { api } from "../../api";
 import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
 import { downloadName, downloadOne } from "../../lib/download";
@@ -1074,7 +1074,25 @@ export function SceneBoard({
     beginDrag(move, up);
   };
 
-  // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리는 멤버 바운딩박스로 자동, 이름변경·접기 가능 ──
+  // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
+  const GPAD = 16; // 테두리 여백
+  const GHD = 26; // 헤더 높이
+  const GCOLLAPSED_W = 200; // 접힌 막대 너비
+  // 카드 id 목록의 바운딩박스 → 그룹 테두리 rect(위쪽 헤더 높이 포함). 그룹 생성 시 초기 rect 로 사용.
+  const rectFromCards = (ids: string[]) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    for (const id of ids) {
+      const c = cardsRef.current.find((cc) => cc.id === id);
+      if (!c) continue;
+      n++;
+      minX = Math.min(minX, c.x);
+      minY = Math.min(minY, c.y);
+      maxX = Math.max(maxX, c.x + widthOf(c));
+      maxY = Math.max(maxY, c.y + heightOf(c));
+    }
+    if (!n) return undefined;
+    return { x: minX - GPAD, y: minY - GPAD - GHD, w: maxX - minX + GPAD * 2, h: maxY - minY + GPAD * 2 + GHD };
+  };
   // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수).
   const pruneGroups = (gs: SceneGroup[], removed: Set<string>): SceneGroup[] =>
     gs
@@ -1089,18 +1107,51 @@ export function SceneBoard({
     if (!ids.length) return;
     // 카드는 한 그룹에만 — 선택 카드를 기존 그룹에서 떼고(빈 그룹 제거) 새 그룹으로 묶는다.
     const stripped = pruneGroups(groupsRef.current, new Set(ids));
-    const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids };
+    const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids, rect: rectFromCards(ids) };
     applyGroups([...stripped, grp]);
   };
-  const ungroupSelected = () => {
-    const sel = selectedRef.current;
-    const next = groupsRef.current.filter((g) => !g.cardIds.some((id) => sel.has(id)));
-    if (next.length !== groupsRef.current.length) applyGroups(next);
-  };
+  // × 버튼 = 그룹 해제(멤버 카드는 그대로 두고 묶음만 제거).
+  const removeGroup = (id: string) => applyGroups(groupsRef.current.filter((g) => g.id !== id));
   const renameGroup = (id: string, name: string) =>
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, name } : g)));
   const toggleGroupCollapsed = (id: string) =>
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)));
+  const setGroupColor = (id: string, color: string) =>
+    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, color } : g)));
+  // 카드 드롭 위치로 그룹 멤버십 재배정 — 드롭한 프레임 안이면 그 그룹 가입, 어느 프레임에도 없으면 해제.
+  //  · startFrames: 드래그 시작 시점의 그룹 프레임 스냅샷(자동 그룹 프레임이 드래그 중 흔들리지 않게).
+  //  · setGroups 로 반영하고, persist 에 넘길 최신 그룹 배열을 반환(변화 없으면 현재 배열 그대로).
+  const reassignGroups = (
+    targetIds: string[],
+    startFrames: { id: string; frame: { x: number; y: number; w: number; h: number } }[],
+  ): SceneGroup[] => {
+    if (!startFrames.length) return groupsRef.current;
+    const cur = cardsRef.current;
+    const next = groupsRef.current.map((g) => ({ ...g, cardIds: [...g.cardIds] }));
+    let changed = false;
+    for (const tid of targetIds) {
+      const c = cur.find((cc) => cc.id === tid);
+      if (!c) continue;
+      const cx = c.x + widthOf(c) / 2;
+      const cy = c.y + heightOf(c) / 2;
+      let hitId: string | null = null;
+      for (const f of startFrames)
+        if (cx >= f.frame.x && cx <= f.frame.x + f.frame.w && cy >= f.frame.y && cy <= f.frame.y + f.frame.h)
+          hitId = f.id; // 겹치면 뒤에(위에) 그려진 그룹 우선
+      const curId = next.find((g) => g.cardIds.includes(tid))?.id ?? null;
+      if (hitId === curId) continue; // 같은 그룹이면 변화 없음
+      for (const g of next) {
+        const i = g.cardIds.indexOf(tid);
+        if (i >= 0) g.cardIds.splice(i, 1);
+      }
+      if (hitId) next.find((g) => g.id === hitId)!.cardIds.push(tid);
+      changed = true;
+    }
+    if (!changed) return groupsRef.current;
+    const pruned = next.filter((g) => g.cardIds.length > 0); // 비게 된 그룹 정리
+    setGroups(pruned);
+    return pruned;
+  };
 
   // ── 카드 삭제(선택) — 내 것·미공유·비최종 변형만 휴지통, 공유/최종/남의 것은 라이브러리에 보존 ──
   const deleteCards = (ids: string[]) => {
@@ -1288,11 +1339,10 @@ export function SceneBoard({
         persist(nextCards, nextEdges);
         return;
       }
-      // Ctrl+G = 선택 카드 그룹 · Ctrl+Shift+G = 그룹 해제. (mod+g 라 g=초록색 단축키와 충돌 없음)
+      // Ctrl+G = 선택 카드 그룹. 해제는 그룹 헤더의 × 버튼으로. (mod+g 라 g=초록색 단축키와 충돌 없음)
       if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
         e.preventDefault(); // 브라우저 '다음 찾기' 방지
-        if (e.shiftKey) ungroupSelected();
-        else groupSelected();
+        groupSelected();
         return;
       }
       // f = 프레이밍. 선택 카드 있으면 그 카드(들) 중심, 없으면 전체 카드가 다 보이게 맞춤.
@@ -1582,6 +1632,8 @@ export function SceneBoard({
         }
         let gMoved = false;
         const gAnchor = origins[memberIds[0]]; // 그룹 이동도 첫 멤버를 격자에 스냅하고 전체를 같은 오프셋으로.
+        const gOrigRect = grp.rect; // 수동 rect 가 있으면 멤버와 함께 같은 오프셋으로 이동(멤버십은 유지).
+        let gLastRect = gOrigRect; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
         const move = (ev: MouseEvent) => {
           if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
           gMoved = true;
@@ -1593,10 +1645,19 @@ export function SceneBoard({
           setCards((prev) =>
             prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c)),
           );
+          if (gOrigRect) {
+            gLastRect = { ...gOrigRect, x: gOrigRect.x + sdx, y: gOrigRect.y + sdy };
+            setGroups((prev) => prev.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x)));
+          }
         };
         const up = () => {
-          if (gMoved) persist(cardsRef.current, edgesRef.current);
-          else
+          if (gMoved) {
+            const ng = gOrigRect
+              ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
+              : groupsRef.current;
+            if (gOrigRect) setGroups(ng);
+            persist(cardsRef.current, edgesRef.current, ng);
+          } else
             setSelected((prev) => {
               if (gAdditive) {
                 const n = new Set(prev);
@@ -1628,6 +1689,8 @@ export function SceneBoard({
         if (c) origins[tid] = { x: c.x, y: c.y };
       }
       const anchor = origins[id]; // 잡은 카드 — 이 카드를 격자에 스냅하고 나머지는 같은 오프셋으로 이동(상대배치 보존).
+      // 드래그 시작 시점의 그룹 프레임 스냅샷 — 드롭 위치로 멤버십(가입/해제)을 판정하는 기준.
+      const startFrames = groupViews.map((v) => ({ id: v.g.id, frame: v.frame }));
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         moved = true;
@@ -1647,7 +1710,8 @@ export function SceneBoard({
       };
       const up = () => {
         if (moved) {
-          persist(cardsRef.current, edgesRef.current);
+          const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
+          persist(cardsRef.current, edgesRef.current, ng);
         } else {
           setSelected((prev) => {
             if (additive) {
@@ -1792,10 +1856,7 @@ export function SceneBoard({
     [cards, edges, grayHidden],
   );
 
-  // ── 그룹 기하 — 테두리는 멤버 카드 바운딩박스로 자동. 접힘=제목 막대(연결은 막대로 브릿지) ──
-  const GPAD = 16; // 테두리 여백
-  const GHD = 26; // 헤더 높이
-  const GCOLLAPSED_W = 200; // 접힌 막대 너비
+  // ── 그룹 기하 — 테두리는 저장된 rect 우선, 없으면 멤버 바운딩박스로 자동(하위호환). 접힘=제목 막대 ──
   const memberBounds = (g: SceneGroup) => {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let n = 0;
@@ -1810,17 +1871,23 @@ export function SceneBoard({
     }
     return n ? { minX, minY, maxX, maxY } : null;
   };
+  // 그룹 프레임: 저장된 rect 우선, 없으면 멤버 바운딩박스+여백. 둘 다 못 구하면 null(렌더 제외).
+  const frameOf = (g: SceneGroup) => {
+    if (g.rect) return g.rect;
+    const b = memberBounds(g);
+    if (!b) return null;
+    return {
+      x: b.minX - GPAD,
+      y: b.minY - GPAD - GHD,
+      w: b.maxX - b.minX + GPAD * 2,
+      h: b.maxY - b.minY + GPAD * 2 + GHD,
+    };
+  };
   // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
   const groupViews = groups
     .map((g) => {
-      const b = memberBounds(g);
-      if (!b) return null;
-      const frame = {
-        x: b.minX - GPAD,
-        y: b.minY - GPAD - GHD,
-        w: b.maxX - b.minX + GPAD * 2,
-        h: b.maxY - b.minY + GPAD * 2 + GHD,
-      };
+      const frame = frameOf(g);
+      if (!frame) return null;
       const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
       return { g, frame, bar };
     })
@@ -1995,11 +2062,13 @@ export function SceneBoard({
           const box = collapsed ? bar : frame;
           const memberCount = g.cardIds.filter((id) => cardById(id)).length;
           const editing = editingGroupId === g.id;
+          const gstyle: CSSProperties = { left: box.x, top: box.y, width: box.w, height: box.h };
+          if (g.color) (gstyle as Record<string, string | number>)["--gc"] = g.color;
           return (
             <div
               key={g.id}
               className={"scene-group" + (collapsed ? " collapsed" : "")}
-              style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
+              style={gstyle}
             >
               <div
                 className="scene-group-hd scene-group-grab"
@@ -2047,7 +2116,56 @@ export function SceneBoard({
                   </span>
                 )}
                 <span className="scene-group-count">{memberCount}</span>
+                <label
+                  className="scene-group-color"
+                  title="그룹 색"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="color"
+                    value={g.color || "#5a6270"}
+                    onChange={(e) => setGroupColor(g.id, e.target.value)}
+                  />
+                </label>
+                <button
+                  className="scene-group-x"
+                  title="그룹 해제(카드는 유지)"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeGroup(g.id);
+                  }}
+                >
+                  ×
+                </button>
               </div>
+              {!collapsed && (
+                <div
+                  className="scene-group-resize"
+                  title="크기 조절"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    const rect0 = g.rect ?? frame; // 자동 그룹이면 현재 프레임을 초기 rect 로 고정
+                    const sx = e.clientX;
+                    const sy = e.clientY;
+                    let last = rect0; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
+                    const mv = (ev: MouseEvent) => {
+                      const z = zoomRef.current;
+                      const w = Math.max(140, rect0.w + (ev.clientX - sx) / z);
+                      const h = Math.max(GHD + 48, rect0.h + (ev.clientY - sy) / z);
+                      last = { x: rect0.x, y: rect0.y, w, h };
+                      setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, rect: last } : x)));
+                    };
+                    const upr = () => {
+                      const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
+                      setGroups(ng);
+                      persist(cardsRef.current, edgesRef.current, ng);
+                    };
+                    beginDrag(mv, upr);
+                  }}
+                />
+              )}
             </div>
           );
         })}

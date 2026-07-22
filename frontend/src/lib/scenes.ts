@@ -60,13 +60,17 @@ export interface SceneEdge {
   order?: number; // list 노드 수집 순서(없으면 소스 y 로 폴백).
 }
 
-// 카드 묶음(그룹) — 테두리는 멤버 카드들의 바운딩박스로 자동 계산(별도 좌표 저장 안 함).
+// 카드 묶음(그룹).
 //  · name: 헤더에 표시(더블클릭 편집)  · collapsed: 접으면 제목 막대로 축소(멤버 숨김·연결은 막대로 브릿지)
+//  · rect: 수동 지정한 테두리 위치·크기. 없으면 멤버 바운딩박스로 자동(하위호환).
+//  · color: 테두리·헤더 색.  멤버십(cardIds)은 카드를 그룹 안/밖으로 드롭할 때만 바뀐다.
 export interface SceneGroup {
   id: string;
   name: string;
   cardIds: string[];
   collapsed?: boolean;
+  rect?: { x: number; y: number; w: number; h: number };
+  color?: string;
 }
 
 export interface Scene {

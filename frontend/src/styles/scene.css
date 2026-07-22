@@ -82,18 +82,19 @@
 /* ── 카드 그룹(Ctrl+G) — 멤버 바운딩박스 테두리 + 헤더(이름·접기). 컨테이너는 클릭 통과, 헤더만 잡힘 ── */
 .scene-group {
   position: absolute; z-index: 0; pointer-events: none;
-  border: 1.5px dashed var(--border2); border-radius: 12px;
-  background: rgba(196, 232, 74, 0.045);
+  border: 1.5px dashed var(--gc, var(--border2)); border-radius: 12px;
+  background: color-mix(in srgb, var(--gc, #c4e84a) 5%, transparent);
 }
 .scene-group.collapsed {
-  pointer-events: auto; border-style: solid; border-color: var(--accent);
+  pointer-events: auto; border-style: solid; border-color: var(--gc, var(--accent));
   background: rgba(20, 22, 26, 0.92); border-radius: 10px; overflow: hidden;
 }
 .scene-group-hd {
   position: absolute; top: 0; left: 0; right: 0; height: 26px; pointer-events: auto;
   display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: grab;
   font-size: 12px; font-weight: 700; color: var(--text);
-  background: rgba(20, 22, 26, 0.72); border-bottom: 1px solid var(--border2);
+  background: color-mix(in srgb, var(--gc, transparent) 22%, rgba(20, 22, 26, 0.72));
+  border-bottom: 1px solid var(--gc, var(--border2));
   border-radius: 11px 11px 0 0;
 }
 .scene-group.collapsed .scene-group-hd { border-bottom: 0; background: transparent; }
@@ -112,6 +113,30 @@
   flex: none; font-size: 11px; font-weight: 800; color: var(--accent-ink); background: var(--accent);
   border-radius: 999px; padding: 0 7px; line-height: 16px;
 }
+/* 그룹 색 스와치 — 네이티브 컬러픽커를 스와치 뒤에 숨김. 현재 색이 없으면 회색으로 보임(클릭해 지정) */
+.scene-group-color {
+  flex: none; width: 16px; height: 16px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--border2); background: var(--gc, var(--border2));
+  position: relative; overflow: hidden; display: inline-block;
+}
+.scene-group-color input {
+  position: absolute; inset: -4px; width: 200%; height: 200%;
+  border: 0; padding: 0; opacity: 0; cursor: pointer;
+}
+/* × = 그룹 해제(카드는 유지) */
+.scene-group-x {
+  flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 5px; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 15px; line-height: 1;
+}
+.scene-group-x:hover { background: #e5484d; color: #fff; }
+/* 우하단 크기조절 핸들 — 그룹 rect 를 수동 조절 */
+.scene-group-resize {
+  position: absolute; right: -3px; bottom: -3px; width: 16px; height: 16px; pointer-events: auto;
+  cursor: nwse-resize; border-radius: 0 0 10px 0;
+  background: linear-gradient(135deg, transparent 45%, var(--gc, var(--border2)) 45%);
+}
+.scene-group-resize:hover { background: linear-gradient(135deg, transparent 45%, var(--gc, var(--accent)) 45%); }
 /* 씬 카드 — 레퍼런스/생성 공용 뼈대 */
 .scene-card {
   position: absolute; border-radius: 12px; display: flex; flex-direction: column;
