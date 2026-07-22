@@ -13,9 +13,12 @@ import { toggleDisabledGen } from "../../lib/deactivated";
 import { matchShortcut } from "../../lib/shortcuts";
 import { KEY_COLORS } from "../../lib/appConstants";
 import {
+  notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
   readSpotlightAssetPayload,
+  referenceDropTypeFromFile,
   spotlightAssetRefBase,
+  type SpotlightAssetDragItem,
 } from "../../lib/spotlightAssetRefs";
 import {
   sceneRefFingerprint,
@@ -666,29 +669,69 @@ export function SceneBoard({
   );
   useEffect(() => () => dragCleanupRef.current?.(), []);
 
-  // ── 에셋 드롭 → 레퍼런스 카드 ──
+  // ── 에셋 드롭/붙여넣기 → 레퍼런스 카드(항상 1장에 1개) ──
   const hasAssetDrag = (dt: DataTransfer) => Array.from(dt.types).includes(DRAG_TYPES.asset);
+  const hasFileDrag = (dt: DataTransfer) => Array.from(dt.types).includes("Files");
+  const itemToRef = (it: SpotlightAssetDragItem): SceneRef => {
+    const b = spotlightAssetRefBase(it);
+    return { file_path: b.file_path, type: b.type, name: b.name, thumb: b.thumb };
+  };
+  // 레퍼런스들을 각각 1장짜리 카드로 만들어 배치 — (cx,cy) 를 중심으로 가로 한 줄, 격자 스냅.
+  const addRefCardsAt = (refs: SceneRef[], cx: number, cy: number) => {
+    if (!refs.length) return;
+    const gap = CARD_W + 20;
+    const startX = cx - CARD_W / 2 - ((refs.length - 1) * gap) / 2;
+    const created: SceneCard[] = refs.map((r, i) => ({
+      id: uid(),
+      kind: "reference",
+      x: snapGrid(startX + i * gap),
+      y: snapGrid(cy - CARD_H / 2),
+      refs: [r],
+    }));
+    const next = [...cardsRef.current, ...created];
+    cardsRef.current = next; // 비동기 업로드가 연달아 resolve 돼도 stale 배열에 덮이지 않게 즉시 반영
+    setCards(next);
+    setSelected(new Set(created.map((c) => c.id)));
+    persist(next, edgesRef.current);
+  };
+  // 외부(다른 앱/OS)에서 드래그·붙여넣기한 파일 → 서버 imports 로 업로드 후 레퍼런스 카드로.
+  const importExternalAsRefs = async (files: File[], cx: number, cy: number) => {
+    const accepted = files.filter((f) => referenceDropTypeFromFile(f));
+    if (!accepted.length) return; // 이미지/영상/오디오만
+    try {
+      const res = await api.uploadReferenceFiles(accepted);
+      const items = res.saved || [];
+      if (items.length) {
+        addRefCardsAt(items.map(itemToRef), cx, cy);
+        notifySpotlightAssetsChanged(items);
+      }
+    } catch (err) {
+      console.warn("[scene] 외부 파일 레퍼런스 추가 실패", err);
+    }
+  };
   const onDragOver = (e: React.DragEvent) => {
-    if (hasAssetDrag(e.dataTransfer)) {
+    if (hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
   };
   const onDrop = (e: React.DragEvent) => {
-    if (!hasAssetDrag(e.dataTransfer)) return;
-    e.preventDefault();
-    const items = parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer));
-    if (!items.length) return;
-    const refs: SceneRef[] = items.map((it) => {
-      const b = spotlightAssetRefBase(it);
-      return { file_path: b.file_path, type: b.type, name: b.name, thumb: b.thumb };
-    });
-    const p = toCanvas(e.clientX, e.clientY);
-    const card: SceneCard = { id: uid(), kind: "reference", x: p.x - CARD_W / 2, y: p.y - CARD_H / 2, refs };
-    const next = [...cardsRef.current, card];
-    setCards(next);
-    setSelected(new Set([card.id]));
-    persist(next, edgesRef.current);
+    // 내부 에셋 드래그 — 여러 개면 각각 1장짜리 카드로.
+    if (hasAssetDrag(e.dataTransfer)) {
+      e.preventDefault();
+      const items = parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer));
+      if (!items.length) return;
+      const p = toCanvas(e.clientX, e.clientY);
+      addRefCardsAt(items.map(itemToRef), p.x, p.y);
+      return;
+    }
+    // 외부 파일 드래그 → 업로드 후 레퍼런스 카드.
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length) {
+      e.preventDefault();
+      const p = toCanvas(e.clientX, e.clientY);
+      void importExternalAsRefs(files, p.x, p.y);
+    }
   };
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
@@ -1221,7 +1264,7 @@ export function SceneBoard({
         else undo();
         return;
       }
-      // Ctrl+C / Ctrl+V = 노드 복사·붙여넣기(텍스트 편집 중이면 위 포커스 가드로 이미 제외 → 일반 텍스트 복붙).
+      // Ctrl+C = 선택 노드 복사(clipboardRef). 붙여넣기는 paste 이벤트에서(텍스트 편집 중이면 위 포커스 가드로 제외).
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "c" || e.key === "C")) {
         const ids = new Set(sel);
         if (!ids.size) return;
@@ -1234,36 +1277,7 @@ export function SceneBoard({
         };
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "v" || e.key === "V")) {
-        const clip = clipboardRef.current;
-        if (!clip || !clip.cards.length) return;
-        e.preventDefault();
-        // 새 id 부여 + 위치 오프셋(격자 2칸) + 그들 사이 엣지 재매핑. 붙여넣은 것만 선택.
-        const idMap = new Map<string, string>();
-        const off = GRID * 2;
-        const newCards = clip.cards.map((c) => {
-          const nid = uid();
-          idMap.set(c.id, nid);
-          return { ...c, id: nid, x: c.x + off, y: c.y + off };
-        });
-        // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
-        for (const c of newCards)
-          if (c.kind === "input" && c.channel && idMap.has(c.channel))
-            c.channel = idMap.get(c.channel);
-        const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
-          ...ed,
-          id: uid(),
-          from: idMap.get(ed.from)!,
-          to: idMap.get(ed.to)!,
-        }));
-        const nextEdges = [...edgesRef.current, ...newEdges];
-        const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
-        setCards(nextCards);
-        setEdges(nextEdges);
-        setSelected(new Set(newCards.map((c) => c.id)));
-        persist(nextCards, nextEdges);
-        return;
-      }
+      // Ctrl+V(카드 붙여넣기)는 paste 이벤트에서 처리 — 클립보드 이미지(캡쳐)가 있으면 그쪽이 우선.
       // Ctrl+G = 선택 카드 그룹. 해제는 그룹 헤더의 × 버튼으로. (mod+g 라 g=초록색 단축키와 충돌 없음)
       if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
         e.preventDefault(); // 브라우저 '다음 찾기' 방지
@@ -1733,6 +1747,89 @@ export function SceneBoard({
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [colorPopId]);
+  // 붙여넣기(Ctrl+V) — 편집 요소 포커스면 그쪽이 처리. 아니면 클립보드 이미지(캡쳐)를 레퍼런스 카드로,
+  // 이미지가 없고 내부에서 복사(Ctrl+C)한 카드가 있으면 그 카드들을 붙여넣는다(이미지 우선).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable ||
+          t.closest?.("input, textarea, [contenteditable=true]"))
+      )
+        return; // 프롬프트 등 편집 중이면 그쪽 paste 가 처리
+      const items = e.clipboardData?.items;
+      let blob: File | null = null;
+      if (items)
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.startsWith("image/")) {
+            blob = items[i].getAsFile();
+            break;
+          }
+        }
+      // 1) 클립보드 이미지(캡쳐) → 레퍼런스 카드.
+      if (blob) {
+        e.preventDefault();
+        // 위치: 마우스가 보드 위면 그 지점, 아니면 뷰포트 중앙.
+        const lm = lastMouseRef.current;
+        const r = scrollRef.current?.getBoundingClientRect();
+        let cx: number, cy: number;
+        if (lm.over) {
+          const p = toCanvas(lm.x, lm.y);
+          cx = p.x;
+          cy = p.y;
+        } else if (r) {
+          const p = toCanvas(r.left + r.width / 2, r.top + r.height / 2);
+          cx = p.x;
+          cy = p.y;
+        } else return;
+        void api
+          .uploadCapture(blob)
+          .then((rr) =>
+            addRefCardsAt(
+              [itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" })],
+              cx,
+              cy,
+            ),
+          )
+          .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
+        return;
+      }
+      // 2) 이미지가 없으면 내부에서 복사한 카드 붙여넣기(새 id·격자 2칸 오프셋, 그들 사이 엣지 재매핑).
+      const clip = clipboardRef.current;
+      if (!clip || !clip.cards.length) return;
+      e.preventDefault();
+      const idMap = new Map<string, string>();
+      const off = GRID * 2;
+      const newCards = clip.cards.map((c) => {
+        const nid = uid();
+        idMap.set(c.id, nid);
+        return { ...c, id: nid, x: c.x + off, y: c.y + off };
+      });
+      // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
+      for (const c of newCards)
+        if (c.kind === "input" && c.channel && idMap.has(c.channel)) c.channel = idMap.get(c.channel);
+      const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
+        ...ed,
+        id: uid(),
+        from: idMap.get(ed.from)!,
+        to: idMap.get(ed.to)!,
+      }));
+      const nextEdges = [...edgesRef.current, ...newEdges];
+      const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
+      cardsRef.current = nextCards;
+      edgesRef.current = nextEdges;
+      setCards(nextCards);
+      setEdges(nextEdges);
+      setSelected(new Set(newCards.map((c) => c.id)));
+      persist(nextCards, nextEdges);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 엣지 계산·렌더에서 카드를 id 로 매우 자주 조회한다(E×C). 선형 find 대신 Map(O(1))로 —
   // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
@@ -2550,10 +2647,11 @@ export function SceneBoard({
                                       }
                                     }}
                                     onDrop={(e) => {
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
                                       e.preventDefault();
                                       e.stopPropagation();
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (from) reorderList(card.id, from, cid);
+                                      reorderList(card.id, from, cid);
                                     }}
                                   >
                                     {src ? (
@@ -2583,10 +2681,11 @@ export function SceneBoard({
                                       }
                                     }}
                                     onDrop={(e) => {
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
                                       e.preventDefault();
                                       e.stopPropagation();
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (from) reorderList(card.id, from, cid);
+                                      reorderList(card.id, from, cid);
                                     }}
                                   >
                                     <span
@@ -2631,10 +2730,11 @@ export function SceneBoard({
                                       }
                                     }}
                                     onDrop={(e) => {
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
                                       e.preventDefault();
                                       e.stopPropagation();
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (from) reorderList(card.id, from, cid);
+                                      reorderList(card.id, from, cid);
                                     }}
                                   >
                                     {src ? (
