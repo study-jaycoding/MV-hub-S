@@ -922,8 +922,23 @@ export function SceneBoard({
       const idx = order.indexOf(ed.from);
       return idx >= 0 ? { ...ed, order: idx } : ed;
     });
-    // 레퍼런스 리스트가 생성카드에 연결돼 있으면 순서 변경 후 refs 멤버십을 다시 맞춘다(추가/제거 정합).
-    const nextCards = withGenRefs(cardsRef.current, nextEdges);
+    // 순서 변경 후 refs 멤버십 재계산(추가/제거 정합).
+    let nextCards = withGenRefs(cardsRef.current, nextEdges);
+    // ★레퍼런스 리스트가 생성카드에 연결돼 있으면 '리스트 순서 우선' — 그 카드 refs 를 리스트(gatherTarget) 순서로 재배열.
+    //   (@·드래그로 넣은 참조 source_gen_id 는 뒤에 보존.) 사용자 결정: 연결 뒤 재정렬도 리스트 순서가 이긴다.
+    if (collectListInputs(listId, byId, nextEdges).kind === "reference") {
+      const genTargets = new Set(
+        nextEdges.filter((e) => e.from === listId && byId.get(e.to)?.kind === "generation").map((e) => e.to),
+      );
+      if (genTargets.size)
+        nextCards = nextCards.map((c) => {
+          if (c.kind !== "generation" || !genTargets.has(c.id)) return c;
+          const ordered = gatherTarget(c.id, cardsRef.current, nextEdges); // 리스트 순서 반영된 레퍼런스들
+          const okey = new Set(ordered.map((r) => r.file_path + "#" + (r.source_gen_id || "")));
+          const extras = (c.refs || []).filter((r) => !okey.has(r.file_path + "#" + (r.source_gen_id || "")));
+          return { ...c, refs: [...ordered, ...extras] };
+        });
+    }
     setEdges(nextEdges);
     setCards(nextCards);
     persist(nextCards, nextEdges);
