@@ -3,6 +3,23 @@
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
 import { variantIds, type SceneCard, type SceneEdge, type SceneEdgeRole } from "./scenes";
 
+// 연결 허용 규칙 — to 노드 종류별로 받을 수 있는 소스만. 말이 안 되는 연결(text→view 등)을 막는다.
+//  · generation: 모델/텍스트/레퍼런스/생성/리스트 입력 허용(view 제외)
+//  · list: 생성/텍스트만(동종 수집)  · view: 생성/리스트만(미디어)  · text/model/reference/view: 입력 없음
+export function canConnect(from: SceneCard, to: SceneCard): boolean {
+  if (from.id === to.id) return false;
+  switch (to.kind) {
+    case "generation":
+      return from.kind !== "view";
+    case "list":
+      return from.kind === "generation" || from.kind === "text";
+    case "view":
+      return from.kind === "generation" || from.kind === "list";
+    default:
+      return false;
+  }
+}
+
 // list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
 // text 만 들어오면 그 텍스트를 order/y 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
 export interface ListInputs {

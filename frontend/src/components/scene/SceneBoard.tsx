@@ -25,10 +25,20 @@ import {
   type SceneCard,
   type SceneCardKind,
   type SceneEdge,
+  type SceneEdgeRole,
   type SceneGroup,
   type SceneRef,
 } from "../../lib/scenes";
-import { classifyEdges, computeBridgeEdges, edgePathXY, fanOffset } from "../../lib/sceneEdges";
+import {
+  canConnect,
+  classifyEdges,
+  collectListInputs,
+  collectViewGenCardIds,
+  computeBridgeEdges,
+  edgePathXY,
+  fanOffset,
+  resolveEdgeRole,
+} from "../../lib/sceneEdges";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
@@ -771,14 +781,20 @@ export function SceneBoard({
       const cardEl = el?.closest(".scene-port.in")?.closest(".scene-card") as HTMLElement | null;
       const toId = cardEl?.dataset.id;
       if (!toId) return;
+      const toCard = cardsRef.current.find((c) => c.id === toId);
+      if (!toCard) return;
       // ① 다중 레퍼런스 일괄 연결 — 드래그한 카드가 선택에 포함돼 있으면, 같은 종류(레퍼런스/생성)로
-      //    선택된 카드 전부를 한 번에 연결한다. 아니면 그 카드 하나만.
+      //    선택된 카드 전부를 한 번에 연결한다. 아니면 그 카드 하나만. 규칙에 맞는 소스만(canConnect).
       const sel = selectedRef.current;
       const srcKind = cardsRef.current.find((c) => c.id === cardId)?.kind;
-      const froms = sel.has(cardId)
+      const froms = (sel.has(cardId)
         ? [...sel].filter((id) => cardsRef.current.find((c) => c.id === id)?.kind === srcKind)
-        : [cardId];
-      addEdges(froms.map((f) => [f, toId] as [string, string]));
+        : [cardId]
+      ).filter((id) => {
+        const f = cardsRef.current.find((c) => c.id === id);
+        return f && canConnect(f, toCard);
+      });
+      if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]));
     };
     beginDrag(move, up);
   };
@@ -834,7 +850,9 @@ export function SceneBoard({
           ? { ...base, kind: "model" }
           : kind === "list"
             ? { ...base, kind: "list" }
-            : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+            : kind === "view"
+              ? { ...base, kind: "view" }
+              : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
     const nextCards = [...cardsRef.current, card];
     setCards(nextCards);
     setSelected(new Set([card.id]));
@@ -845,6 +863,24 @@ export function SceneBoard({
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
+  };
+  // View 노드 재생 — 연결된(직접+generation-list) 생성물을 모아 기존 미리보기(MediaPreview)로 순차 재생.
+  const playView = (viewId: string) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const items: PreviewItem[] = [];
+    for (const cid of collectViewGenCardIds(viewId, byId, edgesRef.current)) {
+      const card = byId.get(cid);
+      const gid = card?.genId || (card ? variantIds(card)[0] : undefined);
+      const a = gid ? genDataRef.current[gid]?.assets?.[0] : null;
+      if (a && gid)
+        items.push({
+          url: a.file_path,
+          type: a.type,
+          name: genDataRef.current[gid]?.prompt?.slice(0, 50) || "결과",
+          genId: gid,
+        });
+    }
+    if (items.length) onPreviewRef.current?.({ ...items[0], items, index: 0 });
   };
 
   // ── 색/비활성은 '대상 gid 배열'만 받는 command — 캔버스/팝업 두 레이어가 같은 로직 재사용 ──
@@ -1220,7 +1256,9 @@ export function SceneBoard({
           refs: [],
           genId: null,
         };
-        const newEdges: SceneEdge[] = srcCards.map((c) => ({ id: uid(), from: c.id, to: empty.id }));
+        const newEdges: SceneEdge[] = srcCards
+          .filter((c) => canConnect(c, empty)) // view 등 소스로 부적절한 카드 제외
+          .map((c) => ({ id: uid(), from: c.id, to: empty.id }));
         const nextEdges = [...edgesRef.current, ...newEdges];
         const nextCards = withGenRefs([...cardsRef.current, empty], nextEdges);
         setCards(nextCards);
@@ -1239,6 +1277,10 @@ export function SceneBoard({
         e.preventDefault(); // T = 텍스트 노드
         setNodePicker(null);
         createNode("text");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "v" || e.key === "V")) {
+        e.preventDefault(); // V = View 노드
+        setNodePicker(null);
+        createNode("view");
       } else if (e.key === "Delete") {
         if (!sel.size) return;
         e.preventDefault();
@@ -1658,12 +1700,46 @@ export function SceneBoard({
     return { outEdges: out, inEdges: inn };
   }, [visibleEdges, cardsById]);
   const FAN = 13;
-  const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => ({
-    x1: a.x + widthOf(a),
-    y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
-    x2: b.x,
-    y2: b.y + heightOf(b) / 2 + fanOffset(inEdges.get(b.id), e.id, FAN),
-  });
+  // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
+  const edgeRoles = useMemo(() => {
+    const m = new Map<string, SceneEdgeRole>();
+    for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents));
+    return m;
+  }, [edges, cardsById, refParents]);
+  // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
+  // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
+  const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>
+    role === "model" ? "model" : role === "text" ? "text" : "ref";
+  const laneFrac = (lane: "model" | "ref" | "text") =>
+    lane === "model" ? 0.28 : lane === "text" ? 0.72 : 0.5;
+  // 생성카드로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로 펼쳐 겹침 방지.
+  const inEdgesLaned = useMemo(() => {
+    const m = new Map<string, SceneEdge[]>();
+    for (const e of visibleEdges) {
+      if (cardsById.get(e.to)?.kind !== "generation") continue;
+      const key = e.to + ":" + laneOf(edgeRoles.get(e.id) || "ref");
+      const arr = m.get(key);
+      if (arr) arr.push(e);
+      else m.set(key, [e]);
+    }
+    const yOf = (id: string) => cardsById.get(id)?.y ?? 0;
+    for (const [, list] of m) list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleEdges, cardsById, edgeRoles]);
+  const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => {
+    const lane = laneOf(edgeRoles.get(e.id) || "ref");
+    // 타깃이 생성카드면 물리 레인 y + 그 레인 내 fan, 아니면 중앙 + 타깃 전체 fan.
+    const gen = b.kind === "generation";
+    const y2base = b.y + heightOf(b) * (gen ? laneFrac(lane) : 0.5);
+    const fanList = gen ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
+    return {
+      x1: a.x + widthOf(a),
+      y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
+      x2: b.x,
+      y2: y2base + fanOffset(fanList, e.id, FAN),
+    };
+  };
 
   // 접힌 그룹 막대로 재연결되는 브릿지 선 — 멤버가 숨어 visibleEdges 에서 빠진 연결을 막대 포트로 그린다.
   const groupBridges = collapsedMemberOf.size
@@ -1676,7 +1752,9 @@ export function SceneBoard({
         const a = barOut(e.from);
         const b = barIn(e.to);
         if (!a || !b) return [];
-        return [{ id: e.id, a, b, ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) }];
+        return [
+          { id: e.id, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
+        ];
       })
     : [];
 
@@ -1766,9 +1844,19 @@ export function SceneBoard({
             const a = cardById(e.from);
             const b = cardById(e.to);
             if (!a || !b) return null;
+            const role = edgeRoles.get(e.id);
             const cls =
               "scene-edge" +
-              (refCardEdgeIds.has(e.id) ? " ref" : genRefEdgeIds.has(e.id) ? " refg" : "") + // 레퍼런스카드=파란 점선, 생성물-레퍼런스=초록 점선, 계보=초록 실선
+              // 모델=주황, 텍스트=노랑, 레퍼런스카드=파란점선, 생성물-레퍼런스=초록점선, 계보=초록실선
+              (role === "model"
+                ? " model"
+                : role === "text"
+                  ? " text"
+                  : refCardEdgeIds.has(e.id)
+                    ? " ref"
+                    : genRefEdgeIds.has(e.id)
+                      ? " refg"
+                      : "") +
               (selected.has(e.from) || selected.has(e.to) ? " onsel" : "") + // 선택 카드에 닿은 선 강조
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
@@ -1798,7 +1886,15 @@ export function SceneBoard({
             const d = edgePathXY(gb.a.x, gb.a.y, gb.b.x, gb.b.y);
             const cls =
               "scene-edge" +
-              (gb.ref ? " ref" : gb.refg ? " refg" : "") +
+              (gb.role === "model"
+                ? " model"
+                : gb.role === "text"
+                  ? " text"
+                  : gb.ref
+                    ? " ref"
+                    : gb.refg
+                      ? " refg"
+                      : "") +
               (edgesToCut.has(gb.id) ? " cut" : "");
             return (
               <g key={gb.id}>
@@ -1862,8 +1958,14 @@ export function SceneBoard({
               }
               data-id={card.id}
               style={{ left: card.x, top: card.y, width: widthOf(card), ...(isRef ? {} : { height: heightOf(card) }) }}
-              // 레퍼런스 카드 더블클릭 → 담긴 레퍼런스들을 팝업으로 보기(분리 가능). 생성 카드는 각자 처리.
-              onDoubleClick={isRef ? () => setRefMenu(card.id) : undefined}
+              // 레퍼런스=refs 팝업, View=재생. (모델 더블클릭 모달은 후속 단계) 생성 카드는 각자 처리.
+              onDoubleClick={
+                isRef
+                  ? () => setRefMenu(card.id)
+                  : card.kind === "view"
+                    ? () => playView(card.id)
+                    : undefined
+              }
             >
               {isRef ? (
                 <>
@@ -1961,19 +2063,88 @@ export function SceneBoard({
                   />
                 </>
               ) : card.kind === "list" ? (
-                <>
-                  {/* 리스트 노드 — 연결된 생성 카드를 모아 재생. (썸네일·재생은 후속 단계) */}
-                  <div className="scene-card-inner scene-listnode">
-                    <div className="scene-card-hd list">리스트</div>
-                    <div className="scene-listnode-body">생성 카드를 연결하세요</div>
-                  </div>
-                  <span className="scene-port in" title="생성 카드를 연결해 모음" />
-                  <span
-                    className="scene-resize"
-                    onMouseDown={(e) => onResizeDown(e, card.id)}
-                    title="드래그해 크기 조절"
-                  />
-                </>
+                (() => {
+                  // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트).
+                  const li = collectListInputs(card.id, cardsById, edges);
+                  const label =
+                    li.kind === "generation"
+                      ? `생성물 ${li.generationCardIds.length}개`
+                      : li.kind === "text"
+                        ? `텍스트 ${li.sourceIds.length}개`
+                        : li.kind === "mixed"
+                          ? "⚠ 혼합 입력(사용 불가)"
+                          : li.kind === "invalid"
+                            ? "⚠ 잘못된 입력"
+                            : "생성/텍스트 카드를 연결";
+                  return (
+                    <>
+                      <div className="scene-card-inner scene-listnode">
+                        <div className="scene-card-hd list">리스트</div>
+                        <div className="scene-listnode-body">
+                          {li.kind === "text" ? (
+                            <div className="scene-listnode-text">{li.text}</div>
+                          ) : (
+                            label
+                          )}
+                        </div>
+                      </div>
+                      {li.kind === "text" && (
+                        <button
+                          className="scene-copy-btn"
+                          title="합친 텍스트 복사"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void navigator.clipboard?.writeText(li.text);
+                          }}
+                        >
+                          ⧉
+                        </button>
+                      )}
+                      <span className="scene-port in" title="생성/텍스트 카드를 연결해 모음" />
+                      <span
+                        className="scene-port out"
+                        onMouseDown={(e) => onOutPortDown(e, card.id)}
+                        title="드래그해 View(재생) 또는 생성 카드에 연결"
+                      />
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
+              ) : card.kind === "view" ? (
+                (() => {
+                  // 재생 끝점 — 연결된 생성물(직접+generation-list)을 모아 미리보기로 순차 재생.
+                  const genIds = collectViewGenCardIds(card.id, cardsById, edges);
+                  return (
+                    <>
+                      <div className="scene-card-inner scene-viewnode">
+                        <div className="scene-card-hd view">View</div>
+                        <div className="scene-viewnode-body">생성물 {genIds.length}개</div>
+                        <button
+                          className="scene-view-play"
+                          disabled={!genIds.length}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            playView(card.id);
+                          }}
+                        >
+                          ▶ 재생
+                        </button>
+                      </div>
+                      <span className="scene-port in" title="생성 카드 / 리스트를 연결" />
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
               ) : (
                 <>
                   {showNode && g ? (
@@ -2051,7 +2222,23 @@ export function SceneBoard({
                       ▤ {variantIds(card).length}
                     </button>
                   )}
-                  <span className="scene-port in" title="레퍼런스 연결 입력" />
+                  {/* 3 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(노랑). 연결 역할은
+                      소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
+                  {(
+                    [
+                      ["model", 0.28, "모델 입력"],
+                      ["ref", 0.5, "레퍼런스 입력"],
+                      ["text", 0.72, "텍스트 입력"],
+                    ] as [SceneEdgeRole, number, string][]
+                  ).map(([role, frac, tip]) => (
+                    <span
+                      key={role}
+                      className={"scene-port in lane-" + role}
+                      data-role={role}
+                      style={{ top: `${frac * 100}%` }}
+                      title={tip}
+                    />
+                  ))}
                   <span
                     className="scene-port out"
                     onMouseDown={(e) => onOutPortDown(e, card.id)}
@@ -2096,7 +2283,16 @@ export function SceneBoard({
             const a = cardById(e.from);
             const b = cardById(e.to);
             if (!a || !b) return null;
-            const cls = "scene-dot" + (refCardEdgeIds.has(e.id) ? " ref" : "");
+            const dotRole = edgeRoles.get(e.id);
+            const cls =
+              "scene-dot" +
+              (dotRole === "model"
+                ? " model"
+                : dotRole === "text"
+                  ? " text"
+                  : refCardEdgeIds.has(e.id)
+                    ? " ref"
+                    : "");
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             return (
               <g key={e.id}>
@@ -2143,6 +2339,7 @@ export function SceneBoard({
                 ["Model", "M", "model"],
                 ["List", "L", "list"],
                 ["Text", "T", "text"],
+                ["View", "V", "view"],
               ] as [string, string, SceneCardKind][]
             ).map(([label, key, kind]) => (
               <button

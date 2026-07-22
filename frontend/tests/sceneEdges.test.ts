@@ -8,6 +8,7 @@ import {
   resolveEdgeRole,
   collectListInputs,
   collectViewGenCardIds,
+  canConnect,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -231,5 +232,34 @@ describe("collectViewGenCardIds", () => {
       { id: "e2", from: "T", to: "L" },
     ];
     expect(collectViewGenCardIds("V", cards, edges)).toEqual([]);
+  });
+});
+
+describe("canConnect", () => {
+  const c = (id: string, kind: SceneCard["kind"]): SceneCard => ({ id, kind, x: 0, y: 0 });
+  it("generation 은 view 외 모든 소스 허용", () => {
+    const G = c("G", "generation");
+    expect(canConnect(c("M", "model"), G)).toBe(true);
+    expect(canConnect(c("T", "text"), G)).toBe(true);
+    expect(canConnect(c("R", "reference"), G)).toBe(true);
+    expect(canConnect(c("L", "list"), G)).toBe(true);
+    expect(canConnect(c("V", "view"), G)).toBe(false);
+  });
+  it("list 는 generation/text 만", () => {
+    const L = c("L", "list");
+    expect(canConnect(c("G", "generation"), L)).toBe(true);
+    expect(canConnect(c("T", "text"), L)).toBe(true);
+    expect(canConnect(c("M", "model"), L)).toBe(false);
+  });
+  it("view 는 generation/list 만", () => {
+    const V = c("V", "view");
+    expect(canConnect(c("G", "generation"), V)).toBe(true);
+    expect(canConnect(c("L", "list"), V)).toBe(true);
+    expect(canConnect(c("T", "text"), V)).toBe(false);
+  });
+  it("text/model/reference 는 입력 없음, 자기연결 금지", () => {
+    expect(canConnect(c("A", "generation"), c("B", "text"))).toBe(false);
+    expect(canConnect(c("A", "generation"), c("B", "model"))).toBe(false);
+    expect(canConnect(c("X", "generation"), c("X", "generation"))).toBe(false);
   });
 });
