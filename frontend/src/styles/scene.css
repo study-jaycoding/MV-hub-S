@@ -414,8 +414,15 @@
 .scene-card-gen.sel .scene-port.in.lane-ref { background: #7fa9ff; }
 .scene-card-gen.sel .scene-port.in.lane-text { background: #b57aff; }
 .scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.35); }
-/* 연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 드러내 어디든 놓을 수 있게(비선택 대상도 드롭 가능). */
-.scene-board.wiring .scene-card .scene-port.in { opacity: 0.85; pointer-events: auto; }
+/* ★연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 색까지 넣어 드러낸다(어디에 놓을지 보이게). 비선택 대상도 드롭 가능. */
+.scene-board.wiring .scene-card .scene-port.in {
+  opacity: 1; pointer-events: auto; z-index: 15;
+  background: var(--pc, #7fa9ff); border-color: #14161a;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5), 0 0 8px 2px color-mix(in srgb, var(--pc, #7fa9ff) 55%, transparent);
+}
+.scene-board.wiring .scene-card-gen .scene-port.in.lane-model { background: #ffb84d; }
+.scene-board.wiring .scene-card-gen .scene-port.in.lane-ref { background: #7fa9ff; }
+.scene-board.wiring .scene-card-gen .scene-port.in.lane-text { background: #b57aff; }
 /* 연결선 끝점 색 점 — 한 포트에 여러 연결이 겹칠 때 선마다 끝점을 분리(fan-out).
    레퍼런스 카드 연결만 파랑, 나머지(계보·생성물레퍼런스)는 초록. */
 .scene-dot { fill: var(--accent); stroke: #14161a; stroke-width: 2; } /* 초록 */
