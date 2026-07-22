@@ -149,6 +149,64 @@
   position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 7;
   cursor: nwse-resize;
 }
+
+/* ── 텍스트 노드 — 검정 배경/흰 글씨 textarea + 우측하단 전체복사 버튼 ── */
+.scene-card-text { border: 2px solid #3a3f48; background: #000; }
+.scene-card-text:hover { border-color: #ffe27a; }
+.scene-card-hd.text { color: #ffe27a; background: rgba(255, 226, 122, 0.08); cursor: grab; }
+.scene-textnode {
+  flex: 1; width: 100%; box-sizing: border-box;
+  background: #000; color: #fff; border: 0; border-radius: 0 0 10px 10px;
+  resize: none; padding: 8px 8px 24px; font-size: 12px; line-height: 1.45;
+  font-family: inherit; outline: none;
+}
+.scene-textnode::placeholder { color: #666; }
+.scene-copy-btn {
+  position: absolute; right: 22px; bottom: 4px; z-index: 8;
+  width: 20px; height: 20px; border: 0; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.12); color: #fff; cursor: pointer;
+  font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.scene-copy-btn:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* ── 모델 노드 — 주황 계열, 설정 정보 표시 ── */
+.scene-card-model { border: 2px solid #6b4a1f; }
+.scene-card-model:hover { border-color: #ffb84d; }
+.scene-card-hd.model { color: #ffb84d; background: rgba(255, 150, 50, 0.10); }
+.scene-modelnode-body {
+  flex: 1; display: flex; flex-direction: column; gap: 3px;
+  padding: 8px; justify-content: center;
+}
+.scene-modelnode-name { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
+.scene-modelnode-type { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.scene-modelnode-empty { font-size: 11px; color: var(--muted); text-align: center; }
+
+/* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
+.scene-card-list { border: 2px solid #3a4a2b; }
+.scene-card-list:hover { border-color: var(--accent); }
+.scene-card-hd.list { color: var(--accent); background: rgba(196, 232, 74, 0.10); }
+.scene-listnode-body {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 11px; padding: 8px; text-align: center;
+}
+
+/* ── Tab 노드 피커(Houdini식) ── */
+.scene-nodepick-backdrop { position: absolute; inset: 0; z-index: 24; }
+.scene-nodepick {
+  position: absolute; z-index: 25; min-width: 132px; padding: 3px;
+  background: #1b1e24; border: 1px solid #3a3f48; border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5); overflow: hidden;
+}
+.scene-nodepick-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; background: transparent; border: 0; color: var(--text);
+  cursor: pointer; padding: 6px 9px; border-radius: 6px; font-size: 12px; text-align: left;
+}
+.scene-nodepick-item:hover { background: rgba(255, 255, 255, 0.08); }
+.scene-nodepick-key {
+  font-size: 10px; color: var(--muted); border: 1px solid var(--border2);
+  border-radius: 4px; padding: 0 5px; line-height: 15px;
+}
 .scene-card-hd.gen { color: var(--blue, #7fa9ff); background: rgba(127, 169, 255, 0.10); }
 .scene-card-genbody {
   flex: 1; display: grid; place-items: center; color: var(--muted); font-size: 11.5px;

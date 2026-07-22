@@ -23,6 +23,7 @@ import {
   variantIds,
   type Scene,
   type SceneCard,
+  type SceneCardKind,
   type SceneEdge,
   type SceneGroup,
   type SceneRef,
@@ -151,6 +152,10 @@ export function SceneBoard({
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [refMenu, setRefMenu] = useState<string | null>(null); // 레퍼런스 카드 더블클릭 → 담긴 refs 보기 팝업
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
+  // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
+  const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
+  const nodePickerRef = useRef(false);
+  nodePickerRef.current = !!nodePicker;
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
@@ -271,10 +276,11 @@ export function SceneBoard({
   }, []);
   useLayoutEffect(applyTransform);
 
-  // 카드 크기(캔버스 좌표). 생성 카드는 사용자가 조절한 w/h(없으면 기본), 레퍼런스는 고정폭·측정높이.
-  const widthOf = (c: SceneCard) => (c.kind === "generation" ? c.w ?? CARD_W : CARD_W);
+  // 카드 크기(캔버스 좌표). 레퍼런스는 고정폭·측정높이(내용에 맞춤), 그 외(생성/텍스트/모델/리스트)는
+  // 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
+  const widthOf = (c: SceneCard) => (c.kind === "reference" ? CARD_W : c.w ?? CARD_W);
   const heightOf = (c: SceneCard) =>
-    c.kind === "generation" ? c.h ?? CARD_H : heightsRef.current[c.id] || CARD_H;
+    c.kind === "reference" ? heightsRef.current[c.id] || CARD_H : c.h ?? CARD_H;
 
   // ── f 키 프레이밍 · 미니맵 이동 공용 카메라 유틸 ──
   // 카드 한 장의 바깥 사각형(캔버스 좌표). 레퍼런스는 실제 측정 높이, 생성은 고정.
@@ -802,6 +808,45 @@ export function SceneBoard({
     beginDrag(move, up);
   };
 
+  // ── 노드 생성(Tab 피커·단축키 공용) ─────────────────────────────────────────
+  // 마우스 위치(캔버스 위)를 새 노드 좌상단 좌표로. 캔버스 밖이면 화면 중앙 폴백.
+  const cursorSpawn = (): { x: number; y: number } => {
+    const m = lastMouseRef.current;
+    const rect = scrollRef.current?.getBoundingClientRect();
+    if (m.over) {
+      const p = toCanvas(m.x, m.y);
+      return { x: Math.round(p.x - CARD_W / 2), y: Math.round(p.y - CARD_H / 2) };
+    }
+    if (rect) {
+      const c = toCanvas(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { x: Math.round(c.x - CARD_W / 2), y: Math.round(c.y - CARD_H / 2) };
+    }
+    return { x: 200, y: 200 };
+  };
+  // 새 노드 한 개 생성(연결 없음) — text/model/list/generation. 선택 후 저장.
+  const createNode = (kind: SceneCardKind, pos?: { x: number; y: number }) => {
+    const at = pos ?? cursorSpawn();
+    const base = { id: uid(), x: at.x, y: at.y };
+    const card: SceneCard =
+      kind === "text"
+        ? { ...base, kind: "text", text: "" }
+        : kind === "model"
+          ? { ...base, kind: "model" }
+          : kind === "list"
+            ? { ...base, kind: "list" }
+            : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+    const nextCards = [...cardsRef.current, card];
+    setCards(nextCards);
+    setSelected(new Set([card.id]));
+    persist(nextCards, edgesRef.current);
+  };
+  // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움).
+  const setNodeText = (cardId: string, text: string) => {
+    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
+
   // ── 색/비활성은 '대상 gid 배열'만 받는 command — 캔버스/팝업 두 레이어가 같은 로직 재사용 ──
   // 색 지정/해제(라이브러리와 같은 토글: 전부 같은 색이면 해제). 로드된 결과만 대상.
   const applyColorToGids = (gids: string[], color: string) => {
@@ -989,7 +1034,8 @@ export function SceneBoard({
       )
         return;
       if (e.key === "Escape") {
-        if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
+        if (nodePickerRef.current) setNodePicker(null); // 노드 피커 닫기(우선)
+        else if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
         else if (refMenuRef.current) setRefMenu(null); // 레퍼런스 검사 팝업 닫기
         return;
       }
@@ -1023,6 +1069,22 @@ export function SceneBoard({
         return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
       }
       const sel = selectedRef.current;
+      // Tab = Houdini식 노드 피커. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
+      // 이동을 막지 않는다(접근성). 위 모달 가드(refMenu/cardMenu) 통과 후라 팝업 중엔 안 뜬다.
+      if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const m = lastMouseRef.current;
+        const rect = scrollRef.current?.getBoundingClientRect();
+        if (!m.over || !rect) return; // 보드 위가 아니면 기본 Tab(포커스 이동) 허용
+        e.preventDefault();
+        const cp = toCanvas(m.x, m.y);
+        setNodePicker({
+          sx: m.x - rect.left,
+          sy: m.y - rect.top,
+          cx: Math.round(cp.x - CARD_W / 2),
+          cy: Math.round(cp.y - CARD_H / 2),
+        });
+        return;
+      }
       // Ctrl+Z = 되돌리기, Ctrl+Shift+Z = 다시 실행(redo). Alt 조합은 제외.
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
@@ -1165,6 +1227,18 @@ export function SceneBoard({
         setEdges(nextEdges);
         setSelected(new Set([empty.id]));
         persist(nextCards, nextEdges);
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M")) {
+        e.preventDefault(); // M = 모델 노드
+        setNodePicker(null);
+        createNode("model");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "l" || e.key === "L")) {
+        e.preventDefault(); // L = 리스트 노드
+        setNodePicker(null);
+        createNode("list");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "t" || e.key === "T")) {
+        e.preventDefault(); // T = 텍스트 노드
+        setNodePicker(null);
+        createNode("text");
       } else if (e.key === "Delete") {
         if (!sel.size) return;
         e.preventDefault();
@@ -1765,8 +1839,15 @@ export function SceneBoard({
         {visibleCards.map((card) => {
           const sel = selected.has(card.id);
           const isRef = card.kind === "reference";
-          const g = !isRef && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
+          const isGen = card.kind === "generation";
+          const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
+          const kindCls =
+            card.kind === "reference"
+              ? "scene-card-ref"
+              : card.kind === "generation"
+                ? "scene-card-gen"
+                : "scene-card-" + card.kind; // text/model/list
           return (
             <div
               key={card.id}
@@ -1775,7 +1856,7 @@ export function SceneBoard({
               }}
               className={
                 "scene-card " +
-                (isRef ? "scene-card-ref" : "scene-card-gen") +
+                kindCls +
                 (sel ? " sel" : "") +
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
@@ -1810,6 +1891,87 @@ export function SceneBoard({
                     className="scene-port out"
                     onMouseDown={(e) => onOutPortDown(e, card.id)}
                     title="드래그해 생성 카드에 연결"
+                  />
+                </>
+              ) : card.kind === "text" ? (
+                <>
+                  {/* 텍스트 노드 — 상단 헤더(잡아서 이동) + 검정/흰 textarea. 우측하단 복사·리사이즈. */}
+                  <div className="scene-card-inner">
+                    <div className="scene-card-hd text">텍스트</div>
+                    <textarea
+                      className="scene-textnode"
+                      value={card.text || ""}
+                      placeholder="텍스트 입력..."
+                      spellCheck={false}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onChange={(e) => setNodeText(card.id, e.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="scene-copy-btn"
+                    title="텍스트 전체 복사"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void navigator.clipboard?.writeText(card.text || "");
+                    }}
+                  >
+                    ⧉
+                  </button>
+                  <span
+                    className="scene-port out"
+                    onMouseDown={(e) => onOutPortDown(e, card.id)}
+                    title="드래그해 생성 카드 텍스트 입력에 연결(노랑)"
+                  />
+                  <span
+                    className="scene-resize"
+                    onMouseDown={(e) => onResizeDown(e, card.id)}
+                    title="드래그해 크기 조절"
+                  />
+                </>
+              ) : card.kind === "model" ? (
+                <>
+                  {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
+                  <div className="scene-card-inner scene-modelnode">
+                    <div className="scene-card-hd model">모델</div>
+                    <div className="scene-modelnode-body">
+                      {card.modelCfg?.model ? (
+                        <>
+                          <div className="scene-modelnode-name">
+                            {card.modelCfg.modelName || card.modelCfg.model}
+                          </div>
+                          {card.modelCfg.type && (
+                            <div className="scene-modelnode-type">{card.modelCfg.type}</div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="scene-modelnode-empty">더블클릭해 모델 설정</div>
+                      )}
+                    </div>
+                  </div>
+                  <span
+                    className="scene-port out"
+                    onMouseDown={(e) => onOutPortDown(e, card.id)}
+                    title="드래그해 생성 카드 모델 입력에 연결(주황)"
+                  />
+                  <span
+                    className="scene-resize"
+                    onMouseDown={(e) => onResizeDown(e, card.id)}
+                    title="드래그해 크기 조절"
+                  />
+                </>
+              ) : card.kind === "list" ? (
+                <>
+                  {/* 리스트 노드 — 연결된 생성 카드를 모아 재생. (썸네일·재생은 후속 단계) */}
+                  <div className="scene-card-inner scene-listnode">
+                    <div className="scene-card-hd list">리스트</div>
+                    <div className="scene-listnode-body">생성 카드를 연결하세요</div>
+                  </div>
+                  <span className="scene-port in" title="생성 카드를 연결해 모음" />
+                  <span
+                    className="scene-resize"
+                    onMouseDown={(e) => onResizeDown(e, card.id)}
+                    title="드래그해 크기 조절"
                   />
                 </>
               ) : (
@@ -1968,6 +2130,37 @@ export function SceneBoard({
 
       {cutHeld && (
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
+      )}
+
+      {/* Tab 노드 피커 — 커서 위치의 작은 메뉴. 항목 클릭 시 그 자리에 노드 생성. 배경/Esc 로 닫힘. */}
+      {nodePicker && (
+        <>
+          <div className="scene-nodepick-backdrop" onMouseDown={() => setNodePicker(null)} />
+          <div className="scene-nodepick" style={{ left: nodePicker.sx, top: nodePicker.sy }}>
+            {(
+              [
+                ["New", "N", "generation"],
+                ["Model", "M", "model"],
+                ["List", "L", "list"],
+                ["Text", "T", "text"],
+              ] as [string, string, SceneCardKind][]
+            ).map(([label, key, kind]) => (
+              <button
+                key={kind}
+                className="scene-nodepick-item"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  const at = { x: nodePicker.cx, y: nodePicker.cy };
+                  setNodePicker(null);
+                  createNode(kind, at);
+                }}
+              >
+                <span className="scene-nodepick-name">{label}</span>
+                <span className="scene-nodepick-key">{key}</span>
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
