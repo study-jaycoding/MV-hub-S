@@ -6,6 +6,8 @@ import {
   computeBridgeEdges,
   classifyEdges,
   resolveEdgeRole,
+  collectListInputs,
+  collectViewGenCardIds,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -114,5 +116,120 @@ describe("resolveEdgeRole", () => {
     const cards = byId([S, T, U]);
     expect(resolveEdgeRole({ id: "e1", from: "S", to: "T" }, cards, {})).toBe("ref");
     expect(resolveEdgeRole({ id: "e2", from: "S", to: "U" }, cards, {})).toBe("lineage");
+  });
+});
+
+describe("collectListInputs", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("입력 없으면 empty", () => {
+    expect(collectListInputs("L", byId([node("L", "list")]), []).kind).toBe("empty");
+  });
+  it("생성카드만 → generation, 순서=소스 y", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("G2", "generation", { y: 20 }),
+      node("G1", "generation", { y: 5 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G2", to: "L" },
+      { id: "e2", from: "G1", to: "L" },
+    ];
+    const r = collectListInputs("L", cards, edges);
+    expect(r.kind).toBe("generation");
+    expect(r.generationCardIds).toEqual(["G1", "G2"]); // y 오름차순
+  });
+  it("edge.order 가 y 보다 우선", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("G1", "generation", { y: 5 }),
+      node("G2", "generation", { y: 20 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G1", to: "L", order: 2 },
+      { id: "e2", from: "G2", to: "L", order: 1 },
+    ];
+    expect(collectListInputs("L", cards, edges).generationCardIds).toEqual(["G2", "G1"]);
+  });
+  it("텍스트만 → text, join('\\n')", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("T1", "text", { y: 0, text: "hello" }),
+      node("T2", "text", { y: 10, text: "world" }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "T1", to: "L" },
+      { id: "e2", from: "T2", to: "L" },
+    ];
+    const r = collectListInputs("L", cards, edges);
+    expect(r.kind).toBe("text");
+    expect(r.text).toBe("hello\nworld");
+  });
+  it("gen+text 혼합 → mixed, model 섞이면 invalid", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("G", "generation"),
+      node("T", "text"),
+      node("M", "model"),
+    ]);
+    expect(
+      collectListInputs("L", cards, [
+        { id: "e1", from: "G", to: "L" },
+        { id: "e2", from: "T", to: "L" },
+      ]).kind,
+    ).toBe("mixed");
+    expect(
+      collectListInputs("L", cards, [
+        { id: "e1", from: "G", to: "L" },
+        { id: "e2", from: "M", to: "L" },
+      ]).kind,
+    ).toBe("invalid");
+  });
+});
+
+describe("collectViewGenCardIds", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("생성카드 직접 + generation-list 를 펼쳐 수집(중복 제거)", () => {
+    const cards = byId([
+      node("V", "view"),
+      node("G1", "generation", { y: 0 }),
+      node("L", "list", { y: 10 }),
+      node("G2", "generation", { y: 100 }),
+      node("G3", "generation", { y: 200 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G1", to: "V" }, // 직접
+      { id: "e2", from: "L", to: "V" }, // 리스트 경유
+      { id: "e3", from: "G2", to: "L" },
+      { id: "e4", from: "G3", to: "L" },
+    ];
+    expect(collectViewGenCardIds("V", cards, edges)).toEqual(["G1", "G2", "G3"]);
+  });
+  it("text-list 는 무시(View 는 미디어 전용)", () => {
+    const cards = byId([
+      node("V", "view"),
+      node("L", "list"),
+      node("T", "text", { text: "x" }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "L", to: "V" },
+      { id: "e2", from: "T", to: "L" },
+    ];
+    expect(collectViewGenCardIds("V", cards, edges)).toEqual([]);
   });
 });

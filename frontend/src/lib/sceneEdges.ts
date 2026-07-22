@@ -3,6 +3,79 @@
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
 import { variantIds, type SceneCard, type SceneEdge, type SceneEdgeRole } from "./scenes";
 
+// list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
+// text 만 들어오면 그 텍스트를 order/y 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
+export interface ListInputs {
+  kind: "empty" | "generation" | "text" | "mixed" | "invalid";
+  sourceIds: string[]; // 정렬된 입력 소스 카드 id
+  generationCardIds: string[]; // generation 수집일 때 그 카드들
+  text: string; // text 수집일 때 합친 텍스트
+}
+
+// 입력 소스 정렬: edge.order 우선 → 소스 y → 소스 x → 기존 순서.
+function sortByOrder(items: { e: SceneEdge; c: SceneCard }[]): { e: SceneEdge; c: SceneCard }[] {
+  return items
+    .map((x, i) => ({ ...x, i }))
+    .sort((a, b) => {
+      const oa = a.e.order;
+      const ob = b.e.order;
+      if (oa != null && ob != null && oa !== ob) return oa - ob;
+      if (oa != null && ob == null) return -1;
+      if (oa == null && ob != null) return 1;
+      if (a.c.y !== b.c.y) return a.c.y - b.c.y;
+      if (a.c.x !== b.c.x) return a.c.x - b.c.x;
+      return a.i - b.i;
+    });
+}
+
+export function collectListInputs(
+  listId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): ListInputs {
+  const sources = edges
+    .filter((e) => e.to === listId)
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
+  if (!sources.length) return { kind: "empty", sourceIds: [], generationCardIds: [], text: "" };
+  const sorted = sortByOrder(sources);
+  const sourceIds = sorted.map((s) => s.c.id);
+  const kinds = new Set(sorted.map((s) => s.c.kind));
+  if ([...kinds].every((k) => k === "generation"))
+    return { kind: "generation", sourceIds, generationCardIds: sourceIds, text: "" };
+  if ([...kinds].every((k) => k === "text"))
+    return { kind: "text", sourceIds, generationCardIds: [], text: sorted.map((s) => s.c.text || "").join("\n") };
+  // 그 외: gen+text 혼합이면 mixed, model/reference 등이 섞이면 invalid.
+  const hasNonGenText = sorted.some((s) => s.c.kind !== "generation" && s.c.kind !== "text");
+  return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
+}
+
+// View 노드가 표시할 생성 카드 id 목록(순서 보존, 중복 제거). generation 직접 연결 + generation-list 를
+// 통해 들어온 것까지 펼친다. text/model/ref 나 text-list 는 무시(View 는 미디어 전용).
+export function collectViewGenCardIds(
+  viewId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): string[] {
+  const srcs = edges
+    .filter((e) => e.to === viewId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => !!c)
+    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  const out: string[] = [];
+  const push = (id: string) => {
+    if (!out.includes(id)) out.push(id);
+  };
+  for (const c of srcs) {
+    if (c.kind === "generation") push(c.id);
+    else if (c.kind === "list") {
+      const li = collectListInputs(c.id, cardsById, edges);
+      if (li.kind === "generation") li.generationCardIds.forEach(push);
+    }
+  }
+  return out;
+}
+
 // 연결의 역할 판정(순수) — 생성카드 입력 레인·엣지 색의 단일 근거. edge.role 이 명시돼 있으면 그대로,
 // 아니면 소스/타깃 kind 로 추론(기존 저장분 하위호환). gen→gen 은 refParents/refs 로 'ref 사용'과 '계보'를 구분.
 //  · model 노드 → 'model'(주황)  · text 노드 → 'text'(노랑)  · reference 카드 → 'ref'(파랑)

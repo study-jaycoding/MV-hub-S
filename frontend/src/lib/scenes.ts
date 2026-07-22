@@ -3,7 +3,7 @@
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
-export type SceneCardKind = "reference" | "generation" | "text" | "model" | "list";
+export type SceneCardKind = "reference" | "generation" | "text" | "model" | "list" | "view";
 
 // 모델 노드 설정 — 하단 프롬프트(SpotlightOptionsBar)에서 고른 값의 스냅샷(표시·조직화용).
 export interface SceneModelCfg {
