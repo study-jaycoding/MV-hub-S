@@ -582,19 +582,6 @@
 .scene-portnode-body {
   flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 6px 7px; min-width: 0;
 }
-.scene-portnode-name {
-  width: 100%; box-sizing: border-box; font-size: 12px; font-weight: 700;
-  color: var(--text); background: #0d1016; border: 1px solid var(--border2);
-  border-radius: 6px; padding: 4px 7px; outline: none;
-}
-.scene-portnode-name:focus { border-color: var(--oc); }
-.scene-portnode-name::placeholder { color: var(--muted); font-weight: 500; }
-.scene-portnode-sel {
-  width: 100%; box-sizing: border-box; font-size: 12px; font-weight: 600;
-  color: var(--text); background: #0d1016; border: 1px solid var(--border2);
-  border-radius: 6px; padding: 4px 7px; outline: none; cursor: pointer;
-}
-.scene-portnode-sel:focus { border-color: var(--oc); }
 /* 타입 라벨(모델/텍스트/레퍼런스…) — 소스색 알약. 포트가 있는 쪽에 붙여 '포트 옆' 느낌으로. */
 .scene-portnode-src {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; color: var(--oc);
@@ -608,6 +595,31 @@
 .scene-portnode-dot {
   flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--oc);
 }
+/* 입력된 값(채널 이름) — 타입 라벨 아래 큼직하게. */
+.scene-portnode-val {
+  font-size: 13px; font-weight: 800; color: var(--text); word-break: break-word;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scene-portnode.out .scene-portnode-val { text-align: left; }
+.scene-portnode.in .scene-portnode-val { text-align: right; }
+.scene-portnode-valph { color: var(--muted); font-weight: 600; }
+/* 카드 아래 편집 툴바(선택 시) — 이름 입력/출력 드롭다운. 생성카드 Generate 툴바와 같은 위치·스타일. */
+.scene-portedit {
+  position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 14;
+  display: inline-flex; align-items: center; padding: 4px; white-space: nowrap;
+  background: #14171c; border: 1px solid var(--border2); border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.scene-portedit-name,
+.scene-portedit-sel {
+  box-sizing: border-box; min-width: 130px; font-size: 12px; font-weight: 700;
+  color: var(--text); background: #0d1016; border: 1px solid var(--border2);
+  border-radius: 6px; padding: 4px 8px; outline: none;
+}
+.scene-portedit-sel { cursor: pointer; }
+.scene-portedit-name:focus,
+.scene-portedit-sel:focus { border-color: var(--accent); }
+.scene-portedit-name::placeholder { color: var(--muted); font-weight: 500; }
 .scene-portnode-empty { color: var(--muted); font-weight: 500; }
 
 /* ── Head(제목) 노드 — 포트 없는 큰 글씨 주석. 배경/테두리 없음, 크기 조절 시 글자도 커짐. ── */

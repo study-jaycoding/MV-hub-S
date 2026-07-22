@@ -884,9 +884,9 @@ export function SceneBoard({
             : kind === "view"
               ? { ...base, kind: "view" }
               : kind === "output"
-                ? { ...base, kind: "output", text: "", w: 148, h: 90 }
+                ? { ...base, kind: "output", text: "", w: 140, h: 74 }
                 : kind === "input"
-                  ? { ...base, kind: "input", w: 148, h: 90 }
+                  ? { ...base, kind: "input", w: 140, h: 74 }
                   : kind === "head"
                     ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
                     : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
@@ -2643,14 +2643,7 @@ export function SceneBoard({
                       <div className={"scene-card-inner scene-portnode out oc-" + (k || "none")}>
                         <div className="scene-card-hd portout">OUTPUT</div>
                         <div className="scene-portnode-body">
-                          <input
-                            className="scene-portnode-name"
-                            value={card.text || ""}
-                            placeholder="채널 이름"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onFocus={() => setSelected(new Set([card.id]))}
-                            onChange={(e) => setNodeText(card.id, e.target.value)}
-                          />
+                          {/* 본문 = 타입 라벨 + 입력된 값(채널 이름). 이름 입력은 선택 시 카드 아래 툴바에서. */}
                           <div className="scene-portnode-src">
                             {src ? (
                               <>
@@ -2660,8 +2653,23 @@ export function SceneBoard({
                               <span className="scene-portnode-empty">소스를 연결</span>
                             )}
                           </div>
+                          <div className="scene-portnode-val">
+                            {(card.text || "").trim() || (
+                              <span className="scene-portnode-valph">이름 없음</span>
+                            )}
+                          </div>
                         </div>
                       </div>
+                      {sel && (
+                        <div className="scene-portedit" onMouseDown={(e) => e.stopPropagation()}>
+                          <input
+                            className="scene-portedit-name"
+                            value={card.text || ""}
+                            placeholder="채널 이름 입력"
+                            onChange={(e) => setNodeText(card.id, e.target.value)}
+                          />
+                        </div>
+                      )}
                       <span className="scene-port in" title="발행할 소스(모델/텍스트/레퍼런스/생성물/리스트)를 연결" />
                     </>
                   );
@@ -2686,16 +2694,34 @@ export function SceneBoard({
                               ? "리스트"
                               : "";
                   const chOk = !!card.channel && outputs.some((o) => o.id === card.channel);
+                  const channelName = chOk ? (cardsById.get(card.channel!)?.text || "").trim() : "";
                   return (
                     <>
                       <div className={"scene-card-inner scene-portnode in oc-" + (k || "none")}>
                         <div className="scene-card-hd portin">INPUT</div>
                         <div className="scene-portnode-body">
+                          {/* 본문 = 타입 라벨 + 고른 채널 이름. 출력 선택 드롭다운은 선택 시 카드 아래 툴바에서. */}
+                          <div className="scene-portnode-src">
+                            {real ? (
+                              <>
+                                <span className="scene-portnode-dot" /> → {kindLabel}
+                              </>
+                            ) : (
+                              <span className="scene-portnode-empty">
+                                {card.channel ? "⚠ 미연결(소스 없음)" : "출력 선택"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="scene-portnode-val">
+                            {channelName || <span className="scene-portnode-valph">채널 없음</span>}
+                          </div>
+                        </div>
+                      </div>
+                      {sel && (
+                        <div className="scene-portedit" onMouseDown={(e) => e.stopPropagation()}>
                           <select
-                            className="scene-portnode-sel"
+                            className="scene-portedit-sel"
                             value={chOk ? card.channel : ""}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onFocus={() => setSelected(new Set([card.id]))}
                             onChange={(e) => setNodeChannel(card.id, e.target.value)}
                           >
                             <option value="">출력 선택…</option>
@@ -2705,19 +2731,8 @@ export function SceneBoard({
                               </option>
                             ))}
                           </select>
-                          <div className="scene-portnode-src">
-                            {real ? (
-                              <>
-                                <span className="scene-portnode-dot" /> → {kindLabel}
-                              </>
-                            ) : (
-                              <span className="scene-portnode-empty">
-                                {card.channel ? "⚠ 미연결(소스 없음)" : "출력을 고르세요"}
-                              </span>
-                            )}
-                          </div>
                         </div>
-                      </div>
+                      )}
                       <span
                         className="scene-port out"
                         onMouseDown={(e) => onOutPortDown(e, card.id)}
