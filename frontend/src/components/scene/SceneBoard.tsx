@@ -41,6 +41,10 @@ import { useClickSeparation } from "../../lib/useClickSeparation";
 
 const CARD_W = 152;
 const CARD_H = 130;
+// 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
+const GRID = 22;
+const CARD_MIN = GRID * 3; // 카드 최소 크기(내용이 뭉개지지 않게)
+const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 
 // 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
 // asset:proj|path 토큰이면 포스터(assetThumbUrl, 백엔드 첫 프레임)로 바꿔 이미지로 표시한다.
@@ -265,13 +269,18 @@ export function SceneBoard({
   }, []);
   useLayoutEffect(applyTransform);
 
+  // 카드 크기(캔버스 좌표). 생성 카드는 사용자가 조절한 w/h(없으면 기본), 레퍼런스는 고정폭·측정높이.
+  const widthOf = (c: SceneCard) => (c.kind === "generation" ? c.w ?? CARD_W : CARD_W);
+  const heightOf = (c: SceneCard) =>
+    c.kind === "generation" ? c.h ?? CARD_H : heightsRef.current[c.id] || CARD_H;
+
   // ── f 키 프레이밍 · 미니맵 이동 공용 카메라 유틸 ──
   // 카드 한 장의 바깥 사각형(캔버스 좌표). 레퍼런스는 실제 측정 높이, 생성은 고정.
   const cardRect = (c: SceneCard) => ({
     x: c.x,
     y: c.y,
-    w: CARD_W,
-    h: c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H,
+    w: widthOf(c),
+    h: heightOf(c),
   });
   // 주어진 카드 집합이 화면에 꽉 차게(여백 포함) 프레이밍 — 중심 정렬 + 맞춤 줌.
   const frameCards = (list: SceneCard[], maxZoom: number) => {
@@ -766,6 +775,31 @@ export function SceneBoard({
     beginDrag(move, up);
   };
 
+  // 생성 카드 우하단 핸들 드래그 → 크기 조절(자유 조절, 22px 격자 스냅, 최소 CARD_MIN). 카드 이동과
+  // 겹치지 않게 stopPropagation. 손 떼면 저장.
+  const onResizeDown = (e: React.MouseEvent, cardId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const c = cardsRef.current.find((cc) => cc.id === cardId);
+    if (!c) return;
+    const startW = c.w ?? CARD_W;
+    const startH = c.h ?? CARD_H;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const move = (ev: MouseEvent) => {
+      const z = zoomRef.current;
+      const w = Math.max(CARD_MIN, snapGrid(startW + (ev.clientX - sx) / z));
+      const h = Math.max(CARD_MIN, snapGrid(startH + (ev.clientY - sy) / z));
+      setCards((prev) => {
+        const cur = prev.find((cc) => cc.id === cardId);
+        if (cur && cur.w === w && cur.h === h) return prev; // 스냅값 그대로면 리렌더 스킵
+        return prev.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
+      });
+    };
+    const up = () => persist(cardsRef.current, edgesRef.current);
+    beginDrag(move, up);
+  };
+
   // ── 색/비활성은 '대상 gid 배열'만 받는 command — 캔버스/팝업 두 레이어가 같은 로직 재사용 ──
   // 색 지정/해제(라이브러리와 같은 토글: 전부 같은 색이면 해제). 로드된 결과만 대상.
   const applyColorToGids = (gids: string[], color: string) => {
@@ -1231,14 +1265,17 @@ export function SceneBoard({
           if (c) origins[tid] = { x: c.x, y: c.y };
         }
         let gMoved = false;
+        const gAnchor = origins[memberIds[0]]; // 그룹 이동도 첫 멤버를 격자에 스냅하고 전체를 같은 오프셋으로.
         const move = (ev: MouseEvent) => {
           if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
           gMoved = true;
           const z = zoomRef.current;
           const dx = (ev.clientX - gsx) / z;
           const dy = (ev.clientY - gsy) / z;
+          const sdx = gAnchor ? snapGrid(gAnchor.x + dx) - gAnchor.x : dx;
+          const sdy = gAnchor ? snapGrid(gAnchor.y + dy) - gAnchor.y : dy;
           setCards((prev) =>
-            prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + dx, y: origins[c.id].y + dy } : c)),
+            prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c)),
           );
         };
         const up = () => {
@@ -1274,15 +1311,23 @@ export function SceneBoard({
         const c = cardsRef.current.find((cc) => cc.id === tid);
         if (c) origins[tid] = { x: c.x, y: c.y };
       }
+      const anchor = origins[id]; // 잡은 카드 — 이 카드를 격자에 스냅하고 나머지는 같은 오프셋으로 이동(상대배치 보존).
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         moved = true;
         const z = zoomRef.current;
         const dx = (ev.clientX - startX) / z;
         const dy = (ev.clientY - startY) / z;
-        setCards((prev) =>
-          prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + dx, y: origins[c.id].y + dy } : c)),
-        );
+        // 잡은 카드의 최종 위치를 22px 격자에 스냅 → 그 스냅된 이동량을 전체에 적용.
+        const sdx = snapGrid(anchor.x + dx) - anchor.x;
+        const sdy = snapGrid(anchor.y + dy) - anchor.y;
+        setCards((prev) => {
+          const a = prev.find((c) => c.id === id);
+          if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return prev; // 스냅 후 위치 그대로면 스킵
+          return prev.map((c) =>
+            origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
+          );
+        });
       };
       const up = () => {
         if (moved) {
@@ -1377,8 +1422,8 @@ export function SceneBoard({
         id: c.id,
         x: c.x,
         y: c.y,
-        w: CARD_W,
-        h: c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H,
+        w: widthOf(c),
+        h: heightOf(c),
         kind: c.kind,
       })),
     // heightTick: 레퍼런스 카드 높이 측정 후에도 bounds 가 정확하게 갱신되도록.
@@ -1430,8 +1475,6 @@ export function SceneBoard({
     () => computeBridgeEdges(cards, edges, grayHidden),
     [cards, edges, grayHidden],
   );
-  const heightOf = (c: SceneCard) =>
-    c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H;
 
   // ── 그룹 기하 — 테두리는 멤버 카드 바운딩박스로 자동. 접힘=제목 막대(연결은 막대로 브릿지) ──
   const GPAD = 16; // 테두리 여백
@@ -1446,7 +1489,7 @@ export function SceneBoard({
       n++;
       minX = Math.min(minX, c.x);
       minY = Math.min(minY, c.y);
-      maxX = Math.max(maxX, c.x + CARD_W);
+      maxX = Math.max(maxX, c.x + widthOf(c));
       maxY = Math.max(maxY, c.y + heightOf(c));
     }
     return n ? { minX, minY, maxX, maxY } : null;
@@ -1477,7 +1520,7 @@ export function SceneBoard({
       return bar ? { x: bar.x + bar.w, y: bar.y + bar.h / 2 } : null;
     }
     const c = cardById(id);
-    return c ? { x: c.x + CARD_W, y: c.y + heightOf(c) / 2 } : null;
+    return c ? { x: c.x + widthOf(c), y: c.y + heightOf(c) / 2 } : null;
   };
   const barIn = (id: string) => {
     const g = collapsedMemberOf.get(id);
@@ -1490,7 +1533,7 @@ export function SceneBoard({
   };
 
   const edgePath = (from: SceneCard, to: SceneCard) => {
-    const x1 = from.x + CARD_W;
+    const x1 = from.x + widthOf(from);
     const y1 = from.y + heightOf(from) / 2;
     const x2 = to.x;
     const y2 = to.y + heightOf(to) / 2;
@@ -1540,7 +1583,7 @@ export function SceneBoard({
   }, [visibleEdges, cardsById]);
   const FAN = 13;
   const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => ({
-    x1: a.x + CARD_W,
+    x1: a.x + widthOf(a),
     y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
     x2: b.x,
     y2: b.y + heightOf(b) / 2 + fanOffset(inEdges.get(b.id), e.id, FAN),
@@ -1704,7 +1747,7 @@ export function SceneBoard({
             (() => {
               const a = cardById(tempWire.fromId);
               if (!a) return null;
-              const x1 = a.x + CARD_W;
+              const x1 = a.x + widthOf(a);
               const y1 = a.y + heightOf(a) / 2;
               const mx = (x1 + tempWire.x2) / 2;
               const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${tempWire.y2}, ${tempWire.x2} ${tempWire.y2}`;
@@ -1735,7 +1778,7 @@ export function SceneBoard({
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
-              style={{ left: card.x, top: card.y, width: CARD_W, ...(isRef ? {} : { height: CARD_H }) }}
+              style={{ left: card.x, top: card.y, width: widthOf(card), ...(isRef ? {} : { height: heightOf(card) }) }}
               // 레퍼런스 카드 더블클릭 → 담긴 레퍼런스들을 팝업으로 보기(분리 가능). 생성 카드는 각자 처리.
               onDoubleClick={isRef ? () => setRefMenu(card.id) : undefined}
             >
@@ -1775,8 +1818,8 @@ export function SceneBoard({
                       generation={g}
                       x={0}
                       y={0}
-                      width={CARD_W}
-                      height={CARD_H}
+                      width={widthOf(card)}
+                      height={heightOf(card)}
                       isRoot={false}
                       isSelected={sel}
                       onLine={false}
@@ -1849,6 +1892,11 @@ export function SceneBoard({
                     className="scene-port out"
                     onMouseDown={(e) => onOutPortDown(e, card.id)}
                     title="드래그해 다른 생성 카드에 연결"
+                  />
+                  <span
+                    className="scene-resize"
+                    onMouseDown={(e) => onResizeDown(e, card.id)}
+                    title="드래그해 카드 크기 조절"
                   />
                   {g && card.id === tagEditCardId && onSetTags && (
                     <div className="scene-tagpop" onMouseDown={(e) => e.stopPropagation()}>

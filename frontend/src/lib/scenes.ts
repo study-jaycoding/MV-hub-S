@@ -19,6 +19,8 @@ export interface SceneCard {
   kind: SceneCardKind;
   x: number;
   y: number;
+  w?: number; // 생성 카드: 사용자가 조절한 너비(없으면 기본 CARD_W). 레퍼런스는 미사용(고정폭·자동높이).
+  h?: number; // 생성 카드: 사용자가 조절한 높이(없으면 기본 CARD_H).
   refs?: SceneRef[]; // 레퍼런스 카드: 담긴 레퍼런스(순서)
   genId?: string | null; // 생성 카드: 현재 표시 중인 generation id(다중이면 그중 하나)
   genIds?: string[]; // 생성 카드: 이 카드에서 만들어진 모든 결과(누적, 오래된→최신). 배지·팝업용.
