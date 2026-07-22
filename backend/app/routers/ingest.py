@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from . import _proxy
 from .. import repo
 from ..config import AUTH_ENABLED, BACKEND_DIR, DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..emailnorm import norm_email
 from ..deps import account_scope_uid, require_agent_account
 from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
@@ -55,8 +56,8 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # 안 줄 수 있어 그땐 검사 생략(하위호환).
     # 이메일 검증은 서버(AUTH on)에서만 — 로컬 허브(AUTH off)는 내 PC·내 에이전트라 acc.email 이
     # 'local' 이라 검증 대상이 아니다(검증은 크레딧 보고를 서버로 전달할 때 서버가 수행).
-    reported_email = ((account_status or {}).get("email") or "").strip().lower()
-    acc_email = (acc.get("email") or "").strip().lower()
+    reported_email = norm_email((account_status or {}).get("email"))
+    acc_email = norm_email(acc.get("email"))
     if AUTH_ENABLED and (jobs or account_status) and not reported_email:
         raise HTTPException(
             status_code=409,
@@ -84,7 +85,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     if not AUTH_ENABLED:
         from ..active_account import account_key
 
-        hub_email = (account_key() or "").strip().lower()
+        hub_email = norm_email(account_key())
         if hub_email:  # 프록시 로그인 상태 — 반드시 CLI 신원을 검증해야 한다.
             if not reported_email:
                 # 옛 에이전트는 account_status.email 을 안 줘 검증이 불가능 → 적재 거부(예전엔 검증을

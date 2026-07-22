@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from ._common import new_id
 from ..db import get_connection
+from ..emailnorm import norm_email
 
 
 def gen_recipe(gen_id: str) -> dict[str, Any]:
@@ -57,7 +58,7 @@ def create_gen_request(
         conn.execute(
             "INSERT INTO gen_request(id, account_email, creator_uid, gen_id, kind, payload, status) "
             "VALUES(?,?,?,?,?,?, 'pending')",
-            (rid, (account_email or "").strip().lower(), creator_uid, gen_id, kind,
+            (rid, norm_email(account_email), creator_uid, gen_id, kind,
              json.dumps(payload, ensure_ascii=False)),
         )
     return rid
@@ -67,7 +68,7 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
     """이 계정의 대기 요청을 가져오면서 running 으로 표시(claim) — 중복 실행 방지.
     limit=16 은 에이전트 병렬도(push_agent _MAX_CONCURRENCY)와 맞춤 — team 플랜 16 병렬 한 번에 claim.
     반환: [{id, gen_id, kind, model, prompt, params, references}]."""
-    email = (account_email or "").strip().lower()
+    email = norm_email(account_email)
     out: list[dict[str, Any]] = []
     with get_connection() as conn:
         # ★원자 claim: 커넥션이 autocommit(isolation_level=None)이라 SELECT→UPDATE 사이에 트랜잭션

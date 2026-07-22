@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from .. import rbac
 from ..db import get_connection
+from ..emailnorm import norm_email
 from ..services import auth
 
 _PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
@@ -52,7 +53,7 @@ def count_accounts() -> int:
 def register(email: str, password: str, name: Optional[str] = None) -> dict[str, Any]:
     """신규 계정 등록. 첫 계정 → 부트스트랩 관리자(admin/approved), 그 외 → member/pending.
     이미 있는 이메일이면 ValueError. password 는 해시로만 저장."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     if not email or "@" not in email:
         raise ValueError("올바른 이메일이 필요합니다")
     if not password or len(password) < 6:
@@ -80,7 +81,7 @@ def ensure_admin_account(email: str, password: str) -> bool:
     """부트스트랩 관리자 계정 보장 — 없으면 생성(admin+product_manager·approved). 멱등.
     이미 있으면 절대 건드리지 않는다(비밀번호·역할 보존). 서버(AUTH on) 시작 시 호출해서
     '관리자 계정을 따로 안 만들어도 처음부터 있게' 한다. True=새로 만듦."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     if not email or "@" not in email or not password or len(password) < 6:
         return False
     with get_connection() as conn:
@@ -103,7 +104,7 @@ def ensure_admin_account(email: str, password: str) -> bool:
 def authenticate(email: str, password: str) -> Optional[dict[str, Any]]:
     """이메일+비밀번호 검증. 성공 시 계정(공개필드) 반환, 실패 시 None.
     status 와 무관하게 비밀번호만 검증(승인 여부는 호출측에서 판단)."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     with get_connection() as conn:
         row = conn.execute(
             "SELECT password_hash FROM account WHERE email=?", (email,)
@@ -115,7 +116,7 @@ def authenticate(email: str, password: str) -> Optional[dict[str, Any]]:
 
 def get_account(email: str) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
-        return _row(conn, (email or "").strip().lower())
+        return _row(conn, norm_email(email))
 
 
 def list_accounts(
@@ -145,7 +146,7 @@ def list_accounts(
 
 def set_password(email: str, new_password: str) -> Optional[dict[str, Any]]:
     """비밀번호 변경(본인 또는 관리자 초기화). 해시로만 저장. 없는 계정이면 None."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     if not new_password or len(new_password) < 6:
         raise ValueError("비밀번호는 6자 이상이어야 합니다")
     with get_connection() as conn:
@@ -161,7 +162,7 @@ def set_password(email: str, new_password: str) -> Optional[dict[str, Any]]:
 
 def set_account_hidden(email: str, hidden: bool) -> Optional[dict[str, Any]]:
     """계정 숨김/표시 토글(관리자). 숨기면 멤버·승인 목록에서 가려진다. 없는 계정이면 None."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     with get_connection() as conn:
         if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
             return None
@@ -175,7 +176,7 @@ def set_account_status(email: str, status: str) -> Optional[dict[str, Any]]:
     """승인/거부/대기 전환. approved 면 approved_at 기록."""
     if status not in ("pending", "approved", "rejected"):
         raise ValueError(f"잘못된 상태: {status}")
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     with get_connection() as conn:
         if not conn.execute("SELECT 1 FROM account WHERE email=?", (email,)).fetchone():
             return None
@@ -197,7 +198,7 @@ def set_account_name(email: str, name: Optional[str]) -> Optional[dict[str, Any]
     """계정 표시이름 변경(계정별 — 전역 provider 와 무관). creator_uid 가 연결돼 있으면
     creator.name 에도 미러한다 → 멤버 목록·작성자 표기를 표시이름으로 일관(UI 는 uid 를 보이지 않음)."""
     name = (name or "").strip() or None
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     with get_connection() as conn:
         row = conn.execute(
             "SELECT creator_uid FROM account WHERE email=?", (email,)
@@ -221,7 +222,7 @@ def set_account_global_roles(
     """v02 전역 역할(복수) 부여 — 리스트/CSV 입력을 CSV 로 저장. 빈 입력이면 member 로.
     creator_uid 가 연결돼 있으면 creator.global_role 에도 미러 — 멤버 목록 표기 일관."""
     csv = rbac.roles_to_str(global_roles) or rbac.MEMBER
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     with get_connection() as conn:
         cur = conn.execute(
             "UPDATE account SET global_role=? WHERE email=?", (csv, email)

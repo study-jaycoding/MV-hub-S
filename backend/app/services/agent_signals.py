@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+
+from ..emailnorm import norm_email
 from typing import Optional
 
 # 마지막 에이전트 호출 후 이 시간(초)까지는 '연결됨'으로 본다. 에이전트는 생성 실행 중
@@ -28,7 +30,7 @@ class AgentSignals:
         self._last_seen: dict[str, float] = {}  # 계정별 마지막 에이전트 접촉 시각(monotonic)
 
     def _norm(self, email: str) -> str:
-        return (email or "").strip().lower()
+        return norm_email(email)
 
     def _ev(self, email: str) -> asyncio.Event:
         ev = self._events.get(email)

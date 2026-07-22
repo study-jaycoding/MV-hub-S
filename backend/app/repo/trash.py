@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from ..db import DB_BACKEND, get_connection, get_db_path
+from ..emailnorm import norm_email
 from . import tags
 from .generations import _delete_generation
 
@@ -308,7 +309,7 @@ def _account_alias_uids(conn, account_uid: str) -> set[str]:
     for r in conn.execute(
         "SELECT email FROM account WHERE creator_uid=?", (account_uid,)
     ).fetchall():
-        email = (r["email"] or "").strip().lower()
+        email = norm_email(r["email"])
         if email:
             aliases.add("acct:" + email)
     return aliases
@@ -322,7 +323,7 @@ def _acct_remap(conn) -> dict[str, str]:
         "SELECT email, creator_uid FROM account WHERE creator_uid IS NOT NULL"
     ).fetchall():
         cuid = r["creator_uid"]
-        email = (r["email"] or "").strip().lower()
+        email = norm_email(r["email"])
         if email and cuid and str(cuid).startswith("user_"):
             m["acct:" + email] = cuid
     return m

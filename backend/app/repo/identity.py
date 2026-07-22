@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from ..config import DEFAULT_WORKER_ID, DEFAULT_WORKER_NAME
 from ..db import get_connection
+from ..emailnorm import norm_email
 from ._common import _UID_RE, _email_localpart
 
 
@@ -309,8 +310,8 @@ def _effective_globals(stored: Optional[str], is_mine: bool) -> list[str]:
 def account_creator_uid(email: str, owner_email: Optional[str], my_uid: Optional[str]) -> str:
     """한 계정(로그인 사용자)의 생성자 uid 를 결정 — 소유자(provider)면 힉스필드 my_creator_uid,
     그 외는 이메일 앵커 합성 uid('acct:<email>'). 멱등·안정(이메일 불변)."""
-    email = (email or "").strip().lower()
-    if owner_email and email == (owner_email or "").strip().lower() and my_uid:
+    email = norm_email(email)
+    if owner_email and email == norm_email(owner_email) and my_uid:
         return my_uid
     return "acct:" + email
 
@@ -398,7 +399,7 @@ def set_account_hf_creator(email: str, uid: str) -> bool:
     """push 시 계정을 '실제 힉스필드 생성자 uid'에 연결(합성 acct: uid 를 대체).
     이래야 그 계정 '내 작업'이 자기 힉스필드 생성물(creator_uid=uid)로 채워진다.
     이미 같은 실제 uid 면 그대로. creator 행 표시이름은 계정 이름 우선(authoritative)."""
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     uid = (uid or "").strip()
     if not email or not uid:
         return False
@@ -623,7 +624,7 @@ def creator_uid_remap_plan() -> dict[str, Any]:
         ).fetchall():
             cuid = str(r["creator_uid"])
             if not cuid.startswith("acct:"):
-                amap["acct:" + (r["email"] or "").strip().lower()] = cuid
+                amap["acct:" + norm_email(r["email"])] = cuid
         changes: list[dict[str, Any]] = []
         unmapped: dict[str, int] = {}
         total = 0
@@ -673,7 +674,7 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
     생성정보엔 크레딧이 없으므로, 팀 전체/구성원별 크레딧 집계는 이 '마지막 보고값'으로 한다."""
     import json as _json
 
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     if not email or not isinstance(status, dict):
         return
     set_setting(f"hf_status:{email}", _json.dumps(status, ensure_ascii=False))
@@ -684,7 +685,7 @@ def get_reported_status(email: str) -> Optional[dict[str, Any]]:
     '내 것'을 표시할 때 쓴다. 보고 이력 없으면 None. (브라우저는 그 계정 CLI에 직접 접근 못 함)"""
     import json as _json
 
-    email = (email or "").strip().lower()
+    email = norm_email(email)
     raw = get_setting(f"hf_status:{email}")
     if not raw:
         return None

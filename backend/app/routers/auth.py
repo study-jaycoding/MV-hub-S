@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from .. import repo
 from ..config import AUTH_ENABLED, MANAGE_ENABLED
+from ..emailnorm import norm_email
 from ..deps import SESSION_COOKIE, require_admin, require_global_cap
 from ..services import auth
 
@@ -33,7 +34,7 @@ _rl_fails: dict[str, list[float]] = {}
 
 def _rl_key(request: Request, email: str) -> str:
     ip = request.client.host if request.client else "?"
-    return f"{ip}|{(email or '').strip().lower()}"
+    return f"{ip}|{norm_email(email)}"
 
 
 def _rl_check(key: str) -> None:
@@ -149,7 +150,7 @@ def access(body: RegisterIn, response: Response, request: Request):
     """로그인=가입 통합 — 힉스필드 이메일+비밀번호 하나로. 처음 보는 이메일이면 자동 등록(승인 대기),
     이미 있으면 로그인. 별도 '가입' 단계를 없앤다(계정 식별자 = 힉스필드 이메일). push_agent 는 여전히
     /login 사용. 반환: {account, token(승인 전이면 null), pending}."""
-    email = (body.email or "").strip().lower()
+    email = norm_email(body.email)
     key = _rl_key(request, email)
     _rl_check(key)
     existing = repo.get_account(email)

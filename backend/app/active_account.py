@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .emailnorm import norm_email
 from .services.atomic_io import atomic_write_text
 
 _POINTER = config.DATA_DIR / "active.json"
@@ -38,8 +39,8 @@ _cache: list = [False, None]
 def slug(email: str) -> str:
     """이메일 → 폴더 안전 슬러그. 가독성(치환) + 충돌 방지(짧은 해시) 둘 다.
     DB 폴더·백업 폴더 등 계정별 경로에서 공통으로 쓴다(같은 계정=같은 슬러그)."""
-    base = _SAFE.sub("_", (email or "").strip().lower())[:40]
-    h = hashlib.sha1((email or "").strip().lower().encode("utf-8")).hexdigest()[:8]
+    base = _SAFE.sub("_", norm_email(email))[:40]
+    h = hashlib.sha1(norm_email(email).encode("utf-8")).hexdigest()[:8]
     return f"{base}-{h}"
 
 

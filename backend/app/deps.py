@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request
 
 from . import rbac
 from .config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from .emailnorm import norm_email
 
 
 # 세션 쿠키 이름 — img 태그·WebSocket 처럼 헤더를 못 붙이는 요청용(브라우저 자동 첨부).
@@ -31,7 +32,7 @@ def account_actor_uid(request: Request) -> Optional[str]:
     if uid:
         return uid
     if AUTH_ENABLED:
-        email = (acc.get("email") or "").strip().lower()
+        email = norm_email(acc.get("email"))
         if email:
             return f"acct:{email}"
         raise HTTPException(status_code=409, detail="계정 신원(creator_uid)을 확인할 수 없습니다")
@@ -91,7 +92,7 @@ def account_scope_uid(request: Request) -> Optional[str]:
         return None
     uid = acc.get("creator_uid")
     if AUTH_ENABLED and not uid:
-        email = (acc.get("email") or "").strip().lower()
+        email = norm_email(acc.get("email"))
         return f"acct:{email}" if email else "\x00"
     return uid
 
@@ -107,7 +108,7 @@ def realtime_scope(acc: Optional[dict[str, Any]]) -> Optional[str]:
     ws.broadcast(None) 은 a==None 소켓(=AUTH off 소켓 전부)에만 가므로 단독 모드의 모든 탭이 받는다."""
     if not AUTH_ENABLED or not acc:
         return None
-    email = (acc.get("email") or "").strip().lower()
+    email = norm_email(acc.get("email"))
     return f"acct:{email}" if email else None
 
 
