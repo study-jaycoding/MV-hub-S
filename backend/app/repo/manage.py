@@ -526,6 +526,126 @@ def _task_gen_rows(
     ).fetchall()
 
 
+def _batch_task_gen_rows(conn, project_id: str, tasks) -> dict[str, list[dict[str, Any]]]:
+    """모든 작업의 귀속 컷을 '한 번에' 조회 — 작업당 1쿼리(N+1)를 레인별 배치 쿼리로 대체.
+    각 작업별 결과는 _task_gen_rows 와 완전히 동일(행·순서·필드) 해야 한다(비교 테스트로 고정).
+    레인(작업 메타에 따라):
+      · 수동 링크(task_generation) — 항상 포함 + linked=1
+      · 폴더 레인(folder_path 있음) — g.project_id=? AND g.folder_path=작업.folder_path
+      · 시퀀스 레인(folder_path 없음 + sequence 있음) — auto_tag.name=작업.sequence
+    정렬: is_final DESC, shared DESC, sort_ts DESC (SQLite 와 동일 — NULL sort_ts 는 뒤)."""
+    task_ids = [t["id"] for t in tasks]
+    if not task_ids:
+        return {}
+    # 작업별 (folder_path, sequence) — 폴더작업이면 시퀀스 레인 비활성(원 함수와 동일 규칙).
+    meta: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for t in tasks:
+        fpath = (t["folder_path"] or "").strip() or None
+        seq = (t["sequence"] or "").strip() or None
+        if fpath is not None:
+            seq = None
+        meta[t["id"]] = (fpath, seq)
+
+    membership: dict[str, set[str]] = {tid: set() for tid in task_ids}
+    linked: dict[str, set[str]] = {tid: set() for tid in task_ids}
+
+    # ① 수동 링크 — 항상 포함 + linked 표시.
+    ph_t = ",".join("?" * len(task_ids))
+    for r in conn.execute(
+        f"SELECT task_id, gen_id FROM task_generation WHERE task_id IN ({ph_t})",
+        task_ids,
+    ):
+        tid, gid = r["task_id"], r["gen_id"]
+        if tid in membership:
+            membership[tid].add(gid)
+            linked[tid].add(gid)
+
+    # ② 폴더 레인 — folder_path 별로 그 경로를 가진 작업들에 매핑.
+    fpath_to_tasks: dict[str, list[str]] = {}
+    for tid in task_ids:
+        fpath = meta[tid][0]
+        if fpath is not None:
+            fpath_to_tasks.setdefault(fpath, []).append(tid)
+    if fpath_to_tasks:
+        fpaths = list(fpath_to_tasks.keys())
+        ph_f = ",".join("?" * len(fpaths))
+        for r in conn.execute(
+            f"SELECT id, folder_path FROM generation "
+            f"WHERE project_id=? AND deleted_at IS NULL AND folder_path IN ({ph_f})",
+            [project_id, *fpaths],
+        ):
+            for tid in fpath_to_tasks.get(r["folder_path"], []):
+                membership[tid].add(r["id"])
+
+    # ③ 시퀀스 레인 — folder_path 없고 sequence 있는 작업. auto_tag.name=sequence.
+    seq_to_tasks: dict[str, list[str]] = {}
+    for tid in task_ids:
+        fpath, seq = meta[tid]
+        if fpath is None and seq is not None:
+            seq_to_tasks.setdefault(seq, []).append(tid)
+    if seq_to_tasks:
+        seqs = list(seq_to_tasks.keys())
+        ph_s = ",".join("?" * len(seqs))
+        for r in conn.execute(
+            f"SELECT g.id AS id, at.name AS seqname FROM generation g "
+            f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
+            f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
+            f"WHERE g.project_id=? AND g.deleted_at IS NULL AND at.name IN ({ph_s})",
+            [project_id, *seqs],
+        ):
+            for tid in seq_to_tasks.get(r["seqname"], []):
+                membership[tid].add(r["id"])
+
+    # 등장한 모든 gen_id 상세를 1회 조회(원 함수의 컬럼·서브쿼리 그대로).
+    all_ids: set[str] = set()
+    for s in membership.values():
+        all_ids |= s
+    detail: dict[str, dict[str, Any]] = {}
+    if all_ids:
+        idlist = list(all_ids)
+        ph_g = ",".join("?" * len(idlist))
+        for g in conn.execute(
+            f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
+            f"  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
+            f"  g.sort_ts AS sort_ts, "
+            f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
+            f"  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
+            f"   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
+            f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
+            f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
+            # ★deleted_at IS NULL — 원 함수는 이 필터를 전체 lane 바깥에 둬서 '수동 링크된 삭제 생성물'도
+            #  제외한다. 멤버십에 그 gid 가 있어도 detail 에 없으면 아래 조립에서 걸러진다(회귀 방지).
+            f"FROM generation g WHERE g.id IN ({ph_g}) AND g.deleted_at IS NULL",
+            idlist,
+        ):
+            detail[g["id"]] = dict(g)
+
+    def _order(g):
+        st = g["sort_ts"]
+        return (
+            -(g["is_final"] or 0),
+            -(g["shared"] or 0),
+            (0, -st) if st is not None else (1, 0.0),  # sort_ts DESC, NULL 뒤(SQLite 동일)
+            g["id"],  # 완전 동점(is_final·shared·sort_ts 동일) 시 결정적 순서(원 SQL 은 미정의였음)
+        )
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for tid in task_ids:
+        gens = []
+        for gid in membership[tid]:
+            d = detail.get(gid)
+            if not d:
+                continue
+            row = dict(d)
+            row["linked"] = 1 if gid in linked[tid] else 0
+            gens.append(row)
+        gens.sort(key=_order)
+        for row in gens:
+            row.pop("sort_ts", None)  # 정렬용 내부값 — 원 함수 출력엔 없으므로 제거(shape 일치)
+        result[tid] = gens
+    return result
+
+
 def sync_folder_tasks(conn, project_id: str) -> None:
     """폴더로 라벨링된 생성물에서 작업 카드를 자동 생성(create-only, 멱등).
 
@@ -573,16 +693,10 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
         out = []
         all_creator_uids: set[str] = set()
         all_gen_ids: set[str] = set()
-        per_task_cuts: dict[str, list[dict[str, Any]]] = {}
-        # 1차: 작업별 컷만 확보하고 전체 gen_id 를 모은다(크레딧·코멘트는 아래서 1회 배치 조회).
+        # 1차: 작업별 컷을 '한 번에' 확보(작업당 1쿼리 N+1 → 레인별 배치) + 전체 gen_id 수집.
+        per_task_cuts: dict[str, list[dict[str, Any]]] = _batch_task_gen_rows(conn, project_id, rows)
         for r in rows:
-            tid = r["id"]
-            gens = [
-                dict(c)
-                for c in _task_gen_rows(conn, tid, project_id, r["sequence"], r["folder_path"])
-            ]
-            per_task_cuts[tid] = gens
-            for g in gens:
+            for g in per_task_cuts.get(r["id"], []):
                 if g["creator_uid"]:
                     all_creator_uids.add(g["creator_uid"])
                 all_gen_ids.add(g["id"])
