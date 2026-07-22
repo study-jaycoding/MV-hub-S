@@ -99,12 +99,14 @@
 }
 .scene-group.collapsed .scene-group-hd { border-bottom: 0; background: transparent; }
 .scene-group-hd:active { cursor: grabbing; }
+/* 접기 버튼 = 오른쪽 묶음(접기·색·×)의 첫 요소 → margin-left:auto 로 이름·카운트와 사이를 벌린다 */
 .scene-group-btn {
-  flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+  flex: none; margin-left: auto; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
   border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px;
 }
 .scene-group-btn:hover { background: var(--accent); color: var(--accent-ink); }
-/* 이름은 늘어나지 않게(flex-grow 0) → 카운트가 텍스트 바로 오른쪽에 붙는다. ×는 margin-left:auto 로 끝으로 */
+/* 이름은 늘어나지 않게(flex-grow 0) → 카운트가 텍스트 바로 오른쪽에 붙는다 */
 .scene-group-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-group-name-input {
   flex: 0 1 auto; width: 110px; min-width: 60px; font-size: 12px; font-weight: 700; color: var(--text);
@@ -121,7 +123,7 @@
   border: 1px solid var(--border2);
 }
 .scene-group-colorpop {
-  position: absolute; top: calc(100% + 5px); left: 0; z-index: 5;
+  position: absolute; top: calc(100% + 5px); right: 0; left: auto; z-index: 5;
   display: flex; flex-wrap: wrap; gap: 5px; width: 108px; padding: 7px;
   background: #14161a; border: 1px solid var(--border2); border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
@@ -140,9 +142,9 @@
   background: #14161a; color: var(--muted); font-size: 14px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
 }
-/* × = 그룹 해제(카드는 유지). margin-left:auto 로 헤더 오른쪽 끝에 붙인다 */
+/* × = 그룹 해제(카드는 유지). 오른쪽 묶음의 마지막 요소 */
 .scene-group-x {
-  flex: none; margin-left: auto; width: 18px; height: 18px;
+  flex: none; width: 18px; height: 18px;
   display: flex; align-items: center; justify-content: center;
   border: 0; border-radius: 5px; background: transparent; color: var(--muted);
   cursor: pointer; font-size: 15px; line-height: 1;

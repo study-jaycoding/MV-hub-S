@@ -2092,6 +2092,36 @@ export function SceneBoard({
                 data-group-id={g.id}
                 title="끌어서 그룹 이동 · 더블클릭=이름 변경"
               >
+                {editing ? (
+                  <input
+                    className="scene-group-name-input"
+                    autoFocus
+                    defaultValue={g.name}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") {
+                        renameGroup(g.id, (e.target as HTMLInputElement).value.trim() || g.name);
+                        setEditingGroupId(null);
+                      } else if (e.key === "Escape") setEditingGroupId(null);
+                    }}
+                    onBlur={(e) => {
+                      renameGroup(g.id, e.target.value.trim() || g.name);
+                      setEditingGroupId(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="scene-group-name"
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingGroupId(g.id);
+                    }}
+                  >
+                    {g.name}
+                  </span>
+                )}
+                <span className="scene-group-count">{memberCount}</span>
                 <button
                   className="scene-group-btn"
                   title={collapsed ? "펼치기" : "접기"}
@@ -2149,36 +2179,6 @@ export function SceneBoard({
                     </div>
                   )}
                 </div>
-                {editing ? (
-                  <input
-                    className="scene-group-name-input"
-                    autoFocus
-                    defaultValue={g.name}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === "Enter") {
-                        renameGroup(g.id, (e.target as HTMLInputElement).value.trim() || g.name);
-                        setEditingGroupId(null);
-                      } else if (e.key === "Escape") setEditingGroupId(null);
-                    }}
-                    onBlur={(e) => {
-                      renameGroup(g.id, e.target.value.trim() || g.name);
-                      setEditingGroupId(null);
-                    }}
-                  />
-                ) : (
-                  <span
-                    className="scene-group-name"
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setEditingGroupId(g.id);
-                    }}
-                  >
-                    {g.name}
-                  </span>
-                )}
-                <span className="scene-group-count">{memberCount}</span>
                 <button
                   className="scene-group-x"
                   title="그룹 해제(카드는 유지)"
