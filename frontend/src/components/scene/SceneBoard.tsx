@@ -2210,7 +2210,27 @@ export function SceneBoard({
                       setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, rect: last } : x)));
                     };
                     const upr = () => {
-                      const ng = groupsRef.current.map((x) => (x.id === g.id ? { ...x, rect: last } : x));
+                      const rect = last;
+                      // 늘린 rect 안에 중심이 든 카드를 이 그룹에 포함(다른 그룹에 있던 카드는 옮겨옴=한 카드 한 그룹).
+                      // 기존 멤버는 rect 밖이어도 유지 — '줄여서 제외'는 안 함(제외는 노드를 밖으로 드래그).
+                      const contained = new Set(
+                        cardsRef.current
+                          .filter((c) => {
+                            const cx = c.x + widthOf(c) / 2;
+                            const cy = c.y + heightOf(c) / 2;
+                            return cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+                          })
+                          .map((c) => c.id),
+                      );
+                      const ng = groupsRef.current
+                        .map((x) => {
+                          if (x.id === g.id) {
+                            const keep = x.cardIds.filter((id) => cardsRef.current.some((c) => c.id === id));
+                            return { ...x, rect, cardIds: Array.from(new Set([...keep, ...contained])) };
+                          }
+                          return { ...x, cardIds: x.cardIds.filter((id) => !contained.has(id)) };
+                        })
+                        .filter((x) => x.id === g.id || x.cardIds.length > 0); // 비게 된 다른 그룹만 정리
                       setGroups(ng);
                       persist(cardsRef.current, edgesRef.current, ng);
                     };
