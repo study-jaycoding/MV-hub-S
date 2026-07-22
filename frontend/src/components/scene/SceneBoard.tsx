@@ -2140,17 +2140,23 @@ export function SceneBoard({
                     while ((m = re.exec(text))) {
                       if (m.index > last) out.push(text.slice(last, m.index));
                       const label = m[0];
-                      const thumb = thumbByLabel.get(label.toLowerCase());
-                      out.push(
-                        <span className="scene-inlinetok" key={`t${k++}`} title={label}>
-                          {thumb ? (
-                            <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} />
-                          ) : (
-                            <span className="scene-inlinetok-ph" />
-                          )}
-                          {label}
-                        </span>,
-                      );
+                      const key = label.toLowerCase();
+                      if (thumbByLabel.has(key)) {
+                        // 연결된 레퍼런스가 있는 토큰만 알약(썸네일). 없으면 그냥 텍스트로 둔다.
+                        const thumb = thumbByLabel.get(key);
+                        out.push(
+                          <span className="scene-inlinetok" key={`t${k++}`} title={label}>
+                            {thumb ? (
+                              <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} />
+                            ) : (
+                              <span className="scene-inlinetok-ph" />
+                            )}
+                            {label}
+                          </span>,
+                        );
+                      } else {
+                        out.push(label); // 연결 안 됨 → 그냥 @image1 텍스트
+                      }
                       last = m.index + m[0].length;
                     }
                     if (last < text.length) out.push(text.slice(last));
