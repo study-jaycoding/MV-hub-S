@@ -425,6 +425,9 @@ export function wrapRefTokens(
     const r = wrapTokensInTextNode(textNode, resolveMedia, isCaret ? caretOffset : null);
     if (isCaret && r) restore = r;
   }
+  // 이미 감싼 알약(.sl-tok)의 missing/썸네일 상태도 최신 resolveMedia 로 재평가해 교정한다 — 위 루프는
+  // 기존 알약을 건너뛰므로, 한 번 missing(빨강)으로 칠해진 알약이 refs 정착 후에도 안 고쳐지던 문제 해결.
+  refreshTokenPills(editor, resolveMedia);
   if (restore && sel) {
     const range = document.createRange();
     const len = (restore.node.textContent || "").length;
@@ -433,6 +436,34 @@ export function wrapRefTokens(
     sel.removeAllRanges();
     sel.addRange(range);
   }
+}
+
+// 이미 알약(.sl-tok)으로 감싼 토큰의 missing/썸네일 상태를 최신 resolveMedia 로 다시 평가해 교정한다.
+// resolveMedia 가 없으면(정규화만) 존재 여부를 알 수 없으니 건드리지 않는다. 상태가 실제로 바뀐 알약만
+// 교체(불필요한 DOM 교체·깜빡임 방지). 알약은 contentEditable=false 원자라 텍스트 캐럿에 영향 없다.
+export function refreshTokenPills(
+  editor: HTMLElement,
+  resolveMedia?: (kind: string, n: number) => string | undefined,
+) {
+  if (!resolveMedia) return;
+  editor.querySelectorAll<HTMLElement>(".sl-tok").forEach((pill) => {
+    const token = (pill.textContent || "").trim();
+    const m = new RegExp(SEEDANCE_TOKEN_SRC, "gi").exec(token);
+    if (!m) return;
+    const raw = m[1] || m[3];
+    const num = m[2] || m[4];
+    const kind = seedanceAtTokenKind(raw);
+    const media = resolveMedia(kind, Number(num));
+    const missing = media === undefined;
+    const wasMissing = pill.classList.contains("sl-tok-missing");
+    if (wasMissing === missing) {
+      // missing 상태는 그대로 — 썸네일 유무만 달라졌는지 확인(레퍼런스가 나중에 붙은 경우).
+      const hasThumb = !!pill.querySelector(".sl-tok-thumb");
+      const wantThumb = !!media && kind !== "audio" && !missing;
+      if (hasThumb === wantThumb) return; // 변화 없음 → 건드리지 않음
+    }
+    pill.replaceWith(buildRefTokenEl(seedanceCanonToken(raw, num), kind, media || undefined, missing));
+  });
 }
 
 export function countImageChips(editor: HTMLElement): number {
