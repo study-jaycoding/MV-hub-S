@@ -884,9 +884,9 @@ export function SceneBoard({
             : kind === "view"
               ? { ...base, kind: "view" }
               : kind === "output"
-                ? { ...base, kind: "output", text: "", w: 150, h: 78 }
+                ? { ...base, kind: "output", text: "", w: 148, h: 90 }
                 : kind === "input"
-                  ? { ...base, kind: "input", w: 150, h: 78 }
+                  ? { ...base, kind: "input", w: 148, h: 90 }
                   : kind === "head"
                     ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
                     : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
