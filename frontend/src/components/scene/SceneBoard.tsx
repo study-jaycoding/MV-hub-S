@@ -1769,7 +1769,20 @@ export function SceneBoard({
     }
     const yOf = (id: string) => cardsById.get(id)?.y ?? 0;
     for (const [, list] of out) list.sort((p, q) => yOf(p.to) - yOf(q.to));
-    for (const [, list] of inn) list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    for (const [toId, list] of inn) {
+      // 리스트 타깃은 항목 순서(edge.order, 없으면 y)로 fan-in 정렬 — 리스트 안에서 순서를 바꾸면
+      // 들어오는 연결선 순서도 그에 맞춰 바뀐다. 그 외 타깃은 소스 y 순.
+      if (cardsById.get(toId)?.kind === "list")
+        list.sort((p, q) => {
+          const po = p.order;
+          const qo = q.order;
+          if (po != null && qo != null && po !== qo) return po - qo;
+          if (po != null && qo == null) return -1;
+          if (po == null && qo != null) return 1;
+          return yOf(p.from) - yOf(q.from);
+        });
+      else list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    }
     return { outEdges: out, inEdges: inn };
   }, [visibleEdges, cardsById]);
   const FAN = 13;
@@ -2080,7 +2093,10 @@ export function SceneBoard({
                       value={card.text || ""}
                       placeholder="텍스트 입력..."
                       spellCheck={false}
-                      onMouseDown={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => {
+                        e.stopPropagation(); // 카드 이동 드래그는 막되
+                        setSelected(new Set([card.id])); // 입력창 클릭도 카드 선택으로 처리
+                      }}
                       onChange={(e) => setNodeText(card.id, e.target.value)}
                     />
                   </div>
