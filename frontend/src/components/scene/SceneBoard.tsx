@@ -906,6 +906,15 @@ export function SceneBoard({
     }
     if (items.length) onPreviewRef.current?.({ ...items[0], items, index: 0 });
   };
+  // 생성물 리스트 → 연결된 생성물 전부를 레퍼런스로 추가(하단 프롬프트 트레이). 단일 카드 @ 버튼과 동일 경로.
+  const addListAsReference = (generationCardIds: string[]) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    for (const cid of generationCardIds) {
+      const gc = byId.get(cid);
+      const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+      if (gid) dispatchAppEvent(APP_EVENTS.addReference, gid);
+    }
+  };
   // View 열기(더블클릭·버튼 공용) — 생성물이 있으면 재생, 없고 텍스트가 있으면 텍스트 보기.
   const openView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
@@ -1802,7 +1811,7 @@ export function SceneBoard({
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
   const edgeRoles = useMemo(() => {
     const m = new Map<string, SceneEdgeRole>();
-    for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents));
+    for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents, edges));
     return m;
   }, [edges, cardsById, refParents]);
   // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
@@ -2296,6 +2305,19 @@ export function SceneBoard({
                           }}
                         >
                           ⧉
+                        </button>
+                      )}
+                      {li.kind === "generation" && li.generationCardIds.length > 0 && (
+                        <button
+                          className="scene-copy-btn"
+                          title="모든 생성물을 레퍼런스로 사용"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addListAsReference(li.generationCardIds);
+                          }}
+                        >
+                          @
                         </button>
                       )}
                       <span className="scene-port in" title="생성/텍스트 카드를 연결해 모음" />

@@ -111,6 +111,20 @@ describe("resolveEdgeRole", () => {
     expect(resolveEdgeRole({ id: "e1", from: "G", to: "L" }, byId(cards), {})).toBe("list");
     expect(resolveEdgeRole({ id: "e2", from: "T", to: "L" }, byId(cards), {})).toBe("text");
   });
+  it("텍스트 수집 리스트의 출력 → 생성카드 = 'text'(edges 전달 시), 생성물 리스트면 'lineage'", () => {
+    const textList = byId([node("L", "list"), node("T", "text"), node("G", "generation")]);
+    const te: SceneEdge[] = [
+      { id: "e1", from: "T", to: "L" },
+      { id: "e2", from: "L", to: "G" },
+    ];
+    expect(resolveEdgeRole(te[1], textList, {}, te)).toBe("text");
+    const genList = byId([node("L", "list"), node("S", "generation"), node("G", "generation")]);
+    const ge: SceneEdge[] = [
+      { id: "e1", from: "S", to: "L" },
+      { id: "e2", from: "L", to: "G" },
+    ];
+    expect(resolveEdgeRole(ge[1], genList, {}, ge)).toBe("lineage");
+  });
   it("생성물을 ref 로 사용한 gen→gen → 'ref', 아니면 'lineage'", () => {
     const S = gen("S");
     const T = gen("T", { refs: [{ file_path: "x", type: "image", source_gen_id: "S" }] });

@@ -125,6 +125,7 @@ export function resolveEdgeRole(
   edge: SceneEdge,
   cardsById: Map<string, SceneCard>,
   refParents: Record<string, string[]>,
+  edges?: SceneEdge[],
 ): SceneEdgeRole {
   if (edge.role) return edge.role;
   const from = cardsById.get(edge.from);
@@ -133,6 +134,9 @@ export function resolveEdgeRole(
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "reference") return "ref";
+  // 텍스트를 모은 리스트의 출력은 '텍스트'로 취급 — 생성카드 텍스트 입력(보라)에 연결 가능. edges 필요.
+  if (from?.kind === "list" && edges && collectListInputs(from.id, cardsById, edges).kind === "text")
+    return "text";
   if (to?.kind === "list") return "list"; // 생성물 → 리스트 수집
   if (from?.kind === "generation" && to) {
     const srcGens = variantIds(from);
