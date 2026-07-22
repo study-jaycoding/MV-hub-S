@@ -9,6 +9,8 @@ import {
   collectListInputs,
   collectViewGenCardIds,
   collectViewTexts,
+  collectGenText,
+  collectGenModel,
   canConnect,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -283,6 +285,55 @@ describe("collectViewTexts", () => {
       { id: "e2", from: "T", to: "V" },
     ];
     expect(collectViewTexts("V", cards, edges)).toEqual([]);
+  });
+});
+
+describe("collectGenText / collectGenModel", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("연결된 text 노드 + text-list 를 순서로 합침(count)", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("T1", "text", { y: 0, text: "hello" }),
+      node("L", "list", { y: 50 }),
+      node("T2", "text", { y: 100, text: "a" }),
+      node("T3", "text", { y: 200, text: "b" }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "T1", to: "G" },
+      { id: "e2", from: "L", to: "G" },
+      { id: "e3", from: "T2", to: "L" },
+      { id: "e4", from: "T3", to: "L" },
+    ];
+    const r = collectGenText("G", cards, edges);
+    expect(r.count).toBe(2);
+    expect(r.text).toBe("hello\na\nb");
+  });
+  it("텍스트 연결 없으면 count 0", () => {
+    const cards = byId([node("G", "generation"), node("R", "reference")]);
+    expect(collectGenText("G", cards, [{ id: "e", from: "R", to: "G" }]).count).toBe(0);
+  });
+  it("collectGenModel: 모델 1개만 유효, 복수/0 이면 null", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("M1", "model", { modelCfg: { model: "seedance_2_0_mini", type: "video" } }),
+      node("M2", "model", { modelCfg: { model: "nano_banana_flash" } }),
+    ]);
+    expect(collectGenModel("G", cards, [{ id: "e", from: "M1", to: "G" }])?.model).toBe("seedance_2_0_mini");
+    expect(
+      collectGenModel("G", cards, [
+        { id: "e1", from: "M1", to: "G" },
+        { id: "e2", from: "M2", to: "G" },
+      ]),
+    ).toBeNull();
+    expect(collectGenModel("G", cards, [])).toBeNull();
   });
 });
 

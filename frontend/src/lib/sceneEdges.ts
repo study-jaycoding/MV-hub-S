@@ -1,7 +1,13 @@
 // SceneBoard 의 '순수 엣지 기하/그래프 계산'을 컴포넌트에서 추출(렌더마다 인라인으로 돌던 것).
 //  · DOM/이벤트/상태를 건드리지 않는 순수 함수만 모은다 — 높이 측정(heightsRef) 의존인 heightOf/edgePath/edgeEnds 는 컴포넌트에 남긴다.
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
-import { variantIds, type SceneCard, type SceneEdge, type SceneEdgeRole } from "./scenes";
+import {
+  variantIds,
+  type SceneCard,
+  type SceneEdge,
+  type SceneEdgeRole,
+  type SceneModelCfg,
+} from "./scenes";
 
 // 연결 허용 규칙 — to 노드 종류별로 받을 수 있는 소스만. 말이 안 되는 연결(text→view 등)을 막는다.
 //  · generation: 모델/텍스트/레퍼런스/생성/리스트 입력 허용(view 제외)
@@ -94,6 +100,43 @@ export function collectViewGenCardIds(
     }
   }
   return out;
+}
+
+// 생성카드에 연결된 텍스트 입력(text 노드 + text-list)을 순서대로 합친다 — 하단 프롬프트 텍스트로 쓸 값.
+//  count>0 이면 '텍스트가 연결됨'(파생 우선). count=0 이면 연결 없음(카드 자체 프롬프트 fallback).
+export function collectGenText(
+  genId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): { text: string; count: number } {
+  const srcs = edges
+    .filter((e) => e.to === genId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => !!c)
+    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  const blocks: string[] = [];
+  for (const s of srcs) {
+    if (s.kind === "text") blocks.push(s.text || "");
+    else if (s.kind === "list") {
+      const li = collectListInputs(s.id, cardsById, edges);
+      if (li.kind === "text") blocks.push(li.text);
+    }
+  }
+  return { text: blocks.join("\n"), count: blocks.length };
+}
+
+// 생성카드에 연결된 모델 노드의 설정 — 정확히 1개일 때만 유효(복수면 침묵 선택 위험 → null).
+export function collectGenModel(
+  genId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): SceneModelCfg | null {
+  const models = edges
+    .filter((e) => e.to === genId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => c?.kind === "model");
+  if (models.length !== 1) return null;
+  return models[0].modelCfg ?? null;
 }
 
 // View 노드가 표시할 텍스트 블록들(순서 보존) — text 노드 직접 연결 + text-list 를 통해 들어온 것.
