@@ -497,6 +497,23 @@ export default function App() {
   // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
   const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
 
+  // 폴더 딤 대상 — 매 App 렌더마다 새 객체를 만들면 HistoryBoardNode memo 가 깨지므로 memo.
+  const folderSel = useMemo(
+    () =>
+      filters.project_id && filters.project_id !== "none" && filters.folder_path
+        ? { projectId: filters.project_id, path: filters.folder_path }
+        : null,
+    [filters.project_id, filters.folder_path],
+  );
+  // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
+  const commentLabel = useMemo(
+    () =>
+      commentGenId
+        ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
+        : "생성본",
+    [commentGenId, gens],
+  );
+
   return (
     <div className="app">
       <TopBar
@@ -625,12 +642,8 @@ export default function App() {
                 commentOnly={commentOnly}
                 finalOnly={finalOnly}
                 // 사이드바에서 폴더를 선택(project_id+folder_path)했을 때만 그 폴더 밖 카드를 딤.
-                // 프로젝트/라이브러리 선택(folder_path 없음)이면 null → 딤 해제.
-                folderSel={
-                  filters.project_id && filters.project_id !== "none" && filters.folder_path
-                    ? { projectId: filters.project_id, path: filters.folder_path }
-                    : null
-                }
+                // 프로젝트/라이브러리 선택(folder_path 없음)이면 null → 딤 해제. (memo=folderSel)
+                folderSel={folderSel}
                 onSetTags={(g, tags) => {
                   mergeFacetTags(tags); // '등록된 태그' 패널 즉시 반영(compose 탭은 reload 가 facets 를 안 불러옴)
                   onSetTags(g, tags);
@@ -868,12 +881,7 @@ export default function App() {
         account={account}
         adminOpen={adminOpen}
         commentGenId={commentGenId}
-        commentLabel={
-          // 패널이 열렸을 때만 조회 — 닫힌 상태(null)에서 매 렌더 전량 find 방지.
-          commentGenId
-            ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
-            : "생성본"
-        }
+        commentLabel={commentLabel}
         compareGens={compareGens}
         history={history}
         info={info}

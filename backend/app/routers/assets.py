@@ -898,7 +898,13 @@ def get_thumb(
         # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
         # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
         raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
-    return FileResponse(cache, media_type="image/jpeg")
+    # 썸네일은 내용 파생(w 로 키가 갈림)이고 업로드가 in-place 덮어쓰기를 안 하므로 장기 캐시 안전.
+    # 생성물 썸네일(library.media_thumb)과 동일하게 브라우저가 재요청 안 하도록 Cache-Control 부여.
+    return FileResponse(
+        cache,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=2592000"},
+    )
 
 
 @router.post("/upload", dependencies=[Depends(_require_local_assets)])

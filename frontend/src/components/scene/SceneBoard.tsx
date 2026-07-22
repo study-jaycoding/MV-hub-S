@@ -373,6 +373,9 @@ export function SceneBoard({
   // 카드 이동(위치 변경)만으론 다시 안 쏘도록 cardId+레퍼런스 지문으로 변화만 감지.
   const onBindingRef = useRef(onBindingChange);
   onBindingRef.current = onBindingChange;
+  // 전역 keydown 핸들러([] deps)가 mount 시점 onSetTags 를 붙잡지 않게 미러(향후 undefined→정의 전환 방어).
+  const onSetTagsRef = useRef(onSetTags);
+  onSetTagsRef.current = onSetTags;
   const lastEmitRef = useRef<string>("");
   useEffect(() => {
     const ids = [...selected];
@@ -868,7 +871,10 @@ export function SceneBoard({
     onSelGensRef.current?.(gens);
   }, [selected, cards, genData, cardMenu]);
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
-  if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()) };
+  // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
+  useLayoutEffect(() => {
+    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()) };
+  });
 
   // ── 키보드: n=빈 카드 연결 · Delete/Backspace=삭제 ──
   useEffect(() => {
@@ -906,7 +912,7 @@ export function SceneBoard({
             e.preventDefault();
             toggleDisabledGen(pids);
           }
-        } else if (onSetTags && matchShortcut(e, "tag")) {
+        } else if (onSetTagsRef.current && matchShortcut(e, "tag")) {
           // # = 선택한 타일 태그 편집(타일 T 버튼과 동일). 여러 개 선택이면 첫 번째.
           const gid = pids.find((id) => genDataRef.current[id]);
           if (gid) {
@@ -998,7 +1004,7 @@ export function SceneBoard({
         return;
       }
       // #: 선택된 생성 카드의 태그 편집 팝업 열기(라이브러리와 동일 — 팝업 안에서 # 한 번 더로 전역태그).
-      if (onSetTags && matchShortcut(e, "tag")) {
+      if (onSetTagsRef.current && matchShortcut(e, "tag")) {
         const target = [...sel]
           .map((id) => cardsRef.current.find((c) => c.id === id))
           .find((c) => !!c && c.kind === "generation" && !!c.genId && !!genDataRef.current[c.genId]);

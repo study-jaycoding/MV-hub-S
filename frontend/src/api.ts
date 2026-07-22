@@ -64,7 +64,17 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
 
 // 코멘트 스레드 캐시(genId → 코멘트들) — 호버 prefetch + stale-while-revalidate.
 // 패널이 열릴 때 캐시를 즉시 그리고, 동시에 서버 재요청으로 최신화한다.
+// ★상한 LRU — 긴 세션에서 카드 수천 개 호버 시 무한 적재 방지. Map 삽입순서로 오래된 것부터 제거.
+const GEN_COMMENTS_CACHE_MAX = 500;
 const genCommentsCache = new Map<string, import("./types").GenComment[]>();
+function putGenComments(genId: string, comments: import("./types").GenComment[]) {
+  genCommentsCache.delete(genId); // 최신 접근을 맨 뒤로(recency)
+  genCommentsCache.set(genId, comments);
+  if (genCommentsCache.size > GEN_COMMENTS_CACHE_MAX) {
+    const oldest = genCommentsCache.keys().next().value;
+    if (oldest !== undefined) genCommentsCache.delete(oldest);
+  }
+}
 
 export const api = {
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
@@ -293,7 +303,7 @@ export const api = {
     jsonFetch<import("./types").GenComment[]>(
       `/api/generations/${pathPart(genId)}/comments`,
     ).then((c) => {
-      genCommentsCache.set(genId, c);
+      putGenComments(genId, c);
       return c;
     }),
   // 캐시된 코멘트(없으면 undefined) — 패널이 먼저 그려놓고 뒤에서 갱신해 체감 딜레이 제거
