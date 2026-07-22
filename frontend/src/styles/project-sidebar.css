@@ -15,6 +15,11 @@
 .proj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .proj-count { font-size: 11px; color: var(--muted2); flex: none; }
 .proj-row.on .proj-count { color: var(--muted); }
+/* 현재 선택 = 실제 생성 목적지. 폴더 빨강과 같은 언어로 위쪽 행(라이브러리/미분류/휴지통/프로젝트)도
+   빨강+흰글씨로 표시 — 한 번에 한 곳만 뜬다(폴더 무장 중이면 프로젝트 행엔 안 뜸). .on 뒤에 두어 덮음. */
+.proj-row.sel-target { background: rgba(255,79,138,0.2); color: #fff; font-weight: 700; }
+.proj-row.sel-target:hover { background: rgba(255,79,138,0.28); }
+.proj-row.sel-target .proj-count { color: #ffd6e5; }
 /* 사이드바 프로젝트 순서 드래그 — 그립은 평소 숨기고 행 호버 때만 살짝 보인다(깔끔한 룩 유지). */
 .proj-row .proj-drag-handle { opacity: 0; margin-right: 2px; font-size: 11px; flex: none; }
 .proj-row:hover .proj-drag-handle { opacity: 0.5; }
@@ -125,6 +130,26 @@
 }
 .folder-tree-count.zero { color: var(--muted2); }
 .folder-tree-row.selected .folder-tree-count { color: #ffd6e5; }
+
+/* 사이드바 폴더 트리 전용 — 무장(선택) 안 된 폴더는 회색으로 가라앉히고, 무장 폴더만 빨강+흰글씨로
+   도드라지게. 위쪽(라이브러리/프로젝트)을 고르면 폴더가 전부 회색이 되어 '지금 폴더 아님'이 분명해진다.
+   공통 FolderTreeView(어셋/관리자창)엔 영향 없게 .sidebar-folder-tree 로 스코프. */
+.folder-tree.sidebar-folder-tree .folder-tree-icon {
+  background: linear-gradient(#8b9099, #5b616b);
+  box-shadow: none;
+}
+.folder-tree.sidebar-folder-tree .folder-tree-row:not(.selected) .folder-tree-name,
+.folder-tree.sidebar-folder-tree .folder-tree-row:not(.selected) .folder-tree-count {
+  color: var(--muted);
+}
+.folder-tree.sidebar-folder-tree .folder-tree-row.selected { color: #fff; }
+.folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-name,
+.folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-count { color: #fff; }
+.folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-icon {
+  background: linear-gradient(#ff8bbc, #f34c91);
+  box-shadow: 0 0 10px rgba(255,79,138,0.36);
+}
+
 .assets-root-row { margin-bottom: 4px; }
 .assets-root-row.selected {
   background: transparent;

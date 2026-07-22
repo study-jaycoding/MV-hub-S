@@ -153,6 +153,7 @@ function SidebarFolderTree({
         isDisabled={isDisabled}
         onRowKeyDown={onRowKeyDown}
         scroll={scroll}
+        className="sidebar-folder-tree"
       />
       {state.truncated && <div className="side-folder-note">일부만 표시</div>}
     </div>
@@ -373,7 +374,9 @@ export function ProjectSection({
         <h4 className="auto-tag-head">Millionvolt</h4>
         <div className="proj-list">
           <button
-            className={"proj-row" + (!activeId && !deletedOnly ? " on" : "")}
+            className={
+              "proj-row" + (!activeId && !deletedOnly ? " on sel-target" : "")
+            }
             onClick={() => onFilter(undefined)}
           >
             <span className="proj-name">{tr("라이브러리")}</span>
@@ -381,7 +384,7 @@ export function ProjectSection({
           <button
             className={
               "proj-row proj-unassigned" +
-              (activeId === "none" && !deletedOnly ? " on" : "") +
+              (activeId === "none" && !deletedOnly ? " on sel-target" : "") +
               (unassignOver ? " drop-over" : "")
             }
             onClick={() => onFilter(activeId === "none" ? undefined : "none")}
@@ -412,7 +415,7 @@ export function ProjectSection({
             <span className="proj-count">{unassignedCount}</span>
           </button>
           <button
-            className={"proj-row proj-trash" + (deletedOnly ? " on" : "")}
+            className={"proj-row proj-trash" + (deletedOnly ? " on sel-target" : "")}
             onClick={onViewDeleted}
             title="지운 것만 보기 — 힉스필드 원본엔 영향 없음(우리 카탈로그 휴지통)"
           >
@@ -440,6 +443,9 @@ export function ProjectSection({
                   className={
                     "proj-row" +
                     (projectActive ? " on" : "") +
+                    // 이 프로젝트가 활성이면서 그 안의 폴더를 무장하지 않았을 때만 프로젝트 행이 빨강
+                    // (=프로젝트 루트가 목적지). 폴더 무장 중이면 빨강은 그 폴더에만.
+                    (projectActive && armedFolder?.projectId !== project.id ? " sel-target" : "") +
                     (dragIdx === index ? " row-dragging" : "") +
                     (overIdx === index && dragIdx !== index ? " row-dragover" : "")
                   }
@@ -536,7 +542,7 @@ export function ProjectSection({
                 archived.map((project) => (
                   <button
                     key={project.id}
-                    className={"proj-row archived" + (activeId === project.id ? " on" : "")}
+                    className={"proj-row archived" + (activeId === project.id ? " on sel-target" : "")}
                     onClick={() => onFilter(activeId === project.id ? undefined : project.id)}
                     title={project.name}
                   >
