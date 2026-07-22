@@ -104,28 +104,46 @@
   border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px;
 }
 .scene-group-btn:hover { background: var(--accent); color: var(--accent-ink); }
-.scene-group-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 이름은 늘어나지 않게(flex-grow 0) → 카운트가 텍스트 바로 오른쪽에 붙는다. ×는 margin-left:auto 로 끝으로 */
+.scene-group-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scene-group-name-input {
-  flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 700; color: var(--text);
+  flex: 0 1 auto; width: 110px; min-width: 60px; font-size: 12px; font-weight: 700; color: var(--text);
   background: var(--bg2, #14161a); border: 1px solid var(--accent); border-radius: 5px; padding: 1px 5px;
 }
 .scene-group-count {
   flex: none; font-size: 11px; font-weight: 800; color: var(--accent-ink); background: var(--accent);
   border-radius: 999px; padding: 0 7px; line-height: 16px;
 }
-/* 그룹 색 스와치 — 네이티브 컬러픽커를 스와치 뒤에 숨김. 현재 색이 없으면 회색으로 보임(클릭해 지정) */
+/* 그룹 색 — 스와치 버튼을 누르면 프리셋 팔레트 팝오버(고정색 + 커스텀 + 없음) */
+.scene-group-colorwrap { flex: none; position: relative; display: inline-flex; }
 .scene-group-color {
-  flex: none; width: 16px; height: 16px; border-radius: 5px; cursor: pointer;
-  border: 1px solid var(--border2); background: var(--gc, var(--border2));
-  position: relative; overflow: hidden; display: inline-block;
+  width: 16px; height: 16px; border-radius: 5px; cursor: pointer; padding: 0;
+  border: 1px solid var(--border2);
 }
-.scene-group-color input {
+.scene-group-colorpop {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 5px; width: 108px; padding: 7px;
+  background: #14161a; border: 1px solid var(--border2); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.scene-group-swatch {
+  width: 20px; height: 20px; border-radius: 5px; cursor: pointer; padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.15); position: relative; overflow: hidden;
+}
+.scene-group-swatch.on { outline: 2px solid #fff; outline-offset: 1px; }
+.scene-group-swatch.custom { background: conic-gradient(red, #ff0, lime, aqua, blue, magenta, red); }
+.scene-group-swatch.custom input {
   position: absolute; inset: -4px; width: 200%; height: 200%;
   border: 0; padding: 0; opacity: 0; cursor: pointer;
 }
-/* × = 그룹 해제(카드는 유지) */
+.scene-group-swatch.none {
+  background: #14161a; color: var(--muted); font-size: 14px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+/* × = 그룹 해제(카드는 유지). margin-left:auto 로 헤더 오른쪽 끝에 붙인다 */
 .scene-group-x {
-  flex: none; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
+  flex: none; margin-left: auto; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
   border: 0; border-radius: 5px; background: transparent; color: var(--muted);
   cursor: pointer; font-size: 15px; line-height: 1;
 }

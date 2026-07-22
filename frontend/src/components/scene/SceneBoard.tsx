@@ -63,6 +63,8 @@ const GRID = 22;
 const CARD_MIN_W = GRID * 5; // 110
 const CARD_MIN_H = GRID * 3; // 66
 const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
+// 그룹 고정 색 팔레트(팝오버 프리셋). 이 외의 색은 '커스텀'(네이티브 컬러픽커)으로 지정.
+const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
 
 // 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
 // asset:proj|path 토큰이면 포스터(assetThumbUrl, 백엔드 첫 프레임)로 바꿔 이미지로 표시한다.
@@ -165,6 +167,7 @@ export function SceneBoard({
   const [edges, setEdges] = useState<SceneEdge[]>(scene.edges);
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
+  const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
@@ -1116,8 +1119,8 @@ export function SceneBoard({
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, name } : g)));
   const toggleGroupCollapsed = (id: string) =>
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)));
-  const setGroupColor = (id: string, color: string) =>
-    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, color } : g)));
+  const setGroupColor = (id: string, color?: string) =>
+    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, color: color || undefined } : g)));
   // 카드 드롭 위치로 그룹 멤버십 재배정 — 드롭한 프레임 안이면 그 그룹 가입, 어느 프레임에도 없으면 해제.
   //  · startFrames: 드래그 시작 시점의 그룹 프레임 스냅샷(자동 그룹 프레임이 드래그 중 흔들리지 않게).
   //  · setGroups 로 반영하고, persist 에 넘길 최신 그룹 배열을 반환(변화 없으면 현재 배열 그대로).
@@ -1238,6 +1241,7 @@ export function SceneBoard({
       // 텍스트/제목 노드 편집 중이면(포커스가 새어도) 캔버스 단축키(m/l/t/o/i/h 등)를 무시 — 글자가 노드 생성으로 새지 않게.
       if (editTextIdRef.current && e.key !== "Escape") return;
       if (e.key === "Escape") {
+        setColorPopId(null); // 그룹 색 팔레트 열려 있으면 닫기(닫혀 있으면 무해)
         if (nodePickerRef.current) setNodePicker(null); // 노드 피커 닫기(우선)
         else if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
         else if (refMenuRef.current) setRefMenu(null); // 레퍼런스 검사 팝업 닫기
@@ -1789,6 +1793,15 @@ export function SceneBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyTransform]);
   useEffect(() => () => { if (camSaveTimer.current) clearTimeout(camSaveTimer.current); }, []);
+  // 그룹 색 팔레트 — 팝오버 바깥 클릭 시 닫기.
+  useEffect(() => {
+    if (!colorPopId) return;
+    const onDown = (ev: MouseEvent) => {
+      if (!(ev.target as HTMLElement)?.closest?.(".scene-group-colorwrap")) setColorPopId(null);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [colorPopId]);
 
   // 엣지 계산·렌더에서 카드를 id 로 매우 자주 조회한다(E×C). 선형 find 대신 Map(O(1))로 —
   // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
@@ -2064,6 +2077,10 @@ export function SceneBoard({
           const editing = editingGroupId === g.id;
           const gstyle: CSSProperties = { left: box.x, top: box.y, width: box.w, height: box.h };
           if (g.color) (gstyle as Record<string, string | number>)["--gc"] = g.color;
+          if (colorPopId === g.id) {
+            gstyle.zIndex = 60; // 팔레트 열리면 카드 위로 올려 가려지지 않게
+            gstyle.overflow = "visible"; // 접힌 그룹의 overflow:hidden 이 팝오버를 자르지 않게
+          }
           return (
             <div
               key={g.id}
@@ -2086,6 +2103,52 @@ export function SceneBoard({
                 >
                   {collapsed ? "▸" : "▾"}
                 </button>
+                <div className="scene-group-colorwrap" onMouseDown={(e) => e.stopPropagation()}>
+                  <button
+                    className="scene-group-color"
+                    title="그룹 색"
+                    style={{ background: g.color || "var(--border2)" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setColorPopId((p) => (p === g.id ? null : g.id));
+                    }}
+                  />
+                  {colorPopId === g.id && (
+                    <div className="scene-group-colorpop">
+                      {GROUP_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          className={"scene-group-swatch" + (g.color === c ? " on" : "")}
+                          style={{ background: c }}
+                          title={c}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGroupColor(g.id, c);
+                            setColorPopId(null);
+                          }}
+                        />
+                      ))}
+                      <label className="scene-group-swatch custom" title="커스텀 색">
+                        <input
+                          type="color"
+                          value={g.color || "#5a6270"}
+                          onChange={(e) => setGroupColor(g.id, e.target.value)}
+                        />
+                      </label>
+                      <button
+                        className="scene-group-swatch none"
+                        title="색 없음"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setGroupColor(g.id, undefined);
+                          setColorPopId(null);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+                </div>
                 {editing ? (
                   <input
                     className="scene-group-name-input"
@@ -2116,17 +2179,6 @@ export function SceneBoard({
                   </span>
                 )}
                 <span className="scene-group-count">{memberCount}</span>
-                <label
-                  className="scene-group-color"
-                  title="그룹 색"
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <input
-                    type="color"
-                    value={g.color || "#5a6270"}
-                    onChange={(e) => setGroupColor(g.id, e.target.value)}
-                  />
-                </label>
                 <button
                   className="scene-group-x"
                   title="그룹 해제(카드는 유지)"
