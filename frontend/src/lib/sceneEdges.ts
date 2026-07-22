@@ -12,8 +12,27 @@ import {
 // 연결 허용 규칙 — to 노드 종류별로 받을 수 있는 소스만. 말이 안 되는 연결(text→view 등)을 막는다.
 //  · generation: 모델/텍스트/레퍼런스/생성/리스트 입력 허용(view 제외)
 //  · list: 생성/텍스트만(동종 수집)  · view: 생성/리스트만(미디어)  · text/model/reference/view: 입력 없음
-export function canConnect(from: SceneCard, to: SceneCard): boolean {
+//  · output: 출력 포트가 있는 소스 하나에 붙음(view/output/input 제외)  · input: 입력 포트 없음
+//  · 소스가 input 이면 그것이 가리키는 '실제 소스'의 종류로 검증한다(무선 연결). 컨텍스트(cardsById/edges) 필요.
+export function canConnect(
+  from: SceneCard,
+  to: SceneCard,
+  cardsById?: Map<string, SceneCard>,
+  edges?: SceneEdge[],
+): boolean {
   if (from.id === to.id) return false;
+  if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
+  // input 을 소스로 놓으면 실제 소스로 해석해 그 종류로 검증(input 자체는 어디에도 못 풂 → 컨텍스트 없으면 불가)
+  if (from.kind === "input") {
+    if (!cardsById || !edges) return false;
+    const realId = resolveInputSourceId(from.id, cardsById, edges);
+    const real = realId ? cardsById.get(realId) : undefined;
+    if (!real) return false;
+    return canConnect(real, to); // real 은 input 이 아니므로 컨텍스트 불필요
+  }
+  // 여기 오면 from 은 output/input 이 아니다(위에서 처리) — output 은 출력 포트 있는 소스만(view 제외).
+  if (to.kind === "output") return from.kind !== "view";
+  if (to.kind === "input") return false;
   switch (to.kind) {
     case "generation":
       return from.kind !== "view";
@@ -27,6 +46,57 @@ export function canConnect(from: SceneCard, to: SceneCard): boolean {
     default:
       return false;
   }
+}
+
+// input 노드가 가리키는 '실제 소스 카드 id' 로 해석(무선 연결) — input→output→(output 에 물린 소스).
+// 소스가 또 input 이면 계속 따라가되, 사이클/재방문은 unresolved(null)로 끊는다. input 이 아니면 그대로 반환.
+export function resolveInputSourceId(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  seen: Set<string> = new Set(),
+): string | null {
+  const card = cardsById.get(cardId);
+  if (!card) return null;
+  if (card.kind !== "input") return cardId; // 이미 실제 소스
+  if (seen.has(cardId)) return null; // 사이클 차단
+  seen.add(cardId);
+  const outId = card.channel;
+  if (!outId) return null; // 채널 미선택
+  const out = cardsById.get(outId);
+  if (!out || out.kind !== "output") return null; // 선택한 output 이 사라짐/무효
+  // output 에 물린 소스(들) 중 대표 1개: order → y → x 순.
+  const ins = edges
+    .filter((e) => e.to === outId)
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
+  if (!ins.length) return null; // output 에 아직 소스가 안 붙음
+  const primary = sortByOrder(ins)[0].c.id;
+  return resolveInputSourceId(primary, cardsById, edges, seen);
+}
+
+// 수집기(collect*)에 넘길 '해석된 엣지' — from 이 input 이면 실제 소스 id 로 치환, 못 풀면 그 엣지는 뺀다.
+// (from,to) 중복은 제거해 같은 소스가 두 번 잡히는 것(모델 2개로 오판 등)을 막는다. order/role 등은 보존.
+export function resolvePortEdges(
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): SceneEdge[] {
+  const out: SceneEdge[] = [];
+  const seenPair = new Set<string>();
+  for (const e of edges) {
+    const from = cardsById.get(e.from);
+    let realFrom = e.from;
+    if (from?.kind === "input") {
+      const r = resolveInputSourceId(e.from, cardsById, edges);
+      if (!r) continue; // 못 푼 input 엣지는 수집에서 제외
+      realFrom = r;
+    }
+    const key = realFrom + ">" + e.to;
+    if (seenPair.has(key)) continue;
+    seenPair.add(key);
+    out.push(realFrom === e.from ? e : { ...e, from: realFrom });
+  }
+  return out;
 }
 
 // list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
@@ -174,7 +244,13 @@ export function resolveEdgeRole(
   edges?: SceneEdge[],
 ): SceneEdgeRole {
   if (edge.role) return edge.role;
-  const from = cardsById.get(edge.from);
+  const rawFrom = cardsById.get(edge.from);
+  // 소스가 input(무선)이면 실제 소스 종류로 색을 맞춘다 — 못 풀면 그대로(중립 폴백).
+  const fromId =
+    rawFrom?.kind === "input" && edges
+      ? resolveInputSourceId(edge.from, cardsById, edges) ?? edge.from
+      : edge.from;
+  const from = cardsById.get(fromId);
   const to = cardsById.get(edge.to);
   // 소스 종류를 먼저 본다 — 텍스트→리스트여도 '텍스트'(보라)로. 모델/텍스트/레퍼런스는 소스색 우선.
   if (to?.kind === "text") return "ref"; // 무엇이든 텍스트 노드 입력 = 레퍼런스(파랑)

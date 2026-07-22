@@ -28,7 +28,7 @@ import {
   variantIds,
   type SceneRef,
 } from "./lib/scenes";
-import { collectGenText, collectGenModel } from "./lib/sceneEdges";
+import { collectGenText, collectGenModel, resolvePortEdges } from "./lib/sceneEdges";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -372,17 +372,22 @@ export default function App() {
     activeScene && sceneBinding
       ? activeScene.cards.find((c) => c.id === sceneBinding.cardId)?.prompt ?? ""
       : "";
+  // 수집 전 input(무선) 소스를 실제 소스로 해석한 엣지 — 텍스트/모델 모두 이 기준으로 잡는다.
+  const boundCardsById =
+    activeScene && sceneBinding ? new Map(activeScene.cards.map((c) => [c.id, c])) : null;
+  const boundResolvedEdges =
+    boundCardsById && activeScene ? resolvePortEdges(boundCardsById, activeScene.edges) : [];
   // 연결된 텍스트(text·text-list)가 있으면 그 합친 텍스트가 프롬프트의 진실원천(파생 우선). 없으면 카드 자체 프롬프트.
   const boundGenText =
-    activeScene && sceneBinding
-      ? collectGenText(sceneBinding.cardId, new Map(activeScene.cards.map((c) => [c.id, c])), activeScene.edges)
+    boundCardsById && sceneBinding
+      ? collectGenText(sceneBinding.cardId, boundCardsById, boundResolvedEdges)
       : { text: "", count: 0 };
   const textDerived = boundGenText.count > 0;
   const derivedPrompt = textDerived ? boundGenText.text : boundCardPrompt;
   // 연결된 모델 노드(1개만 유효)의 설정 — 있으면 하단 프롬프트 모델로 적용.
   const boundModel =
-    activeScene && sceneBinding
-      ? collectGenModel(sceneBinding.cardId, new Map(activeScene.cards.map((c) => [c.id, c])), activeScene.edges)
+    boundCardsById && sceneBinding
+      ? collectGenModel(sceneBinding.cardId, boundCardsById, boundResolvedEdges)
       : null;
   const trayBinding =
     filters.tab === "compose" && activeScene

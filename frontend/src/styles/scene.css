@@ -510,3 +510,46 @@
   line-height: 1.7; padding: 24px; pointer-events: none;
 }
 .scene-empty-title { font-size: 16px; font-weight: 800; color: var(--text); }
+
+/* ── Input/Output(무선 연결) 노드 — ComfyUI Set/Get 방식 ─────────────────────── */
+.scene-card-output { border: 2px solid #38404d; }
+.scene-card-input  { border: 2px solid #38404d; }
+.scene-card-output:hover,
+.scene-card-input:hover { border-color: #8aa0bf; }
+.scene-card-hd.portout { color: #cfd6e0; background: rgba(120, 140, 170, 0.12); }
+.scene-card-hd.portin  { color: #cfd6e0; background: rgba(120, 140, 170, 0.12); }
+.scene-portnode {
+  --oc: var(--muted);
+  border-left: 3px solid var(--oc);
+}
+/* 붙은/해석된 소스 종류별 강조색 */
+.scene-portnode.oc-model      { --oc: #ffb84d; }
+.scene-portnode.oc-text       { --oc: #b57aff; }
+.scene-portnode.oc-reference  { --oc: #7fa9ff; }
+.scene-portnode.oc-generation { --oc: #7fa9ff; }
+.scene-portnode.oc-list       { --oc: var(--accent); }
+.scene-portnode.oc-none       { --oc: #566072; }
+.scene-portnode-body {
+  flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; min-width: 0;
+}
+.scene-portnode-name {
+  width: 100%; box-sizing: border-box; font-size: 12px; font-weight: 700;
+  color: var(--text); background: #0d1016; border: 1px solid var(--border2);
+  border-radius: 6px; padding: 4px 7px; outline: none;
+}
+.scene-portnode-name:focus { border-color: var(--oc); }
+.scene-portnode-name::placeholder { color: var(--muted); font-weight: 500; }
+.scene-portnode-sel {
+  width: 100%; box-sizing: border-box; font-size: 12px; font-weight: 600;
+  color: var(--text); background: #0d1016; border: 1px solid var(--border2);
+  border-radius: 6px; padding: 4px 7px; outline: none; cursor: pointer;
+}
+.scene-portnode-sel:focus { border-color: var(--oc); }
+.scene-portnode-src {
+  display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--oc);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.scene-portnode-dot {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--oc);
+}
+.scene-portnode-empty { color: var(--muted); font-weight: 500; }

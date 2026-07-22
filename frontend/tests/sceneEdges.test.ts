@@ -12,6 +12,8 @@ import {
   collectGenText,
   collectGenModel,
   canConnect,
+  resolveInputSourceId,
+  resolvePortEdges,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -366,5 +368,157 @@ describe("canConnect", () => {
     expect(canConnect(c("T2", "text"), c("T", "text"))).toBe(false);
     expect(canConnect(c("A", "generation"), c("B", "model"))).toBe(false);
     expect(canConnect(c("X", "generation"), c("X", "generation"))).toBe(false);
+  });
+});
+
+describe("Input/Output 무선 노드", () => {
+  const n = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  describe("resolveInputSourceId", () => {
+    it("input → output → 실제 소스로 해석", () => {
+      const cards = [
+        n("M", "model", { modelCfg: { model: "x" } }),
+        n("O", "output", { text: "hero" }),
+        n("I", "input", { channel: "O" }),
+      ];
+      const edges: SceneEdge[] = [{ id: "e1", from: "M", to: "O" }];
+      expect(resolveInputSourceId("I", byId(cards), edges)).toBe("M");
+    });
+    it("input 이 아닌 카드는 자기 자신 반환", () => {
+      const cards = [n("M", "model")];
+      expect(resolveInputSourceId("M", byId(cards), [])).toBe("M");
+    });
+    it("채널 미선택/무효 output/소스 없음 → null", () => {
+      const noChan = [n("I", "input")];
+      expect(resolveInputSourceId("I", byId(noChan), [])).toBeNull();
+      const badOut = [n("I", "input", { channel: "Z" }), n("Z", "model")]; // Z 는 output 이 아님
+      expect(resolveInputSourceId("I", byId(badOut), [])).toBeNull();
+      const emptyOut = [n("I", "input", { channel: "O" }), n("O", "output")];
+      expect(resolveInputSourceId("I", byId(emptyOut), [])).toBeNull();
+    });
+    it("input 체인도 따라가며, 사이클은 null 로 끊는다", () => {
+      // I1 → O1 ← I2 → O2 ← T  (I1 이 O1 을 통해 결국 T 로)
+      const chain = [
+        n("T", "text", { text: "hi" }),
+        n("O2", "output"),
+        n("I2", "input", { channel: "O2" }),
+        n("O1", "output"),
+        n("I1", "input", { channel: "O1" }),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "a", from: "T", to: "O2" },
+        { id: "b", from: "I2", to: "O1" },
+      ];
+      expect(resolveInputSourceId("I1", byId(chain), edges)).toBe("T");
+      // 사이클: output 의 소스가 자기를 참조하는 input
+      const cyc = [n("O", "output"), n("I", "input", { channel: "O" })];
+      const cycEdges: SceneEdge[] = [{ id: "c", from: "I", to: "O" }];
+      expect(resolveInputSourceId("I", byId(cyc), cycEdges)).toBeNull();
+    });
+  });
+
+  describe("resolvePortEdges", () => {
+    it("input 소스 엣지를 실제 소스로 치환(order 보존)", () => {
+      const cards = [
+        n("M", "model"),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("G", "generation"),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "e1", from: "M", to: "O" },
+        { id: "e2", from: "I", to: "G", order: 3 },
+      ];
+      const resolved = resolvePortEdges(byId(cards), edges);
+      const toG = resolved.find((e) => e.to === "G")!;
+      expect(toG.from).toBe("M"); // I → 실제 소스 M 으로 치환
+      expect(toG.order).toBe(3); // order 보존
+    });
+    it("못 푼 input 엣지는 제외, (from,to) 중복은 하나만", () => {
+      const cards = [
+        n("M", "model"),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("Ibad", "input"), // 채널 없음
+        n("G", "generation"),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "e1", from: "M", to: "O" },
+        { id: "e2", from: "M", to: "G" }, // 실제 연결
+        { id: "e3", from: "I", to: "G" }, // I→M 으로 치환 → M,G 중복
+        { id: "e4", from: "Ibad", to: "G" }, // 못 풂 → 제외
+      ];
+      const resolved = resolvePortEdges(byId(cards), edges);
+      const toG = resolved.filter((e) => e.to === "G");
+      expect(toG).toHaveLength(1); // 중복 제거
+      expect(toG[0].from).toBe("M");
+    });
+    it("input 을 거친 모델도 collectGenModel 로 정확히 1개 잡힌다", () => {
+      const cards = [
+        n("M", "model", { modelCfg: { model: "kling" } }),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("G", "generation"),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "e1", from: "M", to: "O" },
+        { id: "e2", from: "I", to: "G" },
+      ];
+      const map = byId(cards);
+      const cfg = collectGenModel("G", map, resolvePortEdges(map, edges));
+      expect(cfg?.model).toBe("kling");
+    });
+  });
+
+  describe("canConnect (input/output)", () => {
+    it("output 은 출력 포트 있는 소스만 받음(view/output/input 제외)", () => {
+      const O = n("O", "output");
+      expect(canConnect(n("M", "model"), O)).toBe(true);
+      expect(canConnect(n("G", "generation"), O)).toBe(true);
+      expect(canConnect(n("V", "view"), O)).toBe(false);
+    });
+    it("input 은 아무것도 못 받고, output 은 소스가 될 수 없다", () => {
+      expect(canConnect(n("M", "model"), n("I", "input"))).toBe(false);
+      expect(canConnect(n("O", "output"), n("G", "generation"))).toBe(false);
+    });
+    it("input 소스는 해석된 실제 소스 종류로 검증 — model→gen OK, model→view 불가", () => {
+      const cards = [
+        n("M", "model"),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("G", "generation"),
+        n("V", "view"),
+      ];
+      const edges: SceneEdge[] = [{ id: "e1", from: "M", to: "O" }];
+      const map = byId(cards);
+      expect(canConnect(map.get("I")!, map.get("G")!, map, edges)).toBe(true);
+      expect(canConnect(map.get("I")!, map.get("V")!, map, edges)).toBe(false);
+    });
+    it("컨텍스트 없이 input 소스는 불가(안전)", () => {
+      expect(canConnect(n("I", "input", { channel: "O" }), n("G", "generation"))).toBe(false);
+    });
+  });
+
+  describe("resolveEdgeRole (input 색)", () => {
+    it("input→gen 색은 해석된 실제 소스 종류를 따른다(model=주황)", () => {
+      const cards = [
+        n("M", "model"),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("G", "generation"),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "e1", from: "M", to: "O" },
+        { id: "e2", from: "I", to: "G" },
+      ];
+      expect(resolveEdgeRole(edges[1], byId(cards), {}, edges)).toBe("model");
+    });
   });
 });

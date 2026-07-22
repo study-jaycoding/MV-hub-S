@@ -3,7 +3,15 @@
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
-export type SceneCardKind = "reference" | "generation" | "text" | "model" | "list" | "view";
+export type SceneCardKind =
+  | "reference"
+  | "generation"
+  | "text"
+  | "model"
+  | "list"
+  | "view"
+  | "output"
+  | "input";
 
 // 모델 노드 설정 — 하단 프롬프트(SpotlightOptionsBar)에서 고른 값의 스냅샷(표시·조직화용).
 export interface SceneModelCfg {
@@ -34,8 +42,9 @@ export interface SceneCard {
   genIds?: string[]; // 생성 카드: 이 카드에서 만들어진 모든 결과(누적, 오래된→최신). 배지·팝업용.
   prompt?: string; // 생성 카드: 작성 중인 프롬프트 초안(직렬화 텍스트). 카드 전환 시 이 카드로 복원.
   status?: "empty" | "pending" | "running" | "done" | "failed";
-  text?: string; // text 노드: 입력한 텍스트 내용.
+  text?: string; // text 노드: 입력한 텍스트 내용. / output 노드: 채널 이름.
   modelCfg?: SceneModelCfg; // model 노드: 고른 모델 설정 스냅샷.
+  channel?: string; // input 노드: 참조할 output 카드 id(이름 아님 — 이름은 바뀌므로 id 로 고정).
 }
 
 // 연결의 의미(입력 레인·색). 없으면 소스/타깃 kind 로 추론(resolveEdgeRole) — 기존 저장분 하위호환.

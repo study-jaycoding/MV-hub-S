@@ -39,6 +39,8 @@ import {
   edgePathXY,
   fanOffset,
   resolveEdgeRole,
+  resolveInputSourceId,
+  resolvePortEdges,
 } from "../../lib/sceneEdges";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
@@ -577,10 +579,12 @@ export function SceneBoard({
   // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
   // 연결된 레퍼런스 카드들이 제공하는 "목표 레퍼런스 집합"(엣지 순서대로).
   const gatherTarget = (genId: string, cs: SceneCard[], es: SceneEdge[]): SceneRef[] => {
+    const byId = new Map(cs.map((c) => [c.id, c] as const));
+    const resolved = resolvePortEdges(byId, es); // input(무선)으로 연결한 레퍼런스도 실제 소스로 해석
     const out: SceneRef[] = [];
-    for (const e of es) {
+    for (const e of resolved) {
       if (e.to !== genId) continue;
-      const src = cs.find((c) => c.id === e.from);
+      const src = byId.get(e.from);
       if (src?.kind === "reference" && src.refs) out.push(...src.refs);
     }
     return out;
@@ -795,12 +799,13 @@ export function SceneBoard({
       //    선택된 카드 전부를 한 번에 연결한다. 아니면 그 카드 하나만. 규칙에 맞는 소스만(canConnect).
       const sel = selectedRef.current;
       const srcKind = cardsRef.current.find((c) => c.id === cardId)?.kind;
+      const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
       const froms = (sel.has(cardId)
         ? [...sel].filter((id) => cardsRef.current.find((c) => c.id === id)?.kind === srcKind)
         : [cardId]
       ).filter((id) => {
         const f = cardsRef.current.find((c) => c.id === id);
-        return f && canConnect(f, toCard);
+        return f && canConnect(f, toCard, byId, edgesRef.current);
       });
       if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]));
     };
@@ -860,15 +865,29 @@ export function SceneBoard({
             ? { ...base, kind: "list" }
             : kind === "view"
               ? { ...base, kind: "view" }
-              : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+              : kind === "output"
+                ? { ...base, kind: "output", text: "" }
+                : kind === "input"
+                  ? { ...base, kind: "input" }
+                  : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
     const nextCards = [...cardsRef.current, card];
     setCards(nextCards);
     setSelected(new Set([card.id]));
     persist(nextCards, edgesRef.current);
   };
-  // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움).
+  // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
+  // input 노드가 참조할 output(채널) 선택 저장. channel = output 카드 id(빈 문자열이면 미선택).
+  // ★채널이 바뀌면 무선으로 끌어오던 레퍼런스가 달라지므로 생성카드 refs 를 다시 계산해야 한다(안 하면 stale).
+  const setNodeChannel = (cardId: string, channel: string) => {
+    const patched = cardsRef.current.map((c) =>
+      c.id === cardId ? { ...c, channel: channel || undefined } : c,
+    );
+    const nextCards = withGenRefs(patched, edgesRef.current);
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
@@ -892,8 +911,9 @@ export function SceneBoard({
   // View 노드 재생 — 연결된(직접+generation-list) 생성물을 모아 기존 미리보기(MediaPreview)로 순차 재생.
   const playView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const es = resolvePortEdges(byId, edgesRef.current);
     const items: PreviewItem[] = [];
-    for (const cid of collectViewGenCardIds(viewId, byId, edgesRef.current)) {
+    for (const cid of collectViewGenCardIds(viewId, byId, es)) {
       const card = byId.get(cid);
       const gid = card?.genId || (card ? variantIds(card)[0] : undefined);
       const a = gid ? genDataRef.current[gid]?.assets?.[0] : null;
@@ -919,11 +939,12 @@ export function SceneBoard({
   // View 열기(더블클릭·버튼 공용) — 생성물이 있으면 재생, 없고 텍스트가 있으면 텍스트 보기.
   const openView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    if (collectViewGenCardIds(viewId, byId, edgesRef.current).length) {
+    const es = resolvePortEdges(byId, edgesRef.current);
+    if (collectViewGenCardIds(viewId, byId, es).length) {
       playView(viewId);
       return;
     }
-    const texts = collectViewTexts(viewId, byId, edgesRef.current);
+    const texts = collectViewTexts(viewId, byId, es);
     if (texts.length) setViewTextModal(texts);
   };
 
@@ -1054,10 +1075,13 @@ export function SceneBoard({
         return !!g && g.is_mine && !g.shared && !g.is_final; // 지워도 안전한 것만
       });
     const nextEdges = edgesRef.current.filter((e) => !idset.has(e.from) && !idset.has(e.to));
-    const nextCards = withGenRefs(
-      cardsRef.current.filter((c) => !idset.has(c.id)),
-      nextEdges,
-    );
+    // 삭제된 output(채널)을 가리키던 input 은 channel 을 비운다(무효 참조 방지).
+    const survivingCards = cardsRef.current
+      .filter((c) => !idset.has(c.id))
+      .map((c) =>
+        c.kind === "input" && c.channel && idset.has(c.channel) ? { ...c, channel: undefined } : c,
+      );
+    const nextCards = withGenRefs(survivingCards, nextEdges);
     const nextGroups = pruneGroups(groupsRef.current, idset); // 삭제 카드는 그룹 멤버에서 제거·빈 그룹 정리
     setCards(nextCards);
     setEdges(nextEdges);
@@ -1197,6 +1221,10 @@ export function SceneBoard({
           idMap.set(c.id, nid);
           return { ...c, id: nid, x: c.x + off, y: c.y + off };
         });
+        // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
+        for (const c of newCards)
+          if (c.kind === "input" && c.channel && idMap.has(c.channel))
+            c.channel = idMap.get(c.channel);
         const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
           ...ed,
           id: uid(),
@@ -1234,8 +1262,18 @@ export function SceneBoard({
           .map((id) => cardsRef.current.find((cc) => cc.id === id))
           .filter((c): c is SceneCard => !!c);
         if (selCards.length >= 2) {
+          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트=2 → View=3 → Output(무선 발신)=4(가장 깊은 싱크).
           const layerOf = (c: SceneCard) =>
-            c.kind === "generation" ? 1 : c.kind === "list" ? 2 : c.kind === "view" ? 3 : 0;
+            c.kind === "generation"
+              ? 1
+              : c.kind === "list"
+                ? 2
+                : c.kind === "view"
+                  ? 3
+                  : c.kind === "output"
+                    ? 4
+                    : 0;
+          const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
           if (selCards.every((c) => c.kind === "generation")) {
             // 생성 카드끼리 — 화면 왼→오 계보 체인.
             e.preventDefault();
@@ -1248,7 +1286,9 @@ export function SceneBoard({
           // 레이어 연결 — s 보다 깊고 연결 가능한 선택 카드 중 '가장 얕은 레이어' 전부에 연결.
           const pairs: Array<[string, string]> = [];
           for (const s of selCards) {
-            const cand = selCards.filter((t) => layerOf(t) > layerOf(s) && canConnect(s, t));
+            const cand = selCards.filter(
+              (t) => layerOf(t) > layerOf(s) && canConnect(s, t, byId, edgesRef.current),
+            );
             if (!cand.length) continue;
             const minLayer = Math.min(...cand.map(layerOf));
             for (const t of cand) if (layerOf(t) === minLayer) pairs.push([s.id, t.id]);
@@ -1352,8 +1392,9 @@ export function SceneBoard({
           refs: [],
           genId: null,
         };
+        const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
         const newEdges: SceneEdge[] = srcCards
-          .filter((c) => canConnect(c, empty)) // view 등 소스로 부적절한 카드 제외
+          .filter((c) => canConnect(c, empty, byId, edgesRef.current)) // view 등 소스로 부적절한 카드 제외
           .map((c) => ({ id: uid(), from: c.id, to: empty.id }));
         const nextEdges = [...edgesRef.current, ...newEdges];
         const nextCards = withGenRefs([...cardsRef.current, empty], nextEdges);
@@ -1377,6 +1418,14 @@ export function SceneBoard({
         e.preventDefault(); // V = View 노드
         setNodePicker(null);
         createNode("view");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "o" || e.key === "O")) {
+        e.preventDefault(); // O = Output(무선 발신) 노드
+        setNodePicker(null);
+        createNode("output");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "i" || e.key === "I")) {
+        e.preventDefault(); // I = Input(무선 수신) 노드
+        setNodePicker(null);
+        createNode("input");
       } else if (e.key === "Delete") {
         if (!sel.size) return;
         e.preventDefault();
@@ -1815,6 +1864,9 @@ export function SceneBoard({
     for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents, edges));
     return m;
   }, [edges, cardsById, refParents]);
+  // 수집기(collectListInputs/View*/GenText/Model, text 노드 @레퍼런스)에 넘길 '해석된 엣지' —
+  // input(무선) 소스를 실제 소스로 치환. 그리기(선 좌표)는 원본 edges 를 계속 쓴다(입력→타깃 실선 유지).
+  const resolvedEdges = useMemo(() => resolvePortEdges(cardsById, edges), [cardsById, edges]);
   // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
   // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
   const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>
@@ -2108,8 +2160,8 @@ export function SceneBoard({
                 </>
               ) : card.kind === "text" ? (
                 (() => {
-                  // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑.
-                  const refSrcs = edges
+                  // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑. input 은 실제 소스로 해석.
+                  const refSrcs = resolvedEdges
                     .filter((e) => e.to === card.id)
                     .map((e) => cardsById.get(e.from))
                     .filter((c): c is SceneCard => !!c)
@@ -2267,8 +2319,8 @@ export function SceneBoard({
                 </>
               ) : card.kind === "list" ? (
                 (() => {
-                  // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트).
-                  const li = collectListInputs(card.id, cardsById, edges);
+                  // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트). input(무선)은 실제 소스로 해석.
+                  const li = collectListInputs(card.id, cardsById, resolvedEdges);
                   const label =
                     li.kind === "generation"
                       ? `생성물 ${li.generationCardIds.length}개`
@@ -2414,8 +2466,8 @@ export function SceneBoard({
               ) : card.kind === "view" ? (
                 (() => {
                   // 뷰어 끝점 — 생성물(직접+generation-list)은 미리보기로 재생, 텍스트(text·text-list)는 표시.
-                  const genIds = collectViewGenCardIds(card.id, cardsById, edges);
-                  const texts = collectViewTexts(card.id, cardsById, edges);
+                  const genIds = collectViewGenCardIds(card.id, cardsById, resolvedEdges);
+                  const texts = collectViewTexts(card.id, cardsById, resolvedEdges);
                   const hasMedia = genIds.length > 0;
                   const hasText = texts.length > 0;
                   return (
@@ -2457,6 +2509,112 @@ export function SceneBoard({
                         className="scene-resize"
                         onMouseDown={(e) => onResizeDown(e, card.id)}
                         title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
+              ) : card.kind === "output" ? (
+                (() => {
+                  // Output(무선 발신) — 소스 하나에 붙어 '채널'을 발행. 색은 붙은 소스 종류를 따른다.
+                  const inEdge = edges.find((e) => e.to === card.id);
+                  const src = inEdge ? cardsById.get(inEdge.from) : undefined;
+                  const k = src?.kind;
+                  const kindLabel =
+                    k === "model"
+                      ? "모델"
+                      : k === "text"
+                        ? "텍스트"
+                        : k === "reference"
+                          ? "레퍼런스"
+                          : k === "generation"
+                            ? "생성물"
+                            : k === "list"
+                              ? "리스트"
+                              : "";
+                  return (
+                    <>
+                      <div className={"scene-card-inner scene-portnode out oc-" + (k || "none")}>
+                        <div className="scene-card-hd portout">OUTPUT</div>
+                        <div className="scene-portnode-body">
+                          <input
+                            className="scene-portnode-name"
+                            value={card.text || ""}
+                            placeholder="채널 이름"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onFocus={() => setSelected(new Set([card.id]))}
+                            onChange={(e) => setNodeText(card.id, e.target.value)}
+                          />
+                          <div className="scene-portnode-src">
+                            {src ? (
+                              <>
+                                <span className="scene-portnode-dot" /> {kindLabel}
+                              </>
+                            ) : (
+                              <span className="scene-portnode-empty">소스를 연결</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="scene-port in" title="발행할 소스(모델/텍스트/레퍼런스/생성물/리스트)를 연결" />
+                    </>
+                  );
+                })()
+              ) : card.kind === "input" ? (
+                (() => {
+                  // Input(무선 수신) — output 채널 하나를 골라 그 소스에 직접 연결한 것처럼 사용.
+                  const outputs = cards.filter((c) => c.kind === "output");
+                  const realId = resolveInputSourceId(card.id, cardsById, edges);
+                  const real = realId ? cardsById.get(realId) : undefined;
+                  const k = real?.kind;
+                  const kindLabel =
+                    k === "model"
+                      ? "모델"
+                      : k === "text"
+                        ? "텍스트"
+                        : k === "reference"
+                          ? "레퍼런스"
+                          : k === "generation"
+                            ? "생성물"
+                            : k === "list"
+                              ? "리스트"
+                              : "";
+                  const chOk = !!card.channel && outputs.some((o) => o.id === card.channel);
+                  return (
+                    <>
+                      <div className={"scene-card-inner scene-portnode in oc-" + (k || "none")}>
+                        <div className="scene-card-hd portin">INPUT</div>
+                        <div className="scene-portnode-body">
+                          <select
+                            className="scene-portnode-sel"
+                            value={chOk ? card.channel : ""}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onFocus={() => setSelected(new Set([card.id]))}
+                            onChange={(e) => setNodeChannel(card.id, e.target.value)}
+                          >
+                            <option value="">출력 선택…</option>
+                            {outputs.map((o) => (
+                              <option key={o.id} value={o.id}>
+                                {(o.text || "").trim() || "(이름없음)"}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="scene-portnode-src">
+                            {real ? (
+                              <>
+                                <span className="scene-portnode-dot" /> → {kindLabel}
+                              </>
+                            ) : (
+                              <span className="scene-portnode-empty">
+                                {card.channel ? "⚠ 미연결(소스 없음)" : "출력을 고르세요"}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <span
+                        className="scene-port out"
+                        onMouseDown={(e) => onOutPortDown(e, card.id)}
+                        title="드래그해 원하는 곳에 연결(고른 출력의 소스처럼 동작)"
                       />
                     </>
                   );
@@ -2656,6 +2814,8 @@ export function SceneBoard({
                 ["List", "L", "list"],
                 ["Text", "T", "text"],
                 ["View", "V", "view"],
+                ["Output", "O", "output"],
+                ["Input", "I", "input"],
               ] as [string, string, SceneCardKind][]
             ).map(([label, key, kind]) => (
               <button
