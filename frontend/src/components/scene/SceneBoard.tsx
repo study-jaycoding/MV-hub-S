@@ -42,6 +42,7 @@ import {
   resolveInputSourceId,
   resolvePortEdges,
 } from "../../lib/sceneEdges";
+import { arrangeNodes } from "../../lib/sceneLayout";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
@@ -722,86 +723,6 @@ export function SceneBoard({
     persist(nc, ne);
   };
 
-  // ── 레퍼런스 카드 병합/분리 ──
-  // 여러 레퍼런스 카드를 하나로 병합 — 왼쪽 카드에 refs 전부 합치고(중복 제거) 나머지 삭제.
-  // 지워진 카드에 걸린 엣지는 남는 카드로 재연결(연결 유지) + 중복/자기연결 정리.
-  const mergeRefCards = (ids: string[]) => {
-    const picked = ids
-      .map((id) => cardsRef.current.find((c) => c.id === id))
-      .filter((c): c is SceneCard => !!c && c.kind === "reference");
-    if (picked.length < 2) return;
-    const sorted = [...picked].sort((a, b) => a.x - b.x);
-    const keep = sorted[0];
-    const gone = new Set(sorted.slice(1).map((c) => c.id));
-    const seen = new Set<string>();
-    const mergedRefs: SceneRef[] = [];
-    for (const c of sorted) {
-      for (const r of c.refs || []) {
-        const k = r.file_path + "#" + (r.source_gen_id || "");
-        if (seen.has(k)) continue;
-        seen.add(k);
-        mergedRefs.push(r);
-      }
-    }
-    const baseCards = cardsRef.current
-      .filter((c) => !gone.has(c.id))
-      .map((c) => (c.id === keep.id ? { ...c, refs: mergedRefs } : c));
-    const eseen = new Set<string>();
-    const nextEdges = edgesRef.current
-      .map((ed) => ({
-        ...ed,
-        from: gone.has(ed.from) ? keep.id : ed.from,
-        to: gone.has(ed.to) ? keep.id : ed.to,
-      }))
-      .filter((ed) => {
-        if (ed.from === ed.to) return false;
-        const k = ed.from + ">" + ed.to;
-        if (eseen.has(k)) return false;
-        eseen.add(k);
-        return true;
-      });
-    const nextGroups = pruneGroups(groupsRef.current, gone); // 병합으로 사라진 카드는 그룹 멤버에서 제거
-    const nextCards = withGenRefs(baseCards, nextEdges);
-    setCards(nextCards);
-    setEdges(nextEdges);
-    setGroups(nextGroups);
-    setSelected(new Set([keep.id]));
-    persist(nextCards, nextEdges, nextGroups);
-  };
-  // 레퍼런스 카드에서 한 장(index)을 빼 개별 레퍼런스 카드로 분리(오른쪽에 배치).
-  const separateRef = (cardId: string, index: number) => {
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    if (!card || card.kind !== "reference" || !card.refs) return;
-    const ref = card.refs[index];
-    if (!ref) return;
-    const remaining = card.refs.filter((_, i) => i !== index);
-    const newCard: SceneCard = {
-      id: uid(),
-      kind: "reference",
-      x: card.x + CARD_W + 40,
-      y: card.y + Math.min(index, 4) * 22,
-      refs: [ref],
-    };
-    let nextCards: SceneCard[];
-    let nextEdges = edgesRef.current;
-    let nextGroups = groupsRef.current;
-    if (remaining.length === 0) {
-      // 마지막 한 장을 분리 → 원본은 비므로 삭제(엣지·그룹 멤버도 정리). 분리한 장은 새 카드로 이동.
-      nextCards = cardsRef.current.filter((c) => c.id !== cardId).concat(newCard);
-      nextEdges = edgesRef.current.filter((ed) => ed.from !== cardId && ed.to !== cardId);
-      nextGroups = pruneGroups(groupsRef.current, new Set([cardId]));
-      setRefMenu(null);
-    } else {
-      nextCards = cardsRef.current
-        .map((c) => (c.id === cardId ? { ...c, refs: remaining } : c))
-        .concat(newCard);
-    }
-    const nc = withGenRefs(nextCards, nextEdges);
-    setCards(nc);
-    setEdges(nextEdges);
-    setGroups(nextGroups);
-    persist(nc, nextEdges, nextGroups);
-  };
   const onOutPortDown = (e: React.MouseEvent, cardId: string) => {
     e.stopPropagation();
     e.preventDefault();
@@ -1403,14 +1324,24 @@ export function SceneBoard({
           }
         }
       }
-      // a = 선택된 레퍼런스 카드(2장 이상)를 하나로 병합.
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "a" || e.key === "A")) {
-        const refIds = [...sel].filter(
-          (id) => cardsRef.current.find((c) => c.id === id)?.kind === "reference",
-        );
-        if (refIds.length >= 2) {
+      // a = 선택 노드(2개 이상)를 가지런히 정렬 — 연결 흐름(왼→오른쪽) 기준 열 배치, 열 안은 현재 세로순서 보존.
+      if (matchShortcut(e, "boardArrange")) {
+        const picked = [...sel]
+          .map((id) => cardsRef.current.find((c) => c.id === id))
+          .filter((c): c is SceneCard => !!c);
+        if (picked.length >= 2) {
           e.preventDefault();
-          mergeRefCards(refIds);
+          if (e.repeat) return; // 키 반복 눌림 무시(중복 정렬·undo 오염 방지)
+          const layoutNodes = picked.map((c) => ({ id: c.id, x: c.x, y: c.y, w: widthOf(c), h: heightOf(c) }));
+          const pos = arrangeNodes(layoutNodes, edgesRef.current);
+          // 실제로 위치가 바뀐 카드가 없으면(이미 정렬됨) 저장·undo 생략.
+          const changed = picked.some((c) => c.x !== pos[c.id].x || c.y !== pos[c.id].y);
+          if (!changed) return;
+          const nextCards = cardsRef.current.map((c) =>
+            pos[c.id] ? { ...c, x: pos[c.id].x, y: pos[c.id].y } : c,
+          );
+          setCards(nextCards);
+          persist(nextCards, edgesRef.current);
           return;
         }
       }
@@ -3615,7 +3546,7 @@ export function SceneBoard({
           );
         })()}
 
-      {/* 레퍼런스 검사 팝업 — 카드에 담긴 레퍼런스들을 보고, 카드 위 '분리'로 개별 카드로 뺀다(변형팝업과 동일 룩). */}
+      {/* 레퍼런스 검사 팝업 — 카드에 담긴 레퍼런스들을 크게 본다(읽기 전용, 변형팝업과 동일 룩). */}
       {refMenu &&
         (() => {
           const card = cards.find((c) => c.id === refMenu && c.kind === "reference");
@@ -3634,7 +3565,7 @@ export function SceneBoard({
               >
                 <div className="scene-varpop">
                   <div className="scene-varpop-hd">
-                    <span>레퍼런스 {refs.length}개 · 카드 위 ‘분리’로 개별 카드로</span>
+                    <span>레퍼런스 {refs.length}개</span>
                     <button className="scene-varpop-x" title="닫기" onClick={() => setRefMenu(null)}>
                       ×
                     </button>
@@ -3642,18 +3573,6 @@ export function SceneBoard({
                   <div className="scene-varpop-grid">
                     {refs.map((r, i) => (
                       <div key={i} className="scene-varpop-cell">
-                        {refs.length > 1 && (
-                          <button
-                            className="scene-varpop-rep"
-                            title="이 레퍼런스를 개별 카드로 분리"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              separateRef(card.id, i);
-                            }}
-                          >
-                            ⤴ 분리
-                          </button>
-                        )}
                         <div className="scene-varpop-item" title={r.name || `레퍼런스 ${i + 1}`}>
                           {(() => {
                             const src = refThumbSrc(r);
