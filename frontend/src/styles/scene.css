@@ -593,16 +593,17 @@
 .scene-portnode.out .scene-portnode-val { align-self: flex-start; }
 .scene-portnode.in .scene-portnode-val { align-self: flex-end; }
 .scene-portnode-valph { color: var(--muted); font-weight: 600; font-size: 12px; }
-/* 카드 아래 편집 툴바(선택 시) — 이름 입력/출력 드롭다운. 생성카드 Generate 툴바와 같은 위치·스타일. */
+/* 카드 아래 편집 툴바(선택 시) — 이름 입력/출력 드롭다운. 폭은 카드(150)와 동일하게 맞춘다. */
 .scene-portedit {
   position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 14;
-  display: inline-flex; align-items: center; padding: 4px; white-space: nowrap;
+  width: 150px; box-sizing: border-box;
+  display: flex; align-items: center; padding: 4px;
   background: #14171c; border: 1px solid var(--border2); border-radius: 10px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 .scene-portedit-name,
 .scene-portedit-sel {
-  box-sizing: border-box; min-width: 130px; font-size: 12px; font-weight: 700;
+  flex: 1; min-width: 0; box-sizing: border-box; font-size: 12px; font-weight: 700;
   color: var(--text); background: #0d1016; border: 1px solid var(--border2);
   border-radius: 6px; padding: 4px 8px; outline: none;
 }
