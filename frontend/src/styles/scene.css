@@ -473,6 +473,16 @@
 .scene-card-gen.sel .scene-port.in.lane-ref { background: #7fa9ff; }
 .scene-card-gen.sel .scene-port.in.lane-text { background: #b57aff; }
 .scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.35); }
+/* 카드에 호버만 해도(선택 안 해도) 포트를 드러내고 클릭 가능 — 포트를 눌러 바로 연결 시작. 포트 hit
+   영역이 카드와 겹쳐 호버가 끊기지 않는다. 선택(.sel)과 동일한 채움/링. */
+.scene-card:hover .scene-port {
+  opacity: 1; pointer-events: auto; z-index: 15;
+  background: var(--pc, var(--accent)); border-color: #14161a;
+}
+.scene-card-gen:hover .scene-port.in.lane-model { background: #ffb84d; }
+.scene-card-gen:hover .scene-port.in.lane-ref { background: #7fa9ff; }
+.scene-card-gen:hover .scene-port.in.lane-text { background: #b57aff; }
+.scene-card:hover .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* ★연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 색까지 넣어 드러낸다(어디에 놓을지 보이게). 비선택 대상도 드롭 가능. */
 .scene-board.wiring .scene-card .scene-port.in {
   opacity: 1; pointer-events: auto; z-index: 15;

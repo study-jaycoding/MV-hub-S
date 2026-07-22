@@ -2512,13 +2512,23 @@ export function SceneBoard({
                     counters[t] = (counters[t] || 0) + 1;
                     thumbByLabel.set(`@${t}${counters[t]}`, thumb);
                   };
+                  const addGenRef = (gc?: SceneCard) => {
+                    const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+                    const gen = gid ? genData[gid] : undefined;
+                    addRef(gen?.assets?.[0]?.type, gen ? thumbOf(gen, 128) || undefined : undefined);
+                  };
                   for (const s of refSrcs) {
                     if (s.kind === "reference")
                       (s.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
-                    else if (s.kind === "generation") {
-                      const gid = s.genId || variantIds(s)[0];
-                      const gen = gid ? genData[gid] : undefined;
-                      addRef(gen?.assets?.[0]?.type, gen ? thumbOf(gen, 128) || undefined : undefined);
+                    else if (s.kind === "generation") addGenRef(s);
+                    else if (s.kind === "list") {
+                      // 리스트로 묶은 레퍼런스/생성물을 순서대로 펼쳐 @image1/@image2… 로 매핑.
+                      const li = collectListInputs(s.id, cardsById, resolvedEdges);
+                      if (li.kind === "reference")
+                        for (const cid of li.sourceIds)
+                          (cardsById.get(cid)?.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
+                      else if (li.kind === "generation")
+                        for (const cid of li.generationCardIds) addGenRef(cardsById.get(cid));
                     }
                   }
                   // 텍스트를 @토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.

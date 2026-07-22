@@ -42,8 +42,9 @@ export function canConnect(
     case "view":
       return from.kind === "generation" || from.kind === "list" || from.kind === "text";
     case "text":
-      // 텍스트 노드는 레퍼런스 입력만 받는다(레퍼런스 카드·생성물을 @레퍼런스로).
-      return from.kind === "reference" || from.kind === "generation";
+      // 텍스트 노드는 레퍼런스 입력을 받는다(레퍼런스 카드·생성물을 @레퍼런스로). 리스트로 묶은
+      // 레퍼런스/생성물도 연결 허용 — 텍스트 노드가 리스트를 펼쳐 @image1/@image2… 로 매핑한다.
+      return from.kind === "reference" || from.kind === "generation" || from.kind === "list";
     default:
       return false;
   }

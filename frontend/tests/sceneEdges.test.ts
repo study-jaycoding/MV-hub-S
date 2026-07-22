@@ -115,6 +115,10 @@ describe("resolveEdgeRole", () => {
     expect(resolveEdgeRole({ id: "e1", from: "G", to: "L" }, byId(cards), {})).toBe("list");
     expect(resolveEdgeRole({ id: "e2", from: "T", to: "L" }, byId(cards), {})).toBe("text");
   });
+  it("리스트 → 텍스트 노드 = 'ref'(텍스트 노드 입력은 무엇이든 레퍼런스/파랑)", () => {
+    const cards = [node("L", "list"), node("T", "text")];
+    expect(resolveEdgeRole({ id: "e", from: "L", to: "T" }, byId(cards), {})).toBe("ref");
+  });
   it("텍스트 수집 리스트의 출력 → 생성카드 = 'text'(edges 전달 시), 생성물 리스트면 'lineage'", () => {
     const textList = byId([node("L", "list"), node("T", "text"), node("G", "generation")]);
     const te: SceneEdge[] = [
@@ -362,10 +366,12 @@ describe("canConnect", () => {
     expect(canConnect(c("T", "text"), V)).toBe(true);
     expect(canConnect(c("M", "model"), V)).toBe(false);
   });
-  it("text 는 reference/generation 입력만(레퍼런스), model/reference 는 입력 없음, 자기연결 금지", () => {
+  it("text 는 reference/generation/list 입력(레퍼런스), model/text/reference 는 입력 없음, 자기연결 금지", () => {
     expect(canConnect(c("R", "reference"), c("T", "text"))).toBe(true);
     expect(canConnect(c("G", "generation"), c("T", "text"))).toBe(true);
+    expect(canConnect(c("L", "list"), c("T", "text"))).toBe(true); // 리스트로 묶은 레퍼런스도 텍스트에 연결
     expect(canConnect(c("T2", "text"), c("T", "text"))).toBe(false);
+    expect(canConnect(c("M", "model"), c("T", "text"))).toBe(false);
     expect(canConnect(c("A", "generation"), c("B", "model"))).toBe(false);
     expect(canConnect(c("X", "generation"), c("X", "generation"))).toBe(false);
   });
