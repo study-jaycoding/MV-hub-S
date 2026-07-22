@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { hasActiveGenerationJob } from "./generationDisplay";
 import type { Filters, Generation } from "../types";
 
@@ -14,6 +14,8 @@ export function useGenerationAutoRefresh({
   reload,
 }: UseGenerationAutoRefreshArgs) {
   const hasActiveJob = hasActiveGenerationJob(generations);
+  // 마지막 갱신 시각 — 폴링 인터벌과 focus/visibility 복귀가 공유해 중복 리로드를 막는다.
+  const lastRefreshRef = useRef(0);
 
   useEffect(() => {
     if (!hasActiveJob && tab !== "team") return;
@@ -26,6 +28,7 @@ export function useGenerationAutoRefresh({
       // 창이 안 보이면 쉰다(복귀 시 아래 visibilitychange 가 즉시 1회 갱신).
       if (inflight || document.visibilityState === "hidden") return;
       inflight = true;
+      lastRefreshRef.current = Date.now();
       void Promise.resolve(reload(true, true)).finally(() => {
         inflight = false;
       });
@@ -34,8 +37,14 @@ export function useGenerationAutoRefresh({
   }, [hasActiveJob, reload, tab]);
 
   useEffect(() => {
+    // focus 와 visibilitychange 가 복귀 시 함께 터진다 → 500ms 공유 가드로 1회만.
+    // 방금 인터벌 폴이 돈 직후 복귀해도 중복 리로드하지 않는다(같은 lastRefreshRef 공유).
     const onVisible = () => {
-      if (document.visibilityState === "visible") void reload(true, true);
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastRefreshRef.current < 500) return;
+      lastRefreshRef.current = now;
+      void reload(true, true);
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);

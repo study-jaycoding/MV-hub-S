@@ -46,9 +46,16 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
   // 생성물을 즉시 재조회한다. 완료 카드는 평소 재폴링을 안 해 folder_path/project_id 가 stale 이었고,
   // 그래서 캔버스에서 폴더로 담은 직후 그 폴더를 눌러도(탭 왕복 전) 딤이 옛 값으로 잘못 표시되던 버그.
   const [refreshTick, setRefreshTick] = useState(0);
-  const bumpRefresh = () => setRefreshTick((t) => t + 1);
+  // 라이브러리 변경이 연속으로(배치 태깅·담기 등) 오면 매번 전 variant 재조회는 과하다 →
+  // 트레일링 300ms 디바운스로 버스트를 1회로 합친다(마지막 이벤트 후 실행이라 folder 신선도 유지).
+  const refreshTimerRef = useRef<number | undefined>(undefined);
+  const bumpRefresh = () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => setRefreshTick((t) => t + 1), 300);
+  };
   useEffect(() => onLibraryChanged(bumpRefresh), []); // 창 간
   useCustomEvent(APP_EVENTS.libraryChanged, bumpRefresh); // 같은 창(내 담기·생성 즉시)
+  useEffect(() => () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); }, []);
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
     if (!ids.length) return;
