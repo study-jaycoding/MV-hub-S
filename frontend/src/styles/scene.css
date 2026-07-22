@@ -384,8 +384,9 @@
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
 /* 카드 포트(원) — 연결점. 평소 숨김(pointer-events 없음), 카드를 선택할 때만 카드 밖으로 떨어져 나와 잡힌다.
    ★위치: 카드 가장자리에서 PORT_GAP(12px)+반지름(9px)=21px 밖 → 끝점 좌표(edgeEnds)와 동심(원 안 점이 중앙). */
+/* 크기(9px 콘텐츠 + 2px 링 = 13px)를 연결선 끝점 점(.scene-dot: r5.5)과 똑같이 맞춰, 연결된 포트는 끝점과 완전히 겹쳐 '하나의 점'으로 보인다. */
 .scene-port {
-  position: absolute; width: 13px; height: 13px; border-radius: 50%;
+  position: absolute; width: 9px; height: 9px; border-radius: 50%;
   top: 50%; transform: translateY(-50%); background: transparent; border: 2px solid transparent;
   z-index: 8; opacity: 0; pointer-events: none; transition: opacity 0.08s;
 }
