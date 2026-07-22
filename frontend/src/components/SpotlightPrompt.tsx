@@ -67,7 +67,7 @@ import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
 import { SpotlightRefTray } from "./spotlight/SpotlightRefTray";
-import type { SceneRef } from "../lib/scenes";
+import type { SceneRef, SceneModelCfg } from "../lib/scenes";
 import type { Generation, PreviewTarget } from "../types";
 
 const MAX_COUNT = 4; // 한 번에 생성할 최대 장수(배치)
@@ -87,7 +87,14 @@ interface Props {
   //  key = `${sceneId}:${cardId}` (카드 바뀜 감지) · refs = 카드에 연결된 레퍼런스(순서).
   //  트레이에서 순서변경/추가/삭제하면 onTrayBindingRefsChange 로 씬 카드에 되돌린다. null=일반 모드.
   //  prompt = 그 카드에 저장된 프롬프트 초안(직렬화 텍스트). 카드 전환 시 입력창에 복원.
-  trayBinding?: { key: string; refs: SceneRef[]; prompt?: string; promptKey?: string } | null;
+  trayBinding?: {
+    key: string;
+    refs: SceneRef[];
+    prompt?: string;
+    promptKey?: string;
+    model?: SceneModelCfg | null;
+    modelKey?: string;
+  } | null;
   onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
   onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
   onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
@@ -295,6 +302,50 @@ export function SpotlightPrompt({
     bumpPromptTick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey, bindingPromptKey]);
+
+  // ── 연결된 모델 노드 → 하단 모델 적용(카드 전환·모델노드 변경 시만). 라이브러리 탭 오염 방지: 씬 진입 때
+  //    현재 모델을 저장해 두고, 씬 이탈(binding=null) 때 복원한다. useModels 의 type→기본모델 자동선택과
+  //    경쟁하지 않게 'ALLOWED 로 타입 추론 → pendingOpts → setType/setModel' 순서. ALLOWED 밖이면 적용 안 함(폴백 금지).
+  const bindingModel = trayBinding?.model ?? null;
+  const bindingModelKey = trayBinding?.modelKey ?? null;
+  const savedLibModelRef = useRef<{
+    type: "image" | "video";
+    model: string;
+    opts: Record<string, string | number | boolean>;
+  } | null>(null);
+  const prevBindingKeyModelRef = useRef<string | null>(null);
+  // 모델 적용 공통 — 목표 모델이 현재와 같으면 setModel 이 no-op(=params effect 안 돎)이라 옵션이 안 실린다.
+  // 그 경우 옵션을 직접 반영하고, 다르면 pendingOpts 예약 후 type/model 전환(params 로드 시 옵션 덮음).
+  const applyModelCfg = (t: "image" | "video", m: string, opts: Record<string, string | number | boolean>) => {
+    if (m === model) {
+      setOptionValues(opts);
+    } else {
+      pendingOptsRef.current = { model: m, opts };
+      setType(t);
+      setModel(m);
+    }
+  };
+  useEffect(() => {
+    const prev = prevBindingKeyModelRef.current;
+    prevBindingKeyModelRef.current = bindingKey;
+    // 라이브러리 → 씬 진입: 지금(씬 모델 적용 전=라이브러리) 모델 상태를 저장.
+    if (prev === null && bindingKey !== null)
+      savedLibModelRef.current = { type, model, opts: optionValues };
+    if (bindingKey === null) {
+      // 씬 → 라이브러리 이탈: 저장한 라이브러리 모델 복원.
+      const s = savedLibModelRef.current;
+      if (prev !== null && s?.model) applyModelCfg(s.type, s.model, s.opts);
+      savedLibModelRef.current = null;
+      return;
+    }
+    // 연결된 모델 적용 — model id 로 타입 추론(cfg.type 보다 우선). ALLOWED 밖이면 적용 안 함(폴백 금지).
+    if (bindingModel?.model) {
+      const m = bindingModel.model;
+      const t = ALLOWED.video.includes(m) ? "video" : ALLOWED.image.includes(m) ? "image" : null;
+      if (t) applyModelCfg(t, m, bindingModel.params ?? {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindingKey, bindingModelKey]);
   useEffect(() => {
     if (!bindingKey) return;
     const ed = editorRef.current;

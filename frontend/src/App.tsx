@@ -28,7 +28,7 @@ import {
   variantIds,
   type SceneRef,
 } from "./lib/scenes";
-import { collectGenText } from "./lib/sceneEdges";
+import { collectGenText, collectGenModel } from "./lib/sceneEdges";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -379,6 +379,11 @@ export default function App() {
       : { text: "", count: 0 };
   const textDerived = boundGenText.count > 0;
   const derivedPrompt = textDerived ? boundGenText.text : boundCardPrompt;
+  // 연결된 모델 노드(1개만 유효)의 설정 — 있으면 하단 프롬프트 모델로 적용.
+  const boundModel =
+    activeScene && sceneBinding
+      ? collectGenModel(sceneBinding.cardId, new Map(activeScene.cards.map((c) => [c.id, c])), activeScene.edges)
+      : null;
   const trayBinding =
     filters.tab === "compose" && activeScene
       ? sceneBinding
@@ -388,8 +393,13 @@ export default function App() {
             promptKey: textDerived ? `txt:${boundGenText.text}` : "card",
             refs: sceneBinding.refs,
             prompt: derivedPrompt,
+            model: boundModel,
+            // modelKey: 연결 모델(모델/타입/파라미터) 변경 감지 — 같은 카드에서 모델노드 바뀌면 재적용.
+            modelKey: boundModel
+              ? `${boundModel.model}|${boundModel.type ?? ""}|${JSON.stringify(boundModel.params ?? {})}`
+              : "none",
           }
-        : { key: `${activeScene.id}:none`, promptKey: "none", refs: [] as SceneRef[], prompt: "" }
+        : { key: `${activeScene.id}:none`, promptKey: "none", refs: [] as SceneRef[], prompt: "", model: null, modelKey: "none" }
       : null;
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
   // ★refs·prompt 저장이 같은 순간 겹치면(재사용 등) 서로를 덮어쓰지 않게, 렌더 스냅샷 대신
