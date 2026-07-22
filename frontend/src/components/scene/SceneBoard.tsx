@@ -43,7 +43,9 @@ const CARD_W = 152;
 const CARD_H = 130;
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 const GRID = 22;
-const CARD_MIN = GRID * 3; // 카드 최소 크기(내용이 뭉개지지 않게)
+// 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
+const CARD_MIN_W = GRID * 5; // 110
+const CARD_MIN_H = GRID * 3; // 66
 const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 
 // 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
@@ -788,8 +790,8 @@ export function SceneBoard({
     const sy = e.clientY;
     const move = (ev: MouseEvent) => {
       const z = zoomRef.current;
-      const w = Math.max(CARD_MIN, snapGrid(startW + (ev.clientX - sx) / z));
-      const h = Math.max(CARD_MIN, snapGrid(startH + (ev.clientY - sy) / z));
+      const w = Math.max(CARD_MIN_W, snapGrid(startW + (ev.clientX - sx) / z));
+      const h = Math.max(CARD_MIN_H, snapGrid(startH + (ev.clientY - sy) / z));
       setCards((prev) => {
         const cur = prev.find((cc) => cc.id === cardId);
         if (cur && cur.w === w && cur.h === h) return prev; // 스냅값 그대로면 리렌더 스킵
@@ -1127,8 +1129,8 @@ export function SceneBoard({
         let nx: number;
         let ny: number;
         if (srcCards.length) {
-          // 선택 있음 → 선택된 것들의 오른쪽·세로 중앙(가로 배치 겹침 방지).
-          nx = Math.max(...srcCards.map((c) => c.x)) + CARD_W + 64;
+          // 선택 있음 → 선택된 것들의 실제 오른쪽 끝 + 간격(리사이즈로 넓힌 카드와도 안 겹치게).
+          nx = Math.max(...srcCards.map((c) => c.x + widthOf(c))) + 64;
           ny = Math.round(srcCards.reduce((s, c) => s + c.y, 0) / srcCards.length);
         } else {
           // 선택 없음 → 마우스 위치(캔버스 위)에. 캔버스 밖이면 화면 중앙 폴백.
