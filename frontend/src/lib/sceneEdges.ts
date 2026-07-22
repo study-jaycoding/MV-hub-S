@@ -21,6 +21,7 @@ export function canConnect(
   edges?: SceneEdge[],
 ): boolean {
   if (from.id === to.id) return false;
+  if (from.kind === "head" || to.kind === "head") return false; // head 는 포트 없는 주석 노드
   if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
   // input 을 소스로 놓으면 실제 소스로 해석해 그 종류로 검증(input 자체는 어디에도 못 풂 → 컨텍스트 없으면 불가)
   if (from.kind === "input") {
@@ -37,7 +38,7 @@ export function canConnect(
     case "generation":
       return from.kind !== "view";
     case "list":
-      return from.kind === "generation" || from.kind === "text";
+      return from.kind === "generation" || from.kind === "text" || from.kind === "reference";
     case "view":
       return from.kind === "generation" || from.kind === "list" || from.kind === "text";
     case "text":
@@ -102,8 +103,8 @@ export function resolvePortEdges(
 // list 노드로 들어온 입력을 수집·판정(순수). list 는 '동종 수집기' — 생성카드만 들어오면 generation,
 // text 만 들어오면 그 텍스트를 order/y 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
 export interface ListInputs {
-  kind: "empty" | "generation" | "text" | "mixed" | "invalid";
-  sourceIds: string[]; // 정렬된 입력 소스 카드 id
+  kind: "empty" | "generation" | "text" | "reference" | "mixed" | "invalid";
+  sourceIds: string[]; // 정렬된 입력 소스 카드 id (reference 수집이면 레퍼런스 카드 id 들)
   generationCardIds: string[]; // generation 수집일 때 그 카드들
   text: string; // text 수집일 때 합친 텍스트
 }
@@ -141,7 +142,9 @@ export function collectListInputs(
     return { kind: "generation", sourceIds, generationCardIds: sourceIds, text: "" };
   if ([...kinds].every((k) => k === "text"))
     return { kind: "text", sourceIds, generationCardIds: [], text: sorted.map((s) => s.c.text || "").join("\n") };
-  // 그 외: gen+text 혼합이면 mixed, model/reference 등이 섞이면 invalid.
+  if ([...kinds].every((k) => k === "reference"))
+    return { kind: "reference", sourceIds, generationCardIds: [], text: "" };
+  // 그 외: gen+text 혼합이면 mixed, 그 외 종류가 섞이면 invalid(리스트는 동종만).
   const hasNonGenText = sorted.some((s) => s.c.kind !== "generation" && s.c.kind !== "text");
   return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
 }
@@ -257,9 +260,12 @@ export function resolveEdgeRole(
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "reference") return "ref";
-  // 텍스트를 모은 리스트의 출력은 '텍스트'로 취급 — 생성카드 텍스트 입력(보라)에 연결 가능. edges 필요.
-  if (from?.kind === "list" && edges && collectListInputs(from.id, cardsById, edges).kind === "text")
-    return "text";
+  // 리스트의 출력색은 그 리스트가 모은 종류를 따른다(edges 필요): 텍스트리스트=텍스트(보라), 레퍼런스리스트=레퍼런스(파랑).
+  if (from?.kind === "list" && edges) {
+    const lk = collectListInputs(from.id, cardsById, edges).kind;
+    if (lk === "text") return "text";
+    if (lk === "reference") return "ref";
+  }
   if (to?.kind === "list") return "list"; // 생성물 → 리스트 수집
   if (from?.kind === "generation" && to) {
     const srcGens = variantIds(from);

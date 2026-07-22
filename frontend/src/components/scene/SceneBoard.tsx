@@ -586,6 +586,15 @@ export function SceneBoard({
       if (e.to !== genId) continue;
       const src = byId.get(e.from);
       if (src?.kind === "reference" && src.refs) out.push(...src.refs);
+      // 레퍼런스만 모은 리스트를 생성카드에 연결하면 그 안의 레퍼런스 전부를 순서대로 가져온다.
+      else if (src?.kind === "list") {
+        const li = collectListInputs(src.id, byId, resolved);
+        if (li.kind === "reference")
+          for (const cid of li.sourceIds) {
+            const rc = byId.get(cid);
+            if (rc?.refs) out.push(...rc.refs);
+          }
+      }
     }
     return out;
   };
@@ -869,7 +878,9 @@ export function SceneBoard({
                 ? { ...base, kind: "output", text: "" }
                 : kind === "input"
                   ? { ...base, kind: "input" }
-                  : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+                  : kind === "head"
+                    ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
+                    : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
     const nextCards = [...cardsRef.current, card];
     setCards(nextCards);
     setSelected(new Set([card.id]));
@@ -878,6 +889,12 @@ export function SceneBoard({
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
+  // head 노드 글씨 색 저장.
+  const setNodeColor = (cardId: string, color: string) => {
+    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, color } : c));
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
@@ -905,8 +922,11 @@ export function SceneBoard({
       const idx = order.indexOf(ed.from);
       return idx >= 0 ? { ...ed, order: idx } : ed;
     });
+    // 레퍼런스 리스트가 생성카드에 연결돼 있으면 순서 변경 후 refs 멤버십을 다시 맞춘다(추가/제거 정합).
+    const nextCards = withGenRefs(cardsRef.current, nextEdges);
     setEdges(nextEdges);
-    persist(cardsRef.current, nextEdges);
+    setCards(nextCards);
+    persist(nextCards, nextEdges);
   };
   // View 노드 재생 — 연결된(직접+generation-list) 생성물을 모아 기존 미리보기(MediaPreview)로 순차 재생.
   const playView = (viewId: string) => {
@@ -1426,6 +1446,10 @@ export function SceneBoard({
         e.preventDefault(); // I = Input(무선 수신) 노드
         setNodePicker(null);
         createNode("input");
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "h" || e.key === "H")) {
+        e.preventDefault(); // H = Head(제목 글씨) 노드
+        setNodePicker(null);
+        createNode("head");
       } else if (e.key === "Delete") {
         if (!sel.size) return;
         e.preventDefault();
@@ -1803,15 +1827,18 @@ export function SceneBoard({
     const mx = (x1 + x2) / 2;
     return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
   };
-  // 연결 종류 판정 — 카드 종류가 아니라 실제 데이터 기준.
+  // 수집·분류에 넘길 '해석된 엣지' — input(무선) 소스를 실제 소스로 치환. 그리기(선 좌표)는 원본 edges 사용.
+  //  ★엣지 id 는 보존되므로(from 만 치환) refCardEdgeIds/genRefEdgeIds 의 e.id 판정이 원본 렌더와 그대로 맞물린다.
+  const resolvedEdges = useMemo(() => resolvePortEdges(cardsById, edges), [cardsById, edges]);
+  // 연결 종류 판정 — 카드 종류가 아니라 실제 데이터 기준. input 은 해석된 실제 소스로 판정(레퍼런스 무선연결도 파란점선).
   //  · refCardEdgeIds: 레퍼런스 카드 → 생성(파란 점선)
   //  · genRefEdgeIds : 생성물을 레퍼런스로 사용 → 초록 점선. 두 근거를 OR:
   //      (1) 씬 로컬 refs 에 소스의 source_gen_id 가 들어있거나(@·드래그로 넣은 경우),
   //      (2) 백엔드 history: 타깃이 소스를 레퍼런스 부모(materials)로 실제 사용(수동 연결도 잡힘).
   //  · 그 외 생성→생성은 '단순 계보 연결'(초록 실선).
   const { refCardEdgeIds, genRefEdgeIds } = useMemo(
-    () => classifyEdges(edges, cardsById, refParents),
-    [edges, cardsById, refParents],
+    () => classifyEdges(resolvedEdges, cardsById, refParents),
+    [resolvedEdges, cardsById, refParents],
   );
   // 한 포트에 연결이 여러 개면 세로로 펼쳐(fan-out) 끝점이 겹치지 않게 — 선마다 자기 색 점을 갖게 한다.
   // (연결이 1개면 오프셋 0 → 포트 정중앙. 흔한 경우는 그대로.)
@@ -1864,9 +1891,6 @@ export function SceneBoard({
     for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents, edges));
     return m;
   }, [edges, cardsById, refParents]);
-  // 수집기(collectListInputs/View*/GenText/Model, text 노드 @레퍼런스)에 넘길 '해석된 엣지' —
-  // input(무선) 소스를 실제 소스로 치환. 그리기(선 좌표)는 원본 edges 를 계속 쓴다(입력→타깃 실선 유지).
-  const resolvedEdges = useMemo(() => resolvePortEdges(cardsById, edges), [cardsById, edges]);
   // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
   // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
   const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>
@@ -1914,7 +1938,7 @@ export function SceneBoard({
         const b = barIn(e.to);
         if (!a || !b) return [];
         return [
-          { id: e.id, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
+          { id: e.id, from: e.from, to: e.to, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
         ];
       })
     : [];
@@ -2006,19 +2030,23 @@ export function SceneBoard({
             const b = cardById(e.to);
             if (!a || !b) return null;
             const role = edgeRoles.get(e.id);
+            // ★기본은 회색(idle). 선택한 카드에 닿은 선만 종류색으로 활성화(모델=주황·텍스트=보라·레퍼런스=파란점선 등).
+            const active = selected.has(e.from) || selected.has(e.to);
             const cls =
               "scene-edge" +
-              // 모델=주황, 텍스트=보라, 레퍼런스카드=파란점선, 생성물-레퍼런스=초록점선, 계보=초록실선
-              (role === "model"
-                ? " model"
-                : role === "text"
-                  ? " text"
-                  : refCardEdgeIds.has(e.id)
-                    ? " ref"
-                    : genRefEdgeIds.has(e.id)
-                      ? " refg"
-                      : "") +
-              (selected.has(e.from) || selected.has(e.to) ? " onsel" : "") + // 선택 카드에 닿은 선 강조
+              (active
+                ? (role === "model"
+                    ? " model"
+                    : role === "text"
+                      ? " text"
+                      : refCardEdgeIds.has(e.id)
+                        ? " ref"
+                        : genRefEdgeIds.has(e.id)
+                          ? " refg"
+                          : role === "ref" // 레퍼런스 리스트 출력 등 classifyEdges 밖의 ref = 파란점선
+                            ? " ref"
+                            : "") + " onsel"
+                : " idle") +
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             const d = edgePathXY(x1, y1, x2, y2);
@@ -2045,17 +2073,22 @@ export function SceneBoard({
               일반 엣지와 동일하게 hit-path(클릭 삭제) + data-edge(가위 절단) + cut 예고 스타일을 태운다. */}
           {groupBridges.map((gb) => {
             const d = edgePathXY(gb.a.x, gb.a.y, gb.b.x, gb.b.y);
+            const active = selected.has(gb.from) || selected.has(gb.to);
             const cls =
               "scene-edge" +
-              (gb.role === "model"
-                ? " model"
-                : gb.role === "text"
-                  ? " text"
-                  : gb.ref
-                    ? " ref"
-                    : gb.refg
-                      ? " refg"
-                      : "") +
+              (active
+                ? (gb.role === "model"
+                    ? " model"
+                    : gb.role === "text"
+                      ? " text"
+                      : gb.ref
+                        ? " ref"
+                        : gb.refg
+                          ? " refg"
+                          : gb.role === "ref"
+                            ? " ref"
+                            : "") + " onsel"
+                : " idle") +
               (edgesToCut.has(gb.id) ? " cut" : "");
             return (
               <g key={gb.id}>
@@ -2326,11 +2359,13 @@ export function SceneBoard({
                       ? `생성물 ${li.generationCardIds.length}개`
                       : li.kind === "text"
                         ? `텍스트 ${li.sourceIds.length}개`
-                        : li.kind === "mixed"
-                          ? "⚠ 혼합 입력(사용 불가)"
-                          : li.kind === "invalid"
-                            ? "⚠ 잘못된 입력"
-                            : "생성/텍스트 카드를 연결";
+                        : li.kind === "reference"
+                          ? `레퍼런스 ${li.sourceIds.length}개`
+                          : li.kind === "mixed"
+                            ? "⚠ 혼합 입력(사용 불가)"
+                            : li.kind === "invalid"
+                              ? "⚠ 잘못된 입력"
+                              : "생성/텍스트/레퍼런스 카드를 연결";
                   return (
                     <>
                       <div className="scene-card-inner scene-listnode">
@@ -2418,6 +2453,50 @@ export function SceneBoard({
                                 );
                               })}
                             </div>
+                          ) : li.kind === "reference" ? (
+                            // 레퍼런스 카드들 — 카드마다 대표 썸네일(첫 장)+장수 배지, 드래그해 순서 변경.
+                            <div className="scene-listthumbs">
+                              {li.sourceIds.map((cid, i) => {
+                                const rc = cardsById.get(cid);
+                                const refs = rc?.refs || [];
+                                const src = refs[0] ? refThumbSrc(refs[0]) : null;
+                                return (
+                                  <div
+                                    key={cid}
+                                    className="scene-listthumb"
+                                    title={`${i + 1}번 (레퍼런스 ${refs.length}장) — 드래그해 순서 변경`}
+                                    draggable
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragOver={(e) => {
+                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (from) reorderList(card.id, from, cid);
+                                    }}
+                                  >
+                                    {src ? (
+                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                    ) : (
+                                      <span className="scene-listthumb-ph" />
+                                    )}
+                                    <span className="scene-listthumb-n">{i + 1}</span>
+                                    {refs.length > 1 && (
+                                      <span className="scene-listthumb-cnt">{refs.length}</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           ) : (
                             label
                           )}
@@ -2449,7 +2528,7 @@ export function SceneBoard({
                           @
                         </button>
                       )}
-                      <span className="scene-port in" title="생성/텍스트 카드를 연결해 모음" />
+                      <span className="scene-port in" title="생성/텍스트/레퍼런스 카드를 연결해 모음" />
                       <span
                         className="scene-port out"
                         onMouseDown={(e) => onOutPortDown(e, card.id)}
@@ -2619,6 +2698,59 @@ export function SceneBoard({
                     </>
                   );
                 })()
+              ) : card.kind === "head" ? (
+                (() => {
+                  // Head(제목) — 포트 없는 주석 글씨. 크기 조절 시 글자 크기도 같이 커진다. 색은 스와치로 변경.
+                  const editing = editTextId === card.id;
+                  const fs = Math.max(12, Math.round(heightOf(card) * 0.62));
+                  const col = card.color || "#e8c341";
+                  return (
+                    <>
+                      {editing ? (
+                        <input
+                          className="scene-headnode-edit"
+                          value={card.text || ""}
+                          placeholder="제목"
+                          autoFocus
+                          style={{ fontSize: fs, color: col }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onBlur={() => setEditTextId(null)}
+                          onChange={(e) => setNodeText(card.id, e.target.value)}
+                          onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === "Enter" || e.key === "Escape") setEditTextId(null);
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="scene-headnode-text"
+                          style={{ fontSize: fs, color: col }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            setEditTextId(card.id);
+                          }}
+                        >
+                          {card.text || "제목"}
+                        </div>
+                      )}
+                      {sel && !editing && (
+                        <input
+                          type="color"
+                          className="scene-headnode-color"
+                          value={col}
+                          title="글씨 색 변경"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onChange={(e) => setNodeColor(card.id, e.target.value)}
+                        />
+                      )}
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절(글자도 같이 커짐)"
+                      />
+                    </>
+                  );
+                })()
               ) : (
                 <>
                   {showNode && g ? (
@@ -2758,15 +2890,18 @@ export function SceneBoard({
             const b = cardById(e.to);
             if (!a || !b) return null;
             const dotRole = edgeRoles.get(e.id);
+            const active = selected.has(e.from) || selected.has(e.to);
             const cls =
               "scene-dot" +
-              (dotRole === "model"
-                ? " model"
-                : dotRole === "text"
-                  ? " text"
-                  : refCardEdgeIds.has(e.id)
-                    ? " ref"
-                    : "");
+              (active
+                ? dotRole === "model"
+                  ? " model"
+                  : dotRole === "text"
+                    ? " text"
+                    : refCardEdgeIds.has(e.id) || dotRole === "ref"
+                      ? " ref"
+                      : ""
+                : " idle");
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
             return (
               <g key={e.id}>
@@ -2816,6 +2951,7 @@ export function SceneBoard({
                 ["View", "V", "view"],
                 ["Output", "O", "output"],
                 ["Input", "I", "input"],
+                ["Head", "H", "head"],
               ] as [string, string, SceneCardKind][]
             ).map(([label, key, kind]) => (
               <button

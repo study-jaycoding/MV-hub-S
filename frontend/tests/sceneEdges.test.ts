@@ -371,6 +371,55 @@ describe("canConnect", () => {
   });
 });
 
+describe("리스트 레퍼런스 수집", () => {
+  const n = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("레퍼런스 카드만 모으면 kind=reference, sourceIds=레퍼런스 카드들(순서)", () => {
+    const cards = [
+      n("L", "list"),
+      n("R1", "reference", { y: 0, refs: [{ file_path: "a", type: "image" }] }),
+      n("R2", "reference", { y: 10, refs: [{ file_path: "b", type: "image" }] }),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "R1", to: "L" },
+      { id: "e2", from: "R2", to: "L" },
+    ];
+    const li = collectListInputs("L", byId(cards), edges);
+    expect(li.kind).toBe("reference");
+    expect(li.sourceIds).toEqual(["R1", "R2"]);
+  });
+  it("레퍼런스+생성 혼합은 invalid(동종만)", () => {
+    const cards = [n("L", "list"), n("R", "reference", { refs: [] }), n("G", "generation")];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "R", to: "L" },
+      { id: "e2", from: "G", to: "L" },
+    ];
+    expect(collectListInputs("L", byId(cards), edges).kind).toBe("invalid");
+  });
+  it("canConnect: 리스트는 레퍼런스도 받는다", () => {
+    expect(canConnect(n("R", "reference"), n("L", "list"))).toBe(true);
+  });
+  it("resolveEdgeRole: 레퍼런스 리스트 출력선은 ref(파랑)", () => {
+    const cards = [
+      n("L", "list"),
+      n("R", "reference", { refs: [{ file_path: "a", type: "image" }] }),
+      n("G", "generation"),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "R", to: "L" },
+      { id: "e2", from: "L", to: "G" },
+    ];
+    expect(resolveEdgeRole(edges[1], byId(cards), {}, edges)).toBe("ref");
+  });
+});
+
 describe("Input/Output 무선 노드", () => {
   const n = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
     id,
