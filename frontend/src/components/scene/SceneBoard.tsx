@@ -168,6 +168,8 @@ export function SceneBoard({
   const nodePickerRef = useRef(false);
   nodePickerRef.current = !!nodePicker;
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
+  // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
+  const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
@@ -1128,6 +1130,45 @@ export function SceneBoard({
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
+        return;
+      }
+      // Ctrl+C / Ctrl+V = 노드 복사·붙여넣기(텍스트 편집 중이면 위 포커스 가드로 이미 제외 → 일반 텍스트 복붙).
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "c" || e.key === "C")) {
+        const ids = new Set(sel);
+        if (!ids.size) return;
+        e.preventDefault();
+        clipboardRef.current = {
+          cards: cardsRef.current.filter((c) => ids.has(c.id)).map((c) => ({ ...c })),
+          edges: edgesRef.current
+            .filter((ed) => ids.has(ed.from) && ids.has(ed.to))
+            .map((ed) => ({ ...ed })),
+        };
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "v" || e.key === "V")) {
+        const clip = clipboardRef.current;
+        if (!clip || !clip.cards.length) return;
+        e.preventDefault();
+        // 새 id 부여 + 위치 오프셋(격자 2칸) + 그들 사이 엣지 재매핑. 붙여넣은 것만 선택.
+        const idMap = new Map<string, string>();
+        const off = GRID * 2;
+        const newCards = clip.cards.map((c) => {
+          const nid = uid();
+          idMap.set(c.id, nid);
+          return { ...c, id: nid, x: c.x + off, y: c.y + off };
+        });
+        const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
+          ...ed,
+          id: uid(),
+          from: idMap.get(ed.from)!,
+          to: idMap.get(ed.to)!,
+        }));
+        const nextEdges = [...edgesRef.current, ...newEdges];
+        const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
+        setCards(nextCards);
+        setEdges(nextEdges);
+        setSelected(new Set(newCards.map((c) => c.id)));
+        persist(nextCards, nextEdges);
         return;
       }
       // Ctrl+G = 선택 카드 그룹 · Ctrl+Shift+G = 그룹 해제. (mod+g 라 g=초록색 단축키와 충돌 없음)
