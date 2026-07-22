@@ -1277,6 +1277,36 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
         )
 
 
+def purge_generation_sidecar(gen_id: str) -> None:
+    """생성물이 '영구 삭제'(휴지통 purge)될 때 남는 사이드카 고아 행 정리 — generation_metrics·
+    task_generation·final_export(모두 gen_id 키). 이 행들은 메인/휴지통 어디에도 대응 생성물이 없어
+    LEFT JOIN 에서 영영 안 잡히며 무한 누적된다(영구삭제만 해당 — 휴지통 이동 땐 복원용으로 보존).
+    ★telemetry_outbox 는 건드리지 않는다 — 삭제 tombstone 은 아직 서버에 push 안 됐을 수 있어
+    드레이너가 소유(purge 는 서버로의 '삭제 통보'를 취소하는 게 아니다)."""
+    if not gen_id:
+        return
+    tables = ("generation_metrics", "task_generation", "final_export")
+    with get_connection() as conn:
+        # MANAGE off 계약: 사이드카 스키마가 없으면 새로 만들지 않는다(_ensure_schema 호출 금지).
+        #  → 이미 있는 테이블만 정리. 과거 MANAGE on 때 쌓인 고아는 off 여도 청소 가능.
+        have = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('generation_metrics','task_generation','final_export')"
+            )
+        }
+        if not have:
+            return
+        # 안전: 메인에 같은 id 의 살아있는 생성물이 남아있으면(크래시로 메인·휴지통 오버랩 등) 지우지 않는다
+        #  — 사이드카는 그 살아있는 생성물의 것일 수 있다. 정상 purge 는 이미 메인에서 사라진 뒤라 무해.
+        if conn.execute("SELECT 1 FROM generation WHERE id=? LIMIT 1", (gen_id,)).fetchone():
+            return
+        for t in tables:
+            if t in have:
+                conn.execute(f"DELETE FROM {t} WHERE gen_id=?", (gen_id,))
+
+
 def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
     """적재된 잡(job_id)들을 내 로컬 generation.id 로 역매핑해 outbox 에 dirty 표시. 반환=표시 수.
     동기화본은 id==job_id, placeholder 채움본은 job_id 로 매칭 → (id IN OR job_id IN) 둘 다 커버.
