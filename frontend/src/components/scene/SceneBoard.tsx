@@ -376,6 +376,9 @@ export function SceneBoard({
   // 전역 keydown 핸들러([] deps)가 mount 시점 onSetTags 를 붙잡지 않게 미러(향후 undefined→정의 전환 방어).
   const onSetTagsRef = useRef(onSetTags);
   onSetTagsRef.current = onSetTags;
+  // onNodePreview(안정 useCallback)가 최신 onPreview 를 참조하게 미러.
+  const onPreviewRef = useRef(onPreview);
+  onPreviewRef.current = onPreview;
   const lastEmitRef = useRef<string>("");
   useEffect(() => {
     const ids = [...selected];
@@ -473,6 +476,40 @@ export function SceneBoard({
     const card = cardsRef.current.find((c) => c.kind === "generation" && c.genId === g.id);
     if (card) setTagEditCardId(card.id);
   }, []);
+  // 미리보기 핸들러 — 카드별로 '안정 참조'를 캐시한다(같은 card.id → 같은 함수). HistoryBoardNode memo 를
+  //  안 깨서 드래그·선택 중 전 노드 재렌더를 막고, 동시에 '렌더된 그 카드'(card.id)로 정확히 조회한다
+  //  → 같은 gen 이 여러 카드에 있어도(중복 gid) 인라인 때처럼 정확한 카드의 변형 묶음을 방향키로 넘긴다.
+  const nodePreviewHandlers = useRef(new Map<string, (target: PreviewTarget) => void>());
+  const getNodePreview = (cardId: string) => {
+    const cache = nodePreviewHandlers.current;
+    let h = cache.get(cardId);
+    if (!h) {
+      h = (target: PreviewTarget) => {
+        const op = onPreviewRef.current;
+        if (!op) return;
+        const card = cardsRef.current.find((c) => c.id === cardId);
+        const items: PreviewItem[] = [];
+        if (card) {
+          for (const id of variantIds(card)) {
+            const av = genDataRef.current[id]?.assets?.[0];
+            if (av)
+              items.push({
+                url: av.file_path,
+                type: av.type,
+                name: genDataRef.current[id]?.prompt?.slice(0, 50) || "결과",
+                genId: id,
+              });
+          }
+        }
+        if (items.length > 1) {
+          const index = Math.max(0, items.findIndex((it) => it.genId === target.genId));
+          op({ ...target, items, index });
+        } else op(target);
+      };
+      cache.set(cardId, h);
+    }
+    return h;
+  };
 
   // ── S5 토대: 생성 카드는 자신에게 연결된 레퍼런스 카드들의 레퍼런스를 순서대로 모아 보유한다. ──
   // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
@@ -1330,23 +1367,41 @@ export function SceneBoard({
     }
     return { minX, minY, maxX, maxY };
   }, [mmBoxes]);
+  // ★그래프 파생값 memo — 셀렉션/마퀴 드래그(selected·marquee 만 변경) 중엔 cards/edges/groups 가
+  //  안 바뀌므로 아래 Set/Map·분류·정렬을 매 프레임 재계산하지 않는다(드래그 렌더 비용 절감).
   // grayOn: 비활성(회색) 카드 숨김 — 그 카드와 연결선을 렌더에서 제외(상태는 유지).
-  const grayHidden = new Set(
-    grayOn
-      ? cards
-          .filter((c) => c.kind === "generation" && c.genId && disabledIds.has(c.genId))
-          .map((c) => c.id)
-      : [],
+  const grayHidden = useMemo(
+    () =>
+      new Set(
+        grayOn
+          ? cards
+              .filter((c) => c.kind === "generation" && c.genId && disabledIds.has(c.genId))
+              .map((c) => c.id)
+          : [],
+      ),
+    [grayOn, cards, disabledIds],
   );
   // 접힌 그룹의 멤버 카드 → 그 그룹. 접히면 멤버를 숨기고 연결은 그룹 막대로 브릿지한다.
-  const collapsedMemberOf = new Map<string, SceneGroup>();
-  for (const g of groups)
-    if (g.collapsed && g.cardIds.length) for (const id of g.cardIds) collapsedMemberOf.set(id, g);
-  const hiddenIds = new Set<string>([...grayHidden, ...collapsedMemberOf.keys()]);
-  const visibleCards = hiddenIds.size ? cards.filter((c) => !hiddenIds.has(c.id)) : cards;
+  const collapsedMemberOf = useMemo(() => {
+    const m = new Map<string, SceneGroup>();
+    for (const g of groups)
+      if (g.collapsed && g.cardIds.length) for (const id of g.cardIds) m.set(id, g);
+    return m;
+  }, [groups]);
+  const hiddenIds = useMemo(
+    () => new Set<string>([...grayHidden, ...collapsedMemberOf.keys()]),
+    [grayHidden, collapsedMemberOf],
+  );
+  const visibleCards = useMemo(
+    () => (hiddenIds.size ? cards.filter((c) => !hiddenIds.has(c.id)) : cards),
+    [cards, hiddenIds],
+  );
   // 숨긴(회색) 카드가 중간에 있어도 앞뒤 흐름이 끊긴 것처럼 보이지 않게 — 숨김 노드를 건너뛰어
   // 보이는 '앞 카드 → 뒤 카드'로 회색 점선 우회선을 만든다(중간에 뭔가 숨겨져 있다는 표시).
-  const bridgeEdges = computeBridgeEdges(cards, edges, grayHidden);
+  const bridgeEdges = useMemo(
+    () => computeBridgeEdges(cards, edges, grayHidden),
+    [cards, edges, grayHidden],
+  );
   const heightOf = (c: SceneCard) =>
     c.kind === "generation" ? CARD_H : heightsRef.current[c.id] || CARD_H;
 
@@ -1420,26 +1475,41 @@ export function SceneBoard({
   //      (1) 씬 로컬 refs 에 소스의 source_gen_id 가 들어있거나(@·드래그로 넣은 경우),
   //      (2) 백엔드 history: 타깃이 소스를 레퍼런스 부모(materials)로 실제 사용(수동 연결도 잡힘).
   //  · 그 외 생성→생성은 '단순 계보 연결'(초록 실선).
-  const { refCardEdgeIds, genRefEdgeIds } = classifyEdges(edges, cardsById, refParents);
+  const { refCardEdgeIds, genRefEdgeIds } = useMemo(
+    () => classifyEdges(edges, cardsById, refParents),
+    [edges, cardsById, refParents],
+  );
   // 한 포트에 연결이 여러 개면 세로로 펼쳐(fan-out) 끝점이 겹치지 않게 — 선마다 자기 색 점을 갖게 한다.
   // (연결이 1개면 오프셋 0 → 포트 정중앙. 흔한 경우는 그대로.)
   // ★실제로 렌더되는(보이는·유효한) 연결만으로 계산 — 숨긴 형제 연결이 보이는 단일선을 밀지 않게.
-  const visibleEdges = edges.filter(
-    (e) => !hiddenIds.has(e.from) && !hiddenIds.has(e.to) && cardById(e.from) && cardById(e.to),
+  const visibleEdges = useMemo(
+    () =>
+      edges.filter(
+        (e) =>
+          !hiddenIds.has(e.from) &&
+          !hiddenIds.has(e.to) &&
+          cardsById.has(e.from) &&
+          cardsById.has(e.to),
+      ),
+    [edges, hiddenIds, cardsById],
   );
-  const outEdges = new Map<string, SceneEdge[]>();
-  const inEdges = new Map<string, SceneEdge[]>();
-  for (const e of visibleEdges) {
-    const o = outEdges.get(e.from);
-    if (o) o.push(e);
-    else outEdges.set(e.from, [e]);
-    const i = inEdges.get(e.to);
-    if (i) i.push(e);
-    else inEdges.set(e.to, [e]);
-  }
-  const yOf = (id: string) => cardById(id)?.y ?? 0; // 교차 최소화: 상대 카드 y 순으로 펼침
-  for (const [, list] of outEdges) list.sort((p, q) => yOf(p.to) - yOf(q.to));
-  for (const [, list] of inEdges) list.sort((p, q) => yOf(p.from) - yOf(q.from));
+  // 팬아웃 정렬 맵 — 상대 카드 y 순(교차 최소화). 카드 이동(y 변경) 시 cardsById 갱신으로 재정렬된다.
+  const { outEdges, inEdges } = useMemo(() => {
+    const out = new Map<string, SceneEdge[]>();
+    const inn = new Map<string, SceneEdge[]>();
+    for (const e of visibleEdges) {
+      const o = out.get(e.from);
+      if (o) o.push(e);
+      else out.set(e.from, [e]);
+      const i = inn.get(e.to);
+      if (i) i.push(e);
+      else inn.set(e.to, [e]);
+    }
+    const yOf = (id: string) => cardsById.get(id)?.y ?? 0;
+    for (const [, list] of out) list.sort((p, q) => yOf(p.to) - yOf(q.to));
+    for (const [, list] of inn) list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    return { outEdges: out, inEdges: inn };
+  }, [visibleEdges, cardsById]);
   const FAN = 13;
   const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => ({
     x1: a.x + CARD_W,
@@ -1697,32 +1767,7 @@ export function SceneBoard({
                       onSDouble={onNodeSDouble}
                       onSConfirmYes={onNodeSConfirmYes}
                       onSConfirmNo={onNodeSConfirmNo}
-                      onPreview={
-                        onPreview
-                          ? (target) => {
-                              // 카드에 변형(결과)이 여러 개면 큰창에서 ←/→ 로 넘길 수 있게 그 변형들을
-                              // items 로 함께 넘긴다(내작업 그리드/변형 팝업과 동일한 방향키 이동).
-                              const items: PreviewItem[] = [];
-                              for (const id of variantIds(card)) {
-                                const av = genData[id]?.assets?.[0];
-                                if (av)
-                                  items.push({
-                                    url: av.file_path,
-                                    type: av.type,
-                                    name: genData[id]?.prompt?.slice(0, 50) || "결과",
-                                    genId: id,
-                                  });
-                              }
-                              if (items.length > 1) {
-                                const index = Math.max(
-                                  0,
-                                  items.findIndex((it) => it.genId === (target.genId ?? g?.id)),
-                                );
-                                onPreview({ ...target, items, index });
-                              } else onPreview(target);
-                            }
-                          : () => {}
-                      }
+                      onPreview={getNodePreview(card.id)}
                       onInfo={onInfo || (() => {})}
                       onRegenerate={onRegenerate || (() => {})}
                       onTag={onSetTags ? onNodeTag : undefined}
