@@ -2199,7 +2199,45 @@ export function SceneBoard({
                               })}
                             </div>
                           ) : li.kind === "text" ? (
-                            <div className="scene-listnode-text">{li.text}</div>
+                            // 텍스트들 — 각 텍스트를 한 행(카드)으로, 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
+                            <div className="scene-listrows">
+                              {li.sourceIds.map((cid) => {
+                                const tc = cardsById.get(cid);
+                                const txt = (tc?.text || "").trim();
+                                return (
+                                  <div
+                                    key={cid}
+                                    className="scene-listrow"
+                                    onDragOver={(e) => {
+                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (from) reorderList(card.id, from, cid);
+                                    }}
+                                  >
+                                    <span
+                                      className="scene-listrow-grip"
+                                      title="드래그해 순서 변경"
+                                      draggable
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onDragStart={(e) => {
+                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }}
+                                    >
+                                      ⠿
+                                    </span>
+                                    <span className="scene-listrow-text">{txt || "(빈 텍스트)"}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           ) : (
                             label
                           )}

@@ -161,13 +161,15 @@
   font-family: inherit; outline: none;
 }
 .scene-textnode::placeholder { color: #666; }
+/* 전체복사 버튼 — 우측하단 모서리. 카드를 선택했을 때만 보인다(평소엔 숨겨 다른 카드 위로 삐져나오지 않게). */
 .scene-copy-btn {
-  position: absolute; right: 22px; bottom: 4px; z-index: 8;
+  position: absolute; right: 4px; bottom: 4px; z-index: 9;
   width: 20px; height: 20px; border: 0; border-radius: 5px;
-  background: rgba(255, 255, 255, 0.12); color: #fff; cursor: pointer;
-  font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer;
+  font-size: 12px; line-height: 1; display: none; align-items: center; justify-content: center;
 }
-.scene-copy-btn:hover { background: rgba(255, 255, 255, 0.24); }
+.scene-card.sel .scene-copy-btn { display: flex; }
+.scene-copy-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
 /* ── 모델 노드 — 주황 계열, 설정 정보 표시 ── */
 .scene-card-model { border: 2px solid #6b4a1f; }
@@ -193,6 +195,25 @@
   align-self: stretch; width: 100%; text-align: left; font-size: 10.5px; color: #cdd3dc;
   white-space: pre-wrap; word-break: break-word; overflow: hidden; max-height: 100%;
 }
+/* 텍스트 리스트 — 각 텍스트를 한 행(카드)으로, 왼쪽 그립을 잡아 드래그로 순서 변경 */
+.scene-listrows {
+  align-self: stretch; width: 100%; max-height: 100%; overflow: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.scene-listrow {
+  display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border2); border-radius: 6px;
+}
+.scene-listrow-grip {
+  flex: none; cursor: grab; color: var(--muted); font-size: 13px; line-height: 1; user-select: none;
+}
+.scene-listrow-grip:active { cursor: grabbing; }
+.scene-listrow-grip:hover { color: var(--text); }
+.scene-listrow-text {
+  flex: 1; min-width: 0; font-size: 10.5px; color: #cdd3dc;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
 .scene-listthumbs {
   align-self: stretch; width: 100%; max-height: 100%; overflow: auto;
