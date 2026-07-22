@@ -2,8 +2,8 @@
 //  · contentEditable 프롬프트 + 선택 소스를 인라인 이미지 칩으로 삽입
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { MutableRefObject, ReactNode } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "../lib/appEvents";
 import { openAssetBroadcast } from "../lib/assetBroadcast";
@@ -102,6 +102,10 @@ interface Props {
   // 단축키가 글자로 새지 않게). 프롬프트는 직접 클릭해야 타이핑. sceneMode(카드 바인딩)보다 넓게 —
   // 카드를 아직 안 골랐어도 캔버스에선 자동 포커스 금지.
   inCompose?: boolean;
+  // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유), submit 을 ref 로 노출.
+  count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
+  onCountChange?: (n: number) => void;
+  submitRef?: MutableRefObject<(() => void) | null>; // 카드 아래 Generate 가 호출할 제출 함수
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -121,13 +125,22 @@ export function SpotlightPrompt({
   onTrayBindingRefsChange,
   onTrayBindingPromptChange,
   onPreview,
+  count: countProp,
+  onCountChange,
+  submitRef,
 }: Props) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
           pendingOptsRef, setOpenRef } =
     useModels((msg) => setError(msg));
-  const [count, setCount] = useState(1); // 한 번에 N장 생성(배치)
+  const [countState, setCountState] = useState(1); // 한 번에 N장 생성(배치) — 내부 폴백
+  const count = countProp ?? countState; // App 이 배치수를 보유하면 컨트롤드(카드 툴바와 공유)
+  // SpotlightGenerateControls 는 Dispatch<SetStateAction<number>> 를 기대하므로 함수형 업데이트도 받는다.
+  const setCount = (v: number | ((prev: number) => number)) => {
+    const n = typeof v === "function" ? v(count) : v;
+    (onCountChange ?? setCountState)(n);
+  };
   const [open, setOpen] = useState<string | null>(null); // 열린 드롭다운 키(파라미터명 또는 'model')
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -859,6 +872,10 @@ export function SpotlightPrompt({
       setBusy(false);
     }
   };
+  // 캔버스 카드 아래 Generate 버튼이 호출할 제출 함수를 ref 로 노출(항상 최신 closure). busy 면 submit 내부에서 무시.
+  useLayoutEffect(() => {
+    if (submitRef) submitRef.current = submit;
+  });
 
   // 드롭다운(model/ratio) Esc 닫기 — 도크 자체는 항상 떠 있음.
   useEffect(() => {

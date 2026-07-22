@@ -102,6 +102,10 @@ interface Props {
   onSelectionGens?: (gens: Generation[]) => void;
   // 선택바의 '삭제'가 부를 명령형 핸들 — 선택된 결과 카드를 캔버스에서 제거(+안전 휴지통).
   actionRef?: MutableRefObject<{ deleteSelected: () => void } | null>;
+  // 생성 카드 아래 'Generate' 툴바 — 배치수(App 공유)와 즉시 생성(하단 프롬프트 submit 재사용).
+  batchCount?: number;
+  onBatchCountChange?: (n: number) => void;
+  onGenerateCard?: () => void;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
   typeFilter?: "all" | "image" | "video" | "audio";
@@ -141,6 +145,9 @@ export function SceneBoard({
   onVariantDelete,
   onSelectionGens,
   actionRef,
+  batchCount = 1,
+  onBatchCountChange,
+  onGenerateCard,
   grayOn,
   typeFilter = "all",
   colorFilter,
@@ -1900,6 +1907,7 @@ export function SceneBoard({
     return { outEdges: out, inEdges: inn };
   }, [visibleEdges, cardsById]);
   const FAN = 13;
+  const PORT_GAP = 12; // 연결 끝점(포트·점)을 카드 밖으로 이만큼 띄운다 — 포트가 카드에 겹치지 않게(CSS 포트 위치와 일치).
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
   const edgeRoles = useMemo(() => {
     const m = new Map<string, SceneEdgeRole>();
@@ -1934,9 +1942,9 @@ export function SceneBoard({
     const y2base = b.y + heightOf(b) * (gen ? laneFrac(lane) : 0.5);
     const fanList = gen ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
     return {
-      x1: a.x + widthOf(a),
+      x1: a.x + widthOf(a) + PORT_GAP, // 출력 포트(카드 오른쪽 밖)
       y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),
-      x2: b.x,
+      x2: b.x - PORT_GAP, // 입력 포트(카드 왼쪽 밖)
       y2: y2base + fanOffset(fanList, e.id, FAN),
     };
   };
@@ -1960,7 +1968,7 @@ export function SceneBoard({
 
   return (
     <div
-      className={"scene-board" + (cutHeld ? " cutting" : "")}
+      className={"scene-board" + (cutHeld ? " cutting" : "") + (tempWire ? " wiring" : "")}
       ref={scrollRef}
       onMouseDownCapture={onBoardMouseDownCapture}
       onMouseDown={onMouseDown}
@@ -2128,7 +2136,7 @@ export function SceneBoard({
             (() => {
               const a = cardById(tempWire.fromId);
               if (!a) return null;
-              const x1 = a.x + widthOf(a);
+              const x1 = a.x + widthOf(a) + PORT_GAP; // 출력 포트 위치(카드 밖)에서 시작
               const y1 = a.y + heightOf(a) / 2;
               const mx = (x1 + tempWire.x2) / 2;
               const d = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${tempWire.y2}, ${tempWire.x2} ${tempWire.y2}`;
@@ -2870,6 +2878,44 @@ export function SceneBoard({
                     onMouseDown={(e) => onResizeDown(e, card.id)}
                     title="드래그해 카드 크기 조절"
                   />
+                  {/* 이 카드만 선택했을 때 카드 아래 Generate 툴바 — 연결된 모델·레퍼런스·텍스트로 바로 생성(하단 프롬프트 재사용). */}
+                  {selected.size === 1 && sel && onGenerateCard && (
+                    <div className="scene-cardgen-bar" onMouseDown={(e) => e.stopPropagation()}>
+                      <button
+                        className="scene-cardgen-step"
+                        title="배치 줄이기"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBatchCountChange?.(Math.max(1, batchCount - 1));
+                        }}
+                      >
+                        −
+                      </button>
+                      <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
+                        {batchCount}
+                      </span>
+                      <button
+                        className="scene-cardgen-step"
+                        title="배치 늘리기"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onBatchCountChange?.(Math.min(4, batchCount + 1));
+                        }}
+                      >
+                        +
+                      </button>
+                      <button
+                        className="scene-cardgen-go"
+                        title="연결된 모델·레퍼런스·텍스트로 바로 생성"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onGenerateCard();
+                        }}
+                      >
+                        Generate ✨
+                      </button>
+                    </div>
+                  )}
                   {g && card.id === tagEditCardId && onSetTags && (
                     <div className="scene-tagpop" onMouseDown={(e) => e.stopPropagation()}>
                       <TagEditor

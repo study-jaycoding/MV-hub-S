@@ -1,5 +1,5 @@
 // 앱 루트: 탭·필터 상태, 데이터 로딩, WebSocket 진행률, 액션 오케스트레이션.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 // 코드 스플리팅 — 드물게 여는 구성보드는 지연 로드해 초기 번들에서 분리.
 const HistoryBoard = lazy(() =>
   import("./components/HistoryBoard").then((m) => ({ default: m.HistoryBoard })),
@@ -101,6 +101,9 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     selectScene, addScene, renameScene, removeSceneById, patchActiveScene,
   } = useSceneCoordination(flash);
+  // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
+  const [batchCount, setBatchCount] = useState(1);
+  const spotlightSubmitRef = useRef<(() => void) | null>(null);
   // 구성탭 히스토리 보드(계보 트리) 상태는 useHistoryBoardState 훅으로 추출.
   const {
     boardFocusId, setBoardFocusId, boardFocusIdRef,
@@ -668,6 +671,9 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
+                batchCount={batchCount}
+                onBatchCountChange={setBatchCount}
+                onGenerateCard={() => spotlightSubmitRef.current?.()}
                 grayOn={grayOn}
                 typeFilter={typeFilter}
                 colorFilter={colorFilter}
@@ -849,6 +855,9 @@ export default function App() {
           inCompose={filters.tab === "compose"}
           onTrayBindingRefsChange={setSceneCardRefs}
           onTrayBindingPromptChange={setSceneCardPrompt}
+          count={batchCount}
+          onCountChange={setBatchCount}
+          submitRef={spotlightSubmitRef}
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={
