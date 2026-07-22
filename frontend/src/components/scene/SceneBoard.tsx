@@ -868,6 +868,23 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
+  // 리스트 노드 썸네일 드래그로 순서 변경 — 들어오는 엣지에 order 를 다시 매겨 collectListInputs 정렬을 바꾼다.
+  const reorderList = (listId: string, fromCardId: string, toCardId: string) => {
+    if (fromCardId === toCardId) return;
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
+    const fi = order.indexOf(fromCardId);
+    const ti = order.indexOf(toCardId);
+    if (fi < 0 || ti < 0) return;
+    order.splice(ti, 0, order.splice(fi, 1)[0]);
+    const nextEdges = edgesRef.current.map((ed) => {
+      if (ed.to !== listId) return ed;
+      const idx = order.indexOf(ed.from);
+      return idx >= 0 ? { ...ed, order: idx } : ed;
+    });
+    setEdges(nextEdges);
+    persist(cardsRef.current, nextEdges);
+  };
   // View 노드 재생 — 연결된(직접+generation-list) 생성물을 모아 기존 미리보기(MediaPreview)로 순차 재생.
   const playView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
@@ -2139,7 +2156,49 @@ export function SceneBoard({
                       <div className="scene-card-inner scene-listnode">
                         <div className="scene-card-hd list">리스트</div>
                         <div className="scene-listnode-body">
-                          {li.kind === "text" ? (
+                          {li.kind === "generation" ? (
+                            // 생성물 썸네일(순서대로) — 드래그해 순서 변경.
+                            <div className="scene-listthumbs">
+                              {li.generationCardIds.map((cid, i) => {
+                                const gc = cardsById.get(cid);
+                                const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+                                const gen = gid ? genData[gid] : undefined;
+                                const src = gen ? thumbOf(gen, 128) : null;
+                                return (
+                                  <div
+                                    key={cid}
+                                    className="scene-listthumb"
+                                    title={`${i + 1}번 — 드래그해 순서 변경`}
+                                    draggable
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragOver={(e) => {
+                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (from) reorderList(card.id, from, cid);
+                                    }}
+                                  >
+                                    {src ? (
+                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                    ) : (
+                                      <span className="scene-listthumb-ph" />
+                                    )}
+                                    <span className="scene-listthumb-n">{i + 1}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : li.kind === "text" ? (
                             <div className="scene-listnode-text">{li.text}</div>
                           ) : (
                             label
