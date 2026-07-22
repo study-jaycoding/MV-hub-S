@@ -45,6 +45,7 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
+import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPromptConfig";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
@@ -2139,20 +2140,33 @@ export function SceneBoard({
                   {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
                   <div className="scene-card-inner scene-modelnode">
                     <div className="scene-card-hd model">모델</div>
-                    <div className="scene-modelnode-body">
-                      {card.modelCfg?.model ? (
-                        <>
+                    {card.modelCfg?.model ? (
+                      <div className="scene-modelnode-body">
+                        {/* 상단 중앙 = 모델명·타입, 아래 = 설정한 옵션 전부(라벨: 값) */}
+                        <div className="scene-modelnode-head">
                           <div className="scene-modelnode-name">
                             {card.modelCfg.modelName || card.modelCfg.model}
                           </div>
                           {card.modelCfg.type && (
                             <div className="scene-modelnode-type">{card.modelCfg.type}</div>
                           )}
-                        </>
-                      ) : (
+                        </div>
+                        {card.modelCfg.params && Object.keys(card.modelCfg.params).length > 0 && (
+                          <div className="scene-modelnode-params">
+                            {Object.entries(card.modelCfg.params).map(([k, v]) => (
+                              <div key={k} className="scene-modelnode-param">
+                                <span className="k">{spotlightParamLabel(k)}</span>
+                                <span className="v">{spotlightValueLabel(String(v))}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="scene-modelnode-body">
                         <div className="scene-modelnode-empty">더블클릭해 모델 설정</div>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                   <span
                     className="scene-port out"

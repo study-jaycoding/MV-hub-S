@@ -176,12 +176,22 @@
 .scene-card-model:hover { border-color: #ffb84d; }
 .scene-card-hd.model { color: #ffb84d; background: rgba(255, 150, 50, 0.10); }
 .scene-modelnode-body {
-  flex: 1; display: flex; flex-direction: column; gap: 3px;
-  padding: 8px; justify-content: center;
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+  padding: 8px; overflow: auto;
 }
+/* 모델명·타입 — 상단 중앙 */
+.scene-modelnode-head { text-align: center; }
 .scene-modelnode-name { font-size: 12px; font-weight: 700; color: var(--text); word-break: break-word; }
 .scene-modelnode-type { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.scene-modelnode-empty { font-size: 11px; color: var(--muted); text-align: center; }
+.scene-modelnode-empty { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); }
+/* 설정 옵션 — 라벨(좌) : 값(우) 목록 */
+.scene-modelnode-params { display: flex; flex-direction: column; gap: 2px; }
+.scene-modelnode-param {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font-size: 10.5px; border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 2px;
+}
+.scene-modelnode-param .k { color: var(--muted); flex: none; }
+.scene-modelnode-param .v { color: var(--text); text-align: right; word-break: break-word; }
 
 /* ── 리스트 노드 — 연결된 생성 카드 모음(재생) ── */
 .scene-card-list { border: 2px solid #3a4a2b; }
