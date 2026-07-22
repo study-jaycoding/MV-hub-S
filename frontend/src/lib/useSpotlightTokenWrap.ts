@@ -49,6 +49,11 @@ export function useSpotlightTokenWrap({
     },
     [trayRefs],
   );
+  // 타이머가 실제로 발화할 때(350ms 뒤)의 '최신' resolveTokenMedia 를 쓰도록 ref 로 보관한다.
+  // 카드 복귀 직후 스케줄된 라이브랩 타이머가 스케줄 시점의 낡은 trayRefs(이전 카드/빈 트레이) 클로저를
+  // 붙잡아, 방금 복원한 @image1/@image2 를 '트레이에 없음(missing)'=빨간 경고로 잘못 칠하던 버그 수정.
+  const resolveTokenMediaRef = useRef(resolveTokenMedia);
+  resolveTokenMediaRef.current = resolveTokenMedia;
 
   // 입력창을 벗어나면(blur) 손으로 친 토큰(<<<video1>>>·@image1·언더바 변형)을 알약으로 감싼다(썸네일 포함).
   // 편집 중엔 안 건드리고(포커스 유지), 벗어날 때만 정리 → 캐럿 튐 없이 @처럼 보이게 한다.
@@ -58,12 +63,14 @@ export function useSpotlightTokenWrap({
     const onBlur = () => {
       editingTokenNodeRef.current = null; // 편집 종료 — 재알약화되므로 멘션 억제 해제(가드보다 먼저)
       if (!usesMediaRefTokens(model)) return;
-      wrapRefTokens(ed, resolveTokenMedia); // 풀어둔 토큰·손으로 친 토큰을 알약으로 정규화
+      // 발화 시점의 최신 resolve 사용(타이머와 동일 이유) — 낡은 trayRefs 로 missing 오탐 방지.
+      // 한 번 missing 으로 칠하면 wrapRefTokens 가 기존 알약을 건너뛰어 자동 교정이 안 되므로 여기서도 막는다.
+      wrapRefTokens(ed, resolveTokenMediaRef.current); // 풀어둔 토큰·손으로 친 토큰을 알약으로 정규화
       onPromptChanged();
     };
     ed.addEventListener("blur", onBlur);
     return () => ed.removeEventListener("blur", onBlur);
-  }, [model, resolveTokenMedia, onPromptChanged, editorRef, editingTokenNodeRef]);
+  }, [model, onPromptChanged, editorRef, editingTokenNodeRef]);
 
   // 라이브 알약화 — 타이핑이 잠깐 멈추면 손으로 친 토큰(<<<video1>>>·@image1)을 바로 알약으로 감싼다.
   // '지금 입력 중인 토큰'(캐럿이 있는 텍스트 노드)은 건드리지 않아 캐럿이 튀지 않는다(에디터를 벗어날 때
@@ -75,10 +82,11 @@ export function useSpotlightTokenWrap({
     liveWrapTimer.current = window.setTimeout(() => {
       const ed = editorRef.current;
       if (!ed || composingRef.current) return;
-      wrapRefTokens(ed, resolveTokenMedia, { skipCaretNode: true }); // 입력 중 토큰(캐럿 노드)은 두고 나머지만
+      // 발화 시점의 최신 resolve(정착된 trayRefs)로 해석 — 스케줄 시점 클로저(낡은 refs) 사용 금지.
+      wrapRefTokens(ed, resolveTokenMediaRef.current, { skipCaretNode: true }); // 입력 중 토큰(캐럿 노드)은 두고 나머지만
     }, 350);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, resolveTokenMedia]);
+  }, [model]);
   useEffect(() => () => {
     if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);
   }, []);
