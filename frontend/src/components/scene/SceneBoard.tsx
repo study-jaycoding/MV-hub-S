@@ -1143,39 +1143,40 @@ export function SceneBoard({
         frameView();
         return;
       }
-      // c = 자동 연결(모든 노드 종류 공통, canConnect 규칙 적용).
-      //  ① 순수 소스(레퍼런스/모델/텍스트, 출력만) + 흐름 노드(생성/리스트/View) 함께 선택 →
-      //     각 소스를 연결 가능한 각 흐름 노드에 연결(기존 레퍼런스→생성과 동일 방식).
-      //  ② 흐름 노드끼리만 → 화면 왼→오 인접 체인(생성 계보 + 생성→리스트→View 등).
+      // c = 자동 연결(모든 노드 종류 공통, canConnect 규칙 적용). 연결 흐름 깊이(레이어):
+      //   소스(레퍼런스/모델/텍스트)=0 → 생성=1 → 리스트=2 → View=3.
+      //  · 각 카드를 '자기보다 깊고 연결 가능한 가장 가까운 레이어'의 선택 카드들에 모두 연결.
+      //    (레퍼런스+생성 → 레퍼런스 전부가 생성으로 / 생성들+리스트 → 생성 전부가 리스트로 / 텍스트+리스트도 동일)
+      //  · 생성 카드끼리만 선택하면 왼→오 계보 체인(기존).
       if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "c" || e.key === "C")) {
         const selCards = [...sel]
           .map((id) => cardsRef.current.find((cc) => cc.id === id))
           .filter((c): c is SceneCard => !!c);
-        const isSource = (c: SceneCard) =>
-          c.kind === "reference" || c.kind === "model" || c.kind === "text";
-        const isFlow = (c: SceneCard) =>
-          c.kind === "generation" || c.kind === "list" || c.kind === "view";
-        const sources = selCards.filter(isSource);
-        const flow = selCards.filter(isFlow);
-        if (sources.length && flow.length) {
-          const pairs = sources.flatMap((s) =>
-            flow.filter((f) => canConnect(s, f)).map((f) => [s.id, f.id] as [string, string]),
-          );
+        if (selCards.length >= 2) {
+          const layerOf = (c: SceneCard) =>
+            c.kind === "generation" ? 1 : c.kind === "list" ? 2 : c.kind === "view" ? 3 : 0;
+          if (selCards.every((c) => c.kind === "generation")) {
+            // 생성 카드끼리 — 화면 왼→오 계보 체인.
+            e.preventDefault();
+            const sorted = [...selCards].sort((a, b) => a.x - b.x);
+            const pairs: Array<[string, string]> = [];
+            for (let i = 0; i < sorted.length - 1; i++) pairs.push([sorted[i].id, sorted[i + 1].id]);
+            if (pairs.length) addEdges(pairs);
+            return;
+          }
+          // 레이어 연결 — s 보다 깊고 연결 가능한 선택 카드 중 '가장 얕은 레이어' 전부에 연결.
+          const pairs: Array<[string, string]> = [];
+          for (const s of selCards) {
+            const cand = selCards.filter((t) => layerOf(t) > layerOf(s) && canConnect(s, t));
+            if (!cand.length) continue;
+            const minLayer = Math.min(...cand.map(layerOf));
+            for (const t of cand) if (layerOf(t) === minLayer) pairs.push([s.id, t.id]);
+          }
           if (pairs.length) {
             e.preventDefault();
             addEdges(pairs);
             return;
           }
-        }
-        if (flow.length >= 2) {
-          // 흐름 노드 왼→오 인접 체인 — canConnect 되는 쌍만(예: 생성→생성, 생성→리스트, 리스트→View).
-          e.preventDefault();
-          const sorted = [...flow].sort((a, b) => a.x - b.x);
-          const pairs: Array<[string, string]> = [];
-          for (let i = 0; i < sorted.length - 1; i++)
-            if (canConnect(sorted[i], sorted[i + 1])) pairs.push([sorted[i].id, sorted[i + 1].id]);
-          if (pairs.length) addEdges(pairs);
-          return;
         }
       }
       // a = 선택된 레퍼런스 카드(2장 이상)를 하나로 병합.
