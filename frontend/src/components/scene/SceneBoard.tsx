@@ -1861,7 +1861,7 @@ export function SceneBoard({
             const role = edgeRoles.get(e.id);
             const cls =
               "scene-edge" +
-              // 모델=주황, 텍스트=노랑, 레퍼런스카드=파란점선, 생성물-레퍼런스=초록점선, 계보=초록실선
+              // 모델=주황, 텍스트=보라, 레퍼런스카드=파란점선, 생성물-레퍼런스=초록점선, 계보=초록실선
               (role === "model"
                 ? " model"
                 : role === "text"
@@ -2039,7 +2039,7 @@ export function SceneBoard({
                   <span
                     className="scene-port out"
                     onMouseDown={(e) => onOutPortDown(e, card.id)}
-                    title="드래그해 생성 카드 텍스트 입력에 연결(노랑)"
+                    title="드래그해 생성 카드 텍스트 입력에 연결(보라)"
                   />
                   <span
                     className="scene-resize"
@@ -2238,7 +2238,7 @@ export function SceneBoard({
                       ▤ {variantIds(card).length}
                     </button>
                   )}
-                  {/* 3 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(노랑). 연결 역할은
+                  {/* 3 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(보라). 연결 역할은
                       소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
                   {(
                     [
