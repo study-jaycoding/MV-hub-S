@@ -182,17 +182,31 @@
 .scene-refthumb {
   aspect-ratio: 1; position: relative; border-radius: 5px; overflow: hidden; background: #05060a;
 }
-.scene-refthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 이미지·영상(호버 재생) 공통 — 채우기(cover). 전체보기 토글 시 contain(아래). */
+.scene-refthumb img,
+.scene-refthumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 툴바 '전체 보기'(fill=false) — 비율 유지 + 검은 여백. 생성 카드 fit-contain 과 동일 동작. */
+.scene-card-body.fit-contain .scene-refthumb { background: #050608; }
+.scene-card-body.fit-contain .scene-refthumb img,
+.scene-card-body.fit-contain .scene-refthumb video { object-fit: contain; }
 .scene-refthumb-ph {
   display: block; width: 100%; height: 100%;
   background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
 }
-/* 영상(▶)·오디오(♪) 레퍼런스 표시 — 포스터/플레이스홀더 위 우하단 */
+/* 영상(▶)·오디오(♪) 표시 — 여러 장(그리드)일 땐 작게 우하단 */
 .scene-refthumb-vid {
   position: absolute; right: 2px; bottom: 1px; font-size: 8px; color: #fff;
   background: rgba(0, 0, 0, 0.55); border-radius: 3px; padding: 0 3px; line-height: 1.4; pointer-events: none;
 }
-.scene-card-body.single .scene-refthumb-vid { font-size: 11px; right: 4px; bottom: 3px; padding: 1px 5px; }
+/* 1장(크게)일 땐 생성 카드처럼 중앙 원형 배지, 호버(자동재생) 시 숨김 */
+.scene-card-body.single .scene-refthumb-vid {
+  top: 50%; left: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%);
+  width: 34px; height: 34px; border-radius: 50%; padding: 0; display: grid; place-items: center;
+  font-size: 13px; background: rgba(15, 16, 20, 0.5); border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(4px); transition: opacity 0.15s;
+}
+/* 비디오 배지만 호버(자동재생) 시 숨김 — 오디오(♪)는 재생이 없으니 계속 표시 */
+.scene-card-body.single .scene-refthumb:hover .scene-refthumb-vid.vid { opacity: 0; }
 /* 생성(빈) 카드 */
 .scene-card-gen { border: 2px solid #2b3a55; }
 .scene-card-gen:hover { border-color: var(--blue, #7fa9ff); }

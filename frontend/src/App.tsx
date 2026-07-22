@@ -675,6 +675,7 @@ export default function App() {
                 onBatchCountChange={setBatchCount}
                 onGenerateCard={() => spotlightSubmitRef.current?.()}
                 grayOn={grayOn}
+                fill={fill}
                 typeFilter={typeFilter}
                 colorFilter={colorFilter}
                 tagFilter={tagFilter}

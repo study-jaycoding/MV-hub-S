@@ -87,6 +87,21 @@ function refTypeLabel(refs?: SceneRef[]): string {
   const label = t === "video" ? "비디오" : t === "audio" ? "오디오" : "이미지";
   return refs.length > 1 ? `${label} ${refs.length}` : label;
 }
+// 레퍼런스의 재생·미리보기용 실제 파일 URL — 영상 호버재생(src)·더블클릭 큰화면(preview)에 쓴다.
+//  · asset:proj|path 토큰 → 원본 파일 URL, 그 외(원격 URL 등)는 그대로.
+function refMediaSrc(r: SceneRef): string | undefined {
+  const p = r.file_path;
+  if (!p) return undefined;
+  if (p.startsWith("asset:")) {
+    const [proj, path] = p.slice(6).split("|");
+    return proj && path ? api.assetFileUrl(proj, path) : undefined;
+  }
+  return p;
+}
+// SceneRef.type 을 PreviewTarget 의 좁은 유니온으로 정규화.
+function refMediaType(r: SceneRef): "image" | "video" | "audio" {
+  return r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image";
+}
 
 interface Props {
   scene: Scene;
@@ -121,6 +136,7 @@ interface Props {
   onBatchCountChange?: (n: number) => void;
   onGenerateCard?: () => void;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
+  fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
   typeFilter?: "all" | "image" | "video" | "audio";
   colorFilter?: Set<string>;
@@ -163,6 +179,7 @@ export function SceneBoard({
   onBatchCountChange,
   onGenerateCard,
   grayOn,
+  fill = true,
   typeFilter = "all",
   colorFilter,
   tagFilter,
@@ -187,7 +204,6 @@ export function SceneBoard({
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
   const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
-  const [refMenu, setRefMenu] = useState<string | null>(null); // 레퍼런스 카드 더블클릭 → 담긴 refs 보기 팝업
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
@@ -240,8 +256,6 @@ export function SceneBoard({
   // 팝업이 '모달 레이어'인지·그 선택을 전역 keydown 에서 읽기 위한 ref(빈-deps 핸들러용).
   const cardMenuRef = useRef(cardMenu);
   cardMenuRef.current = cardMenu;
-  const refMenuRef = useRef(refMenu);
-  refMenuRef.current = refMenu;
   const popupSelRef = useRef(popupSel);
   popupSelRef.current = popupSel;
   // 가위(연결 자르기) — 후디니식: Y 를 누르고 있는 동안만 활성. 좌드래그로 궤적을 그리고 지나간
@@ -1161,7 +1175,6 @@ export function SceneBoard({
     setGroups(nextGroups);
     setSelected(new Set());
     setCardMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 카드의 팝업은 닫는다
-    setRefMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 레퍼런스 카드의 검사 팝업도 닫는다
     persist(nextCards, nextEdges, nextGroups);
     for (const gid of toTrash)
       api.deleteGeneration(gid).catch((err) => console.warn("[scene] 생성물 휴지통 이동 실패", gid, err));
@@ -1216,11 +1229,8 @@ export function SceneBoard({
         setColorPopId(null); // 그룹 색 팔레트 열려 있으면 닫기(닫혀 있으면 무해)
         if (nodePickerRef.current) setNodePicker(null); // 노드 피커 닫기(우선)
         else if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
-        else if (refMenuRef.current) setRefMenu(null); // 레퍼런스 검사 팝업 닫기
         return;
       }
-      // 레퍼런스 검사 팝업이 열려 있으면 캔버스 키(n/a/c/Delete 등) 전부 차단(모달).
-      if (refMenuRef.current) return;
       // ── 팝업(모달 레이어)이 열려 있으면: 팝업 선택(popupSel) 대상만 처리하고 캔버스 키는 완전 차단 ──
       if (cardMenuRef.current) {
         const pids = [...popupSelRef.current];
@@ -1250,7 +1260,7 @@ export function SceneBoard({
       }
       const sel = selectedRef.current;
       // Tab = Houdini식 노드 피커. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
-      // 이동을 막지 않는다(접근성). 위 모달 가드(refMenu/cardMenu) 통과 후라 팝업 중엔 안 뜬다.
+      // 이동을 막지 않는다(접근성). 위 모달 가드(cardMenu) 통과 후라 팝업 중엔 안 뜬다.
       if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const m = lastMouseRef.current;
         const rect = scrollRef.current?.getBoundingClientRect();
@@ -2409,15 +2419,13 @@ export function SceneBoard({
               }
               data-id={card.id}
               style={{ left: card.x, top: card.y, width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }}
-              // 레퍼런스=refs 팝업, View=재생. (모델 더블클릭 모달은 후속 단계) 생성 카드는 각자 처리.
+              // View=재생, 모델=모달. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
               onDoubleClick={
-                isRef
-                  ? () => setRefMenu(card.id)
-                  : card.kind === "view"
-                    ? () => openView(card.id)
-                    : card.kind === "model"
-                      ? () => setModelModalId(card.id)
-                      : undefined
+                card.kind === "view"
+                  ? () => openView(card.id)
+                  : card.kind === "model"
+                    ? () => setModelModalId(card.id)
+                    : undefined
               }
             >
               {isRef ? (
@@ -2425,24 +2433,62 @@ export function SceneBoard({
                   {/* 내부 래퍼만 클리핑(둥근 모서리) — 포트는 이 밖이라 잡기 영역이 안 잘린다 */}
                   <div className="scene-card-inner">
                     <div className="scene-card-hd">{refTypeLabel(card.refs)}</div>
-                    <div className={"scene-card-body" + ((card.refs?.length ?? 0) <= 1 ? " single" : "")}>
-                      {(card.refs || []).map((r, i) => (
-                        <div className="scene-refthumb" key={i} title={r.name || `레퍼런스 ${i + 1}`}>
-                          {(() => {
-                            const src = refThumbSrc(r);
-                            return src ? (
-                              <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
-                            ) : (
-                              <span className="scene-refthumb-ph" />
-                            );
-                          })()}
-                          {r.type === "video" ? (
-                            <span className="scene-refthumb-vid">▶</span>
-                          ) : r.type === "audio" ? (
-                            <span className="scene-refthumb-vid">♪</span>
-                          ) : null}
-                        </div>
-                      ))}
+                    <div
+                      className={
+                        "scene-card-body" +
+                        ((card.refs?.length ?? 0) <= 1 ? " single" : "") +
+                        (fill ? "" : " fit-contain")
+                      }
+                    >
+                      {(card.refs || []).map((r, i) => {
+                        const isVid = refMediaType(r) === "video";
+                        return (
+                          <div
+                            className="scene-refthumb"
+                            key={i}
+                            title={r.name || `레퍼런스 ${i + 1} · 더블클릭=큰 화면`}
+                            onMouseEnter={
+                              isVid
+                                ? (e) => {
+                                    const v = e.currentTarget.querySelector("video");
+                                    if (v) {
+                                      v.muted = true; // React <video muted> 반영 버그 → 재생 직전 무음 강제
+                                      v.play().catch(() => {});
+                                    }
+                                  }
+                                : undefined
+                            }
+                            onMouseLeave={
+                              isVid
+                                ? (e) => {
+                                    const v = e.currentTarget.querySelector("video");
+                                    if (v) {
+                                      v.pause();
+                                      v.currentTime = 0;
+                                    }
+                                  }
+                                : undefined
+                            }
+                            onDoubleClick={(e) => {
+                              e.stopPropagation();
+                              const url = refMediaSrc(r);
+                              if (url) onPreview?.({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
+                            }}
+                          >
+                            <MediaThumbnail
+                              thumb={refThumbSrc(r)}
+                              isVideo={isVid}
+                              src={refMediaSrc(r)}
+                              fallback={<span className="scene-refthumb-ph" />}
+                            />
+                            {isVid ? (
+                              <span className="scene-refthumb-vid vid">▶</span>
+                            ) : refMediaType(r) === "audio" ? (
+                              <span className="scene-refthumb-vid aud">♪</span>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                   <span
@@ -3006,7 +3052,7 @@ export function SceneBoard({
                       isSelected={sel}
                       onLine={false}
                       offLine={false}
-                      fill
+                      fill={fill}
                       disabled={disabledIds.has(g.id)}
                       typeFilter={typeFilter}
                       colorFilter={colorFilter}
@@ -3652,53 +3698,6 @@ export function SceneBoard({
                       </div>
                     );
                   })()}
-              </div>
-            </div>
-          );
-        })()}
-
-      {/* 레퍼런스 검사 팝업 — 카드에 담긴 레퍼런스들을 크게 본다(읽기 전용, 변형팝업과 동일 룩). */}
-      {refMenu &&
-        (() => {
-          const card = cards.find((c) => c.id === refMenu && c.kind === "reference");
-          const refs = card?.refs ?? [];
-          if (!card || !refs.length) return null;
-          return (
-            <div
-              className="scene-varpop-backdrop"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setRefMenu(null)}
-            >
-              <div
-                className="scene-varpop-wrap"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="scene-varpop">
-                  <div className="scene-varpop-hd">
-                    <span>레퍼런스 {refs.length}개</span>
-                    <button className="scene-varpop-x" title="닫기" onClick={() => setRefMenu(null)}>
-                      ×
-                    </button>
-                  </div>
-                  <div className="scene-varpop-grid">
-                    {refs.map((r, i) => (
-                      <div key={i} className="scene-varpop-cell">
-                        <div className="scene-varpop-item" title={r.name || `레퍼런스 ${i + 1}`}>
-                          {(() => {
-                            const src = refThumbSrc(r);
-                            return src ? (
-                              <img src={src} alt="" onError={hideBrokenImg} />
-                            ) : (
-                              <span className="scene-varpop-ph">?</span>
-                            );
-                          })()}
-                          {r.type === "video" && <span className="scene-varpop-vid">▶</span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             </div>
           );
