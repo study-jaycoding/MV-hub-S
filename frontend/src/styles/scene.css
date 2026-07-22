@@ -580,29 +580,14 @@
 .scene-portnode.oc-list       { --oc: var(--accent); }
 .scene-portnode.oc-none       { --oc: #7f8a9c; }
 .scene-portnode-body {
-  flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 6px 7px; min-width: 0;
+  flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 6px 8px; min-width: 0;
 }
-/* 타입 라벨(모델/텍스트/레퍼런스…) — 소스색 알약. 포트가 있는 쪽에 붙여 '포트 옆' 느낌으로. */
-.scene-portnode-src {
-  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; color: var(--oc);
-  white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-  padding: 2px 8px; border-radius: 999px;
-  background: color-mix(in srgb, var(--oc) 20%, transparent); border: 1px solid var(--oc);
-}
-.scene-portnode.out .scene-portnode-src { align-self: flex-start; }
-.scene-portnode.in .scene-portnode-src { align-self: flex-end; }
-.scene-portnode-src .scene-portnode-empty { border: 0; background: none; }
-.scene-portnode-dot {
-  flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--oc);
-}
-/* 입력된 값(채널 이름) — 타입 라벨 아래 큼직하게. */
+/* 본문 = 입력된 값(채널 이름)만. 타입은 색(헤더·틴트)으로만 구분. */
 .scene-portnode-val {
-  font-size: 13px; font-weight: 800; color: var(--text); word-break: break-word;
+  font-size: 14px; font-weight: 800; color: var(--text); text-align: center;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.scene-portnode.out .scene-portnode-val { text-align: left; }
-.scene-portnode.in .scene-portnode-val { text-align: right; }
-.scene-portnode-valph { color: var(--muted); font-weight: 600; }
+.scene-portnode-valph { color: var(--muted); font-weight: 600; font-size: 12px; }
 /* 카드 아래 편집 툴바(선택 시) — 이름 입력/출력 드롭다운. 생성카드 Generate 툴바와 같은 위치·스타일. */
 .scene-portedit {
   position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 14;

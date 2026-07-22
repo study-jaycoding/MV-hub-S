@@ -2626,36 +2626,17 @@ export function SceneBoard({
                   const inEdge = edges.find((e) => e.to === card.id);
                   const src = inEdge ? cardsById.get(inEdge.from) : undefined;
                   const k = src?.kind;
-                  const kindLabel =
-                    k === "model"
-                      ? "모델"
-                      : k === "text"
-                        ? "텍스트"
-                        : k === "reference"
-                          ? "레퍼런스"
-                          : k === "generation"
-                            ? "생성물"
-                            : k === "list"
-                              ? "리스트"
-                              : "";
                   return (
                     <>
                       <div className={"scene-card-inner scene-portnode out oc-" + (k || "none")}>
                         <div className="scene-card-hd portout">OUTPUT</div>
                         <div className="scene-portnode-body">
-                          {/* 본문 = 타입 라벨 + 입력된 값(채널 이름). 이름 입력은 선택 시 카드 아래 툴바에서. */}
-                          <div className="scene-portnode-src">
-                            {src ? (
-                              <>
-                                <span className="scene-portnode-dot" /> {kindLabel}
-                              </>
-                            ) : (
-                              <span className="scene-portnode-empty">소스를 연결</span>
-                            )}
-                          </div>
+                          {/* 본문 = 입력된 값(채널 이름)만. 이름 입력은 선택 시 카드 아래 툴바에서. */}
                           <div className="scene-portnode-val">
                             {(card.text || "").trim() || (
-                              <span className="scene-portnode-valph">이름 없음</span>
+                              <span className="scene-portnode-valph">
+                                {src ? "채널 이름" : "소스를 연결"}
+                              </span>
                             )}
                           </div>
                         </div>
@@ -2681,18 +2662,6 @@ export function SceneBoard({
                   const realId = resolveInputSourceId(card.id, cardsById, edges);
                   const real = realId ? cardsById.get(realId) : undefined;
                   const k = real?.kind;
-                  const kindLabel =
-                    k === "model"
-                      ? "모델"
-                      : k === "text"
-                        ? "텍스트"
-                        : k === "reference"
-                          ? "레퍼런스"
-                          : k === "generation"
-                            ? "생성물"
-                            : k === "list"
-                              ? "리스트"
-                              : "";
                   const chOk = !!card.channel && outputs.some((o) => o.id === card.channel);
                   const channelName = chOk ? (cardsById.get(card.channel!)?.text || "").trim() : "";
                   return (
@@ -2700,20 +2669,13 @@ export function SceneBoard({
                       <div className={"scene-card-inner scene-portnode in oc-" + (k || "none")}>
                         <div className="scene-card-hd portin">INPUT</div>
                         <div className="scene-portnode-body">
-                          {/* 본문 = 타입 라벨 + 고른 채널 이름. 출력 선택 드롭다운은 선택 시 카드 아래 툴바에서. */}
-                          <div className="scene-portnode-src">
-                            {real ? (
-                              <>
-                                <span className="scene-portnode-dot" /> → {kindLabel}
-                              </>
-                            ) : (
-                              <span className="scene-portnode-empty">
-                                {card.channel ? "⚠ 미연결(소스 없음)" : "출력 선택"}
+                          {/* 본문 = 고른 채널 이름(입력값)만. 출력 선택 드롭다운은 선택 시 카드 아래 툴바에서. */}
+                          <div className="scene-portnode-val">
+                            {channelName || (
+                              <span className="scene-portnode-valph">
+                                {card.channel ? "⚠ 미연결" : "출력 선택"}
                               </span>
                             )}
-                          </div>
-                          <div className="scene-portnode-val">
-                            {channelName || <span className="scene-portnode-valph">채널 없음</span>}
                           </div>
                         </div>
                       </div>
