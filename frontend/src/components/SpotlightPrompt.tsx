@@ -87,7 +87,7 @@ interface Props {
   //  key = `${sceneId}:${cardId}` (카드 바뀜 감지) · refs = 카드에 연결된 레퍼런스(순서).
   //  트레이에서 순서변경/추가/삭제하면 onTrayBindingRefsChange 로 씬 카드에 되돌린다. null=일반 모드.
   //  prompt = 그 카드에 저장된 프롬프트 초안(직렬화 텍스트). 카드 전환 시 입력창에 복원.
-  trayBinding?: { key: string; refs: SceneRef[]; prompt?: string } | null;
+  trayBinding?: { key: string; refs: SceneRef[]; prompt?: string; promptKey?: string } | null;
   onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
   onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
   onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
@@ -257,6 +257,7 @@ export function SpotlightPrompt({
   //  (A) 바인딩 전환(카드↔카드, 라이브러리↔씬) 처리 · (B) 편집 시 현재 카드에 저장.
   const bindingKey = trayBinding?.key ?? null;
   const bindingPrompt = trayBinding?.prompt ?? ""; // JSON(PromptPart[]) 또는 "" (없음)
+  const bindingPromptKey = trayBinding?.promptKey ?? null; // 연결 텍스트 변경 감지(같은 카드에서 파생 반영)
   const lastPromptFpRef = useRef<string>("");
   const prevBindingKeyRef = useRef<string | null>(null);
   const libraryDraftRef = useRef<string>(""); // 비-씬(라이브러리) 프롬프트 임시 보관
@@ -293,7 +294,7 @@ export function SpotlightPrompt({
     updatePlaceholder();
     bumpPromptTick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bindingKey]);
+  }, [bindingKey, bindingPromptKey]);
   useEffect(() => {
     if (!bindingKey) return;
     const ed = editorRef.current;

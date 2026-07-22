@@ -28,6 +28,7 @@ import {
   variantIds,
   type SceneRef,
 } from "./lib/scenes";
+import { collectGenText } from "./lib/sceneEdges";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -371,11 +372,24 @@ export default function App() {
     activeScene && sceneBinding
       ? activeScene.cards.find((c) => c.id === sceneBinding.cardId)?.prompt ?? ""
       : "";
+  // 연결된 텍스트(text·text-list)가 있으면 그 합친 텍스트가 프롬프트의 진실원천(파생 우선). 없으면 카드 자체 프롬프트.
+  const boundGenText =
+    activeScene && sceneBinding
+      ? collectGenText(sceneBinding.cardId, new Map(activeScene.cards.map((c) => [c.id, c])), activeScene.edges)
+      : { text: "", count: 0 };
+  const textDerived = boundGenText.count > 0;
+  const derivedPrompt = textDerived ? boundGenText.text : boundCardPrompt;
   const trayBinding =
     filters.tab === "compose" && activeScene
       ? sceneBinding
-        ? { key: `${activeScene.id}:${sceneBinding.cardId}`, refs: sceneBinding.refs, prompt: boundCardPrompt }
-        : { key: `${activeScene.id}:none`, refs: [] as SceneRef[], prompt: "" }
+        ? {
+            key: `${activeScene.id}:${sceneBinding.cardId}`,
+            // promptKey: 같은 카드에서 연결 텍스트가 바뀌면 에디터를 다시 채우도록(파생 반영). 파생 아니면 고정.
+            promptKey: textDerived ? `txt:${boundGenText.text}` : "card",
+            refs: sceneBinding.refs,
+            prompt: derivedPrompt,
+          }
+        : { key: `${activeScene.id}:none`, promptKey: "none", refs: [] as SceneRef[], prompt: "" }
       : null;
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
   // ★refs·prompt 저장이 같은 순간 겹치면(재사용 등) 서로를 덮어쓰지 않게, 렌더 스냅샷 대신
@@ -389,6 +403,8 @@ export default function App() {
   // 프롬프트 입력창 편집 → 현재 바인딩된 카드에 초안 저장(카드별 프롬프트 기억).
   const setSceneCardPrompt = (prompt: string) => {
     if (!activeScene || !sceneBinding) return;
+    // 연결된 텍스트가 있으면 프롬프트는 파생(연결 텍스트 우선) — 에디터 편집을 카드에 저장하지 않는다.
+    if (textDerived) return;
     const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
     const nextCards = cards.map((c) => (c.id === sceneBinding.cardId ? { ...c, prompt } : c));
     patchActiveScene({ cards: nextCards });
