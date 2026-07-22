@@ -161,19 +161,22 @@
   font-family: inherit; outline: none;
 }
 .scene-textnode::placeholder { color: #666; }
-/* 텍스트 노드로 들어온 @레퍼런스 알약(썸네일 + @imageN) — 헤더 아래, 텍스트 앞. */
-.scene-textrefs {
-  flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 6px 0;
+/* 텍스트 보기(비편집) — @토큰을 인라인 썸네일 알약으로. 클릭하면 편집 textarea 로 전환. */
+.scene-textview-inline {
+  flex: 1; width: 100%; box-sizing: border-box; overflow: auto; cursor: text;
+  background: #000; color: #fff; border-radius: 0 0 10px 10px;
+  padding: 8px 8px 24px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
-.scene-textref {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
-  background: rgba(127, 169, 255, 0.14); border: 1px solid #4a5a80; border-radius: 999px;
-  padding: 1px 7px 1px 2px; font-size: 10px; color: #cdd8f0;
+.scene-textnode-ph2 { color: #666; }
+/* 인라인 @레퍼런스 알약 — 문장 속에서 썸네일 + @imageN. */
+.scene-inlinetok {
+  display: inline-flex; align-items: center; gap: 3px; vertical-align: middle;
+  background: rgba(127, 169, 255, 0.16); border: 1px solid #4a5a80; border-radius: 5px;
+  padding: 0 5px 0 2px; margin: 0 1px; font-size: 11px; color: #cdd8f0; white-space: nowrap;
 }
-.scene-textref img, .scene-textref-ph {
-  width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex: none; background: #05060a;
+.scene-inlinetok img, .scene-inlinetok-ph {
+  width: 15px; height: 15px; border-radius: 3px; object-fit: cover; flex: none; background: #05060a;
 }
-.scene-textref-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 전체복사 버튼 — 우측하단 모서리. 카드를 선택했을 때만 보인다(평소엔 숨겨 다른 카드 위로 삐져나오지 않게). */
 .scene-copy-btn {
   position: absolute; right: 4px; bottom: 4px; z-index: 9;

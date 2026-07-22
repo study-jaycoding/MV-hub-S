@@ -171,6 +171,7 @@ export function SceneBoard({
   nodePickerRef.current = !!nodePicker;
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
+  const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트 노드(그 외엔 @토큰 알약 미리보기)
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
@@ -2107,64 +2108,87 @@ export function SceneBoard({
                 </>
               ) : card.kind === "text" ? (
                 (() => {
-                  // 텍스트로 들어온 레퍼런스 연결(레퍼런스 카드 refs + 생성물) → 상단 @레퍼런스 알약(직관 확인용).
+                  // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑.
                   const refSrcs = edges
                     .filter((e) => e.to === card.id)
                     .map((e) => cardsById.get(e.from))
                     .filter((c): c is SceneCard => !!c)
                     .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
                   const counters: Record<string, number> = {};
-                  const nextLabel = (type?: string) => {
+                  const thumbByLabel = new Map<string, string | undefined>();
+                  const addRef = (type: string | undefined, thumb?: string) => {
                     const t = type === "video" ? "video" : type === "audio" ? "audio" : "image";
                     counters[t] = (counters[t] || 0) + 1;
-                    return `@${t}${counters[t]}`;
+                    thumbByLabel.set(`@${t}${counters[t]}`, thumb);
                   };
-                  const pills: { key: string; thumb?: string; label: string }[] = [];
                   for (const s of refSrcs) {
                     if (s.kind === "reference")
-                      (s.refs || []).forEach((r, i) =>
-                        pills.push({ key: s.id + ":" + i, thumb: refThumbSrc(r), label: nextLabel(r.type) }),
-                      );
+                      (s.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
                     else if (s.kind === "generation") {
                       const gid = s.genId || variantIds(s)[0];
                       const gen = gid ? genData[gid] : undefined;
-                      pills.push({
-                        key: s.id,
-                        thumb: gen ? thumbOf(gen, 128) || undefined : undefined,
-                        label: nextLabel(gen?.assets?.[0]?.type),
-                      });
+                      addRef(gen?.assets?.[0]?.type, gen ? thumbOf(gen, 128) || undefined : undefined);
                     }
                   }
+                  // 텍스트를 @토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.
+                  const renderInline = (text: string) => {
+                    const re = /@(?:image|video|audio)\d+/gi;
+                    const out: React.ReactNode[] = [];
+                    let last = 0;
+                    let m: RegExpExecArray | null;
+                    let k = 0;
+                    while ((m = re.exec(text))) {
+                      if (m.index > last) out.push(text.slice(last, m.index));
+                      const label = m[0];
+                      const thumb = thumbByLabel.get(label.toLowerCase());
+                      out.push(
+                        <span className="scene-inlinetok" key={`t${k++}`} title={label}>
+                          {thumb ? (
+                            <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} />
+                          ) : (
+                            <span className="scene-inlinetok-ph" />
+                          )}
+                          {label}
+                        </span>,
+                      );
+                      last = m.index + m[0].length;
+                    }
+                    if (last < text.length) out.push(text.slice(last));
+                    return out;
+                  };
+                  const editing = editTextId === card.id;
                   return (
                     <>
-                      {/* 상단 헤더(이동) + @레퍼런스 알약(연결된 레퍼런스) + 검정/흰 textarea. */}
+                      {/* 상단 헤더(이동) + 본문(보기=@토큰 인라인 알약, 클릭 시 편집 textarea). */}
                       <div className="scene-card-inner">
                         <div className="scene-card-hd text">텍스트</div>
-                        {pills.length > 0 && (
-                          <div className="scene-textrefs">
-                            {pills.map((p) => (
-                              <span className="scene-textref" key={p.key} title={p.label}>
-                                {p.thumb ? (
-                                  <img src={p.thumb} alt="" draggable={false} onError={hideBrokenImg} />
-                                ) : (
-                                  <span className="scene-textref-ph" />
-                                )}
-                                <span className="scene-textref-label">{p.label}</span>
-                              </span>
-                            ))}
+                        {editing ? (
+                          <textarea
+                            className="scene-textnode"
+                            value={card.text || ""}
+                            placeholder="텍스트 입력..."
+                            spellCheck={false}
+                            autoFocus
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onBlur={() => setEditTextId(null)}
+                            onChange={(e) => setNodeText(card.id, e.target.value)}
+                          />
+                        ) : (
+                          <div
+                            className="scene-textview-inline"
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              setSelected(new Set([card.id]));
+                              setEditTextId(card.id); // 클릭하면 편집으로 전환
+                            }}
+                          >
+                            {card.text ? (
+                              renderInline(card.text)
+                            ) : (
+                              <span className="scene-textnode-ph2">텍스트 입력...</span>
+                            )}
                           </div>
                         )}
-                        <textarea
-                          className="scene-textnode"
-                          value={card.text || ""}
-                          placeholder="텍스트 입력..."
-                          spellCheck={false}
-                          onMouseDown={(e) => {
-                            e.stopPropagation(); // 카드 이동 드래그는 막되
-                            setSelected(new Set([card.id])); // 입력창 클릭도 카드 선택으로 처리
-                          }}
-                          onChange={(e) => setNodeText(card.id, e.target.value)}
-                        />
                       </div>
                       <button
                         className="scene-copy-btn"
