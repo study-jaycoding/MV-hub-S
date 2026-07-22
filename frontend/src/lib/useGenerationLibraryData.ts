@@ -38,8 +38,13 @@ export function useGenerationLibraryData({
   const projectsLoadedRef = useRef(false);
   const reloadSeqRef = useRef(0);
   const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
+  // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
+  // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
+  const pendingResolversRef = useRef<Array<() => void>>([]);
 
-  const reload = useCallback(async (silent = false, light = false) => {
+  const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;
     // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref 가 다른 탭 값으로 바뀌어 있어도 안전.
     const tab = filtersRef.current.tab;
@@ -100,6 +105,50 @@ export function useGenerationLibraryData({
       projectsLoadedRef.current = true;
     }
   }, [flash]);
+
+  // 실제 실행 1건을 돌리고, 끝나면 큐에 쌓인(병합된) 다음 실행을 이어서 돌린다.
+  // 병합 실행이 끝나면 그동안 대기하던 호출자들의 promise 를 resolve → awaited 호출도 '자기 요청을
+  // 포함한' 실행이 끝난 뒤 신선한 데이터를 본다.
+  const launch = useCallback(
+    (silent: boolean, light: boolean): Promise<void> => {
+      const p = runReload(silent, light).finally(() => {
+        inflightRef.current = null;
+        const next = pendingArgsRef.current;
+        if (next) {
+          pendingArgsRef.current = null;
+          const resolvers = pendingResolversRef.current;
+          pendingResolversRef.current = [];
+          void launch(next.silent, next.light)
+            .finally(() => {
+              for (const r of resolvers) r();
+            })
+            .catch(() => {}); // 방어: runReload 는 정상 reject 안 하지만 leak 방지
+        } else {
+          // 체인 종료 — 무효화된(seq 불일치) non-silent run 이 남긴 스피너를 확실히 내린다.
+          setLoading(false);
+        }
+      });
+      inflightRef.current = p;
+      return p;
+    },
+    [runReload],
+  );
+
+  const reload = useCallback(
+    (silent = false, light = false): Promise<void> => {
+      if (!inflightRef.current) return launch(silent, light);
+      // 실행 중인 stale run 을 즉시 무효화(seq++) — 그 run 은 완료돼도 결과를 적용하지 않는다.
+      //  (새 필터로 바꿨을 때 옛 필터 결과가 잠깐 번쩍이거나, 그 run 이 실패해도 잔존하지 않게.)
+      reloadSeqRef.current++;
+      // 큐에 병합. '강한' 옵션 우선: 하나라도 non-silent/non-light 면 그걸로(전체 로드·스피너).
+      const prev = pendingArgsRef.current;
+      pendingArgsRef.current = prev
+        ? { silent: prev.silent && silent, light: prev.light && light }
+        : { silent, light };
+      return new Promise<void>((res) => pendingResolversRef.current.push(res));
+    },
+    [launch],
+  );
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !authReadyRef.current) return;
