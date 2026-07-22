@@ -92,12 +92,14 @@ export default function App() {
   } = useLibraryFilters(LS);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
+  const { flash, toast } = useAppToast();
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
+  //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
   const {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     selectScene, addScene, renameScene, removeSceneById, patchActiveScene,
-  } = useSceneCoordination();
+  } = useSceneCoordination(flash);
   // 구성탭 히스토리 보드(계보 트리) 상태는 useHistoryBoardState 훅으로 추출.
   const {
     boardFocusId, setBoardFocusId, boardFocusIdRef,
@@ -130,7 +132,6 @@ export default function App() {
   const { clearSelect, selected, selectedRef, setSelected, toggleSelect } = useGenerationSelection({
     resetKey: selectionResetKey,
   });
-  const { flash, toast } = useAppToast();
   const {
     archivedCount,
     facets,
