@@ -5,6 +5,7 @@ import {
   fanOffset,
   computeBridgeEdges,
   classifyEdges,
+  resolveEdgeRole,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -74,5 +75,44 @@ describe("classifyEdges", () => {
     const edges: SceneEdge[] = [{ id: "e", from: "S", to: "T" }];
     const { genRefEdgeIds } = classifyEdges(edges, byId, {});
     expect([...genRefEdgeIds]).toEqual(["e"]);
+  });
+});
+
+describe("resolveEdgeRole", () => {
+  const node = (id: string, kind: SceneCard["kind"]): SceneCard => ({ id, kind, x: 0, y: 0 });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("명시 role 이 있으면 그대로 반환(추론보다 우선)", () => {
+    const cards = [node("A", "generation"), node("B", "generation")];
+    const e: SceneEdge = { id: "e", from: "A", to: "B", role: "text" };
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
+  });
+  it("model 노드 소스 → 'model'", () => {
+    const cards = [node("M", "model"), node("G", "generation")];
+    const e: SceneEdge = { id: "e", from: "M", to: "G" };
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("model");
+  });
+  it("text 노드 소스 → 'text'", () => {
+    const cards = [node("T", "text"), node("G", "generation")];
+    const e: SceneEdge = { id: "e", from: "T", to: "G" };
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
+  });
+  it("reference 카드 소스 → 'ref'", () => {
+    const cards = [node("R", "reference"), node("G", "generation")];
+    const e: SceneEdge = { id: "e", from: "R", to: "G" };
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("ref");
+  });
+  it("타깃이 list 노드 → 'list'", () => {
+    const cards = [node("G", "generation"), node("L", "list")];
+    const e: SceneEdge = { id: "e", from: "G", to: "L" };
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("list");
+  });
+  it("생성물을 ref 로 사용한 gen→gen → 'ref', 아니면 'lineage'", () => {
+    const S = gen("S");
+    const T = gen("T", { refs: [{ file_path: "x", type: "image", source_gen_id: "S" }] });
+    const U = gen("U");
+    const cards = byId([S, T, U]);
+    expect(resolveEdgeRole({ id: "e1", from: "S", to: "T" }, cards, {})).toBe("ref");
+    expect(resolveEdgeRole({ id: "e2", from: "S", to: "U" }, cards, {})).toBe("lineage");
   });
 });

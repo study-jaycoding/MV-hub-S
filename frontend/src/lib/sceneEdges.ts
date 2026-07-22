@@ -1,7 +1,32 @@
 // SceneBoard 의 '순수 엣지 기하/그래프 계산'을 컴포넌트에서 추출(렌더마다 인라인으로 돌던 것).
 //  · DOM/이벤트/상태를 건드리지 않는 순수 함수만 모은다 — 높이 측정(heightsRef) 의존인 heightOf/edgePath/edgeEnds 는 컴포넌트에 남긴다.
 //  · 등가성 보존이 목적이라 원본의 반복/큐 순서·판정 로직을 그대로 옮긴다.
-import { variantIds, type SceneCard, type SceneEdge } from "./scenes";
+import { variantIds, type SceneCard, type SceneEdge, type SceneEdgeRole } from "./scenes";
+
+// 연결의 역할 판정(순수) — 생성카드 입력 레인·엣지 색의 단일 근거. edge.role 이 명시돼 있으면 그대로,
+// 아니면 소스/타깃 kind 로 추론(기존 저장분 하위호환). gen→gen 은 refParents/refs 로 'ref 사용'과 '계보'를 구분.
+//  · model 노드 → 'model'(주황)  · text 노드 → 'text'(노랑)  · reference 카드 → 'ref'(파랑)
+//  · → list 노드 = 'list'(수집)   · 생성물을 ref 로 사용 → 'ref', 그 외 생성→생성 = 'lineage'
+export function resolveEdgeRole(
+  edge: SceneEdge,
+  cardsById: Map<string, SceneCard>,
+  refParents: Record<string, string[]>,
+): SceneEdgeRole {
+  if (edge.role) return edge.role;
+  const from = cardsById.get(edge.from);
+  const to = cardsById.get(edge.to);
+  if (to?.kind === "list") return "list";
+  if (from?.kind === "model") return "model";
+  if (from?.kind === "text") return "text";
+  if (from?.kind === "reference") return "ref";
+  if (from?.kind === "generation" && to) {
+    const srcGens = variantIds(from);
+    const byRefs = (to.refs || []).some((r) => r.source_gen_id && srcGens.includes(r.source_gen_id));
+    const byHistory = variantIds(to).some((b) => (refParents[b] || []).some((p) => srcGens.includes(p)));
+    return byRefs || byHistory ? "ref" : "lineage";
+  }
+  return "lineage";
+}
 
 // 베지어 연결선 path(d) — 양 끝점 좌표만으로. 중간 제어점은 x 중앙.
 export function edgePathXY(x1: number, y1: number, x2: number, y2: number): string {
