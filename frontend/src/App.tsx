@@ -476,6 +476,24 @@ export default function App() {
     await logout();
   };
 
+  // ★훅은 조기 return 위에서 무조건 호출돼야 한다(아래 authPending/로그인 게이트보다 위). memo 파생값.
+  // 폴더 딤 대상 — 매 App 렌더마다 새 객체를 만들면 HistoryBoardNode memo 가 깨지므로 memo.
+  const folderSel = useMemo(
+    () =>
+      filters.project_id && filters.project_id !== "none" && filters.folder_path
+        ? { projectId: filters.project_id, path: filters.folder_path }
+        : null,
+    [filters.project_id, filters.folder_path],
+  );
+  // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
+  const commentLabel = useMemo(
+    () =>
+      commentGenId
+        ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
+        : "생성본",
+    [commentGenId, gens],
+  );
+
   // 인증 검증이 끝나기 전(authConfig 로딩 중 또는 토큰 me 검증 중)에는 화면을 보류한다.
   // → 새로고침 시 메인(전역 provider 이름)·로그인 화면이 잠깐 깜빡이는 것을 방지.
   if (authPending) {
@@ -497,23 +515,6 @@ export default function App() {
   // 관리창(관리탭)은 로그인 사용자 모두에게 연다 — 작업/완료 탭은 전원 접근. 대시보드 탭만
   // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
   const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
-
-  // 폴더 딤 대상 — 매 App 렌더마다 새 객체를 만들면 HistoryBoardNode memo 가 깨지므로 memo.
-  const folderSel = useMemo(
-    () =>
-      filters.project_id && filters.project_id !== "none" && filters.folder_path
-        ? { projectId: filters.project_id, path: filters.folder_path }
-        : null,
-    [filters.project_id, filters.folder_path],
-  );
-  // 코멘트 패널 라벨 — 열렸을 때만, gens 가 바뀔 때만 계산(매 렌더 전량 find 방지).
-  const commentLabel = useMemo(
-    () =>
-      commentGenId
-        ? (gens.find((g) => g.id === commentGenId)?.prompt || "").slice(0, 40) || "생성본"
-        : "생성본",
-    [commentGenId, gens],
-  );
 
   return (
     <div className="app">
