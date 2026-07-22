@@ -253,6 +253,14 @@ export function SceneBoard({
     const c = canvasRef.current;
     if (c)
       c.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoomRef.current})`;
+    // 점 배경(.scene-board)도 팬/줌에 맞춰 이동·확대 — 배경은 고정 뷰포트에 있어 그대로 두면 확대축소가
+    // 안 보인다. 격자 간격(22px)을 배율만큼 키우고 원점 오프셋을 pan 에 맞춰 카드와 함께 움직이게 한다.
+    const b = scrollRef.current;
+    if (b) {
+      const cell = 22 * zoomRef.current;
+      b.style.backgroundSize = `${cell}px ${cell}px`;
+      b.style.backgroundPosition = `${panRef.current.x}px ${panRef.current.y}px`;
+    }
     mmUpdateRef.current?.(); // 팬/줌 반영 즉시 미니맵 뷰포트 박스도 갱신
   }, []);
   useLayoutEffect(applyTransform);
@@ -290,8 +298,12 @@ export function SceneBoard({
     const cv = canvasRef.current;
     if (cv) {
       cv.style.transition = "transform 0.25s ease";
+      // 배경 점 격자도 같은 시간으로 함께 글라이드(안 그러면 배경만 최종위치로 순간이동해 어긋난다).
+      if (scrollRef.current)
+        scrollRef.current.style.transition = "background-position 0.25s ease, background-size 0.25s ease";
       window.setTimeout(() => {
         if (canvasRef.current) canvasRef.current.style.transition = "";
+        if (scrollRef.current) scrollRef.current.style.transition = "";
       }, 300);
     }
     applyTransform();
