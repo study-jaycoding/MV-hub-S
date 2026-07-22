@@ -174,8 +174,11 @@
   padding: 3px 7px; background: rgba(196, 232, 74, 0.10); border-bottom: 1px solid var(--border2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* 썸네일 3열 그리드 — 개수만큼 행이 늘어 카드가 자연스럽게 길어진다(고정 높이 없음). */
+/* 썸네일 3열 그리드 — 여러 장(레거시)일 때만. 개수만큼 행이 늘어 카드가 자연스럽게 길어진다. */
 .scene-card-body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 4px; }
+/* 레퍼런스 1장(기본) — 카드 폭을 꽉 채워 크게 보여준다(어떤 레퍼런스인지는 헤더 라벨로). */
+.scene-card-body.single { display: block; padding: 0; }
+.scene-card-body.single .scene-refthumb { aspect-ratio: 4 / 3; border-radius: 0; }
 .scene-refthumb {
   aspect-ratio: 1; position: relative; border-radius: 5px; overflow: hidden; background: #05060a;
 }
@@ -184,15 +187,12 @@
   display: block; width: 100%; height: 100%;
   background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
 }
-.scene-refnum {
-  position: absolute; left: 2px; top: 1px; font-size: 8px; font-weight: 800;
-  background: rgba(0, 0, 0, 0.6); color: #fff; padding: 0 3px; border-radius: 3px; line-height: 1.4;
-}
-/* 영상 레퍼런스 표시(▶) — 포스터 위 우하단 */
+/* 영상(▶)·오디오(♪) 레퍼런스 표시 — 포스터/플레이스홀더 위 우하단 */
 .scene-refthumb-vid {
   position: absolute; right: 2px; bottom: 1px; font-size: 8px; color: #fff;
   background: rgba(0, 0, 0, 0.55); border-radius: 3px; padding: 0 3px; line-height: 1.4; pointer-events: none;
 }
+.scene-card-body.single .scene-refthumb-vid { font-size: 11px; right: 4px; bottom: 3px; padding: 1px 5px; }
 /* 생성(빈) 카드 */
 .scene-card-gen { border: 2px solid #2b3a55; }
 .scene-card-gen:hover { border-color: var(--blue, #7fa9ff); }
