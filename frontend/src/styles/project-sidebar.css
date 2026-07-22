@@ -131,13 +131,9 @@
 .folder-tree-count.zero { color: var(--muted2); }
 .folder-tree-row.selected .folder-tree-count { color: #ffd6e5; }
 
-/* 사이드바 폴더 트리 전용 — 무장(선택) 안 된 폴더는 회색으로 가라앉히고, 무장 폴더만 빨강+흰글씨로
-   도드라지게. 위쪽(라이브러리/프로젝트)을 고르면 폴더가 전부 회색이 되어 '지금 폴더 아님'이 분명해진다.
-   공통 FolderTreeView(어셋/관리자창)엔 영향 없게 .sidebar-folder-tree 로 스코프. */
-.folder-tree.sidebar-folder-tree .folder-tree-icon {
-  background: linear-gradient(#8b9099, #5b616b);
-  box-shadow: none;
-}
+/* 사이드바 폴더 트리 전용 — 무장(선택) 안 된 폴더는 이름을 회색으로 가라앉히고, 무장 폴더만 흰글씨로
+   도드라지게. 위쪽(라이브러리/프로젝트)을 고르면 폴더 이름이 전부 회색이 되어 '지금 폴더 아님'이 분명해진다.
+   아이콘 색은 원래대로(루트=파랑, 하위=초록). 공통 FolderTreeView(어셋/관리자창)엔 영향 없게 스코프. */
 .folder-tree.sidebar-folder-tree .folder-tree-row:not(.selected) .folder-tree-name,
 .folder-tree.sidebar-folder-tree .folder-tree-row:not(.selected) .folder-tree-count {
   color: var(--muted);
@@ -145,10 +141,6 @@
 .folder-tree.sidebar-folder-tree .folder-tree-row.selected { color: #fff; }
 .folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-name,
 .folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-count { color: #fff; }
-.folder-tree.sidebar-folder-tree .folder-tree-row.selected .folder-tree-icon {
-  background: linear-gradient(#ff8bbc, #f34c91);
-  box-shadow: 0 0 10px rgba(255,79,138,0.36);
-}
 
 .assets-root-row { margin-bottom: 4px; }
 .assets-root-row.selected {
