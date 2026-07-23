@@ -694,19 +694,39 @@ export function SceneBoard({
 
   // 드래그 리스너 등록/정리를 한곳에서 — 드래그 중 언마운트(씬 전환·삭제)돼도 누수 없게 unmount 에서 정리.
   const dragCleanupRef = useRef<(() => void) | null>(null);
+  // 드래그 이동을 rAF로 '프레임당 1회'만 반영(합치기) — 마우스가 mousemove 를 초당 수백 번 쏴도
+  // 무거운 setState/렌더는 화면 주사율만큼만 돈다. 그 결과 메인 스레드가 덜 막혀 드래그 중 빠른
+  // 클릭·키 입력이 지연·누락되지 않는다. mouseup 시 아직 안 돈 마지막 이동을 먼저 flush 해 최종 위치·
+  // 그룹 재배정·연결 drop 판정이 항상 최신 좌표를 쓰게 한다.
   const beginDrag = useCallback(
     (move: (e: MouseEvent) => void, up: (e: MouseEvent) => void) => {
+      let rafId: number | null = null;
+      let pending: MouseEvent | null = null;
+      const runPending = () => {
+        rafId = null;
+        if (pending) { const ev = pending; pending = null; move(ev); }
+      };
+      const onMove = (ev: MouseEvent) => {
+        pending = ev;
+        if (rafId === null) rafId = requestAnimationFrame(runPending);
+      };
+      const flush = () => {
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+        if (pending) { const ev = pending; pending = null; move(ev); }
+      };
       const teardown = () => {
-        window.removeEventListener("mousemove", move);
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+        window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         dragCleanupRef.current = null;
       };
       const onUp = (ev: MouseEvent) => {
+        flush(); // 아직 반영 안 된 마지막 이동을 먼저 적용
         teardown();
         up(ev);
       };
       dragCleanupRef.current = teardown;
-      window.addEventListener("mousemove", move);
+      window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
     [],
@@ -862,7 +882,9 @@ export function SceneBoard({
       setCards((prev) => {
         const cur = prev.find((cc) => cc.id === cardId);
         if (cur && cur.w === w && cur.h === h) return prev; // 스냅값 그대로면 리렌더 스킵
-        return prev.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
+        const next = prev.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
+        cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 크기를 쓰게 즉시 동기화
+        return next;
       });
     };
     const up = () => persist(cardsRef.current, edgesRef.current);
@@ -1713,6 +1735,7 @@ export function SceneBoard({
           if (c) origins[tid] = { x: c.x, y: c.y };
         }
         let gMoved = false;
+        let gLastSdx = NaN, gLastSdy = NaN; // 직전 스냅 오프셋 — 같으면 setState 생략(no-op 가드)
         const gAnchor = origins[memberIds[0]]; // 그룹 이동도 첫 멤버를 격자에 스냅하고 전체를 같은 오프셋으로.
         const gOrigRect = grp.rect; // 수동 rect 가 있으면 멤버와 함께 같은 오프셋으로 이동(멤버십은 유지).
         let gLastRect = gOrigRect; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
@@ -1724,9 +1747,15 @@ export function SceneBoard({
           const dy = (ev.clientY - gsy) / z;
           const sdx = gAnchor ? snapGrid(gAnchor.x + dx) - gAnchor.x : dx;
           const sdy = gAnchor ? snapGrid(gAnchor.y + dy) - gAnchor.y : dy;
-          setCards((prev) =>
-            prev.map((c) => (origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c)),
-          );
+          if (sdx === gLastSdx && sdy === gLastSdy) return; // 스냅 위치 그대로면 리렌더 스킵
+          gLastSdx = sdx; gLastSdy = sdy;
+          setCards((prev) => {
+            const next = prev.map((c) =>
+              origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
+            );
+            cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 좌표를 쓰게 즉시 동기화
+            return next;
+          });
           if (gOrigRect) {
             gLastRect = { ...gOrigRect, x: gOrigRect.x + sdx, y: gOrigRect.y + sdy };
             setGroups((prev) => prev.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x)));
@@ -1785,9 +1814,11 @@ export function SceneBoard({
         setCards((prev) => {
           const a = prev.find((c) => c.id === id);
           if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return prev; // 스냅 후 위치 그대로면 스킵
-          return prev.map((c) =>
+          const next = prev.map((c) =>
             origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
           );
+          cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 좌표를 쓰게 즉시 동기화
+          return next;
         });
       };
       const up = () => {
