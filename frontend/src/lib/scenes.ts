@@ -238,11 +238,33 @@ export function parseSceneImport(text: string): SceneSnapshot {
       : typeof o.name === "string" && o.name
         ? (o.name as string)
         : "불러온 씬";
+  // 엣지·그룹은 '손상 항목만 버리고' 나머지는 살린다(전체 거부보다 관대). 특히 group.cardIds 가 배열이
+  // 아니면 렌더(memberBounds)에서 순회하다 크래시하므로 여기서 반드시 정제한다. 존재하지 않는 카드
+  // id 참조는 렌더가 이미 건너뛰므로(cardById=null) 남겨도 안전.
+  const cardIds = new Set((s.cards as SceneCard[]).map((c) => c.id));
+  const edges = (s.edges as unknown[]).filter(
+    (e): e is SceneEdge =>
+      !!e &&
+      typeof (e as SceneEdge).id === "string" &&
+      typeof (e as SceneEdge).from === "string" &&
+      typeof (e as SceneEdge).to === "string",
+  );
+  const rawGroups = Array.isArray(s.groups) ? (s.groups as unknown[]) : [];
+  const groups = rawGroups
+    .filter(
+      (g): g is SceneGroup =>
+        !!g && typeof (g as SceneGroup).id === "string" && Array.isArray((g as SceneGroup).cardIds),
+    )
+    .map((g) => ({
+      ...g,
+      name: typeof g.name === "string" ? g.name : "",
+      cardIds: g.cardIds.filter((id) => typeof id === "string" && cardIds.has(id)), // 문자열 + 실제 존재 카드만
+    }));
   return {
     name,
     cards: s.cards as SceneCard[],
-    edges: s.edges as SceneEdge[],
-    groups: Array.isArray(s.groups) ? (s.groups as SceneGroup[]) : undefined,
+    edges,
+    groups: groups.length ? groups : undefined,
     camera: s.camera && typeof s.camera === "object" ? (s.camera as SceneSnapshot["camera"]) : undefined,
   };
 }
@@ -260,6 +282,11 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
     created_at: Date.now(),
   };
   saveScenes(projectId, [...scenes, scene]);
+  // 저장이 실제로 persist 됐는지 확인 — localStorage 가 꽉 차면 saveJSON 이 조용히 실패한다. 이때 그냥
+  // 반환하면 활성씬 id 만 새로 잡히고 목록엔 없어 '빈 화면'이 된다. 실패면 throw 해서 호출부가 알린다.
+  if (!listScenes(projectId).some((s) => s.id === scene.id)) {
+    throw new Error("저장 공간이 부족해 씬을 불러오지 못했습니다.");
+  }
   return scene;
 }
 

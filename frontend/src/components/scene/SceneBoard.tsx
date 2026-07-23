@@ -710,6 +710,8 @@ export function SceneBoard({
   // 그룹 재배정·연결 drop 판정이 항상 최신 좌표를 쓰게 한다.
   const beginDrag = useCallback(
     (move: (e: MouseEvent) => void, up: (e: MouseEvent) => void) => {
+      // 이전 드래그가 mouseup 유실(Alt-Tab·창 blur 등)로 안 끝났으면 먼저 정리 — 리스너 누수·이중 실행 방지.
+      dragCleanupRef.current?.();
       let rafId: number | null = null;
       let pending: MouseEvent | null = null;
       const runPending = () => {
@@ -800,19 +802,20 @@ export function SceneBoard({
       return;
     }
     const files = Array.from(e.dataTransfer.files || []);
-    // 씬 파일(.mvscene.json / .json) 드롭 → 저장 파일 그대로 불러오기(새 탭). 레퍼런스 업로드보다 우선.
-    //  형식이 아니면 parseSceneImport 가 걸러 알림을 띄운다(레퍼런스는 이미지/영상만이라 json 은 어차피 무시됨).
-    const sceneFile = files.find((f) => /\.json$/i.test(f.name));
-    if (sceneFile && onLoadSceneFile) {
+    // 씬 파일(.json) 단독 드롭 → 저장 파일 그대로 불러오기(새 탭). 형식이 아니면 parseSceneImport 가 알림.
+    //  ★미디어와 섞여 드롭되면 씬으로 가로채지 않는다 — json 은 레퍼런스가 못 되니 미디어 업로드를 우선.
+    const jsonFiles = files.filter((f) => /\.json$/i.test(f.name));
+    const mediaFiles = files.filter((f) => !/\.json$/i.test(f.name));
+    if (jsonFiles[0] && mediaFiles.length === 0 && onLoadSceneFile) {
       e.preventDefault();
-      onLoadSceneFile(sceneFile);
+      onLoadSceneFile(jsonFiles[0]);
       return;
     }
-    // 외부 파일 드래그 → 업로드 후 레퍼런스 카드.
-    if (files.length) {
+    // 외부 미디어 파일 드래그 → 업로드 후 레퍼런스 카드(섞여 온 json 은 무시).
+    if (mediaFiles.length) {
       e.preventDefault();
       const p = toCanvas(e.clientX, e.clientY);
-      void importExternalAsRefs(files, p.x, p.y);
+      void importExternalAsRefs(mediaFiles, p.x, p.y);
     }
   };
 
@@ -1691,16 +1694,24 @@ export function SceneBoard({
   // 따라가며, 무선(Input/Output)은 resolvePortEdges 로 실제 소스까지 해석해 함께 포함한다.
   const collectRecipe = (startId: string): Set<string> => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const adj = [...edgesRef.current, ...resolvePortEdges(byId, edgesRef.current)]; // 원본 엣지 + 무선 해석 합집합
+    // to → [from...] 역방향 인접맵을 1회만 만든다(노드마다 전체 엣지 재순회 회피). (from,to) 중복은 Set 으로 제거.
+    const rev = new Map<string, Set<string>>();
+    for (const ed of [...edgesRef.current, ...resolvePortEdges(byId, edgesRef.current)]) {
+      let s = rev.get(ed.to);
+      if (!s) rev.set(ed.to, (s = new Set()));
+      s.add(ed.from);
+    }
     const out = new Set<string>([startId]);
     const stack = [startId];
     while (stack.length) {
       const cur = stack.pop()!;
-      for (const ed of adj)
-        if (ed.to === cur && !out.has(ed.from)) {
-          out.add(ed.from);
-          stack.push(ed.from);
-        }
+      const froms = rev.get(cur);
+      if (froms)
+        for (const from of froms)
+          if (!out.has(from)) {
+            out.add(from);
+            stack.push(from);
+          }
     }
     return out;
   };
