@@ -179,20 +179,20 @@ export function collectViewGenCardIds(
   return out;
 }
 
-// 렌더(배치) 노드에 연결된 생성 카드 id들(순서 보존, 중복 제거). 생성 카드만 — 리스트/텍스트 등은 무시.
+// 렌더(배치) 노드에 연결된 생성 카드 id들(edge.order→y→x 순, 중복 제거). 생성 카드만 — 리스트/텍스트 등은 무시.
 // 소스가 input(무선)이면 호출부에서 resolvePortEdges 로 실제 소스로 해석된 엣지를 넘겨준다.
+// order 우선이라 렌더 노드 안에서 드래그로 순서 변경(reorderList)한 결과가 표시에 반영된다.
 export function collectRenderGenCardIds(
   renderId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
 ): string[] {
-  const srcs = edges
+  const items = edges
     .filter((e) => e.to === renderId)
-    .map((e) => cardsById.get(e.from))
-    .filter((c): c is SceneCard => c?.kind === "generation")
-    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter((x): x is { e: SceneEdge; c: SceneCard } => x.c?.kind === "generation");
   const out: string[] = [];
-  for (const c of srcs) if (!out.includes(c.id)) out.push(c.id);
+  for (const s of sortByOrder(items)) if (!out.includes(s.c.id)) out.push(s.c.id);
   return out;
 }
 

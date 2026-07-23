@@ -2704,15 +2704,22 @@ export function SceneBoard({
                           {li.kind === "generation" ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
                             <div className="scene-listrows">
-                              {li.generationCardIds.map((cid, i) => {
+                              {li.generationCardIds.map((cid) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;
+                                const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
                                 return (
                                   <div
                                     key={cid}
                                     className="scene-listrow"
+                                    title={n > 0 ? "더블클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                                    onDoubleClick={(e) => {
+                                      if (n <= 0) return;
+                                      e.stopPropagation();
+                                      setCardMenu(cid); // 그 카드의 생성 결과 팝업
+                                    }}
                                     onDragOver={(e) => {
                                       if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
                                         e.preventDefault();
@@ -2744,7 +2751,7 @@ export function SceneBoard({
                                     ) : (
                                       <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listrow-text">생성물 {i + 1}</span>
+                                    <span className="scene-listrow-text">{n > 0 ? `${n}개 생성` : "빈 카드"}</span>
                                   </div>
                                 );
                               })}
@@ -3023,21 +3030,56 @@ export function SceneBoard({
                         <div className="scene-card-hd render">렌더</div>
                         <div className="scene-listnode-body">
                           {gcids.length ? (
-                            // 생성물 — 텍스트처럼 한 행씩(작은 썸네일+라벨). 렌더는 순서 무관이라 재정렬 없음.
+                            // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+개수). 그립을 잡아 드래그로 순서 변경, 더블클릭=결과 팝업.
                             <div className="scene-listrows">
-                              {gcids.map((cid, i) => {
+                              {gcids.map((cid) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;
+                                const n = gc ? variantIds(gc).length : 0;
                                 return (
-                                  <div key={cid} className="scene-listrow" title={`${i + 1}번 생성 카드`}>
+                                  <div
+                                    key={cid}
+                                    className="scene-listrow"
+                                    title={n > 0 ? "더블클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                                    onDoubleClick={(e) => {
+                                      if (n <= 0) return;
+                                      e.stopPropagation();
+                                      setCardMenu(cid);
+                                    }}
+                                    onDragOver={(e) => {
+                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }
+                                    }}
+                                    onDrop={(e) => {
+                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
+                                      if (!from) return;
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      reorderList(card.id, from, cid);
+                                    }}
+                                  >
+                                    <span
+                                      className="scene-listrow-grip"
+                                      title="드래그해 순서 변경"
+                                      draggable
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onDragStart={(e) => {
+                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }}
+                                    >
+                                      ⠿
+                                    </span>
                                     {src ? (
                                       <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
                                     ) : (
                                       <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listrow-text">생성물 {i + 1}</span>
+                                    <span className="scene-listrow-text">{n > 0 ? `${n}개 생성` : "빈 카드"}</span>
                                   </div>
                                 );
                               })}
