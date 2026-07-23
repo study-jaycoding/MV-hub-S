@@ -2726,12 +2726,6 @@ export function SceneBoard({
                                   <div
                                     key={cid}
                                     className="scene-listrow"
-                                    title={n > 0 ? "더블클릭해 이 카드의 생성 결과 모두 보기" : undefined}
-                                    onDoubleClick={(e) => {
-                                      if (n <= 0) return;
-                                      e.stopPropagation();
-                                      setCardMenu(cid); // 그 카드의 생성 결과 팝업
-                                    }}
                                     onDragOver={(e) => {
                                       if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
                                         e.preventDefault();
@@ -2758,16 +2752,27 @@ export function SceneBoard({
                                     >
                                       ⠿
                                     </span>
-                                    {src ? (
-                                      <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
-                                    ) : (
-                                      <span className="scene-listrow-thumb scene-listthumb-ph" />
-                                    )}
                                     <span className="scene-listrow-text">
                                       {n > 0 ? (
                                         <span className="scene-listrow-badge">▤ {n}</span>
                                       ) : (
                                         <span className="scene-listrow-empty">빈 카드</span>
+                                      )}
+                                    </span>
+                                    <span
+                                      className="scene-listrow-view"
+                                      title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        if (n <= 0) return;
+                                        e.stopPropagation();
+                                        setCardMenu(cid);
+                                      }}
+                                    >
+                                      {src ? (
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      ) : (
+                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
                                       )}
                                     </span>
                                   </div>
@@ -3062,12 +3067,6 @@ export function SceneBoard({
                                   <div
                                     key={cid}
                                     className="scene-listrow"
-                                    title={n > 0 ? "더블클릭해 이 카드의 생성 결과 모두 보기" : undefined}
-                                    onDoubleClick={(e) => {
-                                      if (n <= 0) return;
-                                      e.stopPropagation();
-                                      setCardMenu(cid);
-                                    }}
                                     onDragOver={(e) => {
                                       if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
                                         e.preventDefault();
@@ -3094,18 +3093,6 @@ export function SceneBoard({
                                     >
                                       ⠿
                                     </span>
-                                    {src ? (
-                                      <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
-                                    ) : (
-                                      <span className="scene-listrow-thumb scene-listthumb-ph" />
-                                    )}
-                                    <span className="scene-listrow-text">
-                                      {n > 0 ? (
-                                        <span className="scene-listrow-badge">▤ {n}</span>
-                                      ) : (
-                                        <span className="scene-listrow-empty">빈 카드</span>
-                                      )}
-                                    </span>
                                     <input
                                       type="checkbox"
                                       className="scene-listrow-check"
@@ -3115,6 +3102,29 @@ export function SceneBoard({
                                       onClick={(e) => e.stopPropagation()}
                                       onChange={() => toggleRenderCheck(card.id, cid)}
                                     />
+                                    <span className="scene-listrow-text">
+                                      {n > 0 ? (
+                                        <span className="scene-listrow-badge">▤ {n}</span>
+                                      ) : (
+                                        <span className="scene-listrow-empty">빈 카드</span>
+                                      )}
+                                    </span>
+                                    <span
+                                      className="scene-listrow-view"
+                                      title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        if (n <= 0) return;
+                                        e.stopPropagation();
+                                        setCardMenu(cid);
+                                      }}
+                                    >
+                                      {src ? (
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      ) : (
+                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
+                                      )}
+                                    </span>
                                   </div>
                                 );
                               })}

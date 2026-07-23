@@ -327,8 +327,10 @@
   background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 10.5px; line-height: 1.6;
 }
 .scene-listrow-empty { font-size: 10.5px; color: var(--muted); }
-/* 렌더 행 체크박스(맨 우측) — 체크된 카드만 Render 대상 */
-.scene-listrow-check { flex: none; margin-left: auto; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+/* 렌더 행 체크박스(그립 옆, 왼쪽) — 체크된 카드만 Render 대상 */
+.scene-listrow-check { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+/* 결과 보기용 썸네일(맨 우측) — 클릭하면 그 카드의 생성 결과 팝업 */
+.scene-listrow-view { flex: none; display: flex; align-items: center; cursor: pointer; }
 
 /* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
 .scene-listthumbs {
