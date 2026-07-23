@@ -3731,8 +3731,10 @@ export function SceneBoard({
                             <button
                               className="scene-varpop-rep"
                               title="이 결과를 카드 대표로 지정"
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
+                              // preventDefault = 버튼이 포커스를 받아 그리드가 스크롤(옆으로 이동)되는 것 차단.
+                              // mousedown 에서 바로 지정 → 빠르게 눌러도 확실히 선택(클릭 타이밍 의존 제거).
+                              onMouseDown={(e) => {
+                                e.preventDefault();
                                 e.stopPropagation();
                                 setCardVariant(c.id, gid);
                               }}
