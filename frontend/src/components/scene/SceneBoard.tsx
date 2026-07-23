@@ -2954,6 +2954,7 @@ export function SceneBoard({
                             <div className="scene-viewnode-empty">생성물/텍스트를 연결</div>
                           )}
                         </div>
+                        {/* 연결이 있을 때만 버튼 노출 — 영상=재생, 텍스트=텍스트 보기, 아무것도 없으면 버튼 없음. */}
                         {hasMedia ? (
                           <button
                             className="scene-view-play"
@@ -2965,10 +2966,9 @@ export function SceneBoard({
                           >
                             ▶ 재생
                           </button>
-                        ) : (
+                        ) : hasText ? (
                           <button
                             className="scene-view-play"
-                            disabled={!hasText}
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2977,7 +2977,7 @@ export function SceneBoard({
                           >
                             📄 텍스트 보기
                           </button>
-                        )}
+                        ) : null}
                       </div>
                       <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트를 연결" />
                       <span
