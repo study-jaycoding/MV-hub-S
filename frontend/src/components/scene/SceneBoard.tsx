@@ -1424,13 +1424,14 @@ export function SceneBoard({
           .map((id) => cardsRef.current.find((cc) => cc.id === id))
           .filter((c): c is SceneCard => !!c);
         if (selCards.length >= 2) {
-          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트=2 → View/Render(싱크)=3 → Output(무선 발신)=4(가장 깊은 싱크).
+          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트/렌더(수집기)=2 → View(싱크)=3 → Output(무선 발신)=4.
+          //  렌더는 생성물을 모아 View 로 내보내는 수집기라 리스트와 같은 레이어(2) — 생성(1)→렌더(2)→미리보기(3)가 c 로 이어진다.
           const layerOf = (c: SceneCard) =>
             c.kind === "generation"
               ? 1
-              : c.kind === "list"
+              : c.kind === "list" || c.kind === "render"
                 ? 2
-                : c.kind === "view" || c.kind === "render"
+                : c.kind === "view"
                   ? 3
                   : c.kind === "output"
                     ? 4
