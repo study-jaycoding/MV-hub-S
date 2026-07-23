@@ -2622,7 +2622,8 @@ export function SceneBoard({
                   const editing = editTextId === card.id;
                   return (
                     <>
-                      {/* 상단 헤더(이동) + 본문(보기=@토큰 인라인 알약, 클릭 시 편집 textarea). */}
+                      {/* 본문(보기=@토큰 인라인 알약, 더블클릭 시 편집 textarea). 단일 클릭/드래그는 카드 이동 —
+                          보기 상태에선 카드 어디를 잡아도 이동돼 조작성이 좋다(편집 진입은 더블클릭). */}
                       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
                       <div className="scene-card-inner">
                         {editing ? (
@@ -2639,11 +2640,10 @@ export function SceneBoard({
                         ) : (
                           <div
                             className="scene-textview-inline"
-                            onMouseDown={(e) => {
+                            onDoubleClick={(e) => {
                               e.stopPropagation();
-                              e.preventDefault(); // ★기본 포커스 이동 차단 — textarea 로 바뀐 뒤 autoFocus 가 body 로 뺏기지 않게
                               setSelected(new Set([card.id]));
-                              setEditTextId(card.id); // 클릭하면 편집으로 전환
+                              setEditTextId(card.id); // 더블클릭하면 편집으로 전환(단일 클릭/드래그는 카드 이동)
                             }}
                           >
                             {card.text ? (
