@@ -432,9 +432,12 @@
 /* 생성중(결과 없는) 생성 카드는 완성 카드처럼 자체 테두리(파랑) 유지 + 라임 '링'만 — 통짜 라임 방지 */
 .scene-card-gen.sel:not(.has-node) { border-color: #2b3a55; }
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.
-   선택 강조(확대·라임 링)는 노드 자체(.linb-node.sel)가 그린다(계보와 동일) — 중복 링 안 주게 */
+   선택 강조(라임 링)는 노드 자체(.linb-node.sel)가 그린다(계보와 동일) — 중복 링 안 주게 */
 .scene-card.has-node,
 .scene-card.has-node.sel { border: 0; background: transparent; box-shadow: none; }
+/* ★캔버스에선 결과 노드 선택 시 확대(scale 1.14)를 끈다 — 끝점·Generate 바는 카드 rect 기준 위치라,
+   노드가 rect 밖으로 커지면 그것들과 겹친다. 선택 강조는 라임 링(box-shadow)만으로 충분(계보 뷰만 확대 유지). */
+.scene-card .linb-node.sel { transform: none; }
 /* 연결선 — 기본은 라임 실선. 레퍼런스카드=파란 점선, 생성물을 레퍼런스로 쓴 연결=초록 점선 */
 .scene-edge { fill: none; stroke: var(--accent); stroke-width: 2.4; opacity: 0.85; }
 .scene-edge.ref { stroke: #7fa9ff; stroke-width: 2.2; stroke-dasharray: 6 5; opacity: 0.9; } /* 레퍼런스 카드 → 생성 */
