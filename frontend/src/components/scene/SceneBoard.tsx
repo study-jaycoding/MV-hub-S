@@ -220,6 +220,9 @@ export function SceneBoard({
   editTextIdRef.current = editTextId;
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
+  // 직전에 레퍼런스로 넣은 클립보드 이미지 지문(크기:타입) — '새 캡쳐'인지 '이미 쓴 캡쳐'인지 구분해
+  //  붙여넣기 우선순위(새 이미지=이미지 / 이미 쓴 이미지+복사한 노드=노드)를 최근 동작 기준으로 정한다.
+  const lastImgKeyRef = useRef<string | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
@@ -1365,7 +1368,7 @@ export function SceneBoard({
         };
         return;
       }
-      // Ctrl+V(카드 붙여넣기)는 paste 이벤트에서 처리 — 클립보드 이미지(캡쳐)가 있으면 그쪽이 우선.
+      // Ctrl+V(카드 붙여넣기)는 paste 이벤트에서 처리 — 내부 노드 클립보드가 있으면 노드가 우선(없을 때만 캡쳐 이미지).
       // Ctrl+G = 선택 카드 그룹. 해제는 그룹 헤더의 × 버튼으로. (mod+g 라 g=초록색 단축키와 충돌 없음)
       if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
         e.preventDefault(); // 브라우저 '다음 찾기' 방지
@@ -1780,9 +1783,18 @@ export function SceneBoard({
             break;
           }
         }
-      // 1) 클립보드 이미지(캡쳐) → 레퍼런스 카드.
-      if (blob) {
+      // 같은 Ctrl+V 안에서 '최근 동작' 기준으로 무엇을 붙여넣을지 정한다.
+      //  · 방금 새로 '캡쳐한 이미지'(지문이 직전에 넣은 것과 다름)이거나 붙여넣을 노드가 없으면 → 이미지를 레퍼런스로.
+      //  · 이미 넣었던 그 캡쳐가 OS 클립보드에 그대로 남아있고 내부에서 복사한 노드가 있으면 → 노드 붙여넣기.
+      //  (캡쳐는 앱 밖(OS)에서 일어나 이벤트를 못 받으므로, 이미지 지문 변화로 '새 캡쳐'를 판별한다.)
+      const clip = clipboardRef.current;
+      const hasNodes = !!clip && clip.cards.length > 0;
+      const blobKey = blob ? `${blob.size}:${blob.type}` : null;
+      const isNewImage = !!blob && blobKey !== lastImgKeyRef.current;
+      // 1) 새 캡쳐 이미지 또는 붙여넣을 노드가 없음 → 클립보드 이미지(캡쳐)를 레퍼런스 카드로.
+      if (blob && (isNewImage || !hasNodes)) {
         e.preventDefault();
+        lastImgKeyRef.current = blobKey; // 이 캡쳐는 '이미 넣은 것'으로 기록(다음 붙여넣기에서 노드 우선 판단)
         // 위치: 마우스가 보드 위면 그 지점, 아니면 뷰포트 중앙.
         const lm = lastMouseRef.current;
         const r = scrollRef.current?.getBoundingClientRect();
@@ -1808,34 +1820,35 @@ export function SceneBoard({
           .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
         return;
       }
-      // 2) 이미지가 없으면 내부에서 복사한 카드 붙여넣기(새 id·격자 2칸 오프셋, 그들 사이 엣지 재매핑).
-      const clip = clipboardRef.current;
-      if (!clip || !clip.cards.length) return;
-      e.preventDefault();
-      const idMap = new Map<string, string>();
-      const off = GRID * 2;
-      const newCards = clip.cards.map((c) => {
-        const nid = uid();
-        idMap.set(c.id, nid);
-        return { ...c, id: nid, x: c.x + off, y: c.y + off };
-      });
-      // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
-      for (const c of newCards)
-        if (c.kind === "input" && c.channel && idMap.has(c.channel)) c.channel = idMap.get(c.channel);
-      const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
-        ...ed,
-        id: uid(),
-        from: idMap.get(ed.from)!,
-        to: idMap.get(ed.to)!,
-      }));
-      const nextEdges = [...edgesRef.current, ...newEdges];
-      const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
-      cardsRef.current = nextCards;
-      edgesRef.current = nextEdges;
-      setCards(nextCards);
-      setEdges(nextEdges);
-      setSelected(new Set(newCards.map((c) => c.id)));
-      persist(nextCards, nextEdges);
+      // 2) 내부에서 복사한 노드 붙여넣기(새 id·격자 2칸 오프셋, 그들 사이 엣지 재매핑).
+      if (hasNodes && clip) {
+        e.preventDefault();
+        const idMap = new Map<string, string>();
+        const off = GRID * 2;
+        const newCards = clip.cards.map((c) => {
+          const nid = uid();
+          idMap.set(c.id, nid);
+          return { ...c, id: nid, x: c.x + off, y: c.y + off };
+        });
+        // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
+        for (const c of newCards)
+          if (c.kind === "input" && c.channel && idMap.has(c.channel)) c.channel = idMap.get(c.channel);
+        const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
+          ...ed,
+          id: uid(),
+          from: idMap.get(ed.from)!,
+          to: idMap.get(ed.to)!,
+        }));
+        const nextEdges = [...edgesRef.current, ...newEdges];
+        const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
+        cardsRef.current = nextCards;
+        edgesRef.current = nextEdges;
+        setCards(nextCards);
+        setEdges(nextEdges);
+        setSelected(new Set(newCards.map((c) => c.id)));
+        persist(nextCards, nextEdges);
+        return;
+      }
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
