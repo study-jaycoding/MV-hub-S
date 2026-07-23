@@ -65,6 +65,9 @@ import { useClickSeparation } from "../../lib/useClickSeparation";
 
 const CARD_W = 152;
 const CARD_H = 130;
+// 줌 한계 — 최소(멀리 보기)·최대(가까이 보기). 큰 씬을 한눈에 볼 수 있게 하한을 넉넉히 낮춘다.
+const MIN_ZOOM = 0.05;
+const MAX_ZOOM = 2.5;
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 const GRID = 22;
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
@@ -389,7 +392,7 @@ export function SceneBoard({
     const bh = Math.max(1, maxY - minY);
     const pad = 0.82; // 가장자리 여백
     let z = Math.min((vp.width * pad) / bw, (vp.height * pad) / bh);
-    z = Math.min(maxZoom, Math.max(0.3, z)); // 줌 한계(휠과 동일 하한)
+    z = Math.min(maxZoom, Math.max(MIN_ZOOM, z)); // 줌 한계(휠과 동일 하한)
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     zoomRef.current = z;
@@ -1935,7 +1938,7 @@ export function SceneBoard({
       const cx = e.clientX - r.left;
       const cy = e.clientY - r.top;
       const prev = zoomRef.current;
-      const nz = Math.min(2.5, Math.max(0.3, prev * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      const nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
       if (nz === prev) return;
       const ratio = nz / prev;
       const p = panRef.current;
