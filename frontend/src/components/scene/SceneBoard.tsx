@@ -2702,8 +2702,8 @@ export function SceneBoard({
                         <div className="scene-card-hd list">리스트</div>
                         <div className="scene-listnode-body">
                           {li.kind === "generation" ? (
-                            // 생성물 썸네일(순서대로) — 드래그해 순서 변경.
-                            <div className="scene-listthumbs">
+                            // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
+                            <div className="scene-listrows">
                               {li.generationCardIds.map((cid, i) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
@@ -2712,14 +2712,7 @@ export function SceneBoard({
                                 return (
                                   <div
                                     key={cid}
-                                    className="scene-listthumb"
-                                    title={`${i + 1}번 — 드래그해 순서 변경`}
-                                    draggable
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onDragStart={(e) => {
-                                      e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
-                                      e.dataTransfer.effectAllowed = "move";
-                                    }}
+                                    className="scene-listrow"
                                     onDragOver={(e) => {
                                       if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
                                         e.preventDefault();
@@ -2734,12 +2727,24 @@ export function SceneBoard({
                                       reorderList(card.id, from, cid);
                                     }}
                                   >
+                                    <span
+                                      className="scene-listrow-grip"
+                                      title="드래그해 순서 변경"
+                                      draggable
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onDragStart={(e) => {
+                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
+                                        e.dataTransfer.effectAllowed = "move";
+                                      }}
+                                    >
+                                      ⠿
+                                    </span>
                                     {src ? (
-                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
                                     ) : (
-                                      <span className="scene-listthumb-ph" />
+                                      <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listthumb-n">{i + 1}</span>
+                                    <span className="scene-listrow-text">생성물 {i + 1}</span>
                                   </div>
                                 );
                               })}
@@ -3018,20 +3023,21 @@ export function SceneBoard({
                         <div className="scene-card-hd render">렌더</div>
                         <div className="scene-listnode-body">
                           {gcids.length ? (
-                            <div className="scene-listthumbs">
+                            // 생성물 — 텍스트처럼 한 행씩(작은 썸네일+라벨). 렌더는 순서 무관이라 재정렬 없음.
+                            <div className="scene-listrows">
                               {gcids.map((cid, i) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;
                                 return (
-                                  <div key={cid} className="scene-listthumb" title={`${i + 1}번 생성 카드`}>
+                                  <div key={cid} className="scene-listrow" title={`${i + 1}번 생성 카드`}>
                                     {src ? (
-                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
                                     ) : (
-                                      <span className="scene-listthumb-ph" />
+                                      <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listthumb-n">{i + 1}</span>
+                                    <span className="scene-listrow-text">생성물 {i + 1}</span>
                                   </div>
                                 );
                               })}

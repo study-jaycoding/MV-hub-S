@@ -316,6 +316,11 @@
   flex: 1; min-width: 0; font-size: 10.5px; color: #cdd3dc;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 생성물 행의 작은 대표 썸네일(텍스트 행과 같은 줄 형식으로 통일) */
+.scene-listrow-thumb {
+  flex: none; width: 24px; height: 24px; border-radius: 4px; overflow: hidden;
+  object-fit: cover; background: #05060a; display: block;
+}
 
 /* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
 .scene-listthumbs {
