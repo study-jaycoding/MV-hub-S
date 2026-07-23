@@ -2935,9 +2935,31 @@ export function SceneBoard({
                       <div className="scene-card-inner scene-viewnode">
                         <div className="scene-card-hd view">View</div>
                         <div className="scene-viewnode-body">
-                          {hasMedia && <div>생성물 {genIds.length}개</div>}
-                          {hasText && <div>텍스트 {texts.length}개</div>}
-                          {!hasMedia && !hasText && <div>생성물/텍스트를 연결</div>}
+                          {hasMedia ? (
+                            // 연결된 영상/이미지의 대표 프레임을 미리보기로 표시(개수 대신 실제 내용).
+                            <div className="scene-viewthumbs">
+                              {genIds.map((cid) => {
+                                const gc = cardsById.get(cid);
+                                const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+                                const gen = gid ? genData[gid] : undefined;
+                                const src = gen ? thumbOf(gen, 256) : null;
+                                return (
+                                  <div key={cid} className="scene-viewthumb">
+                                    {src ? (
+                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                    ) : (
+                                      <span className="scene-listthumb-ph" />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : hasText ? (
+                            // 연결된 텍스트의 실제 내용을 표시(개수 대신).
+                            <div className="scene-viewtext">{texts.join("\n\n")}</div>
+                          ) : (
+                            <div className="scene-viewnode-empty">생성물/텍스트를 연결</div>
+                          )}
                         </div>
                         {hasMedia ? (
                           <button
