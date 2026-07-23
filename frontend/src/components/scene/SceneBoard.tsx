@@ -275,6 +275,9 @@ export function SceneBoard({
   const [cutHeld, setCutHeld] = useState(false); // Y 키를 누르고 있는 중
   const [cutStroke, setCutStroke] = useState<{ x: number; y: number }[] | null>(null); // 드래그 궤적(캔버스 좌표)
   const [edgesToCut, setEdgesToCut] = useState<Set<string>>(new Set()); // 끊을 예정(빨강) 연결 id
+  // 순서변경 드래그 — 삽입 위치 흰 선(화면좌표·fixed) + 잡고 있는 항목(흐리게)
+  const [reorderLine, setReorderLine] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [reorderFrom, setReorderFrom] = useState<string | null>(null);
   // 씬 전환 = 선택 해제. 같은 씬이라도 외부(생성 결과 바인딩·프롬프트 순서변경)에서 cards/edges 가
   // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
   const sceneIdRef = useRef(scene.id);
@@ -982,14 +985,9 @@ export function SceneBoard({
     persist(nextCards, edgesRef.current);
   };
   // 리스트 노드 썸네일 드래그로 순서 변경 — 들어오는 엣지에 order 를 다시 매겨 collectListInputs 정렬을 바꾼다.
-  const reorderList = (listId: string, fromCardId: string, toCardId: string) => {
-    if (fromCardId === toCardId) return;
+  // 리스트/렌더 항목의 새 순서(order = sourceId 배열)를 엣지 order·refs 멤버십에 반영해 저장.
+  const commitListOrder = (listId: string, order: string[]) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
-    const fi = order.indexOf(fromCardId);
-    const ti = order.indexOf(toCardId);
-    if (fi < 0 || ti < 0) return;
-    order.splice(ti, 0, order.splice(fi, 1)[0]);
     const nextEdges = edgesRef.current.map((ed) => {
       if (ed.to !== listId) return ed;
       const idx = order.indexOf(ed.from);
@@ -1015,6 +1013,77 @@ export function SceneBoard({
     setEdges(nextEdges);
     setCards(nextCards);
     persist(nextCards, nextEdges);
+  };
+  // fromCardId 를 insertIndex(원래 배열 기준 삽입 위치, 0..n) 로 옮긴다. 순서가 그대로면 아무것도 안 함.
+  const reorderListToIndex = (listId: string, fromCardId: string, insertIndex: number) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
+    const fi = order.indexOf(fromCardId);
+    if (fi < 0) return;
+    let ti = insertIndex;
+    order.splice(fi, 1);
+    if (ti > fi) ti -= 1; // 제거로 인덱스가 하나 당겨짐
+    ti = Math.max(0, Math.min(order.length, ti));
+    if (ti === fi) return; // 위치 변화 없음
+    order.splice(ti, 0, fromCardId);
+    commitListOrder(listId, order);
+  };
+  // 그립/타일을 마우스로 잡아 순서 변경(HTML5 드래그 대신 — 빠르게 움직여도 안정적). 드래그 중 삽입 위치를
+  // 흰 선으로 표시하고, 손 떼는 순간 그 위치로 이동. orientation: "v"=세로 행 리스트, "h"=가로 감싸는 썸네일.
+  const startReorder = (
+    e: React.MouseEvent,
+    listId: string,
+    fromId: string,
+    orientation: "v" | "h",
+  ) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // 카드 이동/마퀴로 번지지 않게
+    const container = (e.currentTarget as HTMLElement).closest("[data-reorder]") as HTMLElement | null;
+    if (!container) return;
+    const GAP = 4; // 삽입선을 항목 사이 틈 가운데쯤에
+    let insertIndex = -1;
+    const recompute = (cx: number, cy: number) => {
+      const items = Array.from(container.querySelectorAll<HTMLElement>("[data-reid]"));
+      if (!items.length) return;
+      let idx = items.length;
+      if (orientation === "v") {
+        for (let i = 0; i < items.length; i++) {
+          const r = items[i].getBoundingClientRect();
+          if (cy < r.top + r.height / 2) { idx = i; break; }
+        }
+        const line =
+          idx < items.length
+            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left, y: r.top - GAP, w: r.width, h: 3 }; })()
+            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.left, y: r.bottom + GAP - 3, w: r.width, h: 3 }; })();
+        setReorderLine(line);
+      } else {
+        // 가로 감싸는 배치 — 중심이 포인터에 가장 가까운 타일 기준, 포인터가 그 중심보다 오른쪽이면 뒤에 삽입.
+        let best = 0, bestD = Infinity, after = false;
+        for (let i = 0; i < items.length; i++) {
+          const r = items[i].getBoundingClientRect();
+          const c = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          const d = Math.hypot(cx - c.x, cy - c.y);
+          if (d < bestD) { bestD = d; best = i; after = cx > c.x; }
+        }
+        idx = after ? best + 1 : best;
+        const line =
+          idx < items.length
+            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left - GAP, y: r.top, w: 3, h: r.height }; })()
+            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.right + GAP - 3, y: r.top, w: 3, h: r.height }; })();
+        setReorderLine(line);
+      }
+      insertIndex = idx;
+    };
+    recompute(e.clientX, e.clientY);
+    setReorderFrom(fromId);
+    const move = (ev: MouseEvent) => recompute(ev.clientX, ev.clientY);
+    const up = () => {
+      if (insertIndex >= 0) reorderListToIndex(listId, fromId, insertIndex);
+      setReorderLine(null);
+      setReorderFrom(null);
+    };
+    beginDrag(move, up);
   };
   // View 에 연결된(직접+generation-list) 생성물을 순서대로 타임라인 클립(url·타입·썸네일)으로 모은다. 재생·미리보기 공용.
   const buildViewClips = (
@@ -2746,7 +2815,7 @@ export function SceneBoard({
                         <div className="scene-listnode-body">
                           {li.kind === "generation" ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
-                            <div className="scene-listrows">
+                            <div className="scene-listrows" data-reorder>
                               {li.generationCardIds.map((cid) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
@@ -2756,30 +2825,13 @@ export function SceneBoard({
                                 return (
                                   <div
                                     key={cid}
-                                    className="scene-listrow"
-                                    onDragOver={(e) => {
-                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                      }
-                                    }}
-                                    onDrop={(e) => {
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      reorderList(card.id, from, cid);
-                                    }}
+                                    className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
+                                    data-reid={cid}
                                   >
                                     <span
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
-                                      draggable
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onDragStart={(e) => {
-                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
-                                        e.dataTransfer.effectAllowed = "move";
-                                      }}
+                                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                                     >
                                       ⠿
                                     </span>
@@ -2822,37 +2874,20 @@ export function SceneBoard({
                             </div>
                           ) : li.kind === "text" ? (
                             // 텍스트들 — 각 텍스트를 한 행(카드)으로, 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
-                            <div className="scene-listrows">
+                            <div className="scene-listrows" data-reorder>
                               {li.sourceIds.map((cid) => {
                                 const tc = cardsById.get(cid);
                                 const txt = (tc?.text || "").trim();
                                 return (
                                   <div
                                     key={cid}
-                                    className="scene-listrow"
-                                    onDragOver={(e) => {
-                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                      }
-                                    }}
-                                    onDrop={(e) => {
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      reorderList(card.id, from, cid);
-                                    }}
+                                    className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
+                                    data-reid={cid}
                                   >
                                     <span
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
-                                      draggable
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onDragStart={(e) => {
-                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
-                                        e.dataTransfer.effectAllowed = "move";
-                                      }}
+                                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                                     >
                                       ⠿
                                     </span>
@@ -2863,7 +2898,7 @@ export function SceneBoard({
                             </div>
                           ) : li.kind === "reference" ? (
                             // 레퍼런스 카드들 — 카드마다 대표 썸네일(첫 장)+장수 배지, 드래그해 순서 변경.
-                            <div className="scene-listthumbs">
+                            <div className="scene-listthumbs" data-reorder>
                               {li.sourceIds.map((cid, i) => {
                                 const rc = cardsById.get(cid);
                                 const refs = rc?.refs || [];
@@ -2871,27 +2906,10 @@ export function SceneBoard({
                                 return (
                                   <div
                                     key={cid}
-                                    className="scene-listthumb"
+                                    className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
+                                    data-reid={cid}
                                     title={`${i + 1}번 (레퍼런스 ${refs.length}장) — 드래그해 순서 변경`}
-                                    draggable
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onDragStart={(e) => {
-                                      e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
-                                      e.dataTransfer.effectAllowed = "move";
-                                    }}
-                                    onDragOver={(e) => {
-                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                      }
-                                    }}
-                                    onDrop={(e) => {
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (!from) return; // 리스트 아이템 드래그가 아니면(파일 등) 보드로 전달
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      reorderList(card.id, from, cid);
-                                    }}
+                                    onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                                   >
                                     {src ? (
                                       <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
@@ -3103,7 +3121,7 @@ export function SceneBoard({
                         <div className="scene-listnode-body">
                           {gcids.length ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+개수). 그립을 잡아 드래그로 순서 변경, 더블클릭=결과 팝업.
-                            <div className="scene-listrows">
+                            <div className="scene-listrows" data-reorder>
                               {gcids.map((cid) => {
                                 const gc = cardsById.get(cid);
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
@@ -3113,30 +3131,13 @@ export function SceneBoard({
                                 return (
                                   <div
                                     key={cid}
-                                    className="scene-listrow"
-                                    onDragOver={(e) => {
-                                      if (e.dataTransfer.types.includes(DRAG_TYPES.listItem)) {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                      }
-                                    }}
-                                    onDrop={(e) => {
-                                      const from = e.dataTransfer.getData(DRAG_TYPES.listItem);
-                                      if (!from) return;
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      reorderList(card.id, from, cid);
-                                    }}
+                                    className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
+                                    data-reid={cid}
                                   >
                                     <span
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
-                                      draggable
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onDragStart={(e) => {
-                                        e.dataTransfer.setData(DRAG_TYPES.listItem, cid);
-                                        e.dataTransfer.effectAllowed = "move";
-                                      }}
+                                      onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
                                     >
                                       ⠿
                                     </span>
@@ -3513,6 +3514,14 @@ export function SceneBoard({
         <div
           className="scene-marquee"
           style={{ left: marquee.l, top: marquee.t, width: marquee.w, height: marquee.h }}
+        />
+      )}
+
+      {/* 순서변경 삽입 위치 — 화면좌표 기준(fixed) 흰 선. 항목 사이 어디에 놓일지 보여준다. */}
+      {reorderLine && (
+        <div
+          className="scene-reorder-line"
+          style={{ left: reorderLine.x, top: reorderLine.y, width: reorderLine.w, height: reorderLine.h }}
         />
       )}
 
