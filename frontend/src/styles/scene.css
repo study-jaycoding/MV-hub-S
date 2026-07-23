@@ -184,23 +184,6 @@
   padding: 3px 7px; background: rgba(196, 232, 74, 0.10); border-bottom: 1px solid var(--border2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* 노드 제목 바(리스트·렌더·미리보기·모델·텍스트) — 자리는 항상 그대로 두고(레이아웃 변화 없음),
-   기본은 투명해서 안 보이다가 카드를 클릭(선택)하면 글자·바가 나타나기만 한다. Input/Output 은 라벨이
-   노드 정체성이라 제외(항상 표시). 레퍼런스는 위쪽 오버레이 규칙으로 이미 동일 동작. */
-.scene-card-hd.list,
-.scene-card-hd.render,
-.scene-card-hd.view,
-.scene-card-hd.model,
-.scene-card-hd.text {
-  opacity: 0; transition: opacity 0.12s ease;
-}
-.scene-card.sel .scene-card-hd.list,
-.scene-card.sel .scene-card-hd.render,
-.scene-card.sel .scene-card-hd.view,
-.scene-card.sel .scene-card-hd.model,
-.scene-card.sel .scene-card-hd.text {
-  opacity: 1;
-}
 /* 썸네일 3열 그리드 — 여러 장(레거시)일 때만. 개수만큼 행이 늘어 카드가 자연스럽게 길어진다. */
 .scene-card-body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 4px; }
 /* 레퍼런스 1장(기본) — 카드 폭을 꽉 채워 크게 보여준다(어떤 레퍼런스인지는 헤더 라벨로). */
@@ -411,6 +394,17 @@
 .scene-card-render { border: 2px solid #5a4327; }
 .scene-card-render:hover { border-color: #ffb454; }
 .scene-card-hd.render { color: #ffb454; background: rgba(255, 180, 84, 0.10); }
+
+/* 노드 제목 — 카드 위쪽에 '떠 있는' 라벨(inner 밖 카드 직속이라 안 잘림). 자리를 차지하지 않아 밀어냄이 없고,
+   기본 숨김 → 카드 선택 시에만 표시. 글씨색은 노드별 색 유지, 배경만 읽기 쉬운 어두운 알약으로 덮어씀.
+   (per-type 규칙 뒤에 둬서 background 를 이긴다.) Input/Output 은 라벨이 정체성이라 제외. */
+.scene-card-hd.scene-card-hd-float {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 3px; max-width: 100%;
+  z-index: 4; pointer-events: none; border-radius: 6px; border-bottom: 0;
+  background: rgba(12, 14, 18, 0.9); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.scene-card.sel .scene-card-hd.scene-card-hd-float { opacity: 1; }
 
 /* ── Tab 노드 피커(Houdini식) ── */
 .scene-nodepick-backdrop { position: absolute; inset: 0; z-index: 24; }

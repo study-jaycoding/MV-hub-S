@@ -2623,8 +2623,8 @@ export function SceneBoard({
                   return (
                     <>
                       {/* 상단 헤더(이동) + 본문(보기=@토큰 인라인 알약, 클릭 시 편집 textarea). */}
+                      <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
                       <div className="scene-card-inner">
-                        <div className="scene-card-hd text">텍스트</div>
                         {editing ? (
                           <textarea
                             className="scene-textnode"
@@ -2682,8 +2682,8 @@ export function SceneBoard({
               ) : card.kind === "model" ? (
                 <>
                   {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
+                  <div className="scene-card-hd model scene-card-hd-float">모델</div>
                   <div className="scene-card-inner scene-modelnode">
-                    <div className="scene-card-hd model">모델</div>
                     {card.modelCfg?.model ? (
                       <div className="scene-modelnode-body">
                         {/* 상단 중앙 = 모델명·타입, 아래 = 설정한 옵션 전부(라벨: 값) */}
@@ -2741,8 +2741,8 @@ export function SceneBoard({
                               : "생성/텍스트/레퍼런스 카드를 연결";
                   return (
                     <>
+                      <div className="scene-card-hd list scene-card-hd-float">리스트</div>
                       <div className="scene-card-inner scene-listnode">
-                        <div className="scene-card-hd list">리스트</div>
                         <div className="scene-listnode-body">
                           {li.kind === "generation" ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
@@ -2960,8 +2960,8 @@ export function SceneBoard({
                   const hasText = texts.length > 0;
                   return (
                     <>
+                      <div className="scene-card-hd view scene-card-hd-float">{t("미리보기")}</div>
                       <div className="scene-card-inner scene-viewnode">
-                        <div className="scene-card-hd view">{t("미리보기")}</div>
                         <div className="scene-viewnode-body">
                           {hasMedia ? (
                             // '합쳐진 영상' 한 화면 미리보기 — 대표 프레임을 크게, 마우스 올리면 순서대로 이어 재생.
@@ -3098,8 +3098,8 @@ export function SceneBoard({
                   const activeGcids = gcids.filter((cid) => !unchecked.has(cid)); // 실제 Render 대상(체크된 것만)
                   return (
                     <>
+                      <div className="scene-card-hd render scene-card-hd-float">렌더</div>
                       <div className="scene-card-inner scene-listnode scene-rendernode">
-                        <div className="scene-card-hd render">렌더</div>
                         <div className="scene-listnode-body">
                           {gcids.length ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+개수). 그립을 잡아 드래그로 순서 변경, 더블클릭=결과 팝업.
