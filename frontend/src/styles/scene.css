@@ -783,11 +783,19 @@
 }
 .vtl-dl:hover:not(:disabled) { filter: brightness(1.08); }
 .vtl-dl:disabled { opacity: 0.5; cursor: default; }
-.vtl-close {
+.vtl-icon, .vtl-close {
   width: 30px; height: 30px; border: 0; border-radius: 8px; cursor: pointer;
   background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 15px;
 }
-.vtl-close:hover { background: rgba(255, 255, 255, 0.16); }
+.vtl-icon { font-size: 14px; }
+.vtl-icon:hover, .vtl-close:hover { background: rgba(255, 255, 255, 0.16); }
+/* 전체화면 — .vtl 이 화면을 꽉 채우고 무대가 남는 공간을 차지 */
+.vtl:fullscreen, .vtl:-webkit-full-screen {
+  width: 100vw; max-width: none; height: 100vh; max-height: none; border-radius: 0;
+}
+.vtl:fullscreen .vtl-stage, .vtl:-webkit-full-screen .vtl-stage { flex: 1; min-height: 0; }
+.vtl:fullscreen .vtl-stage video, .vtl:fullscreen .vtl-stage img,
+.vtl:-webkit-full-screen .vtl-stage video, .vtl:-webkit-full-screen .vtl-stage img { max-height: 100%; }
 .vtl-stage {
   flex: none; min-height: 200px; display: flex; align-items: center; justify-content: center;
   background: #000; border-radius: 12px; overflow: hidden;

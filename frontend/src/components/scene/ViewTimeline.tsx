@@ -43,7 +43,9 @@ export function ViewTimeline({
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [downloading, setDownloading] = useState(false);
+  const [isFs, setIsFs] = useState(false); // 전체화면 여부
   const [cycle, setCycle] = useState(0); // 클립을 처음부터 다시 시작할 때마다 증가 — 같은 클립 재시작(단일/반복) 강제 remount 용
+  const vtlRef = useRef<HTMLDivElement>(null); // 전체화면 대상 컨테이너
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekRef = useRef<number | null>(null); // 클립 전환 후 적용할 seek 오프셋(초)
   const idxRef = useRef(idx);
@@ -216,12 +218,14 @@ export function ViewTimeline({
     return () => cancelAnimationFrame(raf);
   }, [isVideo, playing, idx, cycle, cur, goNext]); // cycle: 단일/반복 이미지 클립 재시작 시 rAF 재개
 
-  // Esc 닫기 · Space 재생/정지.
+  // Esc 닫기(전체화면 중엔 브라우저가 먼저 해제 — 그땐 닫지 않음) · Space 재생/정지.
   const togglePlayRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if (e.key === " ") {
+      if (e.key === "Escape") {
+        if (document.fullscreenElement) return; // 전체화면 해제만
+        onClose();
+      } else if (e.key === " ") {
         e.preventDefault();
         togglePlayRef.current();
       }
@@ -229,6 +233,17 @@ export function ViewTimeline({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // 전체화면 토글 — .vtl 컨테이너를 전체화면으로.
+  useEffect(() => {
+    const onFs = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+  const toggleFs = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void vtlRef.current?.requestFullscreen().catch(() => {});
+  };
 
   // 타임라인 트랙 클릭/드래그로 스크럽.
   const trackRef = useRef<HTMLDivElement>(null);
@@ -295,10 +310,13 @@ export function ViewTimeline({
 
   return (
     <div className="vtl-backdrop" onMouseDown={onClose}>
-      <div className="vtl" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="vtl" ref={vtlRef} onMouseDown={(e) => e.stopPropagation()}>
         <div className="vtl-hd">
           <span className="vtl-title">TIMELINE</span>
           <div className="vtl-hd-actions">
+            <button className="vtl-icon" title={isFs ? "창 모드" : "전체화면"} onClick={toggleFs}>
+              {isFs ? "🡼" : "⛶"}
+            </button>
             {onDownload && (
               <button
                 className="vtl-dl"
