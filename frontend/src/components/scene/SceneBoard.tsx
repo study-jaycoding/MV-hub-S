@@ -52,6 +52,7 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
+import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPromptConfig";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
@@ -215,6 +216,7 @@ export function SceneBoard({
   nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
+  const [viewTimeline, setViewTimeline] = useState<TimelineClip[] | null>(null); // View 재생 타임라인(연속 재생) 클립들
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
   editTextIdRef.current = editTextId;
@@ -1011,24 +1013,25 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, nextEdges);
   };
-  // View 노드 재생 — 연결된(직접+generation-list) 생성물을 모아 기존 미리보기(MediaPreview)로 순차 재생.
+  // View 노드 재생 — 연결된(직접+generation-list) 생성물을 순서대로 이어 타임라인 플레이어로 '연속 재생'.
   const playView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
     const es = resolvePortEdges(byId, edgesRef.current);
-    const items: PreviewItem[] = [];
+    const clips: TimelineClip[] = [];
     for (const cid of collectViewGenCardIds(viewId, byId, es)) {
       const card = byId.get(cid);
       const gid = card?.genId || (card ? variantIds(card)[0] : undefined);
-      const a = gid ? genDataRef.current[gid]?.assets?.[0] : null;
+      const gen = gid ? genDataRef.current[gid] : undefined;
+      const a = gen?.assets?.[0];
       if (a && gid)
-        items.push({
+        clips.push({
           url: a.file_path,
-          type: a.type,
-          name: genDataRef.current[gid]?.prompt?.slice(0, 50) || "결과",
-          genId: gid,
+          type: a.type === "video" ? "video" : "image",
+          name: gen?.prompt?.slice(0, 50) || "결과",
+          thumb: gen ? thumbOf(gen, 256) : null,
         });
     }
-    if (items.length) onPreviewRef.current?.({ ...items[0], items, index: 0 });
+    if (clips.length) setViewTimeline(clips);
   };
   // 생성물 리스트 → 연결된 생성물 전부를 레퍼런스로 추가(하단 프롬프트 트레이). 단일 카드 @ 버튼과 동일 경로.
   const addListAsReference = (generationCardIds: string[]) => {
@@ -3537,6 +3540,10 @@ export function SceneBoard({
         })()}
 
       {/* View 텍스트 보기 모달 — 연결된 텍스트 블록들을 순서대로 표시(+전체 복사). */}
+      {viewTimeline && (
+        <ViewTimeline clips={viewTimeline} onClose={() => setViewTimeline(null)} />
+      )}
+
       {viewTextModal && (
         <div className="scene-modelmodal-backdrop" onMouseDown={() => setViewTextModal(null)}>
           <div className="scene-textview" onMouseDown={(e) => e.stopPropagation()}>

@@ -761,3 +761,49 @@
 }
 .scene-cardgen-go:hover:not(:disabled) { filter: brightness(1.08); }
 .scene-cardgen-go:disabled { opacity: 0.4; cursor: default; }
+
+/* ── View 타임라인 재생기(연결된 생성물 연속 재생) ── */
+.vtl-backdrop {
+  position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column;
+  background: rgba(6, 7, 10, 0.92); backdrop-filter: blur(3px);
+}
+.vtl { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 14px 18px 18px; gap: 10px; }
+.vtl-hd { display: flex; align-items: center; justify-content: space-between; flex: none; }
+.vtl-title { color: var(--accent); font-weight: 800; font-size: 13px; letter-spacing: 0.14em; font-style: italic; }
+.vtl-close {
+  width: 30px; height: 30px; border: 0; border-radius: 8px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.08); color: var(--text); font-size: 15px;
+}
+.vtl-close:hover { background: rgba(255, 255, 255, 0.16); }
+.vtl-stage {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  background: #000; border-radius: 12px; overflow: hidden;
+}
+.vtl-stage video, .vtl-stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.vtl-empty { color: var(--muted); font-size: 13px; }
+.vtl-controls { flex: none; display: flex; align-items: center; gap: 14px; }
+.vtl-play {
+  width: 40px; height: 40px; flex: none; border: 0; border-radius: 50%; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); font-size: 14px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.vtl-play:hover { filter: brightness(1.08); }
+.vtl-time { font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 700; }
+.vtl-time-sep { color: var(--muted); margin: 0 2px; }
+.vtl-vol { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.vtl-mute { border: 0; background: transparent; color: var(--text); font-size: 15px; cursor: pointer; }
+.vtl-vol input[type="range"] { width: 90px; accent-color: var(--accent); cursor: pointer; }
+/* 클립 트랙 — 각 클립을 길이 비례 너비로, 대표 썸네일 배경. 빨간 재생헤드가 가상 시간을 가리킨다. */
+.vtl-track {
+  position: relative; flex: none; height: 56px; border-radius: 8px; overflow: hidden;
+  display: flex; background: #0c0e13; border: 1px solid var(--border2); cursor: pointer; user-select: none;
+}
+.vtl-clip { position: relative; min-width: 8px; height: 100%; border-right: 1px solid rgba(0, 0, 0, 0.5); overflow: hidden; }
+.vtl-clip:last-child { border-right: 0; }
+.vtl-clip img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0.7; }
+.vtl-clip.cur img { opacity: 1; }
+.vtl-clip.cur { box-shadow: inset 0 0 0 2px var(--accent); }
+.vtl-clip-ph { width: 100%; height: 100%; background: repeating-linear-gradient(45deg, #15171d, #15171d 5px, #0f1116 5px, #0f1116 10px); }
+.vtl-clip-n { position: absolute; left: 3px; top: 2px; font-size: 9px; font-weight: 800; background: rgba(0, 0, 0, 0.6); color: #fff; padding: 0 4px; border-radius: 3px; }
+.vtl-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff3b3b; box-shadow: 0 0 6px rgba(255, 59, 59, 0.8); pointer-events: none; }
+.vtl-playhead::before { content: ""; position: absolute; top: -1px; left: -4px; border: 5px solid transparent; border-top-color: #ff3b3b; }
