@@ -17,6 +17,7 @@ interface Props {
   onPreview: (t: PreviewTarget) => void; // 소스/칩 클릭 → 크게 보기
   projects?: Project[]; // 프로젝트 이름 표시용(목록에서 uuid→이름 매핑)
   onOpenInBoard?: (g: Generation) => void; // 구성탭에서 원본→파생 트리로 보기
+  onOpenCanvas?: (g: Generation) => void; // recipe(어떻게 만들었나)를 캔버스 노드로 열기
 }
 
 const POP_W = 380;
@@ -45,7 +46,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard }: Props) {
+export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard, onOpenCanvas }: Props) {
   // 레퍼런스(소스) → 크게 보기. 원본(asset 토큰/URL/로컬) 우선, 없으면 썸네일.
   const openSource = (r: Reference) => {
     const url = refSrc(r.file_path) || refSrc(r.thumbnail_path) || refSrc(r.source_url);
@@ -281,6 +282,16 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard 
               onClick={() => onOpenInBoard(target.gen)}
             >
               ⧉ 히스토리 보기
+            </button>
+          )}
+          {target.kind === "generation" && onOpenCanvas && (
+            <button
+              className="info-board-btn"
+              title="어떻게 만들었나를 캔버스 노드로 열기"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onOpenCanvas(target.gen)}
+            >
+              ⧉ 캔버스 보기
             </button>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">

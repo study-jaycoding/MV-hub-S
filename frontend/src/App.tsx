@@ -1141,6 +1141,10 @@ export default function App() {
           setInfo(null);
           onOpenInBoard(g);
         }}
+        onInfoOpenCanvas={(g) => {
+          setInfo(null);
+          onShowHistory(g);
+        }}
         onOpenInBoard={onOpenInBoard}
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
