@@ -27,6 +27,7 @@ import {
   exportSceneText,
   listScenes,
   parseSceneImport,
+  SCENE_IMPORT_MAX_BYTES,
   variantIds,
   type SceneRef,
 } from "./lib/scenes";
@@ -465,9 +466,10 @@ export default function App() {
     return handlePromptCreated(created, dragParentId);
   };
   // 씬 저장 — 현재 활성 씬을 가벼운 텍스트(JSON)로 내려받는다. 미디어는 참조만(가볍게).
-  const handleSaveScene = () => {
+  //  camera 인자는 SceneBoard 의 '라이브 카메라'(debounce 로 지연된 activeScene.camera 대신 최신).
+  const handleSaveScene = (camera?: { z: number; x: number; y: number }) => {
     if (!activeScene) return;
-    const text = exportSceneText(activeScene);
+    const text = exportSceneText(camera ? { ...activeScene, camera } : activeScene);
     const blob = new Blob([text], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -478,6 +480,10 @@ export default function App() {
   };
   // 씬 불러오기 — 파일을 검증해 '새 탭'으로 연다(현재 캔버스 보존). 선택·프롬프트 바인딩은 초기화.
   const handleLoadSceneFile = async (file: File) => {
+    if (file.size > SCENE_IMPORT_MAX_BYTES) {
+      flash("파일이 너무 큽니다(최대 5MB).");
+      return;
+    }
     try {
       const snap = parseSceneImport(await file.text());
       importSceneSnapshot(snap);

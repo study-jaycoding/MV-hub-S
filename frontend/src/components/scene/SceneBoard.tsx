@@ -111,7 +111,8 @@ interface Props {
   scene: Scene;
   onChange: (patch: Partial<Scene>) => void;
   // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
-  onSaveScene?: () => void;
+  //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
+  onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
@@ -795,8 +796,16 @@ export function SceneBoard({
       addRefCardsAt(items.map(itemToRef), p.x, p.y);
       return;
     }
-    // 외부 파일 드래그 → 업로드 후 레퍼런스 카드.
     const files = Array.from(e.dataTransfer.files || []);
+    // 씬 파일(.mvscene.json / .json) 드롭 → 저장 파일 그대로 불러오기(새 탭). 레퍼런스 업로드보다 우선.
+    //  형식이 아니면 parseSceneImport 가 걸러 알림을 띄운다(레퍼런스는 이미지/영상만이라 json 은 어차피 무시됨).
+    const sceneFile = files.find((f) => /\.json$/i.test(f.name));
+    if (sceneFile && onLoadSceneFile) {
+      e.preventDefault();
+      onLoadSceneFile(sceneFile);
+      return;
+    }
+    // 외부 파일 드래그 → 업로드 후 레퍼런스 카드.
     if (files.length) {
       e.preventDefault();
       const p = toCanvas(e.clientX, e.clientY);
@@ -3573,7 +3582,13 @@ export function SceneBoard({
           <div className="scene-io-name" title={scene.name}>{scene.name}</div>
           <div className="scene-io-btns">
             {onSaveScene && (
-              <button className="scene-io-btn" title="이 씬을 파일로 저장" onClick={onSaveScene}>저장</button>
+              <button
+                className="scene-io-btn"
+                title="이 씬을 파일로 저장"
+                onClick={() => onSaveScene({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y })}
+              >
+                저장
+              </button>
             )}
             {onLoadSceneFile && (
               <button
