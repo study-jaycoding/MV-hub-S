@@ -625,17 +625,21 @@ export function SceneBoard({
 
   // ── S5 토대: 생성 카드는 자신에게 연결된 레퍼런스 카드들의 레퍼런스를 순서대로 모아 보유한다. ──
   // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
-  // 연결된 레퍼런스 카드들이 제공하는 "목표 레퍼런스 집합"(엣지 순서대로).
+  // 연결된 레퍼런스/리스트 소스를 "공간 순서(위→아래, 그다음 좌→우)"로 정렬해 모은다 — 직접 연결이든
+  // 리스트 경유든 이미지 순서(→ Seedance <<<image1>>>/<<<image2>>> 위치 매핑)가 항상 같게(리스트도 order→y→x 기준).
   const gatherTarget = (genId: string, cs: SceneCard[], es: SceneEdge[]): SceneRef[] => {
     const byId = new Map(cs.map((c) => [c.id, c] as const));
     const resolved = resolvePortEdges(byId, es); // input(무선)으로 연결한 레퍼런스도 실제 소스로 해석
+    const srcs = resolved
+      .filter((e) => e.to === genId)
+      .map((e) => byId.get(e.from))
+      .filter((c): c is SceneCard => c?.kind === "reference" || c?.kind === "list")
+      .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x)); // 위→아래, 같은 높이면 좌→우
     const out: SceneRef[] = [];
-    for (const e of resolved) {
-      if (e.to !== genId) continue;
-      const src = byId.get(e.from);
-      if (src?.kind === "reference" && src.refs) out.push(...src.refs);
-      // 레퍼런스만 모은 리스트를 생성카드에 연결하면 그 안의 레퍼런스 전부를 순서대로 가져온다.
-      else if (src?.kind === "list") {
+    for (const src of srcs) {
+      if (src.kind === "reference" && src.refs) out.push(...src.refs);
+      // 레퍼런스만 모은 리스트를 생성카드에 연결하면 그 안의 레퍼런스 전부를 리스트 순서대로 가져온다.
+      else if (src.kind === "list") {
         const li = collectListInputs(src.id, byId, resolved);
         if (li.kind === "reference")
           for (const cid of li.sourceIds) {
