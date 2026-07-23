@@ -369,13 +369,14 @@
   color: var(--muted); font-size: 11px; padding: 8px; overflow: hidden;
 }
 .scene-viewnode-empty { margin: auto; }
-/* 연결된 영상/이미지 대표 프레임 미리보기(개수 대신 실제 내용) */
-.scene-viewthumbs {
-  flex: 1; min-height: 0; overflow: auto; align-content: start;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px;
+/* '합쳐진 영상' 한 화면 미리보기(개수 대신 실제 영상) — 대표 프레임을 크게, 호버 시 이어 재생 */
+.scene-viewseq { flex: 1; min-height: 0; position: relative; border-radius: 8px; overflow: hidden; background: #05060a; cursor: pointer; }
+.scene-viewseq video, .scene-viewseq img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.scene-viewseq-ph { width: 100%; height: 100%; background: repeating-linear-gradient(45deg, #15171d, #15171d 6px, #0f1116 6px, #0f1116 12px); }
+.scene-viewseq-badge {
+  position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); pointer-events: none;
+  background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
 }
-.scene-viewthumb { aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: #05060a; }
-.scene-viewthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* 연결된 텍스트 실제 내용 */
 .scene-viewtext {
   flex: 1; min-height: 0; overflow: auto; text-align: left; line-height: 1.5;

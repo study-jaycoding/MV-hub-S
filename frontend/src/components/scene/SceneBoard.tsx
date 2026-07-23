@@ -53,6 +53,7 @@ import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
+import { ViewSequencePreview } from "./ViewSequencePreview";
 import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPromptConfig";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
@@ -1013,10 +1014,12 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, nextEdges);
   };
-  // View 노드 재생 — 연결된(직접+generation-list) 생성물을 순서대로 이어 타임라인 플레이어로 '연속 재생'.
-  const playView = (viewId: string) => {
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const es = resolvePortEdges(byId, edgesRef.current);
+  // View 에 연결된(직접+generation-list) 생성물을 순서대로 타임라인 클립(url·타입·썸네일)으로 모은다. 재생·미리보기 공용.
+  const buildViewClips = (
+    viewId: string,
+    byId: Map<string, SceneCard>,
+    es: SceneEdge[],
+  ): TimelineClip[] => {
     const clips: TimelineClip[] = [];
     for (const cid of collectViewGenCardIds(viewId, byId, es)) {
       const card = byId.get(cid);
@@ -1031,6 +1034,12 @@ export function SceneBoard({
           thumb: gen ? thumbOf(gen, 256) : null,
         });
     }
+    return clips;
+  };
+  // View 노드 재생 — 연결된 생성물을 순서대로 이어 타임라인 플레이어로 '연속 재생'.
+  const playView = (viewId: string) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const clips = buildViewClips(viewId, byId, resolvePortEdges(byId, edgesRef.current));
     if (clips.length) setViewTimeline(clips);
   };
   // 생성물 리스트 → 연결된 생성물 전부를 레퍼런스로 추가(하단 프롬프트 트레이). 단일 카드 @ 버튼과 동일 경로.
@@ -2936,24 +2945,8 @@ export function SceneBoard({
                         <div className="scene-card-hd view">View</div>
                         <div className="scene-viewnode-body">
                           {hasMedia ? (
-                            // 연결된 영상/이미지의 대표 프레임을 미리보기로 표시(개수 대신 실제 내용).
-                            <div className="scene-viewthumbs">
-                              {genIds.map((cid) => {
-                                const gc = cardsById.get(cid);
-                                const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-                                const gen = gid ? genData[gid] : undefined;
-                                const src = gen ? thumbOf(gen, 256) : null;
-                                return (
-                                  <div key={cid} className="scene-viewthumb">
-                                    {src ? (
-                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
-                                    ) : (
-                                      <span className="scene-listthumb-ph" />
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
+                            // '합쳐진 영상' 한 화면 미리보기 — 대표 프레임을 크게, 마우스 올리면 순서대로 이어 재생.
+                            <ViewSequencePreview clips={buildViewClips(card.id, cardsById, resolvedEdges)} />
                           ) : hasText ? (
                             // 연결된 텍스트의 실제 내용을 표시(개수 대신).
                             <div className="scene-viewtext">{texts.join("\n\n")}</div>
