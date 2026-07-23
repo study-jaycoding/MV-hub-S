@@ -66,6 +66,8 @@ const EN: Record<string, string> = {
   "날짜 구분 끄기 (한 번 더)": "Ungroup (click again)",
   "리스트": "List",
   "그리드": "Grid",
+  // 캔버스 노드
+  "미리보기": "View", // View 노드 헤더(한글 UI=미리보기, 영문 UI=View)
   // 미디어 타입
   "이미지": "Image",
   "영상": "Video",

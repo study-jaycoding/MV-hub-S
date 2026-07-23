@@ -48,6 +48,7 @@ import {
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { useSceneGenData } from "../../lib/useSceneGenData";
+import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
@@ -198,6 +199,7 @@ export function SceneBoard({
   autoTagOptions,
   onOpenComments,
 }: Props) {
+  const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
   const [cards, setCards] = useState<SceneCard[]>(scene.cards);
   const [edges, setEdges] = useState<SceneEdge[]>(scene.edges);
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
@@ -2942,7 +2944,7 @@ export function SceneBoard({
                   return (
                     <>
                       <div className="scene-card-inner scene-viewnode">
-                        <div className="scene-card-hd view">View</div>
+                        <div className="scene-card-hd view">{t("미리보기")}</div>
                         <div className="scene-viewnode-body">
                           {hasMedia ? (
                             // '합쳐진 영상' 한 화면 미리보기 — 대표 프레임을 크게, 마우스 올리면 순서대로 이어 재생.
