@@ -6,7 +6,7 @@
 // onPromptChanged 는 반드시 안정된(useCallback) 콜백을 넘겨야 blur 재구독 빈도가 원본(model/trayRefs 변화 시)과 같다.
 import { useCallback, useEffect, useRef } from "react";
 import { refSrc } from "./promptParts";
-import { wrapRefTokens } from "./promptEditor";
+import { refreshTokenPills, wrapRefTokens } from "./promptEditor";
 import { usesMediaRefTokens } from "./seedancePrompt";
 import type { SpotlightTrayRef } from "../components/spotlight/SpotlightRefTray";
 
@@ -76,6 +76,20 @@ export function useSpotlightTokenWrap({
   // '지금 입력 중인 토큰'(캐럿이 있는 텍스트 노드)은 건드리지 않아 캐럿이 튀지 않는다(에디터를 벗어날 때
   // 까지 기다리던 딜레이 제거). 편집 모드(알약 클릭)인 동안엔 쉬어 이름 편집을 방해하지 않는다.
   const liveWrapTimer = useRef<number | null>(null);
+  // 트레이 순서/구성이 바뀌면 이미 박힌 알약 썸네일도 그 위치의 새 레퍼런스로 즉시 갱신한다.
+  //  @imageN 은 '위치 토큰'이라 순서만 바뀌어도 가리키는 이미지가 달라진다 → 표시(썸네일)를 실시간 일치.
+  //  refreshTokenPills 는 원자 알약(contentEditable=false)만 교체하므로 편집 캐럿에 영향 없다.
+  //  ★file_path 포함 필수 — 비디오 알약은 resolveTokenMedia 가 thumb 이 아니라 file_path(refSrc)를 쓰므로,
+  //   같은 thumb 의 서로 다른 비디오를 재정렬해도 sig 가 바뀌게 하려면 file_path 가 있어야 한다.
+  const trayMediaSig = trayRefs.map((r) => `${r.type}:${r.file_path}:${r.thumb || ""}`).join("|");
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || !usesMediaRefTokens(model)) return;
+    if (composingRef.current) return; // IME 조합 중엔 건드리지 않는다(조합 깨짐 방지)
+    refreshTokenPills(ed, resolveTokenMediaRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trayMediaSig, model]);
+
   const scheduleLiveWrap = useCallback(() => {
     if (!usesMediaRefTokens(model)) return;
     if (liveWrapTimer.current) window.clearTimeout(liveWrapTimer.current);

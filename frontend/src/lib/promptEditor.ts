@@ -269,6 +269,7 @@ export function buildRefTokenEl(token: string, kind: string, media?: string, mis
   // missing = 트레이에 그 번호의 레퍼런스가 없음(@image3 인데 3번이 없음) → 경고 스타일로 시인성 있게.
   const hasMedia = !!media && kind !== "audio" && !missing;
   el.className = "sl-tok sl-tok-" + kind + (hasMedia ? " sl-tok-has-thumb" : "") + (missing ? " sl-tok-missing" : "");
+  el.dataset.tokMedia = media || ""; // 이 알약이 가리키는 원본 미디어 — 트레이 재정렬로 썸네일이 바뀌었는지 비교(refreshTokenPills)
   if (missing) el.title = "이 번호의 레퍼런스가 트레이에 없습니다";
   if (hasMedia) {
     let m: HTMLElement;
@@ -457,10 +458,11 @@ export function refreshTokenPills(
     const missing = media === undefined;
     const wasMissing = pill.classList.contains("sl-tok-missing");
     if (wasMissing === missing) {
-      // missing 상태는 그대로 — 썸네일 유무만 달라졌는지 확인(레퍼런스가 나중에 붙은 경우).
+      // missing 상태 동일 — 썸네일 유무 + 실제 미디어(순서 변경으로 같은 번호가 다른 이미지를 가리키는 경우)까지 비교.
       const hasThumb = !!pill.querySelector(".sl-tok-thumb");
       const wantThumb = !!media && kind !== "audio" && !missing;
-      if (hasThumb === wantThumb) return; // 변화 없음 → 건드리지 않음
+      const mediaSame = (pill.dataset.tokMedia ?? "") === (media || ""); // 트레이 재정렬 시 여기서 걸림
+      if (hasThumb === wantThumb && mediaSame) return; // 변화 없음 → 건드리지 않음
     }
     pill.replaceWith(buildRefTokenEl(seedanceCanonToken(raw, num), kind, media || undefined, missing));
   });
