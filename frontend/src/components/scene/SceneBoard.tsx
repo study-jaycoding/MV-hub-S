@@ -3527,15 +3527,15 @@ export function SceneBoard({
           <div className="scene-nodepick" style={{ left: nodePicker.sx, top: nodePicker.sy }}>
             {(
               [
-                // 역할별 묶음: 생성(New·Model·Text) → 모음/흐름(List·Render·View) → 무선(Output·Input) → 주석(Head)
+                // 역할별 묶음: 생성(New·Model·Text) → 모음/흐름(List·Render·View) → 무선(Input·Output) → 주석(Head)
                 ["New", "N", "generation"],
                 ["Model", "M", "model"],
                 ["Text", "T", "text"],
                 ["List", "L", "list"],
                 ["Render", "R", "render"],
                 ["View", "V", "view"],
-                ["Output", "O", "output"],
                 ["Input", "I", "input"],
+                ["Output", "O", "output"],
                 ["Head", "H", "head"],
               ] as [string, string, SceneCardKind][]
             ).map(([label, key, kind]) => (
@@ -3987,7 +3987,7 @@ export function SceneBoard({
           <div className="scene-empty-title">{scene.name}</div>
           <b>에셋 창에서 레퍼런스를 이 화면으로 드래그</b>하면 레퍼런스 카드가 만들어집니다.
           <div className="scene-empty-hint">
-            <b>Tab</b> → 노드 만들기 메뉴(New/Model/Text/List/Render/View/Output/Input/Head) · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
+            <b>Tab</b> → 노드 만들기 메뉴(New/Model/Text/List/Render/View/Input/Output/Head) · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
           </div>
         </div>
       )}
