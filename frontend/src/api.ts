@@ -15,6 +15,7 @@ import {
   jsonBody,
   jsonFetch,
   setAuthToken,
+  throwHttpError,
 } from "./lib/http";
 import { projectApi } from "./lib/projectApi";
 import { sharedApi } from "./lib/sharedApi";
@@ -151,6 +152,20 @@ export const api = {
       method: "POST",
       body: jsonBody({ model, params, prompt }),
     }),
+
+  // View 타임라인 '합쳐진 영상' 다운로드 — 서버가 클립들을 ffmpeg 로 하나의 mp4 로 병합해 반환.
+  mergeVideos: async (srcs: string[], name: string): Promise<Blob> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const t = getAuthToken();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    const res = await fetch("/api/merge", {
+      method: "POST",
+      headers,
+      body: jsonBody({ srcs, name }),
+    });
+    if (!res.ok) await throwHttpError(res, "/api/merge");
+    return res.blob();
+  },
 
   // 계정 상태(연결·크레딧·이메일) — 하단 상태줄 클릭 시 수동 조회
   account: () =>

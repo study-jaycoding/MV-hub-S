@@ -6,13 +6,19 @@ CLAUDE.md 원칙 1: 내 작업물 탐색은 네트워크를 절대 타지 않는
 from __future__ import annotations
 
 import asyncio
+import logging
+import shutil
+import subprocess
+import tempfile
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import _proxy
 from .. import rbac, repo
@@ -20,10 +26,11 @@ from ..config import AUTH_ENABLED
 from ..deps import account_global_roles, account_scope_uid, require_view_generation
 from ..models import FacetsOut, GenerationOut
 from ..services import media_cache, thumbs
-from ..services.media_types import VIDEO_EXTENSIONS
+from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
 router = APIRouter(prefix="/api", tags=["library"])
+log = logging.getLogger("library")
 
 
 def _overlay_personal_meta(data, request: Request):
@@ -209,6 +216,145 @@ def download_media(url: str = Query(...), name: str = Query("download")):
         _stream(),
         media_type=ctype,
         headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
+
+
+# ── View 타임라인 '합쳐진 영상' 병합 다운로드 ──────────────────────────────────
+# 연결된 생성 영상들을 순서대로 하나의 mp4 로 이어붙인다. 클립마다 코덱·해상도가 다를 수 있어
+# 공통 해상도(첫 클립 기준)로 정규화 재인코딩한 뒤 concat demuxer 로 붙인다(오디오 없으면 무음 삽입).
+MERGE_MAX_CLIPS = 30
+MERGE_IMG_DUR = 3  # 이미지 클립은 3초짜리 정지영상으로 병합(플레이어 재생과 동일)
+
+
+class MergeReq(BaseModel):
+    srcs: list[str]
+    name: str = "merged"
+
+
+async def _resolve_local_media(src: str) -> Optional[tuple[Path, bool]]:
+    """미디어 src(/media 경로 또는 http(s) URL)를 로컬 파일 경로로 해석(썸네일과 동일 규칙).
+    반환 (path, is_image). 비디오·이미지만 허용, 그 외/미해석은 None."""
+    if not isinstance(src, str) or not src:
+        return None
+    if src.startswith(("http://", "https://")):
+        rel = await media_cache.cache_url(src)  # 원격은 로컬로 캐시(SSRF 가드 내장)
+        target = thumbs._media_target(rel) if rel else None
+    elif src.startswith("/media/"):
+        target = thumbs._media_target(src)  # 경로 이탈 차단
+    else:
+        target = None
+    if not target or not target.is_file():
+        return None
+    ext = target.suffix.lower()
+    if ext in VIDEO_EXTENSIONS:
+        return target, False
+    if ext in IMAGE_EXTENSIONS:
+        return target, True
+    return None
+
+
+def _ffprobe_has_audio(ffprobe: Optional[str], path: Path) -> bool:
+    if not ffprobe:
+        return False
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+        return bool(out)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ffprobe_wh(ffprobe: Optional[str], path: Path) -> Optional[tuple[int, int]]:
+    if not ffprobe:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, timeout=20, check=True,
+        ).stdout.strip()
+        w, h = out.split("x")[:2]
+        return int(w), int(h)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _merge_clips_sync(items: list[tuple[Path, bool]], workdir: Path) -> Path:
+    """클립들(비디오/이미지)을 공통 해상도로 정규화(재인코딩) 후 concat 으로 이어붙여 mp4 반환.
+    items = [(path, is_image)]. 이미지는 MERGE_IMG_DUR 초 정지영상으로, 오디오 없으면 무음 삽입.
+    블로킹 — 스레드에서 호출."""
+    ff = thumbs._ffmpeg_bin()
+    if not ff:
+        raise RuntimeError("ffmpeg 를 찾을 수 없습니다")
+    ffprobe = shutil.which("ffprobe")
+    wh = _ffprobe_wh(ffprobe, items[0][0]) or (1280, 720)
+    w = max(2, wh[0] - wh[0] % 2)
+    h = max(2, wh[1] - wh[1] % 2)
+    vf = (
+        f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p"
+    )
+    enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart"]
+    silent = ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+    norm: list[Path] = []
+    for i, (p, is_image) in enumerate(items):
+        out_i = workdir / f"n{i}.mp4"
+        if is_image:
+            # 정지 이미지 → MERGE_IMG_DUR 초 루프 + 무음.
+            cmd = [ff, "-y", "-loglevel", "error", "-loop", "1", "-t", str(MERGE_IMG_DUR), "-i", str(p),
+                   *silent, "-vf", vf, "-map", "0:v", "-map", "1:a", "-shortest", *enc, str(out_i)]
+        elif _ffprobe_has_audio(ffprobe, p):
+            cmd = [ff, "-y", "-loglevel", "error", "-i", str(p), "-vf", vf, "-ar", "44100", "-ac", "2", *enc, str(out_i)]
+        else:
+            # 오디오 없는 클립엔 무음 트랙을 붙여, 오디오 있는 클립과 concat 시 스트림 수가 맞게 한다.
+            cmd = [ff, "-y", "-loglevel", "error", "-i", str(p), *silent,
+                   "-vf", vf, "-map", "0:v", "-map", "1:a", "-shortest", *enc, str(out_i)]
+        with thumbs._FFMPEG_SEM:  # 동시 ffmpeg 프로세스 수 제한(썸네일과 공용)
+            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        norm.append(out_i)
+    listfile = workdir / "list.txt"
+    listfile.write_text("".join(f"file '{n.as_posix()}'\n" for n in norm), encoding="utf-8")
+    out = workdir / "merged.mp4"
+    with thumbs._FFMPEG_SEM:
+        subprocess.run(
+            [ff, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listfile),
+             "-c", "copy", "-movflags", "+faststart", str(out)],
+            check=True, capture_output=True, timeout=300,
+        )
+    return out
+
+
+@router.post("/merge")
+async def merge_videos(req: MergeReq):
+    """연결된 생성물(영상/이미지)들을 순서대로 하나의 mp4 로 병합해 attachment 로 내려준다."""
+    if not req.srcs:
+        raise HTTPException(status_code=400, detail="병합할 항목이 없습니다")
+    if len(req.srcs) > MERGE_MAX_CLIPS:
+        # 조용히 잘라내면 일부 빠진 영상을 정상처럼 받게 되므로 명시적으로 거절.
+        raise HTTPException(status_code=413, detail=f"한 번에 병합 가능한 항목은 최대 {MERGE_MAX_CLIPS}개입니다")
+    items: list[tuple[Path, bool]] = []
+    for s in req.srcs:
+        r = await _resolve_local_media(s)
+        if r:
+            items.append(r)
+    if not items:
+        raise HTTPException(status_code=400, detail="병합할 로컬 미디어를 찾을 수 없습니다")
+    workdir = Path(tempfile.mkdtemp(prefix="mvhub_merge_"))
+    try:
+        out = await asyncio.to_thread(_merge_clips_sync, items, workdir)
+    except Exception as e:  # noqa: BLE001
+        shutil.rmtree(workdir, ignore_errors=True)
+        # 원본 예외(ffmpeg 경로 등)는 로그로만, 클라이언트엔 일반 메시지.
+        log.warning("[merge] 병합 실패: %s", e)
+        raise HTTPException(status_code=500, detail="영상 병합에 실패했습니다")
+    safe = (req.name or "merged").replace('"', "").replace("\n", "").replace("\r", "")[:80] or "merged"
+    # 응답 전송이 끝나면 임시 폴더 정리(BackgroundTask).
+    return FileResponse(
+        out, media_type="video/mp4", filename=f"{safe}.mp4",
+        background=BackgroundTask(shutil.rmtree, workdir, ignore_errors=True),
     )
 
 

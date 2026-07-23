@@ -3541,7 +3541,21 @@ export function SceneBoard({
 
       {/* View 텍스트 보기 모달 — 연결된 텍스트 블록들을 순서대로 표시(+전체 복사). */}
       {viewTimeline && (
-        <ViewTimeline clips={viewTimeline} onClose={() => setViewTimeline(null)} />
+        <ViewTimeline
+          clips={viewTimeline}
+          onClose={() => setViewTimeline(null)}
+          onDownload={async (srcs, name) => {
+            const blob = await api.mergeVideos(srcs, name);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${name}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 8000);
+          }}
+        />
       )}
 
       {viewTextModal && (

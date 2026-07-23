@@ -271,7 +271,7 @@ async def auth_enforcement(request: Request, call_next):
 # 연결된 다른 클라이언트(같은 계정의 다른 기기/탭)에 'synced' 를 push 해 즉시 새로고침시킨다.
 # 엔드포인트마다 손대지 않고 미들웨어 한 곳에서 처리(디바운스는 ws.manager 가 담당).
 # 라이브러리 데이터와 무관한 경로는 제외(불필요한 reload 방지).
-_NOTIFY_EXCLUDE = ("/api/auth/", "/api/health", "/api/backup")
+_NOTIFY_EXCLUDE = ("/api/auth/", "/api/health", "/api/backup", "/api/merge")
 _NOTIFY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 

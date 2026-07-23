@@ -12,15 +12,28 @@ export interface TimelineClip {
 }
 
 const IMG_DUR = 3; // 이미지 클립 기본 길이(초)
+const FPS = 30; // 타임코드 프레임 기준(HH:MM:SS:FF)
 
-function fmt(t: number): string {
+// HH:MM:SS:FF 타임코드.
+function tc(t: number): string {
   if (!isFinite(t) || t < 0) t = 0;
-  const m = Math.floor(t / 60);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
   const s = Math.floor(t % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
+  const f = Math.floor((t - Math.floor(t)) * FPS);
+  return `${p2(h)}:${p2(m)}:${p2(s)}:${p2(f)}`;
 }
 
-export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClose: () => void }) {
+export function ViewTimeline({
+  clips,
+  onClose,
+  onDownload,
+}: {
+  clips: TimelineClip[];
+  onClose: () => void;
+  onDownload?: (srcs: string[], name: string) => Promise<void>;
+}) {
   const [durations, setDurations] = useState<number[]>(() =>
     clips.map((c) => (c.type === "image" ? IMG_DUR : 0)),
   );
@@ -29,7 +42,7 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
   const [clipTime, setClipTime] = useState(0);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
-  const [loop, setLoop] = useState(false); // 반복 재생(끝나면 처음부터)
+  const [downloading, setDownloading] = useState(false);
   const [cycle, setCycle] = useState(0); // 클립을 처음부터 다시 시작할 때마다 증가 — 같은 클립 재시작(단일/반복) 강제 remount 용
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekRef = useRef<number | null>(null); // 클립 전환 후 적용할 seek 오프셋(초)
@@ -37,8 +50,6 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
   idxRef.current = idx;
   const playingRef = useRef(playing);
   playingRef.current = playing;
-  const loopRef = useRef(loop);
-  loopRef.current = loop;
   const durationsRef = useRef(durations);
   durationsRef.current = durations;
   const clipTimeRef = useRef(clipTime);
@@ -80,15 +91,10 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     };
   }, [clips]);
 
-  // 다음 클립으로. 마지막이면: 반복 ON → 처음(0)부터, OFF → 정지.
+  // 다음 클립으로. 마지막이면 처음(0)으로 — 기본 반복 재생(끊김없이 순환).
   //  cycle 을 올려 video key(idx-cycle) 를 바꿔, 같은 클립으로 되돌아가는 경우(단일 클립/반복)에도 remount·재시작되게 한다.
   const goNext = useCallback(() => {
-    const nextIdx =
-      idxRef.current + 1 < clips.length ? idxRef.current + 1 : loopRef.current ? 0 : -1;
-    if (nextIdx < 0) {
-      setPlaying(false);
-      return;
-    }
+    const nextIdx = idxRef.current + 1 < clips.length ? idxRef.current + 1 : 0;
     seekRef.current = 0;
     setClipTime(0);
     setCycle((c) => c + 1);
@@ -173,6 +179,20 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     }
   }, [muted, volume, idx]);
 
+  // 비디오 클립 타이밍 — 재생 중엔 매 프레임 video.currentTime 을 읽어 부드럽게 갱신한다.
+  //  (onTimeUpdate 는 ~4Hz 라 타임코드 프레임 자리가 툭툭 건너뛰어 보인다 → rAF 로 매끄럽게.)
+  useEffect(() => {
+    if (!isVideo || !playing) return;
+    let raf = 0;
+    const tick = () => {
+      const v = videoRef.current;
+      if (v) setClipTime(v.currentTime);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isVideo, playing, idx, cycle]);
+
   // 이미지 클립 타이밍 — 재생 중이면 실시간으로 clipTime 을 늘리고, 길이를 넘기면 다음 클립으로.
   //  ★전환(goNext)은 setClipTime updater '밖'에서 처리한다(updater 안 부수효과는 StrictMode 중복·중복전환 위험).
   //   clipTimeRef 로 최신값을 읽어 seek(같은 이미지 클립 내)도 이어서 반영한다.
@@ -239,22 +259,38 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     window.addEventListener("mouseup", up);
   };
 
-  // 재생/정지 — 끝에서 '재생'을 누르면 처음부터 다시.
-  const atEnd = total > 0 && virtual >= total - 0.05;
-  const togglePlay = () => {
-    if (!playing && atEnd) seekTo(0);
-    setPlaying((p) => !p);
-  };
+  const togglePlay = () => setPlaying((p) => !p);
   togglePlayRef.current = togglePlay;
+
+  // 합쳐진 영상 다운로드 — 연결된 영상들을 서버에서 하나로 병합해 내려받는다.
+  const download = async () => {
+    if (!onDownload || downloading) return;
+    setDownloading(true);
+    try {
+      await onDownload(
+        clips.map((c) => c.url),
+        "timeline",
+      );
+    } catch (e) {
+      console.warn("[timeline] 병합 다운로드 실패", e);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const playheadPct = total > 0 ? (virtual / total) * 100 : 0;
 
-  // 타임 눈금 — 총 길이에 맞춰 ~7개 간격의 눈금·시간 라벨.
-  const rulerTicks: number[] = [];
-  if (total > 0) {
+  // 타임 눈금 — 큰 눈금(라벨)과 그 사이 작은 눈금(촘촘하게). majorStep 은 총 길이에 맞춰 정하고, 작은 눈금은 그 1/5.
+  const majorStep = (() => {
     const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-    const step = steps.find((s) => total / s <= 8) ?? 600;
-    for (let t = 0; t <= total + 0.001; t += step) rulerTicks.push(t);
+    return steps.find((s) => (total > 0 ? total / s : 0) <= 8) ?? 600;
+  })();
+  const minorStep = majorStep / 5;
+  const rulerTicks: { t: number; major: boolean }[] = [];
+  if (total > 0) {
+    for (let k = 0; k * minorStep <= total + 0.001; k++) {
+      rulerTicks.push({ t: k * minorStep, major: k % 5 === 0 });
+    }
   }
 
   return (
@@ -262,9 +298,21 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
       <div className="vtl" onMouseDown={(e) => e.stopPropagation()}>
         <div className="vtl-hd">
           <span className="vtl-title">TIMELINE</span>
-          <button className="vtl-close" title="닫기 (Esc)" onClick={onClose}>
-            ✕
-          </button>
+          <div className="vtl-hd-actions">
+            {onDownload && (
+              <button
+                className="vtl-dl"
+                title="합쳐진 영상 다운로드(mp4)"
+                disabled={downloading}
+                onClick={download}
+              >
+                {downloading ? "병합 중…" : "⬇ 다운로드"}
+              </button>
+            )}
+            <button className="vtl-close" title="닫기 (Esc)" onClick={onClose}>
+              ✕
+            </button>
+          </div>
         </div>
         <div className="vtl-stage">
           {cur ? (
@@ -286,19 +334,13 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
           )}
         </div>
         <div className="vtl-controls">
-          <button className="vtl-play" title="재생/정지 (Space)" onClick={togglePlay}>
-            {playing ? "❚❚" : "▶"}
-          </button>
-          <button
-            className={"vtl-loop" + (loop ? " on" : "")}
-            title={loop ? "반복 재생 켜짐" : "한 번 재생"}
-            onClick={() => setLoop((l) => !l)}
-          >
-            🔁
-          </button>
-          <span className="vtl-time">
-            {fmt(virtual)} <span className="vtl-time-sep">/</span> {fmt(total)}
-          </span>
+          <div className="vtl-center">
+            <span className="vtl-time cur">{tc(virtual)}</span>
+            <button className="vtl-play" title="재생/정지 (Space)" onClick={togglePlay}>
+              {playing ? "❚❚" : "▶"}
+            </button>
+            <span className="vtl-time total">{tc(total)}</span>
+          </div>
           <div className="vtl-vol">
             <button className="vtl-mute" title={muted ? "음소거 해제" : "음소거"} onClick={() => setMuted((m) => !m)}>
               {muted || volume === 0 ? "🔇" : "🔊"}
@@ -317,28 +359,38 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
             />
           </div>
         </div>
-        <div className="vtl-ruler">
-          {rulerTicks.map((t) => (
-            <div key={t} className="vtl-ruler-tick" style={{ left: `${(t / total) * 100}%` }}>
-              <span className="vtl-ruler-label">{fmt(t)}</span>
-            </div>
-          ))}
-        </div>
-        <div className="vtl-track" ref={trackRef} onMouseDown={onTrackDown}>
-          {clips.map((c, i) => {
-            const w = total > 0 ? (durations[i] / total) * 100 : 100 / Math.max(1, clips.length);
-            return (
-              <div
-                key={i}
-                className={"vtl-clip" + (i === idx ? " cur" : "")}
-                style={{ width: `${w}%` }}
-                title={c.name || `클립 ${i + 1}`}
-              >
-                {c.thumb ? <img src={c.thumb} alt="" draggable={false} /> : <div className="vtl-clip-ph" />}
-                <span className="vtl-clip-n">{i + 1}</span>
-              </div>
-            );
-          })}
+        <div className="vtl-timeline">
+          <div className="vtl-ruler">
+            {rulerTicks.map((tk, i) => {
+              const pct = (tk.t / total) * 100;
+              return (
+                <div
+                  key={i}
+                  className={"vtl-ruler-tick" + (tk.major ? " major" : "") + (pct > 88 ? " end" : "")}
+                  style={{ left: `${pct}%` }}
+                >
+                  {tk.major && <span className="vtl-ruler-label">{tc(tk.t)}</span>}
+                </div>
+              );
+            })}
+          </div>
+          <div className="vtl-track" ref={trackRef} onMouseDown={onTrackDown}>
+            {clips.map((c, i) => {
+              const w = total > 0 ? (durations[i] / total) * 100 : 100 / Math.max(1, clips.length);
+              return (
+                <div
+                  key={i}
+                  className={"vtl-clip" + (i === idx ? " cur" : "")}
+                  style={{ width: `${w}%` }}
+                  title={c.name || `클립 ${i + 1}`}
+                >
+                  {c.thumb ? <img src={c.thumb} alt="" draggable={false} /> : <div className="vtl-clip-ph" />}
+                  <span className="vtl-clip-n">{i + 1}</span>
+                </div>
+              );
+            })}
+          </div>
+          {/* 재생헤드 — 줄자~트랙 전체 높이를 관통(위에 삼각형). */}
           <div className="vtl-playhead" style={{ left: `${playheadPct}%` }} />
         </div>
       </div>
