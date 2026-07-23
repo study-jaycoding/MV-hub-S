@@ -457,7 +457,7 @@
 /* 가위 드래그 궤적 */
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
 /* 카드 포트(원) — 연결 시작/받는 클릭 손잡이. 평소 숨김, 카드 선택/호버 때만 드러난다.
-   ★위치: 연결선 끝점(.scene-dot·선 끝, 카드밖 PORT_GAP 30px)은 바깥에, 클릭 포트는 카드 가까운 안쪽(≈12px)에 둔다 —
+   ★위치: 연결선 끝점(.scene-dot·선 끝, 카드밖 PORT_GAP 24px)은 바깥에, 클릭 포트는 카드 가까운 안쪽(≈12px)에 둔다 —
    끝점=연결 상태 표시(바깥), 포트=클릭 손잡이(안쪽)로 서로 겹치지 않게 분리. */
 .scene-port {
   position: absolute; width: 9px; height: 9px; border-radius: 50%;
