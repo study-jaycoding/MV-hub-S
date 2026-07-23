@@ -1581,7 +1581,15 @@ export function SceneBoard({
         if (picked.length >= 2) {
           e.preventDefault();
           if (e.repeat) return; // 키 반복 눌림 무시(중복 정렬·undo 오염 방지)
-          const layoutNodes = picked.map((c) => ({ id: c.id, x: c.x, y: c.y, w: widthOf(c), h: heightOf(c) }));
+          // 높이는 '실측 offsetHeight' 우선 — 자동높이 레퍼런스 카드는 이미지 로드에 따라 크기가 변하므로
+          // 캐시(heightsRef)가 한 박자 늦으면 정렬 간격이 들쭉날쭉해진다. 지금 화면의 실제 높이로 정렬한다.
+          const layoutNodes = picked.map((c) => ({
+            id: c.id,
+            x: c.x,
+            y: c.y,
+            w: widthOf(c),
+            h: cardEls.current[c.id]?.offsetHeight || heightOf(c),
+          }));
           const pos = arrangeNodes(layoutNodes, edgesRef.current);
           // 실제로 위치가 바뀐 카드가 없으면(이미 정렬됨) 저장·undo 생략.
           const changed = picked.some((c) => c.x !== pos[c.id].x || c.y !== pos[c.id].y);

@@ -37,15 +37,19 @@ describe("buildRecipeScene", () => {
     expect(gens).toHaveLength(1); // 결과만
     const result = gens[0];
     expect(result.genId).toBe("res1");
+    // 결과 카드에 refs 가 있어 클릭 시 프롬프트에 붙는다(from_card).
+    expect(result.refs).toHaveLength(1);
+    expect(result.refs?.[0].from_card).toBe(true);
+    expect(result.refs?.[0].file_path).toBe("p1");
 
     // 모든 엣지는 결과 카드로 향하고 역할이 있다.
     expect(s.edges.every((e) => e.to === result.id)).toBe(true);
     expect(s.edges.map((e) => e.role).sort()).toEqual(["model", "ref", "text"]);
 
-    // params 의 객체 값은 짧은 문자열로 정규화, primitive 는 그대로.
+    // params: primitive 는 그대로, 객체/배열은 제외(재생성 시 잘못 제출 방지).
     const model = s.cards.find((c) => c.kind === "model")!;
     expect(model.modelCfg?.params?.steps).toBe(20);
-    expect(typeof model.modelCfg?.params?.extra).toBe("string");
+    expect(model.modelCfg?.params?.extra).toBeUndefined();
 
     // 텍스트는 display_prompt 우선.
     expect(s.cards.find((c) => c.kind === "text")!.text).toBe("a @cat");

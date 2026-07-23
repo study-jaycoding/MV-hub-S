@@ -12,16 +12,15 @@ const RIGHT_X = 620; // 결과 카드 열
 const Y_STEP = 200; // 입력 노드 세로 간격
 const START_Y = 40;
 
-// params 값 중 객체/배열은 모델 노드가 primitive 만 받으므로 짧은 JSON 문자열로 정규화.
+// 모델 노드 params 는 primitive 만 — 객체/배열(input_images·medias 등 숨김 입력)은 빼야 한다.
+//  (문자열로 넣으면 이 노드로 재생성할 때 그 값이 잘못 제출될 수 있어 표시·제출 모두에서 제외.)
 function normalizeParams(
   params: Record<string, unknown> | null,
 ): Record<string, string | number | boolean> | undefined {
   if (!params) return undefined;
   const out: Record<string, string | number | boolean> = {};
   for (const [k, v] of Object.entries(params)) {
-    if (v == null) continue;
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[k] = v;
-    else out[k] = JSON.stringify(v).slice(0, 120);
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -80,6 +79,8 @@ export function buildRecipeScene(gen: Generation, history?: History | null): Sce
   }
 
   // 결과 카드 — 오른쪽, 입력 열의 세로 가운데쯤.
+  //  ★refs 도 채운다: 이걸 클릭하면 연결된 레퍼런스가 하단 프롬프트에 붙어 @image 토큰이 해석된다
+  //   (from_card=true — 소스 연결에서 온 참조라 연결이 바뀌면 함께 갱신). 없으면 @image 가 ⚠ 로 뜬다.
   const inputSpan = Math.max(0, y - Y_STEP - START_Y);
   cards.push({
     id: resultId,
@@ -89,6 +90,7 @@ export function buildRecipeScene(gen: Generation, history?: History | null): Sce
     genId: gen.id,
     genIds: [gen.id],
     status: "done",
+    refs: (gen.references || []).map((r) => ({ ...refToSceneRef(r), from_card: true })),
   });
 
   const name = `히스토리 - ${gen.model || "gen"} - ${gen.id.slice(0, 6)}`;
