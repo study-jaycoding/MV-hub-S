@@ -106,11 +106,13 @@ export function variantIds(card: Pick<SceneCard, "genIds" | "genId">): string[] 
 
 // 레퍼런스 목록의 "내용 지문" — 순서·값이 같으면 같은 문자열. uid/role 같은 표시용 필드는 제외.
 // 씬 카드 ↔ 하단 프롬프트 트레이 동기화에서 '내 편집의 에코'를 걸러내 무한 갱신을 막는 데 쓴다.
+//  ★from_card 포함: 소스 연결로 같은 참조의 출처만 바뀌어도(직접@→연결) 트레이가 최신화돼야 유령 참조를
+//   막는다. undefined 를 그대로 넣으면 JSON 이 null 로 직렬화돼 false 와 달라지므로 ?? false 로 정규화.
 export function sceneRefFingerprint(
-  refs: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[],
+  refs: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id" | "from_card">[],
 ): string {
   return JSON.stringify(
-    refs.map((r) => [r.file_path, r.type, r.name ?? "", r.thumb ?? "", r.source_gen_id ?? ""]),
+    refs.map((r) => [r.file_path, r.type, r.name ?? "", r.thumb ?? "", r.source_gen_id ?? "", r.from_card ?? false]),
   );
 }
 
