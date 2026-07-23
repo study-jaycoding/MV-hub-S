@@ -25,7 +25,7 @@ function normalizeParams(
   return Object.keys(out).length ? out : undefined;
 }
 
-function refToSceneRef(r: Reference): SceneRef {
+function refToSceneRef(r: Reference, sourceGenId?: string): SceneRef {
   return {
     // 원본 토큰/URL(source_url) 우선 — file_path 는 로컬 캐시 경로일 수 있어 팀·교차서버에서 안 풀린다.
     //  (SceneRef.file_path 계약 = 'asset:' 토큰 또는 원격 URL, 즉 재해석 가능한 위치. promptParts 와 동일 패턴.)
@@ -33,6 +33,8 @@ function refToSceneRef(r: Reference): SceneRef {
     type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
     name: r.source || r.role || undefined,
     thumb: r.thumbnail_path || null,
+    // 이 레퍼런스가 어떤 생성물(@소스)에서 왔는지 — 재생성·제출 시 히스토리 계보엣지 기록, 씬에선 초록 계보선.
+    source_gen_id: sourceGenId,
   };
 }
 
@@ -51,9 +53,22 @@ export function buildRecipeScene(gen: Generation, history?: History | null): Sce
     y += Y_STEP;
   };
 
+  // 재료(@소스로 쓴 생성물)의 에셋 URL → 그 생성물 id 색인. 이 결과의 레퍼런스가 어느 재료에서 왔는지
+  //  URL 로 되짚어 source_gen_id 를 채운다(계보 기록·초록 계보선). source_url·file_path 양쪽으로 색인.
+  const materialByUrl = new Map<string, string>();
+  for (const m of history?.materials || []) {
+    for (const a of m.assets || []) {
+      if (a.source_url) materialByUrl.set(a.source_url, m.id);
+      if (a.file_path) materialByUrl.set(a.file_path, m.id);
+    }
+  }
+  const sourceGenIdFor = (r: Reference): string | undefined =>
+    (r.source_url ? materialByUrl.get(r.source_url) : undefined) ||
+    (r.file_path ? materialByUrl.get(r.file_path) : undefined);
+
   // 레퍼런스(입력 이미지/영상/오디오) — 하나당 카드 1개.
   for (const r of gen.references || []) {
-    pushInput({ id: uid(), kind: "reference", refs: [refToSceneRef(r)] }, "ref");
+    pushInput({ id: uid(), kind: "reference", refs: [refToSceneRef(r, sourceGenIdFor(r))] }, "ref");
   }
   // 재료(@소스로 쓴 생성물) — 1단계 위 생성물 노드.
   for (const m of history?.materials || []) {
@@ -92,7 +107,7 @@ export function buildRecipeScene(gen: Generation, history?: History | null): Sce
     genId: gen.id,
     genIds: [gen.id],
     status: "done",
-    refs: (gen.references || []).map((r) => ({ ...refToSceneRef(r), from_card: true })),
+    refs: (gen.references || []).map((r) => ({ ...refToSceneRef(r, sourceGenIdFor(r)), from_card: true })),
   });
 
   const name = `히스토리 - ${gen.model || "gen"} - ${gen.id.slice(0, 6)}`;

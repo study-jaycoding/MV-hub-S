@@ -79,6 +79,32 @@ describe("buildRecipeScene", () => {
     expect(result.refs?.[0].file_path).toBe("https://cdn.example/orig.png");
   });
 
+  it("레퍼런스가 재료(@소스) 생성물에서 왔으면 source_gen_id 로 되짚어 계보를 기록", () => {
+    const g = gen({
+      id: "res5",
+      references: [
+        // 이 레퍼런스의 source_url 이 재료 mat1 의 에셋과 일치 → source_gen_id=mat1 이어야.
+        { id: "r1", type: "image", file_path: "/cache/x.png", thumbnail_path: "t", source: "s", role: null, source_url: "https://cdn/mat1.png", cached: true },
+        // 매칭 재료 없음 → source_gen_id 없음.
+        { id: "r2", type: "image", file_path: "asset:p|y.png", thumbnail_path: "t", source: "s", role: null, source_url: null, cached: true },
+      ],
+    });
+    const history = {
+      ancestors: [],
+      materials: [
+        { id: "mat1", assets: [{ id: "a1", generation_id: "mat1", type: "image", file_path: "/media/mat1_local.png", thumbnail_path: null, source_url: "https://cdn/mat1.png", cached: true }] },
+      ],
+      target: {} as Generation,
+      children: [],
+      used_by: [],
+      siblings: [],
+    } as unknown as History;
+    const s = buildRecipeScene(g, history);
+    const result = s.cards.filter((c) => c.kind === "generation").find((c) => c.genId === "res5")!;
+    expect(result.refs?.find((r) => r.file_path === "https://cdn/mat1.png")?.source_gen_id).toBe("mat1");
+    expect(result.refs?.find((r) => r.file_path === "asset:p|y.png")?.source_gen_id).toBeUndefined();
+  });
+
   it("source_url 이 없으면 file_path 로 폴백", () => {
     const g = gen({
       id: "res4",
