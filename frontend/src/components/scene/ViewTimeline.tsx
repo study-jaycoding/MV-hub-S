@@ -29,12 +29,16 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
   const [clipTime, setClipTime] = useState(0);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+  const [loop, setLoop] = useState(false); // 반복 재생(끝나면 처음부터)
+  const [cycle, setCycle] = useState(0); // 클립을 처음부터 다시 시작할 때마다 증가 — 같은 클립 재시작(단일/반복) 강제 remount 용
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekRef = useRef<number | null>(null); // 클립 전환 후 적용할 seek 오프셋(초)
   const idxRef = useRef(idx);
   idxRef.current = idx;
   const playingRef = useRef(playing);
   playingRef.current = playing;
+  const loopRef = useRef(loop);
+  loopRef.current = loop;
   const durationsRef = useRef(durations);
   durationsRef.current = durations;
   const clipTimeRef = useRef(clipTime);
@@ -76,15 +80,19 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     };
   }, [clips]);
 
-  // 다음 클립으로(마지막이면 정지, 재생헤드 끝).
+  // 다음 클립으로. 마지막이면: 반복 ON → 처음(0)부터, OFF → 정지.
+  //  cycle 을 올려 video key(idx-cycle) 를 바꿔, 같은 클립으로 되돌아가는 경우(단일 클립/반복)에도 remount·재시작되게 한다.
   const goNext = useCallback(() => {
-    if (idxRef.current + 1 < clips.length) {
-      seekRef.current = 0;
-      setClipTime(0);
-      setIdx(idxRef.current + 1);
-    } else {
+    const nextIdx =
+      idxRef.current + 1 < clips.length ? idxRef.current + 1 : loopRef.current ? 0 : -1;
+    if (nextIdx < 0) {
       setPlaying(false);
+      return;
     }
+    seekRef.current = 0;
+    setClipTime(0);
+    setCycle((c) => c + 1);
+    setIdx(nextIdx);
   }, [clips.length]);
 
   // 가상 시간(vt)으로 이동 — 어느 클립의 어느 오프셋인지 찾아 seek.
@@ -186,15 +194,16 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isVideo, playing, idx, cur, goNext]);
+  }, [isVideo, playing, idx, cycle, cur, goNext]); // cycle: 단일/반복 이미지 클립 재시작 시 rAF 재개
 
   // Esc 닫기 · Space 재생/정지.
+  const togglePlayRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
       else if (e.key === " ") {
         e.preventDefault();
-        setPlaying((p) => !p);
+        togglePlayRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -230,7 +239,23 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
     window.addEventListener("mouseup", up);
   };
 
+  // 재생/정지 — 끝에서 '재생'을 누르면 처음부터 다시.
+  const atEnd = total > 0 && virtual >= total - 0.05;
+  const togglePlay = () => {
+    if (!playing && atEnd) seekTo(0);
+    setPlaying((p) => !p);
+  };
+  togglePlayRef.current = togglePlay;
+
   const playheadPct = total > 0 ? (virtual / total) * 100 : 0;
+
+  // 타임 눈금 — 총 길이에 맞춰 ~7개 간격의 눈금·시간 라벨.
+  const rulerTicks: number[] = [];
+  if (total > 0) {
+    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    const step = steps.find((s) => total / s <= 8) ?? 600;
+    for (let t = 0; t <= total + 0.001; t += step) rulerTicks.push(t);
+  }
 
   return (
     <div className="vtl-backdrop" onMouseDown={onClose}>
@@ -245,7 +270,7 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
           {cur ? (
             isVideo ? (
               <video
-                key={idx}
+                key={`${idx}-${cycle}`}
                 ref={videoRef}
                 src={cur.url}
                 onLoadedMetadata={onLoaded}
@@ -254,15 +279,22 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
                 playsInline
               />
             ) : (
-              <img key={idx} src={cur.url} alt={cur.name || ""} draggable={false} />
+              <img key={`${idx}-${cycle}`} src={cur.url} alt={cur.name || ""} draggable={false} />
             )
           ) : (
             <div className="vtl-empty">재생할 생성물이 없습니다</div>
           )}
         </div>
         <div className="vtl-controls">
-          <button className="vtl-play" title="재생/정지 (Space)" onClick={() => setPlaying((p) => !p)}>
+          <button className="vtl-play" title="재생/정지 (Space)" onClick={togglePlay}>
             {playing ? "❚❚" : "▶"}
+          </button>
+          <button
+            className={"vtl-loop" + (loop ? " on" : "")}
+            title={loop ? "반복 재생 켜짐" : "한 번 재생"}
+            onClick={() => setLoop((l) => !l)}
+          >
+            🔁
           </button>
           <span className="vtl-time">
             {fmt(virtual)} <span className="vtl-time-sep">/</span> {fmt(total)}
@@ -284,6 +316,13 @@ export function ViewTimeline({ clips, onClose }: { clips: TimelineClip[]; onClos
               }}
             />
           </div>
+        </div>
+        <div className="vtl-ruler">
+          {rulerTicks.map((t) => (
+            <div key={t} className="vtl-ruler-tick" style={{ left: `${(t / total) * 100}%` }}>
+              <span className="vtl-ruler-label">{fmt(t)}</span>
+            </div>
+          ))}
         </div>
         <div className="vtl-track" ref={trackRef} onMouseDown={onTrackDown}>
           {clips.map((c, i) => {
