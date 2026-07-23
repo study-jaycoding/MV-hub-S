@@ -207,8 +207,8 @@ export function SceneBoard({
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
-  const nodePickerRef = useRef(false);
-  nodePickerRef.current = !!nodePicker;
+  const nodePickerRef = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
+  nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
@@ -887,6 +887,45 @@ export function SceneBoard({
     setSelected(new Set([card.id]));
     persist(nextCards, edgesRef.current);
   };
+  // 'New'(빈 생성 카드) 생성 — 선택된 카드(들)에서 새 카드로 자동 연결(부적합 소스는 제외). 아무것도
+  // 선택 안 했으면 단독. pos 있으면 그 위치(피커), 없으면 선택 오른쪽/마우스 위치에.
+  const createGenerationConnected = (pos?: { x: number; y: number }) => {
+    const srcCards = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((c) => c.id === id))
+      .filter((c): c is SceneCard => !!c);
+    let nx: number;
+    let ny: number;
+    if (pos) {
+      nx = pos.x;
+      ny = pos.y;
+    } else if (srcCards.length) {
+      nx = Math.max(...srcCards.map((c) => c.x + widthOf(c))) + 64;
+      ny = Math.round(srcCards.reduce((s, c) => s + c.y, 0) / srcCards.length);
+    } else {
+      const sp = cursorSpawn();
+      nx = sp.x;
+      ny = sp.y;
+    }
+    const empty: SceneCard = {
+      id: uid(),
+      kind: "generation",
+      x: nx,
+      y: ny,
+      status: "empty",
+      refs: [],
+      genId: null,
+    };
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const newEdges: SceneEdge[] = srcCards
+      .filter((c) => canConnect(c, empty, byId, edgesRef.current)) // view 등 소스로 부적절한 카드 제외
+      .map((c) => ({ id: uid(), from: c.id, to: empty.id }));
+    const nextEdges = [...edgesRef.current, ...newEdges];
+    const nextCards = withGenRefs([...cardsRef.current, empty], nextEdges);
+    setCards(nextCards);
+    setEdges(nextEdges);
+    setSelected(new Set([empty.id]));
+    persist(nextCards, nextEdges);
+  };
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
@@ -1259,6 +1298,30 @@ export function SceneBoard({
         return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
       }
       const sel = selectedRef.current;
+      // ── 노드 생성 단축키(N/M/L/T/V/O/I/H)는 Tab 피커가 열렸을 때만 작동 — 피커 위치에 만들고 닫는다.
+      //    (a=정렬을 비롯한 그 외 단축키는 피커와 무관하게 평소대로.) 피커 없으면 이 키들은 아무것도 안 함.
+      const np = nodePickerRef.current;
+      if (np && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const NODE_KEYS: Record<string, SceneCardKind> = {
+          n: "generation",
+          m: "model",
+          l: "list",
+          t: "text",
+          v: "view",
+          o: "output",
+          i: "input",
+          h: "head",
+        };
+        const kind = NODE_KEYS[e.key.toLowerCase()];
+        if (kind) {
+          e.preventDefault();
+          const at = { x: np.cx, y: np.cy };
+          setNodePicker(null);
+          if (kind === "generation") createGenerationConnected(at);
+          else createNode(kind, at);
+          return;
+        }
+      }
       // Tab = Houdini식 노드 피커. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
       // 이동을 막지 않는다(접근성). 위 모달 가드(cardMenu) 통과 후라 팝업 중엔 안 뜬다.
       if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -1419,84 +1482,7 @@ export function SceneBoard({
         if (!e.repeat) setCutHeld(true); // 누르고 있는 동안만 가위 — 반복 keydown 무시
         return;
       }
-      if (e.key === "n" || e.key === "N") {
-        // 선택된 것(레퍼런스/카드) 전부에서 새 카드 하나로 연결. 하나만 잡으면 엣지 1개.
-        // 아무것도 선택 안 했으면 → 화면 중앙에 '단독' 빈 생성 카드(연결 없음).
-        const srcCards = [...sel]
-          .map((id) => cardsRef.current.find((c) => c.id === id))
-          .filter((c): c is SceneCard => !!c);
-        e.preventDefault();
-        let nx: number;
-        let ny: number;
-        if (srcCards.length) {
-          // 선택 있음 → 선택된 것들의 실제 오른쪽 끝 + 간격(리사이즈로 넓힌 카드와도 안 겹치게).
-          nx = Math.max(...srcCards.map((c) => c.x + widthOf(c))) + 64;
-          ny = Math.round(srcCards.reduce((s, c) => s + c.y, 0) / srcCards.length);
-        } else {
-          // 선택 없음 → 마우스 위치(캔버스 위)에. 캔버스 밖이면 화면 중앙 폴백.
-          const m = lastMouseRef.current;
-          const rect = scrollRef.current?.getBoundingClientRect();
-          if (m.over) {
-            const p = toCanvas(m.x, m.y);
-            nx = Math.round(p.x - CARD_W / 2);
-            ny = Math.round(p.y - CARD_H / 2);
-          } else if (rect) {
-            const center = toCanvas(rect.left + rect.width / 2, rect.top + rect.height / 2);
-            nx = Math.round(center.x - CARD_W / 2);
-            ny = Math.round(center.y - CARD_H / 2);
-          } else {
-            nx = 200;
-            ny = 200;
-          }
-        }
-        const empty: SceneCard = {
-          id: uid(),
-          kind: "generation",
-          x: nx,
-          y: ny,
-          status: "empty",
-          refs: [],
-          genId: null,
-        };
-        const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-        const newEdges: SceneEdge[] = srcCards
-          .filter((c) => canConnect(c, empty, byId, edgesRef.current)) // view 등 소스로 부적절한 카드 제외
-          .map((c) => ({ id: uid(), from: c.id, to: empty.id }));
-        const nextEdges = [...edgesRef.current, ...newEdges];
-        const nextCards = withGenRefs([...cardsRef.current, empty], nextEdges);
-        setCards(nextCards);
-        setEdges(nextEdges);
-        setSelected(new Set([empty.id]));
-        persist(nextCards, nextEdges);
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M")) {
-        e.preventDefault(); // M = 모델 노드
-        setNodePicker(null);
-        createNode("model");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "l" || e.key === "L")) {
-        e.preventDefault(); // L = 리스트 노드
-        setNodePicker(null);
-        createNode("list");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "t" || e.key === "T")) {
-        e.preventDefault(); // T = 텍스트 노드
-        setNodePicker(null);
-        createNode("text");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "v" || e.key === "V")) {
-        e.preventDefault(); // V = View 노드
-        setNodePicker(null);
-        createNode("view");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "o" || e.key === "O")) {
-        e.preventDefault(); // O = Output(무선 발신) 노드
-        setNodePicker(null);
-        createNode("output");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "i" || e.key === "I")) {
-        e.preventDefault(); // I = Input(무선 수신) 노드
-        setNodePicker(null);
-        createNode("input");
-      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "h" || e.key === "H")) {
-        e.preventDefault(); // H = Head(제목 글씨) 노드
-        setNodePicker(null);
-        createNode("head");
-      } else if (e.key === "Delete") {
+      if (e.key === "Delete") {
         if (!sel.size) return;
         e.preventDefault();
         deleteCards([...sel]);
@@ -3296,7 +3282,8 @@ export function SceneBoard({
                   e.stopPropagation();
                   const at = { x: nodePicker.cx, y: nodePicker.cy };
                   setNodePicker(null);
-                  createNode(kind, at);
+                  if (kind === "generation") createGenerationConnected(at);
+                  else createNode(kind, at);
                 }}
               >
                 <span className="scene-nodepick-name">{label}</span>
@@ -3718,7 +3705,7 @@ export function SceneBoard({
           <div className="scene-empty-title">{scene.name}</div>
           <b>에셋 창에서 레퍼런스를 이 화면으로 드래그</b>하면 레퍼런스 카드가 만들어집니다.
           <div className="scene-empty-hint">
-            카드 선택 후 <b>N</b> 키 → 빈 생성 카드 연결 · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
+            <b>Tab</b> → 노드 만들기 메뉴(New/Model/List/Text/View/Output/Input/Head) · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
           </div>
         </div>
       )}
