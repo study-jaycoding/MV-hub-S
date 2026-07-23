@@ -2233,7 +2233,7 @@ export function SceneBoard({
                     toggleGroupCollapsed(g.id);
                   }}
                 >
-                  {collapsed ? "▸" : "▾"}
+                  {collapsed ? "+" : "−"}
                 </button>
                 <div className="scene-group-colorwrap" onMouseDown={(e) => e.stopPropagation()}>
                   <button
