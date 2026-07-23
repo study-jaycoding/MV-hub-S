@@ -441,10 +441,10 @@ export function SpotlightPrompt({
   }, [mention, model, trayRefs]);
 
   // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
-  // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지.
-  const onEditorPaste = (e: React.ClipboardEvent) => {
+  // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지. 처리했으면 true.
+  const pasteCaptureAsRef = (e: { clipboardData: DataTransfer | null; preventDefault: () => void }): boolean => {
     const items = e.clipboardData?.items;
-    if (!items) return;
+    if (!items) return false;
     let blob: File | null = null;
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.startsWith("image/")) {
@@ -452,7 +452,7 @@ export function SpotlightPrompt({
         break;
       }
     }
-    if (!blob) return; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
+    if (!blob) return false; // 이미지 없음 → 기본 동작(텍스트 붙여넣기)
     e.preventDefault();
     api
       .uploadCapture(blob)
@@ -460,7 +460,26 @@ export function SpotlightPrompt({
         addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }])),
       )
       .catch((err) => flashMsg("캡쳐 추가 실패: " + String(err)));
+    return true;
   };
+  const onEditorPaste = (e: React.ClipboardEvent) => {
+    pasteCaptureAsRef(e);
+  };
+  // 트레이(레퍼런스 넣는 곳)를 클릭한 상태에서 붙여넣기 — 에디터가 포커스가 아니라 React onPaste 가 안 걸린다.
+  //  dock 안에 포커스가 있으면(에디터 제외) document paste 를 받아 캡쳐를 레퍼런스로 넣는다. 최신 클로저는 ref 로.
+  const pasteCaptureRef = useRef(pasteCaptureAsRef);
+  pasteCaptureRef.current = pasteCaptureAsRef;
+  useEffect(() => {
+    const onDocPaste = (e: ClipboardEvent) => {
+      if (e.defaultPrevented) return; // 에디터 등 다른 핸들러가 이미 처리
+      const active = document.activeElement as HTMLElement | null;
+      if (!active?.closest(".sl-dockbar")) return; // 프롬프트 dock 밖(캔버스 등)은 무시 — 그쪽이 처리
+      if (active.isContentEditable) return; // 에디터는 자체 onPaste 가 처리(중복 방지)
+      pasteCaptureRef.current(e);
+    };
+    document.addEventListener("paste", onDocPaste);
+    return () => document.removeEventListener("paste", onDocPaste);
+  }, []);
 
   // 프롬프트 전체를 클립보드로 복사 — @소스명 토큰을 포함한 표시 프롬프트(화면 그대로).
   const copyPrompt = () => {

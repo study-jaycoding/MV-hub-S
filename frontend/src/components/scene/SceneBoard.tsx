@@ -1451,7 +1451,8 @@ export function SceneBoard({
         (t.tagName === "INPUT" ||
           t.tagName === "TEXTAREA" ||
           t.tagName === "SELECT" ||
-          t.isContentEditable)
+          t.isContentEditable ||
+          t.closest?.(".sl-dockbar")) // 프롬프트 dock(레퍼런스 트레이 등) 포커스 시 캔버스 단축키(Delete·m·l 등) 차단
       )
         return;
       // 텍스트/제목 노드 편집 중이면(포커스가 새어도) 캔버스 단축키(m/l/t/o/i/h 등)를 무시 — 글자가 노드 생성으로 새지 않게.
@@ -1720,7 +1721,16 @@ export function SceneBoard({
     )
       return;
     const ae = document.activeElement as HTMLElement | null;
-    if (ae && ae !== t && (ae.isContentEditable || ae.tagName === "INPUT" || ae.tagName === "TEXTAREA"))
+    // 편집 요소 + 프롬프트 dock(레퍼런스 트레이 등) 포커스를 캔버스 클릭 시 해제 — 안 하면 트레이가 계속
+    //  포커스로 남아, 캔버스 클릭 후 붙여넣기가 캔버스 카드 대신 트레이로 잘못 가던 문제가 생긴다.
+    if (
+      ae &&
+      ae !== t &&
+      (ae.isContentEditable ||
+        ae.tagName === "INPUT" ||
+        ae.tagName === "TEXTAREA" ||
+        ae.closest(".sl-dockbar"))
+    )
       ae.blur();
   };
 
@@ -2013,14 +2023,16 @@ export function SceneBoard({
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       const t = e.target as HTMLElement | null;
+      const active = document.activeElement as HTMLElement | null;
       if (
-        t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable ||
-          t.closest?.("input, textarea, [contenteditable=true]"))
+        (t &&
+          (t.tagName === "INPUT" ||
+            t.tagName === "TEXTAREA" ||
+            t.isContentEditable ||
+            t.closest?.("input, textarea, [contenteditable=true], .sl-dockbar"))) ||
+        active?.closest(".sl-dockbar") // 트레이 포커스면 paste 가 body 를 타깃해도 프롬프트가 처리
       )
-        return; // 프롬프트 등 편집 중이면 그쪽 paste 가 처리
+        return; // 프롬프트 dock(에디터·레퍼런스 트레이 포함) 안에서 붙여넣으면 그쪽이 처리 — 캔버스 카드로 안 가로챈다
       const items = e.clipboardData?.items;
       let blob: File | null = null;
       if (items)
