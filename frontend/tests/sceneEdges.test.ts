@@ -257,6 +257,20 @@ describe("collectViewGenCardIds", () => {
     ];
     expect(collectViewGenCardIds("V", cards, edges)).toEqual([]);
   });
+  it("render 노드도 리스트처럼 그 안의 생성 카드들을 펼쳐 View 로 넘긴다", () => {
+    const cards = byId([
+      node("V", "view"),
+      node("RN", "render"),
+      node("G1", "generation", { y: 0 }),
+      node("G2", "generation", { y: 100 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "RN", to: "V" }, // render → view
+      { id: "e2", from: "G1", to: "RN" },
+      { id: "e3", from: "G2", to: "RN" },
+    ];
+    expect(collectViewGenCardIds("V", cards, edges)).toEqual(["G1", "G2"]);
+  });
 });
 
 describe("collectRenderGenCardIds", () => {
@@ -398,15 +412,16 @@ describe("canConnect", () => {
     expect(canConnect(c("T", "text"), V)).toBe(true);
     expect(canConnect(c("M", "model"), V)).toBe(false);
   });
-  it("render 는 generation 만(순수 싱크 — 소스로는 못 씀)", () => {
+  it("render 입력은 generation 만, 출력은 미리보기(View)에만", () => {
     const R = c("R", "render");
     expect(canConnect(c("G", "generation"), R)).toBe(true);
     expect(canConnect(c("L", "list"), R)).toBe(false);
     expect(canConnect(c("T", "text"), R)).toBe(false);
     expect(canConnect(c("M", "model"), R)).toBe(false);
-    // render 는 어디에도 소스가 될 수 없다
+    // render 는 소스로는 View 에만 연결(그 외는 불가)
+    expect(canConnect(c("R", "render"), c("V", "view"))).toBe(true);
     expect(canConnect(c("R", "render"), c("G", "generation"))).toBe(false);
-    expect(canConnect(c("R", "render"), c("V", "view"))).toBe(false);
+    expect(canConnect(c("R", "render"), c("L", "list"))).toBe(false);
   });
   it("text 는 reference/generation/list 입력(레퍼런스), model/text/reference 는 입력 없음, 자기연결 금지", () => {
     expect(canConnect(c("R", "reference"), c("T", "text"))).toBe(true);

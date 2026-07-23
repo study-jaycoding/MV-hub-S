@@ -23,7 +23,7 @@ export function canConnect(
   if (from.id === to.id) return false;
   if (from.kind === "head" || to.kind === "head") return false; // head 는 포트 없는 주석 노드
   if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
-  if (from.kind === "render") return false; // render 는 순수 싱크(배치 트리거) — 소스가 될 수 없음
+  if (from.kind === "render") return to.kind === "view"; // render 는 미리보기(View)에만 연결 — 안의 생성물들을 리스트처럼 넘긴다
   // input 을 소스로 놓으면 실제 소스로 해석해 그 종류로 검증(input 자체는 어디에도 못 풂 → 컨텍스트 없으면 불가)
   if (from.kind === "input") {
     if (!cardsById || !edges) return false;
@@ -174,6 +174,9 @@ export function collectViewGenCardIds(
     else if (c.kind === "list") {
       const li = collectListInputs(c.id, cardsById, edges);
       if (li.kind === "generation") li.generationCardIds.forEach(push);
+    } else if (c.kind === "render") {
+      // 렌더 노드도 리스트처럼 그 안의 생성 카드들을 펼쳐 넘긴다.
+      collectRenderGenCardIds(c.id, cardsById, edges).forEach(push);
     }
   }
   return out;

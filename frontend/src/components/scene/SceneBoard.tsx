@@ -3214,6 +3214,11 @@ export function SceneBoard({
                       )}
                       <span className="scene-port in" title="생성 카드를 연결해 모음" />
                       <span
+                        className="scene-port out"
+                        onMouseDown={(e) => onOutPortDown(e, card.id)}
+                        title="드래그해 미리보기(View)에 연결 — 담긴 생성물들을 재생"
+                      />
+                      <span
                         className="scene-resize"
                         onMouseDown={(e) => onResizeDown(e, card.id)}
                         title="드래그해 크기 조절"
