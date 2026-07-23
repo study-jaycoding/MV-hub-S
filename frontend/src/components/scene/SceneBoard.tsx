@@ -879,13 +879,12 @@ export function SceneBoard({
       const z = zoomRef.current;
       const w = Math.max(CARD_MIN_W, snapGrid(startW + (ev.clientX - sx) / z));
       const h = Math.max(CARD_MIN_H, snapGrid(startH + (ev.clientY - sy) / z));
-      setCards((prev) => {
-        const cur = prev.find((cc) => cc.id === cardId);
-        if (cur && cur.w === w && cur.h === h) return prev; // 스냅값 그대로면 리렌더 스킵
-        const next = prev.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
-        cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 크기를 쓰게 즉시 동기화
-        return next;
-      });
+      const prevCards = cardsRef.current;
+      const cur = prevCards.find((cc) => cc.id === cardId);
+      if (cur && cur.w === w && cur.h === h) return; // 스냅값 그대로면 리렌더 스킵
+      const next = prevCards.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
+      cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 크기를 읽게
+      setCards(next);
     };
     const up = () => persist(cardsRef.current, edgesRef.current);
     beginDrag(move, up);
@@ -1749,13 +1748,11 @@ export function SceneBoard({
           const sdy = gAnchor ? snapGrid(gAnchor.y + dy) - gAnchor.y : dy;
           if (sdx === gLastSdx && sdy === gLastSdy) return; // 스냅 위치 그대로면 리렌더 스킵
           gLastSdx = sdx; gLastSdy = sdy;
-          setCards((prev) => {
-            const next = prev.map((c) =>
-              origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
-            );
-            cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 좌표를 쓰게 즉시 동기화
-            return next;
-          });
+          const next = cardsRef.current.map((c) =>
+            origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
+          );
+          cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 좌표를 읽게
+          setCards(next);
           if (gOrigRect) {
             gLastRect = { ...gOrigRect, x: gOrigRect.x + sdx, y: gOrigRect.y + sdy };
             setGroups((prev) => prev.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x)));
@@ -1811,15 +1808,14 @@ export function SceneBoard({
         // 잡은 카드의 최종 위치를 22px 격자에 스냅 → 그 스냅된 이동량을 전체에 적용.
         const sdx = snapGrid(anchor.x + dx) - anchor.x;
         const sdy = snapGrid(anchor.y + dy) - anchor.y;
-        setCards((prev) => {
-          const a = prev.find((c) => c.id === id);
-          if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return prev; // 스냅 후 위치 그대로면 스킵
-          const next = prev.map((c) =>
-            origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
-          );
-          cardsRef.current = next; // rAF flush 대비 — up 의 persist 가 최신 좌표를 쓰게 즉시 동기화
-          return next;
-        });
+        const prevCards = cardsRef.current;
+        const a = prevCards.find((c) => c.id === id);
+        if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return; // 스냅 후 위치 그대로면 스킵
+        const next = prevCards.map((c) =>
+          origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
+        );
+        cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
+        setCards(next);
       };
       const up = () => {
         if (moved) {
