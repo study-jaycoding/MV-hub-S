@@ -456,19 +456,21 @@
 .scene-edge.bridge { stroke: #8a8f98; stroke-width: 1.8; stroke-dasharray: 2 6; opacity: 0.6; }
 /* 가위 드래그 궤적 */
 .scene-cut-stroke { fill: none; stroke: #f2777c; stroke-width: 2; stroke-dasharray: 4 4; opacity: 0.85; }
-/* 카드 포트(원) — 연결점. 평소 숨김(pointer-events 없음), 카드를 선택할 때만 카드 밖으로 떨어져 나와 잡힌다.
-   ★위치: 카드 가장자리에서 PORT_GAP(12px)+반지름(9px)=21px 밖 → 끝점 좌표(edgeEnds)와 동심(원 안 점이 중앙). */
-/* 크기(9px 콘텐츠 + 2px 링 = 13px)를 연결선 끝점 점(.scene-dot: r5.5)과 똑같이 맞춰, 연결된 포트는 끝점과 완전히 겹쳐 '하나의 점'으로 보인다. */
+/* 카드 포트(원) — 연결 시작/받는 클릭점. 평소 숨김, 카드 선택/호버 때만 드러난다.
+   ★위치: 연결선 끝점(.scene-dot, 카드밖 PORT_GAP 12px)과 겹쳐 보이지 않게 포트를 더 바깥(32px)으로 뺀다 —
+   연결된 포트가 끝점 점과 한 자리에 포개져 '연결이 안 풀린 것처럼' 보이던 혼동 방지. 끝점=연결 상태 표시, 포트=클릭 손잡이. */
 .scene-port {
   position: absolute; width: 9px; height: 9px; border-radius: 50%;
   top: 50%; transform: translateY(-50%); background: transparent; border: 2px solid transparent;
   z-index: 8; opacity: 0; pointer-events: none; transition: opacity 0.08s;
 }
-/* 보이지 않는 넓은 잡기 영역 — 작은 점이라도 넉넉히 잡히게(마우스다운·elementFromPoint 모두 이 원소로 판정). */
+/* 보이지 않는 넓은 잡기 영역 — 작은 점이라도 넉넉히 잡히게(마우스다운·elementFromPoint 모두 이 원소로 판정).
+   포트를 바깥으로 뺐으므로 카드 쪽(안쪽)으로 더 늘려, 카드→포트로 마우스를 옮겨도 호버가 끊기지 않게 한다. */
 .scene-port::before { content: ""; position: absolute; inset: -12px; border-radius: 50%; }
-/* 끝점 좌표(edgeEnds=카드밖 PORT_GAP 12px)와 점 중심이 겹치게: 반지름 6.5 → 12+6.5≈18px */
-.scene-port.out { right: -18px; cursor: crosshair; }
-.scene-port.in { left: -18px; }
+.scene-port.out { right: -32px; cursor: crosshair; }
+.scene-port.out::before { inset: -12px -6px -12px -26px; }
+.scene-port.in { left: -32px; }
+.scene-port.in::before { inset: -12px -26px -12px -6px; }
 /* 노드 종류별 포트 색(--pc) — 선택 시 포트가 그 노드 고유색으로 채워진다. 테두리(선택 링)는 라임 유지. */
 .scene-card-gen { --pc: var(--accent); }
 .scene-card-model { --pc: #ffb84d; }
