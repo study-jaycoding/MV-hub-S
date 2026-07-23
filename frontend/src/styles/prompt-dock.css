@@ -133,6 +133,14 @@
   cursor: grab; user-select: none;
 }
 .sl-reftray-item:active { cursor: grabbing; }
+/* 순서변경으로 잡고 있는 항목 — 흐리게 */
+.sl-reftray-item.reordering { opacity: 0.4; }
+/* 삽입 위치 흰 세로선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
+.sl-reftray-line {
+  position: fixed; width: 3px; z-index: 60; pointer-events: none;
+  background: #fff; border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 6px rgba(255, 255, 255, 0.8);
+}
 .sl-reftray-item img, .sl-reftray-item video, .sl-reftray-ph {
   width: 66px; height: 66px; border-radius: 10px; object-fit: cover;
   background: #050608; border: 1px solid var(--border2); display: block;

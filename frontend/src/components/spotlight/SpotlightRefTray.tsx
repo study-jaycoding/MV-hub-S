@@ -1,4 +1,4 @@
-import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { displayThumb, hideBrokenImg } from "../../lib/media";
 import { refSrc } from "../../lib/promptParts";
 import type { ChipRef } from "../../lib/promptEditor";
@@ -25,8 +25,7 @@ interface Props {
   onDragOver: (event: DragEvent<HTMLElement>) => void;
   onDrop: (event: DragEvent<HTMLElement>) => void;
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
-  onItemDragStart: (index: number) => (event: DragEvent<HTMLElement>) => void;
-  onItemDrop: (index: number) => (event: DragEvent<HTMLElement>) => void;
+  onReorder: (from: number, insertIndex: number) => void; // 마우스 드래그로 확정된 순서변경(from → insertIndex)
   onRemove: (index: number) => void;
   onClearAll: () => void;
   onPreview?: (target: PreviewTarget) => void; // 항목 더블클릭 → 원본 크게 보기
@@ -39,14 +38,80 @@ export function SpotlightRefTray({
   onDragOver,
   onDrop,
   onKeyDown,
-  onItemDragStart,
-  onItemDrop,
+  onReorder,
   onRemove,
   onClearAll,
   onPreview,
 }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  // 순서변경 드래그 — 삽입 위치 세로 흰 선(화면좌표·fixed) + 잡고 있는 항목(흐리게)
+  const [line, setLine] = useState<{ x: number; y: number; h: number } | null>(null);
+  const [fromIdx, setFromIdx] = useState<number | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => cleanupRef.current?.(), []); // 드래그 중 언마운트 시 리스너 정리
+
+  // 항목을 마우스로 잡아 순서 변경 — HTML5 네이티브 드래그 대신(빠르게 움직여도 안정적).
+  // 4px 이상 움직여야 시작(단일/더블 클릭은 그대로 미리보기·선택). 삽입 위치를 흰 세로선으로 표시.
+  const startReorder = (e: MouseEvent<HTMLDivElement>, index: number) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return; // × 등 버튼은 제외
+    const container = containerRef.current;
+    if (!container) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    let insertIndex = -1;
+    const GAP = 4;
+    const recompute = (cx: number, cy: number) => {
+      const items = Array.from(container.querySelectorAll<HTMLElement>("[data-tidx]"));
+      if (!items.length) return;
+      // 가로 배치 — 중심이 포인터에 가장 가까운 항목 기준, 포인터가 그 중심보다 오른쪽이면 뒤에 삽입.
+      let best = 0, bestD = Infinity, after = false;
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i].getBoundingClientRect();
+        const c = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        const d = Math.hypot(cx - c.x, cy - c.y);
+        if (d < bestD) { bestD = d; best = i; after = cx > c.x; }
+      }
+      const idx = after ? best + 1 : best;
+      if (idx < items.length) {
+        const r = items[idx].getBoundingClientRect();
+        setLine({ x: r.left - GAP, y: r.top, h: r.height });
+      } else {
+        const r = items[items.length - 1].getBoundingClientRect();
+        setLine({ x: r.right + GAP - 3, y: r.top, h: r.height });
+      }
+      insertIndex = idx;
+    };
+    const onMove = (ev: globalThis.MouseEvent) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+        dragging = true;
+        setFromIdx(index);
+      }
+      recompute(ev.clientX, ev.clientY);
+    };
+    const finish = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      cleanupRef.current = null;
+      setLine(null);
+      setFromIdx(null);
+    };
+    const onUp = () => {
+      const wasDragging = dragging;
+      const ii = insertIndex;
+      finish();
+      if (wasDragging && ii >= 0) onReorder(index, ii);
+    };
+    cleanupRef.current = finish;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
     <div
+      ref={containerRef}
       className="sl-reftray"
       tabIndex={0}
       onDragOver={onDragOver}
@@ -74,11 +139,9 @@ export function SpotlightRefTray({
           return (
             <div
               key={ref.uid}
-              className="sl-reftray-item"
-              draggable
-              onDragStart={onItemDragStart(index)}
-              onDragOver={onDragOver}
-              onDrop={onItemDrop(index)}
+              className={"sl-reftray-item" + (fromIdx === index ? " reordering" : "")}
+              data-tidx={index}
+              onMouseDown={(e) => startReorder(e, index)}
               onDoubleClick={() =>
                 onPreview?.({
                   url: refSrc(ref.file_path) || ref.thumb,
@@ -86,7 +149,7 @@ export function SpotlightRefTray({
                   name: ref.name,
                 })
               }
-              title={`${displayIndex}. ${ref.name} · ${badgeTitle} · 더블클릭=크게 보기`}
+              title={`${displayIndex}. ${ref.name} · ${badgeTitle} · 드래그=순서변경 · 더블클릭=크게 보기`}
             >
               <span className="sl-reftray-num">{displayIndex}</span>
               {ref.type === "video" ? (
@@ -108,8 +171,6 @@ export function SpotlightRefTray({
               ) : (ref.type as string) === "audio" ? (
                 <span className="sl-reftray-ph">A</span>
               ) : ref.thumb ? (
-                // draggable=false: 썸네일 자체가 네이티브 이미지 드래그가 되면 크롬이 합성 파일을
-                // 만들어 순서변경이 '외부 파일 추가'로 처리된다. 드래그 주체는 항상 바깥 항목 div.
                 <img
                   src={displayThumb(ref.thumb) || undefined}
                   alt=""
@@ -146,6 +207,10 @@ export function SpotlightRefTray({
           <span className="sl-reftray-clear-ic" aria-hidden>⌫</span>
         </button>
         </>
+      )}
+      {/* 순서변경 삽입 위치 — 화면좌표(fixed) 흰 세로선 */}
+      {line && (
+        <div className="sl-reftray-line" style={{ left: line.x, top: line.y, height: line.h }} />
       )}
     </div>
   );

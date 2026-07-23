@@ -176,7 +176,7 @@ export function SpotlightPrompt({
   const {
     trayRefs, setTrayRefs, sceneMode, withFreshTrayUids,
     addAssetToTray, removeTrayRef, onTrayKeyDown, onTrayDragOver, onTrayDrop,
-    onTrayItemDragStart, onTrayItemDrop,
+    reorderTray,
   } = useSpotlightTray({
     trayBinding,
     onTrayBindingRefsChange,
@@ -1087,8 +1087,7 @@ export function SpotlightPrompt({
               onDragOver={onTrayDragOver}
               onDrop={onTrayDrop}
               onKeyDown={onTrayKeyDown}
-              onItemDragStart={onTrayItemDragStart}
-              onItemDrop={onTrayItemDrop}
+              onReorder={reorderTray}
               onRemove={removeTrayRef}
               onClearAll={() => setTrayRefs([])}
               onPreview={onPreview}

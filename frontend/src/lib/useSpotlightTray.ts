@@ -36,8 +36,7 @@ export interface SpotlightTrayApi {
   onTrayKeyDown: (e: React.KeyboardEvent) => void;
   onTrayDragOver: (e: React.DragEvent) => void;
   onTrayDrop: (e: React.DragEvent) => void;
-  onTrayItemDragStart: (i: number) => (e: React.DragEvent) => void;
-  onTrayItemDrop: (i: number) => (e: React.DragEvent) => void;
+  reorderTray: (from: number, insertIndex: number) => void;
 }
 
 export function useSpotlightTray({
@@ -149,44 +148,18 @@ export function useSpotlightTray({
       onImportFiles(Array.from(e.dataTransfer.files));
     }
   };
-  const onTrayItemDragStart = (i: number) => (e: React.DragEvent) => {
-    trayDragIdx.current = i;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData(DRAG_TYPES.trayIndex, String(i));
-  };
-  const onTrayItemDrop = (i: number) => (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // 내부 재정렬은 파일/에셋보다 우선 — 썸네일 네이티브 드래그로 files 가 섞여 들어와도 순서변경 유지.
-    if (e.dataTransfer.types.includes(DRAG_TYPES.trayIndex)) {
-      const from = trayDragIdx.current;
-      trayDragIdx.current = null;
-      if (from === null || from === i) return;
-      setTrayRefs((prev) => {
-        const arr = [...prev];
-        const [m] = arr.splice(from, 1);
-        arr.splice(i, 0, m);
-        return arr;
-      });
-      return;
-    }
-    if (e.dataTransfer.types.includes(DRAG_TYPES.asset)) {
-      addAssetToTray(readSpotlightAssetPayload(e.dataTransfer)); // 항목 위에 에셋 떨어뜨려도 추가
-      trayDragIdx.current = null;
-      return;
-    }
-    if (dataTransferHasFiles(e.dataTransfer)) {
-      onImportFiles(Array.from(e.dataTransfer.files));
-      trayDragIdx.current = null;
-      return;
-    }
-    const from = trayDragIdx.current;
-    trayDragIdx.current = null;
-    if (from === null || from === i) return;
+  // 트레이 항목 순서 변경 — from 을 빼고 insertIndex(원래 배열 기준 0..n) 위치에 삽입. 순서 그대로면 no-op.
+  // (마우스 기반 드래그+흰 삽입선은 SpotlightRefTray 가 담당하고, 확정 시 이 함수를 호출한다.)
+  const reorderTray = (from: number, insertIndex: number) => {
     setTrayRefs((prev) => {
+      if (from < 0 || from >= prev.length) return prev;
       const arr = [...prev];
       const [m] = arr.splice(from, 1);
-      arr.splice(i, 0, m); // from → i 위치로 이동
+      let to = insertIndex;
+      if (to > from) to -= 1; // 제거로 인덱스가 하나 당겨짐
+      to = Math.max(0, Math.min(arr.length, to));
+      if (to === from) return prev; // 위치 변화 없음
+      arr.splice(to, 0, m);
       return arr;
     });
   };
@@ -201,7 +174,6 @@ export function useSpotlightTray({
     onTrayKeyDown,
     onTrayDragOver,
     onTrayDrop,
-    onTrayItemDragStart,
-    onTrayItemDrop,
+    reorderTray,
   };
 }
