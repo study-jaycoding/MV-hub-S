@@ -329,8 +329,9 @@
 .scene-listrow-empty { font-size: 10.5px; color: var(--muted); }
 /* 렌더 행 체크박스(그립 옆, 왼쪽) — 체크된 카드만 Render 대상 */
 .scene-listrow-check { flex: none; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
-/* 대표 썸네일(그립/체크 옆) — 클릭하면 그 카드 결과를 크게 보기(라이트박스) */
-.scene-listrow-view { flex: none; display: flex; align-items: center; cursor: pointer; }
+/* 대표 썸네일(가운데) — 클릭하면 그 카드 결과를 크게 보기(라이트박스).
+   썸네일·배지 둘 다 margin-left:auto 라 남는 공간이 반씩 나뉘어 썸네일=가운데, 배지=맨 우측이 된다. */
+.scene-listrow-view { margin-left: auto; flex: none; display: flex; align-items: center; cursor: pointer; }
 /* 개수 배지 영역(맨 우측) — 클릭하면 그 카드의 생성 결과 팝업(변형 전체) */
 .scene-listrow-count { margin-left: auto; flex: none; display: flex; align-items: center; cursor: pointer; }
 
