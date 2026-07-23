@@ -1591,17 +1591,33 @@ export function SceneBoard({
       e.preventDefault();
       const pts: { x: number; y: number }[] = [];
       const marked = new Set<string>();
-      const sample = (cx: number, cy: number) => {
-        pts.push(toCanvas(cx, cy));
-        setCutStroke([...pts]);
+      let lastCx = e.clientX;
+      let lastCy = e.clientY;
+      // 한 지점(화면좌표)에서 겹치는 연결선(넓은 히트 패스 data-edge)을 마킹.
+      const hitAt = (cx: number, cy: number) => {
         for (const el of document.elementsFromPoint(cx, cy)) {
           const id = (el as HTMLElement).dataset?.edge;
           if (id) marked.add(id);
         }
+      };
+      // 이전 점 → 현재 점 사이를 ~8px 간격으로 촘촘히 검사 — 빠르게 움직여 샘플이 듬성해도 지나간 선을 놓치지 않게.
+      const sample = (cx: number, cy: number, interpolate: boolean) => {
+        if (interpolate) {
+          const dist = Math.hypot(cx - lastCx, cy - lastCy);
+          const steps = Math.max(1, Math.ceil(dist / 8));
+          for (let i = 1; i <= steps; i++)
+            hitAt(lastCx + ((cx - lastCx) * i) / steps, lastCy + ((cy - lastCy) * i) / steps);
+        } else {
+          hitAt(cx, cy);
+        }
+        lastCx = cx;
+        lastCy = cy;
+        pts.push(toCanvas(cx, cy));
+        setCutStroke([...pts]);
         setEdgesToCut(new Set(marked));
       };
-      sample(e.clientX, e.clientY);
-      const move = (ev: MouseEvent) => sample(ev.clientX, ev.clientY);
+      sample(e.clientX, e.clientY, false);
+      const move = (ev: MouseEvent) => sample(ev.clientX, ev.clientY, true);
       const up = () => {
         if (marked.size) removeEdges([...marked]); // 손 떼는 순간 절단
         setCutStroke(null);
