@@ -4,6 +4,7 @@
 // fallback 슬롯으로 받아 각자 유지(에셋 코멘트처럼 억지 통합하지 않음). AssetCell(오디오·fillStyle·
 // node 모델)은 구조가 달라 포함하지 않는다.
 import type { ReactNode, Ref } from "react";
+import { useEffect, useState } from "react";
 
 interface Props {
   thumb: string | null | undefined; // 썸네일(포스터) URL
@@ -13,9 +14,24 @@ interface Props {
   videoRef?: Ref<HTMLVideoElement>; // 호버 재생용 ref(필요 없으면 생략)
   fallback: ReactNode; // 썸네일·영상 둘 다 없을 때 보일 사이트별 상태 플레이스홀더
   onError?: () => void; // 미디어 로드 실패(원본 URL 죽음 등) — 카드가 '원본 없음' 표시에 사용
+  // 이미지 썸네일이 깨졌을 때 원본 src 로 한 번 재시도(교차서버 팀 레퍼런스처럼 캐시 썸네일만 죽은 경우).
+  // opt-in — 기본 off 라 기존 소비처 동작은 그대로. src 가 thumb 와 다를 때만 유효.
+  retrySrcOnThumbError?: boolean;
 }
 
-export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallback, onError }: Props) {
+export function MediaThumbnail({
+  thumb,
+  isVideo,
+  src,
+  alt = "",
+  videoRef,
+  fallback,
+  onError,
+  retrySrcOnThumbError,
+}: Props) {
+  const [thumbBroken, setThumbBroken] = useState(false);
+  // thumb 이 바뀌면(다른 레퍼런스로 재렌더) 재시도 상태 초기화.
+  useEffect(() => setThumbBroken(false), [thumb]);
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   if (thumb && isVideo)
     return (
@@ -32,10 +48,24 @@ export function MediaThumbnail({ thumb, isVideo, src, alt = "", videoRef, fallba
       />
     );
   // 이미지(또는 영상의 정지 썸네일).
-  if (thumb)
+  if (thumb) {
+    // 재시도 옵션 + 썸네일이 깨졌고 원본 src 가 별도로 있으면 원본으로 교체(한 번만).
+    const canRetry = retrySrcOnThumbError && !!src && src !== thumb;
+    const imgSrc = canRetry && thumbBroken ? src : thumb;
     return (
-      <img src={thumb} loading="lazy" decoding="async" alt={alt} draggable={false} onError={onError} />
+      <img
+        src={imgSrc}
+        loading="lazy"
+        decoding="async"
+        alt={alt}
+        draggable={false}
+        onError={() => {
+          if (canRetry && !thumbBroken) setThumbBroken(true); // 원본으로 1회 재시도
+          else onError?.(); // 원본까지 실패(또는 재시도 미사용) → 사이트별 '원본 없음' 처리
+        }}
+      />
     );
+  }
   // 영상인데 썸네일 없음: 첫 프레임을 메타데이터로 띄워 'done' 대신 내용이 보이게.
   if (isVideo && src)
     return (

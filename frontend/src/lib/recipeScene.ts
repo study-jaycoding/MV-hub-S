@@ -27,7 +27,9 @@ function normalizeParams(
 
 function refToSceneRef(r: Reference): SceneRef {
   return {
-    file_path: r.file_path,
+    // 원본 토큰/URL(source_url) 우선 — file_path 는 로컬 캐시 경로일 수 있어 팀·교차서버에서 안 풀린다.
+    //  (SceneRef.file_path 계약 = 'asset:' 토큰 또는 원격 URL, 즉 재해석 가능한 위치. promptParts 와 동일 패턴.)
+    file_path: r.source_url || r.file_path,
     type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
     name: r.source || r.role || undefined,
     thumb: r.thumbnail_path || null,

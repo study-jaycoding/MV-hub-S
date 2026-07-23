@@ -2688,6 +2688,7 @@ export function SceneBoard({
                               isVideo={isVid}
                               src={refMediaSrc(r)}
                               fallback={<span className="scene-refthumb-ph" />}
+                              retrySrcOnThumbError
                             />
                             {isVid ? (
                               <span className="scene-refthumb-vid vid">▶</span>

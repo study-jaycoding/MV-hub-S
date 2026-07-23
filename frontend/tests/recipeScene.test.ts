@@ -55,6 +55,41 @@ describe("buildRecipeScene", () => {
     expect(s.cards.find((c) => c.kind === "text")!.text).toBe("a @cat");
   });
 
+  it("레퍼런스 file_path 는 source_url(원본 토큰/URL) 우선 — 팀·교차서버 해석용", () => {
+    const g = gen({
+      id: "res3",
+      references: [
+        {
+          id: "r1",
+          type: "image",
+          file_path: "/cache/local/abc.png", // 캐시 경로(교차서버에서 안 풀림)
+          thumbnail_path: "t1",
+          source: "cat",
+          role: null,
+          source_url: "https://cdn.example/orig.png", // 원본 URL
+          cached: true,
+        },
+      ],
+    });
+    const s = buildRecipeScene(g);
+    const refCard = s.cards.find((c) => c.kind === "reference")!;
+    expect(refCard.refs?.[0].file_path).toBe("https://cdn.example/orig.png");
+    // 결과 카드 refs 도 같은 원본을 써 dedup 키가 레퍼런스 카드와 일관된다.
+    const result = s.cards.find((c) => c.kind === "generation")!;
+    expect(result.refs?.[0].file_path).toBe("https://cdn.example/orig.png");
+  });
+
+  it("source_url 이 없으면 file_path 로 폴백", () => {
+    const g = gen({
+      id: "res4",
+      references: [
+        { id: "r1", type: "image", file_path: "asset:proj|p.png", thumbnail_path: "t1", source: "s", role: null, source_url: null, cached: true },
+      ],
+    });
+    const s = buildRecipeScene(g);
+    expect(s.cards.find((c) => c.kind === "reference")!.refs?.[0].file_path).toBe("asset:proj|p.png");
+  });
+
   it("history 의 재료(@소스)·직속 부모 → 1단계 위 생성물 노드", () => {
     const g = gen({ id: "res2", prompt: "x" });
     const history = {
