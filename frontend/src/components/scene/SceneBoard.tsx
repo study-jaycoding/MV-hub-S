@@ -954,6 +954,18 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
+  // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.
+  const toggleRenderCheck = (renderId: string, genCardId: string) => {
+    const nextCards = cardsRef.current.map((c) => {
+      if (c.id !== renderId) return c;
+      const un = new Set(c.unchecked || []);
+      if (un.has(genCardId)) un.delete(genCardId);
+      else un.add(genCardId);
+      return { ...c, unchecked: [...un] };
+    });
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
   // input 노드가 참조할 output(채널) 선택 저장. channel = output 카드 id(빈 문자열이면 미선택).
   // ★채널이 바뀌면 무선으로 끌어오던 레퍼런스가 달라지므로 생성카드 refs 를 다시 계산해야 한다(안 하면 stale).
   const setNodeChannel = (cardId: string, channel: string) => {
@@ -2751,7 +2763,13 @@ export function SceneBoard({
                                     ) : (
                                       <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listrow-text">{n > 0 ? `${n}개 생성` : "빈 카드"}</span>
+                                    <span className="scene-listrow-text">
+                                      {n > 0 ? (
+                                        <span className="scene-listrow-badge">▤ {n}</span>
+                                      ) : (
+                                        <span className="scene-listrow-empty">빈 카드</span>
+                                      )}
+                                    </span>
                                   </div>
                                 );
                               })}
@@ -3024,6 +3042,8 @@ export function SceneBoard({
                 (() => {
                   // 렌더(배치 생성) — 연결된 생성카드들을 모아 Render 버튼 한 번으로 각 카드를 자기 모델·refs·텍스트로 생성.
                   const gcids = collectRenderGenCardIds(card.id, cardsById, resolvedEdges);
+                  const unchecked = new Set(card.unchecked || []); // 체크 해제된(렌더 제외) 카드들
+                  const activeGcids = gcids.filter((cid) => !unchecked.has(cid)); // 실제 Render 대상(체크된 것만)
                   return (
                     <>
                       <div className="scene-card-inner scene-listnode scene-rendernode">
@@ -3079,7 +3099,22 @@ export function SceneBoard({
                                     ) : (
                                       <span className="scene-listrow-thumb scene-listthumb-ph" />
                                     )}
-                                    <span className="scene-listrow-text">{n > 0 ? `${n}개 생성` : "빈 카드"}</span>
+                                    <span className="scene-listrow-text">
+                                      {n > 0 ? (
+                                        <span className="scene-listrow-badge">▤ {n}</span>
+                                      ) : (
+                                        <span className="scene-listrow-empty">빈 카드</span>
+                                      )}
+                                    </span>
+                                    <input
+                                      type="checkbox"
+                                      className="scene-listrow-check"
+                                      checked={!unchecked.has(cid)}
+                                      title={unchecked.has(cid) ? "체크(렌더 대상)" : "체크 해제(렌더 제외)"}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={() => toggleRenderCheck(card.id, cid)}
+                                    />
                                   </div>
                                 );
                               })}
@@ -3116,14 +3151,14 @@ export function SceneBoard({
                           </button>
                           <button
                             className="scene-cardgen-go"
-                            title="연결된 모든 생성 카드를 각자 한 번에 생성"
-                            disabled={!gcids.length}
+                            title="체크된 생성 카드만 각자 한 번에 생성"
+                            disabled={!activeGcids.length}
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (gcids.length) onRenderCards(gcids);
+                              if (activeGcids.length) onRenderCards(activeGcids);
                             }}
                           >
-                            Render ▶
+                            Render ▶ {activeGcids.length}
                           </button>
                         </div>
                       )}

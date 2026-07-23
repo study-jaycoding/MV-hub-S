@@ -51,6 +51,7 @@ export interface SceneCard {
   modelCfg?: SceneModelCfg; // model 노드: 고른 모델 설정 스냅샷.
   channel?: string; // input 노드: 참조할 output 카드 id(이름 아님 — 이름은 바뀌므로 id 로 고정).
   color?: string; // head 노드: 글씨 색(HEX).
+  unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
 }
 
 // 연결의 의미(입력 레인·색). 없으면 소스/타깃 kind 로 추론(resolveEdgeRole) — 기존 저장분 하위호환.

@@ -321,6 +321,14 @@
   flex: none; width: 24px; height: 24px; border-radius: 4px; overflow: hidden;
   object-fit: cover; background: #05060a; display: block;
 }
+/* 생성 개수 배지(카드 다중결과 배지와 같은 라임 알약) — 검은 글씨(라임 배경) */
+.scene-listrow-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 10.5px; line-height: 1.6;
+}
+.scene-listrow-empty { font-size: 10.5px; color: var(--muted); }
+/* 렌더 행 체크박스(맨 우측) — 체크된 카드만 Render 대상 */
+.scene-listrow-check { flex: none; margin-left: auto; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 
 /* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
 .scene-listthumbs {
