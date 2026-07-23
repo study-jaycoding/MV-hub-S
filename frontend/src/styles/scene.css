@@ -313,7 +313,7 @@
 .scene-listthumb.reordering { opacity: 0.4; }
 /* 삽입 위치 흰 선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
 .scene-reorder-line {
-  position: fixed; z-index: 60; pointer-events: none; background: #fff; border-radius: 2px;
+  position: absolute; z-index: 60; pointer-events: none; background: #fff; border-radius: 2px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 6px rgba(255, 255, 255, 0.8);
 }
 .scene-listrow-grip {

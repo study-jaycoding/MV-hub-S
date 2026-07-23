@@ -1067,6 +1067,11 @@ export function SceneBoard({
     const recompute = (cx: number, cy: number) => {
       const items = Array.from(container.querySelectorAll<HTMLElement>("[data-reid]"));
       if (!items.length) return;
+      // 흰 선은 마퀴와 같은 컨테이너(scrollRef)에 absolute 로 그린다 — 화면좌표를 그 기준 로컬좌표로 변환.
+      // (position:fixed 는 상위 backdrop-filter/transform 이 있으면 엉뚱하게 잡혀 안 보일 수 있어 회피.)
+      const sr = scrollRef.current?.getBoundingClientRect();
+      const ox = sr ? sr.left : 0;
+      const oy = sr ? sr.top : 0;
       let idx = items.length;
       if (orientation === "v") {
         for (let i = 0; i < items.length; i++) {
@@ -1075,8 +1080,8 @@ export function SceneBoard({
         }
         const line =
           idx < items.length
-            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left, y: r.top - GAP, w: r.width, h: 3 }; })()
-            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.left, y: r.bottom + GAP - 3, w: r.width, h: 3 }; })();
+            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left - ox, y: r.top - oy - GAP, w: r.width, h: 3 }; })()
+            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.left - ox, y: r.bottom - oy + GAP - 3, w: r.width, h: 3 }; })();
         setReorderLine(line);
       } else {
         // 가로 감싸는 배치 — 중심이 포인터에 가장 가까운 타일 기준, 포인터가 그 중심보다 오른쪽이면 뒤에 삽입.
@@ -1090,8 +1095,8 @@ export function SceneBoard({
         idx = after ? best + 1 : best;
         const line =
           idx < items.length
-            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left - GAP, y: r.top, w: 3, h: r.height }; })()
-            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.right + GAP - 3, y: r.top, w: 3, h: r.height }; })();
+            ? (() => { const r = items[idx].getBoundingClientRect(); return { x: r.left - ox - GAP, y: r.top - oy, w: 3, h: r.height }; })()
+            : (() => { const r = items[items.length - 1].getBoundingClientRect(); return { x: r.right - ox + GAP - 3, y: r.top - oy, w: 3, h: r.height }; })();
         setReorderLine(line);
       }
       insertIndex = idx;

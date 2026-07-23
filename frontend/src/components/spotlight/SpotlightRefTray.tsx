@@ -74,12 +74,17 @@ export function SpotlightRefTray({
         if (d < bestD) { bestD = d; best = i; after = cx > c.x; }
       }
       const idx = after ? best + 1 : best;
+      // 선은 컨테이너 기준 로컬 좌표(absolute) — 독에 backdrop-filter 가 있어 position:fixed 는
+      // 화면이 아니라 독 기준으로 잡혀 엉뚱한 곳에 놓인다. 가로 스크롤도 반영(scrollLeft/Top).
+      const cr = container.getBoundingClientRect();
+      const lx = (vx: number) => vx - cr.left + container.scrollLeft;
+      const ly = (vy: number) => vy - cr.top + container.scrollTop;
       if (idx < items.length) {
         const r = items[idx].getBoundingClientRect();
-        setLine({ x: r.left - GAP, y: r.top, h: r.height });
+        setLine({ x: lx(r.left) - GAP, y: ly(r.top), h: r.height });
       } else {
         const r = items[items.length - 1].getBoundingClientRect();
-        setLine({ x: r.right + GAP - 3, y: r.top, h: r.height });
+        setLine({ x: lx(r.right) + GAP - 3, y: ly(r.top), h: r.height });
       }
       insertIndex = idx;
     };

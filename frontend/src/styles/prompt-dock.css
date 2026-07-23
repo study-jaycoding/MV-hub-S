@@ -114,6 +114,7 @@
 .sl-expand-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .sl-reftray {
+  position: relative; /* 순서변경 흰 선(absolute)의 기준 */
   display: flex; align-items: stretch; gap: 8px; flex-wrap: nowrap;
   overflow-x: auto; overflow-y: hidden;
   padding: 10px 10px 8px; margin-bottom: 2px;
@@ -137,7 +138,7 @@
 .sl-reftray-item.reordering { opacity: 0.4; }
 /* 삽입 위치 흰 세로선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
 .sl-reftray-line {
-  position: fixed; width: 3px; z-index: 60; pointer-events: none;
+  position: absolute; width: 3px; z-index: 60; pointer-events: none;
   background: #fff; border-radius: 2px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 6px rgba(255, 255, 255, 0.8);
 }
