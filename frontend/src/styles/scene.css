@@ -478,25 +478,27 @@
 .scene-card-view { --pc: #61eaff; }
 .scene-card-output,
 .scene-card-input { --pc: #8aa0bf; }
-/* 카드 선택 시 — 큰 원 없이 '엔드포인트 점'처럼만 보인다(노드 고유색 채움 + 어두운 링). 연결선 끝점 점과 동심으로 겹친다. */
+/* 카드 선택/호버 시 포트는 '속 빈 링'(노드색 테두리 + 투명 중앙)으로 보인다. ★연결된 포트는 그 자리에
+   항상 그려지는 연결선 끝점(.scene-dot, z9)이 중앙을 채워 '꽉 찬 점'으로, 연결 안 된 포트는 빈 링으로
+   보여 서로 구분된다 — 연결을 끊었는데도 포트가 꽉 찬 점으로 남아 '연결이 안 풀린 것처럼' 보이던 오인 방지. */
 .scene-card.sel .scene-port {
   opacity: 1; pointer-events: auto; z-index: 15;
-  background: var(--pc, var(--accent)); border-color: #14161a;
+  background: transparent; border-color: var(--pc, var(--accent));
 }
-/* 생성카드 입력은 레인별 색으로(위=모델 주황·중간=레퍼런스 파랑·아래=텍스트 보라) — 어떤 입력인지 구분. */
-.scene-card-gen.sel .scene-port.in.lane-model { background: #ffb84d; }
-.scene-card-gen.sel .scene-port.in.lane-ref { background: #7fa9ff; }
-.scene-card-gen.sel .scene-port.in.lane-text { background: #b57aff; }
+/* 생성카드 입력은 레인별 색 링으로(위=모델 주황·중간=레퍼런스 파랑·아래=텍스트 보라) — 어떤 입력인지 구분. */
+.scene-card-gen.sel .scene-port.in.lane-model { border-color: #ffb84d; }
+.scene-card-gen.sel .scene-port.in.lane-ref { border-color: #7fa9ff; }
+.scene-card-gen.sel .scene-port.in.lane-text { border-color: #b57aff; }
 .scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* 카드에 호버만 해도(선택 안 해도) 포트를 드러내고 클릭 가능 — 포트를 눌러 바로 연결 시작. 포트 hit
-   영역이 카드와 겹쳐 호버가 끊기지 않는다. 선택(.sel)과 동일한 채움/링. */
+   영역이 카드와 겹쳐 호버가 끊기지 않는다. 선택(.sel)과 동일한 빈 링. */
 .scene-card:hover .scene-port {
   opacity: 1; pointer-events: auto; z-index: 15;
-  background: var(--pc, var(--accent)); border-color: #14161a;
+  background: transparent; border-color: var(--pc, var(--accent));
 }
-.scene-card-gen:hover .scene-port.in.lane-model { background: #ffb84d; }
-.scene-card-gen:hover .scene-port.in.lane-ref { background: #7fa9ff; }
-.scene-card-gen:hover .scene-port.in.lane-text { background: #b57aff; }
+.scene-card-gen:hover .scene-port.in.lane-model { border-color: #ffb84d; }
+.scene-card-gen:hover .scene-port.in.lane-ref { border-color: #7fa9ff; }
+.scene-card-gen:hover .scene-port.in.lane-text { border-color: #b57aff; }
 .scene-card:hover .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* ★연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 색까지 넣어 드러낸다(어디에 놓을지 보이게). 비선택 대상도 드롭 가능. */
 .scene-board.wiring .scene-card .scene-port.in {
