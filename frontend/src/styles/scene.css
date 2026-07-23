@@ -399,8 +399,9 @@
    기본 숨김 → 카드 선택 시에만 표시. 글씨색은 노드별 색 유지, 배경만 읽기 쉬운 어두운 알약으로 덮어씀.
    (per-type 규칙 뒤에 둬서 background 를 이긴다.) Input/Output 은 라벨이 정체성이라 제외. */
 .scene-card-hd.scene-card-hd-float {
-  position: absolute; left: 0; bottom: 100%; margin-bottom: 3px; max-width: 100%;
-  z-index: 4; pointer-events: none; border-radius: 6px; border-bottom: 0;
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 8px; max-width: 100%;
+  z-index: 4; pointer-events: none; border-radius: 8px; border-bottom: 0;
+  font-size: 13px; padding: 5px 11px; letter-spacing: 0.02em;
   background: rgba(12, 14, 18, 0.9); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   opacity: 0; transition: opacity 0.12s ease;
 }
