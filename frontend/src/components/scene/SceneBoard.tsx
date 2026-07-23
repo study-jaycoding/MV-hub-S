@@ -36,6 +36,7 @@ import {
   canConnect,
   classifyEdges,
   collectListInputs,
+  collectRenderGenCardIds,
   collectViewGenCardIds,
   collectViewTexts,
   computeBridgeEdges,
@@ -135,6 +136,8 @@ interface Props {
   batchCount?: number;
   onBatchCountChange?: (n: number) => void;
   onGenerateCard?: () => void;
+  // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
+  onRenderCards?: (cardIds: string[]) => void;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
   fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
@@ -178,6 +181,7 @@ export function SceneBoard({
   batchCount = 1,
   onBatchCountChange,
   onGenerateCard,
+  onRenderCards,
   grayOn,
   fill = true,
   typeFilter = "all",
@@ -881,7 +885,9 @@ export function SceneBoard({
                   ? { ...base, kind: "input" }
                   : kind === "head"
                     ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
-                    : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+                    : kind === "render"
+                      ? { ...base, kind: "render" }
+                      : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
     const nextCards = [...cardsRef.current, card];
     setCards(nextCards);
     setSelected(new Set([card.id]));
@@ -1298,7 +1304,7 @@ export function SceneBoard({
         return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
       }
       const sel = selectedRef.current;
-      // ── 노드 생성 단축키(N/M/L/T/V/O/I/H)는 Tab 피커가 열렸을 때만 작동 — 피커 위치에 만들고 닫는다.
+      // ── 노드 생성 단축키(N/M/L/T/V/R/O/I/H)는 Tab 피커가 열렸을 때만 작동 — 피커 위치에 만들고 닫는다.
       //    (a=정렬을 비롯한 그 외 단축키는 피커와 무관하게 평소대로.) 피커 없으면 이 키들은 아무것도 안 함.
       const np = nodePickerRef.current;
       if (np && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -1311,6 +1317,7 @@ export function SceneBoard({
           o: "output",
           i: "input",
           h: "head",
+          r: "render",
         };
         const kind = NODE_KEYS[e.key.toLowerCase()];
         if (kind) {
@@ -1381,13 +1388,13 @@ export function SceneBoard({
           .map((id) => cardsRef.current.find((cc) => cc.id === id))
           .filter((c): c is SceneCard => !!c);
         if (selCards.length >= 2) {
-          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트=2 → View=3 → Output(무선 발신)=4(가장 깊은 싱크).
+          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트=2 → View/Render(싱크)=3 → Output(무선 발신)=4(가장 깊은 싱크).
           const layerOf = (c: SceneCard) =>
             c.kind === "generation"
               ? 1
               : c.kind === "list"
                 ? 2
-                : c.kind === "view"
+                : c.kind === "view" || c.kind === "render"
                   ? 3
                   : c.kind === "output"
                     ? 4
@@ -2981,6 +2988,86 @@ export function SceneBoard({
                     </>
                   );
                 })()
+              ) : card.kind === "render" ? (
+                (() => {
+                  // 렌더(배치 생성) — 연결된 생성카드들을 모아 Render 버튼 한 번으로 각 카드를 자기 모델·refs·텍스트로 생성.
+                  const gcids = collectRenderGenCardIds(card.id, cardsById, resolvedEdges);
+                  return (
+                    <>
+                      <div className="scene-card-inner scene-listnode scene-rendernode">
+                        <div className="scene-card-hd render">렌더</div>
+                        <div className="scene-listnode-body">
+                          {gcids.length ? (
+                            <div className="scene-listthumbs">
+                              {gcids.map((cid, i) => {
+                                const gc = cardsById.get(cid);
+                                const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+                                const gen = gid ? genData[gid] : undefined;
+                                const src = gen ? thumbOf(gen, 128) : null;
+                                return (
+                                  <div key={cid} className="scene-listthumb" title={`${i + 1}번 생성 카드`}>
+                                    {src ? (
+                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                    ) : (
+                                      <span className="scene-listthumb-ph" />
+                                    )}
+                                    <span className="scene-listthumb-n">{i + 1}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            "생성 카드를 연결"
+                          )}
+                        </div>
+                      </div>
+                      {sel && onRenderCards && (
+                        <div className="scene-cardgen-bar" onMouseDown={(e) => e.stopPropagation()}>
+                          <button
+                            className="scene-cardgen-step"
+                            title="배치 줄이기"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onBatchCountChange?.(Math.max(1, batchCount - 1));
+                            }}
+                          >
+                            −
+                          </button>
+                          <span className="scene-cardgen-n" title="각 카드에서 생성할 장수(배치)">
+                            {batchCount}
+                          </span>
+                          <button
+                            className="scene-cardgen-step"
+                            title="배치 늘리기"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onBatchCountChange?.(Math.min(4, batchCount + 1));
+                            }}
+                          >
+                            +
+                          </button>
+                          <button
+                            className="scene-cardgen-go"
+                            title="연결된 모든 생성 카드를 각자 한 번에 생성"
+                            disabled={!gcids.length}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (gcids.length) onRenderCards(gcids);
+                            }}
+                          >
+                            Render ▶
+                          </button>
+                        </div>
+                      )}
+                      <span className="scene-port in" title="생성 카드를 연결해 모음" />
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
               ) : card.kind === "head" ? (
                 (() => {
                   // Head(제목) — 포트 없는 주석 글씨. 크기 조절 시 글자 크기도 같이 커진다. 색은 스와치로 변경.
@@ -3270,6 +3357,7 @@ export function SceneBoard({
                 ["List", "L", "list"],
                 ["Text", "T", "text"],
                 ["View", "V", "view"],
+                ["Render", "R", "render"],
                 ["Output", "O", "output"],
                 ["Input", "I", "input"],
                 ["Head", "H", "head"],
@@ -3705,7 +3793,7 @@ export function SceneBoard({
           <div className="scene-empty-title">{scene.name}</div>
           <b>에셋 창에서 레퍼런스를 이 화면으로 드래그</b>하면 레퍼런스 카드가 만들어집니다.
           <div className="scene-empty-hint">
-            <b>Tab</b> → 노드 만들기 메뉴(New/Model/List/Text/View/Output/Input/Head) · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
+            <b>Tab</b> → 노드 만들기 메뉴(New/Model/List/Text/View/Render/Output/Input/Head) · <b>Delete</b> → 삭제 · <b>Y</b> → 연결 자르기 · 미들버튼 드래그 → 화면 이동
           </div>
         </div>
       )}

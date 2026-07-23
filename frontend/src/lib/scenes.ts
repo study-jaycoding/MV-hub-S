@@ -12,7 +12,8 @@ export type SceneCardKind =
   | "view"
   | "output"
   | "input"
-  | "head";
+  | "head"
+  | "render";
 
 // 모델 노드 설정 — 하단 프롬프트(SpotlightOptionsBar)에서 고른 값의 스냅샷(표시·조직화용).
 export interface SceneModelCfg {

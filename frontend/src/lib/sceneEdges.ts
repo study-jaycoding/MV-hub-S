@@ -23,6 +23,7 @@ export function canConnect(
   if (from.id === to.id) return false;
   if (from.kind === "head" || to.kind === "head") return false; // head 는 포트 없는 주석 노드
   if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
+  if (from.kind === "render") return false; // render 는 순수 싱크(배치 트리거) — 소스가 될 수 없음
   // input 을 소스로 놓으면 실제 소스로 해석해 그 종류로 검증(input 자체는 어디에도 못 풂 → 컨텍스트 없으면 불가)
   if (from.kind === "input") {
     if (!cardsById || !edges) return false;
@@ -41,6 +42,8 @@ export function canConnect(
       return from.kind === "generation" || from.kind === "text" || from.kind === "reference";
     case "view":
       return from.kind === "generation" || from.kind === "list" || from.kind === "text";
+    case "render":
+      return from.kind === "generation"; // 렌더(배치)는 생성 카드만 모은다
     case "text":
       // 텍스트 노드는 레퍼런스 입력을 받는다(레퍼런스 카드·생성물을 @레퍼런스로). 리스트로 묶은
       // 레퍼런스/생성물도 연결 허용 — 텍스트 노드가 리스트를 펼쳐 @image1/@image2… 로 매핑한다.
@@ -173,6 +176,23 @@ export function collectViewGenCardIds(
       if (li.kind === "generation") li.generationCardIds.forEach(push);
     }
   }
+  return out;
+}
+
+// 렌더(배치) 노드에 연결된 생성 카드 id들(순서 보존, 중복 제거). 생성 카드만 — 리스트/텍스트 등은 무시.
+// 소스가 input(무선)이면 호출부에서 resolvePortEdges 로 실제 소스로 해석된 엣지를 넘겨준다.
+export function collectRenderGenCardIds(
+  renderId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): string[] {
+  const srcs = edges
+    .filter((e) => e.to === renderId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => c?.kind === "generation")
+    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  const out: string[] = [];
+  for (const c of srcs) if (!out.includes(c.id)) out.push(c.id);
   return out;
 }
 

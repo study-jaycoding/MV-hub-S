@@ -7,6 +7,7 @@ import {
   classifyEdges,
   resolveEdgeRole,
   collectListInputs,
+  collectRenderGenCardIds,
   collectViewGenCardIds,
   collectViewTexts,
   collectGenText,
@@ -258,6 +259,37 @@ describe("collectViewGenCardIds", () => {
   });
 });
 
+describe("collectRenderGenCardIds", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("연결된 생성 카드만 y→x 순으로(생성 외 소스는 무시)", () => {
+    const cards = byId([
+      node("RN", "render"),
+      node("G2", "generation", { y: 100 }),
+      node("G1", "generation", { y: 0 }),
+      node("T", "text", { y: 50, text: "x" }),
+      node("L", "list", { y: 60 }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G2", to: "RN" },
+      { id: "e2", from: "G1", to: "RN" },
+      { id: "e3", from: "T", to: "RN" }, // 텍스트는 canConnect 에서 막히지만, 수집 함수도 생성만 남긴다
+      { id: "e4", from: "L", to: "RN" },
+    ];
+    expect(collectRenderGenCardIds("RN", cards, edges)).toEqual(["G1", "G2"]);
+  });
+  it("연결 없으면 빈 배열", () => {
+    expect(collectRenderGenCardIds("RN", byId([node("RN", "render")]), [])).toEqual([]);
+  });
+});
+
 describe("collectViewTexts", () => {
   const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
     id,
@@ -365,6 +397,16 @@ describe("canConnect", () => {
     expect(canConnect(c("L", "list"), V)).toBe(true);
     expect(canConnect(c("T", "text"), V)).toBe(true);
     expect(canConnect(c("M", "model"), V)).toBe(false);
+  });
+  it("render 는 generation 만(순수 싱크 — 소스로는 못 씀)", () => {
+    const R = c("R", "render");
+    expect(canConnect(c("G", "generation"), R)).toBe(true);
+    expect(canConnect(c("L", "list"), R)).toBe(false);
+    expect(canConnect(c("T", "text"), R)).toBe(false);
+    expect(canConnect(c("M", "model"), R)).toBe(false);
+    // render 는 어디에도 소스가 될 수 없다
+    expect(canConnect(c("R", "render"), c("G", "generation"))).toBe(false);
+    expect(canConnect(c("R", "render"), c("V", "view"))).toBe(false);
   });
   it("text 는 reference/generation/list 입력(레퍼런스), model/text/reference 는 입력 없음, 자기연결 금지", () => {
     expect(canConnect(c("R", "reference"), c("T", "text"))).toBe(true);

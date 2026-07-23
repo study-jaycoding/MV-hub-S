@@ -67,8 +67,13 @@ import type {
   Generation,
   History,
   InfoTarget,
+  ModelParam,
   PreviewTarget,
 } from "./types";
+import { api } from "./api";
+import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
+import { resolveAutoAspectRatio } from "./lib/aspectAuto";
+import type { ChipRef } from "./lib/promptEditor";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -471,6 +476,149 @@ export default function App() {
     });
     patchActiveScene({ cards: nextCards });
   };
+  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
+  //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).
+  //  · 모델이 안 붙은 카드는 건너뛴다(생성 불가). 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
+  const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
+  const renderingRef = useRef(false); // 렌더 진행 중 재진입(더블클릭) 방지
+  const generateCards = async (cardIds: string[]) => {
+    if (!activeScene || renderingRef.current || !cardIds.length) return;
+    renderingRef.current = true;
+    try {
+      const scene = listScenes(null).find((s) => s.id === activeScene.id) || activeScene;
+      const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
+      const resolved = resolvePortEdges(cardsById, scene.edges);
+      const batch = Math.max(1, batchCount);
+      const projectId =
+        filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+      const folderPath =
+        armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
+      // 카드별 job(모델·refs·텍스트) 조립 — 모델 없는 카드는 건너뛴다.
+      const jobs: { cardId: string; model: string; params: Record<string, unknown>; refs: ChipRef[]; text: string }[] = [];
+      let skipped = 0;
+      for (const cid of cardIds) {
+        const card = cardsById.get(cid);
+        if (!card || card.kind !== "generation") continue;
+        const cfg = collectGenModel(cid, cardsById, resolved);
+        if (!cfg?.model) {
+          skipped++;
+          continue;
+        }
+        const gt = collectGenText(cid, cardsById, resolved);
+        const text = gt.count > 0 ? gt.text : card.prompt || "";
+        const refs: ChipRef[] = (card.refs || []).map((r) => ({
+          file_path: r.file_path,
+          type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
+          role: "", // buildSpotlightCreateBody 가 @Image1 등으로 다시 매긴다
+          name: r.name ?? "",
+          thumb: r.thumb ?? "",
+          source_gen_id: r.source_gen_id ?? undefined,
+        }));
+        jobs.push({ cardId: cid, model: cfg.model, params: { ...(cfg.params || {}) }, refs, text });
+      }
+      if (!jobs.length) {
+        flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
+        return;
+      }
+      // 모델별 파라미터 스키마 선로드(캐시) — aspect_ratio "auto" 를 레퍼런스 비율로 해석하기 위함.
+      const uniqueModels = [...new Set(jobs.map((j) => j.model))].filter(
+        (m) => !(m in genParamsCacheRef.current),
+      );
+      await Promise.all(
+        uniqueModels.map((m) =>
+          api
+            .modelParams(m)
+            .then((r) => {
+              genParamsCacheRef.current[m] = r.params;
+            })
+            .catch(() => {
+              // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도(빈 배열을 심으면 auto 비율이 영영 미해석).
+            }),
+        ),
+      );
+      // body 조립(카드별, auto 비율 해석 포함) → 잡 전부 한 번에 제출.
+      const built = await Promise.all(
+        jobs.map(async (j) => {
+          const tunable = genParamsCacheRef.current[j.model] || [];
+          const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
+          const { body } = buildSpotlightCreateBody({
+            text: j.text,
+            inlineRefs: [],
+            trayRefs: j.refs,
+            parts: [],
+            displayPrompt: j.text,
+            model: j.model,
+            optionValues,
+            armedAutoTags: [...armedAutoTags],
+            activeProjectId: projectId,
+            folderPath,
+          });
+          return body ? { cardId: j.cardId, body } : null;
+        }),
+      );
+      const valid = built.filter((b): b is { cardId: string; body: NonNullable<typeof b>["body"] } => !!b);
+      const buildFail = jobs.length - valid.length; // body 조립 실패(레퍼런스 토큰·seedance 검증 등)
+      if (!valid.length) {
+        flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
+        return;
+      }
+      // 각 잡 × 배치수를 전부 동시에 제출(초과분은 서버 큐가 순서대로 처리). 결과는 카드별로 모은다.
+      let createFail = 0; // api.create 거부 수
+      const results = await Promise.all(
+        valid.flatMap((v) =>
+          Array.from({ length: batch }, () =>
+            api
+              .create(v.body)
+              .then((g) => ({ cardId: v.cardId, gen: g }))
+              .catch(() => {
+                createFail++;
+                return null;
+              }),
+          ),
+        ),
+      );
+      const byCard = new Map<string, string[]>();
+      const freshGens: Generation[] = [];
+      for (const r of results) {
+        if (!r) continue;
+        const arr = byCard.get(r.cardId) || [];
+        arr.push(r.gen.id);
+        byCard.set(r.cardId, arr);
+        freshGens.push(r.gen);
+      }
+      if (byCard.size) {
+        // 최신 씬을 다시 읽어(대기 중 편집 보존) 각 소스 카드에 결과 id 를 누적한다 — 덮어쓰지 않는다.
+        const cur = listScenes(null).find((s) => s.id === activeScene.id)?.cards || scene.cards;
+        const nextCards = cur.map((c) => {
+          const ids = byCard.get(c.id);
+          if (!ids || !ids.length) return c;
+          const genIds = [...variantIds(c)];
+          for (const id of ids) if (!genIds.includes(id)) genIds.push(id);
+          return { ...c, genId: ids[0], genIds, status: "pending" as const };
+        });
+        patchActiveScene({ cards: nextCards });
+      }
+      if (freshGens.length) {
+        setGens((prev) => {
+          const ids = new Set(prev.map((x) => x.id));
+          const fresh = freshGens.filter((x) => !ids.has(x.id));
+          return fresh.length ? [...fresh, ...prev] : prev;
+        });
+      }
+      const notes: string[] = [];
+      if (skipped) notes.push(`모델 없음 ${skipped}개`);
+      if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
+      if (createFail) notes.push(`제출 실패 ${createFail}장`);
+      flash(
+        `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
+          (notes.length ? ` · ${notes.join(" · ")}` : ""),
+      );
+      void reload();
+      bumpBoard();
+    } finally {
+      renderingRef.current = false;
+    }
+  };
   // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
   // 함께 해제한다 — 안 그러면 폴더 필터를 풀어도 새 생성이 예전 폴더로 저장되던 문제(라이브러리·캔버스 공통).
   useEffect(() => {
@@ -674,6 +822,7 @@ export default function App() {
                 batchCount={batchCount}
                 onBatchCountChange={setBatchCount}
                 onGenerateCard={() => spotlightSubmitRef.current?.()}
+                onRenderCards={generateCards}
                 grayOn={grayOn}
                 fill={fill}
                 typeFilter={typeFilter}
