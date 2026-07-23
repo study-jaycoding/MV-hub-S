@@ -2752,15 +2752,25 @@ export function SceneBoard({
                                     >
                                       ⠿
                                     </span>
-                                    <span className="scene-listrow-text">
-                                      {n > 0 ? (
-                                        <span className="scene-listrow-badge">▤ {n}</span>
+                                    <span
+                                      className="scene-listrow-view"
+                                      title={gen?.assets?.[0] ? "클릭해 크게 보기" : undefined}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        const a = gen?.assets?.[0];
+                                        if (!a || !gid) return;
+                                        e.stopPropagation();
+                                        getNodePreview(cid)({ url: a.file_path, type: a.type, name: gen?.prompt?.slice(0, 50) || "결과", genId: gid });
+                                      }}
+                                    >
+                                      {src ? (
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
                                       ) : (
-                                        <span className="scene-listrow-empty">빈 카드</span>
+                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
                                       )}
                                     </span>
                                     <span
-                                      className="scene-listrow-view"
+                                      className="scene-listrow-count"
                                       title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
                                       onMouseDown={(e) => e.stopPropagation()}
                                       onClick={(e) => {
@@ -2769,10 +2779,10 @@ export function SceneBoard({
                                         setCardMenu(cid);
                                       }}
                                     >
-                                      {src ? (
-                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      {n > 0 ? (
+                                        <span className="scene-listrow-badge">▤ {n}</span>
                                       ) : (
-                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
+                                        <span className="scene-listrow-empty">빈 카드</span>
                                       )}
                                     </span>
                                   </div>
@@ -3102,15 +3112,25 @@ export function SceneBoard({
                                       onClick={(e) => e.stopPropagation()}
                                       onChange={() => toggleRenderCheck(card.id, cid)}
                                     />
-                                    <span className="scene-listrow-text">
-                                      {n > 0 ? (
-                                        <span className="scene-listrow-badge">▤ {n}</span>
+                                    <span
+                                      className="scene-listrow-view"
+                                      title={gen?.assets?.[0] ? "클릭해 크게 보기" : undefined}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        const a = gen?.assets?.[0];
+                                        if (!a || !gid) return;
+                                        e.stopPropagation();
+                                        getNodePreview(cid)({ url: a.file_path, type: a.type, name: gen?.prompt?.slice(0, 50) || "결과", genId: gid });
+                                      }}
+                                    >
+                                      {src ? (
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
                                       ) : (
-                                        <span className="scene-listrow-empty">빈 카드</span>
+                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
                                       )}
                                     </span>
                                     <span
-                                      className="scene-listrow-view"
+                                      className="scene-listrow-count"
                                       title={n > 0 ? "클릭해 이 카드의 생성 결과 모두 보기" : undefined}
                                       onMouseDown={(e) => e.stopPropagation()}
                                       onClick={(e) => {
@@ -3119,10 +3139,10 @@ export function SceneBoard({
                                         setCardMenu(cid);
                                       }}
                                     >
-                                      {src ? (
-                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      {n > 0 ? (
+                                        <span className="scene-listrow-badge">▤ {n}</span>
                                       ) : (
-                                        <span className="scene-listrow-thumb scene-listthumb-ph" />
+                                        <span className="scene-listrow-empty">빈 카드</span>
                                       )}
                                     </span>
                                   </div>
