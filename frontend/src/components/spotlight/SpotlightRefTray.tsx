@@ -14,7 +14,9 @@ import {
   type SeedanceTokenRoles,
 } from "../../lib/seedancePrompt";
 
-export type SpotlightTrayRef = ChipRef & { uid: string };
+// from_card: 이 참조가 씬의 연결된 레퍼런스 카드/리스트에서 온 것인지(SceneRef 와 왕복 시 보존해야
+//   disconnect 후에도 유령 참조로 남지 않는다). 일반 트레이 항목엔 없음.
+export type SpotlightTrayRef = ChipRef & { uid: string; from_card?: boolean };
 
 interface Props {
   trayRefs: SpotlightTrayRef[];

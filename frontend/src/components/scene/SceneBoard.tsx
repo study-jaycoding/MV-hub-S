@@ -636,32 +636,35 @@ export function SceneBoard({
       .filter((c): c is SceneCard => c?.kind === "reference" || c?.kind === "list")
       .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x)); // 위→아래, 같은 높이면 좌→우
     const out: SceneRef[] = [];
+    // 카드/리스트가 제공한 참조엔 from_card 표시 — 소스 연결이 바뀌면(reconcileRefs) 함께 사라지게.
+    const tagged = (refs: SceneRef[]) => refs.map((r) => ({ ...r, from_card: true as const }));
     for (const src of srcs) {
-      if (src.kind === "reference" && src.refs) out.push(...src.refs);
+      if (src.kind === "reference" && src.refs) out.push(...tagged(src.refs));
       // 레퍼런스만 모은 리스트를 생성카드에 연결하면 그 안의 레퍼런스 전부를 리스트 순서대로 가져온다.
       else if (src.kind === "list") {
         const li = collectListInputs(src.id, byId, resolved);
         if (li.kind === "reference")
           for (const cid of li.sourceIds) {
             const rc = byId.get(cid);
-            if (rc?.refs) out.push(...rc.refs);
+            if (rc?.refs) out.push(...tagged(rc.refs));
           }
       }
     }
     return out;
   };
   // 기존 refs(프롬프트에서 재정렬됐을 수 있음)의 순서를 보존하며, 새 연결은 뒤에 붙이고 끊긴 건 뺀다.
-  // ★@·드래그로 넣은 '생성물 참조'(source_gen_id 있음)는 레퍼런스 카드가 관리하지 않으므로,
-  //   엣지 조작(연결/해제)으로 지워지면 안 된다 — target 에 없어도 그대로 보존한다(참조 유실·색 뒤집힘 방지).
+  // ★@·드래그로 '직접' 넣은 생성물 참조(source_gen_id 있고 from_card 없음)만 엣지와 무관하게 보존한다.
+  //   레퍼런스 카드/리스트가 제공한 참조(from_card)는 그 소스가 바뀌면(target 에서 빠지면) 함께 사라진다 —
+  //   안 그러면 옛 레퍼런스 카드(비디오 등)를 끊고 다른 걸 연결해도 옛 참조가 유령으로 남아 생성에 섞였다.
   const reconcileRefs = (existing: SceneRef[], target: SceneRef[]): SceneRef[] => {
     const key = (r: SceneRef) => r.file_path + "#" + (r.source_gen_id || "");
     const pool = [...target];
     const result: SceneRef[] = [];
     for (const r of existing) {
       const i = pool.findIndex((t) => key(t) === key(r));
-      if (i >= 0) result.push(pool.splice(i, 1)[0]); // 연결된 레퍼런스 카드가 제공하는 참조 — 유지
-      else if (r.source_gen_id) result.push(r); // @·드래그로 넣은 생성물 참조 — 엣지와 무관하게 보존
-      // 그 외(연결이 끊긴 레퍼런스 카드 참조)만 제거
+      if (i >= 0) result.push(pool.splice(i, 1)[0]); // 연결된 레퍼런스 카드가 제공하는 참조 — 유지(from_card 포함)
+      else if (r.source_gen_id && !r.from_card) result.push(r); // @·드래그로 직접 넣은 생성물 참조만 보존
+      // 그 외(연결이 끊긴 레퍼런스 카드/리스트 참조)는 제거
     }
     result.push(...pool);
     return result;

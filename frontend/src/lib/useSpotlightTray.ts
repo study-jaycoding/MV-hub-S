@@ -78,6 +78,7 @@ export function useSpotlightTray({
         name: r.name ?? "",
         thumb: r.thumb ?? "",
         source_gen_id: r.source_gen_id ?? undefined,
+        from_card: r.from_card, // 카드/리스트 출신 표시 보존(disconnect 시 유령 참조 방지)
         uid: `t${trayUidRef.current++}`,
       })),
     );
@@ -100,6 +101,7 @@ export function useSpotlightTray({
         name: t.name || undefined, // "" → undefined 로 되돌려 원본 SceneRef 와 지문 일치
         thumb: t.thumb || null,
         source_gen_id: t.source_gen_id ?? null,
+        from_card: t.from_card, // 카드/리스트 출신 표시 보존(트레이 편집 후에도 유지)
       })),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps

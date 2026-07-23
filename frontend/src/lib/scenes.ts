@@ -30,6 +30,9 @@ export interface SceneRef {
   name?: string;
   thumb?: string | null;
   source_gen_id?: string | null;
+  // 이 참조가 '연결된 레퍼런스 카드/리스트'에서 온 것인지 표시(gatherTarget 이 붙임). true 면 소스 연결이
+  // 바뀌면 함께 사라져야 한다 — @·드래그로 직접 넣은 생성물 참조(source_gen_id, from_card 없음)만 보존.
+  from_card?: boolean;
 }
 
 export interface SceneCard {
