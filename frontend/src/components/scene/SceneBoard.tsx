@@ -1676,6 +1676,24 @@ export function SceneBoard({
       ae.blur();
   };
 
+  // '생성에 쓰인 노드 전체' — 시작 카드 + 위로 연결된 모든 소스(조상)를 모은다. 엣지를 거꾸로(to→from)
+  // 따라가며, 무선(Input/Output)은 resolvePortEdges 로 실제 소스까지 해석해 함께 포함한다.
+  const collectRecipe = (startId: string): Set<string> => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const adj = [...edgesRef.current, ...resolvePortEdges(byId, edgesRef.current)]; // 원본 엣지 + 무선 해석 합집합
+    const out = new Set<string>([startId]);
+    const stack = [startId];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const ed of adj)
+        if (ed.to === cur && !out.has(ed.from)) {
+          out.add(ed.from);
+          stack.push(ed.from);
+        }
+    }
+    return out;
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 → 화면 이동
     if (e.button === 1) {
@@ -1801,7 +1819,10 @@ export function SceneBoard({
       }
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey; // 마퀴·단일 토글 공용(기존)
+    // Ctrl(⌘)+클릭 = 그 카드 + '생성에 쓰인 연결 노드 전체' 선택. Ctrl+Shift = 현재 선택에 합집합, 아니면 교체.
+    const chainSel = e.ctrlKey || e.metaKey;
+    const shiftHeld = e.shiftKey;
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
@@ -1841,6 +1862,10 @@ export function SceneBoard({
         if (moved) {
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
           persist(cardsRef.current, edgesRef.current, ng);
+        } else if (chainSel) {
+          // Ctrl+클릭 = 카드+업스트림 체인. Ctrl+Shift 는 현재 선택에 합집합, 아니면 교체.
+          const recipe = collectRecipe(id);
+          setSelected((prev) => (shiftHeld ? new Set([...prev, ...recipe]) : recipe));
         } else {
           setSelected((prev) => {
             if (additive) {
