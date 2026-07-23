@@ -428,11 +428,12 @@ export default function App() {
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
   // ★refs·prompt 저장이 같은 순간 겹치면(재사용 등) 서로를 덮어쓰지 않게, 렌더 스냅샷 대신
   //  '최신 씬'을 다시 읽어 그 위에 얹는다(onPromptCreated 와 동일 안전 패턴).
-  const setSceneCardRefs = (refs: SceneRef[]) => {
-    if (!activeScene || !sceneBinding) return;
-    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
-    const nextCards = cards.map((c) => (c.id === sceneBinding.cardId ? { ...c, refs } : c));
-    patchActiveScene({ cards: nextCards });
+  const setSceneCardRefs = (refs: SceneRef[]): SceneRef[] => {
+    if (!sceneBinding) return refs;
+    // SceneBoard 의 명령형 핸들로 위임 — 연결 상태 정규화(연결=레퍼런스) + persist(undo 스택) 를 그쪽에서 처리.
+    //  (예전엔 patchActiveScene 로 직접 저장해 undo 우회 + 연결 무시 문제가 있었다.)
+    //  정규화된 결과를 반환 → 트레이가 재채택(전체비우기·재사용으로 연결 ref 가 빠져도 되살아난다).
+    return sceneActionRef.current?.setCardRefs(sceneBinding.cardId, refs) ?? refs;
   };
   // 프롬프트 입력창 편집 → 현재 바인딩된 카드에 초안 저장(카드별 프롬프트 기억).
   const setSceneCardPrompt = (prompt: string) => {

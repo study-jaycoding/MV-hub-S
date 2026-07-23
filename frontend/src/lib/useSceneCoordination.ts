@@ -65,7 +65,10 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   const [sceneBinding, setSceneBinding] = useState<{ cardId: string; refs: SceneRef[] } | null>(null);
   // 씬 캔버스에서 선택된 결과 카드들 → 프롬프트 위 선택바. 삭제는 명령형 핸들로.
   const [sceneSelGens, setSceneSelGens] = useState<Generation[]>([]);
-  const sceneActionRef = useRef<{ deleteSelected: () => void } | null>(null);
+  const sceneActionRef = useRef<{
+    deleteSelected: () => void;
+    setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+  } | null>(null);
 
   const refreshScenes = () => setScenes(listScenes(null));
   const selectScene = (id: string | null) => {

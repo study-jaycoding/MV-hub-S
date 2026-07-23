@@ -172,6 +172,15 @@
 }
 .sl-reftray-item:hover .sl-reftray-x { display: block; }
 .sl-reftray-x:hover { color: #fff; border-color: var(--accent); }
+/* 연결된 레퍼런스 표식(× 대신) — 캔버스 엣지로 연결됐음을 알리고, 트레이에선 못 뺀다. 호버 시에만. */
+.sl-reftray-linked {
+  position: absolute; top: -6px; right: -6px; z-index: 2;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #14151a; border: 1px solid var(--border2);
+  font-size: 9px; line-height: 18px; text-align: center; cursor: default;
+  display: none; user-select: none;
+}
+.sl-reftray-item:hover .sl-reftray-linked { display: block; }
 .sl-reftray-name {
   max-width: 66px; font-size: 10.5px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;

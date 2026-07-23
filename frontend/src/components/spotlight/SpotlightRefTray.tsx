@@ -191,14 +191,21 @@ export function SpotlightRefTray({
                 </span>
               )}
               <span className="sl-reftray-name">{ref.name}</span>
-              <button
-                className="sl-reftray-x"
-                title="제거"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => onRemove(index)}
-              >
-                ×
-              </button>
+              {/* 연결된(from_card) 레퍼런스는 여기서 못 뺀다 — 캔버스에서 엣지를 끊어야 함(연결=레퍼런스). */}
+              {ref.from_card ? (
+                <span className="sl-reftray-linked" title="캔버스에서 연결된 레퍼런스 — 빼려면 엣지를 끊으세요">
+                  🔗
+                </span>
+              ) : (
+                <button
+                  className="sl-reftray-x"
+                  title="제거"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => onRemove(index)}
+                >
+                  ×
+                </button>
+              )}
             </div>
           );
         })}

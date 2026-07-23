@@ -20,7 +20,7 @@ interface Params {
   // 씬의 생성 카드 1개를 선택하면 그 카드의 레퍼런스를 이 트레이에 바인딩. null=일반 모드.
   //  key = `${sceneId}:${cardId}` (카드 바뀜 감지) · refs = 카드에 연결된 레퍼런스(순서).
   trayBinding?: { key: string; refs: SceneRef[] } | null;
-  onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
+  onTrayBindingRefsChange?: (refs: SceneRef[]) => SceneRef[] | void;
   // 외부 파일 드롭을 레퍼런스로 임포트 — 컴포넌트가 주입(카드/에셋 도메인). 렌더마다 최신 클로저를 받는다.
   onImportFiles: (files: File[]) => void;
 }
@@ -92,17 +92,34 @@ export function useSpotlightTray({
     if (!bindingKey) return;
     const fp = sceneRefFingerprint(boundTrayRefs);
     if (fp === lastSyncFpRef.current) return;
-    lastSyncFpRef.current = fp;
-    onTrayBindingRefsChange?.(
-      boundTrayRefs.map((t) => ({
-        file_path: t.file_path,
-        type: t.type,
-        name: t.name || undefined, // "" → undefined 로 되돌려 원본 SceneRef 와 지문 일치
-        thumb: t.thumb || null,
-        source_gen_id: t.source_gen_id ?? null,
-        from_card: t.from_card, // 카드/리스트 출신 표시 보존(트레이 편집 후에도 유지)
-      })),
-    );
+    const proposed: SceneRef[] = boundTrayRefs.map((t) => ({
+      file_path: t.file_path,
+      type: t.type,
+      name: t.name || undefined, // "" → undefined 로 되돌려 원본 SceneRef 와 지문 일치
+      thumb: t.thumb || null,
+      source_gen_id: t.source_gen_id ?? null,
+      from_card: t.from_card, // 카드/리스트 출신 표시 보존(트레이 편집 후에도 유지)
+    }));
+    const accepted = onTrayBindingRefsChange?.(proposed);
+    // 카드가 정규화(연결 복원 등)로 트레이가 보낸 것과 다른 값을 채택하면 → 트레이를 그 값으로 되맞춘다.
+    //  전체비우기·재사용 등으로 연결 ref 가 트레이에서 빠져도 여기서 되살아난다(stale tray·유령생성 방지).
+    if (accepted && sceneRefFingerprint(accepted) !== fp) {
+      lastSyncFpRef.current = sceneRefFingerprint(accepted);
+      setBoundTrayRefs(
+        accepted.map((r) => ({
+          file_path: r.file_path,
+          type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
+          role: r.type === "video" ? "@Video" : r.type === "audio" ? "@Audio" : "@Image",
+          name: r.name ?? "",
+          thumb: r.thumb ?? "",
+          source_gen_id: r.source_gen_id ?? undefined,
+          from_card: r.from_card,
+          uid: `t${trayUidRef.current++}`,
+        })),
+      );
+    } else {
+      lastSyncFpRef.current = fp;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boundTrayRefs]);
 
@@ -118,7 +135,9 @@ export function useSpotlightTray({
     }));
     if (additions.length) setTrayRefs((prev) => [...prev, ...additions]);
   };
-  const removeTrayRef = (i: number) => setTrayRefs((prev) => prev.filter((_, j) => j !== i));
+  //  연결된(from_card) 레퍼런스는 트레이에서 못 뺀다 — 캔버스 엣지를 끊어야 한다(연결=레퍼런스). × 는 이미 숨김.
+  const removeTrayRef = (i: number) =>
+    setTrayRefs((prev) => (prev[i]?.from_card ? prev : prev.filter((_, j) => j !== i)));
   // 트레이에 포커스를 둔 채 Shift+Backspace = 레퍼런스만 전체 삭제(프롬프트는 그대로).
   const onTrayKeyDown = (e: React.KeyboardEvent) => {
     const isBackspace =
@@ -126,7 +145,8 @@ export function useSpotlightTray({
     if (isBackspace && e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      setTrayRefs([]);
+      // 연결된(from_card) 레퍼런스는 남긴다 — 캔버스 연결이 진실. 수동 추가분만 비운다.
+      setTrayRefs((prev) => prev.filter((r) => r.from_card));
     }
   };
   const onTrayDragOver = (e: React.DragEvent) => {

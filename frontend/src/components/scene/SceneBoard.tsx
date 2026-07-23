@@ -140,8 +140,11 @@ interface Props {
   onVariantDelete?: (sel: Generation[]) => Promise<string[]>; // 삭제 성공 id 반환
   // 캔버스에서 선택된 '결과 카드'들의 Generation 을 App 에 올려 프롬프트 위 선택바를 띄운다.
   onSelectionGens?: (gens: Generation[]) => void;
-  // 선택바의 '삭제'가 부를 명령형 핸들 — 선택된 결과 카드를 캔버스에서 제거(+안전 휴지통).
-  actionRef?: MutableRefObject<{ deleteSelected: () => void } | null>;
+  // 선택바의 '삭제'·트레이 편집이 부를 명령형 핸들.
+  actionRef?: MutableRefObject<{
+    deleteSelected: () => void;
+    setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+  } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 배치수(App 공유)와 즉시 생성(하단 프롬프트 submit 재사용).
   batchCount?: number;
   onBatchCountChange?: (n: number) => void;
@@ -515,13 +518,26 @@ export function SceneBoard({
     let payload: { cardId: string; refs: SceneRef[] } | null = null;
     if (ids.length === 1) {
       const c = cards.find((cc) => cc.id === ids[0]);
-      if (c && c.kind === "generation") payload = { cardId: c.id, refs: c.refs || [] };
+      if (c && c.kind === "generation") {
+        // ★연결 상태로 정규화 — 저장 refs 가 비어도 연결된 레퍼런스를 다시 모아 프롬프트·생성에 반영한다
+        //  ('캔버스에서 연결=레퍼런스'). @·드래그로 직접 넣은 참조는 reconcileRefs 가 보존.
+        const normRefs = reconcileRefs(c.refs || [], gatherTarget(c.id, cards, edges));
+        // 저장값과 다르면(=연결됐는데 refs 가 비었던 깨진 카드) 한 번 고쳐 저장(undo 대상). 재수집은
+        //  idempotent 라 다음 커밋에서 지문이 같아 멈춘다(루프·undo 오염 없음).
+        if (sceneRefFingerprint(c.refs || []) !== sceneRefFingerprint(normRefs)) {
+          const nextCards = cards.map((cc) => (cc.id === c.id ? { ...cc, refs: normRefs } : cc));
+          cardsRef.current = nextCards;
+          setCards(nextCards);
+          persist(nextCards, edgesRef.current);
+        }
+        payload = { cardId: c.id, refs: normRefs };
+      }
     }
     const sig = payload ? payload.cardId + "|" + sceneRefFingerprint(payload.refs) : "";
     if (sig === lastEmitRef.current) return;
     lastEmitRef.current = sig;
     onBindingRef.current?.(payload);
-  }, [selected, cards]);
+  }, [selected, cards, edges]);
   useEffect(() => () => onBindingRef.current?.(null), []); // 언마운트(탭·씬 이탈) → 바인딩 해제
 
   // 태그 적용 — App 핸들러(서버 저장 + 라이브러리 목록 + facet 갱신)에 위임하고, 씬 genData 도 낙관적으로 패치.
@@ -671,9 +687,10 @@ export function SceneBoard({
     return out;
   };
   // 기존 refs(프롬프트에서 재정렬됐을 수 있음)의 순서를 보존하며, 새 연결은 뒤에 붙이고 끊긴 건 뺀다.
-  // ★@·드래그로 '직접' 넣은 생성물 참조(source_gen_id 있고 from_card 없음)만 엣지와 무관하게 보존한다.
-  //   레퍼런스 카드/리스트가 제공한 참조(from_card)는 그 소스가 바뀌면(target 에서 빠지면) 함께 사라진다 —
+  // ★'직접' 넣은 참조(from_card 없음 — @생성물·드래그 asset 등)는 엣지와 무관하게 보존한다.
+  //   레퍼런스 카드/리스트가 제공한 참조(from_card:true)는 그 소스가 바뀌면(target 에서 빠지면) 함께 사라진다 —
   //   안 그러면 옛 레퍼런스 카드(비디오 등)를 끊고 다른 걸 연결해도 옛 참조가 유령으로 남아 생성에 섞였다.
+  //   (from_card 는 gatherTarget 이 연결로 모은 참조에만 붙는다. 없으면 사용자가 손으로 넣은 것이라 보존.)
   const reconcileRefs = (existing: SceneRef[], target: SceneRef[]): SceneRef[] => {
     const key = (r: SceneRef) => r.file_path + "#" + (r.source_gen_id || "");
     const pool = [...target];
@@ -681,7 +698,7 @@ export function SceneBoard({
     for (const r of existing) {
       const i = pool.findIndex((t) => key(t) === key(r));
       if (i >= 0) result.push(pool.splice(i, 1)[0]); // 연결된 레퍼런스 카드가 제공하는 참조 — 유지(from_card 포함)
-      else if (r.source_gen_id && !r.from_card) result.push(r); // @·드래그로 직접 넣은 생성물 참조만 보존
+      else if (!r.from_card) result.push(r); // 연결에서 온 게 아닌 수동 참조(@생성물·드래그 asset)는 보존
       // 그 외(연결이 끊긴 레퍼런스 카드/리스트 참조)는 제거
     }
     result.push(...pool);
@@ -693,6 +710,23 @@ export function SceneBoard({
         ? { ...c, refs: reconcileRefs(c.refs || [], gatherTarget(c.id, cs, es)) }
         : c,
     );
+
+  // 하단 프롬프트 트레이 편집(직접ref 삭제·순서변경)을 카드에 저장한다. App 이 sceneActionRef 로 호출.
+  //  · 연결 상태로 정규화(reconcileRefs+gatherTarget) → 연결된 레퍼런스는 트레이에서 지워도 다시 병합(연결=레퍼런스).
+  //  · persist 경로를 타 undo 스택(Ctrl+Z)에 자연스럽게 섞인다. 값이 안 바뀌면 무시(undo 오염 방지).
+  //  ★정규화된 refs 를 반환한다 — 트레이가 이 값을 재채택해 자기 UI 를 맞춘다(전체비우기·재사용 등으로
+  //   연결 ref 가 트레이에서 빠져도, 정규화가 되살린 값으로 트레이가 되돌아온다. stale tray·유령생성 방지).
+  const setCardRefs = (cardId: string, refs: SceneRef[]): SceneRef[] => {
+    const cur = cardsRef.current.find((c) => c.id === cardId);
+    if (!cur || cur.kind !== "generation") return refs;
+    const nextRefs = reconcileRefs(refs, gatherTarget(cardId, cardsRef.current, edgesRef.current));
+    if (sceneRefFingerprint(cur.refs || []) === sceneRefFingerprint(nextRefs)) return nextRefs; // 값 동일 → 저장 생략, 정규화값만 반환
+    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, refs: nextRefs } : c));
+    cardsRef.current = nextCards;
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+    return nextRefs;
+  };
 
   const toCanvas = (clientX: number, clientY: number) => {
     const r = scrollRef.current!.getBoundingClientRect();
@@ -1405,7 +1439,7 @@ export function SceneBoard({
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   useLayoutEffect(() => {
-    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()) };
+    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs };
   });
 
   // ── 키보드: n=빈 카드 연결 · Delete/Backspace=삭제 ──

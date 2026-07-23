@@ -95,7 +95,7 @@ interface Props {
     model?: SceneModelCfg | null;
     modelKey?: string;
   } | null;
-  onTrayBindingRefsChange?: (refs: SceneRef[]) => void;
+  onTrayBindingRefsChange?: (refs: SceneRef[]) => SceneRef[] | void;
   onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
   onPreview?: (target: PreviewTarget) => void; // 트레이 소스 더블클릭 → 크게 보기
   // 캔버스(구성)탭 여부 — 켜지면 프롬프트를 자동 포커스하지 않는다(카드 선택 후 r/g/b 등 캔버스
