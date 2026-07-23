@@ -184,23 +184,22 @@
   padding: 3px 7px; background: rgba(196, 232, 74, 0.10); border-bottom: 1px solid var(--border2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* 노드 제목 바(리스트·렌더·미리보기·모델·텍스트) — 기본은 접혀서 안 보이고, 카드를 클릭(선택)하면 펼쳐진다.
-   헤더는 flex:none 이라 접히면 본문(flex:1)이 그 자리를 채워 카드 전체 크기는 그대로. Input/Output 은 라벨이
+/* 노드 제목 바(리스트·렌더·미리보기·모델·텍스트) — 자리는 항상 그대로 두고(레이아웃 변화 없음),
+   기본은 투명해서 안 보이다가 카드를 클릭(선택)하면 글자·바가 나타나기만 한다. Input/Output 은 라벨이
    노드 정체성이라 제외(항상 표시). 레퍼런스는 위쪽 오버레이 규칙으로 이미 동일 동작. */
 .scene-card-hd.list,
 .scene-card-hd.render,
 .scene-card-hd.view,
 .scene-card-hd.model,
 .scene-card-hd.text {
-  max-height: 0; padding-top: 0; padding-bottom: 0; border-bottom-width: 0; opacity: 0;
-  transition: max-height 0.12s ease, opacity 0.12s ease, padding 0.12s ease;
+  opacity: 0; transition: opacity 0.12s ease;
 }
 .scene-card.sel .scene-card-hd.list,
 .scene-card.sel .scene-card-hd.render,
 .scene-card.sel .scene-card-hd.view,
 .scene-card.sel .scene-card-hd.model,
 .scene-card.sel .scene-card-hd.text {
-  max-height: 40px; padding-top: 3px; padding-bottom: 3px; border-bottom-width: 1px; opacity: 1;
+  opacity: 1;
 }
 /* 썸네일 3열 그리드 — 여러 장(레거시)일 때만. 개수만큼 행이 늘어 카드가 자연스럽게 길어진다. */
 .scene-card-body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 4px; }
