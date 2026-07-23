@@ -102,8 +102,8 @@ export function GenerationThumbOverlay({
             className="ov-icon ov-icon-on ov-lineage"
             title={
               (gen.child_count || 0) > 0
-                ? `가계 보기 · 이 결과물에서 파생·사용 ${gen.child_count}개`
-                : "가계 보기 (히스토리)"
+                ? `히스토리 — 어떻게 만들었나 노드로 열기 · 파생·사용 ${gen.child_count}개`
+                : "히스토리 — 어떻게 만들었나 노드로 열기"
             }
             onClick={(event) => {
               event.stopPropagation();

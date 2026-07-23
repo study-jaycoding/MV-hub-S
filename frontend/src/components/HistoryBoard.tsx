@@ -526,9 +526,9 @@ export function HistoryBoard({
     return (
       <div className="linb-empty">
         <div className="linb-empty-card">
-          <div className="linb-empty-title">히스토리 보기</div>
-          카드의 히스토리 뱃지(⑂ / ↻)를 눌러 가계 패널을 연 뒤,
-          <b> ‘히스토리 보기’</b>를 누르면 여기에 원본 → 파생 트리가 그려집니다.
+          <div className="linb-empty-title">계보 트리</div>
+          카드의 히스토리 버튼(⑂)을 누르면 그 결과물이 <b>‘어떻게 만들었나’ 노드</b>로 새 씬 탭에 열립니다.
+          이 화면은 보조로, 연결된 원본 → 파생 트리를 보여줍니다.
         </div>
       </div>
     );

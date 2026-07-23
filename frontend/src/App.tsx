@@ -32,6 +32,7 @@ import {
   type SceneRef,
 } from "./lib/scenes";
 import { collectGenText, collectGenModel, resolvePortEdges } from "./lib/sceneEdges";
+import { buildRecipeScene } from "./lib/recipeScene";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -336,7 +337,6 @@ export default function App() {
     });
 
   const {
-    openOverlay,
     closeOverlay,
     navTab,
     enterBoard,
@@ -355,6 +355,14 @@ export default function App() {
     setBoardArrange,
     setFilters,
   });
+  // 히스토리 버튼 → 그 생성물 recipe(어떻게 만들었나)를 새 씬 탭으로 연다(편집·재생성 가능). 팀 결과물도 동일.
+  const openRecipe = (g: Generation, history: History) => {
+    importSceneSnapshot(buildRecipeScene(g, history));
+    setSceneBinding(null);
+    setSceneSelGens([]);
+    navTab("compose");
+    flash(`"${g.model || "생성물"}" 을(를) 노드로 열었습니다.`);
+  };
   const {
     bulkDownload,
     onShowHistory,
@@ -362,7 +370,7 @@ export default function App() {
     openManageWindow,
   } = useGenerationUtilityActions({
     flash,
-    openOverlay,
+    openRecipe,
   });
   const { handlePromptCreated } = usePromptCreatedActions({
     boardFocusIdRef,

@@ -5,12 +5,13 @@ import { EMBED_MODES, openEmbedWindow } from "./popupWindows";
 
 interface UseGenerationUtilityActionsArgs {
   flash: (message: string) => void;
-  openOverlay: (overlay: "history", payload: History) => void;
+  // 히스토리 버튼 → 그 생성물의 recipe(어떻게 만들었나)를 노드로. App 이 새 씬 탭으로 연다.
+  openRecipe: (g: Generation, history: History) => void;
 }
 
 export function useGenerationUtilityActions({
   flash,
-  openOverlay,
+  openRecipe,
 }: UseGenerationUtilityActionsArgs) {
   const bulkDownload = async (list: Generation[]) => {
     const items = downloadItemsForGenerations(list);
@@ -34,9 +35,9 @@ export function useGenerationUtilityActions({
   const onShowHistory = async (g: Generation) => {
     try {
       const history = await api.history(g.id);
-      openOverlay("history", history);
+      openRecipe(g, history);
     } catch (e) {
-      flash("가계 조회 실패: " + String(e));
+      flash("히스토리 조회 실패: " + String(e));
     }
   };
 

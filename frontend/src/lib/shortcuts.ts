@@ -33,7 +33,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "colorBlue", label: "컬러 — 파랑", group: "라이브러리", def: "b" },
   { id: "tag", label: "태그 입력", group: "라이브러리", def: "#" },
   { id: "comment", label: "코멘트 열기", group: "라이브러리", def: "c" },
-  { id: "showHistory", label: "히스토리(가계) 보기", group: "라이브러리", def: "h" },
+  { id: "showHistory", label: "히스토리 (어떻게 만들었나 노드로)", group: "라이브러리", def: "h" },
   { id: "selectAll", label: "전체 선택", group: "라이브러리", def: "mod+a" },
   { id: "boardDisable", label: "노드 비활성화(회색) 토글", group: "구성 보드", def: "d" },
   { id: "boardArrange", label: "선택 노드 자동 정렬", group: "구성 보드", def: "a" },
