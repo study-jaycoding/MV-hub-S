@@ -2046,7 +2046,7 @@ export function SceneBoard({
     return { outEdges: out, inEdges: inn };
   }, [visibleEdges, cardsById]);
   const FAN = 13;
-  const PORT_GAP = 12; // 연결 끝점(포트·점)을 카드 밖으로 이만큼 띄운다 — 포트가 카드에 겹치지 않게(CSS 포트 위치와 일치).
+  const PORT_GAP = 30; // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다 — 끝점은 바깥, 클릭 포트(CSS)는 안쪽으로 분리.
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
   const edgeRoles = useMemo(() => {
     const m = new Map<string, SceneEdgeRole>();
