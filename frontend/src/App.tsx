@@ -24,7 +24,9 @@ import { generationQueryKey } from "./lib/appGenerationQuery";
 import { generationsByIds } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
+  exportSceneText,
   listScenes,
+  parseSceneImport,
   variantIds,
   type SceneRef,
 } from "./lib/scenes";
@@ -104,7 +106,7 @@ export default function App() {
   const {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
-    selectScene, addScene, renameScene, removeSceneById, patchActiveScene,
+    selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById, patchActiveScene,
   } = useSceneCoordination(flash);
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
@@ -462,6 +464,30 @@ export default function App() {
     }
     return handlePromptCreated(created, dragParentId);
   };
+  // 씬 저장 — 현재 활성 씬을 가벼운 텍스트(JSON)로 내려받는다. 미디어는 참조만(가볍게).
+  const handleSaveScene = () => {
+    if (!activeScene) return;
+    const text = exportSceneText(activeScene);
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(activeScene.name || "scene").replace(/[^\w가-힣 .-]/g, "_")}.mvscene.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  // 씬 불러오기 — 파일을 검증해 '새 탭'으로 연다(현재 캔버스 보존). 선택·프롬프트 바인딩은 초기화.
+  const handleLoadSceneFile = async (file: File) => {
+    try {
+      const snap = parseSceneImport(await file.text());
+      importSceneSnapshot(snap);
+      setSceneBinding(null);
+      setSceneSelGens([]);
+      flash(`씬 "${snap.name}" 을(를) 새 탭으로 불러왔습니다.`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : "씬 불러오기에 실패했습니다.");
+    }
+  };
   // 캔버스에서 '재생성' → 새 결과를 그 생성물이 속한 카드에 변형으로 쌓는다(라이브러리처럼 별도 카드가
   // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
   const onSceneRegenerate = async (g: Generation) => {
@@ -799,6 +825,8 @@ export default function App() {
               <SceneBoard
                 scene={activeScene}
                 onChange={(patch) => patchActiveScene(patch)}
+                onSaveScene={handleSaveScene}
+                onLoadSceneFile={handleLoadSceneFile}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
                 onCameraChange={(camera) => patchActiveScene({ camera })}

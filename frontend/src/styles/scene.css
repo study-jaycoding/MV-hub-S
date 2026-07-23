@@ -54,6 +54,25 @@
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
 
+/* ── 좌상단 씬 패널 — 씬 이름 + 저장/불러오기(이미지1 헤더 스타일) ── */
+.scene-io-panel {
+  position: absolute; top: 10px; left: 10px; z-index: 20;
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 10px;
+  background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); backdrop-filter: blur(2px);
+}
+.scene-io-name {
+  max-width: 180px; font-size: 12px; font-weight: 800; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scene-io-btns { display: flex; gap: 6px; }
+.scene-io-btn {
+  padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; cursor: pointer;
+  border: 1px solid var(--border2); background: rgba(255, 255, 255, 0.06); color: var(--text);
+}
+.scene-io-btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
 /* ── 미니맵(우측 상단 네비게이터) — 화면 밖 카드가 있을 때만 표시(JS 로 display 토글) ── */
 .scene-minimap {
   position: absolute; top: 10px; right: 10px; z-index: 20;

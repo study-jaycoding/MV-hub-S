@@ -159,6 +159,110 @@ export function deleteScene(projectId: string | null, sceneId: string) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 씬 저장/불러오기 (ComfyUI 워크플로우식 가벼운 텍스트) — 미디어 바이트는 안 넣고 참조(URL/토큰/genId)만.
+//   같은 서버/팀이면 백엔드가 실제 미디어를 그려주므로 화면이 그대로 재현된다.
+// ─────────────────────────────────────────────────────────────────────────
+export const SCENE_EXPORT_FORMAT = "mv-scene";
+export const SCENE_EXPORT_VERSION = 1;
+export const SCENE_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // 5MB — 텍스트라 충분히 큰 상한
+
+const SCENE_CARD_KINDS: SceneCardKind[] = [
+  "reference", "generation", "text", "model", "list", "view", "output", "input", "head", "render",
+];
+
+// 불러오기로 새 씬을 만들 때 쓰는 스냅샷(= Scene 에서 id/created_at 만 뺀 것).
+export interface SceneSnapshot {
+  name: string;
+  cards: SceneCard[];
+  edges: SceneEdge[];
+  groups?: SceneGroup[];
+  camera?: { z: number; x: number; y: number };
+}
+
+// 저장용 정규화 — 임시 상태만 정리하고 '내용'(refs 순서·프롬프트·텍스트)은 그대로 둔다.
+//  · 생성 카드: 결과(genId/genIds)가 있으면 status 는 저장 안 함(실제 상태는 서버가 결정), 없으면 empty.
+//  · refs 썸네일이 data:/blob: 이면 제거(무겁고 이식성 없음 — 실제 복원 기준은 file_path/genId).
+function normalizeCardForExport(card: SceneCard): SceneCard {
+  const c: SceneCard = { ...card };
+  if (c.refs) {
+    c.refs = c.refs.map((r) =>
+      r.thumb && (r.thumb.startsWith("data:") || r.thumb.startsWith("blob:")) ? { ...r, thumb: null } : r,
+    );
+  }
+  if (c.kind === "generation") {
+    if ((c.genIds && c.genIds.length > 0) || c.genId) delete c.status;
+    else c.status = "empty";
+  }
+  return c;
+}
+
+// 활성 씬 → 저장 텍스트(JSON). 다운로드해서 파일로 보관.
+export function exportSceneText(scene: Scene): string {
+  const snapshot: SceneSnapshot = {
+    name: scene.name,
+    cards: scene.cards.map(normalizeCardForExport),
+    edges: scene.edges,
+    groups: scene.groups,
+    camera: scene.camera,
+  };
+  return JSON.stringify(
+    { format: SCENE_EXPORT_FORMAT, version: SCENE_EXPORT_VERSION, savedAt: Date.now(), name: scene.name, scene: snapshot },
+    null,
+    2,
+  );
+}
+
+// 저장 텍스트 → 검증된 스냅샷. 형식·버전·구조·알 수 없는 카드 종류를 막고, 실패 시 사용자 메시지로 throw.
+export function parseSceneImport(text: string): SceneSnapshot {
+  if (text.length > SCENE_IMPORT_MAX_BYTES) throw new Error("파일이 너무 큽니다(최대 5MB).");
+  let obj: unknown;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    throw new Error("씬 파일을 읽을 수 없습니다(JSON 형식이 아님).");
+  }
+  const o = obj as Record<string, unknown>;
+  if (!o || o.format !== SCENE_EXPORT_FORMAT) throw new Error("MV 씬 파일이 아닙니다.");
+  if (o.version !== SCENE_EXPORT_VERSION) throw new Error(`지원하지 않는 씬 파일 버전입니다(v${String(o.version)}).`);
+  const s = o.scene as Record<string, unknown> | undefined;
+  if (!s || !Array.isArray(s.cards) || !Array.isArray(s.edges)) throw new Error("씬 데이터가 손상됐습니다.");
+  for (const c of s.cards as SceneCard[]) {
+    if (!c || typeof c.id !== "string" || !SCENE_CARD_KINDS.includes(c.kind)) {
+      throw new Error("알 수 없는 카드가 있어 불러올 수 없습니다(버전이 다를 수 있음).");
+    }
+  }
+  const name =
+    typeof s.name === "string" && s.name
+      ? s.name
+      : typeof o.name === "string" && o.name
+        ? (o.name as string)
+        : "불러온 씬";
+  return {
+    name,
+    cards: s.cards as SceneCard[],
+    edges: s.edges as SceneEdge[],
+    groups: Array.isArray(s.groups) ? (s.groups as SceneGroup[]) : undefined,
+    camera: s.camera && typeof s.camera === "object" ? (s.camera as SceneSnapshot["camera"]) : undefined,
+  };
+}
+
+// 스냅샷을 '새 씬'으로 저장(새 id/created_at). 이름은 그대로(탭에서 구분).
+export function importScene(projectId: string | null, snap: SceneSnapshot): Scene {
+  const scenes = listScenes(projectId);
+  const scene: Scene = {
+    id: uid(),
+    name: snap.name || `씬 ${scenes.length + 1}`,
+    cards: snap.cards,
+    edges: snap.edges,
+    groups: snap.groups,
+    camera: snap.camera,
+    created_at: Date.now(),
+  };
+  saveScenes(projectId, [...scenes, scene]);
+  return scene;
+}
+
 export function getActiveSceneId(projectId: string | null): string | null {
   const map = loadJSON<Record<string, string>>(STORAGE_KEYS.scenesActive) || {};
   return map[keyOf(projectId)] || null;

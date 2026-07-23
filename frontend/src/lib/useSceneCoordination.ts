@@ -3,11 +3,12 @@
 //  · patchActiveScene: 활성 씬을 갱신하고 목록을 다시 읽는 반복 패턴(updateScene + listScenes)을 DRY.
 // 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. localStorage 데이터계층(scenes.ts).
 import { useEffect, useRef, useState } from "react";
-import type { Scene, SceneRef } from "./scenes";
+import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
 import {
   createScene,
   deleteScene,
   getActiveSceneId,
+  importScene,
   listScenes,
   setActiveSceneId as persistActiveScene,
   updateScene,
@@ -76,6 +77,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     refreshScenes();
     selectScene(s.id);
   };
+  // 파일에서 불러온 스냅샷을 새 씬 탭으로 만들고 그 탭으로 전환(현재 캔버스는 보존).
+  const importSceneSnapshot = (snap: SceneSnapshot): Scene => {
+    const s = importScene(null, snap);
+    refreshScenes();
+    selectScene(s.id);
+    return s;
+  };
   const renameScene = (id: string, name: string) => {
     updateScene(null, id, { name });
     refreshScenes();
@@ -104,6 +112,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     sceneActionRef,
     selectScene,
     addScene,
+    importSceneSnapshot,
     renameScene,
     removeSceneById,
     patchActiveScene,

@@ -110,6 +110,9 @@ function refMediaType(r: SceneRef): "image" | "video" | "audio" {
 interface Props {
   scene: Scene;
   onChange: (patch: Partial<Scene>) => void;
+  // 좌상단 패널 — 현재 씬을 텍스트 파일로 저장 / 파일에서 새 탭으로 불러오기.
+  onSaveScene?: () => void;
+  onLoadSceneFile?: (file: File) => void;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
   // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
@@ -162,6 +165,8 @@ interface Props {
 export function SceneBoard({
   scene,
   onChange,
+  onSaveScene,
+  onLoadSceneFile,
   onBindingChange,
   onCameraChange,
   onPreview,
@@ -233,6 +238,7 @@ export function SceneBoard({
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
   const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const varGridRef = useRef<HTMLDivElement>(null);
+  const sceneFileRef = useRef<HTMLInputElement>(null); // 씬 불러오기 파일 인풋(숨김)
   const varpopWrapRef = useRef<HTMLDivElement>(null);
   // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
   // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
@@ -3559,6 +3565,38 @@ export function SceneBoard({
 
       {cutHeld && (
         <div className="scene-cut-hint">✂ 연결 자르기 — 드래그로 선을 지나가고 손을 떼면 끊깁니다</div>
+      )}
+
+      {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭). 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
+      {(onSaveScene || onLoadSceneFile) && (
+        <div className="scene-io-panel" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="scene-io-name" title={scene.name}>{scene.name}</div>
+          <div className="scene-io-btns">
+            {onSaveScene && (
+              <button className="scene-io-btn" title="이 씬을 파일로 저장" onClick={onSaveScene}>저장</button>
+            )}
+            {onLoadSceneFile && (
+              <button
+                className="scene-io-btn"
+                title="씬 파일을 새 탭으로 불러오기"
+                onClick={() => sceneFileRef.current?.click()}
+              >
+                불러오기
+              </button>
+            )}
+          </div>
+          <input
+            ref={sceneFileRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onLoadSceneFile?.(f);
+              e.target.value = ""; // 같은 파일을 다시 고를 수 있게 초기화
+            }}
+          />
+        </div>
       )}
 
       {/* Tab 노드 피커 — 커서 위치의 작은 메뉴. 항목 클릭 시 그 자리에 노드 생성. 배경/Esc 로 닫힘. */}
