@@ -274,25 +274,29 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
           <span className="info-title" title={title}>
             {target.kind === "generation" ? "ℹ 생성 정보" : "ℹ 파일 정보"}
           </span>
-          {target.kind === "generation" && onOpenInBoard && (
-            <button
-              className="info-board-btn"
-              title="구성탭에서 원본 → 파생 트리로 보기"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => onOpenInBoard(target.gen)}
-            >
-              ⧉ 히스토리 보기
-            </button>
-          )}
-          {target.kind === "generation" && onOpenCanvas && (
-            <button
-              className="info-board-btn"
-              title="어떻게 만들었나를 캔버스 노드로 열기"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => onOpenCanvas(target.gen)}
-            >
-              ⧉ 캔버스 보기
-            </button>
+          {target.kind === "generation" && (onOpenInBoard || onOpenCanvas) && (
+            <div className="info-head-actions">
+              {onOpenInBoard && (
+                <button
+                  className="info-board-btn"
+                  title="구성탭에서 원본 → 파생 트리로 보기"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onOpenInBoard(target.gen)}
+                >
+                  ⧉ 히스토리
+                </button>
+              )}
+              {onOpenCanvas && (
+                <button
+                  className="info-board-btn"
+                  title="어떻게 만들었나를 캔버스 노드로 열기"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onOpenCanvas(target.gen)}
+                >
+                  ⧉ 캔버스
+                </button>
+              )}
+            </div>
           )}
           <button className="assets-x" onClick={onClose} title="닫기">
             ✕

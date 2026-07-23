@@ -554,8 +554,10 @@
 /* 미리보기 헤더 우측 버튼 그룹 — [다운로드][구성에서 보기] 를 한 덩어리로 우측 정렬(닫기 앞) */
 .preview-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .preview-head-actions .lin-board-btn { margin-left: 0; white-space: nowrap; }
+/* 헤더 우측 버튼 그룹 — [히스토리][캔버스] 를 한 덩어리로 우측 정렬(닫기 바로 앞) */
+.info-head-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .info-board-btn {
-  margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
+  font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
   border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12));
   color: var(--accent); cursor: pointer; white-space: nowrap;
 }
