@@ -1891,6 +1891,7 @@ export function SceneBoard({
         const move = (ev: MouseEvent) => {
           if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
           gMoved = true;
+          scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단
           const z = zoomRef.current;
           const dx = (ev.clientX - gsx) / z;
           const dy = (ev.clientY - gsy) / z;
@@ -1910,6 +1911,7 @@ export function SceneBoard({
           }
         };
         const up = () => {
+          scrollRef.current?.classList.remove("dragging");
           if (gRelocated) {
             const ng = gOrigRect
               ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
@@ -1960,6 +1962,7 @@ export function SceneBoard({
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         moved = true;
+        scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
         const z = zoomRef.current;
         const dx = (ev.clientX - startX) / z;
         const dy = (ev.clientY - startY) / z;
@@ -1977,6 +1980,7 @@ export function SceneBoard({
         setCards(next);
       };
       const up = () => {
+        scrollRef.current?.classList.remove("dragging");
         if (relocated) {
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
           persist(cardsRef.current, edgesRef.current, ng);

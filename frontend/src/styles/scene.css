@@ -35,6 +35,9 @@
 }
 .scene-board.panning { cursor: grabbing; }
 .scene-board.panning * { cursor: grabbing !important; }
+/* 카드를 드래그하는 동안엔 카드의 pointer-events 를 꺼서 hover/포트 노출을 막는다 — 겹친 뒤 카드가
+   마우스 영향을 받아(포트 튀어나옴·강조) 앞 카드 위로 올라오던 문제 방지. 이동은 document 레벨(beginDrag)이라 무관. */
+.scene-board.dragging .scene-card { pointer-events: none; }
 /* 가위 모드('Y') — 좌드래그로 연결선 자르기. 커서를 가위 모양으로. */
 .scene-board.cutting {
   cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%23c4e84a%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Ccircle%20cx%3D%276%27%20cy%3D%276%27%20r%3D%273%27%2F%3E%3Ccircle%20cx%3D%276%27%20cy%3D%2718%27%20r%3D%273%27%2F%3E%3Cpath%20d%3D%27M20%204%208.12%2015.88M14.47%2014.48%2020%2020M8.12%208.12%2012%2012%27%2F%3E%3C%2Fsvg%3E") 8 12, crosshair;
