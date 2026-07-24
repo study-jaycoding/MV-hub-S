@@ -321,16 +321,17 @@
 .scene-card-list:hover { border-color: var(--accent); }
 .scene-card-hd.list { color: var(--accent); background: rgba(196, 232, 74, 0.10); }
 .scene-listnode-body {
-  flex: 1; display: flex; align-items: center; justify-content: center;
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
   color: var(--muted); font-size: 11px; padding: 8px; text-align: center;
 }
 .scene-listnode-text {
-  align-self: stretch; width: 100%; text-align: left; font-size: 10.5px; color: #cdd3dc;
+  align-self: stretch; width: 100%; min-height: 0; text-align: left; font-size: 10.5px; color: #cdd3dc;
   white-space: pre-wrap; word-break: break-word; overflow: hidden; max-height: 100%;
 }
-/* 텍스트 리스트 — 각 텍스트를 한 행(카드)으로, 왼쪽 그립을 잡아 드래그로 순서 변경 */
+/* 텍스트/생성물 리스트 — 각 항목을 한 행으로. flex:1+min-height:0 로 body 를 채우고 넘치면 스크롤. */
 .scene-listrows {
-  align-self: stretch; width: 100%; max-height: 100%; overflow: auto;
+  align-self: stretch; width: 100%; flex: 1 1 0; min-height: 0; overflow: auto;
   display: flex; flex-direction: column; gap: 3px;
 }
 .scene-listrow {
@@ -375,8 +376,9 @@
 
 /* 생성물 리스트 — 썸네일 그리드(드래그로 순서 변경) */
 .scene-listthumbs {
-  align-self: stretch; width: 100%; max-height: 100%; overflow: auto;
+  align-self: stretch; width: 100%; flex: 1 1 0; min-height: 0; overflow: auto;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 4px;
+  align-content: start; /* 넘칠 때 위에서부터 채워 스크롤(가운데 정렬로 잘리지 않게) */
 }
 .scene-listthumb {
   position: relative; aspect-ratio: 1; border-radius: 4px; overflow: hidden;
