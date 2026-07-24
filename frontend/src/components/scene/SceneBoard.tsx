@@ -2037,8 +2037,14 @@ export function SceneBoard({
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      // 팝업 위에서는 보드 줌 대신 팝업이 스크롤되게 — 줌/preventDefault 를 건너뛴다.
-      if ((e.target as HTMLElement)?.closest?.(".scene-varpop-backdrop")) return;
+      // 떠있는 UI(변형 팝업·모델설정 모달·옵션 드롭다운·프롬프트 독) 위에서는 보드 줌 대신 그 UI 가
+      //  스크롤되게 — 줌/preventDefault 를 건너뛴다. (예: 비율 드롭다운 휠이 화면 확대/축소로 새던 버그)
+      if (
+        (e.target as HTMLElement)?.closest?.(
+          ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .sl-dropdown, .sl-dockbar",
+        )
+      )
+        return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
       const cx = e.clientX - r.left;
