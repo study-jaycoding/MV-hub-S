@@ -21,6 +21,7 @@ import { MountManager } from "./assets/MountManager";
 import { setSingleFileDrag, setZipDrag } from "./assets/exportDrag";
 import {
   EMPTY_ASSET_META,
+  INTERNAL_COMBINED_PROJECT,
   assetDragItemsForPath,
   assetPreviewTarget,
   toggleAssetDateSelection,
@@ -603,7 +604,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           <span className="assets-thumb sm" /> Assets
         </button>
         <select
-          className="assets-project"
+          className={
+            "assets-project" + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
+          }
           value={project}
           onChange={(e) => {
             setProject(e.target.value);
@@ -611,7 +614,11 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           }}
         >
           {projects.map((p) => (
-            <option key={p} value={p}>
+            <option
+              key={p}
+              value={p}
+              className={p === INTERNAL_COMBINED_PROJECT ? "internal" : undefined}
+            >
               {p}
             </option>
           ))}

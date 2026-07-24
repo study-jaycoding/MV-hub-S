@@ -73,6 +73,11 @@
   background: #16171b;
   color: var(--text);
 }
+/* 합본(imp/cap) — 내장 스크래치 프로젝트라 글씨를 회색으로(선택 시 닫힌 표시도, 목록 옵션도). */
+.assets-project.internal,
+.assets-project option.internal {
+  color: var(--muted);
+}
 .assets-x {
   width: 28px; height: 28px; padding: 0; border-radius: 8px;
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
