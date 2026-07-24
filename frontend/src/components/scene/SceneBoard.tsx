@@ -1252,6 +1252,7 @@ export function SceneBoard({
     for (const cid of collectViewGenCardIds(viewId, byId, es)) {
       const card = byId.get(cid);
       const gid = card?.genId || (card ? variantIds(card)[0] : undefined);
+      if (gid && disabledIds.has(gid)) continue; // 비활성(회색) 결과는 View 재생·미리보기에서 제외
       const gen = gid ? genDataRef.current[gid] : undefined;
       const a = gen?.assets?.[0];
       if (a && gid)
@@ -3100,10 +3101,11 @@ export function SceneBoard({
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;
                                 const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
+                                const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
                                 return (
                                   <div
                                     key={cid}
-                                    className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
+                                    className={"scene-listrow" + (off ? " off" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
                                   >
                                     <span
@@ -3250,9 +3252,10 @@ export function SceneBoard({
               ) : card.kind === "view" ? (
                 (() => {
                   // 뷰어 끝점 — 생성물(직접+generation-list)은 미리보기로 재생, 텍스트(text·text-list)는 표시.
-                  const genIds = collectViewGenCardIds(card.id, cardsById, resolvedEdges);
+                  //  clips 는 buildViewClips 가 비활성(회색) 결과를 제외한 목록 → hasMedia 도 이 기준으로 판정.
+                  const clips = buildViewClips(card.id, cardsById, resolvedEdges);
                   const texts = collectViewTexts(card.id, cardsById, resolvedEdges);
-                  const hasMedia = genIds.length > 0;
+                  const hasMedia = clips.length > 0;
                   const hasText = texts.length > 0;
                   return (
                     <>
@@ -3261,7 +3264,7 @@ export function SceneBoard({
                         <div className="scene-viewnode-body">
                           {hasMedia ? (
                             // '합쳐진 영상' 한 화면 미리보기 — 대표 프레임을 크게, 마우스 올리면 순서대로 이어 재생.
-                            <ViewSequencePreview clips={buildViewClips(card.id, cardsById, resolvedEdges)} />
+                            <ViewSequencePreview clips={clips} />
                           ) : hasText ? (
                             // 연결된 텍스트의 실제 내용을 표시(개수 대신).
                             <div className="scene-viewtext">{texts.join("\n\n")}</div>
@@ -3406,10 +3409,11 @@ export function SceneBoard({
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;
                                 const n = gc ? variantIds(gc).length : 0;
+                                const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
                                 return (
                                   <div
                                     key={cid}
-                                    className={"scene-listrow" + (reorderFrom === cid ? " reordering" : "")}
+                                    className={"scene-listrow" + (off ? " off" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
                                   >
                                     <span

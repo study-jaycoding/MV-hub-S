@@ -341,6 +341,9 @@
 /* 순서변경으로 잡고 있는 항목 — 흐리게(어디를 옮기는 중인지 표시) */
 .scene-listrow.reordering,
 .scene-listthumb.reordering { opacity: 0.4; }
+/* 비활성(회색) 결과 — 캔버스 카드처럼 리스트/렌더에서도 흐리게+무채색으로 표시(그 결과는 View 에서도 제외됨). */
+.scene-listrow.off { opacity: 0.5; filter: grayscale(1); }
+.scene-listthumb.off { opacity: 0.5; filter: grayscale(1); }
 /* 삽입 위치 흰 선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
 .scene-reorder-line {
   position: absolute; z-index: 60; pointer-events: none; background: #fff; border-radius: 2px;
