@@ -12,7 +12,8 @@ const CACHE_MAX_BYTES = 3_000_000; // localStorage 안전 상한(대략) — 넘
 function persistCache(key: string, obj: unknown) {
   try {
     const s = JSON.stringify(obj);
-    if (s.length <= CACHE_MAX_BYTES) STORE.set(key, s);
+    // 상한 초과면 저장을 건너뛰되, 예전에 저장된 작은(=낡은) 캐시가 다음 세션에 되살아나지 않게 비운다.
+    STORE.set(key, s.length <= CACHE_MAX_BYTES ? s : "");
   } catch {
     /* ignore */
   }
@@ -70,7 +71,8 @@ export function useAssetProjectData({
   const reloadMeta = useCallback(async (targetProject = project) => {
     if (!targetProject) return;
     const cached = metaCacheRef.current[targetProject];
-    if (cached) setMeta(cached); // 캐시 즉시 표시
+    // 캐시 즉시 표시는 '지금 보고 있는' 프로젝트일 때만 — 아니면 미러 이펙트가 현재 프로젝트 캐시를 오염시킨다.
+    if (cached && projectRef.current === targetProject) setMeta(cached);
     try {
       const fresh = await api.assetMeta(targetProject);
       metaCacheRef.current[targetProject] = fresh; // 어느 프로젝트든 fresh 는 캐시(다음 방문 즉시)
@@ -85,12 +87,16 @@ export function useAssetProjectData({
     if (!targetProject) return;
     const isCurrent = () => projectRef.current === targetProject;
     const cached = treeCacheRef.current[targetProject];
-    if (cached) {
-      setTree(cached); // 캐시 있으면 즉시 표시(로딩 화면 없음)
-      onTreeLoaded?.(cached);
-      if (isCurrent()) setLoading(false); // 이전 uncached 로딩 잔여가 있으면 끈다
-    } else if (isCurrent()) {
-      setLoading(true); // 처음 여는 프로젝트만 로딩 표시(tree 는 안 비운다 — 비우면 mirror effect 가 빈 캐시를 남길 수 있음)
+    // 화면(setTree/로딩)은 '지금 보고 있는' 프로젝트일 때만 건드린다 — 아니면 미러 이펙트가 현재 프로젝트
+    //  캐시를 다른 프로젝트 트리로 오염시킨다. (백그라운드 fetch 로 캐시 갱신은 아래에서 계속 수행)
+    if (isCurrent()) {
+      if (cached) {
+        setTree(cached); // 캐시 있으면 즉시 표시(로딩 화면 없음)
+        onTreeLoaded?.(cached);
+        setLoading(false);
+      } else {
+        setLoading(true); // 처음 여는 프로젝트만 로딩 표시(tree 는 안 비운다 — 비우면 mirror effect 가 빈 캐시를 남길 수 있음)
+      }
     }
     try {
       const nextTree = await api.assetTree(targetProject);

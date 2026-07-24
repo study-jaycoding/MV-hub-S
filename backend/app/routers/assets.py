@@ -107,7 +107,9 @@ def _sha256_file(path: Path) -> Optional[str]:
         return None
 
 
-def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]:
+def _find_same_media(
+    dest: Path, digest: str, media_type: str, size: Optional[int] = None
+) -> Optional[Path]:
     try:
         entries = list(dest.iterdir())
     except OSError:
@@ -115,6 +117,14 @@ def _find_same_media(dest: Path, digest: str, media_type: str) -> Optional[Path]
     for p in entries:
         if not p.is_file() or _media_type(p.name) != media_type:
             continue
+        # sha256 계산은 비싸다 — 파일 크기가 다르면 내용도 다르므로 해시 없이 건너뛴다.
+        #  (폴더가 커질수록 업로드마다 전수 해시하던 비용을 크게 줄인다. 크기 같은 것만 해시.)
+        if size is not None:
+            try:
+                if p.stat().st_size != size:
+                    continue
+            except OSError:
+                continue
         if _sha256_file(p) == digest:
             return p
     return None
@@ -951,6 +961,10 @@ async def upload_assets(
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
+    # 합본(imp/cap)은 물리 폴더가 아니라 ASSETS_ROOT 뷰다. 루트(빈 dir)로 드롭하면 파일이 ASSETS_ROOT
+    #  최상위에 저장돼 합본 트리에 안 보이고 루트를 오염시킨다 → imports 폴더로 보낸다(외부 파일 버킷).
+    if project == _COMBINED_INTERNAL and not dir:
+        dir = _PROMPT_IMPORT_PROJECT
     dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
     if not dest or not dest.is_dir():
         raise HTTPException(status_code=400, detail="대상 폴더 없음")
@@ -999,8 +1013,8 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     if size == 0:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
-    # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지).
-    existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image")
+    # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지). 크기 우선 비교로 가속.
+    existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image", size)
     if existing:
         tmp.unlink(missing_ok=True)
         return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
@@ -1054,8 +1068,8 @@ async def upload_reference_import(
             tmp.unlink(missing_ok=True)
             skipped.append(raw)
             continue
-        # 폴더 내 기존 파일 전수 sha256 비교 — 동기 파일 IO 라 스레드로 오프로딩(이벤트 루프 보호).
-        existing = await asyncio.to_thread(_find_same_media, dest, digest, mt)
+        # 폴더 내 기존 파일 비교 — 크기 우선(다르면 해시 스킵) 후 sha256. 동기 IO 라 스레드로 오프로딩.
+        existing = await asyncio.to_thread(_find_same_media, dest, digest, mt, size)
         if existing:
             tmp.unlink(missing_ok=True)
             rel = (
