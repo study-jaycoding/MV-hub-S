@@ -726,6 +726,19 @@ def _require_project(project: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
 
 
+def _real_meta_key(project: str, path: str) -> tuple[str, str]:
+    """메타(태그·소스·컬러·댓글)는 겉포장(imp/cap)이 아니라 실제 폴더에 붙어야 한다.
+    합본의 (imp/cap, 'captures/foo.png') → ('captures', 'foo.png') 로 되돌린다. 합본이 아니거나
+    첫 조각이 captures/imports 가 아니면 그대로 둔다(방어). 이러면 합본에서 단 메모가 실제 폴더 기준으로
+    저장·조회되어, 개별 폴더 뷰·생성탭 @/# 피커·레퍼런스 토큰(asset:captures|…)과 정체성이 일치한다."""
+    if project != _COMBINED_INTERNAL:
+        return project, path
+    head, sep, rest = path.partition("/")
+    if sep and head in _INTERNAL_FOLDERS:
+        return head, rest
+    return project, path
+
+
 @router.get("/meta")
 def asset_meta(request: Request, project: str = Query(...)):
     """파일별 메타(+ comment_count·has_unread). 미확인은 코멘트별 muted 플래그를 따른다.
@@ -736,29 +749,42 @@ def asset_meta(request: Request, project: str = Query(...)):
     DB 를 봐서 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 코멘트
     스레드만 공유(서버)라, 프록시 중이면 서버에서 코멘트 뱃지(comment_count·has_unread)만 가져와
     로컬 개인 메타에 머지한다."""
-    local = repo.get_asset_meta(project, actor_id(request))
+    actor = actor_id(request)
+    # 합본(imp/cap)은 실제 폴더(captures/imports) 메타를 각각 읽어 'captures/…' prefix 로 키를 다시 매겨
+    #  합본 트리 경로와 맞춘다 → 메모가 실제 폴더 기준으로 제대로 붙는다. 일반 프로젝트는 그대로 1건.
+    sources = (
+        [(f, f + "/") for f in _INTERNAL_FOLDERS]
+        if project == _COMBINED_INTERNAL
+        else [(project, "")]
+    )
+    local: dict[str, Any] = {}
+    for real_proj, prefix in sources:
+        for p, m in repo.get_asset_meta(real_proj, actor).items():
+            local[prefix + p] = m
     if _proxy.proxying():
-        try:
-            remote = _proxy.proxy_json(
-                "GET", "/api/assets/meta", params={"project": project},
-                timeout=5,  # 비핵심 보강(코멘트 뱃지만) — 서버 지연/다운에 메타 응답을 60초씩 막지 않게
-            )
-        except Exception:  # noqa: BLE001 — 코멘트 뱃지는 부가정보, 실패해도 개인 메타는 보여준다
-            remote = None
-        if isinstance(remote, dict):
-            for path, rm in remote.items():
-                if not isinstance(rm, dict):
-                    continue
-                slot = local.get(path)
-                if slot is None:  # 개인 메타는 없지만 공유 코멘트가 달린 파일 → 뱃지만 채운다
-                    slot = {
-                        "is_source": False, "source_name": None, "tags": [],
-                        "comment": None, "color": None,
-                        "comment_count": 0, "has_unread": False,
-                    }
-                    local[path] = slot
-                slot["comment_count"] = rm.get("comment_count", 0)
-                slot["has_unread"] = rm.get("has_unread", False)
+        for real_proj, prefix in sources:
+            try:
+                remote = _proxy.proxy_json(
+                    "GET", "/api/assets/meta", params={"project": real_proj},
+                    timeout=5,  # 비핵심 보강(코멘트 뱃지만) — 서버 지연/다운에 메타 응답을 60초씩 막지 않게
+                )
+            except Exception:  # noqa: BLE001 — 코멘트 뱃지는 부가정보, 실패해도 개인 메타는 보여준다
+                remote = None
+            if isinstance(remote, dict):
+                for p, rm in remote.items():
+                    if not isinstance(rm, dict):
+                        continue
+                    key = prefix + p
+                    slot = local.get(key)
+                    if slot is None:  # 개인 메타는 없지만 공유 코멘트가 달린 파일 → 뱃지만 채운다
+                        slot = {
+                            "is_source": False, "source_name": None, "tags": [],
+                            "comment": None, "color": None,
+                            "comment_count": 0, "has_unread": False,
+                        }
+                        local[key] = slot
+                    slot["comment_count"] = rm.get("comment_count", 0)
+                    slot["has_unread"] = rm.get("has_unread", False)
     return local
 
 
@@ -785,6 +811,7 @@ class CommentReadIn(BaseModel):
 @router.get("/comments")
 def list_comments(request: Request, project: str = Query(...), path: str = Query(...)):
     """파일 코멘트 스레드(작성자·시각 포함, 오래된→최신). 스레드 자체는 팀 공유."""
+    project, path = _real_meta_key(project, path)  # 합본이면 실제 폴더 기준으로
     if _proxy.proxying():
         return _proxy.proxy_json(
             "GET", "/api/assets/comments", params={"project": project, "path": path}
@@ -794,14 +821,18 @@ def list_comments(request: Request, project: str = Query(...), path: str = Query
 
 @router.post("/comments")
 def add_comment(body: CommentAddIn, request: Request):
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     if _proxy.proxying():
-        return _proxy.proxy_json("POST", "/api/assets/comments", body=body.model_dump())
+        return _proxy.proxy_json(
+            "POST", "/api/assets/comments",
+            body={**body.model_dump(), "project": real_project, "path": real_path},
+        )
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
     # 작성자는 로그인 신원(creator_uid) — body.author 무시(멀티계정에서 'me' 로 뭉치지 않게).
     cid = repo.add_asset_comment(
-        body.project, body.path, actor_id(request), text, body.parent_id, body.muted
+        real_project, real_path, actor_id(request), text, body.parent_id, body.muted
     )
     return {"id": cid}
 
@@ -837,9 +868,13 @@ def delete_comment(comment_id: str, request: Request):
 
 @router.post("/comments/read")
 def read_comments(body: CommentReadIn, request: Request):
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     if _proxy.proxying():
-        return _proxy.proxy_json("POST", "/api/assets/comments/read", body=body.model_dump())
-    repo.mark_asset_comments_read(actor_id(request), body.project, body.path)
+        return _proxy.proxy_json(
+            "POST", "/api/assets/comments/read",
+            body={**body.model_dump(), "project": real_project, "path": real_path},
+        )
+    repo.mark_asset_comments_read(actor_id(request), real_project, real_path)
     return {"ok": True}
 
 
@@ -851,14 +886,15 @@ def read_comments(body: CommentReadIn, request: Request):
 def asset_set_source(body: AssetSourceIn, request: Request):
     # 에셋 메타는 계정별 개인화 — 내(actor_id) 설정만 만들고 바꾼다(남의 것과 안 섞임).
     # 소스로 켤 때 파일 내용 지문(sha256)을 함께 기록해, 이후 폴더가 바뀌어도 재매칭되게 한다.
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     content_sha: Optional[str] = None
     if body.is_source:
-        proj_dir = _safe_project_dir(body.project, request)
-        target = _safe_resolve(proj_dir, body.path) if proj_dir else None
+        proj_dir = _safe_project_dir(real_project, request)
+        target = _safe_resolve(proj_dir, real_path) if proj_dir else None
         if target and target.is_file():
             content_sha = _sha256_file(target)
     repo.set_asset_source(
-        body.project, body.path, body.name, body.is_source, actor_id(request), content_sha
+        real_project, real_path, body.name, body.is_source, actor_id(request), content_sha
     )
     return {"ok": True}
 
@@ -882,19 +918,22 @@ def prune_broken_sources(request: Request):
 
 @router.put("/tags")
 def asset_set_tags(body: AssetTagsIn, request: Request):
-    repo.set_asset_tags(body.project, body.path, body.tags, actor_id(request))
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
+    repo.set_asset_tags(real_project, real_path, body.tags, actor_id(request))
     return {"ok": True}
 
 
 @router.put("/comment")
 def asset_set_comment(body: AssetCommentIn, request: Request):
-    repo.set_asset_comment(body.project, body.path, body.comment, actor_id(request))
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
+    repo.set_asset_comment(real_project, real_path, body.comment, actor_id(request))
     return {"ok": True}
 
 
 @router.put("/color")
 def asset_set_color(body: AssetColorIn, request: Request):
-    repo.set_asset_color(body.project, body.path, body.color, actor_id(request))
+    real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
+    repo.set_asset_color(real_project, real_path, body.color, actor_id(request))
     return {"ok": True}
 
 
