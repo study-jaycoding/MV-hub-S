@@ -2118,7 +2118,8 @@ export function SceneBoard({
   useEffect(() => {
     if (!colorPopId) return;
     const onDown = (ev: MouseEvent) => {
-      if (!(ev.target as HTMLElement)?.closest?.(".scene-group-colorwrap")) setColorPopId(null);
+      if (!(ev.target as HTMLElement)?.closest?.(".scene-group-colorwrap, .scene-headnode-colorwrap"))
+        setColorPopId(null);
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
@@ -3555,17 +3556,47 @@ export function SceneBoard({
                           className="scene-headnode-ctrls"
                           onMouseDown={(e) => e.stopPropagation()}
                         >
-                          <input
-                            type="color"
-                            className="scene-headnode-color"
-                            value={col}
-                            title="글씨 색 변경"
-                            onChange={(e) => setNodeColor(card.id, e.target.value)}
-                          />
+                          {/* 가운데 — 글씨 크기 스테퍼 */}
                           <div className="scene-headnode-fs" title="글씨 크기">
                             <button onClick={() => setNodeFontSize(card.id, fs - 4)}>−</button>
                             <span>{fs}</span>
                             <button onClick={() => setNodeFontSize(card.id, fs + 4)}>＋</button>
+                          </div>
+                          {/* 맨 우측 — 글씨 색(그룹처럼 스와치 팔레트 팝업) */}
+                          <div className="scene-headnode-colorwrap">
+                            <button
+                              className="scene-group-color"
+                              title="글씨 색"
+                              style={{ background: col }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setColorPopId((p) => (p === card.id ? null : card.id));
+                              }}
+                            />
+                            {colorPopId === card.id && (
+                              <div className="scene-group-colorpop">
+                                {GROUP_COLORS.map((c) => (
+                                  <button
+                                    key={c}
+                                    className={"scene-group-swatch" + (col === c ? " on" : "")}
+                                    style={{ background: c }}
+                                    title={c}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setNodeColor(card.id, c);
+                                      setColorPopId(null);
+                                    }}
+                                  />
+                                ))}
+                                <label className="scene-group-swatch custom" title="커스텀 색">
+                                  <input
+                                    type="color"
+                                    value={col}
+                                    onChange={(e) => setNodeColor(card.id, e.target.value)}
+                                  />
+                                </label>
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}

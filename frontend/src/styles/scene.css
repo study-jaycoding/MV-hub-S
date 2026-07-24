@@ -800,19 +800,21 @@
   border: 1px dashed rgba(255, 255, 255, 0.4); border-radius: 6px; padding: 2px 6px;
   font-weight: 900; letter-spacing: 0.01em; line-height: 1.15; outline: none;
 }
-/* 선택 시 컨트롤 묶음(글씨 색 + 크기 조절) — 헤드 위쪽에 떠있게. */
+/* 선택 시 컨트롤 바(헤드 위쪽) — 헤드 폭 전체를 차지하고 폰트 스테퍼=가운데, 색=맨 우측. */
 .scene-headnode-ctrls {
-  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 12;
-  display: flex; align-items: center; gap: 6px;
+  position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 12;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
 }
-.scene-headnode-color {
-  width: 22px; height: 22px; padding: 0; flex: none;
-  border: 2px solid #1b1e24; border-radius: 50%; background: none; cursor: pointer;
+.scene-headnode-colorwrap {
+  grid-column: 3; justify-self: end; position: relative; display: inline-flex;
 }
 .scene-headnode-fs {
+  grid-column: 2; justify-self: center;
   display: flex; align-items: center; gap: 2px;
   background: #1b1e24; border: 1px solid var(--border2); border-radius: 8px; padding: 2px;
 }
+/* head 색 팝업은 컨트롤이 헤드 '위'에 있어, 아래로 열면 헤드 글씨와 겹친다 → 위로 열리게. */
+.scene-headnode-colorwrap .scene-group-colorpop { top: auto; bottom: calc(100% + 5px); }
 .scene-headnode-fs button {
   width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent;
   color: var(--text); cursor: pointer; font-size: 14px; font-weight: 800; line-height: 1;
