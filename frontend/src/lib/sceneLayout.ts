@@ -51,7 +51,7 @@ export function arrangeNodes(
   };
   for (const id of ids) calc(id);
 
-  // 열별 그룹핑 후, 열 안 세로 순서는 현재 y(→x→id)로 정렬 = 순서 보존.
+  // 열별 그룹핑(가로 = 연결 깊이).
   const cols = new Map<number, string[]>();
   for (const id of ids) {
     const d = depth.get(id)!;
@@ -59,33 +59,51 @@ export function arrangeNodes(
     cols.get(d)!.push(id);
   }
   const colKeys = [...cols.keys()].sort((a, b) => a - b);
-  for (const k of colKeys)
-    cols.get(k)!.sort((a, b) => {
-      const A = byId.get(a)!;
-      const B = byId.get(b)!;
-      return A.y - B.y || A.x - B.x || (a < b ? -1 : 1);
-    });
 
   // 앵커 = 현재 선택의 좌상단(격자 스냅) → 대략 제자리에서 정렬.
   const anchorX = snap(Math.min(...nodes.map((n) => n.x)));
   const anchorY = snap(Math.min(...nodes.map((n) => n.y)));
 
   const out: Record<string, { x: number; y: number }> = {};
-  // ★간격이 들쭉날쭉하지 않게 '누적 좌표'가 아니라 '한 칸 이동량(step)'을 격자에 스냅한다.
-  //  예전엔 snap(누적 rowY) 라 카드마다 반올림이 위/아래로 엇갈려 간격이 달라졌다(특히 높이가
-  //  격자 배수가 아닌 이미지 카드: 예 h=180 → 간격 198,220 처럼 벌어짐). step 을 스냅하면 anchor·step
-  //  이 모두 격자 배수라 좌표가 항상 격자에 맞고, 같은 높이 카드는 간격이 완전히 균일해진다.
-  let colX = anchorX; // anchorX 는 이미 격자 스냅됨
+  // ★열 안을 '행(row)'으로 묶는다: 세로로 겹치는(=가로로 나란한) 카드는 같은 행에 두어 윗변을 맞추고
+  //  왼→오른쪽으로 편다. 세로로 떨어져 있으면 다음 행 → 예전처럼 세로로 쌓인다(연결 흐름과 호환).
+  //  간격은 '누적 좌표'가 아니라 '한 칸 이동량(step)'을 격자에 스냅해 균일하게 만든다(anchor·step 이
+  //  모두 격자 배수라 좌표도 항상 격자에 맞고, 같은 크기 카드는 간격이 완전히 균일해진다).
+  let colX = anchorX;
   for (const k of colKeys) {
-    const col = cols.get(k)!;
-    const colW = Math.max(...col.map((id) => byId.get(id)!.w));
-    let rowY = anchorY; // anchorY 도 이미 격자 스냅됨
-    for (const id of col) {
+    // 세로(y→x) 순으로 훑으며, 앞 행과 세로로 겹치면 같은 행에 붙인다.
+    const sorted = [...cols.get(k)!].sort((a, b) => {
+      const A = byId.get(a)!, B = byId.get(b)!;
+      return A.y - B.y || A.x - B.x || (a < b ? -1 : 1);
+    });
+    const rows: string[][] = [];
+    let rowBottom = -Infinity;
+    for (const id of sorted) {
       const n = byId.get(id)!;
-      out[id] = { x: colX, y: rowY }; // colX·rowY 는 격자 배수 step 만 더해져 항상 격자 정렬 상태
-      rowY += snap(n.h + rowGap);
+      if (rows.length && n.y < rowBottom) {
+        rows[rows.length - 1].push(id); // 앞 행과 세로로 겹침 → 같은 행(가로 나란)
+        rowBottom = Math.max(rowBottom, n.y + n.h);
+      } else {
+        rows.push([id]); // 세로로 떨어짐 → 새 행
+        rowBottom = n.y + n.h;
+      }
     }
-    colX += snap(colW + colGap);
+    let rowY = anchorY;
+    let colRight = colX;
+    for (const row of rows) {
+      row.sort((a, b) => byId.get(a)!.x - byId.get(b)!.x || (a < b ? -1 : 1));
+      let cellX = colX;
+      let rowH = 0;
+      for (const id of row) {
+        const n = byId.get(id)!;
+        out[id] = { x: cellX, y: rowY }; // 같은 행 = 같은 y(윗변 정렬), 왼→오른쪽 배치
+        rowH = Math.max(rowH, n.h);
+        colRight = Math.max(colRight, cellX + n.w);
+        cellX += snap(n.w + colGap); // step 스냅 → 좌표가 항상 격자 정렬
+      }
+      rowY += snap(rowH + rowGap); // 행 높이는 그 행 최고 카드 기준
+    }
+    colX = snap(colRight + colGap); // 다음 열 = 이 열의 오른쪽 끝 + 간격
   }
   return out;
 }

@@ -23,13 +23,27 @@ describe("arrangeNodes", () => {
     expect(pos.c.y).toBeLessThan(pos.a.y);
   });
 
-  it("연결 없는 노드들은 한 열에 세로로 정돈(x 동일)", () => {
+  it("세로로 겹치는(가로 나란) 카드는 같은 행에 윗변 맞춰 정렬(같은 y, x 증가)", () => {
+    // y=0,30,80(h=100)은 세로로 겹침 → 한 행. 예전엔 세로로 collapse 됐지만 이제 행에 맞춰 가로 배치.
     const nodes = [N("a", 10, 0), N("b", 500, 30), N("c", 900, 80)];
     const pos = arrangeNodes(nodes, []);
-    expect(pos.a.x).toBe(pos.b.x);
-    expect(pos.b.x).toBe(pos.c.x);
-    expect(pos.a.y).toBeLessThan(pos.b.y);
-    expect(pos.b.y).toBeLessThan(pos.c.y);
+    expect(pos.a.y).toBe(pos.b.y);
+    expect(pos.b.y).toBe(pos.c.y);
+    expect(pos.a.x).toBeLessThan(pos.b.x);
+    expect(pos.b.x).toBeLessThan(pos.c.x);
+  });
+
+  it("2D 격자: 같은 행(겹침) 카드는 같은 y, 아랫 행은 그 아래로", () => {
+    const nodes: LayoutNode[] = [
+      { id: "tl", x: 0, y: 0, w: 150, h: 120 },
+      { id: "tr", x: 300, y: 10, w: 150, h: 120 }, // 위 행과 세로 겹침 → 같은 행
+      { id: "bl", x: 0, y: 300, w: 150, h: 120 }, // 겹치지 않음 → 아래 행
+    ];
+    const pos = arrangeNodes(nodes, []);
+    expect(pos.tl.y).toBe(pos.tr.y);
+    expect(pos.tl.x).toBeLessThan(pos.tr.x);
+    expect(pos.bl.y).toBeGreaterThan(pos.tl.y);
+    expect(pos.bl.x).toBe(pos.tl.x);
   });
 
   it("좌표는 격자(22)에 스냅", () => {
@@ -65,10 +79,11 @@ describe("arrangeNodes", () => {
   it("같은 열·같은 높이 카드는 세로 간격이 균일(높이가 격자 배수가 아니어도)", () => {
     // h=180 은 22 의 배수가 아니라, 예전엔 누적좌표 스냅이 위/아래로 엇갈려 간격이 198,220 처럼 달라졌다.
     const H = 180;
+    // y 간격을 넉넉히(겹치지 않게) 둬 3개가 각각 다른 행(세로 스택)이 되게 한다.
     const nodes: LayoutNode[] = [
       { id: "a", x: 0, y: 0, w: 150, h: H },
-      { id: "b", x: 0, y: 100, w: 150, h: H },
-      { id: "c", x: 0, y: 200, w: 150, h: H },
+      { id: "b", x: 0, y: 300, w: 150, h: H },
+      { id: "c", x: 0, y: 600, w: 150, h: H },
     ];
     const pos = arrangeNodes(nodes, []);
     const gap1 = pos.b.y - pos.a.y;
