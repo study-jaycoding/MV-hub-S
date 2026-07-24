@@ -211,9 +211,13 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* 썸네일 3열 그리드 — 여러 장(레거시)일 때만. 개수만큼 행이 늘어 카드가 자연스럽게 길어진다. */
-.scene-card-body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 4px; }
-/* 레퍼런스 1장(기본) — 카드 폭을 꽉 채워 크게 보여준다(어떤 레퍼런스인지는 헤더 라벨로). */
-.scene-card-body.single { display: block; padding: 0; }
+.scene-card-body {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 4px;
+  /* 레퍼런스가 많아 넘치면 카드가 무한정 길어지지 않게 상한 + 카드 안에서 휠 스크롤(휠 핸들러가 감지). */
+  max-height: 264px; overflow-y: auto;
+}
+/* 레퍼런스 1장(기본) — 카드 폭을 꽉 채워 크게 보여준다(어떤 레퍼런스인지는 헤더 라벨로). 상한 해제. */
+.scene-card-body.single { display: block; padding: 0; max-height: none; overflow: visible; }
 .scene-card-body.single .scene-refthumb { aspect-ratio: 4 / 3; border-radius: 0; }
 .scene-refthumb {
   aspect-ratio: 1; position: relative; border-radius: 5px; overflow: hidden; background: #05060a;
@@ -261,7 +265,7 @@
   flex: 1; width: 100%; box-sizing: border-box;
   background: #000; color: #fff; border: 0; border-radius: 0 0 10px 10px;
   resize: none; padding: 8px 8px 24px; font-size: 12px; line-height: 1.45;
-  font-family: inherit; outline: none;
+  font-family: inherit; outline: none; overflow-y: auto; /* 넘치면 카드 안에서 스크롤(휠 핸들러가 감지) */
 }
 .scene-textnode::placeholder { color: #666; }
 /* 텍스트 보기(비편집) — @토큰을 인라인 썸네일 알약으로. 클릭하면 편집 textarea 로 전환. */

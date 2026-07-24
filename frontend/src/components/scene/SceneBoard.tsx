@@ -2090,9 +2090,15 @@ export function SceneBoard({
         )
       )
         return;
-      // 내용이 넘쳐 스크롤 가능한 텍스트 카드 위에서는 줌 대신 그 카드 내용을 스크롤(짧으면 기존처럼 줌).
-      const sc = tgt?.closest?.(".scene-textview-inline, .scene-textnode") as HTMLElement | null;
-      if (sc && sc.scrollHeight > sc.clientHeight) return;
+      // 커서 밑에서 보드까지 올라가며, 내용이 넘쳐 실제로 스크롤 가능한 요소가 있으면 줌 대신 그걸 스크롤한다.
+      //  → 텍스트·리스트·렌더·레퍼런스 등 카드 내부 스크롤 콘텐츠를 모두 자동 커버(클래스 열거 불필요).
+      //  .scene-board 는 overflow:hidden 이라 경계에서 줌으로 새지 않는다.
+      for (let node: HTMLElement | null = tgt; node && node !== el; node = node.parentElement) {
+        const s = getComputedStyle(node);
+        const scrollY = (s.overflowY === "auto" || s.overflowY === "scroll") && node.scrollHeight > node.clientHeight;
+        const scrollX = (s.overflowX === "auto" || s.overflowX === "scroll") && node.scrollWidth > node.clientWidth;
+        if (scrollY || scrollX) return;
+      }
       e.preventDefault();
       const r = el.getBoundingClientRect();
       const cx = e.clientX - r.left;
