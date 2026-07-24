@@ -313,6 +313,7 @@ export function SceneBoard({
     if (sceneIdRef.current !== scene.id) {
       sceneIdRef.current = scene.id;
       setSelected(new Set());
+      setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
       undoStackRef.current = []; // 다른 씬으로 넘어가면 되돌리기·다시실행 히스토리도 새로.
       redoStackRef.current = [];
     }
@@ -1133,10 +1134,12 @@ export function SceneBoard({
   const toggleRenderCheck = (renderId: string, genCardId: string) => {
     // 렌더 행이 복수 선택돼 있고 클릭한 게 그중 하나면 선택 전부에 같은 상태를 적용(일괄 체크/해제).
     const rs = rowSelRef.current;
-    const targets =
+    const exists = new Set(cardsRef.current.map((c) => c.id)); // stale 선택 방어 — 존재하는 카드만
+    const targets = (
       rs.listId === renderId && rs.cids.has(genCardId) && rs.cids.size > 1
-        ? [...rs.cids]
-        : [genCardId];
+        ? [...rs.cids].filter((c) => exists.has(c))
+        : [genCardId]
+    );
     const nextCards = cardsRef.current.map((c) => {
       if (c.id !== renderId) return c;
       const un = new Set(c.unchecked || []);
@@ -1525,6 +1528,13 @@ export function SceneBoard({
     setEdges(nextEdges);
     setGroups(nextGroups);
     setSelected(new Set());
+    // 삭제된 카드가 리스트/렌더 행 선택에 있으면 그 항목만 걷어낸다(리스트 노드 자체가 지워지면 통째 해제).
+    setRowSel((prev) => {
+      if (!prev.cids.size) return prev;
+      if (idset.has(prev.listId)) return { listId: "", cids: new Set() };
+      const cids = new Set([...prev.cids].filter((c) => !idset.has(c)));
+      return cids.size === prev.cids.size ? prev : { listId: prev.listId, cids };
+    });
     setCardMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 카드의 팝업은 닫는다
     persist(nextCards, nextEdges, nextGroups);
     for (const gid of toTrash)
@@ -2027,6 +2037,9 @@ export function SceneBoard({
 
     if (cardEl) {
       const id = cardEl.dataset.id!;
+      // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
+      //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
+      const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
       // 이동 대상: 잡은 카드가 선택에 포함되면 선택 전부, 아니면 그 카드만.
       const sel = selectedRef.current;
       const targetIds = sel.has(id) ? [...sel] : [id];
@@ -2066,6 +2079,8 @@ export function SceneBoard({
         if (relocated) {
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
           persist(cardsRef.current, edgesRef.current, ng);
+        } else if (fromRow) {
+          // 행에서 시작한 클릭 → 카드 선택 안 함(행 onClick 이 행 선택 처리).
         } else if (chainSel) {
           // Shift+클릭 = 카드+연결 체인. Shift+Ctrl 은 현재 선택에 합집합, 아니면 교체.
           const recipe = collectRecipe(id);
@@ -3154,13 +3169,13 @@ export function SceneBoard({
                                     key={cid}
                                     className={"scene-listrow" + (off ? " off" : "") + (rsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
-                                    onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                                   >
                                     <span
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
                                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                                      onClick={(e) => e.stopPropagation()}
                                     >
                                       ⠿
                                     </span>
@@ -3217,6 +3232,7 @@ export function SceneBoard({
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
                                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                                      onClick={(e) => e.stopPropagation()}
                                     >
                                       ⠿
                                     </span>
@@ -3465,13 +3481,13 @@ export function SceneBoard({
                                     key={cid}
                                     className={"scene-listrow" + (off ? " off" : "") + (rsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
-                                    onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                                   >
                                     <span
                                       className="scene-listrow-grip"
                                       title="드래그해 순서 변경"
                                       onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                                      onClick={(e) => e.stopPropagation()}
                                     >
                                       ⠿
                                     </span>
