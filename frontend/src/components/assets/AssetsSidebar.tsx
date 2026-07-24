@@ -1,6 +1,6 @@
 import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTree } from "./FolderTree";
-import type { AssetTypeFilter } from "./assetsViewModel";
+import { INTERNAL_COMBINED_PROJECT, type AssetTypeFilter } from "./assetsViewModel";
 
 const TYPE_ROWS: Array<[Exclude<AssetTypeFilter, null>, string, string]> = [
   ["image", "🖼", "Image"],
@@ -38,8 +38,10 @@ export function AssetsSidebar({
   onSelectDir: (path: string) => void;
 }) {
   const total = typeCounts.image + typeCounts.video + typeCounts.audio;
+  // 합본(imp/cap)은 폴더 아이콘을 회색으로 — 내장 스크래치 폴더임을 구분.
+  const isInternal = project === INTERNAL_COMBINED_PROJECT;
   return (
-    <aside className="assets-tree">
+    <aside className={"assets-tree" + (isInternal ? " internal-project" : "")}>
       <div className="type-filter">
         <div
           className={"type-row type-all" + (!typeFilter ? " active" : "")}

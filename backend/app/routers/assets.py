@@ -87,6 +87,9 @@ def _mounts_file() -> Path:
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
 _PROMPT_IMPORT_PROJECT = "imports"
+# 내장 스크래치 폴더(캡쳐·임포트)를 하나로 보여주는 합본 프로젝트 — 사이드바엔 두 폴더로 표시.
+_COMBINED_INTERNAL = "imp/cap"
+_INTERNAL_FOLDERS = ("captures", _PROMPT_IMPORT_PROJECT)
 
 
 def _media_type(name: str) -> Optional[str]:
@@ -302,6 +305,9 @@ def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bo
     두 번째 값이 True 면 PM 프로젝트 설정에서 온 경로다. 이 경우 Assets 트리에서
     Render 폴더는 숨기고, 나머지 제작 폴더만 보여준다.
     """
+    # 합본(imp/cap)은 ASSETS_ROOT 기준 — 파일/썸네일 경로가 captures/xxx, imports/xxx 로 해석된다.
+    if project == _COMBINED_INTERNAL:
+        return ASSETS_ROOT, False
     owner = actor_id(request)
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
@@ -524,17 +530,25 @@ def list_projects(request: Request, background: BackgroundTasks):
     for m in _auto_project_mounts(request):
         if m["name"] not in projects:
             projects.append(m["name"])
-    # 내장 폴더는 파일이 있으면 프로젝트로 노출 → Assets 에서 탐색·태그·소스지정(@이름) 가능.
-    for built_in in ("captures", _PROMPT_IMPORT_PROJECT):
-        p = ASSETS_ROOT / built_in
-        if p.is_dir() and built_in not in projects and any(p.iterdir()):
-            projects.append(built_in)
+    # 내장 스크래치 폴더(captures/imports)는 하나로 합쳐 'imp/cap' 한 항목으로 노출(둘 중 하나라도 파일 있으면).
+    #  → 사이드바에서 두 폴더로 갈라 보여준다(아래 _combined_internal_children).
+    if _COMBINED_INTERNAL not in projects:
+        for folder in _INTERNAL_FOLDERS:
+            p = ASSETS_ROOT / folder
+            if p.is_dir() and any(p.iterdir()):
+                projects.append(_COMBINED_INTERNAL)
+                break
     # 앱 로드 때 전 프로젝트를 백그라운드로 미리 프리워밍(스로틀) — 첫 열람도 웜 캐시로 즉시 뜨게.
     global _PREWARM_ALL_AT
     now = time.monotonic()
     if projects and (now - _PREWARM_ALL_AT) > _PREWARM_ALL_TTL:
         _PREWARM_ALL_AT = now
-        dirs = [info for name in projects if (info := _project_dir_info(name, request))]
+        # 합본(imp/cap)은 ASSETS_ROOT 전체를 훑게 되므로 프리워밍 제외 — 스크래치라 열 때 굽는 걸로 충분.
+        dirs = [
+            info
+            for name in projects
+            if name != _COMBINED_INTERNAL and (info := _project_dir_info(name, request))
+        ]
         if dirs:
             background.add_task(_prewarm_projects_bg, dirs)
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
@@ -628,9 +642,26 @@ def _invalidate_tree_cache(proj_dir: Path) -> None:
     _TREE_CACHE.pop(str(proj_dir), None)
 
 
+def _combined_internal_children() -> list[dict[str, Any]]:
+    """captures·imports 를 각각 하위 폴더 노드로 묶은 합본 트리(파일 있는 폴더만).
+    파일 경로는 'captures/xxx', 'imports/xxx' — ASSETS_ROOT 기준으로 썸네일·파일이 서빙된다.
+    작고 변동 잦은 스크래치라 캐시 없이 매번 훑는다(캡쳐/임포트 직후 바로 반영)."""
+    children: list[dict[str, Any]] = []
+    for folder in _INTERNAL_FOLDERS:
+        d = (ASSETS_ROOT / folder).resolve()
+        if not d.is_dir():
+            continue
+        sub = _build_tree(d, f"{folder}/")
+        if sub:  # 비어있는 폴더는 노드도 숨김
+            children.append({"name": folder, "type": "dir", "path": folder, "children": sub})
+    return children
+
+
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
 def project_tree(request: Request, background: BackgroundTasks, project: str = Query(...)):
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석."""
+    if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
+        return {"project": project, "name": project, "children": _combined_internal_children()}
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")

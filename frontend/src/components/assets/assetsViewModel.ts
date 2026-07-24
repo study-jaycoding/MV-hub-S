@@ -15,6 +15,11 @@ export const EMPTY_ASSET_META: AssetMeta = {
 
 export type AssetTypeFilter = "image" | "video" | "audio" | null;
 
+// 캡쳐·임포트를 하나로 보여주는 합본 프로젝트(백엔드와 이름 일치). 사이드바엔 두 폴더로 표시되고 아이콘은 회색.
+export const INTERNAL_COMBINED_PROJECT = "imp/cap";
+// 합본이 감싸는 실제 내장 폴더들 — 실시간 반영 신호(projects=["captures"]/["imports"])를 합본에 연결할 때 사용.
+export const INTERNAL_FOLDERS = ["captures", "imports"];
+
 // 정렬 — 파일 정렬 기준(이름/날짜/유형)과 방향(오름/내림). 에셋 목록은 전부 로컬(클라이언트)이라
 // 여기서 바로 정렬한다(생성물과 달리 서버 정렬·페이지네이션 아님).
 export type AssetSortField = "name" | "date" | "type";

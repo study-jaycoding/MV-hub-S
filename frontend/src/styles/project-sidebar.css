@@ -153,6 +153,12 @@
   background: linear-gradient(#61eaff, #279fba);
   box-shadow: 0 0 8px rgba(97,234,255,0.24);
 }
+/* 합본(imp/cap) — 내장 스크래치 폴더라 아이콘을 회색으로(루트 파랑·하위 초록 대신). 선택 강조는 행 배경으로 유지.
+   .folder-tree-row 선행자로 특정성을 맞춰 루트/하위/선택 아이콘 규칙을 모두 덮는다. */
+.assets-tree.internal-project .folder-tree-row .folder-tree-icon {
+  background: linear-gradient(#b9bdc5, #71767f);
+  box-shadow: 0 0 8px rgba(165,170,180,0.15);
+}
 .side-folder-note {
   padding: 4px 8px 5px 22px;
   color: var(--muted); font-size: 11px; line-height: 1.35;

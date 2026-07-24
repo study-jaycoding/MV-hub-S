@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ASSET_CHANNEL_MESSAGES } from "../../lib/appEvents";
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
+import { INTERNAL_COMBINED_PROJECT, INTERNAL_FOLDERS } from "./assetsViewModel";
 
 interface UseAssetBroadcastSyncArgs {
   dir: string;
@@ -26,7 +27,13 @@ export function useAssetBroadcastSync({
       if (event.data?.type === ASSET_CHANNEL_MESSAGES.assetsUpdated) {
         const projects = Array.isArray(event.data.projects) ? event.data.projects : [];
         reloadProjects(true);
-        if (!project || (projects.length && !projects.includes(project))) return;
+        if (!project) return;
+        // 합본(imp/cap)을 보고 있으면 captures/imports 변경도 내 화면 변경으로 취급(실시간 반영).
+        const relevant =
+          projects.includes(project) ||
+          (project === INTERNAL_COMBINED_PROJECT &&
+            projects.some((p: string) => INTERNAL_FOLDERS.includes(p)));
+        if (projects.length && !relevant) return;
         void refreshProjectData(project);
       }
     };
