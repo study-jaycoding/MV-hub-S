@@ -1,6 +1,6 @@
 // Canvas 씬 보드 — 계보 탭과 동일한 조작감:
 //   · 좌드래그(배경)=마퀴 복수선택 · 미들버튼 드래그=화면이동(팬) · 휠=줌
-//   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택(Ctrl/Shift=토글) · 배경클릭=해제
+//   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1932,10 +1932,11 @@ export function SceneBoard({
       }
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey; // 마퀴·단일 토글 공용(기존)
-    // Ctrl(⌘)+클릭 = 그 카드 + '생성에 쓰인 연결 노드 전체' 선택. Ctrl+Shift = 현재 선택에 합집합, 아니면 교체.
-    const chainSel = e.ctrlKey || e.metaKey;
-    const shiftHeld = e.shiftKey;
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey; // 마퀴 복수선택 공용(기존 유지)
+    // Shift+클릭 = 그 카드 + '연결된 노드 전체(체인)' 선택. Ctrl(⌘)+클릭 = 개별 토글(내 선택에 누적).
+    //  Shift+Ctrl = 체인을 현재 선택에 합집합.
+    const chainSel = e.shiftKey;
+    const accumulate = e.ctrlKey || e.metaKey;
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
@@ -1980,12 +1981,13 @@ export function SceneBoard({
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
           persist(cardsRef.current, edgesRef.current, ng);
         } else if (chainSel) {
-          // Ctrl+클릭 = 카드+업스트림 체인. Ctrl+Shift 는 현재 선택에 합집합, 아니면 교체.
+          // Shift+클릭 = 카드+연결 체인. Shift+Ctrl 은 현재 선택에 합집합, 아니면 교체.
           const recipe = collectRecipe(id);
-          setSelected((prev) => (shiftHeld ? new Set([...prev, ...recipe]) : recipe));
+          setSelected((prev) => (accumulate ? new Set([...prev, ...recipe]) : recipe));
         } else {
           setSelected((prev) => {
-            if (additive) {
+            if (accumulate) {
+              // Ctrl+클릭 = 개별 토글(내 선택에 누적/제거).
               const n = new Set(prev);
               n.has(id) ? n.delete(id) : n.add(id);
               return n;
