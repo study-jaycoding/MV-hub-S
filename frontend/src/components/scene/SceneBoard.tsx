@@ -2123,7 +2123,7 @@ export function SceneBoard({
         } // 연결 시엔 addRefCardsAt 이 위치를 계산하므로 임의값
         void api
           .uploadCapture(blob)
-          .then((rr) =>
+          .then((rr) => {
             addRefCardsAt(
               // 캡쳐 → origin 'upload'(테두리 파랑).
               [
@@ -2135,8 +2135,10 @@ export function SceneBoard({
               cx,
               cy,
               connectTo,
-            ),
-          )
+            );
+            // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
+            notifySpotlightAssetsChanged([{ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }]);
+          })
           .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
         return;
       }

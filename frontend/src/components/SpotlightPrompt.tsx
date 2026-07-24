@@ -456,9 +456,11 @@ export function SpotlightPrompt({
     e.preventDefault();
     api
       .uploadCapture(blob)
-      .then((r) =>
-        addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }])),
-      )
+      .then((r) => {
+        addAssetRefs(JSON.stringify([{ project: r.project, path: r.path, name: r.name, type: "image" }]));
+        // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
+        notifySpotlightAssetsChanged([{ project: r.project, path: r.path, name: r.name, type: r.type || "image" }]);
+      })
       .catch((err) => flashMsg("캡쳐 추가 실패: " + String(err)));
     return true;
   };
