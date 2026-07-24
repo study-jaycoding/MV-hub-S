@@ -2806,6 +2806,7 @@ export function SceneBoard({
                 "scene-card " +
                 kindCls +
                 (sel ? " sel" : "") +
+                (editTextId === card.id ? " editing" : "") + // 편집 중 — head 이중 외곽선 방지 등
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
@@ -3524,19 +3525,30 @@ export function SceneBoard({
                   return (
                     <>
                       {editing ? (
-                        <input
+                        // 편집 textarea — 멀티라인(Shift+Enter=줄바꿈, Enter=완료). 박스는 글씨에 맞춰 자동
+                        //  크기(field-sizing:content). rows 는 미지원 브라우저 폴백용 초기 줄 수.
+                        <textarea
                           className="scene-headnode-edit"
                           value={card.text || ""}
                           placeholder="제목"
                           autoFocus
-                          // 편집 중에도 박스가 글씨에 맞게 — 글자 수 기준 폭(ch).
-                          style={{ fontSize: fs, color: col, width: `${Math.max(3, (card.text || "제목").length + 1)}ch` }}
+                          rows={Math.max(1, (card.text || "제목").split("\n").length)}
+                          wrap="off"
+                          style={{ fontSize: fs, color: col }}
                           onMouseDown={(e) => e.stopPropagation()}
                           onBlur={() => setEditTextId(null)}
                           onChange={(e) => setNodeText(card.id, e.target.value)}
                           onKeyDown={(e) => {
                             e.stopPropagation();
-                            if (e.key === "Enter" || e.key === "Escape") setEditTextId(null);
+                            if (e.key === "Escape") {
+                              setEditTextId(null);
+                              return;
+                            }
+                            // Enter=편집 완료, Shift+Enter=줄바꿈(기본 동작 허용).
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              setEditTextId(null);
+                            }
                           }}
                         />
                       ) : (
