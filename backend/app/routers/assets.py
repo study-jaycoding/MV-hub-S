@@ -962,12 +962,17 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     cap_dir = (ASSETS_ROOT / "captures").resolve()
     cap_dir.mkdir(parents=True, exist_ok=True)
     try:
-        tmp, size, _ = await _stream_upload_tmp(file, cap_dir)
+        tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
         raise HTTPException(status_code=413, detail="캡쳐가 너무 큽니다")
     if size == 0:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
+    # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지).
+    existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image")
+    if existing:
+        tmp.unlink(missing_ok=True)
+        return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
     name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
     target = _commit_unique_tmp(tmp, cap_dir, name)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
