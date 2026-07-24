@@ -975,6 +975,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
     name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
     target = _commit_unique_tmp(tmp, cap_dir, name)
+    _invalidate_tree_cache(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다(안 그러면 캐시가 만료될 때까지 안 보임)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
 
 
@@ -1002,6 +1003,7 @@ async def upload_reference_import(
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
+    committed_new = False  # 새 파일을 하나라도 확정했으면 트리 캐시 무효화 대상
     for up in files:
         raw = os.path.basename((up.filename or "").replace("\\", "/"))
         if not raw:
@@ -1039,6 +1041,7 @@ async def upload_reference_import(
             })
             continue
         target = _commit_unique_tmp(tmp, dest, raw)
+        committed_new = True
         rel = (
             target.relative_to(project_dir).as_posix()
             if project_dir
@@ -1051,6 +1054,8 @@ async def upload_reference_import(
             "type": mt,
         })
 
+    if committed_new:
+        _invalidate_tree_cache(dest)  # 새 임포트 즉시 반영 — 다음 트리 요청은 다시 훑는다
     return {"saved": saved, "skipped": skipped}
 
 
