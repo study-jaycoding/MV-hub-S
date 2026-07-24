@@ -1838,6 +1838,7 @@ export function SceneBoard({
           if (c) origins[tid] = { x: c.x, y: c.y };
         }
         let gMoved = false;
+        let gRelocated = false; // 실제로 다른 칸으로 이동했는지 — 임계값만 넘고 스냅 후 제자리면 클릭으로 처리(빠른 클릭 떨림 방지)
         let gLastSdx = NaN, gLastSdy = NaN; // 직전 스냅 오프셋 — 같으면 setState 생략(no-op 가드)
         const gAnchor = origins[memberIds[0]]; // 그룹 이동도 첫 멤버를 격자에 스냅하고 전체를 같은 오프셋으로.
         const gOrigRect = grp.rect; // 수동 rect 가 있으면 멤버와 함께 같은 오프셋으로 이동(멤버십은 유지).
@@ -1852,6 +1853,7 @@ export function SceneBoard({
           const sdy = gAnchor ? snapGrid(gAnchor.y + dy) - gAnchor.y : dy;
           if (sdx === gLastSdx && sdy === gLastSdy) return; // 스냅 위치 그대로면 리렌더 스킵
           gLastSdx = sdx; gLastSdy = sdy;
+          if (sdx !== 0 || sdy !== 0) gRelocated = true; // 원점과 다른 오프셋 = 실제 이동
           const next = cardsRef.current.map((c) =>
             origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
           );
@@ -1863,7 +1865,7 @@ export function SceneBoard({
           }
         };
         const up = () => {
-          if (gMoved) {
+          if (gRelocated) {
             const ng = gOrigRect
               ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
               : groupsRef.current;
@@ -1906,6 +1908,9 @@ export function SceneBoard({
       const anchor = origins[id]; // 잡은 카드 — 이 카드를 격자에 스냅하고 나머지는 같은 오프셋으로 이동(상대배치 보존).
       // 드래그 시작 시점의 그룹 프레임 스냅샷 — 드롭 위치로 멤버십(가입/해제)을 판정하는 기준.
       const startFrames = groupViews.map((v) => ({ id: v.g.id, frame: v.frame }));
+      // ★relocated: 임계값(moved)만 넘고 스냅 후 같은 칸이면 실제로는 안 움직인 것 → 클릭으로 처리한다.
+      //  (빠른 클릭의 손떨림이 4px 를 넘겨도 드래그로 오인해 선택을 건너뛰던 문제 해결.)
+      let relocated = false;
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         moved = true;
@@ -1918,6 +1923,7 @@ export function SceneBoard({
         const prevCards = cardsRef.current;
         const a = prevCards.find((c) => c.id === id);
         if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return; // 스냅 후 위치 그대로면 스킵
+        relocated = true; // 실제로 다른 칸으로 이동함
         const next = prevCards.map((c) =>
           origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
         );
@@ -1925,7 +1931,7 @@ export function SceneBoard({
         setCards(next);
       };
       const up = () => {
-        if (moved) {
+        if (relocated) {
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
           persist(cardsRef.current, edgesRef.current, ng);
         } else if (chainSel) {
