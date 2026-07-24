@@ -4,6 +4,19 @@ import { makeStore } from "../../lib/storage";
 import type { AssetMeta, AssetNode } from "../../types";
 
 const STORE = makeStore("ch.assets.");
+const TREE_CACHE_KEY = "treecache";
+const META_CACHE_KEY = "metacache";
+const CACHE_MAX_BYTES = 3_000_000; // localStorage 안전 상한(대략) — 넘으면 저장 생략(다음 세션은 다시 fetch)
+
+// 캐시 맵을 localStorage 에 저장(용량 초과·직렬화 실패는 조용히 무시).
+function persistCache(key: string, obj: unknown) {
+  try {
+    const s = JSON.stringify(obj);
+    if (s.length <= CACHE_MAX_BYTES) STORE.set(key, s);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function useAssetProjectData({
   onTreeLoaded,
@@ -19,8 +32,15 @@ export function useAssetProjectData({
 
   // 프로젝트별 트리·메타 캐시 — 한 번 본 폴더는 다시 열 때 즉시 보여주고(로딩 플래시 제거), 뒤에서 조용히 최신화.
   //  파일 그리드는 tree 에서 파생되므로 트리 캐시 하나로 사이드바+그리드 둘 다 즉시 표시된다.
+  //  ★localStorage 에 저장 — 에셋 창을 껐다 켜도(컴포넌트 언마운트) 캐시가 살아남아 즉시 표시된다.
   const treeCacheRef = useRef<Record<string, AssetNode[]>>({});
   const metaCacheRef = useRef<Record<string, Record<string, AssetMeta>>>({});
+  const cacheSeededRef = useRef(false);
+  if (!cacheSeededRef.current) {
+    cacheSeededRef.current = true; // 최초 렌더 1회만 localStorage 에서 시드
+    treeCacheRef.current = STORE.loadJSON<Record<string, AssetNode[]>>(TREE_CACHE_KEY) || {};
+    metaCacheRef.current = STORE.loadJSON<Record<string, Record<string, AssetMeta>>>(META_CACHE_KEY) || {};
+  }
   const projectRef = useRef(project); // 최신 선택 프로젝트 — 느린 응답이 돌아와도 딴 프로젝트를 덮지 않게
   projectRef.current = project;
 
@@ -54,6 +74,7 @@ export function useAssetProjectData({
     try {
       const fresh = await api.assetMeta(targetProject);
       metaCacheRef.current[targetProject] = fresh; // 어느 프로젝트든 fresh 는 캐시(다음 방문 즉시)
+      persistCache(META_CACHE_KEY, metaCacheRef.current); // 창 닫아도 살아남게 localStorage 저장
       if (projectRef.current === targetProject) setMeta(fresh); // 여전히 이 프로젝트를 보고 있을 때만 화면 반영
     } catch {
       if (!cached && projectRef.current === targetProject) setMeta({});
@@ -74,6 +95,7 @@ export function useAssetProjectData({
     try {
       const nextTree = await api.assetTree(targetProject);
       treeCacheRef.current[targetProject] = nextTree.children; // 어느 프로젝트든 fresh 는 캐시
+      persistCache(TREE_CACHE_KEY, treeCacheRef.current); // 창 닫아도 살아남게 localStorage 저장
       if (isCurrent()) {
         setTree(nextTree.children);
         onTreeLoaded?.(nextTree.children);
