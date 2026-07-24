@@ -342,6 +342,7 @@ export function SceneBoard({
     onCameraChangeRef.current?.({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y });
   const cardEls = useRef<Record<string, HTMLDivElement | null>>({});
   const heightsRef = useRef<Record<string, number>>({});
+  const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
   // 미니맵(네비게이터)의 뷰포트 박스 갱신 함수 — 팬/줌마다 applyTransform 이 호출(리렌더 없이).
   const mmUpdateRef = useRef<(() => void) | null>(null);
@@ -366,10 +367,22 @@ export function SceneBoard({
   // 그 외(생성/텍스트/모델/리스트)는 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
   const isAutoCard = (c: SceneCard) =>
     c.kind === "reference" || c.kind === "output" || c.kind === "input";
+  // head = 폭·높이 모두 글씨에 맞춘 자동 크기(측정값). 아직 측정 전이면 fallback.
+  const isAutoSize = (c: SceneCard) => c.kind === "head";
   const widthOf = (c: SceneCard) =>
-    c.kind === "reference" ? CARD_W : c.kind === "output" || c.kind === "input" ? 150 : c.w ?? CARD_W;
+    c.kind === "reference"
+      ? CARD_W
+      : c.kind === "output" || c.kind === "input"
+        ? 150
+        : c.kind === "head"
+          ? widthsRef.current[c.id] || c.w || 160
+          : c.w ?? CARD_W;
   const heightOf = (c: SceneCard) =>
-    isAutoCard(c) ? heightsRef.current[c.id] || CARD_H : c.h ?? CARD_H;
+    isAutoCard(c)
+      ? heightsRef.current[c.id] || CARD_H
+      : c.kind === "head"
+        ? heightsRef.current[c.id] || c.h || 48
+        : c.h ?? CARD_H;
 
   // ── f 키 프레이밍 · 미니맵 이동 공용 카메라 유틸 ──
   // 카드 한 장의 바깥 사각형(캔버스 좌표). 레퍼런스는 실제 측정 높이, 생성은 고정.
@@ -449,18 +462,36 @@ export function SceneBoard({
 
   // 카드 실제 높이 측정 → 연결선 끝점(세로 중앙)을 정확히. offsetHeight 는 scale 영향 없는 레이아웃 높이.
   // 카드 구성(개수·레퍼런스 수)이 바뀔 때만 측정 — 단순 위치 이동(드래그)엔 재측정하지 않는다.
-  const structSig = cards.map((c) => c.id + ":" + c.kind + ":" + (c.refs?.length || 0)).join("|");
+  const structSig = cards
+    .map(
+      (c) =>
+        c.id +
+        ":" +
+        c.kind +
+        ":" +
+        (c.refs?.length || 0) +
+        // head 는 글씨 내용·크기가 바뀌면 박스 크기도 달라지므로 재측정 트리거에 포함.
+        (c.kind === "head" ? ":" + (c.text || "") + ":" + (c.fontSize || 0) : ""),
+    )
+    .join("|");
   useLayoutEffect(() => {
     let changed = false;
-    const next: Record<string, number> = {};
+    const nextH: Record<string, number> = {};
+    const nextW: Record<string, number> = {};
     for (const c of cardsRef.current) {
       const el = cardEls.current[c.id];
       const h = el?.offsetHeight || heightsRef.current[c.id];
-      if (h) next[c.id] = h;
+      if (h) nextH[c.id] = h;
       if (h && h !== heightsRef.current[c.id]) changed = true;
+      if (c.kind === "head") {
+        const w = el?.offsetWidth || widthsRef.current[c.id];
+        if (w) nextW[c.id] = w;
+        if (w && w !== widthsRef.current[c.id]) changed = true;
+      }
     }
     if (changed) {
-      heightsRef.current = next;
+      heightsRef.current = nextH;
+      widthsRef.current = nextW; // head 만 담김 — widthOf 는 head 에서만 이 값을 참조
       bumpHeights((n) => n + 1);
     }
   }, [structSig]);
@@ -1016,7 +1047,7 @@ export function SceneBoard({
                 : kind === "input"
                   ? { ...base, kind: "input" }
                   : kind === "head"
-                    ? { ...base, kind: "head", text: "제목", w: 240, h: 56, color: "#e8c341" }
+                    ? { ...base, kind: "head", text: "제목", color: "#e8c341", fontSize: 32 }
                     : kind === "render"
                       ? { ...base, kind: "render" }
                       : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
@@ -1073,6 +1104,13 @@ export function SceneBoard({
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, color } : c));
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
+  // head 노드 글씨 크기 저장(12~200px 클램프). 박스는 측정으로 자동 맞춰진다.
+  const setNodeFontSize = (cardId: string, fontSize: number) => {
+    const fs = Math.max(12, Math.min(200, Math.round(fontSize)));
+    const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, fontSize: fs } : c));
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
@@ -2747,6 +2785,7 @@ export function SceneBoard({
           const sel = selected.has(card.id);
           const isRef = card.kind === "reference";
           const autoH = isAutoCard(card); // 레퍼런스·Input·Output = 내용에 맞춘 자동 높이(고정 height 미지정)
+          const autoSize = isAutoSize(card); // head = 폭·높이 모두 자동(글씨에 맞춰 박스가 줄고 늘어남)
           const isGen = card.kind === "generation";
           const g = isGen && card.genId ? genData[card.genId] : null; // 바인딩된 실제 생성물
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
@@ -2769,7 +2808,11 @@ export function SceneBoard({
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
               data-id={card.id}
-              style={{ left: card.x, top: card.y, width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }}
+              style={{
+                left: card.x,
+                top: card.y,
+                ...(autoSize ? {} : { width: widthOf(card), ...(autoH ? {} : { height: heightOf(card) }) }),
+              }}
               // View=재생, 모델=모달. 레퍼런스는 각 썸네일 더블클릭으로 큰화면(아래). 생성 카드는 각자 처리.
               onDoubleClick={
                 card.kind === "view"
@@ -3473,9 +3516,9 @@ export function SceneBoard({
                 })()
               ) : card.kind === "head" ? (
                 (() => {
-                  // Head(제목) — 포트 없는 주석 글씨. 크기 조절 시 글자 크기도 같이 커진다. 색은 스와치로 변경.
+                  // Head(제목) — 포트 없는 주석 글씨. 박스는 글씨에 맞춰 자동 크기. 색·글씨크기는 선택 시 컨트롤로.
                   const editing = editTextId === card.id;
-                  const fs = Math.max(12, Math.round(heightOf(card) * 0.62));
+                  const fs = card.fontSize ?? 32;
                   const col = card.color || "#e8c341";
                   return (
                     <>
@@ -3485,7 +3528,8 @@ export function SceneBoard({
                           value={card.text || ""}
                           placeholder="제목"
                           autoFocus
-                          style={{ fontSize: fs, color: col }}
+                          // 편집 중에도 박스가 글씨에 맞게 — 글자 수 기준 폭(ch).
+                          style={{ fontSize: fs, color: col, width: `${Math.max(3, (card.text || "제목").length + 1)}ch` }}
                           onMouseDown={(e) => e.stopPropagation()}
                           onBlur={() => setEditTextId(null)}
                           onChange={(e) => setNodeText(card.id, e.target.value)}
@@ -3507,20 +3551,24 @@ export function SceneBoard({
                         </div>
                       )}
                       {sel && !editing && (
-                        <input
-                          type="color"
-                          className="scene-headnode-color"
-                          value={col}
-                          title="글씨 색 변경"
+                        <div
+                          className="scene-headnode-ctrls"
                           onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => setNodeColor(card.id, e.target.value)}
-                        />
+                        >
+                          <input
+                            type="color"
+                            className="scene-headnode-color"
+                            value={col}
+                            title="글씨 색 변경"
+                            onChange={(e) => setNodeColor(card.id, e.target.value)}
+                          />
+                          <div className="scene-headnode-fs" title="글씨 크기">
+                            <button onClick={() => setNodeFontSize(card.id, fs - 4)}>−</button>
+                            <span>{fs}</span>
+                            <button onClick={() => setNodeFontSize(card.id, fs + 4)}>＋</button>
+                          </div>
+                        </div>
                       )}
-                      <span
-                        className="scene-resize"
-                        onMouseDown={(e) => onResizeDown(e, card.id)}
-                        title="드래그해 크기 조절(글자도 같이 커짐)"
-                      />
                     </>
                   );
                 })()

@@ -54,6 +54,7 @@ export interface SceneCard {
   modelCfg?: SceneModelCfg; // model 노드: 고른 모델 설정 스냅샷.
   channel?: string; // input 노드: 참조할 output 카드 id(이름 아님 — 이름은 바뀌므로 id 로 고정).
   color?: string; // head 노드: 글씨 색(HEX).
+  fontSize?: number; // head 노드: 글씨 크기(px). 박스는 글씨에 맞춰 자동 크기.
   unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
 }
 
