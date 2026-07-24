@@ -71,17 +71,21 @@ export function arrangeNodes(
   const anchorY = snap(Math.min(...nodes.map((n) => n.y)));
 
   const out: Record<string, { x: number; y: number }> = {};
-  let colX = anchorX;
+  // ★간격이 들쭉날쭉하지 않게 '누적 좌표'가 아니라 '한 칸 이동량(step)'을 격자에 스냅한다.
+  //  예전엔 snap(누적 rowY) 라 카드마다 반올림이 위/아래로 엇갈려 간격이 달라졌다(특히 높이가
+  //  격자 배수가 아닌 이미지 카드: 예 h=180 → 간격 198,220 처럼 벌어짐). step 을 스냅하면 anchor·step
+  //  이 모두 격자 배수라 좌표가 항상 격자에 맞고, 같은 높이 카드는 간격이 완전히 균일해진다.
+  let colX = anchorX; // anchorX 는 이미 격자 스냅됨
   for (const k of colKeys) {
     const col = cols.get(k)!;
     const colW = Math.max(...col.map((id) => byId.get(id)!.w));
-    let rowY = anchorY;
+    let rowY = anchorY; // anchorY 도 이미 격자 스냅됨
     for (const id of col) {
       const n = byId.get(id)!;
-      out[id] = { x: snap(colX), y: snap(rowY) };
-      rowY += n.h + rowGap;
+      out[id] = { x: colX, y: rowY }; // colX·rowY 는 격자 배수 step 만 더해져 항상 격자 정렬 상태
+      rowY += snap(n.h + rowGap);
     }
-    colX += colW + colGap;
+    colX += snap(colW + colGap);
   }
   return out;
 }

@@ -62,6 +62,21 @@ describe("arrangeNodes", () => {
     expect(second).toEqual(first);
   });
 
+  it("같은 열·같은 높이 카드는 세로 간격이 균일(높이가 격자 배수가 아니어도)", () => {
+    // h=180 은 22 의 배수가 아니라, 예전엔 누적좌표 스냅이 위/아래로 엇갈려 간격이 198,220 처럼 달라졌다.
+    const H = 180;
+    const nodes: LayoutNode[] = [
+      { id: "a", x: 0, y: 0, w: 150, h: H },
+      { id: "b", x: 0, y: 100, w: 150, h: H },
+      { id: "c", x: 0, y: 200, w: 150, h: H },
+    ];
+    const pos = arrangeNodes(nodes, []);
+    const gap1 = pos.b.y - pos.a.y;
+    const gap2 = pos.c.y - pos.b.y;
+    expect(gap1).toBe(gap2); // 같은 높이 → top-to-top 간격 동일
+    for (const id of ["a", "b", "c"]) expect(pos[id].y % 22).toBe(0); // 여전히 격자 정렬
+  });
+
   it("앵커는 선택 좌상단 근처(격자 스냅)", () => {
     const nodes = [N("a", 220, 130), N("b", 400, 300)];
     const pos = arrangeNodes(nodes, [{ from: "a", to: "b" }]);
