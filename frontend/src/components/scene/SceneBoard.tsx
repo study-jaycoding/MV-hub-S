@@ -848,7 +848,8 @@ export function SceneBoard({
       const res = await api.uploadReferenceFiles(accepted);
       const items = res.saved || [];
       if (items.length) {
-        addRefCardsAt(items.map(itemToRef), cx, cy);
+        // 외부 파일 임포트 → origin 'upload'(테두리 파랑).
+        addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "upload" as const })), cx, cy);
         notifySpotlightAssetsChanged(items);
       }
     } catch (err) {
@@ -868,7 +869,8 @@ export function SceneBoard({
       const items = parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer));
       if (!items.length) return;
       const p = toCanvas(e.clientX, e.clientY);
-      addRefCardsAt(items.map(itemToRef), p.x, p.y);
+      // 에셋 패널에서 가져온 것 → origin 'asset'(테두리 형광).
+      addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "asset" as const })), p.x, p.y);
       return;
     }
     const files = Array.from(e.dataTransfer.files || []);
@@ -2123,7 +2125,13 @@ export function SceneBoard({
           .uploadCapture(blob)
           .then((rr) =>
             addRefCardsAt(
-              [itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" })],
+              // 캡쳐 → origin 'upload'(테두리 파랑).
+              [
+                {
+                  ...itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }),
+                  origin: "upload" as const,
+                },
+              ],
               cx,
               cy,
               connectTo,
@@ -2719,7 +2727,7 @@ export function SceneBoard({
           const showNode = !!g && String(g.status) === "done"; // 완료 → 히스토리 카드로 표시
           const kindCls =
             card.kind === "reference"
-              ? "scene-card-ref"
+              ? "scene-card-ref" + (card.refs?.[0]?.origin === "asset" ? " from-asset" : "")
               : card.kind === "generation"
                 ? "scene-card-gen"
                 : "scene-card-" + card.kind; // text/model/list

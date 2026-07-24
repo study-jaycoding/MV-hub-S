@@ -33,6 +33,9 @@ export interface SceneRef {
   // 이 참조가 '연결된 레퍼런스 카드/리스트'에서 온 것인지 표시(gatherTarget 이 붙임). true 면 소스 연결이
   // 바뀌면 함께 사라져야 한다 — @·드래그로 직접 넣은 생성물 참조(source_gen_id, from_card 없음)만 보존.
   from_card?: boolean;
+  // 출처 — 'asset'(우리 에셋 패널에서 가져옴) vs 'upload'(임포트/캡쳐). 레퍼런스 카드 테두리 색 구분용.
+  //  (없으면 upload 취급 = 파란색. 지문·제출에는 영향 없음.)
+  origin?: "asset" | "upload";
 }
 
 export interface SceneCard {
