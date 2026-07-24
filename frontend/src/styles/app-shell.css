@@ -9,7 +9,9 @@
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 20;
+  /* 캔버스 상단 패널(미니맵·좌상단 씬패널 z-index:20)이 root 로 새어나와 상단바(및 계정 팝업)를 덮던 문제.
+     21 로 그 동률만 깬다 — 더 위 오버레이(노드픽 24, 전체화면 모달 200+)와의 관계는 그대로 둔다. */
+  z-index: 21;
 }
 .brand {
   font-weight: 800;
