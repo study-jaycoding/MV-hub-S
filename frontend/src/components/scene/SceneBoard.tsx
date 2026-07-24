@@ -1787,6 +1787,19 @@ export function SceneBoard({
     const stack = [startId];
     while (stack.length) {
       const cur = stack.pop()!;
+      // input 노드가 참조하는 output(channel)도 함께 수집한다. resolvePortEdges 는 input 을 실제 소스로
+      //  건너뛰어(input→하류 를 소스→하류 로 치환) 중간 output 노드를 빠뜨린다 → 여기서 직접 이어준다.
+      //  output 을 스택에 넣으면 그 output 에 물린 소스들(rev[output])까지 자연히 따라간다.
+      const curCard = byId.get(cur);
+      if (
+        curCard?.kind === "input" &&
+        curCard.channel &&
+        byId.has(curCard.channel) &&
+        !out.has(curCard.channel)
+      ) {
+        out.add(curCard.channel);
+        stack.push(curCard.channel);
+      }
       const froms = rev.get(cur);
       if (froms)
         for (const from of froms)
