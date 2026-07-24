@@ -344,6 +344,11 @@
 /* 비활성(회색) 결과 — 캔버스 카드처럼 리스트/렌더에서도 흐리게+무채색으로 표시(그 결과는 View 에서도 제외됨). */
 .scene-listrow.off { opacity: 0.5; filter: grayscale(1); }
 .scene-listthumb.off { opacity: 0.5; filter: grayscale(1); }
+/* 선택된 행 — 라임 강조(클릭=선택, Ctrl+클릭=복수). 선택 후 그립 드래그하면 함께 이동/일괄 체크. */
+.scene-listrow.selrow {
+  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+  background: rgba(196, 232, 74, 0.12);
+}
 /* 삽입 위치 흰 선 — 화면좌표(fixed), 항목 사이에 뜬다. 살짝 빛나게 해 시인성 확보. */
 .scene-reorder-line {
   position: absolute; z-index: 60; pointer-events: none; background: #fff; border-radius: 2px;

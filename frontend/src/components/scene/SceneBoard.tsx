@@ -291,6 +291,21 @@ export function SceneBoard({
   // 순서변경 드래그 — 삽입 위치 흰 선(화면좌표·fixed) + 잡고 있는 항목(흐리게)
   const [reorderLine, setReorderLine] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [reorderFrom, setReorderFrom] = useState<string | null>(null);
+  // 리스트/렌더 행 선택 — listId 스코프의 항목(cid) 집합. 클릭=단일, Ctrl+클릭=복수 토글.
+  //  선택 후 그립 드래그하면 선택 전부 함께 이동, 렌더는 선택 전부 일괄 체크/해제.
+  const [rowSel, setRowSel] = useState<{ listId: string; cids: Set<string> }>({ listId: "", cids: new Set() });
+  const rowSelRef = useRef(rowSel);
+  rowSelRef.current = rowSel;
+  const toggleRowSel = (listId: string, cid: string, additive: boolean) => {
+    setRowSel((prev) => {
+      if (additive && prev.listId === listId) {
+        const cids = new Set(prev.cids);
+        cids.has(cid) ? cids.delete(cid) : cids.add(cid);
+        return { listId, cids };
+      }
+      return { listId, cids: new Set([cid]) };
+    });
+  };
   // 씬 전환 = 선택 해제. 같은 씬이라도 외부(생성 결과 바인딩·프롬프트 순서변경)에서 cards/edges 가
   // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
   const sceneIdRef = useRef(scene.id);
@@ -1116,11 +1131,17 @@ export function SceneBoard({
   };
   // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.
   const toggleRenderCheck = (renderId: string, genCardId: string) => {
+    // 렌더 행이 복수 선택돼 있고 클릭한 게 그중 하나면 선택 전부에 같은 상태를 적용(일괄 체크/해제).
+    const rs = rowSelRef.current;
+    const targets =
+      rs.listId === renderId && rs.cids.has(genCardId) && rs.cids.size > 1
+        ? [...rs.cids]
+        : [genCardId];
     const nextCards = cardsRef.current.map((c) => {
       if (c.id !== renderId) return c;
       const un = new Set(c.unchecked || []);
-      if (un.has(genCardId)) un.delete(genCardId);
-      else un.add(genCardId);
+      const willUncheck = !un.has(genCardId); // 클릭한 행의 새 상태로 통일
+      for (const t of targets) willUncheck ? un.add(t) : un.delete(t);
       return { ...c, unchecked: [...un] };
     });
     setCards(nextCards);
@@ -1180,6 +1201,24 @@ export function SceneBoard({
     order.splice(ti, 0, fromCardId);
     commitListOrder(listId, order);
   };
+  // 여러 항목(movingCids)을 insertIndex(원래 배열 기준) 로 함께 옮긴다 — 상대순서 보존, insertIndex 이후
+  //  첫 '이동 안 하는' 항목 앞에 블록으로 삽입. 순서가 그대로면 아무것도 안 함.
+  const reorderListMultiToIndex = (listId: string, movingCids: string[], insertIndex: number) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
+    const movingSet = new Set(movingCids.filter((c) => order.includes(c)));
+    if (!movingSet.size) return;
+    if (movingSet.size === 1) return reorderListToIndex(listId, [...movingSet][0], insertIndex);
+    const movingOrdered = order.filter((c) => movingSet.has(c)); // 현재 상대순서 보존
+    const rest = order.filter((c) => !movingSet.has(c));
+    let anchor: string | null = null; // insertIndex 이후 첫 비이동 항목 = 이 앞에 블록 삽입
+    for (let i = insertIndex; i < order.length; i++)
+      if (!movingSet.has(order[i])) { anchor = order[i]; break; }
+    const pos = anchor ? rest.indexOf(anchor) : rest.length;
+    const next = [...rest.slice(0, pos), ...movingOrdered, ...rest.slice(pos)];
+    if (next.join("|") === order.join("|")) return; // 변화 없음
+    commitListOrder(listId, next);
+  };
   // 그립/타일을 마우스로 잡아 순서 변경(HTML5 드래그 대신 — 빠르게 움직여도 안정적). 드래그 중 삽입 위치를
   // 흰 선으로 표시하고, 손 떼는 순간 그 위치로 이동. orientation: "v"=세로 행 리스트, "h"=가로 감싸는 썸네일.
   const startReorder = (
@@ -1234,9 +1273,13 @@ export function SceneBoard({
     };
     recompute(e.clientX, e.clientY);
     setReorderFrom(fromId);
+    // 드래그한 항목이 이 리스트의 선택에 포함돼 있으면 선택 전부를 함께 이동(상대순서 보존). 아니면 그것만.
+    const rs = rowSelRef.current;
+    const movingCids =
+      rs.listId === listId && rs.cids.has(fromId) ? [...rs.cids] : [fromId];
     const move = (ev: MouseEvent) => recompute(ev.clientX, ev.clientY);
     const up = () => {
-      if (insertIndex >= 0) reorderListToIndex(listId, fromId, insertIndex);
+      if (insertIndex >= 0) reorderListMultiToIndex(listId, movingCids, insertIndex);
       setReorderLine(null);
       setReorderFrom(null);
     };
@@ -2071,7 +2114,10 @@ export function SceneBoard({
       const up = () => {
         setMarquee(null);
         // 배경을 '그냥 클릭'(드래그 없음·비추가)하면 선택 해제 — 이후 f=전체 프레이밍이 되게.
-        if (!moved && !additive) setSelected(new Set());
+        if (!moved && !additive) {
+          setSelected(new Set());
+          setRowSel({ listId: "", cids: new Set() }); // 리스트/렌더 행 선택도 함께 해제
+        }
       };
       beginDrag(move, up);
     }
@@ -3102,11 +3148,14 @@ export function SceneBoard({
                                 const src = gen ? thumbOf(gen, 128) : null;
                                 const n = gc ? variantIds(gc).length : 0; // 이 카드에 생성된 결과 수
                                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
+                                const rsel = rowSel.listId === card.id && rowSel.cids.has(cid);
                                 return (
                                   <div
                                     key={cid}
-                                    className={"scene-listrow" + (off ? " off" : "") + (reorderFrom === cid ? " reordering" : "")}
+                                    className={"scene-listrow" + (off ? " off" : "") + (rsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                                   >
                                     <span
                                       className="scene-listrow-grip"
@@ -3410,11 +3459,14 @@ export function SceneBoard({
                                 const src = gen ? thumbOf(gen, 128) : null;
                                 const n = gc ? variantIds(gc).length : 0;
                                 const off = !!gid && disabledIds.has(gid); // 비활성(회색) 결과
+                                const rsel = rowSel.listId === card.id && rowSel.cids.has(cid);
                                 return (
                                   <div
                                     key={cid}
-                                    className={"scene-listrow" + (off ? " off" : "") + (reorderFrom === cid ? " reordering" : "")}
+                                    className={"scene-listrow" + (off ? " off" : "") + (rsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
                                     data-reid={cid}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
                                   >
                                     <span
                                       className="scene-listrow-grip"
