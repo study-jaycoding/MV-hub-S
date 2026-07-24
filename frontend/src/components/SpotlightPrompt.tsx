@@ -949,6 +949,18 @@ export function SpotlightPrompt({
 
     const composing = composingRef.current || e.nativeEvent.isComposing;
 
+    // Shift+Home = 커서에서 프롬프트 '맨 앞'까지 선택(앞쪽 레퍼런스 알약 포함). 브라우저 기본 Shift+Home 은
+    //  contenteditable=false 알약을 원자로 건너뛰어 앞 레퍼런스가 안 잡히던 문제 → 앵커 유지·포커스만 맨앞으로.
+    if (e.key === "Home" && e.shiftKey && !composing) {
+      const ed = editorRef.current;
+      const sel = window.getSelection();
+      if (ed && sel && sel.rangeCount) {
+        e.preventDefault();
+        sel.extend(ed, 0);
+      }
+      return;
+    }
+
     // 프롬프트 기록(쉘식 ↑↓) — 피커 닫힘 + (비었거나 이미 기록 탐색 중)일 때만.
     if (!mention && !composing && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       const ed = editorRef.current;
