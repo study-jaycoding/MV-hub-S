@@ -12,6 +12,7 @@ interface Params {
   activeTags: Set<string>;
   setMeta: Dispatch<SetStateAction<Record<string, AssetMeta>>>;
   setActiveTags: Dispatch<SetStateAction<Set<string>>>;
+  reloadMeta: (targetProject?: string) => Promise<void>; // 서버 상태 재조회(가드·캐시 있는 경로)
 }
 
 export function useAssetMetaActions({
@@ -22,6 +23,7 @@ export function useAssetMetaActions({
   activeTags,
   setMeta,
   setActiveTags,
+  reloadMeta,
 }: Params) {
   const selPaths = () =>
     [...selected].map((index) => filesRef.current[index]?.path).filter(Boolean) as string[];
@@ -33,8 +35,8 @@ export function useAssetMetaActions({
       return next;
     });
 
-  const reconcile = () =>
-    api.assetMeta(project).then(setMeta).catch(() => {});
+  // 서버 상태로 되돌림 — 가드된 reloadMeta 로 위임(전환 중이면 딴 프로젝트 화면/캐시를 안 덮는다).
+  const reconcile = () => reloadMeta(project);
 
   const metaFail = () => {
     reconcile();

@@ -75,10 +75,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     project,
     projects,
     refreshProjectData,
+    reloadMeta,
     reloadProjects,
     setMeta,
     setProject,
-    setTree,
     tree,
   } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs });
   const toggleDir = useCallback((path: string) => {
@@ -364,8 +364,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   } = useAssetDropImport({
     dir,
     project,
-    onMetaLoaded: setMeta,
-    onTreeLoaded: setTree,
+    onImported: refreshProjectData,
   });
 
   const onGridMouseDown = (e: React.MouseEvent) => {
@@ -485,6 +484,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     activeTags,
     setMeta,
     setActiveTags,
+    reloadMeta,
   });
 
   const { selectActiveTag, toggleColor, toggleMuteOwn, toggleTagPanel } = useAssetFilterActions({

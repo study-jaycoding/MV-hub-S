@@ -2,18 +2,16 @@ import { useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { api } from "../../api";
 import { dataTransferHasFiles } from "../../lib/media";
-import type { AssetMeta, AssetNode } from "../../types";
 
 export function useAssetDropImport({
   dir,
   project,
-  onMetaLoaded,
-  onTreeLoaded,
+  onImported,
 }: {
   dir: string;
   project: string;
-  onMetaLoaded: (meta: Record<string, AssetMeta>) => void;
-  onTreeLoaded: (tree: AssetNode[]) => void;
+  // 업로드 후 새로고침 — 가드·캐시가 있는 refreshProjectData 로 위임(전환 중이면 화면 대신 캐시만 갱신).
+  onImported: (project: string) => void | Promise<void>;
 }) {
   const [dropActive, setDropActive] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -26,10 +24,7 @@ export function useAssetDropImport({
     setImporting(true);
     try {
       const result = await api.uploadAssets(project, dir, incoming);
-      const tree = await api.assetTree(project);
-      onTreeLoaded(tree.children);
-      const meta = await api.assetMeta(project);
-      onMetaLoaded(meta);
+      await onImported(project); // 트리·메타 새로고침을 가드된 경로로 위임(직접 setter 로 stale 반영/캐시 오염 방지)
       if (result.skipped.length) {
         alert(
           `${result.saved.length}개 추가됨.\n미디어가 아니어서 제외: ${result.skipped.join(", ")}`,
