@@ -787,22 +787,58 @@ export function SceneBoard({
     return { file_path: b.file_path, type: b.type, name: b.name, thumb: b.thumb };
   };
   // 레퍼런스들을 각각 1장짜리 카드로 만들어 배치 — (cx,cy) 를 중심으로 가로 한 줄, 격자 스냅.
-  const addRefCardsAt = (refs: SceneRef[], cx: number, cy: number) => {
+  //  connectToGenIds 를 주면 만든 레퍼런스 카드를 그 생성 카드(들)에 바로 엣지로 연결한다(캔버스 붙여넣기 컨셉).
+  const addRefCardsAt = (refs: SceneRef[], cx: number, cy: number, connectToGenIds?: string[]) => {
     if (!refs.length) return;
+    // 단일 생성 카드에 연결하는 경우엔 위치를 '커밋 시점'에 계산 — 그 카드 왼쪽·기존 입력 아래로 스택.
+    //  (paste 시점이 아니라 여기서 계산해야 연속 붙여넣기에서 카드가 안 겹치고 순서대로 쌓인다.)
+    const targetGen =
+      connectToGenIds?.length === 1
+        ? cardsRef.current.find((c) => c.id === connectToGenIds[0] && c.kind === "generation")
+        : null;
+    let baseCx = cx, baseCy = cy;
+    if (targetGen) {
+      const inputs = edgesRef.current.filter((e) => e.to === targetGen.id).length;
+      baseCx = targetGen.x - (CARD_W + 40) + CARD_W / 2; // 생성 카드 왼쪽 40px 열(addRefCardsAt 는 cx 를 중심으로 씀)
+      baseCy = targetGen.y + CARD_H / 2 + inputs * (CARD_H + 20); // 이미 연결된 입력 아래로 스택
+    }
     const gap = CARD_W + 20;
-    const startX = cx - CARD_W / 2 - ((refs.length - 1) * gap) / 2;
+    const startX = baseCx - CARD_W / 2 - ((refs.length - 1) * gap) / 2;
     const created: SceneCard[] = refs.map((r, i) => ({
       id: uid(),
       kind: "reference",
       x: snapGrid(startX + i * gap),
-      y: snapGrid(cy - CARD_H / 2),
+      y: snapGrid(baseCy - CARD_H / 2),
       refs: [r],
     }));
-    const next = [...cardsRef.current, ...created];
-    cardsRef.current = next; // 비동기 업로드가 연달아 resolve 돼도 stale 배열에 덮이지 않게 즉시 반영
-    setCards(next);
-    setSelected(new Set(created.map((c) => c.id)));
-    persist(next, edgesRef.current);
+    const baseCards = [...cardsRef.current, ...created];
+    // 연결 대상(실제 존재하는 생성 카드만) → 새 레퍼런스마다 엣지 추가 후 withGenRefs 로 refs 재수집.
+    const targets = (connectToGenIds || []).filter((gid) =>
+      baseCards.some((c) => c.id === gid && c.kind === "generation"),
+    );
+    let ne = edgesRef.current;
+    let finalCards = baseCards;
+    if (targets.length) {
+      const seen = new Set(ne.map((e) => e.from + ">" + e.to));
+      const additions: SceneEdge[] = [];
+      for (const c of created)
+        for (const gid of targets) {
+          const k = c.id + ">" + gid;
+          if (!seen.has(k)) { seen.add(k); additions.push({ id: uid(), from: c.id, to: gid }); }
+        }
+      if (additions.length) {
+        ne = [...ne, ...additions];
+        finalCards = withGenRefs(baseCards, ne);
+      }
+    }
+    cardsRef.current = finalCards; // 비동기 업로드가 연달아 resolve 돼도 stale 배열에 덮이지 않게 즉시 반영
+    edgesRef.current = ne; //  ★엣지도 즉시 동기화 — 연속 붙여넣기의 다음 .then 이 방금 추가한 엣지를 보게(연결 유실 방지)
+    setCards(finalCards);
+    setEdges(ne);
+    // 연결한 경우엔 생성 카드 선택을 유지 — 바인딩 효과가 새 레퍼런스를 프롬프트에 바로 반영한다.
+    //  연결 안 한 단독 생성이면(드롭 등) 만든 레퍼런스 카드를 선택(기존 동작).
+    if (!targets.length) setSelected(new Set(created.map((c) => c.id)));
+    persist(finalCards, ne);
   };
   // 외부(다른 앱/OS)에서 드래그·붙여넣기한 파일 → 서버 imports 로 업로드 후 레퍼런스 카드로.
   const importExternalAsRefs = async (files: File[], cx: number, cy: number) => {
@@ -2060,10 +2096,16 @@ export function SceneBoard({
       if (blob && (isNewImage || !hasNodes)) {
         e.preventDefault();
         lastImgKeyRef.current = blobKey; // 이 캡쳐는 '이미 넣은 것'으로 기록(다음 붙여넣기에서 노드 우선 판단)
-        // 위치: 마우스가 보드 위면 그 지점, 아니면 뷰포트 중앙.
+        // ★캔버스 컨셉: 생성 카드 '하나만' 선택돼 있으면 캡쳐를 그 카드에 바로 연결한다(위치는 addRefCardsAt 이
+        //  커밋 시점에 카드 왼쪽·입력 스택으로 계산). '정확히 1개' 여야 바인딩 효과가 프롬프트에 바로 반영된다.
+        //  아니면(선택 없음·복수·비생성) 예전처럼 마우스 위치에 단독 생성.
+        const sel = selectedRef.current;
+        const onlyCard = sel.size === 1 ? cardsRef.current.find((c) => c.id === [...sel][0]) : null;
+        const connectTo = onlyCard?.kind === "generation" ? [onlyCard.id] : undefined;
+        // 단독 생성 위치: 마우스가 보드 위면 그 지점, 아니면 뷰포트 중앙(연결 시엔 addRefCardsAt 이 위치를 덮어씀).
+        let cx: number, cy: number;
         const lm = lastMouseRef.current;
         const r = scrollRef.current?.getBoundingClientRect();
-        let cx: number, cy: number;
         if (lm.over) {
           const p = toCanvas(lm.x, lm.y);
           cx = p.x;
@@ -2072,7 +2114,11 @@ export function SceneBoard({
           const p = toCanvas(r.left + r.width / 2, r.top + r.height / 2);
           cx = p.x;
           cy = p.y;
-        } else return;
+        } else if (!connectTo) return; // 위치를 못 구하고 연결도 안 하면 취소
+        else {
+          cx = 0;
+          cy = 0;
+        } // 연결 시엔 addRefCardsAt 이 위치를 계산하므로 임의값
         void api
           .uploadCapture(blob)
           .then((rr) =>
@@ -2080,6 +2126,7 @@ export function SceneBoard({
               [itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" })],
               cx,
               cy,
+              connectTo,
             ),
           )
           .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
