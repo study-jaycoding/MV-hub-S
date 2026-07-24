@@ -2043,14 +2043,18 @@ export function SceneBoard({
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      const tgt = e.target as HTMLElement;
       // 떠있는 UI(변형 팝업·모델설정 모달·옵션 드롭다운·프롬프트 독) 위에서는 보드 줌 대신 그 UI 가
       //  스크롤되게 — 줌/preventDefault 를 건너뛴다. (예: 비율 드롭다운 휠이 화면 확대/축소로 새던 버그)
       if (
-        (e.target as HTMLElement)?.closest?.(
+        tgt?.closest?.(
           ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .sl-dropdown, .sl-dockbar",
         )
       )
         return;
+      // 내용이 넘쳐 스크롤 가능한 텍스트 카드 위에서는 줌 대신 그 카드 내용을 스크롤(짧으면 기존처럼 줌).
+      const sc = tgt?.closest?.(".scene-textview-inline, .scene-textnode") as HTMLElement | null;
+      if (sc && sc.scrollHeight > sc.clientHeight) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
       const cx = e.clientX - r.left;
