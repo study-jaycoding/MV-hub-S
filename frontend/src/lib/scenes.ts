@@ -1,6 +1,6 @@
 // Canvas 씬(빈 캔버스) 데이터 레이어 — 카드·연결·카메라를 localStorage 에 프로젝트별로 보관.
 // 생성 결과물 자체는 실제 generation(서버)이고, 여기 저장하는 건 "캔버스 편집물"(개인 로컬)뿐이다.
-import { loadJSON, saveJSON } from "./storage";
+import { loadJSON, loadString, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export type SceneCardKind =
@@ -113,7 +113,28 @@ export interface Scene {
 
 type ScenesByProject = Record<string, Scene[]>;
 
-const keyOf = (projectId: string | null | undefined) => projectId || "_none";
+// 씬 저장 버킷 키. ★계정별 네임스페이스 — 팀 서버에서 한 브라우저를 여러 계정이 써도 안 섞이게,
+//  계정 전환 시 서로 지워지지 않게. 로그인 이메일(ch.activeAccount, clearPersonalSettings 가 보존)로 구분.
+//  AUTH off 로컬(로그인 없음)은 'local' 네임스페이스. legacyKeyOf = 네임스페이스 도입 전 옛 키(1회 이관용).
+const nsPrefix = () => {
+  const acct = loadString(STORAGE_KEYS.activeAccount);
+  return acct ? `acct:${acct}` : "local";
+};
+const keyOf = (projectId: string | null | undefined) => `${nsPrefix()}::${projectId || "_none"}`;
+const legacyKeyOf = (projectId: string | null | undefined) => projectId || "_none";
+
+// 네임스페이스 도입 전 옛 버킷을 현재 계정 버킷으로 1회 이관(작업 유실 방지). 이관 후 옛 키는 제거해
+//  같은 브라우저의 다른 계정이 다시 가져가지 않게 한다. map 을 제자리에서 바꾸고 이관 여부를 반환.
+function migrateLegacyBucket<T>(map: Record<string, T>, projectId: string | null | undefined): boolean {
+  const k = keyOf(projectId);
+  const legacy = legacyKeyOf(projectId);
+  if (k === legacy || map[k] !== undefined) return false; // 이미 네임스페이스 버킷 있으면 이관 안 함
+  const val = map[legacy] as unknown as { length?: number } | undefined;
+  if (val === undefined || (Array.isArray(val) && val.length === 0)) return false;
+  map[k] = map[legacy];
+  delete map[legacy];
+  return true;
+}
 
 export function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -155,7 +176,9 @@ function saveAll(all: ScenesByProject) {
 }
 
 export function listScenes(projectId: string | null): Scene[] {
-  return loadAll()[keyOf(projectId)] || [];
+  const all = loadAll();
+  if (migrateLegacyBucket(all, projectId)) saveAll(all); // 옛 씬을 현재 계정으로 1회 이관
+  return all[keyOf(projectId)] || [];
 }
 
 export function saveScenes(projectId: string | null, scenes: Scene[]) {
@@ -325,6 +348,7 @@ export function importScene(projectId: string | null, snap: SceneSnapshot): Scen
 
 export function getActiveSceneId(projectId: string | null): string | null {
   const map = loadJSON<Record<string, string>>(STORAGE_KEYS.scenesActive) || {};
+  if (migrateLegacyBucket(map, projectId)) saveJSON(STORAGE_KEYS.scenesActive, map); // '마지막 연 씬'도 계정별
   return map[keyOf(projectId)] || null;
 }
 
