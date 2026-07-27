@@ -3287,11 +3287,14 @@ export function SceneBoard({
   const PORT_V_GAP = 26;
   const laneDelta = (lane: "model" | "ref" | "text") =>
     lane === "model" ? -PORT_V_GAP : lane === "text" ? PORT_V_GAP : 0;
-  // 생성카드로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로 펼쳐 겹침 방지.
+  // 다입력 카드(생성·comfy)로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로
+  //  펼쳐 겹침 방지. comfy 도 ref(중앙)·text(아래) 레인 포트로 그려지므로 레인별 fan 이 포트와 맞아야 한다
+  //  (안 그러면 전체 입력 기준 fan 이라 ref 선이 ref 포트에서 어긋남).
   const inEdgesLaned = useMemo(() => {
     const m = new Map<string, SceneEdge[]>();
     for (const e of visibleEdges) {
-      if (cardsById.get(e.to)?.kind !== "generation") continue;
+      const toKind = cardsById.get(e.to)?.kind;
+      if (toKind !== "generation" && toKind !== "comfy") continue;
       const key = e.to + ":" + laneOf(edgeRoles.get(e.id) || "ref");
       const arr = m.get(key);
       if (arr) arr.push(e);
@@ -3309,7 +3312,8 @@ export function SceneBoard({
     const gen = b.kind === "generation";
     const laned = gen || b.kind === "comfy";
     const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane) : 0);
-    const fanList = gen ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
+    // 레인 포트를 가진 카드(생성·comfy)는 레인별 fan 으로 그 레인 포트에 맞춘다. 그 외는 중앙 전체 fan.
+    const fanList = laned ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
     return {
       x1: a.x + widthOf(a) + PORT_GAP, // 출력 포트(카드 오른쪽 밖)
       y1: a.y + heightOf(a) / 2 + fanOffset(outEdges.get(a.id), e.id, FAN),

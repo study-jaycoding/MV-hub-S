@@ -148,6 +148,10 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
   - **반영**: 렌더 no-comfy 경로가 `onRenderCards`(=generateCards)를 await 안 해 중복 클릭이 조용히 삼켜지고 에러가 보드와 안 이어지던 문제 → `await` + 타입 `void|Promise<void>` 통일(comfy 경로와 일관).
   - **기각(의도 확인)**: gen_requests 의 `require_project_role(..., read_only=True)` 는 버그 아님 — 주석에 명시된 팀 모델(프로젝트 멤버 또는 전역 read_all=admin/PM/PD 통과, 로컬 AUTH off 즉시 통과). 메모의 "의도 확인 필요" 해소.
   - **Jay 판단 보고**: 단일 생성카드 Generate(comfy 없음)는 makeGenJob(모델 없으면 차단)이 아니라 하단 스포트라이트 submit 을 재사용(197행 의도). 그래서 모델 노드 없는 카드를 생성하면 이전 카드/라이브러리의 '남은 모델'로 나갈 수 있음. 스포트라이트에 그 모델이 보이긴 하나 렌더 경로(차단)와 불일치. 차단으로 바꾸면 "Generate=하단 submit" 의도가 깨져 자동수정 보류 — 원하면 "모델 노드 없으면 Generate 비활성" 정책으로 통일 가능.
+- **청크 6 (렌더 / UI)**: 완료. 코덱스 4건 — 반영 1건, 후속/폴리시 3건. XSS·dangerouslySetInnerHTML 없음(깨끗), 리스트 key 대부분 id 기반.
+  - **반영**: comfy 입력 엣지 끝점이 base 만 레인별(ref/text)이고 fan 은 전체 입력 기준이라 ref 선이 ref 포트에서 어긋나던 문제 → 생성카드처럼 레인별 fan(inEdgesLaned 에 comfy 포함)으로 포트에 정렬(생성 동작 불변).
+  - **후속(병합 후 Phase 6)**: 마퀴/드래그 중 전 카드 재렌더로 buildViewClips·collectListInputs·comfy JSON 파싱이 매 프레임 반복(큰 씬 렉). 렌더 핫패스 memo 리팩터라 지금 잘 되는 걸 안 깨뜨리기 위해 병합 후. (연관: 보류 #8 워크플로 JSON 파싱 캐시)
+  - **폴리시(후속)**: MediaThumbnail 최종 로드실패 시 fallback 미전환(레퍼런스·결과 카드가 GenerationCard 의 '원본 없음'과 불일치), comfy/InfoPopup 비디오 preload·poster·onError 누락. 기능 파손 아니라 후속 폴리시.
 - **보류(저위험·후속)**:
   - #1 다중 탭+서로 다른 계정 동시 로그인 시 씬 오염 가능(매우 드묾, keyOf 가 매 호출 activeAccount 를 읽음). 필요 시 탭 시작 시 네임스페이스 고정으로.
   - #5 실행계획 내부에서 resolvePortEdges 미적용(현재 호출부가 모두 먼저 적용 → 실버그 아님, 방어적 보강만).
