@@ -160,6 +160,7 @@ _LOCAL_PREFIXES = (
     "/api/gen-requests",   # 로컬 실행 큐(에이전트가 폴링해 자기 CLI 로 실행)
     "/api/agent/",         # 에이전트 롱폴·상태·다운로드(이 허브에 붙음)
     "/api/models",         # CLI 모델 목록·params
+    "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)
     "/api/workspaces",     # CLI 워크스페이스
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
     # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.

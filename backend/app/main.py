@@ -48,6 +48,7 @@ from .routers import (
     _proxy,
     assets,
     auth,
+    comfy,
     db_backup,
     db_transfer,
     gen_requests,
@@ -218,6 +219,7 @@ app.include_router(publish.router)
 app.include_router(auth.router)
 app.include_router(db_transfer.router)
 app.include_router(db_backup.router)
+app.include_router(comfy.router)
 
 # ── PM 대시보드(분리형 사이드카) — 플래그 on 일 때만 등록 ────────────────────────
 # 기본 off: import 자체를 안 해 라우터·사이드카 테이블이 전혀 생기지 않는다(운영 무영향).
