@@ -238,7 +238,11 @@ export function comfyTextDriveKeys(
     if (p.type !== "text") continue;
     const [nid, field = ""] = p.key.split("|");
     const cls = classByNode[nid];
-    if (cls ? TEXT_INPUT_NODE_RE.test(cls) : TEXT_INPUT_FIELD_RE.test(field)) out.add(p.key);
+    // 필드명이 텍스트 계열(text/prompt/positive/negative/string)인 것만 대상. class 를 알면 그 노드가
+    // 텍스트 입력 노드인지도 함께 확인한다 — 'SaveText' 처럼 class 는 매칭돼도 filename_prefix 같은 설정
+    // 문자열엔 연결 텍스트가 새어들지 않게(필드 검사를 항상 적용). class 를 모르면 필드명만으로 판정(폴백).
+    const fieldOk = TEXT_INPUT_FIELD_RE.test(field);
+    if (cls ? TEXT_INPUT_NODE_RE.test(cls) && fieldOk : fieldOk) out.add(p.key);
   }
   return out;
 }

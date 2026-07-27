@@ -124,16 +124,22 @@ def check_alive(target: dict) -> bool:
         return False
 
 
-_OBJECT_INFO_CACHE: dict[str, tuple[float, dict]] = {}
+_OBJECT_INFO_CACHE: dict[tuple, tuple[float, dict]] = {}
 _OBJECT_INFO_TTL = 300.0  # 5분 — object_info 는 노드 설치 전엔 안 바뀐다(재다운로드 낭비 방지)
+
+
+def _cache_key(target: dict) -> tuple:
+    """캐시 키 — base/prefix 뿐 아니라 api_key 까지 포함해야 키/워크스페이스를 바꿔도 옛 캐시가 안 남는다."""
+    return (target.get("base", ""), target.get("prefix", ""),
+            (target.get("headers") or {}).get("X-API-Key", ""))
 
 
 def get_object_info(target: dict, *, use_cache: bool = True) -> dict:
     """ComfyUI 전체 /object_info (노드별 입력 위젯 스펙 = COMBO 드롭다운 후보 등).
     ★Comfy Cloud 는 개별 /object_info/{class} 를 지원하지 않고 전체 /object_info 만 지원하므로
-    항상 전체를 받는다. 응답이 크므로(수 MB) target(base+prefix)별 TTL 캐시로 매 파싱마다 재다운로드하지 않는다.
+    항상 전체를 받는다. 응답이 크므로(수 MB) target(base+prefix+api_key)별 TTL 캐시로 재다운로드를 줄인다.
     실패(서버 꺼짐·비2xx)는 ComfyError 로 올린다(호출부가 best-effort 폴백)."""
-    key = target.get("base", "") + target.get("prefix", "")
+    key = _cache_key(target)
     now = time.time()
     if use_cache:
         hit = _OBJECT_INFO_CACHE.get(key)
@@ -144,14 +150,14 @@ def get_object_info(target: dict, *, use_cache: bool = True) -> dict:
     return data
 
 
-_SUBSCRIPTION_CACHE: dict[str, tuple[float, "str | None"]] = {}
+_SUBSCRIPTION_CACHE: dict[tuple, tuple[float, "str | None"]] = {}
 _SUBSCRIPTION_TTL = 300.0  # 5분 — 구독 등급은 거의 안 바뀐다
 
 
 def get_subscription_tier(target: dict, *, use_cache: bool = True) -> "str | None":
     """Comfy Cloud 첫 워크스페이스의 구독 등급(예: 'PRO'). 로컬/미지원/실패면 None.
-    크레딧 표시용(생성 정보) — target(base+prefix)별 TTL 캐시. 예외는 삼키고 None 반환(best-effort)."""
-    key = target.get("base", "") + target.get("prefix", "")
+    크레딧 표시용(생성 정보) — target(base+prefix+api_key)별 TTL 캐시. 예외는 삼키고 None 반환(best-effort)."""
+    key = _cache_key(target)
     now = time.time()
     if use_cache:
         hit = _SUBSCRIPTION_CACHE.get(key)

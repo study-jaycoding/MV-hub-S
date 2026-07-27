@@ -310,6 +310,13 @@ _MEDIA_EXT_KIND = {
 }
 
 
+def _media_kind(filename: str) -> Optional[str]:
+    """파일명 확장자로 미디어 종류 판정. 이미지/영상 확장자만 인정 — 그 외(.txt 등)는 None.
+    (SaveText 가 낸 .txt 같은 비미디어 파일을 image 로 잘못 저장하던 문제 방지 — 텍스트는 별도 경로.)"""
+    ext = os.path.splitext(filename or "")[1].lower()
+    return _MEDIA_EXT_KIND.get(ext)
+
+
 def _inject_params(wf: dict, param_values: dict[str, Any]) -> None:
     """플랫 {"node|field": value} 를 워크플로우 inputs 에 주입. 원래 값 타입으로 강제."""
     for key, val in (param_values or {}).items():
@@ -584,9 +591,11 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
     # 복수일 수 있다(SaveText/SaveImage/VideoCombine 등). 미디어는 MEDIA_DIR 로 받아 /media URL 로.
     results: list[dict] = []
     for item in comfy_client.collect_outputs(entry):
+        kind = _media_kind(item["filename"])
+        if kind is None:
+            continue  # 이미지/영상 확장자가 아니면 미디어로 저장하지 않는다(.txt 등 → 아래 텍스트 경로에서 처리)
         ext = os.path.splitext(item["filename"])[1].lower()
-        kind = _MEDIA_EXT_KIND.get(ext, "image")
-        rel = f"comfy/{uuid.uuid4().hex[:16]}{ext or '.png'}"
+        rel = f"comfy/{uuid.uuid4().hex[:16]}{ext}"
         try:
             comfy_client.download_view(target, item, MEDIA_DIR / rel)
         except comfy_client.ComfyError as e:

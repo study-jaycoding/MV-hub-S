@@ -1257,18 +1257,33 @@ export function SceneBoard({
   const applyComfyApi = async (cardId: string, name: string, content: string): Promise<boolean> => {
     try {
       const res = await comfyApi.parse(content, []);
-      patchComfyCfg(cardId, {
-        name,
-        content,
-        nodeCount: res.node_count,
-        paramExposed: [],
-        paramValues: {},
-        params: [],
-        outputs: [],
-        output: null,
-        status: "idle",
-        error: null,
-      });
+      // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
+      // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
+      const nextCards = cardsRef.current.map((c) =>
+        c.id === cardId && c.kind === "comfy"
+          ? {
+              ...c,
+              genId: null,
+              genIds: [],
+              comfyCfg: {
+                ...(c.comfyCfg || {}),
+                name,
+                content,
+                nodeCount: res.node_count,
+                paramExposed: [],
+                paramValues: {},
+                params: [],
+                outputs: [],
+                output: null,
+                status: "idle" as const,
+                error: null,
+              },
+            }
+          : c,
+      );
+      cardsRef.current = nextCards;
+      setCards(nextCards);
+      persist(nextCards, edgesRef.current);
       return true;
     } catch {
       return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
@@ -1535,8 +1550,9 @@ export function SceneBoard({
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
       patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null });
       // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
+      // ★순차 await — 병렬이면 응답 도착순에 따라 대표(genId)·genIds 순서가 뒤섞인다(대표=마지막 결과 보장).
       for (const s of sets)
-        void saveComfyToLibrary(cardId, { silent: true, elapsedSeconds: s.elapsed, outputs: s.outputs });
+        await saveComfyToLibrary(cardId, { silent: true, elapsedSeconds: s.elapsed, outputs: s.outputs });
       return true;
     } catch (e) {
       patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" });
@@ -1668,13 +1684,14 @@ export function SceneBoard({
       // 출력이 생긴 comfy 노드는 자동으로 '내 작업'에 추가(체인 실행에서도) + 노드별 소요시간 기록. 멱등이라 중복 없음.
       // ★배치의 '모든 복사본' 결과를 각각 저장한다(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
       //   직접 실행(runComfy)과 동일하게 복사본별 outputs·소요시간으로 저장.
+      // ★순차 await — 응답 도착순 레이스로 대표(genId)·genIds 순서가 뒤섞이는 것 방지(대표=마지막 저장 보장).
       for (const cid of plan.comfyIds) {
         const c = snap.find((x) => x.id === cid);
         if (c?.comfyCfg?.status !== "done") continue;
         for (const cp of copies) {
           const outs = cp.overlay[cid];
           if (outs && outs.length)
-            void saveComfyToLibrary(cid, { silent: true, elapsedSeconds: cp.elapsed[cid], outputs: outs });
+            await saveComfyToLibrary(cid, { silent: true, elapsedSeconds: cp.elapsed[cid], outputs: outs });
         }
       }
     }
@@ -5188,12 +5205,24 @@ export function SceneBoard({
                 // 예전 워크플로 출력을 참조한다(재실행 전까지 stale). content 그대로면 결과 보존.
                 const prev = cardsRef.current.find((x) => x.id === comfyModalId)?.comfyCfg;
                 const contentChanged = (prev?.content || "") !== (cfg.content || "");
-                patchComfyCfg(
-                  comfyModalId,
-                  contentChanged
-                    ? { ...cfg, outputs: [], output: null, status: "idle", error: null }
-                    : cfg,
-                );
+                if (contentChanged) {
+                  // content 교체 → 카드에 쌓인 생성물(대표·목록)까지 초기화(applyComfyApi 와 동일 규칙).
+                  const nextCards = cardsRef.current.map((c) =>
+                    c.id === comfyModalId && c.kind === "comfy"
+                      ? {
+                          ...c,
+                          genId: null,
+                          genIds: [],
+                          comfyCfg: { ...(c.comfyCfg || {}), ...cfg, outputs: [], output: null, status: "idle" as const, error: null },
+                        }
+                      : c,
+                  );
+                  cardsRef.current = nextCards;
+                  setCards(nextCards);
+                  persist(nextCards, edgesRef.current);
+                } else {
+                  patchComfyCfg(comfyModalId, cfg);
+                }
               }}
             />
           );

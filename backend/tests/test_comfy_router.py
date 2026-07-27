@@ -164,6 +164,37 @@ class ComboChoiceTests(unittest.TestCase):
         self.assertEqual(candidates[0]["choices"], [1, 2])
 
 
+class MediaKindTests(unittest.TestCase):
+    """출력 파일 확장자 → 미디어 종류 판정. 비미디어(.txt 등)는 None(image 로 잘못 저장 방지)."""
+
+    def test_only_image_video_extensions(self):
+        self.assertEqual(comfy._media_kind("a.png"), "image")
+        self.assertEqual(comfy._media_kind("A.JPG"), "image")
+        self.assertEqual(comfy._media_kind("clip.MP4"), "video")
+        self.assertIsNone(comfy._media_kind("note.txt"))   # SaveText 출력 → 미디어 아님
+        self.assertIsNone(comfy._media_kind("noext"))
+        self.assertIsNone(comfy._media_kind(""))
+
+
+class ObjectInfoCacheTests(unittest.TestCase):
+    """object_info 캐시가 api_key 까지 키로 삼아 키/워크스페이스 변경을 구분하는지."""
+
+    def test_cache_keyed_by_api_key(self):
+        calls = []
+        orig = comfy.comfy_client._get_json
+        comfy.comfy_client._get_json = lambda target, route, **kw: (calls.append(route), {"X": {"input": {}}})[1]
+        try:
+            comfy.comfy_client._OBJECT_INFO_CACHE.clear()
+            t1 = {"base": "https://cloud.comfy.org", "prefix": "/api", "headers": {"X-API-Key": "k1"}, "cloud": True}
+            t2 = {"base": "https://cloud.comfy.org", "prefix": "/api", "headers": {"X-API-Key": "k2"}, "cloud": True}
+            comfy.comfy_client.get_object_info(t1)
+            comfy.comfy_client.get_object_info(t1)  # 같은 키 → 캐시 히트(재조회 없음)
+            comfy.comfy_client.get_object_info(t2)  # 다른 api_key → 새 조회
+            self.assertEqual(len(calls), 2)
+        finally:
+            comfy.comfy_client._get_json = orig
+
+
 class SubscriptionTierTests(unittest.TestCase):
     """Comfy Cloud 구독 등급 추출(크레딧 표시용) — /workspaces 응답 파싱."""
 

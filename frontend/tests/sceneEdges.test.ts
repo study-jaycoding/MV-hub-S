@@ -530,6 +530,18 @@ describe("collectGenRefs (comfy 미디어 → 생성 ref)", () => {
     expect([...comfyTextDriveKeys(params, content)]).toEqual(["5|text"]);
   });
 
+  it("comfyTextDriveKeys: 텍스트 노드여도 설정 필드(filename_prefix)엔 주입 안 함", () => {
+    // SaveText 는 class 에 'text' 가 있어 노드 매칭되지만, filename_prefix 는 텍스트 필드가 아니므로 제외.
+    const content = JSON.stringify({
+      "1": { class_type: "SaveText|pysssss", inputs: { text: "", filename_prefix: "out" } },
+    });
+    const params = [
+      { key: "1|text", type: "text" },
+      { key: "1|filename_prefix", type: "text" },
+    ];
+    expect([...comfyTextDriveKeys(params, content)]).toEqual(["1|text"]);
+  });
+
   it("comfyTextDriveKeys: content 없거나 깨지면 필드명으로 폴백(text/prompt 만)", () => {
     const params = [
       { key: "1|text", type: "text" },
