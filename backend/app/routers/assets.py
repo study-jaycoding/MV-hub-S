@@ -1217,8 +1217,13 @@ def reveal_file(body: RevealIn, request: Request):
         raise HTTPException(status_code=404, detail="파일 없음")
     try:
         if sys.platform == "win32":
-            # explorer 는 성공해도 종료코드 1 을 반환하므로 검사하지 않음
-            subprocess.Popen(["explorer", f"/select,{target}"])
+            # ★인자 '리스트'로 넘기면 subprocess 가 경로에 공백이 있을 때 "/select,<경로>" 전체를
+            #  통째로 따옴표로 감싸버린다(explorer "/select,C:\My Docs\a.png"). 이 형태는 explorer 가
+            #  파싱 못 해 파일 선택 대신 기본 폴더(문서 등)가 열린다 → "원본을 못 찾는" 증상.
+            #  명령 '문자열'로 넘겨 경로만 따옴표로 감싼(/select,"<경로>") 올바른 형태가 explorer 에
+            #  그대로 전달되게 한다. shell=False 라 파일명 속 &, ^ 등 셸 메타문자도 그대로 리터럴(주입 없음).
+            #  explorer 는 성공해도 종료코드 1 을 반환하므로 검사하지 않음.
+            subprocess.Popen(f'explorer /select,"{target}"')
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(target)])
         else:
