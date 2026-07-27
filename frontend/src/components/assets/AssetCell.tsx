@@ -4,7 +4,6 @@ import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { downloadOne } from "../../lib/download";
 import { TagEditor } from "../TagEditor";
-import { prefetchOriginalFile } from "./exportDrag";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -104,9 +103,6 @@ export const AssetCell = memo(function AssetCell({
   const onEnter = () => {
     if (videoRef.current) videoRef.current.muted = true; // 영상 호버는 무음(React muted 반영 버그 방어). 오디오는 그대로
     (videoRef.current || audioRef.current)?.play().catch(() => {});
-    // 드래그 대비 원본 미리 받기 — hover 로 앞당겨 dragstart 때 '진짜 File'(원본 화질)이 준비되게.
-    //  (이미지·오디오만. 준비 전이면 img 네이티브 드래그가 썸네일로 폴백해 그래도 첨부는 된다.)
-    prefetchOriginalFile(project, node.path, node.name);
   };
   const onLeave = () => {
     const m = videoRef.current || audioRef.current;
@@ -230,7 +226,6 @@ export const AssetCell = memo(function AssetCell({
         title={node.name}
         draggable
         onDragStart={onMediaDragStart}
-        onMouseDown={() => prefetchOriginalFile(project, node.path, node.name)} // 누름(드래그/선택 의도) 순간 원본 미리 받기 → dragstart 때 '진짜 파일'로 첨부
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
       >

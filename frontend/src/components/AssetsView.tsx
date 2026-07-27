@@ -336,9 +336,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (multi) {
       setZipDrag(dt, proj, items.map((item) => item.path));
     } else {
-      const name =
-        filesRef.current.find((f) => f.path === path)?.name || path.split("/").pop() || path;
-      setSingleFileDrag(dt, proj, path, name);
+      const file = filesRef.current.find((f) => f.path === path);
+      const name = file?.name || path.split("/").pop() || path;
+      // ★단일 이미지는 dataTransfer 를 건드리지 않는다 — img 가 draggable 이라 크롬이 '네이티브
+      //  이미지 드래그'로 로컬 이미지를 직접 실어 외부 웹앱(클로드 대화창)이 파일로 받는다. 여기서
+      //  DownloadURL/html 을 setData 하면 그 네이티브 이미지가 깨져 대화창이 아무것도 못 받는다.
+      //  (아래 커스텀 타입 DRAG_TYPES.asset 은 내부 캔버스/트레이 감지용 '플래그'라 native 와 공존.)
+      //  영상·오디오는 네이티브 이미지가 없으므로 기존대로 DownloadURL/URL 을 심는다.
+      if (file?.type !== "image") setSingleFileDrag(dt, proj, path, name);
     }
     // 본창 프롬프트 레퍼런스 트레이로 드래그(같은 오리진 팝업↔본창)에서 읽을 커스텀 타입.
     // 다중선택에 포함되면 선택 전체를(그리드 순서 보존), 아니면 그 파일 하나만 배열로 싣는다 →
