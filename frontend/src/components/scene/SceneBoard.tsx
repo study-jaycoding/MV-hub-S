@@ -197,7 +197,7 @@ interface Props {
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (batch?: number) => void; // batch = 이 노드의 배치수(comfy 없는 경로에도 적용)
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
-  onRenderCards?: (cardIds: string[], batch?: number) => void;
+  onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
   onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
@@ -1783,7 +1783,9 @@ export function SceneBoard({
       } else {
         const { runnableGenIds, aborted } = await runPlanComfy(plan, sid);
         if (!aborted && sceneIdRef.current === sid && runnableGenIds.length)
-          onRenderCards?.(runnableGenIds, batch); // comfy 없는 경로도 이 렌더 노드의 배치수로
+          // await — 제출 끝까지 orchestratingRef 를 잡아 중복 클릭이 조용히 삼켜지지 않게(comfy 경로와 일관).
+          await onRenderCards?.(runnableGenIds, batch); // comfy 없는 경로도 이 렌더 노드의 배치수로
+
       }
     } finally {
       orchestratingRef.current = false;
