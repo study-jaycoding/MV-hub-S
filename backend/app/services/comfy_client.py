@@ -81,6 +81,9 @@ def _request(method: str, url: str, *, headers: dict | None = None,
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
         content_type = "application/json"
+    # http/https 만 허용 — file://·ftp:// 등으로 서버가 임의 로컬 자원을 읽는 것 차단(SSRF 2차 방어).
+    if urllib.parse.urlsplit(url).scheme.lower() not in ("http", "https"):
+        raise ComfyError(f"허용되지 않은 URL 스킴입니다(http/https 만): {url[:80]}")
     req = urllib.request.Request(url, data=data, method=method.upper())
     if content_type:
         req.add_header("Content-Type", content_type)

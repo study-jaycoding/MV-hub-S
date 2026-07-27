@@ -53,6 +53,12 @@ def _str_set(raw) -> set:
     return {k for k in raw if isinstance(k, str)} if isinstance(raw, list) else set()
 
 
+def _dict(v) -> dict:
+    """dict 가 아니면 빈 dict (malformed 워크플로 방어 — inputs 가 list, _meta 가 문자열이어도
+    .get()/.items() 에서 500 나지 않게)."""
+    return v if isinstance(v, dict) else {}
+
+
 def detect_slots(wf: dict, exposed=None) -> dict:
     """API 포맷 JSON에서 이미지/영상 슬롯과 노출된 조절 파라미터를 감지한다.
     필드명은 추측하지 않고 실제 inputs에 존재하는 키만 대상으로 한다.
@@ -69,8 +75,8 @@ def detect_slots(wf: dict, exposed=None) -> dict:
                 "API 포맷이 아닙니다. ComfyUI에서 'Export (API)'로 내보낸 JSON을 사용하세요."
             )
         ct = node["class_type"]
-        inputs = node.get("inputs", {})
-        title = (node.get("_meta") or {}).get("title") or ct
+        inputs = _dict(node.get("inputs"))
+        title = _dict(node.get("_meta")).get("title") or ct
 
         if ct in IMAGE_CLASSES:
             image_slots.append({
@@ -100,7 +106,7 @@ def detect_slots(wf: dict, exposed=None) -> dict:
     def socket_order(node_id: str):
         best = None
         for node in wf.values():
-            for key, val in (node.get("inputs") or {}).items():
+            for key, val in _dict(node.get("inputs")).items():
                 if isinstance(val, list) and len(val) == 2 and str(val[0]) == node_id:
                     m = re.search(r"(\d+)\s*$", key)
                     if m:
@@ -117,7 +123,7 @@ def detect_slots(wf: dict, exposed=None) -> dict:
     params = []
     for node_id, node in wf.items():
         curated = CURATED_PARAMS.get(node["class_type"]) or {}
-        inputs = node.get("inputs") or {}
+        inputs = _dict(node.get("inputs"))
         fields = []
         for key, val in inputs.items():
             if (isinstance(val, (list, dict)) or (node_id, key) in slot_keys
@@ -128,7 +134,7 @@ def detect_slots(wf: dict, exposed=None) -> dict:
         if fields:
             params.append({
                 "node_id": node_id,
-                "title": (node.get("_meta") or {}).get("title") or node["class_type"],
+                "title": _dict(node.get("_meta")).get("title") or node["class_type"],
                 "fields": fields,
             })
 
@@ -150,8 +156,8 @@ def param_candidates(wf: dict, exposed=None) -> list:
     for node_id, node in wf.items():
         ct = node["class_type"]
         curated = CURATED_PARAMS.get(ct) or {}
-        title = (node.get("_meta") or {}).get("title") or ct
-        for key, val in (node.get("inputs") or {}).items():
+        title = _dict(node.get("_meta")).get("title") or ct
+        for key, val in _dict(node.get("inputs")).items():
             if isinstance(val, (list, dict)) or (node_id, key) in slot_keys:
                 continue  # 링크/구조/슬롯은 조절 대상 아님
             spec = curated.get(key) or {}

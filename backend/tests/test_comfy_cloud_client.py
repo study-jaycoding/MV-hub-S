@@ -195,5 +195,25 @@ class EnvIntTests(unittest.TestCase):
             self.assertEqual(comfy._env_int("CH_TEST_X", 1800, minimum=30), 120)
 
 
+class SchemeGuardTests(unittest.TestCase):
+    """SSRF 방어 — http/https 아닌 스킴은 urlopen 도달 전에 거부한다."""
+
+    def test_file_scheme_rejected(self):
+        with self.assertRaises(comfy_client.ComfyError):
+            comfy_client._request("GET", "file:///etc/passwd")
+
+    def test_non_http_scheme_rejected(self):
+        with self.assertRaises(comfy_client.ComfyError):
+            comfy_client._request("GET", "gopher://127.0.0.1/x")
+
+    def test_http_scheme_passes_guard(self):
+        # http 스킴은 게이트를 통과해 urlopen 까지 간다(연결 자체는 monkeypatch 로 가로챈다).
+        with mock.patch.object(comfy_client.urllib.request, "urlopen") as m:
+            m.return_value.__enter__.return_value.status = 200
+            m.return_value.__enter__.return_value.read.return_value = b"ok"
+            status, body = comfy_client._request("GET", "http://127.0.0.1:8188/system_stats")
+        self.assertEqual((status, body), (200, b"ok"))
+
+
 if __name__ == "__main__":
     unittest.main()

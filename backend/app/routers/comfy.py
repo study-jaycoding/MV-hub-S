@@ -17,6 +17,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -68,6 +69,28 @@ _RUN_FAILED = "failed"
 
 _RUN_JOBS_LOCK = threading.Lock()
 _RUN_JOBS: dict[str, dict[str, Any]] = {}
+
+# ── 동시 실행 게이트 ──────────────────────────────────────────────────────────
+# comfy_concurrency 설정만큼만 동시에 제출·폴링하도록 워커 스레드를 대기시킨다.
+# (배치 병렬 시 클라우드 동시성 한도(5) 초과로 429 나는 것 방지. capacity 는 실행 시점 설정값.)
+_RUN_GATE = threading.Condition()
+_RUN_SLOTS_ACTIVE = 0
+
+
+def _acquire_run_slot(capacity: int) -> None:
+    global _RUN_SLOTS_ACTIVE
+    cap = max(1, capacity)
+    with _RUN_GATE:
+        while _RUN_SLOTS_ACTIVE >= cap:
+            _RUN_GATE.wait()
+        _RUN_SLOTS_ACTIVE += 1
+
+
+def _release_run_slot() -> None:
+    global _RUN_SLOTS_ACTIVE
+    with _RUN_GATE:
+        _RUN_SLOTS_ACTIVE = max(0, _RUN_SLOTS_ACTIVE - 1)
+        _RUN_GATE.notify()
 
 
 def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
@@ -188,7 +211,12 @@ def get_settings():
 @router.put("/settings")
 def put_settings(patch: SettingsPatch):
     if patch.comfy_url is not None:
-        repo.set_setting(_K_URL, patch.comfy_url.strip().rstrip("/"))
+        url = patch.comfy_url.strip().rstrip("/")
+        # 스킴은 http/https 만 허용 — file://·gopher:// 등으로 서버가 임의 자원을 읽는 것 차단(SSRF 방어).
+        # (로컬/LAN ComfyUI 는 http 라 정상 통과. 사설 IP 자체는 막지 않는다 — 로컬이 정상 사용처.)
+        if url and urlsplit(url).scheme.lower() not in ("http", "https"):
+            raise HTTPException(400, "ComfyUI 주소는 http:// 또는 https:// 만 허용됩니다")
+        repo.set_setting(_K_URL, url)
     if patch.comfy_target is not None:
         tgt = patch.comfy_target if patch.comfy_target in ("local", "cloud") else "local"
         repo.set_setting(_K_TARGET, tgt)
@@ -380,7 +408,9 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
                     f"영상 노드({slot['class_type']})가 경로 입력형입니다. "
                     "설정에서 ComfyUI input 폴더를 지정하거나 파일 선택형(VHS_LoadVideo) 노드를 쓰세요.",
                 )
-            dest = Path(input_dir) / "mvhub" / fname
+            # 파일명은 경로 성분을 제거해 mvhub 폴더 밖으로 못 빠지게 한다(경로 탈출 방어).
+            safe = Path(fname).name or "input.bin"
+            dest = Path(input_dir) / "mvhub" / safe
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             node.setdefault("inputs", {})[slot["field"]] = str(dest.resolve())
@@ -545,17 +575,22 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
 def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
                           uploads: list[tuple[str, bytes]], settings: dict) -> None:
-    """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존."""
-    _update_run_job(job_id, state=_RUN_RUNNING)
+    """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
+    설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
+    _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3))
     try:
-        result = _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings)
-    except HTTPException as e:
-        _fail_run_job(job_id, int(e.status_code or 500), e.detail)
-    except Exception as e:  # noqa: BLE001
-        log.exception("comfy async run 예외 job_id=%s", job_id)
-        _fail_run_job(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
-    else:
-        _finish_run_job(job_id, result)
+        _update_run_job(job_id, state=_RUN_RUNNING)
+        try:
+            result = _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings)
+        except HTTPException as e:
+            _fail_run_job(job_id, int(e.status_code or 500), e.detail)
+        except Exception as e:  # noqa: BLE001
+            log.exception("comfy async run 예외 job_id=%s", job_id)
+            _fail_run_job(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
+        else:
+            _finish_run_job(job_id, result)
+    finally:
+        _release_run_slot()
 
 
 @router.post("/run")

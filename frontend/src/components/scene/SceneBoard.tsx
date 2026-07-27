@@ -4911,7 +4911,18 @@ export function SceneBoard({
               key={comfyModalId}
               initial={c.comfyCfg}
               onClose={() => setComfyModalId(null)}
-              onSave={(cfg) => patchComfyCfg(comfyModalId, cfg)}
+              onSave={(cfg) => {
+                // 워크플로우(content)가 바뀌면 이전 실행 결과를 비운다 — 안 그러면 하류 생성카드가
+                // 예전 워크플로 출력을 참조한다(재실행 전까지 stale). content 그대로면 결과 보존.
+                const prev = cardsRef.current.find((x) => x.id === comfyModalId)?.comfyCfg;
+                const contentChanged = (prev?.content || "") !== (cfg.content || "");
+                patchComfyCfg(
+                  comfyModalId,
+                  contentChanged
+                    ? { ...cfg, outputs: [], output: null, status: "idle", error: null }
+                    : cfg,
+                );
+              }}
             />
           );
         })()}
