@@ -939,8 +939,6 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                batchCount={batchCount}
-                onBatchCountChange={setBatchCount}
                 onGenerateCard={() => spotlightSubmitRef.current?.()}
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
