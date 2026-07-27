@@ -850,17 +850,21 @@ export function SceneBoard({
   };
 
   // 드래그 리스너 등록/정리를 한곳에서 — 드래그 중 언마운트(씬 전환·삭제)돼도 누수 없게 unmount 에서 정리.
-  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null); // 언마운트용: 리스너만 제거(setState 없이)
+  const dragCancelRef = useRef<(() => void) | null>(null); // 취소용: 정리+onCancel(다음 드래그 시작·blur 에서)
   // 드래그 이동을 rAF로 '프레임당 1회'만 반영(합치기) — 마우스가 mousemove 를 초당 수백 번 쏴도
   // 무거운 setState/렌더는 화면 주사율만큼만 돈다. 그 결과 메인 스레드가 덜 막혀 드래그 중 빠른
   // 클릭·키 입력이 지연·누락되지 않는다. mouseup 시 아직 안 돈 마지막 이동을 먼저 flush 해 최종 위치·
   // 그룹 재배정·연결 drop 판정이 항상 최신 좌표를 쓰게 한다.
+  //  onCancel: 창 blur(Alt-Tab 등)로 mouseup 을 놓쳤을 때 실행 — 유효 드롭 좌표가 없으므로 up 의
+  //  커밋/클릭 로직 대신 '정리'만(유령 와이어·팬 커서·리오더 라인 등 고착 방지). 없으면 리스너만 제거.
   const beginDrag = useCallback(
-    (move: (e: MouseEvent) => void, up: (e: MouseEvent) => void) => {
-      // 이전 드래그가 mouseup 유실(Alt-Tab·창 blur 등)로 안 끝났으면 먼저 정리 — 리스너 누수·이중 실행 방지.
-      dragCleanupRef.current?.();
+    (move: (e: MouseEvent) => void, up: (e: MouseEvent) => void, onCancel?: () => void) => {
+      // 이전 드래그가 mouseup 유실(Alt-Tab·창 blur 등)로 안 끝났으면 먼저 취소 — 리스너 누수·이중 실행 방지.
+      dragCancelRef.current?.();
       let rafId: number | null = null;
       let pending: MouseEvent | null = null;
+      let closed = false; // teardown 멱등 — blur 취소 뒤 뒤늦은 mouseup 이 up 을 또 부르지 않게
       const runPending = () => {
         rafId = null;
         if (pending) { const ev = pending; pending = null; move(ev); }
@@ -873,24 +877,34 @@ export function SceneBoard({
         if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         if (pending) { const ev = pending; pending = null; move(ev); }
       };
-      const teardown = () => {
+      function teardown() {
+        if (closed) return false;
+        closed = true;
         if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onCancelDrag);
         dragCleanupRef.current = null;
-      };
+        if (dragCancelRef.current === onCancelDrag) dragCancelRef.current = null;
+        return true;
+      }
       const onUp = (ev: MouseEvent) => {
         flush(); // 아직 반영 안 된 마지막 이동을 먼저 적용
-        teardown();
-        up(ev);
+        if (teardown()) up(ev);
       };
+      function onCancelDrag() {
+        flush();
+        if (teardown()) onCancel?.();
+      }
       dragCleanupRef.current = teardown;
+      dragCancelRef.current = onCancelDrag;
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onCancelDrag);
     },
     [],
   );
-  useEffect(() => () => dragCleanupRef.current?.(), []);
+  useEffect(() => () => dragCleanupRef.current?.(), []); // 언마운트: teardown(리스너만) — onCancel 의 setState 는 안 돌린다
 
   // ── 에셋 드롭/붙여넣기 → 레퍼런스 카드(항상 1장에 1개) ──
   const hasAssetDrag = (dt: DataTransfer) => Array.from(dt.types).includes(DRAG_TYPES.asset);
@@ -1069,7 +1083,7 @@ export function SceneBoard({
       });
       if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]));
     };
-    beginDrag(move, up);
+    beginDrag(move, up, () => setTempWire(null)); // blur: 유효 드롭 좌표 없음 → 연결 안 만들고 임시선만 제거
   };
 
   // 생성 카드 우하단 핸들 드래그 → 크기 조절(자유 조절, 22px 격자 스냅, 최소 CARD_MIN). 카드 이동과
@@ -1095,7 +1109,7 @@ export function SceneBoard({
       setCards(next);
     };
     const up = () => persist(cardsRef.current, edgesRef.current);
-    beginDrag(move, up);
+    beginDrag(move, up, up); // blur: 현재 크기 그대로 저장(좌표 무관 커밋이라 up 재사용 안전)
   };
 
   // ── 노드 생성(Tab 피커·단축키 공용) ─────────────────────────────────────────
@@ -1932,7 +1946,7 @@ export function SceneBoard({
       setReorderLine(null);
       setReorderFrom(null);
     };
-    beginDrag(move, up);
+    beginDrag(move, up, () => { setReorderLine(null); setReorderFrom(null); }); // blur: 순서 커밋 안 함, 표시선만 정리
   };
   // View 에 연결된(직접+generation-list) 생성물을 순서대로 타임라인 클립(url·타입·썸네일)으로 모은다. 재생·미리보기 공용.
   const buildViewClips = (
@@ -2069,7 +2083,7 @@ export function SceneBoard({
       setPopupMarq(null);
       if (!moved && !additive) setPopupSel(new Set()); // 빈 곳 클릭 = 선택 해제
     };
-    beginDrag(move, up);
+    beginDrag(move, up, () => setPopupMarq(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
   };
 
   // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
@@ -2244,6 +2258,7 @@ export function SceneBoard({
       }
       // ── 팝업(모달 레이어)이 열려 있으면: 팝업 선택(popupSel) 대상만 처리하고 캔버스 키는 완전 차단 ──
       if (cardMenuRef.current) {
+        if (e.repeat) return; // 색/비활성 토글이 키 반복으로 깜빡이지 않게(반복 setColor 전송 방지)
         const pids = [...popupSelRef.current];
         if (matchShortcut(e, "colorRed")) {
           e.preventDefault();
@@ -2336,6 +2351,7 @@ export function SceneBoard({
       // Ctrl+G = 선택 카드 그룹. 해제는 그룹 헤더의 × 버튼으로. (mod+g 라 g=초록색 단축키와 충돌 없음)
       if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
         e.preventDefault(); // 브라우저 '다음 찾기' 방지
+        if (e.repeat) return; // 키 반복으로 중복 그룹 생성 방지
         groupSelected();
         return;
       }
@@ -2435,6 +2451,7 @@ export function SceneBoard({
       }
       // d: 선택 카드 비활성(회색) 토글 — 계보/라이브러리와 같은 소스. 카드 대표 genId 기준.
       if (matchShortcut(e, "boardDisable")) {
+        if (e.repeat) return; // 비활성 토글이 키 반복으로 깜빡이지 않게
         const gids = [...sel]
           .map((id) => cardsRef.current.find((c) => c.id === id)?.genId)
           .filter((x): x is string => !!x);
@@ -2447,16 +2464,19 @@ export function SceneBoard({
       // r/g/b: 선택 카드 색 지정(계보/라이브러리와 동일)
       if (matchShortcut(e, "colorRed")) {
         e.preventDefault();
+        if (e.repeat) return; // 색 토글이 키 반복으로 깜빡이지 않게(반복 setColor 전송 방지)
         setSelColor(KEY_COLORS.r);
         return;
       }
       if (matchShortcut(e, "colorGreen")) {
         e.preventDefault();
+        if (e.repeat) return;
         setSelColor(KEY_COLORS.g);
         return;
       }
       if (matchShortcut(e, "colorBlue")) {
         e.preventDefault();
+        if (e.repeat) return;
         setSelColor(KEY_COLORS.b);
         return;
       }
@@ -2575,7 +2595,7 @@ export function SceneBoard({
         persistCamera(); // 팬 끝 → 마지막 본 화면 저장
       };
       scrollRef.current?.classList.add("panning");
-      beginDrag(move, up);
+      beginDrag(move, up, up); // blur: 현재 화면 저장 + 팬 커서 해제(좌표 무관 커밋이라 up 재사용 안전)
       return;
     }
     // 가위(Y 누른 채) → 좌드래그로 궤적을 그리고 지나간 선을 빨갛게 예고, 손 떼면 실제 절단.
@@ -2615,7 +2635,7 @@ export function SceneBoard({
         setCutStroke(null);
         setEdgesToCut(new Set());
       };
-      beginDrag(move, up);
+      beginDrag(move, up, () => { setCutStroke(null); setEdgesToCut(new Set()); }); // blur: 절단 안 하고 표시만 정리
       return;
     }
     if (e.button !== 0) return;
@@ -2663,17 +2683,21 @@ export function SceneBoard({
             setGroups((prev) => prev.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x)));
           }
         };
+        // 그룹 이동 확정(테두리 rect + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
+        const commitMovedGroup = () => {
+          const ng = gOrigRect
+            ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
+            : groupsRef.current;
+          if (gOrigRect) setGroups(ng);
+          const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
+          cardsRef.current = nextCards;
+          setCards(nextCards);
+          persist(nextCards, edgesRef.current, ng);
+        };
         const up = () => {
           scrollRef.current?.classList.remove("dragging");
           if (gRelocated) {
-            const ng = gOrigRect
-              ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
-              : groupsRef.current;
-            if (gOrigRect) setGroups(ng);
-            const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
-            cardsRef.current = nextCards;
-            setCards(nextCards);
-            persist(nextCards, edgesRef.current, ng);
+            commitMovedGroup();
           } else
             setSelected((prev) => {
               if (gAdditive) {
@@ -2685,7 +2709,11 @@ export function SceneBoard({
               return new Set(memberIds);
             });
         };
-        beginDrag(move, up);
+        // blur: 멤버 선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
+        beginDrag(move, up, () => {
+          scrollRef.current?.classList.remove("dragging");
+          if (gRelocated) commitMovedGroup();
+        });
         return;
       }
     }
@@ -2738,14 +2766,18 @@ export function SceneBoard({
         cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
         setCards(next);
       };
+      // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
+      const commitMovedCards = () => {
+        const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
+        const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
+        cardsRef.current = nextCards;
+        setCards(nextCards);
+        persist(nextCards, edgesRef.current, ng);
+      };
       const up = () => {
         scrollRef.current?.classList.remove("dragging");
         if (relocated) {
-          const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
-          const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
-          cardsRef.current = nextCards;
-          setCards(nextCards);
-          persist(nextCards, edgesRef.current, ng);
+          commitMovedCards();
         } else if (fromRow) {
           // 행에서 시작한 클릭 → 카드 선택 안 함(행 onClick 이 행 선택 처리).
         } else if (chainSel) {
@@ -2764,7 +2796,11 @@ export function SceneBoard({
           });
         }
       };
-      beginDrag(move, up);
+      // blur: 클릭-선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
+      beginDrag(move, up, () => {
+        scrollRef.current?.classList.remove("dragging");
+        if (relocated) commitMovedCards();
+      });
     } else {
       // 배경 → 마퀴 복수선택. 시작 시점 선택을 기억한다.
       const prevSel = new Set(selectedRef.current);
@@ -2801,7 +2837,7 @@ export function SceneBoard({
           setRowSel({ listId: "", cids: new Set() }); // 리스트/렌더 행 선택도 함께 해제
         }
       };
-      beginDrag(move, up);
+      beginDrag(move, up, () => setMarquee(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
     }
   };
 
@@ -3478,7 +3514,7 @@ export function SceneBoard({
                       setGroups(ng);
                       persist(cardsRef.current, edgesRef.current, ng);
                     };
-                    beginDrag(mv, upr);
+                    beginDrag(mv, upr, upr); // blur: 현재 테두리로 멤버십 커밋(좌표·클릭 모호함 없어 upr 재사용 안전)
                   }}
                 />
               )}
@@ -4398,10 +4434,11 @@ export function SceneBoard({
                             className="scene-comfynode-empty"
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={async (e) => {
+                              const f = e.dataTransfer.files?.[0];
+                              // .json(워크플로)만 가로챈다 — 이미지·에셋 드롭은 보드로 흘려보내 레퍼런스 카드가 되게.
+                              if (!f || !/\.json$/i.test(f.name)) return;
                               e.preventDefault();
                               e.stopPropagation();
-                              const f = e.dataTransfer.files?.[0];
-                              if (!f) return;
                               await applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
                             }}
                           >
@@ -4428,7 +4465,8 @@ export function SceneBoard({
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={async (e) => {
                               const f = e.dataTransfer.files?.[0];
-                              if (!f) return;
+                              // .json(워크플로)만 가로채 교체 — 이미지·에셋은 보드로 흘려보낸다.
+                              if (!f || !/\.json$/i.test(f.name)) return;
                               e.preventDefault();
                               e.stopPropagation();
                               await applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
