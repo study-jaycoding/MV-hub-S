@@ -39,7 +39,8 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     [genData, disabledTick],
   );
   const genIdSig = cards
-    .filter((c) => c.kind === "generation")
+    // 생성 카드 + Comfy 노드(출력을 생성물로 저장해 genIds 를 가진 것) 모두 생성물 데이터를 조회한다.
+    .filter((c) => c.kind === "generation" || (c.kind === "comfy" && (c.genIds?.length || c.genId)))
     .flatMap((c) => variantIds(c))
     .join(",");
   // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/삭제 등)를 구독 → refreshTick 을 올려 현재 카드들의

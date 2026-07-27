@@ -14,6 +14,8 @@ import {
   collectGenModel,
   collectGenRefs,
   comfyDeclaredKinds,
+  comfyTextDriveKeys,
+  comfyGenMeta,
   canConnect,
   resolveInputSourceId,
   resolvePortEdges,
@@ -114,6 +116,11 @@ describe("resolveEdgeRole", () => {
     const cards = [node("R", "reference"), node("G", "generation")];
     const e: SceneEdge = { id: "e", from: "R", to: "G" };
     expect(resolveEdgeRole(e, byId(cards), {})).toBe("ref");
+  });
+  it("출력을 저장한 comfy(genIds 보유) 소스 → 'lineage'(생성물색)", () => {
+    const savedComfy: SceneCard = { id: "CF", kind: "comfy", x: 0, y: 0, genId: "g", genIds: ["g"] };
+    const cards = byId([savedComfy, node("G", "generation")]);
+    expect(resolveEdgeRole({ id: "e", from: "CF", to: "G" }, cards, {})).toBe("lineage");
   });
   it("생성물 → list = 'list', 텍스트 → list = 'text'(소스색 우선=보라)", () => {
     const cards = [node("G", "generation"), node("T", "text"), node("L", "list")];
@@ -306,6 +313,20 @@ describe("collectRenderGenCardIds", () => {
   it("연결 없으면 빈 배열", () => {
     expect(collectRenderGenCardIds("RN", byId([node("RN", "render")]), [])).toEqual([]);
   });
+  it("출력을 저장한 comfy(genIds 보유)도 생성물로 수집 — 생성카드와 함께 렌더에 쌓임", () => {
+    const cards = byId([
+      node("RN", "render"),
+      node("G1", "generation", { y: 0, genId: "G1", genIds: ["G1"] }),
+      node("CF", "comfy", { y: 50, genId: "cf-gen", genIds: ["cf-gen"] }), // 저장된 comfy
+      node("CF0", "comfy", { y: 60 }), // 아직 출력 없음 → 수집 제외
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G1", to: "RN" },
+      { id: "e2", from: "CF", to: "RN" },
+      { id: "e3", from: "CF0", to: "RN" },
+    ];
+    expect(collectRenderGenCardIds("RN", cards, edges)).toEqual(["G1", "CF"]);
+  });
 });
 
 describe("collectViewTexts", () => {
@@ -478,6 +499,64 @@ describe("collectGenRefs (comfy 미디어 → 생성 ref)", () => {
     expect(
       comfyDeclaredKinds('{"1":{"class_type":"VHS_LoadVideo"},"2":{"class_type":"SaveText|pysssss"}}'),
     ).toEqual({ media: false, text: true });
+  });
+
+  // ★연결 텍스트는 '텍스트 입력 노드'의 필드에만 주입 — model·resolution 등 설정 문자열은 제외.
+  it("comfyTextDriveKeys: 텍스트 입력 노드 필드만 선별(class_type 기준)", () => {
+    const content = JSON.stringify({
+      "1": { class_type: "Text Multiline", inputs: { text: "" } },
+      "2": { class_type: "Nano Banana Pro", inputs: { model: "gemini-3-pro", resolution: "1K" } },
+      "3": { class_type: "SaveImage", inputs: { filename_prefix: "ComfyUI" } },
+    });
+    const params = [
+      { key: "1|text", type: "text" },
+      { key: "2|model", type: "text" },
+      { key: "2|resolution", type: "text" },
+      { key: "3|filename_prefix", type: "text" },
+    ];
+    // Text Multiline 의 text 만 — model·resolution·filename_prefix 는 문자열이어도 설정값이라 제외.
+    expect([...comfyTextDriveKeys(params, content)]).toEqual(["1|text"]);
+  });
+
+  it("comfyTextDriveKeys: CLIPTextEncode 도 텍스트 입력으로 인식, number/bool 은 무시", () => {
+    const content = JSON.stringify({
+      "5": { class_type: "CLIPTextEncode", inputs: { text: "" } },
+      "6": { class_type: "KSampler", inputs: { seed: 42 } },
+    });
+    const params = [
+      { key: "5|text", type: "text" },
+      { key: "6|seed", type: "number" },
+    ];
+    expect([...comfyTextDriveKeys(params, content)]).toEqual(["5|text"]);
+  });
+
+  it("comfyTextDriveKeys: content 없거나 깨지면 필드명으로 폴백(text/prompt 만)", () => {
+    const params = [
+      { key: "1|text", type: "text" },
+      { key: "2|model", type: "text" },
+      { key: "3|prompt", type: "text" },
+    ];
+    expect([...comfyTextDriveKeys(params, undefined)]).toEqual(["1|text", "3|prompt"]);
+    expect([...comfyTextDriveKeys(params, "not json")]).toEqual(["1|text", "3|prompt"]);
+    expect([...comfyTextDriveKeys(undefined, undefined)]).toEqual([]);
+  });
+
+  // ★생성 정보에 담을 model·비율·해상도 — 워크플로 baked 값 + 노출·조절값(우선) 병합.
+  it("comfyGenMeta: baked 값 읽고 조절값으로 덮어씀", () => {
+    const content = JSON.stringify({
+      "1": { class_type: "GeminiImage2Node",
+             inputs: { model: "gemini-3-pro-image-preview", aspect_ratio: "auto", resolution: "1K", seed: 42 } },
+    });
+    // 사용자가 resolution 을 2K 로 조절(노출) → baked "1K" 를 덮는다.
+    expect(comfyGenMeta(content, [{ key: "1|resolution", type: "text" }], { "1|resolution": "2K" }))
+      .toEqual({ model: "gemini-3-pro-image-preview", aspect_ratio: "auto", resolution: "2K" });
+  });
+
+  it("comfyGenMeta: content 없으면 노출값만 · malformed 안전", () => {
+    expect(comfyGenMeta(undefined, [{ key: "1|model", type: "text" }], { "1|model": "x" }))
+      .toEqual({ model: "x" });
+    expect(comfyGenMeta("not json", undefined, undefined)).toEqual({});
+    expect(comfyGenMeta(undefined, undefined, undefined)).toEqual({});
   });
 
   it("resolveEdgeRole: SaveText 워크플로우+stale 미디어출력이어도 생성으로는 text(선언 우선)", () => {

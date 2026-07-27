@@ -117,6 +117,10 @@ export const api = {
       elapsed_seconds: number | null;
     }>(`/api/generations/${pathPart(id)}/metrics`),
 
+  // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
+  comfySubscription: () =>
+    jsonFetch<{ target: "cloud" | "local"; tier: string | null }>(`/api/comfy/subscription`),
+
   // 수동 히스토리 연결 — id 의 부모를 parentId 로 지정(동기화 잡 등 자동 히스토리 없는 것 묶기)
   addHistory: (id: string, parentId: string, relation: "derived" | "reference" = "derived") =>
     jsonFetch<History>(`/api/generations/${pathPart(id)}/history`, {

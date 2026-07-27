@@ -58,6 +58,29 @@ export interface ComfyRunResult {
   prompt_id: string;
 }
 
+// Comfy 출력 → '내 작업' 저장 요청/응답.
+export interface ComfySaveRef {
+  url: string;
+  type: "image" | "video";
+  source_gen_id?: string | null;
+  name?: string | null;
+  source_url?: string | null;
+  role?: string | null;
+}
+export interface ComfySavePayload {
+  outputs: { url: string; kind: "image" | "video" | "text" }[];
+  name?: string; // 워크플로 이름
+  prompt?: string; // 프롬프트(text 파라미터 값)
+  params?: Record<string, unknown>;
+  inputs?: ComfySaveRef[]; // 연결된 입력 레퍼런스(계보)
+  project_id?: string | null;
+  folder_path?: string | null;
+  elapsed_seconds?: number | null; // 실행 누른→결과 나온 소요시간(초). PM 메트릭용.
+}
+export interface ComfySaveResult {
+  saved: { url: string; generation_id: string; existed: boolean }[];
+}
+
 export const comfyApi = {
   settings: () => jsonFetch<ComfySettings>("/api/comfy/settings"),
   setSettings: (patch: Partial<Omit<ComfySettings, "has_api_key">>) =>
@@ -68,6 +91,9 @@ export const comfyApi = {
       method: "POST",
       body: jsonBody({ content, exposed: exposed ?? [] }),
     }),
+  // Comfy 출력(이미지/영상)을 라이브러리 generation 으로 저장 → '내 작업'에 편입. 텍스트는 서버가 제외.
+  saveToLibrary: (payload: ComfySavePayload) =>
+    jsonFetch<ComfySaveResult>("/api/comfy/save-to-library", { method: "POST", body: jsonBody(payload) }),
   // 실행 — 멀티파트(FormData). content + param_values(JSON) + media_meta(JSON) + media 파일들.
   // media 순서가 백엔드의 타입별 슬롯 채움 순서를 결정한다.
   //  ★백엔드가 제출/폴링/다운로드를 백그라운드로 분리 → /run 은 즉시 job_id 만 주고, 여기서 /run_status 를

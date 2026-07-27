@@ -211,6 +211,71 @@ export function comfyDeclaredKinds(content: string | undefined): { media: boolea
   return { media, text };
 }
 
+// 연결된 텍스트를 주입할 파라미터 key 집합 — '텍스트 입력 노드'(Text Multiline·CLIPTextEncode 등)의
+// 텍스트 필드만 대상. model·resolution·filename_prefix 처럼 문자열이어도 설정값인 파라미터는 제외한다
+// (사용자가 직접 조절). 노드 class_type 로 판정하고, content 가 없거나 깨졌으면 필드명으로 폴백한다.
+const TEXT_INPUT_NODE_RE = /text|string|prompt|multiline/i;
+const TEXT_INPUT_FIELD_RE = /^(text|prompt|positive|negative|string)/i;
+export function comfyTextDriveKeys(
+  params: { key: string; type: string }[] | undefined,
+  content: string | undefined,
+): Set<string> {
+  const classByNode: Record<string, string> = {};
+  if (content) {
+    try {
+      const wf = JSON.parse(content) as Record<string, unknown>;
+      if (wf && typeof wf === "object")
+        for (const [nid, node] of Object.entries(wf)) {
+          const ct = (node as { class_type?: unknown } | null)?.class_type;
+          if (typeof ct === "string") classByNode[nid] = ct;
+        }
+    } catch {
+      /* malformed content → 필드명 폴백 */
+    }
+  }
+  const out = new Set<string>();
+  for (const p of params || []) {
+    if (p.type !== "text") continue;
+    const [nid, field = ""] = p.key.split("|");
+    const cls = classByNode[nid];
+    if (cls ? TEXT_INPUT_NODE_RE.test(cls) : TEXT_INPUT_FIELD_RE.test(field)) out.add(p.key);
+  }
+  return out;
+}
+
+// Comfy 출력을 생성물로 저장할 때 '생성 정보'에 담을 표준 메타(model·비율·해상도)를 뽑는다.
+// 워크플로 원문의 노드 입력에서 baked 값을 먼저 읽고, 사용자가 노출·조절한 값(paramValues)으로 덮어쓴다
+// (실제 사용값 우선). 여러 노드에 같은 필드가 있으면 마지막 값이 남는다(일반 이미지 워크플로는 1개).
+const COMFY_META_FIELDS = ["model", "aspect_ratio", "resolution"] as const;
+export function comfyGenMeta(
+  content: string | undefined,
+  params: { key: string; type: string }[] | undefined,
+  paramValues: Record<string, string | number | boolean> | undefined,
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  const fields: readonly string[] = COMFY_META_FIELDS;
+  try {
+    const wf = content ? (JSON.parse(content) as Record<string, unknown>) : null;
+    if (wf && typeof wf === "object")
+      for (const node of Object.values(wf)) {
+        const inputs = (node as { inputs?: unknown } | null)?.inputs;
+        if (inputs && typeof inputs === "object" && !Array.isArray(inputs))
+          for (const f of fields) {
+            const v = (inputs as Record<string, unknown>)[f];
+            if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[f] = v;
+          }
+      }
+  } catch {
+    /* malformed content → 노출·조절값만 사용 */
+  }
+  for (const p of params || []) {
+    const field = p.key.split("|")[1] || "";
+    const v = paramValues?.[p.key];
+    if (fields.includes(field) && v != null) out[field] = v;
+  }
+  return out;
+}
+
 // 한 카드가 '제공하는 텍스트'. 텍스트 노드(연결된 텍스트 입력 + 자기 텍스트), comfy 텍스트 출력,
 // 텍스트 리스트를 재귀적으로 합친다(seen 으로 사이클 차단). 그 외 종류는 빈 문자열.
 export function effectiveTextOf(
@@ -330,7 +395,12 @@ export function collectRenderGenCardIds(
   const items = edges
     .filter((e) => e.to === renderId)
     .map((e) => ({ e, c: cardsById.get(e.from) }))
-    .filter((x): x is { e: SceneEdge; c: SceneCard } => x.c?.kind === "generation");
+    // 생성 카드 + Comfy 노드(출력을 생성물로 저장해 genIds 를 가진 것) — 둘 다 렌더에 '생성물'로 쌓인다.
+    .filter(
+      (x): x is { e: SceneEdge; c: SceneCard } =>
+        x.c?.kind === "generation" ||
+        (x.c?.kind === "comfy" && !!(x.c.genIds?.length || x.c.genId)),
+    );
   const out: string[] = [];
   for (const s of sortByOrder(items)) if (!out.includes(s.c.id)) out.push(s.c.id);
   return out;
@@ -606,6 +676,8 @@ export function resolveEdgeRole(
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "comfy") {
+    // 출력을 '내 작업' 생성물로 저장한 comfy(genIds 보유)는 생성물색(lineage) — 생성카드처럼 취급·렌더.
+    if (from.genIds?.length || from.genId) return "lineage";
     // ★워크플로우가 '선언한' 출력으로 색 결정 — 실행 전에도 정확하고, 이전 워크플로우의 stale 런타임 출력에
     //  속지 않는다. 미디어 출력이 있으면 ref(파랑), 텍스트 전용이면 text(보라). 둘 다면 ref 우선(텍스트는
     //  프롬프트에서 확인). 선언을 못 읽으면 런타임 출력으로 폴백.

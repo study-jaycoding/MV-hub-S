@@ -34,7 +34,8 @@ export interface SceneComfyCfg {
   // 노출 파라미터 메타 스냅샷(카드 인라인 컨트롤 렌더용) — 노출 순서 유지.
   params?: { key: string; label: string; type: "bool" | "number" | "text"; choices?: (string | number)[] | null }[];
   output?: { url: string; kind: "image" | "video" } | null; // (구) 단일 결과 — 하위호환용
-  outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string }[]; // 실행 결과(복수·혼합)
+  // 실행 결과(복수·혼합). saved_generation_id = '내 작업'에 저장한 gen id(표시용 캐시 — "저장됨" 배지).
+  outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string; saved_generation_id?: string }[];
   status?: "idle" | "running" | "done" | "failed"; // 실행 상태
   error?: string | null; // 실패 메시지
 }
