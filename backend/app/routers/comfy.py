@@ -19,11 +19,17 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from .. import repo
-from ..config import MEDIA_DIR
+from .. import rbac, repo
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED, MEDIA_DIR
+from ..deps import (
+    account_actor_uid,
+    can_view_generation,
+    require_agent_account,
+    require_project_role,
+)
 from ..services import comfy_client, comfy_workflow, video_convert
 
 log = logging.getLogger("comfy")
@@ -237,11 +243,50 @@ def health():
     return {"alive": comfy_client.check_alive(target), "target": target["base"]}
 
 
+@router.get("/subscription")
+def subscription():
+    """Comfy 실행 대상의 크레딧 표시용 정보. Cloud 는 구독 등급(예 'PRO'), 로컬은 tier 없음.
+    Comfy Cloud 는 건별 크레딧을 API 로 노출하지 않아(정액 구독제) 등급만 보여준다. best-effort."""
+    s = _raw_settings()
+    is_cloud = (s.get("comfy_target") or "local") == "cloud"
+    tier = None
+    if is_cloud:
+        try:
+            tier = comfy_client.get_subscription_tier(comfy_client.make_target(s))
+        except Exception:  # noqa: BLE001 — 조회 실패해도 target 만 반환
+            tier = None
+    return {"target": "cloud" if is_cloud else "local", "tier": tier}
+
+
 # ── 파싱: 노출 후보/슬롯 조회 ────────────────────────────────────────────────
 
 class ParseReq(BaseModel):
     content: str                       # API 포맷 워크플로우 JSON 원문
     exposed: Optional[list[str]] = None  # 현재 노출된 "node|field" 목록(체크 표시용)
+
+
+def _enrich_choices(candidates: list[dict]) -> None:
+    """ComfyUI /object_info 의 COMBO 위젯 후보를 candidates 에 채워 dropdown 으로 만든다(best-effort).
+    이미 CURATED choices 가 있으면 유지. 서버 꺼짐·미지원이면 조용히 넘어간다(텍스트 폴백).
+    class_type 당 1회만 조회(같은 노드종류 여러 필드 공유)."""
+    need = {c["class_type"] for c in candidates if not c.get("choices")}
+    if not need:
+        return
+    try:
+        target = comfy_client.make_target(_raw_settings())
+        full = comfy_client.get_object_info(target)  # 전체 1회(캐시) — cloud 는 개별 조회 불가
+    except Exception:  # noqa: BLE001 — 서버 꺼짐·설정 미비 등: 선택지 없이(텍스트) 진행
+        return
+    combos: dict[str, dict] = {}
+    for c in candidates:
+        if c.get("choices"):
+            continue
+        ct = c["class_type"]
+        if ct not in combos:
+            combos[ct] = comfy_workflow.extract_combo_choices(full, ct)
+        ch = combos[ct].get(c["field"])
+        if ch:
+            c["choices"] = ch
 
 
 @router.post("/parse")
@@ -253,6 +298,7 @@ def parse(req: ParseReq):
         candidates = comfy_workflow.param_candidates(wf, exposed)
     except (json.JSONDecodeError, ValueError) as e:
         raise HTTPException(400, f"워크플로우 파싱 실패: {e}")
+    _enrich_choices(candidates)  # ComfyUI 위젯 후보를 dropdown 으로(best-effort)
     return {"slots": slots, "candidates": candidates, "node_count": slots["node_count"]}
 
 
@@ -662,3 +708,110 @@ def run_status(job_id: str):
     if state == _RUN_FAILED:
         raise HTTPException(int(snapshot.get("code") or 500), snapshot.get("error") or "Comfy 실행 실패")
     raise HTTPException(500, "작업 상태가 올바르지 않습니다")
+
+
+# ── Comfy 출력 → "내 작업" 라이브러리 저장 ────────────────────────────────────
+
+class ComfyOutputItem(BaseModel):
+    url: str                       # /media/comfy/... (또는 원격 URL)
+    kind: str                      # 'image' | 'video' | 'text'(저장 제외)
+
+
+class ComfyRefItem(BaseModel):
+    url: str
+    type: str = "image"            # 'image' | 'video'
+    source_gen_id: Optional[str] = None  # 입력이 생성물에서 왔으면 계보 엣지 기록
+    name: Optional[str] = None           # @소스명(칩)
+    source_url: Optional[str] = None
+    role: Optional[str] = None
+
+
+class SaveToLibraryReq(BaseModel):
+    outputs: list[ComfyOutputItem]
+    name: Optional[str] = None      # 워크플로 이름
+    prompt: Optional[str] = None    # 프롬프트(text 파라미터 값)
+    params: Optional[dict[str, Any]] = None
+    inputs: Optional[list[ComfyRefItem]] = None  # 연결된 입력 레퍼런스
+    project_id: Optional[str] = None
+    folder_path: Optional[str] = None
+    elapsed_seconds: Optional[float] = None  # 실행 누른→결과 나온 소요시간(프론트 측정). PM 메트릭용.
+
+
+def _pm(action) -> None:
+    """PM 메트릭 best-effort — MANAGE off 거나 실패해도 저장 흐름에 영향 0(gen_requests 와 동일 패턴)."""
+    if not MANAGE_ENABLED:
+        return
+    try:
+        from ..repo import manage as _m
+
+        action(_m)
+    except Exception:  # noqa: BLE001 — 메트릭 실패가 저장을 막지 않게
+        pass
+
+
+@router.post("/save-to-library")
+def save_to_library(req: SaveToLibraryReq, request: Request):
+    """Comfy 노드 출력(이미지/영상)을 라이브러리 generation 으로 물질화 → '내 작업'에 편입.
+    힉스필드 생성물과 구분(generator='comfy', job_id 없음). 텍스트 출력은 제외.
+    멱등: 같은 출력 파일(asset.file_path)이 이미 저장돼 있으면 그 gen 을 재사용(중복 방지)."""
+    acc = require_agent_account(request)
+    # 생성요청과 동일한 신원 규칙 — AUTH on 은 account_actor_uid(미링크는 acct:email), off 는 계정 uid.
+    creator_uid = account_actor_uid(request) if AUTH_ENABLED else acc.get("creator_uid")
+
+    # project_id 검증(생성요청과 동일) — 존재 + 역할까지. 남의 프로젝트에 주입 방지. AUTH off 로컬은 통과.
+    pid = (req.project_id or "").strip()
+    if pid in ("", "none"):
+        pid = None
+    elif AUTH_ENABLED:
+        if not repo.get_project(pid):
+            raise HTTPException(400, "없는 프로젝트에는 저장할 수 없습니다")
+        require_project_role(
+            request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+        )
+
+    prompt = (req.prompt or "").strip() or (req.name or "Comfy 출력")
+    params = dict(req.params or {})
+    if req.name:
+        params.setdefault("workflow_name", req.name)
+    # 입력 계보(source_gen_id)는 열람 권한이 있는 것만 엣지로 남긴다 — 남의 비공개 생성물 id 를
+    # 알고 넘겨 계보로 노출시키는 것을 막는다(엣지만 드롭, ref URL 자체는 그대로 보존).
+    ref_dicts: list[dict[str, Any]] = []
+    for r in (req.inputs or []):
+        sgid = r.source_gen_id
+        if sgid:
+            g = repo.get_generation(sgid)
+            if not g or not can_view_generation(request, g):
+                sgid = None
+        ref_dicts.append(
+            {"file_path": r.url, "type": r.type, "source_gen_id": sgid,
+             "name": r.name, "source_url": r.source_url, "role": r.role}
+        )
+
+    saved: list[dict[str, Any]] = []
+    for o in req.outputs:
+        if o.kind not in ("image", "video"):
+            continue  # 텍스트 등 미디어 아닌 출력은 라이브러리 저장 대상 아님
+        # Comfy 출력은 항상 로컬 /media/ 아래다 — 외부/임의 URL 저장 차단(HF 동기화 URL 과 겹쳐
+        # job_id 가 붙어 generator='comfy' 인데 HF 삭제검증 대상이 되는 불변식 붕괴 방지).
+        if not o.url.startswith("/media/"):
+            raise HTTPException(400, "저장 가능한 출력은 로컬 미디어(/media/…)만 지원합니다")
+        # 멱등은 create 내부에서 같은 트랜잭션(BEGIN IMMEDIATE)으로 판정 — find→create 사이
+        # 레이스로 중복 생성되던 것을 닫는다. (gen_id, existed) 반환.
+        gid, existed = repo.create_comfy_generation(
+            worker_id=DEFAULT_WORKER_ID,
+            creator_uid=creator_uid,
+            prompt=prompt,
+            display_prompt=None,
+            params=params,
+            kind=o.kind,
+            file_path=o.url,
+            thumbnail_path=None,
+            references=ref_dicts,
+            project_id=pid,
+            folder_path=req.folder_path,
+        )
+        # 새로 만든 것만 소요시간 기록(재저장은 원래 값 유지). '실행→결과' 시간을 PM 메트릭에.
+        if not existed and req.elapsed_seconds is not None:
+            _pm(lambda _m, g=gid: _m.record_elapsed(g, req.elapsed_seconds))
+        saved.append({"url": o.url, "generation_id": gid, "existed": existed})
+    return {"saved": saved}

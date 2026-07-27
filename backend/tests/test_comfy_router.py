@@ -77,5 +77,131 @@ class RunGateTests(unittest.TestCase):
         self.assertEqual(comfy._RUN_SLOTS_ACTIVE, 2)
 
 
+class ComboChoiceTests(unittest.TestCase):
+    """ComfyUI /object_info 의 COMBO 위젯 후보를 dropdown 선택지로 자동 채우는 로직."""
+
+    def test_extract_picks_only_list_widgets(self):
+        oi = {"GeminiImage": {"input": {"required": {
+            "resolution": [["1K", "2K", "4K"], {"default": "1K"}],   # COMBO → 후보
+            "model": [["gemini-3-pro-image-preview", "gemini-2"], {}],  # COMBO → 후보
+            "seed": ["INT", {"default": 0}],                          # 스칼라 → 후보 없음
+            "text": ["STRING", {"multiline": True}],                  # 스칼라 → 후보 없음
+        }}}}
+        self.assertEqual(
+            comfy_workflow.extract_combo_choices(oi, "GeminiImage"),
+            {"resolution": ["1K", "2K", "4K"],
+             "model": ["gemini-3-pro-image-preview", "gemini-2"]},
+        )
+
+    def test_extract_new_combo_format(self):
+        # 신형 표기: 첫 원소 "COMBO", 후보는 opts.options (현재 ComfyUI 다수 API 노드).
+        oi = {"GeminiImage2Node": {"input": {"required": {
+            "resolution": ["COMBO", {"default": "1K", "options": ["1K", "2K", "4K"]}],
+            "model": ["COMBO", {"options": ["gemini-3-pro-image-preview", "nano-banana-2"]}],
+            "seed": ["INT", {"default": 0}],           # options 없음 → 후보 없음
+            "prompt": ["STRING", {"multiline": True}],  # options 없음 → 후보 없음
+        }}}}
+        self.assertEqual(
+            comfy_workflow.extract_combo_choices(oi, "GeminiImage2Node"),
+            {"resolution": ["1K", "2K", "4K"],
+             "model": ["gemini-3-pro-image-preview", "nano-banana-2"]},
+        )
+
+    def test_extract_malformed_is_safe(self):
+        self.assertEqual(comfy_workflow.extract_combo_choices({}, "X"), {})
+        self.assertEqual(comfy_workflow.extract_combo_choices({"X": "bad"}, "X"), {})
+
+    def _patch(self, get_object_info):
+        """make_target/_raw_settings/get_object_info 를 임시 교체(DB·네트워크 없이 테스트)."""
+        self._orig = (comfy._raw_settings, comfy.comfy_client.make_target,
+                      comfy.comfy_client.get_object_info)
+        comfy._raw_settings = lambda: {}
+        comfy.comfy_client.make_target = lambda s: {
+            "cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+        comfy.comfy_client.get_object_info = get_object_info
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        (comfy._raw_settings, comfy.comfy_client.make_target,
+         comfy.comfy_client.get_object_info) = self._orig
+
+    def test_enrich_fills_choices_and_skips_missing(self):
+        # get_object_info 는 전체 object_info 를 1회 반환(cloud 는 개별 조회 불가) → 클래스별 추출.
+        full = {"GeminiImage2Node": {"input": {"required": {
+            "resolution": ["COMBO", {"options": ["1K", "2K", "4K"]}],
+            "model": ["COMBO", {"options": ["gemini-3-pro-image-preview"]}],
+        }}}}
+        self._patch(lambda target, **kw: full)
+        candidates = [
+            {"class_type": "GeminiImage2Node", "field": "resolution", "type": "text", "choices": None},
+            {"class_type": "GeminiImage2Node", "field": "model", "type": "text", "choices": None},
+            {"class_type": "KSampler", "field": "seed", "type": "number", "choices": None},
+        ]
+        comfy._enrich_choices(candidates)
+        by = {c["field"]: c["choices"] for c in candidates}
+        self.assertEqual(by["resolution"], ["1K", "2K", "4K"])
+        self.assertEqual(by["model"], ["gemini-3-pro-image-preview"])
+        self.assertIsNone(by["seed"])   # object_info 에 없는 노드 → 그대로(텍스트/숫자)
+
+    def test_enrich_survives_server_down(self):
+        def boom(target, **kw):
+            raise comfy.comfy_client.ComfyError("server down")
+
+        self._patch(boom)
+        candidates = [{"class_type": "X", "field": "f", "type": "text", "choices": None}]
+        comfy._enrich_choices(candidates)   # 예외 없이 통과
+        self.assertIsNone(candidates[0]["choices"])
+
+    def test_enrich_keeps_existing_curated_choices(self):
+        # 이미 CURATED choices 가 있으면 object_info 조회 자체를 하지 않는다(need 비어 있음).
+        def must_not_call(target, **kw):
+            raise AssertionError("이미 choices 있으면 조회하면 안 됨")
+
+        self._patch(must_not_call)
+        candidates = [{"class_type": "ImpactSwitch", "field": "select",
+                       "type": "number", "choices": [1, 2]}]
+        comfy._enrich_choices(candidates)
+        self.assertEqual(candidates[0]["choices"], [1, 2])
+
+
+class SubscriptionTierTests(unittest.TestCase):
+    """Comfy Cloud 구독 등급 추출(크레딧 표시용) — /workspaces 응답 파싱."""
+
+    def test_extracts_tier_from_workspaces(self):
+        orig = comfy.comfy_client._get_json
+        comfy.comfy_client._get_json = lambda target, route, **kw: {
+            "workspaces": [{"id": "w-1", "subscription_tier": "PRO"}]}
+        try:
+            comfy.comfy_client._SUBSCRIPTION_CACHE.clear()
+            t = {"base": "https://cloud.comfy.org", "prefix": "/api", "headers": {}, "cloud": True}
+            self.assertEqual(comfy.comfy_client.get_subscription_tier(t, use_cache=False), "PRO")
+        finally:
+            comfy.comfy_client._get_json = orig
+
+    def test_missing_tier_returns_none(self):
+        orig = comfy.comfy_client._get_json
+        comfy.comfy_client._get_json = lambda target, route, **kw: {"workspaces": [{"id": "w-1"}]}
+        try:
+            comfy.comfy_client._SUBSCRIPTION_CACHE.clear()
+            t = {"base": "http://x", "prefix": "", "headers": {}, "cloud": True}
+            self.assertIsNone(comfy.comfy_client.get_subscription_tier(t, use_cache=False))
+        finally:
+            comfy.comfy_client._get_json = orig
+
+    def test_fetch_error_returns_none(self):
+        orig = comfy.comfy_client._get_json
+
+        def boom(target, route, **kw):
+            raise comfy.comfy_client.ComfyError("down")
+
+        comfy.comfy_client._get_json = boom
+        try:
+            comfy.comfy_client._SUBSCRIPTION_CACHE.clear()
+            t = {"base": "http://x", "prefix": "", "headers": {}, "cloud": True}
+            self.assertIsNone(comfy.comfy_client.get_subscription_tier(t, use_cache=False))
+        finally:
+            comfy.comfy_client._get_json = orig
+
+
 if __name__ == "__main__":
     unittest.main()

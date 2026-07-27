@@ -9,6 +9,7 @@ urllib 로 이식한 것. 로컬/Cloud 를 target 기술자로 통일한다.
 import json
 import mimetypes
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -121,6 +122,52 @@ def check_alive(target: dict) -> bool:
         return status == 200
     except ComfyError:
         return False
+
+
+_OBJECT_INFO_CACHE: dict[str, tuple[float, dict]] = {}
+_OBJECT_INFO_TTL = 300.0  # 5분 — object_info 는 노드 설치 전엔 안 바뀐다(재다운로드 낭비 방지)
+
+
+def get_object_info(target: dict, *, use_cache: bool = True) -> dict:
+    """ComfyUI 전체 /object_info (노드별 입력 위젯 스펙 = COMBO 드롭다운 후보 등).
+    ★Comfy Cloud 는 개별 /object_info/{class} 를 지원하지 않고 전체 /object_info 만 지원하므로
+    항상 전체를 받는다. 응답이 크므로(수 MB) target(base+prefix)별 TTL 캐시로 매 파싱마다 재다운로드하지 않는다.
+    실패(서버 꺼짐·비2xx)는 ComfyError 로 올린다(호출부가 best-effort 폴백)."""
+    key = target.get("base", "") + target.get("prefix", "")
+    now = time.time()
+    if use_cache:
+        hit = _OBJECT_INFO_CACHE.get(key)
+        if hit and now - hit[0] < _OBJECT_INFO_TTL:
+            return hit[1]
+    data = _get_json(target, "/object_info", timeout=30)
+    _OBJECT_INFO_CACHE[key] = (now, data)
+    return data
+
+
+_SUBSCRIPTION_CACHE: dict[str, tuple[float, "str | None"]] = {}
+_SUBSCRIPTION_TTL = 300.0  # 5분 — 구독 등급은 거의 안 바뀐다
+
+
+def get_subscription_tier(target: dict, *, use_cache: bool = True) -> "str | None":
+    """Comfy Cloud 첫 워크스페이스의 구독 등급(예: 'PRO'). 로컬/미지원/실패면 None.
+    크레딧 표시용(생성 정보) — target(base+prefix)별 TTL 캐시. 예외는 삼키고 None 반환(best-effort)."""
+    key = target.get("base", "") + target.get("prefix", "")
+    now = time.time()
+    if use_cache:
+        hit = _SUBSCRIPTION_CACHE.get(key)
+        if hit and now - hit[0] < _SUBSCRIPTION_TTL:
+            return hit[1]
+    tier: "str | None" = None
+    try:
+        data = _get_json(target, "/workspaces", timeout=10)
+        wss = data.get("workspaces") if isinstance(data, dict) else None
+        if isinstance(wss, list) and wss and isinstance(wss[0], dict):
+            t = wss[0].get("subscription_tier")
+            tier = str(t) if t else None
+    except ComfyError:
+        tier = None
+    _SUBSCRIPTION_CACHE[key] = (now, tier)
+    return tier
 
 
 def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvhub") -> str:

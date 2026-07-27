@@ -59,6 +59,32 @@ def _dict(v) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def extract_combo_choices(object_info: dict, class_type: str) -> dict:
+    """ComfyUI /object_info 응답에서 한 노드의 COMBO(드롭다운) 위젯 후보를 {field: [choices]} 로 뽑는다.
+    위젯 스펙 형태: field -> [<type>, {opts}]. ComfyUI 는 두 가지 COMBO 표기를 쓴다:
+      · 구형: 첫 원소가 후보 리스트.        예: ["resolution", [["1K","2K","4K"], {"default":"1K"}]]
+      · 신형: 첫 원소가 "COMBO", 후보는 opts.options. 예: ["COMBO", {"options": ["480p","720p"]}]
+    스칼라 타입("INT"/"STRING" 등, options 없음)이면 후보 없음(→ 텍스트/숫자 입력)."""
+    node = _dict(_dict(object_info).get(class_type))
+    inp = _dict(node.get("input"))
+    out: dict = {}
+    for section in ("required", "optional"):
+        for field, spec in _dict(inp.get(section)).items():
+            if not isinstance(spec, (list, tuple)) or not spec:
+                continue
+            choices = None
+            if isinstance(spec[0], list):                          # 구형: 후보 리스트가 첫 원소
+                choices = spec[0]
+            elif len(spec) > 1 and isinstance(spec[1], dict):      # 신형: opts.options
+                opts = spec[1].get("options")
+                if isinstance(opts, list):
+                    choices = opts
+            if (choices and all(isinstance(x, (str, int, float)) and not isinstance(x, bool)
+                                for x in choices)):
+                out[field] = list(choices)
+    return out
+
+
 def detect_slots(wf: dict, exposed=None) -> dict:
     """API 포맷 JSON에서 이미지/영상 슬롯과 노출된 조절 파라미터를 감지한다.
     필드명은 추측하지 않고 실제 inputs에 존재하는 키만 대상으로 한다.
