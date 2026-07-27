@@ -954,3 +954,31 @@ describe("실행 계획(오케스트레이션)", () => {
     expect(p.skippedByCycle.sort()).toEqual(["A", "B", "G"]);
   });
 });
+
+describe("collectListInputs 텍스트 상류 추적(#4)", () => {
+  const n = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({ id, kind, x: 0, y: 0, ...over });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+  const e = (from: string, to: string): SceneEdge => ({ id: `${from}-${to}`, from, to });
+
+  it("comfy→text(빈)→list 면 comfy 텍스트가 리스트로 전달된다(직접 연결과 동일)", () => {
+    const cards = [
+      n("CF", "comfy", { comfyCfg: { outputs: [{ kind: "text", text: "불꽃" }] } }),
+      n("T", "text"),
+      n("L", "list"),
+    ];
+    const li = collectListInputs("L", byId(cards), [e("CF", "T"), e("T", "L")]);
+    expect(li.kind).toBe("text");
+    expect(li.text).toBe("불꽃");
+  });
+
+  it("자기 텍스트가 있으면 그대로(상류 무시 아님, 우선)", () => {
+    const cards = [n("T", "text", { text: "내가쓴것" }), n("L", "list")];
+    const li = collectListInputs("L", byId(cards), [e("T", "L")]);
+    expect(li.text).toBe("내가쓴것");
+  });
+
+  it("list↔text 순환이어도 무한루프 없이 반환", () => {
+    const cards = [n("T", "text"), n("L", "list")];
+    expect(() => collectListInputs("L", byId(cards), [e("T", "L"), e("L", "T")])).not.toThrow();
+  });
+});

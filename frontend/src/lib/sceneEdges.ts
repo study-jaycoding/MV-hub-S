@@ -294,7 +294,7 @@ export function effectiveTextOf(
   seen.add(cardId);
   if (card.kind === "comfy") return comfyOutputTexts(card, overlay).join("\n");
   if (card.kind === "list") {
-    const li = collectListInputs(cardId, cardsById, edges, overlay);
+    const li = collectListInputs(cardId, cardsById, edges, overlay, seen);
     return li.kind === "text" ? li.text : "";
   }
   if (card.kind === "text") {
@@ -329,6 +329,7 @@ export function collectListInputs(
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
   overlay?: ComfyOutputsById,
+  seen: Set<string> = new Set(), // 텍스트 상류 추적 시 순환 차단(effectiveTextOf 체인과 공유)
 ): ListInputs {
   const sources = edges
     .filter((e) => e.to === listId)
@@ -348,8 +349,9 @@ export function collectListInputs(
       kind: "text",
       sourceIds,
       generationCardIds: [],
+      // 텍스트 소스는 상류(comfy 등)까지 따라 읽는다(effectiveTextOf) — 직접 text→gen 과 동일하게. seen 으로 순환 차단.
       text: sorted
-        .map((s) => (s.c.kind === "comfy" ? comfyOutputTexts(s.c, overlay).join("\n") : s.c.text || ""))
+        .map((s) => effectiveTextOf(s.c.id, cardsById, edges, seen, overlay))
         .join("\n"),
     };
   if ([...kinds].every((k) => k === "reference"))

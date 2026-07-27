@@ -128,9 +128,13 @@ const legacyKeyOf = (projectId: string | null | undefined) => projectId || "_non
 function migrateLegacyBucket<T>(map: Record<string, T>, projectId: string | null | undefined): boolean {
   const k = keyOf(projectId);
   const legacy = legacyKeyOf(projectId);
-  if (k === legacy || map[k] !== undefined) return false; // 이미 네임스페이스 버킷 있으면 이관 안 함
-  const val = map[legacy] as unknown as { length?: number } | undefined;
-  if (val === undefined || (Array.isArray(val) && val.length === 0)) return false;
+  // 현재 계정 버킷에 '내용'이 있으면 이관 안 함. ★빈 버킷([])만 있어도 이관받아야 한다 —
+  //  안 그러면 legacy 가 남아 다른 계정이 나중에 가져가(재귀속) 버린다.
+  const existing = map[k] as unknown;
+  const nsHasContent = Array.isArray(existing) ? existing.length > 0 : existing !== undefined;
+  if (k === legacy || nsHasContent) return false;
+  const val = map[legacy] as unknown;
+  if (val === undefined || (Array.isArray(val) && val.length === 0)) return false; // 이관할 옛 내용 없음
   map[k] = map[legacy];
   delete map[legacy];
   return true;
@@ -269,6 +273,34 @@ export function exportSceneText(scene: Scene): string {
   );
 }
 
+const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+// 불러온 카드의 소비처 크래시를 막는 최소 정규화: 좌표는 유한수로, 배열/객체여야 하는 필드는 형태를 강제한다.
+//  (손상/악성 씬 파일이 refs.map·genIds 순회·comfyCfg.outputs.filter·arrangeNodes 좌표계산에서 터지는 것 방지.)
+function sanitizeImportedCard(c: SceneCard): SceneCard {
+  const out: SceneCard = { ...c, x: isFiniteNum(c.x) ? c.x : 0, y: isFiniteNum(c.y) ? c.y : 0 };
+  if (c.w !== undefined && !isFiniteNum(c.w)) delete out.w;
+  if (c.h !== undefined && !isFiniteNum(c.h)) delete out.h;
+  if (c.refs !== undefined && !Array.isArray(c.refs)) delete out.refs;
+  if (c.genIds !== undefined && !Array.isArray(c.genIds)) delete out.genIds;
+  const cfg = c.comfyCfg;
+  if (cfg !== undefined) {
+    if (!cfg || typeof cfg !== "object") delete out.comfyCfg;
+    else {
+      const nc: SceneComfyCfg = { ...cfg };
+      if (nc.outputs !== undefined && !Array.isArray(nc.outputs)) delete nc.outputs;
+      if (nc.params !== undefined && !Array.isArray(nc.params)) delete nc.params;
+      if (nc.paramExposed !== undefined && !Array.isArray(nc.paramExposed)) delete nc.paramExposed;
+      if (nc.paramValues !== undefined &&
+          (!nc.paramValues || typeof nc.paramValues !== "object" || Array.isArray(nc.paramValues))) {
+        delete nc.paramValues;
+      }
+      out.comfyCfg = nc;
+    }
+  }
+  return out;
+}
+
 // 저장 텍스트 → 검증된 스냅샷. 형식·버전·구조·알 수 없는 카드 종류를 막고, 실패 시 사용자 메시지로 throw.
 export function parseSceneImport(text: string): SceneSnapshot {
   if (text.length > SCENE_IMPORT_MAX_BYTES) throw new Error("파일이 너무 큽니다(최대 5MB).");
@@ -283,10 +315,15 @@ export function parseSceneImport(text: string): SceneSnapshot {
   if (o.version !== SCENE_EXPORT_VERSION) throw new Error(`지원하지 않는 씬 파일 버전입니다(v${String(o.version)}).`);
   const s = o.scene as Record<string, unknown> | undefined;
   if (!s || !Array.isArray(s.cards) || !Array.isArray(s.edges)) throw new Error("씬 데이터가 손상됐습니다.");
+  const seenCardIds = new Set<string>();
+  const cards: SceneCard[] = [];
   for (const c of s.cards as SceneCard[]) {
     if (!c || typeof c.id !== "string" || !SCENE_CARD_KINDS.includes(c.kind)) {
       throw new Error("알 수 없는 카드가 있어 불러올 수 없습니다(버전이 다를 수 있음).");
     }
+    if (seenCardIds.has(c.id)) continue; // 중복 id 제거(첫 것 유지) — 렌더/매핑 혼란 방지
+    seenCardIds.add(c.id);
+    cards.push(sanitizeImportedCard(c)); // 좌표·배열·comfyCfg 형태 강제
   }
   const name =
     typeof s.name === "string" && s.name
@@ -297,7 +334,7 @@ export function parseSceneImport(text: string): SceneSnapshot {
   // 엣지·그룹은 '손상 항목만 버리고' 나머지는 살린다(전체 거부보다 관대). 특히 group.cardIds 가 배열이
   // 아니면 렌더(memberBounds)에서 순회하다 크래시하므로 여기서 반드시 정제한다. 존재하지 않는 카드
   // id 참조는 렌더가 이미 건너뛰므로(cardById=null) 남겨도 안전.
-  const cardIds = new Set((s.cards as SceneCard[]).map((c) => c.id));
+  const cardIds = new Set(cards.map((c) => c.id));
   const edges = (s.edges as unknown[]).filter(
     (e): e is SceneEdge =>
       !!e &&
@@ -316,12 +353,18 @@ export function parseSceneImport(text: string): SceneSnapshot {
       name: typeof g.name === "string" ? g.name : "",
       cardIds: g.cardIds.filter((id) => typeof id === "string" && cardIds.has(id)), // 문자열 + 실제 존재 카드만
     }));
+  // 카메라도 유한수 3값일 때만 채택(NaN/문자열이면 기본 뷰로 — 렌더 좌표 계산 보호).
+  const cam = s.camera as { x?: unknown; y?: unknown; z?: unknown } | null | undefined;
+  const camera =
+    cam && typeof cam === "object" && isFiniteNum(cam.x) && isFiniteNum(cam.y) && isFiniteNum(cam.z)
+      ? { x: cam.x, y: cam.y, z: cam.z }
+      : undefined;
   return {
     name,
-    cards: s.cards as SceneCard[],
+    cards,
     edges,
     groups: groups.length ? groups : undefined,
-    camera: s.camera && typeof s.camera === "object" ? (s.camera as SceneSnapshot["camera"]) : undefined,
+    camera,
   };
 }
 

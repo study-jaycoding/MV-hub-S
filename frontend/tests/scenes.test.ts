@@ -7,6 +7,9 @@ import {
   listScenes,
   saveScenes,
   getActiveSceneId,
+  parseSceneImport,
+  SCENE_EXPORT_FORMAT,
+  SCENE_EXPORT_VERSION,
   type Scene,
 } from "../src/lib/scenes";
 import { saveJSON, saveString } from "../src/lib/storage";
@@ -103,5 +106,55 @@ describe("sceneRefFingerprint", () => {
     const one = sceneRefFingerprint([{ file_path: "a", type: "image" }]);
     const two = sceneRefFingerprint([{ file_path: "b", type: "image" }]);
     expect(one).not.toBe(two);
+  });
+});
+
+describe("parseSceneImport 방어(#3)", () => {
+  const wrap = (cards: unknown[], extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      format: SCENE_EXPORT_FORMAT,
+      version: SCENE_EXPORT_VERSION,
+      scene: { name: "t", cards, edges: [], ...extra },
+    });
+
+  it("손상 카드 필드(refs/genIds/comfyCfg 비배열, 좌표 비수치)를 정규화한다", () => {
+    const snap = parseSceneImport(
+      wrap([
+        { id: "A", kind: "reference", x: "bad", y: null, refs: {}, genIds: {} },
+        { id: "B", kind: "comfy", x: 10, y: 20, comfyCfg: { outputs: {}, params: "x", paramValues: [] } },
+      ]),
+    );
+    const a = snap.cards.find((c) => c.id === "A")!;
+    expect(a.x).toBe(0); // 비수치 → 0
+    expect(a.y).toBe(0);
+    expect(a.refs).toBeUndefined(); // 비배열 → 제거
+    expect(a.genIds).toBeUndefined();
+    const b = snap.cards.find((c) => c.id === "B")!;
+    expect(b.comfyCfg!.outputs).toBeUndefined();
+    expect(b.comfyCfg!.params).toBeUndefined();
+    expect(b.comfyCfg!.paramValues).toBeUndefined();
+    expect(b.x).toBe(10); // 정상값 보존
+  });
+
+  it("중복 카드 id 는 첫 것만 남긴다", () => {
+    const snap = parseSceneImport(
+      wrap([
+        { id: "A", kind: "text", x: 0, y: 0, text: "first" },
+        { id: "A", kind: "text", x: 0, y: 0, text: "dup" },
+      ]),
+    );
+    expect(snap.cards.map((c) => c.id)).toEqual(["A"]);
+    expect(snap.cards[0].text).toBe("first");
+  });
+
+  it("손상 카메라는 무시(기본 뷰)", () => {
+    const ok = parseSceneImport(wrap([], { camera: { x: 1, y: 2, z: 3 } }));
+    expect(ok.camera).toEqual({ x: 1, y: 2, z: 3 });
+    const bad = parseSceneImport(wrap([], { camera: { x: "a", y: 2, z: 3 } }));
+    expect(bad.camera).toBeUndefined();
+  });
+
+  it("알 수 없는 카드 종류는 여전히 거부", () => {
+    expect(() => parseSceneImport(wrap([{ id: "X", kind: "bogus", x: 0, y: 0 }]))).toThrow();
   });
 });
