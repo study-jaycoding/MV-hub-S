@@ -1044,6 +1044,21 @@ def record_completed(gen_id: str, job_id: Optional[str] = None) -> None:
         )
 
 
+def record_elapsed(gen_id: str, seconds: float) -> None:
+    """실행 소요시간(초)을 측정값으로 직접 기록 — started/completed 타임스탬프가 아니라.
+    Comfy 처럼 generation 이 완료 후 저장되는 경우: 프론트가 '실행 누른→결과 나온' 시각을 재서 넘긴다.
+    (기존 힉스필드 허브 생성은 record_started→record_completed 로 계산. 이건 그 자리에 값만 채운다.)"""
+    if seconds is None or seconds < 0:
+        return
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            "INSERT INTO generation_metrics(gen_id, elapsed_seconds) VALUES(?,?) "
+            "ON CONFLICT(gen_id) DO UPDATE SET elapsed_seconds=excluded.elapsed_seconds",
+            (gen_id, float(seconds)),
+        )
+
+
 def link_generations(task_id: str, gen_ids: list[str]) -> int:
     """생성물들을 작업에 연결(멱등). 변경 행수 반환."""
     if not gen_ids:

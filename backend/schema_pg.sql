@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS generation (
   deleted_at text,
   is_final integer NOT NULL DEFAULT 0,      -- v02 CMS: Supervisor 가 지정한 최종(골드)
   final_by text,                            -- 최종 지정자 creator_uid
+  generator text,                           -- 만든 도구: NULL=힉스필드 | 'comfy'(캔버스 Comfy 출력 저장)
   PRIMARY KEY (id)
 );
 

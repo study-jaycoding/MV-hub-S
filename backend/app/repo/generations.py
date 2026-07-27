@@ -437,6 +437,112 @@ def create_local_generation(
             raise
 
 
+def find_comfy_generation_by_asset(
+    file_path: str, creator_uid: Optional[str] = None
+) -> Optional[str]:
+    """이미 저장된 Comfy 출력인지 asset.file_path 로 조회(중복 저장 방지). 있으면 gen_id.
+    creator_uid 지정 시 그 계정 저장본만(계정별 '내 작업' 분리). 휴지통 행은 제외."""
+    where = "a.file_path=? AND g.generator='comfy' AND g.deleted_at IS NULL"
+    args: list[Any] = [file_path]
+    if creator_uid:
+        where += " AND g.creator_uid=?"
+        args.append(creator_uid)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT g.id FROM generation g JOIN asset a ON a.generation_id=g.id "
+            f"WHERE {where} LIMIT 1",
+            args,
+        ).fetchone()
+        return row["id"] if row else None
+
+
+def create_comfy_generation(
+    *,
+    worker_id: str,
+    creator_uid: Optional[str],
+    prompt: str,
+    display_prompt: Optional[str],
+    params: dict[str, Any],
+    kind: str,
+    file_path: str,
+    thumbnail_path: Optional[str],
+    references: Optional[list[dict[str, Any]]] = None,
+    project_id: Optional[str] = None,
+    folder_path: Optional[str] = None,
+) -> tuple[str, bool]:
+    """캔버스 Comfy 노드 출력 1개를 라이브러리 generation(+asset)으로 물질화. (gen_id, existed) 반환.
+
+    힉스필드 생성물과 구분: origin='local'(내 것), generator='comfy'(만든 도구),
+    job_id=NULL(=HF 삭제검증 대상 아님), status='done'. asset 1행을 같은 트랜잭션으로 넣어
+    '내 작업' 그리드에 바로 뜨게 한다. 입력 refs 는 계보(reference/history)로 기록.
+
+    멱등: 같은 file_path(+creator_uid)로 이미 저장된 comfy 저장본이 있으면 그것을 재사용한다.
+    조회→INSERT 를 한 BEGIN IMMEDIATE 트랜잭션 안에서 처리해 동시 저장(더블클릭) 중복을 막는다.
+    """
+    gen_id = new_id()
+    my_uid = creator_uid or identity.get_my_uid()
+    now = time.time()
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # 같은 트랜잭션 안에서 중복 검사(레이스 차단). 있으면 그 gen 재사용.
+            dedup_where = "a.file_path=? AND g.generator='comfy' AND g.deleted_at IS NULL"
+            dedup_args: list[Any] = [file_path]
+            if my_uid:
+                dedup_where += " AND g.creator_uid=?"
+                dedup_args.append(my_uid)
+            dup = conn.execute(
+                "SELECT g.id FROM generation g JOIN asset a ON a.generation_id=g.id "
+                f"WHERE {dedup_where} LIMIT 1",
+                dedup_args,
+            ).fetchone()
+            if dup:
+                conn.execute("COMMIT")
+                return dup["id"], True
+            conn.execute(
+                "INSERT INTO generation"
+                "(id, worker_id, prompt, display_prompt, model, params, status, sort_ts, "
+                " project_id, folder_path, creator_uid, origin, generator) "
+                "VALUES(?,?,?,?, 'comfy', ?, 'done', ?, ?, ?, ?, 'local', 'comfy')",
+                (
+                    gen_id,
+                    worker_id,
+                    prompt,
+                    display_prompt,
+                    json.dumps(params or {}, ensure_ascii=False),
+                    now,
+                    project_id,
+                    _clean_folder_path(folder_path),
+                    my_uid,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
+                "VALUES(?,?,?,?,?)",
+                (new_id(), gen_id, kind, file_path, thumbnail_path or file_path),
+            )
+            src_gen_ids: set[str] = set()
+            for ref in references or []:
+                rid = _upsert_reference(
+                    conn,
+                    ref_id=None,
+                    type_=ref.get("type", "image"),
+                    file_path=ref["file_path"],
+                    thumbnail_path=ref.get("thumbnail"),
+                    source=ref.get("name") or "uploaded",
+                    source_url=ref.get("source_url"),
+                )
+                _link_reference(conn, gen_id, rid, ref.get("role"))
+                sgid = ref.get("source_gen_id")
+                if sgid and sgid != gen_id:
+                    src_gen_ids.add(sgid)
+            for sgid in src_gen_ids:
+                _record_history(conn, sgid, gen_id, "reference")
+            conn.execute("COMMIT")
+            return gen_id, False
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:

@@ -88,6 +88,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 행 출생 마커 — '동기화본 vs 로컬'을 id==job_id 좌표가 아니라 명시 컬럼으로 판별(id 통일 리팩터 0a).
     if "origin" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN origin TEXT")
+    # 만든 도구 마커 — NULL=힉스필드(기본), 'comfy'=캔버스 Comfy 노드 출력 저장본.
+    # HF 삭제검증 제외(job_id 없어도 자동 제외되지만 명시)·필터·팀 공유 시 앵커 오인 방지용.
+    if "generator" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN generator TEXT")
     # 백필은 컬럼 추가와 별개로 **매 부팅 멱등 보강**(WHERE origin IS NULL) — ALTER 후 백필 전 중단돼도
     # 다음 부팅이 채운다(sort_ts 와 동일 패턴). if 안에 두면 컬럼 생성 후 재실행이 안 돼 NULL 영구 잔존,
     # 그러면 모든 동기화본이 'local' 폴백으로 dedup 에서 빠지던 비대칭 결함이었다(P1-A).
