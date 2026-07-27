@@ -1,6 +1,21 @@
 // scenes 순수 헬퍼 특성화 — 변형 id·지문(양방향 동기화 안정성 근거).
 import { describe, it, expect } from "vitest";
-import { variantIds, sceneRefFingerprint } from "../src/lib/scenes";
+import { variantIds, sceneRefFingerprint, cardBatch } from "../src/lib/scenes";
+
+describe("cardBatch", () => {
+  it("기본값 1, 정상값 유지", () => {
+    expect(cardBatch(undefined)).toBe(1);
+    expect(cardBatch({})).toBe(1);
+    expect(cardBatch({ batchCount: 3 })).toBe(3);
+  });
+  it("범위·비정상값 안전화(1~4 정수)", () => {
+    expect(cardBatch({ batchCount: 99 })).toBe(4); // 손상/임포트 상한 clamp
+    expect(cardBatch({ batchCount: 0 })).toBe(1);
+    expect(cardBatch({ batchCount: 2.9 })).toBe(2); // 정수화
+    expect(cardBatch({ batchCount: NaN })).toBe(1);
+    expect(cardBatch({ batchCount: "x" as unknown as number })).toBe(1);
+  });
+});
 
 describe("variantIds", () => {
   it("genIds 가 있으면 그것을(순서 보존)", () => {

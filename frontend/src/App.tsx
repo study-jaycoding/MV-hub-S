@@ -129,7 +129,7 @@ export default function App() {
   } = useSceneCoordination(flash);
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
-  const spotlightSubmitRef = useRef<(() => void) | null>(null);
+  const spotlightSubmitRef = useRef<((batch?: number) => void) | null>(null);
   // 구성탭 히스토리 보드(계보 트리) 상태는 useHistoryBoardState 훅으로 추출.
   const {
     boardFocusId, setBoardFocusId, boardFocusIdRef,
@@ -680,14 +680,15 @@ export default function App() {
   };
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 batch 장씩 한 번에 생성.
   //  · comfy 없는(또는 comfy 결과를 짝으로 나누지 않는) 경로. 각 카드를 batch 수만큼 복제해 병렬 제출.
-  const generateCards = async (cardIds: string[]) => {
+  const generateCards = async (cardIds: string[], batchOverride?: number) => {
     if (!activeScene || renderingRef.current || !cardIds.length) return;
     renderingRef.current = true;
     try {
       const scene = listScenes(null).find((s) => s.id === activeScene.id) || activeScene;
       const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
       const resolved = resolvePortEdges(cardsById, scene.edges);
-      const batch = Math.max(1, batchCount);
+      // 렌더 노드의 배치수(노드별)로 각 잡을 복제. 없으면 하단 스포트라이트 배치.
+      const batch = Math.max(1, batchOverride ?? batchCount);
       const projectId =
         filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
       const folderPath =
@@ -939,7 +940,7 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                onGenerateCard={() => spotlightSubmitRef.current?.()}
+                onGenerateCard={(batch) => spotlightSubmitRef.current?.(batch)}
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
                 grayOn={grayOn}

@@ -105,7 +105,7 @@ interface Props {
   // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유), submit 을 ref 로 노출.
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
-  submitRef?: MutableRefObject<(() => void) | null>; // 카드 아래 Generate 가 호출할 제출 함수
+  submitRef?: MutableRefObject<((batch?: number) => void) | null>; // 카드 아래 Generate 가 호출(노드별 배치수 전달)
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -811,7 +811,7 @@ export function SpotlightPrompt({
       ed.focus();
     }
   };
-  const submit = async () => {
+  const submit = async (batchOverride?: number) => {
     if (busy) return; // 진행 중(비율 측정 await 포함) 재진입 방지 — 중복 생성 차단
     setError(null);
     const ed = editorRef.current;
@@ -861,7 +861,10 @@ export function SpotlightPrompt({
         return;
       }
       // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡). 씬 모드도 N장 → 그 카드에 변형으로 누적된다.
-      const batch = Math.max(1, count);
+      // 카드 아래 Generate 가 노드별 배치수를 넘기면 그 값을 우선(없으면 하단 컨트롤의 count).
+      // ★버튼 onClick 은 이벤트 객체를 넘기므로 숫자일 때만 override 로 인정(NaN 방지).
+      const override = typeof batchOverride === "number" ? batchOverride : undefined;
+      const batch = Math.max(1, override ?? count);
       const created = await Promise.all(Array.from({ length: batch }, () => api.create(body)));
       // 드래그로 불러온 원본이 있으면 그것을 부모로 자동 히스토리 기록(App 이 처리). 1회 소모.
       const dragParent = dragParentRef.current;

@@ -21,6 +21,7 @@ import {
   type SpotlightAssetDragItem,
 } from "../../lib/spotlightAssetRefs";
 import {
+  cardBatch,
   sceneRefFingerprint,
   uid,
   variantIds,
@@ -194,9 +195,9 @@ interface Props {
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
-  onGenerateCard?: () => void;
+  onGenerateCard?: (batch?: number) => void; // batch = 이 노드의 배치수(comfy 없는 경로에도 적용)
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
-  onRenderCards?: (cardIds: string[]) => void;
+  onRenderCards?: (cardIds: string[], batch?: number) => void;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
   onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
@@ -1380,6 +1381,7 @@ export function SceneBoard({
     const silent = opts?.silent;
     const card = cardsRef.current.find((c) => c.id === cardId);
     const cfg = card?.comfyCfg;
+    const runContent = cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
     const outs = (opts?.outputs ?? cfg?.outputs ?? []).filter(
       (o) => (o.kind === "image" || o.kind === "video") && o.url,
     );
@@ -1420,6 +1422,9 @@ export function SceneBoard({
       //  + 이 노드가 만든 생성물 id 를 card.genIds 에 누적 → 생성카드처럼 관리·렌더 가능(kind='comfy' 유지).
       const next = cardsRef.current.map((c) => {
         if (c.id !== cardId || c.kind !== "comfy") return c;
+        // 저장 진행 중 워크플로가 교체됐으면(content 변경) 옛 결과를 새 워크플로 카드에 붙이지 않는다.
+        //  (라이브러리에는 이미 저장됨 — 여기선 카드의 genIds/genId/outputs 만 안 건드림.)
+        if (c.comfyCfg?.content !== runContent) return c;
         const outs = (c.comfyCfg?.outputs || []).map((o) =>
           o.url && byUrl.has(o.url) ? { ...o, saved_generation_id: byUrl.get(o.url) } : o,
         );
@@ -1540,7 +1545,7 @@ export function SceneBoard({
   const runComfy = async (cardId: string): Promise<boolean> => {
     const card = cardsRef.current.find((c) => c.id === cardId);
     if (!card?.comfyCfg?.content) return false;
-    const batch = Math.max(1, card.batchCount ?? 1); // 이 노드의 배치수(노드별 관리)
+    const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
     patchComfyCfg(cardId, { status: "running", error: null });
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
@@ -1707,7 +1712,7 @@ export function SceneBoard({
     const resolved = resolvePortEdges(byId, edgesRef.current);
     const plan = buildGenerationExecutionPlan(genId, byId, resolved);
     if (!plan.comfyIds.length) {
-      onGenerateCard?.();
+      onGenerateCard?.(cardBatch(byId.get(genId))); // comfy 없는 경로도 이 노드의 배치수로 생성
       return;
     }
     if (orchestratingRef.current) return; // 이미 실행 중이면 무시(중복 실행 방지)
@@ -1715,7 +1720,7 @@ export function SceneBoard({
     setComfyWaitingIds(new Set([genId])); // 상류 comfy 도는 동안 이 카드 '생성 대기중' 표시
     const sid = sceneIdRef.current;
     try {
-      const batch = Math.max(1, byId.get(genId)?.batchCount ?? 1); // 이 생성카드의 배치수(노드별)
+      const batch = cardBatch(byId.get(genId)); // 이 생성카드의 배치수(노드별)
       const { runs, aborted } = await runPlanComfyCopies(plan, sid, batch);
       const mine = runs.filter((r) => r.cardId === genId);
       if (!aborted && sceneIdRef.current === sid && mine.length) await onRenderCardRuns?.(mine);
@@ -1739,7 +1744,7 @@ export function SceneBoard({
         .filter((c): c is SceneCard => c?.kind === "comfy")
         .map((c) => c.id);
       const plan = buildExecutionPlan(checkedGenIds, directComfy, byId, resolved);
-      const batch = Math.max(1, byId.get(renderId)?.batchCount ?? 1); // 이 렌더 노드의 배치수(노드별)
+      const batch = cardBatch(byId.get(renderId)); // 이 렌더 노드의 배치수(노드별)
       if (plan.comfyIds.length) {
         // 상류 comfy 도는 동안 실행대상 생성카드들을 '생성 대기중'으로 표시.
         setComfyWaitingIds(new Set(plan.generationIds.length ? plan.generationIds : checkedGenIds));
@@ -1748,7 +1753,7 @@ export function SceneBoard({
       } else {
         const { runnableGenIds, aborted } = await runPlanComfy(plan, sid);
         if (!aborted && sceneIdRef.current === sid && runnableGenIds.length)
-          onRenderCards?.(runnableGenIds);
+          onRenderCards?.(runnableGenIds, batch); // comfy 없는 경로도 이 렌더 노드의 배치수로
       }
     } finally {
       orchestratingRef.current = false;
@@ -4296,20 +4301,20 @@ export function SceneBoard({
                             title="배치 줄이기"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setCardBatch(card.id, (card.batchCount ?? 1) - 1);
+                              setCardBatch(card.id, cardBatch(card) - 1);
                             }}
                           >
                             −
                           </button>
                           <span className="scene-cardgen-n" title="각 카드에서 생성할 장수(배치)">
-                            {card.batchCount ?? 1}
+                            {cardBatch(card)}
                           </span>
                           <button
                             className="scene-cardgen-step"
                             title="배치 늘리기"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setCardBatch(card.id, (card.batchCount ?? 1) + 1);
+                              setCardBatch(card.id, cardBatch(card) + 1);
                             }}
                           >
                             +
@@ -4682,20 +4687,20 @@ export function SceneBoard({
                             title="배치 줄이기"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setCardBatch(card.id, (card.batchCount ?? 1) - 1);
+                              setCardBatch(card.id, cardBatch(card) - 1);
                             }}
                           >
                             −
                           </button>
                           <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
-                            {card.batchCount ?? 1}
+                            {cardBatch(card)}
                           </span>
                           <button
                             className="scene-cardgen-step"
                             title="배치 늘리기"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setCardBatch(card.id, (card.batchCount ?? 1) + 1);
+                              setCardBatch(card.id, cardBatch(card) + 1);
                             }}
                           >
                             +
@@ -4973,20 +4978,20 @@ export function SceneBoard({
                         title="배치 줄이기"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setCardBatch(card.id, (card.batchCount ?? 1) - 1);
+                          setCardBatch(card.id, cardBatch(card) - 1);
                         }}
                       >
                         −
                       </button>
                       <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
-                        {card.batchCount ?? 1}
+                        {cardBatch(card)}
                       </span>
                       <button
                         className="scene-cardgen-step"
                         title="배치 늘리기"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setCardBatch(card.id, (card.batchCount ?? 1) + 1);
+                          setCardBatch(card.id, cardBatch(card) + 1);
                         }}
                       >
                         +

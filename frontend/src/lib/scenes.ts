@@ -73,7 +73,7 @@ export interface SceneCard {
   color?: string; // head 노드: 글씨 색(HEX).
   fontSize?: number; // head 노드: 글씨 크기(px). 박스는 글씨에 맞춰 자동 크기.
   unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
-  batchCount?: number; // 이 노드에서 한 번에 생성할 장수(배치). 노드마다 각자 관리(없으면 1).
+  batchCount?: number; // 이 노드에서 한 번에 생성할 장수(배치). 노드마다 각자 관리(없으면 1). 실제 사용은 cardBatch().
   comfyCfg?: SceneComfyCfg; // comfy 노드: ComfyUI 워크플로우·파라미터·실행결과 스냅샷.
 }
 
@@ -117,6 +117,13 @@ const keyOf = (projectId: string | null | undefined) => projectId || "_none";
 
 export function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// 카드의 배치수(한 번에 생성할 장수) — 표시·실행 공용. 임포트/저장값이 범위를 벗어나거나 숫자가 아니어도
+// 1~4 정수로 안전화한다(예: 손상된 씬에 batchCount:99 나 NaN 이 들어와도 폭주/실패하지 않게).
+export function cardBatch(card?: { batchCount?: number } | null): number {
+  const n = Math.trunc(Number(card?.batchCount));
+  return Number.isFinite(n) ? Math.max(1, Math.min(4, n)) : 1;
 }
 
 // 생성 카드의 변형(결과) id 목록 — genIds(누적) + legacy genId 를 합쳐 중복 제거, 순서 보존.
