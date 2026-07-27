@@ -569,6 +569,10 @@
 .scene-comfynode-status.s-done { color: #4dd6c4; }
 .scene-comfynode-status.s-failed { color: #ff8f8f; }
 .scene-comfynode-outputs { display: flex; flex-direction: column; gap: 6px; }
+.scene-comfynode-genwrap {
+  position: relative; width: 100%; height: 150px; flex: none;
+}
+.scene-comfynode-tagpop { z-index: 40; }
 .scene-comfynode-outtext { position: relative; }
 .scene-comfynode-outtext-body {
   max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
@@ -581,6 +585,15 @@
   border-radius: 4px; font-size: 11px; padding: 1px 5px; cursor: pointer;
 }
 .scene-comfynode-copy:hover { color: var(--text); }
+/* Comfy 출력이 '내 작업' 생성물로 저장됐을 때, 기존 변형 팝업을 여는 배지. */
+.scene-comfynode-saved {
+  align-self: center; margin-top: 2px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border2); background: #1b1e24; color: var(--muted);
+  font-size: 10px; font-weight: 800; letter-spacing: 0.02em; cursor: pointer;
+}
+.scene-comfynode-saved:hover {
+  border-color: var(--accent); color: var(--accent);
+}
 
 /* Comfy 모달 — 모델 모달 골격 재사용 + API 로드/카탈로그 */
 .scene-comfymodal-body { display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow-y: auto; }
@@ -744,6 +757,7 @@
   background: var(--accent); color: var(--accent-ink); border: 1px solid rgba(0, 0, 0, 0.25);
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
 }
+.scene-multi-badge-comfy { bottom: calc(100% + 8px); }
 /* 보이지 않는 넓은 잡기 영역 — 배지 살짝 옆을 눌러도 팝업이 열리게(코너의 S/정보 버튼과는 안 겹침). */
 .scene-multi-badge::before { content: ""; position: absolute; inset: -6px -12px; }
 .scene-multi-badge:hover { filter: brightness(1.08); }

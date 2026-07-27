@@ -50,7 +50,11 @@ export function SceneComfyModal({
   async function loadFile(file: File) {
     const text = await file.text();
     const base = file.name.replace(/\.json$/i, "");
-    await parseContent(text, base, [...exposed]);
+    // 다른 워크플로우를 새로 불러오면 노출 선택을 초기화한다. ComfyUI 워크플로는 노드 id("1","2"…)가
+    // 겹치기 쉬워, 옛 선택(node|field)을 그대로 두면 엉뚱한 노드에 매핑돼 옛 값이 남는다.
+    const changed = text.trim() !== (content || "").trim();
+    if (changed) setExposed(new Set());
+    await parseContent(text, base, changed ? [] : [...exposed]);
   }
 
   function toggle(key: string) {
@@ -63,20 +67,21 @@ export function SceneComfyModal({
   }
 
   function save() {
-    // 노출 선택 순서를 유지하고, 새로 노출된 항목은 현재 값으로 초기값을 채운다.
+    // 노출 선택 순서를 유지. 값의 출처:
+    //  · 같은 워크플로우(내용 동일)면 카드에서 사용자가 바꾼 값(initial.paramValues)을 우선한다.
+    //  · 다른 워크플로우를 새로 불러왔으면 그 워크플로우의 기본값(candidates)에서 새로 채운다(옛 값 잔존 금지).
     const paramExposed = [...exposed];
-    const values: Record<string, string | number | boolean> = { ...(initial?.paramValues || {}) };
     const byKey = new Map<string, ComfyParamCandidate>(
       candidates.map((c) => [`${c.node_id}|${c.field}`, c]),
     );
+    const sameWorkflow = content === (initial?.content || "");
+    const values: Record<string, string | number | boolean> = {};
     for (const key of paramExposed) {
-      if (!(key in values)) {
-        const c = byKey.get(key);
-        if (c) values[key] = c.value;
-      }
+      const prior = sameWorkflow ? initial?.paramValues?.[key] : undefined;
+      const c = byKey.get(key);
+      if (prior !== undefined) values[key] = prior;
+      else if (c) values[key] = c.value;
     }
-    // 더 이상 노출되지 않는 값은 정리
-    for (const key of Object.keys(values)) if (!exposed.has(key)) delete values[key];
     // 노출 파라미터 메타 스냅샷(카드 인라인 컨트롤 렌더용) — 노출 순서 유지.
     const params = paramExposed
       .map((key) => byKey.get(key))

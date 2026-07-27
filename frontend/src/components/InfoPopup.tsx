@@ -61,6 +61,8 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     credit_source: string | null;
     elapsed_seconds: number | null;
   } | null>(null); // 실제 크레딧·소요시간(있으면 우선)
+  // Comfy 생성물은 Cloud 가 건별 크레딧을 API 로 안 준다(정액 구독제) → 견적 대신 구독 정보를 보여준다.
+  const [comfySub, setComfySub] = useState<{ target: "cloud" | "local"; tier: string | null } | null>(null);
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -72,11 +74,17 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     if (target.kind !== "generation") return;
     setCredits(null);
     setMetrics(null);
+    setComfySub(null);
     const g = target.gen;
-    api
-      .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
-      .then((r) => setCredits(r.credits))
-      .catch(() => setCredits(null));
+    if (g.model === "comfy") {
+      // Comfy: 견적 API 는 단가가 없어 영영 안 끝난다 → 호출하지 않고 구독 정보를 조회한다.
+      api.comfySubscription().then(setComfySub).catch(() => setComfySub(null));
+    } else {
+      api
+        .estimateCost(g.model || "", (g.params || {}) as Record<string, unknown>, g.prompt)
+        .then((r) => setCredits(r.credits))
+        .catch(() => setCredits(null));
+    }
     api.generationMetrics(g.id).then(setMetrics).catch(() => setMetrics(null));
   }, [target]);
 
@@ -119,7 +127,16 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     const params = (g.params || {}) as Record<string, unknown>;
     rows = (
       <>
-        <Row label="모델" value={modelName(g.model)} />
+        <Row
+          label="모델"
+          // Comfy 생성물은 g.model 이 판별자('comfy')라, 워크플로에서 뽑아 저장한 실제 모델명을 보여준다.
+          // (comfy 에서 만든 사실은 크레딧 행의 'Comfy Cloud' 로 이미 드러나므로 여기엔 표기하지 않는다.)
+          value={
+            g.model === "comfy" && typeof params.model === "string" && params.model
+              ? (params.model as string)
+              : modelName(g.model)
+          }
+        />
         {g.status === "failed" && (
           <div className="info-error">
             <span className="info-error-label">⚠ 실패 사유</span>
@@ -129,16 +146,30 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
         <Row label="비율" value={params.aspect_ratio as string} />
         <Row label="해상도" value={params.resolution as string} />
         <Row label="생성일" value={g.created_at} />
-        <Row
-          label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
-          value={
-            metrics?.real_credits != null
-              ? `${metrics.real_credits} credits`
-              : credits != null
-                ? `${credits} credits`
-                : "조회 중…"
-          }
-        />
+        {g.model === "comfy" ? (
+          // Comfy 는 건별 크레딧이 없다(Cloud=정액 구독제 / 로컬=무과금) → 구독/실행 정보로 대체.
+          <Row
+            label="크레딧"
+            value={
+              !comfySub
+                ? "Comfy 생성물"
+                : comfySub.target === "cloud"
+                  ? `구독제 · Comfy Cloud${comfySub.tier ? ` (${comfySub.tier})` : ""}`
+                  : "로컬 ComfyUI (무과금)"
+            }
+          />
+        ) : (
+          <Row
+            label={metrics?.real_credits != null ? "크레딧(실제)" : "크레딧(견적)"}
+            value={
+              metrics?.real_credits != null
+                ? `${metrics.real_credits} credits`
+                : credits != null
+                  ? `${credits} credits`
+                  : "조회 중…"
+            }
+          />
+        )}
         {metrics?.elapsed_seconds != null && (
           <Row label="생성 시간" value={formatElapsed(metrics.elapsed_seconds)} />
         )}
