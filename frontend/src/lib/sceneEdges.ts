@@ -4,9 +4,11 @@
 import {
   variantIds,
   type SceneCard,
+  type SceneCardKind,
   type SceneEdge,
   type SceneEdgeRole,
   type SceneModelCfg,
+  type SceneRef,
 } from "./scenes";
 
 // 연결 허용 규칙 — to 노드 종류별로 받을 수 있는 소스만. 말이 안 되는 연결(text→view 등)을 막는다.
@@ -41,13 +43,28 @@ export function canConnect(
     case "list":
       return from.kind === "generation" || from.kind === "text" || from.kind === "reference";
     case "view":
-      return from.kind === "generation" || from.kind === "list" || from.kind === "text";
+      return (
+        from.kind === "generation" || from.kind === "list" || from.kind === "text" ||
+        from.kind === "comfy" // comfy 출력물(이미지·영상)도 미리보기 가능
+      );
     case "render":
-      return from.kind === "generation"; // 렌더(배치)는 생성 카드만 모은다
+      // 렌더(배치)는 생성 카드 + comfy 노드를 모은다 — 실행 시 comfy 먼저, 그 하류 생성 순차 실행.
+      return from.kind === "generation" || from.kind === "comfy";
     case "text":
       // 텍스트 노드는 레퍼런스 입력을 받는다(레퍼런스 카드·생성물을 @레퍼런스로). 리스트로 묶은
       // 레퍼런스/생성물도 연결 허용 — 텍스트 노드가 리스트를 펼쳐 @image1/@image2… 로 매핑한다.
-      return from.kind === "reference" || from.kind === "generation" || from.kind === "list";
+      // comfy(프롬프트 생성 등)의 출력도 텍스트로 전달 가능(Phase 2 체인).
+      return (
+        from.kind === "reference" || from.kind === "generation" || from.kind === "list" ||
+        from.kind === "comfy"
+      );
+    case "comfy":
+      // comfy 노드는 레퍼런스/생성물/텍스트/리스트/다른 comfy 를 입력으로 받는다(이미지 수정·후처리·프롬프트 체인).
+      // list = 이미지·영상 묶음(순서대로 타입별 슬롯에 자동 주입).
+      return (
+        from.kind === "reference" || from.kind === "generation" || from.kind === "text" ||
+        from.kind === "list" || from.kind === "comfy"
+      );
     default:
       return false;
   }
@@ -129,10 +146,120 @@ function sortByOrder(items: { e: SceneEdge; c: SceneCard }[]): { e: SceneEdge; c
     });
 }
 
+// comfy 실행 1회의 출력셋(카드 저장분과 같은 모양). 배치 병렬 실행에선 각 실행 결과를 카드에 안 쓰고
+// 이 배열로 들고 다니며(overlay), 인덱스별로 짝지어 생성에 주입한다.
+export type ComfyOutput = { kind: "image" | "video" | "text"; url?: string; text?: string };
+// { comfyCardId: 그 실행의 출력셋 } — 배치 복사본 하나(=한 짝)의 comfy 결과 오버레이.
+export type ComfyOutputsById = Record<string, ComfyOutput[]>;
+// 배치 병렬·짝 실행의 1묶음 — 카드 1개를 그 comfy 실행 결과(overlay)와 짝지어 1장 생성한다.
+//  batchIndex = 몇 번째 복사본인지(0..N-1). SceneBoard 오케스트레이터가 만들어 App.generateCardRuns 로 넘긴다.
+export type SceneGenerationRun = { batchIndex: number; cardId: string; comfyOutputsById: ComfyOutputsById };
+
+// 출력셋 → 텍스트/미디어 추출(순수). 카드/오버레이 어느 쪽 출력이든 같은 규칙으로 뽑는다.
+export function comfyOutputTextsFrom(outputs: ComfyOutput[]): string[] {
+  return outputs.filter((o) => o.kind === "text" && (o.text || "").trim()).map((o) => o.text as string);
+}
+export function comfyOutputMediaFrom(outputs: ComfyOutput[]): { url: string; kind: "image" | "video" }[] {
+  return outputs
+    .filter((o) => (o.kind === "image" || o.kind === "video") && o.url)
+    .map((o) => ({ url: o.url as string, kind: o.kind as "image" | "video" }));
+}
+
+// 이 comfy 카드의 '읽을 출력셋' 결정.
+//  · overlay 가 주어지면(배치·짝 실행) overlay[cardId] 만 쓴다 — 없으면 빈 배열(★카드 슬롯 fallback 금지:
+//    실패/누락한 복사본이 예전 카드 출력으로 잘못 생성되는 stale 버그를 막는다).
+//  · overlay 가 없으면(표시·비배치 경로) 카드 저장분(comfyCfg.outputs)을 쓴다.
+function outputsOf(card: SceneCard, overlay?: ComfyOutputsById): ComfyOutput[] {
+  if (overlay) return overlay[card.id] || [];
+  return card.comfyCfg?.outputs || [];
+}
+
+// comfy 노드의 텍스트 출력(kind==="text") — 다른 노드에 텍스트로 전달하는 원천. overlay 우선.
+export function comfyOutputTexts(card: SceneCard, overlay?: ComfyOutputsById): string[] {
+  return comfyOutputTextsFrom(outputsOf(card, overlay));
+}
+
+// comfy 노드의 미디어 출력(image/video) — 다른 노드에 미디어로 전달하는 원천. overlay 우선.
+export function comfyOutputMedia(
+  card: SceneCard,
+  overlay?: ComfyOutputsById,
+): { url: string; kind: "image" | "video" }[] {
+  return comfyOutputMediaFrom(outputsOf(card, overlay));
+}
+
+// 워크플로우가 '선언한' 출력 종류 — 저장(Save/Show) 노드의 class_type 으로 판정한다.
+//  · 실행 전에도, 그리고 이전 워크플로우의 stale 런타임 출력에 속지 않고 정확히 판단하기 위함.
+//  · SaveImage/SaveVideo/VideoCombine/SaveAnimated… → media, SaveText/ShowText → text.
+//  · 파싱 불가/없으면 { media:false, text:false } (호출부가 런타임 출력으로 폴백).
+export function comfyDeclaredKinds(content: string | undefined): { media: boolean; text: boolean } {
+  if (!content) return { media: false, text: false };
+  let wf: unknown;
+  try {
+    wf = JSON.parse(content);
+  } catch {
+    return { media: false, text: false };
+  }
+  if (!wf || typeof wf !== "object") return { media: false, text: false };
+  let media = false;
+  let text = false;
+  for (const node of Object.values(wf as Record<string, unknown>)) {
+    const ct = String((node as { class_type?: unknown })?.class_type || "");
+    // ★출력(저장/합성) 노드만 — 'VHS_LoadVideo' 같은 입력 노드를 미디어 출력으로 오판하지 않게 좁게 매칭.
+    if (/saveimage|savevideo|videocombine|saveanimated|savewebm|savegif/i.test(ct)) media = true;
+    if (/savetext|showtext/i.test(ct)) text = true;
+  }
+  return { media, text };
+}
+
+// 한 카드가 '제공하는 텍스트'. 텍스트 노드(연결된 텍스트 입력 + 자기 텍스트), comfy 텍스트 출력,
+// 텍스트 리스트를 재귀적으로 합친다(seen 으로 사이클 차단). 그 외 종류는 빈 문자열.
+export function effectiveTextOf(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  seen: Set<string> = new Set(),
+  overlay?: ComfyOutputsById,
+): string {
+  const card = cardsById.get(cardId);
+  if (!card || seen.has(cardId)) return "";
+  seen.add(cardId);
+  if (card.kind === "comfy") return comfyOutputTexts(card, overlay).join("\n");
+  if (card.kind === "list") {
+    const li = collectListInputs(cardId, cardsById, edges, overlay);
+    return li.kind === "text" ? li.text : "";
+  }
+  if (card.kind === "text") {
+    // 사용자가 채택/편집한 자기 텍스트가 있으면 그것을 쓴다(내가 적은 것 우선).
+    if ((card.text || "").trim()) return card.text as string;
+    // 아직 자기 텍스트가 없으면 연결된 텍스트 소스(comfy 등)를 그대로 라이브로 사용한다.
+    return incomingTextOf(cardId, cardsById, edges, seen, overlay);
+  }
+  return "";
+}
+
+// 텍스트 노드로 '들어오는' 텍스트(자기 텍스트 제외) — 연결된 텍스트 제공 소스들을 순서대로 합친다.
+export function incomingTextOf(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  seen: Set<string> = new Set(),
+  overlay?: ComfyOutputsById,
+): string {
+  const incoming = edges
+    .filter((e) => e.to === cardId)
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
+  return sortByOrder(incoming)
+    .map((s) => effectiveTextOf(s.c.id, cardsById, edges, seen, overlay))
+    .filter((t) => t.trim())
+    .join("\n");
+}
+
 export function collectListInputs(
   listId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
+  overlay?: ComfyOutputsById,
 ): ListInputs {
   const sources = edges
     .filter((e) => e.to === listId)
@@ -142,14 +269,24 @@ export function collectListInputs(
   const sorted = sortByOrder(sources);
   const sourceIds = sorted.map((s) => s.c.id);
   const kinds = new Set(sorted.map((s) => s.c.kind));
+  // 텍스트를 내놓는 소스 = 텍스트 노드 또는 텍스트 출력이 있는 comfy 노드.
+  const isTextSrc = (c: SceneCard) =>
+    c.kind === "text" || (c.kind === "comfy" && comfyOutputTexts(c, overlay).length > 0);
   if ([...kinds].every((k) => k === "generation"))
     return { kind: "generation", sourceIds, generationCardIds: sourceIds, text: "" };
-  if ([...kinds].every((k) => k === "text"))
-    return { kind: "text", sourceIds, generationCardIds: [], text: sorted.map((s) => s.c.text || "").join("\n") };
+  if (sorted.every((s) => isTextSrc(s.c)))
+    return {
+      kind: "text",
+      sourceIds,
+      generationCardIds: [],
+      text: sorted
+        .map((s) => (s.c.kind === "comfy" ? comfyOutputTexts(s.c, overlay).join("\n") : s.c.text || ""))
+        .join("\n"),
+    };
   if ([...kinds].every((k) => k === "reference"))
     return { kind: "reference", sourceIds, generationCardIds: [], text: "" };
   // 그 외: gen+text 혼합이면 mixed, 그 외 종류가 섞이면 invalid(리스트는 동종만).
-  const hasNonGenText = sorted.some((s) => s.c.kind !== "generation" && s.c.kind !== "text");
+  const hasNonGenText = sorted.some((s) => !isTextSrc(s.c) && s.c.kind !== "generation");
   return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
 }
 
@@ -199,27 +336,208 @@ export function collectRenderGenCardIds(
   return out;
 }
 
+// ── 실행 오케스트레이션 계획(순수) ──────────────────────────────────────────
+// 생성/렌더를 실행할 때, 상류 comfy 노드를 먼저 실행해야 한다(연결 순서). 실행 대상(comfy + 생성)을
+// 모으고 의존관계로 위상정렬한 계획을 만든다. comfy 가 먼저, 같은 단계면 y→x(위→아래·왼→오).
+
+export type SceneExecKind = "comfy" | "generation";
+export interface SceneExecStep {
+  id: string;
+  kind: SceneExecKind;
+  dependsOn: string[]; // 이 노드가 의존하는 상류 comfy id들(직접 의존)
+}
+export interface SceneExecutionPlan {
+  steps: SceneExecStep[]; // 위상정렬된 실행 순서
+  comfyIds: string[]; // 실행할 comfy id(순서)
+  generationIds: string[]; // 생성할 생성카드 id(순서)
+  skippedByCycle: string[]; // 사이클로 실행 불가한 노드
+}
+
+// comfy 의존 추적 시 '통과' 노드 — 이들을 지나 상류 comfy 를 찾는다(text/list 로 comfy 출력이 전달됨).
+const _PASSTHROUGH: SceneCardKind[] = ["text", "list"];
+
+// nodeId 의 '가장 가까운 상류 comfy' 집합 — 통과 노드는 지나 재귀, comfy 를 만나면 멈춘다.
+// (레퍼런스·모델·생성 등은 comfy 실행 의존이 아니므로 통과하지 않는다 — comfy 입력은 실행 시점에 gather.)
+function nearestUpstreamComfy(
+  nodeId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  seen: Set<string> = new Set(),
+): Set<string> {
+  const result = new Set<string>();
+  for (const e of edges.filter((x) => x.to === nodeId)) {
+    const src = cardsById.get(e.from);
+    if (!src) continue;
+    if (src.kind === "comfy") result.add(src.id);
+    else if (_PASSTHROUGH.includes(src.kind) && !seen.has(src.id)) {
+      seen.add(src.id);
+      for (const c of nearestUpstreamComfy(src.id, cardsById, edges, seen)) result.add(c);
+    }
+  }
+  return result;
+}
+
+export function buildExecutionPlan(
+  targetGenIds: string[],
+  directComfyIds: string[],
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): SceneExecutionPlan {
+  const kindOf = new Map<string, SceneExecKind>();
+  for (const id of targetGenIds) if (cardsById.get(id)?.kind === "generation") kindOf.set(id, "generation");
+  for (const id of directComfyIds) if (cardsById.get(id)?.kind === "comfy") kindOf.set(id, "comfy");
+
+  // 상류 comfy 를 transitively 모으고 각 노드의 직접 의존을 기록.
+  const deps = new Map<string, Set<string>>();
+  const stack = [...kindOf.keys()];
+  const visited = new Set<string>();
+  while (stack.length) {
+    const id = stack.pop() as string;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const upc = nearestUpstreamComfy(id, cardsById, edges);
+    deps.set(id, upc);
+    for (const c of upc) {
+      if (!kindOf.has(c)) kindOf.set(c, "comfy");
+      if (!visited.has(c)) stack.push(c);
+    }
+  }
+
+  // Kahn 위상정렬 — comfy 먼저, 같은 단계면 y→x.
+  const indeg = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const id of kindOf.keys()) {
+    indeg.set(id, 0);
+    dependents.set(id, []);
+  }
+  for (const [id, ds] of deps)
+    for (const d of ds)
+      if (kindOf.has(d)) {
+        indeg.set(id, (indeg.get(id) || 0) + 1);
+        dependents.get(d)?.push(id);
+      }
+  // 생성카드끼리 tie 는 호출부가 준 순서(렌더 행의 edge.order 반영)를 우선 보존, 그 다음 y→x.
+  const genOrder = new Map(targetGenIds.map((id, i) => [id, i] as const));
+  const cmp = (a: string, b: string): number => {
+    const ka = kindOf.get(a);
+    const kb = kindOf.get(b);
+    if (ka !== kb) return ka === "comfy" ? -1 : 1; // comfy 먼저
+    if (ka === "generation") {
+      const oa = genOrder.get(a);
+      const ob = genOrder.get(b);
+      if (oa != null && ob != null && oa !== ob) return oa - ob;
+    }
+    const ca = cardsById.get(a);
+    const cb = cardsById.get(b);
+    if (!ca || !cb) return 0;
+    return ca.y !== cb.y ? ca.y - cb.y : ca.x - cb.x;
+  };
+  const ready = [...kindOf.keys()].filter((id) => (indeg.get(id) || 0) === 0).sort(cmp);
+  const order: string[] = [];
+  while (ready.length) {
+    const id = ready.shift() as string;
+    order.push(id);
+    for (const dep of dependents.get(id) || []) {
+      indeg.set(dep, (indeg.get(dep) || 0) - 1);
+      if ((indeg.get(dep) || 0) === 0) ready.push(dep);
+    }
+    ready.sort(cmp);
+  }
+  const inOrder = new Set(order);
+  const skippedByCycle = [...kindOf.keys()].filter((id) => !inOrder.has(id));
+  const steps: SceneExecStep[] = order.map((id) => ({
+    id,
+    kind: kindOf.get(id) as SceneExecKind,
+    dependsOn: [...(deps.get(id) || [])].filter((d) => kindOf.has(d)),
+  }));
+  return {
+    steps,
+    comfyIds: order.filter((id) => kindOf.get(id) === "comfy"),
+    generationIds: order.filter((id) => kindOf.get(id) === "generation"),
+    skippedByCycle,
+  };
+}
+
+// 단일 생성카드 실행 계획 — 그 카드 + 상류 comfy.
+export function buildGenerationExecutionPlan(
+  genId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): SceneExecutionPlan {
+  return buildExecutionPlan([genId], [], cardsById, edges);
+}
+
+// 렌더 노드 실행 계획 — 연결된 생성카드 + 직접 연결된 comfy + 그 상류 comfy 전부.
+export function buildRenderExecutionPlan(
+  renderId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): SceneExecutionPlan {
+  const genIds = collectRenderGenCardIds(renderId, cardsById, edges);
+  const directComfy = edges
+    .filter((e) => e.to === renderId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => c?.kind === "comfy")
+    .map((c) => c.id);
+  return buildExecutionPlan(genIds, directComfy, cardsById, edges);
+}
+
 // 생성카드에 연결된 텍스트 입력(text 노드 + text-list)을 순서대로 합친다 — 하단 프롬프트 텍스트로 쓸 값.
 //  count>0 이면 '텍스트가 연결됨'(파생 우선). count=0 이면 연결 없음(카드 자체 프롬프트 fallback).
 export function collectGenText(
   genId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
+  overlay?: ComfyOutputsById,
 ): { text: string; count: number } {
   const srcs = edges
     .filter((e) => e.to === genId)
     .map((e) => cardsById.get(e.from))
     .filter((c): c is SceneCard => !!c)
     .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  // 텍스트를 제공하는 소스(텍스트 노드·comfy 텍스트 출력·텍스트 리스트)를 순서대로 합친다.
+  // effectiveTextOf 가 텍스트 노드의 연결된 텍스트 입력(comfy→텍스트 체인)까지 펼쳐 준다.
   const blocks: string[] = [];
   for (const s of srcs) {
-    if (s.kind === "text") blocks.push(s.text || "");
-    else if (s.kind === "list") {
-      const li = collectListInputs(s.id, cardsById, edges);
-      if (li.kind === "text") blocks.push(li.text);
-    }
+    const t = effectiveTextOf(s.id, cardsById, edges, new Set(), overlay);
+    if (t.trim()) blocks.push(t);
   }
   return { text: blocks.join("\n"), count: blocks.length };
+}
+
+// 생성카드에 연결된 comfy 노드의 '미디어 출력(image/video)'을 레퍼런스로 파생 수집한다(순수·transient).
+//  · card.refs 처럼 persist 하지 않는다 — comfy 재실행 때 URL 이 바뀌므로 생성 직전에 최신 comfyCfg.outputs 에서
+//    그때그때 읽는다(stale URL 자동 해소). collectGenText 와 같은 파생-시점 철학.
+//  · comfy 를 직접 연결한 경우만 처리(comfy→list 는 list 가 미디어를 수집하지 않으므로 제외). comfy 끼리는 y→x 순.
+//  · 텍스트 출력은 collectGenText 가 프롬프트로 가져가므로 여기선 미디어만. 한 comfy 가 둘 다 내면 프롬프트+ref 로 동시 사용.
+export function collectGenRefs(
+  genId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  overlay?: ComfyOutputsById,
+): Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] {
+  const comfys = edges
+    .filter((e) => e.to === genId)
+    .map((e) => cardsById.get(e.from))
+    .filter((c): c is SceneCard => c?.kind === "comfy")
+    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+  const out: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] = [];
+  for (const c of comfys) {
+    // 워크플로우가 '텍스트 전용'을 선언하면 미디어 ref 로 붙이지 않는다 — 이전 워크플로우의 stale 미디어
+    //  출력이 레퍼런스로 잘못 새는 것을 막는다(텍스트는 collectGenText 가 프롬프트로 가져간다).
+    const dk = comfyDeclaredKinds(c.comfyCfg?.content);
+    if (dk.text && !dk.media) continue;
+    for (const m of comfyOutputMedia(c, overlay)) {
+      out.push({
+        file_path: m.url,
+        type: m.kind,
+        name: c.comfyCfg?.name || "Comfy",
+        thumb: m.kind === "image" ? m.url : null,
+        source_gen_id: null,
+      });
+    }
+  }
+  return out;
 }
 
 // 생성카드에 연결된 모델 노드의 설정 — 정확히 1개일 때만 유효(복수면 침묵 선택 위험 → null).
@@ -250,12 +568,9 @@ export function collectViewTexts(
     .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
   const out: string[] = [];
   for (const c of srcs) {
-    if (c.kind === "text") {
-      if ((c.text || "").trim()) out.push(c.text || "");
-    } else if (c.kind === "list") {
-      const li = collectListInputs(c.id, cardsById, edges);
-      if (li.kind === "text" && li.text.trim()) out.push(li.text);
-    }
+    // 텍스트 노드·comfy 텍스트 출력·텍스트 리스트 모두 표시(comfy→텍스트 체인 포함).
+    const t = effectiveTextOf(c.id, cardsById, edges);
+    if (t.trim()) out.push(t);
   }
   return out;
 }
@@ -280,9 +595,24 @@ export function resolveEdgeRole(
   const from = cardsById.get(fromId);
   const to = cardsById.get(edge.to);
   // 소스 종류를 먼저 본다 — 텍스트→리스트여도 '텍스트'(보라)로. 모델/텍스트/레퍼런스는 소스색 우선.
-  if (to?.kind === "text") return "ref"; // 무엇이든 텍스트 노드 입력 = 레퍼런스(파랑)
+  // 텍스트 노드 입력: 텍스트를 주는 소스(comfy 텍스트·텍스트 노드·텍스트 리스트)면 텍스트색(보라),
+  // 레퍼런스(레퍼런스 카드·생성물·레퍼런스 리스트)면 파랑.
+  if (to?.kind === "text") {
+    if (from?.kind === "comfy" || from?.kind === "text") return "text";
+    if (from?.kind === "list" && edges)
+      return collectListInputs(from.id, cardsById, edges).kind === "text" ? "text" : "ref";
+    return "ref"; // reference·generation → 레퍼런스(파랑)
+  }
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
+  if (from?.kind === "comfy") {
+    // ★워크플로우가 '선언한' 출력으로 색 결정 — 실행 전에도 정확하고, 이전 워크플로우의 stale 런타임 출력에
+    //  속지 않는다. 미디어 출력이 있으면 ref(파랑), 텍스트 전용이면 text(보라). 둘 다면 ref 우선(텍스트는
+    //  프롬프트에서 확인). 선언을 못 읽으면 런타임 출력으로 폴백.
+    const dk = comfyDeclaredKinds(from.comfyCfg?.content);
+    if (dk.media || dk.text) return dk.media ? "ref" : "text";
+    return comfyOutputMedia(from).length > 0 ? "ref" : "text";
+  }
   if (from?.kind === "reference") return "ref";
   // 리스트의 출력색은 그 리스트가 모은 종류를 따른다(edges 필요): 텍스트리스트=텍스트(보라), 레퍼런스리스트=레퍼런스(파랑).
   if (from?.kind === "list" && edges) {

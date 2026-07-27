@@ -12,9 +12,13 @@ import {
   collectViewTexts,
   collectGenText,
   collectGenModel,
+  collectGenRefs,
+  comfyDeclaredKinds,
   canConnect,
   resolveInputSourceId,
   resolvePortEdges,
+  buildGenerationExecutionPlan,
+  buildRenderExecutionPlan,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -389,6 +393,154 @@ describe("collectGenText / collectGenModel", () => {
   });
 });
 
+describe("collectGenRefs (comfy 미디어 → 생성 ref)", () => {
+  const node = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("comfy 이미지 출력을 ref 로 수집(url·type 보존)", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "image", url: "/media/a.png" }] } }),
+    ]);
+    const r = collectGenRefs("G", cards, [{ id: "e", from: "C", to: "G" }]);
+    expect(r).toEqual([
+      { file_path: "/media/a.png", type: "image", name: "Comfy", thumb: "/media/a.png", source_gen_id: null },
+    ]);
+  });
+
+  it("comfy 영상 출력은 thumb null", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { name: "vid", outputs: [{ kind: "video", url: "/media/v.mp4" }] } }),
+    ]);
+    const r = collectGenRefs("G", cards, [{ id: "e", from: "C", to: "G" }]);
+    expect(r[0]).toMatchObject({ file_path: "/media/v.mp4", type: "video", thumb: null, name: "vid" });
+  });
+
+  it("텍스트 출력만 있으면 ref 수집 안 함(프롬프트로만 감)", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "text", text: "hi" }] } }),
+    ]);
+    expect(collectGenRefs("G", cards, [{ id: "e", from: "C", to: "G" }])).toEqual([]);
+  });
+
+  it("여러 comfy 는 y→x 순으로 미디어 수집", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C2", "comfy", { y: 100, comfyCfg: { outputs: [{ kind: "image", url: "/media/2.png" }] } }),
+      node("C1", "comfy", { y: 0, comfyCfg: { outputs: [{ kind: "image", url: "/media/1.png" }] } }),
+    ]);
+    const r = collectGenRefs("G", cards, [
+      { id: "e1", from: "C2", to: "G" },
+      { id: "e2", from: "C1", to: "G" },
+    ]);
+    expect(r.map((x) => x.file_path)).toEqual(["/media/1.png", "/media/2.png"]);
+  });
+
+  it("resolveEdgeRole: comfy 미디어 출력→생성은 ref(파랑), 텍스트만이면 text(보라)", () => {
+    const media = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "image", url: "/media/a.png" }] } }),
+    ]);
+    expect(resolveEdgeRole({ id: "e", from: "C", to: "G" }, media, {})).toBe("ref");
+    const text = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "text", text: "hi" }] } }),
+    ]);
+    expect(resolveEdgeRole({ id: "e", from: "C", to: "G" }, text, {})).toBe("text");
+  });
+
+  it("resolveEdgeRole: comfy→text 는 미디어 출력이어도 text(보라) 유지", () => {
+    const cards = byId([
+      node("T", "text"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "image", url: "/media/a.png" }] } }),
+    ]);
+    expect(resolveEdgeRole({ id: "e", from: "C", to: "T" }, cards, {})).toBe("text");
+  });
+
+  // ★워크플로우 선언 기준: SaveText 워크플로우면 옛(stale) 미디어 출력이 남아 있어도 text 레인으로.
+  it("comfyDeclaredKinds: Save 노드 class_type 으로 출력 종류 판정", () => {
+    expect(comfyDeclaredKinds('{"1":{"class_type":"SaveText|pysssss"}}')).toEqual({ media: false, text: true });
+    expect(comfyDeclaredKinds('{"2":{"class_type":"SaveImage"}}')).toEqual({ media: true, text: false });
+    expect(comfyDeclaredKinds('{"3":{"class_type":"VHS_VideoCombine"}}')).toEqual({ media: true, text: false });
+    expect(comfyDeclaredKinds('{"1":{"class_type":"SaveText"},"2":{"class_type":"SaveImage"}}'))
+      .toEqual({ media: true, text: true });
+    expect(comfyDeclaredKinds("not json")).toEqual({ media: false, text: false });
+    expect(comfyDeclaredKinds(undefined)).toEqual({ media: false, text: false });
+    // ★r2v: 비디오를 '입력'(VHS_LoadVideo)받고 텍스트를 '출력'(SaveText) → media 아님, text 만.
+    expect(
+      comfyDeclaredKinds('{"1":{"class_type":"VHS_LoadVideo"},"2":{"class_type":"SaveText|pysssss"}}'),
+    ).toEqual({ media: false, text: true });
+  });
+
+  it("resolveEdgeRole: SaveText 워크플로우+stale 미디어출력이어도 생성으로는 text(선언 우선)", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", {
+        comfyCfg: {
+          content: '{"9":{"class_type":"SaveText|pysssss"}}', // 텍스트 전용 선언
+          outputs: [{ kind: "image", url: "/media/stale.png" }], // 이전 워크플로우의 stale 미디어
+        },
+      }),
+    ]);
+    expect(resolveEdgeRole({ id: "e", from: "C", to: "G" }, cards, {})).toBe("text");
+  });
+
+  it("collectGenRefs: SaveText 워크플로우면 stale 미디어를 ref 로 붙이지 않는다", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", {
+        comfyCfg: {
+          content: '{"9":{"class_type":"SaveText"}}',
+          outputs: [{ kind: "image", url: "/media/stale.png" }],
+        },
+      }),
+    ]);
+    expect(collectGenRefs("G", cards, [{ id: "e", from: "C", to: "G" }])).toEqual([]);
+  });
+
+  // 배치 짝 실행: overlay 가 있으면 그 복사본의 comfy 결과를 쓰고 카드 저장분은 무시(fallback 금지).
+  it("overlay 우선: collectGenRefs 는 카드 슬롯 대신 overlay 미디어를 쓴다", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "image", url: "/media/card.png" }] } }),
+    ]);
+    const edges: SceneEdge[] = [{ id: "e", from: "C", to: "G" }];
+    const overlay = { C: [{ kind: "image" as const, url: "/o/copy1.png" }] };
+    expect(collectGenRefs("G", cards, edges, overlay).map((r) => r.file_path)).toEqual(["/o/copy1.png"]);
+    // overlay 미제공(표시 경로)이면 카드 슬롯 사용
+    expect(collectGenRefs("G", cards, edges).map((r) => r.file_path)).toEqual(["/media/card.png"]);
+  });
+
+  it("overlay 에 없는 comfy 는 카드 슬롯으로 fallback 하지 않는다(stale 방지)", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "image", url: "/media/old.png" }] } }),
+    ]);
+    const edges: SceneEdge[] = [{ id: "e", from: "C", to: "G" }];
+    // overlay 는 주어졌지만 C 실행 결과가 없음(실패한 복사본) → 빈 배열(옛 출력으로 생성 금지)
+    expect(collectGenRefs("G", cards, edges, {})).toEqual([]);
+  });
+
+  it("overlay 우선: collectGenText 는 overlay 의 comfy 텍스트를 프롬프트로 쓴다", () => {
+    const cards = byId([
+      node("G", "generation"),
+      node("C", "comfy", { comfyCfg: { outputs: [{ kind: "text", text: "card-text" }] } }),
+    ]);
+    const edges: SceneEdge[] = [{ id: "e", from: "C", to: "G" }];
+    const overlay = { C: [{ kind: "text" as const, text: "copy-text" }] };
+    expect(collectGenText("G", cards, edges, overlay).text).toBe("copy-text");
+    expect(collectGenText("G", cards, edges).text).toBe("card-text");
+  });
+});
+
 describe("canConnect", () => {
   const c = (id: string, kind: SceneCard["kind"]): SceneCard => ({ id, kind, x: 0, y: 0 });
   it("generation 은 view 외 모든 소스 허용", () => {
@@ -632,5 +784,82 @@ describe("Input/Output 무선 노드", () => {
       ];
       expect(resolveEdgeRole(edges[1], byId(cards), {}, edges)).toBe("model");
     });
+  });
+});
+
+describe("실행 계획(오케스트레이션)", () => {
+  const n = (id: string, kind: SceneCard["kind"], over: Partial<SceneCard> = {}): SceneCard => ({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    ...over,
+  });
+  const byId = (cards: SceneCard[]) => new Map(cards.map((c) => [c.id, c] as const));
+
+  it("comfy→text→generation: comfy 먼저 실행, 생성 나중", () => {
+    const cards = [n("A", "comfy"), n("T", "text"), n("G", "generation")];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "A", to: "T" },
+      { id: "e2", from: "T", to: "G" },
+    ];
+    const p = buildGenerationExecutionPlan("G", byId(cards), edges);
+    expect(p.comfyIds).toEqual(["A"]);
+    expect(p.generationIds).toEqual(["G"]);
+    expect(p.steps.map((s) => s.id)).toEqual(["A", "G"]);
+    expect(p.steps.find((s) => s.id === "G")?.dependsOn).toEqual(["A"]);
+  });
+
+  it("comfy 체인 B→A→text→generation: B, A, G 순서", () => {
+    const cards = [n("A", "comfy"), n("B", "comfy"), n("T", "text"), n("G", "generation")];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "B", to: "A" },
+      { id: "e2", from: "A", to: "T" },
+      { id: "e3", from: "T", to: "G" },
+    ];
+    const p = buildGenerationExecutionPlan("G", byId(cards), edges);
+    expect(p.steps.map((s) => s.id)).toEqual(["B", "A", "G"]);
+  });
+
+  it("상류 comfy 없으면 comfyIds 비고 생성만", () => {
+    const cards = [n("T", "text"), n("G", "generation")];
+    const edges: SceneEdge[] = [{ id: "e1", from: "T", to: "G" }];
+    const p = buildGenerationExecutionPlan("G", byId(cards), edges);
+    expect(p.comfyIds).toEqual([]);
+    expect(p.generationIds).toEqual(["G"]);
+  });
+
+  it("렌더: 연결된 생성 + 직접 comfy + 상류 comfy 모두 포함", () => {
+    const cards = [
+      n("R", "render"),
+      n("G", "generation"),
+      n("A", "comfy", { y: 0 }),
+      n("T", "text"),
+      n("C", "comfy", { y: 10 }),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G", to: "R" },
+      { id: "e2", from: "A", to: "T" },
+      { id: "e3", from: "T", to: "G" },
+      { id: "e4", from: "C", to: "R" },
+    ];
+    const p = buildRenderExecutionPlan("R", byId(cards), edges);
+    expect(new Set(p.comfyIds)).toEqual(new Set(["A", "C"]));
+    expect(p.generationIds).toEqual(["G"]);
+    // comfy 는 생성보다 앞선다
+    const gi = p.steps.findIndex((s) => s.id === "G");
+    expect(p.steps.findIndex((s) => s.id === "A")).toBeLessThan(gi);
+  });
+
+  it("사이클은 skippedByCycle 로", () => {
+    const cards = [n("A", "comfy"), n("B", "comfy"), n("G", "generation")];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "A", to: "B" },
+      { id: "e2", from: "B", to: "A" },
+      { id: "e3", from: "A", to: "G" },
+    ];
+    const p = buildGenerationExecutionPlan("G", byId(cards), edges);
+    // A↔B 사이클 → 둘 다 실행 불가, 그에 의존하는 G 도 실행 불가.
+    expect(p.skippedByCycle.sort()).toEqual(["A", "B", "G"]);
   });
 });

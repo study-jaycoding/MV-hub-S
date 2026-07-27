@@ -30,6 +30,7 @@ import {
   MetadataContinuitySection,
   SyncToolsSection,
 } from "./settings/SettingsSections";
+import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 
 export function SettingsPanel({
   onClose,
@@ -243,6 +244,8 @@ export function SettingsPanel({
             </button>
             <p className="settings-hint">{t("지정된 단축키를 보고 원하는 키로 바꿀 수 있습니다.")}</p>
           </section>
+
+          <ComfyConnectionSection />
 
           <BackfillSettingsSection
             uploading={uploading}

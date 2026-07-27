@@ -13,7 +13,8 @@ export type SceneCardKind =
   | "output"
   | "input"
   | "head"
-  | "render";
+  | "render"
+  | "comfy";
 
 // 모델 노드 설정 — 하단 프롬프트(SpotlightOptionsBar)에서 고른 값의 스냅샷(표시·조직화용).
 export interface SceneModelCfg {
@@ -21,6 +22,21 @@ export interface SceneModelCfg {
   model?: string; // 모델 id
   modelName?: string; // 표시용 이름
   params?: Record<string, string | number | boolean>; // 주요 파라미터(표시·복원용)
+}
+
+// Comfy 노드 설정 — ComfyUI API 워크플로우 + 노출·조절 파라미터 스냅샷(씬에 저장).
+export interface SceneComfyCfg {
+  name?: string; // 워크플로우 표시 이름(파일명 등)
+  content?: string; // API 포맷 워크플로우 JSON 원문
+  nodeCount?: number; // 파싱된 노드 수(표시용)
+  paramExposed?: string[]; // 노출 선택한 "node|field" 목록
+  paramValues?: Record<string, string | number | boolean>; // {"node|field": value} 현재 조절값
+  // 노출 파라미터 메타 스냅샷(카드 인라인 컨트롤 렌더용) — 노출 순서 유지.
+  params?: { key: string; label: string; type: "bool" | "number" | "text"; choices?: (string | number)[] | null }[];
+  output?: { url: string; kind: "image" | "video" } | null; // (구) 단일 결과 — 하위호환용
+  outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string }[]; // 실행 결과(복수·혼합)
+  status?: "idle" | "running" | "done" | "failed"; // 실행 상태
+  error?: string | null; // 실패 메시지
 }
 
 // 카드가 담는 레퍼런스 — 하단 프롬프트의 레퍼런스와 호환되는 최소 필드.
@@ -56,6 +72,7 @@ export interface SceneCard {
   color?: string; // head 노드: 글씨 색(HEX).
   fontSize?: number; // head 노드: 글씨 크기(px). 박스는 글씨에 맞춰 자동 크기.
   unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
+  comfyCfg?: SceneComfyCfg; // comfy 노드: ComfyUI 워크플로우·파라미터·실행결과 스냅샷.
 }
 
 // 연결의 의미(입력 레인·색). 없으면 소스/타깃 kind 로 추론(resolveEdgeRole) — 기존 저장분 하위호환.
@@ -175,6 +192,7 @@ export const SCENE_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // 5MB — 텍스트라 �
 
 const SCENE_CARD_KINDS: SceneCardKind[] = [
   "reference", "generation", "text", "model", "list", "view", "output", "input", "head", "render",
+  "comfy",
 ];
 
 // 불러오기로 새 씬을 만들 때 쓰는 스냅샷(= Scene 에서 id/created_at 만 뺀 것).

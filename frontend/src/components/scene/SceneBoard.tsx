@@ -39,7 +39,17 @@ import {
   collectRenderGenCardIds,
   collectViewGenCardIds,
   collectViewTexts,
+  comfyOutputMedia,
+  comfyDeclaredKinds,
   computeBridgeEdges,
+  buildExecutionPlan,
+  buildGenerationExecutionPlan,
+  type SceneExecutionPlan,
+  type ComfyOutput,
+  type ComfyOutputsById,
+  type SceneGenerationRun,
+  effectiveTextOf,
+  incomingTextOf,
   edgePathXY,
   fanOffset,
   resolveEdgeRole,
@@ -53,6 +63,9 @@ import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
+import { SceneComfyModal } from "./SceneComfyModal";
+import { comfyApi, type ComfyRunMedia } from "../../lib/comfyApi";
+import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { ViewSequencePreview } from "./ViewSequencePreview";
 import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPromptConfig";
@@ -110,6 +123,36 @@ function refMediaType(r: SceneRef): "image" | "video" | "audio" {
   return r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image";
 }
 
+// 단순 미디어 비교 아이템(레퍼런스 포함) — fallback=로드 실패 시 대체, full=크게 보기용 원본.
+type CompareMediaItem = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
+
+// URL/이름에서 확장자를 뽑고, 없으면 타입 기본값(png/mp4). ComfyUI 가 파일종류를 알도록 이름에 확장자를 붙인다.
+function mediaFileName(nameOrUrl: string, type: "image" | "video", idx: number): string {
+  const m = /\.([a-z0-9]{2,4})(?:\?|#|$)/i.exec(nameOrUrl);
+  const ext = m ? m[1].toLowerCase() : type === "video" ? "mp4" : "png";
+  return `${type}${idx}.${ext}`;
+}
+
+// 임의 URL → 풀해상도 Blob. 로컬(/…)은 쿠키로 직접, 원격은 직접 fetch 후 CORS 막히면 /api/download 프록시.
+// (download.ts 의 _fetchBlob 과 동일 전략 — 그쪽은 비공개라 여기 재사용용으로 옮겨 적음.)
+async function fetchRefBlob(url: string, name: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
+    if (res.ok) return await res.blob();
+  } catch {
+    /* 프록시 폴백으로 */
+  }
+  if (url.startsWith("/")) return null;
+  try {
+    const q = `url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+    const res = await fetch(`/api/download?${q}`, { credentials: "include" });
+    if (res.ok) return await res.blob();
+  } catch {
+    /* 프록시도 실패 */
+  }
+  return null;
+}
+
 interface Props {
   scene: Scene;
   onChange: (patch: Partial<Scene>) => void;
@@ -135,6 +178,8 @@ interface Props {
   onVariantShare?: (sel: Generation[]) => void;
   onVariantDownload?: (sel: Generation[]) => void;
   onVariantCompare?: (sel: Generation[]) => void;
+  // 레퍼런스 등 비생성 미디어가 섞인 선택 → 상단 선택바가 '미디어 비교'를 띄우게 App 에 보고(없으면 null).
+  onSelectionCompare?: (media: CompareMediaItem[] | null) => void;
   onVariantAssign?: (sel: Generation[], projectId: string | null) => void;
   onVariantCreateAssign?: (sel: Generation[], name: string) => void;
   onVariantDelete?: (sel: Generation[]) => Promise<string[]>; // 삭제 성공 id 반환
@@ -151,6 +196,8 @@ interface Props {
   onGenerateCard?: () => void;
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
   onRenderCards?: (cardIds: string[]) => void;
+  // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
+  onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
   fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
@@ -188,6 +235,7 @@ export function SceneBoard({
   onVariantShare,
   onVariantDownload,
   onVariantCompare,
+  onSelectionCompare,
   onVariantAssign,
   onVariantCreateAssign,
   onVariantDelete,
@@ -197,6 +245,7 @@ export function SceneBoard({
   onBatchCountChange,
   onGenerateCard,
   onRenderCards,
+  onRenderCardRuns,
   grayOn,
   fill = true,
   typeFilter = "all",
@@ -230,6 +279,7 @@ export function SceneBoard({
   const nodePickerRef = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
   nodePickerRef.current = nodePicker; // 열림여부(truthy) + 생성 좌표(cx/cy) 둘 다 여기서 참조
   const [modelModalId, setModelModalId] = useState<string | null>(null); // 모델 노드 설정 모달 대상 카드 id
+  const [comfyModalId, setComfyModalId] = useState<string | null>(null); // comfy 노드 설정 모달 대상 카드 id
   const [viewTextModal, setViewTextModal] = useState<string[] | null>(null); // View 텍스트 보기 모달 내용
   const [viewTimeline, setViewTimeline] = useState<TimelineClip[] | null>(null); // View 재생 타임라인(연속 재생) 클립들
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
@@ -283,6 +333,7 @@ export function SceneBoard({
   cardMenuRef.current = cardMenu;
   const popupSelRef = useRef(popupSel);
   popupSelRef.current = popupSel;
+  const popupAnchorRef = useRef<string | null>(null); // 팝업 Shift 범위선택 기준점(마지막 단일/토글 클릭)
   // 가위(연결 자르기) — 후디니식: Y 를 누르고 있는 동안만 활성. 좌드래그로 궤적을 그리고 지나간
   // 연결선을 빨갛게 표시(예고)했다가, 마우스를 떼면 그 선들을 실제로 끊는다.
   const [cutHeld, setCutHeld] = useState(false); // Y 키를 누르고 있는 중
@@ -335,6 +386,9 @@ export function SceneBoard({
   cardsRef.current = cards;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
+  const orchestratingRef = useRef(false); // 실행(오케스트레이션) 진행 중 재클릭 가드
+  // 상류 comfy 가 도는 동안 '생성 대기중'으로 표시할 생성카드 id 들(잡 제출 전 구간). comfy 끝나면 비운다.
+  const [comfyWaitingIds, setComfyWaitingIds] = useState<Set<string>>(new Set());
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const selectedRef = useRef(selected);
@@ -1066,7 +1120,15 @@ export function SceneBoard({
                     ? { ...base, kind: "head", text: "제목", color: "#e8c341", fontSize: 32 }
                     : kind === "render"
                       ? { ...base, kind: "render" }
-                      : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
+                      : kind === "comfy"
+                        ? {
+                            ...base,
+                            kind: "comfy",
+                            w: 210,
+                            h: 190,
+                            comfyCfg: { status: "idle", paramExposed: [], paramValues: {}, params: [] },
+                          }
+                        : { ...base, kind: "generation", status: "empty", refs: [], genId: null };
     const nextCards = [...cardsRef.current, card];
     setCards(nextCards);
     setSelected(new Set([card.id]));
@@ -1111,6 +1173,40 @@ export function SceneBoard({
     setSelected(new Set([empty.id]));
     persist(nextCards, nextEdges);
   };
+  // 선택 노드(2개 이상)를 키로 연결 — 포트 드래그 대신. 공간 순서(왼→오른쪽,위→아래)로 인접쌍을
+  // canConnect 허용 방향으로 잇는다(a→b 불가면 b→a 시도). 이미 있는 엣지·불가쌍은 건너뛴다.
+  const connectSelected = () => {
+    const picked = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((c) => c.id === id))
+      .filter((c): c is SceneCard => !!c)
+      .sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y));
+    if (picked.length < 2) return;
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const existing = new Set(edgesRef.current.map((e) => e.from + ">" + e.to));
+    const newEdges: SceneEdge[] = [];
+    for (let i = 0; i < picked.length - 1; i++) {
+      const a = picked[i];
+      const b = picked[i + 1];
+      let from = a;
+      let to = b;
+      if (!canConnect(a, b, byId, edgesRef.current)) {
+        if (canConnect(b, a, byId, edgesRef.current)) {
+          from = b;
+          to = a;
+        } else continue; // 어느 방향도 불가한 쌍은 건너뜀
+      }
+      const key = from.id + ">" + to.id;
+      if (existing.has(key)) continue;
+      existing.add(key);
+      newEdges.push({ id: uid(), from: from.id, to: to.id });
+    }
+    if (!newEdges.length) return;
+    const nextEdges = [...edgesRef.current, ...newEdges];
+    const nextCards = withGenRefs(cardsRef.current, nextEdges); // 새 연결로 생성카드 refs 재계산
+    setCards(nextCards);
+    setEdges(nextEdges);
+    persist(nextCards, nextEdges);
+  };
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
@@ -1129,6 +1225,388 @@ export function SceneBoard({
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, fontSize: fs } : c));
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
+  };
+  // comfy 노드: comfyCfg 부분 병합 저장(모달 저장·실행 상태 갱신·파라미터 값 변경 공용).
+  const patchComfyCfg = (cardId: string, patch: Partial<SceneComfyCfg>) => {
+    const nextCards = cardsRef.current.map((c) =>
+      c.id === cardId && c.kind === "comfy"
+        ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
+        : c,
+    );
+    cardsRef.current = nextCards; // ref 즉시 갱신 — 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성)
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+  };
+  // comfy 노드: 노출 파라미터 1개 값 변경(카드 인라인 컨트롤에서).
+  const setComfyParam = (cardId: string, key: string, value: string | number | boolean) => {
+    const card = cardsRef.current.find((c) => c.id === cardId);
+    const values = { ...(card?.comfyCfg?.paramValues || {}), [key]: value };
+    patchComfyCfg(cardId, { paramValues: values });
+  };
+  // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
+  //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
+  const applyComfyApi = async (cardId: string, name: string, content: string): Promise<boolean> => {
+    try {
+      const res = await comfyApi.parse(content, []);
+      patchComfyCfg(cardId, {
+        name,
+        content,
+        nodeCount: res.node_count,
+        paramExposed: [],
+        paramValues: {},
+        params: [],
+        outputs: [],
+        output: null,
+        status: "idle",
+        error: null,
+      });
+      return true;
+    } catch {
+      return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
+    }
+  };
+  // comfy 노드: 파일 선택으로 API 교체(.json). 버튼에서 호출 — 숨은 input 을 즉석 생성.
+  const pickComfyFile = (cardId: string) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      const text = await f.text();
+      await applyComfyApi(cardId, f.name.replace(/\.json$/i, ""), text);
+    };
+    input.click();
+  };
+  // comfy 노드: 현재 워크플로우를 다시 파싱(노드수 갱신 + 실행상태/에러 리셋 → 재실행 준비). 내용·노출은 유지.
+  const refreshComfy = async (cardId: string) => {
+    const content = cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content;
+    if (!content) return;
+    try {
+      const res = await comfyApi.parse(content, []);
+      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null });
+    } catch {
+      /* 파싱 실패 — 상태만 두고 무시 */
+    }
+  };
+  // comfy 노드 입력 수집 — 연결된 레퍼런스/생성물/리스트를 공간 순서(위→아래,왼→오)대로,
+  // 종류(image/video)별로 풀해상도 URL 로 모은다. (텍스트 노드 gather 패턴과 동형)
+  const gatherComfyMedia = (
+    comfyId: string,
+    overlay?: ComfyOutputsById,
+  ): { type: "image" | "video"; url: string; name: string }[] => {
+    const cardsById = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const resolved = resolvePortEdges(cardsById, edgesRef.current);
+    const srcs = resolved
+      .filter((e) => e.to === comfyId)
+      .map((e) => cardsById.get(e.from))
+      .filter((c): c is SceneCard => !!c)
+      .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+    const out: { type: "image" | "video"; url: string; name: string }[] = [];
+    const pushRef = (r: SceneRef) => {
+      const mt = refMediaType(r);
+      if (mt === "audio") return; // 오디오는 image/video 슬롯 대상이 아님 — 제외
+      const url = refMediaSrc(r);
+      if (!url) return;
+      out.push({ type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1) });
+    };
+    const pushGen = (gc?: SceneCard) => {
+      const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+      const a = gid ? genDataRef.current[gid]?.assets?.[0] : undefined;
+      const url = a?.source_url || a?.file_path;
+      if (!url) return;
+      const type = a?.type === "video" ? "video" : "image";
+      out.push({ type, url, name: mediaFileName(url, type, out.length + 1) });
+    };
+    for (const s of srcs) {
+      if (s.kind === "reference") (s.refs || []).forEach(pushRef);
+      else if (s.kind === "generation") pushGen(s);
+      else if (s.kind === "comfy")
+        // 상류 comfy 의 이미지/영상 출력물을 입력으로(comfy→comfy 체인). overlay 가 있으면 이 짝(복사본)의 결과를 읽는다.
+        for (const m of comfyOutputMedia(s, overlay))
+          out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
+      else if (s.kind === "list") {
+        const li = collectListInputs(s.id, cardsById, resolved);
+        if (li.kind === "reference")
+          for (const cid of li.sourceIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
+        else if (li.kind === "generation")
+          for (const cid of li.generationCardIds) pushGen(cardsById.get(cid));
+      }
+    }
+    return out;
+  };
+  // ComfyUI 시드 INT 상한(2^31-1). 이보다 크면 노드 검증에서 400(value_bigger_than_max) 이 난다.
+  const SEED_MAX = 2_147_483_647;
+  const randomSeed = () => Math.floor(Math.random() * (SEED_MAX + 1)); // 0..2^31-1
+  // 워크플로우 JSON 의 seed/noise_seed 숫자 필드를 무작위로 바꾼 사본을 만든다(배치 복사본마다 다른 결과를 위해).
+  //  ComfyUI 의 control_after_generate(시드 자동변경)는 웹UI 기능이라 /prompt API 로 같은 워크플로우를 N번 제출하면
+  //  결과가 전부 같다 → 여기서 프론트가 복사본마다 시드를 바꿔 준다(시드 필드 없으면 원본 그대로).
+  const randomizeSeeds = (content: string): string => {
+    try {
+      const wf = JSON.parse(content);
+      if (!wf || typeof wf !== "object") return content;
+      for (const node of Object.values(wf)) {
+        const inputs = (node as { inputs?: Record<string, unknown> })?.inputs;
+        if (!inputs || typeof inputs !== "object") continue;
+        for (const key of ["seed", "noise_seed"]) {
+          if (typeof inputs[key] === "number") inputs[key] = randomSeed();
+        }
+      }
+      return JSON.stringify(wf);
+    } catch {
+      return content; // 파싱 실패 시 원본 그대로(시드 변경 포기)
+    }
+  };
+  // 노출 파라미터(paramValues, 키="node|field")의 seed/noise_seed 도 무작위로 — 시드를 파라미터로 노출했으면
+  //  백엔드가 이 값을 워크플로우에 재주입해 content 랜덤을 덮어쓴다. 여기서도 바꿔 줘야 N개가 서로 달라진다.
+  const randomizeSeedParams = (
+    paramValues: Record<string, string | number | boolean>,
+  ): Record<string, string | number | boolean> => {
+    const out = { ...paramValues };
+    for (const key of Object.keys(out)) {
+      const field = key.split("|")[1]; // "node|field"
+      if ((field === "seed" || field === "noise_seed") && typeof out[key] === "number")
+        out[key] = randomSeed();
+    }
+    return out;
+  };
+  // comfy 노드에 '텍스트가 연결돼 있는지' — 내용 유무와 무관하게 연결 존재만 본다(ComfyUI 처럼 연결되면
+  //  위젯 비활성). resolveEdgeRole 로 들어오는 엣지 중 텍스트 역할이 하나라도 있으면 true.
+  const hasTextConnection = (cardId: string, map: Map<string, SceneCard>, es: SceneEdge[]): boolean =>
+    es.some((e) => e.to === cardId && resolveEdgeRole(e, map, refParents, es) === "text");
+  // 연결된 텍스트로 노출된 text 파라미터를 구동 — 텍스트가 연결돼 있으면(빈 값이어도) 모든 text 타입 파라미터를
+  //  연결 텍스트로 덮는다(연결이 위젯을 대체). 연결 없으면 원래 편집값 유지. 실행 시 라이브로 읽는다.
+  const driveTextParams = (
+    cardId: string,
+    baseParams: Record<string, string | number | boolean>,
+    params: { key: string; type: string }[] | undefined,
+    overlay?: ComfyOutputsById,
+  ): Record<string, string | number | boolean> => {
+    const textKeys = (params || []).filter((p) => p.type === "text").map((p) => p.key);
+    if (!textKeys.length) return baseParams;
+    const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    if (!hasTextConnection(cardId, map, edgesRef.current)) return baseParams;
+    const linked = incomingTextOf(cardId, map, edgesRef.current, new Set(), overlay); // 빈 문자열 가능
+    const out = { ...baseParams };
+    for (const k of textKeys) out[k] = linked;
+    return out;
+  };
+  // comfy 실행 코어 — 카드 상태를 쓰지 않고 결과 출력셋만 반환(배치 병렬 실행용). 실패 시 throw.
+  //  · overlay 가 있으면 상류 comfy 입력은 카드 저장분이 아니라 이 복사본의 결과(overlay)를 읽는다(체인 짝 맞춤).
+  //  · cfgSnap 을 주면 그 content/paramValues 로 실행한다(클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 새는 것 방지).
+  //  · varySeed 면 복사본마다 content·paramValues 의 시드를 무작위로(배치 N>1). 단일 실행은 시드 보존.
+  const runComfyRaw = async (
+    cardId: string,
+    overlay: ComfyOutputsById | undefined,
+    varySeed: boolean,
+    cfgSnap?: { content: string; paramValues: Record<string, string | number | boolean> },
+  ): Promise<ComfyOutput[]> => {
+    const card = cardsRef.current.find((c) => c.id === cardId);
+    const baseContent = cfgSnap?.content ?? card?.comfyCfg?.content;
+    const baseParams = cfgSnap?.paramValues ?? card?.comfyCfg?.paramValues ?? {};
+    if (!baseContent) throw new Error("워크플로우가 없습니다");
+    const wanted = gatherComfyMedia(cardId, overlay);
+    const media: ComfyRunMedia[] = [];
+    for (const m of wanted) {
+      const blob = await fetchRefBlob(m.url, m.name);
+      if (!blob) throw new Error(`입력을 불러오지 못했습니다: ${m.name}`); // 부분 주입 방지(슬롯 밀림 방지)
+      media.push({ type: m.type, name: m.name, blob });
+    }
+    // 연결된 텍스트가 있으면 노출된 text 파라미터를 그 텍스트로 구동(연결 우선). 실행 시점에 라이브로 읽어
+    //  Text Multiline 등 텍스트 입력을 자동 채운다. overlay 로 상류 comfy 텍스트 체인도 반영.
+    const driven = driveTextParams(cardId, baseParams, card?.comfyCfg?.params, overlay);
+    const content = varySeed ? randomizeSeeds(baseContent) : baseContent;
+    const paramValues = varySeed ? randomizeSeedParams(driven) : driven;
+    const res = await comfyApi.run(content, paramValues, media);
+    return res.outputs;
+  };
+  // comfy 단독(표시) 실행 — 카드 버튼/단일 실행용. 코어를 감싸 카드에 running/done/failed 를 쓴다. 성공 시 true.
+  const runComfy = async (cardId: string): Promise<boolean> => {
+    const card = cardsRef.current.find((c) => c.id === cardId);
+    if (!card?.comfyCfg?.content) return false;
+    patchComfyCfg(cardId, { status: "running", error: null });
+    try {
+      const outputs = await runComfyRaw(cardId, undefined, false); // 카드 슬롯 기준·시드 보존
+      patchComfyCfg(cardId, { status: "done", outputs, output: null, error: null });
+      return true;
+    } catch (e) {
+      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" });
+      return false;
+    }
+  };
+  // 실행 계획대로 상류 comfy 를 순서대로 실행(await)한 뒤, 실패의 하류가 아닌 생성카드 id 만 돌려준다.
+  //  comfy 없는 렌더 경로 전용(=comfy 실행 없이 실행가능 생성만 추린다). 표시용 runComfy 를 그대로 쓴다.
+  const runPlanComfy = async (
+    plan: SceneExecutionPlan,
+    sceneId: string,
+  ): Promise<{ runnableGenIds: string[]; aborted: boolean }> => {
+    const failed = new Set<string>(plan.skippedByCycle); // 사이클 = 실행 불가 취급
+    const runnableGenIds: string[] = [];
+    for (const step of plan.steps) {
+      if (sceneIdRef.current !== sceneId) return { runnableGenIds, aborted: true }; // 씬 전환 → 중단
+      const depFailed = step.dependsOn.some((d) => failed.has(d));
+      if (step.kind === "comfy") {
+        if (depFailed) {
+          failed.add(step.id);
+          continue;
+        }
+        const ok = await runComfy(step.id);
+        if (!ok) failed.add(step.id);
+      } else if (!depFailed) {
+        runnableGenIds.push(step.id);
+      }
+    }
+    return { runnableGenIds, aborted: false };
+  };
+  // 배치 짝 실행 — 실행계획을 batch 벌 '병렬'로 돌린다(복사본 i 마다 독립 overlay). 복사본 안에서는 comfy 체인을
+  //  순서대로(위상순) 돌려 하류 comfy 가 상류 복사본 결과를 읽게 한다. 각 복사본의 실행가능 생성카드를 그 overlay 와
+  //  짝지어 SceneGenerationRun 으로 만든다. comfy 표시(카드 status/outputs)는 시작(running)·종료(스냅샷) 때만 집계.
+  //  로컬 ComfyUI 는 큐가 GPU 를 순차 처리(제출은 병렬)·클라우드는 진짜 병렬 — 코드는 동일(서버가 알아서).
+  const runPlanComfyCopies = async (
+    plan: SceneExecutionPlan,
+    sceneId: string,
+    batch: number,
+  ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
+    // 클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 다르게 새는 것을 막는다(comfy content·paramValues).
+    const cfgSnap = new Map<string, { content: string; paramValues: Record<string, string | number | boolean> }>();
+    for (const c of cardsRef.current)
+      if (c.kind === "comfy" && plan.comfyIds.includes(c.id) && c.comfyCfg?.content)
+        cfgSnap.set(c.id, {
+          content: c.comfyCfg.content,
+          paramValues: { ...(c.comfyCfg.paramValues || {}) },
+        });
+    // 표시: plan 의 comfy 카드들을 running 으로(집계 1회). ★persist 안 함 — 중단(씬 전환)돼도 running 이 디스크에
+    //  남지 않게(반대 씬에 잘못 쓰는 것도 방지). 라이브 UI 표시용으로 setCards 만.
+    if (plan.comfyIds.length) {
+      const running = cardsRef.current.map((c) =>
+        c.kind === "comfy" && plan.comfyIds.includes(c.id)
+          ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "running" as const, error: null } }
+          : c,
+      );
+      cardsRef.current = running;
+      setCards(running);
+    }
+    const varySeed = batch > 1;
+    type CopyResult = {
+      runs: SceneGenerationRun[];
+      overlay: ComfyOutputsById;
+      errors: Record<string, string>; // comfyId → 이 복사본에서 난 실제 에러 메시지(카드 표시·진단용)
+      aborted: boolean;
+    };
+    const runOneCopy = async (i: number): Promise<CopyResult> => {
+      const overlay: ComfyOutputsById = {};
+      const errors: Record<string, string> = {};
+      const failed = new Set<string>(plan.skippedByCycle);
+      let aborted = false;
+      for (const step of plan.steps) {
+        if (sceneIdRef.current !== sceneId) {
+          aborted = true;
+          break;
+        }
+        if (step.kind !== "comfy") continue; // 생성카드는 아래에서 overlay 확정 후 일괄 판정
+        if (step.dependsOn.some((d) => failed.has(d))) {
+          failed.add(step.id); // 상류(comfy) 실패 → 이 comfy 도 스킵
+          continue;
+        }
+        try {
+          overlay[step.id] = await runComfyRaw(step.id, overlay, varySeed, cfgSnap.get(step.id));
+        } catch (e) {
+          errors[step.id] = e instanceof Error ? e.message : String(e); // 실제 원인 보존(401/402/429 등)
+          failed.add(step.id);
+        }
+      }
+      const runs: SceneGenerationRun[] = aborted
+        ? []
+        : plan.steps
+            .filter((s) => s.kind === "generation" && !s.dependsOn.some((d) => failed.has(d)))
+            .map((s) => ({ batchIndex: i, cardId: s.id, comfyOutputsById: { ...overlay } }));
+      return { runs, overlay, errors, aborted };
+    };
+    const copies = await Promise.all(Array.from({ length: batch }, (_, i) => runOneCopy(i)));
+    const aborted = copies.some((c) => c.aborted) || sceneIdRef.current !== sceneId;
+    // 표시 스냅샷: 각 comfy 는 첫 성공 복사본 결과를 카드에 남긴다(생성 입력엔 안 쓰임 — UI 미리보기용).
+    if (!aborted && plan.comfyIds.length) {
+      const snap = cardsRef.current.map((c) => {
+        if (c.kind !== "comfy" || !plan.comfyIds.includes(c.id)) return c;
+        const ok = copies.filter((cp) => c.id in cp.overlay);
+        const outputs = ok[0]?.overlay[c.id];
+        const failCount = batch - ok.length;
+        const errMsg = copies.map((cp) => cp.errors[c.id]).find(Boolean); // 실패한 복사본의 실제 사유(있으면)
+        if (outputs)
+          return {
+            ...c,
+            comfyCfg: {
+              ...(c.comfyCfg || {}),
+              status: "done" as const,
+              outputs,
+              output: null,
+              error: failCount > 0 ? `${failCount}/${batch} 실패${errMsg ? `: ${errMsg}` : ""}` : null,
+            },
+          };
+        return {
+          ...c,
+          comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: errMsg || "실행 실패" },
+        };
+      });
+      cardsRef.current = snap;
+      setCards(snap);
+      persist(snap, edgesRef.current);
+    }
+    return { runs: copies.flatMap((c) => c.runs), aborted };
+  };
+  // 단일 생성카드 실행 — 상류 comfy 가 있으면 배치수만큼 병렬 실행해 각 결과와 짝지어 생성. 없으면 스포트라이트 제출.
+  const orchestrateGenerate = async (genId: string) => {
+    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+    const resolved = resolvePortEdges(byId, edgesRef.current);
+    const plan = buildGenerationExecutionPlan(genId, byId, resolved);
+    if (!plan.comfyIds.length) {
+      onGenerateCard?.();
+      return;
+    }
+    if (orchestratingRef.current) return; // 이미 실행 중이면 무시(중복 실행 방지)
+    orchestratingRef.current = true;
+    setComfyWaitingIds(new Set([genId])); // 상류 comfy 도는 동안 이 카드 '생성 대기중' 표시
+    const sid = sceneIdRef.current;
+    try {
+      const batch = Math.max(1, batchCount);
+      const { runs, aborted } = await runPlanComfyCopies(plan, sid, batch);
+      const mine = runs.filter((r) => r.cardId === genId);
+      if (!aborted && sceneIdRef.current === sid && mine.length) await onRenderCardRuns?.(mine);
+    } finally {
+      orchestratingRef.current = false;
+      setComfyWaitingIds(new Set()); // 잡 제출 완료(genId 세팅 → Generating 이 이어받음)
+    }
+  };
+  // 렌더 실행 — comfy 가 있으면 배치수만큼 병렬 실행해 체크된 모든 생성카드를 각 짝과 함께 생성(결과=N×카드).
+  //  comfy 가 없으면 기존 병렬 배치 경로(각 카드 batch장) 유지.
+  const orchestrateRender = async (renderId: string, checkedGenIds: string[]) => {
+    if (orchestratingRef.current) return; // 중복 실행 방지
+    orchestratingRef.current = true;
+    const sid = sceneIdRef.current;
+    try {
+      const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
+      const resolved = resolvePortEdges(byId, edgesRef.current);
+      const directComfy = resolved
+        .filter((e) => e.to === renderId)
+        .map((e) => byId.get(e.from))
+        .filter((c): c is SceneCard => c?.kind === "comfy")
+        .map((c) => c.id);
+      const plan = buildExecutionPlan(checkedGenIds, directComfy, byId, resolved);
+      const batch = Math.max(1, batchCount);
+      if (plan.comfyIds.length) {
+        // 상류 comfy 도는 동안 실행대상 생성카드들을 '생성 대기중'으로 표시.
+        setComfyWaitingIds(new Set(plan.generationIds.length ? plan.generationIds : checkedGenIds));
+        const { runs, aborted } = await runPlanComfyCopies(plan, sid, batch);
+        if (!aborted && sceneIdRef.current === sid && runs.length) await onRenderCardRuns?.(runs);
+      } else {
+        const { runnableGenIds, aborted } = await runPlanComfy(plan, sid);
+        if (!aborted && sceneIdRef.current === sid && runnableGenIds.length)
+          onRenderCards?.(runnableGenIds);
+      }
+    } finally {
+      orchestratingRef.current = false;
+      setComfyWaitingIds(new Set()); // 잡 제출 완료(genId 세팅 → Generating 이 이어받음)
+    }
   };
   // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.
   const toggleRenderCheck = (renderId: string, genCardId: string) => {
@@ -1309,6 +1787,15 @@ export function SceneBoard({
           thumb: gen ? thumbOf(gen, 256) : null,
         });
     }
+    // comfy 노드의 이미지/영상 출력물도 View 클립으로 추가(연결 순서 = 공간순).
+    const comfySrcs = es
+      .filter((e) => e.to === viewId)
+      .map((e) => byId.get(e.from))
+      .filter((c): c is SceneCard => c?.kind === "comfy")
+      .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+    for (const c of comfySrcs)
+      for (const m of comfyOutputMedia(c))
+        clips.push({ url: m.url, type: m.kind, name: c.comfyCfg?.name || "Comfy 결과", thumb: m.url });
     return clips;
   };
   // View 노드 재생 — 연결된 생성물을 순서대로 이어 타임라인 플레이어로 '연속 재생'.
@@ -1330,7 +1817,7 @@ export function SceneBoard({
   const openView = (viewId: string) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
     const es = resolvePortEdges(byId, edgesRef.current);
-    if (collectViewGenCardIds(viewId, byId, es).length) {
+    if (buildViewClips(viewId, byId, es).length) {
       playView(viewId);
       return;
     }
@@ -1576,15 +2063,21 @@ export function SceneBoard({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (
-        t &&
-        (t.tagName === "INPUT" ||
+      // keydown 은 window 에 걸려 있어 e.target = document.activeElement 다. 카드를 클릭/Ctrl클릭으로 선택하면
+      // 카드 안 컨트롤(렌더 체크박스 등)에 포커스가 남아, INPUT 을 통째로 막던 옛 가드가 c(연결)·f·Delete 등
+      // 캔버스 단축키를 삼켰다(마퀴 드래그는 배경 시작이라 포커스가 body → 안 막힘 = 증상 차이). 체크박스·라디오
+      // 같은 '비-텍스트 컨트롤'엔 글자를 타이핑할 수 없으므로 단축키를 막을 이유가 없다 → 진짜 텍스트 입력만 차단한다.
+      const NON_TEXT_INPUT = new Set([
+        "checkbox", "radio", "button", "range", "color", "file", "submit", "reset", "image",
+      ]);
+      const isTextEntry =
+        !!t &&
+        ((t.tagName === "INPUT" && !NON_TEXT_INPUT.has((t as HTMLInputElement).type)) ||
           t.tagName === "TEXTAREA" ||
           t.tagName === "SELECT" ||
           t.isContentEditable ||
-          t.closest?.(".sl-dockbar")) // 프롬프트 dock(레퍼런스 트레이 등) 포커스 시 캔버스 단축키(Delete·m·l 등) 차단
-      )
-        return;
+          !!t.closest?.(".sl-dockbar")); // 프롬프트 dock(레퍼런스 트레이 등) 포커스 시 캔버스 단축키 차단(종류 무관)
+      if (isTextEntry) return;
       // 텍스트/제목 노드 편집 중이면(포커스가 새어도) 캔버스 단축키(m/l/t/o/i/h 등)를 무시 — 글자가 노드 생성으로 새지 않게.
       if (editTextIdRef.current && e.key !== "Escape") return;
       if (e.key === "Escape") {
@@ -1635,6 +2128,7 @@ export function SceneBoard({
           i: "input",
           h: "head",
           r: "render",
+          c: "comfy",
         };
         const kind = NODE_KEYS[e.key.toLowerCase()];
         if (kind) {
@@ -1770,6 +2264,15 @@ export function SceneBoard({
           );
           setCards(nextCards);
           persist(nextCards, edgesRef.current);
+          return;
+        }
+      }
+      // c = 선택 노드(2개 이상)를 연결(왼→오른쪽). 포트를 드래그하지 않고 키로 연결.
+      if (matchShortcut(e, "boardConnect")) {
+        if ([...sel].length >= 2) {
+          e.preventDefault();
+          if (e.repeat) return; // 키 반복 무시(중복 엣지·undo 오염 방지)
+          connectSelected();
           return;
         }
       }
@@ -2312,6 +2815,72 @@ export function SceneBoard({
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);
   const cardById = (id: string) => cardsById.get(id);
 
+  // 상류 comfy 가 'running' 인 생성카드 집합 — 어느 버튼(생성카드 Generate / comfy 노드 실행)으로 돌리든
+  //  컨피가 도는 동안 그 다운스트림 생성카드가 '생성중(회색)'으로 보이게 comfy 상태에서 파생한다.
+  //  (running comfy 가 없으면 조기 반환 — 매 렌더 계획수립 비용 회피.)
+  const genWaitingFromComfy = useMemo(() => {
+    const runningComfy = new Set(
+      cards.filter((c) => c.kind === "comfy" && c.comfyCfg?.status === "running").map((c) => c.id),
+    );
+    const out = new Set<string>();
+    if (!runningComfy.size) return out;
+    const resolved = resolvePortEdges(cardsById, edges);
+    for (const c of cards) {
+      if (c.kind !== "generation") continue;
+      const plan = buildGenerationExecutionPlan(c.id, cardsById, resolved);
+      if (plan.comfyIds.some((id) => runningComfy.has(id))) out.add(c.id);
+    }
+    return out;
+  }, [cards, edges, cardsById]);
+
+  // 다중선택 '미디어 비교' 대상 — 레퍼런스처럼 비생성 카드가 섞였을 때 이미지·영상을 나란히 보기(영상은 동시재생).
+  //  전부 생성카드면 여기선 null → App 상단 선택바가 기존 생성 비교(CompareModal)로 처리한다(생성정보 포함).
+  //  비교 불가 조합(오디오·모델·리스트·컨피·결과없는 생성)이면 null.
+  const sceneCompareMedia = useMemo((): CompareMediaItem[] | null => {
+    if (selected.size < 2) return null;
+    const sels = [...selected].map((id) => cardsById.get(id)).filter((c): c is SceneCard => !!c);
+    const media: CompareMediaItem[] = [];
+    let hasRef = false;
+    for (const c of sels) {
+      if (c.kind === "generation") {
+        const g = c.genId ? genData[c.genId] : undefined;
+        const a = g?.assets?.[0];
+        if (!g || !a) return null; // 아직 결과 없는 생성카드 → 비교 불가
+        media.push({ url: a.file_path, name: g.prompt?.slice(0, 40) || "생성", type: a.type === "video" ? "video" : "image", full: a.file_path });
+      } else if (c.kind === "reference") {
+        hasRef = true;
+        const r = c.refs?.[0];
+        if (!r) return null;
+        const mt = refMediaType(r);
+        if (mt !== "image" && mt !== "video") return null; // 오디오·빈 레퍼런스는 제외
+        // 이미지: displayThumb 로 표시용 URL(백엔드 리사이즈, 로컬 에셋 원본은 서버에 없어 <img> 로 깨짐).
+        //  선명하게 r.file_path 로 1024 를 요청하되, 로드 실패(스테일 경로 등)면 캔버스에서 검증된 썸네일(refThumbSrc)로
+        //  폴백한다. 영상: 재생해야 하므로 실제 파일 URL(refMediaSrc).
+        if (mt === "video") {
+          const url = refMediaSrc(r);
+          if (!url) return null;
+          media.push({ url, name: r.name || "레퍼런스", type: "video" });
+        } else {
+          const thumb = refThumbSrc(r); // 캔버스와 동일한 검증된 표시 URL(폴백)
+          const url = displayThumb(r.file_path, 1024) ?? thumb ?? refMediaSrc(r);
+          if (!url) return null;
+          // 크게 보기(zoom)는 원본(refMediaSrc=assetFileUrl, 고해상도). 없으면 표시 URL.
+          media.push({ url, name: r.name || "레퍼런스", type: "image", fallback: thumb, full: refMediaSrc(r) ?? url });
+        }
+      } else {
+        return null; // 모델·리스트·컨피 등은 비교 대상 아님
+      }
+    }
+    return hasRef ? media : null; // 레퍼런스 없이 전부 생성 → 기존 생성 비교로
+  }, [selected, cardsById, genData]);
+  // 미디어 비교 대상(레퍼런스 포함)을 상단 선택바에 보고 — 변형 팝업 열려 있으면(그 자체 바) 숨긴다.
+  const onSelCmpRef = useRef(onSelectionCompare);
+  onSelCmpRef.current = onSelectionCompare;
+  useEffect(() => {
+    onSelCmpRef.current?.(cardMenu ? null : sceneCompareMedia);
+  }, [sceneCompareMedia, cardMenu]);
+  useEffect(() => () => onSelCmpRef.current?.(null), []);
+
   // ── 미니맵(네비게이터)용 박스·바운즈 — 카드가 바뀔 때만 재계산 ──
   const mmBoxes = useMemo(
     () =>
@@ -2509,8 +3078,11 @@ export function SceneBoard({
   // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
   const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>
     role === "model" ? "model" : role === "text" ? "text" : "ref";
-  const laneFrac = (lane: "model" | "ref" | "text") =>
-    lane === "model" ? 0.28 : lane === "text" ? 0.72 : 0.5;
+  // 입력 포트 세로 위치 — 카드 '세로 중앙' 기준 고정 오프셋(카드가 커져도 간격 유지·항상 중앙 정렬). 모든 카드 공통.
+  //  ref=중앙(0), 모델=위, 텍스트=아래. gen·comfy 등 다입력 카드에 동일 적용.
+  const PORT_V_GAP = 26;
+  const laneDelta = (lane: "model" | "ref" | "text") =>
+    lane === "model" ? -PORT_V_GAP : lane === "text" ? PORT_V_GAP : 0;
   // 생성카드로 들어오는 연결의 fan-in 을 (타깃+물리레인) 단위로 — 같은 레인끼리만 세로로 펼쳐 겹침 방지.
   const inEdgesLaned = useMemo(() => {
     const m = new Map<string, SceneEdge[]>();
@@ -2529,8 +3101,10 @@ export function SceneBoard({
   const edgeEnds = (e: SceneEdge, a: SceneCard, b: SceneCard) => {
     const lane = laneOf(edgeRoles.get(e.id) || "ref");
     // 타깃이 생성카드면 물리 레인 y + 그 레인 내 fan, 아니면 중앙 + 타깃 전체 fan.
+    // 다입력 카드(gen·comfy)는 세로중앙 + 레인 오프셋으로, 그 외는 중앙(0.5).
     const gen = b.kind === "generation";
-    const y2base = b.y + heightOf(b) * (gen ? laneFrac(lane) : 0.5);
+    const laned = gen || b.kind === "comfy";
+    const y2base = b.y + heightOf(b) * 0.5 + (laned ? laneDelta(lane) : 0);
     const fanList = gen ? inEdgesLaned.get(b.id + ":" + lane) : inEdges.get(b.id);
     return {
       x1: a.x + widthOf(a) + PORT_GAP, // 출력 포트(카드 오른쪽 밖)
@@ -2889,7 +3463,9 @@ export function SceneBoard({
                   ? () => openView(card.id)
                   : card.kind === "model"
                     ? () => setModelModalId(card.id)
-                    : undefined
+                    : card.kind === "comfy"
+                      ? () => setComfyModalId(card.id)
+                      : undefined
               }
             >
               {isRef ? (
@@ -2996,9 +3572,10 @@ export function SceneBoard({
                         for (const cid of li.generationCardIds) addGenRef(cardsById.get(cid));
                     }
                   }
-                  // 텍스트를 @토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.
+                  // 텍스트를 토큰 기준으로 쪼개, 토큰은 인라인 알약(썸네일)으로, 나머지는 그대로.
+                  //  @image1 형식 + comfy 프롬프트의 <<<image1>>> 형식 둘 다 인식 → 같은 레퍼런스로 매핑.
                   const renderInline = (text: string) => {
-                    const re = /@(?:image|video|audio)\d+/gi;
+                    const re = /@(image|video|audio)(\d+)|<<<(image|video|audio)(\d+)>>>/gi;
                     const out: React.ReactNode[] = [];
                     let last = 0;
                     let m: RegExpExecArray | null;
@@ -3006,7 +3583,7 @@ export function SceneBoard({
                     while ((m = re.exec(text))) {
                       if (m.index > last) out.push(text.slice(last, m.index));
                       const label = m[0];
-                      const key = label.toLowerCase();
+                      const key = `@${(m[1] || m[3] || "").toLowerCase()}${m[2] || m[4] || ""}`;
                       if (thumbByLabel.has(key)) {
                         // 연결된 레퍼런스가 있는 토큰만 알약(썸네일). 없으면 그냥 텍스트로 둔다.
                         const thumb = thumbByLabel.get(key);
@@ -3028,11 +3605,18 @@ export function SceneBoard({
                     if (last < text.length) out.push(text.slice(last));
                     return out;
                   };
+                  // 연결된 텍스트 소스(comfy 텍스트 출력·다른 텍스트 노드·텍스트 리스트)의 텍스트.
+                  const incomingText = refSrcs
+                    .map((s) => effectiveTextOf(s.id, cardsById, resolvedEdges))
+                    .filter((t) => t.trim())
+                    .join("\n");
+                  // 표시/사용 텍스트 = 내가 편집한 자기 텍스트 우선, 없으면 들어온 텍스트를 그대로(내가 적은 것처럼).
+                  const shownText = (card.text || "").trim() ? card.text || "" : incomingText;
                   const editing = editTextId === card.id;
                   return (
                     <>
-                      {/* 본문(보기=@토큰 인라인 알약, 더블클릭 시 편집 textarea). 단일 클릭/드래그는 카드 이동 —
-                          보기 상태에선 카드 어디를 잡아도 이동돼 조작성이 좋다(편집 진입은 더블클릭). */}
+                      {/* 본문(보기=토큰 인라인 알약, 더블클릭 시 편집 textarea). 연결로 들어온 텍스트도 여기 그대로
+                          나타나며, 더블클릭하면 그 텍스트가 편집 본문으로 채택돼 바로 수정·사용된다. */}
                       <div className="scene-card-hd text scene-card-hd-float">텍스트</div>
                       <div className="scene-card-inner">
                         {editing ? (
@@ -3052,11 +3636,14 @@ export function SceneBoard({
                             onDoubleClick={(e) => {
                               e.stopPropagation();
                               setSelected(new Set([card.id]));
-                              setEditTextId(card.id); // 더블클릭하면 편집으로 전환(단일 클릭/드래그는 카드 이동)
+                              // 자기 텍스트가 비어있고 들어온 텍스트가 있으면, 그걸 편집 본문으로 채택(한 번).
+                              if (!(card.text || "").trim() && incomingText.trim())
+                                setNodeText(card.id, incomingText);
+                              setEditTextId(card.id); // 더블클릭 = 편집 전환(단일 클릭/드래그는 카드 이동)
                             }}
                           >
-                            {card.text ? (
-                              renderInline(card.text)
+                            {shownText ? (
+                              renderInline(shownText)
                             ) : (
                               <span className="scene-textnode-ph2">텍스트 입력...</span>
                             )}
@@ -3065,16 +3652,21 @@ export function SceneBoard({
                       </div>
                       <button
                         className="scene-copy-btn"
-                        title="텍스트 전체 복사"
+                        title="텍스트 전체 복사(연결 입력 + 편집 텍스트)"
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation();
-                          void navigator.clipboard?.writeText(card.text || "");
+                          void navigator.clipboard?.writeText(
+                            effectiveTextOf(card.id, cardsById, resolvedEdges),
+                          );
                         }}
                       >
                         ⧉
                       </button>
-                      <span className="scene-port in" title="레퍼런스 연결(레퍼런스 카드·생성물)" />
+                      <span
+                        className="scene-port in"
+                        title="레퍼런스(→@토큰) + 텍스트(comfy 결과·텍스트 노드) 연결"
+                      />
                       <span
                         className="scene-port out"
                         onMouseDown={(e) => onOutPortDown(e, card.id)}
@@ -3362,7 +3954,7 @@ export function SceneBoard({
                           </button>
                         ) : null}
                       </div>
-                      <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트를 연결" />
+                      <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트 / Comfy 결과를 연결" />
                       <span
                         className="scene-resize"
                         onMouseDown={(e) => onResizeDown(e, card.id)}
@@ -3460,6 +4052,13 @@ export function SceneBoard({
                   const gcids = collectRenderGenCardIds(card.id, cardsById, resolvedEdges);
                   const unchecked = new Set(card.unchecked || []); // 체크 해제된(렌더 제외) 카드들
                   const activeGcids = gcids.filter((cid) => !unchecked.has(cid)); // 실제 Render 대상(체크된 것만)
+                  // 렌더에 직접 연결된 comfy — 생성이 없어도 이들만으로 실행 가능.
+                  const renderComfyIds = resolvedEdges
+                    .filter((e) => e.to === card.id)
+                    .map((e) => cardsById.get(e.from))
+                    .filter((c): c is SceneCard => c?.kind === "comfy")
+                    .map((c) => c.id);
+                  const renderCount = activeGcids.length + renderComfyIds.length;
                   return (
                     <>
                       <div className="scene-card-hd render scene-card-hd-float">렌더</div>
@@ -3569,14 +4168,14 @@ export function SceneBoard({
                           </button>
                           <button
                             className="scene-cardgen-go"
-                            title="체크된 생성 카드만 각자 한 번에 생성"
-                            disabled={!activeGcids.length}
+                            title="연결된 comfy 를 먼저 실행하고, 체크된 생성 카드를 각자 생성"
+                            disabled={!renderCount}
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (activeGcids.length) onRenderCards(activeGcids);
+                              if (renderCount) void orchestrateRender(card.id, activeGcids);
                             }}
                           >
-                            Render ▶ {activeGcids.length}
+                            Render ▶ {renderCount}
                           </button>
                         </div>
                       )}
@@ -3585,6 +4184,268 @@ export function SceneBoard({
                         className="scene-port out"
                         onMouseDown={(e) => onOutPortDown(e, card.id)}
                         title="드래그해 미리보기(View)에 연결 — 담긴 생성물들을 재생"
+                      />
+                      <span
+                        className="scene-resize"
+                        onMouseDown={(e) => onResizeDown(e, card.id)}
+                        title="드래그해 크기 조절"
+                      />
+                    </>
+                  );
+                })()
+              ) : card.kind === "comfy" ? (
+                (() => {
+                  // Comfy 노드 — ComfyUI 워크플로우를 얹어 단독 실행. 더블클릭=API 로드·파라미터 노출 모달.
+                  const cfg = card.comfyCfg;
+                  const st = cfg?.status;
+                  const params = cfg?.params || [];
+                  const values = cfg?.paramValues || {};
+                  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+                  // 텍스트가 '연결'돼 있으면(내용 유무 무관) 노출된 text 파라미터 입력칸을 비활성화하고, 연결된
+                  //  텍스트(라이브)를 표시한다. 실행 시 그 값이 자동 주입된다(내가 텍스트 노드에 적으면 그대로 반영).
+                  const hasTextParam = params.some((p) => p.type === "text");
+                  const textDriven = hasTextParam && hasTextConnection(card.id, cardsById, edges);
+                  const linkedText = textDriven ? incomingTextOf(card.id, cardsById, edges) : "";
+                  // 출력 포트 색 = 워크플로우가 선언한 출력 종류(resolveEdgeRole 과 동일 규칙): 미디어=파랑(ref),
+                  //  텍스트 전용=보라(text). 선언을 못 읽으면 런타임 출력으로 폴백.
+                  const odk = comfyDeclaredKinds(cfg?.content);
+                  const outLane =
+                    odk.media || odk.text
+                      ? odk.media ? "ref" : "text"
+                      : comfyOutputMedia(card).length > 0 ? "ref" : cfg?.outputs?.length ? "text" : "";
+                  return (
+                    <>
+                      <div className="scene-card-hd comfy scene-card-hd-float">Comfy</div>
+                      <div className="scene-card-inner scene-comfynode">
+                        {!cfg?.content ? (
+                          <div
+                            className="scene-comfynode-empty"
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={async (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const f = e.dataTransfer.files?.[0];
+                              if (!f) return;
+                              await applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
+                            }}
+                          >
+                            <span>API를 넣어주세요</span>
+                            <small>.json 드롭 · 더블클릭</small>
+                          </div>
+                        ) : (
+                          <div
+                            className="scene-comfynode-body"
+                            // 로드된 노드에도 .json 을 드롭하면 다른 API 로 교체(재파싱 성공 시에만).
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={async (e) => {
+                              const f = e.dataTransfer.files?.[0];
+                              if (!f) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              await applyComfyApi(card.id, f.name.replace(/\.json$/i, ""), await f.text());
+                            }}
+                          >
+                            <div className="scene-comfynode-name" title={cfg.name || ""}>
+                              <span className="scene-comfynode-nametext">
+                                {cfg.name || "workflow"} · {cfg.nodeCount || 0}노드
+                              </span>
+                              <span className="scene-comfynode-actions">
+                                <button
+                                  className="scene-comfynode-act"
+                                  title="다른 API(.json)로 교체"
+                                  onMouseDown={stop}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    pickComfyFile(card.id);
+                                  }}
+                                >
+                                  API
+                                </button>
+                                <button
+                                  className="scene-comfynode-act"
+                                  title="현재 워크플로우 다시 읽기(노드수 갱신·상태 리셋)"
+                                  onMouseDown={stop}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void refreshComfy(card.id);
+                                  }}
+                                >
+                                  ↻
+                                </button>
+                              </span>
+                            </div>
+                            {params.length > 0 && (
+                              <div className="scene-comfynode-params">
+                                {params.map((p) => {
+                                  const v = values[p.key];
+                                  return (
+                                    <div key={p.key} className="scene-comfynode-param">
+                                      <label title={p.label}>{p.label}</label>
+                                      {p.type === "bool" ? (
+                                        <input
+                                          type="checkbox"
+                                          checked={!!v}
+                                          onMouseDown={stop}
+                                          onChange={(e) => setComfyParam(card.id, p.key, e.target.checked)}
+                                        />
+                                      ) : p.choices && p.choices.length ? (
+                                        <select
+                                          value={String(v ?? "")}
+                                          onMouseDown={stop}
+                                          onChange={(e) => {
+                                            const orig = p.choices?.find((ch) => String(ch) === e.target.value);
+                                            setComfyParam(card.id, p.key, orig ?? e.target.value);
+                                          }}
+                                        >
+                                          {p.choices.map((ch) => (
+                                            <option key={String(ch)} value={String(ch)}>
+                                              {String(ch)}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : p.type === "number" ? (
+                                        <input
+                                          type="number"
+                                          value={v == null ? "" : (v as number)}
+                                          onMouseDown={stop}
+                                          onChange={(e) => setComfyParam(card.id, p.key, Number(e.target.value))}
+                                        />
+                                      ) : p.type === "text" && textDriven ? (
+                                        // 텍스트가 연결됨 → 비활성 + 연결된 텍스트 표시(실행 시 이 값이 자동 주입).
+                                        <input
+                                          type="text"
+                                          className="driven"
+                                          value={linkedText}
+                                          placeholder="연결된 텍스트"
+                                          disabled
+                                          title="텍스트가 연결됨 — 연결한 텍스트 노드의 값이 자동 입력됩니다(연결을 끊으면 다시 편집 가능)"
+                                        />
+                                      ) : (
+                                        <input
+                                          type="text"
+                                          value={String(v ?? "")}
+                                          onMouseDown={stop}
+                                          onChange={(e) => setComfyParam(card.id, p.key, e.target.value)}
+                                        />
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {(() => {
+                              // 실행 결과(복수·혼합) — 텍스트는 스크롤 박스(+복사), 이미지/영상은 미리보기.
+                              const outs =
+                                cfg.outputs ||
+                                (cfg.output?.url ? [{ kind: cfg.output.kind, url: cfg.output.url }] : []);
+                              if (!outs.length) return null;
+                              return (
+                                <div className="scene-comfynode-outputs">
+                                  {outs.map((o, i) =>
+                                    o.kind === "text" ? (
+                                      <div key={i} className="scene-comfynode-outtext">
+                                        <button
+                                          className="scene-comfynode-copy"
+                                          title="복사"
+                                          onMouseDown={stop}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void navigator.clipboard?.writeText(o.text || "");
+                                          }}
+                                        >
+                                          ⧉
+                                        </button>
+                                        <div className="scene-comfynode-outtext-body">{o.text}</div>
+                                      </div>
+                                    ) : o.url ? (
+                                      <div key={i} className="scene-comfynode-preview">
+                                        {o.kind === "video" ? (
+                                          <video src={o.url} muted loop playsInline />
+                                        ) : (
+                                          <img src={o.url} alt="" draggable={false} onError={hideBrokenImg} />
+                                        )}
+                                      </div>
+                                    ) : null,
+                                  )}
+                                </div>
+                              );
+                            })()}
+                            {(() => {
+                              // 연결된 입력 미리 보기 — 타입별 개수(실행 시 슬롯에 자동 주입).
+                              const inp = gatherComfyMedia(card.id);
+                              const ni = inp.filter((m) => m.type === "image").length;
+                              const nv = inp.filter((m) => m.type === "video").length;
+                              return ni || nv || textDriven ? (
+                                <div className="scene-comfynode-inputs">
+                                  입력 {ni ? `🖼×${ni}` : ""} {nv ? `🎬×${nv}` : ""}
+                                  {textDriven ? " 🔗text" : ""}
+                                </div>
+                              ) : null;
+                            })()}
+                            {/* 현재 상태 — 실행 버튼을 카드 밑으로 옮기며 생긴 공간에 대기/실행 중/완료/실패 표시. */}
+                            <div className={"scene-comfynode-status s-" + (st || "idle")}>
+                              ● {st === "running" ? "실행 중…" : st === "done" ? "완료" : st === "failed" ? "실패" : "대기"}
+                            </div>
+                            {st === "failed" && cfg.error && (
+                              <div className="scene-comfynode-errwrap">
+                                <button
+                                  className="scene-comfynode-copy"
+                                  title="에러 메시지 복사"
+                                  onMouseDown={stop}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void navigator.clipboard?.writeText(cfg.error || "");
+                                  }}
+                                >
+                                  ⧉
+                                </button>
+                                <div className="scene-comfynode-err" title={cfg.error}>
+                                  실패: {cfg.error}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {cfg?.content && sel && (
+                        // 실행 버튼 — 생성카드 Generate 처럼 카드 '밑'에 바로 표시(선택 시).
+                        <div className="scene-cardgen-bar" onMouseDown={(e) => e.stopPropagation()}>
+                          <button
+                            className="scene-cardgen-go"
+                            disabled={st === "running"}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void runComfy(card.id);
+                            }}
+                          >
+                            {st === "running" ? "실행 중…" : "실행 ▶"}
+                          </button>
+                        </div>
+                      )}
+                      {/* 미디어 입력(레퍼런스/생성물 → LoadImage/LoadVideo)=ref 레인(중앙). 텍스트 파라미터가
+                          노출돼 있으면 아래(text 레인)에 텍스트 입력 포트(보라)도 추가 — 다른 카드와 같은 고정 간격. */}
+                      <span
+                        className={"scene-port in" + (hasTextParam ? " lane-ref" : "")}
+                        style={hasTextParam ? { top: `calc(50% + ${laneDelta("ref")}px)` } : undefined}
+                        title="레퍼런스·생성물·리스트 연결 → 타입별로 LoadImage/LoadVideo 에 자동 주입"
+                      />
+                      {hasTextParam && (
+                        <span
+                          className="scene-port in lane-text"
+                          style={{ top: `calc(50% + ${laneDelta("text")}px)` }}
+                          title="텍스트 연결 → 노출된 text 파라미터에 자동 입력(연결 중엔 입력칸 비활성)"
+                        />
+                      )}
+                      <span
+                        className={"scene-port out" + (outLane ? " lane-" + outLane : "")}
+                        onMouseDown={(e) => onOutPortDown(e, card.id)}
+                        title={
+                          outLane === "text"
+                            ? "텍스트 출력 — 드래그해 연결"
+                            : outLane === "ref"
+                              ? "이미지·영상 출력 — 드래그해 연결"
+                              : "드래그해 다른 노드에 연결"
+                        }
                       />
                       <span
                         className="scene-resize"
@@ -3695,7 +4556,24 @@ export function SceneBoard({
                 })()
               ) : (
                 <>
-                  {showNode && g ? (
+                  {comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id) ? (
+                    // 상류 comfy 가 도는 중 — 완료 결과(HistoryBoardNode)보다 '생성중(회색)'을 최우선으로 덮어
+                    //  이 노드 전체가 생성 진행 중임을 바로 보인다(컨피 완료 → 실제 생성잡 → 아래 Generating).
+                    <div className="scene-card-inner">
+                      <div className="scene-card-genbody status-pending">
+                        <span className="gen-generating">
+                          <span className="gen-wave" aria-hidden>
+                            <span className="gen-wave-bar" />
+                            <span className="gen-wave-bar" />
+                            <span className="gen-wave-bar" />
+                            <span className="gen-wave-bar" />
+                            <span className="gen-wave-bar" />
+                          </span>
+                          <span className="gen-generating-label">생성중</span>
+                        </span>
+                      </div>
+                    </div>
+                  ) : showNode && g ? (
                     // 완료 결과 → 히스토리 카드(HistoryBoardNode) 그대로 — 캡션·오버레이(S/ⓘ/⠿/⤓/@/↻) 전부.
                     <HistoryBoardNode
                       generation={g}
@@ -3774,16 +4652,16 @@ export function SceneBoard({
                       소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
                   {(
                     [
-                      ["model", 0.28, "모델 입력"],
-                      ["ref", 0.5, "레퍼런스 입력"],
-                      ["text", 0.72, "텍스트 입력"],
-                    ] as [SceneEdgeRole, number, string][]
-                  ).map(([role, frac, tip]) => (
+                      ["model", "model", "모델 입력"],
+                      ["ref", "ref", "레퍼런스 입력"],
+                      ["text", "text", "텍스트 입력"],
+                    ] as [SceneEdgeRole, "model" | "ref" | "text", string][]
+                  ).map(([role, lane, tip]) => (
                     <span
                       key={role}
                       className={"scene-port in lane-" + role}
                       data-role={role}
-                      style={{ top: `${frac * 100}%` }}
+                      style={{ top: `calc(50% + ${laneDelta(lane)}px)` }}
                       title={tip}
                     />
                   ))}
@@ -3825,10 +4703,10 @@ export function SceneBoard({
                       </button>
                       <button
                         className="scene-cardgen-go"
-                        title="연결된 모델·레퍼런스·텍스트로 바로 생성"
+                        title="연결된 comfy 가 있으면 먼저 실행하고, 모델·레퍼런스·텍스트로 생성"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onGenerateCard();
+                          void orchestrateGenerate(card.id);
                         }}
                       >
                         Generate ✨
@@ -3980,6 +4858,7 @@ export function SceneBoard({
                 ["Input", "I", "input"],
                 ["Output", "O", "output"],
                 ["Head", "H", "head"],
+                ["Comfy", "C", "comfy"],
               ] as [string, string, SceneCardKind][]
             ).map(([label, key, kind]) => (
               <button
@@ -4018,6 +4897,21 @@ export function SceneBoard({
                 setCards(next);
                 persist(next, edgesRef.current);
               }}
+            />
+          );
+        })()}
+
+      {/* Comfy 노드 더블클릭 → ComfyUI 워크플로우 로드 + 파라미터 노출 모달. 저장 시 comfyCfg 스냅샷. */}
+      {comfyModalId &&
+        (() => {
+          const c = cards.find((x) => x.id === comfyModalId);
+          if (!c) return null;
+          return (
+            <SceneComfyModal
+              key={comfyModalId}
+              initial={c.comfyCfg}
+              onClose={() => setComfyModalId(null)}
+              onSave={(cfg) => patchComfyCfg(comfyModalId, cfg)}
             />
           );
         })()}
@@ -4081,7 +4975,15 @@ export function SceneBoard({
         (() => {
           const c = cards.find((x) => x.id === cardMenu);
           if (!c) return null;
-          const ids = variantIds(c);
+          // 최신순(최근 생성이 맨 위) — sort_ts(정밀 epoch) 우선, 없으면 created_at. genData 없는 변형은 뒤로.
+          const genTs = (gid: string): number => {
+            const gg = genData[gid];
+            if (!gg) return 0;
+            if (typeof gg.sort_ts === "number") return gg.sort_ts;
+            const t = Date.parse(gg.created_at);
+            return Number.isNaN(t) ? 0 : t;
+          };
+          const ids = [...variantIds(c)].sort((a, b) => genTs(b) - genTs(a));
           // asset 있는(미리보기 가능) 변형만 방향키 목록으로 — pending/실패 섞임 방지.
           const previewItems: PreviewItem[] = [];
           for (const id of ids) {
@@ -4118,6 +5020,26 @@ export function SceneBoard({
               n.has(gid) ? n.delete(gid) : n.add(gid);
               return n;
             });
+          // 클릭 선택 — Shift=앵커~현재 범위 선택(비활성 제외), Ctrl/Cmd=토글, 단독=단일. 앵커는 단독/토글에서 갱신.
+          const selectPopup = (gid: string, e: React.MouseEvent) => {
+            const anchor = popupAnchorRef.current;
+            if (e.shiftKey && anchor && anchor !== gid) {
+              const ai = ids.indexOf(anchor);
+              const bi = ids.indexOf(gid);
+              if (ai >= 0 && bi >= 0) {
+                const [lo, hi] = ai < bi ? [ai, bi] : [bi, ai];
+                const range = ids.slice(lo, hi + 1).filter((id) => !disabledIds.has(id));
+                setPopupSel((prev) => {
+                  const base = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<string>();
+                  for (const id of range) base.add(id);
+                  return base;
+                });
+                return; // 앵커 유지 → 연속 Shift 로 범위 확장 가능
+              }
+            }
+            toggleSel(gid, e.ctrlKey || e.metaKey);
+            popupAnchorRef.current = gid;
+          };
           return (
             <div
               className={"scene-varpop-backdrop" + (gripDragging ? " drag-through" : "")}
@@ -4160,7 +5082,7 @@ export function SceneBoard({
                         <div key={gid} className="scene-varpop-cell">
                           {/* 대표 라벨/지정 버튼 — 카드 '밖' 상단(요청). 대표면 라벨, 아니면 지정 버튼. */}
                           {rep ? (
-                            <span className="scene-varpop-cur">대표</span>
+                            <span className="scene-varpop-cur">★ 대표</span>
                           ) : gg && a ? (
                             <button
                               className="scene-varpop-rep"
@@ -4173,7 +5095,7 @@ export function SceneBoard({
                                 setCardVariant(c.id, gid);
                               }}
                             >
-                              ★ 대표
+                              대표
                             </button>
                           ) : null}
                           <div
@@ -4196,7 +5118,7 @@ export function SceneBoard({
                               onInfo?.({ kind: "generation", gen: gg, x: e.clientX, y: e.clientY });
                             }
                           }}
-                          onClick={(e) => toggleSel(gid, e.ctrlKey || e.shiftKey || e.metaKey)}
+                          onClick={(e) => selectPopup(gid, e)}
                           onDoubleClick={() => a && openPreviewAt(gid)}
                         >
                           {/* 영상도 확실히 보이게 — 썸네일 있으면 포스터, 없으면 첫 프레임(video). */}

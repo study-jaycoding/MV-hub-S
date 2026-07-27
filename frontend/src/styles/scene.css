@@ -275,6 +275,13 @@
   padding: 8px 8px 24px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
 }
 .scene-textnode-ph2 { color: #666; }
+/* 연결된 입력 텍스트(comfy 결과·텍스트 노드) — 읽기전용, 편집 영역 위에 표시. */
+.scene-textnode-incoming {
+  flex: 0 0 auto; max-height: 45%; overflow-y: auto; box-sizing: border-box;
+  background: rgba(181, 122, 255, 0.10); color: #d9c8ff;
+  border-bottom: 1px solid rgba(181, 122, 255, 0.35); border-radius: 10px 10px 0 0;
+  padding: 6px 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
 /* 인라인 @레퍼런스 알약 — 문장 속에서 썸네일 + @imageN. */
 .scene-inlinetok {
   display: inline-flex; align-items: center; gap: 3px; vertical-align: middle;
@@ -501,6 +508,111 @@
 .scene-modelmodal-ft button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .scene-modelmodal-ft button:disabled { opacity: 0.5; cursor: default; }
 
+/* ── Comfy 노드 ── */
+.scene-card-hd.comfy { color: #4dd6c4; background: rgba(60, 210, 190, 0.12); }
+.scene-card-comfy { border-color: rgba(77, 214, 196, 0.5); }
+.scene-comfynode { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.scene-comfynode-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; text-align: center; color: var(--muted); font-size: 12px;
+  border: 1px dashed var(--border2); border-radius: 8px; margin: 6px; padding: 8px;
+}
+.scene-comfynode-empty small { font-size: 10px; opacity: 0.7; }
+.scene-comfynode-body {
+  flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.scene-comfynode-name {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--muted); font-weight: 600;
+}
+.scene-comfynode-nametext { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scene-comfynode-actions { display: flex; gap: 4px; flex: none; }
+.scene-comfynode-act {
+  background: #1b1e24; border: 1px solid var(--border2); color: var(--text);
+  border-radius: 5px; padding: 1px 6px; font-size: 10px; font-weight: 700; cursor: pointer; line-height: 1.5;
+}
+.scene-comfynode-act:hover { border-color: var(--accent); color: var(--accent); }
+.scene-comfynode-params { display: flex; flex-direction: column; gap: 4px; }
+.scene-comfynode-param { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.scene-comfynode-param label {
+  flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.scene-comfynode-param input[type="text"],
+.scene-comfynode-param input[type="number"],
+.scene-comfynode-param select {
+  width: 78px; background: #1b1e24; border: 1px solid var(--border2); color: var(--text);
+  border-radius: 5px; padding: 2px 5px; font-size: 11px;
+}
+/* 텍스트 연결로 구동 중인 입력칸 — 비활성(회색) + 보라 테두리로 '연결됨'을 표시. */
+.scene-comfynode-param input.driven {
+  background: #14161b; border-color: #8b7bff; color: var(--muted); cursor: not-allowed; opacity: 0.85;
+}
+.scene-comfynode-preview { border-radius: 6px; overflow: hidden; background: #0c0e12; }
+.scene-comfynode-preview img,
+.scene-comfynode-preview video { display: block; width: 100%; max-height: 120px; object-fit: contain; }
+.scene-comfynode-run {
+  margin-top: auto; background: var(--accent); color: var(--accent-ink); border: 0;
+  border-radius: 6px; padding: 5px 8px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.scene-comfynode-run:disabled { opacity: 0.6; cursor: default; }
+.scene-comfynode-errwrap { position: relative; }
+.scene-comfynode-err {
+  padding-right: 26px;
+  font-size: 10px; color: #ff8f8f; white-space: pre-wrap; word-break: break-word;
+  max-height: 120px; overflow-y: auto; user-select: text; cursor: text;
+}
+.scene-comfynode-inputs { font-size: 10px; color: #4dd6c4; letter-spacing: 0.02em; }
+.scene-comfynode-status { font-size: 11px; font-weight: 700; letter-spacing: 0.02em; text-align: center; }
+.scene-comfynode-status.s-idle { color: var(--muted); }
+.scene-comfynode-status.s-running { color: var(--accent); }
+.scene-comfynode-status.s-done { color: #4dd6c4; }
+.scene-comfynode-status.s-failed { color: #ff8f8f; }
+.scene-comfynode-outputs { display: flex; flex-direction: column; gap: 6px; }
+.scene-comfynode-outtext { position: relative; }
+.scene-comfynode-outtext-body {
+  max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  font-size: 11px; line-height: 1.4; color: var(--text);
+  background: #0c0e12; border: 1px solid var(--border2); border-radius: 6px; padding: 6px 8px;
+}
+.scene-comfynode-copy {
+  position: absolute; top: 3px; right: 3px; z-index: 1;
+  background: rgba(20, 22, 27, 0.85); border: 1px solid var(--border2); color: var(--muted);
+  border-radius: 4px; font-size: 11px; padding: 1px 5px; cursor: pointer;
+}
+.scene-comfynode-copy:hover { color: var(--text); }
+
+/* Comfy 모달 — 모델 모달 골격 재사용 + API 로드/카탈로그 */
+.scene-comfymodal-body { display: flex; flex-direction: column; gap: 12px; max-height: 70vh; overflow-y: auto; }
+.scene-comfy-drop {
+  border: 2px dashed var(--border2); border-radius: 10px; padding: 18px; text-align: center;
+  color: var(--muted); font-size: 13px; cursor: pointer; transition: border-color 0.12s, background 0.12s;
+}
+.scene-comfy-drop.over { border-color: var(--accent); background: rgba(196, 232, 74, 0.08); }
+.scene-comfy-drop small { font-size: 11px; opacity: 0.7; }
+.scene-comfy-msg { font-size: 12px; color: var(--muted); }
+.scene-comfy-msg.err { color: #ff8f8f; }
+.scene-comfy-catalog { display: flex; flex-direction: column; gap: 8px; }
+.scene-comfy-catalog-hd { font-size: 12px; font-weight: 700; color: var(--text); }
+.scene-comfy-grp { border: 1px solid #2a2e36; border-radius: 8px; padding: 8px; }
+.scene-comfy-grp-title { font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.scene-comfy-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; cursor: pointer; }
+.scene-comfy-item-label { color: var(--text); }
+.scene-comfy-item-val { color: var(--muted); font-size: 11px; margin-left: auto; }
+.scene-comfy-badge {
+  font-size: 9px; padding: 1px 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); color: var(--muted);
+}
+
+/* 설정 — ComfyUI 연결 행 */
+.comfy-set-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.comfy-set-row label { flex: none; width: 78px; font-size: 12px; color: var(--muted); }
+.comfy-set-row input,
+.comfy-set-row select {
+  flex: 1; background: #1b1e24; border: 1px solid var(--border2); color: var(--text);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px;
+}
+.settings-actions-row { display: flex; gap: 8px; margin-top: 8px; }
+
 /* View 텍스트 보기 모달 — 연결된 텍스트 블록들 */
 .scene-textview {
   width: min(640px, 94vw); max-height: 82vh; background: #14161b; border: 1px solid #3a3f48;
@@ -581,9 +693,9 @@
   background: transparent; border-color: var(--pc, var(--accent));
 }
 /* 생성카드 입력은 레인별 색 링으로(위=모델 주황·중간=레퍼런스 파랑·아래=텍스트 보라) — 어떤 입력인지 구분. */
-.scene-card-gen.sel .scene-port.in.lane-model { border-color: #ffb84d; }
-.scene-card-gen.sel .scene-port.in.lane-ref { border-color: #7fa9ff; }
-.scene-card-gen.sel .scene-port.in.lane-text { border-color: #b57aff; }
+.scene-card.sel .scene-port.in.lane-model { border-color: #ffb84d; }
+.scene-card.sel .scene-port.in.lane-ref { border-color: #7fa9ff; }
+.scene-card.sel .scene-port.in.lane-text { border-color: #b57aff; }
 .scene-card.sel .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* 카드에 호버만 해도(선택 안 해도) 포트를 드러내고 클릭 가능 — 포트를 눌러 바로 연결 시작. 포트 hit
    영역이 카드와 겹쳐 호버가 끊기지 않는다. 선택(.sel)과 동일한 빈 링. */
@@ -591,9 +703,14 @@
   opacity: 1; pointer-events: auto; z-index: 15;
   background: transparent; border-color: var(--pc, var(--accent));
 }
-.scene-card-gen:hover .scene-port.in.lane-model { border-color: #ffb84d; }
-.scene-card-gen:hover .scene-port.in.lane-ref { border-color: #7fa9ff; }
-.scene-card-gen:hover .scene-port.in.lane-text { border-color: #b57aff; }
+.scene-card:hover .scene-port.in.lane-model { border-color: #ffb84d; }
+.scene-card:hover .scene-port.in.lane-ref { border-color: #7fa9ff; }
+.scene-card:hover .scene-port.in.lane-text { border-color: #b57aff; }
+/* comfy 출력 포트 — 출력 종류별 색(미디어=파랑·텍스트=보라). 선택/호버 시 링 색으로 표시. */
+.scene-card.sel .scene-port.out.lane-ref,
+.scene-card:hover .scene-port.out.lane-ref { border-color: #7fa9ff; }
+.scene-card.sel .scene-port.out.lane-text,
+.scene-card:hover .scene-port.out.lane-text { border-color: #b57aff; }
 .scene-card:hover .scene-port:hover { transform: translateY(-50%) scale(1.35); }
 /* ★연결선을 드래그하는 중에는 모든 카드의 '입력' 포트를 색까지 넣어 드러낸다(어디에 놓을지 보이게). 비선택 대상도 드롭 가능. */
 .scene-board.wiring .scene-card .scene-port.in {
@@ -601,9 +718,9 @@
   background: var(--pc, #7fa9ff); border-color: #14161a;
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5), 0 0 8px 2px color-mix(in srgb, var(--pc, #7fa9ff) 55%, transparent);
 }
-.scene-board.wiring .scene-card-gen .scene-port.in.lane-model { background: #ffb84d; }
-.scene-board.wiring .scene-card-gen .scene-port.in.lane-ref { background: #7fa9ff; }
-.scene-board.wiring .scene-card-gen .scene-port.in.lane-text { background: #b57aff; }
+.scene-board.wiring .scene-card .scene-port.in.lane-model { background: #ffb84d; }
+.scene-board.wiring .scene-card .scene-port.in.lane-ref { background: #7fa9ff; }
+.scene-board.wiring .scene-card .scene-port.in.lane-text { background: #b57aff; }
 /* 연결선 끝점 색 점 — 한 포트에 여러 연결이 겹칠 때 선마다 끝점을 분리(fan-out).
    레퍼런스 카드 연결만 파랑, 나머지(계보·생성물레퍼런스)는 초록. */
 .scene-dot { fill: var(--accent); stroke: #14161a; stroke-width: 2; } /* 초록 */
@@ -702,7 +819,8 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .scene-varpop-cur { background: #ffd24a; color: #1a1c20; pointer-events: none; }
-.scene-varpop-rep { border: 0; cursor: pointer; background: rgba(255, 255, 255, 0.09); color: #ffd24a; }
+/* 미선택 후보 — 별표 없이 회색 '대표'(아직 선택 안 됨을 명확히). hover 시 노랑=이걸 대표로. */
+.scene-varpop-rep { border: 0; cursor: pointer; background: rgba(255, 255, 255, 0.06); color: var(--muted); }
 .scene-varpop-rep:hover { background: #ffd24a; color: #1a1c20; }
 /* 색바(하단) · 비활성 회색 — 계보 카드와 같은 정보. (공유/최종은 좌상단 S 버튼이 겸함) */
 .scene-varpop-colorbar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; z-index: 2; }

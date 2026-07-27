@@ -17,7 +17,8 @@ export type ShortcutId =
   | "showHistory"
   | "selectAll"
   | "boardDisable"
-  | "boardArrange";
+  | "boardArrange"
+  | "boardConnect";
 
 export interface ShortcutDef {
   id: ShortcutId;
@@ -37,6 +38,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "selectAll", label: "전체 선택", group: "라이브러리", def: "mod+a" },
   { id: "boardDisable", label: "노드 비활성화(회색) 토글", group: "구성 보드", def: "d" },
   { id: "boardArrange", label: "선택 노드 자동 정렬", group: "구성 보드", def: "a" },
+  { id: "boardConnect", label: "선택 노드 연결(왼→오른쪽)", group: "구성 보드", def: "c" },
 ];
 
 const LS_KEY = STORAGE_KEYS.shortcuts;
