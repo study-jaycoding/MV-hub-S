@@ -15,6 +15,9 @@ import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoard } from "./components/scene/SceneBoard";
 import { AppOverlays } from "./components/app/AppOverlays";
+const VideoCompareModal = lazy(() =>
+  import("./components/VideoCompareModal").then((m) => ({ default: m.VideoCompareModal })),
+);
 import {
   BoardSelectionActionBar,
   LibrarySelectionActionBar,
@@ -29,9 +32,19 @@ import {
   parseSceneImport,
   SCENE_IMPORT_MAX_BYTES,
   variantIds,
+  type Scene,
+  type SceneCard,
+  type SceneEdge,
   type SceneRef,
 } from "./lib/scenes";
-import { collectGenText, collectGenModel, resolvePortEdges } from "./lib/sceneEdges";
+import {
+  collectGenText,
+  collectGenModel,
+  collectGenRefs,
+  resolvePortEdges,
+  type ComfyOutputsById,
+  type SceneGenerationRun,
+} from "./lib/sceneEdges";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
@@ -101,6 +114,10 @@ export default function App() {
     genQuery, selectionResetKey,
   } = useLibraryFilters(LS);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
+  // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
+  type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
+  const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
+  const [sceneCompareMedia, setSceneCompareMedia] = useState<CompareMedia[] | null>(null);
   const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const { flash, toast } = useAppToast();
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
@@ -522,6 +539,147 @@ export default function App() {
   //  · 모델이 안 붙은 카드는 건너뛴다(생성 불가). 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
   const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
   const renderingRef = useRef(false); // 렌더 진행 중 재진입(더블클릭) 방지
+  // 생성 1건의 조립 재료 — 카드 1개 × 1회 생성분(모델·파라미터·refs·텍스트).
+  type GenJob = { cardId: string; model: string; params: Record<string, unknown>; refs: ChipRef[]; text: string };
+  // 생성카드 1개의 job 조립(생성카드 아니거나 모델 없으면 null). overlay 가 있으면 그 comfy 결과로 텍스트·ref 를 해석.
+  const makeGenJob = (
+    cid: string,
+    cardsById: Map<string, SceneCard>,
+    resolved: SceneEdge[],
+    overlay?: ComfyOutputsById,
+  ): GenJob | null => {
+    const card = cardsById.get(cid);
+    if (!card || card.kind !== "generation") return null;
+    const cfg = collectGenModel(cid, cardsById, resolved);
+    if (!cfg?.model) return null;
+    const gt = collectGenText(cid, cardsById, resolved, overlay);
+    const text = gt.count > 0 ? gt.text : card.prompt || "";
+    // card.refs(레퍼런스 카드/수동) 뒤에 상류 comfy 미디어를 붙인다 — card.refs 내부 중복은 보존(@image1/@image2),
+    //  comfy 수집분만 card.refs 와 file_path 가 겹치면 제외(중복 매핑 방지). overlay 로 이 짝의 comfy 결과만 반영.
+    const cardRefs = card.refs || [];
+    const cardRefPaths = new Set(cardRefs.map((r) => r.file_path));
+    const comfyRefs = collectGenRefs(cid, cardsById, resolved, overlay).filter(
+      (r) => !cardRefPaths.has(r.file_path),
+    );
+    const refs: ChipRef[] = [...cardRefs, ...comfyRefs].map((r) => ({
+      file_path: r.file_path,
+      type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
+      role: "", // buildSpotlightCreateBody 가 @Image1 등으로 다시 매긴다
+      name: r.name ?? "",
+      thumb: r.thumb ?? "",
+      source_gen_id: r.source_gen_id ?? undefined,
+    }));
+    return { cardId: cid, model: cfg.model, params: { ...(cfg.params || {}) }, refs, text };
+  };
+  // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
+  //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
+  const submitGenJobs = async (
+    jobs: GenJob[],
+    skipped: number,
+    scene: Scene,
+    projectId: string | undefined,
+    folderPath: string | undefined,
+  ) => {
+    if (!jobs.length) {
+      flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
+      return;
+    }
+    // 모델별 파라미터 스키마 선로드(캐시) — aspect_ratio "auto" 를 레퍼런스 비율로 해석하기 위함.
+    const uniqueModels = [...new Set(jobs.map((j) => j.model))].filter(
+      (m) => !(m in genParamsCacheRef.current),
+    );
+    await Promise.all(
+      uniqueModels.map((m) =>
+        api
+          .modelParams(m)
+          .then((r) => {
+            genParamsCacheRef.current[m] = r.params;
+          })
+          .catch(() => {
+            // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도(빈 배열을 심으면 auto 비율이 영영 미해석).
+          }),
+      ),
+    );
+    // body 조립(job 별, auto 비율 해석 포함) → 잡 전부 한 번에 제출.
+    const built = await Promise.all(
+      jobs.map(async (j) => {
+        const tunable = genParamsCacheRef.current[j.model] || [];
+        const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
+        const { body } = buildSpotlightCreateBody({
+          text: j.text,
+          inlineRefs: [],
+          trayRefs: j.refs,
+          parts: [],
+          displayPrompt: j.text,
+          model: j.model,
+          optionValues,
+          armedAutoTags: [...armedAutoTags],
+          activeProjectId: projectId,
+          folderPath,
+        });
+        return body ? { cardId: j.cardId, body } : null;
+      }),
+    );
+    const valid = built.filter((b): b is { cardId: string; body: NonNullable<typeof b>["body"] } => !!b);
+    const buildFail = jobs.length - valid.length; // body 조립 실패(레퍼런스 토큰·seedance 검증 등)
+    if (!valid.length) {
+      flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
+      return;
+    }
+    // 각 job 1회씩 전부 동시에 제출(초과분은 서버 큐가 순서대로 처리). 결과는 카드별로 모은다.
+    let createFail = 0; // api.create 거부 수
+    const results = await Promise.all(
+      valid.map((v) =>
+        api
+          .create(v.body)
+          .then((g) => ({ cardId: v.cardId, gen: g }))
+          .catch(() => {
+            createFail++;
+            return null;
+          }),
+      ),
+    );
+    const byCard = new Map<string, string[]>();
+    const freshGens: Generation[] = [];
+    for (const r of results) {
+      if (!r) continue;
+      const arr = byCard.get(r.cardId) || [];
+      arr.push(r.gen.id);
+      byCard.set(r.cardId, arr);
+      freshGens.push(r.gen);
+    }
+    if (byCard.size) {
+      // 최신 씬을 다시 읽어(대기 중 편집 보존) 각 소스 카드에 결과 id 를 누적한다 — 덮어쓰지 않는다.
+      const cur = listScenes(null).find((s) => s.id === scene.id)?.cards || scene.cards;
+      const nextCards = cur.map((c) => {
+        const ids = byCard.get(c.id);
+        if (!ids || !ids.length) return c;
+        const genIds = [...variantIds(c)];
+        for (const id of ids) if (!genIds.includes(id)) genIds.push(id);
+        return { ...c, genId: ids[0], genIds, status: "pending" as const };
+      });
+      patchActiveScene({ cards: nextCards });
+    }
+    if (freshGens.length) {
+      setGens((prev) => {
+        const ids = new Set(prev.map((x) => x.id));
+        const fresh = freshGens.filter((x) => !ids.has(x.id));
+        return fresh.length ? [...fresh, ...prev] : prev;
+      });
+    }
+    const notes: string[] = [];
+    if (skipped) notes.push(`모델 없음 ${skipped}개`);
+    if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
+    if (createFail) notes.push(`제출 실패 ${createFail}장`);
+    flash(
+      `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
+        (notes.length ? ` · ${notes.join(" · ")}` : ""),
+    );
+    void reload();
+    bumpBoard();
+  };
+  // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 batch 장씩 한 번에 생성.
+  //  · comfy 없는(또는 comfy 결과를 짝으로 나누지 않는) 경로. 각 카드를 batch 수만큼 복제해 병렬 제출.
   const generateCards = async (cardIds: string[]) => {
     if (!activeScene || renderingRef.current || !cardIds.length) return;
     renderingRef.current = true;
@@ -534,128 +692,46 @@ export default function App() {
         filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
-      // 카드별 job(모델·refs·텍스트) 조립 — 모델 없는 카드는 건너뛴다.
-      const jobs: { cardId: string; model: string; params: Record<string, unknown>; refs: ChipRef[]; text: string }[] = [];
+      const jobs: GenJob[] = [];
       let skipped = 0;
       for (const cid of cardIds) {
-        const card = cardsById.get(cid);
-        if (!card || card.kind !== "generation") continue;
-        const cfg = collectGenModel(cid, cardsById, resolved);
-        if (!cfg?.model) {
-          skipped++;
+        const job = makeGenJob(cid, cardsById, resolved);
+        if (!job) {
+          if (cardsById.get(cid)?.kind === "generation") skipped++; // 생성카드인데 모델 없음
           continue;
         }
-        const gt = collectGenText(cid, cardsById, resolved);
-        const text = gt.count > 0 ? gt.text : card.prompt || "";
-        const refs: ChipRef[] = (card.refs || []).map((r) => ({
-          file_path: r.file_path,
-          type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
-          role: "", // buildSpotlightCreateBody 가 @Image1 등으로 다시 매긴다
-          name: r.name ?? "",
-          thumb: r.thumb ?? "",
-          source_gen_id: r.source_gen_id ?? undefined,
-        }));
-        jobs.push({ cardId: cid, model: cfg.model, params: { ...(cfg.params || {}) }, refs, text });
+        for (let i = 0; i < batch; i++) jobs.push({ ...job }); // 각 잡 × 배치수
       }
-      if (!jobs.length) {
-        flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
-        return;
+      await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
+    } finally {
+      renderingRef.current = false;
+    }
+  };
+  // ── 배치 짝 생성 ── 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 받아, 각 run 을 그 comfy 결과(overlay)와
+  //  짝지어 1장씩 병렬 생성한다. SceneBoard 오케스트레이터가 runs 를 만들어 이 함수를 1회 호출한다
+  //  (renderingRef 가드에 조용히 막히지 않도록 반드시 1회). run 마다 overlay 가 달라 서로 다른 comfy 결과로 생성.
+  const generateCardRuns = async (runs: SceneGenerationRun[]) => {
+    if (!activeScene || renderingRef.current || !runs.length) return;
+    renderingRef.current = true;
+    try {
+      const scene = listScenes(null).find((s) => s.id === activeScene.id) || activeScene;
+      const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
+      const resolved = resolvePortEdges(cardsById, scene.edges);
+      const projectId =
+        filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
+      const folderPath =
+        armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
+      const jobs: GenJob[] = [];
+      let skipped = 0;
+      for (const run of runs) {
+        const job = makeGenJob(run.cardId, cardsById, resolved, run.comfyOutputsById);
+        if (!job) {
+          if (cardsById.get(run.cardId)?.kind === "generation") skipped++;
+          continue;
+        }
+        jobs.push(job); // run 하나당 1장(overlay 로 그 짝의 comfy 결과 주입)
       }
-      // 모델별 파라미터 스키마 선로드(캐시) — aspect_ratio "auto" 를 레퍼런스 비율로 해석하기 위함.
-      const uniqueModels = [...new Set(jobs.map((j) => j.model))].filter(
-        (m) => !(m in genParamsCacheRef.current),
-      );
-      await Promise.all(
-        uniqueModels.map((m) =>
-          api
-            .modelParams(m)
-            .then((r) => {
-              genParamsCacheRef.current[m] = r.params;
-            })
-            .catch(() => {
-              // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도(빈 배열을 심으면 auto 비율이 영영 미해석).
-            }),
-        ),
-      );
-      // body 조립(카드별, auto 비율 해석 포함) → 잡 전부 한 번에 제출.
-      const built = await Promise.all(
-        jobs.map(async (j) => {
-          const tunable = genParamsCacheRef.current[j.model] || [];
-          const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
-          const { body } = buildSpotlightCreateBody({
-            text: j.text,
-            inlineRefs: [],
-            trayRefs: j.refs,
-            parts: [],
-            displayPrompt: j.text,
-            model: j.model,
-            optionValues,
-            armedAutoTags: [...armedAutoTags],
-            activeProjectId: projectId,
-            folderPath,
-          });
-          return body ? { cardId: j.cardId, body } : null;
-        }),
-      );
-      const valid = built.filter((b): b is { cardId: string; body: NonNullable<typeof b>["body"] } => !!b);
-      const buildFail = jobs.length - valid.length; // body 조립 실패(레퍼런스 토큰·seedance 검증 등)
-      if (!valid.length) {
-        flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
-        return;
-      }
-      // 각 잡 × 배치수를 전부 동시에 제출(초과분은 서버 큐가 순서대로 처리). 결과는 카드별로 모은다.
-      let createFail = 0; // api.create 거부 수
-      const results = await Promise.all(
-        valid.flatMap((v) =>
-          Array.from({ length: batch }, () =>
-            api
-              .create(v.body)
-              .then((g) => ({ cardId: v.cardId, gen: g }))
-              .catch(() => {
-                createFail++;
-                return null;
-              }),
-          ),
-        ),
-      );
-      const byCard = new Map<string, string[]>();
-      const freshGens: Generation[] = [];
-      for (const r of results) {
-        if (!r) continue;
-        const arr = byCard.get(r.cardId) || [];
-        arr.push(r.gen.id);
-        byCard.set(r.cardId, arr);
-        freshGens.push(r.gen);
-      }
-      if (byCard.size) {
-        // 최신 씬을 다시 읽어(대기 중 편집 보존) 각 소스 카드에 결과 id 를 누적한다 — 덮어쓰지 않는다.
-        const cur = listScenes(null).find((s) => s.id === activeScene.id)?.cards || scene.cards;
-        const nextCards = cur.map((c) => {
-          const ids = byCard.get(c.id);
-          if (!ids || !ids.length) return c;
-          const genIds = [...variantIds(c)];
-          for (const id of ids) if (!genIds.includes(id)) genIds.push(id);
-          return { ...c, genId: ids[0], genIds, status: "pending" as const };
-        });
-        patchActiveScene({ cards: nextCards });
-      }
-      if (freshGens.length) {
-        setGens((prev) => {
-          const ids = new Set(prev.map((x) => x.id));
-          const fresh = freshGens.filter((x) => !ids.has(x.id));
-          return fresh.length ? [...fresh, ...prev] : prev;
-        });
-      }
-      const notes: string[] = [];
-      if (skipped) notes.push(`모델 없음 ${skipped}개`);
-      if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
-      if (createFail) notes.push(`제출 실패 ${createFail}장`);
-      flash(
-        `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
-          (notes.length ? ` · ${notes.join(" · ")}` : ""),
-      );
-      void reload();
-      bumpBoard();
+      await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
     } finally {
       renderingRef.current = false;
     }
@@ -857,6 +933,7 @@ export default function App() {
                 onVariantShare={boardShare}
                 onVariantDownload={bulkDownload}
                 onVariantCompare={setCompareGens}
+                onSelectionCompare={setSceneCompareMedia}
                 onVariantAssign={boardAssign}
                 onVariantCreateAssign={boardCreateAssign}
                 onVariantDelete={deleteReturningIds}
@@ -866,6 +943,7 @@ export default function App() {
                 onBatchCountChange={setBatchCount}
                 onGenerateCard={() => spotlightSubmitRef.current?.()}
                 onRenderCards={generateCards}
+                onRenderCardRuns={generateCardRuns}
                 grayOn={grayOn}
                 fill={fill}
                 typeFilter={typeFilter}
@@ -1062,7 +1140,18 @@ export default function App() {
             filters.tab === "compose" ? (
               // 씬(캔버스)이 열려 있으면 씬 선택 결과카드 기준, 아니면 히스토리 보드 선택 노드 기준.
               activeScene ? (
-                sceneSelGens.length > 0 ? (
+                sceneCompareMedia ? (
+                  // 레퍼런스 등 비생성 미디어가 섞인 선택 → 단순 미디어 비교(이미지·영상 나란히, 영상 동시재생).
+                  <div className="select-bar">
+                    <span className="sb-count">{sceneCompareMedia.length}개 선택</span>
+                    <button
+                      title="선택한 미디어를 나란히 비교(영상은 동시 재생, 보기 전용)"
+                      onClick={() => setVideoCompare(sceneCompareMedia)}
+                    >
+                      ⊞ 비교
+                    </button>
+                  </div>
+                ) : sceneSelGens.length > 0 ? (
                   <BoardSelectionActionBar
                     selected={sceneSelGens}
                     projects={projects}
@@ -1150,6 +1239,11 @@ export default function App() {
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />
+      {videoCompare && (
+        <Suspense fallback={null}>
+          <VideoCompareModal videos={videoCompare} onClose={() => setVideoCompare(null)} />
+        </Suspense>
+      )}
     </div>
   );
 }

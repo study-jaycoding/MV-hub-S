@@ -7,7 +7,7 @@ import {
   refKey,
   tokenizePrompt,
 } from "../../lib/compareDiff";
-import { thumbUrl } from "../../lib/media";
+import { displayThumb, hideBrokenImg, thumbUrl } from "../../lib/media";
 import { refSrc } from "../../lib/promptParts";
 import type { Generation, Reference } from "../../types";
 import type { CompareSourcePreview } from "./CompareSourceLightbox";
@@ -108,10 +108,12 @@ export function CompareGenerationColumn({
       {generation.references.length > 0 && (
         <div className="cmp-refs">
           {generation.references.map((reference) => {
-            const thumbUrlValue = refThumb(reference);
-            if (!thumbUrlValue) return null;
             const isDiff = !commonRefs.has(refKey(reference));
-            const full = refSrc(reference.file_path) || reference.source_url || thumbUrlValue;
+            // InfoPopup 과 동일하게 displayThumb — asset: 토큰/영상 경로를 백엔드 첫 프레임 포스터로 변환한다.
+            //  (thumbUrl 은 asset: 를 안 바꿔 poster 가 null→검정이 됐다.)
+            const poster = displayThumb(reference.thumbnail_path || reference.file_path, 128);
+            const full =
+              refSrc(reference.file_path) || reference.source_url || refThumb(reference) || "";
             return (
               <button
                 key={reference.id}
@@ -130,7 +132,24 @@ export function CompareGenerationColumn({
                   })
                 }
               >
-                <img src={thumbUrlValue} className="cmp-ref" alt={reference.role || "reference"} />
+                {reference.type === "video" ? (
+                  <video
+                    className="cmp-ref"
+                    src={refSrc(reference.file_path) || undefined}
+                    poster={poster || undefined}
+                    muted
+                    preload="metadata"
+                  />
+                ) : reference.type === "audio" ? (
+                  <span className="cmp-ref cmp-ref-ph">🎵</span>
+                ) : (
+                  <img
+                    src={poster || undefined}
+                    className="cmp-ref"
+                    alt={reference.role || "reference"}
+                    onError={hideBrokenImg}
+                  />
+                )}
               </button>
             );
           })}
