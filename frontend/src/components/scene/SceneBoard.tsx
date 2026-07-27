@@ -804,8 +804,14 @@ export function SceneBoard({
     const result: SceneRef[] = [];
     for (const r of existing) {
       const i = pool.findIndex((t) => key(t) === key(r));
-      if (i >= 0) result.push(pool.splice(i, 1)[0]); // 연결된 레퍼런스 카드가 제공하는 참조 — 유지(from_card 포함)
-      else if (!r.from_card) result.push(r); // 연결에서 온 게 아닌 수동 참조(@생성물·드래그 asset)는 보존
+      if (i >= 0) {
+        const linked = pool.splice(i, 1)[0];
+        // ★수동으로 넣은 참조(!from_card)는 연결이 같은 파일을 제공해도 수동 표식을 유지한다 —
+        //  안 그러면 연결 해제 때 수동 참조까지 사라진다. from_card 참조만 연결본으로 갱신.
+        result.push(r.from_card ? linked : r);
+      } else if (!r.from_card) {
+        result.push(r); // 연결에서 온 게 아닌 수동 참조(@생성물·드래그 asset)는 보존
+      }
       // 그 외(연결이 끊긴 레퍼런스 카드/리스트 참조)는 제거
     }
     result.push(...pool);
@@ -951,13 +957,15 @@ export function SceneBoard({
   const importExternalAsRefs = async (files: File[], cx: number, cy: number) => {
     const accepted = files.filter((f) => referenceDropTypeFromFile(f));
     if (!accepted.length) return; // 이미지/영상/오디오만
+    const sid = sceneIdRef.current; // 업로드 중 씬 전환 시 새 카드를 엉뚱한 씬에 넣지 않게
     try {
       const res = await api.uploadReferenceFiles(accepted);
       const items = res.saved || [];
       if (items.length) {
-        // 외부 파일 임포트 → origin 'upload'(테두리 파랑).
-        addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "upload" as const })), cx, cy);
-        notifySpotlightAssetsChanged(items);
+        // 외부 파일 임포트 → origin 'upload'(테두리 파랑). 씬이 그대로일 때만 카드 추가.
+        if (sceneIdRef.current === sid)
+          addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "upload" as const })), cx, cy);
+        notifySpotlightAssetsChanged(items); // 씬과 무관 — 유지
       }
     } catch (err) {
       console.warn("[scene] 외부 파일 레퍼런스 추가 실패", err);
@@ -1260,8 +1268,10 @@ export function SceneBoard({
   // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
   //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
   const applyComfyApi = async (cardId: string, name: string, content: string): Promise<boolean> => {
+    const sid = sceneIdRef.current; // 파싱 대기 중 씬 전환되면 다른 씬에 반영 안 함
     try {
       const res = await comfyApi.parse(content, []);
+      if (sceneIdRef.current !== sid) return false;
       // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
       // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
       const nextCards = cardsRef.current.map((c) =>
@@ -1311,8 +1321,10 @@ export function SceneBoard({
   const refreshComfy = async (cardId: string) => {
     const content = cardsRef.current.find((c) => c.id === cardId)?.comfyCfg?.content;
     if (!content) return;
+    const sid = sceneIdRef.current;
     try {
       const res = await comfyApi.parse(content, []);
+      if (sceneIdRef.current !== sid) return;
       patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null });
     } catch {
       /* 파싱 실패 — 상태만 두고 무시 */
@@ -1379,6 +1391,7 @@ export function SceneBoard({
     },
   ) => {
     const silent = opts?.silent;
+    const sid = sceneIdRef.current; // 저장 대기 중 씬 전환 시 다른 씬 카드에 반영 안 함
     const card = cardsRef.current.find((c) => c.id === cardId);
     const cfg = card?.comfyCfg;
     const runContent = cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
@@ -1415,6 +1428,7 @@ export function SceneBoard({
         inputs,
         elapsed_seconds: opts?.elapsedSeconds ?? null,
       });
+      if (sceneIdRef.current !== sid) return; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
       const byUrl = new Map(res.saved.map((s) => [s.url, s.generation_id]));
       const savedIds = res.saved.map((s) => s.generation_id);
       // ★현재 카드 기준으로 패치 — 저장 대기 중 재실행(outputs 교체)되면 늦게 온 응답이
@@ -1546,6 +1560,7 @@ export function SceneBoard({
     const card = cardsRef.current.find((c) => c.id === cardId);
     if (!card?.comfyCfg?.content) return false;
     const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
+    const sid = sceneIdRef.current; // 실행 대기 중 씬 전환 시 다른 씬에 결과 반영 안 함
     patchComfyCfg(cardId, { status: "running", error: null });
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
@@ -1556,6 +1571,7 @@ export function SceneBoard({
           return { outputs, elapsed: (Date.now() - t) / 1000 };
         }),
       );
+      if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
       patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null });
       // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
@@ -2075,10 +2091,11 @@ export function SceneBoard({
     if (!n) return undefined;
     return { x: minX - GPAD, y: minY - GPAD - GHD, w: maxX - minX + GPAD * 2, h: maxY - minY + GPAD * 2 + GHD };
   };
-  // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수).
-  const pruneGroups = (gs: SceneGroup[], removed: Set<string>): SceneGroup[] =>
+  // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수). existing=현재 존재하는 카드 id —
+  //  손상/구버전 씬의 유령 멤버 id 도 함께 정리(rect 만 남은 빈 그룹 잔존 방지).
+  const pruneGroups = (gs: SceneGroup[], removed: Set<string>, existing: Set<string>): SceneGroup[] =>
     gs
-      .map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => !removed.has(id)) }))
+      .map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => !removed.has(id) && existing.has(id)) }))
       .filter((g) => g.cardIds.length > 0);
   const applyGroups = (next: SceneGroup[]) => {
     setGroups(next);
@@ -2088,7 +2105,8 @@ export function SceneBoard({
     const ids = [...selectedRef.current].filter((id) => cardsRef.current.some((c) => c.id === id));
     if (!ids.length) return;
     // 카드는 한 그룹에만 — 선택 카드를 기존 그룹에서 떼고(빈 그룹 제거) 새 그룹으로 묶는다.
-    const stripped = pruneGroups(groupsRef.current, new Set(ids));
+    const existing = new Set(cardsRef.current.map((c) => c.id));
+    const stripped = pruneGroups(groupsRef.current, new Set(ids), existing);
     const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids, rect: rectFromCards(ids) };
     applyGroups([...stripped, grp]);
   };
@@ -2139,21 +2157,8 @@ export function SceneBoard({
   const deleteCards = (ids: string[]) => {
     if (!ids.length) return;
     const idset = new Set(ids);
-    const gd = genDataRef.current;
-    // 삭제 안 되는 다른 카드가 아직 쓰는 결과는 제외(중복/legacy 대비).
-    const survivors = new Set(
-      cardsRef.current
-        .filter((c) => !idset.has(c.id) && c.kind === "generation")
-        .flatMap((c) => variantIds(c)),
-    );
-    const toTrash = cardsRef.current
-      .filter((c) => idset.has(c.id) && c.kind === "generation")
-      .flatMap((c) => variantIds(c))
-      .filter((gid) => !survivors.has(gid))
-      .filter((gid) => {
-        const g = gd[gid];
-        return !!g && g.is_mine && !g.shared && !g.is_final; // 지워도 안전한 것만
-      });
+    // ★캔버스에서 카드를 지워도 서버 생성물('내 작업')은 건드리지 않는다(Jay 결정 ⓑ) — 캔버스 편집물만 제거.
+    //  (생성물을 실제로 지우려면 라이브러리에서 별도로. 이렇게 해야 삭제→Ctrl+Z 로 되살려도 생성물이 온전하다.)
     const nextEdges = edgesRef.current.filter((e) => !idset.has(e.from) && !idset.has(e.to));
     // 삭제된 output(채널)을 가리키던 input 은 channel 을 비운다(무효 참조 방지).
     const survivingCards = cardsRef.current
@@ -2162,7 +2167,8 @@ export function SceneBoard({
         c.kind === "input" && c.channel && idset.has(c.channel) ? { ...c, channel: undefined } : c,
       );
     const nextCards = withGenRefs(survivingCards, nextEdges);
-    const nextGroups = pruneGroups(groupsRef.current, idset); // 삭제 카드는 그룹 멤버에서 제거·빈 그룹 정리
+    // 삭제 후 카드 기준으로 그룹 정리 — 삭제 카드 제거 + 유령 멤버 id 도 정리.
+    const nextGroups = pruneGroups(groupsRef.current, idset, new Set(nextCards.map((c) => c.id)));
     setCards(nextCards);
     setEdges(nextEdges);
     setGroups(nextGroups);
@@ -2176,8 +2182,6 @@ export function SceneBoard({
     });
     setCardMenu((m) => (m && idset.has(m) ? null : m)); // 삭제된 카드의 팝업은 닫는다
     persist(nextCards, nextEdges, nextGroups);
-    for (const gid of toTrash)
-      api.deleteGeneration(gid).catch((err) => console.warn("[scene] 생성물 휴지통 이동 실패", gid, err));
   };
 
   // ── 캔버스 선택 → App 선택바(프롬프트 위 topSlot)로 결과 카드들 올리기 + 삭제 명령형 핸들 ──
@@ -2411,9 +2415,10 @@ export function SceneBoard({
           // 실제로 위치가 바뀐 카드가 없으면(이미 정렬됨) 저장·undo 생략.
           const changed = picked.some((c) => c.x !== pos[c.id].x || c.y !== pos[c.id].y);
           if (!changed) return;
-          const nextCards = cardsRef.current.map((c) =>
+          const moved = cardsRef.current.map((c) =>
             pos[c.id] ? { ...c, x: pos[c.id].x, y: pos[c.id].y } : c,
           );
+          const nextCards = withGenRefs(moved, edgesRef.current); // 위치가 바뀌면 연결 참조 순서(@Image1/2) 재계산
           setCards(nextCards);
           persist(nextCards, edgesRef.current);
           return;
@@ -2665,7 +2670,10 @@ export function SceneBoard({
               ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
               : groupsRef.current;
             if (gOrigRect) setGroups(ng);
-            persist(cardsRef.current, edgesRef.current, ng);
+            const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
+            cardsRef.current = nextCards;
+            setCards(nextCards);
+            persist(nextCards, edgesRef.current, ng);
           } else
             setSelected((prev) => {
               if (gAdditive) {
@@ -2734,7 +2742,10 @@ export function SceneBoard({
         scrollRef.current?.classList.remove("dragging");
         if (relocated) {
           const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
-          persist(cardsRef.current, edgesRef.current, ng);
+          const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
+          cardsRef.current = nextCards;
+          setCards(nextCards);
+          persist(nextCards, edgesRef.current, ng);
         } else if (fromRow) {
           // 행에서 시작한 클릭 → 카드 선택 안 함(행 onClick 이 행 선택 처리).
         } else if (chainSel) {
@@ -2907,22 +2918,24 @@ export function SceneBoard({
           cx = 0;
           cy = 0;
         } // 연결 시엔 addRefCardsAt 이 위치를 계산하므로 임의값
+        const sid = sceneIdRef.current; // 캡쳐 업로드 중 씬 전환 시 엉뚱한 씬에 카드 추가 방지
         void api
           .uploadCapture(blob)
           .then((rr) => {
-            addRefCardsAt(
-              // 캡쳐 → origin 'upload'(테두리 파랑).
-              [
-                {
-                  ...itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }),
-                  origin: "upload" as const,
-                },
-              ],
-              cx,
-              cy,
-              connectTo,
-            );
-            // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록.
+            if (sceneIdRef.current === sid)
+              addRefCardsAt(
+                // 캡쳐 → origin 'upload'(테두리 파랑).
+                [
+                  {
+                    ...itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }),
+                    origin: "upload" as const,
+                  },
+                ],
+                cx,
+                cy,
+                connectTo,
+              );
+            // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록(씬과 무관).
             notifySpotlightAssetsChanged([{ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }]);
           })
           .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
