@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { downloadOne } from "../../lib/download";
 import { TagEditor } from "../TagEditor";
+import { prefetchOriginalFile } from "./exportDrag";
 import type { AssetMeta, AssetNode, InfoTarget } from "../../types";
 
 export const AssetCell = memo(function AssetCell({
@@ -226,6 +227,7 @@ export const AssetCell = memo(function AssetCell({
         title={node.name}
         draggable
         onDragStart={onMediaDragStart}
+        onMouseDown={() => prefetchOriginalFile(project, node.path, node.name)} // 누름(드래그/선택 의도) 순간 원본 미리 받기 → dragstart 때 '진짜 파일'로 첨부
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
       >

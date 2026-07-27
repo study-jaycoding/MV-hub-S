@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { api } from "../../api";
 import { dataTransferHasFiles } from "../../lib/media";
+import { DRAG_TYPES } from "../../lib/dragTypes";
 
 export function useAssetDropImport({
   dir,
@@ -17,7 +18,11 @@ export function useAssetDropImport({
   const [importing, setImporting] = useState(false);
   const dropDepth = useRef(0);
 
-  const hasFiles = (event: DragEvent) => dataTransferHasFiles(event.dataTransfer);
+  // 외부 파일 가져오기 대상만 감지한다. 내부 에셋 드래그는 원본을 '진짜 File' 로 실어(대화창 첨부용)
+  //  dataTransfer 에 "Files" 가 잡히지만, 같은 폴더로 되-업로드(중복 생성)하면 안 되므로 제외한다.
+  const hasFiles = (event: DragEvent) =>
+    !event.dataTransfer.types.includes(DRAG_TYPES.asset) &&
+    dataTransferHasFiles(event.dataTransfer);
 
   const importFiles = async (incoming: File[]) => {
     if (!project || !incoming.length) return;
