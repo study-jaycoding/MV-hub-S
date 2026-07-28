@@ -1234,3 +1234,80 @@ def reveal_file(body: RevealIn, request: Request):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"탐색기 열기 실패: {e}")
     return {"ok": True}
+
+
+class ClipboardCopyIn(BaseModel):
+    project: str
+    paths: list[str]
+
+
+# Claude 대화창이 이미지로 받는 확장자만(도움말 기준 JPEG/PNG/GIF/WebP). BMP·영상·오디오는 제외.
+_CLIPBOARD_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_CLIPBOARD_MAX = 20  # Claude 채팅 첨부 최대 개수
+
+
+@router.post("/clipboard-copy", dependencies=[Depends(_require_local_assets)])
+def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
+    """선택한 어셋 원본 파일들을 OS 클립보드에 '파일 목록'(CF_HDROP)으로 올린다(Windows·로컬 전용).
+    사용자가 외부 대화창(claude.ai)에서 Ctrl+V 하면 여러 파일이 한 번에 첨부된다(탐색기 파일복사와 동일 원리).
+    브라우저 클립보드는 이미지 1장만 담기는 한계가 있어, 로컬 백엔드가 대신 OS 클립보드를 채운다."""
+    # 클립보드 덮어쓰기는 단순 조회보다 부작용이 크다 → AUTH 여부와 무관하게 loopback 을 직접 강제.
+    require_loopback_request(request, "클립보드 복사는 로컬 허브에서만 가능합니다")
+    if sys.platform != "win32":
+        raise HTTPException(status_code=400, detail="이 기능은 Windows에서만 지원됩니다")
+    proj_dir = _safe_project_dir(body.project, request)
+    if not proj_dir:
+        raise HTTPException(status_code=404, detail=f"프로젝트 없음: {body.project}")
+
+    abs_paths: list[str] = []
+    seen: set[str] = set()
+    skipped = 0
+    for rel in body.paths:
+        target = _safe_resolve(proj_dir, rel)  # 경로 이탈 차단(safe_join)
+        # is_file() 로 폴더 배제 + Claude 지원 이미지 확장자만 허용.
+        if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_IMAGE_EXT:
+            skipped += 1
+            continue
+        key = str(target)
+        if key in seen:  # 중복 제거(순서 보존)
+            continue
+        seen.add(key)
+        abs_paths.append(key)
+        if len(abs_paths) >= _CLIPBOARD_MAX:
+            break
+
+    if not abs_paths:
+        raise HTTPException(status_code=404, detail="복사할 이미지 파일이 없습니다")
+
+    # 경로들을 임시 파일에 한 줄씩(UTF-8 BOM) 기록 → PowerShell 이 그 파일에서 읽어 클립보드에 올린다.
+    #  ★경로를 명령 문자열에 직접 넣지 않는다(파일명 속 따옴표·$·백틱 인젝션 원천 차단). tmp 경로조차
+    #   명령에 안 넣고 환경변수(MVHUB_CLIP_LIST)로 넘긴다. Windows 파일명에 개행 불가라 줄 구분이 안전.
+    #  -Sta: 클립보드 API 는 STA 스레드 필요. Set-Clipboard 는 실제 데이터를 복사하므로 프로세스 종료 후 유지.
+    fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="mvhub_clip_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="\n") as f:
+            f.write("\n".join(abs_paths))
+        ps_cmd = (
+            "Set-Clipboard -LiteralPath "
+            "(Get-Content -LiteralPath $env:MVHUB_CLIP_LIST -Encoding UTF8 | Where-Object { $_ })"
+        )
+        try:
+            proc = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-Command", ps_cmd],
+                env={**os.environ, "MVHUB_CLIP_LIST": list_path},
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=500, detail="클립보드 복사 시간 초과")
+        if proc.returncode != 0:
+            detail = (proc.stderr or "").strip() or "PowerShell 오류"
+            raise HTTPException(status_code=500, detail=f"클립보드 복사 실패: {detail}")
+    finally:
+        try:
+            os.unlink(list_path)
+        except OSError:
+            pass
+
+    return {"ok": True, "count": len(abs_paths), "skipped": skipped}

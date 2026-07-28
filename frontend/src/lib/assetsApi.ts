@@ -132,6 +132,14 @@ export const assetsApi = {
       body: jsonBody({ project, path }),
     }),
 
+  // 선택한 원본 이미지 파일들을 OS 클립보드에 '파일 목록'(CF_HDROP)으로 올린다(Windows·로컬 전용).
+  // → 외부 대화창(claude.ai)에서 Ctrl+V 로 여러 장이 한 번에 첨부됨. 반환 count=올린 개수, skipped=제외 개수.
+  clipboardCopyFiles: (project: string, paths: string[]) =>
+    jsonFetch<{ ok: boolean; count: number; skipped: number }>(`/api/assets/clipboard-copy`, {
+      method: "POST",
+      body: jsonBody({ project, paths }),
+    }),
+
   // 분리 창 파일별 메타데이터
   assetMeta: (project: string) => jsonFetch<Record<string, AssetMeta>>(assetMetaUrl(project)),
 

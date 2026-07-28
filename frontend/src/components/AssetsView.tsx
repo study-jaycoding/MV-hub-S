@@ -3,6 +3,7 @@
 //  · 영상 호버 자동재생 + 미디어 호버 오버레이(정보·미리보기·다운로드)
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
 import { nearestCellIndex } from "../lib/gridNavigation";
 import { useT } from "../lib/i18n";
@@ -360,6 +361,21 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }
   }, [onDragMove, onDragUp]);
 
+  // 다중 선택 복사: 선택한 원본 이미지 파일들을 OS 클립보드(파일 목록)에 올린다 → 대화창에서 Ctrl+V 로 여러 장.
+  //  (브라우저 클립보드는 이미지 1장 한계라 여러 장이 안 됨 → 로컬 백엔드가 CF_HDROP 을 채운다. 이미지만 대상.)
+  const copyFilesToClipboard = useCallback(async (path: string) => {
+    const proj = projectRef.current;
+    const { items } = assetDragItemsForPath({
+      project: proj,
+      files: filesRef.current,
+      selected: selectedRef.current,
+      path,
+    });
+    const paths = items.filter((it) => it.type === "image").map((it) => it.path);
+    if (paths.length === 0) throw new Error("복사할 이미지가 없습니다");
+    await api.clipboardCopyFiles(proj, paths);
+  }, []);
+
   const {
     dropActive,
     importing,
@@ -574,6 +590,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       onTagCancel={cellOnTagCancel}
       onInfo={onInfo}
       onExportDrag={exportDrag}
+      onCopyFiles={copyFilesToClipboard}
     />
   ));
   const marqueeEl = marquee && (

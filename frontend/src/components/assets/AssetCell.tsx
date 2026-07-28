@@ -29,6 +29,7 @@ export const AssetCell = memo(function AssetCell({
   onTagCancel,
   onInfo,
   onExportDrag,
+  onCopyFiles,
 }: {
   project: string;
   node: AssetNode;
@@ -53,6 +54,8 @@ export const AssetCell = memo(function AssetCell({
   onInfo: (t: InfoTarget) => void;
   // 네이티브 파일 드래그 시작 → 부모가 선택 상태를 보고 단일/다중(zip) DownloadURL 설정 + 마퀴 취소
   onExportDrag: (path: string, dt: DataTransfer) => void;
+  // 다중 선택 복사 → 선택한 원본 이미지들을 OS 클립보드(파일 목록)에 올림(부모가 선택 전체를 앎)
+  onCopyFiles?: (path: string) => Promise<void>;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -140,7 +143,21 @@ export const AssetCell = memo(function AssetCell({
   const [dragReadyUrl, setDragReadyUrl] = useState<string | null>(null);
   const copyImage = () => {
     if (copyState === "busy") return;
+    // 다중 선택(2장 이상)이면: OS 클립보드에 '파일 목록'으로 올린다 → 대화창 Ctrl+V 로 여러 장 한 번에.
+    //  (브라우저 클립보드는 이미지 1장 한계라 여러 장 불가 → 로컬 백엔드가 CF_HDROP 을 채운다.)
+    if (selectedCount && selectedCount > 1 && onCopyFiles) {
+      setCopyState("busy");
+      onCopyFiles(node.path)
+        .then(() => setCopyState("ok"))
+        .catch(() => setCopyState("err"))
+        .finally(() => {
+          if (copyTimer.current != null) clearTimeout(copyTimer.current);
+          copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1500);
+        });
+      return;
+    }
     setCopyState("busy");
+    // 단일: 브라우저 클립보드(이미지 바이트) + 드래그용 data:URL.
     // 원본 1회 fetch → 두 소비자가 공유(클립보드용 PNG + 드래그용 data:URL). url=원본(같은 오리진이라 차단 없음)
     const blobP = fetch(url).then((r) => {
       if (!r.ok) throw new Error("이미지 로드 실패");
@@ -341,11 +358,17 @@ export const AssetCell = memo(function AssetCell({
               <button
                 className={"ov-icon" + (copyState === "ok" ? " ok" : copyState === "err" ? " err" : "")}
                 title={
-                  copyState === "ok"
-                    ? "준비됨! 이미지를 대화창으로 드래그하거나 Ctrl+V"
-                    : copyState === "err"
-                      ? "복사 실패 (브라우저 미지원 가능)"
-                      : "이미지 준비 → 대화창으로 드래그하거나 Ctrl+V"
+                  selectedCount && selectedCount > 1
+                    ? copyState === "ok"
+                      ? `${selectedCount}장 복사됨! 대화창에서 Ctrl+V`
+                      : copyState === "err"
+                        ? "복사 실패"
+                        : `선택한 ${selectedCount}장 복사 → 대화창에서 Ctrl+V`
+                    : copyState === "ok"
+                      ? "준비됨! 이미지를 대화창으로 드래그하거나 Ctrl+V"
+                      : copyState === "err"
+                        ? "복사 실패 (브라우저 미지원 가능)"
+                        : "이미지 준비 → 대화창으로 드래그하거나 Ctrl+V"
                 }
                 onClick={(e) => {
                   e.stopPropagation();
