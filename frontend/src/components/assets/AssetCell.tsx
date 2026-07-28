@@ -160,7 +160,11 @@ export const AssetCell = memo(function AssetCell({
       setCopyState("busy");
       onCopyFiles(node.path)
         .then(() => setCopyState("ok"))
-        .catch(() => setCopyState("err"))
+        .catch((err) => {
+          setCopyState("err");
+          // 실패 이유를 그대로 노출(서버 미재시작=엔드포인트 없음, 미디어 아님, PowerShell 오류 등 구분).
+          alert(`클립보드 복사 실패: ${err?.message || err}`);
+        })
         .finally(resetCopySoon);
       return;
     }
