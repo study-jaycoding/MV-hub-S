@@ -283,12 +283,27 @@ export function SpotlightPrompt({
   const libraryDraftRef = useRef<string>(""); // 비-씬(라이브러리) 프롬프트 임시 보관
   const draftParse = (s: string): PromptPart[] => {
     if (!s) return [];
+    let p: unknown;
     try {
-      const p = JSON.parse(s);
-      return Array.isArray(p) ? (p as PromptPart[]) : [];
+      p = JSON.parse(s);
     } catch {
-      return [{ t: "text", v: s }]; // 옛 순수텍스트 초안 하위호환
+      return [{ t: "text", v: s }]; // 옛 순수텍스트 초안 하위호환(JSON 아님 → 원문 텍스트)
     }
+    // JSON 이지만 배열이 아니면(숫자/객체) 원문을 텍스트로 — 내용 손실 방지.
+    if (!Array.isArray(p)) return [{ t: "text", v: s }];
+    // 원소 검증 — text 는 문자열 v, chip 은 ref 객체만. 손상 씬/localStorage/import 의 [null]·
+    //  {t:'text',v:1} 같은 값이 restoreParts 에서 p.t/p.v.split 예외를 내던 것 차단.
+    const out: PromptPart[] = [];
+    for (const it of p) {
+      if (!it || typeof it !== "object") continue;
+      const rec = it as Record<string, unknown>;
+      if (rec.t === "text" && typeof rec.v === "string") out.push(it as PromptPart);
+      else if (rec.t === "chip" && rec.ref && typeof rec.ref === "object") out.push(it as PromptPart);
+    }
+    // 배열이었으나 유효 PromptPart 가 하나도 없으면(예: 텍스트노드에 쓴 ["prompt"]·[1]) 원문을 텍스트로.
+    //  (빈 배열 []=의도된 빈 프롬프트는 그대로 빈 결과.)
+    if (!out.length && p.length) return [{ t: "text", v: s }];
+    return out;
   };
   useEffect(() => {
     const prev = prevBindingKeyRef.current;
@@ -465,7 +480,15 @@ export function SpotlightPrompt({
     return true;
   };
   const onEditorPaste = (e: React.ClipboardEvent) => {
-    pasteCaptureAsRef(e);
+    if (pasteCaptureAsRef(e)) return; // 이미지 캡쳐면 그쪽이 처리(preventDefault 포함)
+    // 이미지가 아니면 '평문'만 붙여넣는다 — 기본 붙여넣기는 클립보드의 text/html 을 그대로
+    //  contentEditable DOM 에 넣어 <img onerror=…> 등 실행형 HTML 이 삽입되는 XSS 표면이 된다.
+    //  서식/스크립트를 버리고 text/plain 만 캐럿에 삽입한다.
+    const ed = editorRef.current;
+    if (!ed) return;
+    e.preventDefault();
+    const text = e.clipboardData.getData("text/plain");
+    if (text) insertTextAtCaret(ed, text);
   };
   // 트레이(레퍼런스 넣는 곳)를 클릭한 상태에서 붙여넣기 — 에디터가 포커스가 아니라 React onPaste 가 안 걸린다.
   //  dock 안에 포커스가 있으면(에디터 제외) document paste 를 받아 캡쳐를 레퍼런스로 넣는다. 최신 클로저는 ref 로.
@@ -862,9 +885,14 @@ export function SpotlightPrompt({
       }
       // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡). 씬 모드도 N장 → 그 카드에 변형으로 누적된다.
       // 카드 아래 Generate 가 노드별 배치수를 넘기면 그 값을 우선(없으면 하단 컨트롤의 count).
-      // ★버튼 onClick 은 이벤트 객체를 넘기므로 숫자일 때만 override 로 인정(NaN 방지).
-      const override = typeof batchOverride === "number" ? batchOverride : undefined;
-      const batch = Math.max(1, override ?? count);
+      // ★버튼 onClick 은 이벤트 객체를 넘기므로 유한한 숫자일 때만 override 로 인정(NaN·Infinity 방지).
+      const override =
+        typeof batchOverride === "number" && Number.isFinite(batchOverride)
+          ? Math.floor(batchOverride)
+          : undefined;
+      // 상한 MAX_COUNT·정수·최소 1 로 clamp — 비정상 배치수(Infinity·9999·소수)가 Array.from RangeError
+      //  나 대량 api.create 요청 폭주로 이어지지 않게(방어). UI/cardBatch 도 1~MAX_COUNT.
+      const batch = Math.min(MAX_COUNT, Math.max(1, override ?? count));
       const created = await Promise.all(Array.from({ length: batch }, () => api.create(body)));
       // 드래그로 불러온 원본이 있으면 그것을 부모로 자동 히스토리 기록(App 이 처리). 1회 소모.
       const dragParent = dragParentRef.current;
