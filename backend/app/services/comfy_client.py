@@ -16,6 +16,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from .net_guard import assert_public_http_url, guarded_opener, BlockedURLError
+
 CLIENT_ID = f"mvhub-{uuid.uuid4().hex[:8]}"
 CLOUD_BASE = "https://cloud.comfy.org"
 CLOUD_MAX_CONCURRENCY = 5  # Pro 티어 문서 기준
@@ -422,9 +424,17 @@ def view_bytes(target: dict, params: dict) -> bytes:
             loc = e.headers.get("Location")
             if not loc:
                 raise ComfyError("리다이렉트 응답에 Location 헤더가 없습니다")
-            try:  # 서명 URL — 헤더 없이 받는다
-                with urllib.request.urlopen(loc, timeout=600) as r2:
+            # ★리다이렉트 대상 검증(SSRF·로컬파일 읽기 차단). 원래 comfy 직결은 사설/로컬을 허용(위 주석)
+            #  하지만 /view 302 는 '공개 서명 스토리지 URL' 이어야 한다. 검증 없이 urlopen 하면 악의적
+            #  Comfy 서버가 `Location: file:///…`(urllib 은 file:// 지원) 이나 내부망 IP 를 돌려줘 서버
+            #  로컬 파일·내부 서비스를 읽게 할 수 있다. http(s)+공개 IP 만 허용하고, 두 번째 요청도
+            #  no-redirect opener 로 열어 체인 리다이렉트 우회까지 막는다(헤더 미첨부 → X-API-Key 미유출).
+            try:
+                assert_public_http_url(loc)
+                with guarded_opener().open(loc, timeout=600) as r2:
                     return r2.read()
+            except BlockedURLError as e2:
+                raise ComfyError(f"출력물 리다이렉트가 차단되었습니다(SSRF 방어): {e2}")
             except (urllib.error.URLError, TimeoutError, OSError) as e2:
                 raise ComfyError(f"출력물 다운로드 실패: {e2}")
         raise _classify(e.code, e.read().decode("utf-8", "replace")[:200])
