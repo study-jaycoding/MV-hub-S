@@ -158,6 +158,12 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
     - ① Assets 공유 코멘트(`/meta`·`/comments`)에 프로젝트 멤버십 검사 없음 — 비멤버가 project 이름+path 알면 코멘트 열람/작성 가능. "팀 신뢰모델"이면 허용이나, 프로젝트 격리 필요하면 멤버십 ACL 추가. (마운트형 project 는 멤버십 개념 자체가 없어 정책 결정 필요)
     - ③ `GET /mounts` 가 loopback 없이 PM auto-mount 의 서버 절대경로·exists 노출(멤버 프로젝트 한정이나 서버 경로 노출). 원격에서 폴더등록 UI 자체가 무의미하니 게이트 검토.
     - ④ 공유서버(AUTH on)는 account_key=None → 마운트 단일파일. `_owner_mounts` 의 레거시(owner="") 흡수가 첫 요청자에게 쏠림(업그레이드 서버에서 마운트 유실). 로컬 허브 마이그레이션 의도와 얽혀 신중 필요.
+- **청크 8 (계정 / DB / 휴지통)**: 리뷰 완료, **코드 변경 없음 — Jay 결정 필요**. 신원·공유 번들·마이그레이션은 가장 민감·정교한 시스템이라 정책/회귀 위험이 커 안전한 원라인 수정이 없음. remap_creator_uid 는 넓게 커버(깨끗), 일반 휴지통 삭제/복원은 owner 스코프됨(깨끗).
+  - **★Critical (Jay 결정): publish-bundle 재공유가 남의 생성물 오염** — [share.py] 병합에서 `fact_blocked`(creator≠shared_by)는 프롬프트/에셋만 막고, 그 뒤 `share` 행 INSERT·`_set_auto_tags`(REPLACE)·`_merge_comments` 는 그대로 실행. B가 A의 생성물 id/job_id 를 아는 채 번들을 보내면 ① A의 비공개 생성물이 team 공유로 바뀌고 ② `_set_auto_tags` 가 owner=생성물작성자(A) 기준 REPLACE 라 B 번들의 빈 auto_tags 로 **A의 auto_tag 가 삭제**될 수 있음. 단, 코드가 "남의 것 재공유(COALESCE)"를 의도적으로 다뤄 재공유는 설계된 기능 → 정책 판단 필요. 권고: fact_blocked(비소유) 시 파괴적 오버레이(`_set_auto_tags` REPLACE·강제 share)도 함께 차단(코덱스 안).
+  - **High → 현재 미해당**: 부팅 마이그레이션에 프로세스간 락 없음. 그러나 서버는 **단일 워커**(uvicorn.run reload=False, workers 미지정)라 레이스 없음. 향후 멀티워커 스케일 시에만 락 필요.
+  - **Medium (Jay 결정): `/api/sources` 개인메타 누출** — search_sources 가 viewer/creator 스코프를 안 넘겨, 같은 프로젝트 멤버 B가 A의 개인 색/태그/auto_tag 를 소스 응답으로 봄(일반 목록에선 숨겨지는데). 수정=sources 쿼리에 viewer 스코프(피커 회귀 주의).
+  - **Medium: 팀탭 auto_tags 필터 존재추론** — 값은 숨기나 필터 결과로 남의 auto_tag 부착 여부 노출.
+  - **Low: `generation_stats().failed_count` 계정 미스코프** — 남의 실패물 수가 내 카운트에 섞임(clear_failed 는 본인만 → 숫자·조작범위 불일치).
 - **보류(저위험·후속)**:
   - #1 다중 탭+서로 다른 계정 동시 로그인 시 씬 오염 가능(매우 드묾, keyOf 가 매 호출 activeAccount 를 읽음). 필요 시 탭 시작 시 네임스페이스 고정으로.
   - #5 실행계획 내부에서 resolvePortEdges 미적용(현재 호출부가 모두 먼저 적용 → 실버그 아님, 방어적 보강만).
