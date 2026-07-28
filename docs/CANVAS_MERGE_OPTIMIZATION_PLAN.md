@@ -152,6 +152,12 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
   - **반영**: comfy 입력 엣지 끝점이 base 만 레인별(ref/text)이고 fan 은 전체 입력 기준이라 ref 선이 ref 포트에서 어긋나던 문제 → 생성카드처럼 레인별 fan(inEdgesLaned 에 comfy 포함)으로 포트에 정렬(생성 동작 불변).
   - **후속(병합 후 Phase 6)**: 마퀴/드래그 중 전 카드 재렌더로 buildViewClips·collectListInputs·comfy JSON 파싱이 매 프레임 반복(큰 씬 렉). 렌더 핫패스 memo 리팩터라 지금 잘 되는 걸 안 깨뜨리기 위해 병합 후. (연관: 보류 #8 워크플로 JSON 파싱 캐시)
   - **폴리시(후속)**: MediaThumbnail 최종 로드실패 시 fallback 미전환(레퍼런스·결과 카드가 GenerationCard 의 '원본 없음'과 불일치), comfy/InfoPopup 비디오 preload·poster·onError 누락. 기능 파손 아니라 후속 폴리시.
+- **청크 7 (Assets)**: 완료. 코덱스 4건 — 반영 1건, Jay 보고 3건. safe_join·loopback 게이트(tree/file/thumb/upload/reveal/zip)·업로드 상한·zip 정리·reveal shell 미경유는 깨끗.
+  - **반영**: `/api/assets/projects` 가 loopback 없이 백그라운드 프리워밍(서버 디스크 스캔·썸네일 생성)을 걸어, 공유서버 원격 사용자가 Assets 만 열어도 서버 파일 I/O 를 돌리던 문제 → `is_loopback_request` 일 때만 프리워밍(원격은 thumb 를 못 받으니 기능 손실 0).
+  - **Jay 보고(팀 ACL/토폴로지 판단)**:
+    - ① Assets 공유 코멘트(`/meta`·`/comments`)에 프로젝트 멤버십 검사 없음 — 비멤버가 project 이름+path 알면 코멘트 열람/작성 가능. "팀 신뢰모델"이면 허용이나, 프로젝트 격리 필요하면 멤버십 ACL 추가. (마운트형 project 는 멤버십 개념 자체가 없어 정책 결정 필요)
+    - ③ `GET /mounts` 가 loopback 없이 PM auto-mount 의 서버 절대경로·exists 노출(멤버 프로젝트 한정이나 서버 경로 노출). 원격에서 폴더등록 UI 자체가 무의미하니 게이트 검토.
+    - ④ 공유서버(AUTH on)는 account_key=None → 마운트 단일파일. `_owner_mounts` 의 레거시(owner="") 흡수가 첫 요청자에게 쏠림(업그레이드 서버에서 마운트 유실). 로컬 허브 마이그레이션 의도와 얽혀 신중 필요.
 - **보류(저위험·후속)**:
   - #1 다중 탭+서로 다른 계정 동시 로그인 시 씬 오염 가능(매우 드묾, keyOf 가 매 호출 activeAccount 를 읽음). 필요 시 탭 시작 시 네임스페이스 고정으로.
   - #5 실행계획 내부에서 resolvePortEdges 미적용(현재 호출부가 모두 먼저 적용 → 실버그 아님, 방어적 보강만).

@@ -43,7 +43,7 @@ from ..services.atomic_io import atomic_write_text
 from ..deps import account_global_roles, account_scope_uid, actor_id
 from ..services.media_types import asset_media_type
 from ..services.project_folders import hidden_folder
-from ..services.request_guards import require_loopback_request
+from ..services.request_guards import require_loopback_request, is_loopback_request
 from ..services import media_cache, thumbs
 from ..services.path_safety import safe_join
 
@@ -549,9 +549,12 @@ def list_projects(request: Request, background: BackgroundTasks):
                 projects.append(_COMBINED_INTERNAL)
                 break
     # 앱 로드 때 전 프로젝트를 백그라운드로 미리 프리워밍(스로틀) — 첫 열람도 웜 캐시로 즉시 뜨게.
+    #  ★로컬 허브(loopback)에서만 — 공유 서버 원격 사용자는 썸네일 엔드포인트가 loopback 게이트라
+    #   결과를 못 받는데, 프리워밍은 서버 디스크 스캔·썸네일 생성을 유발한다(원격이 서버 파일 I/O 를
+    #   돌리는 자원 남용·원칙 위반). 원격이면 목록만 주고 프리워밍은 건너뛴다(기능 손실 없음).
     global _PREWARM_ALL_AT
     now = time.monotonic()
-    if projects and (now - _PREWARM_ALL_AT) > _PREWARM_ALL_TTL:
+    if projects and is_loopback_request(request) and (now - _PREWARM_ALL_AT) > _PREWARM_ALL_TTL:
         _PREWARM_ALL_AT = now
         # 합본(imp/cap)은 ASSETS_ROOT 전체를 훑게 되므로 프리워밍 제외 — 스크래치라 열 때 굽는 걸로 충분.
         dirs = [
