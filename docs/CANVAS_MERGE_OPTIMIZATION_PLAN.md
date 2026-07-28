@@ -176,7 +176,7 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
   - **④(중간) batch 상한 방어**: submit(batchOverride) 가 Math.max(1,…)뿐이라 Infinity/9999/소수 시 Array.from RangeError·요청 폭주 → 유한·정수화 + [1, MAX_COUNT] clamp.
 - **청크 11 (Comfy 재확인)**: 완료. 코덱스 5건 — 반영 1건(치명), Jay 결정/후속 4건. `_LOCAL_PREFIXES` 에 /api/comfy 포함·GET 키 마스킹·PUT '***' 무시·object_info 캐시키 api_key 분리·COMBO 두 형식·_str_set 방어는 깨끗.
   - **★반영(치명): /view 리다이렉트 file:// 로컬파일 읽기** — view_bytes 가 302 Location 을 스킴 검증 없이 urlopen 해, 악의적 Comfy 서버가 `Location: file:///…`(urllib file:// 지원) 나 내부망 IP 를 돌려주면 서버 로컬 파일·내부 서비스를 읽을 수 있었음 → 리다이렉트 대상에 `assert_public_http_url`(http(s)+공개IP) + `guarded_opener`(체인 리다이렉트 차단) 적용. comfy 직결은 기존대로 사설/로컬 허용.
-  - **Jay 결정(권고): 공유서버 /api/comfy 게이트** — 결정 #2 는 "Comfy=개인 로컬 사용"인데 comfy 라우터엔 loopback 게이트가 없음. 공유서버가 원격 사용자 /api/comfy 를 처리하면 ① comfy_url 을 공격자 서버로 바꿔 SSRF ② 설정/키가 account_key=None 이라 서버 공용(B가 A의 저장 키를 /run 으로 사용) 위험. 권고: assets 처럼 /api/comfy 를 loopback 게이트(로컬 허브 전용) — 팀원은 로컬 허브로 쓰니 제약 아니고 결정 #2 모델을 오히려 강제. (결정 #2 가 명시적이라 승인 후 반영)
+  - **✅ Jay 승인·반영: 공유서버 /api/comfy loopback 게이트** — comfy 라우터 전체에 `_require_local_comfy`(AUTH on 이면 loopback 전용) 부착. 로컬 허브(AUTH off)는 통과, 공유서버 원격의 SSRF·저장키 대리사용 차단. 결정 #2("Comfy=로컬 개인사용") 모델을 강제. (assets 의 _require_local_assets 와 동일 패턴)
   - **후속: DoS 상한** — /run 워크플로 JSON·업로드·/view 다운로드에 크기 상한/스트리밍 없음(정상 대형 영상과 구분 필요).
   - **후속: 실행 중 워크플로 교체** — sceneId 가드는 있으나 content/run 버전 가드 없어, 실행 중 같은 씬에서 워크플로 교체 시 옛 결과가 새 카드에 붙을 수 있음(드묾).
 - **청크 12 (검증 매트릭스)**: 완료. 병합 전 청크 5~11 반영 후 전체 자동 검증 **올 그린** — 백엔드 pytest 150 통과, 프론트 tsc 클린·vitest 124 통과·vite build ✓. (수동 스모크는 Jay 실사용 확인 몫: 씬 생성/전환·drag·pan·zoom·paste·drop·undo, Comfy 파싱·실행·배치·내작업저장·실행중 씬전환, 비교모달, 팀서버 AUTH 권한별.)

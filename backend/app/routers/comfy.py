@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from .. import rbac, repo
@@ -31,10 +31,22 @@ from ..deps import (
     require_project_role,
 )
 from ..services import comfy_client, comfy_workflow, video_convert
+from ..services.request_guards import require_loopback_request
 
 log = logging.getLogger("comfy")
 
-router = APIRouter(prefix="/api/comfy", tags=["comfy"])
+
+def _require_local_comfy(request: Request) -> None:
+    """Comfy 실행·설정·파싱은 로컬 허브(loopback) 전용. 공유 서버(AUTH on)에서 LAN/원격 사용자가
+    서버를 시켜 임의 comfy_url 로 요청(SSRF)하거나, 서버 단일 DB 에 저장된 '남의 키'를 /run 으로
+    대신 쓰는 것을 막는다. 로컬 허브는 AUTH off + 127.0.0.1 바인드라 그대로 통과한다
+    (설계상 Comfy 는 각자 자기 로컬에서 자기 키로 사용 — 팀 서버엔 Comfy 를 공유하지 않는다)."""
+    if AUTH_ENABLED:
+        require_loopback_request(request, "Comfy 기능은 로컬 허브에서만 사용할 수 있습니다")
+
+
+# 라우터 전체에 로컬 게이트 — 모든 /api/comfy/* 가 공유 서버 원격에서 차단된다(프록시는 로컬 위임).
+router = APIRouter(prefix="/api/comfy", tags=["comfy"], dependencies=[Depends(_require_local_comfy)])
 
 # app_setting 키 — 이 PC 로컬 DB 에만 저장되는 ComfyUI 연결 정보.
 _K_URL = "comfy_url"
