@@ -361,8 +361,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }
   }, [onDragMove, onDragUp]);
 
-  // 다중 선택 복사: 선택한 원본 이미지 파일들을 OS 클립보드(파일 목록)에 올린다 → 대화창에서 Ctrl+V 로 여러 장.
-  //  (브라우저 클립보드는 이미지 1장 한계라 여러 장이 안 됨 → 로컬 백엔드가 CF_HDROP 을 채운다. 이미지만 대상.)
+  // 복사: 선택한 원본 미디어(이미지·영상·오디오) 파일들을 OS 클립보드(파일 목록)에 올린다 → 대화창에서
+  //  Ctrl+V 로 한 번에. (브라우저 클립보드는 이미지 1장 한계 → 로컬 백엔드가 CF_HDROP 을 채운다.
+  //  단건이면 그 파일 하나, 다중선택이면 선택 전체를 올린다 — assetDragItemsForPath 가 선택-인지 처리.)
   const copyFilesToClipboard = useCallback(async (path: string) => {
     const proj = projectRef.current;
     const { items } = assetDragItemsForPath({
@@ -371,8 +372,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       selected: selectedRef.current,
       path,
     });
-    const paths = items.filter((it) => it.type === "image").map((it) => it.path);
-    if (paths.length === 0) throw new Error("복사할 이미지가 없습니다");
+    const paths = items.map((it) => it.path); // 미디어 최종 판별은 백엔드(허용 확장자)에서
+    if (paths.length === 0) throw new Error("복사할 파일이 없습니다");
     await api.clipboardCopyFiles(proj, paths);
   }, []);
 

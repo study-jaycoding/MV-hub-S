@@ -41,7 +41,7 @@ from ..config import (
 from ..db import get_connection
 from ..services.atomic_io import atomic_write_text
 from ..deps import account_global_roles, account_scope_uid, actor_id
-from ..services.media_types import asset_media_type
+from ..services.media_types import asset_media_type, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request, is_loopback_request
 from ..services import media_cache, thumbs
@@ -1241,16 +1241,20 @@ class ClipboardCopyIn(BaseModel):
     paths: list[str]
 
 
-# Claude 대화창이 이미지로 받는 확장자만(도움말 기준 JPEG/PNG/GIF/WebP). BMP·영상·오디오는 제외.
+# 이미지는 Claude 지원 세트(JPEG/PNG/GIF/WebP)만(BMP 제외). 여기에 모든 영상·오디오를 더한다.
+# OS 클립보드는 파일 종류를 안 가리므로 미디어 파일이면 올린다 — 붙여넣는 대상(claude.ai 등)이 그 종류를
+# 받는지는 대상 앱에 달림(이미지는 확실, 영상·오디오는 대상에 따라 다름).
 _CLIPBOARD_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-_CLIPBOARD_MAX = 20  # Claude 채팅 첨부 최대 개수
+_CLIPBOARD_MEDIA_EXT = _CLIPBOARD_IMAGE_EXT + VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
+_CLIPBOARD_MAX = 20  # 한 번에 올릴 최대 개수(과다 복사 방지)
 
 
 @router.post("/clipboard-copy", dependencies=[Depends(_require_local_assets)])
 def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
-    """선택한 어셋 원본 파일들을 OS 클립보드에 '파일 목록'(CF_HDROP)으로 올린다(Windows·로컬 전용).
-    사용자가 외부 대화창(claude.ai)에서 Ctrl+V 하면 여러 파일이 한 번에 첨부된다(탐색기 파일복사와 동일 원리).
-    브라우저 클립보드는 이미지 1장만 담기는 한계가 있어, 로컬 백엔드가 대신 OS 클립보드를 채운다."""
+    """선택한 어셋 원본 미디어(이미지·영상·오디오) 파일들을 OS 클립보드에 '파일 목록'(CF_HDROP)으로
+    올린다(Windows·로컬 전용). 사용자가 외부 대화창(claude.ai)에서 Ctrl+V 하면 여러 파일이 한 번에
+    첨부된다(탐색기 파일복사와 동일 원리). 브라우저 클립보드는 이미지 1장만 담기는 한계가 있어(영상·오디오
+    불가), 로컬 백엔드가 대신 OS 클립보드를 채운다. (대상 앱이 그 종류를 받는지는 대상에 달림.)"""
     # 클립보드 덮어쓰기는 단순 조회보다 부작용이 크다 → AUTH 여부와 무관하게 loopback 을 직접 강제.
     require_loopback_request(request, "클립보드 복사는 로컬 허브에서만 가능합니다")
     if sys.platform != "win32":
@@ -1264,8 +1268,8 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
     skipped = 0
     for rel in body.paths:
         target = _safe_resolve(proj_dir, rel)  # 경로 이탈 차단(safe_join)
-        # is_file() 로 폴더 배제 + Claude 지원 이미지 확장자만 허용.
-        if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_IMAGE_EXT:
+        # is_file() 로 폴더 배제 + 허용 미디어(이미지·영상·오디오) 확장자만.
+        if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_MEDIA_EXT:
             skipped += 1
             continue
         key = str(target)
@@ -1277,7 +1281,7 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
             break
 
     if not abs_paths:
-        raise HTTPException(status_code=404, detail="복사할 이미지 파일이 없습니다")
+        raise HTTPException(status_code=404, detail="복사할 미디어 파일이 없습니다")
 
     # 경로들을 임시 파일에 한 줄씩(UTF-8 BOM) 기록 → PowerShell 이 그 파일에서 읽어 클립보드에 올린다.
     #  ★경로를 명령 문자열에 직접 넣지 않는다(파일명 속 따옴표·$·백틱 인젝션 원천 차단). tmp 경로조차
