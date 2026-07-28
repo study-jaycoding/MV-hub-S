@@ -100,9 +100,57 @@ export const AssetCell = memo(function AssetCell({
     ? { width: "100%", height: "100%", objectFit: fit }
     : { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit };
 
+  // ── 외부 웹앱(예: 클로드 대화창)으로 이미지 드래그-첨부 ──────────────────────────
+  // 크롬은 <img> 를 드래그하면 그 이미지를 '네이티브 이미지 드래그'로 파일처럼 실어준다.
+  // 문제: img.src 가 우리 로컬서버(127.0.0.1) 썸네일 URL 이면, 공개 사이트(claude.ai)에 드롭할 때
+  //   크롬의 사설망 차단(Private Network Access)으로 바이트를 못 가져와 첨부가 빈다.
+  // 해결: 이미지에 잠깐 머무르면(호버 150ms) 원본을 data:URL(바이트 내장)로 만들어 src 에 심는다.
+  //   → 드롭 시 네트워크 요청이 0 이라 차단과 무관하게 붙고, 썸네일이 아닌 '원본'이 첨부된다.
+  //   호버가 끝나면 썸네일로 되돌려 풀해상도 base64 메모리를 즉시 반납한다. (이미지 단건 한정)
+  const [dragDataUrl, setDragDataUrl] = useState<string | null>(null);
+  const hoverTimer = useRef<number | null>(null);
+  const prefetchAC = useRef<AbortController | null>(null);
+  const clearDragPrefetch = () => {
+    if (hoverTimer.current != null) {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    prefetchAC.current?.abort();
+    prefetchAC.current = null;
+  };
+  useEffect(
+    () => () => {
+      // 언마운트 정리(스크롤로 셀이 사라질 때 타이머·요청 누수 방지)
+      if (hoverTimer.current != null) clearTimeout(hoverTimer.current);
+      prefetchAC.current?.abort();
+    },
+    [],
+  );
+
   const onEnter = () => {
     if (videoRef.current) videoRef.current.muted = true; // 영상 호버는 무음(React muted 반영 버그 방어). 오디오는 그대로
     (videoRef.current || audioRef.current)?.play().catch(() => {});
+    // 이미지: 잠깐 머무르면(=끌 의도) 원본을 data:URL 로 미리 준비 — 외부 드래그-첨부용.
+    if (node.type === "image" && !dragDataUrl && hoverTimer.current == null && !prefetchAC.current) {
+      hoverTimer.current = window.setTimeout(() => {
+        hoverTimer.current = null;
+        const ac = new AbortController();
+        prefetchAC.current = ac;
+        fetch(url, { signal: ac.signal })
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("fetch"))))
+          .then((blob) => {
+            if (blob.size > 40 * 1024 * 1024) return; // 너무 크면 스킵(썸네일 URL 네이티브 드래그로 폴백)
+            const reader = new FileReader();
+            reader.onload = () => {
+              if (!ac.signal.aborted && typeof reader.result === "string") setDragDataUrl(reader.result);
+            };
+            reader.readAsDataURL(blob);
+          })
+          .catch(() => {
+            /* 취소·실패 시 썸네일 유지 → 로컬 URL 네이티브 드래그로 폴백 */
+          });
+      }, 150);
+    }
   };
   const onLeave = () => {
     const m = videoRef.current || audioRef.current;
@@ -110,6 +158,8 @@ export const AssetCell = memo(function AssetCell({
       m.pause();
       m.currentTime = 0;
     }
+    clearDragPrefetch();
+    if (dragDataUrl) setDragDataUrl(null); // 썸네일로 복귀 → base64 메모리 반납
   };
   const info = (x: number, y: number) =>
     onInfo({ kind: "file", project, node, meta, x, y });
@@ -238,7 +288,7 @@ export const AssetCell = memo(function AssetCell({
           </div>
         ) : (
           <img
-            src={imgSrc}
+            src={dragDataUrl || imgSrc}
             loading="lazy"
             decoding="async"
             // ★img 자체를 드래그 소스로 — 이래야 크롬이 '이미지 드래그'로 인식해 외부 웹앱(클로드 대화창)에
