@@ -488,7 +488,13 @@ export function SpotlightPrompt({
     if (!ed) return;
     e.preventDefault();
     const text = e.clipboardData.getData("text/plain");
-    if (text) insertTextAtCaret(ed, text);
+    if (text) {
+      insertTextAtCaret(ed, text);
+      // ★insertTextAtCaret 은 DOM 을 직접 넣어 'input' 이벤트를 쏘지 않는다 → onEditorInput 이 안 돌아
+      //  placeholder(data-empty) 가 안 사라지고 직렬화(promptTick)·토큰 알약화도 stale 이 된다.
+      //  타이핑과 동일하게 직접 호출해 갱신한다.
+      onEditorInput();
+    }
   };
   // 트레이(레퍼런스 넣는 곳)를 클릭한 상태에서 붙여넣기 — 에디터가 포커스가 아니라 React onPaste 가 안 걸린다.
   //  dock 안에 포커스가 있으면(에디터 제외) document paste 를 받아 캡쳐를 레퍼런스로 넣는다. 최신 클로저는 ref 로.
