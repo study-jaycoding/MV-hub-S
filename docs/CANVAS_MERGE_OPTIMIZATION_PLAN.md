@@ -164,6 +164,11 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
   - **Medium (Jay 결정): `/api/sources` 개인메타 누출** — search_sources 가 viewer/creator 스코프를 안 넘겨, 같은 프로젝트 멤버 B가 A의 개인 색/태그/auto_tag 를 소스 응답으로 봄(일반 목록에선 숨겨지는데). 수정=sources 쿼리에 viewer 스코프(피커 회귀 주의).
   - **Medium: 팀탭 auto_tags 필터 존재추론** — 값은 숨기나 필터 결과로 남의 auto_tag 부착 여부 노출.
   - **Low: `generation_stats().failed_count` 계정 미스코프** — 남의 실패물 수가 내 카운트에 섞임(clear_failed 는 본인만 → 숫자·조작범위 불일치).
+- **청크 9 (미디어 비교)**: 완료. 코덱스 4건 — 반영 3건, 후속 1건. compareDiff 캔버스/ObjectURL/rAF 없음·XSS 없음(깨끗).
+  - **반영 ①(높음)**: 비교 모달 위에서 Delete 가 뒤 SceneBoard 로 새어 선택 카드가 삭제되던 문제 → 두 모달(Compare/VideoCompare) keydown 을 capture 단계 + 폼컨트롤 밖 키 stopPropagation 으로 소유(배경 캔버스 단축키 차단).
+  - **반영 ②(중간)**: 소스 라이트박스 `.cmp-srcbox` z-index 220 < 모달 231 이라 의도(모달 위)와 달리 뒤에 깔리던 문제 → 240 으로.
+  - **반영 ④(낮음)**: VideoCompareModal 이미지 fallback 이 `img.src`(절대)≠`v.fallback`(상대) 비교라 fallback 도 404 면 무한 재요청 → dataset 플래그로 1회만.
+  - **후속(중간)**: 두 영상 수동 seek 동기화 없음(play/pause/loop 는 동기됨). 기능 추가라 피드백루프 주의하며 후속.
 - **보류(저위험·후속)**:
   - #1 다중 탭+서로 다른 계정 동시 로그인 시 씬 오염 가능(매우 드묾, keyOf 가 매 호출 activeAccount 를 읽음). 필요 시 탭 시작 시 네임스페이스 고정으로.
   - #5 실행계획 내부에서 resolvePortEdges 미적용(현재 호출부가 모두 먼저 적용 → 실버그 아님, 방어적 보강만).

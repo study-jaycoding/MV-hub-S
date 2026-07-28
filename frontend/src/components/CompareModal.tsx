@@ -46,12 +46,18 @@ export function CompareModal({
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]); // 영상 동기 재생용
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 모달이 열려 있는 동안 이 모달이 키를 소유 — 폼 컨트롤(체크박스 등) 밖의 키는 배경(캔버스
+      //  Delete 로 선택 카드 삭제 등)으로 새지 않게 막는다. capture 단계라 먼저 등록된 SceneBoard
+      //  bubble 리스너보다 앞서 stopPropagation 이 걸린다.
+      const t = e.target as HTMLElement | null;
+      const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if (!formEl) e.stopPropagation();
       if (e.key !== "Escape") return;
       if (srcPreview) setSrcPreview(null); // 라이트박스 먼저 닫기
       else onClose();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, srcPreview]);
 
   // 영상 동기 재생 — 한 곳에서 재생/정지하면 전부 같이. 길이가 다르면 먼저 끝난 영상은

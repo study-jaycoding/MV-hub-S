@@ -42,12 +42,17 @@ export function VideoCompareModal({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 모달이 키를 소유 — 폼 컨트롤 밖의 키는 배경(캔버스 Delete 등)으로 새지 않게 막는다.
+      //  capture 단계라 먼저 등록된 SceneBoard bubble 리스너보다 앞서 stopPropagation 이 걸린다.
+      const t = e.target as HTMLElement | null;
+      const formEl = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      if (!formEl) e.stopPropagation();
       if (e.key !== "Escape") return;
       if (zoom) setZoom(null); // 라이트박스 먼저 닫기
       else onClose();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, zoom]);
 
   // 동기 재생 — CompareModal 과 같은 방식(프로그램적 play/pause 는 ignore 로 전파 차단). 영상 요소만 대상.
@@ -164,9 +169,14 @@ export function VideoCompareModal({
                         setZoom({ url: v.full || v.url, type: "image", name: v.name })
                       }
                       onError={(e) => {
-                        // 고해상도 URL 로드 실패 → 검증된 대체(썸네일)로 한 번 교체(무한 루프 방지).
+                        // 고해상도 URL 로드 실패 → 검증된 대체(썸네일)로 '한 번만' 교체. img.src 는 절대 URL 로
+                        //  정규화되고 v.fallback 은 상대 /api 라 문자열 비교가 항상 달라, fallback 도 404 면
+                        //  무한 재요청이 났다 → dataset 플래그로 1회 적용 보장.
                         const img = e.currentTarget;
-                        if (v.fallback && img.src !== v.fallback) img.src = v.fallback;
+                        if (v.fallback && !img.dataset.fellback) {
+                          img.dataset.fellback = "1";
+                          img.src = v.fallback;
+                        }
                       }}
                     />
                   )}
