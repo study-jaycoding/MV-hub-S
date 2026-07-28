@@ -110,6 +110,9 @@ export const AssetCell = memo(function AssetCell({
       m.pause();
       m.currentTime = 0;
     }
+    // 셀을 벗어나면 드래그용 원본 data:URL 을 해제해 메모리(풀해상도 base64) 반납 → 썸네일로 복귀.
+    // (드래그 페이로드는 dragstart 시점에 이미 확정되므로, 드래그 도중 벗어나 복귀돼도 진행 중 드래그엔 영향 없음)
+    if (dragReadyUrl) setDragReadyUrl(null);
   };
   const info = (x: number, y: number) =>
     onInfo({ kind: "file", project, node, meta, x, y });
@@ -132,17 +135,42 @@ export const AssetCell = memo(function AssetCell({
   const [copyState, setCopyState] = useState<"idle" | "busy" | "ok" | "err">("idle");
   const copyTimer = useRef<number | null>(null);
   useEffect(() => () => { if (copyTimer.current != null) clearTimeout(copyTimer.current); }, []);
+  // 📋 클릭 후 '드래그로도' 첨부되게 하는 원본 data:URL. img.src 에 심어두면 드래그 시 파일로 실린다.
+  //  (로컬서버 URL 을 그대로 드래그하면 외부 사이트 드롭에서 사설망 차단(PNA)으로 첨부가 비어서, 바이트 내장이 필요)
+  const [dragReadyUrl, setDragReadyUrl] = useState<string | null>(null);
   const copyImage = () => {
     if (copyState === "busy") return;
+    setCopyState("busy");
+    // 원본 1회 fetch → 두 소비자가 공유(클립보드용 PNG + 드래그용 data:URL). url=원본(같은 오리진이라 차단 없음)
+    const blobP = fetch(url).then((r) => {
+      if (!r.ok) throw new Error("이미지 로드 실패");
+      return r.blob();
+    });
+    // (1) 드래그용: 원본을 data:URL 로 만들어 img.src 에 심는다 → 이후 이 이미지를 대화창으로 드래그하면 파일로 붙는다.
+    blobP
+      .then(
+        (blob) =>
+          new Promise<string>((res, rej) => {
+            const fr = new FileReader();
+            fr.onload = () => (typeof fr.result === "string" ? res(fr.result) : rej(new Error("read")));
+            fr.onerror = () => rej(fr.error);
+            fr.readAsDataURL(blob);
+          }),
+      )
+      .then(setDragReadyUrl)
+      .catch(() => {
+        /* 드래그 준비 실패해도 클립보드(Ctrl+V)는 별개로 동작 */
+      });
+    // (2) 붙여넣기용: 클립보드에 담는다. 제스처 유지 위해 write 는 동기 호출하고 blob 은 Promise 로 넘긴다.
+    //  클립보드 이미지 쓰기는 image/png 만 안전 → png 아니면 canvas 로 변환.
     if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
-      setCopyState("err");
+      // 클립보드 미지원 브라우저 — 드래그 준비만 하고 종료(드래그로는 첨부 가능)
+      setCopyState("ok");
+      if (copyTimer.current != null) clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1500);
       return;
     }
-    setCopyState("busy");
-    const pngBlob = (async (): Promise<Blob> => {
-      const res = await fetch(url); // url = 원본(같은 오리진이라 CORS/차단 없음)
-      if (!res.ok) throw new Error("이미지 로드 실패");
-      const blob = await res.blob();
+    const pngP = blobP.then(async (blob) => {
       if (blob.type === "image/png") return blob;
       const bmp = await createImageBitmap(blob);
       const canvas = document.createElement("canvas");
@@ -155,9 +183,9 @@ export const AssetCell = memo(function AssetCell({
       const png = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
       if (!png) throw new Error("PNG 변환 실패");
       return png;
-    })();
+    });
     navigator.clipboard
-      .write([new ClipboardItem({ "image/png": pngBlob })])
+      .write([new ClipboardItem({ "image/png": pngP })])
       .then(() => setCopyState("ok"))
       .catch(() => setCopyState("err"))
       .finally(() => {
@@ -281,7 +309,7 @@ export const AssetCell = memo(function AssetCell({
           </div>
         ) : (
           <img
-            src={imgSrc}
+            src={dragReadyUrl || imgSrc}
             loading="lazy"
             decoding="async"
             // ★img 자체를 드래그 소스로 — 이래야 크롬이 '이미지 드래그'로 인식해 외부 웹앱(클로드 대화창)에
@@ -314,10 +342,10 @@ export const AssetCell = memo(function AssetCell({
                 className={"ov-icon" + (copyState === "ok" ? " ok" : copyState === "err" ? " err" : "")}
                 title={
                   copyState === "ok"
-                    ? "복사됨! 대화창에서 Ctrl+V"
+                    ? "준비됨! 이미지를 대화창으로 드래그하거나 Ctrl+V"
                     : copyState === "err"
                       ? "복사 실패 (브라우저 미지원 가능)"
-                      : "이미지 복사 → 대화창에 Ctrl+V 로 붙여넣기"
+                      : "이미지 준비 → 대화창으로 드래그하거나 Ctrl+V"
                 }
                 onClick={(e) => {
                   e.stopPropagation();
