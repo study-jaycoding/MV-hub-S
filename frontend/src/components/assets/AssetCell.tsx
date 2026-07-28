@@ -123,6 +123,49 @@ export const AssetCell = memo(function AssetCell({
     onExportDrag(node.path, e.dataTransfer);
   };
 
+  // ── 이미지 복사(클립보드) ──────────────────────────────────────────────
+  // 웹페이지 → 외부 사이트(claude.ai)로는 '파일 드래그'가 브라우저 제약으로 불안정하다.
+  // 대신 실제 이미지 바이트를 클립보드에 담아, 대화창에서 Ctrl+V 로 붙여넣게 한다(원본 화질·확실).
+  //  · 클릭(사용자 제스처) 안에서 clipboard.write 를 '동기로' 호출하고, 실제 blob 은 Promise 로 넘긴다
+  //    → 제스처를 잃지 않으면서 fetch·변환을 비동기로 처리(권장 패턴).
+  //  · 클립보드 이미지 쓰기는 image/png 만 안전 → png 아니면 canvas 로 변환.
+  const [copyState, setCopyState] = useState<"idle" | "busy" | "ok" | "err">("idle");
+  const copyTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (copyTimer.current != null) clearTimeout(copyTimer.current); }, []);
+  const copyImage = () => {
+    if (copyState === "busy") return;
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
+      setCopyState("err");
+      return;
+    }
+    setCopyState("busy");
+    const pngBlob = (async (): Promise<Blob> => {
+      const res = await fetch(url); // url = 원본(같은 오리진이라 CORS/차단 없음)
+      if (!res.ok) throw new Error("이미지 로드 실패");
+      const blob = await res.blob();
+      if (blob.type === "image/png") return blob;
+      const bmp = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("canvas 없음");
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close?.();
+      const png = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+      if (!png) throw new Error("PNG 변환 실패");
+      return png;
+    })();
+    navigator.clipboard
+      .write([new ClipboardItem({ "image/png": pngBlob })])
+      .then(() => setCopyState("ok"))
+      .catch(() => setCopyState("err"))
+      .finally(() => {
+        if (copyTimer.current != null) clearTimeout(copyTimer.current);
+        copyTimer.current = window.setTimeout(() => setCopyState("idle"), 1500);
+      });
+  };
+
   // 좌상단 액션 — S(소스)·T(태그)·C(코멘트). 생성파트와 동일 위치/스타일(card-tl/card-sf/card-cm).
   //  · 기능은 어셋 고유: S=소스 등록/해제(meta.is_source), T=태그 인라인 편집(#), C=어셋 코멘트(meta.has_unread). 골드/최종 개념 없음.
   //  · 평소 숨김(호버 시 표시), S 는 소스이면·T 는 태그 있으면·C 는 미확인 코멘트면 항상 표시.
@@ -266,6 +309,24 @@ export const AssetCell = memo(function AssetCell({
           </div>
           <div className="ov-bottom">
             {!isList && <span className="ov-name">{node.name}</span>}
+            {node.type === "image" && (
+              <button
+                className={"ov-icon" + (copyState === "ok" ? " ok" : copyState === "err" ? " err" : "")}
+                title={
+                  copyState === "ok"
+                    ? "복사됨! 대화창에서 Ctrl+V"
+                    : copyState === "err"
+                      ? "복사 실패 (브라우저 미지원 가능)"
+                      : "이미지 복사 → 대화창에 Ctrl+V 로 붙여넣기"
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  copyImage();
+                }}
+              >
+                {copyState === "busy" ? "…" : copyState === "ok" ? "✓" : copyState === "err" ? "⚠" : "📋"}
+              </button>
+            )}
             <button
               className="ov-icon"
               title="원본 위치 열기 (탐색기)"
