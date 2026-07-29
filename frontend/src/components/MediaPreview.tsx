@@ -70,6 +70,9 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         });
       } else if (e.code === "Space" || e.key === " ") {
         // 스페이스바 → 재생/일시정지(네이티브 controls 는 포커스가 있어야만 먹으므로 직접 처리).
+        // 단 버튼·입력 등에 포커스가 있으면 그 요소의 기본 동작(클릭/입력)을 살린다(capture 로 가로채지 않음).
+        const t = e.target instanceof Element ? e.target : null;
+        if (t?.closest("button, a, input, textarea, select, [role=button], [contenteditable]")) return;
         const v = videoRef.current;
         if (!v) return;
         e.preventDefault();
