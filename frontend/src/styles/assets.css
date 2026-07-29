@@ -474,6 +474,20 @@
 .assets-masonry.fit-contain .asset-media video {
   object-fit: contain;
 }
+
+/* ── 가상 스크롤(virtua) 모드 — 컨테이너는 순수 스크롤러로, 레이아웃은 행 단위로 위임(생성 그리드와 동일).
+   좌우 padding 을 컨테이너에 둬 컬럼 측정(clientWidth)이 실제 행 폭과 일치. */
+.assets-masonry.assets-virtual { display: block; padding: 0 16px; }
+.assets-list.assets-virtual { display: block; padding: 0 14px; }
+.asset-vrow-grid { display: grid; gap: 12px; padding-bottom: 12px; } /* 반응형 컬럼은 인라인 style */
+.asset-vrow-list { padding-bottom: 6px; }
+/* 상·하단 여백(옛 컨테이너 padding 대체) — head 높이는 Virtualizer startMargin(14/10)과 반드시 일치. */
+.asset-grid-head { height: 14px; }
+.asset-grid-tail { height: 14px; }
+.assets-list.assets-virtual .asset-grid-head,
+.assets-list.assets-virtual .asset-grid-tail { height: 10px; }
+/* 가상화가 오프스크린을 언마운트하므로 content-visibility(추정높이)는 불필요하고 스크롤 점프를 유발 → 끈다. */
+.assets-virtual .asset-cell { content-visibility: visible; contain-intrinsic-size: auto; }
 .asset-media:hover .thumb-overlay { opacity: 1; }
 .asset-media:hover .play-badge { opacity: 0; }
 .asset-type-tag {

@@ -2,10 +2,12 @@
 //  · 메이슨리(핀터레스트형) 그리드 + 리스트 토글, 크기 조절 슬라이더
 //  · 영상 호버 자동재생 + 미디어 호버 오버레이(정보·미리보기·다운로드)
 //  · 좌측 폴더 트리는 유지. 셀 휠클릭=정보, 클릭=미리보기.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Virtualizer, type VirtualizerHandle } from "virtua";
 import { api } from "../api";
 import { DRAG_TYPES } from "../lib/dragTypes";
-import { nearestCellIndex } from "../lib/gridNavigation";
+import { computeGridColumns, navigateGrid } from "../lib/gridVirtualRows";
+import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
@@ -14,7 +16,6 @@ import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
-import { AssetGridCells } from "./assets/AssetGridCells";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
@@ -193,7 +194,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }, 150);
   }, [scrollKey]);
 
-  const { allTags, breadcrumb, dateGroups, files, hasAnyUnread, searchActive, typeCounts } =
+  const { allTags, breadcrumb, files, hasAnyUnread, searchActive, typeCounts } =
     useAssetViewData({
       activeColors,
       activeTags,
@@ -243,6 +244,27 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   } | null>(null);
   const filesRef = useRef(files);
   filesRef.current = files;
+
+  // ── 가상 스크롤(virtua) — 화면에 보이는 셀만 마운트(메모리). 생성 그리드와 동일 패턴. ──
+  const isList = layout === "list";
+  const vRef = useRef<VirtualizerHandle>(null);
+  const [columns, setColumns] = useState(1);
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el || isList) {
+      setColumns(1);
+      return;
+    }
+    const measure = () => setColumns(computeGridColumns(el, Math.round(180 * scale), 12)); // gap 12 = .asset-vrow-grid
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scale, isList, files.length]);
+  const rowModel = useMemo(
+    () => buildAssetRows(files, isList ? 1 : columns, groupByDate),
+    [files, isList, columns, groupByDate],
+  );
 
   useAssetSelectionPersistence({
     activeColors,
@@ -444,16 +466,17 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       const cur = focusIdx < 0 ? 0 : focusIdx;
-      const nxt = focusIdx < 0 ? 0 : nearestCellIndex(gridRef.current, ".asset-cell", cur, e.key);
+      const nxt =
+        focusIdx < 0
+          ? 0
+          : navigateGrid({ navGrid: rowModel.navGrid, posByGen: rowModel.posByIdx }, cur, e.key);
       if (nxt == null) return;
       setFocusIdx(nxt);
       if (e.shiftKey) setSelected((prev) => new Set([...prev, cur, nxt]));
       else setSelected(new Set([nxt]));
-      requestAnimationFrame(() =>
-        gridRef.current
-          ?.querySelector(`.asset-cell[data-idx="${nxt}"]`)
-          ?.scrollIntoView({ block: "nearest" }),
-      );
+      // 가상 스크롤: 대상 셀의 행으로 스크롤(예전 scrollIntoView 는 오프스크린이면 DOM 이 없어 무효).
+      const pos = rowModel.posByIdx[nxt];
+      if (pos) vRef.current?.scrollToIndex(rowModel.rowIndexOfNavRow[pos.navRow], { align: "nearest" });
     } else if (e.key === "Enter") {
       e.preventDefault();
       const f = filesRef.current[focusIdx];
@@ -566,34 +589,39 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 그리드/리스트가 공유하는 셀 목록(중복 제거). layout 한 값으로 둘 중 하나만 렌더된다.
   // 다중선택 태그 편집 활성(편집 카드가 선택에 포함 + 2개 이상) — 선택된 비포커스 카드에 스트립 표시.
   const tagEditingMulti = tagEditPath != null && selected.size > 1 && selPaths().includes(tagEditPath);
-  const cellEls = files.map((f, i) => (
-    <AssetCell
-      key={f.path}
-      project={project}
-      node={f}
-      idx={i}
-      layout={layout}
-      scale={scale}
-      fit={fit}
-      selected={selected.has(i)}
-      focused={focusIdx === i}
-      deactivated={disabledAssets.has(f.path)}
-      selectedCount={selected.has(i) && selected.size > 1 ? selected.size : 1}
-      tagEditing={tagEditingMulti}
-      meta={meta[f.path] || EMPTY_ASSET_META}
-      editingTag={tagEditPath === f.path}
-      onS={cellOnS}
-      onT={cellOnT}
-      onC={cellOnC}
-      onTagsReplace={cellOnTagsReplace}
-      onBulkTagAdd={cellOnBulkTagAdd}
-      onBulkTagRemove={cellOnBulkTagRemove}
-      onTagCancel={cellOnTagCancel}
-      onInfo={onInfo}
-      onExportDrag={exportDrag}
-      onCopyFiles={copyFilesToClipboard}
-    />
-  ));
+  // 카드 셀은 virtua 가 렌더하는 '보이는 행' 안에서만 생성한다(오프스크린은 마운트 안 됨=메모리 절감).
+  const renderAssetCell = (idx: number) => {
+    const f = files[idx];
+    if (!f) return null;
+    return (
+      <AssetCell
+        key={f.path}
+        project={project}
+        node={f}
+        idx={idx}
+        layout={layout}
+        scale={scale}
+        fit={fit}
+        selected={selected.has(idx)}
+        focused={focusIdx === idx}
+        deactivated={disabledAssets.has(f.path)}
+        selectedCount={selected.has(idx) && selected.size > 1 ? selected.size : 1}
+        tagEditing={tagEditingMulti}
+        meta={meta[f.path] || EMPTY_ASSET_META}
+        editingTag={tagEditPath === f.path}
+        onS={cellOnS}
+        onT={cellOnT}
+        onC={cellOnC}
+        onTagsReplace={cellOnTagsReplace}
+        onBulkTagAdd={cellOnBulkTagAdd}
+        onBulkTagRemove={cellOnBulkTagRemove}
+        onTagCancel={cellOnTagCancel}
+        onInfo={onInfo}
+        onExportDrag={exportDrag}
+        onCopyFiles={copyFilesToClipboard}
+      />
+    );
+  };
   const marqueeEl = marquee && (
     <div
       className="assets-marquee"
@@ -604,17 +632,37 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 날짜 헤더 체크박스 — 그 날짜의 모든 파일(인덱스)을 한 번에 선택/해제.
   const toggleDate = (idxs: number[], allSel: boolean) =>
     setSelected((prev) => toggleAssetDateSelection(prev, idxs, allSel));
-
-  const gridCells = (
-    <AssetGridCells
-      files={files}
-      cells={cellEls}
-      groupByDate={groupByDate}
-      dateGroups={dateGroups}
-      selected={selected}
-      onToggleDate={toggleDate}
-    />
-  );
+  const renderDateHeader = (dayKey: string, label: string) => {
+    const idxs = rowModel.dateGroups.get(dayKey)?.idxs ?? [];
+    const allSel = idxs.length > 0 && idxs.every((idx) => selected.has(idx));
+    return (
+      <label className="gen-date-header" key={"h-" + dayKey}>
+        <input type="checkbox" checked={allSel} onChange={() => toggleDate(idxs, allSel)} />
+        <span className="gen-date-label">{label}</span>
+        <span className="gen-date-count">{idxs.length}</span>
+      </label>
+    );
+  };
+  const renderVirtualRow = (row: AssetVirtualRow) => {
+    if (row.type === "header") return renderDateHeader(row.dayKey, row.label);
+    return (
+      <div
+        key={row.key}
+        className={isList ? "asset-vrow-list" : "asset-vrow-grid"}
+        style={isList ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      >
+        {row.idxs.map(renderAssetCell)}
+      </div>
+    );
+  };
+  // 태그 인라인 편집 중인 셀의 행은 스크롤 밖이어도 마운트 유지(포커스·입력 보존) — 생성 그리드와 동일.
+  const keepMounted = useMemo(() => {
+    if (!tagEditPath) return undefined;
+    const idx = files.findIndex((f) => f.path === tagEditPath);
+    const navRow = idx >= 0 ? rowModel.posByIdx[idx]?.navRow : undefined;
+    const rowIdx = navRow == null ? undefined : rowModel.rowIndexOfNavRow[navRow];
+    return rowIdx == null ? undefined : [rowIdx];
+  }, [tagEditPath, files, rowModel]);
 
   return (
     <div className="assets-view">
@@ -781,21 +829,28 @@ export function AssetsView({ onInfo, onPreview }: Props) {
 
           {files.length === 0 && !loading ? (
             <div className="assets-empty">{t("이 폴더에 미디어가 없습니다.")}</div>
-          ) : layout === "list" ? (
-            <div className="assets-list" onScroll={onContentScroll} {...gridHandlers}>
-              {gridCells}
-              {marqueeEl}
-            </div>
           ) : (
             <div
-              className={"assets-masonry" + (fit === "contain" ? " fit-contain" : "")}
+              className={
+                (isList ? "assets-list" : "assets-masonry") +
+                " assets-virtual" +
+                (!isList && fit === "contain" ? " fit-contain" : "")
+              }
               onScroll={onContentScroll}
-              style={{
-                gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(180 * scale)}px, 1fr))`,
-              }}
               {...gridHandlers}
             >
-              {gridCells}
+              <div className="asset-grid-head" />
+              <Virtualizer
+                ref={vRef}
+                scrollRef={gridRef}
+                data={rowModel.rows}
+                bufferSize={400}
+                startMargin={isList ? 10 : 14}
+                keepMounted={keepMounted}
+              >
+                {(row: AssetVirtualRow) => renderVirtualRow(row)}
+              </Virtualizer>
+              <div className="asset-grid-tail" />
               {marqueeEl}
             </div>
           )}
