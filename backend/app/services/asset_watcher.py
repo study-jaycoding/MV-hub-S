@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
@@ -70,10 +70,12 @@ def _log_future_exception(fut) -> None:
 
 
 class _AssetChangeHandler(FileSystemEventHandler):
-    def __init__(self, on_change, dir_key: str, hide_render: bool) -> None:
+    def __init__(self, on_change, dir_key: str, hide_render_for: Callable[[str], bool]) -> None:
         self._on_change = on_change
         self._dir_key = dir_key
-        self._hide_render = hide_render
+        # ★hide_render 를 고정값이 아니라 조회 콜백으로 받는다 — 같은 폴더가 여러 alias 로 등록될 때
+        #   'alias 중 하나라도 render 를 보고 싶어하면 통과' 를 이벤트 시점에 동적으로 판정하기 위함.
+        self._hide_render_for = hide_render_for
 
     def on_any_event(self, event) -> None:  # created/modified/moved/deleted 공통
         if getattr(event, "is_directory", False):
@@ -85,7 +87,9 @@ class _AssetChangeHandler(FileSystemEventHandler):
             return  # 미디어 파일이 아니면(설정·임시파일 등) 무시
         if _is_temp(cand):
             return
-        if self._hide_render and (_under_render(self._dir_key, cand) or _under_render(self._dir_key, src)):
+        if self._hide_render_for(self._dir_key) and (
+            _under_render(self._dir_key, cand) or _under_render(self._dir_key, src)
+        ):
             return  # 숨김 render 폴더 변경은 트리에 안 보이므로 알리지 않음
         self._on_change(self._dir_key)
 
@@ -96,6 +100,8 @@ class _Watcher:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._watches: dict[str, object] = {}  # dir_key -> watch handle(중복 등록 방지)
         self._dir_projects: dict[str, set[str]] = {}  # dir_key -> {project 이름들}(같은 폴더 다중 이름)
+        # dir_key -> {project: hide_render} — alias 별 render 숨김 의사. 하나라도 False 면 render 알림을 통과시킨다.
+        self._dir_hide_by_project: dict[str, dict[str, bool]] = {}
         self._lock = threading.Lock()
         self._pending: set[str] = set()  # 디바운스 윈도우에 모인 변경 폴더(dir_key)
         self._timer: Optional[threading.Timer] = None
@@ -125,6 +131,7 @@ class _Watcher:
         with self._lock:
             self._watches.clear()
             self._dir_projects.clear()
+            self._dir_hide_by_project.clear()
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
@@ -137,18 +144,27 @@ class _Watcher:
         key = str(proj_dir)
         with self._lock:
             self._dir_projects.setdefault(key, set()).add(project)
+            # 이 alias 의 render 숨김 의사를 기록(같은 project 재등록 시 최신값으로 갱신).
+            self._dir_hide_by_project.setdefault(key, {})[project] = hide_render
             if key in self._watches:
-                return
+                return  # 이미 감시 중 — 위 맵만 갱신하면 핸들러가 동적으로 최신 판정을 읽는다
             if not proj_dir.is_dir():
                 return
             try:
                 handle = self._observer.schedule(
-                    _AssetChangeHandler(self._on_change, key, hide_render), key, recursive=True
+                    _AssetChangeHandler(self._on_change, key, self._hide_render_for), key, recursive=True
                 )
             except Exception as e:  # noqa: BLE001 — 감시 등록 실패는 무해(포커스 갱신 폴백)
                 print(f"[asset-watcher] 감시 등록 실패({project}): {e}")
                 return
             self._watches[key] = handle
+
+    def _hide_render_for(self, dir_key: str) -> bool:
+        """이 폴더의 render 변경을 숨길지 — 등록된 모든 alias 가 hide_render=True 일 때만 숨긴다.
+        하나라도 render 를 보고 싶어하면(False) 알림을 통과시킨다. (감시 스레드에서 호출 → 락 짧게)"""
+        with self._lock:
+            by_project = self._dir_hide_by_project.get(dir_key)
+            return bool(by_project) and all(by_project.values())
 
     def _start_timer_locked(self) -> None:
         # ★_lock 을 잡은 상태에서만 호출. 새 타이머로 교체(직전 타이머는 곧 종료됨).
