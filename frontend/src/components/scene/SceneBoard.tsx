@@ -298,6 +298,8 @@ export function SceneBoard({
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
+  const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const [tempWire, setTempWire] = useState<{ fromId: string; x2: number; y2: number } | null>(null);
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
@@ -2819,6 +2821,7 @@ export function SceneBoard({
         let gLastRect = gOrigRect; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
         const move = (ev: MouseEvent) => {
           if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
+          if (!gMoved) setDraggingIds(memberIds); // 첫 이동 확정 시 멤버 전체 keep 등록(컬링 언마운트 방지)
           gMoved = true;
           scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단
           const z = zoomRef.current;
@@ -2852,6 +2855,7 @@ export function SceneBoard({
         };
         const up = () => {
           scrollRef.current?.classList.remove("dragging");
+          setDraggingIds([]); // 그룹 드래그 종료 → keep 해제
           if (gRelocated) {
             commitMovedGroup();
           } else
@@ -2868,6 +2872,7 @@ export function SceneBoard({
         // blur: 멤버 선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
         beginDrag(move, up, () => {
           scrollRef.current?.classList.remove("dragging");
+          setDraggingIds([]); // 그룹 드래그 취소(blur)에도 keep 해제
           if (gRelocated) commitMovedGroup();
         });
         return;
@@ -2904,6 +2909,7 @@ export function SceneBoard({
       let relocated = false;
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+        if (!moved) setDraggingIds(targetIds); // 첫 이동 확정 시 keep 등록(컬링에서 언마운트 방지)
         moved = true;
         scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
         const z = zoomRef.current;
@@ -2932,6 +2938,7 @@ export function SceneBoard({
       };
       const up = () => {
         scrollRef.current?.classList.remove("dragging");
+        setDraggingIds([]); // 드래그 종료 → keep 해제(다시 정상 컬링 대상)
         if (relocated) {
           commitMovedCards();
         } else if (fromRow) {
@@ -2955,6 +2962,7 @@ export function SceneBoard({
       // blur: 클릭-선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
       beginDrag(move, up, () => {
         scrollRef.current?.classList.remove("dragging");
+        setDraggingIds([]); // 드래그 취소(blur)에도 keep 해제
         if (relocated) commitMovedCards();
       });
     } else {
@@ -3299,12 +3307,13 @@ export function SceneBoard({
     const ids = new Set<string>(selected);
     if (editTextId) ids.add(editTextId);
     for (const id of comfyWaitingIds) ids.add(id);
+    for (const id of draggingIds) ids.add(id); // 드래그 중 카드는 마진 밖으로 나가도 유지(언마운트 방지)
     for (const c of cards) {
       if (!Object.prototype.hasOwnProperty.call(heightsRef.current, c.id)) ids.add(c.id);
     }
     return ids;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, editTextId, comfyWaitingIds, cards, heightTick]);
+  }, [selected, editTextId, comfyWaitingIds, draggingIds, cards, heightTick]);
   // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
   // 확장 뷰포트(뷰포트 ± 마진) — 카드·연결선 컬링이 공유하는 단 하나의 기준 사각형. 컬링 꺼졌거나
   // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF+엡실론 게이트로만 갱신됨.
