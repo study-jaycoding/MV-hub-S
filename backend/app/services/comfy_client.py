@@ -308,7 +308,8 @@ CLOUD_DONE = ("completed", "success")
 CLOUD_FAIL = ("error", "failed", "cancelled", "canceled")
 # 정상 대기/진행 상태(풀 타임아웃까지 대기 허용). 이 목록에도 DONE/FAIL 에도 없는 값(빈 문자열·미지 키)은
 # '알 수 없음'으로 보고 짧은 grace 뒤 실패시킨다 — 응답 형식이 어긋나 30분간 '실행중' 고착되는 것을 막는다.
-CLOUD_PENDING = ("waiting_to_dispatch", "pending", "queued", "in_progress", "running", "dispatched")
+CLOUD_PENDING = ("waiting_to_dispatch", "pending", "queued", "in_progress", "running", "dispatched",
+                 "executing")  # ★Cloud 가 실행중을 'executing' 으로 보고한다 — 없으면 미지 상태로 90초 뒤 오실패
 
 
 def cloud_job_status(target: dict, prompt_id: str) -> str:
