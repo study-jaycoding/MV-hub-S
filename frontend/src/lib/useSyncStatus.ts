@@ -15,16 +15,23 @@ export function useSyncStatus(): SyncStatus | null {
 
   useEffect(() => {
     let alive = true;
-    const check = () =>
+    const check = () => {
+      if (document.visibilityState === "hidden") return; // 숨은 탭에선 폴링 쉼(복귀 시 아래 리스너가 1회 갱신)
       api
         .syncStatus()
         .then((s) => alive && setStatus(s))
         .catch(() => alive && setStatus(null));
+    };
     check();
     const id = window.setInterval(check, 30000); // 30초 — 관측용이라 자주 안 찔러도 됨
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 

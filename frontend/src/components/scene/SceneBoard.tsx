@@ -4742,7 +4742,7 @@ export function SceneBoard({
                                     mediaFallback.map((o, i) => (
                                       <div key={"m" + i} className="scene-comfynode-preview">
                                         {o.kind === "video" ? (
-                                          <video src={o.url} muted loop playsInline />
+                                          <video src={o.url} muted loop playsInline preload="metadata" />
                                         ) : (
                                           <img src={o.url} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                                         )}

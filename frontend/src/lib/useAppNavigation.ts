@@ -76,7 +76,19 @@ export function useAppNavigation({
   const openOverlay = useCallback(
     (ov: NavOverlay, payload?: unknown) => {
       const key = ov === "admin" ? 0 : (navSeqRef.current += 1);
-      if (key) navPayloadsRef.current.set(key, payload);
+      if (key) {
+        const m = navPayloadsRef.current;
+        m.set(key, payload);
+        // 세션 내내 오버레이(미리보기·히스토리)를 여닫을 때마다 payload 가 무한 누적되던 것을 막는다.
+        // 키는 단조 증가(삽입순=오래된 순)라 가장 오래된 것부터 잘라 최근 N개만 유지한다. 아주 깊은
+        // 뒤로가기(20단계+)에서는 payload 가 없어 오버레이가 빈 상태로 열리지만(applyView 가 null 처리),
+        // 실사용 뒤로가기 깊이를 훨씬 넘는 값이라 무해.
+        const MAX_PAYLOADS = 20;
+        if (m.size > MAX_PAYLOADS) {
+          const keys = [...m.keys()];
+          for (let i = 0; i < keys.length - MAX_PAYLOADS; i++) m.delete(keys[i]);
+        }
+      }
       const cur = viewRef.current;
       navigate({ tab: cur.tab, focusId: cur.focusId, ov, key });
     },
