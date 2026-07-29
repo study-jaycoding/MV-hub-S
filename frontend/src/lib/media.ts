@@ -66,6 +66,19 @@ export function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
 
 export function thumbUrl(path: string | null | undefined, size = 256): string | null {
   if (!path) return null;
+  // 저장값(생성 ref 의 thumbnail_path 등)에 v 없는 /api/assets/thumb 원시 URL 이 남아 있다 —
+  // 과거 빌드가 그 주소로 옛 썸네일을 브라우저에 장기 캐시해 둬서 그대로 쓰면 옛 이미지가 뜬다.
+  // project/path 를 꺼내 전역 버전표 기반 URL 로 재생성한다(버전 없으면 b 버스터로 재검증 경로).
+  if (path.startsWith("/api/assets/thumb")) {
+    try {
+      const u = new URL(path, window.location.origin);
+      const proj = u.searchParams.get("project");
+      const p = u.searchParams.get("path");
+      if (proj && p) return api.assetThumbUrl(proj, p, size, getAssetVersion(proj, p));
+    } catch {
+      /* 파싱 실패 시 원시 URL 그대로(아래 폴백) */
+    }
+  }
   return api.thumbOrRaw(path, size);
 }
 
@@ -92,7 +105,7 @@ export function displayThumb(pathOrToken: string | null | undefined, size = 256)
       /* 파싱 실패 시 아래 폴백 */
     }
   }
-  return thumbUrl(pathOrToken, size); // /media·http → 프록시, /api/assets/thumb·/api/media-thumb 등은 raw 유지
+  return thumbUrl(pathOrToken, size); // /media·http → 프록시, /api/assets/thumb → 버전표 재생성, /api/media-thumb 등은 raw 유지
 }
 
 // 레퍼런스(캔버스 카드·프롬프트 트레이·인라인 칩·토큰 알약) 썸네일 URL — 저장된 thumb(버전 고정 URL)
