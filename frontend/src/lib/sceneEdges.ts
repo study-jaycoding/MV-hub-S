@@ -305,25 +305,39 @@ export function comfyTextDriveKeys(
 // Comfy 출력을 생성물로 저장할 때 '생성 정보'에 담을 표준 메타(model·비율·해상도·영상길이)를 뽑는다.
 // 워크플로 원문의 노드 입력에서 baked 값을 먼저 읽고, 사용자가 노출·조절한 값(paramValues)으로 덮어쓴다
 // (실제 사용값 우선). 여러 노드에 같은 필드가 있으면 마지막 값이 남는다(일반 이미지 워크플로는 1개).
-// duration: 영상 노드(Seedance 등)의 duration 값(초)을 그대로 읽어 params.duration 으로 저장 → 힉스필드처럼
-//   생성 정보에 영상 길이가 표시된다. 값이 계산 링크(다른 노드에서 유도)면 정적으로 못 읽어 미표시(정적 값만).
-const COMFY_META_FIELDS = ["model", "aspect_ratio", "resolution", "duration"] as const;
+// ★표준 메타 키 → 워크플로 입력 필드명(들). Seedance 등은 평탄 점표기(model.ratio·model.resolution·model.duration)를
+//   쓰므로 alias 로 매핑해 잡는다. duration 은 영상 길이(초) → params.duration 으로 저장돼 힉스필드처럼 생성정보에 표시.
+const COMFY_META_FIELDS: Record<string, readonly string[]> = {
+  model: ["model"],
+  aspect_ratio: ["aspect_ratio", "ratio", "model.ratio"],
+  resolution: ["resolution", "model.resolution"],
+  duration: ["duration", "model.duration"],
+};
+// 입력 필드명 → 표준 메타 키(노출·조절값 paramValues 매칭용). 없으면 null.
+function comfyMetaKeyForField(field: string): string | null {
+  for (const [metaKey, aliases] of Object.entries(COMFY_META_FIELDS))
+    if (aliases.includes(field)) return metaKey;
+  return null;
+}
 export function comfyGenMeta(
   content: string | undefined,
   params: { key: string; type: string }[] | undefined,
   paramValues: Record<string, string | number | boolean> | undefined,
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
-  const fields: readonly string[] = COMFY_META_FIELDS;
   try {
     const wf = content ? (JSON.parse(content) as Record<string, unknown>) : null;
     if (wf && typeof wf === "object")
       for (const node of Object.values(wf)) {
         const inputs = (node as { inputs?: unknown } | null)?.inputs;
-        if (inputs && typeof inputs === "object" && !Array.isArray(inputs))
-          for (const f of fields) {
-            const v = (inputs as Record<string, unknown>)[f];
-            if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[f] = v;
+        if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
+        for (const [metaKey, aliases] of Object.entries(COMFY_META_FIELDS))
+          for (const alias of aliases) {
+            const v = (inputs as Record<string, unknown>)[alias];
+            if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+              out[metaKey] = v;
+              break; // 이 메타 키는 첫 매칭 alias 로 확정
+            }
           }
       }
   } catch {
@@ -331,8 +345,9 @@ export function comfyGenMeta(
   }
   for (const p of params || []) {
     const field = p.key.split("|")[1] || "";
+    const metaKey = comfyMetaKeyForField(field);
     const v = paramValues?.[p.key];
-    if (fields.includes(field) && v != null) out[field] = v;
+    if (metaKey && v != null) out[metaKey] = v;
   }
   return out;
 }
