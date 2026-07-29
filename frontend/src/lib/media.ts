@@ -10,6 +10,13 @@ export function hideBrokenImg(e: SyntheticEvent<HTMLImageElement>): void {
   e.currentTarget.style.visibility = "hidden";
 }
 
+// hideBrokenImg 의 짝 — 숨김은 React 밖에서 직접 건 스타일이라, 이후 src 가 (버전 갱신 등으로)
+// 새 URL 로 바뀌어 로드에 성공해도 React 가 안 되돌린다 → 새로고침 전까지 빈 칸으로 남는다.
+// onLoad 에 이걸 달아 성공하면 다시 보이게 한다. onError={hideBrokenImg} 인 img 는 반드시 함께 쓸 것.
+export function showLoadedImg(e: SyntheticEvent<HTMLImageElement>): void {
+  e.currentTarget.style.visibility = "";
+}
+
 export type ReferenceMediaType = "image" | "video" | "audio";
 
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;

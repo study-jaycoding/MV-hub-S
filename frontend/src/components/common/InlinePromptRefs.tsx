@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { assetVersionsSnapshot, subscribeAssetVersions } from "../../lib/assetVersions";
-import { displayRefThumb, hideBrokenImg } from "../../lib/media";
+import { displayRefThumb, hideBrokenImg, showLoadedImg } from "../../lib/media";
 import { buildPromptParts, refSrc } from "../../lib/promptParts";
 import type { PreviewTarget, Reference } from "../../types";
 
@@ -52,7 +52,7 @@ export function InlinePromptRefs({
             }}
           >
             {displayRefThumb(part.ref) && (
-              <img src={displayRefThumb(part.ref)} alt="" onError={hideBrokenImg} />
+              <img src={displayRefThumb(part.ref)} alt="" onError={hideBrokenImg} onLoad={showLoadedImg} />
             )}
             <span className="inline-ref-name">{part.ref.name}</span>
           </button>

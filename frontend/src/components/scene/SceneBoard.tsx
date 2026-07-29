@@ -90,7 +90,7 @@ import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPro
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { displayRefThumb, displayThumb, hideBrokenImg, thumbOf } from "../../lib/media";
+import { displayRefThumb, displayThumb, hideBrokenImg, showLoadedImg, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 
@@ -3880,7 +3880,7 @@ export function SceneBoard({
                         out.push(
                           <span className="scene-inlinetok" key={`t${k++}`} title={label}>
                             {thumb ? (
-                              <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} />
+                              <img src={thumb} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                             ) : (
                               <span className="scene-inlinetok-ph" />
                             )}
@@ -4073,7 +4073,7 @@ export function SceneBoard({
                                       }}
                                     >
                                       {src ? (
-                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                                       ) : (
                                         <span className="scene-listrow-thumb scene-listthumb-ph" />
                                       )}
@@ -4139,7 +4139,7 @@ export function SceneBoard({
                                     onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                                   >
                                     {src ? (
-                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                      <img src={src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                                     ) : (
                                       <span className="scene-listthumb-ph" />
                                     )}
@@ -4403,7 +4403,7 @@ export function SceneBoard({
                                       }}
                                     >
                                       {src ? (
-                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} />
+                                        <img className="scene-listrow-thumb" src={src} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                                       ) : (
                                         <span className="scene-listrow-thumb scene-listthumb-ph" />
                                       )}
@@ -4714,7 +4714,7 @@ export function SceneBoard({
                                         {o.kind === "video" ? (
                                           <video src={o.url} muted loop playsInline />
                                         ) : (
-                                          <img src={o.url} alt="" draggable={false} onError={hideBrokenImg} />
+                                          <img src={o.url} alt="" draggable={false} onError={hideBrokenImg} onLoad={showLoadedImg} />
                                         )}
                                       </div>
                                     ))

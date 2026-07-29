@@ -7,7 +7,7 @@ import {
   refKey,
   tokenizePrompt,
 } from "../../lib/compareDiff";
-import { displayThumb, hideBrokenImg, thumbUrl } from "../../lib/media";
+import { displayThumb, hideBrokenImg, showLoadedImg, thumbUrl } from "../../lib/media";
 import { refSrc } from "../../lib/promptParts";
 import type { Generation, Reference } from "../../types";
 import type { CompareSourcePreview } from "./CompareSourceLightbox";
@@ -148,6 +148,7 @@ export function CompareGenerationColumn({
                     className="cmp-ref"
                     alt={reference.role || "reference"}
                     onError={hideBrokenImg}
+                    onLoad={showLoadedImg}
                   />
                 )}
               </button>
