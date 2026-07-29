@@ -410,13 +410,14 @@
   display: block; width: 100%; height: 100%;
   background: repeating-linear-gradient(45deg, #15171d, #15171d 4px, #0f1116 4px, #0f1116 8px);
 }
+/* 번호·장수 배지 글씨는 리스트 카드 크기에 비례(--lt-badge-fs, 컨테이너에서 상속). 기본 8px. */
 .scene-listthumb-n {
-  position: absolute; left: 2px; top: 1px; font-size: 8px; font-weight: 800;
+  position: absolute; left: 2px; top: 1px; font-size: var(--lt-badge-fs, 8px); font-weight: 800;
   background: rgba(0, 0, 0, 0.6); color: #fff; padding: 0 3px; border-radius: 3px; line-height: 1.4;
 }
 /* 레퍼런스 카드 타일의 '장수' 배지 — 우하단(카드당 여러 장일 때) */
 .scene-listthumb-cnt {
-  position: absolute; right: 2px; bottom: 1px; font-size: 8px; font-weight: 800;
+  position: absolute; right: 2px; bottom: 1px; font-size: var(--lt-badge-fs, 8px); font-weight: 800;
   background: rgba(127, 169, 255, 0.85); color: #06101f; padding: 0 3px; border-radius: 3px; line-height: 1.4;
 }
 

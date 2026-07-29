@@ -4184,6 +4184,18 @@ export function SceneBoard({
                             : li.kind === "invalid"
                               ? "⚠ 잘못된 입력"
                               : "생성/텍스트/레퍼런스 카드를 연결";
+                  // 리스트 카드를 늘리면 레퍼런스 썸네일도 비례해 커진다 — 최소=기본(42px), 최대=레퍼런스
+                  //  카드의 2/3(≈101px). 카드가 클수록 번호·장수 배지 글씨도 비례해 커져 잘 보이게 한다.
+                  const listThumbPx = Math.max(
+                    42,
+                    Math.min(Math.round((CARD_W * 2) / 3), Math.round((widthOf(card) / CARD_W) * 42)),
+                  );
+                  const listThumbBadgeFs = Math.max(8, Math.min(20, Math.round((listThumbPx * 8) / 42)));
+                  const listThumbsStyle: CSSProperties = {
+                    gridTemplateColumns: `repeat(auto-fill, ${listThumbPx}px)`,
+                  };
+                  (listThumbsStyle as Record<string, string | number>)["--lt-badge-fs"] =
+                    `${listThumbBadgeFs}px`;
                   return (
                     <>
                       <div className="scene-card-hd list scene-card-hd-float">리스트</div>
@@ -4279,7 +4291,8 @@ export function SceneBoard({
                             </div>
                           ) : li.kind === "reference" ? (
                             // 레퍼런스 카드들 — 카드마다 대표 썸네일(첫 장)+장수 배지, 드래그해 순서 변경.
-                            <div className="scene-listthumbs" data-reorder>
+                            //  썸네일·배지 크기는 리스트 카드 크기에 비례(listThumbsStyle: 그리드 열폭 + 배지 글씨).
+                            <div className="scene-listthumbs" data-reorder style={listThumbsStyle}>
                               {li.sourceIds.map((cid, i) => {
                                 const rc = cardsById.get(cid);
                                 const refs = rc?.refs || [];
