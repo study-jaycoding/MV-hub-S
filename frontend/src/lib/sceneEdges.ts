@@ -146,6 +146,61 @@ function sortByOrder(items: { e: SceneEdge; c: SceneCard }[]): { e: SceneEdge; c
     });
 }
 
+// 생성카드로 들어오는 ref 레인 입력 엣지를 'card.refs 순서'로 정렬하기 위한 순서 인덱스(edgeId → index).
+//  · card.refs 는 @image 번호·프롬프트·생성 순서의 단일 권위다. 연결선 fan-in 도 이걸 따라야 프롬프트에서
+//    순서를 바꾸면 캔버스 연결선 순서도 같이 바뀐다(직접 연결·리스트 경유 모두). 표시만 맞추고 데이터는 안 건드림.
+//  · 매핑: 레퍼런스 소스 → 그 카드가 제공한 ref 의 card.refs 내 최소 인덱스,
+//          레퍼런스 리스트 소스 → 리스트 멤버들이 제공한 ref 의 최소 인덱스,
+//          생성물(gen-as-ref) 소스 → source_gen_id 가 일치하는 ref 의 최소 인덱스.
+//  · 못 매핑하면(comfy 등) 해당 엣지는 맵에 안 넣는다 → 호출부가 Infinity 로 취급해 뒤로, 동률은 소스 y 로 tie-break.
+export function refLaneOrderIndex(
+  targetGenId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  const target = cardsById.get(targetGenId);
+  const refs = target?.refs || [];
+  if (!refs.length) return out;
+  const keyOf = (r: { file_path?: string; source_gen_id?: string | null }) =>
+    (r.file_path || "") + "#" + (r.source_gen_id || "");
+  // card.refs 각 항목의 '최초 등장 인덱스'를 key / source_gen_id 로 조회 가능하게 미리 만든다.
+  const idxByKey = new Map<string, number>();
+  const idxBySrcGen = new Map<string, number>();
+  refs.forEach((r, i) => {
+    const k = keyOf(r);
+    if (!idxByKey.has(k)) idxByKey.set(k, i);
+    if (r.source_gen_id && !idxBySrcGen.has(r.source_gen_id)) idxBySrcGen.set(r.source_gen_id, i);
+  });
+  const minKeyIdx = (rs: SceneRef[] | undefined): number => {
+    let min = Infinity;
+    for (const r of rs || []) {
+      const i = idxByKey.get(keyOf(r));
+      if (i != null && i < min) min = i;
+    }
+    return min;
+  };
+  for (const e of edges) {
+    if (e.to !== targetGenId) continue;
+    const src = cardsById.get(e.from);
+    if (!src) continue;
+    let idx = Infinity;
+    if (src.kind === "reference") idx = minKeyIdx(src.refs);
+    else if (src.kind === "list") {
+      const li = collectListInputs(src.id, cardsById, edges);
+      if (li.kind === "reference")
+        for (const cid of li.sourceIds) idx = Math.min(idx, minKeyIdx(cardsById.get(cid)?.refs));
+    } else if (src.kind === "generation") {
+      for (const gid of variantIds(src)) {
+        const i = idxBySrcGen.get(gid);
+        if (i != null) idx = Math.min(idx, i);
+      }
+    }
+    if (Number.isFinite(idx)) out.set(e.id, idx);
+  }
+  return out;
+}
+
 // comfy 실행 1회의 출력셋(카드 저장분과 같은 모양). 배치 병렬 실행에선 각 실행 결과를 카드에 안 쓰고
 // 이 배열로 들고 다니며(overlay), 인덱스별로 짝지어 생성에 주입한다.
 export type ComfyOutput = { kind: "image" | "video" | "text"; url?: string; text?: string };

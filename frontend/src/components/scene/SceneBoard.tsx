@@ -69,6 +69,7 @@ import {
   comfyGenMeta,
   edgePathXY,
   fanOffset,
+  refLaneOrderIndex,
   resolveEdgeRole,
   resolveInputSourceId,
   resolvePortEdges,
@@ -3385,7 +3386,36 @@ export function SceneBoard({
       else m.set(key, [e]);
     }
     const yOf = (id: string) => cardsById.get(id)?.y ?? 0;
-    for (const [, list] of m) list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    // 생성카드의 ref 레인 fan-in 은 card.refs 순서를 따른다(프롬프트에서 순서 바꾸면 연결선도 그대로).
+    //  · card.refs 가 순서 권위이므로 타깃별로 인덱스 맵을 만들어 정렬한다. 못 매핑한 엣지(comfy 등)는 뒤(Infinity),
+    //    동률/미매핑은 기존처럼 소스 y 로 tie-break. ref 레인·생성카드에만 적용하고 그 외(model/text·comfy 타깃)는 y 순 유지.
+    const refIdxCache = new Map<string, Map<string, number>>();
+    const refIdxFor = (genId: string) => {
+      let mp = refIdxCache.get(genId);
+      if (!mp) {
+        mp = refLaneOrderIndex(genId, cardsById, visibleEdges);
+        refIdxCache.set(genId, mp);
+      }
+      return mp;
+    };
+    for (const [key, list] of m) {
+      const ci = key.lastIndexOf(":");
+      const toId = key.slice(0, ci);
+      const lane = key.slice(ci + 1);
+      const idx = lane === "ref" && cardsById.get(toId)?.kind === "generation" ? refIdxFor(toId) : null;
+      // ref 레인엔 lineage(계보) 엣지도 같은 물리 레인으로 섞인다(laneOf). card.refs 로 재정렬할 실제 ref
+      //  엣지가 2개 이상 매핑됐을 때만 적용해, 순수 계보/단일 입력 레인의 기존 y 정렬을 흐트러뜨리지 않는다.
+      //  매핑 안 된 엣지(lineage·comfy·무선 input)는 Infinity 라 뒤로, 서로는 y 로 tie-break(기존과 동일).
+      const reorderable = idx ? list.filter((e) => idx.has(e.id)).length >= 2 : false;
+      if (idx && reorderable) {
+        list.sort((p, q) => {
+          const ip = idx.get(p.id) ?? Infinity;
+          const iq = idx.get(q.id) ?? Infinity;
+          if (ip !== iq) return ip - iq;
+          return yOf(p.from) - yOf(q.from);
+        });
+      } else list.sort((p, q) => yOf(p.from) - yOf(q.from));
+    }
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleEdges, cardsById, edgeRoles]);
