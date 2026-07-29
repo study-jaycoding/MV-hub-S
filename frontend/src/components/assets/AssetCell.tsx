@@ -65,10 +65,11 @@ export const AssetCell = memo(function AssetCell({
   const isAudio = node.type === "audio";
   const isList = layout === "list";
   // 이미지는 리사이즈 썸네일로(풀해상도 디코딩 렉 방지). 영상/오디오는 원본 사용.
-  const imgSrc = node.type === "image" ? api.assetThumbUrl(project, node.path, 512) : url;
+  // node.version(수정시각 나노초+크기)을 붙여 원본이 같은 이름으로 바뀌면 새 썸네일을 불러온다.
+  const imgSrc = node.type === "image" ? api.assetThumbUrl(project, node.path, 512, node.version) : url;
   // 영상 포스터 — ffmpeg 첫 프레임(서버 캐시). 내 작업 라이브러리처럼 poster 로 깔면 preload=none 이라
   // 원본 로딩 없이 선명한 썸네일이 뜬다(포스터 실패 시 poster 만 비고 재생은 정상).
-  const posterSrc = isVideo ? api.assetThumbUrl(project, node.path, 512) : undefined;
+  const posterSrc = isVideo ? api.assetThumbUrl(project, node.path, 512, node.version) : undefined;
   // 영상 poster 는 <img loading="lazy"> 혜택이 없어 폴더 전환 즉시 전부 요청된다(썸네일 폭주).
   // → 뷰포트에 들어올 때만 poster 를 붙여 초기 요청을 줄인다(이미지는 이미 lazy 라 대상 아님).
   const [nearView, setNearView] = useState(false);

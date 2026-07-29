@@ -5,3 +5,4 @@ pydantic>=2.7
 websockets>=12
 python-multipart>=0.0.9
 Pillow>=10            # thumbnail generation in assets router (PIL.Image) - required or startup fails
+watchdog>=4           # asset folder live watch (asset_watcher) -> WS assets_changed. optional: missing = falls back to focus refresh

@@ -6,7 +6,7 @@ import { INTERNAL_COMBINED_PROJECT, INTERNAL_FOLDERS } from "./assetsViewModel";
 interface UseAssetBroadcastSyncArgs {
   dir: string;
   project: string;
-  refreshProjectData: (project: string) => Promise<void> | void;
+  refreshProjectData: (project: string, fresh?: boolean) => Promise<void> | void;
   reloadProjects: (keepCurrent?: boolean) => void;
 }
 
@@ -34,7 +34,8 @@ export function useAssetBroadcastSync({
           (project === INTERNAL_COMBINED_PROJECT &&
             projects.some((p: string) => INTERNAL_FOLDERS.includes(p)));
         if (projects.length && !relevant) return;
-        void refreshProjectData(project);
+        // 외부 파일 변경 반영 — 캐시 우회(fresh)로 최신 트리를 다시 읽는다.
+        void refreshProjectData(project, true);
       }
     };
     return () => {

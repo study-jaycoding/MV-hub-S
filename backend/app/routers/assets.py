@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -502,7 +503,12 @@ def _build_tree(
                     continue
                 _budget[0] -= 1
                 mtime = entry_stat.st_mtime  # 파일 날짜(에셋 날짜별 구분용)
-                out.append({"name": entry.name, "type": mt, "path": rel, "mtime": mtime})
+                # 캐시버스터용 버전 — 초 이하 덮어쓰기까지 구분(나노초+파일크기). 썸네일 URL 에 붙어
+                # 원본이 같은 이름으로 바뀌면 주소가 바뀌어 브라우저가 새 썸네일을 불러온다.
+                version = f"{entry_stat.st_mtime_ns}-{entry_stat.st_size}"
+                out.append(
+                    {"name": entry.name, "type": mt, "path": rel, "mtime": mtime, "version": version}
+                )
     return out
 
 
@@ -649,10 +655,13 @@ def _collect_tree_media(nodes: list[dict], proj_dir: Path) -> list[tuple[Path, s
 # 파일 변경은 곧 반영. 파일 추가(업로드) 시엔 즉시 무효화한다.
 _TREE_CACHE: dict[str, tuple[float, list]] = {}
 _TREE_TTL = 10.0  # 초
+# watcher 스레드(무효화)와 요청 스레드(조회·저장)가 _TREE_CACHE 를 동시에 만지므로 락으로 보호한다.
+_TREE_CACHE_LOCK = threading.Lock()
 
 
 def _invalidate_tree_cache(proj_dir: Path) -> None:
-    _TREE_CACHE.pop(str(proj_dir), None)
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE.pop(str(proj_dir), None)
 
 
 def _combined_internal_children() -> list[dict[str, Any]]:
@@ -671,17 +680,32 @@ def _combined_internal_children() -> list[dict[str, Any]]:
 
 
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
-def project_tree(request: Request, background: BackgroundTasks, project: str = Query(...)):
-    """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석."""
+def project_tree(
+    request: Request,
+    background: BackgroundTasks,
+    project: str = Query(...),
+    fresh: bool = Query(False),
+):
+    """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석.
+    fresh=1 이면 10초 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전을 즉시 반영해야 할 때: 창 포커스 재조회)."""
     if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
         return {"project": project, "name": project, "children": _combined_internal_children()}
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     proj_dir, auto_project = info
+    # 지금 보고 있는 이 프로젝트 폴더를 실시간 감시 등록(로컬 허브 전용·이미 감시 중이면 무시).
+    # 파일이 바뀌면 watchdog 가 WS 로 알려 프론트가 새로고침 없이 갱신한다(Phase 2). 감시 불가 환경은 무해.
+    try:
+        from ..services import asset_watcher
+
+        asset_watcher.watch(proj_dir, project, hide_render=auto_project)
+    except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
+        pass
     key = str(proj_dir)
-    cached = _TREE_CACHE.get(key)
-    if cached and (time.monotonic() - cached[0]) < _TREE_TTL:
+    with _TREE_CACHE_LOCK:
+        cached = _TREE_CACHE.get(key)
+    if cached and not fresh and (time.monotonic() - cached[0]) < _TREE_TTL:
         # 캐시 히트 — 재훑기·재프리워밍 없이 즉시(직전에 이미 프리워밍 걸었다).
         return {"project": project, "name": proj_dir.name, "children": cached[1]}
     children = _build_tree(
@@ -689,7 +713,8 @@ def project_tree(request: Request, background: BackgroundTasks, project: str = Q
         "",
         hidden_names={"render"} if auto_project else None,
     )
-    _TREE_CACHE[key] = (time.monotonic(), children)
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE[key] = (time.monotonic(), children)
     # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).
     # 캐시 미스(새로 훑은 경우)에만 — 이미 캐시면 앞서 걸었으니 중복 방지. 비디오 ffmpeg 는 세마포어로 폭주 방지.
     media = _collect_tree_media(children, proj_dir)
@@ -958,9 +983,11 @@ def get_thumb(
     project: str = Query(...),
     path: str = Query(...),
     w: int = Query(512, ge=64, le=1024),
+    v: Optional[str] = Query(None),
 ):
     """이미지 썸네일(리사이즈+디스크 캐시) — 그리드/리스트 스크롤 성능용.
-    원본 풀해상도(수 MP) 대신 작은 이미지를 디코딩하게 해 렉을 없앤다."""
+    원본 풀해상도(수 MP) 대신 작은 이미지를 디코딩하게 해 렉을 없앤다.
+    v(파일 버전)는 캐시 정책 분기용 — 붙어 있으면 그 URL 은 특정 내용에 1:1 대응이라 영구 캐시한다."""
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
@@ -981,12 +1008,14 @@ def get_thumb(
         # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
         # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
         raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
-    # 썸네일은 내용 파생(w 로 키가 갈림)이고 업로드가 in-place 덮어쓰기를 안 하므로 장기 캐시 안전.
-    # 생성물 썸네일(library.media_thumb)과 동일하게 브라우저가 재요청 안 하도록 Cache-Control 부여.
+    # v(파일 버전)가 붙은 URL 은 그 내용에 1:1 대응 → 영구·immutable 캐시로 다음부턴 요청 없이 즉시 표시.
+    # v 가 없으면(옛 저장 URL·직접 호출) 매번 재검증(no-cache)해, 원본을 같은 이름으로 덮어써도
+    # 브라우저가 옛 썸네일로 굳지 않게 한다. (버전 캐시버스터가 붙은 새 경로가 정상 경로다.)
+    cache_control = "public, max-age=31536000, immutable" if v else "no-cache"
     return FileResponse(
         cache,
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=2592000"},
+        headers={"Cache-Control": cache_control},
     )
 
 

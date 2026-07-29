@@ -61,9 +61,11 @@ def _release_thumb_lock(key: str) -> None:
 
 
 def cache_path(target: Path, w: int) -> Path:
-    """target 파일(+mtime+폭)에 대응하는 썸네일 캐시 경로."""
-    mtime = int(target.stat().st_mtime)
-    key = hashlib.sha1(f"{target}|{mtime}|{w}".encode("utf-8")).hexdigest()
+    """target 파일(+수정시각+크기+폭)에 대응하는 썸네일 캐시 경로.
+    초 단위 mtime 은 같은 1초 안에 덮어쓴 변경을 놓친다 → 나노초+파일크기로 키를 잡아 확실히 구분한다
+    (원본을 같은 이름으로 덮어쓰면 새 썸네일이 새 키로 구워져 옛 캐시와 섞이지 않는다)."""
+    st = target.stat()
+    key = hashlib.sha1(f"{target}|{st.st_mtime_ns}-{st.st_size}|{w}".encode("utf-8")).hexdigest()
     return THUMB_DIR / f"{key}.jpg"
 
 

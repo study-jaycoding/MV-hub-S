@@ -318,6 +318,7 @@ export interface AssetNode {
   type: "dir" | "image" | "video" | "audio";
   path: string;
   mtime?: number | null; // 파일 수정시각(epoch 초) — 날짜별 구분용. 폴더는 없음
+  version?: string | null; // 캐시버스터(수정시각 나노초+파일크기) — 썸네일 URL 에 붙여 원본 변경 시 새로 로드. 폴더는 없음
   children?: AssetNode[];
 }
 
@@ -387,9 +388,10 @@ export interface PreviewTarget {
 
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
-  type: "queued" | "progress" | "synced"; // synced = 주기 동기화로 변동 발생(전체 새로고침)
+  type: "queued" | "progress" | "synced" | "assets_changed"; // synced=주기 동기화, assets_changed=어셋 파일 변경(실시간)
   generation_id?: string;
   status?: GenStatus;
   result_url?: string | null;
   error?: string;
+  projects?: string[]; // assets_changed: 변경된 어셋 프로젝트 이름들(관련 창만 갱신)
 }

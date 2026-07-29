@@ -5,6 +5,7 @@
 // editingTokenNodeRef 는 멘션 감지와 공유되므로 컴포넌트가 소유하고, 여기선 blur 에서 null 로만 해제한다.
 // onPromptChanged 는 반드시 안정된(useCallback) 콜백을 넘겨야 blur 재구독 빈도가 원본(model/trayRefs 변화 시)과 같다.
 import { useCallback, useEffect, useRef } from "react";
+import { displayRefThumb } from "./media";
 import { refSrc } from "./promptParts";
 import { refreshTokenPills, wrapRefTokens } from "./promptEditor";
 import { usesMediaRefTokens } from "./seedancePrompt";
@@ -17,6 +18,7 @@ interface Params {
   editingTokenNodeRef: React.MutableRefObject<Node | null>;
   composingRef: React.MutableRefObject<boolean>;
   onPromptChanged: () => void; // 안정된 콜백(useCallback)이어야 함 — 트레이 역할 배지 갱신 신호.
+  assetVersionTick?: number; // 전역 어셋 버전 표 스냅샷 — 원본이 바뀌면 알약 썸네일을 다시 그리게 하는 트리거.
 }
 
 export interface SpotlightTokenWrapApi {
@@ -32,6 +34,7 @@ export function useSpotlightTokenWrap({
   editingTokenNodeRef,
   composingRef,
   onPromptChanged,
+  assetVersionTick,
 }: Params): SpotlightTokenWrapApi {
   // 토큰(@image1/<<<video1>>>)의 종류·번호 → 그 트레이 항목의 썸네일/비디오 URL. 알약에 미디어를 넣는 데 쓴다.
   const resolveTokenMedia = useCallback(
@@ -42,7 +45,8 @@ export function useSpotlightTokenWrap({
       for (const ref of refsOverride ?? trayRefs) {
         if (ref.type === type && ++c === n) {
           // 항목이 존재하면 썸네일이 없어도 "" 를 돌려줘 '존재함'을 알린다(undefined = 트레이에 없음 = missing).
-          return type === "video" ? refSrc(ref.file_path) || "" : ref.thumb || "";
+          // asset 소스면 file_path 로 버전 반영된 URL 생성(원본 교체 시 새 썸네일). 항목이 있으면 최소 ""(존재).
+          return type === "video" ? refSrc(ref.file_path) || "" : displayRefThumb(ref) || "";
         }
       }
       return undefined;
@@ -88,7 +92,7 @@ export function useSpotlightTokenWrap({
     if (composingRef.current) return; // IME 조합 중엔 건드리지 않는다(조합 깨짐 방지)
     refreshTokenPills(ed, resolveTokenMediaRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trayMediaSig, model]);
+  }, [trayMediaSig, model, assetVersionTick]);
 
   const scheduleLiveWrap = useCallback(() => {
     if (!usesMediaRefTokens(model)) return;

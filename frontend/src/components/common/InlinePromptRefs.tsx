@@ -1,4 +1,6 @@
-import { displayThumb, hideBrokenImg } from "../../lib/media";
+import { useSyncExternalStore } from "react";
+import { assetVersionsSnapshot, subscribeAssetVersions } from "../../lib/assetVersions";
+import { displayRefThumb, hideBrokenImg } from "../../lib/media";
 import { buildPromptParts, refSrc } from "../../lib/promptParts";
 import type { PreviewTarget, Reference } from "../../types";
 
@@ -21,6 +23,8 @@ export function InlinePromptRefs({
   className?: string;
   stopPropagation?: boolean;
 }) {
+  // 전역 어셋 버전 표 구독 — 원본이 바뀌면(생성 카드·정보 팝업 등 어디서 쓰이든) 인라인 칩 썸네일 갱신.
+  useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
   const Element = as;
   const parts = displayPrompt ? buildPromptParts(displayPrompt, references) : [];
   if (!parts.some((part) => part.t === "chip")) {
@@ -47,8 +51,8 @@ export function InlinePromptRefs({
               });
             }}
           >
-            {part.ref.thumb && (
-              <img src={displayThumb(part.ref.thumb) || undefined} alt="" onError={hideBrokenImg} />
+            {displayRefThumb(part.ref) && (
+              <img src={displayRefThumb(part.ref)} alt="" onError={hideBrokenImg} />
             )}
             <span className="inline-ref-name">{part.ref.name}</span>
           </button>

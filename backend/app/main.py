@@ -189,11 +189,21 @@ async def lifespan(app: FastAPI):
     if AUTH_ENABLED:
         periodic_sync.start()
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
+    # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
+    # 로컬 허브 전용(AUTH off): 공유 서버는 LAN 사용자가 어셋 파일 I/O 를 못 해 감시 의미가 없다.
+    if not AUTH_ENABLED:
+        from .services import asset_watcher
+
+        asset_watcher.start(asyncio.get_running_loop())
     yield
-    # 종료: 주기 백업 + 주기 동기화 정리
+    # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
     await periodic_backup.stop()
     if AUTH_ENABLED:
         await periodic_sync.stop()
+    else:
+        from .services import asset_watcher
+
+        asset_watcher.stop()
 
 
 app = FastAPI(title="Millionvolt Hub", version="0.1.0", lifespan=lifespan)

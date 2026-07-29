@@ -2,11 +2,24 @@
 //  · contentEditable 프롬프트 + 선택 소스를 인라인 이미지 칩으로 삽입
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { MutableRefObject, ReactNode } from "react";
 import { api } from "../api";
-import { APP_EVENTS } from "../lib/appEvents";
+import { APP_EVENTS, ASSET_CHANNEL_MESSAGES } from "../lib/appEvents";
 import { openAssetBroadcast } from "../lib/assetBroadcast";
+import {
+  assetVersionsSnapshot,
+  ingestAssetTreeVersions,
+  subscribeAssetVersions,
+} from "../lib/assetVersions";
 import { DRAG_TYPES } from "../lib/dragTypes";
 import { buildPromptParts, refSrc, refsToChips } from "../lib/promptParts";
 import {
@@ -34,7 +47,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
-import { dataTransferHasFiles } from "../lib/media";
+import { dataTransferHasFiles, displayRefThumb } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
   seedanceTokenRoles,
@@ -198,6 +211,44 @@ export function SpotlightPrompt({
 
   // 트레이 역할 배지 갱신 신호 — 안정된 콜백으로 만들어 토큰 훅 blur effect 가 원본처럼 model/trayRefs 변화 때만 재구독되게 한다.
   const bumpPromptTick = useCallback(() => setPromptTick((n) => n + 1), []);
+  // 전역 어셋 버전 표 구독 — 원본이 바뀌면 트레이/멘션/인라인 칩/입력창 토큰 썸네일을 다시 그린다.
+  const assetVersionTick = useSyncExternalStore(
+    subscribeAssetVersions,
+    assetVersionsSnapshot,
+    assetVersionsSnapshot,
+  );
+  // 어셋 파일 실시간 변경 신호(WS→BroadcastChannel) 수신 → 트레이가 참조하는 asset 프로젝트를 fresh 로
+  // 다시 읽어 전역 버전 표를 갱신한다. 트레이 전용 asset(캔버스 카드에 없는 것)도 실시간 반영되게.
+  const trayRefsRef = useRef(trayRefs);
+  trayRefsRef.current = trayRefs;
+  useEffect(() => {
+    const bc = openAssetBroadcast();
+    if (!bc) return;
+    const inFlight = new Set<string>();
+    bc.onmessage = (event) => {
+      if (event.data?.type !== ASSET_CHANNEL_MESSAGES.assetsUpdated) return;
+      const changed: string[] = Array.isArray(event.data.projects) ? event.data.projects : [];
+      const projs = new Set<string>();
+      for (const r of trayRefsRef.current) {
+        if (r.file_path?.startsWith("asset:")) {
+          const proj = r.file_path.slice(6).split("|")[0];
+          if (proj && (changed.length === 0 || changed.includes(proj))) projs.add(proj);
+        }
+      }
+      projs.forEach((proj) => {
+        if (inFlight.has(proj)) return;
+        inFlight.add(proj);
+        api
+          .assetTree(proj, true)
+          .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
+          .catch(() => {
+            /* 조회 실패는 무시 */
+          })
+          .finally(() => inFlight.delete(proj));
+      });
+    };
+    return () => bc.close();
+  }, []);
   // 미디어 레퍼런스 토큰(@image1/<<<video1>>>) → 색 있는 알약 정규화 — useSpotlightTokenWrap 훅으로 추출(동작 보존).
   //  editingTokenNodeRef 는 멘션 감지와 공유하므로 컴포넌트 소유, 훅엔 주입(blur 에서 null 로만 해제).
   //  scheduleLiveWrap 은 아래 onEditorInput/onCaretMove 가 (이벤트 시점에) 참조 — 선언 순서상 forward 참조지만 호출은 마운트 후라 안전.
@@ -208,6 +259,7 @@ export function SpotlightPrompt({
     editingTokenNodeRef,
     composingRef,
     onPromptChanged: bumpPromptTick,
+    assetVersionTick,
   });
 
   const updatePlaceholder = () => {
@@ -449,11 +501,11 @@ export function SpotlightPrompt({
         token: seedanceTrayToken(trayRefs, index),
         type: ref.type as string,
         name: ref.name,
-        // 비디오는 파일 URL(→<video>), 그 외는 썸네일. 오디오는 빈 값(아이콘 폴백).
-        media: ref.type === "video" ? refSrc(ref.file_path) || "" : ref.thumb || "",
+        // 비디오는 파일 URL(→<video>), 그 외는 버전 반영 썸네일. 오디오는 빈 값(아이콘 폴백).
+        media: ref.type === "video" ? refSrc(ref.file_path) || "" : displayRefThumb(ref) || "",
       }))
       .filter((it) => !q || it.token.slice(1).toLowerCase().includes(q));
-  }, [mention, model, trayRefs]);
+  }, [mention, model, trayRefs, assetVersionTick]);
 
   // 화면 캡쳐 붙여넣기(Ctrl+V) — 클립보드의 이미지를 내장 'captures' 폴더에 올리고 곧바로
   // 레퍼런스로 추가(확장=트레이, 접힘=인라인 칩). 이미지가 아니면 기본 텍스트 붙여넣기 유지. 처리했으면 true.

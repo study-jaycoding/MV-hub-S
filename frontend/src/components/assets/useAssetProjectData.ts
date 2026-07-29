@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { ingestAssetTreeVersions } from "../../lib/assetVersions";
 import { makeStore } from "../../lib/storage";
 import type { AssetMeta, AssetNode } from "../../types";
 
@@ -83,7 +84,7 @@ export function useAssetProjectData({
     }
   }, [project]);
 
-  const reloadTree = useCallback(async (targetProject = project) => {
+  const reloadTree = useCallback(async (targetProject = project, fresh = false) => {
     if (!targetProject) return;
     const isCurrent = () => projectRef.current === targetProject;
     const cached = treeCacheRef.current[targetProject];
@@ -99,7 +100,8 @@ export function useAssetProjectData({
       }
     }
     try {
-      const nextTree = await api.assetTree(targetProject);
+      const nextTree = await api.assetTree(targetProject, fresh);
+      ingestAssetTreeVersions(targetProject, nextTree.children); // 전역 버전 표 갱신(캔버스와 공유)
       treeCacheRef.current[targetProject] = nextTree.children; // 어느 프로젝트든 fresh 는 캐시
       persistCache(TREE_CACHE_KEY, treeCacheRef.current); // 창 닫아도 살아남게 localStorage 저장
       if (isCurrent()) {
@@ -117,9 +119,11 @@ export function useAssetProjectData({
   }, [onTreeLoaded, project]);
 
   const refreshProjectData = useCallback(
-    async (targetProject = project) => {
+    async (targetProject = project, fresh = false) => {
       if (!targetProject) return;
-      await Promise.all([reloadTree(targetProject), reloadMeta(targetProject)]);
+      // fresh=true 면 트리를 캐시 우회로 다시 읽는다(실시간 변경 수신 시 — 백엔드 캐시 경합으로 옛 버전이
+      // 남는 경우까지 방어).
+      await Promise.all([reloadTree(targetProject, fresh), reloadMeta(targetProject)]);
     },
     [project, reloadMeta, reloadTree],
   );
@@ -136,6 +140,26 @@ export function useAssetProjectData({
     if (!project) return;
     void refreshProjectData(project);
   }, [project, refreshProjectData]);
+
+  // 창을 다시 볼 때(포커스/탭 전환) 현재 프로젝트를 fresh 로 다시 읽어 최신 파일 버전을 반영한다
+  // → 외부에서 원본을 같은 이름으로 덮어쓰고 어셋 창으로 돌아오면 썸네일이 자동으로 최신화된다.
+  // 캔버스와 같은 동작(포커스 재조회) — 디바운스로 focus/visibilitychange 중복 호출을 한 번으로 묶는다.
+  useEffect(() => {
+    let lastAt = 0;
+    const refresh = () => {
+      if (document.hidden || !projectRef.current) return;
+      const now = Date.now();
+      if (now - lastAt < 500) return;
+      lastAt = now;
+      void reloadTree(projectRef.current, true);
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [reloadTree]);
 
   return {
     error,

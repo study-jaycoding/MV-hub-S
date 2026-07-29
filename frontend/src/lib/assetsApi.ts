@@ -44,7 +44,9 @@ export const assetsApi = {
       { method: "POST" },
     ),
 
-  assetTree: (project: string) => jsonFetch<AssetTree>(assetTreeUrl(project)),
+  // fresh=true 면 백엔드 트리 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전 즉시 반영 — 창 포커스 재조회).
+  assetTree: (project: string, fresh = false) =>
+    jsonFetch<AssetTree>(assetTreeUrl(project, fresh)),
 
   // 파일 URL (원본/미리보기). 프록시를 통해 백엔드가 서빙.
   assetFileUrl: buildAssetFileUrl,

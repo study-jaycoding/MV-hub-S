@@ -3,10 +3,24 @@
 //   · 카드 좌드래그=이동(선택된 것 함께) · 클릭=단일선택 · Ctrl=토글(누적) · Shift=연결 체인선택 · 배경클릭=해제
 //   · Delete=선택 삭제(생성물 있으면 휴지통, 빈 카드면 그냥 제거)
 // 기능: 에셋 드롭 레퍼런스 카드(S2) · n키 빈 카드+연결선(S3) · 포트 수동 연결/해제(S4).
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { CSSProperties, MutableRefObject } from "react";
 import { api } from "../../api";
-import { APP_EVENTS, dispatchAppEvent } from "../../lib/appEvents";
+import {
+  assetVersionsSnapshot,
+  ingestAssetTreeVersions,
+  subscribeAssetVersions,
+} from "../../lib/assetVersions";
+import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/appEvents";
+import { openAssetBroadcast } from "../../lib/assetBroadcast";
 import { downloadName, downloadOne } from "../../lib/download";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { toggleDisabledGen } from "../../lib/deactivated";
@@ -76,7 +90,7 @@ import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPro
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { displayThumb, hideBrokenImg, thumbOf } from "../../lib/media";
+import { displayRefThumb, displayThumb, hideBrokenImg, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 
@@ -94,14 +108,11 @@ const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 // 그룹 고정 색 팔레트(팝오버 프리셋). 이 외의 색은 '커스텀'(네이티브 컬러픽커)으로 지정.
 const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
 
-// 레퍼런스 카드 썸네일 src — 영상 에셋은 thumb 가 '영상 파일 URL'이라 <img> 로는 깨진다.
-// asset:proj|path 토큰이면 포스터(assetThumbUrl, 백엔드 첫 프레임)로 바꿔 이미지로 표시한다.
+// 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
+// asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
+// 영상은 file_path(포스터), 오디오는 undefined(placeholder). 그 외(원격 URL 등)만 저장 thumb 폴백.
 function refThumbSrc(r: SceneRef): string | undefined {
-  if (r.type === "audio") return undefined; // 오디오는 썸네일이 없다 → placeholder(415 깨짐 방지)
-  // display=캐시 썸네일. 영상은 원본 파일을 넘겨 백엔드가 포스터를 만들고(썸네일이 영상 파일 URL이면
-  // <img>로는 깨짐), 이미지는 썸네일 우선. displayThumb 가 asset 토큰·원격 URL 모두 프록시로 통일.
-  const raw = r.type === "video" ? r.file_path : r.thumb || r.file_path;
-  return displayThumb(raw, 256) ?? undefined;
+  return displayRefThumb(r, 256);
 }
 
 // 레퍼런스 카드 헤더 라벨 — 숫자 대신 어떤 레퍼런스인지(이미지/비디오/오디오)를 표시. 여러 장이면 뒤에 개수.
@@ -394,6 +405,66 @@ export function SceneBoard({
   groupsRef.current = groups;
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+
+  // 전역 어셋 버전 표 구독 — 어셋 원본이 바뀌어 버전이 갱신되면 리렌더돼 카드 썸네일 URL 을 다시 만든다.
+  useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
+
+  // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 fresh 로 다시 읽어 전역 버전 표를 갱신한다.
+  // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
+  const assetVerInFlight = useRef<Set<string>>(new Set());
+  const refreshAssetVersions = useCallback((only?: string[]) => {
+    const projs = new Set<string>();
+    for (const c of cardsRef.current) {
+      for (const r of c.refs || []) {
+        if (r.file_path?.startsWith("asset:")) {
+          const proj = r.file_path.slice(6).split("|")[0];
+          if (proj && (!only || only.includes(proj))) projs.add(proj);
+        }
+      }
+    }
+    projs.forEach((proj) => {
+      if (assetVerInFlight.current.has(proj)) return;
+      assetVerInFlight.current.add(proj);
+      api
+        .assetTree(proj, true) // fresh=백엔드 트리 캐시 우회(최신 버전 확보)
+        .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
+        .catch(() => {
+          /* 조회 실패는 무시(다음 신호에 재시도) */
+        })
+        .finally(() => assetVerInFlight.current.delete(proj));
+    });
+  }, []);
+
+  // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
+  useEffect(() => {
+    let lastAt = 0; // 디바운스 — focus 와 visibilitychange 가 거의 동시에 터져도 한 번만
+    const onFocus = () => {
+      if (document.hidden) return;
+      const now = Date.now();
+      if (now - lastAt < 500) return;
+      lastAt = now;
+      refreshAssetVersions();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [refreshAssetVersions]);
+
+  // Phase 2(실시간): 어셋 파일 변경 신호(WS→BroadcastChannel) 수신 → 변경된 프로젝트 중 카드가 참조하는
+  // 것만 즉시 다시 읽어 버전 표 갱신(새로고침·포커스 불필요). 변경 목록이 비면 카드의 전 프로젝트를 갱신.
+  useEffect(() => {
+    const bc = openAssetBroadcast();
+    if (!bc) return;
+    bc.onmessage = (event) => {
+      if (event.data?.type !== ASSET_CHANNEL_MESSAGES.assetsUpdated) return;
+      const changed: string[] = Array.isArray(event.data.projects) ? event.data.projects : [];
+      refreshAssetVersions(changed.length ? changed : undefined);
+    };
+    return () => bc.close();
+  }, [refreshAssetVersions]);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -1064,7 +1135,10 @@ export function SceneBoard({
     const up = (ev: MouseEvent) => {
       setTempWire(null);
       const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
-      const cardEl = el?.closest(".scene-port.in")?.closest(".scene-card") as HTMLElement | null;
+      // 드롭 판정: 예전엔 작은 입력 포트(.scene-port.in) 위에 정확히 놔야만 연결됐다 → 조작이 불편.
+      // 이제 카드 몸통 어디에 놔도 그 카드로 연결되게 히트영역을 카드 전체로 넓힌다. 유효성(자기연결·종류
+      // 규칙)은 아래 canConnect 가 이미 거르므로 안전하다.
+      const cardEl = el?.closest(".scene-card") as HTMLElement | null;
       const toId = cardEl?.dataset.id;
       if (!toId) return;
       const toCard = cardsRef.current.find((c) => c.id === toId);

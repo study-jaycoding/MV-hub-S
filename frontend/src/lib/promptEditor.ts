@@ -1,5 +1,5 @@
 import { DRAG_TYPES } from "./dragTypes";
-import { displayThumb } from "./media";
+import { displayRefThumb, displayThumb } from "./media";
 import { SEEDANCE_TOKEN_SRC, seedanceAtTokenKind, seedanceCanonToken } from "./seedancePrompt";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -98,9 +98,10 @@ export function buildChipEl(ref: ChipRef): HTMLElement {
   chip.draggable = true; // 글자 사이로 끌어 재배치
   // 썸네일 있으면 img, 없으면(오디오 등) 플레이스홀더 — 빈 src img 의 재요청/깨진이미지 방지.
   let media: HTMLElement;
-  if (ref.thumb) {
+  const thumbSrc = displayRefThumb(ref); // asset 소스면 file_path 로 버전 반영, 그 외 저장 thumb 폴백
+  if (thumbSrc) {
     const img = document.createElement("img");
-    img.src = displayThumb(ref.thumb) || ref.thumb; // display=캐시 썸네일(원격 깨짐 방지), 실패 시 원본
+    img.src = thumbSrc;
     img.alt = "";
     img.draggable = false; // 이미지 자체 네이티브 드래그 방지(칩 단위로만 드래그)
     media = img;

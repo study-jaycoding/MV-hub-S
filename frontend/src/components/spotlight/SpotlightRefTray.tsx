@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { displayThumb, hideBrokenImg } from "../../lib/media";
+import { displayRefThumb, hideBrokenImg } from "../../lib/media";
 import { refSrc } from "../../lib/promptParts";
 import type { ChipRef } from "../../lib/promptEditor";
 import type { PreviewTarget } from "../../types";
@@ -175,9 +175,9 @@ export function SpotlightRefTray({
                 />
               ) : (ref.type as string) === "audio" ? (
                 <span className="sl-reftray-ph">A</span>
-              ) : ref.thumb ? (
+              ) : displayRefThumb(ref) ? (
                 <img
-                  src={displayThumb(ref.thumb) || undefined}
+                  src={displayRefThumb(ref)}
                   alt=""
                   draggable={false}
                   onError={hideBrokenImg}

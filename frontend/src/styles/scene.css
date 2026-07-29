@@ -734,6 +734,12 @@
 .scene-board.wiring .scene-card .scene-port.in.lane-model { background: #ffb84d; }
 .scene-board.wiring .scene-card .scene-port.in.lane-ref { background: #7fa9ff; }
 .scene-board.wiring .scene-card .scene-port.in.lane-text { background: #b57aff; }
+/* ★연결 드래그 중에는 카드 몸통 어디에 놔도 연결된다 — 마우스가 얹힌 카드를 은은히 강조해
+   '여기 놓으면 연결됨'을 알려준다(작은 포트에 정확히 맞출 필요 없음). */
+.scene-board.wiring .scene-card:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc, #7fa9ff) 75%, transparent),
+    0 0 16px 3px rgba(0, 0, 0, 0.45);
+}
 /* 연결선 끝점 색 점 — 한 포트에 여러 연결이 겹칠 때 선마다 끝점을 분리(fan-out).
    레퍼런스 카드 연결만 파랑, 나머지(계보·생성물레퍼런스)는 초록. */
 .scene-dot { fill: var(--accent); stroke: #14161a; stroke-width: 2; } /* 초록 */

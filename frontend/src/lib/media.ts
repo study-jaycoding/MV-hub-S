@@ -1,6 +1,7 @@
 // 공용 미디어 헬퍼 — History 보드/패널/미니트리에 동일하게 복붙돼 있던 thumbOf 를 통합.
 import type { SyntheticEvent } from "react";
 import { api } from "../api";
+import { getAssetVersion } from "./assetVersions";
 import type { Generation } from "../types";
 
 // 썸네일 로드 실패 시 공용 폴백 — 깨진 이미지 아이콘 대신 조용히 숨겨 컨테이너 배경(플레이스홀더)이 보이게.
@@ -77,7 +78,8 @@ export function displayThumb(pathOrToken: string | null | undefined, size = 256)
   if (!pathOrToken) return null;
   if (pathOrToken.startsWith("asset:")) {
     const [proj, path] = pathOrToken.slice(6).split("|");
-    return proj && path ? api.assetThumbUrl(proj, path, size) : null;
+    // 전역 버전 표에 최신 버전이 있으면 붙인다 → 원본이 바뀌면 URL 이 바뀌어 새 썸네일을 불러온다.
+    return proj && path ? api.assetThumbUrl(proj, path, size, getAssetVersion(proj, path)) : null;
   }
   // /api/assets/file(원본 파일 서빙)는 '이미 프록시'가 아니라 원본 → 에셋 썸네일로 변환(원본 통째 디코딩 방지).
   if (pathOrToken.startsWith("/api/assets/file")) {
@@ -85,12 +87,27 @@ export function displayThumb(pathOrToken: string | null | undefined, size = 256)
       const u = new URL(pathOrToken, window.location.origin);
       const proj = u.searchParams.get("project");
       const path = u.searchParams.get("path");
-      if (proj && path) return api.assetThumbUrl(proj, path, size);
+      if (proj && path) return api.assetThumbUrl(proj, path, size, getAssetVersion(proj, path));
     } catch {
       /* 파싱 실패 시 아래 폴백 */
     }
   }
   return thumbUrl(pathOrToken, size); // /media·http → 프록시, /api/assets/thumb·/api/media-thumb 등은 raw 유지
+}
+
+// 레퍼런스(캔버스 카드·프롬프트 트레이·인라인 칩·토큰 알약) 썸네일 URL — 저장된 thumb(버전 고정 URL)
+// 대신 asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전(v)을 붙인다(원본이 바뀌면 새 썸네일).
+// asset: 토큰뿐 아니라 옛 저장분의 /api/assets/file 형태도 asset 원본으로 본다. 그 외(원격 URL 등)만
+// 저장 thumb 폴백. 오디오는 썸네일이 없어 undefined(깨진 <img> 방지). SceneBoard·프롬프트 계열 공용.
+export function displayRefThumb(
+  ref: { file_path?: string | null; thumb?: string | null; type?: string | null },
+  size = 256,
+): string | undefined {
+  if (ref.type === "audio") return undefined;
+  const fp = ref.file_path || "";
+  const isAssetSrc = fp.startsWith("asset:") || fp.startsWith("/api/assets/file");
+  const raw = ref.type === "video" ? fp || ref.thumb : isAssetSrc ? fp : ref.thumb || fp;
+  return displayThumb(raw, size) ?? undefined;
 }
 
 // 생성본의 대표 썸네일 URL(없으면 null). 로컬 /media·공유받은 원격 URL 모두 리사이즈 썸네일로 변환.
