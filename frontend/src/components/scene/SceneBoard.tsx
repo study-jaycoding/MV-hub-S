@@ -4185,12 +4185,13 @@ export function SceneBoard({
                               ? "⚠ 잘못된 입력"
                               : "생성/텍스트/레퍼런스 카드를 연결";
                   // 리스트 카드를 늘리면 레퍼런스 썸네일도 비례해 커진다 — 최소=기본(42px), 최대=레퍼런스
-                  //  카드의 2/3(≈101px). 카드가 클수록 번호·장수 배지 글씨도 비례해 커져 잘 보이게 한다.
+                  //  카드 2/3 의 1.5배(≈152px = 레퍼런스 카드 크기). 카드가 클수록 번호·장수 배지 글씨도
+                  //  비례해 커져 잘 보이게 한다.
                   const listThumbPx = Math.max(
                     42,
-                    Math.min(Math.round((CARD_W * 2) / 3), Math.round((widthOf(card) / CARD_W) * 42)),
+                    Math.min(Math.round(((CARD_W * 2) / 3) * 1.5), Math.round((widthOf(card) / CARD_W) * 42)),
                   );
-                  const listThumbBadgeFs = Math.max(8, Math.min(20, Math.round((listThumbPx * 8) / 42)));
+                  const listThumbBadgeFs = Math.max(8, Math.min(30, Math.round((listThumbPx * 8) / 42)));
                   const listThumbsStyle: CSSProperties = {
                     gridTemplateColumns: `repeat(auto-fill, ${listThumbPx}px)`,
                   };
