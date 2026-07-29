@@ -3930,7 +3930,38 @@ export function SceneBoard({
                           <div
                             className="scene-refthumb"
                             key={i}
-                            title={r.name || `레퍼런스 ${i + 1} · 더블클릭=큰 화면`}
+                            title={(r.name || `레퍼런스 ${i + 1}`) + " · 더블클릭=큰 화면 · 미들클릭=정보"}
+                            onMouseDown={(e) => {
+                              if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지(정보는 auxclick 에서)
+                            }}
+                            onAuxClick={(e) => {
+                              // 미들클릭 = 정보. asset 토큰(어셋/임포트/캡처) → 어셋창과 동일한 파일 정보 팝업,
+                              //  생성물에서 온 레퍼런스(source_gen_id) → 생성 정보 팝업.
+                              if (e.button !== 1) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const fp = r.file_path || "";
+                              if (fp.startsWith("asset:")) {
+                                const [proj, path] = fp.slice(6).split("|");
+                                if (proj && path) {
+                                  const mt = refMediaType(r);
+                                  onInfo?.({
+                                    kind: "file",
+                                    project: proj,
+                                    node: {
+                                      name: r.name || path.split("/").pop() || path,
+                                      type: mt === "video" ? "video" : mt === "audio" ? "audio" : "image",
+                                      path,
+                                    },
+                                    x: e.clientX,
+                                    y: e.clientY,
+                                  });
+                                  return;
+                                }
+                              }
+                              const g = r.source_gen_id ? genDataRef.current[r.source_gen_id] : undefined;
+                              if (g) onInfo?.({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
+                            }}
                             onMouseEnter={
                               isVid
                                 ? (e) => {
