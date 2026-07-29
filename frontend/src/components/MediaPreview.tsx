@@ -28,6 +28,7 @@ function previewDownloadName(url: string, name: string, type: string, uniq?: str
 export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
   const [pos, setPos] = useState({ x: 0, y: 0 }); // 화면 중앙 기준 오프셋
   const drag = useRef<{ ox: number; oy: number; sx: number; sy: number } | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null); // 스페이스바 재생/일시정지용
   // 같은 목록(items)이 넘어오면 ←/→ 로 그 안에서 이전·다음 미디어로 이동(생성·에셋 공통).
   const items = target.items;
   const [idx, setIdx] = useState(target.index ?? 0);
@@ -67,6 +68,14 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
           const n = e.key === "ArrowLeft" ? i - 1 : i + 1;
           return Math.max(0, Math.min(items.length - 1, n));
         });
+      } else if (e.code === "Space" || e.key === " ") {
+        // 스페이스바 → 재생/일시정지(네이티브 controls 는 포커스가 있어야만 먹으므로 직접 처리).
+        const v = videoRef.current;
+        if (!v) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (v.paused) void v.play().catch(() => {});
+        else v.pause();
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -131,7 +140,7 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
         </header>
         <div className="media-preview-body">
           {cur.type === "video" ? (
-            <video src={cur.url} controls autoPlay loop />
+            <video ref={videoRef} key={cur.url} src={cur.url} controls autoPlay loop />
           ) : cur.type === "audio" ? (
             <audio src={cur.url} controls autoPlay />
           ) : (
