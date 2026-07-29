@@ -134,5 +134,24 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     };
   }, [genIdSig]);
 
+  // 장기 누적 방지 — 현재 카드가 더 이상 참조하지 않는 id 의 캐시(genData/refParents/missingIds)를 정리.
+  // 카드 삭제·씬 전환을 반복하는 긴 세션에서 옛 생성물 데이터가 무한 쌓이지 않게(옛 forward-merge 만 함).
+  // (진행 중 폴은 genIdSig 변경 시 위 effect cleanup 이 alive=false 로 무효화 → 지운 id 를 되살리는 레이스 없음)
+  useEffect(() => {
+    const live = new Set(genIdSig.split(",").filter(Boolean));
+    const pruned = <T,>(obj: Record<string, T>): Record<string, T> | null => {
+      const keys = Object.keys(obj);
+      if (keys.every((k) => live.has(k))) return null; // 지울 것 없음 → 참조 유지(불필요 리렌더 방지)
+      const next: Record<string, T> = {};
+      for (const k of keys) if (live.has(k)) next[k] = obj[k];
+      return next;
+    };
+    setGenData((prev) => pruned(prev) ?? prev);
+    setRefParents((prev) => pruned(prev) ?? prev);
+    setMissingIds((prev) =>
+      [...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id))),
+    );
+  }, [genIdSig]);
+
   return { genData, setGenData, genDataRef, missingIds, disabledIds, refParents };
 }

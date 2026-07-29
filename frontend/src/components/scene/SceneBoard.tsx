@@ -97,6 +97,22 @@ import { useClickSeparation } from "../../lib/useClickSeparation";
 
 const CARD_W = 152;
 const CARD_H = 130;
+// ── 뷰포트 컬링(가상화) 플래그 — 화면 밖 카드를 렌더에서 빼 메모리·DOM 절감. 단계 롤아웃용. ──
+// CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
+// Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
+const CULL_ENABLED = true;
+const CULL_MARGIN = 3000; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화)
+const VIEW_RECT_EPS = 0.5; // 뷰포트 변화가 이보다 작으면 setState 생략(무한루프·불필요 리렌더 방지)
+type ViewRect = { l: number; t: number; r: number; b: number };
+function sameViewRect(a: ViewRect | null, b: ViewRect, eps = VIEW_RECT_EPS) {
+  return (
+    !!a &&
+    Math.abs(a.l - b.l) <= eps &&
+    Math.abs(a.t - b.t) <= eps &&
+    Math.abs(a.r - b.r) <= eps &&
+    Math.abs(a.b - b.b) <= eps
+  );
+}
 // 줌 한계 — 최소(멀리 보기)·최대(가까이 보기). 큰 씬을 한눈에 볼 수 있게 하한을 넉넉히 낮춘다.
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 2.5;
@@ -497,6 +513,10 @@ export function SceneBoard({
   const heightsRef = useRef<Record<string, number>>({});
   const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
+  // 뷰포트 컬링 상태 — 화면에 보이는 카드 사각형(canvas 좌표). null 이면 컬링 off/미측정.
+  const [viewRect, setViewRect] = useState<ViewRect | null>(null);
+  const viewRectRef = useRef<ViewRect | null>(null); // 직전 적용값 — 엡실론 비교로 재설정 억제
+  const cullRafRef = useRef<number | null>(null); // 여러 렌더의 재계산을 1 프레임으로 합침(coalesce)
   // 미니맵(네비게이터)의 뷰포트 박스 갱신 함수 — 팬/줌마다 applyTransform 이 호출(리렌더 없이).
   const mmUpdateRef = useRef<(() => void) | null>(null);
 
@@ -513,8 +533,48 @@ export function SceneBoard({
       b.style.backgroundPosition = `${panRef.current.x}px ${panRef.current.y}px`;
     }
     mmUpdateRef.current?.(); // 팬/줌 반영 즉시 미니맵 뷰포트 박스도 갱신
+
+    // ── 뷰포트 컬링 재계산(플래그 on 일 때만) ──
+    // ★ applyTransform 은 useLayoutEffect 로 매 렌더 돈다. 여기서 무조건 setState 하면 무한루프다.
+    //   그래서 (1) rAF 로 여러 렌더를 1프레임에 합치고 (2) 엡실론 비교로 변화 있을 때만 setViewRect.
+    if (!CULL_ENABLED) return;
+    if (cullRafRef.current !== null) return;
+    cullRafRef.current = requestAnimationFrame(() => {
+      cullRafRef.current = null;
+      const vp = scrollRef.current?.getBoundingClientRect();
+      if (!vp) return;
+      const z = zoomRef.current;
+      const panX = panRef.current.x;
+      const panY = panRef.current.y;
+      const next: ViewRect = {
+        l: -panX / z,
+        t: -panY / z,
+        r: (vp.width - panX) / z,
+        b: (vp.height - panY) / z,
+      };
+      if (!sameViewRect(viewRectRef.current, next)) {
+        viewRectRef.current = next;
+        setViewRect(next);
+      }
+    });
   }, []);
   useLayoutEffect(applyTransform);
+  // 뷰포트(컨테이너) 리사이즈 시에도 컬링 재계산(플래그 on 일 때만). off 면 옵저버 미등록.
+  useEffect(() => {
+    if (!CULL_ENABLED) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => applyTransform());
+    ro.observe(el);
+    applyTransform();
+    return () => {
+      ro.disconnect();
+      if (cullRafRef.current !== null) {
+        cancelAnimationFrame(cullRafRef.current);
+        cullRafRef.current = null;
+      }
+    };
+  }, [applyTransform]);
 
   // 카드 크기(캔버스 좌표). 레퍼런스·Input·Output 은 고정폭·측정높이(내용에 맞춰 컴팩트, 리사이즈 없음),
   // 그 외(생성/텍스트/모델/리스트)는 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
@@ -3224,6 +3284,46 @@ export function SceneBoard({
     () => (hiddenIds.size ? cards.filter((c) => !hiddenIds.has(c.id)) : cards),
     [cards, hiddenIds],
   );
+  // 컬링돼도 반드시 렌더할 카드 — 선택/편집/Comfy 대기/아직 높이 미측정(오프스크린 생성 시 엣지·미니맵
+  // 오배치 방지). heightsRef 는 언마운트에도 안 지워져 한 번 측정되면 컬링 대상이 됨.
+  const keepIds = useMemo(() => {
+    const ids = new Set<string>(selected);
+    if (editTextId) ids.add(editTextId);
+    for (const id of comfyWaitingIds) ids.add(id);
+    for (const c of cards) {
+      if (!Object.prototype.hasOwnProperty.call(heightsRef.current, c.id)) ids.add(c.id);
+    }
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, editTextId, comfyWaitingIds, cards, heightTick]);
+  // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
+  const renderCards = useMemo(() => {
+    if (!CULL_ENABLED || !viewRect) return visibleCards;
+    const ex = {
+      l: viewRect.l - CULL_MARGIN,
+      t: viewRect.t - CULL_MARGIN,
+      r: viewRect.r + CULL_MARGIN,
+      b: viewRect.b + CULL_MARGIN,
+    };
+    return visibleCards.filter((card) => {
+      if (keepIds.has(card.id)) return true;
+      const r = cardRect(card);
+      return r.x <= ex.r && r.x + r.w >= ex.l && r.y <= ex.b && r.y + r.h >= ex.t;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleCards, viewRect, keepIds, heightTick]);
+
+  // 장기 누적 방지 — 실제 삭제된(현재 cards 에 없는) 카드의 측정 캐시를 정리. ★컬링으로 언마운트된
+  // 카드는 cards 에 남아 있어 안 지워진다(측정값 유지 → keepIds 의 '미측정' 오판 방지). ref 직접 변경(무리렌더).
+  useEffect(() => {
+    const live = new Set(cards.map((c) => c.id));
+    const prune = (obj: Record<string, unknown>) => {
+      for (const k of Object.keys(obj)) if (!live.has(k)) delete obj[k];
+    };
+    prune(heightsRef.current);
+    prune(widthsRef.current);
+    prune(cardEls.current);
+  }, [cards]);
   // 숨긴(회색) 카드가 중간에 있어도 앞뒤 흐름이 끊긴 것처럼 보이지 않게 — 숨김 노드를 건너뛰어
   // 보이는 '앞 카드 → 뒤 카드'로 회색 점선 우회선을 만든다(중간에 뭔가 숨겨져 있다는 표시).
   const bridgeEdges = useMemo(
@@ -3746,7 +3846,7 @@ export function SceneBoard({
             })()}
         </svg>
 
-        {visibleCards.map((card) => {
+        {renderCards.map((card) => {
           const sel = selected.has(card.id);
           const isRef = card.kind === "reference";
           const autoH = isAutoCard(card); // 레퍼런스·Input·Output = 내용에 맞춘 자동 높이(고정 height 미지정)
