@@ -2548,7 +2548,13 @@ export function SceneBoard({
             );
             if (!cand.length) continue;
             const minLayer = Math.min(...cand.map(layerOf));
-            for (const t of cand) if (layerOf(t) === minLayer) pairs.push([s.id, t.id]);
+            for (const t of cand) {
+              if (layerOf(t) !== minLayer) continue;
+              // 방향 결정 — 양방향 다 가능한 '모호한 쌍'(예: 리스트↔텍스트)만 위치(x)로 정한다: 왼쪽 카드가
+              // 출력(소스), 오른쪽이 입력(타깃). 한 방향만 유효한 쌍(레퍼런스→생성 등)은 위치와 무관하게 유지.
+              if (canConnect(t, s, byId, edgesRef.current) && t.x < s.x) pairs.push([t.id, s.id]);
+              else pairs.push([s.id, t.id]);
+            }
           }
           if (pairs.length) {
             e.preventDefault();
