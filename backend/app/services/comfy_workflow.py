@@ -20,14 +20,19 @@ VIDEO_FILE_CLASSES = {"VHS_LoadVideo", "LoadVideo"}
 # 영상 노드에서 치환할 입력 필드 후보 (실제 JSON에 있는 것만 사용)
 VIDEO_FIELD_CANDIDATES = ("video", "file", "path")
 
+# Seedance(ByteDance) 계열 영상 노드의 조절 파라미터 — 실제 필드명은 평탄 점표기(model.ratio 등).
+# class_type 이 노드마다 달라(api_seedance2_0_mini 등) exact 매칭이 자주 빗나가므로 _curated_spec 의 fallback 으로도 붙인다.
+SEEDANCE_PARAMS = {
+    "model": {"label": "Seedance 모델",
+              "choices": ["Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]},
+    "model.ratio": {"label": "비율", "choices": ["16:9", "9:16", "1:1"]},
+    "model.resolution": {"label": "화질", "choices": ["480p", "720p"]},
+}
+
 # 파라미터 팝업에 노출할 항목 큐레이션 — {class_type: {field: {label, choices}}}
 # 새 워크플로우에서 다른 노드 값을 조절하고 싶으면 여기에 추가한다.
 CURATED_PARAMS = {
-    "ByteDance2ReferenceNode": {
-        "model": {"label": "Seedance 모델",
-                  "choices": ["Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]},
-        "model.resolution": {"label": "화질", "choices": ["480p", "720p"]},
-    },
+    "ByteDance2ReferenceNode": SEEDANCE_PARAMS,
     "ImageBlur": {
         "blur_radius": {"label": "blur_radius"},
         "sigma": {"label": "sigma"},
@@ -36,6 +41,17 @@ CURATED_PARAMS = {
         "select": {"label": "블러 스위치 (1=블러, 2=원본)", "choices": [1, 2]},
     },
 }
+
+
+def _curated_spec(class_type: str, field: str) -> dict:
+    """이 필드의 큐레이션(label/choices) — exact class_type 우선, 없으면 Seedance/ByteDance 계열 fallback.
+    class_type 이름이 노드마다 달라도(api_seedance2_0_mini 등) 드롭다운을 붙이기 위함."""
+    exact = (CURATED_PARAMS.get(class_type) or {}).get(field)
+    if exact:
+        return exact
+    if re.search(r"(seedance|bytedance)", str(class_type or ""), re.IGNORECASE):
+        return SEEDANCE_PARAMS.get(field) or {}
+    return {}
 
 
 def _infer_type(val) -> str:
@@ -148,19 +164,19 @@ def detect_slots(wf: dict, exposed=None) -> dict:
     slot_keys = {(s["node_id"], s["field"]) for s in (image_slots + video_slots)}
     params = []
     for node_id, node in wf.items():
-        curated = CURATED_PARAMS.get(node["class_type"]) or {}
+        ct = node["class_type"]
         inputs = _dict(node.get("inputs"))
         fields = []
         for key, val in inputs.items():
             if (isinstance(val, (list, dict)) or (node_id, key) in slot_keys
                     or f"{node_id}|{key}" not in exposed):
                 continue
-            spec = curated.get(key) or {}
+            spec = _curated_spec(ct, key)
             fields.append(_field_entry(key, val, spec.get("label"), spec.get("choices")))
         if fields:
             params.append({
                 "node_id": node_id,
-                "title": _dict(node.get("_meta")).get("title") or node["class_type"],
+                "title": _dict(node.get("_meta")).get("title") or ct,
                 "fields": fields,
             })
 
@@ -181,18 +197,17 @@ def param_candidates(wf: dict, exposed=None) -> list:
     out = []
     for node_id, node in wf.items():
         ct = node["class_type"]
-        curated = CURATED_PARAMS.get(ct) or {}
         title = _dict(node.get("_meta")).get("title") or ct
         for key, val in _dict(node.get("inputs")).items():
             if isinstance(val, (list, dict)) or (node_id, key) in slot_keys:
                 continue  # 링크/구조/슬롯은 조절 대상 아님
-            spec = curated.get(key) or {}
+            spec = _curated_spec(ct, key)
             out.append({
                 "node_id": node_id, "class_type": ct, "title": title,
                 "field": key, "value": val, "type": _infer_type(val),
                 "label": spec.get("label") or key,
                 "choices": spec.get("choices"),  # 드롭다운 후보(있으면)
-                "curated": key in curated,  # 라벨/드롭다운 제공(노출 강제 아님)
+                "curated": bool(spec),  # 라벨/드롭다운 제공(노출 강제 아님)
                 "exposed": f"{node_id}|{key}" in exposed,
             })
     return out
