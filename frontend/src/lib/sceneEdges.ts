@@ -302,10 +302,12 @@ export function comfyTextDriveKeys(
   return out;
 }
 
-// Comfy 출력을 생성물로 저장할 때 '생성 정보'에 담을 표준 메타(model·비율·해상도)를 뽑는다.
+// Comfy 출력을 생성물로 저장할 때 '생성 정보'에 담을 표준 메타(model·비율·해상도·영상길이)를 뽑는다.
 // 워크플로 원문의 노드 입력에서 baked 값을 먼저 읽고, 사용자가 노출·조절한 값(paramValues)으로 덮어쓴다
 // (실제 사용값 우선). 여러 노드에 같은 필드가 있으면 마지막 값이 남는다(일반 이미지 워크플로는 1개).
-const COMFY_META_FIELDS = ["model", "aspect_ratio", "resolution"] as const;
+// duration: 영상 노드(Seedance 등)의 duration 값(초)을 그대로 읽어 params.duration 으로 저장 → 힉스필드처럼
+//   생성 정보에 영상 길이가 표시된다. 값이 계산 링크(다른 노드에서 유도)면 정적으로 못 읽어 미표시(정적 값만).
+const COMFY_META_FIELDS = ["model", "aspect_ratio", "resolution", "duration"] as const;
 export function comfyGenMeta(
   content: string | undefined,
   params: { key: string; type: string }[] | undefined,
