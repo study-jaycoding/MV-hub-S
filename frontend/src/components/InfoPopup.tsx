@@ -3,6 +3,7 @@
 // 헤더를 잡고 드래그해 옮긴다. Esc/바깥 클릭으로 닫음.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { formatGenerationDateTime } from "../lib/generationDisplay";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import { refSrc } from "../lib/promptParts";
@@ -145,7 +146,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
         )}
         <Row label="비율" value={params.aspect_ratio as string} />
         <Row label="해상도" value={params.resolution as string} />
-        <Row label="생성일" value={g.created_at} />
+        <Row label="생성일" value={formatGenerationDateTime(g.created_at)} />
         {g.model === "comfy" ? (
           // Comfy 는 건별 크레딧이 없다(Cloud=정액 구독제 / 로컬=무과금) → 구독/실행 정보로 대체.
           <Row

@@ -36,10 +36,26 @@ export function generationStatusTitle(status: string, error: string | null): str
   return undefined;
 }
 
+// created_at 은 UTC "YYYY-MM-DD HH:MM:SS"(대개 tz 표기 없음)로 저장된다 — comfy=SQLite datetime('now'),
+// 힉스필드=epoch_to_iso 모두 UTC. tz 표기 없이 new Date() 하면 로컬로 오인하므로 UTC(Z)로 파싱해
+// 로컬 시각으로 표시한다(표시만; dateGroups.dayInfoFromUtcString 과 동일 규칙).
+function parseCreatedAt(value: string): Date {
+  let s = value.replace(" ", "T");
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += "Z"; // tz 표기 없으면 UTC 로 간주
+  return new Date(s);
+}
+
 export function formatGenerationDate(value: string): string {
-  const d = new Date(value.replace(" ", "T"));
+  const d = parseCreatedAt(value);
   if (isNaN(d.getTime())) return value.slice(0, 10);
   return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+}
+
+// 생성일 + 시각(로컬) — 정보 팝업 등 정확한 시각이 필요한 곳.
+export function formatGenerationDateTime(value: string): string {
+  if (!value) return value;
+  const d = parseCreatedAt(value);
+  return isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
 export function generationListMeta(params: Record<string, unknown>): {
