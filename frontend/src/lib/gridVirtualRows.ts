@@ -13,6 +13,9 @@ export interface GridRowModel {
   navGrid: number[][]; // 카드 행만: navGrid[navRow] = [generations 인덱스, ...] (열 순서)
   posByGen: { navRow: number; col: number }[]; // generations[i] → 카드 격자 위치
   rowIndexOfNavRow: number[]; // navRow → rows[] 인덱스(virtua scrollToIndex 용)
+  // 날짜별 그룹(헤더 체크박스 '그 날짜 전체 선택'용). groupByDate 아니면 null. 예전엔 별도 O(n)
+  // 스캔(buildGenerationDateGroups)이었으나 이 빌드 루프에 합쳐 페이지 추가마다 재스캔을 줄였다.
+  dateGroups: Map<string, { label: string; ids: string[] }> | null;
 }
 
 // 컬럼 수 = 반응형 그리드가 실제로 만들 열 개수. CSS repeat(auto-fill, minmax(minCellPx,1fr)) 와
@@ -39,6 +42,9 @@ export function buildGridRows(
   const posByGen: { navRow: number; col: number }[] = new Array(generations.length);
   const rowIndexOfNavRow: number[] = [];
 
+  const dateGroups: Map<string, { label: string; ids: string[] }> | null = groupByDate
+    ? new Map()
+    : null;
   let cur: number[] = []; // 현재 카드 행에 쌓이는 generations 인덱스
   let lastDay: string | null = null;
 
@@ -54,6 +60,13 @@ export function buildGridRows(
   for (let i = 0; i < generations.length; i++) {
     if (groupByDate) {
       const { key, label } = dayInfoOf(generations[i].created_at);
+      // 날짜 그룹 누적(생성순 그대로) — 예전 buildGenerationDateGroups 별도 스캔을 이 루프로 합침.
+      let ent = dateGroups!.get(key);
+      if (!ent) {
+        ent = { label, ids: [] };
+        dateGroups!.set(key, ent);
+      }
+      ent.ids.push(generations[i].id);
       if (key !== lastDay) {
         flush(); // 날짜 바뀌면 현재 카드 행 마감(헤더는 전폭이라 별도 행)
         lastDay = key;
@@ -65,12 +78,13 @@ export function buildGridRows(
     cur.push(i);
   }
   flush();
-  return { rows, navGrid, posByGen, rowIndexOfNavRow };
+  return { rows, navGrid, posByGen, rowIndexOfNavRow, dateGroups };
 }
 
-// 방향키 → 이동할 generations 인덱스. 없으면 null(경계). 아래/위는 같은 열(초과 시 그 행 마지막 열로 클램프).
+// 방향키 → 이동할 인덱스. 없으면 null(경계). 아래/위는 같은 열(초과 시 그 행 마지막 열로 클램프).
+// 생성 그리드(GridRowModel)와 에셋 그리드(AssetGridRowModel) 둘 다 쓰도록 필요한 필드만 받는다.
 export function navigateGrid(
-  model: GridRowModel,
+  model: { navGrid: number[][]; posByGen: { navRow: number; col: number }[] },
   fromGenIndex: number,
   key: string,
 ): number | null {

@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
-  buildGenerationDateGroups,
   previewTargetFromGenerations,
   toggleGenerationDateSelection,
 } from "../lib/generationGrid";
@@ -72,12 +71,7 @@ export function ThumbnailGrid(props: Props) {
   const isList = layout === "list";
   const t = useT();
 
-  // 날짜별 그룹(전체 기준) — 헤더 체크박스가 화면에 안 뜬 항목까지 포함해 그 날짜 전체를 선택.
-  // groupByDate 꺼져 있으면 헤더가 없어 불필요 → 계산 생략.
-  const dateGroups = useMemo(
-    () => (groupByDate ? buildGenerationDateGroups(generations) : null),
-    [generations, groupByDate],
-  );
+  // 날짜별 그룹은 rowModel.dateGroups 로 통합(별도 O(n) 스캔 제거) — 아래 rowModel 참고.
 
   // 날짜 헤더 체크박스 — 그 날짜의 모든 항목을 한 번에 선택/해제(토글).
   const toggleDate = (ids: string[], allSelected: boolean) => {
@@ -190,7 +184,7 @@ export function ThumbnailGrid(props: Props) {
     [],
   );
   const renderDateHeader = (dayKey: string, label: string) => {
-    const ids = dateGroups?.get(dayKey)?.ids ?? [];
+    const ids = rowModel.dateGroups?.get(dayKey)?.ids ?? [];
     const allSel = ids.length > 0 && ids.every((id) => selectedIds.has(id));
     return (
       <label className="gen-date-header" key={"h-" + dayKey}>

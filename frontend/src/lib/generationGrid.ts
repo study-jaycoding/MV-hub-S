@@ -1,21 +1,4 @@
-import { dayInfoFromUtcString } from "./dateGroups";
 import type { Generation, PreviewTarget } from "../types";
-
-export type GenerationDateGroups = Map<string, { label: string; ids: string[] }>;
-
-export function buildGenerationDateGroups(generations: Generation[]): GenerationDateGroups {
-  const groups: GenerationDateGroups = new Map();
-  for (const g of generations) {
-    const { key, label } = dayInfoFromUtcString(g.created_at);
-    let entry = groups.get(key);
-    if (!entry) {
-      entry = { label, ids: [] };
-      groups.set(key, entry);
-    }
-    entry.ids.push(g.id);
-  }
-  return groups;
-}
 
 export function toggleGenerationDateSelection(
   selectedIds: Set<string>,
