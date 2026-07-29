@@ -58,6 +58,14 @@ export function formatGenerationDateTime(value: string): string {
   return isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
+// 영상 길이 표기 — 숫자든 숫자문자열("4")이든 "4.0s" 로 통일(힉스필드 기본 duration 은 문자열이라 통일 필요).
+// 숫자로 못 읽는 문자열은 그대로, 값이 없으면 undefined(Row·배지 자동 생략).
+function formatDurationSec(d: unknown): string | undefined {
+  const n = typeof d === "number" ? d : typeof d === "string" && d.trim() !== "" ? Number(d) : NaN;
+  if (Number.isFinite(n)) return `${n.toFixed(1)}s`;
+  return typeof d === "string" ? d : undefined;
+}
+
 export function generationListMeta(params: Record<string, unknown>): {
   resolution?: string;
   duration?: string;
@@ -65,12 +73,7 @@ export function generationListMeta(params: Record<string, unknown>): {
 } {
   return {
     resolution: typeof params.resolution === "string" ? params.resolution : undefined,
-    duration:
-      typeof params.duration === "number"
-        ? `${params.duration.toFixed(1)}s`
-        : typeof params.duration === "string"
-          ? params.duration
-          : undefined,
+    duration: formatDurationSec(params.duration),
     aspect: typeof params.aspect_ratio === "string" ? params.aspect_ratio : undefined,
   };
 }
