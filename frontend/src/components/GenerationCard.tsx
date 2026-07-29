@@ -17,7 +17,9 @@ import {
   formatGenerationDate,
   generationListMeta,
   generationStatusLabel,
+  generationStatusLabelFor,
   generationStatusTitle,
+  isVerifying,
 } from "../lib/generationDisplay";
 import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
 import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay";
@@ -65,6 +67,7 @@ interface Props {
   tagEditing?: boolean; // 다중선택 태그 편집 활성(편집 카드가 선택에 포함). 선택된 비포커스 카드에 스트립 표시
   tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
   onGlobalModeChange?: (on: boolean) => void; // 포커스 에디터의 전역모드 토글 보고
+  thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
 }
 
 function GenerationCardImpl({
@@ -72,6 +75,7 @@ function GenerationCardImpl({
   tab,
   myCreatorUid,
   layout,
+  thumbSize,
   fill = true,
   selected = false,
   onToggleSelect,
@@ -110,7 +114,8 @@ function GenerationCardImpl({
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
   // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.
-  const thumb = thumbUrl(rawThumb, 512);
+  // 요청 폭은 그리드가 표시크기×DPR 로 준 값(작게 보이면 256 → 디코딩 메모리 1/4). 없으면 512.
+  const thumb = thumbUrl(rawThumb, thumbSize ?? 512);
   const isList = layout === "list";
   const videoRef = useRef<HTMLVideoElement>(null);
   // T 버튼 → 적용된 태그 목록 팝업(보기/✕삭제). 태그 '입력'은 # 키(editingField) 로만 — 에셋과 동일.
@@ -248,7 +253,9 @@ function GenerationCardImpl({
                   <span className="gen-wave-bar" />
                   <span className="gen-wave-bar" />
                 </span>
-                <span className="gen-generating-label">Generating</span>
+                <span className="gen-generating-label">
+                  {isVerifying(gen.status, gen.error) ? "확인중" : "Generating"}
+                </span>
               </span>
             ) : (
               generationStatusLabel(gen.status)
@@ -374,7 +381,7 @@ function GenerationCardImpl({
             generationStatusTitle(gen.status, gen.error)
           }
         >
-          {generationStatusLabel(gen.status)}
+          {generationStatusLabelFor(gen.status, gen.error)}
         </span>
       )}
 

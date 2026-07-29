@@ -83,6 +83,62 @@ async def reconcile_stuck_synced() -> int:
     return trashed
 
 
+_house_email: Optional[str] = None
+
+
+async def _house_account_email() -> Optional[str]:
+    """서버에 붙은 CLI(하우스) 계정 이메일 — 재조정 후보 스코프용. 1회 조회 후 캐시."""
+    global _house_email
+    if _house_email is None:
+        with contextlib.suppress(Exception):
+            acct = await cli_bridge.get_account_status()
+            _house_email = (acct.get("email") or "").lower() or None
+    return _house_email
+
+
+async def reconcile_local_house() -> int:
+    """하우스 계정의 '실제 상태 미확정'(확인중/유실된 running, job_id 보유) 로컬 카드를 서버 CLI 로
+    generate get 해 실제 상태로 보정한다 — 하우스도 로컬 실행이므로 fulfill 유실·모호실패가 날 수 있다.
+    팀원 카드는 그 사람 에이전트가 담당(계정 소유권). 서버 CLI 는 하우스 잡만 조회 가능하므로 후보를
+    하우스 이메일로 좁힌다. 조회만(과금 없음). 반환: 보정 건수."""
+    email = await _house_account_email()
+    if not email:
+        return 0
+    cands = await asyncio.to_thread(repo.list_reconcile_candidates, email)
+    if not cands:
+        return 0
+    applied_n = 0
+    for c in cands:
+        raw = await cli_bridge.get_job_raw(c["job_id"])
+        if not raw:
+            continue  # 확인불가/삭제/파싱실패 → 안 건드림
+        parsed = cli_bridge.parse_job(raw)
+        g = parsed.get("generation") or {}
+        asset = parsed.get("asset")
+        status = g.get("status") or "done"
+        if status in ("pending", "running"):
+            continue  # 아직 처리중 → 확인중 유지
+        err = g.get("error") if status == "failed" else None
+        applied = await asyncio.to_thread(
+            repo.apply_reconcile,
+            c["gen_id"],
+            g.get("id"),
+            asset_type=asset["type"] if asset else None,
+            asset_path=asset["file_path"] if asset else None,
+            asset_thumb=(
+                (asset.get("min_result_url") or asset["file_path"]) if asset and asset["type"] == "image"
+                else (asset.get("thumbnail_url") if asset else None)
+            ),
+            created_at=g.get("created_at"),
+            sort_ts=g.get("sort_ts"),
+            status=status,
+            error=err,
+        )
+        if applied:
+            applied_n += 1
+    return applied_n
+
+
 class PeriodicSync:
     def __init__(self, interval: float = SYNC_INTERVAL) -> None:
         self._interval = interval
@@ -126,6 +182,11 @@ class PeriodicSync:
                 stuck = await reconcile_stuck_synced()
                 if stuck:
                     print(f"[periodic-sync] 유령 '생성중' 카드 {stuck}건 정리(힉스필드에서 사라진 잡)")
+                    await manager.broadcast_all({"type": "synced"})
+                # 하우스 계정 로컬 카드의 '실제 상태 미확정'(확인중/유실된 running) 보정 — 후보 없으면 무비용.
+                fixed = await reconcile_local_house()
+                if fixed:
+                    print(f"[periodic-sync] 미확정 로컬 카드 {fixed}건 실제 상태로 보정")
                     await manager.broadcast_all({"type": "synced"})
             except asyncio.CancelledError:
                 raise

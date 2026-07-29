@@ -122,6 +122,23 @@ async def job_exists(job_id: str, timeout: float = 30.0) -> Optional[bool]:
     return True if isinstance(data, dict) and data.get("id") else None
 
 
+async def get_job_raw(job_id: str, timeout: float = 30.0) -> Optional[dict[str, Any]]:
+    """generate get <id> --json → 원시 잡 dict(없음/확인불가면 None). 재조정(하우스 계정)용 —
+    job_exists 는 True/False 만 주지만 이건 status·result_url 이 담긴 실제 잡을 돌려준다.
+    삭제/타임아웃/파싱실패는 None(상태 변경 금지). 호출부가 parse_job 으로 정규화한다."""
+    try:
+        raw = (await _run("generate", "get", job_id, "--json", timeout=timeout)).strip()
+    except CLIError:
+        return None
+    if not raw or "job not found" in raw.lower():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) and data.get("id") else None
+
+
 async def _run_capture(*args: str, timeout: float = 600.0) -> tuple[str, str, int]:
     """create 전용 — stdout/stderr/returncode 를 모두 반환(예외 안 던짐, 타임아웃만 예외).
     소프트 실패(rc=0 인데 status=failed) 시 stderr 에 담긴 사유를 살리기 위함."""
@@ -177,6 +194,11 @@ _STATUS_MAP = {
     "processing": "running",
     "in_progress": "running",
     "nsfw": "nsfw",  # 콘텐츠 차단(결과 없음) — 터미널 상태로 그대로 보존
+    "nsfw_detected": "nsfw",  # 1.x 표기 — 같은 콘텐츠 차단
+    "rejected": "failed",  # 제출 후 거부 — 실패로 취급(재조정이 '생성중' 유령을 실패로 확정)
+    # needs_action/needs_confirmation/ip_detected/user_action_required(사용자 조치 필요)는 매핑하지 않고
+    # 그대로 통과시킨다 — pending/running 이 아니라 '터미널'로 취급돼(재조정·활성판정에서 제외) '생성중'에
+    # 멈추지 않는다. 프론트는 원시 라벨로 노출. (새 status enum 을 만들면 상태판정 함수들을 다 손봐야 해 보류.)
 }
 
 def normalize_status(raw: Optional[str]) -> str:
@@ -264,7 +286,8 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
             "model": job.get("job_set_type") or job.get("job_type"),
             "display_name": job.get("display_name"),
             "params": params,
-            "status": normalize_status(job.get("status")),
+            # 일부 응답은 status 대신 job_status 를 쓴다(millionvolt 실측) → 폴백으로 둘 다 수용.
+            "status": normalize_status(job.get("status") or job.get("job_status")),
             "created_at": epoch_to_iso(job.get("created_at")),
             "sort_ts": _to_epoch(job.get("created_at")),  # 정밀 정렬키(sub-second 보존)
             "creator_uid": creator_uid,  # 생성자(team 워크스페이스에서 작성자 구분)

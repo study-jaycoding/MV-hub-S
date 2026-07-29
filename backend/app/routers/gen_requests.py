@@ -222,6 +222,96 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     return gen
 
 
+@router.post("/gen-requests/{rid}/anchor")
+async def anchor_gen_request(rid: str, request: Request, job_id: str):
+    """에이전트가 '모호한 결말'(타임아웃/파싱실패)에서 job_id 만 확보하고 잡이 아직 처리중일 때 호출 —
+    placeholder 를 running(확인중) 유지하고 job_id 만 기록한다(요청은 done 으로 닫아 30분 stale 회수가
+    이 카드를 실패로 뒤집지 않게). 재조정 패스가 나중에 generate get 으로 done/failed 를 확정한다.
+    ★가짜 실패 방지 — 실제 힉스필드엔 생성됐는데 우리만 '실패'로 뜨던 문제를 앵커로 막는다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    req = repo.get_gen_request(rid)
+    if not req:
+        raise HTTPException(status_code=404, detail="없는 요청")
+    if req["account_email"] != (acc.get("email") or "").lower():
+        raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
+    if req.get("status") in ("done", "failed"):
+        return {"ok": True}  # 이미 종결 — 멱등 무시(완료/실패를 확인중으로 되돌리지 않음)
+    if not repo.apply_local_anchor(req["gen_id"], rid, job_id):
+        return {"ok": True}
+    await manager.broadcast(
+        {
+            "type": "progress",
+            "generation_id": req["gen_id"],
+            "status": "running",
+            "error": repo.VERIFYING_NOTE,
+        },
+        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
+    )
+    return {"ok": True}
+
+
+@router.get("/gen-requests/reconcile-candidates")
+async def reconcile_candidates(request: Request):
+    """에이전트가 주기적으로 호출 — 이 계정의 '실제 상태 미확정' 로컬 카드 목록을 받아, 각 job_id 를
+    자기 CLI 계정으로 generate get 해 확정하고 /reconcile 로 보정 push 한다(push 모델·계정 소유권).
+    조회만이라 과금 없음. [{rid, gen_id, job_id}]."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    cands = repo.list_reconcile_candidates((acc.get("email") or "").lower())
+    return {"candidates": cands}
+
+
+@router.post("/gen-requests/{rid}/reconcile")
+async def reconcile_gen_request(rid: str, body: FulfillIn, request: Request):
+    """재조정 — 에이전트가 generate get 으로 확보한 '권위 있는' 잡 상태로 placeholder 를 보정한다.
+    fulfill 과 달리 이미 종결(done/failed)이어도, 특히 failed→done '되살리기'도 허용한다(가짜 실패 복구).
+    안전: job_id 일치 + origin='local' + 내 계정일 때만(repo.apply_reconcile 강조건). 아직 처리중이면 보정 안 함."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    req = repo.get_gen_request(rid)
+    if not req:
+        raise HTTPException(status_code=404, detail="없는 요청")
+    if req["account_email"] != (acc.get("email") or "").lower():
+        raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
+    gen_id = req["gen_id"]
+    parsed = cli_bridge.parse_job(body.job)
+    g = parsed.get("generation") or {}
+    asset = parsed.get("asset")
+    status = g.get("status") or "done"
+    # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
+    if status in ("pending", "running"):
+        return {"ok": True, "applied": False, "status": status}
+    err = g.get("error") if status == "failed" else None
+    applied = repo.apply_reconcile(
+        gen_id,
+        g.get("id"),
+        asset_type=asset["type"] if asset else None,
+        asset_path=asset["file_path"] if asset else None,
+        asset_thumb=(
+            (asset.get("min_result_url") or asset["file_path"]) if asset and asset["type"] == "image"
+            else (asset.get("thumbnail_url") if asset else None)
+        ),
+        created_at=g.get("created_at"),
+        sort_ts=g.get("sort_ts"),
+        status=status,
+        error=err,
+    )
+    if applied:
+        _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
+        await manager.broadcast(
+            {
+                "type": "progress",
+                "generation_id": gen_id,
+                "status": status,
+                "result_url": asset["file_path"] if (asset and status != "failed") else None,
+                "error": err,
+            },
+            account_uid=realtime_scope(acc),
+        )
+    return {"ok": True, "applied": applied, "status": status}
+
+
 @router.post("/gen-requests/{rid}/fail")
 async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실행 실패"):
     """에이전트가 로컬 실행 실패를 보고 — 요청·placeholder 모두 failed."""

@@ -591,6 +591,96 @@ def list_stuck_synced_active(older_than_seconds: float = 300.0) -> list[tuple[st
         ]
 
 
+def list_reconcile_candidates(account_email: str, limit: int = 200) -> list[dict[str, Any]]:
+    """재조정 후보 [{rid, gen_id, job_id}] — 이 계정 소유의 로컬 카드 중 '실제 상태 미확정'인 것.
+    판정(레이스 안전): generation 이 non-terminal(running/pending) + job_id 보유 + 그 gen_request 가
+    이미 닫힘(done/failed = 에이전트가 --wait 를 끝냈다는 신호). 이러면 아직 진행 중인 라이브 --wait 를
+    건드리지 않는다(claim 직후 running·요청도 running 인 카드는 제외).
+      · 대상: 앵커된 '확인중'(anchor 가 gen_request 를 done 으로 닫음), fulfill-with-running,
+        요청은 닫혔는데 generation 이 아직 running 인 유실 케이스.
+      · 제외: job_id 없는 하드 실패(로컬검증실패)·done/failed 확정본. 오염 없음."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id AS rid, g.id AS gen_id, g.job_id AS job_id
+            FROM generation g
+            JOIN gen_request r ON r.gen_id = g.id
+            WHERE g.origin='local'
+              AND g.job_id IS NOT NULL AND g.job_id<>''
+              AND g.status IN ('running','pending')
+              AND g.deleted_at IS NULL
+              AND r.status IN ('done','failed')
+              AND r.account_email = ?
+            ORDER BY g.sort_ts ASC
+            LIMIT ?
+            """,
+            (account_email.lower(), limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def apply_reconcile(
+    gen_id: str,
+    job_id: str,
+    *,
+    asset_type: Optional[str],
+    asset_path: Optional[str],
+    asset_thumb: Optional[str],
+    created_at: Optional[str],
+    sort_ts: Optional[float],
+    status: str,
+    error: Optional[str],
+) -> bool:
+    """재조정 권위 보정 — 에이전트가 `generate get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
+    ★fulfill 의 CAS 와 달리 failed→done '되살리기'를 허용한다(가짜 실패 복구). 대신 조건이 강하다:
+      · id·job_id 동시 일치 + origin='local' 일 때만(다른 카드·동기화본 오염 차단).
+      · 이미 done 확정본은 절대 뒤집지 않는다(에셋 있는 완료본 보호).
+      · 상태 변화가 없으면 no-op(False).
+    로컬검증실패(레퍼런스 미부착 등)는 애초에 job_id 앵커가 없어 후보에 안 들어오므로 여기 도달하지 않는다.
+    적용했으면 True(호출부가 브로드캐스트)."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT status FROM generation WHERE id=? AND job_id=? AND origin='local'",
+            (gen_id, job_id),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return False
+        if row["status"] == "done":
+            conn.execute("ROLLBACK")  # 완료 확정본은 재조정으로 뒤집지 않음
+            return False
+        if row["status"] == status:
+            conn.execute("ROLLBACK")  # 변화 없음(계속 확인중/실패 유지)
+            return False
+        # ★done 인데 결과물(에셋)이 아직 없으면 확정하지 않는다 — generate get 이 완료를 먼저 주고 result_url
+        #  이 늦게 붙는 경우 '빈 완료 카드'가 되는 것을 막는다. 확인중 유지 → 다음 사이클에 result_url 붙으면 확정.
+        if status == "done" and not asset_path:
+            conn.execute("ROLLBACK")
+            return False
+        # 성공계열(done 등)이고 아직 에셋이 없으면 에셋 INSERT(fulfill 과 동일 규칙). 실패/nsfw 는 에셋 없음.
+        if status != "failed" and asset_type and asset_path:
+            has_asset = conn.execute(
+                "SELECT 1 FROM asset WHERE generation_id=? LIMIT 1", (gen_id,)
+            ).fetchone()
+            if not has_asset:
+                conn.execute(
+                    "INSERT INTO asset(id, generation_id, type, file_path, thumbnail_path) "
+                    "VALUES(?,?,?,?,?)",
+                    (new_id(), gen_id, asset_type, asset_path, asset_thumb),
+                )
+        if sort_ts is not None:
+            conn.execute(
+                "UPDATE generation SET sort_ts=?, created_at=COALESCE(?, created_at) WHERE id=?",
+                (sort_ts, created_at, gen_id),
+            )
+        conn.execute(
+            "UPDATE generation SET status=?, error=? WHERE id=?",
+            (status, error if status == "failed" else None, gen_id),
+        )
+    return True
+
+
 def set_job_id(gen_id: str, job_id: str) -> None:
     """로컬 생성본에 실제 Higgsfield 잡 id 를 기록 — 이후 동기화가 이 행을
     중복 생성 없이 갱신하도록(중복 방지의 핵심).
@@ -705,6 +795,45 @@ def apply_local_fulfillment(
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
             (status, error if status == "failed" else None, gen_id),
+        )
+    return True
+
+
+# '확인중' 마커 — 모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보했을 때 generation.error 에 담는다.
+#  status 는 running 유지(새 enum 안 만듦 — fail_orphaned_jobs 등 상태판정과 충돌 방지). 프론트는 이
+#  문구로 '확인중' 라벨을 띄우고, 재조정이 done/failed 로 확정하면 error 를 지우거나 실제 사유로 덮는다.
+VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
+
+
+def apply_local_anchor(gen_id: str, rid: str, job_id: str) -> bool:
+    """모호한 결말의 앵커: gen_request 는 done(종결 → 30분 stale 회수가 이 카드를 failed 로 뒤집지 않게)
+    으로 닫고, generation 은 running 유지 + job_id 기록 + '확인중' 문구를 단다. 재조정 패스가 나중에
+    generate get 으로 실제 상태를 확정한다. CAS: 이미 종결(done/failed)된 요청/생성이면 건드리지 않음(멱등).
+    적용했으면 True."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute(
+            "UPDATE gen_request SET status='done', error=?, updated_at=datetime('now') "
+            "WHERE id=? AND status NOT IN ('done','failed')",
+            (VERIFYING_NOTE, rid),
+        )
+        if cur.rowcount == 0:  # 이미 종결된 요청 → 멱등 무시
+            conn.execute("ROLLBACK")
+            return False
+        # 레이스 병합: 동기화가 같은 잡을 synced 로 먼저 넣었으면 그 중복본 제거(fulfill 과 동일 패턴).
+        dup = conn.execute(
+            "SELECT id FROM generation WHERE job_id=? AND id<>? AND origin='synced'",
+            (job_id, gen_id),
+        ).fetchone()
+        if dup:
+            _delete_generation(conn, dup["id"])
+        # generation: '확인중(running)' + job_id. ★done 만 보호하고 failed 는 되살린다 — 서버 재시작의
+        #  fail_orphaned_jobs 가 generation 을 failed 로 내렸어도(gen_request 는 running 잔존) 에이전트가
+        #  뒤늦게 anchor 하면 job_id 를 반드시 심어 재조정 후보로 만든다. 앵커는 '모호한 결말'에만 오므로
+        #  failed→확인중 되살리기가 항상 옳다(로컬검증실패는 job_id 없어 anchor 자체를 안 탄다).
+        conn.execute(
+            "UPDATE generation SET job_id=?, status='running', error=? WHERE id=? AND status <> 'done'",
+            (job_id, VERIFYING_NOTE, gen_id),
         )
     return True
 

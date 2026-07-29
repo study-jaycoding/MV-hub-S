@@ -138,6 +138,21 @@ def _parse_cli_json(stdout: str):
 _PARSE_FAIL_PREFIX = "CLI JSON 파싱 실패(비-JSON 출력): "
 
 
+def _as_text(v) -> str:
+    """subprocess 출력(bytes|str|None)을 문자열로. TimeoutExpired.stdout 은 text 모드여도 bytes 로
+    올 수 있어 방어적으로 디코드한다."""
+    if v is None:
+        return ""
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return str(v)
+
+
+# 타임아웃 오류 prefix. 이 뒤엔 '순수 CLI 출력'(우리 args 아님)만 담아, _recover_created_job 이 args 에 박힌
+# 레퍼런스 업로드 UUID 가 아니라 진짜 잡 id 만 되찾게 한다. 파싱실패와 함께 '모호한 결말'로 취급한다.
+_TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
+
+
 def _run_cli_json(cli: str, *args: str, timeout: int = 120):
     """higgsfield CLI 를 --json 으로 실행하고 (파싱 결과, 오류문구) 반환."""
     try:
@@ -145,8 +160,13 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
             [*_cli_argv(cli), *args, "--json"],
             capture_output=True, text=True, timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        return None, f"CLI 타임아웃: {' '.join(args)}"
+    except subprocess.TimeoutExpired as e:
+        # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
+        # (순수 CLI 출력만) 담아, _recover_created_job 이 그 UUID 로 진짜 잡을 되찾게 한다(가짜 실패 방지).
+        partial = _as_text(e.stdout) or _as_text(e.stderr)
+        partial = "".join(ch for ch in partial if ch == "\n" or ch >= " ").strip()[:800]
+        print(f"[경고] CLI 타임아웃: {' '.join(args)[:160]}")
+        return None, f"{_TIMEOUT_PREFIX}{partial}"
     if out.returncode != 0:
         msg = (out.stderr or out.stdout or "").strip()
         # 진짜 CLI 에러를 앞에 둔다 — 뒤에서 잘려도 원인이 남게. 긴 명령어(JSON 프롬프트·ref UUID)는
@@ -188,6 +208,17 @@ def _recover_created_job(cli: str, raw: str):
     # 마지막 UUID = 방금 만든 잡 id(평문 id 든 결과 URL 에 박힌 id 든 동일). get 으로 권위 있는 잡 확보.
     job, _ = _run_cli_json(cli, "generate", "get", ids[-1], timeout=120)
     return job if isinstance(job, dict) and job.get("id") else None
+
+
+# 아직 '처리중'인 원시 상태값 — 이 상태의 잡을 (모호한 결말에서) 되찾으면 실패로 끝내지 않고 anchor 로
+# job_id 만 박고 '확인중(running)' 유지한다. 재조정 패스가 done/failed 로 확정. (done/failed/nsfw 등
+# 종료계열은 기존 fulfill 경로가 처리 — 서버 normalize_status 가 최종 매핑.)
+_PROCESSING_RAW = {"queued", "in_queue", "pending", "created", "running", "processing", "in_progress"}
+
+
+def _job_status(job: dict) -> str:
+    """잡 dict 의 상태 원시값(소문자). 일부 응답은 status 대신 job_status 를 쓰므로 폴백."""
+    return str(job.get("status") or job.get("job_status") or "").strip().lower()
 
 
 # 생성된 잡에 실제로 붙은 입력 이미지 개수 — 모델별 스키마 차이를 모두 커버(pro=params.input_images,
@@ -667,6 +698,13 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     _http("POST", f"{server}/api/gen-requests/{rid}/fail?reason={quote(reason)}", token=token)
 
 
+def _anchor(server: str, token: str, rid: str, job_id: str) -> None:
+    """모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보됐고 잡이 아직 처리중일 때 — 실패로 끝내지 않고
+    placeholder 를 '확인중(running)'으로 두고 job_id 만 서버에 박는다. 재조정 패스가 실제 상태로 확정한다
+    (가짜 실패 방지)."""
+    _http("POST", f"{server}/api/gen-requests/{rid}/anchor?job_id={quote(job_id)}", token=token)
+
+
 def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int = 180, auth: bool = True):
     """레퍼런스 파일을 받아 임시파일로 저장 → 경로 반환(실패 시 None).
     asset:/상대경로 레퍼런스는 허브 로그인이 필요해 CLI 가 직접 못 받는다 → 에이전트가 받아
@@ -832,17 +870,17 @@ def _execute_one(
     if isinstance(job, list):
         job = job[0] if job else None
     # ★job.id 필수 — 정상 결과는 항상 id 를 가진다. 실제 생성은 성공했는데 --wait --json 이 JSON 대신
-    #   평문 id/URL 만 뱉어(파싱만 실패) '가짜 실패 + 유령 카드' 가 나던 경우에 한해, 출력에 박힌 job id 로
-    #   진짜 잡을 되찾아 복구한다. 게이트: 파싱 실패(비-JSON) prefix 일 때만 — 진짜 CLI 실패 메시지 안의
-    #   UUID(예: "job <id> ended with status failed")를 잘못 복구하지 않도록.
-    if (
-        not (isinstance(job, dict) and job.get("id"))
-        and cli_error
-        and cli_error.startswith(_PARSE_FAIL_PREFIX)
-    ):
-        recovered = _recover_created_job(cli, cli_error[len(_PARSE_FAIL_PREFIX):])
+    #   평문 id/URL 만 뱉거나(파싱만 실패) 타임아웃으로 최종 JSON 을 못 받은 '모호한 결말'에 한해, 출력에
+    #   박힌 job id 로 진짜 잡을 되찾아 복구한다. 게이트: 파싱실패·타임아웃 prefix 일 때만 — 진짜 CLI 실패
+    #   메시지("CLI 실패: job <id> ended with status failed") 안의 UUID 를 잘못 복구하지 않도록.
+    ambiguous_prefix = next(
+        (p for p in (_PARSE_FAIL_PREFIX, _TIMEOUT_PREFIX) if cli_error and cli_error.startswith(p)),
+        None,
+    )
+    if not (isinstance(job, dict) and job.get("id")) and ambiguous_prefix:
+        recovered = _recover_created_job(cli, cli_error[len(ambiguous_prefix):])
         if recovered:
-            print(f"  ↻ 평문 출력에서 job 복구: {recovered['id'][:8]}")
+            print(f"  ↻ 출력에서 job 복구: {recovered['id'][:8]}")
             job, cli_error = recovered, None
     if not (isinstance(job, dict) and job.get("id")):
         # cli_error None = 파서가 id 없는 조각을 잡은 경우(진행줄 등). 원인 파악용으로 메시지 구분.
@@ -851,6 +889,13 @@ def _execute_one(
             reason = f"{reason}: {cli_error[:800]}"
             print(f"[경고] {cli_error}")
         _fail(server, token, rid, reason)
+        return
+    # 모호한 결말에서 되찾은 잡이 아직 '처리중'이면 — 실패로 끝내지 않고 anchor 로 job_id 만 박고
+    #  '확인중(running)' 유지한다(재조정 패스가 done/failed 로 확정). 부착검증·fulfill 은 종료계열에서만.
+    #  (정상 --wait 결과는 항상 종료계열이라 이 분기를 안 탄다 — 타임아웃 복구분에만 해당.)
+    if _job_status(job) in _PROCESSING_RAW:
+        _anchor(server, token, rid, job["id"])
+        print(f"  ⏳ 처리중 — 확인중으로 앵커(재조정 대기): {job['id'][:8]}")
         return
     # 방어 — 레퍼런스를 실제로 붙여 실행했는데(expected_image_inputs>0) 생성된 잡에 입력 이미지가 0개면
     #   레퍼런스가 적용 안 된 것(엉뚱한 이미지). 조용히 fulfill 하지 말고 실패로 보고해 눈에 보이게 한다.
@@ -1129,6 +1174,34 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         print(f"[경고] 서버 반영 실패 {body['errors']}건 — 서버 로그 확인 필요(다음 push 에서 재시도됨)")
 
 
+def reconcile_pass(server: str, token: str, cli: str) -> None:
+    """서버가 준 '확인중/유실된 running'(job_id 보유) 로컬 카드를, 내 CLI 계정으로 generate get 해
+    실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
+    조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
+    st, data = _http("GET", f"{server}/api/gen-requests/reconcile-candidates", token=token)
+    if st != 200 or not isinstance(data, dict):
+        return
+    cands = data.get("candidates")
+    if not isinstance(cands, list) or not cands:
+        return
+    print(f"[재조정] 미확정 카드 {len(cands)}건 — 실제 상태 확인")
+    for c in cands:
+        if not isinstance(c, dict):
+            continue
+        rid, job_id = c.get("rid"), c.get("job_id")
+        if not rid or not job_id:
+            continue
+        job = _cli_json(cli, "generate", "get", job_id, timeout=120)
+        # 조회 불가/내 계정 잡 아님(not found)·파싱실패 → 안 건드림(상태 유지, 다음 사이클 재시도).
+        if not (isinstance(job, dict) and job.get("id")):
+            continue
+        st2, body = _http(
+            "POST", f"{server}/api/gen-requests/{rid}/reconcile", token=token, body={"job": job}
+        )
+        if st2 == 200 and isinstance(body, dict) and body.get("applied"):
+            print(f"  ✓ 보정: {job_id[:8]} → {body.get('status')}")
+
+
 def main() -> None:
     # 로그를 콘솔에 즉시 찍어 '무엇을 했는지' 실시간으로 보이게(파이프/리다이렉트에서도).
     try:
@@ -1165,7 +1238,10 @@ def main() -> None:
     def cycle() -> None:
         # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
         execute_pending(server, token, cli)
-        # ② 로컬 CLI 이력 자동 push — 로컬 허브(--no-push)는 안 함(공유는 '선택 발행'으로만)
+        # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
+        #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
+        reconcile_pass(server, token, cli)
+        # ③ 로컬 CLI 이력 자동 push — 로컬 허브(--no-push)는 안 함(공유는 '선택 발행'으로만)
         if not args.no_push:
             push_once(server, token, cli, args.size)
 
@@ -1192,6 +1268,10 @@ def main() -> None:
                 if "gen-request" in reasons:
                     print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
                     execute_pending(server, token, cli)  # 연속 풀 — 16칸 채우고 다 비울 때까지
+                # 매 사이클(이벤트·idle 타임아웃 모두) '실제 상태 미확정' 카드를 보정 — 확인중 카드를
+                #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
+                #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.
+                reconcile_pass(server, token, cli)
                 # gen-request·sync 어느 쪽이든 결과를 서버로 올린다(no_push 모드 제외).
                 if reasons & {"gen-request", "sync"}:
                     if args.no_push:
@@ -1201,7 +1281,6 @@ def main() -> None:
                         if "sync" in reasons and "gen-request" not in reasons:
                             print("[이벤트] 내 작업 올리기 요청")
                         push_once(server, token, cli, args.size)
-                # reason None/타임아웃(idle) → 조용히 재대기
             except SystemExit:
                 raise
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지

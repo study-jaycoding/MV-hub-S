@@ -17,7 +17,20 @@ export function generationStatusLabel(status: string): string {
   return GENERATION_STATUS_LABEL[status] || status;
 }
 
+// '확인중' 마커 — 서버 repo.VERIFYING_NOTE 와 짝. 모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보한
+//  카드는 running 이되 error 에 이 문구가 담긴다 → '생성중' 대신 '확인중'으로 표시(재조정이 곧 확정).
+export const VERIFYING_MARK = "확인중";
+
+export function isVerifying(status: string, error: string | null | undefined): boolean {
+  return (status === "running" || status === "pending") && !!error && error.includes(VERIFYING_MARK);
+}
+
+export function generationStatusLabelFor(status: string, error?: string | null): string {
+  return isVerifying(status, error) ? "확인중" : generationStatusLabel(status);
+}
+
 export function generationStatusTitle(status: string, error: string | null): string | undefined {
+  if (isVerifying(status, error)) return error || undefined; // "확인중 — 실제 상태 재확인 대기"
   if (status === "failed" && error) return error;
   if (status === "pending" || status === "running") return LOCAL_EXEC_HINT;
   return undefined;
