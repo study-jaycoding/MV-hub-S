@@ -12,7 +12,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { CSSProperties, MutableRefObject } from "react";
+import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
 import {
   assetVersionsSnapshot,
@@ -244,11 +244,14 @@ interface Props {
   onSetAutoTags?: (g: Generation, names: string[]) => void;
   autoTagOptions?: string[]; // 내 전역(auto) 태그 목록 — TagEditor 의 # 전역 picker
   onOpenComments?: (g: Generation) => void; // C → 공유 코멘트 스레드 패널 열기(생성탭 카드와 동일)
+  // Ctrl+K 로 프롬프트를 숨겼을 때 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹을 멀티선택 액션바.
+  topCenterOverlay?: ReactNode;
 }
 
 export function SceneBoard({
   scene,
   onChange,
+  topCenterOverlay,
   onSaveScene,
   onLoadSceneFile,
   onBindingChange,
@@ -5370,6 +5373,12 @@ export function SceneBoard({
         </svg>
       </div>
 
+      {/* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다. */}
+      {topCenterOverlay && (
+        <div className="scene-topbar-overlay" onMouseDown={(e) => e.stopPropagation()}>
+          {topCenterOverlay}
+        </div>
+      )}
       {mmBounds && mmBoxes.length > 0 && (
         <SceneMinimap
           boxes={mmBoxes}

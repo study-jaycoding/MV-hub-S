@@ -57,6 +57,11 @@
 }
 .scene-canvas { position: absolute; top: 0; left: 0; will-change: transform; }
 
+/* Ctrl+K 로 프롬프트 숨김 시 — 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵과 같은 줄)에 얹는다. */
+.scene-topbar-overlay {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 20;
+}
+
 /* ── 좌상단 씬 패널 — 씬 이름 + 저장/불러오기(이미지1 헤더 스타일) ── */
 .scene-io-panel {
   position: absolute; top: 10px; left: 10px; z-index: 20;

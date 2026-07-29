@@ -816,6 +816,64 @@ export default function App() {
   // 관리창 안에서 read_all(admin/PM/PD) 로 게이트한다(ManageWindow). 관리 기능 자체가 켜져 있어야.
   const canOpenManage = !!authConfig?.manage_enabled && !!hubAccount;
 
+  // 멀티선택 액션바 — 프롬프트가 보이면 프롬프트 상단(topSlot)에, Ctrl+K 로 프롬프트를 숨기면 화면 상단
+  // 중앙에 플로팅으로 유지한다(프롬프트와 함께 사라지지 않게). 아래에서 상태에 따라 한 곳에서만 마운트.
+  const selectionBar =
+    filters.tab === "compose" ? (
+      // 씬(캔버스)이 열려 있으면 씬 선택 결과카드 기준, 아니면 히스토리 보드 선택 노드 기준.
+      activeScene ? (
+        sceneCompareMedia ? (
+          // 레퍼런스 등 비생성 미디어가 섞인 선택 → 단순 미디어 비교(이미지·영상 나란히, 영상 동시재생).
+          <div className="select-bar">
+            <span className="sb-count">{sceneCompareMedia.length}개 선택</span>
+            <button
+              title="선택한 미디어를 나란히 비교(영상은 동시 재생, 보기 전용)"
+              onClick={() => setVideoCompare(sceneCompareMedia)}
+            >
+              ⊞ 비교
+            </button>
+          </div>
+        ) : sceneSelGens.length > 0 ? (
+          <BoardSelectionActionBar
+            selected={sceneSelGens}
+            projects={projects}
+            onShare={boardShare}
+            onDownload={bulkDownload}
+            onCompare={(items) => setCompareGens(items)}
+            onAssign={(pid) => boardAssign(sceneSelGens, pid)}
+            onCreateAndAssign={(name) => boardCreateAssign(sceneSelGens, name)}
+            onDelete={() => sceneActionRef.current?.deleteSelected()}
+          />
+        ) : undefined
+      ) : boardSelected.length > 0 ? (
+        <BoardSelectionActionBar
+          selected={boardSelected}
+          projects={projects}
+          onShare={boardShare}
+          onDownload={bulkDownload}
+          onCompare={(items) => setCompareGens(items)}
+          onAssign={(pid) => boardAssign(boardSelected, pid)}
+          onCreateAndAssign={(name) => boardCreateAssign(boardSelected, name)}
+          onDelete={boardDelete}
+        />
+      ) : undefined
+    ) : selected.size > 0 ? (
+      <LibrarySelectionActionBar
+        selectedCount={selected.size}
+        selectedGenerations={selectedGenerations}
+        projects={projects}
+        onDownload={bulkDownload}
+        onCompare={(items) => {
+          if (items.length >= 2) setCompareGens(items);
+        }}
+        onAssign={assignSelectedToProject}
+        onCreateAndAssign={createAndAssign}
+        onDelete={bulkDelete}
+        onRestore={bulkRestore}
+        onPurge={bulkPurge}
+      />
+    ) : undefined;
+
   return (
     <div className="app">
       <TopBar
@@ -917,6 +975,8 @@ export default function App() {
               <SceneBoard
                 scene={activeScene}
                 onChange={(patch) => patchActiveScene(patch)}
+                // Ctrl+K 로 프롬프트 숨김 시 멀티선택 액션바를 캔버스 상단 중앙(씬 패널·미니맵 줄)에 얹는다.
+                topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
                 onBindingChange={setSceneBinding}
@@ -1115,6 +1175,11 @@ export default function App() {
         )}
       </div>
 
+      {/* Ctrl+K 로 프롬프트를 숨겨도 멀티선택 액션바는 유지. 캔버스(활성 씬)에선 SceneBoard 가 상단 중앙에
+          얹으므로 여기선 제외하고, 그 외(라이브러리 등)에서만 화면 상단 중앙에 띄운다. */}
+      {!promptVisible && selectionBar && !(filters.tab === "compose" && !!activeScene) && (
+        <div className="selbar-top-float">{selectionBar}</div>
+      )}
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존) */}
       <div style={promptVisible ? undefined : { display: "none" }}>
         <SpotlightPrompt
@@ -1135,62 +1200,7 @@ export default function App() {
               ? filters.project_id
               : undefined
           }
-          topSlot={
-            filters.tab === "compose" ? (
-              // 씬(캔버스)이 열려 있으면 씬 선택 결과카드 기준, 아니면 히스토리 보드 선택 노드 기준.
-              activeScene ? (
-                sceneCompareMedia ? (
-                  // 레퍼런스 등 비생성 미디어가 섞인 선택 → 단순 미디어 비교(이미지·영상 나란히, 영상 동시재생).
-                  <div className="select-bar">
-                    <span className="sb-count">{sceneCompareMedia.length}개 선택</span>
-                    <button
-                      title="선택한 미디어를 나란히 비교(영상은 동시 재생, 보기 전용)"
-                      onClick={() => setVideoCompare(sceneCompareMedia)}
-                    >
-                      ⊞ 비교
-                    </button>
-                  </div>
-                ) : sceneSelGens.length > 0 ? (
-                  <BoardSelectionActionBar
-                    selected={sceneSelGens}
-                    projects={projects}
-                    onShare={boardShare}
-                    onDownload={bulkDownload}
-                    onCompare={(items) => setCompareGens(items)}
-                    onAssign={(pid) => boardAssign(sceneSelGens, pid)}
-                    onCreateAndAssign={(name) => boardCreateAssign(sceneSelGens, name)}
-                    onDelete={() => sceneActionRef.current?.deleteSelected()}
-                  />
-                ) : undefined
-              ) : boardSelected.length > 0 ? (
-                <BoardSelectionActionBar
-                  selected={boardSelected}
-                  projects={projects}
-                  onShare={boardShare}
-                  onDownload={bulkDownload}
-                  onCompare={(items) => setCompareGens(items)}
-                  onAssign={(pid) => boardAssign(boardSelected, pid)}
-                  onCreateAndAssign={(name) => boardCreateAssign(boardSelected, name)}
-                  onDelete={boardDelete}
-                />
-              ) : undefined
-            ) : selected.size > 0 ? (
-              <LibrarySelectionActionBar
-                selectedCount={selected.size}
-                selectedGenerations={selectedGenerations}
-                projects={projects}
-                onDownload={bulkDownload}
-                onCompare={(items) => {
-                  if (items.length >= 2) setCompareGens(items);
-                }}
-                onAssign={assignSelectedToProject}
-                onCreateAndAssign={createAndAssign}
-                onDelete={bulkDelete}
-                onRestore={bulkRestore}
-                onPurge={bulkPurge}
-              />
-            ) : undefined
-          }
+          topSlot={promptVisible ? selectionBar : undefined}
           onCreated={onPromptCreated}
         />
       </div>
