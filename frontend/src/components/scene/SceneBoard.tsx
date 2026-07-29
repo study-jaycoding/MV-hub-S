@@ -435,6 +435,16 @@ export function SceneBoard({
     });
   }, []);
 
+  // Phase 0(초기 로드): 카드가 처음 생기면 즉시 최신 버전 확인 — 포커스/WS 신호를 기다리지 않는다.
+  // 새로고침 직후엔 localStorage 의 '마지막 본 버전'으로 먼저 그리는데, 앱을 안 보는 사이 원본이
+  // 바뀌었을 수 있어 여기서 한 번 맞춘다(바뀐 게 없으면 버전 동일 → 리렌더 없음).
+  const didInitVerRefresh = useRef(false);
+  useEffect(() => {
+    if (didInitVerRefresh.current || cards.length === 0) return;
+    didInitVerRefresh.current = true;
+    refreshAssetVersions();
+  }, [cards, refreshAssetVersions]);
+
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
   useEffect(() => {
     let lastAt = 0; // 디바운스 — focus 와 visibilitychange 가 거의 동시에 터져도 한 번만

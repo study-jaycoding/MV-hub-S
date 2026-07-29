@@ -14,6 +14,32 @@ const versions = new Map<string, string>();
 const listeners = new Set<() => void>();
 let tick = 0; // useSyncExternalStore 용 스냅샷 — 표가 바뀔 때만 증가
 
+// ── 영속화(localStorage) ─────────────────────────────────────────────────────
+// 새로고침 직후 첫 렌더도 '마지막으로 본 버전'이 붙은 URL 로 그리기 위해 표를 저장해 둔다.
+// 표가 비면 v 없는 URL 로 그려지는데, 과거 빌드가 그 주소로 옛 썸네일을 브라우저에 장기 캐시해 둔
+// 사용자는 트리 재조회가 끝날 때까지 옛 이미지를 보게 된다(새로고침 시 옛 썸네일 깜빡임의 원인).
+const LS_KEY = "mvhub.assetVersions.v1";
+
+try {
+  const raw = localStorage.getItem(LS_KEY);
+  if (raw) {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string") versions.set(k, v);
+    }
+  }
+} catch {
+  /* localStorage 접근 불가·손상 데이터 → 빈 표로 시작(기능 저하 없음) */
+}
+
+function persist(): void {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(Object.fromEntries(versions)));
+  } catch {
+    /* 용량 초과 등 → 무시(다음 갱신 때 재시도) */
+  }
+}
+
 function keyOf(project: string, path: string): string {
   return `${project}|${path}`;
 }
@@ -54,6 +80,7 @@ export function ingestAssetTreeVersions(project: string, nodes: AssetNode[]): vo
     }
   }
   if (changed) {
+    persist(); // 다음 새로고침의 첫 렌더가 이 버전을 그대로 쓰게
     tick += 1;
     listeners.forEach((l) => l());
   }
