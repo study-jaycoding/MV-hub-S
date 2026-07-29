@@ -101,7 +101,7 @@ const CARD_H = 130;
 // CULL_ENABLED=false 면 완전 무동작(rAF·setState·ResizeObserver 없음, renderCards===visibleCards).
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
 const CULL_ENABLED = true;
-const CULL_MARGIN = 3000; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화)
+const CULL_MARGIN = 1500; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화). 다이얼: 줄이면 메모리↓·팝인↑
 const VIEW_RECT_EPS = 0.5; // 뷰포트 변화가 이보다 작으면 setState 생략(무한루프·불필요 리렌더 방지)
 type ViewRect = { l: number; t: number; r: number; b: number };
 function sameViewRect(a: ViewRect | null, b: ViewRect, eps = VIEW_RECT_EPS) {
@@ -3297,21 +3297,27 @@ export function SceneBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, editTextId, comfyWaitingIds, cards, heightTick]);
   // 실제 렌더 대상 — 플래그 off/뷰포트 미측정이면 전체(visibleCards). on 이면 뷰포트+마진 교차 || keepIds.
-  const renderCards = useMemo(() => {
-    if (!CULL_ENABLED || !viewRect) return visibleCards;
-    const ex = {
+  // 확장 뷰포트(뷰포트 ± 마진) — 카드·연결선 컬링이 공유하는 단 하나의 기준 사각형. 컬링 꺼졌거나
+  // 뷰포트 미측정이면 null → 전부 렌더(무동작). viewRect 는 팬/줌 시 rAF+엡실론 게이트로만 갱신됨.
+  const cullRect = useMemo(() => {
+    if (!CULL_ENABLED || !viewRect) return null;
+    return {
       l: viewRect.l - CULL_MARGIN,
       t: viewRect.t - CULL_MARGIN,
       r: viewRect.r + CULL_MARGIN,
       b: viewRect.b + CULL_MARGIN,
     };
+  }, [viewRect]);
+
+  const renderCards = useMemo(() => {
+    if (!cullRect) return visibleCards;
     return visibleCards.filter((card) => {
       if (keepIds.has(card.id)) return true;
       const r = cardRect(card);
-      return r.x <= ex.r && r.x + r.w >= ex.l && r.y <= ex.b && r.y + r.h >= ex.t;
+      return r.x <= cullRect.r && r.x + r.w >= cullRect.l && r.y <= cullRect.b && r.y + r.h >= cullRect.t;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleCards, viewRect, keepIds, heightTick]);
+  }, [visibleCards, cullRect, keepIds, heightTick]);
 
   // 장기 누적 방지 — 실제 삭제된(현재 cards 에 없는) 카드의 측정 캐시를 정리. ★컬링으로 언마운트된
   // 카드는 cards 에 남아 있어 안 지워진다(측정값 유지 → keepIds 의 '미측정' 오판 방지). ref 직접 변경(무리렌더).
@@ -3769,6 +3775,15 @@ export function SceneBoard({
                 : " idle") +
               (edgesToCut.has(e.id) ? " cut" : ""); // 가위가 지나간 선 = 빨강 예고
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
+            // 연결선 컬링 — 양 끝점 bbox 가 확장뷰포트 밖이면 곡선 전체가 밖(제어점이 bbox 내라 보장) → 안 그림.
+            if (
+              cullRect &&
+              (Math.max(x1, x2) < cullRect.l ||
+                Math.min(x1, x2) > cullRect.r ||
+                Math.max(y1, y2) < cullRect.t ||
+                Math.min(y1, y2) > cullRect.b)
+            )
+              return null;
             const d = edgePathXY(x1, y1, x2, y2);
             return (
               <g key={e.id}>
@@ -5330,6 +5345,15 @@ export function SceneBoard({
                       : ""
                 : " idle");
             const { x1, y1, x2, y2 } = edgeEnds(e, a, b);
+            // 끝점 점도 같은 기준으로 컬링 — bbox 가 확장뷰포트 밖이면 두 점 다 화면에서 멀어 안 그림.
+            if (
+              cullRect &&
+              (Math.max(x1, x2) < cullRect.l ||
+                Math.min(x1, x2) > cullRect.r ||
+                Math.max(y1, y2) < cullRect.t ||
+                Math.min(y1, y2) > cullRect.b)
+            )
+              return null;
             return (
               <g key={e.id}>
                 <circle className={cls} cx={x1} cy={y1} r={5.5} />
