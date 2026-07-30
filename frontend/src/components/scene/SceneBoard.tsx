@@ -2039,10 +2039,14 @@ export function SceneBoard({
     try {
       const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
       const resolved = resolvePortEdges(byId, edgesRef.current);
+      // ★체크 해제(unchecked)한 comfy 는 실행 대상에서 제외 — 이전엔 directComfy 가 연결된 comfy 를 전부 넣어
+      //  체크 해제해도 렌더됐다. (체크된 생성카드가 '의존'하는 상류 comfy 는 buildExecutionPlan 이 별도로 끌어오므로
+      //  여기서 빠져도 필요하면 실행된다 — 즉 아무도 안 쓰는 직접연결 comfy 만 해제로 꺼진다.)
+      const unchecked = new Set(byId.get(renderId)?.unchecked || []);
       const directComfy = resolved
         .filter((e) => e.to === renderId)
         .map((e) => byId.get(e.from))
-        .filter((c): c is SceneCard => c?.kind === "comfy")
+        .filter((c): c is SceneCard => c?.kind === "comfy" && !unchecked.has(c.id))
         .map((c) => c.id);
       const plan = buildExecutionPlan(checkedGenIds, directComfy, byId, resolved);
       const batch = cardBatch(byId.get(renderId)); // 이 렌더 노드의 배치수(노드별)
