@@ -128,7 +128,7 @@ const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
-const GROUP_EJECT_SPEED = 10.0;
+const GROUP_EJECT_SPEED = 5.0;
 
 // 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
 // asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
@@ -6148,7 +6148,19 @@ export function SceneBoard({
                             thumb={gg ? thumbOf(gg) : null}
                             isVideo={isVideo}
                             src={a?.file_path}
-                            fallback={<span className="scene-varpop-ph">{String(gg?.status || "…")}</span>}
+                            fallback={
+                              gg && (gg.status === "failed" || gg.status === "nsfw") ? (
+                                // 실패·NSFW = 메인 카드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + '실패').
+                                <div
+                                  className={`thumb-placeholder status-${gg.status}`}
+                                  title={gg.error || undefined}
+                                >
+                                  {generationStatusLabelFor(gg.status, gg.error)}
+                                </div>
+                              ) : (
+                                <span className="scene-varpop-ph">{String(gg?.status || "…")}</span>
+                              )
+                            }
                           />
                           {isVideo && <span className="scene-varpop-vid">▶</span>}
                           {/* 좌상단 S/T/C — 생성탭 카드(.card-tl)와 동일 룩·조작(공유/태그/코멘트) */}
