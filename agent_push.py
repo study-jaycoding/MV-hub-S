@@ -133,7 +133,7 @@ def _parse_cli_json(stdout: str):
     return None
 
 
-# exit 0 인데 --json 출력이 파싱 안 될 때의 오류 prefix. 복구(_recover_created_job)는 이 케이스에만
+# exit 0 인데 --json 출력이 파싱 안 될 때의 오류 prefix. 복구(_extract_created_id)는 이 케이스에만
 # 적용한다 — 진짜 CLI 실패 메시지("CLI 실패(...)") 안의 UUID 를 잘못 복구하지 않도록 게이트.
 _PARSE_FAIL_PREFIX = "CLI JSON 파싱 실패(비-JSON 출력): "
 
@@ -148,7 +148,7 @@ def _as_text(v) -> str:
     return str(v)
 
 
-# 타임아웃 오류 prefix. 이 뒤엔 '순수 CLI 출력'(우리 args 아님)만 담아, _recover_created_job 이 args 에 박힌
+# 타임아웃 오류 prefix. 이 뒤엔 '순수 CLI 출력'(우리 args 아님)만 담아, _extract_created_id 가 args 에 박힌
 # 레퍼런스 업로드 UUID 가 아니라 진짜 잡 id 만 되찾게 한다. 파싱실패와 함께 '모호한 결말'로 취급한다.
 _TIMEOUT_PREFIX = "CLI 타임아웃(부분출력): "
 
@@ -162,7 +162,7 @@ def _run_cli_json(cli: str, *args: str, timeout: int = 120):
         )
     except subprocess.TimeoutExpired as e:
         # 타임아웃이어도 CLI 가 이미 찍은 부분 출력에 방금 만든 job id 가 있을 수 있다 → 버리지 않고
-        # (순수 CLI 출력만) 담아, _recover_created_job 이 그 UUID 로 진짜 잡을 되찾게 한다(가짜 실패 방지).
+        # (순수 CLI 출력만) 담아, _extract_created_id 가 그 UUID 로 job_id 를 되찾게 한다(가짜 실패 방지).
         partial = _as_text(e.stdout) or _as_text(e.stderr)
         partial = "".join(ch for ch in partial if ch == "\n" or ch >= " ").strip()[:800]
         print(f"[경고] CLI 타임아웃: {' '.join(args)[:160]}")
@@ -197,17 +197,31 @@ _UUID_RE = re.compile(
 )
 
 
-def _recover_created_job(cli: str, raw: str):
-    """generate create 가 (--wait 조합에서) job JSON 대신 job id/결과 URL 평문만 뱉어 파싱이
-    실패했을 때, 출력에 박힌 job id 로 `generate get <id> --json` 을 호출해 진짜 잡을 되찾는다.
-    실제 생성은 성공했는데 파싱만 실패해 '가짜 실패 + 유령 카드' 가 나던 문제를 근본에서 막는다.
-    되찾은 값은 정상 잡(dict + id)일 때만 반환 — 존재하지 않는 id 면 get 이 실패해 None."""
-    ids = _UUID_RE.findall(raw or "")
-    if not ids:
-        return None
-    # 마지막 UUID = 방금 만든 잡 id(평문 id 든 결과 URL 에 박힌 id 든 동일). get 으로 권위 있는 잡 확보.
-    job, _ = _run_cli_json(cli, "generate", "get", ids[-1], timeout=120)
-    return job if isinstance(job, dict) and job.get("id") else None
+def _extract_created_id(created, cli_error: str | None) -> str | None:
+    """비대기 `generate create --json` 응답에서 방금 만든 job_id 를 뽑는다. 실측 응답은 ["<uuid>"] 배열
+    이지만 dict{id}·평문도 방어적으로 수용한다. 파싱실패/타임아웃 오류출력에서도 UUID 를 복구한다
+    (진짜 실패 메시지 "CLI 실패:" 는 제외 — args 에 박힌 레퍼런스 UUID 를 잘못 잡지 않도록 게이트)."""
+    cands: list[str] = []
+    if isinstance(created, list):
+        for el in created:
+            if isinstance(el, str):
+                cands.append(el)
+            elif isinstance(el, dict) and el.get("id"):
+                cands.append(str(el["id"]))
+    elif isinstance(created, dict):
+        if created.get("id"):
+            cands.append(str(created["id"]))
+    elif isinstance(created, str):
+        cands.append(created)
+    for c in cands:
+        m = _UUID_RE.search(c)
+        if m:
+            return m.group(0)
+    if cli_error and cli_error.startswith((_PARSE_FAIL_PREFIX, _TIMEOUT_PREFIX)):
+        ids = _UUID_RE.findall(cli_error)
+        if ids:
+            return ids[-1]
+    return None
 
 
 # 아직 '처리중'인 원시 상태값 — 이 상태의 잡을 (모호한 결말에서) 되찾으면 실패로 끝내지 않고 anchor 로
@@ -698,11 +712,100 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     _http("POST", f"{server}/api/gen-requests/{rid}/fail?reason={quote(reason)}", token=token)
 
 
-def _anchor(server: str, token: str, rid: str, job_id: str) -> None:
-    """모호한 결말(타임아웃/파싱실패)에서 job_id 만 확보됐고 잡이 아직 처리중일 때 — 실패로 끝내지 않고
-    placeholder 를 '확인중(running)'으로 두고 job_id 만 서버에 박는다. 재조정 패스가 실제 상태로 확정한다
-    (가짜 실패 방지)."""
-    _http("POST", f"{server}/api/gen-requests/{rid}/anchor?job_id={quote(job_id)}", token=token)
+# --- 크래시 세이프 앵커 outbox ---------------------------------------------------
+# create 로 job_id 를 얻은 직후, 서버 앵커가 닿기 전에 죽어도(네트워크 순단·프로세스 종료) job_id 를
+# 잃지 않도록 로컬 파일에 먼저 적어둔다. 재조정 패스/재시작이 이 outbox 를 재전송해 반드시 앵커되게 한다.
+_outbox_lock = Lock()
+
+
+def _outbox_path() -> str:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return os.path.join(base, "MVHub", "anchor_outbox.json")
+    return os.path.join(os.path.expanduser("~"), ".mvhub", "anchor_outbox.json")
+
+
+def _outbox_load() -> list:
+    try:
+        with open(_outbox_path(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _outbox_save(items: list) -> None:
+    path = _outbox_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(items[-500:], f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _outbox_add(rid: str, job_id: str) -> None:
+    with _outbox_lock:
+        items = _outbox_load()
+        if not any(isinstance(it, dict) and it.get("rid") == rid for it in items):
+            items.append({"rid": rid, "job_id": job_id})
+            _outbox_save(items)
+
+
+def _outbox_remove(rid: str) -> None:
+    with _outbox_lock:
+        items = [it for it in _outbox_load() if not (isinstance(it, dict) and it.get("rid") == rid)]
+        _outbox_save(items)
+
+
+def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
+    """placeholder 에 job_id 를 박고 running 유지 — create-first(verifying=False)는 '생성중'으로,
+    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시. 서버 200 이면 True."""
+    st, _ = _http(
+        "POST",
+        f"{server}/api/gen-requests/{rid}/anchor?job_id={quote(job_id)}"
+        f"&verifying={'true' if verifying else 'false'}",
+        token=token,
+    )
+    return st == 200
+
+
+def _anchor_with_retry(server: str, token: str, rid: str, job_id: str, attempts: int = 3) -> bool:
+    """앵커 ACK(200)를 받을 때까지 몇 번 재시도. 성공하면 outbox 에서 제거(서버가 job_id 를 가졌으니
+    이후 크래시는 재조정 백스톱이 덮는다). 끝내 실패하면 outbox 에 남겨 다음 사이클/재시작에 재전송."""
+    for _ in range(max(1, attempts)):
+        if _anchor(server, token, rid, job_id, verifying=False):
+            _outbox_remove(rid)
+            return True
+    return False
+
+
+def replay_outbox(server: str, token: str) -> None:
+    """지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 재전송 — 재조정 패스 초에 매번 돈다(idle 포함).
+    재시작 복구이므로 '확인중'으로 앵커(verifying=True). 성공분은 outbox 에서 제거."""
+    items = _outbox_load()
+    if not items:
+        return
+    print(f"[복구] 미전송 앵커 {len(items)}건 재전송")
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        rid, job_id = it.get("rid"), it.get("job_id")
+        if rid and job_id and _anchor(server, token, rid, job_id, verifying=True):
+            _outbox_remove(rid)
+
+
+def _reconcile(server: str, token: str, rid: str, job: dict, force_fail_reason: str | None = None) -> int:
+    """create-first 완료 확정 — generate wait/get 로 확보한 최종 job 을 /reconcile 로 권위 보정한다.
+    앵커가 gen_request 를 done 으로 닫았으므로 /fulfill 은 멱등 no-op → 완료는 /reconcile 로만 확정한다.
+    force_fail_reason 이면 레퍼런스 미부착 등 로컬 검증 실패로 '되살림 금지' failed 확정. 서버 status 반환."""
+    url = f"{server}/api/gen-requests/{rid}/reconcile"
+    if force_fail_reason:
+        url += f"?force_fail_reason={quote(force_fail_reason)}"
+    st, _ = _http("POST", url, token=token, body={"job": job})
+    return st
 
 
 def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int = 180, auth: bool = True):
@@ -789,8 +892,16 @@ def _execute_one(
     # 통째 JSON 프롬프트(작업자가 지시서를 붙여넣는 경우)는 CLI 가 '객체'로 파싱해 거부한다 →
     # zero-width space 를 앞에 붙여 문자열로 받게 한다(힉스 웹과 동일 동작, 내용은 그대로).
     prompt = _shield_json_prompt(prompt)
-    args = ["generate", "create", model, "--prompt", prompt, "--wait"]
-    args += _param_flags(r.get("params") or {}, _allowed_params(cli, model))
+    # ★create-first: --wait 없이 제출해 job_id 를 즉시 확보한다. 긴 대기(15~30분)를 시작하기 전에
+    #  job_id 를 서버에 앵커해두어, 대기 중 프로그램이 꺼져도 재조정이 반드시 이어받아 완료시킨다.
+    args = ["generate", "create", model, "--prompt", prompt]
+    # ★batch_size 는 1 로 강제 — create-first 는 잡 1개(=카드 1개)를 앵커·대기하므로, N>1 이면 나머지
+    #  잡이 앵커·검증 없이 나중에 synced 독립 카드로 새어 나온다(프론트 배치는 요청 N개 복제 방식이라 무영향).
+    params = dict(r.get("params") or {})
+    if str(params.get("batch_size", "1")) != "1":
+        print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
+        params["batch_size"] = 1
+    args += _param_flags(params, _allowed_params(cli, model))
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
@@ -844,9 +955,10 @@ def _execute_one(
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args
     print(f"  → {model}: {prompt[:40]}")
-    job, cli_error = _run_cli_json(cli, *args, timeout=900)
+    # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
+    created, cli_error = _run_cli_json(cli, *args, timeout=300)
     if (
-        not job
+        not _extract_created_id(created, None)
         and cli_error
         and seedance_media_inputs
         and seedance_used_cached_media
@@ -866,52 +978,63 @@ def _execute_one(
             # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
             base_args = args[:len(args) - len(seedance_ref_args)]
             retry_args = base_args + _seedance_ref_args(retry_ids)
-            job, cli_error = _run_cli_json(cli, *retry_args, timeout=900)
-    if isinstance(job, list):
-        job = job[0] if job else None
-    # ★job.id 필수 — 정상 결과는 항상 id 를 가진다. 실제 생성은 성공했는데 --wait --json 이 JSON 대신
-    #   평문 id/URL 만 뱉거나(파싱만 실패) 타임아웃으로 최종 JSON 을 못 받은 '모호한 결말'에 한해, 출력에
-    #   박힌 job id 로 진짜 잡을 되찾아 복구한다. 게이트: 파싱실패·타임아웃 prefix 일 때만 — 진짜 CLI 실패
-    #   메시지("CLI 실패: job <id> ended with status failed") 안의 UUID 를 잘못 복구하지 않도록.
-    ambiguous_prefix = next(
-        (p for p in (_PARSE_FAIL_PREFIX, _TIMEOUT_PREFIX) if cli_error and cli_error.startswith(p)),
-        None,
-    )
-    if not (isinstance(job, dict) and job.get("id")) and ambiguous_prefix:
-        recovered = _recover_created_job(cli, cli_error[len(ambiguous_prefix):])
-        if recovered:
-            print(f"  ↻ 출력에서 job 복구: {recovered['id'][:8]}")
-            job, cli_error = recovered, None
-    if not (isinstance(job, dict) and job.get("id")):
-        # cli_error None = 파서가 id 없는 조각을 잡은 경우(진행줄 등). 원인 파악용으로 메시지 구분.
-        reason = "결과 파싱 실패(잡 id 없음)" if cli_error is None else "로컬 CLI 실행 실패"
+            created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
+    job_id = _extract_created_id(created, cli_error)
+    if not job_id:
+        # job_id 를 못 얻음 = 제출 자체 실패(레퍼런스 오류 등은 위에서 이미 걸러짐). 진짜 실패이므로 hard fail.
+        reason = "제출 실패(잡 id 없음)" if not cli_error else f"제출 실패: {cli_error[:700]}"
         if cli_error:
-            reason = f"{reason}: {cli_error[:800]}"
             print(f"[경고] {cli_error}")
         _fail(server, token, rid, reason)
+        print(f"  ✗ 제출 실패: {job_id or ''}")
         return
-    # 모호한 결말에서 되찾은 잡이 아직 '처리중'이면 — 실패로 끝내지 않고 anchor 로 job_id 만 박고
-    #  '확인중(running)' 유지한다(재조정 패스가 done/failed 로 확정). 부착검증·fulfill 은 종료계열에서만.
-    #  (정상 --wait 결과는 항상 종료계열이라 이 분기를 안 탄다 — 타임아웃 복구분에만 해당.)
+    # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
+    #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
+    _outbox_add(rid, job_id)
+    if not _anchor_with_retry(server, token, rid, job_id):
+        print(f"  ⚠ 앵커 보고 실패 — outbox 보관(재전송 예정): {job_id[:8]}")
+    # 3) 완료까지 대기(최대 30분). wait 는 조회 성격(과금 없음). 실패/타임아웃이면 확정하지 않고
+    #    백스톱 재조정에 위임한다 — 앵커돼 있으므로 반드시 이어받는다.
+    print(f"  ⏳ 대기: {job_id[:8]} (최대 30분)")
+    job, _werr = _run_cli_json(
+        cli, "generate", "wait", job_id, "--timeout", "30m", "--interval", "5s", "--quiet", timeout=1860
+    )
+    if isinstance(job, list):
+        job = job[0] if job else None
+    if not (isinstance(job, dict) and job.get("id")):
+        # wait 이 애매하게 끝남(타임아웃/파싱실패) → get 으로 1회 권위 재확인.
+        job, _ = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
+    if not (isinstance(job, dict) and job.get("id")):
+        print(f"  ⏳ 대기 결과 미확정 — 백스톱 재조정에 위임: {job_id[:8]}")
+        return
     if _job_status(job) in _PROCESSING_RAW:
-        _anchor(server, token, rid, job["id"])
-        print(f"  ⏳ 처리중 — 확인중으로 앵커(재조정 대기): {job['id'][:8]}")
+        print(f"  ⏳ 아직 처리중 — 백스톱 재조정에 위임: {job_id[:8]}")
         return
-    # 방어 — 레퍼런스를 실제로 붙여 실행했는데(expected_image_inputs>0) 생성된 잡에 입력 이미지가 0개면
-    #   레퍼런스가 적용 안 된 것(엉뚱한 이미지). 조용히 fulfill 하지 말고 실패로 보고해 눈에 보이게 한다.
-    #   현재 job 이 이미 붙어 있으면(count>0) 통과, 0 이면 create 응답이 최소필드였을 수 있어 권위 있는
-    #   generate get 으로 1회 재확인 후 판정(부착 정상 시엔 추가 호출 없음).
+    # 4) 레퍼런스 미부착 방어 — 입력 이미지를 붙여 실행했는데(expected_image_inputs>0) 생성물에 0개면
+    #    힉스필드가 레퍼런스를 무시한 것(엉뚱한 결과). 되살림 금지 force-fail 로 확정(백스톱이 done 으로
+    #    되살리지 못하게 서버가 job_id 를 지운다). count>0 이면 통과, 0 이면 generate get 으로 1회 재확인.
     if expected_image_inputs > 0 and _job_image_input_count(job) <= 0:
         full, _ = _run_cli_json(cli, "generate", "get", job["id"], timeout=120)
         if isinstance(full, dict) and full.get("id"):
             job = full
         if _job_image_input_count(job) <= 0:
-            _suppress_job(job.get("id"))  # 이 고아 잡은 카드로 만들지 않는다(실패는 실패로 끝)
-            _fail(server, token, rid, "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요")
-            print(f"  ✗ 레퍼런스 미부착 감지 — fulfill 안 함(카드화 금지): {job['id'][:8]}")
+            _suppress_job(job.get("id"))
+            # ★force-fail 은 반드시 서버에 안착해야 한다(안착 전엔 카드가 running+job_id 후보로 남아
+            #  백스톱이 done 으로 되살릴 수 있음) → 200 받을 때까지 몇 번 재시도.
+            reason = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
+            ok = False
+            for _ in range(3):
+                if _reconcile(server, token, rid, job, force_fail_reason=reason) == 200:
+                    ok = True
+                    break
+            print(
+                f"  ✗ 레퍼런스 미부착 — 실패 확정(되살림 금지): {job['id'][:8]}"
+                if ok else f"  ⚠ 레퍼런스 미부착 실패 보고 안착 실패(다음 사이클 재시도): {job['id'][:8]}"
+            )
             return
-    st, body = _http("POST", f"{server}/api/gen-requests/{rid}/fulfill", token=token, body={"job": job})
-    print(f"  ✓ 완료 보고(status={st})" if st == 200 else f"  ✗ 보고 실패: {body}")
+    # 5) 완료/실패 확정 — reconcile 로 권위 보정(요청은 앵커가 done 으로 닫았으므로 fulfill 은 no-op).
+    st = _reconcile(server, token, rid, job)
+    print(f"  ✓ 확정 보고(reconcile status={st})" if st == 200 else f"  ✗ 확정 보고 실패(status={st})")
 
 
 # 동시 실행 상한 — team 플랜 16 병렬 생성 기준. 벌크(N장)를 한꺼번에 돌리되 그 이상은 막는다.
@@ -1178,6 +1301,8 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
     """서버가 준 '확인중/유실된 running'(job_id 보유) 로컬 카드를, 내 CLI 계정으로 generate get 해
     실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
     조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
+    # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
+    replay_outbox(server, token)
     st, data = _http("GET", f"{server}/api/gen-requests/reconcile-candidates", token=token)
     if st != 200 or not isinstance(data, dict):
         return

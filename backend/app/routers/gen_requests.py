@@ -223,11 +223,13 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
 
 
 @router.post("/gen-requests/{rid}/anchor")
-async def anchor_gen_request(rid: str, request: Request, job_id: str):
-    """에이전트가 '모호한 결말'(타임아웃/파싱실패)에서 job_id 만 확보하고 잡이 아직 처리중일 때 호출 —
-    placeholder 를 running(확인중) 유지하고 job_id 만 기록한다(요청은 done 으로 닫아 30분 stale 회수가
-    이 카드를 실패로 뒤집지 않게). 재조정 패스가 나중에 generate get 으로 done/failed 를 확정한다.
-    ★가짜 실패 방지 — 실제 힉스필드엔 생성됐는데 우리만 '실패'로 뜨던 문제를 앵커로 막는다."""
+async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying: bool = True):
+    """에이전트가 job_id 를 확보하면 호출 — placeholder 를 running 유지 + job_id 기록(요청은 done 으로
+    닫아 30분 stale 회수가 이 카드를 실패로 뒤집지 않게). 재조정 패스가 나중에 generate get 으로 확정.
+    ★가짜 실패 방지 — 실제 힉스필드엔 생성됐는데 우리만 '실패'로 뜨던 문제를 앵커로 막는다.
+    verifying=False(create-first 정상 흐름): '생성중'으로 표시(제출 직후 앵커). verifying=True(모호한
+    결말·재시작 복구): '확인중'으로 표시. ★멱등: 요청이 이미 done 이어도 apply_local_anchor 가 no-op 처리
+    (failed 요청은 되살려 앵커 — stale/부팅정리 복구). 라우터에서 미리 걸러내지 않는다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)
@@ -235,16 +237,14 @@ async def anchor_gen_request(rid: str, request: Request, job_id: str):
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    if req.get("status") in ("done", "failed"):
-        return {"ok": True}  # 이미 종결 — 멱등 무시(완료/실패를 확인중으로 되돌리지 않음)
-    if not repo.apply_local_anchor(req["gen_id"], rid, job_id):
+    if not repo.apply_local_anchor(req["gen_id"], rid, job_id, verifying=verifying):
         return {"ok": True}
     await manager.broadcast(
         {
             "type": "progress",
             "generation_id": req["gen_id"],
             "status": "running",
-            "error": repo.VERIFYING_NOTE,
+            "error": repo.VERIFYING_NOTE if verifying else None,
         },
         account_uid=realtime_scope(acc),  # 그 계정 소켓에만
     )
@@ -263,10 +263,13 @@ async def reconcile_candidates(request: Request):
 
 
 @router.post("/gen-requests/{rid}/reconcile")
-async def reconcile_gen_request(rid: str, body: FulfillIn, request: Request):
-    """재조정 — 에이전트가 generate get 으로 확보한 '권위 있는' 잡 상태로 placeholder 를 보정한다.
+async def reconcile_gen_request(
+    rid: str, body: FulfillIn, request: Request, force_fail_reason: str | None = None
+):
+    """재조정 — 에이전트가 generate get/wait 로 확보한 '권위 있는' 잡 상태로 placeholder 를 보정한다.
     fulfill 과 달리 이미 종결(done/failed)이어도, 특히 failed→done '되살리기'도 허용한다(가짜 실패 복구).
-    안전: job_id 일치 + origin='local' + 내 계정일 때만(repo.apply_reconcile 강조건). 아직 처리중이면 보정 안 함."""
+    안전: job_id 일치 + origin='local' + 내 계정일 때만(repo.apply_reconcile 강조건). 아직 처리중이면 보정 안 함.
+    force_fail_reason: create-first 에서 레퍼런스 미부착 등 '로컬 검증 실패'를 되살림 금지로 확정할 때."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)
@@ -278,6 +281,21 @@ async def reconcile_gen_request(rid: str, body: FulfillIn, request: Request):
     parsed = cli_bridge.parse_job(body.job)
     g = parsed.get("generation") or {}
     asset = parsed.get("asset")
+    # 로컬 검증 실패(레퍼런스 미부착 등) — 힉스필드엔 (엉뚱한) 결과가 완료로 있어도 되살림 금지 failed 확정.
+    if force_fail_reason:
+        applied = repo.apply_reconcile(
+            gen_id, g.get("id"),
+            asset_type=None, asset_path=None, asset_thumb=None,
+            created_at=None, sort_ts=None, status="failed", error=force_fail_reason,
+            force_fail_reason=force_fail_reason,
+        )
+        if applied:
+            _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
+            await manager.broadcast(
+                {"type": "progress", "generation_id": gen_id, "status": "failed", "error": force_fail_reason},
+                account_uid=realtime_scope(acc),
+            )
+        return {"ok": True, "applied": applied, "status": "failed"}
     status = g.get("status") or "done"
     # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
     if status in ("pending", "running"):

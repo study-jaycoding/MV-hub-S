@@ -112,7 +112,7 @@ def _upsert_synced(
         # 이미 이 잡을 대표하는 행이 있는가? — 동기화본(id=job_id) 이거나
         # 로컬 생성본(job_id 컬럼=job_id). 있으면 그 행을 갱신해 중복 삽입을 막는다.
         existing = conn.execute(
-            "SELECT id, status FROM generation WHERE id = ? OR job_id = ? LIMIT 1",
+            "SELECT id, status, error FROM generation WHERE id = ? OR job_id = ? LIMIT 1",
             (job_id, job_id),
         ).fetchone()
         # URL 매칭 — id/job_id 로 못 찾았고 결과 URL 이 있으면, 같은 결과물을 가진 로컬 생성본을
@@ -120,7 +120,7 @@ def _upsert_synced(
         adopt = False
         if not existing and result_url:
             existing = conn.execute(
-                "SELECT g.id, g.status FROM generation g JOIN asset a ON a.generation_id=g.id "
+                "SELECT g.id, g.status, g.error FROM generation g JOIN asset a ON a.generation_id=g.id "
                 "WHERE a.file_path=? OR a.source_url=? LIMIT 1",
                 (result_url, result_url),
             ).fetchone()
@@ -128,6 +128,10 @@ def _upsert_synced(
 
         result = "inserted"
         if existing:
+            # ★되살림 금지 실패(레퍼런스 미부착) 행은 sync 가 done 으로 되살리지 않는다 — 힉스필드 목록엔
+            #  완료로 있어도 우리가 실패 확정한 '엉뚱한 결과'라 재등장시키면 안 됨.
+            if existing["status"] == "failed" and (existing["error"] or "") == NO_REVIVE_ERROR:
+                return "unchanged"
             target_id = existing["id"]
             result = "updated" if existing["status"] != g["status"] else "unchanged"
             # adopt(URL 매칭)면 job_id 를 권위값으로 덮어씀, 아니면 기존 보존(COALESCE).
@@ -556,15 +560,23 @@ def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
 
 
 def fail_orphaned_jobs() -> int:
-    """서버 시작 시 호출 — 인메모리 잡 큐는 부팅 시 비어 있으므로, DB 의
-    pending/running 은 모두 이전 프로세스에서 끊긴 고아 잡이다(워커가 사라져
-    영영 완료되지 않음). failed 로 정리해 UI 가 '생성중'에 멈추지 않게 한다.
-    실제 결과는 Higgsfield 에 있으므로 사용자가 동기화로 가져올 수 있다."""
+    """서버 시작 시 호출 — 인메모리 잡 큐는 부팅 시 비어 있으므로, DB 의 pending/running 은 이전
+    프로세스에서 끊긴 고아다. ★단, job_id 를 가진 카드는 재조정(generate get)으로 실제 상태를 되살릴
+    수 있으므로 실패시키지 않고 running 유지 + '확인중' 문구만 단다(재조정 패스가 done/failed 로 확정).
+    job_id 없는 것(제출 전 끊김·앵커 도달 실패)만 failed 로 정리해 UI 가 '생성중'에 멈추지 않게 한다.
+    반환: 실제로 failed 로 정리한 수(job_id 없는 고아)."""
     with get_connection() as conn:
         cur = conn.execute(
             "UPDATE generation SET status='failed', "
             "error=COALESCE(error, '서버 재시작으로 생성이 중단되었습니다. 동기화로 결과를 가져오거나 재생성하세요.') "
-            "WHERE status IN ('pending','running')"
+            "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='')"
+        )
+        # job_id 보유분 → running 유지 + '확인중'(재조정 대기). 이미 문구가 있으면 덮지 않는다.
+        conn.execute(
+            "UPDATE generation SET status='running', error=? "
+            "WHERE status IN ('pending','running') AND job_id IS NOT NULL AND job_id<>'' "
+            "AND (error IS NULL OR error='')",
+            (VERIFYING_NOTE,),
         )
         return cur.rowcount
 
@@ -619,6 +631,12 @@ def list_reconcile_candidates(account_email: str, limit: int = 200) -> list[dict
     return [dict(r) for r in rows]
 
 
+# 레퍼런스 미부착 등 '로컬 검증 실패' — 힉스필드엔 (엉뚱한) 결과가 완료로 있어도 우리는 실패로 확정하고
+# 재조정·동기화가 done 으로 되살리지 못하게 하는 '되살림 금지' 사유. 이 문구가 error 인 failed 행은
+# apply_reconcile/_upsert_synced 가 절대 done 으로 바꾸지 않는다(엉뚱한 결과 재등장 차단).
+NO_REVIVE_ERROR = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
+
+
 def apply_reconcile(
     gen_id: str,
     job_id: str,
@@ -630,18 +648,22 @@ def apply_reconcile(
     sort_ts: Optional[float],
     status: str,
     error: Optional[str],
+    force_fail_reason: Optional[str] = None,
 ) -> bool:
     """재조정 권위 보정 — 에이전트가 `generate get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
     ★fulfill 의 CAS 와 달리 failed→done '되살리기'를 허용한다(가짜 실패 복구). 대신 조건이 강하다:
       · id·job_id 동시 일치 + origin='local' 일 때만(다른 카드·동기화본 오염 차단).
       · 이미 done 확정본은 절대 뒤집지 않는다(에셋 있는 완료본 보호).
       · 상태 변화가 없으면 no-op(False).
-    로컬검증실패(레퍼런스 미부착 등)는 애초에 job_id 앵커가 없어 후보에 안 들어오므로 여기 도달하지 않는다.
+    force_fail_reason 이 주어지면(레퍼런스 미부착 등 '로컬 검증 실패') — 힉스필드엔 (엉뚱한) 결과가
+    완료로 있어도 failed 로 확정하되 **job_id 는 유지**(sync 가 중복 synced 카드를 새로 만들지 않게)하고
+    error 에 NO_REVIVE_ERROR 를 박아, 이후 재조정·동기화가 이 행을 done 으로 되살리지 못하게 한다.
+    (status=failed 라 backstop 후보에서도 제외됨). done 확정본은 여기서도 건드리지 않는다.
     적용했으면 True(호출부가 브로드캐스트)."""
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT status FROM generation WHERE id=? AND job_id=? AND origin='local'",
+            "SELECT status, error FROM generation WHERE id=? AND job_id=? AND origin='local'",
             (gen_id, job_id),
         ).fetchone()
         if not row:
@@ -649,6 +671,20 @@ def apply_reconcile(
             return False
         if row["status"] == "done":
             conn.execute("ROLLBACK")  # 완료 확정본은 재조정으로 뒤집지 않음
+            return False
+        if force_fail_reason:
+            if row["status"] == "failed":
+                conn.execute("ROLLBACK")  # 이미 실패 확정
+                return False
+            # 되살림 금지 실패 — job_id 유지 + error=NO_REVIVE_ERROR(아래 일반경로·_upsert_synced 가 보호).
+            conn.execute(
+                "UPDATE generation SET status='failed', error=? WHERE id=?",
+                (NO_REVIVE_ERROR, gen_id),
+            )
+            return True
+        # 되살림 금지 실패 행은 일반 재조정(done 승격)으로도 되살리지 않는다(백스톱 레이스 최종 방어).
+        if status == "done" and row["status"] == "failed" and (row["error"] or "") == NO_REVIVE_ERROR:
+            conn.execute("ROLLBACK")
             return False
         if row["status"] == status:
             conn.execute("ROLLBACK")  # 변화 없음(계속 확인중/실패 유지)
@@ -805,19 +841,26 @@ def apply_local_fulfillment(
 VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
 
 
-def apply_local_anchor(gen_id: str, rid: str, job_id: str) -> bool:
-    """모호한 결말의 앵커: gen_request 는 done(종결 → 30분 stale 회수가 이 카드를 failed 로 뒤집지 않게)
-    으로 닫고, generation 은 running 유지 + job_id 기록 + '확인중' 문구를 단다. 재조정 패스가 나중에
-    generate get 으로 실제 상태를 확정한다. CAS: 이미 종결(done/failed)된 요청/생성이면 건드리지 않음(멱등).
-    적용했으면 True."""
+def apply_local_anchor(gen_id: str, rid: str, job_id: str, *, verifying: bool = True) -> bool:
+    """job_id 앵커: gen_request 는 done(종결 → 30분 stale 회수가 이 카드를 failed 로 뒤집지 않게)으로
+    닫고, generation 은 running 유지 + job_id 기록. 재조정 패스가 나중에 generate get 으로 확정한다.
+
+    verifying=True(모호한 결말·재시작 복구): generation.error 에 '확인중' 문구 → UI '확인중' 표시.
+    verifying=False(create-first 정상 흐름): 제출 직후 곧바로 앵커 — error=NULL 로 둬 UI 는 '생성중'으로
+      자연스럽게 표시하고, wait 이 완료를 확정할 때까지 유지한다.
+
+    ★요청 CAS 는 `status <> 'done'` — done(이미 앵커/완료)만 보호하고 failed 는 되살린다. 실제 job_id 를
+     확보한 앵커는 stale 회수/부팅정리가 요청·생성을 failed 로 닫았어도 되살려 앵커해야 하며(그래야
+     재조정이 진실을 확정), 앵커는 항상 실제 잡을 뜻하므로 failed→앵커 되살림은 언제나 옳다. 적용 시 True."""
+    note = VERIFYING_NOTE if verifying else None
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "UPDATE gen_request SET status='done', error=?, updated_at=datetime('now') "
-            "WHERE id=? AND status NOT IN ('done','failed')",
-            (VERIFYING_NOTE, rid),
+            "WHERE id=? AND status <> 'done'",
+            (note, rid),
         )
-        if cur.rowcount == 0:  # 이미 종결된 요청 → 멱등 무시
+        if cur.rowcount == 0:  # 이미 done(앵커/완료 확정) → 멱등 무시
             conn.execute("ROLLBACK")
             return False
         # 레이스 병합: 동기화가 같은 잡을 synced 로 먼저 넣었으면 그 중복본 제거(fulfill 과 동일 패턴).
@@ -827,13 +870,10 @@ def apply_local_anchor(gen_id: str, rid: str, job_id: str) -> bool:
         ).fetchone()
         if dup:
             _delete_generation(conn, dup["id"])
-        # generation: '확인중(running)' + job_id. ★done 만 보호하고 failed 는 되살린다 — 서버 재시작의
-        #  fail_orphaned_jobs 가 generation 을 failed 로 내렸어도(gen_request 는 running 잔존) 에이전트가
-        #  뒤늦게 anchor 하면 job_id 를 반드시 심어 재조정 후보로 만든다. 앵커는 '모호한 결말'에만 오므로
-        #  failed→확인중 되살리기가 항상 옳다(로컬검증실패는 job_id 없어 anchor 자체를 안 탄다).
+        # generation: running + job_id. done 만 보호하고 failed 는 되살린다(부팅정리·stale 회수 복구).
         conn.execute(
             "UPDATE generation SET job_id=?, status='running', error=? WHERE id=? AND status <> 'done'",
-            (job_id, VERIFYING_NOTE, gen_id),
+            (job_id, note, gen_id),
         )
     return True
 
