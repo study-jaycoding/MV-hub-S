@@ -358,7 +358,9 @@ export function SceneBoard({
   const editTextIdRef = useRef<string | null>(null);
   editTextIdRef.current = editTextId;
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
-  const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[] } | null>(null);
+  //  inEdges = 외부 소스(선택 밖) → 선택 노드로 들어오는 입력 엣지. 붙여넣을 때 기존 소스에 그대로 다시 물려
+  //  '입력을 공유하는 복제'가 되게 한다(from=원본 소스 유지, to=붙여넣은 새 노드).
+  const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[]; inEdges: SceneEdge[] } | null>(null);
   // 직전에 레퍼런스로 넣은 클립보드 이미지 지문(크기:타입) — '새 캡쳐'인지 '이미 쓴 캡쳐'인지 구분해
   //  붙여넣기 우선순위(새 이미지=이미지 / 이미 쓴 이미지+복사한 노드=노드)를 최근 동작 기준으로 정한다.
   const lastImgKeyRef = useRef<string | null>(null);
@@ -2666,6 +2668,10 @@ export function SceneBoard({
           edges: edgesRef.current
             .filter((ed) => ids.has(ed.from) && ids.has(ed.to))
             .map((ed) => ({ ...ed })),
+          // 외부 소스 → 선택 노드로 들어오는 입력 엣지(출력 엣지는 제외 — 하류 이중연결 방지, 입력만 공유).
+          inEdges: edgesRef.current
+            .filter((ed) => !ids.has(ed.from) && ids.has(ed.to))
+            .map((ed) => ({ ...ed })),
         };
         return;
       }
@@ -3379,7 +3385,13 @@ export function SceneBoard({
           from: idMap.get(ed.from)!,
           to: idMap.get(ed.to)!,
         }));
-        const nextEdges = [...edgesRef.current, ...newEdges];
+        // 입력 공유: 외부 소스는 그대로(from 유지), to 만 붙여넣은 새 노드로. 소스가 현재 씬에 남아있을 때만
+        //  재현한다(다른 씬에 붙여넣기·소스 삭제 시 유령 엣지 방지). order/role 등은 보존.
+        const curIds = new Set(cardsRef.current.map((c) => c.id));
+        const inEdges: SceneEdge[] = (clip.inEdges || [])
+          .filter((ed) => curIds.has(ed.from) && idMap.has(ed.to))
+          .map((ed) => ({ ...ed, id: uid(), to: idMap.get(ed.to)! }));
+        const nextEdges = [...edgesRef.current, ...newEdges, ...inEdges];
         const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
         cardsRef.current = nextCards;
         edgesRef.current = nextEdges;
