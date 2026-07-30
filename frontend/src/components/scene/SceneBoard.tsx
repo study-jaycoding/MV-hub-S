@@ -785,13 +785,18 @@ export function SceneBoard({
     nextCards: SceneCard[],
     nextEdges: SceneEdge[],
     nextGroups: SceneGroup[] = groupsRef.current,
+    opts?: { undo?: boolean }, // undo:false = 실행상태·파생저장(running/done/gid반영 등) — undo 스택에 안 쌓는다.
   ) => {
-    // 되돌리기용: 직전 커밋 상태를 스택에 쌓고(상한 200), 이번 상태를 최신 커밋으로 기록.
-    undoStackRef.current.push(lastCommitRef.current);
-    if (undoStackRef.current.length > 200) undoStackRef.current.shift();
-    redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
-    lastCommitRef.current = { cards: nextCards, edges: nextEdges, groups: nextGroups };
-    onChangeRef.current({ cards: nextCards, edges: nextEdges, groups: nextGroups });
+    const next = { cards: nextCards, edges: nextEdges, groups: nextGroups };
+    // 파생/실행상태 저장은 undo 스택을 건드리지 않는다 — Ctrl+Z 가 사용자 편집만 되돌리게(자동 상태변화 제외).
+    //  단 최신 커밋 기록·부모(씬 저장) 반영은 동일(그래야 저장 유실 없음).
+    if (opts?.undo !== false) {
+      undoStackRef.current.push(lastCommitRef.current);
+      if (undoStackRef.current.length > 200) undoStackRef.current.shift();
+      redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
+    }
+    lastCommitRef.current = next;
+    onChangeRef.current(next);
   };
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
@@ -1551,7 +1556,8 @@ export function SceneBoard({
     persist(nextCards, edgesRef.current);
   };
   // comfy 노드: comfyCfg 부분 병합 저장(모달 저장·실행 상태 갱신·파라미터 값 변경 공용).
-  const patchComfyCfg = (cardId: string, patch: Partial<SceneComfyCfg>) => {
+  //  opts.undo=false = 실행상태(running/done/failed)·재파싱 등 파생 저장 → undo 스택에 안 쌓는다(사용자 편집만 undo).
+  const patchComfyCfg = (cardId: string, patch: Partial<SceneComfyCfg>, opts?: { undo?: boolean }) => {
     const nextCards = cardsRef.current.map((c) =>
       c.id === cardId && c.kind === "comfy"
         ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
@@ -1559,7 +1565,7 @@ export function SceneBoard({
     );
     cardsRef.current = nextCards; // ref 즉시 갱신 — 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성)
     setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    persist(nextCards, edgesRef.current, groupsRef.current, opts);
   };
   // 노드별 배치수 설정 — 카드에 저장해 노드마다 각자 관리(1~4). 씬 저장으로 유지.
   const setCardBatch = (cardId: string, n: number) => {
@@ -1635,7 +1641,7 @@ export function SceneBoard({
     try {
       const res = await comfyApi.parse(content, []);
       if (sceneIdRef.current !== sid) return;
-      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null });
+      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null }, { undo: false }); // 재파싱=파생, undo 제외
     } catch {
       /* 파싱 실패 — 상태만 두고 무시 */
     }
@@ -1788,7 +1794,7 @@ export function SceneBoard({
       });
       cardsRef.current = next;
       setCards(next);
-      persist(next, edgesRef.current);
+      persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 저장된 gid 반영=파생, undo 제외
       if (!silent) {
         const created = res.saved.filter((s) => !s.existed).length;
         flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
@@ -1893,7 +1899,7 @@ export function SceneBoard({
     if (!card?.comfyCfg?.content) return false;
     const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
     const sid = sceneIdRef.current; // 실행 대기 중 씬 전환 시 다른 씬에 결과 반영 안 함
-    patchComfyCfg(cardId, { status: "running", error: null });
+    patchComfyCfg(cardId, { status: "running", error: null }, { undo: false }); // 실행상태=파생, undo 제외
     markComfyRunning([cardId], true); // 노드에 '생성중' 웨이브 표시(메모리)
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
@@ -1906,14 +1912,14 @@ export function SceneBoard({
       );
       if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
-      patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null });
+      patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null }, { undo: false }); // 완료 상태=파생, undo 제외
       // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
       // ★순차 await — 병렬이면 응답 도착순에 따라 대표(genId)·genIds 순서가 뒤섞인다(대표=마지막 결과 보장).
       for (const s of sets)
         await saveComfyToLibrary(cardId, { silent: true, elapsedSeconds: s.elapsed, outputs: s.outputs });
       return true;
     } catch (e) {
-      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" });
+      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" }, { undo: false }); // 실패 상태=파생, undo 제외
       return false;
     } finally {
       markComfyRunning([cardId], false);
@@ -2041,7 +2047,7 @@ export function SceneBoard({
       });
       cardsRef.current = snap;
       setCards(snap);
-      persist(snap, edgesRef.current);
+      persist(snap, edgesRef.current, groupsRef.current, { undo: false }); // 배치 실행 스냅샷=파생, undo 제외
       // 출력이 생긴 comfy 노드는 자동으로 '내 작업'에 추가(체인 실행에서도) + 노드별 소요시간 기록. 멱등이라 중복 없음.
       // ★배치의 '모든 복사본' 결과를 각각 저장한다(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
       //   직접 실행(runComfy)과 동일하게 복사본별 outputs·소요시간으로 저장.
