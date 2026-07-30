@@ -78,6 +78,7 @@ import { arrangeNodes } from "../../lib/sceneLayout";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
+import comfyLogo from "../../assets/comfy-logo.svg";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
@@ -4844,6 +4845,16 @@ export function SceneBoard({
                               ) : null;
                             })()}
                             {(() => {
+                              // 실행 중이면 미디어 영역을 Comfy 로고로 덮어 '작업 중'을 보인다(이전 결과가 있어도 우선).
+                              //  하단 상태 웨이브와 별개로, 생성물이 뜨는 자리에 브랜드 로고를 크게 표시.
+                              if (isRunning)
+                                return (
+                                  <div className="scene-comfynode-outputs">
+                                    <div className="scene-comfynode-loading">
+                                      <img src={comfyLogo} alt="Comfy 작업 중" className="scene-comfynode-loading-logo" />
+                                    </div>
+                                  </div>
+                                );
                               // 실행 결과 — 텍스트는 스크롤 박스(+복사). 이미지/영상은 '대표(card.genId)'를
                               // 생성카드(HistoryBoardNode)로 보여준다. 대표는 팝업에서 고르거나(setCardVariant)
                               // 실행 시 최신으로 갱신 → 대표 선택·색상이 카드에 그대로 반영된다.

@@ -575,6 +575,18 @@
 .scene-comfynode-status.s-done { color: #4dd6c4; }
 .scene-comfynode-status.s-failed { color: #ff8f8f; }
 .scene-comfynode-outputs { display: flex; flex-direction: column; gap: 6px; }
+/* 실행 중 미디어 영역 — 어두운 배경에 Comfy 로고를 은은히 펄스(작업 중 표시) */
+.scene-comfynode-loading {
+  display: flex; align-items: center; justify-content: center;
+  height: 150px; border-radius: 8px; background: #0d0d0d;
+}
+.scene-comfynode-loading-logo {
+  width: 60%; max-width: 170px; height: auto;
+  animation: comfy-loading-pulse 1.4s ease-in-out infinite;
+}
+@keyframes comfy-loading-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .scene-comfynode-loading-logo { animation: none; opacity: 0.85; } }
+.reduce-motion .scene-comfynode-loading-logo { animation: none; opacity: 0.85; }
 .scene-comfynode-genwrap {
   position: relative; width: 100%; height: 150px; flex: none;
 }
