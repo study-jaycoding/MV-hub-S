@@ -423,6 +423,20 @@ export function SceneBoard({
   const orchestratingRef = useRef(false); // 실행(오케스트레이션) 진행 중 재클릭 가드
   // 상류 comfy 가 도는 동안 '생성 대기중'으로 표시할 생성카드 id 들(잡 제출 전 구간). comfy 끝나면 비운다.
   const [comfyWaitingIds, setComfyWaitingIds] = useState<Set<string>>(new Set());
+  // 실행 중인 comfy 노드 자신의 id → 실행 카운트 — 노드 카드에 '생성중' 웨이브를 그리기 위한 메모리 상태.
+  //  ★persist 하지 않는다(오케 경로도 여기로 통일) — 크래시·씬전환에도 '영원히 생성중'이 디스크에 남지 않게.
+  //  ★count 방식 — 직접실행+오케가 같은 노드에 겹쳐 돌아도, 마지막 하나가 끝나야 웨이브가 꺼진다.
+  const [runningComfyIds, setRunningComfyIds] = useState<Map<string, number>>(new Map());
+  const markComfyRunning = (ids: string[], on: boolean) =>
+    setRunningComfyIds((prev) => {
+      const n = new Map(prev);
+      for (const id of ids) {
+        const c = (n.get(id) || 0) + (on ? 1 : -1);
+        if (c > 0) n.set(id, c);
+        else n.delete(id);
+      }
+      return n;
+    });
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const selectedRef = useRef(selected);
@@ -1726,6 +1740,7 @@ export function SceneBoard({
     const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
     const sid = sceneIdRef.current; // 실행 대기 중 씬 전환 시 다른 씬에 결과 반영 안 함
     patchComfyCfg(cardId, { status: "running", error: null });
+    markComfyRunning([cardId], true); // 노드에 '생성중' 웨이브 표시(메모리)
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
       const sets = await Promise.all(
@@ -1746,6 +1761,8 @@ export function SceneBoard({
     } catch (e) {
       patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" });
       return false;
+    } finally {
+      markComfyRunning([cardId], false);
     }
   };
   // 실행 계획대로 상류 comfy 를 순서대로 실행(await)한 뒤, 실패의 하류가 아닌 생성카드 id 만 돌려준다.
@@ -1792,6 +1809,7 @@ export function SceneBoard({
     // 표시: plan 의 comfy 카드들을 running 으로(집계 1회). ★persist 안 함 — 중단(씬 전환)돼도 running 이 디스크에
     //  남지 않게(반대 씬에 잘못 쓰는 것도 방지). 라이브 UI 표시용으로 setCards 만.
     if (plan.comfyIds.length) {
+      markComfyRunning(plan.comfyIds, true); // 노드 '생성중' 웨이브(메모리) — 리렌더에도 유지
       const running = cardsRef.current.map((c) =>
         c.kind === "comfy" && plan.comfyIds.includes(c.id)
           ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "running" as const, error: null } }
@@ -1884,6 +1902,7 @@ export function SceneBoard({
         }
       }
     }
+    if (plan.comfyIds.length) markComfyRunning(plan.comfyIds, false); // 웨이브 해제(정상/중단 공통)
     return { runs: copies.flatMap((c) => c.runs), aborted };
   };
   // 단일 생성카드 실행 — 상류 comfy 가 있으면 배치수만큼 병렬 실행해 각 결과와 짝지어 생성. 없으면 스포트라이트 제출.
@@ -4698,6 +4717,8 @@ export function SceneBoard({
                   // Comfy 노드 — ComfyUI 워크플로우를 얹어 단독 실행. 더블클릭=API 로드·파라미터 노출 모달.
                   const cfg = card.comfyCfg;
                   const st = cfg?.status;
+                  // 실행 중 판정 — status 이거나 메모리 running 집합(오케 경로는 persist 안 하므로 후자로 유지)
+                  const isRunning = runningComfyIds.has(card.id) || st === "running";
                   const params = cfg?.params || [];
                   const values = cfg?.paramValues || {};
                   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -4989,10 +5010,25 @@ export function SceneBoard({
                                 })}
                               </div>
                             )}
-                            {/* 현재 상태 — 실행 버튼을 카드 밑으로 옮기며 생긴 공간에 대기/실행 중/완료/실패 표시. */}
-                            <div className={"scene-comfynode-status s-" + (st || "idle")}>
-                              ● {st === "running" ? "실행 중…" : st === "done" ? "완료" : st === "failed" ? "실패" : "대기"}
-                            </div>
+                            {/* 현재 상태 — 실행 중이면 생성카드와 같은 웨이브(생성중), 아니면 대기/완료/실패 텍스트. */}
+                            {isRunning ? (
+                              <div className="scene-comfynode-status s-running">
+                                <span className="gen-generating">
+                                  <span className="gen-wave" aria-hidden>
+                                    <span className="gen-wave-bar" />
+                                    <span className="gen-wave-bar" />
+                                    <span className="gen-wave-bar" />
+                                    <span className="gen-wave-bar" />
+                                    <span className="gen-wave-bar" />
+                                  </span>
+                                  <span className="gen-generating-label">생성중</span>
+                                </span>
+                              </div>
+                            ) : (
+                              <div className={"scene-comfynode-status s-" + (st || "idle")}>
+                                ● {st === "done" ? "완료" : st === "failed" ? "실패" : "대기"}
+                              </div>
+                            )}
                             {st === "failed" && cfg.error && (
                               <div className="scene-comfynode-errwrap">
                                 <button
@@ -5056,13 +5092,13 @@ export function SceneBoard({
                           </button>
                           <button
                             className="scene-cardgen-go"
-                            disabled={st === "running"}
+                            disabled={isRunning}
                             onClick={(e) => {
                               e.stopPropagation();
                               void runComfy(card.id);
                             }}
                           >
-                            {st === "running" ? "실행 중…" : "실행 ▶"}
+                            {isRunning ? "실행 중…" : "실행 ▶"}
                           </button>
                         </div>
                       )}
