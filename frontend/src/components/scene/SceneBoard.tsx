@@ -1385,6 +1385,7 @@ export function SceneBoard({
     const startH = c.h ?? CARD_H;
     const sx = e.clientX;
     const sy = e.clientY;
+    let resized = false; // 실제로 크기가 바뀐 적이 있나 — no-op(핸들만 클릭) 에 persist/undo 오염 방지
     const move = (ev: MouseEvent) => {
       const z = zoomRef.current;
       const w = Math.max(CARD_MIN_W, snapGrid(startW + (ev.clientX - sx) / z));
@@ -1392,11 +1393,14 @@ export function SceneBoard({
       const prevCards = cardsRef.current;
       const cur = prevCards.find((cc) => cc.id === cardId);
       if (cur && cur.w === w && cur.h === h) return; // 스냅값 그대로면 리렌더 스킵
+      resized = true;
       const next = prevCards.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
       cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 크기를 읽게
       setCards(next);
     };
-    const up = () => persist(cardsRef.current, edgesRef.current);
+    const up = () => {
+      if (resized) persist(cardsRef.current, edgesRef.current); // 변화 있을 때만 저장(빈 undo 방지)
+    };
     beginDrag(move, up, up); // blur: 현재 크기 그대로 저장(좌표 무관 커밋이라 up 재사용 안전)
   };
 

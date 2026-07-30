@@ -122,13 +122,25 @@ export function SceneMinimap({
     });
     const start = at(e.clientX, e.clientY);
     onNavigate(start.wx, start.wy, false);
+    // rAF 코얼레싱 — mousemove 를 프레임당 1회로 합쳐 onNavigate 폭주 방지.
+    let raf = 0;
+    let last: { x: number; y: number } | null = null;
     const move = (ev: MouseEvent) => {
-      const p = at(ev.clientX, ev.clientY);
-      onNavigate(p.wx, p.wy, false);
+      last = { x: ev.clientX, y: ev.clientY };
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        if (!last) return;
+        const p = at(last.x, last.y);
+        onNavigate(p.wx, p.wy, false);
+      });
     };
     const teardown = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      window.removeEventListener("blur", onBlur);
       dragCleanupRef.current = null;
     };
     const up = (ev: MouseEvent) => {
@@ -136,9 +148,12 @@ export function SceneMinimap({
       teardown();
       onNavigate(p.wx, p.wy, true);
     };
+    // 드래그 중 창 blur(Alt-Tab 등)로 mouseup 을 놓쳐도 리스너가 남지 않게 정리.
+    const onBlur = () => teardown();
     dragCleanupRef.current = teardown;
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+    window.addEventListener("blur", onBlur);
   };
 
   return (
