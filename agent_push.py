@@ -993,11 +993,11 @@ def _execute_one(
     _outbox_add(rid, job_id)
     if not _anchor_with_retry(server, token, rid, job_id):
         print(f"  ⚠ 앵커 보고 실패 — outbox 보관(재전송 예정): {job_id[:8]}")
-    # 3) 완료까지 대기(최대 30분). wait 는 조회 성격(과금 없음). 실패/타임아웃이면 확정하지 않고
-    #    백스톱 재조정에 위임한다 — 앵커돼 있으므로 반드시 이어받는다.
-    print(f"  ⏳ 대기: {job_id[:8]} (최대 30분)")
+    # 3) 완료까지 대기(최대 15분). wait 는 조회 성격(과금 없음). 타임아웃은 '실패'가 아니라 '능동 대기
+    #    종료→백스톱 위임' 시점일 뿐 — 앵커돼 있으므로 더 긴 잡·큐 대기는 재조정이 끝나는 대로 받아온다.
+    print(f"  ⏳ 대기: {job_id[:8]} (최대 15분, 넘으면 백스톱이 이어받음)")
     job, _werr = _run_cli_json(
-        cli, "generate", "wait", job_id, "--timeout", "30m", "--interval", "5s", "--quiet", timeout=1860
+        cli, "generate", "wait", job_id, "--timeout", "15m", "--interval", "5s", "--quiet", timeout=960
     )
     if isinstance(job, list):
         job = job[0] if job else None
