@@ -3123,21 +3123,24 @@ export function SceneBoard({
         );
         cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
         setCards(next);
-        // 속도 이탈 판정 — 임계 속도 이상으로 시작 프레임 밖으로 나간 멤버를 튕겨낸다(래치: 한번 튕기면 유지).
-        if (memberFrames.size && vSpeed > GROUP_EJECT_SPEED) {
-          let added = false;
+        // 속도 이탈 — 프레임 밖으로 '빠르게' 나가면 이탈(박스가 놓아줌). ★단 다시 프레임 '안으로' 돌아오면
+        //  이탈 해제 → 그룹이 다시 반응한다(한 드래그 안에서 뺐다 넣고 다시 빼도 매번 반응). 밖에 있는
+        //  동안은 래치 유지(밖에서 속도가 줄어도 박스가 갑자기 쫓아가지 않게).
+        if (memberFrames.size) {
+          let changed = false;
           for (const [tid, fr] of memberFrames) {
-            if (ejected.has(tid)) continue;
             const cc = next.find((c) => c.id === tid);
             if (!cc) continue;
             const cx = cc.x + widthOf(cc) / 2;
             const cy = cc.y + heightOf(cc) / 2;
-            if (cx < fr.x || cx > fr.x + fr.w || cy < fr.y || cy > fr.y + fr.h) {
-              ejected.add(tid);
-              added = true;
+            const outside = cx < fr.x || cx > fr.x + fr.w || cy < fr.y || cy > fr.y + fr.h;
+            if (ejected.has(tid)) {
+              if (!outside) { ejected.delete(tid); changed = true; } // 프레임 안으로 복귀 → 이탈 해제
+            } else if (outside && vSpeed > GROUP_EJECT_SPEED) {
+              ejected.add(tid); changed = true; // 빠르게 밖으로 → 이탈
             }
           }
-          if (added) setEjectedIds(new Set(ejected)); // 프레임이 이 카드를 놓아줌(memberBounds 제외 → 스냅백)
+          if (changed) setEjectedIds(new Set(ejected)); // 이탈/복귀 반영(박스가 놓아주거나 다시 담음)
         }
       };
       // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
