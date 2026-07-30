@@ -936,21 +936,52 @@ export function SceneBoard({
     const srcs = resolved
       .filter((e) => e.to === genId)
       .map((e) => byId.get(e.from))
-      .filter((c): c is SceneCard => c?.kind === "reference" || c?.kind === "list")
+      .filter(
+        (c): c is SceneCard =>
+          !!c &&
+          (c.kind === "reference" || c.kind === "generation" ||
+            c.kind === "list" || c.kind === "render"),
+      )
       .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x)); // 위→아래, 같은 높이면 좌→우
     const out: SceneRef[] = [];
+    const seenGid = new Set<string>(); // 같은 생성물이 직접+리스트/렌더 두 경로로 와도 한 번만(중복 방지)
     // 카드/리스트가 제공한 참조엔 from_card 표시 — 소스 연결이 바뀌면(reconcileRefs) 함께 사라지게.
     const tagged = (refs: SceneRef[]) => refs.map((r) => ({ ...r, from_card: true as const }));
+    // 생성물 카드(generation·generation-list·render 안 항목)를 그 asset 으로 SceneRef 화. genData 미로드/comfy 미저장이면 skip.
+    const pushGenRef = (gc?: SceneCard) => {
+      const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
+      const gen = gid ? genDataRef.current[gid] : undefined;
+      const asset = gen?.assets?.[0];
+      if (!gid || !asset || seenGid.has(gid)) return;
+      seenGid.add(gid);
+      const baseName = asset.type === "video" ? "vid" : "img";
+      out.push(
+        ...tagged([
+          {
+            file_path: asset.source_url || asset.file_path,
+            type: asset.type,
+            name: gen?.source_name || `${baseName}-${gid.slice(0, 8)}`,
+            thumb: asset.thumbnail_path || asset.file_path,
+            source_gen_id: gid,
+          },
+        ]),
+      );
+    };
     for (const src of srcs) {
       if (src.kind === "reference" && src.refs) out.push(...tagged(src.refs));
-      // 레퍼런스만 모은 리스트를 생성카드에 연결하면 그 안의 레퍼런스 전부를 리스트 순서대로 가져온다.
+      else if (src.kind === "generation") pushGenRef(src);
       else if (src.kind === "list") {
         const li = collectListInputs(src.id, byId, resolved);
+        // 레퍼런스 리스트 → 그 안 레퍼런스 전부(순서대로). 생성물 리스트 → 각 생성물을 asset ref 로.
         if (li.kind === "reference")
           for (const cid of li.sourceIds) {
             const rc = byId.get(cid);
             if (rc?.refs) out.push(...tagged(rc.refs));
           }
+        else if (li.kind === "generation")
+          for (const cid of li.generationCardIds) pushGenRef(byId.get(cid));
+      } else if (src.kind === "render") {
+        for (const cid of collectRenderGenCardIds(src.id, byId, resolved)) pushGenRef(byId.get(cid));
       }
     }
     return out;
@@ -4341,8 +4372,8 @@ export function SceneBoard({
                             // 텍스트들 — 각 텍스트를 한 행(카드)으로, 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
                             <div className="scene-listrows" data-reorder>
                               {li.sourceIds.map((cid) => {
-                                const tc = cardsById.get(cid);
-                                const txt = (tc?.text || "").trim();
+                                // comfy(프롬프트)·text 카드 모두 유효 텍스트를 effectiveTextOf 로 — comfy 는 출력없으면 입력 프롬프트.
+                                const txt = effectiveTextOf(cid, cardsById, resolvedEdges).trim();
                                 return (
                                   <div
                                     key={cid}
