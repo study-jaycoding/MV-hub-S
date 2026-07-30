@@ -143,7 +143,8 @@ describe("resolveEdgeRole", () => {
       { id: "e1", from: "S", to: "L" },
       { id: "e2", from: "L", to: "G" },
     ];
-    expect(resolveEdgeRole(ge[1], genList, {}, ge)).toBe("lineage");
+    // 생성물(미디어) 리스트 → 생성카드 = 레퍼런스(파랑). 커밋 f0e10f7 이후 lineage→ref 로 정정.
+    expect(resolveEdgeRole(ge[1], genList, {}, ge)).toBe("ref");
   });
   it("생성물을 ref 로 사용한 gen→gen → 'ref', 아니면 'lineage'", () => {
     const S = gen("S");
@@ -227,6 +228,50 @@ describe("collectListInputs", () => {
         { id: "e2", from: "M", to: "L" },
       ]).kind,
     ).toBe("invalid");
+  });
+  it("중첩: 리스트가 렌더를 받으면 렌더 안 생성카드들을 순서대로 펼친다", () => {
+    const cards = byId([
+      node("L", "list"),
+      node("R", "render"),
+      node("GA", "generation"),
+      node("GB", "generation"),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "GA", to: "R", order: 1 },
+      { id: "e2", from: "GB", to: "R", order: 2 },
+      { id: "e3", from: "R", to: "L" },
+    ];
+    const r = collectListInputs("L", cards, edges);
+    expect(r.kind).toBe("generation");
+    expect(r.generationCardIds).toEqual(["GA", "GB"]); // 렌더 안 2개 카드 모두 펼침
+    expect(r.sourceIds).toEqual(["R"]); // 직접 소스는 렌더 1개(행표시·reorder 기준)
+  });
+  it("중첩: 리스트가 다른 생성 리스트를 받으면 그 안 카드들을 펼친다(+직접 소스)", () => {
+    const cards = byId([
+      node("OUT", "list"),
+      node("IN", "list"),
+      node("GA", "generation"),
+      node("GB", "generation"),
+      node("GC", "generation"),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "GA", to: "IN", order: 1 },
+      { id: "e2", from: "GB", to: "IN", order: 2 },
+      { id: "e3", from: "IN", to: "OUT", order: 1 },
+      { id: "e4", from: "GC", to: "OUT", order: 2 },
+    ];
+    const r = collectListInputs("OUT", cards, edges);
+    expect(r.kind).toBe("generation");
+    expect(r.generationCardIds).toEqual(["GA", "GB", "GC"]);
+  });
+  it("중첩: 리스트 순환(A→B→A)이어도 무한재귀 없이 판정(invalid)", () => {
+    const cards = byId([node("A", "list"), node("B", "list"), node("G", "generation")]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "B", to: "A" },
+      { id: "e2", from: "A", to: "B" }, // 순환
+      { id: "e3", from: "G", to: "A" },
+    ];
+    expect(collectListInputs("A", cards, edges).kind).toBe("invalid"); // 순환 소스는 무시(other)
   });
 });
 
@@ -661,10 +706,10 @@ describe("canConnect", () => {
     expect(canConnect(c("L", "list"), R)).toBe(false);
     expect(canConnect(c("T", "text"), R)).toBe(false);
     expect(canConnect(c("M", "model"), R)).toBe(false);
-    // render 는 소스로는 View 에만 연결(그 외는 불가)
+    // render 출력: View 재생 · 생성카드 레퍼런스(커밋 0182213) · 리스트로 중첩 수집(커밋 cd0755a).
     expect(canConnect(c("R", "render"), c("V", "view"))).toBe(true);
-    expect(canConnect(c("R", "render"), c("G", "generation"))).toBe(false);
-    expect(canConnect(c("R", "render"), c("L", "list"))).toBe(false);
+    expect(canConnect(c("R", "render"), c("G", "generation"))).toBe(true);
+    expect(canConnect(c("R", "render"), c("L", "list"))).toBe(true);
   });
   it("text 는 reference/generation/list 입력(레퍼런스), model/text/reference 는 입력 없음, 자기연결 금지", () => {
     expect(canConnect(c("R", "reference"), c("T", "text"))).toBe(true);

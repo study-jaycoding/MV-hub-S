@@ -1070,6 +1070,41 @@ export function SceneBoard({
         : c,
     );
 
+  // ★연결 refs 지연 재동기화 — gatherTarget 은 genData 가 로드된 카드만 asset ref 로 잡는다. 연결 시점에
+  //  리스트/렌더로 묶인 둘째~N째 카드의 genData 가 아직 안 실렸으면 그 카드는 skip 돼 card.refs 에 '첫째만'
+  //  남아 굳었다(연결 변경 때만 재계산되므로 늦게 온 genData 를 못 반영). genData(또는 생성 소스·토폴로지)
+  //  변화 시 모든 생성카드 refs 를 다시 모아, 값이 바뀐 것만 파생 커밋한다(undo 스택 오염·무한루프 없음:
+  //  지문 비교 가드 + 시그니처가 refs 를 안 봄).
+  const genRefSourceSig = useMemo(
+    () =>
+      cards
+        .filter((c) => c.kind === "generation" || (c.kind === "comfy" && !!(c.genIds?.length || c.genId)))
+        .map((c) => `${c.id}:${c.genId || ""}:${(c.genIds || []).join(",")}`)
+        .join("|"),
+    [cards],
+  );
+  const refTopologySig = useMemo(
+    () => edges.map((e) => `${e.from}>${e.to}:${e.order ?? ""}:${e.role ?? ""}`).join("|"),
+    [edges],
+  );
+  useEffect(() => {
+    const cur = cardsRef.current;
+    const nextCards = withGenRefs(cur, edgesRef.current);
+    const changed = cur.some(
+      (c, i) =>
+        c.kind === "generation" &&
+        sceneRefFingerprint(c.refs || []) !== sceneRefFingerprint(nextCards[i].refs || []),
+    );
+    if (!changed) return;
+    cardsRef.current = nextCards;
+    setCards(nextCards);
+    // 파생 동기화 — undo 스택은 늘리지 않고(구조 변경 아님) lastCommit·부모만 최신화.
+    const nextState = { cards: nextCards, edges: edgesRef.current, groups: groupsRef.current };
+    lastCommitRef.current = nextState;
+    onChangeRef.current(nextState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genRefSourceSig, refTopologySig, genData]);
+
   // 하단 프롬프트 트레이 편집(직접ref 삭제·순서변경)을 카드에 저장한다. App 이 sceneActionRef 로 호출.
   //  · 연결 상태로 정규화(reconcileRefs+gatherTarget) → 연결된 레퍼런스는 트레이에서 지워도 다시 병합(연결=레퍼런스).
   //  · persist 경로를 타 undo 스택(Ctrl+Z)에 자연스럽게 섞인다. 값이 안 바뀌면 무시(undo 오염 방지).
