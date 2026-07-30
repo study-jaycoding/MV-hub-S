@@ -822,7 +822,15 @@ export function SceneBoard({
     }, 400);
   };
   // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
-  useEffect(() => () => flushPendingRef.current(), []);
+  //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
+  useEffect(() => {
+    const onHide = () => flushPendingRef.current();
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      flushPendingRef.current();
+    };
+  }, []);
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
@@ -1926,6 +1934,7 @@ export function SceneBoard({
   //  batchCount>1 이면 N벌 병렬 실행(복사본마다 시드 무작위=다른 그림) → 각 결과를 '내 작업'에 저장·누적.
   //  카드엔 마지막 결과셋만 표시(대표), 나머지는 '▤ N' 배지/변형 팝업으로 모아 본다.
   const runComfy = async (cardId: string): Promise<boolean> => {
+    flushPending(); // 실행 직전 밀린 입력 저장 확정 — 최신 텍스트/파라미터로 실행되고 undo 순서도 정확
     const card = cardsRef.current.find((c) => c.id === cardId);
     if (!card?.comfyCfg?.content) return false;
     const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
@@ -1989,6 +1998,7 @@ export function SceneBoard({
     sceneId: string,
     batch: number,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
+    flushPending(); // 실행(배치) 직전 밀린 입력 저장 확정 — 스냅샷이 최신 텍스트/파라미터를 담게
     // 클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 다르게 새는 것을 막는다(comfy content·paramValues).
     const cfgSnap = new Map<string, { content: string; paramValues: Record<string, string | number | boolean> }>();
     for (const c of cardsRef.current)
