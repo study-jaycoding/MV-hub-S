@@ -551,11 +551,11 @@ def create_comfy_generation(
 
 # 종료(터미널) 상태에서만 error(사유)를 보존한다 — nsfw(콘텐츠 차단)도 실패의 일종이라 사유를 남긴다.
 #  (예전엔 status=="failed" 만 봐서 nsfw 사유가 버려졌다.) 진행/성공(done/pending/running)은 사유를 비운다.
-_ACTIVE_STATUSES = {"done", "pending", "running"}
+ACTIVE_STATUSES = {"done", "pending", "running"}
 
 
-def _stored_error(status: str, error: Optional[str]) -> Optional[str]:
-    return error if status not in _ACTIVE_STATUSES else None
+def stored_error(status: str, error: Optional[str]) -> Optional[str]:
+    return error if status not in ACTIVE_STATUSES else None
 
 
 def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
@@ -564,7 +564,7 @@ def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
     with get_connection() as conn:
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, _stored_error(status, error), gen_id),
+            (status, stored_error(status, error), gen_id),
         )
 
 
@@ -721,7 +721,7 @@ def apply_reconcile(
             )
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, _stored_error(status, error), gen_id),
+            (status, stored_error(status, error), gen_id),
         )
     return True
 
@@ -839,7 +839,7 @@ def apply_local_fulfillment(
             )
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, _stored_error(status, error), gen_id),
+            (status, stored_error(status, error), gen_id),
         )
     return True
 
@@ -903,7 +903,7 @@ def apply_local_failure(
     원래 placeholder 에 박는다 → 이후 generate list ingest 가 이 행을 UPDATE(멱등)하고 새 synced 행을
     INSERT 하지 않는다. 이미 레이스로 생긴 같은 job_id 의 origin='synced' 중복 행은 여기서 제거한다.
     (NSFW 처럼 결과 URL 이 없는 실패는 URL 매칭이 불가능해 예전엔 유령 카드가 하나 더 생겼다.)"""
-    if status in _ACTIVE_STATUSES:
+    if status in ACTIVE_STATUSES:
         status = "failed"  # 방어 — 실패 경로에 진행/성공 상태가 들어오면 failed 로 강등
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -924,12 +924,12 @@ def apply_local_failure(
                 _delete_generation(conn, dup["id"])
             conn.execute(
                 "UPDATE generation SET job_id=COALESCE(job_id, ?), status=?, error=? WHERE id=?",
-                (job_id, status, _stored_error(status, reason), gen_id),
+                (job_id, status, stored_error(status, reason), gen_id),
             )
         else:
             conn.execute(
                 "UPDATE generation SET status=?, error=? WHERE id=?",
-                (status, _stored_error(status, reason), gen_id),
+                (status, stored_error(status, reason), gen_id),
             )
     return True
 

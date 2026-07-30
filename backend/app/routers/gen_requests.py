@@ -37,8 +37,8 @@ from ..ws import manager
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
-# 진행/성공 상태 — 이 목록 밖(failed·nsfw 등)만 error(사유)를 보존한다.
-_ACTIVE_STATUSES = {"done", "pending", "running"}
+# 진행/성공 상태(repo.ACTIVE_STATUSES) 밖(failed·nsfw 등)만 error(사유)를 보존한다 — 판정·필터는
+#  repo 의 단일 정의(ACTIVE_STATUSES·stored_error)를 공유한다(중복 정의 제거).
 # 구버전 에이전트의 /fail 은 job_id 를 안 넘긴다 — CLI 실패 사유 문자열에서 job_id·상태를 되찾아
 #  원래 placeholder 에 앵커한다("... job <uuid> ended with status 'nsfw' ...").
 _HF_ENDED_RE = re.compile(
@@ -48,17 +48,14 @@ _HF_ENDED_RE = re.compile(
 )
 
 
-def _terminal_error(status: str, error) -> str | None:
-    return error if status not in _ACTIVE_STATUSES else None
-
-
 def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
-    """실패 사유 문자열에서 (job_id, 정규화 상태) 를 되찾는다. 못 찾으면 (None, None)."""
+    """실패 사유 문자열에서 (job_id, 정규화 상태) 를 되찾는다. 못 찾으면 (None, None).
+    진행/성공 상태로 파싱되면 failed 로 강등."""
     m = _HF_ENDED_RE.search(reason or "")
     if not m:
         return None, None
     status = cli_bridge.normalize_status(m.group(2).strip().replace(" ", "_"))
-    if status in _ACTIVE_STATUSES:
+    if status in repo.ACTIVE_STATUSES:
         status = "failed"
     return m.group(1), status
 
@@ -203,7 +200,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     g = parsed.get("generation") or {}
     asset = parsed.get("asset")
     status = g.get("status") or "done"
-    err = _terminal_error(status, g.get("error"))
+    err = repo.stored_error(status, g.get("error"))
     # ★원자 적용(+CAS): 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로. 동시 fulfill/fail 로
     # 이미 종결됐으면 False → 멱등 반환(완료를 덮어쓰지 않음·중복 브로드캐스트 안 함).
     applied = repo.apply_local_fulfillment(
@@ -327,7 +324,7 @@ async def reconcile_gen_request(
     # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
     if status in ("pending", "running"):
         return {"ok": True, "applied": False, "status": status}
-    err = _terminal_error(status, g.get("error"))
+    err = repo.stored_error(status, g.get("error"))
     applied = repo.apply_reconcile(
         gen_id,
         g.get("id"),
@@ -380,7 +377,7 @@ async def fail_gen_request(
     parsed_job_id, parsed_status = _failure_anchor_from_reason(reason)
     final_job_id = job_id or parsed_job_id
     final_status = cli_bridge.normalize_status(hf_status) if hf_status else (parsed_status or "failed")
-    if final_status in _ACTIVE_STATUSES:
+    if final_status in repo.ACTIVE_STATUSES:
         final_status = "failed"
     # 원자·CAS 적용 — 동시 fulfill 이 라우터 밖 status 검사를 함께 통과해 done 을 failed 로 뒤집던
     # TOCTOU 를 닫는다. 이미 종결됐으면 False → 멱등 반환(브로드캐스트 안 함).
