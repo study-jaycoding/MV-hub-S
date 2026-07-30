@@ -598,6 +598,16 @@
 .info-value { flex: 1; color: var(--text); word-break: break-word; }
 .info-value a { color: var(--accent); }
 .info-prompt { white-space: pre-wrap; line-height: 1.5; }
+/* 프롬프트 클릭 복사 — 텍스트 클릭 시 클립보드 복사(칩은 미리보기). 호버 시 '클릭해 복사' 힌트 노출. */
+.info-prompt-copy { position: relative; cursor: copy; border-radius: 6px; padding: 4px 6px; margin: -4px -6px; transition: background 0.12s; }
+.info-prompt-copy:hover { background: rgba(255, 255, 255, 0.05); }
+.info-prompt-copy .inline-ref-btn { cursor: pointer; } /* 칩은 미리보기라 별도 커서 */
+.info-prompt-copyhint {
+  display: block; margin-top: 4px; font-size: 11px; color: var(--muted2);
+  opacity: 0; transition: opacity 0.12s;
+}
+.info-prompt-copy:hover .info-prompt-copyhint { opacity: 0.75; }
+.info-prompt-copy.copied .info-prompt-copyhint { opacity: 1; color: var(--accent); }
 /* 실패 사유 콜아웃 */
 .info-error {
   display: flex; flex-direction: column; gap: 4px;

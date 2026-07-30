@@ -54,6 +54,18 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     if (url) onPreview({ url, type: r.type, name: r.role || "source" });
   };
   const [pos, setPos] = useState(() => clampStart(target.x, target.y));
+  // 프롬프트 클릭 복사 — 텍스트를 클립보드에 담고 '복사됨' 잠깐 표시(칩은 stopPropagation 이라 미리보기만).
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const copyPrompt = async (text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPrompt(true);
+      setTimeout(() => setCopiedPrompt(false), 1500);
+    } catch {
+      /* 클립보드 접근 차단 환경 — 조용히 무시 */
+    }
+  };
   const [dim, setDim] = useState<string>("");
   const [credits, setCredits] = useState<number | null>(null); // 견적(폴백)
   const [metrics, setMetrics] = useState<{
@@ -204,12 +216,20 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
         <Row
           label="프롬프트"
           value={
-            <InlinePromptRefs
-              displayPrompt={g.display_prompt}
-              prompt={g.prompt}
-              references={g.references}
-              onPreview={onPreview}
-            />
+            <div
+              className={"info-prompt-copy" + (copiedPrompt ? " copied" : "")}
+              title="클릭하면 프롬프트 복사"
+              onClick={() => copyPrompt(g.display_prompt || g.prompt)}
+            >
+              <InlinePromptRefs
+                displayPrompt={g.display_prompt}
+                prompt={g.prompt}
+                references={g.references}
+                onPreview={onPreview}
+                stopPropagation
+              />
+              <span className="info-prompt-copyhint">{copiedPrompt ? "복사됨!" : "클릭해 복사"}</span>
+            </div>
           }
         />
       </>

@@ -662,22 +662,15 @@
 }
 /* 생성중 웨이브 색을 라이브러리와 동일하게 — running=앰버(currentColor 상속). */
 .scene-card-genbody.status-running { color: #E7A93C; }
-/* 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + ⓘ 정보). */
+/* 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + 라벨). 정보는 미들클릭. */
 .scene-card-genbody.scene-genfail {
-  position: relative; flex-direction: column; gap: 6px; padding: 8px; text-align: center;
+  flex-direction: column; gap: 6px; padding: 8px; text-align: center;
   background: linear-gradient(150deg, rgba(74, 16, 22, 0.96), rgba(26, 8, 11, 0.96));
   color: #ff9a9a; font-weight: 800; letter-spacing: 0.3px;
 }
 .scene-card-genbody.scene-genfail::before {
-  content: "⚠"; font-size: 40px; line-height: 1; color: #ff5b5b;
+  content: "⚠"; font-size: 46px; line-height: 1; color: #ff5b5b; margin-bottom: 2px;
 }
-.scene-genfail-info {
-  position: absolute; top: 6px; right: 6px;
-  width: 22px; height: 22px; border-radius: 50%; padding: 0;
-  border: 1px solid rgba(255, 154, 154, 0.5); background: rgba(10, 6, 8, 0.6);
-  color: #ff9a9a; font-size: 13px; line-height: 1; cursor: pointer;
-}
-.scene-genfail-info:hover { background: rgba(255, 91, 91, 0.22); color: #fff; }
 /* 선택 카드 — 라임 강조 */
 .scene-card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); z-index: 5; }
 /* 방금 생성됨 — 라임 glow(맥동)로 '방금 만들어졌다'를 직관 표시. 카드 클릭 시 JS 가 해제. */

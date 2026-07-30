@@ -5412,30 +5412,25 @@ export function SceneBoard({
                           // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시.
                           <div className="scene-card-genbody">삭제됨</div>
                         ) : String(g?.status) === "failed" || String(g?.status) === "nsfw" || String(g?.status) === "error" ? (
-                          // 실패·NSFW 차단 — 라이브러리(My Work)와 동일한 경고 비주얼(빨강+⚠) + ⓘ 로 생성 정보 확인.
+                          // 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(빨강+⚠+라벨).
+                          //  생성 정보는 done 카드와 동일하게 '미들클릭'으로 연다(별도 ⓘ 배지 없음).
                           (() => {
                             const st = String(g?.status) === "error" ? "failed" : String(g?.status);
                             return (
                               <div
                                 className={"scene-card-genbody scene-genfail status-" + st}
                                 title={g?.error || undefined}
+                                onMouseDown={(e) => e.button === 1 && e.preventDefault()} // 휠클릭 자동스크롤 방지
+                                onAuxClick={(e) => {
+                                  if (e.button === 1 && g && onInfo) {
+                                    e.preventDefault();
+                                    onInfo({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
+                                  }
+                                }}
                               >
                                 <span className="scene-genfail-label">
                                   {generationStatusLabelFor(st, g?.error)}
                                 </span>
-                                {g && onInfo && (
-                                  <button
-                                    className="scene-genfail-info"
-                                    title="생성 정보 보기"
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onInfo({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
-                                    }}
-                                  >
-                                    ⓘ
-                                  </button>
-                                )}
                               </div>
                             );
                           })()
