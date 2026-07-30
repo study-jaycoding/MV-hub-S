@@ -290,9 +290,56 @@ export default function App() {
     setArmedAutoTags,
   });
 
+  // comfy 노드 실행 중 목록(SceneBoard 통지) — '내 작업'에 임시 생성중 카드(Comfy 로고)를 프론트 전용으로 띄운다.
+  const [comfyRunning, setComfyRunning] = useState<{ id: string; name: string }[]>([]);
   // 로컬 우선: 내 작업(tab=my)은 로컬 DB 를 그대로 읽으므로 로드된 페이지가 곧 화면 결과
   // (진행중·실패 placeholder 포함). 별도 머지 불필요.
   const visibleGens = gens;
+  // comfy 실행 중이면 '내 작업' 탭 그리드 맨 앞에 임시 생성중 카드(Comfy 로고). 서버 미저장 — 실행 끝나면 사라지고
+  //  실제 저장물이 reload 로 들어온다. tab=my 에서만(내 로컬 실행이므로 팀 탭엔 안 띄운다).
+  const comfyPlaceholders = useMemo<Generation[]>(() => {
+    if (filters.tab !== "my" || !comfyRunning.length) return [];
+    const now = new Date();
+    const created = now.toISOString().slice(0, 19).replace("T", " "); // "YYYY-MM-DD HH:MM:SS"(UTC) — 그룹핑 정합
+    return comfyRunning.map((c) => ({
+      id: "comfy-pending:" + c.id,
+      worker_id: "",
+      worker_name: null,
+      prompt: c.name || "Comfy",
+      display_prompt: null,
+      model: null,
+      params: null,
+      color: null,
+      status: "running",
+      created_at: created,
+      sort_ts: Math.floor(now.getTime() / 1000),
+      assets: [],
+      references: [],
+      tags: [],
+      auto_tags: [],
+      shared: false,
+      parent_gen_id: null,
+      is_source: false,
+      source_name: null,
+      comment: null,
+      error: null,
+      comment_count: 0,
+      has_unread: false,
+      local_only: true,
+      creator_uid: account?.creator_uid ?? null,
+      creator_name: null,
+      is_mine: true,
+      project_id: null,
+      deleted: false,
+      _comfyPending: true,
+    }));
+  }, [filters.tab, comfyRunning, account]);
+  // comfy 실행이 방금 끝났으면(1개↑→0) reload 로 저장된 결과를 당겨 placeholder→실제 카드 전환 간극을 줄인다.
+  const prevComfyRunningRef = useRef(0);
+  useEffect(() => {
+    if (prevComfyRunningRef.current > 0 && comfyRunning.length === 0) void reload();
+    prevComfyRunningRef.current = comfyRunning.length;
+  }, [comfyRunning, reload]);
   // 회색 버튼 ON → 비활성(회색)으로 표시된 카드를 그리드에서 제외(숨김). 색 dot 과 반대 방향 필터.
   // (비활성은 로컬 시각 상태라 서버가 모름 → 클라이언트 측에서 거른다.)
   // id 직접 비활성(d) + 폴더 비활성을 합친 '확장 집합' — 라이브러리 회색/숨김, 썸네일그리드에 공통 사용.
@@ -302,8 +349,8 @@ export default function App() {
   );
   // memo — App 은 진행률·토스트 등으로 자주 리렌더되므로 매번 전량 filter 하지 않게.
   const gridGens = useMemo(
-    () => filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn),
-    [visibleGens, effectiveDisabled, grayOn],
+    () => [...comfyPlaceholders, ...filterDisabledGenerations(visibleGens, effectiveDisabled, grayOn)],
+    [comfyPlaceholders, visibleGens, effectiveDisabled, grayOn],
   );
   // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
@@ -1003,6 +1050,7 @@ export default function App() {
                 onGenerateCard={(batch) => spotlightSubmitRef.current?.(batch)}
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
+                onComfyRunningChange={setComfyRunning}
                 grayOn={grayOn}
                 fill={fill}
                 typeFilter={typeFilter}
@@ -1137,9 +1185,13 @@ export default function App() {
                     groupByDate={groupByDate}
                     selectedIds={selected}
                     onSelectedChange={(next) => {
-                      setSelected(next);
+                      // comfy 임시 카드(가짜 id)는 선택에서 제외 — 전체선택/범위선택으로 삭제·배정 API 에 흘러가지 않게.
+                      const clean = [...next].some((id) => id.startsWith("comfy-pending:"))
+                        ? new Set([...next].filter((id) => !id.startsWith("comfy-pending:")))
+                        : next;
+                      setSelected(clean);
                       // 코멘트 패널이 열려 있으면 방금 클릭한(단일 선택) 카드로 따라가 그 카드 코멘트를 바로 보여준다.
-                      if (commentGenId != null && next.size === 1) setCommentGenId([...next][0]);
+                      if (commentGenId != null && clean.size === 1) setCommentGenId([...clean][0]);
                     }}
                     onToggleSelect={toggleSelect}
                     onSetSource={onSetSource}

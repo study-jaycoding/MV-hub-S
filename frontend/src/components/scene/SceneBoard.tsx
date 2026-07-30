@@ -230,6 +230,8 @@ interface Props {
   onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
   onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
+  // 현재 실행 중인 comfy 노드 목록 통지 — App 이 '내 작업'에 임시 생성중 카드(Comfy 로고)를 띄우는 데 쓴다.
+  onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
   grayOn?: boolean; // 상단 토글 — 켜면 비활성(회색) 카드를 캔버스에서 숨김
   fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
@@ -279,6 +281,7 @@ export function SceneBoard({
   onGenerateCard,
   onRenderCards,
   onRenderCardRuns,
+  onComfyRunningChange,
   grayOn,
   fill = true,
   typeFilter = "all",
@@ -458,16 +461,31 @@ export function SceneBoard({
   //  ★persist 하지 않는다(오케 경로도 여기로 통일) — 크래시·씬전환에도 '영원히 생성중'이 디스크에 남지 않게.
   //  ★count 방식 — 직접실행+오케가 같은 노드에 겹쳐 돌아도, 마지막 하나가 끝나야 웨이브가 꺼진다.
   const [runningComfyIds, setRunningComfyIds] = useState<Map<string, number>>(new Map());
-  const markComfyRunning = (ids: string[], on: boolean) =>
-    setRunningComfyIds((prev) => {
-      const n = new Map(prev);
-      for (const id of ids) {
-        const c = (n.get(id) || 0) + (on ? 1 : -1);
-        if (c > 0) n.set(id, c);
-        else n.delete(id);
-      }
-      return n;
-    });
+  const runningComfyRef = useRef<Map<string, number>>(new Map());
+  // App '내 작업' 임시 생성중 카드 통지 — 실행 중 comfy 노드의 {id,name} 목록.
+  const notifyComfyRunning = () => {
+    if (!onComfyRunningChange) return;
+    const items = [...runningComfyRef.current.keys()]
+      .map((id) => {
+        const c = cardsRef.current.find((cc) => cc.id === id);
+        return c && c.kind === "comfy" ? { id, name: c.comfyCfg?.name || "Comfy" } : null;
+      })
+      .filter((x): x is { id: string; name: string } => !!x);
+    onComfyRunningChange(items);
+  };
+  const markComfyRunning = (ids: string[], on: boolean) => {
+    // ref 를 동기적으로 갱신하고 '직접' 통지한다 — effect 가 아니라서, compose→내작업 탭 이동으로 SceneBoard 가
+    //  언마운트된 뒤 async finally 에서 off 가 와도(부모 setter 는 유효) '내 작업' placeholder 가 고착되지 않는다.
+    const n = new Map(runningComfyRef.current);
+    for (const id of ids) {
+      const c = (n.get(id) || 0) + (on ? 1 : -1);
+      if (c > 0) n.set(id, c);
+      else n.delete(id);
+    }
+    runningComfyRef.current = n;
+    setRunningComfyIds(n); // 노드 웨이브 표시용(언마운트 후엔 no-op)
+    notifyComfyRunning(); // App placeholder(언마운트 후에도 유효)
+  };
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const selectedRef = useRef(selected);

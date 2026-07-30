@@ -12,6 +12,7 @@ import type { GradeMode } from "../lib/gradeStep";
 import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
+import comfyLogo from "../assets/comfy-logo.svg";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import {
   formatGenerationDate,
@@ -529,6 +530,22 @@ function GenerationCardImpl({
   }
 
   // ── 그리드 모드 ── 정사각 썸네일 + 하단 컬러/S·T·C 바(에셋 파트와 동일). 액션은 호버 오버레이.
+  // comfy 실행 중 임시 카드(프론트 전용) — 완전 비인터랙티브(드래그·오버레이·선택·액션 없음)로 렌더해
+  //  가짜 id 가 삭제/배정/태그 등 어떤 API 로도 흘러가지 않게 한다. Comfy 로고로 '지금 comfy 생성중' 표시.
+  if (gen._comfyPending) {
+    return (
+      <div className={"card card-grid" + (fill ? "" : " contain")}>
+        <div className="card-thumb">
+          <div className="thumb-placeholder status-running">
+            <span className="gen-generating gen-comfy-pending">
+              <img src={comfyLogo} alt="Comfy" className="gen-comfy-logo" />
+              <span className="gen-generating-label">생성중</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       className={
