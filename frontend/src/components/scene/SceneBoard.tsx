@@ -1547,11 +1547,23 @@ export function SceneBoard({
         for (const m of comfyOutputMedia(s, overlay))
           out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
       else if (s.kind === "list") {
-        const li = collectListInputs(s.id, cardsById, resolved);
+        const li = collectListInputs(s.id, cardsById, resolved, overlay);
         if (li.kind === "reference")
           for (const cid of li.sourceIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
         else if (li.kind === "generation")
-          for (const cid of li.generationCardIds) pushGen(cardsById.get(cid));
+          for (const cid of li.generationCardIds) {
+            const gc = cardsById.get(cid);
+            // list 안의 comfy 항목은 실행 출력(overlay/결과)을 직접 미디어로 — 라이브러리 저장 전에도 동작.
+            if (gc?.kind === "comfy") {
+              const media = comfyOutputMedia(gc, overlay);
+              if (media.length) {
+                for (const m of media)
+                  out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
+                continue;
+              }
+            }
+            pushGen(gc);
+          }
       }
     }
     return out;

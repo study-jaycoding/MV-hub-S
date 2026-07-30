@@ -41,7 +41,11 @@ export function canConnect(
     case "generation":
       return from.kind !== "view";
     case "list":
-      return from.kind === "generation" || from.kind === "text" || from.kind === "reference";
+      // comfy 출력물(이미지·영상=generation 류, 텍스트=text 류)도 리스트 항목이 될 수 있다.
+      return (
+        from.kind === "generation" || from.kind === "text" ||
+        from.kind === "reference" || from.kind === "comfy"
+      );
     case "view":
       return (
         from.kind === "generation" || from.kind === "list" || from.kind === "text" ||
@@ -396,6 +400,22 @@ export function incomingTextOf(
     .join("\n");
 }
 
+// comfy 노드가 리스트에서 어떤 종류로 취급될지 — 미디어(이미지·영상) 출력이면 generation 류,
+//  텍스트 전용 출력이면 text 류. 아직 워크플로도 출력도 없어 판정 불가면 null(연결은 되나 내용은 invalid).
+//  판정 근거: 저장된 생성물(variantIds) / 워크플로 출력선언(comfyDeclaredKinds) / 실행 결과(comfyOutputMedia·Texts).
+type ListComfySourceKind = "generation" | "text";
+function comfyListSourceKind(
+  card: SceneCard,
+  overlay?: ComfyOutputsById,
+): ListComfySourceKind | null {
+  if (card.kind !== "comfy") return null;
+  const declared = comfyDeclaredKinds(card.comfyCfg?.content);
+  if (variantIds(card).length > 0 || declared.media || comfyOutputMedia(card, overlay).length > 0)
+    return "generation";
+  if (declared.text || comfyOutputTexts(card, overlay).length > 0) return "text";
+  return null;
+}
+
 export function collectListInputs(
   listId: string,
   cardsById: Map<string, SceneCard>,
@@ -410,11 +430,12 @@ export function collectListInputs(
   if (!sources.length) return { kind: "empty", sourceIds: [], generationCardIds: [], text: "" };
   const sorted = sortByOrder(sources);
   const sourceIds = sorted.map((s) => s.c.id);
-  const kinds = new Set(sorted.map((s) => s.c.kind));
-  // 텍스트를 내놓는 소스 = 텍스트 노드 또는 텍스트 출력이 있는 comfy 노드.
+  // 생성물/텍스트를 내놓는 소스 — comfy 는 출력 종류에 따라 generation·text 로 분류.
+  const isGenerationSrc = (c: SceneCard) =>
+    c.kind === "generation" || comfyListSourceKind(c, overlay) === "generation";
   const isTextSrc = (c: SceneCard) =>
-    c.kind === "text" || (c.kind === "comfy" && comfyOutputTexts(c, overlay).length > 0);
-  if ([...kinds].every((k) => k === "generation"))
+    c.kind === "text" || comfyListSourceKind(c, overlay) === "text";
+  if (sorted.every((s) => isGenerationSrc(s.c)))
     return { kind: "generation", sourceIds, generationCardIds: sourceIds, text: "" };
   if (sorted.every((s) => isTextSrc(s.c)))
     return {
@@ -426,10 +447,10 @@ export function collectListInputs(
         .map((s) => effectiveTextOf(s.c.id, cardsById, edges, seen, overlay))
         .join("\n"),
     };
-  if ([...kinds].every((k) => k === "reference"))
+  if (sorted.every((s) => s.c.kind === "reference"))
     return { kind: "reference", sourceIds, generationCardIds: [], text: "" };
-  // 그 외: gen+text 혼합이면 mixed, 그 외 종류가 섞이면 invalid(리스트는 동종만).
-  const hasNonGenText = sorted.some((s) => !isTextSrc(s.c) && s.c.kind !== "generation");
+  // 그 외: gen+text 혼합이면 mixed, reference·미판정 comfy 등이 섞이면 invalid(리스트는 동종만).
+  const hasNonGenText = sorted.some((s) => !isGenerationSrc(s.c) && !isTextSrc(s.c));
   return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
 }
 
@@ -450,6 +471,8 @@ export function collectViewGenCardIds(
     if (!out.includes(id)) out.push(id);
   };
   for (const c of srcs) {
+    // comfy 직접 연결은 여기서 넣지 않는다 — 소비처(buildViewClips)가 comfyOutputMedia 로 따로 담아 중복 방지.
+    //  단 list 경유 comfy 는 아래 generationCardIds 로 들어온다(그건 comfySrcs 가 안 잡으므로 중복 아님).
     if (c.kind === "generation") push(c.id);
     else if (c.kind === "list") {
       const li = collectListInputs(c.id, cardsById, edges);
@@ -656,7 +679,7 @@ export function collectGenText(
 // 생성카드에 연결된 comfy 노드의 '미디어 출력(image/video)'을 레퍼런스로 파생 수집한다(순수·transient).
 //  · card.refs 처럼 persist 하지 않는다 — comfy 재실행 때 URL 이 바뀌므로 생성 직전에 최신 comfyCfg.outputs 에서
 //    그때그때 읽는다(stale URL 자동 해소). collectGenText 와 같은 파생-시점 철학.
-//  · comfy 를 직접 연결한 경우만 처리(comfy→list 는 list 가 미디어를 수집하지 않으므로 제외). comfy 끼리는 y→x 순.
+//  · comfy 직접 연결 + list 경유(comfy 를 담은 generation-list)를 모두 처리. comfy 미디어를 입력 ref 로.
 //  · 텍스트 출력은 collectGenText 가 프롬프트로 가져가므로 여기선 미디어만. 한 comfy 가 둘 다 내면 프롬프트+ref 로 동시 사용.
 export function collectGenRefs(
   genId: string,
@@ -664,18 +687,23 @@ export function collectGenRefs(
   edges: SceneEdge[],
   overlay?: ComfyOutputsById,
 ): Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] {
-  const comfys = edges
+  const srcs = edges
     .filter((e) => e.to === genId)
-    .map((e) => cardsById.get(e.from))
-    .filter((c): c is SceneCard => c?.kind === "comfy")
-    .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+    .map((e) => ({ e, c: cardsById.get(e.from) }))
+    .filter(
+      (x): x is { e: SceneEdge; c: SceneCard } =>
+        x.c?.kind === "comfy" || x.c?.kind === "list",
+    );
   const out: Pick<SceneRef, "file_path" | "type" | "name" | "thumb" | "source_gen_id">[] = [];
-  for (const c of comfys) {
-    // 워크플로우가 '텍스트 전용'을 선언하면 미디어 ref 로 붙이지 않는다 — 이전 워크플로우의 stale 미디어
-    //  출력이 레퍼런스로 잘못 새는 것을 막는다(텍스트는 collectGenText 가 프롬프트로 가져간다).
+  const seen = new Set<string>();
+  const pushComfyMedia = (c: SceneCard) => {
+    // 워크플로우가 '텍스트 전용'을 선언하면 미디어 ref 로 붙이지 않는다(stale 미디어 오누출 방지).
     const dk = comfyDeclaredKinds(c.comfyCfg?.content);
-    if (dk.text && !dk.media) continue;
+    if (dk.text && !dk.media) return;
     for (const m of comfyOutputMedia(c, overlay)) {
+      const key = `${c.id}|${m.url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push({
         file_path: m.url,
         type: m.kind,
@@ -683,6 +711,19 @@ export function collectGenRefs(
         thumb: m.kind === "image" ? m.url : null,
         source_gen_id: null,
       });
+    }
+  };
+  for (const s of sortByOrder(srcs)) {
+    if (s.c.kind === "comfy") {
+      pushComfyMedia(s.c);
+    } else {
+      // list 경유 — generation-list 안의 comfy 항목만 미디어로 편다(순수 generation 카드는 다른 경로).
+      const li = collectListInputs(s.c.id, cardsById, edges, overlay);
+      if (li.kind !== "generation") continue;
+      for (const cid of li.generationCardIds) {
+        const c = cardsById.get(cid);
+        if (c?.kind === "comfy") pushComfyMedia(c);
+      }
     }
   }
   return out;
