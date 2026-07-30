@@ -150,7 +150,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
               : modelName(g.model)
           }
         />
-        {g.status === "failed" && (
+        {(g.status === "failed" || g.status === "nsfw") && (
           <div className="info-error">
             <span className="info-error-label">⚠ 실패 사유</span>
             <span className="info-error-text">{g.error || "사유 정보 없음 (옛 생성)"}</span>

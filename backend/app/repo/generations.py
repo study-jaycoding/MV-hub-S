@@ -549,13 +549,22 @@ def create_comfy_generation(
             raise
 
 
+# 종료(터미널) 상태에서만 error(사유)를 보존한다 — nsfw(콘텐츠 차단)도 실패의 일종이라 사유를 남긴다.
+#  (예전엔 status=="failed" 만 봐서 nsfw 사유가 버려졌다.) 진행/성공(done/pending/running)은 사유를 비운다.
+_ACTIVE_STATUSES = {"done", "pending", "running"}
+
+
+def _stored_error(status: str, error: Optional[str]) -> Optional[str]:
+    return error if status not in _ACTIVE_STATUSES else None
+
+
 def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
-    """상태 전이. failed 면 error(사유)를 저장하고, 그 외 전이는 error 를 비운다
+    """상태 전이. 터미널(failed·nsfw 등)이면 error(사유)를 저장하고, 그 외 전이는 error 를 비운다
     (재시도/재생성으로 성공·진행 시 옛 사유가 남지 않게)."""
     with get_connection() as conn:
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, error if status == "failed" else None, gen_id),
+            (status, _stored_error(status, error), gen_id),
         )
 
 
@@ -712,7 +721,7 @@ def apply_reconcile(
             )
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, error if status == "failed" else None, gen_id),
+            (status, _stored_error(status, error), gen_id),
         )
     return True
 
@@ -830,7 +839,7 @@ def apply_local_fulfillment(
             )
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
-            (status, error if status == "failed" else None, gen_id),
+            (status, _stored_error(status, error), gen_id),
         )
     return True
 
@@ -878,10 +887,24 @@ def apply_local_anchor(gen_id: str, rid: str, job_id: str, *, verifying: bool = 
     return True
 
 
-def apply_local_failure(gen_id: str, rid: str, reason: str) -> bool:
+def apply_local_failure(
+    gen_id: str,
+    rid: str,
+    reason: str,
+    *,
+    job_id: Optional[str] = None,
+    status: str = "failed",
+) -> bool:
     """gen-request fail 을 원자·CAS 로 적용 — 요청표시와 generation 상태를 한 트랜잭션에.
     요청이 이미 종결(done/failed)이면 ROLLBACK·False(완료를 실패로 뒤집지 않음 — fulfill 과 대칭).
-    예전엔 set_status + mark_request 2개 분리 커밋이라 그 사이 fulfill 이 끼면 split 상태가 났다."""
+    예전엔 set_status + mark_request 2개 분리 커밋이라 그 사이 fulfill 이 끼면 split 상태가 났다.
+
+    ★job_id 앵커 + 유령 정리: 실패에 job_id 가 있으면(에이전트가 넘기거나 사유 문자열에서 파싱) 그 값을
+    원래 placeholder 에 박는다 → 이후 generate list ingest 가 이 행을 UPDATE(멱등)하고 새 synced 행을
+    INSERT 하지 않는다. 이미 레이스로 생긴 같은 job_id 의 origin='synced' 중복 행은 여기서 제거한다.
+    (NSFW 처럼 결과 URL 이 없는 실패는 URL 매칭이 불가능해 예전엔 유령 카드가 하나 더 생겼다.)"""
+    if status in _ACTIVE_STATUSES:
+        status = "failed"  # 방어 — 실패 경로에 진행/성공 상태가 들어오면 failed 로 강등
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
@@ -892,9 +915,22 @@ def apply_local_failure(gen_id: str, rid: str, reason: str) -> bool:
         if cur.rowcount == 0:
             conn.execute("ROLLBACK")
             return False
-        conn.execute(
-            "UPDATE generation SET status='failed', error=? WHERE id=?", (reason, gen_id)
-        )
+        if job_id:
+            # 같은 job_id 의 동기화 유령 행 제거(원래 placeholder gen_id 는 보존).
+            for dup in conn.execute(
+                "SELECT id FROM generation WHERE job_id=? AND id<>? AND origin='synced'",
+                (job_id, gen_id),
+            ).fetchall():
+                _delete_generation(conn, dup["id"])
+            conn.execute(
+                "UPDATE generation SET job_id=COALESCE(job_id, ?), status=?, error=? WHERE id=?",
+                (job_id, status, _stored_error(status, reason), gen_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE generation SET status=?, error=? WHERE id=?",
+                (status, _stored_error(status, reason), gen_id),
+            )
     return True
 
 

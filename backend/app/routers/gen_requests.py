@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
@@ -34,6 +36,31 @@ from ..services.agent_signals import agent_signals
 from ..ws import manager
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
+
+# 진행/성공 상태 — 이 목록 밖(failed·nsfw 등)만 error(사유)를 보존한다.
+_ACTIVE_STATUSES = {"done", "pending", "running"}
+# 구버전 에이전트의 /fail 은 job_id 를 안 넘긴다 — CLI 실패 사유 문자열에서 job_id·상태를 되찾아
+#  원래 placeholder 에 앵커한다("... job <uuid> ended with status 'nsfw' ...").
+_HF_ENDED_RE = re.compile(
+    r"\bjob\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"\s+ended with status\s+['\"]?([A-Za-z_ -]+)['\"]?",
+    re.IGNORECASE,
+)
+
+
+def _terminal_error(status: str, error) -> str | None:
+    return error if status not in _ACTIVE_STATUSES else None
+
+
+def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
+    """실패 사유 문자열에서 (job_id, 정규화 상태) 를 되찾는다. 못 찾으면 (None, None)."""
+    m = _HF_ENDED_RE.search(reason or "")
+    if not m:
+        return None, None
+    status = cli_bridge.normalize_status(m.group(2).strip().replace(" ", "_"))
+    if status in _ACTIVE_STATUSES:
+        status = "failed"
+    return m.group(1), status
 
 
 def _pm(action) -> None:
@@ -176,7 +203,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     g = parsed.get("generation") or {}
     asset = parsed.get("asset")
     status = g.get("status") or "done"
-    err = g.get("error") if status == "failed" else None
+    err = _terminal_error(status, g.get("error"))
     # ★원자 적용(+CAS): 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로. 동시 fulfill/fail 로
     # 이미 종결됐으면 False → 멱등 반환(완료를 덮어쓰지 않음·중복 브로드캐스트 안 함).
     applied = repo.apply_local_fulfillment(
@@ -194,7 +221,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         sort_ts=g.get("sort_ts"),
         status=status,
         error=err,
-        request_status="done" if status != "failed" else "failed",
+        request_status="done" if status == "done" else "failed",
     )
     if not applied:
         gen = repo.get_generation(gen_id)
@@ -300,7 +327,7 @@ async def reconcile_gen_request(
     # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
     if status in ("pending", "running"):
         return {"ok": True, "applied": False, "status": status}
-    err = g.get("error") if status == "failed" else None
+    err = _terminal_error(status, g.get("error"))
     applied = repo.apply_reconcile(
         gen_id,
         g.get("id"),
@@ -331,8 +358,16 @@ async def reconcile_gen_request(
 
 
 @router.post("/gen-requests/{rid}/fail")
-async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실행 실패"):
-    """에이전트가 로컬 실행 실패를 보고 — 요청·placeholder 모두 failed."""
+async def fail_gen_request(
+    rid: str,
+    request: Request,
+    reason: str = "로컬 실행 실패",
+    job_id: str | None = None,
+    hf_status: str | None = None,
+):
+    """에이전트가 로컬 실행 실패를 보고 — 요청·placeholder 모두 failed.
+    job_id/hf_status 를 주면(신에이전트) 그대로, 없으면(구에이전트) 사유 문자열에서 되찾아 placeholder 에
+    앵커한다 → generate list ingest 가 새 유령 행을 안 만들고 이 행을 UPDATE(멱등)한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)
@@ -342,13 +377,18 @@ async def fail_gen_request(rid: str, request: Request, reason: str = "로컬 실
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         return {"ok": True}  # 이미 종결 — 멱등 무시(완료된 것을 실패로 뒤집지 않음)
+    parsed_job_id, parsed_status = _failure_anchor_from_reason(reason)
+    final_job_id = job_id or parsed_job_id
+    final_status = cli_bridge.normalize_status(hf_status) if hf_status else (parsed_status or "failed")
+    if final_status in _ACTIVE_STATUSES:
+        final_status = "failed"
     # 원자·CAS 적용 — 동시 fulfill 이 라우터 밖 status 검사를 함께 통과해 done 을 failed 로 뒤집던
     # TOCTOU 를 닫는다. 이미 종결됐으면 False → 멱등 반환(브로드캐스트 안 함).
-    if not repo.apply_local_failure(req["gen_id"], rid, reason):
+    if not repo.apply_local_failure(req["gen_id"], rid, reason, job_id=final_job_id, status=final_status):
         return {"ok": True}
-    _pm(lambda _m: _m.record_completed(req["gen_id"]))  # PM 메트릭: 실패도 종료시각 기록
+    _pm(lambda _m: _m.record_completed(req["gen_id"], job_id=final_job_id))  # PM 메트릭: 실패도 종료시각 기록
     await manager.broadcast(
-        {"type": "progress", "generation_id": req["gen_id"], "status": "failed", "error": reason},
+        {"type": "progress", "generation_id": req["gen_id"], "status": final_status, "error": reason},
         account_uid=realtime_scope(acc),  # 그 계정 소켓에만
     )
     return {"ok": True}
