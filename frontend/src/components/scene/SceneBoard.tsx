@@ -3638,16 +3638,23 @@ export function SceneBoard({
   //  이렇게 해야 '한번 뺐다 넣고 다시 빼도 매번 반응'한다(늘어난 크기를 rect 에 박제하지 않으므로).
   const frameOf = (g: SceneGroup) => grownRect(g);
   // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
-  const groupViews = groups
-    .map((g) => {
-      const frame = frameOf(g);
-      if (!frame) return null;
-      const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
-      return { g, frame, bar };
-    })
-    .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v);
-  const collapsedBarById = new Map(
-    groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const),
+  // 매 렌더 전체 그룹×멤버 bounds 계산이라 메모화 — 입력(그룹·카드위치/크기·이탈·측정)이 바뀔 때만.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const groupViews = useMemo(
+    () =>
+      groups
+        .map((g) => {
+          const frame = frameOf(g);
+          if (!frame) return null;
+          const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
+          return { g, frame, bar };
+        })
+        .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v),
+    [groups, cards, ejectedIds, heightTick],
+  );
+  const collapsedBarById = useMemo(
+    () => new Map(groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const)),
+    [groupViews],
   );
   // 접힌 그룹 멤버에 닿는 연결선 → 멤버 대신 그룹 막대의 포트로 재연결(브릿지). 내부(같은 그룹끼리)는 숨김.
   const barOut = (id: string) => {
@@ -3816,21 +3823,27 @@ export function SceneBoard({
   };
 
   // 접힌 그룹 막대로 재연결되는 브릿지 선 — 멤버가 숨어 visibleEdges 에서 빠진 연결을 막대 포트로 그린다.
-  const groupBridges = collapsedMemberOf.size
-    ? edges.flatMap((e) => {
-        if (grayHidden.has(e.from) || grayHidden.has(e.to)) return [];
-        const fg = collapsedMemberOf.get(e.from);
-        const tg = collapsedMemberOf.get(e.to);
-        if (!fg && !tg) return []; // 둘 다 안 접힘 → 일반선(visibleEdges)이 그림
-        if (fg && tg && fg.id === tg.id) return []; // 같은 접힌 그룹 내부 연결 → 숨김
-        const a = barOut(e.from);
-        const b = barIn(e.to);
-        if (!a || !b) return [];
-        return [
-          { id: e.id, from: e.from, to: e.to, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
-        ];
-      })
-    : [];
+  // 접힌 그룹이 있을 때만 도는 flatMap 이지만 매 렌더 재계산되던 것을 메모화(입력 변경 시에만).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const groupBridges = useMemo(
+    () =>
+      collapsedMemberOf.size
+        ? edges.flatMap((e) => {
+            if (grayHidden.has(e.from) || grayHidden.has(e.to)) return [];
+            const fg = collapsedMemberOf.get(e.from);
+            const tg = collapsedMemberOf.get(e.to);
+            if (!fg && !tg) return []; // 둘 다 안 접힘 → 일반선(visibleEdges)이 그림
+            if (fg && tg && fg.id === tg.id) return []; // 같은 접힌 그룹 내부 연결 → 숨김
+            const a = barOut(e.from);
+            const b = barIn(e.to);
+            if (!a || !b) return [];
+            return [
+              { id: e.id, from: e.from, to: e.to, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
+            ];
+          })
+        : [],
+    [collapsedMemberOf, edges, grayHidden, edgeRoles, refCardEdgeIds, genRefEdgeIds, collapsedBarById, cards, heightTick],
+  );
 
   return (
     <div
