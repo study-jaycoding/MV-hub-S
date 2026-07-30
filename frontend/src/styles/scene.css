@@ -587,6 +587,15 @@
 @keyframes comfy-loading-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .scene-comfynode-loading-logo { animation: none; opacity: 0.85; } }
 .reduce-motion .scene-comfynode-loading-logo { animation: none; opacity: 0.85; }
+/* 생성카드 생성중 — 배경 검정(힉스필드 마크가 원래 검정 배경에 놓이도록). */
+.scene-card-genbody.scene-genloading { background: #000; }
+/* 생성카드 생성중 — 컨피 노드 로딩과 동일하게 힉스필드 로고를 크게 맥동. */
+.scene-genloading-logo {
+  width: 60%; max-width: 170px; height: auto;
+  animation: comfy-loading-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .scene-genloading-logo { animation: none; opacity: 0.85; } }
+.reduce-motion .scene-genloading-logo { animation: none; opacity: 0.85; }
 .scene-comfynode-genwrap {
   position: relative; width: 100%; height: 150px; flex: none;
 }

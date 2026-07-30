@@ -80,6 +80,7 @@ import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import comfyLogo from "../../assets/comfy-logo.svg";
+import higgsfieldLogo from "../../assets/higgsfield-logo.svg";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
@@ -5512,16 +5513,9 @@ export function SceneBoard({
                     // 상류 comfy 가 도는 중 — 완료 결과(HistoryBoardNode)보다 '생성중(회색)'을 최우선으로 덮어
                     //  이 노드 전체가 생성 진행 중임을 바로 보인다(컨피 완료 → 실제 생성잡 → 아래 Generating).
                     <div className="scene-card-inner">
-                      <div className="scene-card-genbody status-pending">
+                      <div className="scene-card-genbody status-pending scene-genloading">
                         <span className="gen-generating">
-                          <span className="gen-wave" aria-hidden>
-                            <span className="gen-wave-bar" />
-                            <span className="gen-wave-bar" />
-                            <span className="gen-wave-bar" />
-                            <span className="gen-wave-bar" />
-                            <span className="gen-wave-bar" />
-                          </span>
-                          <span className="gen-generating-label">생성중</span>
+                          <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" />
                         </span>
                       </div>
                     </div>
@@ -5587,18 +5581,10 @@ export function SceneBoard({
                             );
                           })()
                         ) : (
-                          // 생성중 — 라이브러리(My Work)와 동일한 웨이브 아이콘 + 'Generating'.
-                          // status 클래스로 색도 동일하게(running=앰버, pending=회색).
-                          <div className={"scene-card-genbody status-" + String(g?.status || card.status || "pending")}>
+                          // 생성중 — 힉스필드 로고만 크게 맥동(글씨 없음) · 배경 검정(scene-genloading).
+                          <div className={"scene-card-genbody scene-genloading status-" + String(g?.status || card.status || "pending")}>
                             <span className="gen-generating">
-                              <span className="gen-wave" aria-hidden>
-                                <span className="gen-wave-bar" />
-                                <span className="gen-wave-bar" />
-                                <span className="gen-wave-bar" />
-                                <span className="gen-wave-bar" />
-                                <span className="gen-wave-bar" />
-                              </span>
-                              <span className="gen-generating-label">Generating</span>
+                              <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" />
                             </span>
                           </div>
                         )

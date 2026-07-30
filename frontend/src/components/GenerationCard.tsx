@@ -13,6 +13,7 @@ import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
 import { MediaThumbnail } from "./MediaThumbnail";
 import comfyLogo from "../assets/comfy-logo.svg";
+import higgsfieldLogo from "../assets/higgsfield-logo.svg";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import {
   formatGenerationDate,
@@ -20,7 +21,6 @@ import {
   generationStatusLabel,
   generationStatusLabelFor,
   generationStatusTitle,
-  isVerifying,
 } from "../lib/generationDisplay";
 import { InlinePromptRefs, hasInlinePromptRefs } from "./common/InlinePromptRefs";
 import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay";
@@ -245,18 +245,9 @@ function GenerationCardImpl({
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
-              // 생성중(대기·실행 모두) — 오디오 이퀄라이저식 웨이브 막대 5개 + 'Generating' 캡션.
-              <span className="gen-generating">
-                <span className="gen-wave" aria-hidden>
-                  <span className="gen-wave-bar" />
-                  <span className="gen-wave-bar" />
-                  <span className="gen-wave-bar" />
-                  <span className="gen-wave-bar" />
-                  <span className="gen-wave-bar" />
-                </span>
-                <span className="gen-generating-label">
-                  {isVerifying(gen.status, gen.error) ? "확인중" : "Generating"}
-                </span>
+              // 생성중(대기·실행 모두) — 힉스필드 로고(펄스)만 표시(글씨 없음).
+              <span className="gen-generating gen-comfy-pending">
+                <img src={higgsfieldLogo} alt="Higgsfield" className="gen-comfy-logo" />
               </span>
             ) : (
               generationStatusLabel(gen.status)
@@ -539,7 +530,6 @@ function GenerationCardImpl({
           <div className="thumb-placeholder status-running">
             <span className="gen-generating gen-comfy-pending">
               <img src={comfyLogo} alt="Comfy" className="gen-comfy-logo" />
-              <span className="gen-generating-label">생성중</span>
             </span>
           </div>
         </div>
