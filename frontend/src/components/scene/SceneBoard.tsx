@@ -5113,7 +5113,7 @@ export function SceneBoard({
                                 return (
                                   <div className="scene-comfynode-outputs">
                                     <div className="scene-comfynode-loading">
-                                      <img src={comfyLogo} alt="Comfy 작업 중" className="scene-comfynode-loading-logo" />
+                                      <img src={comfyLogo} alt="Comfy 작업 중" className="scene-comfynode-loading-logo" draggable={false} />
                                     </div>
                                   </div>
                                 );
@@ -5515,7 +5515,7 @@ export function SceneBoard({
                     <div className="scene-card-inner">
                       <div className="scene-card-genbody status-pending scene-genloading">
                         <span className="gen-generating">
-                          <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" />
+                          <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" draggable={false} />
                         </span>
                       </div>
                     </div>
@@ -5584,7 +5584,7 @@ export function SceneBoard({
                           // 생성중 — 힉스필드 로고만 크게 맥동(글씨 없음) · 배경 검정(scene-genloading).
                           <div className={"scene-card-genbody scene-genloading status-" + String(g?.status || card.status || "pending")}>
                             <span className="gen-generating">
-                              <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" />
+                              <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" draggable={false} />
                             </span>
                           </div>
                         )
