@@ -1625,21 +1625,31 @@ export function SceneBoard({
       return;
     }
     const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    // 프롬프트 = '텍스트 입력 노드' 필드값만(model·resolution 등 설정값 제외). 연결되면 연결 텍스트로.
-    const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
-    const connected = hasTextConnection(cardId, map, edgesRef.current);
-    const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
-    const promptText =
-      driveKeys
-        .map((k) => (connected ? linked : String(cfg?.paramValues?.[k] ?? "")))
-        .filter((t) => t.trim())
-        .join("\n") || cfg?.name || "Comfy 출력";
-    const inputs = gatherComfyMedia(cardId).map((m) => ({
-      url: m.url,
-      type: m.type,
-      name: m.name,
-      source_gen_id: m.source_gen_id ?? null, // 생성물 입력이면 계보 연결(서버가 열람권한 검증)
-    }));
+    // 프롬프트·입력 메타 수집은 '최선 노력' — 여기서 예외가 나도(엣지 순회·malformed 워크플로 등) 출력물 저장은
+    //  진행돼야 하고, 렌더 배치 실행(runPlanComfyCopies)이 중단되면 안 된다(silent 자동저장 규약). 이전엔 이 구간이
+    //  try 밖이라 의존이 섞인 복잡한 보드에서 예외 1개가 렌더 전체를 죽여 '노드는 완료·저장 실패·생성 미시작'을 유발했다.
+    //  실패 시 프롬프트=워크플로명, 입력=빈 목록으로 강등한다.
+    let promptText = cfg?.name || "Comfy 출력";
+    let inputs: { url: string; type: "image" | "video"; name: string; source_gen_id: string | null }[] = [];
+    try {
+      // 프롬프트 = '텍스트 입력 노드' 필드값만(model·resolution 등 설정값 제외). 연결되면 연결 텍스트로.
+      const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
+      const connected = hasTextConnection(cardId, map, edgesRef.current);
+      const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
+      promptText =
+        driveKeys
+          .map((k) => (connected ? linked : String(cfg?.paramValues?.[k] ?? "")))
+          .filter((t) => t.trim())
+          .join("\n") || cfg?.name || "Comfy 출력";
+      inputs = gatherComfyMedia(cardId).map((m) => ({
+        url: m.url,
+        type: m.type,
+        name: m.name,
+        source_gen_id: m.source_gen_id ?? null, // 생성물 입력이면 계보 연결(서버가 열람권한 검증)
+      }));
+    } catch (e) {
+      console.warn("comfy 저장 메타(프롬프트/입력) 수집 실패 — 출력물만 저장:", e);
+    }
     try {
       const res = await comfyApi.saveToLibrary({
         outputs: outs.map((o) => ({ url: o.url as string, kind: o.kind })),
