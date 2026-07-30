@@ -68,6 +68,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   const sceneActionRef = useRef<{
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+    flushPending: () => void; // 밀린 입력 저장 확정 — 씬 전환 직전 호출
   } | null>(null);
 
   const refreshScenes = () => setScenes(listScenes(null));

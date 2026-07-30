@@ -234,6 +234,7 @@ interface Props {
   actionRef?: MutableRefObject<{
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+    flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (batch?: number) => void; // batch = 이 노드의 배치수(comfy 없는 경로에도 적용)
@@ -798,6 +799,30 @@ export function SceneBoard({
     lastCommitRef.current = next;
     onChangeRef.current(next);
   };
+  // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
+  //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
+  //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
+  const pendingPersistRef = useRef<number | undefined>(undefined);
+  const flushPending = () => {
+    if (pendingPersistRef.current !== undefined) {
+      clearTimeout(pendingPersistRef.current);
+      pendingPersistRef.current = undefined;
+    }
+    const last = lastCommitRef.current;
+    if (cardsRef.current === last.cards && edgesRef.current === last.edges) return; // 밀린 편집 없음
+    persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
+  };
+  const flushPendingRef = useRef(flushPending);
+  flushPendingRef.current = flushPending;
+  const scheduleInputPersist = () => {
+    if (pendingPersistRef.current !== undefined) clearTimeout(pendingPersistRef.current);
+    pendingPersistRef.current = window.setTimeout(() => {
+      pendingPersistRef.current = undefined;
+      flushPendingRef.current();
+    }, 400);
+  };
+  // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
+  useEffect(() => () => flushPendingRef.current(), []);
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
@@ -1539,8 +1564,9 @@ export function SceneBoard({
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
+    cardsRef.current = nextCards; // 즉시 반영 — 생성/flush 가 최신 텍스트를 읽게
     setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    scheduleInputPersist(); // 저장은 디바운스(blur·언마운트·씬전환 시 flush)
   };
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
@@ -1557,7 +1583,11 @@ export function SceneBoard({
   };
   // comfy 노드: comfyCfg 부분 병합 저장(모달 저장·실행 상태 갱신·파라미터 값 변경 공용).
   //  opts.undo=false = 실행상태(running/done/failed)·재파싱 등 파생 저장 → undo 스택에 안 쌓는다(사용자 편집만 undo).
-  const patchComfyCfg = (cardId: string, patch: Partial<SceneComfyCfg>, opts?: { undo?: boolean }) => {
+  const patchComfyCfg = (
+    cardId: string,
+    patch: Partial<SceneComfyCfg>,
+    opts?: { undo?: boolean; defer?: boolean }, // defer=true = 파라미터 입력 → 저장 디바운스(blur/실행 시 flush)
+  ) => {
     const nextCards = cardsRef.current.map((c) =>
       c.id === cardId && c.kind === "comfy"
         ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
@@ -1565,7 +1595,8 @@ export function SceneBoard({
     );
     cardsRef.current = nextCards; // ref 즉시 갱신 — 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성)
     setCards(nextCards);
-    persist(nextCards, edgesRef.current, groupsRef.current, opts);
+    if (opts?.defer) scheduleInputPersist();
+    else persist(nextCards, edgesRef.current, groupsRef.current, opts);
   };
   // 노드별 배치수 설정 — 카드에 저장해 노드마다 각자 관리(1~4). 씬 저장으로 유지.
   const setCardBatch = (cardId: string, n: number) => {
@@ -1579,7 +1610,7 @@ export function SceneBoard({
   const setComfyParam = (cardId: string, key: string, value: string | number | boolean) => {
     const card = cardsRef.current.find((c) => c.id === cardId);
     const values = { ...(card?.comfyCfg?.paramValues || {}), [key]: value };
-    patchComfyCfg(cardId, { paramValues: values });
+    patchComfyCfg(cardId, { paramValues: values }, { defer: true }); // 파라미터 입력 저장 디바운스(blur/실행 시 flush)
   };
   // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
   //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
@@ -2568,7 +2599,7 @@ export function SceneBoard({
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
   //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
   useLayoutEffect(() => {
-    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs };
+    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs, flushPending };
     return () => {
       if (actionRef) actionRef.current = null;
     };
@@ -4390,7 +4421,7 @@ export function SceneBoard({
                             spellCheck={false}
                             autoFocus
                             onMouseDown={(e) => e.stopPropagation()}
-                            onBlur={() => setEditTextId(null)}
+                            onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
                             onChange={(e) => setNodeText(card.id, e.target.value)}
                           />
                         ) : (
@@ -4802,6 +4833,7 @@ export function SceneBoard({
                             value={card.text || ""}
                             placeholder="채널 이름 입력"
                             onChange={(e) => setNodeText(card.id, e.target.value)}
+                            onBlur={() => flushPending()} // 입력 끝나면 밀린 저장 확정
                           />
                         </div>
                       )}
@@ -5268,6 +5300,7 @@ export function SceneBoard({
                                           checked={!!v}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, e.target.checked)}
+                                          onBlur={() => flushPending()}
                                         />
                                       ) : p.choices && p.choices.length ? (
                                         <select
@@ -5277,6 +5310,7 @@ export function SceneBoard({
                                             const orig = p.choices?.find((ch) => String(ch) === e.target.value);
                                             setComfyParam(card.id, p.key, orig ?? e.target.value);
                                           }}
+                                          onBlur={() => flushPending()}
                                         >
                                           {p.choices.map((ch) => (
                                             <option key={String(ch)} value={String(ch)}>
@@ -5290,6 +5324,7 @@ export function SceneBoard({
                                           value={v == null ? "" : (v as number)}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, Number(e.target.value))}
+                                          onBlur={() => flushPending()}
                                         />
                                       ) : p.type === "text" && drivenKeys.has(p.key) ? (
                                         // 텍스트가 연결됨 → 비활성 + 연결된 텍스트 표시(실행 시 이 값이 자동 주입).
@@ -5307,6 +5342,7 @@ export function SceneBoard({
                                           value={String(v ?? "")}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, e.target.value)}
+                                          onBlur={() => flushPending()}
                                         />
                                       )}
                                     </div>
@@ -5459,7 +5495,7 @@ export function SceneBoard({
                           wrap="off"
                           style={{ fontSize: fs, color: col }}
                           onMouseDown={(e) => e.stopPropagation()}
-                          onBlur={() => setEditTextId(null)}
+                          onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
                           onChange={(e) => setNodeText(card.id, e.target.value)}
                           onKeyDown={(e) => {
                             e.stopPropagation();

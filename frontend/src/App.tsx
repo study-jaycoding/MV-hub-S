@@ -1028,10 +1028,11 @@ export default function App() {
             <SceneBar
               scenes={scenes}
               activeId={activeSceneId}
-              onSelect={selectScene}
-              onAdd={addScene}
+              // 씬을 바꾸기 '전에' 밀린 입력 저장을 확정 — 그때는 activeScene 이 아직 현재(옛) 씬이라 정확히 저장된다.
+              onSelect={(id) => { sceneActionRef.current?.flushPending(); selectScene(id); }}
+              onAdd={() => { sceneActionRef.current?.flushPending(); addScene(); }}
               onRename={renameScene}
-              onDelete={removeSceneById}
+              onDelete={(id) => { sceneActionRef.current?.flushPending(); removeSceneById(id); }}
             />
             {activeScene ? (
               <SceneBoard
