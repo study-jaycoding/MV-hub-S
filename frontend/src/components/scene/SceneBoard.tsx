@@ -128,7 +128,7 @@ const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
-const GROUP_EJECT_SPEED = 2.0;
+const GROUP_EJECT_SPEED = 2.5;
 
 // 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
 // asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
@@ -2449,7 +2449,8 @@ export function SceneBoard({
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)));
   const setGroupColor = (id: string, color?: string) =>
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, color: color || undefined } : g)));
-  // 카드 드롭 위치로 그룹 멤버십 재배정 — 드롭한 프레임 안이면 그 그룹 가입, 어느 프레임에도 없으면 해제.
+  // 카드 드롭 위치로 그룹 멤버십 재배정 — 다른 프레임 안에 놓으면 그 그룹으로 이동. 어느 프레임에도
+  //  안 들면 원래 그룹 유지(슬로우 드래그는 박스가 자동맞춤으로 담음). 그룹서 빼는 건 '빠르게 이탈'로만.
   //  · startFrames: 드래그 시작 시점의 그룹 프레임 스냅샷(자동 그룹 프레임이 드래그 중 흔들리지 않게).
   //  · setGroups 로 반영하고, persist 에 넘길 최신 그룹 배열을 반환(변화 없으면 현재 배열 그대로).
   const reassignGroups = (
@@ -2471,6 +2472,9 @@ export function SceneBoard({
         if (cx >= f.frame.x && cx <= f.frame.x + f.frame.w && cy >= f.frame.y && cy <= f.frame.y + f.frame.h)
           hitId = f.id; // 겹치면 뒤에(위에) 그려진 그룹 우선
       const curId = next.find((g) => g.cardIds.includes(tid))?.id ?? null;
+      // ★슬로우 드래그로 그룹 밖에 놓아도 원래 그룹을 유지한다(박스가 자동맞춤으로 그 카드를 담음) —
+      //  그룹에서 빼는 건 '빠르게 이탈'로만. (드롭 위치가 어느 프레임에도 안 들면 예전엔 해제됐다.)
+      if (!ejected.has(tid) && hitId === null) hitId = curId;
       if (ejected.has(tid) && hitId === curId) hitId = null; // 튕겨낸 카드가 원래 그룹에 다시 떨어져도 이탈 확정
       if (hitId === curId) continue; // 같은 그룹이면 변화 없음
       for (const g of next) {
