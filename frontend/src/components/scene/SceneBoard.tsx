@@ -77,6 +77,7 @@ import {
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
+import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import comfyLogo from "../../assets/comfy-logo.svg";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
@@ -299,6 +300,12 @@ export function SceneBoard({
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 방금 생성된 카드 — 결과가 done 으로 전환된 순간 라임 glow 로 '방금 만들어짐'을 직관 표시. 카드 클릭 시 해제.
+  const [glowIds, setGlowIds] = useState<Set<string>>(new Set());
+  const glowRef = useRef<Set<string>>(new Set());
+  glowRef.current = glowIds;
+  // 카드별 마지막 결과 상태(카드 id → status) — done 전환(pending/running→done)만 glow 트리거. 초기 로드(직접 done)는 제외.
+  const prevGenStatusRef = useRef<Map<string, string>>(new Map());
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
@@ -306,6 +313,29 @@ export function SceneBoard({
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
   const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
+  // 결과가 done 으로 '전환'된 카드만 glow 세트에 추가(방금 생성 표시). 초기 로드/직접 done 은 baseline 으로만 기록해 제외.
+  //  트리거는 pending·running→done 뿐이라, 처음부터 done 인 카드(과거 결과·새로고침)는 빛나지 않는다.
+  useEffect(() => {
+    const prev = prevGenStatusRef.current;
+    const next = new Map<string, string>();
+    const newlyDone: string[] = [];
+    for (const c of cards) {
+      if (c.kind !== "generation" || !c.genId) continue;
+      const st = genData[c.genId]?.status;
+      if (!st) continue;
+      const s = String(st);
+      next.set(c.id, s);
+      const before = prev.get(c.id);
+      if (before && before !== "done" && s === "done") newlyDone.push(c.id);
+    }
+    prevGenStatusRef.current = next;
+    if (newlyDone.length)
+      setGlowIds((cur) => {
+        const n = new Set(cur);
+        for (const id of newlyDone) n.add(id);
+        return n;
+      });
+  }, [genData, cards]);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
@@ -2963,6 +2993,13 @@ export function SceneBoard({
 
     if (cardEl) {
       const id = cardEl.dataset.id!;
+      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. ref 로 가드해 불필요한 리렌더 방지.
+      if (glowRef.current.has(id))
+        setGlowIds((s) => {
+          const n = new Set(s);
+          n.delete(id);
+          return n;
+        });
       // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
       //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
       const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
@@ -3976,6 +4013,7 @@ export function SceneBoard({
                 "scene-card " +
                 kindCls +
                 (sel ? " sel" : "") +
+                (glowIds.has(card.id) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
                 (editTextId === card.id ? " editing" : "") + // 편집 중 — head 이중 외곽선 방지 등
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
@@ -5355,8 +5393,34 @@ export function SceneBoard({
                         missingIds.has(card.genId) ? (
                           // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시.
                           <div className="scene-card-genbody">삭제됨</div>
-                        ) : String(g?.status) === "failed" || String(g?.status) === "error" ? (
-                          <div className="scene-card-genbody">생성 실패</div>
+                        ) : String(g?.status) === "failed" || String(g?.status) === "nsfw" || String(g?.status) === "error" ? (
+                          // 실패·NSFW 차단 — 라이브러리(My Work)와 동일한 경고 비주얼(빨강+⚠) + ⓘ 로 생성 정보 확인.
+                          (() => {
+                            const st = String(g?.status) === "error" ? "failed" : String(g?.status);
+                            return (
+                              <div
+                                className={"scene-card-genbody scene-genfail status-" + st}
+                                title={g?.error || undefined}
+                              >
+                                <span className="scene-genfail-label">
+                                  {generationStatusLabelFor(st, g?.error)}
+                                </span>
+                                {g && onInfo && (
+                                  <button
+                                    className="scene-genfail-info"
+                                    title="생성 정보 보기"
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onInfo({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
+                                    }}
+                                  >
+                                    ⓘ
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()
                         ) : (
                           // 생성중 — 라이브러리(My Work)와 동일한 웨이브 아이콘 + 'Generating'.
                           // status 클래스로 색도 동일하게(running=앰버, pending=회색).

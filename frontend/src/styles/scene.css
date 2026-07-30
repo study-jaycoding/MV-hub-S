@@ -662,8 +662,37 @@
 }
 /* 생성중 웨이브 색을 라이브러리와 동일하게 — running=앰버(currentColor 상속). */
 .scene-card-genbody.status-running { color: #E7A93C; }
+/* 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + ⓘ 정보). */
+.scene-card-genbody.scene-genfail {
+  position: relative; flex-direction: column; gap: 6px; padding: 8px; text-align: center;
+  background: linear-gradient(150deg, rgba(74, 16, 22, 0.96), rgba(26, 8, 11, 0.96));
+  color: #ff9a9a; font-weight: 800; letter-spacing: 0.3px;
+}
+.scene-card-genbody.scene-genfail::before {
+  content: "⚠"; font-size: 40px; line-height: 1; color: #ff5b5b;
+}
+.scene-genfail-info {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; border-radius: 50%; padding: 0;
+  border: 1px solid rgba(255, 154, 154, 0.5); background: rgba(10, 6, 8, 0.6);
+  color: #ff9a9a; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.scene-genfail-info:hover { background: rgba(255, 91, 91, 0.22); color: #fff; }
 /* 선택 카드 — 라임 강조 */
 .scene-card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); z-index: 5; }
+/* 방금 생성됨 — 라임 glow(맥동)로 '방금 만들어졌다'를 직관 표시. 카드 클릭 시 JS 가 해제. */
+.scene-card.glow {
+  z-index: 4;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 20px 5px rgba(210, 255, 60, 0.55);
+  animation: scene-card-glow 1.4s ease-in-out infinite;
+}
+@keyframes scene-card-glow {
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent), 0 0 14px 3px rgba(210, 255, 60, 0.45); }
+  50% { box-shadow: 0 0 0 2px var(--accent), 0 0 26px 7px rgba(210, 255, 60, 0.78); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scene-card.glow { animation: none; }
+}
 /* 생성중(결과 없는) 생성 카드는 완성 카드처럼 자체 테두리(파랑) 유지 + 라임 '링'만 — 통짜 라임 방지 */
 .scene-card-gen.sel:not(.has-node) { border-color: #2b3a55; }
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.
