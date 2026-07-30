@@ -305,7 +305,8 @@ export function SceneBoard({
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
-  const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 프레임 계산·멤버십에서 제외
+  const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
+  const [fitGroups, setFitGroups] = useState<Set<string>>(new Set()); // 카드 드래그 중 실시간 자동맞춤(멤버 전체 담게 늘거나 줄어듦)할 그룹 id
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // 방금 생성된 카드 — 결과가 done 으로 전환된 순간 라임 glow 로 '방금 만들어짐'을 직관 표시. 카드 클릭 시 해제.
   const [glowIds, setGlowIds] = useState<Set<string>>(new Set());
@@ -2425,7 +2426,6 @@ export function SceneBoard({
     const cur = cardsRef.current;
     const next = groupsRef.current.map((g) => ({ ...g, cardIds: [...g.cardIds] }));
     let changed = false;
-    const refitIds = new Set<string>(); // 속도 이탈로 멤버가 빠진 rect 그룹 → 박스를 남은 멤버에 맞게 좁힘
     for (const tid of targetIds) {
       const c = cur.find((cc) => cc.id === tid);
       if (!c) continue;
@@ -2440,22 +2440,12 @@ export function SceneBoard({
       if (hitId === curId) continue; // 같은 그룹이면 변화 없음
       for (const g of next) {
         const i = g.cardIds.indexOf(tid);
-        if (i >= 0) {
-          g.cardIds.splice(i, 1);
-          if (ejected.has(tid) && g.rect) refitIds.add(g.id); // 이탈로 이 rect 그룹이 멤버를 잃음
-        }
+        if (i >= 0) g.cardIds.splice(i, 1);
       }
       if (hitId) next.find((g) => g.id === hitId)!.cardIds.push(tid);
       changed = true;
     }
     if (!changed) return groupsRef.current;
-    // 이탈로 멤버가 빠진 고정박스 그룹은 남은 멤버 크기로 박스를 좁힌다(카드를 놓아준 뒤 크기 반영).
-    for (const g of next) {
-      if (refitIds.has(g.id) && g.cardIds.length) {
-        const r = rectFromCards(g.cardIds);
-        if (r) g.rect = r;
-      }
-    }
     const pruned = next.filter((g) => g.cardIds.length > 0); // 비게 된 그룹 정리
     setGroups(pruned);
     return pruned;
@@ -3055,11 +3045,13 @@ export function SceneBoard({
       const startFrames = groupViews.map((v) => ({ id: v.g.id, frame: v.frame }));
       // 속도 이탈: 드래그하는 멤버 카드별 '시작 프레임' — 이 밖으로 빠르게 나가면 그룹에서 튕겨낸다.
       const memberFrames = new Map<string, { x: number; y: number; w: number; h: number }>();
+      const memberGid = new Map<string, string>(); // 드래그하는 멤버 카드 → 소속 그룹 id
       for (const tid of targetIds) {
         const mg = groupsRef.current.find((gr) => gr.cardIds.includes(tid));
         const sf = mg ? startFrames.find((s) => s.id === mg.id) : null;
-        if (sf) memberFrames.set(tid, sf.frame);
+        if (mg && sf) { memberFrames.set(tid, sf.frame); memberGid.set(tid, mg.id); }
       }
+      const fitGids = new Set(memberGid.values()); // 이 드래그로 실시간 자동맞춤할 그룹들
       const ejected = new Set<string>(); // 이번 드래그에서 튕겨낸 카드(래치 — 한번 튕기면 유지)
       let vT = performance.now(), vX = startX, vY = startY; // 속도 추적(화면 좌표)
       // ★relocated: 임계값(moved)만 넘고 스냅 후 같은 칸이면 실제로는 안 움직인 것 → 클릭으로 처리한다.
@@ -3067,7 +3059,10 @@ export function SceneBoard({
       let relocated = false;
       const move = (ev: MouseEvent) => {
         if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
-        if (!moved) setDraggingIds(targetIds); // 첫 이동 확정 시 keep 등록(컬링에서 언마운트 방지)
+        if (!moved) {
+          setDraggingIds(targetIds); // 첫 이동 확정 시 keep 등록(컬링에서 언마운트 방지)
+          if (fitGids.size) setFitGroups(fitGids); // 그룹 멤버 드래그 → 실시간 자동맞춤 시작
+        }
         moved = true;
         scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
         // 속도(화면 px/ms) 갱신 — 매 이동마다. 이탈 판정의 게이트.
@@ -3110,15 +3105,26 @@ export function SceneBoard({
       // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
       const commitMovedCards = () => {
         const ng = reassignGroups(targetIds, startFrames, ejected); // 드롭 위치로 그룹 가입/해제(+속도 이탈 확정)
+        // 자동맞춤 확정 — 멤버를 옮긴 그룹의 rect 를 남은 멤버 전체에 맞춘다(늘거나 줄어듦). 단, 이 드래그에서
+        //  '속도 이탈'이 있었던 그룹은 크기를 유지한다(빠져나와도 그룹 크기 그대로).
+        const ejectGids = new Set<string>();
+        for (const tid of ejected) { const gid = memberGid.get(tid); if (gid) ejectGids.add(gid); }
+        const fitted = ng.map((g) => {
+          if (!fitGids.has(g.id) || ejectGids.has(g.id) || !g.cardIds.length) return g;
+          const r = rectFromCards(g.cardIds);
+          return r ? { ...g, rect: r } : g;
+        });
+        if (fitted.some((g, i) => g !== ng[i])) setGroups(fitted);
         const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
         cardsRef.current = nextCards;
         setCards(nextCards);
-        persist(nextCards, edgesRef.current, ng);
+        persist(nextCards, edgesRef.current, fitted);
       };
       const up = () => {
         scrollRef.current?.classList.remove("dragging");
         setDraggingIds([]); // 드래그 종료 → keep 해제(다시 정상 컬링 대상)
         if (ejected.size) setEjectedIds(new Set()); // 속도 이탈 표시 해제(드롭 후 프레임 정상 재계산)
+        if (fitGids.size) setFitGroups(new Set()); // 자동맞춤 종료 → 확정된 rect 로 표시
         if (relocated) {
           commitMovedCards();
         } else if (fromRow) {
@@ -3144,6 +3150,7 @@ export function SceneBoard({
         scrollRef.current?.classList.remove("dragging");
         setDraggingIds([]); // 드래그 취소(blur)에도 keep 해제
         if (ejected.size) setEjectedIds(new Set());
+        if (fitGids.size) setFitGroups(new Set());
         if (relocated) commitMovedCards();
       });
     } else {
@@ -3541,7 +3548,6 @@ export function SceneBoard({
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let n = 0;
     for (const id of g.cardIds) {
-      if (ejectedIds.has(id)) continue; // 속도 이탈로 튕겨낸 카드는 프레임이 안 쫓아감(제외 → 프레임 스냅백)
       const c = cardById(id);
       if (!c) continue;
       n++;
@@ -3553,19 +3559,24 @@ export function SceneBoard({
     return n ? { minX, minY, maxX, maxY } : null;
   };
   // 그룹 프레임: 저장된 rect 우선, 없으면 멤버 바운딩박스+여백. 둘 다 못 구하면 null(렌더 제외).
+  const boxFromBounds = (b: { minX: number; minY: number; maxX: number; maxY: number }) => ({
+    x: b.minX - GPAD,
+    y: b.minY - GPAD - GHD,
+    w: b.maxX - b.minX + GPAD * 2,
+    h: b.maxY - b.minY + GPAD * 2 + GHD,
+  });
   const frameOf = (g: SceneGroup) => {
-    // 이 그룹 멤버 중 '속도 이탈' 중인 카드가 있으면 고정 rect 를 무시하고 남은 멤버로 프레임을 좁힌다
-    //  (박스가 그 카드를 시각적으로 놓아줌). 이탈이 없으면 기존대로 저장 rect 우선(수동 크기 보존).
-    const ejecting = ejectedIds.size > 0 && g.cardIds.some((id) => ejectedIds.has(id));
-    if (g.rect && !ejecting) return g.rect;
-    const b = memberBounds(g); // ejectedIds 제외한 멤버 바운딩
-    if (!b) return ejecting ? null : (g.rect ?? null);
-    return {
-      x: b.minX - GPAD,
-      y: b.minY - GPAD - GHD,
-      w: b.maxX - b.minX + GPAD * 2,
-      h: b.maxY - b.minY + GPAD * 2 + GHD,
-    };
+    // ★카드 드래그 중 자동맞춤 대상 + 이탈 없음 → 멤버 전체를 담게 실시간 자동맞춤(천천히 움직이면
+    //  박스가 늘거나 줄어듦). 이탈 중(hasEjected)이면 자동맞춤을 멈추고 저장 rect 를 유지 → 빠져나와도
+    //  그룹 크기는 그대로다.
+    const hasEjected = ejectedIds.size > 0 && g.cardIds.some((id) => ejectedIds.has(id));
+    if (fitGroups.has(g.id) && !hasEjected) {
+      const b = memberBounds(g);
+      if (b) return boxFromBounds(b);
+    }
+    if (g.rect) return g.rect; // 정지 상태·이탈 중: 저장된 박스 크기 유지
+    const b = memberBounds(g);
+    return b ? boxFromBounds(b) : null;
   };
   // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
   const groupViews = groups
