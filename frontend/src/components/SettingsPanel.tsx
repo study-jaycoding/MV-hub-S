@@ -49,6 +49,7 @@ export function SettingsPanel({
   const [dbBusy, setDbBusy] = useState(false);
   const [dbMsg, setDbMsg] = useState("");
   const [syncMsg, setSyncMsg] = useState("");
+  const [reinspectMsg, setReinspectMsg] = useState("");
   const [hfMsg, setHfMsg] = useState("");
   const [dlDir, setDlDir] = useState<string | null>(null);
   const [dlErr, setDlErr] = useState("");
@@ -81,6 +82,19 @@ export function SettingsPanel({
       setSyncMsg("실패");
     }
     setTimeout(() => setSyncMsg(""), 2500);
+  };
+
+  // '생성물 재점검' — 내 에이전트를 깨워 최신 N개를 known-필터 없이 재전송 → 서버가 힉스필드 상태와
+  //  대조해 어긋난 것(로컬만 실패 등)을 정정. 눌렀을 때만 작동(자동 아님).
+  const reinspectGenerations = async () => {
+    setReinspectMsg("요청 보냄…");
+    try {
+      const r = await api.agentReinspect();
+      setReinspectMsg(r.connected ? "✓ 에이전트가 재점검 중" : "에이전트가 꺼져 있어요");
+    } catch {
+      setReinspectMsg("실패");
+    }
+    setTimeout(() => setReinspectMsg(""), 3000);
   };
 
   // '힉스필드 삭제물 검토' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다.
@@ -229,6 +243,16 @@ export function SettingsPanel({
             onLang={pickLang}
             onReduceMotion={pickReduceMotion}
           />
+
+          <section className="settings-section">
+            <h4>{t("생성물 재점검")}</h4>
+            <button className="settings-action" onClick={reinspectGenerations}>
+              🔄 {reinspectMsg || t("생성물 재점검")}
+            </button>
+            <p className="settings-hint">
+              {t("최신 결과물을 힉스필드와 다시 대조해 상태가 어긋난 것(실패로 떠 있지만 실제로는 생성된 것 등)을 정정합니다. 눌렀을 때만 작동합니다.")}
+            </p>
+          </section>
 
           <DownloadLocationSection
             dlDir={dlDir}

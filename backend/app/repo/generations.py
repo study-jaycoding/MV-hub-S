@@ -137,12 +137,15 @@ def _upsert_synced(
             # adopt(URL 매칭)면 job_id 를 권위값으로 덮어씀, 아니면 기존 보존(COALESCE).
             # sort_ts 는 힉스필드 정밀 epoch 으로 갱신 → 로컬 생성본도 힉스필드 순서에 정렬(있을 때만).
             job_id_set = "job_id=?" if adopt else "job_id=COALESCE(job_id, ?)"
+            # ★error 정합: failed→done 되살림 시 옛 실패 사유를 비운다(stored_error 가 done/pending/running 이면
+            #  None). 여전히 실패(failed/nsfw)면 기존 사유를 그대로 보존(existing["error"]) → 사유 유실 방지.
             conn.execute(
-                f"UPDATE generation SET status=?, model=COALESCE(model,?), params=?, "
+                f"UPDATE generation SET status=?, error=?, model=COALESCE(model,?), params=?, "
                 f"sort_ts=COALESCE(?, sort_ts), creator_uid=COALESCE(?, creator_uid), "
                 f"{job_id_set} WHERE id=?",
                 (
                     g["status"],
+                    stored_error(g["status"], existing["error"]),
                     g["model"],
                     json.dumps(g["params"], ensure_ascii=False),
                     g.get("sort_ts"),

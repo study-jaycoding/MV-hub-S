@@ -1195,7 +1195,7 @@ def _signout_and_relogin(cli: str) -> str | None:
     return _cli_account_email(cli)
 
 
-def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True) -> None:
+def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True, reinspect: bool = False) -> None:
     # 1) 로컬 생성물(내 CLI·내 계정) + 크레딧·워크스페이스 상태
     jobs = _cli_json(cli, "generate", "list", "--size", str(size)) or []
     if not isinstance(jobs, list):
@@ -1204,15 +1204,17 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 2) 서버에 없는 잡 판별 — 내 로컬 목록(≤size)을 보내 차집합만 받는다(POST).
     # GET(서버 보유 전량 응답)은 라이브러리가 수천 건으로 커지면 매 사이클 왕복이 무거워진다.
     # 구버전 서버(POST 미지원 404/405)면 기존 GET 전량 방식으로 폴백.
+    # ★reinspect(재점검): 차집합을 건너뛰고 최신 전량을 다시 보낸다 → 서버 upsert 가 힉스필드 상태와
+    #   로컬을 재대조해 어긋난 것(로컬만 실패 등)을 정정. (fresh_ids=None → 아래서 전량 채택)
     local_ids = [j["id"] for j in jobs if isinstance(j, dict) and j.get("id")]
     fresh_ids: set | None = None
-    if local_ids:
+    if not reinspect and local_ids:
         st, diff = _http(
             "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
         )
         if st == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
             fresh_ids = set(diff["unknown"])
-    if fresh_ids is None:
+    if not reinspect and fresh_ids is None:
         status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
         known_ids = set(known.get("job_ids") or []) if isinstance(known, dict) else set()
         fresh_ids = {j for j in local_ids if j not in known_ids}
@@ -1247,18 +1249,23 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
                 t["model"] = dn2key[t["display_name"]]
 
     # 3) 새 것만 추림(서버에 없는 job_id) — 단, 미부착으로 실패한 고아 잡은 카드로 안 올린다.
+    #    reinspect 면 차집합(fresh_ids)을 무시하고 최신 전량을 대상으로(억제 목록은 그대로 존중).
     suppressed = _load_suppressed()
     fresh = [
         j
         for j in jobs
-        if isinstance(j, dict) and j.get("id") and j["id"] in fresh_ids and j["id"] not in suppressed
+        if isinstance(j, dict) and j.get("id") and (reinspect or j["id"] in fresh_ids) and j["id"] not in suppressed
     ]
-    n_suppressed = sum(1 for j in jobs if isinstance(j, dict) and j.get("id") in suppressed and j.get("id") in (fresh_ids or set()))
+    n_suppressed = sum(
+        1 for j in jobs
+        if isinstance(j, dict) and j.get("id") in suppressed and (reinspect or j.get("id") in (fresh_ids or set()))
+    )
     # 내 힉스필드 uid = 내 전체 목록의 최다 user_<id>(= 내 본인 것). fresh 만 보면 남의 레퍼런스에
     # 오염될 수 있으므로 반드시 '전체 목록' 기준으로 산출해 명시 전송 → 서버가 올바르게 연결.
     my_uid = _dominant_uid(jobs)
     skip_note = f" · 미부착 억제 {n_suppressed}개" if n_suppressed else ""
-    print(f"[로컬] 잡 {len(jobs)}개 중 새 잡 {len(fresh)}개{skip_note} · 내 uid={my_uid}")
+    mode_note = "재점검(전량 재전송)" if reinspect else "새 잡"
+    print(f"[로컬] 잡 {len(jobs)}개 중 {mode_note} {len(fresh)}개{skip_note} · 내 uid={my_uid}")
     if not fresh and not acct:
         print("[완료] 올릴 새 결과물이 없습니다.")
         return
@@ -1285,7 +1292,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         # 계정 불일치(409) → 별도 배치 없이 이 에이전트 창에서 바로 CLI 재로그인 제안 후 즉시 재시도.
         if status == 409 and _allow_relogin and offer_cli_relogin(cli, str(detail)):
             print("[재시도] CLI 재로그인 완료 — 지금 바로 다시 push 합니다.")
-            return push_once(server, token, cli, size, _allow_relogin=False)
+            return push_once(server, token, cli, size, _allow_relogin=False, reinspect=reinspect)
         print("       올바른 계정으로 허브에 로그인하면 자동으로 다시 시도합니다.")
         return
     print(
@@ -1397,15 +1404,18 @@ def main() -> None:
                 #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
                 #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.
                 reconcile_pass(server, token, cli)
-                # gen-request·sync 어느 쪽이든 결과를 서버로 올린다(no_push 모드 제외).
-                if reasons & {"gen-request", "sync"}:
+                # gen-request·sync·reinspect 어느 쪽이든 결과를 서버로 올린다(no_push 모드 제외).
+                if reasons & {"gen-request", "sync", "reinspect"}:
                     if args.no_push:
-                        if "sync" in reasons and "gen-request" not in reasons:
-                            print("[이벤트] 동기화 요청 — 생성 전용 모드라 건너뜀(공유는 '선택 발행')")
+                        if reasons & {"sync", "reinspect"} and "gen-request" not in reasons:
+                            print("[이벤트] 동기화/재점검 요청 — 생성 전용 모드라 건너뜀(공유는 '선택 발행')")
                     else:
-                        if "sync" in reasons and "gen-request" not in reasons:
+                        reinspect = "reinspect" in reasons
+                        if reinspect:
+                            print("[이벤트] 생성물 재점검 요청 — 최신 전량을 재전송(상태 정정)")
+                        elif "sync" in reasons and "gen-request" not in reasons:
                             print("[이벤트] 내 작업 올리기 요청")
-                        push_once(server, token, cli, args.size)
+                        push_once(server, token, cli, args.size, reinspect=reinspect)
             except SystemExit:
                 raise
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지
