@@ -923,7 +923,8 @@ export function SceneBoard({
     Promise.resolve(act?.(g)).finally(() => {
       void api
         .getGeneration(g.id)
-        .then((fresh) => fresh && setGenData((prev) => ({ ...prev, [g.id]: fresh })))
+        // 이미 로드된 카드만 갱신 — 씬 전환으로 prune 된 gen 을 재조회 응답이 되살려 넣지 않게(다른 핸들러와 동일 규칙).
+        .then((fresh) => fresh && setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: fresh } : prev)))
         .catch(() => {});
     });
   }, []);
@@ -973,6 +974,13 @@ export function SceneBoard({
     }
     return h;
   };
+  // 카드 삭제·씬 전환에도 핸들러 캐시가 무한 누적되지 않게 — 현재 카드에 없는 id 는 정리(누수 방지).
+  useEffect(() => {
+    const cache = nodePreviewHandlers.current;
+    if (cache.size <= cards.length) return; // 대개 같거나 작으면 지울 것 없음(불필요 순회 방지)
+    const live = new Set(cards.map((c) => c.id));
+    for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
+  }, [cards]);
 
   // ── S5 토대: 생성 카드는 자신에게 연결된 레퍼런스 카드들의 레퍼런스를 순서대로 모아 보유한다. ──
   // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
@@ -2543,8 +2551,12 @@ export function SceneBoard({
   }, [selected, cards, genData, cardMenu]);
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
+  //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
   useLayoutEffect(() => {
     if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs };
+    return () => {
+      if (actionRef) actionRef.current = null;
+    };
   });
 
   // ── 키보드: n=빈 카드 연결 · Delete/Backspace=삭제 ──
