@@ -4378,8 +4378,42 @@ export function SceneBoard({
                           {li.kind === "generation" ? (
                             // 생성물 — 텍스트처럼 한 행씩(그립+작은 썸네일+라벨), 왼쪽 그립(⠿)을 잡아 드래그로 순서 변경.
                             <div className="scene-listrows" data-reorder>
-                              {li.generationCardIds.map((cid) => {
+                              {li.sourceIds.map((cid) => {
                                 const gc = cardsById.get(cid);
+                                // 중첩 소스(list·render) — 묶음 행으로 표시(내부 생성물 개수). 소비 시에만 펼쳐진다.
+                                if (gc?.kind === "list" || gc?.kind === "render") {
+                                  const nestedCount =
+                                    gc.kind === "list"
+                                      ? (() => {
+                                          const nested = collectListInputs(gc.id, cardsById, resolvedEdges);
+                                          return nested.kind === "generation" ? nested.generationCardIds.length : 0;
+                                        })()
+                                      : collectRenderGenCardIds(gc.id, cardsById, resolvedEdges).length;
+                                  const brsel = rowSel.listId === card.id && rowSel.cids.has(cid);
+                                  return (
+                                    <div
+                                      key={cid}
+                                      className={"scene-listrow" + (brsel ? " selrow" : "") + (reorderFrom === cid ? " reordering" : "")}
+                                      data-reid={cid}
+                                      title="중첩 소스 — 내부 생성물을 펼쳐 사용"
+                                      onClick={(e) => { e.stopPropagation(); toggleRowSel(card.id, cid, e.ctrlKey || e.metaKey); }}
+                                    >
+                                      <span
+                                        className="scene-listrow-grip"
+                                        title="드래그해 순서 변경"
+                                        onMouseDown={(e) => startReorder(e, card.id, cid, "v")}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        ⠿
+                                      </span>
+                                      <span className="scene-listrow-count">
+                                        <span className="scene-listrow-badge">
+                                          {gc.kind === "render" ? "렌더" : "리스트"} {nestedCount}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  );
+                                }
                                 const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
                                 const gen = gid ? genData[gid] : undefined;
                                 const src = gen ? thumbOf(gen, 128) : null;

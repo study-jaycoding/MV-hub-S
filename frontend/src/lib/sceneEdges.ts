@@ -25,7 +25,9 @@ export function canConnect(
   if (from.id === to.id) return false;
   if (from.kind === "head" || to.kind === "head") return false; // head 는 포트 없는 주석 노드
   if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
-  if (from.kind === "render") return to.kind === "view" || to.kind === "generation"; // render 안 생성물을 View 재생 또는 생성카드 레퍼런스로
+  if (from.kind === "render")
+    // render 안 생성물을 View 재생 · 생성카드 레퍼런스 · 리스트로 다시 수집(중첩).
+    return to.kind === "view" || to.kind === "generation" || to.kind === "list";
   // input 을 소스로 놓으면 실제 소스로 해석해 그 종류로 검증(input 자체는 어디에도 못 풂 → 컨텍스트 없으면 불가)
   if (from.kind === "input") {
     if (!cardsById || !edges) return false;
@@ -42,9 +44,12 @@ export function canConnect(
       return from.kind !== "view";
     case "list":
       // comfy 출력물(이미지·영상=generation 류, 텍스트=text 류)도 리스트 항목이 될 수 있다.
+      // 다른 list 도 소스로 받아 중첩 수집(내부 생성물을 펼쳐 사용) — 순환은 collectListInputs 가 차단.
+      //  (render→list 는 위 render 분기에서 이미 허용됨.)
       return (
         from.kind === "generation" || from.kind === "text" ||
-        from.kind === "reference" || from.kind === "comfy"
+        from.kind === "reference" || from.kind === "comfy" ||
+        from.kind === "list"
       );
     case "view":
       return (
@@ -466,34 +471,91 @@ export function collectListInputs(
     .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
   if (!sources.length) return { kind: "empty", sourceIds: [], generationCardIds: [], text: "" };
   const sorted = sortByOrder(sources);
-  const sourceIds = sorted.map((s) => s.c.id);
-  // 생성물/텍스트를 내놓는 소스 — comfy 는 출력 종류에 따라 generation·text 로 분류(카드당 1회 판정 캐시).
+  const sourceIds = sorted.map((s) => s.c.id); // 직접 소스(행표시·reorder용) — 중첩이어도 그대로.
+
+  // 중첩 수집 순환 차단 — 하위 list 로 내려갈 때 이 listId 를 경로에 넣는다(자기참조·A→B→A 방지).
+  //  effectiveTextOf(list) 가 이미 listId 를 seen 에 넣고 올 수 있어, 여기선 하위로 내려갈 때만 검사한다.
+  const pathSeen = new Set(seen);
+  pathSeen.add(listId);
+
+  // comfy 는 출력 종류에 따라 generation·text 로 분류(카드당 1회 판정 캐시).
   const comfyKinds = new Map<string, ListComfySourceKind | null>();
   const listComfyKindOf = (c: SceneCard) => {
     if (c.kind !== "comfy") return null;
     if (!comfyKinds.has(c.id))
-      comfyKinds.set(c.id, comfyListSourceKind(c, cardsById, edges, overlay, seen));
+      comfyKinds.set(c.id, comfyListSourceKind(c, cardsById, edges, overlay, new Set(pathSeen)));
     return comfyKinds.get(c.id) ?? null;
   };
-  const isGenerationSrc = (c: SceneCard) =>
-    c.kind === "generation" || listComfyKindOf(c) === "generation";
-  const isTextSrc = (c: SceneCard) => c.kind === "text" || listComfyKindOf(c) === "text";
-  if (sorted.every((s) => isGenerationSrc(s.c)))
-    return { kind: "generation", sourceIds, generationCardIds: sourceIds, text: "" };
-  if (sorted.every((s) => isTextSrc(s.c)))
+  // 중첩 list 는 1회만 재귀 판정(캐시). 순환이면 null.
+  const nestedLists = new Map<string, ListInputs | null>();
+  const nestedListInputsOf = (c: SceneCard): ListInputs | null => {
+    if (c.kind !== "list") return null;
+    if (pathSeen.has(c.id)) return null; // list 사이클/자기참조
+    if (!nestedLists.has(c.id))
+      nestedLists.set(c.id, collectListInputs(c.id, cardsById, edges, overlay, new Set(pathSeen)));
+    return nestedLists.get(c.id) ?? null;
+  };
+
+  type SourceKind = "generation" | "text" | "reference" | "other";
+  const sourceKindOf = (c: SceneCard): SourceKind => {
+    if (c.kind === "generation" || c.kind === "render") return "generation";
+    if (c.kind === "text") return "text";
+    if (c.kind === "reference") return "reference";
+    const comfyKind = listComfyKindOf(c);
+    if (comfyKind) return comfyKind;
+    if (c.kind === "list") {
+      const li = nestedListInputsOf(c);
+      // 중첩 reference 는 이번엔 미지원(sourceIds 기반 reference 소비처와 충돌) → other 로 둬 invalid 처리.
+      if (li?.kind === "generation" || li?.kind === "text") return li.kind;
+      return "other";
+    }
+    return "other";
+  };
+  const classified = sorted.map((s) => ({ ...s, sourceKind: sourceKindOf(s.c) }));
+
+  // generation kind: 중첩 list/render 를 그 안 생성물 id 로 펼친다(순서보존·중복제거).
+  const generationIdsFrom = (c: SceneCard): string[] => {
+    if (c.kind === "generation") return [c.id];
+    if (listComfyKindOf(c) === "generation") return [c.id]; // comfy 는 id 로(소비처가 특수처리)
+    if (c.kind === "render") return collectRenderGenCardIds(c.id, cardsById, edges);
+    if (c.kind === "list") {
+      const li = nestedListInputsOf(c);
+      return li?.kind === "generation" ? li.generationCardIds : [];
+    }
+    return [];
+  };
+
+  if (classified.every((s) => s.sourceKind === "generation")) {
+    const generationCardIds: string[] = [];
+    const seenGen = new Set<string>();
+    for (const s of classified)
+      for (const id of generationIdsFrom(s.c))
+        if (!seenGen.has(id)) {
+          seenGen.add(id);
+          generationCardIds.push(id);
+        }
+    return { kind: "generation", sourceIds, generationCardIds, text: "" };
+  }
+  if (classified.every((s) => s.sourceKind === "text"))
     return {
       kind: "text",
       sourceIds,
       generationCardIds: [],
-      // 텍스트 소스는 상류(comfy 등)까지 따라 읽는다(effectiveTextOf) — 직접 text→gen 과 동일하게. seen 으로 순환 차단.
-      text: sorted
-        .map((s) => effectiveTextOf(s.c.id, cardsById, edges, seen, overlay))
+      // 텍스트 소스는 상류(comfy 등)까지 따라 읽는다. 중첩 list 는 그 리스트의 합친 텍스트를 쓴다.
+      text: classified
+        .map((s) =>
+          s.c.kind === "list"
+            ? nestedListInputsOf(s.c)?.text ?? ""
+            : effectiveTextOf(s.c.id, cardsById, edges, new Set(pathSeen), overlay),
+        )
         .join("\n"),
     };
-  if (sorted.every((s) => s.c.kind === "reference"))
+  if (classified.every((s) => s.sourceKind === "reference"))
     return { kind: "reference", sourceIds, generationCardIds: [], text: "" };
-  // 그 외: gen+text 혼합이면 mixed, reference·미판정 comfy 등이 섞이면 invalid(리스트는 동종만).
-  const hasNonGenText = sorted.some((s) => !isGenerationSrc(s.c) && !isTextSrc(s.c));
+  // 그 외: gen+text 혼합이면 mixed, reference·미판정 comfy·중첩미지원 등이 섞이면 invalid(리스트는 동종만).
+  const hasNonGenText = classified.some(
+    (s) => s.sourceKind !== "generation" && s.sourceKind !== "text",
+  );
   return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
 }
 
