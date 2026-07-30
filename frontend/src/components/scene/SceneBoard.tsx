@@ -126,6 +126,9 @@ const CARD_MIN_H = GRID * 3; // 66
 const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 // 그룹 고정 색 팔레트(팝오버 프리셋). 이 외의 색은 '커스텀'(네이티브 컬러픽커)으로 지정.
 const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
+// 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
+//  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
+const GROUP_EJECT_SPEED = 1.0;
 
 // 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
 // asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
@@ -302,6 +305,7 @@ export function SceneBoard({
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
+  const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 프레임 계산·멤버십에서 제외
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // 방금 생성된 카드 — 결과가 done 으로 전환된 순간 라임 glow 로 '방금 만들어짐'을 직관 표시. 카드 클릭 시 해제.
   const [glowIds, setGlowIds] = useState<Set<string>>(new Set());
@@ -2415,6 +2419,7 @@ export function SceneBoard({
   const reassignGroups = (
     targetIds: string[],
     startFrames: { id: string; frame: { x: number; y: number; w: number; h: number } }[],
+    ejected: Set<string> = new Set(), // 속도 이탈로 튕겨낸 카드 — 원래 그룹으로는 안 돌아감(이탈 확정)
   ): SceneGroup[] => {
     if (!startFrames.length) return groupsRef.current;
     const cur = cardsRef.current;
@@ -2430,6 +2435,7 @@ export function SceneBoard({
         if (cx >= f.frame.x && cx <= f.frame.x + f.frame.w && cy >= f.frame.y && cy <= f.frame.y + f.frame.h)
           hitId = f.id; // 겹치면 뒤에(위에) 그려진 그룹 우선
       const curId = next.find((g) => g.cardIds.includes(tid))?.id ?? null;
+      if (ejected.has(tid) && hitId === curId) hitId = null; // 튕겨낸 카드가 원래 그룹에 다시 떨어져도 이탈 확정
       if (hitId === curId) continue; // 같은 그룹이면 변화 없음
       for (const g of next) {
         const i = g.cardIds.indexOf(tid);
@@ -3036,6 +3042,15 @@ export function SceneBoard({
       const anchor = origins[id]; // 잡은 카드 — 이 카드를 격자에 스냅하고 나머지는 같은 오프셋으로 이동(상대배치 보존).
       // 드래그 시작 시점의 그룹 프레임 스냅샷 — 드롭 위치로 멤버십(가입/해제)을 판정하는 기준.
       const startFrames = groupViews.map((v) => ({ id: v.g.id, frame: v.frame }));
+      // 속도 이탈: 드래그하는 멤버 카드별 '시작 프레임' — 이 밖으로 빠르게 나가면 그룹에서 튕겨낸다.
+      const memberFrames = new Map<string, { x: number; y: number; w: number; h: number }>();
+      for (const tid of targetIds) {
+        const mg = groupsRef.current.find((gr) => gr.cardIds.includes(tid));
+        const sf = mg ? startFrames.find((s) => s.id === mg.id) : null;
+        if (sf) memberFrames.set(tid, sf.frame);
+      }
+      const ejected = new Set<string>(); // 이번 드래그에서 튕겨낸 카드(래치 — 한번 튕기면 유지)
+      let vT = performance.now(), vX = startX, vY = startY; // 속도 추적(화면 좌표)
       // ★relocated: 임계값(moved)만 넘고 스냅 후 같은 칸이면 실제로는 안 움직인 것 → 클릭으로 처리한다.
       //  (빠른 클릭의 손떨림이 4px 를 넘겨도 드래그로 오인해 선택을 건너뛰던 문제 해결.)
       let relocated = false;
@@ -3044,6 +3059,11 @@ export function SceneBoard({
         if (!moved) setDraggingIds(targetIds); // 첫 이동 확정 시 keep 등록(컬링에서 언마운트 방지)
         moved = true;
         scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
+        // 속도(화면 px/ms) 갱신 — 매 이동마다. 이탈 판정의 게이트.
+        const vNow = performance.now();
+        const vDt = vNow - vT;
+        const vSpeed = vDt > 0 ? Math.hypot(ev.clientX - vX, ev.clientY - vY) / vDt : 0;
+        vT = vNow; vX = ev.clientX; vY = ev.clientY;
         const z = zoomRef.current;
         const dx = (ev.clientX - startX) / z;
         const dy = (ev.clientY - startY) / z;
@@ -3059,10 +3079,26 @@ export function SceneBoard({
         );
         cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
         setCards(next);
+        // 속도 이탈 판정 — 임계 속도 이상으로 시작 프레임 밖으로 나간 멤버를 튕겨낸다(래치: 한번 튕기면 유지).
+        if (memberFrames.size && vSpeed > GROUP_EJECT_SPEED) {
+          let added = false;
+          for (const [tid, fr] of memberFrames) {
+            if (ejected.has(tid)) continue;
+            const cc = next.find((c) => c.id === tid);
+            if (!cc) continue;
+            const cx = cc.x + widthOf(cc) / 2;
+            const cy = cc.y + heightOf(cc) / 2;
+            if (cx < fr.x || cx > fr.x + fr.w || cy < fr.y || cy > fr.y + fr.h) {
+              ejected.add(tid);
+              added = true;
+            }
+          }
+          if (added) setEjectedIds(new Set(ejected)); // 프레임이 이 카드를 놓아줌(memberBounds 제외 → 스냅백)
+        }
       };
       // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
       const commitMovedCards = () => {
-        const ng = reassignGroups(targetIds, startFrames); // 드롭 위치로 그룹 가입/해제 반영
+        const ng = reassignGroups(targetIds, startFrames, ejected); // 드롭 위치로 그룹 가입/해제(+속도 이탈 확정)
         const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
         cardsRef.current = nextCards;
         setCards(nextCards);
@@ -3071,6 +3107,7 @@ export function SceneBoard({
       const up = () => {
         scrollRef.current?.classList.remove("dragging");
         setDraggingIds([]); // 드래그 종료 → keep 해제(다시 정상 컬링 대상)
+        if (ejected.size) setEjectedIds(new Set()); // 속도 이탈 표시 해제(드롭 후 프레임 정상 재계산)
         if (relocated) {
           commitMovedCards();
         } else if (fromRow) {
@@ -3095,6 +3132,7 @@ export function SceneBoard({
       beginDrag(move, up, () => {
         scrollRef.current?.classList.remove("dragging");
         setDraggingIds([]); // 드래그 취소(blur)에도 keep 해제
+        if (ejected.size) setEjectedIds(new Set());
         if (relocated) commitMovedCards();
       });
     } else {
@@ -3492,6 +3530,7 @@ export function SceneBoard({
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let n = 0;
     for (const id of g.cardIds) {
+      if (ejectedIds.has(id)) continue; // 속도 이탈로 튕겨낸 카드는 프레임이 안 쫓아감(제외 → 프레임 스냅백)
       const c = cardById(id);
       if (!c) continue;
       n++;
