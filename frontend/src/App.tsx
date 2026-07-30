@@ -66,6 +66,8 @@ import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
 import { useLibraryFilters } from "./lib/useLibraryFilters";
 import { useSceneCoordination } from "./lib/useSceneCoordination";
+import { useSceneCompletionWatcher } from "./lib/useSceneCompletionWatcher";
+import { seedPending } from "./lib/sceneRecentDoneStore";
 import { useHistoryBoardState } from "./lib/useHistoryBoardState";
 import { usePromptDock } from "./lib/usePromptDock";
 import { usePromptCreatedActions } from "./lib/usePromptCreatedActions";
@@ -127,6 +129,16 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById, patchActiveScene,
   } = useSceneCoordination(flash);
+  // 캔버스 '방금 생성' glow — App 레벨에서 완료를 상시 감시(탭 전환·SceneBoard 언마운트와 무관).
+  //  후보 = 활성 씬 생성카드의 변형 genId(새로고침 등 store 가 빈 경우 미확정분을 발견하는 데 씀).
+  const glowCandidateIds = useMemo(
+    () =>
+      (activeScene?.cards || [])
+        .filter((c) => c.kind === "generation")
+        .flatMap((c) => variantIds(c)),
+    [activeScene],
+  );
+  useSceneCompletionWatcher(glowCandidateIds);
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
   const spotlightSubmitRef = useRef<((batch?: number) => void) | null>(null);
@@ -512,6 +524,7 @@ export default function App() {
   const onPromptCreated = async (created?: Generation[], dragParentId?: string | null) => {
     if (sceneMode && activeScene && sceneBinding) {
       const newIds = (created || []).map((x) => x.id); // 복수 생성이면 여러 장 → 카드에 모두 누적
+      if (newIds.length) seedPending(newIds); // 방금 생성 glow — 첫 폴링이 이미 done 이어도 뜨게 baseline 선등록
       if (newIds.length) {
         // 최신 씬을 다시 읽어(생성 대기 중 편집분 보존) 해당 카드에만 변형 append — 덮어쓰지 않는다.
         // 재사용이든 아니든 '선택된 카드'에 쌓는다(사용자 결정: 카드 선택 후 재사용 = 그 카드에 누적).
@@ -572,6 +585,7 @@ export default function App() {
   const onSceneRegenerate = async (g: Generation) => {
     const ng = await onRegenerate(g);
     if (!ng || !activeScene) return;
+    seedPending([ng.id]); // 재생성 결과도 방금 생성 glow 대상
     const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
     const nextCards = cards.map((c) => {
       if (!variantIds(c).includes(g.id)) return c; // g 가 속한 카드에만
@@ -695,6 +709,7 @@ export default function App() {
       byCard.set(r.cardId, arr);
       freshGens.push(r.gen);
     }
+    if (freshGens.length) seedPending(freshGens.map((g) => g.id)); // 렌더 노드 결과도 방금 생성 glow 대상
     if (byCard.size) {
       // 최신 씬을 다시 읽어(대기 중 편집 보존) 각 소스 카드에 결과 id 를 누적한다 — 덮어쓰지 않는다.
       const cur = listScenes(null).find((s) => s.id === scene.id)?.cards || scene.cards;

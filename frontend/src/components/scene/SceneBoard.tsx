@@ -86,6 +86,13 @@ import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi, type ComfyRunMedia } from "../../lib/comfyApi";
+import {
+  ackDone,
+  isRecentlyDone,
+  observeStatus,
+  subscribeRecentDone,
+  getRecentDoneVersion,
+} from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -308,12 +315,9 @@ export function SceneBoard({
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // 방금 생성된 카드 — 결과가 done 으로 전환된 순간 라임 glow 로 '방금 만들어짐'을 직관 표시. 카드 클릭 시 해제.
-  const [glowIds, setGlowIds] = useState<Set<string>>(new Set());
-  const glowRef = useRef<Set<string>>(new Set());
-  glowRef.current = glowIds;
-  // 카드별 마지막 결과 상태(카드 id → status) — done 전환(pending/running→done)만 glow 트리거. 초기 로드(직접 done)는 제외.
-  const prevGenStatusRef = useRef<Map<string, string>>(new Map());
+  // 방금 생성된 카드 — 라임 glow 로 '방금 만들어짐'을 직관 표시. '방금 완료' 판정은 모듈 store 로 분리해
+  //  탭 전환(SceneBoard 언마운트)에도 유지된다(App watcher 가 탭 무관 폴링). glowVer 로 store 변경 시 리렌더.
+  useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
@@ -321,28 +325,17 @@ export function SceneBoard({
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
   const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
-  // 결과가 done 으로 '전환'된 카드만 glow 세트에 추가(방금 생성 표시). 초기 로드/직접 done 은 baseline 으로만 기록해 제외.
-  //  트리거는 pending·running→done 뿐이라, 처음부터 done 인 카드(과거 결과·새로고침)는 빛나지 않는다.
+  // 캔버스에 있는 동안 관찰한 생성 카드 상태를 store 에 반영(전환 규칙은 store 가 판정). 초기 done/새로고침은
+  //  store 가 baseline 으로만 처리해 glow 안 함. active→done 만 recentlyDone. (App watcher 와 공동으로 채움)
   useEffect(() => {
-    const prev = prevGenStatusRef.current;
-    const next = new Map<string, string>();
-    const newlyDone: string[] = [];
     for (const c of cards) {
-      if (c.kind !== "generation" || !c.genId) continue;
-      const st = genData[c.genId]?.status;
-      if (!st) continue;
-      const s = String(st);
-      next.set(c.id, s);
-      const before = prev.get(c.id);
-      if (before && before !== "done" && s === "done") newlyDone.push(c.id);
+      if (c.kind !== "generation") continue;
+      // 변형 전체를 반영(useSceneGenData 가 모든 변형을 조회) — 대표가 바뀌거나 비대표가 늦게 완료돼도 커버.
+      for (const gid of variantIds(c)) {
+        const st = genData[gid]?.status;
+        if (st) observeStatus(gid, String(st));
+      }
     }
-    prevGenStatusRef.current = next;
-    if (newlyDone.length)
-      setGlowIds((cur) => {
-        const n = new Set(cur);
-        for (const id of newlyDone) n.add(id);
-        return n;
-      });
   }, [genData, cards]);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
@@ -3067,13 +3060,9 @@ export function SceneBoard({
 
     if (cardEl) {
       const id = cardEl.dataset.id!;
-      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. ref 로 가드해 불필요한 리렌더 방지.
-      if (glowRef.current.has(id))
-        setGlowIds((s) => {
-          const n = new Set(s);
-          n.delete(id);
-          return n;
-        });
+      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. store 에서 이 카드의 변형들을 ack.
+      const gcard = cardsRef.current.find((c) => c.id === id);
+      if (gcard && gcard.kind === "generation") ackDone(variantIds(gcard));
       // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
       //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
       const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
@@ -4150,7 +4139,7 @@ export function SceneBoard({
                 "scene-card " +
                 kindCls +
                 (sel ? " sel" : "") +
-                (glowIds.has(card.id) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
+                (card.kind === "generation" && variantIds(card).some(isRecentlyDone) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
                 (editTextId === card.id ? " editing" : "") + // 편집 중 — head 이중 외곽선 방지 등
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
