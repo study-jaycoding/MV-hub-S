@@ -851,11 +851,16 @@ export function resolveEdgeRole(
     return comfyOutputMedia(from).length > 0 ? "ref" : "text";
   }
   if (from?.kind === "reference") return "ref";
+  // render(완료 렌더물) → 생성/컨피 카드 = 레퍼런스(파랑). render 는 미디어만 담으므로 그 외 대상은 폴백.
+  if (from?.kind === "render" && (to?.kind === "generation" || to?.kind === "comfy")) return "ref";
   // 리스트의 출력색은 그 리스트가 모은 종류를 따른다(edges 필요): 텍스트리스트=텍스트(보라), 레퍼런스리스트=레퍼런스(파랑).
   if (from?.kind === "list" && edges) {
     const lk = collectListInputs(from.id, cardsById, edges).kind;
     if (lk === "text") return "text";
     if (lk === "reference") return "ref";
+    // 생성물(미디어)을 모은 리스트가 생성/컨피 카드로 들어가면 레퍼런스(파랑). 리스트→리스트 수집(아래 "list")은 그대로 둔다.
+    if ((lk === "generation" || lk === "mixed") && (to?.kind === "generation" || to?.kind === "comfy"))
+      return "ref";
   }
   if (to?.kind === "list") return "list"; // 생성물 → 리스트 수집
   if (from?.kind === "generation" && to) {
