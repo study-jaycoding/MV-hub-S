@@ -3092,7 +3092,8 @@ export function SceneBoard({
       }
       const fitGids = new Set(memberGid.values()); // 이 드래그로 실시간 자동맞춤할 그룹들
       const ejected = new Set<string>(); // 이번 드래그에서 튕겨낸 카드(래치 — 한번 튕기면 유지)
-      let vT = performance.now(), vX = startX, vY = startY; // 속도 추적(화면 좌표)
+      let vWinT = performance.now(), vWinX = startX, vWinY = startY; // 속도 측정 시간창(화면 좌표)
+      let vSpeed = 0; // 최근 ~30ms 창의 평균 속도(px/ms) — 1ms 반올림·프레임레이트 스파이크에 안 흔들림
       // ★relocated: 임계값(moved)만 넘고 스냅 후 같은 칸이면 실제로는 안 움직인 것 → 클릭으로 처리한다.
       //  (빠른 클릭의 손떨림이 4px 를 넘겨도 드래그로 오인해 선택을 건너뛰던 문제 해결.)
       let relocated = false;
@@ -3104,11 +3105,15 @@ export function SceneBoard({
         }
         moved = true;
         scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
-        // 속도(화면 px/ms) 갱신 — 매 이동마다. 이탈 판정의 게이트.
+        // 속도(화면 px/ms) — ★매 이벤트가 아니라 ~30ms '시간창'의 평균으로 잰다. performance.now() 가
+        //  보안상 1ms 로 반올림돼 촘촘한 이벤트에서 dt=0~1ms 로 찍히면 '작은 거리÷작은 시간'이 큰 속도로
+        //  튀어 슬로우 드래그도 이탈로 오인하던 버그(클릭 타이밍마다 들쭉날쭉) 방지. 창이 지나야 갱신.
         const vNow = performance.now();
-        const vDt = vNow - vT;
-        const vSpeed = vDt > 0 ? Math.hypot(ev.clientX - vX, ev.clientY - vY) / vDt : 0;
-        vT = vNow; vX = ev.clientX; vY = ev.clientY;
+        const vWinDt = vNow - vWinT;
+        if (vWinDt >= 30) {
+          vSpeed = Math.hypot(ev.clientX - vWinX, ev.clientY - vWinY) / vWinDt;
+          vWinT = vNow; vWinX = ev.clientX; vWinY = ev.clientY;
+        }
         const z = zoomRef.current;
         const dx = (ev.clientX - startX) / z;
         const dy = (ev.clientY - startY) / z;
