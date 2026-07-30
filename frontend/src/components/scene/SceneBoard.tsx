@@ -3219,7 +3219,9 @@ export function SceneBoard({
           : boxed.size
             ? boxed
             : prevSel;
-        setSelected(hit);
+        // 마퀴 이동 프레임마다 감싼 집합이 그대로면 새 Set 로 리렌더하지 않는다(동일성 가드).
+        const cur = selectedRef.current;
+        if (hit.size !== cur.size || [...hit].some((id) => !cur.has(id))) setSelected(hit);
       };
       const up = () => {
         setMarquee(null);
