@@ -255,19 +255,33 @@ export function comfyOutputMedia(
 //  · 실행 전에도, 그리고 이전 워크플로우의 stale 런타임 출력에 속지 않고 정확히 판단하기 위함.
 //  · SaveImage/SaveVideo/VideoCombine/SaveAnimated… → media, SaveText/ShowText → text.
 //  · 파싱 불가/없으면 { media:false, text:false } (호출부가 런타임 출력으로 폴백).
-export function comfyDeclaredKinds(content: string | undefined): { media: boolean; text: boolean } {
-  if (!content) return { media: false, text: false };
-  let wf: unknown;
+// 워크플로 content(JSON 문자열) → 노드별 class_type 맵. content 문자열 기준으로 파싱 결과를 캐시해
+//  같은 워크플로를 렌더/엣지판정마다 반복 JSON.parse 하지 않게 한다(같은 문자열 = 같은 파싱, 안전).
+const _wfClassCache = new Map<string, Record<string, string>>();
+function classByNodeOf(content: string | undefined): Record<string, string> {
+  if (!content) return {};
+  const hit = _wfClassCache.get(content);
+  if (hit) return hit;
+  const out: Record<string, string> = {};
   try {
-    wf = JSON.parse(content);
+    const wf = JSON.parse(content) as Record<string, unknown>;
+    if (wf && typeof wf === "object")
+      for (const [nid, node] of Object.entries(wf)) {
+        const ct = (node as { class_type?: unknown } | null)?.class_type;
+        if (typeof ct === "string") out[nid] = ct;
+      }
   } catch {
-    return { media: false, text: false };
+    /* malformed content → 빈 맵(필드명 폴백은 호출부가 처리) */
   }
-  if (!wf || typeof wf !== "object") return { media: false, text: false };
+  if (_wfClassCache.size > 64) _wfClassCache.clear(); // 단순 상한(워크플로 몇 종이라 충분)
+  _wfClassCache.set(content, out);
+  return out;
+}
+
+export function comfyDeclaredKinds(content: string | undefined): { media: boolean; text: boolean } {
   let media = false;
   let text = false;
-  for (const node of Object.values(wf as Record<string, unknown>)) {
-    const ct = String((node as { class_type?: unknown })?.class_type || "");
+  for (const ct of Object.values(classByNodeOf(content))) {
     // ★출력(저장/합성) 노드만 — 'VHS_LoadVideo' 같은 입력 노드를 미디어 출력으로 오판하지 않게 좁게 매칭.
     if (/saveimage|savevideo|videocombine|saveanimated|savewebm|savegif/i.test(ct)) media = true;
     if (/savetext|showtext/i.test(ct)) text = true;
@@ -284,19 +298,7 @@ export function comfyTextDriveKeys(
   params: { key: string; type: string }[] | undefined,
   content: string | undefined,
 ): Set<string> {
-  const classByNode: Record<string, string> = {};
-  if (content) {
-    try {
-      const wf = JSON.parse(content) as Record<string, unknown>;
-      if (wf && typeof wf === "object")
-        for (const [nid, node] of Object.entries(wf)) {
-          const ct = (node as { class_type?: unknown } | null)?.class_type;
-          if (typeof ct === "string") classByNode[nid] = ct;
-        }
-    } catch {
-      /* malformed content → 필드명 폴백 */
-    }
-  }
+  const classByNode = classByNodeOf(content); // content 기준 캐시 재사용(반복 JSON.parse 제거)
   const out = new Set<string>();
   for (const p of params || []) {
     if (p.type !== "text") continue;
