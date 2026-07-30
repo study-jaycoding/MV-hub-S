@@ -75,6 +75,7 @@ import {
   resolvePortEdges,
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
+import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
@@ -1085,30 +1086,7 @@ export function SceneBoard({
     }
     return out;
   };
-  // 기존 refs(프롬프트에서 재정렬됐을 수 있음)의 순서를 보존하며, 새 연결은 뒤에 붙이고 끊긴 건 뺀다.
-  // ★'직접' 넣은 참조(from_card 없음 — @생성물·드래그 asset 등)는 엣지와 무관하게 보존한다.
-  //   레퍼런스 카드/리스트가 제공한 참조(from_card:true)는 그 소스가 바뀌면(target 에서 빠지면) 함께 사라진다 —
-  //   안 그러면 옛 레퍼런스 카드(비디오 등)를 끊고 다른 걸 연결해도 옛 참조가 유령으로 남아 생성에 섞였다.
-  //   (from_card 는 gatherTarget 이 연결로 모은 참조에만 붙는다. 없으면 사용자가 손으로 넣은 것이라 보존.)
-  const reconcileRefs = (existing: SceneRef[], target: SceneRef[]): SceneRef[] => {
-    const key = (r: SceneRef) => r.file_path + "#" + (r.source_gen_id || "");
-    const pool = [...target];
-    const result: SceneRef[] = [];
-    for (const r of existing) {
-      const i = pool.findIndex((t) => key(t) === key(r));
-      if (i >= 0) {
-        const linked = pool.splice(i, 1)[0];
-        // ★수동으로 넣은 참조(!from_card)는 연결이 같은 파일을 제공해도 수동 표식을 유지한다 —
-        //  안 그러면 연결 해제 때 수동 참조까지 사라진다. from_card 참조만 연결본으로 갱신.
-        result.push(r.from_card ? linked : r);
-      } else if (!r.from_card) {
-        result.push(r); // 연결에서 온 게 아닌 수동 참조(@생성물·드래그 asset)는 보존
-      }
-      // 그 외(연결이 끊긴 레퍼런스 카드/리스트 참조)는 제거
-    }
-    result.push(...pool);
-    return result;
-  };
+  // reconcileRefs(연결 refs 정규화·from_card 규칙)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const withGenRefs = (cs: SceneCard[], es: SceneEdge[]): SceneCard[] =>
     cs.map((c) =>
       c.kind === "generation"
@@ -2485,12 +2463,7 @@ export function SceneBoard({
     if (!n) return undefined;
     return { x: minX - GPAD, y: minY - GPAD - GHD, w: maxX - minX + GPAD * 2, h: maxY - minY + GPAD * 2 + GHD };
   };
-  // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수). existing=현재 존재하는 카드 id —
-  //  손상/구버전 씬의 유령 멤버 id 도 함께 정리(rect 만 남은 빈 그룹 잔존 방지).
-  const pruneGroups = (gs: SceneGroup[], removed: Set<string>, existing: Set<string>): SceneGroup[] =>
-    gs
-      .map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => !removed.has(id) && existing.has(id)) }))
-      .filter((g) => g.cardIds.length > 0);
+  // pruneGroups(삭제·유령 카드 정리)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const applyGroups = (next: SceneGroup[]) => {
     setGroups(next);
     persist(cardsRef.current, edgesRef.current, next);
