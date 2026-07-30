@@ -3149,14 +3149,15 @@ export function SceneBoard({
       // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
       const commitMovedCards = () => {
         const ng = reassignGroups(targetIds, startFrames, ejected); // 드롭 위치로 그룹 가입/해제(+속도 이탈 확정)
-        // 자동맞춤 확정 — 멤버를 옮긴 그룹의 rect 를 남은 멤버 전체에 맞춘다(늘거나 줄어듦). 단, 이 드래그에서
-        //  '속도 이탈'이 있었던 그룹은 크기를 유지한다(빠져나와도 그룹 크기 그대로).
+        // 확장 확정 — 멤버가 박스를 넘었으면 그만큼만 키운다(저장 크기 유지, 줄이지 않음 = union).
+        //  ★'속도 이탈'이 있었던 그룹은 크기를 그대로 둔다(빠져나와도 그룹 크기 유지).
         const ejectGids = new Set<string>();
         for (const tid of ejected) { const gid = memberGid.get(tid); if (gid) ejectGids.add(gid); }
         const fitted = ng.map((g) => {
           if (!fitGids.has(g.id) || ejectGids.has(g.id) || !g.cardIds.length) return g;
-          const r = rectFromCards(g.cardIds);
-          return r ? { ...g, rect: r } : g;
+          const mbox = rectFromCards(g.cardIds); // 최신 좌표(cardsRef) 기준 멤버 박스
+          const newRect = g.rect ? (mbox ? unionRect(g.rect, mbox) : g.rect) : mbox;
+          return newRect ? { ...g, rect: newRect } : g;
         });
         if (fitted.some((g, i) => g !== ng[i])) setGroups(fitted);
         const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
@@ -3609,14 +3610,27 @@ export function SceneBoard({
     w: b.maxX - b.minX + GPAD * 2,
     h: b.maxY - b.minY + GPAD * 2 + GHD,
   });
+  type Rect = { x: number; y: number; w: number; h: number };
+  // 두 사각형을 모두 담는 최소 사각형(합집합). '저장 크기 유지 + 멤버가 넘으면 확장'에 쓴다.
+  const unionRect = (a: Rect, b: Rect): Rect => {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    const r = Math.max(a.x + a.w, b.x + b.w), bo = Math.max(a.y + a.h, b.y + b.h);
+    return { x, y, w: r - x, h: bo - y };
+  };
+  // 멤버가 넘칠 때만 박스를 키운다(줄이지 않음) — 저장 rect 와 멤버 박스의 합집합. rect 없으면 멤버 박스.
+  const grownRect = (g: SceneGroup): Rect | null => {
+    const b = memberBounds(g);
+    const mbox = b ? boxFromBounds(b) : null;
+    if (!g.rect) return mbox;
+    return mbox ? unionRect(g.rect, mbox) : g.rect;
+  };
   const frameOf = (g: SceneGroup) => {
-    // ★카드 드래그 중 자동맞춤 대상 + 이탈 없음 → 멤버 전체를 담게 실시간 자동맞춤(천천히 움직이면
-    //  박스가 늘거나 줄어듦). 이탈 중(hasEjected)이면 자동맞춤을 멈추고 저장 rect 를 유지 → 빠져나와도
-    //  그룹 크기는 그대로다.
+    // ★카드 드래그 중 + 이탈 없음 → '저장 크기 유지 + 멤버가 박스를 넘으면 그만큼 확장'(줄지 않음).
+    //  이탈 중(hasEjected)이면 확장도 멈추고 저장 rect 유지 → 빠져나와도 그룹 크기는 그대로.
     const hasEjected = ejectedIds.size > 0 && g.cardIds.some((id) => ejectedIds.has(id));
     if (fitGroups.has(g.id) && !hasEjected) {
-      const b = memberBounds(g);
-      if (b) return boxFromBounds(b);
+      const gr = grownRect(g);
+      if (gr) return gr;
     }
     if (g.rect) return g.rect; // 정지 상태·이탈 중: 저장된 박스 크기 유지
     const b = memberBounds(g);
