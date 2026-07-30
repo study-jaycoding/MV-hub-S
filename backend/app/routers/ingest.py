@@ -497,6 +497,16 @@ def agent_sync(request: Request):
     return {"ok": True, "connected": agent_signals.connected(acc["email"])}
 
 
+@router.post("/agent/reinspect")
+def agent_reinspect(request: Request):
+    """'생성물 재점검' 버튼 — 내 에이전트를 깨워 최신 N개를 known-필터 없이 강제 재전송(reinspect)한다.
+    → 서버 upsert 가 힉스필드 상태와 로컬을 다시 대조해 어긋난 것(예: 로컬만 실패)을 정정한다.
+    (되살림 금지 실패·삭제물은 upsert 가 그대로 유지 — 재점검이 함부로 되살리지 않는다.)"""
+    acc = _agent_acc(request)
+    agent_signals.signal(acc["email"], "reinspect")
+    return {"ok": True, "connected": agent_signals.connected(acc["email"])}
+
+
 @router.get("/agent/status")
 def agent_status(request: Request):
     """내 에이전트가 지금 붙어 있나(롱폴 대기 중) — UI 연결 점 표시용."""

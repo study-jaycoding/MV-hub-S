@@ -202,6 +202,9 @@ export const api = {
   // "내 작업 올리기" — 내 에이전트를 깨워 로컬 결과물을 즉시 push
   agentSync: () =>
     jsonFetch<{ ok: boolean; connected: boolean }>("/api/agent/sync", { method: "POST" }),
+  // "생성물 재점검" — 최신 N개를 known-필터 없이 강제 재전송해 힉스필드 상태와 대조·정정
+  agentReinspect: () =>
+    jsonFetch<{ ok: boolean; connected: boolean }>("/api/agent/reinspect", { method: "POST" }),
   // 과거 백필 — MCP show_generations 원시 아이템 배열을 웹 세션으로 직접 적재(파일 업로드 경로). 멱등.
   ingestMcp: (items: unknown[]) =>
     jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number; linked_uid: string | null }>(
