@@ -2425,6 +2425,7 @@ export function SceneBoard({
     const cur = cardsRef.current;
     const next = groupsRef.current.map((g) => ({ ...g, cardIds: [...g.cardIds] }));
     let changed = false;
+    const refitIds = new Set<string>(); // 속도 이탈로 멤버가 빠진 rect 그룹 → 박스를 남은 멤버에 맞게 좁힘
     for (const tid of targetIds) {
       const c = cur.find((cc) => cc.id === tid);
       if (!c) continue;
@@ -2439,12 +2440,22 @@ export function SceneBoard({
       if (hitId === curId) continue; // 같은 그룹이면 변화 없음
       for (const g of next) {
         const i = g.cardIds.indexOf(tid);
-        if (i >= 0) g.cardIds.splice(i, 1);
+        if (i >= 0) {
+          g.cardIds.splice(i, 1);
+          if (ejected.has(tid) && g.rect) refitIds.add(g.id); // 이탈로 이 rect 그룹이 멤버를 잃음
+        }
       }
       if (hitId) next.find((g) => g.id === hitId)!.cardIds.push(tid);
       changed = true;
     }
     if (!changed) return groupsRef.current;
+    // 이탈로 멤버가 빠진 고정박스 그룹은 남은 멤버 크기로 박스를 좁힌다(카드를 놓아준 뒤 크기 반영).
+    for (const g of next) {
+      if (refitIds.has(g.id) && g.cardIds.length) {
+        const r = rectFromCards(g.cardIds);
+        if (r) g.rect = r;
+      }
+    }
     const pruned = next.filter((g) => g.cardIds.length > 0); // 비게 된 그룹 정리
     setGroups(pruned);
     return pruned;
@@ -3543,9 +3554,12 @@ export function SceneBoard({
   };
   // 그룹 프레임: 저장된 rect 우선, 없으면 멤버 바운딩박스+여백. 둘 다 못 구하면 null(렌더 제외).
   const frameOf = (g: SceneGroup) => {
-    if (g.rect) return g.rect;
-    const b = memberBounds(g);
-    if (!b) return null;
+    // 이 그룹 멤버 중 '속도 이탈' 중인 카드가 있으면 고정 rect 를 무시하고 남은 멤버로 프레임을 좁힌다
+    //  (박스가 그 카드를 시각적으로 놓아줌). 이탈이 없으면 기존대로 저장 rect 우선(수동 크기 보존).
+    const ejecting = ejectedIds.size > 0 && g.cardIds.some((id) => ejectedIds.has(id));
+    if (g.rect && !ejecting) return g.rect;
+    const b = memberBounds(g); // ejectedIds 제외한 멤버 바운딩
+    if (!b) return ejecting ? null : (g.rect ?? null);
     return {
       x: b.minX - GPAD,
       y: b.minY - GPAD - GHD,
