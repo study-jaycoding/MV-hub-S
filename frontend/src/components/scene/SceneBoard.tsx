@@ -497,9 +497,10 @@ export function SceneBoard({
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 fresh 로 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
   const assetVerInFlight = useRef<Set<string>>(new Set());
-  const refreshAssetVersions = useCallback((only?: string[]) => {
+  const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[]) => {
     const projs = new Set<string>();
-    for (const c of cardsRef.current) {
+    // srcCards 를 주면 그 목록으로(씬 전환 직후엔 내부 cardsRef 가 아직 이전 씬이라, prop scene.cards 를 넘겨 정확히).
+    for (const c of srcCards ?? cardsRef.current) {
       for (const r of c.refs || []) {
         if (r.file_path?.startsWith("asset:")) {
           const proj = r.file_path.slice(6).split("|")[0];
@@ -525,11 +526,12 @@ export function SceneBoard({
   // 바뀌었을 수 있어 여기서 한 번 맞춘다(바뀐 게 없으면 버전 동일 → 리렌더 없음).
   const didInitVerRefreshScene = useRef<string | null>(null);
   useEffect(() => {
-    // 씬별 1회 — 씬 전환 후 새 씬도 최초 1회 버전 맞춤(컴포넌트 1회성이면 전환 씬은 스킵되던 문제).
-    if (didInitVerRefreshScene.current === scene.id || cards.length === 0) return;
+    // 씬별 1회 — 씬 전환 후 새 씬도 최초 1회 버전 맞춤. ★scene.cards(prop=새 씬 카드)로 판정·조회 —
+    //  내부 cards state 는 전환 직후 한 박자 늦어(이전 씬), 그걸 쓰면 새 씬을 옛 카드로 '처리완료' 표시해 버린다.
+    if (didInitVerRefreshScene.current === scene.id || scene.cards.length === 0) return;
     didInitVerRefreshScene.current = scene.id;
-    refreshAssetVersions();
-  }, [scene.id, cards, refreshAssetVersions]);
+    refreshAssetVersions(undefined, scene.cards);
+  }, [scene.id, scene.cards, refreshAssetVersions]);
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
   useEffect(() => {
@@ -978,7 +980,9 @@ export function SceneBoard({
   // 카드 삭제·씬 전환에도 핸들러 캐시가 무한 누적되지 않게 — 현재 카드에 없는 id 는 정리(누수 방지).
   useEffect(() => {
     const cache = nodePreviewHandlers.current;
-    if (cache.size <= cards.length) return; // 대개 같거나 작으면 지울 것 없음(불필요 순회 방지)
+    if (cache.size === 0) return; // 비었으면 지울 것 없음
+    // 캐시는 '미리보기를 요청한 카드'만 담긴 subset — size 를 cards.length 와 비교하면 stale 이 남으므로
+    //  항상 현재 카드 id 로 prune 한다.
     const live = new Set(cards.map((c) => c.id));
     for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
   }, [cards]);
