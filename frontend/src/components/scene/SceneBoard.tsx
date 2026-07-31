@@ -76,6 +76,7 @@ import {
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
+import { refMediaSrc, refMediaType, mediaFileName } from "../../lib/sceneMedia";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
@@ -153,31 +154,10 @@ function refTypeLabel(refs?: SceneRef[]): string {
   const label = t === "video" ? "비디오" : t === "audio" ? "오디오" : "이미지";
   return refs.length > 1 ? `${label} ${refs.length}` : label;
 }
-// 레퍼런스의 재생·미리보기용 실제 파일 URL — 영상 호버재생(src)·더블클릭 큰화면(preview)에 쓴다.
-//  · asset:proj|path 토큰 → 원본 파일 URL, 그 외(원격 URL 등)는 그대로.
-function refMediaSrc(r: SceneRef): string | undefined {
-  const p = r.file_path;
-  if (!p) return undefined;
-  if (p.startsWith("asset:")) {
-    const [proj, path] = p.slice(6).split("|");
-    return proj && path ? api.assetFileUrl(proj, path) : undefined;
-  }
-  return p;
-}
-// SceneRef.type 을 PreviewTarget 의 좁은 유니온으로 정규화.
-function refMediaType(r: SceneRef): "image" | "video" | "audio" {
-  return r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image";
-}
+// refMediaSrc·refMediaType·mediaFileName 은 순수 헬퍼라 sceneMedia.ts 로 분리(상단에서 import).
 
 // 단순 미디어 비교 아이템(레퍼런스 포함) — fallback=로드 실패 시 대체, full=크게 보기용 원본.
 type CompareMediaItem = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
-
-// URL/이름에서 확장자를 뽑고, 없으면 타입 기본값(png/mp4). ComfyUI 가 파일종류를 알도록 이름에 확장자를 붙인다.
-function mediaFileName(nameOrUrl: string, type: "image" | "video", idx: number): string {
-  const m = /\.([a-z0-9]{2,4})(?:\?|#|$)/i.exec(nameOrUrl);
-  const ext = m ? m[1].toLowerCase() : type === "video" ? "mp4" : "png";
-  return `${type}${idx}.${ext}`;
-}
 
 // 임의 URL → 풀해상도 Blob. 로컬(/…)은 쿠키로 직접, 원격은 직접 fetch 후 CORS 막히면 /api/download 프록시.
 // (download.ts 의 _fetchBlob 과 동일 전략 — 그쪽은 비공개라 여기 재사용용으로 옮겨 적음.)
