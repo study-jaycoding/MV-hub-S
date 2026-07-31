@@ -75,6 +75,7 @@ import {
   resolvePortEdges,
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
+import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
@@ -86,6 +87,13 @@ import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi, type ComfyRunMedia } from "../../lib/comfyApi";
+import {
+  ackDone,
+  isRecentlyDone,
+  observeStatus,
+  subscribeRecentDone,
+  getRecentDoneVersion,
+} from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -227,6 +235,7 @@ interface Props {
   actionRef?: MutableRefObject<{
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+    flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
   onGenerateCard?: (batch?: number) => void; // batch = 이 노드의 배치수(comfy 없는 경로에도 적용)
@@ -308,12 +317,9 @@ export function SceneBoard({
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // 방금 생성된 카드 — 결과가 done 으로 전환된 순간 라임 glow 로 '방금 만들어짐'을 직관 표시. 카드 클릭 시 해제.
-  const [glowIds, setGlowIds] = useState<Set<string>>(new Set());
-  const glowRef = useRef<Set<string>>(new Set());
-  glowRef.current = glowIds;
-  // 카드별 마지막 결과 상태(카드 id → status) — done 전환(pending/running→done)만 glow 트리거. 초기 로드(직접 done)는 제외.
-  const prevGenStatusRef = useRef<Map<string, string>>(new Map());
+  // 방금 생성된 카드 — 라임 glow 로 '방금 만들어짐'을 직관 표시. '방금 완료' 판정은 모듈 store 로 분리해
+  //  탭 전환(SceneBoard 언마운트)에도 유지된다(App watcher 가 탭 무관 폴링). glowVer 로 store 변경 시 리렌더.
+  useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
   // 드래그 중인 카드 id — 컬링(keepIds)이 이동 중 카드를 마진 밖으로 나가도 언마운트하지 않게 유지한다.
   const [draggingIds, setDraggingIds] = useState<readonly string[]>([]);
   const [marquee, setMarquee] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
@@ -321,28 +327,17 @@ export function SceneBoard({
   // genId→실제 생성물 바인딩·폴링·계보(refParents)·비활성/삭제 상태는 useSceneGenData 훅으로 추출(동작 보존).
   //  각 생성물이 '레퍼런스로 쓴' 부모 gen id(refParents)는 수동 연결선 색(레퍼런스 점선 vs 계보 실선) 판정 근거.
   const { genData, setGenData, genDataRef, missingIds, disabledIds, refParents } = useSceneGenData(cards);
-  // 결과가 done 으로 '전환'된 카드만 glow 세트에 추가(방금 생성 표시). 초기 로드/직접 done 은 baseline 으로만 기록해 제외.
-  //  트리거는 pending·running→done 뿐이라, 처음부터 done 인 카드(과거 결과·새로고침)는 빛나지 않는다.
+  // 캔버스에 있는 동안 관찰한 생성 카드 상태를 store 에 반영(전환 규칙은 store 가 판정). 초기 done/새로고침은
+  //  store 가 baseline 으로만 처리해 glow 안 함. active→done 만 recentlyDone. (App watcher 와 공동으로 채움)
   useEffect(() => {
-    const prev = prevGenStatusRef.current;
-    const next = new Map<string, string>();
-    const newlyDone: string[] = [];
     for (const c of cards) {
-      if (c.kind !== "generation" || !c.genId) continue;
-      const st = genData[c.genId]?.status;
-      if (!st) continue;
-      const s = String(st);
-      next.set(c.id, s);
-      const before = prev.get(c.id);
-      if (before && before !== "done" && s === "done") newlyDone.push(c.id);
+      if (c.kind !== "generation") continue;
+      // 변형 전체를 반영(useSceneGenData 가 모든 변형을 조회) — 대표가 바뀌거나 비대표가 늦게 완료돼도 커버.
+      for (const gid of variantIds(c)) {
+        const st = genData[gid]?.status;
+        if (st) observeStatus(gid, String(st));
+      }
     }
-    prevGenStatusRef.current = next;
-    if (newlyDone.length)
-      setGlowIds((cur) => {
-        const n = new Set(cur);
-        for (const id of newlyDone) n.add(id);
-        return n;
-      });
   }, [genData, cards]);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
@@ -504,9 +499,10 @@ export function SceneBoard({
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 fresh 로 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
   const assetVerInFlight = useRef<Set<string>>(new Set());
-  const refreshAssetVersions = useCallback((only?: string[]) => {
+  const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[]) => {
     const projs = new Set<string>();
-    for (const c of cardsRef.current) {
+    // srcCards 를 주면 그 목록으로(씬 전환 직후엔 내부 cardsRef 가 아직 이전 씬이라, prop scene.cards 를 넘겨 정확히).
+    for (const c of srcCards ?? cardsRef.current) {
       for (const r of c.refs || []) {
         if (r.file_path?.startsWith("asset:")) {
           const proj = r.file_path.slice(6).split("|")[0];
@@ -530,12 +526,14 @@ export function SceneBoard({
   // Phase 0(초기 로드): 카드가 처음 생기면 즉시 최신 버전 확인 — 포커스/WS 신호를 기다리지 않는다.
   // 새로고침 직후엔 localStorage 의 '마지막 본 버전'으로 먼저 그리는데, 앱을 안 보는 사이 원본이
   // 바뀌었을 수 있어 여기서 한 번 맞춘다(바뀐 게 없으면 버전 동일 → 리렌더 없음).
-  const didInitVerRefresh = useRef(false);
+  const didInitVerRefreshScene = useRef<string | null>(null);
   useEffect(() => {
-    if (didInitVerRefresh.current || cards.length === 0) return;
-    didInitVerRefresh.current = true;
-    refreshAssetVersions();
-  }, [cards, refreshAssetVersions]);
+    // 씬별 1회 — 씬 전환 후 새 씬도 최초 1회 버전 맞춤. ★scene.cards(prop=새 씬 카드)로 판정·조회 —
+    //  내부 cards state 는 전환 직후 한 박자 늦어(이전 씬), 그걸 쓰면 새 씬을 옛 카드로 '처리완료' 표시해 버린다.
+    if (didInitVerRefreshScene.current === scene.id || scene.cards.length === 0) return;
+    didInitVerRefreshScene.current = scene.id;
+    refreshAssetVersions(undefined, scene.cards);
+  }, [scene.id, scene.cards, refreshAssetVersions]);
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
   useEffect(() => {
@@ -789,14 +787,51 @@ export function SceneBoard({
     nextCards: SceneCard[],
     nextEdges: SceneEdge[],
     nextGroups: SceneGroup[] = groupsRef.current,
+    opts?: { undo?: boolean }, // undo:false = 실행상태·파생저장(running/done/gid반영 등) — undo 스택에 안 쌓는다.
   ) => {
-    // 되돌리기용: 직전 커밋 상태를 스택에 쌓고(상한 200), 이번 상태를 최신 커밋으로 기록.
-    undoStackRef.current.push(lastCommitRef.current);
-    if (undoStackRef.current.length > 200) undoStackRef.current.shift();
-    redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
-    lastCommitRef.current = { cards: nextCards, edges: nextEdges, groups: nextGroups };
-    onChangeRef.current({ cards: nextCards, edges: nextEdges, groups: nextGroups });
+    const next = { cards: nextCards, edges: nextEdges, groups: nextGroups };
+    // 파생/실행상태 저장은 undo 스택을 건드리지 않는다 — Ctrl+Z 가 사용자 편집만 되돌리게(자동 상태변화 제외).
+    //  단 최신 커밋 기록·부모(씬 저장) 반영은 동일(그래야 저장 유실 없음).
+    if (opts?.undo !== false) {
+      undoStackRef.current.push(lastCommitRef.current);
+      if (undoStackRef.current.length > 200) undoStackRef.current.shift();
+      redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
+    }
+    lastCommitRef.current = next;
+    onChangeRef.current(next);
   };
+  // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
+  //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
+  //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
+  const pendingPersistRef = useRef<number | undefined>(undefined);
+  const flushPending = () => {
+    if (pendingPersistRef.current !== undefined) {
+      clearTimeout(pendingPersistRef.current);
+      pendingPersistRef.current = undefined;
+    }
+    const last = lastCommitRef.current;
+    if (cardsRef.current === last.cards && edgesRef.current === last.edges) return; // 밀린 편집 없음
+    persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
+  };
+  const flushPendingRef = useRef(flushPending);
+  flushPendingRef.current = flushPending;
+  const scheduleInputPersist = () => {
+    if (pendingPersistRef.current !== undefined) clearTimeout(pendingPersistRef.current);
+    pendingPersistRef.current = window.setTimeout(() => {
+      pendingPersistRef.current = undefined;
+      flushPendingRef.current();
+    }, 400);
+  };
+  // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
+  //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
+  useEffect(() => {
+    const onHide = () => flushPendingRef.current();
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      flushPendingRef.current();
+    };
+  }, []);
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
@@ -930,7 +965,8 @@ export function SceneBoard({
     Promise.resolve(act?.(g)).finally(() => {
       void api
         .getGeneration(g.id)
-        .then((fresh) => fresh && setGenData((prev) => ({ ...prev, [g.id]: fresh })))
+        // 이미 로드된 카드만 갱신 — 씬 전환으로 prune 된 gen 을 재조회 응답이 되살려 넣지 않게(다른 핸들러와 동일 규칙).
+        .then((fresh) => fresh && setGenData((prev) => (prev[g.id] ? { ...prev, [g.id]: fresh } : prev)))
         .catch(() => {});
     });
   }, []);
@@ -980,6 +1016,15 @@ export function SceneBoard({
     }
     return h;
   };
+  // 카드 삭제·씬 전환에도 핸들러 캐시가 무한 누적되지 않게 — 현재 카드에 없는 id 는 정리(누수 방지).
+  useEffect(() => {
+    const cache = nodePreviewHandlers.current;
+    if (cache.size === 0) return; // 비었으면 지울 것 없음
+    // 캐시는 '미리보기를 요청한 카드'만 담긴 subset — size 를 cards.length 와 비교하면 stale 이 남으므로
+    //  항상 현재 카드 id 로 prune 한다.
+    const live = new Set(cards.map((c) => c.id));
+    for (const id of cache.keys()) if (!live.has(id)) cache.delete(id);
+  }, [cards]);
 
   // ── S5 토대: 생성 카드는 자신에게 연결된 레퍼런스 카드들의 레퍼런스를 순서대로 모아 보유한다. ──
   // (연결/해제 시에만 재계산 — 이후 프롬프트에서 순서를 바꾸면 card.refs 를 직접 갱신한다)
@@ -1041,30 +1086,7 @@ export function SceneBoard({
     }
     return out;
   };
-  // 기존 refs(프롬프트에서 재정렬됐을 수 있음)의 순서를 보존하며, 새 연결은 뒤에 붙이고 끊긴 건 뺀다.
-  // ★'직접' 넣은 참조(from_card 없음 — @생성물·드래그 asset 등)는 엣지와 무관하게 보존한다.
-  //   레퍼런스 카드/리스트가 제공한 참조(from_card:true)는 그 소스가 바뀌면(target 에서 빠지면) 함께 사라진다 —
-  //   안 그러면 옛 레퍼런스 카드(비디오 등)를 끊고 다른 걸 연결해도 옛 참조가 유령으로 남아 생성에 섞였다.
-  //   (from_card 는 gatherTarget 이 연결로 모은 참조에만 붙는다. 없으면 사용자가 손으로 넣은 것이라 보존.)
-  const reconcileRefs = (existing: SceneRef[], target: SceneRef[]): SceneRef[] => {
-    const key = (r: SceneRef) => r.file_path + "#" + (r.source_gen_id || "");
-    const pool = [...target];
-    const result: SceneRef[] = [];
-    for (const r of existing) {
-      const i = pool.findIndex((t) => key(t) === key(r));
-      if (i >= 0) {
-        const linked = pool.splice(i, 1)[0];
-        // ★수동으로 넣은 참조(!from_card)는 연결이 같은 파일을 제공해도 수동 표식을 유지한다 —
-        //  안 그러면 연결 해제 때 수동 참조까지 사라진다. from_card 참조만 연결본으로 갱신.
-        result.push(r.from_card ? linked : r);
-      } else if (!r.from_card) {
-        result.push(r); // 연결에서 온 게 아닌 수동 참조(@생성물·드래그 asset)는 보존
-      }
-      // 그 외(연결이 끊긴 레퍼런스 카드/리스트 참조)는 제거
-    }
-    result.push(...pool);
-    return result;
-  };
+  // reconcileRefs(연결 refs 정규화·from_card 규칙)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const withGenRefs = (cs: SceneCard[], es: SceneEdge[]): SceneCard[] =>
     cs.map((c) =>
       c.kind === "generation"
@@ -1383,6 +1405,7 @@ export function SceneBoard({
     const startH = c.h ?? CARD_H;
     const sx = e.clientX;
     const sy = e.clientY;
+    let resized = false; // 실제로 크기가 바뀐 적이 있나 — no-op(핸들만 클릭) 에 persist/undo 오염 방지
     const move = (ev: MouseEvent) => {
       const z = zoomRef.current;
       const w = Math.max(CARD_MIN_W, snapGrid(startW + (ev.clientX - sx) / z));
@@ -1390,11 +1413,14 @@ export function SceneBoard({
       const prevCards = cardsRef.current;
       const cur = prevCards.find((cc) => cc.id === cardId);
       if (cur && cur.w === w && cur.h === h) return; // 스냅값 그대로면 리렌더 스킵
+      resized = true;
       const next = prevCards.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
       cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 크기를 읽게
       setCards(next);
     };
-    const up = () => persist(cardsRef.current, edgesRef.current);
+    const up = () => {
+      if (resized) persist(cardsRef.current, edgesRef.current); // 변화 있을 때만 저장(빈 undo 방지)
+    };
     beginDrag(move, up, up); // blur: 현재 크기 그대로 저장(좌표 무관 커밋이라 up 재사용 안전)
   };
 
@@ -1524,8 +1550,9 @@ export function SceneBoard({
   // text 노드 내용 편집 저장(디바운스 없이 즉시 — 로컬 저장이라 가벼움). output 노드의 채널 이름도 text 필드 공용.
   const setNodeText = (cardId: string, text: string) => {
     const nextCards = cardsRef.current.map((c) => (c.id === cardId ? { ...c, text } : c));
+    cardsRef.current = nextCards; // 즉시 반영 — 생성/flush 가 최신 텍스트를 읽게
     setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    scheduleInputPersist(); // 저장은 디바운스(blur·언마운트·씬전환 시 flush)
   };
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
@@ -1541,7 +1568,12 @@ export function SceneBoard({
     persist(nextCards, edgesRef.current);
   };
   // comfy 노드: comfyCfg 부분 병합 저장(모달 저장·실행 상태 갱신·파라미터 값 변경 공용).
-  const patchComfyCfg = (cardId: string, patch: Partial<SceneComfyCfg>) => {
+  //  opts.undo=false = 실행상태(running/done/failed)·재파싱 등 파생 저장 → undo 스택에 안 쌓는다(사용자 편집만 undo).
+  const patchComfyCfg = (
+    cardId: string,
+    patch: Partial<SceneComfyCfg>,
+    opts?: { undo?: boolean; defer?: boolean }, // defer=true = 파라미터 입력 → 저장 디바운스(blur/실행 시 flush)
+  ) => {
     const nextCards = cardsRef.current.map((c) =>
       c.id === cardId && c.kind === "comfy"
         ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
@@ -1549,7 +1581,8 @@ export function SceneBoard({
     );
     cardsRef.current = nextCards; // ref 즉시 갱신 — 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성)
     setCards(nextCards);
-    persist(nextCards, edgesRef.current);
+    if (opts?.defer) scheduleInputPersist();
+    else persist(nextCards, edgesRef.current, groupsRef.current, opts);
   };
   // 노드별 배치수 설정 — 카드에 저장해 노드마다 각자 관리(1~4). 씬 저장으로 유지.
   const setCardBatch = (cardId: string, n: number) => {
@@ -1563,7 +1596,7 @@ export function SceneBoard({
   const setComfyParam = (cardId: string, key: string, value: string | number | boolean) => {
     const card = cardsRef.current.find((c) => c.id === cardId);
     const values = { ...(card?.comfyCfg?.paramValues || {}), [key]: value };
-    patchComfyCfg(cardId, { paramValues: values });
+    patchComfyCfg(cardId, { paramValues: values }, { defer: true }); // 파라미터 입력 저장 디바운스(blur/실행 시 flush)
   };
   // comfy 노드에 새 API(워크플로우 JSON)를 넣는다 — 빈 노드 최초 로드·기존 노드 교체 공용.
   //  파싱 성공해야 반영한다(실패 시 기존 유지). 다른 워크플로우로 바뀌므로 노출 파라미터·값·결과는 초기화한다.
@@ -1625,7 +1658,7 @@ export function SceneBoard({
     try {
       const res = await comfyApi.parse(content, []);
       if (sceneIdRef.current !== sid) return;
-      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null });
+      patchComfyCfg(cardId, { nodeCount: res.node_count, status: "idle", error: null }, { undo: false }); // 재파싱=파생, undo 제외
     } catch {
       /* 파싱 실패 — 상태만 두고 무시 */
     }
@@ -1778,7 +1811,7 @@ export function SceneBoard({
       });
       cardsRef.current = next;
       setCards(next);
-      persist(next, edgesRef.current);
+      persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 저장된 gid 반영=파생, undo 제외
       if (!silent) {
         const created = res.saved.filter((s) => !s.existed).length;
         flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
@@ -1879,11 +1912,12 @@ export function SceneBoard({
   //  batchCount>1 이면 N벌 병렬 실행(복사본마다 시드 무작위=다른 그림) → 각 결과를 '내 작업'에 저장·누적.
   //  카드엔 마지막 결과셋만 표시(대표), 나머지는 '▤ N' 배지/변형 팝업으로 모아 본다.
   const runComfy = async (cardId: string): Promise<boolean> => {
+    flushPending(); // 실행 직전 밀린 입력 저장 확정 — 최신 텍스트/파라미터로 실행되고 undo 순서도 정확
     const card = cardsRef.current.find((c) => c.id === cardId);
     if (!card?.comfyCfg?.content) return false;
     const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
     const sid = sceneIdRef.current; // 실행 대기 중 씬 전환 시 다른 씬에 결과 반영 안 함
-    patchComfyCfg(cardId, { status: "running", error: null });
+    patchComfyCfg(cardId, { status: "running", error: null }, { undo: false }); // 실행상태=파생, undo 제외
     markComfyRunning([cardId], true); // 노드에 '생성중' 웨이브 표시(메모리)
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
@@ -1896,14 +1930,14 @@ export function SceneBoard({
       );
       if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
-      patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null });
+      patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null }, { undo: false }); // 완료 상태=파생, undo 제외
       // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
       // ★순차 await — 병렬이면 응답 도착순에 따라 대표(genId)·genIds 순서가 뒤섞인다(대표=마지막 결과 보장).
       for (const s of sets)
         await saveComfyToLibrary(cardId, { silent: true, elapsedSeconds: s.elapsed, outputs: s.outputs });
       return true;
     } catch (e) {
-      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" });
+      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" }, { undo: false }); // 실패 상태=파생, undo 제외
       return false;
     } finally {
       markComfyRunning([cardId], false);
@@ -1942,6 +1976,7 @@ export function SceneBoard({
     sceneId: string,
     batch: number,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
+    flushPending(); // 실행(배치) 직전 밀린 입력 저장 확정 — 스냅샷이 최신 텍스트/파라미터를 담게
     // 클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 다르게 새는 것을 막는다(comfy content·paramValues).
     const cfgSnap = new Map<string, { content: string; paramValues: Record<string, string | number | boolean> }>();
     for (const c of cardsRef.current)
@@ -2031,7 +2066,7 @@ export function SceneBoard({
       });
       cardsRef.current = snap;
       setCards(snap);
-      persist(snap, edgesRef.current);
+      persist(snap, edgesRef.current, groupsRef.current, { undo: false }); // 배치 실행 스냅샷=파생, undo 제외
       // 출력이 생긴 comfy 노드는 자동으로 '내 작업'에 추가(체인 실행에서도) + 노드별 소요시간 기록. 멱등이라 중복 없음.
       // ★배치의 '모든 복사본' 결과를 각각 저장한다(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
       //   직접 실행(runComfy)과 동일하게 복사본별 outputs·소요시간으로 저장.
@@ -2210,6 +2245,10 @@ export function SceneBoard({
     orientation: "v" | "h",
   ) => {
     if (e.button !== 0) return;
+    // ★리스트가 선택돼 있을 때만 행 순서 변경. 미선택이면 여기서 빠져(stopPropagation 안 함) 이벤트를
+    //  보드로 흘려보내 리스트 카드 이동(드래그)이 되게 한다 — 옮기려다 실수로 순서가 바뀌던 불편 해소.
+    //  (순서를 바꾸려면 먼저 리스트를 클릭해 선택한 뒤 행을 드래그한다.)
+    if (!selectedRef.current.has(listId)) return;
     e.preventDefault();
     e.stopPropagation(); // 카드 이동/마퀴로 번지지 않게
     const container = (e.currentTarget as HTMLElement).closest("[data-reorder]") as HTMLElement | null;
@@ -2424,12 +2463,7 @@ export function SceneBoard({
     if (!n) return undefined;
     return { x: minX - GPAD, y: minY - GPAD - GHD, w: maxX - minX + GPAD * 2, h: maxY - minY + GPAD * 2 + GHD };
   };
-  // 삭제된 카드를 그룹 멤버에서 빼고 빈 그룹은 제거(순수). existing=현재 존재하는 카드 id —
-  //  손상/구버전 씬의 유령 멤버 id 도 함께 정리(rect 만 남은 빈 그룹 잔존 방지).
-  const pruneGroups = (gs: SceneGroup[], removed: Set<string>, existing: Set<string>): SceneGroup[] =>
-    gs
-      .map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => !removed.has(id) && existing.has(id)) }))
-      .filter((g) => g.cardIds.length > 0);
+  // pruneGroups(삭제·유령 카드 정리)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const applyGroups = (next: SceneGroup[]) => {
     setGroups(next);
     persist(cardsRef.current, edgesRef.current, next);
@@ -2550,8 +2584,12 @@ export function SceneBoard({
   }, [selected, cards, genData, cardMenu]);
   useEffect(() => () => onSelGensRef.current?.([]), []); // 언마운트 → 선택바 비우기
   // 명령형 핸들 바인딩은 렌더 중 write(비순수) 대신 커밋 후 useLayoutEffect 에서(refs 라 항상 최신).
+  //  언마운트(탭 이탈·씬 언마운트) 시 핸들을 비워 옛 SceneBoard 클로저/refs 가 App 에 붙잡히지 않게 한다.
   useLayoutEffect(() => {
-    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs };
+    if (actionRef) actionRef.current = { deleteSelected: () => deleteCards(selResultCardIds()), setCardRefs, flushPending };
+    return () => {
+      if (actionRef) actionRef.current = null;
+    };
   });
 
   // ── 키보드: n=빈 카드 연결 · Delete/Backspace=삭제 ──
@@ -3067,13 +3105,9 @@ export function SceneBoard({
 
     if (cardEl) {
       const id = cardEl.dataset.id!;
-      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. ref 로 가드해 불필요한 리렌더 방지.
-      if (glowRef.current.has(id))
-        setGlowIds((s) => {
-          const n = new Set(s);
-          n.delete(id);
-          return n;
-        });
+      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. store 에서 이 카드의 변형들을 ack.
+      const gcard = cardsRef.current.find((c) => c.id === id);
+      if (gcard && gcard.kind === "generation") ackDone(variantIds(gcard));
       // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
       //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
       const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
@@ -3217,7 +3251,9 @@ export function SceneBoard({
           : boxed.size
             ? boxed
             : prevSel;
-        setSelected(hit);
+        // 마퀴 이동 프레임마다 감싼 집합이 그대로면 새 Set 로 리렌더하지 않는다(동일성 가드).
+        const cur = selectedRef.current;
+        if (hit.size !== cur.size || [...hit].some((id) => !cur.has(id))) setSelected(hit);
       };
       const up = () => {
         setMarquee(null);
@@ -3400,6 +3436,12 @@ export function SceneBoard({
         setEdges(nextEdges);
         setSelected(new Set(newCards.map((c) => c.id)));
         persist(nextCards, nextEdges);
+        // 연속 붙여넣기 캐스케이드 — 다음 Ctrl+V 가 방금 붙여넣은 위치에서 또 한 칸 밀려 겹치지 않게.
+        //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 전진시킨다. Ctrl+C 하면 초기화.)
+        clipboardRef.current = {
+          ...clip,
+          cards: clip.cards.map((c) => ({ ...c, x: c.x + off, y: c.y + off })),
+        };
         return;
       }
     };
@@ -3630,16 +3672,23 @@ export function SceneBoard({
   //  이렇게 해야 '한번 뺐다 넣고 다시 빼도 매번 반응'한다(늘어난 크기를 rect 에 박제하지 않으므로).
   const frameOf = (g: SceneGroup) => grownRect(g);
   // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
-  const groupViews = groups
-    .map((g) => {
-      const frame = frameOf(g);
-      if (!frame) return null;
-      const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
-      return { g, frame, bar };
-    })
-    .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v);
-  const collapsedBarById = new Map(
-    groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const),
+  // 매 렌더 전체 그룹×멤버 bounds 계산이라 메모화 — 입력(그룹·카드위치/크기·이탈·측정)이 바뀔 때만.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const groupViews = useMemo(
+    () =>
+      groups
+        .map((g) => {
+          const frame = frameOf(g);
+          if (!frame) return null;
+          const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
+          return { g, frame, bar };
+        })
+        .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v),
+    [groups, cards, ejectedIds, heightTick],
+  );
+  const collapsedBarById = useMemo(
+    () => new Map(groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const)),
+    [groupViews],
   );
   // 접힌 그룹 멤버에 닿는 연결선 → 멤버 대신 그룹 막대의 포트로 재연결(브릿지). 내부(같은 그룹끼리)는 숨김.
   const barOut = (id: string) => {
@@ -3808,21 +3857,27 @@ export function SceneBoard({
   };
 
   // 접힌 그룹 막대로 재연결되는 브릿지 선 — 멤버가 숨어 visibleEdges 에서 빠진 연결을 막대 포트로 그린다.
-  const groupBridges = collapsedMemberOf.size
-    ? edges.flatMap((e) => {
-        if (grayHidden.has(e.from) || grayHidden.has(e.to)) return [];
-        const fg = collapsedMemberOf.get(e.from);
-        const tg = collapsedMemberOf.get(e.to);
-        if (!fg && !tg) return []; // 둘 다 안 접힘 → 일반선(visibleEdges)이 그림
-        if (fg && tg && fg.id === tg.id) return []; // 같은 접힌 그룹 내부 연결 → 숨김
-        const a = barOut(e.from);
-        const b = barIn(e.to);
-        if (!a || !b) return [];
-        return [
-          { id: e.id, from: e.from, to: e.to, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
-        ];
-      })
-    : [];
+  // 접힌 그룹이 있을 때만 도는 flatMap 이지만 매 렌더 재계산되던 것을 메모화(입력 변경 시에만).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const groupBridges = useMemo(
+    () =>
+      collapsedMemberOf.size
+        ? edges.flatMap((e) => {
+            if (grayHidden.has(e.from) || grayHidden.has(e.to)) return [];
+            const fg = collapsedMemberOf.get(e.from);
+            const tg = collapsedMemberOf.get(e.to);
+            if (!fg && !tg) return []; // 둘 다 안 접힘 → 일반선(visibleEdges)이 그림
+            if (fg && tg && fg.id === tg.id) return []; // 같은 접힌 그룹 내부 연결 → 숨김
+            const a = barOut(e.from);
+            const b = barIn(e.to);
+            if (!a || !b) return [];
+            return [
+              { id: e.id, from: e.from, to: e.to, a, b, role: edgeRoles.get(e.id), ref: refCardEdgeIds.has(e.id), refg: genRefEdgeIds.has(e.id) },
+            ];
+          })
+        : [],
+    [collapsedMemberOf, edges, grayHidden, edgeRoles, refCardEdgeIds, genRefEdgeIds, collapsedBarById, cards, heightTick],
+  );
 
   return (
     <div
@@ -4150,7 +4205,7 @@ export function SceneBoard({
                 "scene-card " +
                 kindCls +
                 (sel ? " sel" : "") +
-                (glowIds.has(card.id) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
+                (card.kind === "generation" && variantIds(card).some(isRecentlyDone) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
                 (editTextId === card.id ? " editing" : "") + // 편집 중 — head 이중 외곽선 방지 등
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
@@ -4359,7 +4414,7 @@ export function SceneBoard({
                             spellCheck={false}
                             autoFocus
                             onMouseDown={(e) => e.stopPropagation()}
-                            onBlur={() => setEditTextId(null)}
+                            onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
                             onChange={(e) => setNodeText(card.id, e.target.value)}
                           />
                         ) : (
@@ -4771,6 +4826,7 @@ export function SceneBoard({
                             value={card.text || ""}
                             placeholder="채널 이름 입력"
                             onChange={(e) => setNodeText(card.id, e.target.value)}
+                            onBlur={() => flushPending()} // 입력 끝나면 밀린 저장 확정
                           />
                         </div>
                       )}
@@ -5237,6 +5293,7 @@ export function SceneBoard({
                                           checked={!!v}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, e.target.checked)}
+                                          onBlur={() => flushPending()}
                                         />
                                       ) : p.choices && p.choices.length ? (
                                         <select
@@ -5246,6 +5303,7 @@ export function SceneBoard({
                                             const orig = p.choices?.find((ch) => String(ch) === e.target.value);
                                             setComfyParam(card.id, p.key, orig ?? e.target.value);
                                           }}
+                                          onBlur={() => flushPending()}
                                         >
                                           {p.choices.map((ch) => (
                                             <option key={String(ch)} value={String(ch)}>
@@ -5259,6 +5317,7 @@ export function SceneBoard({
                                           value={v == null ? "" : (v as number)}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, Number(e.target.value))}
+                                          onBlur={() => flushPending()}
                                         />
                                       ) : p.type === "text" && drivenKeys.has(p.key) ? (
                                         // 텍스트가 연결됨 → 비활성 + 연결된 텍스트 표시(실행 시 이 값이 자동 주입).
@@ -5276,6 +5335,7 @@ export function SceneBoard({
                                           value={String(v ?? "")}
                                           onMouseDown={stop}
                                           onChange={(e) => setComfyParam(card.id, p.key, e.target.value)}
+                                          onBlur={() => flushPending()}
                                         />
                                       )}
                                     </div>
@@ -5428,7 +5488,7 @@ export function SceneBoard({
                           wrap="off"
                           style={{ fontSize: fs, color: col }}
                           onMouseDown={(e) => e.stopPropagation()}
-                          onBlur={() => setEditTextId(null)}
+                          onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
                           onChange={(e) => setNodeText(card.id, e.target.value)}
                           onKeyDown={(e) => {
                             e.stopPropagation();

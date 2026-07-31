@@ -16,7 +16,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
     realtime_scope,
@@ -33,6 +33,11 @@ from ..models import (
 )
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
+from ..usecases.gen_requests import (
+    GenRequestCommand,
+    pm_best_effort as _pm,
+    submit_gen_request,
+)
 from ..ws import manager
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
@@ -60,20 +65,6 @@ def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
     return m.group(1), status
 
 
-def _pm(action) -> None:
-    """PM 메트릭 best-effort 실행(분리형). MANAGE_ENABLED off 거나 실패해도 생성 흐름·응답에
-    영향 0 — 메트릭 수집은 절대 생성을 막지 않는다(안전 검토 PM_DASHBOARD_DESIGN.md §6-1).
-    action 은 manage 모듈을 받는 콜러블."""
-    if not MANAGE_ENABLED:
-        return
-    try:
-        from ..repo import manage as _m
-
-        action(_m)
-    except Exception:  # noqa: BLE001 — 메트릭 실패가 생성을 막지 않게
-        pass
-
-
 def _require_account(request: Request) -> dict:
     """생성요청용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
@@ -81,7 +72,10 @@ def _require_account(request: Request) -> dict:
 
 @router.post("/gen-requests", response_model=GenerationOut, status_code=201)
 async def create_gen_request(body: GenRequestIn, request: Request):
-    """버튼이 호출 — placeholder 카드 즉시 생성 + 로컬 실행요청 큐잉. placeholder 반환."""
+    """버튼이 호출 — placeholder 카드 즉시 생성 + 로컬 실행요청 큐잉. placeholder 반환.
+
+    라우터는 HTTP/인증/권한/입력검증만 하고, 오케스트레이션(생성·큐잉·signal·PM)은
+    usecases.gen_requests.submit_gen_request 가 수행한다(ARCHITECTURE.md)."""
     acc = _require_account(request)
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
@@ -104,8 +98,14 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             require_project_role(
                 request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
-        worker_id = body.create.worker_id or DEFAULT_WORKER_ID
-        gen_id = repo.create_local_generation(data, worker_id, creator_uid=creator_uid)
+        cmd = GenRequestCommand(
+            kind="create",
+            email=acc["email"],
+            creator_uid=creator_uid,
+            worker_id=body.create.worker_id or DEFAULT_WORKER_ID,
+            source_gen_id=body.source_gen_id,
+            data=data,
+        )
     else:  # regenerate
         if not body.source_gen_id:
             raise HTTPException(status_code=400, detail="source_gen_id 가 필요합니다")
@@ -123,37 +123,17 @@ async def create_gen_request(body: GenRequestIn, request: Request):
                 request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
         reg = body.regenerate or RegenerateIn()
-        worker_id = reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID
-        gen_id = repo.import_generation(body.source_gen_id, worker_id, creator_uid=creator_uid)
-        if reg.color is not None:
-            repo.set_color(gen_id, reg.color)
-        if reg.prompt or reg.model:
-            repo.override_prompt_model(gen_id, prompt=reg.prompt, model=reg.model)
-        if reg.auto_tags:
-            repo.add_auto_tags(gen_id, reg.auto_tags)
+        # worker_id 는 parent 기준으로 라우터가 계산(usecase 가 parent 를 다시 읽으면 동작이 달라짐).
+        cmd = GenRequestCommand(
+            kind="regenerate",
+            email=acc["email"],
+            creator_uid=creator_uid,
+            worker_id=reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID,
+            source_gen_id=body.source_gen_id,
+            regenerate=reg,
+        )
 
-    payload = repo.gen_recipe(gen_id)
-    payload["source_gen_id"] = body.source_gen_id
-    repo.create_gen_request(acc["email"], creator_uid, gen_id, body.kind, payload)
-    # 요청자 에이전트를 즉시 깨움(이벤트 방식) — 30초 폴링 대기 없이 바로 실행.
-    agent_signals.signal(acc["email"], "gen-request")
-
-    # PM 메트릭: 요청 시점 requested_at + 견적 박제. 서버에 CLI 있을 때만 견적(없으면 NULL —
-    # 실제값은 후속 단계의 거래 매칭으로 채움). 견적 0/실패는 미상(NULL)로 둔다(진짜 0 과 구분 불가).
-    if MANAGE_ENABLED:
-        est = None
-        try:
-            if cli_bridge.cli_available():
-                cc = await cli_bridge.estimate_cost(
-                    payload.get("model"), payload.get("params"), payload.get("prompt") or ""
-                )
-                v = (cc or {}).get("credits")
-                est = int(v) if v else None
-        except Exception:  # noqa: BLE001 — 견적 실패가 생성을 막지 않게
-            est = None
-        _pm(lambda _m: _m.record_request(gen_id, est_credits=est))
-
-    gen = repo.get_generation(gen_id)
+    gen = await submit_gen_request(cmd)
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
     return gen

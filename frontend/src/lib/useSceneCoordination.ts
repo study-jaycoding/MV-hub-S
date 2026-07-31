@@ -68,10 +68,14 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   const sceneActionRef = useRef<{
     deleteSelected: () => void;
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
+    flushPending: () => void; // 밀린 입력 저장 확정 — 씬 전환 직전 호출
   } | null>(null);
 
   const refreshScenes = () => setScenes(listScenes(null));
   const selectScene = (id: string | null) => {
+    // ★씬을 바꾸기 전에 SceneBoard 의 밀린 입력 저장을 확정 — 그때는 activeScene 이 아직 옛 씬이라 정확히
+    //  저장된다. add/import/delete 도 모두 이 selectScene 을 거치므로 전환 경로 전체가 여기서 커버된다.
+    sceneActionRef.current?.flushPending();
     setActiveSceneId(id);
     persistActiveScene(null, id);
   };

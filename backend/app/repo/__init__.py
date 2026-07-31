@@ -25,6 +25,7 @@ from .id_resolve import *  # noqa: F401,F403  (id 해석 — generation_rows 뒤
 from .lineage import *  # noqa: F401,F403  (generations 앞 — generations 가 lineage private helper 를 import)
 from .history import *  # noqa: F401,F403  (가계 조회 get_history/graph — lineage·generation_rows 헬퍼 사용)
 from .generations import *  # noqa: F401,F403
+from .generations_query import *  # noqa: F401,F403  (조회/직렬화 — generations 에서 분리, leaf)
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)
 from .gen_requests import *  # noqa: F401,F403  (generations 뒤 — placeholder gen 을 다룸)
