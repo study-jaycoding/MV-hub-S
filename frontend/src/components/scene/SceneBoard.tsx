@@ -77,6 +77,12 @@ import {
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { refMediaSrc, refMediaType, mediaFileName } from "../../lib/sceneMedia";
+import {
+  setComfyRunning,
+  isComfyRunning,
+  subscribeComfyRunning,
+  getComfyRunningVersion,
+} from "../../lib/sceneComfyRunningStore";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
@@ -465,6 +471,7 @@ export function SceneBoard({
     }
     runningComfyRef.current = n;
     setRunningComfyIds(n); // 노드 웨이브 표시용(언마운트 후엔 no-op)
+    setComfyRunning(ids, on); // 모듈 store — 탭 전환(언마운트)에도 '생성중' 표시 유지(#2)
     notifyComfyRunning(); // App placeholder(언마운트 후에도 유효)
   };
   const groupsRef = useRef(groups);
@@ -474,6 +481,8 @@ export function SceneBoard({
 
   // 전역 어셋 버전 표 구독 — 어셋 원본이 바뀌어 버전이 갱신되면 리렌더돼 카드 썸네일 URL 을 다시 만든다.
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
+  // Comfy '생성중' 모듈 store 구독 — 탭 전환(언마운트·재마운트)에도 실행중 표시가 살아있게(#2).
+  useSyncExternalStore(subscribeComfyRunning, getComfyRunningVersion, getComfyRunningVersion);
 
   // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 fresh 로 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
@@ -5096,8 +5105,10 @@ export function SceneBoard({
                   // Comfy 노드 — ComfyUI 워크플로우를 얹어 단독 실행. 더블클릭=API 로드·파라미터 노출 모달.
                   const cfg = card.comfyCfg;
                   const st = cfg?.status;
-                  // 실행 중 판정 — status 이거나 메모리 running 집합(오케 경로는 persist 안 하므로 후자로 유지)
-                  const isRunning = runningComfyIds.has(card.id) || st === "running";
+                  // 실행 중 판정 — 모듈 store(탭 전환 생존) 이거나 status 이거나 메모리 running 집합.
+                  //  배치/오케 경로는 status 를 persist 안 하므로 store(#2)·메모리로 유지된다.
+                  const isRunning =
+                    isComfyRunning(card.id) || runningComfyIds.has(card.id) || st === "running";
                   const params = cfg?.params || [];
                   const values = cfg?.paramValues || {};
                   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
