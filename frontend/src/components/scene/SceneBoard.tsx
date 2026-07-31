@@ -77,7 +77,8 @@ import {
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
-import { refMediaSrc, refMediaType, mediaFileName } from "../../lib/sceneMedia";
+import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
+import { refMediaSrc, refMediaType } from "../../lib/sceneMedia";
 import {
   setComfyRunning,
   isComfyRunning,
@@ -1770,63 +1771,6 @@ export function SceneBoard({
   };
   // comfy 노드 입력 수집 — 연결된 레퍼런스/생성물/리스트를 공간 순서(위→아래,왼→오)대로,
   // 종류(image/video)별로 풀해상도 URL 로 모은다. (텍스트 노드 gather 패턴과 동형)
-  const gatherComfyMedia = (
-    comfyId: string,
-    overlay?: ComfyOutputsById,
-  ): { type: "image" | "video"; url: string; name: string; source_gen_id?: string | null }[] => {
-    const cardsById = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const resolved = resolvePortEdges(cardsById, edgesRef.current);
-    const srcs = resolved
-      .filter((e) => e.to === comfyId)
-      .map((e) => cardsById.get(e.from))
-      .filter((c): c is SceneCard => !!c)
-      .sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
-    const out: { type: "image" | "video"; url: string; name: string; source_gen_id?: string | null }[] = [];
-    const pushRef = (r: SceneRef) => {
-      const mt = refMediaType(r);
-      if (mt === "audio") return; // 오디오는 image/video 슬롯 대상이 아님 — 제외
-      const url = refMediaSrc(r);
-      if (!url) return;
-      // 레퍼런스가 생성물에서 온 것이면 그 gid 를 계보용으로 전달(source_gen_id).
-      out.push({ type: mt, url, name: mediaFileName(r.name || url, mt, out.length + 1), source_gen_id: r.source_gen_id });
-    };
-    const pushGen = (gc?: SceneCard) => {
-      const gid = gc?.genId || (gc ? variantIds(gc)[0] : undefined);
-      const a = gid ? genDataRef.current[gid]?.assets?.[0] : undefined;
-      const url = a?.source_url || a?.file_path;
-      if (!url) return;
-      const type = a?.type === "video" ? "video" : "image";
-      out.push({ type, url, name: mediaFileName(url, type, out.length + 1), source_gen_id: gid });
-    };
-    for (const s of srcs) {
-      if (s.kind === "reference") (s.refs || []).forEach(pushRef);
-      else if (s.kind === "generation") pushGen(s);
-      else if (s.kind === "comfy")
-        // 상류 comfy 의 이미지/영상 출력물을 입력으로(comfy→comfy 체인). overlay 가 있으면 이 짝(복사본)의 결과를 읽는다.
-        for (const m of comfyOutputMedia(s, overlay))
-          out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
-      else if (s.kind === "list") {
-        const li = collectListInputs(s.id, cardsById, resolved, overlay);
-        if (li.kind === "reference")
-          for (const cid of li.sourceIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
-        else if (li.kind === "generation")
-          for (const cid of li.generationCardIds) {
-            const gc = cardsById.get(cid);
-            // list 안의 comfy 항목은 실행 출력(overlay/결과)을 직접 미디어로 — 라이브러리 저장 전에도 동작.
-            if (gc?.kind === "comfy") {
-              const media = comfyOutputMedia(gc, overlay);
-              if (media.length) {
-                for (const m of media)
-                  out.push({ type: m.kind, url: m.url, name: mediaFileName(m.url, m.kind, out.length + 1) });
-                continue;
-              }
-            }
-            pushGen(gc);
-          }
-      }
-    }
-    return out;
-  };
   // Comfy 노드의 이미지/영상 출력을 라이브러리 generation 으로 저장 → '내 작업'에 자동 편입.
   //  · 실행이 끝나 출력이 생기면 자동 호출(silent). 텍스트 출력은 서버가 제외.
   //  · 프롬프트=노출 text 파라미터 값(연결이면 연결텍스트), 없으면 워크플로명.
@@ -1862,14 +1806,14 @@ export function SceneBoard({
     try {
       // 프롬프트 = '텍스트 입력 노드' 필드값만(model·resolution 등 설정값 제외). 연결되면 연결 텍스트로.
       const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
-      const connected = hasTextConnection(cardId, map, edgesRef.current);
+      const connected = hasTextConnection(cardId, map, edgesRef.current, refParents);
       const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
       promptText =
         driveKeys
           .map((k) => (connected ? linked : String(cfg?.paramValues?.[k] ?? "")))
           .filter((t) => t.trim())
           .join("\n") || cfg?.name || "Comfy 출력";
-      inputs = gatherComfyMedia(cardId).map((m) => ({
+      inputs = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current).map((m) => ({
         url: m.url,
         type: m.type,
         name: m.name,
@@ -1970,28 +1914,6 @@ export function SceneBoard({
     }
     return out;
   };
-  // comfy 노드에 '텍스트가 연결돼 있는지' — 내용 유무와 무관하게 연결 존재만 본다(ComfyUI 처럼 연결되면
-  //  위젯 비활성). resolveEdgeRole 로 들어오는 엣지 중 텍스트 역할이 하나라도 있으면 true.
-  const hasTextConnection = (cardId: string, map: Map<string, SceneCard>, es: SceneEdge[]): boolean =>
-    es.some((e) => e.to === cardId && resolveEdgeRole(e, map, refParents, es) === "text");
-  // 연결된 텍스트로 노출된 text 파라미터를 구동 — 텍스트가 연결돼 있으면(빈 값이어도) 모든 text 타입 파라미터를
-  //  연결 텍스트로 덮는다(연결이 위젯을 대체). 연결 없으면 원래 편집값 유지. 실행 시 라이브로 읽는다.
-  const driveTextParams = (
-    cardId: string,
-    baseParams: Record<string, string | number | boolean>,
-    params: { key: string; type: string }[] | undefined,
-    overlay?: ComfyOutputsById,
-  ): Record<string, string | number | boolean> => {
-    const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    if (!hasTextConnection(cardId, map, edgesRef.current)) return baseParams;
-    // 연결 텍스트는 '텍스트 입력 노드'의 필드에만 주입(model·resolution 등 설정값 제외). 표시/프롬프트와 동일 판정.
-    const keys = comfyTextDriveKeys(params, map.get(cardId)?.comfyCfg?.content);
-    if (!keys.size) return baseParams;
-    const linked = incomingTextOf(cardId, map, edgesRef.current, new Set(), overlay); // 빈 문자열 가능
-    const out = { ...baseParams };
-    for (const k of keys) out[k] = linked;
-    return out;
-  };
   // comfy 실행 코어 — 카드 상태를 쓰지 않고 결과 출력셋만 반환(배치 병렬 실행용). 실패 시 throw.
   //  · overlay 가 있으면 상류 comfy 입력은 카드 저장분이 아니라 이 복사본의 결과(overlay)를 읽는다(체인 짝 맞춤).
   //  · cfgSnap 을 주면 그 content/paramValues 로 실행한다(클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 새는 것 방지).
@@ -2006,7 +1928,7 @@ export function SceneBoard({
     const baseContent = cfgSnap?.content ?? card?.comfyCfg?.content;
     const baseParams = cfgSnap?.paramValues ?? card?.comfyCfg?.paramValues ?? {};
     if (!baseContent) throw new Error("워크플로우가 없습니다");
-    const wanted = gatherComfyMedia(cardId, overlay);
+    const wanted = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current, overlay);
     const media: ComfyRunMedia[] = [];
     for (const m of wanted) {
       const blob = await fetchRefBlob(m.url, m.name);
@@ -2015,7 +1937,7 @@ export function SceneBoard({
     }
     // 연결된 텍스트가 있으면 노출된 text 파라미터를 그 텍스트로 구동(연결 우선). 실행 시점에 라이브로 읽어
     //  Text Multiline 등 텍스트 입력을 자동 채운다. overlay 로 상류 comfy 텍스트 체인도 반영.
-    const driven = driveTextParams(cardId, baseParams, card?.comfyCfg?.params, overlay);
+    const driven = driveTextParams(cardId, baseParams, card?.comfyCfg?.params, cardsRef.current, edgesRef.current, refParents, overlay);
     const content = varySeed ? randomizeSeeds(baseContent) : baseContent;
     const paramValues = varySeed ? randomizeSeedParams(driven) : driven;
     const res = await comfyApi.run(content, paramValues, media);
@@ -5268,7 +5190,7 @@ export function SceneBoard({
                   const textDriveTargets = comfyTextDriveKeys(params, cfg?.content);
                   const hasTextParam = textDriveTargets.size > 0;
                   // 텍스트가 '연결'되면 그 필드만 비활성+연결텍스트 표시. model·resolution 은 평소처럼 편집 가능.
-                  const drivenKeys = hasTextConnection(card.id, cardsById, edges)
+                  const drivenKeys = hasTextConnection(card.id, cardsById, edges, refParents)
                     ? textDriveTargets
                     : new Set<string>();
                   const textDriven = drivenKeys.size > 0;
@@ -5372,7 +5294,7 @@ export function SceneBoard({
                             </div>
                             {(() => {
                               // 연결된 입력 미리 보기 — 타입별 개수(실행 시 슬롯에 자동 주입).
-                              const inp = gatherComfyMedia(card.id);
+                              const inp = gatherComfyMedia(card.id, cards, edges, genData);
                               const ni = inp.filter((m) => m.type === "image").length;
                               const nv = inp.filter((m) => m.type === "video").length;
                               return ni || nv || textDriven ? (
