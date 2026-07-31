@@ -64,7 +64,7 @@ function Assert-ReleaseArchive {
         $Forbidden = @($Names | Where-Object {
             $_ -match "^backend/(data|data_test|data_backup_[^/]*|\.data_test-incoming-[^/]*|_pm_test_data_snapshots|media|\.pytest_cache|tests)(/|$)" -or
             $_ -match "^backend/.*\.(db|db-wal|db-shm|sqlite|sqlite3)$" -or
-            $_ -match "(^|/)__pycache__(/|$)"
+            $_ -match "^backend/(.*/)?__pycache__(/|$)"
         })
         if ($Forbidden.Count -gt 0) {
             $Preview = ($Forbidden | Select-Object -First 10) -join ", "
