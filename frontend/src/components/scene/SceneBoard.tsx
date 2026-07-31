@@ -2073,82 +2073,157 @@ export function SceneBoard({
       setCards(running);
     }
     const varySeed = batch > 1;
+    // 동시 제출 상한(세마포어) — 독립 comfy 병렬 × batch 병렬이 곱해져 폭주(429·업로드/네트워크 병목)하지 않게 한다.
+    //  단일 comfy batch 4 나 comfy 4개 batch 1 은 그대로 4 병렬, 큰 보드(노드 많음)만 8개씩 끊어 제출한다.
+    const maxParallel = Math.max(batch, Math.min(8, batch * Math.max(1, plan.comfyIds.length)));
+    let activeRuns = 0;
+    const runQueue: (() => void)[] = [];
+    const pumpQueue = () => {
+      activeRuns--;
+      runQueue.shift()?.();
+    };
+    const limitRun = <T,>(fn: () => Promise<T>): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        const start = () => {
+          activeRuns++;
+          fn().then(resolve, reject).finally(pumpQueue);
+        };
+        if (activeRuns < maxParallel) start();
+        else runQueue.push(start);
+      });
+    // 노드별 완료 집계 — 같은 comfyId 가 batch 벌(=copy) 실행되므로, 그 노드의 '모든 copy 가 끝났을 때만'
+    //  done/failed 로 바꾼다. 먼저 끝난 노드는 배치 전체를 기다리지 않고 즉시 done 반영·'생성중' 웨이브 해제.
+    type NodeProgress = {
+      settled: number;
+      successes: { copyIndex: number; outputs: ComfyOutput[]; elapsed: number }[];
+      failCount: number;
+      firstError?: string;
+      finalized: boolean;
+    };
+    const progress = new Map<string, NodeProgress>(
+      plan.comfyIds.map((id) => [id, { settled: 0, successes: [], failCount: 0, finalized: false }]),
+    );
+    const released = new Set<string>(); // 노드당 정확히 1회만 웨이브 해제(markComfyRunning count 균형 유지)
+    const releaseRunning = (id: string) => {
+      if (released.has(id)) return;
+      released.add(id);
+      markComfyRunning([id], false);
+    };
+    type StepOutcome =
+      | { kind: "success"; outputs: ComfyOutput[]; elapsed: number }
+      | { kind: "failed"; error: string }
+      | { kind: "skipped" };
+    // 한 노드의 한 copy 가 끝날 때마다 호출 — 그 노드의 '마지막' copy 였으면 카드에 done/failed 반영 + 웨이브 해제.
+    const noteStepSettled = (id: string, copyIndex: number, outcome: StepOutcome) => {
+      const p = progress.get(id);
+      if (!p || p.finalized) return;
+      p.settled++;
+      if (outcome.kind === "success")
+        p.successes.push({ copyIndex, outputs: outcome.outputs, elapsed: outcome.elapsed });
+      else {
+        p.failCount++;
+        if (outcome.kind === "failed" && !p.firstError) p.firstError = outcome.error;
+      }
+      if (p.settled < batch) return; // 아직 이 노드의 다른 copy 가 진행 중
+      p.finalized = true;
+      // 씬 전환(abort)됐으면 카드 반영·저장은 생략하되(엉뚱한 씬 오염 방지) 웨이브는 반드시 해제.
+      if (sceneIdRef.current === sceneId) {
+        const sorted = [...p.successes].sort((a, b) => a.copyIndex - b.copyIndex);
+        const repOk = sorted[sorted.length - 1]; // 대표=마지막 성공 복사본 — runComfy·저장 genId 와 일치(로드 후 깜빡임 제거)
+        const next = cardsRef.current.map((c) => {
+          if (c.kind !== "comfy" || c.id !== id) return c;
+          if (repOk)
+            return {
+              ...c,
+              comfyCfg: {
+                ...(c.comfyCfg || {}),
+                status: "done" as const,
+                outputs: repOk.outputs,
+                output: null,
+                error:
+                  p.failCount > 0 ? `${p.failCount}/${batch} 실패${p.firstError ? `: ${p.firstError}` : ""}` : null,
+              },
+            };
+          return { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: p.firstError || "실행 실패" } };
+        });
+        cardsRef.current = next;
+        setCards(next);
+        persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 노드별 완료 스냅샷=파생, undo 제외
+      }
+      releaseRunning(id);
+    };
     type CopyResult = {
       runs: SceneGenerationRun[];
       overlay: ComfyOutputsById;
-      errors: Record<string, string>; // comfyId → 이 복사본에서 난 실제 에러 메시지(카드 표시·진단용)
       elapsed: Record<string, number>; // comfyId → 이 복사본에서 그 노드의 실행→결과 소요시간(초)
       aborted: boolean;
     };
+    // 한 copy = plan 을 batch 인덱스 i 로 1벌 실행. 한 copy 안에서 독립 comfy 는 '병렬로'(dependsOn 존중) 제출한다.
+    //  이전엔 여기서 comfy 를 순차 await 해 render 로 묶인 독립 comfy 가 하나씩만 큐에 올라갔다(핵심 수정).
     const runOneCopy = async (i: number): Promise<CopyResult> => {
       const overlay: ComfyOutputsById = {};
-      const errors: Record<string, string> = {};
       const elapsed: Record<string, number> = {};
       const failed = new Set<string>(plan.skippedByCycle);
       let aborted = false;
+      const stepPromises = new Map<string, Promise<void>>();
       for (const step of plan.steps) {
-        if (sceneIdRef.current !== sceneId) {
-          aborted = true;
-          break;
-        }
-        if (step.kind !== "comfy") continue; // 생성카드는 아래에서 overlay 확정 후 일괄 판정
-        if (step.dependsOn.some((d) => failed.has(d))) {
-          failed.add(step.id); // 상류(comfy) 실패 → 이 comfy 도 스킵
-          continue;
-        }
-        try {
-          const t0 = Date.now(); // 이 노드의 실행→결과 소요시간(체인에서도 노드별로 측정)
-          overlay[step.id] = await runComfyRaw(step.id, overlay, varySeed, cfgSnap.get(step.id));
-          elapsed[step.id] = (Date.now() - t0) / 1000;
-        } catch (e) {
-          errors[step.id] = e instanceof Error ? e.message : String(e); // 실제 원인 보존(401/402/429 등)
-          failed.add(step.id);
-        }
+        if (step.kind !== "comfy") continue; // 생성카드는 comfy 확정 후 아래에서 일괄 판정
+        const p = (async () => {
+          // 상류(dependsOn) comfy 가 overlay 를 채운 뒤에 실행해야 입력 gather 가 맞다 → 상류 promise 먼저 await.
+          await Promise.all(
+            step.dependsOn.map((d) => stepPromises.get(d)).filter((x): x is Promise<void> => !!x),
+          );
+          if (sceneIdRef.current !== sceneId) {
+            aborted = true;
+            noteStepSettled(step.id, i, { kind: "skipped" });
+            return;
+          }
+          if (step.dependsOn.some((d) => failed.has(d))) {
+            failed.add(step.id); // 상류(comfy) 실패 → 이 comfy 도 스킵
+            noteStepSettled(step.id, i, { kind: "skipped" });
+            return;
+          }
+          try {
+            const t0 = Date.now(); // 이 노드의 실행→결과 소요시간(체인에서도 노드별로 측정)
+            //  limiter 대기 후에도 씬이 바뀌었으면 신규 제출을 하지 않는다(reject → 아래 catch 에서 skip 처리).
+            const outputs = await limitRun(() =>
+              sceneIdRef.current !== sceneId
+                ? Promise.reject(new Error("scene changed"))
+                : runComfyRaw(step.id, overlay, varySeed, cfgSnap.get(step.id)),
+            );
+            overlay[step.id] = outputs;
+            elapsed[step.id] = (Date.now() - t0) / 1000;
+            noteStepSettled(step.id, i, { kind: "success", outputs, elapsed: elapsed[step.id] });
+          } catch (e) {
+            if (sceneIdRef.current !== sceneId) {
+              aborted = true; // 씬 전환으로 인한 중단 → 실패가 아니라 skip
+              noteStepSettled(step.id, i, { kind: "skipped" });
+              return;
+            }
+            const msg = e instanceof Error ? e.message : String(e); // 실제 원인 보존(401/402/429 등)
+            failed.add(step.id);
+            noteStepSettled(step.id, i, { kind: "failed", error: msg });
+          }
+        })();
+        stepPromises.set(step.id, p);
       }
+      await Promise.all(stepPromises.values());
       const runs: SceneGenerationRun[] = aborted
         ? []
         : plan.steps
             .filter((s) => s.kind === "generation" && !s.dependsOn.some((d) => failed.has(d)))
             .map((s) => ({ batchIndex: i, cardId: s.id, comfyOutputsById: { ...overlay } }));
-      return { runs, overlay, errors, elapsed, aborted };
+      return { runs, overlay, elapsed, aborted };
     };
     const copies = await Promise.all(Array.from({ length: batch }, (_, i) => runOneCopy(i)));
     const aborted = copies.some((c) => c.aborted) || sceneIdRef.current !== sceneId;
-    // 표시 스냅샷: 각 comfy 는 첫 성공 복사본 결과를 카드에 남긴다(생성 입력엔 안 쓰임 — UI 미리보기용).
-    if (!aborted && plan.comfyIds.length) {
-      const snap = cardsRef.current.map((c) => {
-        if (c.kind !== "comfy" || !plan.comfyIds.includes(c.id)) return c;
-        const ok = copies.filter((cp) => c.id in cp.overlay);
-        const outputs = ok[0]?.overlay[c.id];
-        const failCount = batch - ok.length;
-        const errMsg = copies.map((cp) => cp.errors[c.id]).find(Boolean); // 실패한 복사본의 실제 사유(있으면)
-        if (outputs) {
-          return {
-            ...c,
-            comfyCfg: {
-              ...(c.comfyCfg || {}),
-              status: "done" as const,
-              outputs,
-              output: null,
-              error: failCount > 0 ? `${failCount}/${batch} 실패${errMsg ? `: ${errMsg}` : ""}` : null,
-            },
-          };
-        }
-        return {
-          ...c,
-          comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: errMsg || "실행 실패" },
-        };
-      });
-      cardsRef.current = snap;
-      setCards(snap);
-      persist(snap, edgesRef.current, groupsRef.current, { undo: false }); // 배치 실행 스냅샷=파생, undo 제외
-      // 출력이 생긴 comfy 노드는 자동으로 '내 작업'에 추가(체인 실행에서도) + 노드별 소요시간 기록. 멱등이라 중복 없음.
-      // ★배치의 '모든 복사본' 결과를 각각 저장한다(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
-      //   직접 실행(runComfy)과 동일하게 복사본별 outputs·소요시간으로 저장.
-      // ★순차 await — 응답 도착순 레이스로 대표(genId)·genIds 순서가 뒤섞이는 것 방지(대표=마지막 저장 보장).
+    // 노드별 done/failed 표시는 noteStepSettled 가 이미 반영했다. 여기선 출력이 생긴 comfy 를 '내 작업'에 저장만.
+    // ★배치의 '모든 복사본' 결과를 각각 저장(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
+    // ★comfyId 순서 · 그 안에서 copies(입력) 순서로 순차 await — 응답 도착순 레이스로 대표(genId)·genIds 순서가
+    //   뒤섞이는 것 방지(대표=마지막 저장 보장). copies 는 완료순이 아니라 입력순 배열이라 순서가 보존된다.
+    if (!aborted && sceneIdRef.current === sceneId) {
       for (const cid of plan.comfyIds) {
-        const c = snap.find((x) => x.id === cid);
-        if (c?.comfyCfg?.status !== "done") continue;
+        if (!progress.get(cid)?.successes.length) continue;
         for (const cp of copies) {
           const outs = cp.overlay[cid];
           if (outs && outs.length)
@@ -2156,7 +2231,7 @@ export function SceneBoard({
         }
       }
     }
-    if (plan.comfyIds.length) markComfyRunning(plan.comfyIds, false); // 웨이브 해제(정상/중단 공통)
+    for (const id of plan.comfyIds) releaseRunning(id); // 안전망 — finalize 안 된 노드까지 웨이브 확실히 해제
     return { runs: copies.flatMap((c) => c.runs), aborted };
   };
   // 단일 생성카드 실행 — 상류 comfy 가 있으면 배치수만큼 병렬 실행해 각 결과와 짝지어 생성. 없으면 스포트라이트 제출.
@@ -2788,6 +2863,26 @@ export function SceneBoard({
             .filter((ed) => !ids.has(ed.from) && ids.has(ed.to))
             .map((ed) => ({ ...ed })),
         };
+        // OS 클립보드에 이미 들어있던 옛 캡처를 '이미 아는 것(stale)'으로 표시 — 이 Ctrl+C 직후의 붙여넣기가
+        //  그 옛 캡처를 '새 캡처'로 오판해 노드 대신 이미지를 붙이는 오작동을 막는다. 캡처는 앱 밖(OS)에서
+        //  일어나 이벤트가 없어 지문으로만 구분되는데, 한 번도 앱에 안 붙여넣은 캡처는 지문이 미기록이라
+        //  새 것으로 오판됐다. 여기서 지금 클립보드 이미지 지문을 미리 기록해 노드가 우선되게 한다.
+        //  (Ctrl+C '이후' 새로 캡처하면 지문이 달라 그때는 정상적으로 이미지가 우선.) 권한없음/미지원 시 조용히 폴백.
+        void (async () => {
+          try {
+            const cbItems = await navigator.clipboard?.read?.();
+            if (!cbItems) return;
+            for (const it of cbItems) {
+              const imgType = it.types.find((tp) => tp.startsWith("image/"));
+              if (!imgType) continue;
+              const b = await it.getType(imgType);
+              lastImgKeyRef.current = `${b.size}:${b.type}`;
+              return;
+            }
+          } catch {
+            /* 클립보드 읽기 권한 없음/미지원 — 기존 지문 휴리스틱으로 폴백 */
+          }
+        })();
         return;
       }
       // Ctrl+V(카드 붙여넣기)는 paste 이벤트에서 처리 — 내부 노드 클립보드가 있으면 노드가 우선(없을 때만 캡쳐 이미지).
