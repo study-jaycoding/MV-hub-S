@@ -837,6 +837,23 @@ export function SceneBoard({
       flushPendingRef.current();
     }, 400);
   };
+  // ── 카드 반영 어댑터 — 화면(cardsRef+setCards)은 항상 즉시, 저장은 mode 로 구분. Comfy 실행부가
+  //  persist/scheduleInputPersist 를 직접 부르지 않고 이 하나로만 카드를 반영하게 해 결합을 좁힌다(P4 준비).
+  //   · live          : 화면만(저장 안 함) — 순차 실행 중 다음 노드가 최신 출력을 읽게
+  //   · deferUser     : 사용자 입력 → 저장 디바운스(blur/실행 시 flush)
+  //   · persistUser   : 사용자 편집 확정 저장(undo 스택에 쌓임)
+  //   · persistDerived: 실행상태·파생 저장(undo 스택 제외)
+  type ApplyCardsMode = "live" | "deferUser" | "persistUser" | "persistDerived";
+  const applyCards = (nextCards: SceneCard[], mode: ApplyCardsMode) => {
+    cardsRef.current = nextCards;
+    setCards(nextCards);
+    if (mode === "live") return;
+    if (mode === "deferUser") {
+      scheduleInputPersist();
+      return;
+    }
+    persist(nextCards, edgesRef.current, groupsRef.current, { undo: mode !== "persistDerived" });
+  };
   // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
   //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
   useEffect(() => {
@@ -1592,10 +1609,13 @@ export function SceneBoard({
         ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), ...patch } }
         : c,
     );
-    cardsRef.current = nextCards; // ref 즉시 갱신 — 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성)
-    setCards(nextCards);
-    if (opts?.defer) scheduleInputPersist();
-    else persist(nextCards, edgesRef.current, groupsRef.current, opts);
+    // 순차 comfy 실행 시 다음 comfy 가 최신 출력을 보게(체인 정확성) — applyCards 가 cardsRef 즉시 갱신.
+    const mode: ApplyCardsMode = opts?.defer
+      ? "deferUser"
+      : opts?.undo === false
+        ? "persistDerived"
+        : "persistUser";
+    applyCards(nextCards, mode);
   };
   // 노드별 배치수 설정 — 카드에 저장해 노드마다 각자 관리(1~4). 씬 저장으로 유지.
   const setCardBatch = (cardId: string, n: number) => {
@@ -1642,9 +1662,7 @@ export function SceneBoard({
             }
           : c,
       );
-      cardsRef.current = nextCards;
-      setCards(nextCards);
-      persist(nextCards, edgesRef.current);
+      applyCards(nextCards, "persistUser");
       return true;
     } catch {
       return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
