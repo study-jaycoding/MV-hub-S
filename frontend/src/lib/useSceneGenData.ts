@@ -11,6 +11,14 @@ import { DISABLED_EVENT, loadDisabledFolders, loadDisabledGen } from "./deactiva
 import { expandDisabledGenerationIds } from "./generationDisplay";
 import { useCustomEvent } from "./useCustomEvent";
 import { variantIds, type SceneCard } from "./scenes";
+import {
+  putGen,
+  putParents,
+  markGenMissing,
+  hydrateGen,
+  hydrateParents,
+  hydrateMissing,
+} from "./sceneGenDataStore";
 import type { Generation } from "../types";
 
 export interface SceneGenDataApi {
@@ -23,12 +31,17 @@ export interface SceneGenDataApi {
 }
 
 export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
-  const [genData, setGenData] = useState<Record<string, Generation>>({});
+  // 마운트 초기값 = 캐시(sceneGenDataStore)에서 즉시 복원 — 탭 왕복(언마운트→재마운트) 시 빈 화면 없이 바로 표시.
+  const initialGenIds = (): string[] =>
+    cards
+      .filter((c) => c.kind === "generation" || (c.kind === "comfy" && (c.genIds?.length || c.genId)))
+      .flatMap((c) => variantIds(c));
+  const [genData, setGenData] = useState<Record<string, Generation>>(() => hydrateGen(initialGenIds()));
   const genDataRef = useRef(genData);
   genDataRef.current = genData;
   // 외부(라이브러리)에서 삭제(휴지통 이동)돼 404 로 사라진 생성물 id — 카드가 무한 'Generating' 대신 '삭제됨' 표시.
-  const [missingIds, setMissingIds] = useState<Set<string>>(new Set());
-  const [refParents, setRefParents] = useState<Record<string, string[]>>({});
+  const [missingIds, setMissingIds] = useState<Set<string>>(() => hydrateMissing(initialGenIds()));
+  const [refParents, setRefParents] = useState<Record<string, string[]>>(() => hydrateParents(initialGenIds()));
   const refParentsRef = useRef(refParents);
   refParentsRef.current = refParents;
   // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
@@ -74,9 +87,19 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
         }),
       );
       if (!alive) return;
+      // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
+      for (const r of rs) {
+        if (r.gen) {
+          putGen(r.gen);
+          markGenMissing(r.id, false);
+        } else if (r.gone) markGenMissing(r.id, true);
+      }
       setGenData((prev) => {
         const next = { ...prev };
-        for (const r of rs) if (r.gen) next[r.gen.id] = r.gen;
+        for (const r of rs) {
+          if (r.gen) next[r.gen.id] = r.gen;
+          else if (r.gone) delete next[r.id]; // 삭제 확정 → stale 결과 제거(캐시서도 제거됨) → '삭제됨' 표시가 드러나게
+        }
         return next;
       });
       setMissingIds((prev) => {
@@ -123,6 +146,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
       }),
     ).then((rs) => {
       if (!alive) return;
+      for (const r of rs) if (r.store) putParents(r.id, r.parents); // 계보도 캐시 — 탭 왕복 시 재조회 없이 복원
       setRefParents((prev) => {
         const next = { ...prev };
         for (const r of rs) if (r.store) next[r.id] = r.parents;
@@ -132,6 +156,26 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     return () => {
       alive = false;
     };
+  }, [genIdSig]);
+
+  // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
+  //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)
+  useEffect(() => {
+    const ids = genIdSig.split(",").filter(Boolean);
+    if (!ids.length) return;
+    const g = hydrateGen(ids);
+    const p = hydrateParents(ids);
+    const m = hydrateMissing(ids);
+    if (Object.keys(g).length) setGenData((prev) => ({ ...g, ...prev }));
+    if (Object.keys(p).length) setRefParents((prev) => ({ ...p, ...prev }));
+    if (m.size)
+      setMissingIds((prev) => {
+        // id 단위 병합 — 이전 씬 missing 이 남아있어도 새 씬 캐시 missing 을 누락 없이 반영(아래 prune 이 live 밖 제거).
+        let changed = false;
+        const next = new Set(prev);
+        for (const id of m) if (!next.has(id)) { next.add(id); changed = true; }
+        return changed ? next : prev;
+      });
   }, [genIdSig]);
 
   // 장기 누적 방지 — 현재 카드가 더 이상 참조하지 않는 id 의 캐시(genData/refParents/missingIds)를 정리.
