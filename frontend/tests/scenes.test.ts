@@ -115,6 +115,18 @@ describe("preserveRepresentatives (대표 undo 제외)", () => {
     const target = [mk({ id: "gone", genIds: ["a"], genId: "a" })];
     expect(preserveRepresentatives(target, [])[0].genId).toBe("a");
   });
+  it("comfy 는 워크플로(content) 바뀌면 대표 보존 안 함 — 옛 결과를 새 워크플로에 안 붙임", () => {
+    const target = [mk({ id: "c", kind: "comfy", genIds: [], genId: null, comfyCfg: { content: "NEW" } } as Partial<Scene["cards"][number]>)];
+    const current = [mk({ id: "c", kind: "comfy", genId: "old", comfyCfg: { content: "OLD" } } as Partial<Scene["cards"][number]>)];
+    const out = preserveRepresentatives(target, current)[0];
+    expect(out.genId ?? null).toBeNull(); // 옛 워크플로 대표 'old' 를 새 워크플로에 주입하지 않음
+    expect(out.genIds ?? []).toEqual([]);
+  });
+  it("comfy 라도 워크플로 같으면 대표 보존", () => {
+    const target = [mk({ id: "c", kind: "comfy", genIds: ["a"], genId: "a", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
+    const current = [mk({ id: "c", kind: "comfy", genIds: ["a", "b"], genId: "b", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
+    expect(preserveRepresentatives(target, current)[0].genId).toBe("b");
+  });
 });
 
 describe("sceneRefFingerprint", () => {

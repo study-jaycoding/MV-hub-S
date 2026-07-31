@@ -166,8 +166,12 @@ export function variantIds(card: Pick<SceneCard, "genIds" | "genId">): string[] 
 export function preserveRepresentatives(targetCards: SceneCard[], currentCards: SceneCard[]): SceneCard[] {
   const curById = new Map(currentCards.map((c) => [c.id, c] as const));
   return targetCards.map((tc) => {
-    const rep = curById.get(tc.id)?.genId;
+    const cur = curById.get(tc.id);
+    const rep = cur?.genId;
     if (!rep || rep === tc.genId) return tc;
+    // comfy 는 워크플로(content)가 같을 때만 대표 보존 — 워크플로 교체 후엔 옛 워크플로 결과를 새 워크플로에
+    //  붙이지 않는다(#3 propagate 가드와 동일). content 가 다르면 스냅샷 그대로 두어 옛 genId 를 주입하지 않는다.
+    if (tc.kind === "comfy" && tc.comfyCfg?.content !== cur?.comfyCfg?.content) return tc;
     if (variantIds(tc).includes(rep)) return { ...tc, genId: rep };
     return { ...tc, genId: rep, genIds: [...(tc.genIds || []), rep] };
   });

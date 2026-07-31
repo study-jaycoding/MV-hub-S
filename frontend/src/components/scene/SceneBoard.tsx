@@ -804,6 +804,9 @@ export function SceneBoard({
     }
     lastCommitRef.current = next;
     onChangeRef.current(next);
+    // 파생 커밋(실행상태·결과)도 씬 undo store 에 즉시 반영 — 언마운트(탭 전환) 중 comfy 비동기 완료가 부모 씬만
+    //  갱신하고 store lastCommit 은 옛 상태로 남아, 재진입 시 sameSnap 불일치로 undo 스택이 통째 버려지던 문제 방지.
+    if (opts?.undo === false) persistSceneHistory(sceneIdRef.current);
   };
   // ── 커밋/undo 소유 API — 외부에서 undoStackRef/lastCommitRef 를 직접 만지지 않고 이 함수들로만 갱신한다.
   //  (persist 클러스터가 undo·최근커밋을 온전히 소유 → 결합도↓. 추후 훅으로 뺄 때 seam 이 좁아진다.)
@@ -838,6 +841,7 @@ export function SceneBoard({
   const commitDerivedState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
     onChangeRef.current(s);
+    persistSceneHistory(sceneIdRef.current); // 파생 커밋도 store 반영 — 언마운트 중 완료가 undo 스택을 버리지 않게(P1)
   };
   // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
@@ -932,6 +936,7 @@ export function SceneBoard({
     });
     undoStackRef.current = undoStackRef.current.map(patchSnap);
     redoStackRef.current = redoStackRef.current.map(patchSnap); // ★redo 도 — undo:false 는 redo 를 안 비워 stale 손실 방지
+    persistSceneHistory(sceneIdRef.current); // 스택 소급패치도 store 반영 — 언마운트 중 comfy 완료가 undo 를 버리지 않게(P1)
   };
   // 변형 삭제(pruneVariants)를 히스토리에서도 반영 — 실제 삭제된 변형을 undo 로 되살려 깨진 참조가 되지 않게.
   const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
@@ -947,6 +952,7 @@ export function SceneBoard({
     });
     undoStackRef.current = undoStackRef.current.map(patchSnap);
     redoStackRef.current = redoStackRef.current.map(patchSnap);
+    persistSceneHistory(sceneIdRef.current); // 삭제 소급도 store 반영(P1)
   };
   // Ctrl+Z — 직전 커밋으로 복원. 현재 상태는 redo 스택으로 넘겨 Ctrl+Shift+Z 로 되돌릴 수 있게.
   const undo = () => {
