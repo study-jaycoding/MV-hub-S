@@ -54,6 +54,11 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 | `CONTENT_HUB_AUTH` | `0`(코드) · **MV_server.bat=1** | 로그인 인증 enforcement. 1 이면 로그인 필수 |
 | `CONTENT_HUB_MANAGE` | `1`(on) | PM/관리 대시보드(상단 보드 아이콘). 0 이면 숨김 |
 | `CONTENT_HUB_AUTH_SECRET` | (자동생성) | 토큰 서명 시크릿. 미지정 시 DB에 1회 생성·영속 |
+| `CONTENT_HUB_LOG_DIR` | `<DATA>/logs` | JSON 운영 로그 폴더 |
+| `CONTENT_HUB_LOG_MAX_BYTES` | `10485760` | 운영 로그 파일 1개의 회전 크기 |
+| `CONTENT_HUB_LOG_KEEP` | `5` | 회전 로그 보관 개수 |
+| `CONTENT_HUB_METRICS_LOG_INTERVAL` | `60` | CPU·메모리·요청 집계를 로그에 남기는 주기(초), 0=비활성 |
+| `CONTENT_HUB_SLOW_REQUEST_MS` | `1000` | 개별 느린 요청을 운영 로그에 기록하는 기준(ms) |
 
 ## 로그인/계정 승인 보안 (CONTENT_HUB_AUTH=1)
 
@@ -80,6 +85,16 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 - 수동 백업:   `POST /api/backup`
 - 백업 목록:   `GET /api/backups`
 - ⚠️ 실서버에선 `CONTENT_HUB_BACKUP_DIR` 를 **다른 디스크/NAS**로 — 같은 디스크면 동반 손실.
+
+## 운영 상태 확인
+
+- 준비 상태: `GET /api/ready` — DB 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
+- 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
+  프로세스 CPU·RSS, WebSocket·에이전트 연결, DB/WAL·미디어·썸네일 용량.
+- 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 5xx·느린 요청을 JSON 한 줄로 기록.
+
+관리자 지표와 로그에는 이메일·프롬프트·미디어 URL을 기록하지 않는다. 부하 테스트 중에는
+`sqlite_locked_total=0`, 애플리케이션 `5xx=0`, 메모리 워밍업 이후 안정 여부를 우선 확인한다.
 
 ## 실서버 이전 체크리스트
 

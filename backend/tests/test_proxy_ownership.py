@@ -19,6 +19,7 @@ import unittest
 EXPECTED_SERVER_ROUTES = frozenset(
     {
         "/api/account/hf",
+        "/api/admin/runtime",
         "/api/auth/access",
         "/api/auth/accounts",
         "/api/auth/accounts/{email}/global-roles",
@@ -54,6 +55,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/members",
         "/api/members/{uid}/global-roles",
         "/api/provider",
+        "/api/ready",
         "/api/share/publish-bundle",
     }
 )

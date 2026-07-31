@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import sys
 import warnings
 from contextlib import asynccontextmanager
@@ -62,15 +64,38 @@ from .routers import (
     sync,
 )
 from .services import auth as auth_svc
+from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
+from .services.operational_logging import configure_operational_logging, log_event
 from .services.request_guards import is_loopback_host
+from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.syncer import periodic_sync
 from .ws import manager
 
+_runtime_log = logging.getLogger("mvhub.runtime")
+_SLOW_REQUEST_MS = float(os.environ.get("CONTENT_HUB_SLOW_REQUEST_MS", "1000"))
+_METRICS_LOG_INTERVAL = max(
+    0.0,
+    float(os.environ.get("CONTENT_HUB_METRICS_LOG_INTERVAL", "60")),
+)
+
+
+async def _runtime_report_loop(interval: float) -> None:
+    """주기적으로 집계 지표를 회전 로그에 남긴다. 개인 식별정보는 기록하지 않는다."""
+    while True:
+        await asyncio.sleep(interval)
+        snapshot = runtime_metrics.snapshot()
+        snapshot["websocket"] = await manager.stats()
+        snapshot["agents"] = agent_signals.stats()
+        log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_path = configure_operational_logging()
+    log_event(_runtime_log, "startup_begin", log_path=str(log_path))
+    runtime_report_task: asyncio.Task | None = None
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
@@ -195,8 +220,20 @@ async def lifespan(app: FastAPI):
         from .services import asset_watcher
 
         asset_watcher.start(asyncio.get_running_loop())
+    if _METRICS_LOG_INTERVAL > 0:
+        runtime_report_task = asyncio.create_task(
+            _runtime_report_loop(_METRICS_LOG_INTERVAL),
+            name="runtime-metrics-log",
+        )
+    log_event(_runtime_log, "startup_ready")
     yield
     # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
+    if runtime_report_task:
+        runtime_report_task.cancel()
+        try:
+            await runtime_report_task
+        except asyncio.CancelledError:
+            pass
     await periodic_backup.stop()
     if AUTH_ENABLED:
         await periodic_sync.stop()
@@ -204,6 +241,7 @@ async def lifespan(app: FastAPI):
         from .services import asset_watcher
 
         asset_watcher.stop()
+    log_event(_runtime_log, "shutdown_complete")
 
 
 app = FastAPI(title="Millionvolt Hub", version="0.1.0", lifespan=lifespan)
@@ -249,7 +287,12 @@ if MANAGE_ENABLED:
 # 검증되면 request.state.account 에 계정을 싣는다. 정적 SPA 는 공개, /ws 는 핸들러에서 검증.
 # /api/agent/download(agent_push.py)은 공개 — MV_agent.bat 이 인증 없이 curl 로 받게.
 # 스크립트엔 비밀이 없다(클라이언트 코드일 뿐, 실제 push 는 여전히 허브 로그인 필요).
-_AUTH_PUBLIC_PREFIXES = ("/api/auth/", "/api/health", "/api/agent/download")
+_AUTH_PUBLIC_PREFIXES = (
+    "/api/auth/",
+    "/api/health",
+    "/api/ready",
+    "/api/agent/download",
+)
 
 
 @app.middleware("http")
@@ -333,6 +376,38 @@ async def auth_off_remote_guard(request: Request, call_next):
     return await call_next(request)
 
 
+# 가장 바깥쪽 운영 관측 — 인증 거부·프록시 단락까지 포함한 실제 사용자 요청을 센다.
+@app.middleware("http")
+async def runtime_observation(request: Request, call_next):
+    started = runtime_metrics.request_begin()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", None) or request.url.path
+        elapsed_ms = runtime_metrics.request_end(
+            started=started,
+            status=status,
+            method=request.method,
+            path=route_path,
+        )
+        if status >= 500 or elapsed_ms >= _SLOW_REQUEST_MS:
+            try:
+                log_event(
+                    _runtime_log,
+                    "http_request",
+                    method=request.method,
+                    path=route_path,
+                    status=status,
+                    elapsed_ms=round(elapsed_ms, 2),
+                )
+            except Exception:
+                pass  # 로그 I/O 실패가 사용자 응답을 막지 않게
+
+
 # 로컬에 받아둔 미디어 원본 서빙(현재는 원격 URL 직접 사용, 향후 byte-cache 용).
 # StaticFiles 는 마운트 시점에 디렉터리가 있어야 하므로 먼저 생성한다.
 ensure_dirs()
@@ -359,6 +434,32 @@ def health():
         # 이 프로세스의 코드가 핀한 CLI 버전 — 워커 배치가 서버 값과 대조하는 버전 게이트용.
         "cli_version": _pinned_cli_version(),
     }
+
+
+@app.get("/api/ready")
+def ready():
+    """로드밸런서·운영 점검용 준비 상태. DB 읽기가 안 되면 503."""
+    from .db import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return {"status": "ready"}
+    except Exception as exc:  # noqa: BLE001 — 준비 실패는 형식화해 503으로 반환
+        logging.getLogger("mvhub.ready").error("readiness 실패: %s", exc)
+        return JSONResponse({"status": "not_ready"}, status_code=503)
+
+
+@app.get("/api/admin/runtime")
+async def runtime_status(request: Request):
+    """관리자 전용 운영 지표. 계정·프롬프트·URL 같은 사용자 데이터는 포함하지 않는다."""
+    from .deps import require_admin
+
+    require_admin(request)
+    snapshot = runtime_metrics.snapshot()
+    snapshot["websocket"] = await manager.stats()
+    snapshot["agents"] = agent_signals.stats()
+    return snapshot
 
 
 @app.get("/api/cli-check")
