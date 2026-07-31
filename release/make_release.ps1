@@ -7,7 +7,8 @@ param(
     [string]$HiggsfieldRoot = "",
     [switch]$SkipPythonRuntime,
     [switch]$SkipNodeRuntime,
-    [switch]$SkipHiggsfieldCli
+    [switch]$SkipHiggsfieldCli,
+    [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -297,13 +298,16 @@ Write-Host ""
 # git-ignored). If set and reachable, copy the zip FIRST and latest.json LAST so a
 # worker never sees a latest.json that points to a not-yet-copied zip.
 $PublishTarget = $PublishDir
-if (-not $PublishTarget) {
+if ((-not $SkipPublish) -and (-not $PublishTarget)) {
     $TargetFile = Join-Path $PSScriptRoot "publish_target.txt"
     if (Test-Path -LiteralPath $TargetFile) {
         $PublishTarget = (Get-Content -LiteralPath $TargetFile -Raw).Trim()
     }
 }
-if (-not $PublishTarget) {
+if ($SkipPublish) {
+    Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
+}
+elseif (-not $PublishTarget) {
     Write-Host "Upload latest.json and the zip file to your company server packages folder."
     Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
 }

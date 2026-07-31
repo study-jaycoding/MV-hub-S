@@ -36,3 +36,6 @@ release/publish_target.txt
 # 테스트 실행이 만드는 임시 폴더(비면 껍데기만 남는다 — 추적 안 함)
 /_pm_test_data/
 .tmp-*-test-data/
+
+# 배포 전 자동 게이트의 로컬 결과(머신 경로·성능 수치 포함)
+/predeploy-reports/
