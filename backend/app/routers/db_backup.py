@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -41,17 +42,12 @@ def _dir(email: str) -> Path:
     return DATA_DIR / "db-backups" / slug(email)
 
 
-@router.post("")
-async def upload_backup(request: Request, file: UploadFile = File(...)):
-    """내 계정 DB 백업 1건 저장. 같은 계정 폴더에 타임스탬프로 누적, 오래된 건 _KEEP 넘으면 정리."""
-    acc = _acct(request)
-    data = await file.read()
-    if len(data) > _MAX_BYTES:
-        raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
-    d = _dir(acc["email"])
+def _store_backup(d: Path, name: str, data: bytes) -> int:
+    """디스크 쓰기·무결성 검증·오래된 백업 정리(전부 동기 I/O). 남은 백업 개수를 돌려준다.
+
+    최대 512MB 쓰기와 SQLite 검증이 이벤트 루프를 막지 않게 호출부가 스레드로 실행한다.
+    """
     d.mkdir(parents=True, exist_ok=True)
-    # 초 단위 충돌 방지를 위해 ns 접미사. (서버 런타임 시간 — Workflow 가 아니라 일반 코드라 무관)
-    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000:03d}.db"
     path = d / name
     tmp = d / f".upload-{time.time_ns()}.tmp"
     tmp.write_bytes(data)
@@ -59,9 +55,9 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
         # 백업 보관본은 복원의 마지막 보루 — 깨진 파일을 받아두면 복원 시점에야 터진다.
         # quick_check 까지 통과해야 저장(수 MB 메타 DB 라 비용 미미).
         validate_hub_db(tmp, require_integrity=True)
-    except HubDbValidationError as exc:
+    except HubDbValidationError:
         tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
+        raise
     tmp.replace(path)
     # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
     backups = sorted(d.glob("*.db"))
@@ -70,8 +66,24 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
             old.unlink()
         except OSError:
             pass
-    remaining = sorted(d.glob("*.db"))
-    return {"ok": True, "name": name, "size": len(data), "count": len(remaining)}
+    return len(sorted(d.glob("*.db")))
+
+
+@router.post("")
+async def upload_backup(request: Request, file: UploadFile = File(...)):
+    """내 계정 DB 백업 1건 저장. 같은 계정 폴더에 타임스탬프로 누적, 오래된 건 _KEEP 넘으면 정리."""
+    acc = _acct(request)
+    data = await file.read()
+    if len(data) > _MAX_BYTES:
+        raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
+    d = _dir(acc["email"])
+    # 초 단위 충돌 방지를 위해 ns 접미사. (서버 런타임 시간 — Workflow 가 아니라 일반 코드라 무관)
+    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000:03d}.db"
+    try:
+        count = await asyncio.to_thread(_store_backup, d, name, data)
+    except HubDbValidationError as exc:
+        raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
+    return {"ok": True, "name": name, "size": len(data), "count": count}
 
 
 @router.get("")
