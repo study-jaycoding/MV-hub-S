@@ -86,6 +86,19 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 - 백업 목록:   `GET /api/backups`
 - ⚠️ 실서버에선 `CONTENT_HUB_BACKUP_DIR` 를 **다른 디스크/NAS**로 — 같은 디스크면 동반 손실.
 
+### 백업 복원 훈련
+
+운영 DB를 교체하지 않고 임시 파일에 온라인 백업→복원→무결성·외래키·테이블 행 수 비교를 수행한다.
+
+```powershell
+python tools\verify_backup_restore.py
+python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_20260731_120000.db"
+```
+
+`"ok": true`, `"integrity": "ok"`, `"foreign_key_errors": 0`을 확인한다. 실제 장애 복원은
+서버를 중지하고 원본 DB를 별도 보존한 뒤 검증된 백업을 사용해야 한다. 이 도구는 운영 DB를
+자동 교체하지 않으므로 복구 훈련 중 실데이터를 덮어쓰지 않는다.
+
 ## 운영 상태 확인
 
 - 준비 상태: `GET /api/ready` — DB 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
