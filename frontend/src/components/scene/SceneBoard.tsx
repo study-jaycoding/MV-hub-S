@@ -39,6 +39,7 @@ import {
   sceneRefFingerprint,
   uid,
   variantIds,
+  preserveRepresentatives,
   type Scene,
   type SceneCard,
   type SceneCardKind,
@@ -856,17 +857,20 @@ export function SceneBoard({
   }, []);
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
-    lastCommitRef.current = s;
+    // 사용자가 고른 현재 대표(genId)는 undo/redo 로 되돌리지 않는다 — 복원 대상에 '지금 화면의 대표'를 병합.
+    //  (현재 대표는 복원 직전 cardsRef.current 에서 읽는다. 연속 undo 도 매번 여기서 재병합돼 대표가 계속 유지된다.)
+    const s2 = { ...s, cards: preserveRepresentatives(s.cards, cardsRef.current) };
+    lastCommitRef.current = s2;
     // ref 도 즉시 동기화 — 복원 직후(리렌더 전) 비동기 comfy 저장/완료가 옛 ref 를 읽고 어긋난 상태로
     //  덮어쓰지 않게(최상위 X.current=X 는 다음 렌더에나 반영됨).
-    cardsRef.current = s.cards;
-    edgesRef.current = s.edges;
-    groupsRef.current = s.groups;
-    setCards(s.cards);
-    setEdges(s.edges);
-    setGroups(s.groups);
+    cardsRef.current = s2.cards;
+    edgesRef.current = s2.edges;
+    groupsRef.current = s2.groups;
+    setCards(s2.cards);
+    setEdges(s2.edges);
+    setGroups(s2.groups);
     setSelected(new Set());
-    onChangeRef.current(s); // 부모(씬 저장)에도 반영
+    onChangeRef.current(s2); // 부모(씬 저장)에도 반영
   };
   // ── #3 데이터손실 방지 — comfy 결과 누적(genIds/outputs)은 undo:false 로 저장돼 undo 스택에 안 쌓인다.
   //  옛 스냅샷을 Ctrl+Z 로 복원하면 그새 누적된 생성물이 유실됐다. → 파생 누적/삭제를 히스토리에 소급 반영해
@@ -2539,9 +2543,9 @@ export function SceneBoard({
 
   // 팝업/재생성에서 특정 변형을 카드의 '대표(현재 표시)'로 바꾼다.
   const setCardVariant = (cardId: string, gid: string) => {
+    flushPending(); // 디바운스 중인 텍스트/파라미터 편집을 먼저 확정 — 대표선택의 파생저장에 흡수돼 undo 대상에서 빠지지 않게
     const nc = cardsRef.current.map((c) => (c.id === cardId ? { ...c, genId: gid } : c));
-    setCards(nc);
-    persist(nc, edgesRef.current);
+    applyCards(nc, "persistDerived"); // 대표 선택은 파생 저장(undo 스택 제외) — Ctrl+Z 에서 대표는 항상 유지(사용자 요구)
   };
   // 삭제 성공한 변형 id 를 카드의 genIds/genId 에서 정리(대표가 지워졌으면 남은 것/없으면 빈 카드).
   const pruneVariants = (cardId: string, removed: Set<string>) => {
@@ -2552,6 +2556,7 @@ export function SceneBoard({
       const genId = c.genId && !removed.has(c.genId) ? c.genId : genIds[0] ?? null;
       return { ...c, genIds, genId, status: genIds.length ? c.status : ("empty" as const) };
     });
+    cardsRef.current = nc; // restoreState 가 현재 대표를 cardsRef 에서 읽으므로, 삭제로 대표가 바뀌는 경로도 ref 를 즉시 맞춘다
     setCards(nc);
     persist(nc, edgesRef.current);
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지

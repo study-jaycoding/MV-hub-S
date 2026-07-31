@@ -159,6 +159,20 @@ export function variantIds(card: Pick<SceneCard, "genIds" | "genId">): string[] 
   return out;
 }
 
+// undo/redo 복원 시 '사용자가 고른 현재 대표(genId)'는 유지 — 대표 선택은 되돌리기 대상에서 제외(사용자 요구).
+//  현재 카드(currentCards)의 대표를 복원 대상(targetCards)에 병합한다. 대표가 target 변형목록에 없으면(그 시점엔
+//  없던 새 변형) 목록에 포함시켜 깨진 참조를 막는다. 현재 대표가 없는 카드(빈 카드 등)는 스냅샷 그대로 둔다.
+//  삭제로 대표가 바뀐 경우는 현재 대표(cur.genId)가 이미 새 값이라 그대로 유지되어 정상이다.
+export function preserveRepresentatives(targetCards: SceneCard[], currentCards: SceneCard[]): SceneCard[] {
+  const curById = new Map(currentCards.map((c) => [c.id, c] as const));
+  return targetCards.map((tc) => {
+    const rep = curById.get(tc.id)?.genId;
+    if (!rep || rep === tc.genId) return tc;
+    if (variantIds(tc).includes(rep)) return { ...tc, genId: rep };
+    return { ...tc, genId: rep, genIds: [...(tc.genIds || []), rep] };
+  });
+}
+
 // 레퍼런스 목록의 "내용 지문" — 순서·값이 같으면 같은 문자열. uid/role 같은 표시용 필드는 제외.
 // 씬 카드 ↔ 하단 프롬프트 트레이 동기화에서 '내 편집의 에코'를 걸러내 무한 갱신을 막는 데 쓴다.
 //  ★from_card 포함: 소스 연결로 같은 참조의 출처만 바뀌어도(직접@→연결) 트레이가 최신화돼야 유령 참조를
