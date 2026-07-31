@@ -98,6 +98,7 @@ import {
   ackDone,
   isRecentlyDone,
   observeStatus,
+  seedPending,
   subscribeRecentDone,
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
@@ -1880,6 +1881,12 @@ export function SceneBoard({
       persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 저장된 gid 반영=파생, undo 제외
       const savedCard = next.find((c) => c.id === cardId);
       if (savedCard) propagateGenIdsToHistory(cardId, savedCard); // 누적된 결과를 undo/redo 히스토리에도 반영(#3)
+      // 방금 만든 결과를 canvas glow 로 강조(#1b) — comfy 결과는 저장 즉시 done 이라 active baseline 을
+      //  먼저 심고 done 으로 전환시켜야 glow 규칙(active→done)이 발화한다(generation 카드와 동일 강조).
+      if (savedIds.length) {
+        seedPending(savedIds);
+        for (const id of savedIds) observeStatus(id, "done");
+      }
       if (!silent) {
         const created = res.saved.filter((s) => !s.existed).length;
         flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
@@ -3176,7 +3183,7 @@ export function SceneBoard({
       const id = cardEl.dataset.id!;
       // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. store 에서 이 카드의 변형들을 ack.
       const gcard = cardsRef.current.find((c) => c.id === id);
-      if (gcard && gcard.kind === "generation") ackDone(variantIds(gcard));
+      if (gcard && (gcard.kind === "generation" || gcard.kind === "comfy")) ackDone(variantIds(gcard)); // comfy 완료 glow 도 클릭 해제(#1b)
       // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
       //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
       const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
@@ -4274,7 +4281,7 @@ export function SceneBoard({
                 "scene-card " +
                 kindCls +
                 (sel ? " sel" : "") +
-                (card.kind === "generation" && variantIds(card).some(isRecentlyDone) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제)
+                ((card.kind === "generation" || card.kind === "comfy") && variantIds(card).some(isRecentlyDone) ? " glow" : "") + // 방금 생성됨 — 라임 glow(클릭 시 해제, comfy 완료도 포함 #1b)
                 (editTextId === card.id ? " editing" : "") + // 편집 중 — head 이중 외곽선 방지 등
                 (showNode ? " has-node" : "") // 완료 결과가 있으면 히스토리 노드가 카드 뼈대를 대체
               }
