@@ -85,7 +85,8 @@ async def _runtime_report_loop(interval: float) -> None:
     """주기적으로 집계 지표를 회전 로그에 남긴다. 개인 식별정보는 기록하지 않는다."""
     while True:
         await asyncio.sleep(interval)
-        snapshot = runtime_metrics.snapshot()
+        # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
+        snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
         snapshot["websocket"] = await manager.stats()
         snapshot["agents"] = agent_signals.stats()
         log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
@@ -456,7 +457,8 @@ async def runtime_status(request: Request):
     from .deps import require_admin
 
     require_admin(request)
-    snapshot = runtime_metrics.snapshot()
+    # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
+    snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
     snapshot["websocket"] = await manager.stats()
     snapshot["agents"] = agent_signals.stats()
     return snapshot
