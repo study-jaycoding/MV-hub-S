@@ -104,6 +104,7 @@ import {
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
+import { saveSceneHistory, loadSceneHistory, sameSnap } from "../../lib/sceneUndoStore";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { ViewSequencePreview } from "./ViewSequencePreview";
@@ -421,10 +422,13 @@ export function SceneBoard({
   const sceneIdRef = useRef(scene.id);
   useEffect(() => {
     if (sceneIdRef.current !== scene.id) {
+      const prevId = sceneIdRef.current;
+      persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
       sceneIdRef.current = scene.id;
       setSelected(new Set());
       setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
-      resetUndoHistory(); // 다른 씬으로 넘어가면 되돌리기·다시실행 히스토리도 새로.
+      // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
+      restoreSceneHistory(scene.id, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] });
     }
     setCards(scene.cards);
     setEdges(scene.edges);
@@ -560,13 +564,22 @@ export function SceneBoard({
   onChangeRef.current = onChange;
 
   // ── 되돌리기(Ctrl+Z)·다시실행(Ctrl+Shift+Z) 히스토리 ── persist 가 유일한 커밋 지점이라 여기 한 곳에서 쌓는다.
-  const undoStackRef = useRef<Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>>([]);
-  const redoStackRef = useRef<Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>>([]);
-  const lastCommitRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>({
-    cards: scene.cards,
-    edges: scene.edges,
-    groups: scene.groups || [],
-  });
+  // 마운트 초기 히스토리 = 씬별 store 에서 복원(탭 왕복에도 Ctrl+Z 유지). 단 store 의 lastCommit 이 현재 씬
+  //  props 와 어긋나면(다른 탭/외부에서 그새 편집) 낡은 스택을 폐기하고 현재 상태에서 새로 시작한다(stale 복원 방지).
+  const bootHistoryRef = useRef<{
+    undo: Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>;
+    redo: Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>;
+    lastCommit: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] };
+  } | null>(null);
+  if (bootHistoryRef.current === null) {
+    const inc = { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] };
+    const h = loadSceneHistory(scene.id);
+    bootHistoryRef.current =
+      h && sameSnap(h.lastCommit, inc) ? h : { undo: [], redo: [], lastCommit: inc };
+  }
+  const undoStackRef = useRef(bootHistoryRef.current.undo);
+  const redoStackRef = useRef(bootHistoryRef.current.redo);
+  const lastCommitRef = useRef(bootHistoryRef.current.lastCommit);
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
   const camSaveTimer = useRef<number | undefined>(undefined);
@@ -797,10 +810,28 @@ export function SceneBoard({
   const syncCommitBaseline = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
   };
-  // undo/redo 히스토리 초기화(씬 전환 시).
+  // undo/redo 히스토리 초기화(복원할 씬 히스토리가 없거나 stale 일 때).
   const resetUndoHistory = () => {
     undoStackRef.current = [];
     redoStackRef.current = [];
+  };
+  // 현재 씬의 undo 히스토리를 씬별 store 에 보관 — 언마운트(탭 전환)·씬 전환에도 그 씬 Ctrl+Z 가 살아남게.
+  const persistSceneHistory = (sceneId: string) => {
+    saveSceneHistory(sceneId, {
+      undo: undoStackRef.current,
+      redo: redoStackRef.current,
+      lastCommit: lastCommitRef.current,
+    });
+  };
+  // 씬 진입 시 store 에서 그 씬 히스토리 복원 — 단 저장된 lastCommit 이 현재 씬 props 와 어긋나면(외부 편집)
+  //  낡은 스택을 폐기(resetUndoHistory)하고 현재 상태에서 새로 시작(호출부의 syncCommitBaseline 이 lastCommit 세팅).
+  const restoreSceneHistory = (sceneId: string, inc: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
+    const h = loadSceneHistory(sceneId);
+    if (h && sameSnap(h.lastCommit, inc)) {
+      undoStackRef.current = h.undo;
+      redoStackRef.current = h.redo;
+      lastCommitRef.current = h.lastCommit;
+    } else resetUndoHistory();
   };
   // 파생 동기화 커밋 — undo 스택은 안 건드리고 최근커밋·부모저장(onChange)만 최신화(자동 상태변화용).
   const commitDerivedState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
@@ -853,8 +884,10 @@ export function SceneBoard({
     window.addEventListener("pagehide", onHide);
     return () => {
       window.removeEventListener("pagehide", onHide);
-      flushPendingRef.current();
+      flushPendingRef.current(); // 밀린 저장 확정(스택에 반영) 후
+      persistSceneHistory(sceneIdRef.current); // 현재 씬 undo 히스토리를 store 에 보관 — 탭 복귀 시 Ctrl+Z 유지
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
