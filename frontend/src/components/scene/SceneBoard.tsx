@@ -2267,6 +2267,10 @@ export function SceneBoard({
     orientation: "v" | "h",
   ) => {
     if (e.button !== 0) return;
+    // ★리스트가 선택돼 있을 때만 행 순서 변경. 미선택이면 여기서 빠져(stopPropagation 안 함) 이벤트를
+    //  보드로 흘려보내 리스트 카드 이동(드래그)이 되게 한다 — 옮기려다 실수로 순서가 바뀌던 불편 해소.
+    //  (순서를 바꾸려면 먼저 리스트를 클릭해 선택한 뒤 행을 드래그한다.)
+    if (!selectedRef.current.has(listId)) return;
     e.preventDefault();
     e.stopPropagation(); // 카드 이동/마퀴로 번지지 않게
     const container = (e.currentTarget as HTMLElement).closest("[data-reorder]") as HTMLElement | null;
@@ -3459,6 +3463,12 @@ export function SceneBoard({
         setEdges(nextEdges);
         setSelected(new Set(newCards.map((c) => c.id)));
         persist(nextCards, nextEdges);
+        // 연속 붙여넣기 캐스케이드 — 다음 Ctrl+V 가 방금 붙여넣은 위치에서 또 한 칸 밀려 겹치지 않게.
+        //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 전진시킨다. Ctrl+C 하면 초기화.)
+        clipboardRef.current = {
+          ...clip,
+          cards: clip.cards.map((c) => ({ ...c, x: c.x + off, y: c.y + off })),
+        };
         return;
       }
     };
