@@ -52,4 +52,3 @@ def configure_operational_logging() -> Path:
 
 def log_event(logger: logging.Logger, event: str, **fields: Any) -> None:
     logger.info(event, extra={"event_fields": {"event": event, **fields}})
-

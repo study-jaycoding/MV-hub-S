@@ -105,4 +105,3 @@ def verify_restore_drill(backup_path: Path, restored_path: Path) -> dict[str, An
         "foreign_key_errors": 0,
         "integrity": "ok",
     }
-

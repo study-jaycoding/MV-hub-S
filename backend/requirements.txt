@@ -1,8 +1,25 @@
-# Content Hub backend (Phase 2/3)
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic>=2.7
-websockets>=12
-python-multipart>=0.0.9
-Pillow>=10            # thumbnail generation in assets router (PIL.Image) - required or startup fails
-watchdog>=4           # asset folder live watch (asset_watcher) -> WS assets_changed. optional: missing = falls back to focus refresh
+# Content Hub backend — 배포 재현성을 위해 전체 의존성 버전을 고정한다.
+fastapi==0.135.3
+uvicorn[standard]==0.42.0
+pydantic==2.12.5
+websockets==16.0
+python-multipart==0.0.22
+Pillow==12.2.0
+watchdog==6.0.0
+
+# 위 직접 의존성의 하위 패키지까지 고정해 빌드 시점에 따라 ZIP 내용이 바뀌지 않게 한다.
+starlette==1.0.0
+pydantic-core==2.41.5
+annotated-types==0.7.0
+annotated-doc==0.0.4
+typing-inspection==0.4.2
+typing-extensions==4.15.0
+anyio==4.13.0
+idna==3.11
+click==8.2.1
+h11==0.16.0
+httptools==0.8.0
+python-dotenv==1.2.2
+PyYAML==6.0.3
+watchfiles==1.2.0
+colorama==0.4.6
