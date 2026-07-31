@@ -30,6 +30,7 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
 class RuntimeMetrics:
     def __init__(self, sample_max: int = 5000) -> None:
         self._lock = threading.Lock()
+        self._disk_scan_lock = threading.Lock()
         self._started_at = time.time()
         self._request_started = time.perf_counter()
         self._latencies: deque[float] = deque(maxlen=max(100, sample_max))
@@ -117,9 +118,10 @@ class RuntimeMetrics:
             }
 
     def process_snapshot(self) -> dict[str, Any]:
-        now_wall = time.perf_counter()
-        now_cpu = time.process_time()
+        # 시각 읽기도 락 안에서 — snapshot() 이 스레드에서 동시 호출돼도 측정 구간이 역전되지 않게.
         with self._lock:
+            now_wall = time.perf_counter()
+            now_cpu = time.process_time()
             wall_delta = max(0.000001, now_wall - self._last_wall)
             cpu_delta = max(0.0, now_cpu - self._last_cpu)
             self._last_wall = now_wall
@@ -137,10 +139,15 @@ class RuntimeMetrics:
         with self._lock:
             if self._disk_cache and (now - self._disk_cached_at) < ttl_seconds:
                 return dict(self._disk_cache)
-        value = _disk_snapshot()
-        with self._lock:
-            self._disk_cached_at = now
-            self._disk_cache = value
+        # 스캔 직렬화 — 주기 보고와 관리자 요청이 동시에 캐시 미스를 봐도 재귀 스캔은 1회만.
+        with self._disk_scan_lock:
+            with self._lock:  # 앞선 스레드가 스캔을 끝냈으면 그 결과를 재사용
+                if self._disk_cache and (time.monotonic() - self._disk_cached_at) < ttl_seconds:
+                    return dict(self._disk_cache)
+            value = _disk_snapshot()
+            with self._lock:
+                self._disk_cached_at = time.monotonic()
+                self._disk_cache = value
         return dict(value)
 
     def snapshot(self) -> dict[str, Any]:
