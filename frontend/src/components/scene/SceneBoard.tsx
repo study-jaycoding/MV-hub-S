@@ -847,11 +847,57 @@ export function SceneBoard({
   // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
   const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
     lastCommitRef.current = s;
+    // ref 도 즉시 동기화 — 복원 직후(리렌더 전) 비동기 comfy 저장/완료가 옛 ref 를 읽고 어긋난 상태로
+    //  덮어쓰지 않게(최상위 X.current=X 는 다음 렌더에나 반영됨).
+    cardsRef.current = s.cards;
+    edgesRef.current = s.edges;
+    groupsRef.current = s.groups;
     setCards(s.cards);
     setEdges(s.edges);
     setGroups(s.groups);
     setSelected(new Set());
     onChangeRef.current(s); // 부모(씬 저장)에도 반영
+  };
+  // ── #3 데이터손실 방지 — comfy 결과 누적(genIds/outputs)은 undo:false 로 저장돼 undo 스택에 안 쌓인다.
+  //  옛 스냅샷을 Ctrl+Z 로 복원하면 그새 누적된 생성물이 유실됐다. → 파생 누적/삭제를 히스토리에 소급 반영해
+  //  undo/redo 가 생성물을 잃지 않게 한다. 대표 genId 는 스냅샷 것을 유지(유효하면) → setCardVariant undo 보존.
+  const propagateGenIdsToHistory = (cardId: string, latest: SceneCard) => {
+    const latestIds = variantIds(latest);
+    const patchCard = (c: SceneCard): SceneCard => {
+      if (c.id !== cardId || c.kind !== latest.kind) return c;
+      // comfy 는 같은 워크플로(content)일 때만 — 워크플로 교체 후엔 옛 결과를 새 워크플로에 붙이지 않는다.
+      if (c.kind === "comfy" && c.comfyCfg?.content !== latest.comfyCfg?.content) return c;
+      const genId = c.genId && latestIds.includes(c.genId) ? c.genId : latest.genId; // 대표는 스냅샷 것 유지(유효할 때)
+      return {
+        ...c,
+        genIds: latest.genIds,
+        genId,
+        ...(latest.kind === "comfy"
+          ? { comfyCfg: { ...(c.comfyCfg || {}), outputs: latest.comfyCfg?.outputs } }
+          : {}),
+      };
+    };
+    const patchSnap = (snap: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => ({
+      ...snap,
+      cards: snap.cards.map(patchCard),
+    });
+    undoStackRef.current = undoStackRef.current.map(patchSnap);
+    redoStackRef.current = redoStackRef.current.map(patchSnap); // ★redo 도 — undo:false 는 redo 를 안 비워 stale 손실 방지
+  };
+  // 변형 삭제(pruneVariants)를 히스토리에서도 반영 — 실제 삭제된 변형을 undo 로 되살려 깨진 참조가 되지 않게.
+  const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
+    const patchCard = (c: SceneCard): SceneCard => {
+      if (c.id !== cardId) return c;
+      const genIds = variantIds(c).filter((id) => !removed.has(id));
+      const genId = c.genId && !removed.has(c.genId) ? c.genId : genIds[0] ?? null;
+      return { ...c, genIds, genId };
+    };
+    const patchSnap = (snap: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => ({
+      ...snap,
+      cards: snap.cards.map(patchCard),
+    });
+    undoStackRef.current = undoStackRef.current.map(patchSnap);
+    redoStackRef.current = redoStackRef.current.map(patchSnap);
   };
   // Ctrl+Z — 직전 커밋으로 복원. 현재 상태는 redo 스택으로 넘겨 Ctrl+Shift+Z 로 되돌릴 수 있게.
   const undo = () => {
@@ -1823,6 +1869,8 @@ export function SceneBoard({
       cardsRef.current = next;
       setCards(next);
       persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 저장된 gid 반영=파생, undo 제외
+      const savedCard = next.find((c) => c.id === cardId);
+      if (savedCard) propagateGenIdsToHistory(cardId, savedCard); // 누적된 결과를 undo/redo 히스토리에도 반영(#3)
       if (!silent) {
         const created = res.saved.filter((s) => !s.existed).length;
         flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
@@ -2415,6 +2463,7 @@ export function SceneBoard({
     });
     setCards(nc);
     persist(nc, edgesRef.current);
+    pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
   // 팝업 그리드 배경 드래그 = 마퀴 복수선택(썸네일 위에서 시작하면 클릭/더블클릭에 양보).
