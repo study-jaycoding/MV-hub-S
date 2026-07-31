@@ -435,15 +435,14 @@ export function SceneBoard({
       sceneIdRef.current = scene.id;
       setSelected(new Set());
       setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
-      undoStackRef.current = []; // 다른 씬으로 넘어가면 되돌리기·다시실행 히스토리도 새로.
-      redoStackRef.current = [];
+      resetUndoHistory(); // 다른 씬으로 넘어가면 되돌리기·다시실행 히스토리도 새로.
     }
     setCards(scene.cards);
     setEdges(scene.edges);
     setGroups(scene.groups || []);
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
-    lastCommitRef.current = { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] };
+    syncCommitBaseline({ cards: scene.cards, edges: scene.edges, groups: scene.groups || [] });
   }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -800,6 +799,22 @@ export function SceneBoard({
     lastCommitRef.current = next;
     onChangeRef.current(next);
   };
+  // ── 커밋/undo 소유 API — 외부에서 undoStackRef/lastCommitRef 를 직접 만지지 않고 이 함수들로만 갱신한다.
+  //  (persist 클러스터가 undo·최근커밋을 온전히 소유 → 결합도↓. 추후 훅으로 뺄 때 seam 이 좁아진다.)
+  // 씬에서 들어온 상태를 '최근 커밋' 기준으로 동기화 — 외부 갱신 후 Ctrl+Z 가 그 갱신까지 되돌리는 스테일 복원 방지.
+  const syncCommitBaseline = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
+    lastCommitRef.current = s;
+  };
+  // undo/redo 히스토리 초기화(씬 전환 시).
+  const resetUndoHistory = () => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+  };
+  // 파생 동기화 커밋 — undo 스택은 안 건드리고 최근커밋·부모저장(onChange)만 최신화(자동 상태변화용).
+  const commitDerivedState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
+    lastCommitRef.current = s;
+    onChangeRef.current(s);
+  };
   // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
   //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
@@ -1123,9 +1138,7 @@ export function SceneBoard({
     cardsRef.current = nextCards;
     setCards(nextCards);
     // 파생 동기화 — undo 스택은 늘리지 않고(구조 변경 아님) lastCommit·부모만 최신화.
-    const nextState = { cards: nextCards, edges: edgesRef.current, groups: groupsRef.current };
-    lastCommitRef.current = nextState;
-    onChangeRef.current(nextState);
+    commitDerivedState({ cards: nextCards, edges: edgesRef.current, groups: groupsRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [genRefSourceSig, refTopologySig, genData]);
 
