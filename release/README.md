@@ -114,7 +114,9 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 `VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
 이전 버전으로 전환됩니다.
 
-설치/업데이트는 앱 파일만 덮어쓰며, 작업자 로컬 데이터인 `backend\data`는 zip에 포함하지 않습니다.
+설치/업데이트는 앱 파일만 덮어씁니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
+복사하며, `backend\data`, `data_test`, 테스트 스냅샷, DB, 미디어, 캐시는 zip에 포함하지 않습니다.
+압축 후에도 필수 런타임 존재와 로컬 데이터 부재를 자동 검증하고 실패하면 zip을 폐기합니다.
 
 ## 주의
 
