@@ -64,8 +64,16 @@ class SearchSourcesTests(unittest.TestCase):
             share("mem", "u_other")
             src("non", "u_other", "p_non", "NonMemberCat")  # 비멤버 프로젝트의 남 소스(공유) → 새면 안 됨
             share("non", "u_other")
+            conn.execute("UPDATE generation SET color='#111111' WHERE id='own'")
+            conn.execute("UPDATE generation SET color='#ff0000' WHERE id='mem'")
             conn.execute("INSERT INTO tag(id, name) VALUES('t_red','red')")
+            conn.execute("INSERT INTO tag(id, name) VALUES('t_private','private')")
             conn.execute("INSERT INTO gen_tag(generation_id, tag_id) VALUES('own','t_red')")
+            conn.execute("INSERT INTO gen_tag(generation_id, tag_id) VALUES('mem','t_private')")
+            conn.execute("INSERT INTO auto_tag(id, name) VALUES('a_private','private-auto')")
+            conn.execute(
+                "INSERT INTO gen_auto_tag(generation_id, auto_tag_id) VALUES('mem','a_private')"
+            )
 
     @staticmethod
     def _ids(rows):
@@ -77,8 +85,32 @@ class SearchSourcesTests(unittest.TestCase):
         self.assertEqual(self._ids(rows), {"own", "mem"})
 
     def test_read_all_sees_all_sources(self):
-        rows = repo.search_sources(owner_uid="u_me", read_all=True)
+        rows = repo.search_sources(owner_uid="u_me", viewer_uid="u_me", read_all=True)
         self.assertEqual(self._ids(rows), {"own", "mem", "non"})
+
+    def test_member_source_hides_other_users_personal_metadata(self):
+        rows = repo.search_sources(
+            owner_uid="u_me",
+            viewer_uid="u_me",
+            member_projects=["p_mem"],
+        )
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual(by_id["own"]["color"], "#111111")
+        self.assertEqual(by_id["own"]["tags"], ["red"])
+        self.assertIsNone(by_id["mem"]["color"])
+        self.assertEqual(by_id["mem"]["tags"], [])
+        self.assertEqual(by_id["mem"]["auto_tags"], [])
+
+    def test_read_all_does_not_grant_other_users_personal_metadata(self):
+        rows = repo.search_sources(
+            owner_uid="u_me",
+            viewer_uid="u_me",
+            read_all=True,
+        )
+        by_id = {r["id"]: r for r in rows}
+        self.assertIsNone(by_id["mem"]["color"])
+        self.assertEqual(by_id["mem"]["tags"], [])
+        self.assertEqual(by_id["mem"]["auto_tags"], [])
 
     def test_query_matches_source_name(self):
         # owner_uid 없음(AUTH off/단독) → 가시성 필터 없이 query 만. MemberCat/NonMemberCat 매칭.

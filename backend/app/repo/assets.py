@@ -95,6 +95,16 @@ def list_asset_comments(project: str, path: str) -> list[dict[str, Any]]:
         return _name_comments(conn, rows)
 
 
+def get_asset_comment_scope(comment_id: str) -> Optional[dict[str, str]]:
+    """코멘트 id의 프로젝트·경로. 편집/삭제 전에 프로젝트 RBAC를 적용할 때 쓴다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT project, path FROM asset_comment WHERE id=?",
+            (comment_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def add_asset_comment(
     project: str,
     path: str,

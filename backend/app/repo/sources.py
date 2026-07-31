@@ -107,6 +107,7 @@ def search_sources(
     asset_project: Optional[str] = None,
     asset_dir: Optional[str] = None,
     owner_uid: str = "",
+    viewer_uid: Optional[str] = None,
     read_all: bool = False,
     member_projects: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
@@ -119,7 +120,10 @@ def search_sources(
     # 재사용 가능하면 안 됨(하드삭제 때와 동일한 가시성 유지).
     where = ["g.is_source = 1", "g.deleted_at IS NULL"]
     args: list[Any] = []
-    if owner_uid and not read_all:
+    # owner_uid 는 로컬 asset_meta 소유자, viewer_uid 는 생성물 개인 메타 마스킹 기준이다.
+    # 예전 호출 호환을 위해 viewer_uid 미지정이면 owner_uid 를 생성물 뷰어로도 사용한다.
+    scope_uid = viewer_uid if viewer_uid is not None else (owner_uid or None)
+    if scope_uid and not read_all:
         # 가시성 — can_view_generation(deps) 과 동일 경계: 내 것, 또는 **내가 멤버인 프로젝트**의 공유물만.
         # shared 라고 무조건 노출하면 비멤버 프로젝트 소스의 프롬프트·모델·params·URL 이 @ 피커로 샌다
         # (목록/단건은 멤버십으로 가리는데 여기만 뚫려 있던 우회). read_all(admin·PM·PD) 이면 전체.
@@ -130,12 +134,12 @@ def search_sources(
                 f"(g.creator_uid = ? OR (g.project_id IN ({pph}) "
                 f"AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)))"
             )
-            args.append(owner_uid)
+            args.append(scope_uid)
             args.extend(mp)
         else:
             where.append("g.creator_uid = ?")  # 멤버인 프로젝트가 없으면 내 것만
-            args.append(owner_uid)
-    # owner_uid 없음(AUTH off/단독) 또는 read_all → 필터 없이 전체.
+            args.append(scope_uid)
+    # scope_uid 없음(AUTH off/단독) 또는 read_all → 필터 없이 전체.
     if query:
         where.append("(g.source_name LIKE ? OR g.prompt LIKE ?)")
         args += [f"%{query}%", f"%{query}%"]
@@ -147,7 +151,8 @@ def search_sources(
         args.append(tag)
     sql = (
         "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
-        "g.params, g.color, g.status, g.created_at, g.is_source, g.source_name, g.comment, g.error "
+        "g.params, g.color, g.status, g.created_at, g.is_source, g.source_name, g.comment, g.error, "
+        "g.creator_uid, g.project_id "
         "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
         "WHERE " + " AND ".join(where) +
         " ORDER BY g.source_name IS NULL, g.source_name, g.created_at DESC LIMIT ?"
@@ -155,7 +160,8 @@ def search_sources(
     args.append(limit)
     with get_connection() as conn:
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
-        gen_sources = _attach_children(conn, rows)
+        # read_all 은 생성물 가시성을 넓힐 뿐 남의 개인 색·태그를 공유하는 권한은 아니다.
+        gen_sources = _attach_children(conn, rows, viewer_uid=scope_uid)
         asset_sources = (
             _asset_sources(conn, query, tag, asset_project, asset_dir, limit, owner_uid)
             if asset_project

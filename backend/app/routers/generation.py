@@ -551,6 +551,7 @@ def list_sources(
         asset_project=asset_project,
         asset_dir=asset_dir,
         owner_uid=actor_id(request),
+        viewer_uid=viewer_uid,
         read_all=read_all,
         member_projects=member,
     )
