@@ -341,6 +341,7 @@ export function SceneBoard({
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
   editTextIdRef.current = editTextId;
+  const caretPosRef = useRef<Map<string, number>>(new Map()); // 텍스트 노드별 마지막 캐럿 위치 — 재편집 시 그곳으로 복원
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   //  inEdges = 외부 소스(선택 밖) → 선택 노드로 들어오는 입력 엣지. 붙여넣을 때 기존 소스에 그대로 다시 물려
   //  '입력을 공유하는 복제'가 되게 한다(from=원본 소스 유지, to=붙여넣은 새 노드).
@@ -4590,6 +4591,14 @@ export function SceneBoard({
                             spellCheck={false}
                             autoFocus
                             onMouseDown={(e) => e.stopPropagation()}
+                            onFocus={(e) => {
+                              // 편집 진입 캐럿: 이전 편집 위치가 있으면 그곳, 없으면 맨 끝(autoFocus 기본값 offset 0 방지).
+                              const len = e.currentTarget.value.length;
+                              const saved = caretPosRef.current.get(card.id);
+                              const pos = saved != null ? Math.min(saved, len) : len;
+                              e.currentTarget.setSelectionRange(pos, pos);
+                            }}
+                            onSelect={(e) => caretPosRef.current.set(card.id, e.currentTarget.selectionStart ?? 0)} // 편집 중 캐럿 위치 기억
                             onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
                             onChange={(e) => setNodeText(card.id, e.target.value)}
                           />
