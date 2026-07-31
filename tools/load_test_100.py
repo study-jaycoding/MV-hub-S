@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import json
 import os
 import random
@@ -86,6 +87,69 @@ def _http_json(
         return exc.code, parsed, (time.perf_counter() - started) * 1000.0
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return 0, {"error": str(exc)}, (time.perf_counter() - started) * 1000.0
+
+
+def _decode_response(raw: bytes) -> Any:
+    try:
+        return json.loads(raw.decode("utf-8")) if raw else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"bytes": len(raw)}
+
+
+class _KeepAliveJsonClient:
+    """한 가상 사용자의 HTTP 연결을 재사용해 실제 브라우저 동작을 가깝게 재현한다."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: Optional[str] = None,
+        timeout: float = 35.0,
+    ) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"지원하지 않는 base URL: {base_url}")
+        connection_type = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        self._connection = connection_type(
+            parsed.hostname,
+            parsed.port,
+            timeout=timeout,
+        )
+        self._token = token
+
+    def request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        body: Optional[dict[str, Any]] = None,
+    ) -> tuple[int, Any, float]:
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Accept": "application/json"}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        started = time.perf_counter()
+        try:
+            self._connection.request(method, path, body=data, headers=headers)
+            response = self._connection.getresponse()
+            raw = response.read()
+            return (
+                response.status,
+                _decode_response(raw),
+                (time.perf_counter() - started) * 1000.0,
+            )
+        except (http.client.HTTPException, TimeoutError, OSError) as exc:
+            self._connection.close()
+            return 0, {"error": str(exc)}, (time.perf_counter() - started) * 1000.0
+
+    def close(self) -> None:
+        self._connection.close()
 
 
 def _seed_database(
@@ -276,39 +340,51 @@ async def _workload_user(
     rng = random.Random(10_000 + index)
     results: list[dict[str, Any]] = []
     colors = [None, "#e85d5d", "#58a6ff", "#6bcB77"]
-    while time.monotonic() < deadline:
-        roll = rng.random()
-        if roll < 0.55:
-            path, method, body, name = "/api/generations?tab=my&limit=50", "GET", None, "list"
-        elif roll < 0.70:
-            path, method, body, name = "/api/facets?tab=my", "GET", None, "facets"
-        elif roll < 0.80:
-            path, method, body, name = "/api/generations-stats", "GET", None, "stats"
-        elif roll < 0.90:
-            path = f"/api/generations/{generation_id}"
-            method, body, name = "GET", None, "detail"
-        elif roll < 0.96:
-            path = f"/api/generations/{generation_id}/color"
-            method, body, name = "PUT", {"color": rng.choice(colors)}, "write_color"
-        else:
-            path, method, body, name = "/media/lo/load.bin", "GET", None, "media"
-        status, response, elapsed = await asyncio.to_thread(
-            _http_json,
-            base_url,
-            path,
-            method=method,
-            token=token,
-            body=body,
-        )
-        results.append(
-            {
-                "name": name,
-                "status": status,
-                "elapsed_ms": elapsed,
-                "error": response if status == 0 or status >= 500 else None,
-            }
-        )
-        await asyncio.sleep(rng.uniform(think_min, think_max))
+    client = _KeepAliveJsonClient(base_url, token=token)
+    try:
+        while time.monotonic() < deadline:
+            roll = rng.random()
+            if roll < 0.55:
+                path, method, body, name = (
+                    "/api/generations?tab=my&limit=50",
+                    "GET",
+                    None,
+                    "list",
+                )
+            elif roll < 0.70:
+                path, method, body, name = "/api/facets?tab=my", "GET", None, "facets"
+            elif roll < 0.80:
+                path, method, body, name = (
+                    "/api/generations-stats",
+                    "GET",
+                    None,
+                    "stats",
+                )
+            elif roll < 0.90:
+                path = f"/api/generations/{generation_id}"
+                method, body, name = "GET", None, "detail"
+            elif roll < 0.96:
+                path = f"/api/generations/{generation_id}/color"
+                method, body, name = "PUT", {"color": rng.choice(colors)}, "write_color"
+            else:
+                path, method, body, name = "/media/lo/load.bin", "GET", None, "media"
+            status, response, elapsed = await asyncio.to_thread(
+                client.request,
+                path,
+                method=method,
+                body=body,
+            )
+            results.append(
+                {
+                    "name": name,
+                    "status": status,
+                    "elapsed_ms": elapsed,
+                    "error": response if status == 0 or status >= 500 else None,
+                }
+            )
+            await asyncio.sleep(rng.uniform(think_min, think_max))
+    finally:
+        client.close()
     return results
 
 
@@ -319,17 +395,18 @@ async def _long_poll_worker(
     errors: list[str],
 ) -> None:
     """실제 에이전트처럼 롱폴이 반환되면 종료 신호 전까지 즉시 다시 대기한다."""
-    while not stop.is_set():
-        status, response, _elapsed = await asyncio.to_thread(
-            _http_json,
-            base_url,
-            "/api/agent/wait",
-            token=token,
-            timeout=35,
-        )
-        if status < 200 or status >= 300:
-            errors.append(f"status={status}: {response}")
-            return
+    client = _KeepAliveJsonClient(base_url, token=token, timeout=35)
+    try:
+        while not stop.is_set():
+            status, response, _elapsed = await asyncio.to_thread(
+                client.request,
+                "/api/agent/wait",
+            )
+            if status < 200 or status >= 300:
+                errors.append(f"status={status}: {response}")
+                return
+    finally:
+        client.close()
 
 
 async def _run_load(

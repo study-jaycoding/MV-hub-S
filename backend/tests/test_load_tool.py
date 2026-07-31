@@ -4,6 +4,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -47,6 +48,48 @@ class LoadToolTests(unittest.TestCase):
         report["server"]["after"]["requests"]["sqlite_locked_total"] = 0
         report["workload"]["statuses"] = {200: 99, 404: 1}
         self.assertFalse(load_tool._evaluate(report, args)["passed"])
+
+    def test_keep_alive_client_reuses_connection(self):
+        class FakeResponse:
+            status = 200
+
+            def read(self):
+                return b'{"ok": true}'
+
+        class FakeConnection:
+            instances = 0
+            requests = 0
+
+            def __init__(self, host, port, timeout):
+                self.host = host
+                self.port = port
+                self.timeout = timeout
+                FakeConnection.instances += 1
+
+            def request(self, method, path, body=None, headers=None):
+                FakeConnection.requests += 1
+
+            def getresponse(self):
+                return FakeResponse()
+
+            def close(self):
+                pass
+
+        with mock.patch.object(
+            load_tool.http.client,
+            "HTTPConnection",
+            FakeConnection,
+        ):
+            client = load_tool._KeepAliveJsonClient(
+                "http://127.0.0.1:8010",
+                token="test-token",
+            )
+            self.assertEqual(client.request("/api/ready")[0], 200)
+            self.assertEqual(client.request("/api/ready")[0], 200)
+            client.close()
+
+        self.assertEqual(FakeConnection.instances, 1)
+        self.assertEqual(FakeConnection.requests, 2)
 
 
 if __name__ == "__main__":
