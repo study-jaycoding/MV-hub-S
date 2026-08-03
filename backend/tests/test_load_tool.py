@@ -91,6 +91,60 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(FakeConnection.instances, 1)
         self.assertEqual(FakeConnection.requests, 2)
 
+    def test_https_keep_alive_client_uses_verifying_context(self):
+        ssl_context = mock.sentinel.ssl_context
+
+        class FakeHttpsConnection:
+            received_context = None
+
+            def __init__(self, host, port, timeout, context):
+                self.host = host
+                self.port = port
+                self.timeout = timeout
+                FakeHttpsConnection.received_context = context
+
+            def close(self):
+                pass
+
+        with mock.patch.object(
+            load_tool.http.client,
+            "HTTPSConnection",
+            FakeHttpsConnection,
+        ):
+            client = load_tool._KeepAliveJsonClient(
+                "https://127.0.0.1:8443",
+                ssl_context=ssl_context,
+            )
+            client.close()
+
+        self.assertIs(FakeHttpsConnection.received_context, ssl_context)
+
+    def test_server_environment_adds_tls_only_when_configured(self):
+        with mock.patch.dict(
+            load_tool.os.environ,
+            {
+                "CONTENT_HUB_SSL_CERTFILE": r"C:\inherited\cert.pem",
+                "CONTENT_HUB_SSL_KEYFILE": r"C:\inherited\key.pem",
+            },
+        ):
+            plain = load_tool._server_environment(
+                Path(r"C:\Temp\data"),
+                Path(r"C:\Temp\load.db"),
+                8443,
+            )
+        self.assertNotIn("CONTENT_HUB_SSL_CERTFILE", plain)
+        self.assertNotIn("CONTENT_HUB_SSL_KEYFILE", plain)
+
+        tls = load_tool._server_environment(
+            Path(r"C:\Temp\data"),
+            Path(r"C:\Temp\load.db"),
+            8443,
+            ssl_certfile=Path(r"C:\Temp\cert.pem"),
+            ssl_keyfile=Path(r"C:\Temp\key.pem"),
+        )
+        self.assertEqual(tls["CONTENT_HUB_SSL_CERTFILE"], r"C:\Temp\cert.pem")
+        self.assertEqual(tls["CONTENT_HUB_SSL_KEYFILE"], r"C:\Temp\key.pem")
+
     def test_temp_cleanup_retries_transient_windows_lock(self):
         transient_lock = PermissionError(32, "다른 프로세스가 파일을 사용 중입니다")
         with (

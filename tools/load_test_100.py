@@ -9,8 +9,8 @@ r"""MV Hub 100명 격리 부하 테스트.
 배포 전 기본:
   python tools\load_test_100.py --users 100 --duration 60 --generations-per-user 20
 
-8시간 지속:
-  python tools\load_test_100.py --users 100 --duration 28800 --output soak-result.json
+8시간 지속(4시간씩 2회 비교):
+  python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 --output soak-result.json
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import os
 import random
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,7 @@ def _http_json(
     token: Optional[str] = None,
     body: Optional[dict[str, Any]] = None,
     timeout: float = 35.0,
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> tuple[int, Any, float]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(base_url + path, data=data, method=method)
@@ -96,7 +98,10 @@ def _http_json(
         request.add_header("Authorization", f"Bearer {token}")
     started = time.perf_counter()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        open_kwargs: dict[str, Any] = {"timeout": timeout}
+        if ssl_context is not None:
+            open_kwargs["context"] = ssl_context
+        with urllib.request.urlopen(request, **open_kwargs) as response:
             raw = response.read()
             try:
                 parsed: Any = json.loads(raw.decode("utf-8")) if raw else None
@@ -130,20 +135,24 @@ class _KeepAliveJsonClient:
         *,
         token: Optional[str] = None,
         timeout: float = 35.0,
+        ssl_context: Optional[ssl.SSLContext] = None,
     ) -> None:
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError(f"지원하지 않는 base URL: {base_url}")
-        connection_type = (
-            http.client.HTTPSConnection
-            if parsed.scheme == "https"
-            else http.client.HTTPConnection
-        )
-        self._connection = connection_type(
-            parsed.hostname,
-            parsed.port,
-            timeout=timeout,
-        )
+        if parsed.scheme == "https":
+            self._connection = http.client.HTTPSConnection(
+                parsed.hostname,
+                parsed.port,
+                timeout=timeout,
+                context=ssl_context,
+            )
+        else:
+            self._connection = http.client.HTTPConnection(
+                parsed.hostname,
+                parsed.port,
+                timeout=timeout,
+            )
         self._token = token
 
     def request(
@@ -252,8 +261,18 @@ def _seed_database(
     return accounts
 
 
-def _server_environment(data_dir: Path, db_path: Path, port: int) -> dict[str, str]:
+def _server_environment(
+    data_dir: Path,
+    db_path: Path,
+    port: int,
+    *,
+    ssl_certfile: Optional[Path] = None,
+    ssl_keyfile: Optional[Path] = None,
+) -> dict[str, str]:
     env = os.environ.copy()
+    # 호출한 셸의 TLS 설정이 HTTP 회귀 시험에 우연히 섞이지 않도록 항상 명시적으로 재구성한다.
+    env.pop("CONTENT_HUB_SSL_CERTFILE", None)
+    env.pop("CONTENT_HUB_SSL_KEYFILE", None)
     env.update(
         {
             "PYTHONUTF8": "1",
@@ -270,15 +289,28 @@ def _server_environment(data_dir: Path, db_path: Path, port: int) -> dict[str, s
             "CONTENT_HUB_FRONTEND_DIST": str(data_dir / "no-frontend"),
         }
     )
+    if ssl_certfile and ssl_keyfile:
+        env["CONTENT_HUB_SSL_CERTFILE"] = str(ssl_certfile)
+        env["CONTENT_HUB_SSL_KEYFILE"] = str(ssl_keyfile)
     return env
 
 
-def _wait_ready(base_url: str, process: subprocess.Popen, timeout: float = 45.0) -> None:
+def _wait_ready(
+    base_url: str,
+    process: subprocess.Popen,
+    timeout: float = 45.0,
+    ssl_context: Optional[ssl.SSLContext] = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(f"테스트 서버가 조기 종료했습니다(code={process.returncode})")
-        status, _, _ = _http_json(base_url, "/api/ready", timeout=2)
+        status, _, _ = _http_json(
+            base_url,
+            "/api/ready",
+            timeout=2,
+            ssl_context=ssl_context,
+        )
         if status == 200:
             return
         time.sleep(0.25)
@@ -288,6 +320,7 @@ def _wait_ready(base_url: str, process: subprocess.Popen, timeout: float = 45.0)
 async def _login_all(
     base_url: str,
     accounts: list[dict[str, str]],
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> tuple[list[str], list[float], Counter[int]]:
     async def one(account: dict[str, str]) -> tuple[int, Any, float]:
         return await asyncio.to_thread(
@@ -296,6 +329,7 @@ async def _login_all(
             "/api/auth/login",
             method="POST",
             body={"email": account["email"], "password": PASSWORD},
+            ssl_context=ssl_context,
         )
 
     results = await asyncio.gather(*(one(account) for account in accounts))
@@ -312,12 +346,17 @@ async def _login_all(
     return tokens, latencies, statuses
 
 
-async def _runtime_snapshot(base_url: str, admin_token: str) -> dict[str, Any]:
+async def _runtime_snapshot(
+    base_url: str,
+    admin_token: str,
+    ssl_context: Optional[ssl.SSLContext] = None,
+) -> dict[str, Any]:
     status, body, _ = await asyncio.to_thread(
         _http_json,
         base_url,
         "/api/admin/runtime",
         token=admin_token,
+        ssl_context=ssl_context,
     )
     if status != 200 or not isinstance(body, dict):
         raise RuntimeError(f"런타임 지표 조회 실패: status={status}, body={body}")
@@ -330,17 +369,23 @@ async def _websocket_worker(
     stop: asyncio.Event,
     ready: asyncio.Event,
     errors: list[str],
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> None:
     import websockets
 
     try:
         encoded = urllib.parse.quote(token, safe="")
+        connect_kwargs: dict[str, Any] = {
+            "open_timeout": 15,
+            "close_timeout": 3,
+            "ping_interval": 20,
+            "ping_timeout": 20,
+        }
+        if ssl_context is not None:
+            connect_kwargs["ssl"] = ssl_context
         async with websockets.connect(
             f"{ws_url}/ws?token={encoded}",
-            open_timeout=15,
-            close_timeout=3,
-            ping_interval=20,
-            ping_timeout=20,
+            **connect_kwargs,
         ) as websocket:
             ready.set()
             while not stop.is_set():
@@ -361,11 +406,16 @@ async def _workload_user(
     deadline: float,
     think_min: float,
     think_max: float,
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> list[dict[str, Any]]:
     rng = random.Random(10_000 + index)
     results: list[dict[str, Any]] = []
     colors = [None, "#e85d5d", "#58a6ff", "#6bcB77"]
-    client = _KeepAliveJsonClient(base_url, token=token)
+    client = _KeepAliveJsonClient(
+        base_url,
+        token=token,
+        ssl_context=ssl_context,
+    )
     try:
         while time.monotonic() < deadline:
             roll = rng.random()
@@ -418,9 +468,15 @@ async def _long_poll_worker(
     token: str,
     stop: asyncio.Event,
     errors: list[str],
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> None:
     """실제 에이전트처럼 롱폴이 반환되면 종료 신호 전까지 즉시 다시 대기한다."""
-    client = _KeepAliveJsonClient(base_url, token=token, timeout=35)
+    client = _KeepAliveJsonClient(
+        base_url,
+        token=token,
+        timeout=35,
+        ssl_context=ssl_context,
+    )
     try:
         while not stop.is_set():
             status, response, _elapsed = await asyncio.to_thread(
@@ -441,8 +497,13 @@ async def _run_load(
     duration: float,
     think_min: float,
     think_max: float,
+    ssl_context: Optional[ssl.SSLContext] = None,
 ) -> dict[str, Any]:
-    tokens, login_latencies, login_statuses = await _login_all(base_url, accounts)
+    tokens, login_latencies, login_statuses = await _login_all(
+        base_url,
+        accounts,
+        ssl_context,
+    )
 
     # 연결·SQLite 풀·목록 캐시를 한 번 데운 뒤 메모리 기준점을 잡는다.
     await asyncio.gather(
@@ -452,18 +513,26 @@ async def _run_load(
                 base_url,
                 "/api/generations?tab=my&limit=20",
                 token=token,
+                ssl_context=ssl_context,
             )
             for token in tokens
         )
     )
-    baseline = await _runtime_snapshot(base_url, tokens[0])
+    baseline = await _runtime_snapshot(base_url, tokens[0], ssl_context)
 
     stop_ws = asyncio.Event()
     ws_errors: list[str] = []
     ws_ready = [asyncio.Event() for _ in tokens]
     ws_tasks = [
         asyncio.create_task(
-            _websocket_worker(ws_url, token, stop_ws, ws_ready[index], ws_errors)
+            _websocket_worker(
+                ws_url,
+                token,
+                stop_ws,
+                ws_ready[index],
+                ws_errors,
+                ssl_context,
+            )
         )
         for index, token in enumerate(tokens)
     ]
@@ -481,6 +550,7 @@ async def _run_load(
                 token,
                 stop_long_poll,
                 long_poll_errors,
+                ssl_context,
             )
         )
         for token in tokens
@@ -497,13 +567,14 @@ async def _run_load(
                 deadline,
                 think_min,
                 think_max,
+                ssl_context,
             )
         )
         for index, account in enumerate(accounts)
     ]
 
     await asyncio.sleep(min(3.0, max(1.0, duration / 4)))
-    during = await _runtime_snapshot(base_url, tokens[0])
+    during = await _runtime_snapshot(base_url, tokens[0], ssl_context)
     started = time.perf_counter()
     nested_results = await asyncio.gather(*workload_tasks)
     workload_seconds = max(0.001, time.perf_counter() - started + min(3.0, max(1.0, duration / 4)))
@@ -518,6 +589,7 @@ async def _run_load(
                 "/api/agent/sync",
                 method="POST",
                 token=token,
+                ssl_context=ssl_context,
             )
             for token in tokens
         )
@@ -525,7 +597,7 @@ async def _run_load(
     await asyncio.gather(*long_poll_tasks, return_exceptions=True)
     stop_ws.set()
     await asyncio.gather(*ws_tasks, return_exceptions=True)
-    after = await _runtime_snapshot(base_url, tokens[0])
+    after = await _runtime_snapshot(base_url, tokens[0], ssl_context)
 
     results = [item for group in nested_results for item in group]
     status_counts = Counter(int(item["status"]) for item in results)
@@ -615,8 +687,15 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
 
 async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     port = args.port or _free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    ws_url = f"ws://127.0.0.1:{port}"
+    tls_enabled = bool(args.tls_certfile)
+    scheme = "https" if tls_enabled else "http"
+    ws_scheme = "wss" if tls_enabled else "ws"
+    base_url = f"{scheme}://127.0.0.1:{port}"
+    ws_url = f"{ws_scheme}://127.0.0.1:{port}"
+    ssl_context = None
+    if tls_enabled:
+        ssl_context = ssl.create_default_context(cafile=str(args.tls_ca_file))
+        ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
     with _temporary_load_root() as temp_name:
         temp_root = Path(temp_name)
         data_dir = temp_root / "data"
@@ -633,13 +712,24 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             process = subprocess.Popen(
                 [sys.executable, str(BACKEND / "serve.py")],
                 cwd=str(BACKEND),
-                env=_server_environment(data_dir, db_path, port),
+                env=_server_environment(
+                    data_dir,
+                    db_path,
+                    port,
+                    ssl_certfile=args.tls_certfile,
+                    ssl_keyfile=args.tls_keyfile,
+                ),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
             )
             try:
-                await asyncio.to_thread(_wait_ready, base_url, process)
+                await asyncio.to_thread(
+                    _wait_ready,
+                    base_url,
+                    process,
+                    ssl_context=ssl_context,
+                )
                 loop = asyncio.get_running_loop()
                 # 100 롱폴 + 100 HTTP 가 서로 클라이언트 스레드를 굶기지 않도록 격리 클라이언트 풀 확보.
                 executor = ThreadPoolExecutor(
@@ -658,6 +748,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                                 args.duration,
                                 args.think_min,
                                 args.think_max,
+                                ssl_context,
                             )
                         )
                     report = cycle_reports[-1]
@@ -727,6 +818,8 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "generations_per_user": args.generations_per_user,
             "base_url": base_url,
             "isolated_temp_data": True,
+            "tls_enabled": tls_enabled,
+            "tls_certificate_verified": tls_enabled,
         }
         report["acceptance"] = _evaluate(report, args)
         if not report["acceptance"]["passed"]:
@@ -755,6 +848,13 @@ def main() -> int:
     parser.add_argument("--max-p95-ms", type=float, default=500.0)
     parser.add_argument("--max-memory-growth-percent", type=float, default=20.0)
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--tls-certfile", type=Path)
+    parser.add_argument("--tls-keyfile", type=Path)
+    parser.add_argument(
+        "--tls-ca-file",
+        type=Path,
+        help="클라이언트가 인증서 검증에 사용할 CA PEM(자체 서명은 certfile과 같은 파일)",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--quiet", action="store_true", help="콘솔에는 요약만 출력")
     args = parser.parse_args()
@@ -766,6 +866,19 @@ def main() -> int:
         parser.error("--cycles는 1~10")
     if args.generations_per_user < 1:
         parser.error("--generations-per-user는 1 이상")
+    if bool(args.tls_certfile) != bool(args.tls_keyfile):
+        parser.error("HTTPS 사용 시 --tls-certfile과 --tls-keyfile을 모두 지정해야 합니다")
+    if args.tls_ca_file and not args.tls_certfile:
+        parser.error("--tls-ca-file은 HTTPS 설정과 함께 사용해야 합니다")
+    if args.tls_certfile and not args.tls_ca_file:
+        args.tls_ca_file = args.tls_certfile
+    for option_name in ("tls_certfile", "tls_keyfile", "tls_ca_file"):
+        path = getattr(args, option_name)
+        if path:
+            resolved = path.resolve()
+            if not resolved.is_file():
+                parser.error(f"--{option_name.replace('_', '-')} 파일을 찾을 수 없습니다: {path}")
+            setattr(args, option_name, resolved)
 
     report, exit_code = asyncio.run(_async_main(args))
     text = json.dumps(report, ensure_ascii=False, indent=2)

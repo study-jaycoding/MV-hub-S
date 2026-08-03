@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 
 import uvicorn
@@ -36,16 +37,30 @@ def _make_socket(family: int, addr: tuple) -> socket.socket:
 
 
 def main() -> None:
+    ssl_certfile = os.environ.get("CONTENT_HUB_SSL_CERTFILE", "").strip() or None
+    ssl_keyfile = os.environ.get("CONTENT_HUB_SSL_KEYFILE", "").strip() or None
+    if bool(ssl_certfile) != bool(ssl_keyfile):
+        raise RuntimeError(
+            "HTTPS 사용 시 CONTENT_HUB_SSL_CERTFILE과 CONTENT_HUB_SSL_KEYFILE을 모두 지정해야 합니다."
+        )
+    scheme = "https" if ssl_certfile else "http"
     sockets = [_make_socket(socket.AF_INET, (HOST, PORT))]
     # localhost(::1) 빠른 접속용 IPv6 루프백. 실패해도(IPv6 비활성/이미 사용중) IPv4 로 계속.
     try:
         sockets.append(_make_socket(socket.AF_INET6, ("::1", PORT)))
         print(f"[serve] 듀얼 스택 기동: IPv4 {HOST}:{PORT} + IPv6 [::1]:{PORT}")
-        print(f"[serve] 같은 PC 접속: http://127.0.0.1:{PORT}  또는  http://localhost:{PORT} (둘 다 빠름)")
+        print(f"[serve] 같은 PC 접속: {scheme}://127.0.0.1:{PORT}  또는  {scheme}://localhost:{PORT} (둘 다 빠름)")
     except OSError as e:  # noqa: BLE001
-        print(f"[serve] IPv6(::1) 바인딩 건너뜀({e}) — IPv4 만 사용. 같은 PC 는 http://127.0.0.1:{PORT} 권장")
+        print(f"[serve] IPv6(::1) 바인딩 건너뜀({e}) — IPv4 만 사용. 같은 PC 는 {scheme}://127.0.0.1:{PORT} 권장")
 
-    config = uvicorn.Config("app.main:app", host=HOST, port=PORT, log_level="info")
+    config = uvicorn.Config(
+        "app.main:app",
+        host=HOST,
+        port=PORT,
+        log_level="info",
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
+    )
     server = uvicorn.Server(config)
     server.run(sockets=sockets)
 
