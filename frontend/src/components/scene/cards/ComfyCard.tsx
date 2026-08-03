@@ -20,6 +20,9 @@ import { TagEditor } from "../../TagEditor";
 import comfyLogo from "../../../assets/comfy-logo.svg";
 import type { HistPass } from "./GenerationCard";
 
+// 안정 참조 no-op — HistoryBoardNode(memo) 무효화 방지(코덱스 P2). GenerationCard 와 동일 원칙.
+const NOOP = () => {};
+
 export function ComfyCard({
   card,
   sel,
@@ -275,7 +278,7 @@ export function ComfyCard({
                         onSConfirmYes={hist.onSConfirmYes}
                         onSConfirmNo={hist.onSConfirmNo}
                         onPreview={getNodePreview(card.id)}
-                        onInfo={hist.onInfo || (() => {})}
+                        onInfo={hist.onInfo || NOOP}
                         onRegenerate={() => {
                           void actions.runComfy(card.id);
                         }}

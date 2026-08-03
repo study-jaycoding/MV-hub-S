@@ -10,6 +10,9 @@ import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
 
+// 안정 참조 no-op — 매 렌더 새 함수를 만들면 HistoryBoardNode(memo)가 항상 리렌더된다(코덱스 P2).
+const NOOP = () => {};
+
 // HistoryBoardNode 전달분 — SceneBoard 의 안정 참조들(필터·핸들러). 새 값 도입 금지(참조 그대로 통과).
 export type HistPass = {
   disabledIds: Set<string>;
@@ -117,8 +120,8 @@ export function GenerationCard({
           onSConfirmYes={hist.onSConfirmYes}
           onSConfirmNo={hist.onSConfirmNo}
           onPreview={getNodePreview(card.id)}
-          onInfo={hist.onInfo || (() => {})}
-          onRegenerate={hist.onRegenerate || (() => {})}
+          onInfo={hist.onInfo || NOOP}
+          onRegenerate={hist.onRegenerate || NOOP}
           onTag={hist.onTag}
           onOpenComments={hist.onOpenComments}
         />
