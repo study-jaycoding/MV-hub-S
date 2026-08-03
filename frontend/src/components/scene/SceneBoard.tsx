@@ -578,7 +578,13 @@ export function SceneBoard({
     lastCommit: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] };
   } | null>(null);
   if (bootHistoryRef.current === null) {
-    const inc = { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] };
+    // 비교 대상도 running 치유본으로 — store lastCommit(정규화됨) vs 레거시 props(running 박제) 불일치로
+    //  같은 씬인데 undo 스택이 stale 폐기되는 것 방지(로드 effect 의 inCards 와 동일 정규화).
+    const inc = {
+      cards: settleComfyRunning(scene.cards, isComfyRunning),
+      edges: scene.edges,
+      groups: scene.groups || [],
+    };
     const h = loadSceneHistory(scene.id);
     bootHistoryRef.current =
       h && sameSnap(h.lastCommit, inc) ? h : { undo: [], redo: [], lastCommit: inc };

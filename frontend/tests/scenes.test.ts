@@ -141,6 +141,10 @@ describe("settleComfyRunning (생성중 박제 방지·치유)", () => {
     const out = settleComfyRunning([mkComfy({ status: "running" })]);
     expect(out[0].comfyCfg!.status).toBe("idle");
   });
+  it("running + 레거시 단일 output.url 만 있어도 → done (하위호환)", () => {
+    const out = settleComfyRunning([mkComfy({ status: "running", output: { url: "u", kind: "image" } })]);
+    expect(out[0].comfyCfg!.status).toBe("done");
+  });
   it("keep(실제 실행 중)이면 running 그대로", () => {
     const out = settleComfyRunning([mkComfy({ status: "running" })], () => true);
     expect(out[0].comfyCfg!.status).toBe("running");

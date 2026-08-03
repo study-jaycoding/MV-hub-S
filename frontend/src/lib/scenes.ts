@@ -187,8 +187,9 @@ export function settleComfyRunning(cards: SceneCard[], keep?: (id: string) => bo
     if (c.kind !== "comfy" || c.comfyCfg?.status !== "running") return c;
     if (keep?.(c.id)) return c;
     changed = true;
-    const status = c.comfyCfg.outputs?.length ? ("done" as const) : ("idle" as const);
-    return { ...c, comfyCfg: { ...c.comfyCfg, status } };
+    // 결과 판정은 신형 outputs + 하위호환 단일 output.url 둘 다 — 레거시 카드가 결과를 보여주면서 idle 로 남지 않게.
+    const hasResult = !!c.comfyCfg.outputs?.length || !!c.comfyCfg.output?.url;
+    return { ...c, comfyCfg: { ...c.comfyCfg, status: hasResult ? ("done" as const) : ("idle" as const) } };
   });
   return changed ? out : cards;
 }
