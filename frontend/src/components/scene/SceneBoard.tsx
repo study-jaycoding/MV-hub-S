@@ -2762,17 +2762,31 @@ export function SceneBoard({
           return;
         }
       }
-      // Tab = Houdini식 노드 피커. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
+      // Tab = Houdini식 노드 피커 '토글'. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
       // 이동을 막지 않는다(접근성). 위 모달 가드(cardMenu) 통과 후라 팝업 중엔 안 뜬다.
       if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (nodePickerRef.current) {
+          // 이미 열려 있으면 닫기(토글) — 계속 새로 열리기만 하던 것 수정(사용자 요청).
+          e.preventDefault();
+          setNodePicker(null);
+          return;
+        }
         const m = lastMouseRef.current;
         const rect = scrollRef.current?.getBoundingClientRect();
         if (!m.over || !rect) return; // 보드 위가 아니면 기본 Tab(포커스 이동) 허용
         e.preventDefault();
         const cp = toCanvas(m.x, m.y);
+        // 메뉴가 보드 밖으로 잘리지 않게 클램프 — 아래 공간이 모자라면 커서 '위쪽'으로 펼친다
+        //  (하단 프롬프트 독 근처에서 열어도 전부 보이게). 크기는 아이템 수 기반 근사값.
+        const MENU_W = 150;
+        const MENU_H = 9 * 29 + 10; // 항목 9개 × 행높이 + 패딩 근사
+        let sx = m.x - rect.left;
+        let sy = m.y - rect.top;
+        if (sx + MENU_W > rect.width) sx = Math.max(4, rect.width - MENU_W - 4);
+        if (sy + MENU_H > rect.height) sy = Math.max(4, sy - MENU_H);
         setNodePicker({
-          sx: m.x - rect.left,
-          sy: m.y - rect.top,
+          sx,
+          sy,
           cx: Math.round(cp.x - CARD_W / 2),
           cy: Math.round(cp.y - CARD_H / 2),
         });

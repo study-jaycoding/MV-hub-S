@@ -469,9 +469,10 @@
 .scene-card.sel .scene-card-hd.scene-card-hd-float { opacity: 1; }
 
 /* ── Tab 노드 피커(Houdini식) ── */
-.scene-nodepick-backdrop { position: absolute; inset: 0; z-index: 24; }
+/* z-index 는 프롬프트 독(.sl-dockbar z=60)보다 위 — 보드 하단에서 열어도 독에 가려지지 않게. */
+.scene-nodepick-backdrop { position: absolute; inset: 0; z-index: 69; }
 .scene-nodepick {
-  position: absolute; z-index: 25; min-width: 132px; padding: 3px;
+  position: absolute; z-index: 70; min-width: 132px; padding: 3px;
   background: #1b1e24; border: 1px solid #3a3f48; border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5); overflow: hidden;
 }
