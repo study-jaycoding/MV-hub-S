@@ -165,14 +165,12 @@ export function useGenerationLibraryData({
         const cursor = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
         batch = await api.listGenerations(genQueryRef.current, cursor);
       }
+      // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
+      //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
+      //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.
       setGens((prev) => {
         const seen = new Set(prev.map((x) => x.id));
-        const next = [...prev, ...batch.filter((x) => !seen.has(x.id))];
-        // 소프트 캡(A5) — 무한 스크롤 누적의 고수위 메모리 억제. 넘으면 앞(최신 쪽)부터 잘라도
-        //  키셋 커서는 배열 끝(가장 오래된 것) 기준이라 다음 페이지 로딩은 정상 동작한다.
-        //  맨 위 복귀는 필터/탭 전환의 reload 가 재충전(2000장 이상 내려간 드문 경우만 해당).
-        const GEN_SOFT_CAP = 2000;
-        return next.length > GEN_SOFT_CAP ? next.slice(next.length - GEN_SOFT_CAP) : next;
+        return [...prev, ...batch.filter((x) => !seen.has(x.id))];
       });
       setHasMore(batch.length >= GEN_PAGE);
     } catch {

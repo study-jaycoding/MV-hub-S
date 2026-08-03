@@ -210,6 +210,12 @@ export function useModels(onError: (msg: string) => void) {
   const paramsCacheRef = useRef<Record<string, ModelParamsOut>>({});
   // cost(예상 크레딧) 결과 캐시 — 키=model+옵션값. 같은 조합 재방문 시 CLI/디바운스 없이 즉시 표시.
   const costCacheRef = useRef<Record<string, number>>({});
+  // 캐시 삽입 공통 관문 — 크기 상한(장기 세션 무한 누적 방지). 넘으면 통째 리셋(재조회 싼 캐시라 LRU 불필요).
+  //  ★모든 삽입은 이 함수로 — 경로별로 직접 대입하면 상한이 절반만 작동한다(코덱스 리뷰).
+  const putCost = (key: string, credits: number) => {
+    if (Object.keys(costCacheRef.current).length >= 500) costCacheRef.current = {};
+    costCacheRef.current[key] = credits;
+  };
   // 드롭다운 닫기 브리지 — open/setOpen 은 컴포넌트 UI 상태로 남으므로,
   // setOpt 가 옵션 선택 후 드롭다운을 닫도록 컴포넌트가 setOpen 을 여기 등록한다.
   const setOpenRef = useRef<((v: string | null) => void) | null>(null);
@@ -302,10 +308,7 @@ export function useModels(onError: (msg: string) => void) {
       api
         .estimateCost(m, opts)
         .then((r) => {
-          // 크기 상한(A6) — 모델×파라미터 조합 탐색이 길어져도 무한 누적 방지. 넘으면 통째 리셋
-          //  (재조회 비용이 싼 캐시라 LRU 관리보다 단순 리셋이 낫다).
-          if (Object.keys(costCacheRef.current).length >= 500) costCacheRef.current = {};
-          costCacheRef.current[key] = r.credits;
+          putCost(key, r.credits);
         })
         .catch(() => {});
     };
@@ -353,7 +356,7 @@ export function useModels(onError: (msg: string) => void) {
         .then(
           (r) =>
             alive &&
-            ((costCacheRef.current[key] = r.credits),
+            (putCost(key, r.credits),
             setCost(r.credits),
             setCostLoading(false)),
         )
