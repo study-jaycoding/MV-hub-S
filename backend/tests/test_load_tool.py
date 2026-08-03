@@ -23,6 +23,29 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(load_tool._percentile(list(range(1, 101)), 0.95), 95)
         self.assertEqual(load_tool._percentile([], 0.95), 0.0)
 
+    def test_ssl_close_filter_only_suppresses_exact_cleanup_warning(self):
+        close_record = load_tool.logging.LogRecord(
+            "asyncio",
+            load_tool.logging.WARNING,
+            __file__,
+            1,
+            "SSL connection is closed",
+            (),
+            None,
+        )
+        error_record = load_tool.logging.LogRecord(
+            "asyncio",
+            load_tool.logging.ERROR,
+            __file__,
+            1,
+            "TLS handshake failed",
+            (),
+            None,
+        )
+        close_filter = load_tool._ExpectedSslCloseFilter()
+        self.assertFalse(close_filter.filter(close_record))
+        self.assertTrue(close_filter.filter(error_record))
+
     def test_acceptance_requires_connections_latency_and_no_locks(self):
         report = {
             "workload": {"statuses": {200: 100}, "latency_ms": {"p95": 100}},
@@ -184,6 +207,7 @@ class LoadToolTests(unittest.TestCase):
         asyncio.run(run_worker())
         self.assertEqual(captured["url"], "wss://127.0.0.1:8443/ws?token=token")
         self.assertIsNone(captured["kwargs"]["ping_interval"])
+        self.assertEqual(captured["kwargs"]["close_timeout"], 3)
         self.assertIs(
             captured["kwargs"]["ssl"],
             mock.sentinel.ssl_context,

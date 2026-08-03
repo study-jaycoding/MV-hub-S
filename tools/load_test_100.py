@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import http.client
 import json
+import logging
 import os
 import random
 import shutil
@@ -40,6 +41,24 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 PASSWORD = "load-test-password"
+
+
+class _ExpectedSslCloseFilter(logging.Filter):
+    """정상 WSS close 뒤 CPython sslproto가 남기는 Windows 전용 경고만 거른다."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != "SSL connection is closed"
+
+
+@contextmanager
+def _suppress_expected_ssl_close_warning():
+    asyncio_logger = logging.getLogger("asyncio")
+    close_filter = _ExpectedSslCloseFilter()
+    asyncio_logger.addFilter(close_filter)
+    try:
+        yield
+    finally:
+        asyncio_logger.removeFilter(close_filter)
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -841,8 +860,10 @@ def _run_async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         # Windows Proactor는 다수 TLS 소켓을 정상 종료할 때도 WinError 10054를
         # 이벤트 루프 콜백 예외로 출력할 수 있다. 테스트 클라이언트는 asyncio
         # subprocess를 쓰지 않으므로 Selector 루프로 TLS 종료를 안정화한다.
-        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
-            return runner.run(_async_main(args))
+        # sslproto의 정확한 정상 종료 경고만 루프가 완전히 닫힐 때까지 거른다.
+        with _suppress_expected_ssl_close_warning():
+            with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+                return runner.run(_async_main(args))
     return asyncio.run(_async_main(args))
 
 
