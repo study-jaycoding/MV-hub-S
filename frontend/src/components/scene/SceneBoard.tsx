@@ -1982,7 +1982,9 @@ export function SceneBoard({
     markComfyRunning([cardId], true); // 노드에 '생성중' 웨이브 표시(메모리)
     try {
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
-      const sets = await Promise.all(
+      // ★allSettled — 하나가 먼저 실패해도 '모든 copy 가 끝난 뒤' 정산한다(코덱스 지적: Promise.all 은
+      //  첫 실패 즉시 아래로 떨어져, 아직 도는 copy 가 있는데 웨이브 해제·failed 표시가 먼저 일어났다).
+      const settledSets = await Promise.allSettled(
         Array.from({ length: batch }, async () => {
           const t = Date.now();
           const outputs = await runComfyRaw(cardId, undefined, batch > 1);
@@ -1990,6 +1992,9 @@ export function SceneBoard({
         }),
       );
       if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
+      const firstRejected = settledSets.find((s): s is PromiseRejectedResult => s.status === "rejected");
+      if (firstRejected) throw firstRejected.reason; // 기존 의미 유지: 하나라도 실패면 전체 failed
+      const sets = settledSets.map((s) => (s as PromiseFulfilledResult<{ outputs: ComfyOutput[]; elapsed: number }>).value);
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
       patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null }, { undo: false }); // 완료 상태=파생, undo 제외
       // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
