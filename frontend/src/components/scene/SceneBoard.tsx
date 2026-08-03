@@ -76,6 +76,12 @@ import {
   resolveInputSourceId,
   resolvePortEdges,
 } from "../../lib/sceneEdges";
+import {
+  computeMaxParallel,
+  createBatchTracker,
+  createLimiter,
+  type StepOutcome,
+} from "../../lib/comfyRunState";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
@@ -2053,78 +2059,36 @@ export function SceneBoard({
       setCards(running);
     }
     const varySeed = batch > 1;
-    // 동시 제출 상한(세마포어) — 독립 comfy 병렬 × batch 병렬이 곱해져 폭주(429·업로드/네트워크 병목)하지 않게 한다.
-    //  단일 comfy batch 4 나 comfy 4개 batch 1 은 그대로 4 병렬, 큰 보드(노드 많음)만 8개씩 끊어 제출한다.
-    const maxParallel = Math.max(batch, Math.min(8, batch * Math.max(1, plan.comfyIds.length)));
-    let activeRuns = 0;
-    const runQueue: (() => void)[] = [];
-    const pumpQueue = () => {
-      activeRuns--;
-      runQueue.shift()?.();
-    };
-    const limitRun = <T,>(fn: () => Promise<T>): Promise<T> =>
-      new Promise<T>((resolve, reject) => {
-        const start = () => {
-          activeRuns++;
-          fn().then(resolve, reject).finally(pumpQueue);
-        };
-        if (activeRuns < maxParallel) start();
-        else runQueue.push(start);
-      });
-    // 노드별 완료 집계 — 같은 comfyId 가 batch 벌(=copy) 실행되므로, 그 노드의 '모든 copy 가 끝났을 때만'
-    //  done/failed 로 바꾼다. 먼저 끝난 노드는 배치 전체를 기다리지 않고 즉시 done 반영·'생성중' 웨이브 해제.
-    type NodeProgress = {
-      settled: number;
-      successes: { copyIndex: number; outputs: ComfyOutput[]; elapsed: number }[];
-      failCount: number;
-      firstError?: string;
-      finalized: boolean;
-    };
-    const progress = new Map<string, NodeProgress>(
-      plan.comfyIds.map((id) => [id, { settled: 0, successes: [], failCount: 0, finalized: false }]),
-    );
-    const released = new Set<string>(); // 노드당 정확히 1회만 웨이브 해제(markComfyRunning count 균형 유지)
+    // 동시 제출 상한(세마포어)·노드별 완료 집계 — 판정 로직은 comfyRunState(순수 모듈, 테스트로 고정)가
+    //  단독 소유한다(R1 분리). 여기는 확정 결과를 카드에 '투영'하는 부수효과만 담당.
+    const limiter = createLimiter(computeMaxParallel(batch, plan.comfyIds.length));
+    const tracker = createBatchTracker<ComfyOutput[]>(plan.comfyIds, batch);
     const releaseRunning = (id: string) => {
-      if (released.has(id)) return;
-      released.add(id);
-      markComfyRunning([id], false);
+      if (tracker.releaseOnce(id)) markComfyRunning([id], false); // 노드당 정확히 1회(count 균형)
     };
-    type StepOutcome =
-      | { kind: "success"; outputs: ComfyOutput[]; elapsed: number }
-      | { kind: "failed"; error: string }
-      | { kind: "skipped" };
     // 한 노드의 한 copy 가 끝날 때마다 호출 — 그 노드의 '마지막' copy 였으면 카드에 done/failed 반영 + 웨이브 해제.
-    const noteStepSettled = (id: string, copyIndex: number, outcome: StepOutcome) => {
-      const p = progress.get(id);
-      if (!p || p.finalized) return;
-      p.settled++;
-      if (outcome.kind === "success")
-        p.successes.push({ copyIndex, outputs: outcome.outputs, elapsed: outcome.elapsed });
-      else {
-        p.failCount++;
-        if (outcome.kind === "failed" && !p.firstError) p.firstError = outcome.error;
-      }
-      if (p.settled < batch) return; // 아직 이 노드의 다른 copy 가 진행 중
-      p.finalized = true;
+    const noteStepSettled = (id: string, copyIndex: number, outcome: StepOutcome<ComfyOutput[]>) => {
+      const fin = tracker.settle(id, copyIndex, outcome);
+      if (!fin) return; // 아직 진행 중이거나 중복/늦은 정산 — tracker 가 무시 판정
       // 씬 전환(abort)됐으면 카드 반영·저장은 생략하되(엉뚱한 씬 오염 방지) 웨이브는 반드시 해제.
       if (sceneIdRef.current === sceneId) {
-        const sorted = [...p.successes].sort((a, b) => a.copyIndex - b.copyIndex);
-        const repOk = sorted[sorted.length - 1]; // 대표=마지막 성공 복사본 — runComfy·저장 genId 와 일치(로드 후 깜빡임 제거)
         const next = cardsRef.current.map((c) => {
           if (c.kind !== "comfy" || c.id !== id) return c;
-          if (repOk)
+          if (fin.rep)
             return {
               ...c,
               comfyCfg: {
                 ...(c.comfyCfg || {}),
                 status: "done" as const,
-                outputs: repOk.outputs,
+                outputs: fin.rep.outputs, // 대표=마지막 성공 복사본 — runComfy·저장 genId 와 일치
                 output: null,
                 error:
-                  p.failCount > 0 ? `${p.failCount}/${batch} 실패${p.firstError ? `: ${p.firstError}` : ""}` : null,
+                  fin.failCount > 0
+                    ? `${fin.failCount}/${batch} 실패${fin.firstError ? `: ${fin.firstError}` : ""}`
+                    : null,
               },
             };
-          return { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: p.firstError || "실행 실패" } };
+          return { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: fin.firstError || "실행 실패" } };
         });
         cardsRef.current = next;
         setCards(next);
@@ -2166,7 +2130,7 @@ export function SceneBoard({
           try {
             const t0 = Date.now(); // 이 노드의 실행→결과 소요시간(체인에서도 노드별로 측정)
             //  limiter 대기 후에도 씬이 바뀌었으면 신규 제출을 하지 않는다(reject → 아래 catch 에서 skip 처리).
-            const outputs = await limitRun(() =>
+            const outputs = await limiter.run(() =>
               sceneIdRef.current !== sceneId
                 ? Promise.reject(new Error("scene changed"))
                 : runComfyRaw(step.id, overlay, varySeed, cfgSnap.get(step.id)),
@@ -2203,7 +2167,7 @@ export function SceneBoard({
     //   뒤섞이는 것 방지(대표=마지막 저장 보장). copies 는 완료순이 아니라 입력순 배열이라 순서가 보존된다.
     if (!aborted && sceneIdRef.current === sceneId) {
       for (const cid of plan.comfyIds) {
-        if (!progress.get(cid)?.successes.length) continue;
+        // 성공 여부는 copy overlay 로만 판정 — tracker(정산)와 저장이 같은 사실을 이중 판단하지 않게(소유권 단일화).
         for (const cp of copies) {
           const outs = cp.overlay[cid];
           if (outs && outs.length)
