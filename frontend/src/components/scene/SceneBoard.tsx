@@ -2818,12 +2818,20 @@ export function SceneBoard({
             .filter((ed) => !ids.has(ed.from) && ids.has(ed.to))
             .map((ed) => ({ ...ed })),
         };
-        // OS 클립보드에 이미 들어있던 옛 캡처를 '이미 아는 것(stale)'으로 표시 — 이 Ctrl+C 직후의 붙여넣기가
-        //  그 옛 캡처를 '새 캡처'로 오판해 노드 대신 이미지를 붙이는 오작동을 막는다. 캡처는 앱 밖(OS)에서
-        //  일어나 이벤트가 없어 지문으로만 구분되는데, 한 번도 앱에 안 붙여넣은 캡처는 지문이 미기록이라
-        //  새 것으로 오판됐다. 여기서 지금 클립보드 이미지 지문을 미리 기록해 노드가 우선되게 한다.
-        //  (Ctrl+C '이후' 새로 캡처하면 지문이 달라 그때는 정상적으로 이미지가 우선.) 권한없음/미지원 시 조용히 폴백.
+        // 노드 복사가 OS 클립보드를 '접수' — 남아있던 옛 캡처 이미지를 마커 텍스트로 대체한다.
+        //  이러면 Ctrl+V 때 이미지 blob 자체가 없어 노드 붙여넣기가 항상 우선(판정 불필요).
+        //  이전 방식(read 로 옛 이미지 지문 기록)은 clipboard-read '권한'이 있어야만 동작해, 권한 없는
+        //  origin(dev 5173 등)에선 옛 캡처가 '새 캡처'로 오판돼 노드 대신 이미지가 붙었다(사용자 보고).
+        //  writeText 는 사용자 제스처에서 권한 프롬프트 없이 동작. Ctrl+C '이후' 새로 캡처하면
+        //  클립보드가 이미지로 다시 바뀌므로 그때는 정상적으로 이미지가 우선된다.
         void (async () => {
+          try {
+            await navigator.clipboard?.writeText?.("[MV-hub] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기");
+            lastImgKeyRef.current = null; // 클립보드에 이미지 없음 상태로 리셋
+            return;
+          } catch {
+            /* write 미지원/실패 → 아래 read 지문 폴백 */
+          }
           try {
             const cbItems = await navigator.clipboard?.read?.();
             if (!cbItems) return;
