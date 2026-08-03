@@ -1984,16 +1984,21 @@ export function SceneBoard({
       // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
       // ★allSettled — 하나가 먼저 실패해도 '모든 copy 가 끝난 뒤' 정산한다(코덱스 지적: Promise.all 은
       //  첫 실패 즉시 아래로 떨어져, 아직 도는 copy 가 있는데 웨이브 해제·failed 표시가 먼저 일어났다).
+      let firstReason: unknown; // '시간상 먼저 난' 실패 원인 보존 — Promise.all 시절 표시 메시지와 동일하게
       const settledSets = await Promise.allSettled(
         Array.from({ length: batch }, async () => {
           const t = Date.now();
-          const outputs = await runComfyRaw(cardId, undefined, batch > 1);
-          return { outputs, elapsed: (Date.now() - t) / 1000 };
+          try {
+            const outputs = await runComfyRaw(cardId, undefined, batch > 1);
+            return { outputs, elapsed: (Date.now() - t) / 1000 };
+          } catch (e) {
+            if (firstReason === undefined) firstReason = e;
+            throw e;
+          }
         }),
       );
       if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
-      const firstRejected = settledSets.find((s): s is PromiseRejectedResult => s.status === "rejected");
-      if (firstRejected) throw firstRejected.reason; // 기존 의미 유지: 하나라도 실패면 전체 failed
+      if (settledSets.some((s) => s.status === "rejected")) throw firstReason; // 하나라도 실패면 전체 failed(기존 의미)
       const sets = settledSets.map((s) => (s as PromiseFulfilledResult<{ outputs: ComfyOutput[]; elapsed: number }>).value);
       // 카드 표시 = 마지막 결과셋(대표). 상태 done.
       patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null }, { undo: false }); // 완료 상태=파생, undo 제외

@@ -60,11 +60,32 @@ describe("createLimiter", () => {
     await p2;
     expect(ran).toBe(true);
   });
-  it("비정상 상한(0·NaN)은 1로 안전화", async () => {
-    const lim = createLimiter(0);
-    let ran = false;
-    await lim.run(async () => { ran = true; });
-    expect(ran).toBe(true);
+  it("비정상 상한(0·NaN·소수)은 정수 1 이상으로 안전화", async () => {
+    for (const cap of [0, NaN, -3]) {
+      const lim = createLimiter(cap);
+      let ran = false;
+      await lim.run(async () => { ran = true; });
+      expect(ran).toBe(true); // 1 로 안전화돼 실행은 된다
+    }
+    // 소수 상한은 내림(floor) — 1.9 면 동시 1개만
+    const lim = createLimiter(1.9);
+    let active = 0;
+    let peak = 0;
+    const resolvers: (() => void)[] = [];
+    const jobs = [0, 1].map(() =>
+      lim.run(() => {
+        active++;
+        peak = Math.max(peak, active);
+        return new Promise<void>((res) => resolvers.push(() => { active--; res(); }));
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(peak).toBe(1);
+    resolvers.shift()!();
+    await new Promise((r) => setTimeout(r, 0));
+    resolvers.shift()!();
+    await Promise.all(jobs);
+    expect(peak).toBe(1);
   });
 });
 
