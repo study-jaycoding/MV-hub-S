@@ -95,7 +95,6 @@ import { useT } from "../../lib/i18n";
 import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import comfyLogo from "../../assets/comfy-logo.svg";
-import higgsfieldLogo from "../../assets/higgsfield-logo.svg";
 import { HistoryBoardNode } from "../history/HistoryBoardNode";
 import { SceneMinimap } from "./SceneMinimap";
 import { SceneModelModal } from "./SceneModelModal";
@@ -124,6 +123,7 @@ import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
 import { ListCard } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
+import { GenerationCard } from "./cards/GenerationCard";
 import { ModelCard } from "./cards/ModelCard";
 import { InputCard } from "./cards/InputCard";
 import { HeadCard } from "./cards/HeadCard";
@@ -4895,192 +4895,58 @@ export function SceneBoard({
                   flushPending={flushPending}
                 />
               ) : (
-                <>
-                  {comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id) ? (
-                    // 상류 comfy 가 도는 중 — 완료 결과(HistoryBoardNode)보다 '생성중(회색)'을 최우선으로 덮어
-                    //  이 노드 전체가 생성 진행 중임을 바로 보인다(컨피 완료 → 실제 생성잡 → 아래 Generating).
-                    <div className="scene-card-inner">
-                      <div className="scene-card-genbody status-pending scene-genloading">
-                        <span className="gen-generating">
-                          <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" draggable={false} />
-                        </span>
-                      </div>
-                    </div>
-                  ) : showNode && g ? (
-                    // 완료 결과 → 히스토리 카드(HistoryBoardNode) 그대로 — 캡션·오버레이(S/ⓘ/⠿/⤓/@/↻) 전부.
-                    <HistoryBoardNode
-                      generation={g}
-                      x={0}
-                      y={0}
-                      width={widthOf(card)}
-                      height={heightOf(card)}
-                      isRoot={false}
-                      isSelected={sel}
-                      onLine={false}
-                      offLine={false}
-                      fill={fill}
-                      disabled={disabledIds.has(g.id)}
-                      typeFilter={typeFilter}
-                      colorFilter={colorFilter}
-                      tagFilter={tagFilter}
-                      sharedOnly={sharedOnly}
-                      commentOnly={commentOnly}
-                      finalOnly={finalOnly}
-                      folderSel={folderSel}
-                      sConfirm={sConfirm?.id === g.id ? sConfirm : null}
-                      onSClick={onNodeSClick}
-                      onSDouble={onNodeSDouble}
-                      onSConfirmYes={onNodeSConfirmYes}
-                      onSConfirmNo={onNodeSConfirmNo}
-                      onPreview={getNodePreview(card.id)}
-                      onInfo={onInfo || (() => {})}
-                      onRegenerate={onRegenerate || (() => {})}
-                      onTag={onSetTags ? onNodeTag : undefined}
-                      onOpenComments={onOpenComments}
-                    />
-                  ) : (
-                    <div className="scene-card-inner">
-                      {card.genId ? (
-                        missingIds.has(card.genId) ? (
-                          // 외부에서 삭제(휴지통)된 생성물 — 무한 'Generating' 대신 명시.
-                          <div className="scene-card-genbody">삭제됨</div>
-                        ) : String(g?.status) === "failed" || String(g?.status) === "nsfw" || String(g?.status) === "error" ? (
-                          // 실패·NSFW 차단 — 라이브러리(My Work) 그리드와 동일한 경고 비주얼(빨강+⚠+라벨).
-                          //  생성 정보는 done 카드와 동일하게 '미들클릭'으로 연다(별도 ⓘ 배지 없음).
-                          (() => {
-                            const st = String(g?.status) === "error" ? "failed" : String(g?.status);
-                            return (
-                              <div
-                                className={"scene-card-genbody scene-genfail status-" + st}
-                                title={g?.error || undefined}
-                                onMouseDown={(e) => e.button === 1 && e.preventDefault()} // 휠클릭 자동스크롤 방지
-                                onAuxClick={(e) => {
-                                  if (e.button === 1 && g && onInfo) {
-                                    e.preventDefault();
-                                    onInfo({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
-                                  }
-                                }}
-                              >
-                                <span className="scene-genfail-label">
-                                  {generationStatusLabelFor(st, g?.error)}
-                                </span>
-                              </div>
-                            );
-                          })()
-                        ) : (
-                          // 생성중 — 힉스필드 로고만 크게 맥동(글씨 없음) · 배경 검정(scene-genloading).
-                          <div className={"scene-card-genbody scene-genloading status-" + String(g?.status || card.status || "pending")}>
-                            <span className="gen-generating">
-                              <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" draggable={false} />
-                            </span>
-                          </div>
-                        )
-                      ) : (
-                        <div className="scene-card-genbody">New</div>
-                      )}
-                    </div>
-                  )}
-                  {/* 다중 결과 배지 — 이 카드에서 만든 결과가 2개 이상이면. 클릭=팝업으로 모아보기 */}
-                  {variantIds(card).length > 1 && (
-                    <button
-                      className="scene-multi-badge"
-                      title={`이 카드의 생성 결과 ${variantIds(card).length}개 모두 보기`}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setCardMenu(card.id);
-                      }}
-                    >
-                      ▤ {variantIds(card).length}
-                    </button>
-                  )}
-                  {/* 3 입력 단자 — 위=모델(주황)·중간=레퍼런스(파랑)·아래=텍스트(보라). 연결 역할은
-                      소스 노드 종류로 자동 판정되어 해당 레인으로 라우팅된다. */}
-                  {(
-                    [
-                      ["model", "model", "모델 입력"],
-                      ["ref", "ref", "레퍼런스 입력"],
-                      ["text", "text", "텍스트 입력"],
-                    ] as [SceneEdgeRole, "model" | "ref" | "text", string][]
-                  ).map(([role, lane, tip]) => (
-                    <span
-                      key={role}
-                      className={"scene-port in lane-" + role}
-                      data-role={role}
-                      style={{ top: `calc(50% + ${laneDelta(lane)}px)` }}
-                      title={tip}
-                    />
-                  ))}
-                  <span
-                    className="scene-port out"
-                    onMouseDown={(e) => onOutPortDown(e, card.id)}
-                    title="드래그해 다른 생성 카드에 연결"
-                  />
-                  <span
-                    className="scene-resize"
-                    onMouseDown={(e) => onResizeDown(e, card.id)}
-                    title="드래그해 카드 크기 조절"
-                  />
-                  {/* 이 카드만 선택했을 때 카드 아래 Generate 툴바 — 연결된 모델·레퍼런스·텍스트로 바로 생성(하단 프롬프트 재사용). */}
-                  {selected.size === 1 && sel && onGenerateCard && (
-                    <div className="scene-cardgen-bar" onMouseDown={(e) => e.stopPropagation()}>
-                      <button
-                        className="scene-cardgen-step"
-                        title="배치 줄이기"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCardBatch(card.id, cardBatch(card) - 1);
-                        }}
-                      >
-                        −
-                      </button>
-                      <span className="scene-cardgen-n" title="한 번에 생성할 장수(배치)">
-                        {cardBatch(card)}
-                      </span>
-                      <button
-                        className="scene-cardgen-step"
-                        title="배치 늘리기"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCardBatch(card.id, cardBatch(card) + 1);
-                        }}
-                      >
-                        +
-                      </button>
-                      <button
-                        className="scene-cardgen-go"
-                        title="연결된 comfy 가 있으면 먼저 실행하고, 모델·레퍼런스·텍스트로 생성"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void orchestrateGenerate(card.id);
-                        }}
-                      >
-                        Generate ✨
-                      </button>
-                    </div>
-                  )}
-                  {g && card.id === tagEditCardId && (!tagEditNodeGenId || tagEditNodeGenId === g.id) && onSetTags && (
-                    <div className="scene-tagpop" onMouseDown={(e) => e.stopPropagation()}>
-                      <TagEditor
-                        tags={g.tags}
-                        onChange={(next) => applyCardTags(g, next)}
-                        global={
-                          onSetAutoTags
-                            ? {
-                                all: autoTagOptions ?? [],
-                                assigned: g.auto_tags ?? [],
-                                onChange: (next) => applyCardAutoTags(g, next),
-                              }
-                            : null
-                        }
-                        onClose={() => {
-                          setTagEditCardId(null);
-                          setTagEditNodeGenId(null);
-                        }}
-                      />
-                    </div>
-                  )}
-                </>
+                <GenerationCard
+                  card={card}
+                  sel={sel}
+                  g={g}
+                  showNode={showNode}
+                  waiting={comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id)}
+                  genMissing={!!card.genId && missingIds.has(card.genId)}
+                  width={widthOf(card)}
+                  height={heightOf(card)}
+                  fill={fill}
+                  selectedOnly={selected.size === 1}
+                  laneDelta={laneDelta}
+                  getNodePreview={getNodePreview}
+                  hist={{
+                    disabledIds,
+                    typeFilter,
+                    colorFilter,
+                    tagFilter,
+                    sharedOnly,
+                    commentOnly,
+                    finalOnly,
+                    folderSel,
+                    sConfirm,
+                    onSClick: onNodeSClick,
+                    onSDouble: onNodeSDouble,
+                    onSConfirmYes: onNodeSConfirmYes,
+                    onSConfirmNo: onNodeSConfirmNo,
+                    onInfo,
+                    onRegenerate,
+                    onTag: onSetTags ? onNodeTag : undefined,
+                    onOpenComments,
+                  }}
+                  actions={{
+                    setCardMenu,
+                    setCardBatch,
+                    orchestrateGenerate,
+                    showGenerateBar: !!onGenerateCard,
+                    onOutPortDown,
+                    onResizeDown,
+                  }}
+                  tagEdit={{
+                    active: card.id === tagEditCardId && (!tagEditNodeGenId || tagEditNodeGenId === g?.id) && !!onSetTags,
+                    hasAutoTags: !!onSetAutoTags,
+                    autoTagOptions: autoTagOptions ?? [],
+                    applyCardTags,
+                    applyCardAutoTags,
+                    close: () => {
+                      setTagEditCardId(null);
+                      setTagEditNodeGenId(null);
+                    },
+                  }}
+                />
               )}
             </div>
           );
