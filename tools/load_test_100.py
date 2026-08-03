@@ -836,6 +836,16 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return report, 0 if report["acceptance"]["passed"] else 2
 
 
+def _run_async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    if os.name == "nt":
+        # Windows Proactor는 다수 TLS 소켓을 정상 종료할 때도 WinError 10054를
+        # 이벤트 루프 콜백 예외로 출력할 수 있다. 테스트 클라이언트는 asyncio
+        # subprocess를 쓰지 않으므로 Selector 루프로 TLS 종료를 안정화한다.
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            return runner.run(_async_main(args))
+    return asyncio.run(_async_main(args))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="MV Hub 격리 100명 부하 테스트")
     parser.add_argument("--users", type=int, default=100)
@@ -884,7 +894,7 @@ def main() -> int:
                 parser.error(f"--{option_name.replace('_', '-')} 파일을 찾을 수 없습니다: {path}")
             setattr(args, option_name, resolved)
 
-    report, exit_code = asyncio.run(_async_main(args))
+    report, exit_code = _run_async_main(args)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.quiet:
         summary = {
