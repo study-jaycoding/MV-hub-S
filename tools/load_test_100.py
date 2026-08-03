@@ -21,6 +21,7 @@ import http.client
 import json
 import os
 import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -31,6 +32,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -51,6 +53,29 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+@contextmanager
+def _temporary_load_root():
+    """Windows의 일시적인 로그 파일 잠금을 기다리며 테스트 폴더를 정리한다."""
+    temp_name = tempfile.mkdtemp(prefix="mvhub-load-")
+    try:
+        yield temp_name
+    finally:
+        for attempt in range(20):
+            try:
+                shutil.rmtree(temp_name)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError as exc:
+                if attempt == 19:
+                    print(
+                        f"[warn] 임시 부하 테스트 폴더 정리를 건너뜁니다: {exc}",
+                        file=sys.stderr,
+                    )
+                    break
+                time.sleep(0.25)
 
 
 def _http_json(
@@ -592,7 +617,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     port = args.port or _free_port()
     base_url = f"http://127.0.0.1:{port}"
     ws_url = f"ws://127.0.0.1:{port}"
-    with tempfile.TemporaryDirectory(prefix="mvhub-load-") as temp_name:
+    with _temporary_load_root() as temp_name:
         temp_root = Path(temp_name)
         data_dir = temp_root / "data"
         db_path = temp_root / "load.db"

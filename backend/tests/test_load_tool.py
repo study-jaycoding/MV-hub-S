@@ -91,6 +91,27 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(FakeConnection.instances, 1)
         self.assertEqual(FakeConnection.requests, 2)
 
+    def test_temp_cleanup_retries_transient_windows_lock(self):
+        transient_lock = PermissionError(32, "다른 프로세스가 파일을 사용 중입니다")
+        with (
+            mock.patch.object(
+                load_tool.tempfile,
+                "mkdtemp",
+                return_value=r"C:\Temp\mvhub-load-test",
+            ),
+            mock.patch.object(
+                load_tool.shutil,
+                "rmtree",
+                side_effect=[transient_lock, None],
+            ) as remove_mock,
+            mock.patch.object(load_tool.time, "sleep") as sleep_mock,
+        ):
+            with load_tool._temporary_load_root() as temp_name:
+                self.assertEqual(temp_name, r"C:\Temp\mvhub-load-test")
+
+        self.assertEqual(remove_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(0.25)
+
 
 if __name__ == "__main__":
     unittest.main()
