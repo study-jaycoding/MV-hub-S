@@ -129,18 +129,26 @@ def _install_db(tmp: Path) -> dict:
     return {"ok": True, "relogin_required": True}
 
 
-def _multipart_upload(url: str, token: str | None, data: bytes) -> tuple[int, object]:
-    """stdlib 멀티파트 업로드(파일 필드명 'file') — 새 의존성 0."""
+def _multipart_upload(url: str, token: str | None, source: Path) -> tuple[int, object]:
+    """stdlib 멀티파트 스트리밍 업로드(파일 필드명 ``file``) — 새 의존성 0."""
     boundary = "----mvhub" + secrets.token_hex(8)
-    body = (
+    prefix = (
         f"--{boundary}\r\n".encode()
         + b'Content-Disposition: form-data; name="file"; filename="backup.db"\r\n'
         + b"Content-Type: application/octet-stream\r\n\r\n"
-        + data
-        + f"\r\n--{boundary}--\r\n".encode()
     )
-    req = urllib.request.Request(url, data=body, method="POST")
+    suffix = f"\r\n--{boundary}--\r\n".encode()
+
+    def body_chunks():
+        yield prefix
+        with source.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                yield chunk
+        yield suffix
+
+    req = urllib.request.Request(url, data=body_chunks(), method="POST")
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Content-Length", str(len(prefix) + source.stat().st_size + len(suffix)))
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -233,7 +241,7 @@ def server_backup(request: Request):
         db._copy_sqlite(path, tmp)  # WAL 무관 일관 스냅샷
         _strip_session(tmp)  # 토큰·서명키 제거(서버엔 메타데이터만 올라감)
         status, body = _multipart_upload(
-            f"{_proxy.base_url()}/api/db-backup", _proxy.token(), tmp.read_bytes()
+            f"{_proxy.base_url()}/api/db-backup", _proxy.token(), tmp
         )
         if status != 200:
             raise HTTPException(status_code=502, detail=f"서버 백업 실패: {body}")

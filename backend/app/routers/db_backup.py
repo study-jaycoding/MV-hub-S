@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -31,6 +33,13 @@ router = APIRouter(prefix="/api/db-backup", tags=["db-backup"])
 
 _KEEP = 10  # 계정별 보관 버전 수(오래된 것부터 정리)
 _MAX_BYTES = 512 * 1024 * 1024  # 업로드 상한 512MB(메타 DB 는 보통 수 MB)
+_CHUNK_BYTES = 1024 * 1024  # 파일 전체를 메모리에 올리지 않고 1MiB씩 복사
+_MAX_CONCURRENT_STORES = 4  # 디스크 쓰기·quick_check 동시 실행 상한
+_store_slots = asyncio.Semaphore(_MAX_CONCURRENT_STORES)
+
+
+class BackupTooLargeError(ValueError):
+    """업로드 스트림이 서버 백업 상한을 넘었다."""
 
 
 def _acct(request: Request) -> dict:
@@ -59,49 +68,62 @@ def _dir_lock(d: Path) -> threading.Lock:
     return lock
 
 
-def _store_backup(d: Path, name: str, data: bytes) -> int:
-    """디스크 쓰기·무결성 검증·오래된 백업 정리(전부 동기 I/O). 남은 백업 개수를 돌려준다.
+def _store_backup(d: Path, name: str, source: BinaryIO) -> tuple[int, int]:
+    """스트림 복사·무결성 검증·백업 정리(전부 동기 I/O).
 
-    최대 512MB 쓰기와 SQLite 검증이 이벤트 루프를 막지 않게 호출부가 스레드로 실행한다.
+    반환은 ``(저장 크기, 남은 백업 개수)``. 호출부가 스레드에서 실행하므로 이벤트 루프를
+    막지 않으며, 한 번에 _CHUNK_BYTES 만큼만 메모리에 둔다.
     """
     with _dir_lock(d):
         d.mkdir(parents=True, exist_ok=True)
         path = d / name
         tmp = d / f".upload-{uuid.uuid4().hex}.tmp"
-        tmp.write_bytes(data)
         try:
+            total = 0
+            with tmp.open("xb") as out:
+                while True:
+                    chunk = source.read(_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MAX_BYTES:
+                        raise BackupTooLargeError
+                    out.write(chunk)
             # 백업 보관본은 복원의 마지막 보루 — 깨진 파일을 받아두면 복원 시점에야 터진다.
             # quick_check 까지 통과해야 저장(수 MB 메타 DB 라 비용 미미).
             validate_hub_db(tmp, require_integrity=True)
-        except HubDbValidationError:
-            tmp.unlink(missing_ok=True)
-            raise
-        tmp.replace(path)
-        # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
-        backups = sorted(d.glob("*.db"))
-        for old in backups[:-_KEEP]:
-            try:
-                old.unlink()
-            except OSError:
-                pass
-        return len(sorted(d.glob("*.db")))
+            tmp.replace(path)
+            # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
+            backups = sorted(d.glob("*.db"))
+            for old in backups[:-_KEEP]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            return total, len(sorted(d.glob("*.db")))
+        finally:
+            # 용량 초과·무결성 실패·디스크 오류 모두 임시파일을 남기지 않는다.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
 
 
 @router.post("")
 async def upload_backup(request: Request, file: UploadFile = File(...)):
     """내 계정 DB 백업 1건 저장. 같은 계정 폴더에 타임스탬프로 누적, 오래된 건 _KEEP 넘으면 정리."""
     acc = _acct(request)
-    data = await file.read()
-    if len(data) > _MAX_BYTES:
-        raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
     d = _dir(acc["email"])
     # 같은 초 동시 업로드 충돌 방지 — 앞부분 타임스탬프로 시간순 정렬 유지, 뒤 uuid 로 유일성 보장.
     name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.db"
     try:
-        count = await asyncio.to_thread(_store_backup, d, name, data)
+        # UploadFile.file 은 Starlette 가 디스크로 spool 한 동기 스트림이다. 제한된 슬롯 안에서
+        # 통째로 스레드에 넘겨 읽기·쓰기·quick_check 를 모두 이벤트 루프 밖에서 실행한다.
+        async with _store_slots:
+            size, count = await asyncio.to_thread(_store_backup, d, name, file.file)
+    except BackupTooLargeError:
+        raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
     except HubDbValidationError as exc:
         raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
-    return {"ok": True, "name": name, "size": len(data), "count": count}
+    return {"ok": True, "name": name, "size": size, "count": count}
 
 
 @router.get("")
