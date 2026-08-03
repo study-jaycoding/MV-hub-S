@@ -123,6 +123,7 @@ import { MediaThumbnail } from "../MediaThumbnail";
 import { displayRefThumb, displayThumb, hideBrokenImg, showLoadedImg, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
+import { OutputCard } from "./cards/OutputCard";
 
 const CARD_W = 152;
 const CARD_H = 130;
@@ -4941,41 +4942,14 @@ export function SceneBoard({
                   );
                 })()
               ) : card.kind === "output" ? (
-                (() => {
-                  // Output(무선 발신) — 소스 하나에 붙어 '채널'을 발행. 색은 붙은 소스 종류를 따른다.
-                  const inEdge = edges.find((e) => e.to === card.id);
-                  const src = inEdge ? cardsById.get(inEdge.from) : undefined;
-                  const k = src?.kind;
-                  return (
-                    <>
-                      <div className={"scene-card-inner scene-portnode out oc-" + (k || "none")}>
-                        <div className="scene-card-hd portout">OUTPUT</div>
-                        <div className="scene-portnode-body">
-                          {/* 본문 = 입력된 값(채널 이름)만. 이름 입력은 선택 시 카드 아래 툴바에서. */}
-                          <div className="scene-portnode-val">
-                            {(card.text || "").trim() || (
-                              <span className="scene-portnode-valph">
-                                {src ? "채널 이름" : "소스를 연결"}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      {sel && (
-                        <div className="scene-portedit" onMouseDown={(e) => e.stopPropagation()}>
-                          <input
-                            className="scene-portedit-name"
-                            value={card.text || ""}
-                            placeholder="채널 이름 입력"
-                            onChange={(e) => setNodeText(card.id, e.target.value)}
-                            onBlur={() => flushPending()} // 입력 끝나면 밀린 저장 확정
-                          />
-                        </div>
-                      )}
-                      <span className="scene-port in" title="발행할 소스(모델/텍스트/레퍼런스/생성물/리스트)를 연결" />
-                    </>
-                  );
-                })()
+                <OutputCard
+                  card={card}
+                  sel={sel}
+                  edges={edges}
+                  cardsById={cardsById}
+                  setNodeText={setNodeText}
+                  flushPending={flushPending}
+                />
               ) : card.kind === "input" ? (
                 (() => {
                   // Input(무선 수신) — output 채널 하나를 골라 그 소스에 직접 연결한 것처럼 사용.
