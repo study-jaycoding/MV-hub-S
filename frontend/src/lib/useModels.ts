@@ -302,6 +302,9 @@ export function useModels(onError: (msg: string) => void) {
       api
         .estimateCost(m, opts)
         .then((r) => {
+          // 크기 상한(A6) — 모델×파라미터 조합 탐색이 길어져도 무한 누적 방지. 넘으면 통째 리셋
+          //  (재조회 비용이 싼 캐시라 LRU 관리보다 단순 리셋이 낫다).
+          if (Object.keys(costCacheRef.current).length >= 500) costCacheRef.current = {};
           costCacheRef.current[key] = r.credits;
         })
         .catch(() => {});

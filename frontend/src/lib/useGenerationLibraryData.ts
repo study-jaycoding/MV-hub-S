@@ -167,7 +167,12 @@ export function useGenerationLibraryData({
       }
       setGens((prev) => {
         const seen = new Set(prev.map((x) => x.id));
-        return [...prev, ...batch.filter((x) => !seen.has(x.id))];
+        const next = [...prev, ...batch.filter((x) => !seen.has(x.id))];
+        // 소프트 캡(A5) — 무한 스크롤 누적의 고수위 메모리 억제. 넘으면 앞(최신 쪽)부터 잘라도
+        //  키셋 커서는 배열 끝(가장 오래된 것) 기준이라 다음 페이지 로딩은 정상 동작한다.
+        //  맨 위 복귀는 필터/탭 전환의 reload 가 재충전(2000장 이상 내려간 드문 경우만 해당).
+        const GEN_SOFT_CAP = 2000;
+        return next.length > GEN_SOFT_CAP ? next.slice(next.length - GEN_SOFT_CAP) : next;
       });
       setHasMore(batch.length >= GEN_PAGE);
     } catch {
