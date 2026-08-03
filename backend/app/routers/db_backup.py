@@ -107,6 +107,26 @@ def _store_backup(d: Path, name: str, source: BinaryIO) -> tuple[int, int]:
                 tmp.unlink(missing_ok=True)
 
 
+async def _store_backup_limited(
+    d: Path, name: str, source: BinaryIO
+) -> tuple[int, int]:
+    """저장 슬롯을 실제 스레드 종료까지 점유한다.
+
+    ``asyncio.to_thread``는 HTTP 요청 task가 취소돼도 실행 중인 스레드를 중단하지 못한다. shield 없이
+    바로 await하면 클라이언트 연결 취소 때 semaphore만 먼저 풀려, 취소 요청을 반복해 동시 검증 상한을
+    우회할 수 있다.
+    """
+    async with _store_slots:
+        worker = asyncio.create_task(asyncio.to_thread(_store_backup, d, name, source))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # 응답 task 취소는 보존하되, 백그라운드 스레드가 끝날 때까지 슬롯은 넘겨주지 않는다.
+            with contextlib.suppress(Exception):
+                await worker
+            raise
+
+
 @router.post("")
 async def upload_backup(request: Request, file: UploadFile = File(...)):
     """내 계정 DB 백업 1건 저장. 같은 계정 폴더에 타임스탬프로 누적, 오래된 건 _KEEP 넘으면 정리."""
@@ -117,8 +137,7 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
     try:
         # UploadFile.file 은 Starlette 가 디스크로 spool 한 동기 스트림이다. 제한된 슬롯 안에서
         # 통째로 스레드에 넘겨 읽기·쓰기·quick_check 를 모두 이벤트 루프 밖에서 실행한다.
-        async with _store_slots:
-            size, count = await asyncio.to_thread(_store_backup, d, name, file.file)
+        size, count = await _store_backup_limited(d, name, file.file)
     except BackupTooLargeError:
         raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
     except HubDbValidationError as exc:

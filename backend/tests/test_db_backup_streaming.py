@@ -103,6 +103,62 @@ class BackupConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             db_backup._store_slots = old_slots
         self.assertEqual(peak, 2)
 
+    async def test_cancelled_request_keeps_slot_until_store_thread_finishes(self):
+        active = 0
+        peak = 0
+        counter_lock = threading.Lock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls = 0
+
+        def fake_store(_directory, _name, source):
+            nonlocal active, peak, calls
+            with counter_lock:
+                calls += 1
+                call_number = calls
+                active += 1
+                peak = max(peak, active)
+            try:
+                if call_number == 1:
+                    first_started.set()
+                    release_first.wait(timeout=2)
+                return len(source.read()), 1
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        old_slots = db_backup._store_slots
+        db_backup._store_slots = asyncio.Semaphore(1)
+        try:
+            with mock.patch.object(db_backup, "_store_backup", side_effect=fake_store):
+                first = asyncio.create_task(
+                    db_backup._store_backup_limited(
+                        self._test_dir / "first", "first.db", io.BytesIO(b"first")
+                    )
+                )
+                self.assertTrue(
+                    await asyncio.to_thread(first_started.wait, 1),
+                    "첫 저장 스레드가 시작되지 않았습니다",
+                )
+                first.cancel()
+                second = asyncio.create_task(
+                    db_backup._store_backup_limited(
+                        self._test_dir / "second", "second.db", io.BytesIO(b"second")
+                    )
+                )
+                await asyncio.sleep(0.02)
+                self.assertFalse(second.done())
+                self.assertEqual(peak, 1)
+                release_first.set()
+                results = await asyncio.gather(first, second, return_exceptions=True)
+        finally:
+            release_first.set()
+            db_backup._store_slots = old_slots
+
+        self.assertIsInstance(results[0], asyncio.CancelledError)
+        self.assertEqual(results[1], (6, 1))
+        self.assertEqual(peak, 1)
+
     @property
     def _test_dir(self) -> Path:
         if not hasattr(self, "_tmp_dir"):
