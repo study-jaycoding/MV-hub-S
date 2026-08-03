@@ -143,6 +143,8 @@ def create_project(body: ProjectCreate, request: Request):
     require_global_cap(request, "create_project")
     try:
         return repo.create_project(body.name, kind=body.kind)
+    except repo.ProjectNameConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -165,12 +167,13 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
     if not repo.get_project(pid):
         raise HTTPException(status_code=404, detail="없는 프로젝트")
     try:
-        if body.name is not None:
-            repo.rename_project(pid, body.name)
-        if body.archived is not None:
-            repo.set_archived(pid, body.archived)
+        if body.name is not None or body.archived is not None:
+            # 이름과 보관 상태를 함께 보낸 PATCH 는 최종 상태 기준으로 한 트랜잭션에서 판정한다.
+            repo.update_project_identity(pid, name=body.name, archived=body.archived)
         if body.render_root_path is not None:
             repo.set_render_root(pid, body.render_root_path)  # 팀 공유 렌더 폴더 경로
+    except repo.ProjectNameConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return repo.get_project(pid)

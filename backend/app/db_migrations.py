@@ -8,6 +8,39 @@ from __future__ import annotations
 import sqlite3
 
 
+_PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
+
+
+def _ensure_project_active_name_index(conn: sqlite3.Connection) -> bool:
+    """활성 프로젝트 이름 고유 인덱스를 데이터 손실 없이 보장한다.
+
+    오래된 DB 에 이미 중복이 있으면 임의 삭제·이름 변경을 하지 않고 인덱스 생성을 보류한다.
+    이때 Assets 권한 조회는 모호한 이름을 거부하고, API 쓰기는 추가 중복을 막는다. 운영자가
+    중복을 정리한 뒤 다음 부팅에서 인덱스가 자동 생성된다.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='project'"
+    ).fetchone()
+    if not table_exists:
+        return False
+    duplicate = conn.execute(
+        "SELECT LOWER(TRIM(name)) AS name_key, COUNT(*) AS count "
+        "FROM project WHERE archived=0 "
+        "GROUP BY LOWER(TRIM(name)) HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicate:
+        print(
+            "[db] 경고: 활성 프로젝트 이름 중복이 있어 고유 인덱스 생성을 보류했습니다. "
+            "관리자 화면에서 중복 이름을 변경하거나 하나를 보관하세요."
+        )
+        return False
+    conn.execute(
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {_PROJECT_ACTIVE_NAME_INDEX} "
+        "ON project(LOWER(TRIM(name))) WHERE archived=0"
+    )
+    return True
+
+
 def _pre_migrate(conn: sqlite3.Connection) -> None:
     """schema.sql executescript **이전**에 도는 구조 마이그레이션(멱등).
 
@@ -125,6 +158,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 팀 공유 렌더 폴더 경로 — 서버가 프로젝트 정의로 보관, 각 PC 가 자기 디스크에서 그 경로를 읽는다.
     if proj_cols and "render_root_path" not in proj_cols:
         conn.execute("ALTER TABLE project ADD COLUMN render_root_path TEXT")
+    # Assets 코멘트 권한은 mount 의 프로젝트 이름을 서버 project.id 로 되돌린다. 활성 이름이
+    # 모호해지지 않도록 DB에서도 차단하되, 레거시 중복 데이터는 임의 변경하지 않는다.
+    _ensure_project_active_name_index(conn)
     # ── 전역 태그(auto_tag) 계정별 소유화 — 옛 전역 UNIQUE(name) → UNIQUE(owner_uid, name) ──
     # 이름이 전역 유일이라 다른 계정이 같은 태그를 못 만들던 충돌(409)을 없앤다. 컬럼 추가만으론
     # UNIQUE 제약을 못 바꾸므로 테이블을 재구성(id 보존 → gen_auto_tag FK 유지). 레거시 행은

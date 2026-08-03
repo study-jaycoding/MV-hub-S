@@ -23,6 +23,22 @@ _SELECT = (
 )
 
 
+class ProjectNameConflictError(ValueError):
+    """활성 프로젝트 이름이 다른 프로젝트와 겹친다."""
+
+
+def _active_name_owner(
+    conn: sqlite3.Connection, name: str, *, exclude_id: Optional[str] = None
+) -> Optional[str]:
+    sql = "SELECT id FROM project WHERE archived=0 AND LOWER(TRIM(name))=LOWER(?)"
+    args: list[Any] = [name]
+    if exclude_id is not None:
+        sql += " AND id<>?"
+        args.append(exclude_id)
+    row = conn.execute(f"{sql} ORDER BY created_at, id LIMIT 1", args).fetchone()
+    return row["id"] if row else None
+
+
 def _provider_uid() -> Optional[str]:
     """프로젝트 created_by 기본값 — 로그인 전엔 제공자 신원(없으면 None)."""
     from .identity import get_provider
@@ -53,11 +69,9 @@ def create_project(
     with get_connection() as conn:
         # SELECT→INSERT 를 즉시 쓰기락으로 직렬화 — 동시 생성이 같은 이름 프로젝트 2개를 만들지 않게.
         conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute(
-            "SELECT id FROM project WHERE name = ? AND archived = 0", (name,)
-        ).fetchone()
-        if existing:
-            return _row(conn, existing["id"])  # type: ignore[return-value]
+        existing_id = _active_name_owner(conn, name)
+        if existing_id:
+            return _row(conn, existing_id)  # type: ignore[return-value]
         pid = new_id()
         conn.execute(
             "INSERT INTO project(id, name, kind, created_by) VALUES(?,?,?,?)",
@@ -81,11 +95,14 @@ def get_project_by_name(name: str) -> Optional[dict[str, Any]]:
     if not name:
         return None
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id FROM project WHERE name=? AND archived=0 ORDER BY created_at LIMIT 1",
+        rows = conn.execute(
+            "SELECT id FROM project "
+            "WHERE archived=0 AND LOWER(TRIM(name))=LOWER(?) "
+            "ORDER BY created_at, id LIMIT 2",
             (name,),
-        ).fetchone()
-        return _row(conn, row["id"]) if row else None
+        ).fetchall()
+        # 레거시 DB 에 중복 이름이 있으면 임의의 첫 행으로 권한을 판정하지 않는다.
+        return _row(conn, rows[0]["id"]) if len(rows) == 1 else None
 
 
 def list_projects(
@@ -176,11 +193,41 @@ def list_projects(
 
 
 def rename_project(pid: str, name: str) -> bool:
-    name = (name or "").strip()
-    if not name:
+    return update_project_identity(pid, name=name)
+
+
+def update_project_identity(
+    pid: str,
+    *,
+    name: Optional[str] = None,
+    archived: Optional[bool] = None,
+) -> bool:
+    """이름·보관 상태를 한 트랜잭션에서 갱신하고 최종 활성 이름의 유일성을 보장한다."""
+    clean_name = (name or "").strip() if name is not None else None
+    if name is not None and not clean_name:
         raise ValueError("빈 프로젝트 이름")
     with get_connection() as conn:
-        cur = conn.execute("UPDATE project SET name = ? WHERE id = ?", (name, pid))
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT name, archived FROM project WHERE id=?", (pid,)
+        ).fetchone()
+        if not current:
+            return False
+        final_name = clean_name if clean_name is not None else current["name"]
+        final_archived = (
+            bool(archived) if archived is not None else bool(current["archived"])
+        )
+        if not final_archived and _active_name_owner(conn, final_name, exclude_id=pid):
+            raise ProjectNameConflictError("같은 이름의 활성 프로젝트가 이미 있습니다")
+        try:
+            cur = conn.execute(
+                "UPDATE project SET name=?, archived=? WHERE id=?",
+                (final_name, 1 if final_archived else 0, pid),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ProjectNameConflictError(
+                "같은 이름의 활성 프로젝트가 이미 있습니다"
+            ) from exc
         return cur.rowcount > 0
 
 
@@ -254,11 +301,7 @@ def reorder_projects(ordered_ids: list[str]) -> None:
 
 
 def set_archived(pid: str, archived: bool) -> bool:
-    with get_connection() as conn:
-        cur = conn.execute(
-            "UPDATE project SET archived = ? WHERE id = ?", (1 if archived else 0, pid)
-        )
-        return cur.rowcount > 0
+    return update_project_identity(pid, archived=archived)
 
 
 def delete_project(pid: str) -> bool:
