@@ -282,7 +282,7 @@ if (-not $SkipPythonRuntime) {
 
     New-Item -ItemType Directory -Force -Path $SitePackages | Out-Null
     Write-Host "      Installing backend packages into runtime..."
-    & $Python.Exe -m pip install --upgrade --target $SitePackages -r (Join-Path $ProjectRoot "backend\requirements.txt")
+    & $Python.Exe -m pip install --upgrade --ignore-installed --target $SitePackages -r (Join-Path $ProjectRoot "backend\requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "pip install into bundled runtime failed"
     }
