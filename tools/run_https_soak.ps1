@@ -123,7 +123,7 @@ public static class MvHubSoakPower {
 
 try {
     # ES_CONTINUOUS | ES_SYSTEM_REQUIRED: 화면은 끌 수 있지만 시스템 절전은 시험 동안 방지한다.
-    [void][MvHubSoakPower]::SetThreadExecutionState(0x80000001)
+    [void][MvHubSoakPower]::SetThreadExecutionState([uint32]2147483649)
     Write-State -Status "running" -Message "HTTPS 장시간 시험 준비 중"
     Invoke-LoadStage `
         -Stage "qualification_30m" `
@@ -147,5 +147,5 @@ catch {
     exit 1
 }
 finally {
-    [void][MvHubSoakPower]::SetThreadExecutionState(0x80000000)
+    [void][MvHubSoakPower]::SetThreadExecutionState([uint32]2147483648)
 }
