@@ -4,6 +4,7 @@ import {
   variantIds,
   preserveRepresentatives,
   sceneRefFingerprint,
+  settleComfyRunning,
   cardBatch,
   listScenes,
   saveScenes,
@@ -126,6 +127,30 @@ describe("preserveRepresentatives (대표 undo 제외)", () => {
     const target = [mk({ id: "c", kind: "comfy", genIds: ["a"], genId: "a", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
     const current = [mk({ id: "c", kind: "comfy", genIds: ["a", "b"], genId: "b", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
     expect(preserveRepresentatives(target, current)[0].genId).toBe("b");
+  });
+});
+
+describe("settleComfyRunning (생성중 박제 방지·치유)", () => {
+  const mkComfy = (cfg: Record<string, unknown>): Scene["cards"][number] =>
+    ({ id: "c", kind: "comfy", x: 0, y: 0, comfyCfg: cfg }) as Scene["cards"][number];
+  it("running + 결과 있음 → done (이전 결과 표시 유지)", () => {
+    const out = settleComfyRunning([mkComfy({ status: "running", outputs: [{ kind: "image", url: "u" }] })]);
+    expect(out[0].comfyCfg!.status).toBe("done");
+  });
+  it("running + 결과 없음 → idle", () => {
+    const out = settleComfyRunning([mkComfy({ status: "running" })]);
+    expect(out[0].comfyCfg!.status).toBe("idle");
+  });
+  it("keep(실제 실행 중)이면 running 그대로", () => {
+    const out = settleComfyRunning([mkComfy({ status: "running" })], () => true);
+    expect(out[0].comfyCfg!.status).toBe("running");
+  });
+  it("running 아닌 카드·비 comfy 카드는 그대로 — 변경 없으면 원본 배열 참조 유지", () => {
+    const cards = [
+      mkComfy({ status: "done" }),
+      { id: "t", kind: "text", x: 0, y: 0, text: "x" } as Scene["cards"][number],
+    ];
+    expect(settleComfyRunning(cards)).toBe(cards); // 동일 참조(불필요 리렌더 방지)
   });
 });
 

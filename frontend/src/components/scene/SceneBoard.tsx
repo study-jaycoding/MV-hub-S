@@ -37,6 +37,7 @@ import {
 import {
   cardBatch,
   sceneRefFingerprint,
+  settleComfyRunning,
   uid,
   variantIds,
   preserveRepresentatives,
@@ -300,7 +301,8 @@ export function SceneBoard({
   onOpenComments,
 }: Props) {
   const t = useT(); // 언어(한/영) — View 노드 헤더 등 라벨 치환. 언어 변경 시 즉시 리렌더.
-  const [cards, setCards] = useState<SceneCard[]>(scene.cards);
+  // 최초 마운트에도 박제된 running 을 치유해 시작(effect 전 첫 페인트에 '생성중' 잔상 방지).
+  const [cards, setCards] = useState<SceneCard[]>(() => settleComfyRunning(scene.cards, isComfyRunning));
   const [edges, setEdges] = useState<SceneEdge[]>(scene.edges);
   const [groups, setGroups] = useState<SceneGroup[]>(scene.groups || []);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null); // 이름 편집 중인 그룹
@@ -422,6 +424,9 @@ export function SceneBoard({
   // 바뀌면 반영하되 선택은 유지 — 카드 드래그 중엔 persist 안 하므로 prop 이 안 바뀌어 방해받지 않는다.
   const sceneIdRef = useRef(scene.id);
   useEffect(() => {
+    // ★기존 저장분(레거시)에 박제된 status:"running" 치유 — 지금 실제로 실행 중(모듈 store)이 아니면
+    //  done/idle 로 정규화해 '영원히 생성중' 표시를 없앤다(persist 쪽 settleComfyRunning 과 짝).
+    const inCards = settleComfyRunning(scene.cards, isComfyRunning);
     if (sceneIdRef.current !== scene.id) {
       const prevId = sceneIdRef.current;
       persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
@@ -429,14 +434,14 @@ export function SceneBoard({
       setSelected(new Set());
       setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
       // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
-      restoreSceneHistory(scene.id, { cards: scene.cards, edges: scene.edges, groups: scene.groups || [] });
+      restoreSceneHistory(scene.id, { cards: inCards, edges: scene.edges, groups: scene.groups || [] });
     }
-    setCards(scene.cards);
+    setCards(inCards);
     setEdges(scene.edges);
     setGroups(scene.groups || []);
     // 표시 중인 상태를 항상 '최근 커밋'으로 맞춘다 — 외부 갱신(생성 완료 등) 후 Ctrl+Z 가
     // 그 갱신까지 되돌리는(스테일 복원) 문제 방지. (내 persist 는 이미 같은 값이라 무해)
-    syncCommitBaseline({ cards: scene.cards, edges: scene.edges, groups: scene.groups || [] });
+    syncCommitBaseline({ cards: inCards, edges: scene.edges, groups: scene.groups || [] });
   }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -794,7 +799,9 @@ export function SceneBoard({
     nextGroups: SceneGroup[] = groupsRef.current,
     opts?: { undo?: boolean }, // undo:false = 실행상태·파생저장(running/done/gid반영 등) — undo 스택에 안 쌓는다.
   ) => {
-    const next = { cards: nextCards, edges: nextEdges, groups: nextGroups };
+    // ★running 은 저장 스냅샷에서 제외(settleComfyRunning) — 디스크·undo 에 '생성중'이 박제되지 않게.
+    //  화면 표시는 cardsRef/모듈 store 가 담당하므로 영향 없다(실행 중 씬 전환·크래시 후 '영원히 생성중' 방지).
+    const next = { cards: settleComfyRunning(nextCards), edges: nextEdges, groups: nextGroups };
     // 파생/실행상태 저장은 undo 스택을 건드리지 않는다 — Ctrl+Z 가 사용자 편집만 되돌리게(자동 상태변화 제외).
     //  단 최신 커밋 기록·부모(씬 저장) 반영은 동일(그래야 저장 유실 없음).
     if (opts?.undo !== false) {
@@ -839,6 +846,7 @@ export function SceneBoard({
   };
   // 파생 동기화 커밋 — undo 스택은 안 건드리고 최근커밋·부모저장(onChange)만 최신화(자동 상태변화용).
   const commitDerivedState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
+    s = { ...s, cards: settleComfyRunning(s.cards) }; // 파생 커밋도 running 을 저장에 남기지 않는다(persist 와 동일)
     lastCommitRef.current = s;
     onChangeRef.current(s);
     persistSceneHistory(sceneIdRef.current); // 파생 커밋도 store 반영 — 언마운트 중 완료가 undo 스택을 버리지 않게(P1)

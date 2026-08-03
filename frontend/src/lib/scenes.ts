@@ -177,6 +177,22 @@ export function preserveRepresentatives(targetCards: SceneCard[], currentCards: 
   });
 }
 
+// comfy '실행중(running)' 상태는 메모리 전용(웨이브·모듈 store 가 표시 담당) — 저장/로드 스냅샷에서는
+//  완료형으로 정규화한다. 안 하면 실행 중 씬 전환·새로고침·크래시 때 status:"running" 이 디스크에 박제돼
+//  카드가 '영원히 생성중'으로 보인다(사용자 보고). keep(id)=true 인 카드(지금 실제 실행 중)는 그대로 둔다.
+//  running → 결과가 있으면 done(이전 결과 표시 유지), 없으면 idle. 변경 없으면 원본 배열 그대로(참조 보존).
+export function settleComfyRunning(cards: SceneCard[], keep?: (id: string) => boolean): SceneCard[] {
+  let changed = false;
+  const out = cards.map((c) => {
+    if (c.kind !== "comfy" || c.comfyCfg?.status !== "running") return c;
+    if (keep?.(c.id)) return c;
+    changed = true;
+    const status = c.comfyCfg.outputs?.length ? ("done" as const) : ("idle" as const);
+    return { ...c, comfyCfg: { ...c.comfyCfg, status } };
+  });
+  return changed ? out : cards;
+}
+
 // 레퍼런스 목록의 "내용 지문" — 순서·값이 같으면 같은 문자열. uid/role 같은 표시용 필드는 제외.
 // 씬 카드 ↔ 하단 프롬프트 트레이 동기화에서 '내 편집의 에코'를 걸러내 무한 갱신을 막는 데 쓴다.
 //  ★from_card 포함: 소스 연결로 같은 참조의 출처만 바뀌어도(직접@→연결) 트레이가 최신화돼야 유령 참조를
