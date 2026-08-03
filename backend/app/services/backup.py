@@ -16,13 +16,16 @@ import asyncio
 import contextlib
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from ..config import DATA_DIR
 from ..db import get_db_path
+from .sqlite_db import validate_hub_db
 
 # 백업 보관 폴더 — 기본은 데이터 루트 아래. 실서버에선 다른 디스크/NAS 로 지정 권장.
 BACKUP_DIR = Path(
@@ -33,7 +36,8 @@ BACKUP_DIR = Path(
 BACKUP_INTERVAL = float(os.environ.get("CONTENT_HUB_BACKUP_INTERVAL", str(24 * 3600)))
 
 # 보관 개수(회전) — 이보다 오래된 백업은 삭제. 기본 7개(약 1주).
-BACKUP_KEEP = int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7"))
+# 최소 1: 0 이하를 허용하면 방금 만든 백업까지 회전이 지워 백업 자체가 무의미해진다.
+BACKUP_KEEP = max(1, int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7")))
 
 # 시작 시 중복 백업 방지: 가장 최근 백업이 이 시간(초)보다 새것이면 시작 백업 생략.
 # (서버 재기동·개발 리스타트가 잦아도 백업이 난립하지 않게.)
@@ -91,29 +95,58 @@ def _rotate() -> None:
             old.unlink()
 
 
+# 주기 백업과 관리자 수동 백업(POST /api/backup)이 겹칠 수 있어 파일 작업을 직렬화.
+# 둘 다 asyncio.to_thread 로 실행되므로 스레드 락이어야 한다(단일 프로세스 운영 전제).
+_BACKUP_LOCK = threading.Lock()
+_TMP_MARK = ".tmp-"
+
+
+def _cleanup_stale_tmp(d: Path) -> None:
+    """크래시가 남긴 임시 백업 잔재 청소 — 이 모듈이 만든 이름만, 1일 이상 묵은 것만.
+    (락 안에서 호출 — 지금 만들고 있는 tmp 를 지울 일이 없다.)"""
+    cutoff = time.time() - 86400.0
+    for p in d.glob(f".{_PREFIX}*{_TMP_MARK}*"):
+        with contextlib.suppress(OSError):
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+
+
 def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
     """DB 의 일관 스냅샷을 백업 폴더에 생성하고 경로를 반환(블로킹).
-    DB 파일이 아직 없으면 None. 회전까지 수행."""
+    DB 파일이 아직 없으면 None. 회전까지 수행.
+
+    ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤
+    quick_check 무결성 검증을 통과해야만 최종 이름으로 os.replace 한다. 중간 크래시/디스크풀이면
+    tmp 쓰레기만 남고, 백업 목록·회전은 검증 통과한 완성본만 본다."""
     src = get_db_path()
     if not src.exists():
         return None
-    d = _backup_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest_path = d / f"{_PREFIX}{stamp}.db"
-
-    src_conn = sqlite3.connect(str(src))
-    try:
-        dest_conn = sqlite3.connect(str(dest_path))
+    with _BACKUP_LOCK:
+        d = _backup_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        _cleanup_stale_tmp(d)
+        # 마이크로초 포함 — 같은 초의 연속 백업(수동+주기)이 같은 최종 이름을 덮지 않게.
+        stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        dest_path = d / f"{_PREFIX}{stamp}.db"
+        tmp = d / f".{_PREFIX}{stamp}.db{_TMP_MARK}{uuid4().hex[:8]}"
         try:
-            src_conn.backup(dest_conn)  # 온라인 일관 스냅샷(WAL 포함, 잠금 없음)
-        finally:
-            dest_conn.close()
-    finally:
-        src_conn.close()
-
-    _rotate()
-    return dest_path
+            src_conn = sqlite3.connect(str(src))
+            try:
+                dest_conn = sqlite3.connect(str(tmp))
+                try:
+                    src_conn.backup(dest_conn)  # 온라인 일관 스냅샷(WAL 포함, 잠금 없음)
+                finally:
+                    dest_conn.close()
+            finally:
+                src_conn.close()
+            validate_hub_db(tmp, require_integrity=True)
+            os.replace(tmp, dest_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+        _rotate()  # 교체 성공 후에만 — 실패 시 기존 정상 백업은 손대지 않는다
+        return dest_path
 
 
 class PeriodicBackup:
