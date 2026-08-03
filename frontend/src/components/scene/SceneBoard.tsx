@@ -3537,29 +3537,40 @@ export function SceneBoard({
       if (hasNodes && clip) {
         e.preventDefault();
         const idMap = new Map<string, string>();
-        // 격자 2칸 대각선을 기본으로 하되, 기존 카드와 '겹치지 않는' 첫 위치까지 전진 —
-        //  복수 선택 붙여넣기에서 복사본이 옆 원본 카드 위로 떨어져 겹치던 문제 수정(사용자 보고).
-        //  묶음 전체를 같은 양만큼 이동해 상대 배치는 보존한다. 40칸 넘게 밀리면 그냥 수용(무한루프 방지).
+        // 배치 규칙(사용자 피드백 반영): 기본은 격자 2칸(원래 간격) — 복사본이 '자기 원본' 위에
+        //  살짝 겹치는 건 허용(단일 붙여넣기의 익숙한 느낌)하되, '다른 카드' 위로 떨어지는 것만 막는다.
+        //  대각선→오른쪽→아래→우상→좌하 순으로 가장 가까운 빈 방향을 골라 멀리 튀지 않게 하고,
+        //  묶음 전체를 같은 양만큼 이동해 상대 배치는 보존한다. 못 찾으면 기본 대각선 수용(무한루프 방지).
         const off = GRID * 2;
-        const rectOf = (c: SceneCard, d: number) => ({
-          x: c.x + d, y: c.y + d, w: widthOf(c), h: heightOf(c),
+        const rectOf = (c: SceneCard, dx: number, dy: number) => ({
+          x: c.x + dx, y: c.y + dy, w: widthOf(c), h: heightOf(c),
         });
-        const existing = cardsRef.current.map((c) => rectOf(c, 0));
-        let shift = off;
-        for (let step = 1; step <= 40; step++) {
-          shift = off * step;
-          const hit = clip.cards.some((c) => {
-            const r = rectOf(c, shift);
+        const existing = cardsRef.current.map((c) => ({ id: c.id, ...rectOf(c, 0, 0) }));
+        const collides = (dx: number, dy: number) =>
+          clip.cards.some((c) => {
+            const r = rectOf(c, dx, dy);
             return existing.some(
-              (x) => r.x < x.x + x.w && x.x < r.x + r.w && r.y < x.y + x.h && x.y < r.y + r.h,
+              (x) =>
+                x.id !== c.id && // 자기 원본과의 겹침은 허용(스택된 복사 느낌)
+                r.x < x.x + x.w && x.x < r.x + r.w && r.y < x.y + x.h && x.y < r.y + r.h,
             );
           });
-          if (!hit) break;
+        const DIRS: [number, number][] = [[1, 1], [1, 0], [0, 1], [1, -1], [-1, 1]];
+        let dxOff = off;
+        let dyOff = off;
+        found: for (let s = 1; s <= 20; s++) {
+          for (const [ux, uy] of DIRS) {
+            if (!collides(ux * off * s, uy * off * s)) {
+              dxOff = ux * off * s;
+              dyOff = uy * off * s;
+              break found;
+            }
+          }
         }
         const newCards = clip.cards.map((c) => {
           const nid = uid();
           idMap.set(c.id, nid);
-          return { ...c, id: nid, x: c.x + shift, y: c.y + shift };
+          return { ...c, id: nid, x: c.x + dxOff, y: c.y + dyOff };
         });
         // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
         for (const c of newCards)
@@ -3585,10 +3596,10 @@ export function SceneBoard({
         setSelected(new Set(newCards.map((c) => c.id)));
         persist(nextCards, nextEdges);
         // 연속 붙여넣기 캐스케이드 — 다음 Ctrl+V 가 방금 붙여넣은 위치에서 이어서 밀려 겹치지 않게.
-        //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 실제 이동량(shift)만큼 전진. Ctrl+C 하면 초기화.)
+        //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 실제 이동량만큼 전진. Ctrl+C 하면 초기화.)
         clipboardRef.current = {
           ...clip,
-          cards: clip.cards.map((c) => ({ ...c, x: c.x + shift, y: c.y + shift })),
+          cards: clip.cards.map((c) => ({ ...c, x: c.x + dxOff, y: c.y + dyOff })),
         };
         return;
       }
