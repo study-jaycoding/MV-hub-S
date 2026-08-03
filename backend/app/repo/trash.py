@@ -23,15 +23,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from ..db import DB_BACKEND, get_connection, get_db_path
+from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
 from . import tags
 from .generations import _delete_generation
 
-# 휴지통은 SQLite 에선 별도 DB 파일을 ATTACH, PostgreSQL 에선 trash 스키마.
-# 어느 쪽이든 SQL 의 `trash.trashed` 참조는 동일하게 동작(부착DB명 ≈ 스키마명).
-_IS_PG = DB_BACKEND == "postgres"
-
+# 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
     "CREATE TABLE IF NOT EXISTS trash.trashed("
     "id TEXT PRIMARY KEY, trashed_at TEXT NOT NULL, project_id TEXT, "
@@ -46,34 +43,19 @@ def _trash_path() -> Path:
 
 def _ensure_trash_schema(conn) -> None:
     """trash.trashed 보장(IF NOT EXISTS, 멱등). 검색용 컬럼 + JSON 페이로드."""
-    if _IS_PG:
-        conn.execute("CREATE SCHEMA IF NOT EXISTS trash")
-        conn.execute(_TRASHED_DDL)
-        _ensure_trash_job_id_col(conn)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_trashed_at ON trash.trashed(trashed_at DESC, id DESC)"
-        )
-        # job_id 인덱스 — tombstoned_among 의 IN 조회와 백필 가드의 IS NULL 스캔을 전체스캔 없이(휴지통 커도 빠르게).
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trashed_job ON trash.trashed(job_id)")
-    else:
-        conn.execute(_TRASHED_DDL)
-        _ensure_trash_job_id_col(conn)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS trash.idx_trashed_at ON trashed(trashed_at DESC, id DESC)"
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS trash.idx_trashed_job ON trashed(job_id)")
+    conn.execute(_TRASHED_DDL)
+    _ensure_trash_job_id_col(conn)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS trash.idx_trashed_at ON trashed(trashed_at DESC, id DESC)"
+    )
+    # job_id 인덱스 — tombstoned_among 의 IN 조회와 백필 가드의 IS NULL 스캔을 전체스캔 없이(휴지통 커도 빠르게).
+    conn.execute("CREATE INDEX IF NOT EXISTS trash.idx_trashed_job ON trashed(job_id)")
 
 
 def _ensure_trash_job_id_col(conn) -> None:
     """구버전 휴지통 DB 에 job_id 컬럼 보강 + payload 에서 1회 백필(멱등).
     job_id 는 동기화(apply_synced_jobs)가 '삭제된 잡'을 되살리지 않도록 거르는 키다 — 없으면
     지운 생성물이 CLI 100-window 에 남아 있는 한 다음 동기화에 그대로 재등장한다."""
-    if _IS_PG:  # 신규 PG 는 DDL 로 이미 보유. 레거시 PG 만 add(중복이면 무시).
-        try:
-            conn.execute("ALTER TABLE trash.trashed ADD COLUMN job_id TEXT")
-        except Exception:  # noqa: BLE001 — 이미 존재(정상)
-            pass
-        return
     cols = {r[1] for r in conn.execute("PRAGMA trash.table_info(trashed)")}
     if "job_id" not in cols:
         conn.execute("ALTER TABLE trash.trashed ADD COLUMN job_id TEXT")
@@ -95,16 +77,13 @@ def attach_trash(conn) -> None:
     """주어진 커넥션에 휴지통 DB 를 ATTACH + 스키마 보장. 반드시 트랜잭션 '밖'에서 호출(sqlite ATTACH 제약).
     호출측이 BEGIN IMMEDIATE 를 열고 그 안에서 tombstoned_among 으로 최신 삭제상태를 조회한 뒤,
     끝나면 detach_trash 로 뗀다. (동기화가 삭제-경합에서도 방금 삭제된 잡을 보게 하는 경로)."""
-    if not _IS_PG:
-        conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
+    conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
     _ensure_trash_schema(conn)
 
 
 def detach_trash(conn) -> None:
     """attach_trash 로 붙인 휴지통 DB 를 뗀다(트랜잭션 종료 후, best-effort).
     안 붙었거나 이미 닫힌 커넥션이면 무해하므로 예외를 삼킨다(상위에서 풀 커넥션을 폐기)."""
-    if _IS_PG:
-        return
     try:
         conn.execute("DETACH DATABASE trash")
     except Exception:  # noqa: BLE001 — 미부착/닫힘 등
@@ -131,19 +110,17 @@ def _with_trash() -> Iterator[Any]:
     """trash.trashed 를 쓸 수 있는 커넥션 컨텍스트(스키마 보장).
 
     본문에서 BEGIN/COMMIT 으로 원자 이동/복원을 제어한다. 예외 시 ROLLBACK.
-    SQLite: 별도 DB 파일을 ATTACH(끝에 DETACH). PostgreSQL: 같은 DB 의 trash 스키마.
+    별도 DB 파일을 ATTACH 하고 끝에 DETACH 한다.
     """
     with get_connection() as conn:
-        if not _IS_PG:
-            conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
+        conn.execute("ATTACH DATABASE ? AS trash", (str(_trash_path()),))
         _ensure_trash_schema(conn)
         try:
             yield conn
         finally:
             if conn.in_transaction:  # 본문이 COMMIT 안 했으면(예외) 되돌림
                 conn.execute("ROLLBACK")
-            if not _IS_PG:
-                conn.execute("DETACH DATABASE trash")
+            conn.execute("DETACH DATABASE trash")
 
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:

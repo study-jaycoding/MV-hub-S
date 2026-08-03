@@ -26,13 +26,10 @@ _FTS_READY_PATH: Optional[str] = None
 
 
 def _fts_ready() -> bool:
-    """FTS5 검색 인덱스가 준비됐는지(없으면 LIKE 폴백). 활성 DB 경로가 바뀔 때만 재확인.
-    PostgreSQL 백엔드면 FTS5 미사용 → False(검색은 ILIKE, pg_trgm GIN 인덱스가 가속)."""
+    """FTS5 검색 인덱스가 준비됐는지(없으면 LIKE 폴백). 활성 DB 경로가 바뀔 때만 재확인."""
     global _FTS_READY, _FTS_READY_PATH
-    from ..db import DB_BACKEND, get_db_path
+    from ..db import get_db_path
 
-    if DB_BACKEND == "postgres":
-        return False
     path = str(get_db_path())
     if _FTS_READY is None or _FTS_READY_PATH != path:
         _FTS_READY_PATH = path

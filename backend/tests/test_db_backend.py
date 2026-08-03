@@ -7,8 +7,7 @@ from app import db
 
 class DbBackendGuardTests(unittest.TestCase):
     def test_postgres_backend_is_blocked_at_entry(self):
-        # 미지원 백엔드(postgres)면 init_db·get_connection 진입에서 RuntimeError.
-        # pgsupport 미완 코드가 옵트인처럼 조용히 실행되지 않게 하는 불변식.
+        # 미지원 백엔드(sqlite 외)면 init_db·get_connection 진입에서 RuntimeError.
         with mock.patch.object(db, "DB_BACKEND", "postgres"):
             with self.assertRaises(RuntimeError):
                 db.init_db()
