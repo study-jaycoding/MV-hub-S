@@ -21,7 +21,6 @@ import {
 } from "../../lib/assetVersions";
 import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/appEvents";
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
-import { downloadName, downloadOne } from "../../lib/download";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { toggleDisabledGen } from "../../lib/deactivated";
 import { matchShortcut } from "../../lib/shortcuts";
@@ -91,9 +90,9 @@ import {
 } from "../../lib/sceneComfyRunningStore";
 import { useSceneGenData } from "../../lib/useSceneGenData";
 import { useT } from "../../lib/i18n";
-import { generationStatusLabelFor } from "../../lib/generationDisplay";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
+import { SceneVariantPopup } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi, type ComfyRunMedia } from "../../lib/comfyApi";
@@ -109,11 +108,7 @@ import { flashMsg } from "../../lib/flash";
 import { saveSceneHistory, loadSceneHistory, sameSnap } from "../../lib/sceneUndoStore";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
-import { TagEditor } from "../TagEditor";
-import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
-import { MediaThumbnail } from "../MediaThumbnail";
 import { displayThumb, thumbOf } from "../../lib/media";
-import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
@@ -4839,395 +4834,59 @@ export function SceneBoard({
 
       {/* 다중 결과 팝업 — 라이브러리 그리드처럼 다중선택→액션바(다운로드/비교/담기/공유/삭제),
           ★대표 지정, 더블클릭 크게보기(방향키). .scene-board 직계(줌/팬 밖). 배경클릭/Esc 닫기. */}
-      {cardMenu &&
-        (() => {
-          const c = cards.find((x) => x.id === cardMenu);
-          if (!c) return null;
-          // 최신순(최근 생성이 맨 위) — sort_ts(정밀 epoch) 우선, 없으면 created_at. genData 없는 변형은 뒤로.
-          const genTs = (gid: string): number => {
-            const gg = genData[gid];
-            if (!gg) return 0;
-            if (typeof gg.sort_ts === "number") return gg.sort_ts;
-            const t = Date.parse(gg.created_at);
-            return Number.isNaN(t) ? 0 : t;
-          };
-          const ids = [...variantIds(c)].sort((a, b) => genTs(b) - genTs(a));
-          // asset 있는(미리보기 가능) 변형만 방향키 목록으로 — pending/실패 섞임 방지.
-          const previewItems: PreviewItem[] = [];
-          for (const id of ids) {
-            const a = genData[id]?.assets?.[0];
-            if (a)
-              previewItems.push({
-                url: a.file_path,
-                type: a.type,
-                name: genData[id]?.prompt?.slice(0, 50) || "결과",
-                genId: id,
-              });
-          }
-          const openPreviewAt = (gid: string) => {
-            const index = previewItems.findIndex((it) => it.genId === gid);
-            if (index < 0) return;
-            onPreview?.({ ...previewItems[index], items: previewItems, index });
-          };
-          const selected = ids.map((id) => genData[id]).filter((g): g is Generation => !!g && popupSel.has(g.id));
-          const closeAndTrash = async () => {
-            const done = await onVariantDelete?.(selected);
-            if (done && done.length) {
-              const removed = new Set(done);
-              pruneVariants(c.id, removed);
-              setPopupSel((prev) => new Set([...prev].filter((id) => !removed.has(id))));
-              // 남은 변형 판정은 최신 카드 기준(삭제 대기 중 뒤에서 append 됐을 수 있어 렌더 스냅샷 대신).
-              const latest = cardsRef.current.find((x) => x.id === c.id) || c;
-              if (variantIds(latest).filter((id) => !removed.has(id)).length === 0) setCardMenu(null);
-            }
-          };
-          const toggleSel = (gid: string, additive: boolean) =>
-            setPopupSel((prev) => {
-              if (!additive) return new Set([gid]);
-              const n = new Set(prev);
-              n.has(gid) ? n.delete(gid) : n.add(gid);
-              return n;
-            });
-          // 클릭 선택 — Shift=앵커~현재 범위 선택(비활성 제외), Ctrl/Cmd=토글, 단독=단일. 앵커는 단독/토글에서 갱신.
-          const selectPopup = (gid: string, e: React.MouseEvent) => {
-            const anchor = popupAnchorRef.current;
-            if (e.shiftKey && anchor && anchor !== gid) {
-              const ai = ids.indexOf(anchor);
-              const bi = ids.indexOf(gid);
-              if (ai >= 0 && bi >= 0) {
-                const [lo, hi] = ai < bi ? [ai, bi] : [bi, ai];
-                const range = ids.slice(lo, hi + 1).filter((id) => !disabledIds.has(id));
-                setPopupSel((prev) => {
-                  const base = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<string>();
-                  for (const id of range) base.add(id);
-                  return base;
-                });
-                return; // 앵커 유지 → 연속 Shift 로 범위 확장 가능
-              }
-            }
-            toggleSel(gid, e.ctrlKey || e.metaKey);
-            popupAnchorRef.current = gid;
-          };
-          return (
-            <div
-              className={"scene-varpop-backdrop" + (gripDragging ? " drag-through" : "")}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setCardMenu(null)}
-            >
-              <div
-                className="scene-varpop-wrap"
-                ref={varpopWrapRef}
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="scene-varpop">
-                  <div className="scene-varpop-hd">
-                    <span>생성 결과 {ids.length}개</span>
-                    <button className="scene-varpop-x" title="닫기" onClick={() => setCardMenu(null)}>
-                      ×
-                    </button>
-                  </div>
-                  <div className="scene-varpop-grid" ref={varGridRef} onMouseDown={onVarGridMouseDown}>
-                    {ids.map((gid) => {
-                      const gg = genData[gid];
-                      const a = gg?.assets?.[0];
-                      const isVideo = a?.type === "video"; // 영상: img 로는 못 그려 썸네일이 비었었음
-                      const rep = gid === c.genId; // 대표
-                      const on = popupSel.has(gid); // 선택
-                      const off = disabledIds.has(gid); // 비활성(회색)
-                      // 선택 폴더(하위 포함) 밖 변형이면 흐리게 — 팝업 안에서 어떤 변형이 그 폴더에
-                      // 들어갔는지 한눈에(캔버스 카드 딤과 동일 규칙). folderSel 없으면 딤 없음.
-                      const folderDim =
-                        !!folderSel &&
-                        !!gg &&
-                        !(
-                          gg.project_id === folderSel.projectId &&
-                          (folderSel.path === "" ||
-                            gg.folder_path === folderSel.path ||
-                            (gg.folder_path?.startsWith(folderSel.path + "/") ?? false))
-                        );
-                      return (
-                        <div key={gid} className="scene-varpop-cell">
-                          {/* 대표 라벨/지정 버튼 — 카드 '밖' 상단(요청). 대표면 라벨, 아니면 지정 버튼. */}
-                          {rep ? (
-                            <span className="scene-varpop-cur">★ 대표</span>
-                          ) : gg && a ? (
-                            <button
-                              className="scene-varpop-rep"
-                              title="이 결과를 카드 대표로 지정"
-                              // preventDefault = 버튼이 포커스를 받아 그리드가 스크롤(옆으로 이동)되는 것 차단.
-                              // mousedown 에서 바로 지정 → 빠르게 눌러도 확실히 선택(클릭 타이밍 의존 제거).
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setCardVariant(c.id, gid);
-                              }}
-                            >
-                              대표
-                            </button>
-                          ) : null}
-                          <div
-                          data-gid={gid}
-                          className={
-                            "scene-varpop-item" +
-                            (rep ? " rep" : "") +
-                            (on ? " on" : "") +
-                            (off ? " off" : "") +
-                            (folderDim ? " foldim" : "")
-                          }
-                          title={gg?.prompt || ""}
-                          onMouseDown={(e) => {
-                            if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지
-                          }}
-                          onAuxClick={(e) => {
-                            // 휠(중간)클릭 = 정보(계보·메인 라이브러리 카드와 동일)
-                            if (e.button === 1 && gg) {
-                              e.preventDefault();
-                              onInfo?.({ kind: "generation", gen: gg, x: e.clientX, y: e.clientY });
-                            }
-                          }}
-                          onClick={(e) => selectPopup(gid, e)}
-                          onDoubleClick={() => a && openPreviewAt(gid)}
-                        >
-                          {/* 영상도 확실히 보이게 — 썸네일 있으면 포스터, 없으면 첫 프레임(video). */}
-                          <MediaThumbnail
-                            thumb={gg ? thumbOf(gg) : null}
-                            isVideo={isVideo}
-                            src={a?.file_path}
-                            fallback={
-                              gg && (gg.status === "failed" || gg.status === "nsfw") ? (
-                                // 실패·NSFW = 메인 카드와 동일한 경고 비주얼(어두운 빨강 + ⚠ + '실패').
-                                <div
-                                  className={`thumb-placeholder status-${gg.status}`}
-                                  title={gg.error || undefined}
-                                >
-                                  {generationStatusLabelFor(gg.status, gg.error)}
-                                </div>
-                              ) : (
-                                <span className="scene-varpop-ph">{String(gg?.status || "…")}</span>
-                              )
-                            }
-                          />
-                          {isVideo && <span className="scene-varpop-vid">▶</span>}
-                          {/* 좌상단 S/T/C — 생성탭 카드(.card-tl)와 동일 룩·조작(공유/태그/코멘트) */}
-                          {gg && (
-                            <div className="card-tl">
-                              {(gg.is_mine ||
-                                gg.is_final ||
-                                (gg.shared && (canFinalize ? canFinalize(gg) : true))) && (
-                                <button
-                                  className={
-                                    "card-sf" + (gg.shared ? " on" : "") + (gg.is_final ? " final" : "")
-                                  }
-                                  title={
-                                    gg.is_final
-                                      ? "최종(골드) — 더블클릭=최종 해제"
-                                      : gg.is_mine
-                                        ? gg.shared
-                                          ? "팀 공유됨 · 클릭=해제 · 더블클릭=최종"
-                                          : "팀에 공유 (클릭) · 최종은 공유 후 더블클릭"
-                                        : "더블클릭=최종 지정 (Supervisor)"
-                                  }
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onNodeSClick(gg);
-                                  }}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    onNodeSDouble(gg);
-                                  }}
-                                >
-                                  {gg.is_final ? "★" : "S"}
-                                </button>
-                              )}
-                              <button
-                                className={"card-cm" + (gg.tags.length ? " on" : "")}
-                                title={
-                                  gg.tags.length
-                                    ? `태그: ${gg.tags.join(", ")} · 클릭=태그 편집`
-                                    : "태그 편집"
-                                }
-                                onMouseDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setTagEditGid((cur) => (cur === gid ? null : gid));
-                                }}
-                              >
-                                T
-                              </button>
-                              <button
-                                className={"card-cm" + (gg.has_unread ? " alert" : "")}
-                                title={
-                                  gg.has_unread
-                                    ? `새 코멘트 · 총 ${gg.comment_count}개`
-                                    : gg.comment_count
-                                      ? `코멘트 ${gg.comment_count}개`
-                                      : "코멘트 스레드 열기"
-                                }
-                                onMouseDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onOpenComments?.(gg);
-                                }}
-                              >
-                                C
-                              </button>
-                            </div>
-                          )}
-                          {/* 좌상단 그립(생성탭 .card-drag-grip 과 동일 — S/T/C 바로 아래). 끌어내려/클릭해 프롬프트 재사용. */}
-                          {gg && a && (
-                            <span
-                              className="card-drag-grip"
-                              draggable
-                              title="클릭 또는 끌어내려 프롬프트 재사용(프롬프트·옵션 불러오기)"
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                dispatchAppEvent(APP_EVENTS.reusePrompt, gg.id);
-                              }}
-                              onDragStart={(e) => {
-                                e.stopPropagation();
-                                e.dataTransfer.setData(DRAG_TYPES.generation, gg.id);
-                                e.dataTransfer.effectAllowed = "copy";
-                                setGripDragging(true);
-                              }}
-                              onDragEnd={() => setGripDragging(false)}
-                            >
-                              ⠿
-                            </span>
-                          )}
-                          {/* 색·비활성 표시(공유/최종은 위 S 버튼이 겸함) */}
-                          {gg?.color && (
-                            <span className="scene-varpop-colorbar" style={{ background: gg.color }} />
-                          )}
-                          {/* S(공유/최종) 확인 — 생성탭 카드와 동일 오버레이. 이 타일이 대상일 때만. */}
-                          {sConfirm?.id === gid && gg && (
-                            <GenerationConfirmOverlay
-                              mode={sConfirm.kind}
-                              shared={!!gg.shared}
-                              isFinal={!!gg.is_final}
-                              onYes={() => onNodeSConfirmYes(gg)}
-                              onNo={onNodeSConfirmNo}
-                            />
-                          )}
-                          {gg && a && (
-                            // 호버 액션 오버레이 — 생성탭 카드(.thumb-overlay / .ov-icon)와 동일 클래스·크기.
-                            // 상단=정보(우), 하단=다운로드/레퍼런스/재생성. 컨테이너 pointer-events:none, 버튼만 활성.
-                            <div className="thumb-overlay">
-                              <div className="ov-top">
-                                <button
-                                  className="ov-icon"
-                                  style={{ marginLeft: "auto" }}
-                                  title="정보"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onInfo?.({ kind: "generation", gen: gg, x: e.clientX, y: e.clientY });
-                                  }}
-                                >
-                                  ⓘ
-                                </button>
-                              </div>
-                              <div className="ov-bottom">
-                                <button
-                                  className="ov-icon"
-                                  title="다운로드"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    downloadOne(a.file_path, downloadName(gg, a.type));
-                                  }}
-                                >
-                                  ⤓
-                                </button>
-                                <button
-                                  className="ov-icon"
-                                  title="레퍼런스로 사용"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    dispatchAppEvent(APP_EVENTS.addReference, gg.id);
-                                  }}
-                                >
-                                  @
-                                </button>
-                                <button
-                                  className="ov-icon"
-                                  title="재생성"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onRegenerate?.(gg);
-                                  }}
-                                >
-                                  ↻
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {popupMarq && (
-                      <div
-                        className="scene-varpop-marq"
-                        style={{ left: popupMarq.l, top: popupMarq.t, width: popupMarq.w, height: popupMarq.h }}
-                      />
-                    )}
-                  </div>
-                </div>
-                {selected.length > 0 && (
-                  <div className="scene-varpop-actions">
-                    <BoardSelectionActionBar
-                      selected={selected}
-                      projects={projects || []}
-                      onShare={(s) => onVariantShare?.(s)}
-                      onDownload={(s) => onVariantDownload?.(s)}
-                      onCompare={(s) => onVariantCompare?.(s)}
-                      onAssign={(pid) => onVariantAssign?.(selected, pid)}
-                      onCreateAndAssign={(name) => onVariantCreateAssign?.(selected, name)}
-                      onDelete={() => void closeAndTrash()}
-                    />
-                  </div>
-                )}
-                {/* 태그 편집 — 타일은 overflow:hidden 이라 잘리므로 팝업 레벨에 절대배치하되, 편집 중인
-                    타일 rect 를 측정해 그 '바로 아래'에 띄운다(카드 밑으로). */}
-                {tagEditGid &&
-                  onSetTags &&
-                  genData[tagEditGid] &&
-                  tagEditorPos &&
-                  (() => {
-                    const g = genData[tagEditGid]!;
-                    return (
-                      <div
-                        className="scene-varpop-tageditor"
-                        style={{ left: tagEditorPos.left, top: tagEditorPos.top }}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <TagEditor
-                          tags={g.tags}
-                          onChange={(next) => applyCardTags(g, next)}
-                          global={
-                            onSetAutoTags
-                              ? {
-                                  all: autoTagOptions ?? [],
-                                  assigned: g.auto_tags ?? [],
-                                  onChange: (next) => applyCardAutoTags(g, next),
-                                }
-                              : null
-                          }
-                          onClose={() => setTagEditGid(null)}
-                        />
-                      </div>
-                    );
-                  })()}
-              </div>
-            </div>
-          );
-        })()}
+      {cardMenu && (
+        <SceneVariantPopup
+          cardId={cardMenu}
+          cards={cards}
+          genData={genData}
+          disabledIds={disabledIds}
+          folderSel={folderSel}
+          projects={projects || []}
+          autoTagOptions={autoTagOptions ?? []}
+          ui={{
+            popupSel,
+            setPopupSel,
+            popupAnchorRef,
+            popupMarq,
+            gripDragging,
+            setGripDragging,
+            tagEditGid,
+            setTagEditGid,
+            tagEditorPos,
+            varGridRef,
+            varpopWrapRef,
+            onVarGridMouseDown,
+          }}
+          gen={{
+            sConfirm,
+            canFinalize,
+            onNodeSClick,
+            onNodeSDouble,
+            onNodeSConfirmYes,
+            onNodeSConfirmNo,
+            onInfo,
+            onOpenComments,
+            onRegenerate,
+            onPreview,
+            tagsEnabled: !!onSetTags,
+            hasAutoTags: !!onSetAutoTags,
+            applyCardTags,
+            applyCardAutoTags,
+          }}
+          actions={{
+            setCardMenu,
+            setCardVariant,
+            pruneVariants,
+            latestCard: (id) => cardsRef.current.find((x) => x.id === id),
+            onVariantDelete,
+            onVariantShare,
+            onVariantDownload,
+            onVariantCompare,
+            onVariantAssign,
+            onVariantCreateAssign,
+          }}
+        />
+      )}
 
       {cards.length === 0 && (
         <div className="scene-empty">
