@@ -83,6 +83,18 @@ class AgentSignals:
         ts = self._last_seen.get(email)
         return ts is not None and (time.monotonic() - ts) < _CONNECTED_WINDOW
 
+    def stats(self) -> dict[str, int]:
+        """운영 관측용 집계. 이메일 등 개인 식별자는 노출하지 않는다."""
+        now = time.monotonic()
+        return {
+            "registered_accounts": len(self._events),
+            "connected_accounts": sum(
+                1 for ts in self._last_seen.values() if (now - ts) < _CONNECTED_WINDOW
+            ),
+            "long_poll_waiters": sum(self._waiters.values()),
+            "pending_signal_accounts": len(self._reasons),
+        }
+
 
 # 앱 전역 단일 인스턴스
 agent_signals = AgentSignals()

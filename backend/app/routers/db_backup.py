@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -41,6 +44,49 @@ def _dir(email: str) -> Path:
     return DATA_DIR / "db-backups" / slug(email)
 
 
+# 계정 폴더별 저장 직렬화 — to_thread 전환으로 같은 계정의 동시 업로드가 실제로 겹칠 수 있어,
+# 저장·정리·개수 계산이 섞이지 않게 폴더 단위로 잠근다(계정 수만큼만 생기니 크기 걱정 없음).
+_dir_locks: dict[str, threading.Lock] = {}
+_dir_locks_guard = threading.Lock()
+
+
+def _dir_lock(d: Path) -> threading.Lock:
+    key = str(d)
+    with _dir_locks_guard:
+        lock = _dir_locks.get(key)
+        if lock is None:
+            lock = _dir_locks[key] = threading.Lock()
+    return lock
+
+
+def _store_backup(d: Path, name: str, data: bytes) -> int:
+    """디스크 쓰기·무결성 검증·오래된 백업 정리(전부 동기 I/O). 남은 백업 개수를 돌려준다.
+
+    최대 512MB 쓰기와 SQLite 검증이 이벤트 루프를 막지 않게 호출부가 스레드로 실행한다.
+    """
+    with _dir_lock(d):
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / name
+        tmp = d / f".upload-{uuid.uuid4().hex}.tmp"
+        tmp.write_bytes(data)
+        try:
+            # 백업 보관본은 복원의 마지막 보루 — 깨진 파일을 받아두면 복원 시점에야 터진다.
+            # quick_check 까지 통과해야 저장(수 MB 메타 DB 라 비용 미미).
+            validate_hub_db(tmp, require_integrity=True)
+        except HubDbValidationError:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.replace(path)
+        # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
+        backups = sorted(d.glob("*.db"))
+        for old in backups[:-_KEEP]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return len(sorted(d.glob("*.db")))
+
+
 @router.post("")
 async def upload_backup(request: Request, file: UploadFile = File(...)):
     """내 계정 DB 백업 1건 저장. 같은 계정 폴더에 타임스탬프로 누적, 오래된 건 _KEEP 넘으면 정리."""
@@ -49,29 +95,13 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
     if len(data) > _MAX_BYTES:
         raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
     d = _dir(acc["email"])
-    d.mkdir(parents=True, exist_ok=True)
-    # 초 단위 충돌 방지를 위해 ns 접미사. (서버 런타임 시간 — Workflow 가 아니라 일반 코드라 무관)
-    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000:03d}.db"
-    path = d / name
-    tmp = d / f".upload-{time.time_ns()}.tmp"
-    tmp.write_bytes(data)
+    # 같은 초 동시 업로드 충돌 방지 — 앞부분 타임스탬프로 시간순 정렬 유지, 뒤 uuid 로 유일성 보장.
+    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.db"
     try:
-        # 백업 보관본은 복원의 마지막 보루 — 깨진 파일을 받아두면 복원 시점에야 터진다.
-        # quick_check 까지 통과해야 저장(수 MB 메타 DB 라 비용 미미).
-        validate_hub_db(tmp, require_integrity=True)
+        count = await asyncio.to_thread(_store_backup, d, name, data)
     except HubDbValidationError as exc:
-        tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
-    tmp.replace(path)
-    # 오래된 백업 정리(이름=타임스탬프라 정렬이 곧 시간순)
-    backups = sorted(d.glob("*.db"))
-    for old in backups[:-_KEEP]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    remaining = sorted(d.glob("*.db"))
-    return {"ok": True, "name": name, "size": len(data), "count": len(remaining)}
+    return {"ok": True, "name": name, "size": len(data), "count": count}
 
 
 @router.get("")

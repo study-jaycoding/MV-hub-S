@@ -71,6 +71,23 @@ def get_project(pid: str) -> Optional[dict[str, Any]]:
         return _row(conn, pid)
 
 
+def get_project_by_name(name: str) -> Optional[dict[str, Any]]:
+    """활성 프로젝트 이름으로 한 건 조회.
+
+    Assets 공유 코멘트는 디스크 마운트 이름(project 문자열)을 사용하므로, 서버 RBAC의
+    project.id 로 되돌릴 때 쓴다. 보관 프로젝트는 새 코멘트 대상에서 제외한다.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM project WHERE name=? AND archived=0 ORDER BY created_at LIMIT 1",
+            (name,),
+        ).fetchone()
+        return _row(conn, row["id"]) if row else None
+
+
 def list_projects(
     include_archived: bool = False,
     member_uid: Optional[str] = None,

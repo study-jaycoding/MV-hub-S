@@ -41,7 +41,12 @@ from ..config import (
 )
 from ..db import get_connection
 from ..services.atomic_io import atomic_write_text
-from ..deps import account_global_roles, account_scope_uid, actor_id
+from ..deps import (
+    account_global_roles,
+    account_scope_uid,
+    actor_id,
+    require_project_role,
+)
 from ..services.media_types import asset_media_type, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request, is_loopback_request
@@ -72,6 +77,29 @@ def _require_local_assets(request: Request) -> None:
     바인드라 그대로 통과한다."""
     if AUTH_ENABLED:
         require_loopback_request(request, "Assets 파일 기능은 로컬 허브에서만 사용할 수 있습니다")
+
+
+def _require_asset_comment_access(project: str, request: Request, *, write: bool) -> None:
+    """공유 Assets 코멘트의 프로젝트 멤버십 경계.
+
+    AUTH on 공유 서버에서는 임의 mount 이름만 알아도 코멘트를 읽고 쓰던 경로를 막는다.
+    실제 활성 프로젝트 이름과 연결되고, 읽기는 프로젝트 멤버 또는 전역 read_all,
+    쓰기는 프로젝트 멤버만 허용한다. 로컬 허브(AUTH off)는 기존 개인 동작을 유지한다.
+    """
+    if not AUTH_ENABLED:
+        return
+    project_row = repo.get_project_by_name(project)
+    if not project_row:
+        raise HTTPException(
+            status_code=403,
+            detail="등록된 프로젝트의 Assets 코멘트만 사용할 수 있습니다",
+        )
+    require_project_role(
+        request,
+        project_row["id"],
+        *rbac.PROJECT_ROLES,
+        read_only=not write,
+    )
 
 
 
@@ -538,7 +566,11 @@ def _prewarm_projects_bg(dirs: list[tuple[Path, bool]]) -> None:
             continue
 
 
-@router.get("/projects", response_model=ProjectsOut)
+@router.get(
+    "/projects",
+    response_model=ProjectsOut,
+    dependencies=[Depends(_require_local_assets)],
+)
 def list_projects(request: Request, background: BackgroundTasks):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
@@ -598,7 +630,7 @@ def _mounts_payload(request: Request) -> dict:
     return {"mounts": manual + auto}
 
 
-@router.get("/mounts")
+@router.get("/mounts", dependencies=[Depends(_require_local_assets)])
 def list_mounts(request: Request):
     """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
     return _mounts_payload(request)
@@ -777,6 +809,10 @@ def asset_meta(request: Request, project: str = Query(...)):
     DB 를 봐서 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 코멘트
     스레드만 공유(서버)라, 프록시 중이면 서버에서 코멘트 뱃지(comment_count·has_unread)만 가져와
     로컬 개인 메타에 머지한다."""
+    if AUTH_ENABLED:
+        # 공유 서버에서 이 엔드포인트는 코멘트 뱃지 합성용으로만 사용된다.
+        # 프로젝트 멤버십 없이 project 문자열만 추측해 코멘트 존재를 조회하지 못하게 한다.
+        _require_asset_comment_access(project, request, write=False)
     actor = actor_id(request)
     # 합본(imp/cap)은 실제 폴더(captures/imports) 메타를 각각 읽어 'captures/…' prefix 로 키를 다시 매겨
     #  합본 트리 경로와 맞춘다 → 메모가 실제 폴더 기준으로 제대로 붙는다. 일반 프로젝트는 그대로 1건.
@@ -844,6 +880,7 @@ def list_comments(request: Request, project: str = Query(...), path: str = Query
         return _proxy.proxy_json(
             "GET", "/api/assets/comments", params={"project": project, "path": path}
         )
+    _require_asset_comment_access(project, request, write=False)
     return repo.list_asset_comments(project, path)
 
 
@@ -855,6 +892,7 @@ def add_comment(body: CommentAddIn, request: Request):
             "POST", "/api/assets/comments",
             body={**body.model_dump(), "project": real_project, "path": real_path},
         )
+    _require_asset_comment_access(real_project, request, write=True)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
@@ -871,6 +909,10 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
         return _proxy.proxy_json(
             "PUT", f"/api/assets/comments/{comment_id}", body=body.model_dump()
         )
+    scope = repo.get_asset_comment_scope(comment_id)
+    if not scope:
+        raise HTTPException(status_code=404, detail="코멘트 없음")
+    _require_asset_comment_access(scope["project"], request, write=True)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
@@ -887,6 +929,10 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
 def delete_comment(comment_id: str, request: Request):
     if _proxy.proxying():
         return _proxy.proxy_json("DELETE", f"/api/assets/comments/{comment_id}")
+    scope = repo.get_asset_comment_scope(comment_id)
+    if not scope:
+        raise HTTPException(status_code=404, detail="코멘트 없음")
+    _require_asset_comment_access(scope["project"], request, write=True)
     try:
         repo.delete_asset_comment(comment_id, actor_id(request))
     except PermissionError as e:
@@ -902,6 +948,7 @@ def read_comments(body: CommentReadIn, request: Request):
             "POST", "/api/assets/comments/read",
             body={**body.model_dump(), "project": real_project, "path": real_path},
         )
+    _require_asset_comment_access(real_project, request, write=False)
     repo.mark_asset_comments_read(actor_id(request), real_project, real_path)
     return {"ok": True}
 
@@ -944,21 +991,21 @@ def prune_broken_sources(request: Request):
     return {"pruned": len(pruned), "relinked": relinked, "items": pruned}
 
 
-@router.put("/tags")
+@router.put("/tags", dependencies=[Depends(_require_local_assets)])
 def asset_set_tags(body: AssetTagsIn, request: Request):
     real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     repo.set_asset_tags(real_project, real_path, body.tags, actor_id(request))
     return {"ok": True}
 
 
-@router.put("/comment")
+@router.put("/comment", dependencies=[Depends(_require_local_assets)])
 def asset_set_comment(body: AssetCommentIn, request: Request):
     real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     repo.set_asset_comment(real_project, real_path, body.comment, actor_id(request))
     return {"ok": True}
 
 
-@router.put("/color")
+@router.put("/color", dependencies=[Depends(_require_local_assets)])
 def asset_set_color(body: AssetColorIn, request: Request):
     real_project, real_path = _real_meta_key(body.project, body.path)  # 합본이면 실제 폴더 기준으로
     repo.set_asset_color(real_project, real_path, body.color, actor_id(request))

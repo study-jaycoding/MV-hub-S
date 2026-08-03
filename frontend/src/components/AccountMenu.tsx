@@ -17,7 +17,7 @@ import type { Account, ReportedHfStatus, Workspace } from "../types";
 // 힉스필드 팀 플랜 월 크레딧 한도(게이지 분모). CLI 가 총 한도를 안 주므로(account status·
 // workspace list·transactions 모두 잔액/차감만) 힉스필드 웹처럼 비율 게이지를 그리려면
 // 총량이 필요 → Jay 지정 상수. 팀 플랜 기준이며, 바꾸려면 이 값만 고치면 된다.
-const MONTHLY_CREDIT_MAX = 9000;
+const MONTHLY_CREDIT_MAX = 200010;
 // 점 세그먼트 게이지(힉스필드 스타일)의 총 칸 수.
 const DOT_COUNT = 20;
 

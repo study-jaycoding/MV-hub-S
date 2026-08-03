@@ -11,6 +11,12 @@ cd D:\ClaudeCode\MV-hub-S\release
 .\make_release.bat
 ```
 
+공유 서버에 자동 게시하지 않고 로컬 검증용 패키지만 만들기:
+
+```powershell
+.\make_release.ps1 -SkipPublish
+```
+
 생성 결과:
 
 ```text
@@ -96,7 +102,21 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 4. 버전이 다르면 자동 다운로드/검증/설치
 5. 업데이트 후 필요할 때 `MV_agent.bat` 실행
 
-설치/업데이트는 앱 파일만 덮어쓰며, 작업자 로컬 데이터인 `backend\data`는 zip에 포함하지 않습니다.
+## 직전 버전으로 롤백
+
+`packages` 폴더에 직전 정상 ZIP을 보관한 상태에서 다음 명령을 실행합니다.
+
+```powershell
+.\select_release.ps1 -PackagePath Z:\mvutil\MV_hub_S\packages\MVHub-<직전정상버전>.zip
+```
+
+기존 `latest.json`은 날짜가 붙은 `latest.previous-*.json`으로 보관됩니다. 선택한 ZIP의
+`VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
+이전 버전으로 전환됩니다.
+
+설치/업데이트는 앱 파일만 덮어씁니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
+복사하며, `backend\data`, `data_test`, 테스트 스냅샷, DB, 미디어, 캐시는 zip에 포함하지 않습니다.
+압축 후에도 필수 런타임 존재와 로컬 데이터 부재를 자동 검증하고 실패하면 zip을 폐기합니다.
 
 ## 주의
 

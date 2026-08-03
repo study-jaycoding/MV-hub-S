@@ -13,6 +13,7 @@ import {
   setActiveSceneId as persistActiveScene,
   updateScene,
 } from "./scenes";
+import { clearSceneHistory } from "./sceneUndoStore";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -97,6 +98,7 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
   const removeSceneById = (id: string) => {
     deleteScene(null, id);
+    clearSceneHistory(id); // 삭제된 씬의 undo 히스토리(모듈 store)도 정리 — 메모리 누적 방지
     refreshScenes();
     if (activeSceneId === id) selectScene(null);
   };

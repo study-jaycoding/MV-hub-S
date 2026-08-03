@@ -45,5 +45,29 @@ git checkout feature/pm-dashboard
 3. 백엔드 `py_compile` / 서버 기동(smoke) 확인
 4. 정리 커밋까지 끝낸 뒤 main에 반영(squash 권장)
 
+## 100명 격리 부하 테스트
+
+운영 DB가 아닌 임시 DB와 임시 포트에서 서버를 자동 기동해 로그인·WebSocket·에이전트
+롱폴·목록·검색·짧은 쓰기·미디어를 함께 검증한다. 종료하면 임시 데이터와 서버도 정리된다.
+
+```powershell
+python tools\load_test_100.py --users 100 --duration 60 --cycles 2 --generations-per-user 20 --output load-result.json
+```
+
+자동 통과 기준:
+
+- 워크로드 5xx·전송 실패 0
+- `sqlite_locked_total=0`
+- 전체 p95 500ms 이하
+- WebSocket 100개 연결
+- 에이전트 롱폴 90개 이상 동시 대기
+- 첫 전체 연결 사이클 이후 2차 사이클 RSS 증가 20% 이하
+
+짧은 테스트 통과 후 운영 서버와 같은 사양의 스테이징 PC에서 8시간 지속 테스트를 실행한다.
+
+```powershell
+python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 --output soak-result.json
+```
+
 > 주의: 테스트 런처는 8011 포트를 쓰는 프로세스를 강제 종료한다.
 > 다른 프로그램이 8011을 쓰고 있으면 함께 종료되니 유의.

@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   variantIds,
+  preserveRepresentatives,
   sceneRefFingerprint,
   cardBatch,
   listScenes,
@@ -87,6 +88,44 @@ describe("variantIds", () => {
   });
   it("둘 다 없으면 빈 배열", () => {
     expect(variantIds({ genIds: undefined, genId: null })).toEqual([]);
+  });
+});
+
+describe("preserveRepresentatives (대표 undo 제외)", () => {
+  const mk = (o: Partial<Scene["cards"][number]>): Scene["cards"][number] =>
+    ({ id: "c", kind: "generation", x: 0, y: 0, ...o }) as Scene["cards"][number];
+  it("현재 대표(genId)를 복원 대상에 병합 — 대표는 되돌리지 않는다", () => {
+    const target = [mk({ id: "c", genIds: ["a", "b"], genId: "a" })]; // 스냅샷 대표=a
+    const current = [mk({ id: "c", genIds: ["a", "b"], genId: "b" })]; // 지금 대표=b
+    expect(preserveRepresentatives(target, current)[0].genId).toBe("b");
+  });
+  it("현재 대표가 스냅샷 변형목록에 없으면 목록에 포함시켜 유효화(깨진 참조 방지)", () => {
+    const target = [mk({ id: "c", genIds: ["a"], genId: "a" })]; // 스냅샷엔 b 없음
+    const current = [mk({ id: "c", genIds: ["a", "b"], genId: "b" })];
+    const out = preserveRepresentatives(target, current)[0];
+    expect(out.genId).toBe("b");
+    expect(out.genIds).toContain("b");
+  });
+  it("현재 대표가 없거나(빈 카드) 같으면 스냅샷 그대로", () => {
+    const target = [mk({ id: "c", genIds: ["a"], genId: "a" })];
+    expect(preserveRepresentatives(target, [mk({ id: "c", genId: null })])[0].genId).toBe("a"); // 현재 대표 없음
+    expect(preserveRepresentatives(target, [mk({ id: "c", genId: "a" })])[0]).toBe(target[0]); // 같으면 동일 참조
+  });
+  it("현재 목록에 없는 카드는 스냅샷 그대로", () => {
+    const target = [mk({ id: "gone", genIds: ["a"], genId: "a" })];
+    expect(preserveRepresentatives(target, [])[0].genId).toBe("a");
+  });
+  it("comfy 는 워크플로(content) 바뀌면 대표 보존 안 함 — 옛 결과를 새 워크플로에 안 붙임", () => {
+    const target = [mk({ id: "c", kind: "comfy", genIds: [], genId: null, comfyCfg: { content: "NEW" } } as Partial<Scene["cards"][number]>)];
+    const current = [mk({ id: "c", kind: "comfy", genId: "old", comfyCfg: { content: "OLD" } } as Partial<Scene["cards"][number]>)];
+    const out = preserveRepresentatives(target, current)[0];
+    expect(out.genId ?? null).toBeNull(); // 옛 워크플로 대표 'old' 를 새 워크플로에 주입하지 않음
+    expect(out.genIds ?? []).toEqual([]);
+  });
+  it("comfy 라도 워크플로 같으면 대표 보존", () => {
+    const target = [mk({ id: "c", kind: "comfy", genIds: ["a"], genId: "a", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
+    const current = [mk({ id: "c", kind: "comfy", genIds: ["a", "b"], genId: "b", comfyCfg: { content: "SAME" } } as Partial<Scene["cards"][number]>)];
+    expect(preserveRepresentatives(target, current)[0].genId).toBe("b");
   });
 });
 

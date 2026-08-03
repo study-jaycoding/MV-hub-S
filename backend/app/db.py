@@ -147,6 +147,12 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA mmap_size = 268435456;")
     # journal_mode=WAL 은 DB 파일에 영속(init_db 가 1회 설정)되므로 커넥션마다 재설정하지 않는다 —
     # 매 요청 재설정은 락을 잡고 체크포인트를 유발해 오히려 지연을 만든다.
+    try:
+        from .services.runtime_metrics import metrics
+
+        metrics.record_db_connection_opened()
+    except Exception:
+        pass  # 관측 실패가 DB 연결을 막지 않게
     return conn
 
 
@@ -222,7 +228,14 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
         yield conn
         if conn.in_transaction:
             conn.execute("COMMIT;")
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower():
+            try:
+                from .services.runtime_metrics import metrics
+
+                metrics.record_db_locked()
+            except Exception:
+                pass  # 관측 실패가 원래 DB 예외를 가리지 않게
         try:
             if conn.in_transaction:
                 conn.execute("ROLLBACK;")

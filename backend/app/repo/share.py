@@ -396,8 +396,12 @@ def import_bundle_item(
             else:
                 result = generations._upsert_synced(conn, parsed, worker_id)
             # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
+            # ★기존 행의 작성자가 아닌 재공유자는 오버레이도 건드리지 않는다.
+            # fact 만 막고 아래를 허용하면 빈 auto_tags 번들로 원 작성자의 자동태그를 지우거나,
+            # share 행을 강제로 만들어 비공개 작업을 팀 공개로 바꿀 수 있다. 100명 운영에서는
+            # "id 를 아는 팀원"을 쓰기 권한으로 간주하지 않고 작성자 발행만 권위로 인정한다.
             gid = _find_id_by_job(conn, job_id)
-            if gid:
+            if gid and not fact_blocked:
                 dp = g.get("display_prompt")
                 if dp:
                     conn.execute(

@@ -1,0 +1,68 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$PackagePath,
+    [string]$LatestPath = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+$Package = Get-Item -LiteralPath $PackagePath -ErrorAction Stop
+if ($Package.Extension -ne ".zip") {
+    throw "PackagePath must point to an MV Hub zip package."
+}
+if (-not $LatestPath) {
+    $LatestPath = Join-Path $Package.DirectoryName "latest.json"
+}
+$LatestPath = [System.IO.Path]::GetFullPath($LatestPath)
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$Archive = [System.IO.Compression.ZipFile]::OpenRead($Package.FullName)
+try {
+    $VersionEntry = $Archive.GetEntry("VERSION.txt")
+    if (-not $VersionEntry) {
+        throw "VERSION.txt is missing from package: $($Package.FullName)"
+    }
+    $Reader = New-Object System.IO.StreamReader($VersionEntry.Open())
+    try {
+        $Version = $Reader.ReadToEnd().Trim()
+    }
+    finally {
+        $Reader.Dispose()
+    }
+}
+finally {
+    $Archive.Dispose()
+}
+if (-not $Version) {
+    throw "VERSION.txt is empty in package: $($Package.FullName)"
+}
+
+$Latest = [ordered]@{
+    version = $Version
+    file = $Package.Name
+    sha256 = (Get-FileHash -LiteralPath $Package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    size = $Package.Length
+    created_at = (Get-Date).ToString("s")
+}
+
+$LatestDirectory = Split-Path -Parent $LatestPath
+New-Item -ItemType Directory -Force -Path $LatestDirectory | Out-Null
+if (Test-Path -LiteralPath $LatestPath) {
+    $BackupName = "latest.previous-{0}.json" -f (Get-Date -Format "yyyyMMdd-HHmmss")
+    Copy-Item -LiteralPath $LatestPath -Destination (Join-Path $LatestDirectory $BackupName)
+}
+
+$TemporaryLatest = "$LatestPath.tmp-$PID"
+try {
+    $Latest | ConvertTo-Json | Set-Content -LiteralPath $TemporaryLatest -Encoding UTF8
+    Move-Item -LiteralPath $TemporaryLatest -Destination $LatestPath -Force
+}
+finally {
+    Remove-Item -LiteralPath $TemporaryLatest -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "Selected release:"
+Write-Host "  version: $Version"
+Write-Host "  package: $($Package.FullName)"
+Write-Host "  latest : $LatestPath"
+Write-Host "Workers can now run update_release.bat to install this exact version."

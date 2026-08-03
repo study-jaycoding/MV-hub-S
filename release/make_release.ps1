@@ -7,7 +7,8 @@ param(
     [string]$HiggsfieldRoot = "",
     [switch]$SkipPythonRuntime,
     [switch]$SkipNodeRuntime,
-    [switch]$SkipHiggsfieldCli
+    [switch]$SkipHiggsfieldCli,
+    [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,71 @@ function Copy-RoboChecked {
     & robocopy $Source $Destination /E @ExtraArgs /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -gt 7) {
         throw "robocopy failed: $Source -> $Destination (code $LASTEXITCODE)"
+    }
+}
+
+function Assert-ReleaseArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$ExpectedVersion
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $Entries = @($Archive.Entries)
+        $Names = @($Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
+        $Required = @(
+            "VERSION.txt",
+            "backend/serve.py",
+            "backend/app/main.py",
+            "frontend/dist/index.html",
+            "runtime/python/python.exe",
+            "runtime/node/node.exe",
+            "runtime/higgsfield/higgsfield.cmd"
+        )
+        if ($SkipPythonRuntime) {
+            $Required = @($Required | Where-Object { $_ -ne "runtime/python/python.exe" })
+        }
+        if ($SkipNodeRuntime) {
+            $Required = @($Required | Where-Object { $_ -ne "runtime/node/node.exe" })
+        }
+        if ($SkipHiggsfieldCli) {
+            $Required = @($Required | Where-Object { $_ -ne "runtime/higgsfield/higgsfield.cmd" })
+        }
+        foreach ($Name in $Required) {
+            if ($Names -notcontains $Name) {
+                throw "Release archive is missing required file: $Name"
+            }
+        }
+
+        $Forbidden = @($Names | Where-Object {
+            $_ -match "^backend/(data|data_test|data_backup_[^/]*|\.data_test-incoming-[^/]*|_pm_test_data_snapshots|media|\.pytest_cache|tests)(/|$)" -or
+            $_ -match "^backend/.*\.(db|db-wal|db-shm|sqlite|sqlite3)$" -or
+            $_ -match "^backend/(.*/)?__pycache__(/|$)"
+        })
+        if ($Forbidden.Count -gt 0) {
+            $Preview = ($Forbidden | Select-Object -First 10) -join ", "
+            throw "Release archive contains forbidden local/test data: $Preview"
+        }
+
+        $VersionEntry = $Archive.GetEntry("VERSION.txt")
+        if (-not $VersionEntry) {
+            throw "VERSION.txt is missing from release archive."
+        }
+        $Reader = New-Object System.IO.StreamReader($VersionEntry.Open())
+        try {
+            $ArchiveVersion = $Reader.ReadToEnd().Trim()
+        }
+        finally {
+            $Reader.Dispose()
+        }
+        if ($ArchiveVersion -ne $ExpectedVersion) {
+            throw "Release version mismatch: expected $ExpectedVersion, got $ArchiveVersion"
+        }
+    }
+    finally {
+        $Archive.Dispose()
     }
 }
 
@@ -149,13 +215,31 @@ finally {
 }
 
 Write-Host "[3/8] Copying app files..."
+New-Item -ItemType Directory -Force -Path (Join-Path $Stage "backend") | Out-Null
 Copy-RoboChecked `
-    -Source (Join-Path $ProjectRoot "backend") `
-    -Destination (Join-Path $Stage "backend") `
+    -Source (Join-Path $ProjectRoot "backend\app") `
+    -Destination (Join-Path $Stage "backend\app") `
     -ExtraArgs @(
-        "/XD", "data", "__pycache__",
-        "/XF", "*.log", "*.pyc", "content_hub.db", "content_hub.db-wal", "content_hub.db-shm", "sample_real.json"
+        "/XD", "__pycache__",
+        "/XF", "*.log", "*.pyc"
     )
+
+$BackendFiles = @(
+    "serve.py",
+    "schema.sql",
+    "schema_pg.sql",
+    "requirements.txt",
+    "backfill_import.py",
+    "cleanup_orphan_creators.py",
+    "migrate_to_pg.py",
+    "reset_db.py"
+)
+foreach ($Name in $BackendFiles) {
+    $Src = Join-Path $ProjectRoot "backend\$Name"
+    if (Test-Path -LiteralPath $Src) {
+        Copy-Item -LiteralPath $Src -Destination (Join-Path $Stage "backend\$Name") -Force
+    }
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "frontend") | Out-Null
 Copy-RoboChecked `
@@ -272,6 +356,14 @@ Write-Host "[7/8] Creating zip..."
 $ZipPath = Join-Path $OutputDir "$PackageName.zip"
 Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+try {
+    Assert-ReleaseArchive -ArchivePath $ZipPath -ExpectedVersion $Version
+    Write-Host "      Archive contents validated (required runtime present, local data absent)."
+}
+catch {
+    Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
+    throw
+}
 
 Write-Host "[8/8] Writing latest.json..."
 $Zip = Get-Item -LiteralPath $ZipPath
@@ -297,13 +389,16 @@ Write-Host ""
 # git-ignored). If set and reachable, copy the zip FIRST and latest.json LAST so a
 # worker never sees a latest.json that points to a not-yet-copied zip.
 $PublishTarget = $PublishDir
-if (-not $PublishTarget) {
+if ((-not $SkipPublish) -and (-not $PublishTarget)) {
     $TargetFile = Join-Path $PSScriptRoot "publish_target.txt"
     if (Test-Path -LiteralPath $TargetFile) {
         $PublishTarget = (Get-Content -LiteralPath $TargetFile -Raw).Trim()
     }
 }
-if (-not $PublishTarget) {
+if ($SkipPublish) {
+    Write-Host "[publish] skipped by -SkipPublish. Package remains local for validation."
+}
+elseif (-not $PublishTarget) {
     Write-Host "Upload latest.json and the zip file to your company server packages folder."
     Write-Host "(To automate: put the server packages path in release\publish_target.txt)"
 }
