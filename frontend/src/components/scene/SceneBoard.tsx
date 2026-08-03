@@ -84,7 +84,7 @@ import {
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
-import { refMediaSrc, refMediaType } from "../../lib/sceneMedia";
+import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   setComfyRunning,
   isComfyRunning,
@@ -117,10 +117,11 @@ import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
-import { displayRefThumb, displayThumb, hideBrokenImg, showLoadedImg, thumbOf } from "../../lib/media";
+import { displayThumb, hideBrokenImg, showLoadedImg, thumbOf } from "../../lib/media";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
+import { ReferenceCard } from "./cards/ReferenceCard";
 import { ModelCard } from "./cards/ModelCard";
 import { InputCard } from "./cards/InputCard";
 import { HeadCard } from "./cards/HeadCard";
@@ -159,20 +160,7 @@ const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
 const GROUP_EJECT_SPEED = 3.0;
 
-// 레퍼런스 카드 썸네일 src — 프롬프트 계열(트레이·칩·토큰)과 동일한 공통 헬퍼(displayRefThumb)로 통일.
-// asset 소스면 file_path 로 재생성해 전역 버전 표의 최신 버전을 붙인다(원본이 바뀌면 새 썸네일).
-// 영상은 file_path(포스터), 오디오는 undefined(placeholder). 그 외(원격 URL 등)만 저장 thumb 폴백.
-function refThumbSrc(r: SceneRef): string | undefined {
-  return displayRefThumb(r, 256);
-}
-
-// 레퍼런스 카드 헤더 라벨 — 숫자 대신 어떤 레퍼런스인지(이미지/비디오/오디오)를 표시. 여러 장이면 뒤에 개수.
-function refTypeLabel(refs?: SceneRef[]): string {
-  if (!refs || !refs.length) return "레퍼런스";
-  const t = refs[0].type;
-  const label = t === "video" ? "비디오" : t === "audio" ? "오디오" : "이미지";
-  return refs.length > 1 ? `${label} ${refs.length}` : label;
-}
+// refThumbSrc·refTypeLabel — lib/sceneMedia.ts 로 이동(R2 카드 분할로 카드 컴포넌트들과 공용).
 // refMediaSrc·refMediaType·mediaFileName 은 순수 헬퍼라 sceneMedia.ts 로 분리(상단에서 import).
 
 // 단순 미디어 비교 아이템(레퍼런스 포함) — fallback=로드 실패 시 대체, full=크게 보기용 원본.
@@ -4361,106 +4349,14 @@ export function SceneBoard({
               }
             >
               {isRef ? (
-                <>
-                  {/* 내부 래퍼만 클리핑(둥근 모서리) — 포트는 이 밖이라 잡기 영역이 안 잘린다 */}
-                  <div className="scene-card-inner">
-                    <div className="scene-card-hd">{refTypeLabel(card.refs)}</div>
-                    <div
-                      className={
-                        "scene-card-body" +
-                        ((card.refs?.length ?? 0) <= 1 ? " single" : "") +
-                        (fill ? "" : " fit-contain")
-                      }
-                    >
-                      {(card.refs || []).map((r, i) => {
-                        const isVid = refMediaType(r) === "video";
-                        return (
-                          <div
-                            className="scene-refthumb"
-                            key={i}
-                            title={(r.name || `레퍼런스 ${i + 1}`) + " · 더블클릭=큰 화면 · 미들클릭=정보"}
-                            onMouseDown={(e) => {
-                              if (e.button === 1) e.preventDefault(); // 휠클릭 자동스크롤 방지(정보는 auxclick 에서)
-                            }}
-                            onAuxClick={(e) => {
-                              // 미들클릭 = 정보. asset 토큰(어셋/임포트/캡처) → 어셋창과 동일한 파일 정보 팝업,
-                              //  생성물에서 온 레퍼런스(source_gen_id) → 생성 정보 팝업.
-                              if (e.button !== 1) return;
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const fp = r.file_path || "";
-                              if (fp.startsWith("asset:")) {
-                                const [proj, path] = fp.slice(6).split("|");
-                                if (proj && path) {
-                                  const mt = refMediaType(r);
-                                  onInfo?.({
-                                    kind: "file",
-                                    project: proj,
-                                    node: {
-                                      name: r.name || path.split("/").pop() || path,
-                                      type: mt === "video" ? "video" : mt === "audio" ? "audio" : "image",
-                                      path,
-                                    },
-                                    x: e.clientX,
-                                    y: e.clientY,
-                                  });
-                                  return;
-                                }
-                              }
-                              const g = r.source_gen_id ? genDataRef.current[r.source_gen_id] : undefined;
-                              if (g) onInfo?.({ kind: "generation", gen: g, x: e.clientX, y: e.clientY });
-                            }}
-                            onMouseEnter={
-                              isVid
-                                ? (e) => {
-                                    const v = e.currentTarget.querySelector("video");
-                                    if (v) {
-                                      v.muted = true; // React <video muted> 반영 버그 → 재생 직전 무음 강제
-                                      v.play().catch(() => {});
-                                    }
-                                  }
-                                : undefined
-                            }
-                            onMouseLeave={
-                              isVid
-                                ? (e) => {
-                                    const v = e.currentTarget.querySelector("video");
-                                    if (v) {
-                                      v.pause();
-                                      v.currentTime = 0;
-                                    }
-                                  }
-                                : undefined
-                            }
-                            onDoubleClick={(e) => {
-                              e.stopPropagation();
-                              const url = refMediaSrc(r);
-                              if (url) onPreview?.({ url, type: refMediaType(r), name: r.name || "레퍼런스" });
-                            }}
-                          >
-                            <MediaThumbnail
-                              thumb={refThumbSrc(r)}
-                              isVideo={isVid}
-                              src={refMediaSrc(r)}
-                              fallback={<span className="scene-refthumb-ph" />}
-                              retrySrcOnThumbError
-                            />
-                            {isVid ? (
-                              <span className="scene-refthumb-vid vid">▶</span>
-                            ) : refMediaType(r) === "audio" ? (
-                              <span className="scene-refthumb-vid aud">♪</span>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <span
-                    className="scene-port out"
-                    onMouseDown={(e) => onOutPortDown(e, card.id)}
-                    title="드래그해 생성 카드에 연결"
-                  />
-                </>
+                <ReferenceCard
+                  card={card}
+                  fill={fill}
+                  getGen={(id) => genDataRef.current[id]}
+                  onInfo={onInfo}
+                  onPreview={onPreview}
+                  onOutPortDown={onOutPortDown}
+                />
               ) : card.kind === "text" ? (
                 (() => {
                   // 연결된 레퍼런스(레퍼런스 카드 refs + 생성물)를 순서대로 @image1/@video1... 에 매핑. input 은 실제 소스로 해석.
