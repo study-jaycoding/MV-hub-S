@@ -378,8 +378,9 @@ async def _websocket_worker(
         connect_kwargs: dict[str, Any] = {
             "open_timeout": 15,
             "close_timeout": 3,
-            "ping_interval": 20,
-            "ping_timeout": 20,
+            # 브라우저는 프로토콜 ping을 직접 예약하지 않고 서버 ping에 자동 응답한다.
+            # 프론트와 같은 텍스트 ping만 아래 루프에서 보내 동기화된 이중 ping 폭주를 피한다.
+            "ping_interval": None,
         }
         if ssl_context is not None:
             connect_kwargs["ssl"] = ssl_context
@@ -390,7 +391,7 @@ async def _websocket_worker(
             ready.set()
             while not stop.is_set():
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=10)
+                    await asyncio.wait_for(stop.wait(), timeout=25)
                 except asyncio.TimeoutError:
                     await websocket.send("ping")
     except Exception as exc:  # noqa: BLE001 — 부하 결과로 수집
@@ -518,8 +519,6 @@ async def _run_load(
             for token in tokens
         )
     )
-    baseline = await _runtime_snapshot(base_url, tokens[0], ssl_context)
-
     stop_ws = asyncio.Event()
     ws_errors: list[str] = []
     ws_ready = [asyncio.Event() for _ in tokens]
@@ -555,6 +554,11 @@ async def _run_load(
         )
         for token in tokens
     ]
+
+    # TLS·WebSocket·롱폴 연결 버퍼가 만들어진 뒤를 기준점으로 잡아 정상 초기 할당을
+    # 메모리 누수로 오인하지 않는다. 이후 지속 워크로드에서 추가로 늘어난 양만 비교한다.
+    await asyncio.sleep(1.0)
+    baseline = await _runtime_snapshot(base_url, tokens[0], ssl_context)
 
     deadline = time.monotonic() + duration
     workload_tasks = [

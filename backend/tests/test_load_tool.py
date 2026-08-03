@@ -1,6 +1,8 @@
 """부하 테스트 순수 집계·판정 테스트."""
 
+import asyncio
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -144,6 +146,48 @@ class LoadToolTests(unittest.TestCase):
         )
         self.assertEqual(tls["CONTENT_HUB_SSL_CERTFILE"], r"C:\Temp\cert.pem")
         self.assertEqual(tls["CONTENT_HUB_SSL_KEYFILE"], r"C:\Temp\key.pem")
+
+    def test_websocket_client_matches_browser_keepalive(self):
+        captured = {}
+
+        class FakeConnection:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        def fake_connect(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return FakeConnection()
+
+        fake_websockets = SimpleNamespace(connect=fake_connect)
+
+        async def run_worker():
+            stop = asyncio.Event()
+            stop.set()
+            ready = asyncio.Event()
+            errors = []
+            with mock.patch.dict(sys.modules, {"websockets": fake_websockets}):
+                await load_tool._websocket_worker(
+                    "wss://127.0.0.1:8443",
+                    "token",
+                    stop,
+                    ready,
+                    errors,
+                    mock.sentinel.ssl_context,
+                )
+            self.assertTrue(ready.is_set())
+            self.assertEqual(errors, [])
+
+        asyncio.run(run_worker())
+        self.assertEqual(captured["url"], "wss://127.0.0.1:8443/ws?token=token")
+        self.assertIsNone(captured["kwargs"]["ping_interval"])
+        self.assertIs(
+            captured["kwargs"]["ssl"],
+            mock.sentinel.ssl_context,
+        )
 
     def test_temp_cleanup_retries_transient_windows_lock(self):
         transient_lock = PermissionError(32, "다른 프로세스가 파일을 사용 중입니다")
