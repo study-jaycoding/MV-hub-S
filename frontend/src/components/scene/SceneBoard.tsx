@@ -73,7 +73,6 @@ import {
   fanOffset,
   refLaneOrderIndex,
   resolveEdgeRole,
-  resolveInputSourceId,
   resolvePortEdges,
 } from "../../lib/sceneEdges";
 import {
@@ -115,8 +114,6 @@ import { flashMsg } from "../../lib/flash";
 import { saveSceneHistory, loadSceneHistory, sameSnap } from "../../lib/sceneUndoStore";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
-import { ViewSequencePreview } from "./ViewSequencePreview";
-import { spotlightParamLabel, spotlightValueLabel } from "../../lib/spotlightPromptConfig";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { MediaThumbnail } from "../MediaThumbnail";
@@ -124,6 +121,11 @@ import { displayRefThumb, displayThumb, hideBrokenImg, showLoadedImg, thumbOf } 
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
+import { ModelCard } from "./cards/ModelCard";
+import { InputCard } from "./cards/InputCard";
+import { HeadCard } from "./cards/HeadCard";
+import { ViewCard } from "./cards/ViewCard";
+import { GROUP_COLORS } from "./sceneColors";
 
 const CARD_W = 152;
 const CARD_H = 130;
@@ -152,8 +154,7 @@ const GRID = 22;
 const CARD_MIN_W = GRID * 5; // 110
 const CARD_MIN_H = GRID * 3; // 66
 const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
-// 그룹 고정 색 팔레트(팝오버 프리셋). 이 외의 색은 '커스텀'(네이티브 컬러픽커)으로 지정.
-const GROUP_COLORS = ["#e5484d", "#f5a524", "#e8c341", "#46a758", "#3b9eff", "#8b7bff", "#e93d82", "#8b98a5"];
+// 그룹 고정 색 팔레트 — sceneColors.ts 로 이동(HeadCard 와 공용, R2 분할).
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
 const GROUP_EJECT_SPEED = 3.0;
@@ -4611,49 +4612,7 @@ export function SceneBoard({
                   );
                 })()
               ) : card.kind === "model" ? (
-                <>
-                  {/* 모델 노드 — 설정한 모델 정보 표시. (더블클릭 모델피커는 후속 단계) */}
-                  <div className="scene-card-hd model scene-card-hd-float">모델</div>
-                  <div className="scene-card-inner scene-modelnode">
-                    {card.modelCfg?.model ? (
-                      <div className="scene-modelnode-body">
-                        {/* 상단 중앙 = 모델명·타입, 아래 = 설정한 옵션 전부(라벨: 값) */}
-                        <div className="scene-modelnode-head">
-                          <div className="scene-modelnode-name">
-                            {card.modelCfg.modelName || card.modelCfg.model}
-                          </div>
-                          {card.modelCfg.type && (
-                            <div className="scene-modelnode-type">{card.modelCfg.type}</div>
-                          )}
-                        </div>
-                        {card.modelCfg.params && Object.keys(card.modelCfg.params).length > 0 && (
-                          <div className="scene-modelnode-params">
-                            {Object.entries(card.modelCfg.params).map(([k, v]) => (
-                              <div key={k} className="scene-modelnode-param">
-                                <span className="k">{spotlightParamLabel(k)}</span>
-                                <span className="v">{spotlightValueLabel(String(v))}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="scene-modelnode-body">
-                        <div className="scene-modelnode-empty">더블클릭해 모델 설정</div>
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className="scene-port out"
-                    onMouseDown={(e) => onOutPortDown(e, card.id)}
-                    title="드래그해 생성 카드 모델 입력에 연결(주황)"
-                  />
-                  <span
-                    className="scene-resize"
-                    onMouseDown={(e) => onResizeDown(e, card.id)}
-                    title="드래그해 크기 조절"
-                  />
-                </>
+                <ModelCard card={card} onOutPortDown={onOutPortDown} onResizeDown={onResizeDown} />
               ) : card.kind === "list" ? (
                 (() => {
                   // 동종 수집기 — 생성카드들(→View 재생) 또는 텍스트들(→합친 텍스트). input(무선)은 실제 소스로 해석.
@@ -4885,62 +4844,16 @@ export function SceneBoard({
                   );
                 })()
               ) : card.kind === "view" ? (
-                (() => {
-                  // 뷰어 끝점 — 생성물(직접+generation-list)은 미리보기로 재생, 텍스트(text·text-list)는 표시.
-                  //  clips 는 buildViewClips 가 비활성(회색) 결과를 제외한 목록 → hasMedia 도 이 기준으로 판정.
-                  const clips = buildViewClips(card.id, cardsById, resolvedEdges);
-                  const texts = collectViewTexts(card.id, cardsById, resolvedEdges);
-                  const hasMedia = clips.length > 0;
-                  const hasText = texts.length > 0;
-                  return (
-                    <>
-                      <div className="scene-card-hd view scene-card-hd-float">{t("미리보기")}</div>
-                      <div className="scene-card-inner scene-viewnode">
-                        <div className="scene-viewnode-body">
-                          {hasMedia ? (
-                            // '합쳐진 영상' 한 화면 미리보기 — 대표 프레임을 크게, 마우스 올리면 순서대로 이어 재생.
-                            <ViewSequencePreview clips={clips} />
-                          ) : hasText ? (
-                            // 연결된 텍스트의 실제 내용을 표시(개수 대신).
-                            <div className="scene-viewtext">{texts.join("\n\n")}</div>
-                          ) : (
-                            <div className="scene-viewnode-empty">생성물/텍스트를 연결</div>
-                          )}
-                        </div>
-                        {/* 연결이 있을 때만 버튼 노출 — 영상=재생, 텍스트=텍스트 보기, 아무것도 없으면 버튼 없음. */}
-                        {hasMedia ? (
-                          <button
-                            className="scene-view-play"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              playView(card.id);
-                            }}
-                          >
-                            ▶ 재생
-                          </button>
-                        ) : hasText ? (
-                          <button
-                            className="scene-view-play"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewTextModal(texts);
-                            }}
-                          >
-                            📄 텍스트 보기
-                          </button>
-                        ) : null}
-                      </div>
-                      <span className="scene-port in" title="생성 카드 / 텍스트 / 리스트 / Comfy 결과를 연결" />
-                      <span
-                        className="scene-resize"
-                        onMouseDown={(e) => onResizeDown(e, card.id)}
-                        title="드래그해 크기 조절"
-                      />
-                    </>
-                  );
-                })()
+                <ViewCard
+                  card={card}
+                  cardsById={cardsById}
+                  resolvedEdges={resolvedEdges}
+                  buildViewClips={buildViewClips}
+                  playView={playView}
+                  setViewTextModal={setViewTextModal}
+                  onResizeDown={onResizeDown}
+                  t={t}
+                />
               ) : card.kind === "output" ? (
                 <OutputCard
                   card={card}
@@ -4951,53 +4864,15 @@ export function SceneBoard({
                   flushPending={flushPending}
                 />
               ) : card.kind === "input" ? (
-                (() => {
-                  // Input(무선 수신) — output 채널 하나를 골라 그 소스에 직접 연결한 것처럼 사용.
-                  const outputs = cards.filter((c) => c.kind === "output");
-                  const realId = resolveInputSourceId(card.id, cardsById, edges);
-                  const real = realId ? cardsById.get(realId) : undefined;
-                  const k = real?.kind;
-                  const chOk = !!card.channel && outputs.some((o) => o.id === card.channel);
-                  const channelName = chOk ? (cardsById.get(card.channel!)?.text || "").trim() : "";
-                  return (
-                    <>
-                      <div className={"scene-card-inner scene-portnode in oc-" + (k || "none")}>
-                        <div className="scene-card-hd portin">INPUT</div>
-                        <div className="scene-portnode-body">
-                          {/* 본문 = 고른 채널 이름(입력값)만. 출력 선택 드롭다운은 선택 시 카드 아래 툴바에서. */}
-                          <div className="scene-portnode-val">
-                            {channelName || (
-                              <span className="scene-portnode-valph">
-                                {card.channel ? "⚠ 미연결" : "출력 선택"}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      {sel && (
-                        <div className="scene-portedit" onMouseDown={(e) => e.stopPropagation()}>
-                          <select
-                            className="scene-portedit-sel"
-                            value={chOk ? card.channel : ""}
-                            onChange={(e) => setNodeChannel(card.id, e.target.value)}
-                          >
-                            <option value="">출력 선택…</option>
-                            {outputs.map((o) => (
-                              <option key={o.id} value={o.id}>
-                                {(o.text || "").trim() || "(이름없음)"}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      <span
-                        className="scene-port out"
-                        onMouseDown={(e) => onOutPortDown(e, card.id)}
-                        title="드래그해 원하는 곳에 연결(고른 출력의 소스처럼 동작)"
-                      />
-                    </>
-                  );
-                })()
+                <InputCard
+                  card={card}
+                  sel={sel}
+                  cards={cards}
+                  cardsById={cardsById}
+                  edges={edges}
+                  setNodeChannel={setNodeChannel}
+                  onOutPortDown={onOutPortDown}
+                />
               ) : card.kind === "render" ? (
                 (() => {
                   // 렌더(배치 생성) — 연결된 생성카드들을 모아 Render 버튼 한 번으로 각 카드를 자기 모델·refs·텍스트로 생성.
@@ -5587,104 +5462,18 @@ export function SceneBoard({
                   );
                 })()
               ) : card.kind === "head" ? (
-                (() => {
-                  // Head(제목) — 포트 없는 주석 글씨. 박스는 글씨에 맞춰 자동 크기. 색·글씨크기는 선택 시 컨트롤로.
-                  const editing = editTextId === card.id;
-                  const fs = card.fontSize ?? 32;
-                  const col = card.color || "#e8c341";
-                  return (
-                    <>
-                      {editing ? (
-                        // 편집 textarea — 멀티라인(Shift+Enter=줄바꿈, Enter=완료). 박스는 글씨에 맞춰 자동
-                        //  크기(field-sizing:content). rows 는 미지원 브라우저 폴백용 초기 줄 수.
-                        <textarea
-                          className="scene-headnode-edit"
-                          value={card.text || ""}
-                          placeholder="제목"
-                          autoFocus
-                          rows={Math.max(1, (card.text || "제목").split("\n").length)}
-                          wrap="off"
-                          style={{ fontSize: fs, color: col }}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onBlur={() => { setEditTextId(null); flushPending(); }} // 편집 끝나면 밀린 저장 확정
-                          onChange={(e) => setNodeText(card.id, e.target.value)}
-                          onKeyDown={(e) => {
-                            e.stopPropagation();
-                            if (e.key === "Escape") {
-                              setEditTextId(null);
-                              return;
-                            }
-                            // Enter=편집 완료, Shift+Enter=줄바꿈(기본 동작 허용).
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              setEditTextId(null);
-                            }
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className="scene-headnode-text"
-                          style={{ fontSize: fs, color: col }}
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            setEditTextId(card.id);
-                          }}
-                        >
-                          {card.text || "제목"}
-                        </div>
-                      )}
-                      {sel && !editing && (
-                        <div
-                          className="scene-headnode-ctrls"
-                          onMouseDown={(e) => e.stopPropagation()}
-                        >
-                          {/* 가운데 — 글씨 크기 스테퍼 */}
-                          <div className="scene-headnode-fs" title="글씨 크기">
-                            <button onClick={() => setNodeFontSize(card.id, fs - 4)}>−</button>
-                            <span>{fs}</span>
-                            <button onClick={() => setNodeFontSize(card.id, fs + 4)}>＋</button>
-                          </div>
-                          {/* 맨 우측 — 글씨 색(그룹처럼 스와치 팔레트 팝업) */}
-                          <div className="scene-headnode-colorwrap">
-                            <button
-                              className="scene-group-color"
-                              title="글씨 색"
-                              style={{ background: col }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setColorPopId((p) => (p === card.id ? null : card.id));
-                              }}
-                            />
-                            {colorPopId === card.id && (
-                              <div className="scene-group-colorpop">
-                                {GROUP_COLORS.map((c) => (
-                                  <button
-                                    key={c}
-                                    className={"scene-group-swatch" + (col === c ? " on" : "")}
-                                    style={{ background: c }}
-                                    title={c}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setNodeColor(card.id, c);
-                                      setColorPopId(null);
-                                    }}
-                                  />
-                                ))}
-                                <label className="scene-group-swatch custom" title="커스텀 색">
-                                  <input
-                                    type="color"
-                                    value={col}
-                                    onChange={(e) => setNodeColor(card.id, e.target.value)}
-                                  />
-                                </label>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()
+                <HeadCard
+                  card={card}
+                  sel={sel}
+                  editing={editTextId === card.id}
+                  colorPopId={colorPopId}
+                  setEditTextId={setEditTextId}
+                  setColorPopId={setColorPopId}
+                  setNodeText={setNodeText}
+                  setNodeFontSize={setNodeFontSize}
+                  setNodeColor={setNodeColor}
+                  flushPending={flushPending}
+                />
               ) : (
                 <>
                   {comfyWaitingIds.has(card.id) || genWaitingFromComfy.has(card.id) ? (
