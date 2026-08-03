@@ -20,6 +20,12 @@ from typing import Any, Optional
 from ..config import DATA_DIR, MEDIA_DIR
 
 
+_COMMON_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+_OTHER_METHOD = "OTHER"
+_OTHER_STATUS = "other"
+_OTHER_PATH = "_other"
+
+
 def _percentile(sorted_values: list[float], percentile: float) -> float:
     if not sorted_values:
         return 0.0
@@ -28,7 +34,7 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
 
 
 class RuntimeMetrics:
-    def __init__(self, sample_max: int = 5000) -> None:
+    def __init__(self, sample_max: int = 5000, path_max: int = 256) -> None:
         self._lock = threading.Lock()
         self._disk_scan_lock = threading.Lock()
         self._started_at = time.time()
@@ -37,6 +43,7 @@ class RuntimeMetrics:
         self._status_counts: Counter[str] = Counter()
         self._method_counts: Counter[str] = Counter()
         self._path_counts: Counter[str] = Counter()
+        self._path_max = max(16, path_max)
         self._in_flight = 0
         self._request_total = 0
         self._db_locked_total = 0
@@ -72,15 +79,28 @@ class RuntimeMetrics:
         path: str = "/",
         was_in_flight: bool = False,
     ) -> None:
-        status_class = f"{max(0, int(status)) // 100}xx"
+        status_code = int(status)
+        status_class = (
+            f"{status_code // 100}xx" if 100 <= status_code <= 599 else _OTHER_STATUS
+        )
+        normalized_method = (method or "").upper()
+        if normalized_method not in _COMMON_METHODS:
+            normalized_method = _OTHER_METHOD
+        normalized_path = path or "/"
         with self._lock:
             if was_in_flight:
                 self._in_flight = max(0, self._in_flight - 1)
             self._request_total += 1
             self._latencies.append(max(0.0, float(elapsed_ms)))
             self._status_counts[status_class] += 1
-            self._method_counts[(method or "UNKNOWN").upper()] += 1
-            self._path_counts[path or "/"] += 1
+            self._method_counts[normalized_method] += 1
+            if (
+                normalized_path in self._path_counts
+                or len(self._path_counts) < self._path_max - 1
+            ):
+                self._path_counts[normalized_path] += 1
+            else:
+                self._path_counts[_OTHER_PATH] += 1
 
     def record_db_locked(self) -> None:
         with self._lock:

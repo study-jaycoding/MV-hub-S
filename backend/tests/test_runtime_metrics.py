@@ -37,6 +37,28 @@ class RuntimeMetricsTests(unittest.TestCase):
         self.assertEqual(snapshot["sqlite_locked_total"], 1)
         self.assertEqual(snapshot["db_connections_opened_total"], 1)
 
+    def test_unique_paths_are_bounded_and_overflow_is_aggregated(self):
+        metrics = RuntimeMetrics(sample_max=100, path_max=32)
+        for index in range(10_000):
+            metrics.record_request(1.0, status=200, path=f"/random/{index}")
+
+        snapshot = metrics.request_snapshot()
+        self.assertLessEqual(len(metrics._path_counts), 32)
+        self.assertEqual(metrics._path_counts["_other"], 10_000 - 31)
+        self.assertEqual(snapshot["top_paths"][0]["path"], "_other")
+
+    def test_unusual_method_and_status_share_bounded_buckets(self):
+        metrics = RuntimeMetrics()
+        for index in range(1000):
+            metrics.record_request(
+                1.0,
+                status=10_000 + index,
+                method=f"CUSTOM-{index}",
+            )
+        snapshot = metrics.request_snapshot()
+        self.assertEqual(snapshot["methods"], {"OTHER": 1000})
+        self.assertEqual(snapshot["status"], {"other": 1000})
+
     def test_process_snapshot_has_safe_cross_platform_shape(self):
         metrics = RuntimeMetrics()
         snapshot = metrics.process_snapshot()

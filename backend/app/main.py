@@ -388,7 +388,9 @@ async def runtime_observation(request: Request, call_next):
         return response
     finally:
         route = request.scope.get("route")
-        route_path = getattr(route, "path", None) or request.url.path
+        # 라우팅 전에 인증 거부되거나 존재하지 않는 URL은 raw path 를 통계 key 로 쓰지 않는다.
+        # 공격자가 매번 다른 URL을 보내도 RuntimeMetrics Counter 가 무한히 늘지 않게 한 버킷으로 합친다.
+        route_path = getattr(route, "path", None) or "_unmatched"
         elapsed_ms = runtime_metrics.request_end(
             started=started,
             status=status,
@@ -401,7 +403,8 @@ async def runtime_observation(request: Request, call_next):
                     _runtime_log,
                     "http_request",
                     method=request.method,
-                    path=route_path,
+                    # 회전 로그에는 실제 경로를 남겨 운영 진단 가능성을 유지한다.
+                    path=request.url.path,
                     status=status,
                     elapsed_ms=round(elapsed_ms, 2),
                 )
