@@ -11,7 +11,7 @@ import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
 
 // HistoryBoardNode 전달분 — SceneBoard 의 안정 참조들(필터·핸들러). 새 값 도입 금지(참조 그대로 통과).
-type HistPass = {
+export type HistPass = {
   disabledIds: Set<string>;
   typeFilter: React.ComponentProps<typeof HistoryBoardNode>["typeFilter"];
   colorFilter: React.ComponentProps<typeof HistoryBoardNode>["colorFilter"];
