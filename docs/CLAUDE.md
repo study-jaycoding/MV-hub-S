@@ -13,7 +13,7 @@ Higgsfield CLI로 이미지/영상을 생성하고, 생성에 쓰인 프롬프�
 - CLI 브리지: `asyncio` subprocess 로 `higgsfield` CLI 래핑
 - 실시간: WebSocket (생성 진행률 / 공유 알림)
 - 프론트엔드: Vite + React + react-window (썸네일 가상 스크롤)
-- 공유 서버(2단계): FastAPI + PostgreSQL + MinIO(S3 호환)
+- 공유 서버(현재): FastAPI + SQLite(WAL). PostgreSQL + MinIO는 규모 신호가 확인된 뒤 재설계
 - 패키지: 백엔드는 `uv` 또는 `pip`, 프론트는 `pnpm`
 
 ## 설계 원칙 (불변 규칙)
@@ -55,7 +55,7 @@ content-hub/
 2. FastAPI 골격 + 라이브러리 조회 라우터 (로컬 탐색)
 3. `cli_bridge.py` + 잡 큐 + WebSocket 진행률 (생성)
 4. React UI — 썸네일 그리드 / 필터 / 생성 모달
-5. publish / import 엔드포인트 + 공유 서버 (PostgreSQL + MinIO)
+5. publish / import 엔드포인트 + SQLite 공유 서버. PostgreSQL + MinIO는 장기 확장 항목
 
 ## 컨벤션
 - 주석·커밋 메시지는 한국어 OK. 코드 식별자는 영어.

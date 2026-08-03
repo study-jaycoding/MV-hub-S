@@ -46,7 +46,7 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 
 ## 2. 기술 스택 · 실행 · 포트
 
-- **백엔드**: Python / FastAPI / Uvicorn. DB 기본 **SQLite(WAL)**, 옵션 **PostgreSQL**(`pgsupport.py` 방언 shim, 옵트인).
+- **백엔드**: Python / FastAPI / Uvicorn. DB는 **SQLite(WAL)만 지원**. PostgreSQL 런타임·이관 도구는 제거되어 환경변수로 전환할 수 없다.
 - **프론트**: React + TypeScript + Vite. 빌드 산출물(`frontend/dist`)을 백엔드가 직접 서빙.
 - **단일 오리진**: 프론트는 상대경로(`/api`·`/ws`·`/media`)만 → 폴더째 올려도 무변경, CORS 불필요.
 - **실행**: `MV_server.bat`(프론트 빌드 → 백엔드 기동). 기본 **포트 8010**, **로그인 강제 ON**(`CONTENT_HUB_AUTH=1`, bat 기본값). `serve.py` 가 IPv4 0.0.0.0 + IPv6 ::1 듀얼스택(Windows localhost IPv6 폴백 ~200ms 지연 제거).
@@ -174,7 +174,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 ## 10. 백엔드 모듈 지도 (`backend/app/`)
 
 - `main.py` — 앱·**미들웨어(auth_enforcement: 토큰→request.state.account / mutation_notify: 쓰기 후 WS 알림)**·lifespan(init_db·고아잡 정리·중복병합·레거시 이전·creator_uid 백필·**계정↔creator 연결**·제공자 신원 캡처·썸네일 사전생성·동기화/백업). `/media`·SPA 마운트.
-- `db.py`(스키마·마이그레이션·인덱스·FTS5), `pgsupport.py`(PG 방언 shim), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
+- `db.py`(SQLite 스키마·마이그레이션·인덱스·FTS5), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
 - **routers/**: `library.py`(목록·검색·통계·facets·휴지통·**미디어 썸네일**·**tab=my 계정 스코프**), `generation.py`(옛 서버측 생성·태그/컬러/소스/코멘트·삭제·복원·힉스필드검증·리니지), **`gen_requests.py`(로컬 실행 큐: 생성요청·pending·fulfill·fail)**, **`ingest.py`(push 적재·known-jobs·`/credits`)**, `share.py`, `projects.py`, `auth.py`(로그인·가입·계정승인), `members.py`(등급), `assets.py`(분리창), `sync.py`.
 - **repo/**: `generations.py`(중심: list_generations 키셋·검색·업서트·재생성·**account_uid 스코프**·리니지 그래프), **`gen_requests.py`(gen_recipe·claim·fulfill mark)**, `identity.py`(생성자·신원·**link_accounts_to_creators·set_account_hf_creator·credit_summary·list_members**), `tags.py`, `projects.py`, `share.py`, `accounts.py`(가입·인증·승인), `assets.py`, `trash.py`.
 - **services/**: `syncer.py`(주기 동기화), `cli_bridge.py`(Higgsfield CLI 래퍼: parse_job·generate list·account status·workspace·**셰임/Proactor 함정**), `media_cache.py`(원격→로컬·샤딩), `thumbs.py`(썸네일), `backup.py`(SQLite 온라인 백업), `auth.py`(pbkdf2 해시·무상태 hmac 토큰). (옛 `jobs.py` 서버측 잡 큐·서버측 create_job 은 push 모델 전환으로 제거됨.)

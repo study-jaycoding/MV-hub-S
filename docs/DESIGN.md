@@ -26,8 +26,8 @@ Higgsfield CLI 기반 콘텐츠 생성·공유 툴의 상세 설계.
 
 ### 팀 공유 서버 (Phase 5)
 - **FastAPI** — 발행(publish) API.
-- **PostgreSQL** — 공유 메타데이터.
-- **MinIO (S3 호환)** — 공유된 에셋 저장.
+- **SQLite (WAL)** — 현재 공유 메타데이터. 동시 쓰기 경합이 실측되면 PostgreSQL을 재설계.
+- **로컬 미디어 저장소** — 현재 공유 에셋 저장. MinIO는 장기 확장 항목.
 
 데이터 흐름:
 - 로컬 ↔ Higgsfield: CLI 호출 / 결과 수신.
@@ -206,4 +206,4 @@ CREATE INDEX idx_lineage_child      ON lineage(child_gen_id);
 3. **Phase 3** — cli_bridge.py + 잡 큐 + WebSocket 진행률 (생성 파이프라인)
    - ⚠️ Phase 3 착수 전: 실제 `higgsfield generate list --json` 출력으로 필드 매핑 검증 필요
 4. **Phase 4** — React UI (썸네일 그리드 / 필터 / 스포트라이트 생성 / 구성 보드), Higgsfield 비주얼
-5. **Phase 5** — publish/import 엔드포인트 + 공유 서버(PostgreSQL + MinIO)
+5. **Phase 5** — publish/import 엔드포인트 + SQLite 공유 서버. PostgreSQL + MinIO는 장기 확장 항목

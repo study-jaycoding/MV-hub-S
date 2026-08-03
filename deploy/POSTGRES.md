@@ -15,11 +15,10 @@
   백업 체계를 별도 프로젝트로 구현한 뒤 전환한다.
 
 ## 과거 설계 기록 — 아직 운영 기능 아님
-- 목표 설계는 `CONTENT_HUB_DB_BACKEND=postgres` 옵트인 전환이다.
-- repo 의 raw SQL 은 **다시 쓰지 않는다.** [app/pgsupport.py](../backend/app/pgsupport.py) 가 실행 시점에
-  방언을 번역한다: `?`→`%s`, `INSERT OR REPLACE/IGNORE`→`ON CONFLICT`, `datetime('now')`→동일 포맷
-  `to_char`, `strftime`→`extract(epoch)`, `LIKE`→`ILIKE`, `GROUP_CONCAT`→`string_agg`,
-  `rowid`→`ctid`, `COLLATE NOCASE`→`LOWER()`, 리터럴 `%`→`%%`.
+- 과거에는 SQL 방언을 실행 시점에 변환하는 shim을 실험했지만, 현재 스키마·락·쿼리와 호환되지 않아
+  관련 코드와 PostgreSQL 전용 스키마·이관 스크립트를 제거했다.
+- 향후 재개 시에는 SQLite용 raw SQL을 문자열 치환하는 방식으로 되살리지 않고, 데이터 접근 계층의
+  백엔드 경계를 명시적으로 설계하고 SQLite/PostgreSQL 통합 테스트를 함께 구축한다.
 - 검색은 FTS5 대신 **pg_trgm GIN + ILIKE**(부분일치 의미 보존). 휴지통은 ATTACH 대신 **trash 스키마**.
 
 ## 개발 재개 시 사전 준비 예시
@@ -33,21 +32,14 @@ docker run -d --name ch-postgres \
 DSN 기본값: `postgresql://ch:chpass@127.0.0.1:55432/content_hub`
 (바꾸려면 `CONTENT_HUB_PG_DSN` 환경변수.)
 
-## 목표 전환 절차(현재 실행 금지)
-1. **데이터 이전**(SQLite → PG). SQLite 는 읽기만, 멱등(매번 PG public 스키마를 리셋 후 재적재):
-   ```sh
-   cd backend && python migrate_to_pg.py
-   ```
-   - SQLite 스키마를 내성해 `schema_pg.sql`(동등 PG DDL)을 생성·적용하고 전 행을 복사한다.
-   - 끝에 테이블별 행수를 SQLite vs PG 로 대조해 무결성을 보고한다.
-2. **백엔드 전환** — 호환성 구현과 전체 테스트가 완료된 미래 버전에서만:
-   ```sh
-   set CONTENT_HUB_DB_BACKEND=postgres   &  MV_server.bat   (Windows)
-   CONTENT_HUB_DB_BACKEND=postgres python serve.py            (그 외)
-   ```
-   시작 시 `init_db` 가 schema_pg.sql 적용 + pg_trgm + 성능 인덱스를 멱등 보장한다.
-3. **롤백** — 단순 환경변수 제거로는 PG 전환 뒤의 새 데이터를 되돌릴 수 없다.
-   역이전 도구와 컷오버 이후 쓰기 동결 절차가 준비되어야 한다.
+## 향후 전환을 재개할 때 필요한 작업
+1. PostgreSQL 전용 DDL과 명시적 데이터 접근 구현
+2. SQLite → PostgreSQL 이관·행수 대조·무결성 검증 도구
+3. 전체 repo·HTTP·동시 쓰기·검색·휴지통 통합 테스트
+4. PostgreSQL용 백업과 복원 훈련
+5. 역이전 도구와 컷오버 이후 쓰기 동결·롤백 절차
+
+위 항목이 모두 구현되기 전에는 `CONTENT_HUB_DB_BACKEND=postgres` 설정을 사용할 수 없다.
 
 ## ⚠️ 주의
 - 전환은 **단방향 컷오버 시점**을 정해서 한다. PG 로 띄운 뒤 들어온 새 데이터는 SQLite 에 없다

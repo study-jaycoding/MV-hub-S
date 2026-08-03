@@ -227,11 +227,9 @@ Copy-RoboChecked `
 $BackendFiles = @(
     "serve.py",
     "schema.sql",
-    "schema_pg.sql",
     "requirements.txt",
     "backfill_import.py",
     "cleanup_orphan_creators.py",
-    "migrate_to_pg.py",
     "reset_db.py"
 )
 foreach ($Name in $BackendFiles) {

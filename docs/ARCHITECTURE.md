@@ -71,7 +71,7 @@ HTTP 요청
    │
    ▼  repo/*.py      — 데이터 접근 계층. 순수 SQL/직렬화. HTTP 를 모름(테스트·재사용 쉬움)
    │
-   ▼  db.py (SQLite/PG)  +  services/*.py (CLI·미디어·동기화·백업·인증)
+   ▼  db.py (SQLite)  +  services/*.py (CLI·미디어·동기화·백업·인증)
 ```
 
 ### 4.1 코어 (`backend/app/`)
@@ -80,7 +80,6 @@ HTTP 요청
 |---|---|
 | `main.py` | FastAPI 앱·미들웨어·lifespan(init_db·고아잡정리·중복병합·creator_uid 백필·계정↔creator 연결·신원캡처·썸네일 사전생성·주기 동기화/백업)·`/media`·SPA 마운트 |
 | `db.py` | 스키마 적용·마이그레이션·인덱스·FTS5. `python -m app.db init` 멱등 |
-| `pgsupport.py` | PostgreSQL 방언 shim(옵트인 이중 백엔드) |
 | `models.py` | 요청/응답 Pydantic 모델 |
 | `config.py` | 경로·포트·`CONTENT_HUB_AUTH` 등 환경 설정 |
 | `deps.py` | 인증/RBAC FastAPI 의존성(`actor_id`·`require_global_cap`·`require_project_role`·`require_edit_generation`) |
@@ -134,8 +133,8 @@ HTTP 요청
 
 ### 4.5 보조 스크립트 (`backend/`)
 
-- `serve.py` — 듀얼스택 기동 진입점. `schema.sql`·`schema_pg.sql` — DDL.
-- `migrate_to_pg.py` — SQLite → PostgreSQL 이관. `backfill_import.py` — 일괄 적재.
+- `serve.py` — 듀얼스택 기동 진입점. `schema.sql` — SQLite DDL.
+- `backfill_import.py` — 일괄 적재. PostgreSQL 런타임과 이관 도구는 현재 제거·미지원.
 
 ---
 
@@ -289,10 +288,10 @@ content-hub-server/
 ├─ deploy/                   nginx.conf · Caddyfile · POSTGRES.md · README.md
 ├─ backend/
 │  ├─ serve.py               듀얼스택 기동
-│  ├─ schema.sql / schema_pg.sql   DDL(SQLite / PostgreSQL)
-│  ├─ migrate_to_pg.py · backfill_import.py
+│  ├─ schema.sql             DDL(SQLite)
+│  ├─ backfill_import.py     일괄 적재
 │  └─ app/
-│     ├─ main.py db.py pgsupport.py models.py config.py deps.py rbac.py ws.py
+│     ├─ main.py db.py models.py config.py deps.py rbac.py ws.py
 │     ├─ routers/   library generation gen_requests ingest share projects auth members assets sync
 │     ├─ repo/      _common generations gen_requests identity tags assets share projects accounts trash
 │     └─ services/  cli_bridge syncer media_cache thumbs backup auth agent_signals mcp_ingest jobs
