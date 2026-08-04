@@ -33,6 +33,7 @@ from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 �
 from .assets import *  # noqa: F401,F403
 from .share import *  # noqa: F401,F403
 from .projects import *  # noqa: F401,F403
+from .scenes_backup import *  # noqa: F401,F403  (캔버스 씬 DB 백업 — leaf)
 from .accounts import *  # noqa: F401,F403
 
 # ── cross-module/외부에서 쓰일 수 있는 private 명시 re-export ──────────────

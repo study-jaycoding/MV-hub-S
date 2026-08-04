@@ -14,6 +14,7 @@ import {
   updateScene,
 } from "./scenes";
 import { clearSceneHistory } from "./sceneUndoStore";
+import { installSceneBackup, restoreScenesIfMissing } from "./sceneBackup";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -29,6 +30,20 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   activeSceneIdRef.current = activeSceneId;
   const flashRef = useRef(flash);
   flashRef.current = flash;
+  // DB 백업 미러 — 저장 관문에 디바운스 푸시 배선(1회) + 로컬 버킷이 통째로 없을 때만 DB 에서 복구.
+  //  (브라우저 캐시 삭제 대비. 로컬이 항상 정답 — 빈 배열 버킷(정상 삭제)은 복구하지 않는다.)
+  useEffect(() => {
+    installSceneBackup();
+    let alive = true;
+    void restoreScenesIfMissing().then((restored) => {
+      if (!restored || !alive) return;
+      setScenes(listScenes(null));
+      flashRef.current?.("씬을 DB 백업에서 복구했습니다.");
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const lastNotifyRef = useRef(0);
   useEffect(() => {
     const notify = (msg: string) => {

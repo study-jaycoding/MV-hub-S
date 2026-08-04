@@ -473,6 +473,8 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # 작업 담당(배정) 신원 — acct:→user_ 전환 시 함께 정합(안 하면 내 배분 작업이 끊김).
     ("task_assignment", "assignee_uid", "ignore_del"),
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
+    # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
+    ("scene_backup", "owner_uid", "ignore_del"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로

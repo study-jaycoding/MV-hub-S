@@ -277,6 +277,21 @@ CREATE TABLE IF NOT EXISTS gen_tag_overlay (
     PRIMARY KEY (anchor, tag)
 );
 
+-- 캔버스 씬 백업 — 브라우저 localStorage(원본)의 단방향 미러(로컬→DB). 캐시 소실 시 복구용.
+-- 복구는 프론트가 '로컬 버킷 키 자체가 없을 때'만 수행(로컬이 항상 정답 — 코덱스 합의).
+-- owner_uid = deps.actor_id(개인 편집물, asset_meta 패턴) — identity._REMAP_PLAN 리맵 대상.
+-- project_id: 현재 씬은 전역(항상 '')이지만 미래 프로젝트별 분리를 위해 키에 포함.
+CREATE TABLE IF NOT EXISTS scene_backup (
+    owner_uid  TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT '',
+    scene_id   TEXT NOT NULL,
+    name       TEXT,
+    data       TEXT NOT NULL,                          -- 씬 JSON 원문(프론트 직렬화 그대로)
+    data_hash  TEXT NOT NULL,                          -- sha256(data) — 변경분만 재업로드하는 대조 키
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_uid, project_id, scene_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

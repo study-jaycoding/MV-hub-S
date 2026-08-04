@@ -210,8 +210,23 @@ export function sceneRefFingerprint(
 function loadAll(): ScenesByProject {
   return loadJSON<ScenesByProject>(STORAGE_KEYS.scenes) || {};
 }
+
+// DB 백업 미러 훅 — saveAll(단일 쓰기 관문) 뒤 호출된다. sceneBackup.ts 가 등록(순환 import 회피).
+let onScenesPersisted: (() => void) | null = null;
+export function setOnScenesPersisted(fn: (() => void) | null): void {
+  onScenesPersisted = fn;
+}
+
 function saveAll(all: ScenesByProject) {
   saveJSON(STORAGE_KEYS.scenes, all);
+  onScenesPersisted?.();
+}
+
+// 이 계정의 씬 버킷 '키'가 존재하는가 — DB 복구 허용 판정(코덱스 P1: 빈 배열 버킷은 정상 삭제의
+// 결과라 복구 금지, 키 자체가 없을 때만 복구). legacy 키가 남아 있으면 이관 대상이므로 존재로 취급.
+export function hasSceneBucket(projectId: string | null): boolean {
+  const all = loadAll();
+  return keyOf(projectId) in all || legacyKeyOf(projectId) in all;
 }
 
 export function listScenes(projectId: string | null): Scene[] {
