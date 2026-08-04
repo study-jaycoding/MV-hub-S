@@ -17,6 +17,7 @@ from .generation_rows import (  # 조회 응답 보강·행 페치 — 단방향
     _attach_children,
     _fetch_generation,
 )
+from ._visibility import team_generation_visibility_clause
 
 # FTS5(generation_fts) 존재 여부 — 검색 경로 선택용. DB 경로별로 1회 확인 후 메모이즈.
 # ★경로로 키잉: 계정 전환·DB 이관으로 활성 DB 가 바뀌면 재확인한다(예전엔 전역 bool 로 1회만 확인해,
@@ -90,20 +91,12 @@ def list_generations(
         # 작성자 본인 예외를 둬야 프로젝트 미배정/비멤버 프로젝트로 정리된 내 공유물이
         # 관리자에게만 보이고 정작 본인에게 숨는 일을 막을 수 있다.
         # team_member_projects=None 이면(read_all·단독) 전체 공유물.
-        if team_member_projects is not None:
-            if team_member_projects:
-                ph = ",".join("?" * len(team_member_projects))
-                if actor_uid:
-                    where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
-                    args.append(actor_uid)
-                else:
-                    where.append(f"g.project_id IN ({ph})")
-                args += list(team_member_projects)
-            elif actor_uid:
-                where.append("g.creator_uid = ?")
-                args.append(actor_uid)
-            else:
-                where.append("1=0")  # 멤버인 프로젝트 없음 → 공유물 0건
+        visibility, visibility_args = team_generation_visibility_clause(
+            team_member_projects, actor_uid
+        )
+        if visibility:
+            where.append(visibility)
+            args += visibility_args
     elif account_uid:
         # 내 작업 = 로그인 계정 본인이 만든 것만(계정별 분리). 비로그인(account_uid 없음)은 전체.
         where.append("g.creator_uid = ?")

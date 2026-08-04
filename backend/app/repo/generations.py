@@ -8,6 +8,7 @@ import time
 from typing import Any, Iterable, Optional
 
 from ..db import get_connection
+from ..generation_result import ACTIVE_STATUSES, stored_error
 from . import identity, tags
 from .lineage import _record_history  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
 from ._common import (
@@ -516,15 +517,6 @@ def create_comfy_generation(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-
-
-# 종료(터미널) 상태에서만 error(사유)를 보존한다 — nsfw(콘텐츠 차단)도 실패의 일종이라 사유를 남긴다.
-#  (예전엔 status=="failed" 만 봐서 nsfw 사유가 버려졌다.) 진행/성공(done/pending/running)은 사유를 비운다.
-ACTIVE_STATUSES = {"done", "pending", "running"}
-
-
-def stored_error(status: str, error: Optional[str]) -> Optional[str]:
-    return error if status not in ACTIVE_STATUSES else None
 
 
 def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:

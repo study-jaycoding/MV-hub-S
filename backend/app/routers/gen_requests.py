@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
+from ..generation_result import ACTIVE_STATUSES, normalize_job_result
 from ..deps import (
     account_actor_uid,
     realtime_scope,
@@ -42,8 +43,8 @@ from ..ws import manager
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
-# 진행/성공 상태(repo.ACTIVE_STATUSES) 밖(failed·nsfw 등)만 error(사유)를 보존한다 — 판정·필터는
-#  repo 의 단일 정의(ACTIVE_STATUSES·stored_error)를 공유한다(중복 정의 제거).
+# 진행/성공 상태(ACTIVE_STATUSES) 밖(failed·nsfw 등)만 error(사유)를 보존한다 — 판정·필드는
+# generation_result 의 단일 정의를 공유한다.
 # 구버전 에이전트의 /fail 은 job_id 를 안 넘긴다 — CLI 실패 사유 문자열에서 job_id·상태를 되찾아
 #  원래 placeholder 에 앵커한다("... job <uuid> ended with status 'nsfw' ...").
 _HF_ENDED_RE = re.compile(
@@ -60,7 +61,7 @@ def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
     if not m:
         return None, None
     status = cli_bridge.normalize_status(m.group(2).strip().replace(" ", "_"))
-    if status in repo.ACTIVE_STATUSES:
+    if status in ACTIVE_STATUSES:
         status = "failed"
     return m.group(1), status
 
@@ -177,28 +178,21 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
 
     gen_id = req["gen_id"]
     parsed = cli_bridge.parse_job(body.job)
-    g = parsed.get("generation") or {}
-    asset = parsed.get("asset")
-    status = g.get("status") or "done"
-    err = repo.stored_error(status, g.get("error"))
+    result = normalize_job_result(parsed)
     # ★원자 적용(+CAS): 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로. 동시 fulfill/fail 로
     # 이미 종결됐으면 False → 멱등 반환(완료를 덮어쓰지 않음·중복 브로드캐스트 안 함).
     applied = repo.apply_local_fulfillment(
         gen_id,
         rid,
-        asset_type=asset["type"] if asset else None,
-        asset_path=asset["file_path"] if asset else None,
-        asset_thumb=(
-            # 이미지: CLI 경량 썸네일(min_result_url) 우선 — 원본 full 을 썸네일로 안 쓴다(디스크 절약).
-            (asset.get("min_result_url") or asset["file_path"]) if asset and asset["type"] == "image"
-            else (asset.get("thumbnail_url") if asset else None)  # 영상: CLI 정적 포스터
-        ),
-        job_id=g.get("id"),
-        created_at=g.get("created_at"),
-        sort_ts=g.get("sort_ts"),
-        status=status,
-        error=err,
-        request_status="done" if status == "done" else "failed",
+        asset_type=result.asset_type,
+        asset_path=result.asset_path,
+        asset_thumb=result.asset_thumb,
+        job_id=result.job_id,
+        created_at=result.created_at,
+        sort_ts=result.sort_ts,
+        status=result.status,
+        error=result.error,
+        request_status="done" if result.status == "done" else "failed",
     )
     if not applied:
         gen = repo.get_generation(gen_id)
@@ -206,7 +200,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
     # PM 메트릭: completed_at + elapsed(started_at 대비). applied=True 일 때만 → 멱등(중복 보고 무영향).
-    _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
+    _pm(lambda _m: _m.record_completed(gen_id, job_id=result.job_id))
     # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
     # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
 
@@ -214,9 +208,9 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
         {
             "type": "progress",
             "generation_id": gen_id,
-            "status": status,
-            "result_url": asset["file_path"] if asset else None,
-            "error": err,
+            "status": result.status,
+            "result_url": result.asset_path,
+            "error": result.error,
         },
         account_uid=realtime_scope(acc),  # 그 계정 소켓에만
     )
@@ -283,55 +277,52 @@ async def reconcile_gen_request(
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     gen_id = req["gen_id"]
     parsed = cli_bridge.parse_job(body.job)
-    g = parsed.get("generation") or {}
-    asset = parsed.get("asset")
     # 로컬 검증 실패(레퍼런스 미부착 등) — 힉스필드엔 (엉뚱한) 결과가 완료로 있어도 되살림 금지 failed 확정.
     if force_fail_reason:
+        # 강제 실패에는 job id 만 필요하다. 잘못 붙은 결과 asset 이 불완전해도 정규화 전에 실패를
+        # 확정해야 하므로 이 분기를 normalize_job_result 보다 먼저 둔다.
+        job_id = (parsed.get("generation") or {}).get("id")
         applied = repo.apply_reconcile(
-            gen_id, g.get("id"),
+            gen_id, job_id,
             asset_type=None, asset_path=None, asset_thumb=None,
             created_at=None, sort_ts=None, status="failed", error=force_fail_reason,
             force_fail_reason=force_fail_reason,
         )
         if applied:
-            _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
+            _pm(lambda _m: _m.record_completed(gen_id, job_id=job_id))
             await manager.broadcast(
                 {"type": "progress", "generation_id": gen_id, "status": "failed", "error": force_fail_reason},
                 account_uid=realtime_scope(acc),
             )
         return {"ok": True, "applied": applied, "status": "failed"}
-    status = g.get("status") or "done"
+    result = normalize_job_result(parsed)
     # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
-    if status in ("pending", "running"):
-        return {"ok": True, "applied": False, "status": status}
-    err = repo.stored_error(status, g.get("error"))
+    if result.status in ("pending", "running"):
+        return {"ok": True, "applied": False, "status": result.status}
     applied = repo.apply_reconcile(
         gen_id,
-        g.get("id"),
-        asset_type=asset["type"] if asset else None,
-        asset_path=asset["file_path"] if asset else None,
-        asset_thumb=(
-            (asset.get("min_result_url") or asset["file_path"]) if asset and asset["type"] == "image"
-            else (asset.get("thumbnail_url") if asset else None)
-        ),
-        created_at=g.get("created_at"),
-        sort_ts=g.get("sort_ts"),
-        status=status,
-        error=err,
+        result.job_id,
+        asset_type=result.asset_type,
+        asset_path=result.asset_path,
+        asset_thumb=result.asset_thumb,
+        created_at=result.created_at,
+        sort_ts=result.sort_ts,
+        status=result.status,
+        error=result.error,
     )
     if applied:
-        _pm(lambda _m: _m.record_completed(gen_id, job_id=g.get("id")))
+        _pm(lambda _m: _m.record_completed(gen_id, job_id=result.job_id))
         await manager.broadcast(
             {
                 "type": "progress",
                 "generation_id": gen_id,
-                "status": status,
-                "result_url": asset["file_path"] if (asset and status != "failed") else None,
-                "error": err,
+                "status": result.status,
+                "result_url": result.asset_path if result.status != "failed" else None,
+                "error": result.error,
             },
             account_uid=realtime_scope(acc),
         )
-    return {"ok": True, "applied": applied, "status": status}
+    return {"ok": True, "applied": applied, "status": result.status}
 
 
 @router.post("/gen-requests/{rid}/fail")

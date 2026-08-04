@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from ._common import clean_folder_path as _clean_folder_path, new_id
+from ._visibility import team_generation_visibility_clause
 
 _SELECT = (
     "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
@@ -398,34 +399,23 @@ def folder_counts(
     의 tab='team' 클로즈와 동일 규약(generations.py)."""
     with get_connection() as conn:
         where = (
-            "project_id = ? AND folder_path IS NOT NULL AND folder_path <> '' "
-            "AND deleted_at IS NULL"
+            "g.project_id = ? AND g.folder_path IS NOT NULL AND g.folder_path <> '' "
+            "AND g.deleted_at IS NULL"
         )
         args: list[Any] = [project_id]
         if account_uid and account_uid != "\x00":
-            where += " AND creator_uid = ?"
+            where += " AND g.creator_uid = ?"
             args.append(account_uid)
         if shared_only:
-            where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
-            # 팀 목록과 동일 가시성 필터(generations.py list_generations tab='team' 과 동형).
-            # 센티넬 "\x00" 은 목록과 동일하게 actor 없음으로 정규화(generations.py:1197).
-            actor = actor_uid if actor_uid and actor_uid != "\x00" else None
-            if team_member_projects is not None:
-                if team_member_projects:
-                    ph = ",".join("?" * len(team_member_projects))
-                    if actor:
-                        where += f" AND (creator_uid = ? OR project_id IN ({ph}))"
-                        args.append(actor)
-                    else:
-                        where += f" AND project_id IN ({ph})"
-                    args += list(team_member_projects)
-                elif actor:
-                    where += " AND creator_uid = ?"
-                    args.append(actor)
-                else:
-                    where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
+            where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
+            visibility, visibility_args = team_generation_visibility_clause(
+                team_member_projects, actor_uid
+            )
+            if visibility:
+                where += f" AND {visibility}"
+                args += visibility_args
         rows = conn.execute(
-            f"SELECT folder_path, COUNT(*) AS c FROM generation WHERE {where} GROUP BY folder_path",
+            f"SELECT g.folder_path, COUNT(*) AS c FROM generation g WHERE {where} GROUP BY g.folder_path",
             args,
         ).fetchall()
         return {r["folder_path"]: r["c"] for r in rows}
@@ -452,21 +442,12 @@ def team_fresh_items(
     if cursor_shared_at is not None and cursor_id is not None:
         where += " AND (s.shared_at < ? OR (s.shared_at = ? AND g.id < ?))"
         args += [cursor_shared_at, cursor_shared_at, cursor_id]
-    actor = actor_uid if actor_uid and actor_uid != "\x00" else None
-    if team_member_projects is not None:
-        if team_member_projects:
-            ph = ",".join("?" * len(team_member_projects))
-            if actor:
-                where += f" AND (g.creator_uid = ? OR g.project_id IN ({ph}))"
-                args.append(actor)
-            else:
-                where += f" AND g.project_id IN ({ph})"
-            args += list(team_member_projects)
-        elif actor:
-            where += " AND g.creator_uid = ?"
-            args.append(actor)
-        else:
-            where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
+    visibility, visibility_args = team_generation_visibility_clause(
+        team_member_projects, actor_uid
+    )
+    if visibility:
+        where += f" AND {visibility}"
+        args += visibility_args
     with get_connection() as conn:
         # shared_at 포함·정렬 — 클라가 '그 공유 시점에 대한 확인'(재공유=다시 새것)을 판정하고,
         # sort_ts(생성 시각)로 자르면 옛 항목의 '재공유'가 상한 밖으로 밀린다.

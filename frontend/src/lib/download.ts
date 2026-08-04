@@ -24,7 +24,7 @@ function _anchor(href: string, name?: string, newTab = false) {
 
 // bytes 를 Blob 으로 받는다(실패 시 null). 로컬(/...)은 쿠키 동봉·직접, 원격은 CDN CORS(*)로 직접
 // 받고, CORS 막힌 호스트면 같은 오리진 서버 프록시(/api/download)로 재시도.
-async function _fetchBlob(url: string, name: string): Promise<Blob | null> {
+export async function fetchBlob(url: string, name: string): Promise<Blob | null> {
   try {
     const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
     if (res.ok) return await res.blob();
@@ -50,7 +50,7 @@ async function _download(
   url: string,
   name: string,
 ): Promise<{ ok: boolean; savedToDir: boolean }> {
-  const blob = await _fetchBlob(url, name);
+  const blob = await fetchBlob(url, name);
   if (blob) {
     // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
     if (await saveToDownloadDir(name, blob)) return { ok: true, savedToDir: true };

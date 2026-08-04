@@ -20,6 +20,7 @@ from typing import Optional
 
 from .. import repo
 from ..config import DEFAULT_WORKER_ID
+from ..generation_result import normalize_job_result
 from ..ws import manager
 from . import cli_bridge
 
@@ -113,26 +114,20 @@ async def reconcile_local_house() -> int:
         if not raw:
             continue  # 확인불가/삭제/파싱실패 → 안 건드림
         parsed = cli_bridge.parse_job(raw)
-        g = parsed.get("generation") or {}
-        asset = parsed.get("asset")
-        status = g.get("status") or "done"
-        if status in ("pending", "running"):
+        result = normalize_job_result(parsed)
+        if result.status in ("pending", "running"):
             continue  # 아직 처리중 → 확인중 유지
-        err = g.get("error") if status == "failed" else None
         applied = await asyncio.to_thread(
             repo.apply_reconcile,
             c["gen_id"],
-            g.get("id"),
-            asset_type=asset["type"] if asset else None,
-            asset_path=asset["file_path"] if asset else None,
-            asset_thumb=(
-                (asset.get("min_result_url") or asset["file_path"]) if asset and asset["type"] == "image"
-                else (asset.get("thumbnail_url") if asset else None)
-            ),
-            created_at=g.get("created_at"),
-            sort_ts=g.get("sort_ts"),
-            status=status,
-            error=err,
+            result.job_id,
+            asset_type=result.asset_type,
+            asset_path=result.asset_path,
+            asset_thumb=result.asset_thumb,
+            created_at=result.created_at,
+            sort_ts=result.sort_ts,
+            status=result.status,
+            error=result.error,
         )
         if applied:
             applied_n += 1

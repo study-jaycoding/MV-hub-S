@@ -105,6 +105,7 @@ import {
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
+import { fetchBlob } from "../../lib/download";
 import { saveSceneHistory, loadSceneHistory, sameSnap } from "../../lib/sceneUndoStore";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -157,26 +158,6 @@ const GROUP_EJECT_SPEED = 3.0;
 
 // 단순 미디어 비교 아이템(레퍼런스 포함) — fallback=로드 실패 시 대체, full=크게 보기용 원본.
 type CompareMediaItem = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
-
-// 임의 URL → 풀해상도 Blob. 로컬(/…)은 쿠키로 직접, 원격은 직접 fetch 후 CORS 막히면 /api/download 프록시.
-// (download.ts 의 _fetchBlob 과 동일 전략 — 그쪽은 비공개라 여기 재사용용으로 옮겨 적음.)
-async function fetchRefBlob(url: string, name: string): Promise<Blob | null> {
-  try {
-    const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
-    if (res.ok) return await res.blob();
-  } catch {
-    /* 프록시 폴백으로 */
-  }
-  if (url.startsWith("/")) return null;
-  try {
-    const q = `url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
-    const res = await fetch(`/api/download?${q}`, { credentials: "include" });
-    if (res.ok) return await res.blob();
-  } catch {
-    /* 프록시도 실패 */
-  }
-  return null;
-}
 
 interface Props {
   scene: Scene;
@@ -1961,7 +1942,7 @@ export function SceneBoard({
     const wanted = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current, overlay);
     const media: ComfyRunMedia[] = [];
     for (const m of wanted) {
-      const blob = await fetchRefBlob(m.url, m.name);
+      const blob = await fetchBlob(m.url, m.name);
       if (!blob) throw new Error(`입력을 불러오지 못했습니다: ${m.name}`); // 부분 주입 방지(슬롯 밀림 방지)
       media.push({ type: m.type, name: m.name, blob });
     }

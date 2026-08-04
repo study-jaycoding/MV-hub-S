@@ -47,11 +47,12 @@ class SharedVisibilityTests(unittest.TestCase):
                 ("p_member", "user_river", "creator"),
             )
 
-            def gen(gen_id, creator_uid, project_id, sort_ts):
+            def gen(gen_id, creator_uid, project_id, sort_ts, folder_path=None):
                 conn.execute(
-                    "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, creator_uid, project_id) "
-                    "VALUES(?, 'me', ?, 'done', '2026-06-30', ?, ?, ?)",
-                    (gen_id, gen_id, sort_ts, creator_uid, project_id),
+                    "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                    "creator_uid, project_id, folder_path) "
+                    "VALUES(?, 'me', ?, 'done', '2026-06-30', ?, ?, ?, ?)",
+                    (gen_id, gen_id, sort_ts, creator_uid, project_id, folder_path),
                 )
 
             def share(gen_id, shared_by):
@@ -60,15 +61,15 @@ class SharedVisibilityTests(unittest.TestCase):
                     ("s_" + gen_id, gen_id, shared_by),
                 )
 
-            gen("own_unassigned", "user_river", None, 5)
+            gen("own_unassigned", "user_river", None, 5, "own-unassigned")
             share("own_unassigned", "user_river")
-            gen("own_nonmember_project", "user_river", "p_other", 4)
+            gen("own_nonmember_project", "user_river", "p_other", 4, "own-folder")
             share("own_nonmember_project", "user_river")
-            gen("other_member_project", "user_other", "p_member", 3)
+            gen("other_member_project", "user_other", "p_member", 3, "member-folder")
             share("other_member_project", "user_other")
-            gen("other_unassigned", "user_other", None, 2)
+            gen("other_unassigned", "user_other", None, 2, "hidden-unassigned")
             share("other_unassigned", "user_other")
-            gen("other_nonmember_project", "user_other", "p_other", 1)
+            gen("other_nonmember_project", "user_other", "p_other", 1, "hidden-folder")
             share("other_nonmember_project", "user_other")
 
     def test_team_tab_includes_own_shared_items_outside_member_projects(self):
@@ -150,6 +151,127 @@ class SharedVisibilityTests(unittest.TestCase):
         )
 
         self.assertEqual({c["uid"]: c["count"] for c in creators}, {"user_river": 1})
+
+    def test_folder_counts_match_visible_team_scope(self):
+        member_counts = repo.folder_counts(
+            "p_member",
+            shared_only=True,
+            team_member_projects=["p_member"],
+            actor_uid="user_river",
+        )
+        nonmember_counts = repo.folder_counts(
+            "p_other",
+            shared_only=True,
+            team_member_projects=["p_member"],
+            actor_uid="user_river",
+        )
+
+        self.assertEqual(member_counts, {"member-folder": 1})
+        self.assertEqual(nonmember_counts, {"own-folder": 1})
+
+    def test_team_fresh_items_match_visible_team_scope(self):
+        items = repo.team_fresh_items(
+            "2000-01-01 00:00:00",
+            team_member_projects=["p_member"],
+            actor_uid="user_river",
+        )
+
+        self.assertEqual(
+            {item["id"] for item in items},
+            {"own_unassigned", "own_nonmember_project", "other_member_project"},
+        )
+
+    def test_empty_member_projects_show_only_own_shared_items(self):
+        rows = repo.list_generations(
+            tab="team",
+            team_member_projects=[],
+            account_uid="user_river",
+            limit=50,
+        )
+        creators = repo.list_creators(
+            account_uid="user_river",
+            tab="team",
+            team_member_projects=[],
+        )
+        fresh = repo.team_fresh_items(
+            "2000-01-01 00:00:00",
+            team_member_projects=[],
+            actor_uid="user_river",
+        )
+
+        own_ids = {"own_unassigned", "own_nonmember_project"}
+        self.assertEqual({row["id"] for row in rows}, own_ids)
+        self.assertEqual({c["uid"]: c["count"] for c in creators}, {"user_river": 2})
+        self.assertEqual({item["id"] for item in fresh}, own_ids)
+
+    def test_empty_member_projects_without_actor_show_nothing(self):
+        rows = repo.list_generations(
+            tab="team",
+            team_member_projects=[],
+            account_uid="\x00",
+            limit=50,
+        )
+        creators = repo.list_creators(
+            account_uid="\x00",
+            tab="team",
+            team_member_projects=[],
+        )
+        fresh = repo.team_fresh_items(
+            "2000-01-01 00:00:00",
+            team_member_projects=[],
+            actor_uid="\x00",
+        )
+        folders = repo.folder_counts(
+            "p_other",
+            shared_only=True,
+            team_member_projects=[],
+            actor_uid="\x00",
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(creators, [])
+        self.assertEqual(fresh, [])
+        self.assertEqual(folders, {})
+
+    def test_project_scope_without_actor_shows_only_member_projects(self):
+        rows = repo.list_generations(
+            tab="team",
+            team_member_projects=["p_member"],
+            account_uid=None,
+            limit=50,
+        )
+        creators = repo.list_creators(
+            account_uid=None,
+            tab="team",
+            team_member_projects=["p_member"],
+        )
+        fresh = repo.team_fresh_items(
+            "2000-01-01 00:00:00",
+            team_member_projects=["p_member"],
+            actor_uid=None,
+        )
+
+        self.assertEqual({row["id"] for row in rows}, {"other_member_project"})
+        self.assertEqual({c["uid"]: c["count"] for c in creators}, {"user_other": 1})
+        self.assertEqual({item["id"] for item in fresh}, {"other_member_project"})
+
+    def test_read_all_scope_sees_every_shared_item(self):
+        rows = repo.list_generations(tab="team", team_member_projects=None, limit=50)
+        fresh = repo.team_fresh_items(
+            "2000-01-01 00:00:00",
+            team_member_projects=None,
+            actor_uid=None,
+        )
+
+        all_ids = {
+            "own_unassigned",
+            "own_nonmember_project",
+            "other_member_project",
+            "other_unassigned",
+            "other_nonmember_project",
+        }
+        self.assertEqual({row["id"] for row in rows}, all_ids)
+        self.assertEqual({item["id"] for item in fresh}, all_ids)
 
     def test_legacy_acct_share_rows_link_account_to_real_creator_uid(self):
         with db.get_connection() as conn:

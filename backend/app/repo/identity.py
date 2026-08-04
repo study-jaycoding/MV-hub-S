@@ -9,6 +9,7 @@ from ..config import DEFAULT_WORKER_ID, DEFAULT_WORKER_NAME
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ._common import _UID_RE, _email_localpart
+from ._visibility import team_generation_visibility_clause
 
 
 # ── 작업자 ───────────────────────────────────────────────────────────────
@@ -120,21 +121,12 @@ def list_creators(
                 "EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)",
             ]
             args: list[Any] = [project_id]
-            actor_uid = account_uid if account_uid and account_uid != "\x00" else None
-            if team_member_projects is not None:
-                if team_member_projects:
-                    ph = ",".join("?" * len(team_member_projects))
-                    if actor_uid:
-                        where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
-                        args.append(actor_uid)
-                    else:
-                        where.append(f"g.project_id IN ({ph})")
-                    args += list(team_member_projects)
-                elif actor_uid:
-                    where.append("g.creator_uid = ?")
-                    args.append(actor_uid)
-                else:
-                    where.append("1=0")
+            visibility, visibility_args = team_generation_visibility_clause(
+                team_member_projects, account_uid
+            )
+            if visibility:
+                where.append(visibility)
+                args += visibility_args
             with get_connection() as conn:
                 rows = conn.execute(
                     "SELECT g.creator_uid uid, COUNT(*) cnt "
@@ -211,21 +203,12 @@ def list_creators(
     args: list[Any] = []
     if tab == "team":
         where.append("EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)")
-        actor_uid = account_uid if account_uid and account_uid != "\x00" else None
-        if team_member_projects is not None:
-            if team_member_projects:
-                ph = ",".join("?" * len(team_member_projects))
-                if actor_uid:
-                    where.append(f"(g.creator_uid = ? OR g.project_id IN ({ph}))")
-                    args.append(actor_uid)
-                else:
-                    where.append(f"g.project_id IN ({ph})")
-                args += list(team_member_projects)
-            elif actor_uid:
-                where.append("g.creator_uid = ?")
-                args.append(actor_uid)
-            else:
-                where.append("1=0")
+        visibility, visibility_args = team_generation_visibility_clause(
+            team_member_projects, account_uid
+        )
+        if visibility:
+            where.append(visibility)
+            args += visibility_args
     elif account_uid:
         where.append("g.creator_uid = ?")
         args.append(account_uid)
