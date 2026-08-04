@@ -32,6 +32,12 @@ THUMB_WIDTHS: tuple[int, ...] = (256, 512)
 # 구울 수 있어 삭제해도 안전하다 — 이 상한은 .thumbs(재생성 가능 캐시)에만 적용하고 MEDIA_DIR 의
 # 원본(특히 최종본 보존본)은 절대 건드리지 않는다. 기본 1GB(≈ 3만 장), 런처 환경변수로 조절.
 THUMB_CACHE_MAX_BYTES = int(os.environ.get("CONTENT_HUB_THUMB_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
+REMOTE_THUMB_CONCURRENCY = max(
+    1, int(os.environ.get("CONTENT_HUB_REMOTE_THUMB_CONCURRENCY", "4"))
+)
+# 요청마다 Semaphore를 만들면 100명이 동시에 팀 목록을 열 때 4×100개까지 늘어난다. 프로세스
+# 전체가 하나를 공유해 원격 다운로드+PIL 작업의 실제 동시 실행을 설정값 이하로 고정한다.
+_REMOTE_PREWARM_SEM = asyncio.Semaphore(REMOTE_THUMB_CONCURRENCY)
 _THUMB_LOCKS: dict[str, threading.Lock] = {}
 _THUMB_LOCK_REFS: dict[str, int] = {}
 _THUMB_LOCKS_GUARD = threading.Lock()
@@ -286,7 +292,7 @@ def prewarm_generation_thumbs(
 
 
 async def prewarm_remote_thumbs(
-    urls: list[str], widths: tuple[int, ...] = THUMB_WIDTHS, concurrency: int = 4
+    urls: list[str], widths: tuple[int, ...] = THUMB_WIDTHS
 ) -> int:
     """원격 미디어 URL 목록을 로컬 캐시 + 썸네일로 미리 구워둔다(team 목록 응답 직후 백그라운드).
 
@@ -296,13 +302,14 @@ async def prewarm_remote_thumbs(
     재호출이 싸다. 동시 다운로드는 cloudfront 부하·메모리 스파이크 방지로 제한한다. 생성 수 반환."""
     from . import media_cache  # 지연 import(순환 방지)
 
-    sem = asyncio.Semaphore(concurrency)
     made = 0
 
     async def _one(url: str) -> None:
         nonlocal made
-        async with sem:
-            rel = await media_cache.cache_url(url)  # 이미 캐시면 즉시 반환
+        async with _REMOTE_PREWARM_SEM:
+            # 썸네일 최적화용 원본은 영구 MEDIA와 분리된 bounded LRU 캐시에 둔다. 목록만 본 원격
+            # 이미지가 실제 작업 원본처럼 무기한 쌓여 디스크를 채우지 않게 한다.
+            rel = await media_cache.cache_thumb_source(url)  # 이미 캐시면 즉시 반환
             if not rel:
                 return
             target = _media_target(rel)
@@ -314,7 +321,21 @@ async def prewarm_remote_thumbs(
                 if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
                     made += 1
 
-    await asyncio.gather(*(_one(u) for u in urls), return_exceptions=True)
+    # URL마다 대기 Task를 만들면 100명×페이지 2,000건에서 실행은 4개뿐이어도 Task가 20만 개
+    # 생길 수 있다. 고정 수 worker가 iterator를 나눠 소비해 실제 실행과 대기 객체를 모두 제한한다.
+    unique_urls = list(dict.fromkeys(urls))
+    url_iter = iter(unique_urls)
+
+    async def _worker() -> None:
+        for url in url_iter:
+            try:
+                await _one(url)
+            except Exception:  # noqa: BLE001 — 한 URL 실패가 같은 페이지의 나머지 워밍을 막지 않게 격리
+                continue
+
+    worker_count = min(REMOTE_THUMB_CONCURRENCY, len(unique_urls))
+    if worker_count:
+        await asyncio.gather(*(_worker() for _ in range(worker_count)))
     if made:
         await asyncio.to_thread(evict_thumb_cache)  # 새로 구운 만큼 상한 점검(디스크 IO → 스레드)
     return made

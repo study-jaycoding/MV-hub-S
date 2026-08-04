@@ -436,17 +436,22 @@ def team_fresh_items(
     team_member_projects: Optional[list[str]] = None,
     actor_uid: Optional[str] = None,
     limit: int = 500,
+    cursor_shared_at: Optional[str] = None,
+    cursor_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """기준선(since) 이후 공유된 항목 [{id, project_id, folder_path, shared_at, ack_key}] — 사이드바 +N(신규) 배지용.
     id 목록을 주는 이유: 클라가 '확인(클릭)한 항목'을 제외하고 세야 하는데, 개수 빼기 방식은
     확인 항목이 공유해제·삭제되면 차감이 남아 다른 신규의 배지를 잡아먹는다(정확 집합 필요).
     가시성은 팀 목록(tab='team')과 동형: None=read_all(전체 공유물), 아니면 내 공유물+내 멤버 프로젝트.
     미분류(project_id NULL)·폴더 미지정도 포함 — 클라가 미분류/프로젝트/폴더 행에 각각 배지를 단다.
-    limit 초과분은 잘린다(과소표시일 뿐 — 신규는 최근 소량이라 실사용 도달 어려움)."""
+    cursor는 (shared_at,id) 복합 키셋 — 500건을 넘어도 다음 페이지로 전부 확인할 수 있다."""
     # share 쪽에서 시작 — generation 전체가 아니라 '공유된 것'만 스캔(코덱스 P2, idx_share_shared_at).
     # share:generation 은 UNIQUE(idx_share_gen)라 1:1 — MAX 서브쿼리 불필요.
     where = "s.shared_at > ? AND g.deleted_at IS NULL"
     args: list[Any] = [since]
+    if cursor_shared_at is not None and cursor_id is not None:
+        where += " AND (s.shared_at < ? OR (s.shared_at = ? AND g.id < ?))"
+        args += [cursor_shared_at, cursor_shared_at, cursor_id]
     actor = actor_uid if actor_uid and actor_uid != "\x00" else None
     if team_member_projects is not None:
         if team_member_projects:
@@ -471,7 +476,7 @@ def team_fresh_items(
             f"SELECT g.id, g.project_id, g.folder_path, s.shared_at, "
             f"COALESCE(NULLIF(g.job_id, ''), g.id) AS ack_key "
             f"FROM share s JOIN generation g ON g.id = s.generation_id "
-            f"WHERE {where} ORDER BY s.shared_at DESC LIMIT ?",
+            f"WHERE {where} ORDER BY s.shared_at DESC, g.id DESC LIMIT ?",
             args + [limit],
         ).fetchall()
         return [dict(r) for r in rows]

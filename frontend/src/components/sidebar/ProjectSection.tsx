@@ -323,8 +323,8 @@ export function ProjectSection({
     const since = tab === "team" ? getTeamBase() : null;
     if (since) {
       api
-        .teamFresh(since)
-        .then((r) => alive && setTeamFreshItems(r.items || []))
+        .teamFreshAll(since, () => alive)
+        .then((items) => alive && setTeamFreshItems(items))
         .catch(() => alive && setTeamFreshItems([]));
     }
     return () => {

@@ -77,6 +77,21 @@ describe("sceneBackup (DB 미러·복구)", () => {
     expect(body.deleted_ids).toEqual([]);
   });
 
+  it("같은 세션에서 올린 씬을 삭제하면 서버 백업도 즉시 삭제한다", async () => {
+    const { scenes, backup } = await boot();
+    scenes.saveScenes(null, [JSON.parse(sceneJson("s1", "잠시 만든 씬"))]);
+    await backup.initSceneBackup();
+    await vi.advanceTimersByTimeAsync(2500); // 첫 reconcile → 서버 upsert
+    expect(puts().length).toBe(1);
+    expect(putBody(puts()[0]).upserts.map((u: { id: string }) => u.id)).toEqual(["s1"]);
+
+    scenes.saveScenes(null, []); // 같은 페이지를 유지한 채 방금 올린 씬 삭제
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(2);
+    expect(putBody(puts()[1]).upserts).toEqual([]);
+    expect(putBody(puts()[1]).deleted_ids).toEqual(["s1"]);
+  });
+
   it("복구 — 버킷 키가 없으면 DB 전체를 복원하고, 직후 sync 에코(재업로드)가 없다", async () => {
     const items = [
       { id: "a", data: sceneJson("a"), data_hash: "x" },

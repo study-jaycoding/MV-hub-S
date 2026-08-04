@@ -16,6 +16,7 @@ import hashlib
 import logging
 import os
 import shutil
+import threading
 import time
 import urllib.request
 import uuid
@@ -36,6 +37,17 @@ _RETRY_BACKOFF = 0.4
 _CONCURRENT_CACHE_WAIT = float(os.getenv("CONTENT_HUB_MEDIA_CACHE_WAIT_SECONDS", "3.0"))
 _MAX_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
 _MIN_FREE_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
+# 팀 목록 썸네일을 만들기 위해 잠깐 보관하는 원격 원본은 영구 보존 미디어와 분리한다. 예전에는
+# MEDIA_DIR 본 경로에 계속 쌓여 .thumbs 1GB 상한과 무관하게 디스크가 증가했다.
+THUMB_SOURCE_CACHE_MAX_BYTES = max(1, int(
+    os.getenv("CONTENT_HUB_THUMB_SOURCE_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+))
+THUMB_SOURCE_FILE_MAX_BYTES = max(1, int(
+    os.getenv("CONTENT_HUB_THUMB_SOURCE_FILE_MAX_BYTES", str(128 * 1024 * 1024))
+))
+_THUMB_SOURCE_TOUCH_MIN_AGE = 86400.0
+_THUMB_SOURCE_STATE_LOCK = threading.Lock()
+_THUMB_SOURCE_STATE: dict[str, tuple[int, set[str]]] = {}
 _TEXT_ERROR_TYPES = {
     "application/json",
     "application/problem+json",
@@ -72,6 +84,12 @@ def local_rel_for(url: str) -> str:
     sha 앞 2글자로 2단계 샤딩 → 한 폴더에 수만 파일이 쌓여 FS 조회가 느려지는 걸 방지(최대 256 버킷)."""
     sha = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
     return f"/media/{sha[:2]}/{sha}{_ext_of(url)}"
+
+
+def thumb_source_rel_for(url: str) -> str:
+    """썸네일 생성 전용 원격 원본 경로 — 영구 MEDIA 파일과 분리해 안전하게 LRU 정리한다."""
+    sha = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+    return f"/media/.thumb-sources/{sha[:2]}/{sha}{_ext_of(url)}"
 
 
 def _local_path(rel: str) -> Path:
@@ -156,7 +174,7 @@ async def _release_lock(rel: str) -> None:
             _LOCK_REFS[rel] = remaining
 
 
-def _download_once(url: str, target: Path) -> None:
+def _download_once(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
     # SSRF 방어 — 내부/사설 대역·리다이렉트 우회 차단(공개 CDN 만 허용). 차단은 영구 오류(재시도 안 함).
     try:
         assert_public_http_url(url)
@@ -170,8 +188,8 @@ def _download_once(url: str, target: Path) -> None:
     try:
         with opener.open(req, timeout=_TIMEOUT) as resp, open(tmp, "wb") as f:
             length = _content_length(resp)
-            if length is not None and length > _MAX_BYTES:
-                raise MediaCachePermanentError(f"media too large: content_length={length}, max={_MAX_BYTES}")
+            if length is not None and length > max_bytes:
+                raise MediaCachePermanentError(f"media too large: content_length={length}, max={max_bytes}")
             _ensure_disk_space(target.parent, length or 0)
             content_type = resp.headers.get("Content-Type") or ""
             saw_head = False
@@ -183,8 +201,8 @@ def _download_once(url: str, target: Path) -> None:
                     _validate_response(content_type, chunk[:512])
                     saw_head = True
                 written += len(chunk)
-                if written > _MAX_BYTES:
-                    raise MediaCachePermanentError(f"media too large while streaming: bytes={written}, max={_MAX_BYTES}")
+                if written > max_bytes:
+                    raise MediaCachePermanentError(f"media too large while streaming: bytes={written}, max={max_bytes}")
                 if written == len(chunk) or written % (16 * 1024 * 1024) < len(chunk):
                     _ensure_disk_space(target.parent, 0)
                 f.write(chunk)
@@ -199,11 +217,11 @@ def _download_once(url: str, target: Path) -> None:
         raise
 
 
-def _download(url: str, target: Path) -> None:
+def _download(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
     last: Optional[BaseException] = None
     for attempt in range(1, _ATTEMPTS + 1):
         try:
-            _download_once(url, target)
+            _download_once(url, target, max_bytes)
             return
         except (MediaCachePermanentError, BlockedURLError):
             raise  # 내부망/사설·리다이렉트 차단은 영구 오류 — 재시도해도 소용없다
@@ -214,8 +232,131 @@ def _download(url: str, target: Path) -> None:
     raise MediaCacheError(f"download failed after {_ATTEMPTS} attempts: {last}") from last
 
 
+def _thumb_source_dir() -> Path:
+    return MEDIA_DIR / ".thumb-sources"
+
+
+def _thumb_source_entries(root: Path) -> list[tuple[float, int, Path]]:
+    """전용 캐시 파일만 열거. 심링크/정션은 외부 파일 삭제 위험 때문에 순회하지 않는다."""
+    if not root.exists() or root.is_symlink():
+        return []
+    entries: list[tuple[float, int, Path]] = []
+    try:
+        for shard in root.iterdir():
+            if shard.is_symlink() or not shard.is_dir():
+                continue
+            for path in shard.iterdir():
+                if path.is_symlink() or not path.is_file() or path.name.endswith(".part"):
+                    continue
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                entries.append((st.st_mtime, st.st_size, path))
+    except OSError:
+        return []
+    return entries
+
+
+def _evict_thumb_sources_locked(root: Path, max_bytes: int) -> int:
+    entries = _thumb_source_entries(root)
+    total = sum(size for _mtime, size, _path in entries)
+    removed = 0
+    if total > max_bytes:
+        entries.sort(key=lambda item: item[0])
+        for _mtime, size, path in entries:
+            if total <= max_bytes:
+                break
+            try:
+                path.unlink()
+                total -= size
+                removed += 1
+            except OSError:
+                continue
+    existing = {str(path) for _mtime, _size, path in _thumb_source_entries(root)}
+    actual_total = 0
+    for path_text in existing:
+        try:
+            actual_total += Path(path_text).stat().st_size
+        except OSError:
+            pass
+    _THUMB_SOURCE_STATE[str(root)] = (actual_total, existing)
+    return removed
+
+
+def evict_thumb_source_cache(max_bytes: int = THUMB_SOURCE_CACHE_MAX_BYTES) -> int:
+    """썸네일 원본 전용 캐시를 LRU(mtime)로 제한. 영구 MEDIA 원본은 절대 대상이 아니다."""
+    root = _thumb_source_dir()
+    with _THUMB_SOURCE_STATE_LOCK:
+        return _evict_thumb_sources_locked(root, max(1, max_bytes))
+
+
+def _account_thumb_source(target: Path) -> None:
+    """새 파일을 메모리 총량에 반영하고 상한 초과 때만 디렉터리를 스캔·정리한다."""
+    root = _thumb_source_dir()
+    key = str(root)
+    target_key = str(target)
+    with _THUMB_SOURCE_STATE_LOCK:
+        state = _THUMB_SOURCE_STATE.get(key)
+        if state is None:
+            _evict_thumb_sources_locked(root, THUMB_SOURCE_CACHE_MAX_BYTES)
+            return
+        total, known = state
+        if target_key not in known:
+            try:
+                total += target.stat().st_size
+                known = {*known, target_key}
+            except OSError:
+                return
+        _THUMB_SOURCE_STATE[key] = (total, known)
+        if total > THUMB_SOURCE_CACHE_MAX_BYTES:
+            _evict_thumb_sources_locked(root, THUMB_SOURCE_CACHE_MAX_BYTES)
+
+
+def _mark_thumb_source_used(path: Path) -> None:
+    try:
+        if time.time() - path.stat().st_mtime > _THUMB_SOURCE_TOUCH_MIN_AGE:
+            os.utime(path)
+    except OSError:
+        pass
+
+
+async def _cache_http_url(url: str, rel: str, max_bytes: Optional[int] = None) -> Optional[str]:
+    """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다."""
+    target = _local_path(rel)
+    if _is_complete_file(target):
+        return rel
+    lock = await _acquire_lock(rel)
+    try:
+        async with lock:
+            if _is_complete_file(target):
+                return rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if max_bytes is None:
+                    await asyncio.to_thread(_download, url, target)
+                else:
+                    await asyncio.to_thread(_download, url, target, max_bytes)
+                return rel if _is_complete_file(target) else None
+            except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
+                if await _wait_for_complete_file(target):
+                    log.info(
+                        "media cache reused concurrently completed file url=%s target=%s",
+                        _safe_url_for_log(url),
+                        target,
+                    )
+                    return rel
+                log.warning(
+                    "media cache download failed url=%s target=%s reason=%s",
+                    _safe_url_for_log(url), target, e,
+                )
+                return None
+    finally:
+        await _release_lock(rel)
+
+
 async def cache_url(url: Optional[str]) -> Optional[str]:
-    """원격 URL 을 로컬로 내려받고 /media 상대경로 반환. 이미 로컬이거나 실패 시 처리.
+    """보존용 원격 URL 을 로컬로 내려받고 /media 상대경로 반환. 이미 로컬이거나 실패 시 처리.
 
     - url 이 비었거나 이미 /media/.. 면 그대로(또는 None).
     - http(s) 가 아니면 캐시 대상 아님 → None.
@@ -228,31 +369,24 @@ async def cache_url(url: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         return None
 
-    rel = local_rel_for(url)
+    return await _cache_http_url(url, local_rel_for(url))
+
+
+async def cache_thumb_source(url: Optional[str]) -> Optional[str]:
+    """원격 썸네일 생성용 원본을 bounded 전용 캐시에 저장한다.
+
+    영구 보존용 cache_url과 경로를 분리해 LRU 정리가 실제 생성 결과·최종본을 지우지 못하게 한다.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    rel = thumb_source_rel_for(url)
     target = _local_path(rel)
-    if _is_complete_file(target):
-        return rel
-    lock = await _acquire_lock(rel)
-    try:
-        async with lock:
-            if _is_complete_file(target):
-                return rel
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)  # 샤딩 서브디렉터리(/media/<2>/) 보장
-                await asyncio.to_thread(_download, url, target)
-                return rel if _is_complete_file(target) else None
-            except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
-                if await _wait_for_complete_file(target):
-                    log.info(
-                        "media cache reused concurrently completed file url=%s target=%s",
-                        _safe_url_for_log(url),
-                        target,
-                    )
-                    return rel
-                log.warning("media cache download failed url=%s target=%s reason=%s", _safe_url_for_log(url), target, e)
-                return None
-    finally:
-        await _release_lock(rel)
+    result = await _cache_http_url(url, rel, THUMB_SOURCE_FILE_MAX_BYTES)
+    if not result:
+        return None
+    await asyncio.to_thread(_mark_thumb_source_used, target)
+    await asyncio.to_thread(_account_thumb_source, target)
+    return result if _is_complete_file(target) else None
 
 
 def migrate_sharding() -> int:

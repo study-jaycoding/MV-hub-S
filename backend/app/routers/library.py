@@ -371,7 +371,8 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     다운로드 실패·비이미지(비디오 등)는 원본 URL 로 리다이렉트해 깨짐을 막는다."""
     is_remote = src.startswith(("http://", "https://"))
     if is_remote:
-        rel = await media_cache.cache_url(src)
+        # 썸네일 생성만을 위한 원격 원본은 bounded 전용 캐시 — 영구 MEDIA_DIR에 무한 누적 금지.
+        rel = await media_cache.cache_thumb_source(src)
         if not rel:
             return RedirectResponse(src)  # 캐시 실패 → 원본 그대로(최소 깨짐 방지)
         target = thumbs._media_target(rel)

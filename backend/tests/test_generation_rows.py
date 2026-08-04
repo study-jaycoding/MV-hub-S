@@ -134,6 +134,21 @@ class GenerationRowsTests(unittest.TestCase):
         self.assertEqual(by_id["g3"]["ack_key"], "g3")
         self.assertEqual(repo.team_fresh_items("2026-08-04 00:00:00"), [])
 
+        # 복합 키셋 페이지 — 같은 shared_at 이어도 id tie-break로 중복·누락 없이 다음 페이지를 받는다.
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE share SET shared_at='2026-08-03 12:00:00' WHERE generation_id='g2'"
+            )
+        first = repo.team_fresh_items("2026-08-02 00:00:00", limit=1)
+        self.assertEqual([i["id"] for i in first], ["g3"])
+        second = repo.team_fresh_items(
+            "2026-08-02 00:00:00",
+            limit=1,
+            cursor_shared_at=first[-1]["shared_at"],
+            cursor_id=first[-1]["id"],
+        )
+        self.assertEqual([i["id"] for i in second], ["g2"])
+
     def test_remote_generation_item_preserves_anchor(self):
         # 프록시 물질화(서버 단건 → 로컬 import)가 서버 UUID 가 아니라 앵커(job_id)를 번들 id 로 넘겨야
         # 로컬 행 job_id·되찾기(finalize_id_map)·확인(ack) 매칭이 어긋나지 않는다(코덱스 P1 보강).

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 import time
 import unittest
@@ -85,6 +86,38 @@ class MediaCacheTests(unittest.TestCase):
                 "text/html; charset=utf-8",
                 b"<!doctype html><html>expired</html>",
             )
+
+    def test_thumb_source_cache_is_separate_and_lru_bounded(self):
+        """썸네일 원격 원본만 지우며 영구 MEDIA 파일은 보존한다."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            persistent = root / "aa" / "keep.png"
+            persistent.parent.mkdir(parents=True)
+            persistent.write_bytes(b"p" * 100)
+
+            source_dir = root / ".thumb-sources" / "bb"
+            source_dir.mkdir(parents=True)
+            old = source_dir / "old.png"
+            fresh = source_dir / "fresh.png"
+            old.write_bytes(b"o" * 100)
+            fresh.write_bytes(b"f" * 100)
+            old_time = time.time() - 86400
+            old.touch()
+            fresh.touch()
+            os.utime(old, (old_time, old_time))
+
+            with mock.patch.object(media_cache, "MEDIA_DIR", root):
+                media_cache._THUMB_SOURCE_STATE.clear()
+                removed = media_cache.evict_thumb_source_cache(max_bytes=100)
+                self.assertEqual(removed, 1)
+                self.assertFalse(old.exists())
+                self.assertTrue(fresh.exists())
+                self.assertTrue(persistent.exists())
+
+    def test_thumb_source_url_uses_dedicated_directory(self):
+        rel = media_cache.thumb_source_rel_for("https://cdn.example.com/image.png?sig=x")
+        self.assertTrue(rel.startswith("/media/.thumb-sources/"))
+        self.assertTrue(rel.endswith(".png"))
 
 
 if __name__ == "__main__":

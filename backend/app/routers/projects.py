@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from . import _proxy
 from .. import rbac, repo
@@ -106,13 +106,21 @@ def my_finalize_roles(request: Request):
 
 
 @router.get("/team-fresh")
-def team_fresh(request: Request, since: str):
+def team_fresh(
+    request: Request,
+    since: str,
+    cursor_shared_at: str | None = None,
+    cursor_id: str | None = None,
+    limit: int = Query(500, ge=1, le=500),
+):
     """기준선(since, UTC "YYYY-MM-DD HH:MM:SS") 이후 공유된 항목의 {id, project_id, folder_path} 목록.
     사이드바 '+N'(신규 라임 배지)용 — 클라가 '내가 확인(클릭)한 항목'을 제외하고 정확히 센다.
     (서버 개수−확인 개수 '빼기' 방식은 확인 항목이 공유해제·삭제되면 차감이 남아 배지를 잡아먹는다.)
     가시성은 팀 목록(tab=team)과 동일 규약. 위임 모드는 서버로 프록시. 구버전 서버는 404 → 배지 숨김."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/projects/team-fresh", request)
+    if (cursor_shared_at is None) != (cursor_id is None):
+        raise HTTPException(status_code=400, detail="cursor_shared_at과 cursor_id를 함께 보내세요")
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
         account_global_roles(request), "read_all"
     )
@@ -121,10 +129,22 @@ def team_fresh(request: Request, since: str):
     if not read_all:
         actor_uid = account_scope_uid(request)
         team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    items = repo.team_fresh_items(
+        since,
+        team_member_projects=team_member_projects,
+        actor_uid=actor_uid,
+        limit=limit,
+        cursor_shared_at=cursor_shared_at,
+        cursor_id=cursor_id,
+    )
+    # 정확히 limit건이면 다음 요청이 한 번 더 갈 수 있지만, 데이터가 끝났다면 빈 페이지로 종료된다.
+    # 별도 COUNT(*)를 매 페이지 실행하는 것보다 싸고 키셋이라 뒤 페이지도 일정한 비용이다.
+    last = items[-1] if len(items) == limit else None
     return {
-        "items": repo.team_fresh_items(
-            since, team_member_projects=team_member_projects, actor_uid=actor_uid
-        )
+        "items": items,
+        "next_cursor": (
+            {"shared_at": last["shared_at"], "id": last["id"]} if last else None
+        ),
     }
 
 

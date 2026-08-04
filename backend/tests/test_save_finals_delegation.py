@@ -7,6 +7,7 @@ final_export.project_id 는 위임 모드에서 팀원 생성물(로컬 generati
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from app import db, repo
 from app.repo import manage as _m
@@ -101,6 +102,28 @@ class SaveFinalsDelegationTests(unittest.TestCase):
             self.assertTrue(p.startswith(proxy_mod._STREAM_PREFIX))
         # 스트리밍 경로는 로컬 처리 대상이 아니어야(위임 시 서버로 감) — 분류 이중 확인.
         self.assertFalse(proxy_mod.is_local_path(proxy_mod._STREAM_PREFIX + "abc"))
+
+    def test_content_rejects_private_remote_url_before_open(self):
+        """발행 번들의 file_path 를 악용해 서버 내부망을 읽는 SSRF를 차단한다."""
+        from fastapi import HTTPException
+
+        from app.routers import manage as mroute
+
+        with (
+            mock.patch.object(mroute.repo, "get_generation", return_value={"project_id": "p1"}),
+            mock.patch.object(mroute, "_require_project_manage"),
+            mock.patch.object(
+                mroute.repo_manage,
+                "finals_to_export",
+                return_value=[{"gen_id": "g1", "file_path": "http://127.0.0.1/private"}],
+            ),
+            mock.patch.object(mroute, "guarded_opener") as opener,
+        ):
+            with self.assertRaises(HTTPException) as cm:
+                mroute.save_finals_content("g1", mock.Mock())
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("허용되지 않는 원본 URL", str(cm.exception.detail))
+        opener.assert_not_called()
 
     def test_targets_facts_shape(self):
         # 서버 targets 는 '사실'만 — 디스크 판정(saved/render_path)이 절대 섞이지 않는다.

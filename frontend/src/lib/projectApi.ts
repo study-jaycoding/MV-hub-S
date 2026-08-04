@@ -2,6 +2,60 @@ import type { Creator, Member, Project, ProjectsResponse, Workspace } from "../t
 import { jsonBody, jsonFetch } from "./http";
 import { pathPart } from "./url";
 
+export interface TeamFreshItem {
+  id: string;
+  project_id: string | null;
+  folder_path: string | null;
+  shared_at: string | null;
+  ack_key?: string | null;
+}
+
+interface TeamFreshCursor {
+  shared_at: string;
+  id: string;
+}
+
+interface TeamFreshPage {
+  items: TeamFreshItem[];
+  next_cursor?: TeamFreshCursor | null;
+}
+
+function teamFreshPage(since: string, cursor: TeamFreshCursor | null = null): Promise<TeamFreshPage> {
+  const p = new URLSearchParams({ since, limit: "500" });
+  if (cursor) {
+    p.set("cursor_shared_at", cursor.shared_at);
+    p.set("cursor_id", cursor.id);
+  }
+  return jsonFetch<TeamFreshPage>(`/api/projects/team-fresh?${p.toString()}`);
+}
+
+export async function fetchAllTeamFresh(
+  since: string,
+  isActive: () => boolean = () => true,
+): Promise<TeamFreshItem[]> {
+  const out: TeamFreshItem[] = [];
+  const itemIds = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: TeamFreshCursor | null = null;
+  while (isActive()) {
+    const page = await teamFreshPage(since, cursor);
+    if (!isActive()) return [];
+    for (const item of page.items || []) {
+      if (!itemIds.has(item.id)) {
+        itemIds.add(item.id);
+        out.push(item);
+      }
+    }
+    const next = page.next_cursor;
+    if (!next) break; // 구서버 응답도 여기서 1페이지 호환 종료
+    const key = `${next.shared_at}\u0000${next.id}`;
+    if (cursors.has(key)) throw new Error("team-fresh 페이지 커서가 반복되었습니다");
+    cursors.add(key);
+    cursor = next;
+  }
+  return out;
+}
+
 export const projectApi = {
   // 프로젝트(작업 묶음) — 공유·이동의 단위
   projects: (tab: "my" | "team" = "my", includeArchived = false) => {
@@ -43,16 +97,8 @@ export const projectApi = {
     ),
   // 기준선 이후 공유된 항목 목록 — 사이드바 +N(신규 라임 배지). 클라가 확인(클릭)분을 제외하고 센다.
   // 구버전 서버는 이 라우트가 없어 404 → 호출부가 빈 목록 폴백(배지만 숨김).
-  teamFresh: (since: string) =>
-    jsonFetch<{
-      items: {
-        id: string;
-        project_id: string | null;
-        folder_path: string | null;
-        shared_at: string | null; // 재공유 판정 축 — 확인 저장값보다 새로우면 다시 +N
-        ack_key?: string | null; // 확인 대조 앵커(job_id 우선) — 구서버 응답엔 없어 id 폴백
-      }[];
-    }>(`/api/projects/team-fresh?since=${encodeURIComponent(since)}`),
+  teamFresh: teamFreshPage,
+  teamFreshAll: fetchAllTeamFresh,
   setProjectFolder: (
     id: string,
     body: { root_path?: string; selected_path?: string },

@@ -226,7 +226,11 @@ async function syncNow(): Promise<void> {
       if (ns() !== scope) return; // 응답 후 상태 반영도 같은 scope 일 때만
       for (const u of chunk) {
         lastPushed.set(u.id, u.data);
-        serverHash?.delete(u.id); // 서버 해시 미상(서버가 재계산) — 다음 대조는 lastPushed 가 담당
+        // 서버가 재계산한 정확한 해시는 모르지만, 이 ID가 서버에 '존재한다'는 사실은 유지해야 한다.
+        // 여기서 지우면 같은 세션에서 로컬 씬을 삭제했을 때 allDeleted가 그 ID를 못 찾아 서버 백업이
+        // 남고, 캐시 소실 후 삭제한 씬이 되살아난다. 빈 문자열은 존재 멤버십용 sentinel이며 변경
+        // 대조는 lastPushed가 담당한다(내용이 바뀌면 sentinel과 해시가 달라 재업로드됨).
+        serverHash?.set(u.id, "");
       }
       for (const id of dels) {
         serverHash?.delete(id);

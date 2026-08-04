@@ -1,5 +1,6 @@
 """썸네일 캐시 LRU — 서빙 touch(mark_thumb_used)와 evict 가 '안 본 지 오래된 것부터' 지우는 불변식."""
 
+import asyncio
 import os
 import tempfile
 import time
@@ -56,6 +57,34 @@ class ThumbLruTests(unittest.TestCase):
     def test_evict_noop_under_limit(self):
         _make_jpg(self.dir, "a.jpg", 100, 86400)
         self.assertEqual(thumbs.evict_thumb_cache(max_bytes=1024), 0)
+
+    def test_remote_prewarm_concurrency_is_global_across_calls(self):
+        """동시 목록 요청마다 제한이 복제되지 않고 프로세스 전체 상한을 공유한다."""
+        from app.services import media_cache
+
+        active = 0
+        peak = 0
+
+        async def fake_cache(_url: str):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return None
+
+        async def scenario():
+            with (
+                mock.patch.object(thumbs, "_REMOTE_PREWARM_SEM", asyncio.Semaphore(2)),
+                mock.patch.object(media_cache, "cache_thumb_source", side_effect=fake_cache),
+            ):
+                await asyncio.gather(
+                    thumbs.prewarm_remote_thumbs([f"https://cdn.example/a{i}.jpg" for i in range(4)]),
+                    thumbs.prewarm_remote_thumbs([f"https://cdn.example/b{i}.jpg" for i in range(4)]),
+                )
+
+        asyncio.run(scenario())
+        self.assertEqual(peak, 2)
 
 
 if __name__ == "__main__":

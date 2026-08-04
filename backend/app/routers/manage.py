@@ -33,6 +33,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..services import cli_bridge, media_cache, project_folders
+from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
@@ -534,7 +535,16 @@ def save_finals_content(gen_id: str, request: Request):
         import urllib.request
 
         try:
-            upstream = urllib.request.urlopen(file_path, timeout=60)  # noqa: S310 — DB 의 결과물 URL
+            # 발행 번들의 file_path 는 외부 입력이다. 문자열이 http(s)라는 이유만으로 신뢰하면
+            # 프로젝트 관리자가 이 중계 API를 통해 127.0.0.1·사설망·클라우드 메타데이터를 읽는
+            # SSRF 경로가 된다. 공용 미디어 캐시와 같은 공개 IP+리다이렉트 차단 규칙을 적용한다.
+            assert_public_http_url(file_path)
+            req = urllib.request.Request(
+                file_path, headers={"User-Agent": "content-hub/0.1"}
+            )
+            upstream = guarded_opener().open(req, timeout=60)
+        except BlockedURLError as e:
+            raise HTTPException(status_code=400, detail=f"허용되지 않는 원본 URL: {e}")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise HTTPException(status_code=502, detail=f"원본(CDN) 조회 실패: {e}")
 
