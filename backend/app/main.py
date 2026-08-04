@@ -563,6 +563,12 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         await manager.disconnect(ws)
     except Exception:
+        # 예상한 WebSocketDisconnect 외의 예외를 숨기면 장시간 연결이 끊겨도 운영 로그에는
+        # 원인이 전혀 남지 않는다. 토큰·이메일은 기록하지 않고 인증 스코프 존재 여부만 남긴다.
+        _runtime_log.exception(
+            "WebSocket handler error (authenticated_scope=%s)",
+            account_uid is not None,
+        )
         await manager.disconnect(ws)
 
 

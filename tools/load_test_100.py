@@ -69,6 +69,23 @@ def _percentile(values: list[float], p: float) -> float:
     return round(ordered[index], 2)
 
 
+def _operational_error_tail(path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    """격리 서버 운영 로그에서 ERROR/CRITICAL만 읽어 실패 보고서에 남긴다."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    errors: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("level") in {"ERROR", "CRITICAL"}:
+            errors.append(payload)
+    return errors[-max(1, limit) :]
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -392,6 +409,7 @@ async def _websocket_worker(
 ) -> None:
     import websockets
 
+    started = time.monotonic()
     try:
         encoded = urllib.parse.quote(token, safe="")
         connect_kwargs: dict[str, Any] = {
@@ -414,7 +432,12 @@ async def _websocket_worker(
                 except asyncio.TimeoutError:
                     await websocket.send("ping")
     except Exception as exc:  # noqa: BLE001 — 부하 결과로 수집
-        errors.append(str(exc))
+        # 실제 사용 중 단절과 테스트 종료(close) 중 단절을 구분할 수 있게 한다.
+        # 토큰·URL은 기록하지 않아 결과 JSON에 인증정보가 남지 않는다.
+        errors.append(
+            f"{type(exc).__name__}|stop_requested={stop.is_set()}|"
+            f"after_seconds={time.monotonic() - started:.2f}|{exc}"
+        )
         ready.set()
 
 
@@ -846,6 +869,9 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }
         report["acceptance"] = _evaluate(report, args)
         if not report["acceptance"]["passed"]:
+            report["operational_error_tail"] = _operational_error_tail(
+                data_dir / "logs" / "mvhub-runtime.jsonl"
+            )
             try:
                 report["server_log_tail"] = server_log.read_text(
                     encoding="utf-8", errors="replace"

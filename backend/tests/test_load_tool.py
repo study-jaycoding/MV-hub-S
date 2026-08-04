@@ -2,7 +2,9 @@
 
 import asyncio
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +24,25 @@ class LoadToolTests(unittest.TestCase):
     def test_percentile(self):
         self.assertEqual(load_tool._percentile(list(range(1, 101)), 0.95), 95)
         self.assertEqual(load_tool._percentile([], 0.95), 0.0)
+
+    def test_operational_error_tail_keeps_only_latest_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runtime.jsonl"
+            path.write_text(
+                "\n".join(
+                    (
+                        json.dumps({"level": "INFO", "message": "ok"}),
+                        "not-json",
+                        json.dumps({"level": "ERROR", "message": "first"}),
+                        json.dumps({"level": "CRITICAL", "message": "last"}),
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = load_tool._operational_error_tail(path, limit=1)
+
+        self.assertEqual(result, [{"level": "CRITICAL", "message": "last"}])
 
     def test_ssl_close_filter_only_suppresses_exact_cleanup_warning(self):
         close_record = load_tool.logging.LogRecord(

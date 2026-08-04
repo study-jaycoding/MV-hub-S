@@ -58,6 +58,10 @@ def main() -> None:
         host=HOST,
         port=PORT,
         log_level="info",
+        # 브라우저가 25초마다 텍스트 ping을 보내고 앱이 45초마다 세션을 재검증한다.
+        # Uvicorn의 별도 프로토콜 ping까지 켜면 100명 연결에서 같은 시각에 ping/pong이
+        # 몰려 정상 연결도 keepalive timeout(1011)으로 끊길 수 있어 중복 ping을 끈다.
+        ws_ping_interval=None,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
     )
