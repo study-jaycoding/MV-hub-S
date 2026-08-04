@@ -235,9 +235,13 @@ def _media_target(rel_or_media_path: str) -> Optional[Path]:
     return safe_join(MEDIA_DIR, rel_or_media_path[len("/media/"):])
 
 
-def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:
+def prewarm_generation_thumbs(
+    widths: tuple[int, ...] = THUMB_WIDTHS, throttle: float = 0.0
+) -> int:
     """모든 로컬 /media 이미지의 썸네일을 미리 생성(없는 것만). 시작 후 백그라운드 데몬에서 호출.
-    → 첫 프로젝트 선택·스크롤에서도 생성 지연 없이 즉시 표시된다. 생성 개수를 반환."""
+    → 첫 프로젝트 선택·스크롤에서도 생성 지연 없이 즉시 표시된다. 생성 개수를 반환.
+    ★파일 하나당 두 버킷(256/512)을 '함께' 굽는다(인터리브) — 폭별로 전체를 두 번 돌면 용량 상한
+    eviction(생성시각 순 삭제)이 먼저 구운 폭 전체를 통째로 밀어내 한 버킷이 항상 콜드가 된다."""
     from ..db import get_connection
 
     with get_connection() as conn:
@@ -247,11 +251,14 @@ def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:
     made = 0
     for r in rows:
         target = _media_target(r["file_path"] or "")
-        if target and not cache_path(target, width).exists():
-            if ensure_thumb(target, width):
-                made += 1
-            if throttle:
-                time.sleep(throttle)
+        if not target:
+            continue
+        for width in widths:
+            if not cache_path(target, width).exists():
+                if ensure_thumb(target, width):
+                    made += 1
+                if throttle:
+                    time.sleep(throttle)
     if made:
         evict_thumb_cache()  # 새로 구운 만큼 상한 점검(초과 시 오래된 것부터 삭제)
     return made
@@ -292,33 +299,39 @@ async def prewarm_remote_thumbs(
     return made
 
 
-def prewarm_asset_thumbs(files: list[tuple[Path, str]], width: int = 512) -> int:
+def prewarm_asset_thumbs(
+    files: list[tuple[Path, str]], widths: tuple[int, ...] = THUMB_WIDTHS
+) -> int:
     """로컬 Assets 미디어의 썸네일/포스터를 미리 구워둔다(폴더 트리 로드 직후 백그라운드).
     이미지=ensure_thumb, 비디오=ensure_video_poster. 이미 캐시면 즉시 통과(멱등)라 재호출이 싸다 →
     스크롤 시점엔 디스크 캐시 히트로 즉시 뜬다. files=[(디스크경로, 'image'|'video')].
-    비디오 ffmpeg 동시성은 _FFMPEG_SEM 이 제한하므로 워커를 조금 둬도 폭주하지 않는다. 새로 구운 수 반환."""
+    ★파일 하나당 두 버킷(256/512)을 '함께' 굽는다(인터리브) — eviction 이 생성시각 순이라
+    폭별 일괄 굽기는 먼저 구운 폭부터 통째로 밀려난다. 비디오 ffmpeg 는 _FFMPEG_SEM 이 제한."""
     from concurrent.futures import ThreadPoolExecutor
 
     made = 0
 
-    def _one(item: tuple[Path, str]) -> bool:
+    def _one(item: tuple[Path, str]) -> int:
         path, mt = item
-        try:
-            existed = _is_complete_file(cache_path(path, width)) if path.is_file() else False
-        except OSError:
-            existed = False
-        if mt == "image":
-            result = ensure_thumb(path, width)
-        elif mt == "video":
-            result = ensure_video_poster(path, width)
-        else:
-            result = None
-        return bool(result) and not existed  # 새로 구운 것만 True
+        new = 0
+        for width in widths:
+            try:
+                existed = _is_complete_file(cache_path(path, width)) if path.is_file() else False
+            except OSError:
+                existed = False
+            if mt == "image":
+                result = ensure_thumb(path, width)
+            elif mt == "video":
+                result = ensure_video_poster(path, width)
+            else:
+                result = None
+            if result and not existed:  # 새로 구운 것만 카운트
+                new += 1
+        return new
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         for new in ex.map(_one, files):
-            if new:
-                made += 1
+            made += new
     if made:
         evict_thumb_cache()  # 새로 구운 만큼 상한 점검
     return made

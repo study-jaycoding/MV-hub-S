@@ -563,8 +563,7 @@ def _prewarm_projects_bg(dirs: list[tuple[Path, bool]]) -> None:
             children = _build_tree(proj_dir, "", hidden_names={"render"} if auto_project else None)
             media = _collect_tree_media(children, proj_dir)
             if media:
-                for w in thumbs.THUMB_WIDTHS:  # 그리드가 쓰는 두 버킷(256/512) 모두 워밍
-                    thumbs.prewarm_asset_thumbs(media, w)
+                thumbs.prewarm_asset_thumbs(media)  # 두 버킷(256/512)을 파일 단위로 함께 워밍
         except Exception:  # noqa: BLE001 — 한 프로젝트 실패가 나머지 프리워밍을 막지 않게
             continue
 
@@ -755,8 +754,7 @@ def project_tree(
     # 올 때마다 전체 재프리워밍이 재큐잉되던 것 방지). 비디오 ffmpeg 는 세마포어로 폭주 방지.
     media = _collect_tree_media(children, proj_dir)
     if media and not thumbs.prewarm_recently(str(proj_dir)):
-        for w in thumbs.THUMB_WIDTHS:  # 그리드가 쓰는 두 버킷(256/512) 모두 — 어느 배율에서도 캐시 히트
-            background.add_task(thumbs.prewarm_asset_thumbs, media, w)
+        background.add_task(thumbs.prewarm_asset_thumbs, media)  # 두 버킷(256/512) 파일 단위 워밍
     return {"project": project, "name": proj_dir.name, "children": children}
 
 

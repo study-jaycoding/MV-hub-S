@@ -41,18 +41,28 @@ export function useAssetProjectData({
   if (!cacheSeededRef.current) {
     cacheSeededRef.current = true; // 최초 렌더 1회만 — 구버전 '합본 한 키' 캐시를 프로젝트별 키로 이관
     // (합본 키는 큰 폴더 하나가 3MB 상한을 넘기면 '모든' 프로젝트 캐시가 같이 비워지는 문제가 있었다.)
-    const oldTree = STORE.loadJSON<Record<string, AssetNode[]>>(TREE_CACHE_KEY);
-    if (oldTree) {
-      treeCacheRef.current = oldTree;
-      for (const [p, v] of Object.entries(oldTree)) persistCache(`${TREE_CACHE_KEY}.${p}`, v);
-      STORE.set(TREE_CACHE_KEY, "");
-    }
-    const oldMeta = STORE.loadJSON<Record<string, Record<string, AssetMeta>>>(META_CACHE_KEY);
-    if (oldMeta) {
-      metaCacheRef.current = oldMeta;
-      for (const [p, v] of Object.entries(oldMeta)) persistCache(`${META_CACHE_KEY}.${p}`, v);
-      STORE.set(META_CACHE_KEY, "");
-    }
+    // ★검증 후 삭제: localStorage quota 초과는 조용히 삼켜지므로, 프로젝트별 키가 실제로 저장됐는지
+    //  읽어서 대조한 뒤에만 합본 키를 비운다 — 실패하면 합본 키를 남겨 다음 세션 캐시를 잃지 않는다(코덱스 P2).
+    const migrate = (legacyKey: string, into: Record<string, unknown>) => {
+      const old = STORE.loadJSON<Record<string, unknown>>(legacyKey);
+      if (!old) return;
+      Object.assign(into, old);
+      let allOk = true;
+      for (const [p, v] of Object.entries(old)) {
+        try {
+          const s = JSON.stringify(v);
+          if (s.length > CACHE_MAX_BYTES) continue; // 그 프로젝트만 저장 생략 — 이관 실패로 안 친다
+          const k = `${legacyKey}.${p}`;
+          STORE.set(k, s);
+          if (STORE.get(k, "") !== s) allOk = false; // quota 초과 등 무음 실패 감지
+        } catch {
+          allOk = false;
+        }
+      }
+      if (allOk) STORE.set(legacyKey, "");
+    };
+    migrate(TREE_CACHE_KEY, treeCacheRef.current);
+    migrate(META_CACHE_KEY, metaCacheRef.current);
   }
   // 프로젝트별 키에서 필요할 때 시드(첫 접근 1회) — 창을 껐다 켜도 그 폴더 화면이 즉시 뜬다.
   const seededProjectsRef = useRef<Set<string>>(new Set());
@@ -170,15 +180,15 @@ export function useAssetProjectData({
 
   // 창을 다시 볼 때(포커스/탭 전환) 현재 프로젝트를 fresh 로 다시 읽어 최신 파일 버전을 반영한다
   // → 외부에서 원본을 같은 이름으로 덮어쓰고 어셋 창으로 돌아오면 썸네일이 자동으로 최신화된다.
-  // ★30초 스로틀 — 폴더 변경은 watchdog(WS assets_changed)가 실시간으로 알려주므로, 포커스마다의
-  //   전체 재스캔(fresh=백엔드 캐시 우회)은 감시가 못 잡는 경우의 '보조'면 충분하다. 0.5초 디바운스
-  //   시절엔 창을 앞뒤로 오갈 때마다 풀 스캔+프리워밍이 반복돼 열 때마다 느려졌다.
+  // ★10초 스로틀(백엔드 트리 캐시 TTL 과 동일) — 폴더 변경은 watchdog(WS assets_changed)가 실시간
+  //   알림이라 포커스 재조회는 보조다. 0.5초 디바운스 시절엔 창을 앞뒤로 오갈 때마다 풀 스캔+프리워밍이
+  //   반복돼 열 때마다 느려졌다. 10초면 감시가 안 되는 환경(네트워크 드라이브 등)에서도 충분히 신선하다.
   useEffect(() => {
     let lastAt = 0;
     const refresh = () => {
       if (document.hidden || !projectRef.current) return;
       const now = Date.now();
-      if (now - lastAt < 30_000) return;
+      if (now - lastAt < 10_000) return;
       lastAt = now;
       void reloadTree(projectRef.current, true);
     };

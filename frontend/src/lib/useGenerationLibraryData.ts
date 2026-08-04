@@ -57,6 +57,27 @@ export function useGenerationLibraryData({
     if (c) tabCacheRef.current[t] = { ...c, gens, hasMore };
   }, [gens, hasMore]);
 
+  // ★탭이 바뀌면 '그 자리에서' 화면 컨텍스트를 전환 — 진행 중 reload(코얼레싱 큐)가 끝나길 기다리면
+  //  이전 탭 카드가 새 탭에 남는다(코덱스 P1). 캐시(sig 일치)가 있으면 즉시 그 탭 목록, 없으면 비움.
+  //  이후 fetch(seq 가드)가 최신본으로 갱신한다. 첫 마운트(null)는 초기 로드에 맡긴다.
+  useEffect(() => {
+    const tab = filters.tab;
+    if (tab === "compose") return; // 캔버스는 그리드를 안 그림 — 표시 컨텍스트 유지
+    if (lastLoadedTabRef.current === null || lastLoadedTabRef.current === tab) return;
+    lastLoadedTabRef.current = tab;
+    const sig = JSON.stringify([!!filtersRef.current.deleted_only, genQueryRef.current]);
+    const cached = tabCacheRef.current[tab];
+    if (cached && cached.sig === sig) {
+      setGens(cached.gens);
+      setHasMore(cached.hasMore);
+      setLoading(false);
+    } else {
+      setGens([]);
+      setHasMore(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.tab]);
+
   const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;
     // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref 가 다른 탭 값으로 바뀌어 있어도 안전.
@@ -85,20 +106,7 @@ export function useGenerationLibraryData({
     const trashMode = !!filtersRef.current.deleted_only;
     const scope = tab === "team" ? "team" : "my";
     const sig = JSON.stringify([trashMode, query]);
-    // 탭이 바뀐 로드면: 그 탭의 캐시가 있으면 즉시 표시(빈 화면 딜레이 없음), 없으면 비우고 로딩.
-    // 어느 쪽이든 이전 탭 카드가 비치는 깜빡임은 없고, 아래 fetch 가 최신본으로 조용히 갱신한다.
-    if (lastLoadedTabRef.current !== null && lastLoadedTabRef.current !== tab) {
-      const cached = tabCacheRef.current[tab];
-      if (cached && cached.sig === sig) {
-        setGens(cached.gens);
-        setHasMore(cached.hasMore);
-        setLoading(false); // 캐시가 화면을 채우는 동안 스피너 불필요(백그라운드 갱신)
-      } else {
-        setGens([]);
-        setHasMore(false);
-      }
-      lastLoadedTabRef.current = tab;
-    }
+    // 탭 전환의 '즉시 표시'는 위 filters.tab effect 가 담당 — 여기(비동기 실행 시점)는 최신본 fetch 만.
     // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
     try {
       const g = trashMode
@@ -186,6 +194,9 @@ export function useGenerationLibraryData({
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
+      // 시작 시점 seq 스냅샷 — 응답이 오기 전에 탭/필터가 바뀌었으면(reload 가 seq 를 올림) 폐기.
+      // 가드 없이는 '내 작업' 추가 페이지가 팀 탭 목록에 합쳐지고 탭 캐시까지 오염된다(코덱스 P1).
+      const seq = reloadSeqRef.current;
       const trashMode = !!filtersRef.current.deleted_only;
       let batch: Generation[];
       if (trashMode) {
@@ -195,6 +206,7 @@ export function useGenerationLibraryData({
         const cursor = last ? { ts: last.sort_ts ?? 0, id: last.id } : null;
         batch = await api.listGenerations(genQueryRef.current, cursor);
       }
+      if (seq !== reloadSeqRef.current) return; // 다른 탭/쿼리로 바뀐 뒤 도착한 이전 컨텍스트 페이지
       // ★gens 누적 캡(A5)은 넣지 않는다(코덱스 리뷰로 폐기): 앞부분 트림이 휴지통 offset 페이지네이션·
       //  virtua 스크롤 앵커·focusIdx(인덱스 기반)·선택 Set 을 동시에 깨뜨린다. 항목당 메타 수 KB 뿐이고
       //  진짜 메모리(썸네일 비트맵·DOM)는 가상 스크롤이 이미 상한 — 실이득 대비 회귀 위험이 커서 제외.
