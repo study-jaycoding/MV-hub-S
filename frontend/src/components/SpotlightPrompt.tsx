@@ -3,15 +3,16 @@
 //  · @ → 소스 피커, # → 태그 목록 피커. 태그 선택 시 tagFilter 고정 + @ 피커가 그 태그로 필터되어 열림
 //  · Esc → 피커 닫기 / tagFilter 해제. 제출 시 본문 텍스트 + 칩→references 직렬화.
 import {
+  forwardRef,
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import type { MutableRefObject, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api";
 import { APP_EVENTS, ASSET_CHANNEL_MESSAGES } from "../lib/appEvents";
 import { openAssetBroadcast } from "../lib/assetBroadcast";
@@ -115,17 +116,20 @@ interface Props {
   // 단축키가 글자로 새지 않게). 프롬프트는 직접 클릭해야 타이핑. sceneMode(카드 바인딩)보다 넓게 —
   // 카드를 아직 안 골랐어도 캔버스에선 자동 포커스 금지.
   inCompose?: boolean;
-  // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유), submit 을 ref 로 노출.
+  // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유).
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
-  submitRef?: MutableRefObject<((batch?: number) => void) | null>; // 카드 아래 Generate 가 호출(노드별 배치수 전달)
+}
+
+export interface SpotlightPromptHandle {
+  submit: (batch?: number) => void;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
 // useModels 훅으로 추출. onPanelDrop 에서 쓰는 상수만 훅 모듈에서 import 해 재사용.
 
 
-export function SpotlightPrompt({
+export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function SpotlightPrompt({
   onCreated,
   armedAutoTags,
   armedFolder,
@@ -140,8 +144,7 @@ export function SpotlightPrompt({
   onPreview,
   count: countProp,
   onCountChange,
-  submitRef,
-}: Props) {
+}, ref) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
           optionValues, setOptionValues, setOpt, cost, costLoading, paramsModel, paramsLoading,
@@ -982,10 +985,8 @@ export function SpotlightPrompt({
       setBusy(false);
     }
   };
-  // 캔버스 카드 아래 Generate 버튼이 호출할 제출 함수를 ref 로 노출(항상 최신 closure). busy 면 submit 내부에서 무시.
-  useLayoutEffect(() => {
-    if (submitRef) submitRef.current = submit;
-  });
+  // App에는 Spotlight 내부 상태 대신 submit(batch) 한 가지 명령만 공개한다.
+  useImperativeHandle(ref, () => ({ submit }), [submit]);
 
   // 드롭다운(model/ratio) Esc 닫기 — 도크 자체는 항상 떠 있음.
   useEffect(() => {
@@ -1299,4 +1300,4 @@ export function SpotlightPrompt({
       </div>
     </div>
   );
-}
+});

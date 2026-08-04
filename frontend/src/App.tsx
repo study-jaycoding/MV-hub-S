@@ -9,7 +9,10 @@ import { ServerLoginScreen } from "./components/ServerLoginScreen";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { CanvasFolderSidebar } from "./components/sidebar/CanvasFolderSidebar";
 import { LibraryToolbar } from "./components/LibraryToolbar";
-import { SpotlightPrompt } from "./components/SpotlightPrompt";
+import {
+  SpotlightPrompt,
+  type SpotlightPromptHandle,
+} from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
 import { ensureTeamBase } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
@@ -149,7 +152,7 @@ export default function App() {
   useSceneCompletionWatcher(glowCandidateIds);
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
-  const spotlightSubmitRef = useRef<((batch?: number) => void) | null>(null);
+  const spotlightPromptRef = useRef<SpotlightPromptHandle>(null);
   // 구성탭 히스토리 보드(계보 트리) 상태는 useHistoryBoardState 훅으로 추출.
   const {
     boardFocusId, setBoardFocusId, boardFocusIdRef,
@@ -1073,7 +1076,7 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                onGenerateCard={(batch) => spotlightSubmitRef.current?.(batch)}
+                onGenerateCard={(batch) => spotlightPromptRef.current?.submit(batch)}
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
                 onComfyRunningChange={setComfyRunning}
@@ -1261,6 +1264,7 @@ export default function App() {
       {/* 프롬프트 입력바 — 구성탭에서도 표시. Ctrl/⌘+K 로 표시/숨김 토글(display 토글로 입력 상태 보존) */}
       <div style={promptVisible ? undefined : { display: "none" }}>
         <SpotlightPrompt
+          ref={spotlightPromptRef}
           expanded={composerExpanded || sceneMode}
           onToggleExpand={toggleComposerExpanded}
           onPreview={openPreview}
@@ -1270,7 +1274,6 @@ export default function App() {
           onTrayBindingPromptChange={setSceneCardPrompt}
           count={batchCount}
           onCountChange={setBatchCount}
-          submitRef={spotlightSubmitRef}
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={
