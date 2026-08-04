@@ -37,6 +37,7 @@ from ..services.agent_signals import agent_signals
 from ..usecases.gen_requests import (
     GenRequestCommand,
     claim_gen_requests,
+    fulfill_request,
     pm_best_effort as _pm,
     submit_gen_request,
 )
@@ -168,45 +169,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
 
-    gen_id = req["gen_id"]
-    parsed = cli_bridge.parse_job(body.job)
-    result = normalize_job_result(parsed)
-    # ★원자 적용(+CAS): 에셋·job_id·타임스탬프·상태·요청표시를 한 트랜잭션으로. 동시 fulfill/fail 로
-    # 이미 종결됐으면 False → 멱등 반환(완료를 덮어쓰지 않음·중복 브로드캐스트 안 함).
-    applied = repo.apply_local_fulfillment(
-        gen_id,
-        rid,
-        asset_type=result.asset_type,
-        asset_path=result.asset_path,
-        asset_thumb=result.asset_thumb,
-        job_id=result.job_id,
-        created_at=result.created_at,
-        sort_ts=result.sort_ts,
-        status=result.status,
-        error=result.error,
-        request_status="done" if result.status == "done" else "failed",
-    )
-    if not applied:
-        gen = repo.get_generation(gen_id)
-        if not gen:
-            raise HTTPException(status_code=500, detail="결과 조회 실패")
-        return gen
-    # PM 메트릭: completed_at + elapsed(started_at 대비). applied=True 일 때만 → 멱등(중복 보고 무영향).
-    _pm(lambda _m: _m.record_completed(gen_id, job_id=result.job_id))
-    # 로컬 우선: 결과는 로컬 DB 에 저장만 하면 내 화면(로컬 읽기)에 바로 보인다. 서버로는
-    # 보내지 않는다 — 공유는 '선택 발행'(번들 push)으로만 일어난다(CLAUDE.md 원칙 2).
-
-    await manager.broadcast(
-        {
-            "type": "progress",
-            "generation_id": gen_id,
-            "status": result.status,
-            "result_url": result.asset_path,
-            "error": result.error,
-        },
-        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
-    )
-    gen = repo.get_generation(gen_id)
+    gen = await fulfill_request(req, rid, body.job, realtime_scope(acc))
     if not gen:
         raise HTTPException(status_code=500, detail="결과 조회 실패")
     return gen

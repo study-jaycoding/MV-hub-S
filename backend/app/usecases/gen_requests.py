@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from .. import repo
 from ..config import MANAGE_ENABLED
+from ..generation_result import normalize_job_result
 from ..models import RegenerateIn
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
@@ -58,6 +59,45 @@ async def claim_gen_requests(email: str, account_uid: str | None, limit: int) ->
             account_uid=account_uid,
         )
     return claimed
+
+
+async def fulfill_request(
+    request_row: dict,
+    request_id: str,
+    job: dict,
+    account_uid: str | None,
+) -> dict | None:
+    """완료 잡을 placeholder에 원자 적용하고, 실제로 적용된 경우에만 완료 알림을 보낸다."""
+    gen_id = request_row["gen_id"]
+    result = normalize_job_result(cli_bridge.parse_job(job))
+    applied = repo.apply_local_fulfillment(
+        gen_id,
+        request_id,
+        asset_type=result.asset_type,
+        asset_path=result.asset_path,
+        asset_thumb=result.asset_thumb,
+        job_id=result.job_id,
+        created_at=result.created_at,
+        sort_ts=result.sort_ts,
+        status=result.status,
+        error=result.error,
+        request_status="done" if result.status == "done" else "failed",
+    )
+    if not applied:
+        return repo.get_generation(gen_id)
+
+    pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
+    await manager.broadcast(
+        {
+            "type": "progress",
+            "generation_id": gen_id,
+            "status": result.status,
+            "result_url": result.asset_path,
+            "error": result.error,
+        },
+        account_uid=account_uid,
+    )
+    return repo.get_generation(gen_id)
 
 
 async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:

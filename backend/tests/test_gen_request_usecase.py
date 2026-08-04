@@ -2,10 +2,16 @@
 부수효과 순서·분기를 고정한다. 라우터에서 옮긴 흐름이 동작 그대로인지 지킨다."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models import RegenerateIn
-from app.usecases.gen_requests import GenRequestCommand, claim_gen_requests, submit_gen_request
+from app.usecases.gen_requests import (
+    GenRequestCommand,
+    claim_gen_requests,
+    fulfill_request,
+    submit_gen_request,
+)
 
 
 def _names(parent):
@@ -140,3 +146,84 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
             "g1",
             "g2",
         ]
+
+
+def test_fulfill_request_applies_result_once_and_broadcasts():
+    result = SimpleNamespace(
+        asset_type="image",
+        asset_path="C:/result.png",
+        asset_thumb="C:/thumb.png",
+        job_id="job1",
+        created_at="2026-08-05T00:00:00Z",
+        sort_ts=123.0,
+        status="done",
+        error=None,
+    )
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job", return_value={"parsed": True}
+    ) as parse_job, patch(
+        "app.usecases.gen_requests.normalize_job_result", return_value=result
+    ) as normalize, patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.apply_local_fulfillment.return_value = True
+        repo.get_generation.return_value = {"id": "g1", "status": "done"}
+
+        out = asyncio.run(
+            fulfill_request({"gen_id": "g1"}, "r1", {"raw": True}, "acct:a")
+        )
+
+        assert out == {"id": "g1", "status": "done"}
+        parse_job.assert_called_once_with({"raw": True})
+        normalize.assert_called_once_with({"parsed": True})
+        repo.apply_local_fulfillment.assert_called_once_with(
+            "g1",
+            "r1",
+            asset_type="image",
+            asset_path="C:/result.png",
+            asset_thumb="C:/thumb.png",
+            job_id="job1",
+            created_at="2026-08-05T00:00:00Z",
+            sort_ts=123.0,
+            status="done",
+            error=None,
+            request_status="done",
+        )
+        pm.assert_called_once()
+        broadcast.assert_awaited_once_with(
+            {
+                "type": "progress",
+                "generation_id": "g1",
+                "status": "done",
+                "result_url": "C:/result.png",
+                "error": None,
+            },
+            account_uid="acct:a",
+        )
+
+
+def test_fulfill_request_cas_noop_does_not_repeat_side_effects():
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job", return_value={}
+    ), patch(
+        "app.usecases.gen_requests.normalize_job_result", return_value=SimpleNamespace(
+            asset_type=None,
+            asset_path=None,
+            asset_thumb=None,
+            job_id="job1",
+            created_at=None,
+            sort_ts=None,
+            status="failed",
+            error="failed",
+        ),
+    ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.apply_local_fulfillment.return_value = False
+        repo.get_generation.return_value = {"id": "g1", "status": "done"}
+
+        out = asyncio.run(fulfill_request({"gen_id": "g1"}, "r1", {}, "acct:a"))
+
+        assert out == {"id": "g1", "status": "done"}
+        pm.assert_not_called()
+        broadcast.assert_not_awaited()
