@@ -59,6 +59,49 @@ class SaveFinalsDelegationTests(unittest.TestCase):
         self.assertEqual(rows[0]["dest_path"], "Z:/b.png")
         self.assertEqual({e["gen_id"] for e in rows}, {"g1"})
 
+    def test_facts_404_disambiguation(self):
+        # 구서버(라우트 없음 "Not Found")만 server_outdated — 프로젝트 404 는 그대로 전달(코덱스 P2).
+        from fastapi import HTTPException
+
+        from app.routers import manage as mroute
+
+        orig_proxying = mroute._proxy.proxying
+        orig_pj = mroute._proxy.proxy_json
+
+        def _raise(detail):
+            def _f(*a, **k):
+                raise HTTPException(status_code=404, detail=detail)
+
+            return _f
+
+        mroute._proxy.proxying = lambda: True
+        try:
+            mroute._proxy.proxy_json = _raise("Not Found")  # FastAPI 기본(라우트 자체 없음)
+            facts, outdated = mroute._save_finals_facts("p1")
+            self.assertEqual((facts, outdated), ([], True))
+            mroute._proxy.proxy_json = _raise("없는 프로젝트")  # 신서버의 실제 404
+            with self.assertRaises(HTTPException) as cm:
+                mroute._save_finals_facts("p1")
+            self.assertEqual(cm.exception.detail, "없는 프로젝트")
+        finally:
+            mroute._proxy.proxying = orig_proxying
+            mroute._proxy.proxy_json = orig_pj
+
+    def test_content_route_covered_by_stream_prefix(self):
+        # content 는 대용량 바이트 — 일반 _forward(전체 read) 대신 스트리밍 중계 접두사에 걸려야
+        # 한다(코덱스 P1). 라우트 개명 시 이 핀이 우회 회귀를 잡는다.
+        from app.routers import _proxy as proxy_mod
+        from app.routers.manage import router as manage_router
+
+        content_paths = [
+            r.path for r in manage_router.routes if "save-finals/content" in getattr(r, "path", "")
+        ]
+        self.assertTrue(content_paths)
+        for p in content_paths:
+            self.assertTrue(p.startswith(proxy_mod._STREAM_PREFIX))
+        # 스트리밍 경로는 로컬 처리 대상이 아니어야(위임 시 서버로 감) — 분류 이중 확인.
+        self.assertFalse(proxy_mod.is_local_path(proxy_mod._STREAM_PREFIX + "abc"))
+
     def test_targets_facts_shape(self):
         # 서버 targets 는 '사실'만 — 디스크 판정(saved/render_path)이 절대 섞이지 않는다.
         from app.routers.manage import _save_finals_targets_facts

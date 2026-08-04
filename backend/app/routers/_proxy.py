@@ -332,8 +332,58 @@ async def _forward(request: Request) -> Response:
     return Response(content=raw, status_code=status, media_type=resp_ctype)
 
 
+# 대용량 바이트 경로 — 일반 _forward 는 응답 전체를 r.read() 로 메모리에 올리므로(영상 최종본
+# GET 한 방에 수 GB), 이 접두사는 청크 스트리밍 중계로 우회한다(코덱스 P1).
+_STREAM_PREFIX = "/api/manage/save-finals/content/"
+
+
+async def _forward_stream(request: Request) -> Response:
+    """GET 전용 스트리밍 중계 — 서버 응답을 1MiB 청크로 그대로 흘려보낸다(허브 메모리 상주 없음).
+    Starlette 가 동기 제너레이터를 threadpool 에서 돌리므로 blocking read 여도 이벤트 루프 안전."""
+    from fastapi.responses import StreamingResponse
+
+    raw = request.scope.get("raw_path")
+    path = raw.decode("latin-1") if raw else request.url.path
+    qs = request.url.query
+    url = base_url() + path + (("?" + qs) if qs else "")
+    req = urllib.request.Request(url)
+    tok = token()
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+    try:
+        upstream = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=300))
+    except urllib.error.HTTPError as e:
+        ct = e.headers.get_content_type() if e.headers else "application/json"
+        return Response(content=e.read(), status_code=e.code, media_type=ct or "application/json")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return Response(
+            content=json.dumps({"detail": f"공유 서버 연결 실패: {e}"}).encode(),
+            status_code=502,
+            media_type="application/json",
+        )
+
+    def _iter():
+        try:
+            while True:
+                chunk = upstream.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    headers = {}
+    cl = upstream.headers.get("Content-Length")
+    if cl:
+        headers["Content-Length"] = cl  # 받는 쪽(브라우저·stream_download)이 크기 대조에 쓴다
+    media_type = upstream.headers.get_content_type() or "application/octet-stream"
+    return StreamingResponse(_iter(), status_code=upstream.status, media_type=media_type, headers=headers)
+
+
 async def data_proxy_middleware(request: Request, call_next):
     """위임 모드 + 데이터 경로면 서버로 중계, 아니면 로컬 처리."""
     if proxying() and not is_local_path(request.url.path):
+        if request.method == "GET" and request.url.path.startswith(_STREAM_PREFIX):
+            return await _forward_stream(request)
         return await _forward(request)
     return await call_next(request)

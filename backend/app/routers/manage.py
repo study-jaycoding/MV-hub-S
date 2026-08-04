@@ -567,7 +567,9 @@ def _save_finals_facts(project_id: str) -> tuple[list[dict], bool]:
             )
             return (r or {}).get("targets") or [], False
         except HTTPException as e:
-            if e.status_code == 404:
+            # 구서버 판별은 '라우트 없음'의 표준 본문("Not Found")만 — 프로젝트 404("없는 프로젝트"
+            # 등 상세 사유)까지 구서버로 오인하면 진짜 오류가 "서버 업데이트 필요"로 가려진다(코덱스 P2).
+            if e.status_code == 404 and str(e.detail).strip() == "Not Found":
                 return [], True  # 구서버 — UI 가 "서버 업데이트 필요"로 표시(완료조건 ①)
             raise
     return _save_finals_targets_facts(project_id), False
