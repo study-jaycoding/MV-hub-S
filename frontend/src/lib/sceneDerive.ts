@@ -2,7 +2,101 @@
 //  domain(순수) 계층: 입력→출력만. 그래서 단위 테스트가 쉽다(ARCHITECTURE.md 참고).
 //  · reconcileRefs: 연결로 모은 참조(target)와 기존 참조(existing)를 병합. from_card 규칙으로 유령 참조 방지.
 //  · pruneGroups: 삭제된/유령 카드 id 를 그룹 멤버에서 빼고 빈 그룹 제거.
-import type { SceneRef, SceneGroup } from "./scenes";
+import type { SceneCard, SceneRef, SceneGroup } from "./scenes";
+
+export const GROUP_PADDING = 16;
+export const GROUP_HEADER_HEIGHT = 26;
+export const GROUP_COLLAPSED_WIDTH = 200;
+
+export interface SceneRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface SceneGroupView {
+  g: SceneGroup;
+  frame: SceneRect;
+  bar: SceneRect;
+}
+
+type CardSize = (card: SceneCard) => { w: number; h: number };
+
+export function groupRectFromCards(
+  cardIds: readonly string[],
+  cardsById: ReadonlyMap<string, SceneCard>,
+  cardSize: CardSize,
+  excludedIds: ReadonlySet<string> = new Set(),
+): SceneRect | undefined {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let count = 0;
+
+  for (const id of cardIds) {
+    if (excludedIds.has(id)) continue;
+    const card = cardsById.get(id);
+    if (!card) continue;
+    const size = cardSize(card);
+    count++;
+    minX = Math.min(minX, card.x);
+    minY = Math.min(minY, card.y);
+    maxX = Math.max(maxX, card.x + size.w);
+    maxY = Math.max(maxY, card.y + size.h);
+  }
+  if (!count) return undefined;
+  return {
+    x: minX - GROUP_PADDING,
+    y: minY - GROUP_PADDING - GROUP_HEADER_HEIGHT,
+    w: maxX - minX + GROUP_PADDING * 2,
+    h: maxY - minY + GROUP_PADDING * 2 + GROUP_HEADER_HEIGHT,
+  };
+}
+
+export function unionSceneRects(a: SceneRect, b: SceneRect): SceneRect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.w, b.x + b.w);
+  const bottom = Math.max(a.y + a.h, b.y + b.h);
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+export function groupFrame(
+  group: SceneGroup,
+  cardsById: ReadonlyMap<string, SceneCard>,
+  cardSize: CardSize,
+  excludedIds: ReadonlySet<string> = new Set(),
+): SceneRect | null {
+  const memberRect = groupRectFromCards(group.cardIds, cardsById, cardSize, excludedIds);
+  if (!group.rect) return memberRect ?? null;
+  return memberRect ? unionSceneRects(group.rect, memberRect) : group.rect;
+}
+
+export function deriveGroupViews(
+  groups: readonly SceneGroup[],
+  cardsById: ReadonlyMap<string, SceneCard>,
+  cardSize: CardSize,
+  excludedIds: ReadonlySet<string> = new Set(),
+): SceneGroupView[] {
+  const views: SceneGroupView[] = [];
+  for (const g of groups) {
+    const frame = groupFrame(g, cardsById, cardSize, excludedIds);
+    if (!frame) continue;
+    views.push({
+      g,
+      frame,
+      bar: {
+        x: frame.x,
+        y: frame.y,
+        w: GROUP_COLLAPSED_WIDTH,
+        h: GROUP_HEADER_HEIGHT,
+      },
+    });
+  }
+  return views;
+}
 
 // 기존 refs(프롬프트에서 재정렬됐을 수 있음)의 순서를 보존하며, 새 연결은 뒤에 붙이고 끊긴 건 뺀다.
 // ★'직접' 넣은 참조(from_card 없음 — @생성물·드래그 asset 등)는 엣지와 무관하게 보존한다.

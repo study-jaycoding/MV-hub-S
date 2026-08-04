@@ -79,7 +79,13 @@ import {
   type StepOutcome,
 } from "../../lib/comfyRunState";
 import { arrangeNodes } from "../../lib/sceneLayout";
-import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
+import {
+  GROUP_HEADER_HEIGHT,
+  deriveGroupViews,
+  groupRectFromCards,
+  pruneGroups,
+  reconcileRefs,
+} from "../../lib/sceneDerive";
 import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
 import {
   randomizeExposedSeedParams,
@@ -2505,24 +2511,13 @@ export function SceneBoard({
   };
 
   // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
-  const GPAD = 16; // 테두리 여백
-  const GHD = 26; // 헤더 높이
-  const GCOLLAPSED_W = 200; // 접힌 막대 너비
   // 카드 id 목록의 바운딩박스 → 그룹 테두리 rect(위쪽 헤더 높이 포함). 그룹 생성 시 초기 rect 로 사용.
-  const rectFromCards = (ids: string[]) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
-    for (const id of ids) {
-      const c = cardsRef.current.find((cc) => cc.id === id);
-      if (!c) continue;
-      n++;
-      minX = Math.min(minX, c.x);
-      minY = Math.min(minY, c.y);
-      maxX = Math.max(maxX, c.x + widthOf(c));
-      maxY = Math.max(maxY, c.y + heightOf(c));
-    }
-    if (!n) return undefined;
-    return { x: minX - GPAD, y: minY - GPAD - GHD, w: maxX - minX + GPAD * 2, h: maxY - minY + GPAD * 2 + GHD };
-  };
+  const rectFromCards = (ids: string[]) =>
+    groupRectFromCards(
+      ids,
+      new Map(cardsRef.current.map((card) => [card.id, card] as const)),
+      (card) => ({ w: widthOf(card), h: heightOf(card) }),
+    );
   // pruneGroups(삭제·유령 카드 정리)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const applyGroups = (next: SceneGroup[]) => {
     setGroups(next);
@@ -3288,7 +3283,7 @@ export function SceneBoard({
       };
       // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
       const commitMovedCards = () => {
-        // ★늘어난 크기를 rect 에 저장하지 않는다 — frameOf 가 union(rect,멤버) 를 항상 실시간 계산하므로,
+        // ★늘어난 크기를 rect 에 저장하지 않는다 — group view가 union(rect,멤버) 를 항상 실시간 계산하므로,
         //  멤버가 rect 안으로 돌아오면 박스도 rect 로 복귀한다(한번 뺐다 넣고 다시 빼도 매번 반응).
         const ng = reassignGroups(targetIds, startFrames, ejected); // 드롭 위치로 그룹 가입/해제(+속도 이탈 확정)
         const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
@@ -3744,61 +3739,18 @@ export function SceneBoard({
     [cards, edges, grayHidden],
   );
 
-  // ── 그룹 기하 — 테두리는 저장된 rect 우선, 없으면 멤버 바운딩박스로 자동(하위호환). 접힘=제목 막대 ──
-  const memberBounds = (g: SceneGroup) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    let n = 0;
-    for (const id of g.cardIds) {
-      if (ejectedIds.has(id)) continue; // 속도 이탈 중인 카드는 박스가 안 쫓아감(union 에서도 제외)
-      const c = cardById(id);
-      if (!c) continue;
-      n++;
-      minX = Math.min(minX, c.x);
-      minY = Math.min(minY, c.y);
-      maxX = Math.max(maxX, c.x + widthOf(c));
-      maxY = Math.max(maxY, c.y + heightOf(c));
-    }
-    return n ? { minX, minY, maxX, maxY } : null;
-  };
-  // 그룹 프레임: 저장된 rect 우선, 없으면 멤버 바운딩박스+여백. 둘 다 못 구하면 null(렌더 제외).
-  const boxFromBounds = (b: { minX: number; minY: number; maxX: number; maxY: number }) => ({
-    x: b.minX - GPAD,
-    y: b.minY - GPAD - GHD,
-    w: b.maxX - b.minX + GPAD * 2,
-    h: b.maxY - b.minY + GPAD * 2 + GHD,
-  });
-  type Rect = { x: number; y: number; w: number; h: number };
-  // 두 사각형을 모두 담는 최소 사각형(합집합). '저장 크기 유지 + 멤버가 넘으면 확장'에 쓴다.
-  const unionRect = (a: Rect, b: Rect): Rect => {
-    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-    const r = Math.max(a.x + a.w, b.x + b.w), bo = Math.max(a.y + a.h, b.y + b.h);
-    return { x, y, w: r - x, h: bo - y };
-  };
-  // 멤버가 넘칠 때만 박스를 키운다(줄이지 않음) — 저장 rect 와 멤버 박스의 합집합. rect 없으면 멤버 박스.
-  const grownRect = (g: SceneGroup): Rect | null => {
-    const b = memberBounds(g);
-    const mbox = b ? boxFromBounds(b) : null;
-    if (!g.rect) return mbox;
-    return mbox ? unionRect(g.rect, mbox) : g.rect;
-  };
-  // ★프레임은 '내가 정한 rect 와 멤버박스의 합집합'을 항상 실시간 계산한다(늘어난 크기를 저장하지 않음):
-  //  · 멤버가 rect 를 넘으면 그만큼 임시로 늘고, 돌아오면 rect 로 복귀(rect 아래로는 안 줄어듦).
-  //  · 이탈 중인 카드는 memberBounds 에서 제외돼 박스가 안 쫓아감(빠져나와도 크기 그대로).
-  //  이렇게 해야 '한번 뺐다 넣고 다시 빼도 매번 반응'한다(늘어난 크기를 rect 에 박제하지 않으므로).
-  const frameOf = (g: SceneGroup) => grownRect(g);
+  // ── 그룹 기하 — 순수 계산은 sceneDerive로 분리. 저장 rect 아래로 줄지 않고 멤버가 넘을 때만 임시 확장한다. ──
   // 각 그룹의 프레임(펼침)·막대(접힘) 사각형. 접힘 막대는 프레임 좌상단에 고정폭으로.
   // 매 렌더 전체 그룹×멤버 bounds 계산이라 메모화 — 입력(그룹·카드위치/크기·이탈·측정)이 바뀔 때만.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const groupViews = useMemo(
     () =>
-      groups
-        .map((g) => {
-          const frame = frameOf(g);
-          if (!frame) return null;
-          const bar = { x: frame.x, y: frame.y, w: GCOLLAPSED_W, h: GHD };
-          return { g, frame, bar };
-        })
-        .filter((v): v is { g: SceneGroup; frame: { x: number; y: number; w: number; h: number }; bar: { x: number; y: number; w: number; h: number } } => !!v),
+      deriveGroupViews(
+        groups,
+        cardsById,
+        (card) => ({ w: widthOf(card), h: heightOf(card) }),
+        ejectedIds,
+      ),
     [groups, cards, ejectedIds, heightTick],
   );
   const collapsedBarById = useMemo(
@@ -4146,7 +4098,7 @@ export function SceneBoard({
                     const mv = (ev: MouseEvent) => {
                       const z = zoomRef.current;
                       const w = Math.max(140, rect0.w + (ev.clientX - sx) / z);
-                      const h = Math.max(GHD + 48, rect0.h + (ev.clientY - sy) / z);
+                      const h = Math.max(GROUP_HEADER_HEIGHT + 48, rect0.h + (ev.clientY - sy) / z);
                       last = { x: rect0.x, y: rect0.y, w, h };
                       setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, rect: last } : x)));
                     };

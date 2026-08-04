@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { reconcileRefs, pruneGroups } from "./sceneDerive";
-import type { SceneRef, SceneGroup } from "./scenes";
+import {
+  GROUP_HEADER_HEIGHT,
+  deriveGroupViews,
+  groupFrame,
+  groupRectFromCards,
+  pruneGroups,
+  reconcileRefs,
+} from "./sceneDerive";
+import type { SceneCard, SceneRef, SceneGroup } from "./scenes";
 
 const ref = (file_path: string, extra: Partial<SceneRef> = {}): SceneRef => ({
   file_path,
@@ -127,5 +134,49 @@ describe("pruneGroups", () => {
     const frozen = Object.freeze([Object.freeze({ ...original, cardIds: Object.freeze(["a", "b"]) })]) as SceneGroup[];
     expect(() => pruneGroups(frozen, new Set(["b"]), new Set(["a", "b"]))).not.toThrow();
     expect(frozen[0].cardIds).toEqual(["a", "b"]); // 원본 멤버 유지
+  });
+});
+
+const card = (id: string, x: number, y: number): SceneCard => ({
+  id,
+  kind: "text",
+  x,
+  y,
+});
+const cardSize = () => ({ w: 100, h: 80 });
+
+describe("group geometry", () => {
+  const cards = new Map([
+    ["a", card("a", 100, 200)],
+    ["b", card("b", 300, 400)],
+  ]);
+
+  it("멤버 전체를 padding과 header까지 포함하는 초기 rect로 감싼다", () => {
+    expect(groupRectFromCards(["a", "b"], cards, cardSize)).toEqual({
+      x: 84,
+      y: 158,
+      w: 332,
+      h: 338,
+    });
+  });
+
+  it("이탈 중인 카드와 유령 id를 제외하고, 남는 카드가 없으면 rect가 없다", () => {
+    expect(groupRectFromCards(["a", "ghost"], cards, cardSize, new Set(["a"]))).toBeUndefined();
+  });
+
+  it("저장 rect보다 멤버가 넘칠 때만 합집합으로 임시 확장한다", () => {
+    const group = grp("g", ["a", "b"], { rect: { x: 0, y: 0, w: 200, h: 200 } });
+    expect(groupFrame(group, cards, cardSize)).toEqual({ x: 0, y: 0, w: 416, h: 496 });
+  });
+
+  it("렌더 view는 접힌 막대를 frame 좌상단과 헤더 높이에 맞춘다", () => {
+    const views = deriveGroupViews([grp("g", ["a"])], cards, cardSize);
+    expect(views).toHaveLength(1);
+    expect(views[0].bar).toEqual({
+      x: views[0].frame.x,
+      y: views[0].frame.y,
+      w: 200,
+      h: GROUP_HEADER_HEIGHT,
+    });
   });
 });
