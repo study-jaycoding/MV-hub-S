@@ -5,7 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models import RegenerateIn
-from app.usecases.gen_requests import GenRequestCommand, submit_gen_request
+from app.usecases.gen_requests import GenRequestCommand, claim_gen_requests, submit_gen_request
 
 
 def _names(parent):
@@ -111,3 +111,32 @@ def test_pm_branch_estimates_only_when_manage_on_and_cli_available():
 
         cli.estimate_cost.assert_not_awaited()
         pm.assert_not_called()
+
+
+def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
+    claimed = [{"id": "r1", "gen_id": "g1"}, {"id": "r2", "gen_id": "g2"}]
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.agent_signals"
+    ) as signals, patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.claim_pending_requests.return_value = claimed
+
+        out = asyncio.run(claim_gen_requests("A@B.COM", "acct:a", limit=99))
+
+        assert out == claimed
+        signals.touch.assert_called_once_with("A@B.COM")
+        repo.claim_pending_requests.assert_called_once_with("A@B.COM", limit=16)
+        assert repo.set_status.call_args_list == [
+            (("g1", "running", None),),
+            (("g2", "running", None),),
+        ]
+        assert pm.call_count == 2
+        assert [call.kwargs["account_uid"] for call in broadcast.await_args_list] == [
+            "acct:a",
+            "acct:a",
+        ]
+        assert [call.args[0]["generation_id"] for call in broadcast.await_args_list] == [
+            "g1",
+            "g2",
+        ]

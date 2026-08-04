@@ -36,6 +36,7 @@ from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
 from ..usecases.gen_requests import (
     GenRequestCommand,
+    claim_gen_requests,
     pm_best_effort as _pm,
     submit_gen_request,
 )
@@ -147,16 +148,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
     완료될 때까지 '생성중'이 안 보였음). limit=에이전트의 빈 병렬 슬롯 수(연속 풀이 그만큼만 집음)."""
     acc = _require_account(request)
-    agent_signals.touch(acc["email"])  # 생성 실행 중 ~1초마다 폴링 → '연결됨' 유지(꺼짐 깜빡임 방지)
-    claimed = repo.claim_pending_requests(acc["email"], limit=max(1, min(limit, 16)))
-    for c in claimed:
-        repo.set_status(c["gen_id"], "running", None)
-        _pm(lambda _m: _m.record_started(c["gen_id"]))  # PM 메트릭: started_at
-        await manager.broadcast(
-            {"type": "progress", "generation_id": c["gen_id"], "status": "running"},
-            account_uid=realtime_scope(acc),  # 그 계정 소켓에만(남에게 진행률 누출 방지)
-        )
-    return claimed
+    return await claim_gen_requests(acc["email"], realtime_scope(acc), limit)
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)

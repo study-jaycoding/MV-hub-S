@@ -14,6 +14,7 @@ from ..config import MANAGE_ENABLED
 from ..models import RegenerateIn
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
+from ..ws import manager
 
 
 def pm_best_effort(action) -> None:
@@ -42,6 +43,21 @@ class GenRequestCommand:
     source_gen_id: str | None
     data: dict | None = None  # kind=create 의 정규화된 GenerationCreate dump
     regenerate: RegenerateIn | None = None  # kind=regenerate 옵션
+
+
+async def claim_gen_requests(email: str, account_uid: str | None, limit: int) -> list[dict]:
+    """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
+    agent_signals.touch(email)
+    claimed = repo.claim_pending_requests(email, limit=max(1, min(limit, 16)))
+    for item in claimed:
+        gen_id = item["gen_id"]
+        repo.set_status(gen_id, "running", None)
+        pm_best_effort(lambda manage, gid=gen_id: manage.record_started(gid))
+        await manager.broadcast(
+            {"type": "progress", "generation_id": gen_id, "status": "running"},
+            account_uid=account_uid,
+        )
+    return claimed
 
 
 async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
