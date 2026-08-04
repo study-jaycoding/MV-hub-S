@@ -8,8 +8,8 @@ import { type Lang, loadLang, saveLang } from "./theme";
 // 한국어 → 영어. 없으면 한국어를 그대로 보여준다(점진 적용 안전).
 const EN: Record<string, string> = {
   // 상단바·탭
-  "내 작업": "Workspace",
-  "팀 작업": "Share & Review",
+  "작업 공간": "Workspace",
+  "공유 & 리뷰": "Share & Review",
   "히스토리": "History",
   "캔버스": "Canvas",
   "캔버스 — 씬 캔버스 · 히스토리 뷰": "Canvas — scene canvas & History view",
