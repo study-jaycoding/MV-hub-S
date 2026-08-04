@@ -73,6 +73,8 @@
 }
 /* 평소 숨김 — 씬 탭 바(또는 패널 자체) 호버 시에만 표시. 캔버스 클릭을 막지 않게 이벤트도 차단. */
 .scene-io-panel.io-hidden { opacity: 0; pointer-events: none; }
+/* 키보드 Tab 으로 안쪽 버튼에 포커스가 닿으면 다시 보인다 — 안 보이는 버튼을 모르고 누르는 일 방지(코덱스 P2). */
+.scene-io-panel.io-hidden:focus-within { opacity: 1; pointer-events: auto; }
 .scene-io-name {
   max-width: 180px; font-size: 12px; font-weight: 800; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
