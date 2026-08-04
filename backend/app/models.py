@@ -65,6 +65,9 @@ class GenerationOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
     auto_tags: list[str] = Field(default_factory=list)  # 별도 네임스페이스(사이드바 필터 전용)
     shared: bool = False
+    # 마지막 공유 시각(UTC "YYYY-MM-DD HH:MM:SS") — 팀 탭 '새로 들어옴'(글로우) 판정 축.
+    # ★response_model 이 모르는 키는 직렬화에서 잘려나간다 — repo 가 붙여도 여기 없으면 프론트에 안 간다.
+    shared_at: Optional[str] = None
     parent_gen_id: Optional[str] = None  # history 상 파생(derived) 부모(있으면 재생성·가져오기본)
     child_count: int = 0  # 이 결과물을 부모로 한 파생/사용 수(히스토리 ⑂N 뱃지)
     source_count: int = 0  # 이 결과물이 @소스로 쓴 재료(reference 부모) 수

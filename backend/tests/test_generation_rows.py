@@ -90,6 +90,13 @@ class GenerationRowsTests(unittest.TestCase):
         self.assertEqual(g["child_count"], 0)
         self.assertEqual(g["source_count"], 0)
 
+    def test_generation_out_exposes_shared_at(self):
+        # 응답 모델이 이 필드를 모르면 FastAPI 직렬화가 repo 가 붙인 값을 잘라내 글로우가 전부 꺼진다
+        # (코덱스 P1 재발 방지 — repo dict 검사만으론 API 경계를 못 잡는다).
+        from app.models import GenerationOut
+
+        self.assertIn("shared_at", GenerationOut.model_fields)
+
     def test_folder_counts_shared_since(self):
         # 폴더 라벨 + 시각이 다른 공유 2건 — shared_since 가 그 사이면 최신 것만 센다(신규 라임 배지).
         with db.get_connection() as conn:
