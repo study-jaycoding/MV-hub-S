@@ -34,7 +34,6 @@ import {
   type SpotlightAssetDragItem,
 } from "../../lib/spotlightAssetRefs";
 import {
-  cardBatch,
   sceneRefFingerprint,
   settleComfyRunning,
   uid,
@@ -56,11 +55,7 @@ import {
   collectViewTexts,
   comfyOutputMedia,
   computeBridgeEdges,
-  buildExecutionPlan,
   buildGenerationExecutionPlan,
-  type SceneExecutionPlan,
-  type ComfyOutput,
-  type ComfyOutputsById,
   type SceneGenerationRun,
   incomingTextOf,
   comfyTextDriveKeys,
@@ -71,12 +66,6 @@ import {
   resolveEdgeRole,
   resolvePortEdges,
 } from "../../lib/sceneEdges";
-import {
-  computeMaxParallel,
-  createBatchTracker,
-  createLimiter,
-  type StepOutcome,
-} from "../../lib/comfyRunState";
 import { arrangeNodes } from "../../lib/sceneLayout";
 import {
   GROUP_HEADER_HEIGHT,
@@ -86,15 +75,14 @@ import {
   reconcileRefs,
 } from "../../lib/sceneDerive";
 import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
-import { executeSceneComfy } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
-  setComfyRunning,
   isComfyRunning,
   subscribeComfyRunning,
   getComfyRunningVersion,
 } from "../../lib/sceneComfyRunningStore";
 import { useSceneGenData } from "../../lib/useSceneGenData";
+import { useSceneComfyExecution } from "../../lib/useSceneComfyExecution";
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
@@ -450,39 +438,6 @@ export function SceneBoard({
   cardsRef.current = cards;
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
-  const orchestratingRef = useRef(false); // 실행(오케스트레이션) 진행 중 재클릭 가드
-  // 상류 comfy 가 도는 동안 '생성 대기중'으로 표시할 생성카드 id 들(잡 제출 전 구간). comfy 끝나면 비운다.
-  const [comfyWaitingIds, setComfyWaitingIds] = useState<Set<string>>(new Set());
-  // 실행 중인 comfy 노드 자신의 id → 실행 카운트 — 노드 카드에 '생성중' 웨이브를 그리기 위한 메모리 상태.
-  //  ★persist 하지 않는다(오케 경로도 여기로 통일) — 크래시·씬전환에도 '영원히 생성중'이 디스크에 남지 않게.
-  //  ★count 방식 — 직접실행+오케가 같은 노드에 겹쳐 돌아도, 마지막 하나가 끝나야 웨이브가 꺼진다.
-  const [runningComfyIds, setRunningComfyIds] = useState<Map<string, number>>(new Map());
-  const runningComfyRef = useRef<Map<string, number>>(new Map());
-  // App '내 작업' 임시 생성중 카드 통지 — 실행 중 comfy 노드의 {id,name} 목록.
-  const notifyComfyRunning = () => {
-    if (!onComfyRunningChange) return;
-    const items = [...runningComfyRef.current.keys()]
-      .map((id) => {
-        const c = cardsRef.current.find((cc) => cc.id === id);
-        return c && c.kind === "comfy" ? { id, name: c.comfyCfg?.name || "Comfy" } : null;
-      })
-      .filter((x): x is { id: string; name: string } => !!x);
-    onComfyRunningChange(items);
-  };
-  const markComfyRunning = (ids: string[], on: boolean) => {
-    // ref 를 동기적으로 갱신하고 '직접' 통지한다 — effect 가 아니라서, compose→내작업 탭 이동으로 SceneBoard 가
-    //  언마운트된 뒤 async finally 에서 off 가 와도(부모 setter 는 유효) '내 작업' placeholder 가 고착되지 않는다.
-    const n = new Map(runningComfyRef.current);
-    for (const id of ids) {
-      const c = (n.get(id) || 0) + (on ? 1 : -1);
-      if (c > 0) n.set(id, c);
-      else n.delete(id);
-    }
-    runningComfyRef.current = n;
-    setRunningComfyIds(n); // 노드 웨이브 표시용(언마운트 후엔 no-op)
-    setComfyRunning(ids, on); // 모듈 store — 탭 전환(언마운트)에도 '생성중' 표시 유지(#2)
-    notifyComfyRunning(); // App placeholder(언마운트 후에도 유효)
-  };
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const selectedRef = useRef(selected);
@@ -1763,308 +1718,30 @@ export function SceneBoard({
       else flashMsg(e instanceof Error ? e.message : "내 작업 저장 실패");
     }
   };
-  // comfy 실행 코어 — 카드 상태를 쓰지 않고 결과 출력셋만 반환(배치 병렬 실행용). 실패 시 throw.
-  //  · overlay 가 있으면 상류 comfy 입력은 카드 저장분이 아니라 이 복사본의 결과(overlay)를 읽는다(체인 짝 맞춤).
-  //  · cfgSnap 을 주면 그 content/paramValues 로 실행한다(클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 새는 것 방지).
-  //  · varySeed 면 복사본마다 content·paramValues 의 시드를 무작위로(배치 N>1). 단일 실행은 시드 보존.
-  const runComfyRaw = async (
-    cardId: string,
-    overlay: ComfyOutputsById | undefined,
-    varySeed: boolean,
-    cfgSnap?: { content: string; paramValues: Record<string, string | number | boolean> },
-  ): Promise<ComfyOutput[]> => {
-    return executeSceneComfy({
-      cardId,
-      cards: cardsRef.current,
-      edges: edgesRef.current,
-      genData: genDataRef.current,
-      refParents,
-      overlay,
-      varySeed,
-      configSnapshot: cfgSnap,
-      getLiveCards: () => cardsRef.current,
-      getLiveEdges: () => edgesRef.current,
-    });
-  };
-  // comfy 단독(표시) 실행 — 카드 버튼/단일 실행용. 코어를 감싸 카드에 running/done/failed 를 쓴다. 성공 시 true.
-  //  batchCount>1 이면 N벌 병렬 실행(복사본마다 시드 무작위=다른 그림) → 각 결과를 '내 작업'에 저장·누적.
-  //  카드엔 마지막 결과셋만 표시(대표), 나머지는 '▤ N' 배지/변형 팝업으로 모아 본다.
-  const runComfy = async (cardId: string): Promise<boolean> => {
-    flushPending(); // 실행 직전 밀린 입력 저장 확정 — 최신 텍스트/파라미터로 실행되고 undo 순서도 정확
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    if (!card?.comfyCfg?.content) return false;
-    const batch = cardBatch(card); // 이 노드의 배치수(노드별 관리, 1~4 안전화)
-    const sid = sceneIdRef.current; // 실행 대기 중 씬 전환 시 다른 씬에 결과 반영 안 함
-    patchComfyCfg(cardId, { status: "running", error: null }, { undo: false }); // 실행상태=파생, undo 제외
-    markComfyRunning([cardId], true); // 노드에 '생성중' 웨이브 표시(메모리)
-    try {
-      // 복사본마다 자체 소요시간 측정(실행 누른→결과). N>1 이면 시드 무작위.
-      // ★allSettled — 하나가 먼저 실패해도 '모든 copy 가 끝난 뒤' 정산한다(코덱스 지적: Promise.all 은
-      //  첫 실패 즉시 아래로 떨어져, 아직 도는 copy 가 있는데 웨이브 해제·failed 표시가 먼저 일어났다).
-      let firstReason: unknown; // '시간상 먼저 난' 실패 원인 보존 — Promise.all 시절 표시 메시지와 동일하게
-      const settledSets = await Promise.allSettled(
-        Array.from({ length: batch }, async () => {
-          const t = Date.now();
-          try {
-            const outputs = await runComfyRaw(cardId, undefined, batch > 1);
-            return { outputs, elapsed: (Date.now() - t) / 1000 };
-          } catch (e) {
-            if (firstReason === undefined) firstReason = e;
-            throw e;
-          }
-        }),
-      );
-      if (sceneIdRef.current !== sid) return false; // 씬 전환됨 → 결과 표시·저장 생략
-      if (settledSets.some((s) => s.status === "rejected")) throw firstReason; // 하나라도 실패면 전체 failed(기존 의미)
-      const sets = settledSets.map((s) => (s as PromiseFulfilledResult<{ outputs: ComfyOutput[]; elapsed: number }>).value);
-      // 카드 표시 = 마지막 결과셋(대표). 상태 done.
-      patchComfyCfg(cardId, { status: "done", outputs: sets[sets.length - 1].outputs, output: null, error: null }, { undo: false }); // 완료 상태=파생, undo 제외
-      // 각 결과셋을 '내 작업'에 저장(genIds 누적) + 복사본별 소요시간 기록.
-      // ★순차 await — 병렬이면 응답 도착순에 따라 대표(genId)·genIds 순서가 뒤섞인다(대표=마지막 결과 보장).
-      for (const s of sets)
-        await saveComfyToLibrary(cardId, { silent: true, elapsedSeconds: s.elapsed, outputs: s.outputs });
-      return true;
-    } catch (e) {
-      patchComfyCfg(cardId, { status: "failed", error: e instanceof Error ? e.message : "실행 실패" }, { undo: false }); // 실패 상태=파생, undo 제외
-      return false;
-    } finally {
-      markComfyRunning([cardId], false);
-    }
-  };
-  // 실행 계획대로 상류 comfy 를 순서대로 실행(await)한 뒤, 실패의 하류가 아닌 생성카드 id 만 돌려준다.
-  //  comfy 없는 렌더 경로 전용(=comfy 실행 없이 실행가능 생성만 추린다). 표시용 runComfy 를 그대로 쓴다.
-  const runPlanComfy = async (
-    plan: SceneExecutionPlan,
-    sceneId: string,
-  ): Promise<{ runnableGenIds: string[]; aborted: boolean }> => {
-    const failed = new Set<string>(plan.skippedByCycle); // 사이클 = 실행 불가 취급
-    const runnableGenIds: string[] = [];
-    for (const step of plan.steps) {
-      if (sceneIdRef.current !== sceneId) return { runnableGenIds, aborted: true }; // 씬 전환 → 중단
-      const depFailed = step.dependsOn.some((d) => failed.has(d));
-      if (step.kind === "comfy") {
-        if (depFailed) {
-          failed.add(step.id);
-          continue;
-        }
-        const ok = await runComfy(step.id);
-        if (!ok) failed.add(step.id);
-      } else if (!depFailed) {
-        runnableGenIds.push(step.id);
-      }
-    }
-    return { runnableGenIds, aborted: false };
-  };
-  // 배치 짝 실행 — 실행계획을 batch 벌 '병렬'로 돌린다(복사본 i 마다 독립 overlay). 복사본 안에서는 comfy 체인을
-  //  순서대로(위상순) 돌려 하류 comfy 가 상류 복사본 결과를 읽게 한다. 각 복사본의 실행가능 생성카드를 그 overlay 와
-  //  짝지어 SceneGenerationRun 으로 만든다. comfy 표시(카드 status/outputs)는 시작(running)·종료(스냅샷) 때만 집계.
-  //  로컬 ComfyUI 는 큐가 GPU 를 순차 처리(제출은 병렬)·클라우드는 진짜 병렬 — 코드는 동일(서버가 알아서).
-  const runPlanComfyCopies = async (
-    plan: SceneExecutionPlan,
-    sceneId: string,
-    batch: number,
-  ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
-    flushPending(); // 실행(배치) 직전 밀린 입력 저장 확정 — 스냅샷이 최신 텍스트/파라미터를 담게
-    // 클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 다르게 새는 것을 막는다(comfy content·paramValues).
-    const cfgSnap = new Map<string, { content: string; paramValues: Record<string, string | number | boolean> }>();
-    for (const c of cardsRef.current)
-      if (c.kind === "comfy" && plan.comfyIds.includes(c.id) && c.comfyCfg?.content)
-        cfgSnap.set(c.id, {
-          content: c.comfyCfg.content,
-          paramValues: { ...(c.comfyCfg.paramValues || {}) },
-        });
-    // 표시: plan 의 comfy 카드들을 running 으로(집계 1회). ★persist 안 함 — 중단(씬 전환)돼도 running 이 디스크에
-    //  남지 않게(반대 씬에 잘못 쓰는 것도 방지). 라이브 UI 표시용으로 setCards 만.
-    if (plan.comfyIds.length) {
-      markComfyRunning(plan.comfyIds, true); // 노드 '생성중' 웨이브(메모리) — 리렌더에도 유지
-      const running = cardsRef.current.map((c) =>
-        c.kind === "comfy" && plan.comfyIds.includes(c.id)
-          ? { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "running" as const, error: null } }
-          : c,
-      );
-      cardsRef.current = running;
-      setCards(running);
-    }
-    const varySeed = batch > 1;
-    // 동시 제출 상한(세마포어)·노드별 완료 집계 — 판정 로직은 comfyRunState(순수 모듈, 테스트로 고정)가
-    //  단독 소유한다(R1 분리). 여기는 확정 결과를 카드에 '투영'하는 부수효과만 담당.
-    const limiter = createLimiter(computeMaxParallel(batch, plan.comfyIds.length));
-    const tracker = createBatchTracker<ComfyOutput[]>(plan.comfyIds, batch);
-    const releaseRunning = (id: string) => {
-      if (tracker.releaseOnce(id)) markComfyRunning([id], false); // 노드당 정확히 1회(count 균형)
-    };
-    // 한 노드의 한 copy 가 끝날 때마다 호출 — 그 노드의 '마지막' copy 였으면 카드에 done/failed 반영 + 웨이브 해제.
-    const noteStepSettled = (id: string, copyIndex: number, outcome: StepOutcome<ComfyOutput[]>) => {
-      const fin = tracker.settle(id, copyIndex, outcome);
-      if (!fin) return; // 아직 진행 중이거나 중복/늦은 정산 — tracker 가 무시 판정
-      // 씬 전환(abort)됐으면 카드 반영·저장은 생략하되(엉뚱한 씬 오염 방지) 웨이브는 반드시 해제.
-      if (sceneIdRef.current === sceneId) {
-        const next = cardsRef.current.map((c) => {
-          if (c.kind !== "comfy" || c.id !== id) return c;
-          if (fin.rep)
-            return {
-              ...c,
-              comfyCfg: {
-                ...(c.comfyCfg || {}),
-                status: "done" as const,
-                outputs: fin.rep.outputs, // 대표=마지막 성공 복사본 — runComfy·저장 genId 와 일치
-                output: null,
-                error:
-                  fin.failCount > 0
-                    ? `${fin.failCount}/${batch} 실패${fin.firstError ? `: ${fin.firstError}` : ""}`
-                    : null,
-              },
-            };
-          return { ...c, comfyCfg: { ...(c.comfyCfg || {}), status: "failed" as const, error: fin.firstError || "실행 실패" } };
-        });
-        cardsRef.current = next;
-        setCards(next);
-        persist(next, edgesRef.current, groupsRef.current, { undo: false }); // 노드별 완료 스냅샷=파생, undo 제외
-      }
-      releaseRunning(id);
-    };
-    type CopyResult = {
-      runs: SceneGenerationRun[];
-      overlay: ComfyOutputsById;
-      elapsed: Record<string, number>; // comfyId → 이 복사본에서 그 노드의 실행→결과 소요시간(초)
-      aborted: boolean;
-    };
-    // 한 copy = plan 을 batch 인덱스 i 로 1벌 실행. 한 copy 안에서 독립 comfy 는 '병렬로'(dependsOn 존중) 제출한다.
-    //  이전엔 여기서 comfy 를 순차 await 해 render 로 묶인 독립 comfy 가 하나씩만 큐에 올라갔다(핵심 수정).
-    const runOneCopy = async (i: number): Promise<CopyResult> => {
-      const overlay: ComfyOutputsById = {};
-      const elapsed: Record<string, number> = {};
-      const failed = new Set<string>(plan.skippedByCycle);
-      let aborted = false;
-      const stepPromises = new Map<string, Promise<void>>();
-      for (const step of plan.steps) {
-        if (step.kind !== "comfy") continue; // 생성카드는 comfy 확정 후 아래에서 일괄 판정
-        const p = (async () => {
-          // 상류(dependsOn) comfy 가 overlay 를 채운 뒤에 실행해야 입력 gather 가 맞다 → 상류 promise 먼저 await.
-          await Promise.all(
-            step.dependsOn.map((d) => stepPromises.get(d)).filter((x): x is Promise<void> => !!x),
-          );
-          if (sceneIdRef.current !== sceneId) {
-            aborted = true;
-            noteStepSettled(step.id, i, { kind: "skipped" });
-            return;
-          }
-          if (step.dependsOn.some((d) => failed.has(d))) {
-            failed.add(step.id); // 상류(comfy) 실패 → 이 comfy 도 스킵
-            noteStepSettled(step.id, i, { kind: "skipped" });
-            return;
-          }
-          try {
-            const t0 = Date.now(); // 이 노드의 실행→결과 소요시간(체인에서도 노드별로 측정)
-            //  limiter 대기 후에도 씬이 바뀌었으면 신규 제출을 하지 않는다(reject → 아래 catch 에서 skip 처리).
-            const outputs = await limiter.run(() =>
-              sceneIdRef.current !== sceneId
-                ? Promise.reject(new Error("scene changed"))
-                : runComfyRaw(step.id, overlay, varySeed, cfgSnap.get(step.id)),
-            );
-            overlay[step.id] = outputs;
-            elapsed[step.id] = (Date.now() - t0) / 1000;
-            noteStepSettled(step.id, i, { kind: "success", outputs, elapsed: elapsed[step.id] });
-          } catch (e) {
-            if (sceneIdRef.current !== sceneId) {
-              aborted = true; // 씬 전환으로 인한 중단 → 실패가 아니라 skip
-              noteStepSettled(step.id, i, { kind: "skipped" });
-              return;
-            }
-            const msg = e instanceof Error ? e.message : String(e); // 실제 원인 보존(401/402/429 등)
-            failed.add(step.id);
-            noteStepSettled(step.id, i, { kind: "failed", error: msg });
-          }
-        })();
-        stepPromises.set(step.id, p);
-      }
-      await Promise.all(stepPromises.values());
-      const runs: SceneGenerationRun[] = aborted
-        ? []
-        : plan.steps
-            .filter((s) => s.kind === "generation" && !s.dependsOn.some((d) => failed.has(d)))
-            .map((s) => ({ batchIndex: i, cardId: s.id, comfyOutputsById: { ...overlay } }));
-      return { runs, overlay, elapsed, aborted };
-    };
-    const copies = await Promise.all(Array.from({ length: batch }, (_, i) => runOneCopy(i)));
-    const aborted = copies.some((c) => c.aborted) || sceneIdRef.current !== sceneId;
-    // 노드별 done/failed 표시는 noteStepSettled 가 이미 반영했다. 여기선 출력이 생긴 comfy 를 '내 작업'에 저장만.
-    // ★배치의 '모든 복사본' 결과를 각각 저장(첫 복사본만 저장해 배치 N장이 1장만 들어오던 버그 수정).
-    // ★comfyId 순서 · 그 안에서 copies(입력) 순서로 순차 await — 응답 도착순 레이스로 대표(genId)·genIds 순서가
-    //   뒤섞이는 것 방지(대표=마지막 저장 보장). copies 는 완료순이 아니라 입력순 배열이라 순서가 보존된다.
-    if (!aborted && sceneIdRef.current === sceneId) {
-      for (const cid of plan.comfyIds) {
-        // 성공 여부는 copy overlay 로만 판정 — tracker(정산)와 저장이 같은 사실을 이중 판단하지 않게(소유권 단일화).
-        for (const cp of copies) {
-          const outs = cp.overlay[cid];
-          if (outs && outs.length)
-            await saveComfyToLibrary(cid, { silent: true, elapsedSeconds: cp.elapsed[cid], outputs: outs });
-        }
-      }
-    }
-    for (const id of plan.comfyIds) releaseRunning(id); // 안전망 — finalize 안 된 노드까지 웨이브 확실히 해제
-    return { runs: copies.flatMap((c) => c.runs), aborted };
-  };
-  // 단일 생성카드 실행 — 상류 comfy 가 있으면 배치수만큼 병렬 실행해 각 결과와 짝지어 생성. 없으면 스포트라이트 제출.
-  const orchestrateGenerate = async (genId: string) => {
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const resolved = resolvePortEdges(byId, edgesRef.current);
-    const plan = buildGenerationExecutionPlan(genId, byId, resolved);
-    if (!plan.comfyIds.length) {
-      onGenerateCard?.(cardBatch(byId.get(genId))); // comfy 없는 경로도 이 노드의 배치수로 생성
-      return;
-    }
-    if (orchestratingRef.current) return; // 이미 실행 중이면 무시(중복 실행 방지)
-    orchestratingRef.current = true;
-    setComfyWaitingIds(new Set([genId])); // 상류 comfy 도는 동안 이 카드 '생성 대기중' 표시
-    const sid = sceneIdRef.current;
-    try {
-      const batch = cardBatch(byId.get(genId)); // 이 생성카드의 배치수(노드별)
-      const { runs, aborted } = await runPlanComfyCopies(plan, sid, batch);
-      const mine = runs.filter((r) => r.cardId === genId);
-      if (!aborted && sceneIdRef.current === sid && mine.length) await onRenderCardRuns?.(mine);
-    } finally {
-      orchestratingRef.current = false;
-      setComfyWaitingIds(new Set()); // 잡 제출 완료(genId 세팅 → Generating 이 이어받음)
-    }
-  };
-  // 렌더 실행 — comfy 가 있으면 배치수만큼 병렬 실행해 체크된 모든 생성카드를 각 짝과 함께 생성(결과=N×카드).
-  //  comfy 가 없으면 기존 병렬 배치 경로(각 카드 batch장) 유지.
-  const orchestrateRender = async (renderId: string, checkedGenIds: string[]) => {
-    if (orchestratingRef.current) return; // 중복 실행 방지
-    orchestratingRef.current = true;
-    const sid = sceneIdRef.current;
-    try {
-      const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-      const resolved = resolvePortEdges(byId, edgesRef.current);
-      // ★체크 해제(unchecked)한 comfy 는 실행 대상에서 제외 — 이전엔 directComfy 가 연결된 comfy 를 전부 넣어
-      //  체크 해제해도 렌더됐다. (체크된 생성카드가 '의존'하는 상류 comfy 는 buildExecutionPlan 이 별도로 끌어오므로
-      //  여기서 빠져도 필요하면 실행된다 — 즉 아무도 안 쓰는 직접연결 comfy 만 해제로 꺼진다.)
-      const unchecked = new Set(byId.get(renderId)?.unchecked || []);
-      const directComfy = resolved
-        .filter((e) => e.to === renderId)
-        .map((e) => byId.get(e.from))
-        .filter((c): c is SceneCard => c?.kind === "comfy" && !unchecked.has(c.id))
-        .map((c) => c.id);
-      const plan = buildExecutionPlan(checkedGenIds, directComfy, byId, resolved);
-      const batch = cardBatch(byId.get(renderId)); // 이 렌더 노드의 배치수(노드별)
-      if (plan.comfyIds.length) {
-        // 상류 comfy 도는 동안 실행대상 생성카드들을 '생성 대기중'으로 표시.
-        setComfyWaitingIds(new Set(plan.generationIds.length ? plan.generationIds : checkedGenIds));
-        const { runs, aborted } = await runPlanComfyCopies(plan, sid, batch);
-        if (!aborted && sceneIdRef.current === sid && runs.length) await onRenderCardRuns?.(runs);
-      } else {
-        const { runnableGenIds, aborted } = await runPlanComfy(plan, sid);
-        if (!aborted && sceneIdRef.current === sid && runnableGenIds.length)
-          // await — 제출 끝까지 orchestratingRef 를 잡아 중복 클릭이 조용히 삼켜지지 않게(comfy 경로와 일관).
-          await onRenderCards?.(runnableGenIds, batch); // comfy 없는 경로도 이 렌더 노드의 배치수로
-
-      }
-    } finally {
-      orchestratingRef.current = false;
-      setComfyWaitingIds(new Set()); // 잡 제출 완료(genId 세팅 → Generating 이 이어받음)
-    }
-  };
+  // Comfy 실행의 중복 방지·배치 정산·씬 전환 중단·실행 표시를 전용 훅에 위임한다.
+  const {
+    comfyWaitingIds,
+    runningComfyIds,
+    runComfy,
+    orchestrateGenerate,
+    orchestrateRender,
+  } = useSceneComfyExecution({
+    sceneIdRef,
+    cardsRef,
+    edgesRef,
+    groupsRef,
+    genDataRef,
+    refParents,
+    setCards,
+    flushPending,
+    patchComfyCfg,
+    persist,
+    saveComfyToLibrary,
+    onGenerateCard,
+    onRenderCards,
+    onRenderCardRuns,
+    onComfyRunningChange,
+  });
   // render 노드: 특정 생성카드의 체크 토글(체크된 카드만 Render 대상). unchecked 목록에 넣고 뺀다.
   const toggleRenderCheck = (renderId: string, genCardId: string) => {
     // 렌더 행이 복수 선택돼 있고 클릭한 게 그중 하나면 선택 전부에 같은 상태를 적용(일괄 체크/해제).
