@@ -336,6 +336,11 @@ export function SceneBoard({
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
   editTextIdRef.current = editTextId;
+  // 편집 중이던 노드가 사라지면(삭제·undo·씬 전환) 편집 상태 해제 — 유령 editTextId 가 남으면
+  // 키보드 가드("편집 중이면 캔버스 단축키 무시")가 Ctrl+C 포함 모든 키를 새로고침 전까지 차단한다.
+  useEffect(() => {
+    if (editTextId && !cards.some((c) => c.id === editTextId)) setEditTextId(null);
+  }, [cards, editTextId]);
   const caretPosRef = useRef<Map<string, number>>(new Map()); // 텍스트 노드별 마지막 캐럿 위치 — 재편집 시 그곳으로 복원
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   //  inEdges = 외부 소스(선택 밖) → 선택 노드로 들어오는 입력 엣지. 붙여넣을 때 기존 소스에 그대로 다시 물려

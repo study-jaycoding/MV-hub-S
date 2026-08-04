@@ -38,6 +38,7 @@ export function useGenerationLibraryData({
   const projectsLoadedRef = useRef(false);
   const reloadSeqRef = useRef(0);
   const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
+  const lastLoadedTabRef = useRef<string | null>(null); // 현재 gens 가 어느 탭 데이터인지
   // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   const inflightRef = useRef<Promise<void> | null>(null);
@@ -71,6 +72,12 @@ export function useGenerationLibraryData({
     const query = genQueryRef.current;
     const trashMode = !!filtersRef.current.deleted_only;
     const scope = tab === "team" ? "team" : "my";
+    // 탭이 바뀐 로드면 이전 탭 목록을 먼저 비운다 — 팀 탭을 눌렀는데 새 데이터 도착 전까지
+    // '작업 공간' 카드들이 잠깐 보이던 깜빡임 방지. 같은 탭 갱신(silent 폴링 등)은 유지.
+    if (lastLoadedTabRef.current !== null && lastLoadedTabRef.current !== tab) {
+      setGens([]);
+      setHasMore(false);
+    }
     // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
     try {
       const g = trashMode
@@ -79,6 +86,7 @@ export function useGenerationLibraryData({
       if (seq !== reloadSeqRef.current) return;
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
+      lastLoadedTabRef.current = tab;
     } catch (e) {
       if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
     } finally {
