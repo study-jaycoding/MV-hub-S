@@ -8,6 +8,7 @@ import { api } from "../api";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import { DRAG_TYPES } from "../lib/dragTypes";
 import { APP_EVENTS, dispatchAppEvent } from "../lib/appEvents";
+import { ackTeamFresh } from "../lib/teamSeen";
 import type { GradeMode } from "../lib/gradeStep";
 import { thumbUrl } from "../lib/media";
 import { useClickSeparation } from "../lib/useClickSeparation";
@@ -456,6 +457,8 @@ function GenerationCardImpl({
         }
         draggable
         onDragStart={onCardDragStart}
+        // 새 카드(글로우)를 클릭하면 '확인' — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
+        onMouseDownCapture={fresh ? () => ackTeamFresh(gen) : undefined}
       >
         {cardConfirm}
         {thumbBox}
@@ -551,6 +554,8 @@ function GenerationCardImpl({
       }
       draggable
       onDragStart={onCardDragStart}
+      // 새 카드(글로우)를 클릭하면 '확인' — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
+      onMouseDownCapture={fresh ? () => ackTeamFresh(gen) : undefined}
     >
       {cardConfirm}
       {thumbBox}

@@ -3,7 +3,7 @@
 //  · 빈 공간 드래그 = 마퀴(러버밴드) 다중 선택
 //  · 더블클릭 = 미리보기. (카드 드래그는 프롬프트 재사용 — 마퀴 대신 네이티브 드래그)
 // 선택 상태는 App 이 Set<string>(id) 로 보유 — 일괄 작업/select-bar 가 의존.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Virtualizer, type VirtualizerHandle } from "virtua";
 import {
   previewTargetFromGenerations,
@@ -22,7 +22,7 @@ import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
-import { isSharedAfter } from "../lib/teamSeen";
+import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
 
 interface Props {
   generations: Generation[];
@@ -65,14 +65,15 @@ interface Props {
   loadingMore?: boolean;
   onLoadMore?: () => void;
   resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
-  // 팀 탭 '새로 들어옴' 기준선(UTC "YYYY-MM-DD HH:MM:SS") — shared_at 이 이후인 카드에 글로우.
-  freshSince?: string | null;
 }
 
 export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds, onSelectedChange } = props;
   const isList = layout === "list";
   const t = useT();
+  // 팀 탭 '새로 들어옴'(확인 전 글로우) — 카드 클릭으로 확인되면 스토어가 bump → 그 카드만 글로우 해제.
+  const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
+  void teamSeenVer;
 
   // 날짜별 그룹은 rowModel.dateGroups 로 통합(별도 O(n) 스캔 제거) — 아래 rowModel 참고.
 
@@ -205,7 +206,7 @@ export function ThumbnailGrid(props: Props) {
     <GenerationCard
       gen={generation}
       tab={props.tab}
-      fresh={isSharedAfter(generation.shared_at, props.freshSince)}
+      fresh={props.tab === "team" && isFreshGen(generation)}
       myCreatorUid={props.myCreatorUid}
       layout={cardLayout}
       thumbSize={thumbSize}
