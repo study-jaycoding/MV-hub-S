@@ -19,6 +19,7 @@ from ..db import get_connection
 from ._common import new_id
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema
+from .manage_analytics import breakdown, matrix, timeseries
 from .manage_telemetry import (
     build_telemetry_facts,
     list_dirty_telemetry,
@@ -922,128 +923,6 @@ def unlink_generation(task_id: str, gen_id: str) -> bool:
             "DELETE FROM task_generation WHERE task_id=? AND gen_id=?", (task_id, gen_id)
         )
         return cur.rowcount > 0
-
-
-# ── 분석(시각화) — 추이·매트릭스 ──────────────────────────────────────────────
-def timeseries(
-    bucket: str = "day",
-    project_id: Optional[str] = None,
-    creator_uid: Optional[str] = None,
-) -> list[dict[str, Any]]:
-    """일/주별 생성수·크레딧 추이. 크레딧=COALESCE(실제,견적). created_at(UTC 문자열) 기준.
-    project_id 를 주면 그 프로젝트, creator_uid 를 주면 그 작업자 생성물만 집계(세부 분석)."""
-    fmt = "%Y-%W" if bucket == "week" else "%Y-%m-%d"
-    where = "g.deleted_at IS NULL AND g.created_at IS NOT NULL"
-    params: list[Any] = []
-    if project_id:
-        where += " AND g.project_id = ?"
-        params.append(project_id)
-    if creator_uid:
-        where += " AND g.creator_uid = ?"
-        params.append(creator_uid)
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        rows = conn.execute(
-            f"""SELECT strftime('{fmt}', g.created_at) AS bucket,
-                       COUNT(*) AS count,
-                       COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits
-                FROM generation g
-                LEFT JOIN generation_metrics m ON m.gen_id = g.id
-                WHERE {where}
-                GROUP BY bucket ORDER BY bucket""",
-            params,
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def matrix() -> dict[str, Any]:
-    """작업자 × 프로젝트 매트릭스 — 셀=건수·크레딧. 미분류 프로젝트는 pid='' 로 표기."""
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        rows = conn.execute(
-            """SELECT g.creator_uid AS uid, g.project_id AS pid, COUNT(*) AS count,
-                      COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
-                      SUM(CASE WHEN g.is_final = 1 THEN 1 ELSE 0 END) AS final_count,
-                      SUM(CASE WHEN EXISTS(
-                            SELECT 1 FROM share s WHERE s.generation_id = g.id
-                          ) THEN 1 ELSE 0 END) AS shared_count
-               FROM generation g
-               LEFT JOIN generation_metrics m ON m.gen_id = g.id
-               WHERE g.deleted_at IS NULL
-               GROUP BY g.creator_uid, g.project_id"""
-        ).fetchall()
-        uids = sorted({r["uid"] for r in rows if r["uid"]})
-        names = resolve_display_names(conn, uids) if uids else {}
-        pnames = {
-            r["id"]: r["name"]
-            for r in conn.execute("SELECT id, name FROM project").fetchall()
-        }
-    # 데이터에 등장한 프로젝트만(순서 보존), 미분류는 빈 키
-    proj_order: list[str] = []
-    seen: set[str] = set()
-    cells: dict[str, dict[str, dict[str, Any]]] = {}
-    for r in rows:
-        u = r["uid"] or ""
-        pkey = r["pid"] or ""
-        cells.setdefault(u, {})[pkey] = {
-            "count": r["count"],
-            "credits": r["credits"],
-            "shared_count": r["shared_count"] or 0,
-            "final_count": r["final_count"] or 0,
-        }
-        if pkey not in seen:
-            seen.add(pkey)
-            proj_order.append(pkey)
-    workers = [{"uid": u, "name": names.get(u) or u} for u in uids]
-    if any((r["uid"] or "") == "" for r in rows):  # 작성자 미상 행도 한 줄로
-        workers.append({"uid": "", "name": "미상"})
-    projects = [
-        {"pid": p, "name": (pnames.get(p) if p else "미분류") or p or "미분류"}
-        for p in proj_order
-    ]
-    return {"workers": workers, "projects": projects, "cells": cells}
-
-
-def breakdown(project_id: str) -> dict[str, Any]:
-    """프로젝트 세부 분석 — (folder_path × 작업자)별 생성/게시/완료/크레딧 플랫 행.
-    프론트가 이 하나로 ①작업자별 에피소드·시퀀스 기여 ②에피소드별 진척 ③시퀀스별 완료율 을 파생.
-    folder_path 는 렌더루트 기준 상대경로(예 'ep001/c0010'); NULL/'' 는 미지정."""
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        raw = conn.execute(
-            """SELECT COALESCE(g.folder_path, '') AS folder_path,
-                      g.creator_uid AS uid, COUNT(*) AS count,
-                      COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
-                      SUM(CASE WHEN g.is_final = 1 THEN 1 ELSE 0 END) AS final_count,
-                      SUM(CASE WHEN EXISTS(
-                            SELECT 1 FROM share s WHERE s.generation_id = g.id
-                          ) THEN 1 ELSE 0 END) AS shared_count
-               FROM generation g
-               LEFT JOIN generation_metrics m ON m.gen_id = g.id
-               WHERE g.deleted_at IS NULL AND g.project_id = ?
-               GROUP BY g.folder_path, g.creator_uid""",
-            (project_id,),
-        ).fetchall()
-        uids = sorted({r["uid"] for r in raw if r["uid"]})
-        names = resolve_display_names(conn, uids) if uids else {}
-    rows = []
-    for r in raw:
-        fp = r["folder_path"] or ""
-        segs = [s for s in fp.split("/") if s]
-        rows.append(
-            {
-                "folder_path": fp,
-                "episode": segs[0] if segs else "(미지정)",
-                "sequence": segs[1] if len(segs) > 1 else "",
-                "uid": r["uid"] or "",
-                "name": names.get(r["uid"] or "") or r["uid"] or "미상",
-                "count": r["count"],
-                "shared_count": r["shared_count"] or 0,
-                "final_count": r["final_count"] or 0,
-                "credits": r["credits"],
-            }
-        )
-    return {"rows": rows}
 
 
 # ── 실제 차감액(account transactions) 수집 + 매칭 (2b) ─────────────────────────
