@@ -123,6 +123,12 @@ tsc·vitest·pytest·build 통과 + 관련 수동 스모크 1회. **하나라도
 
 Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 
+> 2026-08-05 `rearch/mv-hub-v` 진행 상태: Phase 1의 시드·그룹 기하 순수 계산,
+> Phase 2의 저장/undo(`useSceneHistory`), Phase 5의 실행 경계
+> (`sceneComfyExecutor` + `useSceneComfyExecution`)를 분리했다. 카드 상태 소유자는 여전히
+> `SceneBoard` 하나이며, Phase 3 키보드/paste/drop과 Phase 4 포인터/드래그는 실제 브라우저
+> 스모크 자동화 전까지 보류한다. 자동 테스트·production build와 별도로 수동 Comfy/씬 전환 검증이 필요하다.
+
 ---
 
 ## 7. 역할 분담

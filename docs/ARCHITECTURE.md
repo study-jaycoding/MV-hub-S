@@ -6,7 +6,7 @@
 > (원본 [DESIGN.md](DESIGN.md)·[CLAUDE.md](CLAUDE.md) 는 개인용 `content-hub` 시절 명세라
 > 일부는 현재 push 모델 이전 내용이다 — 충돌 시 **이 문서와 AI_CONTEXT.md 가 최신**.)
 >
-> 최종 갱신: 2026-06-19
+> 최종 갱신: 2026-08-05
 
 ---
 
@@ -58,7 +58,8 @@ Higgsfield 로 만든 이미지·영상을 팀이 한곳에 모아 **탐색·태
 
 ## 4. 백엔드 계층 구조
 
-요청은 **미들웨어 → 라우터 → repo(데이터 접근) → db/services** 로 한 방향으로 흐른다.
+요청은 **미들웨어 → 라우터 → usecase(업무 흐름) → repo(데이터 접근)** 로 흐른다.
+단순 CRUD는 라우터가 repo를 바로 호출할 수 있지만, 여러 저장소·외부 효과를 묶는 흐름은 usecase가 소유한다.
 
 ```
 HTTP 요청
@@ -68,6 +69,8 @@ HTTP 요청
    └─ mutation_notify  : 성공한 쓰기(POST/PUT/PATCH/DELETE) 후 WS 'synced' broadcast
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
+   │
+   ▼  usecases/*.py  — 여러 repo·서비스를 묶는 업무 순서와 실패/보상 규칙
    │
    ▼  repo/*.py      — 데이터 접근 계층. 순수 SQL/직렬화. HTTP 를 모름(테스트·재사용 쉬움)
    │
@@ -101,14 +104,23 @@ HTTP 요청
 | `assets.py` | Assets 분리창(폴더 마운트·파일메타·파일 코멘트) |
 | `sync.py` | 수동 동기화 트리거 |
 
-### 4.3 데이터 접근 (`backend/app/repo/`) — 패키지로 분해
+### 4.3 유스케이스 (`backend/app/usecases/`)
+
+| 모듈 | 담당 |
+|---|---|
+| `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
+
+### 4.4 데이터 접근 (`backend/app/repo/`) — 패키지로 분해
 
 `repo.py` 가 비대해져 모듈로 분리, `__init__.py` 의 re-export 로 `repo.X` API 동일 유지(파사드).
 
 | 모듈 | 담당 |
 |---|---|
 | `_common.py` | 공용 헬퍼·상수(`new_id`·미디어 캐시 헬퍼·**알림 SQL 조각 `ALERT_COMMENT_JOINS`/`ALERT_COMMENT_PREDICATE`**) |
-| `generations.py` | 중심: `list_generations`(키셋·검색)·업서트·재생성·`account_uid` 스코프·**리니지 그래프**(`_derived_depth_batch` 등) |
+| `generations.py` | 생성물 쓰기·동기화·상태 변경의 중심 저장소 |
+| `generations_query.py` / `generation_rows.py` / `facets.py` | 목록·직렬화·조회 응답 보강·facet 집계 |
+| `id_resolve.py` | `generation.id`와 외부 `job_id`의 호환 해석 경계 |
+| `lineage.py` / `history.py` / `sources.py` | 계보 엣지·가계 조회·소스 검색 |
 | `gen_requests.py` | 생성 레시피·claim·fulfill mark |
 | `identity.py` | 생성자·신원 해석(`resolve_display_names`)·`link_accounts_to_creators`·`set_account_hf_creator`·`credit_summary`·`list_members` |
 | `tags.py` | 일반 태그 + 자동태그(별도 네임스페이스, owner 스코프) |
@@ -117,8 +129,11 @@ HTTP 요청
 | `projects.py` | 프로젝트·멤버 |
 | `accounts.py` | 가입·인증·승인 |
 | `trash.py` | 휴지통(별도 DB 원자 이동·복원·영구삭제) |
+| `manage.py` | PM 관리 저장소 호환 파사드와 아직 결합도가 높은 작업 CRUD |
+| `manage_schema.py` / `manage_telemetry.py` | 관리 사이드카 스키마·outbox 팩트 전송 상태 |
+| `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
 
-### 4.4 서비스 (`backend/app/services/`) — 외부 연동·부수효과
+### 4.5 서비스 (`backend/app/services/`) — 외부 연동·부수효과
 
 | 서비스 | 담당 |
 |---|---|
@@ -131,7 +146,7 @@ HTTP 요청
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
 
-### 4.5 보조 스크립트 (`backend/`)
+### 4.6 보조 스크립트 (`backend/`)
 
 - `serve.py` — 듀얼스택 기동 진입점. `schema.sql` — SQLite DDL.
 - `backfill_import.py` — 일괄 적재. PostgreSQL 런타임과 이관 도구는 현재 제거·미지원.
@@ -162,6 +177,11 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `download.ts` | `download`·`downloadName`(파일 내려받기, 공용) |
 | `commentTree.ts` | `buildCommentTree<T>`(코멘트 부모-자식 트리 계산, 공용) |
 | `useClickSeparation.ts` | 단일/더블클릭 220ms 분리 훅 + 언마운트 타이머 정리(공용) |
+| `useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용 |
+| `useSceneHistory.ts` | 씬별 커밋 기준선·undo/redo·생성 결과 이력 보정. 화면 상태는 `SceneBoard`가 유지 |
+| `useSceneComfyExecution.ts` | Comfy 단독/배치 실행·중복 방지·씬 전환 중단·실행 표시 수명주기 |
+| `sceneComfyExecutor.ts` | 미디어 확보·연결 텍스트·시드 변환 후 Comfy API를 호출하는 React 비의존 경계 |
+| `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
 
 > `format`·`media`·`download`·`commentTree`·`useClickSeparation` 은 여러 컴포넌트에 복붙돼 있던
 > 동일 로직을 통합한 결과물(중복 제거 리팩터). `MediaThumbnail` 도 같은 맥락의 공용 표현 컴포넌트.
@@ -170,7 +190,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 - **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·로컬 대기/생성중 라벨·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
-- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`/`SceneBar`(자유 배치 씬 — 카드·연결·태그, localStorage)와 계보 뷰 `HistoryBoard`(원본→파생 가로 트리·무한 캔버스)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`·`CompareModal`.
+- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 자유 배치·선택·포인터·렌더 조립을 소유하고, 저장/undo와 Comfy 실행은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
 - **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`).

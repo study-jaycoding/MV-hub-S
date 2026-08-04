@@ -89,4 +89,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File release\select_release.ps1 `
 
 자동 부하는 API와 연결 안정성을 검증하지만 GPU/Houdini/ComfyUI, 실제 대용량 영상, 사내 네트워크 속도,
 사용자 브라우저의 SceneBoard 렌더링 비용까지 재현하지 않는다. 이 항목은 위 5→20→50→100명 단계에서
-확인한다. SceneBoard 실행 훅의 추가 분리는 이 운영 검증과 8시간 지속 테스트가 안정된 뒤 진행한다.
+확인한다. `rearch/mv-hub-v`에서 SceneBoard 저장/undo와 Comfy 실행 훅 분리는 완료했지만,
+실제 Comfy 실행 중 씬 전환·배치 결과 순서·브라우저 undo는 위 단계적 배포에서 반드시 다시 확인한다.
+키보드/paste/drop과 포인터/드래그의 추가 분리는 이 운영 검증과 8시간 지속 테스트가 안정된 뒤 진행한다.
