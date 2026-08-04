@@ -10,9 +10,6 @@
 
 from __future__ import annotations
 
-import bisect
-import hashlib
-from datetime import datetime
 from typing import Any, Optional
 
 from ..db import get_connection
@@ -20,6 +17,12 @@ from ._common import new_id
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema
 from .manage_analytics import breakdown, matrix, timeseries
+from .manage_transactions import (
+    _MATCH_WINDOW,
+    _epoch,
+    _match_transactions,
+    record_transactions,
+)
 from .manage_telemetry import (
     build_telemetry_facts,
     list_dirty_telemetry,
@@ -923,160 +926,6 @@ def unlink_generation(task_id: str, gen_id: str) -> bool:
             "DELETE FROM task_generation WHERE task_id=? AND gen_id=?", (task_id, gen_id)
         )
         return cur.rowcount > 0
-
-
-# ── 실제 차감액(account transactions) 수집 + 매칭 (2b) ─────────────────────────
-# 거래엔 잡 id 가 없어 (모델 시각이 아니라) **소유자+시각 최근접**으로 생성물에 귀속한다.
-# 검증(PM_DASHBOARD_DESIGN.md §3): 같은 계정 안에서 거래 시각 ↔ 생성물 sort_ts 오차 <0.3초,
-# 윈도우 밖(생성물 없는 옛 거래)은 미귀속으로 안전하게 남는다. 모델 표시명↔job_set_type 사전이
-# 서버에 늘 있진 않으므로(공유 서버 CLI 부재) 모델 검증은 생략하고 시각+소유자로만 매칭한다.
-_MATCH_WINDOW = 60.0  # 초 — 설계(§3) 기준값. 검증상 실제 매칭은 1초 이내, 비매칭은 수백 초라 여유 충분
-
-
-def _epoch(iso: Optional[str]) -> Optional[float]:
-    """거래 created_at(UTC ISO) → epoch. 생성물 sort_ts(UTC epoch)와 같은 축."""
-    if not iso:
-        return None
-    try:
-        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
-
-
-def record_transactions(
-    owner_uid: Optional[str], account_email: Optional[str], txns: list[dict]
-) -> dict[str, int]:
-    """account transactions 를 credit_txn 에 적재(dedup) 후 매칭 실행.
-    거래엔 고유 id 가 없어 (owner|created_at|credits|action|display_name) 해시를 PK 로 → 재수집 멱등."""
-    if not txns:
-        return {"inserted": 0, "matched": 0}
-    inserted = 0
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        # 적재 + 매칭을 한 트랜잭션으로 — 매칭 CAS 가 같은 커넥션·트랜잭션에서 돌아야
-        # 동시 요청이 같은 미매칭 건을 이중 매칭하지 않는다.
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            for t in txns:
-                if not isinstance(t, dict):
-                    continue
-                created = t.get("created_at")
-                credits = t.get("credits")
-                action = t.get("action")
-                dn = t.get("display_name")
-                model = t.get("model")  # 에이전트가 display_name→job_set_type 변환해 태깅(옛 에이전트는 없음)
-                raw = f"{owner_uid}|{created}|{credits}|{action}|{dn}"
-                tid = hashlib.sha1(raw.encode("utf-8")).hexdigest()
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO credit_txn"
-                    "(id, owner_uid, account_email, display_name, credits, action, created_at, model) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    (tid, owner_uid, account_email, dn, credits, action, created, model),
-                )
-                inserted += cur.rowcount
-            matched_ids = _match_transactions(conn, owner_uid)
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-    # T5: 실제 크레딧이 방금 채워진 생성물을 텔레메트리 재push 대상으로(이미 pushed 된 과거 잡의 크레딧
-    # 보정 반영). 위 with(풀 커넥션)를 빠져나온 뒤 별도로 호출 — 커넥션 중첩 회피. best-effort.
-    if matched_ids:
-        try:
-            mark_telemetry_dirty(matched_ids)
-        except Exception:  # noqa: BLE001
-            pass
-    return {"inserted": inserted, "matched": len(matched_ids), "matched_ids": matched_ids}
-
-
-def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
-    """매칭 본문 — caller 가 BEGIN IMMEDIATE 를 연 뒤 같은 conn 으로 호출한다. 반환=방금 매칭된 gen id 목록.
-    각 쌍은 SAVEPOINT + CAS(조건부 UPDATE)로 확정해, 동시 실행이 같은 거래/생성물을 이중 매칭하지 못하게 한다."""
-    txns = conn.execute(
-        "SELECT id, credits, created_at, owner_uid, model FROM credit_txn "
-        "WHERE action='spend' AND matched_gen_id IS NULL "
-        "AND (owner_uid IS ? OR ? IS NULL)",
-        (owner_uid, owner_uid),
-    ).fetchall()
-    if not txns:
-        return []
-    gens = conn.execute(
-        "SELECT g.id AS id, g.sort_ts AS sort_ts, g.creator_uid AS creator_uid, "
-        "  g.model AS model FROM generation g "
-        "LEFT JOIN generation_metrics m ON m.gen_id = g.id "
-        "WHERE g.sort_ts IS NOT NULL AND g.deleted_at IS NULL "
-        "AND (g.creator_uid = ? OR ? IS NULL) "
-        "AND m.real_credits IS NULL",
-        (owner_uid, owner_uid),
-    ).fetchall()
-    if not gens:
-        return []
-
-    # 후보쌍을 거리순 그리디로 확정. 각 거래는 시각 ±윈도우 안 생성물만 이분탐색으로 훑는다
-    # → O(T·G) 전체쌍 대신 O(T·logG + 후보수)(누적 백필에서 반복비용 급증 방지).
-    # 가드(둘 다 "양쪽 값을 다 알 때만" 스킵 → 미연결/옛 데이터는 시간매칭 폴백, 회귀 없음):
-    #   (1)소유자 — 거래 owner_uid·생성물 creator_uid 둘 다 있고 다르면 스킵(전역 호출 시 남의 것 오염 차단).
-    #   (2)모델 — 거래·생성물 양쪽 model 을 다 알고 다르면 스킵(옛 에이전트 NULL 이면 시간매칭 폴백).
-    order = sorted(range(len(gens)), key=lambda gi: gens[gi]["sort_ts"])
-    gts = [gens[gi]["sort_ts"] for gi in order]
-    pairs: list[tuple[float, int, int]] = []
-    tepochs = [_epoch(t["created_at"]) for t in txns]
-    for ti, te in enumerate(tepochs):
-        if te is None:
-            continue
-        t = txns[ti]
-        lo = bisect.bisect_left(gts, te - _MATCH_WINDOW)
-        hi = bisect.bisect_right(gts, te + _MATCH_WINDOW)
-        for k in range(lo, hi):
-            gi = order[k]
-            g = gens[gi]
-            if t["owner_uid"] and g["creator_uid"] and t["owner_uid"] != g["creator_uid"]:
-                continue
-            tm, gm = t["model"], g["model"]
-            if tm and gm and tm != gm:
-                continue
-            pairs.append((abs(g["sort_ts"] - te), ti, gi))
-    pairs.sort()
-    used_t: set[int] = set()
-    used_g: set[int] = set()
-    matched_ids: list[str] = []
-    for d, ti, gi in pairs:
-        if ti in used_t or gi in used_g:
-            continue
-        t = txns[ti]
-        g = gens[gi]
-        credits = t["credits"]
-        real = round(abs(credits)) if credits is not None else None  # 사용액=양수
-        # 쌍 확정 — credit_txn 은 '아직 미매칭'일 때만(CAS), metrics 는 '아직 real_credits 비었을'
-        # 때만. 하나라도 이미 다른 매처가 채웠으면 이 쌍 전체를 롤백(SAVEPOINT)하고 건너뛴다.
-        conn.execute("SAVEPOINT match_pair")
-        cur_txn = conn.execute(
-            "UPDATE credit_txn SET matched_gen_id=? WHERE id=? AND matched_gen_id IS NULL",
-            (g["id"], t["id"]),
-        )
-        if cur_txn.rowcount != 1:
-            conn.execute("ROLLBACK TO match_pair")
-            conn.execute("RELEASE match_pair")
-            continue
-        cur_m = conn.execute(
-            "INSERT INTO generation_metrics(gen_id, real_credits, credit_source, matched) "
-            "VALUES(?,?, 'transaction', 1) "
-            "ON CONFLICT(gen_id) DO UPDATE SET "
-            "  real_credits=excluded.real_credits, credit_source='transaction', matched=1 "
-            "  WHERE generation_metrics.real_credits IS NULL",
-            (g["id"], real),
-        )
-        if cur_m.rowcount != 1:
-            conn.execute("ROLLBACK TO match_pair")
-            conn.execute("RELEASE match_pair")
-            continue
-        conn.execute("RELEASE match_pair")
-        # 선점은 쌍이 실제로 확정된 뒤에 — CAS 가 실패해 건너뛴 거래/생성물은 다른 후보와
-        # 매칭될 기회를 남긴다(동시 매칭 경계에서 덜 매칭되던 문제 방지).
-        used_t.add(ti)
-        used_g.add(gi)
-        matched_ids.append(g["id"])  # T5: 실제 크레딧이 방금 채워진 생성물 — 텔레메트리 재push 대상
-    return matched_ids
 
 
 # ── 영구 삭제 시 사이드카 고아 정리 ──────────────────────────────────────────
