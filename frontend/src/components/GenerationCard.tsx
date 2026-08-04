@@ -457,8 +457,10 @@ function GenerationCardImpl({
         }
         draggable
         onDragStart={onCardDragStart}
-        // 새 카드(글로우)를 클릭하면 '확인' — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
-        onMouseDownCapture={fresh ? () => ackTeamFresh(gen) : undefined}
+        // 카드 클릭 = '새로 들어옴' 확인 — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
+        // ★탭 무관: 내 생성물은 작업 공간에도 같은 카드가 보이므로, 어디서 클릭하든 확인돼야
+        //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
+        onMouseDownCapture={() => ackTeamFresh(gen)}
       >
         {cardConfirm}
         {thumbBox}
@@ -554,8 +556,10 @@ function GenerationCardImpl({
       }
       draggable
       onDragStart={onCardDragStart}
-      // 새 카드(글로우)를 클릭하면 '확인' — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
-      onMouseDownCapture={fresh ? () => ackTeamFresh(gen) : undefined}
+      // 카드 클릭 = '새로 들어옴' 확인 — 글로우·사이드바 +N 이 이 항목만 꺼진다(캡처라 내부 버튼도 포함).
+      // ★탭 무관: 내 생성물은 작업 공간에도 같은 카드가 보이므로, 어디서 클릭하든 확인돼야
+      //   팀 탭 배지와 어긋나지 않는다. 새것이 아니면 ackTeamFresh 가 no-op(기록 안 쌓임).
+      onMouseDownCapture={() => ackTeamFresh(gen)}
     >
       {cardConfirm}
       {thumbBox}
