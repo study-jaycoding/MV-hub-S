@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, GEN_PAGE } from "../api";
 import { EMPTY_FACETS } from "./appConstants";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
@@ -39,11 +39,23 @@ export function useGenerationLibraryData({
   const reloadSeqRef = useRef(0);
   const lastStatsAtRef = useRef(0); // stats(전역 집계) 마지막 조회 시각 — light 폴링 스로틀용
   const lastLoadedTabRef = useRef<string | null>(null); // 현재 gens 가 어느 탭 데이터인지
+  // 탭별 마지막 목록 캐시 — 탭을 오갈 때 이전에 보던 그 탭 화면을 '즉시' 띄우고(딜레이 제거),
+  // 뒤에서 fetch 가 최신본으로 조용히 갱신한다. sig(쿼리 직렬화)가 다르면(필터 초기화 등) 캐시를 안 쓴다.
+  const tabCacheRef = useRef<Record<string, { gens: Generation[]; hasMore: boolean; sig: string }>>({});
   // reload 코얼레싱 — 이미 실행 중이면 새 호출을 큐에 '병합'해 동시 네트워크를 1개로 줄인다.
   // reloadSeqRef 가 정합성(최신 결과만 반영)을 보장하므로, 여기선 중복 요청만 없앤다.
   const inflightRef = useRef<Promise<void> | null>(null);
   const pendingArgsRef = useRef<{ silent: boolean; light: boolean } | null>(null);
   const pendingResolversRef = useRef<Array<() => void>>([]);
+
+  // 목록이 바뀌면(삭제·태그·컬러·추가 로드 등) 현재 탭 캐시도 동기화 —
+  // 탭을 오갔다 돌아와도 방금 편집한 결과가 캐시 화면에 그대로 보이게.
+  useEffect(() => {
+    const t = lastLoadedTabRef.current;
+    if (!t) return;
+    const c = tabCacheRef.current[t];
+    if (c) tabCacheRef.current[t] = { ...c, gens, hasMore };
+  }, [gens, hasMore]);
 
   const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;
@@ -72,11 +84,20 @@ export function useGenerationLibraryData({
     const query = genQueryRef.current;
     const trashMode = !!filtersRef.current.deleted_only;
     const scope = tab === "team" ? "team" : "my";
-    // 탭이 바뀐 로드면 이전 탭 목록을 먼저 비운다 — 팀 탭을 눌렀는데 새 데이터 도착 전까지
-    // '작업 공간' 카드들이 잠깐 보이던 깜빡임 방지. 같은 탭 갱신(silent 폴링 등)은 유지.
+    const sig = JSON.stringify([trashMode, query]);
+    // 탭이 바뀐 로드면: 그 탭의 캐시가 있으면 즉시 표시(빈 화면 딜레이 없음), 없으면 비우고 로딩.
+    // 어느 쪽이든 이전 탭 카드가 비치는 깜빡임은 없고, 아래 fetch 가 최신본으로 조용히 갱신한다.
     if (lastLoadedTabRef.current !== null && lastLoadedTabRef.current !== tab) {
-      setGens([]);
-      setHasMore(false);
+      const cached = tabCacheRef.current[tab];
+      if (cached && cached.sig === sig) {
+        setGens(cached.gens);
+        setHasMore(cached.hasMore);
+        setLoading(false); // 캐시가 화면을 채우는 동안 스피너 불필요(백그라운드 갱신)
+      } else {
+        setGens([]);
+        setHasMore(false);
+      }
+      lastLoadedTabRef.current = tab;
     }
     // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
     try {
@@ -87,6 +108,7 @@ export function useGenerationLibraryData({
       setGens(g);
       setHasMore(g.length >= GEN_PAGE);
       lastLoadedTabRef.current = tab;
+      tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
     } catch (e) {
       if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
     } finally {
