@@ -79,6 +79,13 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
     expect(isFreshGen({ id: "g", shared_at: "2099-06-02 00:00:00" })).toBe(true);
   });
 
+  it("시점 미상(구서버 — shared_at 없음)이면 id 확인만으로 인정 — +N 영구 잠김 방지", () => {
+    ensureTeamBase();
+    ackTeamFresh({ id: "a", shared_at: "2099-01-01 00:00:00" });
+    expect(isAckedFor("a", null)).toBe(true); // 확인한 항목 — 시점 몰라도 제외
+    expect(isAckedFor("b", null)).toBe(false); // 확인 안 한 항목은 그대로 +N
+  });
+
   it("확인은 새것이 아닌 카드에 no-op — seen 이 불필요하게 자라지 않는다", () => {
     ensureTeamBase();
     ackTeamFresh({ id: "old", shared_at: "2000-01-01 00:00:00" });

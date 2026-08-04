@@ -115,7 +115,10 @@ export function ackTeamFresh(g: { id: string; shared_at?: string | null }): void
 // >= 인 이유: ack 은 확인한 카드의 shared_at 을 저장하므로 같은 시점이면 확인된 것(코덱스 검증).
 // 재공유로 서버 shared_at 이 더 새로우면(저장값 < sharedAt) 미확인 → 다시 +N.
 export function isAckedFor(id: string, sharedAt: string | null | undefined): boolean {
-  if (!sharedAt) return false;
   const seen = load().seen[id];
-  return !!seen && seen.at >= sharedAt;
+  if (!seen) return false;
+  // 시점 미상(shared_at 을 안 주는 구버전 서버 응답) — id 확인만으로 인정.
+  // 아니면 확인해도 +N 이 영원히 안 줄어드는 잠김이 된다(재공유 정밀 판정만 포기).
+  if (!sharedAt) return true;
+  return seen.at >= sharedAt;
 }
