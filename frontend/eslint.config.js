@@ -10,6 +10,7 @@ const pureDomainFiles = [
   "src/lib/gradeStep.ts",
   "src/lib/recipeScene.ts",
   "src/lib/sceneComfyInputs.ts",
+  "src/lib/sceneComfySeeds.ts",
   "src/lib/sceneDerive.ts",
   "src/lib/sceneEdges.ts",
   "src/lib/sceneLayout.ts",

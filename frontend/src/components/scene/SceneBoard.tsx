@@ -81,6 +81,10 @@ import {
 import { arrangeNodes } from "../../lib/sceneLayout";
 import { reconcileRefs, pruneGroups } from "../../lib/sceneDerive";
 import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
+import {
+  randomizeExposedSeedParams,
+  randomizeWorkflowSeeds,
+} from "../../lib/sceneComfySeeds";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   setComfyRunning,
@@ -1890,41 +1894,6 @@ export function SceneBoard({
       else flashMsg(e instanceof Error ? e.message : "내 작업 저장 실패");
     }
   };
-  // ComfyUI 시드 INT 상한(2^31-1). 이보다 크면 노드 검증에서 400(value_bigger_than_max) 이 난다.
-  const SEED_MAX = 2_147_483_647;
-  const randomSeed = () => Math.floor(Math.random() * (SEED_MAX + 1)); // 0..2^31-1
-  // 워크플로우 JSON 의 seed/noise_seed 숫자 필드를 무작위로 바꾼 사본을 만든다(배치 복사본마다 다른 결과를 위해).
-  //  ComfyUI 의 control_after_generate(시드 자동변경)는 웹UI 기능이라 /prompt API 로 같은 워크플로우를 N번 제출하면
-  //  결과가 전부 같다 → 여기서 프론트가 복사본마다 시드를 바꿔 준다(시드 필드 없으면 원본 그대로).
-  const randomizeSeeds = (content: string): string => {
-    try {
-      const wf = JSON.parse(content);
-      if (!wf || typeof wf !== "object") return content;
-      for (const node of Object.values(wf)) {
-        const inputs = (node as { inputs?: Record<string, unknown> })?.inputs;
-        if (!inputs || typeof inputs !== "object") continue;
-        for (const key of ["seed", "noise_seed"]) {
-          if (typeof inputs[key] === "number") inputs[key] = randomSeed();
-        }
-      }
-      return JSON.stringify(wf);
-    } catch {
-      return content; // 파싱 실패 시 원본 그대로(시드 변경 포기)
-    }
-  };
-  // 노출 파라미터(paramValues, 키="node|field")의 seed/noise_seed 도 무작위로 — 시드를 파라미터로 노출했으면
-  //  백엔드가 이 값을 워크플로우에 재주입해 content 랜덤을 덮어쓴다. 여기서도 바꿔 줘야 N개가 서로 달라진다.
-  const randomizeSeedParams = (
-    paramValues: Record<string, string | number | boolean>,
-  ): Record<string, string | number | boolean> => {
-    const out = { ...paramValues };
-    for (const key of Object.keys(out)) {
-      const field = key.split("|")[1]; // "node|field"
-      if ((field === "seed" || field === "noise_seed") && typeof out[key] === "number")
-        out[key] = randomSeed();
-    }
-    return out;
-  };
   // comfy 실행 코어 — 카드 상태를 쓰지 않고 결과 출력셋만 반환(배치 병렬 실행용). 실패 시 throw.
   //  · overlay 가 있으면 상류 comfy 입력은 카드 저장분이 아니라 이 복사본의 결과(overlay)를 읽는다(체인 짝 맞춤).
   //  · cfgSnap 을 주면 그 content/paramValues 로 실행한다(클릭 시점 스냅샷 — 실행 중 카드 편집이 복사본마다 새는 것 방지).
@@ -1949,8 +1918,8 @@ export function SceneBoard({
     // 연결된 텍스트가 있으면 노출된 text 파라미터를 그 텍스트로 구동(연결 우선). 실행 시점에 라이브로 읽어
     //  Text Multiline 등 텍스트 입력을 자동 채운다. overlay 로 상류 comfy 텍스트 체인도 반영.
     const driven = driveTextParams(cardId, baseParams, card?.comfyCfg?.params, cardsRef.current, edgesRef.current, refParents, overlay);
-    const content = varySeed ? randomizeSeeds(baseContent) : baseContent;
-    const paramValues = varySeed ? randomizeSeedParams(driven) : driven;
+    const content = varySeed ? randomizeWorkflowSeeds(baseContent) : baseContent;
+    const paramValues = varySeed ? randomizeExposedSeedParams(driven) : driven;
     const res = await comfyApi.run(content, paramValues, media);
     return res.outputs;
   };
