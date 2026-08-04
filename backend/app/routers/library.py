@@ -392,6 +392,7 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
         if is_remote:
             return RedirectResponse(src)  # 생성 실패(손상 등) → 원본으로 폴백
         raise HTTPException(status_code=415, detail="썸네일 생성 불가")
+    thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     return FileResponse(
         cache, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=2592000"}
     )

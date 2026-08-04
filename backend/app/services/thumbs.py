@@ -172,10 +172,28 @@ def ensure_video_poster(target: Path, w: int) -> Optional[Path]:
         _release_thumb_lock(lock_key)
 
 
+_TOUCH_MIN_AGE = 86400.0  # 초 — 서빙 히트 시 mtime 이 이보다 묵었을 때만 touch(파일당 하루 1회 쓰기)
+
+
+def mark_thumb_used(cache: Optional[Path]) -> None:
+    """서빙 캐시 히트의 '최근 사용' 신호 — mtime 을 지금으로 touch 해, evict(mtime 순 삭제)가
+    '안 본 지 오래된 것부터'(LRU)가 되게 한다. 하루 이상 묵은 파일만 touch(쓰기 증폭 방지).
+    ★프리워밍 경로에선 부르지 않는다 — 전량 스윕이 touch 하면 '최근 사용' 신호가 무의미해진다.
+    실패(잠금·권한)는 무시 — 기존 생성시각 순서로 자연 폴백."""
+    if cache is None:
+        return
+    try:
+        if time.time() - cache.stat().st_mtime > _TOUCH_MIN_AGE:
+            os.utime(cache)
+    except OSError:
+        pass
+
+
 def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
-    """.thumbs 총 용량이 max_bytes 를 넘으면 오래된 것(mtime = 생성/교체 시각)부터 삭제해 상한 이하로.
-    엄밀히는 접근시각 LRU 가 아니라 생성시각 FIFO — 지워져도 원본 URL 로 즉시 다시 굽는다(무해).
-    ★.thumbs(재생성 가능한 512 리사이즈 캐시)만 대상 — MEDIA_DIR 의 원본·최종 보존본은 안 건드린다.
+    """.thumbs 총 용량이 max_bytes 를 넘으면 mtime 오래된 것부터 삭제해 상한 이하로.
+    서빙 히트가 mark_thumb_used 로 mtime 을 갱신하므로 사실상 '안 본 지 오래된 것부터'(LRU).
+    지워져도 원본에서 즉시 다시 굽는다(무해).
+    ★.thumbs(재생성 가능한 리사이즈 캐시)만 대상 — MEDIA_DIR 의 원본·최종 보존본은 안 건드린다.
     쓰는 중(.tmp)이나 .jpg 아닌 파일은 건너뛴다(반쯤 쓰인 파일 삭제 방지). 삭제 개수를 반환."""
     if not THUMB_DIR.exists() or THUMB_DIR.is_symlink():  # 심링크/정션이면 원본 밖을 지울 위험 → 거부
         return 0
@@ -204,6 +222,9 @@ def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
                 removed += 1
             except OSError:
                 continue  # 다른 스레드가 방금 지웠거나 잠김 — 건너뜀
+        if removed:
+            # 상한 발동 가시화 — 이 로그가 자주 보이면 상한(CONTENT_HUB_THUMB_CACHE_MAX_BYTES) 상향 신호.
+            print(f"[thumbs] 캐시 상한({max_bytes // (1024 * 1024)}MB) 도달 — 오래 안 본 썸네일 {removed}개 삭제")
         return removed
     except OSError:
         return 0

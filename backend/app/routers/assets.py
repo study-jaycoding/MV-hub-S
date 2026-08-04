@@ -1058,6 +1058,7 @@ def get_thumb(
         # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
         # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
         raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
+    thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     # v(파일 버전)가 붙은 URL 은 그 내용에 1:1 대응 → 영구·immutable 캐시로 다음부턴 요청 없이 즉시 표시.
     # v 가 없으면(옛 저장 URL·직접 호출) 매번 재검증(no-cache)해, 원본을 같은 이름으로 덮어써도
     # 브라우저가 옛 썸네일로 굳지 않게 한다. (버전 캐시버스터가 붙은 새 경로가 정상 경로다.)
