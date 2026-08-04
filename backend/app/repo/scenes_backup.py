@@ -18,12 +18,16 @@ from ..db import get_connection
 __all__ = [
     "MAX_SCENE_BYTES",
     "MAX_SCENE_UPSERTS",
+    "MAX_SCENE_DELETES",
+    "MAX_SYNC_TOTAL_BYTES",
     "list_scene_backups",
     "sync_scene_backups",
 ]
 
 MAX_SCENE_BYTES = 5 * 1024 * 1024  # 씬 1개 상한 — 씬 import 상한과 동일(5MB)
-MAX_SCENE_UPSERTS = 200  # 한 요청 상한 — 초과분은 클라가 분할 전송
+MAX_SCENE_UPSERTS = 200  # 한 요청 upsert 개수 상한 — 초과분은 클라가 분할 전송
+MAX_SCENE_DELETES = 500  # 한 요청 삭제 개수 상한 — SQLite 바인딩 한도·폭주 방지(클라 분할)
+MAX_SYNC_TOTAL_BYTES = 20 * 1024 * 1024  # 한 요청 data 총량 상한 — 개수 상한만으론 1GB 도 가능해서
 
 
 def _hash(data: str) -> str:
@@ -66,6 +70,11 @@ def sync_scene_backups(
     data 는 JSON 원문 그대로 보관하되 파싱·id 일치·크기만 검증(이중 데이터 불일치 방지)."""
     if len(upserts) > MAX_SCENE_UPSERTS:
         raise ValueError(f"upserts 가 너무 많음(최대 {MAX_SCENE_UPSERTS}) — 분할 전송 필요")
+    if len(deleted_ids) > MAX_SCENE_DELETES:
+        raise ValueError(f"deleted_ids 가 너무 많음(최대 {MAX_SCENE_DELETES}) — 분할 전송 필요")
+    total = sum(len(str(u.get("data") or "").encode("utf-8")) for u in upserts)
+    if total > MAX_SYNC_TOTAL_BYTES:
+        raise ValueError("요청 data 총량 초과(20MB) — 분할 전송 필요")
     up_ids = [str(u.get("id") or "") for u in upserts]
     if "" in up_ids or len(set(up_ids)) != len(up_ids):
         raise ValueError("upserts 에 id 누락 또는 중복")
@@ -100,7 +109,8 @@ def sync_scene_backups(
                         owner_uid,
                         project_id,
                         sid,
-                        str(u.get("name") or parsed.get("name") or ""),
+                        # name 은 JSON(data.name) 우선 — body.name 과 갈릴 때 이중 데이터 불일치 방지(코덱스 P2)
+                        str(parsed.get("name") or u.get("name") or ""),
                         data,
                         _hash(data),
                     ),
