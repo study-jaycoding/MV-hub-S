@@ -86,6 +86,23 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
     expect(isAckedFor("b", null)).toBe(false); // 확인 안 한 항목은 그대로 +N
   });
 
+  it("60일 프루닝은 저장까지 된다 — localStorage 가 계속 자라지 않는다 (코덱스 P3)", () => {
+    const acct = `user${acctSeq}@test`;
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        [`acct:${acct}`]: {
+          base: "2000-01-01 00:00:00",
+          seen: { old: { at: "2000-01-02 00:00:00" } },
+        },
+      }),
+    );
+    expect(getTeamBase()! > "2000-01-01 00:00:00").toBe(true); // 기준선이 컷오프로 당겨짐
+    const stored = JSON.parse(localStorage.getItem(KEY)!)[`acct:${acct}`];
+    expect(stored.base).toBe(getTeamBase()); // 메모리만이 아니라 저장본도 갱신
+    expect(stored.seen.old).toBeUndefined(); // 묵은 확인 기록은 저장본에서도 제거
+  });
+
   it("확인은 새것이 아닌 카드에 no-op — seen 이 불필요하게 자라지 않는다", () => {
     ensureTeamBase();
     ackTeamFresh({ id: "old", shared_at: "2000-01-01 00:00:00" });

@@ -324,6 +324,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_share_shared_by ON share(shared_by, generation_id)"
     )
+    # team-fresh(+N 배지) — 기준선 이후 공유분 범위 스캔·최신순 정렬(schema.sql 과 동일 정의).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_share_shared_at ON share(shared_at DESC, generation_id)"
+    )
     # 동기화 URL 매칭(adoption)·에셋 역조회 — file_path/source_url 로 asset 을 찾는 경로.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_file_path ON asset(file_path)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_source_url ON asset(source_url)")

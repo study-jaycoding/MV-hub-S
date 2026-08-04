@@ -52,6 +52,10 @@ function load(): AccountSeen {
   if (acc.base && acc.base < cut) {
     acc.base = cut;
     for (const id in acc.seen) if (acc.seen[id].at <= cut) delete acc.seen[id];
+    // 저장까지 해야 실제로 줄어든다(코덱스 P3 — 메모리만 정리하면 localStorage 는 계속 자람).
+    // persist() 아님: load() 는 렌더 중에도 불리므로 bump(리렌더 신호)는 내지 않는다.
+    map[n] = acc;
+    saveJSON(STORAGE_KEYS.teamSeen, map);
   }
   cacheNs = n;
   cache = acc;

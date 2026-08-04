@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS gen_tag_overlay (
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개
+CREATE INDEX IF NOT EXISTS idx_share_shared_at    ON share(shared_at DESC, generation_id);  -- team-fresh(+N) 기준선 범위 스캔
 -- 목록 정렬 키(sort_ts) 인덱스는 db.py _migrate 에서 생성(sort_ts 가 ALTER 로 추가되는 컬럼이라
 -- 여기서 만들면 신규/구버전 분기가 꼬임 — idx_generation_job 과 동일한 이유).
 CREATE INDEX IF NOT EXISTS idx_asset_generation   ON asset(generation_id);

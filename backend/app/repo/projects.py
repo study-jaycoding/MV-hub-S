@@ -443,33 +443,32 @@ def team_fresh_items(
     가시성은 팀 목록(tab='team')과 동형: None=read_all(전체 공유물), 아니면 내 공유물+내 멤버 프로젝트.
     미분류(project_id NULL)·폴더 미지정도 포함 — 클라가 미분류/프로젝트/폴더 행에 각각 배지를 단다.
     limit 초과분은 잘린다(과소표시일 뿐 — 신규는 최근 소량이라 실사용 도달 어려움)."""
-    where = (
-        "deleted_at IS NULL AND EXISTS (SELECT 1 FROM share s "
-        "WHERE s.generation_id = generation.id AND s.shared_at > ?)"
-    )
+    # share 쪽에서 시작 — generation 전체가 아니라 '공유된 것'만 스캔(코덱스 P2, idx_share_shared_at).
+    # share:generation 은 UNIQUE(idx_share_gen)라 1:1 — MAX 서브쿼리 불필요.
+    where = "s.shared_at > ? AND g.deleted_at IS NULL"
     args: list[Any] = [since]
     actor = actor_uid if actor_uid and actor_uid != "\x00" else None
     if team_member_projects is not None:
         if team_member_projects:
             ph = ",".join("?" * len(team_member_projects))
             if actor:
-                where += f" AND (creator_uid = ? OR project_id IN ({ph}))"
+                where += f" AND (g.creator_uid = ? OR g.project_id IN ({ph}))"
                 args.append(actor)
             else:
-                where += f" AND project_id IN ({ph})"
+                where += f" AND g.project_id IN ({ph})"
             args += list(team_member_projects)
         elif actor:
-            where += " AND creator_uid = ?"
+            where += " AND g.creator_uid = ?"
             args.append(actor)
         else:
             where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
     with get_connection() as conn:
-        # shared_at(MAX) 포함 — 클라가 '그 공유 시점에 대한 확인'(재공유=다시 새것)을 판정.
-        # 정렬도 shared_at — sort_ts(생성 시각)로 자르면 옛 항목의 '재공유'가 상한 밖으로 밀린다(코덱스 P2).
+        # shared_at 포함·정렬 — 클라가 '그 공유 시점에 대한 확인'(재공유=다시 새것)을 판정하고,
+        # sort_ts(생성 시각)로 자르면 옛 항목의 '재공유'가 상한 밖으로 밀린다.
         rows = conn.execute(
-            f"SELECT id, project_id, folder_path, "
-            f"  (SELECT MAX(s2.shared_at) FROM share s2 WHERE s2.generation_id = generation.id) AS shared_at "
-            f"FROM generation WHERE {where} ORDER BY shared_at DESC LIMIT ?",
+            f"SELECT g.id, g.project_id, g.folder_path, s.shared_at "
+            f"FROM share s JOIN generation g ON g.id = s.generation_id "
+            f"WHERE {where} ORDER BY s.shared_at DESC LIMIT ?",
             args + [limit],
         ).fetchall()
         return [dict(r) for r in rows]
