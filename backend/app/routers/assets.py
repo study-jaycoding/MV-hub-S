@@ -558,10 +558,13 @@ def _prewarm_projects_bg(dirs: list[tuple[Path, bool]]) -> None:
     """등록된 프로젝트들의 이미지·영상 썸네일을 순회 생성(캐시된 건 스킵). 백그라운드 전용."""
     for proj_dir, auto_project in dirs:
         try:
+            if thumbs.prewarm_recently(str(proj_dir)):
+                continue  # /tree 등에서 방금 걸었으면 중복 스캔·경합 방지
             children = _build_tree(proj_dir, "", hidden_names={"render"} if auto_project else None)
             media = _collect_tree_media(children, proj_dir)
             if media:
-                thumbs.prewarm_asset_thumbs(media, 512)
+                for w in thumbs.THUMB_WIDTHS:  # 그리드가 쓰는 두 버킷(256/512) 모두 워밍
+                    thumbs.prewarm_asset_thumbs(media, w)
         except Exception:  # noqa: BLE001 — 한 프로젝트 실패가 나머지 프리워밍을 막지 않게
             continue
 
@@ -748,10 +751,12 @@ def project_tree(
     with _TREE_CACHE_LOCK:
         _TREE_CACHE[key] = (time.monotonic(), children)
     # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).
-    # 캐시 미스(새로 훑은 경우)에만 — 이미 캐시면 앞서 걸었으니 중복 방지. 비디오 ffmpeg 는 세마포어로 폭주 방지.
+    # 캐시 미스(새로 훑은 경우)에만 + 최근 5분 내 같은 폴더 프리워밍이 있었으면 스킵(포커스 fresh 재조회가
+    # 올 때마다 전체 재프리워밍이 재큐잉되던 것 방지). 비디오 ffmpeg 는 세마포어로 폭주 방지.
     media = _collect_tree_media(children, proj_dir)
-    if media:
-        background.add_task(thumbs.prewarm_asset_thumbs, media, 512)
+    if media and not thumbs.prewarm_recently(str(proj_dir)):
+        for w in thumbs.THUMB_WIDTHS:  # 그리드가 쓰는 두 버킷(256/512) 모두 — 어느 배율에서도 캐시 히트
+            background.add_task(thumbs.prewarm_asset_thumbs, media, w)
     return {"project": project, "name": proj_dir.name, "children": children}
 
 

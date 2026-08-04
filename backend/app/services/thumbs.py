@@ -23,6 +23,11 @@ from .path_safety import safe_join
 
 THUMB_DIR = MEDIA_DIR / ".thumbs"  # 에셋 썸네일과 같은 디스크 캐시 폴더
 
+# 프론트 그리드가 실제로 요청하는 두 버킷(표시크기×DPR ≤ 256 → 256, 아니면 512).
+# ★프리워밍은 반드시 이 두 폭을 모두 구워야 한다 — 512 만 구우면 100% 배율 모니터(256 요청)에서
+#   전부 캐시 미스라 "미리 구웠는데 열 때마다 새로 굽는" 문제가 재현된다.
+THUMB_WIDTHS: tuple[int, ...] = (256, 512)
+
 # 썸네일 캐시(.thumbs) 총 용량 상한. 넘으면 오래된 것부터 삭제(LRU). 썸네일은 원본 URL 로 언제든 다시
 # 구울 수 있어 삭제해도 안전하다 — 이 상한은 .thumbs(재생성 가능 캐시)에만 적용하고 MEDIA_DIR 의
 # 원본(특히 최종본 보존본)은 절대 건드리지 않는다. 기본 1GB(≈ 3만 장), 런처 환경변수로 조절.
@@ -204,6 +209,25 @@ def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
         return 0
 
 
+# 같은 폴더 프리워밍 백그라운드 잡의 단기 반복 큐잉 방지 — 창 포커스 fresh 재조회·/projects 주기
+# 프리워밍이 겹치면 트리 전체 stat 순회가 계속 돈다. 새 파일 썸네일은 어차피 요청 시점(ensure_thumb)에
+# 즉시 생성되므로, 백그라운드 워밍이 몇 분 늦어도 무해하다.
+_PREWARM_RECENT: dict[str, float] = {}
+_PREWARM_RECENT_GUARD = threading.Lock()
+PREWARM_RECENT_TTL = 300.0
+
+
+def prewarm_recently(key: str) -> bool:
+    """이 key(폴더)로 최근 TTL 내 프리워밍을 걸었으면 True(=스킵). 아니면 지금을 기록하고 False."""
+    now = time.monotonic()
+    with _PREWARM_RECENT_GUARD:
+        last = _PREWARM_RECENT.get(key)
+        if last is not None and now - last < PREWARM_RECENT_TTL:
+            return True
+        _PREWARM_RECENT[key] = now
+        return False
+
+
 def _media_target(rel_or_media_path: str) -> Optional[Path]:
     """'/media/<2>/<sha>.ext' → 안전한 절대경로(경로 이탈 차단). 아니면 None."""
     if not rel_or_media_path.startswith("/media/") or "\\" in rel_or_media_path:
@@ -233,7 +257,9 @@ def prewarm_generation_thumbs(width: int = 512, throttle: float = 0.0) -> int:
     return made
 
 
-async def prewarm_remote_thumbs(urls: list[str], width: int = 512, concurrency: int = 4) -> int:
+async def prewarm_remote_thumbs(
+    urls: list[str], widths: tuple[int, ...] = THUMB_WIDTHS, concurrency: int = 4
+) -> int:
     """원격 미디어 URL 목록을 로컬 캐시 + 썸네일로 미리 구워둔다(team 목록 응답 직후 백그라운드).
 
     공유받은(team) 항목은 미디어가 원격 URL(Higgsfield cloudfront)이라, 첫 표시 때마다 보는 PC가
@@ -254,10 +280,11 @@ async def prewarm_remote_thumbs(urls: list[str], width: int = 512, concurrency: 
             target = _media_target(rel)
             if not target:
                 return
-            existed = cache_path(target, width).exists()  # 이미 있으면 새로 만든 게 아님
-            cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
-            if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
-                made += 1
+            for width in widths:  # 그리드가 쓰는 두 버킷 모두 — 어느 배율에서도 캐시 히트
+                existed = cache_path(target, width).exists()  # 이미 있으면 새로 만든 게 아님
+                cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
+                if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
+                    made += 1
 
     await asyncio.gather(*(_one(u) for u in urls), return_exceptions=True)
     if made:

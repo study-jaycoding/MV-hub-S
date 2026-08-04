@@ -202,7 +202,10 @@ async def lifespan(app: FastAPI):
 
     def _prewarm() -> None:
         try:
-            n = thumbs.prewarm_generation_thumbs(512, throttle=0.005)
+            # 그리드가 쓰는 두 버킷(256/512) 모두 — 512 만 구우면 100% 배율(256 요청)에서 전부 미스.
+            n = 0
+            for w in thumbs.THUMB_WIDTHS:
+                n += thumbs.prewarm_generation_thumbs(w, throttle=0.005)
             if n:
                 print(f"[startup] 썸네일 {n}개 사전 생성 완료(백그라운드)")
         except Exception as e:  # noqa: BLE001

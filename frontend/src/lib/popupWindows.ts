@@ -32,13 +32,12 @@ export function openEmbedWindow(mode: EmbedMode): void {
   }
   const url = `/?embed=${mode}&v=${Date.now()}`;
   const opts = WINDOW_OPTIONS[mode];
+  // window.open 이 이미 url 로 내비게이션한다 — location.href 재대입은 같은 페이지를 두 번
+  // 로드시켜(번들 재평가 + 부팅 API 세트 2회) 창 열기를 늦추던 원인이라 제거.
   const w = window.open(url, opts.name, opts.features);
   openWindows[mode] = w;
   try {
-    if (w) {
-      w.location.href = url;
-      w.focus();
-    }
+    w?.focus();
   } catch {
     /* same-origin defensive guard */
   }
