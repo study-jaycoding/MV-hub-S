@@ -39,7 +39,6 @@ import {
   settleComfyRunning,
   uid,
   variantIds,
-  preserveRepresentatives,
   type Scene,
   type SceneCard,
   type SceneCardKind,
@@ -116,7 +115,7 @@ import {
 } from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
 import { fetchBlob } from "../../lib/download";
-import { saveSceneHistory, loadSceneHistory, sameSnap } from "../../lib/sceneUndoStore";
+import { useSceneHistory } from "../../lib/useSceneHistory";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -567,32 +566,6 @@ export function SceneBoard({
     };
     return () => bc.close();
   }, [refreshAssetVersions]);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-
-  // ── 되돌리기(Ctrl+Z)·다시실행(Ctrl+Shift+Z) 히스토리 ── persist 가 유일한 커밋 지점이라 여기 한 곳에서 쌓는다.
-  // 마운트 초기 히스토리 = 씬별 store 에서 복원(탭 왕복에도 Ctrl+Z 유지). 단 store 의 lastCommit 이 현재 씬
-  //  props 와 어긋나면(다른 탭/외부에서 그새 편집) 낡은 스택을 폐기하고 현재 상태에서 새로 시작한다(stale 복원 방지).
-  const bootHistoryRef = useRef<{
-    undo: Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>;
-    redo: Array<{ cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }>;
-    lastCommit: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] };
-  } | null>(null);
-  if (bootHistoryRef.current === null) {
-    // 비교 대상도 running 치유본으로 — store lastCommit(정규화됨) vs 레거시 props(running 박제) 불일치로
-    //  같은 씬인데 undo 스택이 stale 폐기되는 것 방지(로드 effect 의 inCards 와 동일 정규화).
-    const inc = {
-      cards: settleComfyRunning(scene.cards, isComfyRunning),
-      edges: scene.edges,
-      groups: scene.groups || [],
-    };
-    const h = loadSceneHistory(scene.id);
-    bootHistoryRef.current =
-      h && sameSnap(h.lastCommit, inc) ? h : { undo: [], redo: [], lastCommit: inc };
-  }
-  const undoStackRef = useRef(bootHistoryRef.current.undo);
-  const redoStackRef = useRef(bootHistoryRef.current.redo);
-  const lastCommitRef = useRef(bootHistoryRef.current.lastCommit);
   const onCameraChangeRef = useRef(onCameraChange);
   onCameraChangeRef.current = onCameraChange;
   const camSaveTimer = useRef<number | undefined>(undefined);
@@ -799,65 +772,35 @@ export function SceneBoard({
     }
   }, [structSig]);
 
-  // 카드/엣지/그룹을 함께 저장 — 그룹 인자를 안 주면 현재 그룹을 유지(대부분의 호출부는 카드·엣지만 바꿈).
-  const persist = (
-    nextCards: SceneCard[],
-    nextEdges: SceneEdge[],
-    nextGroups: SceneGroup[] = groupsRef.current,
-    opts?: { undo?: boolean }, // undo:false = 실행상태·파생저장(running/done/gid반영 등) — undo 스택에 안 쌓는다.
-  ) => {
-    // ★running 은 저장 스냅샷에서 제외(settleComfyRunning) — 디스크·undo 에 '생성중'이 박제되지 않게.
-    //  화면 표시는 cardsRef/모듈 store 가 담당하므로 영향 없다(실행 중 씬 전환·크래시 후 '영원히 생성중' 방지).
-    const next = { cards: settleComfyRunning(nextCards), edges: nextEdges, groups: nextGroups };
-    // 파생/실행상태 저장은 undo 스택을 건드리지 않는다 — Ctrl+Z 가 사용자 편집만 되돌리게(자동 상태변화 제외).
-    //  단 최신 커밋 기록·부모(씬 저장) 반영은 동일(그래야 저장 유실 없음).
-    if (opts?.undo !== false) {
-      undoStackRef.current.push(lastCommitRef.current);
-      if (undoStackRef.current.length > 200) undoStackRef.current.shift();
-      redoStackRef.current = []; // 새 편집이 일어나면 다시실행(redo) 분기는 무효(표준 undo/redo 동작)
-    }
-    lastCommitRef.current = next;
-    onChangeRef.current(next);
-    // 파생 커밋(실행상태·결과)도 씬 undo store 에 즉시 반영 — 언마운트(탭 전환) 중 comfy 비동기 완료가 부모 씬만
-    //  갱신하고 store lastCommit 은 옛 상태로 남아, 재진입 시 sameSnap 불일치로 undo 스택이 통째 버려지던 문제 방지.
-    if (opts?.undo === false) persistSceneHistory(sceneIdRef.current);
-  };
-  // ── 커밋/undo 소유 API — 외부에서 undoStackRef/lastCommitRef 를 직접 만지지 않고 이 함수들로만 갱신한다.
-  //  (persist 클러스터가 undo·최근커밋을 온전히 소유 → 결합도↓. 추후 훅으로 뺄 때 seam 이 좁아진다.)
-  // 씬에서 들어온 상태를 '최근 커밋' 기준으로 동기화 — 외부 갱신 후 Ctrl+Z 가 그 갱신까지 되돌리는 스테일 복원 방지.
-  const syncCommitBaseline = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
-    lastCommitRef.current = s;
-  };
-  // undo/redo 히스토리 초기화(복원할 씬 히스토리가 없거나 stale 일 때).
-  const resetUndoHistory = () => {
-    undoStackRef.current = [];
-    redoStackRef.current = [];
-  };
-  // 현재 씬의 undo 히스토리를 씬별 store 에 보관 — 언마운트(탭 전환)·씬 전환에도 그 씬 Ctrl+Z 가 살아남게.
-  const persistSceneHistory = (sceneId: string) => {
-    saveSceneHistory(sceneId, {
-      undo: undoStackRef.current,
-      redo: redoStackRef.current,
-      lastCommit: lastCommitRef.current,
-    });
-  };
-  // 씬 진입 시 store 에서 그 씬 히스토리 복원 — 단 저장된 lastCommit 이 현재 씬 props 와 어긋나면(외부 편집)
-  //  낡은 스택을 폐기(resetUndoHistory)하고 현재 상태에서 새로 시작(호출부의 syncCommitBaseline 이 lastCommit 세팅).
-  const restoreSceneHistory = (sceneId: string, inc: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
-    const h = loadSceneHistory(sceneId);
-    if (h && sameSnap(h.lastCommit, inc)) {
-      undoStackRef.current = h.undo;
-      redoStackRef.current = h.redo;
-      lastCommitRef.current = h.lastCommit;
-    } else resetUndoHistory();
-  };
-  // 파생 동기화 커밋 — undo 스택은 안 건드리고 최근커밋·부모저장(onChange)만 최신화(자동 상태변화용).
-  const commitDerivedState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
-    s = { ...s, cards: settleComfyRunning(s.cards) }; // 파생 커밋도 running 을 저장에 남기지 않는다(persist 와 동일)
-    lastCommitRef.current = s;
-    onChangeRef.current(s);
-    persistSceneHistory(sceneIdRef.current); // 파생 커밋도 store 반영 — 언마운트 중 완료가 undo 스택을 버리지 않게(P1)
-  };
+  // 저장 커밋과 undo/redo 스택은 전용 훅이 소유한다. 화면 상태와 ref는 SceneBoard가 계속 소유한다.
+  const {
+    persist,
+    syncCommitBaseline,
+    persistSceneHistory,
+    restoreSceneHistory,
+    commitDerivedState,
+    hasUncommittedCardsOrEdges,
+    propagateGenIdsToHistory,
+    pruneGenIdsFromHistory,
+    undo,
+    redo,
+  } = useSceneHistory({
+    sceneId: scene.id,
+    initialSnapshot: {
+      cards: settleComfyRunning(scene.cards, isComfyRunning),
+      edges: scene.edges,
+      groups: scene.groups || [],
+    },
+    sceneIdRef,
+    cardsRef,
+    edgesRef,
+    groupsRef,
+    setCards,
+    setEdges,
+    setGroups,
+    clearSelection: () => setSelected(new Set()),
+    onChange,
+  });
   // ── C3: 텍스트·comfy 파라미터 입력은 키 입력마다 persist 하면 대형 씬 localStorage 직렬화가 잦아 버벅인다.
   //  화면(setCards)·cardsRef 는 즉시 갱신(생성이 최신값을 읽음), 저장(persist)만 디바운스. 밀린 저장은
   //  입력 blur·언마운트·씬 전환(App 이 flushPending 호출) 시 확정 → 유실·스테일 없음.
@@ -867,8 +810,7 @@ export function SceneBoard({
       clearTimeout(pendingPersistRef.current);
       pendingPersistRef.current = undefined;
     }
-    const last = lastCommitRef.current;
-    if (cardsRef.current === last.cards && edgesRef.current === last.edges) return; // 밀린 편집 없음
+    if (!hasUncommittedCardsOrEdges(cardsRef.current, edgesRef.current)) return; // 밀린 편집 없음
     persist(cardsRef.current, edgesRef.current); // 사용자 편집 확정 → undo:true
   };
   const flushPendingRef = useRef(flushPending);
@@ -909,81 +851,6 @@ export function SceneBoard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // 공통 복원 — 대상 상태로 화면·커밋·부모를 맞춘다(undo/redo 공용).
-  const restoreState = (s: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => {
-    // 사용자가 고른 현재 대표(genId)는 undo/redo 로 되돌리지 않는다 — 복원 대상에 '지금 화면의 대표'를 병합.
-    //  (현재 대표는 복원 직전 cardsRef.current 에서 읽는다. 연속 undo 도 매번 여기서 재병합돼 대표가 계속 유지된다.)
-    const s2 = { ...s, cards: preserveRepresentatives(s.cards, cardsRef.current) };
-    lastCommitRef.current = s2;
-    // ref 도 즉시 동기화 — 복원 직후(리렌더 전) 비동기 comfy 저장/완료가 옛 ref 를 읽고 어긋난 상태로
-    //  덮어쓰지 않게(최상위 X.current=X 는 다음 렌더에나 반영됨).
-    cardsRef.current = s2.cards;
-    edgesRef.current = s2.edges;
-    groupsRef.current = s2.groups;
-    setCards(s2.cards);
-    setEdges(s2.edges);
-    setGroups(s2.groups);
-    setSelected(new Set());
-    onChangeRef.current(s2); // 부모(씬 저장)에도 반영
-  };
-  // ── #3 데이터손실 방지 — comfy 결과 누적(genIds/outputs)은 undo:false 로 저장돼 undo 스택에 안 쌓인다.
-  //  옛 스냅샷을 Ctrl+Z 로 복원하면 그새 누적된 생성물이 유실됐다. → 파생 누적/삭제를 히스토리에 소급 반영해
-  //  undo/redo 가 생성물을 잃지 않게 한다. 대표 genId 는 스냅샷 것을 유지(유효하면) → setCardVariant undo 보존.
-  const propagateGenIdsToHistory = (cardId: string, latest: SceneCard) => {
-    const latestIds = variantIds(latest);
-    const patchCard = (c: SceneCard): SceneCard => {
-      if (c.id !== cardId || c.kind !== latest.kind) return c;
-      // comfy 는 같은 워크플로(content)일 때만 — 워크플로 교체 후엔 옛 결과를 새 워크플로에 붙이지 않는다.
-      if (c.kind === "comfy" && c.comfyCfg?.content !== latest.comfyCfg?.content) return c;
-      const genId = c.genId && latestIds.includes(c.genId) ? c.genId : latest.genId; // 대표는 스냅샷 것 유지(유효할 때)
-      return {
-        ...c,
-        genIds: latest.genIds,
-        genId,
-        ...(latest.kind === "comfy"
-          ? { comfyCfg: { ...(c.comfyCfg || {}), outputs: latest.comfyCfg?.outputs } }
-          : {}),
-      };
-    };
-    const patchSnap = (snap: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => ({
-      ...snap,
-      cards: snap.cards.map(patchCard),
-    });
-    undoStackRef.current = undoStackRef.current.map(patchSnap);
-    redoStackRef.current = redoStackRef.current.map(patchSnap); // ★redo 도 — undo:false 는 redo 를 안 비워 stale 손실 방지
-    persistSceneHistory(sceneIdRef.current); // 스택 소급패치도 store 반영 — 언마운트 중 comfy 완료가 undo 를 버리지 않게(P1)
-  };
-  // 변형 삭제(pruneVariants)를 히스토리에서도 반영 — 실제 삭제된 변형을 undo 로 되살려 깨진 참조가 되지 않게.
-  const pruneGenIdsFromHistory = (cardId: string, removed: Set<string>) => {
-    const patchCard = (c: SceneCard): SceneCard => {
-      if (c.id !== cardId) return c;
-      const genIds = variantIds(c).filter((id) => !removed.has(id));
-      const genId = c.genId && !removed.has(c.genId) ? c.genId : genIds[0] ?? null;
-      return { ...c, genIds, genId };
-    };
-    const patchSnap = (snap: { cards: SceneCard[]; edges: SceneEdge[]; groups: SceneGroup[] }) => ({
-      ...snap,
-      cards: snap.cards.map(patchCard),
-    });
-    undoStackRef.current = undoStackRef.current.map(patchSnap);
-    redoStackRef.current = redoStackRef.current.map(patchSnap);
-    persistSceneHistory(sceneIdRef.current); // 삭제 소급도 store 반영(P1)
-  };
-  // Ctrl+Z — 직전 커밋으로 복원. 현재 상태는 redo 스택으로 넘겨 Ctrl+Shift+Z 로 되돌릴 수 있게.
-  const undo = () => {
-    const prev = undoStackRef.current.pop();
-    if (!prev) return;
-    redoStackRef.current.push(lastCommitRef.current);
-    restoreState(prev);
-  };
-  // Ctrl+Shift+Z — 되돌린 것을 다시 실행. 현재 상태는 undo 스택으로 되돌려 다시 Ctrl+Z 가능하게.
-  const redo = () => {
-    const next = redoStackRef.current.pop();
-    if (!next) return;
-    undoStackRef.current.push(lastCommitRef.current);
-    restoreState(next);
-  };
-
   // ── 선택된 단일 생성 카드를 하단 프롬프트에 바인딩(App 에 통지) ──
   // 카드 이동(위치 변경)만으론 다시 안 쏘도록 cardId+레퍼런스 지문으로 변화만 감지.
   const onBindingRef = useRef(onBindingChange);
