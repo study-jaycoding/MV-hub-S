@@ -464,9 +464,12 @@ def team_fresh_items(
         else:
             where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
     with get_connection() as conn:
+        # shared_at(MAX) 포함 — 클라가 '그 공유 시점에 대한 확인'(재공유=다시 새것)을 판정.
+        # 정렬도 shared_at — sort_ts(생성 시각)로 자르면 옛 항목의 '재공유'가 상한 밖으로 밀린다(코덱스 P2).
         rows = conn.execute(
-            f"SELECT id, project_id, folder_path FROM generation WHERE {where} "
-            f"ORDER BY sort_ts DESC LIMIT ?",
+            f"SELECT id, project_id, folder_path, "
+            f"  (SELECT MAX(s2.shared_at) FROM share s2 WHERE s2.generation_id = generation.id) AS shared_at "
+            f"FROM generation WHERE {where} ORDER BY shared_at DESC LIMIT ?",
             args + [limit],
         ).fetchall()
         return [dict(r) for r in rows]

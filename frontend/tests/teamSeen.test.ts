@@ -4,7 +4,7 @@ import {
   ackTeamFresh,
   ensureTeamBase,
   getTeamBase,
-  isAcked,
+  isAckedFor,
   isFreshGen,
 } from "../src/lib/teamSeen";
 
@@ -56,13 +56,20 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
     expect(isFreshGen(newGen2)).toBe(true); // 나머지는 유지 (탭 이동과 무관)
   });
 
-  it("확인 여부(isAcked)는 항목 단위 — 사이드바 +N 이 확인분만 제외한다", () => {
+  it("확인은 '그 공유 시점'에 대한 것 — 재공유(더 새 shared_at)면 다시 새것이 된다", () => {
     ensureTeamBase();
-    ackTeamFresh({ id: "a", shared_at: "2099-01-01 00:00:00" });
-    ackTeamFresh({ id: "b", shared_at: "2099-01-01 00:00:01" });
-    expect(isAcked("a")).toBe(true);
-    expect(isAcked("b")).toBe(true);
-    expect(isAcked("c")).toBe(false);
+    const g = { id: "a", shared_at: "2099-01-01 00:00:00" };
+    ackTeamFresh(g);
+    expect(isFreshGen(g)).toBe(false); // 확인됨
+    expect(isAckedFor("a", "2099-01-01 00:00:00")).toBe(true); // 같은 시점 = 확인(>=)
+    // 공유해제 → 재공유: shared_at 이 새로워짐 → 글로우·+N 모두 부활
+    const reshared = { id: "a", shared_at: "2099-01-02 00:00:00" };
+    expect(isFreshGen(reshared)).toBe(true);
+    expect(isAckedFor("a", "2099-01-02 00:00:00")).toBe(false);
+    // 다시 확인하면 새 시점으로 꺼진다
+    ackTeamFresh(reshared);
+    expect(isFreshGen(reshared)).toBe(false);
+    expect(isAckedFor("a", "2099-01-02 00:00:00")).toBe(true);
   });
 
   it("구(방문시각 문자열) 형식은 기준선으로 이관된다", () => {
@@ -75,6 +82,6 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
   it("확인은 새것이 아닌 카드에 no-op — seen 이 불필요하게 자라지 않는다", () => {
     ensureTeamBase();
     ackTeamFresh({ id: "old", shared_at: "2000-01-01 00:00:00" });
-    expect(isAcked("old")).toBe(false);
+    expect(isAckedFor("old", "2000-01-01 00:00:00")).toBe(false);
   });
 });

@@ -92,12 +92,16 @@ export function getTeamBase(): string | null {
 }
 
 // 이 항목이 '새로 들어옴'인가 — 기준선 이후 공유 + 아직 확인(클릭) 안 함.
+// ★확인은 '그 공유 시점(shared_at)에 대한 확인' — 공유해제 후 재공유되면 shared_at 이 새로워져
+//   다시 새것이 된다(과거에 확인했더라도). 같은 초 재공유는 구별 불가(초 단위 strict > — 허용 오차).
 export function isFreshGen(g: {
   id: string;
   shared_at?: string | null;
 }): boolean {
   const acc = load();
-  return !!acc.base && !!g.shared_at && g.shared_at > acc.base && !acc.seen[g.id];
+  if (!acc.base || !g.shared_at || g.shared_at <= acc.base) return false;
+  const seen = acc.seen[g.id];
+  return !seen || g.shared_at > seen.at;
 }
 
 // 카드 클릭 = 확인 — 글로우 해제 + 사이드바 +N 에서 제외. 새것 아닌 카드는 no-op.
@@ -107,7 +111,11 @@ export function ackTeamFresh(g: { id: string; shared_at?: string | null }): void
   persist({ ...acc, seen: { ...acc.seen, [g.id]: { at: g.shared_at as string } } });
 }
 
-// 이 항목을 이미 확인(클릭)했나 — 사이드바 +N 이 서버 신규 목록에서 확인분을 제외할 때 쓴다.
-export function isAcked(id: string): boolean {
-  return !!load().seen[id];
+// '그 공유 시점'을 이미 확인했나 — 사이드바 +N 이 서버 신규 목록에서 확인분을 제외할 때 쓴다.
+// >= 인 이유: ack 은 확인한 카드의 shared_at 을 저장하므로 같은 시점이면 확인된 것(코덱스 검증).
+// 재공유로 서버 shared_at 이 더 새로우면(저장값 < sharedAt) 미확인 → 다시 +N.
+export function isAckedFor(id: string, sharedAt: string | null | undefined): boolean {
+  if (!sharedAt) return false;
+  const seen = load().seen[id];
+  return !!seen && seen.at >= sharedAt;
 }

@@ -44,9 +44,14 @@ export const projectApi = {
   // 기준선 이후 공유된 항목 목록 — 사이드바 +N(신규 라임 배지). 클라가 확인(클릭)분을 제외하고 센다.
   // 구버전 서버는 이 라우트가 없어 404 → 호출부가 빈 목록 폴백(배지만 숨김).
   teamFresh: (since: string) =>
-    jsonFetch<{ items: { id: string; project_id: string | null; folder_path: string | null }[] }>(
-      `/api/projects/team-fresh?since=${encodeURIComponent(since)}`,
-    ),
+    jsonFetch<{
+      items: {
+        id: string;
+        project_id: string | null;
+        folder_path: string | null;
+        shared_at: string | null; // 재공유 판정 축 — 확인 저장값보다 새로우면 다시 +N
+      }[];
+    }>(`/api/projects/team-fresh?since=${encodeURIComponent(since)}`),
   setProjectFolder: (
     id: string,
     body: { root_path?: string; selected_path?: string },

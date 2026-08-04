@@ -126,6 +126,9 @@ class GenerationRowsTests(unittest.TestCase):
         self.assertEqual(set(by_id), {"g2", "g3"})  # 기준선 이전(g1)은 제외
         self.assertEqual(by_id["g2"]["folder_path"], "ep001/c0015")
         self.assertIsNone(by_id["g3"]["project_id"])  # 미분류 포함
+        # shared_at 포함(재공유 판정 축) + 최신 공유 순 정렬(생성시각 아님 — 옛 항목 재공유가 잘리지 않게)
+        self.assertEqual(by_id["g2"]["shared_at"], "2026-08-03 00:00:00")
+        self.assertEqual([i["id"] for i in items], ["g3", "g2"])
         self.assertEqual(repo.team_fresh_items("2026-08-04 00:00:00"), [])
 
 
