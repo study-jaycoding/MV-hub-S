@@ -42,6 +42,7 @@ export interface Generation {
   tags: string[];
   auto_tags: string[]; // 자동 태그(별도 네임스페이스 — 사이드바 필터 전용, 카드 미표시)
   shared: boolean;
+  shared_at?: string | null; // 마지막 공유 시각(UTC "YYYY-MM-DD HH:MM:SS") — 팀 탭 '새로 들어옴' 판정
   parent_gen_id: string | null; // 파생(derived) 부모 — 재생성·가져오기본
   child_count?: number; // 이 결과물을 부모로 한 파생/사용 수(히스토리 ⑂N 뱃지)
   source_count?: number; // 이 결과물이 @소스로 쓴 재료(reference 부모) 수

@@ -69,6 +69,7 @@ interface Props {
   tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
   onGlobalModeChange?: (on: boolean) => void; // 포커스 에디터의 전역모드 토글 보고
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
+  fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)
 }
 
 function GenerationCardImpl({
@@ -77,6 +78,7 @@ function GenerationCardImpl({
   myCreatorUid,
   layout,
   thumbSize,
+  fresh = false,
   fill = true,
   selected = false,
   onToggleSelect,
@@ -449,6 +451,7 @@ function GenerationCardImpl({
           (fill ? "" : " contain") +
           (selected ? " selected" : "") +
           (gen.is_final ? " final" : "") +
+          (fresh ? " fresh" : "") +
           (gen.deleted && dimDeleted ? " deleted" : "")
         }
         draggable
@@ -543,6 +546,7 @@ function GenerationCardImpl({
         (fill ? "" : " contain") +
         (selected ? " selected" : "") +
         (gen.is_final ? " final" : "") +
+        (fresh ? " fresh" : "") +
         (gen.deleted && dimDeleted ? " deleted" : "")
       }
       draggable

@@ -36,6 +36,7 @@ def _attach_children(
         g["tags"] = []
         g["auto_tags"] = []  # 별도 네임스페이스 — 필터 사이드바 전용(카드·# 피커엔 안 씀)
         g["shared"] = False
+        g["shared_at"] = None  # 마지막 공유 시각(UTC) — 팀 탭 '새로 들어옴' 판정 축
         g["parent_gen_id"] = None
         g["child_count"] = 0  # 이 결과물을 부모로 한 파생/사용 수(히스토리 뱃지 ⑂N)
         g["source_count"] = 0  # 이 결과물이 @소스로 쓴 재료(reference 부모) 수
@@ -100,11 +101,12 @@ def _attach_children(
         by_id[r["generation_id"]]["auto_tags"].append(r["name"])
 
     for r in conn.execute(
-        f"SELECT DISTINCT generation_id FROM share "
-        f"WHERE generation_id IN ({placeholders})",
+        f"SELECT generation_id, MAX(shared_at) AS shared_at FROM share "
+        f"WHERE generation_id IN ({placeholders}) GROUP BY generation_id",
         ids,
     ).fetchall():
         by_id[r["generation_id"]]["shared"] = True
+        by_id[r["generation_id"]]["shared_at"] = r["shared_at"]
 
     # 파생 부모(강한 — derived만): 카드 ↻ 뱃지·버전 체인. reference 부모는 source_count 로 따로.
     for r in conn.execute(

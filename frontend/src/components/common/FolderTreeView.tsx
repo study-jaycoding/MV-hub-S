@@ -5,6 +5,7 @@ export interface FolderTreeItem {
   name: string;
   path: string;
   count?: number | null;
+  newCount?: number | null; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
   children?: FolderTreeItem[];
   virtual?: boolean; // 디스크에 없는 논리 폴더(팀 데이터의 folder_path로 합성) — 표식만 다르게
 }
@@ -142,6 +143,11 @@ function FolderTreeRow({
         </span>
         <span className="folder-tree-icon" />
         <span className="folder-tree-name">{node.name}</span>
+        {(node.newCount || 0) > 0 && (
+          <span className="folder-tree-newcount" title="마지막 방문 이후 새로 공유됨">
+            +{node.newCount}
+          </span>
+        )}
         <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
           {count > 0 ? count : "-"}
         </span>

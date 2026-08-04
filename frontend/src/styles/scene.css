@@ -701,6 +701,8 @@
 @media (prefers-reduced-motion: reduce) {
   .scene-card.glow { animation: none; }
 }
+/* 앱 설정 '모션 끄기'도 존중(OS 설정과 별개 축) — 누락 보완 */
+.reduce-motion .scene-card.glow { animation: none; }
 /* 생성중(결과 없는) 생성 카드는 완성 카드처럼 자체 테두리(파랑) 유지 + 라임 '링'만 — 통짜 라임 방지 */
 .scene-card-gen.sel:not(.has-node) { border-color: #2b3a55; }
 /* 결과가 든 생성 카드 = 히스토리 노드(.linb-node)가 뼈대를 대체 → 카드 자체 테두리/배경 제거.

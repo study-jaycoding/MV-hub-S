@@ -8,6 +8,7 @@ import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
+import { getTeamLastSeen } from "../../lib/teamSeen";
 import {
   collectExpandableProjectFolders,
   loadProjectFolderExpansion,
@@ -80,19 +81,28 @@ function mergeVirtualFolders(
 
 // 폴더별 생성물 개수(정확 경로)를 트리 노드에 누적 반영 — 노드 count = 자신 + 하위 전부의 합.
 // 디스크 파일 수 대신 '이 폴더에 담긴 생성물 수'를 보여준다(사용자 요청).
+// newCounts(팀 탭 신규 공유 개수)도 같은 누적 규칙으로 노드 newCount 에 얹는다(라임 배지).
 function overlayFolderCounts(
   nodes: FolderTreeItem[],
   counts: Record<string, number>,
+  newCounts?: Record<string, number>,
 ): FolderTreeItem[] {
   return nodes.map((n) => {
     let sum = 0;
     for (const key in counts) {
       if (key === n.path || key.startsWith(n.path + "/")) sum += counts[key];
     }
+    let newSum = 0;
+    if (newCounts) {
+      for (const key in newCounts) {
+        if (key === n.path || key.startsWith(n.path + "/")) newSum += newCounts[key];
+      }
+    }
     return {
       ...n,
       count: sum,
-      children: n.children ? overlayFolderCounts(n.children, counts) : n.children,
+      newCount: newSum,
+      children: n.children ? overlayFolderCounts(n.children, counts, newCounts) : n.children,
     };
   });
 }
@@ -101,6 +111,7 @@ function SidebarFolderTree({
   state,
   loading,
   counts,
+  newCounts,
   selectedPath,
   expanded,
   onToggle,
@@ -112,6 +123,7 @@ function SidebarFolderTree({
   state?: ProjectFolderEntry;
   loading?: boolean;
   counts?: Record<string, number>;
+  newCounts?: Record<string, number>; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
   // 빨간 하이라이트 = 실제 생성 목적지(armedFolder). 서버 저장 selected_path 가 아니라 이걸 쓴다
   // — 무장이 풀리면(기본 라이브러리로 감) 하이라이트도 사라져 '어디로 생성되는지'와 정확히 일치.
   selectedPath?: string;
@@ -129,11 +141,12 @@ function SidebarFolderTree({
     if (!state?.tree) return [] as FolderTreeItem[];
     let r: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
     const normCounts = counts ? normalizeCounts(counts) : undefined;
+    const normNew = newCounts ? normalizeCounts(newCounts) : undefined;
     // 팀 데이터의 folder_path 중 내 디스크에 없는 것을 가상 노드로 합성(팀원 공통 폴더 표시).
     if (normCounts && Object.keys(normCounts).length) r = mergeVirtualFolders(r, normCounts);
-    if (normCounts && r.length) r = overlayFolderCounts(r, normCounts);
+    if (normCounts && r.length) r = overlayFolderCounts(r, normCounts, normNew);
     return r;
-  }, [state?.tree, counts]);
+  }, [state?.tree, counts, newCounts]);
   if (!state?.root_path) return null;
   if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;
   if (state.error) return <div className="side-folder-note error">{state.error}</div>;
@@ -198,6 +211,8 @@ export function ProjectSection({
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>({});
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
   const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
+  // 팀 탭: 마지막 방문 이후 새로 공유된 개수(라임 배지). my 탭이거나 기준선 없으면 빈 맵.
+  const [folderNewCounts, setFolderNewCounts] = useState<Record<string, Record<string, number>>>({});
   // 고정핀 — 켠 프로젝트는 활성이 아니어도 폴더 트리를 계속 보여준다(드래그 담기 상시 가능). 영속.
   const [pinned, setPinned] = useState<Set<string>>(
     () => new Set(loadJSON<string[]>("ch.pinnedProjects") || []),
@@ -287,10 +302,17 @@ export function ProjectSection({
     let alive = true;
     const ids = new Set<string>(pinned);
     if (activeId && activeId !== "none") ids.add(activeId);
+    // 팀 탭이면 '마지막 방문 시각'을 함께 보내 신규 공유 개수(new_counts)도 받는다(라임 배지).
+    // 값은 팀 탭을 떠날 때만 갱신되므로, 탭에 머무는 동안의 재조회(countTick)도 같은 기준선을 쓴다.
+    const since = tab === "team" ? getTeamLastSeen() : null;
     ids.forEach((pid) => {
       api
-        .projectFolderCounts(pid, tab)
-        .then((r) => alive && setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} })))
+        .projectFolderCounts(pid, tab, since)
+        .then((r) => {
+          if (!alive) return;
+          setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} }));
+          setFolderNewCounts((prev) => ({ ...prev, [pid]: r.new_counts || {} }));
+        })
         .catch(() => {});
     });
     return () => {
@@ -501,6 +523,7 @@ export function ProjectSection({
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
                     counts={folderCounts[project.id]}
+                    newCounts={tab === "team" ? folderNewCounts[project.id] : undefined}
                     // 무장 폴더가 이 프로젝트일 때만 빨간 하이라이트. 아니면 없음(=기본 라이브러리로 생성).
                     selectedPath={
                       armedFolder?.projectId === project.id ? armedFolder.path : ""

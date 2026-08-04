@@ -22,6 +22,7 @@ import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
+import { isSharedAfter } from "../lib/teamSeen";
 
 interface Props {
   generations: Generation[];
@@ -64,6 +65,8 @@ interface Props {
   loadingMore?: boolean;
   onLoadMore?: () => void;
   resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
+  // 팀 탭 '새로 들어옴' 기준선(UTC "YYYY-MM-DD HH:MM:SS") — shared_at 이 이후인 카드에 글로우.
+  freshSince?: string | null;
 }
 
 export function ThumbnailGrid(props: Props) {
@@ -202,6 +205,7 @@ export function ThumbnailGrid(props: Props) {
     <GenerationCard
       gen={generation}
       tab={props.tab}
+      fresh={isSharedAfter(generation.shared_at, props.freshSince)}
       myCreatorUid={props.myCreatorUid}
       layout={cardLayout}
       thumbSize={thumbSize}

@@ -11,6 +11,7 @@ import { CanvasFolderSidebar } from "./components/sidebar/CanvasFolderSidebar";
 import { LibraryToolbar } from "./components/LibraryToolbar";
 import { SpotlightPrompt } from "./components/SpotlightPrompt";
 import { ThumbnailGrid } from "./components/ThumbnailGrid";
+import { getTeamLastSeen, markTeamSeenNow } from "./lib/teamSeen";
 import { TopBar } from "./components/TopBar";
 import { SceneBar } from "./components/scene/SceneBar";
 import { SceneBoard } from "./components/scene/SceneBoard";
@@ -131,6 +132,24 @@ export default function App() {
   } = useSceneCoordination(flash);
   // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
   const [sceneBarHover, setSceneBarHover] = useState(false);
+  // 공유&리뷰 '새로 들어옴' 기준선 — 팀 탭 입장 시 직전 방문 시각을 고정(머무는 동안 글로우 유지),
+  // 떠날 때 '여기까지 봤음'으로 갱신. 창을 팀 탭에서 닫아도 봤음 처리(beforeunload).
+  const [teamFreshBase, setTeamFreshBase] = useState<string | null>(() => getTeamLastSeen());
+  const tabForSeenRef = useRef(filters.tab);
+  useEffect(() => {
+    const prev = tabForSeenRef.current;
+    if (prev === filters.tab) return;
+    tabForSeenRef.current = filters.tab;
+    if (filters.tab === "team") setTeamFreshBase(getTeamLastSeen()); // 입장 — 기준선 고정
+    else if (prev === "team") markTeamSeenNow(); // 퇴장 — 다음 방문의 기준선 갱신
+  }, [filters.tab]);
+  useEffect(() => {
+    const onUnload = () => {
+      if (tabForSeenRef.current === "team") markTeamSeenNow();
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, []);
   // 캔버스 '방금 생성' glow — App 레벨에서 완료를 상시 감시(탭 전환·SceneBoard 언마운트와 무관).
   //  후보 = 활성 씬 생성카드의 변형 genId(새로고침 등 store 가 빈 경우 미확정분을 발견하는 데 씀).
   const glowCandidateIds = useMemo(
@@ -1198,6 +1217,7 @@ export default function App() {
                     disabledIds={effectiveDisabled}
                     onBulkGradeStep={onBulkGradeStep}
                     tab={filters.tab}
+                    freshSince={filters.tab === "team" ? teamFreshBase : null}
                     myCreatorUid={account?.creator_uid ?? null}
                     scale={scale}
                     fill={fill}

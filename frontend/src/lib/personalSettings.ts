@@ -11,6 +11,7 @@ export function clearPersonalSettings() {
     STORAGE_KEYS.authToken,
     STORAGE_KEYS.scenes,
     STORAGE_KEYS.scenesActive,
+    STORAGE_KEYS.teamSeen, // 계정별 네임스페이스(씬과 동일) — 전환 때 지우면 상대 계정 기준선이 유실
   ]);
   const remove: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {

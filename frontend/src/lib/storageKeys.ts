@@ -24,4 +24,5 @@ export const STORAGE_KEYS = {
   scenes: "ch.scenes", // Canvas 씬(빈 캔버스) — 카드·연결·카메라, 프로젝트별
   scenesActive: "ch.scenes.active", // 프로젝트별 마지막으로 연 씬 id
   shortcuts: "ch.shortcuts",
+  teamSeen: "ch.lib.teamSeen", // 공유&리뷰 탭 마지막 방문 시각(계정별 맵) — 신규 글로우·배지 기준선
 } as const;

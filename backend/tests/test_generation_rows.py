@@ -81,13 +81,37 @@ class GenerationRowsTests(unittest.TestCase):
         # tags / auto_tags(별도 네임스페이스)
         self.assertEqual(g["tags"], ["cat"])
         self.assertEqual(g["auto_tags"], ["mytag"])
-        # 공유·내 것
+        # 공유·내 것 (+ shared_at — 팀 탭 '새로 들어옴' 판정 축, share.shared_at 기본값이 채워진다)
         self.assertTrue(g["shared"])
+        self.assertTrue(bool(g["shared_at"]))
         self.assertTrue(g["is_mine"])
         # 기본 계보 요약(부모/자식/소스 없음)
         self.assertIsNone(g["parent_gen_id"])
         self.assertEqual(g["child_count"], 0)
         self.assertEqual(g["source_count"], 0)
+
+    def test_folder_counts_shared_since(self):
+        # 폴더 라벨 + 시각이 다른 공유 2건 — shared_since 가 그 사이면 최신 것만 센다(신규 라임 배지).
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET folder_path='ep001/c0010' WHERE id='g1'")
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path) "
+                "VALUES('g2','me','p2','done','2026-07-01',2,'u_me','p1','ep001/c0015')"
+            )
+            conn.execute(
+                "UPDATE share SET shared_at='2026-08-01 00:00:00' WHERE generation_id='g1'"
+            )
+            conn.execute(
+                "INSERT INTO share(id, generation_id, shared_by, visibility, shared_at) "
+                "VALUES('s2','g2','u_me','team','2026-08-03 00:00:00')"
+            )
+        total = repo.folder_counts("p1", shared_only=True)
+        self.assertEqual(total, {"ep001/c0010": 1, "ep001/c0015": 1})
+        fresh = repo.folder_counts("p1", shared_only=True, shared_since="2026-08-02 00:00:00")
+        self.assertEqual(fresh, {"ep001/c0015": 1})  # 기준선 이후 공유된 것만
+        none = repo.folder_counts("p1", shared_only=True, shared_since="2026-08-04 00:00:00")
+        self.assertEqual(none, {})
 
 
 if __name__ == "__main__":

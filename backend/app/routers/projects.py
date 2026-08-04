@@ -106,9 +106,11 @@ def my_finalize_roles(request: Request):
 
 
 @router.get("/{pid}/folder-counts")
-def project_folder_counts(pid: str, request: Request, tab: str = "my"):
+def project_folder_counts(pid: str, request: Request, tab: str = "my", since: str = ""):
     """프로젝트의 폴더별 생성물 개수 {counts: {folder_path: n}} — 사이드바 폴더 트리 뱃지·필터용.
-    내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시)."""
+    내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시).
+    since(UTC "YYYY-MM-DD HH:MM:SS", team 전용)가 오면 그 이후 공유된 개수를 new_counts 로 함께 반환
+    — 사이드바 '새로 들어온 개수'(라임) 배지. 구버전 서버는 이 파라미터를 무시(new_counts 없음 = 배지 숨김)."""
     if _proxy.proxying() and tab == "team":
         return _proxy.proxy_get(f"/api/projects/{pid}/folder-counts", request)
     account_uid = account_scope_uid(request) if tab == "my" else None
@@ -123,7 +125,7 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my"):
         if not read_all:
             actor_uid = account_scope_uid(request)
             team_member_projects = repo.my_member_projects(actor_uid or "\x00")
-    return {
+    out = {
         "counts": repo.folder_counts(
             pid,
             account_uid=account_uid,
@@ -132,6 +134,16 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my"):
             actor_uid=actor_uid,
         )
     }
+    if since and tab == "team":
+        out["new_counts"] = repo.folder_counts(
+            pid,
+            account_uid=account_uid,
+            shared_only=True,
+            team_member_projects=team_member_projects,
+            actor_uid=actor_uid,
+            shared_since=since,
+        )
+    return out
 
 
 @router.post("", response_model=ProjectOut)

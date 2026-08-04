@@ -388,6 +388,7 @@ def folder_counts(
     shared_only: bool = False,
     team_member_projects: Optional[list[str]] = None,
     actor_uid: Optional[str] = None,
+    shared_since: Optional[str] = None,
 ) -> dict[str, int]:
     """프로젝트의 폴더별(정확 경로) 생성물 개수 — {folder_path: n}. deleted 제외.
     account_uid 지정(내 작업 탭)이면 내 생성물만 센다. 프론트가 하위 누적은 클라이언트에서 합산.
@@ -407,6 +408,13 @@ def folder_counts(
             args.append(account_uid)
         if shared_only:
             where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
+            if shared_since:
+                # '이 시각 이후 공유된 것'만 — 사이드바 신규(라임) 배지. UTC "YYYY-MM-DD HH:MM:SS".
+                where += (
+                    " AND EXISTS (SELECT 1 FROM share s2 "
+                    "WHERE s2.generation_id = generation.id AND s2.shared_at > ?)"
+                )
+                args.append(shared_since)
             # 팀 목록과 동일 가시성 필터(generations.py list_generations tab='team' 과 동형).
             # 센티넬 "\x00" 은 목록과 동일하게 actor 없음으로 정규화(generations.py:1197).
             actor = actor_uid if actor_uid and actor_uid != "\x00" else None
