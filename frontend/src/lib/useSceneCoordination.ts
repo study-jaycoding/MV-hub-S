@@ -14,7 +14,7 @@ import {
   updateScene,
 } from "./scenes";
 import { clearSceneHistory } from "./sceneUndoStore";
-import { initSceneBackup } from "./sceneBackup";
+import { initSceneBackup, subscribeSceneRestore } from "./sceneBackup";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -32,16 +32,15 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   flashRef.current = flash;
   // DB 백업 미러 — 저장 관문에 디바운스 푸시 배선 + 초기 reconcile + 로컬 버킷이 통째로 없을 때만
   //  DB 에서 복구(브라우저 캐시 삭제 대비. 로컬이 항상 정답 — 빈 배열 버킷(정상 삭제)은 복구 안 함).
+  //  ★구독 방식: 최초 복구뿐 아니라 백그라운드 복구(미로그인 401 → 로그인 후 백오프 재시도 성공)도
+  //   같은 탭 화면에 즉시 반영돼야 한다 — storage 이벤트는 같은 탭엔 오지 않는다(코덱스 P1).
   useEffect(() => {
-    let alive = true;
-    void initSceneBackup().then((restored) => {
-      if (!restored || !alive) return;
+    const unsubscribe = subscribeSceneRestore(() => {
       setScenes(listScenes(null));
       flashRef.current?.("씬을 DB 백업에서 복구했습니다.");
     });
-    return () => {
-      alive = false;
-    };
+    void initSceneBackup();
+    return unsubscribe;
   }, []);
   const lastNotifyRef = useRef(0);
   useEffect(() => {

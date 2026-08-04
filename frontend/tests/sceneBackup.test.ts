@@ -136,6 +136,35 @@ describe("sceneBackup (DB 미러·복구)", () => {
     expect(puts().length).toBe(0); // 복구 에코 없음
   });
 
+  it("백그라운드 복구도 구독자에게 통지된다 — 로그인 후 열린 캔버스가 즉시 갱신(코덱스 P1)", async () => {
+    let fail = true;
+    getFull = () => (fail ? Promise.reject(new Error("401")) : Promise.resolve({
+      items: [{ id: "a", data: sceneJson("a"), data_hash: "x" }],
+    }));
+    getMeta = () => (fail ? Promise.reject(new Error("401")) : Promise.resolve({
+      items: [{ id: "a", data_hash: "x" }],
+    }));
+    const { backup } = await boot();
+    const notified: number[] = [];
+    backup.subscribeSceneRestore(() => notified.push(1));
+    await backup.initSceneBackup(); // 401 — 복구 실패(retry)
+    expect(notified.length).toBe(0);
+    fail = false; // 로그인 됨
+    await vi.advanceTimersByTimeAsync(35_000); // 백오프 재시도 → 백그라운드 복구
+    expect(notified.length).toBe(1); // 화면 갱신 경로가 불렸다
+  });
+
+  it("chunkUpserts — UTF-8 바이트 기준 분할(멀티바이트 씬이 서버 총량 400 에 영구 걸리지 않게)", async () => {
+    const { backup } = await boot();
+    // '가'=UTF-8 3바이트. JS length 4 짜리 두 항목 — 바이트로는 12 씩이라 상한 20 에서 갈라져야 한다.
+    const a = { id: "a", data: "가가가가" };
+    const b = { id: "b", data: "가가가가" };
+    const chunks = backup.chunkUpserts([a, b], 200, 20);
+    expect(chunks.length).toBe(2); // length 기준(8)이면 한 청크로 뭉쳤을 것
+    expect(chunks[0][0].id).toBe("a");
+    expect(chunks[1][0].id).toBe("b");
+  });
+
   it("삭제 미러 — 로컬에서 지운 씬은 서버 diff 로 삭제되고, 대량이면 분할된다", async () => {
     const many = Array.from({ length: 501 }, (_, i) => ({ id: `d${i}`, data_hash: "h" }));
     getMeta = () => Promise.resolve({ items: many });

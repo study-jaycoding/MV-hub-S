@@ -59,6 +59,39 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let syncing = false;
 let rerun = false; // 동기화 중 새 변경 — 끝나고 한 번 더
 
+// 복구 알림 — 백그라운드(백오프 재시도) 복구도 현재 탭 UI(씬 목록)에 반영되게 구독을 받는다.
+//  같은 탭엔 storage 이벤트가 안 오므로 이 콜백이 유일한 통지 경로다(코덱스 P1).
+const restoreSubs = new Set<() => void>();
+export function subscribeSceneRestore(fn: () => void): () => void {
+  restoreSubs.add(fn);
+  return () => restoreSubs.delete(fn);
+}
+
+// upsert 청크 분할 — 개수 + ★UTF-8 바이트 기준(서버 총량 검증과 같은 단위. JS 문자열 length 로
+//  자르면 한글 등 멀티바이트 씬이 서버 400 에 걸려 같은 청크를 영구 재시도한다 — 코덱스 P1).
+export function chunkUpserts<T extends { data: string }>(
+  ups: T[],
+  maxCount = MAX_UPSERTS,
+  maxBytes = MAX_UPSERT_BYTES,
+): T[][] {
+  const chunks: T[][] = [];
+  const enc = new TextEncoder();
+  let cur: T[] = [];
+  let curBytes = 0;
+  for (const u of ups) {
+    const b = enc.encode(u.data).byteLength;
+    if (cur.length >= maxCount || (cur.length && curBytes + b > maxBytes)) {
+      chunks.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(u);
+    curBytes += b;
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
 // scope 확정·전환 — 바뀌었으면 이전 계정 상태를 전부 버리고 이 scope 로 다시 시작한다.
 function enterScope(): string {
   const s = ns();
@@ -109,6 +142,7 @@ function ensureInit(scope: string): Promise<InitResult> {
     scenes.sort((a, b) => (a.created_at || 0) - (b.created_at || 0)); // 생성 순서대로 탭 복원
     for (const s of scenes) lastPushed.set(s.id, JSON.stringify(s)); // 복구 에코 방지
     saveScenes(null, scenes);
+    restoreSubs.forEach((f) => f()); // 백그라운드 복구 포함 — 열린 캔버스가 즉시 목록을 다시 읽게
     return "restored";
   })();
   initPromise = p;
@@ -174,20 +208,8 @@ async function syncNow(): Promise<void> {
     const allDeleted = [...meta.keys()].filter((id) => !localIds.has(id));
     if (!upserts.length && !allDeleted.length) return;
     if (ns() !== scope) return; // 변경 적용(PUT) 직전 최종 확인
-    // 청크 전송 — upsert 는 개수+바이트, delete 는 개수 기준(서버 상한과 동일).
-    const upChunks: (typeof upserts)[] = [];
-    let cur: typeof upserts = [];
-    let curBytes = 0;
-    for (const u of upserts) {
-      if (cur.length >= MAX_UPSERTS || (cur.length && curBytes + u.data.length > MAX_UPSERT_BYTES)) {
-        upChunks.push(cur);
-        cur = [];
-        curBytes = 0;
-      }
-      cur.push(u);
-      curBytes += u.data.length;
-    }
-    if (cur.length) upChunks.push(cur);
+    // 청크 전송 — upsert 는 개수+UTF-8 바이트, delete 는 개수 기준(서버 상한과 동일).
+    const upChunks = chunkUpserts(upserts);
     const delChunks: string[][] = [];
     for (let i = 0; i < allDeleted.length; i += MAX_DELETES) {
       delChunks.push(allDeleted.slice(i, i + MAX_DELETES));
