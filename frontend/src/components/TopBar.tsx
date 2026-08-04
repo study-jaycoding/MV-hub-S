@@ -61,17 +61,17 @@ export function TopBar({
           {t("내 작업")}
         </button>
         <button
-          className={filters.tab === "team" ? "on" : ""}
-          onClick={() => onTab("team")}
-        >
-          {t("팀 작업")}
-        </button>
-        <button
           className={filters.tab === "compose" ? "on" : ""}
           onClick={() => onTab("compose")}
           title={t("캔버스 — 씬 캔버스 · 히스토리 뷰")}
         >
           {t("캔버스")}
+        </button>
+        <button
+          className={filters.tab === "team" ? "on" : ""}
+          onClick={() => onTab("team")}
+        >
+          {t("팀 작업")}
         </button>
       </nav>
 
