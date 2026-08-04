@@ -170,6 +170,11 @@ def _ensure_schema(conn) -> None:
     ocols = {r[1] for r in conn.execute("PRAGMA table_info(telemetry_outbox)")}
     if "is_tombstone" not in ocols:
         conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0")
+    # final_export.project_id 멱등 보강 — 위임(서버) 모드에선 팀원 생성물이 로컬 generation 에 없어
+    # 조인으로 프로젝트를 못 찾는다(이력 유실). 신코드가 저장 시 채우고, 옛 행은 NULL(조인 폴백).
+    fcols = {r[1] for r in conn.execute("PRAGMA table_info(final_export)")}
+    if "project_id" not in fcols:
+        conn.execute("ALTER TABLE final_export ADD COLUMN project_id TEXT")
     if "tomb_job_id" not in ocols:
         conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN tomb_job_id TEXT")
     if "tomb_creator_uid" not in ocols:
@@ -959,29 +964,34 @@ def finals_to_export(project_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def record_export(gen_id: str, dest_path: str) -> None:
-    """저장 대장에 기록(멱등) — 목적지 경로·시각 갱신."""
+def record_export(gen_id: str, dest_path: str, project_id: Optional[str] = None) -> None:
+    """저장 대장에 기록(멱등) — 목적지 경로·시각 갱신. project_id 는 위임 모드 이력 조회의
+    권위 키(팀원 생성물은 로컬 generation 조인이 불가) — 신코드는 항상 채운다."""
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute(
-            "INSERT INTO final_export(gen_id, dest_path, exported_at) VALUES(?,?, datetime('now')) "
+            "INSERT INTO final_export(gen_id, dest_path, project_id, exported_at) "
+            "VALUES(?,?,?, datetime('now')) "
             "ON CONFLICT(gen_id) DO UPDATE SET "
-            "  dest_path=excluded.dest_path, exported_at=excluded.exported_at",
-            (gen_id, dest_path),
+            "  dest_path=excluded.dest_path, exported_at=excluded.exported_at, "
+            "  project_id=COALESCE(excluded.project_id, final_export.project_id)",
+            (gen_id, dest_path, project_id),
         )
 
 
 def list_exports(project_id: str, limit: int = 20) -> list[dict[str, Any]]:
     """이 프로젝트의 저장 이력(대장) — 최근 limit 개만. dest 파일 존재 확인(UNC stat)은
-    라우터가 이 범위에서만 수행한다(이력이 쌓여도 네트워크 stat 폭주 방지)."""
+    라우터가 이 범위에서만 수행한다(이력이 쌓여도 네트워크 stat 폭주 방지).
+    project_id 컬럼 우선, 옛 행(NULL)은 generation 조인 폴백 — 위임 모드 팀원 생성물 이력 보존."""
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
             "SELECT fe.gen_id, fe.dest_path, fe.exported_at FROM final_export fe "
-            "JOIN generation g ON g.id=fe.gen_id "
-            "WHERE g.project_id=? AND g.deleted_at IS NULL "
+            "LEFT JOIN generation g ON g.id=fe.gen_id "
+            "WHERE (fe.project_id=?) "
+            "   OR (fe.project_id IS NULL AND g.project_id=? AND g.deleted_at IS NULL) "
             "ORDER BY fe.exported_at DESC LIMIT ?",
-            (project_id, limit),
+            (project_id, project_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 

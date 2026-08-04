@@ -463,38 +463,144 @@ def unlink_generation(tid: str, gen_id: str, request: Request):
     return {"ok": repo_manage.unlink_generation(tid, gen_id)}
 
 
-# ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
-@router.get("/save-finals")
-def save_finals_status(project_id: str, request: Request):
-    """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
-    targets: 저장 대상 컷(이미 저장됐는지 saved 로 표시). history: 대장(파일 존재 exists)."""
-    _require_project_read(request, project_id)
-    state = project_folders.render_root_state(project_id)
-    render_path = state.get("render_path") or ""
-    render = Path(render_path) if render_path else None
-    targets: list[dict] = []
+# ── 완료본 렌더폴더 저장(Phase 3 + 위임 모드) ────────────────────────────────
+# 역할 분리(코덱스 합의): 서버 = 저장 '대상 판정' 권위(팀원 최종본·folder_path·task done 은 서버
+# DB 에만 있음) / 로컬 허브 = NAS 저장 권위(렌더 폴더는 이 PC 디스크). 위임 모드의 로컬 GET/POST
+# 는 서버 targets 를 받아 로컬 디스크 판정(saved·render 연결)과 조합한다.
+
+
+def _save_finals_targets_facts(project_id: str) -> list[dict]:
+    """저장 대상 '사실'만 — render_path/saved 등 디스크 판정 절대 미포함(그건 저장하는 PC 의 몫).
+    filename 은 원본 확장자가 필요해 여기(사실 보유측)서 계산한다."""
+    out: list[dict] = []
     for f in repo_manage.finals_to_export(project_id):
         fp = f.get("folder_path")
         file_path = f.get("file_path")
-        filename, saved, reason = "", False, None
-        # 저장 불가 사유를 미리 알려 헛클릭 방지(POST 와 같은 판정 순서).
+        reason: Optional[str] = None
+        filename = ""
         if not fp:
             reason = "폴더 경로 없음"
         elif not file_path:
             reason = "원본 파일 없음"
-        elif render is None:
-            reason = "렌더 폴더 미연결"
         else:
-            filename = project_folders.export_filename(fp, f["gen_id"], file_path, f.get("media_type"))
-            dest = project_folders.safe_dest(render, fp, filename)
-            if dest is None:
-                reason = "경로 안전성 위반"
-            else:
-                saved = bool(dest.exists())
-        targets.append(
+            filename = project_folders.export_filename(
+                fp, f["gen_id"], file_path, f.get("media_type")
+            )
+        out.append(
             {
                 "gen_id": f["gen_id"],
                 "folder_path": fp,
+                "media_type": f.get("media_type"),
+                "filename": filename,
+                "reason": reason,  # None=저장 가능(사실 측면), 값 있으면 불가 사유
+            }
+        )
+    return out
+
+
+@router.get("/save-finals/targets")
+def save_finals_targets(project_id: str, request: Request):
+    """위임 모드의 판정 권위 API — 로컬 허브가 프록시 미들웨어로 이 경로를 서버에 위임한다
+    (_LOCAL_EXACT 는 /save-finals 본체만이라 하위 경로는 자동 프록시). 서버 DB 기준 사실만."""
+    _require_project_read(request, project_id)
+    return {"targets": _save_finals_targets_facts(project_id)}
+
+
+@router.get("/save-finals/content/{gen_id}")
+def save_finals_content(gen_id: str, request: Request):
+    """저장 대상 1건의 원본 바이트 스트리밍(위임 다운로드용) — manage 권한 재검증 후
+    '그 프로젝트의 저장 대상'인 생성물만. 서버 /media 파일 또는 원격(CDN) URL 만 중계하고
+    임의 절대경로는 다루지 않는다(파일시스템 노출 금지)."""
+    from fastapi.responses import FileResponse, StreamingResponse
+
+    gen = repo.get_generation(gen_id)
+    if not gen or not gen.get("project_id"):
+        raise HTTPException(status_code=404, detail="없는 생성물(또는 프로젝트 미배정)")
+    _require_project_manage(request, gen["project_id"])
+    fin = next(
+        (f for f in repo_manage.finals_to_export(gen["project_id"]) if f["gen_id"] == gen_id),
+        None,
+    )
+    if not fin:
+        raise HTTPException(status_code=404, detail="저장 대상이 아닙니다")
+    file_path = fin.get("file_path") or ""
+    if file_path.startswith("/media/"):
+        src = safe_join(MEDIA_DIR, file_path.removeprefix("/media/"))
+        if src is None or not src.exists():
+            raise HTTPException(status_code=404, detail="서버에 원본이 없습니다")
+        return FileResponse(src)
+    if file_path.startswith(("http://", "https://")):
+        import urllib.error
+        import urllib.request
+
+        try:
+            upstream = urllib.request.urlopen(file_path, timeout=60)  # noqa: S310 — DB 의 결과물 URL
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise HTTPException(status_code=502, detail=f"원본(CDN) 조회 실패: {e}")
+
+        def _iter():
+            try:
+                while True:
+                    chunk = upstream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                upstream.close()
+
+        headers = {}
+        cl = upstream.headers.get("Content-Length")
+        if cl:
+            headers["Content-Length"] = cl  # 로컬 허브가 크기 대조(불완전 다운로드 검출)에 쓴다
+        media_type = upstream.headers.get("Content-Type") or "application/octet-stream"
+        return StreamingResponse(_iter(), media_type=media_type, headers=headers)
+    raise HTTPException(status_code=404, detail="원본 파일 없음")
+
+
+def _save_finals_facts(project_id: str) -> tuple[list[dict], bool]:
+    """저장 대상 사실 목록 — 위임 모드면 서버 targets(판정 권위), 아니면 로컬 DB.
+    반환: (facts, server_outdated). 구서버(라우트 없음 404)는 0건으로 숨기지 않고 표식을 올린다."""
+    if _proxy.proxying():
+        try:
+            r = _proxy.proxy_json(
+                "GET", "/api/manage/save-finals/targets", params={"project_id": project_id}
+            )
+            return (r or {}).get("targets") or [], False
+        except HTTPException as e:
+            if e.status_code == 404:
+                return [], True  # 구서버 — UI 가 "서버 업데이트 필요"로 표시(완료조건 ①)
+            raise
+    return _save_finals_targets_facts(project_id), False
+
+
+@router.get("/save-finals")
+def save_finals_status(project_id: str, request: Request):
+    """저장 대상(최종본) 미리보기 + 저장 이력(대장). 읽기 전용 — 다운로드/복사 없음.
+    targets: 사실(서버/로컬) + 이 PC 디스크 판정(saved·렌더 연결) 조합. history: 대장(파일 존재)."""
+    _require_project_read(request, project_id)
+    state = project_folders.render_root_state(project_id)
+    render_path = state.get("render_path") or ""
+    render = Path(render_path) if render_path else None
+    facts, server_outdated = _save_finals_facts(project_id)
+    targets: list[dict] = []
+    for t in facts:
+        reason = t.get("reason")
+        filename = t.get("filename") or ""
+        saved = False
+        # 저장 불가 사유를 미리 알려 헛클릭 방지(POST 와 같은 판정 순서).
+        if not reason:
+            if render is None:
+                reason = "렌더 폴더 미연결"
+            else:
+                dest = project_folders.safe_dest(render, t.get("folder_path") or "", filename)
+                if dest is None:
+                    reason = "경로 안전성 위반"
+                else:
+                    saved = bool(dest.exists())
+        targets.append(
+            {
+                "gen_id": t["gen_id"],
+                "folder_path": t.get("folder_path"),
                 "filename": filename,
                 "saved": saved,
                 "reason": reason,  # None=저장 가능, 값 있으면 저장 불가 사유
@@ -504,13 +610,20 @@ def save_finals_status(project_id: str, request: Request):
         {**e, "exists": Path(e["dest_path"]).exists()}
         for e in repo_manage.list_exports(project_id)
     ]
-    return {"render_path": render_path, "error": state.get("error"), "targets": targets, "history": history}
+    return {
+        "render_path": render_path,
+        "error": state.get("error"),
+        "server_outdated": server_outdated,
+        "targets": targets,
+        "history": history,
+    }
 
 
 @router.post("/save-finals")
 async def save_finals(project_id: str, request: Request):
     """완료 작업의 최종본만 렌더 폴더 경로 구조 그대로 물리 저장(멱등).
-    로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…)."""
+    로컬 전용(_proxy 로컬 목록) — render_root 는 이 PC 의 디스크(Z:\\…).
+    위임 모드: 대상은 서버 targets(판정 권위), 바이트는 content 스트림으로 받아 이 PC 가 저장."""
     _require_project_manage(request, project_id)
     state = project_folders.render_root_state(project_id)
     if state.get("error"):
@@ -519,6 +632,56 @@ async def save_finals(project_id: str, request: Request):
     if not render_path:
         raise HTTPException(status_code=400, detail="렌더 폴더가 연결되지 않았습니다")
     render = Path(render_path)
+
+    if _proxy.proxying():
+        facts, server_outdated = _save_finals_facts(project_id)
+        if server_outdated:
+            raise HTTPException(
+                status_code=400,
+                detail="공유 서버 업데이트가 필요합니다(완료본 저장 API 없음) — 서버를 먼저 배포하세요",
+            )
+        saved, skipped = 0, 0
+        errors: list[dict[str, str]] = []
+        # 순차 처리 — NAS 대역폭·서버 부하를 한 줄로(동시 다운로드 폭주 방지).
+        for t in facts:
+            gen_id = t["gen_id"]
+            try:
+                if t.get("reason"):
+                    errors.append({"gen_id": gen_id, "reason": t["reason"]})
+                    continue
+                dest = project_folders.safe_dest(
+                    render, t.get("folder_path") or "", t.get("filename") or ""
+                )
+                if dest is None:
+                    errors.append({"gen_id": gen_id, "reason": "경로 안전성 위반(트래버설)"})
+                    continue
+                if dest.exists():  # 멱등 — 이미 저장됨
+                    repo_manage.record_export(gen_id, str(dest), project_id)
+                    skipped += 1
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # NAS '같은 폴더'에 .part 로 받고 원자 교체 — 로컬 경로와 동일 규율.
+                tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
+                try:
+                    await asyncio.to_thread(
+                        _proxy.stream_download,
+                        f"/api/manage/save-finals/content/{gen_id}",
+                        tmp,
+                    )
+                    os.replace(tmp, dest)
+                except OSError:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
+                repo_manage.record_export(gen_id, str(dest), project_id)
+                saved += 1
+            except HTTPException as e:  # stream_download 의 상태별 사유를 그대로 노출
+                errors.append({"gen_id": gen_id, "reason": str(e.detail)})
+            except Exception as e:  # noqa: BLE001 — 파일 1건 실패 격리
+                errors.append({"gen_id": gen_id, "reason": str(e)})
+        return {"saved": saved, "skipped": skipped, "errors": errors}
 
     finals = repo_manage.finals_to_export(project_id)
     saved, skipped = 0, 0
@@ -542,7 +705,7 @@ async def save_finals(project_id: str, request: Request):
                 continue
             # 멱등: 목적지 파일이 이미 있으면 skip(사용자가 지웠으면 재복사 — 자기치유).
             if dest.exists():
-                repo_manage.record_export(gen_id, str(dest))
+                repo_manage.record_export(gen_id, str(dest), project_id)
                 skipped += 1
                 continue
             rel = await media_cache.cache_url(file_path)
@@ -572,7 +735,7 @@ async def save_finals(project_id: str, request: Request):
                 except OSError:
                     pass
                 raise
-            repo_manage.record_export(gen_id, str(dest))
+            repo_manage.record_export(gen_id, str(dest), project_id)
             saved += 1
         except Exception as e:  # noqa: BLE001 — 파일 1건 실패 격리(위 주석)
             errors.append({"gen_id": gen_id, "reason": str(e)})

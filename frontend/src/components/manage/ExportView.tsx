@@ -48,10 +48,11 @@ export function ExportView() {
 
   const renderPath = status?.render_path || "";
   const targets = status?.targets ?? [];
+  const serverOutdated = !!status?.server_outdated; // 구서버 — 대상 판정 불가(0건과 구별)
   const pending = targets.filter((t) => !t.saved && !t.reason).length; // 새로 저장 가능
   const alreadySaved = targets.filter((t) => t.saved && !t.reason).length;
   const blocked = targets.filter((t) => t.reason); // 저장 불가(사유 있음)
-  const canSave = !!pid && !!renderPath && !status?.error && !busy;
+  const canSave = !!pid && !!renderPath && !status?.error && !serverOutdated && !busy;
 
   const onSave = async () => {
     if (!canSave) return;
@@ -107,6 +108,13 @@ export function ExportView() {
             </span>
           )}
         </div>
+
+        {serverOutdated && (
+          <div className="export-err">
+            ⚠ 공유 서버 업데이트가 필요합니다 — 서버가 완료본 저장 대상 조회를 지원하지 않는
+            구버전입니다. 서버를 먼저 업데이트한 뒤 다시 시도하세요.
+          </div>
+        )}
 
         <div className="export-preview">
           저장 대상 최종본 <b>{targets.length}</b>건

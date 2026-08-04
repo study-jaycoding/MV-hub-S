@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -147,6 +148,76 @@ def proxy_get(path: str, request: Request) -> Any:
     """현재 GET 요청을 쿼리스트링 그대로 공유 서버에 위임하고 parsed JSON 반환.
     로컬우선 모델에서 'tab=team 목록'이나 '팀(서버) 항목 상세'를 조회할 때 핸들러가 호출한다."""
     return proxy_json("GET", path, raw_query=request.url.query or None)
+
+
+def stream_download(
+    path: str,
+    dest_tmp: "os.PathLike[str] | str",
+    *,
+    max_bytes: int = 2 * 1024 * 1024 * 1024,
+    timeout: int = 300,
+) -> int:
+    """서버 {base}{path} 의 응답 본문을 1MiB 청크로 dest_tmp 파일에 저장(save-finals 위임 다운로드).
+
+    raw_request 는 본문 전체를 read() 하므로 대용량(영상 최종본)에 금지 — 이 헬퍼가 유일한
+    스트리밍 경로다. 상한·Content-Length 대조·디스크 여유 확인·실패 시 부분파일 정리까지 책임.
+    동기(blocking) — 호출측이 asyncio.to_thread 로 오프로딩한다. 반환: 저장한 바이트 수."""
+    tok = token()
+    if not tok:
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 필요합니다")
+    req = urllib.request.Request(
+        base_url() + path, headers={"Authorization": f"Bearer {tok}"}
+    )
+    dest = os.fspath(dest_tmp)
+    total = 0
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            expected = None
+            try:
+                cl = int(r.headers.get("Content-Length") or 0)
+                expected = cl if cl > 0 else None
+            except (TypeError, ValueError):
+                expected = None
+            if expected is not None and expected > max_bytes:
+                raise HTTPException(status_code=413, detail="원본이 너무 큼(상한 초과)")
+            # 디스크 여유 — 크기를 알 때만(모르면 상한 검사와 쓰기 실패 처리에 맡긴다).
+            if expected is not None:
+                try:
+                    free = shutil.disk_usage(os.path.dirname(dest) or ".").free
+                    if free < expected + 64 * 1024 * 1024:  # 64MB 여유 마진
+                        raise HTTPException(status_code=507, detail="대상 디스크 공간 부족")
+                except OSError:
+                    pass  # UNC 등 조회 실패 — 쓰기 오류로 잡힌다
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = r.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise HTTPException(status_code=413, detail="원본이 너무 큼(상한 초과)")
+                    f.write(chunk)
+            if expected is not None and total != expected:
+                raise HTTPException(status_code=502, detail="다운로드 불완전(크기 불일치)")
+        return total
+    except HTTPException:
+        _cleanup_file(dest)
+        raise
+    except urllib.error.HTTPError as e:
+        _cleanup_file(dest)
+        if e.code == 404:
+            raise HTTPException(status_code=404, detail="서버에 원본이 없습니다")
+        raise HTTPException(status_code=e.code, detail=f"서버 다운로드 실패({e.code})")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        _cleanup_file(dest)
+        raise HTTPException(status_code=502, detail=f"공유 서버 다운로드 실패: {e}")
+
+
+def _cleanup_file(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 # ── 중앙 데이터-프록시 미들웨어 ──────────────────────────────────────────────

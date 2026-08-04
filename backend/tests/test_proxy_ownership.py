@@ -39,6 +39,10 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/hf-missing-apply",
         "/api/manage/hf-missing-candidates",
         "/api/manage/matrix",
+        # save-finals 위임 분리(코덱스 합의): 판정(targets)·바이트(content)는 서버 권위 —
+        # 본체 GET/POST(save-finals)는 _LOCAL_EXACT(디스크 저장은 이 PC)로 남는다.
+        "/api/manage/save-finals/content/{gen_id}",
+        "/api/manage/save-finals/targets",
         "/api/manage/planning/{pid}",
         "/api/manage/summary",
         "/api/manage/tasks",

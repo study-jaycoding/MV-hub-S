@@ -175,6 +175,9 @@ export interface SaveFinalsHistory {
 export interface SaveFinalsStatus {
   render_path: string;
   error: string | null;
+  // 위임 모드에서 공유 서버가 구버전(targets API 없음)이라 대상 판정이 불가한 상태 —
+  // 0건으로 오인되지 않게 UI 가 "서버 업데이트 필요"를 표시한다(구백엔드 응답엔 필드 자체가 없음).
+  server_outdated?: boolean;
   targets: SaveFinalsTarget[];
   history: SaveFinalsHistory[];
 }
