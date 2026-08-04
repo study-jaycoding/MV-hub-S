@@ -8,12 +8,7 @@ import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
-import {
-  getTeamBase,
-  getTeamSeenVersion,
-  seenFolderCounts,
-  subscribeTeamSeen,
-} from "../../lib/teamSeen";
+import { getTeamBase, getTeamSeenVersion, isAcked, subscribeTeamSeen } from "../../lib/teamSeen";
 import {
   collectExpandableProjectFolders,
   loadProjectFolderExpansion,
@@ -82,19 +77,6 @@ function mergeVirtualFolders(
   };
   for (const key of Object.keys(counts)) if (key) ensure(key);
   return out;
-}
-
-// 서버 new_counts(기준선 이후 공유)에서 '내가 확인(클릭)한 항목'을 빼 실제 미확인 +N 을 만든다.
-// 경로 정규화 후 같은 키끼리 차감(0 미만 방지) — 확인한 항목의 folder_path 가 그 뒤 바뀌면
-// 오차가 날 수 있으나(드묾) 표시 문제일 뿐이고 다음 프루닝·재공유로 자연 수렴한다.
-function subtractSeen(
-  newCounts: Record<string, number>,
-  seen: Record<string, number>,
-): Record<string, number> {
-  const a = normalizeCounts(newCounts);
-  const b = normalizeCounts(seen);
-  for (const k in b) if (a[k]) a[k] = Math.max(0, a[k] - b[k]);
-  return a;
 }
 
 // 폴더별 생성물 개수(정확 경로)를 트리 노드에 누적 반영 — 노드 count = 자신 + 하위 전부의 합.
@@ -224,16 +206,17 @@ export function ProjectSection({
 }) {
   const tr = useT();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
-  // 팀 탭 +N 배지 — 카드 클릭(확인)마다 스토어가 bump → 차감 재계산으로 배지가 하나씩 줄어든다.
+  // 팀 탭 +N 배지 — 카드 클릭(확인)마다 스토어가 bump → 아래 fresh 재계산으로 배지가 하나씩 줄어든다.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
-  void teamSeenVer;
   const [order, setOrder] = useState<Project[]>(projects);
   useEffect(() => setOrder(projects), [projects]);
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>({});
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
   const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
-  // 팀 탭: 마지막 방문 이후 새로 공유된 개수(라임 배지). my 탭이거나 기준선 없으면 빈 맵.
-  const [folderNewCounts, setFolderNewCounts] = useState<Record<string, Record<string, number>>>({});
+  // 팀 탭: 기준선 이후 공유된 항목 목록(서버) — 확인(클릭)분을 제외하고 +N 을 만든다.
+  const [teamFreshItems, setTeamFreshItems] = useState<
+    { id: string; project_id: string | null; folder_path: string | null }[]
+  >([]);
   // 고정핀 — 켠 프로젝트는 활성이 아니어도 폴더 트리를 계속 보여준다(드래그 담기 상시 가능). 영속.
   const [pinned, setPinned] = useState<Set<string>>(
     () => new Set(loadJSON<string[]>("ch.pinnedProjects") || []),
@@ -323,19 +306,21 @@ export function ProjectSection({
     let alive = true;
     const ids = new Set<string>(pinned);
     if (activeId && activeId !== "none") ids.add(activeId);
-    // 팀 탭이면 기준선(base — 기능 최초 사용 시각)을 함께 보내 그 이후 공유 개수(new_counts)를 받는다.
-    // 실제 +N = new_counts − 내가 확인(클릭)한 항목(seenFolderCounts) — 렌더 시 차감(아래 subtractSeen).
-    const since = tab === "team" ? getTeamBase() : null;
     ids.forEach((pid) => {
       api
-        .projectFolderCounts(pid, tab, since)
-        .then((r) => {
-          if (!alive) return;
-          setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} }));
-          setFolderNewCounts((prev) => ({ ...prev, [pid]: r.new_counts || {} }));
-        })
+        .projectFolderCounts(pid, tab)
+        .then((r) => alive && setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} })))
         .catch(() => {});
     });
+    // 팀 탭: 기준선 이후 공유된 항목 목록(+N 원천)도 갱신 — 폴더뿐 아니라 미분류·프로젝트 행에도 배지.
+    // 구버전 서버(라우트 없음 404)는 빈 목록 폴백 = 배지만 숨김.
+    const since = tab === "team" ? getTeamBase() : null;
+    if (since) {
+      api
+        .teamFresh(since)
+        .then((r) => alive && setTeamFreshItems(r.items || []))
+        .catch(() => alive && setTeamFreshItems([]));
+    }
     return () => {
       alive = false;
     };
@@ -344,6 +329,29 @@ export function ProjectSection({
     // countTick = 생성물 변경 브로드캐스트(캔버스 드롭 포함)로 즉시 재조회.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, projects, pinned, tab, countTick]);
+
+  // +N 계산 — 서버 신규 목록(teamFreshItems)에서 '확인(클릭)한 항목'을 제외해 폴더/프로젝트/미분류별 집계.
+  // teamSeenVer 의존 — 카드 클릭 순간 스토어가 bump 되어 배지가 즉시 하나 줄어든다.
+  const fresh = useMemo(() => {
+    if (tab !== "team" || !teamFreshItems.length) return null;
+    void teamSeenVer;
+    const byProject: Record<string, number> = {};
+    const folderByProject: Record<string, Record<string, number>> = {};
+    let unassigned = 0;
+    for (const it of teamFreshItems) {
+      if (isAcked(it.id)) continue;
+      if (!it.project_id) {
+        unassigned += 1;
+        continue;
+      }
+      byProject[it.project_id] = (byProject[it.project_id] || 0) + 1;
+      if (it.folder_path) {
+        const m = (folderByProject[it.project_id] ||= {});
+        m[it.folder_path] = (m[it.folder_path] || 0) + 1;
+      }
+    }
+    return { byProject, folderByProject, unassigned };
+  }, [tab, teamFreshItems, teamSeenVer]);
 
   const selectFolder = async (pid: string, path: string) => {
     const cur = folders[pid];
@@ -455,6 +463,11 @@ export function ProjectSection({
             }
           >
             <span className="proj-name">{tr("미분류")}</span>
+            {(fresh?.unassigned || 0) > 0 && (
+              <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
+                +{fresh!.unassigned}
+              </span>
+            )}
             <span className="proj-count">{unassignedCount}</span>
           </button>
           <button
@@ -537,6 +550,11 @@ export function ProjectSection({
                     ⠿
                   </span>
                   <span className="proj-name">{project.name}</span>
+                  {(fresh?.byProject[project.id] || 0) > 0 && (
+                    <span className="proj-newcount" title="마지막 확인 이후 새로 공유됨">
+                      +{fresh!.byProject[project.id]}
+                    </span>
+                  )}
                   <span className="proj-count">{project.count}</span>
                 </div>
                 {showTree && (
@@ -544,14 +562,7 @@ export function ProjectSection({
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
                     counts={folderCounts[project.id]}
-                    newCounts={
-                      tab === "team"
-                        ? subtractSeen(
-                            folderNewCounts[project.id] || {},
-                            seenFolderCounts(project.id),
-                          )
-                        : undefined
-                    }
+                    newCounts={fresh?.folderByProject[project.id]}
                     // 무장 폴더가 이 프로젝트일 때만 빨간 하이라이트. 아니면 없음(=기본 라이브러리로 생성).
                     selectedPath={
                       armedFolder?.projectId === project.id ? armedFolder.path : ""

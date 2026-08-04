@@ -12,8 +12,6 @@ import { STORAGE_KEYS } from "./storageKeys";
 
 interface SeenEntry {
   at: string; // 그 항목의 shared_at — 프루닝 기준
-  project_id?: string | null; // 사이드바 +N 차감용(확인한 항목이 속한 폴더)
-  folder_path?: string | null;
 }
 interface AccountSeen {
   base: string; // 기준선 — 이 시각 이전 공유분은 새것 아님
@@ -102,32 +100,14 @@ export function isFreshGen(g: {
   return !!acc.base && !!g.shared_at && g.shared_at > acc.base && !acc.seen[g.id];
 }
 
-// 카드 클릭 = 확인 — 글로우 해제 + 사이드바 +N 차감. 새것 아닌 카드는 no-op.
-export function ackTeamFresh(g: {
-  id: string;
-  shared_at?: string | null;
-  project_id?: string | null;
-  folder_path?: string | null;
-}): void {
+// 카드 클릭 = 확인 — 글로우 해제 + 사이드바 +N 에서 제외. 새것 아닌 카드는 no-op.
+export function ackTeamFresh(g: { id: string; shared_at?: string | null }): void {
   if (!isFreshGen(g)) return;
   const acc = load();
-  persist({
-    ...acc,
-    seen: {
-      ...acc.seen,
-      [g.id]: { at: g.shared_at as string, project_id: g.project_id, folder_path: g.folder_path },
-    },
-  });
+  persist({ ...acc, seen: { ...acc.seen, [g.id]: { at: g.shared_at as string } } });
 }
 
-// 프로젝트별 '확인한 항목'의 폴더 카운트 — 서버 new_counts(since=base)에서 차감해 +N 을 만든다.
-export function seenFolderCounts(projectId: string): Record<string, number> {
-  const acc = load();
-  const out: Record<string, number> = {};
-  for (const id in acc.seen) {
-    const e = acc.seen[id];
-    if (e.project_id !== projectId || !e.folder_path) continue;
-    out[e.folder_path] = (out[e.folder_path] || 0) + 1;
-  }
-  return out;
+// 이 항목을 이미 확인(클릭)했나 — 사이드바 +N 이 서버 신규 목록에서 확인분을 제외할 때 쓴다.
+export function isAcked(id: string): boolean {
+  return !!load().seen[id];
 }

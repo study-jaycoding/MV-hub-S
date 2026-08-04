@@ -97,8 +97,8 @@ class GenerationRowsTests(unittest.TestCase):
 
         self.assertIn("shared_at", GenerationOut.model_fields)
 
-    def test_folder_counts_shared_since(self):
-        # 폴더 라벨 + 시각이 다른 공유 2건 — shared_since 가 그 사이면 최신 것만 센다(신규 라임 배지).
+    def test_team_fresh_items(self):
+        # 기준선 이후 공유만 반환 + 미분류(project_id NULL)도 포함 — 사이드바 +N 배지의 원천.
         with db.get_connection() as conn:
             conn.execute("UPDATE generation SET folder_path='ep001/c0010' WHERE id='g1'")
             conn.execute(
@@ -107,18 +107,26 @@ class GenerationRowsTests(unittest.TestCase):
                 "VALUES('g2','me','p2','done','2026-07-01',2,'u_me','p1','ep001/c0015')"
             )
             conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid) VALUES('g3','me','p3','done','2026-07-02',3,'u_me')"  # 미분류
+            )
+            conn.execute(
                 "UPDATE share SET shared_at='2026-08-01 00:00:00' WHERE generation_id='g1'"
             )
             conn.execute(
                 "INSERT INTO share(id, generation_id, shared_by, visibility, shared_at) "
                 "VALUES('s2','g2','u_me','team','2026-08-03 00:00:00')"
             )
-        total = repo.folder_counts("p1", shared_only=True)
-        self.assertEqual(total, {"ep001/c0010": 1, "ep001/c0015": 1})
-        fresh = repo.folder_counts("p1", shared_only=True, shared_since="2026-08-02 00:00:00")
-        self.assertEqual(fresh, {"ep001/c0015": 1})  # 기준선 이후 공유된 것만
-        none = repo.folder_counts("p1", shared_only=True, shared_since="2026-08-04 00:00:00")
-        self.assertEqual(none, {})
+            conn.execute(
+                "INSERT INTO share(id, generation_id, shared_by, visibility, shared_at) "
+                "VALUES('s3','g3','u_me','team','2026-08-03 12:00:00')"
+            )
+        items = repo.team_fresh_items("2026-08-02 00:00:00")
+        by_id = {i["id"]: i for i in items}
+        self.assertEqual(set(by_id), {"g2", "g3"})  # 기준선 이전(g1)은 제외
+        self.assertEqual(by_id["g2"]["folder_path"], "ep001/c0015")
+        self.assertIsNone(by_id["g3"]["project_id"])  # 미분류 포함
+        self.assertEqual(repo.team_fresh_items("2026-08-04 00:00:00"), [])
 
 
 if __name__ == "__main__":

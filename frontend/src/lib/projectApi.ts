@@ -37,12 +37,15 @@ export const projectApi = {
       `/api/manage/project-folders/${pathPart(id)}`,
     ),
   // 프로젝트의 폴더별 생성물 개수 {folder_path: n} — 사이드바 트리 뱃지·필터 표시용.
-  // since(UTC "YYYY-MM-DD HH:MM:SS", team 전용): 그 이후 공유된 개수 new_counts 도 요청(신규 라임 배지).
-  // 구버전 서버는 since 를 무시하고 new_counts 없이 응답 → 배지만 안 뜨고 정상 동작.
-  projectFolderCounts: (id: string, tab: "my" | "team" = "my", since?: string | null) =>
-    jsonFetch<{ counts: Record<string, number>; new_counts?: Record<string, number> }>(
-      `/api/projects/${pathPart(id)}/folder-counts?tab=${tab}` +
-        (since ? `&since=${encodeURIComponent(since)}` : ""),
+  projectFolderCounts: (id: string, tab: "my" | "team" = "my") =>
+    jsonFetch<{ counts: Record<string, number> }>(
+      `/api/projects/${pathPart(id)}/folder-counts?tab=${tab}`,
+    ),
+  // 기준선 이후 공유된 항목 목록 — 사이드바 +N(신규 라임 배지). 클라가 확인(클릭)분을 제외하고 센다.
+  // 구버전 서버는 이 라우트가 없어 404 → 호출부가 빈 목록 폴백(배지만 숨김).
+  teamFresh: (since: string) =>
+    jsonFetch<{ items: { id: string; project_id: string | null; folder_path: string | null }[] }>(
+      `/api/projects/team-fresh?since=${encodeURIComponent(since)}`,
     ),
   setProjectFolder: (
     id: string,

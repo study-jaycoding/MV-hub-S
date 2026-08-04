@@ -129,9 +129,12 @@
   min-width: 24px; text-align: right; color: var(--muted); font-size: 11px; flex: none;
 }
 .folder-tree-count.zero { color: var(--muted2); }
-/* 마지막 방문 이후 새로 공유된 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' */
+/* 확인 전 신규 공유 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' (폴더 행/프로젝트·미분류 행 공용) */
 .folder-tree-newcount {
   flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 2px;
+}
+.proj-newcount {
+  flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 4px;
 }
 .folder-tree-row.selected .folder-tree-count { color: #ffd6e5; }
 

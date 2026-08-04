@@ -105,12 +105,33 @@ def my_finalize_roles(request: Request):
     return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR])}
 
 
+@router.get("/team-fresh")
+def team_fresh(request: Request, since: str):
+    """기준선(since, UTC "YYYY-MM-DD HH:MM:SS") 이후 공유된 항목의 {id, project_id, folder_path} 목록.
+    사이드바 '+N'(신규 라임 배지)용 — 클라가 '내가 확인(클릭)한 항목'을 제외하고 정확히 센다.
+    (서버 개수−확인 개수 '빼기' 방식은 확인 항목이 공유해제·삭제되면 차감이 남아 배지를 잡아먹는다.)
+    가시성은 팀 목록(tab=team)과 동일 규약. 위임 모드는 서버로 프록시. 구버전 서버는 404 → 배지 숨김."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/projects/team-fresh", request)
+    read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+        account_global_roles(request), "read_all"
+    )
+    team_member_projects = None
+    actor_uid = None
+    if not read_all:
+        actor_uid = account_scope_uid(request)
+        team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    return {
+        "items": repo.team_fresh_items(
+            since, team_member_projects=team_member_projects, actor_uid=actor_uid
+        )
+    }
+
+
 @router.get("/{pid}/folder-counts")
-def project_folder_counts(pid: str, request: Request, tab: str = "my", since: str = ""):
+def project_folder_counts(pid: str, request: Request, tab: str = "my"):
     """프로젝트의 폴더별 생성물 개수 {counts: {folder_path: n}} — 사이드바 폴더 트리 뱃지·필터용.
-    내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시).
-    since(UTC "YYYY-MM-DD HH:MM:SS", team 전용)가 오면 그 이후 공유된 개수를 new_counts 로 함께 반환
-    — 사이드바 '새로 들어온 개수'(라임) 배지. 구버전 서버는 이 파라미터를 무시(new_counts 없음 = 배지 숨김)."""
+    내 작업(my)은 내 생성물만, 팀(team)은 서버 위임(프록시)."""
     if _proxy.proxying() and tab == "team":
         return _proxy.proxy_get(f"/api/projects/{pid}/folder-counts", request)
     account_uid = account_scope_uid(request) if tab == "my" else None
@@ -125,7 +146,7 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my", since: st
         if not read_all:
             actor_uid = account_scope_uid(request)
             team_member_projects = repo.my_member_projects(actor_uid or "\x00")
-    out = {
+    return {
         "counts": repo.folder_counts(
             pid,
             account_uid=account_uid,
@@ -134,16 +155,6 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my", since: st
             actor_uid=actor_uid,
         )
     }
-    if since and tab == "team":
-        out["new_counts"] = repo.folder_counts(
-            pid,
-            account_uid=account_uid,
-            shared_only=True,
-            team_member_projects=team_member_projects,
-            actor_uid=actor_uid,
-            shared_since=since,
-        )
-    return out
 
 
 @router.post("", response_model=ProjectOut)

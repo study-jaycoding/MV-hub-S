@@ -388,7 +388,6 @@ def folder_counts(
     shared_only: bool = False,
     team_member_projects: Optional[list[str]] = None,
     actor_uid: Optional[str] = None,
-    shared_since: Optional[str] = None,
 ) -> dict[str, int]:
     """프로젝트의 폴더별(정확 경로) 생성물 개수 — {folder_path: n}. deleted 제외.
     account_uid 지정(내 작업 탭)이면 내 생성물만 센다. 프론트가 하위 누적은 클라이언트에서 합산.
@@ -408,13 +407,6 @@ def folder_counts(
             args.append(account_uid)
         if shared_only:
             where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
-            if shared_since:
-                # '이 시각 이후 공유된 것'만 — 사이드바 신규(라임) 배지. UTC "YYYY-MM-DD HH:MM:SS".
-                where += (
-                    " AND EXISTS (SELECT 1 FROM share s2 "
-                    "WHERE s2.generation_id = generation.id AND s2.shared_at > ?)"
-                )
-                args.append(shared_since)
             # 팀 목록과 동일 가시성 필터(generations.py list_generations tab='team' 과 동형).
             # 센티넬 "\x00" 은 목록과 동일하게 actor 없음으로 정규화(generations.py:1197).
             actor = actor_uid if actor_uid and actor_uid != "\x00" else None
@@ -437,6 +429,47 @@ def folder_counts(
             args,
         ).fetchall()
         return {r["folder_path"]: r["c"] for r in rows}
+
+
+def team_fresh_items(
+    since: str,
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """기준선(since) 이후 공유된 항목 [{id, project_id, folder_path}] — 사이드바 +N(신규) 배지용.
+    id 목록을 주는 이유: 클라가 '확인(클릭)한 항목'을 제외하고 세야 하는데, 개수 빼기 방식은
+    확인 항목이 공유해제·삭제되면 차감이 남아 다른 신규의 배지를 잡아먹는다(정확 집합 필요).
+    가시성은 팀 목록(tab='team')과 동형: None=read_all(전체 공유물), 아니면 내 공유물+내 멤버 프로젝트.
+    미분류(project_id NULL)·폴더 미지정도 포함 — 클라가 미분류/프로젝트/폴더 행에 각각 배지를 단다.
+    limit 초과분은 잘린다(과소표시일 뿐 — 신규는 최근 소량이라 실사용 도달 어려움)."""
+    where = (
+        "deleted_at IS NULL AND EXISTS (SELECT 1 FROM share s "
+        "WHERE s.generation_id = generation.id AND s.shared_at > ?)"
+    )
+    args: list[Any] = [since]
+    actor = actor_uid if actor_uid and actor_uid != "\x00" else None
+    if team_member_projects is not None:
+        if team_member_projects:
+            ph = ",".join("?" * len(team_member_projects))
+            if actor:
+                where += f" AND (creator_uid = ? OR project_id IN ({ph}))"
+                args.append(actor)
+            else:
+                where += f" AND project_id IN ({ph})"
+            args += list(team_member_projects)
+        elif actor:
+            where += " AND creator_uid = ?"
+            args.append(actor)
+        else:
+            where += " AND 1=0"  # 멤버 프로젝트 없음 → 공유물 0건(목록과 동일)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id, project_id, folder_path FROM generation WHERE {where} "
+            f"ORDER BY sort_ts DESC LIMIT ?",
+            args + [limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def set_project_roles(pid: str, creator_uid: str, project_roles) -> bool:
