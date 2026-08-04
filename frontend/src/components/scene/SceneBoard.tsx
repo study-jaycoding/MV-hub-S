@@ -85,11 +85,8 @@ import {
   pruneGroups,
   reconcileRefs,
 } from "../../lib/sceneDerive";
-import { gatherComfyMedia, driveTextParams, hasTextConnection } from "../../lib/sceneComfyInputs";
-import {
-  randomizeExposedSeedParams,
-  randomizeWorkflowSeeds,
-} from "../../lib/sceneComfySeeds";
+import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
+import { executeSceneComfy } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   setComfyRunning,
@@ -104,7 +101,7 @@ import { SceneMinimap } from "./SceneMinimap";
 import { SceneVariantPopup } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
-import { comfyApi, type ComfyRunMedia } from "../../lib/comfyApi";
+import { comfyApi } from "../../lib/comfyApi";
 import {
   ackDone,
   isRecentlyDone,
@@ -114,7 +111,6 @@ import {
   getRecentDoneVersion,
 } from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
-import { fetchBlob } from "../../lib/download";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -1777,24 +1773,18 @@ export function SceneBoard({
     varySeed: boolean,
     cfgSnap?: { content: string; paramValues: Record<string, string | number | boolean> },
   ): Promise<ComfyOutput[]> => {
-    const card = cardsRef.current.find((c) => c.id === cardId);
-    const baseContent = cfgSnap?.content ?? card?.comfyCfg?.content;
-    const baseParams = cfgSnap?.paramValues ?? card?.comfyCfg?.paramValues ?? {};
-    if (!baseContent) throw new Error("워크플로우가 없습니다");
-    const wanted = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current, overlay);
-    const media: ComfyRunMedia[] = [];
-    for (const m of wanted) {
-      const blob = await fetchBlob(m.url, m.name);
-      if (!blob) throw new Error(`입력을 불러오지 못했습니다: ${m.name}`); // 부분 주입 방지(슬롯 밀림 방지)
-      media.push({ type: m.type, name: m.name, blob });
-    }
-    // 연결된 텍스트가 있으면 노출된 text 파라미터를 그 텍스트로 구동(연결 우선). 실행 시점에 라이브로 읽어
-    //  Text Multiline 등 텍스트 입력을 자동 채운다. overlay 로 상류 comfy 텍스트 체인도 반영.
-    const driven = driveTextParams(cardId, baseParams, card?.comfyCfg?.params, cardsRef.current, edgesRef.current, refParents, overlay);
-    const content = varySeed ? randomizeWorkflowSeeds(baseContent) : baseContent;
-    const paramValues = varySeed ? randomizeExposedSeedParams(driven) : driven;
-    const res = await comfyApi.run(content, paramValues, media);
-    return res.outputs;
+    return executeSceneComfy({
+      cardId,
+      cards: cardsRef.current,
+      edges: edgesRef.current,
+      genData: genDataRef.current,
+      refParents,
+      overlay,
+      varySeed,
+      configSnapshot: cfgSnap,
+      getLiveCards: () => cardsRef.current,
+      getLiveEdges: () => edgesRef.current,
+    });
   };
   // comfy 단독(표시) 실행 — 카드 버튼/단일 실행용. 코어를 감싸 카드에 running/done/failed 를 쓴다. 성공 시 true.
   //  batchCount>1 이면 N벌 병렬 실행(복사본마다 시드 무작위=다른 그림) → 각 결과를 '내 작업'에 저장·누적.
