@@ -103,8 +103,8 @@ class GenerationRowsTests(unittest.TestCase):
             conn.execute("UPDATE generation SET folder_path='ep001/c0010' WHERE id='g1'")
             conn.execute(
                 "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
-                "creator_uid, project_id, folder_path) "
-                "VALUES('g2','me','p2','done','2026-07-01',2,'u_me','p1','ep001/c0015')"
+                "creator_uid, project_id, folder_path, job_id) "
+                "VALUES('g2','me','p2','done','2026-07-01',2,'u_me','p1','ep001/c0015','job-2')"
             )
             conn.execute(
                 "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
@@ -129,7 +129,21 @@ class GenerationRowsTests(unittest.TestCase):
         # shared_at 포함(재공유 판정 축) + 최신 공유 순 정렬(생성시각 아님 — 옛 항목 재공유가 잘리지 않게)
         self.assertEqual(by_id["g2"]["shared_at"], "2026-08-03 00:00:00")
         self.assertEqual([i["id"] for i in items], ["g3", "g2"])
+        # ack_key = 앵커(job_id 우선, 없으면 id) — 작업 공간(로컬 id) 클릭 확인과 대조되는 키.
+        self.assertEqual(by_id["g2"]["ack_key"], "job-2")
+        self.assertEqual(by_id["g3"]["ack_key"], "g3")
         self.assertEqual(repo.team_fresh_items("2026-08-04 00:00:00"), [])
+
+    def test_remote_generation_item_preserves_anchor(self):
+        # 프록시 물질화(서버 단건 → 로컬 import)가 서버 UUID 가 아니라 앵커(job_id)를 번들 id 로 넘겨야
+        # 로컬 행 job_id·되찾기(finalize_id_map)·확인(ack) 매칭이 어긋나지 않는다(코덱스 P1 보강).
+        from app.routers.share import _remote_generation_item
+
+        item = _remote_generation_item({"id": "srv-uuid", "job_id": "job-9"})
+        self.assertEqual(item["generation"]["id"], "job-9")
+        # job_id 없는 항목(comfy 등)은 서버 id 그대로 — 기존 동작 보존.
+        item2 = _remote_generation_item({"id": "srv-uuid"})
+        self.assertEqual(item2["generation"]["id"], "srv-uuid")
 
 
 if __name__ == "__main__":

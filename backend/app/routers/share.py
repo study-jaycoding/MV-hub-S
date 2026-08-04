@@ -316,7 +316,10 @@ def _remote_generation_item(remote: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "generation": {
-            "id": remote.get("id"),
+            # 앵커 보존 — 번들 규약(id=job_id||id)과 동일하게. 서버 UUID 를 그대로 쓰면 물질화된
+            # 로컬 행의 job_id 가 원래 앵커가 아니라 서버 UUID 가 되어, 이후 동기화·확인(ack)·개인메타의
+            # job_id 매칭이 전부 어긋난다(코덱스 P1 보강).
+            "id": remote.get("job_id") or remote.get("id"),
             "prompt": remote.get("prompt") or "",
             "display_prompt": remote.get("display_prompt"),
             "model": remote.get("model"),
@@ -358,8 +361,10 @@ def _materialize_remote_shared(gen_id: str, request: Request) -> tuple[dict[str,
         repo.ensure_worker(conn, shared_by, shared_name, "team")
 
     repo.import_bundle_item(_remote_generation_item(remote), DEFAULT_WORKER_ID, shared_by)
-    local_id, _ = repo.finalize_id_map(str(remote["id"]))
-    source_id = local_id or str(remote["id"])
+    # 되찾기도 앵커로 — 물질화 행은 job_id=앵커로 저장되므로 서버 UUID 로는 못 찾는다(위 id 규약과 쌍).
+    anchor = str(remote.get("job_id") or remote["id"])
+    local_id, _ = repo.finalize_id_map(anchor)
+    source_id = local_id or anchor
     return repo.get_generation(source_id), source_id
 
 

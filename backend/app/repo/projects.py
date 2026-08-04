@@ -437,7 +437,7 @@ def team_fresh_items(
     actor_uid: Optional[str] = None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
-    """기준선(since) 이후 공유된 항목 [{id, project_id, folder_path}] — 사이드바 +N(신규) 배지용.
+    """기준선(since) 이후 공유된 항목 [{id, project_id, folder_path, shared_at, ack_key}] — 사이드바 +N(신규) 배지용.
     id 목록을 주는 이유: 클라가 '확인(클릭)한 항목'을 제외하고 세야 하는데, 개수 빼기 방식은
     확인 항목이 공유해제·삭제되면 차감이 남아 다른 신규의 배지를 잡아먹는다(정확 집합 필요).
     가시성은 팀 목록(tab='team')과 동형: None=read_all(전체 공유물), 아니면 내 공유물+내 멤버 프로젝트.
@@ -465,8 +465,11 @@ def team_fresh_items(
     with get_connection() as conn:
         # shared_at 포함·정렬 — 클라가 '그 공유 시점에 대한 확인'(재공유=다시 새것)을 판정하고,
         # sort_ts(생성 시각)로 자르면 옛 항목의 '재공유'가 상한 밖으로 밀린다.
+        # ack_key = 확인(클릭) 대조용 앵커(job_id 우선, 없으면 id). 서버 행 id 는 자체 UUID 라
+        # 로컬 카드 id 와 다르다 — 클라 확인 기록도 같은 앵커 키라 양쪽이 맞는다(코덱스 P1).
         rows = conn.execute(
-            f"SELECT g.id, g.project_id, g.folder_path, s.shared_at "
+            f"SELECT g.id, g.project_id, g.folder_path, s.shared_at, "
+            f"COALESCE(NULLIF(g.job_id, ''), g.id) AS ack_key "
             f"FROM share s JOIN generation g ON g.id = s.generation_id "
             f"WHERE {where} ORDER BY s.shared_at DESC LIMIT ?",
             args + [limit],

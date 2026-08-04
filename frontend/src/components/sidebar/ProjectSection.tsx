@@ -215,7 +215,13 @@ export function ProjectSection({
   const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
   // 팀 탭: 기준선 이후 공유된 항목 목록(서버) — 확인(클릭)분을 제외하고 +N 을 만든다.
   const [teamFreshItems, setTeamFreshItems] = useState<
-    { id: string; project_id: string | null; folder_path: string | null; shared_at: string | null }[]
+    {
+      id: string;
+      project_id: string | null;
+      folder_path: string | null;
+      shared_at: string | null;
+      ack_key?: string | null;
+    }[]
   >([]);
   // 고정핀 — 켠 프로젝트는 활성이 아니어도 폴더 트리를 계속 보여준다(드래그 담기 상시 가능). 영속.
   const [pinned, setPinned] = useState<Set<string>>(
@@ -339,7 +345,8 @@ export function ProjectSection({
     const folderByProject: Record<string, Record<string, number>> = {};
     let unassigned = 0;
     for (const it of teamFreshItems) {
-      if (isAckedFor(it.id, it.shared_at)) continue; // 재공유(더 새 shared_at)면 다시 센다
+      // 앵커 키(job_id 우선)로 대조 — 작업 공간(로컬 id)에서 클릭한 확인도 맞는다. 구서버는 id 폴백.
+      if (isAckedFor(it.ack_key || it.id, it.shared_at)) continue; // 재공유(더 새 shared_at)면 다시 센다
       if (!it.project_id) {
         unassigned += 1;
         continue;

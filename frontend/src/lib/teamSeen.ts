@@ -95,33 +95,49 @@ export function getTeamBase(): string | null {
   return load().base || null;
 }
 
+// 확인 키 = 앵커. 프록시 모드에선 같은 생성물이 로컬 id·서버 id 를 따로 가진다(둘 다 UUID) —
+// 양쪽에 같게 보존되는 job_id(힉스필드 잡 앵커)를 우선 키로 쓰면 작업 공간에서 클릭한 확인이
+// 서버 team-fresh(ack_key=COALESCE(job_id,id)) 집계와 맞아떨어진다(코덱스 P1 합의).
+// job_id 없는 생성물(comfy 등)은 id 폴백 — 그 값이 서버 job_id 로 저장되므로 역시 양쪽 일치.
+function keyOf(g: { id: string; job_id?: string | null }): string {
+  return g.job_id || g.id;
+}
+
 // 이 항목이 '새로 들어옴'인가 — 기준선 이후 공유 + 아직 확인(클릭) 안 함.
 // ★확인은 '그 공유 시점(shared_at)에 대한 확인' — 공유해제 후 재공유되면 shared_at 이 새로워져
 //   다시 새것이 된다(과거에 확인했더라도). 같은 초 재공유는 구별 불가(초 단위 strict > — 허용 오차).
 export function isFreshGen(g: {
   id: string;
+  job_id?: string | null;
   shared_at?: string | null;
 }): boolean {
   const acc = load();
   if (!acc.base || !g.shared_at || g.shared_at <= acc.base) return false;
-  const seen = acc.seen[g.id];
+  const seen = acc.seen[keyOf(g)];
   return !seen || g.shared_at > seen.at;
 }
 
 // 카드 클릭 = 확인 — 글로우 해제 + 사이드바 +N 에서 제외. 새것 아닌 카드는 no-op.
-export function ackTeamFresh(g: { id: string; shared_at?: string | null }): void {
+// 저장 시각은 shared_at 원값 그대로 — now 로 보정하면 클라 시계가 미래일 때 이후 재공유가
+// 부활하지 않는 회귀가 생긴다(코덱스 판정: max(now) 금지).
+export function ackTeamFresh(g: {
+  id: string;
+  job_id?: string | null;
+  shared_at?: string | null;
+}): void {
   if (!isFreshGen(g)) return;
   const acc = load();
-  persist({ ...acc, seen: { ...acc.seen, [g.id]: { at: g.shared_at as string } } });
+  persist({ ...acc, seen: { ...acc.seen, [keyOf(g)]: { at: g.shared_at as string } } });
 }
 
 // '그 공유 시점'을 이미 확인했나 — 사이드바 +N 이 서버 신규 목록에서 확인분을 제외할 때 쓴다.
+// ackKey = 서버 team-fresh 의 ack_key(job_id 우선 앵커, 구서버는 id 폴백).
 // >= 인 이유: ack 은 확인한 카드의 shared_at 을 저장하므로 같은 시점이면 확인된 것(코덱스 검증).
 // 재공유로 서버 shared_at 이 더 새로우면(저장값 < sharedAt) 미확인 → 다시 +N.
-export function isAckedFor(id: string, sharedAt: string | null | undefined): boolean {
-  const seen = load().seen[id];
+export function isAckedFor(ackKey: string, sharedAt: string | null | undefined): boolean {
+  const seen = load().seen[ackKey];
   if (!seen) return false;
-  // 시점 미상(shared_at 을 안 주는 구버전 서버 응답) — id 확인만으로 인정.
+  // 시점 미상(shared_at 을 안 주는 구버전 서버 응답) — 키 확인만으로 인정.
   // 아니면 확인해도 +N 이 영원히 안 줄어드는 잠김이 된다(재공유 정밀 판정만 포기).
   if (!sharedAt) return true;
   return seen.at >= sharedAt;

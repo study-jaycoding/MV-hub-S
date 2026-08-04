@@ -50,6 +50,7 @@ export const projectApi = {
         project_id: string | null;
         folder_path: string | null;
         shared_at: string | null; // 재공유 판정 축 — 확인 저장값보다 새로우면 다시 +N
+        ack_key?: string | null; // 확인 대조 앵커(job_id 우선) — 구서버 응답엔 없어 id 폴백
       }[];
     }>(`/api/projects/team-fresh?since=${encodeURIComponent(since)}`),
   setProjectFolder: (

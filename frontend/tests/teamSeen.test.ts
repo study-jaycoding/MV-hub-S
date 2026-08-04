@@ -86,6 +86,28 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
     expect(isAckedFor("b", null)).toBe(false); // 확인 안 한 항목은 그대로 +N
   });
 
+  it("확인 키는 앵커(job_id 우선) — 로컬 카드 클릭이 서버 ack_key 와 맞는다 (코덱스 P1)", () => {
+    ensureTeamBase();
+    // 프록시 모드: 같은 생성물이 작업 공간(로컬 UUID)·팀 탭(서버 UUID)에서 id 가 다르지만 job_id 는 같다.
+    const localCard = { id: "local-uuid", job_id: "job-1", shared_at: "2099-01-01 00:00:10" };
+    const serverCard = { id: "server-uuid", job_id: "job-1", shared_at: "2099-01-01 00:00:00" };
+    expect(isFreshGen(serverCard)).toBe(true);
+    ackTeamFresh(localCard); // 작업 공간에서 클릭 (로컬 shared_at ≥ 서버 shared_at — 발행 순서상 보장)
+    expect(isFreshGen(serverCard)).toBe(false); // 팀 탭 글로우도 꺼짐 (앵커 일치)
+    expect(isAckedFor("job-1", "2099-01-01 00:00:00")).toBe(true); // 서버 ack_key 로 +N 제외
+    expect(isAckedFor("server-uuid", "2099-01-01 00:00:00")).toBe(false); // 서버 UUID 는 키가 아니다
+    // 재공유(서버 shared_at 갱신) → 앵커 키에서도 부활
+    expect(isFreshGen({ ...serverCard, shared_at: "2099-01-02 00:00:00" })).toBe(true);
+    expect(isAckedFor("job-1", "2099-01-02 00:00:00")).toBe(false);
+  });
+
+  it("job_id 없는 생성물(comfy 등)은 id 폴백 — 양쪽 모두 같은 값이라 여전히 일치", () => {
+    ensureTeamBase();
+    const g = { id: "gen-a", shared_at: "2099-01-01 00:00:00" };
+    ackTeamFresh(g);
+    expect(isAckedFor("gen-a", "2099-01-01 00:00:00")).toBe(true);
+  });
+
   it("60일 프루닝은 저장까지 된다 — localStorage 가 계속 자라지 않는다 (코덱스 P3)", () => {
     const acct = `user${acctSeq}@test`;
     localStorage.setItem(
