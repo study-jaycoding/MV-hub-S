@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import bisect
 import hashlib
-import json
 from datetime import datetime
 from typing import Any, Optional
 
@@ -20,6 +19,16 @@ from ..db import get_connection
 from ._common import new_id
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema
+from .manage_telemetry import (
+    build_telemetry_facts,
+    list_dirty_telemetry,
+    mark_ingested_dirty,
+    mark_telemetry_dirty,
+    mark_telemetry_failed,
+    mark_telemetry_pushed,
+    mark_telemetry_tombstone,
+    telemetry_outbox_status,
+)
 
 
 def list_project_folders() -> dict[str, dict[str, Any]]:
@@ -1191,51 +1200,7 @@ def _match_transactions(conn, owner_uid: Optional[str]) -> list[str]:
     return matched_ids
 
 
-# ── 팀 매니징 텔레메트리 발신(manage-T2) ───────────────────────────────────────
-# 로컬 outbox 는 '내 생성물 중 서버에 올려야 할 것'만 추적한다. 실제 팩트(메타)는 build 로 그때그때
-# 로컬 generation+metrics 에서 뽑아 만든다(중복 저장 안 함). 드레이너(T3)가 이 함수들을 엮어 push 한다.
-
-
-def mark_telemetry_dirty(gen_ids: list[str]) -> None:
-    """내 생성물이 생기거나(프로젝트·폴더·상태·크레딧) 바뀌면 outbox 에 dirty 표시(멱등).
-    사이드카라 코어 트랜잭션과 분리 — best-effort 로 호출(실패해도 코어 동작 무영향)."""
-    ids = [g for g in (gen_ids or []) if g]
-    if not ids:
-        return
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        for gid in ids:
-            conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET "
-                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=0",
-                (gid,),
-            )
-
-
-def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
-    """생성물이 삭제(휴지통 이동)됐다 — 서버 팩트를 is_deleted 로 넘길 tombstone 을 큐에 넣는다.
-    생성물이 메인에서 사라져 build 로 팩트를 못 만들므로, 삭제 직전 스냅샷(비용·프로젝트·모델 포함)을
-    JSON 으로 저장해 둔다. 서버에 아직 팩트가 없던(미전송) 생성물도 이 스냅샷으로 비용이 집계된다.
-    같은 local_gen_id 의 대기 중 일반 push 는 tombstone 으로 덮인다(삭제가 최종 상태)."""
-    if not gen_id:
-        return
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        conn.execute(
-            "INSERT INTO telemetry_outbox"
-            "(local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid, tomb_snapshot) "
-            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, ?, ?, ?) "
-            "ON CONFLICT(local_gen_id) DO UPDATE SET "
-            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=1, "
-            "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
-            "tomb_snapshot=excluded.tomb_snapshot",
-            (gen_id, snapshot.get("job_id"), snapshot.get("creator_uid"),
-             json.dumps(snapshot, ensure_ascii=False)),
-        )
-
-
+# ── 영구 삭제 시 사이드카 고아 정리 ──────────────────────────────────────────
 def purge_generation_sidecar(gen_id: str) -> None:
     """생성물이 '영구 삭제'(휴지통 purge)될 때 남는 사이드카 고아 행 정리 — generation_metrics·
     task_generation·final_export(모두 gen_id 키). 이 행들은 메인/휴지통 어디에도 대응 생성물이 없어
@@ -1264,158 +1229,3 @@ def purge_generation_sidecar(gen_id: str) -> None:
         for t in tables:
             if t in have:
                 conn.execute(f"DELETE FROM {t} WHERE gen_id=?", (gen_id,))
-
-
-def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
-    """적재된 잡(job_id)들을 내 로컬 generation.id 로 역매핑해 outbox 에 dirty 표시. 반환=표시 수.
-    동기화본은 id==job_id, placeholder 채움본은 job_id 로 매칭 → (id IN OR job_id IN) 둘 다 커버.
-    my_uid 지정 시 내 생성물만(남의 공유본 제외)."""
-    ids = [j for j in (job_ids or []) if j]
-    if not ids:
-        return 0
-    ph = ",".join("?" for _ in ids)
-    where = f"(id IN ({ph}) OR job_id IN ({ph}))"
-    args: list[Any] = ids + ids
-    if my_uid:
-        where += " AND creator_uid = ?"
-        args.append(my_uid)
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        rows = conn.execute(
-            f"SELECT id FROM generation WHERE {where} AND deleted_at IS NULL", args
-        ).fetchall()
-        local_ids = [r["id"] for r in rows]
-        for gid in local_ids:
-            conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET "
-                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=0",
-                (gid,),
-            )
-    return len(local_ids)
-
-
-def telemetry_outbox_status() -> dict[str, Any]:
-    """로컬 텔레메트리 outbox 요약(관측성) — 조용히 묻히던 push 대기·실패를 볼 수 있게.
-    · pending  = 아직 서버로 안 올라간 것(pushed_at IS NULL)
-    · failed   = 그중 오류난 적 있는 것(last_error; 성공 시 mark_telemetry_pushed 가 NULL 로 클리어)
-    · last_error / oldest_dirty = 진단용(가장 최근 오류·가장 오래된 대기 시각).
-    ★로컬 허브 자기 상태 — 프록시하지 않는다(_proxy _LOCAL_EXACT)."""
-    empty = {"pending": 0, "failed": 0, "last_error": None, "oldest_dirty": None}
-    with get_connection() as conn:
-        # ★진짜 read-only — _ensure_schema(CREATE/ALTER 부작용) 호출 안 한다. 테이블 없으면(프레시·MANAGE off) 빈 상태.
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetry_outbox'"
-        ).fetchone():
-            return empty
-        row = conn.execute(
-            "SELECT "
-            "  SUM(CASE WHEN pushed_at IS NULL THEN 1 ELSE 0 END) AS pending, "
-            "  SUM(CASE WHEN pushed_at IS NULL AND last_error IS NOT NULL THEN 1 ELSE 0 END) AS failed, "
-            "  MIN(CASE WHEN pushed_at IS NULL THEN dirty_at END) AS oldest_dirty "
-            "FROM telemetry_outbox"
-        ).fetchone()
-        err = conn.execute(
-            "SELECT last_error FROM telemetry_outbox "
-            "WHERE pushed_at IS NULL AND last_error IS NOT NULL ORDER BY dirty_at DESC LIMIT 1"
-        ).fetchone()
-    return {
-        "pending": (row["pending"] if row else 0) or 0,
-        "failed": (row["failed"] if row else 0) or 0,
-        "last_error": err["last_error"] if err else None,
-        "oldest_dirty": row["oldest_dirty"] if row else None,
-    }
-
-
-def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
-    """push 가 필요한 항목 목록 [{local_gen_id, dirty_at}] (pushed_at IS NULL). 오래된 것 먼저.
-    dirty_at 을 함께 반환 — 드레이너가 mark_telemetry_pushed 에 되돌려 CAS(그 사이 재dirty 된 건 안
-    비움) 하기 위함."""
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        rows = conn.execute(
-            "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid, tomb_snapshot "
-            "FROM telemetry_outbox WHERE pushed_at IS NULL ORDER BY dirty_at ASC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def build_telemetry_facts(
-    gen_ids: Optional[list[str]] = None, my_uid: Optional[str] = None
-) -> list[dict[str, Any]]:
-    """로컬 generation+metrics 에서 매니징 팩트(메타만)를 만든다. 프롬프트·미디어·레퍼런스 제외.
-    my_uid 지정 시 '내 생성물'만(남의 공유본은 팀 팩트로 안 올림). gen_ids 지정 시 그 집합만."""
-    where = ["g.deleted_at IS NULL"]
-    args: list[Any] = []
-    if my_uid:
-        where.append("g.creator_uid = ?")
-        args.append(my_uid)
-    if gen_ids is not None:
-        ids = [g for g in gen_ids if g]
-        if not ids:
-            return []
-        where.append(f"g.id IN ({','.join('?' for _ in ids)})")
-        args.extend(ids)
-    sql = (
-        "SELECT g.id AS local_gen_id, g.job_id, g.creator_uid, c.name AS creator_name, "
-        "g.project_id, p.name AS project_name, g.folder_path, g.model, "
-        "(SELECT a.type FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS output_type, "
-        "g.status, g.created_at, g.sort_ts, g.is_final, "
-        "(CASE WHEN EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) THEN 1 ELSE 0 END) AS is_shared, "
-        "m.real_credits, m.est_credits, m.credit_source, m.elapsed_seconds, "
-        "m.started_at, m.completed_at "
-        "FROM generation g "
-        "LEFT JOIN generation_metrics m ON m.gen_id=g.id "
-        "LEFT JOIN creator c ON c.uid=g.creator_uid "
-        "LEFT JOIN project p ON p.id=g.project_id "
-        f"WHERE {' AND '.join(where)}"
-    )
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        rows = conn.execute(sql, args).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        d = dict(r)
-        d["is_final"] = bool(d.get("is_final"))
-        d["is_shared"] = bool(d.get("is_shared"))
-        d["is_deleted"] = False
-        d["deleted_at"] = None
-        out.append(d)
-    return out
-
-
-def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
-    """push 성공한 항목에 pushed_at 을 찍는다(재푸시 대상에서 빠짐).
-    ★CAS(코덱스): list_dirty 때 읽은 dirty_at 과 지금 dirty_at 이 같을 때만 비운다. drain 도중
-    프로젝트·공유·최종이 바뀌어 재dirty(dirty_at 갱신+pushed_at=NULL) 됐다면 이 UPDATE 는 매칭되지
-    않아 큐에 남는다 → 그 변경이 유실되지 않고 다음 drain 에 다시 전송된다.
-    items = list_dirty_telemetry 가 준 [{local_gen_id, dirty_at}] 그대로."""
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        for it in items or []:
-            gid = it.get("local_gen_id")
-            if not gid:
-                continue
-            conn.execute(
-                "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
-                "attempts=attempts+1, last_error=NULL "
-                "WHERE local_gen_id=? AND dirty_at=? AND pushed_at IS NULL",
-                (gid, it.get("dirty_at")),
-            )
-
-
-def mark_telemetry_failed(gen_ids: list[str], err: str) -> None:
-    """push 실패 기록(재시도 카운트+오류). pushed_at 은 그대로 두어 다음에 다시 대상이 된다."""
-    ids = [g for g in (gen_ids or []) if g]
-    if not ids:
-        return
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        for gid in ids:
-            conn.execute(
-                "UPDATE telemetry_outbox SET attempts=attempts+1, last_error=? "
-                "WHERE local_gen_id=?",
-                (err[:500], gid),
-            )
