@@ -11,13 +11,10 @@
 
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
-from ..generation_result import ACTIVE_STATUSES, normalize_job_result
 from ..deps import (
     account_actor_uid,
     realtime_scope,
@@ -32,41 +29,18 @@ from ..models import (
     PendingRequestOut,
     RegenerateIn,
 )
-from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
 from ..usecases.gen_requests import (
     GenRequestCommand,
+    anchor_request,
     claim_gen_requests,
+    fail_request,
     fulfill_request,
-    pm_best_effort as _pm,
+    reconcile_request,
     submit_gen_request,
 )
-from ..ws import manager
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
-
-# 진행/성공 상태(ACTIVE_STATUSES) 밖(failed·nsfw 등)만 error(사유)를 보존한다 — 판정·필드는
-# generation_result 의 단일 정의를 공유한다.
-# 구버전 에이전트의 /fail 은 job_id 를 안 넘긴다 — CLI 실패 사유 문자열에서 job_id·상태를 되찾아
-#  원래 placeholder 에 앵커한다("... job <uuid> ended with status 'nsfw' ...").
-_HF_ENDED_RE = re.compile(
-    r"\bjob\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
-    r"\s+ended with status\s+['\"]?([A-Za-z_ -]+)['\"]?",
-    re.IGNORECASE,
-)
-
-
-def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
-    """실패 사유 문자열에서 (job_id, 정규화 상태) 를 되찾는다. 못 찾으면 (None, None).
-    진행/성공 상태로 파싱되면 failed 로 강등."""
-    m = _HF_ENDED_RE.search(reason or "")
-    if not m:
-        return None, None
-    status = cli_bridge.normalize_status(m.group(2).strip().replace(" ", "_"))
-    if status in ACTIVE_STATUSES:
-        status = "failed"
-    return m.group(1), status
-
 
 def _require_account(request: Request) -> dict:
     """생성요청용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
@@ -190,17 +164,7 @@ async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    if not repo.apply_local_anchor(req["gen_id"], rid, job_id, verifying=verifying):
-        return {"ok": True}
-    await manager.broadcast(
-        {
-            "type": "progress",
-            "generation_id": req["gen_id"],
-            "status": "running",
-            "error": repo.VERIFYING_NOTE if verifying else None,
-        },
-        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
-    )
+    await anchor_request(req, rid, job_id, verifying, realtime_scope(acc))
     return {"ok": True}
 
 
@@ -230,54 +194,7 @@ async def reconcile_gen_request(
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    gen_id = req["gen_id"]
-    parsed = cli_bridge.parse_job(body.job)
-    # 로컬 검증 실패(레퍼런스 미부착 등) — 힉스필드엔 (엉뚱한) 결과가 완료로 있어도 되살림 금지 failed 확정.
-    if force_fail_reason:
-        # 강제 실패에는 job id 만 필요하다. 잘못 붙은 결과 asset 이 불완전해도 정규화 전에 실패를
-        # 확정해야 하므로 이 분기를 normalize_job_result 보다 먼저 둔다.
-        job_id = (parsed.get("generation") or {}).get("id")
-        applied = repo.apply_reconcile(
-            gen_id, job_id,
-            asset_type=None, asset_path=None, asset_thumb=None,
-            created_at=None, sort_ts=None, status="failed", error=force_fail_reason,
-            force_fail_reason=force_fail_reason,
-        )
-        if applied:
-            _pm(lambda _m: _m.record_completed(gen_id, job_id=job_id))
-            await manager.broadcast(
-                {"type": "progress", "generation_id": gen_id, "status": "failed", "error": force_fail_reason},
-                account_uid=realtime_scope(acc),
-            )
-        return {"ok": True, "applied": applied, "status": "failed"}
-    result = normalize_job_result(parsed)
-    # 아직 처리중(pending/running)이면 확정하지 않는다 — '확인중' 유지, 다음 사이클 재시도.
-    if result.status in ("pending", "running"):
-        return {"ok": True, "applied": False, "status": result.status}
-    applied = repo.apply_reconcile(
-        gen_id,
-        result.job_id,
-        asset_type=result.asset_type,
-        asset_path=result.asset_path,
-        asset_thumb=result.asset_thumb,
-        created_at=result.created_at,
-        sort_ts=result.sort_ts,
-        status=result.status,
-        error=result.error,
-    )
-    if applied:
-        _pm(lambda _m: _m.record_completed(gen_id, job_id=result.job_id))
-        await manager.broadcast(
-            {
-                "type": "progress",
-                "generation_id": gen_id,
-                "status": result.status,
-                "result_url": result.asset_path if result.status != "failed" else None,
-                "error": result.error,
-            },
-            account_uid=realtime_scope(acc),
-        )
-    return {"ok": True, "applied": applied, "status": result.status}
+    return await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
 
 
 @router.post("/gen-requests/{rid}/fail")
@@ -300,18 +217,5 @@ async def fail_gen_request(
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         return {"ok": True}  # 이미 종결 — 멱등 무시(완료된 것을 실패로 뒤집지 않음)
-    parsed_job_id, parsed_status = _failure_anchor_from_reason(reason)
-    final_job_id = job_id or parsed_job_id
-    final_status = cli_bridge.normalize_status(hf_status) if hf_status else (parsed_status or "failed")
-    if final_status in repo.ACTIVE_STATUSES:
-        final_status = "failed"
-    # 원자·CAS 적용 — 동시 fulfill 이 라우터 밖 status 검사를 함께 통과해 done 을 failed 로 뒤집던
-    # TOCTOU 를 닫는다. 이미 종결됐으면 False → 멱등 반환(브로드캐스트 안 함).
-    if not repo.apply_local_failure(req["gen_id"], rid, reason, job_id=final_job_id, status=final_status):
-        return {"ok": True}
-    _pm(lambda _m: _m.record_completed(req["gen_id"], job_id=final_job_id))  # PM 메트릭: 실패도 종료시각 기록
-    await manager.broadcast(
-        {"type": "progress", "generation_id": req["gen_id"], "status": final_status, "error": reason},
-        account_uid=realtime_scope(acc),  # 그 계정 소켓에만
-    )
+    await fail_request(req, rid, reason, job_id, hf_status, realtime_scope(acc))
     return {"ok": True}

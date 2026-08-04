@@ -8,6 +8,7 @@ from app.generation_result import normalize_job_result
 from app.models import FulfillIn
 from app.routers import gen_requests as gen_request_routes
 from app.services import syncer
+from app.usecases import gen_requests as gen_request_usecases
 
 
 class GenerationResultTests(unittest.TestCase):
@@ -117,13 +118,13 @@ class ForceFailReconcileTests(unittest.TestCase):
             "get_gen_request",
             return_value={"gen_id": "gen-5", "account_email": "house@example.com"},
         ), patch.object(
-            gen_request_routes.cli_bridge, "parse_job", return_value=parsed
+            gen_request_usecases.cli_bridge, "parse_job", return_value=parsed
         ), patch.object(
-            gen_request_routes.repo, "apply_reconcile", return_value=True
+            gen_request_usecases.repo, "apply_reconcile", return_value=True
         ) as apply_reconcile, patch.object(
-            gen_request_routes, "_pm"
+            gen_request_usecases, "pm_best_effort"
         ), patch.object(
-            gen_request_routes.manager, "broadcast", AsyncMock()
+            gen_request_usecases.manager, "broadcast", AsyncMock()
         ):
             response = asyncio.run(
                 gen_request_routes.reconcile_gen_request(

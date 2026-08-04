@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.models import RegenerateIn
 from app.usecases.gen_requests import (
     GenRequestCommand,
+    anchor_request,
     claim_gen_requests,
+    fail_request,
     fulfill_request,
+    reconcile_request,
     submit_gen_request,
 )
 
@@ -225,5 +228,140 @@ def test_fulfill_request_cas_noop_does_not_repeat_side_effects():
         out = asyncio.run(fulfill_request({"gen_id": "g1"}, "r1", {}, "acct:a"))
 
         assert out == {"id": "g1", "status": "done"}
+        pm.assert_not_called()
+        broadcast.assert_not_awaited()
+
+
+def test_anchor_request_broadcasts_only_after_apply():
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.VERIFYING_NOTE = "확인중"
+        repo.apply_local_anchor.return_value = True
+
+        applied = asyncio.run(
+            anchor_request({"gen_id": "g1"}, "r1", "job1", True, "acct:a")
+        )
+
+        assert applied is True
+        repo.apply_local_anchor.assert_called_once_with("g1", "r1", "job1", verifying=True)
+        broadcast.assert_awaited_once_with(
+            {
+                "type": "progress",
+                "generation_id": "g1",
+                "status": "running",
+                "error": "확인중",
+            },
+            account_uid="acct:a",
+        )
+
+
+def test_reconcile_request_keeps_pending_without_writing():
+    pending = SimpleNamespace(status="pending")
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job", return_value={"parsed": True}
+    ), patch(
+        "app.usecases.gen_requests.normalize_job_result", return_value=pending
+    ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        out = asyncio.run(reconcile_request({"gen_id": "g1"}, {}, None, "acct:a"))
+
+        assert out == {"ok": True, "applied": False, "status": "pending"}
+        repo.apply_reconcile.assert_not_called()
+        pm.assert_not_called()
+        broadcast.assert_not_awaited()
+
+
+def test_reconcile_request_applies_terminal_result_and_broadcasts():
+    result = SimpleNamespace(
+        asset_type="video",
+        asset_path="C:/result.mp4",
+        asset_thumb="C:/poster.jpg",
+        job_id="job1",
+        created_at="2026-08-05T00:00:00Z",
+        sort_ts=123.0,
+        status="done",
+        error=None,
+    )
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job", return_value={}
+    ), patch(
+        "app.usecases.gen_requests.normalize_job_result", return_value=result
+    ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.apply_reconcile.return_value = True
+
+        out = asyncio.run(reconcile_request({"gen_id": "g1"}, {}, None, "acct:a"))
+
+        assert out == {"ok": True, "applied": True, "status": "done"}
+        repo.apply_reconcile.assert_called_once_with(
+            "g1",
+            "job1",
+            asset_type="video",
+            asset_path="C:/result.mp4",
+            asset_thumb="C:/poster.jpg",
+            created_at="2026-08-05T00:00:00Z",
+            sort_ts=123.0,
+            status="done",
+            error=None,
+        )
+        pm.assert_called_once()
+        broadcast.assert_awaited_once_with(
+            {
+                "type": "progress",
+                "generation_id": "g1",
+                "status": "done",
+                "result_url": "C:/result.mp4",
+                "error": None,
+            },
+            account_uid="acct:a",
+        )
+
+
+def test_fail_request_recovers_legacy_job_id_and_broadcasts():
+    legacy_job_id = "123e4567-e89b-12d3-a456-426614174000"
+    reason = f"job {legacy_job_id} ended with status 'nsfw'"
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.normalize_status", return_value="nsfw"
+    ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.apply_local_failure.return_value = True
+
+        applied = asyncio.run(
+            fail_request({"gen_id": "g1"}, "r1", reason, None, None, "acct:a")
+        )
+
+        assert applied is True
+        repo.apply_local_failure.assert_called_once_with(
+            "g1", "r1", reason, job_id=legacy_job_id, status="nsfw"
+        )
+        pm.assert_called_once()
+        broadcast.assert_awaited_once_with(
+            {
+                "type": "progress",
+                "generation_id": "g1",
+                "status": "nsfw",
+                "error": reason,
+            },
+            account_uid="acct:a",
+        )
+
+
+def test_fail_request_cas_noop_does_not_repeat_side_effects():
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.pm_best_effort"
+    ) as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.apply_local_failure.return_value = False
+
+        applied = asyncio.run(
+            fail_request({"gen_id": "g1"}, "r1", "failed", None, None, "acct:a")
+        )
+
+        assert applied is False
         pm.assert_not_called()
         broadcast.assert_not_awaited()

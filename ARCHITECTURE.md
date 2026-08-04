@@ -57,7 +57,7 @@ services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase �
 - `usecases` 는 FastAPI(Request/Response) 를 import 하지 않는다 — HTTP 는 router 의 몫.
 - `repo/__init__.py` 는 **facade** 다. 바깥은 `from app.repo import X` 만 쓰고, 내부 분할(`repo/generations.py` 등)은 이 파사드 뒤에 숨는다.
 
-> 현재는 router 가 repo 를 직접 호출하며 업무 흐름까지 조립하는 곳이 있다(예: `gen_requests`).
+> 현재는 일부 router 가 repo 를 직접 호출하며 업무 흐름까지 조립하는 곳이 있다.
 > usecases 계층은 그 조립부를 옮겨 담을 자리다. **한 번에 다 옮기지 않는다** — 손대는 라우터부터.
 
 ---
@@ -111,7 +111,7 @@ services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase �
 | **P3** | SceneBoard 상태/저장/undo 훅 분리 | 중(민감) |
 | **P4** | SceneBoard Comfy 실행 훅 분리 | 중(async) |
 | **P5** | SpotlightPrompt 제출 흐름 훅 분리 | 낮~중 |
-| **P6** | 백엔드 `gen_requests` usecase 추출 | 중 |
+| **P6** | 백엔드 `gen_requests` usecase 추출 | 중 ✅ |
 | **P7·P8** | `repo/manage`·`repo/generations` 내부 분할(파사드 유지) | 중~고 |
 
 **순서 원칙:** 순수로직 추출 → 테스트 → 상태 분리 → IO 분리 → UI 분리.
