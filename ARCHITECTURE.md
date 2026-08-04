@@ -78,9 +78,10 @@ services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase �
 
 문서만으로는 안 지켜진다. 도구로 "선을 넘으면 경고"를 깐다. **처음엔 warning-first**(빌드 안 깨짐).
 
-- 프론트: **ESLint 신규 도입**(현재 없음) — `import/no-cycle`, `no-restricted-paths`
-  (domain→react/api/localStorage 금지, feature↔feature 직접 import 금지).
-- 백엔드: `import-linter` — `repo → routers 금지`, `usecases → fastapi 금지`.
+- 프론트: **ESLint** `lint:architecture` — `import/no-cycle`, 순수 domain의
+  React/API/localStorage 접근 제한. P1은 경고 우선이며 현재 경고를 갚으면서 강화한다.
+- 백엔드: pytest AST 경계 검사(`tests/test_architecture_boundaries.py`) —
+  `repo → routers/usecases 금지`, `usecases → routers/FastAPI 금지`.
 
 목표는 "새로 짜는 코드가 더 안 섞이게" 막는 것. 기존 위반은 천천히 갚는다.
 
@@ -105,7 +106,7 @@ services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase �
 | 단계 | 내용 | 위험 |
 |---|---|---|
 | **P0** | 이 문서(ARCHITECTURE.md) | 없음 ✅ |
-| **P1** | import 경계 검사(ESLint/import-linter, 경고 우선) | 낮음 |
+| **P1** | import 경계 검사(ESLint/pytest AST, 경고 우선) | 낮음 ✅ |
 | **P2** | SceneBoard 순수 계산 추가 추출 + 테스트 | 낮음 |
 | **P3** | SceneBoard 상태/저장/undo 훅 분리 | 중(민감) |
 | **P4** | SceneBoard Comfy 실행 훅 분리 | 중(async) |

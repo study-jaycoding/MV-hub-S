@@ -3,6 +3,34 @@
 테스트용 런처는 파일명 앞에 **`test_`**가 붙는다. 나머지 `MV_server.bat`·`MV_agent.bat` 등은 운영/실사용이다.
 테스트는 서버의 **테스트 클론**에서 8011 포트 + 복사된 DB로 돌아가며, 운영(8010)과 데이터가 분리된다.
 
+## 개발자 자동 테스트 기준선
+
+백엔드 테스트 의존성은 운영용 `requirements.txt`와 분리된 `requirements-dev.txt`로 설치한다.
+Windows PowerShell에서 `backend` 폴더를 기준으로 실행한다.
+
+```powershell
+python -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -r requirements-dev.txt
+$env:CONTENT_HUB_NO_PROXY = '1'
+& '.\.venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider
+```
+
+`python`이 Microsoft Store 별칭으로 연결되면 설치된 Python 3.11+ 실행 파일로 첫 줄만 실행한다.
+
+프론트엔드는 `frontend` 폴더에서 실행한다.
+
+```powershell
+npm.cmd ci
+npm.cmd run lint:architecture
+npm.cmd test -- --run
+npm.cmd run build
+```
+
+`lint:architecture`는 P1 단계에서 경고 우선으로 운영한다. 종료 코드는 성공이어도
+표시된 경고는 현재 구조 부채이며, 새 경고를 만들지 않는 것을 원칙으로 한다.
+
+자동 테스트는 운영 DB가 아닌 `CONTENT_HUB_DB` 또는 `CONTENT_HUB_DATA` 임시 경로를 사용한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |
