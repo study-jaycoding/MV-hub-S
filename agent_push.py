@@ -357,6 +357,37 @@ def _http(method: str, url: str, token: str | None = None, body: dict | None = N
         return 0, str(e)
 
 
+# ── Hub gen-request HTTP 계약 어댑터 ────────────────────────────────────
+# 실행 오케스트레이션은 URL·쿼리 형식을 직접 만들지 않는다. 서버 계약 변경 시 이 구간과
+# backend/tests/test_agent_contracts.py 만 먼저 확인한다(단일 파일 배포 계약은 유지).
+def _gen_request_url(
+    server: str,
+    rid: str | None = None,
+    action: str | None = None,
+    query: dict | None = None,
+) -> str:
+    url = f"{server.rstrip('/')}/api/gen-requests"
+    if rid is not None:
+        url += f"/{quote(str(rid), safe='')}"
+    if action:
+        url += f"/{action}"
+    if query:
+        url += f"?{urlencode(query)}"
+    return url
+
+
+def _claim_pending(server: str, token: str, limit: int):
+    return _http(
+        "GET",
+        _gen_request_url(server, action="pending", query={"limit": limit}),
+        token=token,
+    )
+
+
+def _list_reconcile_candidates(server: str, token: str):
+    return _http("GET", _gen_request_url(server, action="reconcile-candidates"), token=token)
+
+
 def _wait_event(server: str, token: str, timeout: int = 35):
     """롱폴 — 서버가 내 계정 이벤트(생성요청/동기화)가 생길 때까지 잡고 있다 반환.
     반환: reason('gen-request'|'sync') | None(타임아웃=idle 또는 일시 네트워크 오류 → 재대기).
@@ -709,7 +740,11 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     """요청 실패 보고. reason 에 한글/공백/괄호가 들어가므로 반드시 URL 인코딩한다
     (urllib 은 비-ASCII URL 을 그대로 못 보냄 — 'ascii codec' 오류로 보고 자체가 실패해
     요청이 running 에 영영 멈추는 버그를 막는다)."""
-    _http("POST", f"{server}/api/gen-requests/{rid}/fail?reason={quote(reason)}", token=token)
+    _http(
+        "POST",
+        _gen_request_url(server, rid, "fail", {"reason": reason}),
+        token=token,
+    )
 
 
 # --- 크래시 세이프 앵커 outbox ---------------------------------------------------
@@ -765,8 +800,12 @@ def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = Fa
     모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시. 서버 200 이면 True."""
     st, _ = _http(
         "POST",
-        f"{server}/api/gen-requests/{rid}/anchor?job_id={quote(job_id)}"
-        f"&verifying={'true' if verifying else 'false'}",
+        _gen_request_url(
+            server,
+            rid,
+            "anchor",
+            {"job_id": job_id, "verifying": "true" if verifying else "false"},
+        ),
         token=token,
     )
     return st == 200
@@ -801,11 +840,24 @@ def _reconcile(server: str, token: str, rid: str, job: dict, force_fail_reason: 
     """create-first 완료 확정 — generate wait/get 로 확보한 최종 job 을 /reconcile 로 권위 보정한다.
     앵커가 gen_request 를 done 으로 닫았으므로 /fulfill 은 멱등 no-op → 완료는 /reconcile 로만 확정한다.
     force_fail_reason 이면 레퍼런스 미부착 등 로컬 검증 실패로 '되살림 금지' failed 확정. 서버 status 반환."""
-    url = f"{server}/api/gen-requests/{rid}/reconcile"
-    if force_fail_reason:
-        url += f"?force_fail_reason={quote(force_fail_reason)}"
-    st, _ = _http("POST", url, token=token, body={"job": job})
+    st, _ = _report_reconcile(server, token, rid, job, force_fail_reason)
     return st
+
+
+def _report_reconcile(
+    server: str,
+    token: str,
+    rid: str,
+    job: dict,
+    force_fail_reason: str | None = None,
+):
+    query = {"force_fail_reason": force_fail_reason} if force_fail_reason else None
+    return _http(
+        "POST",
+        _gen_request_url(server, rid, "reconcile", query),
+        token=token,
+        body={"job": job},
+    )
 
 
 def _download_ref(server: str, token: str, url: str, suffix: str, timeout: int = 180, auth: bool = True):
@@ -1077,9 +1129,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
             claimed: list = []
             if free > 0:
                 # 빈 슬롯 수만큼만 claim(서버가 그만큼만 running 표시 → 카드 상태 정확).
-                status, pend = _http(
-                    "GET", f"{server}/api/gen-requests/pending?limit={free}", token=token
-                )
+                status, pend = _claim_pending(server, token, free)
                 claimed = pend if isinstance(pend, list) else []
             if claimed:
                 if not printed:
@@ -1310,7 +1360,7 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
     조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
     # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
     replay_outbox(server, token)
-    st, data = _http("GET", f"{server}/api/gen-requests/reconcile-candidates", token=token)
+    st, data = _list_reconcile_candidates(server, token)
     if st != 200 or not isinstance(data, dict):
         return
     cands = data.get("candidates")
@@ -1327,9 +1377,7 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
         # 조회 불가/내 계정 잡 아님(not found)·파싱실패 → 안 건드림(상태 유지, 다음 사이클 재시도).
         if not (isinstance(job, dict) and job.get("id")):
             continue
-        st2, body = _http(
-            "POST", f"{server}/api/gen-requests/{rid}/reconcile", token=token, body={"job": job}
-        )
+        st2, body = _report_reconcile(server, token, rid, job)
         if st2 == 200 and isinstance(body, dict) and body.get("applied"):
             print(f"  ✓ 보정: {job_id[:8]} → {body.get('status')}")
 

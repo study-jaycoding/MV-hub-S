@@ -60,6 +60,13 @@ services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase �
 > 현재는 일부 router 가 repo 를 직접 호출하며 업무 흐름까지 조립하는 곳이 있다.
 > usecases 계층은 그 조립부를 옮겨 담을 자리다. **한 번에 다 옮기지 않는다** — 손대는 라우터부터.
 
+### 배포형 에이전트 (`agent_push.py`)
+
+- `/api/agent/download`가 이 파일 하나를 팀원 PC에 배포하므로 **단일 파일 + Python 표준 라이브러리만** 유지한다.
+- 물리적으로 여러 모듈로 나누려면 먼저 번들 생성·다운로드·업데이트 경로를 함께 설계해야 한다.
+- 파일 안에서는 CLI 어댑터, Hub HTTP 계약, outbox, 생성 실행, 스케줄러 경계를 구분한다.
+  서버 URL·쿼리·payload 형식은 HTTP 계약 어댑터에 모으고 `test_agent_contracts.py`로 고정한다.
+
 ---
 
 ## 2. 두지 말아야 할 곳 (자주 하는 실수)
