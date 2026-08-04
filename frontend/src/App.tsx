@@ -129,6 +129,8 @@ export default function App() {
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
     selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById, patchActiveScene,
   } = useSceneCoordination(flash);
+  // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
+  const [sceneBarHover, setSceneBarHover] = useState(false);
   // 캔버스 '방금 생성' glow — App 레벨에서 완료를 상시 감시(탭 전환·SceneBoard 언마운트와 무관).
   //  후보 = 활성 씬 생성카드의 변형 genId(새로고침 등 store 가 빈 경우 미확정분을 발견하는 데 씀).
   const glowCandidateIds = useMemo(
@@ -1033,6 +1035,7 @@ export default function App() {
               onAdd={addScene}
               onRename={renameScene}
               onDelete={removeSceneById}
+              onHoverChange={setSceneBarHover}
             />
             {activeScene ? (
               <SceneBoard
@@ -1042,6 +1045,7 @@ export default function App() {
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
+                ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
                 onCameraChange={(camera) => patchActiveScene({ camera })}

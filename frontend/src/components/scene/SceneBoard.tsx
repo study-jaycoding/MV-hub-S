@@ -185,6 +185,8 @@ interface Props {
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
+  // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
+  ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
   onBindingChange?: (binding: { cardId: string; refs: SceneRef[] } | null) => void;
   // 마지막으로 본 화면(확대/이동)을 기억 — 팬/줌을 멈출 때 저장. 재렌더 없이 localStorage 에만 조용히.
@@ -250,6 +252,7 @@ export function SceneBoard({
   topCenterOverlay,
   onSaveScene,
   onLoadSceneFile,
+  ioPanelHot,
   onBindingChange,
   onCameraChange,
   onPreview,
@@ -347,6 +350,20 @@ export function SceneBoard({
   const [popupMarq, setPopupMarq] = useState<{ l: number; t: number; w: number; h: number } | null>(null);
   const varGridRef = useRef<HTMLDivElement>(null);
   const sceneFileRef = useRef<HTMLInputElement>(null); // 씬 불러오기 파일 인풋(숨김)
+  // 씬 패널(저장/불러오기) 표시 — 씬 탭 바 또는 패널 자체에 호버 중일 때만(평소 숨김, 캔버스 작업 방해 금지).
+  // 탭 바 → 패널로 마우스가 건너오는 동안 사라지지 않게 0.35초 유예. 숨김은 CSS(opacity)로 —
+  // 언마운트하면 '불러오기' 파일 선택창이 열린 사이 hidden input 이 사라져 선택이 무시된다.
+  const [ioPanelHover, setIoPanelHover] = useState(false);
+  const [ioPanelLinger, setIoPanelLinger] = useState(false);
+  useEffect(() => {
+    if (ioPanelHot) {
+      setIoPanelLinger(true);
+      return;
+    }
+    const t = setTimeout(() => setIoPanelLinger(false), 350);
+    return () => clearTimeout(t);
+  }, [ioPanelHot]);
+  const ioPanelVisible = !!ioPanelHot || ioPanelLinger || ioPanelHover;
   const varpopWrapRef = useRef<HTMLDivElement>(null);
   // 변형 팝업 태그 에디터를 '편집 중인 타일 바로 아래'에 띄우기 위한 위치(wrap 기준). 타일은
   // overflow:hidden 이라 안에 넣으면 잘리므로 wrap 레벨에 절대배치하되, 타일 rect 를 측정해 그 밑에 둔다.
@@ -4672,7 +4689,12 @@ export function SceneBoard({
 
       {/* 좌상단 씬 패널 — 씬 이름 + 저장(파일로)/불러오기(새 탭). 미디어 없이 참조만 저장(ComfyUI식 가벼운 텍스트). */}
       {(onSaveScene || onLoadSceneFile) && (
-        <div className="scene-io-panel" onMouseDown={(e) => e.stopPropagation()}>
+        <div
+          className={"scene-io-panel" + (ioPanelVisible ? "" : " io-hidden")}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseEnter={() => setIoPanelHover(true)}
+          onMouseLeave={() => setIoPanelHover(false)}
+        >
           <div className="scene-io-name" title={scene.name}>{scene.name}</div>
           <div className="scene-io-btns">
             {onSaveScene && (

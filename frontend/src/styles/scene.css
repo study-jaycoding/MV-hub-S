@@ -69,7 +69,10 @@
   padding: 7px 10px; border-radius: 10px;
   background: rgba(10, 14, 20, 0.82); border: 1px solid var(--border2);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); backdrop-filter: blur(2px);
+  transition: opacity 0.15s ease;
 }
+/* 평소 숨김 — 씬 탭 바(또는 패널 자체) 호버 시에만 표시. 캔버스 클릭을 막지 않게 이벤트도 차단. */
+.scene-io-panel.io-hidden { opacity: 0; pointer-events: none; }
 .scene-io-name {
   max-width: 180px; font-size: 12px; font-weight: 800; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

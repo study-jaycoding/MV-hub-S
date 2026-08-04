@@ -9,12 +9,17 @@ interface Props {
   onAdd: () => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onHoverChange?: (hover: boolean) => void; // 씬 패널(저장/불러오기) 호버 표시용
 }
 
-export function SceneBar({ scenes, activeId, onSelect, onAdd, onRename, onDelete }: Props) {
+export function SceneBar({ scenes, activeId, onSelect, onAdd, onRename, onDelete, onHoverChange }: Props) {
   const t = useT();
   return (
-    <div className="scene-bar">
+    <div
+      className="scene-bar"
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+    >
       <button
         className={"scene-tab" + (activeId === null ? " on" : "")}
         onClick={() => onSelect(null)}
