@@ -48,6 +48,19 @@ interface Params {
   folderPath?: string; // 무장 폴더(렌더 루트 상대 경로) — 생성물 folder_path 로 저장
 }
 
+export function normalizeSpotlightBatch(
+  override: unknown,
+  fallback: number,
+  maxCount: number,
+): number {
+  const requested =
+    typeof override === "number" && Number.isFinite(override)
+      ? Math.floor(override)
+      : fallback;
+  const finite = Number.isFinite(requested) ? Math.floor(requested) : 1;
+  return Math.min(maxCount, Math.max(1, finite));
+}
+
 // 비-seedance 이미지 모델(Nano Banana·GPT Image 2 등): 프롬프트의 레퍼런스 토큰(@image3·<<<image3>>>)이
 // 실제 첨부 refs(트레이+인라인)의 해당 타입 개수를 넘으면 = 트레이에 없는 번호 → CLI 로 가서 크레딧만
 // 쓰고 실패/무시된다. 제출 전에 막는다(seedance 는 validateSeedanceTokenRoles 로 이미 검증).

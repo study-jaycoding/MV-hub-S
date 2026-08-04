@@ -1,6 +1,9 @@
 // buildSpotlightCreateBody 특성화 — 생성 요청 body 의 마지막 관문(크레딧 낭비 직결).
 import { describe, it, expect } from "vitest";
-import { buildSpotlightCreateBody } from "../src/lib/spotlightSubmit";
+import {
+  buildSpotlightCreateBody,
+  normalizeSpotlightBatch,
+} from "../src/lib/spotlightSubmit";
 import type { ChipRef } from "../src/lib/promptEditor";
 
 const img = (over: Partial<ChipRef> = {}): ChipRef => ({
@@ -78,5 +81,19 @@ describe("buildSpotlightCreateBody — CLI 프롬프트 한 줄 강제", () => {
       model: "nano_banana",
     });
     expect(body!.prompt).toBe("(no text)");
+  });
+});
+
+describe("normalizeSpotlightBatch — 배치 요청 안전 범위", () => {
+  it("노드 override는 정수화하고 1~4 범위로 제한한다", () => {
+    expect(normalizeSpotlightBatch(0, 2, 4)).toBe(1);
+    expect(normalizeSpotlightBatch(2.9, 1, 4)).toBe(2);
+    expect(normalizeSpotlightBatch(9999, 1, 4)).toBe(4);
+  });
+
+  it("유효하지 않은 override는 UI 값을 쓰고, UI 값도 비정상이면 1로 복구한다", () => {
+    expect(normalizeSpotlightBatch(Number.NaN, 3, 4)).toBe(3);
+    expect(normalizeSpotlightBatch(Number.POSITIVE_INFINITY, 2, 4)).toBe(2);
+    expect(normalizeSpotlightBatch(undefined, Number.NaN, 4)).toBe(1);
   });
 });

@@ -34,17 +34,14 @@ import {
   insertTextAtCaret,
   loadHistory,
   moveChipToPoint,
-  partsDisplay,
   partsText,
   placeCaretAtEnd,
   restoreParts,
-  saveHistory,
   serialize,
   serializeParts,
   showChipDropBar,
   stripQuery,
   wrapRefTokens,
-  HIST_MAX,
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
@@ -55,8 +52,6 @@ import {
   seedanceTrayToken,
   usesMediaRefTokens,
 } from "../lib/seedancePrompt";
-import { buildSpotlightCreateBody } from "../lib/spotlightSubmit";
-import { resolveAutoAspectRatio } from "../lib/aspectAuto";
 import { useAccountStatus } from "../lib/useAccountStatus";
 import { useCustomEvent } from "../lib/useCustomEvent";
 import { useSpotlightAgentStatus } from "../lib/useSpotlightAgentStatus";
@@ -81,10 +76,12 @@ import { SpotlightGenerateControls } from "./spotlight/SpotlightGenerateControls
 import { SpotlightMentionPicker } from "./spotlight/SpotlightMentionPicker";
 import { SpotlightPromptRow } from "./spotlight/SpotlightPromptRow";
 import { SpotlightRefTray } from "./spotlight/SpotlightRefTray";
+import {
+  SPOTLIGHT_MAX_COUNT,
+  useSpotlightSubmit,
+} from "./spotlight/useSpotlightSubmit";
 import type { SceneRef, SceneModelCfg } from "../lib/scenes";
 import type { Generation, PreviewTarget } from "../types";
-
-const MAX_COUNT = 4; // 한 번에 생성할 최대 장수(배치)
 
 interface Props {
   // created: 방금 만든 pending 생성본들 — 즉시 '대기' 카드로 띄우게(optimistic). 없으면 그냥 리로드.
@@ -895,96 +892,32 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
       ed.focus();
     }
   };
-  const submit = async (batchOverride?: number) => {
-    if (busy) return; // 진행 중(비율 측정 await 포함) 재진입 방지 — 중복 생성 차단
-    setError(null);
-    const ed = editorRef.current;
-    if (!ed) return;
-    const { text, refs: inlineRefs } = serialize(ed);
-    if (!text && trayRefs.length + inlineRefs.length === 0) {
-      setError("프롬프트를 입력하세요.");
-      ed.focus();
-      return;
-    }
-    if (!model) {
-      setError("모델을 선택하세요.");
-      return;
-    }
-    // 모델 전환 직후 새 스키마/옵션 로드 전이면 stale 옵션(이전 모델 값·enum)이 섞여 제출될 수 있다 → 잠깐 막는다.
-    if (paramsLoading || paramsModel !== model) {
-      setError("모델 옵션을 불러오는 중입니다. 잠시 후 다시 생성해 주세요.");
-      return;
-    }
-    // 표시용 프롬프트(칩 자리에 @소스명) — CLI 본문(text)과 분리해 저장. 줄바꿈 보존(재사용 시 복원).
-    const parts = serializeParts(ed);
-    const displayPrompt = partsDisplay(parts);
-    // 비율 측정(auto)·생성 동안 버튼을 비활성화해 중복 제출을 막는다(측정이 최대 몇 초 걸릴 수 있음).
-    setBusy(true);
-    try {
-      // aspect_ratio 가 'auto'(우리가 합성한 값)면 CLI 로 보내기 전에 레퍼런스 비율로 치환한다(CLI 는 auto 를 거부).
-      // 트레이 + 인라인 칩 이미지를 모두 후보로(접힌 상태의 인라인 이미지도 비율 측정 대상).
-      // ★비율 측정·body 생성도 try 안 — 예외가 나도 아래 catch 에서 busy 를 풀어 버튼이 영구 잠기지 않게 한다.
-      const resolvedOpts = await resolveAutoAspectRatio(optionValues, tunable, [...trayRefs, ...inlineRefs]);
-      const { body, error: bodyError } = buildSpotlightCreateBody({
-        text,
-        inlineRefs,
-        trayRefs,
-        parts,
-        displayPrompt,
-        model,
-        optionValues: resolvedOpts,
-        armedAutoTags,
-        activeProjectId,
-        // 무장 폴더가 현재 프로젝트와 일치할 때만 folder_path 로 라벨링(전역변수 가드).
-        folderPath:
-          armedFolder && armedFolder.projectId === activeProjectId ? armedFolder.path : undefined,
-      });
-      if (bodyError || !body) {
-        setError(bodyError || "생성 요청을 만들 수 없습니다.");
-        setBusy(false);
-        return;
-      }
-      // 배치: 같은 설정으로 N장 동시 생성(각각 별도 잡). 씬 모드도 N장 → 그 카드에 변형으로 누적된다.
-      // 카드 아래 Generate 가 노드별 배치수를 넘기면 그 값을 우선(없으면 하단 컨트롤의 count).
-      // ★버튼 onClick 은 이벤트 객체를 넘기므로 유한한 숫자일 때만 override 로 인정(NaN·Infinity 방지).
-      const override =
-        typeof batchOverride === "number" && Number.isFinite(batchOverride)
-          ? Math.floor(batchOverride)
-          : undefined;
-      // 상한 MAX_COUNT·정수·최소 1 로 clamp — 비정상 배치수(Infinity·9999·소수)가 Array.from RangeError
-      //  나 대량 api.create 요청 폭주로 이어지지 않게(방어). UI/cardBatch 도 1~MAX_COUNT.
-      const batch = Math.min(MAX_COUNT, Math.max(1, override ?? count));
-      const created = await Promise.all(Array.from({ length: batch }, () => api.create(body)));
-      // 드래그로 불러온 원본이 있으면 그것을 부모로 자동 히스토리 기록(App 이 처리). 1회 소모.
-      const dragParent = dragParentRef.current;
-      dragParentRef.current = null;
-      onCreated(created, dragParent); // 방금 만든 pending 들을 즉시 '대기' 카드로(optimistic) + 리로드
-      // 프롬프트 기록에 추가 — 텍스트+칩 구조 보존. 같은 내용은 전부 제거 후 최신으로,
-      // 최근 HIST_MAX(20)개만 유지.
-      const key = displayPrompt; // 텍스트+@칩 까지 반영한 중복 판정 키
-      if (key) {
-        const filtered = historyRef.current.filter((h) => h.text !== key);
-        // 트레이 레퍼런스도 저장(uid 제외) — 토큰 프롬프트를 ↑ 로 불러 제출해도 레퍼런스가 살아있게.
-        const histTray: ChipRef[] = trayRefs.map(({ uid: _uid, ...ref }) => ref);
-        filtered.push({ parts, text: key, trayRefs: histTray.length ? histTray : undefined });
-        historyRef.current = filtered.slice(-HIST_MAX);
-        saveHistory(historyRef.current);
-      }
+  const submit = useSpotlightSubmit({
+    activeProjectId,
+    armedAutoTags,
+    armedFolder,
+    busy,
+    count,
+    dragParentRef,
+    editorRef,
+    historyRef,
+    inCompose,
+    model,
+    onCreated,
+    optionValues,
+    paramsLoading,
+    paramsModel,
+    trayRefs,
+    tunable,
+    setBusy,
+    setError,
+    clearMention: () => setMention(null),
+    updatePlaceholder,
+    notifyPromptChanged: () => {
       histIdxRef.current = -1;
-      // 도크는 항상 떠 있음 — 비우고 연속 생성.
-      ed.innerHTML = "";
-      updatePlaceholder();
-      bumpPromptTick(); // 생성 후 입력창 비움 → 바인딩 카드의 초안도 비운다(옛 프롬프트 복원 방지)
-      setMention(null);
-      setBusy(false);
-      // 캔버스탭에선 생성 후 프롬프트에 포커스를 되돌리지 않는다(캔버스 단축키가 글자로 새는 것 방지).
-      // 연속 생성하려면 프롬프트를 다시 클릭. 라이브러리 모드는 기존대로 재포커스(연속 입력 편의).
-      if (!inCompose) requestAnimationFrame(() => ed.focus());
-    } catch (e) {
-      setError(String(e));
-      setBusy(false);
-    }
-  };
+      bumpPromptTick();
+    },
+  });
   // App에는 Spotlight 내부 상태 대신 submit(batch) 한 가지 명령만 공개한다.
   useImperativeHandle(ref, () => ({ submit }), [submit]);
 
@@ -1239,7 +1172,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
           {/* 컨트롤 행 */}
           <SpotlightGenerateControls
             count={count}
-            maxCount={MAX_COUNT}
+            maxCount={SPOTLIGHT_MAX_COUNT}
             setCount={setCount}
             busy={busy}
             cost={cost}
