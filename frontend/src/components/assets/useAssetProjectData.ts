@@ -178,27 +178,6 @@ export function useAssetProjectData({
     void refreshProjectData(project);
   }, [project, refreshProjectData]);
 
-  // 창을 다시 볼 때(포커스/탭 전환) 현재 프로젝트를 다시 확인한다
-  // → 외부에서 원본을 같은 이름으로 덮어쓰고 어셋 창으로 돌아오면 썸네일이 자동으로 최신화된다.
-  // ★30초 스로틀 + 서버 캐시 사용 — 실제 폴더 변경은 watchdog 신호가 캐시를 즉시 무효화한다.
-  // 감시가 불가능한 네트워크 폴더도 서버 TTL 뒤의 포커스 복귀에서 다시 읽힌다.
-  useEffect(() => {
-    let lastAt = 0;
-    const refresh = () => {
-      if (document.hidden || !projectRef.current) return;
-      const now = Date.now();
-      if (now - lastAt < 30_000) return;
-      lastAt = now;
-      void reloadTree(projectRef.current);
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [reloadTree]);
-
   return {
     error,
     loading,
@@ -208,6 +187,7 @@ export function useAssetProjectData({
     refreshProjectData,
     reloadMeta,
     reloadProjects,
+    reloadTree,
     setMeta,
     setProject,
     setTree,

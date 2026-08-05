@@ -7,6 +7,7 @@ import {
 } from "../../lib/librarySync";
 import { connectProgress } from "../../lib/progressSocket";
 import { INTERNAL_COMBINED_PROJECT, INTERNAL_FOLDERS } from "./assetsViewModel";
+import { assetResumeRefreshAction } from "./assetRefreshPolicy";
 
 const ASSET_SYNC_DEBOUNCE_MS = 160;
 const SEEN_EVENT_LIMIT = 128;
@@ -14,6 +15,7 @@ const SEEN_EVENT_LIMIT = 128;
 interface UseAssetBroadcastSyncArgs {
   project: string;
   refreshProjectData: (project: string, fresh?: boolean) => Promise<void> | void;
+  refreshTree: (project: string, fresh?: boolean) => Promise<void> | void;
   reloadProjects: (keepCurrent?: boolean) => void;
   refreshComments?: () => Promise<void> | void;
 }
@@ -38,17 +40,25 @@ function isRelevantProject(current: string, projects: readonly string[]): boolea
 export function useAssetBroadcastSync({
   project,
   refreshProjectData,
+  refreshTree,
   reloadProjects,
   refreshComments,
 }: UseAssetBroadcastSyncArgs) {
   const projectRef = useRef(project);
   const refreshProjectDataRef = useRef(refreshProjectData);
+  const refreshTreeRef = useRef(refreshTree);
   const reloadProjectsRef = useRef(reloadProjects);
   const refreshCommentsRef = useRef(refreshComments);
   projectRef.current = project;
   refreshProjectDataRef.current = refreshProjectData;
+  refreshTreeRef.current = refreshTree;
   reloadProjectsRef.current = reloadProjects;
   refreshCommentsRef.current = refreshComments;
+  const lastResumeRefreshRef = useRef({ project, at: Date.now() });
+  if (lastResumeRefreshRef.current.project !== project) {
+    // 프로젝트 전환 자체가 데이터를 읽으므로 직후 focus/visibility 안전망은 중복이다.
+    lastResumeRefreshRef.current = { project, at: Date.now() };
+  }
 
   useEffect(() => {
     const pendingProjects = new Set<string>();
@@ -58,6 +68,7 @@ export function useAssetBroadcastSync({
     let dirtyWhileHidden = false;
 
     const flush = () => {
+      if (timer) clearTimeout(timer);
       timer = undefined;
       if (document.hidden) {
         dirtyWhileHidden = true;
@@ -68,6 +79,7 @@ export function useAssetBroadcastSync({
       allProjects = false;
       pendingProjects.clear();
 
+      lastResumeRefreshRef.current = { project: projectRef.current, at: Date.now() };
       reloadProjectsRef.current(true);
       const current = projectRef.current;
       if (!current || !isRelevantProject(current, changedProjects)) return;
@@ -121,15 +133,31 @@ export function useAssetBroadcastSync({
       },
       () => schedule([]),
     );
-    const onVisibility = () => {
-      if (!document.hidden && dirtyWhileHidden) schedule([]);
+    const onResume = () => {
+      const action = assetResumeRefreshAction({
+        hidden: document.hidden,
+        dirtyWhileHidden,
+        refreshScheduled: timer !== undefined,
+        elapsedMs: Date.now() - lastResumeRefreshRef.current.at,
+      });
+      if (action === "flush") {
+        flush();
+        return;
+      }
+      if (action !== "tree") return;
+      const current = projectRef.current;
+      if (!current) return;
+      lastResumeRefreshRef.current = { project: current, at: Date.now() };
+      void Promise.resolve(refreshTreeRef.current(current)).catch(() => {});
     };
-    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onResume);
+    document.addEventListener("visibilitychange", onResume);
     return () => {
       if (timer) clearTimeout(timer);
       disconnect();
       bc?.close();
-      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onResume);
+      document.removeEventListener("visibilitychange", onResume);
     };
   }, []);
 }

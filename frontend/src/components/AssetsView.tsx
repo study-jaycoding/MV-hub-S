@@ -80,6 +80,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     refreshProjectData,
     reloadMeta,
     reloadProjects,
+    reloadTree,
     setMeta,
     setProject,
     tree,
@@ -553,6 +554,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   useAssetBroadcastSync({
     project,
     refreshProjectData,
+    refreshTree: reloadTree,
     reloadProjects,
     refreshComments,
   });
