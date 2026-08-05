@@ -34,9 +34,37 @@ describe("LibrarySyncState", () => {
 
   it("다른 탭·출처 없는 syncer 알림은 최근 자체 reload와 무관하게 반영한다", () => {
     const state = new LibrarySyncState("client_self_123");
+    const ordinaryReload = state.beginReload();
+    state.finishReload(ordinaryReload, true);
     expect(
       state.decide([{ client_id: "client_other_123", mutation_id: "mutation_other_123" }]),
     ).toBe("reload");
+    expect(state.decide(undefined)).toBe("reload");
+  });
+
+  it("출처 없는 신호로 시작한 reload의 구버전 서버 반향만 짧게 생략한다", () => {
+    let now = 10_000;
+    const state = new LibrarySyncState("client_self_123", () => now);
+    state.trackBareSyncedForReload();
+    expect(state.decide(undefined)).toBe("wait");
+    const reload = state.beginReload();
+
+    expect(state.decide(undefined)).toBe("wait");
+    state.finishReload(reload, true);
+    expect(
+      state.decide([{ client_id: "client_other_123", mutation_id: "mutation_other_123" }]),
+    ).toBe("reload");
+    expect(state.decide(undefined)).toBe("skip");
+    now += 1_000;
+    expect(state.decide(undefined)).toBe("reload");
+  });
+
+  it("출처 없는 신호의 reload가 실패하면 다음 신호로 즉시 재시도한다", () => {
+    const state = new LibrarySyncState("client_self_123");
+    state.trackBareSyncedForReload();
+    const reload = state.beginReload();
+    state.finishReload(reload, false);
+
     expect(state.decide(undefined)).toBe("reload");
   });
 

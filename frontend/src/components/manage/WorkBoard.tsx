@@ -18,7 +18,7 @@ import { createLatestMutationQueue } from "../../lib/mutationQueue";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
-import { shouldRunManageFallbackRefresh } from "./manageRefreshPolicy";
+import { shouldRunManageFallbackRefresh } from "../../lib/manageRefreshPolicy";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";

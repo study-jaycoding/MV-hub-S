@@ -14,3 +14,10 @@ export function shouldRunManageFallbackRefresh({
 }: ManageFallbackRefreshState): boolean {
   return !loading && now - lastLoadAt >= minIntervalMs;
 }
+
+/** Bare syncer/legacy signals use the periodic safety refresh; browser-origin writes are immediate. */
+export function shouldRefreshManageForLibrarySync(
+  origins: readonly unknown[] | null | undefined,
+): boolean {
+  return Boolean(origins?.length);
+}

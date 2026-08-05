@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { consumeOwnDomainSync } from "./librarySync";
+import { shouldRefreshManageForLibrarySync } from "./manageRefreshPolicy";
 import { connectProgress } from "./progressSocket";
 
 const MANAGE_SYNC_DEBOUNCE_MS = 180;
@@ -31,6 +32,9 @@ export function useManageRealtime(enabled: boolean): number {
           schedule();
         } else if (message.type === "synced") {
           // 작업 카드의 연결 생성물·완료/게시 상태는 라이브러리 변경에도 영향을 받는다.
+          // 다만 syncer·구형 위임 서버의 출처 없는 신호는 조회 반향과 구분할 수 없고 연속 도착할 수
+          // 있으므로 30초 안전망에 맡긴다. 브라우저 쓰기에서 온 출처 있는 변경만 즉시 반영한다.
+          if (!shouldRefreshManageForLibrarySync(message.origins)) return;
           schedule();
         }
       },

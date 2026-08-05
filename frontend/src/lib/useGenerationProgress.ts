@@ -5,6 +5,7 @@ import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { postAssetsUpdated } from "./assetBroadcast";
 import {
   decideLibrarySync,
+  trackBareSyncedForReload,
   trackOwnSyncedForReload,
   type LibraryMutationOrigin,
 } from "./librarySync";
@@ -50,7 +51,8 @@ export function useGenerationProgress({
     const flushSynced = () => {
       syncedTimer = null;
       if (pendingSyncOrigins === undefined) return;
-      const decision = forceFullSync ? "reload" : decideLibrarySync(pendingSyncOrigins);
+      const wasBareSync = forceFullSync;
+      const decision = decideLibrarySync(wasBareSync ? undefined : pendingSyncOrigins);
       // 내 변경을 포함한 목록 요청이 아직 진행 중이면 끝날 때까지 짧게 기다린다. 실패하면 inflight
       // 표식이 사라져 reload로 전환한다. 비정상적으로 오래 걸리면 5초 뒤 안전하게 한 번 더 읽는다.
       if (decision === "wait" && Date.now() - pendingSyncSince < SYNC_WAIT_MAX_MS) {
@@ -62,6 +64,9 @@ export function useGenerationProgress({
       forceFullSync = false;
       pendingSyncSince = 0;
       if (decision !== "skip") {
+        if (wasBareSync) trackBareSyncedForReload();
+        // bare와 요청 출처가 같은 debounce 묶음에 섞여도, HTTP 응답보다 먼저 온 내 mutation id를
+        // 곧 시작할 reload가 함께 덮도록 별도로 추적한다. 순수 bare에서는 빈 배열이라 no-op이다.
         trackOwnSyncedForReload(flushedOrigins);
         void reload(true);
         // 외부 기기·다른 창 변경은 현재 SceneBoard의 완료 카드 데이터와 사이드바 카운트도

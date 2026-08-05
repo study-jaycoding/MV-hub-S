@@ -15,6 +15,7 @@ const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const COVERED_LIMIT = 2048;
 const PENDING_LIMIT = 2048;
 const DOMAIN_ACK_LIMIT = 2048;
+const BARE_SYNC_ECHO_GUARD_MS = 1_000;
 
 function randomPart(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -25,14 +26,19 @@ function randomPart(): string {
 // 따라서 서버가 되돌려준 '실제 변경 요청 id'와 그 id를 포함해 성공한 목록 reload를 함께 추적한다.
 export class LibrarySyncState {
   readonly clientId: string;
+  private readonly now: () => number;
   private readonly successfulPending = new Set<string>();
   private readonly covered = new Set<string>();
   private readonly inflight = new Map<number, ReadonlySet<string>>();
+  private readonly bareReloadTokens = new Set<number>();
   private readonly domainAcknowledged = new Map<MutationDomain, Set<string>>();
+  private pendingBareReload = false;
+  private bareEchoGuardUntil = 0;
   private nextReloadId = 1;
 
-  constructor(clientId = randomPart()) {
+  constructor(clientId = randomPart(), now: () => number = Date.now) {
     this.clientId = clientId;
+    this.now = now;
   }
 
   createMutationOrigin(method: string | undefined): LibraryMutationOrigin | null {
@@ -114,17 +120,30 @@ export class LibrarySyncState {
     }
   }
 
+  trackBareSyncedForReload(): void {
+    // 출처 없는 신호로 시작하는 목록 reload를 표시한다. 구버전 서버는 조회형 POST도 쓰기로
+    // 오인해 bare synced를 되돌릴 수 있으므로, 이 reload가 성공한 직후의 짧은 반향만 생략한다.
+    this.pendingBareReload = true;
+  }
+
   beginReload(): LibraryReloadToken {
     const token: LibraryReloadToken = {
       id: this.nextReloadId++,
       mutationIds: new Set(this.successfulPending),
     };
     this.inflight.set(token.id, token.mutationIds);
+    if (this.pendingBareReload) {
+      this.pendingBareReload = false;
+      this.bareReloadTokens.add(token.id);
+    }
     return token;
   }
 
   finishReload(token: LibraryReloadToken, applied: boolean): void {
-    if (!this.inflight.delete(token.id) || !applied) return;
+    const wasInflight = this.inflight.delete(token.id);
+    const coveredBareSync = this.bareReloadTokens.delete(token.id);
+    if (!wasInflight || !applied) return;
+    if (coveredBareSync) this.bareEchoGuardUntil = this.now() + BARE_SYNC_ECHO_GUARD_MS;
     for (const mutationId of token.mutationIds) {
       this.successfulPending.delete(mutationId);
       // Set 삽입 순서를 LRU처럼 써 긴 세션에서도 상한을 둔다.
@@ -139,7 +158,12 @@ export class LibrarySyncState {
   }
 
   decide(origins: readonly LibraryMutationOrigin[] | null | undefined): LibrarySyncDecision {
-    if (!origins?.length) return "reload"; // 출처 없는 syncer·구버전 서버·직접 fetch는 항상 반영
+    if (!origins?.length) {
+      // 방금 bare synced가 시작한 reload가 아직 진행 중이면 결과를 기다린다. 성공 직후 되돌아온
+      // bare 신호는 구버전 서버의 조회 반향일 수 있어 짧게 생략하되, 그 밖의 syncer·외부 변경은 반영한다.
+      if (this.pendingBareReload || this.bareReloadTokens.size) return "wait";
+      return this.now() < this.bareEchoGuardUntil ? "skip" : "reload";
+    }
     const ownIds: string[] = [];
     for (const origin of origins) {
       if (!origin || origin.client_id !== this.clientId || !origin.mutation_id) return "reload";
@@ -201,4 +225,8 @@ export function trackOwnSyncedForReload(
   origins: readonly LibraryMutationOrigin[] | null | undefined,
 ): void {
   runtimeState.trackOwnSyncedForReload(origins);
+}
+
+export function trackBareSyncedForReload(): void {
+  runtimeState.trackBareSyncedForReload();
 }
