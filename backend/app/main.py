@@ -56,6 +56,7 @@ from .mutation_notify import (
     notification_domains,
     parse_mutation_origin,
 )
+from .static_files import ImmutableStaticFiles
 from .routers import (
     _proxy,
     assets,
@@ -636,7 +637,11 @@ async def websocket_endpoint(ws: WebSocket):
 if FRONTEND_DIST.is_dir():
     _ASSETS_DIR = FRONTEND_DIST / "assets"
     if _ASSETS_DIR.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="spa-assets")
+        app.mount(
+            "/assets",
+            ImmutableStaticFiles(directory=str(_ASSETS_DIR)),
+            name="spa-assets",
+        )
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
