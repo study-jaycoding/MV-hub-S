@@ -22,15 +22,15 @@
 2026-08-05 리아키텍처 브랜치에서 충돌·리뷰 범위 문제가 실제 착수 트리거로 확인되어 1차 분리를 수행했다.
 
 - `generations.py`의 조회·행 보강·facet·계보·ID 해석은 `generations_query`·`generation_rows`·`facets`·`history`·`lineage`·`id_resolve`로 분리된 상태다.
-- `manage.py`의 스키마·텔레메트리·거래 매칭·분석 조회를 각각 `manage_schema`·`manage_telemetry`·`manage_transactions`·`manage_analytics`로 분리했다. 기존 `from app.repo import manage` 호출은 파사드로 유지한다.
-- `manage.py`는 약 1,600줄에서 959줄로 감소했다. 남은 `manage_tasks` 분리는 `list_tasks`의 관리 허브 폴백과 브라우저 작업탭 스모크가 준비된 뒤 진행한다.
+- `manage.py`의 스키마·텔레메트리·거래 매칭·분석 조회·작업 CRUD를 각각 `manage_schema`·`manage_telemetry`·`manage_transactions`·`manage_analytics`·`manage_tasks`로 분리했다. 기존 `from app.repo import manage` 호출은 파사드로 유지한다.
+- `manage.py`는 약 1,600줄에서 515줄로 감소했다. `manage_tasks`는 컷 일괄 조회·관리 허브 소요시간 폴백·담당자 트랜잭션을 함께 소유하며, 기존 파사드 테스트와 브라우저 작업탭 스모크로 경계를 고정한다.
 - `routers/assets.py` 분리는 아직 보류다. 파일 시스템·watcher·업로드가 함께 있어 실제 Assets 스모크가 선행되어야 한다.
 
 **(a) 착수 트리거**: 같은 파일에서 작업 충돌 반복 / 신규 기능이 계속 이 파일에 붙어 리뷰 범위 비대 / 수정 시 테스트 영향 예측 곤란 / 신규 개발자 파악 지연.
 
 **(b) 접근** (repo `__init__` re-export 파사드 유지, 무중단):
 - `generations.py` → `generation_read`(list/get/stats/hydrate/facets) · `generation_write`(create/import/update/delete/restore/status) · `generation_sync`(synced upsert/known-jobs/fulfillment) · `generation_comments` · `generation_history` · `generation_media`
-- `manage.py` → `manage_schema` · `manage_telemetry` · `manage_transactions` · `manage_analytics` **완료**, `manage_tasks` 후속
+- `manage.py` → `manage_schema` · `manage_telemetry` · `manage_transactions` · `manage_analytics` · `manage_tasks` **완료**
 - 라우터: `generation.py` → history/comments/media/meta 분리, `assets.py` → mounts/upload/meta/comments 분리
 
 **(c) 리스크·순서**: 순환의존이 핵심 — `trash.py`가 참조하는 `_delete_generation` 등은 먼저 `generation_write`(또는 `generation_core`)로 빼야 함. 순서: **독립 영역(comments/history) 먼저 → sync/write → read/hydrate 마지막**(read는 shared helper가 많음).

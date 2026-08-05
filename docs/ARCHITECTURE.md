@@ -129,7 +129,8 @@ HTTP 요청
 | `projects.py` | 프로젝트·멤버 |
 | `accounts.py` | 가입·인증·승인 |
 | `trash.py` | 휴지통(별도 DB 원자 이동·복원·영구삭제) |
-| `manage.py` | PM 관리 저장소 호환 파사드와 아직 결합도가 높은 작업 CRUD |
+| `manage.py` | PM 관리 저장소 호환 파사드와 프로젝트·내보내기·메트릭 경계 |
+| `manage_tasks.py` | PM 작업 조회·자동 폴더 작업·담당자 배정·작업 CRUD |
 | `manage_schema.py` / `manage_telemetry.py` | 관리 사이드카 스키마·outbox 팩트 전송 상태 |
 | `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
 
