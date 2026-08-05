@@ -30,6 +30,16 @@ class AssetTagsIn(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class AssetTagsBatchItem(BaseModel):
+    path: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class AssetTagsBatchIn(BaseModel):
+    project: str
+    items: list[AssetTagsBatchItem] = Field(default_factory=list)
+
+
 class AssetCommentIn(BaseModel):
     project: str
     path: str
@@ -39,6 +49,12 @@ class AssetCommentIn(BaseModel):
 class AssetColorIn(BaseModel):
     project: str
     path: str
+    color: Optional[str] = None
+
+
+class AssetColorsBatchIn(BaseModel):
+    project: str
+    paths: list[str] = Field(default_factory=list)
     color: Optional[str] = None
 
 
@@ -216,6 +232,21 @@ def asset_set_tags(body: AssetTagsIn, request: Request):
 
 
 @router.put(
+    "/tags/batch",
+    dependencies=[Depends(_assets_access.require_local_assets)],
+)
+def asset_set_tags_batch(body: AssetTagsBatchIn, request: Request):
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 파일까지 변경할 수 있습니다")
+    items: list[tuple[str, str, list[str]]] = []
+    for item in body.items:
+        project, path = real_meta_key(body.project, item.path)
+        items.append((project, path, item.tags))
+    count = repo.set_asset_tags_batch(items, actor_id(request))
+    return {"ok": True, "count": count}
+
+
+@router.put(
     "/comment",
     dependencies=[Depends(_assets_access.require_local_assets)],
 )
@@ -233,3 +264,15 @@ def asset_set_color(body: AssetColorIn, request: Request):
     project, path = real_meta_key(body.project, body.path)
     repo.set_asset_color(project, path, body.color, actor_id(request))
     return {"ok": True}
+
+
+@router.put(
+    "/colors/batch",
+    dependencies=[Depends(_assets_access.require_local_assets)],
+)
+def asset_set_colors_batch(body: AssetColorsBatchIn, request: Request):
+    if len(body.paths) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 파일까지 변경할 수 있습니다")
+    items = [real_meta_key(body.project, path) for path in body.paths]
+    count = repo.set_asset_colors_batch(items, body.color, actor_id(request))
+    return {"ok": True, "count": count}

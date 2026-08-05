@@ -47,7 +47,7 @@ export function useAssetMetaActions({
     const allSame = paths.every((path) => metaRef.current[path]?.color === color);
     const next = allSame ? null : color;
     patchMeta(paths, { color: next });
-    Promise.all(paths.map((path) => api.setAssetColor(project, path, next))).catch(metaFail);
+    api.setAssetColorsBatch(project, paths, next).catch(metaFail);
   };
 
   const sourceAssets = (paths: string[]) => {
@@ -96,7 +96,10 @@ export function useAssetMetaActions({
     }
     metaRef.current = next;
     setMeta(next);
-    Promise.allSettled(targets.map((target) => api.setAssetTags(project, target, next[target].tags))).catch(metaFail);
+    api.setAssetTagsBatch(
+      project,
+      targets.map((target) => ({ path: target, tags: next[target].tags })),
+    ).catch(metaFail);
   };
 
   const bulkTagRemove = (path: string, names: string[]) => {
@@ -110,7 +113,10 @@ export function useAssetMetaActions({
     }
     metaRef.current = next;
     setMeta(next);
-    Promise.allSettled(targets.map((target) => api.setAssetTags(project, target, next[target].tags))).catch(metaFail);
+    api.setAssetTagsBatch(
+      project,
+      targets.map((target) => ({ path: target, tags: next[target].tags })),
+    ).catch(metaFail);
   };
 
   const deleteTag = (tag: string) => {
@@ -122,7 +128,10 @@ export function useAssetMetaActions({
     for (const path of affected) next[path] = { ...next[path], tags: next[path].tags.filter((item) => item !== tag) };
     metaRef.current = next;
     setMeta(next);
-    Promise.all(affected.map((path) => api.setAssetTags(project, path, next[path].tags))).catch(metaFail);
+    api.setAssetTagsBatch(
+      project,
+      affected.map((path) => ({ path, tags: next[path].tags })),
+    ).catch(metaFail);
     if (activeTags.has(tag))
       setActiveTags((prev) => {
         const out = new Set(prev);

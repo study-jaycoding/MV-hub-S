@@ -181,9 +181,19 @@ export const assetsApi = {
       method: "PUT",
       body: jsonBody({ project, path, tags }),
     }),
+  setAssetTagsBatch: (project: string, items: { path: string; tags: string[] }[]) =>
+    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/tags/batch`, {
+      method: "PUT",
+      body: jsonBody({ project, items }),
+    }),
   setAssetColor: (project: string, path: string, color: string | null) =>
     jsonFetch(`/api/assets/color`, {
       method: "PUT",
       body: jsonBody({ project, path, color }),
+    }),
+  setAssetColorsBatch: (project: string, paths: string[], color: string | null) =>
+    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/colors/batch`, {
+      method: "PUT",
+      body: jsonBody({ project, paths, color }),
     }),
 };

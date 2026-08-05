@@ -395,12 +395,33 @@ def relink_asset_path(project: str, old_path: str, new_path: str, owner_uid: str
 
 
 def set_asset_tags(project: str, path: str, tags: list[str], owner_uid: str = "") -> None:
+    set_asset_tags_batch([(project, path, tags)], owner_uid)
+
+
+def set_asset_tags_batch(
+    items: list[tuple[str, str, list[str]]], owner_uid: str = ""
+) -> int:
+    """여러 파일의 태그를 한 트랜잭션으로 저장한다.
+
+    items 는 ``(project, path, tags)`` 목록이다. 결합 프로젝트는 라우터에서 실제
+    프로젝트·경로로 먼저 변환한다. 중간 실패 시 일부 파일만 바뀌지 않도록 전부 롤백한다.
+    """
+    if not items:
+        return 0
     with get_connection() as conn:
-        _ensure_asset_meta(conn, project, path, owner_uid)
-        conn.execute(
-            "UPDATE asset_meta SET tags=? WHERE project=? AND path=? AND owner_uid=?",
-            (json.dumps(tags, ensure_ascii=False) if tags else None, project, path, owner_uid),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        for project, path, tags in items:
+            _ensure_asset_meta(conn, project, path, owner_uid)
+            conn.execute(
+                "UPDATE asset_meta SET tags=? WHERE project=? AND path=? AND owner_uid=?",
+                (
+                    json.dumps(tags, ensure_ascii=False) if tags else None,
+                    project,
+                    path,
+                    owner_uid,
+                ),
+            )
+    return len(items)
 
 
 def set_asset_comment(
@@ -415,9 +436,21 @@ def set_asset_comment(
 
 
 def set_asset_color(project: str, path: str, color: Optional[str], owner_uid: str = "") -> None:
+    set_asset_colors_batch([(project, path)], color, owner_uid)
+
+
+def set_asset_colors_batch(
+    items: list[tuple[str, str]], color: Optional[str], owner_uid: str = ""
+) -> int:
+    """여러 파일에 같은 색상을 한 트랜잭션으로 저장한다."""
+    if not items:
+        return 0
     with get_connection() as conn:
-        _ensure_asset_meta(conn, project, path, owner_uid)
-        conn.execute(
-            "UPDATE asset_meta SET color=? WHERE project=? AND path=? AND owner_uid=?",
-            (color or None, project, path, owner_uid),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        for project, path in items:
+            _ensure_asset_meta(conn, project, path, owner_uid)
+            conn.execute(
+                "UPDATE asset_meta SET color=? WHERE project=? AND path=? AND owner_uid=?",
+                (color or None, project, path, owner_uid),
+            )
+    return len(items)

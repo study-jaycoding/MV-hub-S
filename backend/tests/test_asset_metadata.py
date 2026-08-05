@@ -28,8 +28,10 @@ class AssetMetadataTests(unittest.TestCase):
             ("/api/assets/comments/{comment_id}", "DELETE"),
             ("/api/assets/comments/read", "POST"),
             ("/api/assets/tags", "PUT"),
+            ("/api/assets/tags/batch", "PUT"),
             ("/api/assets/comment", "PUT"),
             ("/api/assets/color", "PUT"),
+            ("/api/assets/colors/batch", "PUT"),
         }
         for route_contract in expected:
             self.assertEqual(
@@ -136,6 +138,45 @@ class AssetMetadataTests(unittest.TestCase):
             "review",
             None,
             False,
+        )
+
+    def test_batch_tags_map_combined_paths_before_one_repo_call(self) -> None:
+        body = assets_metadata.AssetTagsBatchIn(
+            project=asset_paths.COMBINED_INTERNAL_PROJECT,
+            items=[
+                assets_metadata.AssetTagsBatchItem(path="captures/a.png", tags=["A"]),
+                assets_metadata.AssetTagsBatchItem(path="imports/b.png", tags=["B"]),
+            ],
+        )
+        with (
+            patch.object(assets_metadata, "actor_id", return_value="me"),
+            patch.object(assets_metadata.repo, "set_asset_tags_batch", return_value=2) as setter,
+        ):
+            result = assets_metadata.asset_set_tags_batch(body, self.request)
+
+        self.assertEqual(result, {"ok": True, "count": 2})
+        setter.assert_called_once_with(
+            [("captures", "a.png", ["A"]), ("imports", "b.png", ["B"])],
+            "me",
+        )
+
+    def test_batch_colors_map_combined_paths_before_one_repo_call(self) -> None:
+        body = assets_metadata.AssetColorsBatchIn(
+            project=asset_paths.COMBINED_INTERNAL_PROJECT,
+            paths=["captures/a.png", "imports/b.png"],
+            color="green",
+        )
+        with (
+            patch.object(assets_metadata, "actor_id", return_value="me"),
+            patch.object(assets_metadata.repo, "set_asset_colors_batch", return_value=2) as setter,
+        ):
+            result = assets_metadata.asset_set_colors_batch(body, self.request)
+
+        self.assertEqual(result, {"ok": True, "count": 2})
+        setter.assert_called_once_with(
+            [("captures", "a.png"), ("imports", "b.png")],
+            "green",
+            "me",
         )
 
 
