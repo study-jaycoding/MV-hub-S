@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 from app import db, repo
 from app.repo import manage
+from app.routers import manage as manage_router
 
 
 class TaskBatchTests(unittest.TestCase):
@@ -53,6 +55,23 @@ class TaskBatchTests(unittest.TestCase):
         with db.get_connection() as conn:
             count = conn.execute("SELECT COUNT(*) AS c FROM task_assignment").fetchone()["c"]
         self.assertEqual(count, 0)
+
+    def test_list_tasks_batch_delegates_all_allowed_projects_once(self) -> None:
+        expected = {"p1": [{"id": "t1"}], "p2": [{"id": "t2"}]}
+        with (
+            patch.object(manage_router, "_require_project_read") as require_read,
+            patch.object(manage_router.repo_manage, "list_tasks_batch", return_value=expected) as batch,
+            patch.object(manage_router.repo_manage, "list_tasks") as single,
+        ):
+            result = manage_router.list_tasks_batch(
+                request=Mock(),
+                project_id=["p1", "p2", "p1"],
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(require_read.call_count, 2)
+        batch.assert_called_once_with(["p1", "p2"])
+        single.assert_not_called()
 
 
 if __name__ == "__main__":

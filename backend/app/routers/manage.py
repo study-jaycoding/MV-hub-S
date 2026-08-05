@@ -404,16 +404,25 @@ def list_tasks_batch(request: Request, project_id: list[str] = Query(default_fac
     1요청으로. ★GET(읽기)이라 mutation 알림을 유발하지 않는다(POST 였으면 폴링마다 라이브러리 reload).
     pid 별로 기존 read 게이트(_require_project_read)를 그대로 적용해 **접근 가능한 프로젝트만**
     {pid:[tasks]} 로 반환. 접근불가/없는 pid·내부오류는 생략 = 부분성공(기존 per-project catch 와 동일 의미)."""
-    out: dict[str, list] = {}
+    allowed: list[str] = []
     for pid in list(dict.fromkeys(project_id))[:500]:  # 중복제거·순서보존·소프트캡
         try:
             _require_project_read(request, pid)
-            out[pid] = repo_manage.list_tasks(pid)
+            allowed.append(pid)
         except HTTPException:
             continue
-        except Exception:  # noqa: BLE001 — 한 프로젝트 오류가 전체 배치를 비우지 않게(부분성공)
-            continue
-    return out
+    if not allowed:
+        return {}
+    try:
+        return repo_manage.list_tasks_batch(allowed)
+    except Exception:  # noqa: BLE001 — 구 데이터 한 프로젝트 오류에도 기존 부분성공 의미 유지
+        out: dict[str, list] = {}
+        for pid in allowed:
+            try:
+                out[pid] = repo_manage.list_tasks(pid)
+            except Exception:  # noqa: BLE001
+                continue
+        return out
 
 
 @router.post("/tasks", status_code=201)

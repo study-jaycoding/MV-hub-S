@@ -19,6 +19,13 @@ _TASK_FIELDS = (
     "name", "status", "start_date", "due_date", "sort_order", "note",
     "sequence", "description",
 )
+_SQLITE_IN_BATCH = 900  # 오래된 SQLite 의 기본 변수 상한(999)보다 작게 유지.
+_SQLITE_PAIRED_IN_BATCH = 400  # project+folder/sequence 두 IN 목록 합이 999 미만.
+
+
+def _batched(values: list[str], size: int = _SQLITE_IN_BATCH):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
 
 
 def task_project_id(tid: str) -> Optional[str]:
@@ -69,7 +76,11 @@ def _task_gen_rows(
     ).fetchall()
 
 
-def _batch_task_gen_rows(conn, project_id: str, tasks) -> dict[str, list[dict[str, Any]]]:
+def _batch_task_gen_rows(
+    conn,
+    project_id: Optional[str],
+    tasks,
+) -> dict[str, list[dict[str, Any]]]:
     """모든 작업의 귀속 컷을 '한 번에' 조회 — 작업당 1쿼리(N+1)를 레인별 배치 쿼리로 대체.
     각 작업별 결과는 _task_gen_rows 와 완전히 동일(행·순서·필드) 해야 한다(비교 테스트로 고정).
     레인(작업 메타에 따라):
@@ -80,6 +91,11 @@ def _batch_task_gen_rows(conn, project_id: str, tasks) -> dict[str, list[dict[st
     task_ids = [t["id"] for t in tasks]
     if not task_ids:
         return {}
+    # 단일 프로젝트 호출은 기존 project_id 인자를 쓰고, 다중 프로젝트 호출은 각 행의 project_id 를 쓴다.
+    task_projects = {
+        t["id"]: (t["project_id"] if "project_id" in t.keys() else project_id)
+        for t in tasks
+    }
     # 작업별 (folder_path, sequence) — 폴더작업이면 시퀀스 레인 비활성(원 함수와 동일 규칙).
     meta: dict[str, tuple[Optional[str], Optional[str]]] = {}
     for t in tasks:
@@ -93,51 +109,66 @@ def _batch_task_gen_rows(conn, project_id: str, tasks) -> dict[str, list[dict[st
     linked: dict[str, set[str]] = {tid: set() for tid in task_ids}
 
     # ① 수동 링크 — 항상 포함 + linked 표시.
-    ph_t = ",".join("?" * len(task_ids))
-    for r in conn.execute(
-        f"SELECT task_id, gen_id FROM task_generation WHERE task_id IN ({ph_t})",
-        task_ids,
-    ):
-        tid, gid = r["task_id"], r["gen_id"]
-        if tid in membership:
-            membership[tid].add(gid)
-            linked[tid].add(gid)
+    for task_batch in _batched(task_ids):
+        ph_t = ",".join("?" * len(task_batch))
+        for r in conn.execute(
+            f"SELECT task_id, gen_id FROM task_generation WHERE task_id IN ({ph_t})",
+            task_batch,
+        ):
+            tid, gid = r["task_id"], r["gen_id"]
+            if tid in membership:
+                membership[tid].add(gid)
+                linked[tid].add(gid)
 
-    # ② 폴더 레인 — folder_path 별로 그 경로를 가진 작업들에 매핑.
-    fpath_to_tasks: dict[str, list[str]] = {}
+    # ② 폴더 레인 — project_id+folder_path 키로 정확히 매핑한다. 두 IN 목록은 400개씩 나눠
+    # 오래된 SQLite 변수 상한을 지키면서도 작업×생성물 조인 후보 폭증을 피한다.
+    fpath_to_tasks: dict[tuple[str, str], list[str]] = {}
     for tid in task_ids:
         fpath = meta[tid][0]
-        if fpath is not None:
-            fpath_to_tasks.setdefault(fpath, []).append(tid)
+        pid = task_projects[tid]
+        if fpath is not None and pid:
+            fpath_to_tasks.setdefault((pid, fpath), []).append(tid)
     if fpath_to_tasks:
-        fpaths = list(fpath_to_tasks.keys())
-        ph_f = ",".join("?" * len(fpaths))
-        for r in conn.execute(
-            f"SELECT id, folder_path FROM generation "
-            f"WHERE project_id=? AND deleted_at IS NULL AND folder_path IN ({ph_f})",
-            [project_id, *fpaths],
-        ):
-            for tid in fpath_to_tasks.get(r["folder_path"], []):
-                membership[tid].add(r["id"])
+        projects = list(dict.fromkeys(pid for pid, _path in fpath_to_tasks))
+        fpaths = list(dict.fromkeys(path for _pid, path in fpath_to_tasks))
+        for project_batch in _batched(projects, _SQLITE_PAIRED_IN_BATCH):
+            for fpath_batch in _batched(fpaths, _SQLITE_PAIRED_IN_BATCH):
+                ph_p = ",".join("?" * len(project_batch))
+                ph_f = ",".join("?" * len(fpath_batch))
+                for r in conn.execute(
+                    f"SELECT id, project_id, folder_path FROM generation "
+                    f"WHERE project_id IN ({ph_p}) AND deleted_at IS NULL "
+                    f"AND folder_path IN ({ph_f})",
+                    [*project_batch, *fpath_batch],
+                ):
+                    for tid in fpath_to_tasks.get((r["project_id"], r["folder_path"]), []):
+                        membership[tid].add(r["id"])
 
-    # ③ 시퀀스 레인 — folder_path 없고 sequence 있는 작업. auto_tag.name=sequence.
-    seq_to_tasks: dict[str, list[str]] = {}
+    # ③ 시퀀스 레인 — folder_path 없고 sequence 있는 작업. project_id+auto_tag.name 키로 매핑.
+    seq_to_tasks: dict[tuple[str, str], list[str]] = {}
     for tid in task_ids:
         fpath, seq = meta[tid]
-        if fpath is None and seq is not None:
-            seq_to_tasks.setdefault(seq, []).append(tid)
+        pid = task_projects[tid]
+        if fpath is None and seq is not None and pid:
+            seq_to_tasks.setdefault((pid, seq), []).append(tid)
     if seq_to_tasks:
-        seqs = list(seq_to_tasks.keys())
-        ph_s = ",".join("?" * len(seqs))
-        for r in conn.execute(
-            f"SELECT g.id AS id, at.name AS seqname FROM generation g "
-            f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
-            f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
-            f"WHERE g.project_id=? AND g.deleted_at IS NULL AND at.name IN ({ph_s})",
-            [project_id, *seqs],
-        ):
-            for tid in seq_to_tasks.get(r["seqname"], []):
-                membership[tid].add(r["id"])
+        projects = list(dict.fromkeys(pid for pid, _seq in seq_to_tasks))
+        seqs = list(dict.fromkeys(seq for _pid, seq in seq_to_tasks))
+        for project_batch in _batched(projects, _SQLITE_PAIRED_IN_BATCH):
+            for seq_batch in _batched(seqs, _SQLITE_PAIRED_IN_BATCH):
+                ph_p = ",".join("?" * len(project_batch))
+                ph_s = ",".join("?" * len(seq_batch))
+                for r in conn.execute(
+                    f"SELECT g.id AS id, g.project_id AS project_id, at.name AS seqname "
+                    f"FROM generation g "
+                    f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
+                    f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
+                    f"WHERE g.project_id IN ({ph_p}) AND g.deleted_at IS NULL "
+                    f"AND at.name IN ({ph_s})",
+                    [*project_batch, *seq_batch],
+                ):
+                    for tid in seq_to_tasks.get((r["project_id"], r["seqname"]), []):
+                        membership[tid].add(r["id"])
 
     # 등장한 모든 gen_id 상세를 1회 조회(원 함수의 컬럼·서브쿼리 그대로).
     all_ids: set[str] = set()
@@ -146,22 +177,22 @@ def _batch_task_gen_rows(conn, project_id: str, tasks) -> dict[str, list[dict[st
     detail: dict[str, dict[str, Any]] = {}
     if all_ids:
         idlist = list(all_ids)
-        ph_g = ",".join("?" * len(idlist))
-        for g in conn.execute(
-            f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
-            f"  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
-            f"  g.sort_ts AS sort_ts, "
-            f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
-            f"  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
-            f"   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
-            f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
-            f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
-            # ★deleted_at IS NULL — 원 함수는 이 필터를 전체 lane 바깥에 둬서 '수동 링크된 삭제 생성물'도
-            #  제외한다. 멤버십에 그 gid 가 있어도 detail 에 없으면 아래 조립에서 걸러진다(회귀 방지).
-            f"FROM generation g WHERE g.id IN ({ph_g}) AND g.deleted_at IS NULL",
-            idlist,
-        ):
-            detail[g["id"]] = dict(g)
+        for id_batch in _batched(idlist):
+            ph_g = ",".join("?" * len(id_batch))
+            for g in conn.execute(
+                f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
+                f"  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
+                f"  g.sort_ts AS sort_ts, "
+                f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
+                f"  (SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type='video' THEN NULL ELSE a.file_path END) "
+                f"   FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumb, "
+                f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type, "
+                f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path "
+                # ★deleted_at IS NULL — 원 함수는 이 필터를 전체 lane 바깥에 둬서 수동 링크 삭제물도 제외.
+                f"FROM generation g WHERE g.id IN ({ph_g}) AND g.deleted_at IS NULL",
+                id_batch,
+            ):
+                detail[g["id"]] = dict(g)
 
     def _order(g):
         st = g["sort_ts"]
@@ -199,13 +230,23 @@ def sync_folder_tasks(conn, project_id: str) -> None:
 
     ★읽기(list_tasks)마다 호출되므로, 이미 작업이 있는 folder_path 는 아예 제외해
     불필요한 INSERT 시도를 없앤다(NOT EXISTS). 새 폴더가 없으면 write 0회."""
+    sync_folder_tasks_batch(conn, [project_id])
+
+
+def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
+    """여러 프로젝트의 새 폴더 작업을 한 조회로 동기화한다."""
+    project_ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    if not project_ids:
+        return
+    placeholders = ",".join("?" * len(project_ids))
     fps = conn.execute(
-        "SELECT DISTINCT g.folder_path FROM generation g "
-        "WHERE g.project_id=? AND g.folder_path IS NOT NULL AND g.folder_path<>'' "
+        "SELECT DISTINCT g.project_id, g.folder_path FROM generation g "
+        "WHERE g.project_id IN (" + placeholders + ") "
+        "  AND g.folder_path IS NOT NULL AND g.folder_path<>'' "
         "  AND g.deleted_at IS NULL "
         "  AND NOT EXISTS (SELECT 1 FROM project_task t "
         "                  WHERE t.project_id=g.project_id AND t.folder_path=g.folder_path)",
-        (project_id,),
+        project_ids,
     ).fetchall()
     for row in fps:
         fp = row["folder_path"]
@@ -217,27 +258,34 @@ def sync_folder_tasks(conn, project_id: str) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO project_task"
             "(id, project_id, name, status, sequence, folder_path) VALUES(?,?,?,?,?,?)",
-            (new_id(), project_id, name, "not_started", sequence, fp),
+            (new_id(), row["project_id"], name, "not_started", sequence, fp),
         )
 
 
-def list_tasks(project_id: str) -> list[dict[str, Any]]:
-    """작업 목록 + 귀속 생성물 파생(컷 썸네일·생성자·크레딧·제작시간·코멘트수).
+def list_tasks_batch(project_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """여러 프로젝트의 작업과 파생값을 한 DB 조회 묶음으로 반환한다.
+
+    작업 목록 + 귀속 생성물 파생(컷 썸네일·생성자·크레딧·제작시간·코멘트수).
     귀속=폴더/시퀀스 자동(2레인) ∪ 수동 링크. 보드/테이블/캘린더가 같은 이 데이터를 쓴다.
-    조회 전에 폴더 자동 작업을 멱등 동기화(create-only)한다."""
+    조회 전에 폴더 자동 작업을 멱등 동기화(create-only)한다. 프로젝트 수와 무관하게 컷·담당·
+    메트릭·코멘트·이름 집계를 각각 한 번만 실행한다."""
+    project_ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    if not project_ids:
+        return {}
     with get_connection() as conn:
         _ensure_schema(conn)
-        sync_folder_tasks(conn, project_id)  # 폴더로 만든 생성물 → 작업 카드 자동 생성(멱등)
+        sync_folder_tasks_batch(conn, project_ids)
+        placeholders = ",".join("?" * len(project_ids))
         rows = conn.execute(
-            "SELECT * FROM project_task WHERE project_id=? "
-            "ORDER BY COALESCE(sort_order, 1000000), created_at",
-            (project_id,),
+            f"SELECT * FROM project_task WHERE project_id IN ({placeholders}) "
+            "ORDER BY project_id, COALESCE(sort_order, 1000000), created_at",
+            project_ids,
         ).fetchall()
         out = []
         all_creator_uids: set[str] = set()
         all_gen_ids: set[str] = set()
         # 1차: 작업별 컷을 '한 번에' 확보(작업당 1쿼리 N+1 → 레인별 배치) + 전체 gen_id 수집.
-        per_task_cuts: dict[str, list[dict[str, Any]]] = _batch_task_gen_rows(conn, project_id, rows)
+        per_task_cuts: dict[str, list[dict[str, Any]]] = _batch_task_gen_rows(conn, None, rows)
         for r in rows:
             for g in per_task_cuts.get(r["id"], []):
                 if g["creator_uid"]:
@@ -247,34 +295,36 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
         task_ids = [r["id"] for r in rows]
         assigned_by_task: dict[str, list[str]] = {}
         if task_ids:
-            ph_t = ",".join("?" * len(task_ids))
             for pr in conn.execute(
-                f"SELECT task_id, assignee_uid FROM task_assignment "
-                f"WHERE task_id IN ({ph_t}) ORDER BY created_at",
-                task_ids,
+                f"SELECT ta.task_id, ta.assignee_uid FROM task_assignment ta "
+                f"JOIN project_task t ON t.id=ta.task_id "
+                f"WHERE t.project_id IN ({placeholders}) ORDER BY ta.created_at",
+                project_ids,
             ).fetchall():
-                assigned_by_task.setdefault(pr["task_id"], []).append(pr["assignee_uid"])
-                all_creator_uids.add(pr["assignee_uid"])
+                if pr["task_id"] in per_task_cuts:
+                    assigned_by_task.setdefault(pr["task_id"], []).append(pr["assignee_uid"])
+                    all_creator_uids.add(pr["assignee_uid"])
         # ★배치 집계 — 작업 P개마다 반복하던 metrics/comment 쿼리(≈2P회)를 전체 gen_id 로 1회씩.
         # elapsed 는 raw(NULL 유지) — '없음(NULL)'과 '0초'를 구분해야 manage_hub 폴백이 가능(코덱스).
         metrics_by_gen: dict[str, tuple] = {}   # gen_id -> (credits, elapsed|None)
         comments_by_gen: dict[str, int] = {}    # gen_id -> 코멘트 수
         if all_gen_ids:
             idlist = list(all_gen_ids)
-            ph = ",".join("?" * len(idlist))
-            for m in conn.execute(
-                f"SELECT gen_id, COALESCE(real_credits, est_credits) AS credits, "
-                f"  elapsed_seconds AS elapsed "
-                f"FROM generation_metrics WHERE gen_id IN ({ph})",
-                idlist,
-            ):
-                metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"])
-            for c in conn.execute(
-                f"SELECT gen_id, COUNT(*) AS c FROM generation_comment "
-                f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
-                idlist,
-            ):
-                comments_by_gen[c["gen_id"]] = c["c"]
+            for id_batch in _batched(idlist):
+                ph = ",".join("?" * len(id_batch))
+                for m in conn.execute(
+                    f"SELECT gen_id, COALESCE(real_credits, est_credits) AS credits, "
+                    f"  elapsed_seconds AS elapsed "
+                    f"FROM generation_metrics WHERE gen_id IN ({ph})",
+                    id_batch,
+                ):
+                    metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"])
+                for c in conn.execute(
+                    f"SELECT gen_id, COUNT(*) AS c FROM generation_comment "
+                    f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
+                    id_batch,
+                ):
+                    comments_by_gen[c["gen_id"]] = c["c"]
         # ★생성 소요시간 폴백 — 콘텐츠 DB elapsed 가 없는(NULL) 컷은 manage_hub.db(텔레메트리로
         # 보존된 elapsed)에서 job_id 로 끌어온다. 콘텐츠 push 경로가 elapsed 를 버려서 작업탭이
         # "—" 로 뜨던 문제를 데이터 그대로(허브 큐 생성분만 존재) 채운다. 실패해도 {} 라 안전.
@@ -287,7 +337,8 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
         ]
         if need_job_ids:
             from .. import manage_db
-            elapsed_by_job = manage_db.elapsed_by_job_ids(need_job_ids)
+            for job_batch in _batched(list(dict.fromkeys(need_job_ids))):
+                elapsed_by_job.update(manage_db.elapsed_by_job_ids(job_batch))
         # 2차: 배치 결과를 작업별로 합산해 조립(집계 의미는 기존과 동일).
         for r in rows:
             tid = r["id"]
@@ -338,7 +389,9 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
             out.append(d)
         # 작성자·담당자 이름 일괄 해석(단일 해석기) 후 작업별 부착.
         # all_creator_uids 에 담당(assignee)도 이미 포함(위 배치 조회에서 add).
-        names = resolve_display_names(conn, list(all_creator_uids)) if all_creator_uids else {}
+        names: dict[str, Optional[str]] = {}
+        for uid_batch in _batched(list(all_creator_uids)):
+            names.update(resolve_display_names(conn, uid_batch))
         for d in out:
             seen: list[str] = []
             for c in per_task_cuts[d["id"]]:
@@ -355,7 +408,15 @@ def list_tasks(project_id: str) -> list[dict[str, Any]]:
             d["assigned_creators"] = [
                 {"uid": u, "name": names.get(u)} for u in assigned_by_task.get(d["id"], [])
             ]
-        return out
+        by_project = {project_id: [] for project_id in project_ids}
+        for task in out:
+            by_project[task["project_id"]].append(task)
+        return by_project
+
+
+def list_tasks(project_id: str) -> list[dict[str, Any]]:
+    """단일 프로젝트 호환 API. 실제 조회는 다중 프로젝트 배치 경로를 공유한다."""
+    return list_tasks_batch([project_id]).get(project_id, [])
 
 
 def add_assignment(task_id: str, assignee_uid: str, added_by: Optional[str]) -> bool:

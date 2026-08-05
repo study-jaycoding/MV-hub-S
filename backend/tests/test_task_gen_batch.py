@@ -8,9 +8,11 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app import db, repo
 from app.repo import manage as _m
+from app.repo import manage_tasks as _mt
 
 
 class TaskGenBatchParityTests(unittest.TestCase):
@@ -139,6 +141,79 @@ class TaskGenBatchParityTests(unittest.TestCase):
         self.assertEqual(g2row["linked"], 0)
         # 시퀀스 작업: g3 만
         self.assertEqual({g["id"] for g in batch["t_seq"]}, {"g3"})
+
+    def test_multi_project_batch_keeps_folder_and_sequence_membership_scoped(self):
+        """같은 폴더·시퀀스 이름을 쓰는 다른 프로젝트의 컷이 섞이면 안 된다."""
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p2','P2','team',0)")
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id) "
+                "VALUES('g_p2_folder', 'me', 'p', 'done', '2026-06-30T00:00:00Z', 300, "
+                "'u_me', 'p2', 'ep001/c0010', 0, 'job-g_p2_folder')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id) "
+                "VALUES('g_p2_seq', 'me', 'p', 'done', '2026-06-30T00:00:00Z', 310, "
+                "'u_me', 'p2', NULL, 0, 'job-g_p2_seq')"
+            )
+            conn.execute(
+                "INSERT INTO gen_auto_tag(generation_id, auto_tag_id) VALUES('g_p2_seq','at1')"
+            )
+            conn.execute(
+                "INSERT INTO project_task(id, project_id, name, status, sequence, folder_path) "
+                "VALUES('t2_folder','p2','ep001','not_started','c0010','ep001/c0010')"
+            )
+            conn.execute(
+                "INSERT INTO project_task(id, project_id, name, status, sequence, folder_path) "
+                "VALUES('t2_seq','p2','manualseq','not_started','c0020', NULL)"
+            )
+
+        with patch.object(_mt, "_batch_task_gen_rows", wraps=_mt._batch_task_gen_rows) as cut_batch:
+            result = _m.list_tasks_batch(["p1", "p2"])
+        cut_batch.assert_called_once()
+        p1 = {task["id"]: task for task in result["p1"]}
+        p2 = {task["id"]: task for task in result["p2"]}
+
+        self.assertEqual({cut["id"] for cut in p2["t2_folder"]["cuts"]}, {"g_p2_folder"})
+        self.assertEqual({cut["id"] for cut in p2["t2_seq"]["cuts"]}, {"g_p2_seq"})
+        self.assertNotIn("g_p2_folder", {cut["id"] for cut in p1["t_folder"]["cuts"]})
+        self.assertNotIn("g_p2_seq", {cut["id"] for cut in p1["t_seq"]["cuts"]})
+
+    def test_multi_project_batch_chunks_paired_filters_below_sqlite_limit(self):
+        """프로젝트와 폴더가 각각 400개를 넘어도 SQL 변수 상한 없이 전부 매칭한다."""
+        count = 401
+        with db.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO project(id, name, kind, archived) VALUES(?,?, 'team',0)",
+                [(f"bulk_p{i}", f"Bulk {i}") for i in range(count)],
+            )
+            conn.executemany(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id) "
+                "VALUES(?, 'me', 'p', 'done', '2026-06-30T00:00:00Z', ?, 'u_me', ?, ?, 0, ?)",
+                [
+                    (f"bulk_g{i}", float(i), f"bulk_p{i}", f"bulk/path/{i}", f"bulk_job{i}")
+                    for i in range(count)
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO project_task(id, project_id, name, status, sequence, folder_path) "
+                "VALUES(?,?,?,'not_started',NULL,?)",
+                [
+                    (f"bulk_t{i}", f"bulk_p{i}", f"task{i}", f"bulk/path/{i}")
+                    for i in range(count)
+                ],
+            )
+            rows = conn.execute(
+                "SELECT * FROM project_task WHERE id LIKE 'bulk_t%' ORDER BY id"
+            ).fetchall()
+            result = _mt._batch_task_gen_rows(conn, None, rows)
+
+        self.assertEqual(len(result), count)
+        for i in range(count):
+            self.assertEqual([cut["id"] for cut in result[f"bulk_t{i}"]], [f"bulk_g{i}"])
 
 
 if __name__ == "__main__":

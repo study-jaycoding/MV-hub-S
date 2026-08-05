@@ -26,6 +26,7 @@ from .manage_tasks import (
     delete_task,
     is_assignee,
     list_tasks,
+    list_tasks_batch,
     remove_assignment,
     sync_folder_tasks,
     task_projects,
