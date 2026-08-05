@@ -77,6 +77,16 @@ import {
 import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
+  buildSelectedConnections,
+  copySceneSelection,
+  moveCardsFromOrigins,
+  partitionSceneDropFiles,
+  pasteSceneClipboard,
+  SCENE_GRID as GRID,
+  snapSceneGrid as snapGrid,
+  type SceneClipboard,
+} from "../../lib/sceneInteractions";
+import {
   isComfyRunning,
   subscribeComfyRunning,
   getComfyRunningVersion,
@@ -141,11 +151,9 @@ function sameViewRect(a: ViewRect | null, b: ViewRect, eps = VIEW_RECT_EPS) {
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 2.5;
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
-const GRID = 22;
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
 const CARD_MIN_W = GRID * 5; // 110
 const CARD_MIN_H = GRID * 3; // 66
-const snapGrid = (v: number) => Math.round(v / GRID) * GRID;
 // 그룹 고정 색 팔레트 — sceneColors.ts 로 이동(HeadCard 와 공용, R2 분할).
 // 그룹 멤버 카드를 이 속도(화면 px/ms) 이상으로 경계 밖으로 빼면 '속도 이탈' — 프레임이 카드를 놓아주고
 //  그룹에서 빠진다(느리게 빼면 기존처럼 프레임이 늘어나 덮음). 폴더에서 아이콘 확 빼내는 제스처.
@@ -324,7 +332,7 @@ export function SceneBoard({
   // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
   //  inEdges = 외부 소스(선택 밖) → 선택 노드로 들어오는 입력 엣지. 붙여넣을 때 기존 소스에 그대로 다시 물려
   //  '입력을 공유하는 복제'가 되게 한다(from=원본 소스 유지, to=붙여넣은 새 노드).
-  const clipboardRef = useRef<{ cards: SceneCard[]; edges: SceneEdge[]; inEdges: SceneEdge[] } | null>(null);
+  const clipboardRef = useRef<SceneClipboard | null>(null);
   // 직전에 레퍼런스로 넣은 클립보드 이미지 지문(크기:타입) — '새 캡쳐'인지 '이미 쓴 캡쳐'인지 구분해
   //  붙여넣기 우선순위(새 이미지=이미지 / 이미 쓴 이미지+복사한 노드=노드)를 최근 동작 기준으로 정한다.
   const lastImgKeyRef = useRef<string | null>(null);
@@ -1263,10 +1271,9 @@ export function SceneBoard({
     const files = filesFromDataTransfer(e.dataTransfer);
     // 씬 파일(.json) 단독 드롭 → 저장 파일 그대로 불러오기(새 탭). 형식이 아니면 parseSceneImport 가 알림.
     //  ★미디어와 섞여 드롭되면 씬으로 가로채지 않는다 — json 은 레퍼런스가 못 되니 미디어 업로드를 우선.
-    const jsonFiles = files.filter((f) => /\.json$/i.test(f.name));
-    const mediaFiles = files.filter((f) => !/\.json$/i.test(f.name));
-    if (jsonFiles[0] && mediaFiles.length === 0 && onLoadSceneFile) {
-      onLoadSceneFile(jsonFiles[0]);
+    const { sceneFile, mediaFiles } = partitionSceneDropFiles(files);
+    if (sceneFile && onLoadSceneFile) {
+      onLoadSceneFile(sceneFile);
       return;
     }
     // 외부 미디어 파일 드래그 → 업로드 후 레퍼런스 카드(섞여 온 json 은 무시).
@@ -1467,30 +1474,12 @@ export function SceneBoard({
   // 선택 노드(2개 이상)를 키로 연결 — 포트 드래그 대신. 공간 순서(왼→오른쪽,위→아래)로 인접쌍을
   // canConnect 허용 방향으로 잇는다(a→b 불가면 b→a 시도). 이미 있는 엣지·불가쌍은 건너뛴다.
   const connectSelected = () => {
-    const picked = [...selectedRef.current]
-      .map((id) => cardsRef.current.find((c) => c.id === id))
-      .filter((c): c is SceneCard => !!c)
-      .sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y));
-    if (picked.length < 2) return;
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const existing = new Set(edgesRef.current.map((e) => e.from + ">" + e.to));
-    const newEdges: SceneEdge[] = [];
-    for (let i = 0; i < picked.length - 1; i++) {
-      const a = picked[i];
-      const b = picked[i + 1];
-      let from = a;
-      let to = b;
-      if (!canConnect(a, b, byId, edgesRef.current)) {
-        if (canConnect(b, a, byId, edgesRef.current)) {
-          from = b;
-          to = a;
-        } else continue; // 어느 방향도 불가한 쌍은 건너뜀
-      }
-      const key = from.id + ">" + to.id;
-      if (existing.has(key)) continue;
-      existing.add(key);
-      newEdges.push({ id: uid(), from: from.id, to: to.id });
-    }
+    const newEdges = buildSelectedConnections(
+      cardsRef.current,
+      edgesRef.current,
+      selectedRef.current,
+      uid,
+    );
     if (!newEdges.length) return;
     const nextEdges = [...edgesRef.current, ...newEdges];
     const nextCards = withGenRefs(cardsRef.current, nextEdges); // 새 연결로 생성카드 refs 재계산
@@ -2312,16 +2301,8 @@ export function SceneBoard({
         const ids = new Set(sel);
         if (!ids.size) return;
         e.preventDefault();
-        clipboardRef.current = {
-          cards: cardsRef.current.filter((c) => ids.has(c.id)).map((c) => ({ ...c })),
-          edges: edgesRef.current
-            .filter((ed) => ids.has(ed.from) && ids.has(ed.to))
-            .map((ed) => ({ ...ed })),
-          // 외부 소스 → 선택 노드로 들어오는 입력 엣지(출력 엣지는 제외 — 하류 이중연결 방지, 입력만 공유).
-          inEdges: edgesRef.current
-            .filter((ed) => !ids.has(ed.from) && ids.has(ed.to))
-            .map((ed) => ({ ...ed })),
-        };
+        // 외부 소스 → 선택 노드로 들어오는 입력 엣지만 함께 보관한다. 출력 엣지는 하류 이중연결 방지를 위해 제외.
+        clipboardRef.current = copySceneSelection(cardsRef.current, edgesRef.current, ids);
         // 노드 복사가 OS 클립보드를 '접수' — 남아있던 옛 캡처 이미지를 마커 텍스트로 대체한다.
         //  이러면 Ctrl+V 때 이미지 blob 자체가 없어 노드 붙여넣기가 항상 우선(판정 불필요).
         //  이전 방식(read 로 옛 이미지 지문 기록)은 clipboard-read '권한'이 있어야만 동작해, 권한 없는
@@ -2791,15 +2772,11 @@ export function SceneBoard({
         const dx = (ev.clientX - startX) / z;
         const dy = (ev.clientY - startY) / z;
         // 잡은 카드의 최종 위치를 22px 격자에 스냅 → 그 스냅된 이동량을 전체에 적용.
-        const sdx = snapGrid(anchor.x + dx) - anchor.x;
-        const sdy = snapGrid(anchor.y + dy) - anchor.y;
         const prevCards = cardsRef.current;
-        const a = prevCards.find((c) => c.id === id);
-        if (a && a.x === anchor.x + sdx && a.y === anchor.y + sdy) return; // 스냅 후 위치 그대로면 스킵
+        const movedCards = moveCardsFromOrigins(prevCards, origins, id, anchor, dx, dy);
+        if (!movedCards.changed) return; // 스냅 후 위치 그대로면 스킵
         relocated = true; // 실제로 다른 칸으로 이동함
-        const next = prevCards.map((c) =>
-          origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
-        );
+        const next = movedCards.cards;
         cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
         setCards(next);
         // 속도 이탈 — 프레임 밖으로 '빠르게' 나가면 이탈(박스가 놓아줌). ★단 다시 프레임 '안으로' 돌아오면
@@ -3044,55 +3021,18 @@ export function SceneBoard({
       // 2) 내부에서 복사한 노드 붙여넣기(새 id·격자 오프셋, 그들 사이 엣지 재매핑).
       if (hasNodes && clip) {
         e.preventDefault();
-        const idMap = new Map<string, string>();
-        // 배치 규칙(사용자 확정): 항상 격자 2칸 '대각선 계단'(원래 간격·모양 — 스택된 복사 느낌).
-        //  단, 어떤 복사본이 기존 카드와 '거의 같은 자리'(격자 1칸 미만 차이)에 떨어져 완전히 겹쳐
-        //  안 보이게 되는 경우만 한 계단씩 더 내려간다 — 계단 모양은 유지하고 완전 중첩만 방지.
-        const off = GRID * 2;
-        let shift = off;
-        for (let s = 1; s <= 20; s++) {
-          shift = off * s;
-          const fullyOverlaps = clip.cards.some((c) =>
-            cardsRef.current.some(
-              (x) => Math.abs(c.x + shift - x.x) < GRID && Math.abs(c.y + shift - x.y) < GRID,
-            ),
-          );
-          if (!fullyOverlaps) break;
-        }
-        const newCards = clip.cards.map((c) => {
-          const nid = uid();
-          idMap.set(c.id, nid);
-          return { ...c, id: nid, x: c.x + shift, y: c.y + shift };
-        });
-        // input 채널(output id)도 재매핑 — output 을 함께 복사했으면 붙여넣은 output 을 가리키게(아니면 원본 유지).
-        for (const c of newCards)
-          if (c.kind === "input" && c.channel && idMap.has(c.channel)) c.channel = idMap.get(c.channel);
-        const newEdges: SceneEdge[] = clip.edges.map((ed) => ({
-          ...ed,
-          id: uid(),
-          from: idMap.get(ed.from)!,
-          to: idMap.get(ed.to)!,
-        }));
-        // 입력 공유: 외부 소스는 그대로(from 유지), to 만 붙여넣은 새 노드로. 소스가 현재 씬에 남아있을 때만
-        //  재현한다(다른 씬에 붙여넣기·소스 삭제 시 유령 엣지 방지). order/role 등은 보존.
-        const curIds = new Set(cardsRef.current.map((c) => c.id));
-        const inEdges: SceneEdge[] = (clip.inEdges || [])
-          .filter((ed) => curIds.has(ed.from) && idMap.has(ed.to))
-          .map((ed) => ({ ...ed, id: uid(), to: idMap.get(ed.to)! }));
-        const nextEdges = [...edgesRef.current, ...newEdges, ...inEdges];
-        const nextCards = withGenRefs([...cardsRef.current, ...newCards], nextEdges);
+        const pasted = pasteSceneClipboard(cardsRef.current, edgesRef.current, clip, uid);
+        const nextEdges = pasted.edges;
+        const nextCards = withGenRefs(pasted.cards, nextEdges);
         cardsRef.current = nextCards;
         edgesRef.current = nextEdges;
         setCards(nextCards);
         setEdges(nextEdges);
-        setSelected(new Set(newCards.map((c) => c.id)));
+        setSelected(pasted.pastedCardIds);
         persist(nextCards, nextEdges);
         // 연속 붙여넣기 캐스케이드 — 다음 Ctrl+V 가 방금 붙여넣은 위치에서 이어서 밀려 겹치지 않게.
         //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 실제 이동량만큼 전진. Ctrl+C 하면 초기화.)
-        clipboardRef.current = {
-          ...clip,
-          cards: clip.cards.map((c) => ({ ...c, x: c.x + shift, y: c.y + shift })),
-        };
+        clipboardRef.current = pasted.nextClipboard;
         return;
       }
     };
