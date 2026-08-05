@@ -396,4 +396,5 @@ export interface ProgressMessage {
   result_url?: string | null;
   error?: string;
   projects?: string[]; // assets_changed: 변경된 어셋 프로젝트 이름들(관련 창만 갱신)
+  origins?: Array<{ client_id: string; mutation_id: string }>; // synced: 병합된 변경 요청 출처
 }

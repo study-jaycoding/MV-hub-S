@@ -46,6 +46,12 @@ from .config import (
 )
 from .db import init_db
 from .deps import session_token
+from .mutation_notify import (
+    CLIENT_ID_HEADER,
+    MUTATION_ID_HEADER,
+    parse_mutation_origin,
+    should_notify_mutation,
+)
 from .routers import (
     _proxy,
     assets,
@@ -255,6 +261,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[MUTATION_ID_HEADER],
 )
 
 app.include_router(library.router)
@@ -330,38 +337,6 @@ async def auth_enforcement(request: Request, call_next):
 # 한 클라이언트의 쓰기(태그·소스·컬러·코멘트·프로젝트 등)를 DB 저장만 하지 않고,
 # 연결된 다른 클라이언트(같은 계정의 다른 기기/탭)에 'synced' 를 push 해 즉시 새로고침시킨다.
 # 엔드포인트마다 손대지 않고 미들웨어 한 곳에서 처리(디바운스는 ws.manager 가 담당).
-# 라이브러리 데이터와 무관한 경로는 제외(불필요한 reload 방지).
-_NOTIFY_EXCLUDE = ("/api/auth/", "/api/health", "/api/backup", "/api/merge")
-_NOTIFY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-# HTTP는 POST지만 라이브러리 DB를 바꾸지 않는 계약. 특히 generations/batch·comment-counts·
-# folder-counts는 주기 호출되므로 synced를 방송하면 조회→전체 reload→조회의 순환이 생긴다.
-# comfy run은 외부 실행만 시작하고 결과 저장은 별도 save-to-library가 알리므로 여기서는 제외한다.
-_NOTIFY_NO_LIBRARY_CHANGE_POSTS = frozenset(
-    {
-        "/api/cost",
-        "/api/generations/batch",
-        "/api/generations/comment-counts",
-        "/api/ingest/known-jobs",
-        "/api/projects/folder-counts/batch",
-        "/api/comfy/parse",
-        "/api/comfy/run",
-        "/api/assets/reveal",
-        "/api/assets/clipboard-copy",
-    }
-)
-
-
-def should_notify_mutation(method: str, path: str, status_code: int) -> bool:
-    return (
-        method in _NOTIFY_METHODS
-        and path.startswith("/api/")
-        and not path.startswith(_NOTIFY_EXCLUDE)
-        and not (method == "POST" and path in _NOTIFY_NO_LIBRARY_CHANGE_POSTS)
-        # 리다이렉트(307 등)는 실제 변경 완료가 아니므로 최종 2xx 응답만 알린다.
-        and 200 <= status_code < 300
-    )
-
-
 @app.middleware("http")
 async def mutation_notify(request: Request, call_next):
     response = await call_next(request)
@@ -373,7 +348,15 @@ async def mutation_notify(request: Request, call_next):
             from .deps import realtime_scope
 
             acc = getattr(request.state, "account", None)
-            manager.notify_mutation(realtime_scope(acc))  # email 기반 스코프(연결·progress 와 일관)
+            origin = parse_mutation_origin(
+                request.headers.get(CLIENT_ID_HEADER),
+                request.headers.get(MUTATION_ID_HEADER),
+            )
+            # email 기반 스코프(연결·progress 와 일관). 응답에 되돌린 id는 프론트가 이 요청을
+            # 포함해 목록을 다시 읽었는지 추적하는 용도이며 인증·권한 판단에는 쓰지 않는다.
+            manager.notify_mutation(realtime_scope(acc), origin)
+            if origin:
+                response.headers[MUTATION_ID_HEADER] = origin[1]
     except Exception:  # noqa: BLE001 — 알림 실패가 응답을 막지 않게
         pass
     return response

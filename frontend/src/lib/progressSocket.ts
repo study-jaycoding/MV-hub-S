@@ -10,12 +10,16 @@ export function connectProgress(
   let retry: ReturnType<typeof setTimeout> | null = null;
   let backoff = 1000;
   let closed = false;
+  let needsCatchUp = false;
 
   const connect = () => {
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onopen = () => {
       backoff = 1000;
-      onReconnect?.();
+      // 최초 연결은 App의 초기 reload와 겹치므로 보정 조회가 필요 없다. 실제로 한 번 연결된 뒤
+      // 끊겼거나 최초 연결 시도부터 실패했다가 복구된 경우에만 그 사이 놓친 상태를 따라잡는다.
+      if (needsCatchUp) onReconnect?.();
+      needsCatchUp = false;
     };
     ws.onmessage = (ev) => {
       try {
@@ -31,6 +35,7 @@ export function connectProgress(
         // 세션 만료/무효는 재시도해도 거부되므로 무한 재연결을 멈춘다.
         return;
       }
+      needsCatchUp = true;
       backoff = Math.min(backoff * 1.6, 15000);
       retry = setTimeout(connect, backoff);
     };

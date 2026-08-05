@@ -73,6 +73,41 @@ class WsBroadcastScopeTests(unittest.TestCase):
         # None 소켓: account_uid=None broadcast + broadcast_all
         self.assertEqual([m["type"] for m in none_msgs], ["progress", "synced"])
 
+    def test_mutation_notifications_coalesce_and_preserve_known_origins(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            sock = FakeWS()
+            mgr._active[sock] = "acct:a"
+            with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
+                mgr.notify_mutation("acct:a", ("client_a_123", "mutation_001"))
+                mgr.notify_mutation("acct:a", ("client_a_123", "mutation_002"))
+                await mgr._pending_notify
+            return sock.received
+
+        messages = self._run(scenario())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0]["origins"],
+            [
+                {"client_id": "client_a_123", "mutation_id": "mutation_001"},
+                {"client_id": "client_a_123", "mutation_id": "mutation_002"},
+            ],
+        )
+
+    def test_unknown_origin_forces_safe_full_refresh_message(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            sock = FakeWS()
+            mgr._active[sock] = "acct:a"
+            with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
+                mgr.notify_mutation("acct:a", ("client_a_123", "mutation_001"))
+                mgr.notify_mutation("acct:a")
+                await mgr._pending_notify
+            return sock.received
+
+        messages = self._run(scenario())
+        self.assertEqual(messages, [{"type": "synced"}])
+
 
 if __name__ == "__main__":
     unittest.main()

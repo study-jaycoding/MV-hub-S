@@ -1,4 +1,10 @@
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import {
+  createLibraryMutationOrigin,
+  LIBRARY_CLIENT_ID_HEADER,
+  LIBRARY_MUTATION_ID_HEADER,
+  markLibraryMutationSucceeded,
+} from "./librarySync";
 import { loadString, removeStorage, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
@@ -40,13 +46,24 @@ export async function throwHttpError(res: Response, url: string, fallback?: stri
 }
 
 export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const mutationOrigin = createLibraryMutationOrigin(init?.method);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+  if (mutationOrigin) {
+    headers[LIBRARY_CLIENT_ID_HEADER] = mutationOrigin.client_id;
+    headers[LIBRARY_MUTATION_ID_HEADER] = mutationOrigin.mutation_id;
+  }
   const res = await fetch(url, { ...init, headers });
   if (!res.ok) await throwHttpError(res, url);
+  if (mutationOrigin) {
+    markLibraryMutationSucceeded(
+      mutationOrigin,
+      res.headers?.get(LIBRARY_MUTATION_ID_HEADER) ?? null,
+    );
+  }
   return res.json() as Promise<T>;
 }
 

@@ -25,6 +25,12 @@ from fastapi.responses import Response
 
 from .. import repo
 from ..config import AUTH_ENABLED
+from ..mutation_notify import (
+    CLIENT_ID_HEADER,
+    MUTATION_ID_HEADER,
+    parse_mutation_origin,
+    should_notify_mutation,
+)
 
 _K_URL = "shared_server_url"
 _K_TOKEN = "shared_server_token"
@@ -298,11 +304,17 @@ async def _forward(request: Request) -> Response:
     tok = elevation_token() if used_elev else token()
     method = request.method
     ctype = request.headers.get("content-type")
+    client_id = request.headers.get(CLIENT_ID_HEADER)
+    mutation_id = request.headers.get(MUTATION_ID_HEADER)
 
     def _do() -> tuple[int, bytes, str]:
         req = urllib.request.Request(url, data=body if body else None, method=method)
         if ctype:
             req.add_header("Content-Type", ctype)
+        if client_id:
+            req.add_header(CLIENT_ID_HEADER, client_id)
+        if mutation_id:
+            req.add_header(MUTATION_ID_HEADER, mutation_id)
         if tok:
             req.add_header("Authorization", f"Bearer {tok}")
         try:
@@ -322,15 +334,19 @@ async def _forward(request: Request) -> Response:
             repo.set_setting(_K_ELEV_TOKEN if used_elev else _K_TOKEN, None)
         except Exception:  # noqa: BLE001
             pass
-    elif status < 400 and method in ("POST", "PUT", "PATCH", "DELETE"):
+    response = Response(content=raw, status_code=status, media_type=resp_ctype)
+    if should_notify_mutation(method, request.url.path, status):
         # 위임 성공한 쓰기 → 이 허브의 다른 탭도 즉시 새로고침(로컬 WS).
         try:
             from ..ws import manager
 
-            manager.notify_mutation()
+            origin = parse_mutation_origin(client_id, mutation_id)
+            manager.notify_mutation(origin=origin)
+            if origin:
+                response.headers[MUTATION_ID_HEADER] = origin[1]
         except Exception:  # noqa: BLE001
             pass
-    return Response(content=raw, status_code=status, media_type=resp_ctype)
+    return response
 
 
 # 대용량 바이트 경로 — 일반 _forward 는 응답 전체를 r.read() 로 메모리에 올리므로(영상 최종본

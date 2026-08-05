@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, GEN_PAGE } from "../api";
 import { EMPTY_FACETS } from "./appConstants";
+import { beginLibraryReload, finishLibraryReload } from "./librarySync";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
 interface UseGenerationLibraryDataArgs {
@@ -80,67 +81,84 @@ export function useGenerationLibraryData({
 
   const runReload = useCallback(async (silent: boolean, light: boolean) => {
     if (!authReadyRef.current) return;
-    // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref 가 다른 탭 값으로 바뀌어 있어도 안전.
-    const tab = filtersRef.current.tab;
-    if (tab === "compose") {
-      setLoading(false);
-      // 캔버스(구성)탭은 그리드를 안 그리지만, 좌측 폴더 사이드바(ProjectSection)엔 projects 가 필요하다.
-      // 예전엔 여기서 전부 return 해, 새로고침 후 캔버스에선 폴더 트리가 비어 보이다가(라이브러리 방문
-      // 전까지) 다른 탭을 왕복해야 떴다. projects/미분류 수만 가볍게 로드한다(그리드·facets 는 스킵).
-      const seq = ++reloadSeqRef.current;
-      api
-        .projects("my")
-        .then((pr) => {
+    const syncToken = beginLibraryReload();
+    let syncFinished = false;
+    const finishSync = (applied: boolean) => {
+      if (syncFinished) return;
+      syncFinished = true;
+      finishLibraryReload(syncToken, applied);
+    };
+    try {
+      // 시작 시점의 탭/쿼리를 스냅샷 — await 뒤 ref가 다른 탭 값으로 바뀌어 있어도 안전.
+      const tab = filtersRef.current.tab;
+      if (tab === "compose") {
+        setLoading(false);
+        // 캔버스(구성)탭은 그리드를 안 그리지만, 좌측 폴더 사이드바(ProjectSection)엔 projects가 필요하다.
+        // 예전엔 여기서 전부 return해, 새로고침 후 캔버스에선 폴더 트리가 비어 보이다가(라이브러리 방문
+        // 전까지) 다른 탭을 왕복해야 떴다. projects/미분류 수만 가볍게 로드한다(그리드·facets는 스킵).
+        const seq = ++reloadSeqRef.current;
+        try {
+          // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. fire-and-forget이면
+          // 연속 synced가 프로젝트 요청을 동시에 띄우고 seq를 서로 무효화해 폴더가 늦게 나타난다.
+          const pr = await api.projects("my");
           if (seq !== reloadSeqRef.current || !pr) return;
           setProjects(pr.projects);
           setUnassignedCount(pr.unassigned);
           setArchivedCount(pr.archived_count ?? 0);
           projectsLoadedRef.current = true;
-        })
-        .catch(() => {});
-      return;
-    }
-    if (!silent) setLoading(true);
-    const seq = ++reloadSeqRef.current;
-    const query = genQueryRef.current;
-    const trashMode = !!filtersRef.current.deleted_only;
-    const scope = tab === "team" ? "team" : "my";
-    const sig = JSON.stringify([trashMode, query]);
-    // 탭 전환의 '즉시 표시'는 위 filters.tab effect 가 담당 — 여기(비동기 실행 시점)는 최신본 fetch 만.
-    // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
-    try {
-      const g = trashMode
-        ? await api.listTrash(query.search, 0)
-        : await api.listGenerations(query, null);
+          finishSync(true);
+        } catch {
+          // 캔버스는 기존 프로젝트 캐시를 유지하고 다음 sync/focus에서 재시도한다.
+        }
+        return;
+      }
+      if (!silent) setLoading(true);
+      const seq = ++reloadSeqRef.current;
+      const query = genQueryRef.current;
+      const trashMode = !!filtersRef.current.deleted_only;
+      const scope = tab === "team" ? "team" : "my";
+      const sig = JSON.stringify([trashMode, query]);
+      // 탭 전환의 '즉시 표시'는 위 filters.tab effect가 담당 — 여기(비동기 실행 시점)는 최신본 fetch만.
+      // 1) 그리드 목록 먼저 — 도착 즉시 표시(느린 메타 호출에 그리드가 묶이지 않게).
+      try {
+        const g = trashMode
+          ? await api.listTrash(query.search, 0)
+          : await api.listGenerations(query, null);
+        if (seq !== reloadSeqRef.current) return;
+        setGens(g);
+        setHasMore(g.length >= GEN_PAGE);
+        lastLoadedTabRef.current = tab;
+        tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
+        // 이 목록 요청을 시작하기 전에 성공한 내 변경 id들은 이제 화면 데이터에 포함됐다.
+        finishSync(true);
+      } catch (e) {
+        if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
+      } finally {
+        if (!silent && seq === reloadSeqRef.current) setLoading(false);
+      }
+      // 2) 메타(실패수·안읽음 배지·facets·projects)는 뒤따라 — 실패해도 그리드 표시엔 영향 없음.
+      const now = Date.now();
+      const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats는 비싸 10초 스로틀
+      const [st, f, pr] = await Promise.all([
+        wantStats ? api.generationStats().catch(() => null) : Promise.resolve(null),
+        light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
+        light ? Promise.resolve(null) : api.projects(scope).catch(() => null),
+      ]);
       if (seq !== reloadSeqRef.current) return;
-      setGens(g);
-      setHasMore(g.length >= GEN_PAGE);
-      lastLoadedTabRef.current = tab;
-      tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
-    } catch (e) {
-      if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
+      if (st) {
+        setStats(st);
+        lastStatsAtRef.current = now;
+      }
+      if (f) setFacets(f);
+      if (pr) {
+        setProjects(pr.projects);
+        setUnassignedCount(pr.unassigned);
+        setArchivedCount(pr.archived_count ?? 0);
+        projectsLoadedRef.current = true;
+      }
     } finally {
-      if (!silent && seq === reloadSeqRef.current) setLoading(false);
-    }
-    // 2) 메타(실패수·안읽음 배지·facets·projects)는 뒤따라 — 실패해도 그리드 표시엔 영향 없음.
-    const now = Date.now();
-    const wantStats = !light || now - lastStatsAtRef.current > 10000; // stats 는 비싸 10초 스로틀
-    const [st, f, pr] = await Promise.all([
-      wantStats ? api.generationStats().catch(() => null) : Promise.resolve(null),
-      light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
-      light ? Promise.resolve(null) : api.projects(scope).catch(() => null),
-    ]);
-    if (seq !== reloadSeqRef.current) return;
-    if (st) {
-      setStats(st);
-      lastStatsAtRef.current = now;
-    }
-    if (f) setFacets(f);
-    if (pr) {
-      setProjects(pr.projects);
-      setUnassignedCount(pr.unassigned);
-      setArchivedCount(pr.archived_count ?? 0);
-      projectsLoadedRef.current = true;
+      // 실패·탭/필터 전환으로 결과가 폐기된 reload는 변경을 덮었다고 표시하지 않는다.
+      finishSync(false);
     }
   }, [flash]);
 

@@ -1,7 +1,13 @@
 import { useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
+import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
 import { postAssetsUpdated } from "./assetBroadcast";
+import {
+  decideLibrarySync,
+  trackOwnSyncedForReload,
+  type LibraryMutationOrigin,
+} from "./librarySync";
 import { isKnownGen, observeStatus } from "./sceneRecentDoneStore";
 import type { Generation } from "../types";
 
@@ -14,6 +20,9 @@ interface UseGenerationProgressArgs {
 }
 
 const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "processing"]);
+const SYNC_DEBOUNCE_MS = 400;
+const SYNC_WAIT_POLL_MS = 100;
+const SYNC_WAIT_MAX_MS = 5000;
 
 export function shouldObserveProgressStatus(
   generationId: string | null | undefined,
@@ -34,6 +43,47 @@ export function useGenerationProgress({
 }: UseGenerationProgressArgs) {
   useEffect(() => {
     let syncedTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingSyncOrigins: LibraryMutationOrigin[] | undefined;
+    let forceFullSync = false;
+    let pendingSyncSince = 0;
+
+    const flushSynced = () => {
+      syncedTimer = null;
+      if (pendingSyncOrigins === undefined) return;
+      const decision = forceFullSync ? "reload" : decideLibrarySync(pendingSyncOrigins);
+      // 내 변경을 포함한 목록 요청이 아직 진행 중이면 끝날 때까지 짧게 기다린다. 실패하면 inflight
+      // 표식이 사라져 reload로 전환한다. 비정상적으로 오래 걸리면 5초 뒤 안전하게 한 번 더 읽는다.
+      if (decision === "wait" && Date.now() - pendingSyncSince < SYNC_WAIT_MAX_MS) {
+        syncedTimer = setTimeout(flushSynced, SYNC_WAIT_POLL_MS);
+        return;
+      }
+      const flushedOrigins = pendingSyncOrigins;
+      pendingSyncOrigins = undefined;
+      forceFullSync = false;
+      pendingSyncSince = 0;
+      if (decision !== "skip") {
+        trackOwnSyncedForReload(flushedOrigins);
+        void reload(true);
+        // 외부 기기·다른 창 변경은 현재 SceneBoard의 완료 카드 데이터와 사이드바 카운트도
+        // 갱신해야 한다. 전체 목록 reload만으로는 compose 탭의 useSceneGenData가 깨어나지 않는다.
+        dispatchAppEvent(APP_EVENTS.libraryChanged);
+      }
+      // 목록 reload를 생략해도 열린 코멘트와 히스토리 보드는 가벼운 자기 갱신 신호를 받는다.
+      bumpBoard();
+      setSyncTick((t) => t + 1);
+    };
+
+    const queueSynced = (origins: LibraryMutationOrigin[] | undefined) => {
+      if (pendingSyncOrigins === undefined) {
+        pendingSyncOrigins = [];
+        pendingSyncSince = Date.now();
+      }
+      if (!origins?.length) forceFullSync = true;
+      else pendingSyncOrigins.push(...origins);
+      if (syncedTimer) clearTimeout(syncedTimer);
+      syncedTimer = setTimeout(flushSynced, SYNC_DEBOUNCE_MS);
+    };
+
     const off = connectProgress(
       (m) => {
         if (m.type === "assets_changed") {
@@ -42,13 +92,7 @@ export function useGenerationProgress({
           return;
         }
         if (m.type === "synced") {
-          if (syncedTimer) clearTimeout(syncedTimer);
-          syncedTimer = setTimeout(() => {
-            syncedTimer = null;
-            void reload(true);
-            bumpBoard();
-            setSyncTick((t) => t + 1);
-          }, 400);
+          queueSynced(m.origins);
           return;
         }
         if (!m.status) return;

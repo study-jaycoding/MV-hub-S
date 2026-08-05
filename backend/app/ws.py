@@ -16,11 +16,14 @@ from typing import Any, Optional
 
 from fastapi import WebSocket
 
+from .mutation_notify import MutationOrigin
+
 # 변경 알림 디바운스(초) — 일괄 트리아지(컬러 연타 등)에서 한 번만 broadcast 하도록 합친다.
 _NOTIFY_DEBOUNCE = 0.4
 
 # notify_mutation 에서 "계정 불명 → 전체에 알림"을 표시하는 센티넬(None 은 dict 값으로도 쓰여 구분).
 _ALL = "*"
+_MAX_NOTIFY_ORIGINS = 32  # 비정상 연타로 WS payload·메모리가 커지면 출처 생략(전원 reload가 안전)
 
 
 class ConnectionManager:
@@ -29,7 +32,9 @@ class ConnectionManager:
         self._active: dict[WebSocket, Optional[str]] = {}
         self._lock = asyncio.Lock()
         self._pending_notify: Optional[asyncio.Task] = None
-        self._pending_accounts: set[str] = set()  # 디바운스 윈도우에 모인 알림 대상
+        # 스코프 → {브라우저 client id: 요청 mutation id 집합}. None이면 출처 불명 변경이 섞여
+        # 어느 탭도 안전하게 자기 알림을 생략할 수 없다는 뜻이다.
+        self._pending_accounts: dict[str, Optional[set[MutationOrigin]]] = {}
 
     async def connect(self, ws: WebSocket, account_uid: Optional[str] = None) -> None:
         await ws.accept()
@@ -83,14 +88,29 @@ class ConnectionManager:
                 for ws in dead:
                     self._active.pop(ws, None)
 
-    def notify_mutation(self, account_uid: Optional[str] = None) -> None:
+    def notify_mutation(
+        self,
+        account_uid: Optional[str] = None,
+        origin: Optional[MutationOrigin] = None,
+    ) -> None:
         """로컬 데이터 변경(태그·소스·컬러·코멘트·프로젝트 등)을 같은 계정의 다른 탭/기기에 알린다.
         account_uid=None(계정 불명/AUTH off)이면 전체에 알린다.
         연타(일괄 트리아지)에 대비해 짧은 윈도우로 coalesce — reload 폭주를 막는다.
         프론트는 'synced' 를 받으면 전체 reload 하므로 그 타입을 재사용."""
-        self._pending_accounts.add(account_uid if account_uid is not None else _ALL)
+        scope = account_uid if account_uid is not None else _ALL
+        if scope not in self._pending_accounts:
+            self._pending_accounts[scope] = {origin} if origin else None
+        else:
+            origins = self._pending_accounts[scope]
+            if origins is not None:
+                if origin is None:
+                    self._pending_accounts[scope] = None
+                else:
+                    origins.add(origin)
+                    if len(origins) > _MAX_NOTIFY_ORIGINS:
+                        self._pending_accounts[scope] = None
         if self._pending_notify and not self._pending_notify.done():
-            return  # 이미 예약됨 → 이 변경 대상은 위 set 에 합쳐졌다
+            return  # 이미 예약됨 → 이 변경 대상·출처는 위 dict에 합쳐졌다
         try:
             self._pending_notify = asyncio.create_task(self._debounced_notify())
         except RuntimeError:
@@ -99,12 +119,18 @@ class ConnectionManager:
     async def _debounced_notify(self) -> None:
         await asyncio.sleep(_NOTIFY_DEBOUNCE)
         accounts = self._pending_accounts
-        self._pending_accounts = set()
-        for a in accounts:
+        self._pending_accounts = {}
+        for a, origins in accounts.items():
+            message: dict[str, Any] = {"type": "synced"}
+            if origins:
+                message["origins"] = [
+                    {"client_id": client_id, "mutation_id": mutation_id}
+                    for client_id, mutation_id in sorted(origins)
+                ]
             if a == _ALL:
-                await self.broadcast_all({"type": "synced"})  # 계정 불명 mutation → 전체 reload 신호
+                await self.broadcast_all(message)  # 계정 불명 mutation → 전체 reload 신호
             else:
-                await self.broadcast({"type": "synced"}, account_uid=a)
+                await self.broadcast(message, account_uid=a)
         # broadcast 가 await 하는 동안 새로 쌓인 알림은 notify_mutation 이 (이 태스크가 아직 done 이
         # 아니라) 새 태스크를 안 만든다 → 여기서 직접 재예약해 누락(다른 탭이 reload 못 받음) 방지.
         if self._pending_accounts:
