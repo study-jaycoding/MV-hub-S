@@ -52,9 +52,9 @@
 ### B. 성능 핫스팟 (대부분 저위험, 병합 전 일부 가능)
 | 항목 | 근거 | 방향 |
 |---|---|---|
-| 워크플로 JSON 반복 파싱 | `sceneEdges.ts`의 comfyDeclaredKinds·comfyTextDriveKeys·comfyGenMeta 가 렌더/계산 중 반복 `JSON.parse` | content 문자열 기준 파싱 결과 memo/cache(무동작변경, 저위험) |
-| 렌더당 재계산 | groupViews·collapsed·edge role 계산이 큰 씬에서 반복 가능 | `useMemo`/순수 selector 로 이동 |
-| N+1 조회 | useSceneGenData 는 개선됨. `getGeneration/history` 는 id별 호출 | (병합 후) batch API 검토 |
+| 워크플로 JSON 반복 파싱 | **해결** — content LRU에서 파싱·class·출력 종류를 공유하고 params 배열별 텍스트 키를 캐시 | 270개 프론트 테스트 + Comfy 카드 실측 |
+| 렌더당 재계산 | **해결** — 그래프 파생값 memo, 뷰포트 컬링, 엣지 역할 incoming 인덱스 적용 | 큰 씬 이동 시 불필요한 전체 탐색 축소 |
+| N+1 조회 | **해결** — `useSceneGenData`·완료 감시가 generation/history 배치 API 사용 | 진행 중 id만 재폴링 |
 | object_info | 백엔드 5분 캐시 있음. 로컬 타깃은 전체(수 MB) 대신 개별조회 여지 | 로컬은 `/object_info/{class}`(작음), 클라우드는 전체 유지 |
 
 ### C. 팀서버 보안 / 권한 (위험 높음, 병합 전 필수)
@@ -149,7 +149,7 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 
 > 2026-08-05 P8: CLI 결과의 known/unknown job 조회와 단건·배치 적재를 `generation_sync.py`로,
 > 공용 레퍼런스 upsert/link를 `generation_references.py`로 분리했다. `generations.py`는 1,192줄에서
-> 858줄로 줄었고 `repo.X` 파사드는 유지했다. 다음은 전체 중복·성능·회귀 최종 감사다.
+> 861줄로 줄었고 `repo.X` 파사드는 유지했다. 다음은 전체 중복·성능·회귀 최종 감사다.
 
 ---
 
@@ -178,7 +178,7 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
   - **Jay 판단 보고**: 단일 생성카드 Generate(comfy 없음)는 makeGenJob(모델 없으면 차단)이 아니라 하단 스포트라이트 submit 을 재사용(197행 의도). 그래서 모델 노드 없는 카드를 생성하면 이전 카드/라이브러리의 '남은 모델'로 나갈 수 있음. 스포트라이트에 그 모델이 보이긴 하나 렌더 경로(차단)와 불일치. 차단으로 바꾸면 "Generate=하단 submit" 의도가 깨져 자동수정 보류 — 원하면 "모델 노드 없으면 Generate 비활성" 정책으로 통일 가능.
 - **청크 6 (렌더 / UI)**: 완료. 코덱스 4건 — 반영 1건, 후속/폴리시 3건. XSS·dangerouslySetInnerHTML 없음(깨끗), 리스트 key 대부분 id 기반.
   - **반영**: comfy 입력 엣지 끝점이 base 만 레인별(ref/text)이고 fan 은 전체 입력 기준이라 ref 선이 ref 포트에서 어긋나던 문제 → 생성카드처럼 레인별 fan(inEdgesLaned 에 comfy 포함)으로 포트에 정렬(생성 동작 불변).
-  - **후속(병합 후 Phase 6)**: 마퀴/드래그 중 전 카드 재렌더로 buildViewClips·collectListInputs·comfy JSON 파싱이 매 프레임 반복(큰 씬 렉). 렌더 핫패스 memo 리팩터라 지금 잘 되는 걸 안 깨뜨리기 위해 병합 후. (연관: 보류 #8 워크플로 JSON 파싱 캐시)
+  - **✅ 반영(2026-08-05 Phase 6)**: 뷰포트 컬링·그래프 파생값 memo·워크플로 파싱 캐시·Comfy 입력 집계 memo·엣지 역할 incoming 인덱스를 적용했다. 카드별 수집 계산은 연결 순서가 공간 좌표에 의존하므로 이동 시 재계산을 유지한다.
   - **폴리시(후속)**: MediaThumbnail 최종 로드실패 시 fallback 미전환(레퍼런스·결과 카드가 GenerationCard 의 '원본 없음'과 불일치), comfy/InfoPopup 비디오 preload·poster·onError 누락. 기능 파손 아니라 후속 폴리시.
 - **청크 7 (Assets)**: 완료. 코덱스 4건 — 반영 1건, Jay 보고 3건. safe_join·loopback 게이트(tree/file/thumb/upload/reveal/zip)·업로드 상한·zip 정리·reveal shell 미경유는 깨끗.
   - **반영**: `/api/assets/projects` 가 loopback 없이 백그라운드 프리워밍(서버 디스크 스캔·썸네일 생성)을 걸어, 공유서버 원격 사용자가 Assets 만 열어도 서버 파일 I/O 를 돌리던 문제 → `is_loopback_request` 일 때만 프리워밍(원격은 thumb 를 못 받으니 기능 손실 0).
@@ -210,12 +210,20 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 - **청크 12 (검증 매트릭스)**: 완료. 병합 전 청크 5~11 반영 후 전체 자동 검증 **올 그린** — 백엔드 pytest 150 통과, 프론트 tsc 클린·vitest 124 통과·vite build ✓. (수동 스모크는 Jay 실사용 확인 몫: 씬 생성/전환·drag·pan·zoom·paste·drop·undo, Comfy 파싱·실행·배치·내작업저장·실행중 씬전환, 비교모달, 팀서버 AUTH 권한별.)
 - **★리뷰 완료 요약(청크 1~12)**: 코드 반영 = 청크 4·5·6·7·9·10·11(+세션 초반 1~3).
   - **Jay 결정 완료**: (B) 공유서버 /api/comfy loopback 게이트 = **✅ 승인·반영**(커밋 8a7959a). (A) 청크 8 신원·공유 번들(publish-bundle 재공유 오염 등) = **그대로 둠**(Jay 결정: 팀은 신뢰관계, 수용 가능한 위험). 인원 확대·외부 노출 시 재검토 대상으로 남김.
-  - **후속(병합 후)**: Comfy DoS 상한·실행중 교체 가드, 청크6 마퀴 성능 memo(Phase 6), 미디어 fallback 폴리시, 비교 seek 동기화.
+  - **후속(기능/정책)**: Comfy DoS 상한·실행중 교체 가드, 미디어 fallback 폴리시, 비교 seek 동기화.
   - **결론**: 병합 전 위험 반영 완료. dev→main 병합 가능(fast-forward).
 - **보류(저위험·후속)**:
   - #1 다중 탭+서로 다른 계정 동시 로그인 시 씬 오염 가능(매우 드묾, keyOf 가 매 호출 activeAccount 를 읽음). 필요 시 탭 시작 시 네임스페이스 고정으로.
   - #5 실행계획 내부에서 resolvePortEdges 미적용(현재 호출부가 모두 먼저 적용 → 실버그 아님, 방어적 보강만).
-  - #7 arrangeNodes 비정상 grid/좌표 방어. #8 워크플로 JSON 반복 파싱 캐시(무동작변경 최적화).
+  - #7 arrangeNodes 비정상 grid/좌표 방어.
+
+## 2026-08-05 리아키텍처 최종 감사
+
+- `SceneBoard.tsx` 3,507줄(카드·입력·카메라·이동 훅 분리), `manage.py` 515줄,
+  `generations.py` 861줄까지 축소했다. 공개 파사드와 저장 데이터 형식은 유지했다.
+- 백엔드 repo 정적 import 순환 0건, 동일 AST 함수 복제 0건, 계층 역방향 import 0건이다.
+- 남은 `assets.py` 분리·id/job_id 데이터 마이그레이션은 파일시스템 운영 정책과 구버전 데이터 호환이
+  선행돼야 하는 별도 고위험 단계다. Comfy 상한·미디어 fallback·영상 seek는 구조가 아니라 기능 정책이다.
 
 ## 부록 — 리뷰 청크(별도 세션, 병합 전 위험 점검용)
 서브시스템 최종 diff 기준. 위험순: ① 백엔드 보안 경계 → ② 씬 그래프 순수 로직 → ③ SceneBoard 상태/저장 → ④ 입력 이벤트 → ⑤ 생성 실행/App 연결 → ⑥ 렌더/UI → ⑦ Assets → ⑧ 계정/DB/휴지통 → ⑨ 미디어 비교 → ⑩ Prompt/Spotlight → ⑪ Comfy 재확인 → ⑫ 검증 매트릭스.
