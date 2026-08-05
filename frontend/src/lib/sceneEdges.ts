@@ -255,38 +255,69 @@ export function comfyOutputMedia(
 //  · 실행 전에도, 그리고 이전 워크플로우의 stale 런타임 출력에 속지 않고 정확히 판단하기 위함.
 //  · SaveImage/SaveVideo/VideoCombine/SaveAnimated… → media, SaveText/ShowText → text.
 //  · 파싱 불가/없으면 { media:false, text:false } (호출부가 런타임 출력으로 폴백).
-// 워크플로 content(JSON 문자열) → 노드별 class_type 맵. content 문자열 기준으로 파싱 결과를 캐시해
-//  같은 워크플로를 렌더/엣지판정마다 반복 JSON.parse 하지 않게 한다(같은 문자열 = 같은 파싱, 안전).
-const _wfClassCache = new Map<string, Record<string, string>>();
-function classByNodeOf(content: string | undefined): Record<string, string> {
-  if (!content) return {};
-  const hit = _wfClassCache.get(content);
-  if (hit) return hit;
-  const out: Record<string, string> = {};
-  try {
-    const wf = JSON.parse(content) as Record<string, unknown>;
-    if (wf && typeof wf === "object")
-      for (const [nid, node] of Object.entries(wf)) {
-        const ct = (node as { class_type?: unknown } | null)?.class_type;
-        if (typeof ct === "string") out[nid] = ct;
-      }
-  } catch {
-    /* malformed content → 빈 맵(필드명 폴백은 호출부가 처리) */
+// 워크플로 content(JSON 문자열)에서 여러 호출부가 함께 쓰는 사실을 한 번에 계산한다. class 맵만
+// 캐시하던 이전 구현은 comfyGenMeta 가 같은 원문을 다시 JSON.parse 했고, 출력 종류도 렌더마다
+// Object.values 를 순회했다. LRU 32개로 원문·파싱 객체의 메모리 상한도 둔다.
+interface WorkflowFacts {
+  workflow: Record<string, unknown> | null;
+  classByNode: Record<string, string>;
+  declaredKinds: { media: boolean; text: boolean };
+}
+
+const EMPTY_WORKFLOW_FACTS: WorkflowFacts = {
+  workflow: null,
+  classByNode: {},
+  declaredKinds: { media: false, text: false },
+};
+const WORKFLOW_CACHE_LIMIT = 32;
+const _workflowFactsCache = new Map<string, WorkflowFacts>();
+const MEDIA_OUTPUT_NODE_RE = /saveimage|savevideo|videocombine|saveanimated|savewebm|savegif/i;
+const TEXT_OUTPUT_NODE_RE = /savetext|showtext/i;
+
+function workflowFactsOf(content: string | undefined): WorkflowFacts {
+  if (!content) return EMPTY_WORKFLOW_FACTS;
+  const cached = _workflowFactsCache.get(content);
+  if (cached) {
+    // 최근 사용 항목을 뒤로 보내 오래 안 쓴 워크플로부터 제거한다.
+    _workflowFactsCache.delete(content);
+    _workflowFactsCache.set(content, cached);
+    return cached;
   }
-  if (_wfClassCache.size > 64) _wfClassCache.clear(); // 단순 상한(워크플로 몇 종이라 충분)
-  _wfClassCache.set(content, out);
-  return out;
+
+  let workflow: Record<string, unknown> | null = null;
+  const classByNode: Record<string, string> = {};
+  let media = false;
+  let text = false;
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed && typeof parsed === "object") {
+      workflow = parsed as Record<string, unknown>;
+      for (const [nodeId, node] of Object.entries(workflow)) {
+        const classType = (node as { class_type?: unknown } | null)?.class_type;
+        if (typeof classType !== "string") continue;
+        classByNode[nodeId] = classType;
+        if (MEDIA_OUTPUT_NODE_RE.test(classType)) media = true;
+        if (TEXT_OUTPUT_NODE_RE.test(classType)) text = true;
+      }
+    }
+  } catch {
+    /* malformed content → 빈 사실(필드명/런타임 출력 폴백은 호출부가 처리) */
+  }
+  const facts = { workflow, classByNode, declaredKinds: { media, text } };
+  if (_workflowFactsCache.size >= WORKFLOW_CACHE_LIMIT) {
+    const oldest = _workflowFactsCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) _workflowFactsCache.delete(oldest);
+  }
+  _workflowFactsCache.set(content, facts);
+  return facts;
+}
+
+function classByNodeOf(content: string | undefined): Record<string, string> {
+  return workflowFactsOf(content).classByNode;
 }
 
 export function comfyDeclaredKinds(content: string | undefined): { media: boolean; text: boolean } {
-  let media = false;
-  let text = false;
-  for (const ct of Object.values(classByNodeOf(content))) {
-    // ★출력(저장/합성) 노드만 — 'VHS_LoadVideo' 같은 입력 노드를 미디어 출력으로 오판하지 않게 좁게 매칭.
-    if (/saveimage|savevideo|videocombine|saveanimated|savewebm|savegif/i.test(ct)) media = true;
-    if (/savetext|showtext/i.test(ct)) text = true;
-  }
-  return { media, text };
+  return workflowFactsOf(content).declaredKinds;
 }
 
 // 연결된 텍스트를 주입할 파라미터 key 집합 — '텍스트 입력 노드'(Text Multiline·CLIPTextEncode 등)의
@@ -294,13 +325,30 @@ export function comfyDeclaredKinds(content: string | undefined): { media: boolea
 // (사용자가 직접 조절). 노드 class_type 로 판정하고, content 가 없거나 깨졌으면 필드명으로 폴백한다.
 const TEXT_INPUT_NODE_RE = /text|string|prompt|multiline/i;
 const TEXT_INPUT_FIELD_RE = /^(text|prompt|positive|negative|string)/i;
+type ComfyParam = { key: string; type: string };
+const EMPTY_COMFY_PARAMS: ComfyParam[] = [];
+const _textDriveKeysCache = new WeakMap<
+  readonly ComfyParam[],
+  Map<string | undefined, ReadonlySet<string>>
+>();
 export function comfyTextDriveKeys(
-  params: { key: string; type: string }[] | undefined,
+  params: ComfyParam[] | undefined,
   content: string | undefined,
-): Set<string> {
+): ReadonlySet<string> {
+  // params 배열은 SceneCard 갱신 시 불변 교체된다. 배열 정체성+content 로 캐시해 선택·마퀴 렌더에서
+  // 같은 필드 선별을 반복하지 않는다. 반환 Set 은 읽기 전용으로 취급한다.
+  const paramList = params || EMPTY_COMFY_PARAMS;
+  let byContent = _textDriveKeysCache.get(paramList);
+  if (!byContent) {
+    byContent = new Map();
+    _textDriveKeysCache.set(paramList, byContent);
+  }
+  const cached = byContent.get(content);
+  if (cached) return cached;
+
   const classByNode = classByNodeOf(content); // content 기준 캐시 재사용(반복 JSON.parse 제거)
   const out = new Set<string>();
-  for (const p of params || []) {
+  for (const p of paramList) {
     if (p.type !== "text") continue;
     const [nid, field = ""] = p.key.split("|");
     const cls = classByNode[nid];
@@ -310,6 +358,7 @@ export function comfyTextDriveKeys(
     const fieldOk = TEXT_INPUT_FIELD_RE.test(field);
     if (cls ? TEXT_INPUT_NODE_RE.test(cls) && fieldOk : fieldOk) out.add(p.key);
   }
+  byContent.set(content, out);
   return out;
 }
 
@@ -336,24 +385,24 @@ export function comfyGenMeta(
   paramValues: Record<string, string | number | boolean> | undefined,
 ): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
-  try {
-    const wf = content ? (JSON.parse(content) as Record<string, unknown>) : null;
-    if (wf && typeof wf === "object")
-      for (const node of Object.values(wf)) {
-        const inputs = (node as { inputs?: unknown } | null)?.inputs;
-        if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
-        for (const [metaKey, aliases] of Object.entries(COMFY_META_FIELDS))
-          for (const alias of aliases) {
-            const v = (inputs as Record<string, unknown>)[alias];
-            if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-              out[metaKey] = v;
-              break; // 이 메타 키는 첫 매칭 alias 로 확정
-            }
+  const workflow = workflowFactsOf(content).workflow;
+  if (workflow)
+    for (const node of Object.values(workflow)) {
+      const inputs = (node as { inputs?: unknown } | null)?.inputs;
+      if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) continue;
+      for (const [metaKey, aliases] of Object.entries(COMFY_META_FIELDS))
+        for (const alias of aliases) {
+          const value = (inputs as Record<string, unknown>)[alias];
+          if (
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean"
+          ) {
+            out[metaKey] = value;
+            break; // 이 메타 키는 첫 매칭 alias 로 확정
           }
-      }
-  } catch {
-    /* malformed content → 노출·조절값만 사용 */
-  }
+        }
+    }
   for (const p of params || []) {
     const field = p.key.split("|")[1] || "";
     const metaKey = comfyMetaKeyForField(field);

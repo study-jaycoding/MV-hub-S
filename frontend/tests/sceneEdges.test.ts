@@ -1,5 +1,5 @@
 // sceneEdges 순수 그래프/기하 특성화 — SceneBoard 엣지 렌더의 안전망(이번 리팩토링으로 추출).
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   edgePathXY,
   fanOffset,
@@ -596,6 +596,24 @@ describe("collectGenRefs (comfy 미디어 → 생성 ref)", () => {
     expect([...comfyTextDriveKeys(params, undefined)]).toEqual(["1|text", "3|prompt"]);
     expect([...comfyTextDriveKeys(params, "not json")]).toEqual(["1|text", "3|prompt"]);
     expect([...comfyTextDriveKeys(undefined, undefined)]).toEqual([]);
+  });
+
+  it("동일 워크플로는 출력·텍스트필드·메타 조회에서 한 번만 파싱한다", () => {
+    const content =
+      '{"cache-text":{"class_type":"Text Multiline","inputs":{"prompt":""}},' +
+      '"cache-save":{"class_type":"SaveImage","inputs":{"model":"cache-model"}}}';
+    const params = [{ key: "cache-text|prompt", type: "text" }];
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      expect(comfyDeclaredKinds(content)).toEqual({ media: true, text: false });
+      const firstKeys = comfyTextDriveKeys(params, content);
+      expect([...firstKeys]).toEqual(["cache-text|prompt"]);
+      expect(comfyTextDriveKeys(params, content)).toBe(firstKeys);
+      expect(comfyGenMeta(content, params, {})).toEqual({ model: "cache-model" });
+      expect(parse).toHaveBeenCalledTimes(1);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   // ★생성 정보에 담을 model·비율·해상도 — 워크플로 baked 값 + 노출·조절값(우선) 병합.

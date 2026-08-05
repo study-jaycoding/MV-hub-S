@@ -2,6 +2,7 @@
 //  ★파라미터 입력 포커스 주의: 모듈 최상단 선언(타입 안정) — 타이핑 중 리렌더에도 input 이 리마운트
 //   되지 않아 포커스 유지. 저장은 setComfyParam(defer)→blur 시 flushPending 확정(기존 동작 그대로).
 //  HistoryBoardNode(memo)는 GenerationCard 와 동일하게 hist 번들의 안정 참조를 개별로 풀어 전달.
+import { useMemo } from "react";
 import type React from "react";
 import type { SceneCard, SceneEdge } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
@@ -89,18 +90,36 @@ export function ComfyCard({
   //  텍스트(라이브)를 표시한다. 실행 시 그 값이 자동 주입된다(내가 텍스트 노드에 적으면 그대로 반영).
   // 이 워크플로가 받을 수 있는 '텍스트 입력' 필드(Text Multiline 등) — 연결 무관. model·resolution 등
   //  설정 파라미터는 문자열이어도 제외(실행/프롬프트와 동일 판정). 텍스트 입력 포트도 이게 있을 때만 표시.
-  const textDriveTargets = comfyTextDriveKeys(params, cfg?.content);
+  const textDriveTargets = useMemo(
+    () => comfyTextDriveKeys(params, cfg?.content),
+    [params, cfg?.content],
+  );
   const hasTextParam = textDriveTargets.size > 0;
   // 텍스트가 '연결'되면 그 필드만 비활성+연결텍스트 표시. model·resolution 은 평소처럼 편집 가능.
-  const drivenKeys = hasTextConnection(card.id, cardsById, edges, refParents)
+  const textConnected = useMemo(
+    () => hasTextConnection(card.id, cardsById, edges, refParents),
+    [card.id, cardsById, edges, refParents],
+  );
+  const drivenKeys = textConnected
     ? textDriveTargets
     : new Set<string>();
   const textDriven = drivenKeys.size > 0;
-  const linkedText = textDriven ? incomingTextOf(card.id, cardsById, edges) : "";
+  const linkedText = useMemo(
+    () => (textDriven ? incomingTextOf(card.id, cardsById, edges) : ""),
+    [textDriven, card.id, cardsById, edges],
+  );
   // 출력 포트 색 = 워크플로우가 선언한 출력 종류(resolveEdgeRole 과 동일 규칙): 미디어=파랑(ref),
   //  텍스트 전용=보라(text). 선언을 못 읽으면 런타임 출력으로 폴백.
   //  ★출력을 '내 작업' 생성물로 저장한 노드(genIds 보유)는 생성물색(lane 없음=기본, 생성카드와 동일).
-  const odk = comfyDeclaredKinds(cfg?.content);
+  const odk = useMemo(() => comfyDeclaredKinds(cfg?.content), [cfg?.content]);
+  const inputMediaCounts = useMemo(() => {
+    const counts = { image: 0, video: 0 };
+    for (const media of gatherComfyMedia(card.id, cards, edges, genData)) {
+      if (media.type === "image") counts.image += 1;
+      else if (media.type === "video") counts.video += 1;
+    }
+    return counts;
+  }, [card.id, cards, edges, genData]);
   const hasSavedGen = !!(card.genIds?.length || card.genId);
   const outLane = hasSavedGen
     ? ""
@@ -194,18 +213,14 @@ export function ComfyCard({
                 </button>
               </span>
             </div>
-            {(() => {
-              // 연결된 입력 미리 보기 — 타입별 개수(실행 시 슬롯에 자동 주입).
-              const inp = gatherComfyMedia(card.id, cards, edges, genData);
-              const ni = inp.filter((m) => m.type === "image").length;
-              const nv = inp.filter((m) => m.type === "video").length;
-              return ni || nv || textDriven ? (
-                <div className="scene-comfynode-inputs">
-                  입력 {ni ? `🖼×${ni}` : ""} {nv ? `🎬×${nv}` : ""}
-                  {textDriven ? " 🔗text" : ""}
-                </div>
-              ) : null;
-            })()}
+            {/* 연결된 입력 미리 보기 — 그래프가 그대로면 선택/마퀴 렌더에서 다시 수집하지 않는다. */}
+            {inputMediaCounts.image || inputMediaCounts.video || textDriven ? (
+              <div className="scene-comfynode-inputs">
+                입력 {inputMediaCounts.image ? `🖼×${inputMediaCounts.image}` : ""}{" "}
+                {inputMediaCounts.video ? `🎬×${inputMediaCounts.video}` : ""}
+                {textDriven ? " 🔗text" : ""}
+              </div>
+            ) : null}
             {(() => {
               // 실행 중이면 미디어 영역을 Comfy 로고로 덮어 '작업 중'을 보인다(이전 결과가 있어도 우선).
               //  하단 상태 웨이브와 별개로, 생성물이 뜨는 자리에 브랜드 로고를 크게 표시.
