@@ -1,10 +1,11 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api } from "../api";
 import { KEY_COLORS } from "./appConstants";
 import { toggleDisabledGen } from "./deactivated";
+import { applyGenerationColor, nextGenerationSelectionColor } from "./generationColorState";
+import { createMutationQueue } from "./mutationQueue";
 import { matchShortcut } from "./shortcuts";
-import { useDebouncedCallback } from "./useDebouncedCallback";
 import type { Filters, Generation } from "../types";
 
 interface UseGenerationKeyboardActionsArgs {
@@ -28,6 +29,12 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+class ColorSaveError extends Error {
+  constructor(readonly failed: number) {
+    super("generation color save failed");
+  }
+}
+
 export function useGenerationKeyboardActions({
   clearSelect,
   filtersRef,
@@ -37,33 +44,44 @@ export function useGenerationKeyboardActions({
   selectedRef,
   setGens,
 }: UseGenerationKeyboardActionsArgs) {
-  const { run: scheduleColorReload, cancel: cancelColorReload } = useDebouncedCallback(
-    () => void reload(false, true),
-    350,
-  );
+  const latestCallbacksRef = useRef({
+    flash,
+    reload: null as typeof reload | null,
+  });
+  latestCallbacksRef.current = { flash, reload };
+  const colorQueueRef = useRef<ReturnType<typeof createMutationQueue> | null>(null);
+  if (!colorQueueRef.current) {
+    colorQueueRef.current = createMutationQueue(async (errors) => {
+      const latest = latestCallbacksRef.current;
+      await latest.reload?.(false, true);
+      const failed = errors.reduce<number>(
+        (sum, error) => sum + (error instanceof ColorSaveError ? error.failed : 1),
+        0,
+      );
+      latest.flash(`컬러 적용 ${failed}건 실패 — 서버 상태로 되돌렸습니다`);
+    });
+  }
 
   const colorSelected = useCallback(
     async (ids: string[], color: string) => {
-      const idSet = new Set(ids);
-      const sel = gensRef.current.filter((g) => idSet.has(g.id));
-      const allSame = sel.length > 0 && sel.every((g) => g.color === color);
-      const next = allSame ? null : color;
-      setGens((prev) => prev.map((g) => (idSet.has(g.id) ? { ...g, color: next } : g)));
-      let failed = ids.length;
-      try {
-        failed = (await api.setColorsBatch(ids, next)).failed.length;
-      } catch {
-        // 전체 요청 실패 — 아래 공통 복구 경로에서 서버 상태를 다시 읽는다.
-      }
-      cancelColorReload();
-      if (failed) {
-        await reload(false, true);
-        flash(`컬러 적용 ${failed}/${ids.length}건 실패`);
-        return;
-      }
-      scheduleColorReload();
+      const next = nextGenerationSelectionColor(gensRef.current, ids, color);
+      gensRef.current = applyGenerationColor(gensRef.current, ids, next);
+      setGens((prev) => {
+        const updated = applyGenerationColor(prev, ids, next);
+        gensRef.current = updated;
+        return updated;
+      });
+      void colorQueueRef.current?.enqueue(async () => {
+        try {
+          const failed = (await api.setColorsBatch(ids, next)).failed.length;
+          if (failed) throw new ColorSaveError(failed);
+        } catch (error) {
+          if (error instanceof ColorSaveError) throw error;
+          throw new ColorSaveError(ids.length);
+        }
+      });
     },
-    [cancelColorReload, flash, gensRef, reload, scheduleColorReload, setGens],
+    [gensRef, setGens],
   );
 
   useEffect(() => {

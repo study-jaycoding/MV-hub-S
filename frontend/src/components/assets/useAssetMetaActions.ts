@@ -1,8 +1,8 @@
 import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
+import { createMutationQueue } from "../../lib/mutationQueue";
 import type { AssetMeta, AssetNode } from "../../types";
-import { createAssetMetaMutationQueue } from "./assetMetaMutationQueue";
 import { EMPTY_ASSET_META, assetFileBaseName } from "./assetsViewModel";
 
 interface Params {
@@ -54,12 +54,12 @@ export function useAssetMetaActions({
 
   // 서버 상태로 되돌림 — 가드된 reloadMeta 로 위임(전환 중이면 딴 프로젝트 화면/캐시를 안 덮는다).
   const reconcile = () => reloadMeta(project);
-  const mutationQueuesRef = useRef(new Map<string, ReturnType<typeof createAssetMetaMutationQueue>>());
+  const mutationQueuesRef = useRef(new Map<string, ReturnType<typeof createMutationQueue>>());
   const enqueueSave = (operation: () => Promise<unknown>) => {
     let queue = mutationQueuesRef.current.get(project);
     if (!queue) {
       const targetProject = project;
-      queue = createAssetMetaMutationQueue(async () => {
+      queue = createMutationQueue(async () => {
         const revisionBeforeReload = mutationRevisionRef.current.get(targetProject) || 0;
         await reloadMeta(targetProject);
         // 재조회가 진행되는 동안 새 편집이 들어오면 그 낙관적 화면을 다시 복원한다.

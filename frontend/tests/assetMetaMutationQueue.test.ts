@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAssetMetaMutationQueue } from "../src/components/assets/assetMetaMutationQueue";
+import { createMutationQueue } from "../src/lib/mutationQueue";
 
 describe("asset meta mutation queue", () => {
   it("executes rapid mutations in input order", async () => {
@@ -8,7 +8,7 @@ describe("asset meta mutation queue", () => {
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    const queue = createAssetMetaMutationQueue(vi.fn());
+    const queue = createMutationQueue(vi.fn());
 
     const first = queue.enqueue(async () => {
       events.push("first:start");
@@ -28,7 +28,7 @@ describe("asset meta mutation queue", () => {
 
   it("reconciles once after all queued mutations when an earlier save fails", async () => {
     const reconcile = vi.fn(async () => undefined);
-    const queue = createAssetMetaMutationQueue(reconcile);
+    const queue = createMutationQueue(reconcile);
     const events: string[] = [];
 
     const first = queue.enqueue(async () => {
@@ -42,11 +42,12 @@ describe("asset meta mutation queue", () => {
     await Promise.all([first, second]);
     expect(events).toEqual(["failed", "second"]);
     expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile.mock.calls[0][0]).toEqual([expect.any(Error)]);
   });
 
   it("continues accepting mutations after reconcile itself fails", async () => {
     const reconcile = vi.fn().mockRejectedValueOnce(new Error("reload failed"));
-    const queue = createAssetMetaMutationQueue(reconcile);
+    const queue = createMutationQueue(reconcile);
     const later = vi.fn(async () => undefined);
 
     await queue.enqueue(async () => {
@@ -64,7 +65,7 @@ describe("asset meta mutation queue", () => {
     const reconcileGate = new Promise<void>((resolve) => {
       releaseReconcile = resolve;
     });
-    const queue = createAssetMetaMutationQueue(async () => {
+    const queue = createMutationQueue(async () => {
       events.push("reconcile:start");
       await reconcileGate;
       events.push("reconcile:end");
