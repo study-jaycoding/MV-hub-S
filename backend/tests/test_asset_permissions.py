@@ -6,7 +6,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
-from app.routers import assets
+from app.routers import _assets_access, assets
 
 
 class AssetPermissionTests(unittest.TestCase):
@@ -15,23 +15,35 @@ class AssetPermissionTests(unittest.TestCase):
 
     def test_unknown_project_comments_are_rejected_on_shared_server(self):
         with (
-            mock.patch.object(assets, "AUTH_ENABLED", True),
-            mock.patch.object(assets.repo, "get_project_by_name", return_value=None),
+            mock.patch.object(_assets_access, "AUTH_ENABLED", True),
+            mock.patch.object(_assets_access.repo, "get_project_by_name", return_value=None),
         ):
             with self.assertRaises(HTTPException) as ctx:
-                assets._require_asset_comment_access("unknown", self.request, write=False)
+                _assets_access.require_asset_comment_access(
+                    "unknown",
+                    self.request,
+                    write=False,
+                )
         self.assertEqual(ctx.exception.status_code, 403)
 
     def test_read_and_write_use_different_project_role_modes(self):
         project = {"id": "p1"}
         with (
-            mock.patch.object(assets, "AUTH_ENABLED", True),
-            mock.patch.object(assets.repo, "get_project_by_name", return_value=project),
-            mock.patch.object(assets, "require_project_role") as require,
+            mock.patch.object(_assets_access, "AUTH_ENABLED", True),
+            mock.patch.object(_assets_access.repo, "get_project_by_name", return_value=project),
+            mock.patch.object(_assets_access, "require_project_role") as require,
         ):
-            assets._require_asset_comment_access("Project", self.request, write=False)
+            _assets_access.require_asset_comment_access(
+                "Project",
+                self.request,
+                write=False,
+            )
             self.assertTrue(require.call_args.kwargs["read_only"])
-            assets._require_asset_comment_access("Project", self.request, write=True)
+            _assets_access.require_asset_comment_access(
+                "Project",
+                self.request,
+                write=True,
+            )
             self.assertFalse(require.call_args.kwargs["read_only"])
 
     def test_projects_and_mounts_routes_have_local_dependencies(self):
