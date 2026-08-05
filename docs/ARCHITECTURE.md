@@ -179,6 +179,9 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `useClickSeparation.ts` | 단일/더블클릭 220ms 분리 훅 + 언마운트 타이머 정리(공용) |
 | `useSpotlightSubmit.ts` | Spotlight 입력 정규화·생성 요청·배치 제출 흐름. `App`은 ref의 `submit` 계약만 사용 |
 | `useSceneHistory.ts` | 씬별 커밋 기준선·undo/redo·생성 결과 이력 보정. 화면 상태는 `SceneBoard`가 유지 |
+| `useSceneKeyboardShortcuts.ts` / `sceneKeyboard.ts` | 캔버스 단축키 리스너 생명주기 / 입력 대상·키 의도 순수 판정 |
+| `useSceneDragSession.ts` / `sceneDragSession.ts` | 전역 드래그 리스너·프레임 합치기 / React 비의존 드래그 세션 생명주기 |
+| `useSceneViewport.ts` / `sceneViewport.ts` | 팬·줌·미니맵·카메라 저장·컬링 갱신 / 좌표·프레이밍 순수 계산 |
 | `useSceneComfyExecution.ts` | Comfy 단독/배치 실행·중복 방지·씬 전환 중단·실행 표시 수명주기 |
 | `sceneComfyExecutor.ts` | 미디어 확보·연결 텍스트·시드 변환 후 Comfy API를 호출하는 React 비의존 경계 |
 | `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
@@ -190,7 +193,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 - **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·로컬 대기/생성중 라벨·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
-- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 자유 배치·선택·포인터·렌더 조립을 소유하고, 저장/undo와 Comfy 실행은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
+- **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
 - **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`).

@@ -115,10 +115,10 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 |---|---|---|
 | **P0** | 이 문서(ARCHITECTURE.md) | 없음 ✅ |
 | **P1** | import 경계 검사(ESLint/pytest AST, 경고 우선) | 낮음 ✅ |
-| **P2** | SceneBoard 순수 계산 추가 추출 + 테스트 | 낮음 |
-| **P3** | SceneBoard 상태/저장/undo 훅 분리 | 중(민감) |
-| **P4** | SceneBoard Comfy 실행 훅 분리 | 중(async) |
-| **P5** | SpotlightPrompt 제출 흐름 훅 분리 | 낮~중 |
+| **P2** | SceneBoard 순수 계산 추가 추출 + 테스트 | 낮음 ✅ |
+| **P3** | SceneBoard 상태/저장/undo 훅 분리 | 중(민감) ✅ |
+| **P4** | SceneBoard Comfy 실행 훅 분리 | 중(async) ✅ |
+| **P5** | SpotlightPrompt 제출 흐름 훅 분리 | 낮~중 ✅ |
 | **P6** | 백엔드 `gen_requests` usecase 추출 | 중 ✅ |
 | **P7·P8** | `repo/manage`·`repo/generations` 내부 분할(파사드 유지) | 중~고 |
 

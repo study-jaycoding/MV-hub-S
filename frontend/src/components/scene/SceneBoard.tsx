@@ -110,6 +110,7 @@ import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
+import { useSceneViewport } from "../../lib/useSceneViewport";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import {
@@ -136,20 +137,6 @@ import { CARD_H, CARD_W, GROUP_COLORS } from "./sceneColors";
 // Phase 1: 켜되 마진 넉넉(먼 카드만 언마운트) — 문제 시 이 값만 false 로 되돌리면 즉시 원복.
 const CULL_ENABLED = true;
 const CULL_MARGIN = 1500; // 뷰포트 밖 이 canvas px 까지는 유지(가장자리 팝인 완화). 다이얼: 줄이면 메모리↓·팝인↑
-const VIEW_RECT_EPS = 0.5; // 뷰포트 변화가 이보다 작으면 setState 생략(무한루프·불필요 리렌더 방지)
-type ViewRect = { l: number; t: number; r: number; b: number };
-function sameViewRect(a: ViewRect | null, b: ViewRect, eps = VIEW_RECT_EPS) {
-  return (
-    !!a &&
-    Math.abs(a.l - b.l) <= eps &&
-    Math.abs(a.t - b.t) <= eps &&
-    Math.abs(a.r - b.r) <= eps &&
-    Math.abs(a.b - b.b) <= eps
-  );
-}
-// 줌 한계 — 최소(멀리 보기)·최대(가까이 보기). 큰 씬을 한눈에 볼 수 있게 하한을 넉넉히 낮춘다.
-const MIN_ZOOM = 0.05;
-const MAX_ZOOM = 2.5;
 // 점 배경 격자 간격(scene.css 의 22px 와 동일). 카드 이동·크기조절이 이 격자에 스냅된다.
 // 카드 최소 크기(격자 배수). 너비는 완료 카드 상단 버튼(S/T/C/ⓘ)이 안 잘리게 넉넉히, 높이는 더 낮게 허용.
 const CARD_MIN_W = GRID * 5; // 110
@@ -441,12 +428,27 @@ export function SceneBoard({
     syncCommitBaseline({ cards: inCards, edges: scene.edges, groups: scene.groups || [] });
   }, [scene.id, scene.cards, scene.edges, scene.groups]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const {
+    scrollRef,
+    canvasRef,
+    zoomRef,
+    panRef,
+    minimapUpdateRef: mmUpdateRef,
+    viewRect,
+    getCamera,
+    toCanvas,
+    navigateTo,
+    frameRects,
+    beginPan,
+  } = useSceneViewport({
+    sceneId: scene.id,
+    camera: scene.camera,
+    onCameraChange,
+    cullingEnabled: CULL_ENABLED,
+    gridSize: GRID,
+  });
   // 캔버스 위 마지막 마우스 좌표(클라이언트) — 선택 없이 n 눌렀을 때 이 위치에 카드 생성.
   const lastMouseRef = useRef<{ x: number; y: number; over: boolean }>({ x: 0, y: 0, over: false });
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const zoomRef = useRef(scene.camera?.z ?? 1);
-  const panRef = useRef({ x: scene.camera?.x ?? 0, y: scene.camera?.y ?? 0 });
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
   const edgesRef = useRef(edges);
@@ -530,78 +532,10 @@ export function SceneBoard({
     };
     return () => bc.close();
   }, [refreshAssetVersions]);
-  const onCameraChangeRef = useRef(onCameraChange);
-  onCameraChangeRef.current = onCameraChange;
-  const camSaveTimer = useRef<number | undefined>(undefined);
-  // 현재 팬/줌을 저장(마지막 본 화면 기억). 화면 갱신 없이 localStorage 에만 → 편집 재렌더 유발 안 함.
-  const persistCamera = () =>
-    onCameraChangeRef.current?.({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y });
   const cardEls = useRef<Record<string, HTMLDivElement | null>>({});
   const heightsRef = useRef<Record<string, number>>({});
   const widthsRef = useRef<Record<string, number>>({}); // head 등 폭도 내용에 맞춰 자동측정
   const [heightTick, bumpHeights] = useState(0);
-  // 뷰포트 컬링 상태 — 화면에 보이는 카드 사각형(canvas 좌표). null 이면 컬링 off/미측정.
-  const [viewRect, setViewRect] = useState<ViewRect | null>(null);
-  const viewRectRef = useRef<ViewRect | null>(null); // 직전 적용값 — 엡실론 비교로 재설정 억제
-  const cullRafRef = useRef<number | null>(null); // 여러 렌더의 재계산을 1 프레임으로 합침(coalesce)
-  // 미니맵(네비게이터)의 뷰포트 박스 갱신 함수 — 팬/줌마다 applyTransform 이 호출(리렌더 없이).
-  const mmUpdateRef = useRef<(() => void) | null>(null);
-
-  const applyTransform = useCallback(() => {
-    const c = canvasRef.current;
-    if (c)
-      c.style.transform = `translate(${panRef.current.x}px, ${panRef.current.y}px) scale(${zoomRef.current})`;
-    // 점 배경(.scene-board)도 팬/줌에 맞춰 이동·확대 — 배경은 고정 뷰포트에 있어 그대로 두면 확대축소가
-    // 안 보인다. 격자 간격(22px)을 배율만큼 키우고 원점 오프셋을 pan 에 맞춰 카드와 함께 움직이게 한다.
-    const b = scrollRef.current;
-    if (b) {
-      const cell = 22 * zoomRef.current;
-      b.style.backgroundSize = `${cell}px ${cell}px`;
-      b.style.backgroundPosition = `${panRef.current.x}px ${panRef.current.y}px`;
-    }
-    mmUpdateRef.current?.(); // 팬/줌 반영 즉시 미니맵 뷰포트 박스도 갱신
-
-    // ── 뷰포트 컬링 재계산(플래그 on 일 때만) ──
-    // ★ applyTransform 은 useLayoutEffect 로 매 렌더 돈다. 여기서 무조건 setState 하면 무한루프다.
-    //   그래서 (1) rAF 로 여러 렌더를 1프레임에 합치고 (2) 엡실론 비교로 변화 있을 때만 setViewRect.
-    if (!CULL_ENABLED) return;
-    if (cullRafRef.current !== null) return;
-    cullRafRef.current = requestAnimationFrame(() => {
-      cullRafRef.current = null;
-      const vp = scrollRef.current?.getBoundingClientRect();
-      if (!vp) return;
-      const z = zoomRef.current;
-      const panX = panRef.current.x;
-      const panY = panRef.current.y;
-      const next: ViewRect = {
-        l: -panX / z,
-        t: -panY / z,
-        r: (vp.width - panX) / z,
-        b: (vp.height - panY) / z,
-      };
-      if (!sameViewRect(viewRectRef.current, next)) {
-        viewRectRef.current = next;
-        setViewRect(next);
-      }
-    });
-  }, []);
-  useLayoutEffect(applyTransform);
-  // 뷰포트(컨테이너) 리사이즈 시에도 컬링 재계산(플래그 on 일 때만). off 면 옵저버 미등록.
-  useEffect(() => {
-    if (!CULL_ENABLED) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => applyTransform());
-    ro.observe(el);
-    applyTransform();
-    return () => {
-      ro.disconnect();
-      if (cullRafRef.current !== null) {
-        cancelAnimationFrame(cullRafRef.current);
-        cullRafRef.current = null;
-      }
-    };
-  }, [applyTransform]);
 
   // 카드 크기(캔버스 좌표). 레퍼런스·Input·Output 은 고정폭·측정높이(내용에 맞춰 컴팩트, 리사이즈 없음),
   // 그 외(생성/텍스트/모델/리스트)는 사용자가 조절한 w/h(없으면 기본 CARD_W/CARD_H).
@@ -632,73 +566,14 @@ export function SceneBoard({
     w: widthOf(c),
     h: heightOf(c),
   });
-  // 주어진 카드 집합이 화면에 꽉 차게(여백 포함) 프레이밍 — 중심 정렬 + 맞춤 줌.
-  const frameCards = (list: SceneCard[], maxZoom: number) => {
-    const vp = scrollRef.current?.getBoundingClientRect();
-    if (!vp || !list.length) return;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const c of list) {
-      const r = cardRect(c);
-      minX = Math.min(minX, r.x);
-      minY = Math.min(minY, r.y);
-      maxX = Math.max(maxX, r.x + r.w);
-      maxY = Math.max(maxY, r.y + r.h);
-    }
-    const bw = Math.max(1, maxX - minX);
-    const bh = Math.max(1, maxY - minY);
-    const pad = 0.82; // 가장자리 여백
-    let z = Math.min((vp.width * pad) / bw, (vp.height * pad) / bh);
-    z = Math.min(maxZoom, Math.max(MIN_ZOOM, z)); // 줌 한계(휠과 동일 하한)
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    zoomRef.current = z;
-    panRef.current = { x: vp.width / 2 - cx * z, y: vp.height / 2 - cy * z };
-    // 부드럽게 이동 — 잠시 transition 을 걸고 적용 후 해제(이후 팬/줌은 즉시반응 유지).
-    const cv = canvasRef.current;
-    if (cv) {
-      cv.style.transition = "transform 0.25s ease";
-      // 배경 점 격자도 같은 시간으로 함께 글라이드(안 그러면 배경만 최종위치로 순간이동해 어긋난다).
-      if (scrollRef.current)
-        scrollRef.current.style.transition = "background-position 0.25s ease, background-size 0.25s ease";
-      window.setTimeout(() => {
-        if (canvasRef.current) canvasRef.current.style.transition = "";
-        if (scrollRef.current) scrollRef.current.style.transition = "";
-      }, 300);
-    }
-    applyTransform();
-    persistCamera();
-  };
   // f 키 — 선택 있으면 그 카드(들) 중심, 없으면 전체 카드. 단일 카드는 과확대 방지로 줌 상한을 낮게.
   const frameView = () => {
     const sel = selectedRef.current;
     const list = sel.size
       ? cardsRef.current.filter((c) => sel.has(c.id))
       : cardsRef.current;
-    frameCards(list, sel.size ? 1.4 : 1.0);
+    frameRects(list.map(cardRect), sel.size ? 1.4 : 1.0);
   };
-  // 미니맵의 한 지점(캔버스 좌표)을 화면 중앙으로 — 줌은 그대로. commit=드래그 종료 시 저장.
-  const navigateTo = (worldX: number, worldY: number, commit: boolean) => {
-    const vp = scrollRef.current?.getBoundingClientRect();
-    if (!vp) return;
-    const z = zoomRef.current;
-    panRef.current = { x: vp.width / 2 - worldX * z, y: vp.height / 2 - worldY * z };
-    applyTransform();
-    if (commit) persistCamera();
-  };
-
-  // 씬을 열 때(전환/첫 진입)만 저장된 카메라를 복원 — 마지막으로 본 화면. scene.camera 를 deps 에서
-  // 뺀 이유: 같은 씬에서 카드 편집으로 scene 이 재로드돼도 라이브 카메라를 되돌리지 않기 위함.
-  useEffect(() => {
-    // 이전 씬에서 예약된 줌 저장 타이머가 남아 있으면 취소 — 전환 후 엉뚱한 씬에 쓰거나 낭비되지 않게.
-    if (camSaveTimer.current) {
-      clearTimeout(camSaveTimer.current);
-      camSaveTimer.current = undefined;
-    }
-    zoomRef.current = scene.camera?.z ?? 1;
-    panRef.current = { x: scene.camera?.x ?? 0, y: scene.camera?.y ?? 0 };
-    applyTransform();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene.id, applyTransform]);
 
   // 카드 실제 높이 측정 → 연결선 끝점(세로 중앙)을 정확히. offsetHeight 는 scale 영향 없는 레이아웃 높이.
   // 카드 구성(개수·레퍼런스 수)이 바뀔 때만 측정 — 단순 위치 이동(드래그)엔 재측정하지 않는다.
@@ -1101,14 +976,6 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
     return nextRefs;
-  };
-
-  const toCanvas = (clientX: number, clientY: number) => {
-    const r = scrollRef.current!.getBoundingClientRect();
-    return {
-      x: (clientX - r.left - panRef.current.x) / zoomRef.current,
-      y: (clientY - r.top - panRef.current.y) / zoomRef.current,
-    };
   };
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
@@ -2413,25 +2280,8 @@ export function SceneBoard({
   };
 
   const onMouseDown = (e: React.MouseEvent) => {
-    // 미들 버튼 → 화면 이동
-    if (e.button === 1) {
-      e.preventDefault();
-      const ox = panRef.current.x;
-      const oy = panRef.current.y;
-      const sx = e.clientX;
-      const sy = e.clientY;
-      const move = (ev: MouseEvent) => {
-        panRef.current = { x: ox + (ev.clientX - sx), y: oy + (ev.clientY - sy) };
-        applyTransform();
-      };
-      const up = () => {
-        scrollRef.current?.classList.remove("panning");
-        persistCamera(); // 팬 끝 → 마지막 본 화면 저장
-      };
-      scrollRef.current?.classList.add("panning");
-      beginDrag(move, up, up); // blur: 현재 화면 저장 + 팬 커서 해제(좌표 무관 커밋이라 up 재사용 안전)
-      return;
-    }
+    // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
+    if (beginPan(e, beginDrag)) return;
     // 가위(Y 누른 채) → 좌드래그로 궤적을 그리고 지나간 선을 빨갛게 예고, 손 떼면 실제 절단.
     if (cutHeld && e.button === 0) {
       e.preventDefault();
@@ -2724,50 +2574,6 @@ export function SceneBoard({
     }
   };
 
-  // 휠 줌(커서 기준)
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      const tgt = e.target as HTMLElement;
-      // 떠있는 UI(변형 팝업·모델설정 모달·옵션 드롭다운·프롬프트 독) 위에서는 보드 줌 대신 그 UI 가
-      //  스크롤되게 — 줌/preventDefault 를 건너뛴다. (예: 비율 드롭다운 휠이 화면 확대/축소로 새던 버그)
-      if (
-        tgt?.closest?.(
-          ".scene-varpop-backdrop, .scene-modelmodal-backdrop, .sl-dropdown, .sl-dockbar",
-        )
-      )
-        return;
-      // 커서 밑에서 보드까지 올라가며, 내용이 넘쳐 실제로 스크롤 가능한 요소가 있으면 줌 대신 그걸 스크롤한다.
-      //  → 텍스트·리스트·렌더·레퍼런스 등 카드 내부 스크롤 콘텐츠를 모두 자동 커버(클래스 열거 불필요).
-      //  .scene-board 는 overflow:hidden 이라 경계에서 줌으로 새지 않는다.
-      for (let node: HTMLElement | null = tgt; node && node !== el; node = node.parentElement) {
-        const s = getComputedStyle(node);
-        const scrollY = (s.overflowY === "auto" || s.overflowY === "scroll") && node.scrollHeight > node.clientHeight;
-        const scrollX = (s.overflowX === "auto" || s.overflowX === "scroll") && node.scrollWidth > node.clientWidth;
-        if (scrollY || scrollX) return;
-      }
-      e.preventDefault();
-      const r = el.getBoundingClientRect();
-      const cx = e.clientX - r.left;
-      const cy = e.clientY - r.top;
-      const prev = zoomRef.current;
-      const nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-      if (nz === prev) return;
-      const ratio = nz / prev;
-      const p = panRef.current;
-      zoomRef.current = nz;
-      panRef.current = { x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio };
-      applyTransform();
-      // 줌이 멈추면(연속 휠 종료) 마지막 본 화면 저장 — 디바운스.
-      if (camSaveTimer.current) clearTimeout(camSaveTimer.current);
-      camSaveTimer.current = window.setTimeout(persistCamera, 400);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyTransform]);
-  useEffect(() => () => { if (camSaveTimer.current) clearTimeout(camSaveTimer.current); }, []);
   // 그룹 색 팔레트 — 팝오버 바깥 클릭 시 닫기.
   useEffect(() => {
     if (!colorPopId) return;
@@ -3931,7 +3737,7 @@ export function SceneBoard({
               <button
                 className="scene-io-btn"
                 title="이 씬을 파일로 저장"
-                onClick={() => onSaveScene({ z: zoomRef.current, x: panRef.current.x, y: panRef.current.y })}
+                onClick={() => onSaveScene(getCamera())}
               >
                 저장
               </button>
