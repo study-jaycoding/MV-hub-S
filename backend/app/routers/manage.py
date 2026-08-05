@@ -376,10 +376,12 @@ class TaskIdsIn(BaseModel):
     task_ids: list[str] = Field(default_factory=list)
 
 
-def _require_tasks_manage(task_ids: list[str], request: Request) -> list[str]:
+def _require_tasks_manage(
+    task_ids: list[str], request: Request, *, reject_duplicates: bool = True
+) -> list[str]:
     """배치 쓰기 전에 모든 작업 존재와 프로젝트별 manage 권한을 확인한다."""
     unique_ids = list(dict.fromkeys(task_ids))
-    if len(unique_ids) != len(task_ids):
+    if reject_duplicates and len(unique_ids) != len(task_ids):
         raise HTTPException(status_code=400, detail="중복 작업 id가 있습니다")
     if len(unique_ids) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 작업까지 변경할 수 있습니다")
@@ -525,14 +527,10 @@ def bulk_set_assignments(body: BulkAssignIn, request: Request):
     # 방어적 상한 — 작업당 담당 20명.
     for it in items:
         it["assignee_uids"] = [u for u in (it.get("assignee_uids") or [])][:20]
-    # 프로젝트별 1회만 권한 검사(중복 조회 방지).
-    checked: set[str] = set()
-    for it in items:
-        pid = _task_project_or_404(it["task_id"])
-        if pid in checked:
-            continue
-        checked.add(pid)
-        _require_project_manage(request, pid)
+    # task→project도 한 번에 조회한다. 예전에는 저장만 배치고 여기서 작업 수만큼 DB를 다시 열었다.
+    # 같은 task를 여러 줄로 보낸 기존 입력 순서 의미는 유지하므로 이 경로만 중복을 허용한다.
+    task_ids = [it["task_id"] for it in items]
+    _require_tasks_manage(task_ids, request, reject_duplicates=False)
     n = repo_manage.bulk_set_assignments(items, body.mode, actor)
     return {"ok": True, "count": n}
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, call, patch
+
+from fastapi import HTTPException
 
 from app import db, repo
 from app.repo import manage
@@ -72,6 +74,56 @@ class TaskBatchTests(unittest.TestCase):
         self.assertEqual(require_read.call_count, 2)
         batch.assert_called_once_with(["p1", "p2"])
         single.assert_not_called()
+
+    def test_bulk_assignment_resolves_all_task_projects_once(self) -> None:
+        body = manage_router.BulkAssignIn(
+            items=[
+                manage_router.BulkAssignItem(task_id="t1", assignee_uids=["u1"]),
+                manage_router.BulkAssignItem(task_id="t2", assignee_uids=["u2"]),
+                manage_router.BulkAssignItem(task_id="t1", assignee_uids=["u3"]),
+            ]
+        )
+        with (
+            patch.object(manage_router, "actor_id", return_value="pm"),
+            patch.object(
+                manage_router.repo_manage,
+                "task_projects",
+                return_value={"t1": "p1", "t2": "p2"},
+            ) as projects,
+            patch.object(manage_router, "_require_project_manage") as require_manage,
+            patch.object(manage_router, "_task_project_or_404") as single_lookup,
+            patch.object(
+                manage_router.repo_manage,
+                "bulk_set_assignments",
+                return_value=3,
+            ) as setter,
+        ):
+            result = manage_router.bulk_set_assignments(body, Mock())
+
+        self.assertEqual(result, {"ok": True, "count": 3})
+        projects.assert_called_once_with(["t1", "t2"])
+        self.assertEqual(
+            require_manage.call_args_list,
+            [call(ANY, "p1"), call(ANY, "p2")],
+        )
+        single_lookup.assert_not_called()
+        setter.assert_called_once()
+
+    def test_bulk_assignment_rejects_missing_task_before_write(self) -> None:
+        body = manage_router.BulkAssignIn(
+            items=[manage_router.BulkAssignItem(task_id="missing", assignee_uids=["u1"])]
+        )
+        with (
+            patch.object(manage_router, "actor_id", return_value="pm"),
+            patch.object(manage_router.repo_manage, "task_projects", return_value={}),
+            patch.object(manage_router.repo_manage, "bulk_set_assignments") as setter,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                manage_router.bulk_set_assignments(body, Mock())
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("없는 작업", raised.exception.detail)
+        setter.assert_not_called()
 
 
 if __name__ == "__main__":
