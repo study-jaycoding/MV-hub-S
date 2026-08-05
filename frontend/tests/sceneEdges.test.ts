@@ -6,6 +6,7 @@ import {
   computeBridgeEdges,
   classifyEdges,
   resolveEdgeRole,
+  resolveEdgeRoles,
   collectListInputs,
   collectRenderGenCardIds,
   collectViewGenCardIds,
@@ -153,6 +154,38 @@ describe("resolveEdgeRole", () => {
     const cards = byId([S, T, U]);
     expect(resolveEdgeRole({ id: "e1", from: "S", to: "T" }, cards, {})).toBe("ref");
     expect(resolveEdgeRole({ id: "e2", from: "S", to: "U" }, cards, {})).toBe("lineage");
+  });
+
+  it("일괄 역할 판정은 input/list를 인덱스로 해석하고 단일 판정 결과와 같다", () => {
+    const cards = byId([
+      node("M", "model"),
+      node("O", "output"),
+      { ...node("I", "input"), channel: "O" },
+      node("G1", "generation"),
+      node("G2", "generation"),
+      { ...node("T", "text"), text: "prompt" },
+      node("L", "list"),
+      node("R", "reference"),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "model-output", from: "M", to: "O" },
+      { id: "input-gen", from: "I", to: "G1" },
+      { id: "text-list", from: "T", to: "L" },
+      { id: "list-gen", from: "L", to: "G2" },
+      { id: "ref-gen", from: "R", to: "G2" },
+    ];
+    const expected = new Map(edges.map((edge) => [edge.id, resolveEdgeRole(edge, cards, {}, edges)]));
+    // 일괄 경로가 원본 edges.filter를 다시 호출하면 즉시 실패한다. 내부의 작은 임시 배열 filter는 허용한다.
+    const guardedEdges = new Proxy(edges, {
+      get(target, property, receiver) {
+        if (property === "filter") throw new Error("전체 엣지 재탐색");
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(resolveEdgeRoles(guardedEdges, cards, {})).toEqual(expected);
+    expect(expected.get("input-gen")).toBe("model");
+    expect(expected.get("list-gen")).toBe("text");
   });
 });
 

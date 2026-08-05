@@ -52,7 +52,7 @@ import {
   edgePathXY,
   fanOffset,
   refLaneOrderIndex,
-  resolveEdgeRole,
+  resolveEdgeRoles,
   resolvePortEdges,
 } from "../../lib/sceneEdges";
 import { arrangeNodes } from "../../lib/sceneLayout";
@@ -2495,11 +2495,10 @@ export function SceneBoard({
   const FAN = 13;
   const PORT_GAP = 24; // 연결 끝점(선 끝·점)을 카드 밖으로 이만큼 띄운다 — 끝점(바깥)과 클릭 포트(안쪽,≈12px) 간격을 카드↔포트 간격과 고르게.
   // 엣지 역할(model/ref/text/lineage/list) — 색·생성카드 입력 레인 결정. edge.role 우선, 없으면 추론.
-  const edgeRoles = useMemo(() => {
-    const m = new Map<string, SceneEdgeRole>();
-    for (const e of edges) m.set(e.id, resolveEdgeRole(e, cardsById, refParents, edges));
-    return m;
-  }, [edges, cardsById, refParents]);
+  const edgeRoles = useMemo(
+    () => resolveEdgeRoles(edges, cardsById, refParents),
+    [edges, cardsById, refParents],
+  );
   // 물리 레인 — model/text 는 각자, ref·lineage 는 같은 중앙 레인('ref')으로 묶는다(같은 y라 fan 을 합쳐야
   // 겹치지 않는다). laneFrac 은 이 물리 레인 기준 y 비율(위=모델·중간=ref/계보·아래=텍스트).
   const laneOf = (role: SceneEdgeRole): "model" | "ref" | "text" =>

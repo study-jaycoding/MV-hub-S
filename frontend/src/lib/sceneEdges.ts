@@ -11,6 +11,28 @@ import {
   type SceneRef,
 } from "./scenes";
 
+type IncomingEdgeIndex = ReadonlyMap<string, readonly SceneEdge[]>;
+
+// 같은 그래프를 여러 번 판정할 때 `edges.filter(e => e.to === id)` 전체 순회를 되풀이하지 않도록
+// 타깃 카드별 들어오는 엣지를 한 번만 묶는다. 원본 순서를 유지해 order 동률의 기존 결과도 보존한다.
+function buildIncomingEdgeIndex(edges: SceneEdge[]): Map<string, SceneEdge[]> {
+  const incoming = new Map<string, SceneEdge[]>();
+  for (const edge of edges) {
+    const found = incoming.get(edge.to);
+    if (found) found.push(edge);
+    else incoming.set(edge.to, [edge]);
+  }
+  return incoming;
+}
+
+function incomingEdgesOf(
+  targetId: string,
+  edges: SceneEdge[],
+  incomingByTarget?: IncomingEdgeIndex,
+): readonly SceneEdge[] {
+  return incomingByTarget ? incomingByTarget.get(targetId) ?? [] : edges.filter((e) => e.to === targetId);
+}
+
 // 연결 허용 규칙 — to 노드 종류별로 받을 수 있는 소스만. 말이 안 되는 연결(text→view 등)을 막는다.
 //  · generation: 모델/텍스트/레퍼런스/생성/리스트 입력 허용(view 제외)
 //  · list: 생성/텍스트만(동종 수집)  · view: 생성/리스트만(미디어)  · text/model/reference/view: 입력 없음
@@ -81,11 +103,12 @@ export function canConnect(
 
 // input 노드가 가리키는 '실제 소스 카드 id' 로 해석(무선 연결) — input→output→(output 에 물린 소스).
 // 소스가 또 input 이면 계속 따라가되, 사이클/재방문은 unresolved(null)로 끊는다. input 이 아니면 그대로 반환.
-export function resolveInputSourceId(
+function resolveInputSourceIdIndexed(
   cardId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
-  seen: Set<string> = new Set(),
+  seen: Set<string>,
+  incomingByTarget?: IncomingEdgeIndex,
 ): string | null {
   const card = cardsById.get(cardId);
   if (!card) return null;
@@ -97,13 +120,21 @@ export function resolveInputSourceId(
   const out = cardsById.get(outId);
   if (!out || out.kind !== "output") return null; // 선택한 output 이 사라짐/무효
   // output 에 물린 소스(들) 중 대표 1개: order → y → x 순.
-  const ins = edges
-    .filter((e) => e.to === outId)
+  const ins = incomingEdgesOf(outId, edges, incomingByTarget)
     .map((e) => ({ e, c: cardsById.get(e.from) }))
     .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
   if (!ins.length) return null; // output 에 아직 소스가 안 붙음
   const primary = sortByOrder(ins)[0].c.id;
-  return resolveInputSourceId(primary, cardsById, edges, seen);
+  return resolveInputSourceIdIndexed(primary, cardsById, edges, seen, incomingByTarget);
+}
+
+export function resolveInputSourceId(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  seen: Set<string> = new Set(),
+): string | null {
+  return resolveInputSourceIdIndexed(cardId, cardsById, edges, seen);
 }
 
 // 수집기(collect*)에 넘길 '해석된 엣지' — from 이 input 이면 실제 소스 id 로 치환, 못 풀면 그 엣지는 뺀다.
@@ -509,15 +540,15 @@ function comfyListSourceKind(
   return null;
 }
 
-export function collectListInputs(
+function collectListInputsIndexed(
   listId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
   overlay?: ComfyOutputsById,
   seen: Set<string> = new Set(), // 텍스트 상류 추적 시 순환 차단(effectiveTextOf 체인과 공유)
+  incomingByTarget?: IncomingEdgeIndex,
 ): ListInputs {
-  const sources = edges
-    .filter((e) => e.to === listId)
+  const sources = incomingEdgesOf(listId, edges, incomingByTarget)
     .map((e) => ({ e, c: cardsById.get(e.from) }))
     .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
   if (!sources.length) return { kind: "empty", sourceIds: [], generationCardIds: [], text: "" };
@@ -543,7 +574,10 @@ export function collectListInputs(
     if (c.kind !== "list") return null;
     if (pathSeen.has(c.id)) return null; // list 사이클/자기참조
     if (!nestedLists.has(c.id))
-      nestedLists.set(c.id, collectListInputs(c.id, cardsById, edges, overlay, new Set(pathSeen)));
+      nestedLists.set(
+        c.id,
+        collectListInputsIndexed(c.id, cardsById, edges, overlay, new Set(pathSeen), incomingByTarget),
+      );
     return nestedLists.get(c.id) ?? null;
   };
 
@@ -608,6 +642,16 @@ export function collectListInputs(
     (s) => s.sourceKind !== "generation" && s.sourceKind !== "text",
   );
   return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
+}
+
+export function collectListInputs(
+  listId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  overlay?: ComfyOutputsById,
+  seen: Set<string> = new Set(),
+): ListInputs {
+  return collectListInputsIndexed(listId, cardsById, edges, overlay, seen);
 }
 
 // View 노드가 표시할 생성 카드 id 목록(순서 보존, 중복 제거). generation 직접 연결 + generation-list 를
@@ -927,18 +971,65 @@ export function collectViewTexts(
 // 아니면 소스/타깃 kind 로 추론(기존 저장분 하위호환). gen→gen 은 refParents/refs 로 'ref 사용'과 '계보'를 구분.
 //  · model 노드 → 'model'(주황)  · text 노드 → 'text'(노랑)  · reference 카드 → 'ref'(파랑)
 //  · → list 노드 = 'list'(수집)   · 생성물을 ref 로 사용 → 'ref', 그 외 생성→생성 = 'lineage'
-export function resolveEdgeRole(
+interface EdgeRoleResolutionContext {
+  incomingByTarget: IncomingEdgeIndex;
+  inputSourceById: Map<string, string | null>;
+  listInputsById: Map<string, ListInputs>;
+}
+
+function resolveRoleInputSourceId(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  context: EdgeRoleResolutionContext,
+): string | null {
+  if (context.inputSourceById.has(cardId)) return context.inputSourceById.get(cardId) ?? null;
+  const resolved = resolveInputSourceIdIndexed(
+    cardId,
+    cardsById,
+    edges,
+    new Set(),
+    context.incomingByTarget,
+  );
+  context.inputSourceById.set(cardId, resolved);
+  return resolved;
+}
+
+function collectRoleListInputs(
+  listId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+  context: EdgeRoleResolutionContext,
+): ListInputs {
+  const cached = context.listInputsById.get(listId);
+  if (cached) return cached;
+  const collected = collectListInputsIndexed(
+    listId,
+    cardsById,
+    edges,
+    undefined,
+    new Set(),
+    context.incomingByTarget,
+  );
+  context.listInputsById.set(listId, collected);
+  return collected;
+}
+
+function resolveEdgeRoleWithContext(
   edge: SceneEdge,
   cardsById: Map<string, SceneCard>,
   refParents: Record<string, string[]>,
   edges?: SceneEdge[],
+  context?: EdgeRoleResolutionContext,
 ): SceneEdgeRole {
   if (edge.role) return edge.role;
   const rawFrom = cardsById.get(edge.from);
   // 소스가 input(무선)이면 실제 소스 종류로 색을 맞춘다 — 못 풀면 그대로(중립 폴백).
   const fromId =
     rawFrom?.kind === "input" && edges
-      ? resolveInputSourceId(edge.from, cardsById, edges) ?? edge.from
+      ? (context
+          ? resolveRoleInputSourceId(edge.from, cardsById, edges, context)
+          : resolveInputSourceId(edge.from, cardsById, edges)) ?? edge.from
       : edge.from;
   const from = cardsById.get(fromId);
   const to = cardsById.get(edge.to);
@@ -948,7 +1039,12 @@ export function resolveEdgeRole(
   if (to?.kind === "text") {
     if (from?.kind === "comfy" || from?.kind === "text") return "text";
     if (from?.kind === "list" && edges)
-      return collectListInputs(from.id, cardsById, edges).kind === "text" ? "text" : "ref";
+      return (context
+        ? collectRoleListInputs(from.id, cardsById, edges, context)
+        : collectListInputs(from.id, cardsById, edges)
+      ).kind === "text"
+        ? "text"
+        : "ref";
     return "ref"; // reference·generation → 레퍼런스(파랑)
   }
   if (from?.kind === "model") return "model";
@@ -968,7 +1064,10 @@ export function resolveEdgeRole(
   if (from?.kind === "render" && (to?.kind === "generation" || to?.kind === "comfy")) return "ref";
   // 리스트의 출력색은 그 리스트가 모은 종류를 따른다(edges 필요): 텍스트리스트=텍스트(보라), 레퍼런스리스트=레퍼런스(파랑).
   if (from?.kind === "list" && edges) {
-    const lk = collectListInputs(from.id, cardsById, edges).kind;
+    const lk = (context
+      ? collectRoleListInputs(from.id, cardsById, edges, context)
+      : collectListInputs(from.id, cardsById, edges)
+    ).kind;
     if (lk === "text") return "text";
     if (lk === "reference") return "ref";
     // 생성물(미디어)을 모은 리스트가 생성/컨피 카드로 들어가면 레퍼런스(파랑). 리스트→리스트 수집(아래 "list")은 그대로 둔다.
@@ -983,6 +1082,33 @@ export function resolveEdgeRole(
     return byRefs || byHistory ? "ref" : "lineage";
   }
   return "lineage";
+}
+
+export function resolveEdgeRole(
+  edge: SceneEdge,
+  cardsById: Map<string, SceneCard>,
+  refParents: Record<string, string[]>,
+  edges?: SceneEdge[],
+): SceneEdgeRole {
+  return resolveEdgeRoleWithContext(edge, cardsById, refParents, edges);
+}
+
+// 화면 렌더용 일괄 판정. 들어오는 엣지 인덱스와 input/list 해석 결과를 그래프 전체에서 공유해,
+// 카드 이동 중 엣지마다 같은 전체 그래프를 되풀이해 읽는 비용을 없앤다.
+export function resolveEdgeRoles(
+  edges: SceneEdge[],
+  cardsById: Map<string, SceneCard>,
+  refParents: Record<string, string[]>,
+): Map<string, SceneEdgeRole> {
+  const context: EdgeRoleResolutionContext = {
+    incomingByTarget: buildIncomingEdgeIndex(edges),
+    inputSourceById: new Map(),
+    listInputsById: new Map(),
+  };
+  const roles = new Map<string, SceneEdgeRole>();
+  for (const edge of edges)
+    roles.set(edge.id, resolveEdgeRoleWithContext(edge, cardsById, refParents, edges, context));
+  return roles;
 }
 
 // 베지어 연결선 path(d) — 양 끝점 좌표만으로. 중간 제어점은 x 중앙.
