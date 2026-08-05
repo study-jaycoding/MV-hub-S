@@ -7,7 +7,8 @@
 //    올리며 정리해 무한 성장을 막는다(두 달 묵은 미확인 항목은 조용히 만료 — 허용된 트레이드오프).
 //  · 시각 형식은 서버 share.shared_at 과 같은 UTC "YYYY-MM-DD HH:MM:SS" — 사전순 비교=시간 비교,
 //    서버 folder-counts?since= 에도 그대로 쓴다.
-import { loadJSON, loadString, saveJSON } from "./storage";
+import { getAccountNamespace } from "./accountScope";
+import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 interface SeenEntry {
@@ -20,10 +21,7 @@ interface AccountSeen {
 
 const PRUNE_DAYS = 60;
 
-const ns = () => {
-  const acct = loadString(STORAGE_KEYS.activeAccount);
-  return acct ? `acct:${acct}` : "local";
-};
+const ns = getAccountNamespace;
 
 export function utcNowSql(): string {
   return new Date().toISOString().slice(0, 19).replace("T", " ");

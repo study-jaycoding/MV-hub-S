@@ -16,8 +16,7 @@
 //    context 로 subtle 이 없으면 첫 동기화 때 전 씬을 한 번 올린다(누락보다 중복이 안전) —
 //    이후는 세션 내 lastPushed 문자열 비교로 변경분만.
 import { jsonFetch } from "./http";
-import { loadString } from "./storage";
-import { STORAGE_KEYS } from "./storageKeys";
+import { getAccountNamespace } from "./accountScope";
 import { hasSceneBucket, listScenes, saveScenes, setOnScenesPersisted, type Scene } from "./scenes";
 
 const API = "/api/scenes/backup";
@@ -27,10 +26,7 @@ const MAX_UPSERTS = 200; // 서버 상한과 동일
 const MAX_UPSERT_BYTES = 8 * 1024 * 1024; // 청크당 대략 바이트 상한(서버 총량 20MB 의 여유 하한)
 const MAX_DELETES = 500; // 서버 상한과 동일
 
-const ns = () => {
-  const acct = loadString(STORAGE_KEYS.activeAccount);
-  return acct ? `acct:${acct}` : "local";
-};
+const ns = getAccountNamespace;
 
 async function sha256hex(text: string): Promise<string | null> {
   try {

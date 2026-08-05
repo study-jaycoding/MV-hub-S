@@ -1,5 +1,5 @@
 // scenes 순수 헬퍼 특성화 — 변형 id·지문(양방향 동기화 안정성 근거).
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   variantIds,
   preserveRepresentatives,
@@ -16,11 +16,12 @@ import {
 } from "../src/lib/scenes";
 import { saveJSON, saveString } from "../src/lib/storage";
 import { STORAGE_KEYS } from "../src/lib/storageKeys";
+import { setAccountScope } from "../src/lib/accountScope";
 
 // node 환경엔 localStorage 가 없어 인메모리 목을 심는다(계정 네임스페이스·이관 검증용).
-function installLocalStorageMock() {
+function storageMock(): Storage {
   const store: Record<string, string> = {};
-  (globalThis as { localStorage?: Storage }).localStorage = {
+  return {
     getItem: (k: string) => (k in store ? store[k] : null),
     setItem: (k: string, v: string) => { store[k] = String(v); },
     removeItem: (k: string) => { delete store[k]; },
@@ -29,31 +30,43 @@ function installLocalStorageMock() {
     get length() { return Object.keys(store).length; },
   } as Storage;
 }
+function installStorageMocks() {
+  (globalThis as { localStorage?: Storage }).localStorage = storageMock();
+  (globalThis as { sessionStorage?: Storage }).sessionStorage = storageMock();
+}
 const mkScene = (id: string): Scene => ({ id, name: id, cards: [], edges: [], created_at: 1 });
 
 describe("scenes 계정 네임스페이스", () => {
-  beforeEach(installLocalStorageMock);
+  beforeEach(installStorageMocks);
+  afterEach(() => {
+    delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
+  });
 
   it("계정별로 씬이 분리된다(전환해도 안 섞임, 되돌아오면 복원)", () => {
     saveString(STORAGE_KEYS.activeAccount, "a@x.com");
+    setAccountScope("a@x.com");
     saveScenes(null, [mkScene("A1")]);
     expect(listScenes(null).map((s) => s.id)).toEqual(["A1"]);
 
     saveString(STORAGE_KEYS.activeAccount, "b@x.com"); // 계정 전환
+    setAccountScope("b@x.com");
     expect(listScenes(null)).toEqual([]); // A 씬 안 보임
     saveScenes(null, [mkScene("B1")]);
 
     saveString(STORAGE_KEYS.activeAccount, "a@x.com"); // 되돌아옴
+    setAccountScope("a@x.com");
     expect(listScenes(null).map((s) => s.id)).toEqual(["A1"]); // A 씬 복원
   });
 
   it("네임스페이스 이전(레거시 _none) 씬을 현재 계정으로 1회 이관하고 옛 키는 제거", () => {
     saveJSON(STORAGE_KEYS.scenes, { _none: [mkScene("OLD")] }); // 옛 데이터
     saveString(STORAGE_KEYS.activeAccount, "a@x.com");
+    setAccountScope("a@x.com");
     expect(listScenes(null).map((s) => s.id)).toEqual(["OLD"]); // 현재 계정으로 이관돼 보임
 
     // 다른 계정은 이관된 옛 씬을 다시 가져가지 않는다(옛 키 제거됨).
     saveString(STORAGE_KEYS.activeAccount, "b@x.com");
+    setAccountScope("b@x.com");
     expect(listScenes(null)).toEqual([]);
   });
 
@@ -62,6 +75,22 @@ describe("scenes 계정 네임스페이스", () => {
     // activeAccount 없음
     expect(listScenes(null).map((s) => s.id)).toEqual(["LOCAL"]); // 로컬도 옛 씬 유지(이관)
     expect(getActiveSceneId(null)).toBeNull();
+  });
+
+  it("다른 탭의 로그인으로 activeAccount가 바뀌어도 현재 탭의 씬 범위는 유지", () => {
+    saveString(STORAGE_KEYS.activeAccount, "a@x.com");
+    setAccountScope("a@x.com");
+    saveScenes(null, [mkScene("A1")]);
+
+    // 다른 탭이 B로 로그인하면 공유 localStorage 마커는 B가 되지만 이 탭 인증은 여전히 A다.
+    saveString(STORAGE_KEYS.activeAccount, "b@x.com");
+    expect(listScenes(null).map((s) => s.id)).toEqual(["A1"]);
+    saveScenes(null, [mkScene("A2")]);
+
+    setAccountScope("b@x.com"); // 이 탭도 실제로 B 인증이 확인된 뒤에만 전환
+    expect(listScenes(null)).toEqual([]);
+    setAccountScope("a@x.com");
+    expect(listScenes(null).map((s) => s.id)).toEqual(["A2"]);
   });
 });
 

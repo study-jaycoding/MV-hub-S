@@ -20,14 +20,31 @@ export function arrangeNodes(
   links: LayoutLink[],
   opts: { colGap?: number; rowGap?: number; grid?: number } = {},
 ): Record<string, { x: number; y: number }> {
-  const colGap = opts.colGap ?? 60; // 열 사이 가로 간격
-  const rowGap = opts.rowGap ?? 28; // 같은 열 노드 사이 세로 간격
-  const grid = opts.grid ?? 22; // 최종 좌표를 이 격자에 스냅
-  const snap = (v: number) => Math.round(v / grid) * grid;
   if (!nodes.length) return {};
+  const nonNegative = (value: number | undefined, fallback: number) =>
+    Number.isFinite(value) && value! >= 0 ? value! : fallback;
+  const positive = (value: number | undefined, fallback: number) =>
+    Number.isFinite(value) && value! > 0 ? value! : fallback;
+  const finite = (value: number, fallback = 0) => Number.isFinite(value) ? value : fallback;
+  const colGap = nonNegative(opts.colGap, 60); // 열 사이 가로 간격
+  const rowGap = nonNegative(opts.rowGap, 28); // 같은 열 노드 사이 세로 간격
+  const grid = positive(opts.grid, 22); // 최종 좌표를 이 격자에 스냅
+  const snap = (v: number) => {
+    const snapped = Math.round(finite(v) / grid) * grid;
+    return finite(snapped);
+  };
+  // 직접 편집된 localStorage·외부 도구가 NaN/Infinity/0 크기를 넣어도 정렬 결과가 전파되지 않게
+  // 계산용 입력만 안전화한다. 원본 노드 객체는 바꾸지 않는다.
+  const safeNodes = nodes.map((node) => ({
+    ...node,
+    x: finite(node.x),
+    y: finite(node.y),
+    w: positive(node.w, 1),
+    h: positive(node.h, 1),
+  }));
 
-  const ids = new Set(nodes.map((n) => n.id));
-  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const ids = new Set(safeNodes.map((n) => n.id));
+  const byId = new Map(safeNodes.map((n) => [n.id, n]));
   // 선택 노드끼리의 연결만 사용 — 선택 밖으로 나가는 연결은 정렬에 영향 없음.
   const preds = new Map<string, Set<string>>();
   for (const id of ids) preds.set(id, new Set());
@@ -61,8 +78,8 @@ export function arrangeNodes(
   const colKeys = [...cols.keys()].sort((a, b) => a - b);
 
   // 앵커 = 현재 선택의 좌상단(격자 스냅) → 대략 제자리에서 정렬.
-  const anchorX = snap(Math.min(...nodes.map((n) => n.x)));
-  const anchorY = snap(Math.min(...nodes.map((n) => n.y)));
+  const anchorX = snap(Math.min(...safeNodes.map((n) => n.x)));
+  const anchorY = snap(Math.min(...safeNodes.map((n) => n.y)));
 
   const out: Record<string, { x: number; y: number }> = {};
   // ★열 안을 '행(row)'으로 묶는다: 세로로 겹치는(=가로로 나란한) 카드는 같은 행에 두어 윗변을 맞추고
@@ -98,10 +115,10 @@ export function arrangeNodes(
         const n = byId.get(id)!;
         out[id] = { x: cellX, y: rowY }; // 같은 행 = 같은 y(윗변 정렬), 왼→오른쪽 배치
         rowH = Math.max(rowH, n.h);
-        colRight = Math.max(colRight, cellX + n.w);
-        cellX += snap(n.w + colGap); // step 스냅 → 좌표가 항상 격자 정렬
+        colRight = Math.max(colRight, finite(cellX + n.w, cellX));
+        cellX = snap(cellX + snap(n.w + colGap)); // step 스냅 → 좌표가 항상 격자 정렬
       }
-      rowY += snap(rowH + rowGap); // 행 높이는 그 행 최고 카드 기준
+      rowY = snap(rowY + snap(rowH + rowGap)); // 행 높이는 그 행 최고 카드 기준
     }
     colX = snap(colRight + colGap); // 다음 열 = 이 열의 오른쪽 끝 + 간격
   }

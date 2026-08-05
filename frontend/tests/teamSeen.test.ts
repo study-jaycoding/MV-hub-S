@@ -1,5 +1,5 @@
 // 공유&리뷰 '새로 들어옴' 항목 단위 확인(ack) 모델 — 기준선·확인·차감·이관 불변식.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ackTeamFresh,
   ensureTeamBase,
@@ -7,6 +7,7 @@ import {
   isAckedFor,
   isFreshGen,
 } from "../src/lib/teamSeen";
+import { setAccountScope } from "../src/lib/accountScope";
 
 const KEY = "ch.lib.teamSeen";
 
@@ -35,6 +36,9 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
   beforeEach(() => {
     localStorage.clear();
     freshAccount();
+  });
+  afterEach(() => {
+    delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
   });
 
   it("기준선이 없으면 아무것도 새것이 아니다 (도입 첫날 전체 글로우 방지)", () => {
@@ -129,5 +133,28 @@ describe("teamSeen (항목 단위 확인 모델)", () => {
     ensureTeamBase();
     ackTeamFresh({ id: "old", shared_at: "2000-01-01 00:00:00" });
     expect(isAckedFor("old", "2000-01-01 00:00:00")).toBe(false);
+  });
+
+  it("다른 탭의 로그인 마커가 바뀌어도 현재 탭의 확인 기록은 현재 계정에 저장", () => {
+    const session = new Map<string, string>();
+    (globalThis as { sessionStorage?: Storage }).sessionStorage = {
+      getItem: (k) => session.get(k) ?? null,
+      setItem: (k, v) => void session.set(k, String(v)),
+      removeItem: (k) => void session.delete(k),
+      clear: () => void session.clear(),
+      key: (i) => [...session.keys()][i] ?? null,
+      get length() { return session.size; },
+    } as Storage;
+    const accountA = `user${acctSeq}@test`;
+    setAccountScope(accountA);
+    ensureTeamBase();
+
+    localStorage.setItem("ch.activeAccount", "other@test"); // 다른 탭이 로그인
+    const fresh = { id: "new", shared_at: "2099-01-01 00:00:00" };
+    ackTeamFresh(fresh);
+
+    const stored = JSON.parse(localStorage.getItem(KEY)!);
+    expect(stored[`acct:${accountA}`].seen.new.at).toBe(fresh.shared_at);
+    expect(stored["acct:other@test"]).toBeUndefined();
   });
 });

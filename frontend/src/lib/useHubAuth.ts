@@ -4,6 +4,7 @@ import { APP_EVENTS } from "./appEvents";
 import { clearPersonalSettings } from "./personalSettings";
 import { loadString, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+import { setAccountScope } from "./accountScope";
 import { useCustomEvent } from "./useCustomEvent";
 import type { Account, AuthConfig } from "../types";
 
@@ -68,7 +69,10 @@ export function useHubAuth() {
     const newEmail = st?.email || "";
     const prev = loadString(STORAGE_KEYS.activeAccount);
     if (newEmail && prev && prev !== newEmail) clearPersonalSettings();
-    if (newEmail) saveString(STORAGE_KEYS.activeAccount, newEmail);
+    if (newEmail) {
+      setAccountScope(newEmail);
+      saveString(STORAGE_KEYS.activeAccount, newEmail);
+    }
     window.location.reload();
   }, []);
 
@@ -117,6 +121,7 @@ export function useHubAuth() {
   useEffect(() => {
     if (!account?.email) return;
     const prev = loadString(STORAGE_KEYS.activeAccount);
+    const accountScopeChanged = setAccountScope(account.email);
     if (prev && prev !== account.email && authConfig?.auth_enabled) {
       clearPersonalSettings();
       saveString(STORAGE_KEYS.activeAccount, account.email);
@@ -124,6 +129,9 @@ export function useHubAuth() {
       return;
     }
     saveString(STORAGE_KEYS.activeAccount, account.email);
+    // 첫 로그인처럼 이전 activeAccount 가 없던 경우에도 App 의 씬 상태는 이미 local 범위로
+    // 초기화됐을 수 있다. 인증 범위가 달라졌다면 한 번만 다시 열어 정확한 계정 버킷을 읽는다.
+    if (accountScopeChanged) window.location.reload();
   }, [account?.email, authConfig?.auth_enabled]);
 
   useEffect(() => {

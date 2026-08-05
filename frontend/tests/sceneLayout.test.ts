@@ -98,4 +98,18 @@ describe("arrangeNodes", () => {
     expect(pos.a.x).toBe(220); // 220 은 22 의 배수 → 그대로
     expect(pos.a.y).toBe(132); // min y=130 → 22 스냅 = 132
   });
+
+  it("손상 좌표·크기와 잘못된 정렬 옵션도 유한한 기본 격자 좌표로 복구", () => {
+    const nodes: LayoutNode[] = [
+      { id: "a", x: Number.NaN, y: Number.POSITIVE_INFINITY, w: 0, h: Number.NaN },
+      { id: "b", x: Number.NEGATIVE_INFINITY, y: 100, w: Number.POSITIVE_INFINITY, h: -5 },
+    ];
+    const pos = arrangeNodes(nodes, [], { grid: 0, colGap: Number.NaN, rowGap: -1 });
+    for (const id of ["a", "b"]) {
+      expect(Number.isFinite(pos[id].x)).toBe(true);
+      expect(Number.isFinite(pos[id].y)).toBe(true);
+      expect(pos[id].x % 22).toBe(0);
+      expect(pos[id].y % 22).toBe(0);
+    }
+  });
 });
