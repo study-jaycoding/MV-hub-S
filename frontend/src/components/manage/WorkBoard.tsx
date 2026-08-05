@@ -15,6 +15,7 @@ import { manageApi } from "../../lib/manageApi";
 import { thumbUrl } from "../../lib/media";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
+import { createLatestMutationQueue } from "../../lib/mutationQueue";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
@@ -164,23 +165,26 @@ export function WorkBoard() {
     };
   }, []);
 
-  // 전체 프로젝트 작업 병합 로드 — 프로젝트별 listTasks 를 병렬 호출해 합친다(project_name 부착).
+  // 전체 프로젝트 작업 병합 로드 — tasks-batch 1요청 우선, 구버전 서버만 프로젝트별 폴백.
   // reqRef 로 늦게 온 이전 요청이 최신 화면을 덮지 않게 한다(폴링/브로드캐스트 중첩 대비).
   const projectsRef = useRef(projects);
   const reqRef = useRef(0);
   const loadingRef = useRef(false);
+  const loadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingLoadRef = useRef(false);
   const lastLoadAtRef = useRef(0);
-  const orderSaveRef = useRef<Promise<void>>(Promise.resolve());
-  const loadAll = () => {
+  const orderSaveRef = useRef<ReturnType<typeof createLatestMutationQueue> | null>(null);
+  const orderRevisionRef = useRef(0);
+  const optimisticOrderRef = useRef<{ revision: number; tasks: Task[] } | null>(null);
+  const loadAll = (): Promise<void> => {
     if (loadingRef.current) {
       pendingLoadRef.current = true; // 진행 중 들어온 변경 신호들은 후속 1회로 합친다.
-      return;
+      return loadPromiseRef.current || Promise.resolve();
     }
     const ps = projectsRef.current;
     if (!ps.length) {
       setTasks([]);
-      return;
+      return Promise.resolve();
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
@@ -200,22 +204,37 @@ export function WorkBoard() {
         ),
       ).then((all) => finish(all.flat()));
     // 우선 1요청(tasks-batch). 서버가 pid 별 read 게이트를 적용해 {pid: tasks} 반환.
-    manageApi
+    const request = manageApi
       .listTasksBatch(ps.map((p) => p.pid))
       .then((byPid) => {
         finish(ps.flatMap((p) => (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name }))));
       })
       .catch(() => fanout().catch(() => finish([])))
-      .finally(() => {
+      .finally(async () => {
         if (reqRef.current === my) {
           loadingRef.current = false;
+          loadPromiseRef.current = null;
           if (pendingLoadRef.current) {
             pendingLoadRef.current = false;
-            loadAll();
+            await loadAll();
           }
         }
       });
+    loadPromiseRef.current = request;
+    return request;
   };
+  const loadAllRef = useRef(loadAll);
+  loadAllRef.current = loadAll;
+  if (!orderSaveRef.current) {
+    orderSaveRef.current = createLatestMutationQueue(async () => {
+      const revisionBeforeReload = orderRevisionRef.current;
+      await loadAllRef.current();
+      const optimistic = optimisticOrderRef.current;
+      if (optimistic && optimistic.revision !== revisionBeforeReload) {
+        setTasks(optimistic.tasks);
+      }
+    });
+  }
 
   useEffect(() => {
     api
@@ -238,7 +257,7 @@ export function WorkBoard() {
       debounce = window.setTimeout(loadAll, 300);
     };
     // 팀원 변경 안전망 폴링 — 내 조작은 브로드캐스트로 즉시 오므로 주기는 느슨하게(30초).
-    // 프로젝트 수만큼 listTasks fan-out 이라 이전 라운드가 진행 중이면 건너뛴다.
+    // 이전 배치 라운드가 진행 중이면 중복 폴링을 건너뛴다.
     const poll = window.setInterval(() => {
       if (document.visibilityState === "visible" && !loadingRef.current) reload();
     }, 30000);
@@ -341,20 +360,20 @@ export function WorkBoard() {
     ids.splice(ids.indexOf(targetId), 0, moved); // 제거 후 대상 위치를 다시 찾아 그 앞에 삽입
     const orderMap = new Map(ids.map((id, i) => [id, i * 10]));
     const taskById = new Map(tasks.map((task) => [task.id, task] as const));
-    setTasks((prev) =>
-      prev.map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t)).sort(bySort),
-    );
+    const optimisticTasks = tasks
+      .map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t))
+      .sort(bySort);
+    const revision = ++orderRevisionRef.current;
+    optimisticOrderRef.current = { revision, tasks: optimisticTasks };
+    setTasks(optimisticTasks);
     const changed = ids.flatMap((id) => {
       const cur = taskById.get(id);
       const sort_order = orderMap.get(id)!;
       return cur && cur.sort_order !== sort_order ? [{ task_id: id, sort_order }] : [];
     });
     if (!changed.length) return;
-    // 빠르게 연속 드래그해도 서버 저장 순서가 뒤집히지 않게 요청을 직렬화한다.
-    orderSaveRef.current = orderSaveRef.current
-      .catch(() => undefined)
-      .then(() => manageApi.updateTaskOrderBatch(changed).then(() => undefined))
-      .catch(() => loadAll());
+    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 최신 순서 하나로 교체한다.
+    orderSaveRef.current?.enqueue(() => manageApi.updateTaskOrderBatch(changed));
   };
 
   // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때
