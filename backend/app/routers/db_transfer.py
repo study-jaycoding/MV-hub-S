@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import shutil
 import sqlite3
@@ -23,11 +24,12 @@ from starlette.background import BackgroundTask
 
 from . import _proxy
 from .. import db, repo
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, DATA_DIR
 from ..deps import require_admin
 from ..repo import identity
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
+from ..services.test_snapshot import TestSnapshotError, create_test_snapshot_archive
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
 
@@ -197,6 +199,29 @@ def export_db(request: Request):
         filename="MV-hub-mydb.db",
         media_type="application/octet-stream",
         background=BackgroundTask(lambda: tmp.unlink(missing_ok=True)),
+    )
+
+
+@router.get("/export-test-snapshot")
+def export_test_snapshot(request: Request):
+    """test_push-db가 만든 격리 스냅샷의 모든 SQLite DB를 한 번에 내보낸다.
+
+    일반 서버에서는 환경 플래그가 없어 404다. test_push-db가 명시적으로 켠 스냅샷 서버에서만,
+    관리자 인증 후 사용할 수 있다. 라이브 DB·미디어·에셋 파일은 번들에 포함하지 않는다.
+    """
+    if os.environ.get("CONTENT_HUB_TEST_SNAPSHOT_EXPORT", "").strip() != "1":
+        raise HTTPException(status_code=404, detail="테스트 스냅샷 내보내기가 비활성화돼 있습니다")
+    require_admin(request)
+    _require_local_when_open(request)
+    try:
+        archive = create_test_snapshot_archive(DATA_DIR)
+    except TestSnapshotError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return FileResponse(
+        archive,
+        filename="MV-hub-test-dbs.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
     )
 
 

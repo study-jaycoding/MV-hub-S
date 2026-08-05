@@ -37,8 +37,8 @@ npm.cmd run build
 
 | 파일 | 실행 위치 | 하는 일 |
 |---|---|---|
-| `test_push-db.bat` | 서버 | live DB를 수정하지 않고 `backend\data_test_push`에 일관된 스냅샷을 만든 뒤, 다운로드용 서버(8011)를 실행 |
-| `test_pull-db.bat` | 내 PC | 서버가 준비한 8011 스냅샷 DB를 격리된 `backend\data_test`로 내려받음(미디어 제외) |
+| `test_push-db.bat` | 서버 | live DB를 수정하지 않고 `backend\data_test_push`에 모든 SQLite DB의 일관된 스냅샷을 만든 뒤, 다운로드용 서버(8011)를 실행 |
+| `test_pull-db.bat` | 내 PC | 서버가 준비한 콘텐츠·휴지통·팀 통계·계정 DB 번들을 검증해 `backend\data_test`로 내려받음(미디어 제외) |
 | `test_dev.bat` | 내 PC | 테스트 백엔드(8012)·생성 에이전트·Vite(5173)를 실행하고, 브라우저 로그인 계정을 에이전트에 자동 연결 |
 | `test_dev_server.bat` | 내 PC | 내려받은 DB로 프론트 빌드와 API를 한 서버(8011)에서 실행해 배포 직전 형태를 확인 |
 
@@ -98,7 +98,8 @@ git checkout feature/pm-dashboard
    - live DB는 읽기만 하고 `backend\data_test_push`에 일관된 복사본을 만든다.
    - 복사본만 제공하는 임시 서버가 서버 PC의 8011 포트에서 실행된다.
 2. **내 PC**에서 `test_pull-db.bat`을 실행한다.
-   - 관리자 비밀번호를 입력하면 서버의 8011 복사본을 `backend\data_test`로 내려받는다.
+   - 관리자 비밀번호를 입력하면 서버의 8011에서 모든 SQLite DB 번들을 내려받는다.
+   - 경로·크기·CRC·SQLite 무결성을 모두 통과해야 설치하며 기존 `backend\data_test`는 자동 보관한다.
    - 다운로드가 끝나면 서버의 `test_push-db.bat` 창은 종료해도 된다.
 3. **내 PC**에서 `test_dev_server.bat`을 실행한다.
    - 프론트엔드를 실제 배포 방식으로 빌드하고 UI와 API를 한 서버로 실행한다.

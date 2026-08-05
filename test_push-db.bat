@@ -7,7 +7,7 @@ REM
 REM  One double-click does:
 REM    1) Copy a consistent SQLite snapshot of the LIVE DB into data_test_push.
 REM    2) Start an isolated snapshot server on port 8011.
-REM    3) A developer PC can then run test_pull-db.bat to download THIS snapshot.
+REM    3) A developer PC can then run test_pull-db.bat to download every DB in THIS snapshot.
 REM
 REM  The live DB on 8010 is READ ONLY here. Nothing is deleted or overwritten in
 REM  E:\MV-hub-S\backend\data. An older pushed TEST snapshot is archived.
@@ -27,6 +27,7 @@ set "CONTENT_HUB_AUTH=1"
 set "CONTENT_HUB_MANAGE=1"
 set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
+set "CONTENT_HUB_TEST_SNAPSHOT_EXPORT=1"
 set "CONTENT_HUB_DATA=%DST%"
 set "CONTENT_HUB_DB=%DST%\db\content_hub.db"
 

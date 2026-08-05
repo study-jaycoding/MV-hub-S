@@ -10,7 +10,8 @@ REM
 REM  After this, run test_dev_server.bat for the production-like final test.
 REM  For live Vite editing + local generation, use test_dev.bat instead.
 REM
-REM  Only the DB is downloaded (no media/assets). The live server is READ only.
+REM  All snapshot DBs are downloaded (content/trash/manage/account DBs; no media/assets).
+REM  The live server is READ only. The old local test data is archived before replacement.
 REM ============================================================================
 set "ROOT=%~dp0"
 set "SERVER=http://192.168.1.199:8011"

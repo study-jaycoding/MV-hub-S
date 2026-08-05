@@ -18,7 +18,7 @@ BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.services.sqlite_db import HubDbValidationError, validate_hub_db
+from app.services.test_snapshot import TestSnapshotError, extract_test_snapshot_archive
 from account_paths import account_slug
 
 
@@ -169,21 +169,6 @@ def detail_text(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def validate_sqlite(path: Path) -> None:
-    if not path.exists():
-        fail(f"downloaded db does not exist: {path}")
-    try:
-        validate_hub_db(path, require_integrity=True)
-    except HubDbValidationError as exc:
-        if exc.reason == "not_sqlite":
-            fail("downloaded file is not a SQLite database")
-        if exc.reason == "missing_generation":
-            fail("downloaded db is not an MV Hub database (missing generation table)")
-        if exc.reason == "integrity":
-            fail("downloaded db failed integrity check")
-        fail(f"downloaded db is not readable: {exc.reason}")
-
-
 def download_server_db(base_url: str, dst: Path) -> None:
     email = (os.environ.get("PM_TEST_ADMIN_EMAIL") or "").strip()
     password = os.environ.get("PM_TEST_ADMIN_PASSWORD") or ""
@@ -207,10 +192,8 @@ def download_server_db(base_url: str, dst: Path) -> None:
         fail(f"admin login failed ({status}): {detail_text(payload)}")
     token = str(payload["token"])
 
-    db_dir = dst / "db"
-    db_dir.mkdir(parents=True, exist_ok=True)
-    tmp = dst.parent / f"{dst.name}-download-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-    req = urllib.request.Request(f"{base}/api/db/export", method="GET")
+    tmp = dst.parent / f"{dst.name}-download-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
+    req = urllib.request.Request(f"{base}/api/db/export-test-snapshot", method="GET")
     req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
@@ -223,15 +206,23 @@ def download_server_db(base_url: str, dst: Path) -> None:
         except ValueError:
             payload = raw
         tmp.unlink(missing_ok=True)
-        fail(f"db export failed ({exc.code}): {detail_text(payload)}")
+        fail(
+            f"test snapshot export failed ({exc.code}): {detail_text(payload)}; "
+            "update the server code and run test_push-db.bat"
+        )
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         tmp.unlink(missing_ok=True)
         fail(f"db export request failed: {exc}")
 
-    validate_sqlite(tmp)
-    target = db_dir / "content_hub.db"
-    shutil.move(str(tmp), str(target))
-    print(f"[download] db saved: {target}")
+    try:
+        installed = extract_test_snapshot_archive(tmp, dst)
+    except TestSnapshotError as exc:
+        fail(f"downloaded test snapshot is invalid: {exc}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    print(f"[download] verified db files: {len(installed)}")
+    for path in installed:
+        print(f"[download] db saved: {path}")
 
 
 def table_count(conn: sqlite3.Connection, table: str) -> str:

@@ -5,12 +5,14 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+import sqlite3
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from app.models import PendingRequestOut
+from app.services.test_snapshot import create_test_snapshot_archive
 
 
 AGENT_PATH = Path(__file__).resolve().parents[2] / "agent_push.py"
@@ -137,12 +139,14 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'set "SRC=E:\\MV-hub-S\\backend\\data"' in push
     assert 'set "DST=%ROOT%backend\\data_test_push"' in push
     assert 'set "CONTENT_HUB_DB=%DST%\\db\\content_hub.db"' in push
+    assert 'set "CONTENT_HUB_TEST_SNAPSHOT_EXPORT=1"' in push
     assert 'refresh_pm_test_data.py" "%SRC%" "%DST%"' in push
     assert 'set "PORT=8011"' in push
 
     assert 'set "SERVER=http://192.168.1.199:8011"' in pull
     assert 'set "DST=%ROOT%backend\\data_test"' in pull
     assert "192.168.1.199:8010" not in pull
+    assert "/api/db/export-test-snapshot" in REFRESH_TOOL_PATH.read_text(encoding="utf-8")
 
     assert 'set "HOST=127.0.0.1"' in local_server
     assert 'set "PORT=8011"' in local_server
@@ -151,6 +155,43 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'call "%ROOT%MV_server.bat"' in local_server
     assert "MV_agent.bat" not in local_server
     assert "npm run dev" not in local_server
+
+
+def test_pull_download_installs_every_db_from_snapshot_bundle(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    db_dir = source / "db"
+    db_dir.mkdir(parents=True)
+    with sqlite3.connect(db_dir / "content_hub.db") as conn:
+        conn.execute("CREATE TABLE generation(id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO generation VALUES('g1')")
+    with sqlite3.connect(db_dir / "manage_hub.db") as conn:
+        conn.execute("CREATE TABLE team_generation_fact(id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO team_generation_fact VALUES('fact1')")
+    with sqlite3.connect(db_dir / "content_hub_trash.db") as conn:
+        conn.execute("CREATE TABLE trashed_generation(id TEXT PRIMARY KEY)")
+
+    archive = create_test_snapshot_archive(source)
+    bundle_bytes = archive.read_bytes()
+    archive.unlink()
+    tool = _load_refresh_tool()
+    monkeypatch.setenv("PM_TEST_ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("PM_TEST_ADMIN_PASSWORD", "secret")
+    monkeypatch.setattr(tool, "request_json", lambda *args, **kwargs: (200, {"token": "token"}))
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        return io.BytesIO(bundle_bytes)
+
+    monkeypatch.setattr(tool.urllib.request, "urlopen", fake_urlopen)
+    destination = tmp_path / "downloaded"
+
+    tool.download_server_db("http://snapshot", destination)
+
+    assert requested_urls == ["http://snapshot/api/db/export-test-snapshot"]
+    assert (destination / "db" / "content_hub.db").is_file()
+    assert (destination / "db" / "manage_hub.db").is_file()
+    assert (destination / "db" / "content_hub_trash.db").is_file()
 
 
 def test_pending_response_contains_every_field_the_agent_executes():
