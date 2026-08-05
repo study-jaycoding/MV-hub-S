@@ -59,6 +59,25 @@ describe("stateReconciliation", () => {
     expect(reconciled[0]).toBe(changed[0]);
   });
 
+  it("동일한 관리 작업표 응답은 컷·담당자까지 비교해 이전 배열을 유지한다", () => {
+    const previous = [
+      {
+        id: "task-1",
+        status: "progress",
+        cuts: [{ id: "gen-1", is_final: false }],
+        assigned_creators: [{ uid: "user-1", name: "Jay" }],
+      },
+    ];
+
+    expect(reconcileArrayState(previous, structuredClone(previous))).toBe(previous);
+
+    const changed = structuredClone(previous);
+    changed[0].cuts[0].is_final = true;
+    const reconciled = reconcileArrayState(previous, changed);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled[0]).toBe(changed[0]);
+  });
+
   it("레코드가 같으면 전체 참조를 유지하고 변경·삭제는 반영한다", () => {
     const previous = {
       a: { status: "done", tags: ["x"] },
@@ -74,5 +93,25 @@ describe("stateReconciliation", () => {
     const next = reconcileRecordState(previous, { a: { status: "failed", tags: ["x"] } });
     expect(next).toEqual({ a: { status: "failed", tags: ["x"] } });
     expect(next).not.toHaveProperty("b");
+  });
+
+  it("폴더 카운트 일부를 병합해도 값이 같으면 전체 state 참조를 유지한다", () => {
+    const previous = {
+      projectA: { ep001: 3, "ep001/c0010": 3 },
+      projectB: { render: 2 },
+    };
+    const samePatch = {
+      ...previous,
+      projectA: { ep001: 3, "ep001/c0010": 3 },
+    };
+    expect(reconcileRecordState(previous, samePatch)).toBe(previous);
+
+    const changedPatch = {
+      ...previous,
+      projectA: { ep001: 4, "ep001/c0010": 3 },
+    };
+    const reconciled = reconcileRecordState(previous, changedPatch);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled.projectB).toBe(previous.projectB);
   });
 });

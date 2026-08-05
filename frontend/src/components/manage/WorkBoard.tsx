@@ -15,6 +15,7 @@ import { thumbUrl } from "../../lib/media";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { createLatestMutationQueue } from "../../lib/mutationQueue";
+import { reconcileArrayState } from "../../lib/stateReconciliation";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
@@ -183,14 +184,18 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     }
     const ps = projectsRef.current;
     if (!ps.length) {
-      setTasks([]);
+      setTasks((previous) => reconcileArrayState(previous, []));
       return Promise.resolve();
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
     lastLoadAtRef.current = Date.now();
     const finish = (tasks: Task[]) => {
-      if (reqRef.current === my) setTasks(tasks.sort(bySort));
+      if (reqRef.current === my) {
+        const ordered = tasks.sort(bySort);
+        // 30초 안전망·실시간 신호가 같은 JSON을 돌려줘도 작업표 전체를 다시 그리지 않는다.
+        setTasks((previous) => reconcileArrayState(previous, ordered));
+      }
     };
     // 프로젝트별 fan-out(폴백) — 배치 실패(예: 롤아웃 중 구 공유서버에 tasks-batch 없음) 시
     // 프로젝트별 개별 조회로 부분성공 유지(하나 실패해도 나머지는 표시).

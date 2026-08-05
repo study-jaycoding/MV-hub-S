@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
 import { api } from "../../api";
 import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
 import { buildFolderCountTree, hasMoreThanFolderNodes } from "../../lib/folderTreeModel";
@@ -8,6 +16,7 @@ import { DRAG_TYPES } from "../../lib/dragTypes";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
+import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "../../lib/teamSeen";
 import {
@@ -118,7 +127,10 @@ export function ProjectSection({
   // 팀 탭 +N 배지 — 카드 클릭(확인)마다 스토어가 bump → 아래 fresh 재계산으로 배지가 하나씩 줄어든다.
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
   const [order, setOrder] = useState<Project[]>(projects);
-  useEffect(() => setOrder(projects), [projects]);
+  useEffect(
+    () => setOrder((previous) => reconcileArrayState(previous, projects)),
+    [projects],
+  );
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>(() =>
     cachedProjectFolderEntries(projects.map((project) => project.id)),
   );
@@ -245,17 +257,13 @@ export function ProjectSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, pinned, linkedFolderIds]);
 
-  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/생성)를 구독 — countTick 을 올려 폴더 카운트를
-  // 즉시 재조회한다. 캔버스(compose) 탭은 reload 가 early-return 이라 projects 레퍼런스가 안 바뀌어
-  // 아래 카운트 useEffect 가 안 도는데, 이 채널로 드롭 즉시 뱃지 숫자를 최신화한다(라이브러리 탭도 동일).
-  const [countTick, setCountTick] = useState(0);
-  const bumpCount = () => setCountTick((t) => t + 1);
-  useEffect(() => onLibraryChanged(bumpCount), []); // 창 간(다른 창의 변경)
-  useCustomEvent(APP_EVENTS.libraryChanged, bumpCount); // 같은 창(내 담기·생성 즉시 반영)
-
-  // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). 진입·리로드·변경 시 최신화.
-  useEffect(() => {
-    let alive = true;
+  // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). state 카운터를 먼저 올리지
+  // 않고 요청을 직접 시작해, 데이터가 도착하기 전의 ProjectSection 선렌더를 없앤다.
+  const countRequestSeqRef = useRef(0);
+  const refreshCountsRef = useRef<() => void>(() => {});
+  const refreshCounts = () => {
+    const requestSeq = ++countRequestSeqRef.current;
+    const isLatest = () => requestSeq === countRequestSeqRef.current;
     const ids = new Set<string>(pinned);
     if (activeId && activeId !== "none") ids.add(activeId);
     const wanted = [...ids];
@@ -263,11 +271,11 @@ export function ProjectSection({
       api
         .projectFolderCountsBatch(wanted, tab)
         .then((r) => {
-          if (!alive) return;
+          if (!isLatest()) return;
           setFolderCounts((prev) => {
             const next = { ...prev };
             for (const pid of wanted) next[pid] = r.counts?.[pid] || {};
-            return next;
+            return reconcileRecordState(prev, next);
           });
         })
         .catch(() => {});
@@ -277,18 +285,35 @@ export function ProjectSection({
     const since = tab === "team" ? getTeamBase() : null;
     if (since) {
       api
-        .teamFreshAll(since, () => alive)
-        .then((items) => alive && setTeamFreshItems(items))
-        .catch(() => alive && setTeamFreshItems([]));
+        .teamFreshAll(since, isLatest)
+        .then((items) => {
+          if (isLatest()) {
+            setTeamFreshItems((previous) => reconcileArrayState(previous, items));
+          }
+        })
+        .catch(() => {
+          if (isLatest()) {
+            setTeamFreshItems((previous) => reconcileArrayState(previous, []));
+          }
+        });
     }
+  };
+  refreshCountsRef.current = refreshCounts;
+
+  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/생성)를 구독한다. 캔버스 탭에서는
+  // 프로젝트 목록 reload가 생략되므로 이 채널이 폴더 배지를 즉시 최신화한다.
+  useEffect(() => onLibraryChanged(() => refreshCountsRef.current()), []); // 다른 창의 변경
+  useCustomEvent(APP_EVENTS.libraryChanged, () => refreshCountsRef.current()); // 같은 창의 변경
+
+  useEffect(() => {
+    refreshCountsRef.current();
     return () => {
-      alive = false;
+      // 의존값 변경·언마운트 뒤 도착한 이전 응답은 현재 탭/프로젝트 상태에 반영하지 않는다.
+      countRequestSeqRef.current += 1;
     };
-    // projects 는 라이브러리 리로드(생성·담기 후)마다 새 배열 → 개수 최신화 트리거.
-    // 탭(my/team) 전환 시에도 재조회 → 팀 탭에서 팀 기준 개수 표시.
-    // countTick = 생성물 변경 브로드캐스트(캔버스 드롭 포함)로 즉시 재조회.
+    // 프로젝트 구성·탭·핀·활성 프로젝트가 바뀌면 조회 범위가 달라진다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projectKey, pinned, tab, countTick]);
+  }, [activeId, projectKey, pinned, tab]);
 
   // +N 계산 — 서버 신규 목록(teamFreshItems)에서 '확인(클릭)한 항목'을 제외해 폴더/프로젝트/미분류별 집계.
   // teamSeenVer 의존 — 카드 클릭 순간 스토어가 bump 되어 배지가 즉시 하나 줄어든다.
