@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import asset_tree
 from .media_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 try:
@@ -187,14 +188,9 @@ class _Watcher:
             projects = sorted({p for d in dirs for p in self._dir_projects.get(d, ())})
             loop = self._loop
         if dirs and loop is not None:
-            # ① 백엔드 트리 캐시 무효화 — 재조회가 최신을 보게. 지연 import 로 순환 회피.
-            try:
-                from ..routers import assets as _assets
-
-                for d in dirs:
-                    _assets._invalidate_tree_cache(Path(d))
-            except Exception:  # noqa: BLE001
-                pass
+            # ① 백엔드 트리 캐시 무효화 — 재조회가 최신을 보게.
+            for directory in dirs:
+                asset_tree.invalidate_project_tree(Path(directory))
             # ② 이벤트 루프로 넘겨 WS 브로드캐스트(감시 스레드 → 루프 스레드 브리지).
             if projects:
                 from ..ws import manager

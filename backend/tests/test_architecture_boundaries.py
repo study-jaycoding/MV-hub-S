@@ -17,11 +17,9 @@ FORBIDDEN_IMPORTS: dict[str, tuple[str, ...]] = {
     "services": ("app.routers",),
 }
 
-# 제거 대상이지만 아직 동작 코드에 남아 있는 역방향 의존성이다. 정확한 파일과
-# import만 허용하므로 같은 계층의 새 위반은 통과하지 못한다.
-KNOWN_DEBT: set[tuple[str, str]] = {
-    ("app/services/asset_watcher.py", "app.routers.assets"),
-}
+# 해결되지 않은 역방향 의존성만 정확한 파일·import 쌍으로 기록한다.
+# 현재는 예외 없이 계층 경계를 지킨다.
+KNOWN_DEBT: set[tuple[str, str]] = set()
 
 
 def _module_name(path: Path) -> str:

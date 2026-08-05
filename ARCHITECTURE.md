@@ -49,11 +49,12 @@ routers     HTTP 만 — 요청/응답 변환, 인증 통과, usecase 호출
 usecases    업무 흐름 — 여러 repo·부수효과(WS·PM·agent signal)를 하나로 묶는다
   ▼
 repo        데이터 만 — SQL·트랜잭션 (facade __init__.py 유지, 내부만 분할)
-services    cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase 가 호출)
+services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO (usecase 가 호출)
 ```
 
 **의존 방향:** `routers → usecases → repo/services`.
 - `repo` 는 `routers` 를 import 하지 않는다(역방향 금지).
+- `services` 는 `routers` 를 import 하지 않는다. 파일 감시·캐시 무효화도 서비스 안에서 끝낸다.
 - `usecases` 는 FastAPI(Request/Response) 를 import 하지 않는다 — HTTP 는 router 의 몫.
 - `repo/__init__.py` 는 **facade** 다. 바깥은 `from app.repo import X` 만 쓰고, 내부 분할(`repo/generations.py` 등)은 이 파사드 뒤에 숨는다.
 

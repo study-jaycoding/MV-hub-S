@@ -16,8 +16,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import uuid
 import zipfile
 from datetime import datetime
@@ -48,9 +46,8 @@ from ..deps import (
     require_project_role,
 )
 from ..services.media_types import asset_media_type, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
-from ..services.project_folders import hidden_folder
 from ..services.request_guards import require_loopback_request
-from ..services import media_cache, thumbs
+from ..services import asset_tree, media_cache, thumbs
 from ..services.path_safety import safe_join
 
 
@@ -446,100 +443,6 @@ def _resolve_broken_sources(request: Request, prune: bool) -> tuple[int, list[st
     return relinked, pruned
 
 
-def _hidden(name: str) -> bool:
-    # 시스템/ledger 파일·placeholder 숨김 (PV 와 동일한 취지)
-    return hidden_folder(name) or name.lower() == "readme.md"
-
-
-# 트리 스캔 방어 한도 — 심볼릭링크/정션이 만든 순환·거대 폴더가 요청을 무한히 잡지 않게.
-_TREE_MAX_DEPTH = 24
-_TREE_MAX_NODES = 20000
-
-
-def _build_tree(
-    directory: Path,
-    rel_prefix: str,
-    *,
-    hidden_names: Optional[set[str]] = None,
-    _depth: int = 0,
-    _budget: Optional[list[int]] = None,
-) -> list[dict[str, Any]]:
-    """디렉터리를 재귀 순회 — 폴더 우선, 미디어 파일만 포함.
-    심볼릭링크/정션은 따라가지 않는다(등록 폴더 밖으로 새는 디렉터리 목록 노출·순환 방지).
-    깊이·노드 상한으로 거대/순환 트리가 이벤트 스레드를 무한히 잡는 것을 막는다."""
-    if _budget is None:
-        _budget = [_TREE_MAX_NODES]
-    if _depth > _TREE_MAX_DEPTH or _budget[0] <= 0:
-        return []
-    try:
-        entries: list[tuple[os.DirEntry[str], bool, bool]] = []
-        with os.scandir(directory) as scan:
-            for entry in scan:
-                if _hidden(entry.name):
-                    continue
-                if hidden_names and entry.name.lower() in hidden_names:
-                    continue
-                try:
-                    is_symlink = entry.is_symlink()
-                    is_dir = entry.is_dir(follow_symlinks=False)
-                except OSError:
-                    continue
-                entries.append((entry, is_dir, is_symlink))
-        entries.sort(key=lambda item: (not item[1], item[0].name.lower()))
-    except (PermissionError, OSError):
-        return []
-
-    out: list[dict[str, Any]] = []
-    reparse_point_attr = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
-    for entry, is_dir, is_symlink in entries:
-        if _budget[0] <= 0:
-            break
-        # 심볼릭링크/정션은 등록 폴더 밖(예: C:\Users)을 가리킬 수 있어 목록에서 제외한다.
-        # (파일 본문은 safe_join 이 막지만 디렉터리 listing 은 여기서만 막힌다.)
-        # DirEntry 에는 is_junction()이 없으므로 follow_symlinks=False stat 의 reparse-point
-        # 속성으로 Windows 정션/마운트포인트 등 재해석 지점을 보수적으로 차단한다.
-        if is_symlink:
-            continue
-        rel = f"{rel_prefix}{entry.name}"
-        if is_dir:
-            try:
-                entry_stat = entry.stat(follow_symlinks=False)
-                if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
-                    continue
-            except OSError:
-                continue
-            _budget[0] -= 1
-            out.append(
-                {
-                    "name": entry.name,
-                    "type": "dir",
-                    "path": rel,
-                    "children": _build_tree(
-                        Path(entry.path), rel + "/", hidden_names=hidden_names,
-                        _depth=_depth + 1, _budget=_budget,
-                    ),
-                }
-            )
-        else:
-            mt = _media_type(entry.name)
-            if mt:
-                try:
-                    entry_stat = entry.stat(follow_symlinks=False)
-                    if getattr(entry_stat, "st_file_attributes", 0) & reparse_point_attr:
-                        continue
-                except OSError:
-                    continue
-                _budget[0] -= 1
-                mtime = entry_stat.st_mtime  # 파일 날짜(에셋 날짜별 구분용)
-                # 캐시버스터용 버전 — 초 이하 덮어쓰기까지 구분(나노초+파일크기). 썸네일 URL 에 붙어
-                # 원본이 같은 이름으로 바뀌면 주소가 바뀌어 브라우저가 새 썸네일을 불러온다.
-                version = f"{entry_stat.st_mtime_ns}-{entry_stat.st_size}"
-                out.append(
-                    {"name": entry.name, "type": mt, "path": rel, "mtime": mtime, "version": version}
-                )
-    return out
-
-
 class ProjectsOut(BaseModel):
     projects: list[str]
     default: str
@@ -559,7 +462,7 @@ def list_projects(request: Request, background: BackgroundTasks):
         if m["name"] not in projects:
             projects.append(m["name"])
     # 내장 스크래치 폴더(captures/imports)는 하나로 합쳐 'imp/cap' 한 항목으로 노출(둘 중 하나라도 파일 있으면).
-    #  → 사이드바에서 두 폴더로 갈라 보여준다(아래 _combined_internal_children).
+    #  → 사이드바에서 두 폴더로 갈라 보여준다(asset_tree.read_combined_tree).
     if _COMBINED_INTERNAL not in projects:
         for folder in _INTERNAL_FOLDERS:
             p = ASSETS_ROOT / folder
@@ -634,89 +537,6 @@ def del_mount(name: str, request: Request):
     return _mounts_payload(request)
 
 
-def _collect_tree_media(nodes: list[dict], proj_dir: Path) -> list[tuple[Path, str]]:
-    """트리에서 이미지·영상 파일의 (디스크경로, 타입) 목록 — 프리워밍용(오디오·폴더 제외)."""
-    out: list[tuple[Path, str]] = []
-    for n in nodes:
-        t = n.get("type")
-        if t == "dir":
-            out.extend(_collect_tree_media(n.get("children") or [], proj_dir))
-        elif t in ("image", "video"):
-            target = _safe_resolve(proj_dir, n.get("path") or "")
-            if target and target.is_file():
-                out.append((target, t))
-    return out
-
-
-# 트리 스캔 캐시 — 프로젝트 전환 시 같은 폴더를 매번 다시 훑던 비용 제거(느린/네트워크 드라이브는 2초+).
-# 키=해석된 디스크 경로(사용자별 마운트 반영·같은 폴더는 공유 안전). 짧은 TTL 로 왔다갔다 전환은 즉시,
-# 파일 변경은 곧 반영. 파일 추가(업로드) 시엔 즉시 무효화한다.
-_TREE_CACHE: dict[str, tuple[float, list]] = {}
-_TREE_TTL = max(1.0, float(os.environ.get("CONTENT_HUB_ASSET_TREE_CACHE_TTL", "30")))
-# watcher 스레드(무효화)와 요청 스레드(조회·저장)가 _TREE_CACHE 를 동시에 만지므로 락으로 보호한다.
-_TREE_CACHE_LOCK = threading.Lock()
-_TREE_SCAN_LOCKS: dict[str, threading.Lock] = {}
-
-
-def _invalidate_tree_cache(proj_dir: Path) -> None:
-    with _TREE_CACHE_LOCK:
-        _TREE_CACHE.pop(str(proj_dir), None)
-
-
-def _tree_scan_lock(key: str) -> threading.Lock:
-    with _TREE_CACHE_LOCK:
-        return _TREE_SCAN_LOCKS.setdefault(key, threading.Lock())
-
-
-def _cached_tree(key: str) -> list | None:
-    with _TREE_CACHE_LOCK:
-        cached = _TREE_CACHE.get(key)
-        if cached and (time.monotonic() - cached[0]) < _TREE_TTL:
-            return cached[1]
-        if cached:
-            _TREE_CACHE.pop(key, None)
-    return None
-
-
-def _scan_combined_internal_children() -> list[dict[str, Any]]:
-    """captures·imports 를 각각 하위 폴더 노드로 묶은 합본 트리(파일 있는 폴더만).
-    파일 경로는 'captures/xxx', 'imports/xxx' — ASSETS_ROOT 기준으로 썸네일·파일이 서빙된다.
-    실제 디스크 순회만 담당한다. 캐시/동시 요청 합치기는 호출부에서 처리한다."""
-    children: list[dict[str, Any]] = []
-    for folder in _INTERNAL_FOLDERS:
-        d = (ASSETS_ROOT / folder).resolve()
-        if not d.is_dir():
-            continue
-        sub = _build_tree(d, f"{folder}/")
-        if sub:  # 비어있는 폴더는 노드도 숨김
-            children.append({"name": folder, "type": "dir", "path": folder, "children": sub})
-    return children
-
-
-_COMBINED_TREE_KEY = f"{ASSETS_ROOT}::__combined_internal__"
-
-
-def _invalidate_combined_tree_cache() -> None:
-    with _TREE_CACHE_LOCK:
-        _TREE_CACHE.pop(_COMBINED_TREE_KEY, None)
-
-
-def _combined_internal_children(*, fresh: bool = False) -> list[dict[str, Any]]:
-    """captures/imports 합본도 일반 프로젝트처럼 TTL 캐시·동시 요청 합치기를 적용한다."""
-    if fresh:
-        _invalidate_combined_tree_cache()
-    children = _cached_tree(_COMBINED_TREE_KEY)
-    if children is not None:
-        return children
-    with _tree_scan_lock(_COMBINED_TREE_KEY):
-        children = _cached_tree(_COMBINED_TREE_KEY)
-        if children is None:
-            children = _scan_combined_internal_children()
-            with _TREE_CACHE_LOCK:
-                _TREE_CACHE[_COMBINED_TREE_KEY] = (time.monotonic(), children)
-    return children
-
-
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
 def project_tree(
     request: Request,
@@ -730,7 +550,11 @@ def project_tree(
         return {
             "project": project,
             "name": project,
-            "children": _combined_internal_children(fresh=fresh),
+            "children": asset_tree.read_combined_tree(
+                ASSETS_ROOT,
+                _INTERNAL_FOLDERS,
+                fresh=fresh,
+            ),
         }
     info = _project_dir_info(project, request)
     if not info:
@@ -744,29 +568,17 @@ def project_tree(
         asset_watcher.watch(proj_dir, project, hide_render=auto_project)
     except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
         pass
-    key = str(proj_dir)
-    if fresh:
-        _invalidate_tree_cache(proj_dir)
-    children = _cached_tree(key)
-    scanned = False
-    if children is None:
-        # 캔버스·프롬프트·에셋 창이 같은 변경 신호를 함께 받아도 실제 디스크 순회는 한 번만.
-        with _tree_scan_lock(key):
-            children = _cached_tree(key)
-            if children is None:
-                children = _build_tree(
-                    proj_dir,
-                    "",
-                    hidden_names={"render"} if auto_project else None,
-                )
-                with _TREE_CACHE_LOCK:
-                    _TREE_CACHE[key] = (time.monotonic(), children)
-                scanned = True
+    tree_read = asset_tree.read_project_tree(
+        proj_dir,
+        fresh=fresh,
+        hidden_names={"render"} if auto_project else None,
+    )
+    children = tree_read.children
     # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).
     # 캐시 미스(새로 훑은 경우)에만 + 최근 5분 내 같은 폴더 프리워밍이 있었으면 스킵(포커스 fresh 재조회가
     # 올 때마다 전체 재프리워밍이 재큐잉되던 것 방지). 비디오 ffmpeg 는 세마포어로 폭주 방지.
-    if scanned:
-        media = _collect_tree_media(children, proj_dir)
+    if tree_read.scanned:
+        media = asset_tree.collect_media(children, proj_dir)
         if media and not thumbs.prewarm_recently(str(proj_dir)):
             background.add_task(thumbs.prewarm_asset_thumbs, media)  # 두 버킷(256/512) 파일 단위 워밍
     return {"project": project, "name": proj_dir.name, "children": children}
@@ -1131,7 +943,7 @@ async def upload_assets(
         saved.append(target.relative_to(proj_dir).as_posix())
 
     if saved:
-        _invalidate_tree_cache(proj_dir)  # 새 파일 반영 — 다음 트리 요청은 다시 훑는다
+        asset_tree.invalidate_project_tree(proj_dir)  # 새 파일 반영 — 다음 트리 요청은 다시 훑는다
     return {"saved": saved, "skipped": skipped}
 
 
@@ -1156,8 +968,8 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
     name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
     target = _commit_unique_tmp(tmp, cap_dir, name)
-    _invalidate_tree_cache(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다(안 그러면 캐시가 만료될 때까지 안 보임)
-    _invalidate_combined_tree_cache()
+    asset_tree.invalidate_project_tree(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다
+    asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
 
 
@@ -1237,8 +1049,8 @@ async def upload_reference_import(
         })
 
     if committed_new:
-        _invalidate_tree_cache(dest)  # 새 임포트 즉시 반영 — 다음 트리 요청은 다시 훑는다
-        _invalidate_combined_tree_cache()
+        asset_tree.invalidate_project_tree(dest)  # 새 임포트 즉시 반영 — 다음 트리 요청은 다시 훑는다
+        asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"saved": saved, "skipped": skipped}
 
 
