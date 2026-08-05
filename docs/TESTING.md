@@ -38,15 +38,14 @@ npm.cmd run build
 |---|---|---|
 | `test_dev.bat` | 내 PC | 한 번에 테스트 백엔드(8012)·생성 에이전트·Vite(5173)를 실행하고 실시간 프론트엔드를 엶 |
 | `test_pull-db.bat` | 내 PC | 필요할 때만 서버 DB를 격리된 `backend\data_test`로 내려받음(미디어 제외) |
-| `test_refresh-db.bat` | 서버 | live DB를 테스트 클론의 `backend\data`로 복사(읽기 전용 스냅샷) |
-| `test_run-server.bat` | 서버 | 테스트 서버 실행 — 8011, 로그인 켜짐, `CONTENT_HUB_NO_PROXY=1`로 완전 독립 |
+| `test_server_dev.bat` | 서버 | 한 번에 live DB 복사·프론트 빌드·서버 최종 확인 환경(8011)을 실행 |
 
 참고 — 운영(테스트 아님): `MV_server.bat`(공유 서버 8010), `MV_agent.bat`(각 PC 로컬 허브), `update*.bat`.
 
 ## 테스트 클론 최초 만들기 (서버에서, git)
 
 테스트 클론은 **`backend frontend tools` 3개**를 sparse-checkout 해야 한다.
-`tools/`가 빠지면 `test_refresh-db.bat`이 쓰는 `tools\refresh_pm_test_data.py`가 없어 DB 복사가 실패한다.
+`tools/`가 빠지면 `test_server_dev.bat`이 쓰는 `tools\refresh_pm_test_data.py`가 없어 DB 복사가 실패한다.
 (worker용 `setup_clone_git.bat`은 tools가 필요없어 `backend frontend`만 받으므로, 테스트 클론은 별도로 tools를 포함해야 한다.)
 
 ```powershell
@@ -79,14 +78,15 @@ git checkout feature/pm-dashboard
 새 `test_dev.bat`을 실행한다. 5173 또는 8012가 이미 사용 중이면 새 런처는 중복 생성
 에이전트를 만들지 않고 안내 후 종료한다.
 
-## 서버 통합 테스트 표준 순서 (서버에서)
+## 서버 적용 전 최종 확인 (서버에서)
 
-1. `test_refresh-db.bat` — live DB를 테스트 클론으로 복사
-2. `test_run-server.bat` — 8011로 실행
-3. 내 PC 브라우저에서 `http://<서버IP>:8011` 접속
+1. 서버 테스트 클론에서 `test_server_dev.bat` 하나를 실행한다.
+2. live DB를 읽기 전용 스냅샷으로 복사한 뒤 현재 코드의 프론트엔드를 빌드한다.
+3. 테스트 서버가 8011로 켜지면 내 PC 브라우저에서 `http://<서버IP>:8011`에 접속한다.
 
 `CONTENT_HUB_NO_PROXY=1`이 중요하다. 빠지면 복사 DB가 로그인 시 토큰을 되살려 `/api/manage/*`가
-운영 서버로 프록시되어 엉뚱한 404/오작동이 난다. `test_run-server.bat`은 이 값을 강제로 켠다.
+운영 서버로 프록시되어 엉뚱한 404/오작동이 난다. `test_server_dev.bat`은 이 값과 서버측 CLI
+동기화를 강제로 끄므로 운영 서버에는 쓰지 않는다.
 
 ## 머지 전 체크리스트
 
@@ -119,5 +119,5 @@ python tools\load_test_100.py --users 100 --duration 60 --cycles 2 --generations
 python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 --output soak-result.json
 ```
 
-> 주의: 테스트 런처는 8011 포트를 쓰는 프로세스를 강제 종료한다.
-> 다른 프로그램이 8011을 쓰고 있으면 함께 종료되니 유의.
+> 주의: 8011 포트가 이미 사용 중이면 `test_server_dev.bat`은 기존 프로세스를 강제 종료하지 않고
+> 안내 후 종료한다. 이전 서버 테스트 창을 닫은 뒤 다시 실행한다.
