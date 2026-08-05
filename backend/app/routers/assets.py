@@ -49,7 +49,7 @@ from ..deps import (
 )
 from ..services.media_types import asset_media_type, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 from ..services.project_folders import hidden_folder
-from ..services.request_guards import require_loopback_request, is_loopback_request
+from ..services.request_guards import require_loopback_request
 from ..services import media_cache, thumbs
 from ..services.path_safety import safe_join
 
@@ -546,28 +546,6 @@ class ProjectsOut(BaseModel):
     root: str
 
 
-# ── 전 프로젝트 썸네일 백그라운드 프리워밍 ──────────────────────────────────
-# 프로젝트를 '열 때(/tree)' 굽는 것만으론 브라우저 첫 요청과 경쟁해 첫 화면이 여전히 콜드다.
-# 앱 로드(/projects) 시 등록된 모든 프로젝트를 미리 통째로 구워두면, 실제로 열 때 캐시가 웜이라 즉시 뜬다.
-# 이미 구운 파일은 ensure_thumb 가 스킵하므로 반복 비용은 트리 훑기뿐. 네트워크 부담을 줄이려 스로틀한다.
-_PREWARM_ALL_AT = 0.0
-_PREWARM_ALL_TTL = 600.0  # 초 — 이 간격 안에는 다시 훑지 않는다(새 파일은 다음 주기에 반영)
-
-
-def _prewarm_projects_bg(dirs: list[tuple[Path, bool]]) -> None:
-    """등록된 프로젝트들의 이미지·영상 썸네일을 순회 생성(캐시된 건 스킵). 백그라운드 전용."""
-    for proj_dir, auto_project in dirs:
-        try:
-            if thumbs.prewarm_recently(str(proj_dir)):
-                continue  # /tree 등에서 방금 걸었으면 중복 스캔·경합 방지
-            children = _build_tree(proj_dir, "", hidden_names={"render"} if auto_project else None)
-            media = _collect_tree_media(children, proj_dir)
-            if media:
-                thumbs.prewarm_asset_thumbs(media)  # 두 버킷(256/512)을 파일 단위로 함께 워밍
-        except Exception:  # noqa: BLE001 — 한 프로젝트 실패가 나머지 프리워밍을 막지 않게
-            continue
-
-
 @router.get(
     "/projects",
     response_model=ProjectsOut,
@@ -588,22 +566,8 @@ def list_projects(request: Request, background: BackgroundTasks):
             if p.is_dir() and any(p.iterdir()):
                 projects.append(_COMBINED_INTERNAL)
                 break
-    # 앱 로드 때 전 프로젝트를 백그라운드로 미리 프리워밍(스로틀) — 첫 열람도 웜 캐시로 즉시 뜨게.
-    #  ★로컬 허브(loopback)에서만 — 공유 서버 원격 사용자는 썸네일 엔드포인트가 loopback 게이트라
-    #   결과를 못 받는데, 프리워밍은 서버 디스크 스캔·썸네일 생성을 유발한다(원격이 서버 파일 I/O 를
-    #   돌리는 자원 남용·원칙 위반). 원격이면 목록만 주고 프리워밍은 건너뛴다(기능 손실 없음).
-    global _PREWARM_ALL_AT
-    now = time.monotonic()
-    if projects and is_loopback_request(request) and (now - _PREWARM_ALL_AT) > _PREWARM_ALL_TTL:
-        _PREWARM_ALL_AT = now
-        # 합본(imp/cap)은 ASSETS_ROOT 전체를 훑게 되므로 프리워밍 제외 — 스크래치라 열 때 굽는 걸로 충분.
-        dirs = [
-            info
-            for name in projects
-            if name != _COMBINED_INTERNAL and (info := _project_dir_info(name, request))
-        ]
-        if dirs:
-            background.add_task(_prewarm_projects_bg, dirs)
+    # 목록 조회는 디스크 재귀 순회를 유발하지 않는다. 썸네일 준비는 실제로 /tree 를 연
+    # 현재 프로젝트에서만 수행한다(등록된 모든 네트워크 폴더를 미리 훑던 지연 제거).
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
     return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
@@ -688,9 +652,10 @@ def _collect_tree_media(nodes: list[dict], proj_dir: Path) -> list[tuple[Path, s
 # 키=해석된 디스크 경로(사용자별 마운트 반영·같은 폴더는 공유 안전). 짧은 TTL 로 왔다갔다 전환은 즉시,
 # 파일 변경은 곧 반영. 파일 추가(업로드) 시엔 즉시 무효화한다.
 _TREE_CACHE: dict[str, tuple[float, list]] = {}
-_TREE_TTL = 10.0  # 초
+_TREE_TTL = max(1.0, float(os.environ.get("CONTENT_HUB_ASSET_TREE_CACHE_TTL", "30")))
 # watcher 스레드(무효화)와 요청 스레드(조회·저장)가 _TREE_CACHE 를 동시에 만지므로 락으로 보호한다.
 _TREE_CACHE_LOCK = threading.Lock()
+_TREE_SCAN_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _invalidate_tree_cache(proj_dir: Path) -> None:
@@ -698,10 +663,25 @@ def _invalidate_tree_cache(proj_dir: Path) -> None:
         _TREE_CACHE.pop(str(proj_dir), None)
 
 
-def _combined_internal_children() -> list[dict[str, Any]]:
+def _tree_scan_lock(key: str) -> threading.Lock:
+    with _TREE_CACHE_LOCK:
+        return _TREE_SCAN_LOCKS.setdefault(key, threading.Lock())
+
+
+def _cached_tree(key: str) -> list | None:
+    with _TREE_CACHE_LOCK:
+        cached = _TREE_CACHE.get(key)
+        if cached and (time.monotonic() - cached[0]) < _TREE_TTL:
+            return cached[1]
+        if cached:
+            _TREE_CACHE.pop(key, None)
+    return None
+
+
+def _scan_combined_internal_children() -> list[dict[str, Any]]:
     """captures·imports 를 각각 하위 폴더 노드로 묶은 합본 트리(파일 있는 폴더만).
     파일 경로는 'captures/xxx', 'imports/xxx' — ASSETS_ROOT 기준으로 썸네일·파일이 서빙된다.
-    작고 변동 잦은 스크래치라 캐시 없이 매번 훑는다(캡쳐/임포트 직후 바로 반영)."""
+    실제 디스크 순회만 담당한다. 캐시/동시 요청 합치기는 호출부에서 처리한다."""
     children: list[dict[str, Any]] = []
     for folder in _INTERNAL_FOLDERS:
         d = (ASSETS_ROOT / folder).resolve()
@@ -713,6 +693,30 @@ def _combined_internal_children() -> list[dict[str, Any]]:
     return children
 
 
+_COMBINED_TREE_KEY = f"{ASSETS_ROOT}::__combined_internal__"
+
+
+def _invalidate_combined_tree_cache() -> None:
+    with _TREE_CACHE_LOCK:
+        _TREE_CACHE.pop(_COMBINED_TREE_KEY, None)
+
+
+def _combined_internal_children(*, fresh: bool = False) -> list[dict[str, Any]]:
+    """captures/imports 합본도 일반 프로젝트처럼 TTL 캐시·동시 요청 합치기를 적용한다."""
+    if fresh:
+        _invalidate_combined_tree_cache()
+    children = _cached_tree(_COMBINED_TREE_KEY)
+    if children is not None:
+        return children
+    with _tree_scan_lock(_COMBINED_TREE_KEY):
+        children = _cached_tree(_COMBINED_TREE_KEY)
+        if children is None:
+            children = _scan_combined_internal_children()
+            with _TREE_CACHE_LOCK:
+                _TREE_CACHE[_COMBINED_TREE_KEY] = (time.monotonic(), children)
+    return children
+
+
 @router.get("/tree", dependencies=[Depends(_require_local_assets)])
 def project_tree(
     request: Request,
@@ -721,9 +725,13 @@ def project_tree(
     fresh: bool = Query(False),
 ):
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석.
-    fresh=1 이면 10초 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전을 즉시 반영해야 할 때: 창 포커스 재조회)."""
+    fresh=1 이면 캐시를 먼저 무효화한다. 같은 프로젝트 동시 요청은 한 번의 순회로 합친다."""
     if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
-        return {"project": project, "name": project, "children": _combined_internal_children()}
+        return {
+            "project": project,
+            "name": project,
+            "children": _combined_internal_children(fresh=fresh),
+        }
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
@@ -737,24 +745,30 @@ def project_tree(
     except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
         pass
     key = str(proj_dir)
-    with _TREE_CACHE_LOCK:
-        cached = _TREE_CACHE.get(key)
-    if cached and not fresh and (time.monotonic() - cached[0]) < _TREE_TTL:
-        # 캐시 히트 — 재훑기·재프리워밍 없이 즉시(직전에 이미 프리워밍 걸었다).
-        return {"project": project, "name": proj_dir.name, "children": cached[1]}
-    children = _build_tree(
-        proj_dir,
-        "",
-        hidden_names={"render"} if auto_project else None,
-    )
-    with _TREE_CACHE_LOCK:
-        _TREE_CACHE[key] = (time.monotonic(), children)
+    if fresh:
+        _invalidate_tree_cache(proj_dir)
+    children = _cached_tree(key)
+    scanned = False
+    if children is None:
+        # 캔버스·프롬프트·에셋 창이 같은 변경 신호를 함께 받아도 실제 디스크 순회는 한 번만.
+        with _tree_scan_lock(key):
+            children = _cached_tree(key)
+            if children is None:
+                children = _build_tree(
+                    proj_dir,
+                    "",
+                    hidden_names={"render"} if auto_project else None,
+                )
+                with _TREE_CACHE_LOCK:
+                    _TREE_CACHE[key] = (time.monotonic(), children)
+                scanned = True
     # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).
     # 캐시 미스(새로 훑은 경우)에만 + 최근 5분 내 같은 폴더 프리워밍이 있었으면 스킵(포커스 fresh 재조회가
     # 올 때마다 전체 재프리워밍이 재큐잉되던 것 방지). 비디오 ffmpeg 는 세마포어로 폭주 방지.
-    media = _collect_tree_media(children, proj_dir)
-    if media and not thumbs.prewarm_recently(str(proj_dir)):
-        background.add_task(thumbs.prewarm_asset_thumbs, media)  # 두 버킷(256/512) 파일 단위 워밍
+    if scanned:
+        media = _collect_tree_media(children, proj_dir)
+        if media and not thumbs.prewarm_recently(str(proj_dir)):
+            background.add_task(thumbs.prewarm_asset_thumbs, media)  # 두 버킷(256/512) 파일 단위 워밍
     return {"project": project, "name": proj_dir.name, "children": children}
 
 
@@ -1143,6 +1157,7 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
     target = _commit_unique_tmp(tmp, cap_dir, name)
     _invalidate_tree_cache(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다(안 그러면 캐시가 만료될 때까지 안 보임)
+    _invalidate_combined_tree_cache()
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
 
 
@@ -1223,6 +1238,7 @@ async def upload_reference_import(
 
     if committed_new:
         _invalidate_tree_cache(dest)  # 새 임포트 즉시 반영 — 다음 트리 요청은 다시 훑는다
+        _invalidate_combined_tree_cache()
     return {"saved": saved, "skipped": skipped}
 
 

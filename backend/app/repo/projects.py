@@ -421,6 +421,46 @@ def folder_counts(
         return {r["folder_path"]: r["c"] for r in rows}
 
 
+def folder_counts_batch(
+    project_ids: list[str],
+    account_uid: Optional[str] = None,
+    shared_only: bool = False,
+    team_member_projects: Optional[list[str]] = None,
+    actor_uid: Optional[str] = None,
+) -> dict[str, dict[str, int]]:
+    """여러 프로젝트의 폴더 개수를 한 SQL로 집계한다."""
+    ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    out: dict[str, dict[str, int]] = {pid: {} for pid in ids}
+    if not ids:
+        return out
+    placeholders = ",".join("?" for _ in ids)
+    where = (
+        f"g.project_id IN ({placeholders}) "
+        "AND g.folder_path IS NOT NULL AND g.folder_path <> '' AND g.deleted_at IS NULL"
+    )
+    args: list[Any] = [*ids]
+    if account_uid and account_uid != "\x00":
+        where += " AND g.creator_uid = ?"
+        args.append(account_uid)
+    if shared_only:
+        where += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
+        visibility, visibility_args = team_generation_visibility_clause(
+            team_member_projects, actor_uid
+        )
+        if visibility:
+            where += f" AND {visibility}"
+            args += visibility_args
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT g.project_id, g.folder_path, COUNT(*) AS c FROM generation g "
+            f"WHERE {where} GROUP BY g.project_id, g.folder_path",
+            args,
+        ).fetchall()
+    for row in rows:
+        out[row["project_id"]][row["folder_path"]] = row["c"]
+    return out
+
+
 def team_fresh_items(
     since: str,
     team_member_projects: Optional[list[str]] = None,

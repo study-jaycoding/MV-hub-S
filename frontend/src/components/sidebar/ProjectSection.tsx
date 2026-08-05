@@ -11,7 +11,10 @@ import { loadJSON, saveJSON } from "../../lib/storage";
 import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "../../lib/teamSeen";
 import {
   collectExpandableProjectFolders,
+  cachedProjectFolderEntries,
   loadProjectFolderExpansion,
+  rememberProjectFolderEntry,
+  rememberProjectFolderLink,
   saveProjectFolderExpansion,
   visibleProjectFolderRoots,
   type ProjectFolderEntry,
@@ -210,8 +213,13 @@ export function ProjectSection({
   const teamSeenVer = useSyncExternalStore(subscribeTeamSeen, getTeamSeenVersion);
   const [order, setOrder] = useState<Project[]>(projects);
   useEffect(() => setOrder(projects), [projects]);
-  const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>({});
+  const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>(() =>
+    cachedProjectFolderEntries(projects.map((project) => project.id)),
+  );
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
+  // 링크 목록과 실제 디스크 트리를 분리한다. 링크는 전 프로젝트를 가볍게 받고,
+  // 트리는 현재 선택/고정된 프로젝트만 지연 로드한다.
+  const [linkedFolderIds, setLinkedFolderIds] = useState<string[]>([]);
   const [folderCounts, setFolderCounts] = useState<Record<string, Record<string, number>>>({});
   // 팀 탭: 기준선 이후 공유된 항목 목록(서버) — 확인(클릭)분을 제외하고 +N 을 만든다.
   const [teamFreshItems, setTeamFreshItems] = useState<
@@ -265,39 +273,68 @@ export function ProjectSection({
         const linkedIds = Object.keys(links).filter(
           (pid) => visibleIds.has(pid) && !!links[pid]?.root_path,
         );
+        setLinkedFolderIds(linkedIds);
         setFolders((prev) => {
           const next: Record<string, ProjectFolderEntry> = {};
-          for (const pid of linkedIds) next[pid] = { ...prev[pid], ...links[pid] };
+          for (const pid of linkedIds) {
+            const current = prev[pid];
+            const link = links[pid];
+            // 현재 인스턴스가 가진 트리가 캐시보다 최신일 수도 있다(폴더 선택 직후 등).
+            if (current) rememberProjectFolderEntry(current);
+            next[pid] = rememberProjectFolderLink(link);
+          }
           return next;
         });
-        linkedIds.forEach((pid) => {
-          setFolderLoading((prev) => ({ ...prev, [pid]: true }));
-          api
-            .projectFolder(pid)
-            .then((state) => {
-              if (!alive) return;
-              seedProjectExpansion(pid, state);
-              setFolders((prev) => ({ ...prev, [pid]: state }));
-            })
-            .catch(() => {
-              // 조용히 삼키지 않고 트리에 사유 표시(SidebarFolderTree 가 state.error 렌더).
-              if (alive)
-                setFolders((prev) => ({
-                  ...prev,
-                  [pid]: { ...prev[pid], error: "폴더 정보를 불러오지 못했습니다" },
-                }));
-            })
-            .finally(() => {
-              if (alive) setFolderLoading((prev) => ({ ...prev, [pid]: false }));
-            });
-        });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (alive) setLinkedFolderIds([]);
+      });
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey]);
+
+  // 실제 재귀 트리는 화면에 필요한 활성 프로젝트와 고정핀 프로젝트만 읽는다.
+  useEffect(() => {
+    let alive = true;
+    const linked = new Set(linkedFolderIds);
+    const ids = new Set<string>();
+    pinned.forEach((pid) => {
+      if (linked.has(pid)) ids.add(pid);
+    });
+    if (activeId && activeId !== "none" && linked.has(activeId)) ids.add(activeId);
+    ids.forEach((pid) => {
+      setFolderLoading((prev) => ({ ...prev, [pid]: true }));
+      api
+        .projectFolder(pid)
+        .then((state) => {
+          if (!alive) return;
+          seedProjectExpansion(pid, state);
+          rememberProjectFolderEntry(state);
+          setFolders((prev) => ({ ...prev, [pid]: state }));
+        })
+        .catch(() => {
+          if (!alive) return;
+          setFolders((prev) => {
+            const failed = {
+              ...prev[pid],
+              error: "폴더 정보를 불러오지 못했습니다",
+            } as ProjectFolderEntry;
+            rememberProjectFolderEntry(failed);
+            return { ...prev, [pid]: failed };
+          });
+        })
+        .finally(() => {
+          if (alive) setFolderLoading((prev) => ({ ...prev, [pid]: false }));
+        });
+    });
+    return () => {
+      alive = false;
+    };
+    // pinned 는 토글할 때 새 Set 으로 교체되므로 안전한 의존성이다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, pinned, linkedFolderIds]);
 
   // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/생성)를 구독 — countTick 을 올려 폴더 카운트를
   // 즉시 재조회한다. 캔버스(compose) 탭은 reload 가 early-return 이라 projects 레퍼런스가 안 바뀌어
@@ -312,12 +349,20 @@ export function ProjectSection({
     let alive = true;
     const ids = new Set<string>(pinned);
     if (activeId && activeId !== "none") ids.add(activeId);
-    ids.forEach((pid) => {
+    const wanted = [...ids];
+    if (wanted.length) {
       api
-        .projectFolderCounts(pid, tab)
-        .then((r) => alive && setFolderCounts((prev) => ({ ...prev, [pid]: r.counts || {} })))
+        .projectFolderCountsBatch(wanted, tab)
+        .then((r) => {
+          if (!alive) return;
+          setFolderCounts((prev) => {
+            const next = { ...prev };
+            for (const pid of wanted) next[pid] = r.counts?.[pid] || {};
+            return next;
+          });
+        })
         .catch(() => {});
-    });
+    }
     // 팀 탭: 기준선 이후 공유된 항목 목록(+N 원천)도 갱신 — 폴더뿐 아니라 미분류·프로젝트 행에도 배지.
     // 구버전 서버(라우트 없음 404)는 빈 목록 폴백 = 배지만 숨김.
     const since = tab === "team" ? getTeamBase() : null;
@@ -334,7 +379,7 @@ export function ProjectSection({
     // 탭(my/team) 전환 시에도 재조회 → 팀 탭에서 팀 기준 개수 표시.
     // countTick = 생성물 변경 브로드캐스트(캔버스 드롭 포함)로 즉시 재조회.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projects, pinned, tab, countTick]);
+  }, [activeId, projectKey, pinned, tab, countTick]);
 
   // +N 계산 — 서버 신규 목록(teamFreshItems)에서 '확인(클릭)한 항목'을 제외해 폴더/프로젝트/미분류별 집계.
   // teamSeenVer 의존 — 카드 클릭 순간 스토어가 bump 되어 배지가 즉시 하나 줄어든다.
@@ -365,13 +410,14 @@ export function ProjectSection({
     if (!cur?.root_path) return;
     onFilter(pid);
     onArmFolder?.(pid, path); // 무장: 이 폴더로 생성하면 folder_path 자동 라벨링
-    setFolders((prev) => ({ ...prev, [pid]: { ...cur, selected_path: path } }));
+    const selected = rememberProjectFolderEntry({ ...cur, selected_path: path });
+    setFolders((prev) => ({ ...prev, [pid]: selected }));
     try {
-      const state = await api.setProjectFolder(pid, {
-        root_path: cur.root_path,
-        selected_path: path,
+      const link = await api.setProjectFolderSelection(pid, path);
+      setFolders((prev) => {
+        const state = rememberProjectFolderEntry({ ...(prev[pid] ?? cur), ...link });
+        return { ...prev, [pid]: state };
       });
-      setFolders((prev) => ({ ...prev, [pid]: state }));
     } catch {
       /* 권한이 없는 사용자는 화면 선택만 반영한다. */
     }

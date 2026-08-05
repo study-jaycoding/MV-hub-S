@@ -178,19 +178,18 @@ export function useAssetProjectData({
     void refreshProjectData(project);
   }, [project, refreshProjectData]);
 
-  // 창을 다시 볼 때(포커스/탭 전환) 현재 프로젝트를 fresh 로 다시 읽어 최신 파일 버전을 반영한다
+  // 창을 다시 볼 때(포커스/탭 전환) 현재 프로젝트를 다시 확인한다
   // → 외부에서 원본을 같은 이름으로 덮어쓰고 어셋 창으로 돌아오면 썸네일이 자동으로 최신화된다.
-  // ★10초 스로틀(백엔드 트리 캐시 TTL 과 동일) — 폴더 변경은 watchdog(WS assets_changed)가 실시간
-  //   알림이라 포커스 재조회는 보조다. 0.5초 디바운스 시절엔 창을 앞뒤로 오갈 때마다 풀 스캔+프리워밍이
-  //   반복돼 열 때마다 느려졌다. 10초면 감시가 안 되는 환경(네트워크 드라이브 등)에서도 충분히 신선하다.
+  // ★30초 스로틀 + 서버 캐시 사용 — 실제 폴더 변경은 watchdog 신호가 캐시를 즉시 무효화한다.
+  // 감시가 불가능한 네트워크 폴더도 서버 TTL 뒤의 포커스 복귀에서 다시 읽힌다.
   useEffect(() => {
     let lastAt = 0;
     const refresh = () => {
       if (document.hidden || !projectRef.current) return;
       const now = Date.now();
-      if (now - lastAt < 10_000) return;
+      if (now - lastAt < 30_000) return;
       lastAt = now;
-      void reloadTree(projectRef.current, true);
+      void reloadTree(projectRef.current);
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);

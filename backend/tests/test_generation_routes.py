@@ -25,12 +25,15 @@ class GenerationReadRouteTests(unittest.TestCase):
         repo.ensure_default_worker()
         # 팀 탭 카드처럼 id != job_id 인 동기화 생성물 시드(로컬 id=loc1, 서버 앵커=srv1).
         with db.get_connection() as conn:
-            for gid, jid, ts in (("loc1", "srv1", 2), ("par1", "par1", 1)):
+            for gid, jid, ts in (("loc1", "srv1", 3), ("par1", "par1", 2), ("mat1", "mat1", 1)):
                 conn.execute(
                     "INSERT INTO generation(id, job_id, worker_id, creator_uid, prompt, model, status, created_at, sort_ts) "
                     "VALUES(?,?,'me','me','p','m','done','2026-01-01', ?)",
                     (gid, jid, ts),
                 )
+            conn.execute(
+                "INSERT INTO history(parent_gen_id, child_gen_id, relation) VALUES('mat1','loc1','reference')"
+            )
         from fastapi.testclient import TestClient
         from app.main import app
 
@@ -83,6 +86,32 @@ class GenerationReadRouteTests(unittest.TestCase):
         # 프록시 off(NO_PROXY) + 로컬에 없음 → 404(기존 동작 고정).
         r = self.client.get("/api/generations/nope/history-tree")
         self.assertEqual(r.status_code, 404)
+
+    def test_generation_batch_returns_items_materials_and_missing(self):
+        r = self.client.post(
+            "/api/generations/batch",
+            json={"gen_ids": ["loc1", "mat1", "nope", "loc1"]},
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(set(data["items"]), {"loc1", "mat1"})
+        self.assertEqual(data["materials"]["loc1"], ["mat1"])
+        self.assertEqual(data["materials"]["mat1"], [])
+        self.assertEqual(data["missing"], ["nope"])
+
+    def test_generation_batch_resolves_server_job_id_and_keeps_request_key(self):
+        r = self.client.post("/api/generations/batch", json={"gen_ids": ["srv1"]})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["items"]["srv1"]["id"], "loc1")
+        self.assertEqual(r.json()["materials"]["srv1"], ["mat1"])
+
+    def test_generation_batch_rejects_unbounded_request(self):
+        r = self.client.post(
+            "/api/generations/batch",
+            json={"gen_ids": [f"g{i}" for i in range(501)]},
+        )
+        self.assertEqual(r.status_code, 413)
 
     # ── write 라우트(add/remove/derive)도 서버 job_id → 로컬 행 해석(ref.local_id) ──
     def test_add_history_via_server_job_id_targets_local_row(self):

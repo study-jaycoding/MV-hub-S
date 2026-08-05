@@ -18,6 +18,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -60,6 +61,12 @@ _HTMLISH_PREFIXES = (b"<!doctype", b"<html", b"<?xml")
 _LOCKS: dict[str, asyncio.Lock] = {}
 _LOCK_REFS: dict[str, int] = {}  # rel -> 사용 중 코루틴 수. 0 이 되면 _LOCKS 에서 제거(락 누적 방지).
 _LOCKS_GUARD = asyncio.Lock()
+_THUMB_FAILURE_TTL = max(
+    1.0, float(os.getenv("CONTENT_HUB_THUMB_FAILURE_TTL_SECONDS", "3600"))
+)
+_THUMB_FAILURE_CAP = 5000
+_THUMB_FAILURES: dict[str, float] = {}  # thumb rel -> 재시도 허용 시각(monotonic)
+_THUMB_FAILURES_GUARD = threading.Lock()
 
 
 class MediaCacheError(RuntimeError):
@@ -209,6 +216,16 @@ def _download_once(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
         if written <= 0:
             raise MediaCachePermanentError("empty media response")
         tmp.replace(target)  # 원자적 교체(부분 파일 방지)
+    except urllib.error.HTTPError as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # 만료·권한없음·삭제된 CDN URL은 같은 주소로 재시도해도 복구되지 않는다. 408/429만
+        # 일시 오류로 남기고 나머지 4xx는 즉시 영구 실패 처리해 한 호출 안의 3회 재시도를 막는다.
+        if 400 <= e.code < 500 and e.code not in (408, 429):
+            raise MediaCachePermanentError(f"HTTP Error {e.code}: remote media unavailable") from e
+        raise
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
@@ -225,6 +242,14 @@ def _download(url: str, target: Path, max_bytes: int = _MAX_BYTES) -> None:
             return
         except (MediaCachePermanentError, BlockedURLError):
             raise  # 내부망/사설·리다이렉트 차단은 영구 오류 — 재시도해도 소용없다
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500 and e.code not in (408, 429):
+                raise MediaCachePermanentError(
+                    f"HTTP Error {e.code}: remote media unavailable"
+                ) from e
+            last = e
+            if attempt < _ATTEMPTS:
+                time.sleep(_RETRY_BACKOFF * attempt)
         except Exception as e:  # noqa: BLE001 — 네트워크/CloudFront 일시 오류는 재시도 후 최종 로깅
             last = e
             if attempt < _ATTEMPTS:
@@ -321,31 +346,88 @@ def _mark_thumb_source_used(path: Path) -> None:
         pass
 
 
-async def _cache_http_url(url: str, rel: str, max_bytes: Optional[int] = None) -> Optional[str]:
+def _thumb_failure_active(rel: str) -> bool:
+    now = time.monotonic()
+    with _THUMB_FAILURES_GUARD:
+        retry_at = _THUMB_FAILURES.get(rel)
+        if retry_at is None:
+            return False
+        if retry_at <= now:
+            _THUMB_FAILURES.pop(rel, None)
+            return False
+        return True
+
+
+def _remember_thumb_failure(rel: str) -> None:
+    now = time.monotonic()
+    with _THUMB_FAILURES_GUARD:
+        # 만료 항목부터 정리하고, 장기 세션에서 서로 다른 깨진 URL이 무한히 쌓이지 않게 상한 적용.
+        for key, retry_at in list(_THUMB_FAILURES.items()):
+            if retry_at <= now:
+                _THUMB_FAILURES.pop(key, None)
+        while len(_THUMB_FAILURES) >= _THUMB_FAILURE_CAP:
+            oldest = next(iter(_THUMB_FAILURES), None)
+            if oldest is None:
+                break
+            _THUMB_FAILURES.pop(oldest, None)
+        _THUMB_FAILURES[rel] = now + _THUMB_FAILURE_TTL
+
+
+def _clear_thumb_failure(rel: str) -> None:
+    with _THUMB_FAILURES_GUARD:
+        _THUMB_FAILURES.pop(rel, None)
+
+
+async def _cache_http_url(
+    url: str,
+    rel: str,
+    max_bytes: Optional[int] = None,
+    *,
+    negative_thumb_cache: bool = False,
+) -> Optional[str]:
     """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다."""
     target = _local_path(rel)
     if _is_complete_file(target):
+        if negative_thumb_cache:
+            _clear_thumb_failure(rel)
         return rel
+    if negative_thumb_cache and _thumb_failure_active(rel):
+        return None
     lock = await _acquire_lock(rel)
     try:
         async with lock:
             if _is_complete_file(target):
+                if negative_thumb_cache:
+                    _clear_thumb_failure(rel)
                 return rel
+            # 같은 URL의 앞선 동시 요청이 영구 실패를 기록했으면 락 대기 후 재다운로드하지 않는다.
+            if negative_thumb_cache and _thumb_failure_active(rel):
+                return None
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if max_bytes is None:
                     await asyncio.to_thread(_download, url, target)
                 else:
                     await asyncio.to_thread(_download, url, target, max_bytes)
-                return rel if _is_complete_file(target) else None
+                result = rel if _is_complete_file(target) else None
+                if result and negative_thumb_cache:
+                    _clear_thumb_failure(rel)
+                return result
             except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
-                if await _wait_for_complete_file(target):
+                permanent = isinstance(e, (MediaCachePermanentError, BlockedURLError))
+                # 영구 실패(403/404/차단)는 같은 프로세스 락 안에서 복구될 수 없으므로 3초 대기를 생략.
+                # 일시 오류만 다른 프로세스가 같은 파일을 막 완성했을 가능성을 확인한다.
+                if not permanent and await _wait_for_complete_file(target):
                     log.info(
                         "media cache reused concurrently completed file url=%s target=%s",
                         _safe_url_for_log(url),
                         target,
                     )
+                    if negative_thumb_cache:
+                        _clear_thumb_failure(rel)
                     return rel
+                if negative_thumb_cache and permanent:
+                    _remember_thumb_failure(rel)
                 log.warning(
                     "media cache download failed url=%s target=%s reason=%s",
                     _safe_url_for_log(url), target, e,
@@ -381,7 +463,12 @@ async def cache_thumb_source(url: Optional[str]) -> Optional[str]:
         return None
     rel = thumb_source_rel_for(url)
     target = _local_path(rel)
-    result = await _cache_http_url(url, rel, THUMB_SOURCE_FILE_MAX_BYTES)
+    result = await _cache_http_url(
+        url,
+        rel,
+        THUMB_SOURCE_FILE_MAX_BYTES,
+        negative_thumb_cache=True,
+    )
     if not result:
         return None
     await asyncio.to_thread(_mark_thumb_source_used, target)

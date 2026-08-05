@@ -562,6 +562,71 @@ def get_generation(gen_id: str, request: Request):
     return gen
 
 
+class GenerationBatchIn(BaseModel):
+    gen_ids: list[str]
+
+
+class GenerationBatchOut(BaseModel):
+    items: dict[str, GenerationOut]
+    materials: dict[str, list[str]]
+    missing: list[str]
+
+
+@router.post("/generations/batch", response_model=GenerationBatchOut)
+def get_generations_batch(body: GenerationBatchIn, request: Request):
+    """캔버스용 생성물 상태 + 직접 레퍼런스 부모 일괄 조회.
+
+    단건 GET을 카드 수만큼 호출하던 N+1 요청을 한 번으로 합친다. 로컬에 없는 id도 공유 서버에
+    한 번의 배치 요청으로 위임하며, 찾지 못한 id는 missing으로 명시해 클라이언트가 재조회하지 않는다.
+    """
+    ids = list(dict.fromkeys(str(gen_id).strip() for gen_id in (body.gen_ids or []) if str(gen_id).strip()))
+    if len(ids) > 500:
+        raise HTTPException(status_code=413, detail="한 번에 조회 가능한 생성물은 최대 500개입니다")
+    if not ids:
+        return {"items": {}, "materials": {}, "missing": []}
+
+    account_uid = _account_uid(request)
+    local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
+    visible_items: dict[str, dict] = {}
+    visible_materials: dict[str, list[str]] = {}
+    for gen_id, gen in local_items.items():
+        try:
+            require_view_generation(request, gen)
+        except HTTPException:
+            continue  # 단건 GET과 같은 존재 은닉 — batch에서는 missing으로 합친다.
+        visible_items[gen_id] = gen
+        visible_materials[gen_id] = local_materials.get(gen_id, [])
+
+    unresolved = [gen_id for gen_id in ids if gen_id not in visible_items]
+    if unresolved and _proxy.proxying():
+        remote = _proxy.proxy_json(
+            "POST",
+            "/api/generations/batch",
+            body={"gen_ids": unresolved},
+            timeout=15,
+        )
+        if isinstance(remote, dict):
+            remote_items = remote.get("items") if isinstance(remote.get("items"), dict) else {}
+            _overlay_personal_meta(list(remote_items.values()), request)
+            remote_materials = (
+                remote.get("materials") if isinstance(remote.get("materials"), dict) else {}
+            )
+            for requested_id in unresolved:
+                gen = remote_items.get(requested_id)
+                if isinstance(gen, dict):
+                    visible_items[requested_id] = gen
+                    parents = remote_materials.get(requested_id)
+                    visible_materials[requested_id] = (
+                        [str(parent) for parent in parents if parent] if isinstance(parents, list) else []
+                    )
+
+    return {
+        "items": visible_items,
+        "materials": visible_materials,
+        "missing": [gen_id for gen_id in ids if gen_id not in visible_items],
+    }
+
+
 @router.get("/facets", response_model=FacetsOut)
 def facets(request: Request, tab: str = Query("my", pattern="^(my|team)$")):
     # 컬러/태그 facet — my=내 로컬 생성물 기준, team=서버(팀 공유물) 기준.

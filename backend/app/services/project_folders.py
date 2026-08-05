@@ -1,11 +1,53 @@
 from __future__ import annotations
 
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from .path_safety import safe_join
 from ..repo import manage as repo_manage
 from ..repo import projects as repo_projects
+
+
+# UNC/네트워크 드라이브의 Render 트리를 매 API 호출마다 재귀 순회하면 사이드바를 열거나
+# 폴더를 클릭할 때마다 UI가 멈춘다. 짧은 프로세스 메모리 캐시로 같은 프로젝트의 반복 순회를
+# 합치되, 루트 변경 시 즉시 무효화하고 필요하면 fresh=True 로 강제 갱신할 수 있게 한다.
+_FOLDER_TREE_CACHE_TTL = max(
+    1.0, float(os.environ.get("CONTENT_HUB_FOLDER_TREE_CACHE_TTL", "30"))
+)
+_FOLDER_TREE_CACHE: dict[str, tuple[float, str, dict[str, Any]]] = {}
+_FOLDER_TREE_LOCKS: dict[str, threading.Lock] = {}
+_FOLDER_TREE_GUARD = threading.Lock()
+
+
+def invalidate_project_folder(pid: str) -> None:
+    with _FOLDER_TREE_GUARD:
+        _FOLDER_TREE_CACHE.pop(pid, None)
+
+
+def _folder_tree_lock(pid: str) -> threading.Lock:
+    with _FOLDER_TREE_GUARD:
+        return _FOLDER_TREE_LOCKS.setdefault(pid, threading.Lock())
+
+
+def _cached_folder_scan(pid: str, root_raw: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _FOLDER_TREE_GUARD:
+        cached = _FOLDER_TREE_CACHE.get(pid)
+        if not cached:
+            return None
+        saved_at, saved_root, result = cached
+        if saved_root != root_raw or now - saved_at >= _FOLDER_TREE_CACHE_TTL:
+            _FOLDER_TREE_CACHE.pop(pid, None)
+            return None
+        return result
+
+
+def _remember_folder_scan(pid: str, root_raw: str, result: dict[str, Any]) -> None:
+    with _FOLDER_TREE_GUARD:
+        _FOLDER_TREE_CACHE[pid] = (time.monotonic(), root_raw, result)
 
 
 def hidden_folder(name: str) -> bool:
@@ -125,7 +167,31 @@ def render_root_state(pid: str) -> dict[str, Any]:
     return {"render_path": str(render), "error": None}
 
 
-def project_folder_state(pid: str) -> dict[str, Any]:
+def _scan_project_folder(root_raw: str) -> dict[str, Any]:
+    """디스크에서 Render 트리만 읽는다. selected_path 같은 개인 상태는 캐시에 넣지 않는다."""
+    result: dict[str, Any] = {
+        "render_path": "",
+        "tree": None,
+        "error": None,
+        "truncated": False,
+    }
+    root = Path(root_raw).expanduser().resolve()
+    if not root.is_dir():
+        result["error"] = f"폴더가 없습니다: {root}"
+        return result
+    render = render_root(root)
+    if not render:
+        result["error"] = f"Render 폴더가 없습니다: {root}"
+        return result
+    stats = {"nodes": 0, "truncated": 0}
+    tree, _ = folder_tree_node(render, render, stats)
+    result["render_path"] = str(render)
+    result["tree"] = tree
+    result["truncated"] = bool(stats.get("truncated"))
+    return result
+
+
+def project_folder_state(pid: str, *, fresh: bool = False) -> dict[str, Any]:
     meta = repo_manage.get_project_folder(pid)
     root_raw = effective_root_path(pid)  # 공유(서버) 우선, 없으면 로컬 링크
     state: dict[str, Any] = {
@@ -138,19 +204,16 @@ def project_folder_state(pid: str) -> dict[str, Any]:
         "truncated": False,
     }
     if not root_raw:
+        invalidate_project_folder(pid)
         return state
 
-    root = Path(root_raw).expanduser().resolve()
-    if not root.is_dir():
-        state["error"] = f"폴더가 없습니다: {root}"
-        return state
-    render = render_root(root)
-    if not render:
-        state["error"] = f"Render 폴더가 없습니다: {root}"
-        return state
-    stats = {"nodes": 0, "truncated": 0}
-    tree, _ = folder_tree_node(render, render, stats)
-    state["render_path"] = str(render)
-    state["tree"] = tree
-    state["truncated"] = bool(stats.get("truncated"))
+    scan = None if fresh else _cached_folder_scan(pid, root_raw)
+    if scan is None:
+        # 같은 프로젝트에 요청이 동시에 몰려도 실제 재귀 순회는 한 번만 수행한다.
+        with _folder_tree_lock(pid):
+            scan = None if fresh else _cached_folder_scan(pid, root_raw)
+            if scan is None:
+                scan = _scan_project_folder(root_raw)
+                _remember_folder_scan(pid, root_raw, scan)
+    state.update(scan)
     return state

@@ -9,7 +9,11 @@ import {
   systemMemberUids,
   visibleAdminMembers,
 } from "../../lib/accountIdentity";
-import type { ProjectFolderEntry } from "../../lib/projectFolderTree";
+import {
+  rememberProjectFolderEntry,
+  rememberProjectFolderLink,
+  type ProjectFolderEntry,
+} from "../../lib/projectFolderTree";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { useEscapeClose } from "../../lib/useEscapeClose";
@@ -46,6 +50,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     setFolderLoading((prev) => ({ ...prev, [pid]: true }));
     try {
       const state = await api.projectFolder(pid);
+      rememberProjectFolderEntry(state);
       setProjFolders((prev) => {
         const next = { ...prev };
         if (state.root_path) next[pid] = state;
@@ -68,13 +73,11 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
         api
           .projectFolderLinks()
           .then((res) => {
-            setProjFolders((prev) => {
-              const next: Record<string, ProjectFolderEntry> = {};
-              for (const [pid, link] of Object.entries(res.links || {})) {
-                next[pid] = { ...prev[pid], ...link };
-              }
-              return next;
-            });
+            const next: Record<string, ProjectFolderEntry> = {};
+            for (const [pid, link] of Object.entries(res.links || {})) {
+              next[pid] = rememberProjectFolderLink(link);
+            }
+            setProjFolders(next);
             const linkedIds = Object.keys(res.links || {}).filter(
               (pid) => !!res.links[pid]?.root_path,
             );
@@ -84,7 +87,9 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
               (pid) => linkedSet.has(pid),
             );
             setOpenFolderTrees(new Set(saved));
-            saved.forEach((pid) => loadProjectFolderTree(pid));
+            saved.forEach((pid) => {
+              if (!next[pid]?.tree) loadProjectFolderTree(pid);
+            });
           })
           .catch(() => {});
       })
@@ -158,6 +163,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
         root_path: rootPath,
         selected_path: rootPath ? selectedPath : "",
       });
+      rememberProjectFolderEntry(state);
       setProjFolders((cur) => {
         const next = { ...cur };
         if (state.root_path) next[pid] = state;
@@ -230,8 +236,11 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     if (!cur?.root_path) return;
     setProjFolders((prev) => ({ ...prev, [pid]: { ...cur, selected_path: path } }));
     try {
-      const state = await api.setProjectFolder(pid, { root_path: cur.root_path, selected_path: path });
-      setProjFolders((prev) => ({ ...prev, [pid]: state }));
+      const link = await api.setProjectFolderSelection(pid, path);
+      setProjFolders((prev) => {
+        const state = rememberProjectFolderEntry({ ...(prev[pid] ?? cur), ...link });
+        return { ...prev, [pid]: state };
+      });
     } catch {
       loadProjectFolderTree(pid);
     }

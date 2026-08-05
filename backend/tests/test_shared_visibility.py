@@ -169,6 +169,17 @@ class SharedVisibilityTests(unittest.TestCase):
         self.assertEqual(member_counts, {"member-folder": 1})
         self.assertEqual(nonmember_counts, {"own-folder": 1})
 
+    def test_folder_counts_batch_matches_individual_visible_scope(self):
+        counts = repo.folder_counts_batch(
+            ["p_member", "p_other", "p_member"],
+            shared_only=True,
+            team_member_projects=["p_member"],
+            actor_uid="user_river",
+        )
+
+        self.assertEqual(counts["p_member"], {"member-folder": 1})
+        self.assertEqual(counts["p_other"], {"own-folder": 1})
+
     def test_team_fresh_items_match_visible_team_scope(self):
         items = repo.team_fresh_items(
             "2000-01-01 00:00:00",

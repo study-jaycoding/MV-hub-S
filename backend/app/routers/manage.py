@@ -247,6 +247,10 @@ class ProjectFolderIn(BaseModel):
     selected_path: Optional[str] = None
 
 
+class ProjectFolderSelectionIn(BaseModel):
+    selected_path: str = ""
+
+
 @router.get("/project-folders")
 def project_folder_links(request: Request):
     links = repo_manage.list_project_folders()  # 로컬 링크(selected_path·레거시 root)
@@ -289,17 +293,33 @@ def put_project_folder(pid: str, body: ProjectFolderIn, request: Request):
     # ★루트가 '실제로 바뀔 때만' 서버에 저장한다 — 하위폴더만 클릭(selected 변경)해도 프론트가 같은
     # root_path 를 함께 보내는데, 매번 서버 PATCH 를 쏘면 (1) 불필요한 쓰기 (2) create_project 없는
     # 매니저가 폴더 탐색만 해도 403 이 난다. 값이 같으면 서버를 건드리지 않는다.
+    current_root = project_folders.effective_root_path(pid)
+    root_changed = False
     if body.root_path is not None:
         new_root = body.root_path.strip()
-        if new_root != project_folders.effective_root_path(pid):  # 루트가 실제 변경됨
+        root_changed = new_root != current_root
+        if root_changed:  # 루트가 실제 변경됨
             # 위임 모드: 공유 서버에 먼저 저장(실패 시 예외 전파 → 로컬 미변경으로 불일치 방지) → 로컬 미러.
             if _proxy.proxying():
                 _proxy.proxy_json(
                     "PATCH", f"/api/projects/{pid}", body={"render_root_path": new_root}
                 )
             repo.set_render_root(pid, new_root)  # 로컬 미러(즉시 반영) / 서버 본체면 이게 진실
-    repo_manage.set_project_folder(pid, body.root_path, body.selected_path)  # selected(개인)+레거시 로컬 root
-    return project_folders.project_folder_state(pid)
+    # root_path 를 생략한 구형 호출도 기존 루트를 지우지 않도록 보존한다.
+    root_for_local = body.root_path if body.root_path is not None else current_root
+    repo_manage.set_project_folder(pid, root_for_local, body.selected_path)
+    if root_changed:
+        project_folders.invalidate_project_folder(pid)
+    return project_folders.project_folder_state(pid, fresh=root_changed)
+
+
+@router.patch("/project-folders/{pid}/selection")
+def patch_project_folder_selection(pid: str, body: ProjectFolderSelectionIn, request: Request):
+    """개인 선택 경로만 저장한다. 디스크 트리를 읽거나 큰 트리 JSON을 되돌려주지 않는다."""
+    _require_project_read(request, pid)
+    root = project_folders.effective_root_path(pid)
+    meta = repo_manage.set_project_folder(pid, root, body.selected_path)
+    return {**meta, "root_path": root}
 
 
 @router.get("/planning/{pid}")

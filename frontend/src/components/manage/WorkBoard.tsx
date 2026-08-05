@@ -169,7 +169,13 @@ export function WorkBoard() {
   const projectsRef = useRef(projects);
   const reqRef = useRef(0);
   const loadingRef = useRef(false);
+  const pendingLoadRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
   const loadAll = () => {
+    if (loadingRef.current) {
+      pendingLoadRef.current = true; // 진행 중 들어온 변경 신호들은 후속 1회로 합친다.
+      return;
+    }
     const ps = projectsRef.current;
     if (!ps.length) {
       setTasks([]);
@@ -177,6 +183,7 @@ export function WorkBoard() {
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
+    lastLoadAtRef.current = Date.now();
     const finish = (tasks: Task[]) => {
       if (reqRef.current === my) setTasks(tasks.sort(bySort));
     };
@@ -199,7 +206,13 @@ export function WorkBoard() {
       })
       .catch(() => fanout().catch(() => finish([])))
       .finally(() => {
-        if (reqRef.current === my) loadingRef.current = false;
+        if (reqRef.current === my) {
+          loadingRef.current = false;
+          if (pendingLoadRef.current) {
+            pendingLoadRef.current = false;
+            loadAll();
+          }
+        }
       });
   };
 
@@ -229,7 +242,11 @@ export function WorkBoard() {
       if (document.visibilityState === "visible" && !loadingRef.current) reload();
     }, 30000);
     const onVis = () => {
-      if (document.visibilityState === "visible") reload();
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastLoadAtRef.current >= 5000
+      )
+        reload();
     };
     document.addEventListener("visibilitychange", onVis);
     const offBroadcast = onLibraryChanged(reload);

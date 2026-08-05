@@ -149,7 +149,8 @@ export default function App() {
         .flatMap((c) => variantIds(c)),
     [activeScene],
   );
-  useSceneCompletionWatcher(glowCandidateIds);
+  // 캔버스가 열려 있을 때는 useSceneGenData가 같은 상태를 조회·기록하므로 보조 감시는 중복 실행하지 않는다.
+  useSceneCompletionWatcher(glowCandidateIds, filters.tab !== "compose");
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
   const spotlightPromptRef = useRef<SpotlightPromptHandle>(null);

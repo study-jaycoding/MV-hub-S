@@ -11,11 +11,12 @@ import { getWatchIds, isKnownGen, observeStatus } from "./sceneRecentDoneStore";
 const POLL_MS = 2500;
 const MAX_DISCOVER_PER_TICK = 30; // 대형 씬에서 한 tick 에 몰아 폴링하지 않게(여러 tick 에 걸쳐 발견)
 
-export function useSceneCompletionWatcher(candidateIds: string[]): void {
+export function useSceneCompletionWatcher(candidateIds: string[], enabled = true): void {
   const candRef = useRef<string[]>(candidateIds);
   candRef.current = candidateIds;
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     let timer: number | undefined;
     const tick = async () => {
@@ -28,17 +29,19 @@ export function useSceneCompletionWatcher(candidateIds: string[]): void {
       }
       const ids = Array.from(new Set([...watchIds, ...discover]));
       if (ids.length) {
-        await Promise.all(
-          ids.map(async (id) => {
-            try {
-              const g = await api.getGeneration(id);
-              if (alive) observeStatus(id, g.status);
-            } catch (e) {
-              // 삭제(404/410) → 종결로 처리해 watch 해제(무한 폴 방지). 일시 오류는 다음 tick 재시도.
-              if (alive && /\b(404|410)\b/.test(String(e))) observeStatus(id, "failed");
+        try {
+          const batch = await api.getGenerationsBatch(ids);
+          if (alive) {
+            const missing = new Set(batch.missing || []);
+            for (const id of ids) {
+              const g = batch.items[id];
+              if (g) observeStatus(id, g.status);
+              else if (missing.has(id)) observeStatus(id, "failed");
             }
-          }),
-        );
+          }
+        } catch {
+          // 일시 오류는 다음 tick에서 배치 1회로 재시도한다.
+        }
       }
       if (alive) timer = window.setTimeout(tick, POLL_MS);
     };
@@ -47,5 +50,5 @@ export function useSceneCompletionWatcher(candidateIds: string[]): void {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [enabled]);
 }

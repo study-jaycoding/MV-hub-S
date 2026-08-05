@@ -102,6 +102,17 @@ export const api = {
   getGeneration: (id: string) =>
     jsonFetch<Generation>(`/api/generations/${pathPart(id)}`),
 
+  // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
+  getGenerationsBatch: (genIds: string[]) =>
+    jsonFetch<{
+      items: Record<string, Generation>;
+      materials: Record<string, string[]>;
+      missing: string[];
+    }>("/api/generations/batch", {
+      method: "POST",
+      body: jsonBody({ gen_ids: genIds }),
+    }),
+
   // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 히스토리 패널용
   history: (id: string) => jsonFetch<History>(`/api/generations/${pathPart(id)}/history`),
 

@@ -2,7 +2,7 @@
 //  · 카드의 모든 변형(genIds) 생성물을 조회하고, 진행 중이면 그것만 재폴링(N+1 폴링 제거).
 //  · 외부에서 삭제(404/410)된 id 는 missingIds 로 표시, deactivated(회색)는 disabledIds 로.
 //  · 각 생성물의 레퍼런스 부모(materials)는 새 id 만 1회 조회(계보는 생성 시 확정·불변).
-// 미러 ref(genDataRef/refParentsRef)는 렌더 중 대입해야 한다(useEffect 로 옮기면 한 렌더 늦음). refParentsRef 는 내부 전용.
+// 미러 ref(genDataRef)는 렌더 중 대입해야 한다(useEffect 로 옮기면 한 렌더 늦음).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { APP_EVENTS } from "./appEvents";
@@ -19,6 +19,7 @@ import {
   hydrateParents,
   hydrateMissing,
 } from "./sceneGenDataStore";
+import { observeStatus } from "./sceneRecentDoneStore";
 import type { Generation } from "../types";
 
 export interface SceneGenDataApi {
@@ -42,8 +43,6 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
   // 외부(라이브러리)에서 삭제(휴지통 이동)돼 404 로 사라진 생성물 id — 카드가 무한 'Generating' 대신 '삭제됨' 표시.
   const [missingIds, setMissingIds] = useState<Set<string>>(() => hydrateMissing(initialGenIds()));
   const [refParents, setRefParents] = useState<Record<string, string[]>>(() => hydrateParents(initialGenIds()));
-  const refParentsRef = useRef(refParents);
-  refParentsRef.current = refParents;
   // 비활성(회색) 표시 — 라이브러리/계보와 같은 로컬 소스(deactivated). 어디서 토글해도 즉시 반영.
   const [disabledTick, setDisabledTick] = useState(0);
   useCustomEvent(DISABLED_EVENT, () => setDisabledTick((t) => t + 1));
@@ -76,28 +75,49 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     let alive = true;
     let timer: number | undefined;
     const tick = async (pollIds: string[]) => {
-      // id 별로 성공/삭제(404·410)/일시오류를 구분 — 삭제는 '없음' 표시, 일시오류는 그대로 둔다.
-      const rs = await Promise.all(
-        pollIds.map(async (id) => {
-          try {
-            return { id, gen: await api.getGeneration(id), gone: false };
-          } catch (e) {
-            return { id, gen: null, gone: /\b(404|410)\b/.test(String(e)) };
-          }
-        }),
-      );
+      // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
+      let batch: Awaited<ReturnType<typeof api.getGenerationsBatch>>;
+      try {
+        batch = await api.getGenerationsBatch(pollIds);
+      } catch {
+        // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
+        // 중복 방지를 위해 App 보조 watcher가 쉬므로 여기서 재시도 책임을 가진다.
+        if (alive) timer = window.setTimeout(() => tick(pollIds), 2500);
+        return;
+      }
+      const missing = new Set(batch.missing || []);
+      const rs = pollIds.map((id) => ({
+        id,
+        gen: batch.items[id] || null,
+        gone: missing.has(id),
+      }));
       if (!alive) return;
       // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
       for (const r of rs) {
         if (r.gen) {
-          putGen(r.gen);
+          putGen(r.gen, r.id);
           markGenMissing(r.id, false);
+          observeStatus(r.id, r.gen.status);
         } else if (r.gone) markGenMissing(r.id, true);
       }
+      for (const id of pollIds) {
+        const parents = batch.materials[id];
+        if (Array.isArray(parents)) putParents(id, parents);
+        else if (missing.has(id)) putParents(id, []);
+      }
+      setRefParents((prev) => {
+        const next = { ...prev };
+        for (const id of pollIds) {
+          const parents = batch.materials[id];
+          if (Array.isArray(parents)) next[id] = parents;
+          else if (missing.has(id)) next[id] = [];
+        }
+        return next;
+      });
       setGenData((prev) => {
         const next = { ...prev };
         for (const r of rs) {
-          if (r.gen) next[r.gen.id] = r.gen;
+          if (r.gen) next[r.id] = r.gen;
           else if (r.gone) delete next[r.id]; // 삭제 확정 → stale 결과 제거(캐시서도 제거됨) → '삭제됨' 표시가 드러나게
         }
         return next;
@@ -127,36 +147,6 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     };
     // refreshTick = 라이브러리 변경 브로드캐스트 시 전체 재조회(담기 직후 folder_path 최신화).
   }, [genIdSig, refreshTick]);
-
-  // 각 생성물의 '레퍼런스 부모'(materials) 조회 — 새로 등장한 id 만(계보는 생성 시 확정, 이후 불변).
-  useEffect(() => {
-    const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
-    const need = ids.filter((id) => !(id in refParentsRef.current));
-    if (!need.length) return;
-    let alive = true;
-    void Promise.all(
-      need.map(async (id) => {
-        try {
-          const h = await api.history(id);
-          return { id, parents: (h.materials || []).map((m) => m.id), store: true };
-        } catch (e) {
-          // 확정적 부재(404/410)만 [] 로 캐시. 일시 오류는 저장하지 않아 다음 변경 때 재조회(false 실선 고정 방지).
-          return { id, parents: [] as string[], store: /\b(404|410)\b/.test(String(e)) };
-        }
-      }),
-    ).then((rs) => {
-      if (!alive) return;
-      for (const r of rs) if (r.store) putParents(r.id, r.parents); // 계보도 캐시 — 탭 왕복 시 재조회 없이 복원
-      setRefParents((prev) => {
-        const next = { ...prev };
-        for (const r of rs) if (r.store) next[r.id] = r.parents;
-        return next;
-      });
-    });
-    return () => {
-      alive = false;
-    };
-  }, [genIdSig]);
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)

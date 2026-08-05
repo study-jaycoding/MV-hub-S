@@ -26,9 +26,12 @@ function capSet(s: Set<string>): void {
 }
 
 // 조회 성공한 생성물을 캐시에 저장(재삽입으로 최근성 갱신 후 상한 적용).
-export function putGen(g: Generation): void {
-  genCache.delete(g.id);
-  genCache.set(g.id, g);
+export function putGen(g: Generation, requestedId = g.id): void {
+  // 공유 서버 job_id 로 요청해 로컬 id 생성물을 받은 경우에도 씬 카드가 쓰는 요청 키로 복원한다.
+  for (const key of new Set([g.id, requestedId])) {
+    genCache.delete(key);
+    genCache.set(key, g);
+  }
   capMap(genCache);
 }
 export function putParents(id: string, parents: string[]): void {

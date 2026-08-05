@@ -34,8 +34,8 @@ export function useAssetBroadcastSync({
           (project === INTERNAL_COMBINED_PROJECT &&
             projects.some((p: string) => INTERNAL_FOLDERS.includes(p)));
         if (projects.length && !relevant) return;
-        // 외부 파일 변경 반영 — 캐시 우회(fresh)로 최신 트리를 다시 읽는다.
-        void refreshProjectData(project, true);
+        // 백엔드 watcher/파일 변경 API가 캐시를 이미 무효화하므로 일반 조회로 동시 요청을 합친다.
+        void refreshProjectData(project);
       }
     };
     return () => {

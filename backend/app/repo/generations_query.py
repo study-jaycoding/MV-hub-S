@@ -16,6 +16,7 @@ from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE
 from .generation_rows import (  # 조회 응답 보강·행 페치 — 단방향 import
     _attach_children,
     _fetch_generation,
+    _fetch_gens,
 )
 from ._visibility import team_generation_visibility_clause
 
@@ -312,6 +313,64 @@ def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
 def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         return _fetch_generation(conn, gen_id, account_uid)
+
+
+def get_generations_with_materials(
+    gen_ids: list[str], account_uid: Optional[str] = None
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    """여러 생성물과 직접 레퍼런스 부모를 한 커넥션에서 일괄 조회한다.
+
+    캔버스는 카드별로 단건 generation + history API 를 호출하지 않고 이 결과를 한 번 받아 쓴다.
+    반환 materials 는 발견된 generation id마다 빈 배열을 포함하므로, 레퍼런스가 없는 경우도
+    프론트가 확정값으로 캐시해 다시 묻지 않는다.
+    """
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    if not ids:
+        return {}, {}
+    with get_connection() as conn:
+        # 씬 파일에는 로컬 PK(id) 또는 공유 서버 앵커(job_id)가 들어올 수 있다. 응답 키는
+        # 요청한 id 그대로 유지해 카드 바인딩이 깨지지 않게 한다.
+        wanted_values = ",".join("(?)" for _ in ids)
+        resolved_rows = conn.execute(
+            f"WITH wanted(value) AS (VALUES {wanted_values}) "
+            "SELECT id, job_id FROM generation "
+            "WHERE id IN (SELECT value FROM wanted) OR job_id IN (SELECT value FROM wanted)",
+            ids,
+        ).fetchall()
+        exact = {row["id"]: row["id"] for row in resolved_rows if row["id"] in ids}
+        by_job = {
+            row["job_id"]: row["id"]
+            for row in resolved_rows
+            if row["job_id"] and row["job_id"] in ids
+        }
+        requested_to_local = {
+            requested: exact.get(requested) or by_job[requested]
+            for requested in ids
+            if requested in exact or requested in by_job
+        }
+        local_ids = list(dict.fromkeys(requested_to_local.values()))
+        local_gens = _fetch_gens(conn, local_ids, viewer_uid=account_uid)
+        gens = {
+            requested: local_gens[local_id]
+            for requested, local_id in requested_to_local.items()
+            if local_id in local_gens
+        }
+        materials_by_local: dict[str, list[str]] = {local_id: [] for local_id in local_gens}
+        if local_gens:
+            found = list(local_gens)
+            ph = ",".join("?" * len(found))
+            for row in conn.execute(
+                f"SELECT child_gen_id, parent_gen_id FROM history "
+                f"WHERE relation='reference' AND child_gen_id IN ({ph})",
+                found,
+            ).fetchall():
+                materials_by_local[row["child_gen_id"]].append(row["parent_gen_id"])
+        materials = {
+            requested: materials_by_local.get(local_id, [])
+            for requested, local_id in requested_to_local.items()
+            if local_id in local_gens
+        }
+        return gens, materials
 
 
 def get_generation_metrics(gen_id: str) -> Optional[dict[str, Any]]:

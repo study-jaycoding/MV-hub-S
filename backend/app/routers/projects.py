@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from . import _proxy
 from .. import rbac, repo
@@ -34,6 +35,11 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
 _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
+
+
+class FolderCountsBatchIn(BaseModel):
+    project_ids: list[str] = Field(default_factory=list)
+    tab: str = "my"
 
 
 def _has_read_all(request: Request) -> bool:
@@ -169,6 +175,40 @@ def project_folder_counts(pid: str, request: Request, tab: str = "my"):
     return {
         "counts": repo.folder_counts(
             pid,
+            account_uid=account_uid,
+            shared_only=(tab == "team"),
+            team_member_projects=team_member_projects,
+            actor_uid=actor_uid,
+        )
+    }
+
+
+@router.post("/folder-counts/batch")
+def project_folder_counts_batch(body: FolderCountsBatchIn, request: Request):
+    """사이드바의 활성·고정 프로젝트 폴더 개수를 한 요청·한 SQL로 반환한다."""
+    project_ids = list(dict.fromkeys(pid for pid in body.project_ids if pid))
+    if len(project_ids) > 100:
+        raise HTTPException(status_code=413, detail="프로젝트는 최대 100개까지 조회할 수 있습니다")
+    tab = "team" if body.tab == "team" else "my"
+    if _proxy.proxying() and tab == "team":
+        return _proxy.proxy_json(
+            "POST",
+            "/api/projects/folder-counts/batch",
+            body={"project_ids": project_ids, "tab": "team"},
+        )
+    account_uid = account_scope_uid(request) if tab == "my" else None
+    team_member_projects = None
+    actor_uid = None
+    if tab == "team":
+        read_all = (not AUTH_ENABLED) or rbac.has_global_cap(
+            account_global_roles(request), "read_all"
+        )
+        if not read_all:
+            actor_uid = account_scope_uid(request)
+            team_member_projects = repo.my_member_projects(actor_uid or "\x00")
+    return {
+        "counts": repo.folder_counts_batch(
+            project_ids,
             account_uid=account_uid,
             shared_only=(tab == "team"),
             team_member_projects=team_member_projects,

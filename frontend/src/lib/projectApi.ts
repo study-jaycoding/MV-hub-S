@@ -95,6 +95,14 @@ export const projectApi = {
     jsonFetch<{ counts: Record<string, number> }>(
       `/api/projects/${pathPart(id)}/folder-counts?tab=${tab}`,
     ),
+  projectFolderCountsBatch: (ids: string[], tab: "my" | "team" = "my") =>
+    jsonFetch<{ counts: Record<string, Record<string, number>> }>(
+      "/api/projects/folder-counts/batch",
+      {
+        method: "POST",
+        body: jsonBody({ project_ids: ids, tab }),
+      },
+    ),
   // 기준선 이후 공유된 항목 목록 — 사이드바 +N(신규 라임 배지). 클라가 확인(클릭)분을 제외하고 센다.
   // 구버전 서버는 이 라우트가 없어 404 → 호출부가 빈 목록 폴백(배지만 숨김).
   teamFresh: teamFreshPage,
@@ -108,6 +116,14 @@ export const projectApi = {
       {
         method: "PUT",
         body: jsonBody(body),
+      },
+    ),
+  setProjectFolderSelection: (id: string, selectedPath: string) =>
+    jsonFetch<import("../types").ProjectFolderLink>(
+      `/api/manage/project-folders/${pathPart(id)}/selection`,
+      {
+        method: "PATCH",
+        body: jsonBody({ selected_path: selectedPath }),
       },
     ),
   assignProject: (

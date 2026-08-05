@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -118,6 +119,55 @@ class MediaCacheTests(unittest.TestCase):
         rel = media_cache.thumb_source_rel_for("https://cdn.example.com/image.png?sig=x")
         self.assertTrue(rel.startswith("/media/.thumb-sources/"))
         self.assertTrue(rel.endswith(".png"))
+
+    def test_permanent_thumb_failure_is_negative_cached(self):
+        with tempfile.TemporaryDirectory() as td:
+            url = "https://cdn.example.com/expired.png"
+            calls = 0
+
+            def fail(*_args, **_kwargs):
+                nonlocal calls
+                calls += 1
+                raise media_cache.MediaCachePermanentError("HTTP Error 403")
+
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", Path(td)),
+                mock.patch.object(media_cache, "_download", side_effect=fail),
+            ):
+                media_cache._THUMB_FAILURES.clear()
+                self.assertIsNone(asyncio.run(media_cache.cache_thumb_source(url)))
+                self.assertIsNone(asyncio.run(media_cache.cache_thumb_source(url)))
+                self.assertEqual(calls, 1)
+                media_cache._THUMB_FAILURES.clear()
+
+    def test_temporary_thumb_failure_is_retried_next_call(self):
+        with tempfile.TemporaryDirectory() as td:
+            calls = 0
+
+            def fail(*_args, **_kwargs):
+                nonlocal calls
+                calls += 1
+                raise RuntimeError("temporary")
+
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", Path(td)),
+                mock.patch.object(media_cache, "_download", side_effect=fail),
+            ):
+                media_cache._THUMB_FAILURES.clear()
+                asyncio.run(media_cache.cache_thumb_source("https://cdn.example.com/flaky.png"))
+                asyncio.run(media_cache.cache_thumb_source("https://cdn.example.com/flaky.png"))
+                self.assertEqual(calls, 2)
+
+    def test_http_403_is_not_retried_inside_download(self):
+        error = urllib.error.HTTPError(
+            "https://cdn.example.com/expired.png", 403, "Forbidden", None, None
+        )
+        with mock.patch.object(media_cache, "_download_once", side_effect=error) as call:
+            with self.assertRaises(media_cache.MediaCachePermanentError):
+                media_cache._download(
+                    "https://cdn.example.com/expired.png", Path("unused-target.png")
+                )
+        self.assertEqual(call.call_count, 1)
 
 
 if __name__ == "__main__":
