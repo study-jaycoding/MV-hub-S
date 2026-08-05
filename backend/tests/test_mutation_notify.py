@@ -41,6 +41,12 @@ def test_scene_backup_asset_metadata_and_comfy_settings_use_their_own_refresh_ch
     assert not should_notify_mutation("POST", "/api/assets/upload", 200)
 
 
+def test_shared_server_login_and_settings_do_not_reload_library():
+    assert notification_domains("POST", "/api/shared-server/login", 200) == ()
+    assert notification_domains("POST", "/api/shared-server/logout", 200) == ()
+    assert notification_domains("POST", "/api/shared-server/url", 200) == ()
+
+
 def test_asset_writes_use_only_the_asset_refresh_channel():
     assert notification_domains("PUT", "/api/assets/files/meta", 200) == (DOMAIN_ASSETS,)
     assert notification_domains("POST", "/api/assets/upload", 200) == (DOMAIN_ASSETS,)

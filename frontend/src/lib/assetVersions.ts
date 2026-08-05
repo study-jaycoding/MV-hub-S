@@ -5,7 +5,7 @@
 // (/api/assets/tree) 응답의 node.version 에서 얻어 이 표에 채운다.
 //
 // 범위: 이 표는 '한 창(window/JS 모듈 인스턴스)' 안에서만 공유된다. 어셋이 별도 창으로 떠 있으면 창마다
-// 자기 표를 가진다 — 창 간 실시간 전파(파일 감시)는 후속 단계(Phase 2, WebSocket)에서 다룬다.
+// 자기 표를 가지며, 로컬/원격 WS와 BroadcastChannel 변경 신호가 각 창의 트리 재조회·표 갱신을 유도한다.
 //
 // key = `${project}|${path}`.
 import type { AssetNode } from "../types";

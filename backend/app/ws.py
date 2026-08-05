@@ -12,11 +12,12 @@ higgsfield 는 퍼센트가 아니라 상태 전이를 주므로, 가짜 진행�
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Optional
 
 from fastapi import WebSocket
 
-from .mutation_notify import MutationOrigin
+from .mutation_notify import DOMAIN_LIBRARY, MutationOrigin
 
 # 변경 알림 디바운스(초) — 일괄 트리아지(컬러 연타 등)에서 한 번만 broadcast 하도록 합친다.
 _NOTIFY_DEBOUNCE = 0.4
@@ -24,6 +25,8 @@ _NOTIFY_DEBOUNCE = 0.4
 # notify_mutation 에서 "계정 불명 → 전체에 알림"을 표시하는 센티넬(None 은 dict 값으로도 쓰여 구분).
 _ALL = "*"
 _MAX_NOTIFY_ORIGINS = 32  # 비정상 연타로 WS payload·메모리가 커지면 출처 생략(전원 reload가 안전)
+_RECENT_ORIGIN_TTL = 30.0
+_MAX_RECENT_ORIGINS = 4096
 
 
 class ConnectionManager:
@@ -37,6 +40,10 @@ class ConnectionManager:
         self._pending_accounts: dict[str, Optional[set[MutationOrigin]]] = {}
         # Assets·PM처럼 라이브러리와 분리된 데이터 없는 갱신 신호. 이벤트 종류별로 출처를 병합한다.
         self._pending_domains: dict[str, Optional[set[MutationOrigin]]] = {}
+        # 로컬 프록시가 즉시 보낸 알림은 잠시 뒤 원격 WS 브리지로 그대로 되돌아올 수 있다.
+        # (영역, 스코프, 요청 출처) 조합을 짧게 기억해 한 HTTP 쓰기가 두 번 reload를 만들지 않게 한다.
+        # 출처가 없는 변경은 서로 다른 실제 변경일 수 있으므로 절대 억지로 합치지 않는다.
+        self._recent_origins: dict[tuple[str, str, MutationOrigin], tuple[float, str]] = {}
 
     async def connect(self, ws: WebSocket, account_uid: Optional[str] = None) -> None:
         await ws.accept()
@@ -95,19 +102,69 @@ class ConnectionManager:
         self,
         account_uid: Optional[str] = None,
         origin: Optional[MutationOrigin] = None,
+        source: str = "local",
     ) -> None:
         """로컬 데이터 변경(태그·소스·컬러·코멘트·프로젝트 등)을 같은 계정의 다른 탭/기기에 알린다.
         account_uid=None(계정 불명/AUTH off)이면 전체에 알린다.
         연타(일괄 트리아지)에 대비해 짧은 윈도우로 coalesce — reload 폭주를 막는다.
         프론트는 'synced' 를 받으면 전체 reload 하므로 그 타입을 재사용."""
         scope = account_uid if account_uid is not None else _ALL
+        if self._is_duplicate_origin(DOMAIN_LIBRARY, scope, origin, source):
+            return
         self._merge_origin(self._pending_accounts, scope, origin)
         self._schedule_notify()
 
-    def notify_domain(self, event_type: str, origin: Optional[MutationOrigin] = None) -> None:
+    def notify_domain(
+        self,
+        event_type: str,
+        origin: Optional[MutationOrigin] = None,
+        source: str = "local",
+    ) -> None:
         """Assets·PM 전용 갱신을 모든 연결에 알린다. payload는 변경 사실·출처뿐이라 데이터 누출이 없다."""
+        if self._is_duplicate_origin(event_type, _ALL, origin, source):
+            return
         self._merge_origin(self._pending_domains, event_type, origin)
         self._schedule_notify()
+
+    def _is_duplicate_origin(
+        self,
+        channel: str,
+        scope: str,
+        origin: Optional[MutationOrigin],
+        source: str,
+    ) -> bool:
+        """같은 요청의 로컬 즉시 알림과 원격 WS echo만 제거한다.
+
+        mutation id는 탭이 요청마다 새로 만드는 값이라, 같은 영역·스코프에서 TTL 안에 다시 온
+        동일 조합은 같은 쓰기의 전달 경로 중복이다. 영역을 키에 포함하므로 library+manage를 함께
+        바꾸는 한 요청은 두 영역 모두 정상 전달된다.
+        """
+        if origin is None:
+            return False
+        now = time.monotonic()
+        key = (channel, scope, origin)
+        seen = self._recent_origins.get(key)
+        # 같은 경로에서 요청 id를 재사용한 실제 쓰기까지 숨기지 않는다. 오직 로컬 즉시 알림과
+        # remote bridge처럼 서로 다른 전달 경로가 같은 요청을 가져왔을 때만 echo로 판정한다.
+        if seen is not None and seen[1] != source and now - seen[0] < _RECENT_ORIGIN_TTL:
+            return True
+        self._recent_origins[key] = (now, source)
+        if len(self._recent_origins) > _MAX_RECENT_ORIGINS:
+            cutoff = now - _RECENT_ORIGIN_TTL
+            self._recent_origins = {
+                k: seen_value
+                for k, seen_value in self._recent_origins.items()
+                if seen_value[0] >= cutoff
+            }
+            # 비정상적으로 많은 서로 다른 출처가 TTL 안에 몰려도 메모리 상한을 지킨다.
+            if len(self._recent_origins) > _MAX_RECENT_ORIGINS:
+                oldest = sorted(
+                    self._recent_origins,
+                    key=lambda recent_key: self._recent_origins[recent_key][0],
+                )
+                for old_key in oldest[: len(self._recent_origins) - _MAX_RECENT_ORIGINS]:
+                    self._recent_origins.pop(old_key, None)
+        return False
 
     @staticmethod
     def _merge_origin(

@@ -18,6 +18,7 @@ import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
@@ -39,6 +40,12 @@ from ..mutation_notify import (
 _K_URL = "shared_server_url"
 _K_TOKEN = "shared_server_token"
 _K_ELEV_TOKEN = "shared_server_elev_token"  # 임시 관리자 권한 토큰(계정관리 호출에만)
+
+# 로컬 처리 라우터가 내부에서 proxy_json을 호출해도 원 브라우저 요청의 출처를 서버까지 보존한다.
+# ContextVar라 동시 요청·FastAPI threadpool·asyncio.to_thread 사이에서 서로 섞이지 않는다.
+_REQUEST_MUTATION_ORIGIN: ContextVar[Optional[tuple[str, str]]] = ContextVar(
+    "proxy_request_mutation_origin", default=None
+)
 
 # publish.py 와 동일한 기본값(한 곳에서 바꾸면 양쪽 반영되도록 env 우선).
 _DEFAULT_URL = (os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
@@ -95,6 +102,7 @@ def raw_request(
     token: Optional[str] = None,
     body: Optional[Any] = None,
     timeout: int = 60,
+    mutation_origin: Optional[tuple[str, str]] = None,
 ) -> tuple[int, Any]:
     """공유 서버로 보내는 저수준 stdlib HTTP(새 의존성 0). `(status, parsed|text)` 반환.
     연결 실패만 502 로 올리고, 4xx/5xx 는 (code, 본문)으로 돌려준다(호출자가 해석).
@@ -104,6 +112,9 @@ def raw_request(
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    if mutation_origin:
+        req.add_header(CLIENT_ID_HEADER, mutation_origin[0])
+        req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode() or "null")
@@ -141,7 +152,14 @@ def proxy_json(
 
     qs = ("?" + raw_query) if raw_query else _qs(params)
     url = base_url() + path + qs
-    status, parsed = raw_request(method, url, token=tok, body=body, timeout=timeout)
+    status, parsed = raw_request(
+        method,
+        url,
+        token=tok,
+        body=body,
+        timeout=timeout,
+        mutation_origin=_REQUEST_MUTATION_ORIGIN.get(),
+    )
     if 200 <= status < 300:
         return parsed
     detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else parsed
@@ -410,8 +428,17 @@ async def _forward_stream(request: Request) -> Response:
 
 async def data_proxy_middleware(request: Request, call_next):
     """위임 모드 + 데이터 경로면 서버로 중계, 아니면 로컬 처리."""
-    if proxying() and not is_local_path(request.url.path):
-        if request.method == "GET" and request.url.path.startswith(_STREAM_PREFIX):
-            return await _forward_stream(request)
-        return await _forward(request)
-    return await call_next(request)
+    context_token = _REQUEST_MUTATION_ORIGIN.set(
+        parse_mutation_origin(
+            request.headers.get(CLIENT_ID_HEADER),
+            request.headers.get(MUTATION_ID_HEADER),
+        )
+    )
+    try:
+        if proxying() and not is_local_path(request.url.path):
+            if request.method == "GET" and request.url.path.startswith(_STREAM_PREFIX):
+                return await _forward_stream(request)
+            return await _forward(request)
+        return await call_next(request)
+    finally:
+        _REQUEST_MUTATION_ORIGIN.reset(context_token)

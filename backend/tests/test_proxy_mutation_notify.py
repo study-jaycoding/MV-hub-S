@@ -2,6 +2,7 @@ import asyncio
 from unittest import mock
 
 from starlette.requests import Request
+from starlette.responses import Response
 
 from app.mutation_notify import (
     CLIENT_ID_HEADER,
@@ -99,3 +100,28 @@ def test_proxy_manage_library_mutation_uses_both_channels():
     manager.notify_domain.assert_called_once_with(
         "manage_changed", ("client_test_123", "mutation_test_123")
     )
+
+
+def test_route_level_proxy_json_preserves_request_origin_and_resets_context():
+    request = _request("/api/projects", with_origin=True)
+    raw_request = mock.Mock(return_value=(200, {"ok": True}))
+
+    async def call_next(_request):
+        _proxy.proxy_json("POST", "/api/projects", body={"name": "p"})
+        return Response(status_code=200)
+
+    with (
+        mock.patch.object(_proxy, "proxying", return_value=True),
+        mock.patch.object(_proxy, "base_url", return_value="http://server.test"),
+        mock.patch.object(_proxy, "token", return_value="token"),
+        mock.patch.object(_proxy, "raw_request", raw_request),
+    ):
+        asyncio.run(_proxy.data_proxy_middleware(request, call_next))
+        # 요청이 끝난 뒤 별도 호출에는 이전 요청 출처가 남지 않아야 한다.
+        _proxy.proxy_json("POST", "/api/projects", body={"name": "outside"})
+
+    assert raw_request.call_args_list[0].kwargs["mutation_origin"] == (
+        "client_test_123",
+        "mutation_test_123",
+    )
+    assert raw_request.call_args_list[1].kwargs["mutation_origin"] is None

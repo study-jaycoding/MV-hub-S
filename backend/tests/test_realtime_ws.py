@@ -137,6 +137,49 @@ class WsBroadcastScopeTests(unittest.TestCase):
             ],
         )
 
+    def test_same_origin_echo_is_suppressed_beyond_debounce_but_expires(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            sock = FakeWS()
+            mgr._active[sock] = None
+            origin = ("client_a_123", "mutation_001")
+            with (
+                mock.patch("app.ws._NOTIFY_DEBOUNCE", 0),
+                mock.patch("app.ws.time.monotonic", return_value=100.0) as clock,
+            ):
+                mgr.notify_mutation(origin=origin)
+                await mgr._pending_notify
+
+                # 로컬 프록시 알림 뒤 원격 브리지가 같은 요청을 늦게 echo해도 두 번째 reload 없음.
+                clock.return_value = 101.0
+                mgr.notify_mutation(origin=origin, source="remote")
+                await asyncio.sleep(0)
+
+                # TTL 뒤 같은 식별자가 정말 재사용되면 새 변경으로 취급한다.
+                clock.return_value = 131.0
+                mgr.notify_mutation(origin=origin)
+                await mgr._pending_notify
+            return sock.received
+
+        messages = self._run(scenario())
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(all(message["type"] == "synced" for message in messages))
+
+    def test_same_origin_on_same_transport_is_not_hidden(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            sock = FakeWS()
+            mgr._active[sock] = None
+            origin = ("client_a_123", "mutation_001")
+            with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
+                mgr.notify_mutation(origin=origin)
+                await mgr._pending_notify
+                mgr.notify_mutation(origin=origin)
+                await mgr._pending_notify
+            return sock.received
+
+        self.assertEqual(len(self._run(scenario())), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

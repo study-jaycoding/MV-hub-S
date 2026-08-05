@@ -19,7 +19,13 @@ DOMAIN_LIBRARY = "library"
 DOMAIN_ASSETS = "assets"
 DOMAIN_MANAGE = "manage"
 
-_NOTIFY_EXCLUDE = ("/api/auth/", "/api/health", "/api/backup", "/api/merge")
+_NOTIFY_EXCLUDE = (
+    "/api/auth/",
+    "/api/shared-server/",  # 로컬 로그인·주소·임시권한 설정이지 라이브러리 데이터 변경이 아님
+    "/api/health",
+    "/api/backup",
+    "/api/merge",
+)
 _NOTIFY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 # HTTP 쓰기 메서드를 쓰지만 라이브러리 DB를 바꾸지 않는 계약. 주기 조회·씬 백업 경로를 빠뜨리면
 # 조회/백업→synced→전체 reload의 순환이 생기므로 본 서버와 프록시가 이 집합을 공유한다.

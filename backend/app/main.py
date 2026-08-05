@@ -81,6 +81,7 @@ from .services.operational_logging import configure_operational_logging, log_eve
 from .services.request_guards import is_loopback_host
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
+from .services.remote_realtime import RemoteRealtimeBridge, relay_event
 from .services.syncer import periodic_sync
 from .ws import manager
 
@@ -92,6 +93,22 @@ _METRICS_LOG_INTERVAL = max(
 )
 
 
+def _remote_realtime_config() -> tuple[str, str] | None:
+    """현재 활성 로컬 계정의 공유 서버 연결값. 로그인·계정전환 때 자동으로 달라진다."""
+    if not _proxy.is_worker_hub():
+        return None
+    token = _proxy.token()
+    if not token:
+        return None
+    return _proxy.base_url(), token
+
+
+remote_realtime_bridge = RemoteRealtimeBridge(
+    _remote_realtime_config,
+    lambda event: relay_event(event, manager),
+)
+
+
 async def _runtime_report_loop(interval: float) -> None:
     """주기적으로 집계 지표를 회전 로그에 남긴다. 개인 식별정보는 기록하지 않는다."""
     while True:
@@ -99,6 +116,7 @@ async def _runtime_report_loop(interval: float) -> None:
         # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
         snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
         snapshot["websocket"] = await manager.stats()
+        snapshot["remote_realtime"] = remote_realtime_bridge.stats()
         snapshot["agents"] = agent_signals.stats()
         log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
 
@@ -233,6 +251,10 @@ async def lifespan(app: FastAPI):
         from .services import asset_watcher
 
         asset_watcher.start(asyncio.get_running_loop())
+    # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
+    # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
+    if _proxy.is_worker_hub():
+        remote_realtime_bridge.start()
     if _METRICS_LOG_INTERVAL > 0:
         runtime_report_task = asyncio.create_task(
             _runtime_report_loop(_METRICS_LOG_INTERVAL),
@@ -248,6 +270,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await periodic_backup.stop()
+    await remote_realtime_bridge.stop()
     if AUTH_ENABLED:
         await periodic_sync.stop()
     else:
@@ -454,6 +477,8 @@ def health():
     return {
         "status": "ok",
         "cli_available": cli_bridge.cli_available(),
+        # 로컬 허브에서 공유 서버 실시간 연결이 살아 있는지 토큰·주소 없이 확인한다.
+        "remote_realtime": remote_realtime_bridge.stats(),
         # 이 프로세스의 코드가 핀한 CLI 버전 — 워커 배치가 서버 값과 대조하는 버전 게이트용.
         "cli_version": _pinned_cli_version(),
     }
@@ -482,6 +507,7 @@ async def runtime_status(request: Request):
     # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
     snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
     snapshot["websocket"] = await manager.stats()
+    snapshot["remote_realtime"] = remote_realtime_bridge.stats()
     snapshot["agents"] = agent_signals.stats()
     return snapshot
 
@@ -534,9 +560,21 @@ async def trigger_backup(request: Request):
     return {"ok": path is not None, "file": path.name if path else None}
 
 
+def _websocket_session_token(ws: WebSocket, cookie_name: str) -> str | None:
+    """WS 인증 토큰. 헤더를 붙일 수 있는 백엔드 브리지는 Bearer를 우선 사용한다."""
+    authorization = ws.headers.get("authorization") or ""
+    bearer = (
+        authorization[7:].strip()
+        if authorization.lower().startswith("bearer ")
+        else None
+    )
+    # 브라우저=cookie, 구버전 클라이언트=query. 새 코드가 query를 만들지는 않는다.
+    return bearer or ws.cookies.get(cookie_name) or ws.query_params.get("token")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    """생성 진행률 push 채널. AUTH_ENABLED 면 세션 쿠키(또는 ?token=)로 인증 후 수락."""
+    """생성 진행률 push 채널. AUTH_ENABLED 면 세션 토큰을 검증한 뒤 수락."""
     account_uid: str | None = None
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (ws.client.host if ws.client else "") or ""
@@ -546,7 +584,7 @@ async def websocket_endpoint(ws: WebSocket):
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE, realtime_scope
 
-        token = ws.cookies.get(SESSION_COOKIE) or ws.query_params.get("token")
+        token = _websocket_session_token(ws, SESSION_COOKIE)
         email = auth_svc.verify_token(token) if token else None
         acc = repo.get_account(email) if email else None
         pcat = acc.get("password_changed_at") if acc else None
