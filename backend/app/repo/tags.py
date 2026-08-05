@@ -81,21 +81,62 @@ def set_gen_auto_tags(gen_id: str, names: Iterable[str]) -> None:
     """이 결과물의 전역(auto) 태그를 정확히 이 집합으로 교체(기존 제거 후 부여). 카드의 # 피커가
     호출 — 작성자(creator_uid)가 '이미 가진' 전역 태그만 부여하고, 모르는 이름은 조용히 무시한다
     (전역 태그 '생성'은 사이드바 전용 — 여기서 새 auto_tag 를 만들지 않는다)."""
+    set_generation_auto_tags_batch([(gen_id, list(names))])
+
+
+def set_generation_auto_tags_batch(items: list[tuple[str, list[str]]]) -> int:
+    """여러 생성물의 자동 태그를 한 트랜잭션으로 교체한다.
+
+    같은 생성물 id가 여러 번 오면 단건 호출 순서와 동일하게 마지막 값이 이긴다. 자동 태그는
+    생성하지 않고 각 생성물 작성자가 이미 가진 태그만 연결한다.
+    """
+    final_by_id: dict[str, list[str]] = {}
+    for gen_id, names in items or []:
+        if gen_id:
+            final_by_id[gen_id] = list(names or [])
+    if not final_by_id:
+        return 0
+
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT creator_uid FROM generation WHERE id=?", (gen_id,)
-        ).fetchone()
-        owner_uid = row["creator_uid"] if row else None
-        conn.execute("DELETE FROM gen_auto_tag WHERE generation_id=?", (gen_id,))
-        for name in {t.strip() for t in names if t and t.strip()}:
-            r = conn.execute(
-                "SELECT id FROM auto_tag WHERE name=? AND owner_uid IS ?", (name, owner_uid)
-            ).fetchone()
-            if r:
-                conn.execute(
-                    "INSERT OR IGNORE INTO gen_auto_tag(generation_id, auto_tag_id) VALUES(?,?)",
-                    (gen_id, r["id"]),
-                )
+        conn.execute("BEGIN IMMEDIATE")
+        gen_ids = list(final_by_id)
+        owners: dict[str, Optional[str]] = {}
+        for offset in range(0, len(gen_ids), 900):
+            batch = gen_ids[offset:offset + 900]
+            placeholders = ",".join("?" * len(batch))
+            for row in conn.execute(
+                f"SELECT id, creator_uid FROM generation WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall():
+                owners[row["id"]] = row["creator_uid"]
+
+        tag_cache: dict[tuple[Optional[str], str], Optional[str]] = {}
+        links: list[tuple[str, str]] = []
+        for gen_id, names in final_by_id.items():
+            if gen_id not in owners:
+                continue
+            owner_uid = owners[gen_id]
+            for name in {tag.strip() for tag in names if tag and tag.strip()}:
+                key = (owner_uid, name)
+                if key not in tag_cache:
+                    row = conn.execute(
+                        "SELECT id FROM auto_tag WHERE name=? AND owner_uid IS ?",
+                        (name, owner_uid),
+                    ).fetchone()
+                    tag_cache[key] = row["id"] if row else None
+                if tag_cache[key]:
+                    links.append((gen_id, tag_cache[key]))
+
+        conn.executemany(
+            "DELETE FROM gen_auto_tag WHERE generation_id=?",
+            [(gen_id,) for gen_id in owners],
+        )
+        if links:
+            conn.executemany(
+                "INSERT OR IGNORE INTO gen_auto_tag(generation_id, auto_tag_id) VALUES(?,?)",
+                links,
+            )
+    return len(owners)
 
 
 def create_auto_tag(name: str, owner_uid: Optional[str] = None) -> bool:
@@ -132,8 +173,48 @@ def delete_auto_tag(name: str, owner_uid: Optional[str] = None) -> int:
 
 
 def set_tags(gen_id: str, tags: Iterable[str]) -> None:
+    set_generation_tags_batch([(gen_id, list(tags))])
+
+
+def set_generation_tags_batch(items: list[tuple[str, list[str]]]) -> int:
+    """여러 생성물의 일반 태그를 한 트랜잭션으로 전체 교체한다.
+
+    공통 태그 id는 배치 안에서 한 번만 조회·생성하고, 같은 생성물 id가 반복되면 마지막 값이 이긴다.
+    """
+    final_by_id: dict[str, list[str]] = {}
+    for gen_id, names in items or []:
+        if gen_id:
+            final_by_id[gen_id] = list(names or [])
+    if not final_by_id:
+        return 0
+
     with get_connection() as conn:
-        _set_tags(conn, gen_id, tags)
+        conn.execute("BEGIN IMMEDIATE")
+        tag_ids: dict[str, str] = {}
+        all_names = {
+            name.strip()
+            for names in final_by_id.values()
+            for name in names
+            if name and name.strip()
+        }
+        for name in all_names:
+            tag_ids[name] = _get_or_create_tag(conn, name)
+
+        conn.executemany(
+            "DELETE FROM gen_tag WHERE generation_id=?",
+            [(gen_id,) for gen_id in final_by_id],
+        )
+        links = [
+            (gen_id, tag_ids[name])
+            for gen_id, names in final_by_id.items()
+            for name in {tag.strip() for tag in names if tag and tag.strip()}
+        ]
+        if links:
+            conn.executemany(
+                "INSERT OR IGNORE INTO gen_tag(generation_id, tag_id) VALUES(?,?)",
+                links,
+            )
+    return len(final_by_id)
 
 
 def delete_tag_everywhere(name: str, account_uid: Optional[str] = None) -> int:

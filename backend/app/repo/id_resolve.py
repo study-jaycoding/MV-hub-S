@@ -14,6 +14,9 @@ from ..db import get_connection
 from .generation_rows import _fetch_generation, _fetch_gens  # 단방향 import (id_resolve → generation_rows)
 
 
+_SQLITE_PAIRED_IN_BATCH = 400  # id/job_id 두 IN 목록을 합쳐도 오래된 SQLite 변수 상한(999) 미만.
+
+
 def finalize_id_map(any_id: str) -> tuple[Optional[str], str]:
     """(local_id, server_id) 해석.
 
@@ -72,6 +75,45 @@ def resolve_and_get(
         return _fetch_generation(conn, local_id, account_uid), local_id, server_id
 
 
+def resolve_generation_meta_batch(any_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """여러 로컬 id/서버 job_id를 개인 메타 저장에 필요한 최소 행으로 일괄 해석한다.
+
+    반환 키는 요청 id 그대로이며 값은 ``id``(로컬 PK), ``job_id``, ``creator_uid``다.
+    단건 ``resolve_and_get``처럼 직접 id 일치를 최우선, 그다음 ``origin='local'`` 행을 선택한다.
+    개인 메타 배치는 응답 전체를 만들 필요가 없으므로 asset/history/comment 보강 쿼리는 실행하지 않는다.
+    """
+    requested_ids = list(dict.fromkeys(any_id for any_id in (any_ids or []) if any_id))
+    if not requested_ids:
+        return {}
+
+    resolved: dict[str, dict[str, Any]] = {}
+    ranks: dict[str, tuple[bool, bool]] = {}
+    with get_connection() as conn:
+        for offset in range(0, len(requested_ids), _SQLITE_PAIRED_IN_BATCH):
+            batch = requested_ids[offset:offset + _SQLITE_PAIRED_IN_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = conn.execute(
+                "SELECT id, job_id, creator_uid, origin FROM generation "
+                f"WHERE id IN ({placeholders}) OR job_id IN ({placeholders})",
+                [*batch, *batch],
+            ).fetchall()
+            wanted = set(batch)
+            for row in rows:
+                candidates = {row["id"]}
+                if row["job_id"]:
+                    candidates.add(row["job_id"])
+                value = dict(row)
+                for requested in candidates & wanted:
+                    rank = (
+                        row["id"] == requested,
+                        (row["origin"] or "local") == "local",
+                    )
+                    if requested not in ranks or rank > ranks[requested]:
+                        ranks[requested] = rank
+                        resolved[requested] = value
+    return resolved
+
+
 def personal_meta_by_anchor(
     anchor_ids: list[str], owner_uid: str
 ) -> dict[str, dict[str, Any]]:
@@ -123,18 +165,35 @@ def _ensure_color_overlay(conn) -> None:
 
 def set_color_overlay(anchor: str, color: Optional[str]) -> None:
     """남의 팀 카드 '내 로컬 색' 저장(계정DB 전용). color=None 이면 해제(행 삭제)."""
-    if not anchor:
-        return
+    set_color_overlays_batch([(anchor, color)])
+
+
+def set_color_overlays_batch(items: list[tuple[str, Optional[str]]]) -> int:
+    """여러 팀 카드 색 shadow를 한 트랜잭션으로 저장한다. 같은 anchor는 마지막 값이 이긴다."""
+    final_by_anchor: dict[str, Optional[str]] = {}
+    for anchor, color in items or []:
+        if anchor:
+            final_by_anchor[anchor] = color
+    if not final_by_anchor:
+        return 0
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         _ensure_color_overlay(conn)
-        if color is None:
-            conn.execute("DELETE FROM gen_color_overlay WHERE anchor=?", (anchor,))
-        else:
-            conn.execute(
+        clear = [(anchor,) for anchor, color in final_by_anchor.items() if color is None]
+        if clear:
+            conn.executemany("DELETE FROM gen_color_overlay WHERE anchor=?", clear)
+        colors = [
+            (anchor, color)
+            for anchor, color in final_by_anchor.items()
+            if color is not None
+        ]
+        if colors:
+            conn.executemany(
                 "INSERT INTO gen_color_overlay(anchor, color) VALUES(?,?) "
                 "ON CONFLICT(anchor) DO UPDATE SET color=excluded.color",
-                (anchor, color),
+                colors,
             )
+    return len(final_by_anchor)
 
 
 def color_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, str]:
@@ -162,17 +221,37 @@ def _ensure_tag_overlay(conn) -> None:
 
 def set_tags_overlay(anchor: str, tags: list[str]) -> None:
     """남의 팀 카드 '내 로컬 태그' 저장(계정DB 전용, 전체 교체). 빈 리스트면 해제."""
-    if not anchor:
-        return
-    clean = [t.strip() for t in (tags or []) if t and t.strip()]
+    set_tag_overlays_batch([(anchor, tags)])
+
+
+def set_tag_overlays_batch(items: list[tuple[str, list[str]]]) -> int:
+    """여러 팀 카드 태그 shadow를 한 트랜잭션으로 전체 교체한다. 같은 anchor는 마지막 값이 이긴다."""
+    final_by_anchor: dict[str, list[str]] = {}
+    for anchor, names in items or []:
+        if anchor:
+            final_by_anchor[anchor] = [
+                name.strip() for name in (names or []) if name and name.strip()
+            ]
+    if not final_by_anchor:
+        return 0
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         _ensure_tag_overlay(conn)
-        conn.execute("DELETE FROM gen_tag_overlay WHERE anchor=?", (anchor,))
-        if clean:
+        conn.executemany(
+            "DELETE FROM gen_tag_overlay WHERE anchor=?",
+            [(anchor,) for anchor in final_by_anchor],
+        )
+        links = [
+            (anchor, tag)
+            for anchor, names in final_by_anchor.items()
+            for tag in names
+        ]
+        if links:
             conn.executemany(
                 "INSERT OR IGNORE INTO gen_tag_overlay(anchor, tag) VALUES(?,?)",
-                [(anchor, t) for t in clean],
+                links,
             )
+    return len(final_by_anchor)
 
 
 def tags_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, list[str]]:

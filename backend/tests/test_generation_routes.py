@@ -113,6 +113,47 @@ class GenerationReadRouteTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 413)
 
+    def test_color_write_batch_resolves_ids_and_reports_missing(self):
+        from app import repo
+
+        r = self.client.put(
+            "/api/generations/colors/batch",
+            json={
+                "items": [
+                    {"id": "srv1", "color": "red"},
+                    {"id": "par1", "color": "blue"},
+                    {"id": "missing", "color": "green"},
+                ]
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            r.json(),
+            {"succeeded": ["srv1", "par1"], "failed": ["missing"]},
+        )
+        self.assertEqual(repo.get_generation("loc1")["color"], "red")
+        self.assertEqual(repo.get_generation("par1")["color"], "blue")
+
+    def test_tag_write_batch_commits_all_local_rows(self):
+        from app import repo
+
+        r = self.client.put(
+            "/api/generations/tags/batch",
+            json={
+                "items": [
+                    {"id": "srv1", "tags": ["hero"]},
+                    {"id": "par1", "tags": ["parent"]},
+                ],
+                "auto": False,
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["failed"], [])
+        self.assertEqual(repo.get_generation("loc1")["tags"], ["hero"])
+        self.assertEqual(repo.get_generation("par1")["tags"], ["parent"])
+
     # ── write 라우트(add/remove/derive)도 서버 job_id → 로컬 행 해석(ref.local_id) ──
     def test_add_history_via_server_job_id_targets_local_row(self):
         r = self.client.post(

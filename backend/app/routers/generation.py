@@ -37,7 +37,7 @@ from ..models import (
     TagsIn,
 )
 from ..services import cli_bridge, syncer
-from ..usecases import generation_media_cache, hf_missing
+from ..usecases import generation_media_cache, generation_personal_meta, hf_missing
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -360,23 +360,54 @@ class GenerationTagsBatchIn(BaseModel):
     auto: bool = False
 
 
+def _batch_meta_callbacks(request: Request):
+    """FastAPI 권한·프록시 예외를 usecase가 소비할 수 있는 값 콜백으로 변환한다."""
+    def can_edit(ref: dict[str, Any]) -> bool:
+        try:
+            require_edit_generation(request, ref)
+            return True
+        except HTTPException:
+            return False
+
+    def fetch_server_cards(gen_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not gen_ids:
+            return {}
+        try:
+            result = _proxy.proxy_json(
+                "POST",
+                "/api/generations/batch",
+                body={"gen_ids": gen_ids},
+                timeout=15,
+            )
+        except HTTPException:
+            return {}
+        items = result.get("items") if isinstance(result, dict) else None
+        if not isinstance(items, dict):
+            return {}
+        return {
+            requested_id: card
+            for requested_id, card in items.items()
+            if isinstance(requested_id, str) and isinstance(card, dict)
+        }
+
+    return can_edit, fetch_server_cards
+
+
 @router.put("/generations/tags/batch")
 def set_tags_batch(body: GenerationTagsBatchIn, request: Request):
-    """다중 태그 저장의 HTTP fan-out 제거. 기존처럼 항목별 부분 성공을 허용한다."""
+    """다중 태그를 로컬/팀 shadow별 한 트랜잭션으로 저장한다. 항목별 부분 성공은 유지한다."""
     if len(body.items) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
-    succeeded: list[str] = []
-    failed: list[str] = []
-    for item in body.items:
-        try:
-            if body.auto:
-                set_gen_auto_tags(item.id, AutoTagsIn(auto_tags=item.tags), request)
-            else:
-                set_tags(item.id, TagsIn(tags=item.tags), request)
-            succeeded.append(item.id)
-        except HTTPException:
-            failed.append(item.id)
-    return {"succeeded": succeeded, "failed": failed}
+    can_edit, fetch_server_cards = _batch_meta_callbacks(request)
+    result = generation_personal_meta.set_tags_batch(
+        [(item.id, item.tags) for item in body.items],
+        auto=body.auto,
+        proxying=_proxy.proxying(),
+        my_uid=_my_uid(request),
+        can_edit=can_edit,
+        fetch_server_cards=fetch_server_cards,
+    )
+    return {"succeeded": result.succeeded, "failed": result.failed}
 
 
 @router.delete("/tags/{tag}")
@@ -513,18 +544,18 @@ class GenerationColorsBatchIn(BaseModel):
 
 @router.put("/generations/colors/batch")
 def set_colors_batch(body: GenerationColorsBatchIn, request: Request):
-    """다중 색상 저장의 HTTP fan-out 제거. 권한·존재 실패는 항목별로 반환한다."""
+    """다중 색상을 로컬/팀 shadow별 한 트랜잭션으로 저장한다. 권한·존재 실패는 항목별 반환한다."""
     if len(body.items) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
-    succeeded: list[str] = []
-    failed: list[str] = []
-    for item in body.items:
-        try:
-            set_color(item.id, ColorIn(color=item.color), request)
-            succeeded.append(item.id)
-        except HTTPException:
-            failed.append(item.id)
-    return {"succeeded": succeeded, "failed": failed}
+    can_edit, fetch_server_cards = _batch_meta_callbacks(request)
+    result = generation_personal_meta.set_colors_batch(
+        [(item.id, item.color) for item in body.items],
+        proxying=_proxy.proxying(),
+        my_uid=_my_uid(request),
+        can_edit=can_edit,
+        fetch_server_cards=fetch_server_cards,
+    )
+    return {"succeeded": result.succeeded, "failed": result.failed}
 
 
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)

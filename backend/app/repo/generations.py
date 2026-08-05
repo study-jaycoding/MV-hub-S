@@ -565,8 +565,24 @@ def apply_local_failure(
 
 
 def set_color(gen_id: str, color: Optional[str]) -> None:
+    set_generation_colors_batch([(gen_id, color)])
+
+
+def set_generation_colors_batch(items: list[tuple[str, Optional[str]]]) -> int:
+    """여러 생성물 색상을 한 트랜잭션으로 저장한다. 같은 id는 마지막 값이 이긴다."""
+    final_by_id: dict[str, Optional[str]] = {}
+    for gen_id, color in items or []:
+        if gen_id:
+            final_by_id[gen_id] = color
+    if not final_by_id:
+        return 0
     with get_connection() as conn:
-        conn.execute("UPDATE generation SET color=? WHERE id=?", (color, gen_id))
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany(
+            "UPDATE generation SET color=? WHERE id=?",
+            [(color, gen_id) for gen_id, color in final_by_id.items()],
+        )
+    return len(final_by_id)
 
 
 def set_source(gen_id: str, name: Optional[str], is_source: bool = True) -> None:
