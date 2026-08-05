@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import _assets_access, assets_metadata
@@ -426,13 +426,23 @@ class AssetSourceIn(BaseModel):
     is_source: bool = True
 
 
+class AssetSourceBatchItem(BaseModel):
+    path: str
+    name: Optional[str] = None
+
+
+class AssetSourcesBatchIn(BaseModel):
+    project: str
+    items: list[AssetSourceBatchItem] = Field(default_factory=list)
+
+
 _real_meta_key = asset_paths.real_meta_key
 
 
 # 메타 쓰기(소스/태그/컬러/개인 노트) — 계정별 개인화라 **로컬 계정 DB** 에 저장한다(서버로
 # 위임하지 않는다). 생성탭 @/# 피커(/api/sources)가 같은 로컬 asset_meta 를 읽으므로 여기서
 # 서버로 새면 '에셋에서 정한 소스/태그가 생성탭에 안 뜨는' 단절이 생긴다(실측 버그). 디스크
-# 디스크 검증 없음: 메타는 (project,path,owner) 키로만 식별.
+# 파일이 있으면 재연결용 지문만 계산하고, 없어도 메타 자체는 (project,path,owner) 키로 저장한다.
 @router.put("/source", dependencies=[Depends(_require_local_assets)])
 def asset_set_source(body: AssetSourceIn, request: Request):
     # 에셋 메타는 계정별 개인화 — 내(actor_id) 설정만 만들고 바꾼다(남의 것과 안 섞임).
@@ -448,6 +458,23 @@ def asset_set_source(body: AssetSourceIn, request: Request):
         real_project, real_path, body.name, body.is_source, actor_id(request), content_sha
     )
     return {"ok": True}
+
+
+@router.put("/sources/batch", dependencies=[Depends(_require_local_assets)])
+def asset_set_sources_batch(body: AssetSourcesBatchIn, request: Request):
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 파일까지 변경할 수 있습니다")
+    prepared: list[tuple[str, str, Optional[str], bool, Optional[str]]] = []
+    for item in body.items:
+        real_project, real_path = _real_meta_key(body.project, item.path)
+        content_sha: Optional[str] = None
+        proj_dir = _safe_project_dir(real_project, request)
+        target = _safe_resolve(proj_dir, real_path) if proj_dir else None
+        if target and target.is_file():
+            content_sha = _sha256_file(target)
+        prepared.append((real_project, real_path, item.name, True, content_sha))
+    count = repo.set_asset_sources_batch(prepared, actor_id(request))
+    return {"ok": True, "count": count}
 
 
 @router.post("/sources/relink", dependencies=[Depends(_require_local_assets)])

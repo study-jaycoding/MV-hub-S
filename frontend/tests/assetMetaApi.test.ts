@@ -46,4 +46,21 @@ describe("Assets batch metadata API", () => {
       }),
     );
   });
+
+  it("여러 소스 지정을 한 요청 본문으로 보낸다", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true, count: 2 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const items = [
+      { path: "a.png", name: "a.png" },
+      { path: "b.png", name: "b.png" },
+    ];
+
+    await assetsApi.setAssetSourcesBatch("demo", items);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assets/sources/batch",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ project: "demo", items }) }),
+    );
+  });
 });

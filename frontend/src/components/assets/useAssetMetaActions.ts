@@ -58,7 +58,7 @@ export function useAssetMetaActions({
         next[path] = { ...(next[path] || EMPTY_ASSET_META), is_source: true, source_name: name };
       return next;
     });
-    Promise.all(named.map(({ path, name }) => api.setAssetSource(project, path, name, true))).catch(metaFail);
+    api.setAssetSourcesBatch(project, named).catch(metaFail);
   };
 
   const toggleSource = (path: string) => {

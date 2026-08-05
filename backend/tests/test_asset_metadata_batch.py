@@ -50,6 +50,24 @@ class AssetMetadataBatchTests(unittest.TestCase):
         self.assertEqual(repo.get_asset_meta("project-b", "user-a")["b.png"]["tags"], ["bg"])
         self.assertEqual(repo.get_asset_meta("project-a", "other"), {})
 
+    def test_batch_writes_sources_and_preserves_owner_scope(self) -> None:
+        self.assertEqual(
+            repo.set_asset_sources_batch(
+                [
+                    ("project-a", "a.png", "hero", True, "sha-a"),
+                    ("project-a", "b.png", "background", True, None),
+                ],
+                "user-a",
+            ),
+            2,
+        )
+
+        meta = repo.get_asset_meta("project-a", "user-a")
+        self.assertTrue(meta["a.png"]["is_source"])
+        self.assertEqual(meta["a.png"]["source_name"], "hero")
+        self.assertTrue(meta["b.png"]["is_source"])
+        self.assertEqual(repo.get_asset_meta("project-a", "other"), {})
+
     def test_batch_rolls_back_all_items_when_one_write_fails(self) -> None:
         original = asset_repo._ensure_asset_meta
         calls = 0

@@ -22,6 +22,7 @@ class AssetMetadataTests(unittest.TestCase):
         ]
         expected = {
             ("/api/assets/meta", "GET"),
+            ("/api/assets/sources/batch", "PUT"),
             ("/api/assets/comments", "GET"),
             ("/api/assets/comments", "POST"),
             ("/api/assets/comments/{comment_id}", "PUT"),
@@ -176,6 +177,34 @@ class AssetMetadataTests(unittest.TestCase):
         setter.assert_called_once_with(
             [("captures", "a.png"), ("imports", "b.png")],
             "green",
+            "me",
+        )
+
+    def test_batch_sources_hash_files_then_use_one_repo_call(self) -> None:
+        body = assets.AssetSourcesBatchIn(
+            project=asset_paths.COMBINED_INTERNAL_PROJECT,
+            items=[
+                assets.AssetSourceBatchItem(path="captures/a.png", name="a.png"),
+                assets.AssetSourceBatchItem(path="imports/b.png", name="b.png"),
+            ],
+        )
+        first_target = SimpleNamespace(is_file=lambda: True)
+        second_target = SimpleNamespace(is_file=lambda: True)
+        with (
+            patch.object(assets, "_safe_project_dir", side_effect=["captures-dir", "imports-dir"]),
+            patch.object(assets, "_safe_resolve", side_effect=[first_target, second_target]),
+            patch.object(assets, "_sha256_file", side_effect=["sha-a", "sha-b"]),
+            patch.object(assets, "actor_id", return_value="me"),
+            patch.object(assets.repo, "set_asset_sources_batch", return_value=2) as setter,
+        ):
+            result = assets.asset_set_sources_batch(body, self.request)
+
+        self.assertEqual(result, {"ok": True, "count": 2})
+        setter.assert_called_once_with(
+            [
+                ("captures", "a.png", "a.png", True, "sha-a"),
+                ("imports", "b.png", "b.png", True, "sha-b"),
+            ],
             "me",
         )
 

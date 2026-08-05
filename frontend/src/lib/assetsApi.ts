@@ -176,6 +176,11 @@ export const assetsApi = {
       method: "PUT",
       body: jsonBody({ project, path, name, is_source }),
     }),
+  setAssetSourcesBatch: (project: string, items: { path: string; name: string | null }[]) =>
+    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/sources/batch`, {
+      method: "PUT",
+      body: jsonBody({ project, items }),
+    }),
   setAssetTags: (project: string, path: string, tags: string[]) =>
     jsonFetch(`/api/assets/tags`, {
       method: "PUT",

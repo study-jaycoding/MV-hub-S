@@ -322,20 +322,47 @@ def set_asset_source(
     owner_uid: str = "",
     content_sha: Optional[str] = None,
 ) -> None:
+    set_asset_sources_batch(
+        [(project, path, name, is_source, content_sha)],
+        owner_uid,
+    )
+
+
+def set_asset_sources_batch(
+    items: list[tuple[str, str, Optional[str], bool, Optional[str]]],
+    owner_uid: str = "",
+) -> int:
+    """여러 파일의 소스 지정을 한 트랜잭션으로 저장한다.
+
+    각 항목은 ``(project, path, name, is_source, content_sha)``다. 파일 지문 계산은
+    라우터가 DB 트랜잭션을 열기 전에 끝내므로 큰 파일을 읽는 동안 쓰기 잠금을 잡지 않는다.
+    """
+    if not items:
+        return 0
     with get_connection() as conn:
-        _ensure_asset_meta(conn, project, path, owner_uid)
-        conn.execute(
-            "UPDATE asset_meta SET is_source=?, source_name=? "
-            "WHERE project=? AND path=? AND owner_uid=?",
-            (1 if is_source else 0, (name or None) if is_source else None, project, path, owner_uid),
-        )
-        # 소스로 켤 때 파일 내용 지문(sha256)도 기록 — 폴더 이동/개명으로 원경로가 어긋나도
-        # 같은 내용의 파일을 다시 찾아 잇기 위한 것. 해제(is_source=0) 시엔 건드리지 않는다.
-        if is_source and content_sha:
+        conn.execute("BEGIN IMMEDIATE")
+        for project, path, name, is_source, content_sha in items:
+            _ensure_asset_meta(conn, project, path, owner_uid)
             conn.execute(
-                "UPDATE asset_meta SET content_sha=? WHERE project=? AND path=? AND owner_uid=?",
-                (content_sha, project, path, owner_uid),
+                "UPDATE asset_meta SET is_source=?, source_name=? "
+                "WHERE project=? AND path=? AND owner_uid=?",
+                (
+                    1 if is_source else 0,
+                    (name or None) if is_source else None,
+                    project,
+                    path,
+                    owner_uid,
+                ),
             )
+            # 소스로 켤 때 파일 내용 지문(sha256)도 기록 — 폴더 이동/개명으로 원경로가
+            # 어긋나도 같은 내용의 파일을 다시 찾아 잇는다. 해제 시엔 기존 지문을 보존한다.
+            if is_source and content_sha:
+                conn.execute(
+                    "UPDATE asset_meta SET content_sha=? "
+                    "WHERE project=? AND path=? AND owner_uid=?",
+                    (content_sha, project, path, owner_uid),
+                )
+    return len(items)
 
 
 def list_source_metas(owner_uid: str = "") -> list[tuple[str, str, Optional[str]]]:
