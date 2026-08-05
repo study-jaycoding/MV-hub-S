@@ -21,16 +21,7 @@ import {
 } from "../../lib/assetVersions";
 import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/appEvents";
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
-import { DRAG_TYPES } from "../../lib/dragTypes";
 import { toggleDisabledGen } from "../../lib/deactivated";
-import {
-  notifySpotlightAssetsChanged,
-  parseSpotlightAssetItems,
-  readSpotlightAssetPayload,
-  referenceDropTypeFromFile,
-  spotlightAssetRefBase,
-  type SpotlightAssetDragItem,
-} from "../../lib/spotlightAssetRefs";
 import {
   sceneRefFingerprint,
   settleComfyRunning,
@@ -76,13 +67,9 @@ import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs"
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
-  copySceneSelection,
   moveCardsFromOrigins,
-  partitionSceneDropFiles,
-  pasteSceneClipboard,
   SCENE_GRID as GRID,
   snapSceneGrid as snapGrid,
-  type SceneClipboard,
 } from "../../lib/sceneInteractions";
 import {
   isComfyRunning,
@@ -111,14 +98,10 @@ import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
+import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
-import {
-  dataTransferHasFiles,
-  displayThumb,
-  filesFromDataTransfer,
-  thumbOf,
-} from "../../lib/media";
+import { displayThumb, thumbOf } from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
@@ -316,13 +299,6 @@ export function SceneBoard({
     if (editTextId && !cards.some((c) => c.id === editTextId)) setEditTextId(null);
   }, [cards, editTextId]);
   const caretPosRef = useRef<Map<string, number>>(new Map()); // 텍스트 노드별 마지막 캐럿 위치 — 재편집 시 그곳으로 복원
-  // 노드 복사·붙여넣기 클립보드(Ctrl+C/V) — 선택 카드 + 그들 사이 엣지 스냅샷.
-  //  inEdges = 외부 소스(선택 밖) → 선택 노드로 들어오는 입력 엣지. 붙여넣을 때 기존 소스에 그대로 다시 물려
-  //  '입력을 공유하는 복제'가 되게 한다(from=원본 소스 유지, to=붙여넣은 새 노드).
-  const clipboardRef = useRef<SceneClipboard | null>(null);
-  // 직전에 레퍼런스로 넣은 클립보드 이미지 지문(크기:타입) — '새 캡쳐'인지 '이미 쓴 캡쳐'인지 구분해
-  //  붙여넣기 우선순위(새 이미지=이미지 / 이미 쓴 이미지+복사한 노드=노드)를 최근 동작 기준으로 정한다.
-  const lastImgKeyRef = useRef<string | null>(null);
   const [tagEditGid, setTagEditGid] = useState<string | null>(null); // 변형 팝업 타일별 태그 편집 대상 gen id
   const [popupSel, setPopupSel] = useState<Set<string>>(new Set()); // 팝업 내 다중선택(gid)
   const [gripDragging, setGripDragging] = useState(false); // 팝업 재사용 그립 드래그 중 — 백드롭 클릭통과(프롬프트로 드롭)
@@ -928,6 +904,25 @@ export function SceneBoard({
         : c,
     );
 
+  // 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭은 전용 훅이 브라우저 이벤트와 업로드 수명주기를 맡는다.
+  const { copySelectedNodes, onDragOver, onDrop } = useSceneClipboardDrop({
+    sceneIdRef,
+    cardsRef,
+    edgesRef,
+    selectedRef,
+    lastMouseRef,
+    scrollRef,
+    setCards,
+    setEdges,
+    setSelected,
+    toCanvas,
+    reconcileGenerationRefs: withGenRefs,
+    persist,
+    onLoadSceneFile,
+    cardWidth: CARD_W,
+    cardHeight: CARD_H,
+  });
+
   // ★연결 refs 지연 재동기화 — gatherTarget 은 genData 가 로드된 카드만 asset ref 로 잡는다. 연결 시점에
   //  리스트/렌더로 묶인 둘째~N째 카드의 genData 가 아직 안 실렸으면 그 카드는 skip 돼 card.refs 에 '첫째만'
   //  남아 굳었다(연결 변경 때만 재계산되므로 늦게 온 genData 를 못 반영). genData(또는 생성 소스·토폴로지)
@@ -980,121 +975,6 @@ export function SceneBoard({
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
   const beginDrag = useSceneDragSession();
-
-  // ── 에셋 드롭/붙여넣기 → 레퍼런스 카드(항상 1장에 1개) ──
-  const hasAssetDrag = (dt: DataTransfer) => Array.from(dt.types).includes(DRAG_TYPES.asset);
-  const itemToRef = (it: SpotlightAssetDragItem): SceneRef => {
-    const b = spotlightAssetRefBase(it);
-    return { file_path: b.file_path, type: b.type, name: b.name, thumb: b.thumb };
-  };
-  // 레퍼런스들을 각각 1장짜리 카드로 만들어 배치 — (cx,cy) 를 중심으로 가로 한 줄, 격자 스냅.
-  //  connectToGenIds 를 주면 만든 레퍼런스 카드를 그 생성 카드(들)에 바로 엣지로 연결한다(캔버스 붙여넣기 컨셉).
-  const addRefCardsAt = (refs: SceneRef[], cx: number, cy: number, connectToGenIds?: string[]) => {
-    if (!refs.length) return;
-    // 단일 생성 카드에 연결하는 경우엔 위치를 '커밋 시점'에 계산 — 그 카드 왼쪽·기존 입력 아래로 스택.
-    //  (paste 시점이 아니라 여기서 계산해야 연속 붙여넣기에서 카드가 안 겹치고 순서대로 쌓인다.)
-    const targetGen =
-      connectToGenIds?.length === 1
-        ? cardsRef.current.find((c) => c.id === connectToGenIds[0] && c.kind === "generation")
-        : null;
-    let baseCx = cx, baseCy = cy;
-    if (targetGen) {
-      const inputs = edgesRef.current.filter((e) => e.to === targetGen.id).length;
-      baseCx = targetGen.x - (CARD_W + 40) + CARD_W / 2; // 생성 카드 왼쪽 40px 열(addRefCardsAt 는 cx 를 중심으로 씀)
-      baseCy = targetGen.y + CARD_H / 2 + inputs * (CARD_H + 20); // 이미 연결된 입력 아래로 스택
-    }
-    const gap = CARD_W + 20;
-    const startX = baseCx - CARD_W / 2 - ((refs.length - 1) * gap) / 2;
-    const created: SceneCard[] = refs.map((r, i) => ({
-      id: uid(),
-      kind: "reference",
-      x: snapGrid(startX + i * gap),
-      y: snapGrid(baseCy - CARD_H / 2),
-      refs: [r],
-    }));
-    const baseCards = [...cardsRef.current, ...created];
-    // 연결 대상(실제 존재하는 생성 카드만) → 새 레퍼런스마다 엣지 추가 후 withGenRefs 로 refs 재수집.
-    const targets = (connectToGenIds || []).filter((gid) =>
-      baseCards.some((c) => c.id === gid && c.kind === "generation"),
-    );
-    let ne = edgesRef.current;
-    let finalCards = baseCards;
-    if (targets.length) {
-      const seen = new Set(ne.map((e) => e.from + ">" + e.to));
-      const additions: SceneEdge[] = [];
-      for (const c of created)
-        for (const gid of targets) {
-          const k = c.id + ">" + gid;
-          if (!seen.has(k)) { seen.add(k); additions.push({ id: uid(), from: c.id, to: gid }); }
-        }
-      if (additions.length) {
-        ne = [...ne, ...additions];
-        finalCards = withGenRefs(baseCards, ne);
-      }
-    }
-    cardsRef.current = finalCards; // 비동기 업로드가 연달아 resolve 돼도 stale 배열에 덮이지 않게 즉시 반영
-    edgesRef.current = ne; //  ★엣지도 즉시 동기화 — 연속 붙여넣기의 다음 .then 이 방금 추가한 엣지를 보게(연결 유실 방지)
-    setCards(finalCards);
-    setEdges(ne);
-    // 연결한 경우엔 생성 카드 선택을 유지 — 바인딩 효과가 새 레퍼런스를 프롬프트에 바로 반영한다.
-    //  연결 안 한 단독 생성이면(드롭 등) 만든 레퍼런스 카드를 선택(기존 동작).
-    if (!targets.length) setSelected(new Set(created.map((c) => c.id)));
-    persist(finalCards, ne);
-  };
-  // 외부(다른 앱/OS)에서 드래그·붙여넣기한 파일 → 서버 imports 로 업로드 후 레퍼런스 카드로.
-  const importExternalAsRefs = async (files: File[], cx: number, cy: number) => {
-    const accepted = files.filter((f) => referenceDropTypeFromFile(f));
-    if (!accepted.length) return; // 이미지/영상/오디오만
-    const sid = sceneIdRef.current; // 업로드 중 씬 전환 시 새 카드를 엉뚱한 씬에 넣지 않게
-    try {
-      const res = await api.uploadReferenceFiles(accepted);
-      const items = res.saved || [];
-      if (items.length) {
-        // 외부 파일 임포트 → origin 'upload'(테두리 파랑). 씬이 그대로일 때만 카드 추가.
-        if (sceneIdRef.current === sid)
-          addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "upload" as const })), cx, cy);
-        notifySpotlightAssetsChanged(items); // 씬과 무관 — 유지
-      }
-    } catch (err) {
-      console.warn("[scene] 외부 파일 레퍼런스 추가 실패", err);
-    }
-  };
-  const onDragOver = (e: React.DragEvent) => {
-    // 캔버스 위 드래그는 항상 브라우저 기본 동작을 막는다. 파일 신호를 조건으로 먼저 검사하면
-    // Windows/Chrome이 types를 다르게 준 순간 JSON이 앱 대신 새 탭으로 열릴 수 있다.
-    e.preventDefault();
-    e.stopPropagation();
-    if (hasAssetDrag(e.dataTransfer) || dataTransferHasFiles(e.dataTransfer)) {
-      e.dataTransfer.dropEffect = "copy";
-    }
-  };
-  const onDrop = (e: React.DragEvent) => {
-    // 내용 판별보다 먼저 차단해야, 지원하지 않거나 브라우저가 늦게 노출한 파일도 새 탭으로 안 열린다.
-    e.preventDefault();
-    e.stopPropagation();
-    // 내부 에셋 드래그 — 여러 개면 각각 1장짜리 카드로.
-    if (hasAssetDrag(e.dataTransfer)) {
-      const items = parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer));
-      if (!items.length) return;
-      const p = toCanvas(e.clientX, e.clientY);
-      // 에셋 패널에서 가져온 것 → origin 'asset'(테두리 형광).
-      addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "asset" as const })), p.x, p.y);
-      return;
-    }
-    const files = filesFromDataTransfer(e.dataTransfer);
-    // 씬 파일(.json) 단독 드롭 → 저장 파일 그대로 불러오기(새 탭). 형식이 아니면 parseSceneImport 가 알림.
-    //  ★미디어와 섞여 드롭되면 씬으로 가로채지 않는다 — json 은 레퍼런스가 못 되니 미디어 업로드를 우선.
-    const { sceneFile, mediaFiles } = partitionSceneDropFiles(files);
-    if (sceneFile && onLoadSceneFile) {
-      onLoadSceneFile(sceneFile);
-      return;
-    }
-    // 외부 미디어 파일 드래그 → 업로드 후 레퍼런스 카드(섞여 온 json 은 무시).
-    if (mediaFiles.length) {
-      const p = toCanvas(e.clientX, e.clientY);
-      void importExternalAsRefs(mediaFiles, p.x, p.y);
-    }
-  };
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
   // 여러 연결을 한 번에 추가(중복·자기연결 제외). 다중 레퍼런스 일괄 연결·c 자동연결에서 재사용.
@@ -2031,37 +1911,6 @@ export function SceneBoard({
     return true;
   };
 
-  const copySelectedNodes = () => {
-    const ids = new Set(selectedRef.current);
-    clipboardRef.current = copySceneSelection(cardsRef.current, edgesRef.current, ids);
-    // 노드 복사가 OS 클립보드를 접수한다. 이전 캡처 이미지를 마커 텍스트로 바꿔
-    // 다음 Ctrl+V에서 내부 노드가 우선되게 하고, 실패하면 이미지 지문 읽기로 폴백한다.
-    void (async () => {
-      try {
-        await navigator.clipboard?.writeText?.(
-          "[MV-hub] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기",
-        );
-        lastImgKeyRef.current = null;
-        return;
-      } catch {
-        /* write 미지원/실패 → 아래 read 지문 폴백 */
-      }
-      try {
-        const clipboardItems = await navigator.clipboard?.read?.();
-        if (!clipboardItems) return;
-        for (const item of clipboardItems) {
-          const imageType = item.types.find((type) => type.startsWith("image/"));
-          if (!imageType) continue;
-          const blob = await item.getType(imageType);
-          lastImgKeyRef.current = `${blob.size}:${blob.type}`;
-          return;
-        }
-      } catch {
-        /* 클립보드 읽기 권한 없음/미지원 — 기존 지문 휴리스틱으로 폴백 */
-      }
-    })();
-  };
-
   const autoConnectSelection = (): boolean => {
     const selectedCards = [...selectedRef.current]
       .map((id) => cardsRef.current.find((card) => card.id === id))
@@ -2584,111 +2433,6 @@ export function SceneBoard({
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [colorPopId]);
-  // 붙여넣기(Ctrl+V) — 편집 요소 포커스면 그쪽이 처리. 아니면 클립보드 이미지(캡쳐)를 레퍼런스 카드로,
-  // 이미지가 없고 내부에서 복사(Ctrl+C)한 카드가 있으면 그 카드들을 붙여넣는다(이미지 우선).
-  useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        (t &&
-          (t.tagName === "INPUT" ||
-            t.tagName === "TEXTAREA" ||
-            t.isContentEditable ||
-            t.closest?.("input, textarea, [contenteditable=true], .sl-dockbar"))) ||
-        active?.closest(".sl-dockbar") // 트레이 포커스면 paste 가 body 를 타깃해도 프롬프트가 처리
-      )
-        return; // 프롬프트 dock(에디터·레퍼런스 트레이 포함) 안에서 붙여넣으면 그쪽이 처리 — 캔버스 카드로 안 가로챈다
-      const items = e.clipboardData?.items;
-      let blob: File | null = null;
-      if (items)
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].type.startsWith("image/")) {
-            blob = items[i].getAsFile();
-            break;
-          }
-        }
-      // 같은 Ctrl+V 안에서 '최근 동작' 기준으로 무엇을 붙여넣을지 정한다.
-      //  · 방금 새로 '캡쳐한 이미지'(지문이 직전에 넣은 것과 다름)이거나 붙여넣을 노드가 없으면 → 이미지를 레퍼런스로.
-      //  · 이미 넣었던 그 캡쳐가 OS 클립보드에 그대로 남아있고 내부에서 복사한 노드가 있으면 → 노드 붙여넣기.
-      //  (캡쳐는 앱 밖(OS)에서 일어나 이벤트를 못 받으므로, 이미지 지문 변화로 '새 캡쳐'를 판별한다.)
-      const clip = clipboardRef.current;
-      const hasNodes = !!clip && clip.cards.length > 0;
-      const blobKey = blob ? `${blob.size}:${blob.type}` : null;
-      const isNewImage = !!blob && blobKey !== lastImgKeyRef.current;
-      // 1) 새 캡쳐 이미지 또는 붙여넣을 노드가 없음 → 클립보드 이미지(캡쳐)를 레퍼런스 카드로.
-      if (blob && (isNewImage || !hasNodes)) {
-        e.preventDefault();
-        lastImgKeyRef.current = blobKey; // 이 캡쳐는 '이미 넣은 것'으로 기록(다음 붙여넣기에서 노드 우선 판단)
-        // ★캔버스 컨셉: 생성 카드 '하나만' 선택돼 있으면 캡쳐를 그 카드에 바로 연결한다(위치는 addRefCardsAt 이
-        //  커밋 시점에 카드 왼쪽·입력 스택으로 계산). '정확히 1개' 여야 바인딩 효과가 프롬프트에 바로 반영된다.
-        //  아니면(선택 없음·복수·비생성) 예전처럼 마우스 위치에 단독 생성.
-        const sel = selectedRef.current;
-        const onlyCard = sel.size === 1 ? cardsRef.current.find((c) => c.id === [...sel][0]) : null;
-        const connectTo = onlyCard?.kind === "generation" ? [onlyCard.id] : undefined;
-        // 단독 생성 위치: 마우스가 보드 위면 그 지점, 아니면 뷰포트 중앙(연결 시엔 addRefCardsAt 이 위치를 덮어씀).
-        let cx: number, cy: number;
-        const lm = lastMouseRef.current;
-        const r = scrollRef.current?.getBoundingClientRect();
-        if (lm.over) {
-          const p = toCanvas(lm.x, lm.y);
-          cx = p.x;
-          cy = p.y;
-        } else if (r) {
-          const p = toCanvas(r.left + r.width / 2, r.top + r.height / 2);
-          cx = p.x;
-          cy = p.y;
-        } else if (!connectTo) return; // 위치를 못 구하고 연결도 안 하면 취소
-        else {
-          cx = 0;
-          cy = 0;
-        } // 연결 시엔 addRefCardsAt 이 위치를 계산하므로 임의값
-        const sid = sceneIdRef.current; // 캡쳐 업로드 중 씬 전환 시 엉뚱한 씬에 카드 추가 방지
-        void api
-          .uploadCapture(blob)
-          .then((rr) => {
-            if (sceneIdRef.current === sid)
-              addRefCardsAt(
-                // 캡쳐 → origin 'upload'(테두리 파랑).
-                [
-                  {
-                    ...itemToRef({ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }),
-                    origin: "upload" as const,
-                  },
-                ],
-                cx,
-                cy,
-                connectTo,
-              );
-            // 임포트와 동일하게 에셋창에 변경 신호 — 캡쳐도 실시간 반영되도록(씬과 무관).
-            notifySpotlightAssetsChanged([{ project: rr.project, path: rr.path, name: rr.name, type: rr.type || "image" }]);
-          })
-          .catch((err) => console.warn("[scene] 캡쳐 붙여넣기 실패", err));
-        return;
-      }
-      // 2) 내부에서 복사한 노드 붙여넣기(새 id·격자 오프셋, 그들 사이 엣지 재매핑).
-      if (hasNodes && clip) {
-        e.preventDefault();
-        const pasted = pasteSceneClipboard(cardsRef.current, edgesRef.current, clip, uid);
-        const nextEdges = pasted.edges;
-        const nextCards = withGenRefs(pasted.cards, nextEdges);
-        cardsRef.current = nextCards;
-        edgesRef.current = nextEdges;
-        setCards(nextCards);
-        setEdges(nextEdges);
-        setSelected(pasted.pastedCardIds);
-        persist(nextCards, nextEdges);
-        // 연속 붙여넣기 캐스케이드 — 다음 Ctrl+V 가 방금 붙여넣은 위치에서 이어서 밀려 겹치지 않게.
-        //  (원본 id 는 유지해 엣지 재매핑을 계속 가능하게 하고, 위치만 실제 이동량만큼 전진. Ctrl+C 하면 초기화.)
-        clipboardRef.current = pasted.nextClipboard;
-        return;
-      }
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // 엣지 계산·렌더에서 카드를 id 로 매우 자주 조회한다(E×C). 선형 find 대신 Map(O(1))로 —
   // cards 가 바뀔 때만(드래그 등) 1회 재구성. 드래그 중 렌더 비용을 크게 줄인다.
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c] as const)), [cards]);

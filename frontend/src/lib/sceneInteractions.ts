@@ -1,4 +1,4 @@
-import type { SceneCard, SceneEdge } from "./scenes";
+import type { SceneCard, SceneEdge, SceneRef } from "./scenes";
 import { canConnect } from "./sceneEdges";
 
 export const SCENE_GRID = 22;
@@ -10,6 +10,112 @@ export interface SceneClipboard {
   cards: SceneCard[];
   edges: SceneEdge[];
   inEdges: SceneEdge[];
+}
+
+export type ScenePasteIntent = "image" | "nodes" | "none";
+
+export function scenePasteIntent(
+  imageKey: string | null,
+  lastImageKey: string | null,
+  nodeCount: number,
+): ScenePasteIntent {
+  const hasNodes = nodeCount > 0;
+  if (imageKey && (imageKey !== lastImageKey || !hasNodes)) return "image";
+  if (hasNodes) return "nodes";
+  return "none";
+}
+
+interface AppendSceneReferenceCardsOptions {
+  cards: SceneCard[];
+  edges: SceneEdge[];
+  refs: SceneRef[];
+  center: { x: number; y: number };
+  connectToGenerationIds?: readonly string[];
+  makeId: () => string;
+  cardWidth: number;
+  cardHeight: number;
+  gap?: number;
+  grid?: number;
+}
+
+export interface AppendedSceneReferenceCards {
+  cards: SceneCard[];
+  edges: SceneEdge[];
+  createdCards: SceneCard[];
+  connectedTargetIds: string[];
+}
+
+/** 레퍼런스 카드 배치와 선택 생성카드 연결을 DOM/API 없이 계산한다. */
+export function appendSceneReferenceCards({
+  cards,
+  edges,
+  refs,
+  center,
+  connectToGenerationIds,
+  makeId,
+  cardWidth,
+  cardHeight,
+  gap = 20,
+  grid = SCENE_GRID,
+}: AppendSceneReferenceCardsOptions): AppendedSceneReferenceCards {
+  if (!refs.length) {
+    return { cards, edges, createdCards: [], connectedTargetIds: [] };
+  }
+
+  const requestedTargets = connectToGenerationIds || [];
+  const singleTarget =
+    requestedTargets.length === 1
+      ? cards.find(
+          (card) => card.id === requestedTargets[0] && card.kind === "generation",
+        )
+      : undefined;
+  let centerX = center.x;
+  let centerY = center.y;
+  if (singleTarget) {
+    const inputCount = edges.filter((edge) => edge.to === singleTarget.id).length;
+    centerX = singleTarget.x - (cardWidth + 40) + cardWidth / 2;
+    centerY = singleTarget.y + cardHeight / 2 + inputCount * (cardHeight + gap);
+  }
+
+  const step = cardWidth + gap;
+  const startX = centerX - cardWidth / 2 - ((refs.length - 1) * step) / 2;
+  const createdCards: SceneCard[] = refs.map((ref, index) => ({
+    id: makeId(),
+    kind: "reference",
+    x: snapSceneGrid(startX + index * step, grid),
+    y: snapSceneGrid(centerY - cardHeight / 2, grid),
+    refs: [ref],
+  }));
+  const nextCards = [...cards, ...createdCards];
+  const connectedTargetIds = requestedTargets.filter((targetId) =>
+    nextCards.some((card) => card.id === targetId && card.kind === "generation"),
+  );
+  if (!connectedTargetIds.length) {
+    return {
+      cards: nextCards,
+      edges,
+      createdCards,
+      connectedTargetIds,
+    };
+  }
+
+  const seen = new Set(edges.map((edge) => `${edge.from}>${edge.to}`));
+  const additions: SceneEdge[] = [];
+  for (const card of createdCards) {
+    for (const targetId of connectedTargetIds) {
+      const key = `${card.id}>${targetId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      additions.push({ id: makeId(), from: card.id, to: targetId });
+    }
+  }
+
+  return {
+    cards: nextCards,
+    edges: additions.length ? [...edges, ...additions] : edges,
+    createdCards,
+    connectedTargetIds,
+  };
 }
 
 export function partitionSceneDropFiles<T extends { name: string }>(files: readonly T[]): {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendSceneReferenceCards,
   buildSelectedConnections,
   copySceneSelection,
   moveCardsFromOrigins,
   partitionSceneDropFiles,
   pasteSceneClipboard,
+  scenePasteIntent,
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -40,6 +42,73 @@ describe("partitionSceneDropFiles", () => {
       sceneFile: null,
       mediaFiles: [image, video],
     });
+  });
+});
+
+describe("scenePasteIntent", () => {
+  it("새 캡처 이미지는 내부 노드 복사본보다 우선한다", () => {
+    expect(scenePasteIntent("20:image/png", "10:image/png", 2)).toBe("image");
+  });
+
+  it("이미 사용한 캡처가 그대로면 최근에 복사한 노드를 붙여넣는다", () => {
+    expect(scenePasteIntent("20:image/png", "20:image/png", 2)).toBe("nodes");
+  });
+
+  it("복사한 노드가 없으면 같은 캡처 이미지도 다시 붙여넣을 수 있다", () => {
+    expect(scenePasteIntent("20:image/png", "20:image/png", 0)).toBe("image");
+    expect(scenePasteIntent(null, null, 0)).toBe("none");
+  });
+});
+
+describe("appendSceneReferenceCards", () => {
+  it("선택 생성카드 왼쪽의 다음 입력 슬롯에 레퍼런스를 놓고 연결한다", () => {
+    const cards = [
+      card("existing", "reference", 0, 0),
+      card("target", "generation", 440, 220),
+    ];
+    const edges: SceneEdge[] = [{ id: "old-edge", from: "existing", to: "target" }];
+    const appended = appendSceneReferenceCards({
+      cards,
+      edges,
+      refs: [{ file_path: "asset:demo|image.png", type: "image", name: "image.png" }],
+      center: { x: 0, y: 0 },
+      connectToGenerationIds: ["target"],
+      makeId: idSequence("new-card", "new-edge"),
+      cardWidth: 220,
+      cardHeight: 132,
+    });
+
+    expect(appended.createdCards).toEqual([
+      expect.objectContaining({ id: "new-card", kind: "reference", x: 176, y: 374 }),
+    ]);
+    expect(appended.edges.at(-1)).toEqual({
+      id: "new-edge",
+      from: "new-card",
+      to: "target",
+    });
+    expect(appended.connectedTargetIds).toEqual(["target"]);
+  });
+
+  it("연결 대상이 없으면 지정한 중심에 카드만 배치한다", () => {
+    const appended = appendSceneReferenceCards({
+      cards: [],
+      edges: [],
+      refs: [
+        { file_path: "first.png", type: "image" },
+        { file_path: "second.png", type: "image" },
+      ],
+      center: { x: 330, y: 198 },
+      makeId: idSequence("first", "second"),
+      cardWidth: 220,
+      cardHeight: 132,
+    });
+
+    expect(appended.createdCards.map(({ id, x, y }) => ({ id, x, y }))).toEqual([
+      { id: "first", x: 110, y: 132 },
+      { id: "second", x: 330, y: 132 },
+    ]);
+    expect(appended.edges).toEqual([]);
+    expect(appended.connectedTargetIds).toEqual([]);
   });
 });
 
