@@ -49,38 +49,53 @@ def _masked_password_input(prompt: str, *, _read_key=None, _stream=None) -> str:
     if os.name != "nt" and _read_key is None:
         return getpass.getpass(prompt)
 
+    restore_console_mode = None
     if _read_key is None:
+        import ctypes
         import msvcrt
 
         _read_key = msvcrt.getwch
+        # 일부 CMD/호스트 조합에서 getwch 사용 중에도 콘솔 ECHO_INPUT이 남는 사례를 이중 차단한다.
+        # 입력이 끝나면 원래 모드로 반드시 복구해 이후 일반 input()이 정상 동작하게 한다.
+        kernel32 = ctypes.windll.kernel32
+        stdin_handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if stdin_handle not in (0, -1) and kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
+            restore_console_mode = (kernel32, stdin_handle, mode.value)
+            kernel32.SetConsoleMode(stdin_handle, mode.value & ~0x0004)  # ENABLE_ECHO_INPUT
     stream = _stream or sys.stdout
     chars: list[str] = []
     stream.write(prompt)
     stream.flush()
-    while True:
-        char = _read_key()
-        if char in ("\r", "\n"):
-            stream.write("\n")
-            stream.flush()
-            return "".join(chars)
-        if char == "\x03":  # Ctrl+C
-            stream.write("\n")
-            stream.flush()
-            raise KeyboardInterrupt
-        if char == "\b":
-            if chars:
-                chars.pop()
-                stream.write("\b \b")
+    try:
+        while True:
+            char = _read_key()
+            if char in ("\r", "\n"):
+                stream.write("\n")
                 stream.flush()
-            continue
-        if char in ("\x00", "\xe0"):  # 화살표·기능키의 2바이트 시퀀스
-            _read_key()
-            continue
-        if not char or ord(char) < 32:
-            continue
-        chars.append(char)
-        stream.write("*")
-        stream.flush()
+                return "".join(chars)
+            if char == "\x03":  # Ctrl+C
+                stream.write("\n")
+                stream.flush()
+                raise KeyboardInterrupt
+            if char == "\b":
+                if chars:
+                    chars.pop()
+                    stream.write("\b \b")
+                    stream.flush()
+                continue
+            if char in ("\x00", "\xe0"):  # 화살표·기능키의 2바이트 시퀀스
+                _read_key()
+                continue
+            if not char or ord(char) < 32:
+                continue
+            chars.append(char)
+            stream.write("*")
+            stream.flush()
+    finally:
+        if restore_console_mode:
+            kernel32, stdin_handle, original_mode = restore_console_mode
+            kernel32.SetConsoleMode(stdin_handle, original_mode)
 
 
 def _dominant_uid(jobs: list) -> str | None:
@@ -459,6 +474,28 @@ def login(server: str, email: str, password: str) -> str:
     acc = body.get("account") or {}
     print(f"[로그인] {acc.get('name') or email} · {acc.get('status')} · 역할={','.join(acc.get('global_roles') or [])}")
     return body["token"]
+
+
+def _request_local_pair(server: str, secret: str):
+    """test_dev 브라우저 로그인 계정을 로컬 일회성 키로 교환한다."""
+    return _http(
+        "POST",
+        f"{server}/api/agent/local-pair-token",
+        body={"secret": secret},
+    )
+
+
+def wait_for_local_pair(server: str, secret: str) -> tuple[str, str]:
+    """브라우저 로그인 완료까지 대기한 뒤 (세션 토큰, 이메일)을 반환한다."""
+    print("[연결] 브라우저 로그인을 기다립니다. CMD에 이메일/비밀번호를 입력할 필요가 없습니다.")
+    while True:
+        status, body = _request_local_pair(server, secret)
+        if status == 200 and isinstance(body, dict) and body.get("token") and body.get("email"):
+            print(f"[연결] 브라우저 계정 자동 연결: {body['email']}")
+            return body["token"], body["email"]
+        if status in (403, 404):
+            sys.exit(f"[오류] 로컬 에이전트 자동 연결 실패(status={status}): {body}")
+        time.sleep(1)
 
 
 # NOTE: 아래 _role_flag / _param_flags / _dominant_uid / _cli_json 은 backend cli_bridge 의
@@ -1436,6 +1473,10 @@ def main() -> None:
     ap.add_argument("--email", help="내 허브 로그인 이메일(로그인 모드에서 필요)")
     ap.add_argument("--password", help="허브 비밀번호(생략 시 안전 입력 프롬프트)")
     ap.add_argument("--token", help="허브 세션 토큰 직접 사용(로그인 생략 — 자동화/테스트용)")
+    ap.add_argument(
+        "--pair-secret",
+        help="test_dev 전용: 브라우저 로그인 세션을 로컬 일회성 키로 자동 연결",
+    )
     ap.add_argument("--size", type=int, default=100, help="로컬에서 읽을 최근 잡 수(기본 100, CLI 상한)")
     ap.add_argument("--watch", type=int, metavar="SEC", help="상주(이벤트) 모드 — 롱폴로 대기하다 액션 시 즉시 작동. 값은 호환용(무시)")
     ap.add_argument(
@@ -1448,7 +1489,10 @@ def main() -> None:
     server = args.server.rstrip("/")
     cli = _cli()
     creds: dict | None = None  # 세션 만료 시 자동 재로그인용(메모리에만 유지, 저장 안 함)
-    if args.token:
+    paired_email: str | None = None
+    if args.pair_secret:
+        token, paired_email = wait_for_local_pair(server, args.pair_secret)
+    elif args.token:
         token = args.token  # AUTH off 로컬 허브는 토큰을 검증하지 않으므로 더미('local')도 됨
         print(f"[토큰] 전달된 세션 토큰 사용({args.email or '로컬'})")
     else:
@@ -1477,9 +1521,39 @@ def main() -> None:
             print(f"[경고] 초기 처리 오류(무시): {e}")
         while True:
             reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
+            if args.pair_secret:
+                pair_status, pair_body = _request_local_pair(server, args.pair_secret)
+                if pair_status == 200 and isinstance(pair_body, dict):
+                    next_email = pair_body.get("email")
+                    next_token = pair_body.get("token")
+                    if next_email and next_token:
+                        account_changed = next_email != paired_email
+                        token, paired_email = next_token, next_email
+                        if account_changed:
+                            print(f"[연결] 브라우저 계정 전환: {paired_email}")
+                            try:
+                                cycle()
+                            except Exception as e:  # noqa: BLE001 — 계정 전환 1회 오류로 상주 종료 금지
+                                print(f"[경고] 계정 전환 후 초기 처리 오류(무시): {e}")
+                            continue
+                elif pair_status == 409:
+                    print("[연결] 브라우저 로그아웃 감지 — 다음 로그인을 기다립니다.")
+                    token, paired_email = wait_for_local_pair(server, args.pair_secret)
+                    try:
+                        cycle()
+                    except Exception as e:  # noqa: BLE001 — 재로그인 1회 오류로 상주 종료 금지
+                        print(f"[경고] 재연결 후 초기 처리 오류(무시): {e}")
+                    continue
+                elif pair_status in (403, 404):
+                    sys.exit(
+                        f"[오류] 로컬 에이전트 자동 연결 실패(status={pair_status}): {pair_body}"
+                    )
             if reason == "__reauth__":
                 # 세션 만료 → 자동 재로그인(자격이 메모리에 있을 때만). 실패하면 login 이 종료한다
                 # (비밀번호 변경/계정 정지 등 — 무한 재시도 루프 방지).
+                if args.pair_secret:
+                    token, paired_email = wait_for_local_pair(server, args.pair_secret)
+                    continue
                 if not creds:
                     sys.exit("[오류] 세션 만료/인증 실패 — 에이전트를 다시 실행하세요.")
                 print("[세션] 만료 감지 — 자동 재로그인")

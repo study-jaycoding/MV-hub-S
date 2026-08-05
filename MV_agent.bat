@@ -230,7 +230,10 @@ echo     Browser: %MVHUB_OPEN_URL%
 start "" "%MVHUB_OPEN_URL%"
 echo.
 if "%RUN_AGENT%"=="1" (
-  if "%CONTENT_HUB_AUTH%"=="1" (
+  if not "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%"=="" (
+    echo [login] Waiting for the browser login - no CMD email/password input is needed.
+    "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --pair-secret "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%" --watch 30
+  ) else if "%CONTENT_HUB_AUTH%"=="1" (
     echo [login] The browser and generation agent must use the same account.
     "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --email "%MVHUB_AGENT_EMAIL%" --watch 30
   ) else (

@@ -296,6 +296,7 @@ _AUTH_PUBLIC_PREFIXES = (
     "/api/health",
     "/api/ready",
     "/api/agent/download",
+    "/api/agent/local-pair-token",
 )
 
 

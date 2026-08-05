@@ -36,6 +36,15 @@ set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
 set "MVHUB_OPEN_URL=%FRONTEND_URL%"
 
+REM One-launch, memory-only pairing key. The browser login selects the account; the local
+REM agent exchanges this key for that session, so CMD never asks for email or hub password.
+for /f "delims=" %%s in ('powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"') do set "CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET=%%s"
+if "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%"=="" (
+  echo [ERROR] Could not create the local browser-agent pairing key.
+  pause
+  exit /b 1
+)
+
 where npm.cmd >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org. & pause & exit /b 1)
 
 cd /d "%ROOT%frontend" || (echo [ERROR] frontend folder not found. & pause & exit /b 1)
@@ -66,20 +75,12 @@ if defined PORT_PID (
   exit /b 1
 )
 
-if "%MVHUB_AGENT_EMAIL%"=="" set /p "MVHUB_AGENT_EMAIL=Test login email: "
-if "%MVHUB_AGENT_EMAIL%"=="" (
-  echo [ERROR] Login email is required so My Work can be scoped to your account.
-  pause
-  exit /b 1
-)
-
 echo.
 echo [DEV ONE-CLICK] frontend = %FRONTEND_URL%    api/data = %BACKEND%
-echo   Login account: %MVHUB_AGENT_EMAIL%
 echo   Edit .tsx/.css and save -^> the page updates instantly.
 echo   Backend (.py) changes -^> restart this file.
 echo   Generation is isolated from the team DB but spends REAL Higgsfield credits.
-echo   Use the SAME account in the browser and at the agent password prompt.
+echo   Log in only in the browser. The local agent follows that browser account automatically.
 echo.
 
 REM Keep Vite attached to this console so closing the one launcher window stops it.

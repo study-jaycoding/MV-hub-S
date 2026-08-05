@@ -65,6 +65,10 @@ FRONTEND_DIST = Path(
 # 끄면(기본) 현재처럼 누구나 접근(개인 PC·개발). 팀 서버에서 막고 싶을 때 켠다.
 AUTH_ENABLED = os.environ.get("CONTENT_HUB_AUTH", "0").lower() in ("1", "true", "yes", "on")
 
+# test_dev 전용: 브라우저 로그인 계정을 같은 런처의 로컬 생성 에이전트에 연결하는 일회성 키.
+# 빈 값(기본)이면 관련 엔드포인트가 완전히 비활성이다. 운영/일반 MV_agent 실행은 설정하지 않는다.
+LOCAL_AGENT_PAIR_SECRET = os.environ.get("CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET", "").strip()
+
 # ── PM 대시보드(매니징먼트) 모듈 스위치 ───────────────────────────────────────
 # 기본 on. 분리형 사이드카 기능(routers/manage·repo/manage). 런처(MV_agent/MV_server.bat)가 이미
 # 비어있으면 =1 로 강제하므로 실사용은 늘 on 이었고, 코드 기본값도 여기에 맞춘다 — 켰다 껐다 하며

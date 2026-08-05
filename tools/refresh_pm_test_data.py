@@ -39,38 +39,51 @@ def masked_password_input(prompt: str, *, _read_key=None, _stream=None) -> str:
     if os.name != "nt" and _read_key is None:
         return getpass.getpass(prompt)
 
+    restore_console_mode = None
     if _read_key is None:
+        import ctypes
         import msvcrt
 
         _read_key = msvcrt.getwch
+        kernel32 = ctypes.windll.kernel32
+        stdin_handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if stdin_handle not in (0, -1) and kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
+            restore_console_mode = (kernel32, stdin_handle, mode.value)
+            kernel32.SetConsoleMode(stdin_handle, mode.value & ~0x0004)  # ENABLE_ECHO_INPUT
     stream = _stream or sys.stdout
     chars: list[str] = []
     stream.write(prompt)
     stream.flush()
-    while True:
-        char = _read_key()
-        if char in ("\r", "\n"):
-            stream.write("\n")
-            stream.flush()
-            return "".join(chars)
-        if char == "\x03":
-            stream.write("\n")
-            stream.flush()
-            raise KeyboardInterrupt
-        if char == "\b":
-            if chars:
-                chars.pop()
-                stream.write("\b \b")
+    try:
+        while True:
+            char = _read_key()
+            if char in ("\r", "\n"):
+                stream.write("\n")
                 stream.flush()
-            continue
-        if char in ("\x00", "\xe0"):
-            _read_key()
-            continue
-        if not char or ord(char) < 32:
-            continue
-        chars.append(char)
-        stream.write("*")
-        stream.flush()
+                return "".join(chars)
+            if char == "\x03":
+                stream.write("\n")
+                stream.flush()
+                raise KeyboardInterrupt
+            if char == "\b":
+                if chars:
+                    chars.pop()
+                    stream.write("\b \b")
+                    stream.flush()
+                continue
+            if char in ("\x00", "\xe0"):
+                _read_key()
+                continue
+            if not char or ord(char) < 32:
+                continue
+            chars.append(char)
+            stream.write("*")
+            stream.flush()
+    finally:
+        if restore_console_mode:
+            kernel32, stdin_handle, original_mode = restore_console_mode
+            kernel32.SetConsoleMode(stdin_handle, original_mode)
 
 
 def fail(message: str) -> None:

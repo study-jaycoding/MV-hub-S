@@ -100,6 +100,32 @@ def test_pull_db_password_input_is_masked_too():
     assert "s3cr3t" not in stream.getvalue()
 
 
+def test_agent_requests_browser_pair_without_credentials():
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(200, {"email": "worker@example.com", "token": "session-token"}),
+    ) as http:
+        assert agent._request_local_pair("http://hub", "pair-key") == (
+            200,
+            {"email": "worker@example.com", "token": "session-token"},
+        )
+
+    http.assert_called_once_with(
+        "POST",
+        "http://hub/api/agent/local-pair-token",
+        body={"secret": "pair-key"},
+    )
+
+
+def test_test_dev_has_no_console_account_or_password_prompt():
+    launcher = (AGENT_PATH.parent / "test_dev.bat").read_text(encoding="utf-8")
+    assert "set /p \"MVHUB_AGENT_EMAIL=" not in launcher
+    assert "CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET" in launcher
+    assert "Log in only in the browser" in launcher
+
+
 def test_pending_response_contains_every_field_the_agent_executes():
     fields = PendingRequestOut.model_fields
     assert {

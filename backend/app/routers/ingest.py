@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 from collections import Counter
 
@@ -20,18 +21,55 @@ from pydantic import BaseModel
 
 from . import _proxy
 from .. import repo
-from ..config import AUTH_ENABLED, BACKEND_DIR, DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..config import (
+    AUTH_ENABLED,
+    BACKEND_DIR,
+    DEFAULT_WORKER_ID,
+    LOCAL_AGENT_PAIR_SECRET,
+    MANAGE_ENABLED,
+)
 from ..emailnorm import norm_email
 from ..deps import account_scope_uid, require_agent_account
 from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
+from ..services import auth as auth_service
+from ..services import local_agent_pair
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
+from ..services.request_guards import is_loopback_request
 
 # agent_push.py — 저장소 최상단(content-hub-server/). 팀원이 허브에서 받아 자기 PC에서 실행.
 _AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
 
 router = APIRouter(prefix="/api", tags=["ingest"])
+
+
+class LocalAgentPairIn(BaseModel):
+    secret: str
+
+
+@router.post("/agent/local-pair-token")
+def local_agent_pair_token(body: LocalAgentPairIn, request: Request):
+    """test_dev의 로컬 에이전트가 브라우저 로그인 세션을 이어받는 개발 전용 교환점.
+
+    운영에서는 비밀키 env가 없으므로 404다. 개발에서도 loopback + 런처 일회성 키가 모두
+    맞아야 하며, 브라우저 로그인 전에는 409를 반환해 에이전트가 조용히 대기하게 한다.
+    """
+    if not LOCAL_AGENT_PAIR_SECRET:
+        raise HTTPException(status_code=404, detail="로컬 에이전트 연결이 비활성입니다")
+    if not is_loopback_request(request) or not hmac.compare_digest(
+        body.secret or "", LOCAL_AGENT_PAIR_SECRET
+    ):
+        raise HTTPException(status_code=403, detail="로컬 에이전트 연결 키가 올바르지 않습니다")
+    email = local_agent_pair.paired_email(request, body.secret)
+    if not email:
+        raise HTTPException(status_code=409, detail="브라우저 로그인을 기다리는 중입니다")
+    acc = repo.get_account(email)
+    if not acc or acc.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="승인된 브라우저 계정을 기다리는 중입니다")
+    token = auth_service.make_token(email, pwd_stamp=acc.get("password_changed_at"))
+    agent_signals.touch(email)
+    return {"email": email, "token": token}
 
 
 def _acc(request: Request) -> dict:

@@ -19,6 +19,8 @@ from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..emailnorm import norm_email
 from ..deps import SESSION_COOKIE, require_admin, require_global_cap
 from ..services import auth
+from ..services import local_agent_pair
+from ..services.agent_signals import agent_signals
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -71,6 +73,13 @@ def _set_session_cookie(response: Response, token: str) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def _activate_local_agent(request: Request, email: str) -> None:
+    """test_dev에서 브라우저 로그인 계정을 로컬 에이전트가 이어받도록 깨운다."""
+    previous = local_agent_pair.activate(request, email)
+    if previous and previous != norm_email(email):
+        agent_signals.signal(previous, "pair-change")
 
 
 class RegisterIn(BaseModel):
@@ -142,6 +151,7 @@ def login(body: LoginIn, response: Response, request: Request):
     _rl_ok(key)
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
     _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
+    _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token}
 
 
@@ -164,6 +174,7 @@ def access(body: RegisterIn, response: Response, request: Request):
             return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
         token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
         _set_session_cookie(response, token)
+        _activate_local_agent(request, acc["email"])
         return {"account": acc, "token": token, "pending": False}
     # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
     try:
@@ -175,6 +186,7 @@ def access(body: RegisterIn, response: Response, request: Request):
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)
+        _activate_local_agent(request, acc["email"])
     return {"account": acc, "token": token, "pending": acc["status"] == "pending"}
 
 
@@ -184,12 +196,17 @@ def me(request: Request):
     acc = getattr(request.state, "account", None)
     if not acc:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    _activate_local_agent(request, acc["email"])
     return acc
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(response: Response, request: Request):
     """토큰은 무상태라 서버 저장이 없다 — 클라이언트가 토큰을 버리고 세션 쿠키를 지운다."""
+    acc = getattr(request.state, "account", None)
+    previous = local_agent_pair.clear(request, (acc or {}).get("email"))
+    if previous:
+        agent_signals.signal(previous, "pair-change")
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 
