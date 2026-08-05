@@ -42,7 +42,7 @@ export function RenderCard({
   getNodePreview: (cardId: string) => (p: PreviewTarget) => void;
   setCardMenu: (cardId: string | null) => void;
   setCardBatch: (cardId: string, n: number) => void;
-  orchestrateRender: (renderId: string, checkedGenIds: string[]) => Promise<void>;
+  orchestrateRender: (renderId: string) => Promise<void>;
   onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
   onResizeDown: (e: React.MouseEvent, cardId: string) => void;
 }) {
@@ -172,7 +172,7 @@ export function RenderCard({
             disabled={!renderCount}
             onClick={(e) => {
               e.stopPropagation();
-              if (renderCount) void orchestrateRender(card.id, activeGcids);
+              if (renderCount) void orchestrateRender(card.id);
             }}
           >
             Render ▶ {renderCount}

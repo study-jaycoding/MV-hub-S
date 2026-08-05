@@ -22,6 +22,8 @@ import {
   resolvePortEdges,
   buildGenerationExecutionPlan,
   buildRenderExecutionPlan,
+  isGenerationExecutionPlanCurrent,
+  isRenderExecutionPlanCurrent,
 } from "../src/lib/sceneEdges";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -997,6 +999,26 @@ describe("실행 계획(오케스트레이션)", () => {
     expect(p.steps.find((s) => s.id === "G")?.dependsOn).toEqual(["A"]);
   });
 
+  it("고수준 실행 계획은 무선 Input/Output 엣지를 자체 해석한다", () => {
+    const cards = [
+      n("A", "comfy"),
+      n("O", "output"),
+      n("I", "input", { channel: "O" }),
+      n("T", "text"),
+      n("G", "generation"),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "A", to: "O" },
+      { id: "e2", from: "I", to: "T" },
+      { id: "e3", from: "T", to: "G" },
+    ];
+
+    const p = buildGenerationExecutionPlan("G", byId(cards), edges);
+
+    expect(p.comfyIds).toEqual(["A"]);
+    expect(p.generationIds).toEqual(["G"]);
+  });
+
   it("comfy 체인 B→A→text→generation: B, A, G 순서", () => {
     const cards = [n("A", "comfy"), n("B", "comfy"), n("T", "text"), n("G", "generation")];
     const edges: SceneEdge[] = [
@@ -1036,6 +1058,77 @@ describe("실행 계획(오케스트레이션)", () => {
     // comfy 는 생성보다 앞선다
     const gi = p.steps.findIndex((s) => s.id === "G");
     expect(p.steps.findIndex((s) => s.id === "A")).toBeLessThan(gi);
+  });
+
+  it("렌더 실행 계획은 체크 해제된 생성과 직접 comfy를 제외한다", () => {
+    const cards = [
+      n("R", "render", { unchecked: ["G2", "C"] }),
+      n("G1", "generation"),
+      n("G2", "generation"),
+      n("C", "comfy"),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G1", to: "R" },
+      { id: "e2", from: "G2", to: "R" },
+      { id: "e3", from: "C", to: "R" },
+    ];
+
+    const p = buildRenderExecutionPlan("R", byId(cards), edges);
+
+    expect(p.generationIds).toEqual(["G1"]);
+    expect(p.comfyIds).toEqual([]);
+  });
+
+  it("카드 이동은 같은 계획이지만 렌더 체크 변경은 이전 계획을 폐기한다", () => {
+    const cards = [
+      n("R", "render"),
+      n("G", "generation"),
+      n("A", "comfy", { y: 0 }),
+      n("T", "text"),
+    ];
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "G", to: "R" },
+      { id: "e2", from: "A", to: "T" },
+      { id: "e3", from: "T", to: "G" },
+    ];
+    const snapshot = buildRenderExecutionPlan("R", byId(cards), edges);
+    const moved = cards.map((card) => ({ ...card, x: card.x + 500, y: card.y + 300 }));
+    const unchecked = cards.map((card) =>
+      card.id === "R" ? { ...card, unchecked: ["G"] } : card,
+    );
+
+    expect(isRenderExecutionPlanCurrent(snapshot, "R", byId(moved), edges)).toBe(true);
+    expect(isRenderExecutionPlanCurrent(snapshot, "R", byId(unchecked), edges)).toBe(false);
+    expect(
+      isRenderExecutionPlanCurrent(
+        snapshot,
+        "R",
+        byId(cards),
+        edges.filter((edge) => edge.id !== "e1"),
+      ),
+    ).toBe(false);
+  });
+
+  it("생성카드의 Comfy 의존 연결이 바뀌면 이전 계획을 폐기한다", () => {
+    const cards = [
+      n("A", "comfy"),
+      n("B", "comfy"),
+      n("T", "text"),
+      n("G", "generation"),
+    ];
+    const originalEdges: SceneEdge[] = [
+      { id: "e1", from: "A", to: "T" },
+      { id: "e2", from: "T", to: "G" },
+    ];
+    const changedEdges: SceneEdge[] = [
+      { id: "e3", from: "B", to: "T" },
+      { id: "e2", from: "T", to: "G" },
+    ];
+    const snapshot = buildGenerationExecutionPlan("G", byId(cards), originalEdges);
+
+    expect(
+      isGenerationExecutionPlanCurrent(snapshot, "G", byId(cards), changedEdges),
+    ).toBe(false);
   });
 
   it("사이클은 skippedByCycle 로", () => {

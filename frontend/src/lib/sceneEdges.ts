@@ -724,6 +724,28 @@ export interface SceneExecutionPlan {
   skippedByCycle: string[]; // 사이클로 실행 불가한 노드
 }
 
+// 실행 계획의 의미만 비교한다. 카드 위치에 따른 동순위 실행 순서가 바뀌어도 같은 계획으로 보고,
+// 실제 대상·종류·Comfy 의존관계·사이클 제외 대상이 달라졌을 때만 이전 실행을 폐기한다.
+export function sameSceneExecutionPlan(
+  left: SceneExecutionPlan,
+  right: SceneExecutionPlan,
+): boolean {
+  const sorted = (items: readonly string[]) => [...items].sort();
+  const stepSignatures = (plan: SceneExecutionPlan) =>
+    plan.steps
+      .map((step) => `${step.id}\u0000${step.kind}\u0000${sorted(step.dependsOn).join("\u0001")}`)
+      .sort();
+  const sameStrings = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((item, index) => item === b[index]);
+
+  return (
+    sameStrings(sorted(left.comfyIds), sorted(right.comfyIds)) &&
+    sameStrings(sorted(left.generationIds), sorted(right.generationIds)) &&
+    sameStrings(sorted(left.skippedByCycle), sorted(right.skippedByCycle)) &&
+    sameStrings(stepSignatures(left), stepSignatures(right))
+  );
+}
+
 // comfy 의존 추적 시 '통과' 노드 — 이들을 지나 상류 comfy 를 찾는다(text/list 로 comfy 출력이 전달됨).
 const _PASSTHROUGH: SceneCardKind[] = ["text", "list"];
 
@@ -835,22 +857,58 @@ export function buildGenerationExecutionPlan(
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
 ): SceneExecutionPlan {
-  return buildExecutionPlan([genId], [], cardsById, edges);
+  return buildExecutionPlan(
+    [genId],
+    [],
+    cardsById,
+    resolvePortEdges(cardsById, edges),
+  );
 }
 
-// 렌더 노드 실행 계획 — 연결된 생성카드 + 직접 연결된 comfy + 그 상류 comfy 전부.
+// 렌더 노드 실행 계획 — 현재 체크된 생성카드 + 직접 연결된 comfy + 그 상류 comfy 전부.
+// 고수준 경계에서 무선 Input/Output 해석과 unchecked 적용까지 책임져 호출부마다 규칙이 갈리지 않게 한다.
 export function buildRenderExecutionPlan(
   renderId: string,
   cardsById: Map<string, SceneCard>,
   edges: SceneEdge[],
 ): SceneExecutionPlan {
-  const genIds = collectRenderGenCardIds(renderId, cardsById, edges);
-  const directComfy = edges
+  const render = cardsById.get(renderId);
+  if (render?.kind !== "render") return buildExecutionPlan([], [], cardsById, []);
+  const resolved = resolvePortEdges(cardsById, edges);
+  const unchecked = new Set(render.unchecked || []);
+  const genIds = collectRenderGenCardIds(renderId, cardsById, resolved).filter(
+    (id) => !unchecked.has(id),
+  );
+  const directComfy = resolved
     .filter((e) => e.to === renderId)
     .map((e) => cardsById.get(e.from))
-    .filter((c): c is SceneCard => c?.kind === "comfy")
+    .filter((c): c is SceneCard => c?.kind === "comfy" && !unchecked.has(c.id))
     .map((c) => c.id);
-  return buildExecutionPlan(genIds, directComfy, cardsById, edges);
+  return buildExecutionPlan(genIds, directComfy, cardsById, resolved);
+}
+
+export function isGenerationExecutionPlanCurrent(
+  snapshot: SceneExecutionPlan,
+  genId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): boolean {
+  return sameSceneExecutionPlan(
+    snapshot,
+    buildGenerationExecutionPlan(genId, cardsById, edges),
+  );
+}
+
+export function isRenderExecutionPlanCurrent(
+  snapshot: SceneExecutionPlan,
+  renderId: string,
+  cardsById: Map<string, SceneCard>,
+  edges: SceneEdge[],
+): boolean {
+  return sameSceneExecutionPlan(
+    snapshot,
+    buildRenderExecutionPlan(renderId, cardsById, edges),
+  );
 }
 
 // 생성카드에 연결된 텍스트 입력(text 노드 + text-list)을 순서대로 합친다 — 하단 프롬프트 텍스트로 쓸 값.

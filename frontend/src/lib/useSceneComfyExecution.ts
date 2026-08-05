@@ -15,9 +15,10 @@ import {
   samePreparedSceneComfyInputs,
 } from "./sceneComfyInputs";
 import {
-  buildExecutionPlan,
   buildGenerationExecutionPlan,
-  resolvePortEdges,
+  buildRenderExecutionPlan,
+  isGenerationExecutionPlanCurrent,
+  isRenderExecutionPlanCurrent,
   type ComfyOutputsById,
   type SceneExecutionPlan,
   type SceneGenerationRun,
@@ -25,6 +26,7 @@ import {
 import { setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
 import {
   cardBatch,
+  settleComfyRunning,
   type SceneCard,
   type SceneComfyCfg,
   type SceneEdge,
@@ -287,8 +289,11 @@ export function useSceneComfyExecution({
     plan: SceneExecutionPlan,
     sceneId: string,
     batch: number,
+    isPlanCurrent: () => boolean,
   ): Promise<{ runs: SceneGenerationRun[]; aborted: boolean }> => {
     flushPending();
+    const executionStillCurrent = () =>
+      sceneIdRef.current === sceneId && isPlanCurrent();
     const configSnapshots = new Map<string, SceneComfyConfigSnapshot>();
     for (const card of cardsRef.current) {
       if (
@@ -357,7 +362,7 @@ export function useSceneComfyExecution({
           ));
       if (!representativeCurrent) supersededIds.add(id);
       if (
-        sceneIdRef.current === sceneId &&
+        executionStillCurrent() &&
         isConfigCurrent(id) &&
         !supersededIds.has(id) &&
         representativeCurrent
@@ -418,7 +423,7 @@ export function useSceneComfyExecution({
               .filter((item): item is Promise<void> => !!item),
           );
           if (
-            sceneIdRef.current !== sceneId ||
+            !executionStillCurrent() ||
             !isConfigCurrent(step.id) ||
             step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
           ) {
@@ -435,8 +440,8 @@ export function useSceneComfyExecution({
           try {
             const startedAt = Date.now();
             const execution = await limiter.run(() =>
-              sceneIdRef.current !== sceneId
-                ? Promise.reject(new Error("scene changed"))
+              !executionStillCurrent()
+                ? Promise.reject(new SceneComfyRunSupersededError())
                 : runComfyRaw(
                     step.id,
                     overlay,
@@ -445,6 +450,7 @@ export function useSceneComfyExecution({
                   ),
             );
             if (
+              !executionStillCurrent() ||
               !isConfigCurrent(step.id) ||
               step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
             ) {
@@ -467,7 +473,7 @@ export function useSceneComfyExecution({
             });
           } catch (error) {
             if (
-              sceneIdRef.current !== sceneId ||
+              !executionStillCurrent() ||
               !isConfigCurrent(step.id) ||
               error instanceof SceneComfyRunSupersededError
             ) {
@@ -526,14 +532,14 @@ export function useSceneComfyExecution({
       );
     let aborted =
       copies.some((copy) => copy.aborted) ||
-      sceneIdRef.current !== sceneId ||
+      !executionStillCurrent() ||
       !arePlanConfigsCurrent() ||
       !areAllInputsCurrent();
-    if (!aborted && sceneIdRef.current === sceneId) {
+    if (!aborted && executionStillCurrent()) {
       for (const comfyId of plan.comfyIds) {
         if (aborted) break;
         for (const copy of copies) {
-          if (!arePlanConfigsCurrent()) {
+          if (!executionStillCurrent() || !arePlanConfigsCurrent()) {
             aborted = true;
             break;
           }
@@ -546,6 +552,7 @@ export function useSceneComfyExecution({
               break;
             }
             const inputStillCurrent = () =>
+              executionStillCurrent() &&
               arePlanConfigsCurrent() &&
               isInputCurrent(comfyId, configSnapshot, inputSnapshot, copy.overlay);
             await saveComfyToLibrary(comfyId, {
@@ -564,15 +571,29 @@ export function useSceneComfyExecution({
         }
       }
     }
-    if (!arePlanConfigsCurrent() || !areAllInputsCurrent()) aborted = true;
+    if (!executionStillCurrent() || !arePlanConfigsCurrent() || !areAllInputsCurrent()) {
+      aborted = true;
+    }
     for (const id of plan.comfyIds) releaseRunning(id);
+    // 대상 변경으로 결과 반영을 건너뛴 카드도 화면에 running 상태로 남기지 않는다.
+    // 다른 직접 실행과 겹친 카드는 runningComfyRef count가 남아 있으므로 그대로 유지한다.
+    if (sceneIdRef.current === sceneId) {
+      const settledCards = settleComfyRunning(
+        cardsRef.current,
+        (id) => runningComfyRef.current.has(id),
+      );
+      if (settledCards !== cardsRef.current) {
+        cardsRef.current = settledCards;
+        setCards(settledCards);
+        persist(settledCards, edgesRef.current, groupsRef.current, { undo: false });
+      }
+    }
     return { runs: aborted ? [] : copies.flatMap((copy) => copy.runs), aborted };
   };
 
   const orchestrateGenerate = async (generationId: string) => {
     const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
-    const resolved = resolvePortEdges(cardsById, edgesRef.current);
-    const plan = buildGenerationExecutionPlan(generationId, cardsById, resolved);
+    const plan = buildGenerationExecutionPlan(generationId, cardsById, edgesRef.current);
     if (!plan.comfyIds.length) {
       onGenerateCard?.(cardBatch(cardsById.get(generationId)));
       return;
@@ -581,11 +602,26 @@ export function useSceneComfyExecution({
     orchestratingRef.current = true;
     setComfyWaitingIds(new Set([generationId]));
     const sceneId = sceneIdRef.current;
+    const isPlanCurrent = () => {
+      if (sceneIdRef.current !== sceneId) return false;
+      const liveCards = new Map(cardsRef.current.map((card) => [card.id, card] as const));
+      return isGenerationExecutionPlanCurrent(
+        plan,
+        generationId,
+        liveCards,
+        edgesRef.current,
+      );
+    };
     try {
       const batch = cardBatch(cardsById.get(generationId));
-      const { runs, aborted } = await runPlanComfyCopies(plan, sceneId, batch);
+      const { runs, aborted } = await runPlanComfyCopies(
+        plan,
+        sceneId,
+        batch,
+        isPlanCurrent,
+      );
       const matchingRuns = runs.filter((run) => run.cardId === generationId);
-      if (!aborted && sceneIdRef.current === sceneId && matchingRuns.length) {
+      if (!aborted && isPlanCurrent() && matchingRuns.length) {
         await onRenderCardRuns?.(matchingRuns);
       }
     } finally {
@@ -594,39 +630,33 @@ export function useSceneComfyExecution({
     }
   };
 
-  const orchestrateRender = async (renderId: string, checkedGenerationIds: string[]) => {
+  const orchestrateRender = async (renderId: string) => {
     if (orchestratingRef.current) return;
     orchestratingRef.current = true;
     const sceneId = sceneIdRef.current;
     try {
       const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
-      const resolved = resolvePortEdges(cardsById, edgesRef.current);
-      const unchecked = new Set(cardsById.get(renderId)?.unchecked || []);
-      const directComfyIds = resolved
-        .filter((edge) => edge.to === renderId)
-        .map((edge) => cardsById.get(edge.from))
-        .filter(
-          (card): card is SceneCard => card?.kind === "comfy" && !unchecked.has(card.id),
-        )
-        .map((card) => card.id);
-      const plan = buildExecutionPlan(
-        checkedGenerationIds,
-        directComfyIds,
-        cardsById,
-        resolved,
-      );
+      const plan = buildRenderExecutionPlan(renderId, cardsById, edgesRef.current);
       const batch = cardBatch(cardsById.get(renderId));
+      const isPlanCurrent = () => {
+        if (sceneIdRef.current !== sceneId) return false;
+        const liveCards = new Map(cardsRef.current.map((card) => [card.id, card] as const));
+        return isRenderExecutionPlanCurrent(plan, renderId, liveCards, edgesRef.current);
+      };
       if (plan.comfyIds.length) {
-        setComfyWaitingIds(
-          new Set(plan.generationIds.length ? plan.generationIds : checkedGenerationIds),
+        setComfyWaitingIds(new Set(plan.generationIds));
+        const { runs, aborted } = await runPlanComfyCopies(
+          plan,
+          sceneId,
+          batch,
+          isPlanCurrent,
         );
-        const { runs, aborted } = await runPlanComfyCopies(plan, sceneId, batch);
-        if (!aborted && sceneIdRef.current === sceneId && runs.length) {
+        if (!aborted && isPlanCurrent() && runs.length) {
           await onRenderCardRuns?.(runs);
         }
       } else {
         const { runnableGenIds, aborted } = await runPlanComfy(plan, sceneId);
-        if (!aborted && sceneIdRef.current === sceneId && runnableGenIds.length) {
+        if (!aborted && isPlanCurrent() && runnableGenIds.length) {
           await onRenderCards?.(runnableGenIds, batch);
         }
       }
