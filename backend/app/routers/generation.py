@@ -36,10 +36,8 @@ from ..models import (
     SourceIn,
     TagsIn,
 )
-import asyncio
-
-from ..services import cli_bridge, media_cache, syncer
-from ..usecases import hf_missing
+from ..services import cli_bridge, syncer
+from ..usecases import generation_media_cache, hf_missing
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -664,73 +662,21 @@ def seen_gen_comment(comment_id: str, request: Request):
     return {"ok": True}
 
 
-# ── 출처 영속화 (byte-cache): 소스·결과물을 로컬로 보관 ───────────────────
-async def cache_generation_media(gen: dict) -> dict[str, int]:
-    """한 generation 의 asset·reference 원격 URL 을 로컬로 내려받고 경로를 갱신.
-
-    원본 URL 은 repo 헬퍼가 source_url 에 보존한다(출처 영속).
-    동시 다운로드, 실패는 건너뛰고(원격 URL 유지) 카운트만 집계.
-    """
-    targets: list[tuple[str, str, str, bool]] = []  # (kind, id, url, is_image)
-    for a in gen.get("assets", []):
-        if not a["file_path"].startswith("/media/"):
-            targets.append(("asset", a["id"], a["file_path"], a["type"] == "image"))
-    for r in gen.get("references", []):
-        if not r["file_path"].startswith("/media/"):
-            targets.append(("ref", r["id"], r["file_path"], r["type"] == "image"))
-
-    if not targets:
-        return {"cached": 0, "failed": 0, "skipped": 0}
-
-    results = await asyncio.gather(*(media_cache.cache_url(t[2]) for t in targets))
-
-    cached = failed = 0
-    for (kind, rid, url, is_image), local in zip(targets, results):
-        if not local:
-            failed += 1
-            continue
-        thumb = local if is_image else None
-        if kind == "asset":
-            repo.update_asset_cache(rid, local, thumb, url)
-        else:
-            repo.update_reference_cache(rid, local, thumb, url)
-        cached += 1
-    return {"cached": cached, "failed": failed, "skipped": 0}
-
-
 @router.post("/generations/{gen_id}/cache")
 async def cache_one(gen_id: str, request: Request):
     gen, gen_id, _ = _resolve_local_or_reclaim(gen_id, request)  # 팀 탭 카드(서버 UUID)→로컬 행
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
-    res = await cache_generation_media(gen)
+    res = await generation_media_cache.cache_generation_media(gen)
     res["generation"] = repo.get_generation(gen_id)
     return res
 
 
 @router.post("/cache-all")
 async def cache_all(request: Request):
+    """모든 생성물의 미보관 원격 미디어를 관리자 권한으로 일괄 보관한다."""
     from ..deps import require_admin
 
     require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
-    """모든 generation 의 소스·결과물을 로컬로 보관(미보관분만). 출처 영속화 일괄.
-    gen 단위로 병렬 처리(동시성 캡)해 일괄 보관 속도를 높인다 — 각 gen 내부 미디어도 gather."""
-    total = {"cached": 0, "failed": 0, "generations": 0}
-    sem = asyncio.Semaphore(6)  # 동시 다운로드 상한(서버 과부하·레이트리밋 방지)
-
-    async def _one(gid: str) -> dict[str, int] | None:
-        async with sem:
-            gen = repo.get_generation(gid)
-            if not gen:
-                return None
-            return await cache_generation_media(gen)
-
-    for r in await asyncio.gather(*(_one(g) for g in repo.all_generation_ids())):
-        if not r:
-            continue
-        total["cached"] += r["cached"]
-        total["failed"] += r["failed"]
-        if r["cached"]:
-            total["generations"] += 1
-    return total
+    return await generation_media_cache.cache_all_generation_media()
