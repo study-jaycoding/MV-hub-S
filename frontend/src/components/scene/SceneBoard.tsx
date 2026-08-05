@@ -99,6 +99,7 @@ import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
+import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -1678,42 +1679,21 @@ export function SceneBoard({
     pruneGenIdsFromHistory(cardId, removed); // 삭제된 변형을 히스토리에서도 제거 — undo 로 되살려 깨진 참조 방지
   };
 
+  const beginVariantMarquee = useSceneMarqueeSelection<string>({
+    selected: popupSel,
+    surfaceRef: varGridRef,
+    setSelected: setPopupSel,
+    setMarquee: setPopupMarq,
+    beginDrag,
+    cellSelector: ".scene-varpop-item",
+    keyOf: (element) => element.dataset.gid,
+    preventDefault: true,
+  });
+
   // 팝업 그리드 배경 드래그 = 마퀴 복수선택(썸네일 위에서 시작하면 클릭/더블클릭에 양보).
   const onVarGridMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".scene-varpop-item")) return;
-    const grid = varGridRef.current;
-    if (!grid) return;
-    e.preventDefault();
-    const additive = e.ctrlKey || e.shiftKey || e.metaKey;
-    const base = additive ? new Set(popupSel) : new Set<string>();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let moved = false;
-    const move = (ev: MouseEvent) => {
-      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
-      moved = true;
-      const gr = grid.getBoundingClientRect();
-      const x0 = Math.min(startX, ev.clientX);
-      const y0 = Math.min(startY, ev.clientY);
-      const x1 = Math.max(startX, ev.clientX);
-      const y1 = Math.max(startY, ev.clientY);
-      setPopupMarq({ l: x0 - gr.left + grid.scrollLeft, t: y0 - gr.top + grid.scrollTop, w: x1 - x0, h: y1 - y0 });
-      const hit = new Set(base);
-      grid.querySelectorAll(".scene-varpop-item").forEach((el) => {
-        const r = (el as HTMLElement).getBoundingClientRect();
-        if (r.right >= x0 && r.left <= x1 && r.bottom >= y0 && r.top <= y1) {
-          const gid = (el as HTMLElement).dataset.gid;
-          if (gid) hit.add(gid);
-        }
-      });
-      setPopupSel(hit);
-    };
-    const up = () => {
-      setPopupMarq(null);
-      if (!moved && !additive) setPopupSel(new Set()); // 빈 곳 클릭 = 선택 해제
-    };
-    beginDrag(move, up, () => setPopupMarq(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
+    beginVariantMarquee(e);
   };
 
   // ── 그룹(Ctrl+G) — 선택 카드를 하나의 묶음으로. 테두리(rect)는 수동 지정·리사이즈, 멤버십은 드롭 위치로 ──
@@ -2145,6 +2125,21 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
   });
+  const beginBoardMarquee = useSceneMarqueeSelection<string>({
+    selected,
+    surfaceRef: scrollRef,
+    hitRootRef: canvasRef,
+    setSelected,
+    setMarquee,
+    beginDrag,
+    cellSelector: ".scene-card",
+    keyOf: (element) => element.dataset.id,
+    preserveSelectionOnEmptyDrag: true,
+    onPlainClick: () => {
+      setSelected(new Set());
+      setRowSel({ listId: "", cids: new Set() });
+    },
+  });
 
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
@@ -2201,48 +2196,7 @@ export function SceneBoard({
       return;
     }
 
-    // 배경 → 마퀴 복수선택. 시작 시점 선택을 기억한다.
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let moved = false;
-    const prevSel = new Set(selectedRef.current);
-    const move = (ev: MouseEvent) => {
-      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
-      moved = true;
-      const r = scrollRef.current!.getBoundingClientRect();
-      const x0 = Math.min(startX, ev.clientX);
-      const y0 = Math.min(startY, ev.clientY);
-      const x1 = Math.max(startX, ev.clientX);
-      const y1 = Math.max(startY, ev.clientY);
-      setMarquee({ l: x0 - r.left, t: y0 - r.top, w: x1 - x0, h: y1 - y0 });
-      const boxed = new Set<string>();
-      canvasRef.current?.querySelectorAll(".scene-card").forEach((el) => {
-        const cr = (el as HTMLElement).getBoundingClientRect();
-        if (cr.right >= x0 && cr.left <= x1 && cr.bottom >= y0 && cr.top <= y1) {
-          const cid = (el as HTMLElement).dataset.id;
-          if (cid) boxed.add(cid);
-        }
-      });
-      // Shift/Ctrl: 기존 + 감싼 것. 아니면: 감싼 카드가 있으면 그걸로 교체, '빈 곳'을 감싸면 기존 선택 유지(해제 안 함).
-      const hit = additive
-        ? new Set([...prevSel, ...boxed])
-        : boxed.size
-          ? boxed
-          : prevSel;
-      // 마퀴 이동 프레임마다 감싼 집합이 그대로면 새 Set 로 리렌더하지 않는다(동일성 가드).
-      const cur = selectedRef.current;
-      if (hit.size !== cur.size || [...hit].some((id) => !cur.has(id))) setSelected(hit);
-    };
-    const up = () => {
-      setMarquee(null);
-      // 배경을 '그냥 클릭'(드래그 없음·비추가)하면 선택 해제 — 이후 f=전체 프레이밍이 되게.
-      if (!moved && !additive) {
-        setSelected(new Set());
-        setRowSel({ listId: "", cids: new Set() }); // 리스트/렌더 행 선택도 함께 해제
-      }
-    };
-    beginDrag(move, up, () => setMarquee(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
+    beginBoardMarquee(e);
   };
 
   // 그룹 색 팔레트 — 팝오버 바깥 클릭 시 닫기.

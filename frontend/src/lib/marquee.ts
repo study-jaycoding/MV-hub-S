@@ -41,3 +41,15 @@ export function marqueeHits<K>(
   });
   return hit;
 }
+
+/** 마퀴 결과를 기존 선택과 합칠지, 교체할지, 빈 결과에서 유지할지를 순수 계산한다. */
+export function resolveMarqueeSelection<K>(
+  previous: ReadonlySet<K>,
+  hits: ReadonlySet<K>,
+  additive: boolean,
+  preserveOnEmpty: boolean,
+): Set<K> {
+  if (additive) return new Set([...previous, ...hits]);
+  if (hits.size) return new Set(hits);
+  return preserveOnEmpty ? new Set(previous) : new Set();
+}
