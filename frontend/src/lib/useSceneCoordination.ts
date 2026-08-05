@@ -1,6 +1,6 @@
 // Canvas 씬(빈 캔버스) 상태·CRUD 를 App.tsx 에서 추출.
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
-//  · patchActiveScene: 활성 씬을 갱신하고 목록을 다시 읽는 반복 패턴(updateScene + listScenes)을 DRY.
+//  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
 // 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. localStorage 데이터계층(scenes.ts).
 import { useEffect, useRef, useState } from "react";
 import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
@@ -17,6 +17,30 @@ import { clearSceneHistory } from "./sceneUndoStore";
 import { initSceneBackup, subscribeSceneRestore } from "./sceneBackup";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
+
+// 백그라운드 씬의 비동기 결과가 도착해도, 현재 씬의 아직 디바운스 저장 전인 입력은 React 메모리에서
+// 보존한다. target 씬만 최신 저장본으로 교체하고 나머지는 최신 목록을 사용한다.
+export function mergePatchedSceneList(
+  previous: Scene[],
+  latest: Scene[],
+  activeSceneId: string | null,
+  patchedSceneId: string,
+): Scene[] {
+  if (!activeSceneId || activeSceneId === patchedSceneId) return latest;
+  const inMemoryActive = previous.find((scene) => scene.id === activeSceneId);
+  if (!inMemoryActive) return latest;
+  let found = false;
+  const merged = latest.map((scene) => {
+    if (scene.id !== activeSceneId) return scene;
+    found = true;
+    return inMemoryActive;
+  });
+  if (found) return merged;
+  // 다른 탭이 활성 씬을 삭제한 순간 백그라운드 결과가 도착해도, 기존 비파괴 정책처럼 화면은 유지한다.
+  const previousIndex = previous.findIndex((scene) => scene.id === activeSceneId);
+  merged.splice(Math.min(Math.max(previousIndex, 0), merged.length), 0, inMemoryActive);
+  return merged;
+}
 
 export function useSceneCoordination(flash?: (msg: string) => void) {
   const [scenes, setScenes] = useState<Scene[]>(() => listScenes(null));
@@ -84,6 +108,11 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     setCardRefs: (cardId: string, refs: SceneRef[]) => SceneRef[];
     flushPending: () => void; // 밀린 입력 저장 확정 — 씬 전환 직전 호출
   } | null>(null);
+  // 비동기 결과가 현재 씬에 합쳐지기 직전, 아직 SceneBoard 메모리에만 있는 입력을 먼저 저장한다.
+  // patchSceneById 안에서 자동 호출하면 flush→onChange→patch 재귀가 되므로 명시 관문으로 분리한다.
+  const flushScenePending = (sceneId: string) => {
+    if (activeSceneIdRef.current === sceneId) sceneActionRef.current?.flushPending();
+  };
 
   const refreshScenes = () => setScenes(listScenes(null));
   const selectScene = (id: string | null) => {
@@ -115,14 +144,22 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     refreshScenes();
     if (activeSceneId === id) selectScene(null);
   };
-  // 활성 씬 patch + 목록 재읽기 — updateScene(null, activeScene.id, …) + setScenes(listScenes(null)) 반복을 하나로.
+  // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
+  // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
+  const patchSceneById = (sceneId: string, patch: Partial<Scene>) => {
+    updateScene(null, sceneId, patch);
+    const latest = listScenes(null);
+    setScenes((previous) =>
+      mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
+    );
+  };
+  // 동기 UI 편집용 활성 씬 관문.
   const patchActiveScene = (patch: Partial<Scene>) => {
     if (!activeScene) return;
-    updateScene(null, activeScene.id, patch);
-    refreshScenes();
+    patchSceneById(activeScene.id, patch);
   };
 
-  // setScenes/refreshScenes 는 내부 전용(반환 안 함) — 외부는 CRUD·patchActiveScene 로만 씬을 바꾼다.
+  // setScenes/refreshScenes 는 내부 전용(반환 안 함) — 외부는 CRUD·두 patch 관문으로만 씬을 바꾼다.
   return {
     scenes,
     activeSceneId,
@@ -132,11 +169,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     sceneSelGens,
     setSceneSelGens,
     sceneActionRef,
+    flushScenePending,
     selectScene,
     addScene,
     importSceneSnapshot,
     renameScene,
     removeSceneById,
+    patchSceneById,
     patchActiveScene,
   };
 }

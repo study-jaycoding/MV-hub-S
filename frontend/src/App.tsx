@@ -49,6 +49,11 @@ import {
   buildSceneGenerationJobInput,
   type SceneGenerationJobInput,
 } from "./lib/sceneGenerationInputs";
+import {
+  acquireSceneGeneration,
+  applySceneGenerationResults,
+  executeSceneGenerationBatch,
+} from "./lib/sceneGenerationSubmission";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -129,7 +134,8 @@ export default function App() {
   const {
     scenes, activeSceneId, activeScene,
     sceneBinding, setSceneBinding, sceneSelGens, setSceneSelGens, sceneActionRef,
-    selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById, patchActiveScene,
+    flushScenePending, selectScene, addScene, importSceneSnapshot, renameScene, removeSceneById,
+    patchSceneById, patchActiveScene,
   } = useSceneCoordination(flash);
   // 씬 탭 바 호버 → SceneBoard 좌상단 씬 패널(저장/불러오기) 표시 트리거(평소 숨김).
   const [sceneBarHover, setSceneBarHover] = useState(false);
@@ -540,6 +546,7 @@ export default function App() {
       const newIds = (created || []).map((x) => x.id); // 복수 생성이면 여러 장 → 카드에 모두 누적
       if (newIds.length) seedPending(newIds); // 방금 생성 glow — 첫 폴링이 이미 done 이어도 뜨게 baseline 선등록
       if (newIds.length) {
+        flushScenePending(activeScene.id);
         // 최신 씬을 다시 읽어(생성 대기 중 편집분 보존) 해당 카드에만 변형 append — 덮어쓰지 않는다.
         // 재사용이든 아니든 '선택된 카드'에 쌓는다(사용자 결정: 카드 선택 후 재사용 = 그 카드에 누적).
         const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
@@ -549,7 +556,7 @@ export default function App() {
           for (const id of newIds) if (!genIds.includes(id)) genIds.push(id);
           return { ...c, genId: newIds[0], genIds, status: "pending" as const }; // 첫 장을 대표로 표시
         });
-        patchActiveScene({ cards: nextCards });
+        patchSceneById(activeScene.id, { cards: nextCards });
       }
       if (created?.length) {
         setGens((prev) => {
@@ -600,6 +607,7 @@ export default function App() {
     const ng = await onRegenerate(g);
     if (!ng || !activeScene) return;
     seedPending([ng.id]); // 재생성 결과도 방금 생성 glow 대상
+    flushScenePending(activeScene.id);
     const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
     const nextCards = cards.map((c) => {
       if (!variantIds(c).includes(g.id)) return c; // g 가 속한 카드에만
@@ -607,13 +615,14 @@ export default function App() {
       if (!genIds.includes(ng.id)) genIds.push(ng.id);
       return { ...c, genId: ng.id, genIds, status: "pending" as const };
     });
-    patchActiveScene({ cards: nextCards });
+    patchSceneById(activeScene.id, { cards: nextCards });
   };
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
   //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).
   //  · 모델이 안 붙은 카드는 건너뛴다(생성 불가). 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
   const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
-  const renderingRef = useRef(false); // 렌더 진행 중 재진입(더블클릭) 방지
+  // 씬별 렌더 진행 가드 — 같은 씬의 더블클릭만 막고, 느린 요청 중 다른 씬 작업은 허용한다.
+  const renderingSceneIdsRef = useRef(new Set<string>());
   // 생성 1건의 조립 재료는 sceneGenerationInputs 공용 순수 함수가 만든다(실행 지문과 제출 규칙 공유).
   // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
   //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
@@ -628,25 +637,46 @@ export default function App() {
       flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
       return;
     }
-    // 모델별 파라미터 스키마 선로드(캐시) — aspect_ratio "auto" 를 레퍼런스 비율로 해석하기 위함.
-    const uniqueModels = [...new Set(jobs.map((j) => j.model))].filter(
-      (m) => !(m in genParamsCacheRef.current),
-    );
-    await Promise.all(
-      uniqueModels.map((m) =>
-        api
-          .modelParams(m)
-          .then((r) => {
-            genParamsCacheRef.current[m] = r.params;
-          })
-          .catch(() => {
-            // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도(빈 배열을 심으면 auto 비율이 영영 미해석).
-          }),
-      ),
-    );
-    // body 조립(job 별, auto 비율 해석 포함) → 잡 전부 한 번에 제출.
-    const built = await Promise.all(
-      jobs.map(async (j) => {
+    // 같은 모델 요청은 파라미터 조회 1회를 공유하되, 다른 모델 작업은 독립적으로 준비·제출한다.
+    // 예전처럼 모든 모델 조회·body 조립을 먼저 Promise.all로 기다리면 느린 1건이 전체 시작을 막는다.
+    const paramLoads = new Map<string, Promise<void>>();
+    const ensureModelParams = (model: string): Promise<void> => {
+      if (model in genParamsCacheRef.current) return Promise.resolve();
+      const pending = paramLoads.get(model);
+      if (pending) return pending;
+      const load = api
+        .modelParams(model)
+        .then((r) => {
+          genParamsCacheRef.current[model] = r.params;
+        })
+        .catch(() => {
+          // 실패는 캐시하지 않는다 — 다음 렌더에서 다시 시도한다. 이번 작업은 빈 스키마로 계속 진행.
+        });
+      paramLoads.set(model, load);
+      return load;
+    };
+
+    const applySuccess = (cardId: string, gen: Generation) => {
+      seedPending([gen.id]);
+      setGens((prev) => {
+        if (prev.some((item) => item.id === gen.id)) return prev;
+        return [gen, ...prev];
+      });
+      // 매 완료마다 최신 저장본 위에 붙인다. 카드/씬이 대기 중 삭제됐다면 되살리지 않는다.
+      flushScenePending(scene.id);
+      const latest = listScenes(null).find((item) => item.id === scene.id);
+      if (latest) {
+        const applied = applySceneGenerationResults(latest.cards, [
+          { cardId, generationId: gen.id },
+        ]);
+        if (applied.attachedCardCount) patchSceneById(scene.id, { cards: applied.cards });
+      }
+    };
+
+    const summary = await executeSceneGenerationBatch(
+      jobs.map((job) => ({ cardId: job.cardId, input: job })),
+      async (j) => {
+        await ensureModelParams(j.model);
         const tunable = genParamsCacheRef.current[j.model] || [];
         const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
         const { body } = buildSpotlightCreateBody({
@@ -661,61 +691,42 @@ export default function App() {
           activeProjectId: projectId,
           folderPath,
         });
-        return body ? { cardId: j.cardId, body } : null;
-      }),
+        return body;
+      },
+      (body) => api.create(body),
+      ({ cardId, result }) => applySuccess(cardId, result),
     );
-    const valid = built.filter((b): b is { cardId: string; body: NonNullable<typeof b>["body"] } => !!b);
-    const buildFail = jobs.length - valid.length; // body 조립 실패(레퍼런스 토큰·seedance 검증 등)
-    if (!valid.length) {
+    const { successes, buildFail, submitFail: createFail, applyFail } = summary;
+    if (!successes.length && buildFail === jobs.length) {
       flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
       return;
     }
-    // 각 job 1회씩 전부 동시에 제출(초과분은 서버 큐가 순서대로 처리). 결과는 카드별로 모은다.
-    let createFail = 0; // api.create 거부 수
-    const results = await Promise.all(
-      valid.map((v) =>
-        api
-          .create(v.body)
-          .then((g) => ({ cardId: v.cardId, gen: g }))
-          .catch(() => {
-            createFail++;
-            return null;
-          }),
-      ),
-    );
+    // 최종 배치 순서는 요청 순서로 한 번 정규화한다(점진 반영은 실제 응답 순서였을 수 있음).
     const byCard = new Map<string, string[]>();
-    const freshGens: Generation[] = [];
-    for (const r of results) {
-      if (!r) continue;
-      const arr = byCard.get(r.cardId) || [];
-      arr.push(r.gen.id);
-      byCard.set(r.cardId, arr);
-      freshGens.push(r.gen);
+    const freshGens: Generation[] = successes.map((item) => item.result);
+    for (const success of successes) {
+      const arr = byCard.get(success.cardId) || [];
+      arr.push(success.result.id);
+      byCard.set(success.cardId, arr);
     }
-    if (freshGens.length) seedPending(freshGens.map((g) => g.id)); // 렌더 노드 결과도 방금 생성 glow 대상
-    if (byCard.size) {
-      // 최신 씬을 다시 읽어(대기 중 편집 보존) 각 소스 카드에 결과 id 를 누적한다 — 덮어쓰지 않는다.
-      const cur = listScenes(null).find((s) => s.id === scene.id)?.cards || scene.cards;
-      const nextCards = cur.map((c) => {
-        const ids = byCard.get(c.id);
-        if (!ids || !ids.length) return c;
-        const genIds = [...variantIds(c)];
-        for (const id of ids) if (!genIds.includes(id)) genIds.push(id);
-        return { ...c, genId: ids[0], genIds, status: "pending" as const };
-      });
-      patchActiveScene({ cards: nextCards });
-    }
-    if (freshGens.length) {
-      setGens((prev) => {
-        const ids = new Set(prev.map((x) => x.id));
-        const fresh = freshGens.filter((x) => !ids.has(x.id));
-        return fresh.length ? [...fresh, ...prev] : prev;
-      });
+    let finalApplyFail = 0;
+    try {
+      const latest = listScenes(null).find((item) => item.id === scene.id);
+      if (latest && successes.length) {
+        const applied = applySceneGenerationResults(
+          latest.cards,
+          successes.map(({ cardId, result }) => ({ cardId, generationId: result.id })),
+        );
+        if (applied.attachedCardCount) patchSceneById(scene.id, { cards: applied.cards });
+      }
+    } catch {
+      finalApplyFail = 1;
     }
     const notes: string[] = [];
     if (skipped) notes.push(`모델 없음 ${skipped}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
+    if (applyFail || finalApplyFail) notes.push("화면 반영 실패 — 새로고침 필요");
     flash(
       `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
         (notes.length ? ` · ${notes.join(" · ")}` : ""),
@@ -726,10 +737,15 @@ export default function App() {
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 batch 장씩 한 번에 생성.
   //  · comfy 없는(또는 comfy 결과를 짝으로 나누지 않는) 경로. 각 카드를 batch 수만큼 복제해 병렬 제출.
   const generateCards = async (cardIds: string[], batchOverride?: number) => {
-    if (!activeScene || renderingRef.current || !cardIds.length) return;
-    renderingRef.current = true;
+    if (!activeScene || !cardIds.length) return;
+    const sceneId = activeScene.id;
+    const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
+    if (!release) {
+      flash("이 씬은 이미 생성 요청을 제출하고 있습니다.");
+      return;
+    }
     try {
-      const scene = listScenes(null).find((s) => s.id === activeScene.id) || activeScene;
+      const scene = listScenes(null).find((s) => s.id === sceneId) || activeScene;
       const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
       const resolved = resolvePortEdges(cardsById, scene.edges);
       // 렌더 노드의 배치수(노드별)로 각 잡을 복제. 없으면 하단 스포트라이트 배치.
@@ -750,17 +766,22 @@ export default function App() {
       }
       await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
     } finally {
-      renderingRef.current = false;
+      release();
     }
   };
   // ── 배치 짝 생성 ── 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 받아, 각 run 을 그 comfy 결과(overlay)와
   //  짝지어 1장씩 병렬 생성한다. SceneBoard 오케스트레이터가 runs 를 만들어 이 함수를 1회 호출한다
-  //  (renderingRef 가드에 조용히 막히지 않도록 반드시 1회). run 마다 overlay 가 달라 서로 다른 comfy 결과로 생성.
+  //  (씬별 실행 가드에 조용히 막히지 않도록 반드시 1회). run 마다 overlay 가 달라 서로 다른 comfy 결과로 생성.
   const generateCardRuns = async (runs: SceneGenerationRun[]) => {
-    if (!activeScene || renderingRef.current || !runs.length) return;
-    renderingRef.current = true;
+    if (!activeScene || !runs.length) return;
+    const sceneId = activeScene.id;
+    const release = acquireSceneGeneration(renderingSceneIdsRef.current, sceneId);
+    if (!release) {
+      flash("이 씬은 이미 생성 요청을 제출하고 있습니다.");
+      return;
+    }
     try {
-      const scene = listScenes(null).find((s) => s.id === activeScene.id) || activeScene;
+      const scene = listScenes(null).find((s) => s.id === sceneId) || activeScene;
       const cardsById = new Map(scene.cards.map((c) => [c.id, c] as const));
       const resolved = resolvePortEdges(cardsById, scene.edges);
       const projectId =
@@ -784,7 +805,7 @@ export default function App() {
       }
       await submitGenJobs(jobs, skipped, scene, projectId, folderPath);
     } finally {
-      renderingRef.current = false;
+      release();
     }
   };
   // 폴더 필터가 해제되거나(프로젝트/라이브러리/미분류 선택) 다른 프로젝트로 바뀌면 무장 폴더(armedFolder)도
