@@ -35,6 +35,10 @@ if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
 set "CONTENT_HUB_HOST=127.0.0.1"
 set "CONTENT_HUB_PORT=%PORT%"
 set "HUB=http://127.0.0.1:%PORT%"
+REM Normal launches open the built app served by the hub. Development launchers may
+REM override only the browser URL (for example Vite on 5173) while keeping HUB as the
+REM backend/agent endpoint.
+if "%MVHUB_OPEN_URL%"=="" set "MVHUB_OPEN_URL=%HUB%"
 
 REM Prefer tools bundled with the release package. This keeps worker PCs close to
 REM zero-install: no Git, no system Python, no system Node needed for normal use.
@@ -220,8 +224,9 @@ if errorlevel 1 (
 )
 
 :agent_stage
-echo [5/5] Opening the hub + keeping the generation agent running ^(closing this window stops it^)
-start "" "%HUB%"
+echo [5/5] Opening the app + keeping the generation agent running ^(closing this window stops it^)
+echo     Browser: %MVHUB_OPEN_URL%
+start "" "%MVHUB_OPEN_URL%"
 echo.
 if "%RUN_AGENT%"=="1" (
   "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30

@@ -7,7 +7,7 @@ REM
 REM    source (server) : http://192.168.1.199:8010   -> downloaded via admin login
 REM    target (test)   : this PC's  backend\data_test  -> filled with that copy
 REM
-REM  After this, run test_agent.bat (port 8012): you see the copied real data
+REM  After this, run test_dev.bat (backend port 8012): you see the copied real data
 REM  AND anything you generate locally, fully isolated from the live server.
 REM
 REM  Only the DB is downloaded (no media/assets). The live server is READ only.
@@ -55,6 +55,6 @@ if errorlevel 1 (
 
 echo.
 echo [OK] Server DB copied into the test data.
-echo      Now start test_agent.bat  -> open http://127.0.0.1:8012
+echo      Now start test_dev.bat  -> open http://127.0.0.1:5173
 echo.
 pause
