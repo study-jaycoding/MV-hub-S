@@ -20,6 +20,54 @@ export interface ComfyMediaInput {
   source_gen_id?: string | null;
 }
 
+export interface PreparedSceneComfyInputs {
+  media: ComfyMediaInput[];
+  drivenParamValues: Record<string, string | number | boolean>;
+  textParamKeys: string[];
+}
+
+export function sameComfyParamValues(
+  left: Record<string, string | number | boolean> | undefined,
+  right: Record<string, string | number | boolean>,
+): boolean {
+  const actual = left || {};
+  const leftKeys = Object.keys(actual);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    rightKeys.every(
+      (key) => Object.prototype.hasOwnProperty.call(actual, key) && actual[key] === right[key],
+    )
+  );
+}
+
+export function sameComfyMediaInputs(left: ComfyMediaInput[], right: ComfyMediaInput[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => {
+      const other = right[index];
+      return (
+        item.type === other.type &&
+        item.url === other.url &&
+        item.name === other.name &&
+        (item.source_gen_id || null) === (other.source_gen_id || null)
+      );
+    })
+  );
+}
+
+export function samePreparedSceneComfyInputs(
+  left: PreparedSceneComfyInputs,
+  right: PreparedSceneComfyInputs,
+): boolean {
+  return (
+    sameComfyMediaInputs(left.media, right.media) &&
+    sameComfyParamValues(left.drivenParamValues, right.drivenParamValues) &&
+    left.textParamKeys.length === right.textParamKeys.length &&
+    left.textParamKeys.every((key, index) => key === right.textParamKeys[index])
+  );
+}
+
 // comfy 노드에 '텍스트가 연결돼 있는지' — 내용 유무와 무관하게 연결 존재만 본다(ComfyUI 처럼 연결되면 위젯 비활성).
 //  resolveEdgeRole 로 들어오는 엣지 중 텍스트 역할이 하나라도 있으면 true.
 export function hasTextConnection(
@@ -113,4 +161,32 @@ export function driveTextParams(
   const out = { ...baseParams };
   for (const k of keys) out[k] = linked;
   return out;
+}
+
+// 실제 Comfy API에 영향을 주는 그래프 입력만 정규화한다. 카드 좌표 자체는 제외하되 좌표 변화로
+// 미디어 입력 순서가 달라지면 gatherComfyMedia 결과 순서가 바뀌므로 변경으로 판정된다.
+export function prepareSceneComfyInputs(
+  cardId: string,
+  baseParams: Record<string, string | number | boolean>,
+  cards: SceneCard[],
+  edges: SceneEdge[],
+  genData: Record<string, Generation>,
+  refParents: Record<string, string[]>,
+  overlay?: ComfyOutputsById,
+): PreparedSceneComfyInputs {
+  const card = cards.find((candidate) => candidate.id === cardId);
+  const drivenParamValues = driveTextParams(
+    cardId,
+    baseParams,
+    card?.comfyCfg?.params,
+    cards,
+    edges,
+    refParents,
+    overlay,
+  );
+  return {
+    media: gatherComfyMedia(cardId, cards, edges, genData, overlay),
+    drivenParamValues: { ...drivenParamValues },
+    textParamKeys: [...comfyTextDriveKeys(card?.comfyCfg?.params, card?.comfyCfg?.content)],
+  };
 }

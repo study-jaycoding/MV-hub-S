@@ -67,6 +67,7 @@ import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs"
 import {
   isSceneComfyConfigCurrent,
   type SceneComfyConfigSnapshot,
+  type SceneComfyRunInputSnapshot,
 } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
@@ -1300,6 +1301,8 @@ export function SceneBoard({
       outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string }[];
       // 실행 시작 시점 입력. 저장 응답 전 교체되면 옛 결과를 현재 카드에 연결하지 않는다.
       configSnapshot?: SceneComfyConfigSnapshot;
+      inputSnapshot?: SceneComfyRunInputSnapshot;
+      isInputCurrent?: () => boolean;
     },
   ) => {
     const silent = opts?.silent;
@@ -1322,6 +1325,7 @@ export function SceneBoard({
       if (!silent) flashMsg("저장할 이미지·영상 출력이 없습니다");
       return;
     }
+    if (opts?.isInputCurrent && !opts.isInputCurrent()) return;
     const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
     // 프롬프트·입력 메타 수집은 '최선 노력' — 여기서 예외가 나도(엣지 순회·malformed 워크플로 등) 출력물 저장은
     //  진행돼야 하고, 렌더 배치 실행(runPlanComfyCopies)이 중단되면 안 된다(silent 자동저장 규약). 이전엔 이 구간이
@@ -1329,22 +1333,39 @@ export function SceneBoard({
     //  실패 시 프롬프트=워크플로명, 입력=빈 목록으로 강등한다.
     let promptText = cfg?.name || "Comfy 출력";
     let inputs: { url: string; type: "image" | "video"; name: string; source_gen_id: string | null }[] = [];
+    const executedParamValues = opts?.inputSnapshot?.executedParamValues ?? cfg?.paramValues ?? {};
     try {
-      // 프롬프트 = '텍스트 입력 노드' 필드값만(model·resolution 등 설정값 제외). 연결되면 연결 텍스트로.
-      const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
-      const connected = hasTextConnection(cardId, map, edgesRef.current, refParents);
-      const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
-      promptText =
-        driveKeys
-          .map((k) => (connected ? linked : String(cfg?.paramValues?.[k] ?? "")))
-          .filter((t) => t.trim())
-          .join("\n") || cfg?.name || "Comfy 출력";
-      inputs = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current).map((m) => ({
-        url: m.url,
-        type: m.type,
-        name: m.name,
-        source_gen_id: m.source_gen_id ?? null, // 생성물 입력이면 계보 연결(서버가 열람권한 검증)
-      }));
+      if (opts?.inputSnapshot) {
+        // 자동 저장은 '현재 그래프'를 다시 읽지 않고 실제 API에 들어간 텍스트·미디어를 사용한다.
+        // 실행 직후 연결을 바꿔도 옛 출력의 출처와 seed가 새 입력으로 잘못 기록되지 않는다.
+        promptText =
+          opts.inputSnapshot.textParamKeys
+            .map((key) => String(executedParamValues[key] ?? ""))
+            .filter((text) => text.trim())
+            .join("\n") || cfg?.name || "Comfy 출력";
+        inputs = opts.inputSnapshot.media.map((item) => ({
+          url: item.url,
+          type: item.type,
+          name: item.name,
+          source_gen_id: item.source_gen_id ?? null,
+        }));
+      } else {
+        // 수동 저장은 현재 카드 기준으로 메타를 수집한다.
+        const driveKeys = [...comfyTextDriveKeys(cfg?.params, cfg?.content)];
+        const connected = hasTextConnection(cardId, map, edgesRef.current, refParents);
+        const linked = connected ? incomingTextOf(cardId, map, edgesRef.current) : "";
+        promptText =
+          driveKeys
+            .map((key) => (connected ? linked : String(executedParamValues[key] ?? "")))
+            .filter((text) => text.trim())
+            .join("\n") || cfg?.name || "Comfy 출력";
+        inputs = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current).map((item) => ({
+          url: item.url,
+          type: item.type,
+          name: item.name,
+          source_gen_id: item.source_gen_id ?? null, // 생성물 입력이면 계보 연결(서버가 열람권한 검증)
+        }));
+      }
     } catch (e) {
       console.warn("comfy 저장 메타(프롬프트/입력) 수집 실패 — 출력물만 저장:", e);
     }
@@ -1354,11 +1375,15 @@ export function SceneBoard({
         name: cfg?.name,
         prompt: promptText,
         // 파라미터값(노드|필드) + 생성 정보용 표준 메타(model·비율·해상도)를 함께 저장.
-        params: { ...(cfg?.paramValues || {}), ...comfyGenMeta(cfg?.content, cfg?.params, cfg?.paramValues) },
+        params: {
+          ...executedParamValues,
+          ...comfyGenMeta(configSnapshot?.content ?? cfg?.content, cfg?.params, executedParamValues),
+        },
         inputs,
         elapsed_seconds: opts?.elapsedSeconds ?? null,
       });
       if (sceneIdRef.current !== sid) return; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
+      if (opts?.isInputCurrent && !opts.isInputCurrent()) return;
       const byUrl = new Map(res.saved.map((s) => [s.url, s.generation_id]));
       const savedIds = res.saved.map((s) => s.generation_id);
       if (

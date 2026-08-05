@@ -1,7 +1,13 @@
 import type { Generation } from "../types";
 import { comfyApi, type ComfyOutput, type ComfyRunMedia } from "./comfyApi";
 import { fetchBlob } from "./download";
-import { driveTextParams, gatherComfyMedia } from "./sceneComfyInputs";
+import {
+  prepareSceneComfyInputs,
+  sameComfyMediaInputs,
+  sameComfyParamValues,
+  samePreparedSceneComfyInputs,
+  type PreparedSceneComfyInputs,
+} from "./sceneComfyInputs";
 import {
   randomizeExposedSeedParams,
   randomizeWorkflowSeeds,
@@ -12,6 +18,11 @@ import type { SceneCard, SceneEdge } from "./scenes";
 export interface SceneComfyConfigSnapshot {
   content: string;
   paramValues: Record<string, string | number | boolean>;
+}
+
+export interface SceneComfyRunInputSnapshot extends PreparedSceneComfyInputs {
+  // 배치 seed 무작위화까지 마친, 실제 Comfy API에 전달한 값. 자동 저장 메타도 이 값을 쓴다.
+  executedParamValues: Record<string, string | number | boolean>;
 }
 
 export interface ExecuteSceneComfyOptions {
@@ -25,6 +36,9 @@ export interface ExecuteSceneComfyOptions {
   configSnapshot?: SceneComfyConfigSnapshot;
   getLiveCards?: () => SceneCard[];
   getLiveEdges?: () => SceneEdge[];
+  getLiveGenData?: () => Record<string, Generation>;
+  getLiveRefParents?: () => Record<string, string[]>;
+  onRunPrepared?: (snapshot: SceneComfyRunInputSnapshot) => void;
   // 실행 중 워크플로·노출 파라미터가 교체되면 이미 시작한 옛 실행 결과를 버린다.
   isRunCurrent?: () => boolean;
 }
@@ -45,24 +59,9 @@ const defaultDependencies: SceneComfyExecutorDependencies = {
 
 export class SceneComfyRunSupersededError extends Error {
   constructor() {
-    super("실행 중 워크플로우가 변경되었습니다");
+    super("실행 중 Comfy 입력이 변경되었습니다");
     this.name = "SceneComfyRunSupersededError";
   }
-}
-
-function sameParamValues(
-  left: Record<string, string | number | boolean> | undefined,
-  right: Record<string, string | number | boolean>,
-): boolean {
-  const actual = left || {};
-  const leftKeys = Object.keys(actual);
-  const rightKeys = Object.keys(right);
-  return (
-    leftKeys.length === rightKeys.length &&
-    rightKeys.every(
-      (key) => Object.prototype.hasOwnProperty.call(actual, key) && actual[key] === right[key],
-    )
-  );
 }
 
 // status·outputs 같은 실행 결과 필드는 비교하지 않는다. 사용자가 실행 입력 자체(content·paramValues)를
@@ -76,12 +75,38 @@ export function isSceneComfyConfigCurrent(
   return (
     card?.kind === "comfy" &&
     card.comfyCfg?.content === snapshot.content &&
-    sameParamValues(card.comfyCfg.paramValues, snapshot.paramValues)
+    sameComfyParamValues(card.comfyCfg.paramValues, snapshot.paramValues)
   );
 }
 
 function assertRunCurrent(options: ExecuteSceneComfyOptions): void {
   if (options.isRunCurrent && !options.isRunCurrent()) {
+    throw new SceneComfyRunSupersededError();
+  }
+}
+
+function currentPreparedInputs(
+  options: ExecuteSceneComfyOptions,
+  baseParams: Record<string, string | number | boolean>,
+): PreparedSceneComfyInputs {
+  return prepareSceneComfyInputs(
+    options.cardId,
+    baseParams,
+    options.getLiveCards?.() ?? options.cards,
+    options.getLiveEdges?.() ?? options.edges,
+    options.getLiveGenData?.() ?? options.genData,
+    options.getLiveRefParents?.() ?? options.refParents,
+    options.overlay,
+  );
+}
+
+function assertPreparedInputsCurrent(
+  options: ExecuteSceneComfyOptions,
+  baseParams: Record<string, string | number | boolean>,
+  prepared: PreparedSceneComfyInputs,
+): void {
+  assertRunCurrent(options);
+  if (!samePreparedSceneComfyInputs(prepared, currentPreparedInputs(options, baseParams))) {
     throw new SceneComfyRunSupersededError();
   }
 }
@@ -99,15 +124,17 @@ export async function executeSceneComfy(
   if (!baseContent) throw new Error("워크플로우가 없습니다");
   assertRunCurrent(options);
 
-  const wanted = gatherComfyMedia(
+  const initialInputs = prepareSceneComfyInputs(
     options.cardId,
+    baseParams,
     options.cards,
     options.edges,
     options.genData,
+    options.refParents,
     options.overlay,
   );
   const media: ComfyRunMedia[] = [];
-  for (const item of wanted) {
+  for (const item of initialInputs.media) {
     assertRunCurrent(options);
     const blob = await deps.fetchMedia(item.url, item.name);
     if (!blob) throw new Error(`입력을 불러오지 못했습니다: ${item.name}`);
@@ -118,21 +145,31 @@ export async function executeSceneComfy(
   assertRunCurrent(options);
 
   // 미디어를 받는 동안 연결 텍스트가 편집될 수 있으므로 API 호출 직전에 최신 그래프를 다시 읽는다.
-  const liveCards = options.getLiveCards?.() ?? options.cards;
-  const liveEdges = options.getLiveEdges?.() ?? options.edges;
-  const driven = driveTextParams(
-    options.cardId,
-    baseParams,
-    card?.comfyCfg?.params,
-    liveCards,
-    liveEdges,
-    options.refParents,
-    options.overlay,
-  );
+  const prepared = currentPreparedInputs(options, baseParams);
+  // 이미 받은 blob과 현재 미디어 슬롯이 다르면 잘못된 파일로 실행하지 않는다. 텍스트는 위 prepared의
+  // 최신값을 그대로 사용해, 다운로드 중 편집을 허용하던 기존 동작을 유지한다.
+  if (!sameComfyMediaInputs(initialInputs.media, prepared.media)) {
+    throw new SceneComfyRunSupersededError();
+  }
   const content = options.varySeed ? deps.randomizeContent(baseContent) : baseContent;
-  const paramValues = options.varySeed ? deps.randomizeParams(driven) : driven;
-  const result = await deps.run(content, paramValues, media);
-  // API 호출은 취소할 수 없지만, 완료 전에 교체된 실행의 결과가 새 카드로 넘어가지는 않게 한다.
-  assertRunCurrent(options);
-  return result.outputs;
+  const paramValues = options.varySeed
+    ? deps.randomizeParams(prepared.drivenParamValues)
+    : prepared.drivenParamValues;
+  const inputSnapshot: SceneComfyRunInputSnapshot = {
+    media: prepared.media.map((item) => ({ ...item })),
+    drivenParamValues: { ...prepared.drivenParamValues },
+    textParamKeys: [...prepared.textParamKeys],
+    executedParamValues: { ...paramValues },
+  };
+  options.onRunPrepared?.(inputSnapshot);
+  try {
+    const result = await deps.run(content, paramValues, media);
+    // API 호출은 취소할 수 없지만, 완료 전에 바뀐 입력의 결과가 새 그래프로 넘어가지는 않게 한다.
+    assertPreparedInputsCurrent(options, baseParams, prepared);
+    return result.outputs;
+  } catch (error) {
+    // 실패 응답도 입력 교체 뒤 현재 카드에 표시되면 안 된다. 교체가 아니면 원래 오류를 보존한다.
+    assertPreparedInputsCurrent(options, baseParams, prepared);
+    throw error;
+  }
 }

@@ -64,8 +64,8 @@ describe("executeSceneComfy", () => {
     );
 
     expect(outputs).toEqual([{ kind: "text", text: "ok" }]);
-    expect(getLiveCards).toHaveBeenCalledOnce();
-    expect(getLiveEdges).toHaveBeenCalledOnce();
+    expect(getLiveCards).toHaveBeenCalledTimes(2); // API 직전 + 완료 후 입력 지문 재검사
+    expect(getLiveEdges).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenCalledWith("workflow", { prompt: "hello" }, []);
   });
 
@@ -162,6 +162,41 @@ describe("executeSceneComfy", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("미디어를 받는 동안 연결이 바뀌면 받은 파일로 API를 실행하지 않는다", async () => {
+    const reference = {
+      id: "reference",
+      kind: "reference",
+      x: 0,
+      y: 0,
+      refs: [{ file_path: "/input.png", type: "image", name: "input.png" }],
+    } as SceneCard;
+    const edges: SceneEdge[] = [{ id: "edge", from: "reference", to: "comfy", role: "ref" }];
+    let liveEdges = edges;
+    const run = vi.fn();
+
+    await expect(
+      executeSceneComfy(
+        {
+          cardId: "comfy",
+          cards: [reference, comfyCard()],
+          edges,
+          genData: {},
+          refParents: {},
+          varySeed: false,
+          getLiveEdges: () => liveEdges,
+        },
+        {
+          fetchMedia: vi.fn().mockImplementation(async () => {
+            liveEdges = [];
+            return new Blob(["image"]);
+          }),
+          run,
+        },
+      ),
+    ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("API 실행 중 설정이 교체되면 완료 결과를 반환하지 않는다", async () => {
     let current = true;
     const run = vi.fn().mockImplementation(async () => {
@@ -185,10 +220,80 @@ describe("executeSceneComfy", () => {
     ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
   });
 
+  it("API 실행 중 연결 텍스트가 바뀌면 성공 결과를 반환하지 않는다", async () => {
+    const target = comfyCard({
+      comfyCfg: {
+        content: "workflow",
+        paramValues: { "1|prompt": "manual" },
+        params: [{ key: "1|prompt", label: "Prompt", type: "text" }],
+      },
+    });
+    let liveCards = [
+      { id: "text", kind: "text", x: 0, y: 0, text: "old" } as SceneCard,
+      target,
+    ];
+    const edges: SceneEdge[] = [{ id: "text-edge", from: "text", to: "comfy", role: "text" }];
+    const run = vi.fn().mockImplementation(async () => {
+      liveCards = [{ ...liveCards[0], text: "new" }, target];
+      return { outputs: [{ kind: "text", text: "old result" }], prompt_id: "stale-text" };
+    });
+
+    await expect(
+      executeSceneComfy(
+        {
+          cardId: "comfy",
+          cards: liveCards,
+          edges,
+          genData: {},
+          refParents: {},
+          varySeed: false,
+          getLiveCards: () => liveCards,
+        },
+        { run },
+      ),
+    ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    expect(run).toHaveBeenCalledWith("workflow", { "1|prompt": "old" }, []);
+  });
+
+  it("API 실패 중 연결 입력이 바뀌면 옛 실패 대신 교체 오류로 처리한다", async () => {
+    const target = comfyCard({
+      comfyCfg: {
+        content: "workflow",
+        paramValues: { "1|prompt": "manual" },
+        params: [{ key: "1|prompt", label: "Prompt", type: "text" }],
+      },
+    });
+    let liveCards = [
+      { id: "text", kind: "text", x: 0, y: 0, text: "old" } as SceneCard,
+      target,
+    ];
+    const edges: SceneEdge[] = [{ id: "text-edge", from: "text", to: "comfy", role: "text" }];
+    const run = vi.fn().mockImplementation(async () => {
+      liveCards = [{ ...liveCards[0], text: "new" }, target];
+      throw new Error("old run failed");
+    });
+
+    await expect(
+      executeSceneComfy(
+        {
+          cardId: "comfy",
+          cards: liveCards,
+          edges,
+          genData: {},
+          refParents: {},
+          varySeed: false,
+          getLiveCards: () => liveCards,
+        },
+        { run },
+      ),
+    ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+  });
+
   it("배치 복사본은 전달된 시드 변환 결과로 실행한다", async () => {
     const run = vi.fn().mockResolvedValue({ outputs: [], prompt_id: "p3" });
     const randomizeContent = vi.fn().mockReturnValue("random-workflow");
     const randomizeParams = vi.fn().mockReturnValue({ prompt: "random" });
+    let prepared: { executedParamValues: Record<string, string | number | boolean> } | undefined;
 
     await executeSceneComfy(
       {
@@ -198,6 +303,9 @@ describe("executeSceneComfy", () => {
         genData: {},
         refParents: {},
         varySeed: true,
+        onRunPrepared: (snapshot) => {
+          prepared = snapshot;
+        },
       },
       { run, randomizeContent, randomizeParams },
     );
@@ -205,5 +313,6 @@ describe("executeSceneComfy", () => {
     expect(randomizeContent).toHaveBeenCalledWith("workflow");
     expect(randomizeParams).toHaveBeenCalledWith({ prompt: "hello" });
     expect(run).toHaveBeenCalledWith("random-workflow", { prompt: "random" }, []);
+    expect(prepared?.executedParamValues).toEqual({ prompt: "random" });
   });
 });

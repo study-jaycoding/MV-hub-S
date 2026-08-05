@@ -6,8 +6,14 @@ import type { ComfyOutput } from "./comfyApi";
 import {
   executeSceneComfy,
   isSceneComfyConfigCurrent,
+  SceneComfyRunSupersededError,
   type SceneComfyConfigSnapshot,
+  type SceneComfyRunInputSnapshot,
 } from "./sceneComfyExecutor";
+import {
+  prepareSceneComfyInputs,
+  samePreparedSceneComfyInputs,
+} from "./sceneComfyInputs";
 import {
   buildExecutionPlan,
   buildGenerationExecutionPlan,
@@ -30,6 +36,8 @@ interface SaveComfyOptions {
   elapsedSeconds?: number;
   outputs?: ComfyOutput[];
   configSnapshot?: SceneComfyConfigSnapshot;
+  inputSnapshot?: SceneComfyRunInputSnapshot;
+  isInputCurrent?: () => boolean;
 }
 
 interface UseSceneComfyExecutionOptions {
@@ -82,6 +90,8 @@ export function useSceneComfyExecution({
   const [comfyWaitingIds, setComfyWaitingIds] = useState<Set<string>>(new Set());
   const [runningComfyIds, setRunningComfyIds] = useState<Map<string, number>>(new Map());
   const runningComfyRef = useRef<Map<string, number>>(new Map());
+  const refParentsRef = useRef(refParents);
+  refParentsRef.current = refParents;
 
   const notifyComfyRunning = () => {
     if (!onComfyRunningChange) return;
@@ -110,27 +120,56 @@ export function useSceneComfyExecution({
     notifyComfyRunning();
   };
 
-  const runComfyRaw = (
+  const runComfyRaw = async (
     cardId: string,
     overlay: ComfyOutputsById | undefined,
     varySeed: boolean,
     configSnapshot?: SceneComfyConfigSnapshot,
-  ) =>
-    executeSceneComfy({
+  ): Promise<{ outputs: ComfyOutput[]; inputSnapshot: SceneComfyRunInputSnapshot }> => {
+    let inputSnapshot: SceneComfyRunInputSnapshot | undefined;
+    const outputs = await executeSceneComfy({
       cardId,
       cards: cardsRef.current,
       edges: edgesRef.current,
       genData: genDataRef.current,
-      refParents,
+      refParents: refParentsRef.current,
       overlay,
       varySeed,
       configSnapshot,
       getLiveCards: () => cardsRef.current,
       getLiveEdges: () => edgesRef.current,
+      getLiveGenData: () => genDataRef.current,
+      getLiveRefParents: () => refParentsRef.current,
+      onRunPrepared: (snapshot) => {
+        inputSnapshot = snapshot;
+      },
       isRunCurrent: configSnapshot
         ? () => isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)
         : undefined,
     });
+    if (!inputSnapshot) throw new Error("Comfy 실행 입력을 준비하지 못했습니다");
+    return { outputs, inputSnapshot };
+  };
+
+  const isInputCurrent = (
+    cardId: string,
+    configSnapshot: SceneComfyConfigSnapshot,
+    inputSnapshot: SceneComfyRunInputSnapshot,
+    overlay?: ComfyOutputsById,
+  ) =>
+    isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot) &&
+    samePreparedSceneComfyInputs(
+      inputSnapshot,
+      prepareSceneComfyInputs(
+        cardId,
+        configSnapshot.paramValues,
+        cardsRef.current,
+        edgesRef.current,
+        genDataRef.current,
+        refParentsRef.current,
+        overlay,
+      ),
+    );
 
   const runComfy = async (cardId: string): Promise<boolean> => {
     flushPending();
@@ -153,8 +192,8 @@ export function useSceneComfyExecution({
         Array.from({ length: batch }, async () => {
           const startedAt = Date.now();
           try {
-            const outputs = await runComfyRaw(cardId, undefined, batch > 1, configSnapshot);
-            return { outputs, elapsed: (Date.now() - startedAt) / 1000 };
+            const execution = await runComfyRaw(cardId, undefined, batch > 1, configSnapshot);
+            return { ...execution, elapsed: (Date.now() - startedAt) / 1000 };
           } catch (error) {
             if (firstReason === undefined) firstReason = error;
             throw error;
@@ -162,10 +201,21 @@ export function useSceneComfyExecution({
         }),
       );
       if (!isRunCurrent()) return false;
+      const superseded = settledSets.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected" && result.reason instanceof SceneComfyRunSupersededError,
+      );
+      if (superseded) throw superseded.reason;
       if (settledSets.some((result) => result.status === "rejected")) throw firstReason;
       const sets = settledSets.map(
         (result) =>
-          (result as PromiseFulfilledResult<{ outputs: ComfyOutput[]; elapsed: number }>).value,
+          (
+            result as PromiseFulfilledResult<{
+              outputs: ComfyOutput[];
+              inputSnapshot: SceneComfyRunInputSnapshot;
+              elapsed: number;
+            }>
+          ).value,
       );
       patchComfyCfg(
         cardId,
@@ -178,18 +228,24 @@ export function useSceneComfyExecution({
         { undo: false },
       );
       for (const result of sets) {
-        if (!isRunCurrent()) return false;
+        const inputStillCurrent = () =>
+          isRunCurrent() &&
+          isInputCurrent(cardId, configSnapshot, result.inputSnapshot);
+        if (!inputStillCurrent()) return false;
         await saveComfyToLibrary(cardId, {
           silent: true,
           elapsedSeconds: result.elapsed,
           outputs: result.outputs,
           configSnapshot,
+          inputSnapshot: result.inputSnapshot,
+          isInputCurrent: inputStillCurrent,
         });
+        if (!inputStillCurrent()) return false;
       }
       return isRunCurrent();
     } catch (error) {
       // 교체된 옛 실행의 실패까지 새 워크플로 카드에 덮어쓰지 않는다.
-      if (isRunCurrent()) {
+      if (isRunCurrent() && !(error instanceof SceneComfyRunSupersededError)) {
         patchComfyCfg(
           cardId,
           {
@@ -269,6 +325,12 @@ export function useSceneComfyExecution({
     const arePlanConfigsCurrent = () => plan.comfyIds.every(isConfigCurrent);
     const limiter = createLimiter(computeMaxParallel(batch, plan.comfyIds.length));
     const tracker = createBatchTracker<ComfyOutput[]>(plan.comfyIds, batch);
+    const supersededIds = new Set<string>();
+    const settledInputs = new Map<
+      string,
+      { snapshot: SceneComfyRunInputSnapshot; overlay: ComfyOutputsById }
+    >();
+    const settledInputKey = (id: string, copyIndex: number) => `${id}\u0000${copyIndex}`;
     const releaseRunning = (id: string) => {
       if (tracker.releaseOnce(id)) markComfyRunning([id], false);
     };
@@ -279,7 +341,27 @@ export function useSceneComfyExecution({
     ) => {
       const final = tracker.settle(id, copyIndex, outcome);
       if (!final) return;
-      if (sceneIdRef.current === sceneId && isConfigCurrent(id)) {
+      const configSnapshot = configSnapshots.get(id);
+      const representativeInput = final.rep
+        ? settledInputs.get(settledInputKey(id, final.rep.copyIndex))
+        : undefined;
+      const representativeCurrent =
+        !final.rep ||
+        (!!configSnapshot &&
+          !!representativeInput &&
+          isInputCurrent(
+            id,
+            configSnapshot,
+            representativeInput.snapshot,
+            representativeInput.overlay,
+          ));
+      if (!representativeCurrent) supersededIds.add(id);
+      if (
+        sceneIdRef.current === sceneId &&
+        isConfigCurrent(id) &&
+        !supersededIds.has(id) &&
+        representativeCurrent
+      ) {
         const next = cardsRef.current.map((card) => {
           if (card.kind !== "comfy" || card.id !== id) return card;
           if (final.rep) {
@@ -317,11 +399,13 @@ export function useSceneComfyExecution({
       runs: SceneGenerationRun[];
       overlay: ComfyOutputsById;
       elapsed: Record<string, number>;
+      inputSnapshots: Record<string, SceneComfyRunInputSnapshot>;
       aborted: boolean;
     };
     const runOneCopy = async (copyIndex: number): Promise<CopyResult> => {
       const overlay: ComfyOutputsById = {};
       const elapsed: Record<string, number> = {};
+      const inputSnapshots: Record<string, SceneComfyRunInputSnapshot> = {};
       const failed = new Set<string>(plan.skippedByCycle);
       let aborted = false;
       const stepPromises = new Map<string, Promise<void>>();
@@ -339,6 +423,7 @@ export function useSceneComfyExecution({
             step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
           ) {
             aborted = true;
+            supersededIds.add(step.id);
             noteStepSettled(step.id, copyIndex, { kind: "skipped" });
             return;
           }
@@ -349,7 +434,7 @@ export function useSceneComfyExecution({
           }
           try {
             const startedAt = Date.now();
-            const outputs = await limiter.run(() =>
+            const execution = await limiter.run(() =>
               sceneIdRef.current !== sceneId
                 ? Promise.reject(new Error("scene changed"))
                 : runComfyRaw(
@@ -364,19 +449,30 @@ export function useSceneComfyExecution({
               step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
             ) {
               aborted = true;
+              supersededIds.add(step.id);
               noteStepSettled(step.id, copyIndex, { kind: "skipped" });
               return;
             }
-            overlay[step.id] = outputs;
+            overlay[step.id] = execution.outputs;
+            inputSnapshots[step.id] = execution.inputSnapshot;
             elapsed[step.id] = (Date.now() - startedAt) / 1000;
+            settledInputs.set(settledInputKey(step.id, copyIndex), {
+              snapshot: execution.inputSnapshot,
+              overlay,
+            });
             noteStepSettled(step.id, copyIndex, {
               kind: "success",
-              outputs,
+              outputs: execution.outputs,
               elapsed: elapsed[step.id],
             });
           } catch (error) {
-            if (sceneIdRef.current !== sceneId || !isConfigCurrent(step.id)) {
+            if (
+              sceneIdRef.current !== sceneId ||
+              !isConfigCurrent(step.id) ||
+              error instanceof SceneComfyRunSupersededError
+            ) {
               aborted = true;
+              supersededIds.add(step.id);
               noteStepSettled(step.id, copyIndex, { kind: "skipped" });
               return;
             }
@@ -390,7 +486,15 @@ export function useSceneComfyExecution({
         stepPromises.set(step.id, promise);
       }
       await Promise.all(stepPromises.values());
-      if (!arePlanConfigsCurrent()) aborted = true;
+      const inputsCurrent = Object.entries(inputSnapshots).every(([id, snapshot]) => {
+        const configSnapshot = configSnapshots.get(id);
+        const current =
+          !!configSnapshot &&
+          isInputCurrent(id, configSnapshot, snapshot, overlay);
+        if (!current) supersededIds.add(id);
+        return current;
+      });
+      if (!arePlanConfigsCurrent() || !inputsCurrent) aborted = true;
       const runs: SceneGenerationRun[] = aborted
         ? []
         : plan.steps
@@ -404,16 +508,27 @@ export function useSceneComfyExecution({
               cardId: step.id,
               comfyOutputsById: { ...overlay },
             }));
-      return { runs, overlay, elapsed, aborted };
+      return { runs, overlay, elapsed, inputSnapshots, aborted };
     };
 
     const copies = await Promise.all(
       Array.from({ length: batch }, (_, copyIndex) => runOneCopy(copyIndex)),
     );
+    const areAllInputsCurrent = () =>
+      copies.every((copy) =>
+        Object.entries(copy.inputSnapshots).every(([id, snapshot]) => {
+          const configSnapshot = configSnapshots.get(id);
+          return (
+            !!configSnapshot &&
+            isInputCurrent(id, configSnapshot, snapshot, copy.overlay)
+          );
+        }),
+      );
     let aborted =
       copies.some((copy) => copy.aborted) ||
       sceneIdRef.current !== sceneId ||
-      !arePlanConfigsCurrent();
+      !arePlanConfigsCurrent() ||
+      !areAllInputsCurrent();
     if (!aborted && sceneIdRef.current === sceneId) {
       for (const comfyId of plan.comfyIds) {
         if (aborted) break;
@@ -423,14 +538,25 @@ export function useSceneComfyExecution({
             break;
           }
           const outputs = copy.overlay[comfyId];
+          const inputSnapshot = copy.inputSnapshots[comfyId];
           if (outputs?.length) {
+            const configSnapshot = configSnapshots.get(comfyId);
+            if (!configSnapshot || !inputSnapshot) {
+              aborted = true;
+              break;
+            }
+            const inputStillCurrent = () =>
+              arePlanConfigsCurrent() &&
+              isInputCurrent(comfyId, configSnapshot, inputSnapshot, copy.overlay);
             await saveComfyToLibrary(comfyId, {
               silent: true,
               elapsedSeconds: copy.elapsed[comfyId],
               outputs,
-              configSnapshot: configSnapshots.get(comfyId),
+              configSnapshot,
+              inputSnapshot,
+              isInputCurrent: inputStillCurrent,
             });
-            if (!arePlanConfigsCurrent()) {
+            if (!inputStillCurrent()) {
               aborted = true;
               break;
             }
@@ -438,6 +564,7 @@ export function useSceneComfyExecution({
         }
       }
     }
+    if (!arePlanConfigsCurrent() || !areAllInputsCurrent()) aborted = true;
     for (const id of plan.comfyIds) releaseRunning(id);
     return { runs: aborted ? [] : copies.flatMap((copy) => copy.runs), aborted };
   };
