@@ -9,6 +9,7 @@ import {
   refKey,
 } from "../lib/compareDiff";
 import { useModelDisplayName } from "../lib/modelCatalog";
+import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
 import { CompareGenerationColumn } from "./compare/CompareGenerationColumn";
 import {
   CompareSourceLightbox,
@@ -60,68 +61,11 @@ export function CompareModal({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, srcPreview]);
 
-  // 영상 동기 재생 — 한 곳에서 재생/정지하면 전부 같이. 길이가 다르면 먼저 끝난 영상은
-  // 마지막 프레임에서 대기하다가, 가장 긴 영상이 끝나는 순간 전부 0으로 되감고 동시 재시작.
+  // 영상 동기화 — 재생·정지·종료·수동 탐색을 두 비교 모달이 같은 공용 규칙으로 처리한다.
   useEffect(() => {
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
     if (promptOnly || vids.length === 0) return;
-    // 프로그램적으로 일으킨 play/pause 이벤트는 무시(무한 전파 방지).
-    const ignore = new Set<HTMLVideoElement>();
-    const playAll = (except?: HTMLVideoElement) =>
-      vids.forEach((v) => {
-        if (v !== except && v.paused) {
-          ignore.add(v);
-          v.play().catch(() => ignore.delete(v));
-        }
-      });
-    const pauseAll = (except?: HTMLVideoElement) =>
-      vids.forEach((v) => {
-        if (v !== except && !v.paused) {
-          ignore.add(v);
-          v.pause();
-        }
-      });
-    let restarting = false;
-    const onPlay = (e: Event) => {
-      const t = e.target as HTMLVideoElement;
-      if (ignore.has(t)) {
-        ignore.delete(t);
-        return;
-      }
-      playAll(t);
-    };
-    const onPause = (e: Event) => {
-      const t = e.target as HTMLVideoElement;
-      if (ignore.has(t)) {
-        ignore.delete(t);
-        return;
-      }
-      if (t.ended) return; // 끝나서 멈춘 건 전파 안 함(짧은 영상은 대기)
-      pauseAll(t);
-    };
-    const onEnded = (e: Event) => {
-      if (restarting) return;
-      const t = e.target as HTMLVideoElement;
-      const maxDur = Math.max(...vids.map((v) => v.duration || 0));
-      if ((t.duration || 0) >= maxDur - 0.05 || vids.every((v) => v.ended)) {
-        restarting = true;
-        vids.forEach((v) => (v.currentTime = 0));
-        playAll();
-        setTimeout(() => (restarting = false), 120);
-      }
-    };
-    vids.forEach((v) => {
-      v.addEventListener("play", onPlay);
-      v.addEventListener("pause", onPause);
-      v.addEventListener("ended", onEnded);
-    });
-    playAll(); // 열리면 동시 자동재생(muted 라 정책 통과)
-    return () =>
-      vids.forEach((v) => {
-        v.removeEventListener("play", onPlay);
-        v.removeEventListener("pause", onPause);
-        v.removeEventListener("ended", onEnded);
-      });
+    return bindSynchronizedVideos(vids);
   }, [gens, promptOnly]);
 
   const prompts = gens.map((g) => g.display_prompt || g.prompt || "");

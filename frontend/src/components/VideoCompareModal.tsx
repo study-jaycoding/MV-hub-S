@@ -1,7 +1,8 @@
-// 단순 미디어 비교 — 생성정보(프롬프트·파라미터) 없이 이미지·영상 2개+를 나란히 보고, 영상은 동시 재생만 한다.
+// 단순 미디어 비교 — 생성정보(프롬프트·파라미터) 없이 이미지·영상 2개+를 나란히 본다.
 // (생성카드끼리는 CompareModal 로 전체 비교. 여기는 레퍼런스처럼 생성본이 아닌 미디어가 섞였을 때 '보기' 전용.)
-// 영상 동기 로직은 CompareModal 과 동일 — 한 곳에서 재생/정지하면 전부 같이, 길이 다르면 가장 긴 것 끝에 함께 되감기.
+// 영상 동기 로직은 CompareModal 과 공용 — 재생·정지·수동 탐색을 함께, 길이 다르면 가장 긴 것 끝에 되감기.
 import { useEffect, useRef, useState } from "react";
+import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
 import {
   CompareSourceLightbox,
   type CompareSourcePreview,
@@ -55,66 +56,11 @@ export function VideoCompareModal({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, zoom]);
 
-  // 동기 재생 — CompareModal 과 같은 방식(프로그램적 play/pause 는 ignore 로 전파 차단). 영상 요소만 대상.
+  // 동기 재생·탐색 — CompareModal 과 같은 공용 바인더. 영상 요소만 대상.
   useEffect(() => {
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
     if (vids.length === 0) return;
-    const ignore = new Set<HTMLVideoElement>();
-    const playAll = (except?: HTMLVideoElement) =>
-      vids.forEach((v) => {
-        if (v !== except && v.paused) {
-          ignore.add(v);
-          v.play().catch(() => ignore.delete(v));
-        }
-      });
-    const pauseAll = (except?: HTMLVideoElement) =>
-      vids.forEach((v) => {
-        if (v !== except && !v.paused) {
-          ignore.add(v);
-          v.pause();
-        }
-      });
-    let restarting = false;
-    const onPlay = (e: Event) => {
-      const t = e.target as HTMLVideoElement;
-      if (ignore.has(t)) {
-        ignore.delete(t);
-        return;
-      }
-      playAll(t);
-    };
-    const onPause = (e: Event) => {
-      const t = e.target as HTMLVideoElement;
-      if (ignore.has(t)) {
-        ignore.delete(t);
-        return;
-      }
-      if (t.ended) return; // 끝나서 멈춘 건 전파 안 함(짧은 영상은 대기)
-      pauseAll(t);
-    };
-    const onEnded = (e: Event) => {
-      if (restarting) return;
-      const t = e.target as HTMLVideoElement;
-      const maxDur = Math.max(...vids.map((v) => v.duration || 0));
-      if ((t.duration || 0) >= maxDur - 0.05 || vids.every((v) => v.ended)) {
-        restarting = true;
-        vids.forEach((v) => (v.currentTime = 0));
-        playAll();
-        setTimeout(() => (restarting = false), 120);
-      }
-    };
-    vids.forEach((v) => {
-      v.addEventListener("play", onPlay);
-      v.addEventListener("pause", onPause);
-      v.addEventListener("ended", onEnded);
-    });
-    playAll(); // 열리면 동시 자동재생(muted 라 정책 통과)
-    return () =>
-      vids.forEach((v) => {
-        v.removeEventListener("play", onPlay);
-        v.removeEventListener("pause", onPause);
-        v.removeEventListener("ended", onEnded);
-      });
+    return bindSynchronizedVideos(vids);
   }, [videos]);
 
   return (
