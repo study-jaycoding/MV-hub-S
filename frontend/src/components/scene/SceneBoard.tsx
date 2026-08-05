@@ -23,8 +23,6 @@ import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 import { toggleDisabledGen } from "../../lib/deactivated";
-import { matchShortcut } from "../../lib/shortcuts";
-import { KEY_COLORS } from "../../lib/appConstants";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -110,6 +108,7 @@ import {
 } from "../../lib/sceneRecentDoneStore";
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
+import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import {
@@ -2177,337 +2176,233 @@ export function SceneBoard({
     };
   });
 
-  // ── 키보드: n=빈 카드 연결 · Delete/Backspace=삭제 ──
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      // keydown 은 window 에 걸려 있어 e.target = document.activeElement 다. 카드를 클릭/Ctrl클릭으로 선택하면
-      // 카드 안 컨트롤(렌더 체크박스 등)에 포커스가 남아, INPUT 을 통째로 막던 옛 가드가 c(연결)·f·Delete 등
-      // 캔버스 단축키를 삼켰다(마퀴 드래그는 배경 시작이라 포커스가 body → 안 막힘 = 증상 차이). 체크박스·라디오
-      // 같은 '비-텍스트 컨트롤'엔 글자를 타이핑할 수 없으므로 단축키를 막을 이유가 없다 → 진짜 텍스트 입력만 차단한다.
-      const NON_TEXT_INPUT = new Set([
-        "checkbox", "radio", "button", "range", "color", "file", "submit", "reset", "image",
-      ]);
-      const isTextEntry =
-        !!t &&
-        ((t.tagName === "INPUT" && !NON_TEXT_INPUT.has((t as HTMLInputElement).type)) ||
-          t.tagName === "TEXTAREA" ||
-          t.tagName === "SELECT" ||
-          t.isContentEditable ||
-          !!t.closest?.(".sl-dockbar")); // 프롬프트 dock(레퍼런스 트레이 등) 포커스 시 캔버스 단축키 차단(종류 무관)
-      if (isTextEntry) return;
-      // 텍스트/제목 노드 편집 중이면(포커스가 새어도) 캔버스 단축키(m/l/t/o/i/h 등)를 무시 — 글자가 노드 생성으로 새지 않게.
-      if (editTextIdRef.current && e.key !== "Escape") return;
-      if (e.key === "Escape") {
-        setColorPopId(null); // 그룹 색 팔레트 열려 있으면 닫기(닫혀 있으면 무해)
-        if (nodePickerRef.current) setNodePicker(null); // 노드 피커 닫기(우선)
-        else if (cardMenuRef.current) setCardMenu(null); // 팝업 열려 있으면 닫기
+  // ── 전역 키보드 단축키 ──
+  // 실제 키 판정·리스너 생명주기는 useSceneKeyboardShortcuts가 담당하고,
+  // 여기서는 SceneBoard 상태를 바꾸는 행동만 제공한다.
+  const createNodeFromPicker = (kind: SceneCardKind) => {
+    const picker = nodePickerRef.current;
+    if (!picker) return;
+    const at = { x: picker.cx, y: picker.cy };
+    setNodePicker(null);
+    if (kind === "generation") createGenerationConnected(at);
+    else createNode(kind, at);
+  };
+
+  const toggleNodePicker = (): boolean => {
+    if (nodePickerRef.current) {
+      setNodePicker(null);
+      return true;
+    }
+    const mouse = lastMouseRef.current;
+    const rect = scrollRef.current?.getBoundingClientRect();
+    if (!mouse.over || !rect) return false;
+
+    const canvasPoint = toCanvas(mouse.x, mouse.y);
+    const menuWidth = 150;
+    const menuHeight = 9 * 29 + 10;
+    let screenX = mouse.x - rect.left;
+    let screenY = mouse.y - rect.top;
+    if (screenX + menuWidth > rect.width) {
+      screenX = Math.max(4, rect.width - menuWidth - 4);
+    }
+    if (screenY + menuHeight > rect.height) {
+      screenY = Math.max(4, screenY - menuHeight);
+    }
+    setNodePicker({
+      sx: screenX,
+      sy: screenY,
+      cx: Math.round(canvasPoint.x - CARD_W / 2),
+      cy: Math.round(canvasPoint.y - CARD_H / 2),
+    });
+    return true;
+  };
+
+  const copySelectedNodes = () => {
+    const ids = new Set(selectedRef.current);
+    clipboardRef.current = copySceneSelection(cardsRef.current, edgesRef.current, ids);
+    // 노드 복사가 OS 클립보드를 접수한다. 이전 캡처 이미지를 마커 텍스트로 바꿔
+    // 다음 Ctrl+V에서 내부 노드가 우선되게 하고, 실패하면 이미지 지문 읽기로 폴백한다.
+    void (async () => {
+      try {
+        await navigator.clipboard?.writeText?.(
+          "[MV-hub] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기",
+        );
+        lastImgKeyRef.current = null;
         return;
+      } catch {
+        /* write 미지원/실패 → 아래 read 지문 폴백 */
       }
-      // ── 팝업(모달 레이어)이 열려 있으면: 팝업 선택(popupSel) 대상만 처리하고 캔버스 키는 완전 차단 ──
-      if (cardMenuRef.current) {
-        if (e.repeat) return; // 색/비활성 토글이 키 반복으로 깜빡이지 않게(반복 setColor 전송 방지)
-        const pids = [...popupSelRef.current];
-        if (matchShortcut(e, "colorRed")) {
-          e.preventDefault();
-          applyColorToGids(pids, KEY_COLORS.r);
-        } else if (matchShortcut(e, "colorGreen")) {
-          e.preventDefault();
-          applyColorToGids(pids, KEY_COLORS.g);
-        } else if (matchShortcut(e, "colorBlue")) {
-          e.preventDefault();
-          applyColorToGids(pids, KEY_COLORS.b);
-        } else if (matchShortcut(e, "boardDisable")) {
-          if (pids.length) {
-            e.preventDefault();
-            toggleDisabledGen(pids);
-          }
-        } else if (onSetTagsRef.current && matchShortcut(e, "tag")) {
-          // # = 선택한 타일 태그 편집(타일 T 버튼과 동일). 여러 개 선택이면 첫 번째.
-          const gid = pids.find((id) => genDataRef.current[id]);
-          if (gid) {
-            e.preventDefault();
-            setTagEditGid(gid);
-          }
-        }
-        return; // n/y/Delete 등 캔버스 명령은 팝업 중 무시
-      }
-      const sel = selectedRef.current;
-      // ── 노드 생성 단축키(N/M/L/T/V/R/O/I/H)는 Tab 피커가 열렸을 때만 작동 — 피커 위치에 만들고 닫는다.
-      //    (a=정렬을 비롯한 그 외 단축키는 피커와 무관하게 평소대로.) 피커 없으면 이 키들은 아무것도 안 함.
-      const np = nodePickerRef.current;
-      if (np && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const NODE_KEYS: Record<string, SceneCardKind> = {
-          n: "generation",
-          m: "model",
-          l: "list",
-          t: "text",
-          v: "view",
-          o: "output",
-          i: "input",
-          h: "head",
-          r: "render",
-          c: "comfy",
-        };
-        const kind = NODE_KEYS[e.key.toLowerCase()];
-        if (kind) {
-          e.preventDefault();
-          const at = { x: np.cx, y: np.cy };
-          setNodePicker(null);
-          if (kind === "generation") createGenerationConnected(at);
-          else createNode(kind, at);
+      try {
+        const clipboardItems = await navigator.clipboard?.read?.();
+        if (!clipboardItems) return;
+        for (const item of clipboardItems) {
+          const imageType = item.types.find((type) => type.startsWith("image/"));
+          if (!imageType) continue;
+          const blob = await item.getType(imageType);
+          lastImgKeyRef.current = `${blob.size}:${blob.type}`;
           return;
         }
+      } catch {
+        /* 클립보드 읽기 권한 없음/미지원 — 기존 지문 휴리스틱으로 폴백 */
       }
-      // Tab = Houdini식 노드 피커 '토글'. 마우스가 보드 위에 있고 Shift 없이 누를 때만 — 그 외엔 기본 포커스
-      // 이동을 막지 않는다(접근성). 위 모달 가드(cardMenu) 통과 후라 팝업 중엔 안 뜬다.
-      if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (nodePickerRef.current) {
-          // 이미 열려 있으면 닫기(토글) — 계속 새로 열리기만 하던 것 수정(사용자 요청).
-          e.preventDefault();
-          setNodePicker(null);
-          return;
-        }
-        const m = lastMouseRef.current;
-        const rect = scrollRef.current?.getBoundingClientRect();
-        if (!m.over || !rect) return; // 보드 위가 아니면 기본 Tab(포커스 이동) 허용
-        e.preventDefault();
-        const cp = toCanvas(m.x, m.y);
-        // 메뉴가 보드 밖으로 잘리지 않게 클램프 — 아래 공간이 모자라면 커서 '위쪽'으로 펼친다
-        //  (하단 프롬프트 독 근처에서 열어도 전부 보이게). 크기는 아이템 수 기반 근사값.
-        const MENU_W = 150;
-        const MENU_H = 9 * 29 + 10; // 항목 9개 × 행높이 + 패딩 근사
-        let sx = m.x - rect.left;
-        let sy = m.y - rect.top;
-        if (sx + MENU_W > rect.width) sx = Math.max(4, rect.width - MENU_W - 4);
-        if (sy + MENU_H > rect.height) sy = Math.max(4, sy - MENU_H);
-        setNodePicker({
-          sx,
-          sy,
-          cx: Math.round(cp.x - CARD_W / 2),
-          cy: Math.round(cp.y - CARD_H / 2),
-        });
-        return;
+    })();
+  };
+
+  const autoConnectSelection = (): boolean => {
+    const selectedCards = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((card) => card.id === id))
+      .filter((card): card is SceneCard => !!card);
+    if (selectedCards.length < 2) return false;
+
+    const layerOf = (card: SceneCard) =>
+      card.kind === "generation"
+        ? 1
+        : card.kind === "list" || card.kind === "render"
+          ? 2
+          : card.kind === "view"
+            ? 3
+            : card.kind === "output"
+              ? 4
+              : 0;
+    const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
+
+    if (selectedCards.every((card) => card.kind === "generation")) {
+      const sorted = [...selectedCards].sort((left, right) => left.x - right.x);
+      const pairs: Array<[string, string]> = [];
+      for (let index = 0; index < sorted.length - 1; index++) {
+        pairs.push([sorted[index].id, sorted[index + 1].id]);
       }
-      // Ctrl+Z = 되돌리기, Ctrl+Shift+Z = 다시 실행(redo). Alt 조합은 제외.
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "z" || e.key === "Z")) {
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-        return;
-      }
-      // Ctrl+C = 선택 노드 복사(clipboardRef). 붙여넣기는 paste 이벤트에서(텍스트 편집 중이면 위 포커스 가드로 제외).
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "c" || e.key === "C")) {
-        const ids = new Set(sel);
-        if (!ids.size) return;
-        e.preventDefault();
-        // 외부 소스 → 선택 노드로 들어오는 입력 엣지만 함께 보관한다. 출력 엣지는 하류 이중연결 방지를 위해 제외.
-        clipboardRef.current = copySceneSelection(cardsRef.current, edgesRef.current, ids);
-        // 노드 복사가 OS 클립보드를 '접수' — 남아있던 옛 캡처 이미지를 마커 텍스트로 대체한다.
-        //  이러면 Ctrl+V 때 이미지 blob 자체가 없어 노드 붙여넣기가 항상 우선(판정 불필요).
-        //  이전 방식(read 로 옛 이미지 지문 기록)은 clipboard-read '권한'이 있어야만 동작해, 권한 없는
-        //  origin(dev 5173 등)에선 옛 캡처가 '새 캡처'로 오판돼 노드 대신 이미지가 붙었다(사용자 보고).
-        //  writeText 는 사용자 제스처에서 권한 프롬프트 없이 동작. Ctrl+C '이후' 새로 캡처하면
-        //  클립보드가 이미지로 다시 바뀌므로 그때는 정상적으로 이미지가 우선된다.
-        void (async () => {
-          try {
-            await navigator.clipboard?.writeText?.("[MV-hub] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기");
-            lastImgKeyRef.current = null; // 클립보드에 이미지 없음 상태로 리셋
-            return;
-          } catch {
-            /* write 미지원/실패 → 아래 read 지문 폴백 */
-          }
-          try {
-            const cbItems = await navigator.clipboard?.read?.();
-            if (!cbItems) return;
-            for (const it of cbItems) {
-              const imgType = it.types.find((tp) => tp.startsWith("image/"));
-              if (!imgType) continue;
-              const b = await it.getType(imgType);
-              lastImgKeyRef.current = `${b.size}:${b.type}`;
-              return;
-            }
-          } catch {
-            /* 클립보드 읽기 권한 없음/미지원 — 기존 지문 휴리스틱으로 폴백 */
-          }
-        })();
-        return;
-      }
-      // Ctrl+V(카드 붙여넣기)는 paste 이벤트에서 처리 — 내부 노드 클립보드가 있으면 노드가 우선(없을 때만 캡쳐 이미지).
-      // Ctrl+G = 선택 카드 그룹. 해제는 그룹 헤더의 × 버튼으로. (mod+g 라 g=초록색 단축키와 충돌 없음)
-      if ((e.ctrlKey || e.metaKey) && (e.key === "g" || e.key === "G")) {
-        e.preventDefault(); // 브라우저 '다음 찾기' 방지
-        if (e.repeat) return; // 키 반복으로 중복 그룹 생성 방지
-        groupSelected();
-        return;
-      }
-      // f = 프레이밍. 선택 카드 있으면 그 카드(들) 중심, 없으면 전체 카드가 다 보이게 맞춤.
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "f" || e.key === "F")) {
-        e.preventDefault();
-        frameView();
-        return;
-      }
-      // c = 자동 연결(모든 노드 종류 공통, canConnect 규칙 적용). 연결 흐름 깊이(레이어):
-      //   소스(레퍼런스/모델/텍스트)=0 → 생성=1 → 리스트=2 → View=3.
-      //  · 각 카드를 '자기보다 깊고 연결 가능한 가장 가까운 레이어'의 선택 카드들에 모두 연결.
-      //    (레퍼런스+생성 → 레퍼런스 전부가 생성으로 / 생성들+리스트 → 생성 전부가 리스트로 / 텍스트+리스트도 동일)
-      //  · 생성 카드끼리만 선택하면 왼→오 계보 체인(기존).
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "c" || e.key === "C")) {
-        const selCards = [...sel]
-          .map((id) => cardsRef.current.find((cc) => cc.id === id))
-          .filter((c): c is SceneCard => !!c);
-        if (selCards.length >= 2) {
-          // 소스(레퍼런스/모델/텍스트/input)=0 → 생성=1 → 리스트/렌더(수집기)=2 → View(싱크)=3 → Output(무선 발신)=4.
-          //  렌더는 생성물을 모아 View 로 내보내는 수집기라 리스트와 같은 레이어(2) — 생성(1)→렌더(2)→미리보기(3)가 c 로 이어진다.
-          const layerOf = (c: SceneCard) =>
-            c.kind === "generation"
-              ? 1
-              : c.kind === "list" || c.kind === "render"
-                ? 2
-                : c.kind === "view"
-                  ? 3
-                  : c.kind === "output"
-                    ? 4
-                    : 0;
-          const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-          if (selCards.every((c) => c.kind === "generation")) {
-            // 생성 카드끼리 — 화면 왼→오 계보 체인.
-            e.preventDefault();
-            const sorted = [...selCards].sort((a, b) => a.x - b.x);
-            const pairs: Array<[string, string]> = [];
-            for (let i = 0; i < sorted.length - 1; i++) pairs.push([sorted[i].id, sorted[i + 1].id]);
-            if (pairs.length) addEdges(pairs);
-            return;
-          }
-          // 레이어 연결 — s 보다 깊고 연결 가능한 선택 카드 중 '가장 얕은 레이어' 전부에 연결.
-          const pairs: Array<[string, string]> = [];
-          for (const s of selCards) {
-            const cand = selCards.filter(
-              (t) => layerOf(t) > layerOf(s) && canConnect(s, t, byId, edgesRef.current),
-            );
-            if (!cand.length) continue;
-            const minLayer = Math.min(...cand.map(layerOf));
-            for (const t of cand) {
-              if (layerOf(t) !== minLayer) continue;
-              // 방향 결정 — 양방향 다 가능한 '모호한 쌍'(예: 리스트↔텍스트)만 위치(x)로 정한다: 왼쪽 카드가
-              // 출력(소스), 오른쪽이 입력(타깃). 한 방향만 유효한 쌍(레퍼런스→생성 등)은 위치와 무관하게 유지.
-              if (canConnect(t, s, byId, edgesRef.current) && t.x < s.x) pairs.push([t.id, s.id]);
-              else pairs.push([s.id, t.id]);
-            }
-          }
-          if (pairs.length) {
-            e.preventDefault();
-            addEdges(pairs);
-            return;
-          }
+      if (!pairs.length) return false;
+      addEdges(pairs);
+      return true;
+    }
+
+    const pairs: Array<[string, string]> = [];
+    for (const source of selectedCards) {
+      const candidates = selectedCards.filter(
+        (target) =>
+          layerOf(target) > layerOf(source) &&
+          canConnect(source, target, cardsById, edgesRef.current),
+      );
+      if (!candidates.length) continue;
+      const minimumLayer = Math.min(...candidates.map(layerOf));
+      for (const target of candidates) {
+        if (layerOf(target) !== minimumLayer) continue;
+        // 양방향이 가능한 모호한 쌍만 화면 위치로 방향을 정하고, 한 방향만 가능한 연결은 규칙을 유지한다.
+        if (
+          canConnect(target, source, cardsById, edgesRef.current) &&
+          target.x < source.x
+        ) {
+          pairs.push([target.id, source.id]);
+        } else {
+          pairs.push([source.id, target.id]);
         }
       }
-      // a = 선택 노드(2개 이상)를 가지런히 정렬 — 연결 흐름(왼→오른쪽) 기준 열 배치, 열 안은 현재 세로순서 보존.
-      if (matchShortcut(e, "boardArrange")) {
-        const picked = [...sel]
-          .map((id) => cardsRef.current.find((c) => c.id === id))
-          .filter((c): c is SceneCard => !!c);
-        if (picked.length >= 2) {
-          e.preventDefault();
-          if (e.repeat) return; // 키 반복 눌림 무시(중복 정렬·undo 오염 방지)
-          // 높이는 '실측 offsetHeight' 우선 — 자동높이 레퍼런스 카드는 이미지 로드에 따라 크기가 변하므로
-          // 캐시(heightsRef)가 한 박자 늦으면 정렬 간격이 들쭉날쭉해진다. 지금 화면의 실제 높이로 정렬한다.
-          const layoutNodes = picked.map((c) => ({
-            id: c.id,
-            x: c.x,
-            y: c.y,
-            w: widthOf(c),
-            h: cardEls.current[c.id]?.offsetHeight || heightOf(c),
-          }));
-          const pos = arrangeNodes(layoutNodes, edgesRef.current);
-          // 실제로 위치가 바뀐 카드가 없으면(이미 정렬됨) 저장·undo 생략.
-          const changed = picked.some((c) => c.x !== pos[c.id].x || c.y !== pos[c.id].y);
-          if (!changed) return;
-          const moved = cardsRef.current.map((c) =>
-            pos[c.id] ? { ...c, x: pos[c.id].x, y: pos[c.id].y } : c,
-          );
-          const nextCards = withGenRefs(moved, edgesRef.current); // 위치가 바뀌면 연결 참조 순서(@Image1/2) 재계산
-          setCards(nextCards);
-          persist(nextCards, edgesRef.current);
-          return;
-        }
-      }
-      // c = 선택 노드(2개 이상)를 연결(왼→오른쪽). 포트를 드래그하지 않고 키로 연결.
-      if (matchShortcut(e, "boardConnect")) {
-        if ([...sel].length >= 2) {
-          e.preventDefault();
-          if (e.repeat) return; // 키 반복 무시(중복 엣지·undo 오염 방지)
-          connectSelected();
-          return;
-        }
-      }
-      // d: 선택 카드 비활성(회색) 토글 — 계보/라이브러리와 같은 소스. 카드 대표 genId 기준.
-      if (matchShortcut(e, "boardDisable")) {
-        if (e.repeat) return; // 비활성 토글이 키 반복으로 깜빡이지 않게
-        const gids = [...sel]
-          .map((id) => cardsRef.current.find((c) => c.id === id)?.genId)
-          .filter((x): x is string => !!x);
-        if (gids.length) {
-          e.preventDefault();
-          toggleDisabledGen(gids);
-        }
-        return;
-      }
-      // r/g/b: 선택 카드 색 지정(계보/라이브러리와 동일)
-      if (matchShortcut(e, "colorRed")) {
-        e.preventDefault();
-        if (e.repeat) return; // 색 토글이 키 반복으로 깜빡이지 않게(반복 setColor 전송 방지)
-        setSelColor(KEY_COLORS.r);
-        return;
-      }
-      if (matchShortcut(e, "colorGreen")) {
-        e.preventDefault();
-        if (e.repeat) return;
-        setSelColor(KEY_COLORS.g);
-        return;
-      }
-      if (matchShortcut(e, "colorBlue")) {
-        e.preventDefault();
-        if (e.repeat) return;
-        setSelColor(KEY_COLORS.b);
-        return;
-      }
-      // #: 선택된 생성 카드의 태그 편집 팝업 열기(라이브러리와 동일 — 팝업 안에서 # 한 번 더로 전역태그).
-      if (onSetTagsRef.current && matchShortcut(e, "tag")) {
-        const target = [...sel]
-          .map((id) => cardsRef.current.find((c) => c.id === id))
-          .find((c) => !!c && c.kind === "generation" && !!c.genId && !!genDataRef.current[c.genId]);
-        if (target) {
-          e.preventDefault();
-          setTagEditNodeGenId(null);
-          setTagEditCardId(target.id);
-        }
-        return;
-      }
-      if (e.key === "y" || e.key === "Y") {
-        if (!e.repeat) setCutHeld(true); // 누르고 있는 동안만 가위 — 반복 keydown 무시
-        return;
-      }
-      if (e.key === "Delete") {
-        if (!sel.size) return;
-        e.preventDefault();
-        deleteCards([...sel]);
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === "y" || e.key === "Y") setCutHeld(false); // Y 떼면 가위 종료
-    };
-    const onBlur = () => setCutHeld(false); // 포커스 잃으면(alt-tab 등) 가위 상태 고착 방지
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onBlur);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }
+    if (!pairs.length) return false;
+    addEdges(pairs);
+    return true;
+  };
+
+  const arrangeSelection = (repeat: boolean): boolean => {
+    const picked = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((card) => card.id === id))
+      .filter((card): card is SceneCard => !!card);
+    if (picked.length < 2) return false;
+    if (repeat) return true;
+
+    const layoutNodes = picked.map((card) => ({
+      id: card.id,
+      x: card.x,
+      y: card.y,
+      w: widthOf(card),
+      h: cardEls.current[card.id]?.offsetHeight || heightOf(card),
+    }));
+    const positions = arrangeNodes(layoutNodes, edgesRef.current);
+    const changed = picked.some(
+      (card) => card.x !== positions[card.id].x || card.y !== positions[card.id].y,
+    );
+    if (!changed) return true;
+
+    const moved = cardsRef.current.map((card) =>
+      positions[card.id]
+        ? { ...card, x: positions[card.id].x, y: positions[card.id].y }
+        : card,
+    );
+    const nextCards = withGenRefs(moved, edgesRef.current);
+    setCards(nextCards);
+    persist(nextCards, edgesRef.current);
+    return true;
+  };
+
+  const disableSelected = (): boolean => {
+    const generationIds = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((card) => card.id === id)?.genId)
+      .filter((id): id is string => !!id);
+    if (!generationIds.length) return false;
+    toggleDisabledGen(generationIds);
+    return true;
+  };
+
+  const editSelectedTag = (): boolean => {
+    if (!onSetTagsRef.current) return false;
+    const target = [...selectedRef.current]
+      .map((id) => cardsRef.current.find((card) => card.id === id))
+      .find(
+        (card) =>
+          !!card &&
+          card.kind === "generation" &&
+          !!card.genId &&
+          !!genDataRef.current[card.genId],
+      );
+    if (!target) return false;
+    setTagEditNodeGenId(null);
+    setTagEditCardId(target.id);
+    return true;
+  };
+
+  useSceneKeyboardShortcuts({
+    isTextEditing: () => !!editTextIdRef.current,
+    isPopupOpen: () => !!cardMenuRef.current,
+    isPickerOpen: () => !!nodePickerRef.current,
+    selectionCount: () => selectedRef.current.size,
+    onEscape: () => {
+      setColorPopId(null);
+      if (nodePickerRef.current) setNodePicker(null);
+      else if (cardMenuRef.current) setCardMenu(null);
+    },
+    onPopupColor: (color) => applyColorToGids([...popupSelRef.current], color),
+    onPopupDisable: () => {
+      const ids = [...popupSelRef.current];
+      if (!ids.length) return false;
+      toggleDisabledGen(ids);
+      return true;
+    },
+    onPopupTag: () => {
+      if (!onSetTagsRef.current) return false;
+      const generationId = [...popupSelRef.current].find(
+        (id) => !!genDataRef.current[id],
+      );
+      if (!generationId) return false;
+      setTagEditGid(generationId);
+      return true;
+    },
+    onCreateNode: createNodeFromPicker,
+    onTogglePicker: toggleNodePicker,
+    onUndo: undo,
+    onRedo: redo,
+    onCopy: copySelectedNodes,
+    onGroup: groupSelected,
+    onFrame: frameView,
+    onAutoConnect: autoConnectSelection,
+    onArrange: arrangeSelection,
+    onConnect: connectSelected,
+    onDisable: disableSelected,
+    onColor: setSelColor,
+    onTag: editSelectedTag,
+    onCutHeldChange: setCutHeld,
+    onDelete: () => deleteCards([...selectedRef.current]),
+  });
 
   // ── 마우스: 미들=팬 · 카드=이동/선택 · 배경=마퀴 복수선택 ──
   // 캔버스(카드/배경)를 클릭하면 열려 있던 프롬프트 입력창의 포커스를 해제한다 → 카드 선택 후
