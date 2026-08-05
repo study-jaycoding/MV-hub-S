@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
 import { api } from "../../api";
 import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
-import { buildFolderCountTree } from "../../lib/folderTreeModel";
+import { buildFolderCountTree, hasMoreThanFolderNodes } from "../../lib/folderTreeModel";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
@@ -11,8 +11,8 @@ import { useT } from "../../lib/i18n";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "../../lib/teamSeen";
 import {
-  collectExpandableProjectFolders,
   cachedProjectFolderEntries,
+  initialProjectFolderExpansion,
   loadProjectFolderExpansion,
   rememberProjectFolderEntry,
   rememberProjectFolderLink,
@@ -22,15 +22,6 @@ import {
 } from "../../lib/projectFolderTree";
 import type { Project, ProjectFolderState } from "../../types";
 import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
-
-// 트리의 전체 폴더 노드 수(모든 하위 포함) — 스크롤 여부 판단용.
-function countFolderNodes(nodes: FolderTreeItem[]): number {
-  let n = 0;
-  for (const node of nodes) {
-    n += 1 + (node.children ? countFolderNodes(node.children) : 0);
-  }
-  return n;
-}
 
 function SidebarFolderTree({
   state,
@@ -71,7 +62,7 @@ function SidebarFolderTree({
   if (!state.tree) return null;
   if (!roots.length) return null; // 합성 후에도 비면(디스크·데이터 모두 없음) 트리 숨김
   // 폴더가 15개를 넘을 때만 스크롤(max-height) 적용 — 적을 땐 스크롤바가 깜빡이지 않게.
-  const scroll = countFolderNodes(roots) > 15;
+  const scroll = hasMoreThanFolderNodes(roots, 15);
   return (
     <div title={state.render_path || state.root_path}>
       <FolderTreeView
@@ -170,7 +161,10 @@ export function ProjectSection({
       if (Object.prototype.hasOwnProperty.call(prev, pid)) return prev;
       const next = {
         ...prev,
-        [pid]: collectExpandableProjectFolders(visibleProjectFolderRoots(tree)),
+        [pid]: initialProjectFolderExpansion(
+          visibleProjectFolderRoots(tree),
+          state.selected_path || "",
+        ),
       };
       saveProjectFolderExpansion(next);
       return next;

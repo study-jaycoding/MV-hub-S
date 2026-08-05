@@ -7,6 +7,23 @@ export interface FolderCountTreeNode {
   virtual?: boolean;
 }
 
+// 스크롤 같은 임계값 판정은 전체 트리를 끝까지 세지 않는다.
+// 반복문을 사용해 비정상적으로 깊은 폴더에서도 호출 스택을 소모하지 않는다.
+export function hasMoreThanFolderNodes(
+  nodes: FolderCountTreeNode[],
+  limit: number,
+): boolean {
+  let count = 0;
+  const pending = [...nodes];
+  while (pending.length) {
+    const node = pending.pop()!;
+    count += 1;
+    if (count > limit) return true;
+    if (node.children?.length) pending.push(...node.children);
+  }
+  return false;
+}
+
 // 렌더 루트 상대 경로 정규화 — 백슬래시/중복슬래시/앞뒤슬래시/. .. 제거.
 export function normalizeFolderPath(path: string | null | undefined): string {
   return (path || "")

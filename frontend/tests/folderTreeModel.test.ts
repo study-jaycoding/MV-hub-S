@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFolderCountTree,
+  hasMoreThanFolderNodes,
   normalizeFolderPath,
   type FolderCountTreeNode,
 } from "../src/lib/folderTreeModel";
@@ -90,5 +91,15 @@ describe("프로젝트 폴더 카운트 트리", () => {
 
     expect(buildFolderCountTree(roots)).toBe(roots);
     expect(buildFolderCountTree(roots, {})).toBe(roots);
+  });
+
+  it("스크롤 임계값은 깊은 트리를 재귀 없이 판정한다", () => {
+    let node: FolderCountTreeNode = { name: "leaf", path: "leaf", children: [] };
+    for (let depth = 1_498; depth >= 0; depth -= 1) {
+      node = { name: `d${depth}`, path: `d${depth}`, children: [node] };
+    }
+
+    expect(hasMoreThanFolderNodes([node], 15)).toBe(true);
+    expect(hasMoreThanFolderNodes([node], 1_500)).toBe(false);
   });
 });
