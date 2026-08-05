@@ -37,9 +37,9 @@ from ..models import (
     TagsIn,
 )
 import asyncio
-import logging
 
 from ..services import cli_bridge, media_cache, syncer
+from ..usecases import hf_missing
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -370,70 +370,23 @@ async def trash_hf_missing(request: Request):
     무료 호출(생성 아님). 확인 불가(None)는 건드리지 않는다 — 일시적 오류로 멀쩡한 걸 지우지 않게.
     재등장한 항목은 흐림(hf_missing) 표시만 해제. 반환: {checked, trashed}.
     AUTH on 이면 내 생성물만 검증 대상(남의 잡을 다른 신원 CLI 로 오판·삭제 방지)."""
-    gens = repo.gens_with_job_id(account_uid=account_scope_uid(request))
-    sem = asyncio.Semaphore(8)  # 동시 CLI 호출 제한
-
-    async def check(gen_id: str, job_id: str):
-        async with sem:
-            exists = await cli_bridge.job_exists(job_id)
-            return gen_id, exists  # True/False/None(확인불가)
-
-    results = await asyncio.gather(*(check(g, j) for g, j in gens))
-
-    # DB 쓰기(set_hf_missing/delete_generation = BEGIN IMMEDIATE·ATTACH·다테이블)는 동기라
-    # async 라우트 루프에서 직접 돌리면 이벤트루프를 막는다 → 한 번에 스레드로(syncer 와 동일).
-    def _apply_local(rs):
-        n = 0
-        for gid, ex in rs:
-            if ex is None:
-                continue  # 확인 불가 → 그대로 둠
-            if ex:
-                repo.set_hf_missing(gid, False)  # 재등장 → 흐림 해제
-            else:
-                repo.delete_generation(gid)  # 힉스에서 삭제됨 → 휴지통행(soft delete)
-                n += 1
-        return n
-
-    trashed = await asyncio.to_thread(_apply_local, results)
-
-    # ★서버 공유본까지 검토(로컬 우선 확장): 공유했다가 원 작성자 HF 에서 삭제된 건 서버에만 남아
-    # 로컬 검토망에 안 걸린다. 프록시(서버 연결) 있으면 서버 후보를 받아 '내 것'만 CLI 로 검증하고,
-    # 삭제 확정만 서버가 휴지통으로 보내게 결과를 올린다(서버엔 CLI 없음 → 로컬이 검증 주체).
-    server_checked = 0
-    server_trashed = 0
+    fetch_server_candidates = None
+    apply_server_results = None
     if _proxy.proxying():
-        try:
-            # proxy_json 은 동기 urllib(최대 60s) — async 라우트에서 직접 부르면 루프 블로킹.
-            cands = (
-                await asyncio.to_thread(_proxy.proxy_json, "GET", "/api/manage/hf-missing-candidates")
-                or {}
-            ).get("candidates", [])
-            server_checked = len(cands)
+        fetch_server_candidates = lambda: _proxy.proxy_json(
+            "GET", "/api/manage/hf-missing-candidates"
+        )
+        apply_server_results = lambda results: _proxy.proxy_json(
+            "POST",
+            "/api/manage/hf-missing-apply",
+            body={"results": results},
+        )
 
-            async def scheck(c):
-                async with sem:
-                    return {
-                        "gen_id": c["gen_id"],
-                        "job_id": c["job_id"],
-                        "exists": await cli_bridge.job_exists(c["job_id"]),
-                    }
-
-            sres = await asyncio.gather(*(scheck(c) for c in cands if c.get("job_id")))
-            payload = [r for r in sres if r["exists"] is not None]  # 확인불가(None)는 안 보냄
-            if payload:
-                resp = await asyncio.to_thread(
-                    _proxy.proxy_json, "POST", "/api/manage/hf-missing-apply", body={"results": payload}
-                )
-                server_trashed = (resp or {}).get("trashed", 0)
-        except Exception as e:  # noqa: BLE001 — 서버 검토 실패는 로컬 검토 결과를 막지 않음
-            logging.getLogger(__name__).warning("서버측 hf-missing 검토 실패(로컬 결과는 정상): %s", e)
-
-    return {
-        "checked": len(gens),
-        "trashed": trashed,
-        "server_checked": server_checked,
-        "server_trashed": server_trashed,
-    }
+    return await hf_missing.trash_missing_generations(
+        account_scope_uid(request),
+        fetch_server_candidates=fetch_server_candidates,
+        apply_server_results=apply_server_results,
+    )
 
 
 @router.delete("/generations/{gen_id}")
