@@ -262,7 +262,15 @@ export default function App() {
 
 
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신하고, 놓친 전이는 reload 로 따라잡는다.
-  useGenerationProgress({ gensRef, setGens, reload, bumpBoard, setSyncTick });
+  useGenerationProgress({
+    gensRef,
+    setGens,
+    reload,
+    bumpBoard,
+    setSyncTick,
+    historyBoardVisible: filters.tab === "compose" && !activeScene,
+    commentsVisible: commentGenId !== null,
+  });
 
   // 진행중 잡·팀 탭 폴링 + 탭 재포커스 새로고침.
   useGenerationAutoRefresh({ generations: gens, tab: filters.tab, reload });

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
@@ -18,6 +18,8 @@ interface UseGenerationProgressArgs {
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
   bumpBoard: () => void;
   setSyncTick: Dispatch<SetStateAction<number>>;
+  historyBoardVisible: boolean;
+  commentsVisible: boolean;
 }
 
 const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "processing"]);
@@ -35,13 +37,35 @@ export function shouldObserveProgressStatus(
   );
 }
 
+export function refreshVisibleSyncConsumers({
+  historyBoardVisible,
+  commentsVisible,
+  bumpBoard,
+  bumpComments,
+}: {
+  historyBoardVisible: boolean;
+  commentsVisible: boolean;
+  bumpBoard: () => void;
+  bumpComments: () => void;
+}): void {
+  // 숨은 보드는 열릴 때 mount 조회하고, 닫힌 코멘트 패널도 genId mount 조회를 한다.
+  // 보이지 않는 소비자의 카운터까지 올리면 App 전체와 큰 SceneBoard가 의미 없이 다시 렌더된다.
+  if (historyBoardVisible) bumpBoard();
+  if (commentsVisible) bumpComments();
+}
+
 export function useGenerationProgress({
   gensRef,
   setGens,
   reload,
   bumpBoard,
   setSyncTick,
+  historyBoardVisible,
+  commentsVisible,
 }: UseGenerationProgressArgs) {
+  // 표시 상태 변화만으로 WebSocket 연결을 다시 만들지 않도록 최신값은 ref로 읽는다.
+  const visibleConsumersRef = useRef({ historyBoardVisible, commentsVisible });
+  visibleConsumersRef.current = { historyBoardVisible, commentsVisible };
   useEffect(() => {
     let syncedTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingSyncOrigins: LibraryMutationOrigin[] | undefined;
@@ -73,9 +97,12 @@ export function useGenerationProgress({
         // 갱신해야 한다. 전체 목록 reload만으로는 compose 탭의 useSceneGenData가 깨어나지 않는다.
         dispatchAppEvent(APP_EVENTS.libraryChanged);
       }
-      // 목록 reload를 생략해도 열린 코멘트와 히스토리 보드는 가벼운 자기 갱신 신호를 받는다.
-      bumpBoard();
-      setSyncTick((t) => t + 1);
+      // 목록 reload를 생략해도 현재 보이는 코멘트와 히스토리 보드는 가벼운 자기 갱신 신호를 받는다.
+      refreshVisibleSyncConsumers({
+        ...visibleConsumersRef.current,
+        bumpBoard,
+        bumpComments: () => setSyncTick((t) => t + 1),
+      });
     };
 
     const queueSynced = (origins: LibraryMutationOrigin[] | undefined) => {

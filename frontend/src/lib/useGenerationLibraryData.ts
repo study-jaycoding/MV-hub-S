@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, GEN_PAGE } from "../api";
 import { EMPTY_FACETS } from "./appConstants";
 import { beginLibraryReload, finishLibraryReload } from "./librarySync";
+import { reconcileArrayState, reconcileValueState } from "./stateReconciliation";
 import type { Facets, Filters, GenQuery, GenStats, Generation, Project } from "../types";
 
 interface UseGenerationLibraryDataArgs {
@@ -102,7 +103,7 @@ export function useGenerationLibraryData({
           // 연속 synced가 프로젝트 요청을 동시에 띄우고 seq를 서로 무효화해 폴더가 늦게 나타난다.
           const pr = await api.projects("my");
           if (seq !== reloadSeqRef.current || !pr) return;
-          setProjects(pr.projects);
+          setProjects((prev) => reconcileArrayState(prev, pr.projects));
           setUnassignedCount(pr.unassigned);
           setArchivedCount(pr.archived_count ?? 0);
           projectsLoadedRef.current = true;
@@ -125,7 +126,7 @@ export function useGenerationLibraryData({
           ? await api.listTrash(query.search, 0)
           : await api.listGenerations(query, null);
         if (seq !== reloadSeqRef.current) return;
-        setGens(g);
+        setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(g.length >= GEN_PAGE);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
@@ -146,12 +147,12 @@ export function useGenerationLibraryData({
       ]);
       if (seq !== reloadSeqRef.current) return;
       if (st) {
-        setStats(st);
+        setStats((prev) => reconcileValueState(prev, st));
         lastStatsAtRef.current = now;
       }
-      if (f) setFacets(f);
+      if (f) setFacets((prev) => reconcileValueState(prev, f));
       if (pr) {
-        setProjects(pr.projects);
+        setProjects((prev) => reconcileArrayState(prev, pr.projects));
         setUnassignedCount(pr.unassigned);
         setArchivedCount(pr.archived_count ?? 0);
         projectsLoadedRef.current = true;

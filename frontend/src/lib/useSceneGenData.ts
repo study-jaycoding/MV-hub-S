@@ -20,6 +20,7 @@ import {
   hydrateMissing,
 } from "./sceneGenDataStore";
 import { observeStatus } from "./sceneRecentDoneStore";
+import { reconcileRecordState } from "./stateReconciliation";
 import type { Generation } from "../types";
 
 export interface SceneGenDataApi {
@@ -55,29 +56,36 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     .filter((c) => c.kind === "generation" || (c.kind === "comfy" && (c.genIds?.length || c.genId)))
     .flatMap((c) => variantIds(c))
     .join(",");
-  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/삭제 등)를 구독 → refreshTick 을 올려 현재 카드들의
-  // 생성물을 즉시 재조회한다. 완료 카드는 평소 재폴링을 안 해 folder_path/project_id 가 stale 이었고,
+  // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/삭제 등)를 구독 → 현재 카드들의 생성물을 즉시
+  // 재조회한다. 완료 카드는 평소 재폴링을 안 해 folder_path/project_id 가 stale 이었고,
   // 그래서 캔버스에서 폴더로 담은 직후 그 폴더를 눌러도(탭 왕복 전) 딤이 옛 값으로 잘못 표시되던 버그.
-  const [refreshTick, setRefreshTick] = useState(0);
   // 라이브러리 변경이 연속으로(배치 태깅·담기 등) 오면 매번 전 variant 재조회는 과하다 →
   // 트레일링 300ms 디바운스로 버스트를 1회로 합친다(마지막 이벤트 후 실행이라 folder 신선도 유지).
+  // 화면에 보이는 상태가 아닌 재조회 트리거를 setState로 만들면 응답이 같아도 큰 SceneBoard가 먼저
+  // 한 번 렌더된다. 실제 요청 함수는 ref로 직접 호출하고, 아래 state는 응답 내용이 달라질 때만 바꾼다.
+  const refreshSceneDataRef = useRef<() => void>(() => {});
   const refreshTimerRef = useRef<number | undefined>(undefined);
   const bumpRefresh = () => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = window.setTimeout(() => setRefreshTick((t) => t + 1), 300);
+    refreshTimerRef.current = window.setTimeout(() => refreshSceneDataRef.current(), 300);
   };
   useEffect(() => onLibraryChanged(bumpRefresh), []); // 창 간
   useCustomEvent(APP_EVENTS.libraryChanged, bumpRefresh); // 같은 창(내 담기·생성 즉시)
   useEffect(() => () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); }, []);
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
-    if (!ids.length) return;
+    if (!ids.length) {
+      refreshSceneDataRef.current = () => {};
+      return;
+    }
     let alive = true;
     let timer: number | undefined;
+    let requestSeq = 0;
     const tick = async (pollIds: string[]) => {
+      const seq = ++requestSeq;
       // 숨겨진 탭에서는 활성 씬도 보이지 않는다. 서버 조회를 쉬고 복귀 뒤 기존 주기 안에 재개한다.
       if (document.visibilityState === "hidden") {
-        if (alive) timer = window.setTimeout(() => tick(pollIds), 2500);
+        if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
         return;
       }
       // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
@@ -87,7 +95,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
       } catch {
         // 일시 오류는 기존 캐시를 유지하고 같은 묶음을 다시 시도한다. 캔버스가 열려 있는 동안은
         // 중복 방지를 위해 App 보조 watcher가 쉬므로 여기서 재시도 책임을 가진다.
-        if (alive) timer = window.setTimeout(() => tick(pollIds), 2500);
+        if (alive && seq === requestSeq) timer = window.setTimeout(() => tick(pollIds), 2500);
         return;
       }
       const missing = new Set(batch.missing || []);
@@ -96,7 +104,8 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
         gen: batch.items[id] || null,
         gone: missing.has(id),
       }));
-      if (!alive) return;
+      // 새 변경 신호가 와서 전량 요청을 다시 시작했으면 그보다 먼저 출발한 응답은 폐기한다.
+      if (!alive || seq !== requestSeq) return;
       // 캐시에도 기록 — 탭 왕복·씬 전환 시 재조회 없이 즉시 복원되게(성공=저장/재등장, 삭제=missing 표시).
       for (const r of rs) {
         if (r.gen) {
@@ -117,7 +126,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
           if (Array.isArray(parents)) next[id] = parents;
           else if (missing.has(id)) next[id] = [];
         }
-        return next;
+        return reconcileRecordState(prev, next);
       });
       setGenData((prev) => {
         const next = { ...prev };
@@ -125,7 +134,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
           if (r.gen) next[r.id] = r.gen;
           else if (r.gone) delete next[r.id]; // 삭제 확정 → stale 결과 제거(캐시서도 제거됨) → '삭제됨' 표시가 드러나게
         }
-        return next;
+        return reconcileRecordState(prev, next);
       });
       setMissingIds((prev) => {
         let changed = false;
@@ -145,13 +154,21 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
         .map((r) => r.id);
       if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
     };
+    refreshSceneDataRef.current = () => {
+      if (!alive) return;
+      // 진행 중 카드의 다음 부분 폴링보다 외부 변경 전량 조회를 우선한다.
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      void tick(ids);
+    };
     void tick(ids); // 1회차만 전체 조회(상태 파악), 이후엔 진행 중인 것만
     return () => {
       alive = false;
+      requestSeq += 1;
+      refreshSceneDataRef.current = () => {};
       if (timer) clearTimeout(timer);
     };
-    // refreshTick = 라이브러리 변경 브로드캐스트 시 전체 재조회(담기 직후 folder_path 최신화).
-  }, [genIdSig, refreshTick]);
+  }, [genIdSig]);
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)
@@ -161,8 +178,12 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     const g = hydrateGen(ids);
     const p = hydrateParents(ids);
     const m = hydrateMissing(ids);
-    if (Object.keys(g).length) setGenData((prev) => ({ ...g, ...prev }));
-    if (Object.keys(p).length) setRefParents((prev) => ({ ...p, ...prev }));
+    if (Object.keys(g).length) {
+      setGenData((prev) => reconcileRecordState(prev, { ...g, ...prev }));
+    }
+    if (Object.keys(p).length) {
+      setRefParents((prev) => reconcileRecordState(prev, { ...p, ...prev }));
+    }
     if (m.size)
       setMissingIds((prev) => {
         // id 단위 병합 — 이전 씬 missing 이 남아있어도 새 씬 캐시 missing 을 누락 없이 반영(아래 prune 이 live 밖 제거).
