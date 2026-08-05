@@ -99,6 +99,7 @@ import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
+import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -975,6 +976,16 @@ export function SceneBoard({
 
   // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
   const beginDrag = useSceneDragSession();
+  const onResizeDown = useSceneCardResize({
+    cardsRef,
+    edgesRef,
+    zoomRef,
+    setCards,
+    persist,
+    beginDrag,
+    defaultSize: { w: CARD_W, h: CARD_H },
+    minSize: { w: CARD_MIN_W, h: CARD_MIN_H },
+  });
 
   // ── S4: 출력 포트 드래그 → 입력 포트에 놓으면 연결 · 엣지 클릭으로 해제 ──
   // 여러 연결을 한 번에 추가(중복·자기연결 제외). 다중 레퍼런스 일괄 연결·c 자동연결에서 재사용.
@@ -1043,36 +1054,6 @@ export function SceneBoard({
       if (froms.length) addEdges(froms.map((f) => [f, toId] as [string, string]));
     };
     beginDrag(move, up, () => setTempWire(null)); // blur: 유효 드롭 좌표 없음 → 연결 안 만들고 임시선만 제거
-  };
-
-  // 생성 카드 우하단 핸들 드래그 → 크기 조절(자유 조절, 22px 격자 스냅, 최소 CARD_MIN). 카드 이동과
-  // 겹치지 않게 stopPropagation. 손 떼면 저장.
-  const onResizeDown = (e: React.MouseEvent, cardId: string) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const c = cardsRef.current.find((cc) => cc.id === cardId);
-    if (!c) return;
-    const startW = c.w ?? CARD_W;
-    const startH = c.h ?? CARD_H;
-    const sx = e.clientX;
-    const sy = e.clientY;
-    let resized = false; // 실제로 크기가 바뀐 적이 있나 — no-op(핸들만 클릭) 에 persist/undo 오염 방지
-    const move = (ev: MouseEvent) => {
-      const z = zoomRef.current;
-      const w = Math.max(CARD_MIN_W, snapGrid(startW + (ev.clientX - sx) / z));
-      const h = Math.max(CARD_MIN_H, snapGrid(startH + (ev.clientY - sy) / z));
-      const prevCards = cardsRef.current;
-      const cur = prevCards.find((cc) => cc.id === cardId);
-      if (cur && cur.w === w && cur.h === h) return; // 스냅값 그대로면 리렌더 스킵
-      resized = true;
-      const next = prevCards.map((cc) => (cc.id === cardId ? { ...cc, w, h } : cc));
-      cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 크기를 읽게
-      setCards(next);
-    };
-    const up = () => {
-      if (resized) persist(cardsRef.current, edgesRef.current); // 변화 있을 때만 저장(빈 undo 방지)
-    };
-    beginDrag(move, up, up); // blur: 현재 크기 그대로 저장(좌표 무관 커밋이라 up 재사용 안전)
   };
 
   // ── 노드 생성(Tab 피커·단축키 공용) ─────────────────────────────────────────

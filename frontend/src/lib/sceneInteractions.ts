@@ -6,6 +6,52 @@ export const SCENE_GRID = 22;
 export const snapSceneGrid = (value: number, grid = SCENE_GRID) =>
   Math.round(value / grid) * grid;
 
+interface ResizeSceneCardOptions {
+  cards: SceneCard[];
+  cardId: string;
+  startSize: { w: number; h: number };
+  clientDelta: { x: number; y: number };
+  zoom: number;
+  minSize: { w: number; h: number };
+  grid?: number;
+}
+
+export function resizeSceneCard({
+  cards,
+  cardId,
+  startSize,
+  clientDelta,
+  zoom,
+  minSize,
+  grid = SCENE_GRID,
+}: ResizeSceneCardOptions): {
+  cards: SceneCard[];
+  size: { w: number; h: number };
+  changed: boolean;
+} {
+  const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  const size = {
+    w: Math.max(minSize.w, snapSceneGrid(startSize.w + clientDelta.x / safeZoom, grid)),
+    h: Math.max(minSize.h, snapSceneGrid(startSize.h + clientDelta.y / safeZoom, grid)),
+  };
+  const current = cards.find((card) => card.id === cardId);
+  if (!current) return { cards, size, changed: false };
+
+  const currentWidth = current.w ?? startSize.w;
+  const currentHeight = current.h ?? startSize.h;
+  if (currentWidth === size.w && currentHeight === size.h) {
+    return { cards, size, changed: false };
+  }
+
+  return {
+    cards: cards.map((card) =>
+      card.id === cardId ? { ...card, w: size.w, h: size.h } : card,
+    ),
+    size,
+    changed: true,
+  };
+}
+
 export interface SceneClipboard {
   cards: SceneCard[];
   edges: SceneEdge[];

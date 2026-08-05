@@ -6,6 +6,7 @@ import {
   moveCardsFromOrigins,
   partitionSceneDropFiles,
   pasteSceneClipboard,
+  resizeSceneCard,
   scenePasteIntent,
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -148,6 +149,53 @@ describe("moveCardsFromOrigins", () => {
 
     expect(result.changed).toBe(false);
     expect(result.cards).toBe(cards);
+  });
+});
+
+describe("resizeSceneCard", () => {
+  it("화면 이동량을 줌으로 보정한 뒤 격자에 맞춰 크기를 바꾼다", () => {
+    const cards = [card("target", "generation", 0, 0)];
+    const resized = resizeSceneCard({
+      cards,
+      cardId: "target",
+      startSize: { w: 220, h: 132 },
+      clientDelta: { x: 30, y: 50 },
+      zoom: 0.5,
+      minSize: { w: 110, h: 66 },
+    });
+
+    expect(resized.changed).toBe(true);
+    expect(resized.size).toEqual({ w: 286, h: 242 });
+    expect(resized.cards[0]).toEqual(expect.objectContaining({ w: 286, h: 242 }));
+  });
+
+  it("기본 크기 안에서 발생한 손떨림은 명시적 크기나 빈 undo를 만들지 않는다", () => {
+    const cards = [card("target", "generation", 0, 0)];
+    const resized = resizeSceneCard({
+      cards,
+      cardId: "target",
+      startSize: { w: 220, h: 132 },
+      clientDelta: { x: 5, y: 5 },
+      zoom: 1,
+      minSize: { w: 110, h: 66 },
+    });
+
+    expect(resized.changed).toBe(false);
+    expect(resized.cards).toBe(cards);
+    expect(resized.cards[0].w).toBeUndefined();
+  });
+
+  it("아주 작게 줄여도 최소 크기보다 작아지지 않는다", () => {
+    const resized = resizeSceneCard({
+      cards: [card("target", "generation", 0, 0, { w: 220, h: 132 })],
+      cardId: "target",
+      startSize: { w: 220, h: 132 },
+      clientDelta: { x: -1000, y: -1000 },
+      zoom: 1,
+      minSize: { w: 110, h: 66 },
+    });
+
+    expect(resized.size).toEqual({ w: 110, h: 66 });
   });
 });
 
