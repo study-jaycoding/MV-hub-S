@@ -3,7 +3,11 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { Generation } from "../types";
 import { computeMaxParallel, createBatchTracker, createLimiter, type StepOutcome } from "./comfyRunState";
 import type { ComfyOutput } from "./comfyApi";
-import { executeSceneComfy, type SceneComfyConfigSnapshot } from "./sceneComfyExecutor";
+import {
+  executeSceneComfy,
+  isSceneComfyConfigCurrent,
+  type SceneComfyConfigSnapshot,
+} from "./sceneComfyExecutor";
 import {
   buildExecutionPlan,
   buildGenerationExecutionPlan,
@@ -25,6 +29,7 @@ interface SaveComfyOptions {
   silent?: boolean;
   elapsedSeconds?: number;
   outputs?: ComfyOutput[];
+  configSnapshot?: SceneComfyConfigSnapshot;
 }
 
 interface UseSceneComfyExecutionOptions {
@@ -122,6 +127,9 @@ export function useSceneComfyExecution({
       configSnapshot,
       getLiveCards: () => cardsRef.current,
       getLiveEdges: () => edgesRef.current,
+      isRunCurrent: configSnapshot
+        ? () => isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)
+        : undefined,
     });
 
   const runComfy = async (cardId: string): Promise<boolean> => {
@@ -130,6 +138,13 @@ export function useSceneComfyExecution({
     if (!card?.comfyCfg?.content) return false;
     const batch = cardBatch(card);
     const sceneId = sceneIdRef.current;
+    const configSnapshot: SceneComfyConfigSnapshot = {
+      content: card.comfyCfg.content,
+      paramValues: { ...(card.comfyCfg.paramValues || {}) },
+    };
+    const isRunCurrent = () =>
+      sceneIdRef.current === sceneId &&
+      isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot);
     patchComfyCfg(cardId, { status: "running", error: null }, { undo: false });
     markComfyRunning([cardId], true);
     try {
@@ -138,7 +153,7 @@ export function useSceneComfyExecution({
         Array.from({ length: batch }, async () => {
           const startedAt = Date.now();
           try {
-            const outputs = await runComfyRaw(cardId, undefined, batch > 1);
+            const outputs = await runComfyRaw(cardId, undefined, batch > 1, configSnapshot);
             return { outputs, elapsed: (Date.now() - startedAt) / 1000 };
           } catch (error) {
             if (firstReason === undefined) firstReason = error;
@@ -146,7 +161,7 @@ export function useSceneComfyExecution({
           }
         }),
       );
-      if (sceneIdRef.current !== sceneId) return false;
+      if (!isRunCurrent()) return false;
       if (settledSets.some((result) => result.status === "rejected")) throw firstReason;
       const sets = settledSets.map(
         (result) =>
@@ -163,22 +178,27 @@ export function useSceneComfyExecution({
         { undo: false },
       );
       for (const result of sets) {
+        if (!isRunCurrent()) return false;
         await saveComfyToLibrary(cardId, {
           silent: true,
           elapsedSeconds: result.elapsed,
           outputs: result.outputs,
+          configSnapshot,
         });
       }
-      return true;
+      return isRunCurrent();
     } catch (error) {
-      patchComfyCfg(
-        cardId,
-        {
-          status: "failed",
-          error: error instanceof Error ? error.message : "실행 실패",
-        },
-        { undo: false },
-      );
+      // 교체된 옛 실행의 실패까지 새 워크플로 카드에 덮어쓰지 않는다.
+      if (isRunCurrent()) {
+        patchComfyCfg(
+          cardId,
+          {
+            status: "failed",
+            error: error instanceof Error ? error.message : "실행 실패",
+          },
+          { undo: false },
+        );
+      }
       return false;
     } finally {
       markComfyRunning([cardId], false);
@@ -242,6 +262,11 @@ export function useSceneComfyExecution({
     }
 
     const varySeed = batch > 1;
+    const isConfigCurrent = (id: string) => {
+      const snapshot = configSnapshots.get(id);
+      return !snapshot || isSceneComfyConfigCurrent(cardsRef.current, id, snapshot);
+    };
+    const arePlanConfigsCurrent = () => plan.comfyIds.every(isConfigCurrent);
     const limiter = createLimiter(computeMaxParallel(batch, plan.comfyIds.length));
     const tracker = createBatchTracker<ComfyOutput[]>(plan.comfyIds, batch);
     const releaseRunning = (id: string) => {
@@ -254,7 +279,7 @@ export function useSceneComfyExecution({
     ) => {
       const final = tracker.settle(id, copyIndex, outcome);
       if (!final) return;
-      if (sceneIdRef.current === sceneId) {
+      if (sceneIdRef.current === sceneId && isConfigCurrent(id)) {
         const next = cardsRef.current.map((card) => {
           if (card.kind !== "comfy" || card.id !== id) return card;
           if (final.rep) {
@@ -308,7 +333,11 @@ export function useSceneComfyExecution({
               .map((dependency) => stepPromises.get(dependency))
               .filter((item): item is Promise<void> => !!item),
           );
-          if (sceneIdRef.current !== sceneId) {
+          if (
+            sceneIdRef.current !== sceneId ||
+            !isConfigCurrent(step.id) ||
+            step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
+          ) {
             aborted = true;
             noteStepSettled(step.id, copyIndex, { kind: "skipped" });
             return;
@@ -330,6 +359,14 @@ export function useSceneComfyExecution({
                     configSnapshots.get(step.id),
                   ),
             );
+            if (
+              !isConfigCurrent(step.id) ||
+              step.dependsOn.some((dependency) => !isConfigCurrent(dependency))
+            ) {
+              aborted = true;
+              noteStepSettled(step.id, copyIndex, { kind: "skipped" });
+              return;
+            }
             overlay[step.id] = outputs;
             elapsed[step.id] = (Date.now() - startedAt) / 1000;
             noteStepSettled(step.id, copyIndex, {
@@ -338,7 +375,7 @@ export function useSceneComfyExecution({
               elapsed: elapsed[step.id],
             });
           } catch (error) {
-            if (sceneIdRef.current !== sceneId) {
+            if (sceneIdRef.current !== sceneId || !isConfigCurrent(step.id)) {
               aborted = true;
               noteStepSettled(step.id, copyIndex, { kind: "skipped" });
               return;
@@ -353,6 +390,7 @@ export function useSceneComfyExecution({
         stepPromises.set(step.id, promise);
       }
       await Promise.all(stepPromises.values());
+      if (!arePlanConfigsCurrent()) aborted = true;
       const runs: SceneGenerationRun[] = aborted
         ? []
         : plan.steps
@@ -372,24 +410,36 @@ export function useSceneComfyExecution({
     const copies = await Promise.all(
       Array.from({ length: batch }, (_, copyIndex) => runOneCopy(copyIndex)),
     );
-    const aborted =
-      copies.some((copy) => copy.aborted) || sceneIdRef.current !== sceneId;
+    let aborted =
+      copies.some((copy) => copy.aborted) ||
+      sceneIdRef.current !== sceneId ||
+      !arePlanConfigsCurrent();
     if (!aborted && sceneIdRef.current === sceneId) {
       for (const comfyId of plan.comfyIds) {
+        if (aborted) break;
         for (const copy of copies) {
+          if (!arePlanConfigsCurrent()) {
+            aborted = true;
+            break;
+          }
           const outputs = copy.overlay[comfyId];
           if (outputs?.length) {
             await saveComfyToLibrary(comfyId, {
               silent: true,
               elapsedSeconds: copy.elapsed[comfyId],
               outputs,
+              configSnapshot: configSnapshots.get(comfyId),
             });
+            if (!arePlanConfigsCurrent()) {
+              aborted = true;
+              break;
+            }
           }
         }
       }
     }
     for (const id of plan.comfyIds) releaseRunning(id);
-    return { runs: copies.flatMap((copy) => copy.runs), aborted };
+    return { runs: aborted ? [] : copies.flatMap((copy) => copy.runs), aborted };
   };
 
   const orchestrateGenerate = async (generationId: string) => {

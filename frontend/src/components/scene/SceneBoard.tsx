@@ -64,6 +64,10 @@ import {
   reconcileRefs,
 } from "../../lib/sceneDerive";
 import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
+import {
+  isSceneComfyConfigCurrent,
+  type SceneComfyConfigSnapshot,
+} from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
@@ -1294,6 +1298,8 @@ export function SceneBoard({
       elapsedSeconds?: number;
       // 배치 실행: 저장할 결과셋을 명시(카드에 표시되지 않는 복사본도 각각 저장·누적). 없으면 카드 현재 출력.
       outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string }[];
+      // 실행 시작 시점 입력. 저장 응답 전 교체되면 옛 결과를 현재 카드에 연결하지 않는다.
+      configSnapshot?: SceneComfyConfigSnapshot;
     },
   ) => {
     const silent = opts?.silent;
@@ -1301,6 +1307,14 @@ export function SceneBoard({
     const card = cardsRef.current.find((c) => c.id === cardId);
     const cfg = card?.comfyCfg;
     const runContent = cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
+    const configSnapshot =
+      opts?.configSnapshot ||
+      (runContent
+        ? {
+            content: runContent,
+            paramValues: { ...(cfg?.paramValues || {}) },
+          }
+        : undefined);
     const outs = (opts?.outputs ?? cfg?.outputs ?? []).filter(
       (o) => (o.kind === "image" || o.kind === "video") && o.url,
     );
@@ -1347,6 +1361,12 @@ export function SceneBoard({
       if (sceneIdRef.current !== sid) return; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
       const byUrl = new Map(res.saved.map((s) => [s.url, s.generation_id]));
       const savedIds = res.saved.map((s) => s.generation_id);
+      if (
+        configSnapshot &&
+        !isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)
+      ) {
+        return;
+      }
       // ★현재 카드 기준으로 패치 — 저장 대기 중 재실행(outputs 교체)되면 늦게 온 응답이
       //  옛 outputs 로 되돌리지 않게(레이스 방지). url 이 여전히 있는 것만 마킹.
       //  + 이 노드가 만든 생성물 id 를 card.genIds 에 누적 → 생성카드처럼 관리·렌더 가능(kind='comfy' 유지).
