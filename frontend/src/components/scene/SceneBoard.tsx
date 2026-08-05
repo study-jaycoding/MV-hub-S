@@ -68,7 +68,6 @@ import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
   SCENE_GRID as GRID,
-  snapSceneGrid as snapGrid,
 } from "../../lib/sceneInteractions";
 import {
   isComfyRunning,
@@ -99,6 +98,7 @@ import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { useSceneCardMove } from "../../lib/useSceneCardMove";
+import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -2131,6 +2131,20 @@ export function SceneBoard({
     persist,
     ejectSpeed: GROUP_EJECT_SPEED,
   });
+  const beginGroupMove = useSceneGroupMove({
+    cardsRef,
+    edgesRef,
+    groupsRef,
+    zoomRef,
+    scrollRef,
+    setCards,
+    setGroups,
+    setSelected,
+    setDraggingIds,
+    beginDrag,
+    reconcileGenerationRefs: withGenRefs,
+    persist,
+  });
 
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
@@ -2178,84 +2192,8 @@ export function SceneBoard({
     if (e.button !== 0) return;
     // 그룹 헤더 잡기 → 멤버 카드 전체 이동(드래그) · 제자리 클릭 = 멤버 전체 선택(Shift/Ctrl=토글)
     const grabEl = (e.target as HTMLElement).closest(".scene-group-grab") as HTMLElement | null;
-    if (grabEl) {
-      const gid = grabEl.dataset.groupId;
-      const grp = gid ? groupsRef.current.find((x) => x.id === gid) : null;
-      if (grp) {
-        e.preventDefault();
-        const gAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
-        const gsx = e.clientX;
-        const gsy = e.clientY;
-        const memberIds = grp.cardIds.filter((id) => cardsRef.current.some((c) => c.id === id));
-        const origins: Record<string, { x: number; y: number }> = {};
-        for (const tid of memberIds) {
-          const c = cardsRef.current.find((cc) => cc.id === tid);
-          if (c) origins[tid] = { x: c.x, y: c.y };
-        }
-        let gMoved = false;
-        let gRelocated = false; // 실제로 다른 칸으로 이동했는지 — 임계값만 넘고 스냅 후 제자리면 클릭으로 처리(빠른 클릭 떨림 방지)
-        let gLastSdx = NaN, gLastSdy = NaN; // 직전 스냅 오프셋 — 같으면 setState 생략(no-op 가드)
-        const gAnchor = origins[memberIds[0]]; // 그룹 이동도 첫 멤버를 격자에 스냅하고 전체를 같은 오프셋으로.
-        const gOrigRect = grp.rect; // 수동 rect 가 있으면 멤버와 함께 같은 오프셋으로 이동(멤버십은 유지).
-        let gLastRect = gOrigRect; // 최종 rect — up 에서 명시적으로 persist(groupsRef 최신성 레이스 방지)
-        const move = (ev: MouseEvent) => {
-          if (!gMoved && Math.hypot(ev.clientX - gsx, ev.clientY - gsy) < 4) return;
-          if (!gMoved) setDraggingIds(memberIds); // 첫 이동 확정 시 멤버 전체 keep 등록(컬링 언마운트 방지)
-          gMoved = true;
-          scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단
-          const z = zoomRef.current;
-          const dx = (ev.clientX - gsx) / z;
-          const dy = (ev.clientY - gsy) / z;
-          const sdx = gAnchor ? snapGrid(gAnchor.x + dx) - gAnchor.x : dx;
-          const sdy = gAnchor ? snapGrid(gAnchor.y + dy) - gAnchor.y : dy;
-          if (sdx === gLastSdx && sdy === gLastSdy) return; // 스냅 위치 그대로면 리렌더 스킵
-          gLastSdx = sdx; gLastSdy = sdy;
-          if (sdx !== 0 || sdy !== 0) gRelocated = true; // 원점과 다른 오프셋 = 실제 이동
-          const next = cardsRef.current.map((c) =>
-            origins[c.id] ? { ...c, x: origins[c.id].x + sdx, y: origins[c.id].y + sdy } : c,
-          );
-          cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up 의 persist 가 최신 좌표를 읽게
-          setCards(next);
-          if (gOrigRect) {
-            gLastRect = { ...gOrigRect, x: gOrigRect.x + sdx, y: gOrigRect.y + sdy };
-            setGroups((prev) => prev.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x)));
-          }
-        };
-        // 그룹 이동 확정(테두리 rect + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
-        const commitMovedGroup = () => {
-          const ng = gOrigRect
-            ? groupsRef.current.map((x) => (x.id === gid ? { ...x, rect: gLastRect } : x))
-            : groupsRef.current;
-          if (gOrigRect) setGroups(ng);
-          const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
-          cardsRef.current = nextCards;
-          setCards(nextCards);
-          persist(nextCards, edgesRef.current, ng);
-        };
-        const up = () => {
-          scrollRef.current?.classList.remove("dragging");
-          setDraggingIds([]); // 그룹 드래그 종료 → keep 해제
-          if (gRelocated) {
-            commitMovedGroup();
-          } else
-            setSelected((prev) => {
-              if (gAdditive) {
-                const n = new Set(prev);
-                const all = memberIds.every((id) => n.has(id));
-                memberIds.forEach((id) => (all ? n.delete(id) : n.add(id)));
-                return n;
-              }
-              return new Set(memberIds);
-            });
-        };
-        // blur: 멤버 선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
-        beginDrag(move, up, () => {
-          scrollRef.current?.classList.remove("dragging");
-          setDraggingIds([]); // 그룹 드래그 취소(blur)에도 keep 해제
-          if (gRelocated) commitMovedGroup();
-        });
-        return;
-      }
+    if (grabEl?.dataset.groupId && beginGroupMove(e, grabEl.dataset.groupId)) {
+      return;
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
     if (cardEl?.dataset.id) {
