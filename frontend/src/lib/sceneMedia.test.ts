@@ -1,9 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
-
-// refMediaSrc 의 asset: 토큰 경로만 api 에 의존 — URL 빌더를 결정적으로 목킹.
-vi.mock("../api", () => ({
-  api: { assetFileUrl: (proj: string, path: string) => `/A/${proj}/${path}` },
-}));
+import { describe, it, expect } from "vitest";
 
 import { refMediaSrc, refMediaType, mediaFileName } from "./sceneMedia";
 import type { SceneRef } from "./scenes";
@@ -31,8 +26,10 @@ describe("mediaFileName", () => {
 });
 
 describe("refMediaSrc", () => {
-  it("asset:proj|path 토큰은 api 빌더 URL 로", () => {
-    expect(refMediaSrc(ref("asset:proj|dir/x.png"))).toBe("/A/proj/dir/x.png");
+  it("asset:proj|path 토큰은 순수 URL 빌더로 인코딩", () => {
+    expect(refMediaSrc(ref("asset:proj|dir/x.png"))).toBe(
+      "/api/assets/file?project=proj&path=dir%2Fx.png",
+    );
   });
   it("원격 URL 등은 그대로", () => {
     expect(refMediaSrc(ref("https://cdn/x.png"))).toBe("https://cdn/x.png");

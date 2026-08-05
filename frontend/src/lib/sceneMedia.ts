@@ -1,6 +1,5 @@
 // 씬 레퍼런스/미디어 순수 헬퍼 — SceneBoard 에서 분리(React·ref 무관, 인자만으로 계산). 테스트 대상.
-//  refMediaSrc 만 api(자산 URL 빌더)에 의존한다.
-import { api } from "../api";
+import { assetFileUrl } from "./assetUrls";
 import { displayRefThumb } from "./media";
 import type { SceneRef } from "./scenes";
 
@@ -27,7 +26,7 @@ export function refMediaSrc(r: SceneRef): string | undefined {
   if (!p) return undefined;
   if (p.startsWith("asset:")) {
     const [proj, path] = p.slice(6).split("|");
-    return proj && path ? api.assetFileUrl(proj, path) : undefined;
+    return proj && path ? assetFileUrl(proj, path) : undefined;
   }
   return p;
 }
