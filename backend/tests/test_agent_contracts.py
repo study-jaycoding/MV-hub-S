@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from app.models import PendingRequestOut
 
 
 AGENT_PATH = Path(__file__).resolve().parents[2] / "agent_push.py"
+REFRESH_TOOL_PATH = Path(__file__).resolve().parents[2] / "tools" / "refresh_pm_test_data.py"
 
 
 def _load_agent():
@@ -20,6 +22,24 @@ def _load_agent():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_refresh_tool():
+    spec = importlib.util.spec_from_file_location(
+        "mvhub_refresh_tool_contract_target", REFRESH_TOOL_PATH
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    tool_dir = str(REFRESH_TOOL_PATH.parent)
+    added = tool_dir not in sys.path
+    if added:
+        sys.path.insert(0, tool_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if added:
+            sys.path.remove(tool_dir)
     return module
 
 
@@ -36,6 +56,48 @@ def test_agent_remains_single_file_standard_library_only():
         name for name in imported_roots if name != "__future__" and name not in sys.stdlib_module_names
     )
     assert non_stdlib == []
+
+
+def test_masked_password_input_never_writes_plaintext():
+    agent = _load_agent()
+    keys = iter(["s", "e", "c", "r", "e", "t", "\r"])
+    stream = io.StringIO()
+
+    password = agent._masked_password_input(
+        "Password: ", _read_key=lambda: next(keys), _stream=stream
+    )
+
+    assert password == "secret"
+    assert stream.getvalue() == "Password: ******\n"
+    assert "secret" not in stream.getvalue()
+
+
+def test_masked_password_input_handles_backspace_without_exposing_text():
+    agent = _load_agent()
+    keys = iter(["a", "x", "\b", "b", "\r"])
+    stream = io.StringIO()
+
+    password = agent._masked_password_input(
+        "Password: ", _read_key=lambda: next(keys), _stream=stream
+    )
+
+    assert password == "ab"
+    assert stream.getvalue() == "Password: **\b \b*\n"
+    assert "ab" not in stream.getvalue()
+
+
+def test_pull_db_password_input_is_masked_too():
+    tool = _load_refresh_tool()
+    keys = iter(["s", "3", "c", "r", "3", "t", "\r"])
+    stream = io.StringIO()
+
+    password = tool.masked_password_input(
+        "Admin password: ", _read_key=lambda: next(keys), _stream=stream
+    )
+
+    assert password == "s3cr3t"
+    assert stream.getvalue() == "Admin password: ******\n"
+    assert "s3cr3t" not in stream.getvalue()
 
 
 def test_pending_response_contains_every_field_the_agent_executes():

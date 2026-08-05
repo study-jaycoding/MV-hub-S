@@ -23,12 +23,6 @@ echo   server (read-only): %SERVER%
 echo   admin email       : %PM_TEST_ADMIN_EMAIL%
 echo   target (test data): %DST%
 echo.
-set /p "PM_TEST_ADMIN_PASSWORD=Admin password for %PM_TEST_ADMIN_EMAIL%: "
-if "%PM_TEST_ADMIN_PASSWORD%"=="" (
-  echo [ERROR] password is empty - aborting.
-  pause
-  exit /b 1
-)
 
 REM --- locate python (same logic as the other launchers) ---
 set "PYEXE="
@@ -44,6 +38,7 @@ if "%PYEXE%"=="" (
 )
 echo [python] %PYEXE%
 
+REM Python reads the password with echo disabled and prints only * characters.
 "%PYEXE%" "%ROOT%tools\refresh_pm_test_data.py" "%SERVER%" "%DST%"
 if errorlevel 1 (
   echo.

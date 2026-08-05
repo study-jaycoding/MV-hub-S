@@ -40,6 +40,49 @@ from threading import Event, Lock
 from urllib.parse import quote, urlencode, urlparse
 
 
+def _masked_password_input(prompt: str, *, _read_key=None, _stream=None) -> str:
+    """비밀번호를 콘솔에 노출하지 않고 글자 수만 `*`로 표시한다.
+
+    Windows의 일부 실행 환경에서 getpass가 일반 입력으로 폴백해 실제 문자를 표시하는 경우가
+    있어, Windows에서는 키를 echo 없이 직접 읽는다. 주입 인자는 콘솔을 건드리지 않는 테스트용이다.
+    """
+    if os.name != "nt" and _read_key is None:
+        return getpass.getpass(prompt)
+
+    if _read_key is None:
+        import msvcrt
+
+        _read_key = msvcrt.getwch
+    stream = _stream or sys.stdout
+    chars: list[str] = []
+    stream.write(prompt)
+    stream.flush()
+    while True:
+        char = _read_key()
+        if char in ("\r", "\n"):
+            stream.write("\n")
+            stream.flush()
+            return "".join(chars)
+        if char == "\x03":  # Ctrl+C
+            stream.write("\n")
+            stream.flush()
+            raise KeyboardInterrupt
+        if char == "\b":
+            if chars:
+                chars.pop()
+                stream.write("\b \b")
+                stream.flush()
+            continue
+        if char in ("\x00", "\xe0"):  # 화살표·기능키의 2바이트 시퀀스
+            _read_key()
+            continue
+        if not char or ord(char) < 32:
+            continue
+        chars.append(char)
+        stream.write("*")
+        stream.flush()
+
+
 def _dominant_uid(jobs: list) -> str | None:
     """잡 목록 결과 URL의 user_<id> 중 최다 = 이 CLI 계정 본인의 힉스필드 uid."""
     c: Counter = Counter()
@@ -1411,7 +1454,7 @@ def main() -> None:
     else:
         if not args.email:
             sys.exit("[오류] --email 또는 --token 중 하나는 필요합니다.")
-        password = args.password or getpass.getpass(f"{args.email} 허브 비밀번호: ")
+        password = args.password or _masked_password_input(f"{args.email} 허브 비밀번호: ")
         token = login(server, args.email, password)
         creds = {"email": args.email, "password": password}
 

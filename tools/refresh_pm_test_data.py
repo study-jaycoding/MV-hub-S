@@ -7,6 +7,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+import getpass
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,45 @@ SKIP_SUFFIXES = {
     ".db-shm",
     ".db-wal",
 }
+
+
+def masked_password_input(prompt: str, *, _read_key=None, _stream=None) -> str:
+    """Windows CMD에서도 실제 비밀번호 대신 `*`만 표시한다."""
+    if os.name != "nt" and _read_key is None:
+        return getpass.getpass(prompt)
+
+    if _read_key is None:
+        import msvcrt
+
+        _read_key = msvcrt.getwch
+    stream = _stream or sys.stdout
+    chars: list[str] = []
+    stream.write(prompt)
+    stream.flush()
+    while True:
+        char = _read_key()
+        if char in ("\r", "\n"):
+            stream.write("\n")
+            stream.flush()
+            return "".join(chars)
+        if char == "\x03":
+            stream.write("\n")
+            stream.flush()
+            raise KeyboardInterrupt
+        if char == "\b":
+            if chars:
+                chars.pop()
+                stream.write("\b \b")
+                stream.flush()
+            continue
+        if char in ("\x00", "\xe0"):
+            _read_key()
+            continue
+        if not char or ord(char) < 32:
+            continue
+        chars.append(char)
+        stream.write("*")
+        stream.flush()
 
 
 def fail(message: str) -> None:
@@ -134,8 +174,12 @@ def validate_sqlite(path: Path) -> None:
 def download_server_db(base_url: str, dst: Path) -> None:
     email = (os.environ.get("PM_TEST_ADMIN_EMAIL") or "").strip()
     password = os.environ.get("PM_TEST_ADMIN_PASSWORD") or ""
-    if not email or not password:
-        fail("PM_TEST_ADMIN_EMAIL and PM_TEST_ADMIN_PASSWORD are required for URL mode")
+    if not email:
+        fail("PM_TEST_ADMIN_EMAIL is required for URL mode")
+    if not password:
+        password = masked_password_input(f"Admin password for {email}: ")
+    if not password:
+        fail("admin password is empty")
 
     base = base_url.rstrip("/")
     print(f"[download] server: {base}")
