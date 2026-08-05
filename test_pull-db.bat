@@ -4,22 +4,22 @@ setlocal EnableExtensions
 REM ============================================================================
 REM  Pull the SHARED SERVER db into this PC's TEST data   (run on YOUR OWN PC)
 REM
-REM    source (server) : http://192.168.1.199:8010   -> downloaded via admin login
+REM    source (server) : test_push-db snapshot on http://192.168.1.199:8011
 REM    target (test)   : this PC's  backend\data_test  -> filled with that copy
 REM
-REM  After this, run test_dev.bat (backend port 8012): you see the copied real data
-REM  AND anything you generate locally, fully isolated from the live server.
+REM  After this, run test_dev_server.bat for the production-like final test.
+REM  For live Vite editing + local generation, use test_dev.bat instead.
 REM
 REM  Only the DB is downloaded (no media/assets). The live server is READ only.
 REM ============================================================================
 set "ROOT=%~dp0"
-set "SERVER=http://192.168.1.199:8010"
+set "SERVER=http://192.168.1.199:8011"
 set "DST=%ROOT%backend\data_test"
 set "PM_TEST_ADMIN_EMAIL=lee.jaelyun@gmail.com"
 
 echo.
 echo [PULL SERVER DB -^> TEST]
-echo   server (read-only): %SERVER%
+echo   pushed snapshot   : %SERVER%
 echo   admin email       : %PM_TEST_ADMIN_EMAIL%
 echo   target (test data): %DST%
 echo.
@@ -43,13 +43,14 @@ REM Python reads the password with echo disabled and prints only * characters.
 if errorlevel 1 (
   echo.
   echo [ERROR] pull failed. Check the server address, your admin password, and that
-  echo         the shared server on %SERVER% is running.
+  echo         test_push-db.bat is still running on the server.
   pause
   exit /b 1
 )
 
 echo.
 echo [OK] Server DB copied into the test data.
-echo      Now start test_dev.bat  -^> open http://127.0.0.1:5173
+echo      Now start test_dev_server.bat -^> open http://127.0.0.1:8011
+echo      ^(Use test_dev.bat instead when you need Vite live editing.^)
 echo.
 pause

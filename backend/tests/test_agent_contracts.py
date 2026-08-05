@@ -15,6 +15,7 @@ from app.models import PendingRequestOut
 
 AGENT_PATH = Path(__file__).resolve().parents[2] / "agent_push.py"
 REFRESH_TOOL_PATH = Path(__file__).resolve().parents[2] / "tools" / "refresh_pm_test_data.py"
+ROOT_DIR = AGENT_PATH.parent
 
 
 def _load_agent():
@@ -120,10 +121,36 @@ def test_agent_requests_browser_pair_without_credentials():
 
 
 def test_test_dev_has_no_console_account_or_password_prompt():
-    launcher = (AGENT_PATH.parent / "test_dev.bat").read_text(encoding="utf-8")
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
     assert "set /p \"MVHUB_AGENT_EMAIL=" not in launcher
     assert "CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET" in launcher
     assert "Log in only in the browser" in launcher
+
+
+def test_server_db_test_launchers_keep_live_and_local_data_isolated():
+    push = (ROOT_DIR / "test_push-db.bat").read_text(encoding="utf-8")
+    pull = (ROOT_DIR / "test_pull-db.bat").read_text(encoding="utf-8")
+    local_server = (ROOT_DIR / "test_dev_server.bat").read_text(encoding="utf-8")
+
+    assert not (ROOT_DIR / "test_server_dev.bat").exists()
+
+    assert 'set "SRC=E:\\MV-hub-S\\backend\\data"' in push
+    assert 'set "DST=%ROOT%backend\\data_test_push"' in push
+    assert 'set "CONTENT_HUB_DB=%DST%\\db\\content_hub.db"' in push
+    assert 'refresh_pm_test_data.py" "%SRC%" "%DST%"' in push
+    assert 'set "PORT=8011"' in push
+
+    assert 'set "SERVER=http://192.168.1.199:8011"' in pull
+    assert 'set "DST=%ROOT%backend\\data_test"' in pull
+    assert "192.168.1.199:8010" not in pull
+
+    assert 'set "HOST=127.0.0.1"' in local_server
+    assert 'set "PORT=8011"' in local_server
+    assert 'set "TEST_DATA=%ROOT%backend\\data_test"' in local_server
+    assert 'set "CONTENT_HUB_DB=%TEST_DB%"' in local_server
+    assert 'call "%ROOT%MV_server.bat"' in local_server
+    assert "MV_agent.bat" not in local_server
+    assert "npm run dev" not in local_server
 
 
 def test_pending_response_contains_every_field_the_agent_executes():
