@@ -27,8 +27,9 @@ REM Force Python/pip to UTF-8 (avoid Korean Windows cp949 UnicodeDecodeError on 
 set "PYTHONUTF8=1"
 set "ROOT=%~dp0"
 if "%PORT%"=="" set "PORT=8010"
-REM Local hub backend has no login of its own; the team-server login gate guards the UI.
-set "CONTENT_HUB_AUTH=0"
+REM Normal local hubs use the team-server login gate and need no local login. Isolated
+REM test_dev may override this to 1 so a copied multi-user DB keeps account boundaries.
+if "%CONTENT_HUB_AUTH%"=="" set "CONTENT_HUB_AUTH=0"
 REM Show the manage (PM dashboard) button on the local hub too. Manage DATA is proxied
 REM to the shared server; access is still gated by each account's global role. Set 0 to hide.
 if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
@@ -229,7 +230,12 @@ echo     Browser: %MVHUB_OPEN_URL%
 start "" "%MVHUB_OPEN_URL%"
 echo.
 if "%RUN_AGENT%"=="1" (
-  "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30
+  if "%CONTENT_HUB_AUTH%"=="1" (
+    echo [login] The browser and generation agent must use the same account.
+    "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --email "%MVHUB_AGENT_EMAIL%" --watch 30
+  ) else (
+    "%PY_EXE%" %PY_ARGS% "%ROOT%agent_push.py" --server %HUB% --token local --watch 30
+  )
 ) else (
   echo [info] Generation agent is not running - see the reason shown above.
   echo [info] The local hub is open. Close this window to stop the local hub.

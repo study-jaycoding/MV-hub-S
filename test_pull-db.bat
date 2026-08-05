@@ -18,7 +18,7 @@ set "DST=%ROOT%backend\data_test"
 set "PM_TEST_ADMIN_EMAIL=lee.jaelyun@gmail.com"
 
 echo.
-echo [PULL SERVER DB -> TEST]
+echo [PULL SERVER DB -^> TEST]
 echo   server (read-only): %SERVER%
 echo   admin email       : %PM_TEST_ADMIN_EMAIL%
 echo   target (test data): %DST%
@@ -55,6 +55,6 @@ if errorlevel 1 (
 
 echo.
 echo [OK] Server DB copied into the test data.
-echo      Now start test_dev.bat  -> open http://127.0.0.1:5173
+echo      Now start test_dev.bat  -^> open http://127.0.0.1:5173
 echo.
 pause
