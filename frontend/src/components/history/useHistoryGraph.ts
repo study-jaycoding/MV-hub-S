@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
+import { reconcileValueState } from "../../lib/stateReconciliation";
 import type { HistoryGraph } from "../../types";
 
 export function useHistoryGraph(focusId: string | null, reloadSignal?: number) {
@@ -18,7 +19,9 @@ export function useHistoryGraph(focusId: string | null, reloadSignal?: number) {
     const attempt = (retriesLeft: number) => {
       api
         .historyTree(focusId)
-        .then((nextGraph) => alive && setGraph(nextGraph))
+        .then((nextGraph) => {
+          if (alive) setGraph((previous) => reconcileValueState(previous, nextGraph));
+        })
         .catch((error) => {
           if (!alive) return;
           if (retriesLeft > 0) timer = setTimeout(() => attempt(retriesLeft - 1), 500);

@@ -65,3 +65,19 @@ export function reconcileRecordState<T>(
   }
   return changed ? next : previous;
 }
+
+// Map 자체는 API JSON이 아니지만, 대시보드처럼 JSON 레코드를 조회 편의상 Map으로 바꿔 보관하는
+// state가 있다. 키 집합과 JSON 값이 같으면 Map 참조를 유지하고 일부만 바뀌면 같은 값 참조를 재사용한다.
+export function reconcileMapState<K, V>(previous: Map<K, V>, incoming: Map<K, V>): Map<K, V> {
+  let changed = previous.size !== incoming.size;
+  const next = new Map<K, V>();
+  for (const [key, value] of incoming) {
+    if (previous.has(key) && isStructurallyEqual(previous.get(key), value)) {
+      next.set(key, previous.get(key) as V);
+    } else {
+      next.set(key, value);
+      changed = true;
+    }
+  }
+  return changed ? next : previous;
+}

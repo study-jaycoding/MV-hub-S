@@ -3,6 +3,7 @@
 // 저장은 로컬 전용(이 PC 디스크). 이미 저장된 건 건너뛴다(멱등).
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import {
   manageApi,
   type SaveFinalsResult,
@@ -26,7 +27,7 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
       .projects("team")
       .then((r) => {
         const ps = r.projects.map((p) => ({ pid: p.id, name: p.name }));
-        setProjects(ps);
+        setProjects((previous) => reconcileArrayState(previous, ps));
         setPid((cur) => cur || (ps[0]?.pid ?? ""));
       })
       .catch((e) => setErr(String(e?.message || e)));
@@ -46,7 +47,9 @@ export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     manageApi
       .saveFinalsStatus(p)
       .then((next) => {
-        if (statusRequestRef.current === requestId && pidRef.current === p) setStatus(next);
+        if (statusRequestRef.current === requestId && pidRef.current === p) {
+          setStatus((previous) => reconcileValueState(previous, next));
+        }
       })
       .catch((e) => {
         if (statusRequestRef.current === requestId && pidRef.current === p)

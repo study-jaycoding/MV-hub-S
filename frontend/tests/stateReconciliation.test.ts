@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isStructurallyEqual,
   reconcileArrayState,
+  reconcileMapState,
   reconcileRecordState,
   reconcileValueState,
 } from "../src/lib/stateReconciliation";
@@ -113,5 +114,35 @@ describe("stateReconciliation", () => {
     const reconciled = reconcileRecordState(previous, changedPatch);
     expect(reconciled).not.toBe(previous);
     expect(reconciled.projectB).toBe(previous.projectB);
+  });
+
+  it("JSON 레코드를 담은 Map도 동일 값은 이전 Map과 항목 참조를 유지한다", () => {
+    const previous = new Map([
+      ["projectA", [{ uid: "user-1", role: "creator" }]],
+      ["projectB", [{ uid: "user-2", role: "manager" }]],
+    ]);
+    const same = new Map([
+      ["projectB", [{ uid: "user-2", role: "manager" }]],
+      ["projectA", [{ uid: "user-1", role: "creator" }]],
+    ]);
+    expect(reconcileMapState(previous, same)).toBe(previous);
+
+    const changed = new Map([
+      ["projectA", [{ uid: "user-1", role: "supervisor" }]],
+      ["projectB", [{ uid: "user-2", role: "manager" }]],
+    ]);
+    const reconciled = reconcileMapState(previous, changed);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled.get("projectA")).toBe(changed.get("projectA"));
+    expect(reconciled.get("projectB")).toBe(previous.get("projectB"));
+
+    const replacedKey = new Map([
+      ["projectA", [{ uid: "user-1", role: "creator" }]],
+      ["projectC", [{ uid: "user-3", role: "creator" }]],
+    ]);
+    const replaced = reconcileMapState(previous, replacedKey);
+    expect(replaced).not.toBe(previous);
+    expect(replaced.has("projectB")).toBe(false);
+    expect(replaced.get("projectC")).toBe(replacedKey.get("projectC"));
   });
 });

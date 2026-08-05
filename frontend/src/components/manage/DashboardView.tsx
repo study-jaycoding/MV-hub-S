@@ -5,6 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi, type TeamBucket, type TeamOverview } from "../../lib/manageApi";
 import { projectApi } from "../../lib/projectApi";
+import {
+  reconcileArrayState,
+  reconcileMapState,
+  reconcileValueState,
+} from "../../lib/stateReconciliation";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { PROJECT_ROLE_LABEL, type ProjectMember } from "../../types";
 import {
@@ -444,8 +449,8 @@ export function DashboardView({ reloadSignal = 0 }: { reloadSignal?: number }) {
     }
     const summaryP = manageApi
       .summary()
-      .then((d) => setSummary(d))
-      .catch(() => setSummary(null));
+      .then((d) => setSummary((previous) => reconcileValueState(previous, d)))
+      .catch(() => setSummary((previous) => reconcileValueState(previous, null)));
     const tasksP = api
       .projects("team")
       .then(async (r) => {
@@ -458,17 +463,22 @@ export function DashboardView({ reloadSignal = 0 }: { reloadSignal?: number }) {
             .allProjectMembers()
             .catch(() => ({} as Record<string, ProjectMember[]>)),
         ]);
-        setMembers(new Map(Object.entries(membersByPid)));
+        setMembers((previous) =>
+          reconcileMapState(previous, new Map(Object.entries(membersByPid))),
+        );
         return r.projects.flatMap((p) =>
           (byPid[p.id] || []).map((t) => ({ ...t, project_name: p.name })),
         );
       })
-      .then((all) => setTasks(all));
-    const teamP = manageApi.teamOverview().then(setTeam).catch(() => setTeam(null));
+      .then((all) => setTasks((previous) => reconcileArrayState(previous, all)));
+    const teamP = manageApi
+      .teamOverview()
+      .then((next) => setTeam((previous) => reconcileValueState(previous, next)))
+      .catch(() => setTeam((previous) => reconcileValueState(previous, null)));
     const trendP = manageApi
       .teamTimeseries("week")
-      .then((r) => setTrend(r.buckets || []))
-      .catch(() => setTrend([]));
+      .then((r) => setTrend((previous) => reconcileArrayState(previous, r.buckets || [])))
+      .catch(() => setTrend((previous) => reconcileArrayState(previous, [])));
     const request = Promise.all([summaryP, tasksP, teamP, trendP])
       .then(() => setErr("")) // 성공하면 이전 에러 화면 해제
       .catch((e) => setErr(String(e?.message || e)))

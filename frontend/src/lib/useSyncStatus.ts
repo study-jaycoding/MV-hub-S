@@ -2,6 +2,7 @@
 // failed>0 일 때만 경고를 띄운다(pending 은 정상 backlog 라 노이즈). read-only 관측.
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { reconcileValueState } from "./stateReconciliation";
 
 export interface SyncStatus {
   pending: number;
@@ -19,7 +20,9 @@ export function useSyncStatus(): SyncStatus | null {
       if (document.visibilityState === "hidden") return; // 숨은 탭에선 폴링 쉼(복귀 시 아래 리스너가 1회 갱신)
       api
         .syncStatus()
-        .then((s) => alive && setStatus(s))
+        .then((s) => {
+          if (alive) setStatus((previous) => reconcileValueState(previous, s));
+        })
         .catch(() => alive && setStatus(null));
     };
     check();
