@@ -205,6 +205,8 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
     복원한다. DB 원문은 보존하고 일반 JSON·손상 배열은 변환하지 않는다.
 12. **서버형 테스트 DB 전달** — `test_push-db`의 격리 서버에서만 관리자용 전체 SQLite ZIP을 열고,
     `test_pull-db`는 콘텐츠·휴지통·팀 통계·계정 DB를 모두 검증한 뒤 `data_test`를 원자 교체한다.
+13. **미디어 로드 실패 표시** — 공용 `MediaThumbnail`은 이미지 썸네일 실패 시 허용된 화면에서만
+    원본 URL로 한 번 재시도하고, 원본·영상까지 실패하면 각 화면의 fallback으로 전환한다.
 
 ---
 

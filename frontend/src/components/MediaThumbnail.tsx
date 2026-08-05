@@ -6,6 +6,28 @@
 import type { ReactNode, Ref } from "react";
 import { useEffect, useState } from "react";
 
+export interface MediaThumbnailLoadState {
+  thumbBroken: boolean;
+  mediaBroken: boolean;
+}
+
+export const INITIAL_MEDIA_THUMBNAIL_LOAD_STATE: MediaThumbnailLoadState = {
+  thumbBroken: false,
+  mediaBroken: false,
+};
+
+// 이미지 썸네일 실패는 원본 재시도가 가능할 때 한 번만 넘기고, 그 외 실패는 최종 fallback으로 간다.
+// DOM 없이도 경계조건을 검증할 수 있게 순수 전이로 둔다.
+export function nextMediaThumbnailErrorState(
+  state: MediaThumbnailLoadState,
+  canRetryOriginal: boolean,
+): MediaThumbnailLoadState {
+  if (canRetryOriginal && !state.thumbBroken) {
+    return { thumbBroken: true, mediaBroken: false };
+  }
+  return { ...state, mediaBroken: true };
+}
+
 interface Props {
   thumb: string | null | undefined; // 썸네일(포스터) URL
   isVideo: boolean; // 결과물이 영상인가
@@ -29,9 +51,16 @@ export function MediaThumbnail({
   onError,
   retrySrcOnThumbError,
 }: Props) {
-  const [thumbBroken, setThumbBroken] = useState(false);
-  // thumb 이 바뀌면(다른 레퍼런스로 재렌더) 재시도 상태 초기화.
-  useEffect(() => setThumbBroken(false), [thumb]);
+  const [loadState, setLoadState] = useState<MediaThumbnailLoadState>(
+    INITIAL_MEDIA_THUMBNAIL_LOAD_STATE,
+  );
+  // 다른 미디어로 재렌더되면 이전 URL의 실패·재시도 상태를 넘기지 않는다.
+  useEffect(() => setLoadState(INITIAL_MEDIA_THUMBNAIL_LOAD_STATE), [thumb, src, isVideo]);
+  const terminalError = () => {
+    if (!loadState.mediaBroken) onError?.();
+    setLoadState({ ...loadState, mediaBroken: true });
+  };
+  if (loadState.mediaBroken) return <>{fallback}</>;
   // 영상 + 썸네일: 포스터로 깔고 호버 시 재생(preload 없음).
   if (thumb && isVideo)
     return (
@@ -44,14 +73,14 @@ export function MediaThumbnail({
         playsInline
         preload="none"
         draggable={false}
-        onError={onError}
+        onError={terminalError}
       />
     );
   // 이미지(또는 영상의 정지 썸네일).
   if (thumb) {
     // 재시도 옵션 + 썸네일이 깨졌고 원본 src 가 별도로 있으면 원본으로 교체(한 번만).
     const canRetry = retrySrcOnThumbError && !!src && src !== thumb;
-    const imgSrc = canRetry && thumbBroken ? src : thumb;
+    const imgSrc = canRetry && loadState.thumbBroken ? src : thumb;
     return (
       <img
         src={imgSrc}
@@ -60,8 +89,9 @@ export function MediaThumbnail({
         alt={alt}
         draggable={false}
         onError={() => {
-          if (canRetry && !thumbBroken) setThumbBroken(true); // 원본으로 1회 재시도
-          else onError?.(); // 원본까지 실패(또는 재시도 미사용) → 사이트별 '원본 없음' 처리
+          const next = nextMediaThumbnailErrorState(loadState, !!canRetry);
+          if (next.mediaBroken && !loadState.mediaBroken) onError?.();
+          setLoadState(next);
         }}
       />
     );
@@ -77,7 +107,7 @@ export function MediaThumbnail({
         playsInline
         preload="metadata"
         draggable={false}
-        onError={onError}
+        onError={terminalError}
       />
     );
   // 둘 다 없음 → 사이트별 플레이스홀더.

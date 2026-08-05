@@ -137,6 +137,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 | **P25** | HF 원본 누락 검토의 신원·상태 반복 조회를 배치화하고 삭제 집계 교정 | 낮~중 ✅ |
 | **P26** | 구버전 PromptPart JSON을 프론트 API 경계에서 안전하게 복원하고 재생성 원문 오염 방지 | 낮 ✅ |
 | **P27** | 서버형 테스트 pull을 단일 DB에서 검증된 전체 SQLite 번들로 교정 | 중 ✅ |
+| **P28** | 공용 미디어 썸네일의 최종 로드 실패를 화면별 fallback으로 일관되게 전환 | 낮 ✅ |
 
 **순서 원칙:** 순수로직 추출 → 테스트 → 상태 분리 → IO 분리 → UI 분리.
 (JSX 부터 자르면 props 만 늘고 이득이 없다.)
