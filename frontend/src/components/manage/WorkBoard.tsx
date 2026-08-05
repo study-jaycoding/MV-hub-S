@@ -18,6 +18,7 @@ import { createLatestMutationQueue } from "../../lib/mutationQueue";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
+import { shouldRunManageFallbackRefresh } from "./manageRefreshPolicy";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
@@ -260,19 +261,29 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     let debounce: number | undefined;
     const reload = () => {
       if (debounce) clearTimeout(debounce);
-      debounce = window.setTimeout(loadAll, 300);
+      debounce = window.setTimeout(() => {
+        debounce = undefined;
+        // 예약 뒤 실시간 신호가 먼저 loadAll 을 시작할 수 있다. 실행 시점에 다시 확인해
+        // 복귀 안전망이 같은 tasks-batch 를 뒤따라 한 번 더 요청하지 않게 한다.
+        if (
+          document.visibilityState !== "visible" ||
+          !shouldRunManageFallbackRefresh({
+            loading: loadingRef.current,
+            lastLoadAt: lastLoadAtRef.current,
+            now: Date.now(),
+          })
+        )
+          return;
+        void loadAllRef.current();
+      }, 300);
     };
     // 프록시 모드에서 다른 PC가 원격 서버에 직접 쓴 변경도 결국 따라잡도록 주기를 느슨하게 유지한다.
     // 이전 배치 라운드가 진행 중이면 중복 폴링을 건너뛴다.
     const poll = window.setInterval(() => {
-      if (document.visibilityState === "visible" && !loadingRef.current) reload();
+      if (document.visibilityState === "visible") reload();
     }, 30000);
     const onVis = () => {
-      if (
-        document.visibilityState === "visible" &&
-        Date.now() - lastLoadAtRef.current >= 5000
-      )
-        reload();
+      if (document.visibilityState === "visible") reload();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
