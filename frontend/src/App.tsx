@@ -145,16 +145,22 @@ export default function App() {
     if (filters.tab === "team") ensureTeamBase();
   }, [filters.tab]);
   // 캔버스 '방금 생성' glow — App 레벨에서 완료를 상시 감시(탭 전환·SceneBoard 언마운트와 무관).
-  //  후보 = 활성 씬 생성카드의 변형 genId(새로고침 등 store 가 빈 경우 미확정분을 발견하는 데 씀).
+  //  후보 = 활성 씬 생성·저장된 Comfy 카드의 변형 genId(새로고침 뒤 store가 빈 경우 발견 보완).
   const glowCandidateIds = useMemo(
     () =>
       (activeScene?.cards || [])
-        .filter((c) => c.kind === "generation")
+        .filter(
+          (c) =>
+            c.kind === "generation" ||
+            (c.kind === "comfy" && Boolean(c.genIds?.length || c.genId)),
+        )
         .flatMap((c) => variantIds(c)),
     [activeScene],
   );
-  // 캔버스가 열려 있을 때는 useSceneGenData가 같은 상태를 조회·기록하므로 보조 감시는 중복 실행하지 않는다.
-  useSceneCompletionWatcher(glowCandidateIds, filters.tab !== "compose");
+  // 현재 SceneBoard의 id는 useSceneGenData가 담당하므로 App watcher에서만 제외한다. watcher 자체는
+  // 계속 살아 있어 P34의 다른 씬 동시 렌더·히스토리 화면에서도 백그라운드 완료를 놓치지 않는다.
+  const sceneBoardCoveredIds = filters.tab === "compose" && activeScene ? glowCandidateIds : [];
+  useSceneCompletionWatcher(glowCandidateIds, { coveredIds: sceneBoardCoveredIds });
   // 배치수(한 번에 N장)를 App 이 보유 — 하단 프롬프트와 '카드 아래 Generate 버튼'이 공유. submit 은 ref 로 노출.
   const [batchCount, setBatchCount] = useState(1);
   const spotlightPromptRef = useRef<SpotlightPromptHandle>(null);

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { api, connectProgress } from "../api";
 import { postAssetsUpdated } from "./assetBroadcast";
+import { isKnownGen, observeStatus } from "./sceneRecentDoneStore";
 import type { Generation } from "../types";
 
 interface UseGenerationProgressArgs {
@@ -10,6 +11,18 @@ interface UseGenerationProgressArgs {
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
   bumpBoard: () => void;
   setSyncTick: Dispatch<SetStateAction<number>>;
+}
+
+const ACTIVE_PROGRESS_STATUSES = new Set(["pending", "queued", "running", "processing"]);
+
+export function shouldObserveProgressStatus(
+  generationId: string | null | undefined,
+  status: string | null | undefined,
+  known: (id: string) => boolean = isKnownGen,
+): boolean {
+  return Boolean(
+    generationId && status && (ACTIVE_PROGRESS_STATUSES.has(status) || known(generationId)),
+  );
 }
 
 export function useGenerationProgress({
@@ -39,6 +52,12 @@ export function useGenerationProgress({
           return;
         }
         if (!m.status) return;
+        // 서버가 확정 상태를 push한 즉시 캔버스 glow 전환도 반영한다. 다만 create 응답(seedPending)보다
+        // 초고속 done이 먼저 온 미확정 id를 settled로 박으면 glow를 잃으므로, active이거나 이미 아는 id만.
+        // 배치 폴링은 WS 누락·재연결의 안전망으로 남는다.
+        if (m.generation_id && shouldObserveProgressStatus(m.generation_id, m.status)) {
+          observeStatus(m.generation_id, m.status);
+        }
         setGens((prev) =>
           prev.map((g) =>
             g.id === m.generation_id ? { ...g, status: m.status! } : g,

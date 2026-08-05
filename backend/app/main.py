@@ -333,6 +333,33 @@ async def auth_enforcement(request: Request, call_next):
 # 라이브러리 데이터와 무관한 경로는 제외(불필요한 reload 방지).
 _NOTIFY_EXCLUDE = ("/api/auth/", "/api/health", "/api/backup", "/api/merge")
 _NOTIFY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+# HTTP는 POST지만 라이브러리 DB를 바꾸지 않는 계약. 특히 generations/batch·comment-counts·
+# folder-counts는 주기 호출되므로 synced를 방송하면 조회→전체 reload→조회의 순환이 생긴다.
+# comfy run은 외부 실행만 시작하고 결과 저장은 별도 save-to-library가 알리므로 여기서는 제외한다.
+_NOTIFY_NO_LIBRARY_CHANGE_POSTS = frozenset(
+    {
+        "/api/cost",
+        "/api/generations/batch",
+        "/api/generations/comment-counts",
+        "/api/ingest/known-jobs",
+        "/api/projects/folder-counts/batch",
+        "/api/comfy/parse",
+        "/api/comfy/run",
+        "/api/assets/reveal",
+        "/api/assets/clipboard-copy",
+    }
+)
+
+
+def should_notify_mutation(method: str, path: str, status_code: int) -> bool:
+    return (
+        method in _NOTIFY_METHODS
+        and path.startswith("/api/")
+        and not path.startswith(_NOTIFY_EXCLUDE)
+        and not (method == "POST" and path in _NOTIFY_NO_LIBRARY_CHANGE_POSTS)
+        # 리다이렉트(307 등)는 실제 변경 완료가 아니므로 최종 2xx 응답만 알린다.
+        and 200 <= status_code < 300
+    )
 
 
 @app.middleware("http")
@@ -340,12 +367,7 @@ async def mutation_notify(request: Request, call_next):
     response = await call_next(request)
     try:
         path = request.url.path
-        if (
-            request.method in _NOTIFY_METHODS
-            and path.startswith("/api/")
-            and not path.startswith(_NOTIFY_EXCLUDE)
-            and response.status_code < 400
-        ):
+        if should_notify_mutation(request.method, path, response.status_code):
             # 변경한 계정의 탭/기기에만 알림(AUTH off 면 account 없음 → 전체). 남의 비공개
             # 변경에 전원이 reload 하던 폭주를 막는다.
             from .deps import realtime_scope

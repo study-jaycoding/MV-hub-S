@@ -88,6 +88,66 @@ function generationFetch(path: string, init?: RequestInit): Promise<Generation> 
   return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
 }
 
+interface GenerationBatchResponse {
+  items: Record<string, Generation>;
+  materials: Record<string, string[]>;
+  missing: string[];
+}
+
+const GENERATION_BATCH_LIMIT = 500; // 백엔드 /api/generations/batch 계약 상한
+const GENERATION_BATCH_CONCURRENCY = 3;
+
+function fetchGenerationBatchPage(genIds: string[]): Promise<GenerationBatchResponse> {
+  return jsonFetch<GenerationBatchResponse>("/api/generations/batch", {
+    method: "POST",
+    body: jsonBody({ gen_ids: genIds }),
+  }).then((batch) => ({
+    ...batch,
+    items: Object.fromEntries(
+      Object.entries(batch.items).map(([id, generation]) => [
+        id,
+        normalizeGenerationPromptCompatibility(generation),
+      ]),
+    ),
+  }));
+}
+
+async function getGenerationsBatch(genIds: string[]): Promise<GenerationBatchResponse> {
+  const ids = Array.from(new Set(genIds.map((id) => id.trim()).filter(Boolean)));
+  if (!ids.length) return { items: {}, materials: {}, missing: [] };
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += GENERATION_BATCH_LIMIT) {
+    chunks.push(ids.slice(i, i + GENERATION_BATCH_LIMIT));
+  }
+  if (chunks.length === 1) return fetchGenerationBatchPage(chunks[0]);
+
+  // 큰 씬도 서버 상한을 넘기지 않되 요청 수만큼 한꺼번에 연결하지 않는다. 한 페이지가 실패하면
+  // 나머지 worker가 끝난 뒤 전체를 reject해 호출부가 기존 캐시를 유지하고 다음 tick에 다시 시도한다.
+  const pages = new Array<GenerationBatchResponse>(chunks.length);
+  let nextPage = 0;
+  const worker = async () => {
+    while (nextPage < chunks.length) {
+      const index = nextPage++;
+      pages[index] = await fetchGenerationBatchPage(chunks[index]);
+    }
+  };
+  const workers = Array.from(
+    { length: Math.min(GENERATION_BATCH_CONCURRENCY, chunks.length) },
+    () => worker(),
+  );
+  const settled = await Promise.allSettled(workers);
+  const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) throw failed.reason;
+
+  const merged: GenerationBatchResponse = { items: {}, materials: {}, missing: [] };
+  for (const page of pages) {
+    Object.assign(merged.items, page.items);
+    Object.assign(merged.materials, page.materials);
+    merged.missing.push(...page.missing);
+  }
+  return merged;
+}
+
 function historyFetch(path: string, init?: RequestInit): Promise<History> {
   return jsonFetch<History>(path, init).then(normalizeHistory);
 }
@@ -134,23 +194,7 @@ export const api = {
     generationFetch(`/api/generations/${pathPart(id)}`),
 
   // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
-  getGenerationsBatch: (genIds: string[]) =>
-    jsonFetch<{
-      items: Record<string, Generation>;
-      materials: Record<string, string[]>;
-      missing: string[];
-    }>("/api/generations/batch", {
-      method: "POST",
-      body: jsonBody({ gen_ids: genIds }),
-    }).then((batch) => ({
-      ...batch,
-      items: Object.fromEntries(
-        Object.entries(batch.items).map(([id, generation]) => [
-          id,
-          normalizeGenerationPromptCompatibility(generation),
-        ]),
-      ),
-    })),
+  getGenerationsBatch,
 
   // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 히스토리 패널용
   history: (id: string) => historyFetch(`/api/generations/${pathPart(id)}/history`),

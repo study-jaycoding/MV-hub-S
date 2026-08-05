@@ -75,6 +75,11 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     let alive = true;
     let timer: number | undefined;
     const tick = async (pollIds: string[]) => {
+      // 숨겨진 탭에서는 활성 씬도 보이지 않는다. 서버 조회를 쉬고 복귀 뒤 기존 주기 안에 재개한다.
+      if (document.visibilityState === "hidden") {
+        if (alive) timer = window.setTimeout(() => tick(pollIds), 2500);
+        return;
+      }
       // 생성물 상태와 직접 레퍼런스 부모를 한 번에 조회 — 카드별 generation/history N+1 제거.
       let batch: Awaited<ReturnType<typeof api.getGenerationsBatch>>;
       try {
