@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
 import { api } from "../../api";
-import { isFolderDisabled, normalizeFolderPath, toggleDisabledFolder } from "../../lib/deactivated";
+import { isFolderDisabled, toggleDisabledFolder } from "../../lib/deactivated";
+import { buildFolderCountTree } from "../../lib/folderTreeModel";
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
@@ -31,85 +32,6 @@ function countFolderNodes(nodes: FolderTreeItem[]): number {
   return n;
 }
 
-// counts 키 정규화(레거시 DB 의 `/ep001//c0010/`·역슬래시·. 등 방어) + 정규화 후 중복 합산.
-function normalizeCounts(counts: Record<string, number>): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const k in counts) {
-    const p = normalizeFolderPath(k);
-    if (p) out[p] = (out[p] || 0) + counts[k];
-  }
-  return out;
-}
-
-// 디스크 트리에 없는 folder_path(팀원이 쓴 경로 등)를 가상 노드로 합성 — counts 키 기준.
-// 부모 체인도 함께 만들고 virtual 표식을 단다. 팀 공유의 공통 폴더 구조가 내 디스크에 없어도 보이게.
-function mergeVirtualFolders(
-  roots: FolderTreeItem[],
-  counts: Record<string, number>,
-): FolderTreeItem[] {
-  const clone = (nodes: FolderTreeItem[]): FolderTreeItem[] =>
-    nodes.map((n) => ({ ...n, children: n.children ? clone(n.children) : n.children }));
-  const out = clone(roots);
-  const byPath = new Map<string, FolderTreeItem>();
-  const index = (nodes: FolderTreeItem[]) =>
-    nodes.forEach((n) => {
-      byPath.set(n.path, n);
-      if (n.children) index(n.children);
-    });
-  index(out);
-  const ensure = (path: string): FolderTreeItem => {
-    const existing = byPath.get(path);
-    if (existing) return existing;
-    const segs = path.split("/");
-    const node: FolderTreeItem = {
-      name: segs[segs.length - 1],
-      path,
-      count: 0,
-      children: [],
-      virtual: true,
-    };
-    byPath.set(path, node);
-    if (segs.length === 1) {
-      out.push(node);
-    } else {
-      const parent = ensure(segs.slice(0, -1).join("/"));
-      parent.children = parent.children || [];
-      parent.children.push(node);
-    }
-    return node;
-  };
-  for (const key of Object.keys(counts)) if (key) ensure(key);
-  return out;
-}
-
-// 폴더별 생성물 개수(정확 경로)를 트리 노드에 누적 반영 — 노드 count = 자신 + 하위 전부의 합.
-// 디스크 파일 수 대신 '이 폴더에 담긴 생성물 수'를 보여준다(사용자 요청).
-// newCounts(팀 탭 신규 공유 개수)도 같은 누적 규칙으로 노드 newCount 에 얹는다(라임 배지).
-function overlayFolderCounts(
-  nodes: FolderTreeItem[],
-  counts: Record<string, number>,
-  newCounts?: Record<string, number>,
-): FolderTreeItem[] {
-  return nodes.map((n) => {
-    let sum = 0;
-    for (const key in counts) {
-      if (key === n.path || key.startsWith(n.path + "/")) sum += counts[key];
-    }
-    let newSum = 0;
-    if (newCounts) {
-      for (const key in newCounts) {
-        if (key === n.path || key.startsWith(n.path + "/")) newSum += newCounts[key];
-      }
-    }
-    return {
-      ...n,
-      count: sum,
-      newCount: newSum,
-      children: n.children ? overlayFolderCounts(n.children, counts, newCounts) : n.children,
-    };
-  });
-}
-
 function SidebarFolderTree({
   state,
   loading,
@@ -137,18 +59,11 @@ function SidebarFolderTree({
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
-  // 트리 파생(정규화→가상폴더 합성→카운트 오버레이)은 O(노드수×counts키수)라 매 렌더 재계산이
-  // 아깝다 — 드래그/확장 등 잦은 부모 리렌더에서 tree·counts 가 그대로면 이전 결과 재사용.
+  // 트리 파생(정규화→가상폴더 합성→카운트 누적)은 입력이 바뀔 때만 계산한다.
   // (훅 규칙상 아래 early return 들보다 먼저 호출)
   const roots = useMemo(() => {
     if (!state?.tree) return [] as FolderTreeItem[];
-    let r: FolderTreeItem[] = visibleProjectFolderRoots(state.tree);
-    const normCounts = counts ? normalizeCounts(counts) : undefined;
-    const normNew = newCounts ? normalizeCounts(newCounts) : undefined;
-    // 팀 데이터의 folder_path 중 내 디스크에 없는 것을 가상 노드로 합성(팀원 공통 폴더 표시).
-    if (normCounts && Object.keys(normCounts).length) r = mergeVirtualFolders(r, normCounts);
-    if (normCounts && r.length) r = overlayFolderCounts(r, normCounts, normNew);
-    return r;
+    return buildFolderCountTree(visibleProjectFolderRoots(state.tree), counts, newCounts);
   }, [state?.tree, counts, newCounts]);
   if (!state?.root_path) return null;
   if (loading && !state.tree) return <div className="side-folder-note">폴더 로딩...</div>;

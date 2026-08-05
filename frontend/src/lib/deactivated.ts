@@ -4,8 +4,11 @@
 //   어디서 토글하든 DISABLED_EVENT 를 쏘아 다른 화면(App·보드·에셋뷰)이 즉시 재조회한다.
 
 import { APP_EVENTS, dispatchAppEvent } from "./appEvents";
+import { normalizeFolderPath } from "./folderTreeModel";
 import { loadJSON, saveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
+
+export { normalizeFolderPath } from "./folderTreeModel";
 
 const GEN_KEY = STORAGE_KEYS.historyDisabled;
 const GEN_KEY_OLD = STORAGE_KEYS.historyDisabledLegacy; // 리네임 전 저장값 1회 폴백
@@ -66,16 +69,6 @@ export const toggleDisabledAssets = (paths: string[]): void =>
 // projectId 별 최소 집합(부모가 걸려 있으면 자식은 저장하지 않음). 로컬 전용, DISABLED_EVENT 공유.
 const FOLDER_KEY = STORAGE_KEYS.disabledFolders;
 export type DisabledFolders = Record<string, string[]>;
-
-// 렌더 루트 상대 경로 정규화 — 백슬래시/중복슬래시/앞뒤슬래시/. .. 제거(백엔드 clean_folder_path 규칙과 정합).
-export function normalizeFolderPath(path: string | null | undefined): string {
-  return (path || "")
-    .replace(/\\/g, "/")
-    .split("/")
-    .map((s) => s.trim())
-    .filter((s) => s && s !== "." && s !== "..")
-    .join("/");
-}
 
 export function loadDisabledFolders(): DisabledFolders {
   try {

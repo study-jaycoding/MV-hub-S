@@ -8,6 +8,7 @@ const pureDomainFiles = [
   "src/lib/comfyRunState.ts",
   "src/lib/generationDisplay.ts",
   "src/lib/gradeStep.ts",
+  "src/lib/folderTreeModel.ts",
   "src/lib/recipeScene.ts",
   "src/lib/sceneComfyInputs.ts",
   "src/lib/sceneComfySeeds.ts",
