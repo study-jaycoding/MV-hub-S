@@ -33,8 +33,8 @@ class HfMissingCleanupTests(IsolatedAsyncioTestCase):
                     ("gen-unknown", "job-unknown"),
                 ],
             ) as list_gens,
-            patch.object(repo, "set_hf_missing") as set_hf_missing,
-            patch.object(repo, "delete_generation") as delete_generation,
+            patch.object(repo, "set_hf_missing_batch") as set_hf_missing_batch,
+            patch.object(repo, "delete_generation", return_value=True) as delete_generation,
             patch.object(
                 cli_bridge,
                 "job_exists",
@@ -44,7 +44,7 @@ class HfMissingCleanupTests(IsolatedAsyncioTestCase):
             result = await generation.trash_hf_missing(SimpleNamespace())
 
         list_gens.assert_called_once_with(account_uid="account-1")
-        set_hf_missing.assert_called_once_with("gen-exists", False)
+        set_hf_missing_batch.assert_called_once_with([("gen-exists", False)])
         delete_generation.assert_called_once_with("gen-missing")
         self.assertEqual(
             result,
@@ -84,7 +84,7 @@ class HfMissingCleanupTests(IsolatedAsyncioTestCase):
             patch.object(generation._proxy, "proxying", return_value=True),
             patch.object(generation._proxy, "proxy_json", proxy_json),
             patch.object(repo, "gens_with_job_id", return_value=[]),
-            patch.object(repo, "set_hf_missing"),
+            patch.object(repo, "set_hf_missing_batch"),
             patch.object(repo, "delete_generation"),
             patch.object(
                 cli_bridge,
@@ -137,8 +137,8 @@ class HfMissingCleanupTests(IsolatedAsyncioTestCase):
                 "gens_with_job_id",
                 return_value=[("gen-missing", "job-missing")],
             ),
-            patch.object(repo, "set_hf_missing"),
-            patch.object(repo, "delete_generation") as delete_generation,
+            patch.object(repo, "set_hf_missing_batch"),
+            patch.object(repo, "delete_generation", return_value=True) as delete_generation,
             patch.object(
                 cli_bridge,
                 "job_exists",
@@ -158,6 +158,62 @@ class HfMissingCleanupTests(IsolatedAsyncioTestCase):
                 "server_trashed": 0,
             },
         )
+
+    async def test_local_trash_count_increases_only_when_move_succeeds(self):
+        from app import repo
+        from app.routers import generation
+        from app.services import cli_bridge
+
+        with (
+            patch.object(generation, "account_scope_uid", return_value="account-1"),
+            patch.object(generation._proxy, "proxying", return_value=False),
+            patch.object(
+                repo,
+                "gens_with_job_id",
+                return_value=[("already-gone", "job-missing")],
+            ),
+            patch.object(repo, "set_hf_missing_batch") as set_hf_missing_batch,
+            patch.object(repo, "delete_generation", return_value=False),
+            patch.object(cli_bridge, "job_exists", new=AsyncMock(return_value=False)),
+        ):
+            result = await generation.trash_hf_missing(SimpleNamespace())
+
+        self.assertEqual(result["trashed"], 0)
+        set_hf_missing_batch.assert_called_once_with([])
+
+    async def test_server_apply_batches_identity_validation_and_reappeared_flags(self):
+        from app.routers import manage
+
+        body = manage.HfMissingApplyIn(
+            results=[
+                manage.HfCheckResult(gen_id="exists", job_id="job-exists", exists=True),
+                manage.HfCheckResult(gen_id="missing", job_id="job-missing", exists=False),
+                manage.HfCheckResult(gen_id="other", job_id="job-other", exists=False),
+                manage.HfCheckResult(gen_id="mismatch", job_id="wrong-job", exists=True),
+            ]
+        )
+        identities = {
+            "exists": ("me", "job-exists"),
+            "missing": ("me", "job-missing"),
+            "other": ("someone-else", "job-other"),
+            "mismatch": ("me", "real-job"),
+        }
+        with (
+            patch.object(manage, "_push_acc", return_value={"creator_uid": "me"}),
+            patch.object(
+                manage.repo,
+                "get_generation_identities_batch",
+                return_value=identities,
+            ) as identity_batch,
+            patch.object(manage.repo, "set_hf_missing_batch") as missing_batch,
+            patch.object(manage.repo, "delete_generation", return_value=True) as delete,
+        ):
+            result = manage.hf_missing_apply(body, SimpleNamespace())
+
+        self.assertEqual(result, {"trashed": 1})
+        identity_batch.assert_called_once_with(["exists", "missing", "other", "mismatch"])
+        missing_batch.assert_called_once_with([("exists", False)])
+        delete.assert_called_once_with("missing")
 
 
 if __name__ == "__main__":

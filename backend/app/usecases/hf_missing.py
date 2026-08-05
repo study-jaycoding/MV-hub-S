@@ -44,14 +44,15 @@ async def trash_missing_generations(
 
     def apply_local(checked: list[tuple[str, bool | None]]) -> int:
         trashed = 0
+        reappeared: list[tuple[str, bool]] = []
         for gen_id, exists in checked:
             if exists is None:
                 continue
             if exists:
-                repo.set_hf_missing(gen_id, False)
-            else:
-                repo.delete_generation(gen_id)
+                reappeared.append((gen_id, False))
+            elif repo.delete_generation(gen_id):
                 trashed += 1
+        repo.set_hf_missing_batch(reappeared)
         return trashed
 
     trashed = await asyncio.to_thread(apply_local, results)

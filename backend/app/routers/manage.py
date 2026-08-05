@@ -202,17 +202,22 @@ def hf_missing_apply(body: HfMissingApplyIn, request: Request):
     my_uid = acc.get("creator_uid")
     if not my_uid:
         return {"trashed": 0}
+    identities = repo.get_generation_identities_batch(
+        [result.gen_id for result in body.results]
+    )
     trashed = 0
+    reappeared: list[tuple[str, bool]] = []
     for r in body.results:
         # ★재검증: 내 것이고 job_id 가 일치할 때만(로컬이 보낸 값을 그대로 믿지 않음).
         # get_generation 공개 dict 엔 job_id 가 없어 identity 를 직접 조회한다(코덱스).
-        creator_uid, job_id = repo.get_generation_identity(r.gen_id)
+        creator_uid, job_id = identities.get(r.gen_id, (None, None))
         if creator_uid != my_uid or (job_id or "") != r.job_id:
             continue
         if r.exists:
-            repo.set_hf_missing(r.gen_id, False)  # 재등장 → 흐림 해제
+            reappeared.append((r.gen_id, False))  # 재등장 → 흐림 해제
         elif repo.delete_generation(r.gen_id):  # HF 삭제 확정 → 서버 휴지통(soft delete)
             trashed += 1
+    repo.set_hf_missing_batch(reappeared)
     return {"trashed": trashed}
 
 

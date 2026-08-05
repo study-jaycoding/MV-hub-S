@@ -679,19 +679,52 @@ def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]
 def get_generation_identity(gen_id: str) -> tuple[Optional[str], Optional[str]]:
     """서버 재검증용 (creator_uid, job_id) — 공개 get_generation dict 엔 job_id 가 없어 직접 조회한다.
     HF 삭제 검토 적용 시 '내 것이고 job_id 일치'를 확인하는 데 쓴다. 없으면 (None, None)."""
+    identity_map = get_generation_identities_batch([gen_id])
+    return identity_map.get(gen_id, (None, None))
+
+
+def get_generation_identities_batch(
+    gen_ids: list[str],
+) -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """여러 생성물의 ``id -> (creator_uid, job_id)``를 변수 상한 아래에서 일괄 조회한다."""
+    ids = list(dict.fromkeys(gen_id for gen_id in (gen_ids or []) if gen_id))
+    if not ids:
+        return {}
+    out: dict[str, tuple[Optional[str], Optional[str]]] = {}
     with get_connection() as conn:
-        r = conn.execute(
-            "SELECT creator_uid, job_id FROM generation WHERE id=?", (gen_id,)
-        ).fetchone()
-        return (r["creator_uid"], r["job_id"]) if r else (None, None)
+        for offset in range(0, len(ids), 900):
+            batch = ids[offset:offset + 900]
+            placeholders = ",".join("?" * len(batch))
+            rows = conn.execute(
+                f"SELECT id, creator_uid, job_id FROM generation WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            out.update(
+                {row["id"]: (row["creator_uid"], row["job_id"]) for row in rows}
+            )
+    return out
 
 
 def set_hf_missing(gen_id: str, missing: bool) -> None:
     """힉스필드 삭제 검증 결과 반영(로컬-only 흐림 처리/필터에 사용)."""
+    set_hf_missing_batch([(gen_id, missing)])
+
+
+def set_hf_missing_batch(items: list[tuple[str, bool]]) -> int:
+    """여러 생성물의 HF 원본 누락 표시를 한 트랜잭션으로 저장한다. 같은 id는 마지막 값이 이긴다."""
+    final_by_id: dict[str, bool] = {}
+    for gen_id, missing in items or []:
+        if gen_id:
+            final_by_id[gen_id] = bool(missing)
+    if not final_by_id:
+        return 0
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE generation SET hf_missing=? WHERE id=?", (1 if missing else 0, gen_id)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany(
+            "UPDATE generation SET hf_missing=? WHERE id=?",
+            [(1 if missing else 0, gen_id) for gen_id, missing in final_by_id.items()],
         )
+    return len(final_by_id)
 
 
 def reconcile_duplicates() -> int:
