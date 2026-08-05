@@ -20,6 +20,7 @@ import {
 import { projectApi } from "./lib/projectApi";
 import { sharedApi } from "./lib/sharedApi";
 import { pathPart } from "./lib/url";
+import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -63,6 +64,34 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   return p.toString();
 }
 
+function normalizeGenerations(generations: Generation[]): Generation[] {
+  return generations.map(normalizeGenerationPromptCompatibility);
+}
+
+function normalizeHistory(history: History): History {
+  return {
+    ...history,
+    ancestors: normalizeGenerations(history.ancestors),
+    materials: normalizeGenerations(history.materials),
+    target: normalizeGenerationPromptCompatibility(history.target),
+    children: normalizeGenerations(history.children),
+    used_by: normalizeGenerations(history.used_by),
+    siblings: normalizeGenerations(history.siblings),
+  };
+}
+
+function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
+  return { ...graph, nodes: normalizeGenerations(graph.nodes) };
+}
+
+function generationFetch(path: string, init?: RequestInit): Promise<Generation> {
+  return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
+}
+
+function historyFetch(path: string, init?: RequestInit): Promise<History> {
+  return jsonFetch<History>(path, init).then(normalizeHistory);
+}
+
 // 코멘트 스레드 캐시(genId → 코멘트들) — 호버 prefetch + stale-while-revalidate.
 // 패널이 열릴 때 캐시를 즉시 그리고, 동시에 서버 재요청으로 최신화한다.
 // ★상한 LRU — 긴 세션에서 카드 수천 개 호버 시 무한 적재 방지. Map 삽입순서로 오래된 것부터 제거.
@@ -81,7 +110,9 @@ export const api = {
   // 한 페이지(커서 뒤 limit개)만 받아온다. 무한 스크롤이 호출. cursor=null 이면 첫 페이지.
   // 서버가 모든 필터를 거르므로 반환된 페이지가 곧 화면에 그릴 정확한 결과.
   listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE) =>
-    jsonFetch<Generation[]>(`/api/generations?${buildQuery(query, cursor, limit)}`),
+    jsonFetch<Generation[]>(`/api/generations?${buildQuery(query, cursor, limit)}`).then(
+      normalizeGenerations,
+    ),
 
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
@@ -93,14 +124,14 @@ export const api = {
     if (search) p.set("search", search);
     p.set("limit", String(limit));
     p.set("offset", String(offset));
-    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`);
+    return jsonFetch<Generation[]>(`/api/trash?${p.toString()}`).then(normalizeGenerations);
   },
   // 휴지통에서 영구 삭제(복원 불가)
   purgeTrashed: (id: string) =>
     jsonFetch<{ purged: boolean }>(`/api/trash/${pathPart(id)}`, { method: "DELETE" }),
 
   getGeneration: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}`),
+    generationFetch(`/api/generations/${pathPart(id)}`),
 
   // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
   getGenerationsBatch: (genIds: string[]) =>
@@ -111,13 +142,24 @@ export const api = {
     }>("/api/generations/batch", {
       method: "POST",
       body: jsonBody({ gen_ids: genIds }),
-    }),
+    }).then((batch) => ({
+      ...batch,
+      items: Object.fromEntries(
+        Object.entries(batch.items).map(([id, generation]) => [
+          id,
+          normalizeGenerationPromptCompatibility(generation),
+        ]),
+      ),
+    })),
 
   // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 히스토리 패널용
-  history: (id: string) => jsonFetch<History>(`/api/generations/${pathPart(id)}/history`),
+  history: (id: string) => historyFetch(`/api/generations/${pathPart(id)}/history`),
 
   // 연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리용
-  historyTree: (id: string) => jsonFetch<HistoryGraph>(`/api/generations/${pathPart(id)}/history-tree`),
+  historyTree: (id: string) =>
+    jsonFetch<HistoryGraph>(`/api/generations/${pathPart(id)}/history-tree`).then(
+      normalizeHistoryGraph,
+    ),
 
   // 생성물의 실제 크레딧·소요시간(정보 팝업) — generation_metrics(매칭 실제값·허브 소요시간)
   generationMetrics: (id: string) =>
@@ -134,18 +176,20 @@ export const api = {
 
   // 수동 히스토리 연결 — id 의 부모를 parentId 로 지정(동기화 잡 등 자동 히스토리 없는 것 묶기)
   addHistory: (id: string, parentId: string, relation: "derived" | "reference" = "derived") =>
-    jsonFetch<History>(`/api/generations/${pathPart(id)}/history`, {
+    historyFetch(`/api/generations/${pathPart(id)}/history`, {
       method: "POST",
       body: jsonBody({ parent_gen_id: parentId, relation }),
     }),
 
   // 히스토리 엣지 해제 — id 와 그 부모 parentId 의 연결 풀기
   removeHistory: (id: string, parentId: string) =>
-    jsonFetch<History>(`/api/generations/${pathPart(id)}/history/${pathPart(parentId)}`, { method: "DELETE" }),
+    historyFetch(`/api/generations/${pathPart(id)}/history/${pathPart(parentId)}`, {
+      method: "DELETE",
+    }),
 
   // 생성 직후 파생 부모(들) 일괄 기록 — 서버가 전이 축소(조상 잉여 엣지 제거)해 가장 가까운 부모만 남김
   deriveFrom: (id: string, parentIds: string[]) =>
-    jsonFetch<History>(`/api/generations/${pathPart(id)}/derive-from`, {
+    historyFetch(`/api/generations/${pathPart(id)}/derive-from`, {
       method: "POST",
       body: jsonBody({ parent_ids: parentIds }),
     }),
@@ -247,7 +291,7 @@ export const api = {
   }) =>
     // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
     // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
-    jsonFetch<Generation>("/api/gen-requests", {
+    generationFetch("/api/gen-requests", {
       method: "POST",
       body: jsonBody({ kind: "create", create: body }),
     }),
@@ -257,13 +301,13 @@ export const api = {
     body: { prompt?: string; color?: string | null; auto_tags?: string[] },
   ) =>
     // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
-    jsonFetch<Generation>("/api/gen-requests", {
+    generationFetch("/api/gen-requests", {
       method: "POST",
       body: jsonBody({ kind: "regenerate", source_gen_id: id, regenerate: body }),
     }),
 
   setTags: (id: string, tags: string[]) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/tags`, {
+    generationFetch(`/api/generations/${pathPart(id)}/tags`, {
       method: "PUT",
       body: jsonBody({ tags }),
     }),
@@ -276,7 +320,7 @@ export const api = {
 
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
   setGenAutoTags: (id: string, auto_tags: string[]) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/auto-tags`, {
+    generationFetch(`/api/generations/${pathPart(id)}/auto-tags`, {
       method: "PUT",
       body: jsonBody({ auto_tags }),
     }),
@@ -324,7 +368,7 @@ export const api = {
     }),
 
   setColor: (id: string, color: string | null) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/color`, {
+    generationFetch(`/api/generations/${pathPart(id)}/color`, {
       method: "PUT",
       body: jsonBody({ color }),
     }),
@@ -337,7 +381,7 @@ export const api = {
 
   // 소스 라이브러리 등록/해제(@이름)
   setSource: (id: string, name: string | null, is_source = true) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/source`, {
+    generationFetch(`/api/generations/${pathPart(id)}/source`, {
       method: "PUT",
       body: jsonBody({ name, is_source }),
     }),
@@ -399,12 +443,12 @@ export const api = {
     if (tag) q.set("tag", tag);
     if (assetProject) q.set("asset_project", assetProject);
     if (assetDir) q.set("asset_dir", assetDir);
-    return jsonFetch<Generation[]>(`/api/sources?${q.toString()}`);
+    return jsonFetch<Generation[]>(`/api/sources?${q.toString()}`).then(normalizeGenerations);
   },
 
   // 팀 공유 해제(내가 공유한 것 되돌리기). ⚠️ 최종(골드)이면 409
   unpublish: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/unpublish`, {
+    generationFetch(`/api/generations/${pathPart(id)}/unpublish`, {
       method: "POST",
       body: jsonBody({}),
     }),
@@ -413,12 +457,12 @@ export const api = {
 
   // v02 CMS — Supervisor 최종(골드) 지정/해제. 공유 없으면 finalize 가 함께 발행.
   finalize: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
+    generationFetch(`/api/generations/${pathPart(id)}/finalize`, { method: "POST" }),
   unfinalize: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/unfinalize`, { method: "POST" }),
+    generationFetch(`/api/generations/${pathPart(id)}/unfinalize`, { method: "POST" }),
 
   importToWorkspace: (id: string) =>
-    jsonFetch<Generation>(`/api/generations/${pathPart(id)}/import`, {
+    generationFetch(`/api/generations/${pathPart(id)}/import`, {
       method: "POST",
       body: jsonBody({}),
     }),
