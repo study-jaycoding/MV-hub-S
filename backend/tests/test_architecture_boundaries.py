@@ -66,6 +66,20 @@ def _matches_prefix(module: str, prefix: str) -> bool:
     return module == prefix or module.startswith(f"{prefix}.")
 
 
+def _graph_module_name(path: Path) -> str:
+    module = _module_name(path)
+    return module.removesuffix(".__init__")
+
+
+def _resolve_app_module(imported: str, known: set[str]) -> str | None:
+    matches = [
+        module
+        for module in known
+        if imported == module or imported.startswith(f"{module}.")
+    ]
+    return max(matches, key=len) if matches else None
+
+
 class ArchitectureBoundaryTests(unittest.TestCase):
     def test_backend_layers_do_not_import_forbidden_dependencies(self) -> None:
         violations: list[str] = []
@@ -97,6 +111,49 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             KNOWN_DEBT,
             observed_debt,
             "KNOWN_DEBT가 실제 코드와 다릅니다. 해결된 항목은 예외 목록에서도 제거하세요.",
+        )
+
+    def test_backend_internal_import_graph_has_no_cycles(self) -> None:
+        paths = sorted(APP_ROOT.rglob("*.py"))
+        source_modules = {path: _graph_module_name(path) for path in paths}
+        known = set(source_modules.values())
+        graph: dict[str, set[str]] = {module: set() for module in known}
+
+        for path, source in source_modules.items():
+            for _, imported in _imported_modules(path):
+                target = _resolve_app_module(imported, known)
+                if target and target != source:
+                    graph[source].add(target)
+
+        visiting: list[str] = []
+        visited: set[str] = set()
+        cycles: set[tuple[str, ...]] = set()
+
+        def walk(module: str) -> None:
+            if module in visiting:
+                members = visiting[visiting.index(module):]
+                rotations = [
+                    tuple(members[index:] + members[:index])
+                    for index in range(len(members))
+                ]
+                cycles.add(min(rotations))
+                return
+            if module in visited:
+                return
+            visiting.append(module)
+            for dependency in graph[module]:
+                walk(dependency)
+            visiting.pop()
+            visited.add(module)
+
+        for module in sorted(graph):
+            walk(module)
+
+        self.assertEqual(
+            set(),
+            cycles,
+            "백엔드 내부 import 순환이 발견되었습니다:\n"
+            + "\n".join(" -> ".join(cycle) for cycle in sorted(cycles)),
         )
 
 

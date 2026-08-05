@@ -36,16 +36,11 @@ from . import config
 from . import db_migrations
 # 계정별 DB 순수 헬퍼(순환 없음) — ensure_account_db 가 호출하고, db._copy_sqlite 는 db_transfer.py 가 쓴다.
 from .db_account_dbs import _copy_sqlite, _legacy_owner, _seed_default_worker
+from .db_paths import DEFAULT_DB_PATH, LEGACY_DB_PATH as _LEGACY_DB_PATH, get_db_path
 
 # backend/app/db.py → backend/ 가 기준 디렉터리
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = BACKEND_DIR / "schema.sql"
-
-# DB 경로는 환경변수로 재정의 가능(테스트·다중 워크스페이스 대비). 기본은 <데이터 루트>/db/content_hub.db.
-# 데이터 루트는 config.DATA_DIR(= CONTENT_HUB_DATA) 를 따른다 — media/shared 와 같은 루트에 묶이게.
-DEFAULT_DB_PATH = config.DATA_DIR / "db" / "content_hub.db"
-# 구버전 경로(backend 루트 직속) — 재시작 시 새 위치로 1회 자동 이전.
-_LEGACY_DB_PATH = BACKEND_DIR / "content_hub.db"
 
 # 백엔드 스위치 — sqlite 만 지원. 다른 값이 설정돼도 조용히 오작동하지 않게 진입에서 명시 차단한다.
 DB_BACKEND = os.environ.get("CONTENT_HUB_DB_BACKEND", "sqlite").strip().lower()
@@ -57,21 +52,6 @@ def _assert_supported_backend() -> None:
     startup 뿐 아니라 테스트·관리 스크립트·백업/복원도 get_connection 을 직접 쓰므로 여기서 막는다."""
     if DB_BACKEND != "sqlite":
         raise RuntimeError(_UNSUPPORTED_BACKEND % DB_BACKEND)
-
-
-def get_db_path() -> Path:
-    """현재 사용할 DB 파일 경로.
-
-    우선순위: ① 환경변수 CONTENT_HUB_DB ② 활성 계정(로컬 프록시 로그인 계정)의 전용 DB
-    ③ 레거시 단일 DB(미로그인/단독·공유 서버). ②가 계정별 격리의 핵심 — 로그인 계정마다
-    data/db/acct/<uid>/content_hub.db 로 갈라 다른 계정 데이터가 섞이지 않게 한다."""
-    env = os.environ.get("CONTENT_HUB_DB")
-    if env:
-        return Path(env).expanduser().resolve()
-    from .active_account import account_db_path, account_key
-
-    key = account_key()
-    return account_db_path(key) if key else DEFAULT_DB_PATH
 
 
 def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:

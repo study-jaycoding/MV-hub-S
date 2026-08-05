@@ -41,5 +41,5 @@ from .accounts import *  # noqa: F401,F403
 from .identity import _MY_UID_CACHE, ensure_worker, get_setting, set_setting
 from .tags import _add_tags, _set_auto_tags, _set_tags
 from .generation_rows import _attach_children
-from .generations import _delete_generation
+from .generation_delete import delete_generation_rows as _delete_generation
 from .share import import_bundle_item

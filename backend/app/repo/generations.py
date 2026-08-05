@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from typing import Any, Optional
 
@@ -14,6 +13,7 @@ from ..db import get_connection
 from ..generation_result import ACTIVE_STATUSES, stored_error
 from . import identity, tags
 from .generation_references import _link_reference, _upsert_reference
+from .generation_delete import delete_generation_rows as _delete_generation
 from .generation_sync import NO_REVIVE_ERROR
 from .lineage import _record_history  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
 from ._common import (
@@ -628,40 +628,11 @@ def override_prompt_model(
         )
 
 
-def _delete_generation(conn: sqlite3.Connection, gen_id: str) -> bool:
-    """generation + 모든 자식 행을 한 트랜잭션에서 제거.
-    share·history 는 ON DELETE CASCADE 가 없고, generation_comment(_read) 는 FK 자체가
-    없어 본체만 지우면 FK 에러나 고아 행이 남는다 → 명시적으로 전부 정리.
-    ★child 테이블을 추가하면 backend/cleanup_orphan_creators.py 의 복사본도 같이 고칠 것
-    (그 스크립트는 표준 라이브러리만 쓰는 독립 도구라 이 함수를 import 하지 않는다)."""
-    conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
-    conn.execute(
-        "DELETE FROM history WHERE parent_gen_id=? OR child_gen_id=?", (gen_id, gen_id)
-    )
-    # 코멘트 seen(comment_id 기준)은 generation_comment 삭제 전에 먼저 정리 — 안 그러면 고아로 남아
-    # 무한 누적되고, comment_id 충돌(복원 등) 시 새 코멘트가 '이미 확인됨'으로 잘못 표시될 수 있다.
-    try:
-        conn.execute(
-            "DELETE FROM generation_comment_seen WHERE comment_id IN "
-            "(SELECT id FROM generation_comment WHERE gen_id=?)",
-            (gen_id,),
-        )
-    except Exception:  # noqa: BLE001 — 구버전 DB 에 테이블이 없을 수 있음
-        pass
-    conn.execute("DELETE FROM generation_comment WHERE gen_id=?", (gen_id,))
-    conn.execute("DELETE FROM generation_comment_read WHERE gen_id=?", (gen_id,))
-    conn.execute("DELETE FROM gen_tag WHERE generation_id=?", (gen_id,))
-    conn.execute("DELETE FROM gen_auto_tag WHERE generation_id=?", (gen_id,))
-    conn.execute("DELETE FROM gen_reference WHERE generation_id=?", (gen_id,))
-    conn.execute("DELETE FROM asset WHERE generation_id=?", (gen_id,))
-    return conn.execute("DELETE FROM generation WHERE id=?", (gen_id,)).rowcount > 0
-
-
 def delete_generation(gen_id: str) -> bool:
     """사용자 삭제 = **휴지통 DB 로 이동**(메인에서 제거). 힉스필드 원본엔 영향 없음.
     검색·복원·영구삭제는 휴지통 창(repo.trash)에서. 메인 DB 는 항상 가볍게 유지된다.
     ⚠️ 시스템 정리(sync 중복 등)는 _delete_generation(물리 삭제)을 직접 쓴다(휴지통 안 거침)."""
-    from . import trash  # 지연 import — trash 가 이 모듈의 _delete_generation 을 import(순환 회피)
+    from . import trash
     return trash.move_to_trash(gen_id)
 
 

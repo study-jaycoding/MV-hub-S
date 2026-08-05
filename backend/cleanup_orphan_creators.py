@@ -65,7 +65,7 @@ def _gens_of(conn: sqlite3.Connection, uid: str) -> list[sqlite3.Row]:
 
 
 def _delete_generation(conn: sqlite3.Connection, gen_id: str) -> bool:
-    """app/repo/generations.py::_delete_generation 과 동일한 연쇄 정리(복붙 이식).
+    """app/repo/generation_delete.py::delete_generation_rows 와 동일한 연쇄 정리(복붙 이식).
     ★이 스크립트는 '표준 라이브러리만' 원칙이라 앱 모듈을 import 하지 않는다 — 대신
     본가(_delete_generation)에 child 테이블이 추가되면 여기도 같이 고쳐야 한다(본가 docstring 에 상호 표기)."""
     conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))

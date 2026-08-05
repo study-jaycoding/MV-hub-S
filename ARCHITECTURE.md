@@ -89,7 +89,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 - 프론트: **ESLint** `lint:architecture` — `import/no-cycle`, 순수 domain의
   React/API/localStorage 접근 제한. P1은 경고 우선이며 현재 경고를 갚으면서 강화한다.
 - 백엔드: pytest AST 경계 검사(`tests/test_architecture_boundaries.py`) —
-  `repo → routers/usecases 금지`, `usecases → routers/FastAPI 금지`.
+  `repo → routers/usecases 금지`, `usecases → routers/FastAPI 금지`, 내부 import 순환 금지.
 
 목표는 "새로 짜는 코드가 더 안 섞이게" 막는 것. 기존 위반은 천천히 갚는다.
 
@@ -124,6 +124,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 | **P9** | Assets 디스크 IO·계정별 마운트 저장소를 라우터에서 분리 | 중 ✅ |
 | **P10** | Assets 개인 메타·팀 코멘트 하위 라우터 분리 | 중 ✅ |
 | **P11** | 실패 통계와 실패 정리의 계정 범위 일치 | 낮 ✅ |
+| **P12** | DB 경로·물리 삭제 공용부 추출 및 백엔드 import 순환 제거 | 낮~중 ✅ |
 
 **순서 원칙:** 순수로직 추출 → 테스트 → 상태 분리 → IO 분리 → UI 분리.
 (JSX 부터 자르면 props 만 늘고 이득이 없다.)

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..config import DATA_DIR, MEDIA_DIR
+from ..db_paths import get_db_path
 
 
 _COMMON_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -255,8 +256,6 @@ def _directory_size(path: Path) -> int:
 
 
 def _disk_snapshot() -> dict[str, Any]:
-    from ..db import get_db_path
-
     db_path = get_db_path()
     try:
         usage = shutil.disk_usage(DATA_DIR)

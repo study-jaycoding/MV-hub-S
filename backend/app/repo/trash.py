@@ -26,7 +26,7 @@ from typing import Any, Iterator, Optional
 from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
 from . import tags
-from .generations import _delete_generation
+from .generation_delete import delete_generation_rows as _delete_generation
 
 # 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
