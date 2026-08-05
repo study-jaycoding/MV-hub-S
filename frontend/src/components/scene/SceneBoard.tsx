@@ -109,6 +109,7 @@ import {
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
+import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import {
@@ -1110,62 +1111,8 @@ export function SceneBoard({
     };
   };
 
-  // 드래그 리스너 등록/정리를 한곳에서 — 드래그 중 언마운트(씬 전환·삭제)돼도 누수 없게 unmount 에서 정리.
-  const dragCleanupRef = useRef<(() => void) | null>(null); // 언마운트용: 리스너만 제거(setState 없이)
-  const dragCancelRef = useRef<(() => void) | null>(null); // 취소용: 정리+onCancel(다음 드래그 시작·blur 에서)
-  // 드래그 이동을 rAF로 '프레임당 1회'만 반영(합치기) — 마우스가 mousemove 를 초당 수백 번 쏴도
-  // 무거운 setState/렌더는 화면 주사율만큼만 돈다. 그 결과 메인 스레드가 덜 막혀 드래그 중 빠른
-  // 클릭·키 입력이 지연·누락되지 않는다. mouseup 시 아직 안 돈 마지막 이동을 먼저 flush 해 최종 위치·
-  // 그룹 재배정·연결 drop 판정이 항상 최신 좌표를 쓰게 한다.
-  //  onCancel: 창 blur(Alt-Tab 등)로 mouseup 을 놓쳤을 때 실행 — 유효 드롭 좌표가 없으므로 up 의
-  //  커밋/클릭 로직 대신 '정리'만(유령 와이어·팬 커서·리오더 라인 등 고착 방지). 없으면 리스너만 제거.
-  const beginDrag = useCallback(
-    (move: (e: MouseEvent) => void, up: (e: MouseEvent) => void, onCancel?: () => void) => {
-      // 이전 드래그가 mouseup 유실(Alt-Tab·창 blur 등)로 안 끝났으면 먼저 취소 — 리스너 누수·이중 실행 방지.
-      dragCancelRef.current?.();
-      let rafId: number | null = null;
-      let pending: MouseEvent | null = null;
-      let closed = false; // teardown 멱등 — blur 취소 뒤 뒤늦은 mouseup 이 up 을 또 부르지 않게
-      const runPending = () => {
-        rafId = null;
-        if (pending) { const ev = pending; pending = null; move(ev); }
-      };
-      const onMove = (ev: MouseEvent) => {
-        pending = ev;
-        if (rafId === null) rafId = requestAnimationFrame(runPending);
-      };
-      const flush = () => {
-        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
-        if (pending) { const ev = pending; pending = null; move(ev); }
-      };
-      function teardown() {
-        if (closed) return false;
-        closed = true;
-        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        window.removeEventListener("blur", onCancelDrag);
-        dragCleanupRef.current = null;
-        if (dragCancelRef.current === onCancelDrag) dragCancelRef.current = null;
-        return true;
-      }
-      const onUp = (ev: MouseEvent) => {
-        flush(); // 아직 반영 안 된 마지막 이동을 먼저 적용
-        if (teardown()) up(ev);
-      };
-      function onCancelDrag() {
-        flush();
-        if (teardown()) onCancel?.();
-      }
-      dragCleanupRef.current = teardown;
-      dragCancelRef.current = onCancelDrag;
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-      window.addEventListener("blur", onCancelDrag);
-    },
-    [],
-  );
-  useEffect(() => () => dragCleanupRef.current?.(), []); // 언마운트: teardown(리스너만) — onCancel 의 setState 는 안 돌린다
+  // 전역 mousemove/mouseup/blur 생명주기와 프레임당 이동 합치기는 전용 훅이 담당한다.
+  const beginDrag = useSceneDragSession();
 
   // ── 에셋 드롭/붙여넣기 → 레퍼런스 카드(항상 1장에 1개) ──
   const hasAssetDrag = (dt: DataTransfer) => Array.from(dt.types).includes(DRAG_TYPES.asset);
