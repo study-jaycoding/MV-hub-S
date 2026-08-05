@@ -40,6 +40,25 @@ describe("stateReconciliation", () => {
     expect(next[1]).not.toBe(previous[1]);
   });
 
+  it("중첩 Assets 트리가 같으면 전체 참조를 유지하고 파일 버전 변경은 반영한다", () => {
+    const previous = [
+      {
+        name: "Render",
+        type: "dir",
+        path: "Render",
+        children: [{ name: "shot.png", type: "image", path: "Render/shot.png", version: "1" }],
+      },
+    ];
+    expect(reconcileArrayState(previous, structuredClone(previous))).toBe(previous);
+
+    const changed = structuredClone(previous);
+    changed[0].children[0].version = "2";
+    const reconciled = reconcileArrayState(previous, changed);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled).toEqual(changed);
+    expect(reconciled[0]).toBe(changed[0]);
+  });
+
   it("레코드가 같으면 전체 참조를 유지하고 변경·삭제는 반영한다", () => {
     const previous = {
       a: { status: "done", tags: ["x"] },

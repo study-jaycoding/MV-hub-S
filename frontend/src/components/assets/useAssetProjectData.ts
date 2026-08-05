@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { ingestAssetTreeVersions } from "../../lib/assetVersions";
+import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
 import { makeStore } from "../../lib/storage";
 import type { AssetMeta, AssetNode } from "../../types";
 
@@ -85,7 +86,7 @@ export function useAssetProjectData({
     api
       .assetProjects()
       .then((info) => {
-        setProjects(info.projects);
+        setProjects((prev) => reconcileArrayState(prev, info.projects));
         setProject((current) => {
           if (keepCurrent && current && info.projects.includes(current)) return current;
           const saved = STORE.get("project", "");
@@ -109,14 +110,21 @@ export function useAssetProjectData({
     seedProject(targetProject);
     const cached = metaCacheRef.current[targetProject];
     // 캐시 즉시 표시는 '지금 보고 있는' 프로젝트일 때만 — 아니면 미러 이펙트가 현재 프로젝트 캐시를 오염시킨다.
-    if (cached && projectRef.current === targetProject) setMeta(cached);
+    if (cached && projectRef.current === targetProject) {
+      setMeta((prev) => reconcileRecordState(prev, cached));
+    }
     try {
       const fresh = await api.assetMeta(targetProject);
       metaCacheRef.current[targetProject] = fresh; // 어느 프로젝트든 fresh 는 캐시(다음 방문 즉시)
       persistCache(`${META_CACHE_KEY}.${targetProject}`, fresh); // 프로젝트별 키 — 창 닫아도 살아남게
-      if (projectRef.current === targetProject) setMeta(fresh); // 여전히 이 프로젝트를 보고 있을 때만 화면 반영
+      if (projectRef.current === targetProject) {
+        // API가 매번 새 객체를 반환해도 내용이 같으면 526개 파일 화면을 다시 계산·렌더하지 않는다.
+        setMeta((prev) => reconcileRecordState(prev, fresh));
+      }
     } catch {
-      if (!cached && projectRef.current === targetProject) setMeta({});
+      if (!cached && projectRef.current === targetProject) {
+        setMeta((prev) => reconcileRecordState(prev, {}));
+      }
     }
   }, [project]);
 
@@ -129,7 +137,7 @@ export function useAssetProjectData({
     //  캐시를 다른 프로젝트 트리로 오염시킨다. (백그라운드 fetch 로 캐시 갱신은 아래에서 계속 수행)
     if (isCurrent()) {
       if (cached) {
-        setTree(cached); // 캐시 있으면 즉시 표시(로딩 화면 없음)
+        setTree((prev) => reconcileArrayState(prev, cached)); // 캐시 있으면 즉시 표시(로딩 화면 없음)
         onTreeLoaded?.(cached);
         setLoading(false);
       } else {
@@ -142,7 +150,8 @@ export function useAssetProjectData({
       treeCacheRef.current[targetProject] = nextTree.children; // 어느 프로젝트든 fresh 는 캐시
       persistCache(`${TREE_CACHE_KEY}.${targetProject}`, nextTree.children); // 프로젝트별 키
       if (isCurrent()) {
-        setTree(nextTree.children);
+        // 새 트리 객체라도 파일·버전·계층이 같으면 현재 화면 참조를 유지한다.
+        setTree((prev) => reconcileArrayState(prev, nextTree.children));
         onTreeLoaded?.(nextTree.children);
         setError(null);
         setLoading(false);
