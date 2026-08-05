@@ -9,14 +9,10 @@ safe_project_dir / safe_resolve 가드를 그대로 따른다.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
 import os
 import subprocess
 import sys
 import tempfile
-import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -38,16 +34,15 @@ from ..config import (
     MANAGE_ENABLED,
 )
 from ..db import get_connection
-from ..services.atomic_io import atomic_write_text
 from ..deps import (
     account_global_roles,
     account_scope_uid,
     actor_id,
     require_project_role,
 )
-from ..services.media_types import asset_media_type, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
+from ..services.media_types import VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 from ..services.request_guards import require_loopback_request
-from ..services import asset_tree, media_cache, thumbs
+from ..services import asset_io, asset_mounts, asset_tree, thumbs
 from ..services.path_safety import safe_join
 
 
@@ -119,156 +114,42 @@ _INTERNAL_FOLDERS = ("captures", _PROMPT_IMPORT_PROJECT)
 
 
 def _media_type(name: str) -> Optional[str]:
-    return asset_media_type(name, include_audio=True)
+    return asset_io.media_type(name)
 
 
 def _sha256_file(path: Path) -> Optional[str]:
-    try:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except OSError:
-        return None
+    return asset_io.sha256_file(path)
 
 
 def _find_same_media(
     dest: Path, digest: str, media_type: str, size: Optional[int] = None
 ) -> Optional[Path]:
-    try:
-        entries = list(dest.iterdir())
-    except OSError:
-        return None
-    for p in entries:
-        if not p.is_file() or _media_type(p.name) != media_type:
-            continue
-        # sha256 계산은 비싸다 — 파일 크기가 다르면 내용도 다르므로 해시 없이 건너뛴다.
-        #  (폴더가 커질수록 업로드마다 전수 해시하던 비용을 크게 줄인다. 크기 같은 것만 해시.)
-        if size is not None:
-            try:
-                if p.stat().st_size != size:
-                    continue
-            except OSError:
-                continue
-        if _sha256_file(p) == digest:
-            return p
-    return None
+    return asset_io.find_same_media(dest, digest, media_type, size)
 
 
 # ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
-_UPLOAD_CHUNK_SIZE = media_cache._CHUNK_SIZE
-_UPLOAD_MAX_BYTES = int(os.getenv("CONTENT_HUB_UPLOAD_MAX_BYTES", str(media_cache._MAX_BYTES)))
-_UPLOAD_MAX_FILES = 500  # 한 요청당 파일 수 상한(요청 총량 방어 — 파일별 상한과 별개)
-_ZIP_MAX_FILES = 1000    # zip 한 건에 담을 최대 파일 수(중복 요청·거대 묶음 방어)
-
-
-class _UploadTooLarge(Exception):
-    """업로드가 크기 상한(_UPLOAD_MAX_BYTES)을 넘음."""
+_UPLOAD_MAX_FILES = asset_io.UPLOAD_MAX_FILES
+_ZIP_MAX_FILES = asset_io.ZIP_MAX_FILES
+_UploadTooLarge = asset_io.UploadTooLarge
 
 
 async def _stream_upload_tmp(up: UploadFile, dest_dir: Path) -> tuple[Path, int, str]:
-    """업로드를 dest_dir 안 temp(.part)로 청크 스트리밍 — 전체를 메모리에 올리지 않는다.
-    함께 sha256 을 계산해 (tmp, 바이트수, sha256hex) 반환. 상한 초과면 _UploadTooLarge.
-    실패 시 temp 를 정리하고 예외를 다시 던진다."""
-    tmp = dest_dir / f".upload-{uuid.uuid4().hex}.part"
-    h = hashlib.sha256()
-    written = 0
-    try:
-        with tmp.open("xb") as f:
-            while True:
-                chunk = await up.read(_UPLOAD_CHUNK_SIZE)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > _UPLOAD_MAX_BYTES:
-                    raise _UploadTooLarge()
-                h.update(chunk)
-                await asyncio.to_thread(f.write, chunk)
-        return tmp, written, h.hexdigest()
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
+    return await asset_io.stream_upload_tmp(up, dest_dir)
 
 
 def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
     """temp 를 최종 파일명으로 원자적 확정(덮어쓰기 안 함). 이름 충돌은 _2, _3… 로 회피하되,
     os.link(하드링크)로 '없을 때만 생성'을 원자화해 동일 이름 동시 업로드 race 를 막는다.
     하드링크 불가 파일시스템은 O_EXCL 로 최종 이름을 선점한 뒤 replace 로 폴백."""
-    stem, ext = Path(raw_name).stem, Path(raw_name).suffix
-    i = 1
-    while True:
-        name = raw_name if i == 1 else f"{stem}_{i}{ext}"
-        target = safe_join(dest_dir, name)
-        if target is None:
-            tmp.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="안전하지 않은 파일명")
-        try:
-            os.link(tmp, target)
-            tmp.unlink(missing_ok=True)
-            return target
-        except FileExistsError:
-            i += 1
-            continue
-        except OSError:
-            # 하드링크 미지원 파일시스템 → 최종 이름을 배타 생성으로 선점 후 replace
-            try:
-                fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-            except FileExistsError:
-                i += 1
-                continue
-            try:
-                os.replace(tmp, target)
-            except Exception:
-                # replace 실패 → 방금 선점한 0바이트 파일과 tmp 를 정리(잔재 방지)
-                try:
-                    os.unlink(target)
-                except OSError:
-                    pass
-                tmp.unlink(missing_ok=True)
-                raise
-            return target
-
-
-def _load_mounts() -> list[dict[str, str]]:
-    """등록된 외부 폴더 [{name, path, owner}]. owner=등록한 계정(creator_uid) — 계정별 개인 목록.
-    레거시(소유자 없는) 항목은 _owner_mounts(owner) 에서 현재 요청 계정 소유로 1회 이관한다."""
     try:
-        data = json.loads(_mounts_file().read_text("utf-8"))
-    except (FileNotFoundError, ValueError, OSError):
-        return []
-    out: list[dict[str, str]] = []
-    for m in data.get("mounts", []) if isinstance(data, dict) else []:
-        name = str(m.get("name", "")).strip()
-        path = str(m.get("path", "")).strip()
-        if not (name and path):
-            continue
-        owner = str(m.get("owner", "")).strip()
-        out.append({"name": name, "path": path, "owner": owner})
-    return out
-
-
-def _save_mounts(mounts: list[dict[str, str]]) -> None:
-    atomic_write_text(_mounts_file(), json.dumps({"mounts": mounts}, ensure_ascii=False, indent=2))
+        return asset_io.commit_unique_tmp(tmp, dest_dir, raw_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
-    mounts = _load_mounts()
-    migrated = False
-    out: list[dict[str, str]] = []
-    for m in mounts:
-        m_owner = m.get("owner", "")
-        if m_owner == owner:
-            out.append(m)
-        elif m_owner in ("", DEFAULT_WORKER_ID):
-            m["owner"] = owner
-            migrated = True
-            out.append(m)
-    if migrated:
-        _save_mounts(mounts)
-    return out
+    return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
 
 
 def _mount_dir(name: str, owner: str) -> Optional[Path]:
@@ -522,9 +403,7 @@ def add_mount(body: MountIn, request: Request):
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
-    mounts = [m for m in _load_mounts() if not (m["name"] == name and m.get("owner", "") == owner)]
-    mounts.append({"name": name, "path": str(p), "owner": owner})
-    _save_mounts(mounts)
+    asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
     return _mounts_payload(request)
 
 
@@ -532,8 +411,7 @@ def add_mount(body: MountIn, request: Request):
 def del_mount(name: str, request: Request):
     """등록된 외부 폴더 해제 — **내 것만** 지운다(남의 등록엔 영향 없음). 원본 폴더는 안 건드림."""
     owner = actor_id(request)
-    mounts = [m for m in _load_mounts() if not (m["name"] == name and m.get("owner", "") == owner)]
-    _save_mounts(mounts)
+    asset_mounts.remove(_mounts_file(), name=name, owner=owner)
     return _mounts_payload(request)
 
 

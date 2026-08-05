@@ -120,7 +120,8 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 | **P4** | SceneBoard Comfy 실행 훅 분리 | 중(async) ✅ |
 | **P5** | SpotlightPrompt 제출 흐름 훅 분리 | 낮~중 ✅ |
 | **P6** | 백엔드 `gen_requests` usecase 추출 | 중 ✅ |
-| **P7·P8** | `repo/manage`·`repo/generations` 내부 분할(파사드 유지) | 중~고 |
+| **P7·P8** | `repo/manage`·`repo/generations` 내부 분할(파사드 유지) | 중~고 ✅ |
+| **P9** | Assets 디스크 IO·계정별 마운트 저장소를 라우터에서 분리 | 중 ✅ |
 
 **순서 원칙:** 순수로직 추출 → 테스트 → 상태 분리 → IO 분리 → UI 분리.
 (JSX 부터 자르면 props 만 늘고 이득이 없다.)

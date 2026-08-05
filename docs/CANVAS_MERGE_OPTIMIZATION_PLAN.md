@@ -149,7 +149,11 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 
 > 2026-08-05 P8: CLI 결과의 known/unknown job 조회와 단건·배치 적재를 `generation_sync.py`로,
 > 공용 레퍼런스 upsert/link를 `generation_references.py`로 분리했다. `generations.py`는 1,192줄에서
-> 861줄로 줄었고 `repo.X` 파사드는 유지했다. 다음은 전체 중복·성능·회귀 최종 감사다.
+> 861줄로 줄였고 `repo.X` 파사드는 유지했다.
+
+> 2026-08-05 P9: `assets.py`에 있던 업로드 스트리밍·지문·중복 탐색·원자 파일 확정을
+> `services/asset_io.py`로, 계정별 마운트 JSON 저장을 `services/asset_mounts.py`로 분리했다.
+> 다중 Assets 창의 동시 마운트 갱신은 파일별 잠금으로 변경 유실을 막고, 라우터 URL·응답은 유지했다.
 
 ---
 
@@ -221,9 +225,12 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 
 - `SceneBoard.tsx` 3,507줄(카드·입력·카메라·이동 훅 분리), `manage.py` 515줄,
   `generations.py` 861줄까지 축소했다. 공개 파사드와 저장 데이터 형식은 유지했다.
+- `assets.py`의 디스크 IO와 계정별 마운트 저장을 각각 `asset_io.py`·`asset_mounts.py`로
+  분리해 1,225줄에서 1,103줄로 줄였다. 여러 Assets 창의 동시 마운트 등록도 변경을 잃지 않는다.
 - 백엔드 repo 정적 import 순환 0건, 동일 AST 함수 복제 0건, 계층 역방향 import 0건이다.
-- 남은 `assets.py` 분리·id/job_id 데이터 마이그레이션은 파일시스템 운영 정책과 구버전 데이터 호환이
-  선행돼야 하는 별도 고위험 단계다. Comfy 상한·미디어 fallback·영상 seek는 구조가 아니라 기능 정책이다.
+- 남은 `id/job_id` 데이터 마이그레이션은 구버전 데이터 호환이 선행돼야 하는 별도 고위험 단계다.
+  Assets의 라우트 그룹 추가 분리는 기능 경계를 더 명확히 하는 후속 개선이며 현재 성능 병목은 아니다.
+  Comfy 상한·미디어 fallback·영상 seek는 구조가 아니라 기능 정책이다.
 
 ## 부록 — 리뷰 청크(별도 세션, 병합 전 위험 점검용)
 서브시스템 최종 diff 기준. 위험순: ① 백엔드 보안 경계 → ② 씬 그래프 순수 로직 → ③ SceneBoard 상태/저장 → ④ 입력 이벤트 → ⑤ 생성 실행/App 연결 → ⑥ 렌더/UI → ⑦ Assets → ⑧ 계정/DB/휴지통 → ⑨ 미디어 비교 → ⑩ Prompt/Spotlight → ⑪ Comfy 재확인 → ⑫ 검증 매트릭스.
