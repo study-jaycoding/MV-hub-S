@@ -340,11 +340,12 @@ export function WorkBoard() {
     const [moved] = ids.splice(ids.indexOf(draggedId), 1);
     ids.splice(ids.indexOf(targetId), 0, moved); // 제거 후 대상 위치를 다시 찾아 그 앞에 삽입
     const orderMap = new Map(ids.map((id, i) => [id, i * 10]));
+    const taskById = new Map(tasks.map((task) => [task.id, task] as const));
     setTasks((prev) =>
       prev.map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t)).sort(bySort),
     );
     const changed = ids.flatMap((id) => {
-      const cur = tasks.find((x) => x.id === id);
+      const cur = taskById.get(id);
       const sort_order = orderMap.get(id)!;
       return cur && cur.sort_order !== sort_order ? [{ task_id: id, sort_order }] : [];
     });
