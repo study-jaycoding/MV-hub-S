@@ -448,17 +448,22 @@ def remove_assignee(tid: str, uid: str, request: Request):
     return {"removed": repo_manage.remove_assignment(tid, uid)}
 
 
+class BulkAssignItem(BaseModel):
+    task_id: str
+    assignee_uids: list[str] = Field(default_factory=list)
+
+
 class BulkAssignIn(BaseModel):
-    mode: str = "replace"  # replace | add
-    items: list[dict] = Field(default_factory=list)  # [{task_id, assignee_uids:[]}]
+    mode: str = "replace"  # replace | add | remove
+    items: list[BulkAssignItem] = Field(default_factory=list)
 
 
 @router.patch("/tasks/assignees/bulk")
 def bulk_set_assignments(body: BulkAssignIn, request: Request):
     """여러 작업의 담당(배정)을 한 번에 설정 — 전부 PM(manage) 권한."""
-    if body.mode not in ("replace", "add"):
-        raise HTTPException(status_code=400, detail="mode 는 replace 또는 add")
-    items = (body.items or [])[:500]
+    if body.mode not in ("replace", "add", "remove"):
+        raise HTTPException(status_code=400, detail="mode 는 replace, add 또는 remove")
+    items = [item.model_dump() for item in body.items[:500]]
     if not items:
         return {"ok": True, "count": 0}
     actor = actor_id(request)

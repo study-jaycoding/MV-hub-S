@@ -403,8 +403,11 @@ def bulk_set_assignments(
     items: list[dict[str, Any]], mode: str, added_by: Optional[str]
 ) -> int:
     """여러 작업의 담당(배정)을 한 트랜잭션으로 설정.
-    mode='replace'(그 작업 배정 전체 교체) | 'add'(추가만, 중복 무시). items=[{task_id, assignee_uids}].
+    mode='replace'(전체 교체) | 'add'(추가) | 'remove'(지정 담당만 해제).
+    items=[{task_id, assignee_uids}].
     한 번에 전부 성공/실패(원자). 권한은 라우터가 프로젝트별로 검사한 뒤 호출한다."""
+    if mode not in ("replace", "add", "remove"):
+        raise ValueError(f"지원하지 않는 배정 모드: {mode}")
     with get_connection() as conn:
         _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
@@ -416,6 +419,12 @@ def bulk_set_assignments(
                 uids = [(u or "").strip() for u in (it.get("assignee_uids") or []) if (u or "").strip()]
                 if mode == "replace":
                     conn.execute("DELETE FROM task_assignment WHERE task_id=?", (tid,))
+                if mode == "remove":
+                    conn.executemany(
+                        "DELETE FROM task_assignment WHERE task_id=? AND assignee_uid=?",
+                        [(tid, uid) for uid in uids],
+                    )
+                    continue
                 for u in uids:
                     conn.execute(
                         "INSERT INTO task_assignment(task_id, assignee_uid, added_by) "

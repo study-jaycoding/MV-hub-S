@@ -77,6 +77,30 @@ class TaskAssignmentTests(unittest.TestCase):
             ).fetchone()["c"]
         self.assertEqual(n, 0)
 
+    def test_bulk_remove_preserves_other_assignees(self):
+        first = manage.create_task("p1", "seq D")
+        second = manage.create_task("p1", "seq E")
+        for task in (first, second):
+            manage.add_assignment(task["id"], "user_A", "pm")
+            manage.add_assignment(task["id"], "user_B", "pm")
+
+        count = manage.bulk_set_assignments(
+            [
+                {"task_id": first["id"], "assignee_uids": ["user_A"]},
+                {"task_id": second["id"], "assignee_uids": ["user_A"]},
+            ],
+            "remove",
+            "pm",
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(self._assignee_uids("p1", first["id"]), {"user_B"})
+        self.assertEqual(self._assignee_uids("p1", second["id"]), {"user_B"})
+
+    def test_bulk_assignment_rejects_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            manage.bulk_set_assignments([], "unknown", "pm")
+
 
 if __name__ == "__main__":
     unittest.main()

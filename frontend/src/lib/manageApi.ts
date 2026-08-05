@@ -54,10 +54,10 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
       { method: "DELETE" },
     ),
-  // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가)
+  // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가) | remove(지정 담당 해제)
   bulkSetAssignments: (
     items: { task_id: string; assignee_uids: string[] }[],
-    mode: "replace" | "add",
+    mode: "replace" | "add" | "remove",
   ) =>
     jsonFetch<{ ok: boolean; count: number }>(
       "/api/manage/tasks/assignees/bulk",
