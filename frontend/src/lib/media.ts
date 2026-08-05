@@ -68,7 +68,31 @@ export function referenceMediaTypeFromFile(file: File): ReferenceMediaType | nul
 }
 
 export function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
-  return Array.from(dataTransfer.types).includes("Files");
+  // OS/브라우저 조합에 따라 파일 드래그 표시는 `Files`의 대소문자가 달라지거나,
+  // dragover 시점에 types 대신 items/files 에만 잡힐 수 있다. 한 신호만 믿으면 Chrome이
+  // 파일을 앱에 드롭하지 않고 새 탭으로 여는 기본 동작으로 빠질 수 있어 세 경로를 모두 본다.
+  if (Array.from(dataTransfer.types || []).some((type) => type.toLowerCase() === "files")) return true;
+  if ((dataTransfer.files?.length || 0) > 0) return true;
+  return Array.from(dataTransfer.items || []).some((item) => item.kind === "file");
+}
+
+export function filesFromDataTransfer(dataTransfer: DataTransfer): File[] {
+  // drop 시점의 files 가 표준 경로다. 일부 Chromium/Windows 드래그 소스에서는 이 목록이
+  // 비고 items 에만 File이 남으므로 getAsFile 폴백으로 실제 파일을 복원한다.
+  const direct = Array.from(dataTransfer.files || []);
+  if (direct.length) return direct;
+
+  const files: File[] = [];
+  const seen = new Set<File>();
+  for (const item of Array.from(dataTransfer.items || [])) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (file && !seen.has(file)) {
+      seen.add(file);
+      files.push(file);
+    }
+  }
+  return files;
 }
 
 export function thumbUrl(path: string | null | undefined, size = 256): string | null {

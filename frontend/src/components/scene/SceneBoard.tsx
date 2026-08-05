@@ -102,7 +102,12 @@ import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
-import { displayThumb, thumbOf } from "../../lib/media";
+import {
+  dataTransferHasFiles,
+  displayThumb,
+  filesFromDataTransfer,
+  thumbOf,
+} from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
@@ -466,7 +471,7 @@ export function SceneBoard({
       if (assetVerInFlight.current.has(proj)) return;
       assetVerInFlight.current.add(proj);
       api
-        .assetTree(proj, true) // fresh=백엔드 트리 캐시 우회(최신 버전 확보)
+        .assetTree(proj) // 변경 신호가 서버 캐시를 무효화하므로 다른 화면 요청과 재사용
         .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
         .catch(() => {
           /* 조회 실패는 무시(다음 신호에 재시도) */
@@ -489,11 +494,11 @@ export function SceneBoard({
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
   useEffect(() => {
-    let lastAt = 0; // 디바운스 — focus 와 visibilitychange 가 거의 동시에 터져도 한 번만
+    let lastAt = 0; // 포커스 왕복 때 네트워크 폴더를 반복 순회하지 않도록 스로틀
     const onFocus = () => {
       if (document.hidden) return;
       const now = Date.now();
-      if (now - lastAt < 500) return;
+      if (now - lastAt < 30_000) return;
       lastAt = now;
       refreshAssetVersions();
     };
@@ -1157,7 +1162,6 @@ export function SceneBoard({
 
   // ── 에셋 드롭/붙여넣기 → 레퍼런스 카드(항상 1장에 1개) ──
   const hasAssetDrag = (dt: DataTransfer) => Array.from(dt.types).includes(DRAG_TYPES.asset);
-  const hasFileDrag = (dt: DataTransfer) => Array.from(dt.types).includes("Files");
   const itemToRef = (it: SpotlightAssetDragItem): SceneRef => {
     const b = spotlightAssetRefBase(it);
     return { file_path: b.file_path, type: b.type, name: b.name, thumb: b.thumb };
@@ -1235,15 +1239,20 @@ export function SceneBoard({
     }
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (hasAssetDrag(e.dataTransfer) || hasFileDrag(e.dataTransfer)) {
-      e.preventDefault();
+    // 캔버스 위 드래그는 항상 브라우저 기본 동작을 막는다. 파일 신호를 조건으로 먼저 검사하면
+    // Windows/Chrome이 types를 다르게 준 순간 JSON이 앱 대신 새 탭으로 열릴 수 있다.
+    e.preventDefault();
+    e.stopPropagation();
+    if (hasAssetDrag(e.dataTransfer) || dataTransferHasFiles(e.dataTransfer)) {
       e.dataTransfer.dropEffect = "copy";
     }
   };
   const onDrop = (e: React.DragEvent) => {
+    // 내용 판별보다 먼저 차단해야, 지원하지 않거나 브라우저가 늦게 노출한 파일도 새 탭으로 안 열린다.
+    e.preventDefault();
+    e.stopPropagation();
     // 내부 에셋 드래그 — 여러 개면 각각 1장짜리 카드로.
     if (hasAssetDrag(e.dataTransfer)) {
-      e.preventDefault();
       const items = parseSpotlightAssetItems(readSpotlightAssetPayload(e.dataTransfer));
       if (!items.length) return;
       const p = toCanvas(e.clientX, e.clientY);
@@ -1251,19 +1260,17 @@ export function SceneBoard({
       addRefCardsAt(items.map((it) => ({ ...itemToRef(it), origin: "asset" as const })), p.x, p.y);
       return;
     }
-    const files = Array.from(e.dataTransfer.files || []);
+    const files = filesFromDataTransfer(e.dataTransfer);
     // 씬 파일(.json) 단독 드롭 → 저장 파일 그대로 불러오기(새 탭). 형식이 아니면 parseSceneImport 가 알림.
     //  ★미디어와 섞여 드롭되면 씬으로 가로채지 않는다 — json 은 레퍼런스가 못 되니 미디어 업로드를 우선.
     const jsonFiles = files.filter((f) => /\.json$/i.test(f.name));
     const mediaFiles = files.filter((f) => !/\.json$/i.test(f.name));
     if (jsonFiles[0] && mediaFiles.length === 0 && onLoadSceneFile) {
-      e.preventDefault();
       onLoadSceneFile(jsonFiles[0]);
       return;
     }
     // 외부 미디어 파일 드래그 → 업로드 후 레퍼런스 카드(섞여 온 json 은 무시).
     if (mediaFiles.length) {
-      e.preventDefault();
       const p = toCanvas(e.clientX, e.clientY);
       void importExternalAsRefs(mediaFiles, p.x, p.y);
     }

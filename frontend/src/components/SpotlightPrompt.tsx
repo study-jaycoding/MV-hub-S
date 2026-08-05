@@ -239,7 +239,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
         if (inFlight.has(proj)) return;
         inFlight.add(proj);
         api
-          .assetTree(proj, true)
+          .assetTree(proj)
           .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
           .catch(() => {
             /* 조회 실패는 무시 */
