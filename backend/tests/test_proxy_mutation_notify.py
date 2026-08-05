@@ -3,7 +3,11 @@ from unittest import mock
 
 from starlette.requests import Request
 
-from app.mutation_notify import CLIENT_ID_HEADER, MUTATION_ID_HEADER
+from app.mutation_notify import (
+    CLIENT_ID_HEADER,
+    MUTATION_DOMAINS_HEADER,
+    MUTATION_ID_HEADER,
+)
 from app.routers import _proxy
 
 
@@ -52,20 +56,46 @@ def _forward(request: Request):
         ),
         mock.patch.object(_proxy, "base_url", return_value="http://server.test"),
         mock.patch.object(_proxy, "token", return_value=None),
-        mock.patch("app.ws.manager.notify_mutation") as notify,
+        mock.patch("app.ws.manager") as manager,
     ):
         response = asyncio.run(_proxy._forward(request))
-    return response, notify
+    return response, manager
 
 
 def test_proxy_read_only_post_uses_shared_contract_and_does_not_notify():
-    response, notify = _forward(_request("/api/generations/batch", with_origin=True))
+    response, manager = _forward(_request("/api/generations/batch", with_origin=True))
     assert response.status_code == 200
     assert MUTATION_ID_HEADER not in response.headers
-    notify.assert_not_called()
+    assert MUTATION_DOMAINS_HEADER not in response.headers
+    manager.notify_mutation.assert_not_called()
+    manager.notify_domain.assert_not_called()
 
 
 def test_proxy_real_mutation_echoes_origin_and_notifies_once():
-    response, notify = _forward(_request("/api/generations/g1/tags", with_origin=True))
+    response, manager = _forward(_request("/api/generations/g1/tags", with_origin=True))
     assert response.headers[MUTATION_ID_HEADER] == "mutation_test_123"
-    notify.assert_called_once_with(origin=("client_test_123", "mutation_test_123"))
+    assert response.headers[MUTATION_DOMAINS_HEADER] == "library"
+    manager.notify_mutation.assert_called_once_with(
+        origin=("client_test_123", "mutation_test_123")
+    )
+    manager.notify_domain.assert_not_called()
+
+
+def test_proxy_asset_mutation_uses_asset_channel_only():
+    response, manager = _forward(_request("/api/assets/upload", with_origin=True))
+    assert response.headers[MUTATION_DOMAINS_HEADER] == "assets"
+    manager.notify_mutation.assert_not_called()
+    manager.notify_domain.assert_called_once_with(
+        "assets_changed", ("client_test_123", "mutation_test_123")
+    )
+
+
+def test_proxy_manage_library_mutation_uses_both_channels():
+    response, manager = _forward(_request("/api/manage/hf-missing-apply", with_origin=True))
+    assert response.headers[MUTATION_DOMAINS_HEADER] == "library,manage"
+    manager.notify_mutation.assert_called_once_with(
+        origin=("client_test_123", "mutation_test_123")
+    )
+    manager.notify_domain.assert_called_once_with(
+        "manage_changed", ("client_test_123", "mutation_test_123")
+    )

@@ -66,7 +66,7 @@ HTTP 요청
    │
    ▼  app/main.py 미들웨어
    ├─ auth_enforcement : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
-   └─ mutation_notify  : 성공한 쓰기(POST/PUT/PATCH/DELETE) 후 WS 'synced' broadcast
+   └─ mutation_notify  : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
    │
@@ -87,7 +87,8 @@ HTTP 요청
 | `config.py` | 경로·포트·`CONTENT_HUB_AUTH` 등 환경 설정 |
 | `deps.py` | 인증/RBAC FastAPI 의존성(`actor_id`·`require_global_cap`·`require_project_role`·`require_edit_generation`) |
 | `rbac.py` | 역할·역량 정의(전역 역할 + 프로젝트 역할) |
-| `ws.py` | `ConnectionManager` — 진행률·`synced` broadcast(0.4s 디바운스) |
+| `mutation_notify.py` | 본 서버·위임 프록시가 공유하는 변경 영역 판정과 요청 출처 헤더 계약 |
+| `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스) |
 
 ### 4.2 라우터 (`backend/app/routers/`) — HTTP 경계
 
@@ -187,6 +188,8 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `useSceneComfyExecution.ts` | Comfy 단독/배치 실행·중복 방지·씬 전환 중단·실행 표시 수명주기 |
 | `sceneComfyExecutor.ts` | 미디어 확보·연결 텍스트·시드 변환 후 Comfy API를 호출하는 React 비의존 경계 |
 | `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
+| `librarySync.ts` | 쓰기 요청 id와 library/assets/manage 응답 영역을 추적해 자기 알림의 중복 reload만 안전하게 생략 |
+| `assetBroadcast.ts` / `useManageRealtime.ts` | Assets 창 간 WS 전달 / 독립 PM 창의 직접 WS·숨김 상태 따라잡기 |
 
 > `format`·`media`·`download`·`commentTree`·`useClickSeparation` 은 여러 컴포넌트에 복붙돼 있던
 > 동일 로직을 통합한 결과물(중복 제거 리팩터). `MediaThumbnail` 도 같은 맥락의 공용 표현 컴포넌트.
@@ -198,7 +201,8 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 - **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
 - **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
-- **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`).
+- **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`·`useAssetBroadcastSync`). 메인 창 없이도 WS를 직접 구독한다.
+- **PM 분리창**: `ManageWindow` + `manage/`(`DashboardView`·`WorkBoard`·`ExportView`). 전용 실시간 신호를 활성 탭의 한 번짜리 재조회로 합친다.
 - **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`HowItWorks`.
 
 ---
@@ -280,7 +284,7 @@ push_once: GET /api/ingest/known-jobs → 로컬 generate list 중 새 잡만 �
 - **RBAC**: 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
 - **개인화 vs 공유**: 컬러·태그·소스명·파일메타는 계정별 개인 소유(owner_uid). 코멘트 스레드·공유여부·프롬프트·소스는 공유.
 - **표시이름 단일 해석**: `resolve_display_names`(creator.name → account.name → email) 읽기 시점에만.
-- **실시간**: 쓰기 후 미들웨어가 WS `synced` broadcast → 프론트가 그리드/뱃지 갱신.
+- **실시간**: 성공한 쓰기는 `library`→`synced`, `assets`→`assets_changed`, `manage`→`manage_changed`로 분리한다. 요청 id·영역 응답 헤더로 자기 알림 재조회를 생략하며 독립 Assets/PM 창은 자체 WS를 가진다.
 - **검색**: SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.
 - **성능**: 키셋 페이지네이션·content-visibility 가상스크롤·썸네일 사전생성·미디어 2단계 샤딩.
 - **휴지통**: 삭제 즉시 별도 DB 로 원자 이동(메인 항상 가벼움).

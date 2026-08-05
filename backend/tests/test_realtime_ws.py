@@ -108,6 +108,35 @@ class WsBroadcastScopeTests(unittest.TestCase):
         messages = self._run(scenario())
         self.assertEqual(messages, [{"type": "synced"}])
 
+    def test_domain_notifications_coalesce_and_reach_independent_windows(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            a, b = FakeWS(), FakeWS()
+            mgr._active[a] = "acct:a"
+            mgr._active[b] = "acct:b"
+            with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
+                mgr.notify_domain("assets_changed", ("client_a_123", "mutation_001"))
+                mgr.notify_domain("assets_changed", ("client_a_123", "mutation_002"))
+                mgr.notify_domain("manage_changed")
+                await mgr._pending_notify
+            return a.received, b.received
+
+        a_messages, b_messages = self._run(scenario())
+        self.assertEqual(a_messages, b_messages)
+        self.assertEqual(
+            a_messages,
+            [
+                {
+                    "type": "assets_changed",
+                    "origins": [
+                        {"client_id": "client_a_123", "mutation_id": "mutation_001"},
+                        {"client_id": "client_a_123", "mutation_id": "mutation_002"},
+                    ],
+                },
+                {"type": "manage_changed"},
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,9 +27,13 @@ from .. import repo
 from ..config import AUTH_ENABLED
 from ..mutation_notify import (
     CLIENT_ID_HEADER,
+    DOMAIN_ASSETS,
+    DOMAIN_LIBRARY,
+    DOMAIN_MANAGE,
+    MUTATION_DOMAINS_HEADER,
     MUTATION_ID_HEADER,
+    notification_domains,
     parse_mutation_origin,
-    should_notify_mutation,
 )
 
 _K_URL = "shared_server_url"
@@ -335,15 +339,22 @@ async def _forward(request: Request) -> Response:
         except Exception:  # noqa: BLE001
             pass
     response = Response(content=raw, status_code=status, media_type=resp_ctype)
-    if should_notify_mutation(method, request.url.path, status):
-        # 위임 성공한 쓰기 → 이 허브의 다른 탭도 즉시 새로고침(로컬 WS).
+    domains = notification_domains(method, request.url.path, status)
+    if domains:
+        # 위임 성공한 쓰기 → 원격 서버의 WS와 별개로 이 로컬 허브의 창에도 즉시 알린다.
         try:
             from ..ws import manager
 
             origin = parse_mutation_origin(client_id, mutation_id)
-            manager.notify_mutation(origin=origin)
+            if DOMAIN_LIBRARY in domains:
+                manager.notify_mutation(origin=origin)
+            if DOMAIN_ASSETS in domains:
+                manager.notify_domain("assets_changed", origin)
+            if DOMAIN_MANAGE in domains:
+                manager.notify_domain("manage_changed", origin)
             if origin:
                 response.headers[MUTATION_ID_HEADER] = origin[1]
+                response.headers[MUTATION_DOMAINS_HEADER] = ",".join(domains)
         except Exception:  # noqa: BLE001
             pass
     return response

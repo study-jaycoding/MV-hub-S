@@ -10,7 +10,6 @@ import {
   loadDisabledGen,
   removeDisabledGen,
 } from "../../lib/deactivated";
-import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { manageApi } from "../../lib/manageApi";
 import { thumbUrl } from "../../lib/media";
 import { loadJSON, loadString, saveJSON, saveString } from "../../lib/storage";
@@ -88,7 +87,7 @@ function matchTask(t: Task, f: WorkFilters): boolean {
   return true;
 }
 
-export function WorkBoard() {
+export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
   useT(); // 언어 토글 시 라벨 리렌더
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
@@ -224,6 +223,7 @@ export function WorkBoard() {
     return request;
   };
   const loadAllRef = useRef(loadAll);
+  const seenReloadSignalRef = useRef(reloadSignal);
   loadAllRef.current = loadAll;
   if (!orderSaveRef.current) {
     orderSaveRef.current = createLatestMutationQueue(async () => {
@@ -249,14 +249,20 @@ export function WorkBoard() {
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
   }, []);
 
-  // 실시간 반영 — 내 조작은 즉시(브로드캐스트), 팀원(다른 PC) 변경은 폴링으로.
+  useEffect(() => {
+    if (seenReloadSignalRef.current === reloadSignal) return;
+    seenReloadSignalRef.current = reloadSignal;
+    void loadAllRef.current();
+  }, [reloadSignal]);
+
+  // WebSocket 누락 안전망 — 실시간 신호는 ManageWindow가 담당하고 여기서는 30초 폴링만 유지한다.
   useEffect(() => {
     let debounce: number | undefined;
     const reload = () => {
       if (debounce) clearTimeout(debounce);
       debounce = window.setTimeout(loadAll, 300);
     };
-    // 팀원 변경 안전망 폴링 — 내 조작은 브로드캐스트로 즉시 오므로 주기는 느슨하게(30초).
+    // 프록시 모드에서 다른 PC가 원격 서버에 직접 쓴 변경도 결국 따라잡도록 주기를 느슨하게 유지한다.
     // 이전 배치 라운드가 진행 중이면 중복 폴링을 건너뛴다.
     const poll = window.setInterval(() => {
       if (document.visibilityState === "visible" && !loadingRef.current) reload();
@@ -269,12 +275,10 @@ export function WorkBoard() {
         reload();
     };
     document.addEventListener("visibilitychange", onVis);
-    const offBroadcast = onLibraryChanged(reload);
     return () => {
       if (debounce) clearTimeout(debounce);
       clearInterval(poll);
       document.removeEventListener("visibilitychange", onVis);
-      offBroadcast();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -35,6 +35,8 @@ class ConnectionManager:
         # 스코프 → {브라우저 client id: 요청 mutation id 집합}. None이면 출처 불명 변경이 섞여
         # 어느 탭도 안전하게 자기 알림을 생략할 수 없다는 뜻이다.
         self._pending_accounts: dict[str, Optional[set[MutationOrigin]]] = {}
+        # Assets·PM처럼 라이브러리와 분리된 데이터 없는 갱신 신호. 이벤트 종류별로 출처를 병합한다.
+        self._pending_domains: dict[str, Optional[set[MutationOrigin]]] = {}
 
     async def connect(self, ws: WebSocket, account_uid: Optional[str] = None) -> None:
         await ws.accept()
@@ -54,6 +56,7 @@ class ConnectionManager:
                 "authenticated_connections": scoped,
                 "local_connections": len(self._active) - scoped,
                 "pending_notify_accounts": len(self._pending_accounts),
+                "pending_notify_domains": len(self._pending_domains),
             }
 
     async def broadcast(
@@ -98,19 +101,35 @@ class ConnectionManager:
         연타(일괄 트리아지)에 대비해 짧은 윈도우로 coalesce — reload 폭주를 막는다.
         프론트는 'synced' 를 받으면 전체 reload 하므로 그 타입을 재사용."""
         scope = account_uid if account_uid is not None else _ALL
-        if scope not in self._pending_accounts:
-            self._pending_accounts[scope] = {origin} if origin else None
+        self._merge_origin(self._pending_accounts, scope, origin)
+        self._schedule_notify()
+
+    def notify_domain(self, event_type: str, origin: Optional[MutationOrigin] = None) -> None:
+        """Assets·PM 전용 갱신을 모든 연결에 알린다. payload는 변경 사실·출처뿐이라 데이터 누출이 없다."""
+        self._merge_origin(self._pending_domains, event_type, origin)
+        self._schedule_notify()
+
+    @staticmethod
+    def _merge_origin(
+        pending: dict[str, Optional[set[MutationOrigin]]],
+        key: str,
+        origin: Optional[MutationOrigin],
+    ) -> None:
+        if key not in pending:
+            pending[key] = {origin} if origin else None
         else:
-            origins = self._pending_accounts[scope]
+            origins = pending[key]
             if origins is not None:
                 if origin is None:
-                    self._pending_accounts[scope] = None
+                    pending[key] = None
                 else:
                     origins.add(origin)
                     if len(origins) > _MAX_NOTIFY_ORIGINS:
-                        self._pending_accounts[scope] = None
+                        pending[key] = None
+
+    def _schedule_notify(self) -> None:
         if self._pending_notify and not self._pending_notify.done():
-            return  # 이미 예약됨 → 이 변경 대상·출처는 위 dict에 합쳐졌다
+            return  # 이미 예약됨 → 변경 대상·도메인·출처는 pending dict에 합쳐졌다
         try:
             self._pending_notify = asyncio.create_task(self._debounced_notify())
         except RuntimeError:
@@ -131,9 +150,19 @@ class ConnectionManager:
                 await self.broadcast_all(message)  # 계정 불명 mutation → 전체 reload 신호
             else:
                 await self.broadcast(message, account_uid=a)
+        domains = self._pending_domains
+        self._pending_domains = {}
+        for event_type, origins in domains.items():
+            message = {"type": event_type}
+            if origins:
+                message["origins"] = [
+                    {"client_id": client_id, "mutation_id": mutation_id}
+                    for client_id, mutation_id in sorted(origins)
+                ]
+            await self.broadcast_all(message)
         # broadcast 가 await 하는 동안 새로 쌓인 알림은 notify_mutation 이 (이 태스크가 아직 done 이
         # 아니라) 새 태스크를 안 만든다 → 여기서 직접 재예약해 누락(다른 탭이 reload 못 받음) 방지.
-        if self._pending_accounts:
+        if self._pending_accounts or self._pending_domains:
             try:
                 self._pending_notify = asyncio.create_task(self._debounced_notify())
             except RuntimeError:

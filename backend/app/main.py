@@ -48,9 +48,13 @@ from .db import init_db
 from .deps import session_token
 from .mutation_notify import (
     CLIENT_ID_HEADER,
+    DOMAIN_ASSETS,
+    DOMAIN_LIBRARY,
+    DOMAIN_MANAGE,
+    MUTATION_DOMAINS_HEADER,
     MUTATION_ID_HEADER,
+    notification_domains,
     parse_mutation_origin,
-    should_notify_mutation,
 )
 from .routers import (
     _proxy,
@@ -261,7 +265,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=[MUTATION_ID_HEADER],
+    expose_headers=[MUTATION_ID_HEADER, MUTATION_DOMAINS_HEADER],
 )
 
 app.include_router(library.router)
@@ -334,17 +338,16 @@ async def auth_enforcement(request: Request, call_next):
 
 
 # ── 변경 전파 미들웨어 ────────────────────────────────────────────────────────
-# 한 클라이언트의 쓰기(태그·소스·컬러·코멘트·프로젝트 등)를 DB 저장만 하지 않고,
-# 연결된 다른 클라이언트(같은 계정의 다른 기기/탭)에 'synced' 를 push 해 즉시 새로고침시킨다.
-# 엔드포인트마다 손대지 않고 미들웨어 한 곳에서 처리(디바운스는 ws.manager 가 담당).
+# 한 클라이언트의 쓰기를 DB 저장만 하지 않고 데이터 영역별 갱신 신호로 전파한다.
+# library 는 같은 계정에, Assets·PM은 데이터 없는 전역 신호로 보내며 디바운스는 ws.manager가 담당한다.
+# 본 서버와 위임 프록시는 mutation_notify의 같은 판정 계약을 사용한다.
 @app.middleware("http")
 async def mutation_notify(request: Request, call_next):
     response = await call_next(request)
     try:
         path = request.url.path
-        if should_notify_mutation(request.method, path, response.status_code):
-            # 변경한 계정의 탭/기기에만 알림(AUTH off 면 account 없음 → 전체). 남의 비공개
-            # 변경에 전원이 reload 하던 폭주를 막는다.
+        domains = notification_domains(request.method, path, response.status_code)
+        if domains:
             from .deps import realtime_scope
 
             acc = getattr(request.state, "account", None)
@@ -352,11 +355,18 @@ async def mutation_notify(request: Request, call_next):
                 request.headers.get(CLIENT_ID_HEADER),
                 request.headers.get(MUTATION_ID_HEADER),
             )
-            # email 기반 스코프(연결·progress 와 일관). 응답에 되돌린 id는 프론트가 이 요청을
-            # 포함해 목록을 다시 읽었는지 추적하는 용도이며 인증·권한 판단에는 쓰지 않는다.
-            manager.notify_mutation(realtime_scope(acc), origin)
+            if DOMAIN_LIBRARY in domains:
+                # 라이브러리 비공개 데이터는 변경한 계정의 탭/기기에만 알린다.
+                manager.notify_mutation(realtime_scope(acc), origin)
+            if DOMAIN_ASSETS in domains:
+                manager.notify_domain("assets_changed", origin)
+            if DOMAIN_MANAGE in domains:
+                manager.notify_domain("manage_changed", origin)
             if origin:
+                # 프론트는 요청 id와 변경 영역을 함께 확인한 경우에만 자기 알림을 생략한다.
+                # 이 헤더는 인증·권한 판단에는 사용하지 않는다.
                 response.headers[MUTATION_ID_HEADER] = origin[1]
+                response.headers[MUTATION_DOMAINS_HEADER] = ",".join(domains)
     except Exception:  # noqa: BLE001 — 알림 실패가 응답을 막지 않게
         pass
     return response

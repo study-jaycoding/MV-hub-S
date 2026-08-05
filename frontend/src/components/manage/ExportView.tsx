@@ -1,7 +1,7 @@
 // 완료 탭 — 완료 작업의 최종본(★)만 렌더 폴더 경로 구조 그대로 물리 저장.
 // 프로젝트를 고르면 그 프로젝트의 렌더 폴더 연결 상태를 확인하고, 버튼으로 저장을 실행한다.
 // 저장은 로컬 전용(이 PC 디스크). 이미 저장된 건 건너뛴다(멱등).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import {
   manageApi,
@@ -9,15 +9,19 @@ import {
   type SaveFinalsStatus,
 } from "../../lib/manageApi";
 
-export function ExportView() {
+export function ExportView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [pid, setPid] = useState("");
   const [status, setStatus] = useState<SaveFinalsStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SaveFinalsResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const pidRef = useRef(pid);
+  const seenReloadSignalRef = useRef(reloadSignal);
+  const statusRequestRef = useRef(0);
+  pidRef.current = pid;
 
-  useEffect(() => {
+  const loadProjects = () => {
     api
       .projects("team")
       .then((r) => {
@@ -26,17 +30,28 @@ export function ExportView() {
         setPid((cur) => cur || (ps[0]?.pid ?? ""));
       })
       .catch((e) => setErr(String(e?.message || e)));
+  };
+
+  useEffect(() => {
+    loadProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadStatus = (p: string) => {
+    const requestId = ++statusRequestRef.current;
     if (!p) {
       setStatus(null);
       return;
     }
     manageApi
       .saveFinalsStatus(p)
-      .then(setStatus)
-      .catch((e) => setErr(String(e?.message || e)));
+      .then((next) => {
+        if (statusRequestRef.current === requestId && pidRef.current === p) setStatus(next);
+      })
+      .catch((e) => {
+        if (statusRequestRef.current === requestId && pidRef.current === p)
+          setErr(String(e?.message || e));
+      });
   };
 
   useEffect(() => {
@@ -45,6 +60,14 @@ export function ExportView() {
     loadStatus(pid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
+
+  useEffect(() => {
+    if (seenReloadSignalRef.current === reloadSignal) return;
+    seenReloadSignalRef.current = reloadSignal;
+    loadProjects();
+    loadStatus(pidRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSignal]);
 
   const renderPath = status?.render_path || "";
   const targets = status?.targets ?? [];

@@ -88,7 +88,7 @@ export function useGenerationProgress({
       (m) => {
         if (m.type === "assets_changed") {
           // 어셋 파일 실시간 변경(watchdog) → BroadcastChannel 로 재전파해 어셋 창·캔버스가 각자 갱신.
-          postAssetsUpdated(Array.isArray(m.projects) ? m.projects : []);
+          postAssetsUpdated(Array.isArray(m.projects) ? m.projects : [], m.origins);
           return;
         }
         if (m.type === "synced") {

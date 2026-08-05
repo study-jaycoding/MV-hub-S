@@ -3,7 +3,9 @@ import {
   createLibraryMutationOrigin,
   LIBRARY_CLIENT_ID_HEADER,
   LIBRARY_MUTATION_ID_HEADER,
-  markLibraryMutationSucceeded,
+  markMutationDomainsSucceeded,
+  MUTATION_DOMAINS_HEADER,
+  type MutationDomain,
 } from "./librarySync";
 import { loadString, removeStorage, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
@@ -59,9 +61,21 @@ export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> 
   const res = await fetch(url, { ...init, headers });
   if (!res.ok) await throwHttpError(res, url);
   if (mutationOrigin) {
-    markLibraryMutationSucceeded(
+    const domainHeader = res.headers?.get(MUTATION_DOMAINS_HEADER) ?? null;
+    // P36 서버는 변경 id만 되돌려주므로 도메인 헤더가 없으면 library로 간주해 롤링 업데이트를
+    // 유지한다. 새 서버의 명시적 빈/알 수 없는 값은 임의로 성공 처리하지 않는다.
+    const domains: MutationDomain[] = domainHeader === null
+      ? ["library"]
+      : domainHeader
+          .split(",")
+          .map((part) => part.trim())
+          .filter((part): part is MutationDomain =>
+            part === "library" || part === "assets" || part === "manage",
+          );
+    markMutationDomainsSucceeded(
       mutationOrigin,
       res.headers?.get(LIBRARY_MUTATION_ID_HEADER) ?? null,
+      domains,
     );
   }
   return res.json() as Promise<T>;

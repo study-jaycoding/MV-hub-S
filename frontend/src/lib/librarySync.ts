@@ -4,6 +4,7 @@ export interface LibraryMutationOrigin {
 }
 
 export type LibrarySyncDecision = "reload" | "wait" | "skip";
+export type MutationDomain = "library" | "assets" | "manage";
 
 export interface LibraryReloadToken {
   id: number;
@@ -13,6 +14,7 @@ export interface LibraryReloadToken {
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const COVERED_LIMIT = 2048;
 const PENDING_LIMIT = 2048;
+const DOMAIN_ACK_LIMIT = 2048;
 
 function randomPart(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -26,6 +28,7 @@ export class LibrarySyncState {
   private readonly successfulPending = new Set<string>();
   private readonly covered = new Set<string>();
   private readonly inflight = new Map<number, ReadonlySet<string>>();
+  private readonly domainAcknowledged = new Map<MutationDomain, Set<string>>();
   private nextReloadId = 1;
 
   constructor(clientId = randomPart()) {
@@ -52,6 +55,54 @@ export class LibrarySyncState {
     if (echoedMutationId !== origin.mutation_id) return;
     if (this.covered.has(origin.mutation_id)) return; // 알림이 HTTP 응답보다 먼저 와 이미 반영된 경합
     this.addPending(origin.mutation_id);
+  }
+
+  markDomainsSucceeded(
+    origin: LibraryMutationOrigin,
+    echoedMutationId: string | null,
+    domains: readonly MutationDomain[],
+  ): void {
+    if (echoedMutationId !== origin.mutation_id) return;
+    if (domains.includes("library")) this.markMutationSucceeded(origin, echoedMutationId);
+    for (const domain of domains) {
+      if (domain === "library") continue;
+      let acknowledged = this.domainAcknowledged.get(domain);
+      if (!acknowledged) {
+        acknowledged = new Set<string>();
+        this.domainAcknowledged.set(domain, acknowledged);
+      }
+      acknowledged.delete(origin.mutation_id);
+      acknowledged.add(origin.mutation_id);
+      while (acknowledged.size > DOMAIN_ACK_LIMIT) {
+        const oldest = acknowledged.values().next().value as string | undefined;
+        if (!oldest) break;
+        acknowledged.delete(oldest);
+      }
+    }
+  }
+
+  consumeOwnDomainSync(
+    domain: Exclude<MutationDomain, "library">,
+    origins: readonly LibraryMutationOrigin[] | null | undefined,
+  ): boolean {
+    if (!origins?.length) return false;
+    const acknowledged = this.domainAcknowledged.get(domain);
+    if (!acknowledged) return false;
+    const ownIds: string[] = [];
+    let allOwn = true;
+    for (const origin of origins) {
+      if (!origin || origin.client_id !== this.clientId || !origin.mutation_id) {
+        allOwn = false;
+        continue;
+      }
+      ownIds.push(origin.mutation_id);
+    }
+    const allAcknowledged =
+      ownIds.length === origins.length && ownIds.every((id) => acknowledged.has(id));
+    // 다른 탭 변경이 섞였거나 응답보다 이벤트가 먼저 온 경우에는 reload가 이 요청까지 덮으므로,
+    // 이미 확인된 자기 id는 소비한다. 미확인 id는 이후 응답에서 들어와도 상한 내에서만 남는다.
+    for (const id of ownIds) acknowledged.delete(id);
+    return allOwn && allAcknowledged;
   }
 
   trackOwnSyncedForReload(origins: readonly LibraryMutationOrigin[] | null | undefined): void {
@@ -111,16 +162,25 @@ const runtimeState = new LibrarySyncState();
 
 export const LIBRARY_CLIENT_ID_HEADER = "X-MVHub-Client-Id";
 export const LIBRARY_MUTATION_ID_HEADER = "X-MVHub-Mutation-Id";
+export const MUTATION_DOMAINS_HEADER = "X-MVHub-Mutation-Domains";
 
 export function createLibraryMutationOrigin(method: string | undefined): LibraryMutationOrigin | null {
   return runtimeState.createMutationOrigin(method);
 }
 
-export function markLibraryMutationSucceeded(
+export function markMutationDomainsSucceeded(
   origin: LibraryMutationOrigin,
   echoedMutationId: string | null,
+  domains: readonly MutationDomain[],
 ): void {
-  runtimeState.markMutationSucceeded(origin, echoedMutationId);
+  runtimeState.markDomainsSucceeded(origin, echoedMutationId, domains);
+}
+
+export function consumeOwnDomainSync(
+  domain: Exclude<MutationDomain, "library">,
+  origins: readonly LibraryMutationOrigin[] | null | undefined,
+): boolean {
+  return runtimeState.consumeOwnDomainSync(domain, origins);
 }
 
 export function beginLibraryReload(): LibraryReloadToken {

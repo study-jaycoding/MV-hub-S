@@ -66,4 +66,29 @@ describe("LibrarySyncState", () => {
     expect(state.decide([origin])).toBe("skip");
     expect(state.beginReload().mutationIds.size).toBe(0);
   });
+
+  it("Assets·관리 요청은 라이브러리 pending과 분리하고 자기 알림만 한 번 소비한다", () => {
+    const state = new LibrarySyncState("client_self_123");
+    const assetOrigin = state.createMutationOrigin("PUT")!;
+    const manageOrigin = state.createMutationOrigin("PATCH")!;
+    state.markDomainsSucceeded(assetOrigin, assetOrigin.mutation_id, ["assets"]);
+    state.markDomainsSucceeded(manageOrigin, manageOrigin.mutation_id, ["manage"]);
+
+    expect(state.beginReload().mutationIds.size).toBe(0);
+    expect(state.consumeOwnDomainSync("assets", [assetOrigin])).toBe(true);
+    expect(state.consumeOwnDomainSync("assets", [assetOrigin])).toBe(false);
+    expect(state.consumeOwnDomainSync("manage", [manageOrigin])).toBe(true);
+  });
+
+  it("도메인 알림에 다른 탭 변경이 섞이면 자기 요청이 있어도 갱신한다", () => {
+    const state = new LibrarySyncState("client_self_123");
+    const own = state.createMutationOrigin("POST")!;
+    state.markDomainsSucceeded(own, own.mutation_id, ["assets"]);
+    expect(
+      state.consumeOwnDomainSync("assets", [
+        own,
+        { client_id: "client_other_123", mutation_id: "mutation_other_123" },
+      ]),
+    ).toBe(false);
+  });
 });

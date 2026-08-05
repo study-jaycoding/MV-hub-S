@@ -160,7 +160,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   // 등록 폴더(마운트) 관리 창
   const [mountOpen, setMountOpen] = useState(false);
 
-  useAssetBroadcastSync({ dir, project, refreshProjectData, reloadProjects });
   useAssetViewPersistence({
     activeColors,
     activeTags,
@@ -543,13 +542,19 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     tagPanelOpen,
   });
 
-  const { openComments, sendComment, editComment, delComment } = useAssetCommentActions({
+  const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
     muteOwnRef,
     setCommentPath,
     setComments,
     reconcile,
+  });
+  useAssetBroadcastSync({
+    project,
+    refreshProjectData,
+    reloadProjects,
+    refreshComments,
   });
   const gridHandlers = {
     ref: gridRef,

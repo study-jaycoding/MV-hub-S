@@ -1,7 +1,7 @@
 // 통합 대시보드 — 2단 구조. 상단 '요약'(회사 전체 프로젝트: 제작일수·예산·진행율·인원·관리)
 // → 프로젝트 클릭 → 하단 '상세'(그 프로젝트의 에피소드▸시퀀스 진행상황·컷 담당·참여자 3축).
 // 요약 행 기준은 summary.projects(빈 프로젝트 포함), 진행율은 list_tasks 상태 롤업으로 통일.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api";
 import { manageApi, type TeamBucket, type TeamOverview } from "../../lib/manageApi";
 import { projectApi } from "../../lib/projectApi";
@@ -414,7 +414,7 @@ function ProjectDetail({
   );
 }
 
-export function DashboardView() {
+export function DashboardView({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -432,43 +432,68 @@ export function DashboardView() {
   const [editName, setEditName] = useState("");
   const [form, setForm] = useState<Planning>({});
   const [saving, setSaving] = useState(false);
+  const reloadPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingReloadRef = useRef(false);
 
   // 전체 재로딩(프로젝트 목록·작업·예산·멤버·팀) — 프로젝트/멤버 변경 후 즉시 반영.
   // 요약(summary)과 작업(tasks) 둘 다 끝나야 로딩 해제 — 초기 '프로젝트 없음' 깜빡임 방지.
   const reload = () => {
+    if (reloadPromiseRef.current) {
+      pendingReloadRef.current = true;
+      return reloadPromiseRef.current;
+    }
     const summaryP = manageApi
       .summary()
       .then((d) => setSummary(d))
       .catch(() => setSummary(null));
     const tasksP = api
       .projects("team")
-      .then((r) => {
-        projectApi
-          .allProjectMembers()
-          .then((byPid) => setMembers(new Map(Object.entries(byPid))))
-          .catch(() => setMembers(new Map()));
+      .then(async (r) => {
         // fan-out(프로젝트마다 listTasks) 대신 tasks-batch 1요청 — 접근불가/오류 pid 는 서버가 생략(부분성공).
-        return manageApi
-          .listTasksBatch(r.projects.map((p) => p.id))
-          .then((byPid) =>
-            r.projects.flatMap((p) =>
-              (byPid[p.id] || []).map((t) => ({ ...t, project_name: p.name })),
-            ),
-          )
-          .catch(() => [] as Task[]);
+        const [byPid, membersByPid] = await Promise.all([
+          manageApi
+            .listTasksBatch(r.projects.map((p) => p.id))
+            .catch(() => ({} as Record<string, Task[]>)),
+          projectApi
+            .allProjectMembers()
+            .catch(() => ({} as Record<string, ProjectMember[]>)),
+        ]);
+        setMembers(new Map(Object.entries(membersByPid)));
+        return r.projects.flatMap((p) =>
+          (byPid[p.id] || []).map((t) => ({ ...t, project_name: p.name })),
+        );
       })
       .then((all) => setTasks(all));
-    Promise.all([summaryP, tasksP])
-      .then(() => setErr("")) // 성공하면 이전 에러 화면 해제
-      .catch((e) => setErr(String(e?.message || e)))
-      .finally(() => setLoading(false));
-    manageApi.teamOverview().then(setTeam).catch(() => setTeam(null));
-    manageApi
+    const teamP = manageApi.teamOverview().then(setTeam).catch(() => setTeam(null));
+    const trendP = manageApi
       .teamTimeseries("week")
       .then((r) => setTrend(r.buckets || []))
       .catch(() => setTrend([]));
+    const request = Promise.all([summaryP, tasksP, teamP, trendP])
+      .then(() => setErr("")) // 성공하면 이전 에러 화면 해제
+      .catch((e) => setErr(String(e?.message || e)))
+      .finally(() => {
+        setLoading(false);
+        if (reloadPromiseRef.current === request) reloadPromiseRef.current = null;
+        if (pendingReloadRef.current) {
+          pendingReloadRef.current = false;
+          void reload();
+        }
+      });
+    reloadPromiseRef.current = request;
+    return request;
   };
-  useEffect(reload, []);
+  useEffect(() => {
+    void reload();
+  }, []);
+  const reloadRef = useRef(reload);
+  const seenReloadSignalRef = useRef(reloadSignal);
+  reloadRef.current = reload;
+  useEffect(() => {
+    if (seenReloadSignalRef.current === reloadSignal) return;
+    seenReloadSignalRef.current = reloadSignal;
+    reloadRef.current();
+  }, [reloadSignal]);
 
   const { tree, totals } = useMemo(() => buildHierarchy(tasks), [tasks]);
   // 프로젝트 id → 그 프로젝트 서브트리(진행율·컷 롤업) 조회용

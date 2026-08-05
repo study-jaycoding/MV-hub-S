@@ -173,7 +173,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 ## 10. 백엔드 모듈 지도 (`backend/app/`)
 
-- `main.py` — 앱·**미들웨어(auth_enforcement: 토큰→request.state.account / mutation_notify: 쓰기 후 WS 알림)**·lifespan(init_db·고아잡 정리·중복병합·레거시 이전·creator_uid 백필·**계정↔creator 연결**·제공자 신원 캡처·썸네일 사전생성·동기화/백업). `/media`·SPA 마운트. `mutation_notify.py`는 본 서버·데이터 프록시가 공유하는 라이브러리 변경 판정과 안전한 요청 출처 파싱 계약이다.
+- `main.py` — 앱·**미들웨어(auth_enforcement: 토큰→request.state.account / mutation_notify: 쓰기 후 영역별 WS 알림)**·lifespan(init_db·고아잡 정리·중복병합·레거시 이전·creator_uid 백필·**계정↔creator 연결**·제공자 신원 캡처·썸네일 사전생성·동기화/백업). `/media`·SPA 마운트. `mutation_notify.py`는 본 서버·데이터 프록시가 공유하는 library/assets/manage 판정과 안전한 요청 출처·응답 영역 헤더 계약이다.
 - `db.py`(SQLite 스키마·마이그레이션·인덱스·FTS5), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
 - **routers/**: `library.py`(목록·검색·통계·facets·휴지통·**미디어 썸네일**·**tab=my 계정 스코프**), `generation.py`(옛 서버측 생성·태그/컬러/소스/코멘트·삭제·복원·힉스필드검증·리니지), **`gen_requests.py`(로컬 실행 큐: 생성요청·pending·fulfill·fail)**, **`ingest.py`(push 적재·known-jobs·`/credits`)**, `share.py`, `projects.py`, `auth.py`(로그인·가입·계정승인), `members.py`(등급), `assets.py`(분리창), `sync.py`.
 - **repo/**: `generations.py`(중심: list_generations 키셋·검색·업서트·재생성·**account_uid 스코프**·리니지 그래프), **`gen_requests.py`(gen_recipe·claim·fulfill mark)**, `identity.py`(생성자·신원·**link_accounts_to_creators·set_account_hf_creator·credit_summary·list_members**), `tags.py`, `projects.py`, `share.py`, `accounts.py`(가입·인증·승인), `assets.py`, `trash.py`.
@@ -184,7 +184,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 ## 11. 프론트엔드 모듈 지도 (`frontend/src/`)
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
-- `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer, 401→로그인), `types.ts`(응답 타입), `lib/`(`librarySync.ts`(자기 변경 요청↔적용된 목록 reload 상관관계)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
+- `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer, 401→로그인), `types.ts`(응답 타입), `lib/`(`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
 - **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·**로컬 대기/생성중 라벨**·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스·표시이름)·`ManageAccount`·**`SettingsPanel`(강조색·모션·팀 크레딧·언어·전체 가져오기)**, `LoginScreen`, `TopBar`, `InfoPopup`·`MediaPreview`·`CompareModal`·`HowItWorks`·`WorkspaceSelector`·`ProjectAssignMenu`.
 
 ---
@@ -238,6 +238,13 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
     자기 알림의 두 번째 전체 reload를 한 번 생략한다. 다른 탭/기기·출처 불명·실패한 조회는 반드시
     reload하며, 외부 변경은 활성 SceneBoard와 사이드바에도 별도 갱신 신호를 전달한다. WebSocket 최초
     연결은 초기 reload와 합치고, 실제 연결 실패·재연결 때만 누락 보정 조회를 한다.
+22. **변경 영역별 실시간 갱신** — 성공한 쓰기는 응답의 `X-MVHub-Mutation-Domains`와 WS에서
+    `library`/`assets`/`manage`로 분리한다. Assets·PM 독립 창은 메인 App이 닫혀 있어도 `/ws`를 직접
+    구독하며, 같은 요청이 직접 WS와 BroadcastChannel 양쪽으로 와도 요청 출처 조합을 한 번만 처리한다.
+    자기 창이 이미 낙관 반영한 성공 요청은 해당 영역 알림만 소비하고, 다른 탭·출처 불명·재연결은
+    반드시 재조회한다. 숨겨진 창은 복귀 때 따라잡고 PM 대시보드는 느린 집계 요청을 겹치지 않는다.
+    위임 모드에서 **다른 PC가 원격 서버에 직접 쓴 이벤트**는 아직 로컬 `/ws`로 중계되지 않으므로
+    WorkBoard의 30초/포커스 보정은 유지하며, 원격 WS 브리지는 별도 운영 검증 후 결정한다.
 
 ---
 
