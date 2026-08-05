@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,6 +59,76 @@ class ProjectFolderCacheTests(unittest.TestCase):
         (self.root / "Render" / "shot03").mkdir()
         invalidated = self._state()
         self.assertIn("shot03", [node["name"] for node in invalidated["tree"]["children"]])
+
+    def test_tree_scan_uses_scandir_and_keeps_directory_order_and_counts(self):
+        render = self.root / "Render"
+        (render / "shot02").mkdir()
+        (render / "shot02" / "b.png").write_bytes(b"x")
+
+        # Path.iterdir 기반 구현으로 돌아가면 UNC에서 파일마다 메타데이터 조회가 반복된다.
+        with patch.object(Path, "iterdir", side_effect=AssertionError("iterdir must not be used")):
+            tree, count = project_folders.folder_tree_node(
+                render, render, {"nodes": 0, "truncated": 0}
+            )
+
+        self.assertEqual(count, 2)
+        self.assertEqual([node["name"] for node in tree["children"]], ["shot01", "shot02"])
+        self.assertEqual([node["count"] for node in tree["children"]], [1, 1])
+
+    def test_tree_scan_stops_before_exceeding_node_budget(self):
+        render = self.root / "Render"
+        (render / "shot02").mkdir()
+        (render / "shot03").mkdir()
+        stats = {"nodes": 0, "truncated": 0}
+
+        tree, _ = project_folders.folder_tree_node(render, render, stats, max_nodes=2)
+
+        self.assertEqual(stats["nodes"], 2)
+        self.assertEqual(stats["truncated"], 1)
+        self.assertEqual(len(tree["children"]), 1)
+
+    def test_tree_scan_skips_windows_reparse_directory(self):
+        class _FakeStat:
+            st_file_attributes = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+        class _FakeEntry:
+            name = "loop"
+            path = "ignored-loop"
+
+            @staticmethod
+            def is_dir(*, follow_symlinks=True):
+                return True
+
+            @staticmethod
+            def is_file(*, follow_symlinks=True):
+                return False
+
+            @staticmethod
+            def is_symlink():
+                return False
+
+            @staticmethod
+            def stat(*, follow_symlinks=True):
+                return _FakeStat()
+
+        class _FakeScandir:
+            def __enter__(self):
+                return iter([_FakeEntry()])
+
+            def __exit__(self, *_args):
+                return False
+
+        render = self.root / "Render"
+        stats = {"nodes": 0, "truncated": 0}
+        with patch.object(project_folders.os, "scandir", return_value=_FakeScandir()) as scan:
+            tree, count = project_folders.folder_tree_node(
+                render, render, stats
+            )
+
+        self.assertEqual(scan.call_count, 1)
+        self.assertEqual(tree["children"], [])
+        self.assertEqual(count, 0)
+        self.assertEqual(stats["truncated"], 1)
 
 
 class ProjectFolderSelectionRouteTests(unittest.TestCase):

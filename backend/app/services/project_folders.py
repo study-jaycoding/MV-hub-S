@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -112,6 +113,25 @@ def render_root(root: Path) -> Path | None:
     return None
 
 
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_reparse_directory(entry: os.DirEntry[str]) -> bool:
+    """Return whether a child directory is a symlink/junction that must not be traversed.
+
+    ``DirEntry.is_dir(follow_symlinks=False)`` is still true for Windows junctions, and
+    ``is_symlink()`` is false for them.  The Windows reparse attribute closes that gap.
+    A stat failure is treated as unsafe so an inaccessible link cannot escape the render root.
+    """
+    try:
+        if entry.is_symlink():
+            return True
+        attrs = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+        return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+    except OSError:
+        return True
+
+
 def folder_tree_node(
     path: Path,
     root: Path,
@@ -119,7 +139,13 @@ def folder_tree_node(
     *,
     max_nodes: int = 2000,
 ) -> tuple[dict[str, Any], int]:
-    """Build a folder tree with recursive file counts."""
+    """Build a folder tree with recursive file counts.
+
+    Files are counted while enumerating but only child directories are sorted.  ``Path.iterdir``
+    plus repeated ``Path.is_dir/is_file`` checks used to issue two or three metadata probes per
+    file, which is especially expensive on UNC roots.  Reparse directories are intentionally
+    skipped so a Windows junction cannot recurse outside (or back into) the render root.
+    """
     stats["nodes"] += 1
     if stats["nodes"] > max_nodes:
         stats["truncated"] = 1
@@ -132,22 +158,35 @@ def folder_tree_node(
             },
             0,
         )
+
+    directories: list[tuple[str, Path]] = []
+    count = 0
     try:
-        entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-    except (OSError, PermissionError):
-        entries = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if hidden_folder(entry.name):
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if _is_reparse_directory(entry):
+                            stats["truncated"] = 1
+                            continue
+                        directories.append((entry.name.lower(), Path(entry.path)))
+                    elif entry.is_file(follow_symlinks=False):
+                        count += 1
+                except OSError:
+                    continue
+    except OSError:
+        pass
 
     children: list[dict[str, Any]] = []
-    count = 0
-    for entry in entries:
-        if hidden_folder(entry.name):
-            continue
-        if entry.is_dir():
-            node, child_count = folder_tree_node(entry, root, stats, max_nodes=max_nodes)
-            children.append(node)
-            count += child_count
-        elif entry.is_file():
-            count += 1
+    for _, directory in sorted(directories, key=lambda item: item[0]):
+        if stats["nodes"] >= max_nodes:
+            stats["truncated"] = 1
+            break
+        node, child_count = folder_tree_node(directory, root, stats, max_nodes=max_nodes)
+        children.append(node)
+        count += child_count
     rel = path.relative_to(root).as_posix() if path != root else ""
     return {"name": path.name, "path": rel, "count": count, "children": children}, count
 
