@@ -4,7 +4,7 @@ REM ============================================================================
 REM  MV Hub - SERVER TEST launcher   (run ON THE SERVER, inside the test clone)
 REM
 REM  Starts the TEST server on port 8011, bound to ALL interfaces so your
-REM  local PC can open it at  http://<server-ip>:8011  (use test_open.bat).
+REM  local PC can open it at  http://<server-ip>:8011.
 REM
 REM  Isolated from the live service (which stays on 8010):
 REM    - PORT 8011
@@ -34,7 +34,7 @@ set "CONTENT_HUB_NO_PROXY=1"
 echo.
 echo [SERVER TEST] host=%HOST% port=%PORT% auth=%CONTENT_HUB_AUTH% manage=1 proxy=off
 echo             data = %~dp0backend\data   (copy of live; refresh to update)
-echo             open from your PC: http://^<server-ip^>:%PORT%   (or use test_open.bat)
+echo             open from your PC: http://^<server-ip^>:%PORT%
 echo.
 
 REM Reuse the shared server launcher (builds frontend, auto-restart, serve.py).

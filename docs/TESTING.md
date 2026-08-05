@@ -40,7 +40,6 @@ npm.cmd run build
 | `test_pull-db.bat` | 내 PC | 필요할 때만 서버 DB를 격리된 `backend\data_test`로 내려받음(미디어 제외) |
 | `test_refresh-db.bat` | 서버 | live DB를 테스트 클론의 `backend\data`로 복사(읽기 전용 스냅샷) |
 | `test_run-server.bat` | 서버 | 테스트 서버 실행 — 8011, 로그인 켜짐, `CONTENT_HUB_NO_PROXY=1`로 완전 독립 |
-| `test_open.bat` | 내 PC | 브라우저로 `http://<서버IP>:8011` 열기 (아무것도 실행 안 함, URL만 엶) |
 
 참고 — 운영(테스트 아님): `MV_server.bat`(공유 서버 8010), `MV_agent.bat`(각 PC 로컬 허브), `update*.bat`.
 
@@ -84,7 +83,7 @@ git checkout feature/pm-dashboard
 
 1. `test_refresh-db.bat` — live DB를 테스트 클론으로 복사
 2. `test_run-server.bat` — 8011로 실행
-3. 내 PC에서 `test_open.bat` (= `http://<서버IP>:8011`)
+3. 내 PC 브라우저에서 `http://<서버IP>:8011` 접속
 
 `CONTENT_HUB_NO_PROXY=1`이 중요하다. 빠지면 복사 DB가 로그인 시 토큰을 되살려 `/api/manage/*`가
 운영 서버로 프록시되어 엉뚱한 404/오작동이 난다. `test_run-server.bat`은 이 값을 강제로 켠다.
