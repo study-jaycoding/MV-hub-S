@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import _proxy
 from .. import rbac, repo
@@ -350,6 +350,35 @@ def set_gen_auto_tags(gen_id: str, body: AutoTagsIn, request: Request):
     return _set_meta(gen_id, request, lambda i: repo.set_gen_auto_tags(i, body.auto_tags))
 
 
+class GenerationTagsBatchItem(BaseModel):
+    id: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class GenerationTagsBatchIn(BaseModel):
+    items: list[GenerationTagsBatchItem] = Field(default_factory=list)
+    auto: bool = False
+
+
+@router.put("/generations/tags/batch")
+def set_tags_batch(body: GenerationTagsBatchIn, request: Request):
+    """다중 태그 저장의 HTTP fan-out 제거. 기존처럼 항목별 부분 성공을 허용한다."""
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
+    succeeded: list[str] = []
+    failed: list[str] = []
+    for item in body.items:
+        try:
+            if body.auto:
+                set_gen_auto_tags(item.id, AutoTagsIn(auto_tags=item.tags), request)
+            else:
+                set_tags(item.id, TagsIn(tags=item.tags), request)
+            succeeded.append(item.id)
+        except HTTPException:
+            failed.append(item.id)
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.delete("/tags/{tag}")
 def delete_tag(tag: str, request: Request):
     """태그를 generation 에서 삭제(에셋 T 패널 ✕ 와 동일). AUTH on 이면 내 생성물에서만(남의 태그 보존)."""
@@ -471,6 +500,31 @@ def set_color(gen_id: str, body: ColorIn, request: Request):
         shadow_apply=lambda a: repo.set_color_overlay(a, body.color),
         result_key="color", result_value=body.color,
     )
+
+
+class GenerationColorBatchItem(BaseModel):
+    id: str
+    color: Optional[str] = None
+
+
+class GenerationColorsBatchIn(BaseModel):
+    items: list[GenerationColorBatchItem] = Field(default_factory=list)
+
+
+@router.put("/generations/colors/batch")
+def set_colors_batch(body: GenerationColorsBatchIn, request: Request):
+    """다중 색상 저장의 HTTP fan-out 제거. 권한·존재 실패는 항목별로 반환한다."""
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
+    succeeded: list[str] = []
+    failed: list[str] = []
+    for item in body.items:
+        try:
+            set_color(item.id, ColorIn(color=item.color), request)
+            succeeded.append(item.id)
+        except HTTPException:
+            failed.append(item.id)
+    return {"succeeded": succeeded, "failed": failed}
 
 
 @router.put("/generations/{gen_id}/source", response_model=GenerationOut)

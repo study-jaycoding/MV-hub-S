@@ -268,6 +268,12 @@ export const api = {
       body: jsonBody({ tags }),
     }),
 
+  setTagsBatch: (items: { id: string; tags: string[] }[], auto = false) =>
+    jsonFetch<{ succeeded: string[]; failed: string[] }>("/api/generations/tags/batch", {
+      method: "PUT",
+      body: jsonBody({ items, auto }),
+    }),
+
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
   setGenAutoTags: (id: string, auto_tags: string[]) =>
     jsonFetch<Generation>(`/api/generations/${pathPart(id)}/auto-tags`, {
@@ -321,6 +327,12 @@ export const api = {
     jsonFetch<Generation>(`/api/generations/${pathPart(id)}/color`, {
       method: "PUT",
       body: jsonBody({ color }),
+    }),
+
+  setColorsBatch: (ids: string[], color: string | null) =>
+    jsonFetch<{ succeeded: string[]; failed: string[] }>("/api/generations/colors/batch", {
+      method: "PUT",
+      body: jsonBody({ items: ids.map((id) => ({ id, color })) }),
     }),
 
   // 소스 라이브러리 등록/해제(@이름)

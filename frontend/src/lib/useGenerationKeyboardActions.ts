@@ -49,8 +49,12 @@ export function useGenerationKeyboardActions({
       const allSame = sel.length > 0 && sel.every((g) => g.color === color);
       const next = allSame ? null : color;
       setGens((prev) => prev.map((g) => (idSet.has(g.id) ? { ...g, color: next } : g)));
-      const results = await Promise.allSettled(ids.map((id) => api.setColor(id, next)));
-      const failed = results.filter((r) => r.status === "rejected").length;
+      let failed = ids.length;
+      try {
+        failed = (await api.setColorsBatch(ids, next)).failed.length;
+      } catch {
+        // 전체 요청 실패 — 아래 공통 복구 경로에서 서버 상태를 다시 읽는다.
+      }
       cancelColorReload();
       if (failed) {
         await reload(false, true);
