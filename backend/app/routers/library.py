@@ -514,10 +514,16 @@ def list_generations(
 
 @router.get("/generations-stats")
 def generation_stats(request: Request):
-    """전역 파생값(실패 수·미확인 코멘트 여부) — 무한 스크롤 모드에서 클라이언트 전량 로드 대체.
-    미확인 여부는 로그인 계정(creator_uid) 기준 — 패널 seen 기록과 동일 신원이어야 알림이 꺼진다."""
+    """패널 파생값(내 실패 수·미확인 코멘트 여부).
+
+    실패 수는 실패 정리 API와 동일한 계정 범위, 미확인 여부는 패널 seen 기록과 동일 신원을 쓴다.
+    """
     uid = _account_uid(request)
-    return repo.generation_stats(viewer_id=uid) if uid else repo.generation_stats()
+    return (
+        repo.generation_stats(viewer_id=uid, account_uid=uid)
+        if uid
+        else repo.generation_stats()
+    )
 
 
 # ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ───────────────────────────

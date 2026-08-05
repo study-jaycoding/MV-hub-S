@@ -123,6 +123,7 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 | **P7·P8** | `repo/manage`·`repo/generations` 내부 분할(파사드 유지) | 중~고 ✅ |
 | **P9** | Assets 디스크 IO·계정별 마운트 저장소를 라우터에서 분리 | 중 ✅ |
 | **P10** | Assets 개인 메타·팀 코멘트 하위 라우터 분리 | 중 ✅ |
+| **P11** | 실패 통계와 실패 정리의 계정 범위 일치 | 낮 ✅ |
 
 **순서 원칙:** 순수로직 추출 → 테스트 → 상태 분리 → IO 분리 → UI 분리.
 (JSX 부터 자르면 props 만 늘고 이득이 없다.)

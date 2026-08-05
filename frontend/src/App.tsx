@@ -383,7 +383,7 @@ export default function App() {
     if (grayOn && gridGens.length === 0 && hasMore && !loadingMore) loadMore();
   }, [grayOn, gridGens.length, hasMore, loadingMore, loadMore]);
 
-  // 미확인 코멘트 여부·실패 수는 전역 파생값 → 서버 stats 에서(전량 로드 대체).
+  // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).
   const hasAnyUnread = stats.has_unread;
   const failedCount = stats.failed_count;
   const {

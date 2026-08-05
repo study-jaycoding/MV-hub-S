@@ -83,7 +83,7 @@ export const api = {
   listGenerations: (query: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE) =>
     jsonFetch<Generation[]>(`/api/generations?${buildQuery(query, cursor, limit)}`),
 
-  // 전역 파생값(실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
+  // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
 
   // ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ────────────────────────

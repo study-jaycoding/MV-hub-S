@@ -291,15 +291,29 @@ def generation_comment_counts(
     return out
 
 
-def generation_stats(viewer_id: str = DEFAULT_WORKER_ID) -> dict[str, Any]:
-    """전역 파생값 — 무한 스크롤로 전량 로드를 안 하므로 클라이언트 대신 서버가 계산.
-      · failed_count: 실패·차단 등 비정상(휴지통 제외) 건수('실패 정리' 버튼용, 전역)
+def generation_stats(
+    viewer_id: str = DEFAULT_WORKER_ID,
+    account_uid: Optional[str] = None,
+) -> dict[str, Any]:
+    """무한 스크롤에서 전량 로드하지 않는 패널 파생값.
+
+      · failed_count: 실패 정리 버튼과 같은 계정 범위의 비정상 건수(휴지통 제외)
       · has_unread:   미확인 코멘트가 하나라도 있나(C 뱃지용, 전역)
+
+    ``account_uid``가 None인 단독 모드는 전체를 세고, AUTH 계정 모드는 현재 작성자만 센다.
+    정리 API의 ``delete_failed_orphans(account_uid=...)``와 반드시 같은 범위를 써야 숫자가 남지 않는다.
     """
+    failed_where = (
+        "status NOT IN ('done','pending','running') AND deleted_at IS NULL"
+    )
+    failed_args: list[Any] = []
+    if account_uid is not None:
+        failed_where += " AND creator_uid=?"
+        failed_args.append(account_uid)
     with get_connection() as conn:
         failed = conn.execute(
-            "SELECT COUNT(*) FROM generation "
-            "WHERE status NOT IN ('done','pending','running') AND deleted_at IS NULL"
+            f"SELECT COUNT(*) FROM generation WHERE {failed_where}",
+            failed_args,
         ).fetchone()[0]
         unread = conn.execute(
             f"SELECT EXISTS (SELECT 1 FROM generation_comment c "
