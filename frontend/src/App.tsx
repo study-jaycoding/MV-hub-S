@@ -37,18 +37,18 @@ import {
   SCENE_IMPORT_MAX_BYTES,
   variantIds,
   type Scene,
-  type SceneCard,
-  type SceneEdge,
   type SceneRef,
 } from "./lib/scenes";
 import {
   collectGenText,
   collectGenModel,
-  collectGenRefs,
   resolvePortEdges,
-  type ComfyOutputsById,
   type SceneGenerationRun,
 } from "./lib/sceneEdges";
+import {
+  buildSceneGenerationJobInput,
+  type SceneGenerationJobInput,
+} from "./lib/sceneGenerationInputs";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -95,7 +95,6 @@ import type {
 import { api } from "./api";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
-import type { ChipRef } from "./lib/promptEditor";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -615,42 +614,11 @@ export default function App() {
   //  · 모델이 안 붙은 카드는 건너뛴다(생성 불가). 잡은 전부 한 번에 제출하고 초과분은 서버 큐가 순서대로 처리.
   const genParamsCacheRef = useRef<Record<string, ModelParam[]>>({}); // 모델별 파라미터 스키마 캐시(auto 비율 해석용)
   const renderingRef = useRef(false); // 렌더 진행 중 재진입(더블클릭) 방지
-  // 생성 1건의 조립 재료 — 카드 1개 × 1회 생성분(모델·파라미터·refs·텍스트).
-  type GenJob = { cardId: string; model: string; params: Record<string, unknown>; refs: ChipRef[]; text: string };
-  // 생성카드 1개의 job 조립(생성카드 아니거나 모델 없으면 null). overlay 가 있으면 그 comfy 결과로 텍스트·ref 를 해석.
-  const makeGenJob = (
-    cid: string,
-    cardsById: Map<string, SceneCard>,
-    resolved: SceneEdge[],
-    overlay?: ComfyOutputsById,
-  ): GenJob | null => {
-    const card = cardsById.get(cid);
-    if (!card || card.kind !== "generation") return null;
-    const cfg = collectGenModel(cid, cardsById, resolved);
-    if (!cfg?.model) return null;
-    const gt = collectGenText(cid, cardsById, resolved, overlay);
-    const text = gt.count > 0 ? gt.text : card.prompt || "";
-    // card.refs(레퍼런스 카드/수동) 뒤에 상류 comfy 미디어를 붙인다 — card.refs 내부 중복은 보존(@image1/@image2),
-    //  comfy 수집분만 card.refs 와 file_path 가 겹치면 제외(중복 매핑 방지). overlay 로 이 짝의 comfy 결과만 반영.
-    const cardRefs = card.refs || [];
-    const cardRefPaths = new Set(cardRefs.map((r) => r.file_path));
-    const comfyRefs = collectGenRefs(cid, cardsById, resolved, overlay).filter(
-      (r) => !cardRefPaths.has(r.file_path),
-    );
-    const refs: ChipRef[] = [...cardRefs, ...comfyRefs].map((r) => ({
-      file_path: r.file_path,
-      type: r.type === "video" ? "video" : r.type === "audio" ? "audio" : "image",
-      role: "", // buildSpotlightCreateBody 가 @Image1 등으로 다시 매긴다
-      name: r.name ?? "",
-      thumb: r.thumb ?? "",
-      source_gen_id: r.source_gen_id ?? undefined,
-    }));
-    return { cardId: cid, model: cfg.model, params: { ...(cfg.params || {}) }, refs, text };
-  };
+  // 생성 1건의 조립 재료는 sceneGenerationInputs 공용 순수 함수가 만든다(실행 지문과 제출 규칙 공유).
   // job 목록 제출(공통) — 모델 파라미터 선로드→body 조립→각 job 1회씩 병렬 create→카드에 결과 id 누적.
   //  ★배치 반복은 호출자가 jobs 를 늘려서(같은 카드 N개) 결정한다 — 여기선 job 1개=1장.
   const submitGenJobs = async (
-    jobs: GenJob[],
+    jobs: SceneGenerationJobInput[],
     skipped: number,
     scene: Scene,
     projectId: string | undefined,
@@ -770,10 +738,10 @@ export default function App() {
         filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
-      const jobs: GenJob[] = [];
+      const jobs: SceneGenerationJobInput[] = [];
       let skipped = 0;
       for (const cid of cardIds) {
-        const job = makeGenJob(cid, cardsById, resolved);
+        const job = buildSceneGenerationJobInput(cid, cardsById, resolved);
         if (!job) {
           if (cardsById.get(cid)?.kind === "generation") skipped++; // 생성카드인데 모델 없음
           continue;
@@ -799,10 +767,15 @@ export default function App() {
         filters.project_id && filters.project_id !== "none" ? filters.project_id : undefined;
       const folderPath =
         armedFolder && armedFolder.projectId === projectId ? armedFolder.path : undefined;
-      const jobs: GenJob[] = [];
+      const jobs: SceneGenerationJobInput[] = [];
       let skipped = 0;
       for (const run of runs) {
-        const job = makeGenJob(run.cardId, cardsById, resolved, run.comfyOutputsById);
+        const job = buildSceneGenerationJobInput(
+          run.cardId,
+          cardsById,
+          resolved,
+          run.comfyOutputsById,
+        );
         if (!job) {
           if (cardsById.get(run.cardId)?.kind === "generation") skipped++;
           continue;

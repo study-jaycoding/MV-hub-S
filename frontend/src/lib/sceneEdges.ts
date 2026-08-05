@@ -981,8 +981,9 @@ export function collectGenRefs(
       for (const cid of li.generationCardIds) {
         const c = cardsById.get(cid);
         if (c?.kind !== "comfy") continue;
-        // 저장된(variantIds 있는) comfy 는 gatherTarget 이 genData 기반 SceneRef 로 이미 붙인다 → 여기선 미저장분만(중복 방지).
-        if (variantIds(c).length > 0) continue;
+        // 평상시에는 저장된 comfy를 gatherTarget의 SceneRef가 담당한다. 배치 실행 overlay가 있으면
+        // 이전 저장 ref가 아니라 이번 복사본 결과를 써야 하므로 저장 이력이 있어도 overlay를 펼친다.
+        if (variantIds(c).length > 0 && !overlay) continue;
         pushComfyMedia(c);
       }
     }

@@ -23,6 +23,10 @@ import {
   type SceneExecutionPlan,
   type SceneGenerationRun,
 } from "./sceneEdges";
+import {
+  captureSceneGenerationInputSnapshot,
+  isSceneGenerationInputSnapshotCurrent,
+} from "./sceneGenerationInputs";
 import { setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
 import {
   cardBatch,
@@ -172,6 +176,27 @@ export function useSceneComfyExecution({
         overlay,
       ),
     );
+
+  // 한 실행 단계에서 같은 cards/edges 참조를 여러 번 검사한다. 의미 비교는 그래프 순회가 필요하므로
+  // 상태 참조가 실제로 바뀐 경우에만 다시 계산해 배치·다중 Comfy에서 가드 자체가 지연을 만들지 않게 한다.
+  const createSceneStateGuard = (
+    sceneId: string,
+    evaluate: (cards: SceneCard[], edges: SceneEdge[]) => boolean,
+  ) => {
+    let lastCards: SceneCard[] | undefined;
+    let lastEdges: SceneEdge[] | undefined;
+    let lastResult = false;
+    return () => {
+      if (sceneIdRef.current !== sceneId) return false;
+      const currentCards = cardsRef.current;
+      const currentEdges = edgesRef.current;
+      if (currentCards === lastCards && currentEdges === lastEdges) return lastResult;
+      lastCards = currentCards;
+      lastEdges = currentEdges;
+      lastResult = evaluate(currentCards, currentEdges);
+      return lastResult;
+    };
+  };
 
   const runComfy = async (cardId: string): Promise<boolean> => {
     flushPending();
@@ -602,16 +627,28 @@ export function useSceneComfyExecution({
     orchestratingRef.current = true;
     setComfyWaitingIds(new Set([generationId]));
     const sceneId = sceneIdRef.current;
-    const isPlanCurrent = () => {
-      if (sceneIdRef.current !== sceneId) return false;
-      const liveCards = new Map(cardsRef.current.map((card) => [card.id, card] as const));
-      return isGenerationExecutionPlanCurrent(
-        plan,
-        generationId,
-        liveCards,
-        edgesRef.current,
+    const generationInputSnapshot = captureSceneGenerationInputSnapshot(
+      plan.generationIds,
+      plan.comfyIds,
+      cardsById,
+      edgesRef.current,
+    );
+    const isPlanCurrent = createSceneStateGuard(sceneId, (currentCards, currentEdges) => {
+      const liveCards = new Map(currentCards.map((card) => [card.id, card] as const));
+      return (
+        isGenerationExecutionPlanCurrent(
+          plan,
+          generationId,
+          liveCards,
+          currentEdges,
+        ) &&
+        isSceneGenerationInputSnapshotCurrent(
+          generationInputSnapshot,
+          liveCards,
+          currentEdges,
+        )
       );
-    };
+    });
     try {
       const batch = cardBatch(cardsById.get(generationId));
       const { runs, aborted } = await runPlanComfyCopies(
@@ -638,11 +675,23 @@ export function useSceneComfyExecution({
       const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
       const plan = buildRenderExecutionPlan(renderId, cardsById, edgesRef.current);
       const batch = cardBatch(cardsById.get(renderId));
-      const isPlanCurrent = () => {
-        if (sceneIdRef.current !== sceneId) return false;
-        const liveCards = new Map(cardsRef.current.map((card) => [card.id, card] as const));
-        return isRenderExecutionPlanCurrent(plan, renderId, liveCards, edgesRef.current);
-      };
+      const generationInputSnapshot = captureSceneGenerationInputSnapshot(
+        plan.generationIds,
+        plan.comfyIds,
+        cardsById,
+        edgesRef.current,
+      );
+      const isPlanCurrent = createSceneStateGuard(sceneId, (currentCards, currentEdges) => {
+        const liveCards = new Map(currentCards.map((card) => [card.id, card] as const));
+        return (
+          isRenderExecutionPlanCurrent(plan, renderId, liveCards, currentEdges) &&
+          isSceneGenerationInputSnapshotCurrent(
+            generationInputSnapshot,
+            liveCards,
+            currentEdges,
+          )
+        );
+      });
       if (plan.comfyIds.length) {
         setComfyWaitingIds(new Set(plan.generationIds));
         const { runs, aborted } = await runPlanComfyCopies(
