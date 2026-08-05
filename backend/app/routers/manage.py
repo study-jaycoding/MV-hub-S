@@ -363,6 +363,35 @@ class TaskLinkIn(BaseModel):
     gen_ids: list[str]
 
 
+class TaskOrderItem(BaseModel):
+    task_id: str
+    sort_order: int
+
+
+class TaskOrderBatchIn(BaseModel):
+    items: list[TaskOrderItem] = Field(default_factory=list)
+
+
+class TaskIdsIn(BaseModel):
+    task_ids: list[str] = Field(default_factory=list)
+
+
+def _require_tasks_manage(task_ids: list[str], request: Request) -> list[str]:
+    """배치 쓰기 전에 모든 작업 존재와 프로젝트별 manage 권한을 확인한다."""
+    unique_ids = list(dict.fromkeys(task_ids))
+    if len(unique_ids) != len(task_ids):
+        raise HTTPException(status_code=400, detail="중복 작업 id가 있습니다")
+    if len(unique_ids) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 작업까지 변경할 수 있습니다")
+    projects = repo_manage.task_projects(unique_ids)
+    missing = [task_id for task_id in unique_ids if task_id not in projects]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"없는 작업: {missing[0]}")
+    for project_id in dict.fromkeys(projects.values()):
+        _require_project_manage(request, project_id)
+    return unique_ids
+
+
 @router.get("/tasks")
 def list_tasks(project_id: str, request: Request):
     _require_project_read(request, project_id)
@@ -419,6 +448,23 @@ def patch_task(tid: str, body: TaskPatch, request: Request):
 def remove_task(tid: str, request: Request):
     _require_project_manage(request, _task_project_or_404(tid))
     return {"ok": repo_manage.delete_task(tid)}
+
+
+@router.patch("/tasks-batch/order")
+def update_task_order_batch(body: TaskOrderBatchIn, request: Request):
+    task_ids = [item.task_id for item in body.items]
+    _require_tasks_manage(task_ids, request)
+    count = repo_manage.bulk_update_task_orders(
+        [(item.task_id, item.sort_order) for item in body.items]
+    )
+    return {"ok": True, "count": count}
+
+
+@router.post("/tasks-batch/delete")
+def delete_tasks_batch(body: TaskIdsIn, request: Request):
+    task_ids = _require_tasks_manage(body.task_ids, request)
+    count = repo_manage.bulk_delete_tasks(task_ids)
+    return {"ok": True, "count": count}
 
 
 @router.post("/tasks/{tid}/generations")

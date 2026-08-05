@@ -33,6 +33,16 @@ export const manageApi = {
     jsonFetch<{ ok: boolean }>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "DELETE",
     }),
+  updateTaskOrderBatch: (items: { task_id: string; sort_order: number }[]) =>
+    jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/order", {
+      method: "PATCH",
+      body: jsonBody({ items }),
+    }),
+  deleteTasksBatch: (taskIds: string[]) =>
+    jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/delete", {
+      method: "POST",
+      body: jsonBody({ task_ids: taskIds }),
+    }),
   linkGenerations: (tid: string, genIds: string[]) =>
     jsonFetch<{ linked: number }>(`/api/manage/tasks/${pathPart(tid)}/generations`, {
       method: "POST",

@@ -171,6 +171,7 @@ export function WorkBoard() {
   const loadingRef = useRef(false);
   const pendingLoadRef = useRef(false);
   const lastLoadAtRef = useRef(0);
+  const orderSaveRef = useRef<Promise<void>>(Promise.resolve());
   const loadAll = () => {
     if (loadingRef.current) {
       pendingLoadRef.current = true; // 진행 중 들어온 변경 신호들은 후속 1회로 합친다.
@@ -342,11 +343,17 @@ export function WorkBoard() {
     setTasks((prev) =>
       prev.map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t)).sort(bySort),
     );
-    ids.forEach((id) => {
+    const changed = ids.flatMap((id) => {
       const cur = tasks.find((x) => x.id === id);
-      const so = orderMap.get(id)!;
-      if (cur && cur.sort_order !== so) manageApi.updateTask(id, { sort_order: so });
+      const sort_order = orderMap.get(id)!;
+      return cur && cur.sort_order !== sort_order ? [{ task_id: id, sort_order }] : [];
     });
+    if (!changed.length) return;
+    // 빠르게 연속 드래그해도 서버 저장 순서가 뒤집히지 않게 요청을 직렬화한다.
+    orderSaveRef.current = orderSaveRef.current
+      .catch(() => undefined)
+      .then(() => manageApi.updateTaskOrderBatch(changed).then(() => undefined))
+      .catch(() => loadAll());
   };
 
   // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때
@@ -355,9 +362,13 @@ export function WorkBoard() {
     const ids = [...selected];
     if (!ids.length) return;
     if (!window.confirm(`선택한 작업 ${ids.length}개를 삭제할까요?`)) return;
-    await Promise.all(ids.map((id) => manageApi.deleteTask(id).catch(() => {})));
-    clearSel();
-    loadAll();
+    try {
+      await manageApi.deleteTasksBatch(ids);
+      clearSel();
+      loadAll();
+    } catch (e) {
+      window.alert("작업 삭제 실패: " + String(e));
+    }
   };
 
   if (err) return <div className="manage-empty">불러오기 실패: {err}</div>;

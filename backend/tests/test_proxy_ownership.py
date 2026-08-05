@@ -47,6 +47,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/summary",
         "/api/manage/tasks",
         "/api/manage/tasks-batch",
+        "/api/manage/tasks-batch/delete",
+        "/api/manage/tasks-batch/order",
         "/api/manage/tasks/assignees/bulk",
         "/api/manage/tasks/{tid}",
         "/api/manage/tasks/{tid}/assignees/{uid}",

@@ -471,6 +471,34 @@ def update_task(tid: str, fields: dict[str, Any]) -> Optional[dict[str, Any]]:
         return dict(r) if r else None
 
 
+def task_projects(task_ids: list[str]) -> dict[str, str]:
+    """작업 여러 건의 ``task_id -> project_id``를 한 쿼리로 반환한다."""
+    if not task_ids:
+        return {}
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        placeholders = ",".join("?" * len(task_ids))
+        rows = conn.execute(
+            f"SELECT id, project_id FROM project_task WHERE id IN ({placeholders})",
+            task_ids,
+        ).fetchall()
+    return {row["id"]: row["project_id"] for row in rows}
+
+
+def bulk_update_task_orders(items: list[tuple[str, int]]) -> int:
+    """여러 작업의 표시 순서를 한 트랜잭션으로 저장한다."""
+    if not items:
+        return 0
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany(
+            "UPDATE project_task SET sort_order=? WHERE id=?",
+            [(sort_order, task_id) for task_id, sort_order in items],
+        )
+    return len(items)
+
+
 def delete_task(tid: str) -> bool:
     with get_connection() as conn:
         _ensure_schema(conn)
@@ -478,3 +506,34 @@ def delete_task(tid: str) -> bool:
         conn.execute("DELETE FROM task_assignment WHERE task_id=?", (tid,))
         cur = conn.execute("DELETE FROM project_task WHERE id=?", (tid,))
         return cur.rowcount > 0
+
+
+def bulk_delete_tasks(task_ids: list[str]) -> int:
+    """작업·수동 링크·담당 배정을 한 트랜잭션으로 일괄 삭제한다."""
+    if not task_ids:
+        return 0
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        placeholders = ",".join("?" * len(task_ids))
+        existing = conn.execute(
+            f"SELECT id FROM project_task WHERE id IN ({placeholders})",
+            task_ids,
+        ).fetchall()
+        existing_ids = [row["id"] for row in existing]
+        if not existing_ids:
+            return 0
+        existing_placeholders = ",".join("?" * len(existing_ids))
+        conn.execute(
+            f"DELETE FROM task_generation WHERE task_id IN ({existing_placeholders})",
+            existing_ids,
+        )
+        conn.execute(
+            f"DELETE FROM task_assignment WHERE task_id IN ({existing_placeholders})",
+            existing_ids,
+        )
+        conn.execute(
+            f"DELETE FROM project_task WHERE id IN ({existing_placeholders})",
+            existing_ids,
+        )
+    return len(existing_ids)

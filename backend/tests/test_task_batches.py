@@ -1,0 +1,59 @@
+"""PM 작업 순서·삭제 배치의 트랜잭션 계약."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+
+from app import db, repo
+from app.repo import manage
+
+
+class TaskBatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_db = os.environ.get("CONTENT_HUB_DB")
+        os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        db.flush_pool()
+        db.init_db()
+        repo.ensure_default_worker()
+
+    def tearDown(self) -> None:
+        db.flush_pool()
+        if self.old_db is None:
+            os.environ.pop("CONTENT_HUB_DB", None)
+        else:
+            os.environ["CONTENT_HUB_DB"] = self.old_db
+        db.flush_pool()
+        self.tmp.cleanup()
+
+    def test_bulk_order_updates_all_tasks(self) -> None:
+        first = manage.create_task("p1", "first", sort_order=10)
+        second = manage.create_task("p1", "second", sort_order=20)
+
+        count = manage.bulk_update_task_orders([(first["id"], 20), (second["id"], 10)])
+
+        self.assertEqual(count, 2)
+        tasks = manage.list_tasks("p1")
+        self.assertEqual([task["id"] for task in tasks], [second["id"], first["id"]])
+        self.assertEqual(
+            manage.task_projects([first["id"], second["id"]]),
+            {first["id"]: "p1", second["id"]: "p1"},
+        )
+
+    def test_bulk_delete_clears_tasks_and_assignments(self) -> None:
+        first = manage.create_task("p1", "first")
+        second = manage.create_task("p1", "second")
+        manage.add_assignment(first["id"], "user-a", "pm")
+        manage.add_assignment(second["id"], "user-b", "pm")
+
+        self.assertEqual(manage.bulk_delete_tasks([first["id"], second["id"]]), 2)
+        self.assertEqual(manage.list_tasks("p1"), [])
+        with db.get_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) AS c FROM task_assignment").fetchone()["c"]
+        self.assertEqual(count, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
