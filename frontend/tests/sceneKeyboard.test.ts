@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isSceneTextEntryTarget,
+  sceneEscapeTarget,
   sceneKeyIntent,
   sceneNodeKindForKey,
   type SceneKeyLike,
@@ -33,6 +34,22 @@ describe("isSceneTextEntryTarget", () => {
 });
 
 describe("scene keyboard intent", () => {
+  it("Escape는 열린 UI를 우선 닫고, 없을 때만 카드·행 선택을 해제한다", () => {
+    const base = {
+      colorOpen: false,
+      pickerOpen: false,
+      popupOpen: false,
+      selectionCount: 0,
+      rowSelectionCount: 0,
+    };
+    expect(sceneEscapeTarget({ ...base, colorOpen: true, selectionCount: 2 })).toBe("color");
+    expect(sceneEscapeTarget({ ...base, pickerOpen: true, selectionCount: 2 })).toBe("picker");
+    expect(sceneEscapeTarget({ ...base, popupOpen: true, selectionCount: 2 })).toBe("popup");
+    expect(sceneEscapeTarget({ ...base, selectionCount: 1 })).toBe("selection");
+    expect(sceneEscapeTarget({ ...base, rowSelectionCount: 1 })).toBe("selection");
+    expect(sceneEscapeTarget(base)).toBeNull();
+  });
+
   it("Tab 피커가 열려 있을 때 노드 키를 카드 종류로 변환한다", () => {
     expect(sceneNodeKindForKey("N")).toBe("generation");
     expect(sceneNodeKindForKey("c")).toBe("comfy");

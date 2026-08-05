@@ -8,6 +8,7 @@ import {
   type ProviderIdentity,
 } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { useSyncStatus } from "../lib/useSyncStatus";
 import { ManageAccount } from "./ManageAccount";
@@ -45,8 +46,13 @@ export function AccountMenu({
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const avatarRef = useRef<HTMLButtonElement>(null);
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
+  const closeMenuOnEscape = useCallback(() => {
+    setOpen(false);
+    avatarRef.current?.focus();
+  }, []);
   const sync = useSyncStatus(); // 로컬 텔레메트리 push 실패 관측(failed>0 때만 경고)
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
@@ -60,6 +66,8 @@ export function AccountMenu({
     else api.accountHf().then(setReported).catch(() => setReported(null));
   }, [liveMode]);
   useOutsideMouseDown(ref, closeMenu, open);
+  // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
+  useEscapeClose(closeMenuOnEscape, open, true, true);
   // 메뉴를 열 때마다 워크스페이스/보고값을 새로고침 — 에이전트 동기화·계정상태 보고가 나중에
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
@@ -122,8 +130,12 @@ export function AccountMenu({
     <div className="acct-menu" ref={ref}>
       {/* 아바타 링 = 남은 크레딧 비율(힉스필드처럼 테두리로 표시). 크레딧 없으면 링 없이 아바타만. */}
       <button
+        ref={avatarRef}
+        type="button"
         className="acct-avatar-btn"
         onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
         title={
           `${displayName}${account && roleText ? ` · ${roleText}` : ""}` +
           (activeCredits != null

@@ -7,6 +7,7 @@ import { api } from "../api";
 import { useAskPrompt } from "../lib/prompt";
 import { visibleProjectFolderRoots } from "../lib/projectFolderTree";
 import { loadJSON, saveJSON } from "../lib/storage";
+import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import type { Project, ProjectFolderState } from "../types";
 import { FolderTreeView } from "./common/FolderTreeView";
@@ -27,8 +28,13 @@ export function ProjectAssignMenu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const askPrompt = useAskPrompt();
   const closeMenu = useCallback(() => setOpen(false), []);
+  const closeMenuOnEscape = useCallback(() => {
+    setOpen(false);
+    buttonRef.current?.focus();
+  }, []);
 
   const [linkedIds, setLinkedIds] = useState<Set<string>>(new Set());
   // 마지막으로 펼친 폴더·펼침 상태를 기억(재오픈 시 복원).
@@ -39,6 +45,8 @@ export function ProjectAssignMenu({
   );
 
   useOutsideMouseDown(ref, closeMenu, open);
+  // 메뉴만 닫고 현재 카드 선택은 유지 — 전역 라이브러리 Esc 보다 캡처 단계에서 먼저 처리한다.
+  useEscapeClose(closeMenuOnEscape, open, true, true);
 
   // 폴더 연결 여부 로드(메뉴 열 때).
   useEffect(() => {
@@ -110,7 +118,14 @@ export function ProjectAssignMenu({
 
   return (
     <div className="proj-assign" ref={ref}>
-      <button onClick={() => setOpen((v) => !v)} title="선택한 결과물을 프로젝트에 담기">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="선택한 결과물을 프로젝트에 담기"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
         📁 프로젝트에 담기 ▾
       </button>
       {open && (

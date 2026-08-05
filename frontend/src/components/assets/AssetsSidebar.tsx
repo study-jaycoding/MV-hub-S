@@ -41,31 +41,33 @@ export function AssetsSidebar({
   return (
     <aside className="assets-tree">
       <div className="type-filter">
-        <div
+        <button
+          type="button"
           className={"type-row type-all" + (!typeFilter ? " active" : "")}
+          aria-pressed={!typeFilter}
           onClick={() => onTypeFilterChange(null)}
         >
           <span className="type-icon">▦</span>
           <span className="type-label">All</span>
           <span className="type-count">{total || "-"}</span>
-        </div>
+        </button>
         {TYPE_ROWS.map(([type, icon, label]) => (
-          <div
+          <button
+            type="button"
             key={type}
             className={
               "type-row" +
               (typeFilter === type ? " active" : "") +
               (typeCounts[type] === 0 ? " zero" : "")
             }
-            onClick={() => {
-              if (typeCounts[type] === 0) return;
-              onTypeFilterChange(typeFilter === type ? null : type);
-            }}
+            disabled={typeCounts[type] === 0}
+            aria-pressed={typeFilter === type}
+            onClick={() => onTypeFilterChange(typeFilter === type ? null : type)}
           >
             <span className="type-icon">{icon}</span>
             <span className="type-label">{label}</span>
             <span className="type-count">{typeCounts[type] > 0 ? typeCounts[type] : "-"}</span>
-          </div>
+          </button>
         ))}
       </div>
 

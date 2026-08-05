@@ -98,6 +98,7 @@ import {
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
+import { sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
@@ -2038,9 +2039,20 @@ export function SceneBoard({
     isPickerOpen: () => !!nodePickerRef.current,
     selectionCount: () => selectedRef.current.size,
     onEscape: () => {
-      setColorPopId(null);
-      if (nodePickerRef.current) setNodePicker(null);
-      else if (cardMenuRef.current) setCardMenu(null);
+      const target = sceneEscapeTarget({
+        colorOpen: !!colorPopId,
+        pickerOpen: !!nodePickerRef.current,
+        popupOpen: !!cardMenuRef.current,
+        selectionCount: selectedRef.current.size,
+        rowSelectionCount: rowSelRef.current.cids.size,
+      });
+      if (target === "color") setColorPopId(null);
+      else if (target === "picker") setNodePicker(null);
+      else if (target === "popup") setCardMenu(null);
+      else if (target === "selection") {
+        setSelected(new Set());
+        setRowSel({ listId: "", cids: new Set() });
+      }
     },
     onPopupColor: (color) => applyColorToGids([...popupSelRef.current], color),
     onPopupDisable: () => {

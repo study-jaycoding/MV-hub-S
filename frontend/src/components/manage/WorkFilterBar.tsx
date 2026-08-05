@@ -1,7 +1,8 @@
 // 작업탭 노션식 필터 바 — 다중선택 칩(프로젝트/에피소드/시퀀스/상태/생성자) + 자유 검색.
 // 옵션 값은 현재 작업 목록에서 뽑는다. 전부 클라이언트 필터(백엔드 무관). 값 매칭은 '포함'(OR),
 // 서로 다른 칩끼리는 AND.
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useEscapeClose } from "../../lib/useEscapeClose";
 import { COLOR_OPTIONS, type ColorMap, colorKeyOf } from "./manageColors";
 import {
   SELECTABLE_STATUSES,
@@ -54,6 +55,11 @@ export function WorkFilterBar({
 }) {
   const [openField, setOpenField] = useState<WorkFilterField | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const closePopups = useCallback(() => {
+    setOpenField(null);
+    setAddOpen(false);
+  }, []);
+  useEscapeClose(closePopups, addOpen || openField !== null, true, true);
 
   const inactive = WORK_FILTER_FIELDS.filter((f) => !filters.active.includes(f));
 

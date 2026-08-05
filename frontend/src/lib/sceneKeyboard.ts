@@ -33,6 +33,25 @@ export type SceneKeyIntent =
   | { type: "cut-start" }
   | { type: "delete" };
 
+export type SceneEscapeTarget = "color" | "picker" | "popup" | "selection" | null;
+
+// Escape 우선순위 — 열린 UI를 먼저 한 단계 닫고, 닫을 UI가 없을 때만 캔버스 선택을 해제한다.
+// 팝업을 닫으면서 선택까지 동시에 잃으면 연속 편집이 불편하고, 반대로 아무 UI도 없는데 선택이
+// 남으면 라이브러리의 Escape 동작과 어긋난다. 순수 함수로 고정해 SceneBoard 회귀를 막는다.
+export function sceneEscapeTarget(context: {
+  colorOpen: boolean;
+  pickerOpen: boolean;
+  popupOpen: boolean;
+  selectionCount: number;
+  rowSelectionCount: number;
+}): SceneEscapeTarget {
+  if (context.colorOpen) return "color";
+  if (context.pickerOpen) return "picker";
+  if (context.popupOpen) return "popup";
+  if (context.selectionCount > 0 || context.rowSelectionCount > 0) return "selection";
+  return null;
+}
+
 export type SceneShortcutMatcher = (
   event: SceneKeyLike,
   shortcut:

@@ -22,6 +22,7 @@ export function AssetSortMenu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -29,8 +30,17 @@ export function AssetSortMenu({
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [open]);
 
   const fieldLabel = FIELDS.find((f) => f.key === field)?.label ?? "정렬";
@@ -38,8 +48,12 @@ export function AssetSortMenu({
   return (
     <div className="asset-sort" ref={ref}>
       <button
+        ref={buttonRef}
+        type="button"
         className={"af-btn asort-btn" + (open ? " on" : "")}
         title={`정렬: ${fieldLabel} · ${dir === "asc" ? "오름차순" : "내림차순"}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         ⇅
@@ -48,6 +62,7 @@ export function AssetSortMenu({
         <div className="asort-menu" role="menu">
           {FIELDS.map((f) => (
             <button
+              type="button"
               key={f.key}
               className={"asort-item" + (field === f.key ? " sel" : "")}
               onClick={() => onField(f.key)}
@@ -58,6 +73,7 @@ export function AssetSortMenu({
           ))}
           <div className="asort-sep" />
           <button
+            type="button"
             className={"asort-item" + (dir === "asc" ? " sel" : "")}
             onClick={() => onDir("asc")}
           >
@@ -65,6 +81,7 @@ export function AssetSortMenu({
             오름차순
           </button>
           <button
+            type="button"
             className={"asort-item" + (dir === "desc" ? " sel" : "")}
             onClick={() => onDir("desc")}
           >

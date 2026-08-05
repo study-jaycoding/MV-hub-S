@@ -130,6 +130,7 @@
 }
 .type-row {
   display: flex; align-items: center; gap: 8px;
+  width: 100%; border: 0; background: transparent; text-align: left; font: inherit;
   padding: 6px 8px; border-radius: 7px; cursor: pointer;
   font-size: 13px; color: var(--text-1, var(--text));
 }
