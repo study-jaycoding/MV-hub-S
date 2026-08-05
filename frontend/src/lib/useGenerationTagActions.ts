@@ -1,4 +1,4 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../api";
 import type { Generation } from "../types";
 import {
@@ -8,65 +8,97 @@ import {
   removeGenerationTags,
   replaceGenerationTags,
 } from "./generationTags";
+import { createMutationQueue } from "./mutationQueue";
 
 interface UseGenerationTagActionsArgs {
   flash: (message: string) => void;
   gensRef: MutableRefObject<Generation[]>;
-  scheduleTagReload: () => void;
+  onTagNamesAdded: (names: string[]) => void;
+  reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
   selectedRef: MutableRefObject<Set<string>>;
   setGens: Dispatch<SetStateAction<Generation[]>>;
+}
+
+class TagSaveError extends Error {
+  constructor(readonly failed: number) {
+    super("generation tag save failed");
+  }
 }
 
 export function useGenerationTagActions({
   flash,
   gensRef,
-  scheduleTagReload,
+  onTagNamesAdded,
+  reload,
   selectedRef,
   setGens,
 }: UseGenerationTagActionsArgs) {
-  const applyGens = (next: Generation[]) => {
+  const latestCallbacksRef = useRef({ flash, reload });
+  latestCallbacksRef.current = { flash, reload };
+  const tagQueueRef = useRef<ReturnType<typeof createMutationQueue> | null>(null);
+  if (!tagQueueRef.current) {
+    tagQueueRef.current = createMutationQueue(async (errors) => {
+      const latest = latestCallbacksRef.current;
+      await latest.reload(false, false); // 실패 때는 낙관적으로 합친 facets.tags 도 서버값으로 복구.
+      const failed = errors.reduce<number>(
+        (sum, error) => sum + (error instanceof TagSaveError ? error.failed : 1),
+        0,
+      );
+      latest.flash(`태그 저장 ${failed}건 실패 — 서버 상태로 되돌렸습니다`);
+    });
+  }
+
+  const applyGens = (update: (generations: Generation[]) => Generation[]) => {
+    const next = update(gensRef.current);
     gensRef.current = next;
-    setGens(next);
+    setGens((current) => {
+      const updated = update(current);
+      gensRef.current = updated;
+      return updated;
+    });
+    return next;
+  };
+
+  const enqueueSave = (operation: () => Promise<unknown>, total: number) => {
+    void tagQueueRef.current?.enqueue(async () => {
+      try {
+        await operation();
+      } catch (error) {
+        if (error instanceof TagSaveError) throw error;
+        throw new TagSaveError(total);
+      }
+    });
   };
 
   const onSetTags = (g: Generation, tags: string[]) => {
-    applyGens(replaceGenerationTags(gensRef.current, g.id, "tags", tags));
-    api.setTags(g.id, tags).then(scheduleTagReload).catch((e) => flash("태그 변경 실패: " + String(e)));
+    applyGens((generations) => replaceGenerationTags(generations, g.id, "tags", tags));
+    onTagNamesAdded(tags);
+    enqueueSave(() => api.setTags(g.id, tags), 1);
   };
 
   const onSetAutoTags = (g: Generation, names: string[]) => {
-    applyGens(replaceGenerationTags(gensRef.current, g.id, "auto_tags", names));
-    api.setGenAutoTags(g.id, names)
-      .then(scheduleTagReload)
-      .catch((e) => flash("전역 태그 변경 실패: " + String(e)));
+    applyGens((generations) => replaceGenerationTags(generations, g.id, "auto_tags", names));
+    enqueueSave(() => api.setGenAutoTags(g.id, names), 1);
   };
 
-  const persistBulkTags = (
+  const enqueueBulkTags = (
     items: { id: string; tags: string[] }[],
     auto: boolean,
-    action: string,
   ) => {
-    api
-      .setTagsBatch(items, auto)
-      .then((result) => {
-        if (result.failed.length) flash(`${action} ${result.failed.length}/${items.length}건 실패`);
-        scheduleTagReload();
-      })
-      .catch(() => {
-        flash(`${action} 실패`);
-        scheduleTagReload();
-      });
+    enqueueSave(async () => {
+      const result = await api.setTagsBatch(items, auto);
+      if (result.failed.length) throw new TagSaveError(result.failed.length);
+    }, items.length);
   };
 
   const onBulkAddTags = (g: Generation, names: string[]) => {
     const idSet = generationBulkIds(selectedRef.current, g.id);
     if (!idSet.size) return;
-    const next = addGenerationTags(gensRef.current, idSet, "tags", names);
-    applyGens(next);
-    persistBulkTags(
+    const next = applyGens((generations) => addGenerationTags(generations, idSet, "tags", names));
+    onTagNamesAdded(names);
+    enqueueBulkTags(
       generationsByIds(next, idSet).map((x) => ({ id: x.id, tags: x.tags })),
       false,
-      "태그 적용",
     );
     flash(`선택한 ${idSet.size}개에 태그 적용`);
   };
@@ -74,24 +106,22 @@ export function useGenerationTagActions({
   const onBulkRemoveTags = (g: Generation, names: string[]) => {
     const idSet = generationBulkIds(selectedRef.current, g.id);
     if (!idSet.size) return;
-    const next = removeGenerationTags(gensRef.current, idSet, "tags", names);
-    applyGens(next);
-    persistBulkTags(
+    const next = applyGens((generations) => removeGenerationTags(generations, idSet, "tags", names));
+    enqueueBulkTags(
       generationsByIds(next, idSet).map((x) => ({ id: x.id, tags: x.tags })),
       false,
-      "태그 해제",
     );
   };
 
   const onBulkAddAutoTags = (g: Generation, names: string[]) => {
     const idSet = generationBulkIds(selectedRef.current, g.id);
     if (!idSet.size) return;
-    const next = addGenerationTags(gensRef.current, idSet, "auto_tags", names);
-    applyGens(next);
-    persistBulkTags(
+    const next = applyGens((generations) =>
+      addGenerationTags(generations, idSet, "auto_tags", names),
+    );
+    enqueueBulkTags(
       generationsByIds(next, idSet).map((x) => ({ id: x.id, tags: x.auto_tags || [] })),
       true,
-      "전역 태그 적용",
     );
     flash(`선택한 ${idSet.size}개에 전역 태그 적용`);
   };
@@ -99,12 +129,12 @@ export function useGenerationTagActions({
   const onBulkRemoveAutoTags = (g: Generation, names: string[]) => {
     const idSet = generationBulkIds(selectedRef.current, g.id);
     if (!idSet.size) return;
-    const next = removeGenerationTags(gensRef.current, idSet, "auto_tags", names);
-    applyGens(next);
-    persistBulkTags(
+    const next = applyGens((generations) =>
+      removeGenerationTags(generations, idSet, "auto_tags", names),
+    );
+    enqueueBulkTags(
       generationsByIds(next, idSet).map((x) => ({ id: x.id, tags: x.auto_tags || [] })),
       true,
-      "전역 태그 해제",
     );
     flash(`선택한 ${idSet.size}개에서 전역 태그 해제`);
   };

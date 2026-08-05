@@ -50,7 +50,6 @@ import {
   type SceneGenerationRun,
 } from "./lib/sceneEdges";
 import { buildRecipeScene } from "./lib/recipeScene";
-import { useDebouncedCallback } from "./lib/useDebouncedCallback";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
 import { useGenerationAutoTagActions } from "./lib/useGenerationAutoTagActions";
@@ -271,9 +270,6 @@ export default function App() {
     toggleComposerExpanded,
   } = usePromptDock(LS);
 
-  // 태그 reload 디바운스 — 연속 태그 입력 중 매 입력마다 reload 하면, 아직 저장 안 끝난 옵티미스틱
-  // 상태를 옛 서버값으로 덮어써 '방금 넣은 태그가 사라지는' 레이스가 난다. 마지막 입력 후 1회만 reconcile.
-  const { run: scheduleTagReload } = useDebouncedCallback(() => void reload(false, true), 600);
   const {
     onBulkAddAutoTags,
     onBulkAddTags,
@@ -281,7 +277,14 @@ export default function App() {
     onBulkRemoveTags,
     onSetAutoTags,
     onSetTags,
-  } = useGenerationTagActions({ flash, gensRef, scheduleTagReload, selectedRef, setGens });
+  } = useGenerationTagActions({
+    flash,
+    gensRef,
+    onTagNamesAdded: mergeFacetTags,
+    reload,
+    selectedRef,
+    setGens,
+  });
   useGenerationKeyboardActions({ clearSelect, filtersRef, flash, gensRef, reload, selectedRef, setGens });
 
   // 정보(ⓘ) 버튼: 복수 선택 상태에서 선택된 카드의 정보를 누르면 비교창, 그 외엔 단일 정보창.
@@ -1092,10 +1095,7 @@ export default function App() {
                 // 사이드바에서 폴더를 선택(project_id+folder_path)했을 때만 그 폴더 밖 카드를 딤.
                 // 프로젝트/라이브러리 선택(folder_path 없음)이면 null → 딤 해제. (memo=folderSel)
                 folderSel={folderSel}
-                onSetTags={(g, tags) => {
-                  mergeFacetTags(tags); // '등록된 태그' 패널 즉시 반영(compose 탭은 reload 가 facets 를 안 불러옴)
-                  onSetTags(g, tags);
-                }}
+                onSetTags={onSetTags}
                 onSetAutoTags={onSetAutoTags}
                 autoTagOptions={facets.auto_tags}
                 onOpenComments={(g) => openComment(g.id)}
