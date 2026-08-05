@@ -8,6 +8,7 @@ import {
   pasteSceneClipboard,
   resizeSceneCard,
   scenePasteIntent,
+  updateSceneEjectedCards,
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
 
@@ -149,6 +150,46 @@ describe("moveCardsFromOrigins", () => {
 
     expect(result.changed).toBe(false);
     expect(result.cards).toBe(cards);
+  });
+});
+
+describe("updateSceneEjectedCards", () => {
+  const frames = new Map([["member", { x: 0, y: 0, w: 100, h: 100 }]]);
+
+  it("프레임 밖이어도 느린 이동이면 그룹 이탈로 표시하지 않는다", () => {
+    const current = new Set<string>();
+    const result = updateSceneEjectedCards(
+      current,
+      frames,
+      new Map([["member", { x: 120, y: 50 }]]),
+      2,
+      3,
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.ejected).toBe(current);
+    expect([...result.ejected]).toEqual([]);
+  });
+
+  it("빠르게 프레임 밖으로 나가면 이탈하고 다시 안으로 들어오면 복귀한다", () => {
+    const outside = updateSceneEjectedCards(
+      new Set(),
+      frames,
+      new Map([["member", { x: 120, y: 50 }]]),
+      4,
+      3,
+    );
+    expect([...outside.ejected]).toEqual(["member"]);
+
+    const inside = updateSceneEjectedCards(
+      outside.ejected,
+      frames,
+      new Map([["member", { x: 50, y: 50 }]]),
+      0,
+      3,
+    );
+    expect(inside.changed).toBe(true);
+    expect([...inside.ejected]).toEqual([]);
   });
 });
 

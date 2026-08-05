@@ -126,10 +126,10 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 > 2026-08-05 `rearch/mv-hub-v` 진행 상태: Phase 1의 시드·그룹 기하 순수 계산,
 > Phase 2의 저장/undo(`useSceneHistory`), Phase 3의 키보드 판정·리스너와
 > 붙여넣기·파일/에셋 드롭(`useSceneClipboardDrop`),
-> Phase 4의 드래그 세션 생명주기, 카메라·좌표 계산과 카드 크기 조절
-> (`useSceneCardResize`), Phase 5의 실행 경계
+> Phase 4의 드래그 세션 생명주기, 카메라·좌표 계산, 카드 크기 조절과 카드 이동
+> (`useSceneCardResize`, `useSceneCardMove`), Phase 5의 실행 경계
 > (`sceneComfyExecutor` + `useSceneComfyExecution`)를 분리했다. 카드 상태 소유자는 여전히
-> `SceneBoard` 하나다. 다음 작업은 Phase 4의 카드 이동·그룹·마퀴별 포인터 판정을 작은 단위로
+> `SceneBoard` 하나다. 다음 작업은 Phase 4의 그룹 이동·마퀴 포인터 판정을 작은 단위로
 > 분리하는 것이며, 실제 브라우저 스모크를 각 단계에 병행해야 한다.
 
 ---

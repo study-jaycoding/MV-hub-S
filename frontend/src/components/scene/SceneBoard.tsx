@@ -67,7 +67,6 @@ import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs"
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
-  moveCardsFromOrigins,
   SCENE_GRID as GRID,
   snapSceneGrid as snapGrid,
 } from "../../lib/sceneInteractions";
@@ -86,7 +85,6 @@ import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi } from "../../lib/comfyApi";
 import {
-  ackDone,
   isRecentlyDone,
   observeStatus,
   seedPending,
@@ -100,6 +98,7 @@ import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
 import { useSceneCardResize } from "../../lib/useSceneCardResize";
+import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
@@ -432,6 +431,9 @@ export function SceneBoard({
   edgesRef.current = edges;
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
+  const groupFramesRef = useRef<
+    Array<{ id: string; frame: { x: number; y: number; w: number; h: number } }>
+  >([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
@@ -2109,6 +2111,27 @@ export function SceneBoard({
     return out;
   };
 
+  const beginCardMove = useSceneCardMove({
+    cardsRef,
+    edgesRef,
+    groupsRef,
+    selectedRef,
+    groupFramesRef,
+    zoomRef,
+    scrollRef,
+    setCards,
+    setSelected,
+    setDraggingIds,
+    setEjectedIds,
+    beginDrag,
+    cardSize: (card) => ({ w: widthOf(card), h: heightOf(card) }),
+    collectRecipe,
+    reassignGroups,
+    reconcileGenerationRefs: withGenRefs,
+    persist,
+    ejectSpeed: GROUP_EJECT_SPEED,
+  });
+
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
     if (beginPan(e, beginDrag)) return;
@@ -2235,173 +2258,53 @@ export function SceneBoard({
       }
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey; // 마퀴 복수선택 공용(기존 유지)
-    // Shift+클릭 = 그 카드 + '연결된 노드 전체(체인)' 선택. Ctrl(⌘)+클릭 = 개별 토글(내 선택에 누적).
-    //  Shift+Ctrl = 체인을 현재 선택에 합집합.
-    const chainSel = e.shiftKey;
-    const accumulate = e.ctrlKey || e.metaKey;
+    if (cardEl?.dataset.id) {
+      beginCardMove(e, cardEl.dataset.id);
+      return;
+    }
+
+    // 배경 → 마퀴 복수선택. 시작 시점 선택을 기억한다.
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
-
-    if (cardEl) {
-      const id = cardEl.dataset.id!;
-      // 방금 생성 glow 는 클릭(선택 시도)하는 순간 해제 — '확인했다'는 신호. store 에서 이 카드의 변형들을 ack.
-      const gcard = cardsRef.current.find((c) => c.id === id);
-      if (gcard && (gcard.kind === "generation" || gcard.kind === "comfy")) ackDone(variantIds(gcard)); // comfy 완료 glow 도 클릭 해제(#1b)
-      // 리스트/렌더 행(.scene-listrow/.scene-listthumb)에서 시작한 '클릭'은 카드 선택을 건너뛴다 —
-      //  행의 onClick 이 행 선택을 담당한다. 단 드래그(relocated)면 기존대로 카드를 이동(행 배경 드래그로도 이동 유지).
-      const fromRow = !!(e.target as HTMLElement)?.closest?.(".scene-listrow, .scene-listthumb");
-      // 이동 대상: 잡은 카드가 선택에 포함되면 선택 전부, 아니면 그 카드만.
-      const sel = selectedRef.current;
-      const targetIds = sel.has(id) ? [...sel] : [id];
-      const origins: Record<string, { x: number; y: number }> = {};
-      for (const tid of targetIds) {
-        const c = cardsRef.current.find((cc) => cc.id === tid);
-        if (c) origins[tid] = { x: c.x, y: c.y };
-      }
-      const anchor = origins[id]; // 잡은 카드 — 이 카드를 격자에 스냅하고 나머지는 같은 오프셋으로 이동(상대배치 보존).
-      // 드래그 시작 시점의 그룹 프레임 스냅샷 — 드롭 위치로 멤버십(가입/해제)을 판정하는 기준.
-      const startFrames = groupViews.map((v) => ({ id: v.g.id, frame: v.frame }));
-      // 속도 이탈: 드래그하는 멤버 카드별 '시작 프레임' — 이 밖으로 빠르게 나가면 그룹에서 튕겨낸다.
-      const memberFrames = new Map<string, { x: number; y: number; w: number; h: number }>();
-      for (const tid of targetIds) {
-        const mg = groupsRef.current.find((gr) => gr.cardIds.includes(tid));
-        const sf = mg ? startFrames.find((s) => s.id === mg.id) : null;
-        if (mg && sf) memberFrames.set(tid, sf.frame);
-      }
-      const ejected = new Set<string>(); // 이번 드래그에서 튕겨낸 카드(래치 — 한번 튕기면 유지)
-      let vWinT = performance.now(), vWinX = startX, vWinY = startY; // 속도 측정 시간창(화면 좌표)
-      let vSpeed = 0; // 최근 ~30ms 창의 평균 속도(px/ms) — 1ms 반올림·프레임레이트 스파이크에 안 흔들림
-      // ★relocated: 임계값(moved)만 넘고 스냅 후 같은 칸이면 실제로는 안 움직인 것 → 클릭으로 처리한다.
-      //  (빠른 클릭의 손떨림이 4px 를 넘겨도 드래그로 오인해 선택을 건너뛰던 문제 해결.)
-      let relocated = false;
-      const move = (ev: MouseEvent) => {
-        if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
-        if (!moved) setDraggingIds(targetIds); // 첫 이동 확정 시 keep 등록(컬링에서 언마운트 방지)
-        moved = true;
-        scrollRef.current?.classList.add("dragging"); // 드래그 중 카드 hover/포트 노출 차단(뒤 카드가 마우스 영향받는 것 방지)
-        // 속도(화면 px/ms) — ★매 이벤트가 아니라 ~30ms '시간창'의 평균으로 잰다. performance.now() 가
-        //  보안상 1ms 로 반올림돼 촘촘한 이벤트에서 dt=0~1ms 로 찍히면 '작은 거리÷작은 시간'이 큰 속도로
-        //  튀어 슬로우 드래그도 이탈로 오인하던 버그(클릭 타이밍마다 들쭉날쭉) 방지. 창이 지나야 갱신.
-        const vNow = performance.now();
-        const vWinDt = vNow - vWinT;
-        if (vWinDt >= 30) {
-          vSpeed = Math.hypot(ev.clientX - vWinX, ev.clientY - vWinY) / vWinDt;
-          vWinT = vNow; vWinX = ev.clientX; vWinY = ev.clientY;
+    const prevSel = new Set(selectedRef.current);
+    const move = (ev: MouseEvent) => {
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      moved = true;
+      const r = scrollRef.current!.getBoundingClientRect();
+      const x0 = Math.min(startX, ev.clientX);
+      const y0 = Math.min(startY, ev.clientY);
+      const x1 = Math.max(startX, ev.clientX);
+      const y1 = Math.max(startY, ev.clientY);
+      setMarquee({ l: x0 - r.left, t: y0 - r.top, w: x1 - x0, h: y1 - y0 });
+      const boxed = new Set<string>();
+      canvasRef.current?.querySelectorAll(".scene-card").forEach((el) => {
+        const cr = (el as HTMLElement).getBoundingClientRect();
+        if (cr.right >= x0 && cr.left <= x1 && cr.bottom >= y0 && cr.top <= y1) {
+          const cid = (el as HTMLElement).dataset.id;
+          if (cid) boxed.add(cid);
         }
-        const z = zoomRef.current;
-        const dx = (ev.clientX - startX) / z;
-        const dy = (ev.clientY - startY) / z;
-        // 잡은 카드의 최종 위치를 22px 격자에 스냅 → 그 스냅된 이동량을 전체에 적용.
-        const prevCards = cardsRef.current;
-        const movedCards = moveCardsFromOrigins(prevCards, origins, id, anchor, dx, dy);
-        if (!movedCards.changed) return; // 스냅 후 위치 그대로면 스킵
-        relocated = true; // 실제로 다른 칸으로 이동함
-        const next = movedCards.cards;
-        cardsRef.current = next; // ref 먼저 갱신(updater 밖) → rAF flush 후 up(reassignGroups/persist)이 최신 좌표를 읽게
-        setCards(next);
-        // 속도 이탈 — 프레임 밖으로 '빠르게' 나가면 이탈(박스가 놓아줌). ★단 다시 프레임 '안으로' 돌아오면
-        //  이탈 해제 → 그룹이 다시 반응한다(한 드래그 안에서 뺐다 넣고 다시 빼도 매번 반응). 밖에 있는
-        //  동안은 래치 유지(밖에서 속도가 줄어도 박스가 갑자기 쫓아가지 않게).
-        if (memberFrames.size) {
-          let changed = false;
-          for (const [tid, fr] of memberFrames) {
-            const cc = next.find((c) => c.id === tid);
-            if (!cc) continue;
-            const cx = cc.x + widthOf(cc) / 2;
-            const cy = cc.y + heightOf(cc) / 2;
-            const outside = cx < fr.x || cx > fr.x + fr.w || cy < fr.y || cy > fr.y + fr.h;
-            if (ejected.has(tid)) {
-              if (!outside) { ejected.delete(tid); changed = true; } // 프레임 안으로 복귀 → 이탈 해제
-            } else if (outside && vSpeed > GROUP_EJECT_SPEED) {
-              ejected.add(tid); changed = true; // 빠르게 밖으로 → 이탈
-            }
-          }
-          if (changed) setEjectedIds(new Set(ejected)); // 이탈/복귀 반영(박스가 놓아주거나 다시 담음)
-        }
-      };
-      // 이동 확정(그룹 재배정 + 연결 참조 순서 재계산 + 저장) — 정상 drop 과 blur 취소가 공유.
-      const commitMovedCards = () => {
-        // ★늘어난 크기를 rect 에 저장하지 않는다 — group view가 union(rect,멤버) 를 항상 실시간 계산하므로,
-        //  멤버가 rect 안으로 돌아오면 박스도 rect 로 복귀한다(한번 뺐다 넣고 다시 빼도 매번 반응).
-        const ng = reassignGroups(targetIds, startFrames, ejected); // 드롭 위치로 그룹 가입/해제(+속도 이탈 확정)
-        const nextCards = withGenRefs(cardsRef.current, edgesRef.current); // 이동으로 바뀐 연결 참조 순서 재계산
-        cardsRef.current = nextCards;
-        setCards(nextCards);
-        persist(nextCards, edgesRef.current, ng);
-      };
-      const up = () => {
-        scrollRef.current?.classList.remove("dragging");
-        setDraggingIds([]); // 드래그 종료 → keep 해제(다시 정상 컬링 대상)
-        if (ejected.size) setEjectedIds(new Set()); // 속도 이탈 표시 해제(드롭 후 프레임 정상 재계산)
-        if (relocated) {
-          commitMovedCards();
-        } else if (fromRow) {
-          // 행에서 시작한 클릭 → 카드 선택 안 함(행 onClick 이 행 선택 처리).
-        } else if (chainSel) {
-          // Shift+클릭 = 카드+연결 체인. Shift+Ctrl 은 현재 선택에 합집합, 아니면 교체.
-          const recipe = collectRecipe(id);
-          setSelected((prev) => (accumulate ? new Set([...prev, ...recipe]) : recipe));
-        } else {
-          setSelected((prev) => {
-            if (accumulate) {
-              // Ctrl+클릭 = 개별 토글(내 선택에 누적/제거).
-              const n = new Set(prev);
-              n.has(id) ? n.delete(id) : n.add(id);
-              return n;
-            }
-            return new Set([id]);
-          });
-        }
-      };
-      // blur: 클릭-선택은 안 함(유효 드롭 아님). 단 이동이 있었으면 좌표가 이미 반영됐으니 그대로 확정 저장.
-      beginDrag(move, up, () => {
-        scrollRef.current?.classList.remove("dragging");
-        setDraggingIds([]); // 드래그 취소(blur)에도 keep 해제
-        if (ejected.size) setEjectedIds(new Set());
-        if (relocated) commitMovedCards();
       });
-    } else {
-      // 배경 → 마퀴 복수선택. 시작 시점 선택을 기억한다.
-      const prevSel = new Set(selectedRef.current);
-      const move = (ev: MouseEvent) => {
-        if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
-        moved = true;
-        const r = scrollRef.current!.getBoundingClientRect();
-        const x0 = Math.min(startX, ev.clientX);
-        const y0 = Math.min(startY, ev.clientY);
-        const x1 = Math.max(startX, ev.clientX);
-        const y1 = Math.max(startY, ev.clientY);
-        setMarquee({ l: x0 - r.left, t: y0 - r.top, w: x1 - x0, h: y1 - y0 });
-        const boxed = new Set<string>();
-        canvasRef.current?.querySelectorAll(".scene-card").forEach((el) => {
-          const cr = (el as HTMLElement).getBoundingClientRect();
-          if (cr.right >= x0 && cr.left <= x1 && cr.bottom >= y0 && cr.top <= y1) {
-            const cid = (el as HTMLElement).dataset.id;
-            if (cid) boxed.add(cid);
-          }
-        });
-        // Shift/Ctrl: 기존 + 감싼 것. 아니면: 감싼 카드가 있으면 그걸로 교체, '빈 곳'을 감싸면 기존 선택 유지(해제 안 함).
-        const hit = additive
-          ? new Set([...prevSel, ...boxed])
-          : boxed.size
-            ? boxed
-            : prevSel;
-        // 마퀴 이동 프레임마다 감싼 집합이 그대로면 새 Set 로 리렌더하지 않는다(동일성 가드).
-        const cur = selectedRef.current;
-        if (hit.size !== cur.size || [...hit].some((id) => !cur.has(id))) setSelected(hit);
-      };
-      const up = () => {
-        setMarquee(null);
-        // 배경을 '그냥 클릭'(드래그 없음·비추가)하면 선택 해제 — 이후 f=전체 프레이밍이 되게.
-        if (!moved && !additive) {
-          setSelected(new Set());
-          setRowSel({ listId: "", cids: new Set() }); // 리스트/렌더 행 선택도 함께 해제
-        }
-      };
-      beginDrag(move, up, () => setMarquee(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
-    }
+      // Shift/Ctrl: 기존 + 감싼 것. 아니면: 감싼 카드가 있으면 그걸로 교체, '빈 곳'을 감싸면 기존 선택 유지(해제 안 함).
+      const hit = additive
+        ? new Set([...prevSel, ...boxed])
+        : boxed.size
+          ? boxed
+          : prevSel;
+      // 마퀴 이동 프레임마다 감싼 집합이 그대로면 새 Set 로 리렌더하지 않는다(동일성 가드).
+      const cur = selectedRef.current;
+      if (hit.size !== cur.size || [...hit].some((id) => !cur.has(id))) setSelected(hit);
+    };
+    const up = () => {
+      setMarquee(null);
+      // 배경을 '그냥 클릭'(드래그 없음·비추가)하면 선택 해제 — 이후 f=전체 프레이밍이 되게.
+      if (!moved && !additive) {
+        setSelected(new Set());
+        setRowSel({ listId: "", cids: new Set() }); // 리스트/렌더 행 선택도 함께 해제
+      }
+    };
+    beginDrag(move, up, () => setMarquee(null)); // blur: 클릭-해제 없이 마퀴 사각형만 정리
   };
 
   // 그룹 색 팔레트 — 팝오버 바깥 클릭 시 닫기.
@@ -2607,6 +2510,7 @@ export function SceneBoard({
       ),
     [groups, cards, ejectedIds, heightTick],
   );
+  groupFramesRef.current = groupViews.map(({ g, frame }) => ({ id: g.id, frame }));
   const collapsedBarById = useMemo(
     () => new Map(groupViews.filter((v) => v.g.collapsed).map((v) => [v.g.id, v.bar] as const)),
     [groupViews],

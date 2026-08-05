@@ -211,6 +211,48 @@ export function moveCardsFromOrigins(
   };
 }
 
+interface ScenePoint {
+  x: number;
+  y: number;
+}
+
+interface SceneRect extends ScenePoint {
+  w: number;
+  h: number;
+}
+
+export function updateSceneEjectedCards(
+  current: Set<string>,
+  memberFrames: ReadonlyMap<string, SceneRect>,
+  cardCenters: ReadonlyMap<string, ScenePoint>,
+  speed: number,
+  ejectSpeed: number,
+): { ejected: Set<string>; changed: boolean } {
+  let ejected = current;
+  let changed = false;
+  for (const [cardId, frame] of memberFrames) {
+    const center = cardCenters.get(cardId);
+    if (!center) continue;
+    const outside =
+      center.x < frame.x ||
+      center.x > frame.x + frame.w ||
+      center.y < frame.y ||
+      center.y > frame.y + frame.h;
+    if (ejected.has(cardId)) {
+      if (!outside) {
+        if (!changed) ejected = new Set(current);
+        ejected.delete(cardId);
+        changed = true;
+      }
+    } else if (outside && speed > ejectSpeed) {
+      if (!changed) ejected = new Set(current);
+      ejected.add(cardId);
+      changed = true;
+    }
+  }
+  return { ejected, changed };
+}
+
 export function buildSelectedConnections(
   cards: SceneCard[],
   edges: SceneEdge[],
