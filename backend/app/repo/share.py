@@ -8,7 +8,7 @@ from typing import Any, Iterable, Optional
 
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
-from . import generations, identity, tags
+from . import generation_sync, identity, tags
 from ._common import (
     BUNDLE_FORMAT,
     BUNDLE_VERSION,
@@ -394,7 +394,7 @@ def import_bundle_item(
             if fact_blocked:
                 result = "unchanged"
             else:
-                result = generations._upsert_synced(conn, parsed, worker_id)
+                result = generation_sync._upsert_synced(conn, parsed, worker_id)
             # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
             # ★기존 행의 작성자가 아닌 재공유자는 오버레이도 건드리지 않는다.
             # fact 만 막고 아래를 허용하면 빈 auto_tags 번들로 원 작성자의 자동태그를 지우거나,

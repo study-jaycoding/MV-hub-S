@@ -147,6 +147,10 @@ Phase 1은 저위험(병합 전 후보 가능), 2~6은 신중(병합 후).
 > 분리하고 `repo.manage` 파사드는 유지했다. `manage.py`는 959줄에서 515줄로 줄었다. 다음은 P8
 > `generations.py`의 남은 쓰기·동기화 책임을 점검한다.
 
+> 2026-08-05 P8: CLI 결과의 known/unknown job 조회와 단건·배치 적재를 `generation_sync.py`로,
+> 공용 레퍼런스 upsert/link를 `generation_references.py`로 분리했다. `generations.py`는 1,192줄에서
+> 858줄로 줄었고 `repo.X` 파사드는 유지했다. 다음은 전체 중복·성능·회귀 최종 감사다.
+
 ---
 
 ## 7. 역할 분담

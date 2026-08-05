@@ -117,7 +117,8 @@ HTTP 요청
 | 모듈 | 담당 |
 |---|---|
 | `_common.py` | 공용 헬퍼·상수(`new_id`·미디어 캐시 헬퍼·**알림 SQL 조각 `ALERT_COMMENT_JOINS`/`ALERT_COMMENT_PREDICATE`**) |
-| `generations.py` | 생성물 쓰기·동기화·상태 변경의 중심 저장소 |
+| `generations.py` | 생성물 로컬 생성·상태 변경·삭제·재조정의 중심 저장소 |
+| `generation_sync.py` / `generation_references.py` | CLI 결과 단건·배치 적재·known job 경계 / 공용 레퍼런스 쓰기 |
 | `generations_query.py` / `generation_rows.py` / `facets.py` | 목록·직렬화·조회 응답 보강·facet 집계 |
 | `id_resolve.py` | `generation.id`와 외부 `job_id`의 호환 해석 경계 |
 | `lineage.py` / `history.py` / `sources.py` | 계보 엣지·가계 조회·소스 검색 |
