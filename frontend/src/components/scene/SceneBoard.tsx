@@ -64,11 +64,7 @@ import {
   reconcileRefs,
 } from "../../lib/sceneDerive";
 import { gatherComfyMedia, hasTextConnection } from "../../lib/sceneComfyInputs";
-import {
-  isSceneComfyConfigCurrent,
-  type SceneComfyConfigSnapshot,
-  type SceneComfyRunInputSnapshot,
-} from "../../lib/sceneComfyExecutor";
+import { isSceneComfyConfigCurrent } from "../../lib/sceneComfyExecutor";
 import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
@@ -80,7 +76,11 @@ import {
   getComfyRunningVersion,
 } from "../../lib/sceneComfyRunningStore";
 import { useSceneGenData } from "../../lib/useSceneGenData";
-import { useSceneComfyExecution } from "../../lib/useSceneComfyExecution";
+import {
+  useSceneComfyExecution,
+  type SaveComfyOptions,
+  type SaveComfyResult,
+} from "../../lib/useSceneComfyExecution";
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
@@ -1295,28 +1295,24 @@ export function SceneBoard({
   //  · 저장 후 outputs[i].saved_generation_id 마킹(표시용). 멱등은 서버가 file_path 로 판정(재실행마다 새 파일=새 항목).
   const saveComfyToLibrary = async (
     cardId: string,
-    opts?: {
-      silent?: boolean;
-      elapsedSeconds?: number;
-      // 배치 실행: 저장할 결과셋을 명시(카드에 표시되지 않는 복사본도 각각 저장·누적). 없으면 카드 현재 출력.
-      outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string }[];
-      // 실행 시작 시점 입력. 저장 응답 전 교체되면 옛 결과를 현재 카드에 연결하지 않는다.
-      configSnapshot?: SceneComfyConfigSnapshot;
-      inputSnapshot?: SceneComfyRunInputSnapshot;
-      isInputCurrent?: () => boolean;
-    },
-  ) => {
+    opts?: SaveComfyOptions,
+  ): Promise<SaveComfyResult> => {
     const silent = opts?.silent;
     const sid = sceneIdRef.current; // 저장 대기 중 씬 전환 시 다른 씬 카드에 반영 안 함
     const card = cardsRef.current.find((c) => c.id === cardId);
     const cfg = card?.comfyCfg;
-    const runContent = cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
+    const runContent = opts?.configSnapshot?.content ?? cfg?.content; // 저장 시작 시점 워크플로 — 응답 도착 전 교체되면 카드 상태는 안 건드린다
     const configSnapshot =
       opts?.configSnapshot ||
       (runContent
         ? {
+            name: cfg?.name,
             content: runContent,
             paramValues: { ...(cfg?.paramValues || {}) },
+            params: cfg?.params?.map((param) => ({
+              ...param,
+              choices: param.choices ? [...param.choices] : param.choices,
+            })),
           }
         : undefined);
     const outs = (opts?.outputs ?? cfg?.outputs ?? []).filter(
@@ -1324,17 +1320,17 @@ export function SceneBoard({
     );
     if (!outs.length) {
       if (!silent) flashMsg("저장할 이미지·영상 출력이 없습니다");
-      return;
+      return { saved: 0, failed: 0 };
     }
-    if (opts?.isInputCurrent && !opts.isInputCurrent()) return;
     const map = new Map(cardsRef.current.map((c) => [c.id, c] as const));
     // 프롬프트·입력 메타 수집은 '최선 노력' — 여기서 예외가 나도(엣지 순회·malformed 워크플로 등) 출력물 저장은
     //  진행돼야 하고, 렌더 배치 실행(runPlanComfyCopies)이 중단되면 안 된다(silent 자동저장 규약). 이전엔 이 구간이
     //  try 밖이라 의존이 섞인 복잡한 보드에서 예외 1개가 렌더 전체를 죽여 '노드는 완료·저장 실패·생성 미시작'을 유발했다.
     //  실패 시 프롬프트=워크플로명, 입력=빈 목록으로 강등한다.
-    let promptText = cfg?.name || "Comfy 출력";
+    let promptText = configSnapshot?.name || "Comfy 출력";
     let inputs: { url: string; type: "image" | "video"; name: string; source_gen_id: string | null }[] = [];
-    const executedParamValues = opts?.inputSnapshot?.executedParamValues ?? cfg?.paramValues ?? {};
+    const executedParamValues =
+      opts?.inputSnapshot?.executedParamValues ?? configSnapshot?.paramValues ?? {};
     try {
       if (opts?.inputSnapshot) {
         // 자동 저장은 '현재 그래프'를 다시 읽지 않고 실제 API에 들어간 텍스트·미디어를 사용한다.
@@ -1343,7 +1339,7 @@ export function SceneBoard({
           opts.inputSnapshot.textParamKeys
             .map((key) => String(executedParamValues[key] ?? ""))
             .filter((text) => text.trim())
-            .join("\n") || cfg?.name || "Comfy 출력";
+            .join("\n") || configSnapshot?.name || "Comfy 출력";
         inputs = opts.inputSnapshot.media.map((item) => ({
           url: item.url,
           type: item.type,
@@ -1359,7 +1355,7 @@ export function SceneBoard({
           driveKeys
             .map((key) => (connected ? linked : String(executedParamValues[key] ?? "")))
             .filter((text) => text.trim())
-            .join("\n") || cfg?.name || "Comfy 출력";
+            .join("\n") || configSnapshot?.name || "Comfy 출력";
         inputs = gatherComfyMedia(cardId, cardsRef.current, edgesRef.current, genDataRef.current).map((item) => ({
           url: item.url,
           type: item.type,
@@ -1373,25 +1369,25 @@ export function SceneBoard({
     try {
       const res = await comfyApi.saveToLibrary({
         outputs: outs.map((o) => ({ url: o.url as string, kind: o.kind })),
-        name: cfg?.name,
+        name: configSnapshot?.name,
         prompt: promptText,
         // 파라미터값(노드|필드) + 생성 정보용 표준 메타(model·비율·해상도)를 함께 저장.
         params: {
           ...executedParamValues,
-          ...comfyGenMeta(configSnapshot?.content ?? cfg?.content, cfg?.params, executedParamValues),
+          ...comfyGenMeta(configSnapshot?.content, configSnapshot?.params, executedParamValues),
         },
         inputs,
         elapsed_seconds: opts?.elapsedSeconds ?? null,
       });
-      if (sceneIdRef.current !== sid) return; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
-      if (opts?.isInputCurrent && !opts.isInputCurrent()) return;
+      if (sceneIdRef.current !== sid) return { saved: res.saved.length, failed: 0 }; // 저장 후 씬 전환됨 → 카드 상태 반영 생략(라이브러리엔 이미 저장됨)
+      if (opts?.isInputCurrent && !opts.isInputCurrent()) return { saved: res.saved.length, failed: 0 };
       const byUrl = new Map(res.saved.map((s) => [s.url, s.generation_id]));
       const savedIds = res.saved.map((s) => s.generation_id);
       if (
         configSnapshot &&
         !isSceneComfyConfigCurrent(cardsRef.current, cardId, configSnapshot)
       ) {
-        return;
+        return { saved: res.saved.length, failed: 0 };
       }
       // ★현재 카드 기준으로 패치 — 저장 대기 중 재실행(outputs 교체)되면 늦게 온 응답이
       //  옛 outputs 로 되돌리지 않게(레이스 방지). url 이 여전히 있는 것만 마킹.
@@ -1401,7 +1397,8 @@ export function SceneBoard({
         // 저장 진행 중 워크플로가 교체됐으면(content 변경) 옛 결과를 새 워크플로 카드에 붙이지 않는다.
         //  (라이브러리에는 이미 저장됨 — 여기선 카드의 genIds/genId/outputs 만 안 건드림.)
         if (c.comfyCfg?.content !== runContent) return c;
-        const outs = (c.comfyCfg?.outputs || []).map((o) =>
+        const outputsToLink = opts?.outputs ?? c.comfyCfg?.outputs ?? [];
+        const linkedOutputs = outputsToLink.map((o) =>
           o.url && byUrl.has(o.url) ? { ...o, saved_generation_id: byUrl.get(o.url) } : o,
         );
         const genIds = [...(c.genIds || [])];
@@ -1413,7 +1410,7 @@ export function SceneBoard({
           ...c,
           genIds,
           genId: newestSaved || c.genId || genIds[genIds.length - 1] || null,
-          comfyCfg: { ...(c.comfyCfg || {}), outputs: outs },
+          comfyCfg: { ...(c.comfyCfg || {}), outputs: linkedOutputs },
         };
       });
       cardsRef.current = next;
@@ -1431,10 +1428,12 @@ export function SceneBoard({
         const created = res.saved.filter((s) => !s.existed).length;
         flashMsg(created ? `${created}개 내 작업에 저장했습니다` : "이미 내 작업에 저장돼 있습니다");
       }
+      return { saved: res.saved.length, failed: 0 };
     } catch (e) {
       // 자동(silent) 저장 실패는 조용히 로그만 — 매 실행 에러 토스트로 도배하지 않는다.
       if (silent) console.warn("comfy 출력 자동 저장 실패:", e);
       else flashMsg(e instanceof Error ? e.message : "내 작업 저장 실패");
+      return { saved: 0, failed: outs.length };
     }
   };
   // Comfy 실행의 중복 방지·배치 정산·씬 전환 중단·실행 표시를 전용 훅에 위임한다.
@@ -1448,13 +1447,11 @@ export function SceneBoard({
     sceneIdRef,
     cardsRef,
     edgesRef,
-    groupsRef,
     genDataRef,
     refParents,
     setCards,
     flushPending,
     patchComfyCfg,
-    persist,
     saveComfyToLibrary,
     onGenerateCard,
     onRenderCards,

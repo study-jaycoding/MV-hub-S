@@ -24,6 +24,8 @@ export interface PreparedSceneComfyInputs {
   media: ComfyMediaInput[];
   drivenParamValues: Record<string, string | number | boolean>;
   textParamKeys: string[];
+  // URL 해소 상태와 무관한 사용자 입력 지문. pending 생성물이 완료되어 URL만 생기는 경우에는 바뀌지 않는다.
+  inputFingerprint: string;
 }
 
 export function sameComfyParamValues(
@@ -60,12 +62,110 @@ export function samePreparedSceneComfyInputs(
   left: PreparedSceneComfyInputs,
   right: PreparedSceneComfyInputs,
 ): boolean {
-  return (
-    sameComfyMediaInputs(left.media, right.media) &&
-    sameComfyParamValues(left.drivenParamValues, right.drivenParamValues) &&
-    left.textParamKeys.length === right.textParamKeys.length &&
-    left.textParamKeys.every((key, index) => key === right.textParamKeys[index])
-  );
+  return left.inputFingerprint === right.inputFingerprint;
+}
+
+function stableParamValues(values: Record<string, string | number | boolean>): [string, string | number | boolean][] {
+  return Object.keys(values)
+    .sort()
+    .map((key) => [key, values[key]]);
+}
+
+// target에서 상류로 이어지는 실제 입력 그래프만 걷는다. 출력 URL·런타임 status는 의도적으로 넣지 않는다.
+// 이 지문은 엣지/포트 구조, 리스트 순서, 선택한 generation 변형, 레퍼런스 식별자, 연결 텍스트 값,
+// 상류 Comfy 실행 번호를 비교하기 위한 것이다.
+function inputGraphFingerprint(
+  cardId: string,
+  cards: SceneCard[],
+  edges: SceneEdge[],
+  drivenParamValues: Record<string, string | number | boolean>,
+  textParamKeys: string[],
+): string {
+  const byId = new Map(cards.map((card) => [card.id, card] as const));
+  const relevantIds = new Set<string>([cardId]);
+  const relevantEdges: SceneEdge[] = [];
+  const queue = [cardId];
+  while (queue.length) {
+    const targetId = queue.shift() as string;
+    for (const edge of edges) {
+      if (edge.to !== targetId) continue;
+      relevantEdges.push(edge);
+      if (!relevantIds.has(edge.from)) {
+        relevantIds.add(edge.from);
+        queue.push(edge.from);
+      }
+    }
+    const target = byId.get(targetId);
+    if (target?.kind === "input" && target.channel && !relevantIds.has(target.channel)) {
+      relevantIds.add(target.channel);
+      queue.push(target.channel);
+    }
+  }
+  const cardState = [...relevantIds]
+    .sort()
+    .map((id) => {
+      const card = byId.get(id);
+      if (!card) return { id, missing: true };
+      if (card.kind === "reference")
+        return {
+          id,
+          kind: card.kind,
+          refs: (card.refs || []).map((ref) => ({
+            type: ref.type,
+            file_path: ref.file_path,
+            source_gen_id: ref.source_gen_id || null,
+          })),
+        };
+      if (card.kind === "generation")
+        return {
+          id,
+          kind: card.kind,
+          selected_gen_id: card.genId || null,
+          variants: variantIds(card),
+        };
+      if (card.kind === "comfy")
+        return {
+          id,
+          kind: card.kind,
+          content: card.comfyCfg?.content || "",
+          paramValues: stableParamValues(card.comfyCfg?.paramValues || {}),
+          executionId: card.comfyCfg?.runId || null,
+        };
+      if (card.kind === "text" || card.kind === "output")
+        return { id, kind: card.kind, text: card.text || "" };
+      if (card.kind === "input") return { id, kind: card.kind, channel: card.channel || null };
+      return { id, kind: card.kind };
+    });
+  // order가 없으면 실행 입력 수집과 같은 y→x 순서를 비교한다. 좌표값 자체가 아니라 순서만 반영한다.
+  const edgeState = [...relevantEdges]
+    .map((edge, index) => ({ edge, index, source: byId.get(edge.from) }))
+    .sort((a, b) => {
+      if (a.edge.to !== b.edge.to) return a.edge.to.localeCompare(b.edge.to);
+      const ao = a.edge.order;
+      const bo = b.edge.order;
+      if (ao != null && bo != null && ao !== bo) return ao - bo;
+      if (ao != null) return -1;
+      if (bo != null) return 1;
+      const ay = a.source?.y || 0;
+      const by = b.source?.y || 0;
+      if (ay !== by) return ay - by;
+      const ax = a.source?.x || 0;
+      const bx = b.source?.x || 0;
+      if (ax !== bx) return ax - bx;
+      return a.index - b.index;
+    })
+    .map(({ edge }) => ({
+      from: edge.from,
+      to: edge.to,
+      role: edge.role || null,
+      order: edge.order ?? null,
+    }));
+  return JSON.stringify({
+    edges: edgeState,
+    cards: cardState,
+    drivenParamValues: stableParamValues(drivenParamValues),
+    textParamKeys,
+  });
 }
 
 // comfy 노드에 '텍스트가 연결돼 있는지' — 내용 유무와 무관하게 연결 존재만 본다(ComfyUI 처럼 연결되면 위젯 비활성).
@@ -184,9 +284,18 @@ export function prepareSceneComfyInputs(
     refParents,
     overlay,
   );
+  const textParamKeys = [...comfyTextDriveKeys(card?.comfyCfg?.params, card?.comfyCfg?.content)];
+  const copiedParamValues = { ...drivenParamValues };
   return {
     media: gatherComfyMedia(cardId, cards, edges, genData, overlay),
-    drivenParamValues: { ...drivenParamValues },
-    textParamKeys: [...comfyTextDriveKeys(card?.comfyCfg?.params, card?.comfyCfg?.content)],
+    drivenParamValues: copiedParamValues,
+    textParamKeys,
+    inputFingerprint: inputGraphFingerprint(
+      cardId,
+      cards,
+      edges,
+      copiedParamValues,
+      textParamKeys,
+    ),
   };
 }

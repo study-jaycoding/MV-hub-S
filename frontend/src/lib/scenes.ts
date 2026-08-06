@@ -39,6 +39,8 @@ export interface SceneComfyCfg {
   outputs?: { kind: "image" | "video" | "text"; url?: string; text?: string; saved_generation_id?: string }[];
   status?: "idle" | "running" | "done" | "failed"; // 실행 상태
   error?: string | null; // 실패 메시지
+  // 현재 실행 소유자. 늦게 끝난 이전 실행이 새 실행의 상태를 덮어쓰지 않게 하는 메모리용 식별자.
+  runId?: number;
 }
 
 // 카드가 담는 레퍼런스 — 하단 프롬프트의 레퍼런스와 호환되는 최소 필드.

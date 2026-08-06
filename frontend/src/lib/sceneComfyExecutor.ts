@@ -3,7 +3,6 @@ import { comfyApi, type ComfyOutput, type ComfyRunMedia } from "./comfyApi";
 import { fetchBlob } from "./download";
 import {
   prepareSceneComfyInputs,
-  sameComfyMediaInputs,
   sameComfyParamValues,
   samePreparedSceneComfyInputs,
   type PreparedSceneComfyInputs,
@@ -13,16 +12,25 @@ import {
   randomizeWorkflowSeeds,
 } from "./sceneComfySeeds";
 import type { ComfyOutputsById } from "./sceneEdges";
-import type { SceneCard, SceneEdge } from "./scenes";
+import type { SceneCard, SceneComfyCfg, SceneEdge } from "./scenes";
 
 export interface SceneComfyConfigSnapshot {
+  name?: string;
   content: string;
   paramValues: Record<string, string | number | boolean>;
+  params?: SceneComfyCfg["params"];
 }
 
 export interface SceneComfyRunInputSnapshot extends PreparedSceneComfyInputs {
   // 배치 seed 무작위화까지 마친, 실제 Comfy API에 전달한 값. 자동 저장 메타도 이 값을 쓴다.
   executedParamValues: Record<string, string | number | boolean>;
+}
+
+// API 요청이 시작된 뒤에는 결과물을 버리지 않는다. superseded는 현재 카드에 연결해도 되는지만 결정한다.
+export interface SceneComfyExecutionResult {
+  outputs: ComfyOutput[];
+  inputSnapshot: SceneComfyRunInputSnapshot;
+  superseded: boolean;
 }
 
 export interface ExecuteSceneComfyOptions {
@@ -116,7 +124,7 @@ function assertPreparedInputsCurrent(
 export async function executeSceneComfy(
   options: ExecuteSceneComfyOptions,
   dependencies: Partial<SceneComfyExecutorDependencies> = {},
-): Promise<ComfyOutput[]> {
+): Promise<SceneComfyExecutionResult> {
   const deps = { ...defaultDependencies, ...dependencies };
   const card = options.cards.find((candidate) => candidate.id === options.cardId);
   const baseContent = options.configSnapshot?.content ?? card?.comfyCfg?.content;
@@ -148,7 +156,7 @@ export async function executeSceneComfy(
   const prepared = currentPreparedInputs(options, baseParams);
   // 이미 받은 blob과 현재 미디어 슬롯이 다르면 잘못된 파일로 실행하지 않는다. 텍스트는 위 prepared의
   // 최신값을 그대로 사용해, 다운로드 중 편집을 허용하던 기존 동작을 유지한다.
-  if (!sameComfyMediaInputs(initialInputs.media, prepared.media)) {
+  if (!samePreparedSceneComfyInputs(initialInputs, prepared)) {
     throw new SceneComfyRunSupersededError();
   }
   const content = options.varySeed ? deps.randomizeContent(baseContent) : baseContent;
@@ -156,17 +164,27 @@ export async function executeSceneComfy(
     ? deps.randomizeParams(prepared.drivenParamValues)
     : prepared.drivenParamValues;
   const inputSnapshot: SceneComfyRunInputSnapshot = {
-    media: prepared.media.map((item) => ({ ...item })),
+    // blob을 실제로 받은 최초 URL을 보존한다. 실행 직전 pending 결과의 URL만 해소된 경우에도
+    // API에는 이 목록으로 전달했으므로, 라이브러리 메타도 그 실제 실행 입력과 일치해야 한다.
+    media: initialInputs.media.map((item) => ({ ...item })),
     drivenParamValues: { ...prepared.drivenParamValues },
     textParamKeys: [...prepared.textParamKeys],
+    inputFingerprint: prepared.inputFingerprint,
     executedParamValues: { ...paramValues },
   };
   options.onRunPrepared?.(inputSnapshot);
   try {
     const result = await deps.run(content, paramValues, media);
-    // API 호출은 취소할 수 없지만, 완료 전에 바뀐 입력의 결과가 새 그래프로 넘어가지는 않게 한다.
-    assertPreparedInputsCurrent(options, baseParams, prepared);
-    return result.outputs;
+    // API 호출은 취소할 수 없지만, 완료 전에 바뀐 입력의 결과도 라이브러리에는 남긴다.
+    // superseded 표식만 붙여 현재 카드 연결을 막는다.
+    let superseded = false;
+    try {
+      assertPreparedInputsCurrent(options, baseParams, prepared);
+    } catch (error) {
+      if (!(error instanceof SceneComfyRunSupersededError)) throw error;
+      superseded = true;
+    }
+    return { outputs: result.outputs, inputSnapshot, superseded };
   } catch (error) {
     // 실패 응답도 입력 교체 뒤 현재 카드에 표시되면 안 된다. 교체가 아니면 원래 오류를 보존한다.
     assertPreparedInputsCurrent(options, baseParams, prepared);

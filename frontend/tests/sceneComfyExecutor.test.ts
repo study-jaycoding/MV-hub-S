@@ -49,7 +49,7 @@ describe("executeSceneComfy", () => {
     const getLiveCards = vi.fn().mockReturnValue(cards);
     const getLiveEdges = vi.fn().mockReturnValue([]);
 
-    const outputs = await executeSceneComfy(
+    const execution = await executeSceneComfy(
       {
         cardId: "comfy",
         cards,
@@ -63,7 +63,14 @@ describe("executeSceneComfy", () => {
       { run },
     );
 
-    expect(outputs).toEqual([{ kind: "text", text: "ok" }]);
+    expect(execution).toMatchObject({
+      outputs: [{ kind: "text", text: "ok" }],
+      superseded: false,
+      inputSnapshot: {
+        drivenParamValues: { prompt: "hello" },
+        executedParamValues: { prompt: "hello" },
+      },
+    });
     expect(getLiveCards).toHaveBeenCalledTimes(2); // API 직전 + 완료 후 입력 지문 재검사
     expect(getLiveEdges).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenCalledWith("workflow", { prompt: "hello" }, []);
@@ -197,7 +204,7 @@ describe("executeSceneComfy", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("API 실행 중 설정이 교체되면 완료 결과를 반환하지 않는다", async () => {
+  it("API 실행 중 설정이 교체되어도 완료 결과와 실행 입력을 superseded로 반환한다", async () => {
     let current = true;
     const run = vi.fn().mockImplementation(async () => {
       current = false;
@@ -217,10 +224,16 @@ describe("executeSceneComfy", () => {
         },
         { run },
       ),
-    ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    ).resolves.toMatchObject({
+      outputs: [{ kind: "text", text: "old" }],
+      superseded: true,
+      inputSnapshot: {
+        executedParamValues: { prompt: "hello" },
+      },
+    });
   });
 
-  it("API 실행 중 연결 텍스트가 바뀌면 성공 결과를 반환하지 않는다", async () => {
+  it("API 실행 중 연결 텍스트가 바뀌면 성공 결과를 superseded로 반환한다", async () => {
     const target = comfyCard({
       comfyCfg: {
         content: "workflow",
@@ -251,8 +264,85 @@ describe("executeSceneComfy", () => {
         },
         { run },
       ),
-    ).rejects.toBeInstanceOf(SceneComfyRunSupersededError);
+    ).resolves.toMatchObject({
+      outputs: [{ kind: "text", text: "old result" }],
+      superseded: true,
+      inputSnapshot: { executedParamValues: { "1|prompt": "old" } },
+    });
     expect(run).toHaveBeenCalledWith("workflow", { "1|prompt": "old" }, []);
+  });
+
+  it("상류 pending 생성물의 URL만 실행 중 해소되어도 superseded로 처리하지 않는다", async () => {
+    const source = {
+      id: "generation",
+      kind: "generation",
+      x: 0,
+      y: 0,
+      genId: "pending-generation",
+      genIds: ["pending-generation"],
+    } as SceneCard;
+    const cards = [source, comfyCard()];
+    const edges: SceneEdge[] = [{ id: "edge", from: "generation", to: "comfy", role: "ref" }];
+    let liveGenData = {};
+    const run = vi.fn().mockImplementation(async () => {
+      liveGenData = {
+        "pending-generation": {
+          id: "pending-generation",
+          assets: [{ type: "image", file_path: "/resolved.png", source_url: "/resolved.png" }],
+        },
+      };
+      return { outputs: [{ kind: "text", text: "ok" }], prompt_id: "resolved" };
+    });
+
+    const execution = await executeSceneComfy(
+      {
+        cardId: "comfy",
+        cards,
+        edges,
+        genData: liveGenData,
+        refParents: {},
+        varySeed: false,
+        getLiveGenData: () => liveGenData,
+      },
+      { run },
+    );
+
+    expect(execution.superseded).toBe(false);
+    expect(execution.outputs).toEqual([{ kind: "text", text: "ok" }]);
+    expect(execution.inputSnapshot.media).toEqual([]); // 실제 API 호출 당시에는 아직 pending 이었다.
+  });
+
+  it("API 실행 중 입력 엣지가 바뀌면 결과를 superseded로 반환해 카드 연결을 막는다", async () => {
+    const reference = {
+      id: "reference",
+      kind: "reference",
+      x: 0,
+      y: 0,
+      refs: [{ file_path: "/input.png", type: "image", name: "input.png" }],
+    } as SceneCard;
+    let liveEdges: SceneEdge[] = [{ id: "edge", from: "reference", to: "comfy", role: "ref" }];
+    const run = vi.fn().mockImplementation(async () => {
+      liveEdges = [];
+      return { outputs: [{ kind: "image", url: "/old.png" }], prompt_id: "old-edge" };
+    });
+
+    const execution = await executeSceneComfy(
+      {
+        cardId: "comfy",
+        cards: [reference, comfyCard()],
+        edges: liveEdges,
+        genData: {},
+        refParents: {},
+        varySeed: false,
+        getLiveEdges: () => liveEdges,
+      },
+      { fetchMedia: vi.fn().mockResolvedValue(new Blob(["image"])), run },
+    );
+
+    expect(execution).toMatchObject({
+      outputs: [{ kind: "image", url: "/old.png" }],
+      superseded: true,
+    });
   });
 
   it("API 실패 중 연결 입력이 바뀌면 옛 실패 대신 교체 오류로 처리한다", async () => {
