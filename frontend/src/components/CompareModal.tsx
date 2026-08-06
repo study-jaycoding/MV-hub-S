@@ -10,6 +10,12 @@ import {
 } from "../lib/compareDiff";
 import { useModelDisplayName } from "../lib/modelCatalog";
 import { bindSynchronizedVideos } from "../lib/synchronizedVideos";
+import {
+  fitCompareWindowToViewport,
+  moveCompareWindow,
+  resizeCompareWindow,
+  type CompareWindowRect,
+} from "../lib/compareWindow";
 import { CompareGenerationColumn } from "./compare/CompareGenerationColumn";
 import {
   CompareSourceLightbox,
@@ -27,6 +33,10 @@ export function CompareModal({
   const modelName = useModelDisplayName();
   const [onlyDiff, setOnlyDiff] = useState(false); // 다른 값만 보기 토글
   const [promptOnly, setPromptOnly] = useState(false); // 프롬프트만 보기(이미지·파라미터 숨김)
+  const [maximized, setMaximized] = useState(false);
+  const [windowRect, setWindowRect] = useState<CompareWindowRect | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const interactionCleanupRef = useRef<(() => void) | null>(null);
   // 이미지 표시 방식 — 전체 보기(contain, 블랙바) ↔ 꽉 채우기(cover, 크롭). 다음에 열어도 유지.
   const [fitContain, setFitContain] = useState<boolean>(() => {
     try {
@@ -61,6 +71,74 @@ export function CompareModal({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, srcPreview]);
 
+  useEffect(() => {
+    const onViewportResize = () => {
+      setWindowRect((current) =>
+        current
+          ? fitCompareWindowToViewport(current, window.innerWidth, window.innerHeight)
+          : null,
+      );
+    };
+    window.addEventListener("resize", onViewportResize);
+    return () => {
+      window.removeEventListener("resize", onViewportResize);
+      interactionCleanupRef.current?.();
+    };
+  }, []);
+
+  const currentRect = (): CompareWindowRect | null => {
+    const rect = modalRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  };
+
+  const beginWindowInteraction = (
+    mode: "move" | "resize",
+    event: React.PointerEvent<HTMLElement>,
+  ) => {
+    if (maximized || event.button !== 0) return;
+    if (mode === "move" && (event.target as HTMLElement).closest("button, input, label")) return;
+    const start = currentRect();
+    if (!start) return;
+    event.preventDefault();
+    interactionCleanupRef.current?.();
+    setWindowRect(start);
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    const onPointerMove = (nextEvent: PointerEvent) => {
+      if (nextEvent.pointerId !== pointerId) return;
+      const deltaX = nextEvent.clientX - startX;
+      const deltaY = nextEvent.clientY - startY;
+      setWindowRect(
+        mode === "move"
+          ? moveCompareWindow(start, deltaX, deltaY, window.innerWidth, window.innerHeight)
+          : resizeCompareWindow(start, deltaX, deltaY, window.innerWidth, window.innerHeight),
+      );
+    };
+    const stop = (nextEvent: PointerEvent) => {
+      if (nextEvent.pointerId !== pointerId) return;
+      cleanup();
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      interactionCleanupRef.current = null;
+    };
+    interactionCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+
+  const toggleMaximized = () => {
+    interactionCleanupRef.current?.();
+    if (!maximized && !windowRect) setWindowRect(currentRect());
+    setMaximized((current) => !current);
+  };
+
   // 영상 동기화 — 재생·정지·종료·수동 탐색을 두 비교 모달이 같은 공용 규칙으로 처리한다.
   useEffect(() => {
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
@@ -84,12 +162,44 @@ export function CompareModal({
   return (
     <>
       <div className="cmp-backdrop" onMouseDown={onClose} />
-      <div className="cmp-modal" role="dialog" aria-label="버전 비교">
-        <header className="admin-head">
+      <div
+        ref={modalRef}
+        className={"cmp-modal cmp-window" + (maximized ? " maximized" : "")}
+        role="dialog"
+        aria-label="버전 비교"
+        style={
+          !maximized && windowRect
+            ? {
+                left: windowRect.left,
+                top: windowRect.top,
+                width: windowRect.width,
+                height: windowRect.height,
+                transform: "none",
+              }
+            : undefined
+        }
+      >
+        <header
+          className="admin-head"
+          onPointerDown={(event) => beginWindowInteraction("move", event)}
+          onDoubleClick={(event) => {
+            if (!(event.target as HTMLElement).closest("button")) toggleMaximized();
+          }}
+        >
           <span className="admin-title">⊞ 버전 비교 ({gens.length})</span>
-          <button className="assets-x" onClick={onClose} title="닫기">
-            ✕
-          </button>
+          <div className="cmp-window-actions">
+            <button
+              className="cmp-window-control"
+              onClick={toggleMaximized}
+              title={maximized ? "창 크기로 복원" : "전체화면"}
+              aria-label={maximized ? "창 크기로 복원" : "전체화면"}
+            >
+              {maximized ? "❐" : "□"}
+            </button>
+            <button className="assets-x" onClick={onClose} title="닫기">
+              ✕
+            </button>
+          </div>
         </header>
         <div className="cmp-note">
           <span>
@@ -153,6 +263,14 @@ export function CompareModal({
             ))}
           </div>
         </div>
+        {!maximized && (
+          <div
+            className="cmp-window-resize"
+            onPointerDown={(event) => beginWindowInteraction("resize", event)}
+            title="드래그하여 창 크기 조절"
+            aria-hidden="true"
+          />
+        )}
       </div>
 
       <CompareSourceLightbox preview={srcPreview} onClose={() => setSrcPreview(null)} />
