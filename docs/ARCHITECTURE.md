@@ -249,9 +249,11 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
    │       (재생성은 placeholder + 'derived' 리니지까지)
    ▼ GET /api/gen-requests/pending  (요청자 PC 에이전트가 claim → running)
 요청자 PC 에이전트(agent_push.py --watch):
-   │   higgsfield generate create <model> --prompt … --wait  ← 자기 로컬 CLI(유료)
-   ▼ POST /api/gen-requests/{id}/fulfill (성공) | /fail (실패)
-   ▼ 서버: placeholder 에 결과 채움 + WS broadcast → 카드 done
+   │   제출 워커(기본 8): higgsfield generate create <model> --prompt …  ← 자기 로컬 CLI(유료)
+   │   job_id 즉시 anchor → 원격 작업 최대 64개 추적
+   │   단일 generate list 주기 조회 → 끝난 작업만 상세 확인
+   ▼ POST /api/gen-requests/{id}/reconcile (완료 확정) | /fail (제출 실패)
+   ▼ 서버: placeholder 에 결과 채움 + WS broadcast → 카드 done/failed
 ```
 
 버튼·UX 는 그대로, 실행 주체만 "서버 1개 CLI"→"각자 로컬 CLI". 결과·크레딧·귀속은 실행한 사람 것.

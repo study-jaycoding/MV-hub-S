@@ -121,7 +121,7 @@ async def pending_gen_requests(request: Request, limit: int = 16):
     """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
     claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
-    완료될 때까지 '생성중'이 안 보였음). limit=에이전트의 빈 병렬 슬롯 수(연속 풀이 그만큼만 집음)."""
+    완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
     acc = _require_account(request)
     return await claim_gen_requests(acc["email"], realtime_scope(acc), limit)
 
@@ -183,7 +183,7 @@ async def reconcile_candidates(request: Request):
 async def reconcile_gen_request(
     rid: str, body: FulfillIn, request: Request, force_fail_reason: str | None = None
 ):
-    """재조정 — 에이전트가 generate get/wait 로 확보한 '권위 있는' 잡 상태로 placeholder 를 보정한다.
+    """재조정 — 에이전트가 generate list/get 으로 확보한 '권위 있는' 잡 상태로 placeholder 를 보정한다.
     fulfill 과 달리 이미 종결(done/failed)이어도, 특히 failed→done '되살리기'도 허용한다(가짜 실패 복구).
     안전: job_id 일치 + origin='local' + 내 계정일 때만(repo.apply_reconcile 강조건). 아직 처리중이면 보정 안 함.
     force_fail_reason: create-first 에서 레퍼런스 미부착 등 '로컬 검증 실패'를 되살림 금지로 확정할 때."""

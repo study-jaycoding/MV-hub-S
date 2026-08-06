@@ -92,10 +92,11 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
    │
    ▼  GET /api/gen-requests/pending  (요청자 PC의 에이전트가 claim → running)
 요청자 PC 에이전트(agent_push.py --watch):
-      higgsfield generate create <model> --prompt … --wait [params] [미디어]  ← 자기 로컬 CLI(유료)
-      레퍼런스 URL 은 --image 등에 그대로(서버 기존 재생성과 동일, 업로드 불필요)
+      제출 워커(기본 8): higgsfield generate create <model> --prompt … [params] [미디어]
+      job_id 즉시 anchor → 원격 작업 최대 64개를 단일 generate list 조회로 추적
+      끝난 작업과 목록에서 빠진 작업만 generate get 으로 상세 확인
    │
-   ▼  POST /api/gen-requests/{id}/fulfill  (raw 잡 보고)  | 실패 시 /fail
+   ▼  POST /api/gen-requests/{id}/reconcile (완료 확정) | 제출 실패 시 /fail
 서버: placeholder 에 결과(asset·job_id·status) 채움 + WS broadcast → 카드 done
 ```
 
@@ -114,7 +115,7 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 python agent_push.py --server http://<서버IP>:8010 --email <내이메일> [--watch 30]
 # --token <세션토큰> 으로 로그인 생략 가능(자동화/테스트용)
 ```
-- **cycle = ① execute_pending(허브 요청을 내 로컬 CLI로 실행→fulfill) + ② push_once(내 로컬 결과물을 서버로 적재)**.
+- **cycle = ① execute_pending(허브 요청 제출→목록 추적→reconcile) + ② reconcile_pass(재시작 복구) + ③ push_once(내 로컬 결과물을 서버로 적재)**.
 - push_once: `GET /api/ingest/known-jobs`(서버 보유 job_id) → 로컬 `generate list --json` 중 **새 것만** 추림 → `POST /api/ingest {jobs, creator_uid, account_status}`.
   - **내 힉스필드 uid = 로컬 전체 목록의 최다 user_<id>**(fresh 부분집합만 보면 남의 레퍼런스에 오염되어 잘못 연결되는 실측 버그가 있어, 반드시 전체 기준으로 산출해 명시 전송).
 - **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장.

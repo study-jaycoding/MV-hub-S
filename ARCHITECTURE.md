@@ -67,6 +67,8 @@ services    asset_tree·cli_bridge·media_cache·thumbs·syncer 등 도메인 IO
 - 물리적으로 여러 모듈로 나누려면 먼저 번들 생성·다운로드·업데이트 경로를 함께 설계해야 한다.
 - 파일 안에서는 CLI 어댑터, Hub HTTP 계약, outbox, 생성 실행, 스케줄러 경계를 구분한다.
   서버 URL·쿼리·payload 형식은 HTTP 계약 어댑터에 모으고 `test_agent_contracts.py`로 고정한다.
+- 생성 스케줄러는 **CLI 제출 워커**와 **원격 진행 작업**을 분리한다. 기본값은 제출 8개,
+  원격 추적 64개이며 진행 상태는 작업별 `generate wait` 대신 한 번의 `generate list`로 확인한다.
 
 ---
 

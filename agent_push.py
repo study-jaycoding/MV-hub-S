@@ -159,7 +159,7 @@ def _parse_cli_json(stdout: str):
     """CLI stdout → 파싱값(실패 시 None). `--json` 단일 JSON 이면 그대로.
     `generate create --wait` 처럼 진행줄+최종 JSON 이 섞여 whole 파싱이 안 되면, 뒤에서부터
     마지막 JSON 을 복구한다(JSONL 이든 여러 줄 pretty-print 든). ★생성 결과 오인식 방지는
-    호출측(_execute_one)이 job.id 필수 검증으로 담당 — 여기선 '파싱되는 JSON' 만 돌려준다."""
+    호출측이 job.id 필수 검증을 담당 — 여기선 '파싱되는 JSON' 만 돌려준다."""
     s = stdout or ""
     if not s.strip():
         return None
@@ -714,7 +714,7 @@ def _upload_for_media(
 ) -> tuple[dict | None, bool]:
     """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환.
     in-flight 잠금: 같은 파일을 여러 스레드가 동시에 올리면 한 스레드만 업로드하고 나머지는 그 결과를
-    기다린다(벌크 seedance 에서 같은 캐릭터/스토리보드 참조가 16병렬로 겹쳐 중복 업로드되던 것 방지)."""
+    기다린다(벌크 seedance 제출에서 같은 캐릭터/스토리보드 참조가 겹쳐 중복 업로드되던 것 방지)."""
     key = None
     size = 0
     my_ev = None
@@ -917,7 +917,7 @@ def replay_outbox(server: str, token: str) -> None:
 
 
 def _reconcile(server: str, token: str, rid: str, job: dict, force_fail_reason: str | None = None) -> int:
-    """create-first 완료 확정 — generate wait/get 로 확보한 최종 job 을 /reconcile 로 권위 보정한다.
+    """create-first 완료 확정 — 목록 조회/get 으로 확보한 최종 job 을 /reconcile 로 권위 보정한다.
     앵커가 gen_request 를 done 으로 닫았으므로 /fulfill 은 멱등 no-op → 완료는 /reconcile 로만 확정한다.
     force_fail_reason 이면 레퍼런스 미부착 등 로컬 검증 실패로 '되살림 금지' failed 확정. 서버 status 반환."""
     st, _ = _report_reconcile(server, token, rid, job, force_fail_reason)
@@ -998,7 +998,7 @@ def _cleanup(paths: list) -> None:
             pass
 
 
-def _execute_one(
+def _submit_one(
     server: str,
     token: str,
     cli: str,
@@ -1006,14 +1006,14 @@ def _execute_one(
     ref_cache: dict,
     upload_cache: dict,
     upload_lock: Lock,
-) -> None:
-    """대기 요청 1건을 내 로컬 CLI 로 실행 → fulfill/fail. 스레드에서 호출되므로 예외를
-    바깥으로 던지지 않는다(한 건 실패가 다른 건 실행을 막지 않게).
+) -> dict | None:
+    """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
+    제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
     레퍼런스는 배치 시작 때 한 번씩만 받아둔 `ref_cache`(값→해석값) 를 조회만 한다(중복 다운로드 방지)."""
     rid, model, prompt = r.get("id"), r.get("model"), r.get("prompt") or ""
     if not model:
         _fail(server, token, rid, "모델 없음")
-        return
+        return None
     # ★CLI 프롬프트는 반드시 한 줄 — 개행이 있으면 Higgsfield 가 레퍼런스(입력 이미지)를 못 붙여 '엉뚱한
     #  결과물'이 나온다(실측). 프론트 신규·재사용·재생성·직접 API·옛 DB 데이터 어느 경로로 왔든 최종 관문인
     #  여기서 한 번에 접는다(display_prompt 는 서버가 별도 보관하므로 표시·재사용 줄바꿈은 영향 없음).
@@ -1038,7 +1038,7 @@ def _execute_one(
     if ref_error:
         _fail(server, token, rid, ref_error)
         print(f"  ✗ {model}: {ref_error}")
-        return
+        return None
     # 레퍼런스 — 다운로드 없이 배치 공유 캐시 조회만(해석값=공개 URL 또는 로컬 임시파일경로).
     unresolved: list = []
     upload_failed: list = []
@@ -1079,11 +1079,11 @@ def _execute_one(
         # 소모된다 → 실행하지 않고 명확한 사유로 실패시킨다.
         _fail(server, token, rid, f"레퍼런스를 가져올 수 없습니다({len(unresolved)}개): {unresolved[0]}")
         print(f"  ✗ 레퍼런스 해석 불가 — 실행 안 함: {unresolved[0]}")
-        return
+        return None
     if upload_failed:
         _fail(server, token, rid, f"레퍼런스를 업로드할 수 없습니다({len(upload_failed)}개): {upload_failed[0]}")
         print(f"  ✗ 레퍼런스 업로드 실패 — 실행 안 함: {upload_failed[0]}")
-        return
+        return None
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args
     print(f"  → {model}: {prompt[:40]}")
@@ -1119,65 +1119,55 @@ def _execute_one(
             print(f"[경고] {cli_error}")
         _fail(server, token, rid, reason)
         print(f"  ✗ 제출 실패: {job_id or ''}")
-        return
+        return None
     # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
     #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
     _outbox_add(rid, job_id)
     if not _anchor_with_retry(server, token, rid, job_id):
         print(f"  ⚠ 앵커 보고 실패 — outbox 보관(재전송 예정): {job_id[:8]}")
-    # 3) 완료까지 대기(최대 15분). wait 는 조회 성격(과금 없음). 타임아웃은 '실패'가 아니라 '능동 대기
-    #    종료→백스톱 위임' 시점일 뿐 — 앵커돼 있으므로 더 긴 잡·큐 대기는 재조정이 끝나는 대로 받아온다.
-    print(f"  ⏳ 대기: {job_id[:8]} (최대 15분, 넘으면 백스톱이 이어받음)")
-    job, _werr = _run_cli_json(
-        cli, "generate", "wait", job_id, "--timeout", "15m", "--interval", "5s", "--quiet", timeout=960
-    )
-    if isinstance(job, list):
-        job = job[0] if job else None
-    if not (isinstance(job, dict) and job.get("id")):
-        # wait 이 애매하게 끝남(타임아웃/파싱실패) → get 으로 1회 권위 재확인.
-        job, _ = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
-    if not (isinstance(job, dict) and job.get("id")):
-        print(f"  ⏳ 대기 결과 미확정 — 백스톱 재조정에 위임: {job_id[:8]}")
-        return
-    if _job_status(job) in _PROCESSING_RAW:
-        print(f"  ⏳ 아직 처리중 — 백스톱 재조정에 위임: {job_id[:8]}")
-        return
-    # 4) 레퍼런스 미부착 방어 — 입력 이미지를 붙여 실행했는데(expected_image_inputs>0) 생성물에 0개면
-    #    힉스필드가 레퍼런스를 무시한 것(엉뚱한 결과). 되살림 금지 force-fail 로 확정(백스톱이 done 으로
-    #    되살리지 못하게 서버가 job_id 를 지운다). count>0 이면 통과, 0 이면 generate get 으로 1회 재확인.
-    if expected_image_inputs > 0 and _job_image_input_count(job) <= 0:
-        full, _ = _run_cli_json(cli, "generate", "get", job["id"], timeout=120)
-        if isinstance(full, dict) and full.get("id"):
-            job = full
-        if _job_image_input_count(job) <= 0:
-            _suppress_job(job.get("id"))
-            # ★force-fail 은 반드시 서버에 안착해야 한다(안착 전엔 카드가 running+job_id 후보로 남아
-            #  백스톱이 done 으로 되살릴 수 있음) → 200 받을 때까지 몇 번 재시도.
-            reason = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
-            ok = False
-            for _ in range(3):
-                if _reconcile(server, token, rid, job, force_fail_reason=reason) == 200:
-                    ok = True
-                    break
-            print(
-                f"  ✗ 레퍼런스 미부착 — 실패 확정(되살림 금지): {job['id'][:8]}"
-                if ok else f"  ⚠ 레퍼런스 미부착 실패 보고 안착 실패(다음 사이클 재시도): {job['id'][:8]}"
-            )
-            return
-    # 5) 완료/실패 확정 — reconcile 로 권위 보정(요청은 앵커가 done 으로 닫았으므로 fulfill 은 no-op).
-    st = _reconcile(server, token, rid, job)
-    print(f"  ✓ 확정 보고(reconcile status={st})" if st == 200 else f"  ✗ 확정 보고 실패(status={st})")
+    return {
+        "rid": rid,
+        "job_id": job_id,
+        "expected_image_inputs": expected_image_inputs,
+        "deadline": time.monotonic() + _ACTIVE_TRACKING_TIMEOUT_SECONDS,
+        "next_direct_check": 0.0,
+    }
 
 
-# 동시 실행 상한 — team 플랜 16 병렬 생성 기준. 벌크(N장)를 한꺼번에 돌리되 그 이상은 막는다.
-# (서버 claim 한도 claim_pending_requests(limit) 와 맞춤 — 둘 다 16.)
-_MAX_CONCURRENCY = 16
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """환경변수 정수를 안전한 범위로 읽는다(잘못된 값이면 기본값)."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
 
 
-def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
-    """이 묶음의 고유 레퍼런스를 한 번씩만 받아 캐시 구성(같은 레퍼런스 N번 다운로드 방지).
-    반환: (ref_cache={값→해석값}, 정리할 임시파일 리스트)."""
-    ref_cache: dict = {}
+# 로컬 CLI 프로세스 수와 원격 진행 작업 수는 서로 다른 자원이다.
+# 제출은 적은 워커로 차례로 밀어 넣고, 제출이 끝난 작업은 단일 조회 루프가 추적한다.
+_SUBMIT_WORKERS = _env_int("MVHUB_CLI_SUBMIT_WORKERS", 8, 1, 32)
+_MAX_IN_FLIGHT_JOBS = max(
+    _SUBMIT_WORKERS,
+    _env_int("MVHUB_CLI_MAX_IN_FLIGHT", 64, 1, 256),
+)
+_JOB_POLL_INTERVAL_SECONDS = 5.0
+_DIRECT_CHECK_INTERVAL_SECONDS = 30.0
+_ACTIVE_TRACKING_TIMEOUT_SECONDS = 60 * 60
+# CLI 1.1.20의 최근 목록 상한. 범위 밖 작업은 30초 간격 개별 get으로 보완한다.
+_JOB_LIST_SIZE = 100
+
+
+def _claim_capacity(submitting_count: int, active_count: int) -> int:
+    """로컬 제출 워커와 원격 진행 상한을 모두 넘지 않는 다음 claim 수."""
+    local_free = _SUBMIT_WORKERS - submitting_count
+    remote_free = _MAX_IN_FLIGHT_JOBS - submitting_count - active_count
+    return max(0, min(local_free, remote_free))
+
+
+def _resolve_refs_for(server: str, token: str, reqs: list, ref_cache: dict | None = None) -> tuple:
+    """새로 claim한 요청의 고유 레퍼런스만 받아 공유 캐시에 추가한다.
+    반환: (ref_cache={값→해석값}, 이번에 만든 임시파일 리스트)."""
+    ref_cache = ref_cache if ref_cache is not None else {}
     ref_temps: list = []
     for val in {
         ref.get("file_path")
@@ -1185,6 +1175,8 @@ def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
         for ref in (r.get("references") or [])
         if ref.get("file_path")
     }:
+        if val in ref_cache:
+            continue
         resolved, tmp = _resolve_ref(server, token, val)
         ref_cache[val] = resolved
         if tmp:
@@ -1192,43 +1184,193 @@ def _resolve_refs_for(server: str, token: str, reqs: list) -> tuple:
     return ref_cache, ref_temps
 
 
+def _recent_jobs_by_id(cli: str) -> dict | None:
+    """최근 생성 목록을 한 번 조회해 id 기준으로 바꾼다. 조회 실패는 None."""
+    jobs, error = _run_cli_json(cli, "generate", "list", "--size", str(_JOB_LIST_SIZE), timeout=120)
+    if error or not isinstance(jobs, list):
+        if error:
+            print(f"[경고] 작업 목록 조회 실패: {error}")
+        return None
+    return {
+        str(job["id"]): job
+        for job in jobs
+        if isinstance(job, dict) and job.get("id")
+    }
+
+
+def _finalize_tracked_job(
+    server: str,
+    token: str,
+    cli: str,
+    tracked: dict,
+    job: dict,
+    *,
+    detailed: bool,
+) -> bool:
+    """종료된 작업을 검증하고 서버에 확정한다. 재확인이 필요하면 False."""
+    rid = tracked["rid"]
+    job_id = tracked["job_id"]
+    expected_image_inputs = tracked.get("expected_image_inputs", 0)
+
+    # 목록 응답은 축약될 수 있다. 입력 이미지 검증이 필요한 작업만 상세 정보를 한 번 더 받는다.
+    if expected_image_inputs > 0 and not detailed:
+        full, _ = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
+        if not (isinstance(full, dict) and full.get("id")):
+            return False
+        job = full
+        detailed = True
+    if not (isinstance(job, dict) and job.get("id")):
+        return False
+    if _job_status(job) in _PROCESSING_RAW:
+        return False
+
+    if expected_image_inputs > 0 and _job_image_input_count(job) <= 0:
+        # 상세 응답까지 확인했는데도 입력 이미지가 없으면 잘못 생성된 결과를 카드로 만들지 않는다.
+        if not detailed:
+            return False
+        _suppress_job(job_id)
+        reason = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
+        ok = False
+        for _ in range(3):
+            if _reconcile(server, token, rid, job, force_fail_reason=reason) == 200:
+                ok = True
+                break
+        print(
+            f"  ✗ 레퍼런스 미부착 — 실패 확정(되살림 금지): {job_id[:8]}"
+            if ok else f"  ⚠ 레퍼런스 미부착 실패 보고 안착 실패(다음 사이클 재시도): {job_id[:8]}"
+        )
+        return True
+
+    status = _reconcile(server, token, rid, job)
+    print(f"  ✓ 확정 보고(reconcile status={status})" if status == 200 else f"  ✗ 확정 보고 실패(status={status})")
+    return True
+
+
+def _poll_active_jobs(server: str, token: str, cli: str, active: dict) -> int:
+    """진행 작업 전체를 목록 조회 한 번으로 확인하고, 끝난 작업만 상세 처리한다."""
+    if not active:
+        return 0
+    now = time.monotonic()
+    recent = _recent_jobs_by_id(cli)
+    finished: list[str] = []
+
+    for job_id, tracked in list(active.items()):
+        if now >= tracked["deadline"]:
+            print(f"  ⏳ 장시간 처리중 — 백스톱 재조정에 위임: {job_id[:8]}")
+            finished.append(job_id)
+            continue
+
+        job = recent.get(job_id) if recent is not None else None
+        if isinstance(job, dict):
+            if _job_status(job) in _PROCESSING_RAW:
+                continue
+            if _finalize_tracked_job(server, token, cli, tracked, job, detailed=False):
+                finished.append(job_id)
+            continue
+
+        # 최근 목록 범위 밖이거나 목록 조회가 실패한 작업만 개별 조회한다. 같은 작업을 매 틱마다
+        # 조회하지 않도록 30초 간격을 둔다.
+        if now < tracked.get("next_direct_check", 0.0):
+            continue
+        tracked["next_direct_check"] = now + _DIRECT_CHECK_INTERVAL_SECONDS
+        full, _ = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
+        if not (isinstance(full, dict) and full.get("id")):
+            continue
+        if _job_status(full) in _PROCESSING_RAW:
+            continue
+        if _finalize_tracked_job(server, token, cli, tracked, full, detailed=True):
+            finished.append(job_id)
+
+    for job_id in finished:
+        active.pop(job_id, None)
+    return len(finished)
+
+
 def execute_pending(server: str, token: str, cli: str) -> int:
-    """대기 요청을 **연속 워커 풀**로 실행 — 슬롯(최대 _MAX_CONCURRENCY)이 비는 즉시 다음 요청을
-    claim해 채운다. 한 묶음이 다 끝나길 기다리지 않으므로 빈 병렬 슬롯이 안 생긴다(느린 1건이
-    나머지 슬롯을 안 막고, 실행 중 새로 들어온 요청도 즉시 흡수). 대기·실행이 모두 없으면 종료.
-    실행은 유료(내 크레딧). 반환: 이번에 처리한 요청 수."""
-    in_flight: set = set()
+    """제출 워커와 원격 진행 작업 추적을 분리해 대기 요청을 처리한다.
+    실행은 유료(내 크레딧). 반환: 이번에 claim한 요청 수."""
+    submitting: dict = {}
+    active: dict[str, dict] = {}
+    ref_cache: dict = {}
     ref_temps_all: list = []
     upload_cache: dict = _load_upload_cache(_cli_account_email(cli))
     upload_lock = Lock()
     total = 0
     printed = False
-    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENCY) as ex:
-        while True:
-            free = _MAX_CONCURRENCY - len(in_flight)
-            claimed: list = []
-            if free > 0:
-                # 빈 슬롯 수만큼만 claim(서버가 그만큼만 running 표시 → 카드 상태 정확).
-                status, pend = _claim_pending(server, token, free)
-                claimed = pend if isinstance(pend, list) else []
-            if claimed:
-                if not printed:
-                    print(f"[실행] 대기 요청 처리 — 최대 {_MAX_CONCURRENCY}개 병렬, 슬롯 비는 대로 채움")
-                    printed = True
-                ref_cache, ref_temps = _resolve_refs_for(server, token, claimed)
-                ref_temps_all += ref_temps
-                for m in {r.get("model") for r in claimed if r.get("model")}:
-                    _allowed_params(cli, m)  # 모델 param 스키마 미리 캐시(동시 model get 낭비 방지)
-                for r in claimed:
-                    in_flight.add(ex.submit(_execute_one, server, token, cli, r, ref_cache, upload_cache, upload_lock))
-                    total += 1
-                continue  # 곧장 남은 슬롯도 채우러
-            if not in_flight:
-                break  # claim할 것도, 실행 중인 것도 없음 → 종료
-            # 슬롯이 다 찼거나 새 요청 없음 → 하나라도 끝나면(또는 3s마다) 다시 채우러.
-            # (1s 틱은 장시간 생성 1건 동안 pending GET 을 초당 1회 반복 — 3s 로도 슬롯 충원 체감 동일)
-            _, in_flight = futures_wait(in_flight, timeout=3.0, return_when=FIRST_COMPLETED)
-    _cleanup(ref_temps_all)  # 공유 임시파일은 전부 끝난 뒤 한 번에 삭제
+    next_claim_at = 0.0
+    next_poll_at = 0.0
+    try:
+        with ThreadPoolExecutor(max_workers=_SUBMIT_WORKERS) as executor:
+            while True:
+                # 완료된 제출만 회수한다. 생성 대기는 워커가 아니라 active 목록으로 이동한다.
+                for future, request in list(submitting.items()):
+                    if not future.done():
+                        continue
+                    submitting.pop(future, None)
+                    try:
+                        tracked = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        rid = request.get("id")
+                        _fail(server, token, rid, f"제출 처리 예외: {exc}")
+                        print(f"  ✗ 제출 처리 예외: {exc}")
+                        continue
+                    if tracked:
+                        active[tracked["job_id"]] = tracked
+
+                now = time.monotonic()
+                if active and now >= next_poll_at:
+                    _poll_active_jobs(server, token, cli, active)
+                    next_poll_at = time.monotonic() + _JOB_POLL_INTERVAL_SECONDS
+
+                claimed: list = []
+                claim_limit = _claim_capacity(len(submitting), len(active))
+                now = time.monotonic()
+                if claim_limit > 0 and now >= next_claim_at:
+                    _, pending = _claim_pending(server, token, claim_limit)
+                    claimed = pending if isinstance(pending, list) else []
+                    next_claim_at = now if len(claimed) >= claim_limit else now + 3.0
+
+                if claimed:
+                    if not printed:
+                        print("[실행] 대기 요청 처리")
+                        printed = True
+                    ref_cache, ref_temps = _resolve_refs_for(server, token, claimed, ref_cache)
+                    ref_temps_all.extend(ref_temps)
+                    batch_ref_cache = dict(ref_cache)
+                    for model in {r.get("model") for r in claimed if r.get("model")}:
+                        _allowed_params(cli, model)
+                    for request in claimed:
+                        future = executor.submit(
+                            _submit_one,
+                            server,
+                            token,
+                            cli,
+                            request,
+                            batch_ref_cache,
+                            upload_cache,
+                            upload_lock,
+                        )
+                        submitting[future] = request
+                        total += 1
+                    continue
+
+                if not submitting and not active:
+                    break
+
+                # 제출 완료·다음 목록 조회·다음 claim 중 가장 가까운 시점까지만 쉰다.
+                now = time.monotonic()
+                wake_times = []
+                if claim_limit > 0:
+                    wake_times.append(next_claim_at)
+                if active:
+                    wake_times.append(next_poll_at)
+                timeout = 3.0 if not wake_times else max(0.05, min(3.0, min(wake_times) - now))
+                if submitting:
+                    futures_wait(tuple(submitting), timeout=timeout, return_when=FIRST_COMPLETED)
+                else:
+                    time.sleep(timeout)
+    finally:
+        _cleanup(ref_temps_all)  # 공유 임시파일은 추적 종료 뒤 한 번에 삭제
     return total
 
 
@@ -1564,7 +1706,7 @@ def main() -> None:
             try:
                 if "gen-request" in reasons:
                     print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
-                    execute_pending(server, token, cli)  # 연속 풀 — 16칸 채우고 다 비울 때까지
+                    execute_pending(server, token, cli)  # 제출 워커와 원격 작업 추적을 분리해 처리
                 # 매 사이클(이벤트·idle 타임아웃 모두) '실제 상태 미확정' 카드를 보정 — 확인중 카드를
                 #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
                 #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.

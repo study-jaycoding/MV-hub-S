@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -263,6 +264,145 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     assert parsed.path == "/api/gen-requests/pending"
     assert parse_qs(parsed.query) == {"limit": ["16"]}
     assert call.kwargs == {"token": "token-1"}
+
+
+def test_agent_separates_local_submit_workers_from_remote_in_flight_jobs():
+    with patch.dict(
+        os.environ,
+        {"MVHUB_CLI_SUBMIT_WORKERS": "", "MVHUB_CLI_MAX_IN_FLIGHT": ""},
+    ):
+        agent = _load_agent()
+
+    assert agent._SUBMIT_WORKERS == 8
+    assert agent._MAX_IN_FLIGHT_JOBS == 64
+    assert agent._SUBMIT_WORKERS < agent._MAX_IN_FLIGHT_JOBS
+    assert agent._claim_capacity(submitting_count=0, active_count=0) == 8
+    assert agent._claim_capacity(submitting_count=8, active_count=0) == 0
+    assert agent._claim_capacity(submitting_count=0, active_count=63) == 1
+    assert agent._claim_capacity(submitting_count=0, active_count=64) == 0
+
+
+def test_agent_poll_uses_one_list_call_and_keeps_processing_jobs():
+    agent = _load_agent()
+    active = {
+        "job-running": {
+            "rid": "request-running",
+            "job_id": "job-running",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        },
+        "job-done": {
+            "rid": "request-done",
+            "job_id": "job-done",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        },
+    }
+    jobs = [
+        {"id": "job-running", "status": "running"},
+        {"id": "job-done", "status": "completed", "result_url": "https://result"},
+    ]
+
+    with patch.object(agent, "_run_cli_json", return_value=(jobs, None)) as cli_json, patch.object(
+        agent, "_reconcile", return_value=200
+    ) as reconcile:
+        assert agent._poll_active_jobs("http://hub", "token-1", "higgsfield", active) == 1
+
+    cli_json.assert_called_once_with(
+        "higgsfield", "generate", "list", "--size", str(agent._JOB_LIST_SIZE), timeout=120
+    )
+    reconcile.assert_called_once_with(
+        "http://hub",
+        "token-1",
+        "request-done",
+        jobs[1],
+    )
+    assert list(active) == ["job-running"]
+
+
+def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it():
+    agent = _load_agent()
+    active = {
+        "job-done": {
+            "rid": "request-done",
+            "job_id": "job-done",
+            "expected_image_inputs": 1,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+    }
+    listed = {"id": "job-done", "status": "completed"}
+    detailed = {
+        "id": "job-done",
+        "status": "completed",
+        "params": {"input_images": ["image-1"]},
+    }
+
+    with patch.object(
+        agent,
+        "_run_cli_json",
+        side_effect=[([listed], None), (detailed, None)],
+    ) as cli_json, patch.object(agent, "_reconcile", return_value=200) as reconcile:
+        assert agent._poll_active_jobs("http://hub", "token-1", "higgsfield", active) == 1
+
+    assert cli_json.call_args_list[1].args == (
+        "higgsfield",
+        "generate",
+        "get",
+        "job-done",
+    )
+    assert cli_json.call_args_list[1].kwargs == {"timeout": 120}
+    reconcile.assert_called_once_with(
+        "http://hub",
+        "token-1",
+        "request-done",
+        detailed,
+    )
+    assert active == {}
+
+
+def test_agent_does_not_launch_one_wait_process_per_remote_job():
+    source = AGENT_PATH.read_text(encoding="utf-8")
+
+    assert '"generate", "wait"' not in source
+    assert "슬롯 비는 대로 채움" not in source
+    assert "최대 {_MAX_CONCURRENCY}개 병렬" not in source
+
+
+def test_execute_pending_claims_only_current_submit_worker_capacity():
+    agent = _load_agent()
+    request = {"id": "request-1", "model": "model-1", "references": []}
+    tracked = {
+        "rid": "request-1",
+        "job_id": "job-1",
+        "expected_image_inputs": 0,
+        "deadline": float("inf"),
+        "next_direct_check": 0.0,
+    }
+    claim_limits: list[int] = []
+
+    def claim_once(_server, _token, limit):
+        claim_limits.append(limit)
+        return (200, [request] if len(claim_limits) == 1 else [])
+
+    def finish_active(_server, _token, _cli, active):
+        active.clear()
+        return 1
+
+    with patch.object(agent, "_cli_account_email", return_value="user@example.com"), patch.object(
+        agent, "_load_upload_cache", return_value={}
+    ), patch.object(agent, "_claim_pending", side_effect=claim_once), patch.object(
+        agent, "_resolve_refs_for", side_effect=lambda _s, _t, _r, cache: (cache, [])
+    ), patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_submit_one", return_value=tracked
+    ), patch.object(agent, "_poll_active_jobs", side_effect=finish_active):
+        assert agent.execute_pending("http://hub", "token-1", "higgsfield") == 1
+
+    assert claim_limits
+    assert claim_limits[0] == agent._SUBMIT_WORKERS
+    assert max(claim_limits) <= agent._SUBMIT_WORKERS
 
 
 def test_agent_failure_report_url_encodes_reason_and_authenticates():

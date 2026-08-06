@@ -289,7 +289,7 @@ def apply_reconcile(
     error: Optional[str],
     force_fail_reason: Optional[str] = None,
 ) -> bool:
-    """재조정 권위 보정 — 에이전트가 `generate get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
+    """재조정 권위 보정 — 에이전트가 `generate list/get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
     ★fulfill 의 CAS 와 달리 failed→done '되살리기'를 허용한다(가짜 실패 복구). 대신 조건이 강하다:
       · id·job_id 동시 일치 + origin='local' 일 때만(다른 카드·동기화본 오염 차단).
       · 이미 done 확정본은 절대 뒤집지 않는다(에셋 있는 완료본 보호).

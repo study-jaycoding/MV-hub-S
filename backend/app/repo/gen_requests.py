@@ -66,7 +66,7 @@ def create_gen_request(
 
 def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str, Any]]:
     """이 계정의 대기 요청을 가져오면서 running 으로 표시(claim) — 중복 실행 방지.
-    limit=16 은 에이전트 병렬도(push_agent _MAX_CONCURRENCY)와 맞춤 — team 플랜 16 병렬 한 번에 claim.
+    limit 는 호출자가 현재 제출 가능한 수만큼 전달한다. 저장소는 그 수만 running 으로 선점한다.
     반환: [{id, gen_id, kind, model, prompt, params, references}]."""
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
