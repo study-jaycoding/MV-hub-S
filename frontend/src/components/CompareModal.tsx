@@ -144,7 +144,7 @@ export function CompareModal({
     const vids = videoRefs.current.filter((v): v is HTMLVideoElement => !!v);
     if (promptOnly || vids.length === 0) return;
     return bindSynchronizedVideos(vids);
-  }, [gens, promptOnly]);
+  }, [gens, maximized, promptOnly]);
 
   const prompts = gens.map((g) => g.display_prompt || g.prompt || "");
   const common = commonPromptTokens(prompts);
@@ -209,15 +209,18 @@ export function CompareModal({
           </span>
           <div className="cmp-toggles">
             <button
-              className={"fit-toggle" + (fitContain ? " on" : "")}
+              className={"fit-toggle" + (fitContain || maximized ? " on" : "")}
+              disabled={maximized}
               onClick={() => setFitContain((v) => !v)}
               title={
-                fitContain
+                maximized
+                  ? "전체화면에서는 원본 전체 보기로 고정됩니다"
+                  : fitContain
                   ? "전체 보기(블랙바) — 클릭 시 꽉 채우기"
                   : "꽉 채우기(크롭) — 클릭 시 전체 보기"
               }
             >
-              {fitContain ? "▢" : "▣"}
+              {fitContain || maximized ? "▢" : "▣"}
             </button>
             <label className="cmp-onlydiff">
               <input
@@ -240,7 +243,7 @@ export function CompareModal({
         </div>
         <div className="cmp-body">
           <div
-            className={"cmp-cols" + (fitContain ? " fit-contain" : "")}
+            className={"cmp-cols" + (fitContain || maximized ? " fit-contain" : "")}
             style={{ gridTemplateColumns: `repeat(${gens.length}, minmax(220px, 1fr))` }}
           >
             {gens.map((generation, idx) => (
@@ -258,6 +261,7 @@ export function CompareModal({
                 onSourcePreview={setSrcPreview}
                 prompt={prompts[idx]}
                 promptOnly={promptOnly}
+                useOriginalMedia={maximized}
                 videoRefs={videoRefs}
               />
             ))}

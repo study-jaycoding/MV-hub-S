@@ -8,6 +8,14 @@ export interface CompareWindowRect {
 export const COMPARE_WINDOW_MIN_WIDTH = 560;
 export const COMPARE_WINDOW_MIN_HEIGHT = 360;
 
+export function compareImageSource(
+  original: string | null | undefined,
+  thumbnail: string | null | undefined,
+  useOriginal: boolean,
+): string | null {
+  return (useOriginal ? original || thumbnail : thumbnail || original) || null;
+}
+
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
 

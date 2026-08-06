@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   COMPARE_WINDOW_MIN_HEIGHT,
   COMPARE_WINDOW_MIN_WIDTH,
+  compareImageSource,
   fitCompareWindowToViewport,
   moveCompareWindow,
   resizeCompareWindow,
@@ -10,6 +11,12 @@ import {
 const start = { left: 100, top: 80, width: 900, height: 600 };
 
 describe("compareWindow", () => {
+  it("일반 창은 썸네일, 전체화면은 원본 이미지를 우선한다", () => {
+    expect(compareImageSource("/original.png", "/thumb.png", false)).toBe("/thumb.png");
+    expect(compareImageSource("/original.png", "/thumb.png", true)).toBe("/original.png");
+    expect(compareImageSource(null, "/thumb.png", true)).toBe("/thumb.png");
+  });
+
   it("이동할 때 창 전체가 화면 밖으로 빠져나가지 않는다", () => {
     expect(moveCompareWindow(start, -500, -500, 1200, 800)).toEqual({
       ...start,

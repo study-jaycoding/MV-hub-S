@@ -8,6 +8,7 @@ import {
   tokenizePrompt,
 } from "../../lib/compareDiff";
 import { displayThumb, hideBrokenImg, showLoadedImg, thumbUrl } from "../../lib/media";
+import { compareImageSource } from "../../lib/compareWindow";
 import { refSrc } from "../../lib/promptParts";
 import type { Generation, Reference } from "../../types";
 import type { CompareSourcePreview } from "./CompareSourceLightbox";
@@ -56,6 +57,7 @@ export function CompareGenerationColumn({
   onSourcePreview,
   prompt,
   promptOnly,
+  useOriginalMedia,
   videoRefs,
 }: {
   common: Set<string>;
@@ -70,12 +72,14 @@ export function CompareGenerationColumn({
   onSourcePreview: (preview: CompareSourcePreview) => void;
   prompt: string;
   promptOnly: boolean;
+  useOriginalMedia: boolean;
   videoRefs: MutableRefObject<(HTMLVideoElement | null)[]>;
 }) {
   const asset = generation.assets[0];
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (asset?.type !== "video" ? asset?.file_path : null);
   const thumb = mediaThumb(rawThumb, 512);
+  const imageSrc = compareImageSource(asset?.file_path, thumb, useOriginalMedia);
 
   return (
     <div className={"cmp-col" + (generation.is_final ? " final" : "")}>
@@ -84,18 +88,35 @@ export function CompareGenerationColumn({
           <div className="cmp-thumb">
             {isVideo && asset ? (
               <video
+                key={useOriginalMedia ? "original" : "preview"}
                 ref={(el) => {
                   videoRefs.current[index] = el;
                 }}
                 src={asset.file_path}
-                poster={thumb || undefined}
+                poster={useOriginalMedia ? undefined : thumb || undefined}
                 controls
                 muted
                 playsInline
-                preload="metadata"
+                preload={useOriginalMedia ? "auto" : "metadata"}
               />
-            ) : thumb ? (
-              <img src={thumb} alt={generation.prompt} loading="lazy" decoding="async" />
+            ) : imageSrc ? (
+              <img
+                key={useOriginalMedia ? "original" : "preview"}
+                src={imageSrc}
+                alt={generation.prompt}
+                loading={useOriginalMedia ? "eager" : "lazy"}
+                decoding="async"
+                onError={(event) => {
+                  if (
+                    useOriginalMedia &&
+                    thumb &&
+                    event.currentTarget.dataset.fallbackApplied !== "1"
+                  ) {
+                    event.currentTarget.dataset.fallbackApplied = "1";
+                    event.currentTarget.src = thumb;
+                  }
+                }}
+              />
             ) : (
               <div className="cmp-thumb-empty">{generation.status}</div>
             )}
