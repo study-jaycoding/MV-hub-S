@@ -354,7 +354,9 @@ async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str
         return {"job_set_type": job_set_type, "type": "image", "params": []}
     result = {
         "display_name": data.get("display_name"),
-        "job_set_type": data.get("job_set_type") or job_set_type,
+        # CLI 1.1.20 model get 도 job_set_type 대신 job_type 을 반환한다. 내부 응답 계약은
+        # 계속 job_set_type 으로 유지하되 신·구 CLI 필드를 모두 받는다.
+        "job_set_type": data.get("job_set_type") or data.get("job_type") or job_set_type,
         "type": data.get("type") or "image",
         "params": data.get("params") or [],
     }

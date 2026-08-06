@@ -79,6 +79,46 @@ function Get-ReleaseFile {
     }
 }
 
+function Assert-BundledCli {
+    param(
+        [string]$Root,
+        [string]$ExpectedVersion = "",
+        [string]$Label = "package"
+    )
+
+    $PinPath = Join-Path $Root "hf_cli_version.txt"
+    $ManifestPath = Join-Path $Root "runtime\higgsfield\node_modules\@higgsfield\cli\package.json"
+    $NodeExe = Join-Path $Root "runtime\node\node.exe"
+    $CliEntry = Join-Path $Root "runtime\higgsfield\node_modules\@higgsfield\cli\bin\higgsfield.js"
+    foreach ($RequiredPath in @($PinPath, $ManifestPath, $NodeExe, $CliEntry)) {
+        if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
+            throw "Bundled CLI validation failed ($Label): missing $RequiredPath"
+        }
+    }
+
+    $Pin = (Get-Content -LiteralPath $PinPath -TotalCount 1).Trim()
+    $PackageVersion = [string]((Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json).version)
+    if (-not $Pin -or $PackageVersion -ne $Pin) {
+        throw "Bundled CLI validation failed ($Label): pin=$Pin package=$PackageVersion"
+    }
+    if ($ExpectedVersion -and $Pin -ne $ExpectedVersion) {
+        throw "Bundled CLI validation failed ($Label): latest=$ExpectedVersion package=$Pin"
+    }
+
+    $VersionOutput = @(& $NodeExe $CliEntry version 2>&1)
+    $VersionText = $VersionOutput -join "`n"
+    $VersionLine = $VersionText.Trim()
+    $ExpectedPrefix = "higgsfield $Pin"
+    if (
+        $LASTEXITCODE -ne 0 -or
+        ($VersionLine -ne $ExpectedPrefix -and -not $VersionLine.StartsWith($ExpectedPrefix + " "))
+    ) {
+        throw "Bundled CLI execution failed ($Label): expected=$Pin output=$VersionText"
+    }
+    Write-Host "[$Label] Higgsfield CLI verified: $Pin"
+    return $Pin
+}
+
 function Stop-MvHubProcesses {
     param([string]$Root)
 
@@ -161,6 +201,8 @@ function Install-Package {
 
     Write-Host "[install] Extracting..."
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
+    $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
+    Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
 
     Write-Host "[install] Installing to $TargetDir..."
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
@@ -168,6 +210,7 @@ function Install-Package {
     Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
     }
+    Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
     Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
 }
 
@@ -191,11 +234,22 @@ try {
         $CurrentVersion = (Get-Content -LiteralPath $VersionPath -Raw).Trim()
     }
 
-    if ($CurrentVersion -eq [string]$Latest.version) {
-        Write-Host "[2/3] Already installed: $CurrentVersion"
-        Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
+    $NeedsInstall = $CurrentVersion -ne [string]$Latest.version
+    if (-not $NeedsInstall) {
+        try {
+            Assert-BundledCli `
+                -Root $TargetDir `
+                -ExpectedVersion ([string]$Latest.higgsfield_cli_version) `
+                -Label "installed" | Out-Null
+            Write-Host "[2/3] Already installed: $CurrentVersion"
+            Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
+        }
+        catch {
+            Write-Host "[2/3] App version matches, but bundled CLI needs repair: $($_.Exception.Message)"
+            $NeedsInstall = $true
+        }
     }
-    else {
+    if ($NeedsInstall) {
         Write-Host "[2/3] Installing/updating: '$CurrentVersion' -> '$($Latest.version)'"
         Install-Package -Latest $Latest -TempRoot $TempRoot
     }

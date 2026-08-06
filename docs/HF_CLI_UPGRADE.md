@@ -10,7 +10,7 @@
 
 ## 버전 pin 단일 출처
 
-- `hf_cli_version.txt` (저장소 루트) — 한 줄, 예: `1.1.8`.
+- `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.20`.
 - 이 값을 런처(`MV_agent.bat`)·업데이트(`update_cli.bat`)·릴리스(`release/make_release.ps1`)·
   서버 생성 bat(`backend/app/routers/ingest.py`)·초기설치(`setup_clone_git.bat`)가 모두 읽어
   **정확히 이 버전**을 설치/검증한다. `MV_agent.bat` 은 매 실행 때 설치본이 pin 과 다르면 교정한다.
@@ -48,7 +48,8 @@ python tools/hf_cli_check_update.py
 5. (선택) 소액 유료 생성 1건으로 `generate create ... --wait --json` 실제 결과를 확인한다 —
    이건 무료 스모크가 못 잡는다.
 6. 커밋(무엇이 바뀌어 무엇을 고쳤는지) 후 `release/make_release.bat` 로 릴리스 빌드.
-   (릴리스는 pin 과 다른 CLI 를 번들하려 하면 빌드가 중단된다.)
+   릴리스는 빌드 원본뿐 아니라 완성된 ZIP 안의 pin·npm package 버전까지 다시 비교한다.
+   작업자는 이후 `update_release.bat`만 실행하면 코드와 해당 CLI가 함께 교체된다.
 
 ## CLI 출력/플래그를 읽는 곳 (계약이 깨지면 여기를 고친다)
 

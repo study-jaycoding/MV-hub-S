@@ -26,6 +26,27 @@ function Copy-RoboChecked {
     }
 }
 
+function Read-ArchiveText {
+    param(
+        [object]$Archive,
+        [string]$EntryName
+    )
+
+    $Entry = $Archive.Entries | Where-Object {
+        $_.FullName.Replace("\", "/") -eq $EntryName
+    } | Select-Object -First 1
+    if (-not $Entry) {
+        throw "Release archive is missing required file: $EntryName"
+    }
+    $Reader = New-Object System.IO.StreamReader($Entry.Open())
+    try {
+        return $Reader.ReadToEnd()
+    }
+    finally {
+        $Reader.Dispose()
+    }
+}
+
 function Assert-ReleaseArchive {
     param(
         [string]$ArchivePath,
@@ -39,21 +60,33 @@ function Assert-ReleaseArchive {
         $Names = @($Entries | ForEach-Object { $_.FullName.Replace("\", "/") })
         $Required = @(
             "VERSION.txt",
+            "MV_agent.bat",
+            "update_release.bat",
+            "agent_push.py",
+            "hf_cli_version.txt",
             "backend/serve.py",
             "backend/app/main.py",
+            "backend/requirements.txt",
             "frontend/dist/index.html",
             "runtime/python/python.exe",
+            "runtime/python/Lib/site-packages/fastapi/__init__.py",
+            "runtime/python/Lib/site-packages/pip/__init__.py",
+            "backend/.deps_installed",
             "runtime/node/node.exe",
-            "runtime/higgsfield/higgsfield.cmd"
+            "runtime/node/npm.cmd",
+            "runtime/higgsfield/higgsfield.cmd",
+            "runtime/higgsfield/node_modules/@higgsfield/cli/bin/higgsfield.js"
         )
         if ($SkipPythonRuntime) {
-            $Required = @($Required | Where-Object { $_ -ne "runtime/python/python.exe" })
+            $Required = @($Required | Where-Object {
+                $_ -notmatch "^(runtime/python/|backend/\.deps_installed$)"
+            })
         }
         if ($SkipNodeRuntime) {
-            $Required = @($Required | Where-Object { $_ -ne "runtime/node/node.exe" })
+            $Required = @($Required | Where-Object { $_ -notmatch "^runtime/node/" })
         }
         if ($SkipHiggsfieldCli) {
-            $Required = @($Required | Where-Object { $_ -ne "runtime/higgsfield/higgsfield.cmd" })
+            $Required = @($Required | Where-Object { $_ -notmatch "^runtime/higgsfield/" })
         }
         foreach ($Name in $Required) {
             if ($Names -notcontains $Name) {
@@ -61,29 +94,77 @@ function Assert-ReleaseArchive {
             }
         }
 
+        # 릴리즈는 복사 허용 목록으로 만들지만, 나중에 스테이징 로직이 바뀌어 개발 파일이
+        # 조용히 추가되는 회귀도 압축을 배포하기 전에 막는다.
+        $AllowedTopLevel = @(
+            "VERSION.txt",
+            "backend",
+            "frontend",
+            "runtime",
+            "MV_agent.bat",
+            "update_release.bat",
+            "agent_push.py",
+            "hf_cli_version.txt"
+        )
+        $UnexpectedTopLevel = @($Names | Where-Object {
+            $TopLevel = ($_ -split "/", 2)[0]
+            $AllowedTopLevel -notcontains $TopLevel
+        })
+        $AllowedBackendFiles = @(
+            "backend/serve.py",
+            "backend/schema.sql",
+            "backend/requirements.txt",
+            "backend/.deps_installed"
+        )
+        $UnexpectedBackend = @($Names | Where-Object {
+            $_ -match "^backend/" -and
+            $_ -notmatch "^backend/app(/|$)" -and
+            $AllowedBackendFiles -notcontains $_
+        })
+        $UnexpectedFrontend = @($Names | Where-Object {
+            $_ -match "^frontend/" -and $_ -notmatch "^frontend/dist(/|$)"
+        })
+        $UnexpectedLayout = @($UnexpectedTopLevel + $UnexpectedBackend + $UnexpectedFrontend)
+        if ($UnexpectedLayout.Count -gt 0) {
+            $Preview = ($UnexpectedLayout | Select-Object -Unique -First 10) -join ", "
+            throw "Release archive contains files outside the allowlist: $Preview"
+        }
+
         $Forbidden = @($Names | Where-Object {
             $_ -match "^backend/(data|data_test|data_backup_[^/]*|\.data_test-incoming-[^/]*|_pm_test_data_snapshots|media|\.pytest_cache|tests)(/|$)" -or
             $_ -match "^backend/.*\.(db|db-wal|db-shm|sqlite|sqlite3)$" -or
-            $_ -match "^backend/(.*/)?__pycache__(/|$)"
+            $_ -match "^backend/(.*/)?__pycache__(/|$)" -or
+            $_ -match "^backend/(backfill_import|cleanup_orphan_creators|reset_db|requirements-dev\.txt)$" -or
+            $_ -match "^frontend/(src|tests|node_modules)(/|$)" -or
+            $_ -match "^frontend/.*\.(map|tsbuildinfo)$" -or
+            $_ -match "^(docs|tools|deploy|release|predeploy-reports)(/|$)" -or
+            $_ -match "^(test_.*\.bat|setup_clone_git\.bat|update_git\.bat)$" -or
+            $_ -match "(^|/)\.env($|\.)" -or
+            $_ -match "(^|/)(publish_target|INSTALL_SOURCE)\.txt$"
         })
         if ($Forbidden.Count -gt 0) {
             $Preview = ($Forbidden | Select-Object -First 10) -join ", "
             throw "Release archive contains forbidden local/test data: $Preview"
         }
 
-        $VersionEntry = $Archive.GetEntry("VERSION.txt")
-        if (-not $VersionEntry) {
-            throw "VERSION.txt is missing from release archive."
-        }
-        $Reader = New-Object System.IO.StreamReader($VersionEntry.Open())
-        try {
-            $ArchiveVersion = $Reader.ReadToEnd().Trim()
-        }
-        finally {
-            $Reader.Dispose()
-        }
+        $ArchiveVersion = (Read-ArchiveText -Archive $Archive -EntryName "VERSION.txt").Trim()
         if ($ArchiveVersion -ne $ExpectedVersion) {
             throw "Release version mismatch: expected $ExpectedVersion, got $ArchiveVersion"
+        }
+
+        # 빌드 원본만 믿지 않고 완성된 ZIP 안의 pin과 실제 npm 패키지 버전을 다시 비교한다.
+        # 이 검사를 통과한 ZIP이면 update_release.bat 하나로 코드와 정확한 CLI를 함께 배포할 수 있다.
+        if (-not $SkipHiggsfieldCli) {
+            $ArchiveCliPin = (Read-ArchiveText -Archive $Archive -EntryName "hf_cli_version.txt").Trim()
+            $ArchiveCliManifest = (
+                Read-ArchiveText `
+                    -Archive $Archive `
+                    -EntryName "runtime/higgsfield/node_modules/@higgsfield/cli/package.json"
+            ) | ConvertFrom-Json
+            $ArchiveCliVersion = [string]$ArchiveCliManifest.version
+            if (-not $ArchiveCliPin -or $ArchiveCliVersion -ne $ArchiveCliPin) {
+                throw "Bundled Higgsfield CLI mismatch: pin=$ArchiveCliPin package=$ArchiveCliVersion"
+            }
         }
     }
     finally {
@@ -191,6 +272,7 @@ $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $PackageName = "MVHub-$Version"
 $StagingRoot = Join-Path $PSScriptRoot "_staging"
 $Stage = Join-Path $StagingRoot $PackageName
+$ReleaseCliVersion = ""
 
 Write-Host "[1/8] Preparing staging folder..."
 Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -227,10 +309,7 @@ Copy-RoboChecked `
 $BackendFiles = @(
     "serve.py",
     "schema.sql",
-    "requirements.txt",
-    "backfill_import.py",
-    "cleanup_orphan_creators.py",
-    "reset_db.py"
+    "requirements.txt"
 )
 foreach ($Name in $BackendFiles) {
     $Src = Join-Path $ProjectRoot "backend\$Name"
@@ -242,17 +321,17 @@ foreach ($Name in $BackendFiles) {
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "frontend") | Out-Null
 Copy-RoboChecked `
     -Source (Join-Path $ProjectRoot "frontend\dist") `
-    -Destination (Join-Path $Stage "frontend\dist")
+    -Destination (Join-Path $Stage "frontend\dist") `
+    -ExtraArgs @(
+        "/XD", ".vite",
+        "/XF", "*.map", "*.tsbuildinfo"
+    )
 
 $RootFiles = @(
     "MV_agent.bat",
     "update_release.bat",
-    "MV_server.bat",
-    "cli-login.bat",
-    "update_cli.bat",
     "agent_push.py",
-    "hf_cli_version.txt",
-    "README.md"
+    "hf_cli_version.txt"
 )
 foreach ($Name in $RootFiles) {
     $Src = Join-Path $ProjectRoot $Name
@@ -276,13 +355,25 @@ if (-not $SkipPythonRuntime) {
             "/XD",
             (Join-Path $Python.Root "Doc"),
             (Join-Path $Python.Root "Lib\site-packages"),
+            (Join-Path $Python.Root "Lib\ensurepip"),
+            (Join-Path $Python.Root "Lib\idlelib"),
+            (Join-Path $Python.Root "Lib\tkinter"),
+            (Join-Path $Python.Root "Lib\turtledemo"),
+            (Join-Path $Python.Root "Lib\venv"),
+            (Join-Path $Python.Root "Scripts"),
+            (Join-Path $Python.Root "include"),
+            (Join-Path $Python.Root "libs"),
+            (Join-Path $Python.Root "tcl"),
             "__pycache__",
-            "/XF", "*.pyc", "*.pyo"
+            "/XF", "*.pyc", "*.pyo", "pythonw.exe", "_tkinter.pyd", "tcl*.dll", "tk*.dll"
         )
 
     New-Item -ItemType Directory -Force -Path $SitePackages | Out-Null
     Write-Host "      Installing backend packages into runtime..."
-    & $Python.Exe -m pip install --upgrade --ignore-installed --target $SitePackages -r (Join-Path $ProjectRoot "backend\requirements.txt")
+    # 원본 Python의 site-packages는 복사하지 않으므로 pip도 명시적으로 넣는다. MV_agent.bat이
+    # 누락된 앱 의존성을 자동 복구할 때 `python -m pip`가 실제로 동작해야 한다.
+    & $Python.Exe -m pip install --upgrade --ignore-installed --target $SitePackages `
+        "pip==25.3" -r (Join-Path $ProjectRoot "backend\requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "pip install into bundled runtime failed"
     }
@@ -321,6 +412,7 @@ if (-not $SkipHiggsfieldCli) {
         throw "hf_cli_version.txt not found at repo root - cannot verify the bundled CLI version."
     }
     $HfPin = (Get-Content -LiteralPath $HfPinFile -TotalCount 1).Trim()
+    $ReleaseCliVersion = $HfPin
     $BundledVer = (Get-Content -LiteralPath (Join-Path $Higgsfield.Package "package.json") -Raw | ConvertFrom-Json).version
     if ($BundledVer -ne $HfPin) {
         throw "Higgsfield CLI to bundle is $BundledVer but hf_cli_version.txt pins $HfPin. Fix: npm install -g @higgsfield/cli@$HfPin then re-run (or update the pin file)."
@@ -368,6 +460,7 @@ $Zip = Get-Item -LiteralPath $ZipPath
 $Hash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $Latest = [ordered]@{
     version = $Version
+    higgsfield_cli_version = $ReleaseCliVersion
     file = $Zip.Name
     sha256 = $Hash
     size = $Zip.Length

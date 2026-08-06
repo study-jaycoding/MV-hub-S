@@ -29,6 +29,33 @@ try {
     finally {
         $Reader.Dispose()
     }
+
+    $CliPinEntry = $Archive.Entries | Where-Object {
+        $_.FullName.Replace("\", "/") -eq "hf_cli_version.txt"
+    } | Select-Object -First 1
+    $CliPackageEntry = $Archive.Entries | Where-Object {
+        $_.FullName.Replace("\", "/") -eq "runtime/higgsfield/node_modules/@higgsfield/cli/package.json"
+    } | Select-Object -First 1
+    if (-not $CliPinEntry -or -not $CliPackageEntry) {
+        throw "Bundled Higgsfield CLI metadata is missing from package: $($Package.FullName)"
+    }
+    $Reader = New-Object System.IO.StreamReader($CliPinEntry.Open())
+    try {
+        $CliVersion = $Reader.ReadToEnd().Trim()
+    }
+    finally {
+        $Reader.Dispose()
+    }
+    $Reader = New-Object System.IO.StreamReader($CliPackageEntry.Open())
+    try {
+        $CliPackageVersion = [string](($Reader.ReadToEnd() | ConvertFrom-Json).version)
+    }
+    finally {
+        $Reader.Dispose()
+    }
+    if (-not $CliVersion -or $CliPackageVersion -ne $CliVersion) {
+        throw "Bundled Higgsfield CLI mismatch: pin=$CliVersion package=$CliPackageVersion"
+    }
 }
 finally {
     $Archive.Dispose()
@@ -39,6 +66,7 @@ if (-not $Version) {
 
 $Latest = [ordered]@{
     version = $Version
+    higgsfield_cli_version = $CliVersion
     file = $Package.Name
     sha256 = (Get-FileHash -LiteralPath $Package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     size = $Package.Length
@@ -63,6 +91,7 @@ finally {
 
 Write-Host "Selected release:"
 Write-Host "  version: $Version"
+Write-Host "  cli    : $CliVersion"
 Write-Host "  package: $($Package.FullName)"
 Write-Host "  latest : $LatestPath"
 Write-Host "Workers can now run update_release.bat to install this exact version."

@@ -95,7 +95,7 @@ def main() -> int:
                f"키={list(m0)} (1.x=job_type)")
         record(PASS if "display_name" in m0 else FAIL, "model list 항목에 display_name", f"키={list(m0)}")
 
-    # 3) model get — _allowed_params / get_model_params 가 params[].name, job_set_type 의존
+    # 3) model get — _allowed_params / get_model_params 가 params[].name과 모델키에 의존
     mg, err = run_json(cli, "model", "get", "nano_banana_flash")
     if err or not isinstance(mg, dict):
         record(FAIL, "model get nano_banana_flash = JSON dict", err or f"type={type(mg).__name__}")
@@ -103,8 +103,9 @@ def main() -> int:
         params = mg.get("params") or []
         names = [p.get("name") for p in params if isinstance(p, dict)]
         record(PASS if names else FAIL, "model get: params[].name 존재", f"params={names}")
-        # model get 은 1.x 에서도 job_set_type 유지(불일치 주의)
-        record(PASS if mg.get("job_set_type") else WARN, "model get: job_set_type 유지",
+        # 1.1.20부터 model get도 job_type을 사용한다. 앱은 신·구 키를 모두 수용한다.
+        model_key = mg.get("job_set_type") or mg.get("job_type")
+        record(PASS if model_key else FAIL, "model get: job_type|job_set_type",
                f"job_set_type={mg.get('job_set_type')!r} job_type={mg.get('job_type')!r}")
 
     # 4) account status — email/credits (auth+workspace 필요)

@@ -49,6 +49,11 @@ frontend\dist         # 빌드 완료된 프론트
 backend               # 백엔드 코드
 ```
 
+`hf_cli_version.txt`의 고정 버전과 실제 번들 npm 패키지 버전이 다르면 릴리즈 생성이 중단됩니다.
+완성된 ZIP 내부에서도 같은 검사를 한 번 더 수행하고, `latest.json`에
+`higgsfield_cli_version`을 기록합니다. 따라서 작업자는 `update_release.bat`만 실행하면 앱 코드와
+Higgsfield CLI가 함께 갱신되며, 릴리즈 설치본에서는 `update_git.bat`을 사용할 필요가 없습니다.
+
 ## 서버 폴더
 
 서버에는 아래 구조만 있으면 됩니다.
@@ -99,7 +104,7 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 1. 관리자가 `make_release.bat`로 새 zip 생성 (→ `publish_target.txt` 설정 시 서버 `packages`로 자동 복사)
 2. (자동 복사 안 쓰면) 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 수동 복사
 3. 작업자는 로컬 `Desktop\MV-hub-S\update_release.bat` 실행
-4. 버전이 다르면 자동 다운로드/검증/설치
+4. 앱 또는 번들 CLI 버전이 다르면 자동 다운로드/검증/설치
 5. 업데이트 후 필요할 때 `MV_agent.bat` 실행
 
 ## 직전 버전으로 롤백
@@ -117,6 +122,21 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 설치/업데이트는 앱 파일만 덮어씁니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
 복사하며, `backend\data`, `data_test`, 테스트 스냅샷, DB, 미디어, 캐시는 zip에 포함하지 않습니다.
 압축 후에도 필수 런타임 존재와 로컬 데이터 부재를 자동 검증하고 실패하면 zip을 폐기합니다.
+
+저장소 관리자만 사용하는 `backfill_import.py`, `cleanup_orphan_creators.py`, `reset_db.py`도
+작업자 릴리즈에서는 제외합니다. 테스트 BAT·테스트 코드·개발 문서와 도구·프론트 소스맵·로컬
+설정 파일이 ZIP에 섞여도 검증 단계에서 실패합니다. 단, `test_pull-db`가 배포된 서버에서 안전한
+DB 사본을 만들 때 사용하는 스냅샷 기능 코드는 평소 비활성 상태로 앱에 유지됩니다.
+압축 검증은 금지 파일 검사뿐 아니라 최상위·백엔드·프론트 허용 구조도 확인하므로, 새 개발
+파일을 릴리즈 복사 단계에 실수로 추가해도 배포 전에 중단됩니다.
+
+이 ZIP은 작업자 설치 전용이므로 Git 저장소에서만 쓰는 `MV_server.bat`, `update_cli.bat`, 루트
+`README.md`도 넣지 않습니다. 공유 서버는 저장소의 `MV_server.bat`으로 별도 운영하고, 작업자
+ZIP에는 `MV_agent.bat`, 자동 업데이트 파일과 실행 런타임만 넣습니다.
+
+portable Python에서는 컴파일·GUI 개발용 `include`, `libs`, Tcl/Tk, IDLE, venv와 기존 Scripts를
+제외합니다. 대신 앱 의존성이 손상됐을 때 `MV_agent.bat`이 자동 복구할 수 있도록 고정 버전 `pip`는
+반드시 포함하고, 압축 검증에서도 실제 모듈 존재를 확인합니다.
 
 ## 주의
 
