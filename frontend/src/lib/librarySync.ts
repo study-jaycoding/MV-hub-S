@@ -33,6 +33,8 @@ export class LibrarySyncState {
   private readonly bareReloadTokens = new Set<number>();
   private readonly domainAcknowledged = new Map<MutationDomain, Set<string>>();
   private pendingBareReload = false;
+  private bareDeferralArmed = true;
+  private bareDeferredWaitUntil = 0;
   private bareEchoGuardUntil = 0;
   private nextReloadId = 1;
 
@@ -160,9 +162,25 @@ export class LibrarySyncState {
   decide(origins: readonly LibraryMutationOrigin[] | null | undefined): LibrarySyncDecision {
     if (!origins?.length) {
       // 방금 bare synced가 시작한 reload가 아직 진행 중이면 결과를 기다린다. 성공 직후 되돌아온
-      // bare 신호는 구버전 서버의 조회 반향일 수 있어 짧게 생략하되, 그 밖의 syncer·외부 변경은 반영한다.
+      // bare 신호는 구버전 서버의 조회 반향일 수 있어 짧게 미루되, 그 밖의 syncer·외부 변경은 반영한다.
+      const now = this.now();
       if (this.pendingBareReload || this.bareReloadTokens.size) return "wait";
-      return this.now() < this.bareEchoGuardUntil ? "skip" : "reload";
+      // 가드 안 신호의 처분(코덱스 합의 D6): 반향인지 진짜 외부 변경인지 시간으로는 구분할 수
+      // 없으므로, 버리는 대신 가드가 끝날 때까지 "wait"로 미뤄 한 번 더 읽는다(유실 제거).
+      // 단 그 지연 reload 가 만든 다음 가드에서 또 bare 가 오면(반향 연쇄의 서명) 그때만 끊는다
+      // — 연쇄는 지연 1회를 허용해도 재점화되지 않고, 진짜 변경은 최대 한 신호만 놓친 뒤
+      // 다음 신호에서 복구된다(무한 reload 순환과 상시 유실을 맞바꾼 지점).
+      if (now < this.bareDeferredWaitUntil) return "wait"; // 지연 중 — 가드가 끝나면 reload 로 떨어진다
+      if (now < this.bareEchoGuardUntil) {
+        if (this.bareDeferralArmed) {
+          this.bareDeferralArmed = false;
+          this.bareDeferredWaitUntil = this.bareEchoGuardUntil;
+          return "wait";
+        }
+        this.bareDeferralArmed = true; // 연쇄를 끊었으니 다음 독립 신호는 다시 지연을 허용한다
+        return "skip";
+      }
+      return "reload";
     }
     const ownIds: string[] = [];
     for (const origin of origins) {

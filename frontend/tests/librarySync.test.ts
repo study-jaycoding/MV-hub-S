@@ -42,7 +42,7 @@ describe("LibrarySyncState", () => {
     expect(state.decide(undefined)).toBe("reload");
   });
 
-  it("출처 없는 신호로 시작한 reload의 구버전 서버 반향만 짧게 생략한다", () => {
+  it("가드 안 bare 신호는 버리지 않고 가드 종료까지 미뤄 한 번 더 읽는다(유실 제거)", () => {
     let now = 10_000;
     const state = new LibrarySyncState("client_self_123", () => now);
     state.trackBareSyncedForReload();
@@ -54,8 +54,33 @@ describe("LibrarySyncState", () => {
     expect(
       state.decide([{ client_id: "client_other_123", mutation_id: "mutation_other_123" }]),
     ).toBe("reload");
+    // 가드 안 첫 bare — 반향인지 진짜 외부 변경인지 구분 불가 → skip 대신 wait(지연).
+    expect(state.decide(undefined)).toBe("wait");
+    now += 400;
+    expect(state.decide(undefined)).toBe("wait"); // 가드가 끝날 때까지 유지
+    now += 700;
+    expect(state.decide(undefined)).toBe("reload"); // 가드 종료 → 지연 reload 실행
+  });
+
+  it("지연 reload 가 만든 다음 가드의 bare(반향 연쇄)만 끊고, 그 다음 기회는 다시 지연한다", () => {
+    let now = 10_000;
+    const state = new LibrarySyncState("client_self_123", () => now);
+    // 1차 bare reload → 가드 → 가드 안 신호는 지연됐다가 reload 로 실행됨(위 테스트 경로).
+    state.trackBareSyncedForReload();
+    const first = state.beginReload();
+    state.finishReload(first, true);
+    expect(state.decide(undefined)).toBe("wait");
+    now += 1_100;
+    expect(state.decide(undefined)).toBe("reload");
+    // 지연 reload(2차)가 실행되고 그 자신도 bare 로 시작한다.
+    state.trackBareSyncedForReload();
+    const second = state.beginReload();
+    state.finishReload(second, true);
+    // 2차 가드 안에서 또 bare = 구서버 반향 연쇄의 서명 — 여기서만 끊는다(무한 순환 차단).
     expect(state.decide(undefined)).toBe("skip");
-    now += 1_000;
+    // 끊은 뒤 다음 독립 신호는 다시 지연이 허용된다(재무장) — 상시 유실로 돌아가지 않는다.
+    expect(state.decide(undefined)).toBe("wait");
+    now += 1_100;
     expect(state.decide(undefined)).toBe("reload");
   });
 
