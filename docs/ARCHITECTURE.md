@@ -111,6 +111,10 @@ HTTP 요청
 |---|---|
 | `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
 
+> usecase 는 FastAPI 를 직접 import 하지 않는다(test_architecture_boundaries 가 강제).
+> 알려진 예외: `gen_requests.py` 가 진행률 브로드캐스트를 위해 `app.ws` 를 직접 의존한다
+> — ws.py 가 FastAPI 타입을 쓰므로 전이적으로는 묶여 있다. 다음 정리 후보(notifier 포트 주입).
+
 ### 4.4 데이터 접근 (`backend/app/repo/`) — 패키지로 분해
 
 `repo.py` 가 비대해져 모듈로 분리, `__init__.py` 의 re-export 로 `repo.X` API 동일 유지(파사드).
