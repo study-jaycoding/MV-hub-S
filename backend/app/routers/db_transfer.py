@@ -11,7 +11,6 @@ import json
 import os
 import secrets
 import shutil
-import sqlite3
 import tempfile
 import time
 import urllib.error
@@ -27,6 +26,8 @@ from .. import db, repo
 from ..config import AUTH_ENABLED, DATA_DIR
 from ..deps import require_admin
 from ..repo import identity
+from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
+from ..services.db_scrub import strip_transfer_secrets as _strip_session
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
 from ..services.test_snapshot import TestSnapshotError, create_test_snapshot_archive
@@ -41,34 +42,8 @@ def _require_local_when_open(request: Request) -> None:
         return
     require_loopback_request(request, "이 작업은 로컬에서만 가능합니다")
 
-# 업로드 전/복원 후 비울 세션·보안·신원 키. 가져온 DB 가 남의 토큰으로 서버에 proxy 하거나 위장
-# 로그인되는 것을 막고, 남의 .db 를 파일 가져오기 했을 때 그 사람의 로그인 신원·역할(admin 뱃지)이
-# 남지 않게 한다(서버 주소 shared_server_url 만 무해해 남긴다). ★email/name/roles 도 비운다 —
-# 안 그러면 가져온 DB 주인이 admin 이었으면 가져온 사람 화면에 admin 탭이 (재로그인 전까지) 뜬다.
-_SESSION_KEYS = (
-    "shared_server_token",
-    "shared_server_email",
-    "shared_server_name",
-    "shared_server_roles",
-    "shared_server_elev_token",
-    "shared_server_elev_email",
-    "shared_server_elev_name",
-    "auth_secret",
-)
-
-
-def _strip_session(db_path: Path) -> None:
-    """주어진 .db 의 세션·보안 설정을 비운다(업로드 사본/복원 대상에 적용)."""
-    c = sqlite3.connect(str(db_path))
-    try:
-        c.execute("BEGIN")
-        for k in _SESSION_KEYS:
-            c.execute("DELETE FROM app_setting WHERE key=?", (k,))
-        c.execute("COMMIT")
-    except sqlite3.DatabaseError:
-        pass
-    finally:
-        c.close()
+# 세션·보안 키 목록과 전송 프로파일 정제는 services/db_scrub.py 로 이동(테스트 스냅샷
+# 프로파일과 정책을 한곳에서 관리). 이 모듈의 _SESSION_KEYS/_strip_session 이름은 유지.
 
 
 def _install_db(tmp: Path) -> dict:

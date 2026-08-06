@@ -15,6 +15,7 @@ import zipfile
 from contextlib import closing
 from pathlib import Path, PurePosixPath
 
+from .db_scrub import scrub_test_snapshot_db
 from .sqlite_db import HubDbValidationError, validate_hub_db
 
 SNAPSHOT_FORMAT = "mvhub-test-db-snapshot"
@@ -74,6 +75,14 @@ def create_test_snapshot_archive(data_dir: Path) -> Path:
                 snapshot_handle.close()
                 try:
                     _sqlite_snapshot(source, snapshot)
+                    # 임시 사본에서 운영 비밀값 정제(원본 무접촉) — 실패하면 번들 생성 자체를 중단한다.
+                    # 정제 안 된 스냅샷이 조용히 나가는 것이 곧 auth_secret·비밀번호 해시 유출이다.
+                    try:
+                        scrub_test_snapshot_db(snapshot, create_test_admin=(source == primary))
+                    except sqlite3.DatabaseError as exc:
+                        raise TestSnapshotError(
+                            f"스냅샷 비밀값 정제에 실패했습니다: {source.name}"
+                        ) from exc
                     archive_name = _db_archive_name(db_root, source)
                     size = snapshot.stat().st_size
                     bundle.write(snapshot, archive_name)

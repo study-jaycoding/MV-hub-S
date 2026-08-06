@@ -18,6 +18,7 @@ BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.services.db_scrub import scrub_test_snapshot_db
 from app.services.test_snapshot import TestSnapshotError, extract_test_snapshot_archive
 from account_paths import account_slug
 
@@ -119,6 +120,9 @@ def copy_snapshot(src: Path, dst: Path) -> None:
             continue
         if path.suffix.lower() == ".db":
             backup_sqlite(path, target)
+            # 로컬 복사 경로도 서버 스냅샷과 같은 테스트 정제 정책 — 운영 서명키·비밀번호
+            # 해시가 테스트 사본에 남지 않게 한다(기본 DB에만 테스트 관리자 생성).
+            scrub_test_snapshot_db(target, create_test_admin=(rel == Path("db") / "content_hub.db"))
             copied_dbs += 1
         else:
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -138,3 +138,103 @@ def test_enabled_snapshot_endpoint_returns_multi_db_zip(
         archive.unlink(missing_ok=True)
         primary.close()
         manage.close()
+
+
+ACCOUNT_SCHEMA = (
+    "CREATE TABLE account("
+    "email TEXT PRIMARY KEY, name TEXT, password_hash TEXT NOT NULL, "
+    "status TEXT NOT NULL DEFAULT 'pending', global_role TEXT, creator_uid TEXT, "
+    "created_at TEXT NOT NULL DEFAULT (datetime('now')), approved_at TEXT, "
+    "password_changed_at TEXT)"
+)
+
+
+def _secrets_db(path: Path) -> None:
+    """운영 비밀값(서명키·세션·실계정 해시)이 든 허브 DB 를 흉내 낸다."""
+    from app.services import auth
+
+    conn = _db(path, "CREATE TABLE generation(id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT INTO app_setting VALUES('auth_secret','prod-secret'),"
+        "('shared_server_token','prod-token'),('comfy_api_key','prod-comfy-key'),"
+        "('shared_server_url','http://srv:8010')"
+    )
+    conn.execute(ACCOUNT_SCHEMA)
+    conn.execute(
+        "INSERT INTO account(email, password_hash, status, global_role) VALUES(?,?,?,?)",
+        ("boss@team.com", auth.hash_password("prod-pw"), "approved", "admin"),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_snapshot_scrubs_secrets_and_creates_single_test_admin(tmp_path: Path):
+    # ★보안 계약: 번들 어디에도 운영 auth_secret·세션 토큰·운영 비밀번호 해시가 남지 않고,
+    #  로그인 가능한 계정은 기본 DB의 테스트 관리자 1명뿐이다(계정별 DB엔 생성 안 함).
+    from app.services import auth
+    from app.services.db_scrub import (
+        DISABLED_PASSWORD_HASH,
+        TEST_ADMIN_EMAIL,
+        TEST_ADMIN_PASSWORD,
+    )
+
+    data = tmp_path / "data"
+    _secrets_db(data / "db" / "content_hub.db")
+    _secrets_db(data / "db" / "acct" / "worker" / "content_hub.db")
+
+    archive = create_test_snapshot_archive(data)
+    dest = tmp_path / "installed"
+    try:
+        extract_test_snapshot_archive(archive, dest)
+    finally:
+        archive.unlink(missing_ok=True)
+
+    for rel, is_primary in (
+        (Path("db") / "content_hub.db", True),
+        (Path("db") / "acct" / "worker" / "content_hub.db", False),
+    ):
+        conn = sqlite3.connect(dest / rel)
+        conn.row_factory = sqlite3.Row
+        try:
+            keys = {r["key"] for r in conn.execute("SELECT key FROM app_setting")}
+            assert "auth_secret" not in keys and "shared_server_token" not in keys
+            assert "comfy_api_key" not in keys  # Cloud API 키 — 자격증명은 PC 밖으로 안 나간다
+            assert "shared_server_url" in keys  # 무해한 서버 주소는 보존
+            rows = {
+                r["email"]: r
+                for r in conn.execute("SELECT email, password_hash, status FROM account")
+            }
+            prod = rows["boss@team.com"]
+            assert prod["password_hash"] == DISABLED_PASSWORD_HASH
+            assert not auth.verify_password("prod-pw", prod["password_hash"])
+            if is_primary:
+                admin = rows[TEST_ADMIN_EMAIL]
+                assert admin["status"] == "approved"
+                assert auth.verify_password(TEST_ADMIN_PASSWORD, admin["password_hash"])
+            else:
+                assert TEST_ADMIN_EMAIL not in rows
+        finally:
+            conn.close()
+
+
+def test_transfer_strip_keeps_account_hashes(tmp_path: Path):
+    # 전송 프로파일은 세션·서명키만 지운다 — 계정 해시를 건드리면 server-backup 복원 후
+    # 본인 로그인이 불가능해진다(테스트 스냅샷 프로파일과 강도가 달라야 하는 이유).
+    from app.services import auth
+    from app.services.db_scrub import strip_transfer_secrets
+
+    path = tmp_path / "mine.db"
+    _secrets_db(path)
+    strip_transfer_secrets(path)
+
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        keys = {r["key"] for r in conn.execute("SELECT key FROM app_setting")}
+        assert "auth_secret" not in keys and "shared_server_token" not in keys
+        assert "comfy_api_key" not in keys  # 서버 백업 사본에도 API 키를 올리지 않는다
+        row = conn.execute("SELECT password_hash FROM account").fetchone()
+        assert auth.verify_password("prod-pw", row["password_hash"])
+    finally:
+        conn.close()
