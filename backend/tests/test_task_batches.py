@@ -125,6 +125,54 @@ class TaskBatchTests(unittest.TestCase):
         self.assertIn("없는 작업", raised.exception.detail)
         setter.assert_not_called()
 
+    def test_order_snapshot_assigns_positions_and_wins_over_items(self) -> None:
+        # 신형 계약: ordered_task_ids 위치가 곧 순서(i*10). 함께 온 items(구서버 호환용)는 무시.
+        body = manage_router.TaskOrderBatchIn(
+            ordered_task_ids=["t2", "t1"],
+            items=[manage_router.TaskOrderItem(task_id="t9", sort_order=999)],
+        )
+        with (
+            patch.object(
+                manage_router.repo_manage,
+                "task_projects",
+                return_value={"t1": "p1", "t2": "p1"},
+            ),
+            patch.object(manage_router, "_require_project_manage"),
+            patch.object(
+                manage_router.repo_manage, "bulk_update_task_orders", return_value=2
+            ) as bulk,
+        ):
+            result = manage_router.update_task_order_batch(body, Mock())
+
+        self.assertEqual(result, {"ok": True, "count": 2})
+        bulk.assert_called_once_with([("t2", 0), ("t1", 10)])
+
+    def test_order_snapshot_rejects_over_limit(self) -> None:
+        body = manage_router.TaskOrderBatchIn(
+            ordered_task_ids=[f"t{i}" for i in range(2001)]
+        )
+        with patch.object(manage_router.repo_manage, "bulk_update_task_orders") as bulk:
+            with self.assertRaises(HTTPException) as raised:
+                manage_router.update_task_order_batch(body, Mock())
+
+        self.assertEqual(raised.exception.status_code, 400)
+        bulk.assert_not_called()
+
+    def test_bulk_assignment_rejects_over_limit_instead_of_silent_truncation(self) -> None:
+        # 예전 [:500] 무음 절단은 잘린 뒤쪽 작업의 배정을 조용히 유실시켰다 — 명시 400.
+        body = manage_router.BulkAssignIn(
+            items=[
+                manage_router.BulkAssignItem(task_id=f"t{i}", assignee_uids=["u1"])
+                for i in range(501)
+            ]
+        )
+        with patch.object(manage_router.repo_manage, "bulk_set_assignments") as setter:
+            with self.assertRaises(HTTPException) as raised:
+                manage_router.bulk_set_assignments(body, Mock())
+
+        self.assertEqual(raised.exception.status_code, 400)
+        setter.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

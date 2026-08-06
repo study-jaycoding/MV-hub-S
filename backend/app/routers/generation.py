@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -38,6 +40,12 @@ from ..models import (
 )
 from ..services import cli_bridge, syncer
 from ..usecases import generation_media_cache, generation_personal_meta, hf_missing
+
+logger = logging.getLogger(__name__)
+
+# 구서버 단건 폴백의 순차 왕복 상한 — 이 수를 넘는 팀 카드 선택은 폴백에서 실패로 남긴다
+# (서버 업데이트가 정식 경로. 폴백은 롤아웃 과도기 안전망일 뿐이다).
+_LEGACY_FANOUT_LIMIT = 100
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -369,6 +377,32 @@ def _batch_meta_callbacks(request: Request):
         except HTTPException:
             return False
 
+    def _fetch_server_cards_fanout(gen_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """구서버(배치 라우트 없음) 폴백 — 단건 조회 fan-out. 서버 GET /generations/{id} 는
+        id_resolve 로 job_id 앵커도 해석하므로 배치와 같은 키로 카드를 되찾는다.
+        대량 선택의 순차 왕복 폭주를 막기 위해 상한을 두고, 초과분은 실패로 남긴다."""
+        cards: dict[str, dict[str, Any]] = {}
+        limited = gen_ids[:_LEGACY_FANOUT_LIMIT]
+        if len(gen_ids) > len(limited):
+            logger.warning(
+                "구서버 단건 폴백 상한 초과 — %d개 중 %d개만 조회(나머지는 실패 처리)",
+                len(gen_ids),
+                len(limited),
+            )
+        for gen_id in limited:
+            try:
+                card = _proxy.proxy_json(
+                    "GET", f"/api/generations/{quote(gen_id, safe='')}", timeout=15
+                )
+            except HTTPException as exc:
+                # 개별 404(서버에 없음)·403(열람권한 없음)은 그 항목만 실패로 남긴다.
+                if exc.status_code in (404, 403):
+                    continue
+                raise
+            if isinstance(card, dict):
+                cards[gen_id] = card
+        return cards
+
     def fetch_server_cards(gen_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not gen_ids:
             return {}
@@ -379,8 +413,12 @@ def _batch_meta_callbacks(request: Request):
                 body={"gen_ids": gen_ids},
                 timeout=15,
             )
-        except HTTPException:
-            return {}
+        except HTTPException as exc:
+            # 404/405만 구서버(배치 라우트 없음) — 단건 폴백. 401/403/5xx 를 여기서 삼키면
+            # 인증 만료·서버 장애가 "팀 카드 N건 실패"로 뭉개져 원인이 보이지 않는다(합의 설계).
+            if exc.status_code not in (404, 405):
+                raise
+            return _fetch_server_cards_fanout(gen_ids)
         items = result.get("items") if isinstance(result, dict) else None
         if not isinstance(items, dict):
             return {}

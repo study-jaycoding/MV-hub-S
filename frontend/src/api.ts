@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { authApi } from "./lib/authApi";
 import { assetsApi } from "./lib/assetsApi";
+import { chunked } from "./lib/batching";
 import {
   getAuthToken,
   jsonBody,
@@ -356,11 +357,20 @@ export const api = {
       body: jsonBody({ tags }),
     }),
 
-  setTagsBatch: (items: { id: string; tags: string[] }[], auto = false) =>
-    jsonFetch<{ succeeded: string[]; failed: string[] }>("/api/generations/tags/batch", {
-      method: "PUT",
-      body: jsonBody({ items, auto }),
-    }),
+  setTagsBatch: async (items: { id: string; tags: string[] }[], auto = false) => {
+    // 서버 배치 상한(500) 초과 선택은 조각으로 나눠 순차 저장 — 예전 단건 fan-out처럼
+    // 개수 무관하게 동작하되, 부분 실패는 succeeded/failed 로 합산해 그대로 알린다.
+    const out = { succeeded: [] as string[], failed: [] as string[] };
+    for (const chunk of chunked(items)) {
+      const res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
+        "/api/generations/tags/batch",
+        { method: "PUT", body: jsonBody({ items: chunk, auto }) },
+      );
+      out.succeeded.push(...res.succeeded);
+      out.failed.push(...res.failed);
+    }
+    return out;
+  },
 
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
   setGenAutoTags: (id: string, auto_tags: string[]) =>
@@ -417,11 +427,18 @@ export const api = {
       body: jsonBody({ color }),
     }),
 
-  setColorsBatch: (ids: string[], color: string | null) =>
-    jsonFetch<{ succeeded: string[]; failed: string[] }>("/api/generations/colors/batch", {
-      method: "PUT",
-      body: jsonBody({ items: ids.map((id) => ({ id, color })) }),
-    }),
+  setColorsBatch: async (ids: string[], color: string | null) => {
+    const out = { succeeded: [] as string[], failed: [] as string[] };
+    for (const chunk of chunked(ids)) {
+      const res = await jsonFetch<{ succeeded: string[]; failed: string[] }>(
+        "/api/generations/colors/batch",
+        { method: "PUT", body: jsonBody({ items: chunk.map((id) => ({ id, color })) }) },
+      );
+      out.succeeded.push(...res.succeeded);
+      out.failed.push(...res.failed);
+    }
+    return out;
+  },
 
   // 소스 라이브러리 등록/해제(@이름)
   setSource: (id: string, name: string | null, is_source = true) =>

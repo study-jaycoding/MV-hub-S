@@ -39,12 +39,28 @@ async function responseErrorDetail(res: Response, fallback?: string): Promise<st
   return detail;
 }
 
+// 상태코드를 구조로 보존한 HTTP 오류 — 구서버 폴백(404/405 판별)이 message 문자열
+// 파싱에 의존하지 않게 한다. message 형식("<status>: <detail>")은 기존과 동일하게 유지.
+export class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+export function isHttpStatus(error: unknown, ...codes: number[]): boolean {
+  return error instanceof HttpError && codes.includes(error.status);
+}
+
 export async function throwHttpError(res: Response, url: string, fallback?: string): Promise<never> {
   if (res.status === 401 && !url.includes("/api/auth/")) {
     setAuthToken(null);
     dispatchAppEvent(APP_EVENTS.authRequired);
   }
-  throw new Error(`${res.status}: ${await responseErrorDetail(res, fallback)}`);
+  throw new HttpError(res.status, `${res.status}: ${await responseErrorDetail(res, fallback)}`);
 }
 
 export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {

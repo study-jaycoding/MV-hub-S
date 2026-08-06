@@ -5,6 +5,7 @@ import type {
   AssetTree,
   ProjectsInfo,
 } from "../types";
+import { chunked } from "./batching";
 import {
   assetCommentsUrl,
   assetFileUrl as buildAssetFileUrl,
@@ -176,29 +177,47 @@ export const assetsApi = {
       method: "PUT",
       body: jsonBody({ project, path, name, is_source }),
     }),
-  setAssetSourcesBatch: (project: string, items: { path: string; name: string | null }[]) =>
-    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/sources/batch`, {
-      method: "PUT",
-      body: jsonBody({ project, items }),
-    }),
+  setAssetSourcesBatch: async (project: string, items: { path: string; name: string | null }[]) => {
+    let count = 0;
+    for (const chunk of chunked(items)) {
+      const res = await jsonFetch<{ ok: boolean; count: number }>(`/api/assets/sources/batch`, {
+        method: "PUT",
+        body: jsonBody({ project, items: chunk }),
+      });
+      count += res.count;
+    }
+    return { ok: true, count };
+  },
   setAssetTags: (project: string, path: string, tags: string[]) =>
     jsonFetch(`/api/assets/tags`, {
       method: "PUT",
       body: jsonBody({ project, path, tags }),
     }),
-  setAssetTagsBatch: (project: string, items: { path: string; tags: string[] }[]) =>
-    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/tags/batch`, {
-      method: "PUT",
-      body: jsonBody({ project, items }),
-    }),
+  setAssetTagsBatch: async (project: string, items: { path: string; tags: string[] }[]) => {
+    let count = 0;
+    for (const chunk of chunked(items)) {
+      const res = await jsonFetch<{ ok: boolean; count: number }>(`/api/assets/tags/batch`, {
+        method: "PUT",
+        body: jsonBody({ project, items: chunk }),
+      });
+      count += res.count;
+    }
+    return { ok: true, count };
+  },
   setAssetColor: (project: string, path: string, color: string | null) =>
     jsonFetch(`/api/assets/color`, {
       method: "PUT",
       body: jsonBody({ project, path, color }),
     }),
-  setAssetColorsBatch: (project: string, paths: string[], color: string | null) =>
-    jsonFetch<{ ok: boolean; count: number }>(`/api/assets/colors/batch`, {
-      method: "PUT",
-      body: jsonBody({ project, paths, color }),
-    }),
+  setAssetColorsBatch: async (project: string, paths: string[], color: string | null) => {
+    let count = 0;
+    for (const chunk of chunked(paths)) {
+      const res = await jsonFetch<{ ok: boolean; count: number }>(`/api/assets/colors/batch`, {
+        method: "PUT",
+        body: jsonBody({ project, paths: chunk, color }),
+      });
+      count += res.count;
+    }
+    return { ok: true, count };
+  },
 };

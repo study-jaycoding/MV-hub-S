@@ -372,28 +372,37 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     [effective, filters, mineOnly, myUid],
   );
 
-  // 드래그 순서변경 — 표시 순서에서 draggedId 를 targetId 앞으로 옮기고 sort_order 를 재부여(전역 유지).
+  // 필터·검색·내 배정 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
+  // 부분 목록 재정렬이 전역 순서를 임의로 바꾸게 된다(합의 설계: 전체 스냅샷일 때만 저장).
+  const filterActive = useMemo(
+    () =>
+      mineOnly ||
+      !!filters.search.trim() ||
+      Object.values(filters.values).some((selectedValues) => selectedValues.length > 0),
+    [filters, mineOnly],
+  );
+
+  // 드래그 순서변경 — 표시 순서에서 draggedId 를 targetId 앞으로 옮기고, 보드 전체 순서
+  // 스냅샷(위치=순서)을 저장한다. delta 전송은 latest-merge 큐와 조합 시 대기 중 교체된
+  // 중간 드래그의 변경분이 영영 전송되지 않는 유실이 있었다(코덱스 합의로 스냅샷 전환).
   const onReorder = (draggedId: string, targetId: string) => {
+    if (filterActive) {
+      window.alert("필터·검색 중에는 순서를 바꿀 수 없습니다. 필터를 해제한 뒤 정렬해 주세요.");
+      return;
+    }
     const ids = filtered.map((t) => t.id);
     if (draggedId === targetId || !ids.includes(draggedId) || !ids.includes(targetId)) return;
     const [moved] = ids.splice(ids.indexOf(draggedId), 1);
     ids.splice(ids.indexOf(targetId), 0, moved); // 제거 후 대상 위치를 다시 찾아 그 앞에 삽입
     const orderMap = new Map(ids.map((id, i) => [id, i * 10]));
-    const taskById = new Map(tasks.map((task) => [task.id, task] as const));
     const optimisticTasks = tasks
       .map((t) => (orderMap.has(t.id) ? { ...t, sort_order: orderMap.get(t.id)! } : t))
       .sort(bySort);
     const revision = ++orderRevisionRef.current;
     optimisticOrderRef.current = { revision, tasks: optimisticTasks };
     setTasks(optimisticTasks);
-    const changed = ids.flatMap((id) => {
-      const cur = taskById.get(id);
-      const sort_order = orderMap.get(id)!;
-      return cur && cur.sort_order !== sort_order ? [{ task_id: id, sort_order }] : [];
-    });
-    if (!changed.length) return;
-    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 최신 순서 하나로 교체한다.
-    orderSaveRef.current?.enqueue(() => manageApi.updateTaskOrderBatch(changed));
+    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 최신 순서 하나로 교체한다(전체 상태라 안전).
+    orderSaveRef.current?.enqueue(() => manageApi.updateTaskOrderSnapshot(ids));
   };
 
   // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때

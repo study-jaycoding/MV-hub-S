@@ -374,7 +374,11 @@ class TaskOrderItem(BaseModel):
 
 
 class TaskOrderBatchIn(BaseModel):
+    # 신형 계약: 보드 전체 순서 스냅샷(ordered_task_ids — 위치가 곧 순서). delta(items)는
+    # 대기 중 합침(latest-merge)과 조합 시 중간 드래그가 유실돼 전체 상태 전송으로 전환했다.
+    # 구형 프론트 호환을 위해 items 도 계속 받는다(스냅샷이 있으면 우선).
     items: list[TaskOrderItem] = Field(default_factory=list)
+    ordered_task_ids: Optional[list[str]] = None
 
 
 class TaskIdsIn(BaseModel):
@@ -382,14 +386,14 @@ class TaskIdsIn(BaseModel):
 
 
 def _require_tasks_manage(
-    task_ids: list[str], request: Request, *, reject_duplicates: bool = True
+    task_ids: list[str], request: Request, *, reject_duplicates: bool = True, limit: int = 500
 ) -> list[str]:
     """배치 쓰기 전에 모든 작업 존재와 프로젝트별 manage 권한을 확인한다."""
     unique_ids = list(dict.fromkeys(task_ids))
     if reject_duplicates and len(unique_ids) != len(task_ids):
         raise HTTPException(status_code=400, detail="중복 작업 id가 있습니다")
-    if len(unique_ids) > 500:
-        raise HTTPException(status_code=400, detail="한 번에 최대 500개 작업까지 변경할 수 있습니다")
+    if len(unique_ids) > limit:
+        raise HTTPException(status_code=400, detail=f"한 번에 최대 {limit}개 작업까지 변경할 수 있습니다")
     projects = repo_manage.task_projects(unique_ids)
     missing = [task_id for task_id in unique_ids if task_id not in projects]
     if missing:
@@ -468,6 +472,14 @@ def remove_task(tid: str, request: Request):
 
 @router.patch("/tasks-batch/order")
 def update_task_order_batch(body: TaskOrderBatchIn, request: Request):
+    if body.ordered_task_ids is not None:
+        # 전체 스냅샷 모드 — 리스트 위치로 순번(i*10)을 서버가 한 트랜잭션에 부여한다.
+        # 보드 전체가 오므로 상한은 delta(500)보다 넉넉히 2000(권한 조회는 단일 IN 쿼리).
+        ids = _require_tasks_manage(body.ordered_task_ids, request, limit=2000)
+        count = repo_manage.bulk_update_task_orders(
+            [(task_id, index * 10) for index, task_id in enumerate(ids)]
+        )
+        return {"ok": True, "count": count}
     task_ids = [item.task_id for item in body.items]
     _require_tasks_manage(task_ids, request)
     count = repo_manage.bulk_update_task_orders(
@@ -525,7 +537,11 @@ def bulk_set_assignments(body: BulkAssignIn, request: Request):
     """여러 작업의 담당(배정)을 한 번에 설정 — 전부 PM(manage) 권한."""
     if body.mode not in ("replace", "add", "remove"):
         raise HTTPException(status_code=400, detail="mode 는 replace, add 또는 remove")
-    items = [item.model_dump() for item in body.items[:500]]
+    # 상한 초과는 무음 절단([:500]) 대신 명시 거절 — 잘린 뒤쪽 작업의 배정이 조용히
+    # 유실되는 것을 막는다. 프론트가 500 단위로 나눠 보낸다(batching.ts).
+    if len(body.items) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 작업까지 배정할 수 있습니다")
+    items = [item.model_dump() for item in body.items]
     if not items:
         return {"ok": True, "count": 0}
     actor = actor_id(request)

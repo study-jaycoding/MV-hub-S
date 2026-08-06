@@ -97,14 +97,54 @@ class GenerationMetaBatchRouteTests(unittest.TestCase):
             timeout=15,
         )
 
-    def test_proxy_callback_turns_remote_failure_into_item_failures(self) -> None:
-        with patch.object(
-            generation._proxy,
-            "proxy_json",
-            side_effect=HTTPException(status_code=502, detail="offline"),
-        ):
+    def test_proxy_callback_reraises_non_legacy_failures(self) -> None:
+        # 401(인증 만료)·403(권한)·502(서버 장애)를 삼켜 "N건 실패"로 뭉개면 사용자가
+        # 원인을 볼 수 없다 — 구서버 판별(404/405) 외에는 그대로 전파한다(합의 설계).
+        for status in (401, 403, 502):
+            with patch.object(
+                generation._proxy,
+                "proxy_json",
+                side_effect=HTTPException(status_code=status, detail="boom"),
+            ):
+                _, fetch_server_cards = generation._batch_meta_callbacks(self.request)
+                with self.assertRaises(HTTPException):
+                    fetch_server_cards(["g1"])
+
+    def test_proxy_callback_falls_back_to_single_gets_on_legacy_server(self) -> None:
+        # 배치 라우트가 없는 구서버(404) → 단건 GET fan-out 으로 실제 카드를 되찾는다.
+        # 개별 404(서버에 없는 항목)는 그 항목만 실패로 남긴다.
+        def fake_proxy(method, path, body=None, timeout=None):
+            if method == "POST":
+                raise HTTPException(status_code=404, detail="Not Found")
+            gen_id = path.rsplit("/", 1)[-1]
+            if gen_id == "gone":
+                raise HTTPException(status_code=404, detail="Not Found")
+            return {"id": gen_id, "job_id": f"job-{gen_id}"}
+
+        with patch.object(generation._proxy, "proxy_json", side_effect=fake_proxy):
             _, fetch_server_cards = generation._batch_meta_callbacks(self.request)
-            self.assertEqual(fetch_server_cards(["g1"]), {})
+            result = fetch_server_cards(["g1", "gone", "g2"])
+
+        self.assertEqual(set(result), {"g1", "g2"})
+        self.assertEqual(result["g1"]["job_id"], "job-g1")
+
+    def test_proxy_callback_fanout_respects_limit(self) -> None:
+        # 폴백 fan-out 은 상한까지만 순차 조회 — 초과분은 실패로 남는다(폭주 방지).
+        calls: list[str] = []
+
+        def fake_proxy(method, path, body=None, timeout=None):
+            if method == "POST":
+                raise HTTPException(status_code=404, detail="Not Found")
+            calls.append(path)
+            return {"id": path.rsplit("/", 1)[-1]}
+
+        ids = [f"g{i}" for i in range(generation._LEGACY_FANOUT_LIMIT + 20)]
+        with patch.object(generation._proxy, "proxy_json", side_effect=fake_proxy):
+            _, fetch_server_cards = generation._batch_meta_callbacks(self.request)
+            result = fetch_server_cards(ids)
+
+        self.assertEqual(len(calls), generation._LEGACY_FANOUT_LIMIT)
+        self.assertEqual(len(result), generation._LEGACY_FANOUT_LIMIT)
 
 
 if __name__ == "__main__":

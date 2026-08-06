@@ -1,11 +1,26 @@
 ﻿// PM 대시보드 API 클라이언트 — 인증/에러 처리는 공용 jsonFetch 를 재사용한다.
-import { jsonBody, jsonFetch } from "./http";
+import { chunked } from "./batching";
+import { isHttpStatus, jsonBody, jsonFetch } from "./http";
 import { pathPart, withQuery } from "./url";
 import type {
   ManageSummary,
   Planning,
   Task,
 } from "../components/manage/types";
+
+// 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
+// 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
+function isLegacyServer(error: unknown): boolean {
+  return isHttpStatus(error, 404, 405);
+}
+
+let warnedLegacyBatch = false;
+
+function warnLegacyBatchOnce(): void {
+  if (warnedLegacyBatch) return;
+  warnedLegacyBatch = true;
+  console.warn("[manage] 공유 서버가 구버전입니다 — 배치 저장을 단건 API로 대신합니다. 서버 업데이트를 권장합니다.");
+}
 
 export const manageApi = {
   summary: () => jsonFetch<ManageSummary>("/api/manage/summary"),
@@ -33,16 +48,53 @@ export const manageApi = {
     jsonFetch<{ ok: boolean }>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "DELETE",
     }),
-  updateTaskOrderBatch: (items: { task_id: string; sort_order: number }[]) =>
-    jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/order", {
-      method: "PATCH",
-      body: jsonBody({ items }),
-    }),
-  deleteTasksBatch: (taskIds: string[]) =>
-    jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/delete", {
-      method: "POST",
-      body: jsonBody({ task_ids: taskIds }),
-    }),
+  // 순서 저장 = 보드 전체 순서 스냅샷(위치가 곧 순서). 원자성이 계약이라 청크 분할하지 않는다.
+  // 이중 페이로드: 신서버는 ordered_task_ids 를, 스냅샷 계약을 모르는 구배치 서버는 items(같은
+  // 내용의 전체 목록)를 읽는다 — 어느 쪽이 받아도 "전체 상태 저장"이라 latest-merge 큐와 안전.
+  // 라우트 자체가 없는 최구형(404/405)만 단건 PATCH 폴백.
+  updateTaskOrderSnapshot: async (orderedTaskIds: string[]) => {
+    const items = orderedTaskIds.map((task_id, index) => ({ task_id, sort_order: index * 10 }));
+    try {
+      return await jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/order", {
+        method: "PATCH",
+        body: jsonBody({ ordered_task_ids: orderedTaskIds, items }),
+      });
+    } catch (error) {
+      if (!isLegacyServer(error)) throw error;
+      warnLegacyBatchOnce();
+      let count = 0;
+      for (const item of items) {
+        await manageApi.updateTask(item.task_id, { sort_order: item.sort_order });
+        count += 1;
+      }
+      return { ok: true, count };
+    }
+  },
+  deleteTasksBatch: async (taskIds: string[]) => {
+    let count = 0;
+    for (const chunk of chunked(taskIds)) {
+      try {
+        const res = await jsonFetch<{ ok: boolean; count: number }>("/api/manage/tasks-batch/delete", {
+          method: "POST",
+          body: jsonBody({ task_ids: chunk }),
+        });
+        count += res.count;
+      } catch (error) {
+        if (!isLegacyServer(error)) throw error;
+        warnLegacyBatchOnce();
+        for (const tid of chunk) {
+          try {
+            await manageApi.deleteTask(tid);
+            count += 1;
+          } catch (itemError) {
+            // 이미 삭제된 작업(404)은 배치 삭제의 '있는 것만 지움' 의미와 동일하게 건너뛴다.
+            if (!isHttpStatus(itemError, 404)) throw itemError;
+          }
+        }
+      }
+    }
+    return { ok: true, count };
+  },
   linkGenerations: (tid: string, genIds: string[]) =>
     jsonFetch<{ linked: number }>(`/api/manage/tasks/${pathPart(tid)}/generations`, {
       method: "POST",
@@ -65,14 +117,40 @@ export const manageApi = {
       { method: "DELETE" },
     ),
   // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가) | remove(지정 담당 해제)
-  bulkSetAssignments: (
+  bulkSetAssignments: async (
     items: { task_id: string; assignee_uids: string[] }[],
     mode: "replace" | "add" | "remove",
-  ) =>
-    jsonFetch<{ ok: boolean; count: number }>(
-      "/api/manage/tasks/assignees/bulk",
-      { method: "PATCH", body: jsonBody({ mode, items }) },
-    ),
+  ) => {
+    let count = 0;
+    for (const chunk of chunked(items)) {
+      try {
+        const res = await jsonFetch<{ ok: boolean; count: number }>(
+          "/api/manage/tasks/assignees/bulk",
+          { method: "PATCH", body: jsonBody({ mode, items: chunk }) },
+        );
+        count += res.count;
+        continue;
+      } catch (error) {
+        // 구서버 판별: 라우트 자체가 없으면 404/405, mode="remove" 미지원 구서버는 400을 낸다.
+        // remove 만 400 도 폴백 사유로 인정(다른 mode 의 400 은 진짜 입력 오류라 전파).
+        const legacy = isLegacyServer(error) || (mode === "remove" && isHttpStatus(error, 400));
+        if (!legacy) throw error;
+      }
+      warnLegacyBatchOnce();
+      if (mode === "replace") {
+        // 구 단건 API(add/remove)로는 '교체'를 원자적으로 재현할 수 없다 — 명시 오류.
+        throw new Error("공유 서버가 구버전이라 담당 일괄 교체를 지원하지 않습니다. 서버를 업데이트해 주세요.");
+      }
+      for (const item of chunk) {
+        for (const uid of item.assignee_uids) {
+          if (mode === "add") await manageApi.addAssignee(item.task_id, uid);
+          else await manageApi.removeAssignee(item.task_id, uid);
+        }
+        count += 1;
+      }
+    }
+    return { ok: true, count };
+  },
   // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.
   teamOverview: (f: TeamFilters = {}) =>
     jsonFetch<TeamOverview>(
