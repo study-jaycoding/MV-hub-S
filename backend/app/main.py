@@ -58,6 +58,7 @@ from .mutation_notify import (
     parse_mutation_origin,
 )
 from .static_files import ImmutableStaticFiles
+from .services.test_snapshot import SNAPSHOT_EXPORT_ENV, SNAPSHOT_EXPORT_PATH
 from .routers import (
     _proxy,
     assets,
@@ -123,6 +124,11 @@ async def _runtime_report_loop(interval: float) -> None:
         log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
 
 
+def _should_bootstrap_admin() -> bool:
+    """일반 인증 서버에만 초기 관리자를 만들고 다운로드 전용 서버에는 만들지 않는다."""
+    return AUTH_ENABLED and os.environ.get(SNAPSHOT_EXPORT_ENV, "").strip() != "1"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_path = configure_operational_logging()
@@ -139,14 +145,13 @@ async def lifespan(app: FastAPI):
     repo.ensure_default_worker()
     # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
     # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
-    if AUTH_ENABLED:
-        import os as _os
+    if _should_bootstrap_admin():
         import secrets as _secrets
 
-        _ae = (_os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
+        _ae = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
         # ★고정 기본 비번 폐지(보안) — env 미지정이면 1회용 랜덤을 생성해 '이번 부팅에만' 출력한다.
         # 누구나 아는 admin1985 로 LAN 서버 관리자에 바로 로그인되던 구멍 제거.
-        _ap = _os.environ.get("CONTENT_HUB_ADMIN_PASSWORD")
+        _ap = os.environ.get("CONTENT_HUB_ADMIN_PASSWORD")
         _ap_generated = not _ap
         if _ap_generated:
             _ap = _secrets.token_urlsafe(12)
@@ -334,12 +339,21 @@ _AUTH_PUBLIC_PREFIXES = (
     "/api/agent/download",
     "/api/agent/local-pair-token",
 )
+_AUTH_PUBLIC_PATHS = frozenset({SNAPSHOT_EXPORT_PATH})
+_SNAPSHOT_SERVER_PATHS = frozenset({SNAPSHOT_EXPORT_PATH, "/api/health", "/api/ready"})
 
 
 @app.middleware("http")
 async def auth_enforcement(request: Request, call_next):
     request.state.account = None
     path = request.url.path
+    # test_push-db의 LAN 서버는 DB 다운로드만을 위한 일시적 서버다. 가입·로그인·일반 DB API와
+    # 정적 UI까지 닫아, 원본 DB에 계정이 0개인 경우에도 외부인이 첫 관리자로 가입할 수 없게 한다.
+    if (
+        os.environ.get(SNAPSHOT_EXPORT_ENV, "").strip() == "1"
+        and path not in _SNAPSHOT_SERVER_PATHS
+    ):
+        return JSONResponse({"detail": "테스트 스냅샷 다운로드 전용 서버입니다"}, status_code=404)
     # 토큰(헤더 또는 쿠키)이 있으면 모드와 무관하게 계정을 실어둔다(/me·관리자 검증·표시에).
     token = session_token(request)
     if token:
@@ -355,7 +369,10 @@ async def auth_enforcement(request: Request, call_next):
     if not AUTH_ENABLED:
         return await call_next(request)
     # 보호: /api/*(로그인·가입·헬스 제외) + /media/*. 정적 SPA·/ws 는 여기서 제외.
-    api_protected = path.startswith("/api/") and not path.startswith(_AUTH_PUBLIC_PREFIXES)
+    # 테스트 DB 다운로드는 일반 계정 로그인 대신 별도의 일회용 코드로 라우터에서 검증한다.
+    # 정확히 이 경로만 예외로 두어 /api/db/export 같은 일반 DB API는 계속 세션 인증을 요구한다.
+    api_public = path.startswith(_AUTH_PUBLIC_PREFIXES) or path in _AUTH_PUBLIC_PATHS
+    api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:
         return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)

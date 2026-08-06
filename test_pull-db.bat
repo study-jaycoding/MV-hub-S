@@ -12,16 +12,15 @@ REM  For live Vite editing + local generation, use test_dev.bat instead.
 REM
 REM  All snapshot DBs are downloaded (content/trash/manage/account DBs; no media/assets).
 REM  The live server is READ only. The old local test data is archived before replacement.
+REM  Enter the one-time code shown by test_push-db; the real admin password is never used.
 REM ============================================================================
 set "ROOT=%~dp0"
 set "SERVER=http://192.168.1.199:8011"
 set "DST=%ROOT%backend\data_test"
-set "PM_TEST_ADMIN_EMAIL=lee.jaelyun@gmail.com"
 
 echo.
 echo [PULL SERVER DB -^> TEST]
 echo   pushed snapshot   : %SERVER%
-echo   admin email       : %PM_TEST_ADMIN_EMAIL%
 echo   target (test data): %DST%
 echo.
 
@@ -39,12 +38,12 @@ if "%PYEXE%"=="" (
 )
 echo [python] %PYEXE%
 
-REM Python reads the password with echo disabled and prints only * characters.
+REM Python reads the one-time code with echo disabled and prints only * characters.
 "%PYEXE%" "%ROOT%tools\refresh_pm_test_data.py" "%SERVER%" "%DST%"
 if errorlevel 1 (
   echo.
-  echo [ERROR] pull failed. Check the server address, your admin password, and that
-  echo         test_push-db.bat is still running on the server.
+  echo [ERROR] pull failed. Check the server address, one-time code, and that
+  echo         test_push-db.bat is still running. Used codes cannot be retried.
   pause
   exit /b 1
 )

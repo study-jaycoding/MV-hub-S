@@ -19,7 +19,13 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.db_scrub import scrub_test_snapshot_db
-from app.services.test_snapshot import TestSnapshotError, extract_test_snapshot_archive
+from app.services.test_snapshot import (
+    SNAPSHOT_EXPORT_PATH,
+    SNAPSHOT_STAGING_ENV,
+    SNAPSHOT_TOKEN_HEADER,
+    TestSnapshotError,
+    extract_test_snapshot_archive,
+)
 from account_paths import account_slug
 
 
@@ -110,6 +116,7 @@ def backup_sqlite(src: Path, dst: Path) -> None:
 def copy_snapshot(src: Path, dst: Path) -> None:
     copied_files = 0
     copied_dbs = 0
+    staging_only = os.environ.get(SNAPSHOT_STAGING_ENV, "").strip() == "1"
     for path in src.rglob("*"):
         if should_skip(path, src):
             continue
@@ -120,9 +127,10 @@ def copy_snapshot(src: Path, dst: Path) -> None:
             continue
         if path.suffix.lower() == ".db":
             backup_sqlite(path, target)
-            # 로컬 복사 경로도 서버 스냅샷과 같은 테스트 정제 정책 — 운영 서명키·비밀번호
-            # 해시가 테스트 사본에 남지 않게 한다(기본 DB에만 테스트 관리자 생성).
-            scrub_test_snapshot_db(target, create_test_admin=(rel == Path("db") / "content_hub.db"))
+            # 서버가 LAN에 잠시 공개하는 중간 사본에는 로그인 계정을 하나도 만들지 않는다.
+            # 최종 다운로드 ZIP을 만들 때만 기본 DB에 로컬 테스트 관리자를 추가한다.
+            create_test_admin = not staging_only and rel == Path("db") / "content_hub.db"
+            scrub_test_snapshot_db(target, create_test_admin=create_test_admin)
             copied_dbs += 1
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -137,34 +145,6 @@ def is_url(value: str) -> bool:
     return low.startswith("http://") or low.startswith("https://")
 
 
-def request_json(
-    method: str,
-    url: str,
-    *,
-    body: dict[str, Any] | None = None,
-    token: str | None = None,
-    timeout: int = 60,
-) -> tuple[int, Any]:
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method.upper())
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-            return resp.status, json.loads(raw or "null")
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
-        try:
-            payload: Any = json.loads(raw or "null")
-        except ValueError:
-            payload = raw
-        return exc.code, payload
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        fail(f"shared server request failed: {exc}")
-
-
 def detail_text(payload: Any) -> str:
     if isinstance(payload, dict) and "detail" in payload:
         payload = payload["detail"]
@@ -174,31 +154,18 @@ def detail_text(payload: Any) -> str:
 
 
 def download_server_db(base_url: str, dst: Path) -> None:
-    email = (os.environ.get("PM_TEST_ADMIN_EMAIL") or "").strip()
-    password = os.environ.get("PM_TEST_ADMIN_PASSWORD") or ""
-    if not email:
-        fail("PM_TEST_ADMIN_EMAIL is required for URL mode")
-    if not password:
-        password = masked_password_input(f"Admin password for {email}: ")
-    if not password:
-        fail("admin password is empty")
+    snapshot_token = (os.environ.get("PM_TEST_SNAPSHOT_TOKEN") or "").strip()
+    if not snapshot_token:
+        snapshot_token = masked_password_input("One-time snapshot code: ").strip()
+    if not snapshot_token:
+        fail("one-time snapshot code is empty")
 
     base = base_url.rstrip("/")
     print(f"[download] server: {base}")
-    print(f"[download] admin:  {email}")
-    status, payload = request_json(
-        "POST",
-        f"{base}/api/auth/login",
-        body={"email": email, "password": password},
-        timeout=30,
-    )
-    if status != 200 or not isinstance(payload, dict) or not payload.get("token"):
-        fail(f"admin login failed ({status}): {detail_text(payload)}")
-    token = str(payload["token"])
 
     tmp = dst.parent / f"{dst.name}-download-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
-    req = urllib.request.Request(f"{base}/api/db/export-test-snapshot", method="GET")
-    req.add_header("Authorization", f"Bearer {token}")
+    req = urllib.request.Request(f"{base}{SNAPSHOT_EXPORT_PATH}", method="GET")
+    req.add_header(SNAPSHOT_TOKEN_HEADER, snapshot_token)
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
             with open(tmp, "wb") as handle:
@@ -212,7 +179,7 @@ def download_server_db(base_url: str, dst: Path) -> None:
         tmp.unlink(missing_ok=True)
         fail(
             f"test snapshot export failed ({exc.code}): {detail_text(payload)}; "
-            "update the server code and run test_push-db.bat"
+            "run test_push-db.bat again to get a new one-time code"
         )
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         tmp.unlink(missing_ok=True)

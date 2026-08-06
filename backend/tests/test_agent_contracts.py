@@ -12,7 +12,11 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from app.models import PendingRequestOut
-from app.services.test_snapshot import create_test_snapshot_archive
+from app.services.test_snapshot import (
+    SNAPSHOT_STAGING_ENV,
+    SNAPSHOT_TOKEN_HEADER,
+    create_test_snapshot_archive,
+)
 
 
 AGENT_PATH = Path(__file__).resolve().parents[2] / "agent_push.py"
@@ -89,17 +93,17 @@ def test_masked_password_input_handles_backspace_without_exposing_text():
     assert "ab" not in stream.getvalue()
 
 
-def test_pull_db_password_input_is_masked_too():
+def test_pull_db_snapshot_code_input_is_masked_too():
     tool = _load_refresh_tool()
     keys = iter(["s", "3", "c", "r", "3", "t", "\r"])
     stream = io.StringIO()
 
-    password = tool.masked_password_input(
-        "Admin password: ", _read_key=lambda: next(keys), _stream=stream
+    snapshot_code = tool.masked_password_input(
+        "One-time snapshot code: ", _read_key=lambda: next(keys), _stream=stream
     )
 
-    assert password == "s3cr3t"
-    assert stream.getvalue() == "Admin password: ******\n"
+    assert snapshot_code == "s3cr3t"
+    assert stream.getvalue() == "One-time snapshot code: ******\n"
     assert "s3cr3t" not in stream.getvalue()
 
 
@@ -140,13 +144,18 @@ def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     assert 'set "DST=%ROOT%backend\\data_test_push"' in push
     assert 'set "CONTENT_HUB_DB=%DST%\\db\\content_hub.db"' in push
     assert 'set "CONTENT_HUB_TEST_SNAPSHOT_EXPORT=1"' in push
+    assert 'set "CONTENT_HUB_TEST_SNAPSHOT_STAGING=1"' in push
+    assert "[guid]::NewGuid().ToString('N')" in push
     assert 'refresh_pm_test_data.py" "%SRC%" "%DST%"' in push
     assert 'set "PORT=8011"' in push
 
     assert 'set "SERVER=http://192.168.1.199:8011"' in pull
     assert 'set "DST=%ROOT%backend\\data_test"' in pull
+    assert "PM_TEST_ADMIN_EMAIL" not in pull
     assert "192.168.1.199:8010" not in pull
-    assert "/api/db/export-test-snapshot" in REFRESH_TOOL_PATH.read_text(encoding="utf-8")
+    refresh_tool = REFRESH_TOOL_PATH.read_text(encoding="utf-8")
+    assert "PM_TEST_SNAPSHOT_TOKEN" in refresh_tool
+    assert "/api/auth/login" not in refresh_tool
 
     assert 'set "HOST=127.0.0.1"' in local_server
     assert 'set "PORT=8011"' in local_server
@@ -174,13 +183,14 @@ def test_pull_download_installs_every_db_from_snapshot_bundle(tmp_path, monkeypa
     bundle_bytes = archive.read_bytes()
     archive.unlink()
     tool = _load_refresh_tool()
-    monkeypatch.setenv("PM_TEST_ADMIN_EMAIL", "admin@example.com")
-    monkeypatch.setenv("PM_TEST_ADMIN_PASSWORD", "secret")
-    monkeypatch.setattr(tool, "request_json", lambda *args, **kwargs: (200, {"token": "token"}))
+    monkeypatch.setenv("PM_TEST_SNAPSHOT_TOKEN", "single-use-code")
     requested_urls: list[str] = []
+    requested_codes: list[str | None] = []
 
     def fake_urlopen(request, timeout):
         requested_urls.append(request.full_url)
+        headers = {name.lower(): value for name, value in request.header_items()}
+        requested_codes.append(headers.get(SNAPSHOT_TOKEN_HEADER.lower()))
         return io.BytesIO(bundle_bytes)
 
     monkeypatch.setattr(tool.urllib.request, "urlopen", fake_urlopen)
@@ -189,9 +199,40 @@ def test_pull_download_installs_every_db_from_snapshot_bundle(tmp_path, monkeypa
     tool.download_server_db("http://snapshot", destination)
 
     assert requested_urls == ["http://snapshot/api/db/export-test-snapshot"]
+    assert requested_codes == ["single-use-code"]
     assert (destination / "db" / "content_hub.db").is_file()
     assert (destination / "db" / "manage_hub.db").is_file()
     assert (destination / "db" / "content_hub_trash.db").is_file()
+
+
+def test_lan_staging_snapshot_has_no_login_capable_account(tmp_path, monkeypatch):
+    from app.services import auth
+    from app.services.db_scrub import DISABLED_PASSWORD_HASH, TEST_ADMIN_EMAIL
+
+    source = tmp_path / "live"
+    db_path = source / "db" / "content_hub.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE generation(id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE account(email TEXT PRIMARY KEY, name TEXT, password_hash TEXT NOT NULL, "
+            "status TEXT NOT NULL, global_role TEXT, approved_at TEXT, password_changed_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO account(email, name, password_hash, status, global_role) VALUES(?,?,?,?,?)",
+            ("admin@company.com", "Admin", auth.hash_password("real-password"), "approved", "admin"),
+        )
+
+    tool = _load_refresh_tool()
+    monkeypatch.setenv(SNAPSHOT_STAGING_ENV, "1")
+    destination = tmp_path / "staging"
+    tool.copy_snapshot(source, destination)
+
+    with sqlite3.connect(destination / "db" / "content_hub.db") as conn:
+        rows = dict(conn.execute("SELECT email, password_hash FROM account"))
+    assert rows["admin@company.com"] == DISABLED_PASSWORD_HASH
+    assert not auth.verify_password("real-password", rows["admin@company.com"])
+    assert TEST_ADMIN_EMAIL not in rows
 
 
 def test_pending_response_contains_every_field_the_agent_executes():

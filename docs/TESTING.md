@@ -6,9 +6,11 @@
 준비하고 내 PC가 그 복사본만 내려받는다. 모든 테스트 데이터는 운영(8010)과 분리된다.
 
 ★테스트 스냅샷은 **정제된 테스트용 데이터**다(`services/db_scrub.py`): 운영 서명키
-(`auth_secret`)·세션 토큰·운영 계정 비밀번호 해시가 제거되고, 로그인 가능한 계정은
-테스트 관리자 `test-admin@mvhub.local` / `mvhub-test-1234` 하나뿐이다. 운영 계정으로는
-테스트 서버에 로그인할 수 없는 것이 정상이다.
+(`auth_secret`)·세션 토큰·운영 계정 비밀번호 해시가 제거된다. LAN에 잠시 열리는 서버측
+중간 사본에는 로그인 가능한 계정이 하나도 없다. 일회용 코드로 내려받은 최종 로컬 사본에만
+테스트 관리자 `test-admin@mvhub.local` / `mvhub-test-1234`가 추가된다. 이 계정은
+`127.0.0.1` 테스트에서만 사용하며 운영 계정으로 테스트 서버에 로그인할 수 없는 것이 정상이다.
+서버측 8011은 헬스 체크와 스냅샷 다운로드 외의 가입·로그인·일반 API·화면도 모두 닫힌다.
 
 ## 개발자 자동 테스트 기준선
 
@@ -42,8 +44,8 @@ npm.cmd run build
 
 | 파일 | 실행 위치 | 하는 일 |
 |---|---|---|
-| `test_push-db.bat` | 서버 | live DB를 수정하지 않고 `backend\data_test_push`에 모든 SQLite DB의 일관된 스냅샷을 만든 뒤, 다운로드용 서버(8011)를 실행 |
-| `test_pull-db.bat` | 내 PC | 서버가 준비한 콘텐츠·휴지통·팀 통계·계정 DB 번들을 검증해 `backend\data_test`로 내려받음(미디어 제외) |
+| `test_push-db.bat` | 서버 | live DB를 수정하지 않고 `backend\data_test_push`에 모든 SQLite DB의 일관된 스냅샷을 만든 뒤, 다운로드용 서버(8011)와 일회용 코드를 준비 |
+| `test_pull-db.bat` | 내 PC | 서버 창의 일회용 코드를 입력해 콘텐츠·휴지통·팀 통계·계정 DB 번들을 검증하고 `backend\data_test`로 내려받음(미디어 제외) |
 | `test_dev.bat` | 내 PC | 테스트 백엔드(8012)·생성 에이전트·Vite(5173)를 실행하고, 브라우저 로그인 계정을 에이전트에 자동 연결 |
 | `test_dev_server.bat` | 내 PC | 내려받은 DB로 프론트 빌드와 API를 한 서버(8011)에서 실행해 배포 직전 형태를 확인 |
 
@@ -83,8 +85,10 @@ git checkout feature/pm-dashboard
 있지만 로그인 계정의 `creator_uid`로 내 작업을 제한하므로 내 결과만 보인다. 브라우저에서 계정을 바꾸면
 에이전트도 자동으로 새 계정에 다시 연결된다.
 
-`test_pull-db.bat`의 관리자 비밀번호는 DB 다운로드에 필요하므로 CMD에서 한 번 입력한다. Windows 콘솔의
-입력 echo를 끈 상태에서 실제 문자 대신 `*`만 표시하며 비밀번호를 저장하지 않는다.
+`test_pull-db.bat`에는 서버의 `test_push-db.bat` 창에 표시된 일회용 코드를 입력한다. 운영 관리자
+이메일이나 비밀번호는 묻지도 전송하지도 않는다. Windows 콘솔의 입력 echo를 끈 상태에서 실제 문자 대신
+`*`만 표시하며 코드 원문을 저장하지 않는다. 코드는 다운로드 응답을 한 번 준비하면 즉시 폐기되며,
+임시 서버가 자동 재시작되어도 다시 사용할 수 없다.
 
 최신 운영 DB 모양이 필요할 때는 서버에서 `test_push-db.bat`을 먼저 실행한 뒤, 내 PC에서
 `test_pull-db.bat`을 실행한다. 내려받은 DB와 이후 생성 결과는 `backend\data_test`에만 저장되며
@@ -102,10 +106,12 @@ git checkout feature/pm-dashboard
 1. **서버** 테스트 클론에서 `test_push-db.bat`을 실행하고 창을 열어 둔다.
    - live DB는 읽기만 하고 `backend\data_test_push`에 일관된 복사본을 만든다.
    - 복사본만 제공하는 임시 서버가 서버 PC의 8011 포트에서 실행된다.
+   - 창에 표시된 `ONE-TIME DOWNLOAD CODE`를 개발 PC로 전달한다.
 2. **내 PC**에서 `test_pull-db.bat`을 실행한다.
-   - 관리자 비밀번호를 입력하면 서버의 8011에서 모든 SQLite DB 번들을 내려받는다.
+   - 전달받은 일회용 코드를 입력하면 서버의 8011에서 모든 SQLite DB 번들을 내려받는다.
    - 경로·크기·CRC·SQLite 무결성을 모두 통과해야 설치하며 기존 `backend\data_test`는 자동 보관한다.
    - 다운로드가 끝나면 서버의 `test_push-db.bat` 창은 종료해도 된다.
+   - 코드가 소비된 뒤 전송이 끊겼다면 서버에서 `test_push-db.bat`을 다시 실행해 새 코드를 만든다.
 3. **내 PC**에서 `test_dev_server.bat`을 실행한다.
    - 프론트엔드를 실제 배포 방식으로 빌드하고 UI와 API를 한 서버로 실행한다.
    - 준비가 끝나면 `http://127.0.0.1:8011`이 자동으로 열린다.

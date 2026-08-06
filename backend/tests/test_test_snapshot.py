@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import zipfile
@@ -9,17 +10,42 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.routers import db_transfer
 from app.routers.db_transfer import export_test_snapshot
 from app.services.test_snapshot import (
     MANIFEST_NAME,
+    SNAPSHOT_EXPORT_ENV,
+    SNAPSHOT_EXPORT_PATH,
     SNAPSHOT_FORMAT,
+    SNAPSHOT_TOKEN_ENV,
+    SNAPSHOT_TOKEN_HEADER,
     SNAPSHOT_VERSION,
     TestSnapshotError,
     create_test_snapshot_archive,
     extract_test_snapshot_archive,
 )
+
+
+def _request(path: str = SNAPSHOT_EXPORT_PATH, snapshot_token: str | None = None) -> Request:
+    headers = []
+    if snapshot_token is not None:
+        headers.append((SNAPSHOT_TOKEN_HEADER.lower().encode(), snapshot_token.encode()))
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": headers,
+            "client": ("192.168.1.20", 50000),
+            "server": ("192.168.1.199", 8011),
+        }
+    )
 
 
 def _db(path: Path, schema: str, insert: str | None = None) -> sqlite3.Connection:
@@ -124,20 +150,123 @@ def test_enabled_snapshot_endpoint_returns_multi_db_zip(
         "INSERT INTO team_generation_fact VALUES('fact1')",
     )
     monkeypatch.setenv("CONTENT_HUB_TEST_SNAPSHOT_EXPORT", "1")
+    monkeypatch.setenv(SNAPSHOT_TOKEN_ENV, "single-use-export-token")
     monkeypatch.setattr(db_transfer, "DATA_DIR", data)
-    monkeypatch.setattr(db_transfer, "require_admin", lambda request: None)
-    monkeypatch.setattr(db_transfer, "_require_local_when_open", lambda request: None)
 
-    response = export_test_snapshot(None)  # type: ignore[arg-type]
+    response = export_test_snapshot(_request(snapshot_token="single-use-export-token"))
     archive = Path(response.path)
     try:
         with zipfile.ZipFile(archive) as bundle:
             assert {"db/content_hub.db", "db/manage_hub.db"}.issubset(bundle.namelist())
         assert response.media_type == "application/zip"
+        # MV_server 자동 재시작으로 메모리가 초기화돼도 데이터 폴더 표식이 재사용을 막는다.
+        monkeypatch.setattr(db_transfer, "_snapshot_token_consumed", None)
+        monkeypatch.setattr(db_transfer, "_snapshot_token_in_progress", None)
+        with pytest.raises(HTTPException) as reused:
+            export_test_snapshot(_request(snapshot_token="single-use-export-token"))
+        assert reused.value.status_code == 410
     finally:
         archive.unlink(missing_ok=True)
         primary.close()
         manage.close()
+
+
+def test_snapshot_endpoint_rejects_wrong_code_before_building_archive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("CONTENT_HUB_TEST_SNAPSHOT_EXPORT", "1")
+    monkeypatch.setenv(SNAPSHOT_TOKEN_ENV, "expected-export-token")
+    called = False
+
+    def unexpected_build(_data_dir: Path):
+        nonlocal called
+        called = True
+        raise AssertionError("wrong code must not build a snapshot")
+
+    monkeypatch.setattr(db_transfer, "create_test_snapshot_archive", unexpected_build)
+    with pytest.raises(HTTPException) as exc:
+        export_test_snapshot(_request(snapshot_token="wrong-token"))
+
+    assert exc.value.status_code == 401
+    assert called is False
+
+
+def test_snapshot_build_failure_releases_code_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    data = tmp_path / "retry-data"
+    token = "retry-after-build-failure-token"
+    monkeypatch.setenv("CONTENT_HUB_TEST_SNAPSHOT_EXPORT", "1")
+    monkeypatch.setenv(SNAPSHOT_TOKEN_ENV, token)
+    monkeypatch.setattr(db_transfer, "DATA_DIR", data)
+
+    with pytest.raises(HTTPException) as failed:
+        export_test_snapshot(_request(snapshot_token=token))
+    assert failed.value.status_code == 500
+
+    conn = _db(data / "db" / "content_hub.db", "CREATE TABLE generation(id TEXT PRIMARY KEY)")
+    response = export_test_snapshot(_request(snapshot_token=token))
+    try:
+        assert response.media_type == "application/zip"
+    finally:
+        Path(response.path).unlink(missing_ok=True)
+        conn.close()
+
+
+def test_auth_middleware_exempts_only_exact_snapshot_download_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "AUTH_ENABLED", True)
+
+    async def pass_through(_request: Request) -> Response:
+        return Response(status_code=204)
+
+    allowed = asyncio.run(main_mod.auth_enforcement(_request(), pass_through))
+    denied = asyncio.run(
+        main_mod.auth_enforcement(_request(path=f"{SNAPSHOT_EXPORT_PATH}/extra"), pass_through)
+    )
+
+    assert allowed.status_code == 204
+    assert denied.status_code == 401
+
+
+def test_snapshot_server_mode_blocks_registration_and_regular_api(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "AUTH_ENABLED", True)
+    monkeypatch.setenv(SNAPSHOT_EXPORT_ENV, "1")
+
+    async def pass_through(_request: Request) -> Response:
+        return Response(status_code=204)
+
+    snapshot = asyncio.run(main_mod.auth_enforcement(_request(), pass_through))
+    health = asyncio.run(main_mod.auth_enforcement(_request(path="/api/health"), pass_through))
+    register = asyncio.run(
+        main_mod.auth_enforcement(_request(path="/api/auth/register"), pass_through)
+    )
+    regular_export = asyncio.run(
+        main_mod.auth_enforcement(_request(path="/api/db/export"), pass_through)
+    )
+
+    assert snapshot.status_code == 204
+    assert health.status_code == 204
+    assert register.status_code == 404
+    assert regular_export.status_code == 404
+
+
+def test_snapshot_server_does_not_bootstrap_a_login_account(monkeypatch: pytest.MonkeyPatch):
+    from app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "AUTH_ENABLED", True)
+    monkeypatch.setenv(SNAPSHOT_EXPORT_ENV, "1")
+    assert main_mod._should_bootstrap_admin() is False
+
+    monkeypatch.delenv(SNAPSHOT_EXPORT_ENV)
+    assert main_mod._should_bootstrap_admin() is True
 
 
 ACCOUNT_SCHEMA = (

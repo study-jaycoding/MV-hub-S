@@ -7,11 +7,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,9 +32,81 @@ from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
-from ..services.test_snapshot import TestSnapshotError, create_test_snapshot_archive
+from ..services.test_snapshot import (
+    SNAPSHOT_EXPORT_ENV,
+    SNAPSHOT_TOKEN_ENV,
+    SNAPSHOT_TOKEN_HEADER,
+    TestSnapshotError,
+    create_test_snapshot_archive,
+)
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
+
+_snapshot_token_lock = threading.Lock()
+_snapshot_token_in_progress: str | None = None
+_snapshot_token_consumed: str | None = None
+
+
+def _snapshot_token_marker(token: str) -> Path:
+    """원문 코드를 저장하지 않고 재시작 후 재사용만 막는 격리 데이터 폴더 표식."""
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return DATA_DIR / f".test-snapshot-token-{digest}.used"
+
+
+def _claim_snapshot_download(request: Request) -> str:
+    """전용 코드를 검증하고 이 프로세스에서 한 요청만 사용하도록 예약한다."""
+    global _snapshot_token_in_progress
+
+    expected = os.environ.get(SNAPSHOT_TOKEN_ENV, "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="일회용 스냅샷 코드가 설정되지 않았습니다. test_push-db.bat을 다시 실행하세요",
+        )
+    presented = request.headers.get(SNAPSHOT_TOKEN_HEADER, "").strip()
+    if not presented or not secrets.compare_digest(
+        presented.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="일회용 스냅샷 코드가 올바르지 않습니다")
+
+    with _snapshot_token_lock:
+        if _snapshot_token_consumed == expected or _snapshot_token_marker(expected).is_file():
+            raise HTTPException(
+                status_code=410,
+                detail="이 일회용 스냅샷 코드는 이미 사용됐습니다. test_push-db.bat을 다시 실행하세요",
+            )
+        if _snapshot_token_in_progress == expected:
+            raise HTTPException(status_code=409, detail="스냅샷 다운로드가 이미 진행 중입니다")
+        _snapshot_token_in_progress = expected
+    return expected
+
+
+def _finish_snapshot_download(token: str, *, consumed: bool) -> None:
+    """생성 실패면 예약을 풀고, 성공이면 프로세스 재시작 후에도 재사용되지 않게 기록한다."""
+    global _snapshot_token_consumed, _snapshot_token_in_progress
+
+    with _snapshot_token_lock:
+        if _snapshot_token_in_progress == token:
+            _snapshot_token_in_progress = None
+        if consumed:
+            marker = _snapshot_token_marker(token)
+            try:
+                marker.touch(exist_ok=False)
+            except FileExistsError as exc:
+                _snapshot_token_consumed = token
+                raise HTTPException(
+                    status_code=410,
+                    detail=(
+                        "이 일회용 스냅샷 코드는 이미 사용됐습니다. "
+                        "test_push-db.bat을 다시 실행하세요"
+                    ),
+                ) from exc
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="일회용 코드 사용 완료를 기록할 수 없어 다운로드를 중단했습니다",
+                ) from exc
+            _snapshot_token_consumed = token
 
 def _require_local_when_open(request: Request) -> None:
     """AUTH off(차단 비활성) 상태에선 로컬(loopback) 접속만 허용 — 0.0.0.0 바인딩 + 무인증 조합에서
@@ -182,22 +256,35 @@ def export_test_snapshot(request: Request):
     """test_push-db가 만든 격리 스냅샷의 모든 SQLite DB를 한 번에 내보낸다.
 
     일반 서버에서는 환경 플래그가 없어 404다. test_push-db가 명시적으로 켠 스냅샷 서버에서만,
-    관리자 인증 후 사용할 수 있다. 라이브 DB·미디어·에셋 파일은 번들에 포함하지 않는다.
+    서버 창에 표시된 일회용 코드로 한 번만 받을 수 있다. 일반 로그인과 운영 비밀번호는 사용하지
+    않으며 라이브 DB·미디어·에셋 파일은 번들에 포함하지 않는다.
     """
-    if os.environ.get("CONTENT_HUB_TEST_SNAPSHOT_EXPORT", "").strip() != "1":
+    if os.environ.get(SNAPSHOT_EXPORT_ENV, "").strip() != "1":
         raise HTTPException(status_code=404, detail="테스트 스냅샷 내보내기가 비활성화돼 있습니다")
-    require_admin(request)
-    _require_local_when_open(request)
+    claimed_token = _claim_snapshot_download(request)
+    archive: Path | None = None
     try:
         archive = create_test_snapshot_archive(DATA_DIR)
+        response = FileResponse(
+            archive,
+            filename="MV-hub-test-dbs.zip",
+            media_type="application/zip",
+            background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
+        )
     except TestSnapshotError as exc:
+        _finish_snapshot_download(claimed_token, consumed=False)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return FileResponse(
-        archive,
-        filename="MV-hub-test-dbs.zip",
-        media_type="application/zip",
-        background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
-    )
+    except BaseException:
+        if archive is not None:
+            archive.unlink(missing_ok=True)
+        _finish_snapshot_download(claimed_token, consumed=False)
+        raise
+    try:
+        _finish_snapshot_download(claimed_token, consumed=True)
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
+    return response
 
 
 @router.post("/import")
