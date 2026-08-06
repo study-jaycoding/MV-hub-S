@@ -178,3 +178,38 @@ def test_bridge_reconnects_after_failure_and_stop_cleans_task():
     assert stats["relayed_events"] == 1
     assert stats["state"] == "stopped"
     assert stats["connected"] is False
+
+
+def test_bridge_sends_app_level_text_heartbeat(monkeypatch):
+    # 서버 유령 수거(90초 무수신 1001)는 텍스트 수신만 살아있음으로 치므로, 브리지는
+    # 프로토콜 ping 과 별개로 브라우저와 같은 텍스트 "ping" 하트비트를 보내야 한다.
+    from app.services import remote_realtime as rr
+
+    monkeypatch.setattr(rr, "_HEARTBEAT_SECONDS", 0.02)
+
+    async def scenario():
+        current = [("https://hub.test", "tok")]
+        sent = []
+
+        class HeartbeatSocket(FakeSocket):
+            async def send(self, data):
+                sent.append(data)
+                if len(sent) >= 2:
+                    current[0] = None  # 두 번 확인했으면 설정 변경으로 종료시킨다
+
+        def connect(uri, **kwargs):
+            return FakeConnection(HeartbeatSocket([]))
+
+        bridge = RemoteRealtimeBridge(
+            lambda: current[0],
+            lambda event: None,
+            connect_factory=connect,
+            config_poll_seconds=0.01,
+            connected_config_poll_seconds=0.01,
+        )
+        await bridge._consume(("https://hub.test", "tok"))
+        return sent
+
+    sent = asyncio.run(scenario())
+    assert len(sent) >= 2
+    assert all(message == "ping" for message in sent)

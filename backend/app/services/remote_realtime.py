@@ -39,6 +39,8 @@ _EVENT_TO_CHANNEL = {
     "manage_changed": DOMAIN_MANAGE,
 }
 _MAX_MESSAGE_BYTES = 64 * 1024
+# 앱 레벨 텍스트 하트비트 주기 — 브라우저 progressSocket 의 25초 "ping" 과 동일 계약.
+_HEARTBEAT_SECONDS = 25.0
 _MAX_ORIGINS = 32
 
 
@@ -275,6 +277,7 @@ class RemoteRealtimeBridge:
             recv_task: Optional[asyncio.Task] = None
             loop = asyncio.get_running_loop()
             next_config_check = loop.time() + self._connected_config_poll_seconds
+            next_heartbeat = loop.time() + _HEARTBEAT_SECONDS
             try:
                 while True:
                     now = loop.time()
@@ -283,10 +286,21 @@ class RemoteRealtimeBridge:
                         if self._read_config() != config:
                             return
                         next_config_check = now + self._connected_config_poll_seconds
+                    if now >= next_heartbeat:
+                        # 앱 레벨 텍스트 하트비트 — 서버 유령 연결 수거(90초 무수신 close)는
+                        # 텍스트 수신만 살아있음으로 치므로, 프로토콜 ping(20초)만으로는 이
+                        # 브리지가 유령으로 오인돼 주기적으로 끊긴다. 브라우저의 25초 "ping"
+                        # 과 같은 계약을 따른다(서버는 내용 무시).
+                        await websocket.send("ping")
+                        next_heartbeat = now + _HEARTBEAT_SECONDS
                     if recv_task is None:
                         recv_task = asyncio.create_task(websocket.recv())
                     done, _ = await asyncio.wait(
-                        (recv_task,), timeout=max(0.01, next_config_check - loop.time())
+                        (recv_task,),
+                        timeout=max(
+                            0.01,
+                            min(next_config_check, next_heartbeat) - loop.time(),
+                        ),
                     )
                     if not done:
                         continue

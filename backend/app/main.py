@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 import os
 import sys
@@ -573,6 +574,13 @@ def _websocket_session_token(ws: WebSocket, cookie_name: str) -> str | None:
     return bearer or ws.cookies.get(cookie_name) or ws.query_params.get("token")
 
 
+# WS 수신 루프 파라미터 — 프로토콜 ping 비활성(serve.py) 전제의 앱 레벨 살아있음 판정.
+# 클라이언트 하트비트는 25초(브라우저 progressSocket "ping"·원격 브리지 remote_realtime).
+_WS_RECV_TIMEOUT_SECONDS = 45.0
+_WS_GHOST_SECONDS = 90.0  # 하트비트 3주기 이상 무수신 = FIN 없는 사망으로 판정
+_WS_AUTH_RECHECK_SECONDS = 45.0
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """생성 진행률 push 채널. AUTH_ENABLED 면 세션 토큰을 검증한 뒤 수락."""
@@ -597,17 +605,33 @@ async def websocket_endpoint(ws: WebSocket):
         account_uid = realtime_scope(acc)
     await manager.connect(ws, account_uid)
     try:
+        # 프로토콜 ping 은 껐으므로(100명 ping 몰림 1011 방지 — serve.py) 살아있음 판정은
+        # 앱 레벨 텍스트 수신으로 한다: 브라우저 25초 "ping"(progressSocket)·원격 브리지
+        # 25초 하트비트(remote_realtime). 90초(=주기 3배+여유) 무수신이면 FIN 없는 사망
+        # (와이파이 단절·절전)으로 보고 서버가 닫는다 — 안 닫으면 manager._active 에 유령
+        # 연결이 쌓여 브로드캐스트 비용·운영 지표가 왜곡된다.
+        last_received = time.monotonic()
+        last_auth_check = last_received
         while True:
-            # 클라이언트 → 서버 메시지는 현재 쓰지 않지만 연결 유지를 위해 수신.
-            # 프론트가 25초마다 ping 을 보내므로 그 주기로 깨어난다. 수신이 없어도 45초마다
-            # 재검증하도록 타임아웃을 건다(연결 후 계정 정지·비번 변경 시 소켓을 끊기 위함).
+            got_message = False
             try:
-                await asyncio.wait_for(ws.receive_text(), timeout=45)
+                await asyncio.wait_for(ws.receive_text(), timeout=_WS_RECV_TIMEOUT_SECONDS)
+                got_message = True
             except asyncio.TimeoutError:
                 pass
+            now = time.monotonic()
+            if got_message:
+                last_received = now
+            elif now - last_received >= _WS_GHOST_SECONDS:
+                await ws.close(code=1001)  # going away — 유령 연결 수거
+                await manager.disconnect(ws)
+                return
             # ★연결 시점에만 인증하면, 그 뒤 관리자가 계정을 정지(rejected/pending)하거나 비번을
             # 리셋해도 기존 소켓은 계속 진행률·알림을 받는다 → 주기 재검증으로 끊는다.
-            if AUTH_ENABLED:
+            # 재검증은 메시지 수신마다가 아니라 45초 주기 — 100명×25초 ping 이 전부 DB 조회가
+            # 되던 부하를 줄인다(정지 반영 지연 상한은 기존과 같은 ~45초).
+            if AUTH_ENABLED and now - last_auth_check >= _WS_AUTH_RECHECK_SECONDS:
+                last_auth_check = now
                 acc2 = repo.get_account(email) if email else None
                 pcat2 = acc2.get("password_changed_at") if acc2 else None
                 if (
