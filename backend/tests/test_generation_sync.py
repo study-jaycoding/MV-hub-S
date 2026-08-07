@@ -53,15 +53,49 @@ class GenerationSyncTests(unittest.TestCase):
             {"inserted": 1, "updated": 0, "unchanged": 0, "errors": 0},
         )
         self.assertEqual(repo.known_job_ids("u_one"), ["job-1"])
+        self.assertEqual(
+            repo.job_id_sync_diff(["job-1", "job-2"], "u_one"),
+            {"unknown": ["job-2"], "refresh": ["job-1"]},
+        )
         self.assertEqual(repo.unknown_job_ids(["job-1", "job-2"], "u_one"), ["job-2"])
         self.assertEqual(repo.unknown_job_ids(["job-1"], "u_other"), ["job-1"])
 
         done = self.parsed("job-1")
         self.assertEqual(repo.upsert_synced_generation(done, "me"), "updated")
         self.assertEqual(repo.upsert_synced_generation(done, "me"), "unchanged")
+        self.assertEqual(
+            repo.job_id_sync_diff(["job-1"], "u_one"),
+            {"unknown": [], "refresh": []},
+        )
         with db.get_connection() as conn:
             row = conn.execute(
                 "SELECT id, status FROM generation WHERE job_id='job-1'"
+            ).fetchone()
+            self.assertEqual(row["status"], "done")
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM asset WHERE generation_id=?", (row["id"],)
+                ).fetchone()["c"],
+                1,
+            )
+
+    def test_legacy_waiting_synced_job_is_selected_for_repair(self) -> None:
+        waiting = self.parsed("job-waiting", status="waiting")
+        self.assertEqual(repo.upsert_synced_generation(waiting, "me"), "inserted")
+        self.assertEqual(
+            repo.job_id_sync_diff(["job-waiting"], "u_one"),
+            {"unknown": [], "refresh": ["job-waiting"]},
+        )
+
+        self.assertEqual(
+            repo.upsert_synced_generation(
+                self.parsed("job-waiting", status="done"), "me"
+            ),
+            "updated",
+        )
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, status FROM generation WHERE job_id='job-waiting'"
             ).fetchone()
             self.assertEqual(row["status"], "done")
             self.assertEqual(

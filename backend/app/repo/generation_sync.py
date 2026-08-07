@@ -224,22 +224,40 @@ def known_job_ids(creator_uid: str) -> list[str]:
     return [r["job_id"] for r in rows]
 
 
-def unknown_job_ids(job_ids: list[str], creator_uid: Optional[str] = None) -> list[str]:
-    """받은 job_id 중 서버에 아직 없는 것만 — POST known-jobs 차집합용(전량 응답 대체).
-    creator_uid 를 주면 그 계정 소유분만 known 으로 봐 GET known_job_ids 와 같은 경계를 유지한다
-    (남 계정 job 존재 여부 oracle 방지). 잡 id 는 힉스필드 전역 유일이라 스코프해도 판정은 정확."""
+_REFRESHABLE_JOB_STATUSES = frozenset(
+    {"pending", "queued", "waiting", "running", "processing", "in_progress"}
+)
+
+
+def job_id_sync_diff(
+    job_ids: list[str], creator_uid: Optional[str] = None
+) -> dict[str, list[str]]:
+    """로컬 job_id 중 서버에 없거나 아직 진행 상태인 항목을 분리한다."""
     ids = [j for j in (job_ids or []) if j]
     if not ids:
-        return []
+        return {"unknown": [], "refresh": []}
     ph = ",".join("?" * len(ids))
-    sql = f"SELECT job_id FROM generation WHERE job_id IN ({ph})"
+    sql = f"SELECT job_id, status FROM generation WHERE job_id IN ({ph})"
     args: list[Any] = list(ids)
     if creator_uid:
         sql += " AND creator_uid = ?"
         args.append(creator_uid)
     with get_connection() as conn:
-        known = {r["job_id"] for r in conn.execute(sql, args).fetchall()}
-    return [j for j in ids if j not in known]
+        known = {
+            r["job_id"]: str(r["status"] or "").strip().lower()
+            for r in conn.execute(sql, args).fetchall()
+        }
+    return {
+        "unknown": [j for j in ids if j not in known],
+        "refresh": [
+            j for j in ids if j in known and known[j] in _REFRESHABLE_JOB_STATUSES
+        ],
+    }
+
+
+def unknown_job_ids(job_ids: list[str], creator_uid: Optional[str] = None) -> list[str]:
+    """하위 호환용: 받은 job_id 중 서버에 아직 없는 것만 반환한다."""
+    return job_id_sync_diff(job_ids, creator_uid)["unknown"]
 
 
 def upsert_synced_generation(parsed: dict[str, Any], worker_id: str) -> str:
