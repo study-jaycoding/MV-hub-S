@@ -2,7 +2,7 @@
 // 기간이 여러 주에 걸치면 주 단위로 잘라 그린다(주마다 겹치는 작업만 레인에 배치).
 // 시작/마감은 PM 입력값 우선, 없으면 파생값(연결 생성물 생성일 범위). 날짜 없는 작업은 표시 안 함.
 import { useMemo } from "react";
-import { statusColor, statusLabel, type Task } from "./types";
+import { statusColor, workActivityStatusLabel, type Task } from "./types";
 
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -21,7 +21,7 @@ function addDays(d: Date, n: number): Date {
 }
 
 // 작업의 실효 기간(PM값 ?? 파생값). 둘 다 없으면 null(달력에 안 올림).
-function taskSpan(t: Task): { start: Date; end: Date; label: string } | null {
+export function taskSpan(t: Task): { start: Date; end: Date; label: string } | null {
   const start = parseYMD(t.start_date || t.derived_start);
   const end = parseYMD(t.due_date || t.derived_due) || start;
   if (!start || !end) return null;
@@ -29,6 +29,32 @@ function taskSpan(t: Task): { start: Date; end: Date; label: string } | null {
   const e = start <= end ? end : start;
   const seq = [t.name, t.sequence].filter(Boolean).join(" ");
   return { start: s, end: e, label: seq || t.name || "작업" };
+}
+
+function fmtDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) return "—";
+  let rest = Math.floor(seconds);
+  const hours = Math.floor(rest / 3600);
+  rest %= 3600;
+  const minutes = Math.floor(rest / 60);
+  const secs = rest % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", secs || (!hours && !minutes) ? `${secs}s` : ""]
+    .filter(Boolean)
+    .join("");
+}
+
+// 월간 막대는 좁으므로 상세 수치는 툴팁에서 제공한다. 같은 Task 객체의 실시간 집계값을
+// 그대로 사용해 테이블·보드·캘린더 사이에 서로 다른 숫자가 생기지 않게 한다.
+export function taskCalendarTitle(t: Task, label: string, start: Date, end: Date): string {
+  const project = t.project_name ? `${t.project_name} · ` : "";
+  const creators = t.creators?.length ? t.creators.join(", ") : "—";
+  const period = start.getTime() === end.getTime() ? ymd(start) : `${ymd(start)} ~ ${ymd(end)}`;
+  return [
+    `${project}${label}`,
+    `상태: ${workActivityStatusLabel(t.status)} · 생성자: ${creators}`,
+    `생성: ${(t.gen_count || 0).toLocaleString()}개 · 크레딧: ${(t.credits || 0).toLocaleString()} cr · 생성시간: ${fmtDuration(t.elapsed)}`,
+    `생성기간: ${period}`,
+  ].join("\n");
 }
 
 export function MonthlyTaskCalendar({
@@ -79,7 +105,14 @@ export function MonthlyTaskCalendar({
         const e = x.span.end > wkEnd ? wkEnd : x.span.end;
         const col = Math.round((s.getTime() - wkStart.getTime()) / 86400000);
         const endCol = Math.round((e.getTime() - wkStart.getTime()) / 86400000);
-        return { t: x.t, col, span: endCol - col + 1, label: x.span.label };
+        return {
+          t: x.t,
+          col,
+          span: endCol - col + 1,
+          label: x.span.label,
+          periodStart: x.span.start,
+          periodEnd: x.span.end,
+        };
       })
       .sort((a, b) => a.col - b.col || b.span - a.span);
     // 레인 배정 — 각 레인의 마지막 점유 칸을 추적해 겹치면 다음 레인.
@@ -141,7 +174,7 @@ export function MonthlyTaskCalendar({
                       background: statusColor(b.t.status) + "33",
                       borderLeft: `3px solid ${statusColor(b.t.status)}`,
                     }}
-                    title={`${b.label} · ${statusLabel(b.t.status)}`}
+                    title={taskCalendarTitle(b.t, b.label, b.periodStart, b.periodEnd)}
                   >
                     <span className="mcal-bar-txt">{b.label}</span>
                   </div>

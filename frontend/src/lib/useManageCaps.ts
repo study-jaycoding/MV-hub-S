@@ -2,20 +2,24 @@
 // AUTH off 면 백엔드가 require_global_cap 을 통과시키므로 UI 도 전부 허용.
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { viewerGlobalRoles } from "./accountIdentity";
+import { findCurrentMember, viewerGlobalRoles } from "./accountIdentity";
 import { hasGlobalCap } from "../types";
 
 export interface ManageCaps {
   loaded: boolean;
   authOff: boolean;
+  system: boolean;
+  viewerUid: string | null;
   createProject: boolean; // 생성/편집/폴더/삭제
   grantRole: boolean; // 멤버 프로젝트 역할 부여
-  readAll: boolean; // 전체 열람(대시보드·팀 집계) — admin/PM/PD. 대시보드 탭 노출 기준
+  readAll: boolean; // 워크스페이스 전체 통계 열람 — admin/PM/PD
 }
 
 const NONE: ManageCaps = {
   loaded: false,
   authOff: false,
+  system: false,
+  viewerUid: null,
   createProject: false,
   grantRole: false,
   readAll: false,
@@ -34,6 +38,8 @@ export function useManageCaps(): ManageCaps {
             setCaps({
               loaded: true,
               authOff: true,
+              system: true,
+              viewerUid: null,
               createProject: true,
               grantRole: true,
               readAll: true,
@@ -45,10 +51,13 @@ export function useManageCaps(): ManageCaps {
           api.members().catch(() => []),
         ]);
         const roles = viewerGlobalRoles(account, members);
+        const currentMember = findCurrentMember(account, members);
         if (alive)
           setCaps({
             loaded: true,
             authOff: false,
+            system: hasGlobalCap(roles, "system"),
+            viewerUid: account?.creator_uid || currentMember?.uid || null,
             createProject: hasGlobalCap(roles, "create_project"),
             grantRole: hasGlobalCap(roles, "grant_project_role"),
             readAll: hasGlobalCap(roles, "read_all"),
@@ -58,6 +67,8 @@ export function useManageCaps(): ManageCaps {
           setCaps({
             loaded: true,
             authOff: false,
+            system: false,
+            viewerUid: null,
             createProject: false,
             grantRole: false,
             readAll: false,

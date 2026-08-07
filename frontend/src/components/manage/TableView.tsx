@@ -4,10 +4,13 @@
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
+import { taskModelUsage } from "./personalWork";
+import { HoverMetric } from "./WorkspaceUsageDashboard";
 import {
   GEN_MIME,
   statusColor,
   statusLabel,
+  workActivityStatusLabel,
   type Task,
   type WorkViewProps,
 } from "./types";
@@ -92,6 +95,8 @@ export function TableView(props: WorkViewProps) {
         <tbody>
           {tasks.map((t) => {
             const isSel = !!selected?.has(t.id);
+            const modelUsage = taskModelUsage(t);
+            const stateColor = statusColor(t.status);
             return (
               <tr
                 key={t.id}
@@ -185,12 +190,24 @@ export function TableView(props: WorkViewProps) {
                     : "—"}
                 </td>
                 <td>
-                  {/* 상태 — 색 원만(글자 제거). hover 로 이름 확인. */}
-                  <span className="work-status-cell" title={statusLabel(t.status)}>
-                    <span className="status-dot lg" style={{ background: statusColor(t.status) }} />
+                  {/* 상태 — 기존 색을 유지한 텍스트 배지. 자동 폴더 작업은 생성·공유·완료로 읽는다. */}
+                  <span
+                    className="work-status-badge"
+                    title={statusLabel(t.status)}
+                    style={{ color: stateColor, backgroundColor: `${stateColor}22` }}
+                  >
+                    {workActivityStatusLabel(t.status)}
                   </span>
                 </td>
-                <td>{t.credits ? t.credits.toLocaleString() : "—"}</td>
+                <td className="work-credit-cell">
+                  <HoverMetric
+                    value={t.credits || 0}
+                    rows={modelUsage}
+                    metric="both"
+                    title="모델별 생성·크레딧"
+                    suffix=" cr"
+                  />
+                </td>
                 <td>{fmtDur(t.elapsed)}</td>
                 <td>
                   {/* 마감일 — PM 입력값 우선, 없으면 연결 생성물의 최종 생성일 자동 표시.

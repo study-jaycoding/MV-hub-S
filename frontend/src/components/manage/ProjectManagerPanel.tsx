@@ -1,10 +1,10 @@
 // 프로젝트 관리 패널 — 관리자 창의 '프로젝트' 탭을 이식한 오버레이. 프로젝트 생성/편집·렌더 폴더
 // 라벨링·멤버 프로젝트 역할 부여·보관/삭제·순서변경. 권한(create_project/grant_project_role)은
-// 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 프로젝트 관리(요약) 창에서 '＋ 프로젝트'로 연다.
+// 백엔드가 강제하며 여기선 UI 노출만 게이팅한다. 대시보드 상단의 '+ 프로젝트'로 연다.
 import { Fragment, useEffect, useState } from "react";
 import { api } from "../../api";
+import { manageApi } from "../../lib/manageApi";
 import {
-  adminMemberDisplayName,
   projectRoleCounts,
   systemMemberUids,
   visibleAdminMembers,
@@ -14,24 +14,58 @@ import {
   rememberProjectFolderLink,
   type ProjectFolderEntry,
 } from "../../lib/projectFolderTree";
+import {
+  planningBudgetInput,
+  validateProjectPlanning,
+} from "../../lib/projectPlanning";
 import { loadJSON, saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useManageCaps } from "../../lib/useManageCaps";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
-import { ProjectRolePicker, memberRoleRank } from "../admin/RolePickers";
+import { ProjectMembersPanel } from "./ProjectMembersPanel";
+import { ProjectPlanningFields } from "./ProjectPlanningDialog";
+import type { Planning } from "./types";
 import { defaultProjectRoles } from "../../types";
-import type { Member, Project, ProjectFolderState, ProjectMember } from "../../types";
+import type {
+  Member,
+  Project,
+  ProjectFolderState,
+  ProjectMember,
+  WorkspaceMemberCandidate,
+  WorkspaceOption,
+} from "../../types";
 
 type ProjectDialogState =
-  | { mode: "create"; name: string; rootPath: string; busy?: boolean; error?: string }
-  | { mode: "rename"; project: Project; name: string; rootPath: string; busy?: boolean; error?: string };
+  | {
+      mode: "create";
+      name: string;
+      rootPath: string;
+      workspaceId: string;
+      planning: Planning;
+      budgetInput: string;
+      busy?: boolean;
+      error?: string;
+    }
+  | {
+      mode: "rename";
+      project: Project;
+      name: string;
+      rootPath: string;
+      workspaceId: string;
+      planning: Planning;
+      budgetInput: string;
+      busy?: boolean;
+      error?: string;
+    };
 
 export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   useEscapeClose(onClose);
   const caps = useManageCaps();
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [workspaceOptions, setWorkspaceOptions] = useState<WorkspaceOption[]>([]);
+  const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
   // 렌더폴더 트리를 펼친 프로젝트 — 이전에 펼쳐둔 상태를 기억(매번 전체 펼침 금지).
@@ -39,9 +73,8 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
     () => new Set(loadJSON<string[]>(STORAGE_KEYS.manageFolderTrees) || []),
   );
   const [folderLoading, setFolderLoading] = useState<Record<string, boolean>>({});
-  const [openProjs, setOpenProjs] = useState<Set<string>>(new Set());
+  const [activeMembersProjectId, setActiveMembersProjectId] = useState("");
   const [projMembersMap, setProjMembersMap] = useState<Record<string, ProjectMember[]>>({});
-  const [addQuery, setAddQuery] = useState<Record<string, string>>({});
   const [actMsg, setActMsg] = useState("");
   const systemUids = systemMemberUids(members);
   const visibleMembers = visibleAdminMembers(members, systemUids);
@@ -70,6 +103,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       .projects("team", true)
       .then((r) => {
         setProjects(r.projects);
+        api.allProjectMembers().then(setProjMembersMap).catch(() => {});
         api
           .projectFolderLinks()
           .then((res) => {
@@ -96,23 +130,36 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       .catch(() => setProjects([]));
   useEffect(() => {
     api.members().then(setMembers).catch(() => {});
+    api.workspaceOptions().then((r) => setWorkspaceOptions(r.workspaces || [])).catch(() => {});
     loadProjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadWorkspaceMembers = async (workspaceId: string) => {
+    if (!workspaceId) return [];
+    if (workspaceMembers[workspaceId]) return workspaceMembers[workspaceId];
+    try {
+      const response = await api.workspaceMembers(workspaceId);
+      const items = response.members || [];
+      setWorkspaceMembers((previous) => ({ ...previous, [workspaceId]: items }));
+      return items;
+    } catch {
+      setWorkspaceMembers((previous) => ({ ...previous, [workspaceId]: [] }));
+      return [];
+    }
+  };
+
   const setPM = (pid: string, list: ProjectMember[]) =>
     setProjMembersMap((prev) => ({ ...prev, [pid]: list }));
-  const toggleProjRoles = async (pid: string) => {
-    if (openProjs.has(pid)) {
-      setOpenProjs((prev) => {
-        const next = new Set(prev);
-        next.delete(pid);
-        return next;
-      });
+  const toggleProjectMembers = async (pid: string) => {
+    if (activeMembersProjectId === pid) {
+      setActiveMembersProjectId("");
       return;
     }
-    setOpenProjs((prev) => new Set(prev).add(pid));
+    setActiveMembersProjectId(pid);
     try {
+      const project = projects.find((item) => item.id === pid);
+      if (project?.workspace_id) void loadWorkspaceMembers(project.workspace_id);
       setPM(pid, await api.projectMembers(pid));
     } catch {
       setPM(pid, []);
@@ -125,15 +172,13 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       alert("프로젝트 역할 변경 실패: " + String(e));
     }
   };
-  const addProjMember = async (pid: string, uid: string) => {
-    try {
-      // 배치 시 전역 역할 기반 기본 프로젝트 역할 자동 부여(이후 아래 역할 칩으로 수동 조정 가능).
-      const gRoles = members.find((m) => m.uid === uid)?.global_roles;
-      const roles = defaultProjectRoles(gRoles);
+  const addProjectMembers = async (pid: string, uids: string[]) => {
+    for (const uid of uids) {
+      const globalRoles =
+        members.find((member) => member.uid === uid)?.global_roles ||
+        Object.values(workspaceMembers).flat().find((member) => member.uid === uid)?.global_roles;
+      const roles = defaultProjectRoles(globalRoles);
       setPM(pid, await api.setProjectRoles(pid, uid, roles.length ? roles : ["creator"]));
-      setAddQuery((qq) => ({ ...qq, [pid]: "" }));
-    } catch (e) {
-      alert("멤버 추가 실패: " + String(e));
     }
   };
   const removeProjMember = async (pid: string, uid: string) => {
@@ -143,19 +188,43 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       alert("멤버 제거 실패: " + String(e));
     }
   };
-  const projRolesOf = (pid: string, uid: string) =>
-    (projMembersMap[pid] || []).find((m) => m.uid === uid)?.roles || [];
   const projRoleCounts = (pid: string) => projectRoleCounts(projMembersMap[pid] || [], systemUids);
-  const memberName = (uid: string) => adminMemberDisplayName(members, uid);
 
-  const createProject = () => setProjectDialog({ mode: "create", name: "", rootPath: "" });
+  const createProject = () => {
+    const workspaceId = workspaceOptions[0]?.id || "";
+    setProjectDialog({
+      mode: "create",
+      name: "",
+      rootPath: "",
+      workspaceId,
+      planning: { status: "active", budget_period: "month" },
+      budgetInput: "",
+    });
+    if (workspaceId) void loadWorkspaceMembers(workspaceId);
+  };
   const renameProject = async (p: Project) => {
-    let folder: ProjectFolderEntry | ProjectFolderState | undefined = projFolders[p.id];
-    if (!folder) {
-      const loaded = await loadProjectFolderTree(p.id);
-      folder = loaded || undefined;
+    try {
+      const [loadedFolder, planning] = await Promise.all([
+        projFolders[p.id]
+          ? Promise.resolve(projFolders[p.id])
+          : loadProjectFolderTree(p.id),
+        manageApi.getPlanning(p.id),
+      ]);
+      const folder: ProjectFolderEntry | ProjectFolderState | null = loadedFolder;
+      const workspaceId = p.workspace_id || workspaceOptions[0]?.id || "";
+      setProjectDialog({
+        mode: "rename",
+        project: p,
+        name: p.name,
+        rootPath: folder?.root_path || "",
+        workspaceId,
+        planning: { status: "active", ...planning },
+        budgetInput: planningBudgetInput(planning),
+      });
+      if (workspaceId) void loadWorkspaceMembers(workspaceId);
+    } catch (reason) {
+      setActMsg(`프로젝트 설정을 불러오지 못했습니다. ${String(reason).replace(/^Error:\s*/, "")}`);
     }
-    setProjectDialog({ mode: "rename", project: p, name: p.name, rootPath: folder?.root_path || "" });
   };
   const saveProjectFolderLink = async (pid: string, rootPath: string, selectedPath: string) => {
     try {
@@ -192,25 +261,58 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
       setProjectDialog({ ...projectDialog, error: "프로젝트 이름을 입력하세요." });
       return;
     }
+    const planningResult = validateProjectPlanning(
+      projectDialog.planning,
+      projectDialog.budgetInput,
+    );
+    if (!planningResult.planning) {
+      setProjectDialog({ ...projectDialog, error: planningResult.error });
+      return;
+    }
+    const workspace = workspaceOptions.find((item) => item.id === projectDialog.workspaceId);
+    if (!workspace) {
+      setProjectDialog({
+        ...projectDialog,
+        error: workspaceOptions.length
+          ? "워크스페이스를 선택하세요."
+          : "에이전트 동기화 후 확인된 워크스페이스가 있어야 프로젝트를 만들 수 있습니다.",
+      });
+      return;
+    }
+    const workspaceContext = { scope: "team" as const, id: workspace.id, name: workspace.name };
     setProjectDialog({ ...projectDialog, busy: true, error: "" });
+    let createdProjectId = "";
+    let folderSaveFailed = false;
     try {
       if (projectDialog.mode === "create") {
-        const created = await api.createProject(name);
-        if (rootPath) await saveProjectFolderLink(created.id, rootPath, "");
+        const created = await api.createProject(name, "team", workspaceContext);
+        createdProjectId = created.id;
+        await manageApi.setPlanning(created.id, planningResult.planning);
+        if (rootPath) folderSaveFailed = !(await saveProjectFolderLink(created.id, rootPath, ""));
       } else {
-        await api.updateProject(projectDialog.project.id, { name });
+        await api.updateProject(projectDialog.project.id, { name, workspace: workspaceContext });
+        await manageApi.setPlanning(projectDialog.project.id, planningResult.planning);
         const prev = projFolders[projectDialog.project.id];
         if (rootPath || prev?.root_path) {
-          await saveProjectFolderLink(
+          folderSaveFailed = !(await saveProjectFolderLink(
             projectDialog.project.id,
             rootPath,
             rootPath ? prev?.selected_path || "" : "",
-          );
+          ));
         }
       }
       setProjectDialog(null);
+      if (!folderSaveFailed) setActMsg(`${name} 프로젝트 설정을 저장했습니다.`);
       loadProjects();
     } catch (e) {
+      if (createdProjectId) {
+        setProjectDialog(null);
+        setActMsg(
+          `${name} 프로젝트는 생성됐지만 일정·예산 저장에 실패했습니다. 연필 수정에서 다시 저장하세요.`,
+        );
+        loadProjects();
+        return;
+      }
       setProjectDialog({ ...projectDialog, busy: false, error: String(e).replace(/^Error:\s*/, "") });
     }
   };
@@ -271,12 +373,23 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const deleteProject = async (p: Project) => {
     if (!window.confirm(`프로젝트 '${p.name}' 삭제? 결과물은 미분류로 돌아갑니다.`)) return;
     await api.deleteProject(p.id);
+    if (activeMembersProjectId === p.id) setActiveMembersProjectId("");
     loadProjects();
   };
 
+  const activeMembersProject = projects.find((project) => project.id === activeMembersProjectId);
+  const activeMemberCandidates = activeMembersProject
+    ? activeMembersProject.workspace_id
+      ? workspaceMembers[activeMembersProject.workspace_id]
+      : visibleMembers
+    : undefined;
+
   return (
     <div className="manage-proj-overlay" onMouseDown={onClose}>
-      <div className="manage-proj-modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className={`manage-proj-modal${activeMembersProject ? " members-open" : ""}`}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <header className="manage-proj-head">
           <h2>프로젝트 관리</h2>
           <button className="manage-proj-close" onClick={onClose} title="닫기">
@@ -284,7 +397,9 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
           </button>
         </header>
 
-        <section className="admin-section">
+        <div className={`project-admin-layout${activeMembersProject ? " members-open" : ""}`}>
+          <div className="project-admin-list">
+            <section className="admin-section">
           <h4 className="admin-sec-head">
             프로젝트 생성
             {caps.createProject && (
@@ -340,6 +455,9 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                         </span>
                       )}
                       <span className="admin-pname-text">{p.name}</span>
+                      <span className="admin-badge proj-workspace-badge">
+                        {p.workspace_name || "워크스페이스 미지정"}
+                      </span>
                       {p.archived && <span className="admin-badge">보관됨</span>}
                       {projFolders[p.id]?.root_path && (
                         <span className="proj-folder-path" title={projFolders[p.id]?.root_path}>
@@ -361,8 +479,8 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                     <td className="admin-pactions">
                       {caps.grantRole && (
                         <button
-                          className={openProjs.has(p.id) ? "on" : ""}
-                          onClick={() => toggleProjRoles(p.id)}
+                          className={activeMembersProjectId === p.id ? "on" : ""}
+                          onClick={() => void toggleProjectMembers(p.id)}
                           title="멤버 역할 부여(작업·검수)"
                         >
                           👥
@@ -410,99 +528,26 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                       </td>
                     </tr>
                   )}
-                  {openProjs.has(p.id) && (
-                    <tr className="proj-roles-row">
-                      <td colSpan={3}>
-                        <div className="proj-roles">
-                          {projMembersMap[p.id] === undefined && (
-                            <div className="admin-empty">불러오는 중…</div>
-                          )}
-                          {projMembersMap[p.id] !== undefined &&
-                            (projMembersMap[p.id] || []).filter((m) => !systemUids.has(m.uid)).length ===
-                              0 && (
-                              <div className="admin-empty">
-                                아직 멤버가 없습니다. ‘+ 멤버 추가’로 넣으세요.
-                              </div>
-                            )}
-                          {(projMembersMap[p.id] || [])
-                            .filter((m) => !systemUids.has(m.uid))
-                            .map((m) => (
-                              <div key={m.uid} className="proj-role-line">
-                                <span className="admin-dot" />
-                                <span className="proj-role-name">{m.name || memberName(m.uid)}</span>
-                                <ProjectRolePicker
-                                  value={projRolesOf(p.id, m.uid)}
-                                  onChange={(roles) => changeProjRoles(p.id, m.uid, roles)}
-                                />
-                                <button
-                                  className="proj-role-x"
-                                  title="프로젝트에서 제거"
-                                  onClick={() => removeProjMember(p.id, m.uid)}
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            ))}
-
-                          <div className="proj-add">
-                            <div className="proj-add-pick">
-                              <div className="proj-add-search">
-                                <span className="proj-add-search-icn">🔍</span>
-                                <input
-                                  value={addQuery[p.id] || ""}
-                                  onChange={(e) =>
-                                    setAddQuery((qq) => ({ ...qq, [p.id]: e.target.value }))
-                                  }
-                                  placeholder="멤버 검색해서 추가"
-                                />
-                              </div>
-                              {(() => {
-                                const q = (addQuery[p.id] || "").trim().toLowerCase();
-                                const cur = projMembersMap[p.id] || [];
-                                const avail = visibleMembers
-                                  .filter((m) => !cur.some((pm) => pm.uid === m.uid))
-                                  .filter((m) => {
-                                    if (!q) return true;
-                                    const nm = (m.is_mine ? "나" : m.name || "팀원").toLowerCase();
-                                    return nm.includes(q) || m.uid.toLowerCase().includes(q);
-                                  })
-                                  .sort((a, b) => {
-                                    const r = memberRoleRank(a.global_roles) - memberRoleRank(b.global_roles);
-                                    if (r !== 0) return r;
-                                    return (a.name || a.uid).localeCompare(b.name || b.uid);
-                                  });
-                                if (avail.length === 0)
-                                  return (
-                                    <div className="admin-empty">
-                                      {q ? "검색 결과 없음" : "추가할 멤버 없음"}
-                                    </div>
-                                  );
-                                return (
-                                  <div className="proj-add-list">
-                                    {avail.map((m) => (
-                                      <button
-                                        key={m.uid}
-                                        className="proj-add-item"
-                                        onClick={() => addProjMember(p.id, m.uid)}
-                                      >
-                                        <span className={"admin-dot" + (m.is_mine ? " mine" : "")} />
-                                        {m.is_mine ? "나" : m.name || "팀원"}
-                                      </button>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
               ))}
             </tbody>
           </table>
-        </section>
+            </section>
+          </div>
+          {activeMembersProject && (
+            <ProjectMembersPanel
+              key={activeMembersProject.id}
+              project={activeMembersProject}
+              projectMembers={projMembersMap[activeMembersProject.id]}
+              candidates={activeMemberCandidates}
+              systemUids={systemUids}
+              onClose={() => setActiveMembersProjectId("")}
+              onRolesChange={(uid, roles) => changeProjRoles(activeMembersProject.id, uid, roles)}
+              onRemove={(uid) => removeProjMember(activeMembersProject.id, uid)}
+              onAddMembers={(uids) => addProjectMembers(activeMembersProject.id, uids)}
+            />
+          )}
+        </div>
 
         {projectDialog && (
           <div className="admin-confirm-backdrop" onMouseDown={() => setProjectDialog(null)}>
@@ -522,6 +567,29 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                 />
               </label>
               <label className="admin-field">
+                <span>워크스페이스</span>
+                <select
+                  className="settings-input"
+                  value={projectDialog.workspaceId}
+                  onChange={(e) => {
+                    const workspaceId = e.target.value;
+                    setProjectDialog({
+                      ...projectDialog,
+                      workspaceId,
+                      error: "",
+                    });
+                    void loadWorkspaceMembers(workspaceId);
+                  }}
+                >
+                  {workspaceOptions.length === 0 && <option value="">확인된 워크스페이스 없음</option>}
+                  {workspaceOptions.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name} · 멤버 {workspace.member_count}명
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="admin-field">
                 <span>렌더 폴더 경로</span>
                 <input
                   className="settings-input"
@@ -534,6 +602,63 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
               <div className="admin-note-sub">
                 경로를 넣으면 그 안의 Render 폴더 구조가 프로젝트 아래에 표시됩니다.
               </div>
+              {projectDialog.mode === "create" && projectDialog.workspaceId && (
+                <div className="project-member-picker">
+                  <div className="project-member-picker-head">
+                    <strong>워크스페이스 멤버 자동 추가</strong>
+                    <span>
+                      {(() => {
+                        const connected = workspaceMembers[projectDialog.workspaceId]?.length || 0;
+                        const reported = workspaceOptions.find(
+                          (workspace) => workspace.id === projectDialog.workspaceId,
+                        )?.member_count || 0;
+                        const waiting = Math.max(0, reported - connected);
+                        return `${connected}명 자동 추가${waiting ? ` · 연결 대기 ${waiting}명` : ""}`;
+                      })()}
+                    </span>
+                  </div>
+                  <div className="project-member-picker-list">
+                    {(workspaceMembers[projectDialog.workspaceId] || [])
+                      .map((member) => {
+                        return (
+                          <div key={member.uid} className="project-member-pick auto on">
+                            <span className="admin-dot" />
+                            <span>
+                              <strong>{member.name || member.email?.split("@")[0] || "팀원"}</strong>
+                              <small>{member.email || member.workspace_role || "워크스페이스 멤버"}</small>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    {workspaceMembers[projectDialog.workspaceId] === undefined && (
+                      <div className="admin-empty">멤버 불러오는 중…</div>
+                    )}
+                    {workspaceMembers[projectDialog.workspaceId]?.length === 0 && (
+                      <div className="admin-empty">이 워크스페이스에서 확인된 멤버가 없습니다.</div>
+                    )}
+                  </div>
+                  <div className="admin-note-sub project-auto-member-note">
+                    프로젝트를 저장하면 계정 연결이 끝난 워크스페이스 멤버가 기본 역할로 자동 등록됩니다. 역할은 생성 후 👥에서 조정할 수 있습니다.
+                  </div>
+                </div>
+              )}
+              <section className="project-settings-section">
+                <h5>일정·예산</h5>
+                <ProjectPlanningFields
+                  form={projectDialog.planning}
+                  budgetInput={projectDialog.budgetInput}
+                  onFormChange={(planning) => setProjectDialog({
+                    ...projectDialog,
+                    planning,
+                    error: "",
+                  })}
+                  onBudgetInputChange={(budgetInput) => setProjectDialog({
+                    ...projectDialog,
+                    budgetInput,
+                    error: "",
+                  })}
+                />
+              </section>
               {projectDialog.error && <div className="login-error">{projectDialog.error}</div>}
               <div className="admin-confirm-actions">
                 <button className="admin-confirm-yes" onClick={saveProjectDialog} disabled={projectDialog.busy}>

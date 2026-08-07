@@ -1,4 +1,5 @@
-// 작업탭 노션식 필터 바 — 다중선택 칩(프로젝트/에피소드/시퀀스/상태/생성자) + 자유 검색.
+// 작업탭 노션식 필터 바 — 현재 표에 실제로 존재하는 프로젝트/에피소드/시퀀스/상태/생성자/모델
+// 후보만 보여준다. 고정된 예전 상태 목록을 노출하지 않는다.
 // 옵션 값은 현재 작업 목록에서 뽑는다. 전부 클라이언트 필터(백엔드 무관). 값 매칭은 '포함'(OR),
 // 서로 다른 칩끼리는 AND.
 import { useCallback, useMemo, useState } from "react";
@@ -6,7 +7,7 @@ import { useEscapeClose } from "../../lib/useEscapeClose";
 import { COLOR_OPTIONS, type ColorMap, colorKeyOf } from "./manageColors";
 import {
   SELECTABLE_STATUSES,
-  statusLabel,
+  workActivityStatusLabel,
   WORK_FILTER_FIELDS,
   WORK_FILTER_LABELS,
   type Task,
@@ -20,10 +21,17 @@ interface Opt {
   color?: string;
 }
 
-// 필드별 선택 후보 목록 — 상태는 고정(선택가능 상태), 나머지는 작업에서 distinct.
-function optionsFor(field: WorkFilterField, tasks: Task[]): Opt[] {
+// 필드별 선택 후보 목록 — 모든 후보를 현재 작업 데이터에서 만든다.
+export function workFilterOptions(field: WorkFilterField, tasks: Task[]): Opt[] {
   if (field === "status") {
-    return SELECTABLE_STATUSES.map((s) => ({ value: s.v, label: statusLabel(s.v), color: s.color }));
+    const present = new Set(tasks.map((task) => task.status));
+    return SELECTABLE_STATUSES
+      .filter((status) => present.has(status.v))
+      .map((status) => ({
+        value: status.v,
+        label: workActivityStatusLabel(status.v),
+        color: status.color,
+      }));
   }
   const set = new Set<string>();
   for (const t of tasks) {
@@ -35,6 +43,8 @@ function optionsFor(field: WorkFilterField, tasks: Task[]): Opt[] {
       if (t.sequence) set.add(t.sequence);
     } else if (field === "creator") {
       for (const c of t.creators || []) set.add(c);
+    } else if (field === "model") {
+      for (const cut of t.cuts || []) set.add(cut.model?.trim() || "알 수 없음");
     }
   }
   return [...set].sort().map((v) => ({ value: v, label: v }));
@@ -61,7 +71,16 @@ export function WorkFilterBar({
   }, []);
   useEscapeClose(closePopups, addOpen || openField !== null, true, true);
 
-  const inactive = WORK_FILTER_FIELDS.filter((f) => !filters.active.includes(f));
+  const optionsByField = useMemo(
+    () => Object.fromEntries(
+      WORK_FILTER_FIELDS.map((field) => [field, workFilterOptions(field, tasks)]),
+    ) as Record<WorkFilterField, Opt[]>,
+    [tasks],
+  );
+  const availableFields = WORK_FILTER_FIELDS.filter(
+    (field) => filters.active.includes(field) || optionsByField[field].length > 0,
+  );
+  const inactive = availableFields.filter((field) => !filters.active.includes(field));
 
   const addField = (f: WorkFilterField) => {
     onChange({ ...filters, active: [...filters.active, f] });
@@ -77,7 +96,7 @@ export function WorkFilterBar({
     if (openField === f) setOpenField(null);
   };
   const toggleValue = (f: WorkFilterField, v: string) => {
-    const cur = filters.values[f];
+    const cur = filters.values[f] ?? [];
     const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
     onChange({ ...filters, values: { ...filters.values, [f]: next } });
   };
@@ -86,7 +105,7 @@ export function WorkFilterBar({
     <div className="work-filterbar">
       <div className="work-chips">
       {filters.active.map((f) => {
-        const sel = filters.values[f];
+        const sel = filters.values[f] ?? [];
         return (
           <div key={f} className="work-chip-wrap">
             <button
@@ -103,7 +122,7 @@ export function WorkFilterBar({
             {openField === f && (
               <WorkFilterPopup
                 field={f}
-                opts={optionsFor(f, tasks)}
+                opts={optionsByField[f]}
                 selected={sel}
                 colorMap={colorMap}
                 onToggle={(v) => toggleValue(f, v)}

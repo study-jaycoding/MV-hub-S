@@ -7,6 +7,7 @@ import type {
   Planning,
   Task,
 } from "../components/manage/types";
+import type { WorkspaceOption } from "../types";
 
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
@@ -24,6 +25,10 @@ function warnLegacyBatchOnce(): void {
 
 export const manageApi = {
   summary: () => jsonFetch<ManageSummary>("/api/manage/summary"),
+  projectSummary: () =>
+    jsonFetch<Pick<ManageSummary, "projects">>("/api/manage/project-summary"),
+  workspaces: () =>
+    jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/manage/workspaces"),
   getPlanning: (pid: string) =>
     jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`),
   setPlanning: (pid: string, body: Partial<Planning>) =>
@@ -159,16 +164,33 @@ export const manageApi = {
         date_to: f.dateTo,
         project_id: f.projectId,
         creator_uid: f.creatorUid,
+        workspace_id: f.workspaceId,
+        model: f.model,
       }),
     ),
-  teamTimeseries: (bucket: "day" | "week" | "month" = "day", f: TeamFilters = {}) =>
+  teamTimeseries: (bucket: "minute" | "hour" | "day" | "week" | "month" = "day", f: TeamFilters = {}) =>
     jsonFetch<{ buckets: TeamBucket[] }>(
       withQuery("/api/manage/team-timeseries", {
         bucket,
         date_from: f.dateFrom,
         date_to: f.dateTo,
+        time_from: f.timeFrom,
+        time_to: f.timeTo,
         project_id: f.projectId,
         creator_uid: f.creatorUid,
+        workspace_id: f.workspaceId,
+        model: f.model,
+      }),
+    ),
+  usageExport: (f: TeamFilters = {}) =>
+    jsonFetch<{ rows: TeamUsageExportRow[] }>(
+      withQuery("/api/manage/usage-export", {
+        date_from: f.dateFrom,
+        date_to: f.dateTo,
+        project_id: f.projectId,
+        creator_uid: f.creatorUid,
+        workspace_id: f.workspaceId,
+        model: f.model,
       }),
     ),
   // 완료본 렌더폴더 저장 — 완료 작업의 최종본만 물리 저장(멱등). saved/skipped/errors 반환.
@@ -184,8 +206,12 @@ export const manageApi = {
 export interface TeamFilters {
   dateFrom?: string;
   dateTo?: string;
+  timeFrom?: string;
+  timeTo?: string;
   projectId?: string;
   creatorUid?: string;
+  workspaceId?: string;
+  model?: string;
 }
 
 export interface TeamTotals {
@@ -196,6 +222,57 @@ export interface TeamTotals {
   final_count: number;
   workers: number;
   projects: number;
+  models: number;
+  features: number;
+}
+
+export interface TeamModelRow {
+  model: string;
+  count: number;
+  credits: number;
+  elapsed_seconds?: number;
+  final_count: number;
+}
+
+export interface TeamOutputTypeRow {
+  output_type: string;
+  count: number;
+  credits: number;
+}
+
+export interface TeamOutputModelRow extends TeamOutputTypeRow {
+  model: string;
+}
+
+export interface TeamUsageExportRow {
+  date: string;
+  user_email: string;
+  user_id: string | null;
+  model: string;
+  credits_used: number;
+  jobs: number;
+}
+
+export interface TeamWorkerModelRow extends TeamModelRow {
+  creator_uid: string | null;
+}
+
+export interface TeamProjectModelRow extends TeamModelRow {
+  project_id: string | null;
+}
+
+export interface FolderEfficiencyRow {
+  project_id: string | null;
+  project_name: string | null;
+  folder_path: string;
+  episode?: string | null;
+  scene?: string | null;
+  count: number;
+  final_count: number;
+  credits: number;
+  yield_percent?: number;
+  final_rate_tenths: number;
+  attempts_per_final: number | null;
 }
 
 export interface TeamWorkerRow {
@@ -229,6 +306,12 @@ export interface TeamOverview {
   totals: TeamTotals;
   by_worker: TeamWorkerRow[];
   by_project: TeamProjectRow[];
+  by_model: TeamModelRow[];
+  by_output_type?: TeamOutputTypeRow[];
+  output_models?: TeamOutputModelRow[];
+  worker_models: TeamWorkerModelRow[];
+  project_models: TeamProjectModelRow[];
+  folder_efficiency: FolderEfficiencyRow[];
   matrix: TeamMatrixCell[];
 }
 

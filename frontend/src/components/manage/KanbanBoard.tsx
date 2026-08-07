@@ -6,14 +6,30 @@ import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
 import {
   GEN_MIME,
-  groupLabel,
-  HIDDEN_STATUSES,
-  STATUS_GROUPS,
   STATUSES,
-  statusText,
   TASK_MIME,
+  workActivityStatusLabel,
   type WorkViewProps,
 } from "./types";
+
+// 보드는 실제 생성 흐름만 보여준다. 계획용 '시작 전'과 비활성 처리인 '생략'은
+// 테이블 필터에서 계속 확인할 수 있지만, 칸반 레이아웃에는 별도 열을 만들지 않는다.
+export const BOARD_STATUS_VALUES = ["in_progress", "publish", "done"] as const;
+const BOARD_COLUMNS = STATUSES.filter((status) =>
+  BOARD_STATUS_VALUES.includes(status.v as (typeof BOARD_STATUS_VALUES)[number]),
+);
+
+function fmtDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) return "";
+  let rest = Math.floor(seconds);
+  const hours = Math.floor(rest / 3600);
+  rest %= 3600;
+  const minutes = Math.floor(rest / 60);
+  const secs = rest % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", secs || (!hours && !minutes) ? `${secs}s` : ""]
+    .filter(Boolean)
+    .join("");
+}
 
 export function BoardView(props: WorkViewProps) {
   const { tasks, seqOptions, thumb, disabled, colorMap, onPatch, onLinkGen, onUnlinkGen } = props;
@@ -42,7 +58,7 @@ export function BoardView(props: WorkViewProps) {
           >
             <div className="kanban-col-head">
               <span className="status-dot" style={{ background: col.color }} />
-              {statusText(col)} <span className="kanban-count">{items.length}</span>
+              {workActivityStatusLabel(col.v)} <span className="kanban-count">{items.length}</span>
             </div>
             {items.map((t) => (
               <div
@@ -118,9 +134,13 @@ export function BoardView(props: WorkViewProps) {
                 </div>
 
                 <div className="work-card-meta">
-                  {!!t.credits && <span title="크레딧">◆ {t.credits.toLocaleString()}</span>}
+                  {!!t.gen_count && <span title="생성 수">생성 {t.gen_count.toLocaleString()}개</span>}
+                  {!!t.credits && <span title="사용 크레딧">{t.credits.toLocaleString()} cr</span>}
+                  {!!t.elapsed && <span title="생성시간">⏱ {fmtDuration(t.elapsed)}</span>}
                   {!!t.comment_count && <span title="코멘트">💬 {t.comment_count}</span>}
-                  {t.due_date && <span title="마감">📅 {t.due_date}</span>}
+                  {(t.due_date || t.derived_due) && (
+                    <span title={t.due_date ? "마감" : "최근 생성일"}>📅 {t.due_date || t.derived_due}</span>
+                  )}
                 </div>
 
                 {t.description && <div className="work-card-desc">{t.description}</div>}
@@ -131,23 +151,8 @@ export function BoardView(props: WorkViewProps) {
   };
 
   return (
-    <div className="kanban kanban-grouped">
-      {STATUS_GROUPS.map((group) => {
-        const cols = STATUSES.filter(
-          (s) => s.group === group && !HIDDEN_STATUSES.has(s.v),
-        );
-        if (!cols.length) return null; // 시작 전만 있던 '할 일' 그룹 등은 통째로 숨김
-        const total = tasks.filter((t) => cols.some((c) => c.v === t.status)).length;
-        return (
-          // 그룹 폭을 컬럼 수에 비례시켜 모든 컬럼이 균등 폭으로 화면에 한 번에 들어오게 한다.
-          <div key={group} className="kanban-group" style={{ flexGrow: cols.length, flexBasis: 0 }}>
-            <div className="kanban-group-head">
-              {groupLabel(group)} <span className="kanban-count">{total}</span>
-            </div>
-            <div className="kanban-group-cols">{cols.map(renderColumn)}</div>
-          </div>
-        );
-      })}
+    <div className="kanban kanban-flow">
+      {BOARD_COLUMNS.map(renderColumn)}
     </div>
   );
 }
