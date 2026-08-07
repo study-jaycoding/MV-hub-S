@@ -190,6 +190,7 @@ _STATUS_MAP = {
     "in_queue": "pending",
     "pending": "pending",
     "created": "pending",
+    "waiting": "pending",
     "running": "running",
     "processing": "running",
     "in_progress": "running",

@@ -285,7 +285,9 @@ def _extract_created_id(created, cli_error: str | None) -> str | None:
 # 아직 '처리중'인 원시 상태값 — 이 상태의 잡을 (모호한 결말에서) 되찾으면 실패로 끝내지 않고 anchor 로
 # job_id 만 박고 '확인중(running)' 유지한다. 재조정 패스가 done/failed 로 확정. (done/failed/nsfw 등
 # 종료계열은 기존 fulfill 경로가 처리 — 서버 normalize_status 가 최종 매핑.)
-_PROCESSING_RAW = {"queued", "in_queue", "pending", "created", "running", "processing", "in_progress"}
+_PROCESSING_RAW = {
+    "queued", "in_queue", "pending", "created", "waiting", "running", "processing", "in_progress"
+}
 
 
 def _job_status(job: dict) -> str:
@@ -1467,6 +1469,26 @@ def _signout_and_relogin(cli: str) -> str | None:
     return _cli_account_email(cli)
 
 
+def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> set[str]:
+    """서버에 없거나 서버에서 아직 진행중인 로컬 job id만 고른다.
+
+    신버전 서버의 ``refresh``를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
+    """
+    if local_ids:
+        status, diff = _http(
+            "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
+        )
+        if status == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
+            selected = {str(job_id) for job_id in diff["unknown"] if job_id}
+            refresh = diff.get("refresh")
+            if isinstance(refresh, list):
+                selected.update(str(job_id) for job_id in refresh if job_id)
+            return selected
+    status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
+    known_ids = set(known.get("job_ids") or []) if status == 200 and isinstance(known, dict) else set()
+    return {job_id for job_id in local_ids if job_id not in known_ids}
+
+
 def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool = True, reinspect: bool = False) -> None:
     # 1) 로컬 생성물(내 CLI·내 계정) + 크레딧·워크스페이스 상태
     jobs = _cli_json(cli, "generate", "list", "--size", str(size)) or []
@@ -1479,17 +1501,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # ★reinspect(재점검): 차집합을 건너뛰고 최신 전량을 다시 보낸다 → 서버 upsert 가 힉스필드 상태와
     #   로컬을 재대조해 어긋난 것(로컬만 실패 등)을 정정. (fresh_ids=None → 아래서 전량 채택)
     local_ids = [j["id"] for j in jobs if isinstance(j, dict) and j.get("id")]
-    fresh_ids: set | None = None
-    if not reinspect and local_ids:
-        st, diff = _http(
-            "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
-        )
-        if st == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
-            fresh_ids = set(diff["unknown"])
-    if not reinspect and fresh_ids is None:
-        status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
-        known_ids = set(known.get("job_ids") or []) if isinstance(known, dict) else set()
-        fresh_ids = {j for j in local_ids if j not in known_ids}
+    fresh_ids: set[str] | None = None if reinspect else _job_ids_to_sync(server, token, local_ids)
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
     acct = _cli_json(cli, "account", "status")

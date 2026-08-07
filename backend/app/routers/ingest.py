@@ -589,8 +589,9 @@ class KnownJobsIn(BaseModel):
 
 @router.post("/ingest/known-jobs")
 def known_jobs_diff(body: KnownJobsIn, request: Request):
-    """에이전트의 로컬 job_id 목록(≤ --size 개)을 받아 서버에 '없는 것'만 돌려준다 —
+    """에이전트의 로컬 job_id 목록(≤ --size 개)을 받아 서버에 없거나 재확인할 것을 돌려준다 —
     GET(서버 보유 전량 응답)은 라이브러리가 커질수록 매 사이클 왕복이 무거워져 차집합으로 교체.
+    ``refresh``는 서버 상태가 아직 대기/생성중인 항목뿐이라 완료 이력을 불필요하게 재전송하지 않는다.
     응답 payload 가 요청 크기로 유한해진다. 인증 필수."""
     acc = getattr(request.state, "account", None)
     if not acc:
@@ -598,4 +599,4 @@ def known_jobs_diff(body: KnownJobsIn, request: Request):
     ids = [str(j) for j in (body.job_ids or []) if j][:1000]  # 방어적 상한
     # account_scope_uid 로 스코프 — 미링크 계정도 acct:email/'\x00' 이라 전역 검색(남의 job 존재
     # oracle)이 되지 않는다. GET 경로와 동일 기준.
-    return {"unknown": repo.unknown_job_ids(ids, creator_uid=account_scope_uid(request))}
+    return repo.job_id_sync_diff(ids, creator_uid=account_scope_uid(request))

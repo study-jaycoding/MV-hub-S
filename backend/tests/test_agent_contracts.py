@@ -322,6 +322,51 @@ def test_agent_poll_uses_one_list_call_and_keeps_processing_jobs():
     assert list(active) == ["job-running"]
 
 
+def test_agent_keeps_waiting_job_active_until_it_really_completes():
+    """Higgsfield waiting은 종료가 아니라 대기 상태라 reconcile 하면 안 된다."""
+    agent = _load_agent()
+    active = {
+        "job-waiting": {
+            "rid": "request-waiting",
+            "job_id": "job-waiting",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+    }
+    jobs = [{"id": "job-waiting", "status": "waiting"}]
+
+    with patch.object(agent, "_run_cli_json", return_value=(jobs, None)), patch.object(
+        agent, "_reconcile"
+    ) as reconcile:
+        assert agent._poll_active_jobs(
+            "http://hub", "token-1", "higgsfield", active
+        ) == 0
+
+    reconcile.assert_not_called()
+    assert list(active) == ["job-waiting"]
+
+
+def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> None:
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(200, {"unknown": ["job-new"], "refresh": ["job-running"]}),
+    ) as http:
+        selected = agent._job_ids_to_sync(
+            "http://hub", "token-1", ["job-done", "job-running", "job-new"]
+        )
+
+    assert selected == {"job-running", "job-new"}
+    http.assert_called_once_with(
+        "POST",
+        "http://hub/api/ingest/known-jobs",
+        token="token-1",
+        body={"job_ids": ["job-done", "job-running", "job-new"]},
+    )
+
+
 def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it():
     agent = _load_agent()
     active = {

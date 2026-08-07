@@ -160,7 +160,9 @@ class IdentityPermissionTests(unittest.TestCase):
         )
         body = ingest_router.KnownJobsIn(job_ids=["j1", "j2"])
         with auth_on(), mock.patch.object(
-            ingest_router.repo, "unknown_job_ids", return_value=[]
+            ingest_router.repo,
+            "job_id_sync_diff",
+            return_value={"unknown": [], "refresh": []},
         ) as m:
             ingest_router.known_jobs_diff(body, req)
         self.assertEqual(m.call_args.kwargs.get("creator_uid"), "acct:river@example.com")
