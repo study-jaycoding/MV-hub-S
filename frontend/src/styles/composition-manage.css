@@ -496,6 +496,8 @@
 .work-row-handle:hover { opacity: .8; }
 .work-row-handle:active { cursor: grabbing; }
 .work-row-sel { background: rgba(127,127,127,.12); }
+.work-mobile-detail-btn,
+.work-mobile-detail-row { display: none; }
 
 /* 선택 액션 바(생성탭 방식) — 하단 중앙 플로팅 */
 .work-selbar {
@@ -620,6 +622,36 @@
   background: transparent; border: 1px dashed var(--border); border-radius: 8px; padding: 7px 9px;
 }
 .work-newrow input:focus { outline: none; border-color: var(--accent); border-style: solid; }
+
+/* 좁은 창에서는 핵심 열을 한 화면에 유지하고, 나머지 정보는 행 상세로 보존한다. */
+@media (max-width: 900px) {
+  .manage-table.work-table th:nth-child(n+9),
+  .manage-table.work-table > tbody > tr:not(.work-mobile-detail-row) > td:nth-child(n+9) {
+    display: none;
+  }
+  .work-mobile-detail-btn {
+    display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 4px;
+    padding: 0; border: 1px solid var(--border); border-radius: 5px; background: transparent;
+    color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; vertical-align: middle;
+  }
+  .work-mobile-detail-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .work-mobile-detail-row { display: table-row; }
+  .manage-table.work-table .work-mobile-detail-row > td {
+    display: table-cell; padding: 10px 12px; text-align: left; white-space: normal;
+    background: rgba(127,127,127,.04);
+  }
+  .work-mobile-detail-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px 16px;
+  }
+  .work-mobile-detail-grid > div,
+  .work-mobile-detail-grid > label { min-width: 0; display: grid; gap: 4px; }
+  .work-mobile-detail-wide { grid-column: 1 / -1; }
+  .work-mobile-detail-label { color: var(--muted); font-size: 10px; font-weight: 700; }
+  .work-mobile-detail-grid .work-cell-in {
+    min-width: 0; padding-left: 0; text-align: left;
+  }
+  .work-mobile-detail-grid .work-period { padding: 0; text-align: left; }
+}
 
 /* 추이 차트(CSS 막대) */
 .chart { display: flex; align-items: flex-end; gap: 6px; height: 180px; padding: 8px 4px 0; overflow-x: auto; }

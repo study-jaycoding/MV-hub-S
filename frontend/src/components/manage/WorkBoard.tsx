@@ -20,7 +20,6 @@ import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
 import { scopeTasksToCreator } from "./personalWork";
-import { shouldRunManageFallbackRefresh } from "../../lib/manageRefreshPolicy";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
@@ -203,7 +202,6 @@ export function WorkBoard({
   const loadingRef = useRef(false);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingLoadRef = useRef(false);
-  const lastLoadAtRef = useRef(0);
   const orderSaveRef = useRef<ReturnType<typeof createLatestMutationQueue> | null>(null);
   const orderRevisionRef = useRef(0);
   const optimisticOrderRef = useRef<{ revision: number; tasks: Task[] } | null>(null);
@@ -219,7 +217,6 @@ export function WorkBoard({
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
-    lastLoadAtRef.current = Date.now();
     const finish = (tasks: Task[]) => {
       if (reqRef.current === my) {
         const ordered = tasks.sort(bySort);
@@ -290,44 +287,6 @@ export function WorkBoard({
     seenReloadSignalRef.current = reloadSignal;
     void loadAllRef.current();
   }, [reloadSignal]);
-
-  // WebSocket 누락 안전망 — 실시간 신호는 ManageWindow가 담당하고 여기서는 30초 폴링만 유지한다.
-  useEffect(() => {
-    let debounce: number | undefined;
-    const reload = () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = window.setTimeout(() => {
-        debounce = undefined;
-        // 예약 뒤 실시간 신호가 먼저 loadAll 을 시작할 수 있다. 실행 시점에 다시 확인해
-        // 복귀 안전망이 같은 tasks-batch 를 뒤따라 한 번 더 요청하지 않게 한다.
-        if (
-          document.visibilityState !== "visible" ||
-          !shouldRunManageFallbackRefresh({
-            loading: loadingRef.current,
-            lastLoadAt: lastLoadAtRef.current,
-            now: Date.now(),
-          })
-        )
-          return;
-        void loadAllRef.current();
-      }, 300);
-    };
-    // 프록시 모드에서 다른 PC가 원격 서버에 직접 쓴 변경도 결국 따라잡도록 주기를 느슨하게 유지한다.
-    // 이전 배치 라운드가 진행 중이면 중복 폴링을 건너뛴다.
-    const poll = window.setInterval(() => {
-      if (document.visibilityState === "visible") reload();
-    }, 30000);
-    const onVis = () => {
-      if (document.visibilityState === "visible") reload();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      if (debounce) clearTimeout(debounce);
-      clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);

@@ -1,6 +1,7 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
 // 담당(배정)은 대시보드에서 관리 — 작업탭엔 표시하지 않는다. 생성자는 실제 생성자(연결 컷 파생)만.
+import { Fragment, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
 import { CutThumbs } from "./CutThumbs";
@@ -58,6 +59,7 @@ export function TableView(props: WorkViewProps) {
     onUnlinkGen,
   } = props;
   useT(); // 언어 토글 시 상태 라벨 리렌더
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const commitText = (t: Task, value: string) => {
     if ((t.description || "") !== value) onPatch(t.id, { description: value });
@@ -65,6 +67,12 @@ export function TableView(props: WorkViewProps) {
 
   const allIds = tasks.map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
+  const toggleDetails = (id: string) =>
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   return (
     <div className="manage-table-wrap" tabIndex={0}>
@@ -97,9 +105,11 @@ export function TableView(props: WorkViewProps) {
             const isSel = !!selected?.has(t.id);
             const modelUsage = taskModelUsage(t);
             const stateColor = statusColor(t.status);
+            const detailsOpen = expanded.has(t.id);
+            const detailId = `work-detail-${t.id}`;
             return (
+              <Fragment key={t.id}>
               <tr
-                key={t.id}
                 className={isSel ? "work-row-sel" : ""}
                 onDragOver={(e) => {
                   if (e.dataTransfer.types.includes(ROW_MIME)) e.preventDefault();
@@ -127,6 +137,17 @@ export function TableView(props: WorkViewProps) {
                     checked={isSel}
                     onChange={() => onToggleSelect?.(t.id)}
                   />
+                  <button
+                    type="button"
+                    className="work-mobile-detail-btn"
+                    aria-expanded={detailsOpen}
+                    aria-controls={detailId}
+                    aria-label={`${t.project_name || "프로젝트"} ${t.name} ${t.sequence || ""} 상세`}
+                    title={detailsOpen ? "상세 접기" : "상세 펼치기"}
+                    onClick={() => toggleDetails(t.id)}
+                  >
+                    {detailsOpen ? "▴" : "▾"}
+                  </button>
                 </td>
                 <td>
                   <ColorTag field="project" value={t.project_name} colorMap={colorMap} plainClass="work-proj-static" />
@@ -238,6 +259,52 @@ export function TableView(props: WorkViewProps) {
                 </td>
                 <td>{t.comment_count ? `💬 ${t.comment_count}` : "—"}</td>
               </tr>
+              {detailsOpen && (
+                <tr id={detailId} className="work-mobile-detail-row">
+                  <td colSpan={12}>
+                    <div className="work-mobile-detail-grid">
+                      <div>
+                        <span className="work-mobile-detail-label">생성시간</span>
+                        <b>{fmtDur(t.elapsed)}</b>
+                      </div>
+                      <div>
+                        <span className="work-mobile-detail-label">생성기간</span>
+                        <input
+                          className="work-cell-in"
+                          type="date"
+                          value={t.due_date || t.derived_due || ""}
+                          onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
+                        />
+                        {t.derived_start && t.derived_due && (
+                          <div className="work-period" title="연결 생성물의 생성일 범위">
+                            {fmtMD(t.derived_start)}
+                            {t.derived_start !== t.derived_due
+                              ? ` ~ ${fmtMD(t.derived_due)}`
+                              : ""}
+                          </div>
+                        )}
+                      </div>
+                      <label className="work-mobile-detail-wide">
+                        <span className="work-mobile-detail-label">설명</span>
+                        <input
+                          className="work-cell-in"
+                          defaultValue={t.description || ""}
+                          placeholder="설명"
+                          onBlur={(e) => commitText(t, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                      </label>
+                      <div>
+                        <span className="work-mobile-detail-label">코멘트</span>
+                        <b>{t.comment_count ? `${t.comment_count}개` : "없음"}</b>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>
