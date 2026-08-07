@@ -6,7 +6,7 @@
 // 동작 보존이 목적이므로 핸들러는 (기존과 동일하게) 렌더마다 생성되는 평범한 함수로 둔다 — 메모이제이션 없음.
 import { useEffect, useRef, useState } from "react";
 import { DRAG_TYPES } from "./dragTypes";
-import { dataTransferHasFiles } from "./media";
+import { dataTransferHasFiles, filesFromDataTransfer } from "./media";
 import {
   parseSpotlightAssetItems,
   readSpotlightAssetPayload,
@@ -165,7 +165,7 @@ export function useSpotlightTray({
       return;
     }
     if (dataTransferHasFiles(e.dataTransfer)) {
-      onImportFiles(Array.from(e.dataTransfer.files));
+      onImportFiles(filesFromDataTransfer(e.dataTransfer));
     }
   };
   // 트레이 항목 순서 변경 — from 을 빼고 insertIndex(원래 배열 기준 0..n) 위치에 삽입. 순서 그대로면 no-op.

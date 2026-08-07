@@ -8,6 +8,7 @@ export interface Planning {
   start_date?: string | null;
   due_date?: string | null;
   budget_credits?: number | null;
+  budget_period?: "day" | "week" | "month" | null;
   note?: string | null;
 }
 
@@ -26,6 +27,34 @@ export interface Workspace {
   user_role?: string | null;
 }
 
+export interface ProjectModelUsage {
+  model: string;
+  count: number;
+  credits: number;
+  final_count: number;
+  elapsed_seconds?: number;
+}
+
+export interface ProjectCreatorUsage {
+  uid: string;
+  name: string;
+  count: number;
+  credits: number;
+  final_count: number;
+}
+
+export interface ProjectFolderUsage {
+  folder_path: string;
+  count: number;
+  final_count: number;
+  credits: number;
+  elapsed_seconds: number;
+  created_start?: string | null;
+  created_end?: string | null;
+  models: ProjectModelUsage[];
+  members: ProjectCreatorUsage[];
+}
+
 export interface ManageProject {
   pid: string | null;
   name: string;
@@ -35,6 +64,10 @@ export interface ManageProject {
   final_count: number; // 완료(최종선택·골드) 생성물 수
   real_credits: number;
   credits: number; // COALESCE(실제, 견적)
+  budget_used_credits?: number; // 설정된 일/주/월의 현재 기간 사용량(구서버는 미제공)
+  models?: ProjectModelUsage[]; // 프로젝트 전체 모델별 생성·크레딧·최종 집계
+  budget_models?: ProjectModelUsage[]; // 현재 예산 주기의 모델별 사용 집계
+  folders?: ProjectFolderUsage[]; // 등록 폴더+실제 생성물을 합친 시퀀스별 집계
   metric_count: number;
   elapsed_total: number;
   planning?: Planning | null;
@@ -117,6 +150,18 @@ export function statusLabel(v?: string | null): string {
 export function statusColor(v?: string | null): string {
   return statusDef(v)?.color ?? "#787c82";
 }
+// 작업 테이블에서는 생성물의 실제 흐름이 바로 읽히도록 상태를 생성·공유·완료로 표현한다.
+const WORK_ACTIVITY_STATUS_LABELS: Record<string, string> = {
+  not_started: "시작 전",
+  pending: "대기",
+  in_progress: "생성",
+  publish: "공유",
+  done: "완료",
+  omit: "생략",
+};
+export function workActivityStatusLabel(v?: string | null): string {
+  return (v && WORK_ACTIVITY_STATUS_LABELS[v]) || statusLabel(v);
+}
 // '시작 전'은 수동 작업·생성물 없는 계획 작업에 의미가 있어 보드 열·드롭다운·필터에 노출한다.
 // (폴더 자동 작업은 생성물이 있으면 백엔드가 진행 이상으로 파생하므로 자연히 안 걸린다.)
 // 'pending'(대기)만 현재 워크플로에서 미사용이라 숨김. 보드/테이블/필터 단일 소스.
@@ -124,13 +169,14 @@ export const HIDDEN_STATUSES = new Set(["pending"]);
 export const SELECTABLE_STATUSES = STATUSES.filter((s) => !HIDDEN_STATUSES.has(s.v));
 
 // 작업탭 노션식 필터 — 다중선택 칩 5종 + 자유 검색. 전부 클라이언트에서 적용(백엔드 무관).
-export type WorkFilterField = "project" | "episode" | "sequence" | "status" | "creator";
+export type WorkFilterField = "project" | "episode" | "sequence" | "status" | "creator" | "model";
 export const WORK_FILTER_FIELDS: WorkFilterField[] = [
   "project",
   "episode",
   "sequence",
   "status",
   "creator",
+  "model",
 ];
 export const WORK_FILTER_LABELS: Record<WorkFilterField, string> = {
   project: "프로젝트",
@@ -138,6 +184,7 @@ export const WORK_FILTER_LABELS: Record<WorkFilterField, string> = {
   sequence: "시퀀스",
   status: "상태",
   creator: "생성자",
+  model: "모델",
 };
 export interface WorkFilters {
   active: WorkFilterField[]; // 추가된 칩(표시 순서 유지)
@@ -147,7 +194,7 @@ export interface WorkFilters {
 export function emptyWorkFilters(): WorkFilters {
   return {
     active: [],
-    values: { project: [], episode: [], sequence: [], status: [], creator: [] },
+    values: { project: [], episode: [], sequence: [], status: [], creator: [], model: [] },
     search: "",
   };
 }
@@ -159,7 +206,7 @@ export interface WorkViewProps {
   thumb: (path?: string | null) => string | undefined;
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
-  myUid?: string | null; // 현재 로그인 uid — '내 배분' 필터·표시용
+  myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -176,6 +223,7 @@ export interface Cut {
   status: string;
   creator_uid?: string | null;
   creator_name?: string | null;
+  model?: string | null; // 모델별 크레딧 호버 집계용
   thumb?: string | null; // 포스터/이미지 경로(비디오는 poster 없으면 null)
   media_type?: string | null; // 'image' | 'video' | ... — 비디오면 <video> 로 렌더
   file_path?: string | null; // 원본 파일 경로(비디오 첫 프레임 표시용)
@@ -184,6 +232,8 @@ export interface Cut {
   linked?: number | boolean; // 수동 드래그 링크(✕ 해제 가능). 시퀀스 자동 귀속은 false
   created_at?: string | null; // 생성일 — 캘린더(생성자별 활동) 날짜 배치용
   credits?: number; // 이 컷의 크레딧(참여자별 집계용)
+  elapsed?: number; // 이 컷의 생성 소요시간(초) — 개인 작업표 재집계용
+  comment_count?: number; // 이 컷의 코멘트 수 — 개인 작업표 재집계용
 }
 // 카드 썸네일 노출 한도 — 최종→공유→일반 순(백엔드 정렬)에서 앞 3장.
 export const CUT_THUMB_MAX = 3;

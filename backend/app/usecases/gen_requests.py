@@ -50,6 +50,7 @@ class GenRequestCommand:
     creator_uid: str | None
     worker_id: str
     source_gen_id: str | None
+    workspace: dict | None = None
     data: dict | None = None  # kind=create 의 정규화된 GenerationCreate dump
     regenerate: RegenerateIn | None = None  # kind=regenerate 옵션
 
@@ -255,9 +256,15 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     create/import(+tweaks) -> gen_recipe -> create_gen_request -> agent signal -> PM 견적(await) -> get_generation.
     """
     if cmd.kind == "create":
-        gen_id = repo.create_local_generation(cmd.data, cmd.worker_id, creator_uid=cmd.creator_uid)
+        create_kwargs = {"creator_uid": cmd.creator_uid}
+        if cmd.workspace is not None:
+            create_kwargs["workspace"] = cmd.workspace
+        gen_id = repo.create_local_generation(cmd.data, cmd.worker_id, **create_kwargs)
     else:  # regenerate
-        gen_id = repo.import_generation(cmd.source_gen_id, cmd.worker_id, creator_uid=cmd.creator_uid)
+        import_kwargs = {"creator_uid": cmd.creator_uid}
+        if cmd.workspace is not None:
+            import_kwargs["workspace"] = cmd.workspace
+        gen_id = repo.import_generation(cmd.source_gen_id, cmd.worker_id, **import_kwargs)
         reg = cmd.regenerate or RegenerateIn()
         if reg.color is not None:
             repo.set_color(gen_id, reg.color)

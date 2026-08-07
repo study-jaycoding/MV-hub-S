@@ -1,18 +1,18 @@
 interface ManageFallbackRefreshState {
-  loading: boolean;
-  lastLoadAt: number;
+  hidden: boolean;
+  lastRefreshAt: number;
   now: number;
   minIntervalMs?: number;
 }
 
-/** A polling/focus safety refresh must not trail a realtime refresh that just started. */
+/** 숨겨진 창은 건너뛰고, 방금 실시간 갱신한 창에는 안전망 요청을 연달아 붙이지 않는다. */
 export function shouldRunManageFallbackRefresh({
-  loading,
-  lastLoadAt,
+  hidden,
+  lastRefreshAt,
   now,
   minIntervalMs = 5_000,
 }: ManageFallbackRefreshState): boolean {
-  return !loading && now - lastLoadAt >= minIntervalMs;
+  return !hidden && now - lastRefreshAt >= minIntervalMs;
 }
 
 /** Bare syncer/legacy signals use the periodic safety refresh; browser-origin writes are immediate. */

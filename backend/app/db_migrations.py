@@ -5,10 +5,63 @@ init_db(db.py) 가 _pre_migrate → executescript(schema) → _migrate 순으로
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 
 
 _PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
+
+
+def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
+    """기존 ``hf_status:<email>`` JSON에서 확인 가능한 팀 워크스페이스 접근관계를 1회성 보강한다.
+
+    INSERT OR IGNORE만 사용해 재부팅이 오래된 JSON의 last_seen_at을 현재 시각으로 갱신하지 않게 한다.
+    """
+    rows = conn.execute(
+        "SELECT key, value FROM app_setting WHERE key LIKE 'hf_status:%'"
+    ).fetchall()
+    for row in rows:
+        email = str(row["key"]).split("hf_status:", 1)[-1].strip().lower()
+        if not email:
+            continue
+        try:
+            status = json.loads(row["value"]) if row["value"] else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(status, dict) or not isinstance(status.get("workspaces"), list):
+            continue
+        account = conn.execute(
+            "SELECT creator_uid FROM account WHERE email=?", (email,)
+        ).fetchone()
+        creator_uid = account["creator_uid"] if account else None
+        for workspace in status["workspaces"]:
+            if not isinstance(workspace, dict):
+                continue
+            workspace_id = str(workspace.get("id") or "").strip()
+            workspace_name = str(workspace.get("name") or "").strip()
+            if not workspace_id or not workspace_name:
+                continue
+            credits = workspace.get("credits")
+            try:
+                credits = float(credits) if credits is not None else None
+            except (TypeError, ValueError):
+                credits = None
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_registry(id,name,plan_type,credits) VALUES(?,?,?,?)",
+                (workspace_id, workspace_name, workspace.get("plan_type"), credits),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_member"
+                "(workspace_id,account_email,creator_uid,user_role,is_selected,is_available) "
+                "VALUES(?,?,?,?,?,1)",
+                (
+                    workspace_id,
+                    email,
+                    creator_uid,
+                    workspace.get("user_role"),
+                    1 if workspace.get("is_selected") else 0,
+                ),
+            )
 
 
 def _ensure_project_active_name_index(conn: sqlite3.Connection) -> bool:
@@ -125,6 +178,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # HF 삭제검증 제외(job_id 없어도 자동 제외되지만 명시)·필터·팀 공유 시 앵커 오인 방지용.
     if "generator" not in gen_cols:
         conn.execute("ALTER TABLE generation ADD COLUMN generator TEXT")
+    # 생성 당시 워크스페이스 스냅샷. 기존 행은 추측하지 않고 unknown으로 보존한다.
+    if "workspace_scope" not in gen_cols:
+        conn.execute(
+            "ALTER TABLE generation ADD COLUMN workspace_scope TEXT NOT NULL DEFAULT 'unknown' "
+            "CHECK(workspace_scope IN ('team','personal','unknown'))"
+        )
+    if "workspace_id" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN workspace_id TEXT")
+    if "workspace_name" not in gen_cols:
+        conn.execute("ALTER TABLE generation ADD COLUMN workspace_name TEXT")
+    # 부분 배포/수동 DB에서 생긴 불완전 값을 멱등 정규화. team은 id가 없으면 unknown으로 강등하고,
+    # personal/unknown에는 팀 id를 남기지 않는다(필터 오분류 방지).
+    conn.execute(
+        "UPDATE generation SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
+        "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
+        "OR (workspace_scope='team' AND (workspace_id IS NULL OR TRIM(workspace_id)=''))"
+    )
+    conn.execute(
+        "UPDATE generation SET workspace_id=NULL WHERE workspace_scope IN ('personal','unknown')"
+    )
+    conn.execute(
+        "UPDATE generation SET workspace_name=NULL WHERE workspace_scope='unknown'"
+    )
     # 백필은 컬럼 추가와 별개로 **매 부팅 멱등 보강**(WHERE origin IS NULL) — ALTER 후 백필 전 중단돼도
     # 다음 부팅이 채운다(sort_ts 와 동일 패턴). if 안에 두면 컬럼 생성 후 재실행이 안 돼 NULL 영구 잔존,
     # 그러면 모든 동기화본이 'local' 폴백으로 dedup 에서 빠지던 비대칭 결함이었다(P1-A).
@@ -158,6 +234,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 팀 공유 렌더 폴더 경로 — 서버가 프로젝트 정의로 보관, 각 PC 가 자기 디스크에서 그 경로를 읽는다.
     if proj_cols and "render_root_path" not in proj_cols:
         conn.execute("ALTER TABLE project ADD COLUMN render_root_path TEXT")
+    if proj_cols and "workspace_scope" not in proj_cols:
+        conn.execute(
+            "ALTER TABLE project ADD COLUMN workspace_scope TEXT NOT NULL DEFAULT 'unknown' "
+            "CHECK(workspace_scope IN ('team','personal','unknown'))"
+        )
+    if proj_cols and "workspace_id" not in proj_cols:
+        conn.execute("ALTER TABLE project ADD COLUMN workspace_id TEXT")
+    if proj_cols and "workspace_name" not in proj_cols:
+        conn.execute("ALTER TABLE project ADD COLUMN workspace_name TEXT")
+    if proj_cols:
+        conn.execute(
+            "UPDATE project SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
+            "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
+            "OR (workspace_scope='team' AND (workspace_id IS NULL OR TRIM(workspace_id)=''))"
+        )
+        conn.execute(
+            "UPDATE project SET workspace_id=NULL WHERE workspace_scope IN ('personal','unknown')"
+        )
+        conn.execute("UPDATE project SET workspace_name=NULL WHERE workspace_scope='unknown'")
     # Assets 코멘트 권한은 mount 의 프로젝트 이름을 서버 project.id 로 되돌린다. 활성 이름이
     # 모호해지지 않도록 DB에서도 차단하되, 레거시 중복 데이터는 임의 변경하지 않는다.
     _ensure_project_active_name_index(conn)
@@ -270,6 +365,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_job ON generation(job_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_source ON generation(is_source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_project ON generation(project_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_workspace_sort "
+        "ON generation(workspace_scope, workspace_id, sort_ts DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_workspace "
+        "ON project(workspace_scope, workspace_id, archived)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_member_account "
+        "ON workspace_member(account_email, is_available, workspace_id)"
+    )
+    _backfill_workspace_registry(conn)
     # 폴더 자동 파생(관리탭)·완료본 저장이 project_id+folder_path 로 조회 → 그 순서 인덱스.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_generation_folder ON generation(project_id, folder_path)"

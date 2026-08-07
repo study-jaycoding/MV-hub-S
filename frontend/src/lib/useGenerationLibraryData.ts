@@ -101,7 +101,7 @@ export function useGenerationLibraryData({
         try {
           // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. fire-and-forget이면
           // 연속 synced가 프로젝트 요청을 동시에 띄우고 seq를 서로 무효화해 폴더가 늦게 나타난다.
-          const pr = await api.projects("my");
+          const pr = await api.projects("my", false, filtersRef.current.workspace_id);
           if (seq !== reloadSeqRef.current || !pr) return;
           setProjects((prev) => reconcileArrayState(prev, pr.projects));
           setUnassignedCount(pr.unassigned);
@@ -143,7 +143,9 @@ export function useGenerationLibraryData({
       const [st, f, pr] = await Promise.all([
         wantStats ? api.generationStats().catch(() => null) : Promise.resolve(null),
         light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
-        light ? Promise.resolve(null) : api.projects(scope).catch(() => null),
+        light
+          ? Promise.resolve(null)
+          : api.projects(scope, false, query.workspace_id).catch(() => null),
       ]);
       if (seq !== reloadSeqRef.current) return;
       if (st) {

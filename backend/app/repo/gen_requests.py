@@ -13,6 +13,7 @@ from typing import Any, Optional
 from ._common import new_id
 from ..db import get_connection
 from ..emailnorm import norm_email
+from ..workspace_context import normalize_workspace_context
 
 
 def gen_recipe(gen_id: str) -> dict[str, Any]:
@@ -20,7 +21,9 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
     references 의 file_path 는 결과/소스의 원격 URL(공개) — 에이전트가 upload 로 재업로드."""
     with get_connection() as conn:
         g = conn.execute(
-            "SELECT model, prompt, params FROM generation WHERE id=?", (gen_id,)
+            "SELECT model, prompt, params, workspace_scope, workspace_id, workspace_name "
+            "FROM generation WHERE id=?",
+            (gen_id,),
         ).fetchone()
         if not g:
             return {}
@@ -42,6 +45,11 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
         "references": [
             {"file_path": r["url"], "type": r["type"], "role": r["role"]} for r in refs
         ],
+        "workspace": {
+            "scope": g["workspace_scope"] or "unknown",
+            "id": g["workspace_id"],
+            "name": g["workspace_name"],
+        },
     }
 
 
@@ -122,6 +130,7 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
                 "prompt": p.get("prompt"),
                 "params": p.get("params") or {},
                 "references": p.get("references") or [],
+                "workspace": normalize_workspace_context(p.get("workspace")),
             }
         )
     return out

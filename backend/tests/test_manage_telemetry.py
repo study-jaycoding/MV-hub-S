@@ -3,16 +3,24 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
-from app import db, repo
+from app import db, manage_db, repo
+from app.models import AssignProjectIn
 from app.repo import manage
+from app.services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
 
 
 class ManageTelemetryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.old_db = os.environ.get("CONTENT_HUB_DB")
+        self.old_no_proxy = os.environ.get("CONTENT_HUB_NO_PROXY")
+        self.old_manage_path = manage_db.MANAGE_DB_PATH
         os.environ["CONTENT_HUB_DB"] = os.path.join(self.tmp.name, "content_hub.db")
+        os.environ["CONTENT_HUB_NO_PROXY"] = "1"
+        manage_db.MANAGE_DB_PATH = Path(self.tmp.name) / "manage_hub.db"
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
@@ -26,12 +34,21 @@ class ManageTelemetryTests(unittest.TestCase):
                 "ON CONFLICT(uid) DO NOTHING"
             )
             conn.execute(
-                "INSERT INTO project(id, name, kind, archived) VALUES('p1','Project','team',0)"
+                "INSERT INTO project(id, name, kind, archived, workspace_scope, workspace_id, workspace_name) "
+                "VALUES('p1','Project','team',0,'team','ws1','Workspace 1')"
             )
             conn.execute(
                 "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
-                "creator_uid, project_id, job_id, is_final) "
-                "VALUES('g1','me','prompt','done','2026-08-01',1,'u_me','p1','job-1',1)"
+                "creator_uid, project_id, job_id, is_final, workspace_scope, workspace_id, workspace_name) "
+                "VALUES('g1','me','prompt','done','2026-08-01',1,'u_me','p1','job-1',1,"
+                "'team','ws1','Workspace 1')"
+            )
+            conn.execute(
+                "INSERT INTO account(email,name,password_hash,status,creator_uid) "
+                "VALUES('me@example.com','Me','test-hash','approved','u_me')"
+            )
+            conn.execute(
+                "INSERT INTO workspace_registry(id,name) VALUES('ws1','Workspace 1')"
             )
             conn.execute(
                 "INSERT INTO asset(id, generation_id, type, file_path) "
@@ -49,6 +66,11 @@ class ManageTelemetryTests(unittest.TestCase):
             os.environ.pop("CONTENT_HUB_DB", None)
         else:
             os.environ["CONTENT_HUB_DB"] = self.old_db
+        if self.old_no_proxy is None:
+            os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        else:
+            os.environ["CONTENT_HUB_NO_PROXY"] = self.old_no_proxy
+        manage_db.MANAGE_DB_PATH = self.old_manage_path
         db.flush_pool()
         self.tmp.cleanup()
 
@@ -81,6 +103,161 @@ class ManageTelemetryTests(unittest.TestCase):
         current_item = manage.list_dirty_telemetry()[0]
         manage.mark_telemetry_pushed([current_item])
         self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+
+    def test_isolated_drain_upserts_and_refreshes_local_dashboard_fact(self):
+        manage.mark_telemetry_dirty(["g1"])
+        first = drain_isolated_telemetry()
+        self.assertEqual(first, {"target": "local", "upserted": 1, "failed": 0})
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+
+        with manage_db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT account_email,project_id,folder_path,is_final,workspace_id,est_credits "
+                "FROM team_generation_fact WHERE local_gen_id='g1'"
+            ).fetchone()
+        self.assertEqual(
+            tuple(row),
+            ("me@example.com", "p1", None, 1, "ws1", 12),
+        )
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET folder_path='ep001/c0010', is_final=0 WHERE id='g1'"
+            )
+        manage.mark_telemetry_dirty(["g1"])
+        second = drain_isolated_telemetry()
+        self.assertEqual(second["upserted"], 1)
+        with manage_db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, MAX(folder_path) AS folder_path, MAX(is_final) AS is_final "
+                "FROM team_generation_fact WHERE local_gen_id='g1'"
+            ).fetchone()
+        self.assertEqual(tuple(row), (1, "ep001/c0010", 0))
+
+    def test_isolated_drain_partitions_creators_and_keeps_unmapped_pending(self):
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO creator(uid,name) VALUES('u_other','Other')")
+            conn.execute(
+                "INSERT INTO account(email,name,password_hash,status,creator_uid) "
+                "VALUES('other@example.com','Other','test-hash','approved','u_other')"
+            )
+            for gid, uid in (("g2", "u_other"), ("g3", "u_unmapped")):
+                conn.execute(
+                    "INSERT INTO generation(id,worker_id,prompt,status,created_at,sort_ts,creator_uid,"
+                    "workspace_scope,workspace_id,workspace_name) "
+                    "VALUES(?, 'me','p','done','2026-08-02',2,?,'team','ws1','Workspace 1')",
+                    (gid, uid),
+                )
+        manage.mark_telemetry_dirty(["g1", "g2", "g3"])
+        result = drain_isolated_telemetry()
+        self.assertEqual(result["upserted"], 2)
+        self.assertEqual(result["failed"], 1)
+        with manage_db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT local_gen_id,account_email FROM team_generation_fact ORDER BY local_gen_id"
+            ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [("g1", "me@example.com"), ("g2", "other@example.com")],
+        )
+        pending = manage.list_dirty_telemetry()
+        self.assertEqual([row["local_gen_id"] for row in pending], ["g3"])
+
+    def test_project_assignment_route_drains_isolated_telemetry_immediately(self):
+        from app.routers.projects import assign_project
+
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET project_id=NULL WHERE id='g1'")
+        request = SimpleNamespace(state=SimpleNamespace(account=None))
+        result = assign_project(
+            AssignProjectIn(generation_ids=["g1"], project_id="p1"),
+            request,
+            tab="my",
+        )
+        self.assertEqual(result["updated"], 1)
+        with manage_db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT project_id,workspace_id FROM team_generation_fact WHERE local_gen_id='g1'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("p1", "ws1"))
+
+    def test_workspace_assignment_route_drains_isolated_telemetry_immediately(self):
+        from app.routers.generation import (
+            GenerationWorkspaceBatchIn,
+            set_generation_workspace_batch,
+        )
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET workspace_scope='personal', workspace_id=NULL, "
+                "workspace_name=NULL WHERE id='g1'"
+            )
+        request = SimpleNamespace(state=SimpleNamespace(account=None))
+        result = set_generation_workspace_batch(
+            GenerationWorkspaceBatchIn(
+                generation_ids=["g1"],
+                operation="assign",
+                workspace_name="Workspace 1",
+            ),
+            request,
+        )
+        self.assertEqual(result["changed"], ["g1"])
+        with manage_db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_scope,workspace_id FROM team_generation_fact "
+                "WHERE local_gen_id='g1'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("team", "ws1"))
+
+    def test_dashboard_read_repairs_an_existing_isolated_outbox(self):
+        from app.routers.manage import team_overview
+
+        manage.mark_telemetry_dirty(["g1"])
+        request = SimpleNamespace(state=SimpleNamespace(account=None))
+        result = team_overview(
+            request,
+            date_from="2026-08-01",
+            date_to="2026-08-31",
+            workspace_id="ws1",
+        )
+        self.assertEqual(result["totals"]["count"], 1)
+        self.assertEqual(result["by_project"][0]["project_id"], "p1")
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+
+    def test_non_isolated_mode_never_writes_local_manage_db(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_dirty(["g1"])
+        result = drain_isolated_telemetry()
+        self.assertEqual(result["target"], "disabled")
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
+        self.assertFalse(manage_db.MANAGE_DB_PATH.exists())
+
+    def test_remote_drain_keeps_existing_push_contract(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_dirty(["g1"])
+        captured = []
+
+        def push(items):
+            captured.extend(items)
+            return {"upserted": len(items), "skipped": []}
+
+        result = drain_remote_telemetry(push, my_uid="u_me")
+        self.assertEqual(result, {"target": "remote", "upserted": 1, "failed": 0})
+        self.assertEqual([item["local_gen_id"] for item in captured], ["g1"])
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+        self.assertFalse(manage_db.MANAGE_DB_PATH.exists())
+
+    def test_remote_drain_leaves_server_skips_for_retry(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_dirty(["g1"])
+        result = drain_remote_telemetry(
+            lambda items: {"upserted": 0, "skipped": [items[0]["local_gen_id"]]},
+            my_uid="u_me",
+        )
+        self.assertEqual(result["failed"], 1)
+        status = manage.telemetry_outbox_status()
+        self.assertEqual(status["pending"], 1)
+        self.assertEqual(status["failed"], 1)
 
 
 if __name__ == "__main__":

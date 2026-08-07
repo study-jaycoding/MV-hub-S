@@ -6,6 +6,7 @@ import json
 from typing import Any, Optional
 
 from ..db import get_connection
+from ..emailnorm import norm_email
 from .manage_schema import _ensure_schema
 
 
@@ -121,6 +122,33 @@ def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def account_emails_by_creator_uids(creator_uids: list[str]) -> dict[str, str]:
+    """생성자 uid별 승인 계정 이메일을 반환한다.
+
+    격리 개발 모드는 서버 인증 세션 하나에 의존하지 않고, 스냅샷 안의 여러 작성자 팩트를
+    로컬 manage_hub.db로 복원해야 한다. 같은 uid에 서로 다른 이메일이 둘 이상 연결된 비정상
+    상태는 임의 선택하지 않고 결과에서 제외해 오귀속을 막는다.
+    """
+    uids = sorted({uid.strip() for uid in (creator_uids or []) if uid and uid.strip()})
+    if not uids:
+        return {}
+    placeholders = ",".join("?" for _ in uids)
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            f"SELECT creator_uid, email FROM account "
+            f"WHERE creator_uid IN ({placeholders}) AND status='approved'",
+            uids,
+        ).fetchall()
+    grouped: dict[str, set[str]] = {}
+    for row in rows:
+        uid = (row["creator_uid"] or "").strip()
+        email = norm_email(row["email"])
+        if uid and email:
+            grouped.setdefault(uid, set()).add(email)
+    return {uid: next(iter(emails)) for uid, emails in grouped.items() if len(emails) == 1}
+
+
 def build_telemetry_facts(
     gen_ids: Optional[list[str]] = None,
     my_uid: Optional[str] = None,
@@ -139,6 +167,7 @@ def build_telemetry_facts(
         args.extend(ids)
     sql = (
         "SELECT g.id AS local_gen_id, g.job_id, g.creator_uid, c.name AS creator_name, "
+        "g.workspace_scope, g.workspace_id, g.workspace_name, "
         "g.project_id, p.name AS project_name, g.folder_path, g.model, "
         "(SELECT a.type FROM asset a WHERE a.generation_id=g.id LIMIT 1) AS output_type, "
         "g.status, g.created_at, g.sort_ts, g.is_final, "

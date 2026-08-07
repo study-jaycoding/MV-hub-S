@@ -440,6 +440,7 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("asset_comment", "author", "plain"),
     ("generation_comment", "author", "plain"),
     ("gen_request", "creator_uid", "plain"),
+    ("workspace_member", "creator_uid", "plain"),
     ("asset_comment_read", "worker_id", "ignore_del"),
     ("generation_comment_read", "worker_id", "ignore_del"),
     ("generation_comment_seen", "worker_id", "ignore_del"),
@@ -656,13 +657,137 @@ def migrate_all_acct_to_creator_uid() -> int:
 
 def record_account_status(email: str, status: dict[str, Any]) -> None:
     """push 에이전트가 함께 보고한 그 계정의 힉스필드 상태(크레딧·워크스페이스)를 보관.
-    생성정보엔 크레딧이 없으므로, 팀 전체/구성원별 크레딧 집계는 이 '마지막 보고값'으로 한다."""
+    원본 JSON은 계정 메뉴 하위호환용으로 보존하고, 팀 워크스페이스는 registry/member 테이블에
+    정규화해 프로젝트 멤버 후보와 마지막 접근 확인 시각의 근거로 사용한다."""
     import json as _json
 
     email = norm_email(email)
     if not email or not isinstance(status, dict):
         return
     set_setting(f"hf_status:{email}", _json.dumps(status, ensure_ascii=False))
+    workspaces = status.get("workspaces")
+    if not isinstance(workspaces, list):
+        return  # 옛/불완전 보고가 기존 멤버십을 전부 unavailable로 만들지 않게 한다.
+    with get_connection() as conn:
+        account = conn.execute(
+            "SELECT creator_uid FROM account WHERE email=?", (email,)
+        ).fetchone()
+        creator_uid = account["creator_uid"] if account else None
+        conn.execute(
+            "UPDATE workspace_member SET is_available=0, is_selected=0 WHERE account_email=?",
+            (email,),
+        )
+        for workspace in workspaces:
+            if not isinstance(workspace, dict):
+                continue
+            workspace_id = str(workspace.get("id") or "").strip()
+            workspace_name = str(workspace.get("name") or "").strip()
+            # name 없는 항목은 CLI의 개인 컨텍스트다. 프로젝트에 지정할 팀 워크스페이스만 등록한다.
+            if not workspace_id or not workspace_name:
+                continue
+            credits = workspace.get("credits")
+            try:
+                credits = float(credits) if credits is not None else None
+            except (TypeError, ValueError):
+                credits = None
+            conn.execute(
+                "INSERT INTO workspace_registry(id, name, plan_type, credits) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, plan_type=excluded.plan_type, "
+                "credits=excluded.credits, last_seen_at=datetime('now')",
+                (
+                    workspace_id,
+                    workspace_name,
+                    workspace.get("plan_type"),
+                    credits,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO workspace_member"
+                "(workspace_id, account_email, creator_uid, user_role, is_selected, is_available) "
+                "VALUES(?,?,?,?,?,1) "
+                "ON CONFLICT(workspace_id, account_email) DO UPDATE SET "
+                "creator_uid=excluded.creator_uid, user_role=excluded.user_role, "
+                "is_selected=excluded.is_selected, is_available=1, last_seen_at=datetime('now')",
+                (
+                    workspace_id,
+                    email,
+                    creator_uid,
+                    workspace.get("user_role"),
+                    1 if workspace.get("is_selected") else 0,
+                ),
+            )
+
+
+def list_workspace_registry(
+    account_email: Optional[str] = None, *, available_only: bool = True
+) -> list[dict[str, Any]]:
+    """MV-Hub 에이전트 보고로 확인된 팀 워크스페이스와 계정별 접근 상태를 반환한다."""
+    where: list[str] = []
+    args: list[Any] = []
+    if account_email:
+        where.append("m.account_email=?")
+        args.append(norm_email(account_email))
+    if available_only:
+        where.append("m.is_available=1")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT w.id, w.name, w.plan_type, w.credits, w.last_seen_at, "
+            "m.account_email, m.creator_uid, m.user_role, m.is_selected, m.is_available, "
+            "m.last_seen_at AS member_last_seen_at "
+            "FROM workspace_registry w JOIN workspace_member m ON m.workspace_id=w.id"
+            f"{clause} ORDER BY w.name COLLATE NOCASE, m.account_email",
+            args,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_workspace_options() -> list[dict[str, Any]]:
+    """프로젝트/대시보드 선택용 팀 워크스페이스 목록(워크스페이스당 한 행)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT w.id, w.name, w.plan_type, w.credits, w.last_seen_at, "
+            "COUNT(DISTINCT CASE WHEN m.is_available=1 THEN m.account_email END) AS member_count "
+            "FROM workspace_registry w "
+            "LEFT JOIN workspace_member m ON m.workspace_id=w.id "
+            "GROUP BY w.id, w.name, w.plan_type, w.credits, w.last_seen_at "
+            "ORDER BY w.name COLLATE NOCASE"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_workspace_members(workspace_id: str) -> list[dict[str, Any]]:
+    """해당 팀 워크스페이스에 최근 접근 가능한 MV-Hub 계정 멤버 목록."""
+    from .. import rbac
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(m.creator_uid, a.creator_uid) uid, m.account_email email, "
+            "m.user_role workspace_role, "
+            "COALESCE(NULLIF(c.name,''), NULLIF(a.name,'')) name, a.global_role global_role "
+            "FROM workspace_member m "
+            "LEFT JOIN account a ON a.email=m.account_email "
+            "LEFT JOIN creator c ON c.uid=COALESCE(m.creator_uid, a.creator_uid) "
+            "WHERE m.workspace_id=? AND m.is_available=1 "
+            "AND COALESCE(m.creator_uid, a.creator_uid) IS NOT NULL "
+            "ORDER BY name COLLATE NOCASE, m.account_email",
+            (workspace_id,),
+        ).fetchall()
+    # 같은 creator_uid가 여러 계정 행에 나타나도 프로젝트 후보는 한 번만 노출한다.
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        uid = row["uid"]
+        if not uid or uid in out:
+            continue
+        email = row["email"]
+        out[uid] = {
+            "uid": uid,
+            "name": row["name"] or _email_localpart(email),
+            "email": email,
+            "global_roles": rbac.parse_roles(row["global_role"]) or [rbac.MEMBER],
+            "workspace_role": row["workspace_role"],
+        }
+    return list(out.values())
 
 
 def get_reported_status(email: str) -> Optional[dict[str, Any]]:

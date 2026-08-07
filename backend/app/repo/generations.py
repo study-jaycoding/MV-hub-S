@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from ..generation_result import ACTIVE_STATUSES, stored_error
+from ..workspace_context import workspace_columns
 from . import identity, tags
 from .generation_references import _link_reference, _upsert_reference
 from .generation_delete import delete_generation_rows as _delete_generation
@@ -23,7 +24,8 @@ from ._common import (
 
 # ── 로컬 생성 (POST create) ──────────────────────────────────────────────
 def create_local_generation(
-    data: dict[str, Any], worker_id: str, creator_uid: Optional[str] = None
+    data: dict[str, Any], worker_id: str, creator_uid: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> str:
     """status=pending 인 로컬 generation 레코드 생성. gen_id 반환.
 
@@ -36,6 +38,7 @@ def create_local_generation(
     # 'pending' 상태에서도 is_mine=True(=나)가 되게 한다(팀원으로 오표시되던 버그 수정).
     # 로그인 계정이면 그 계정 uid, 아니면 제공자 my_uid(없으면 NULL → 단독 사용자 취급).
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     with get_connection() as conn:
         # generation + 태그 + 레퍼런스 + 히스토리 엣지를 한 트랜잭션으로 — 중간 실패 시
         # generation 만 있고 태그·레퍼런스·계보가 빠진 반쪽 데이터가 생기지 않게.
@@ -43,8 +46,9 @@ def create_local_generation(
         try:
             conn.execute(
                 "INSERT INTO generation"
-                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "
+                "project_id, folder_path, creator_uid, origin, workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local', ?, ?, ?)",  # origin='local' — 내가 만든 행
                 (
                     gen_id,
                     worker_id,
@@ -57,6 +61,9 @@ def create_local_generation(
                     data.get("project_id"),  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
                     _clean_folder_path(data.get("folder_path")),  # 무장 폴더(렌더 루트 상대 경로)
                     my_uid,  # 내 생성자 신원(있으면) — 로컬 생성물 = 내 작업
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             tags._set_tags(conn, gen_id, data.get("tags") or [])
@@ -118,6 +125,7 @@ def create_comfy_generation(
     references: Optional[list[dict[str, Any]]] = None,
     project_id: Optional[str] = None,
     folder_path: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> tuple[str, bool]:
     """캔버스 Comfy 노드 출력 1개를 라이브러리 generation(+asset)으로 물질화. (gen_id, existed) 반환.
 
@@ -130,6 +138,7 @@ def create_comfy_generation(
     """
     gen_id = new_id()
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     now = time.time()
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -151,8 +160,9 @@ def create_comfy_generation(
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, display_prompt, model, params, status, sort_ts, "
-                " project_id, folder_path, creator_uid, origin, generator) "
-                "VALUES(?,?,?,?, 'comfy', ?, 'done', ?, ?, ?, ?, 'local', 'comfy')",
+                " project_id, folder_path, creator_uid, origin, generator, "
+                "workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?, 'comfy', ?, 'done', ?, ?, ?, ?, 'local', 'comfy', ?, ?, ?)",
                 (
                     gen_id,
                     worker_id,
@@ -163,6 +173,9 @@ def create_comfy_generation(
                     project_id,
                     _clean_folder_path(folder_path),
                     my_uid,
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             conn.execute(
@@ -802,7 +815,8 @@ def migrate_legacy_soft_deleted() -> int:
 
 
 def import_generation(
-    source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None
+    source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
@@ -812,6 +826,7 @@ def import_generation(
     # 내 신원 해석은 트랜잭션 전에 — identity.get_my_uid()가 내부에서 커넥션을 열 수 있어
     # BEGIN IMMEDIATE 안에서 부르면 중첩/별도 커넥션 문제가 된다.
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     with get_connection() as conn:
         # 자식 generation + 레퍼런스·태그 복제 + 계보 엣지를 한 트랜잭션으로(반쪽 복제 방지).
         conn.execute("BEGIN IMMEDIATE")
@@ -827,8 +842,9 @@ def import_generation(
             child_id = new_id()
             conn.execute(
                 "INSERT INTO generation"
-                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "
+                "project_id, folder_path, creator_uid, origin, workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local', ?, ?, ?)",  # origin='local' — 가져오기는 내 새 행
                 (
                     child_id,
                     worker_id,
@@ -841,6 +857,9 @@ def import_generation(
                     src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
                     src["folder_path"],  # 재생성본은 부모와 같은 폴더에 귀속(일관성)
                     my_uid,  # 내 생성자 신원 — 자식은 내 작업
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             # 레퍼런스 연결 복제(원본 reference 레코드는 공유)

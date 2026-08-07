@@ -42,6 +42,20 @@ from ..usecases.gen_requests import (
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
+
+def _require_matching_project_workspace(pid: str, workspace) -> None:
+    """팀 프로젝트 생성물이 다른 워크스페이스 계정으로 제출되는 것을 차단한다."""
+    project = repo.get_project(pid)
+    if not project:
+        raise HTTPException(status_code=400, detail="없는 프로젝트에는 생성할 수 없습니다")
+    if project.get("workspace_scope") != "team":
+        return  # 기존 미지정 프로젝트는 하위호환
+    if workspace.scope != "team" or workspace.id != project.get("workspace_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="현재 워크스페이스와 프로젝트 워크스페이스가 다릅니다",
+        )
+
 def _require_account(request: Request) -> dict:
     """생성요청용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
@@ -70,8 +84,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if pid == "none":
             data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
         elif pid:
-            if not repo.get_project(pid):
-                raise HTTPException(status_code=400, detail="없는 프로젝트에는 생성할 수 없습니다")
+            _require_matching_project_workspace(pid, body.workspace)
             require_project_role(
                 request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -81,6 +94,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=body.create.worker_id or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
+            workspace=body.workspace.model_dump(),
             data=data,
         )
     else:  # regenerate
@@ -96,6 +110,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
         ppid = (parent.get("project_id") or "").strip()
         if ppid and ppid != "none":
+            _require_matching_project_workspace(ppid, body.workspace)
             require_project_role(
                 request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -107,6 +122,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
+            workspace=body.workspace.model_dump(),
             regenerate=reg,
         )
 

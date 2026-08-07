@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS team_generation_fact (
     creator_name    TEXT,                    -- 표시이름 스냅샷
     local_gen_id    TEXT NOT NULL,           -- 작업자 로컬 generation id
     job_id          TEXT,                    -- 힉스필드 잡 앵커(nullable)
+    workspace_scope TEXT NOT NULL DEFAULT 'unknown', -- team|personal|unknown
+    workspace_id    TEXT,                    -- team일 때 Higgsfield workspace UUID
+    workspace_name  TEXT,                    -- 현재 귀속 이름(생성 시 기본값, 수동 변경 가능)
     project_id      TEXT,
     project_name    TEXT,                    -- 스냅샷(콘텐츠 DB 조인 회피)
     folder_path     TEXT,
@@ -68,6 +71,44 @@ CREATE INDEX IF NOT EXISTS idx_tgf_created ON team_generation_fact(created_at);
 """
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """기존 manage_hub.db에 워크스페이스 차원과 조회 인덱스를 멱등 추가한다."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(team_generation_fact)")}
+    if "workspace_scope" not in columns:
+        conn.execute(
+            "ALTER TABLE team_generation_fact ADD COLUMN workspace_scope TEXT "
+            "NOT NULL DEFAULT 'unknown'"
+        )
+    if "workspace_id" not in columns:
+        conn.execute("ALTER TABLE team_generation_fact ADD COLUMN workspace_id TEXT")
+    if "workspace_name" not in columns:
+        conn.execute("ALTER TABLE team_generation_fact ADD COLUMN workspace_name TEXT")
+    conn.execute(
+        "UPDATE team_generation_fact "
+        "SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
+        "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
+        "OR (workspace_scope='team' AND (workspace_id IS NULL OR TRIM(workspace_id)=''))"
+    )
+    conn.execute(
+        "UPDATE team_generation_fact SET workspace_id=NULL "
+        "WHERE workspace_scope IN ('personal','unknown')"
+    )
+    conn.execute(
+        "UPDATE team_generation_fact SET workspace_name=NULL WHERE workspace_scope='unknown'"
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_created "
+        "ON team_generation_fact(workspace_scope, workspace_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_creator_created "
+        "ON team_generation_fact(workspace_scope, workspace_id, creator_uid, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_project_created "
+        "ON team_generation_fact(workspace_scope, workspace_id, project_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tgf_workspace_model_created "
+        "ON team_generation_fact(workspace_scope, workspace_id, model, created_at)",
+    ):
+        conn.execute(statement)
+
+
 def init_manage_db() -> Path:
     """manage_hub.db 를 만들고 스키마를 적용한다(멱등). 시작 시 MANAGE_ENABLED 일 때만 호출."""
     MANAGE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +116,7 @@ def init_manage_db() -> Path:
     try:
         conn.execute("PRAGMA journal_mode=WAL")  # 동시 읽기(집계 조회) 중 쓰기 허용
         conn.executescript(_SCHEMA)
+        _migrate_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -105,6 +147,12 @@ def _utcnow() -> str:
 _UPSERT_SET = (
     "creator_uid=excluded.creator_uid, creator_name=excluded.creator_name, "
     "job_id=excluded.job_id, project_id=excluded.project_id, project_name=excluded.project_name, "
+    "workspace_scope=CASE WHEN excluded.workspace_scope='unknown' "
+    "THEN team_generation_fact.workspace_scope ELSE excluded.workspace_scope END, "
+    "workspace_id=CASE WHEN excluded.workspace_scope='unknown' "
+    "THEN team_generation_fact.workspace_id ELSE excluded.workspace_id END, "
+    "workspace_name=CASE WHEN excluded.workspace_scope='unknown' "
+    "THEN team_generation_fact.workspace_name ELSE excluded.workspace_name END, "
     "folder_path=excluded.folder_path, model=excluded.model, output_type=excluded.output_type, "
     "status=excluded.status, "
     "real_credits=COALESCE(excluded.real_credits, team_generation_fact.real_credits), "
@@ -118,6 +166,7 @@ _UPSERT_SET = (
 
 _FACT_COLS = (
     "id", "account_email", "creator_uid", "creator_name", "local_gen_id", "job_id",
+    "workspace_scope", "workspace_id", "workspace_name",
     "project_id", "project_name", "folder_path", "model", "output_type", "status",
     "real_credits", "est_credits", "credit_source", "elapsed_seconds",
     "created_at", "started_at", "completed_at", "sort_ts",
@@ -127,8 +176,12 @@ _FACT_COLS = (
 
 def _fact_values(account_email: str, cu: Optional[str], gid: str, it: dict, now: str) -> tuple:
     """_FACT_COLS 순서에 맞춘 INSERT 값 튜플. 일반 upsert·tombstone 신규행이 공용."""
+    from .workspace_context import workspace_columns
+
+    workspace_scope, workspace_id, workspace_name = workspace_columns(it)
     return (
         uuid.uuid4().hex, account_email, cu, it.get("creator_name"), gid, it.get("job_id"),
+        workspace_scope, workspace_id, workspace_name,
         it.get("project_id"), it.get("project_name"), it.get("folder_path"), it.get("model"),
         it.get("output_type"), it.get("status"), it.get("real_credits"), it.get("est_credits"),
         it.get("credit_source"), it.get("elapsed_seconds"), it.get("created_at"),
@@ -235,6 +288,7 @@ _CREDIT = "COALESCE(real_credits, est_credits, 0)"
 def _agg_where(
     date_from: Optional[str], date_to: Optional[str],
     project_id: Optional[str], creator_uid: Optional[str],
+    workspace_id: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple[str, list[Any]]:
     where: list[str] = []
     args: list[Any] = []
@@ -246,28 +300,46 @@ def _agg_where(
     if date_to:
         where.append("date(created_at) <= ?")
         args.append(date_to)
-    if project_id:
+    if project_id == "__none__":
+        where.append("project_id IS NULL")
+    elif project_id:
         where.append("project_id = ?")
         args.append(project_id)
-    if creator_uid:
+    if creator_uid == "__none__":
+        where.append("creator_uid IS NULL")
+    elif creator_uid:
         where.append("creator_uid = ?")
         args.append(creator_uid)
+    if workspace_id:
+        where.append("workspace_scope = 'team' AND workspace_id = ?")
+        args.append(workspace_id)
+    if model:
+        where.append("model = ?")
+        args.append(model)
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
 def team_overview(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None, model: Optional[str] = None,
 ) -> dict[str, Any]:
-    """대시보드 한 방 — 전체 합계 + 작업자별 + 프로젝트별 + 작업자×프로젝트 매트릭스."""
-    where, args = _agg_where(date_from, date_to, project_id, creator_uid)
+    """워크스페이스 사용량 대시보드 한 방 집계.
+
+    합계·작업자·프로젝트·모델·폴더 Yield를 같은 필터 스냅샷으로 계산해 화면 값이 서로 어긋나지
+    않게 한다. 모델 상세 배열은 count/credits 값에 마우스를 올렸을 때 쓰인다.
+    """
+    where, args = _agg_where(
+        date_from, date_to, project_id, creator_uid, workspace_id, model
+    )
     with get_connection() as conn:
         totals = dict(conn.execute(
             f"SELECT COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
             f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
             f"COALESCE(SUM(CASE WHEN real_credits IS NULL THEN 1 ELSE 0 END),0) AS estimated_count, "
             f"COALESCE(SUM(is_final),0) AS final_count, "
-            f"COUNT(DISTINCT creator_uid) AS workers, COUNT(DISTINCT project_id) AS projects "
+            f"COUNT(DISTINCT creator_uid) AS workers, COUNT(DISTINCT project_id) AS projects, "
+            f"COUNT(DISTINCT model) AS models, COUNT(DISTINCT output_type) AS features "
             f"FROM team_generation_fact {where}", args,
         ).fetchone())
         by_worker = [dict(r) for r in conn.execute(
@@ -288,17 +360,123 @@ def team_overview(
             f"COALESCE(SUM({_CREDIT}),0) AS credits "
             f"FROM team_generation_fact {where} GROUP BY creator_uid, project_id", args,
         ).fetchall()]
-    return {"totals": totals, "by_worker": by_worker, "by_project": by_project, "matrix": matrix}
+        by_model = [dict(r) for r in conn.execute(
+            f"SELECT COALESCE(NULLIF(model,''),'알 수 없음') AS model, COUNT(*) AS count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds, "
+            f"COALESCE(SUM(is_final),0) AS final_count "
+            f"FROM team_generation_fact {where} GROUP BY model ORDER BY credits DESC", args,
+        ).fetchall()]
+        by_output_type = [dict(r) for r in conn.execute(
+            f"SELECT COALESCE(NULLIF(LOWER(output_type),''),'other') AS output_type, "
+            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits "
+            f"FROM team_generation_fact {where} "
+            f"GROUP BY COALESCE(NULLIF(LOWER(output_type),''),'other') ORDER BY credits DESC",
+            args,
+        ).fetchall()]
+        output_models = [dict(r) for r in conn.execute(
+            f"SELECT COALESCE(NULLIF(LOWER(output_type),''),'other') AS output_type, "
+            f"COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
+            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits "
+            f"FROM team_generation_fact {where} "
+            f"GROUP BY COALESCE(NULLIF(LOWER(output_type),''),'other'), model "
+            f"ORDER BY output_type, credits DESC",
+            args,
+        ).fetchall()]
+        worker_models = [dict(r) for r in conn.execute(
+            f"SELECT creator_uid, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
+            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(is_final),0) AS final_count "
+            f"FROM team_generation_fact {where} GROUP BY creator_uid, model "
+            f"ORDER BY creator_uid, credits DESC", args,
+        ).fetchall()]
+        project_models = [dict(r) for r in conn.execute(
+            f"SELECT project_id, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
+            f"COUNT(*) AS count, COALESCE(SUM({_CREDIT}),0) AS credits, "
+            f"COALESCE(SUM(is_final),0) AS final_count "
+            f"FROM team_generation_fact {where} GROUP BY project_id, model "
+            f"ORDER BY project_id, credits DESC", args,
+        ).fetchall()]
+        folders = [dict(r) for r in conn.execute(
+            f"SELECT project_id, MAX(project_name) AS project_name, "
+            f"COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') AS folder_path, "
+            f"COUNT(*) AS count, COALESCE(SUM(is_final),0) AS final_count, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits "
+            f"FROM team_generation_fact {where} "
+            f"GROUP BY project_id, COALESCE(NULLIF(folder_path,''),'(폴더 미지정)') "
+            f"ORDER BY project_name, folder_path", args,
+        ).fetchall()]
+    for row in folders:
+        count = int(row.get("count") or 0)
+        final_count = int(row.get("final_count") or 0)
+        folder_path = str(row.get("folder_path") or "").strip().replace("\\", "/")
+        levels = [level.strip() for level in folder_path.split("/") if level.strip()]
+        if not folder_path or folder_path == "(폴더 미지정)":
+            levels = []
+        row["episode"] = levels[0] if levels else None
+        row["scene"] = "/".join(levels[1:]) if len(levels) > 1 else None
+        row["yield_percent"] = round((final_count / count) * 100, 1) if count else 0
+        row["final_rate_tenths"] = round((final_count / count) * 10, 1) if count else 0
+        row["attempts_per_final"] = round(count / final_count, 2) if final_count else None
+    return {
+        "totals": totals,
+        "by_worker": by_worker,
+        "by_project": by_project,
+        "by_model": by_model,
+        "by_output_type": by_output_type,
+        "output_models": output_models,
+        "worker_models": worker_models,
+        "project_models": project_models,
+        "folder_efficiency": folders,
+        "matrix": matrix,
+    }
+
+
+def team_usage_export(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    project_id: Optional[str] = None, creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None, model: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """HF ``team-members-usage.csv``와 같은 날짜·멤버·모델 단위 사용량 행."""
+    where, args = _agg_where(
+        date_from, date_to, project_id, creator_uid, workspace_id, model
+    )
+    created_clause = f"{'AND' if where else 'WHERE'} created_at IS NOT NULL"
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT date(created_at) AS date, account_email AS user_email, "
+            f"creator_uid AS user_id, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
+            f"COALESCE(SUM({_CREDIT}),0) AS credits_used, COUNT(*) AS jobs "
+            f"FROM team_generation_fact {where} {created_clause} "
+            f"GROUP BY date(created_at), account_email, creator_uid, model "
+            f"ORDER BY date ASC, account_email COLLATE NOCASE ASC, model COLLATE NOCASE ASC",
+            args,
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def team_timeseries(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     project_id: Optional[str] = None, creator_uid: Optional[str] = None,
-    bucket: str = "day",
+    workspace_id: Optional[str] = None, model: Optional[str] = None,
+    bucket: str = "day", time_from: Optional[str] = None, time_to: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """기간별 추이 — 일(day)/주(week)/월(month) 버킷별 크레딧·건수. created_at(생성일) 기준."""
-    fmt = {"week": "%Y-W%W", "month": "%Y-%m"}.get(bucket, "%Y-%m-%d")
-    where, args = _agg_where(date_from, date_to, project_id, creator_uid)
+    """기간별 추이 — 시간/일/주/월 버킷별 크레딧·건수. created_at(생성일) 기준."""
+    fmt = {
+        "minute": "%Y-%m-%dT%H:%M",
+        "hour": "%Y-%m-%dT%H:00",
+        "week": "%Y-W%W",
+        "month": "%Y-%m",
+    }.get(bucket, "%Y-%m-%d")
+    where, args = _agg_where(
+        date_from, date_to, project_id, creator_uid, workspace_id, model
+    )
+    if time_from:
+        where += (" AND " if where else "WHERE ") + "datetime(created_at) >= datetime(?)"
+        args.append(time_from)
+    if time_to:
+        where += (" AND " if where else "WHERE ") + "datetime(created_at) <= datetime(?)"
+        args.append(time_to)
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT strftime('{fmt}', created_at) AS bucket, COUNT(*) AS count, "

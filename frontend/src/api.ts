@@ -7,6 +7,7 @@ import type {
   History,
   HistoryGraph,
   ModelInfo,
+  WorkspaceContext,
 } from "./types";
 import { authApi } from "./lib/authApi";
 import { assetsApi } from "./lib/assetsApi";
@@ -45,6 +46,7 @@ function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PA
   if (q.share_dir) p.set("share_dir", q.share_dir);
   if (q.local_only) p.set("local_only", "true");
   if (q.creator_uid) p.set("creator_uid", q.creator_uid);
+  if (q.workspace_id) p.set("workspace_id", q.workspace_id);
   if (q.project_id) p.set("project_id", q.project_id); // 서버사이드 — 누락 없이 정확
   if (q.folder_path) p.set("folder_path", q.folder_path); // 폴더 접두사 필터
   if (q.search) p.set("search", q.search);
@@ -93,6 +95,14 @@ interface GenerationBatchResponse {
   items: Record<string, Generation>;
   materials: Record<string, string[]>;
   missing: string[];
+}
+
+export interface GenerationWorkspaceBatchResponse {
+  workspace: { id: string; name: string };
+  operation: "assign" | "remove";
+  changed: string[];
+  unchanged: string[];
+  updates: { requested_id: string; generation: Generation }[];
 }
 
 const GENERATION_BATCH_LIMIT = 500; // 백엔드 /api/generations/batch 계약 상한
@@ -333,22 +343,23 @@ export const api = {
     }[];
     project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
     folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
-  }) =>
+  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }) =>
     // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
     // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
     generationFetch("/api/gen-requests", {
       method: "POST",
-      body: jsonBody({ kind: "create", create: body }),
+      body: jsonBody({ kind: "create", workspace, create: body }),
     }),
 
   regenerate: (
     id: string,
     body: { prompt?: string; color?: string | null; auto_tags?: string[] },
+    workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
   ) =>
     // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
     generationFetch("/api/gen-requests", {
       method: "POST",
-      body: jsonBody({ kind: "regenerate", source_gen_id: id, regenerate: body }),
+      body: jsonBody({ kind: "regenerate", workspace, source_gen_id: id, regenerate: body }),
     }),
 
   setTags: (id: string, tags: string[]) =>
@@ -370,6 +381,30 @@ export const api = {
       out.failed.push(...res.failed);
     }
     return out;
+  },
+
+  setGenerationWorkspace: (
+    generationIds: string[],
+    operation: "assign" | "remove",
+    workspaceName: string,
+  ) => {
+    if (generationIds.length > 500) {
+      return Promise.reject(new Error("한 번에 최대 500개 생성물까지 변경할 수 있습니다"));
+    }
+    return jsonFetch<GenerationWorkspaceBatchResponse>("/api/generations/workspace/batch", {
+      method: "PUT",
+      body: jsonBody({
+        generation_ids: generationIds,
+        operation,
+        workspace_name: workspaceName,
+      }),
+    }).then((result) => ({
+      ...result,
+      updates: result.updates.map((update) => ({
+        ...update,
+        generation: normalizeGenerationPromptCompatibility(update.generation),
+      })),
+    }));
   },
 
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.

@@ -159,6 +159,7 @@ class AssetIoTests(unittest.TestCase):
 
             failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
             with (
+                patch.object(assets, "ASSETS_ROOT", root),
                 patch.object(assets, "_find_same_media", side_effect=RuntimeError("hash failed")),
                 self.assertRaises(RuntimeError),
             ):

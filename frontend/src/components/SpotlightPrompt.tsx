@@ -81,7 +81,7 @@ import {
   useSpotlightSubmit,
 } from "./spotlight/useSpotlightSubmit";
 import type { SceneRef, SceneModelCfg } from "../lib/scenes";
-import type { Generation, PreviewTarget } from "../types";
+import type { Generation, PreviewTarget, WorkspaceContext } from "../types";
 
 interface Props {
   // created: 방금 만든 pending 생성본들 — 즉시 '대기' 카드로 띄우게(optimistic). 없으면 그냥 리로드.
@@ -92,6 +92,7 @@ interface Props {
   armedFolder?: { projectId: string; path: string } | null;
   topSlot?: ReactNode; // 도크 상단(프롬프트 바로 위)에 끼우는 슬롯 — 멀티 선택 바
   activeProjectId?: string; // 현재 보고 있는 프로젝트 — 생성 시 자동 귀속(로드맵 §0-4)
+  workspace: WorkspaceContext; // 계정 메뉴에서 선택한 생성/조회 대상
   expanded: boolean; // '+' 확장 — 레퍼런스 트레이(위)+프롬프트(아래) 2단. App 이 보유.
   onToggleExpand: () => void; // '+' 버튼 토글
   // ── Canvas 씬 연동 ── 씬의 생성 카드 1개를 선택하면 그 카드의 레퍼런스를 이 트레이에 바인딩.
@@ -132,6 +133,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   armedFolder,
   topSlot,
   activeProjectId,
+  workspace,
   expanded,
   onToggleExpand,
   trayBinding,
@@ -909,6 +911,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     paramsModel,
     trayRefs,
     tunable,
+    workspace,
     setBusy,
     setError,
     clearMention: () => setMention(null),

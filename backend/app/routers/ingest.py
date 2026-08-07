@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import hmac
-import json
 from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request
@@ -34,6 +33,7 @@ from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services import auth as auth_service
 from ..services import local_agent_pair
+from ..services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 from ..services.request_guards import is_loopback_request
@@ -84,7 +84,7 @@ def _agent_acc(request: Request) -> dict:
     return require_agent_account(request)
 
 
-def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
+def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> IngestOut:
     """CLI list 형태 잡들을 적재 + 계정↔힉스필드 uid 연결 + 크레딧 보고. push/mcp 공통 코어.
     각 잡은 자기 고유 creator_uid(URL의 user_<id>)를 유지하고, 이미 실제 uid 에 연결된 계정은
     재연결하지 않는다(레퍼런스 오염 방지, 실측 버그)."""
@@ -189,7 +189,10 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
     # 나머지는 반영되고, 실패분은 skipped 와 구분해 errors 로 응답(코덱스: 계약 명시).
     errors = 0
     if staged:
-        bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID)
+        if workspace is None:
+            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID)
+        else:
+            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID, workspace=workspace)
         for k in ("inserted", "updated", "unchanged"):
             counts[k] += bcounts.get(k, 0)
         errors = bcounts.get("errors", 0)
@@ -238,78 +241,17 @@ def _ingest_core(acc, jobs, creator_uid, account_status) -> IngestOut:
 
 
 def _drain_telemetry() -> None:
-    """dirty 텔레메트리를 서버 매니징 저장소로 push(best-effort). 프록시(서버 연결) 있을 때만 —
-    서버 없으면 outbox 에 쌓였다 다음 기회에 전송(오프라인 큐). 순수 클라이언트 측 드레이너.
-
-    정합성(코덱스):
-      · dirty 중 내것(build 됨)과 내것 아님(build 에서 빠짐)을 나눈다.
-      · 내것 아님 → 큐에서 정리(다시 build 될 일 없음).
-      · 내것 → 서버가 실제로 받은 수(upserted)가 보낸 수 이상일 때만 정리, 아니면(미링크·스킵) 실패
-        처리해 재시도. mark_pushed 는 dirty_at CAS 라 drain 도중 재dirty 된 건 자동으로 남는다."""
-    if not _proxy.proxying():
-        return
-    from ..repo import manage as _m
-
-    dirty = _m.list_dirty_telemetry(500)  # [{local_gen_id, dirty_at, is_tombstone, tomb_*}]
-    if not dirty:
-        return
-    my_uid = repo.get_my_uid()
-    tomb_rows = [d for d in dirty if d.get("is_tombstone")]
-    normal_rows = [d for d in dirty if not d.get("is_tombstone")]
-    normal_ids = [d["local_gen_id"] for d in normal_rows]
-    # 일반: 살아있는 로컬 gen 에서 팩트 빌드(내것만). tombstone: gen 이 사라졌으므로 저장해둔 값으로 직접 구성.
-    facts = _m.build_telemetry_facts(gen_ids=normal_ids, my_uid=my_uid) if normal_ids else []
-    built_ids = {f["local_gen_id"] for f in facts}
-    tomb_facts = []
-    for d in tomb_rows:
-        snap: dict = {}
-        if d.get("tomb_snapshot"):
-            try:
-                snap = json.loads(d["tomb_snapshot"]) or {}
-            except Exception:  # noqa: BLE001
-                snap = {}
-        # 스냅샷(비용·프로젝트 포함) 위에 삭제 표시를 얹는다 — 서버에 팩트가 없던(미전송) 것도 비용 집계.
-        tomb_facts.append(
-            {
-                **snap,
-                "local_gen_id": d["local_gen_id"],
-                "job_id": snap.get("job_id") or d.get("tomb_job_id"),
-                # tomb_creator_uid(컬럼)를 snapshot JSON 보다 우선 — 컬럼은 remap(acct:→user_)되지만
-                # snapshot JSON 은 stale acct: 로 남을 수 있어, 컬럼 우선이라야 전환 후 삭제반영이 정합.
-                "creator_uid": d.get("tomb_creator_uid") or snap.get("creator_uid") or my_uid,
-                "is_deleted": True,
-            }
+    """dirty 텔레메트리를 현재 실행 모드에 맞는 단 하나의 대상으로 반영한다."""
+    if _proxy.proxying():
+        drain_remote_telemetry(
+            lambda items: _proxy.proxy_json(
+                "POST", "/api/manage/telemetry/push", body={"items": items}
+            ),
+            my_uid=repo.get_my_uid(),
         )
-    all_facts = facts + tomb_facts
-    sent = [d for d in normal_rows if d["local_gen_id"] in built_ids] + tomb_rows
-    non_sent = [d for d in normal_rows if d["local_gen_id"] not in built_ids]
-    _m.mark_telemetry_pushed(non_sent)  # 내것 아님 → 무조건 큐 정리(CAS)
-    if not all_facts:
         return
-    try:
-        resp = _proxy.proxy_json("POST", "/api/manage/telemetry/push", body={"items": all_facts})
-        resp = resp if isinstance(resp, dict) else {}
-        if "skipped" in resp:
-            # 정밀 처리: 서버가 '실제로 스킵한 것'만 재시도로 남기고, 반영된 나머지는 정리한다.
-            # (개수만 보고 성공분까지 통째로 failed 처리해 재전송하던 낭비·attempts 부풀림 제거.)
-            skipped_ids = set(resp.get("skipped") or [])
-            pushed = [d for d in sent if d["local_gen_id"] not in skipped_ids]
-            failed = [d["local_gen_id"] for d in sent if d["local_gen_id"] in skipped_ids]
-            if pushed:
-                _m.mark_telemetry_pushed(pushed)  # 반영됨 → 정리(CAS)
-            if failed:
-                _m.mark_telemetry_failed(failed, "server skipped (unlinked/foreign)")
-        else:
-            # 구 서버(skipped 미지원) 폴백: 개수 기반 전량 판정(기존 동작).
-            upserted = resp.get("upserted", 0)
-            if upserted >= len(all_facts):
-                _m.mark_telemetry_pushed(sent)  # 서버가 다 받음 → 정리(CAS)
-            else:
-                _m.mark_telemetry_failed(
-                    [d["local_gen_id"] for d in sent], f"server upserted {upserted}/{len(all_facts)}"
-                )
-    except Exception as e:  # noqa: BLE001 — 전송 실패는 재시도(다음 drain)로 회복
-        _m.mark_telemetry_failed([d["local_gen_id"] for d in sent], str(e))
+    # test_dev/test_dev_server는 운영 서버로 보내지 않고 복사된 테스트 폴더 안에서만 집계한다.
+    drain_isolated_telemetry()
 
 
 @router.post("/ingest", response_model=IngestOut)
@@ -319,7 +261,13 @@ def ingest(body: IngestIn, request: Request):
     account_status(잔액/플랜)·account_transactions(실제 차감액)를 서버로 전달한다
     (서버가 이메일 일치 검증 + 서버 PM DB 에 집계)."""
     acc = _agent_acc(request)
-    out = _ingest_core(acc, body.jobs, body.creator_uid, body.account_status)
+    out = _ingest_core(
+        acc,
+        body.jobs,
+        body.creator_uid,
+        body.account_status,
+        workspace=body.workspace.model_dump(),
+    )
     # PM: 실제 차감액 수집·매칭(분리형). 플래그 게이트 + best-effort — 실패해도 적재엔 무영향.
     # 거래는 out.linked_uid(이 계정의 힉스필드 uid) 소유로 적재하고, 같은 소유자 생성물과 시각 매칭.
     if MANAGE_ENABLED and body.account_transactions:
@@ -339,6 +287,7 @@ def ingest(body: IngestIn, request: Request):
                     "account_status": body.account_status,
                     "account_transactions": body.account_transactions,
                     "creator_uid": body.creator_uid,
+                    "workspace": body.workspace.model_dump(),
                 },
             )
         except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
@@ -358,7 +307,13 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     흐름: Claude 가 그 사용자 세션으로 show_generations 를 next_cursor 끝까지 순회하며 각 페이지를
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
     jobs = [mcp_item_to_cli(it) for it in body.items if isinstance(it, dict)]
-    out = _ingest_core(_agent_acc(request), jobs, None, body.account_status)
+    out = _ingest_core(
+        _agent_acc(request),
+        jobs,
+        None,
+        body.account_status,
+        workspace=body.workspace.model_dump(),
+    )
     # 팀 매니징: 백필도 일반 ingest 와 동일하게 dirty 텔레메트리를 flush 한다. MCP 백필은 페이지를
     # 여러 번 POST 하고 '마지막 페이지' 신호가 없어, 매 페이지 drain 해야 백필만 한 사용자도 대시보드가
     # 밀리지 않는다. drain 은 프록시 없으면 no-op, 실패분은 큐에 남아 재시도. best-effort.
@@ -591,7 +546,7 @@ class KnownJobsIn(BaseModel):
 def known_jobs_diff(body: KnownJobsIn, request: Request):
     """에이전트의 로컬 job_id 목록(≤ --size 개)을 받아 서버에 없거나 재확인할 것을 돌려준다 —
     GET(서버 보유 전량 응답)은 라이브러리가 커질수록 매 사이클 왕복이 무거워져 차집합으로 교체.
-    ``refresh``는 서버 상태가 아직 대기/생성중인 항목뿐이라 완료 이력을 불필요하게 재전송하지 않는다.
+    ``refresh`` 는 서버 상태가 아직 대기/생성중인 항목뿐이라 완료 이력을 불필요하게 재전송하지 않는다.
     응답 payload 가 요청 크기로 유한해진다. 인증 필수."""
     acc = getattr(request.state, "account", None)
     if not acc:

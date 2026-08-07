@@ -416,6 +416,61 @@ def test_agent_does_not_launch_one_wait_process_per_remote_job():
     assert "최대 {_MAX_CONCURRENCY}개 병렬" not in source
 
 
+def test_agent_startup_refreshes_only_server_selected_jobs() -> None:
+    """초기 cycle도 전량 재전송하지 않고 서버가 고른 진행중 항목만 동기화한다."""
+    agent = _load_agent()
+    with patch.object(agent, "execute_pending") as execute, patch.object(
+        agent, "reconcile_pass"
+    ) as reconcile, patch.object(agent, "push_once") as push:
+        agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, False)
+
+    execute.assert_called_once_with("http://hub", "token-1", "higgsfield")
+    reconcile.assert_called_once_with("http://hub", "token-1", "higgsfield")
+    push.assert_called_once_with("http://hub", "token-1", "higgsfield", 100)
+
+
+def test_agent_startup_keeps_no_push_mode_local() -> None:
+    agent = _load_agent()
+    with patch.object(agent, "execute_pending") as execute, patch.object(
+        agent, "reconcile_pass"
+    ) as reconcile, patch.object(agent, "push_once") as push:
+        agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, True)
+
+    execute.assert_called_once()
+    reconcile.assert_called_once()
+    push.assert_not_called()
+
+
+def test_agent_has_no_removed_cycle_callback_references() -> None:
+    """계정 전환/재로그인 분기도 현재 초기화 함수를 호출해야 한다."""
+    source = AGENT_PATH.read_text(encoding="utf-8")
+
+    assert "cycle()" not in source
+
+
+def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> None:
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(
+            200,
+            {"unknown": ["job-new"], "refresh": ["job-running"]},
+        ),
+    ) as http:
+        selected = agent._job_ids_to_sync(
+            "http://hub", "token-1", ["job-done", "job-running", "job-new"]
+        )
+
+    assert selected == {"job-running", "job-new"}
+    http.assert_called_once_with(
+        "POST",
+        "http://hub/api/ingest/known-jobs",
+        token="token-1",
+        body={"job_ids": ["job-done", "job-running", "job-new"]},
+    )
+
+
 def test_execute_pending_claims_only_current_submit_worker_capacity():
     agent = _load_agent()
     request = {"id": "request-1", "model": "model-1", "references": []}
@@ -448,6 +503,65 @@ def test_execute_pending_claims_only_current_submit_worker_capacity():
     assert claim_limits
     assert claim_limits[0] == agent._SUBMIT_WORKERS
     assert max(claim_limits) <= agent._SUBMIT_WORKERS
+
+
+def test_agent_switches_and_verifies_team_workspace_before_submit():
+    agent = _load_agent()
+    before = [
+        {"id": "personal-1", "name": None, "is_selected": True},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": False},
+    ]
+    after = [
+        {"id": "personal-1", "name": None, "is_selected": False},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": True},
+    ]
+    with patch.object(agent, "_run_cli_json", side_effect=[(before, None), (after, None)]), patch.object(
+        agent, "_run_cli_command", return_value=None
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "team", "id": "team-1", "name": "MILLIONVOLT"}
+        )
+
+    assert ok is True
+    assert error is None
+    command.assert_called_once_with("higgsfield", "workspace", "set", "team-1", timeout=60)
+
+
+def test_agent_resolves_personal_workspace_without_storing_its_cli_id():
+    agent = _load_agent()
+    workspaces = [
+        {"id": "personal-1", "name": None, "is_selected": False},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": True},
+    ]
+    after = [
+        {"id": "personal-1", "name": None, "is_selected": True},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": False},
+    ]
+    with patch.object(agent, "_run_cli_json", side_effect=[(workspaces, None), (after, None)]), patch.object(
+        agent, "_run_cli_command", return_value=None
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "personal", "id": None, "name": None}
+        )
+
+    assert ok is True
+    assert error is None
+    command.assert_called_once_with("higgsfield", "workspace", "set", "personal-1", timeout=60)
+
+
+def test_agent_refuses_missing_team_workspace_without_falling_back():
+    agent = _load_agent()
+    workspaces = [{"id": "personal-1", "name": None, "is_selected": True}]
+    with patch.object(agent, "_run_cli_json", return_value=(workspaces, None)), patch.object(
+        agent, "_run_cli_command"
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "team", "id": "missing", "name": "OTHER"}
+        )
+
+    assert ok is False
+    assert "찾을 수 없습니다" in str(error)
+    command.assert_not_called()
 
 
 def test_agent_failure_report_url_encodes_reason_and_authenticates():

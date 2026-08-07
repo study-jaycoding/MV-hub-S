@@ -12,7 +12,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..services import cli_bridge, media_cache, project_folders
+from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
 
@@ -45,6 +46,14 @@ _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
 def _require_manage_read(request: Request) -> None:
     """전사 PM 집계 열람. admin/PM/PD 같은 read_all 보유자만."""
     require_global_cap(request, "read_all")
+
+
+def _refresh_isolated_telemetry() -> None:
+    """격리 스냅샷의 과거 미전송 outbox를 대시보드 조회 직전에 복구한다."""
+    try:
+        drain_isolated_telemetry()
+    except Exception:  # noqa: BLE001 - 복구 실패가 기존 통계 조회까지 막지 않게
+        pass
 
 
 def _require_project_read(request: Request, pid: str) -> None:
@@ -89,6 +98,9 @@ class TelemetryFactIn(BaseModel):
     job_id: Optional[str] = None
     creator_uid: Optional[str] = None  # 서버가 세션 uid 와 대조(다르면 스킵)
     creator_name: Optional[str] = None
+    workspace_scope: str = Field(default="unknown", pattern="^(team|personal|unknown)$")
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
     project_id: Optional[str] = None
     project_name: Optional[str] = None
     folder_path: Optional[str] = None
@@ -138,15 +150,28 @@ def team_overview(
     date_to: Optional[str] = None,
     project_id: Optional[str] = None,
     creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    model: Optional[str] = None,
 ):
     """팀 전체 집계(합계+작업자별+프로젝트별+매트릭스). 집계는 서버 manage_hub.db 에 있으므로
     로컬 허브는 서버로 위임(프록시), 서버 본체는 로컬 manage_hub.db 를 읽는다. 권한=read_all(매니저)."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/team-overview", request)
     _require_manage_read(request)
+    _refresh_isolated_telemetry()
     from ..manage_db import team_overview as _ov
 
-    return _ov(date_from, date_to, project_id, creator_uid)
+    return _ov(date_from, date_to, project_id, creator_uid, workspace_id, model)
+
+
+@router.get("/workspaces")
+def manage_workspaces(request: Request):
+    """관리 대시보드에서 선택할 검증된 팀 워크스페이스 목록."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/workspaces", request)
+    _require_manage_read(request)
+    _refresh_isolated_telemetry()
+    return {"workspaces": repo.list_workspace_options()}
 
 
 @router.get("/team-timeseries")
@@ -156,15 +181,49 @@ def team_timeseries(
     date_to: Optional[str] = None,
     project_id: Optional[str] = None,
     creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    model: Optional[str] = None,
     bucket: str = "day",
+    time_from: Optional[str] = None,
+    time_to: Optional[str] = None,
 ):
-    """팀 전체 기간별 추이(일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일."""
+    """팀 전체 기간별 추이(시간/일/주/월 버킷). 프록시/권한 규칙은 team-overview 와 동일."""
     if _proxy.proxying():
         return _proxy.proxy_get("/api/manage/team-timeseries", request)
     _require_manage_read(request)
+    _refresh_isolated_telemetry()
     from ..manage_db import team_timeseries as _ts
 
-    return {"buckets": _ts(date_from, date_to, project_id, creator_uid, bucket)}
+    return {
+        "buckets": _ts(
+            date_from, date_to, project_id, creator_uid, workspace_id, model, bucket,
+            time_from, time_to,
+        )
+    }
+
+
+@router.get("/usage-export")
+def usage_export(
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    project_id: Optional[str] = None,
+    creator_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """HF 보고서와 호환되는 날짜·사용자·모델 단위 사용량 행."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/manage/usage-export", request)
+    _require_manage_read(request)
+    _refresh_isolated_telemetry()
+    from ..manage_db import team_usage_export as _export
+
+    return {
+        "rows": _export(
+            date_from, date_to, project_id, creator_uid, workspace_id, model
+        )
+    }
 
 
 # ── 서버 공유본 HF 삭제 검토(서버가 CLI 없이, 로컬이 검증 결과를 올린다) ──────────────
@@ -238,12 +297,38 @@ async def summary(request: Request):
     return repo_manage.dashboard_summary(type_map)
 
 
+@router.get("/project-summary")
+def project_summary(request: Request):
+    """프로젝트 작업 현황용 요약.
+
+    read_all 보유자는 전체 프로젝트, 일반 멤버는 project_member에 들어간 프로젝트만 반환한다.
+    워크스페이스·작업자 전체 통계는 포함하지 않아 대시보드 전체 권한과 분리한다.
+    """
+    read_all = not AUTH_ENABLED or rbac.has_global_cap(
+        account_global_roles(request), "read_all"
+    )
+    member_uid = None if read_all else (account_scope_uid(request) or "\x00")
+    visible = repo.list_projects(include_archived=False, member_uid=member_uid)
+    project_ids = [
+        project.get("id")
+        for project in visible.get("projects") or []
+        if isinstance(project, dict) and project.get("id")
+    ]
+    if not read_all:
+        readable_ids = set(
+            repo.projects_where_role(member_uid, list(_PROJECT_READ_ROLES))
+        )
+        project_ids = [pid for pid in project_ids if pid in readable_ids]
+    return repo_manage.project_dashboard_summary(project_ids)
+
+
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────
 class PlanningIn(BaseModel):
     status: Optional[str] = None        # active | done | hold
     start_date: Optional[str] = None
     due_date: Optional[str] = None
     budget_credits: Optional[int] = None
+    budget_period: Optional[Literal["day", "week", "month"]] = None
     note: Optional[str] = None
 
 

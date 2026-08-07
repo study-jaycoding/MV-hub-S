@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ── 공통 타입 ────────────────────────────────────────────────────────────
 MediaType = Literal["image", "video"]
@@ -16,6 +16,31 @@ MediaType = Literal["image", "video"]
 ReferenceMediaType = Literal["image", "video", "audio"]
 GenStatus = Literal["pending", "running", "done", "failed"]
 AccountType = Literal["personal", "team"]
+WorkspaceScope = Literal["team", "personal", "unknown"]
+
+
+class WorkspaceContext(BaseModel):
+    """생성 요청/동기화 묶음이 캡처한 워크스페이스.
+
+    team만 실제 workspace id를 갖는다. personal은 CLI workspace unset 컨텍스트이고,
+    unknown은 워크스페이스 메타데이터가 없던 레거시/미검증 데이터다.
+    """
+
+    scope: WorkspaceScope = "unknown"
+    id: Optional[str] = None
+    name: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_identity(self):
+        self.id = (self.id or "").strip() or None
+        self.name = (self.name or "").strip() or None
+        if self.scope == "team" and not self.id:
+            raise ValueError("team 워크스페이스에는 id가 필요합니다")
+        if self.scope != "team" and self.id is not None:
+            raise ValueError("personal/unknown 컨텍스트에는 workspace id를 넣을 수 없습니다")
+        if self.scope == "unknown":
+            self.name = None
+        return self
 
 
 # ── 응답 모델 ────────────────────────────────────────────────────────────
@@ -81,6 +106,9 @@ class GenerationOut(BaseModel):
     creator_uid: Optional[str] = None  # 생성자 식별자(팀 워크스페이스)
     creator_name: Optional[str] = None  # 사용자 지정 이름(uid→이름)
     is_mine: bool = True  # 내 생성물인가(아니면 팀원)
+    workspace_scope: WorkspaceScope = "unknown"  # team|personal|unknown(레거시/미검증)
+    workspace_id: Optional[str] = None  # team일 때 Higgsfield workspace UUID
+    workspace_name: Optional[str] = None  # 현재 귀속 표시 이름(생성 시 기본값, 수동 변경 가능)
     project_id: Optional[str] = None  # 귀속 프로젝트(작업 묶음·내부 식별자). NULL=미분류
     project_name: Optional[str] = None  # 프로젝트 표시 이름 — UI 는 이것만 보여준다(uuid 노출 금지)
     folder_path: Optional[str] = None  # 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). NULL=미지정
@@ -182,6 +210,7 @@ class GenRequestIn(BaseModel):
     즉시 만들고, 요청자의 PC 에이전트가 가져가 자기 로컬 CLI 로 실행한다."""
 
     kind: str = Field(default="create", pattern="^(create|regenerate)$")
+    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     create: Optional[GenerationCreate] = None  # kind=create 일 때
     source_gen_id: Optional[str] = None  # kind=regenerate 일 때 원본
     regenerate: Optional[RegenerateIn] = None  # kind=regenerate 옵션(프롬프트/모델/색 덮어쓰기)
@@ -197,6 +226,7 @@ class PendingRequestOut(BaseModel):
     prompt: Optional[str] = None
     params: dict[str, Any] = Field(default_factory=dict)
     references: list[dict[str, Any]] = Field(default_factory=list)  # [{file_path(url), type, role}]
+    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
 
 
 class FulfillIn(BaseModel):
@@ -250,6 +280,9 @@ class ProjectOut(BaseModel):
     count: int = 0  # 내 작업(viewer) 기준 결과물 수 — 사이드바 My Work 용
     total: int = 0  # 프로젝트 전체 결과물 수(작성자 무관) — 관리자 탭에서 표시
     render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로(각 PC 가 자기 디스크에서 읽음)
+    workspace_scope: WorkspaceScope = "unknown"
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
 
 
 class ProjectsOut(BaseModel):
@@ -261,12 +294,14 @@ class ProjectsOut(BaseModel):
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
     kind: str = "team"
+    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     archived: Optional[bool] = None
     render_root_path: Optional[str] = None  # 팀 공유 렌더 폴더 경로 설정(빈 문자열=연결 해제)
+    workspace: Optional[WorkspaceContext] = None
 
 
 class ReorderProjectsIn(BaseModel):
@@ -309,6 +344,7 @@ class IngestIn(BaseModel):
 
     jobs: list[dict] = Field(default_factory=list)
     creator_uid: Optional[str] = None  # 명시하면 그 uid 로 귀속(없으면 자동 추출)
+    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     account_status: Optional[dict] = None  # {email, credits, plan, workspaces} — 크레딧 집계용
     account_transactions: Optional[list] = None  # PM: account transactions 원본(실제 차감액 매칭용). 선택.
 
@@ -318,6 +354,7 @@ class IngestMcpIn(BaseModel):
     items 는 mcp_item_to_cli 로 CLI 형태 변환 후 /ingest 와 동일 코어로 적재."""
 
     items: list[dict] = Field(default_factory=list)
+    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     account_status: Optional[dict] = None
 
 

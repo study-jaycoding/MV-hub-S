@@ -1,7 +1,7 @@
 import type { MutableRefObject } from "react";
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
-import type { Filters, Generation } from "../types";
+import type { Filters, Generation, WorkspaceContext } from "../types";
 
 interface UseGenerationProjectActionsArgs {
   bumpBoard: () => void;
@@ -9,6 +9,7 @@ interface UseGenerationProjectActionsArgs {
   flash: (message: string) => void;
   reload: () => Promise<void>;
   selectedRef: MutableRefObject<Set<string>>;
+  workspace: WorkspaceContext;
 }
 
 export function useGenerationProjectActions({
@@ -17,6 +18,7 @@ export function useGenerationProjectActions({
   flash,
   reload,
   selectedRef,
+  workspace,
 }: UseGenerationProjectActionsArgs) {
   const assignIdsToProject = async (
     ids: string[],
@@ -58,8 +60,12 @@ export function useGenerationProjectActions({
   };
 
   const createAndAssign = async (name: string) => {
+    if (workspace.scope !== "team") {
+      flash("팀 워크스페이스를 선택한 뒤 프로젝트를 만들어 주세요.");
+      return;
+    }
     try {
-      const p = await api.createProject(name);
+      const p = await api.createProject(name, "team", workspace);
       await assignSelectedToProject(p.id);
     } catch (e) {
       flash("프로젝트 생성 실패: " + String(e));
@@ -71,8 +77,12 @@ export function useGenerationProjectActions({
   };
 
   const boardCreateAssign = async (sel: Generation[], name: string) => {
+    if (workspace.scope !== "team") {
+      flash("팀 워크스페이스를 선택한 뒤 프로젝트를 만들어 주세요.");
+      return;
+    }
     try {
-      const p = await api.createProject(name);
+      const p = await api.createProject(name, "team", workspace);
       await boardAssign(sel, p.id);
     } catch (e) {
       flash("프로젝트 생성 실패: " + String(e));

@@ -30,6 +30,7 @@ from ..models import (
     ProjectUpdate,
     ReorderProjectsIn,
 )
+from ..services.telemetry_drain import drain_isolated_telemetry
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -57,7 +58,12 @@ def _require_assign_target(request: Request, pid: str | None) -> None:
 
 
 @router.get("", response_model=ProjectsOut)
-def list_projects(request: Request, include_archived: bool = False, tab: str = "my"):
+def list_projects(
+    request: Request,
+    include_archived: bool = False,
+    tab: str = "my",
+    workspace_id: str | None = None,
+):
     # 로컬 우선 하이브리드: 프로젝트 '정의'는 서버(팀 공유). 카운트 기준은 탭마다 다르다 —
     #  · 내 작업(my): 내 로컬 DB 기준(내 미분류·내 프로젝트 수). 서버 정의에 로컬 카운트를 덮어씀.
     #  · 팀 공유(team): 팀 공유물의 프로젝트 귀속은 서버에 있으므로 서버 카운트를 그대로 쓴다.
@@ -66,11 +72,11 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
         if isinstance(data, dict):
             repo.cache_projects(data.get("projects") or [])  # 정의 미러(assign 검증·project_name 해석)
             if tab != "team":  # 내 작업 탭만 로컬 카운트로 덮어씀
-                counts = repo.local_project_counts()
+                counts = repo.local_project_counts(workspace_id)
                 for p in data.get("projects") or []:
                     if isinstance(p, dict):
                         p["count"] = counts.get(p.get("id"), 0)
-                data["unassigned"] = repo.local_unassigned_count()
+                data["unassigned"] = repo.local_unassigned_count(workspace_id)
         return data
     # 가시성(§5-3): 전역 read_all(admin·PM·PD)은 전체 프로젝트, 그 외(일반 멤버)는 배정된 것만.
     # AUTH off 면 enforcement 없이 전체(기존 동작).
@@ -85,11 +91,15 @@ def list_projects(request: Request, include_archived: bool = False, tab: str = "
             include_archived=include_archived, member_uid=member_uid,
             viewer_uid=None, shared_only=True,
             own_shared_uid=None if read_all else viewer_uid,
+            workspace_id=workspace_id,
         )
         return data
     # 내 작업(my): 카운트는 항상 내 작업만(viewer 스코프).
     return repo.list_projects(
-        include_archived=include_archived, member_uid=member_uid, viewer_uid=viewer_uid
+        include_archived=include_archived,
+        member_uid=member_uid,
+        viewer_uid=viewer_uid,
+        workspace_id=workspace_id,
     )
 
 
@@ -109,6 +119,26 @@ def my_finalize_roles(request: Request):
     if rbac.has_any_global_role(account_global_roles(request), rbac.ADMIN):
         return {"project_ids": ["*"]}
     return {"project_ids": repo.projects_where_role(uid, [rbac.SUPERVISOR])}
+
+
+@router.get("/workspace-options")
+def workspace_options(request: Request):
+    """에이전트 보고로 검증된 팀 워크스페이스 목록 — 프로젝트 생성/대시보드 공용."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/projects/workspace-options", request)
+    require_global_cap(request, "create_project")
+    return {"workspaces": repo.list_workspace_options()}
+
+
+@router.get("/workspace-options/{workspace_id}/members")
+def workspace_option_members(workspace_id: str, request: Request):
+    """선택한 워크스페이스에 접근 가능한 프로젝트 배정 후보."""
+    if _proxy.proxying():
+        return _proxy.proxy_get(f"/api/projects/workspace-options/{workspace_id}/members", request)
+    require_global_cap(request, "create_project")
+    if not any(item["id"] == workspace_id for item in repo.list_workspace_options()):
+        raise HTTPException(status_code=404, detail="확인되지 않은 워크스페이스")
+    return {"members": repo.list_workspace_members(workspace_id)}
 
 
 @router.get("/team-fresh")
@@ -225,7 +255,11 @@ def create_project(body: ProjectCreate, request: Request):
     # 프로젝트 생성 = 전역 create_project 역량(product_director). AUTH off 면 통과.
     require_global_cap(request, "create_project")
     try:
-        return repo.create_project(body.name, kind=body.kind)
+        return repo.create_project(
+            body.name,
+            kind=body.kind,
+            workspace=body.workspace.model_dump(),
+        )
     except repo.ProjectNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -255,6 +289,8 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
             repo.update_project_identity(pid, name=body.name, archived=body.archived)
         if body.render_root_path is not None:
             repo.set_render_root(pid, body.render_root_path)  # 팀 공유 렌더 폴더 경로
+        if body.workspace is not None:
+            repo.set_project_workspace(pid, body.workspace.model_dump())
     except repo.ProjectNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -320,6 +356,7 @@ def assign_project(body: AssignProjectIn, request: Request, tab: str = "my"):
             from ..repo import manage as _m
 
             _m.mark_telemetry_dirty(body.generation_ids)
+            drain_isolated_telemetry()
         except Exception:  # noqa: BLE001
             pass
     # 이동 양방향 동기(#2 Phase3): 내 작업에서 옮긴 게 이미 공유된 것이면 서버에도 같은 이동을
@@ -362,6 +399,27 @@ def list_all_members(request: Request):
         return _proxy.proxy_get("/api/projects/members-all", request)
     require_global_cap(request, "read_all")
     return repo.list_all_project_members()
+
+
+@router.get("/members-visible", response_model=dict[str, list[ProjectMemberOut]])
+def list_visible_members(request: Request):
+    """현재 사용자가 읽을 수 있는 프로젝트들의 멤버만 한 번에 반환한다."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/projects/members-visible", request)
+    read_all = _has_read_all(request)
+    member_uid = None if read_all else (account_scope_uid(request) or "\x00")
+    visible = repo.list_projects(include_archived=False, member_uid=member_uid)
+    project_ids = [
+        project.get("id")
+        for project in visible.get("projects") or []
+        if isinstance(project, dict) and project.get("id")
+    ]
+    if not read_all:
+        readable_ids = set(
+            repo.projects_where_role(member_uid, list(_PROJECT_READ_ROLES))
+        )
+        project_ids = [pid for pid in project_ids if pid in readable_ids]
+    return repo.list_project_members_for_projects(project_ids)
 
 
 @router.get("/{pid}/members", response_model=list[ProjectMemberOut])

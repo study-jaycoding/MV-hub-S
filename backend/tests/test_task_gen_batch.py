@@ -181,6 +181,27 @@ class TaskGenBatchParityTests(unittest.TestCase):
         self.assertNotIn("g_p2_folder", {cut["id"] for cut in p1["t_folder"]["cuts"]})
         self.assertNotIn("g_p2_seq", {cut["id"] for cut in p1["t_seq"]["cuts"]})
 
+    def test_list_tasks_exposes_per_cut_metrics_for_personal_work_totals(self):
+        """개인 작업표가 본인 컷만 골라 크레딧·시간·댓글을 재집계할 수 있어야 한다."""
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET model='nano_banana_2' WHERE id='g1'")
+            conn.execute(
+                "INSERT INTO generation_metrics(gen_id, real_credits, elapsed_seconds) "
+                "VALUES('g1', 7, 12.5)"
+            )
+            conn.execute(
+                "INSERT INTO generation_comment(id, gen_id, author, text) "
+                "VALUES('comment-g1', 'g1', 'u_me', '확인')"
+            )
+
+        folder = next(task for task in _m.list_tasks("p1") if task["id"] == "t_folder")
+        cut = next(item for item in folder["cuts"] if item["id"] == "g1")
+
+        self.assertEqual(cut["credits"], 7)
+        self.assertEqual(cut["elapsed"], 12.5)
+        self.assertEqual(cut["comment_count"], 1)
+        self.assertEqual(cut["model"], "nano_banana_2")
+
     def test_multi_project_batch_chunks_paired_filters_below_sqlite_limit(self):
         """프로젝트와 폴더가 각각 400개를 넘어도 SQL 변수 상한 없이 전부 매칭한다."""
         count = 401

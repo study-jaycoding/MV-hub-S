@@ -27,15 +27,9 @@ export function ManageWindow() {
   });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const reloadSignal = useManageRealtime(enabled === true);
-  // 대시보드 탭은 read_all(admin/PM/PD)만 — 백엔드 대시보드 집계 API 가 read_all 을 요구한다.
-  // 비매니저는 작업/완료만 보이고, 저장된 탭이 dashboard 여도 렌더 전에 tasks 로 보정한다
-  // (안 그러면 DashboardView 가 권한 없이 집계 API 를 먼저 호출).
+  // 대시보드 탭은 모두에게 연다. read_all 보유자는 워크스페이스 전체 통계까지,
+  // 일반 멤버는 자신이 참여한 프로젝트 작업 현황만 본다.
   const caps = useManageCaps();
-  const canDash = caps.authOff || caps.readAll;
-  const visibleTabs = TABS.filter((t) => t.v !== "dashboard" || canDash);
-  useEffect(() => {
-    if (caps.loaded && !canDash && tab === "dashboard") setTab("tasks");
-  }, [caps.loaded, canDash, tab]);
   useEffect(() => saveString(STORAGE_KEYS.manageTab, tab), [tab]);
 
   useEffect(() => {
@@ -76,7 +70,7 @@ export function ManageWindow() {
   return (
     <div className="manage-window">
       <nav className="manage-tabs">
-        {visibleTabs.map((t) => (
+        {TABS.map((t) => (
           <button
             key={t.v}
             className={tab === t.v ? "on" : ""}
@@ -86,8 +80,22 @@ export function ManageWindow() {
           </button>
         ))}
       </nav>
-      {tab === "dashboard" && canDash && <DashboardView reloadSignal={reloadSignal} />}
-      {tab === "tasks" && <WorkBoard reloadSignal={reloadSignal} />}
+      {tab === "dashboard" && !caps.loaded && (
+        <div className="manage-empty">권한 확인 중...</div>
+      )}
+      {tab === "dashboard" && caps.loaded && (
+        <DashboardView reloadSignal={reloadSignal} caps={caps} />
+      )}
+      {tab === "tasks" && !caps.loaded && (
+        <div className="manage-empty">권한 확인 중...</div>
+      )}
+      {tab === "tasks" && caps.loaded && (
+        <WorkBoard
+          reloadSignal={reloadSignal}
+          viewerUid={caps.viewerUid}
+          personalByDefault={!caps.readAll}
+        />
+      )}
       {tab === "export" && <ExportView reloadSignal={reloadSignal} />}
     </div>
   );

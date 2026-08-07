@@ -1,4 +1,13 @@
-import type { Creator, Member, Project, ProjectsResponse, Workspace } from "../types";
+import type {
+  Creator,
+  Member,
+  Project,
+  ProjectsResponse,
+  Workspace,
+  WorkspaceContext,
+  WorkspaceMemberCandidate,
+  WorkspaceOption,
+} from "../types";
 import { jsonBody, jsonFetch } from "./http";
 import { pathPart } from "./url";
 
@@ -58,19 +67,38 @@ export async function fetchAllTeamFresh(
 
 export const projectApi = {
   // 프로젝트(작업 묶음) — 공유·이동의 단위
-  projects: (tab: "my" | "team" = "my", includeArchived = false) => {
+  projects: (tab: "my" | "team" = "my", includeArchived = false, workspaceId?: string) => {
     const p = new URLSearchParams({ tab });
     if (includeArchived) p.set("include_archived", "true");
+    if (workspaceId) p.set("workspace_id", workspaceId);
     return jsonFetch<ProjectsResponse>(`/api/projects?${p.toString()}`);
   },
+  workspaceOptions: () =>
+    jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/projects/workspace-options"),
+  workspaceMembers: (workspaceId: string) =>
+    jsonFetch<{ members: WorkspaceMemberCandidate[] }>(
+      `/api/projects/workspace-options/${pathPart(workspaceId)}/members`,
+    ),
   myFinalizeRoles: () =>
     jsonFetch<{ project_ids: string[] }>("/api/projects/my-finalize-roles"),
-  createProject: (name: string, kind = "team") =>
+  createProject: (
+    name: string,
+    kind = "team",
+    workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  ) =>
     jsonFetch<Project>("/api/projects", {
       method: "POST",
-      body: jsonBody({ name, kind }),
+      body: jsonBody({ name, kind, workspace }),
     }),
-  updateProject: (id: string, patch: { name?: string; archived?: boolean }) =>
+  updateProject: (
+    id: string,
+    patch: {
+      name?: string;
+      archived?: boolean;
+      render_root_path?: string | null;
+      workspace?: WorkspaceContext;
+    },
+  ) =>
     jsonFetch<Project>(`/api/projects/${pathPart(id)}`, {
       method: "PATCH",
       body: jsonBody(patch),
@@ -158,6 +186,11 @@ export const projectApi = {
   allProjectMembers: () =>
     jsonFetch<Record<string, import("../types").ProjectMember[]>>(
       "/api/projects/members-all",
+    ),
+  // 현재 사용자가 읽을 수 있는 프로젝트의 멤버만 {pid: [...]} 한 번에 조회.
+  visibleProjectMembers: () =>
+    jsonFetch<Record<string, import("../types").ProjectMember[]>>(
+      "/api/projects/members-visible",
     ),
   setProjectRoles: (pid: string, creator_uid: string, project_roles: string[]) =>
     jsonFetch<import("../types").ProjectMember[]>(

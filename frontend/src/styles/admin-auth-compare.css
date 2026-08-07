@@ -116,22 +116,6 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
 .role-chip.role-project_manager.on { background: #8e44ad; border-color: #ad6bc8; color: #fff; }
 .role-chip.role-supervisor.on { background: #e08a1e; border-color: #f0a945; color: #2a1d00; }
 .role-chip.role-creator.on { background: #3a9d4a; border-color: #5bbf6b; color: #fff; }
-.proj-roles-row td { background: rgba(255,255,255,0.025); padding: 0 8px 10px; }
-.proj-roles { padding: 4px 2px 2px; }
-.proj-roles-head { font-size: 11.5px; color: var(--muted); margin: 6px 0 8px; }
-.proj-role-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-.proj-role-name { flex: 1; font-weight: 500; font-size: 12.5px; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-role-x {
-  background: transparent; border: none; cursor: pointer; color: var(--muted);
-  font-size: 12px; padding: 3px 6px; border-radius: 6px; flex: none;
-}
-.proj-role-x:hover { color: #ff6b6b; background: rgba(255,107,107,0.12); }
-.proj-add { margin-top: 8px; position: relative; }
-.proj-add-pick {
-  margin-top: 6px; padding: 8px; border-radius: 9px; background: rgba(255,255,255,0.03);
-  border: 1px solid var(--border);
-}
 .proj-add-search {
   display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
   padding: 5px 9px; border-radius: 8px; background: #16171c; border: 1px solid var(--border);
@@ -141,14 +125,99 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
   color: var(--text); font-size: 12.5px;
 }
-.proj-add-list { display: flex; flex-wrap: wrap; gap: 5px; }
 .member-search { max-width: 320px; margin: 0 0 10px; }
-.proj-add-item {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
-  border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer;
-  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+
+/* 프로젝트 멤버 — 프로젝트 목록 옆 고정 패널 + 다중 추가 창. */
+.project-members-panel {
+  min-width: 0; min-height: 470px; padding: 0 0 0 18px; border-left: 1px solid var(--border);
 }
-.proj-add-item:hover { border-color: var(--accent); color: var(--accent); }
+.project-members-head,
+.project-members-head > div,
+.project-member-identity,
+.project-member-candidate { display: flex; align-items: center; }
+.project-members-head { justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.project-members-head > div { gap: 9px; min-width: 0; }
+.project-members-head > div > span:last-child,
+.project-member-identity > span:nth-child(2),
+.project-member-candidate > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.project-members-head strong { font-size: 14px; }
+.project-members-head small,
+.project-member-identity small,
+.project-member-candidate small {
+  overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap;
+}
+.project-members-head > button,
+.project-member-remove,
+.project-member-add-close {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+}
+.project-members-head > button:hover,
+.project-member-remove:hover,
+.project-member-add-close:hover { color: var(--text); }
+.project-members-icon { font-size: 17px; }
+.project-member-add-button {
+  margin: 0 0 12px; padding: 5px 10px; border: 0; border-radius: 999px;
+  background: rgba(255,255,255,.08); color: var(--text); font: inherit; font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.project-member-add-button:hover { background: rgba(190,255,50,.14); color: var(--accent); }
+.project-member-list { display: grid; gap: 8px; max-height: 580px; overflow: auto; padding-right: 3px; }
+.project-member-empty { padding: 22px 4px; color: var(--muted); font-size: 11px; text-align: center; }
+.project-member-card { padding: 10px; border: 1px solid rgba(255,255,255,.07); border-radius: 11px; background: rgba(255,255,255,.025); }
+.project-member-identity { gap: 9px; min-width: 0; }
+.project-member-identity > span:nth-child(2) { flex: 1; }
+.project-member-identity strong,
+.project-member-candidate strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.project-member-avatar {
+  display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #efffa5, var(--accent) 42%, #8bdce5 78%);
+  color: #19200d; font-size: 12px; font-weight: 900;
+}
+.project-member-remove { padding: 5px; }
+.project-member-card .role-chips { margin: 9px 0 0 43px; }
+.project-member-card .role-chip { padding: 3px 7px; font-size: 9.5px; }
+.project-member-add-backdrop {
+  position: fixed; inset: 0; z-index: 340; display: grid; place-items: center; padding: 18px;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(3px);
+}
+.project-member-add-dialog {
+  position: relative; width: min(420px, 94vw); max-height: min(680px, 90vh); display: flex; flex-direction: column;
+  padding: 20px 24px 18px; border: 1px solid rgba(255,255,255,.1); border-radius: 22px;
+  background: #202225; box-shadow: 0 28px 80px rgba(0,0,0,.72); color: var(--text);
+}
+.project-member-add-close { position: absolute; top: 15px; right: 15px; width: 30px; height: 30px; border-radius: 50%; background: rgba(255,255,255,.06); }
+.project-member-add-symbol {
+  display: grid; place-items: center; width: 48px; height: 48px; margin: 2px auto 10px;
+  border: 1px solid rgba(255,255,255,.13); border-radius: 50%; background: linear-gradient(#3a3d40,#1d1f21); font-size: 19px;
+}
+.project-member-add-dialog h3 { margin: 0; font-size: 17px; text-align: center; }
+.project-member-add-dialog > p { margin: 5px 0 15px; color: var(--muted); font-size: 12px; text-align: center; }
+.project-member-add-search {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.12); border-radius: 11px; background: rgba(0,0,0,.12); color: var(--muted);
+}
+.project-member-add-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; }
+.project-member-candidate-list { min-height: 120px; max-height: 370px; overflow: auto; padding: 0 3px 0 0; }
+.project-member-candidate {
+  width: 100%; gap: 10px; padding: 7px; border: 0; border-radius: 10px; background: transparent;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.project-member-candidate:hover,
+.project-member-candidate.on { background: rgba(190,255,50,.075); }
+.project-member-candidate > span:nth-child(2) { flex: 1; }
+.project-member-candidate i {
+  display: grid; place-items: center; width: 18px; height: 18px; flex: 0 0 auto;
+  border: 1px solid rgba(255,255,255,.16); border-radius: 5px; color: var(--accent); font-size: 11px; font-style: normal;
+}
+.project-member-candidate.on i { border-color: var(--accent); background: rgba(190,255,50,.13); }
+.project-member-add-confirm {
+  width: 100%; margin-top: 12px; padding: 11px 14px; border: 0; border-radius: 11px;
+  background: #f5f5f5; color: #171819; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer;
+}
+.project-member-add-confirm:disabled { opacity: .4; cursor: default; }
+@media (max-width: 920px) {
+  .project-members-panel { min-height: 0; margin-top: 16px; padding: 16px 0 0; border-top: 1px solid var(--border); border-left: 0; }
+  .project-member-list { max-height: 360px; }
+}
 
 .proj-folder-row td {
   background: rgba(255,255,255,0.018);
@@ -207,12 +276,68 @@ tr.row-dragover td { box-shadow: inset 0 2px 0 0 var(--accent); }
   background: #1c1c1e; border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px;
   width: min(340px, 88vw); box-shadow: 0 24px 70px rgba(0,0,0,0.6);
 }
-.admin-project-dialog { width: min(460px, 92vw); }
+.admin-project-dialog { width: min(540px, 92vw); max-height: 88vh; overflow: auto; }
 .admin-field { display: block; margin: 0 0 10px; }
 .admin-field span {
   display: block; margin: 0 0 5px; color: var(--muted); font-size: 11.5px; font-weight: 700;
 }
 .admin-field .settings-input { width: 100%; }
+.proj-workspace-badge { margin-left: 7px; color: var(--accent); }
+.project-settings-section {
+  margin: 14px 0 12px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+.project-settings-section h5 {
+  margin: 0 0 11px;
+  color: var(--text);
+  font-size: 13px;
+}
+.project-settings-section .project-planning-fields { gap: 10px; }
+.project-settings-section .manage-field > span { width: 88px; }
+.project-settings-section .project-range-popover {
+  top: auto;
+  bottom: calc(100% + 7px);
+}
+.project-member-picker {
+  margin: 2px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.025);
+}
+.project-member-picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-member-picker-head strong { color: var(--text); font-size: 13px; }
+.project-member-picker-list {
+  max-height: 210px;
+  overflow: auto;
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+.project-member-pick {
+  display: grid;
+  grid-template-columns: 18px 10px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.project-member-pick.auto { grid-template-columns: 10px 1fr; cursor: default; }
+.project-member-pick:hover,
+.project-member-pick.on { background: rgba(190,255,50,.08); }
+.project-member-pick > span:last-child { display: grid; gap: 2px; }
+.project-member-pick strong { font-size: 12px; color: var(--text); }
+.project-member-pick small { font-size: 11px; color: var(--muted); }
+.project-auto-member-note { margin: 9px 0 0; }
 .admin-confirm-q { font-size: 14px; color: var(--text); margin: 0 0 16px; line-height: 1.5; }
 .admin-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .admin-confirm-yes, .admin-confirm-no {

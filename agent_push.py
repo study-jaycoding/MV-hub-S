@@ -248,6 +248,104 @@ def _cli_json(cli: str, *args: str, timeout: int = 120):
     return data
 
 
+def _run_cli_command(cli: str, *args: str, timeout: int = 120) -> str | None:
+    """JSON 출력이 필요 없는 CLI 명령을 실행한다. 성공은 None, 실패는 표시용 사유를 반환한다."""
+    try:
+        out = subprocess.run(
+            [*_cli_argv(cli), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"CLI 시간 초과: {' '.join(args)}"
+    if out.returncode != 0:
+        return (out.stderr or out.stdout or f"종료 코드 {out.returncode}").strip()[:700]
+    return None
+
+
+def _request_workspace(value) -> dict:
+    """서버 요청의 워크스페이스를 에이전트가 사용할 최소 규격으로 정규화한다."""
+    value = value if isinstance(value, dict) else {}
+    scope = str(value.get("scope") or "unknown").strip().lower()
+    workspace_id = str(value.get("id") or "").strip() or None
+    name = str(value.get("name") or "").strip() or None
+    if scope == "team" and workspace_id:
+        return {"scope": "team", "id": workspace_id, "name": name}
+    if scope == "personal":
+        return {"scope": "personal", "id": None, "name": name}
+    return {"scope": "unknown", "id": None, "name": None}
+
+
+def _workspace_context_from_list(workspaces) -> dict:
+    """CLI workspace list에서 현재 선택 컨텍스트를 생성정보용 규격으로 만든다."""
+    if not isinstance(workspaces, list):
+        return {"scope": "unknown", "id": None, "name": None}
+    selected = next(
+        (w for w in workspaces if isinstance(w, dict) and w.get("is_selected")),
+        None,
+    )
+    if not selected:
+        return {"scope": "unknown", "id": None, "name": None}
+    name = str(selected.get("name") or "").strip() or None
+    if name:
+        workspace_id = str(selected.get("id") or "").strip() or None
+        if workspace_id:
+            return {"scope": "team", "id": workspace_id, "name": name}
+    return {"scope": "personal", "id": None, "name": name}
+
+
+def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
+    """요청 워크스페이스로 CLI를 전환하고 실제 선택 상태를 다시 확인한다.
+
+    unknown은 구버전 요청 호환을 위해 현재 상태를 유지한다. 신규 UI 요청은 team/personal을 보낸다.
+    """
+    target = _request_workspace(value)
+    if target["scope"] == "unknown":
+        return True, None
+    workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
+    if error or not isinstance(workspaces, list):
+        return False, error or "워크스페이스 목록을 확인할 수 없습니다"
+
+    if target["scope"] == "team":
+        candidate = next(
+            (
+                w
+                for w in workspaces
+                if isinstance(w, dict) and str(w.get("id") or "") == target["id"]
+            ),
+            None,
+        )
+    else:
+        # CLI 1.x의 개인 공간도 실제 id로 set 해야 한다. API 규격에는 개인 id를 저장하지 않고,
+        # 현재 계정 목록에서 name 없는 개인 항목을 찾아 그 id로 전환한다.
+        candidate = next(
+            (
+                w
+                for w in workspaces
+                if isinstance(w, dict) and not str(w.get("name") or "").strip()
+            ),
+            None,
+        )
+    if not candidate or not candidate.get("id"):
+        label = target.get("name") or ("개인" if target["scope"] == "personal" else target["id"])
+        return False, f"이 계정에서 워크스페이스를 찾을 수 없습니다: {label}"
+    if not candidate.get("is_selected"):
+        error = _run_cli_command(cli, "workspace", "set", str(candidate["id"]), timeout=60)
+        if error:
+            return False, f"워크스페이스 전환 실패: {error}"
+        workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
+        if error or not isinstance(workspaces, list):
+            return False, error or "전환 결과를 확인할 수 없습니다"
+    selected = next(
+        (w for w in workspaces if isinstance(w, dict) and w.get("is_selected")),
+        None,
+    )
+    if not selected or str(selected.get("id") or "") != str(candidate["id"]):
+        return False, "워크스페이스 전환 검증에 실패했습니다"
+    return True, None
+
+
 # 잡 id(UUID) 추출용 — generate create 가 --wait 조합에서 JSON 대신 평문(잡 id 또는 결과 URL)만
 # 내보낸 경우를 대비해, 출력에서 잡 id 를 되찾는다.
 _UUID_RE = re.compile(
@@ -1008,6 +1106,7 @@ def _submit_one(
     ref_cache: dict,
     upload_cache: dict,
     upload_lock: Lock,
+    workspace_lock: Lock,
 ) -> dict | None:
     """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
     제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
@@ -1090,29 +1189,38 @@ def _submit_one(
     args += seedance_ref_args
     print(f"  → {model}: {prompt[:40]}")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
-    created, cli_error = _run_cli_json(cli, *args, timeout=300)
-    if (
-        not _extract_created_id(created, None)
-        and cli_error
-        and seedance_media_inputs
-        and seedance_used_cached_media
-        and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
-    ):
-        print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
-        retry_ids: list = []
-        retry_failed = False
-        for path, media_role in seedance_media_inputs:
-            _invalidate_upload_cache(upload_cache, path, upload_lock)
-            data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
-            if not data:
-                retry_failed = True
-                break
-            retry_ids.append((media_role, data["id"]))
-        if not retry_failed:
-            # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
-            base_args = args[:len(args) - len(seedance_ref_args)]
-            retry_args = base_args + _seedance_ref_args(retry_ids)
-            created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
+    # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
+    # 다른 제출 스레드가 중간에 공간을 바꾸는 경합을 막는다. create 반환 뒤 원격 추적은 다시 병렬이다.
+    with workspace_lock:
+        workspace_ok, workspace_error = _ensure_request_workspace(cli, r.get("workspace"))
+        if not workspace_ok:
+            reason = f"워크스페이스 확인 실패 — 생성하지 않음: {workspace_error}"
+            _fail(server, token, rid, reason)
+            print(f"  ✗ {reason}")
+            return None
+        created, cli_error = _run_cli_json(cli, *args, timeout=300)
+        if (
+            not _extract_created_id(created, None)
+            and cli_error
+            and seedance_media_inputs
+            and seedance_used_cached_media
+            and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
+        ):
+            print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
+            retry_ids: list = []
+            retry_failed = False
+            for path, media_role in seedance_media_inputs:
+                _invalidate_upload_cache(upload_cache, path, upload_lock)
+                data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
+                if not data:
+                    retry_failed = True
+                    break
+                retry_ids.append((media_role, data["id"]))
+            if not retry_failed:
+                # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
+                base_args = args[:len(args) - len(seedance_ref_args)]
+                retry_args = base_args + _seedance_ref_args(retry_ids)
+                created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
         # job_id 를 못 얻음 = 제출 자체 실패(레퍼런스 오류 등은 위에서 이미 걸러짐). 진짜 실패이므로 hard fail.
@@ -1297,6 +1405,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     ref_temps_all: list = []
     upload_cache: dict = _load_upload_cache(_cli_account_email(cli))
     upload_lock = Lock()
+    workspace_lock = Lock()
     total = 0
     printed = False
     next_claim_at = 0.0
@@ -1351,6 +1460,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                             batch_ref_cache,
                             upload_cache,
                             upload_lock,
+                            workspace_lock,
                         )
                         submitting[future] = request
                         total += 1
@@ -1472,7 +1582,7 @@ def _signout_and_relogin(cli: str) -> str | None:
 def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> set[str]:
     """서버에 없거나 서버에서 아직 진행중인 로컬 job id만 고른다.
 
-    신버전 서버의 ``refresh``를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
+    신버전 서버의 ``refresh`` 를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
     """
     if local_ids:
         status, diff = _http(
@@ -1505,9 +1615,11 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
     acct = _cli_json(cli, "account", "status")
+    workspace = {"scope": "unknown", "id": None, "name": None}
     if isinstance(acct, dict):
         ws = _cli_json(cli, "workspace", "list")
         acct["workspaces"] = ws if isinstance(ws, list) else []
+        workspace = _workspace_context_from_list(ws)
         acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
@@ -1557,7 +1669,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 4) 서버로 push (메타데이터만 — 미디어는 공개 URL 그대로, 토큰 안 보냄)
     status, body = _http(
         "POST", f"{server}/api/ingest", token=token,
-        body={"jobs": fresh, "creator_uid": my_uid, "account_status": acct,
+        body={"jobs": fresh, "creator_uid": my_uid, "workspace": workspace, "account_status": acct,
               "account_transactions": txns},
     )
     if status != 200 or not isinstance(body, dict):
@@ -1616,6 +1728,21 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
             print(f"  ✓ 보정: {job_id[:8]} → {body.get('status')}")
 
 
+def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
+    """에이전트 시작 시 요청 복구와 최신 상태 재대조를 한 번 수행한다."""
+    # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
+    execute_pending(server, token, cli)
+    # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
+    #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
+    reconcile_pass(server, token, cli)
+    # ③ 서버에 없거나 아직 대기/생성중인 최신 항목만 동기화한다. 이미 알려진 synced 카드가 test DB
+    #    복사·에이전트 재시작 사이에 완료돼도 서버의 refresh 차집합으로 다시 받아 상태를 바로잡는다.
+    #    완료된 과거 항목은 제외하므로 현재 워크스페이스 정보가 옛 카드에 잘못 붙지 않는다.
+    #    로컬 허브(--no-push)는 기존대로 건너뛴다(공유는 '선택 발행'으로만).
+    if not no_push:
+        push_once(server, token, cli, size)
+
+
 def main() -> None:
     # 로그를 콘솔에 즉시 찍어 '무엇을 했는지' 실시간으로 보이게(파이프/리다이렉트에서도).
     try:
@@ -1656,21 +1783,11 @@ def main() -> None:
         token = login(server, args.email, password)
         creds = {"email": args.email, "password": password}
 
-    def cycle() -> None:
-        # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
-        execute_pending(server, token, cli)
-        # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
-        #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
-        reconcile_pass(server, token, cli)
-        # ③ 로컬 CLI 이력 자동 push — 로컬 허브(--no-push)는 안 함(공유는 '선택 발행'으로만)
-        if not args.no_push:
-            push_once(server, token, cli, args.size)
-
     if args.watch:
         # 이벤트 방식 — 평소엔 롱폴로 조용히 대기, 내가 허브에서 생성/재생성·동기화 할 때만 작동.
         print("[이벤트] 대기 모드 — 생성/재생성·동기화 때만 작동 (Ctrl+C 종료)")
         try:
-            cycle()  # 시작 시 한 번: 밀린 생성요청 처리 + 내 작업 올리기
+            _initial_cycle(server, token, cli, args.size, args.no_push)
         except Exception as e:  # noqa: BLE001
             print(f"[경고] 초기 처리 오류(무시): {e}")
         while True:
@@ -1686,7 +1803,7 @@ def main() -> None:
                         if account_changed:
                             print(f"[연결] 브라우저 계정 전환: {paired_email}")
                             try:
-                                cycle()
+                                _initial_cycle(server, token, cli, args.size, args.no_push)
                             except Exception as e:  # noqa: BLE001 — 계정 전환 1회 오류로 상주 종료 금지
                                 print(f"[경고] 계정 전환 후 초기 처리 오류(무시): {e}")
                             continue
@@ -1694,7 +1811,7 @@ def main() -> None:
                     print("[연결] 브라우저 로그아웃 감지 — 다음 로그인을 기다립니다.")
                     token, paired_email = wait_for_local_pair(server, args.pair_secret)
                     try:
-                        cycle()
+                        _initial_cycle(server, token, cli, args.size, args.no_push)
                     except Exception as e:  # noqa: BLE001 — 재로그인 1회 오류로 상주 종료 금지
                         print(f"[경고] 재연결 후 초기 처리 오류(무시): {e}")
                     continue
@@ -1740,7 +1857,7 @@ def main() -> None:
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지
                 print(f"[경고] 처리 중 오류(무시하고 계속): {e}")
     else:
-        cycle()
+        _initial_cycle(server, token, cli, args.size, args.no_push)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,10 @@
 // 칩·전역칩 버튼은 onMouseDown preventDefault 로 포커스 입력의 blur(닫힘)를 막아, 다른 카드의 칩을
 // 눌러도 편집 세션이 끊기지 않는다.
 import { useState } from "react";
+import {
+  parseWorkspaceCommand,
+  type WorkspaceCommandOperation,
+} from "../lib/workspaceCommand";
 
 export interface TagEditorGlobal {
   all: string[]; // 내 전역(auto) 태그 목록(사이드바에서 만든 것)
@@ -25,6 +29,7 @@ export function TagEditor({
   selectedCount = 1,
   global = null,
   onGlobalModeChange,
+  onWorkspaceCommand,
   showInput = true,
   forcedGlobalMode,
   onClose,
@@ -37,6 +42,10 @@ export function TagEditor({
   selectedCount?: number; // 다중선택에 포함될 때 N. >1 이면 '선택된 카드 …' 배지.
   global?: TagEditorGlobal | null;
   onGlobalModeChange?: (on: boolean) => void; // 전역 모드 토글을 부모로 보고(다른 선택 카드 표시 동기화)
+  onWorkspaceCommand?: (
+    operation: WorkspaceCommandOperation,
+    workspaceName: string,
+  ) => Promise<boolean>; // ## 모드의 +워크스페이스/-워크스페이스. 태그 저장과 완전히 분리.
   showInput?: boolean; // false = 비포커스 선택 카드(입력 없음)
   forcedGlobalMode?: boolean; // 비포커스 카드: 전역 picker 표시를 포커스 카드 모드에 맞춤
   onClose?: () => void;
@@ -46,6 +55,8 @@ export function TagEditor({
   const [assignedLocal, setAssignedLocal] = useState<string[]>(global?.assigned ?? []);
   const [draft, setDraft] = useState("");
   const [internalGlobalMode, setInternalGlobalMode] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const multi = selectedCount > 1;
   const globalMode = forcedGlobalMode !== undefined ? forcedGlobalMode : internalGlobalMode;
 
@@ -60,13 +71,37 @@ export function TagEditor({
     if (showInput) setChips(next);
     onChange(next);
   };
-  const commitDraft = () => {
+  const commitDraft = async () => {
+    const workspaceCommand = parseWorkspaceCommand(draft, globalMode);
+    if (workspaceCommand) {
+      if ("error" in workspaceCommand) {
+        setWorkspaceError(workspaceCommand.error);
+        return;
+      }
+      if (!onWorkspaceCommand) {
+        setWorkspaceError("이 화면에서는 워크스페이스를 변경할 수 없습니다");
+        return;
+      }
+      setWorkspaceBusy(true);
+      setWorkspaceError(null);
+      try {
+        const ok = await onWorkspaceCommand(
+          workspaceCommand.operation,
+          workspaceCommand.workspaceName,
+        );
+        if (ok) setDraft("");
+      } finally {
+        setWorkspaceBusy(false);
+      }
+      return;
+    }
     const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
     const fresh = add.filter((t) => !baseTags.includes(t));
     if (fresh.length) {
       applyTags([...baseTags, ...fresh]); // 이 카드
       if (multi) onBulkAdd?.(fresh); // 나머지 선택 카드
     }
+    setWorkspaceError(null);
     setDraft("");
   };
   const removeChip = (t: string) => {
@@ -100,7 +135,7 @@ export function TagEditor({
     >
       {multi && (
         <div className="te-multi" title="추가는 선택한 카드 전체에, ×(해제)는 이 카드만">
-          {globalMode ? "선택된 카드 전역 적용" : "선택된 카드 태그 적용"}
+          {globalMode ? "선택된 카드 전역/워크스페이스 적용" : "선택된 카드 태그 적용"}
         </div>
       )}
       {baseTags.length > 0 && (
@@ -120,12 +155,29 @@ export function TagEditor({
           className="cs-tag-input"
           autoFocus
           value={draft}
-          placeholder={placeholder ?? (global ? "태그(쉼표) ⏎ · # 전역태그" : "태그(쉼표) ⏎")}
-          onChange={(e) => setDraft(e.target.value)}
+          readOnly={workspaceBusy}
+          aria-busy={workspaceBusy}
+          placeholder={
+            placeholder ??
+            (globalMode
+              ? "+워크스페이스 / -워크스페이스 ⏎"
+              : global
+                ? "태그(쉼표) ⏎ · # 전역태그"
+                : "태그(쉼표) ⏎")
+          }
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setWorkspaceError(null);
+          }}
           onKeyDown={(e) => {
             e.stopPropagation();
+            if (workspaceBusy) {
+              e.preventDefault();
+              return;
+            }
             if (e.key === "Enter") {
-              commitDraft();
+              e.preventDefault();
+              void commitDraft();
             } else if (e.key === "Escape") {
               onClose?.();
             } else if (e.key === "#" && global && draft === "") {
@@ -134,8 +186,13 @@ export function TagEditor({
               setMode(!internalGlobalMode);
             }
           }}
-          onBlur={onClose}
+          onBlur={() => {
+            if (!workspaceBusy) onClose?.();
+          }}
         />
+      )}
+      {showInput && workspaceError && (
+        <span className="te-empty" role="alert">{workspaceError}</span>
       )}
       {globalMode && global && (
         <div className="te-global">
