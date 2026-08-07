@@ -28,6 +28,7 @@ import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay"
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
+import type { WorkspaceCommandOperation } from "../lib/workspaceCommand";
 
 interface Props {
   gen: Generation;
@@ -69,6 +70,11 @@ interface Props {
   tagEditing?: boolean; // 다중선택 태그 편집 활성(편집 카드가 선택에 포함). 선택된 비포커스 카드에 스트립 표시
   tagGlobalMode?: boolean; // 포커스 에디터가 전역 모드인지 — 스트립 배지를 '전역 적용'으로
   onGlobalModeChange?: (on: boolean) => void; // 포커스 에디터의 전역모드 토글 보고
+  onWorkspaceCommand?: (
+    g: Generation,
+    operation: WorkspaceCommandOperation,
+    workspaceName: string,
+  ) => Promise<boolean>;
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
   fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)
 }
@@ -96,6 +102,7 @@ function GenerationCardImpl({
   tagEditing,
   tagGlobalMode,
   onGlobalModeChange,
+  onWorkspaceCommand,
   onOpenComments,
   editingField,
   onRequestEdit,
@@ -418,6 +425,7 @@ function GenerationCardImpl({
       onBulkAddAutoTags={onBulkAddAutoTags}
       onBulkRemoveAutoTags={onBulkRemoveAutoTags}
       onGlobalModeChange={onGlobalModeChange}
+      onWorkspaceCommand={onWorkspaceCommand}
       onEditDone={onEditDone}
     />
   );

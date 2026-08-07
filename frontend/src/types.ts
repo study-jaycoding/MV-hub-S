@@ -2,6 +2,13 @@
 
 export type MediaType = "image" | "video";
 export type GenStatus = "pending" | "running" | "done" | "failed" | "nsfw";
+export type WorkspaceScope = "team" | "personal" | "unknown";
+
+export interface WorkspaceContext {
+  scope: WorkspaceScope;
+  id: string | null;
+  name: string | null;
+}
 
 export interface Asset {
   id: string;
@@ -56,6 +63,9 @@ export interface Generation {
   creator_uid: string | null; // 생성자 식별자(팀 워크스페이스)
   creator_name: string | null; // 사용자 지정 이름
   is_mine: boolean; // 내 생성물인가(아니면 팀원)
+  workspace_scope: WorkspaceScope; // 현재 귀속 team|personal|unknown(레거시/미검증). 수동 보정 가능.
+  workspace_id: string | null;
+  workspace_name: string | null;
   project_id: string | null; // 귀속 프로젝트(작업 묶음·내부 식별자). null=미분류
   project_name?: string | null; // 프로젝트 표시 이름 — UI 는 이것만 보여준다(uuid 노출 금지)
   folder_path?: string | null; // 렌더 루트 기준 상대 폴더 경로(예 'ep001/c0010'). null=미지정
@@ -100,6 +110,9 @@ export interface Project {
   archived: boolean;
   count: number; // 내 작업(viewer) 기준 결과물 수 — 사이드바 My Work 용
   total?: number; // 프로젝트 전체 결과물 수(작성자 무관) — 관리자 탭에서 표시
+  workspace_scope: WorkspaceScope;
+  workspace_id: string | null;
+  workspace_name: string | null;
 }
 
 export interface ProjectsResponse {
@@ -281,6 +294,23 @@ export interface Workspace {
   user_role: string; // owner | member …
 }
 
+export interface WorkspaceOption {
+  id: string;
+  name: string;
+  plan_type: string | null;
+  credits: number | null;
+  member_count: number;
+  last_seen_at: string | null;
+}
+
+export interface WorkspaceMemberCandidate {
+  uid: string;
+  name: string | null;
+  email: string | null;
+  global_roles: string[];
+  workspace_role: string | null;
+}
+
 export interface Filters {
   tab: "my" | "team" | "compose";
   worker_id?: string;
@@ -289,6 +319,7 @@ export interface Filters {
   share_dir?: "mine" | "received"; // 공유한 것 / 공유 받은 것(타 작업자 생성)
   local_only?: boolean; // 로컬 보기 — 힉스필드에 없고 로컬에만 있는 것
   creator_uid?: string; // 특정 생성자(팀원)만 보기
+  workspace_id?: string; // 선택한 팀 워크스페이스. 개인 선택은 생략=전체 보기
   project_id?: string; // 프로젝트 필터. 특정 id 또는 'none'(미분류)
   folder_path?: string; // 폴더 필터(접두사) — 그 폴더 + 하위 전부. 프로젝트 선택 시 해제
   search?: string;
