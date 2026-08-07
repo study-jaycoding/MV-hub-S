@@ -9,6 +9,7 @@ safe_project_dir / safe_resolve 가드를 그대로 따른다.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -615,12 +616,17 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
     # 임포트와 동일 — 같은 내용(sha256)이 이미 captures 에 있으면 재사용(중복 방지). 크기 우선 비교로 가속.
-    existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image", size)
-    if existing:
+    try:
+        existing = await asyncio.to_thread(_find_same_media, cap_dir, digest, "image", size)
+        if existing:
+            tmp.unlink(missing_ok=True)
+            return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
+        name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
+        target = _commit_unique_tmp(tmp, cap_dir, name)
+    except BaseException:
+        # 스트리밍이 끝난 뒤 중복 검사·최종 확정에서 실패해도 .part 파일을 남기지 않는다.
         tmp.unlink(missing_ok=True)
-        return {"project": "captures", "path": existing.name, "name": existing.name, "type": "image", "reused": True}
-    name = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"  # 충돌은 _commit 이 _2 로 회피
-    target = _commit_unique_tmp(tmp, cap_dir, name)
+        raise
     asset_tree.invalidate_project_tree(cap_dir)  # 새 캡쳐 즉시 반영 — 다음 트리 요청은 다시 훑는다
     asset_tree.invalidate_combined_tree(ASSETS_ROOT, _INTERNAL_FOLDERS)
     return {"project": "captures", "path": target.name, "name": target.name, "type": "image"}
@@ -671,23 +677,28 @@ async def upload_reference_import(
             skipped.append(raw)
             continue
         # 폴더 내 기존 파일 비교 — 크기 우선(다르면 해시 스킵) 후 sha256. 동기 IO 라 스레드로 오프로딩.
-        existing = await asyncio.to_thread(_find_same_media, dest, digest, mt, size)
-        if existing:
+        try:
+            existing = await asyncio.to_thread(_find_same_media, dest, digest, mt, size)
+            if existing:
+                tmp.unlink(missing_ok=True)
+                rel = (
+                    existing.relative_to(project_dir).as_posix()
+                    if project_dir
+                    else existing.name
+                )
+                saved.append({
+                    "project": out_project,
+                    "path": rel,
+                    "name": existing.name,
+                    "type": mt,
+                    "reused": True,
+                })
+                continue
+            target = _commit_unique_tmp(tmp, dest, raw)
+        except BaseException:
+            # 스트리밍 이후 예외도 정리해 실패한 드롭이 숨은 디스크 찌꺼기를 만들지 않게 한다.
             tmp.unlink(missing_ok=True)
-            rel = (
-                existing.relative_to(project_dir).as_posix()
-                if project_dir
-                else existing.name
-            )
-            saved.append({
-                "project": out_project,
-                "path": rel,
-                "name": existing.name,
-                "type": mt,
-                "reused": True,
-            })
-            continue
-        target = _commit_unique_tmp(tmp, dest, raw)
+            raise
         committed_new = True
         rel = (
             target.relative_to(project_dir).as_posix()

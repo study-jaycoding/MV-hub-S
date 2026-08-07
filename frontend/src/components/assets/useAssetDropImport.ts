@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { api } from "../../api";
-import { dataTransferHasFiles } from "../../lib/media";
+import { dataTransferHasFiles, filesFromDataTransfer } from "../../lib/media";
 import { DRAG_TYPES } from "../../lib/dragTypes";
 
 export function useAssetDropImport({
@@ -69,7 +69,7 @@ export function useAssetDropImport({
     event.preventDefault();
     dropDepth.current = 0;
     setDropActive(false);
-    const incoming = Array.from(event.dataTransfer.files);
+    const incoming = filesFromDataTransfer(event.dataTransfer);
     if (incoming.length) void importFiles(incoming);
   };
 

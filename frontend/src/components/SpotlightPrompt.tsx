@@ -45,7 +45,7 @@ import {
 } from "../lib/promptEditor";
 import type { ChipRef, HistEntry, PromptPart } from "../lib/promptEditor";
 import { flashMsg } from "../lib/flash";
-import { dataTransferHasFiles, displayRefThumb } from "../lib/media";
+import { dataTransferHasFiles, displayRefThumb, filesFromDataTransfer } from "../lib/media";
 import {
   emptySeedanceTokenRoles,
   seedanceTokenRoles,
@@ -866,7 +866,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     }
     if (dataTransferHasFiles(e.dataTransfer)) {
       e.preventDefault();
-      void importExternalFilesAsRefs(Array.from(e.dataTransfer.files));
+      void importExternalFilesAsRefs(filesFromDataTransfer(e.dataTransfer));
     }
   };
 
