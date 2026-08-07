@@ -347,6 +347,26 @@ def test_agent_keeps_waiting_job_active_until_it_really_completes():
     assert list(active) == ["job-waiting"]
 
 
+def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> None:
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(200, {"unknown": ["job-new"], "refresh": ["job-running"]}),
+    ) as http:
+        selected = agent._job_ids_to_sync(
+            "http://hub", "token-1", ["job-done", "job-running", "job-new"]
+        )
+
+    assert selected == {"job-running", "job-new"}
+    http.assert_called_once_with(
+        "POST",
+        "http://hub/api/ingest/known-jobs",
+        token="token-1",
+        body={"job_ids": ["job-done", "job-running", "job-new"]},
+    )
+
+
 def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it():
     agent = _load_agent()
     active = {
