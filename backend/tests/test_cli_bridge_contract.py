@@ -5,6 +5,11 @@ from unittest.mock import AsyncMock, patch
 
 
 class CliBridgeContractTests(IsolatedAsyncioTestCase):
+    async def test_waiting_status_is_treated_as_pending(self):
+        from app.services import cli_bridge
+
+        self.assertEqual(cli_bridge.normalize_status("waiting"), "pending")
+
     async def test_model_get_accepts_cli_1_1_20_job_type(self):
         from app.services import cli_bridge
 

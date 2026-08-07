@@ -40,7 +40,10 @@ CREATE TABLE IF NOT EXISTS generation (
     final_by   TEXT,                                 -- 최종 지정자 creator_uid(누가 골드 찍었나)
     final_at   TEXT,                                 -- 최종 지정 시각
     origin     TEXT,                                 -- 행 출생: 'synced'(동기화본) | 'local'(내 생성/가져오기). 동기화↔로컬 판별을 id==job_id 좌표에서 분리(id 통일 리팩터 0a)
-    generator  TEXT                                  -- 만든 도구: NULL=힉스필드(기본) | 'comfy'(캔버스 Comfy 노드 출력을 저장). HF 삭제검증 제외·필터·공유 앵커 구분용
+    generator  TEXT,                                 -- 만든 도구: NULL=힉스필드(기본) | 'comfy'(캔버스 Comfy 노드 출력을 저장). HF 삭제검증 제외·필터·공유 앵커 구분용
+    workspace_scope TEXT NOT NULL DEFAULT 'unknown' CHECK(workspace_scope IN ('team','personal','unknown')),
+    workspace_id TEXT,                               -- team일 때 Higgsfield workspace UUID
+    workspace_name TEXT                              -- 현재 귀속 워크스페이스 표시 이름(생성 시 기본값, 수동 변경 가능)
 );
 
 -- 생성자(워크스페이스 멤버) uid → 사용자 지정 이름. CLI 가 uid→이름을 안 주므로 직접 라벨링.
@@ -128,7 +131,10 @@ CREATE TABLE IF NOT EXISTS project (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     archived   INTEGER NOT NULL DEFAULT 0,        -- 보관(목록에서 숨김, 데이터는 보존)
     sort_order INTEGER,                           -- 관리자 수동 정렬 순서(작을수록 위). NULL=미지정(생성물 순 폴백)
-    render_root_path TEXT                          -- 팀 공유 렌더 폴더 경로(예 Z:\...). 각 PC 가 이 경로를 자기 디스크에서 읽는다(경로만 공유)
+    render_root_path TEXT,                        -- 팀 공유 렌더 폴더 경로(예 Z:\...). 각 PC 가 이 경로를 자기 디스크에서 읽는다(경로만 공유)
+    workspace_scope TEXT NOT NULL DEFAULT 'unknown' CHECK(workspace_scope IN ('team','personal','unknown')),
+    workspace_id TEXT,                            -- 이 프로젝트가 속한 Higgsfield workspace UUID
+    workspace_name TEXT                           -- 프로젝트 지정 당시 표시 이름 스냅샷
 );
 
 -- 프로젝트 멤버(전방 호환) — 등급·로그인 단계에서 가시성 enforcement 의 근거가 된다.
@@ -153,6 +159,30 @@ CREATE TABLE IF NOT EXISTS account (
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     approved_at   TEXT,
     password_changed_at TEXT                       -- 설정되면 그 이전 발급된 세션 토큰 무효(비번 변경/리셋 시 갱신)
+);
+
+-- 에이전트가 보고한 팀 워크스페이스 등록부. CLI에는 조직 전체 멤버 API가 없으므로 각 계정의
+-- workspace list 보고를 합쳐 MV-Hub가 확인한 접근 관계를 만든다. 생성물/프로젝트의 스냅샷 이름과
+-- 달리 여기의 name/credits는 마지막 보고값이다.
+CREATE TABLE IF NOT EXISTS workspace_registry (
+    id            TEXT PRIMARY KEY,
+    name          TEXT,
+    plan_type     TEXT,
+    credits       REAL,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS workspace_member (
+    workspace_id  TEXT NOT NULL REFERENCES workspace_registry(id) ON DELETE CASCADE,
+    account_email TEXT NOT NULL,
+    creator_uid   TEXT,
+    user_role     TEXT,
+    is_selected   INTEGER NOT NULL DEFAULT 0,
+    is_available  INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, account_email)
 );
 
 -- 발행 기록(누가, 언제, 공개 범위)

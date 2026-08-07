@@ -152,7 +152,7 @@ def search_sources(
     sql = (
         "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
         "g.params, g.color, g.status, g.created_at, g.is_source, g.source_name, g.comment, g.error, "
-        "g.creator_uid, g.project_id "
+        "g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id "
         "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
         "WHERE " + " AND ".join(where) +
         " ORDER BY g.source_name IS NULL, g.source_name, g.created_at DESC LIMIT ?"

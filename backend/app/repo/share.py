@@ -111,7 +111,8 @@ def export_bundle(
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         grows = conn.execute(
             "SELECT g.id, g.job_id, g.prompt, g.display_prompt, g.model, g.params, "
-            "g.status, g.created_at, g.sort_ts, g.creator_uid, g.project_id, g.folder_path "
+            "g.status, g.created_at, g.sort_ts, g.creator_uid, "
+            "g.workspace_scope, g.workspace_id, g.workspace_name, g.project_id, g.folder_path "
             f"FROM generation g{clause} ORDER BY g.sort_ts DESC, g.created_at DESC",
             args,
         ).fetchall()
@@ -278,6 +279,9 @@ def export_bundle(
                     "created_at": g["created_at"],
                     "sort_ts": g["sort_ts"],
                     "creator_uid": g["creator_uid"],
+                    "workspace_scope": g["workspace_scope"],
+                    "workspace_id": g["workspace_id"],
+                    "workspace_name": g["workspace_name"],
                     # 프로젝트 귀속 — 서버 finalize 가 require_project_role(검수 게이트)를 적용하려면
                     # 서버 사본도 project_id 를 알아야 한다(누락 시 소유자 체크로 떨어져 게이트 우회).
                     "project_id": g["project_id"],
@@ -364,6 +368,9 @@ def import_bundle_item(
             # creator_uid 가 비면(예: user_<id> 없는 영상) 받는 쪽 화면에 '나'로 오표시되지 않게
             # 발신자(공유한 사람)를 생성자로 넣는다. resolve_display_names 가 그 사람 이름으로 표시.
             "creator_uid": g.get("creator_uid") or shared_by,
+            "workspace_scope": g.get("workspace_scope") or "unknown",
+            "workspace_id": g.get("workspace_id"),
+            "workspace_name": g.get("workspace_name"),
             "project_id": g.get("project_id"),
             "folder_path": folder_path,
         },

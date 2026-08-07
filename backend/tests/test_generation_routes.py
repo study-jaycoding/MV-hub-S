@@ -8,6 +8,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 class GenerationReadRouteTests(unittest.TestCase):
@@ -33,6 +34,9 @@ class GenerationReadRouteTests(unittest.TestCase):
                 )
             conn.execute(
                 "INSERT INTO history(parent_gen_id, child_gen_id, relation) VALUES('mat1','loc1','reference')"
+            )
+            conn.execute(
+                "INSERT INTO workspace_registry(id,name) VALUES('ws-teatime','티타임')"
             )
         from fastapi.testclient import TestClient
         from app.main import app
@@ -153,6 +157,128 @@ class GenerationReadRouteTests(unittest.TestCase):
         self.assertEqual(r.json()["failed"], [])
         self.assertEqual(repo.get_generation("loc1")["tags"], ["hero"])
         self.assertEqual(repo.get_generation("par1")["tags"], ["parent"])
+
+    def test_workspace_command_assigns_and_removes_without_creating_tags(self):
+        from app import db, repo
+
+        repo.set_tags("loc1", ["keep-tag"])
+        assigned = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["srv1", "par1"],
+                "operation": "assign",
+                "workspace_name": "티타임",
+            },
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.assertEqual(assigned.json()["changed"], ["srv1", "par1"])
+        for gen_id in ("loc1", "par1"):
+            generation = repo.get_generation(gen_id)
+            self.assertEqual(generation["workspace_id"], "ws-teatime")
+        self.assertEqual(repo.get_generation("loc1")["tags"], ["keep-tag"])
+        with db.get_connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM auto_tag").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tag WHERE name='티타임'").fetchone()[0], 0)
+
+        removed = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1", "par1"],
+                "operation": "remove",
+                "workspace_name": "티타임",
+            },
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        for gen_id in ("loc1", "par1"):
+            generation = repo.get_generation(gen_id)
+            self.assertEqual(generation["workspace_scope"], "personal")
+            self.assertIsNone(generation["workspace_id"])
+
+    def test_workspace_command_rejects_unknown_name_and_keeps_all_rows(self):
+        from app import repo
+
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1", "par1"],
+                "operation": "assign",
+                "workspace_name": "없는곳",
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("존재하지 않습니다", response.json()["detail"])
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+        self.assertIsNone(repo.get_generation("par1")["workspace_id"])
+
+    def test_workspace_command_is_atomic_when_one_generation_is_missing(self):
+        from app import repo
+
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1", "missing"],
+                "operation": "assign",
+                "workspace_name": "티타임",
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+
+    def test_workspace_command_rejects_project_workspace_conflict(self):
+        from app import db, repo
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id,name,kind,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('p-other','Other','team','team','ws-other','OTHER')"
+            )
+            conn.execute("UPDATE generation SET project_id='p-other' WHERE id='loc1'")
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1"],
+                "operation": "assign",
+                "workspace_name": "티타임",
+            },
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("프로젝트", response.json()["detail"])
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+
+    def test_shared_workspace_command_does_not_change_local_when_server_fails(self):
+        from fastapi import HTTPException
+        from app import db, repo
+        from app.routers import generation
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO share(id,generation_id,shared_by,visibility) "
+                "VALUES('share-loc1','loc1','me','team')"
+            )
+        with (
+            patch.object(generation._proxy, "proxying", return_value=True),
+            patch.object(
+                generation,
+                "_resolve_workspace_target",
+                return_value={"id": "ws-teatime", "name": "티타임"},
+            ),
+            patch.object(generation, "_my_uid", return_value="me"),
+            patch.object(
+                generation._proxy,
+                "proxy_json",
+                side_effect=HTTPException(status_code=502, detail="server down"),
+            ),
+        ):
+            response = self.client.put(
+                "/api/generations/workspace/batch",
+                json={
+                    "generation_ids": ["loc1"],
+                    "operation": "assign",
+                    "workspace_name": "티타임",
+                },
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
 
     # ── write 라우트(add/remove/derive)도 서버 job_id → 로컬 행 해석(ref.local_id) ──
     def test_add_history_via_server_job_id_targets_local_row(self):

@@ -11,6 +11,7 @@ from app import db, repo
 from app import deps as deps_mod
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
+from app.routers import manage as manage_router
 from app.routers import projects as projects_router
 
 
@@ -28,6 +29,7 @@ def auth_on():
     stack = ExitStack()
     stack.enter_context(mock.patch.object(deps_mod, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(projects_router, "AUTH_ENABLED", True))
+    stack.enter_context(mock.patch.object(manage_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(ingest_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(gen_requests_router, "AUTH_ENABLED", True))
     return stack
@@ -47,11 +49,30 @@ class IdentityPermissionTests(unittest.TestCase):
                 "VALUES('p_river','River Project','team',0)"
             )
             conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_other','Other Project','team',0)"
+            )
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_roleless','Roleless Project','team',0)"
+            )
+            conn.execute(
                 "INSERT INTO creator(uid, name) VALUES('user_river','River')"
+            )
+            conn.execute(
+                "INSERT INTO creator(uid, name) VALUES('user_other','Other')"
             )
             conn.execute(
                 "INSERT INTO project_member(project_id, creator_uid, project_role) "
                 "VALUES('p_river','user_river','creator')"
+            )
+            conn.execute(
+                "INSERT INTO project_member(project_id, creator_uid, project_role) "
+                "VALUES('p_other','user_other','creator')"
+            )
+            conn.execute(
+                "INSERT INTO project_member(project_id, creator_uid, project_role) "
+                "VALUES('p_roleless','user_river','')"
             )
 
     def tearDown(self):
@@ -114,6 +135,35 @@ class IdentityPermissionTests(unittest.TestCase):
             rows = projects_router.list_members("p_river", river)
         self.assertEqual([r["uid"] for r in rows], ["user_river"])
 
+    def test_visible_project_members_are_limited_to_my_projects(self):
+        river = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        with auth_on():
+            rows = projects_router.list_visible_members(river)
+        self.assertEqual(set(rows), {"p_river"})
+        self.assertEqual([row["uid"] for row in rows["p_river"]], ["user_river"])
+
+    def test_project_dashboard_summary_excludes_foreign_projects(self):
+        river = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        with auth_on():
+            result = manage_router.project_summary(river)
+        self.assertEqual([row["pid"] for row in result["projects"]], ["p_river"])
+        self.assertNotIn("workers", result)
+        self.assertNotIn("workspaces", result)
+
     def test_ingest_requires_reported_cli_email_when_auth_is_on(self):
         acc = {"email": "river@example.com", "creator_uid": "user_river"}
         jobs = [
@@ -160,7 +210,9 @@ class IdentityPermissionTests(unittest.TestCase):
         )
         body = ingest_router.KnownJobsIn(job_ids=["j1", "j2"])
         with auth_on(), mock.patch.object(
-            ingest_router.repo, "unknown_job_ids", return_value=[]
+            ingest_router.repo,
+            "job_id_sync_diff",
+            return_value={"unknown": [], "refresh": []},
         ) as m:
             ingest_router.known_jobs_diff(body, req)
         self.assertEqual(m.call_args.kwargs.get("creator_uid"), "acct:river@example.com")

@@ -34,6 +34,7 @@ from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 �
 from .assets import *  # noqa: F401,F403
 from .share import *  # noqa: F401,F403
 from .projects import *  # noqa: F401,F403
+from .workspace_assignments import *  # noqa: F401,F403  (현재 워크스페이스 귀속 수동 보정)
 from .scenes_backup import *  # noqa: F401,F403  (캔버스 씬 DB 백업 — leaf)
 from .accounts import *  # noqa: F401,F403
 

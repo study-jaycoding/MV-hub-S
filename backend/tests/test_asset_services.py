@@ -124,6 +124,49 @@ class AssetIoTests(unittest.TestCase):
             self.assertEqual((root / "frame.png").read_bytes(), b"test-image")
             invalidate.assert_called_once_with(root)
 
+    def test_capture_route_saves_image_without_leaving_temp_file(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            upload = UploadFile(filename="capture.png", file=io.BytesIO(b"capture-image"))
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets.asset_tree, "invalidate_project_tree"),
+                patch.object(assets.asset_tree, "invalidate_combined_tree"),
+            ):
+                result = asyncio.run(assets.upload_capture(SimpleNamespace(), upload))
+
+            self.assertEqual(result["project"], "captures")
+            self.assertEqual((root / "captures" / result["path"]).read_bytes(), b"capture-image")
+            self.assertEqual(list(root.rglob(".upload-*.part")), [])
+
+    def test_reference_import_route_saves_media_and_cleans_temp_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            upload = UploadFile(filename="reference.png", file=io.BytesIO(b"reference-image"))
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets.asset_tree, "invalidate_project_tree"),
+                patch.object(assets.asset_tree, "invalidate_combined_tree"),
+            ):
+                result = asyncio.run(
+                    assets.upload_reference_import(SimpleNamespace(), files=[upload])
+                )
+
+            saved = result["saved"][0]
+            self.assertEqual(saved["project"], "imports")
+            self.assertEqual((root / "imports" / saved["path"]).read_bytes(), b"reference-image")
+            self.assertEqual(list(root.rglob(".upload-*.part")), [])
+
+            failed = UploadFile(filename="broken.png", file=io.BytesIO(b"broken-image"))
+            with (
+                patch.object(assets, "ASSETS_ROOT", root),
+                patch.object(assets, "_find_same_media", side_effect=RuntimeError("hash failed")),
+                self.assertRaises(RuntimeError),
+            ):
+                asyncio.run(assets.upload_reference_import(SimpleNamespace(), files=[failed]))
+
+            self.assertEqual(list(root.rglob(".upload-*.part")), [])
+
 
 class AssetMountStoreTests(unittest.TestCase):
     def test_owner_mounts_migrates_only_legacy_entries(self) -> None:

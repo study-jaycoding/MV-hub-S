@@ -13,11 +13,13 @@ import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
+from ..workspace_context import workspace_columns
 from ._common import clean_folder_path as _clean_folder_path, new_id
 from ._visibility import team_generation_visibility_clause
 
 _SELECT = (
     "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
+    "p.workspace_scope, p.workspace_id, p.workspace_name, "
     # 그리드와 동일 기준(삭제분 제외) — 안 그러면 옛 소프트삭제 잔존이 카운트만 부풀린다.
     "(SELECT COUNT(*) FROM generation g WHERE g.project_id = p.id AND g.deleted_at IS NULL) AS count "
     "FROM project p"
@@ -55,8 +57,48 @@ def _row(conn: sqlite3.Connection, pid: str) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
+def _add_workspace_members_to_project(
+    conn: sqlite3.Connection, pid: str, workspace_id: str
+) -> int:
+    """워크스페이스의 현재 사용 가능 멤버를 프로젝트에 누락분만 추가한다.
+
+    이미 프로젝트에 있는 멤버와 수동으로 조정한 역할은 건드리지 않는다.
+    같은 creator가 복수 계정으로 보고돼도 전역 역할은 합쳐서 한 번만 계산한다.
+    """
+    from .. import rbac
+
+    rows = conn.execute(
+        "SELECT COALESCE(m.creator_uid, a.creator_uid) creator_uid, a.global_role "
+        "FROM workspace_member m "
+        "LEFT JOIN account a ON a.email=m.account_email "
+        "WHERE m.workspace_id=? AND m.is_available=1 "
+        "AND COALESCE(m.creator_uid, a.creator_uid) IS NOT NULL",
+        (workspace_id,),
+    ).fetchall()
+    roles_by_uid: dict[str, set[str]] = {}
+    for row in rows:
+        uid = (row["creator_uid"] or "").strip()
+        if not uid:
+            continue
+        roles_by_uid.setdefault(uid, set()).update(rbac.effective_roles(row["global_role"]))
+
+    added = 0
+    for uid, global_roles in roles_by_uid.items():
+        project_roles = rbac.default_project_roles(global_roles)
+        cur = conn.execute(
+            "INSERT INTO project_member(project_id, creator_uid, project_role) VALUES(?,?,?) "
+            "ON CONFLICT(project_id, creator_uid) DO NOTHING",
+            (pid, uid, rbac.project_roles_to_str(project_roles) or rbac.CREATOR),
+        )
+        added += cur.rowcount
+    return added
+
+
 def create_project(
-    name: str, kind: str = "team", created_by: Optional[str] = None
+    name: str,
+    kind: str = "team",
+    created_by: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """새 프로젝트 생성. 같은 이름(미보관)이 이미 있으면 그것을 반환(멱등적 생성)."""
     name = (name or "").strip()
@@ -67,6 +109,7 @@ def create_project(
     # 부르면 같은 풀 커넥션이 그 컨텍스트 종료 시 내 트랜잭션을 조기 COMMIT 해 직렬화가 깨진다.
     # 트랜잭션 밖에서 미리 계산한다.
     creator = created_by or _provider_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     with get_connection() as conn:
         # SELECT→INSERT 를 즉시 쓰기락으로 직렬화 — 동시 생성이 같은 이름 프로젝트 2개를 만들지 않게.
         conn.execute("BEGIN IMMEDIATE")
@@ -75,9 +118,12 @@ def create_project(
             return _row(conn, existing_id)  # type: ignore[return-value]
         pid = new_id()
         conn.execute(
-            "INSERT INTO project(id, name, kind, created_by) VALUES(?,?,?,?)",
-            (pid, name, kind, creator),
+            "INSERT INTO project(id, name, kind, created_by, workspace_scope, workspace_id, workspace_name) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (pid, name, kind, creator, workspace_scope, workspace_id, workspace_name),
         )
+        if workspace_scope == "team" and workspace_id:
+            _add_workspace_members_to_project(conn, pid, workspace_id)
         return _row(conn, pid)  # type: ignore[return-value]
 
 
@@ -113,6 +159,7 @@ def list_projects(
     *,
     shared_only: bool = False,
     own_shared_uid: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """프로젝트 목록 + 미분류 수 + 보관 개수. 결과물 많은 순 → 이름 순.
     반환: {"projects": [...], "unassigned": N, "archived_count": M}.
@@ -132,6 +179,9 @@ def list_projects(
     own_uid = own_shared_uid if own_shared_uid and own_shared_uid != "\x00" else None
     if not include_archived:
         conds.append("p.archived = 0")
+    if workspace_id:
+        conds.append("p.workspace_scope = 'team' AND p.workspace_id = ?")
+        args.append(workspace_id)
     if member_uid is not None:
         if shared_only and own_uid:
             conds.append(
@@ -150,6 +200,9 @@ def list_projects(
     if shared_only:  # 팀 공유 탭: 공유물만(그리드와 동일 모집단)
         gen_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
     count_args: list[Any] = []
+    if workspace_id:
+        gen_cond += " AND g.workspace_scope = 'team' AND g.workspace_id = ?"
+        count_args.append(workspace_id)
     if shared_only and member_uid is not None and own_uid:
         gen_cond += (
             " AND (g.creator_uid = ? OR p.id IN "
@@ -162,8 +215,11 @@ def list_projects(
     # count = viewer 의 것(사이드바 My Work), total = 프로젝트 전체(관리자 탭에서 표시).
     select = (
         "SELECT p.id, p.name, p.kind, p.created_by, p.created_at, p.archived, p.render_root_path, "
+        "p.workspace_scope, p.workspace_id, p.workspace_name, "
         f"(SELECT COUNT(*) FROM generation g WHERE {gen_cond}) AS count, "
-        "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL) AS total "
+        "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL"
+        + (" AND gt.workspace_scope='team' AND gt.workspace_id=?" if workspace_id else "")
+        + ") AS total "
         "FROM project p"
     )
     # 정렬: 관리자가 수동 지정한 순서(sort_order) 우선, 미지정은 뒤로 가서 생성물 많은 순 → 이름.
@@ -176,6 +232,9 @@ def list_projects(
     if shared_only:
         un_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
     un_args: list[Any] = []
+    if workspace_id:
+        un_cond += " AND workspace_scope='team' AND workspace_id=?"
+        un_args.append(workspace_id)
     if shared_only and member_uid is not None and own_uid:
         un_cond += " AND creator_uid = ?"
         un_args.append(own_uid)
@@ -183,12 +242,15 @@ def list_projects(
         un_cond += " AND creator_uid = ?"
         un_args.append(viewer_uid)
     with get_connection() as conn:
-        projects = [dict(r) for r in conn.execute(sql, count_args + args).fetchall()]
+        total_args = [workspace_id] if workspace_id else []
+        projects = [dict(r) for r in conn.execute(sql, count_args + total_args + args).fetchall()]
         unassigned = conn.execute(
             f"SELECT COUNT(*) AS c FROM generation WHERE {un_cond}", un_args
         ).fetchone()["c"]
         archived_count = conn.execute(
             "SELECT COUNT(*) AS c FROM project WHERE archived = 1"
+            + (" AND workspace_scope='team' AND workspace_id=?" if workspace_id else ""),
+            ([workspace_id] if workspace_id else []),
         ).fetchone()["c"]
     return {"projects": projects, "unassigned": unassigned, "archived_count": archived_count}
 
@@ -237,16 +299,25 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
     (2) 생성 카드의 project_name 해석이 로컬에서 되게 한다. 멱등 upsert(없으면 추가, 있으면 갱신)."""
     if not projects:
         return
+    backfilled_ids: list[str] = []
     with get_connection() as conn:
         for p in projects:
             pid = p.get("id") if isinstance(p, dict) else None
             if not pid:
                 continue
+            workspace_scope, workspace_id, workspace_name = workspace_columns(p)
             conn.execute(
-                "INSERT INTO project(id, name, kind, created_by, archived, render_root_path) "
-                "VALUES(?,?,?,?,?,?) "
+                "INSERT INTO project(id, name, kind, created_by, archived, render_root_path, "
+                "workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived, "
-                "render_root_path=excluded.render_root_path",  # 공유 렌더경로를 로컬로 미러(팀 공통)
+                "render_root_path=excluded.render_root_path, "
+                "workspace_scope=CASE WHEN excluded.workspace_scope='unknown' "
+                "THEN project.workspace_scope ELSE excluded.workspace_scope END, "
+                "workspace_id=CASE WHEN excluded.workspace_scope='unknown' "
+                "THEN project.workspace_id ELSE excluded.workspace_id END, "
+                "workspace_name=CASE WHEN excluded.workspace_scope='unknown' "
+                "THEN project.workspace_name ELSE excluded.workspace_name END",
                 (
                     pid,
                     p.get("name") or "",
@@ -254,8 +325,63 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
                     p.get("created_by"),
                     1 if p.get("archived") else 0,
                     (p.get("render_root_path") or None),
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
+            if workspace_scope == "team" and workspace_id:
+                rows = conn.execute(
+                    "SELECT id FROM generation WHERE project_id=? AND workspace_scope='unknown'",
+                    (pid,),
+                ).fetchall()
+                if rows:
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
+                        "WHERE project_id=? AND workspace_scope='unknown'",
+                        (workspace_id, workspace_name, pid),
+                    )
+                    backfilled_ids.extend(row["id"] for row in rows)
+    if backfilled_ids:
+        try:
+            from .manage_telemetry import mark_telemetry_dirty
+
+            mark_telemetry_dirty(backfilled_ids)
+        except Exception:  # noqa: BLE001 — 프로젝트 캐시는 텔레메트리 실패와 무관하게 유효
+            pass
+
+
+def set_project_workspace(pid: str, workspace: Optional[dict[str, Any]]) -> bool:
+    """프로젝트의 워크스페이스 컨텍스트를 저장한다. 변경 정책은 라우터/유스케이스가 담당한다."""
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
+    backfilled_ids: list[str] = []
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE project SET workspace_scope=?, workspace_id=?, workspace_name=? WHERE id=?",
+            (workspace_scope, workspace_id, workspace_name, pid),
+        )
+        if cur.rowcount and workspace_scope == "team" and workspace_id:
+            _add_workspace_members_to_project(conn, pid, workspace_id)
+            rows = conn.execute(
+                "SELECT id FROM generation WHERE project_id=? AND workspace_scope='unknown'",
+                (pid,),
+            ).fetchall()
+            if rows:
+                conn.execute(
+                    "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
+                    "WHERE project_id=? AND workspace_scope='unknown'",
+                    (workspace_id, workspace_name, pid),
+                )
+                backfilled_ids = [row["id"] for row in rows]
+        updated = cur.rowcount > 0
+    if backfilled_ids:
+        try:
+            from .manage_telemetry import mark_telemetry_dirty
+
+            mark_telemetry_dirty(backfilled_ids)
+        except Exception:  # noqa: BLE001
+            pass
+    return updated
 
 
 def get_render_root(pid: str) -> str:
@@ -272,25 +398,34 @@ def set_render_root(pid: str, path: Optional[str]) -> None:
         conn.execute("UPDATE project SET render_root_path=? WHERE id=?", (p or None, pid))
 
 
-def local_project_counts() -> dict[str, int]:
+def local_project_counts(workspace_id: Optional[str] = None) -> dict[str, int]:
     """로컬 DB 의 프로젝트별 생성물 수(휴지통 제외). 로컬 우선에서 사이드바 카운트는 '내 로컬 작업'
     기준이어야 하므로(서버 발행분이 아니라) — 로컬은 전부 내 작업이라 creator 필터 없이 센다."""
     with get_connection() as conn:
+        where = "project_id IS NOT NULL AND deleted_at IS NULL"
+        args: list[Any] = []
+        if workspace_id:
+            where += " AND workspace_scope='team' AND workspace_id=?"
+            args.append(workspace_id)
         return {
             r["pid"]: r["c"]
             for r in conn.execute(
                 "SELECT project_id pid, COUNT(*) c FROM generation "
-                "WHERE project_id IS NOT NULL AND deleted_at IS NULL GROUP BY project_id"
+                f"WHERE {where} GROUP BY project_id",
+                args,
             ).fetchall()
         }
 
 
-def local_unassigned_count() -> int:
+def local_unassigned_count(workspace_id: Optional[str] = None) -> int:
     """로컬 미분류(프로젝트 없음) 생성물 수 — 사이드바 '미분류' 카운트(로컬 기준)."""
     with get_connection() as conn:
-        return conn.execute(
-            "SELECT COUNT(*) FROM generation WHERE project_id IS NULL AND deleted_at IS NULL"
-        ).fetchone()[0]
+        where = "project_id IS NULL AND deleted_at IS NULL"
+        args: list[Any] = []
+        if workspace_id:
+            where += " AND workspace_scope='team' AND workspace_id=?"
+            args.append(workspace_id)
+        return conn.execute(f"SELECT COUNT(*) FROM generation WHERE {where}", args).fetchone()[0]
 
 
 def reorder_projects(ordered_ids: list[str]) -> None:
@@ -350,16 +485,34 @@ def assign_to_project(
     if not generation_ids:
         return 0
     with get_connection() as conn:
-        if project_id is not None and not conn.execute(
-            "SELECT 1 FROM project WHERE id = ?", (project_id,)
-        ).fetchone():
-            raise ValueError(f"없는 프로젝트: {project_id}")
+        project = None
+        if project_id is not None:
+            project = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name FROM project WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            if not project:
+                raise ValueError(f"없는 프로젝트: {project_id}")
         # id 또는 job_id 로 매칭 — 팀 공유 탭의 카드 id 는 서버 앵커(=로컬 job_id)라 로컬 primary id
         # 와 다르다. 둘 다 받아야 어느 탭에서 골랐든 같은 로컬 행에 귀속된다.
         placeholders = ",".join("?" for _ in generation_ids)
         scope = " AND creator_uid = ?" if account_uid is not None else ""
         if shared_only:
             scope += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
+        if project and project["workspace_scope"] == "team" and project["workspace_id"]:
+            mismatch_params: list[Any] = [*generation_ids, *generation_ids]
+            if account_uid is not None:
+                mismatch_params.append(account_uid)
+            mismatch_params.append(project["workspace_id"])
+            mismatch = conn.execute(
+                f"SELECT 1 FROM generation WHERE "
+                f"(id IN ({placeholders}) OR job_id IN ({placeholders})){scope} "
+                "AND workspace_scope <> 'unknown' "
+                "AND NOT (workspace_scope='team' AND workspace_id=?) LIMIT 1",
+                mismatch_params,
+            ).fetchone()
+            if mismatch:
+                raise ValueError("다른 워크스페이스의 생성물은 이 프로젝트에 담을 수 없습니다")
         # 폴더 처리(안전한 tri-state):
         #  · 미분류로 빼기(project_id=None) → 폴더도 함께 해제(NULL).
         #  · 폴더를 명시 선택(folder_path 있음) → 그 폴더로 갱신.
@@ -367,6 +520,13 @@ def assign_to_project(
         fpath = _clean_folder_path(folder_path)
         set_cols = ["project_id = ?"]
         set_args: list[Any] = [project_id]
+        if project and project["workspace_scope"] == "team" and project["workspace_id"]:
+            set_cols += [
+                "workspace_scope = CASE WHEN workspace_scope='unknown' THEN 'team' ELSE workspace_scope END",
+                "workspace_id = CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_id END",
+                "workspace_name = CASE WHEN workspace_scope='unknown' THEN ? ELSE workspace_name END",
+            ]
+            set_args += [project["workspace_id"], project["workspace_name"]]
         if project_id is None:
             set_cols.append("folder_path = NULL")
         elif fpath is not None:
@@ -599,5 +759,34 @@ def list_all_project_members() -> dict[str, list[dict[str, Any]]]:
     for r in rows:
         out.setdefault(r["pid"], []).append(
             {"uid": r["uid"], "roles": rbac.parse_project_roles(r["role"]), "name": r["name"]}
+        )
+    return out
+
+
+def list_project_members_for_projects(
+    project_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """지정된 프로젝트들만 한 쿼리로 {pid: [멤버]} 반환한다."""
+    from .. import rbac
+
+    ids = list(dict.fromkeys(pid for pid in project_ids if pid))
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    out: dict[str, list[dict[str, Any]]] = {pid: [] for pid in ids}
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT m.project_id pid, m.creator_uid uid, m.project_role role, c.name name "
+            "FROM project_member m LEFT JOIN creator c ON c.uid = m.creator_uid "
+            f"WHERE m.project_id IN ({marks}) ORDER BY m.project_id, c.name",
+            ids,
+        ).fetchall()
+    for row in rows:
+        out[row["pid"]].append(
+            {
+                "uid": row["uid"],
+                "roles": rbac.parse_project_roles(row["role"]),
+                "name": row["name"],
+            }
         )
     return out
