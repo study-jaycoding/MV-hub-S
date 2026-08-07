@@ -72,10 +72,17 @@ def create_gen_request(
     return rid
 
 
-def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str, Any]]:
+def claim_pending_requests(
+    account_email: str, limit: int = 16, *, workspace_capable: bool = False,
+) -> list[dict[str, Any]]:
     """이 계정의 대기 요청을 가져오면서 running 으로 표시(claim) — 중복 실행 방지.
     limit 는 호출자가 현재 제출 가능한 수만큼 전달한다. 저장소는 그 수만 running 으로 선점한다.
-    반환: [{id, gen_id, kind, model, prompt, params, references}]."""
+    반환: [{id, gen_id, kind, model, prompt, params, references}].
+
+    workspace_capable: 에이전트가 제출 전 워크스페이스 전환·검증을 할 수 있는지(?capability=workspace).
+    False(구 에이전트)면 워크스페이스가 지정된(team/personal) 요청은 건너뛴다 — 구 에이전트는
+    지정을 무시하고 현재 CLI 워크스페이스에서 실행해 다른 팀 크레딧으로 과금될 수 있다.
+    건너뛴 요청은 pending 으로 남아 에이전트 업데이트 후 처리된다(SERVER.md 롤아웃 예외 참고)."""
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
     with get_connection() as conn:
@@ -105,9 +112,19 @@ def claim_pending_requests(account_email: str, limit: int = 16) -> list[dict[str
                     "error='에이전트 응답 없음(30분 초과)' WHERE id=? AND status IN ('pending','running')",
                     (stale["gen_id"],),
                 )
+        # 비-capable(구) 에이전트는 워크스페이스 지정(team/personal) 요청을 SQL 에서 제외하고
+        # 고른다 — Python 측 상한 스캔이면 지정 요청이 상한 이상 쌓였을 때 뒤의 일반 요청이
+        # 영구히 굶는다. 손상된 payload(json_valid 실패)는 기존 파싱 실패와 동일하게 일반
+        # 요청(unknown) 취급. capable 에이전트는 전부 claim 가능.
+        ws_gate = (
+            "" if workspace_capable else
+            " AND NOT (json_valid(payload) AND "
+            "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
+        )
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
-            "WHERE account_email=? AND status='pending' ORDER BY created_at LIMIT ?",
+            f"WHERE account_email=? AND status='pending'{ws_gate} "
+            "ORDER BY created_at, rowid LIMIT ?",
             (email, limit),
         ).fetchall()
         for r in rows:

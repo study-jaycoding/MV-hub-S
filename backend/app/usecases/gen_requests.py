@@ -55,10 +55,14 @@ class GenRequestCommand:
     regenerate: RegenerateIn | None = None  # kind=regenerate 옵션
 
 
-async def claim_gen_requests(email: str, account_uid: str | None, limit: int) -> list[dict]:
+async def claim_gen_requests(
+    email: str, account_uid: str | None, limit: int, *, workspace_capable: bool = False,
+) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
-    claimed = repo.claim_pending_requests(email, limit=max(1, min(limit, 16)))
+    claimed = repo.claim_pending_requests(
+        email, limit=max(1, min(limit, 16)), workspace_capable=workspace_capable
+    )
     for item in claimed:
         gen_id = item["gen_id"]
         repo.set_status(gen_id, "running", None)

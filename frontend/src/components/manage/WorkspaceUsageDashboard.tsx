@@ -419,13 +419,15 @@ export function WorkspaceUsageDashboard({
   const selectedProjectFilter = selectedProject
     ? selectedProject.project_id || "__none__"
     : undefined;
-  const baseScopeKey = `${workspaceId}:${reloadSignal}`;
+  // 표시·페이지네이션 scope 에는 reloadSignal 을 넣지 않는다 — 30초 안전망 갱신마다
+  // 페이지가 1로 튕기고 드릴 스냅샷이 무효화되던 문제. 조회(fetch) effect 만 reloadSignal 로 재실행.
+  const baseScopeKey = `${workspaceId}`;
   const drillTargetKey = selectedWorker
     ? `worker:${selectedCreatorFilter}`
     : selectedProject
       ? `project:${selectedProjectFilter}`
       : "";
-  const drillRequestKey = drillTargetKey ? `${baseScopeKey}:${drillTargetKey}` : "";
+  const drillDisplayKey = drillTargetKey ? `${baseScopeKey}:${drillTargetKey}` : "";
 
   useEffect(() => {
     let active = true;
@@ -475,21 +477,35 @@ export function WorkspaceUsageDashboard({
       projectId: selectedProjectFilter,
     })
       .then((response) => {
-        if (active) setDrillSnapshot({ key: drillRequestKey, data: response });
+        if (active) setDrillSnapshot({ key: drillDisplayKey, data: response });
       })
       .catch(() => {
-        if (active) setDrillErrorKey(drillRequestKey);
+        if (active) setDrillErrorKey(drillDisplayKey);
       });
     return () => { active = false; };
-  }, [drillRequestKey, drillTargetKey, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
+    // reloadSignal: 같은 드릴 대상을 주기 재조회 — 성공 시 같은 표시 키로 교체되므로
+    // 재조회 중에도 이전 스냅샷이 계속 표시된다(깜빡임 없음).
+  }, [drillDisplayKey, drillTargetKey, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
 
+  // 기간·필터·워크스페이스가 바뀌면 이전 차트가 잘못된 데이터라 비우고 다시 그린다.
+  // 반면 reloadSignal(30초 안전망)만 바뀐 재조회는 이전 데이터를 유지한 채 성공 시 교체 —
+  // 매 주기 공백→재표시로 깜빡이던 문제 방지. 실패 시에도 이전 데이터 유지.
+  const trendDisplayKey = [
+    workspaceId, chartModel, chartRange.bucket, chartRange.dateFrom, chartRange.dateTo,
+    chartRange.timeFrom, chartRange.timeTo, selectedCreatorFilter, selectedProjectFilter,
+  ].join("|");
+  const trendKeyRef = useRef("");
   useEffect(() => {
     if (!workspaceId) {
       setTrend([]);
+      trendKeyRef.current = "";
       return;
     }
+    if (trendKeyRef.current !== trendDisplayKey) {
+      trendKeyRef.current = trendDisplayKey;
+      setTrend([]);
+    }
     let active = true;
-    setTrend([]);
     manageApi.teamTimeseries(chartRange.bucket, {
       workspaceId,
       dateFrom: chartRange.dateFrom,
@@ -501,9 +517,10 @@ export function WorkspaceUsageDashboard({
       projectId: selectedProjectFilter,
     })
       .then((response) => active && setTrend(response.buckets || []))
-      .catch(() => active && setTrend([]));
+      .catch(() => {});
     return () => { active = false; };
-  }, [chartModel, chartRange.bucket, chartRange.dateFrom, chartRange.dateTo, chartRange.timeFrom, chartRange.timeTo, reloadSignal, selectedCreatorFilter, selectedProjectFilter, workspaceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSignal, trendDisplayKey]);
 
   const workerModels = (uid: string | null) =>
     (overview?.worker_models || []).filter((row) => row.creator_uid === uid);
@@ -520,10 +537,11 @@ export function WorkspaceUsageDashboard({
   ));
   const scopedOverview = !drillTargetKey
     ? overview
-    : drillSnapshot?.key === drillRequestKey
+    : drillSnapshot?.key === drillDisplayKey
       ? drillSnapshot.data
       : null;
-  const drillFailed = Boolean(drillTargetKey && drillErrorKey === drillRequestKey);
+  // 데이터가 이미 있으면 주기 재조회 실패를 실패 화면으로 승격하지 않는다(이전 데이터 유지).
+  const drillFailed = Boolean(drillTargetKey && drillErrorKey === drillDisplayKey && !scopedOverview);
   const drillPending = Boolean(drillTargetKey && !scopedOverview && !drillFailed);
   const scopedModels = scopedOverview?.by_model || [];
   const scopedFolders = scopedOverview?.folder_efficiency || [];
@@ -531,7 +549,7 @@ export function WorkspaceUsageDashboard({
   const totals = overview?.totals;
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
   const paginationScope = baseScopeKey;
-  const detailPaginationScope = drillRequestKey || baseScopeKey;
+  const detailPaginationScope = drillDisplayKey || baseScopeKey;
   const memberPage = useUsagePagination(overview?.by_worker || [], paginationScope);
   const projectPage = useUsagePagination(overview?.by_project || [], paginationScope);
   const modelPage = useUsagePagination(scopedModels, detailPaginationScope);
@@ -586,7 +604,12 @@ export function WorkspaceUsageDashboard({
           <h2>워크스페이스 사용 현황</h2>
           <div className="usage-actions">{projectCreateButton}</div>
         </header>
-        <p>아직 에이전트가 보고한 팀 워크스페이스가 없습니다. 멤버가 에이전트를 한 번 동기화하면 표시됩니다.</p>
+        {error ? (
+          // 조회 실패(권한·구버전 서버 404 등)를 "워크스페이스 없음"으로 위장하지 않는다.
+          <p className="usage-error">{error}</p>
+        ) : (
+          <p>아직 에이전트가 보고한 팀 워크스페이스가 없습니다. 멤버가 에이전트를 한 번 동기화하면 표시됩니다.</p>
+        )}
       </section>
     );
   }

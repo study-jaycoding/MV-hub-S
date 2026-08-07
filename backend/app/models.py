@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── 공통 타입 ────────────────────────────────────────────────────────────
 MediaType = Literal["image", "video"]
@@ -348,6 +348,15 @@ class IngestIn(BaseModel):
     account_status: Optional[dict] = None  # {email, credits, plan, workspaces} — 크레딧 집계용
     account_transactions: Optional[list] = None  # PM: account transactions 원본(실제 차감액 매칭용). 선택.
 
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _lenient_workspace(cls, v):
+        # 에이전트 push 는 워크스페이스 필드 하나가 깨져도 배치 전체를 422 로 거부하지 않는다
+        # (규격 규칙① — 불완전 team 은 unknown 으로 축소 수용). UI 유래 모델은 엄격 유지.
+        from .workspace_context import normalize_workspace_context
+
+        return normalize_workspace_context(v)
+
 
 class IngestMcpIn(BaseModel):
     """과거 백필 — MCP show_generations 원시 아이템 배열(100개 밖 이력). Claude 가 cursor 순회 POST.
@@ -356,6 +365,14 @@ class IngestMcpIn(BaseModel):
     items: list[dict] = Field(default_factory=list)
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     account_status: Optional[dict] = None
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _lenient_workspace(cls, v):
+        # IngestIn 과 동일 — 백필 배치도 워크스페이스 필드로 전체 거부하지 않는다.
+        from .workspace_context import normalize_workspace_context
+
+        return normalize_workspace_context(v)
 
 
 class IngestOut(BaseModel):

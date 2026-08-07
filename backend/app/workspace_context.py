@@ -26,9 +26,21 @@ def normalize_workspace_context(value: Any = None) -> dict[str, str | None]:
     if not isinstance(value, Mapping):
         return dict(UNKNOWN_WORKSPACE)
 
-    scope = str(value.get("scope") or value.get("workspace_scope") or "unknown").strip().lower()
-    workspace_id = value.get("id") if "id" in value else value.get("workspace_id")
-    workspace_name = value.get("name") if "name" in value else value.get("workspace_name")
+    # 키 출처로 형식을 판별한다: API 형식({scope,id,name}) vs DB 평면 형식(workspace_*).
+    # 프로젝트 행·공유 번들 generation 처럼 자기 자신의 id/name 을 가진 엔티티 dict 가
+    # 평면 형식으로 들어올 때, 엔티티 id 를 워크스페이스 id 로 오인하지 않기 위한 분기다
+    # (섞어 읽으면 프로젝트 UUID·job_id 가 workspace_id 로 저장되는 오염이 생긴다).
+    # fail closed: "scope" 키가 있으면 그 형식으로만 읽고, 비어 있어도 평면 형식으로 폴백하지 않는다.
+    if "scope" in value:
+        scope = str(value.get("scope") or "unknown").strip().lower()
+        workspace_id = value.get("id")
+        workspace_name = value.get("name")
+    elif "workspace_scope" in value:
+        scope = str(value.get("workspace_scope") or "unknown").strip().lower()
+        workspace_id = value.get("workspace_id")
+        workspace_name = value.get("workspace_name")
+    else:
+        return dict(UNKNOWN_WORKSPACE)
     workspace_id = str(workspace_id).strip() if workspace_id is not None else None
     workspace_name = str(workspace_name).strip() if workspace_name is not None else None
     workspace_id = workspace_id or None

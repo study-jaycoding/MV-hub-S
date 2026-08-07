@@ -142,11 +142,13 @@ def _project_model_breakdowns(
                  COUNT(*) AS count,
                  COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
                  SUM(CASE WHEN g.is_final=1 THEN 1 ELSE 0 END) AS final_count"""
+    # 삭제(휴지통)된 생성물도 포함 — 크레딧은 이미 소진됐으므로 사용량·예산에서 빼면
+    # "쓰고 지우면 예산이 줄어드는" 구멍이 생긴다(manage_hub 팩트 집계와 같은 철학).
     all_rows = conn.execute(
         f"""SELECT {columns}
             FROM generation g
             LEFT JOIN generation_metrics m ON m.gen_id = g.id
-            WHERE g.deleted_at IS NULL{project_filter}
+            WHERE 1=1{project_filter}
             GROUP BY g.project_id, COALESCE(NULLIF(TRIM(g.model), ''), '알 수 없음')
             ORDER BY credits DESC, count DESC, model COLLATE NOCASE""",
         params,
@@ -156,8 +158,7 @@ def _project_model_breakdowns(
             FROM generation g
             JOIN project_planning pp ON pp.project_id = g.project_id
             LEFT JOIN generation_metrics m ON m.gen_id = g.id
-            WHERE g.deleted_at IS NULL{project_filter}
-              AND g.created_at IS NOT NULL
+            WHERE g.created_at IS NOT NULL{project_filter}
               AND CASE COALESCE(pp.budget_period, 'month')
                 WHEN 'day' THEN
                   date(g.created_at, 'localtime') = date('now', 'localtime')
@@ -253,7 +254,7 @@ def _project_folder_breakdowns(
                    MAX(g.created_at) AS created_end
             FROM generation g
             LEFT JOIN generation_metrics m ON m.gen_id = g.id
-            WHERE g.deleted_at IS NULL{generation_filter}
+            WHERE 1=1{generation_filter}
             GROUP BY g.project_id, g.folder_path, g.creator_uid,
                      COALESCE(NULLIF(TRIM(g.model), ''), '알 수 없음')
             ORDER BY g.project_id, g.folder_path COLLATE NOCASE, credits DESC""",
@@ -373,7 +374,6 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                LEFT JOIN project p ON p.id = g.project_id
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
                LEFT JOIN share s ON s.generation_id = g.id
-               WHERE g.deleted_at IS NULL
                GROUP BY g.project_id
                ORDER BY gen_count DESC"""
         ).fetchall()
@@ -389,7 +389,6 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                       COALESCE(SUM(m.elapsed_seconds), 0) AS elapsed_total
                FROM generation g
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
-               WHERE g.deleted_at IS NULL
                GROUP BY g.creator_uid
                ORDER BY gen_count DESC"""
         ).fetchall()
@@ -415,8 +414,7 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                FROM generation g
                LEFT JOIN (
                    SELECT generation_id, MIN(type) AS type FROM asset GROUP BY generation_id
-               ) a ON a.generation_id = g.id
-               WHERE g.deleted_at IS NULL"""
+               ) a ON a.generation_id = g.id"""
         ).fetchall()
         # 환불·지급 — credit_txn 의 action 별 합(절대값). spend 는 실매칭으로 이미 잡힘.
         io_rows = conn.execute(
@@ -530,7 +528,7 @@ def project_dashboard_summary(project_ids: list[str]) -> dict[str, Any]:
                 FROM generation g
                 LEFT JOIN generation_metrics m ON m.gen_id = g.id
                 LEFT JOIN share s ON s.generation_id = g.id
-                WHERE g.deleted_at IS NULL AND g.project_id IN ({marks})
+                WHERE g.project_id IN ({marks})
                 GROUP BY g.project_id""",
             ids,
         ).fetchall()

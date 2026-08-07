@@ -1,7 +1,6 @@
 import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../api";
 import type { Generation } from "../types";
-import { generationBulkIds } from "./generationTags";
 import type { WorkspaceCommandOperation } from "./workspaceCommand";
 
 interface UseGenerationWorkspaceActionsArgs {
@@ -12,6 +11,13 @@ interface UseGenerationWorkspaceActionsArgs {
   selectedRef: MutableRefObject<Set<string>>;
   setGens: Dispatch<SetStateAction<Generation[]>>;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
+  /** 팀 탭 여부 — 팀 카드 id 는 서버 UUID 라 job_id 앵커가 필수(없으면 명시 거절). */
+  teamTab?: boolean;
+}
+
+/** 로컬↔서버를 잇는 유일한 안정 앵커 — 팀 카드 id(서버 UUID)는 로컬 DB 와 매칭되지 않는다. */
+function anchorOf(generation: Generation): string {
+  return generation.job_id || generation.id;
 }
 
 function readableError(error: unknown): string {
@@ -27,6 +33,7 @@ export function useGenerationWorkspaceActions({
   selectedRef,
   setGens,
   setSelected,
+  teamTab,
 }: UseGenerationWorkspaceActionsArgs) {
   const runningRef = useRef(false);
 
@@ -36,9 +43,17 @@ export function useGenerationWorkspaceActions({
     workspaceName: string,
   ): Promise<boolean> => {
     if (runningRef.current) return false;
-    const idSet = generationBulkIds(selectedRef.current, focus.id);
-    const ids = [...idSet];
-    if (!ids.length) return false;
+    // 적용 범위는 태그와 동일 규칙 — 포커스가 선택에 포함된 다중 선택일 때만 선택 전체,
+    // 그 외엔 포커스 단건. (선택 안 된 카드에서 입력했는데 보이지 않는 선택 전체가 바뀌는 사고 방지)
+    const selected = selectedRef.current;
+    const multi = selected.has(focus.id) && selected.size > 1;
+    const targets = multi ? gensRef.current.filter((g) => selected.has(g.id)) : [focus];
+    if (!targets.length) return false;
+    if (teamTab && targets.some((g) => !g.job_id)) {
+      flash("팀 탭에서는 잡 앵커가 없는 카드(Comfy 등)의 워크스페이스를 변경할 수 없습니다");
+      return false;
+    }
+    const ids = [...new Set(targets.map(anchorOf))];
     if (ids.length > 500) {
       flash("워크스페이스는 한 번에 최대 500개 카드까지 변경할 수 있습니다");
       return false;
@@ -47,14 +62,12 @@ export function useGenerationWorkspaceActions({
     runningRef.current = true;
     try {
       const result = await api.setGenerationWorkspace(ids, operation, workspaceName);
+      // 응답 매핑은 요청 앵커 기준 — 카드 객체의 id 는 절대 바꾸지 않고 워크스페이스 필드만
+      // 패치한다(팀 카드 id 를 로컬 id 로 치환하면 선택·코멘트 패널·읽음 표시가 어긋난다).
       const byRequested = new Map(
         result.updates.map((update) => [update.requested_id, update.generation]),
       );
-      const byId = new Map(result.updates.map((update) => [update.generation.id, update.generation]));
-      const changed = new Set(result.changed);
-      for (const update of result.updates) {
-        if (changed.has(update.requested_id)) changed.add(update.generation.id);
-      }
+      const changedAnchors = new Set(result.changed);
       const dropChanged = Boolean(
         activeWorkspaceId &&
           ((operation === "remove" && activeWorkspaceId === result.workspace.id) ||
@@ -62,10 +75,18 @@ export function useGenerationWorkspaceActions({
       );
       const apply = (generations: Generation[]) =>
         generations.flatMap((generation) => {
-          const updated = byRequested.get(generation.id) ?? byId.get(generation.id);
+          const anchor = anchorOf(generation);
+          const updated = byRequested.get(anchor);
           if (!updated) return [generation];
-          if (dropChanged && changed.has(generation.id)) return [];
-          return [updated];
+          if (dropChanged && changedAnchors.has(anchor)) return [];
+          return [
+            {
+              ...generation,
+              workspace_scope: updated.workspace_scope,
+              workspace_id: updated.workspace_id,
+              workspace_name: updated.workspace_name,
+            },
+          ];
         });
       const optimistic = apply(gensRef.current);
       gensRef.current = optimistic;
@@ -75,9 +96,12 @@ export function useGenerationWorkspaceActions({
         return next;
       });
       if (dropChanged) {
+        const droppedCardIds = new Set(
+          targets.filter((g) => changedAnchors.has(anchorOf(g))).map((g) => g.id),
+        );
         setSelected((current) => {
           const next = new Set(current);
-          for (const id of changed) next.delete(id);
+          for (const id of droppedCardIds) next.delete(id);
           return next;
         });
       }

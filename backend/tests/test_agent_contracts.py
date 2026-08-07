@@ -262,7 +262,8 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     parsed = urlsplit(call.args[1])
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending"
-    assert parse_qs(parsed.query) == {"limit": ["16"]}
+    # capability=workspace: 워크스페이스 전환·검증 지원 선언 — 신 서버가 지정 요청을 내려주는 조건.
+    assert parse_qs(parsed.query) == {"limit": ["16"], "capability": ["workspace"]}
     assert call.kwargs == {"token": "token-1"}
 
 

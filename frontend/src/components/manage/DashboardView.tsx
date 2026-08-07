@@ -312,12 +312,17 @@ export function DashboardView({
       pendingReloadRef.current = true;
       return reloadPromiseRef.current;
     }
+    // 성공한 응답만 반영하고 실패는 이전 데이터를 유지한다 — 일시 장애 폴링 1회가
+    // 잘 보이던 대시보드를 "프로젝트 없음"으로 초기화하지 않게(null 덮어쓰기 금지).
     const summaryP = (canViewWorkspaceUsage
       ? manageApi.summary()
       : manageApi.projectSummary()
     )
-      .then((d) => setSummary((previous) => reconcileValueState(previous, d)))
-      .catch(() => setSummary((previous) => reconcileValueState(previous, null)));
+      .then((d) => {
+        setSummary((previous) => reconcileValueState(previous, d));
+        return null as string | null;
+      })
+      .catch((e) => String(e?.message || e) || "요약 조회 실패");
     const membersP = (canViewWorkspaceUsage
       ? projectApi.allProjectMembers()
       : projectApi.visibleProjectMembers())
@@ -325,13 +330,11 @@ export function DashboardView({
         setMembers((previous) =>
           reconcileMapState(previous, new Map(Object.entries(membersByPid))),
         );
+        return null as string | null;
       })
-      .catch(() => {
-        setMembers((previous) => reconcileMapState(previous, new Map()));
-      });
+      .catch((e) => String(e?.message || e) || "멤버 조회 실패");
     const request = Promise.all([summaryP, membersP])
-      .then(() => setErr("")) // 성공하면 이전 에러 화면 해제
-      .catch((e) => setErr(String(e?.message || e)))
+      .then(([summaryError, membersError]) => setErr(summaryError || membersError || ""))
       .finally(() => {
         setLoading(false);
         if (reloadPromiseRef.current === request) reloadPromiseRef.current = null;
@@ -368,8 +371,12 @@ export function DashboardView({
   const selProj = summary?.projects.find((p) => p.pid === selectedPid);
   const selName = selProj?.name || "";
 
-  if (loading) return <div className="manage-empty">불러오는 중…</div>;
-  if (err) return <div className="manage-empty">불러오기 실패: {err}</div>;
+  if (loading && !summary) return <div className="manage-empty">불러오는 중…</div>;
+  // 표시할 데이터가 전혀 없을 때만 전체 오류 화면 — 데이터가 있으면 유지하고 배너로 알린다.
+  if (err && !summary) return <div className="manage-empty">불러오기 실패: {err}</div>;
+  const staleBanner = err ? (
+    <div className="dash-stale-banner">갱신 실패: {err} — 마지막으로 성공한 데이터를 표시 중입니다</div>
+  ) : null;
 
   const summaryCard = (
     <div className="dash-tree-card dash-detail-card dash-summary-card">
@@ -496,6 +503,7 @@ export function DashboardView({
 
   return (
     <div className="dash-view">
+      {staleBanner}
       {/* 워크스페이스 사용량을 가장 먼저 표시 — 선택 공간의 생성·크레딧·멤버·모델·폴더 효율. */}
       {canViewWorkspaceUsage && (
         <WorkspaceUsageDashboard

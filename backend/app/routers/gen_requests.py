@@ -133,13 +133,19 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
 
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
-async def pending_gen_requests(request: Request, limit: int = 16):
+async def pending_gen_requests(request: Request, limit: int = 16, capability: str = ""):
     """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
     claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
     완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
     acc = _require_account(request)
-    return await claim_gen_requests(acc["email"], realtime_scope(acc), limit)
+    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다(?capability=workspace).
+    # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
+    # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
+    caps = {c.strip() for c in capability.split(",") if c.strip()}
+    return await claim_gen_requests(
+        acc["email"], realtime_scope(acc), limit, workspace_capable="workspace" in caps
+    )
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)

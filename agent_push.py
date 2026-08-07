@@ -535,9 +535,11 @@ def _gen_request_url(
 
 
 def _claim_pending(server: str, token: str, limit: int):
+    # capability=workspace: 이 에이전트는 제출 전 워크스페이스 전환·검증을 한다는 선언 —
+    # 신 서버는 워크스페이스 지정 요청을 이 선언이 있는 claim 에만 내려준다. 구 서버는 무시(하위호환).
     return _http(
         "GET",
-        _gen_request_url(server, action="pending", query={"limit": limit}),
+        _gen_request_url(server, action="pending", query={"limit": limit, "capability": "workspace"}),
         token=token,
     )
 
@@ -1618,7 +1620,10 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     workspace = {"scope": "unknown", "id": None, "name": None}
     if isinstance(acct, dict):
         ws = _cli_json(cli, "workspace", "list")
-        acct["workspaces"] = ws if isinstance(ws, list) else []
+        # CLI 실패(비-list)면 workspaces 키 자체를 보내지 않는다 — 빈 배열 []는 서버의
+        # "불완전 보고 보존" 가드를 통과해 그 계정 멤버십 전체를 unavailable 로 밀어버린다.
+        if isinstance(ws, list):
+            acct["workspaces"] = ws
         workspace = _workspace_context_from_list(ws)
         acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
 

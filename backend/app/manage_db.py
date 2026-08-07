@@ -294,11 +294,14 @@ def _agg_where(
     args: list[Any] = []
     # date() 로 감싸 날짜만 비교 — created_at 은 'YYYY-MM-DDTHH:MM:SSZ'(시각 포함)이라 문자열 비교하면
     # 종료일 당일이 통째로 빠진다('...T12:00Z' <= '2026-07-03' = false). date_from/to 는 YYYY-MM-DD.
+    # 'localtime' 은 팀 표준시(KST) 통일 — 프론트가 보내는 날짜도 브라우저 로컬(KST) 기준이고,
+    # 다른 집계(예: task 시수)와 예산 계산도 localtime 이라 여기만 UTC 면 일 경계가 9시간 어긋난다.
+    # 전제: 서버 OS 시간대 = KST (SERVER.md 명시).
     if date_from:
-        where.append("date(created_at) >= ?")
+        where.append("date(created_at, 'localtime') >= ?")
         args.append(date_from)
     if date_to:
-        where.append("date(created_at) <= ?")
+        where.append("date(created_at, 'localtime') <= ?")
         args.append(date_to)
     if project_id == "__none__":
         where.append("project_id IS NULL")
@@ -444,11 +447,11 @@ def team_usage_export(
     created_clause = f"{'AND' if where else 'WHERE'} created_at IS NOT NULL"
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT date(created_at) AS date, account_email AS user_email, "
+            f"SELECT date(created_at, 'localtime') AS date, account_email AS user_email, "
             f"creator_uid AS user_id, COALESCE(NULLIF(model,''),'알 수 없음') AS model, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits_used, COUNT(*) AS jobs "
             f"FROM team_generation_fact {where} {created_clause} "
-            f"GROUP BY date(created_at), account_email, creator_uid, model "
+            f"GROUP BY date(created_at, 'localtime'), account_email, creator_uid, model "
             f"ORDER BY date ASC, account_email COLLATE NOCASE ASC, model COLLATE NOCASE ASC",
             args,
         ).fetchall()
@@ -471,15 +474,17 @@ def team_timeseries(
     where, args = _agg_where(
         date_from, date_to, project_id, creator_uid, workspace_id, model
     )
+    # time_from/to 는 프론트가 보내는 브라우저 로컬(KST) 나이브 문자열 — created_at(UTC)을
+    # localtime 으로 맞춰 비교해야 시간 차트가 9시간 밀리지 않는다.
     if time_from:
-        where += (" AND " if where else "WHERE ") + "datetime(created_at) >= datetime(?)"
+        where += (" AND " if where else "WHERE ") + "datetime(created_at, 'localtime') >= datetime(?)"
         args.append(time_from)
     if time_to:
-        where += (" AND " if where else "WHERE ") + "datetime(created_at) <= datetime(?)"
+        where += (" AND " if where else "WHERE ") + "datetime(created_at, 'localtime') <= datetime(?)"
         args.append(time_to)
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT strftime('{fmt}', created_at) AS bucket, COUNT(*) AS count, "
+            f"SELECT strftime('{fmt}', created_at, 'localtime') AS bucket, COUNT(*) AS count, "
             f"COALESCE(SUM({_CREDIT}),0) AS credits, COALESCE(SUM(elapsed_seconds),0) AS elapsed_seconds "
             f"FROM team_generation_fact {where} "
             f"{'AND' if where else 'WHERE'} created_at IS NOT NULL "

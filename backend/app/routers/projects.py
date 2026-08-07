@@ -247,6 +247,32 @@ def project_folder_counts_batch(body: FolderCountsBatchIn, request: Request):
     }
 
 
+def _validated_project_workspace(workspace, *, explicit: bool) -> dict:
+    """프로젝트에 지정하는 워크스페이스의 정책 검증(규격 규칙 8·10).
+
+    - team: 등록부(workspace_registry)에 존재해야 하고, 이름은 등록부의 정식 이름으로
+      교체해 저장한다(오래되거나 조작된 이름 저장 방지). 임의 UUID 저장 차단이 목적.
+    - unknown: 명시적 전달(PATCH)이면 400 — 제거는 personal 로 보내야 한다. unknown 은
+      동기화가 재보강할 수 있는 레거시 상태라 제거 용도로 쓰면 팀 귀속이 되살아난다.
+      (create 의 기본값 unknown 은 "미지정" 의미라 explicit=False 로 허용.)
+    """
+    ctx = workspace.model_dump()
+    if ctx.get("scope") == "unknown" and explicit:
+        raise HTTPException(
+            status_code=400,
+            detail="워크스페이스 제거는 personal 로 보내세요 — unknown 으로는 지정할 수 없습니다",
+        )
+    if ctx.get("scope") == "team":
+        entry = repo.get_registry_workspace(ctx.get("id") or "")
+        if not entry:
+            raise HTTPException(
+                status_code=400,
+                detail="등록부에 없는 워크스페이스입니다 — 에이전트 보고(동기화) 후 다시 시도하세요",
+            )
+        ctx["name"] = entry["name"]
+    return ctx
+
+
 @router.post("", response_model=ProjectOut)
 def create_project(body: ProjectCreate, request: Request):
     # 프로젝트 정의는 팀 공유 → 서버에서 생성·관리(로컬 우선에서도 프로젝트는 서버 권위).
@@ -258,7 +284,7 @@ def create_project(body: ProjectCreate, request: Request):
         return repo.create_project(
             body.name,
             kind=body.kind,
-            workspace=body.workspace.model_dump(),
+            workspace=_validated_project_workspace(body.workspace, explicit=False),
         )
     except repo.ProjectNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -290,7 +316,7 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
         if body.render_root_path is not None:
             repo.set_render_root(pid, body.render_root_path)  # 팀 공유 렌더 폴더 경로
         if body.workspace is not None:
-            repo.set_project_workspace(pid, body.workspace.model_dump())
+            repo.set_project_workspace(pid, _validated_project_workspace(body.workspace, explicit=True))
     except repo.ProjectNameConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:

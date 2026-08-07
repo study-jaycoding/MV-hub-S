@@ -135,7 +135,9 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
 
         assert out == claimed
         signals.touch.assert_called_once_with("A@B.COM")
-        repo.claim_pending_requests.assert_called_once_with("A@B.COM", limit=16)
+        repo.claim_pending_requests.assert_called_once_with(
+            "A@B.COM", limit=16, workspace_capable=False
+        )
         assert repo.set_status.call_args_list == [
             (("g1", "running", None),),
             (("g2", "running", None),),

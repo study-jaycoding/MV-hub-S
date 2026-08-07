@@ -221,6 +221,11 @@
 .manage-table th { font-weight: 600; opacity: .6; font-size: 12px; }
 .manage-name { font-weight: 600; }
 .manage-empty, .manage-empty-row { opacity: .6; text-align: center; padding: 40px; }
+/* 대시보드 갱신 실패 배너 — 이전 데이터를 유지한 채 실패만 알린다(usage-error 톤과 통일). */
+.dash-stale-banner {
+  padding: 9px 11px; border: 1px solid rgba(255,100,100,.25); border-radius: 9px;
+  color: #ffaaaa; font-size: 12px; margin-bottom: 10px;
+}
 .manage-foot {
   font-size: 11px; opacity: .55; line-height: 1.6;
   border-top: 1px solid var(--border); padding-top: 14px; margin-top: 8px;

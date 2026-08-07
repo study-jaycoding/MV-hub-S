@@ -756,6 +756,15 @@ def list_workspace_options() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def get_registry_workspace(workspace_id: str) -> Optional[dict[str, Any]]:
+    """등록부에서 워크스페이스 1건 조회 — 프로젝트 API 가 team 지정 시 존재 검증·정식 이름 교체에 쓴다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, plan_type FROM workspace_registry WHERE id=?", (workspace_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def list_workspace_members(workspace_id: str) -> list[dict[str, Any]]:
     """해당 팀 워크스페이스에 최근 접근 가능한 MV-Hub 계정 멤버 목록."""
     from .. import rbac

@@ -98,6 +98,22 @@ class ProjectBudgetPeriodTests(unittest.TestCase):
         self.assertEqual(restricted_project["budget_models"], project["budget_models"])
         self.assertEqual(restricted_project["folders"], project["folders"])
 
+    def test_deleted_generation_credits_still_count_toward_budget(self):
+        # 크레딧은 생성 시점에 이미 소진 — 카드를 지워도 예산 사용량에서 빠지면 안 된다
+        # (쓰고 지우면 예산이 초기화되는 구멍 방지). 복원·반복 삭제에도 1회만 합산.
+        manage.set_planning("p1", budget_credits=100, budget_period="day")
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET deleted_at=datetime('now') WHERE id='today'")
+        project = manage.dashboard_summary()["projects"][0]
+        self.assertEqual(project["budget_used_credits"], 5)
+        self.assertEqual(project["credits"], 16)
+
+        with db.get_connection() as conn:  # 복원 후 재삭제 — 이중 합산 없음
+            conn.execute("UPDATE generation SET deleted_at=NULL WHERE id='today'")
+            conn.execute("UPDATE generation SET deleted_at=datetime('now') WHERE id='today'")
+        project = manage.dashboard_summary()["projects"][0]
+        self.assertEqual(project["budget_used_credits"], 5)
+
     def test_existing_planning_schema_migrates_to_month(self):
         with db.get_connection() as conn:
             conn.execute("DROP TABLE project_planning")

@@ -338,6 +338,7 @@ export default function App() {
     selectedRef,
     setGens,
     setSelected,
+    teamTab: filters.tab === "team",
   });
   useGenerationKeyboardActions({ clearSelect, filtersRef, flash, gensRef, reload, selectedRef, setGens });
 

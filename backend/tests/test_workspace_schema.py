@@ -34,6 +34,36 @@ class WorkspaceContextContractTests(unittest.TestCase):
             normalize_workspace_context({"scope": "team", "name": "MILLIONVOLT"}),
             {"scope": "unknown", "id": None, "name": None},
         )
+
+        # 자체 id/name 을 가진 엔티티 dict(프로젝트 행·공유 번들 generation)가 평면 형식으로
+        # 들어와도 엔티티 id 를 워크스페이스 id 로 오인하지 않는다 — cache_projects/공유 import 오염 회귀.
+        self.assertEqual(
+            normalize_workspace_context({
+                "id": "proj-uuid-123", "name": "EP01",
+                "workspace_scope": "team", "workspace_id": "ws-uuid-999", "workspace_name": "MILLIONVOLT",
+            }),
+            {"scope": "team", "id": "ws-uuid-999", "name": "MILLIONVOLT"},
+        )
+        self.assertEqual(
+            normalize_workspace_context({
+                "id": "job-abc", "prompt": "x",
+                "workspace_scope": "team", "workspace_id": "ws-uuid-999", "workspace_name": None,
+            }),
+            {"scope": "team", "id": "ws-uuid-999", "name": None},
+        )
+        # fail closed: "scope" 키가 있으면 그 형식으로만 읽는다 — 비었어도 평면 형식으로 폴백하지 않는다.
+        self.assertEqual(
+            normalize_workspace_context({
+                "scope": None,
+                "workspace_scope": "team", "workspace_id": "ws-uuid-999",
+            }),
+            {"scope": "unknown", "id": None, "name": None},
+        )
+        # 어느 스코프 키도 없는 엔티티 dict 는 unknown (엔티티 id 미오염).
+        self.assertEqual(
+            normalize_workspace_context({"id": "job-abc", "prompt": "x"}),
+            {"scope": "unknown", "id": None, "name": None},
+        )
         self.assertIn("workspace_scope", GenerationOut.model_fields)
         self.assertIn("workspace_scope", ProjectOut.model_fields)
 
@@ -79,7 +109,9 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         recipe = repo.gen_recipe(gen_id)
         self.assertEqual(recipe["workspace"], self._team())
         repo.create_gen_request("artist@example.com", "user-me", gen_id, "create", recipe)
-        claimed = repo.claim_pending_requests("artist@example.com", 1)
+        # 워크스페이스 지정 요청은 capability 없는(구) 에이전트에게 내려가지 않는다 — F7 게이트.
+        self.assertEqual(repo.claim_pending_requests("artist@example.com", 1), [])
+        claimed = repo.claim_pending_requests("artist@example.com", 1, workspace_capable=True)
         self.assertEqual(claimed[0]["workspace"], self._team())
 
         telemetry = manage.build_telemetry_facts([gen_id], "user-me")
@@ -118,6 +150,51 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         repo.set_project_workspace(project["id"], self._team())
         roles = {row["uid"]: row["roles"] for row in repo.list_project_members(project["id"])}
         self.assertEqual(roles["u-artist"], ["supervisor"])
+
+    def test_claim_gate_does_not_starve_general_requests_behind_specified_backlog(self):
+        # 지정(team) 요청이 아무리 앞에 쌓여도(65개>구 스캔상한 64) 구 에이전트 claim 이
+        # 뒤의 일반 요청을 집을 수 있어야 한다 — SQL 필터 기아 회귀.
+        for i in range(65):
+            repo.create_gen_request(
+                "artist@example.com", "user-me", f"g{i}", "create",
+                {"model": "m", "workspace": self._team()},
+            )
+        repo.create_gen_request("artist@example.com", "user-me", "g-general", "create", {"model": "m"})
+        claimed = repo.claim_pending_requests("artist@example.com", 4)
+        self.assertEqual([c["gen_id"] for c in claimed], ["g-general"])
+        # capable 에이전트는 남은 지정 요청 전부 claim 가능.
+        claimed_capable = repo.claim_pending_requests(
+            "artist@example.com", 100, workspace_capable=True
+        )
+        self.assertEqual(len(claimed_capable), 65)
+
+    def test_cache_projects_mirror_never_uses_project_id_as_workspace_id(self):
+        # 서버 ProjectOut dict 는 자체 id/name 을 갖는다 — 미러·백필이 프로젝트 UUID 를
+        # workspace_id 로 저장하던 오염 회귀(P1-1).
+        gen_id = repo.create_local_generation(
+            {"prompt": "p", "model": "m", "params": {}}, "me", creator_uid="user-me",
+        )
+        server_project = {
+            "id": "proj-uuid-123", "name": "EP01", "kind": "team", "archived": False,
+            "workspace_scope": "team", "workspace_id": "ws-millionvolt", "workspace_name": "MILLIONVOLT",
+        }
+        repo.cache_projects([server_project])
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET project_id='proj-uuid-123' WHERE id=?", (gen_id,))
+        repo.cache_projects([server_project])  # 백필 경로 재실행
+
+        with db.get_connection() as conn:
+            mirror = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name FROM project WHERE id='proj-uuid-123'"
+            ).fetchone()
+            backfilled = conn.execute(
+                "SELECT workspace_scope, workspace_id FROM generation WHERE id=?", (gen_id,)
+            ).fetchone()
+        self.assertEqual(
+            (mirror["workspace_scope"], mirror["workspace_id"], mirror["workspace_name"]),
+            ("team", "ws-millionvolt", "MILLIONVOLT"),
+        )
+        self.assertEqual((backfilled["workspace_scope"], backfilled["workspace_id"]), ("team", "ws-millionvolt"))
 
     def test_workspace_filter_separates_generations_projects_and_unassigned_counts(self):
         team_a = self._team()
@@ -572,34 +649,119 @@ class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):
         )
         self.assertEqual(sum(row["count"] for row in buckets), 2)
         self.assertEqual(sum(row["credits"] for row in buckets), 6)
+        # 버킷·시간 범위는 서버 localtime 기준(팀 표준시 KST 통일) — 기대값을 머신 시간대
+        # 무관하게 UTC 원본에서 변환해 계산한다.
+        from datetime import datetime, timezone as _tz
+
+        def _local(utc_str: str, fmt: str) -> str:
+            dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
+            return dt.astimezone().strftime(fmt)
+
         hourly = manage_db.team_timeseries(
             workspace_id="ws-millionvolt", project_id="p1", bucket="hour"
         )
         self.assertEqual(
             [row["bucket"] for row in hourly],
-            ["2026-08-01T10:00", "2026-08-02T10:00"],
+            [
+                _local("2026-08-01T10:00:00Z", "%Y-%m-%dT%H:00"),
+                _local("2026-08-02T10:00:00Z", "%Y-%m-%dT%H:00"),
+            ],
         )
+        local_minute = _local("2026-08-02T10:00:00Z", "%Y-%m-%dT%H:%M")
+        local_hour_start = _local("2026-08-02T10:00:00Z", "%Y-%m-%dT%H:00:00")
+        local_hour_end = _local("2026-08-02T10:00:00Z", "%Y-%m-%dT%H:59:59")
         minutes = manage_db.team_timeseries(
             workspace_id="ws-millionvolt", project_id="p1", bucket="minute",
-            time_from="2026-08-02T10:00:00", time_to="2026-08-02T10:59:59",
+            time_from=local_hour_start, time_to=local_hour_end,
         )
         self.assertEqual(
             [(row["bucket"], row["count"]) for row in minutes],
-            [("2026-08-02T10:00", 1)],
+            [(local_minute, 1)],
         )
 
         export_rows = manage_db.team_usage_export(workspace_id="ws-millionvolt")
+        d1 = _local("2026-08-01T10:00:00Z", "%Y-%m-%d")
+        d2 = _local("2026-08-02T10:00:00Z", "%Y-%m-%d")
         self.assertEqual(
             export_rows,
             [
-                {"date": "2026-08-01", "user_email": "u1@example.com", "user_id": "u1",
+                {"date": d1, "user_email": "u1@example.com", "user_id": "u1",
                  "model": "nano", "credits_used": 2, "jobs": 1},
-                {"date": "2026-08-02", "user_email": "u1@example.com", "user_id": "u1",
+                {"date": d2, "user_email": "u1@example.com", "user_id": "u1",
                  "model": "seedance", "credits_used": 4, "jobs": 1},
-                {"date": "2026-08-02", "user_email": "u2@example.com", "user_id": "u2",
+                {"date": d2, "user_email": "u2@example.com", "user_id": "u2",
                  "model": "nano", "credits_used": 3, "jobs": 1},
             ],
         )
+
+
+class WorkspaceProjectApiPolicyTests(unittest.TestCase):
+    """프로젝트 API 워크스페이스 정책(규격 규칙 8·10) — 등록부 검증·정식 이름 교체·unknown 강등 거절."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.old_db = os.environ.get("CONTENT_HUB_DB")
+        self.old_np = os.environ.get("CONTENT_HUB_NO_PROXY")
+        os.environ["CONTENT_HUB_DB"] = str(Path(self.tmp.name) / "content_hub.db")
+        os.environ["CONTENT_HUB_NO_PROXY"] = "1"
+        db.flush_pool()
+        db.init_db()
+        repo.ensure_default_worker()
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-millionvolt','MILLIONVOLT')")
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        self.client = TestClient(app, client=("127.0.0.1", 50000))
+
+    def tearDown(self):
+        self.client.close()
+        db.flush_pool()
+        for key, old in (("CONTENT_HUB_DB", self.old_db), ("CONTENT_HUB_NO_PROXY", self.old_np)):
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+        db.flush_pool()
+        self.tmp.cleanup()
+
+    def test_team_workspace_must_exist_in_registry_and_name_is_canonicalized(self):
+        r = self.client.post(
+            "/api/projects",
+            json={"name": "EP-bad", "workspace": {"scope": "team", "id": "ws-forged", "name": "가짜"}},
+        )
+        self.assertEqual(r.status_code, 400)
+
+        r = self.client.post(
+            "/api/projects",
+            json={"name": "EP01", "workspace": {"scope": "team", "id": "ws-millionvolt", "name": "옛날이름"}},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["workspace_name"], "MILLIONVOLT")  # 등록부 정식 이름으로 교체
+
+    def test_explicit_unknown_downgrade_is_rejected_but_personal_removal_allowed(self):
+        pid = self.client.post(
+            "/api/projects",
+            json={"name": "EP02", "workspace": {"scope": "team", "id": "ws-millionvolt", "name": "MILLIONVOLT"}},
+        ).json()["id"]
+
+        r = self.client.patch(f"/api/projects/{pid}", json={"workspace": {"scope": "unknown"}})
+        self.assertEqual(r.status_code, 400)  # 제거는 personal 로만 (unknown 은 동기화가 재보강)
+
+        r = self.client.patch(f"/api/projects/{pid}", json={"workspace": {"scope": "personal"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["workspace_scope"], "personal")
+
+    def test_default_workspace_on_create_stays_unknown(self):
+        r = self.client.post("/api/projects", json={"name": "EP03"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["workspace_scope"], "unknown")  # 미지정 기본값은 허용
+
+    def test_ingest_accepts_broken_workspace_field_as_unknown(self):
+        # 워크스페이스 필드 하나가 깨져도 push 배치 전체가 422 로 거부되면 안 된다(규격 규칙①).
+        for broken in ({"scope": "team", "name": "MILLIONVOLT"}, None, "garbage"):
+            r = self.client.post("/api/ingest", json={"jobs": [], "workspace": broken})
+            self.assertEqual(r.status_code, 200, f"workspace={broken!r}")
 
 
 if __name__ == "__main__":
