@@ -357,6 +357,48 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_edge "
         "ON history(parent_gen_id, child_gen_id, relation)"
     )
+    # ── 생성 요청 상태 엔진 v2 ─────────────────────────────────────────────
+    # job_id 확보(앵커)를 완료(done)로 오해하지 않도록 제출/추적/검증 상태를 분리한다.
+    # 모두 추가형 컬럼이라 구버전 DB·에이전트와 한 릴리즈 동안 함께 동작할 수 있다.
+    gr_cols = {row[1] for row in conn.execute("PRAGMA table_info(gen_request)")}
+    if gr_cols:
+        for name, ddl in (
+            ("provider_status", "TEXT"),
+            ("last_checked_at", "TEXT"),
+            ("next_check_at", "TEXT"),
+            ("check_failures", "INTEGER NOT NULL DEFAULT 0"),
+            ("lease_owner", "TEXT"),
+            ("lease_expires_at", "TEXT"),
+            ("terminal_at", "TEXT"),
+        ):
+            if name not in gr_cols:
+                conn.execute(f"ALTER TABLE gen_request ADD COLUMN {name} {ddl}")
+
+        # 옛 앵커는 요청만 done이고 generation은 job_id를 가진 running이었다. 실제 완료가 아니므로
+        # tracking으로 되돌린다. 완료/실패 generation은 그대로 terminal로 맞춘다(멱등).
+        conn.execute(
+            "UPDATE gen_request SET status='tracking', error=NULL "
+            "WHERE status='done' AND gen_id IN ("
+            "SELECT id FROM generation WHERE status IN ('pending','running') "
+            "AND job_id IS NOT NULL AND job_id<>'')"
+        )
+        conn.execute(
+            "UPDATE gen_request SET status='done', terminal_at=COALESCE(terminal_at, updated_at) "
+            "WHERE gen_id IN (SELECT id FROM generation WHERE status='done')"
+        )
+        conn.execute(
+            "UPDATE gen_request SET status='failed', terminal_at=COALESCE(terminal_at, updated_at) "
+            "WHERE gen_id IN (SELECT id FROM generation WHERE status NOT IN ('pending','running','done'))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_genrequest_check "
+            "ON gen_request(account_email, status, next_check_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest "
+            "ON gen_request(gen_id, created_at DESC, id DESC)"
+        )
+
     # ── v02 RBAC — 전역 4역할(복수 가능) + 프로젝트 3역할 (로드맵 PART 1) ──────
     # 레거시 C0~C5 는 제거됨. global_role(CSV, 복수) + project_role 만 사용.
     cr_cols = {row[1] for row in conn.execute("PRAGMA table_info(creator)")}

@@ -230,11 +230,15 @@ def list_generations(
     sql = (
         "SELECT g.id, g.worker_id, w.name AS worker_name, g.prompt, g.display_prompt, g.model, "
         "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
-        "g.comment, g.error, g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, "
+        "g.comment, g.error, gr.status AS execution_phase, gr.provider_status, "
+        "gr.last_checked_at, gr.next_check_at, COALESCE(gr.check_failures,0) AS check_failures, "
+        "g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, "
         "g.project_id, g.folder_path, g.deleted_at, "
         "g.is_final, g.final_by, g.job_id, "  # job_id: 팀 카드(서버 UUID)↔로컬 개인메타 매핑 앵커
         "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-        "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id"
+        "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
+        "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
+        "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
         # 정렬키: 힉스필드 created_at(sub-second) 보존 sort_ts. 동률은 id 로 안정화(키셋 total order).
         f"{clause} ORDER BY g.sort_ts DESC, g.id DESC LIMIT ?"
     )

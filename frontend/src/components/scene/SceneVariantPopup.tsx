@@ -240,7 +240,7 @@ export function SceneVariantPopup({
                             className={`thumb-placeholder status-${gg.status}`}
                             title={gg.error || undefined}
                           >
-                            {generationStatusLabelFor(gg.status, gg.error)}
+                            {generationStatusLabelFor(gg.status, gg.error, gg.execution_phase)}
                           </div>
                         ) : (
                           <span className="scene-varpop-ph">{String(gg?.status || "…")}</span>

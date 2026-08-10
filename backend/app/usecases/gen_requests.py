@@ -26,6 +26,21 @@ _HF_ENDED_RE = re.compile(
 )
 
 
+def _has_usable_asset_path(value: object) -> bool:
+    """완료를 확정할 수 있는 실제 결과 위치인지 확인한다.
+
+    CLI 재조정은 보통 HTTP(S) CDN URL을 주지만, 로컬 테스트/레거시 fulfill은 Windows 절대
+    경로를 쓸 수 있어 둘 다 허용한다. 상태 문자열 같은 임의 텍스트는 완료 근거가 아니다.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = value.strip()
+    return bool(
+        path.startswith(("https://", "http://", "/"))
+        or re.match(r"^[A-Za-z]:[\\/]", path)
+    )
+
+
 def pm_best_effort(action) -> None:
     """PM 메트릭 best-effort 실행(분리형). MANAGE_ENABLED off 거나 실패해도 생성 흐름·응답에
     영향 0 — 메트릭 수집은 절대 생성을 막지 않는다(PM_DASHBOARD_DESIGN.md §6-1).
@@ -56,12 +71,20 @@ class GenRequestCommand:
 
 
 async def claim_gen_requests(
-    email: str, account_uid: str | None, limit: int, *, workspace_capable: bool = False,
+    email: str,
+    account_uid: str | None,
+    limit: int,
+    *,
+    workspace_capable: bool = False,
+    lease_owner: str | None = None,
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
     claimed = repo.claim_pending_requests(
-        email, limit=max(1, min(limit, 16)), workspace_capable=workspace_capable
+        email,
+        limit=max(1, min(limit, 16)),
+        workspace_capable=workspace_capable,
+        lease_owner=lease_owner,
     )
     for item in claimed:
         gen_id = item["gen_id"]
@@ -83,6 +106,16 @@ async def fulfill_request(
     """완료 잡을 placeholder에 원자 적용하고, 실제로 적용된 경우에만 완료 알림을 보낸다."""
     gen_id = request_row["gen_id"]
     result = normalize_job_result(cli_bridge.parse_job(job))
+    if result.status == "done" and not _has_usable_asset_path(result.asset_path):
+        repo.record_request_check(
+            request_id,
+            str(job.get("status") or job.get("job_status") or ""),
+            phase="verifying",
+            error=repo.VERIFYING_NOTE,
+            next_seconds=15,
+        )
+        repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        return repo.get_generation(gen_id)
     applied = repo.apply_local_fulfillment(
         gen_id,
         request_id,
@@ -144,8 +177,10 @@ async def reconcile_request(
 ) -> dict:
     """에이전트가 재조회한 권위 상태를 로컬 placeholder에 보정한다."""
     gen_id = request_row["gen_id"]
+    raw_provider_status = str(job.get("status") or job.get("job_status") or "").strip().lower()
+    provider_kind = cli_bridge.provider_status_kind(raw_provider_status)
     parsed = cli_bridge.parse_job(job)
-
+    parsed_job_id = (parsed.get("generation") or {}).get("id")
     if force_fail_reason:
         job_id = (parsed.get("generation") or {}).get("id")
         applied = repo.apply_reconcile(
@@ -159,6 +194,7 @@ async def reconcile_request(
             status="failed",
             error=force_fail_reason,
             force_fail_reason=force_fail_reason,
+            provider_status=raw_provider_status,
         )
         if applied:
             pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=job_id))
@@ -171,11 +207,92 @@ async def reconcile_request(
                 },
                 account_uid=account_uid,
             )
-        return {"ok": True, "applied": applied, "status": "failed"}
+        return {
+            "ok": True,
+            "applied": applied,
+            "outcome": "applied" if applied else "already_final_same_job",
+            "status": "failed",
+            "job_id": job_id,
+            "asset_saved": False,
+        }
+
+    current = repo.get_generation(gen_id)
+    expected_job_id = (current or {}).get("job_id")
+
+    if expected_job_id and parsed_job_id and expected_job_id != parsed_job_id:
+        return {
+            "ok": True,
+            "applied": False,
+            "outcome": "conflict",
+            "status": (current or {}).get("status"),
+            "job_id": expected_job_id,
+            "asset_saved": bool((current or {}).get("assets")),
+        }
 
     result = normalize_job_result(parsed)
-    if result.status in ("pending", "running"):
-        return {"ok": True, "applied": False, "status": result.status}
+    if provider_kind in ("processing", "unknown", "action_required"):
+        phase = "tracking" if provider_kind == "processing" else (
+            "blocked" if provider_kind == "action_required" else "verifying"
+        )
+        note = None
+        if provider_kind == "unknown":
+            note = f"{repo.VERIFYING_NOTE} (알 수 없는 상태: {raw_provider_status or '없음'})"
+        elif provider_kind == "action_required":
+            note = f"조치 필요 — Higgsfield 상태: {raw_provider_status}"
+        repo.record_request_check(
+            request_row["id"],
+            raw_provider_status,
+            phase=phase,
+            error=note,
+            next_seconds=30,
+        )
+        repo.set_status(gen_id, "running", note)
+        if note:
+            await manager.broadcast(
+                {
+                    "type": "progress",
+                    "generation_id": gen_id,
+                    "status": "running",
+                    "error": note,
+                },
+                account_uid=account_uid,
+            )
+        return {
+            "ok": True,
+            "applied": False,
+            "outcome": "not_ready",
+            "status": "running",
+            "job_id": parsed_job_id,
+            "asset_saved": False,
+        }
+
+    # 공급자가 완료를 먼저 알리고 CDN 결과 URL을 나중에 붙이는 경우가 있다. 빈 완료로 닫지 않는다.
+    if provider_kind == "success" and not _has_usable_asset_path(result.asset_path):
+        repo.record_request_check(
+            request_row["id"],
+            raw_provider_status,
+            phase="verifying",
+            error=repo.VERIFYING_NOTE,
+            next_seconds=15,
+        )
+        repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        await manager.broadcast(
+            {
+                "type": "progress",
+                "generation_id": gen_id,
+                "status": "running",
+                "error": repo.VERIFYING_NOTE,
+            },
+            account_uid=account_uid,
+        )
+        return {
+            "ok": True,
+            "applied": False,
+            "outcome": "not_ready",
+            "status": "running",
+            "job_id": result.job_id,
+            "asset_saved": False,
+        }
 
     applied = repo.apply_reconcile(
         gen_id,
@@ -187,6 +304,7 @@ async def reconcile_request(
         sort_ts=result.sort_ts,
         status=result.status,
         error=result.error,
+        provider_status=raw_provider_status,
     )
     if applied:
         pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
@@ -200,7 +318,23 @@ async def reconcile_request(
             },
             account_uid=account_uid,
         )
-    return {"ok": True, "applied": applied, "status": result.status}
+    final = repo.get_generation(gen_id)
+    asset_saved = bool((final or {}).get("assets"))
+    same_job = bool(final and final.get("job_id") == result.job_id)
+    final_matches = bool(
+        same_job
+        and final.get("status") == result.status
+        and (result.status != "done" or asset_saved)
+    )
+    outcome = "applied" if applied else ("already_final_same_job" if final_matches else "rejected")
+    return {
+        "ok": True,
+        "applied": applied,
+        "outcome": outcome,
+        "status": result.status,
+        "job_id": result.job_id,
+        "asset_saved": asset_saved,
+    }
 
 
 def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:

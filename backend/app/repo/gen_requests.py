@@ -73,16 +73,22 @@ def create_gen_request(
 
 
 def claim_pending_requests(
-    account_email: str, limit: int = 16, *, workspace_capable: bool = False,
+    account_email: str,
+    limit: int = 16,
+    *,
+    workspace_capable: bool = False,
+    lease_owner: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """이 계정의 대기 요청을 가져오면서 running 으로 표시(claim) — 중복 실행 방지.
+    """이 계정의 대기 요청을 가져오면서 submitting으로 표시(claim) — 중복 실행 방지.
     limit 는 호출자가 현재 제출 가능한 수만큼 전달한다. 저장소는 그 수만 running 으로 선점한다.
     반환: [{id, gen_id, kind, model, prompt, params, references}].
 
     workspace_capable: 에이전트가 제출 전 워크스페이스 전환·검증을 할 수 있는지(?capability=workspace).
     False(구 에이전트)면 워크스페이스가 지정된(team/personal) 요청은 건너뛴다 — 구 에이전트는
     지정을 무시하고 현재 CLI 워크스페이스에서 실행해 다른 팀 크레딧으로 과금될 수 있다.
-    건너뛴 요청은 pending 으로 남아 에이전트 업데이트 후 처리된다(SERVER.md 롤아웃 예외 참고)."""
+    건너뛴 요청은 pending 으로 남아 에이전트 업데이트 후 처리된다(SERVER.md 롤아웃 예외 참고).
+
+    lease_owner: 요청을 선점한 에이전트 인스턴스. 제출 도중 에이전트가 끊긴 요청을 구분한다."""
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
     with get_connection() as conn:
@@ -91,19 +97,19 @@ def claim_pending_requests(
         # 표시→로컬 CLI 가 두 번 실행돼 크레딧이 이중 소모된다. BEGIN IMMEDIATE 로 즉시 쓰기락을 잡아
         # SELECT+UPDATE 를 한 트랜잭션으로 직렬화한다(둘째 폴은 busy_timeout 대기 후 running 을 보고 건너뜀).
         conn.execute("BEGIN IMMEDIATE")
-        # ★stale running 회수 — 에이전트가 claim 후 죽으면(프로세스 종료·보고 유실) running 이
-        # 영영 남는다(부팅 정리는 generation 만 다룸). CLI create 타임아웃(900s)+여유를 넘긴
-        # running 은 실패로 종결해 카드가 '생성중'에 멈추지 않게 한다. 재큐잉(pending 복귀)은
-        # 원본이 실제로 완료됐는데 보고만 유실된 경우 이중 과금이라 하지 않는다 — 사용자가 재시도.
+        # 제출 중 job_id를 받기 전에 에이전트가 30분 넘게 사라진 경우만 조치 필요로 닫는다.
+        # tracking/verifying는 이미 유료 작업이 존재하므로 절대 실패·재큐잉하지 않고 조회로 복구한다.
         for stale in conn.execute(
-            "SELECT id, gen_id FROM gen_request WHERE account_email=? AND status='running' "
-            "AND updated_at < datetime('now','-30 minutes')",
+            "SELECT r.id, r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.account_email=? AND r.status IN ('running','submitting') "
+            "AND r.updated_at < datetime('now','-30 minutes') "
+            "AND (g.job_id IS NULL OR g.job_id='')",
             (email,),
         ).fetchall():
             conn.execute(
                 "UPDATE gen_request SET status='failed', "
                 "error='에이전트 응답 없음(30분 초과) — 에이전트 상태 확인 후 다시 시도하세요', "
-                "updated_at=datetime('now') WHERE id=?",
+                "terminal_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
                 (stale["id"],),
             )
             if stale["gen_id"]:
@@ -129,8 +135,9 @@ def claim_pending_requests(
         ).fetchall()
         for r in rows:
             conn.execute(
-                "UPDATE gen_request SET status='running', updated_at=datetime('now') WHERE id=?",
-                (r["id"],),
+                "UPDATE gen_request SET status='submitting', error=NULL, lease_owner=?, "
+                "lease_expires_at=datetime('now','+30 minutes'), updated_at=datetime('now') WHERE id=?",
+                (lease_owner, r["id"]),
             )
     # payload 파싱은 트랜잭션(쓰기락) 밖에서 — 락 보유 시간을 SELECT+UPDATE 만으로 최소화.
     for r in rows:
@@ -162,6 +169,33 @@ def get_gen_request(rid: str) -> Optional[dict[str, Any]]:
 def mark_request(rid: str, status: str, error: Optional[str] = None) -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE gen_request SET status=?, error=?, updated_at=datetime('now') WHERE id=?",
-            (status, error, rid),
+            "UPDATE gen_request SET status=?, error=?, "
+            "terminal_at=CASE WHEN ? IN ('done','failed','canceled') THEN datetime('now') ELSE terminal_at END, "
+            "updated_at=datetime('now') WHERE id=?",
+            (status, error, status, rid),
         )
+
+
+def record_request_check(
+    rid: str,
+    provider_status: Optional[str],
+    *,
+    phase: str,
+    error: Optional[str] = None,
+    check_failed: bool = False,
+    next_seconds: int = 30,
+) -> bool:
+    """권위 조회 결과와 다음 확인 시각을 기록한다. terminal 요청은 절대 되돌리지 않는다."""
+    if phase not in {"tracking", "verifying", "blocked"}:
+        phase = "verifying"
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE gen_request SET status=?, provider_status=?, error=?, "
+            "last_checked_at=datetime('now'), "
+            "next_check_at=datetime('now', ?), "
+            "check_failures=CASE WHEN ? THEN check_failures+1 ELSE 0 END, "
+            "lease_expires_at=datetime('now','+5 minutes'), updated_at=datetime('now') "
+            "WHERE id=? AND status NOT IN ('done','failed','canceled')",
+            (phase, provider_status, error, f"+{max(1, next_seconds)} seconds", int(check_failed), rid),
+        )
+    return cur.rowcount > 0

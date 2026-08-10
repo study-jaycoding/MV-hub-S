@@ -197,16 +197,46 @@ _STATUS_MAP = {
     "nsfw": "nsfw",  # 콘텐츠 차단(결과 없음) — 터미널 상태로 그대로 보존
     "nsfw_detected": "nsfw",  # 1.x 표기 — 같은 콘텐츠 차단
     "rejected": "failed",  # 제출 후 거부 — 실패로 취급(재조정이 '생성중' 유령을 실패로 확정)
-    # needs_action/needs_confirmation/ip_detected/user_action_required(사용자 조치 필요)는 매핑하지 않고
-    # 그대로 통과시킨다 — pending/running 이 아니라 '터미널'로 취급돼(재조정·활성판정에서 제외) '생성중'에
-    # 멈추지 않는다. 프론트는 원시 라벨로 노출. (새 status enum 을 만들면 상태판정 함수들을 다 손봐야 해 보류.)
 }
 
+_PROVIDER_SUCCESS = {"completed", "succeeded", "success", "done"}
+_PROVIDER_FAILURE = {
+    "failed", "error", "canceled", "cancelled", "nsfw", "nsfw_detected", "rejected"
+}
+_PROVIDER_PROCESSING = {
+    "queued", "in_queue", "pending", "created", "waiting", "running", "processing", "in_progress"
+}
+_PROVIDER_ACTION_REQUIRED = {
+    "needs_action", "needs_confirmation", "ip_detected", "user_action_required"
+}
+
+
+def provider_status_kind(raw: Optional[str]) -> str:
+    """공급자 원시 상태를 안전한 다섯 종류로 분류한다.
+
+    모르는 신규 상태는 terminal로 추측하지 않는다. `unknown`은 조회를 계속해야 한다는 뜻이다.
+    """
+    value = (raw or "").strip().lower()
+    if value in _PROVIDER_SUCCESS:
+        return "success"
+    if value in _PROVIDER_FAILURE:
+        return "failure"
+    if value in _PROVIDER_PROCESSING or not value:
+        return "processing"
+    if value in _PROVIDER_ACTION_REQUIRED:
+        return "action_required"
+    return "unknown"
+
 def normalize_status(raw: Optional[str]) -> str:
-    """CLI status → 로컬 status. 모르는 값은 그대로 통과(방어적)."""
+    """CLI status → generation의 보수적 상태.
+
+    원시값은 gen_request.provider_status에 따로 보존한다. 모르는 값을 그대로 노출하면 기존 코드가
+    terminal로 오해하므로, generation은 running으로 유지하고 직접 조회를 계속한다.
+    """
     if not raw:
         return "pending"
-    return _STATUS_MAP.get(raw.lower(), raw.lower())
+    value = raw.lower()
+    return _STATUS_MAP.get(value, "running")
 def _to_epoch(value: Any) -> Optional[float]:
     """원시 created_at → epoch float(sub-second 보존). 정렬키용. 실패 시 None.
     CLI 0.x 는 float epoch, CLI 1.x 는 ISO8601 문자열('...Z')로 준다 — 둘 다 처리."""
