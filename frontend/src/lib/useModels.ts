@@ -100,6 +100,29 @@ export const MODEL_CONSTRAINTS: Record<string, ParamConstraint[]> = {
   ],
 };
 
+// ── 조건부 파라미터 게이트 ────────────────────────────────────────────────
+// "특정 값 조합에서만 허용되는 파라미터" — 스키마(model get)엔 표현이 없고 CLI 가 제출 시
+// 명시 거부한다. 조건이 깨지면 UI 에서 숨기고 제출 본문에서도 제외해야 생성이 안 깨진다.
+//  예) seedance_2_5.extension_mode: mode=video_extension 에서만 허용 — 실측(generate cost):
+//      다른 모드에 실으면 "'extension_mode' is only allowed for mode 'video_extension'" 거부.
+//      기본값 규칙(enum 첫값)이 backward 를 자동 선택해 모든 생성이 실패하던 버그의 원인.
+export const PARAM_GATES: Record<string, Record<string, { whenParam: string; whenIn: string[] }>> = {
+  seedance_2_5: {
+    extension_mode: { whenParam: "mode", whenIn: ["video_extension"] },
+  },
+};
+
+// 이 파라미터가 현재 옵션 조합에서 허용되는가 — 게이트 없는 파라미터는 항상 허용.
+export function paramGateAllows(
+  model: string,
+  name: string,
+  optionValues: Record<string, string | number | boolean>,
+): boolean {
+  const gate = PARAM_GATES[model]?.[name];
+  if (!gate) return true;
+  return gate.whenIn.includes(String(optionValues[gate.whenParam] ?? ""));
+}
+
 // 정수 파라미터의 허용 범위 — CLI 가 강제하지만 스키마(model get)엔 min/max 가 없는 것.
 //  (duration 은 슬라이더 전용 DURATION_RANGE 가 따로 처리 — 여기엔 두지 않는다.)
 //  현재 항목 없음(이전의 gpt_image_2.batch_size 는 UI 에서 숨김 처리되어 불필요). 범용 메커니즘은 유지.
@@ -134,12 +157,18 @@ export function activeConstraints(
 //  apply()(모델 선택 시 초기화)와 프리페치(첫 토글 비용 예열)에서 공용 — 둘이 같은 키를 내도록 일원화.
 export function defaultOptions(
   params: ModelParam[],
+  model = "",
 ): Record<string, string | number | boolean> {
   const init: Record<string, string | number | boolean> = {};
   for (const p of params) {
     if (HIDDEN_PARAMS.has(p.name)) continue;
     const dv = effectiveDefault(p); // 오버라이드(bitrate=high 등) 반영
     if (dv != null) init[p.name] = dv;
+  }
+  // 기본값 조합에서 게이트 조건이 깨진 파라미터는 처음부터 싣지 않는다
+  // (예: mode 기본 t2v 인데 extension_mode=backward 가 자동 세팅되는 것 방지).
+  for (const [pname, gate] of Object.entries(PARAM_GATES[model] || {})) {
+    if (!gate.whenIn.includes(String(init[gate.whenParam] ?? ""))) delete init[pname];
   }
   return init;
 }
@@ -172,6 +201,20 @@ export function correctedOptions(
     if (Number.isNaN(n)) continue;
     const cl = Math.min(rg.max, Math.max(rg.min, n));
     if (cl !== n) (next ||= { ...optionValues })[pname] = cl;
+  }
+  // ③ 조건부 게이트 — 조건이 깨진 파라미터는 제거(CLI 가 거부), 조건이 성립했는데 값이
+  //    없으면 실효 기본값을 채운다(모드 전환으로 다시 나타날 때 빈 값 방지). 멱등.
+  for (const [pname, gate] of Object.entries(PARAM_GATES[model] || {})) {
+    const base = next ?? optionValues;
+    const ok = gate.whenIn.includes(String(base[gate.whenParam] ?? ""));
+    if (!ok && pname in base) {
+      next ||= { ...optionValues };
+      delete next[pname];
+    } else if (ok && base[pname] == null) {
+      const p = params.find((x) => x.name === pname);
+      const dv = p ? effectiveDefault(p) : undefined;
+      if (dv != null) (next ||= { ...optionValues })[pname] = dv;
+    }
   }
   return next ?? optionValues;
 }
@@ -254,7 +297,7 @@ export function useModels(onError: (msg: string) => void) {
     // 파라미터 → params + 기본값 옵션 적용. 드롭 복원이 대기 중이면 기본값 위에 덮음.
     const apply = (r: ModelParamsOut) => {
       setParams(r.params);
-      const init = defaultOptions(r.params); // 실효 기본값(오버라이드 반영)
+      const init = defaultOptions(r.params, model); // 실효 기본값(오버라이드·게이트 반영)
       // 이 모델용 예약 옵션일 때만 덮는다(다른 모델용이면 그 모델 로드 때 적용되도록 보존).
       const pend = pendingOptsRef.current;
       if (pend && pend.model === model) {
@@ -298,7 +341,7 @@ export function useModels(onError: (msg: string) => void) {
   useEffect(() => {
     // 기본옵션을 제약 보정까지 적용해 '정착' 상태로 만든 뒤 그 비용을 예열(모델 선택 시 cost effect 가 낼 키와 일치).
     const warmCost = (m: string, params: ModelParam[]) => {
-      let opts = defaultOptions(params);
+      let opts = defaultOptions(params, m);
       for (let i = 0; i < 4; i++) {
         const c = correctedOptions(m, params, opts);
         if (c === opts) break; // 정착(멱등)
