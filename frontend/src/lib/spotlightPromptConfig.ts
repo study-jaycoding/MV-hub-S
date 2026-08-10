@@ -2,6 +2,7 @@
 
 // duration 초 범위 — CLI 스키마(model get)에 min/max 가 없어 모델 스펙(models_explore)으로 보강.
 const DURATION_RANGE: Record<string, { min: number; max: number }> = {
+  seedance_2_5: { min: 4, max: 30 }, // 실측(generate cost): 3 거부·30 허용·31 거부. 6.5크레딧/초(720p)
   seedance_2_0: { min: 4, max: 15 },
   seedance_2_0_mini: { min: 4, max: 15 },
   gemini_omni: { min: 4, max: 10 }, // 실측(generate cost): 4 미만/10 초과 거부
