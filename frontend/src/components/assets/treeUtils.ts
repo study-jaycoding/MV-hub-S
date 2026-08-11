@@ -1,6 +1,24 @@
 // Assets 폴더 트리 순회 유틸(순수 함수) — FolderTree·AssetsView 공용.
 import type { AssetNode } from "../../types";
 
+// 제작 폴더의 약속된 표시 순서: PR을 MOSAIC보다 먼저 보여준다.
+// 서버가 보내준 나머지 순서는 유지하고, 원본 배열도 변경하지 않는다.
+export function orderAssetFolders(nodes: AssetNode[]): AssetNode[] {
+  const ordered = [...nodes];
+  const mosaicIndex = ordered.findIndex(
+    (node) => node.type === "dir" && node.name.toUpperCase() === "MOSAIC",
+  );
+  const prIndex = ordered.findIndex(
+    (node) => node.type === "dir" && node.name.toUpperCase() === "PR",
+  );
+
+  if (mosaicIndex >= 0 && prIndex >= 0 && mosaicIndex < prIndex) {
+    [ordered[mosaicIndex], ordered[prIndex]] = [ordered[prIndex], ordered[mosaicIndex]];
+  }
+
+  return ordered;
+}
+
 // 트리 전체에서 미디어 파일만 평탄화(검색용) — 이미지/영상/오디오 모두 포함
 export function flattenFiles(nodes: AssetNode[]): AssetNode[] {
   const out: AssetNode[] = [];
