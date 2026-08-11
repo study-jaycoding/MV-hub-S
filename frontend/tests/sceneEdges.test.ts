@@ -115,6 +115,13 @@ describe("resolveEdgeRole", () => {
     const e: SceneEdge = { id: "e", from: "T", to: "G" };
     expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
   });
+  it("set 노드 소스 → 생성 카드의 text 레인", () => {
+    const cards = [node("S", "set"), node("G", "generation")];
+    const e: SceneEdge = { id: "e", from: "S", to: "G" };
+    expect(canConnect(cards[0], cards[1])).toBe(true);
+    expect(canConnect(cards[0], node("L", "list"))).toBe(false);
+    expect(resolveEdgeRole(e, byId(cards), {})).toBe("text");
+  });
   it("reference 카드 소스 → 'ref'", () => {
     const cards = [node("R", "reference"), node("G", "generation")];
     const e: SceneEdge = { id: "e", from: "R", to: "G" };

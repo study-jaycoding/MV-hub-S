@@ -13,6 +13,7 @@ export interface LatestMutationQueue {
  */
 export function createMutationQueue(
   reconcileAfterFailure: (errors: unknown[]) => void | Promise<void>,
+  reconcileAfterSuccess?: () => void | Promise<void>,
 ): MutationQueue {
   let tail = Promise.resolve();
   let issued = 0;
@@ -27,7 +28,17 @@ export function createMutationQueue(
           errors.push(error);
         })
         .then(async () => {
-          if (ticket !== issued || !errors.length) return;
+          if (ticket !== issued) return;
+          if (!errors.length) {
+            if (reconcileAfterSuccess) {
+              try {
+                await reconcileAfterSuccess();
+              } catch {
+                // 저장은 성공했다. 후속 조회 실패는 다음 sync/focus에서 다시 맞추고 큐는 계속 사용한다.
+              }
+            }
+            return;
+          }
           const pendingErrors = errors;
           errors = [];
           try {

@@ -85,6 +85,30 @@ describe("asset meta mutation queue", () => {
     await Promise.all([failed, later]);
     expect(events).toEqual(["reconcile:start", "reconcile:end", "later"]);
   });
+
+  it("연속 저장이 모두 성공하면 마지막에 한 번만 성공 동기화한다", async () => {
+    const reconcileSuccess = vi.fn(async () => undefined);
+    const queue = createMutationQueue(vi.fn(), reconcileSuccess);
+
+    const first = queue.enqueue(async () => undefined);
+    const second = queue.enqueue(async () => undefined);
+    await Promise.all([first, second]);
+
+    expect(reconcileSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("저장 실패가 있으면 성공 동기화 대신 실패 복구만 실행한다", async () => {
+    const reconcileFailure = vi.fn(async () => undefined);
+    const reconcileSuccess = vi.fn(async () => undefined);
+    const queue = createMutationQueue(reconcileFailure, reconcileSuccess);
+
+    await queue.enqueue(async () => {
+      throw new Error("save failed");
+    });
+
+    expect(reconcileFailure).toHaveBeenCalledTimes(1);
+    expect(reconcileSuccess).not.toHaveBeenCalled();
+  });
 });
 
 describe("latest mutation queue", () => {

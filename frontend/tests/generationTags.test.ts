@@ -4,6 +4,7 @@ import {
   generationBulkIds,
   removeGenerationTags,
   replaceGenerationTags,
+  uniqueTagNames,
 } from "../src/lib/generationTags";
 import type { Generation } from "../src/types";
 
@@ -32,5 +33,12 @@ describe("generation optimistic tag state", () => {
 
   it("includes the focused generation in a bulk action once", () => {
     expect([...generationBulkIds(new Set(["g1", "g2"]), "g2")]).toEqual(["g1", "g2"]);
+  });
+
+  it("배치 응답에서 반복된 등록 태그를 한 번만 남긴다", () => {
+    expect(uniqueTagNames(["test2, #15", "test1", "test2, #15", "test1", " "])).toEqual([
+      "test2, #15",
+      "test1",
+    ]);
   });
 });

@@ -94,23 +94,24 @@ export function useGenerationLibraryData({
       const tab = filtersRef.current.tab;
       if (tab === "compose") {
         setLoading(false);
-        // 캔버스(구성)탭은 그리드를 안 그리지만, 좌측 폴더 사이드바(ProjectSection)엔 projects가 필요하다.
-        // 예전엔 여기서 전부 return해, 새로고침 후 캔버스에선 폴더 트리가 비어 보이다가(라이브러리 방문
-        // 전까지) 다른 탭을 왕복해야 떴다. projects/미분류 수만 가볍게 로드한다(그리드·facets는 스킵).
+        // 캔버스는 그리드를 안 그리지만 좌측 폴더(projects)와 등록 태그 패널(facets)을 직접 사용한다.
+        // 둘 다 여기서 채워야 새로고침 직후에도 다른 탭 왕복 없이 폴더·태그가 바로 보인다.
         const seq = ++reloadSeqRef.current;
-        try {
-          // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. fire-and-forget이면
-          // 연속 synced가 프로젝트 요청을 동시에 띄우고 seq를 서로 무효화해 폴더가 늦게 나타난다.
-          const pr = await api.projects("my", false, filtersRef.current.workspace_id);
-          if (seq !== reloadSeqRef.current || !pr) return;
+        // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. 각 요청 실패는
+        // 서로 격리해 프로젝트가 잠시 실패해도 태그는 갱신되고, 반대도 동일하게 한다.
+        const [pr, f] = await Promise.all([
+          api.projects("my", false, filtersRef.current.workspace_id).catch(() => null),
+          light ? Promise.resolve(null) : api.facets("my").catch(() => null),
+        ]);
+        if (seq !== reloadSeqRef.current) return;
+        if (pr) {
           setProjects((prev) => reconcileArrayState(prev, pr.projects));
           setUnassignedCount(pr.unassigned);
           setArchivedCount(pr.archived_count ?? 0);
           projectsLoadedRef.current = true;
-          finishSync(true);
-        } catch {
-          // 캔버스는 기존 프로젝트 캐시를 유지하고 다음 sync/focus에서 재시도한다.
         }
+        if (f) setFacets((prev) => reconcileValueState(prev, f));
+        if (pr || f) finishSync(true);
         return;
       }
       if (!silent) setLoading(true);

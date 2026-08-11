@@ -251,6 +251,38 @@ describe("parseSceneImport 방어(#3)", () => {
     expect(bad.camera).toBeUndefined();
   });
 
+  it("Set 폴더 경로는 정규화하고 상위 경로 이동은 거부한다", () => {
+    const snap = parseSceneImport(
+      wrap([
+        {
+          id: "SET-OK",
+          kind: "set",
+          x: 0,
+          y: 0,
+          setCfg: {
+            folder: { projectId: " project-1 ", projectName: " 프로젝트 ", path: "ep001\\c0010" },
+            tagsText: "night, final",
+          },
+        },
+        {
+          id: "SET-BAD",
+          kind: "set",
+          x: 10,
+          y: 10,
+          setCfg: {
+            folder: { projectId: "project-1", path: "../secret" },
+            tagsText: "safe-tag",
+          },
+        },
+      ]),
+    );
+    expect(snap.cards.find((card) => card.id === "SET-OK")?.setCfg).toEqual({
+      folder: { projectId: "project-1", projectName: "프로젝트", path: "ep001/c0010" },
+      tagsText: "night, final",
+    });
+    expect(snap.cards.find((card) => card.id === "SET-BAD")?.setCfg).toEqual({ tagsText: "safe-tag" });
+  });
+
   it("알 수 없는 카드 종류는 여전히 거부", () => {
     expect(() => parseSceneImport(wrap([{ id: "X", kind: "bogus", x: 0, y: 0 }]))).toThrow();
   });

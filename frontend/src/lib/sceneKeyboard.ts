@@ -81,6 +81,7 @@ const NODE_KEYS: Record<string, SceneCardKind> = {
   m: "model",
   l: "list",
   t: "text",
+  s: "set",
   v: "view",
   o: "output",
   i: "input",

@@ -2,6 +2,19 @@ import type { Generation } from "../types";
 
 export type GenerationTagField = "tags" | "auto_tags";
 
+/** 여러 생성 응답에서 같은 태그가 반복되어도 등록 목록에는 이름당 한 번만 둔다. */
+export function uniqueTagNames(names: string[]): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const value of names) {
+    const name = value.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    found.push(name);
+  }
+  return found;
+}
+
 export function generationBulkIds(selected: Set<string>, focusId: string): Set<string> {
   return new Set([...selected, focusId]);
 }

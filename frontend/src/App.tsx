@@ -28,7 +28,7 @@ import {
 } from "./components/app/SelectionActionBar";
 import { KEY_COLORS } from "./lib/appConstants";
 import { generationQueryKey } from "./lib/appGenerationQuery";
-import { generationsByIds } from "./lib/generationTags";
+import { generationsByIds, uniqueTagNames } from "./lib/generationTags";
 import { useAppNavigation } from "./lib/useAppNavigation";
 import {
   exportSceneText,
@@ -47,6 +47,8 @@ import {
 } from "./lib/sceneEdges";
 import {
   buildSceneGenerationJobInput,
+  collectSceneGenerationAssignment,
+  type SceneGenerationAssignment,
   type SceneGenerationJobInput,
 } from "./lib/sceneGenerationInputs";
 import {
@@ -242,8 +244,10 @@ export default function App() {
   const mergeFacetTags = useCallback(
     (names: string[]) =>
       setFacets((f) => {
-        const add = names.filter((n) => n && !f.tags.includes(n));
-        return add.length ? { ...f, tags: [...f.tags, ...add] } : f;
+        const tags = uniqueTagNames([...f.tags, ...names]);
+        return tags.length === f.tags.length && tags.every((tag, index) => tag === f.tags[index])
+          ? f
+          : { ...f, tags };
       }),
     [setFacets],
   );
@@ -561,6 +565,10 @@ export default function App() {
     boundCardsById && sceneBinding
       ? collectGenModel(sceneBinding.cardId, boundCardsById, boundResolvedEdges)
       : null;
+  const boundAssignment =
+    boundCardsById && sceneBinding
+      ? collectSceneGenerationAssignment(sceneBinding.cardId, boundCardsById, boundResolvedEdges)
+      : undefined;
   const trayBinding =
     filters.tab === "compose" && activeScene
       ? sceneBinding
@@ -571,12 +579,21 @@ export default function App() {
             refs: sceneBinding.refs,
             prompt: derivedPrompt,
             model: boundModel,
+            assignment: boundAssignment,
             // modelKey: 연결 모델(모델/타입/파라미터) 변경 감지 — 같은 카드에서 모델노드 바뀌면 재적용.
             modelKey: boundModel
               ? `${boundModel.model}|${boundModel.type ?? ""}|${JSON.stringify(boundModel.params ?? {})}`
               : "none",
           }
-        : { key: `${activeScene.id}:none`, promptKey: "none", refs: [] as SceneRef[], prompt: "", model: null, modelKey: "none" }
+        : {
+            key: `${activeScene.id}:none`,
+            promptKey: "none",
+            refs: [] as SceneRef[],
+            prompt: "",
+            model: null,
+            modelKey: "none",
+            assignment: undefined as SceneGenerationAssignment | undefined,
+          }
       : null;
   // 씬 생성 카드의 레퍼런스를 프롬프트 트레이 편집(순서변경·추가·삭제)으로 되돌려 저장.
   // ★refs·prompt 저장이 같은 순간 겹치면(재사용 등) 서로를 덮어쓰지 않게, 렌더 스냅샷 대신
@@ -616,6 +633,7 @@ export default function App() {
         patchSceneById(activeScene.id, { cards: nextCards });
       }
       if (created?.length) {
+        mergeFacetTags(created.flatMap((item) => item.tags || []));
         setGens((prev) => {
           const ids = new Set(prev.map((x) => x.id));
           const fresh = created.filter((x) => !ids.has(x.id));
@@ -740,6 +758,9 @@ export default function App() {
         await ensureModelParams(j.model);
         const tunable = genParamsCacheRef.current[j.model] || [];
         const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
+        const assignmentProjectId = j.assignment?.projectId ?? projectId;
+        const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
+        const assignmentTags = j.assignment?.tags || [];
         const { body } = buildSpotlightCreateBody({
           text: j.text,
           inlineRefs: [],
@@ -748,9 +769,10 @@ export default function App() {
           displayPrompt: j.text,
           model: j.model,
           optionValues,
+          tags: assignmentTags,
           armedAutoTags: [...armedAutoTags],
-          activeProjectId: projectId,
-          folderPath,
+          activeProjectId: assignmentProjectId,
+          folderPath: assignmentFolderPath,
         });
         return body;
       },
@@ -765,6 +787,7 @@ export default function App() {
     // 최종 배치 순서는 요청 순서로 한 번 정규화한다(점진 반영은 실제 응답 순서였을 수 있음).
     const byCard = new Map<string, string[]>();
     const freshGens: Generation[] = successes.map((item) => item.result);
+    if (freshGens.length) mergeFacetTags(freshGens.flatMap((item) => item.tags || []));
     for (const success of successes) {
       const arr = byCard.get(success.cardId) || [];
       arr.push(success.result.id);
@@ -1142,7 +1165,9 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                onGenerateCard={(batch) => spotlightPromptRef.current?.submit(batch)}
+                onGenerateCard={(batch, assignment) =>
+                  spotlightPromptRef.current?.submit(batch, assignment)
+                }
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
                 onComfyRunningChange={setComfyRunning}

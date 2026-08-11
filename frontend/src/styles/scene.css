@@ -334,6 +334,47 @@
 .scene-card.sel .scene-copy-btn { display: flex; }
 .scene-copy-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
+/* ── Set 노드 — 생성 카드에 폴더·자동 태그를 전달 ── */
+.scene-card-set { border: 2px solid #526126; background: #080a07; --pc: #b57aff; }
+.scene-card-set:hover { border-color: var(--accent); }
+.scene-card-hd.set { color: var(--accent); background: rgba(196, 232, 74, 0.12); }
+.scene-setnode { background: #090b08; }
+.scene-setnode-label {
+  display: block; color: #9ca486; font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; margin-bottom: 5px;
+}
+.scene-setnode-folder {
+  flex: 1 1 50%; min-height: 0; box-sizing: border-box; padding: 9px;
+  border-bottom: 1px solid var(--border2); transition: background 0.12s, box-shadow 0.12s;
+}
+.scene-setnode-folder.drag-over {
+  background: rgba(196, 232, 74, 0.13); box-shadow: inset 0 0 0 1px var(--accent);
+}
+.scene-setnode-folder-empty {
+  height: calc(100% - 18px); min-height: 34px; display: grid; place-items: center;
+  border: 1px dashed #48502f; border-radius: 7px; color: #6f765e; font-size: 10px;
+}
+.scene-setnode-folder-value {
+  display: flex; align-items: center; gap: 6px; min-width: 0; height: calc(100% - 18px);
+  color: #dfe8bd; font-size: 10px;
+}
+.scene-setnode-folder-icon { flex: none; font-size: 13px; }
+.scene-setnode-folder-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-setnode-clear {
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: #8f9582; cursor: pointer;
+}
+.scene-setnode-clear:hover { background: rgba(242, 119, 124, 0.18); color: #f2777c; }
+.scene-setnode-tags {
+  flex: 1 1 50%; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 8px 9px;
+}
+.scene-setnode-tags textarea {
+  flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0;
+  background: transparent; color: #fff; font-family: inherit; font-size: 11px; line-height: 1.4;
+  padding: 0; overflow-y: auto;
+}
+.scene-setnode-tags textarea::placeholder { color: #5f6455; }
+
 /* ── 모델 노드 — 주황 계열, 설정 정보 표시 ── */
 .scene-card-model { border: 2px solid #6b4a1f; }
 .scene-card-model:hover { border-color: #ffb84d; }

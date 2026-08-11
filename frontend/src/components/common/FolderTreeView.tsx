@@ -1,5 +1,5 @@
 // 공통 폴더 트리 뷰 — 생성탭/어셋탭/관리자창이 같은 시각 언어를 공유한다.
-import { useState, type DragEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 
 export interface FolderTreeItem {
   name: string;
@@ -17,6 +17,7 @@ export function FolderTreeView({
   onToggle,
   onSelect,
   onDropFolder,
+  onDragFolder,
   isDisabled,
   onRowKeyDown,
   scroll = false,
@@ -29,6 +30,8 @@ export function FolderTreeView({
   onSelect: (path: string) => void;
   // 카드를 이 폴더로 드래그해 놓으면 호출(드롭). 지정 시 폴더 행이 드롭 타깃이 된다.
   onDropFolder?: (path: string, e: DragEvent) => void;
+  // 이 폴더를 캔버스 Set 노드로 끌기 시작할 때 호출.
+  onDragFolder?: (path: string, e: DragEvent) => void;
   // 이 폴더가 비활성(생략)인가 — true 면 회색 표시.
   isDisabled?: (path: string) => boolean;
   // 폴더 행 포커스 상태에서 키 입력(예: d 로 비활성 토글).
@@ -49,6 +52,7 @@ export function FolderTreeView({
           onToggle={onToggle}
           onSelect={onSelect}
           onDropFolder={onDropFolder}
+          onDragFolder={onDragFolder}
           isDisabled={isDisabled}
           onRowKeyDown={onRowKeyDown}
         />
@@ -65,6 +69,7 @@ function FolderTreeRow({
   onToggle,
   onSelect,
   onDropFolder,
+  onDragFolder,
   isDisabled,
   onRowKeyDown,
 }: {
@@ -75,6 +80,7 @@ function FolderTreeRow({
   onToggle?: (path: string) => void;
   onSelect: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
+  onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
@@ -87,6 +93,7 @@ function FolderTreeRow({
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
   const [dropOver, setDropOver] = useState(false);
+  const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
   const dropProps = onDropFolder && !hasChildren
     ? {
@@ -120,8 +127,33 @@ function FolderTreeRow({
         title={node.virtual ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)` : node.path || node.name}
         onClick={(e) => {
           e.stopPropagation();
+          // 일부 브라우저는 HTML5 drag 종료 뒤 click까지 발화한다. Set으로 끌었는데
+          // 폴더 필터 선택까지 되어 캔버스가 닫히는 일을 막는다.
+          if (folderDraggingRef.current) {
+            e.preventDefault();
+            return;
+          }
           onSelect(node.path);
         }}
+        draggable={!!onDragFolder}
+        onDragStart={
+          onDragFolder
+            ? (e) => {
+                e.stopPropagation();
+                folderDraggingRef.current = true;
+                onDragFolder(node.path, e);
+              }
+            : undefined
+        }
+        onDragEnd={
+          onDragFolder
+            ? () => {
+                window.setTimeout(() => {
+                  folderDraggingRef.current = false;
+                }, 0);
+              }
+            : undefined
+        }
         onKeyDown={
           onRowKeyDown
             ? (e) => {
@@ -164,6 +196,7 @@ function FolderTreeRow({
             onToggle={onToggle}
             onSelect={onSelect}
             onDropFolder={onDropFolder}
+            onDragFolder={onDragFolder}
             isDisabled={isDisabled}
             onRowKeyDown={onRowKeyDown}
           />

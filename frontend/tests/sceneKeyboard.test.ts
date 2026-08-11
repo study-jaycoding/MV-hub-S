@@ -53,6 +53,7 @@ describe("scene keyboard intent", () => {
   it("Tab 피커가 열려 있을 때 노드 키를 카드 종류로 변환한다", () => {
     expect(sceneNodeKindForKey("N")).toBe("generation");
     expect(sceneNodeKindForKey("c")).toBe("comfy");
+    expect(sceneNodeKindForKey("s")).toBe("set");
     expect(sceneKeyIntent(key("t"), { pickerOpen: true, selectionCount: 0 })).toEqual({
       type: "create-node",
       kind: "text",

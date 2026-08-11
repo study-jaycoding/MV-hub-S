@@ -8,6 +8,7 @@ export type SceneCardKind =
   | "reference"
   | "generation"
   | "text"
+  | "set"
   | "model"
   | "list"
   | "view"
@@ -23,6 +24,17 @@ export interface SceneModelCfg {
   model?: string; // 모델 id
   modelName?: string; // 표시용 이름
   params?: Record<string, string | number | boolean>; // 주요 파라미터(표시·복원용)
+}
+
+export interface SceneSetFolder {
+  projectId: string;
+  projectName?: string;
+  path: string;
+}
+
+export interface SceneSetCfg {
+  folder?: SceneSetFolder;
+  tagsText?: string;
 }
 
 // Comfy 노드 설정 — ComfyUI API 워크플로우 + 노출·조절 파라미터 스냅샷(씬에 저장).
@@ -78,6 +90,7 @@ export interface SceneCard {
   unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
   batchCount?: number; // 이 노드에서 한 번에 생성할 장수(배치). 노드마다 각자 관리(없으면 1). 실제 사용은 cardBatch().
   comfyCfg?: SceneComfyCfg; // comfy 노드: ComfyUI 워크플로우·파라미터·실행결과 스냅샷.
+  setCfg?: SceneSetCfg; // set 노드: 생성 목적 폴더 + 생성물에 적용할 일반 등록 태그.
 }
 
 // 연결의 의미(입력 레인·색). 없으면 소스/타깃 kind 로 추론(resolveEdgeRole) — 기존 저장분 하위호환.
@@ -277,7 +290,7 @@ export const SCENE_EXPORT_VERSION = 1;
 export const SCENE_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // 5MB — 텍스트라 충분히 큰 상한
 
 const SCENE_CARD_KINDS: SceneCardKind[] = [
-  "reference", "generation", "text", "model", "list", "view", "output", "input", "head", "render",
+  "reference", "generation", "text", "set", "model", "list", "view", "output", "input", "head", "render",
   "comfy",
 ];
 
@@ -333,6 +346,36 @@ function sanitizeImportedCard(c: SceneCard): SceneCard {
   if (c.h !== undefined && !isFiniteNum(c.h)) delete out.h;
   if (c.refs !== undefined && !Array.isArray(c.refs)) delete out.refs;
   if (c.genIds !== undefined && !Array.isArray(c.genIds)) delete out.genIds;
+  if (c.setCfg !== undefined) {
+    if (!c.setCfg || typeof c.setCfg !== "object" || Array.isArray(c.setCfg)) delete out.setCfg;
+    else {
+      const folder = c.setCfg.folder;
+      const folderProjectId = typeof folder?.projectId === "string" ? folder.projectId.trim() : "";
+      const folderProjectName =
+        typeof folder?.projectName === "string" ? folder.projectName.trim() : "";
+      const folderPath =
+        typeof folder?.path === "string"
+          ? folder.path.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")
+          : "";
+      const folderSegments = folderPath.split("/").filter(Boolean);
+      const validFolder =
+        !!folderProjectId &&
+        folderSegments.length > 0 &&
+        !folderSegments.some((segment) => segment === "." || segment === "..");
+      out.setCfg = {
+        ...(validFolder
+          ? {
+              folder: {
+                projectId: folderProjectId,
+                ...(folderProjectName ? { projectName: folderProjectName } : {}),
+                path: folderSegments.join("/"),
+              },
+            }
+          : {}),
+        ...(typeof c.setCfg.tagsText === "string" ? { tagsText: c.setCfg.tagsText } : {}),
+      };
+    }
+  }
   const cfg = c.comfyCfg;
   if (cfg !== undefined) {
     if (!cfg || typeof cfg !== "object") delete out.comfyCfg;
