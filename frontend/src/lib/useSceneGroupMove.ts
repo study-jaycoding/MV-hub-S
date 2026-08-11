@@ -6,6 +6,10 @@ import type {
   SetStateAction,
 } from "react";
 import { moveCardsFromOrigins } from "./sceneInteractions";
+import {
+  sceneGroupClickSelection,
+  sceneGroupDragTargetIds,
+} from "./sceneGroupSelection";
 import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
 import type { BeginSceneDrag } from "./useSceneDragSession";
 
@@ -13,11 +17,13 @@ interface UseSceneGroupMoveOptions {
   cardsRef: MutableRefObject<SceneCard[]>;
   edgesRef: MutableRefObject<SceneEdge[]>;
   groupsRef: MutableRefObject<SceneGroup[]>;
+  selectedGroupIdsRef: MutableRefObject<Set<string>>;
   zoomRef: MutableRefObject<number>;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
   setCards: Dispatch<SetStateAction<SceneCard[]>>;
   setGroups: Dispatch<SetStateAction<SceneGroup[]>>;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
+  setSelectedGroupIds: Dispatch<SetStateAction<Set<string>>>;
   setDraggingIds: Dispatch<SetStateAction<readonly string[]>>;
   beginDrag: BeginSceneDrag;
   reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
@@ -36,11 +42,24 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
 
     event.preventDefault();
     const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    const targetGroupIds = sceneGroupDragTargetIds(
+      current.selectedGroupIdsRef.current,
+      groupId,
+      additive,
+    );
+    const targetGroupIdSet = new Set(targetGroupIds);
     const start = { x: event.clientX, y: event.clientY };
     const cardsById = new Map(
       current.cardsRef.current.map((card) => [card.id, card] as const),
     );
-    const memberIds = group.cardIds.filter((cardId) => cardsById.has(cardId));
+    const memberIds = Array.from(
+      new Set(
+        current.groupsRef.current
+          .filter((item) => targetGroupIdSet.has(item.id))
+          .flatMap((item) => item.cardIds)
+          .filter((cardId) => cardsById.has(cardId)),
+      ),
+    );
     const origins: Record<string, { x: number; y: number }> = {};
     for (const memberId of memberIds) {
       const card = cardsById.get(memberId);
@@ -49,8 +68,12 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
 
     const anchorId = memberIds[0];
     const anchor = anchorId ? origins[anchorId] : undefined;
-    const originalRect = group.rect ? { ...group.rect } : undefined;
-    let lastRect = originalRect;
+    const originalRects = new Map(
+      current.groupsRef.current
+        .filter((item) => targetGroupIdSet.has(item.id) && item.rect)
+        .map((item) => [item.id, { ...item.rect! }] as const),
+    );
+    let lastRects = new Map(originalRects);
     let lastOffset = { x: Number.NaN, y: Number.NaN };
     let moved = false;
     let relocated = false;
@@ -63,7 +86,10 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
         return;
       }
       const latest = optionsRef.current;
-      if (!moved) latest.setDraggingIds(memberIds);
+      if (!moved) {
+        latest.setDraggingIds(memberIds);
+        latest.setSelectedGroupIds(new Set(targetGroupIds));
+      }
       moved = true;
       latest.scrollRef.current?.classList.add("dragging");
 
@@ -90,7 +116,7 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
       if (movedCards.dx === lastOffset.x && movedCards.dy === lastOffset.y) return;
       lastOffset = { x: movedCards.dx, y: movedCards.dy };
       if (
-        (anchor || originalRect) &&
+        (anchor || originalRects.size > 0) &&
         (movedCards.dx !== 0 || movedCards.dy !== 0)
       ) {
         relocated = true;
@@ -100,28 +126,31 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
         latest.cardsRef.current = movedCards.cards;
         latest.setCards(movedCards.cards);
       }
-      if (originalRect) {
-        lastRect = {
-          ...originalRect,
-          x: originalRect.x + movedCards.dx,
-          y: originalRect.y + movedCards.dy,
-        };
+      if (originalRects.size) {
+        lastRects = new Map(
+          [...originalRects].map(([id, rect]) => [
+            id,
+            { ...rect, x: rect.x + movedCards.dx, y: rect.y + movedCards.dy },
+          ]),
+        );
         latest.setGroups((previous) =>
-          previous.map((item) =>
-            item.id === groupId ? { ...item, rect: lastRect } : item,
-          ),
+          previous.map((item) => {
+            const rect = lastRects.get(item.id);
+            return rect ? { ...item, rect } : item;
+          }),
         );
       }
     };
 
     const commitMovedGroup = () => {
       const latest = optionsRef.current;
-      const nextGroups = originalRect && lastRect
-        ? latest.groupsRef.current.map((item) =>
-            item.id === groupId ? { ...item, rect: lastRect } : item,
-          )
+      const nextGroups = originalRects.size
+        ? latest.groupsRef.current.map((item) => {
+            const rect = lastRects.get(item.id);
+            return rect ? { ...item, rect } : item;
+          })
         : latest.groupsRef.current;
-      if (originalRect) latest.setGroups(nextGroups);
+      if (originalRects.size) latest.setGroups(nextGroups);
       const nextCards = latest.reconcileGenerationRefs(
         latest.cardsRef.current,
         latest.edgesRef.current,
@@ -144,17 +173,13 @@ export function useSceneGroupMove(options: UseSceneGroupMoveOptions) {
         commitMovedGroup();
         return;
       }
-      latest.setSelected((previous) => {
-        if (!additive) return new Set(memberIds);
-        const next = new Set(previous);
-        const allSelected = memberIds.every((cardId) => next.has(cardId));
-        for (const memberId of memberIds) {
-          allSelected ? next.delete(memberId) : next.add(memberId);
-        }
-        return next;
-      });
+      latest.setSelectedGroupIds((previous) =>
+        sceneGroupClickSelection(previous, groupId, additive),
+      );
     };
 
+    // 그룹 선택과 카드 선택은 별개다. 그룹을 잡는 순간 내부 카드 선택은 해제한다.
+    current.setSelected(new Set());
     current.beginDrag(move, up, () => {
       cleanupDrag();
       if (relocated) commitMovedGroup();
