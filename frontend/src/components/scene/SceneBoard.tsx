@@ -902,7 +902,7 @@ export function SceneBoard({
         const li = collectListInputs(src.id, byId, resolved);
         // 레퍼런스 리스트 → 그 안 레퍼런스 전부(순서대로). 생성물 리스트 → 각 생성물을 asset ref 로.
         if (li.kind === "reference")
-          for (const cid of li.sourceIds) {
+          for (const cid of li.referenceCardIds) {
             const rc = byId.get(cid);
             if (rc?.refs) out.push(...tagged(rc.refs));
           }
@@ -1514,27 +1514,39 @@ export function SceneBoard({
     setCards(nextCards);
     persist(nextCards, edgesRef.current);
   };
-  // 리스트 노드 썸네일 드래그로 순서 변경 — 들어오는 엣지에 order 를 다시 매겨 collectListInputs 정렬을 바꾼다.
-  // 리스트/렌더 항목의 새 순서(order = sourceId 배열)를 엣지 order·refs 멤버십에 반영해 저장.
+  // 리스트 노드 항목 순서 변경. 직접 입력은 edge.order 로, 중첩/무선 레퍼런스는 연결선 하나 안에
+  // 여러 항목이 있으므로 대상 list 카드의 listOrder 로 저장한다(원본 리스트 순서는 건드리지 않음).
   const commitListOrder = (listId: string, order: string[]) => {
-    const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const nextEdges = edgesRef.current.map((ed) => {
-      if (ed.to !== listId) return ed;
-      const idx = order.indexOf(ed.from);
-      return idx >= 0 ? { ...ed, order: idx } : ed;
-    });
+    const currentCards = cardsRef.current;
+    const byId = new Map(currentCards.map((c) => [c.id, c] as const));
+    const resolved = resolvePortEdges(byId, edgesRef.current);
+    const isReferenceList = collectListInputs(listId, byId, resolved).kind === "reference";
+    const nextEdges = isReferenceList
+      ? edgesRef.current
+      : edgesRef.current.map((ed) => {
+          if (ed.to !== listId) return ed;
+          const idx = order.indexOf(ed.from);
+          return idx >= 0 ? { ...ed, order: idx } : ed;
+        });
+    const orderedCards = isReferenceList
+      ? currentCards.map((c) => (c.id === listId ? { ...c, listOrder: order } : c))
+      : currentCards;
     // 순서 변경 후 refs 멤버십 재계산(추가/제거 정합).
-    let nextCards = withGenRefs(cardsRef.current, nextEdges);
+    let nextCards = withGenRefs(orderedCards, nextEdges);
     // ★레퍼런스 리스트가 생성카드에 연결돼 있으면 '리스트 순서 우선' — 그 카드 refs 를 리스트(gatherTarget) 순서로 재배열.
     //   (@·드래그로 넣은 참조 source_gen_id 는 뒤에 보존.) 사용자 결정: 연결 뒤 재정렬도 리스트 순서가 이긴다.
-    if (collectListInputs(listId, byId, nextEdges).kind === "reference") {
+    if (isReferenceList) {
+      const nextById = new Map(nextCards.map((c) => [c.id, c] as const));
+      const nextResolved = resolvePortEdges(nextById, nextEdges);
       const genTargets = new Set(
-        nextEdges.filter((e) => e.from === listId && byId.get(e.to)?.kind === "generation").map((e) => e.to),
+        nextResolved
+          .filter((e) => e.from === listId && nextById.get(e.to)?.kind === "generation")
+          .map((e) => e.to),
       );
       if (genTargets.size)
         nextCards = nextCards.map((c) => {
           if (c.kind !== "generation" || !genTargets.has(c.id)) return c;
-          const ordered = gatherTarget(c.id, cardsRef.current, nextEdges); // 리스트 순서 반영된 레퍼런스들
+          const ordered = gatherTarget(c.id, nextCards, nextEdges); // listOrder가 반영된 레퍼런스들
           const okey = new Set(ordered.map((r) => r.file_path + "#" + (r.source_gen_id || "")));
           const extras = (c.refs || []).filter((r) => !okey.has(r.file_path + "#" + (r.source_gen_id || "")));
           return { ...c, refs: [...ordered, ...extras] };
@@ -1547,7 +1559,8 @@ export function SceneBoard({
   // fromCardId 를 insertIndex(원래 배열 기준 삽입 위치, 0..n) 로 옮긴다. 순서가 그대로면 아무것도 안 함.
   const reorderListToIndex = (listId: string, fromCardId: string, insertIndex: number) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
+    const li = collectListInputs(listId, byId, resolvePortEdges(byId, edgesRef.current));
+    const order = [...(li.kind === "reference" ? li.referenceCardIds : li.sourceIds)];
     const fi = order.indexOf(fromCardId);
     if (fi < 0) return;
     let ti = insertIndex;
@@ -1562,7 +1575,8 @@ export function SceneBoard({
   //  첫 '이동 안 하는' 항목 앞에 블록으로 삽입. 순서가 그대로면 아무것도 안 함.
   const reorderListMultiToIndex = (listId: string, movingCids: string[], insertIndex: number) => {
     const byId = new Map(cardsRef.current.map((c) => [c.id, c] as const));
-    const order = [...collectListInputs(listId, byId, edgesRef.current).sourceIds];
+    const li = collectListInputs(listId, byId, resolvePortEdges(byId, edgesRef.current));
+    const order = [...(li.kind === "reference" ? li.referenceCardIds : li.sourceIds)];
     const movingSet = new Set(movingCids.filter((c) => order.includes(c)));
     if (!movingSet.size) return;
     if (movingSet.size === 1) return reorderListToIndex(listId, [...movingSet][0], insertIndex);

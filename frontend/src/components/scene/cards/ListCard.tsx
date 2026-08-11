@@ -51,7 +51,7 @@ export function ListCard({
       : li.kind === "text"
         ? `텍스트 ${li.sourceIds.length}개`
         : li.kind === "reference"
-          ? `레퍼런스 ${li.sourceIds.length}개`
+          ? `레퍼런스 ${li.referenceCardIds.length}개`
           : li.kind === "mixed"
             ? "⚠ 혼합 입력(사용 불가)"
             : li.kind === "invalid"
@@ -200,7 +200,7 @@ export function ListCard({
             // 레퍼런스 카드들 — 카드마다 대표 썸네일(첫 장)+장수 배지, 드래그해 순서 변경.
             //  썸네일·배지 크기는 리스트 카드 크기에 비례(listThumbsStyle: 그리드 열폭 + 배지 글씨).
             <div className="scene-listthumbs" data-reorder style={listThumbsStyle}>
-              {li.sourceIds.map((cid, i) => {
+              {li.referenceCardIds.map((cid, i) => {
                 const rc = cardsById.get(cid);
                 const refs = rc?.refs || [];
                 const src = refs[0] ? refThumbSrc(refs[0]) : null;
@@ -209,7 +209,7 @@ export function ListCard({
                     key={cid}
                     className={"scene-listthumb" + (reorderFrom === cid ? " reordering" : "")}
                     data-reid={cid}
-                    title={`${i + 1}번 (레퍼런스 ${refs.length}장) — 드래그해 순서 변경`}
+                    title={`${i + 1}번 (레퍼런스 ${refs.length}장) — 드래그해 이 리스트의 순서 변경`}
                     onMouseDown={(e) => startReorder(e, card.id, cid, "h")}
                   >
                     {src ? (

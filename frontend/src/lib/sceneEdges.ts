@@ -168,8 +168,9 @@ export function resolvePortEdges(
 // text 만 들어오면 그 텍스트를 order/y 순으로 합친다. 섞이거나 model/ref 가 섞이면 사용 불가로 표시.
 export interface ListInputs {
   kind: "empty" | "generation" | "text" | "reference" | "mixed" | "invalid";
-  sourceIds: string[]; // 정렬된 입력 소스 카드 id (reference 수집이면 레퍼런스 카드 id 들)
+  sourceIds: string[]; // 정렬된 직접 입력 소스 카드 id(행 표시·순서 변경 기준)
   generationCardIds: string[]; // generation 수집일 때 그 카드들
+  referenceCardIds: string[]; // reference 수집일 때 중첩 list까지 펼친 레퍼런스 카드들
   text: string; // text 수집일 때 합친 텍스트
 }
 
@@ -232,7 +233,8 @@ export function refLaneOrderIndex(
     else if (src.kind === "list") {
       const li = collectListInputs(src.id, cardsById, edges);
       if (li.kind === "reference")
-        for (const cid of li.sourceIds) idx = Math.min(idx, minKeyIdx(cardsById.get(cid)?.refs));
+        for (const cid of li.referenceCardIds)
+          idx = Math.min(idx, minKeyIdx(cardsById.get(cid)?.refs));
     } else if (src.kind === "generation") {
       for (const gid of variantIds(src)) {
         const i = idxBySrcGen.get(gid);
@@ -554,7 +556,8 @@ function collectListInputsIndexed(
   const sources = incomingEdgesOf(listId, edges, incomingByTarget)
     .map((e) => ({ e, c: cardsById.get(e.from) }))
     .filter((x): x is { e: SceneEdge; c: SceneCard } => !!x.c);
-  if (!sources.length) return { kind: "empty", sourceIds: [], generationCardIds: [], text: "" };
+  if (!sources.length)
+    return { kind: "empty", sourceIds: [], generationCardIds: [], referenceCardIds: [], text: "" };
   const sorted = sortByOrder(sources);
   const sourceIds = sorted.map((s) => s.c.id); // 직접 소스(행표시·reorder용) — 중첩이어도 그대로.
 
@@ -593,8 +596,7 @@ function collectListInputsIndexed(
     if (comfyKind) return comfyKind;
     if (c.kind === "list") {
       const li = nestedListInputsOf(c);
-      // 중첩 reference 는 이번엔 미지원(sourceIds 기반 reference 소비처와 충돌) → other 로 둬 invalid 처리.
-      if (li?.kind === "generation" || li?.kind === "text") return li.kind;
+      if (li?.kind === "generation" || li?.kind === "text" || li?.kind === "reference") return li.kind;
       return "other";
     }
     return "other";
@@ -622,13 +624,14 @@ function collectListInputsIndexed(
           seenGen.add(id);
           generationCardIds.push(id);
         }
-    return { kind: "generation", sourceIds, generationCardIds, text: "" };
+    return { kind: "generation", sourceIds, generationCardIds, referenceCardIds: [], text: "" };
   }
   if (classified.every((s) => s.sourceKind === "text"))
     return {
       kind: "text",
       sourceIds,
       generationCardIds: [],
+      referenceCardIds: [],
       // 텍스트 소스는 상류(comfy 등)까지 따라 읽는다. 중첩 list 는 그 리스트의 합친 텍스트를 쓴다.
       text: classified
         .map((s) =>
@@ -638,13 +641,49 @@ function collectListInputsIndexed(
         )
         .join("\n"),
     };
-  if (classified.every((s) => s.sourceKind === "reference"))
-    return { kind: "reference", sourceIds, generationCardIds: [], text: "" };
+  if (classified.every((s) => s.sourceKind === "reference")) {
+    const referenceCardIds: string[] = [];
+    const seenRef = new Set<string>();
+    for (const s of classified) {
+      const ids =
+        s.c.kind === "reference"
+          ? [s.c.id]
+          : s.c.kind === "list"
+            ? nestedListInputsOf(s.c)?.referenceCardIds ?? []
+            : [];
+      for (const id of ids)
+        if (!seenRef.has(id)) {
+          seenRef.add(id);
+          referenceCardIds.push(id);
+        }
+    }
+    // 중첩/무선 리스트는 여러 레퍼런스가 연결선 하나로 들어오므로 edge.order 만으로 개별 순서를
+    // 저장할 수 없다. 대상 리스트 카드의 listOrder 를 우선 적용하고 새로 들어온 항목은 뒤에 붙인다.
+    const current = new Set(referenceCardIds);
+    const ordered: string[] = [];
+    for (const id of cardsById.get(listId)?.listOrder || [])
+      if (current.delete(id)) ordered.push(id);
+    for (const id of referenceCardIds)
+      if (current.delete(id)) ordered.push(id);
+    return {
+      kind: "reference",
+      sourceIds,
+      generationCardIds: [],
+      referenceCardIds: ordered,
+      text: "",
+    };
+  }
   // 그 외: gen+text 혼합이면 mixed, reference·미판정 comfy·중첩미지원 등이 섞이면 invalid(리스트는 동종만).
   const hasNonGenText = classified.some(
     (s) => s.sourceKind !== "generation" && s.sourceKind !== "text",
   );
-  return { kind: hasNonGenText ? "invalid" : "mixed", sourceIds, generationCardIds: [], text: "" };
+  return {
+    kind: hasNonGenText ? "invalid" : "mixed",
+    sourceIds,
+    generationCardIds: [],
+    referenceCardIds: [],
+    text: "",
+  };
 }
 
 export function collectListInputs(
