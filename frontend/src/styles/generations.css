@@ -810,6 +810,9 @@
   background: rgba(255,255,255,0.12); border: 1px solid var(--border); color: #fff;
 }
 .select-bar button:hover { background: rgba(255,255,255,0.2); }
+.select-bar button.sb-resolve { border-color: rgba(93, 173, 255, 0.62); }
+.select-bar button:disabled { opacity: 0.55; cursor: wait; }
+.select-bar button:disabled:hover { background: rgba(255,255,255,0.12); }
 .select-bar button.sb-del { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); }
 .select-bar button.sb-del:hover { background: rgba(244,63,94,0.32); }
 

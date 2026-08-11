@@ -72,6 +72,7 @@ import { useGenerationTagActions } from "./lib/useGenerationTagActions";
 import { useGenerationWorkspaceActions } from "./lib/useGenerationWorkspaceActions";
 import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
 import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
+import { useResolveTransferActions } from "./lib/useResolveTransferActions";
 import { useHubAuth } from "./lib/useHubAuth";
 import { useAppToast } from "./lib/useAppToast";
 import { useDisabledGenerations } from "./lib/useDisabledGenerations";
@@ -529,6 +530,7 @@ export default function App() {
     flash,
     openRecipe,
   });
+  const resolveTransfer = useResolveTransferActions({ flash });
   const { handlePromptCreated } = usePromptCreatedActions({
     boardFocusIdRef,
     boardSelectedRef,
@@ -1019,6 +1021,8 @@ export default function App() {
         selectedGenerations={selectedGenerations}
         projects={projects}
         onDownload={bulkDownload}
+        onResolveTransfer={resolveTransfer.sendToResolve}
+        resolveTransferBusy={resolveTransfer.busy}
         onCompare={(items) => {
           if (items.length >= 2) setCompareGens(items);
         }}
