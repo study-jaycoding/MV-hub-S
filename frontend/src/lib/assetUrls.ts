@@ -3,7 +3,7 @@ import { withQuery } from "./url";
 export { withQuery };
 
 export function assetTreeUrl(project: string, fresh = false): string {
-  // fresh=true 면 백엔드 10초 트리 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전 즉시 반영 — 창 포커스 재조회).
+  // fresh=true 면 백엔드 트리 캐시를 건너뛰고 다시 훑는다(변경된 파일 버전 즉시 반영 — 창 포커스 재조회).
   return withQuery("/api/assets/tree", fresh ? { project, fresh: 1 } : { project });
 }
 

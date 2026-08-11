@@ -219,38 +219,76 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     assetVersionsSnapshot,
     assetVersionsSnapshot,
   );
-  // 어셋 파일 실시간 변경 신호(WS→BroadcastChannel) 수신 → 트레이가 참조하는 asset 프로젝트를 fresh 로
+  // 어셋 파일 실시간 변경 신호(WS→BroadcastChannel) 수신 → 트레이가 참조하는 asset 프로젝트를
   // 다시 읽어 전역 버전 표를 갱신한다. 트레이 전용 asset(캔버스 카드에 없는 것)도 실시간 반영되게.
   const trayRefsRef = useRef(trayRefs);
   trayRefsRef.current = trayRefs;
+  const promptAssetProjectsKey = useMemo(() => {
+    const projects = new Set<string>();
+    const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
+    for (const ref of [...trayRefs, ...inlineRefs]) {
+      if (!ref.file_path?.startsWith("asset:")) continue;
+      const project = ref.file_path.slice(6).split("|")[0];
+      if (project) projects.add(project);
+    }
+    return [...projects].sort().join("|");
+  }, [trayRefs, promptTick]);
+  const trayAssetVerInFlightRef = useRef<Set<string>>(new Set());
+  const refreshTrayAssetVersions = useCallback((changed: string[] = [], fresh = false) => {
+    const projs = new Set<string>();
+    const inlineRefs = editorRef.current ? serialize(editorRef.current).refs : [];
+    for (const r of [...trayRefsRef.current, ...inlineRefs]) {
+      if (r.file_path?.startsWith("asset:")) {
+        const proj = r.file_path.slice(6).split("|")[0];
+        if (proj && (changed.length === 0 || changed.includes(proj))) projs.add(proj);
+      }
+    }
+    projs.forEach((proj) => {
+      const inFlight = trayAssetVerInFlightRef.current;
+      if (inFlight.has(proj)) return;
+      inFlight.add(proj);
+      api
+        .assetTree(proj, fresh)
+        .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
+        .catch(() => {
+          /* 조회 실패는 무시(다음 신호/포커스에서 재시도) */
+        })
+        .finally(() => inFlight.delete(proj));
+    });
+  }, []);
   useEffect(() => {
     const bc = openAssetBroadcast();
     if (!bc) return;
-    const inFlight = new Set<string>();
     bc.onmessage = (event) => {
       if (event.data?.type !== ASSET_CHANNEL_MESSAGES.assetsUpdated) return;
       const changed: string[] = Array.isArray(event.data.projects) ? event.data.projects : [];
-      const projs = new Set<string>();
-      for (const r of trayRefsRef.current) {
-        if (r.file_path?.startsWith("asset:")) {
-          const proj = r.file_path.slice(6).split("|")[0];
-          if (proj && (changed.length === 0 || changed.includes(proj))) projs.add(proj);
-        }
-      }
-      projs.forEach((proj) => {
-        if (inFlight.has(proj)) return;
-        inFlight.add(proj);
-        api
-          .assetTree(proj)
-          .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
-          .catch(() => {
-            /* 조회 실패는 무시 */
-          })
-          .finally(() => inFlight.delete(proj));
-      });
+      refreshTrayAssetVersions(changed);
     };
     return () => bc.close();
-  }, []);
+  }, [refreshTrayAssetVersions]);
+  // 새 레퍼런스가 트레이나 인라인 칩에 들어온 직후에도 버전표를 채우고 실제 폴더를 감시 등록한다.
+  // 이것이 없으면 첫 포커스 안전망 전까지 v 없는 썸네일 주소가 남아 즉시 덮어쓰기를 놓칠 수 있다.
+  useEffect(() => {
+    if (!promptAssetProjectsKey) return;
+    refreshTrayAssetVersions([], true);
+  }, [promptAssetProjectsKey, refreshTrayAssetVersions]);
+  // 창을 다시 볼 때는 watchdog 미설치/이벤트 누락도 복구하도록 서버 캐시를 건너뛴다.
+  useEffect(() => {
+    let lastAt = 0;
+    const onFocus = () => {
+      if (document.hidden) return;
+      const now = Date.now();
+      if (now - lastAt < 30_000) return;
+      lastAt = now;
+      refreshTrayAssetVersions([], true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [refreshTrayAssetVersions]);
   // 미디어 레퍼런스 토큰(@image1/<<<video1>>>) → 색 있는 알약 정규화 — useSpotlightTokenWrap 훅으로 추출(동작 보존).
   //  editingTokenNodeRef 는 멘션 감지와 공유하므로 컴포넌트 소유, 훅엔 주입(blur 에서 null 로만 해제).
   //  scheduleLiveWrap 은 아래 onEditorInput/onCaretMove 가 (이벤트 시점에) 참조 — 선언 순서상 forward 참조지만 호출은 마운트 후라 안전.

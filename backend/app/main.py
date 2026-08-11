@@ -253,11 +253,11 @@ async def lifespan(app: FastAPI):
         periodic_sync.start()
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
     # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
-    # 로컬 허브 전용(AUTH off): 공유 서버는 LAN 사용자가 어셋 파일 I/O 를 못 해 감시 의미가 없다.
-    if not AUTH_ENABLED:
-        from .services import asset_watcher
+    # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
+    # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
+    from .services import asset_watcher
 
-        asset_watcher.start(asyncio.get_running_loop())
+    asset_watcher.start(asyncio.get_running_loop())
     # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
     # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
     if _proxy.is_worker_hub():
@@ -280,10 +280,7 @@ async def lifespan(app: FastAPI):
     await remote_realtime_bridge.stop()
     if AUTH_ENABLED:
         await periodic_sync.stop()
-    else:
-        from .services import asset_watcher
-
-        asset_watcher.stop()
+    asset_watcher.stop()
     log_event(_runtime_log, "shutdown_complete")
 
 

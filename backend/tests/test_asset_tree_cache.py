@@ -152,6 +152,26 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(result["children"][0]["path"], "frame.png")
         watch.assert_called_once_with(root, "demo", hide_render=False)
 
+    def test_combined_assets_router_registers_internal_folder_watches(self):
+        expected = [{"name": "captures", "type": "dir", "children": []}]
+        with (
+            patch("app.services.asset_watcher.watch_combined") as watch_combined,
+            patch.object(asset_tree, "read_combined_tree", return_value=expected),
+        ):
+            result = assets.project_tree(
+                SimpleNamespace(),
+                BackgroundTasks(),
+                project=assets._COMBINED_INTERNAL,
+                fresh=False,
+            )
+
+        self.assertEqual(result["children"], expected)
+        watch_combined.assert_called_once_with(
+            assets.ASSETS_ROOT,
+            assets._COMBINED_INTERNAL,
+            tuple(assets._INTERNAL_FOLDERS),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
