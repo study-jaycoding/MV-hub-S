@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app import db, repo
 from app import deps as deps_mod
+from app.routers import generation as generation_router
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
 from app.routers import manage as manage_router
@@ -243,6 +244,37 @@ class IdentityPermissionTests(unittest.TestCase):
                 supplied, "river@example.com"
             )
         self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_workspace_picker_only_lists_current_account_workspaces(self):
+        with db.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO workspace_registry(id,name) VALUES(?,?)",
+                [("ws-river", "RIVER TEAM"), ("ws-other", "OTHER TEAM")],
+            )
+            conn.executemany(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES(?,?,1)",
+                [
+                    ("ws-river", "river@example.com"),
+                    ("ws-other", "other@example.com"),
+                ],
+            )
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with mock.patch.object(generation_router._proxy, "proxying", return_value=False):
+            result = generation_router.available_workspaces(req)
+
+        self.assertEqual(
+            result,
+            {"workspaces": [{"id": "ws-river", "name": "RIVER TEAM"}]},
+        )
 
     def test_local_gen_request_keeps_agent_name_without_registry(self):
         from app.models import WorkspaceContext

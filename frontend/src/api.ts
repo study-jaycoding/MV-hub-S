@@ -416,6 +416,11 @@ export const api = {
     }));
   },
 
+  workspaceCommandOptions: () =>
+    jsonFetch<{ workspaces: { id: string; name: string }[] }>(
+      "/api/workspaces/available",
+    ),
+
   // 전역(auto) 태그를 이 카드에 부여/해제(교체). 신규 전역태그 생성은 사이드바 전용.
   setGenAutoTags: (id: string, auto_tags: string[]) =>
     generationFetch(`/api/generations/${pathPart(id)}/auto-tags`, {
