@@ -12,6 +12,7 @@ import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { useSyncStatus } from "../lib/useSyncStatus";
 import {
+  reconcileReportedWorkspaceContext,
   sameWorkspace,
   selectedWorkspaceContext,
   workspaceContextOf,
@@ -56,6 +57,10 @@ export function AccountMenu({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
+  // 계정 상태 요청이 진행되는 동안 사용자가 공간을 바꿔도 오래된 응답이 선택을 되돌리지 않게
+  // 비동기 콜백은 항상 가장 최신 컨텍스트를 읽는다.
+  const workspaceContextRef = useRef(workspaceContext);
+  workspaceContextRef.current = workspaceContext;
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
@@ -73,18 +78,22 @@ export function AccountMenu({
   const acceptLiveWorkspaces = useCallback((items: Workspace[]) => {
     setList(items);
     const next = selectedWorkspaceContext(items);
-    if (!sameWorkspace(workspaceContext, next) || workspaceContext.name !== next.name) {
+    const currentContext = workspaceContextRef.current;
+    if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
       onWorkspaceContextChange(next);
     }
-  }, [onWorkspaceContextChange, workspaceContext]);
+  }, [onWorkspaceContextChange]);
   const acceptReportedStatus = useCallback((status: ReportedHfStatus) => {
     setReported(status);
     // 공유 서버에서는 메뉴 선택이 "조회/생성 대상"이다. 최초 진입 때만 에이전트가 보고한
-    // 현재 CLI 공간을 기본값으로 삼고, 이후 사용자가 고른 값은 새 보고가 와도 유지한다.
-    if (workspaceContext.scope === "unknown") {
-      onWorkspaceContextChange(selectedWorkspaceContext(status.workspaces || []));
+    // 현재 CLI 공간을 기본값으로 삼는다. 저장 필터에서 id만 복원된 팀 컨텍스트는 같은 id의
+    // 보고값으로 이름까지 보완하되, 이후 사용자가 고른 다른 공간은 새 보고가 와도 유지한다.
+    const currentContext = workspaceContextRef.current;
+    const next = reconcileReportedWorkspaceContext(currentContext, status.workspaces || []);
+    if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
+      onWorkspaceContextChange(next);
     }
-  }, [onWorkspaceContextChange, workspaceContext.scope]);
+  }, [onWorkspaceContextChange]);
   useEffect(() => {
     if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
     else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));

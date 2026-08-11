@@ -200,7 +200,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 
 ### 5.2 화면 컴포넌트 (`components/`)
 
-- **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·로컬 대기/생성중 라벨·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
+- **라이브러리**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일)·`MediaThumbnail`·`FilterSidebar`·`LibraryToolbar`·`SearchBox`·`TopBar`.
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
 - **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
@@ -251,21 +251,34 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 요청자 PC 에이전트(agent_push.py --watch):
    │   제출 워커(기본 8): higgsfield generate create <model> --prompt …  ← 자기 로컬 CLI(유료)
    │   job_id 즉시 anchor → 원격 작업 최대 64개 추적
-   │   단일 generate list 주기 조회 → 끝난 작업만 상세 확인
+   │   기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
+   │   성공 상태 + 결과 URL + 서버의 asset 저장 ACK가 모두 있어야 완료 확정
    ▼ POST /api/gen-requests/{id}/reconcile (완료 확정) | /fail (제출 실패)
    ▼ 서버: placeholder 에 결과 채움 + WS broadcast → 카드 done/failed
 ```
+
+`generate list` 는 로컬 히스토리 적재(§7.2)에 사용한다. 생성 요청의 완료 판정에는 쓰지 않는다.
+목록 반영이 늦거나 작업이 목록에서 빠져도 이미 제출한 유료 작업의 `job_id` 추적은 유지되며,
+에이전트 재시작 뒤에는 로컬 추적 파일·서버 reconcile 후보로 복구한다.
+
+팀 워크스페이스 생성은 id와 표시 이름이 모두 준비된 뒤에만 제출한다. 브라우저 저장 필터에서
+id만 먼저 복원된 경우 `AccountMenu`가 계정 에이전트의 최신 워크스페이스 보고와 같은 id를 찾아
+정식 이름을 보완한다. 이 보완 전에는 API 경계가 생성·재생성을 차단해 이름 없는 신규 데이터를 막는다.
 
 버튼·UX 는 그대로, 실행 주체만 "서버 1개 CLI"→"각자 로컬 CLI". 결과·크레딧·귀속은 실행한 사람 것.
 
 ### 7.2 push 적재(ingest)
 
 ```
-agent_push.py(각 PC) cycle = ① execute_pending(§7.1) + ② push_once
-push_once: GET /api/ingest/known-jobs → 로컬 generate list 중 새 잡만 추림
+agent_push.py(각 PC) cycle = ① execute_pending(§7.1) + ② reconcile_pass(재시작·순단 복구) + ③ push_once
+push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
+           → 서버가 unknown(신규)·refresh(재확인 필요) job_id 만 반환
            → POST /api/ingest {jobs, creator_uid, account_status}
 서버: 각 잡은 자기 고유 creator_uid 유지(uid 없을 때만 보강). account_status 를 app_setting 에 저장(크레딧).
 ```
+
+구버전 서버가 POST 차집합 계약을 지원하지 않을 때만 `GET /api/ingest/known-jobs` 전량 응답으로
+폴백한다. 운영 기본 경로는 로컬 job_id만 보내는 POST라서 서버 데이터가 커져도 왕복 크기가 제한된다.
 
 > 내 Higgsfield uid 는 **로컬 전체 목록의 최다 user_\<id\>** 로 산출해 명시 전송한다(fresh 부분집합만
 > 보면 남의 레퍼런스에 오염돼 잘못 연결되는 실측 버그 회피).
@@ -299,10 +312,13 @@ push_once: GET /api/ingest/known-jobs → 로컬 generate list 중 새 잡만 �
 
 ## 9. 비자명한 설계 결정 / 함정 (요약)
 
-1. **서버는 생성 안 함** — 전원 로컬 CLI + push(§2). 서버측 생성 엔드포인트는 잔존하나 미사용.
+1. **서버는 생성 안 함** — 전원 로컬 CLI + push(§2). 옛 서버측 직접 생성 엔드포인트와 잡 큐는 제거됐다.
 2. **두 로그인 구분** — 허브 세션 ≠ Higgsfield CLI 인증(§8).
 3. **계정↔creator 재연결 오염** 방지 — 잡 고유 uid 유지 + 이미 실제 uid 면 재연결 금지 + 에이전트가 전체목록 최다 uid 전송.
-4. **미디어 공개 URL** — push 는 메타만(바이트 전송 없음). 단 만료 가능 → byte-cache 는 향후 과제.
+4. **미디어 공개 URL + 선택 보존** — 일반 생성물은 Higgsfield 원격 URL을 참조해 push 시 바이트를
+   전송하지 않는다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하고,
+   개별 `/api/generations/{id}/cache`·전체 `/api/cache-all` 보관도 지원한다. 아직 보관하지 않은
+   일반 생성물의 원격 URL은 만료될 수 있다.
 5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB / 미디어 샤딩 / 이중 백엔드(SQLite·PG)**.
 6. **마이그레이션 순서 함정**(§6) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화**(provenance) — `source_url` 보존으로 재사용·변형 가능(최우선 가치).

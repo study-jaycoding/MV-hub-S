@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { RefObject, MutableRefObject } from "react";
 import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
+import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import {
   HIST_MAX,
   partsDisplay,
@@ -72,7 +73,7 @@ export function useSpotlightSubmit({
   return useCallback(async (batchOverride?: number) => {
     if (busy) return;
     setError(null);
-    if (workspace.scope === "unknown") {
+    if (!isGenerationWorkspaceReady(workspace)) {
       setError("워크스페이스를 확인하는 중입니다. 계정 메뉴에서 공간을 선택해 주세요.");
       return;
     }

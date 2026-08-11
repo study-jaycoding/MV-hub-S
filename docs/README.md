@@ -1,9 +1,13 @@
 # Content Hub
 
 Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·공유 툴.
-설계는 [DESIGN.md](DESIGN.md), 규칙은 [CLAUDE.md](CLAUDE.md) 참조.
+현행 설계는 [ARCHITECTURE.md](ARCHITECTURE.md)와 [AI_CONTEXT.md](AI_CONTEXT.md)를 참조한다.
+[DESIGN.md](DESIGN.md)는 서버가 직접 생성하던 초기 설계의 보존 문서다.
 
-## 구현 현황 (Phase 1~5)
+## 초기 구현 기록 (Phase 1~5)
+
+> 아래 표는 개발 이력이며 현재 생성 구조를 뜻하지 않는다. 현행 생성은 서버 잡 큐가 아니라
+> 각 사용자 PC의 `agent_push.py`와 `/api/gen-requests`가 담당한다.
 
 | Phase | 내용 | 상태 |
 |------|------|------|
@@ -13,9 +17,9 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 4 | React UI — 썸네일 그리드(가상 스크롤)/필터/생성 모달/팀 작업 탭 | ✅ |
 | 5 | publish/import + lineage — **로컬 SQLite 구현** | ✅ (원격 서버 보류) |
 
-> **Phase 5 스코프 컷**: 원격 공유 서버(PostgreSQL + MinIO)는 의도적으로 보류했습니다.
-> 발행→팀 작업 탭→가져오기→lineage 전체 루프는 로컬 단일 DB 에서 동작합니다.
-> 원격 연동은 `routers/share.py`의 구현만 교체하면 되도록 `repo` 계층 뒤에 격리돼 있습니다.
+> **과거 Phase 5 스코프 컷**: 당시에는 원격 공유 서버를 보류하고 로컬 단일 DB만 구현했다.
+> 현재는 공유 서버 + 각 사용자 로컬 허브의 이중 구조이며, 자세한 데이터 흐름은
+> [ARCHITECTURE.md](ARCHITECTURE.md)를 기준으로 한다.
 
 ## 실행
 
@@ -44,7 +48,9 @@ npm run dev                    # http://localhost:5173
 2. 썸네일 그리드에서 탐색 · 좌측 사이드바로 컬러/태그/작업자/상태 필터.
 3. 카드 액션: ● 컬러 / # 태그 / ↻ 재생성 / ↗ 공유.
 4. **팀 작업** 탭 → ⬇ 가져오기 = 내 워크스페이스로 복제 + lineage 기록.
-5. **+ 새 생성** — 프롬프트·모델·레퍼런스 입력 → 잡 큐 등록 → WebSocket 진행률.
+5. **+ 새 생성** — 프롬프트·모델·레퍼런스 입력 → `/api/gen-requests` 요청 등록 →
+   내 PC 에이전트가 로컬 Higgsfield CLI로 제출·추적 → WebSocket으로 카드 갱신.
+   팀 공간은 계정 보고에서 id와 이름이 모두 확인된 뒤 요청되어 생성정보에 워크스페이스명이 보존됩니다.
    ⚠️ 실제 Higgsfield 크레딧을 소모합니다.
 
 ## 아키텍처
@@ -59,19 +65,22 @@ backend/
     repo.py               # 데이터 접근·직렬화 (라우터·잡·동기화 공유)
     services/
       cli_bridge.py       # higgsfield CLI asyncio 래퍼 (검증된 필드 매핑)
-      jobs.py             # asyncio 잡 큐 + 백그라운드 워커
+      media_cache.py      # 원격 미디어 byte-cache
+      syncer.py           # 명시적 CLI 히스토리 동기화
     ws.py                 # WebSocket 진행률 broadcast
     routers/
       library.py          # GET /generations, /facets
-      generation.py       # POST /generations, /regenerate, 태그·컬러, /models
+      generation.py       # 워크스페이스·비용·히스토리·코멘트·미디어 보관
+      gen_requests.py     # 로컬 에이전트가 처리할 생성·재생성 요청
+      ingest.py           # 에이전트 결과·계정 상태 적재
       share.py            # publish / import
       sync.py             # POST /sync (명시적, 자동 아님)
-    main.py               # 앱 팩토리 (lifespan: init_db + seed + 큐 기동)
+    main.py               # 앱 팩토리 (lifespan: init_db + seed)
 frontend/
   src/
     api.ts, types.ts      # 타입 안전 클라이언트 + WS
     App.tsx               # 상태·WS·액션 오케스트레이션
-    components/           # TopBar, FilterSidebar, ThumbnailGrid, GenerationCard, GenerateModal
+    components/           # TopBar, FilterSidebar, ThumbnailGrid, GenerationCard, SpotlightPrompt
 ```
 
 ## 기술 노트 (검증됨)
@@ -87,11 +96,12 @@ frontend/
 - **출처 영속화(byte-cache)**: 소스·결과물이 Higgsfield 원격 URL(계정 귀속·만료 가능)에만
   있으면 재사용이 깨진다. `⤓ 보관`(`/api/cache-all`) 이 바이트를 `media/` 로 내려받아
   `file_path` 를 `/media/..` 로 전환하고 원본 URL 은 `source_url` 에 보존한다. dedupe(sha1)·
-  재동기 보존·내 생성물 자동 보관까지 적용(실측 확인).
+  재동기 보존을 적용하며, 최종(골드) 지정본은 백그라운드에서 자동 보관한다(실측 확인).
 - **CLI 필드 매핑**: `generate list --json` 실제 출력으로 검증(★CLI 1.x 대응, `docs/HF_CLI_UPGRADE.md`) —
   `id→PK`, `job_set_type|job_type→model`(1.x 개명, 폴백), `result_url`(확장자로 image/video),
   `created_at`(epoch 또는 1.x ISO문자열→파싱), `params.prompt`, `params.medias[]→reference`
   (1.x 도 출력 params 는 `medias` 유지). CLI 버전은 `hf_cli_version.txt` 로 pin.
 - **진행률**: higgsfield 는 퍼센트가 아니라 상태 전이를 주므로 가짜 진행바 대신
-  coarse 상태(pending/running/done/failed)를 WS 로 push.
+  coarse 상태(pending/running/done/failed)를 WS 로 push한다. 생성 완료는 `generate list`가 아니라
+  저장한 job_id의 `generate get` 직접 응답, 결과 URL, 서버 asset 저장 ACK를 모두 확인해 확정한다.
 ```

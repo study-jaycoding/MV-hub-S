@@ -23,6 +23,7 @@ import { projectApi } from "./lib/projectApi";
 import { sharedApi } from "./lib/sharedApi";
 import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
+import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -343,24 +344,32 @@ export const api = {
     }[];
     project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
     folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
-  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }) =>
+  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }) => {
+    if (!isGenerationWorkspaceReady(workspace)) {
+      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
+    }
     // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
     // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
-    generationFetch("/api/gen-requests", {
+    return generationFetch("/api/gen-requests", {
       method: "POST",
       body: jsonBody({ kind: "create", workspace, create: body }),
-    }),
+    });
+  },
 
   regenerate: (
     id: string,
     body: { prompt?: string; color?: string | null; auto_tags?: string[] },
     workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
-  ) =>
+  ) => {
+    if (!isGenerationWorkspaceReady(workspace)) {
+      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
+    }
     // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
-    generationFetch("/api/gen-requests", {
+    return generationFetch("/api/gen-requests", {
       method: "POST",
       body: jsonBody({ kind: "regenerate", workspace, source_gen_id: id, regenerate: body }),
-    }),
+    });
+  },
 
   setTags: (id: string, tags: string[]) =>
     generationFetch(`/api/generations/${pathPart(id)}/tags`, {
