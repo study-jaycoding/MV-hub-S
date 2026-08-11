@@ -120,10 +120,21 @@
   /* 컬러 지정 그룹은 은은한 글로우로 확 띄게 — 무색 그룹은 --gc 없음 → transparent = 글로우 없음. */
   box-shadow: 0 0 11px color-mix(in srgb, var(--gc, transparent) 24%, transparent);
 }
+.scene-group.selected {
+  border-style: solid; border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.scene-group.selected .scene-group-hd {
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 24%, rgba(20, 22, 26, 0.84));
+}
 .scene-group.collapsed {
   pointer-events: auto; border-style: solid; border-color: var(--gc, var(--accent));
   background: rgba(20, 22, 26, 0.92); border-radius: 10px; overflow: hidden;
 }
+.scene-group.collapsed.selected { border-color: var(--accent); }
 .scene-group-hd {
   position: absolute; top: 0; left: 0; right: 0; height: 26px; pointer-events: auto;
   display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: grab;
@@ -133,7 +144,19 @@
   border-radius: 11px 11px 0 0;
 }
 .scene-group.collapsed .scene-group-hd { border-bottom: 0; background: transparent; }
+.scene-group.collapsed.selected .scene-group-hd {
+  background: color-mix(in srgb, var(--accent) 24%, rgba(20, 22, 26, 0.84));
+}
 .scene-group-hd:active { cursor: grabbing; }
+/* 컨테이너 내부는 카드 클릭을 통과시키고, 실제 테두리 8px 띠만 그룹 선택·이동을 받는다. */
+.scene-group-edge {
+  position: absolute; z-index: 1; pointer-events: auto; cursor: grab;
+}
+.scene-group-edge:active { cursor: grabbing; }
+.scene-group-edge.edge-top { top: -4px; left: 0; right: 0; height: 8px; }
+.scene-group-edge.edge-right { top: 0; right: -4px; bottom: 0; width: 8px; }
+.scene-group-edge.edge-bottom { left: 0; right: 0; bottom: -4px; height: 8px; }
+.scene-group-edge.edge-left { top: 0; left: -4px; bottom: 0; width: 8px; }
 /* 접기 버튼 = 오른쪽 묶음(접기·색·×)의 첫 요소 → margin-left:auto 로 이름·카운트와 사이를 벌린다 */
 .scene-group-btn {
   flex: none; margin-left: auto; width: 24px; height: 24px;

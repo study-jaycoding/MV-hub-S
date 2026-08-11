@@ -70,6 +70,7 @@ import {
   buildSelectedConnections,
   SCENE_GRID as GRID,
 } from "../../lib/sceneInteractions";
+import { sceneGroupControlTargetIds } from "../../lib/sceneGroupSelection";
 import {
   isComfyRunning,
   subscribeComfyRunning,
@@ -264,6 +265,7 @@ export function SceneBoard({
   const [colorPopId, setColorPopId] = useState<string | null>(null); // 색 팔레트 팝오버가 열린 그룹
   const [ejectedIds, setEjectedIds] = useState<Set<string>>(new Set()); // 드래그 중 속도로 그룹에서 튕겨낸 카드 — 이탈해도 박스 크기 유지
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
   // 방금 생성된 카드 — 라임 glow 로 '방금 만들어짐'을 직관 표시. '방금 완료' 판정은 모듈 store 로 분리해
   //  탭 전환(SceneBoard 언마운트)에도 유지된다(App watcher 가 탭 무관 폴링). glowVer 로 store 변경 시 리렌더.
   useSyncExternalStore(subscribeRecentDone, getRecentDoneVersion, getRecentDoneVersion);
@@ -399,6 +401,7 @@ export function SceneBoard({
       persistSceneHistory(prevId); // 떠나는 씬의 undo 히스토리 보관(돌아오면 이어서)
       sceneIdRef.current = scene.id;
       setSelected(new Set());
+      setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() }); // 씬 전환 시 리스트/렌더 행 선택도 해제(stale 방지)
       // 들어온 씬의 히스토리를 store 에서 복원(없거나 stale 이면 리셋). 씬마다 자기 Ctrl+Z 를 유지.
       restoreSceneHistory(scene.id, { cards: inCards, edges: scene.edges, groups: scene.groups || [] });
@@ -443,6 +446,8 @@ export function SceneBoard({
   >([]);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const selectedGroupIdsRef = useRef(selectedGroupIds);
+  selectedGroupIdsRef.current = selectedGroupIds;
 
   // 전역 어셋 버전 표 구독 — 어셋 원본이 바뀌어 버전이 갱신되면 리렌더돼 카드 썸네일 URL 을 다시 만든다.
   useSyncExternalStore(subscribeAssetVersions, assetVersionsSnapshot, assetVersionsSnapshot);
@@ -1750,6 +1755,11 @@ export function SceneBoard({
   // pruneGroups(삭제·유령 카드 정리)는 순수 계산이라 sceneDerive.ts 로 분리(테스트 대상).
   const applyGroups = (next: SceneGroup[]) => {
     setGroups(next);
+    const validIds = new Set(next.map((group) => group.id));
+    setSelectedGroupIds((previous) => {
+      const pruned = new Set([...previous].filter((id) => validIds.has(id)));
+      return pruned.size === previous.size ? previous : pruned;
+    });
     persist(cardsRef.current, edgesRef.current, next);
   };
   const groupSelected = () => {
@@ -1760,15 +1770,45 @@ export function SceneBoard({
     const stripped = pruneGroups(groupsRef.current, new Set(ids), existing);
     const grp: SceneGroup = { id: uid(), name: `그룹 ${stripped.length + 1}`, cardIds: ids, rect: rectFromCards(ids) };
     applyGroups([...stripped, grp]);
+    setSelected(new Set());
+    setSelectedGroupIds(new Set([grp.id]));
+  };
+  const groupControlIds = (id: string) =>
+    sceneGroupControlTargetIds(selectedGroupIdsRef.current, id);
+  const activateGroupControl = (id: string) => {
+    if (selectedGroupIdsRef.current.has(id)) return;
+    setSelected(new Set());
+    setSelectedGroupIds(new Set([id]));
   };
   // × 버튼 = 그룹 해제(멤버 카드는 그대로 두고 묶음만 제거).
-  const removeGroup = (id: string) => applyGroups(groupsRef.current.filter((g) => g.id !== id));
+  const removeGroup = (id: string) => {
+    const targets = new Set(groupControlIds(id));
+    applyGroups(groupsRef.current.filter((g) => !targets.has(g.id)));
+  };
   const renameGroup = (id: string, name: string) =>
     applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, name } : g)));
-  const toggleGroupCollapsed = (id: string) =>
-    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)));
-  const setGroupColor = (id: string, color?: string) =>
-    applyGroups(groupsRef.current.map((g) => (g.id === id ? { ...g, color: color || undefined } : g)));
+  const toggleGroupCollapsed = (id: string) => {
+    const targets = new Set(groupControlIds(id));
+    const collapsed = !groupsRef.current.find((g) => g.id === id)?.collapsed;
+    applyGroups(groupsRef.current.map((g) => (targets.has(g.id) ? { ...g, collapsed } : g)));
+  };
+  const setGroupColor = (id: string, color?: string) => {
+    const targets = new Set(groupControlIds(id));
+    applyGroups(
+      groupsRef.current.map((g) =>
+        targets.has(g.id) ? { ...g, color: color || undefined } : g,
+      ),
+    );
+  };
+  const setSelectedGroupsColor = (color?: string) => {
+    const targets = selectedGroupIdsRef.current;
+    if (!targets.size) return;
+    applyGroups(
+      groupsRef.current.map((g) =>
+        targets.has(g.id) ? { ...g, color: color || undefined } : g,
+      ),
+    );
+  };
   // 카드 드롭 위치로 그룹 멤버십 재배정 — 다른 프레임 안에 놓으면 그 그룹으로 이동. 어느 프레임에도
   //  안 들면 원래 그룹 유지(슬로우 드래그는 박스가 자동맞춤으로 담음). 그룹서 빼는 건 '빠르게 이탈'로만.
   //  · startFrames: 드래그 시작 시점의 그룹 프레임 스냅샷(자동 그룹 프레임이 드래그 중 흔들리지 않게).
@@ -2040,7 +2080,7 @@ export function SceneBoard({
         colorOpen: !!colorPopId,
         pickerOpen: !!nodePickerRef.current,
         popupOpen: !!cardMenuRef.current,
-        selectionCount: selectedRef.current.size,
+        selectionCount: selectedRef.current.size + selectedGroupIdsRef.current.size,
         rowSelectionCount: rowSelRef.current.cids.size,
       });
       if (target === "color") setColorPopId(null);
@@ -2048,6 +2088,7 @@ export function SceneBoard({
       else if (target === "popup") setCardMenu(null);
       else if (target === "selection") {
         setSelected(new Set());
+        setSelectedGroupIds(new Set());
         setRowSel({ listId: "", cids: new Set() });
       }
     },
@@ -2078,7 +2119,8 @@ export function SceneBoard({
     onArrange: arrangeSelection,
     onConnect: connectSelected,
     onDisable: disableSelected,
-    onColor: setSelColor,
+    onColor: (color) =>
+      selectedGroupIdsRef.current.size ? setSelectedGroupsColor(color) : setSelColor(color),
     onTag: editSelectedTag,
     onCutHeldChange: setCutHeld,
     onDelete: () => deleteCards([...selectedRef.current]),
@@ -2169,11 +2211,13 @@ export function SceneBoard({
     cardsRef,
     edgesRef,
     groupsRef,
+    selectedGroupIdsRef,
     zoomRef,
     scrollRef,
     setCards,
     setGroups,
     setSelected,
+    setSelectedGroupIds,
     setDraggingIds,
     beginDrag,
     reconcileGenerationRefs: withGenRefs,
@@ -2191,6 +2235,7 @@ export function SceneBoard({
     preserveSelectionOnEmptyDrag: true,
     onPlainClick: () => {
       setSelected(new Set());
+      setSelectedGroupIds(new Set());
       setRowSel({ listId: "", cids: new Set() });
     },
   });
@@ -2239,17 +2284,19 @@ export function SceneBoard({
       return;
     }
     if (e.button !== 0) return;
-    // 그룹 헤더 잡기 → 멤버 카드 전체 이동(드래그) · 제자리 클릭 = 멤버 전체 선택(Shift/Ctrl=토글)
+    // 그룹 헤더/테두리 잡기 → 선택된 그룹 전체 이동 · 제자리 클릭 = 그룹 자체 선택(Shift/Ctrl=토글)
     const grabEl = (e.target as HTMLElement).closest(".scene-group-grab") as HTMLElement | null;
     if (grabEl?.dataset.groupId && beginGroupMove(e, grabEl.dataset.groupId)) {
       return;
     }
     const cardEl = (e.target as HTMLElement).closest(".scene-card") as HTMLElement | null;
     if (cardEl?.dataset.id) {
+      setSelectedGroupIds(new Set());
       beginCardMove(e, cardEl.dataset.id);
       return;
     }
 
+    setSelectedGroupIds(new Set());
     beginBoardMarquee(e);
   };
 
@@ -2671,6 +2718,16 @@ export function SceneBoard({
           const box = collapsed ? bar : frame;
           const memberCount = g.cardIds.filter((id) => cardById(id)).length;
           const editing = editingGroupId === g.id;
+          const groupSelected = selectedGroupIds.has(g.id);
+          const controlIds = sceneGroupControlTargetIds(selectedGroupIds, g.id);
+          const controlGroups = groups.filter((group) => controlIds.includes(group.id));
+          const firstControlColor = controlGroups[0]?.color;
+          const sharedControlColor = controlGroups.every(
+            (group) => group.color === firstControlColor,
+          )
+            ? firstControlColor
+            : undefined;
+          const controlCount = controlIds.length;
           const gstyle: CSSProperties = { left: box.x, top: box.y, width: box.w, height: box.h };
           if (g.color) (gstyle as Record<string, string | number>)["--gc"] = g.color;
           if (colorPopId === g.id) {
@@ -2680,9 +2737,23 @@ export function SceneBoard({
           return (
             <div
               key={g.id}
-              className={"scene-group" + (collapsed ? " collapsed" : "")}
+              className={
+                "scene-group" +
+                (collapsed ? " collapsed" : "") +
+                (groupSelected ? " selected" : "")
+              }
               style={gstyle}
+              data-group-id={g.id}
+              data-selected={groupSelected ? "true" : "false"}
             >
+              {!collapsed && (
+                <>
+                  <span className="scene-group-edge edge-top scene-group-grab" data-group-id={g.id} />
+                  <span className="scene-group-edge edge-right scene-group-grab" data-group-id={g.id} />
+                  <span className="scene-group-edge edge-bottom scene-group-grab" data-group-id={g.id} />
+                  <span className="scene-group-edge edge-left scene-group-grab" data-group-id={g.id} />
+                </>
+              )}
               <div
                 className="scene-group-hd scene-group-grab"
                 data-group-id={g.id}
@@ -2720,10 +2791,15 @@ export function SceneBoard({
                 <span className="scene-group-count">{memberCount}</span>
                 <button
                   className="scene-group-btn"
-                  title={collapsed ? "펼치기" : "접기"}
+                  title={
+                    controlCount > 1
+                      ? `선택 그룹 ${controlCount}개 ${collapsed ? "펼치기" : "접기"}`
+                      : collapsed ? "펼치기" : "접기"
+                  }
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
+                    activateGroupControl(g.id);
                     toggleGroupCollapsed(g.id);
                   }}
                 >
@@ -2732,10 +2808,11 @@ export function SceneBoard({
                 <div className="scene-group-colorwrap" onMouseDown={(e) => e.stopPropagation()}>
                   <button
                     className="scene-group-color"
-                    title="그룹 색"
+                    title={controlCount > 1 ? `선택 그룹 ${controlCount}개 색상` : "그룹 색"}
                     style={{ background: g.color || "var(--border2)" }}
                     onClick={(e) => {
                       e.stopPropagation();
+                      activateGroupControl(g.id);
                       setColorPopId((p) => (p === g.id ? null : g.id));
                     }}
                   />
@@ -2744,7 +2821,7 @@ export function SceneBoard({
                       {GROUP_COLORS.map((c) => (
                         <button
                           key={c}
-                          className={"scene-group-swatch" + (g.color === c ? " on" : "")}
+                          className={"scene-group-swatch" + (sharedControlColor === c ? " on" : "")}
                           style={{ background: c }}
                           title={c}
                           onClick={(e) => {
@@ -2757,7 +2834,7 @@ export function SceneBoard({
                       <label className="scene-group-swatch custom" title="커스텀 색">
                         <input
                           type="color"
-                          value={g.color || "#5a6270"}
+                          value={sharedControlColor || g.color || "#5a6270"}
                           onChange={(e) => setGroupColor(g.id, e.target.value)}
                         />
                       </label>
@@ -2777,10 +2854,15 @@ export function SceneBoard({
                 </div>
                 <button
                   className="scene-group-x"
-                  title="그룹 해제(카드는 유지)"
+                  title={
+                    controlCount > 1
+                      ? `선택 그룹 ${controlCount}개 해제(카드는 유지)`
+                      : "그룹 해제(카드는 유지)"
+                  }
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
+                    activateGroupControl(g.id);
                     removeGroup(g.id);
                   }}
                 >
@@ -2794,6 +2876,7 @@ export function SceneBoard({
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    activateGroupControl(g.id);
                     const rect0 = g.rect ?? frame; // 자동 그룹이면 현재 프레임을 초기 rect 로 고정
                     const sx = e.clientX;
                     const sy = e.clientY;
