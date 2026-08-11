@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { MediaType, ModelInfo, ModelParam } from "../../types";
-import { effectiveDefault, numericRange } from "../../lib/useModels";
+import { effectiveDefault, numericRange, paramGateAllows } from "../../lib/useModels";
 import {
   SPOTLIGHT_PRIMARY_PARAMS,
   durationRange,
@@ -63,8 +63,11 @@ export function SpotlightOptionsBar({
   open,
   setOpen,
 }: Props) {
-  const audioParam = tunable.find((p) => p.name === "generate_audio");
-  const advancedParams = tunable
+  // 조건부 게이트 — 현재 옵션 조합에서 허용 안 되는 파라미터는 표시하지 않는다
+  // (예: extension_mode 는 mode=video_extension 일 때만 — 다른 모드에 실으면 CLI 거부).
+  const visibleTunable = tunable.filter((p) => paramGateAllows(model, p.name, optionValues));
+  const audioParam = visibleTunable.find((p) => p.name === "generate_audio");
+  const advancedParams = visibleTunable
     .filter((p) => !SPOTLIGHT_PRIMARY_PARAMS.has(p.name) && p.name !== "generate_audio")
     .sort((a, b) => spotlightAdvancedParamRank(a.name) - spotlightAdvancedParamRank(b.name));
   const advancedDirty = advancedParams.some((p) => {
@@ -119,7 +122,7 @@ export function SpotlightOptionsBar({
         )}
       </div>
 
-      {tunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
+      {visibleTunable.filter((p) => SPOTLIGHT_PRIMARY_PARAMS.has(p.name)).map((p) => {
         if (/duration|length/i.test(p.name)) {
           if (p.enum?.length) {
             const vals = p.enum;

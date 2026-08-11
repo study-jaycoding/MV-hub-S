@@ -161,6 +161,16 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
         {/* 영상 길이 — params.duration(초)이 있을 때만. 힉스필드·Comfy 공통(카드와 같은 '7.0s' 표기). 이미지는 자동 생략. */}
         <Row label="영상 길이" value={generationListMeta(params).duration} />
         <Row label="생성일" value={formatGenerationDateTime(g.created_at)} />
+        <Row
+          label="워크스페이스"
+          value={
+            g.workspace_scope === "team"
+              ? g.workspace_name || "팀 워크스페이스"
+              : g.workspace_scope === "personal"
+                ? "개인"
+                : "정보 없음 (기존 생성물)"
+          }
+        />
         {g.model === "comfy" ? (
           // Comfy 는 건별 크레딧이 없다(Cloud=정액 구독제 / 로컬=무과금) → 구독/실행 정보로 대체.
           <Row

@@ -382,6 +382,17 @@ def project_tree(
     """프로젝트 폴더 트리(폴더 + 미디어 파일) — 내가 등록한 마운트 안에서만 해석.
     fresh=1 이면 캐시를 먼저 무효화한다. 같은 프로젝트 동시 요청은 한 번의 순회로 합친다."""
     if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
+        # 합본도 실제 하위 폴더를 감시해야 외부 편집기의 같은 이름 덮어쓰기를 즉시 감지한다.
+        try:
+            from ..services import asset_watcher
+
+            asset_watcher.watch_combined(
+                ASSETS_ROOT,
+                project,
+                tuple(_INTERNAL_FOLDERS),
+            )
+        except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
+            pass
         return {
             "project": project,
             "name": project,
@@ -395,7 +406,7 @@ def project_tree(
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
     proj_dir, auto_project = info
-    # 지금 보고 있는 이 프로젝트 폴더를 실시간 감시 등록(로컬 허브 전용·이미 감시 중이면 무시).
+    # 지금 보고 있는 이 프로젝트 폴더를 실시간 감시 등록(이미 감시 중이면 무시).
     # 파일이 바뀌면 watchdog 가 WS 로 알려 프론트가 새로고침 없이 갱신한다(Phase 2). 감시 불가 환경은 무해.
     try:
         from ..services import asset_watcher

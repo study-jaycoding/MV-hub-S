@@ -19,7 +19,7 @@ import { reconcileArrayState } from "../../lib/stateReconciliation";
 import { CalendarView } from "./CalendarView";
 import { BoardView } from "./KanbanBoard";
 import { type ColorMap, loadColorMap, saveColorMap } from "./manageColors";
-import { shouldRunManageFallbackRefresh } from "../../lib/manageRefreshPolicy";
+import { scopeTasksToCreator } from "./personalWork";
 import { TableView } from "./TableView";
 import { WorkFilterBar } from "./WorkFilterBar";
 import { useT } from "../../lib/i18n";
@@ -38,11 +38,18 @@ function loadFilters(): WorkFilters {
   const base = emptyWorkFilters();
   const saved = loadJSON<WorkFilters>(STORAGE_KEYS.manageWorkFilters);
   if (!saved) return base;
+  const values = { ...base.values };
+  for (const field of WORK_FILTER_FIELDS) {
+    const selected = saved.values?.[field];
+    values[field] = Array.isArray(selected)
+      ? selected.filter((value): value is string => typeof value === "string")
+      : [];
+  }
   return {
     active: Array.isArray(saved.active)
       ? saved.active.filter((f) => WORK_FILTER_FIELDS.includes(f))
       : [],
-    values: { ...base.values, ...(saved.values || {}) },
+    values,
     search: typeof saved.search === "string" ? saved.search : "",
   };
 }
@@ -73,14 +80,33 @@ function bySort(a: Task, b: Task): number {
 // 칩 필터 + 검색 매칭 — 같은 필드 값끼리 OR(포함), 서로 다른 필드끼리 AND. status 는 effective 반영본.
 function matchTask(t: Task, f: WorkFilters): boolean {
   const v = f.values;
-  if (v.project.length && !v.project.includes(t.project_name || "")) return false;
-  if (v.episode.length && !v.episode.includes(t.name)) return false;
-  if (v.sequence.length && !v.sequence.includes(t.sequence || "")) return false;
-  if (v.status.length && !v.status.includes(t.status)) return false;
-  if (v.creator.length && !(t.creators || []).some((c) => v.creator.includes(c))) return false;
+  // 개발 중 새 필터가 추가돼 메모리의 구버전 상태에 해당 키가 없어도 화면을 중단하지 않는다.
+  const selected = (field: keyof WorkFilters["values"]) => v[field] ?? [];
+  const project = selected("project");
+  const episode = selected("episode");
+  const sequence = selected("sequence");
+  const status = selected("status");
+  const creator = selected("creator");
+  const model = selected("model");
+  if (project.length && !project.includes(t.project_name || "")) return false;
+  if (episode.length && !episode.includes(t.name)) return false;
+  if (sequence.length && !sequence.includes(t.sequence || "")) return false;
+  if (status.length && !status.includes(t.status)) return false;
+  if (creator.length && !(t.creators || []).some((c) => creator.includes(c))) return false;
+  if (
+    model.length &&
+    !(t.cuts || []).some((cut) => model.includes(cut.model?.trim() || "알 수 없음"))
+  ) return false;
   const q = f.search.trim().toLowerCase();
   if (q) {
-    const hay = [t.name, t.sequence, t.description, t.project_name, ...(t.creators || [])]
+    const hay = [
+      t.name,
+      t.sequence,
+      t.description,
+      t.project_name,
+      ...(t.creators || []),
+      ...(t.cuts || []).map((cut) => cut.model),
+    ]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
@@ -89,19 +115,22 @@ function matchTask(t: Task, f: WorkFilters): boolean {
   return true;
 }
 
-export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
+export function WorkBoard({
+  reloadSignal = 0,
+  viewerUid = null,
+  personalByDefault = false,
+}: {
+  reloadSignal?: number;
+  viewerUid?: string | null;
+  personalByDefault?: boolean;
+}) {
   useT(); // 언어 토글 시 라벨 리렌더
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]); // 전체 프로젝트 병합(project_name 부착)
   const [seqOptions, setSeqOptions] = useState<string[]>([]);
-  const [myUid, setMyUid] = useState<string | null>(null); // 현재 로그인 uid — '내 배분' 필터
-  const [mineOnly, setMineOnly] = useState(false); // 내게 배정된 작업만 보기(작업자 관점)
-  useEffect(() => {
-    api
-      .me()
-      .then((a) => setMyUid(a?.creator_uid || null))
-      .catch(() => setMyUid(null));
-  }, []);
+  const myUid = viewerUid;
+  // 일반 작업자는 본인이 만든 생성물 기준 개인 작업표가 기본이다. read_all 관리자는 전체가 기본.
+  const [mineOnly, setMineOnly] = useState(() => personalByDefault && !!viewerUid);
   const [view, setView] = useState<WorkView>(
     () => (loadString(STORAGE_KEYS.manageWorkView, "table") as WorkView) || "table",
   );
@@ -173,7 +202,6 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
   const loadingRef = useRef(false);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingLoadRef = useRef(false);
-  const lastLoadAtRef = useRef(0);
   const orderSaveRef = useRef<ReturnType<typeof createLatestMutationQueue> | null>(null);
   const orderRevisionRef = useRef(0);
   const optimisticOrderRef = useRef<{ revision: number; tasks: Task[] } | null>(null);
@@ -189,7 +217,6 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     }
     const my = ++reqRef.current;
     loadingRef.current = true;
-    lastLoadAtRef.current = Date.now();
     const finish = (tasks: Task[]) => {
       if (reqRef.current === my) {
         const ordered = tasks.sort(bySort);
@@ -261,44 +288,6 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     void loadAllRef.current();
   }, [reloadSignal]);
 
-  // WebSocket 누락 안전망 — 실시간 신호는 ManageWindow가 담당하고 여기서는 30초 폴링만 유지한다.
-  useEffect(() => {
-    let debounce: number | undefined;
-    const reload = () => {
-      if (debounce) clearTimeout(debounce);
-      debounce = window.setTimeout(() => {
-        debounce = undefined;
-        // 예약 뒤 실시간 신호가 먼저 loadAll 을 시작할 수 있다. 실행 시점에 다시 확인해
-        // 복귀 안전망이 같은 tasks-batch 를 뒤따라 한 번 더 요청하지 않게 한다.
-        if (
-          document.visibilityState !== "visible" ||
-          !shouldRunManageFallbackRefresh({
-            loading: loadingRef.current,
-            lastLoadAt: lastLoadAtRef.current,
-            now: Date.now(),
-          })
-        )
-          return;
-        void loadAllRef.current();
-      }, 300);
-    };
-    // 프록시 모드에서 다른 PC가 원격 서버에 직접 쓴 변경도 결국 따라잡도록 주기를 느슨하게 유지한다.
-    // 이전 배치 라운드가 진행 중이면 중복 폴링을 건너뛴다.
-    const poll = window.setInterval(() => {
-      if (document.visibilityState === "visible") reload();
-    }, 30000);
-    const onVis = () => {
-      if (document.visibilityState === "visible") reload();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      if (debounce) clearTimeout(debounce);
-      clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
     // 상태 이동과 컷 활성화 동기화(대칭): 생략→컷 비활성화, 생략에서 빼면→컷 재활성화.
@@ -362,14 +351,15 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
     }
     return s;
   }, [tasks, disabled, disabledFolders]);
+  // '내 작업'은 수동 배정뿐 아니라 실제 생성물 creator_uid도 포함한다. 개인 모드에서는
+  // 각 행의 생성물·크레딧·시간·기간도 본인 컷만으로 다시 계산해 팀 전체 수치가 섞이지 않게 한다.
+  const visibleScope = useMemo(
+    () => (mineOnly && myUid ? scopeTasksToCreator(effective, myUid) : effective),
+    [effective, mineOnly, myUid],
+  );
   const filtered = useMemo(
-    () =>
-      effective.filter(
-        (t) =>
-          matchTask(t, filters) &&
-          (!mineOnly || (t.assigned_creators || []).some((a) => a.uid === myUid)),
-      ),
-    [effective, filters, mineOnly, myUid],
+    () => visibleScope.filter((task) => matchTask(task, filters)),
+    [filters, visibleScope],
   );
 
   // 필터·검색·내 배정 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
@@ -444,14 +434,14 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
       <header className="manage-head">
         <h1>작업</h1>
         <div className="work-head-ctl">
-          {/* 내 배분 — 대시보드에서 나에게 배정된 작업만(작업자 관점). myUid 없으면 숨김. */}
+          {/* 실제로 만든 생성물 + 수동 배정 작업을 현재 작업자 기준으로 표시한다. */}
           {myUid ? (
             <button
               className={"work-mine-toggle" + (mineOnly ? " on" : "")}
               onClick={() => setMineOnly((v) => !v)}
-              title="나에게 배정된 작업만 보기"
+              title="내가 만들었거나 배정받은 작업만 보기"
             >
-              내 배분만
+              내 작업만
             </button>
           ) : null}
           <div className="manage-toggles">
@@ -472,7 +462,7 @@ export function WorkBoard({ reloadSignal = 0 }: { reloadSignal?: number }) {
       </header>
 
       <WorkFilterBar
-        tasks={effective}
+        tasks={visibleScope}
         filters={filters}
         onChange={setFilters}
         colorMap={colorMap}

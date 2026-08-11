@@ -28,6 +28,7 @@ export function buildGenerationQuery({
     share_dir: filters.share_dir,
     local_only: filters.local_only,
     creator_uid: filters.creator_uid,
+    workspace_id: filters.workspace_id,
     project_id: filters.project_id,
     folder_path: filters.folder_path,
     search: filters.search,

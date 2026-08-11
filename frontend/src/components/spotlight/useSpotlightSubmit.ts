@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { RefObject, MutableRefObject } from "react";
 import { api } from "../../api";
 import { resolveAutoAspectRatio } from "../../lib/aspectAuto";
+import { isGenerationWorkspaceReady } from "../../lib/workspaceContext";
 import {
   HIST_MAX,
   partsDisplay,
@@ -14,7 +15,7 @@ import {
   buildSpotlightCreateBody,
   normalizeSpotlightBatch,
 } from "../../lib/spotlightSubmit";
-import type { Generation, ModelParam } from "../../types";
+import type { Generation, ModelParam, WorkspaceContext } from "../../types";
 import type { SpotlightTrayRef } from "./SpotlightRefTray";
 
 
@@ -37,6 +38,7 @@ interface UseSpotlightSubmitOptions {
   paramsModel: string;
   trayRefs: SpotlightTrayRef[];
   tunable: ModelParam[];
+  workspace: WorkspaceContext;
   setBusy: (busy: boolean) => void;
   setError: (message: string | null) => void;
   clearMention: () => void;
@@ -61,6 +63,7 @@ export function useSpotlightSubmit({
   paramsModel,
   trayRefs,
   tunable,
+  workspace,
   setBusy,
   setError,
   clearMention,
@@ -70,6 +73,10 @@ export function useSpotlightSubmit({
   return useCallback(async (batchOverride?: number) => {
     if (busy) return;
     setError(null);
+    if (!isGenerationWorkspaceReady(workspace)) {
+      setError("워크스페이스를 확인하는 중입니다. 계정 메뉴에서 공간을 선택해 주세요.");
+      return;
+    }
     const editor = editorRef.current;
     if (!editor) return;
 
@@ -124,7 +131,7 @@ export function useSpotlightSubmit({
         SPOTLIGHT_MAX_COUNT,
       );
       const created = await Promise.all(
-        Array.from({ length: batch }, () => api.create(body)),
+        Array.from({ length: batch }, () => api.create(body, workspace)),
       );
 
       const dragParent = dragParentRef.current;
@@ -174,5 +181,6 @@ export function useSpotlightSubmit({
     trayRefs,
     tunable,
     updatePlaceholder,
+    workspace,
   ]);
 }

@@ -67,6 +67,7 @@ import { useGenerationProjectActions } from "./lib/useGenerationProjectActions";
 import { useGenerationSelection } from "./lib/useGenerationSelection";
 import { useGenerationShareActions } from "./lib/useGenerationShareActions";
 import { useGenerationTagActions } from "./lib/useGenerationTagActions";
+import { useGenerationWorkspaceActions } from "./lib/useGenerationWorkspaceActions";
 import { useGenerationTrashActions } from "./lib/useGenerationTrashActions";
 import { useGenerationUtilityActions } from "./lib/useGenerationUtilityActions";
 import { useHubAuth } from "./lib/useHubAuth";
@@ -96,10 +97,16 @@ import type {
   InfoTarget,
   ModelParam,
   PreviewTarget,
+  WorkspaceContext,
 } from "./types";
 import { api } from "./api";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
+import {
+  isGenerationWorkspaceReady,
+  UNKNOWN_WORKSPACE,
+  sameWorkspace,
+} from "./lib/workspaceContext";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -122,6 +129,22 @@ export default function App() {
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
     genQuery, selectionResetKey,
   } = useLibraryFilters(LS);
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(() =>
+    filters.workspace_id
+      ? { scope: "team", id: filters.workspace_id, name: null }
+      : UNKNOWN_WORKSPACE,
+  );
+  const changeWorkspaceContext = useCallback((next: WorkspaceContext) => {
+    setWorkspaceContext((previous) =>
+      sameWorkspace(previous, next) && previous.name === next.name ? previous : next,
+    );
+    const workspaceId = next.scope === "team" ? next.id || undefined : undefined;
+    setFilters((previous) => {
+      if (previous.workspace_id === workspaceId) return previous;
+      // 공간이 바뀌면 이전 공간의 프로젝트·폴더·생성자 필터를 들고 가지 않는다.
+      return { tab: previous.tab, workspace_id: workspaceId };
+    });
+  }, [setFilters]);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
@@ -233,7 +256,14 @@ export default function App() {
     createAndAssign,
     dropOnFolder,
     dropUnassign,
-  } = useGenerationProjectActions({ bumpBoard, filtersRef, flash, reload, selectedRef });
+  } = useGenerationProjectActions({
+    bumpBoard,
+    filtersRef,
+    flash,
+    reload,
+    selectedRef,
+    workspace: workspaceContext,
+  });
 
   // 모든 필터(project_id·컬러·태그·타입 포함)가 서버 쿼리에 들어가므로, 무엇이 바뀌든
   // 첫 페이지부터 다시 받는다(무한 스크롤 누적 초기화). 서버가 거르니 누락 없이 정확.
@@ -303,6 +333,16 @@ export default function App() {
     reload,
     selectedRef,
     setGens,
+  });
+  const { onWorkspaceCommand } = useGenerationWorkspaceActions({
+    activeWorkspaceId: filters.workspace_id,
+    flash,
+    gensRef,
+    reload,
+    selectedRef,
+    setGens,
+    setSelected,
+    teamTab: filters.tab === "team",
   });
   useGenerationKeyboardActions({ clearSelect, filtersRef, flash, gensRef, reload, selectedRef, setGens });
 
@@ -374,6 +414,9 @@ export default function App() {
       local_only: true,
       creator_uid: account?.creator_uid ?? null,
       creator_name: null,
+      workspace_scope: "unknown",
+      workspace_id: null,
+      workspace_name: null,
       is_mine: true,
       project_id: null,
       deleted: false,
@@ -647,6 +690,10 @@ export default function App() {
     projectId: string | undefined,
     folderPath: string | undefined,
   ) => {
+    if (!isGenerationWorkspaceReady(workspaceContext)) {
+      flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 실행하세요.");
+      return;
+    }
     if (!jobs.length) {
       flash(skipped ? "모델이 연결된 생성 카드가 없습니다." : "생성할 카드가 없습니다.");
       return;
@@ -707,7 +754,7 @@ export default function App() {
         });
         return body;
       },
-      (body) => api.create(body),
+      (body) => api.create(body, workspaceContext),
       ({ cardId, result }) => applySuccess(cardId, result),
     );
     const { successes, buildFail, submitFail: createFail, applyFail } = summary;
@@ -848,6 +895,7 @@ export default function App() {
     flash,
     navTab,
     reload,
+    workspace: workspaceContext,
   });
 
   // 히스토리 패널 '구성에서 보기' → 구성탭 트리(뒤로가기로 직전 화면 복원).
@@ -965,7 +1013,11 @@ export default function App() {
         filters={filters}
         onTab={(tab) => {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
-          setFilters({ tab }); // 직접 탭 클릭은 다른 필터 초기화(기존 동작 유지)
+          setFilters({
+            tab,
+            workspace_id:
+              workspaceContext.scope === "team" ? workspaceContext.id || undefined : undefined,
+          }); // 직접 탭 클릭은 다른 필터를 초기화하되 선택 공간은 유지
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
@@ -973,6 +1025,8 @@ export default function App() {
           await reload();
           flash("워크스페이스 전환 — 라이브러리를 갱신했습니다.");
         }}
+        workspaceContext={workspaceContext}
+        onWorkspaceContextChange={changeWorkspaceContext}
         onImported={async (msg) => {
           await reload();
           flash(msg);
@@ -1240,6 +1294,7 @@ export default function App() {
                     onSetAutoTags={onSetAutoTags}
                     onBulkAddAutoTags={onBulkAddAutoTags}
                     onBulkRemoveAutoTags={onBulkRemoveAutoTags}
+                    onWorkspaceCommand={onWorkspaceCommand}
                     onOpenComments={(g) => openComment(g.id)}
                     onRegenerate={onRegenerate}
                     onPublish={onPublish}
@@ -1290,6 +1345,7 @@ export default function App() {
               ? filters.project_id
               : undefined
           }
+          workspace={workspaceContext}
           topSlot={promptVisible ? selectionBar : undefined}
           onCreated={onPromptCreated}
         />

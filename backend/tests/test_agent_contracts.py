@@ -256,13 +256,18 @@ def test_pending_response_contains_every_field_the_agent_executes():
 def test_gen_request_adapter_builds_claim_url_in_one_place():
     agent = _load_agent()
     with patch.object(agent, "_http", return_value=(200, [])) as http:
-        assert agent._claim_pending("http://hub/", "token-1", 16) == (200, [])
+        assert agent._claim_pending("http://hub/", "token-1", 16, "agent-1") == (200, [])
 
     call = http.call_args
     parsed = urlsplit(call.args[1])
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending"
-    assert parse_qs(parsed.query) == {"limit": ["16"]}
+    # capability=workspace: 워크스페이스 전환·검증 지원 선언 — 신 서버가 지정 요청을 내려주는 조건.
+    assert parse_qs(parsed.query) == {
+        "limit": ["16"],
+        "capability": ["workspace"],
+        "agent_id": ["agent-1"],
+    }
     assert call.kwargs == {"token": "token-1"}
 
 
@@ -282,7 +287,7 @@ def test_agent_separates_local_submit_workers_from_remote_in_flight_jobs():
     assert agent._claim_capacity(submitting_count=0, active_count=64) == 0
 
 
-def test_agent_poll_uses_one_list_call_and_keeps_processing_jobs():
+def test_agent_poll_uses_direct_get_as_authority():
     agent = _load_agent()
     active = {
         "job-running": {
@@ -300,24 +305,34 @@ def test_agent_poll_uses_one_list_call_and_keeps_processing_jobs():
             "next_direct_check": 0.0,
         },
     }
-    jobs = [
-        {"id": "job-running", "status": "running"},
-        {"id": "job-done", "status": "completed", "result_url": "https://result"},
-    ]
-
-    with patch.object(agent, "_run_cli_json", return_value=(jobs, None)) as cli_json, patch.object(
-        agent, "_reconcile", return_value=200
+    direct_running = {"id": "job-running", "status": "running"}
+    direct_done = {
+        "id": "job-done",
+        "status": "completed",
+        "result_url": "https://result",
+    }
+    with patch.object(
+        agent,
+        "_run_cli_json",
+        side_effect=[(direct_running, None), (direct_done, None)],
+    ) as cli_json, patch.object(
+        agent,
+        "_report_reconcile",
+        side_effect=[
+            (200, {"outcome": "not_ready", "asset_saved": False}),
+            (200, {"outcome": "applied", "asset_saved": True}),
+        ],
     ) as reconcile:
         assert agent._poll_active_jobs("http://hub", "token-1", "higgsfield", active) == 1
 
-    cli_json.assert_called_once_with(
-        "higgsfield", "generate", "list", "--size", str(agent._JOB_LIST_SIZE), timeout=120
-    )
-    reconcile.assert_called_once_with(
+    assert cli_json.call_args_list[0].args == ("higgsfield", "generate", "get", "job-running")
+    assert cli_json.call_args_list[0].kwargs == {"timeout": 120}
+    assert cli_json.call_count == 2
+    reconcile.assert_any_call(
         "http://hub",
         "token-1",
         "request-done",
-        jobs[1],
+        direct_done,
     )
     assert list(active) == ["job-running"]
 
@@ -334,16 +349,19 @@ def test_agent_keeps_waiting_job_active_until_it_really_completes():
             "next_direct_check": 0.0,
         }
     }
-    jobs = [{"id": "job-waiting", "status": "waiting"}]
-
-    with patch.object(agent, "_run_cli_json", return_value=(jobs, None)), patch.object(
-        agent, "_reconcile"
+    direct = {"id": "job-waiting", "status": "waiting"}
+    with patch.object(
+        agent, "_run_cli_json", return_value=(direct, None)
+    ), patch.object(
+        agent, "_report_reconcile", return_value=(200, {"outcome": "not_ready"})
     ) as reconcile:
         assert agent._poll_active_jobs(
             "http://hub", "token-1", "higgsfield", active
         ) == 0
 
-    reconcile.assert_not_called()
+    reconcile.assert_called_once_with(
+        "http://hub", "token-1", "request-waiting", direct
+    )
     assert list(active) == ["job-waiting"]
 
 
@@ -378,27 +396,31 @@ def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it(
             "next_direct_check": 0.0,
         }
     }
-    listed = {"id": "job-done", "status": "completed"}
     detailed = {
         "id": "job-done",
         "status": "completed",
+        "result_url": "https://result",
         "params": {"input_images": ["image-1"]},
     }
 
     with patch.object(
         agent,
         "_run_cli_json",
-        side_effect=[([listed], None), (detailed, None)],
-    ) as cli_json, patch.object(agent, "_reconcile", return_value=200) as reconcile:
+        return_value=(detailed, None),
+    ) as cli_json, patch.object(
+        agent,
+        "_report_reconcile",
+        return_value=(200, {"outcome": "applied", "asset_saved": True}),
+    ) as reconcile:
         assert agent._poll_active_jobs("http://hub", "token-1", "higgsfield", active) == 1
 
-    assert cli_json.call_args_list[1].args == (
+    assert cli_json.call_args_list[0].args == (
         "higgsfield",
         "generate",
         "get",
         "job-done",
     )
-    assert cli_json.call_args_list[1].kwargs == {"timeout": 120}
+    assert cli_json.call_args_list[0].kwargs == {"timeout": 120}
     reconcile.assert_called_once_with(
         "http://hub",
         "token-1",
@@ -414,6 +436,62 @@ def test_agent_does_not_launch_one_wait_process_per_remote_job():
     assert '"generate", "wait"' not in source
     assert "슬롯 비는 대로 채움" not in source
     assert "최대 {_MAX_CONCURRENCY}개 병렬" not in source
+    assert 'os.environ.pop("MVHUB_SESSION_TOKEN", None)' in source
+
+
+def test_agent_startup_refreshes_only_server_selected_jobs() -> None:
+    """초기 cycle도 전량 재전송하지 않고 서버가 고른 진행중 항목만 동기화한다."""
+    agent = _load_agent()
+    with patch.object(agent, "execute_pending") as execute, patch.object(
+        agent, "tracking_pass"
+    ) as tracking, patch.object(agent, "push_once") as push:
+        agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, False)
+
+    execute.assert_called_once_with("http://hub", "token-1", "higgsfield")
+    tracking.assert_called_once_with("http://hub", "token-1", "higgsfield")
+    push.assert_called_once_with("http://hub", "token-1", "higgsfield", 100)
+
+
+def test_agent_startup_keeps_no_push_mode_local() -> None:
+    agent = _load_agent()
+    with patch.object(agent, "execute_pending") as execute, patch.object(
+        agent, "tracking_pass"
+    ) as tracking, patch.object(agent, "push_once") as push:
+        agent._initial_cycle("http://hub", "token-1", "higgsfield", 100, True)
+
+    execute.assert_called_once()
+    tracking.assert_called_once()
+    push.assert_not_called()
+
+
+def test_agent_has_no_removed_cycle_callback_references() -> None:
+    """계정 전환/재로그인 분기도 현재 초기화 함수를 호출해야 한다."""
+    source = AGENT_PATH.read_text(encoding="utf-8")
+
+    assert "cycle()" not in source
+
+
+def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> None:
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(
+            200,
+            {"unknown": ["job-new"], "refresh": ["job-running"]},
+        ),
+    ) as http:
+        selected = agent._job_ids_to_sync(
+            "http://hub", "token-1", ["job-done", "job-running", "job-new"]
+        )
+
+    assert selected == {"job-running", "job-new"}
+    http.assert_called_once_with(
+        "POST",
+        "http://hub/api/ingest/known-jobs",
+        token="token-1",
+        body={"job_ids": ["job-done", "job-running", "job-new"]},
+    )
 
 
 def test_execute_pending_claims_only_current_submit_worker_capacity():
@@ -428,11 +506,11 @@ def test_execute_pending_claims_only_current_submit_worker_capacity():
     }
     claim_limits: list[int] = []
 
-    def claim_once(_server, _token, limit):
+    def claim_once(_server, _token, limit, _agent_id):
         claim_limits.append(limit)
         return (200, [request] if len(claim_limits) == 1 else [])
 
-    def finish_active(_server, _token, _cli, active):
+    def finish_active(_server, _token, _cli, active, _account_email):
         active.clear()
         return 1
 
@@ -448,6 +526,65 @@ def test_execute_pending_claims_only_current_submit_worker_capacity():
     assert claim_limits
     assert claim_limits[0] == agent._SUBMIT_WORKERS
     assert max(claim_limits) <= agent._SUBMIT_WORKERS
+
+
+def test_agent_switches_and_verifies_team_workspace_before_submit():
+    agent = _load_agent()
+    before = [
+        {"id": "personal-1", "name": None, "is_selected": True},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": False},
+    ]
+    after = [
+        {"id": "personal-1", "name": None, "is_selected": False},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": True},
+    ]
+    with patch.object(agent, "_run_cli_json", side_effect=[(before, None), (after, None)]), patch.object(
+        agent, "_run_cli_command", return_value=None
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "team", "id": "team-1", "name": "MILLIONVOLT"}
+        )
+
+    assert ok is True
+    assert error is None
+    command.assert_called_once_with("higgsfield", "workspace", "set", "team-1", timeout=60)
+
+
+def test_agent_resolves_personal_workspace_without_storing_its_cli_id():
+    agent = _load_agent()
+    workspaces = [
+        {"id": "personal-1", "name": None, "is_selected": False},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": True},
+    ]
+    after = [
+        {"id": "personal-1", "name": None, "is_selected": True},
+        {"id": "team-1", "name": "MILLIONVOLT", "is_selected": False},
+    ]
+    with patch.object(agent, "_run_cli_json", side_effect=[(workspaces, None), (after, None)]), patch.object(
+        agent, "_run_cli_command", return_value=None
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "personal", "id": None, "name": None}
+        )
+
+    assert ok is True
+    assert error is None
+    command.assert_called_once_with("higgsfield", "workspace", "set", "personal-1", timeout=60)
+
+
+def test_agent_refuses_missing_team_workspace_without_falling_back():
+    agent = _load_agent()
+    workspaces = [{"id": "personal-1", "name": None, "is_selected": True}]
+    with patch.object(agent, "_run_cli_json", return_value=(workspaces, None)), patch.object(
+        agent, "_run_cli_command"
+    ) as command:
+        ok, error = agent._ensure_request_workspace(
+            "higgsfield", {"scope": "team", "id": "missing", "name": "OTHER"}
+        )
+
+    assert ok is False
+    assert "찾을 수 없습니다" in str(error)
+    command.assert_not_called()
 
 
 def test_agent_failure_report_url_encodes_reason_and_authenticates():
@@ -506,9 +643,11 @@ def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():
     ), patch.object(
         agent, "_cli_json", return_value={"id": "job-1", "status": "done"}
     ) as cli_json:
-        agent.reconcile_pass("http://hub", "token-1", "higgsfield")
+        agent.reconcile_pass(
+            "http://hub", "token-1", "higgsfield", account_email="user@example.com"
+        )
 
-    replay.assert_called_once_with("http://hub", "token-1")
+    replay.assert_called_once_with("http://hub", "token-1", "user@example.com")
     cli_json.assert_called_once_with(
         "higgsfield", "generate", "get", "job-1", timeout=120
     )
@@ -525,3 +664,170 @@ def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():
         "token": "token-1",
         "body": {"job": {"id": "job-1", "status": "done"}},
     }
+
+
+def test_list_waiting_but_direct_get_completed_finishes_after_server_ack():
+    """이번 장애 재현: 목록의 오래된 waiting보다 개별 get 완료 결과를 우선한다."""
+    agent = _load_agent()
+    active = {
+        "job-1": {
+            "rid": "request-1",
+            "job_id": "job-1",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+    }
+    detailed = {
+        "id": "job-1",
+        "status": "completed",
+        "result_url": "https://cdn.example/result.mp4",
+    }
+    with patch.object(
+        agent, "_run_cli_json", return_value=(detailed, None)
+    ), patch.object(
+        agent,
+        "_report_reconcile",
+        return_value=(200, {"outcome": "applied", "asset_saved": True}),
+    ):
+        assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 1
+    assert active == {}
+
+
+def test_http_200_not_ready_never_removes_paid_job_from_tracking():
+    agent = _load_agent()
+    active = {
+        "job-1": {
+            "rid": "request-1",
+            "job_id": "job-1",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+    }
+    detailed = {
+        "id": "job-1",
+        "status": "completed",
+        "result_url": "https://cdn.example/result.png",
+    }
+    with patch.object(agent, "_run_cli_json", return_value=(detailed, None)), patch.object(
+        agent,
+        "_report_reconcile",
+        return_value=(200, {"outcome": "not_ready", "asset_saved": False}),
+    ):
+        assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
+    assert list(active) == ["job-1"]
+
+
+def test_completed_without_result_url_is_sanitized_and_kept_for_recheck():
+    agent = _load_agent()
+    active = {
+        "job-1": {
+            "rid": "request-1",
+            "job_id": "job-1",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+    }
+    detailed = {"id": "job-1", "status": "completed", "result_url": "not-a-url"}
+    with patch.object(agent, "_run_cli_json", return_value=(detailed, None)), patch.object(
+        agent,
+        "_report_reconcile",
+        return_value=(200, {"outcome": "not_ready", "asset_saved": False}),
+    ) as report:
+        assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
+    assert report.call_args.args[3]["result_url"] is None
+    assert list(active) == ["job-1"]
+
+
+def test_unknown_provider_status_and_network_failure_are_non_terminal():
+    agent = _load_agent()
+    base = {
+        "rid": "request-1",
+        "job_id": "job-1",
+        "expected_image_inputs": 0,
+        "deadline": float("inf"),
+        "next_direct_check": 0.0,
+    }
+    active = {"job-1": dict(base)}
+    with patch.object(
+        agent,
+        "_run_cli_json",
+        return_value=({"id": "job-1", "status": "brand_new_provider_state"}, None),
+    ), patch.object(
+        agent, "_report_reconcile", return_value=(200, {"outcome": "not_ready"})
+    ) as report:
+        assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
+    report.assert_called_once()
+    assert list(active) == ["job-1"]
+
+    active["job-1"]["next_direct_check"] = 0.0
+    with patch.object(
+        agent, "_run_cli_json", return_value=(None, "timeout")
+    ), patch.object(agent, "_fail") as fail:
+        assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
+    fail.assert_not_called()
+    assert list(active) == ["job-1"]
+
+
+def test_sixty_four_jobs_are_direct_checked_in_fair_bounded_batches():
+    agent = _load_agent()
+    active = {
+        f"job-{index:02d}": {
+            "rid": f"request-{index:02d}",
+            "job_id": f"job-{index:02d}",
+            "expected_image_inputs": 0,
+            "deadline": float("inf"),
+            "next_direct_check": 0.0,
+        }
+        for index in range(64)
+    }
+    checked: list[str] = []
+
+    def direct_get(_cli, _generate, _get, job_id, **_kwargs):
+        checked.append(job_id)
+        return {"id": job_id, "status": "running"}, None
+
+    with patch.object(agent, "_run_cli_json", side_effect=direct_get), patch.object(
+        agent, "_report_reconcile", return_value=(200, {"outcome": "not_ready"})
+    ):
+        for _ in range(8):
+            assert agent._poll_active_jobs("http://hub", "token", "higgsfield", active) == 0
+
+    assert len(checked) == 64
+    assert len(set(checked)) == 64
+    assert len(active) == 64
+
+
+def test_agent_sqlite_state_is_isolated_by_server_and_account(tmp_path):
+    with patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}):
+        agent = _load_agent()
+        agent._outbox_add("http://server-a", "a@example.com", "r-a", "job-a")
+        agent._outbox_add("http://server-a", "b@example.com", "r-b", "job-b")
+        agent._outbox_add("http://server-b", "a@example.com", "r-c", "job-c")
+
+        assert agent._outbox_load("http://server-a", "a@example.com") == [
+            {"rid": "r-a", "job_id": "job-a"}
+        ]
+        assert agent._outbox_load("http://server-a", "b@example.com") == [
+            {"rid": "r-b", "job_id": "job-b"}
+        ]
+        assert agent._outbox_load("http://server-b", "a@example.com") == [
+            {"rid": "r-c", "job_id": "job-c"}
+        ]
+
+        tracked = {
+            "rid": "r-a",
+            "job_id": "job-a",
+            "expected_image_inputs": 0,
+            "provider_status": "running",
+            "check_failures": 0,
+            "next_direct_check": 0.0,
+            "deadline": float("inf"),
+        }
+        # 무한 deadline은 SQLite에 넣을 수는 있지만 복원 산술이 무한이 되므로 실사용 값으로 검증한다.
+        tracked["deadline"] = agent.time.monotonic() + 3600
+        agent._tracked_save("http://server-a", "a@example.com", tracked)
+        assert set(agent._tracked_load("http://server-a", "a@example.com")) == {"job-a"}
+        assert agent._tracked_load("http://server-a", "b@example.com") == {}

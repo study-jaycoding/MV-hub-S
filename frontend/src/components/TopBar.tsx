@@ -3,7 +3,7 @@
 // 로컬 보관)는 불필요 → 제거. '구성(compose)' 탭도 숨김(기능은 유지, 진입만 비활성).
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Filters } from "../types";
+import type { Filters, WorkspaceContext } from "../types";
 import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
 import { AccountMenu } from "./AccountMenu";
@@ -14,6 +14,8 @@ interface Props {
   onTab: (tab: "my" | "team" | "compose") => void;
   onSearch: (q?: string) => void;
   onWorkspaceSwitched: () => void;
+  workspaceContext: WorkspaceContext;
+  onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported: (msg: string) => void; // (서버 모드 미사용 — App 호환)
   onOpenAssets: () => void;
   onOpenManage?: () => void; // PM 대시보드(분리형) — 별도 창. 플래그 off 면 미전달(버튼 숨김)
@@ -28,6 +30,8 @@ export function TopBar({
   onTab,
   onSearch,
   onWorkspaceSwitched,
+  workspaceContext,
+  onWorkspaceContextChange,
   onImported,
   onOpenAssets,
   onOpenManage,
@@ -116,6 +120,8 @@ export function TopBar({
         onProviderUpdated={setProvider}
         onLogout={onLogout}
         onWorkspaceSwitched={onWorkspaceSwitched}
+        workspaceContext={workspaceContext}
+        onWorkspaceContextChange={onWorkspaceContextChange}
         onImported={onImported}
         localHub={localHub}
       />

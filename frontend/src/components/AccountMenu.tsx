@@ -11,9 +11,15 @@ import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
 import { useSyncStatus } from "../lib/useSyncStatus";
+import {
+  reconcileReportedWorkspaceContext,
+  sameWorkspace,
+  selectedWorkspaceContext,
+  workspaceContextOf,
+} from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
-import type { Account, ReportedHfStatus, Workspace } from "../types";
+import type { Account, ReportedHfStatus, Workspace, WorkspaceContext } from "../types";
 
 // 힉스필드 팀 플랜 월 크레딧 한도(게이지 분모). CLI 가 총 한도를 안 주므로(account status·
 // workspace list·transactions 모두 잔액/차감만) 힉스필드 웹처럼 비율 게이지를 그리려면
@@ -28,6 +34,8 @@ export function AccountMenu({
   onProviderUpdated,
   onLogout,
   onWorkspaceSwitched,
+  workspaceContext,
+  onWorkspaceContextChange,
   onImported,
   localHub,
 }: {
@@ -36,6 +44,8 @@ export function AccountMenu({
   onProviderUpdated: (p: ProviderIdentity) => void;
   onLogout?: () => void;
   onWorkspaceSwitched: () => void;
+  workspaceContext: WorkspaceContext;
+  onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
 }) {
@@ -47,6 +57,10 @@ export function AccountMenu({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
+  // 계정 상태 요청이 진행되는 동안 사용자가 공간을 바꿔도 오래된 응답이 선택을 되돌리지 않게
+  // 비동기 콜백은 항상 가장 최신 컨텍스트를 읽는다.
+  const workspaceContextRef = useRef(workspaceContext);
+  workspaceContextRef.current = workspaceContext;
   const t = useT();
   const closeMenu = useCallback(() => setOpen(false), []);
   const closeMenuOnEscape = useCallback(() => {
@@ -61,10 +75,29 @@ export function AccountMenu({
   //    라이브 — /api/workspaces(목록·select)가 로컬 CLI 를 직접 호출하므로 클릭 전환이 그대로 작동.
   //  · 공유 서버 본체(AUTH on): CLI 가 내 것이 아닐 수 있어 읽기전용(에이전트 보고값 표시).
   const liveMode = !account || !!localHub;
+  const acceptLiveWorkspaces = useCallback((items: Workspace[]) => {
+    setList(items);
+    const next = selectedWorkspaceContext(items);
+    const currentContext = workspaceContextRef.current;
+    if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
+      onWorkspaceContextChange(next);
+    }
+  }, [onWorkspaceContextChange]);
+  const acceptReportedStatus = useCallback((status: ReportedHfStatus) => {
+    setReported(status);
+    // 공유 서버에서는 메뉴 선택이 "조회/생성 대상"이다. 최초 진입 때만 에이전트가 보고한
+    // 현재 CLI 공간을 기본값으로 삼는다. 저장 필터에서 id만 복원된 팀 컨텍스트는 같은 id의
+    // 보고값으로 이름까지 보완하되, 이후 사용자가 고른 다른 공간은 새 보고가 와도 유지한다.
+    const currentContext = workspaceContextRef.current;
+    const next = reconcileReportedWorkspaceContext(currentContext, status.workspaces || []);
+    if (!sameWorkspace(currentContext, next) || currentContext.name !== next.name) {
+      onWorkspaceContextChange(next);
+    }
+  }, [onWorkspaceContextChange]);
   useEffect(() => {
-    if (liveMode) api.workspaces().then(setList).catch(() => {});
-    else api.accountHf().then(setReported).catch(() => setReported(null));
-  }, [liveMode]);
+    if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
+    else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
+  }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
   useOutsideMouseDown(ref, closeMenu, open);
   // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
@@ -72,18 +105,23 @@ export function AccountMenu({
   // 끝나도 즉시 반영된다(예전엔 마운트 때 한 번만 받아 '미연결'이 옛 상태로 박혀 있었다).
   useEffect(() => {
     if (!open) return;
-    if (liveMode) api.workspaces().then(setList).catch(() => {});
-    else api.accountHf().then(setReported).catch(() => {});
-  }, [open, liveMode]);
+    if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
+    else api.accountHf().then(acceptReportedStatus).catch(() => {});
+  }, [acceptLiveWorkspaces, acceptReportedStatus, open, liveMode]);
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
   const current = wsList.find((w) => w.is_selected);
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
-  const activeWs = current || wsList.find((w) => !w.name);
+  const activeWs =
+    workspaceContext.scope === "team"
+      ? wsList.find((w) => w.id === workspaceContext.id)
+      : workspaceContext.scope === "personal"
+        ? wsList.find((w) => !w.name)
+        : current || wsList.find((w) => !w.name);
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
-  const rawCredits = liveMode ? activeWs?.credits : reported?.credits;
+  const rawCredits = activeWs?.credits ?? (liveMode ? null : reported?.credits);
   const parsedCredits =
     rawCredits == null ? null : typeof rawCredits === "number" ? rawCredits : Number(rawCredits);
   const activeCredits =
@@ -117,7 +155,7 @@ export function AccountMenu({
     setBusy(true);
     try {
       const r = id ? await api.selectWorkspace(id) : await api.unselectWorkspace();
-      setList(r.workspaces);
+      acceptLiveWorkspaces(r.workspaces);
       onWorkspaceSwitched();
     } catch (e) {
       alert("워크스페이스 전환 실패: " + String(e));
@@ -189,7 +227,8 @@ export function AccountMenu({
             wsList.map((w) => {
               // 이름 없는(name=null) 워크스페이스 = 개인 워크스페이스(힉스필드는 사용자 이름으로 표시).
               const isPersonal = !w.name;
-              const selected = w.is_selected || (isPersonal && !current);
+              const itemContext = workspaceContextOf(w);
+              const selected = sameWorkspace(workspaceContext, itemContext);
               const inner = (
                 <span className="acct-item-main">
                   <span className="acct-item-name">
@@ -201,7 +240,8 @@ export function AccountMenu({
                   </span>
                 </span>
               );
-              // 비로그인(라이브)만 클릭 전환. 로그인 계정은 읽기전용 — 전환은 자기 로컬 CLI에서.
+              // 로컬 허브는 실제 CLI까지 전환한다. 공유 서버에서는 내 에이전트가 생성 직전에
+              // 이 선택값으로 CLI를 전환하므로, 여기서는 라이브러리/생성 대상만 바꾼다.
               return liveMode ? (
                 <button
                   key={w.id}
@@ -215,10 +255,18 @@ export function AccountMenu({
                   {selected && <span className="acct-check">✓</span>}
                 </button>
               ) : (
-                <div key={w.id} className={"acct-item readonly" + (selected ? " on" : "")}>
+                <button
+                  key={w.id}
+                  type="button"
+                  className={"acct-item" + (selected ? " on" : "")}
+                  onClick={() => {
+                    onWorkspaceContextChange(itemContext);
+                    onWorkspaceSwitched();
+                  }}
+                >
                   {inner}
                   {selected && <span className="acct-check">✓</span>}
-                </div>
+                </button>
               );
             })
           )}
@@ -248,7 +296,7 @@ export function AccountMenu({
             </div>
           )}
           {!liveMode && reported?.reported && (
-            <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 전환은 내 로컬 CLI에서</div>
+            <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
           )}
 
           {/* '외부 생성물 올리기'·'힉스필드 삭제물 검토'는 설정 패널로 이동(중복 제거). */}

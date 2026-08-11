@@ -148,7 +148,8 @@ export function useAssetBroadcastSync({
       const current = projectRef.current;
       if (!current) return;
       lastResumeRefreshRef.current = { project: current, at: Date.now() };
-      void Promise.resolve(refreshTreeRef.current(current)).catch(() => {});
+      // 감시기가 없거나 이벤트를 놓친 경우의 안전망이므로 서버 캐시도 강제로 건너뛴다.
+      void Promise.resolve(refreshTreeRef.current(current, true)).catch(() => {});
     };
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);

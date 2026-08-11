@@ -10,7 +10,7 @@
 
 ## 버전 pin 단일 출처
 
-- `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.20`.
+- `hf_cli_version.txt` (저장소 루트) — 한 줄, 현재 `1.1.23`.
 - 이 값을 런처(`MV_agent.bat`)·업데이트(`update_cli.bat`)·릴리스(`release/make_release.ps1`)·
   서버 생성 bat(`backend/app/routers/ingest.py`)·초기설치(`setup_clone_git.bat`)가 모두 읽어
   **정확히 이 버전**을 설치/검증한다. `MV_agent.bat` 은 매 실행 때 설치본이 pin 과 다르면 교정한다.

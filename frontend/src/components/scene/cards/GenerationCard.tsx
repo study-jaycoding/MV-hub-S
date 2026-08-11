@@ -5,7 +5,7 @@ import type React from "react";
 import type { SceneCard, SceneEdgeRole } from "../../../lib/scenes";
 import { cardBatch, variantIds } from "../../../lib/scenes";
 import type { Generation, InfoTarget, PreviewTarget } from "../../../types";
-import { generationStatusLabelFor } from "../../../lib/generationDisplay";
+import { generationStatusLabelFor, generationStatusTitle } from "../../../lib/generationDisplay";
 import { HistoryBoardNode } from "../../history/HistoryBoardNode";
 import { TagEditor } from "../../TagEditor";
 import higgsfieldLogo from "../../../assets/higgsfield-logo.svg";
@@ -149,16 +149,33 @@ export function GenerationCard({
                     }}
                   >
                     <span className="scene-genfail-label">
-                      {generationStatusLabelFor(st, g?.error)}
+                      {generationStatusLabelFor(st, g?.error, g?.execution_phase)}
                     </span>
                   </div>
                 );
               })()
             ) : (
-              // 생성중 — 힉스필드 로고만 크게 맥동(글씨 없음) · 배경 검정(scene-genloading).
-              <div className={"scene-card-genbody scene-genloading status-" + String(g?.status || card.status || "pending")}>
+              // 생성중 — 로고와 서버 상태 엔진의 현재 단계를 함께 표시한다.
+              <div
+                className={"scene-card-genbody scene-genloading status-" + String(g?.status || card.status || "pending")}
+                title={g ? generationStatusTitle(
+                  g.status,
+                  g.error,
+                  g.execution_phase,
+                  g.provider_status,
+                  g.last_checked_at,
+                  g.next_check_at,
+                ) : undefined}
+              >
                 <span className="gen-generating">
                   <img src={higgsfieldLogo} alt="Higgsfield" className="scene-genloading-logo" draggable={false} />
+                  <span className="gen-generating-label">
+                    {generationStatusLabelFor(
+                      String(g?.status || card.status || "pending"),
+                      g?.error,
+                      g?.execution_phase,
+                    )}
+                  </span>
                 </span>
               </div>
             )

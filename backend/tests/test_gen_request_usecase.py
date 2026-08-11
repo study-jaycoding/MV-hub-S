@@ -135,7 +135,9 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
 
         assert out == claimed
         signals.touch.assert_called_once_with("A@B.COM")
-        repo.claim_pending_requests.assert_called_once_with("A@B.COM", limit=16)
+        repo.claim_pending_requests.assert_called_once_with(
+            "A@B.COM", limit=16, workspace_capable=False, lease_owner=None
+        )
         assert repo.set_status.call_args_list == [
             (("g1", "running", None),),
             (("g2", "running", None),),
@@ -256,7 +258,7 @@ def test_anchor_request_broadcasts_only_after_apply():
         )
 
 
-def test_reconcile_request_keeps_pending_without_writing():
+def test_reconcile_request_keeps_processing_in_tracking_without_terminal_write():
     pending = SimpleNamespace(status="pending")
     with patch("app.usecases.gen_requests.repo") as repo, patch(
         "app.usecases.gen_requests.cli_bridge.parse_job", return_value={"parsed": True}
@@ -265,9 +267,21 @@ def test_reconcile_request_keeps_pending_without_writing():
     ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
         "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
     ) as broadcast:
-        out = asyncio.run(reconcile_request({"gen_id": "g1"}, {}, None, "acct:a"))
+        repo.get_generation.return_value = {"job_id": None, "assets": []}
+        out = asyncio.run(
+            reconcile_request({"id": "r1", "gen_id": "g1"}, {}, None, "acct:a")
+        )
 
-        assert out == {"ok": True, "applied": False, "status": "pending"}
+        assert out == {
+            "ok": True,
+            "applied": False,
+            "outcome": "not_ready",
+            "status": "running",
+            "job_id": None,
+            "asset_saved": False,
+        }
+        repo.record_request_check.assert_called_once()
+        repo.set_status.assert_called_once_with("g1", "running", None)
         repo.apply_reconcile.assert_not_called()
         pm.assert_not_called()
         broadcast.assert_not_awaited()
@@ -285,17 +299,33 @@ def test_reconcile_request_applies_terminal_result_and_broadcasts():
         error=None,
     )
     with patch("app.usecases.gen_requests.repo") as repo, patch(
-        "app.usecases.gen_requests.cli_bridge.parse_job", return_value={}
+        "app.usecases.gen_requests.cli_bridge.parse_job",
+        return_value={"generation": {"id": "job1", "status": "done"}},
     ), patch(
         "app.usecases.gen_requests.normalize_job_result", return_value=result
     ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
         "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
     ) as broadcast:
         repo.apply_reconcile.return_value = True
+        repo.get_generation.side_effect = [
+            {"job_id": "job1", "assets": [], "status": "running"},
+            {"job_id": "job1", "assets": [{"file_path": "C:/result.mp4"}], "status": "done"},
+        ]
 
-        out = asyncio.run(reconcile_request({"gen_id": "g1"}, {}, None, "acct:a"))
+        out = asyncio.run(
+            reconcile_request(
+                {"id": "r1", "gen_id": "g1"}, {"status": "done"}, None, "acct:a"
+            )
+        )
 
-        assert out == {"ok": True, "applied": True, "status": "done"}
+        assert out == {
+            "ok": True,
+            "applied": True,
+            "outcome": "applied",
+            "status": "done",
+            "job_id": "job1",
+            "asset_saved": True,
+        }
         repo.apply_reconcile.assert_called_once_with(
             "g1",
             "job1",
@@ -306,6 +336,7 @@ def test_reconcile_request_applies_terminal_result_and_broadcasts():
             sort_ts=123.0,
             status="done",
             error=None,
+            provider_status="done",
         )
         pm.assert_called_once()
         broadcast.assert_awaited_once_with(
@@ -318,6 +349,73 @@ def test_reconcile_request_applies_terminal_result_and_broadcasts():
             },
             account_uid="acct:a",
         )
+
+
+def test_reconcile_unknown_provider_status_is_not_terminal():
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job",
+        return_value={"generation": {"id": "job1", "status": "future_state"}},
+    ), patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ):
+        repo.get_generation.return_value = {
+            "job_id": "job1",
+            "assets": [],
+            "status": "running",
+        }
+        out = asyncio.run(
+            reconcile_request(
+                {"id": "r1", "gen_id": "g1"},
+                {"id": "job1", "status": "future_state"},
+                None,
+                "acct:a",
+            )
+        )
+
+    assert out["outcome"] == "not_ready"
+    assert out["status"] == "running"
+    repo.record_request_check.assert_called_once()
+    assert repo.record_request_check.call_args.kwargs["phase"] == "verifying"
+    repo.apply_reconcile.assert_not_called()
+
+
+def test_reconcile_completed_without_usable_asset_stays_verifying():
+    result = SimpleNamespace(
+        asset_type="image",
+        asset_path="completed",
+        asset_thumb=None,
+        job_id="job1",
+        created_at=None,
+        sort_ts=None,
+        status="done",
+        error=None,
+    )
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.cli_bridge.parse_job",
+        return_value={"generation": {"id": "job1", "status": "done"}},
+    ), patch(
+        "app.usecases.gen_requests.normalize_job_result", return_value=result
+    ), patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ):
+        repo.get_generation.return_value = {
+            "job_id": "job1",
+            "assets": [],
+            "status": "running",
+        }
+        out = asyncio.run(
+            reconcile_request(
+                {"id": "r1", "gen_id": "g1"},
+                {"id": "job1", "status": "done"},
+                None,
+                "acct:a",
+            )
+        )
+
+    assert out["outcome"] == "not_ready"
+    assert out["asset_saved"] is False
+    repo.apply_reconcile.assert_not_called()
+    assert repo.record_request_check.call_args.kwargs["phase"] == "verifying"
 
 
 def test_fail_request_recovers_legacy_job_id_and_broadcasts():

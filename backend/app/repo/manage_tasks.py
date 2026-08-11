@@ -52,7 +52,7 @@ def _task_gen_rows(
     if fpath is not None:
         seq = None
     return conn.execute(
-        "SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
+        "SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, g.model AS model, "
         "  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
         "  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
         "  EXISTS(SELECT 1 FROM task_generation tg WHERE tg.task_id=? AND tg.gen_id=g.id) AS linked, "
@@ -180,7 +180,7 @@ def _batch_task_gen_rows(
         for id_batch in _batched(idlist):
             ph_g = ",".join("?" * len(id_batch))
             for g in conn.execute(
-                f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, "
+                f"SELECT g.id AS id, g.status AS status, g.creator_uid AS creator_uid, g.model AS model, "
                 f"  g.is_final AS is_final, g.created_at AS created_at, g.job_id AS job_id, "
                 f"  g.sort_ts AS sort_ts, "
                 f"  EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared, "
@@ -339,6 +339,9 @@ def list_tasks_batch(project_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
             from .. import manage_db
             for job_batch in _batched(list(dict.fromkeys(need_job_ids))):
                 elapsed_by_job.update(manage_db.elapsed_by_job_ids(job_batch))
+        # 개인 작업표가 작업 전체 합계가 아니라 '내가 만든 컷'만 다시 합산할 수 있도록
+        # 컷별 소요시간도 응답에 싣는다. 콘텐츠 DB 값이 없으면 위 텔레메트리 폴백을 그대로 쓴다.
+        elapsed_by_gen: dict[str, float] = {}
         # 2차: 배치 결과를 작업별로 합산해 조립(집계 의미는 기존과 동일).
         for r in rows:
             tid = r["id"]
@@ -351,7 +354,9 @@ def list_tasks_batch(project_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
                 e = metrics_by_gen.get(g["id"], (0, None))[1]
                 if e is None and g.get("job_id"):
                     e = elapsed_by_job.get(g["job_id"])
-                elapsed += e or 0
+                cut_elapsed = e or 0
+                elapsed_by_gen[g["id"]] = cut_elapsed
+                elapsed += cut_elapsed
             cc = sum(comments_by_gen.get(gid, 0) for gid in gen_ids)
             d = dict(r)
             d["gen_count"] = len(gen_ids)
@@ -399,8 +404,11 @@ def list_tasks_batch(project_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
                 if nm and nm not in seen:
                     seen.append(nm)
                 c["creator_name"] = nm
-                # 컷별 크레딧 — 참여자별 크레딧 집계(대시보드 참여자 세부)에 쓴다.
+                # 컷별 수치 — 프론트가 현재 작업자 기준으로 생성수·크레딧·시간·댓글을
+                # 자동 재집계할 때 사용한다. 작업 전체 합계와 같은 원본 값을 공유한다.
                 c["credits"] = metrics_by_gen.get(c["id"], (0, None))[0]
+                c["elapsed"] = elapsed_by_gen.get(c["id"], 0)
+                c["comment_count"] = comments_by_gen.get(c["id"], 0)
                 c.pop("job_id", None)  # 폴백 계산용 내부값 — 응답(컷)엔 노출 안 함(코덱스)
             d["cuts"] = per_task_cuts[d["id"]]
             d["creators"] = seen  # 실제 생성자(연결 컷 파생) — 기존 필터·캘린더 호환 유지

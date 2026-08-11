@@ -1,4 +1,4 @@
-"""어셋 폴더 실시간 감시 → WebSocket 변경 알림 (로컬 허브 전용).
+"""어셋 폴더 실시간 감시 → WebSocket 변경 알림.
 
 watchdog Observer 로 '트리를 조회한(=지금 보고 있는) 프로젝트 폴더'만 감시한다(요청 시 lazy 등록,
 전체 마운트 상시 스캔은 안 함). 파일이 추가·변경·삭제되면 미디어 파일만 필터하고, 저장 중 연속 이벤트를
@@ -9,8 +9,8 @@ manager.broadcast_all({"type": "assets_changed", "projects": [...]}) 를 보낸�
 watchdog 미설치 환경에서도 앱이 뜨도록 import 를 방어한다(그 경우 실시간 감시만 비활성 —
 Phase 1 의 '창 포커스 시 갱신'은 그대로 동작).
 
-★로컬 허브 전용: 공유 서버(AUTH on)에서는 LAN 사용자가 어셋 파일 I/O 를 못 하므로(=require_local_assets)
-감시할 이유가 없다. main.lifespan 이 `if not AUTH_ENABLED:` 로 start 를 게이트한다.
+인증 모드에서도 시작하지만 실제 감시는 트리 조회 시 lazy 등록한다. AUTH on에서는
+require_local_assets가 로컬 요청만 허용하므로 원격 사용자가 임의의 서버 폴더를 감시 등록할 수 없다.
 """
 
 from __future__ import annotations
@@ -103,6 +103,9 @@ class _Watcher:
         self._dir_projects: dict[str, set[str]] = {}  # dir_key -> {project 이름들}(같은 폴더 다중 이름)
         # dir_key -> {project: hide_render} — alias 별 render 숨김 의사. 하나라도 False 면 render 알림을 통과시킨다.
         self._dir_hide_by_project: dict[str, dict[str, bool]] = {}
+        # dir_key -> {(합본 루트, 합본 폴더들)}. captures/imports 같은 합본 뷰는 개별 폴더 변경 시
+        # 일반 프로젝트 캐시뿐 아니라 합본 캐시도 함께 비워야 한다.
+        self._dir_combined_targets: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
         self._lock = threading.Lock()
         self._pending: set[str] = set()  # 디바운스 윈도우에 모인 변경 폴더(dir_key)
         self._timer: Optional[threading.Timer] = None
@@ -113,6 +116,9 @@ class _Watcher:
                 "[asset-watcher] watchdog 미설치 — 실시간 감시 비활성(포커스 갱신으로 동작). "
                 "pip install watchdog 로 활성화"
             )
+            return
+        if self._observer:
+            self._loop = loop
             return
         self._loop = loop
         self._observer = Observer()
@@ -133,15 +139,18 @@ class _Watcher:
             self._watches.clear()
             self._dir_projects.clear()
             self._dir_hide_by_project.clear()
+            self._dir_combined_targets.clear()
+            self._pending.clear()
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
+        self._loop = None
 
     def watch(self, proj_dir: Path, project: str, hide_render: bool = False) -> None:
         """이 프로젝트 폴더를 감시 등록(이미 감시 중이면 이름만 추가). tree 조회 시점에 호출된다.
         같은 실제 폴더가 여러 project 이름으로 열릴 수 있으므로 dir_key→이름 집합으로 관리한다."""
         if not self._observer:
-            return  # watchdog 없음 or 서버 모드(start 안 함)
+            return  # watchdog 없음 또는 아직 start 전
         key = str(proj_dir)
         with self._lock:
             self._dir_projects.setdefault(key, set()).add(project)
@@ -159,6 +168,25 @@ class _Watcher:
                 print(f"[asset-watcher] 감시 등록 실패({project}): {e}")
                 return
             self._watches[key] = handle
+
+    def watch_combined(
+        self,
+        assets_root: Path,
+        project: str,
+        folders: tuple[str, ...],
+    ) -> None:
+        """합본 뷰를 이루는 실제 폴더들을 감시하고 합본 캐시 무효화 대상을 연결한다."""
+        # 캐시 키는 asset_tree.read_combined_tree에 전달한 경로 문자열과 같아야 한다.
+        # 여기서 resolve하면 상대 경로를 쓰는 테스트/배포 설정에서 서로 다른 키가 될 수 있다.
+        root = assets_root
+        target = (str(assets_root), folders)
+        for folder in folders:
+            directory = root / folder
+            self.watch(directory, project)
+            key = str(directory)
+            with self._lock:
+                if key in self._watches:
+                    self._dir_combined_targets.setdefault(key, set()).add(target)
 
     def _hide_render_for(self, dir_key: str) -> bool:
         """이 폴더의 render 변경을 숨길지 — 등록된 모든 alias 가 hide_render=True 일 때만 숨긴다.
@@ -186,11 +214,18 @@ class _Watcher:
             dirs = list(self._pending)
             self._pending.clear()
             projects = sorted({p for d in dirs for p in self._dir_projects.get(d, ())})
+            combined_targets = {
+                target
+                for directory in dirs
+                for target in self._dir_combined_targets.get(directory, ())
+            }
             loop = self._loop
         if dirs and loop is not None:
             # ① 백엔드 트리 캐시 무효화 — 재조회가 최신을 보게.
             for directory in dirs:
                 asset_tree.invalidate_project_tree(Path(directory))
+            for root, folders in combined_targets:
+                asset_tree.invalidate_combined_tree(Path(root), folders)
             # ② 이벤트 루프로 넘겨 WS 브로드캐스트(감시 스레드 → 루프 스레드 브리지).
             if projects:
                 from ..ws import manager
@@ -225,3 +260,11 @@ def stop() -> None:
 
 def watch(proj_dir: Path, project: str, hide_render: bool = False) -> None:
     _watcher.watch(proj_dir, project, hide_render)
+
+
+def watch_combined(
+    assets_root: Path,
+    project: str,
+    folders: tuple[str, ...],
+) -> None:
+    _watcher.watch_combined(assets_root, project, folders)

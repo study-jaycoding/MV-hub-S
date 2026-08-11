@@ -39,6 +39,7 @@ from ..models import (
     TagsIn,
 )
 from ..services import cli_bridge, syncer
+from ..services.telemetry_drain import drain_isolated_telemetry
 from ..usecases import generation_media_cache, generation_personal_meta, hf_missing
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,70 @@ async def list_workspaces():
     """워크스페이스 목록(개인/팀). is_selected 로 현재 컨텍스트 표시.
     ⚠️ 서버 CLI(하우스 계정) 기준 — 모든 로그인 사용자에게 같은 목록이 보인다."""
     return await cli_bridge.list_workspaces()
+
+
+def _workspace_account_email(request: Request) -> str | None:
+    """워크스페이스 접근 목록을 제한할 현재 계정 이메일."""
+    account = getattr(request.state, "account", None)
+    if account and account.get("email"):
+        return str(account["email"])
+    if _proxy.proxying():
+        from ..active_account import active_email
+
+        return active_email()
+    return None
+
+
+def _resolve_workspace_target(name: str, request: Request) -> dict[str, str]:
+    """로컬 프록시는 로그인된 본 서버의 목록을, 그 외에는 현재 DB 등록부를 사용한다."""
+    if _proxy.proxying():
+        result = _proxy.proxy_json(
+            "GET", f"/api/workspaces/resolve?name={quote(name, safe='')}", timeout=15
+        )
+        if not isinstance(result, dict) or not result.get("id") or not result.get("name"):
+            raise HTTPException(status_code=502, detail="서버의 워크스페이스 확인 응답이 올바르지 않습니다")
+        return {"id": str(result["id"]), "name": str(result["name"])}
+    try:
+        return repo.resolve_workspace_name(
+            name,
+            account_email=_workspace_account_email(request),
+        )
+    except repo.WorkspaceNameNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except repo.WorkspaceNameAmbiguous as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/workspaces/available")
+def available_workspaces(request: Request):
+    """현재 계정이 카드 귀속 명령에 사용할 수 있는 등록 워크스페이스 목록."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/workspaces/available", request)
+    account_email = _workspace_account_email(request)
+    rows = (
+        repo.list_workspace_registry(account_email, available_only=True)
+        if account_email
+        else repo.list_workspace_options()
+    )
+    workspaces: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        workspace_id = str(row.get("id") or "").strip()
+        workspace_name = str(row.get("name") or "").strip()
+        if not workspace_id or not workspace_name or workspace_id in seen:
+            continue
+        seen.add(workspace_id)
+        workspaces.append({"id": workspace_id, "name": workspace_name})
+    return {"workspaces": workspaces}
+
+
+@router.get("/workspaces/resolve")
+def resolve_workspace_by_name(
+    request: Request,
+    name: str = Query(..., min_length=1, max_length=200),
+):
+    """입력한 표시명이 현재 계정이 접근 가능한 실제 팀 워크스페이스인지 확인한다."""
+    return _resolve_workspace_target(name, request)
 
 
 class WorkspaceSelectIn(BaseModel):
@@ -366,6 +431,110 @@ class GenerationTagsBatchItem(BaseModel):
 class GenerationTagsBatchIn(BaseModel):
     items: list[GenerationTagsBatchItem] = Field(default_factory=list)
     auto: bool = False
+
+
+class GenerationWorkspaceBatchIn(BaseModel):
+    generation_ids: list[str] = Field(min_length=1, max_length=500)
+    operation: str = Field(pattern="^(assign|remove)$")
+    workspace_name: str = Field(min_length=1, max_length=200)
+
+
+def _workspace_assignment_error(exc: repo.WorkspaceAssignmentError) -> HTTPException:
+    if isinstance(exc, repo.WorkspaceGenerationNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, repo.WorkspaceOwnershipError):
+        return HTTPException(status_code=403, detail=str(exc))
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@router.put("/generations/workspace/batch")
+def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Request):
+    """선택한 내 카드의 현재 워크스페이스 귀속을 이름 명령으로 일괄 변경한다.
+
+    일반/전역 태그 테이블은 건드리지 않는다. 공유본은 팀 서버를 먼저 갱신하고, 실패하면
+    로컬 변경을 시작하지 않아 양쪽에 서로 다른 귀속이 남는 경우를 최소화한다.
+    """
+    workspace = _resolve_workspace_target(body.workspace_name, request)
+    owner_uid = _my_uid(request)
+    if _proxy.proxying() and not owner_uid:
+        raise HTTPException(
+            status_code=409,
+            detail="로그인 계정의 생성자 정보를 확인한 뒤 다시 시도하세요",
+        )
+    try:
+        preview = repo.plan_generation_workspace_batch(
+            body.generation_ids,
+            body.operation,
+            workspace,
+            owner_uid=owner_uid,
+        )
+    except repo.WorkspaceAssignmentError as exc:
+        raise _workspace_assignment_error(exc)
+
+    # 공유된 내 카드는 팀 탭의 서버 복사본도 같은 값이어야 한다. 변경 여부와 관계없이 선택된
+    # 공유본 전부를 보내 재시도만으로 불일치가 수렴하게 한다(서버 연산은 멱등).
+    shared_server_ids: list[str] = []
+    if _proxy.proxying():
+        for row in preview["resolved"]:
+            if row.get("shared"):
+                _local_id, server_id = repo.finalize_id_map(str(row["id"]))
+                if server_id and server_id not in shared_server_ids:
+                    shared_server_ids.append(server_id)
+        if shared_server_ids:
+            remote = _proxy.proxy_json(
+                "PUT",
+                "/api/generations/workspace/batch",
+                body={
+                    "generation_ids": shared_server_ids,
+                    "operation": body.operation,
+                    "workspace_name": workspace["name"],
+                },
+                timeout=30,
+            )
+            remote_workspace = remote.get("workspace") if isinstance(remote, dict) else None
+            if not isinstance(remote_workspace, dict) or remote_workspace.get("id") != workspace["id"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="로컬과 서버의 워크스페이스 정보가 일치하지 않습니다. 계정 상태를 새로고침하세요",
+                )
+
+    try:
+        result = repo.set_generation_workspace_batch(
+            body.generation_ids,
+            body.operation,
+            workspace,
+            owner_uid=owner_uid,
+        )
+    except repo.WorkspaceAssignmentError as exc:
+        logger.error(
+            "워크스페이스 원격 검증 뒤 로컬 재검증 실패: operation=%s workspace=%s error=%s",
+            body.operation,
+            workspace["id"],
+            exc,
+        )
+        raise _workspace_assignment_error(exc)
+
+    # 격리 test_dev에서는 운영 서버 대신 로컬 manage_hub.db까지 같은 요청에서 갱신한다.
+    # 실패해도 workspace 변경은 완료되며 outbox가 남아 다음 대시보드 조회에서 재시도된다.
+    try:
+        drain_isolated_telemetry()
+    except Exception:  # noqa: BLE001
+        pass
+
+    updates = []
+    for row in result["resolved"]:
+        generation = repo.get_generation(str(row["id"]))
+        if generation:
+            updates.append(
+                {"requested_id": str(row["requested_id"]), "generation": generation}
+            )
+    return {
+        "workspace": workspace,
+        "operation": body.operation,
+        "changed": [str(row["requested_id"]) for row in result["changed"]],
+        "unchanged": [str(row["requested_id"]) for row in result["unchanged"]],
+        "updates": updates,
+    }
 
 
 def _batch_meta_callbacks(request: Request):

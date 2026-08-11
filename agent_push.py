@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+import uuid
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from threading import Event, Lock
@@ -248,6 +250,104 @@ def _cli_json(cli: str, *args: str, timeout: int = 120):
     return data
 
 
+def _run_cli_command(cli: str, *args: str, timeout: int = 120) -> str | None:
+    """JSON 출력이 필요 없는 CLI 명령을 실행한다. 성공은 None, 실패는 표시용 사유를 반환한다."""
+    try:
+        out = subprocess.run(
+            [*_cli_argv(cli), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"CLI 시간 초과: {' '.join(args)}"
+    if out.returncode != 0:
+        return (out.stderr or out.stdout or f"종료 코드 {out.returncode}").strip()[:700]
+    return None
+
+
+def _request_workspace(value) -> dict:
+    """서버 요청의 워크스페이스를 에이전트가 사용할 최소 규격으로 정규화한다."""
+    value = value if isinstance(value, dict) else {}
+    scope = str(value.get("scope") or "unknown").strip().lower()
+    workspace_id = str(value.get("id") or "").strip() or None
+    name = str(value.get("name") or "").strip() or None
+    if scope == "team" and workspace_id:
+        return {"scope": "team", "id": workspace_id, "name": name}
+    if scope == "personal":
+        return {"scope": "personal", "id": None, "name": name}
+    return {"scope": "unknown", "id": None, "name": None}
+
+
+def _workspace_context_from_list(workspaces) -> dict:
+    """CLI workspace list에서 현재 선택 컨텍스트를 생성정보용 규격으로 만든다."""
+    if not isinstance(workspaces, list):
+        return {"scope": "unknown", "id": None, "name": None}
+    selected = next(
+        (w for w in workspaces if isinstance(w, dict) and w.get("is_selected")),
+        None,
+    )
+    if not selected:
+        return {"scope": "unknown", "id": None, "name": None}
+    name = str(selected.get("name") or "").strip() or None
+    if name:
+        workspace_id = str(selected.get("id") or "").strip() or None
+        if workspace_id:
+            return {"scope": "team", "id": workspace_id, "name": name}
+    return {"scope": "personal", "id": None, "name": name}
+
+
+def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
+    """요청 워크스페이스로 CLI를 전환하고 실제 선택 상태를 다시 확인한다.
+
+    unknown은 구버전 요청 호환을 위해 현재 상태를 유지한다. 신규 UI 요청은 team/personal을 보낸다.
+    """
+    target = _request_workspace(value)
+    if target["scope"] == "unknown":
+        return True, None
+    workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
+    if error or not isinstance(workspaces, list):
+        return False, error or "워크스페이스 목록을 확인할 수 없습니다"
+
+    if target["scope"] == "team":
+        candidate = next(
+            (
+                w
+                for w in workspaces
+                if isinstance(w, dict) and str(w.get("id") or "") == target["id"]
+            ),
+            None,
+        )
+    else:
+        # CLI 1.x의 개인 공간도 실제 id로 set 해야 한다. API 규격에는 개인 id를 저장하지 않고,
+        # 현재 계정 목록에서 name 없는 개인 항목을 찾아 그 id로 전환한다.
+        candidate = next(
+            (
+                w
+                for w in workspaces
+                if isinstance(w, dict) and not str(w.get("name") or "").strip()
+            ),
+            None,
+        )
+    if not candidate or not candidate.get("id"):
+        label = target.get("name") or ("개인" if target["scope"] == "personal" else target["id"])
+        return False, f"이 계정에서 워크스페이스를 찾을 수 없습니다: {label}"
+    if not candidate.get("is_selected"):
+        error = _run_cli_command(cli, "workspace", "set", str(candidate["id"]), timeout=60)
+        if error:
+            return False, f"워크스페이스 전환 실패: {error}"
+        workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
+        if error or not isinstance(workspaces, list):
+            return False, error or "전환 결과를 확인할 수 없습니다"
+    selected = next(
+        (w for w in workspaces if isinstance(w, dict) and w.get("is_selected")),
+        None,
+    )
+    if not selected or str(selected.get("id") or "") != str(candidate["id"]):
+        return False, "워크스페이스 전환 검증에 실패했습니다"
+    return True, None
+
+
 # 잡 id(UUID) 추출용 — generate create 가 --wait 조합에서 JSON 대신 평문(잡 id 또는 결과 URL)만
 # 내보낸 경우를 대비해, 출력에서 잡 id 를 되찾는다.
 _UUID_RE = re.compile(
@@ -340,17 +440,27 @@ def _shield_json_prompt(text: str) -> str:
     return _ZWSP + text
 
 
-def _job_image_input_count(job: dict) -> int:
+def _job_image_input_count(job: dict) -> int | None:
+    """상세 응답이 입력 이미지 스키마를 실제로 제공할 때만 개수를 반환한다.
+
+    None은 '0개'가 아니라 '이 CLI 버전 응답으로는 확인 불가'다. 확인 불가를 실패로 오판하지 않는다.
+    """
     params = job.get("params") if isinstance(job, dict) else None
     if not isinstance(params, dict):
-        return 0
+        return None
     count = 0
+    recognized = False
     for key in ("input_images", "image_references"):
+        if key not in params:
+            continue
+        recognized = True
         v = params.get(key)
         if isinstance(v, list):
             count += sum(1 for x in v if x)
         elif v:
             count += 1
+    if "medias" in params:
+        recognized = True
     for m in params.get("medias") or []:
         if not isinstance(m, dict):
             continue
@@ -358,7 +468,7 @@ def _job_image_input_count(job: dict) -> int:
         typ = str(m.get("type") or "").lower()
         if typ == "image" or role.startswith(("image", "@image", "start", "@start", "end", "@end")):
             count += 1
-    return count
+    return count if recognized else None
 
 
 def _cli_version(cli: str) -> str | None:
@@ -436,10 +546,15 @@ def _gen_request_url(
     return url
 
 
-def _claim_pending(server: str, token: str, limit: int):
+def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = None):
+    # capability=workspace: 이 에이전트는 제출 전 워크스페이스 전환·검증을 한다는 선언 —
+    # 신 서버는 워크스페이스 지정 요청을 이 선언이 있는 claim 에만 내려준다. 구 서버는 무시(하위호환).
+    query = {"limit": limit, "capability": "workspace"}
+    if agent_id:
+        query["agent_id"] = agent_id
     return _http(
         "GET",
-        _gen_request_url(server, action="pending", query={"limit": limit}),
+        _gen_request_url(server, action="pending", query=query),
         token=token,
     )
 
@@ -829,52 +944,190 @@ def _fail(server: str, token: str, rid: str, reason: str) -> None:
     )
 
 
-# --- 크래시 세이프 앵커 outbox ---------------------------------------------------
-# create 로 job_id 를 얻은 직후, 서버 앵커가 닿기 전에 죽어도(네트워크 순단·프로세스 종료) job_id 를
-# 잃지 않도록 로컬 파일에 먼저 적어둔다. 재조정 패스/재시작이 이 outbox 를 재전송해 반드시 앵커되게 한다.
+# --- 크래시 세이프 에이전트 상태 저장소 -----------------------------------------
+# JSON 한 파일을 여러 서버/에이전트가 덮어쓰던 구조를 서버+계정 스코프 SQLite(WAL)로 바꾼다.
+# create 직후 앵커 미전송뿐 아니라 원격 추적 목록도 보존해 재시작 후 같은 job_id를 이어서 확인한다.
 _outbox_lock = Lock()
 
 
-def _outbox_path() -> str:
+def _agent_state_path() -> str:
     base = os.environ.get("LOCALAPPDATA")
     if base:
-        return os.path.join(base, "MVHub", "anchor_outbox.json")
-    return os.path.join(os.path.expanduser("~"), ".mvhub", "anchor_outbox.json")
+        return os.path.join(base, "MVHub", "agent_state.db")
+    return os.path.join(os.path.expanduser("~"), ".mvhub", "agent_state.db")
 
 
-def _outbox_load() -> list:
-    try:
-        with open(_outbox_path(), "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return raw if isinstance(raw, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+def _state_scope(server: str, account_email: str | None) -> tuple[str, str]:
+    return server.rstrip("/").lower(), (account_email or "unknown").strip().lower()
 
 
-def _outbox_save(items: list) -> None:
-    path = _outbox_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(items[-500:], f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError:
-        pass
+def _state_connect() -> sqlite3.Connection:
+    path = _agent_state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS anchor_outbox (
+          server_key TEXT NOT NULL,
+          account_email TEXT NOT NULL,
+          rid TEXT NOT NULL,
+          job_id TEXT NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY(server_key, account_email, rid)
+        );
+        CREATE TABLE IF NOT EXISTS tracked_job (
+          server_key TEXT NOT NULL,
+          account_email TEXT NOT NULL,
+          rid TEXT NOT NULL,
+          job_id TEXT NOT NULL,
+          expected_image_inputs INTEGER NOT NULL DEFAULT 0,
+          provider_status TEXT,
+          check_failures INTEGER NOT NULL DEFAULT 0,
+          next_check_at REAL NOT NULL,
+          deadline_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY(server_key, account_email, job_id)
+        );
+        """
+    )
+    return conn
 
 
-def _outbox_add(rid: str, job_id: str) -> None:
+def _agent_instance_id() -> str:
+    with _outbox_lock, _state_connect() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()
+        device_id = row["value"] if row else str(uuid.uuid4())
+        if not row:
+            conn.execute("INSERT INTO meta(key,value) VALUES('device_id',?)", (device_id,))
+    return f"{device_id}:{os.getpid()}"
+
+
+_ACCOUNT_MUTEX_HANDLE = None
+
+
+def _acquire_account_mutex(account_email: str) -> bool:
+    """같은 Windows 로그인 세션에서 동일 Higgsfield 계정의 생성 에이전트를 하나로 제한한다."""
+    global _ACCOUNT_MUTEX_HANDLE
+    if _ACCOUNT_MUTEX_HANDLE is not None:
+        return True
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    digest = hashlib.sha256(account_email.strip().lower().encode("utf-8")).hexdigest()[:24]
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, f"Local\\MVHub_Higgsfield_{digest}")
+    if not handle:
+        raise OSError("에이전트 단일 실행 잠금을 만들 수 없습니다")
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+    _ACCOUNT_MUTEX_HANDLE = handle
+    return True
+
+
+def _outbox_load(server: str, account_email: str | None) -> list[dict]:
+    server_key, account = _state_scope(server, account_email)
+    with _outbox_lock, _state_connect() as conn:
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT rid, job_id FROM anchor_outbox WHERE server_key=? AND account_email=? "
+                "ORDER BY updated_at",
+                (server_key, account),
+            ).fetchall()
+        ]
+
+
+def _outbox_add(server: str, account_email: str | None, rid: str, job_id: str) -> None:
+    server_key, account = _state_scope(server, account_email)
     with _outbox_lock:
-        items = _outbox_load()
-        if not any(isinstance(it, dict) and it.get("rid") == rid for it in items):
-            items.append({"rid": rid, "job_id": job_id})
-            _outbox_save(items)
+        with _state_connect() as conn:
+            conn.execute(
+                "INSERT INTO anchor_outbox(server_key,account_email,rid,job_id,updated_at) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(server_key,account_email,rid) DO UPDATE SET "
+                "job_id=excluded.job_id, updated_at=excluded.updated_at",
+                (server_key, account, rid, job_id, time.time()),
+            )
 
 
-def _outbox_remove(rid: str) -> None:
+def _outbox_remove(server: str, account_email: str | None, rid: str) -> None:
+    server_key, account = _state_scope(server, account_email)
     with _outbox_lock:
-        items = [it for it in _outbox_load() if not (isinstance(it, dict) and it.get("rid") == rid)]
-        _outbox_save(items)
+        with _state_connect() as conn:
+            conn.execute(
+                "DELETE FROM anchor_outbox WHERE server_key=? AND account_email=? AND rid=?",
+                (server_key, account, rid),
+            )
+
+
+def _tracked_save(server: str, account_email: str | None, tracked: dict) -> None:
+    server_key, account = _state_scope(server, account_email)
+    now_wall = time.time()
+    mono = time.monotonic()
+    next_wall = now_wall + max(0.0, tracked.get("next_direct_check", mono) - mono)
+    deadline_wall = now_wall + max(1.0, tracked.get("deadline", mono + 3600) - mono)
+    with _outbox_lock, _state_connect() as conn:
+        conn.execute(
+            "INSERT INTO tracked_job(server_key,account_email,rid,job_id,expected_image_inputs,"
+            "provider_status,check_failures,next_check_at,deadline_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(server_key,account_email,job_id) DO UPDATE SET "
+            "rid=excluded.rid, expected_image_inputs=excluded.expected_image_inputs, "
+            "provider_status=excluded.provider_status, check_failures=excluded.check_failures, "
+            "next_check_at=excluded.next_check_at, deadline_at=excluded.deadline_at, updated_at=excluded.updated_at",
+            (
+                server_key,
+                account,
+                tracked["rid"],
+                tracked["job_id"],
+                int(tracked.get("expected_image_inputs", 0)),
+                tracked.get("provider_status"),
+                int(tracked.get("check_failures", 0)),
+                next_wall,
+                deadline_wall,
+                now_wall,
+            ),
+        )
+
+
+def _tracked_load(server: str, account_email: str | None) -> dict[str, dict]:
+    server_key, account = _state_scope(server, account_email)
+    now_wall = time.time()
+    mono = time.monotonic()
+    with _outbox_lock, _state_connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tracked_job WHERE server_key=? AND account_email=? ORDER BY next_check_at",
+            (server_key, account),
+        ).fetchall()
+    return {
+        row["job_id"]: {
+            "rid": row["rid"],
+            "job_id": row["job_id"],
+            "expected_image_inputs": row["expected_image_inputs"],
+            "provider_status": row["provider_status"],
+            "check_failures": row["check_failures"],
+            "next_direct_check": mono + max(0.0, row["next_check_at"] - now_wall),
+            "deadline": mono + max(1.0, row["deadline_at"] - now_wall),
+        }
+        for row in rows
+    }
+
+
+def _tracked_remove(server: str, account_email: str | None, job_id: str) -> None:
+    server_key, account = _state_scope(server, account_email)
+    with _outbox_lock, _state_connect() as conn:
+        conn.execute(
+            "DELETE FROM tracked_job WHERE server_key=? AND account_email=? AND job_id=?",
+            (server_key, account, job_id),
+        )
 
 
 def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
@@ -893,20 +1146,27 @@ def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = Fa
     return st == 200
 
 
-def _anchor_with_retry(server: str, token: str, rid: str, job_id: str, attempts: int = 3) -> bool:
+def _anchor_with_retry(
+    server: str,
+    token: str,
+    account_email: str | None,
+    rid: str,
+    job_id: str,
+    attempts: int = 3,
+) -> bool:
     """앵커 ACK(200)를 받을 때까지 몇 번 재시도. 성공하면 outbox 에서 제거(서버가 job_id 를 가졌으니
     이후 크래시는 재조정 백스톱이 덮는다). 끝내 실패하면 outbox 에 남겨 다음 사이클/재시작에 재전송."""
     for _ in range(max(1, attempts)):
         if _anchor(server, token, rid, job_id, verifying=False):
-            _outbox_remove(rid)
+            _outbox_remove(server, account_email, rid)
             return True
     return False
 
 
-def replay_outbox(server: str, token: str) -> None:
+def replay_outbox(server: str, token: str, account_email: str | None) -> None:
     """지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 재전송 — 재조정 패스 초에 매번 돈다(idle 포함).
     재시작 복구이므로 '확인중'으로 앵커(verifying=True). 성공분은 outbox 에서 제거."""
-    items = _outbox_load()
+    items = _outbox_load(server, account_email)
     if not items:
         return
     print(f"[복구] 미전송 앵커 {len(items)}건 재전송")
@@ -915,12 +1175,12 @@ def replay_outbox(server: str, token: str) -> None:
             continue
         rid, job_id = it.get("rid"), it.get("job_id")
         if rid and job_id and _anchor(server, token, rid, job_id, verifying=True):
-            _outbox_remove(rid)
+            _outbox_remove(server, account_email, rid)
 
 
 def _reconcile(server: str, token: str, rid: str, job: dict, force_fail_reason: str | None = None) -> int:
     """create-first 완료 확정 — 목록 조회/get 으로 확보한 최종 job 을 /reconcile 로 권위 보정한다.
-    앵커가 gen_request 를 done 으로 닫았으므로 /fulfill 은 멱등 no-op → 완료는 /reconcile 로만 확정한다.
+    앵커는 gen_request 를 tracking/verifying 으로만 옮기며, 완료는 /reconcile ACK로만 확정한다.
     force_fail_reason 이면 레퍼런스 미부착 등 로컬 검증 실패로 '되살림 금지' failed 확정. 서버 status 반환."""
     st, _ = _report_reconcile(server, token, rid, job, force_fail_reason)
     return st
@@ -1004,10 +1264,12 @@ def _submit_one(
     server: str,
     token: str,
     cli: str,
+    account_email: str | None,
     r: dict,
     ref_cache: dict,
     upload_cache: dict,
     upload_lock: Lock,
+    workspace_lock: Lock,
 ) -> dict | None:
     """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
     제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
@@ -1090,29 +1352,38 @@ def _submit_one(
     args += seedance_ref_args
     print(f"  → {model}: {prompt[:40]}")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
-    created, cli_error = _run_cli_json(cli, *args, timeout=300)
-    if (
-        not _extract_created_id(created, None)
-        and cli_error
-        and seedance_media_inputs
-        and seedance_used_cached_media
-        and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
-    ):
-        print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
-        retry_ids: list = []
-        retry_failed = False
-        for path, media_role in seedance_media_inputs:
-            _invalidate_upload_cache(upload_cache, path, upload_lock)
-            data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
-            if not data:
-                retry_failed = True
-                break
-            retry_ids.append((media_role, data["id"]))
-        if not retry_failed:
-            # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
-            base_args = args[:len(args) - len(seedance_ref_args)]
-            retry_args = base_args + _seedance_ref_args(retry_ids)
-            created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
+    # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
+    # 다른 제출 스레드가 중간에 공간을 바꾸는 경합을 막는다. create 반환 뒤 원격 추적은 다시 병렬이다.
+    with workspace_lock:
+        workspace_ok, workspace_error = _ensure_request_workspace(cli, r.get("workspace"))
+        if not workspace_ok:
+            reason = f"워크스페이스 확인 실패 — 생성하지 않음: {workspace_error}"
+            _fail(server, token, rid, reason)
+            print(f"  ✗ {reason}")
+            return None
+        created, cli_error = _run_cli_json(cli, *args, timeout=300)
+        if (
+            not _extract_created_id(created, None)
+            and cli_error
+            and seedance_media_inputs
+            and seedance_used_cached_media
+            and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
+        ):
+            print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
+            retry_ids: list = []
+            retry_failed = False
+            for path, media_role in seedance_media_inputs:
+                _invalidate_upload_cache(upload_cache, path, upload_lock)
+                data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
+                if not data:
+                    retry_failed = True
+                    break
+                retry_ids.append((media_role, data["id"]))
+            if not retry_failed:
+                # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
+                base_args = args[:len(args) - len(seedance_ref_args)]
+                retry_args = base_args + _seedance_ref_args(retry_ids)
+                created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
         # job_id 를 못 얻음 = 제출 자체 실패(레퍼런스 오류 등은 위에서 이미 걸러짐). 진짜 실패이므로 hard fail.
@@ -1124,8 +1395,8 @@ def _submit_one(
         return None
     # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
     #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
-    _outbox_add(rid, job_id)
-    if not _anchor_with_retry(server, token, rid, job_id):
+    _outbox_add(server, account_email, rid, job_id)
+    if not _anchor_with_retry(server, token, account_email, rid, job_id):
         print(f"  ⚠ 앵커 보고 실패 — outbox 보관(재전송 예정): {job_id[:8]}")
     return {
         "rid": rid,
@@ -1133,6 +1404,8 @@ def _submit_one(
         "expected_image_inputs": expected_image_inputs,
         "deadline": time.monotonic() + _ACTIVE_TRACKING_TIMEOUT_SECONDS,
         "next_direct_check": 0.0,
+        "provider_status": None,
+        "check_failures": 0,
     }
 
 
@@ -1154,9 +1427,36 @@ _MAX_IN_FLIGHT_JOBS = max(
 )
 _JOB_POLL_INTERVAL_SECONDS = 5.0
 _DIRECT_CHECK_INTERVAL_SECONDS = 30.0
+_DIRECT_CHECK_BATCH_SIZE = _env_int("MVHUB_CLI_TRACK_CHECKS", 8, 1, 32)
 _ACTIVE_TRACKING_TIMEOUT_SECONDS = 60 * 60
-# CLI 1.1.20의 최근 목록 상한. 범위 밖 작업은 30초 간격 개별 get으로 보완한다.
-_JOB_LIST_SIZE = 100
+_SUCCESS_RAW = {"completed", "succeeded", "success", "done"}
+_FAILURE_RAW = {
+    "failed", "error", "canceled", "cancelled", "nsfw", "nsfw_detected", "rejected"
+}
+_ACTION_REQUIRED_RAW = {"needs_action", "needs_confirmation", "ip_detected", "user_action_required"}
+_ACTIVE_BY_SCOPE: dict[tuple[str, str], dict[str, dict]] = {}
+_ACTIVE_BY_SCOPE_LOCK = Lock()
+
+
+def _provider_status_kind(job: dict) -> str:
+    raw = _job_status(job)
+    if raw in _PROCESSING_RAW or not raw:
+        return "processing"
+    if raw in _SUCCESS_RAW:
+        return "success"
+    if raw in _FAILURE_RAW:
+        return "failure"
+    if raw in _ACTION_REQUIRED_RAW:
+        return "action_required"
+    return "unknown"
+
+
+def _runtime_active(server: str, account_email: str | None) -> dict[str, dict]:
+    scope = _state_scope(server, account_email)
+    with _ACTIVE_BY_SCOPE_LOCK:
+        if scope not in _ACTIVE_BY_SCOPE:
+            _ACTIVE_BY_SCOPE[scope] = _tracked_load(server, account_email)
+        return _ACTIVE_BY_SCOPE[scope]
 
 
 def _claim_capacity(submitting_count: int, active_count: int) -> int:
@@ -1186,20 +1486,6 @@ def _resolve_refs_for(server: str, token: str, reqs: list, ref_cache: dict | Non
     return ref_cache, ref_temps
 
 
-def _recent_jobs_by_id(cli: str) -> dict | None:
-    """최근 생성 목록을 한 번 조회해 id 기준으로 바꾼다. 조회 실패는 None."""
-    jobs, error = _run_cli_json(cli, "generate", "list", "--size", str(_JOB_LIST_SIZE), timeout=120)
-    if error or not isinstance(jobs, list):
-        if error:
-            print(f"[경고] 작업 목록 조회 실패: {error}")
-        return None
-    return {
-        str(job["id"]): job
-        for job in jobs
-        if isinstance(job, dict) and job.get("id")
-    }
-
-
 def _finalize_tracked_job(
     server: str,
     token: str,
@@ -1223,10 +1509,12 @@ def _finalize_tracked_job(
         detailed = True
     if not (isinstance(job, dict) and job.get("id")):
         return False
-    if _job_status(job) in _PROCESSING_RAW:
+    kind = _provider_status_kind(job)
+    if kind not in ("success", "failure"):
         return False
 
-    if expected_image_inputs > 0 and _job_image_input_count(job) <= 0:
+    observed_image_inputs = _job_image_input_count(job)
+    if expected_image_inputs > 0 and observed_image_inputs is not None and observed_image_inputs <= 0:
         # 상세 응답까지 확인했는데도 입력 이미지가 없으면 잘못 생성된 결과를 카드로 만들지 않는다.
         if not detailed:
             return False
@@ -1234,57 +1522,121 @@ def _finalize_tracked_job(
         reason = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
         ok = False
         for _ in range(3):
-            if _reconcile(server, token, rid, job, force_fail_reason=reason) == 200:
+            status, body = _report_reconcile(server, token, rid, job, force_fail_reason=reason)
+            if status == 200 and isinstance(body, dict) and body.get("outcome") in {
+                "applied", "already_final_same_job"
+            }:
                 ok = True
                 break
         print(
             f"  ✗ 레퍼런스 미부착 — 실패 확정(되살림 금지): {job_id[:8]}"
             if ok else f"  ⚠ 레퍼런스 미부착 실패 보고 안착 실패(다음 사이클 재시도): {job_id[:8]}"
         )
-        return True
+        return ok
 
-    status = _reconcile(server, token, rid, job)
-    print(f"  ✓ 확정 보고(reconcile status={status})" if status == 200 else f"  ✗ 확정 보고 실패(status={status})")
-    return True
+    # 성공은 실제 결과 URL과 서버 저장 ACK가 모두 있어야 완료다. 공급자 CDN 지연이면 확인중 유지한다.
+    result_url = job.get("result_url")
+    usable_result = bool(
+        isinstance(result_url, str) and result_url.startswith(("https://", "http://"))
+    )
+    report_job = job
+    if kind == "success" and not usable_result:
+        print(f"  ⏳ 완료 상태지만 결과 URL 대기: {job_id[:8]}")
+        # 공급자가 completed를 먼저 주고 CDN URL을 나중에 붙이는 경우가 있다. 서버가 빈 완료를
+        # 확정하지 못하도록 결과 URL 필드를 명시적으로 비운 사본만 보고한다.
+        report_job = dict(job)
+        report_job["result_url"] = None
+        report_job["min_result_url"] = None
+        report_job["thumbnail_url"] = None
+    status, body = _report_reconcile(server, token, rid, report_job)
+    outcome = body.get("outcome") if isinstance(body, dict) else None
+    asset_saved = bool(body.get("asset_saved")) if isinstance(body, dict) else False
+    finalized = bool(
+        status == 200
+        and outcome in {"applied", "already_final_same_job"}
+        and (kind == "failure" or asset_saved)
+    )
+    if finalized:
+        print(f"  ✓ 확정 보고({outcome}): {job_id[:8]}")
+    else:
+        print(f"  ⏳ 확정 보류(status={status}, outcome={outcome or '응답 없음'}): {job_id[:8]}")
+    return finalized
 
 
-def _poll_active_jobs(server: str, token: str, cli: str, active: dict) -> int:
-    """진행 작업 전체를 목록 조회 한 번으로 확인하고, 끝난 작업만 상세 처리한다."""
+def _poll_active_jobs(
+    server: str,
+    token: str,
+    cli: str,
+    active: dict,
+    account_email: str | None = None,
+) -> int:
+    """기한이 된 추적 작업을 generate get으로 직접 권위 확인한다.
+
+    한 번에 제한된 수만 확인하되 next_direct_check 순서로 골라 64개에서도 기아가 없게 한다.
+    """
     if not active:
         return 0
     now = time.monotonic()
-    recent = _recent_jobs_by_id(cli)
     finished: list[str] = []
+    due: list[tuple[str, dict]] = []
 
-    for job_id, tracked in list(active.items()):
+    for job_id, tracked in sorted(
+        list(active.items()), key=lambda item: item[1].get("next_direct_check", 0.0)
+    ):
         if now >= tracked["deadline"]:
-            print(f"  ⏳ 장시간 처리중 — 백스톱 재조정에 위임: {job_id[:8]}")
-            finished.append(job_id)
-            continue
+            # 오래 걸렸다는 이유로 추적을 버리거나 재생성하지 않는다. 확인 간격만 늘려 계속 보존한다.
+            tracked["deadline"] = now + _ACTIVE_TRACKING_TIMEOUT_SECONDS
+            tracked["next_direct_check"] = min(tracked.get("next_direct_check", now), now)
+            print(f"  ⏳ 장시간 처리중 — 유료 작업 보존·계속 확인: {job_id[:8]}")
 
-        job = recent.get(job_id) if recent is not None else None
-        if isinstance(job, dict):
-            if _job_status(job) in _PROCESSING_RAW:
-                continue
-            if _finalize_tracked_job(server, token, cli, tracked, job, detailed=False):
-                finished.append(job_id)
-            continue
-
-        # 최근 목록 범위 밖이거나 목록 조회가 실패한 작업만 개별 조회한다. 같은 작업을 매 틱마다
-        # 조회하지 않도록 30초 간격을 둔다.
+        # 목록 응답은 실제 상태보다 늦을 수 있어 완료 판정에는 쓰지 않는다. 예약 시각 순서로 직접
+        # 조회해 앞의 작업이 매번 재선점하는 현상 없이 64개 모두 공평하게 확인한다.
         if now < tracked.get("next_direct_check", 0.0):
             continue
-        tracked["next_direct_check"] = now + _DIRECT_CHECK_INTERVAL_SECONDS
-        full, _ = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
+        due.append((job_id, tracked))
+        if len(due) >= _DIRECT_CHECK_BATCH_SIZE:
+            break
+
+    for job_id, tracked in due:
+        full, cli_error = _run_cli_json(cli, "generate", "get", job_id, timeout=120)
         if not (isinstance(full, dict) and full.get("id")):
+            tracked["check_failures"] = int(tracked.get("check_failures", 0)) + 1
+            delay = min(120.0, _DIRECT_CHECK_INTERVAL_SECONDS * (2 ** min(2, tracked["check_failures"] - 1)))
+            tracked["next_direct_check"] = time.monotonic() + delay
+            if account_email is not None:
+                _tracked_save(server, account_email, tracked)
+            if cli_error:
+                print(f"  ⚠ 상태 조회 실패({job_id[:8]}) — {int(delay)}초 뒤 재시도")
             continue
-        if _job_status(full) in _PROCESSING_RAW:
+        if str(full.get("id")) != job_id:
+            tracked["next_direct_check"] = time.monotonic() + 60.0
+            if account_email is not None:
+                _tracked_save(server, account_email, tracked)
+            print(f"  ⚠ 작업 ID 불일치 — 적용하지 않음: {job_id[:8]}")
+            continue
+        tracked["provider_status"] = _job_status(full)
+        tracked["check_failures"] = 0
+        kind = _provider_status_kind(full)
+        if kind in {"processing", "unknown", "action_required"}:
+            # 서버에도 원시 상태·마지막 확인 시각을 기록해 UI에서 확인 가능하게 한다.
+            _report_reconcile(server, token, tracked["rid"], full)
+            tracked["next_direct_check"] = time.monotonic() + _DIRECT_CHECK_INTERVAL_SECONDS
+            if account_email is not None:
+                _tracked_save(server, account_email, tracked)
             continue
         if _finalize_tracked_job(server, token, cli, tracked, full, detailed=True):
             finished.append(job_id)
+        else:
+            tracked["next_direct_check"] = time.monotonic() + (
+                15.0 if kind == "success" else _DIRECT_CHECK_INTERVAL_SECONDS
+            )
+            if account_email is not None:
+                _tracked_save(server, account_email, tracked)
 
     for job_id in finished:
         active.pop(job_id, None)
+        if account_email is not None:
+            _tracked_remove(server, account_email, job_id)
     return len(finished)
 
 
@@ -1292,11 +1644,14 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     """제출 워커와 원격 진행 작업 추적을 분리해 대기 요청을 처리한다.
     실행은 유료(내 크레딧). 반환: 이번에 claim한 요청 수."""
     submitting: dict = {}
-    active: dict[str, dict] = {}
+    account_email = _cli_account_email(cli)
+    agent_id = _agent_instance_id()
+    active = _runtime_active(server, account_email)
     ref_cache: dict = {}
     ref_temps_all: list = []
-    upload_cache: dict = _load_upload_cache(_cli_account_email(cli))
+    upload_cache: dict = _load_upload_cache(account_email)
     upload_lock = Lock()
+    workspace_lock = Lock()
     total = 0
     printed = False
     next_claim_at = 0.0
@@ -1318,17 +1673,18 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                         continue
                     if tracked:
                         active[tracked["job_id"]] = tracked
+                        _tracked_save(server, account_email, tracked)
 
                 now = time.monotonic()
                 if active and now >= next_poll_at:
-                    _poll_active_jobs(server, token, cli, active)
+                    _poll_active_jobs(server, token, cli, active, account_email)
                     next_poll_at = time.monotonic() + _JOB_POLL_INTERVAL_SECONDS
 
                 claimed: list = []
                 claim_limit = _claim_capacity(len(submitting), len(active))
                 now = time.monotonic()
                 if claim_limit > 0 and now >= next_claim_at:
-                    _, pending = _claim_pending(server, token, claim_limit)
+                    _, pending = _claim_pending(server, token, claim_limit, agent_id)
                     claimed = pending if isinstance(pending, list) else []
                     next_claim_at = now if len(claimed) >= claim_limit else now + 3.0
 
@@ -1347,16 +1703,19 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                             server,
                             token,
                             cli,
+                            account_email,
                             request,
                             batch_ref_cache,
                             upload_cache,
                             upload_lock,
+                            workspace_lock,
                         )
                         submitting[future] = request
                         total += 1
                     continue
 
-                if not submitting and not active:
+                # 원격 생성 대기는 지속 추적 저장소가 맡는다. 제출 함수가 완료까지 막고 있지 않는다.
+                if not submitting:
                     break
 
                 # 제출 완료·다음 목록 조회·다음 claim 중 가장 가까운 시점까지만 쉰다.
@@ -1472,7 +1831,7 @@ def _signout_and_relogin(cli: str) -> str | None:
 def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> set[str]:
     """서버에 없거나 서버에서 아직 진행중인 로컬 job id만 고른다.
 
-    신버전 서버의 ``refresh``를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
+    신버전 서버의 ``refresh`` 를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
     """
     if local_ids:
         status, diff = _http(
@@ -1505,9 +1864,14 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
     acct = _cli_json(cli, "account", "status")
+    workspace = {"scope": "unknown", "id": None, "name": None}
     if isinstance(acct, dict):
         ws = _cli_json(cli, "workspace", "list")
-        acct["workspaces"] = ws if isinstance(ws, list) else []
+        # CLI 실패(비-list)면 workspaces 키 자체를 보내지 않는다 — 빈 배열 []는 서버의
+        # "불완전 보고 보존" 가드를 통과해 그 계정 멤버십 전체를 unavailable 로 밀어버린다.
+        if isinstance(ws, list):
+            acct["workspaces"] = ws
+        workspace = _workspace_context_from_list(ws)
         acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
@@ -1557,7 +1921,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 4) 서버로 push (메타데이터만 — 미디어는 공개 URL 그대로, 토큰 안 보냄)
     status, body = _http(
         "POST", f"{server}/api/ingest", token=token,
-        body={"jobs": fresh, "creator_uid": my_uid, "account_status": acct,
+        body={"jobs": fresh, "creator_uid": my_uid, "workspace": workspace, "account_status": acct,
               "account_transactions": txns},
     )
     if status != 200 or not isinstance(body, dict):
@@ -1588,12 +1952,19 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
         print(f"[경고] 서버 반영 실패 {body['errors']}건 — 서버 로그 확인 필요(다음 push 에서 재시도됨)")
 
 
-def reconcile_pass(server: str, token: str, cli: str) -> None:
+def reconcile_pass(
+    server: str,
+    token: str,
+    cli: str,
+    account_email: str | None = None,
+    skip_job_ids: set[str] | None = None,
+) -> None:
     """서버가 준 '확인중/유실된 running'(job_id 보유) 로컬 카드를, 내 CLI 계정으로 generate get 해
     실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
     조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
     # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
-    replay_outbox(server, token)
+    account_email = account_email or _cli_account_email(cli)
+    replay_outbox(server, token, account_email)
     st, data = _list_reconcile_candidates(server, token)
     if st != 200 or not isinstance(data, dict):
         return
@@ -1607,6 +1978,8 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
         rid, job_id = c.get("rid"), c.get("job_id")
         if not rid or not job_id:
             continue
+        if skip_job_ids and job_id in skip_job_ids:
+            continue
         job = _cli_json(cli, "generate", "get", job_id, timeout=120)
         # 조회 불가/내 계정 잡 아님(not found)·파싱실패 → 안 건드림(상태 유지, 다음 사이클 재시도).
         if not (isinstance(job, dict) and job.get("id")):
@@ -1614,6 +1987,30 @@ def reconcile_pass(server: str, token: str, cli: str) -> None:
         st2, body = _report_reconcile(server, token, rid, job)
         if st2 == 200 and isinstance(body, dict) and body.get("applied"):
             print(f"  ✓ 보정: {job_id[:8]} → {body.get('status')}")
+
+
+def tracking_pass(server: str, token: str, cli: str) -> int:
+    """메모리/SQLite 추적 작업을 먼저 확인하고, 나머지 서버 복구 후보를 뒤이어 보정한다."""
+    account_email = _cli_account_email(cli)
+    active = _runtime_active(server, account_email)
+    finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
+    reconcile_pass(server, token, cli, account_email, skip_job_ids=set(active))
+    return finished
+
+
+def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
+    """에이전트 시작 시 요청 복구와 최신 상태 재대조를 한 번 수행한다."""
+    # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
+    execute_pending(server, token, cli)
+    # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
+    #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
+    tracking_pass(server, token, cli)
+    # ③ 서버에 없거나 아직 대기/생성중인 최신 항목만 동기화한다. 이미 알려진 synced 카드가 test DB
+    #    복사·에이전트 재시작 사이에 완료돼도 서버의 refresh 차집합으로 다시 받아 상태를 바로잡는다.
+    #    완료된 과거 항목은 제외하므로 현재 워크스페이스 정보가 옛 카드에 잘못 붙지 않는다.
+    #    로컬 허브(--no-push)는 기존대로 건너뛴다(공유는 '선택 발행'으로만).
+    if not no_push:
+        push_once(server, token, cli, size)
 
 
 def main() -> None:
@@ -1644,10 +2041,12 @@ def main() -> None:
     cli = _cli()
     creds: dict | None = None  # 세션 만료 시 자동 재로그인용(메모리에만 유지, 저장 안 함)
     paired_email: str | None = None
+    env_token = os.environ.pop("MVHUB_SESSION_TOKEN", None)
     if args.pair_secret:
         token, paired_email = wait_for_local_pair(server, args.pair_secret)
-    elif args.token:
-        token = args.token  # AUTH off 로컬 허브는 토큰을 검증하지 않으므로 더미('local')도 됨
+    elif args.token or env_token:
+        # 자동화/안전한 재시작은 환경변수를 사용해 세션 토큰이 프로세스 명령줄에 노출되지 않게 한다.
+        token = args.token or env_token
         print(f"[토큰] 전달된 세션 토큰 사용({args.email or '로컬'})")
     else:
         if not args.email:
@@ -1656,21 +2055,20 @@ def main() -> None:
         token = login(server, args.email, password)
         creds = {"email": args.email, "password": password}
 
-    def cycle() -> None:
-        # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
-        execute_pending(server, token, cli)
-        # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
-        #    no_push 모드(생성 전용)여도 실행한다: 내가 실행한 요청의 진실을 맞추는 것이라 push 정책과 무관.
-        reconcile_pass(server, token, cli)
-        # ③ 로컬 CLI 이력 자동 push — 로컬 허브(--no-push)는 안 함(공유는 '선택 발행'으로만)
-        if not args.no_push:
-            push_once(server, token, cli, args.size)
+    cli_email = _cli_account_email(cli)
+    if not cli_email:
+        sys.exit("[오류] Higgsfield CLI 로그인 계정을 확인할 수 없습니다. `hf auth login` 후 다시 실행하세요.")
+    if not _acquire_account_mutex(cli_email):
+        sys.exit(
+            f"[오류] {cli_email} 계정의 생성 에이전트가 이미 실행 중입니다. "
+            "기존 에이전트 창 하나만 사용하세요."
+        )
 
     if args.watch:
         # 이벤트 방식 — 평소엔 롱폴로 조용히 대기, 내가 허브에서 생성/재생성·동기화 할 때만 작동.
         print("[이벤트] 대기 모드 — 생성/재생성·동기화 때만 작동 (Ctrl+C 종료)")
         try:
-            cycle()  # 시작 시 한 번: 밀린 생성요청 처리 + 내 작업 올리기
+            _initial_cycle(server, token, cli, args.size, args.no_push)
         except Exception as e:  # noqa: BLE001
             print(f"[경고] 초기 처리 오류(무시): {e}")
         while True:
@@ -1686,7 +2084,7 @@ def main() -> None:
                         if account_changed:
                             print(f"[연결] 브라우저 계정 전환: {paired_email}")
                             try:
-                                cycle()
+                                _initial_cycle(server, token, cli, args.size, args.no_push)
                             except Exception as e:  # noqa: BLE001 — 계정 전환 1회 오류로 상주 종료 금지
                                 print(f"[경고] 계정 전환 후 초기 처리 오류(무시): {e}")
                             continue
@@ -1694,7 +2092,7 @@ def main() -> None:
                     print("[연결] 브라우저 로그아웃 감지 — 다음 로그인을 기다립니다.")
                     token, paired_email = wait_for_local_pair(server, args.pair_secret)
                     try:
-                        cycle()
+                        _initial_cycle(server, token, cli, args.size, args.no_push)
                     except Exception as e:  # noqa: BLE001 — 재로그인 1회 오류로 상주 종료 금지
                         print(f"[경고] 재연결 후 초기 처리 오류(무시): {e}")
                     continue
@@ -1722,7 +2120,7 @@ def main() -> None:
                 # 매 사이클(이벤트·idle 타임아웃 모두) '실제 상태 미확정' 카드를 보정 — 확인중 카드를
                 #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
                 #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.
-                reconcile_pass(server, token, cli)
+                tracking_pass(server, token, cli)
                 # gen-request·sync·reinspect 어느 쪽이든 결과를 서버로 올린다(no_push 모드 제외).
                 if reasons & {"gen-request", "sync", "reinspect"}:
                     if args.no_push:
@@ -1740,7 +2138,7 @@ def main() -> None:
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지
                 print(f"[경고] 처리 중 오류(무시하고 계속): {e}")
     else:
-        cycle()
+        _initial_cycle(server, token, cli, args.size, args.no_push)
 
 
 if __name__ == "__main__":

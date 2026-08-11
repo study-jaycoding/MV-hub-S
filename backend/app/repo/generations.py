@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from ..generation_result import ACTIVE_STATUSES, stored_error
+from ..workspace_context import workspace_columns
 from . import identity, tags
 from .generation_references import _link_reference, _upsert_reference
 from .generation_delete import delete_generation_rows as _delete_generation
@@ -23,7 +24,8 @@ from ._common import (
 
 # ── 로컬 생성 (POST create) ──────────────────────────────────────────────
 def create_local_generation(
-    data: dict[str, Any], worker_id: str, creator_uid: Optional[str] = None
+    data: dict[str, Any], worker_id: str, creator_uid: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> str:
     """status=pending 인 로컬 generation 레코드 생성. gen_id 반환.
 
@@ -36,6 +38,7 @@ def create_local_generation(
     # 'pending' 상태에서도 is_mine=True(=나)가 되게 한다(팀원으로 오표시되던 버그 수정).
     # 로그인 계정이면 그 계정 uid, 아니면 제공자 my_uid(없으면 NULL → 단독 사용자 취급).
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     with get_connection() as conn:
         # generation + 태그 + 레퍼런스 + 히스토리 엣지를 한 트랜잭션으로 — 중간 실패 시
         # generation 만 있고 태그·레퍼런스·계보가 빠진 반쪽 데이터가 생기지 않게.
@@ -43,8 +46,9 @@ def create_local_generation(
         try:
             conn.execute(
                 "INSERT INTO generation"
-                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 내가 만든 행
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "
+                "project_id, folder_path, creator_uid, origin, workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local', ?, ?, ?)",  # origin='local' — 내가 만든 행
                 (
                     gen_id,
                     worker_id,
@@ -57,6 +61,9 @@ def create_local_generation(
                     data.get("project_id"),  # 생성 시 보던 프로젝트로 자동 귀속(없으면 미분류)
                     _clean_folder_path(data.get("folder_path")),  # 무장 폴더(렌더 루트 상대 경로)
                     my_uid,  # 내 생성자 신원(있으면) — 로컬 생성물 = 내 작업
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             tags._set_tags(conn, gen_id, data.get("tags") or [])
@@ -118,6 +125,7 @@ def create_comfy_generation(
     references: Optional[list[dict[str, Any]]] = None,
     project_id: Optional[str] = None,
     folder_path: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> tuple[str, bool]:
     """캔버스 Comfy 노드 출력 1개를 라이브러리 generation(+asset)으로 물질화. (gen_id, existed) 반환.
 
@@ -130,6 +138,7 @@ def create_comfy_generation(
     """
     gen_id = new_id()
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     now = time.time()
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -151,8 +160,9 @@ def create_comfy_generation(
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, display_prompt, model, params, status, sort_ts, "
-                " project_id, folder_path, creator_uid, origin, generator) "
-                "VALUES(?,?,?,?, 'comfy', ?, 'done', ?, ?, ?, ?, 'local', 'comfy')",
+                " project_id, folder_path, creator_uid, origin, generator, "
+                "workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?, 'comfy', ?, 'done', ?, ?, ?, ?, 'local', 'comfy', ?, ?, ?)",
                 (
                     gen_id,
                     worker_id,
@@ -163,6 +173,9 @@ def create_comfy_generation(
                     project_id,
                     _clean_folder_path(folder_path),
                     my_uid,
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             conn.execute(
@@ -250,11 +263,8 @@ def list_stuck_synced_active(older_than_seconds: float = 300.0) -> list[tuple[st
 
 def list_reconcile_candidates(account_email: str, limit: int = 200) -> list[dict[str, Any]]:
     """재조정 후보 [{rid, gen_id, job_id}] — 이 계정 소유의 로컬 카드 중 '실제 상태 미확정'인 것.
-    판정(레이스 안전): generation 이 non-terminal(running/pending) + job_id 보유 + 그 gen_request 가
-    이미 닫힘(done/failed = 에이전트가 --wait 를 끝냈다는 신호). 이러면 아직 진행 중인 라이브 --wait 를
-    건드리지 않는다(claim 직후 running·요청도 running 인 카드는 제외).
-      · 대상: 앵커된 '확인중'(anchor 가 gen_request 를 done 으로 닫음), fulfill-with-running,
-        요청은 닫혔는데 generation 이 아직 running 인 유실 케이스.
+    판정(레이스 안전): generation 이 non-terminal(running/pending) + job_id 보유 + 요청이
+    tracking/verifying/blocked인 카드. 구버전 앵커(done/failed)도 한 릴리즈 동안 복구 후보로 수용한다.
       · 제외: job_id 없는 하드 실패(로컬검증실패)·done/failed 확정본. 오염 없음."""
     with get_connection() as conn:
         rows = conn.execute(
@@ -266,7 +276,7 @@ def list_reconcile_candidates(account_email: str, limit: int = 200) -> list[dict
               AND g.job_id IS NOT NULL AND g.job_id<>''
               AND g.status IN ('running','pending')
               AND g.deleted_at IS NULL
-              AND r.status IN ('done','failed')
+              AND r.status IN ('tracking','verifying','blocked','done','failed')
               AND r.account_email = ?
             ORDER BY g.sort_ts ASC
             LIMIT ?
@@ -288,6 +298,7 @@ def apply_reconcile(
     status: str,
     error: Optional[str],
     force_fail_reason: Optional[str] = None,
+    provider_status: Optional[str] = None,
 ) -> bool:
     """재조정 권위 보정 — 에이전트가 `generate list/get` 으로 확보한 실제 상태를 로컬 카드에 적용한다.
     ★fulfill 의 CAS 와 달리 failed→done '되살리기'를 허용한다(가짜 실패 복구). 대신 조건이 강하다:
@@ -309,7 +320,12 @@ def apply_reconcile(
             conn.execute("ROLLBACK")
             return False
         if row["status"] == "done":
-            conn.execute("ROLLBACK")  # 완료 확정본은 재조정으로 뒤집지 않음
+            conn.execute(
+                "UPDATE gen_request SET status='done', provider_status=?, error=NULL, "
+                "last_checked_at=datetime('now'), terminal_at=COALESCE(terminal_at,datetime('now')), "
+                "updated_at=datetime('now') WHERE gen_id=?",
+                (provider_status, gen_id),
+            )
             return False
         if force_fail_reason:
             if row["status"] == "failed":
@@ -320,13 +336,24 @@ def apply_reconcile(
                 "UPDATE generation SET status='failed', error=? WHERE id=?",
                 (NO_REVIVE_ERROR, gen_id),
             )
+            conn.execute(
+                "UPDATE gen_request SET status='failed', provider_status=?, error=?, "
+                "terminal_at=datetime('now'), updated_at=datetime('now') WHERE gen_id=?",
+                (provider_status, force_fail_reason, gen_id),
+            )
             return True
         # 되살림 금지 실패 행은 일반 재조정(done 승격)으로도 되살리지 않는다(백스톱 레이스 최종 방어).
         if status == "done" and row["status"] == "failed" and (row["error"] or "") == NO_REVIVE_ERROR:
             conn.execute("ROLLBACK")
             return False
         if row["status"] == status:
-            conn.execute("ROLLBACK")  # 변화 없음(계속 확인중/실패 유지)
+            request_status = "done" if status == "done" else "failed"
+            conn.execute(
+                "UPDATE gen_request SET status=?, provider_status=?, error=?, "
+                "last_checked_at=datetime('now'), terminal_at=COALESCE(terminal_at,datetime('now')), "
+                "updated_at=datetime('now') WHERE gen_id=?",
+                (request_status, provider_status, error, gen_id),
+            )
             return False
         # ★done 인데 결과물(에셋)이 아직 없으면 확정하지 않는다 — generate get 이 완료를 먼저 주고 result_url
         #  이 늦게 붙는 경우 '빈 완료 카드'가 되는 것을 막는다. 확인중 유지 → 다음 사이클에 result_url 붙으면 확정.
@@ -352,6 +379,13 @@ def apply_reconcile(
         conn.execute(
             "UPDATE generation SET status=?, error=? WHERE id=?",
             (status, stored_error(status, error), gen_id),
+        )
+        request_status = "done" if status == "done" else "failed"
+        conn.execute(
+            "UPDATE gen_request SET status=?, provider_status=?, error=?, "
+            "last_checked_at=datetime('now'), terminal_at=datetime('now'), "
+            "lease_owner=NULL, lease_expires_at=NULL, updated_at=datetime('now') WHERE gen_id=?",
+            (request_status, provider_status, error, gen_id),
         )
     return True
 
@@ -440,7 +474,8 @@ def apply_local_fulfillment(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
-            "UPDATE gen_request SET status=?, error=?, updated_at=datetime('now') "
+            "UPDATE gen_request SET status=?, error=?, terminal_at=datetime('now'), "
+            "lease_owner=NULL, lease_expires_at=NULL, updated_at=datetime('now') "
             "WHERE id=? AND status NOT IN ('done','failed')",
             (request_status, error, rid),
         )
@@ -481,25 +516,35 @@ VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
 
 
 def apply_local_anchor(gen_id: str, rid: str, job_id: str, *, verifying: bool = True) -> bool:
-    """job_id 앵커: gen_request 는 done(종결 → 30분 stale 회수가 이 카드를 failed 로 뒤집지 않게)으로
-    닫고, generation 은 running 유지 + job_id 기록. 재조정 패스가 나중에 generate get 으로 확정한다.
+    """job_id 앵커: 요청은 tracking/verifying으로 옮기고 generation은 running으로 유지한다.
 
     verifying=True(모호한 결말·재시작 복구): generation.error 에 '확인중' 문구 → UI '확인중' 표시.
     verifying=False(create-first 정상 흐름): 제출 직후 곧바로 앵커 — error=NULL 로 둬 UI 는 '생성중'으로
       자연스럽게 표시하고, wait 이 완료를 확정할 때까지 유지한다.
 
-    ★요청 CAS 는 `status <> 'done'` — done(이미 앵커/완료)만 보호하고 failed 는 되살린다. 실제 job_id 를
-     확보한 앵커는 stale 회수/부팅정리가 요청·생성을 failed 로 닫았어도 되살려 앵커해야 하며(그래야
-     재조정이 진실을 확정), 앵커는 항상 실제 잡을 뜻하므로 failed→앵커 되살림은 언제나 옳다. 적용 시 True."""
+    같은 job_id 재전송은 멱등이며, terminal 완료/취소는 절대 되돌리지 않는다."""
     note = VERIFYING_NOTE if verifying else None
+    phase = "verifying" if verifying else "tracking"
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT r.status, g.job_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.id=? AND r.gen_id=?",
+            (rid, gen_id),
+        ).fetchone()
+        if not current or current["status"] in ("done", "canceled"):
+            conn.execute("ROLLBACK")
+            return False
+        if current["status"] == "failed" and current["job_id"] not in (None, "", job_id):
+            conn.execute("ROLLBACK")
+            return False
         cur = conn.execute(
-            "UPDATE gen_request SET status='done', error=?, updated_at=datetime('now') "
-            "WHERE id=? AND status <> 'done'",
-            (note, rid),
+            "UPDATE gen_request SET status=?, error=?, check_failures=0, "
+            "next_check_at=datetime('now'), lease_expires_at=datetime('now','+5 minutes'), "
+            "updated_at=datetime('now') WHERE id=?",
+            (phase, note, rid),
         )
-        if cur.rowcount == 0:  # 이미 done(앵커/완료 확정) → 멱등 무시
+        if cur.rowcount == 0:
             conn.execute("ROLLBACK")
             return False
         # 레이스 병합: 동기화가 같은 잡을 synced 로 먼저 넣었으면 그 중복본 제거(fulfill 과 동일 패턴).
@@ -538,7 +583,8 @@ def apply_local_failure(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
-            "UPDATE gen_request SET status='failed', error=?, updated_at=datetime('now') "
+            "UPDATE gen_request SET status='failed', error=?, terminal_at=datetime('now'), "
+            "lease_owner=NULL, lease_expires_at=NULL, updated_at=datetime('now') "
             "WHERE id=? AND status NOT IN ('done','failed')",
             (reason, rid),
         )
@@ -802,7 +848,8 @@ def migrate_legacy_soft_deleted() -> int:
 
 
 def import_generation(
-    source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None
+    source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
@@ -812,6 +859,7 @@ def import_generation(
     # 내 신원 해석은 트랜잭션 전에 — identity.get_my_uid()가 내부에서 커넥션을 열 수 있어
     # BEGIN IMMEDIATE 안에서 부르면 중첩/별도 커넥션 문제가 된다.
     my_uid = creator_uid or identity.get_my_uid()
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace)
     with get_connection() as conn:
         # 자식 generation + 레퍼런스·태그 복제 + 계보 엣지를 한 트랜잭션으로(반쪽 복제 방지).
         conn.execute("BEGIN IMMEDIATE")
@@ -827,8 +875,9 @@ def import_generation(
             child_id = new_id()
             conn.execute(
                 "INSERT INTO generation"
-                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, project_id, folder_path, creator_uid, origin) "
-                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local')",  # origin='local' — 가져오기는 내 새 행
+                "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "
+                "project_id, folder_path, creator_uid, origin, workspace_scope, workspace_id, workspace_name) "
+                "VALUES(?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?, 'local', ?, ?, ?)",  # origin='local' — 가져오기는 내 새 행
                 (
                     child_id,
                     worker_id,
@@ -841,6 +890,9 @@ def import_generation(
                     src["project_id"],  # 재생성본은 부모와 같은 프로젝트에 귀속(일관성)
                     src["folder_path"],  # 재생성본은 부모와 같은 폴더에 귀속(일관성)
                     my_uid,  # 내 생성자 신원 — 자식은 내 작업
+                    workspace_scope,
+                    workspace_id,
+                    workspace_name,
                 ),
             )
             # 레퍼런스 연결 복제(원본 reference 레코드는 공유)

@@ -28,6 +28,7 @@ from ..models import (
     GenRequestIn,
     PendingRequestOut,
     RegenerateIn,
+    WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
 from ..usecases.gen_requests import (
@@ -42,6 +43,57 @@ from ..usecases.gen_requests import (
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
+
+def _require_matching_project_workspace(pid: str, workspace) -> None:
+    """팀 프로젝트 생성물이 다른 워크스페이스 계정으로 제출되는 것을 차단한다."""
+    project = repo.get_project(pid)
+    if not project:
+        raise HTTPException(status_code=400, detail="없는 프로젝트에는 생성할 수 없습니다")
+    if project.get("workspace_scope") != "team":
+        return  # 기존 미지정 프로젝트는 하위호환
+    if workspace.scope != "team" or workspace.id != project.get("workspace_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="현재 워크스페이스와 프로젝트 워크스페이스가 다릅니다",
+        )
+
+
+def _validated_generation_workspace(
+    workspace: WorkspaceContext, account_email: str
+) -> WorkspaceContext:
+    """팀 생성 요청을 계정이 실제 접근 가능한 등록부 정보로 정규화한다."""
+    if workspace.scope != "team":
+        return workspace
+
+    registered = None
+    if AUTH_ENABLED:
+        registered = next(
+            (
+                item
+                for item in repo.list_workspace_registry(
+                    account_email, available_only=True
+                )
+                if item.get("id") == workspace.id
+            ),
+            None,
+        )
+    else:
+        registered = repo.get_registry_workspace(workspace.id)
+
+    official_name = str((registered or {}).get("name") or "").strip()
+    if official_name:
+        return workspace.model_copy(update={"name": official_name})
+    if not AUTH_ENABLED and workspace.name:
+        # 로컬 단독 모드는 서버 등록부가 없어도 에이전트가 캡처한 이름을 사용한다.
+        return workspace
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "현재 계정에서 워크스페이스 이름을 확인할 수 없습니다 "
+            "— 에이전트 동기화 후 다시 시도하세요"
+        ),
+    )
+
 def _require_account(request: Request) -> dict:
     """생성요청용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
@@ -54,6 +106,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     라우터는 HTTP/인증/권한/입력검증만 하고, 오케스트레이션(생성·큐잉·signal·PM)은
     usecases.gen_requests.submit_gen_request 가 수행한다(ARCHITECTURE.md)."""
     acc = _require_account(request)
+    workspace = _validated_generation_workspace(body.workspace, acc["email"])
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
     # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
@@ -70,8 +123,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if pid == "none":
             data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
         elif pid:
-            if not repo.get_project(pid):
-                raise HTTPException(status_code=400, detail="없는 프로젝트에는 생성할 수 없습니다")
+            _require_matching_project_workspace(pid, workspace)
             require_project_role(
                 request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -81,6 +133,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=body.create.worker_id or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
+            workspace=workspace.model_dump(),
             data=data,
         )
     else:  # regenerate
@@ -96,6 +149,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
         ppid = (parent.get("project_id") or "").strip()
         if ppid and ppid != "none":
+            _require_matching_project_workspace(ppid, workspace)
             require_project_role(
                 request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -107,6 +161,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
+            workspace=workspace.model_dump(),
             regenerate=reg,
         )
 
@@ -117,13 +172,28 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
 
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
-async def pending_gen_requests(request: Request, limit: int = 16):
-    """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
+async def pending_gen_requests(
+    request: Request,
+    limit: int = 16,
+    capability: str = "",
+    agent_id: str | None = None,
+):
+    """에이전트가 호출 — 자기 계정 대기 요청을 claim(submitting)하고 레시피 반환.
     claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
     완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
     acc = _require_account(request)
-    return await claim_gen_requests(acc["email"], realtime_scope(acc), limit)
+    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다(?capability=workspace).
+    # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
+    # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
+    caps = {c.strip() for c in capability.split(",") if c.strip()}
+    return await claim_gen_requests(
+        acc["email"],
+        realtime_scope(acc),
+        limit,
+        workspace_capable="workspace" in caps,
+        lease_owner=agent_id,
+    )
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)
@@ -151,12 +221,10 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
 
 @router.post("/gen-requests/{rid}/anchor")
 async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying: bool = True):
-    """에이전트가 job_id 를 확보하면 호출 — placeholder 를 running 유지 + job_id 기록(요청은 done 으로
-    닫아 30분 stale 회수가 이 카드를 실패로 뒤집지 않게). 재조정 패스가 나중에 generate get 으로 확정.
+    """에이전트가 job_id 를 확보하면 호출 — placeholder는 running, 요청은 tracking/verifying으로 기록.
     ★가짜 실패 방지 — 실제 힉스필드엔 생성됐는데 우리만 '실패'로 뜨던 문제를 앵커로 막는다.
     verifying=False(create-first 정상 흐름): '생성중'으로 표시(제출 직후 앵커). verifying=True(모호한
-    결말·재시작 복구): '확인중'으로 표시. ★멱등: 요청이 이미 done 이어도 apply_local_anchor 가 no-op 처리
-    (failed 요청은 되살려 앵커 — stale/부팅정리 복구). 라우터에서 미리 걸러내지 않는다."""
+    결말·재시작 복구): '확인중'으로 표시. terminal 완료는 되돌리지 않는다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)

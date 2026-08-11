@@ -35,7 +35,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 ```
 
 - **생성·재생성 = 전원 각자 로컬 CLI**(자기 크레딧). 서버는 어떤 CLI에도 의존하지 않음 → 클라우드로 옮겨도 동작.
-- **결과물은 push 로 서버에 적재**. 미디어는 힉스필드 CloudFront **공개 URL** 그대로 참조(인증 없이 200 OK 확인됨) → push 는 메타데이터만, 바이트 전송 불필요(영속이 필요하면 byte-cache는 향후 과제).
+- **결과물은 push 로 서버에 적재**. 일반 미디어는 힉스필드 CloudFront **공개 URL**을 참조해
+  push 시 메타데이터만 전송한다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하며,
+  개별·전체 수동 보관 API도 있다. 보관 전 일반 생성물의 원격 URL은 만료될 수 있다.
 - **토큰은 로컬 보관**: 서버는 힉스필드 자격증명을 절대 저장하지 않는다(사용자 보안 요구).
 - **허브의 생성/재생성 버튼은 "서버에 요청만" 남긴다** → 그 사람 PC의 **에이전트**가 가져가 로컬 CLI로 실행 → 결과를 placeholder 카드에 채움(§5).
 - 과도기 편의: 서버가 jay PC에 떠 있어 jay 결과는 서버측 주기 동기화로도 들어올 수 있으나, 본질은 jay도 로컬→push. "하우스 계정/서버 생성" 개념은 폐기됨.
@@ -93,16 +95,23 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
    ▼  GET /api/gen-requests/pending  (요청자 PC의 에이전트가 claim → running)
 요청자 PC 에이전트(agent_push.py --watch):
       제출 워커(기본 8): higgsfield generate create <model> --prompt … [params] [미디어]
-      job_id 즉시 anchor → 원격 작업 최대 64개를 단일 generate list 조회로 추적
-      끝난 작업과 목록에서 빠진 작업만 generate get 으로 상세 확인
+      job_id 즉시 anchor → 원격 작업 최대 64개 추적
+      기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
+      성공 상태 + 결과 URL + 서버의 asset 저장 ACK가 모두 있어야 완료 확정
    │
    ▼  POST /api/gen-requests/{id}/reconcile (완료 확정) | 제출 실패 시 /fail
 서버: placeholder 에 결과(asset·job_id·status) 채움 + WS broadcast → 카드 done
 ```
 
 - **버튼·UX는 그대로**, 실행 주체만 "서버 1개 CLI" → "각자 로컬 CLI"로 바뀜. 결과·크레딧·귀속 모두 실행한 사람 것.
-- **전제**: 그 사람 에이전트가 `--watch` 로 떠 있어야 동작(안 떠 있으면 "로컬 대기" 카드로 남았다가 켜면 실행). jay 포함.
-- 카드 라벨: pending="로컬 대기", running="로컬 생성중" + 툴팁(에이전트 필요 안내) [GenerationCard].
+- **전제**: 그 사람 에이전트가 `--watch` 로 떠 있어야 동작한다. 꺼져 있으면 pending 카드로 남고,
+  다시 켜면 실행을 이어간다. jay 포함.
+- pending/running 카드의 미디어 영역은 Higgsfield 로고만 표시한다. 대기·제출·생성·확인·조치 같은
+  세부 상태 글씨는 카드 위에 겹치지 않고 툴팁·정보창에서 확인한다 [GenerationCard].
+- 팀 생성·재생성은 workspace id와 이름이 모두 확인된 뒤에만 전송한다. 새로고침으로 id만 복원된
+  경우 계정의 최신 보고 목록에서 같은 id의 이름을 보완하고, 그 전 요청은 프론트 API 경계에서 막는다.
+  서버도 로그인 계정이 접근 가능한 등록부 ID인지 검증한 뒤 공식 이름으로 정규화한다. 시작 시에는
+  등록부와 ID가 정확히 일치하는 이름 없는 과거 팀 생성물과 관리 팩트만 보강하고, 나머지는 추측하지 않는다.
 - 옛 서버측 직접 생성 경로(`POST /api/generations`, `/regenerate`, `services/jobs.py` 큐)는 **제거됨**(push 모델 전환 완료). 생성은 전원 로컬 CLI + `POST /api/gen-requests`.
 - ⚠️ 미완: `create` 의 **로컬파일/`asset:` 토큰 레퍼런스**는 타 PC 에이전트에서 resolve 불가(현재 URL·텍스트 레퍼런스만 OK).
 
@@ -116,7 +125,10 @@ python agent_push.py --server http://<서버IP>:8010 --email <내이메일> [--w
 # --token <세션토큰> 으로 로그인 생략 가능(자동화/테스트용)
 ```
 - **cycle = ① execute_pending(허브 요청 제출→목록 추적→reconcile) + ② reconcile_pass(재시작 복구) + ③ push_once(내 로컬 결과물을 서버로 적재)**.
-- push_once: `GET /api/ingest/known-jobs`(서버 보유 job_id) → 로컬 `generate list --json` 중 **새 것만** 추림 → `POST /api/ingest {jobs, creator_uid, account_status}`.
+- push_once: 로컬 `generate list --json`의 job_id를 `POST /api/ingest/known-jobs`로 보내
+  서버가 돌려준 **unknown(신규) + refresh(재확인 필요)** 대상만
+  `POST /api/ingest {jobs, creator_uid, account_status}`로 적재한다.
+  구버전 서버가 POST를 지원하지 않을 때만 `GET /api/ingest/known-jobs` 전량 응답으로 폴백한다.
   - **내 힉스필드 uid = 로컬 전체 목록의 최다 user_<id>**(fresh 부분집합만 보면 남의 레퍼런스에 오염되어 잘못 연결되는 실측 버그가 있어, 반드시 전체 기준으로 산출해 명시 전송).
 - **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장.
 
@@ -186,7 +198,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
 - `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer, 401→로그인), `types.ts`(응답 타입), `lib/`(`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
-- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·**로컬 대기/생성중 라벨**·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스·표시이름)·`ManageAccount`·**`SettingsPanel`(강조색·모션·팀 크레딧·언어·전체 가져오기)**, `LoginScreen`, `TopBar`, `InfoPopup`·`MediaPreview`·`CompareModal`·`HowItWorks`·`WorkspaceSelector`·`ProjectAssignMenu`.
+- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스·표시이름)·`ManageAccount`·**`SettingsPanel`(강조색·모션·팀 크레딧·언어·전체 가져오기)**, `LoginScreen`, `TopBar`, `InfoPopup`·`MediaPreview`·`CompareModal`·`HowItWorks`·`WorkspaceSelector`·`ProjectAssignMenu`.
 
 ---
 
@@ -195,7 +207,9 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 1. **서버는 생성 안 함**(§1) — 생성은 전원 로컬 CLI + push. 옛 서버측 생성 버튼·엔드포인트·잡 큐는 제거됨.
 2. **두 종류 로그인 구분**(§3) — 허브 세션 ≠ 힉스필드 CLI 인증.
 3. **계정↔creator 재연결 오염**(실측 버그·수정됨): jay `generate list` 에 섞인 남의 레퍼런스가 "새 잡"으로 잡혀 계정이 잘못 재연결됨 → ①잡 고유 uid 유지 ②이미 실제 uid면 재연결 금지 ③에이전트가 전체목록 최다 uid 명시 전송.
-4. **미디어 공개 URL** — 힉스필드 CloudFront 결과 URL 은 인증 없이 열림 → push 는 메타만. 단 만료 가능 → byte-cache 는 향후.
+4. **미디어 공개 URL + 선택 보존** — push 는 메타만 전송한다. 최종(골드)은 자동 byte-cache,
+   필요하면 개별 `/api/generations/{id}/cache` 또는 전체 `/api/cache-all`로 보관한다.
+   보관하지 않은 일반 생성물의 원격 URL은 만료될 수 있다.
 5. **단일 오리진 / 키셋 페이지네이션 / FTS5 검색 / 휴지통 별도 DB / 미디어 샤딩 / 썸네일 사전생성 / 이중 백엔드(SQLite·PG)** — (기존 Phase 0~3, 전부 구현·검증).
 6. **마이그레이션 순서 함정**(§8) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화** — 원격 URL(`source_url`) 보존 → 재사용·변형 가능(provenance 최우선).
@@ -307,7 +321,8 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 ## 13. 남은 과제
 
-- **byte-cache**: CloudFront URL 만료 대비 미디어 영구 보존(별도 저장·동기화 서브시스템, 규모 큼 → 후순위).
+- **byte-cache 운영 보강**: 최종본 자동 보관과 개별·전체 수동 보관은 구현됨. 남은 것은
+  자동 보관 실패 가시화·재시도 정책과 디스크 용량/정리 정책이다.
 - **옛 서버측 생성 제거**: `POST /api/generations`·`/regenerate`·`services/jobs.py` 큐 — **완료(제거됨)**.
 - **create 로컬파일/asset: 레퍼런스**: 타 PC 에이전트 resolve 불가(현재 URL·텍스트만). 바이트 업로드 경로 필요.
 - (선택) 워크스페이스/크레딧 실시간성, 콘텐츠 게시 승인 게이트.

@@ -7,7 +7,12 @@
 // 일괄 추가/부여가 낙관 반영되면 즉시 같이 갱신된다('모두 같이 보이게').
 // 칩·전역칩 버튼은 onMouseDown preventDefault 로 포커스 입력의 blur(닫힘)를 막아, 다른 카드의 칩을
 // 눌러도 편집 세션이 끊기지 않는다.
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import {
+  parseWorkspacePickerCommand,
+  type WorkspaceCommandOperation,
+} from "../lib/workspaceCommand";
 
 export interface TagEditorGlobal {
   all: string[]; // 내 전역(auto) 태그 목록(사이드바에서 만든 것)
@@ -25,6 +30,8 @@ export function TagEditor({
   selectedCount = 1,
   global = null,
   onGlobalModeChange,
+  onWorkspaceCommand,
+  currentWorkspaceName,
   showInput = true,
   forcedGlobalMode,
   onClose,
@@ -37,6 +44,11 @@ export function TagEditor({
   selectedCount?: number; // 다중선택에 포함될 때 N. >1 이면 '선택된 카드 …' 배지.
   global?: TagEditorGlobal | null;
   onGlobalModeChange?: (on: boolean) => void; // 전역 모드 토글을 부모로 보고(다른 선택 카드 표시 동기화)
+  onWorkspaceCommand?: (
+    operation: WorkspaceCommandOperation,
+    workspaceName: string,
+  ) => Promise<boolean>; // ## 모드의 #+ 적용/#- 제거 선택. 태그 저장과 완전히 분리.
+  currentWorkspaceName?: string | null; // 포커스 카드의 현재 귀속 — 목록에서 활성 칩 표시.
   showInput?: boolean; // false = 비포커스 선택 카드(입력 없음)
   forcedGlobalMode?: boolean; // 비포커스 카드: 전역 picker 표시를 포커스 카드 모드에 맞춤
   onClose?: () => void;
@@ -46,8 +58,38 @@ export function TagEditor({
   const [assignedLocal, setAssignedLocal] = useState<string[]>(global?.assigned ?? []);
   const [draft, setDraft] = useState("");
   const [internalGlobalMode, setInternalGlobalMode] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceOptions, setWorkspaceOptions] = useState<{ id: string; name: string }[]>([]);
+  const [workspaceOptionsLoading, setWorkspaceOptionsLoading] = useState(false);
   const multi = selectedCount > 1;
   const globalMode = forcedGlobalMode !== undefined ? forcedGlobalMode : internalGlobalMode;
+  const workspacePicker = parseWorkspacePickerCommand(draft, globalMode);
+  const workspacePickerOpen = Boolean(showInput && onWorkspaceCommand && workspacePicker);
+
+  useEffect(() => {
+    if (!workspacePickerOpen) return;
+    let active = true;
+    setWorkspaceOptionsLoading(true);
+    api.workspaceCommandOptions()
+      .then((result) => {
+        if (!active) return;
+        setWorkspaceOptions(result.workspaces || []);
+        setWorkspaceError(null);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setWorkspaceOptions([]);
+        setWorkspaceError(message.replace(/^\d+:\s*/, "") || "워크스페이스 목록을 불러오지 못했습니다");
+      })
+      .finally(() => {
+        if (active) setWorkspaceOptionsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [workspacePickerOpen]);
 
   // 포커스(showInput): 로컬 사본으로 즉시 편집. 비포커스: 부모 prop 미러(라이브 갱신).
   const baseTags = showInput ? chips : tags;
@@ -60,13 +102,37 @@ export function TagEditor({
     if (showInput) setChips(next);
     onChange(next);
   };
-  const commitDraft = () => {
+  const applyWorkspaceCommand = async (
+    operation: WorkspaceCommandOperation,
+    workspaceName: string,
+  ): Promise<boolean> => {
+    if (!onWorkspaceCommand) {
+      setWorkspaceError("이 화면에서는 워크스페이스를 변경할 수 없습니다");
+      return false;
+    }
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      const ok = await onWorkspaceCommand(operation, workspaceName);
+      if (ok) setDraft("");
+      return ok;
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+  const commitDraft = async () => {
+    // `##` 전역 모드는 칩 선택 전용이다. 워크스페이스 이름이나 태그를 직접 제출하지 않는다.
+    if (globalMode) {
+      setDraft("");
+      return;
+    }
     const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
     const fresh = add.filter((t) => !baseTags.includes(t));
     if (fresh.length) {
       applyTags([...baseTags, ...fresh]); // 이 카드
       if (multi) onBulkAdd?.(fresh); // 나머지 선택 카드
     }
+    setWorkspaceError(null);
     setDraft("");
   };
   const removeChip = (t: string) => {
@@ -100,7 +166,7 @@ export function TagEditor({
     >
       {multi && (
         <div className="te-multi" title="추가는 선택한 카드 전체에, ×(해제)는 이 카드만">
-          {globalMode ? "선택된 카드 전역 적용" : "선택된 카드 태그 적용"}
+          {globalMode ? "선택된 카드 전역/워크스페이스 적용" : "선택된 카드 태그 적용"}
         </div>
       )}
       {baseTags.length > 0 && (
@@ -120,24 +186,84 @@ export function TagEditor({
           className="cs-tag-input"
           autoFocus
           value={draft}
-          placeholder={placeholder ?? (global ? "태그(쉼표) ⏎ · # 전역태그" : "태그(쉼표) ⏎")}
-          onChange={(e) => setDraft(e.target.value)}
+          readOnly={workspaceBusy}
+          aria-busy={workspaceBusy}
+          placeholder={
+            placeholder ??
+            (globalMode
+              ? "#+ 워크스페이스 적용 · #- 워크스페이스 제거"
+              : global
+                ? "태그(쉼표) ⏎ · # 전역태그"
+                : "태그(쉼표) ⏎")
+          }
+          onChange={(e) => {
+            const next = e.target.value;
+            // 전역 모드에서는 선택 목록을 여는 두 명령만 받는다. 이름 직접 입력·붙여넣기는 무시한다.
+            if (globalMode && !["", "#", "#+", "#-"].includes(next)) return;
+            setDraft(next);
+            setWorkspaceError(null);
+          }}
           onKeyDown={(e) => {
             e.stopPropagation();
+            if (workspaceBusy) {
+              e.preventDefault();
+              return;
+            }
             if (e.key === "Enter") {
-              commitDraft();
+              e.preventDefault();
+              void commitDraft();
             } else if (e.key === "Escape") {
               onClose?.();
-            } else if (e.key === "#" && global && draft === "") {
-              // 입력이 비어 있을 때만 전역 모드 토글(태그 안에 # 입력은 허용)
+            } else if (e.key === "#" && global && draft === "" && !globalMode) {
+              // 첫 #은 카드 태그 편집을 열고, 입력 안의 두 번째 #은 전역 모드로 전환한다.
+              // 전역 모드에 들어온 뒤의 #은 막지 않아 `#+`/`#-` 명령을 만들게 한다.
               e.preventDefault();
-              setMode(!internalGlobalMode);
+              setMode(true);
             }
           }}
-          onBlur={onClose}
+          onBlur={() => {
+            if (!workspaceBusy) onClose?.();
+          }}
         />
       )}
-      {globalMode && global && (
+      {showInput && workspaceError && (
+        <span className="te-empty" role="alert">{workspaceError}</span>
+      )}
+      {workspacePickerOpen && workspacePicker ? (
+        <div
+          className={`te-global te-workspaces ${workspacePicker.operation}`}
+          role="listbox"
+          aria-label={workspacePicker.operation === "assign" ? "적용할 워크스페이스" : "제거할 워크스페이스"}
+        >
+          {workspaceOptionsLoading ? (
+            <span className="te-empty">워크스페이스 불러오는 중…</span>
+          ) : workspaceOptions.length === 0 ? (
+            <span className="te-empty">등록된 워크스페이스가 없습니다</span>
+          ) : (
+            workspaceOptions.map((workspace) => {
+              const current = workspace.name === currentWorkspaceName;
+              const sign = workspacePicker.operation === "assign" ? "+" : "−";
+              return (
+                <button
+                  key={workspace.id}
+                  className={"te-gchip te-wchip" + (current ? " on" : "")}
+                  onMouseDown={keepFocus}
+                  onClick={() => {
+                    void applyWorkspaceCommand(workspacePicker.operation, workspace.name);
+                  }}
+                  disabled={workspaceBusy}
+                  role="option"
+                  aria-selected={current}
+                  title={`${workspace.name} 워크스페이스 ${workspacePicker.operation === "assign" ? "적용" : "제거"}`}
+                >
+                  <span className="te-wsign">{sign}</span>
+                  {workspace.name}
+                </button>
+              );
+            })
+          )}
+        </div>
+      ) : globalMode && global ? (
         <div className="te-global">
           {global.all.length === 0 ? (
             <span className="te-empty">사이드바에서 전역 태그를 먼저 만드세요</span>
@@ -159,7 +285,7 @@ export function TagEditor({
             })
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

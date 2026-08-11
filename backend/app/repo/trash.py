@@ -448,6 +448,8 @@ def _to_generation_out(payload: dict[str, Any]) -> dict[str, Any]:
         "comment_count": len(payload.get("comments", [])), "has_unread": False,
         "local_only": bool((not g.get("job_id")) or g.get("hf_missing")),
         "creator_uid": g.get("creator_uid"), "creator_name": None, "is_mine": True,
+        "workspace_scope": g.get("workspace_scope") or "unknown",
+        "workspace_id": g.get("workspace_id"), "workspace_name": g.get("workspace_name"),
         "project_id": g.get("project_id"), "deleted": True,
     }
 

@@ -1,6 +1,7 @@
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
-import type { Filters, Generation } from "../types";
+import { isGenerationWorkspaceReady } from "./workspaceContext";
+import type { Filters, Generation, WorkspaceContext } from "../types";
 
 type AskPrompt = (
   title: string,
@@ -15,6 +16,7 @@ interface UseGenerationCardActionsArgs {
   flash: (message: string) => void;
   navTab: (tab: Filters["tab"]) => void;
   reload: () => Promise<void>;
+  workspace: WorkspaceContext;
 }
 
 export function useGenerationCardActions({
@@ -24,16 +26,21 @@ export function useGenerationCardActions({
   flash,
   navTab,
   reload,
+  workspace,
 }: UseGenerationCardActionsArgs) {
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
   const onRegenerate = async (g: Generation): Promise<Generation | null> => {
+    if (!isGenerationWorkspaceReady(workspace)) {
+      flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
+      return null;
+    }
     try {
       // API 경계에서 구버전 PromptPart[] 문자열은 읽을 수 있는 prompt로 복원돼 있다. prompt를 명시해
       // 보내야 백엔드가 DB에 남은 옛 JSON 원문으로 다시 생성하지 않는다(정상 생성은 같은 값이라 무해).
       const ng = await api.regenerate(g.id, {
         prompt: g.prompt,
         auto_tags: [...armedAutoTags],
-      });
+      }, workspace);
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();

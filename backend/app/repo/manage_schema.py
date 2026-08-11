@@ -35,6 +35,7 @@ _SCHEMA = (
         start_date     TEXT,
         due_date       TEXT,
         budget_credits INTEGER,
+        budget_period  TEXT NOT NULL DEFAULT 'month',
         note           TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS project_folder_link (
@@ -126,6 +127,12 @@ def ensure_manage_schema(conn) -> None:
     transaction_columns = {row[1] for row in conn.execute("PRAGMA table_info(credit_txn)")}
     if "model" not in transaction_columns:
         conn.execute("ALTER TABLE credit_txn ADD COLUMN model TEXT")
+
+    planning_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_planning)")}
+    if "budget_period" not in planning_columns:
+        conn.execute(
+            "ALTER TABLE project_planning ADD COLUMN budget_period TEXT NOT NULL DEFAULT 'month'"
+        )
 
     outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_outbox)")}
     if "is_tombstone" not in outbox_columns:

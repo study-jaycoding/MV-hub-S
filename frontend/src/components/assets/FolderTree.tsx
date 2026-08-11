@@ -2,7 +2,7 @@
 import { useMemo } from "react";
 import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTreeView, type FolderTreeItem } from "../common/FolderTreeView";
-import { flattenFiles } from "./treeUtils";
+import { flattenFiles, orderAssetFolders } from "./treeUtils";
 
 type TypeFilter = "image" | "video" | "audio" | null;
 
@@ -22,8 +22,7 @@ function toFolderItem(
     name: node.name,
     path: node.path,
     count,
-    children: children
-      .filter((child) => child.type === "dir")
+    children: orderAssetFolders(children.filter((child) => child.type === "dir"))
       .map((child) => toFolderItem(child, typeFilter, meta, sourceOnly)),
   };
 }
@@ -51,8 +50,7 @@ export function FolderTree({
   // memo. 예전엔 매 렌더(setDir 포함)마다 전체 트리를 재귀로 세어 큰 프로젝트에서 전환 딜레이의 한 원인.
   const items = useMemo(
     () =>
-      nodes
-        .filter((node) => node.type === "dir")
+      orderAssetFolders(nodes.filter((node) => node.type === "dir"))
         .map((node) => toFolderItem(node, typeFilter, meta, sourceOnly)),
     [nodes, typeFilter, meta, sourceOnly],
   );

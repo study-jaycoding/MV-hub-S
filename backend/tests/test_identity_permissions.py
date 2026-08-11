@@ -9,8 +9,10 @@ from fastapi import HTTPException
 
 from app import db, repo
 from app import deps as deps_mod
+from app.routers import generation as generation_router
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
+from app.routers import manage as manage_router
 from app.routers import projects as projects_router
 
 
@@ -28,6 +30,7 @@ def auth_on():
     stack = ExitStack()
     stack.enter_context(mock.patch.object(deps_mod, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(projects_router, "AUTH_ENABLED", True))
+    stack.enter_context(mock.patch.object(manage_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(ingest_router, "AUTH_ENABLED", True))
     stack.enter_context(mock.patch.object(gen_requests_router, "AUTH_ENABLED", True))
     return stack
@@ -47,11 +50,30 @@ class IdentityPermissionTests(unittest.TestCase):
                 "VALUES('p_river','River Project','team',0)"
             )
             conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_other','Other Project','team',0)"
+            )
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_roleless','Roleless Project','team',0)"
+            )
+            conn.execute(
                 "INSERT INTO creator(uid, name) VALUES('user_river','River')"
+            )
+            conn.execute(
+                "INSERT INTO creator(uid, name) VALUES('user_other','Other')"
             )
             conn.execute(
                 "INSERT INTO project_member(project_id, creator_uid, project_role) "
                 "VALUES('p_river','user_river','creator')"
+            )
+            conn.execute(
+                "INSERT INTO project_member(project_id, creator_uid, project_role) "
+                "VALUES('p_other','user_other','creator')"
+            )
+            conn.execute(
+                "INSERT INTO project_member(project_id, creator_uid, project_role) "
+                "VALUES('p_roleless','user_river','')"
             )
 
     def tearDown(self):
@@ -114,6 +136,35 @@ class IdentityPermissionTests(unittest.TestCase):
             rows = projects_router.list_members("p_river", river)
         self.assertEqual([r["uid"] for r in rows], ["user_river"])
 
+    def test_visible_project_members_are_limited_to_my_projects(self):
+        river = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        with auth_on():
+            rows = projects_router.list_visible_members(river)
+        self.assertEqual(set(rows), {"p_river"})
+        self.assertEqual([row["uid"] for row in rows["p_river"]], ["user_river"])
+
+    def test_project_dashboard_summary_excludes_foreign_projects(self):
+        river = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        with auth_on():
+            result = manage_router.project_summary(river)
+        self.assertEqual([row["pid"] for row in result["projects"]], ["p_river"])
+        self.assertNotIn("workers", result)
+        self.assertNotIn("workspaces", result)
+
     def test_ingest_requires_reported_cli_email_when_auth_is_on(self):
         acc = {"email": "river@example.com", "creator_uid": "user_river"}
         jobs = [
@@ -147,6 +198,95 @@ class IdentityPermissionTests(unittest.TestCase):
         with auth_on(), self.assertRaises(HTTPException) as ctx:
             asyncio.run(gen_requests_router.create_gen_request(body, req))
         self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_gen_request_workspace_uses_accessible_registry_name(self):
+        from app.models import GenerationCreate, GenRequestIn, WorkspaceContext
+
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        body = GenRequestIn(
+            kind="create",
+            workspace=WorkspaceContext(
+                scope="team", id="ws-millionvolt", name="old name"
+            ),
+            create=GenerationCreate(prompt="x", model="seedance_2_0"),
+        )
+        with auth_on(), mock.patch.object(
+            gen_requests_router.repo,
+            "list_workspace_registry",
+            return_value=[{"id": "ws-millionvolt", "name": "MILLIONVOLT"}],
+        ), mock.patch.object(
+            gen_requests_router,
+            "submit_gen_request",
+            new=mock.AsyncMock(return_value={"id": "placeholder"}),
+        ) as submit:
+            asyncio.run(gen_requests_router.create_gen_request(body, req))
+        command = submit.await_args.args[0]
+        self.assertEqual(
+            command.workspace,
+            {"scope": "team", "id": "ws-millionvolt", "name": "MILLIONVOLT"},
+        )
+
+    def test_gen_request_workspace_rejects_unavailable_registry_id(self):
+        from app.models import WorkspaceContext
+
+        supplied = WorkspaceContext(scope="team", id="ws-foreign", name="FORGED")
+        with auth_on(), mock.patch.object(
+            gen_requests_router.repo, "list_workspace_registry", return_value=[]
+        ), self.assertRaises(HTTPException) as ctx:
+            gen_requests_router._validated_generation_workspace(
+                supplied, "river@example.com"
+            )
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_workspace_picker_only_lists_current_account_workspaces(self):
+        with db.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO workspace_registry(id,name) VALUES(?,?)",
+                [("ws-river", "RIVER TEAM"), ("ws-other", "OTHER TEAM")],
+            )
+            conn.executemany(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES(?,?,1)",
+                [
+                    ("ws-river", "river@example.com"),
+                    ("ws-other", "other@example.com"),
+                ],
+            )
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with mock.patch.object(generation_router._proxy, "proxying", return_value=False):
+            result = generation_router.available_workspaces(req)
+
+        self.assertEqual(
+            result,
+            {"workspaces": [{"id": "ws-river", "name": "RIVER TEAM"}]},
+        )
+
+    def test_local_gen_request_keeps_agent_name_without_registry(self):
+        from app.models import WorkspaceContext
+
+        supplied = WorkspaceContext(scope="team", id="ws-local", name="LOCAL TEAM")
+        with mock.patch.object(gen_requests_router, "AUTH_ENABLED", False), mock.patch.object(
+            gen_requests_router.repo, "get_registry_workspace", return_value=None
+        ):
+            validated = gen_requests_router._validated_generation_workspace(
+                supplied, "local@example.com"
+            )
+        self.assertEqual(validated.name, "LOCAL TEAM")
 
     def test_known_jobs_diff_scopes_by_account_not_global(self):
         # 미링크 계정(creator_uid=None)도 acct:email 로 스코프 — None 전역 job 존재 oracle 방지.
