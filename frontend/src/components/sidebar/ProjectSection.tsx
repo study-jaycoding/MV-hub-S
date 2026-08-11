@@ -13,6 +13,7 @@ import { buildFolderCountTree, hasMoreThanFolderNodes } from "../../lib/folderTr
 import { useDisabledFolders } from "../../lib/useDisabledFolders";
 import { APP_EVENTS } from "../../lib/appEvents";
 import { DRAG_TYPES } from "../../lib/dragTypes";
+import { encodeSceneFolderDrag } from "../../lib/sceneSet";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
@@ -42,6 +43,7 @@ function SidebarFolderTree({
   onToggle,
   onSelect,
   onDropFolder,
+  onDragFolder,
   isDisabled,
   onRowKeyDown,
 }: {
@@ -56,6 +58,7 @@ function SidebarFolderTree({
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onDropFolder?: (path: string, e: DragEvent) => void;
+  onDragFolder?: (path: string, e: DragEvent) => void;
   isDisabled?: (path: string) => boolean;
   onRowKeyDown?: (path: string, e: KeyboardEvent) => void;
 }) {
@@ -81,6 +84,7 @@ function SidebarFolderTree({
         onToggle={onToggle}
         onSelect={onSelect}
         onDropFolder={onDropFolder}
+        onDragFolder={onDragFolder}
         isDisabled={isDisabled}
         onRowKeyDown={onRowKeyDown}
         scroll={scroll}
@@ -104,6 +108,7 @@ export function ProjectSection({
   onArmFolder,
   onDropToFolder,
   onDropToUnassigned,
+  enableFolderDrag = false,
 }: {
   projects: Project[];
   unassignedCount: number;
@@ -121,6 +126,8 @@ export function ProjectSection({
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
   // 카드를 '미분류'로 드래그 — 귀속 해제
   onDropToUnassigned?: (genId: string) => void;
+  // 캔버스에서만 폴더 → Set 드래그를 켠다. 일반 작업공간에서는 기존 클릭 UX 유지.
+  enableFolderDrag?: boolean;
 }) {
   const tr = useT();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
@@ -562,6 +569,20 @@ export function ProjectSection({
                         ? (path, e) => {
                             const genId = e.dataTransfer.getData(DRAG_TYPES.generation);
                             if (genId) onDropToFolder(project.id, path, genId);
+                          }
+                        : undefined
+                    }
+                    onDragFolder={
+                      enableFolderDrag
+                        ? (path, e) => {
+                            const payload = encodeSceneFolderDrag({
+                              projectId: project.id,
+                              projectName: project.name,
+                              path,
+                            });
+                            if (!payload) return;
+                            e.dataTransfer.setData(DRAG_TYPES.folder, payload);
+                            e.dataTransfer.effectAllowed = "copy";
                           }
                         : undefined
                     }

@@ -37,15 +37,20 @@ export function useGenerationTagActions({
   latestCallbacksRef.current = { flash, reload };
   const tagQueueRef = useRef<ReturnType<typeof createMutationQueue> | null>(null);
   if (!tagQueueRef.current) {
-    tagQueueRef.current = createMutationQueue(async (errors) => {
-      const latest = latestCallbacksRef.current;
-      await latest.reload(false, false); // 실패 때는 낙관적으로 합친 facets.tags 도 서버값으로 복구.
-      const failed = errors.reduce<number>(
-        (sum, error) => sum + (error instanceof TagSaveError ? error.failed : 1),
-        0,
-      );
-      latest.flash(`태그 저장 ${failed}건 실패 — 서버 상태로 되돌렸습니다`);
-    });
+    tagQueueRef.current = createMutationQueue(
+      async (errors) => {
+        const latest = latestCallbacksRef.current;
+        await latest.reload(false, false); // 실패 때는 낙관적으로 합친 facets.tags 도 서버값으로 복구.
+        const failed = errors.reduce<number>(
+          (sum, error) => sum + (error instanceof TagSaveError ? error.failed : 1),
+          0,
+        );
+        latest.flash(`태그 저장 ${failed}건 실패 — 서버 상태로 되돌렸습니다`);
+      },
+      // 빠른 연속 편집을 모두 저장한 마지막 시점에 한 번만 목록을 맞춘다. 저장 건마다 조회하면
+      // 앞 저장의 서버값이 뒤 낙관적 편집을 잠깐 덮어 캔버스 태그가 깜빡이는 문제가 생긴다.
+      () => latestCallbacksRef.current.reload(true, false),
+    );
   }
 
   const applyGens = (update: (generations: Generation[]) => Generation[]) => {

@@ -22,6 +22,7 @@ export interface SpotlightCreateBody {
   display_prompt?: string;
   model: string;
   params?: Record<string, unknown>;
+  tags?: string[];
   auto_tags?: string[];
   references?: {
     file_path: string;
@@ -43,6 +44,7 @@ interface Params {
   displayPrompt: string;
   model: string;
   optionValues: Record<string, unknown>;
+  tags?: string[];
   armedAutoTags: string[];
   activeProjectId?: string;
   folderPath?: string; // 무장 폴더(렌더 루트 상대 경로) — 생성물 folder_path 로 저장
@@ -94,6 +96,7 @@ export function buildSpotlightCreateBody({
   displayPrompt,
   model,
   optionValues,
+  tags,
   armedAutoTags,
   activeProjectId,
   folderPath,
@@ -156,6 +159,7 @@ export function buildSpotlightCreateBody({
       display_prompt: displayPrompt || undefined,
       model,
       params: optionValues,
+      tags: tags?.length ? tags : undefined,
       auto_tags: armedAutoTags,
       references: refs.map((ref) => ({
         file_path: ref.file_path,

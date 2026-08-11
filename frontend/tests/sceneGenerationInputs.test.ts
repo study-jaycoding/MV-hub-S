@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSceneGenerationJobInput,
+  collectSceneGenerationAssignment,
   captureSceneGenerationInputSnapshot,
   isSceneGenerationInputSnapshotCurrent,
 } from "../src/lib/sceneGenerationInputs";
@@ -23,6 +24,52 @@ const saveImageWorkflow = JSON.stringify({ "1": { class_type: "SaveImage" } });
 const saveTextWorkflow = JSON.stringify({ "1": { class_type: "SaveText" } });
 
 describe("sceneGenerationInputs", () => {
+  it("Set 노드의 폴더·태그를 생성 요청 정보로 모으되 프롬프트는 바꾸지 않는다", () => {
+    const cards = [
+      card("G", "generation", { prompt: "원래 프롬프트" }),
+      card("M", "model", { modelCfg: { model: "nano" } }),
+      card("S1", "set", {
+        x: 10,
+        y: 10,
+        setCfg: {
+          folder: { projectId: "project-1", projectName: "테스트", path: "ep001/c0010" },
+          tagsText: "hero, night",
+        },
+      }),
+      card("S2", "set", { x: 20, y: 20, setCfg: { tagsText: "Night, final" } }),
+    ];
+    const edges = [edge("e1", "M", "G"), edge("e2", "S1", "G"), edge("e3", "S2", "G")];
+    const resolved = resolvePortEdges(byId(cards), edges);
+
+    expect(collectSceneGenerationAssignment("G", byId(cards), resolved)).toEqual({
+      projectId: "project-1",
+      folderPath: "ep001/c0010",
+      tags: ["hero", "night", "final"],
+    });
+    expect(buildSceneGenerationJobInput("G", byId(cards), resolved)).toMatchObject({
+      text: "원래 프롬프트",
+      assignment: {
+        projectId: "project-1",
+        folderPath: "ep001/c0010",
+        tags: ["hero", "night", "final"],
+      },
+    });
+  });
+
+  it("Set 설정 변경은 실행 중 입력 변경으로 판정한다", () => {
+    const cards = [
+      card("G", "generation", { prompt: "prompt" }),
+      card("M", "model", { modelCfg: { model: "nano" } }),
+      card("S", "set", { setCfg: { tagsText: "before" } }),
+    ];
+    const edges = [edge("e1", "M", "G"), edge("e2", "S", "G")];
+    const snapshot = captureSceneGenerationInputSnapshot(["G"], [], byId(cards), edges);
+    const changed = cards.map((item) =>
+      item.id === "S" ? { ...item, setCfg: { tagsText: "after" } } : item,
+    );
+    expect(isSceneGenerationInputSnapshotCurrent(snapshot, byId(changed), edges)).toBe(false);
+  });
+
   it("App과 실행 가드가 공유하는 모델·텍스트·레퍼런스 요청 재료를 조립한다", () => {
     const cards = [
       card("G", "generation", {

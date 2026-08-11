@@ -46,6 +46,9 @@ export function canConnect(
 ): boolean {
   if (from.id === to.id) return false;
   if (from.kind === "head" || to.kind === "head") return false; // head 는 포트 없는 주석 노드
+  // Set은 프롬프트를 대체하는 텍스트가 아니라 생성 목적지/태그 메타데이터다.
+  // 생성 카드에만 직접 연결되게 제한해 의미가 모호한 중첩 연결을 막는다.
+  if (from.kind === "set") return to.kind === "generation";
   if (from.kind === "output") return false; // output 은 출력 포트가 없다 — 소스가 될 수 없음
   if (from.kind === "render")
     // render 안 생성물을 View 재생 · 생성카드 레퍼런스 · 리스트로 다시 수집(중첩).
@@ -1106,6 +1109,7 @@ function resolveEdgeRoleWithContext(
         : "ref";
     return "ref"; // reference·generation → 레퍼런스(파랑)
   }
+  if (from?.kind === "set") return "text";
   if (from?.kind === "model") return "model";
   if (from?.kind === "text") return "text";
   if (from?.kind === "comfy") {

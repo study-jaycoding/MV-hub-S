@@ -34,6 +34,7 @@ import {
   type SceneEdgeRole,
   type SceneGroup,
   type SceneRef,
+  type SceneSetFolder,
 } from "../../lib/scenes";
 import {
   canConnect,
@@ -108,12 +109,14 @@ import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
 import type { SceneComfyCfg } from "../../lib/scenes";
+import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
+import { SetCard } from "./cards/SetCard";
 import { ListCard } from "./cards/ListCard";
 import { RenderCard } from "./cards/RenderCard";
 import { GenerationCard } from "./cards/GenerationCard";
@@ -184,7 +187,7 @@ interface Props {
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
-  onGenerateCard?: (batch?: number) => void; // batch = 이 노드의 배치수(comfy 없는 경로에도 적용)
+  onGenerateCard?: (batch?: number, assignment?: SceneGenerationAssignment | null) => void; // 최신 Set 정보도 함께 전달
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
   onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
@@ -1092,6 +1095,8 @@ export function SceneBoard({
     const card: SceneCard =
       kind === "text"
         ? { ...base, kind: "text", text: "" }
+        : kind === "set"
+          ? { ...base, kind: "set", w: 198, h: 110, setCfg: { tagsText: "" } }
         : kind === "model"
           ? { ...base, kind: "model" }
           : kind === "list"
@@ -1181,6 +1186,22 @@ export function SceneBoard({
     cardsRef.current = nextCards; // 즉시 반영 — 생성/flush 가 최신 텍스트를 읽게
     setCards(nextCards);
     scheduleInputPersist(); // 저장은 디바운스(blur·언마운트·씬전환 시 flush)
+  };
+  const setNodeSetFolder = (cardId: string, folder?: SceneSetFolder) => {
+    const nextCards = cardsRef.current.map((c) =>
+      c.id === cardId
+        ? { ...c, setCfg: { ...(c.setCfg || {}), folder } }
+        : c,
+    );
+    applyCards(nextCards, "persistUser");
+  };
+  const setNodeSetTagsText = (cardId: string, tagsText: string) => {
+    const nextCards = cardsRef.current.map((c) =>
+      c.id === cardId
+        ? { ...c, setCfg: { ...(c.setCfg || {}), tagsText } }
+        : c,
+    );
+    applyCards(nextCards, "deferUser");
   };
   // head 노드 글씨 색 저장.
   const setNodeColor = (cardId: string, color: string) => {
@@ -3101,6 +3122,15 @@ export function SceneBoard({
                   onOutPortDown={onOutPortDown}
                   onResizeDown={onResizeDown}
                 />
+              ) : card.kind === "set" ? (
+                <SetCard
+                  card={card}
+                  setFolder={setNodeSetFolder}
+                  setTagsText={setNodeSetTagsText}
+                  flushPending={flushPending}
+                  onOutPortDown={onOutPortDown}
+                  onResizeDown={onResizeDown}
+                />
               ) : card.kind === "model" ? (
                 <ModelCard card={card} onOutPortDown={onOutPortDown} onResizeDown={onResizeDown} />
               ) : card.kind === "list" ? (
@@ -3434,6 +3464,7 @@ export function SceneBoard({
                 ["New", "N", "generation"],
                 ["Model", "M", "model"],
                 ["Text", "T", "text"],
+                ["Set", "S", "set"],
                 ["List", "L", "list"],
                 ["Render", "R", "render"],
                 ["View", "V", "view"],

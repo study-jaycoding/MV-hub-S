@@ -52,6 +52,7 @@ export function CanvasFolderSidebar({
         onArmFolder={onArmFolder}
         onDropToFolder={onDropToFolder}
         onDropToUnassigned={onDropToUnassigned}
+        enableFolderDrag
       />
     </aside>
   );

@@ -23,10 +23,13 @@ import {
   type ComfyOutputsById,
   type SceneExecutionPlan,
   type SceneGenerationRun,
+  resolvePortEdges,
 } from "./sceneEdges";
 import {
   captureSceneGenerationInputSnapshot,
+  collectSceneGenerationAssignment,
   isSceneGenerationInputSnapshotCurrent,
+  type SceneGenerationAssignment,
 } from "./sceneGenerationInputs";
 import { setComfyRunning as setStoredComfyRunning } from "./sceneComfyRunningStore";
 import { flashMsg } from "./flash";
@@ -127,7 +130,7 @@ interface UseSceneComfyExecutionOptions {
     opts?: { undo?: boolean; defer?: boolean },
   ) => void;
   saveComfyToLibrary: (cardId: string, opts?: SaveComfyOptions) => Promise<SaveComfyResult>;
-  onGenerateCard?: (batch?: number) => void;
+  onGenerateCard?: (batch?: number, assignment?: SceneGenerationAssignment | null) => void;
   onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
   onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
@@ -726,10 +729,15 @@ export function useSceneComfyExecution({
   };
 
   const orchestrateGenerate = async (generationId: string) => {
+    flushPending();
     const cardsById = new Map(cardsRef.current.map((card) => [card.id, card] as const));
     const plan = buildGenerationExecutionPlan(generationId, cardsById, edgesRef.current);
     if (!plan.comfyIds.length) {
-      onGenerateCard?.(cardBatch(cardsById.get(generationId)));
+      const resolved = resolvePortEdges(cardsById, edgesRef.current);
+      onGenerateCard?.(
+        cardBatch(cardsById.get(generationId)),
+        collectSceneGenerationAssignment(generationId, cardsById, resolved) ?? null,
+      );
       return;
     }
     if (orchestratingRef.current) return;

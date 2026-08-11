@@ -11,6 +11,13 @@ import {
   type ComfyOutputsById,
 } from "./sceneEdges";
 import { variantIds, type SceneCard, type SceneEdge } from "./scenes";
+import { parseSceneSetTags } from "./sceneSet";
+
+export interface SceneGenerationAssignment {
+  projectId?: string;
+  folderPath?: string;
+  tags: string[];
+}
 
 export interface SceneGenerationJobInput {
   cardId: string;
@@ -18,6 +25,7 @@ export interface SceneGenerationJobInput {
   params: Record<string, unknown>;
   refs: ChipRef[];
   text: string;
+  assignment?: SceneGenerationAssignment;
 }
 
 export interface SceneGenerationInputSnapshot {
@@ -53,6 +61,39 @@ function connectedOverlayComfyIds(
     }
   }
   return [...found];
+}
+
+export function collectSceneGenerationAssignment(
+  cardId: string,
+  cardsById: Map<string, SceneCard>,
+  resolvedEdges: SceneEdge[],
+): SceneGenerationAssignment | undefined {
+  const sources = resolvedEdges
+    .filter((edge) => edge.to === cardId)
+    .map((edge) => cardsById.get(edge.from))
+    .filter((card): card is SceneCard => card?.kind === "set")
+    .sort((left, right) => (left.y !== right.y ? left.y - right.y : left.x - right.x));
+  if (!sources.length) return undefined;
+
+  const tags: string[] = [];
+  const seenTags = new Set<string>();
+  let projectId: string | undefined;
+  let folderPath: string | undefined;
+  for (const source of sources) {
+    const folder = source.setCfg?.folder;
+    if (folder?.projectId && folder.path) {
+      projectId = folder.projectId;
+      folderPath = folder.path;
+    }
+    for (const tag of parseSceneSetTags(source.setCfg?.tagsText)) {
+      const key = tag.toLocaleLowerCase();
+      if (seenTags.has(key)) continue;
+      seenTags.add(key);
+      tags.push(tag);
+    }
+  }
+  if (!projectId && !folderPath && !tags.length) return undefined;
+  return { projectId, folderPath, tags };
 }
 
 // 호출부가 한 번 resolve한 엣지를 여러 생성카드에 재사용할 수 있도록 이 함수는 resolvedEdges를 받는다.
@@ -110,6 +151,7 @@ export function buildSceneGenerationJobInput(
     params: { ...(modelCfg.params || {}) },
     refs,
     text,
+    assignment: collectSceneGenerationAssignment(cardId, cardsById, resolvedEdges),
   };
 }
 
@@ -139,6 +181,7 @@ function jobFingerprint(job: SceneGenerationJobInput | null): string | null {
         name: ref.name,
         source_gen_id: ref.source_gen_id ?? null,
       })),
+      assignment: job.assignment ?? null,
     }),
   );
 }

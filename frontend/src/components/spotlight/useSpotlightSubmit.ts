@@ -17,6 +17,7 @@ import {
 } from "../../lib/spotlightSubmit";
 import type { Generation, ModelParam, WorkspaceContext } from "../../types";
 import type { SpotlightTrayRef } from "./SpotlightRefTray";
+import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 
 
 export const SPOTLIGHT_MAX_COUNT = 4;
@@ -25,6 +26,7 @@ interface UseSpotlightSubmitOptions {
   activeProjectId?: string;
   armedAutoTags: string[];
   armedFolder?: { projectId: string; path: string } | null;
+  generationAssignment?: SceneGenerationAssignment;
   busy: boolean;
   count: number;
   dragParentRef: MutableRefObject<string | null>;
@@ -50,6 +52,7 @@ export function useSpotlightSubmit({
   activeProjectId,
   armedAutoTags,
   armedFolder,
+  generationAssignment,
   busy,
   count,
   dragParentRef,
@@ -70,7 +73,10 @@ export function useSpotlightSubmit({
   updatePlaceholder,
   notifyPromptChanged,
 }: UseSpotlightSubmitOptions) {
-  return useCallback(async (batchOverride?: number) => {
+  return useCallback(async (
+    batchOverride?: number,
+    generationAssignmentOverride?: SceneGenerationAssignment | null,
+  ) => {
     if (busy) return;
     setError(null);
     if (!isGenerationWorkspaceReady(workspace)) {
@@ -104,6 +110,14 @@ export function useSpotlightSubmit({
         tunable,
         [...trayRefs, ...inlineRefs],
       );
+      const effectiveAssignment =
+        generationAssignmentOverride !== undefined
+          ? generationAssignmentOverride || undefined
+          : generationAssignment;
+      const targetProjectId = effectiveAssignment?.projectId ?? activeProjectId;
+      const targetFolderPath = effectiveAssignment?.folderPath ??
+        (armedFolder && armedFolder.projectId === targetProjectId ? armedFolder.path : undefined);
+      const targetTags = effectiveAssignment?.tags || [];
       const { body, error } = buildSpotlightCreateBody({
         text,
         inlineRefs,
@@ -112,12 +126,10 @@ export function useSpotlightSubmit({
         displayPrompt,
         model,
         optionValues: resolvedOptions,
+        tags: targetTags,
         armedAutoTags,
-        activeProjectId,
-        folderPath:
-          armedFolder && armedFolder.projectId === activeProjectId
-            ? armedFolder.path
-            : undefined,
+        activeProjectId: targetProjectId,
+        folderPath: targetFolderPath,
       });
       if (error || !body) {
         setError(error || "생성 요청을 만들 수 없습니다.");
@@ -163,6 +175,7 @@ export function useSpotlightSubmit({
     activeProjectId,
     armedAutoTags,
     armedFolder,
+    generationAssignment,
     busy,
     clearMention,
     count,

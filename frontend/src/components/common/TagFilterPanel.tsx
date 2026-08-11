@@ -5,6 +5,7 @@ import type {
   Ref,
 } from "react";
 import { useMemo, useState } from "react";
+import { uniqueTagNames } from "../../lib/generationTags";
 import { loadJSON, saveJSON } from "../../lib/storage";
 
 // 태그 글씨 크기(px) — 사용자별 localStorage 저장, 모든 태그창 공통 적용.
@@ -65,7 +66,10 @@ export function TagFilterPanel({
   const [order, setOrder] = useState<string[]>(() =>
     orderKey ? loadJSON<string[]>(orderKey) || [] : [],
   );
-  const orderedTags = useMemo(() => (orderKey ? applyOrder(tags, order) : tags), [tags, order, orderKey]);
+  const orderedTags = useMemo(() => {
+    const uniqueTags = uniqueTagNames(tags);
+    return orderKey ? applyOrder(uniqueTags, order) : uniqueTags;
+  }, [tags, order, orderKey]);
 
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
@@ -105,7 +109,7 @@ export function TagFilterPanel({
     >
       <div className="tag-panel-head" onMouseDown={onHeadMouseDown}>
         <span className="tag-panel-title">
-          등록된 태그 <span className="muted">({tags.length})</span>
+          등록된 태그 <span className="muted">({orderedTags.length})</span>
         </span>
         {activeTags.size > 0 && (
           <button

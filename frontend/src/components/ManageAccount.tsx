@@ -18,6 +18,7 @@ export function ManageAccount({
   onClose,
   plan,
   credits,
+  cliVersion,
 }: {
   provider: ProviderIdentity | null;
   account?: Account | null;
@@ -27,6 +28,7 @@ export function ManageAccount({
   //   구독 플랜(항상 team)·계정 크레딧이 아니라, 지금 선택된 워크스페이스 값이라 전환에 따라 바뀐다.
   plan?: string | null;
   credits?: number | null;
+  cliVersion?: string | null;
 }) {
   // 표시이름은 계정별(account.name) — 전역 provider 가 아니다. 없으면 이메일 로컬파트로.
   const initialName =
@@ -182,6 +184,7 @@ export function ManageAccount({
               }
             />
             <Row label="계정 식별자" value={accountUid(account, provider)} mono />
+            <Row label="CLI 버전" value={cliVersion || "—"} mono />
           </section>
         </div>
       </div>

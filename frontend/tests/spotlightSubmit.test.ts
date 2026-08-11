@@ -61,6 +61,22 @@ describe("buildSpotlightCreateBody — 역할 번호 부여", () => {
   });
 });
 
+describe("buildSpotlightCreateBody — 일반 태그와 전역 태그 분리", () => {
+  it("Set 태그는 tags, 상단 전역 태그는 auto_tags로 보낸다", () => {
+    const { body, error } = buildSpotlightCreateBody({
+      ...base,
+      text: "생성",
+      inlineRefs: [],
+      trayRefs: [],
+      model: "nano_banana",
+      tags: ["set-tag"],
+      armedAutoTags: ["global-tag"],
+    });
+    expect(error).toBeNull();
+    expect(body).toMatchObject({ tags: ["set-tag"], auto_tags: ["global-tag"] });
+  });
+});
+
 describe("buildSpotlightCreateBody — CLI 프롬프트 한 줄 강제", () => {
   it("줄바꿈은 공백으로 합쳐진다(레퍼런스 부착 깨짐 방지)", () => {
     const { body } = buildSpotlightCreateBody({

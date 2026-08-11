@@ -81,6 +81,7 @@ import {
   useSpotlightSubmit,
 } from "./spotlight/useSpotlightSubmit";
 import type { SceneRef, SceneModelCfg } from "../lib/scenes";
+import type { SceneGenerationAssignment } from "../lib/sceneGenerationInputs";
 import type { Generation, PreviewTarget, WorkspaceContext } from "../types";
 
 interface Props {
@@ -106,6 +107,7 @@ interface Props {
     promptKey?: string;
     model?: SceneModelCfg | null;
     modelKey?: string;
+    assignment?: SceneGenerationAssignment;
   } | null;
   onTrayBindingRefsChange?: (refs: SceneRef[]) => SceneRef[] | void;
   onTrayBindingPromptChange?: (text: string) => void; // 입력창 편집 → 그 카드에 초안 저장
@@ -120,7 +122,7 @@ interface Props {
 }
 
 export interface SpotlightPromptHandle {
-  submit: (batch?: number) => void;
+  submit: (batch?: number, assignmentOverride?: SceneGenerationAssignment | null) => void;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -936,6 +938,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     activeProjectId,
     armedAutoTags,
     armedFolder,
+    generationAssignment: trayBinding?.assignment,
     busy,
     count,
     dragParentRef,
