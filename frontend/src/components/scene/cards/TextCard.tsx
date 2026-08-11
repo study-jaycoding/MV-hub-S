@@ -63,7 +63,7 @@ export function TextCard({
       // 리스트로 묶은 레퍼런스/생성물을 순서대로 펼쳐 @image1/@image2… 로 매핑.
       const li = collectListInputs(s.id, cardsById, resolvedEdges);
       if (li.kind === "reference")
-        for (const cid of li.sourceIds)
+        for (const cid of li.referenceCardIds)
           (cardsById.get(cid)?.refs || []).forEach((r) => addRef(r.type, refThumbSrc(r)));
       else if (li.kind === "generation")
         for (const cid of li.generationCardIds) addGenRef(cardsById.get(cid));

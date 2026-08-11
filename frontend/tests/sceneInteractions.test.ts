@@ -333,6 +333,23 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     ]);
   });
 
+  it("리스트와 레퍼런스를 함께 복사하면 리스트 전용 순서 id도 새 카드 id로 바꾼다", () => {
+    const cards = [
+      card("ref", "reference", 0, 0),
+      card("list", "list", 100, 0, { listOrder: ["ref"] }),
+    ];
+    const edges: SceneEdge[] = [{ id: "edge", from: "ref", to: "list" }];
+    const clipboard = copySceneSelection(cards, edges, ["ref", "list"]);
+    const pasted = pasteSceneClipboard(
+      cards,
+      edges,
+      clipboard,
+      idSequence("new-ref", "new-list", "new-edge"),
+    );
+
+    expect(pasted.cards.find((item) => item.id === "new-list")?.listOrder).toEqual(["new-ref"]);
+  });
+
   it("다른 씬에서 외부 입력 소스가 없으면 유령 연결을 복원하지 않는다", () => {
     const clipboard = {
       cards: [card("copied", "generation", 0, 0)],

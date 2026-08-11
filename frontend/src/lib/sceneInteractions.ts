@@ -340,11 +340,14 @@ export function pasteSceneClipboard(
     idMap.set(card.id, id);
     return { ...card, id, x: card.x + shift, y: card.y + shift };
   });
-  const remappedCards = pastedCards.map((card) =>
-    card.kind === "input" && card.channel && idMap.has(card.channel)
-      ? { ...card, channel: idMap.get(card.channel) }
-      : card,
-  );
+  const remappedCards = pastedCards.map((card) => {
+    let next = card;
+    if (card.kind === "input" && card.channel && idMap.has(card.channel))
+      next = { ...next, channel: idMap.get(card.channel) };
+    if (card.kind === "list" && card.listOrder)
+      next = { ...next, listOrder: card.listOrder.map((id) => idMap.get(id) || id) };
+    return next;
+  });
   const internalEdges = clipboard.edges.map((edge) => ({
     ...edge,
     id: makeId(),
