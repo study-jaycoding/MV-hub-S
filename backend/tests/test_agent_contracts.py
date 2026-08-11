@@ -256,14 +256,18 @@ def test_pending_response_contains_every_field_the_agent_executes():
 def test_gen_request_adapter_builds_claim_url_in_one_place():
     agent = _load_agent()
     with patch.object(agent, "_http", return_value=(200, [])) as http:
-        assert agent._claim_pending("http://hub/", "token-1", 16) == (200, [])
+        assert agent._claim_pending("http://hub/", "token-1", 16, "agent-1") == (200, [])
 
     call = http.call_args
     parsed = urlsplit(call.args[1])
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending"
     # capability=workspace: 워크스페이스 전환·검증 지원 선언 — 신 서버가 지정 요청을 내려주는 조건.
-    assert parse_qs(parsed.query) == {"limit": ["16"], "capability": ["workspace"]}
+    assert parse_qs(parsed.query) == {
+        "limit": ["16"],
+        "capability": ["workspace"],
+        "agent_id": ["agent-1"],
+    }
     assert call.kwargs == {"token": "token-1"}
 
 
