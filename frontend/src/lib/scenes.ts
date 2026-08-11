@@ -88,6 +88,7 @@ export interface SceneCard {
   color?: string; // head 노드: 글씨 색(HEX).
   fontSize?: number; // head 노드: 글씨 크기(px). 박스는 글씨에 맞춰 자동 크기.
   unchecked?: string[]; // render 노드: 체크 해제된(렌더 제외) 생성카드 id들. 없으면 전부 체크(=렌더 대상).
+  listOrder?: string[]; // list 노드: 중첩/무선으로 펼쳐진 레퍼런스 카드 id의 이 리스트 전용 순서.
   batchCount?: number; // 이 노드에서 한 번에 생성할 장수(배치). 노드마다 각자 관리(없으면 1). 실제 사용은 cardBatch().
   comfyCfg?: SceneComfyCfg; // comfy 노드: ComfyUI 워크플로우·파라미터·실행결과 스냅샷.
   setCfg?: SceneSetCfg; // set 노드: 생성 목적 폴더 + 생성물에 적용할 일반 등록 태그.
@@ -346,6 +347,10 @@ function sanitizeImportedCard(c: SceneCard): SceneCard {
   if (c.h !== undefined && !isFiniteNum(c.h)) delete out.h;
   if (c.refs !== undefined && !Array.isArray(c.refs)) delete out.refs;
   if (c.genIds !== undefined && !Array.isArray(c.genIds)) delete out.genIds;
+  if (c.listOrder !== undefined) {
+    if (!Array.isArray(c.listOrder)) delete out.listOrder;
+    else out.listOrder = c.listOrder.filter((id): id is string => typeof id === "string");
+  }
   if (c.setCfg !== undefined) {
     if (!c.setCfg || typeof c.setCfg !== "object" || Array.isArray(c.setCfg)) delete out.setCfg;
     else {

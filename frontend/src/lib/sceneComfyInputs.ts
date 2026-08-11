@@ -221,7 +221,7 @@ export function gatherComfyMedia(
     else if (s.kind === "list") {
       const li = collectListInputs(s.id, cardsById, resolved, overlay);
       if (li.kind === "reference")
-        for (const cid of li.sourceIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
+        for (const cid of li.referenceCardIds) (cardsById.get(cid)?.refs || []).forEach(pushRef);
       else if (li.kind === "generation")
         for (const cid of li.generationCardIds) {
           const gc = cardsById.get(cid);

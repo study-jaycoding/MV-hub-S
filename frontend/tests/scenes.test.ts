@@ -217,7 +217,7 @@ describe("parseSceneImport 방어(#3)", () => {
   it("손상 카드 필드(refs/genIds/comfyCfg 비배열, 좌표 비수치)를 정규화한다", () => {
     const snap = parseSceneImport(
       wrap([
-        { id: "A", kind: "reference", x: "bad", y: null, refs: {}, genIds: {} },
+        { id: "A", kind: "reference", x: "bad", y: null, refs: {}, genIds: {}, listOrder: {} },
         { id: "B", kind: "comfy", x: 10, y: 20, comfyCfg: { outputs: {}, params: "x", paramValues: [] } },
       ]),
     );
@@ -226,6 +226,7 @@ describe("parseSceneImport 방어(#3)", () => {
     expect(a.y).toBe(0);
     expect(a.refs).toBeUndefined(); // 비배열 → 제거
     expect(a.genIds).toBeUndefined();
+    expect(a.listOrder).toBeUndefined();
     const b = snap.cards.find((c) => c.id === "B")!;
     expect(b.comfyCfg!.outputs).toBeUndefined();
     expect(b.comfyCfg!.params).toBeUndefined();

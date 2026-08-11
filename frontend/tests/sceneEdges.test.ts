@@ -306,6 +306,23 @@ describe("collectListInputs", () => {
     expect(r.kind).toBe("generation");
     expect(r.generationCardIds).toEqual(["GA", "GB", "GC"]);
   });
+  it("중첩: 레퍼런스 리스트도 실제 레퍼런스 카드들을 순서대로 펼친다", () => {
+    const cards = byId([
+      node("OUT", "list"),
+      node("IN", "list"),
+      node("R1", "reference", { refs: [{ file_path: "a", type: "image" }] }),
+      node("R2", "reference", { refs: [{ file_path: "b", type: "image" }] }),
+    ]);
+    const edges: SceneEdge[] = [
+      { id: "e1", from: "R1", to: "IN", order: 1 },
+      { id: "e2", from: "R2", to: "IN", order: 2 },
+      { id: "e3", from: "IN", to: "OUT" },
+    ];
+    const r = collectListInputs("OUT", cards, edges);
+    expect(r.kind).toBe("reference");
+    expect(r.sourceIds).toEqual(["IN"]); // 직접 연결은 원본 리스트 하나
+    expect(r.referenceCardIds).toEqual(["R1", "R2"]); // 실제 사용 정보는 안쪽까지 펼침
+  });
   it("중첩: 리스트 순환(A→B→A)이어도 무한재귀 없이 판정(invalid)", () => {
     const cards = byId([node("A", "list"), node("B", "list"), node("G", "generation")]);
     const edges: SceneEdge[] = [
@@ -805,6 +822,7 @@ describe("리스트 레퍼런스 수집", () => {
     const li = collectListInputs("L", byId(cards), edges);
     expect(li.kind).toBe("reference");
     expect(li.sourceIds).toEqual(["R1", "R2"]);
+    expect(li.referenceCardIds).toEqual(["R1", "R2"]);
   });
   it("레퍼런스+생성 혼합은 invalid(동종만)", () => {
     const cards = [n("L", "list"), n("R", "reference", { refs: [] }), n("G", "generation")];
@@ -934,6 +952,27 @@ describe("Input/Output 무선 노드", () => {
       const map = byId(cards);
       const cfg = collectGenModel("G", map, resolvePortEdges(map, edges));
       expect(cfg?.model).toBe("kling");
+    });
+    it("레퍼런스 리스트도 Output/Input을 거쳐 다른 리스트에 그대로 전달된다", () => {
+      const cards = [
+        n("R1", "reference", { refs: [{ file_path: "a", type: "image" }] }),
+        n("R2", "reference", { refs: [{ file_path: "b", type: "image" }] }),
+        n("SOURCE", "list"),
+        n("O", "output"),
+        n("I", "input", { channel: "O" }),
+        n("TARGET", "list", { listOrder: ["R2", "missing", "R1"] }),
+      ];
+      const edges: SceneEdge[] = [
+        { id: "e1", from: "R1", to: "SOURCE", order: 1 },
+        { id: "e2", from: "R2", to: "SOURCE", order: 2 },
+        { id: "e3", from: "SOURCE", to: "O" },
+        { id: "e4", from: "I", to: "TARGET" },
+      ];
+      const map = byId(cards);
+      const result = collectListInputs("TARGET", map, resolvePortEdges(map, edges));
+      expect(result.kind).toBe("reference");
+      expect(result.sourceIds).toEqual(["SOURCE"]);
+      expect(result.referenceCardIds).toEqual(["R2", "R1"]); // 수신 리스트 전용 순서, 사라진 id는 무시
     });
   });
 
