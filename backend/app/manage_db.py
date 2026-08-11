@@ -123,6 +123,33 @@ def init_manage_db() -> Path:
     return MANAGE_DB_PATH
 
 
+def backfill_workspace_names(workspaces: list[dict[str, Any]]) -> int:
+    """콘텐츠 등록부에서 받은 정확한 ID→이름으로 빈 팀 팩트 이름만 보강한다.
+
+    관리 DB는 콘텐츠 DB와 물리적으로 격리되어 있으므로 조인하지 않고, 시작 코드가 검증된
+    등록부 스냅샷을 명시적으로 넘긴다. 이미 이름이 있거나 등록부에 없는 ID는 보존한다.
+    """
+    canonical = {
+        str(item.get("id") or "").strip(): str(item.get("name") or "").strip()
+        for item in workspaces
+        if str(item.get("id") or "").strip()
+        and str(item.get("name") or "").strip()
+    }
+    updated = 0
+    if not canonical:
+        return updated
+    with get_connection() as conn:
+        for workspace_id, workspace_name in canonical.items():
+            cursor = conn.execute(
+                "UPDATE team_generation_fact SET workspace_name=? "
+                "WHERE workspace_scope='team' AND workspace_id=? "
+                "AND TRIM(COALESCE(workspace_name,''))=''",
+                (workspace_name, workspace_id),
+            )
+            updated += max(cursor.rowcount, 0)
+    return updated
+
+
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     """매니징 DB 전용 커넥션(1회용). 정상 종료=commit, 예외=rollback. 콘텐츠 풀과 완전 별개."""

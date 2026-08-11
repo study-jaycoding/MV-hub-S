@@ -65,6 +65,7 @@ export function GenerationCardStatusBar({
           onWorkspaceCommand={(operation, workspaceName) =>
             onWorkspaceCommand?.(gen, operation, workspaceName) ?? Promise.resolve(false)
           }
+          currentWorkspaceName={gen.workspace_name}
           global={
             onSetAutoTags
               ? {

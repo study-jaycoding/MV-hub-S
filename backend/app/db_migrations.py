@@ -64,6 +64,31 @@ def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
             )
 
 
+def _backfill_generation_workspace_names(conn: sqlite3.Connection) -> int:
+    """등록부 ID와 정확히 일치하는 옛 팀 생성물의 비어 있는 이름만 보강한다.
+
+    ID가 없거나 등록부에 없는 행은 추측해서 바꾸지 않는다. 이미 이름이 있는 행도 보존한다.
+    """
+    generation_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(generation)")
+    }
+    registry_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_registry'"
+    ).fetchone()
+    required = {"workspace_scope", "workspace_id", "workspace_name"}
+    if not registry_exists or not required.issubset(generation_columns):
+        return 0
+    cursor = conn.execute(
+        "UPDATE generation AS g SET workspace_name=("
+        "SELECT w.name FROM workspace_registry w WHERE w.id=g.workspace_id"
+        ") WHERE g.workspace_scope='team' "
+        "AND TRIM(COALESCE(g.workspace_name,''))='' "
+        "AND EXISTS(SELECT 1 FROM workspace_registry w "
+        "WHERE w.id=g.workspace_id AND TRIM(COALESCE(w.name,''))<>'')"
+    )
+    return max(cursor.rowcount, 0)
+
+
 def _ensure_project_active_name_index(conn: sqlite3.Connection) -> bool:
     """활성 프로젝트 이름 고유 인덱스를 데이터 손실 없이 보장한다.
 
@@ -420,6 +445,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ON workspace_member(account_email, is_available, workspace_id)"
     )
     _backfill_workspace_registry(conn)
+    _backfill_generation_workspace_names(conn)
     # 폴더 자동 파생(관리탭)·완료본 저장이 project_id+folder_path 로 조회 → 그 순서 인덱스.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_generation_folder ON generation(project_id, folder_path)"

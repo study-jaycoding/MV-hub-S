@@ -28,6 +28,7 @@ from ..models import (
     GenRequestIn,
     PendingRequestOut,
     RegenerateIn,
+    WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
 from ..usecases.gen_requests import (
@@ -56,6 +57,43 @@ def _require_matching_project_workspace(pid: str, workspace) -> None:
             detail="현재 워크스페이스와 프로젝트 워크스페이스가 다릅니다",
         )
 
+
+def _validated_generation_workspace(
+    workspace: WorkspaceContext, account_email: str
+) -> WorkspaceContext:
+    """팀 생성 요청을 계정이 실제 접근 가능한 등록부 정보로 정규화한다."""
+    if workspace.scope != "team":
+        return workspace
+
+    registered = None
+    if AUTH_ENABLED:
+        registered = next(
+            (
+                item
+                for item in repo.list_workspace_registry(
+                    account_email, available_only=True
+                )
+                if item.get("id") == workspace.id
+            ),
+            None,
+        )
+    else:
+        registered = repo.get_registry_workspace(workspace.id)
+
+    official_name = str((registered or {}).get("name") or "").strip()
+    if official_name:
+        return workspace.model_copy(update={"name": official_name})
+    if not AUTH_ENABLED and workspace.name:
+        # 로컬 단독 모드는 서버 등록부가 없어도 에이전트가 캡처한 이름을 사용한다.
+        return workspace
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "현재 계정에서 워크스페이스 이름을 확인할 수 없습니다 "
+            "— 에이전트 동기화 후 다시 시도하세요"
+        ),
+    )
+
 def _require_account(request: Request) -> dict:
     """생성요청용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
@@ -68,6 +106,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     라우터는 HTTP/인증/권한/입력검증만 하고, 오케스트레이션(생성·큐잉·signal·PM)은
     usecases.gen_requests.submit_gen_request 가 수행한다(ARCHITECTURE.md)."""
     acc = _require_account(request)
+    workspace = _validated_generation_workspace(body.workspace, acc["email"])
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
     # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
@@ -84,7 +123,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if pid == "none":
             data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
         elif pid:
-            _require_matching_project_workspace(pid, body.workspace)
+            _require_matching_project_workspace(pid, workspace)
             require_project_role(
                 request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -94,7 +133,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=body.create.worker_id or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
-            workspace=body.workspace.model_dump(),
+            workspace=workspace.model_dump(),
             data=data,
         )
     else:  # regenerate
@@ -110,7 +149,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
         ppid = (parent.get("project_id") or "").strip()
         if ppid and ppid != "none":
-            _require_matching_project_workspace(ppid, body.workspace)
+            _require_matching_project_workspace(ppid, workspace)
             require_project_role(
                 request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
             )
@@ -122,7 +161,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             creator_uid=creator_uid,
             worker_id=reg.worker_id or parent["worker_id"] or DEFAULT_WORKER_ID,
             source_gen_id=body.source_gen_id,
-            workspace=body.workspace.model_dump(),
+            workspace=workspace.model_dump(),
             regenerate=reg,
         )
 

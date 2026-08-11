@@ -102,7 +102,11 @@ import type {
 import { api } from "./api";
 import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
-import { UNKNOWN_WORKSPACE, sameWorkspace } from "./lib/workspaceContext";
+import {
+  isGenerationWorkspaceReady,
+  UNKNOWN_WORKSPACE,
+  sameWorkspace,
+} from "./lib/workspaceContext";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -686,8 +690,8 @@ export default function App() {
     projectId: string | undefined,
     folderPath: string | undefined,
   ) => {
-    if (workspaceContext.scope === "unknown") {
-      flash("워크스페이스를 확인하는 중입니다. 계정 메뉴에서 공간을 선택한 뒤 다시 실행하세요.");
+    if (!isGenerationWorkspaceReady(workspaceContext)) {
+      flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 실행하세요.");
       return;
     }
     if (!jobs.length) {

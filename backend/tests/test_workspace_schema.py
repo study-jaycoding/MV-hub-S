@@ -118,6 +118,32 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         self.assertEqual(telemetry[0]["workspace_scope"], "team")
         self.assertEqual(telemetry[0]["workspace_id"], "ws-millionvolt")
 
+    def test_startup_backfills_only_exact_registered_team_workspace_name(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO workspace_registry(id,name) VALUES('ws-known','MILLIONVOLT')"
+            )
+        known_id = repo.create_local_generation(
+            {"prompt": "known", "model": "m", "params": {}},
+            "me",
+            creator_uid="user-me",
+            workspace={"scope": "team", "id": "ws-known", "name": None},
+        )
+        unknown_id = repo.create_local_generation(
+            {"prompt": "unknown", "model": "m", "params": {}},
+            "me",
+            creator_uid="user-me",
+            workspace={"scope": "team", "id": "ws-missing", "name": None},
+        )
+        self.assertIsNone(repo.get_generation(known_id)["workspace_name"])
+        self.assertIsNone(repo.get_generation(unknown_id)["workspace_name"])
+
+        db.flush_pool()
+        db.init_db()
+
+        self.assertEqual(repo.get_generation(known_id)["workspace_name"], "MILLIONVOLT")
+        self.assertIsNone(repo.get_generation(unknown_id)["workspace_name"])
+
     def test_project_workspace_automatically_adds_available_members_without_overwriting_roles(self):
         with db.get_connection() as conn:
             conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-millionvolt','MILLIONVOLT')")
@@ -571,6 +597,44 @@ class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):
                 "AND local_gen_id='g2'"
             ).fetchone()
         self.assertEqual(tuple(removed), ("personal", None, None))
+
+    def test_manage_backfill_uses_only_exact_registry_id_and_empty_name(self):
+        manage_db.init_manage_db()
+        common = {
+            "creator_uid": "user-me",
+            "workspace_scope": "team",
+            "status": "done",
+        }
+        manage_db.upsert_facts(
+            "artist@example.com",
+            "user-me",
+            [
+                {**common, "local_gen_id": "known", "workspace_id": "ws-known"},
+                {**common, "local_gen_id": "missing", "workspace_id": "ws-missing"},
+                {
+                    **common,
+                    "local_gen_id": "named",
+                    "workspace_id": "ws-known",
+                    "workspace_name": "KEEP",
+                },
+            ],
+        )
+
+        updated = manage_db.backfill_workspace_names(
+            [{"id": "ws-known", "name": "MILLIONVOLT"}]
+        )
+
+        with manage_db.get_connection() as conn:
+            rows = {
+                row["local_gen_id"]: row["workspace_name"]
+                for row in conn.execute(
+                    "SELECT local_gen_id, workspace_name FROM team_generation_fact"
+                )
+            }
+        self.assertEqual(updated, 1)
+        self.assertEqual(
+            rows, {"known": "MILLIONVOLT", "missing": None, "named": "KEEP"}
+        )
 
     def test_workspace_usage_aggregates_models_members_projects_and_folder_efficiency(self):
         manage_db.init_manage_db()

@@ -178,6 +178,29 @@ def _resolve_workspace_target(name: str, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@router.get("/workspaces/available")
+def available_workspaces(request: Request):
+    """현재 계정이 카드 귀속 명령에 사용할 수 있는 등록 워크스페이스 목록."""
+    if _proxy.proxying():
+        return _proxy.proxy_get("/api/workspaces/available", request)
+    account_email = _workspace_account_email(request)
+    rows = (
+        repo.list_workspace_registry(account_email, available_only=True)
+        if account_email
+        else repo.list_workspace_options()
+    )
+    workspaces: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        workspace_id = str(row.get("id") or "").strip()
+        workspace_name = str(row.get("name") or "").strip()
+        if not workspace_id or not workspace_name or workspace_id in seen:
+            continue
+        seen.add(workspace_id)
+        workspaces.append({"id": workspace_id, "name": workspace_name})
+    return {"workspaces": workspaces}
+
+
 @router.get("/workspaces/resolve")
 def resolve_workspace_by_name(
     request: Request,

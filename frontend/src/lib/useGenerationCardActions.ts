@@ -1,5 +1,6 @@
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
+import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 
 type AskPrompt = (
@@ -29,8 +30,8 @@ export function useGenerationCardActions({
 }: UseGenerationCardActionsArgs) {
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
   const onRegenerate = async (g: Generation): Promise<Generation | null> => {
-    if (workspace.scope === "unknown") {
-      flash("계정 메뉴에서 생성할 워크스페이스를 먼저 선택하세요.");
+    if (!isGenerationWorkspaceReady(workspace)) {
+      flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
       return null;
     }
     try {

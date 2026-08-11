@@ -194,6 +194,15 @@ class GenerationReadRouteTests(unittest.TestCase):
             self.assertEqual(generation["workspace_scope"], "personal")
             self.assertIsNone(generation["workspace_id"])
 
+    def test_available_workspaces_lists_registered_names_for_picker(self):
+        response = self.client.get("/api/workspaces/available")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {"workspaces": [{"id": "ws-teatime", "name": "티타임"}]},
+        )
+
     def test_workspace_command_rejects_unknown_name_and_keeps_all_rows(self):
         from app import repo
 

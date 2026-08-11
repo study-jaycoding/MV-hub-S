@@ -262,12 +262,10 @@ function GenerationCardImpl({
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
-              // 생성 단계가 구분되도록 로고 아래에 대기/제출/생성/확인/조치 상태를 표시한다.
+              // 카드 안에는 상태 글씨를 겹쳐 표시하지 않고 로고만 보여준다.
+              // 세부 단계(대기/제출/생성/확인/조치)는 위 title 툴팁과 정보창에서 확인한다.
               <span className="gen-generating gen-comfy-pending">
                 <img src={higgsfieldLogo} alt="Higgsfield" className="gen-comfy-logo" />
-                <span className="gen-generating-label">
-                  {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
-                </span>
               </span>
             ) : (
               generationStatusLabel(gen.status)
