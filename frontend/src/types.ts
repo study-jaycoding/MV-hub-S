@@ -57,6 +57,11 @@ export interface Generation {
   source_name: string | null; // @이름
   comment: string | null; // 카드 코멘트(메모, 레거시 — UI 미사용)
   error: string | null; // 실패 사유(status=failed 일 때)
+  execution_phase?: "pending" | "submitting" | "tracking" | "verifying" | "blocked" | "done" | "failed" | null;
+  provider_status?: string | null;
+  last_checked_at?: string | null;
+  next_check_at?: string | null;
+  check_failures?: number;
   comment_count: number; // 공유 코멘트 스레드 글 수
   has_unread: boolean; // 미확인 코멘트 존재(C 뱃지)
   local_only: boolean; // 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)

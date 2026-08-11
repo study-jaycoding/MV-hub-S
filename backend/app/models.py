@@ -100,6 +100,11 @@ class GenerationOut(BaseModel):
     source_name: Optional[str] = None  # @이름
     comment: Optional[str] = None  # 카드 코멘트(메모, 레거시 — UI 미사용)
     error: Optional[str] = None  # 실패 사유(status=failed 일 때)
+    execution_phase: Optional[str] = None  # pending|submitting|tracking|verifying|blocked|done|failed
+    provider_status: Optional[str] = None  # Higgsfield 원시 상태(진단용)
+    last_checked_at: Optional[str] = None
+    next_check_at: Optional[str] = None
+    check_failures: int = 0
     comment_count: int = 0  # 공유 코멘트 스레드 글 수
     has_unread: bool = False  # 미확인 코멘트 존재(뷰어 기준 — C 뱃지)
     local_only: bool = False  # 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)

@@ -214,12 +214,20 @@ CREATE TABLE IF NOT EXISTS gen_request (
     gen_id        TEXT NOT NULL,                  -- 즉시 만든 placeholder generation(여기 결과가 채워짐)
     kind          TEXT NOT NULL DEFAULT 'create', -- 'create' | 'regenerate'
     payload       TEXT,                           -- JSON: {model, prompt, params, references, source_gen_id}
-    status        TEXT NOT NULL DEFAULT 'pending',-- pending | running | done | failed | canceled
+    status        TEXT NOT NULL DEFAULT 'pending',-- pending | submitting | tracking | verifying | blocked | done | failed | canceled
     error         TEXT,
+    provider_status TEXT,                         -- Higgsfield 원시 상태(알 수 없는 신규값도 그대로 보존)
+    last_checked_at TEXT,                         -- generate get 마지막 확인 시각
+    next_check_at TEXT,                           -- 다음 권위 조회 예정 시각(진단·복구용)
+    check_failures INTEGER NOT NULL DEFAULT 0,    -- 연속 조회/보고 실패 횟수
+    lease_owner   TEXT,                           -- 이 요청을 추적 중인 에이전트 식별자
+    lease_expires_at TEXT,                        -- 에이전트 유실 시 다른 프로세스가 인계 가능한 시각
+    terminal_at   TEXT,                           -- 완료/실패가 최종 확정된 시각
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_genrequest_acct ON gen_request(account_email, status);
+CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest ON gen_request(gen_id, created_at DESC, id DESC);
 
 -- 분리 창(Assets 파일 브라우저)용 파일별 메타데이터(소스/태그/코멘트/컬러).
 -- 파일은 generation 이 아니므로 (project, path) 키로 별도 보관.

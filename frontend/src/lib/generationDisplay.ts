@@ -21,15 +21,46 @@ export function generationStatusLabel(status: string): string {
 //  카드는 running 이되 error 에 이 문구가 담긴다 → '생성중' 대신 '확인중'으로 표시(재조정이 곧 확정).
 export const VERIFYING_MARK = "확인중";
 
+const EXECUTION_PHASE_LABEL: Record<string, string> = {
+  pending: "대기",
+  submitting: "제출 중",
+  tracking: "생성 중",
+  verifying: "확인 중",
+  blocked: "조치 필요",
+  done: "완료",
+  failed: "실패",
+};
+
 export function isVerifying(status: string, error: string | null | undefined): boolean {
   return (status === "running" || status === "pending") && !!error && error.includes(VERIFYING_MARK);
 }
 
-export function generationStatusLabelFor(status: string, error?: string | null): string {
-  return isVerifying(status, error) ? "확인중" : generationStatusLabel(status);
+export function generationStatusLabelFor(
+  status: string,
+  error?: string | null,
+  executionPhase?: string | null,
+): string {
+  if (executionPhase && EXECUTION_PHASE_LABEL[executionPhase]) return EXECUTION_PHASE_LABEL[executionPhase];
+  return isVerifying(status, error) ? "확인 중" : generationStatusLabel(status);
 }
 
-export function generationStatusTitle(status: string, error: string | null): string | undefined {
+export function generationStatusTitle(
+  status: string,
+  error: string | null,
+  executionPhase?: string | null,
+  providerStatus?: string | null,
+  lastCheckedAt?: string | null,
+  nextCheckAt?: string | null,
+): string | undefined {
+  const details: string[] = [];
+  if (executionPhase) details.push(`단계: ${EXECUTION_PHASE_LABEL[executionPhase] || executionPhase}`);
+  if (providerStatus) details.push(`Higgsfield 상태: ${providerStatus}`);
+  if (lastCheckedAt) details.push(`마지막 확인: ${formatGenerationDateTime(lastCheckedAt)}`);
+  if (nextCheckAt && !["done", "failed"].includes(executionPhase || "")) {
+    details.push(`다음 확인: ${formatGenerationDateTime(nextCheckAt)}`);
+  }
+  if (error) details.push(error);
+  if (details.length) return details.join("\n");
   if (isVerifying(status, error)) return error || undefined; // "확인중 — 실제 상태 재확인 대기"
   if (status === "failed" && error) return error;
   if (status === "pending" || status === "running") return LOCAL_EXEC_HINT;

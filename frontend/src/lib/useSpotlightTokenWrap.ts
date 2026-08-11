@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { displayRefThumb } from "./media";
 import { refSrc } from "./promptParts";
-import { refreshTokenPills, wrapRefTokens } from "./promptEditor";
+import { refreshInlineRefThumbs, refreshTokenPills, wrapRefTokens } from "./promptEditor";
 import { usesMediaRefTokens } from "./seedancePrompt";
 import type { SpotlightTrayRef } from "../components/spotlight/SpotlightRefTray";
 
@@ -88,7 +88,9 @@ export function useSpotlightTokenWrap({
   const trayMediaSig = trayRefs.map((r) => `${r.type}:${r.file_path}:${r.thumb || ""}`).join("|");
   useEffect(() => {
     const ed = editorRef.current;
-    if (!ed || !usesMediaRefTokens(model)) return;
+    if (!ed) return;
+    refreshInlineRefThumbs(ed);
+    if (!usesMediaRefTokens(model)) return;
     if (composingRef.current) return; // IME 조합 중엔 건드리지 않는다(조합 깨짐 방지)
     refreshTokenPills(ed, resolveTokenMediaRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps

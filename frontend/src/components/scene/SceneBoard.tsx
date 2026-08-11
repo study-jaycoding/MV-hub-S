@@ -449,10 +449,10 @@ export function SceneBoard({
   // Comfy '생성중' 모듈 store 구독 — 탭 전환(언마운트·재마운트)에도 실행중 표시가 살아있게(#2).
   useSyncExternalStore(subscribeComfyRunning, getComfyRunningVersion, getComfyRunningVersion);
 
-  // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 fresh 로 다시 읽어 전역 버전 표를 갱신한다.
+  // 카드가 참조하는 어셋 프로젝트들(only 로 제한 가능)을 다시 읽어 전역 버전 표를 갱신한다.
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
   const assetVerInFlight = useRef<Set<string>>(new Set());
-  const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[]) => {
+  const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[], fresh = false) => {
     const projs = new Set<string>();
     // srcCards 를 주면 그 목록으로(씬 전환 직후엔 내부 cardsRef 가 아직 이전 씬이라, prop scene.cards 를 넘겨 정확히).
     for (const c of srcCards ?? cardsRef.current) {
@@ -467,7 +467,7 @@ export function SceneBoard({
       if (assetVerInFlight.current.has(proj)) return;
       assetVerInFlight.current.add(proj);
       api
-        .assetTree(proj) // 변경 신호가 서버 캐시를 무효화하므로 다른 화면 요청과 재사용
+        .assetTree(proj, fresh) // 실시간 신호는 무효화된 캐시 재사용, 초기/포커스 안전망은 강제 재탐색
         .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
         .catch(() => {
           /* 조회 실패는 무시(다음 신호에 재시도) */
@@ -485,7 +485,7 @@ export function SceneBoard({
     //  내부 cards state 는 전환 직후 한 박자 늦어(이전 씬), 그걸 쓰면 새 씬을 옛 카드로 '처리완료' 표시해 버린다.
     if (didInitVerRefreshScene.current === scene.id || scene.cards.length === 0) return;
     didInitVerRefreshScene.current = scene.id;
-    refreshAssetVersions(undefined, scene.cards);
+    refreshAssetVersions(undefined, scene.cards, true);
   }, [scene.id, scene.cards, refreshAssetVersions]);
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
@@ -496,7 +496,7 @@ export function SceneBoard({
       const now = Date.now();
       if (now - lastAt < 30_000) return;
       lastAt = now;
-      refreshAssetVersions();
+      refreshAssetVersions(undefined, undefined, true);
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);

@@ -135,7 +135,17 @@ class ForceFailReconcileTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(response, {"ok": True, "applied": True, "status": "failed"})
+        self.assertEqual(
+            response,
+            {
+                "ok": True,
+                "applied": True,
+                "outcome": "applied",
+                "status": "failed",
+                "job_id": "job-5",
+                "asset_saved": False,
+            },
+        )
         self.assertEqual(apply_reconcile.call_args.args[:2], ("gen-5", "job-5"))
         self.assertEqual(apply_reconcile.call_args.kwargs["force_fail_reason"], "reference validation failed")
 

@@ -251,13 +251,23 @@ function GenerationCardImpl({
           <div
             className={`thumb-placeholder status-${gen.status}`}
             title={
-              generationStatusTitle(gen.status, gen.error)
+              generationStatusTitle(
+                gen.status,
+                gen.error,
+                gen.execution_phase,
+                gen.provider_status,
+                gen.last_checked_at,
+                gen.next_check_at,
+              )
             }
           >
             {gen.status === "running" || gen.status === "pending" ? (
-              // 생성중(대기·실행 모두) — 힉스필드 로고(펄스)만 표시(글씨 없음).
+              // 생성 단계가 구분되도록 로고 아래에 대기/제출/생성/확인/조치 상태를 표시한다.
               <span className="gen-generating gen-comfy-pending">
                 <img src={higgsfieldLogo} alt="Higgsfield" className="gen-comfy-logo" />
+                <span className="gen-generating-label">
+                  {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
+                </span>
               </span>
             ) : (
               generationStatusLabel(gen.status)
@@ -380,10 +390,17 @@ function GenerationCardImpl({
         <span
           className={`status-pill status-${gen.status}`}
           title={
-            generationStatusTitle(gen.status, gen.error)
+            generationStatusTitle(
+              gen.status,
+              gen.error,
+              gen.execution_phase,
+              gen.provider_status,
+              gen.last_checked_at,
+              gen.next_check_at,
+            )
           }
         >
-          {generationStatusLabelFor(gen.status, gen.error)}
+          {generationStatusLabelFor(gen.status, gen.error, gen.execution_phase)}
         </span>
       )}
 

@@ -477,6 +477,19 @@ export function countImageChips(editor: HTMLElement): number {
   return n;
 }
 
+// 전역 어셋 버전표가 바뀌면 contentEditable 안의 기존 인라인 칩도 최신 v URL로 교체한다.
+// 인라인 칩은 React가 직접 그리는 노드가 아니라 buildChipEl로 만든 DOM이라, 컴포넌트 리렌더만으로는
+// img.src가 갱신되지 않는다. 같은 파일명 덮어쓰기 때 실제로 달라진 src만 바꿔 재다운로드를 최소화한다.
+export function refreshInlineRefThumbs(editor: HTMLElement): void {
+  editor.querySelectorAll<HTMLElement>(".inline-ref").forEach((chip) => {
+    const ref = chipRefOf(chip);
+    if (!ref) return;
+    const nextSrc = displayRefThumb(ref);
+    const img = chip.querySelector<HTMLImageElement>("img");
+    if (img && nextSrc && img.getAttribute("src") !== nextSrc) img.src = nextSrc;
+  });
+}
+
 // 본문 텍스트(칩 제외) + 칩 references 직렬화.
 export function serialize(editor: HTMLElement): { text: string; refs: ChipRef[] } {
   let text = "";

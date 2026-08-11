@@ -133,8 +133,13 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
 
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
-async def pending_gen_requests(request: Request, limit: int = 16, capability: str = ""):
-    """에이전트가 호출 — 자기 계정 대기 요청을 claim(running)하고 레시피 반환.
+async def pending_gen_requests(
+    request: Request,
+    limit: int = 16,
+    capability: str = "",
+    agent_id: str | None = None,
+):
+    """에이전트가 호출 — 자기 계정 대기 요청을 claim(submitting)하고 레시피 반환.
     claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
     에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
     완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
@@ -144,7 +149,11 @@ async def pending_gen_requests(request: Request, limit: int = 16, capability: st
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
     caps = {c.strip() for c in capability.split(",") if c.strip()}
     return await claim_gen_requests(
-        acc["email"], realtime_scope(acc), limit, workspace_capable="workspace" in caps
+        acc["email"],
+        realtime_scope(acc),
+        limit,
+        workspace_capable="workspace" in caps,
+        lease_owner=agent_id,
     )
 
 
@@ -173,12 +182,10 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
 
 @router.post("/gen-requests/{rid}/anchor")
 async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying: bool = True):
-    """에이전트가 job_id 를 확보하면 호출 — placeholder 를 running 유지 + job_id 기록(요청은 done 으로
-    닫아 30분 stale 회수가 이 카드를 실패로 뒤집지 않게). 재조정 패스가 나중에 generate get 으로 확정.
+    """에이전트가 job_id 를 확보하면 호출 — placeholder는 running, 요청은 tracking/verifying으로 기록.
     ★가짜 실패 방지 — 실제 힉스필드엔 생성됐는데 우리만 '실패'로 뜨던 문제를 앵커로 막는다.
     verifying=False(create-first 정상 흐름): '생성중'으로 표시(제출 직후 앵커). verifying=True(모호한
-    결말·재시작 복구): '확인중'으로 표시. ★멱등: 요청이 이미 done 이어도 apply_local_anchor 가 no-op 처리
-    (failed 요청은 되살려 앵커 — stale/부팅정리 복구). 라우터에서 미리 걸러내지 않는다."""
+    결말·재시작 복구): '확인중'으로 표시. terminal 완료는 되돌리지 않는다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     req = repo.get_gen_request(rid)

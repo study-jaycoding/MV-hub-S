@@ -128,6 +128,7 @@ async def reconcile_local_house() -> int:
             sort_ts=result.sort_ts,
             status=result.status,
             error=result.error,
+            provider_status=str(raw.get("status") or raw.get("job_status") or "").strip().lower(),
         )
         if applied:
             applied_n += 1

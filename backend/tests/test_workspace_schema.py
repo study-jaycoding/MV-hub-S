@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app import db, db_migrations, repo
+from app import active_account, db, db_migrations, repo
 from app import manage_db
 from app.models import GenerationOut, ProjectOut, WorkspaceContext
 from app.repo import manage
@@ -704,6 +704,9 @@ class WorkspaceProjectApiPolicyTests(unittest.TestCase):
         self.old_np = os.environ.get("CONTENT_HUB_NO_PROXY")
         os.environ["CONTENT_HUB_DB"] = str(Path(self.tmp.name) / "content_hub.db")
         os.environ["CONTENT_HUB_NO_PROXY"] = "1"
+        # 사용자 PC의 data/active.json 로그인 포인터가 API 정책 테스트에 섞이지 않게 한다.
+        # 이 테스트는 인증이 아니라 워크스페이스 입력 정규화만 검증한다.
+        self.active_token = active_account.set_override("")
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
@@ -717,6 +720,7 @@ class WorkspaceProjectApiPolicyTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         db.flush_pool()
+        active_account.reset_override(self.active_token)
         for key, old in (("CONTENT_HUB_DB", self.old_db), ("CONTENT_HUB_NO_PROXY", self.old_np)):
             if old is None:
                 os.environ.pop(key, None)
