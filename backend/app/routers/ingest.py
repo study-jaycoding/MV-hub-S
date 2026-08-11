@@ -515,11 +515,18 @@ def my_hf_status(request: Request):
     acc = _agent_acc(request)
     st = repo.get_reported_status(acc["email"])
     if not st:
-        return {"reported": False, "credits": None, "plan": None, "workspaces": []}
+        return {
+            "reported": False,
+            "credits": None,
+            "plan": None,
+            "cli_version": None,
+            "workspaces": [],
+        }
     return {
         "reported": True,
         "credits": st.get("credits"),
         "plan": st.get("plan"),
+        "cli_version": st.get("cli_version"),
         "connected": st.get("connected"),
         "workspaces": st.get("workspaces") or [],
     }

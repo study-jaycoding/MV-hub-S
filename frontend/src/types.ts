@@ -194,6 +194,7 @@ export interface ReportedHfStatus {
   reported: boolean; // 보고 이력 있음? (false=에이전트 미연결)
   credits: number | null;
   plan?: string | null;
+  cli_version?: string | null; // 해당 계정 에이전트가 실제 사용 중이라고 보고한 CLI 버전
   connected?: boolean;
   workspaces: Workspace[];
 }

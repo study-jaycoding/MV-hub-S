@@ -55,6 +55,7 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [healthCliVersion, setHealthCliVersion] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
   // 계정 상태 요청이 진행되는 동안 사용자가 공간을 바꿔도 오래된 응답이 선택을 되돌리지 않게
@@ -98,6 +99,22 @@ export function AccountMenu({
     if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
     else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
   }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/health", { signal: controller.signal })
+      .then((response) => response.json())
+      .then((health: { cli_version?: unknown }) => {
+        const version =
+          typeof health.cli_version === "string" ? health.cli_version.trim() : "";
+        setHealthCliVersion(version || null);
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setHealthCliVersion(null);
+        }
+      });
+    return () => controller.abort();
+  }, []);
   useOutsideMouseDown(ref, closeMenu, open);
   // 캡처 단계에서 Esc 를 소비해 뒤의 라이브러리 전역 Esc(선택 해제)까지 전달되지 않게 한다.
   useEscapeClose(closeMenuOnEscape, open, true, true);
@@ -341,6 +358,7 @@ export function AccountMenu({
           onProviderUpdated={onProviderUpdated}
           plan={activeWs?.plan_type ?? null}
           credits={activeCredits}
+          cliVersion={reported?.cli_version ?? healthCliVersion}
         />
       )}
 
