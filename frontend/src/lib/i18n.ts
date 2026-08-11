@@ -78,6 +78,8 @@ const EN: Record<string, string> = {
   "선택": "selected",
   "개 선택": " selected",
   "↗ 팀에 공유": "↗ Share to team",
+  "◆ Resolve로 보내기": "◆ Send to Resolve",
+  "Resolve 전송 중…": "Sending to Resolve…",
   "항목이 없습니다.": "Nothing here yet.",
   "+ 새 생성": "+ New",
   // Assets
