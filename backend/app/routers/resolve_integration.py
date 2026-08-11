@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 from . import _proxy
 from .. import repo
 from ..deps import account_scope_uid, require_view_generation
-from ..services.resolve_transfer import ResolveTransferError, transfer_generations
+from ..services.resolve_bridge import import_manifest_to_current_project
+from ..services.resolve_transfer import (
+    ResolveTransferError,
+    save_manifest,
+    transfer_generations,
+)
 
 
 router = APIRouter(prefix="/api/resolve", tags=["resolve"])
@@ -40,11 +45,7 @@ async def _generation_for_transfer(gen_id: str, request: Request) -> dict:
 
 @router.post("/transfers")
 async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
-    """선택한 완료본을 ResolveSource 폴더 트리로 순차 다운로드한다.
-
-    아직 Resolve Media Pool은 변경하지 않는다. 반환되는 manifest를 다음 단계의
-    Resolve 가져오기 스크립트가 사용한다.
-    """
+    """완료본을 로컬에 준비하고 현재 Resolve Media Pool로 가져온다."""
     ids = list(dict.fromkeys(gen_id.strip() for gen_id in body.gen_ids if gen_id.strip()))
     if not ids:
         raise HTTPException(status_code=400, detail="전송할 생성물을 선택하세요")
@@ -58,6 +59,11 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
     if len(project_ids) != 1:
         raise HTTPException(status_code=400, detail="한 번에 하나의 프로젝트만 전송할 수 있습니다")
     try:
-        return await transfer_generations(next(iter(project_ids)), generations)
+        manifest = await transfer_generations(next(iter(project_ids)), generations)
+        manifest["resolve_import"] = await asyncio.to_thread(
+            import_manifest_to_current_project, manifest
+        )
+        await save_manifest(manifest)
+        return manifest
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

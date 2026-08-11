@@ -71,6 +71,17 @@ function result(overrides: Partial<ResolveTransferResult> = {}): ResolveTransfer
     skipped: 0,
     error_count: 0,
     items: [],
+    resolve_import: {
+      status: "complete",
+      project_name: "편집 프로젝트",
+      target_root: "MV Hub/P1",
+      total: 1,
+      imported: 1,
+      skipped: 0,
+      error_count: 0,
+      error: null,
+      items: [],
+    },
     ...overrides,
   };
 }
@@ -126,9 +137,20 @@ describe("Resolve 전송 API와 결과 안내", () => {
   });
 
   it("완료·기존·실패 수를 숨기지 않고 알려준다", () => {
-    expect(resolveTransferSummary(result({ downloaded: 2, skipped: 1 }))).toContain(
-      "2개 저장 · 기존 1개",
-    );
+    expect(
+      resolveTransferSummary(
+        result({
+          downloaded: 2,
+          skipped: 1,
+          resolve_import: {
+            ...result().resolve_import,
+            total: 3,
+            imported: 2,
+            skipped: 1,
+          },
+        }),
+      ),
+    ).toContain("2개 가져오기 완료 · 기존 1개");
     expect(
       resolveTransferSummary(
         result({
@@ -149,5 +171,34 @@ describe("Resolve 전송 API와 결과 안내", () => {
         }),
       ),
     ).toContain("1개 완료 · 1개 실패 (원본 다운로드 실패)");
+  });
+
+  it("Resolve가 꺼져 있으면 원본 준비와 연결 실패를 구분해 알려준다", () => {
+    expect(
+      resolveTransferSummary(
+        result({
+          resolve_import: {
+            ...result().resolve_import,
+            status: "unavailable",
+            imported: 0,
+            error: "DaVinci Resolve가 실행 중이지 않습니다",
+          },
+        }),
+      ),
+    ).toContain("원본 1개 준비 완료 · DaVinci Resolve가 실행 중이지 않습니다");
+  });
+
+  it("가져온 뒤 프로젝트 저장 확인 실패도 성공으로 숨기지 않는다", () => {
+    expect(
+      resolveTransferSummary(
+        result({
+          resolve_import: {
+            ...result().resolve_import,
+            status: "partial",
+            error: "Resolve 프로젝트 저장을 확인하지 못했습니다",
+          },
+        }),
+      ),
+    ).toContain("Resolve 프로젝트 저장을 확인하지 못했습니다");
   });
 });

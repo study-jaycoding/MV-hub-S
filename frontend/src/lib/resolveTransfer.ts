@@ -25,6 +25,27 @@ export interface ResolveTransferResult {
   skipped: number;
   error_count: number;
   items: ResolveTransferItem[];
+  resolve_import: ResolveImportResult;
+}
+
+export interface ResolveImportItem {
+  generation_id: string;
+  local_path: string;
+  media_pool_path: string;
+  status: "pending" | "imported" | "skipped" | "error";
+  error: string | null;
+}
+
+export interface ResolveImportResult {
+  status: "pending" | "complete" | "partial" | "failed" | "unavailable";
+  project_name: string;
+  target_root: string;
+  total: number;
+  imported: number;
+  skipped: number;
+  error_count: number;
+  error: string | null;
+  items: ResolveImportItem[];
 }
 
 export type ResolveSelectionCheck =
@@ -73,11 +94,23 @@ export function resolveTransferSummary(result: ResolveTransferResult): string {
       .filter(Boolean)
       .join(" ");
   }
-  if (!result.downloaded && result.skipped) {
-    return `선택한 ${result.skipped}개는 이미 ResolveSource에 있습니다.`;
+  const imported = result.resolve_import;
+  if (imported.status === "unavailable") {
+    return `원본 ${completed}개 준비 완료 · ${imported.error || "Resolve 연결 실패"}`;
   }
-  const skipped = result.skipped ? ` · 기존 ${result.skipped}개` : "";
-  return `Resolve 원본 ${result.downloaded}개 저장${skipped} · ${result.source_root}`;
+  const importedCount = imported.imported + imported.skipped;
+  if (imported.error_count || imported.status === "failed" || imported.error) {
+    const firstError = imported.items.find((item) => item.status === "error")?.error;
+    const reason = firstError || imported.error;
+    return [
+      `Resolve 가져오기 ${importedCount}개 완료 · ${imported.error_count}개 실패`,
+      reason ? `(${reason})` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  const existing = imported.skipped ? ` · 기존 ${imported.skipped}개` : "";
+  return `Resolve ${imported.imported}개 가져오기 완료${existing} · ${imported.target_root}`;
 }
 
 export function createResolveTransfer(genIds: string[]): Promise<ResolveTransferResult> {

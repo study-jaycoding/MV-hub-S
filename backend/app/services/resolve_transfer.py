@@ -1,8 +1,7 @@
 """DaVinci Resolve 편집 원본 전송 기반.
 
-이 단계는 Resolve 자체를 조작하지 않는다. 선택한 생성물 원본을 프로젝트의
-``ResolveSource/<folder_path>`` 아래에 안전하게 모으고, 이후 Resolve 가져오기
-스크립트가 읽을 수 있는 manifest JSON 을 남긴다.
+선택한 생성물 원본을 프로젝트의 ``ResolveSource/<folder_path>`` 아래에 안전하게
+모으고, Resolve 연결 계층이 읽을 수 있는 manifest JSON을 남긴다.
 """
 
 from __future__ import annotations
@@ -93,6 +92,19 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
         path,
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
+
+
+async def save_manifest(manifest: dict[str, Any]) -> None:
+    """후속 Resolve 가져오기 결과까지 같은 manifest에 원자적으로 저장한다."""
+    path = Path(str(manifest.get("manifest_path") or ""))
+    source_root = Path(str(manifest.get("source_root") or ""))
+    try:
+        relative = path.relative_to(source_root)
+    except ValueError as exc:
+        raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다") from exc
+    if not path.name or safe_join(source_root, relative) != path:
+        raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다")
+    await asyncio.to_thread(_write_manifest, path, manifest)
 
 
 def _transfer_filename(
