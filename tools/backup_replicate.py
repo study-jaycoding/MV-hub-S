@@ -86,26 +86,39 @@ def copy_one(src: Path, dest: Path) -> str:
         return "fail"
 
 
-def cleanup_parts(root: Path) -> int:
-    """지난 실행이 끊기며 남긴 .part 잔재 제거(원본에서 사라진 백업의 .part 영구 누적 방지)."""
+def cleanup_parts(target: Path) -> int:
+    """지난 실행이 끊기며 남긴 .part 잔재 제거.
+
+    ★범위 한정(적대 리뷰 P1): 대상이 NAS 공용 폴더일 수 있다 — 전체를 rglob 하면
+    남의 전송 중 파일(video.zip.part 등)까지 지운다. 우리가 만드는 하위 폴더
+    (backups/·db-backups/)의, 우리가 만드는 이름(*.db.part)만 지운다."""
     removed = 0
-    try:
-        for p in root.rglob("*.part"):
-            try:
-                p.unlink()
-                removed += 1
-            except OSError:
-                pass
-    except OSError:
-        pass
+    for sub, _ in _sources():
+        root = target / sub
+        if not root.is_dir():
+            continue
+        try:
+            for p in root.rglob("*.db.part"):
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        except OSError:
+            pass
     return removed
 
 
-def prune_dir(d: Path) -> int:
-    """복제본 폴더당 최신 KEEP_PER_DIR 개만 유지. 반환: 삭제 수."""
+def prune_dir(d: Path, protected: set[str]) -> int:
+    """복제본 폴더당 최신 KEEP_PER_DIR 개만 유지. 반환: 삭제 수.
+
+    protected = 원본에 아직 존재하는 파일명 — 지우면 다음 실행이 도로 복사해
+    '매일 지웠다 복사' 진동이 생기므로(적대 리뷰 P2) 개수와 무관하게 남긴다."""
     files = sorted(d.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
     removed = 0
     for old in files[KEEP_PER_DIR:]:
+        if old.name in protected:
+            continue
         try:
             old.unlink()
             removed += 1
@@ -120,6 +133,9 @@ def main() -> int:
         log("복제 대상 미설정 — 건너뜀 (CONTENT_HUB_BACKUP_REPLICA_DIR "
             "또는 tools/backup_replica_target.txt 에 UNC 경로를 넣으세요)")
         return 0
+    if not str(target).startswith("\\\\"):
+        # 작업 스케줄러(SYSTEM)에선 매핑 드라이브가 안 보인다 — 실패 원인 안내만 하고 시도는 한다.
+        log(f"경고: 대상이 UNC 가 아님({target}) — SYSTEM 예약작업에선 Z: 등이 안 보여 실패할 수 있음")
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -129,6 +145,7 @@ def main() -> int:
     stale = cleanup_parts(target)
     copied = skipped = failed = 0
     dirs: set[Path] = set()
+    protected_by_dir: dict[Path, set[str]] = {}  # 원본에 아직 있는 파일명(진동 방지)
     seen_any_source = False
     for sub, source in _sources():
         if not source.is_dir():
@@ -144,10 +161,11 @@ def main() -> int:
             else:
                 failed += 1
             dirs.add(dest.parent)
+            protected_by_dir.setdefault(dest.parent, set()).add(dest.name)
     if not seen_any_source:
         log(f"원본 백업 폴더 없음({[str(s) for _, s in _sources()]}) — 건너뜀")
         return 0
-    removed = sum(prune_dir(d) for d in dirs if d.is_dir())
+    removed = sum(prune_dir(d, protected_by_dir.get(d, set())) for d in dirs if d.is_dir())
     summary = (f"→ {target} (신규 {copied} · 최신유지 {skipped} · 실패 {failed}"
                f" · 정리 {removed}+part {stale})")
     if failed:

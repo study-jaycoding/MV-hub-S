@@ -193,6 +193,7 @@ def main() -> int:
     fails = 0
     kills: list[float] = []  # 개입 시각 기록(폭풍 판정)
     pause_until = 0.0
+    hold_alerted = False   # "포트 뺏김" ALERT 는 상태 지속 중 1회만(매분 스팸 방지)
 
     while True:
         ok, reason = check_ready(url, args.timeout)
@@ -204,6 +205,7 @@ def main() -> int:
                 log(args, f"복구 확인 (연속 실패 {fails}회 후 정상)")
             armed = True
             fails = 0
+            hold_alerted = False
         elif armed:
             fails += 1
             log(args, f"응답 이상 {fails}/{args.fail_threshold} — {reason}")
@@ -236,6 +238,23 @@ def main() -> int:
                                 continue
                             # 종료 실패(접근 거부 등) — 개입으로 치지 않고 다음 주기에 재시도.
                             log(args, "종료 실패 — 다음 주기에 재시도")
+                        elif how == "port-owned-by-other":
+                            # 다른 프로그램이 서버 포트를 차지 — 자동 종료는 위험해서 보류하지만,
+                            # 조용히 반복하면 영구 마비를 아무도 모른다(적대 리뷰 P1) → ALERT 1회.
+                            # fails 는 리셋하지 않는다: 매 주기 재확인하다 포트가 풀리면 즉시 개입.
+                            if not hold_alerted:
+                                hold_alerted = True
+                                alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                                msg = (f"{datetime.now():%Y-%m-%d %H:%M:%S} 포트 {args.port} 를 "
+                                       "다른 프로그램이 점유 중 — 서버가 못 뜨고 있는데 자동 조치가 "
+                                       "불가합니다. 서버 PC에서 점유 프로그램을 확인·종료하세요.")
+                                log(args, "★ALERT★ " + msg)
+                                try:
+                                    alert.write_text(msg + "\n", encoding="utf-8")
+                                except OSError:
+                                    pass
+                            else:
+                                log(args, "포트 점유 지속 — 개입 보류(ALERT 기록됨)")
                         else:
                             log(args, f"종료 대상 특정 실패({how}) — 개입 보류")
                             # not-found 면 프로세스가 이미 죽어 bat 루프가 살리는 중일 수 있다.

@@ -33,17 +33,28 @@ echo ============================================
 echo.
 
 REM ---- step 1: NAS backup replica path (optional) ---------------------------
-REM NOTE: no parenthesized block here - %NASPATH% read after set /p must expand
-REM at execution time (inside a block it expands at parse time = always empty).
+REM NOTE: no parenthesized block here - the value read by set /p must expand at
+REM execution time. Delayed expansion (!VAR!) is used for every reference so a
+REM path containing & ^ ( ) is never re-parsed as a command (P1: with %VAR% an
+REM input like \\NAS\a&whoami would RUN whoami in this elevated window).
 if exist "%ROOT%tools\backup_replica_target.txt" goto :nas_have
 echo [1/3] Where should daily DB backups be copied?
 echo       Use a UNC path like \\NAS\share\mvhub_backup  (NOT Z:\...)
 echo       Press Enter to skip - you can set it later in
 echo       tools\backup_replica_target.txt
+setlocal EnableDelayedExpansion
 set "NASPATH="
 set /p "NASPATH=  NAS path (Enter=skip): "
-if not defined NASPATH goto :nas_skip
->"%ROOT%tools\backup_replica_target.txt" echo %NASPATH%
+REM parentheses required: a bare `if X A & B` runs B unconditionally (cmd rule)
+if not defined NASPATH ( endlocal & goto :nas_skip )
+if not "!NASPATH:~0,2!"=="\\" (
+  echo       NOT saved: must be a UNC path starting with \\  ...
+  echo       Drive letters like Z: are invisible to the SYSTEM task account.
+  endlocal
+  goto :nas_skip
+)
+>"%ROOT%tools\backup_replica_target.txt" echo(!NASPATH!
+endlocal
 echo       saved.
 goto :nas_done
 :nas_skip
@@ -52,6 +63,10 @@ goto :nas_done
 :nas_have
 echo [1/3] Backup replica target already set:
 type "%ROOT%tools\backup_replica_target.txt"
+findstr /b /l /c:"\\" "%ROOT%tools\backup_replica_target.txt" >nul || (
+  echo       WARNING: not a UNC path - the SYSTEM backup task cannot see
+  echo       mapped drives like Z:. Edit tools\backup_replica_target.txt.
+)
 :nas_done
 
 REM ---- step 2: register scheduled tasks -------------------------------------
@@ -59,23 +74,27 @@ if not exist "%ROOT%logs" mkdir "%ROOT%logs"
 echo.
 echo [2/3] Registering auto-start tasks...
 
+REM task_launch.bat rotates the console log, sets CONTENT_HUB_TASK=1 (child
+REM scripts then exit instead of pausing on errors) and does the redirection.
 schtasks /Create /F /TN "MVHub Server" /SC ONSTART /DELAY 0001:00 /RU SYSTEM /RL HIGHEST ^
-  /TR "cmd /c call \"%ROOT%MV_server.bat\" >> \"%ROOT%logs\server_console.log\" 2>&1" >nul
+  /TR "cmd /c call \"%ROOT%task_launch.bat\" server" >nul
 if errorlevel 1 goto :err
 
 schtasks /Create /F /TN "MVHub Watchdog" /SC ONSTART /DELAY 0002:00 /RU SYSTEM /RL HIGHEST ^
-  /TR "cmd /c call \"%ROOT%MV_watchdog.bat\" >> \"%ROOT%logs\watchdog_console.log\" 2>&1" >nul
+  /TR "cmd /c call \"%ROOT%task_launch.bat\" watchdog" >nul
 if errorlevel 1 goto :err
 
 schtasks /Create /F /TN "MVHub BackupCopy" /SC DAILY /ST 03:30 /RU SYSTEM /RL HIGHEST ^
-  /TR "cmd /c call \"%ROOT%run_py.bat\" \"%ROOT%tools\backup_replicate.py\" >> \"%ROOT%logs\backup_console.log\" 2>&1" >nul
+  /TR "cmd /c call \"%ROOT%task_launch.bat\" backup" >nul
 if errorlevel 1 goto :err
 
 REM schtasks default kills a task after 72h and ONSTART would not refire until
 REM the next reboot -> the hub would silently die on day 3. Disable the limit.
-powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; foreach ($t in 'MVHub Server','MVHub Watchdog','MVHub BackupCopy') { Set-ScheduledTask -TaskName $t -Settings $s | Out-Null }"
+REM RestartCount/Interval: boot-time failures (npm not ready, network down) now
+REM exit nonzero thanks to CONTENT_HUB_TASK=1 -> scheduler retries every 5 min.
+powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 5); foreach ($t in 'MVHub Server','MVHub Watchdog','MVHub BackupCopy') { Set-ScheduledTask -TaskName $t -Settings $s | Out-Null }"
 if errorlevel 1 goto :err
-echo       done (3 tasks, no time limit, start at boot without login).
+echo       done (3 tasks, no time limit, retry on boot failure, no login needed).
 
 REM ---- step 3: start now ----------------------------------------------------
 echo.
@@ -95,12 +114,25 @@ schtasks /Run /TN "MVHub Server" >nul
 schtasks /Run /TN "MVHub Watchdog" >nul
 if exist "%ROOT%tools\backup_replica_target.txt" schtasks /Run /TN "MVHub BackupCopy" >nul
 
+REM Don't just claim success - poll /api/ready for up to 3 minutes and report
+REM what actually happened (first install builds the frontend = takes minutes).
+echo       waiting for the server to come up (up to 3 min)...
+set "UPSTATE=DOWN"
+REM usebackq: the PowerShell command itself contains single quotes, which would
+REM end a plain 'command' clause early.
+for /f "usebackq delims=" %%s in (`powershell -NoProfile -Command "$ok='DOWN'; $end=(Get-Date).AddSeconds(180); while((Get-Date) -lt $end){ try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 'http://127.0.0.1:%PORT%/api/ready'; if($r.StatusCode -eq 200){ $ok='UP'; break } } catch {}; Start-Sleep -Seconds 5 }; Write-Output $ok"`) do set "UPSTATE=%%s"
+
 echo.
 echo ============================================
-echo  Setup complete.
+if "%UPSTATE%"=="UP" (
+  echo  Setup complete - server is UP:  http://127.0.0.1:%PORT%
+) else (
+  echo  Setup registered, but the server is NOT up yet.
+  echo  First install builds the frontend and can take several minutes.
+  echo  Watch progress with MV_logs.bat. If it stays down, check
+  echo  logs\server_console.log - a failed boot is retried every 5 min.
+)
 echo ============================================
-echo  - First start builds the frontend: the hub may take a few minutes
-echo    to come up. Check:  http://127.0.0.1:%PORT%
 echo  - Live log (old console window): double-click MV_logs.bat
 echo  - From now on do NOT run MV_server.bat manually.
 echo  - Everything auto-recovers: crash, hang, reboot.

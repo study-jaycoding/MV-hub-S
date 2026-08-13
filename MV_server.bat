@@ -38,10 +38,9 @@ if "%PYEXE%"=="" (
 )
 if "%PYEXE%"=="" (
   echo [ERROR] Python not found - install from python.org and retry.
-  pause
-  exit /b 1
+  goto :fail
 )
-where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & pause & exit /b 1)
+where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & goto :fail)
 
 echo.
 echo [python] %PYEXE%
@@ -74,5 +73,10 @@ goto :serverloop
 :err
 echo.
 echo [ERROR] a step above failed - aborting.
-pause
+:fail
+REM Under the scheduled task (CONTENT_HUB_TASK=1) there is no console user:
+REM "pause" would hang the hidden window forever and Task Scheduler could never
+REM retry. Exit nonzero instead -> the task's RestartCount retries in 5 min
+REM (covers boot-time transients: network not up yet, npm registry hiccup).
+if not "%CONTENT_HUB_TASK%"=="1" pause
 exit /b 1
