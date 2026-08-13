@@ -8,6 +8,7 @@ placeholder 카드를 즉시 만든다. 요청자의 PC 에이전트가 대기 �
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any, Optional
 
 from ._common import new_id
@@ -59,17 +60,151 @@ def create_gen_request(
     gen_id: str,
     kind: str,
     payload: dict[str, Any],
+    canvas_link: Optional[dict[str, str]] = None,
 ) -> str:
     """생성요청 1건 등록(placeholder gen 은 호출측에서 이미 만든 상태). 요청 id 반환."""
     rid = new_id()
     with get_connection() as conn:
+        link = canvas_link or {}
         conn.execute(
-            "INSERT INTO gen_request(id, account_email, creator_uid, gen_id, kind, payload, status) "
-            "VALUES(?,?,?,?,?,?, 'pending')",
-            (rid, norm_email(account_email), creator_uid, gen_id, kind,
-             json.dumps(payload, ensure_ascii=False)),
+            "INSERT INTO gen_request("
+            "id, account_email, creator_uid, gen_id, kind, payload, status, "
+            "canvas_attempt_id, canvas_scene_id, canvas_card_id) "
+            "VALUES(?,?,?,?,?,?, 'pending',?,?,?)",
+            (
+                rid,
+                norm_email(account_email),
+                creator_uid,
+                gen_id,
+                kind,
+                json.dumps(payload, ensure_ascii=False),
+                link.get("attempt_id"),
+                link.get("scene_id"),
+                link.get("card_id"),
+            ),
         )
     return rid
+
+
+def get_canvas_generation_link(account_email: str, attempt_id: str) -> Optional[dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
+            "canvas_card_id card_id, gen_id generation_id, status request_status, created_at "
+            "FROM gen_request WHERE account_email=? AND canvas_attempt_id=? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (norm_email(account_email), attempt_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def resolve_canvas_generation_links(
+    account_email: str, attempt_ids: list[str]
+) -> list[dict[str, Any]]:
+    ids = list(dict.fromkeys(attempt_ids))[:200]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
+            "canvas_card_id card_id, gen_id generation_id, status request_status, created_at "
+            f"FROM gen_request WHERE account_email=? AND canvas_attempt_id IN ({placeholders}) "
+            "ORDER BY created_at, id",
+            [norm_email(account_email), *ids],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_canvas_generation_candidates(account_email: str, limit: int = 30) -> list[str]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.account_email=? AND r.kind='create' AND r.canvas_attempt_id IS NULL "
+            "AND g.deleted_at IS NULL ORDER BY r.created_at DESC, r.id DESC LIMIT ?",
+            (norm_email(account_email), max(1, min(limit, 100))),
+        ).fetchall()
+    return list(dict.fromkeys(str(row["gen_id"]) for row in rows if row["gen_id"]))
+
+
+def claim_canvas_generation_candidate(
+    account_email: str, generation_id: str, scene_id: str, card_id: str
+) -> bool:
+    attempt_id = "manual_" + uuid.uuid4().hex
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE gen_request SET canvas_attempt_id=?, canvas_scene_id=?, canvas_card_id=?, "
+            "updated_at=datetime('now') WHERE id=("
+            "SELECT id FROM gen_request WHERE account_email=? AND gen_id=? "
+            "AND canvas_attempt_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1)",
+            (attempt_id, scene_id, card_id, norm_email(account_email), generation_id),
+        )
+    return cursor.rowcount > 0
+
+
+def repair_orphaned_canvas_generation(
+    account_email: str,
+    creator_uid: Optional[str],
+    canvas_link: dict[str, str],
+    payload: dict[str, Any],
+) -> bool:
+    """placeholder 저장 뒤 요청행 저장 전에 프로세스가 끝난 극소 구간을 복구한다.
+
+    generation 소유자·상태·origin을 한 쓰기 트랜잭션 안에서 재확인하고, 요청행이 전혀 없는
+    진짜 orphan만 큐에 넣는다. 다른 계정의 id를 안다고 가져갈 수 없다.
+    """
+    rid = new_id()
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM gen_request WHERE account_email=? AND canvas_attempt_id=?",
+                (email, canvas_link["attempt_id"]),
+            ).fetchone()
+            if existing:
+                conn.execute("COMMIT")
+                return True
+            generation = conn.execute(
+                "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
+                (canvas_link["generation_id"],),
+            ).fetchone()
+            owned_orphan = bool(
+                generation
+                and generation["creator_uid"] == creator_uid
+                and generation["origin"] == "local"
+                and generation["status"] == "pending"
+                and not generation["job_id"]
+                and not conn.execute(
+                    "SELECT 1 FROM gen_request WHERE gen_id=? LIMIT 1",
+                    (canvas_link["generation_id"],),
+                ).fetchone()
+            )
+            if not owned_orphan:
+                conn.execute("ROLLBACK")
+                return False
+            conn.execute(
+                "INSERT INTO gen_request("
+                "id, account_email, creator_uid, gen_id, kind, payload, status, "
+                "canvas_attempt_id, canvas_scene_id, canvas_card_id) "
+                "VALUES(?,?,?,?,?,?, 'pending',?,?,?)",
+                (
+                    rid,
+                    email,
+                    creator_uid,
+                    canvas_link["generation_id"],
+                    "create",
+                    json.dumps(payload, ensure_ascii=False),
+                    canvas_link["attempt_id"],
+                    canvas_link["scene_id"],
+                    canvas_link["card_id"],
+                ),
+            )
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def claim_pending_requests(

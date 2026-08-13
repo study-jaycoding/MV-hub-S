@@ -114,6 +114,7 @@ import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs"
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
+import { settleCanvasGenerationAttempt } from "../../lib/canvasGenerationRecovery";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
@@ -188,7 +189,17 @@ interface Props {
     flushPending: () => void; // 밀린 입력 저장 확정 — App 이 씬 전환 직전 호출(옛 씬에 정확히 저장)
   } | null>;
   // 생성 카드 아래 'Generate' 툴바 — 즉시 생성(하단 프롬프트 submit 재사용). 배치수는 노드별(card.batchCount)로 관리.
-  onGenerateCard?: (batch?: number, assignment?: SceneGenerationAssignment | null) => void; // 최신 Set 정보도 함께 전달
+  onGenerateCard?: (
+    cardId: string,
+    batch?: number,
+    assignment?: SceneGenerationAssignment | null,
+  ) => void; // 최신 Set 정보와 정확한 목적 카드를 함께 전달
+  onCanvasRecoveryCandidates?: () => Promise<Generation[]>;
+  onCanvasRecoveryClaim?: (
+    generationId: string,
+    sceneId: string,
+    cardId: string,
+  ) => Promise<void>;
   // 렌더(배치) 노드 — 연결된 생성카드 id들을 넘기면 각 카드가 자기 모델·refs·텍스트로 한 번에 생성된다.
   onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   // 배치 짝 생성 — 상류 comfy 를 배치수만큼 병렬 실행한 결과(runs)를 넘기면 각 run(짝)이 그 comfy 결과로 1장 생성.
@@ -243,6 +254,8 @@ export function SceneBoard({
   onSelectionGens,
   actionRef,
   onGenerateCard,
+  onCanvasRecoveryCandidates,
+  onCanvasRecoveryClaim,
   onRenderCards,
   onRenderCardRuns,
   onComfyRunningChange,
@@ -295,6 +308,13 @@ export function SceneBoard({
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
+  const [canvasRecovery, setCanvasRecovery] = useState<{
+    cardId: string;
+    items: Generation[];
+    loading: boolean;
+    claimingId: string | null;
+    error: string | null;
+  } | null>(null);
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
   const nodePickerRef = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
@@ -672,6 +692,47 @@ export function SceneBoard({
       return;
     }
     persist(nextCards, edgesRef.current, groupsRef.current, { undo: mode !== "persistDerived" });
+  };
+  const openCanvasRecovery = async (cardId: string) => {
+    if (!onCanvasRecoveryCandidates) return;
+    setCanvasRecovery({ cardId, items: [], loading: true, claimingId: null, error: null });
+    try {
+      const items = await onCanvasRecoveryCandidates();
+      setCanvasRecovery((current) =>
+        current?.cardId === cardId
+          ? { ...current, items, loading: false }
+          : current,
+      );
+    } catch (error) {
+      setCanvasRecovery((current) =>
+        current?.cardId === cardId
+          ? { ...current, loading: false, error: String(error) }
+          : current,
+      );
+    }
+  };
+  const claimCanvasRecovery = async (generation: Generation) => {
+    const target = canvasRecovery;
+    if (!target || !onCanvasRecoveryClaim) return;
+    setCanvasRecovery({ ...target, claimingId: generation.id, error: null });
+    try {
+      await onCanvasRecoveryClaim(generation.id, scene.id, target.cardId);
+      const nextCards = settleCanvasGenerationAttempt(
+        cardsRef.current,
+        target.cardId,
+        generation.id,
+      );
+      applyCards(nextCards, "persistUser");
+      setGenData((previous) => ({ ...previous, [generation.id]: generation }));
+      setCanvasRecovery(null);
+      flashMsg("생성물을 이 카드에 복구했습니다.");
+    } catch (error) {
+      setCanvasRecovery((current) =>
+        current
+          ? { ...current, claimingId: null, error: String(error) }
+          : current,
+      );
+    }
   };
   // 언마운트(탭 이탈·씬 언마운트) 시 밀린 저장 확정 — 그때 onChange 는 아직 현재 씬을 가리킨다.
   //  + 새로고침/창닫기(pagehide) 에도 확정 — 디바운스 대기 중 편집 유실 방지.
@@ -3314,6 +3375,10 @@ export function SceneBoard({
                     setCardBatch,
                     orchestrateGenerate,
                     showGenerateBar: !!onGenerateCard,
+                    onRecover:
+                      onCanvasRecoveryCandidates && onCanvasRecoveryClaim
+                        ? openCanvasRecovery
+                        : undefined,
                     onOutPortDown,
                     onResizeDown,
                   }}
@@ -3603,6 +3668,55 @@ export function SceneBoard({
                 전체 복사
               </button>
               <button className="primary" onClick={() => setViewTextModal(null)}>
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {canvasRecovery && (
+        <div
+          className="scene-modelmodal-backdrop"
+          onMouseDown={() => !canvasRecovery.claimingId && setCanvasRecovery(null)}
+        >
+          <div className="scene-modelmodal scene-recoverymodal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="scene-modelmodal-hd">
+              <b>빠진 생성물 복구</b>
+              <button
+                className="scene-modelmodal-x"
+                disabled={!!canvasRecovery.claimingId}
+                onClick={() => setCanvasRecovery(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="scene-comfymodal-body scene-recovery-list">
+              {canvasRecovery.loading ? (
+                <div className="scene-recovery-empty">내 생성 요청을 확인하는 중입니다…</div>
+              ) : canvasRecovery.error ? (
+                <div className="scene-recovery-error">{canvasRecovery.error}</div>
+              ) : canvasRecovery.items.length ? (
+                canvasRecovery.items.map((generation) => (
+                  <button
+                    key={generation.id}
+                    className="scene-recovery-item"
+                    disabled={!!canvasRecovery.claimingId}
+                    onClick={() => void claimCanvasRecovery(generation)}
+                  >
+                    <b>{generation.prompt || "프롬프트 없음"}</b>
+                    <span>
+                      {generation.model || "모델 미상"} · {generation.status} · {generation.created_at}
+                    </span>
+                    {canvasRecovery.claimingId === generation.id && <i>복구 중…</i>}
+                  </button>
+                ))
+              ) : (
+                <div className="scene-recovery-empty">연결이 빠진 이전 생성 요청이 없습니다.</div>
+              )}
+            </div>
+            <div className="scene-modelmodal-ft">
+              <button disabled={!!canvasRecovery.claimingId} onClick={() => setCanvasRecovery(null)}>
                 닫기
               </button>
             </div>

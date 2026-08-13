@@ -395,6 +395,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("lease_owner", "TEXT"),
             ("lease_expires_at", "TEXT"),
             ("terminal_at", "TEXT"),
+            ("canvas_attempt_id", "TEXT"),
+            ("canvas_scene_id", "TEXT"),
+            ("canvas_card_id", "TEXT"),
         ):
             if name not in gr_cols:
                 conn.execute(f"ALTER TABLE gen_request ADD COLUMN {name} {ddl}")
@@ -422,6 +425,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest "
             "ON gen_request(gen_id, created_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_canvas_attempt "
+            "ON gen_request(account_email, canvas_attempt_id) "
+            "WHERE canvas_attempt_id IS NOT NULL"
         )
 
     # ── v02 RBAC — 전역 4역할(복수 가능) + 프로젝트 3역할 (로드맵 PART 1) ──────

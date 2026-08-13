@@ -56,6 +56,10 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
     .filter((c) => c.kind === "generation" || (c.kind === "comfy" && (c.genIds?.length || c.genId)))
     .flatMap((c) => variantIds(c))
     .join(",");
+  const pendingAttemptSig = cards
+    .flatMap((card) => card.pendingGenerationAttempts || [])
+    .map((attempt) => attempt.generationId)
+    .join(",");
   // 생성물 변경 브로드캐스트(담기/폴더이동/미분류/삭제 등)를 구독 → 현재 카드들의 생성물을 즉시
   // 재조회한다. 완료 카드는 평소 재폴링을 안 해 folder_path/project_id 가 stale 이었고,
   // 그래서 캔버스에서 폴더로 담은 직후 그 폴더를 눌러도(탭 왕복 전) 딤이 옛 값으로 잘못 표시되던 버그.
@@ -74,6 +78,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
   useEffect(() => () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); }, []);
   useEffect(() => {
     const ids = Array.from(new Set(genIdSig.split(",").filter(Boolean)));
+    const pendingAttemptIds = new Set(pendingAttemptSig.split(",").filter(Boolean));
     if (!ids.length) {
       refreshSceneDataRef.current = () => {};
       return;
@@ -112,7 +117,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
           putGen(r.gen, r.id);
           markGenMissing(r.id, false);
           observeStatus(r.id, r.gen.status);
-        } else if (r.gone) markGenMissing(r.id, true);
+        } else if (r.gone && !pendingAttemptIds.has(r.id)) markGenMissing(r.id, true);
       }
       for (const id of pollIds) {
         const parents = batch.materials[id];
@@ -141,7 +146,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
         const next = new Set(prev);
         for (const r of rs) {
           if (r.gen && next.delete(r.id)) changed = true; // 되살아나면(복원) 해제
-          else if (r.gone && !next.has(r.id)) {
+          else if (r.gone && !pendingAttemptIds.has(r.id) && !next.has(r.id)) {
             next.add(r.id);
             changed = true;
           }
@@ -150,7 +155,10 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
       });
       // 재폴은 '아직 진행 중'인 id 만 — 완료 카드를 매 2.5초 다시 조회하던 N+1 폴링 제거.
       const stillPending = rs
-        .filter((r) => r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status)))
+        .filter((r) =>
+          (r.gen && ["pending", "queued", "running", "processing"].includes(String(r.gen.status))) ||
+          (!r.gen && pendingAttemptIds.has(r.id)),
+        )
         .map((r) => r.id);
       if (stillPending.length) timer = window.setTimeout(() => tick(stillPending), 2500);
     };
@@ -168,7 +176,7 @@ export function useSceneGenData(cards: SceneCard[]): SceneGenDataApi {
       refreshSceneDataRef.current = () => {};
       if (timer) clearTimeout(timer);
     };
-  }, [genIdSig]);
+  }, [genIdSig, pendingAttemptSig]);
 
   // 씬 전환(genIdSig 변경) 시 새 씬 카드들의 생성물을 캐시에서 즉시 복원 — tick 서버조회를 기다리는 빈 화면 제거.
   //  (prev 우선 병합이라 이미 최신인 값은 덮지 않는다. 아래 prune 이 현재 카드 밖 id 를 곧 정리한다.)

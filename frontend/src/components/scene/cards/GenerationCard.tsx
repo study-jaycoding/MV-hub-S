@@ -69,6 +69,7 @@ export function GenerationCard({
     setCardBatch: (cardId: string, n: number) => void;
     orchestrateGenerate: (genId: string) => Promise<void>;
     showGenerateBar: boolean; // onGenerateCard prop 존재 여부
+    onRecover?: (cardId: string) => void;
     onOutPortDown: (e: React.MouseEvent, cardId: string) => void;
     onResizeDown: (e: React.MouseEvent, cardId: string) => void;
   };
@@ -261,6 +262,18 @@ export function GenerationCard({
           >
             Generate ✨
           </button>
+          {actions.onRecover && (
+            <button
+              className="scene-cardgen-recover"
+              title="이전에 연결이 빠진 내 생성물을 이 카드에 복구"
+              onClick={(e) => {
+                e.stopPropagation();
+                actions.onRecover?.(card.id);
+              }}
+            >
+              복구
+            </button>
+          )}
         </div>
       )}
       {g && tagEdit.active && (

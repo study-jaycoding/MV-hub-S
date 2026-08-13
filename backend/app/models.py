@@ -209,6 +209,37 @@ class RegenerateIn(BaseModel):
     auto_tags: Optional[list[str]] = None  # 재생성 시점 무장된 자동태그(부모 자동태그에 더해 적용)
 
 
+class CanvasGenerationLinkIn(BaseModel):
+    """프로그램 종료 후에도 생성 결과를 원래 캔버스 카드로 되돌리는 로컬 연결표식."""
+
+    attempt_id: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    generation_id: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    scene_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_-]+$")
+    card_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class CanvasLinkResolveIn(BaseModel):
+    attempt_ids: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator("attempt_ids")
+    @classmethod
+    def validate_attempt_ids(cls, values: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(str(value).strip() for value in values))
+        if any(not value or len(value) > 80 or not value.replace("-", "").replace("_", "").isalnum() for value in cleaned):
+            raise ValueError("캔버스 복구 ID 형식이 올바르지 않습니다")
+        return cleaned
+
+
+class CanvasLinkRepairIn(BaseModel):
+    links: list[CanvasGenerationLinkIn] = Field(min_length=1, max_length=100)
+
+
+class CanvasManualClaimIn(BaseModel):
+    generation_id: str = Field(min_length=1, max_length=80)
+    scene_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_-]+$")
+    card_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 # ── 로컬 실행 생성요청(gen-request) — 버튼은 요청만, 실행은 각자 로컬 에이전트 ──────
 class GenRequestIn(BaseModel):
     """허브의 생성/재생성 버튼이 서버에 남기는 '로컬 실행 요청'. 서버는 placeholder 카드만
@@ -219,6 +250,7 @@ class GenRequestIn(BaseModel):
     create: Optional[GenerationCreate] = None  # kind=create 일 때
     source_gen_id: Optional[str] = None  # kind=regenerate 일 때 원본
     regenerate: Optional[RegenerateIn] = None  # kind=regenerate 옵션(프롬프트/모델/색 덮어쓰기)
+    canvas_link: Optional[CanvasGenerationLinkIn] = None  # 캔버스 재시작 복구용(로컬 전용)
 
 
 class PendingRequestOut(BaseModel):

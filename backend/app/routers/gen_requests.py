@@ -23,6 +23,9 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import (
+    CanvasLinkResolveIn,
+    CanvasLinkRepairIn,
+    CanvasManualClaimIn,
     FulfillIn,
     GenerationOut,
     GenRequestIn,
@@ -38,6 +41,7 @@ from ..usecases.gen_requests import (
     fail_request,
     fulfill_request,
     reconcile_request,
+    repair_canvas_generation_links,
     submit_gen_request,
 )
 
@@ -111,6 +115,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
     # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
     creator_uid = account_actor_uid(request) if AUTH_ENABLED else acc.get("creator_uid")
+    canvas_link = body.canvas_link.model_dump() if body.canvas_link else None
 
     if body.kind == "create":
         if not body.create:
@@ -135,6 +140,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             source_gen_id=body.source_gen_id,
             workspace=workspace.model_dump(),
             data=data,
+            canvas_link=canvas_link,
         )
     else:  # regenerate
         if not body.source_gen_id:
@@ -163,12 +169,58 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             source_gen_id=body.source_gen_id,
             workspace=workspace.model_dump(),
             regenerate=reg,
+            canvas_link=canvas_link,
         )
 
     gen = await submit_gen_request(cmd)
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
     return gen
+
+
+@router.post("/gen-requests/canvas-links/resolve")
+async def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
+    """재시작한 캔버스가 요청 전 저장한 attempt와 실제 generation 연결을 복구한다."""
+    acc = _require_account(request)
+    return {
+        "links": repo.resolve_canvas_generation_links(acc["email"], body.attempt_ids)
+    }
+
+
+@router.post("/gen-requests/canvas-links/repair")
+async def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
+    """placeholder만 저장된 비정상 종료 지점을 소유권 확인 후 다시 큐잉한다."""
+    acc = _require_account(request)
+    creator_uid = (
+        account_actor_uid(request)
+        if AUTH_ENABLED
+        else acc.get("creator_uid") or repo.get_my_uid()
+    )
+    links = [link.model_dump() for link in body.links]
+    return {
+        "links": repair_canvas_generation_links(acc["email"], creator_uid, links)
+    }
+
+
+@router.get("/gen-requests/canvas-candidates")
+async def canvas_generation_candidates(request: Request, limit: int = 30):
+    """구버전에서 연결을 잃은 내 생성 요청만 수동 복구 후보로 돌려준다."""
+    acc = _require_account(request)
+    ids = repo.list_canvas_generation_candidates(acc["email"], limit=limit)
+    items = [repo.get_generation(gen_id) for gen_id in ids]
+    return {"items": [item for item in items if item]}
+
+
+@router.post("/gen-requests/canvas-candidates/claim")
+async def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
+    """선택한 구버전 생성물을 한 캔버스 카드에 1회 귀속한다."""
+    acc = _require_account(request)
+    claimed = repo.claim_canvas_generation_candidate(
+        acc["email"], body.generation_id, body.scene_id, body.card_id
+    )
+    if not claimed:
+        raise HTTPException(status_code=404, detail="복구할 수 있는 내 생성 요청이 아닙니다")
+    return {"ok": True}
 
 
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])

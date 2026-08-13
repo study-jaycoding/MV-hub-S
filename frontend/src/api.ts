@@ -24,6 +24,7 @@ import { sharedApi } from "./lib/sharedApi";
 import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
+import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -344,7 +345,7 @@ export const api = {
     }[];
     project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
     folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
-  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }) => {
+  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }, canvasLink?: CanvasGenerationLink) => {
     if (!isGenerationWorkspaceReady(workspace)) {
       return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
     }
@@ -352,7 +353,7 @@ export const api = {
     // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
     return generationFetch("/api/gen-requests", {
       method: "POST",
-      body: jsonBody({ kind: "create", workspace, create: body }),
+      body: jsonBody({ kind: "create", workspace, create: body, canvas_link: canvasLink }),
     });
   },
 
@@ -360,6 +361,7 @@ export const api = {
     id: string,
     body: { prompt?: string; color?: string | null; auto_tags?: string[] },
     workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+    canvasLink?: CanvasGenerationLink,
   ) => {
     if (!isGenerationWorkspaceReady(workspace)) {
       return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
@@ -367,9 +369,54 @@ export const api = {
     // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
     return generationFetch("/api/gen-requests", {
       method: "POST",
-      body: jsonBody({ kind: "regenerate", workspace, source_gen_id: id, regenerate: body }),
+      body: jsonBody({
+        kind: "regenerate",
+        workspace,
+        source_gen_id: id,
+        regenerate: body,
+        canvas_link: canvasLink,
+      }),
     });
   },
+
+  resolveCanvasGenerationLinks: async (attemptIds: string[]) => {
+    const links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[] = [];
+    for (const page of chunked(Array.from(new Set(attemptIds)), 200)) {
+      const result = await jsonFetch<{
+        links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[];
+      }>("/api/gen-requests/canvas-links/resolve", {
+        method: "POST",
+        body: jsonBody({ attempt_ids: page }),
+      });
+      links.push(...result.links);
+    }
+    return { links };
+  },
+
+  repairCanvasGenerationLinks: async (canvasLinks: CanvasGenerationLink[]) => {
+    const links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[] = [];
+    for (const page of chunked(canvasLinks, 100)) {
+      const result = await jsonFetch<{
+        links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[];
+      }>("/api/gen-requests/canvas-links/repair", {
+        method: "POST",
+        body: jsonBody({ links: page }),
+      });
+      links.push(...result.links);
+    }
+    return { links };
+  },
+
+  canvasGenerationCandidates: (limit = 30) =>
+    jsonFetch<{ items: Generation[] }>(
+      `/api/gen-requests/canvas-candidates?limit=${Math.max(1, Math.min(limit, 100))}`,
+    ).then((result) => ({ ...result, items: normalizeGenerations(result.items) })),
+
+  claimCanvasGenerationCandidate: (generationId: string, sceneId: string, cardId: string) =>
+    jsonFetch<{ ok: boolean }>("/api/gen-requests/canvas-candidates/claim", {
+      method: "POST",
+      body: jsonBody({ generation_id: generationId, scene_id: sceneId, card_id: cardId }),
+    }),
 
   setTags: (id: string, tags: string[]) =>
     generationFetch(`/api/generations/${pathPart(id)}/tags`, {

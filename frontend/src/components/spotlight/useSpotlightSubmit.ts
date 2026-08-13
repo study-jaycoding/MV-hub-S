@@ -18,6 +18,10 @@ import {
 import type { Generation, ModelParam, WorkspaceContext } from "../../types";
 import type { SpotlightTrayRef } from "./SpotlightRefTray";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
+import type {
+  CanvasGenerationLink,
+  CanvasGenerationTarget,
+} from "../../lib/canvasGenerationRecovery";
 
 
 export const SPOTLIGHT_MAX_COUNT = 4;
@@ -35,6 +39,14 @@ interface UseSpotlightSubmitOptions {
   inCompose: boolean;
   model: string;
   onCreated: (created?: Generation[], dragParentId?: string | null) => void;
+  canvasTarget?: CanvasGenerationTarget | null;
+  prepareCanvasGeneration?: (
+    target: CanvasGenerationTarget,
+    count: number,
+  ) => CanvasGenerationLink[];
+  settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
+  discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
+  onCanvasBatchCreated?: (created: Generation[]) => void;
   optionValues: Record<string, unknown>;
   paramsLoading: boolean;
   paramsModel: string;
@@ -61,6 +73,11 @@ export function useSpotlightSubmit({
   inCompose,
   model,
   onCreated,
+  canvasTarget,
+  prepareCanvasGeneration,
+  settleCanvasGeneration,
+  discardCanvasGeneration,
+  onCanvasBatchCreated,
   optionValues,
   paramsLoading,
   paramsModel,
@@ -76,6 +93,7 @@ export function useSpotlightSubmit({
   return useCallback(async (
     batchOverride?: number,
     generationAssignmentOverride?: SceneGenerationAssignment | null,
+    canvasTargetOverride?: CanvasGenerationTarget | null,
   ) => {
     if (busy) return;
     setError(null);
@@ -142,13 +160,47 @@ export function useSpotlightSubmit({
         count,
         SPOTLIGHT_MAX_COUNT,
       );
-      const created = await Promise.all(
-        Array.from({ length: batch }, () => api.create(body, workspace)),
+      const effectiveCanvasTarget =
+        canvasTargetOverride !== undefined ? canvasTargetOverride : canvasTarget;
+      // 요청보다 먼저 generation id와 목적 카드를 저장한다. 이 다음 순간 창이 닫혀도 재시작 복구가 가능하다.
+      const canvasLinks = effectiveCanvasTarget && prepareCanvasGeneration
+        ? prepareCanvasGeneration(effectiveCanvasTarget, batch)
+        : [];
+      if (effectiveCanvasTarget && canvasLinks.length !== batch) {
+        throw new Error("캔버스 생성 위치를 저장하지 못했습니다. 씬을 다시 선택한 뒤 시도하세요.");
+      }
+      const outcomes = await Promise.all(
+        Array.from({ length: batch }, async (_, index) => {
+          const link = canvasLinks[index];
+          try {
+            const generation = await api.create(body, workspace, link);
+            if (link) settleCanvasGeneration?.(link, generation);
+            return { generation };
+          } catch (error) {
+            const status = Number((error as { status?: number })?.status);
+            // 서버가 요청을 확실히 거절한 4xx는 유령 표식을 즉시 치운다. 타임아웃·과부하·네트워크
+            // 단절은 서버 커밋 여부가 모호하므로 재시작 복구가 확인할 수 있게 남긴다.
+            if (link && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+              discardCanvasGeneration?.(link);
+            }
+            return { error };
+          }
+        }),
       );
+      const created = outcomes.flatMap((outcome) =>
+        "generation" in outcome && outcome.generation ? [outcome.generation] : [],
+      );
+      const failed = outcomes.filter((outcome) => "error" in outcome).length;
+      if (!created.length) {
+        const firstError = outcomes.find((outcome) => "error" in outcome);
+        throw (firstError && "error" in firstError ? firstError.error : new Error("생성 요청 실패"));
+      }
 
       const dragParent = dragParentRef.current;
       dragParentRef.current = null;
-      onCreated(created, dragParent);
+      // 캔버스는 요청 전에 이미 연결했다. 일반 생성만 기존 콜백으로 결과 카드를 추가한다.
+      if (canvasLinks.length) onCanvasBatchCreated?.(created);
+      else onCreated(created, dragParent);
 
       if (displayPrompt) {
         const filtered = historyRef.current.filter((entry) => entry.text !== displayPrompt);
@@ -166,6 +218,7 @@ export function useSpotlightSubmit({
       notifyPromptChanged();
       clearMention();
       setBusy(false);
+      if (failed) setError(`${batch}장 중 ${failed}장 제출 실패 — 성공한 요청은 계속 진행됩니다.`);
       if (!inCompose) requestAnimationFrame(() => editor.focus());
     } catch (error) {
       setError(String(error));
@@ -176,9 +229,11 @@ export function useSpotlightSubmit({
     armedAutoTags,
     armedFolder,
     generationAssignment,
+    canvasTarget,
     busy,
     clearMention,
     count,
+    discardCanvasGeneration,
     dragParentRef,
     editorRef,
     historyRef,
@@ -186,6 +241,9 @@ export function useSpotlightSubmit({
     model,
     notifyPromptChanged,
     onCreated,
+    onCanvasBatchCreated,
+    prepareCanvasGeneration,
+    settleCanvasGeneration,
     optionValues,
     paramsLoading,
     paramsModel,

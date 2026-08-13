@@ -130,7 +130,11 @@ interface UseSceneComfyExecutionOptions {
     opts?: { undo?: boolean; defer?: boolean },
   ) => void;
   saveComfyToLibrary: (cardId: string, opts?: SaveComfyOptions) => Promise<SaveComfyResult>;
-  onGenerateCard?: (batch?: number, assignment?: SceneGenerationAssignment | null) => void;
+  onGenerateCard?: (
+    cardId: string,
+    batch?: number,
+    assignment?: SceneGenerationAssignment | null,
+  ) => void;
   onRenderCards?: (cardIds: string[], batch?: number) => void | Promise<void>;
   onRenderCardRuns?: (runs: SceneGenerationRun[]) => void | Promise<void>;
   onComfyRunningChange?: (items: { id: string; name: string }[]) => void;
@@ -735,6 +739,7 @@ export function useSceneComfyExecution({
     if (!plan.comfyIds.length) {
       const resolved = resolvePortEdges(cardsById, edgesRef.current);
       onGenerateCard?.(
+        generationId,
         cardBatch(cardsById.get(generationId)),
         collectSceneGenerationAssignment(generationId, cardsById, resolved) ?? null,
       );

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import re
 import threading
 import time
@@ -28,6 +29,7 @@ _generation_log = logging.getLogger("mvhub.generation")
 _pm_failure_log_lock = threading.Lock()
 _pm_last_failure_log_at = 0.0
 _PM_FAILURE_LOG_INTERVAL = 300.0
+_estimate_tasks: set[asyncio.Task[None]] = set()
 
 _HF_ENDED_RE = re.compile(
     r"\bjob\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
@@ -82,6 +84,29 @@ def pm_best_effort(action, *, operation: str = "record") -> None:
         _log_pm_failure(operation, exc)
 
 
+async def _record_request_estimate(gen_id: str, payload: dict) -> None:
+    """부가 견적은 생성 응답과 분리한다. 느린 CLI 조회가 카드 연결을 늦추면 안 된다."""
+    est = None
+    try:
+        if cli_bridge.cli_available():
+            cc = await cli_bridge.estimate_cost(
+                payload.get("model"), payload.get("params"), payload.get("prompt") or ""
+            )
+            value = (cc or {}).get("credits")
+            est = int(value) if value else None
+    except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
+        _log_pm_failure("estimate_cost", exc)
+    pm_best_effort(lambda _m: _m.record_request(gen_id, est_credits=est))
+
+
+def _schedule_request_estimate(gen_id: str, payload: dict) -> None:
+    if not MANAGE_ENABLED:
+        return
+    task = asyncio.create_task(_record_request_estimate(gen_id, payload))
+    _estimate_tasks.add(task)
+    task.add_done_callback(_estimate_tasks.discard)
+
+
 @dataclass
 class GenRequestCommand:
     """라우터가 인증·권한·입력검증을 끝내고 만든 '검증된 제출 명령'. usecase 는 이걸 실행만 한다.
@@ -95,6 +120,30 @@ class GenRequestCommand:
     workspace: dict | None = None
     data: dict | None = None  # kind=create 의 정규화된 GenerationCreate dump
     regenerate: RegenerateIn | None = None  # kind=regenerate 옵션
+    canvas_link: dict[str, str] | None = None
+
+
+def repair_canvas_generation_links(
+    email: str,
+    creator_uid: str | None,
+    links: list[dict[str, str]],
+) -> list[dict]:
+    """generation만 저장되고 요청행이 빠진 종료 지점을 안전하게 다시 큐잉한다."""
+    repaired = False
+    for link in links:
+        if repo.get_canvas_generation_link(email, link["attempt_id"]):
+            continue
+        payload = repo.gen_recipe(link["generation_id"])
+        if not payload:
+            continue
+        payload["source_gen_id"] = None
+        if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload):
+            repaired = True
+    if repaired:
+        agent_signals.signal(email, "gen-request")
+    return repo.resolve_canvas_generation_links(
+        email, [link["attempt_id"] for link in links]
+    )
 
 
 async def claim_gen_requests(
@@ -628,18 +677,28 @@ async def fail_request(
 async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     """placeholder 생성 + 요청 큐잉 + 에이전트 깨우기 + PM 견적. placeholder gen 반환(없으면 None).
 
-    부수효과 순서는 원본과 동일하게 보존한다:
-    create/import(+tweaks) -> gen_recipe -> create_gen_request -> agent signal -> PM 견적(await) -> get_generation.
+    생성 연결에 필요한 저장과 signal까지 마친 뒤 즉시 응답한다. PM 견적은 백그라운드에서 기록한다.
     """
+    if cmd.canvas_link:
+        existing = repo.get_canvas_generation_link(
+            cmd.email, cmd.canvas_link["attempt_id"]
+        )
+        if existing:
+            return repo.get_generation(existing["generation_id"])
+
     if cmd.kind == "create":
         create_kwargs = {"creator_uid": cmd.creator_uid}
         if cmd.workspace is not None:
             create_kwargs["workspace"] = cmd.workspace
+        if cmd.canvas_link:
+            create_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
         gen_id = repo.create_local_generation(cmd.data, cmd.worker_id, **create_kwargs)
     else:  # regenerate
         import_kwargs = {"creator_uid": cmd.creator_uid}
         if cmd.workspace is not None:
             import_kwargs["workspace"] = cmd.workspace
+        if cmd.canvas_link:
+            import_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
         gen_id = repo.import_generation(cmd.source_gen_id, cmd.worker_id, **import_kwargs)
         reg = cmd.regenerate or RegenerateIn()
         if reg.color is not None:
@@ -651,7 +710,14 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
 
     payload = repo.gen_recipe(gen_id)
     payload["source_gen_id"] = cmd.source_gen_id
-    request_id = repo.create_gen_request(cmd.email, cmd.creator_uid, gen_id, cmd.kind, payload)
+    request_id = repo.create_gen_request(
+        cmd.email,
+        cmd.creator_uid,
+        gen_id,
+        cmd.kind,
+        payload,
+        canvas_link=cmd.canvas_link,
+    )
     log_event(
         _generation_log,
         "generation_requested",
@@ -672,20 +738,8 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     # 요청자 에이전트를 즉시 깨움(이벤트 방식) — 30초 폴링 대기 없이 바로 실행.
     agent_signals.signal(cmd.email, "gen-request")
 
-    # PM 메트릭: 요청 시점 견적 박제. 서버에 CLI 있을 때만 견적(없으면 NULL — 실제값은 후속 거래
-    # 매칭으로 채움). 견적 0/실패는 미상(NULL)로 둔다(진짜 0 과 구분 불가).
-    if MANAGE_ENABLED:
-        est = None
-        try:
-            if cli_bridge.cli_available():
-                cc = await cli_bridge.estimate_cost(
-                    payload.get("model"), payload.get("params"), payload.get("prompt") or ""
-                )
-                v = (cc or {}).get("credits")
-                est = int(v) if v else None
-        except Exception as exc:  # noqa: BLE001 — 견적 실패가 생성을 막지 않게
-            est = None
-            _log_pm_failure("estimate_cost", exc)
-        pm_best_effort(lambda _m: _m.record_request(gen_id, est_credits=est))
+    # 요청 시점 견적은 부가 통계다. 느린 CLI 응답 때문에 브라우저가 닫히기 전 generation id를
+    # 못 받는 일이 없도록 응답 경로에서 분리한다.
+    _schedule_request_estimate(gen_id, payload)
 
     return repo.get_generation(gen_id)

@@ -2,6 +2,7 @@ import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
+import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
 
 type AskPrompt = (
   title: string,
@@ -29,7 +30,11 @@ export function useGenerationCardActions({
   workspace,
 }: UseGenerationCardActionsArgs) {
   // 새로 만든 재생성 placeholder 를 반환한다(캔버스에서 그 카드에 변형으로 append 하려고). 실패 시 null.
-  const onRegenerate = async (g: Generation): Promise<Generation | null> => {
+  const onRegenerate = async (
+    g: Generation,
+    canvasLink?: CanvasGenerationLink,
+    onDefinitiveReject?: () => void,
+  ): Promise<Generation | null> => {
     if (!isGenerationWorkspaceReady(workspace)) {
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
       return null;
@@ -40,13 +45,17 @@ export function useGenerationCardActions({
       const ng = await api.regenerate(g.id, {
         prompt: g.prompt,
         auto_tags: [...armedAutoTags],
-      }, workspace);
+      }, workspace, canvasLink);
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();
       postLibraryChanged();
       return ng;
     } catch (e) {
+      const status = Number((e as { status?: number })?.status);
+      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+        onDefinitiveReject?.();
+      }
       flash("재생성 실패: " + String(e));
       return null;
     }

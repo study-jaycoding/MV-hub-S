@@ -70,6 +70,14 @@ export interface SceneRef {
   origin?: "asset" | "upload";
 }
 
+// 캔버스가 생성 요청보다 먼저 저장하는 복구 표식. 브라우저가 요청 직후 종료돼도 generation id와
+// 목적 카드가 로컬 씬에 남아, 다음 실행에서 서버 요청 기록과 다시 맞출 수 있다.
+export interface CanvasGenerationAttempt {
+  attemptId: string;
+  generationId: string;
+  createdAt: number;
+}
+
 export interface SceneCard {
   id: string;
   kind: SceneCardKind;
@@ -80,6 +88,7 @@ export interface SceneCard {
   refs?: SceneRef[]; // 레퍼런스 카드: 담긴 레퍼런스(순서)
   genId?: string | null; // 생성 카드: 현재 표시 중인 generation id(다중이면 그중 하나)
   genIds?: string[]; // 생성 카드: 이 카드에서 만들어진 모든 결과(누적, 오래된→최신). 배지·팝업용.
+  pendingGenerationAttempts?: CanvasGenerationAttempt[]; // 응답 전 종료 대비 생성 연결 복구 표식.
   prompt?: string; // 생성 카드: 작성 중인 프롬프트 초안(직렬화 텍스트). 카드 전환 시 이 카드로 복원.
   status?: "empty" | "pending" | "running" | "done" | "failed";
   text?: string; // text 노드: 입력한 텍스트 내용. / output 노드: 채널 이름. / head 노드: 제목 글씨.

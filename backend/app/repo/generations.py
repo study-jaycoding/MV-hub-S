@@ -26,6 +26,7 @@ from ._common import (
 def create_local_generation(
     data: dict[str, Any], worker_id: str, creator_uid: Optional[str] = None,
     workspace: Optional[dict[str, Any]] = None,
+    generation_id: Optional[str] = None,
 ) -> str:
     """status=pending 인 로컬 generation 레코드 생성. gen_id 반환.
 
@@ -33,7 +34,7 @@ def create_local_generation(
     creator_uid: 로그인한 계정의 생성자 신원(있으면 그것으로 귀속 → 계정별 '내 작업' 분리).
                  없으면(비로그인/단독) 제공자 my_uid 로 폴백(기존 동작).
     """
-    gen_id = new_id()
+    gen_id = generation_id or new_id()
     # 내가 지금 만드는 것이므로 내 신원으로 즉시 귀속 — 동기화로 creator_uid 가 채워지기 전
     # 'pending' 상태에서도 is_mine=True(=나)가 되게 한다(팀원으로 오표시되던 버그 수정).
     # 로그인 계정이면 그 계정 uid, 아니면 제공자 my_uid(없으면 NULL → 단독 사용자 취급).
@@ -850,6 +851,7 @@ def migrate_legacy_soft_deleted() -> int:
 def import_generation(
     source_gen_id: str, worker_id: str, creator_uid: Optional[str] = None,
     workspace: Optional[dict[str, Any]] = None,
+    generation_id: Optional[str] = None,
 ) -> str:
     """공유 항목을 내 워크스페이스로 복제(프롬프트·레퍼런스 보존) + history 기록.
 
@@ -872,7 +874,7 @@ def import_generation(
             if not src:
                 raise ValueError(f"원본 generation 없음: {source_gen_id}")
 
-            child_id = new_id()
+            child_id = generation_id or new_id()
             conn.execute(
                 "INSERT INTO generation"
                 "(id, worker_id, prompt, display_prompt, model, params, color, status, sort_ts, "

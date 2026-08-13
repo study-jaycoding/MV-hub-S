@@ -53,9 +53,17 @@ import {
 } from "./lib/sceneGenerationInputs";
 import {
   acquireSceneGeneration,
-  applySceneGenerationResults,
   executeSceneGenerationBatch,
 } from "./lib/sceneGenerationSubmission";
+import {
+  createCanvasGenerationLinks,
+  discardCanvasGenerationAttempt,
+  prepareCanvasGenerationLinks,
+  reconcileCanvasGenerationAttempts,
+  settleCanvasGenerationAttempt,
+  type CanvasGenerationLink,
+  type CanvasGenerationTarget,
+} from "./lib/canvasGenerationRecovery";
 import { buildRecipeScene } from "./lib/recipeScene";
 import { useGenerationAutoRefresh } from "./lib/useGenerationAutoRefresh";
 import { useCommentBadgePoll } from "./lib/useCommentBadgePoll";
@@ -252,6 +260,140 @@ export default function App() {
       }),
     [setFacets],
   );
+  const prepareCanvasGenerationBatch = useCallback((
+    sceneId: string,
+    cardIds: string[],
+  ): CanvasGenerationLink[] => {
+    const links = cardIds.flatMap((cardId) =>
+      createCanvasGenerationLinks({ sceneId, cardId }, 1),
+    );
+    flushScenePending(sceneId);
+    const latest = listScenes(null).find((scene) => scene.id === sceneId);
+    if (!latest) return [];
+    const prepared = prepareCanvasGenerationLinks(latest.cards, links);
+    if (!prepared.attachedCount) return [];
+    // updateScene/saveScenes는 동기 저장이라, 아래 HTTP 요청보다 generation id가 먼저 디스크에 남는다.
+    patchSceneById(sceneId, { cards: prepared.cards });
+    seedPending(links.map((link) => link.generation_id));
+    return links;
+  }, [flushScenePending, patchSceneById]);
+  const prepareCanvasGeneration = useCallback((
+    target: CanvasGenerationTarget,
+    count: number,
+  ): CanvasGenerationLink[] => prepareCanvasGenerationBatch(
+    target.sceneId,
+    Array.from({ length: Math.max(1, Math.trunc(count) || 1) }, () => target.cardId),
+  ), [prepareCanvasGenerationBatch]);
+
+  const settleCanvasGeneration = useCallback((
+    link: CanvasGenerationLink,
+    generation: Generation,
+  ) => {
+    flushScenePending(link.scene_id);
+    const latest = listScenes(null).find((scene) => scene.id === link.scene_id);
+    if (latest) {
+      const cards = settleCanvasGenerationAttempt(
+        latest.cards,
+        link.card_id,
+        generation.id,
+      );
+      if (cards !== latest.cards) patchSceneById(link.scene_id, { cards });
+    }
+    seedPending([generation.id]);
+    setGens((previous) =>
+      previous.some((item) => item.id === generation.id)
+        ? previous
+        : [generation, ...previous],
+    );
+  }, [flushScenePending, patchSceneById, setGens]);
+  const discardCanvasGeneration = useCallback((link: CanvasGenerationLink) => {
+    flushScenePending(link.scene_id);
+    const latest = listScenes(null).find((scene) => scene.id === link.scene_id);
+    if (!latest) return;
+    const cards = discardCanvasGenerationAttempt(
+      latest.cards,
+      link.card_id,
+      link.generation_id,
+    );
+    if (cards !== latest.cards) patchSceneById(link.scene_id, { cards });
+  }, [flushScenePending, patchSceneById]);
+
+  // 응답 전에 앱을 닫은 생성 시도를 재시작 시 복구한다. 서버 연결표 + 미리 정한 generation id를
+  // 함께 확인하고, 서버에 도달하지 않은 표식만 2분 뒤 제거한다.
+  const canvasAttemptSig = useMemo(
+    () => scenes.flatMap((scene) =>
+      scene.cards.flatMap((card) =>
+        (card.pendingGenerationAttempts || []).map(
+          (attempt) => `${scene.id}:${card.id}:${attempt.attemptId}:${attempt.generationId}:${attempt.createdAt}`,
+        ),
+      ),
+    ).join("|"),
+    [scenes],
+  );
+  useEffect(() => {
+    if (!authReady || !canvasAttemptSig) return;
+    let alive = true;
+    let timer: number | undefined;
+    const recover = async () => {
+      const current = listScenes(null);
+      const attempts = current.flatMap((scene) =>
+        scene.cards.flatMap((card) =>
+          (card.pendingGenerationAttempts || []).map((attempt) => ({ scene, card, attempt })),
+        ),
+      );
+      if (!attempts.length) return;
+      try {
+        const [resolved, batch] = await Promise.all([
+          api.resolveCanvasGenerationLinks(attempts.map(({ attempt }) => attempt.attemptId)),
+          api.getGenerationsBatch(attempts.map(({ attempt }) => attempt.generationId)),
+        ]);
+        if (!alive) return;
+        const existing = new Set(Object.keys(batch.items));
+        if (existing.size) {
+          setGens((previous) => {
+            const known = new Set(previous.map((item) => item.id));
+            const fresh = Object.values(batch.items).filter((item) => !known.has(item.id));
+            return fresh.length ? [...fresh, ...previous] : previous;
+          });
+        }
+        const resolvedAttemptIds = new Set(resolved.links.map((link) => link.attempt_id));
+        const orphanLinks = attempts
+          .filter(({ attempt }) =>
+            existing.has(attempt.generationId) && !resolvedAttemptIds.has(attempt.attemptId),
+          )
+          .map(({ scene, card, attempt }) => ({
+            attempt_id: attempt.attemptId,
+            generation_id: attempt.generationId,
+            scene_id: scene.id,
+            card_id: card.id,
+          }));
+        const repaired = orphanLinks.length
+          ? await api.repairCanvasGenerationLinks(orphanLinks)
+          : { links: [] };
+        if (!alive) return;
+        const recoveryLinks = [...resolved.links, ...repaired.links];
+        for (const scene of listScenes(null)) {
+          const reconciled = reconcileCanvasGenerationAttempts(
+            scene.cards,
+            scene.id,
+            recoveryLinks,
+          );
+          if (reconciled.cards !== scene.cards) {
+            flushScenePending(scene.id);
+            patchSceneById(scene.id, { cards: reconciled.cards });
+          }
+        }
+      } catch {
+        // 백엔드가 아직 시작 중이거나 일시 끊김이면 표식을 그대로 두고 다음 주기에 재확인한다.
+      }
+      if (alive) timer = window.setTimeout(recover, 2500);
+    };
+    void recover();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [authReady, canvasAttemptSig, flushScenePending, patchSceneById, setGens]);
   const selectedGenerations = useMemo(() => generationsByIds(gens, selected), [gens, selected]);
 
   const {
@@ -682,18 +824,21 @@ export default function App() {
   // 캔버스에서 '재생성' → 새 결과를 그 생성물이 속한 카드에 변형으로 쌓는다(라이브러리처럼 별도 카드가
   // 아니라 같은 카드에 누적). 배치 생성(onPromptCreated)과 동일한 append 규칙 — 새 것을 대표로.
   const onSceneRegenerate = async (g: Generation) => {
-    const ng = await onRegenerate(g);
-    if (!ng || !activeScene) return;
-    seedPending([ng.id]); // 재생성 결과도 방금 생성 glow 대상
+    if (!activeScene) return;
     flushScenePending(activeScene.id);
-    const cards = listScenes(null).find((s) => s.id === activeScene.id)?.cards || activeScene.cards;
-    const nextCards = cards.map((c) => {
-      if (!variantIds(c).includes(g.id)) return c; // g 가 속한 카드에만
-      const genIds = [...variantIds(c)];
-      if (!genIds.includes(ng.id)) genIds.push(ng.id);
-      return { ...c, genId: ng.id, genIds, status: "pending" as const };
-    });
-    patchSceneById(activeScene.id, { cards: nextCards });
+    const latest = listScenes(null).find((scene) => scene.id === activeScene.id) || activeScene;
+    const target = latest.cards.find((card) => variantIds(card).includes(g.id));
+    if (!target) {
+      flash("재생성 결과를 쌓을 캔버스 카드를 찾지 못했습니다.");
+      return;
+    }
+    const link = prepareCanvasGenerationBatch(activeScene.id, [target.id])[0];
+    if (!link) {
+      flash("재생성 위치를 저장하지 못해 제출을 중단했습니다.");
+      return;
+    }
+    const ng = await onRegenerate(g, link, () => discardCanvasGeneration(link));
+    if (ng) settleCanvasGeneration(link, ng);
   };
   // ── 렌더(배치) 노드 ── 연결된 생성카드들을 각자 자기 모델·refs·텍스트로 한 번에 생성한다.
   //  · 각 카드의 연결 모델(collectGenModel)·연결 텍스트(collectGenText)·카드 refs 로 body 를 조립(하단 프롬프트 재사용).
@@ -739,7 +884,6 @@ export default function App() {
     };
 
     const applySuccess = (cardId: string, gen: Generation) => {
-      seedPending([gen.id]);
       setGens((prev) => {
         if (prev.some((item) => item.id === gen.id)) return prev;
         return [gen, ...prev];
@@ -748,38 +892,74 @@ export default function App() {
       flushScenePending(scene.id);
       const latest = listScenes(null).find((item) => item.id === scene.id);
       if (latest) {
-        const applied = applySceneGenerationResults(latest.cards, [
-          { cardId, generationId: gen.id },
-        ]);
-        if (applied.attachedCardCount) patchSceneById(scene.id, { cards: applied.cards });
+        const settled = settleCanvasGenerationAttempt(latest.cards, cardId, gen.id);
+        if (settled !== latest.cards) patchSceneById(scene.id, { cards: settled });
       }
     };
 
+    const canvasLinks = prepareCanvasGenerationBatch(
+      scene.id,
+      jobs.map((job) => job.cardId),
+    );
+    if (canvasLinks.length !== jobs.length) {
+      flash("캔버스 생성 위치를 저장하지 못해 제출을 중단했습니다.");
+      return;
+    }
+    const linkedJobs = jobs.map((job, index) => ({
+      ...job,
+      canvasLink: canvasLinks[index],
+    }));
+
     const summary = await executeSceneGenerationBatch(
-      jobs.map((job) => ({ cardId: job.cardId, input: job })),
+      linkedJobs.map((job) => ({ cardId: job.cardId, input: job })),
       async (j) => {
-        await ensureModelParams(j.model);
-        const tunable = genParamsCacheRef.current[j.model] || [];
-        const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
-        const assignmentProjectId = j.assignment?.projectId ?? projectId;
-        const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
-        const assignmentTags = j.assignment?.tags || [];
-        const { body } = buildSpotlightCreateBody({
-          text: j.text,
-          inlineRefs: [],
-          trayRefs: j.refs,
-          parts: [],
-          displayPrompt: j.text,
-          model: j.model,
-          optionValues,
-          tags: assignmentTags,
-          armedAutoTags: [...armedAutoTags],
-          activeProjectId: assignmentProjectId,
-          folderPath: assignmentFolderPath,
-        });
-        return body;
+        try {
+          await ensureModelParams(j.model);
+          const tunable = genParamsCacheRef.current[j.model] || [];
+          const optionValues = await resolveAutoAspectRatio(j.params, tunable, j.refs);
+          const assignmentProjectId = j.assignment?.projectId ?? projectId;
+          const assignmentFolderPath = j.assignment?.folderPath ?? folderPath;
+          const assignmentTags = j.assignment?.tags || [];
+          const { body } = buildSpotlightCreateBody({
+            text: j.text,
+            inlineRefs: [],
+            trayRefs: j.refs,
+            parts: [],
+            displayPrompt: j.text,
+            model: j.model,
+            optionValues,
+            tags: assignmentTags,
+            armedAutoTags: [...armedAutoTags],
+            activeProjectId: assignmentProjectId,
+            folderPath: assignmentFolderPath,
+          });
+          if (!body) {
+            if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
+            return null;
+          }
+          return { body, canvasLink: j.canvasLink };
+        } catch (error) {
+          if (j.canvasLink) discardCanvasGeneration(j.canvasLink);
+          throw error;
+        }
       },
-      (body) => api.create(body, workspaceContext),
+      async ({ body, canvasLink }) => {
+        try {
+          return await api.create(body, workspaceContext, canvasLink);
+        } catch (error) {
+          const status = Number((error as { status?: number })?.status);
+          if (
+            canvasLink &&
+            status >= 400 &&
+            status < 500 &&
+            status !== 408 &&
+            status !== 429
+          ) {
+            discardCanvasGeneration(canvasLink);
+          }
+          throw error;
+        }
+      },
       ({ cardId, result }) => applySuccess(cardId, result),
     );
     const { successes, buildFail, submitFail: createFail, applyFail } = summary;
@@ -787,7 +967,7 @@ export default function App() {
       flash(`생성 요청을 만들 수 없습니다(카드 ${buildFail}개 실패, 모델 없음 ${skipped}개).`);
       return;
     }
-    // 최종 배치 순서는 요청 순서로 한 번 정규화한다(점진 반영은 실제 응답 순서였을 수 있음).
+    // 연결은 요청 전에 입력 순서대로 저장됐다. 여기서는 성공 수와 표시 데이터만 정산한다.
     const byCard = new Map<string, string[]>();
     const freshGens: Generation[] = successes.map((item) => item.result);
     if (freshGens.length) mergeFacetTags(freshGens.flatMap((item) => item.tags || []));
@@ -796,24 +976,11 @@ export default function App() {
       arr.push(success.result.id);
       byCard.set(success.cardId, arr);
     }
-    let finalApplyFail = 0;
-    try {
-      const latest = listScenes(null).find((item) => item.id === scene.id);
-      if (latest && successes.length) {
-        const applied = applySceneGenerationResults(
-          latest.cards,
-          successes.map(({ cardId, result }) => ({ cardId, generationId: result.id })),
-        );
-        if (applied.attachedCardCount) patchSceneById(scene.id, { cards: applied.cards });
-      }
-    } catch {
-      finalApplyFail = 1;
-    }
     const notes: string[] = [];
     if (skipped) notes.push(`모델 없음 ${skipped}개`);
     if (buildFail) notes.push(`요청 실패 ${buildFail}개`);
     if (createFail) notes.push(`제출 실패 ${createFail}장`);
-    if (applyFail || finalApplyFail) notes.push("화면 반영 실패 — 새로고침 필요");
+    if (applyFail) notes.push("화면 반영 실패 — 재시작 시 자동 복구");
     flash(
       `${byCard.size}개 카드에서 생성 시작(${freshGens.length}장)` +
         (notes.length ? ` · ${notes.join(" · ")}` : ""),
@@ -1173,8 +1340,17 @@ export default function App() {
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}
-                onGenerateCard={(batch, assignment) =>
-                  spotlightPromptRef.current?.submit(batch, assignment)
+                onGenerateCard={(cardId, batch, assignment) =>
+                  spotlightPromptRef.current?.submit(batch, assignment, {
+                    sceneId: activeScene.id,
+                    cardId,
+                  })
+                }
+                onCanvasRecoveryCandidates={() =>
+                  api.canvasGenerationCandidates(30).then((result) => result.items)
+                }
+                onCanvasRecoveryClaim={(generationId, sceneId, cardId) =>
+                  api.claimCanvasGenerationCandidate(generationId, sceneId, cardId).then(() => undefined)
                 }
                 onRenderCards={generateCards}
                 onRenderCardRuns={generateCardRuns}
@@ -1371,6 +1547,20 @@ export default function App() {
           onTrayBindingPromptChange={setSceneCardPrompt}
           count={batchCount}
           onCountChange={setBatchCount}
+          canvasTarget={
+            activeScene && sceneBinding
+              ? { sceneId: activeScene.id, cardId: sceneBinding.cardId }
+              : null
+          }
+          prepareCanvasGeneration={prepareCanvasGeneration}
+          settleCanvasGeneration={settleCanvasGeneration}
+          discardCanvasGeneration={discardCanvasGeneration}
+          onCanvasBatchCreated={(created) => {
+            mergeFacetTags(created.flatMap((item) => item.tags || []));
+            flash(`생성 잡 ${created.length}개를 시작했습니다.`);
+            void reload();
+            bumpBoard();
+          }}
           armedAutoTags={[...armedAutoTags]}
           armedFolder={armedFolder}
           activeProjectId={

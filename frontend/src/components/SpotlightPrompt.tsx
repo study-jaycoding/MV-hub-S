@@ -82,6 +82,10 @@ import {
 } from "./spotlight/useSpotlightSubmit";
 import type { SceneRef, SceneModelCfg } from "../lib/scenes";
 import type { SceneGenerationAssignment } from "../lib/sceneGenerationInputs";
+import type {
+  CanvasGenerationLink,
+  CanvasGenerationTarget,
+} from "../lib/canvasGenerationRecovery";
 import type { Generation, PreviewTarget, WorkspaceContext } from "../types";
 
 interface Props {
@@ -119,10 +123,22 @@ interface Props {
   // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유).
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
+  canvasTarget?: CanvasGenerationTarget | null;
+  prepareCanvasGeneration?: (
+    target: CanvasGenerationTarget,
+    count: number,
+  ) => CanvasGenerationLink[];
+  settleCanvasGeneration?: (link: CanvasGenerationLink, generation: Generation) => void;
+  discardCanvasGeneration?: (link: CanvasGenerationLink) => void;
+  onCanvasBatchCreated?: (created: Generation[]) => void;
 }
 
 export interface SpotlightPromptHandle {
-  submit: (batch?: number, assignmentOverride?: SceneGenerationAssignment | null) => void;
+  submit: (
+    batch?: number,
+    assignmentOverride?: SceneGenerationAssignment | null,
+    canvasTargetOverride?: CanvasGenerationTarget | null,
+  ) => void;
 }
 
 // 노출 모델 화이트리스트(ALLOWED)·숨김 파라미터(HIDDEN_PARAMS)·모델/파라미터/비용 로직은
@@ -145,6 +161,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   onPreview,
   count: countProp,
   onCountChange,
+  canvasTarget,
+  prepareCanvasGeneration,
+  settleCanvasGeneration,
+  discardCanvasGeneration,
+  onCanvasBatchCreated,
 }, ref) {
   // 모델/파라미터/비용 로직은 useModels 훅으로 추출(동작 100% 보존). 로드 실패는 setError 로 보고.
   const { type, setType, model, setModel, tunable, constraints, typeModels, modelName,
@@ -947,6 +968,11 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     inCompose,
     model,
     onCreated,
+    canvasTarget,
+    prepareCanvasGeneration,
+    settleCanvasGeneration,
+    discardCanvasGeneration,
+    onCanvasBatchCreated,
     optionValues,
     paramsLoading,
     paramsModel,
