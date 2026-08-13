@@ -18,7 +18,7 @@ import sys
 import unicodedata
 
 
-PLUGIN_VERSION = "0.6.1"
+PLUGIN_VERSION = "0.6.2"
 CURRENT_SETTINGS_LABEL = "현재 Resolve 설정 유지"
 DEFAULT_TEMPLATE = "{project}_{episode}_{sequence}_{description}_v{version:03d}"
 WINDOW_ID = "com.millionvolt.mvhub.clip-exporter"
@@ -529,7 +529,12 @@ def preview_text(jobs):
 
 def _resolve_context():
     resolve_obj = globals().get("resolve")
+    app_obj = globals().get("app")
     bmd_obj = globals().get("bmd")
+    if resolve_obj is None and app_obj is not None:
+        get_resolve = getattr(app_obj, "GetResolve", None)
+        if callable(get_resolve):
+            resolve_obj = get_resolve()
     if resolve_obj is None or bmd_obj is None:
         try:
             import DaVinciResolveScript as dvr_script

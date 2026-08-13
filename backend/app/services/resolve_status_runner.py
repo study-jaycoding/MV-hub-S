@@ -26,6 +26,8 @@ def _unavailable(message: str) -> dict[str, Any]:
         "project_open": False,
         "project_id": "",
         "project_name": "",
+        "resolve_version": "",
+        "resolve_product": "",
         "message": message,
     }
 

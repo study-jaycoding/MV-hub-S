@@ -35,6 +35,7 @@ class ResolveScriptInstallerTests(unittest.TestCase):
             "Blackmagic Design/DaVinci Resolve/Support/Fusion/Scripts/Utility/MV Hub/MVHub Clip Exporter.py",
         )
         self.assertEqual(target.read_bytes(), self.source.read_bytes())
+        self.assertTrue(resolve_script_installer.resolve_importer_target(target).is_file())
         self.assertTrue(result["changed"])
         self.assertEqual(result["bundled_version"], "1.2.3")
         self.assertTrue(result["up_to_date"])
@@ -64,6 +65,52 @@ class ResolveScriptInstallerTests(unittest.TestCase):
         self.assertFalse(result["changed"])
         self.assertEqual(result["installed_version"], "1.2.3")
 
+    def test_real_app_install_prefers_version_independent_all_users_path(self):
+        programdata = self.root / "ProgramData"
+        result = resolve_script_installer.install_resolve_script(
+            appdata=self.appdata,
+            programdata=programdata,
+            source_path=self.source,
+        )
+
+        public_target = resolve_script_installer.resolve_all_users_script_target(
+            programdata
+        )
+        self.assertEqual(Path(result["path"]), public_target)
+        self.assertEqual(public_target.read_bytes(), self.source.read_bytes())
+        self.assertEqual(result["installed_scope"], "all_users")
+        self.assertTrue(result["all_users_installed"])
+
+    def test_public_path_permission_failure_falls_back_to_current_user(self):
+        programdata = self.root / "ProgramData"
+        public_target = resolve_script_installer.resolve_all_users_script_target(
+            programdata
+        )
+        original_install = resolve_script_installer._atomic_install
+
+        def install_with_public_failure(target, content, importer_content):
+            if target == public_target:
+                raise resolve_script_installer.ResolveScriptInstallError("denied")
+            return original_install(target, content, importer_content)
+
+        with mock.patch.object(
+            resolve_script_installer,
+            "_atomic_install",
+            side_effect=install_with_public_failure,
+        ):
+            result = resolve_script_installer.install_resolve_script(
+                appdata=self.appdata,
+                programdata=programdata,
+                source_path=self.source,
+            )
+
+        self.assertEqual(result["installed_scope"], "current_user")
+        self.assertEqual(
+            resolve_script_installer.resolve_script_target(self.appdata).read_bytes(),
+            self.source.read_bytes(),
+        )
+        self.assertTrue(any("공용 경로 설치 실패" in item for item in result["warnings"]))
+
     def test_update_replaces_only_the_managed_script(self):
         target = resolve_script_installer.resolve_script_target(self.appdata)
         target.parent.mkdir(parents=True)
@@ -78,6 +125,38 @@ class ResolveScriptInstallerTests(unittest.TestCase):
         self.assertEqual(result["previous_version"], "0.9.0")
         self.assertEqual(target.read_bytes(), self.source.read_bytes())
         self.assertEqual(unrelated.read_text("utf-8"), "keep")
+
+    def test_two_script_install_rolls_back_if_importer_replace_fails(self):
+        target = resolve_script_installer.resolve_script_target(self.appdata)
+        importer = resolve_script_installer.resolve_importer_target(target)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'PLUGIN_VERSION = "old-exporter"\n')
+        importer.write_bytes(b'PLUGIN_VERSION = "old-importer"\n')
+        original_replace = resolve_script_installer.os.replace
+        calls = 0
+
+        def fail_second_replace(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise PermissionError("simulated importer replace failure")
+            return original_replace(source, destination)
+
+        importer_content = resolve_script_installer.bundled_importer_script_path().read_bytes()
+        with (
+            mock.patch.object(
+                resolve_script_installer.os,
+                "replace",
+                side_effect=fail_second_replace,
+            ),
+            self.assertRaises(resolve_script_installer.ResolveScriptInstallError),
+        ):
+            resolve_script_installer._atomic_install(
+                target, self.source.read_bytes(), importer_content
+            )
+
+        self.assertEqual(target.read_bytes(), b'PLUGIN_VERSION = "old-exporter"\n')
+        self.assertEqual(importer.read_bytes(), b'PLUGIN_VERSION = "old-importer"\n')
 
     def test_resolve_api_allows_this_pc_loopback_and_lan_ip_only(self):
         local_request = Request({"type": "http", "client": ("127.0.0.1", 12345)})

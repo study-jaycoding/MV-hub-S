@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException, Request
+from fastapi.testclient import TestClient
 
 from app.routers import resolve_integration
 from app.services import request_guards, resolve_transfer
@@ -134,6 +135,44 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded["transfer_id"], result["transfer_id"])
         self.assertEqual(loaded["items"][0]["status"], "downloaded")
 
+    async def test_manual_importer_lists_only_safe_pending_manifests(self):
+        pending = await self._transfer(
+            [self._generation(1, "ep001/c0010")], "manual-pending"
+        )
+        completed = await self._transfer(
+            [self._generation(2, "ep001/c0020")], "manual-completed"
+        )
+        completed["resolve_import"] = {"status": "complete", "imported": 1}
+        await resolve_transfer.save_manifest(completed)
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            found = resolve_transfer.list_pending_manifests(["p1"])
+
+        self.assertEqual([item["transfer_id"] for item in found], ["manual-pending"])
+        self.assertEqual(found[0]["manifest_path"], pending["manifest_path"])
+
+    async def test_manual_importer_rejects_media_outside_project_render(self):
+        pending = await self._transfer(
+            [self._generation(1, "ep001/c0010")], "unsafe-manual"
+        )
+        outside = self.root / "outside.mp4"
+        outside.write_bytes(b"outside")
+        pending["items"][0]["local_path"] = str(outside)
+        await resolve_transfer.save_manifest(pending)
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            found = resolve_transfer.list_pending_manifests(["p1"])
+
+        self.assertEqual(found, [])
+
     async def test_retry_route_reuses_manifest_without_copying_sources(self):
         manifest = {
             "project_id": "p1",
@@ -189,10 +228,76 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
                     resolve_integration.ResolveRetryIn(project_id="p1", transfer_id="t1"),
                     remote,
                 ),
+                lambda: resolve_integration.pending_resolve_transfers(remote),
+                lambda: resolve_integration.record_manual_resolve_result(
+                    resolve_integration.ResolveManualResultIn(
+                        project_id="p1",
+                        transfer_id="t1",
+                        status="complete",
+                        total=1,
+                        imported=1,
+                        skipped=0,
+                        error_count=0,
+                    ),
+                    remote,
+                ),
             ):
                 with self.assertRaises(HTTPException) as raised:
                     await operation()
                 self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_manual_import_result_is_validated_and_saved(self):
+        manifest = {"project_id": "p1", "transfer_id": "manual-result"}
+        request = Request({"type": "http", "client": ("127.0.0.1", 12345)})
+        body = resolve_integration.ResolveManualResultIn(
+            project_id="p1",
+            transfer_id="manual-result",
+            status="partial",
+            total=3,
+            imported=1,
+            skipped=1,
+            error_count=1,
+            error="one failed",
+        )
+        with (
+            mock.patch.object(
+                resolve_integration,
+                "load_manifest",
+                new=mock.AsyncMock(return_value=manifest),
+            ),
+            mock.patch.object(
+                resolve_integration, "save_manifest", new=mock.AsyncMock()
+            ) as save,
+        ):
+            result = await resolve_integration.record_manual_resolve_result(body, request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(manifest["resolve_import"]["method"], "resolve_menu_script")
+        self.assertEqual(manifest["resolve_import"]["status"], "partial")
+        save.assert_awaited_once_with(manifest)
+
+    async def test_manual_importer_endpoint_works_without_browser_cookie_only_locally(self):
+        from app import main as main_module
+
+        with (
+            mock.patch.object(main_module, "AUTH_ENABLED", True),
+            mock.patch.object(
+                request_guards,
+                "local_machine_hosts",
+                return_value=frozenset({"127.0.0.1", "testclient"}),
+            ),
+            mock.patch.object(
+                resolve_integration.repo,
+                "list_projects",
+                return_value={"projects": []},
+            ),
+        ):
+            response = TestClient(main_module.app).get(
+                "/api/resolve/transfers/pending"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"items": []})
 
     async def test_large_transfer_checkpoints_manifest_instead_of_rewriting_every_item(self):
         generations = [self._generation(i, "ep001/c0010") for i in range(1, 26)]

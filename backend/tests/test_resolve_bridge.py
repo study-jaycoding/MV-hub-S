@@ -306,6 +306,43 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertIs(connected, expected)
         self.assertEqual(module.calls, 2)
 
+    def test_api_path_accepts_official_root_or_modules_directory(self):
+        api_root = self.root / "Developer" / "Scripting"
+        modules = api_root / "Modules"
+        modules.mkdir(parents=True)
+        (modules / "DaVinciResolveScript.py").write_text("# api", encoding="utf-8")
+
+        with mock.patch.dict(
+            resolve_bridge.os.environ,
+            {"CONTENT_HUB_RESOLVE_SCRIPT_API": str(api_root)},
+            clear=False,
+        ):
+            found, _library = resolve_bridge._prepare_resolve_api()
+
+        self.assertIn(modules, found)
+
+    def test_running_resolve_connection_failure_explains_local_setting(self):
+        class DisconnectedModule:
+            @staticmethod
+            def scriptapp(_name):
+                return None
+
+        with (
+            mock.patch.object(
+                resolve_bridge.importlib,
+                "import_module",
+                return_value=DisconnectedModule(),
+            ),
+            mock.patch.object(resolve_bridge, "_resolve_process_running", return_value=True),
+            mock.patch.object(resolve_bridge, "_CONNECT_ATTEMPTS", 1),
+        ):
+            with self.assertRaises(resolve_bridge.ResolveBridgeError) as raised:
+                resolve_bridge._connect_resolve()
+
+        self.assertEqual(raised.exception.code, "api_unavailable")
+        self.assertIn("External scripting using", str(raised.exception))
+        self.assertIn("Local", str(raised.exception))
+
     def test_new_bins_are_created_in_natural_folder_name_order(self):
         manifest = self._manifest()
         manifest["items"][0]["folder_path"] = "ep001/c10"

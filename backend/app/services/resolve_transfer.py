@@ -206,6 +206,95 @@ async def load_manifest(project_id: str, transfer_id: str) -> dict[str, Any]:
     return manifest
 
 
+def _pending_manifest(
+    project_id: str,
+    path: Path,
+    manifest_root: Path,
+    source_root: Path,
+) -> dict[str, Any] | None:
+    """수동 Resolve 메뉴에 노출해도 안전한 준비 완료 manifest인지 검증한다."""
+    try:
+        manifest = _read_manifest(path)
+        recorded_path = Path(str(manifest.get("manifest_path") or "")).resolve()
+        recorded_root = Path(str(manifest.get("manifest_root") or "")).resolve()
+        recorded_source = Path(str(manifest.get("source_root") or "")).resolve()
+    except (ResolveTransferError, OSError):
+        return None
+    if manifest.get("format") != MANIFEST_FORMAT:
+        return None
+    if str(manifest.get("project_id") or "") != project_id:
+        return None
+    if (
+        recorded_path != path.resolve()
+        or recorded_root != manifest_root.resolve()
+        or recorded_source != source_root.resolve()
+    ):
+        return None
+    if manifest.get("status") not in {"complete", "partial"}:
+        return None
+    ready = False
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict) or item.get("status") not in {
+            "downloaded",
+            "skipped",
+        }:
+            continue
+        try:
+            local_path = Path(str(item.get("local_path") or "")).resolve()
+            local_path.relative_to(source_root)
+        except (OSError, ValueError):
+            return None
+        if local_path.is_file():
+            ready = True
+    if not ready:
+        return None
+    if (manifest.get("resolve_import") or {}).get("status") == "complete":
+        return None
+    return manifest
+
+
+def list_pending_manifests(
+    project_ids: list[str], *, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Resolve 내부 Importer가 처리할 준비 완료 전송을 최신순으로 반환한다.
+
+    프로젝트 전체를 재귀 검색하지 않고 등록된 ``@davinci/.mvhub/transfers``만
+    확인하므로 NAS 프로젝트에서도 가볍게 동작한다.
+    """
+    pending: list[dict[str, Any]] = []
+    for project_id in dict.fromkeys(pid for pid in project_ids if pid):
+        state = project_folders.render_root_state(project_id)
+        render_raw = str(state.get("render_path") or "").strip()
+        if not render_raw or state.get("error"):
+            continue
+        try:
+            source_root = Path(render_raw).resolve()
+            project_root = source_root.parent
+            manifest_root = safe_join(project_root, DAVINCI_DIR_NAME)
+            transfer_dir = (
+                safe_join(manifest_root, Path(".mvhub") / "transfers")
+                if manifest_root is not None
+                else None
+            )
+            if transfer_dir is None or not transfer_dir.is_dir():
+                continue
+            paths = sorted(
+                (path for path in transfer_dir.glob("*.json") if path.is_file()),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            continue
+        for path in paths[: max(1, limit)]:
+            manifest = _pending_manifest(
+                project_id, path, manifest_root, source_root
+            )
+            if manifest is not None:
+                pending.append(manifest)
+    pending.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return pending[: max(1, limit)]
+
+
 def _transfer_filename(
     folder_path: str, gen_id: str, source_hint: str, media_type: str
 ) -> str:

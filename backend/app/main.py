@@ -339,7 +339,15 @@ _AUTH_PUBLIC_PREFIXES = (
     "/api/agent/download",
     "/api/agent/local-pair-token",
 )
-_AUTH_PUBLIC_PATHS = frozenset({SNAPSHOT_EXPORT_PATH})
+_AUTH_PUBLIC_PATHS = frozenset(
+    {
+        SNAPSHOT_EXPORT_PATH,
+        # Resolve 내부 메뉴 스크립트는 브라우저 로그인 쿠키를 읽을 수 없다. 두 주소는
+        # 각 라우터에서 현재 PC 요청만 허용하므로 인증 예외를 정확히 이 경로에만 둔다.
+        "/api/resolve/transfers/pending",
+        "/api/resolve/transfers/manual-result",
+    }
+)
 _SNAPSHOT_SERVER_PATHS = frozenset({SNAPSHOT_EXPORT_PATH, "/api/health", "/api/ready"})
 
 

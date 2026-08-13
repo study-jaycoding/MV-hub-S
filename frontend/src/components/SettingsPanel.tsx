@@ -110,10 +110,16 @@ export function SettingsPanel({
     try {
       const result = await installResolveScript();
       setResolveScriptStatus(result);
+      const summary = result.changed
+        ? `가져오기·내보내기 도구 설치 완료 · v${result.bundled_version || "확인 불가"} · Resolve를 완전히 종료하고 다시 실행하세요.`
+        : `가져오기·내보내기 도구가 이미 최신입니다 · v${result.bundled_version || "확인 불가"}`;
+      const migration = result.backup_paths?.length
+        ? ` · 예전 사용자용 스크립트 ${result.backup_paths.length}개 안전 백업`
+        : "";
       setResolveScriptMsg(
-        result.changed
-          ? `설치 완료 · v${result.bundled_version || "확인 불가"} · Resolve를 다시 실행하세요.`
-          : `이미 최신 버전입니다 · v${result.bundled_version || "확인 불가"}`,
+        result.warnings?.length
+          ? `${summary}${migration} · ${result.warnings[0]}`
+          : `${summary}${migration}`,
       );
     } catch (error) {
       setResolveScriptMsg(

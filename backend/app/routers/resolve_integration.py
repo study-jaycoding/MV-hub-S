@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
+from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -23,6 +25,7 @@ from ..services.resolve_script_installer import (
 )
 from ..services.resolve_transfer import (
     ResolveTransferError,
+    list_pending_manifests,
     load_manifest,
     save_manifest,
     transfer_generations,
@@ -43,6 +46,17 @@ class ResolveRetryIn(BaseModel):
     transfer_id: str = Field(min_length=1, max_length=80)
 
 
+class ResolveManualResultIn(BaseModel):
+    project_id: str = Field(min_length=1, max_length=200)
+    transfer_id: str = Field(min_length=1, max_length=80)
+    status: Literal["complete", "partial", "failed"]
+    total: int = Field(ge=1, le=500)
+    imported: int = Field(ge=0, le=500)
+    skipped: int = Field(ge=0, le=500)
+    error_count: int = Field(ge=0, le=500)
+    error: str | None = Field(default=None, max_length=1000)
+
+
 def _require_local_resolve(request: Request) -> None:
     require_local_machine_request(
         request, "DaVinci Resolve 연동은 이 PC의 로컬 MV Hub에서만 사용할 수 있습니다"
@@ -61,7 +75,7 @@ def get_resolve_script_status(request: Request):
 
 @router.post("/script/install")
 def post_resolve_script_install(request: Request):
-    """MV Hub에 포함된 최신 Clip Exporter를 현재 Windows 사용자에게 설치한다."""
+    """MV Hub Resolve 가져오기·내보내기 메뉴를 공식 경로에 설치한다."""
     _require_local_resolve(request)
     try:
         return install_resolve_script()
@@ -138,5 +152,50 @@ async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
         )
         await save_manifest(manifest)
         return manifest
+    except ResolveTransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/transfers/pending")
+async def pending_resolve_transfers(request: Request):
+    """Resolve 내부 메뉴 스크립트가 가져올 준비 완료 전송 목록."""
+    _require_local_resolve(request)
+    projects = repo.list_projects(include_archived=True).get("projects") or []
+    project_ids = [str(project.get("id") or "") for project in projects]
+    manifests = await asyncio.to_thread(list_pending_manifests, project_ids)
+    return {"items": manifests}
+
+
+@router.post("/transfers/manual-result")
+async def record_manual_resolve_result(body: ResolveManualResultIn, request: Request):
+    """Resolve 내부 Importer의 완료 결과를 기록해 중복 가져오기를 막는다."""
+    _require_local_resolve(request)
+    if body.imported + body.skipped + body.error_count != body.total:
+        raise HTTPException(status_code=400, detail="Resolve 가져오기 집계가 올바르지 않습니다")
+    successful = body.imported + body.skipped
+    expected_status = (
+        "complete"
+        if body.error_count == 0
+        else ("partial" if successful else "failed")
+    )
+    if body.status != expected_status:
+        raise HTTPException(status_code=400, detail="Resolve 가져오기 상태가 집계와 일치하지 않습니다")
+    try:
+        manifest = await load_manifest(body.project_id, body.transfer_id)
+        manifest["resolve_import"] = {
+            "status": body.status,
+            "method": "resolve_menu_script",
+            "project_name": "",
+            "target_root": "MV Hub",
+            "total": body.total,
+            "imported": body.imported,
+            "skipped": body.skipped,
+            "error_count": body.error_count,
+            "error": body.error,
+            "items": [],
+            "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        await save_manifest(manifest)
+        return {"ok": True, "resolve_import": manifest["resolve_import"]}
     except ResolveTransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

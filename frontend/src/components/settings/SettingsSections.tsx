@@ -290,10 +290,10 @@ export function ResolveScriptSettingsSection({
   const version = status?.installed_version || status?.bundled_version;
   const stateText = status
     ? status.up_to_date
-      ? `설치됨 · v${version || "확인 불가"}`
+      ? `Resolve 도구 2개 설치됨 · v${version || "확인 불가"}`
       : status.installed
-        ? `업데이트 필요 · 현재 v${status.installed_version || "확인 불가"}`
-        : "아직 설치되지 않았습니다."
+        ? `Resolve 도구 업데이트 필요 · 현재 v${status.installed_version || "확인 불가"}`
+        : "Resolve 가져오기·내보내기 도구가 아직 설치되지 않았습니다."
     : "설치 상태를 확인하는 중…";
   return (
     <section className="settings-section">
@@ -309,15 +309,44 @@ export function ResolveScriptSettingsSection({
       <p className="settings-hint">
         연결 상태: {connection?.message || "확인하는 중…"}
       </p>
-      <p className="settings-hint">{msg || stateText}</p>
-      {status?.path && (
-        <p className="settings-hint resolve-script-path" title={status.path}>
-          {status.path}
+      {connection?.connected && connection.resolve_version && (
+        <p className="settings-hint">
+          확인된 프로그램: {connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}
         </p>
       )}
+      <p className="settings-hint">{msg || stateText}</p>
+      {status?.installations?.length
+        ? status.installations.map((installation) => (
+            <p
+              key={installation.scope}
+              className="settings-hint resolve-script-path"
+              title={installation.path}
+            >
+              {installation.scope === "all_users" ? "모든 사용자" : "현재 사용자"}: {" "}
+              {installation.up_to_date
+                ? "가져오기·내보내기 설치됨"
+                : installation.installed
+                  ? "업데이트 필요"
+                  : "설치 안 됨"}
+              {" · "}{installation.path}
+              {installation.importer_path && (
+                <><br />가져오기 도구 · {installation.importer_path}</>
+              )}
+            </p>
+          ))
+        : status?.path && (
+            <p className="settings-hint resolve-script-path" title={status.path}>
+              {status.path}
+            </p>
+          )}
+      {!!status?.warnings?.length && (
+        <p className="settings-hint">설치 참고: {status.warnings[0]}</p>
+      )}
       <p className="settings-hint">
-        설치 또는 업데이트 후 Resolve를 완전히 종료했다가 다시 실행하세요. 이후 작업 공간 → 스크립트
-        → MV Hub에서 사용할 수 있습니다.
+        설치 또는 업데이트 후 Resolve를 완전히 종료했다가 다시 실행하세요. 자동 연결은 Resolve 환경설정
+        → 시스템 → 일반 → External scripting using이 Local이어야 합니다. 자동 연결이 지원되지 않는
+        환경에서도 작업 공간 → 스크립트 → MV Hub → MVHub Importer를 누르면 준비된 원본을 직접
+        가져올 수 있습니다.
       </p>
     </section>
   );

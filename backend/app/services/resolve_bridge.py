@@ -22,11 +22,12 @@ from typing import Any
 
 
 MEDIA_POOL_ROOT = "MV Hub"
-_DEFAULT_SCRIPT_MODULES = Path(
-    os.environ.get(
-        "CONTENT_HUB_RESOLVE_SCRIPT_API",
-        r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules",
-    )
+_SCRIPTING_RELATIVE_DIR = Path(
+    "Blackmagic Design",
+    "DaVinci Resolve",
+    "Support",
+    "Developer",
+    "Scripting",
 )
 _IMPORT_LOCK = threading.Lock()
 _CONNECT_ATTEMPTS = max(
@@ -56,6 +57,76 @@ class ResolveBridgeError(RuntimeError):
         self.code = code
 
 
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = os.path.normcase(os.path.normpath(str(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _script_module_candidates() -> list[Path]:
+    """Resolve 버전·설치 방식별 공식 Python 모듈 후보 경로."""
+    candidates: list[Path] = []
+    for variable in ("CONTENT_HUB_RESOLVE_SCRIPT_API", "RESOLVE_SCRIPT_API"):
+        raw = os.environ.get(variable, "").strip()
+        if not raw:
+            continue
+        configured = Path(raw).expanduser()
+        candidates.append(
+            configured if configured.name.casefold() == "modules" else configured / "Modules"
+        )
+    programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    candidates.append(Path(programdata) / _SCRIPTING_RELATIVE_DIR / "Modules")
+    return _unique_paths(candidates)
+
+
+def _script_library_candidates() -> list[Path]:
+    """기본 C: 드라이브가 아닌 설치까지 포함한 fusionscript 후보."""
+    candidates: list[Path] = []
+    for variable in ("CONTENT_HUB_RESOLVE_SCRIPT_LIB", "RESOLVE_SCRIPT_LIB"):
+        raw = os.environ.get(variable, "").strip()
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    install_dir = os.environ.get("CONTENT_HUB_RESOLVE_INSTALL_DIR", "").strip()
+    if install_dir:
+        candidates.append(Path(install_dir).expanduser() / "fusionscript.dll")
+    for variable in ("ProgramW6432", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        root = os.environ.get(variable, "").strip()
+        if root:
+            candidates.append(
+                Path(root) / "Blackmagic Design" / "DaVinci Resolve" / "fusionscript.dll"
+            )
+    candidates.append(
+        Path(r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll")
+    )
+    return _unique_paths(candidates)
+
+
+def _prepare_resolve_api() -> tuple[list[Path], Path | None]:
+    """찾아낸 API를 현재 프로세스에 연결하고 진단 정보를 반환한다."""
+    module_dirs = _script_module_candidates()
+    existing_module_dirs = [
+        path for path in module_dirs if (path / "DaVinciResolveScript.py").is_file()
+    ]
+    for path in reversed(existing_module_dirs):
+        value = str(path)
+        if value not in sys.path:
+            sys.path.insert(0, value)
+
+    library = next((path for path in _script_library_candidates() if path.is_file()), None)
+    if library is not None:
+        # 공식 래퍼가 비표준 설치 드라이브에서도 DLL을 찾게 한다.
+        configured = os.environ.get("RESOLVE_SCRIPT_LIB", "").strip()
+        if not configured or not Path(configured).is_file():
+            os.environ["RESOLVE_SCRIPT_LIB"] = str(library)
+    return existing_module_dirs, library
+
+
 def _resolve_process_running() -> bool | None:
     """Windows에서 Resolve.exe 실행 여부를 짧게 확인한다.
 
@@ -81,14 +152,15 @@ def _resolve_process_running() -> bool | None:
 
 def _connect_resolve() -> Any:
     """설치된 공식 Resolve 스크립팅 모듈로 실행 중인 앱에 연결한다."""
-    module_path = str(_DEFAULT_SCRIPT_MODULES)
-    if module_path not in sys.path:
-        sys.path.insert(0, module_path)
+    module_dirs, library = _prepare_resolve_api()
     try:
         module = importlib.import_module("DaVinciResolveScript")
     except (ImportError, OSError) as exc:
+        searched = ", ".join(str(path) for path in _script_module_candidates())
         raise ResolveBridgeError(
-            "DaVinci Resolve 스크립팅 모듈을 불러올 수 없습니다",
+            "DaVinci Resolve 스크립팅 API를 찾을 수 없습니다. "
+            "Resolve 설치 프로그램에서 복구 설치를 실행하세요. "
+            f"확인한 위치: {searched}",
             code="module_unavailable",
         ) from exc
     last_error: Exception | None = None
@@ -109,9 +181,17 @@ def _connect_resolve() -> Any:
         ) from last_error
     process_running = _resolve_process_running()
     if process_running:
+        detail = ""
+        if module_dirs:
+            detail = f" (API: {module_dirs[0]}"
+            if library:
+                detail += f", DLL: {library}"
+            detail += ")"
         raise ResolveBridgeError(
-            "DaVinci Resolve는 실행 중이지만 내부 연결 기능을 사용할 수 없습니다. "
-            "작업을 저장하고 Resolve를 완전히 종료한 뒤 다시 실행하세요",
+            "DaVinci Resolve는 실행 중이지만 외부 연결이 허용되지 않았습니다. "
+            "Resolve 환경설정 → 시스템 → 일반 → External scripting using을 "
+            "Local로 저장한 뒤 Resolve를 완전히 종료하고 다시 실행하세요"
+            + detail,
             code="api_unavailable",
         )
     if process_running is False:
@@ -145,6 +225,10 @@ def resolve_connection_status() -> dict[str, Any]:
             project_manager = resolve.GetProjectManager()
             project = project_manager.GetCurrentProject() if project_manager else None
             project_identity = _project_identity(project) if project else None
+            get_version = getattr(resolve, "GetVersionString", None)
+            resolve_version = str(get_version() or "") if callable(get_version) else ""
+            get_product = getattr(resolve, "GetProductName", None)
+            resolve_product = str(get_product() or "") if callable(get_product) else ""
         if not project:
             return {
                 "status": "no_project",
@@ -153,6 +237,8 @@ def resolve_connection_status() -> dict[str, Any]:
                 "project_open": False,
                 "project_id": "",
                 "project_name": "",
+                "resolve_version": resolve_version,
+                "resolve_product": resolve_product,
                 "message": "DaVinci Resolve는 연결됐지만 열려 있는 프로젝트가 없습니다",
             }
         project_id, project_name = project_identity or ("", "")
@@ -163,6 +249,8 @@ def resolve_connection_status() -> dict[str, Any]:
             "project_open": True,
             "project_id": project_id,
             "project_name": project_name,
+            "resolve_version": resolve_version,
+            "resolve_product": resolve_product,
             "message": f"DaVinci Resolve 연결됨 · {project_name}",
         }
     except ResolveBridgeError as exc:
@@ -174,6 +262,8 @@ def resolve_connection_status() -> dict[str, Any]:
             "project_open": False,
             "project_id": "",
             "project_name": "",
+            "resolve_version": "",
+            "resolve_product": "",
             "message": str(exc),
         }
     except Exception as exc:  # noqa: BLE001 - 외부 API 상태 확인 실패도 HTTP 500으로 만들지 않는다.
@@ -184,6 +274,8 @@ def resolve_connection_status() -> dict[str, Any]:
             "project_open": False,
             "project_id": "",
             "project_name": "",
+            "resolve_version": "",
+            "resolve_product": "",
             "message": f"DaVinci Resolve 연결 상태를 확인할 수 없습니다: {exc}",
         }
 

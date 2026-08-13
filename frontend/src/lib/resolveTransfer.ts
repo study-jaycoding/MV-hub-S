@@ -59,13 +59,31 @@ export interface ResolveScriptStatus {
   installed: boolean;
   up_to_date: boolean;
   bundled_version: string | null;
+  importer_bundled_version?: string | null;
   installed_version: string | null;
   path: string;
+  paths?: string[];
+  installed_paths?: string[];
+  all_users_installed?: boolean;
+  warnings?: string[];
+  installations?: Array<{
+    scope: "current_user" | "all_users";
+    path: string;
+    importer_path?: string;
+    installed: boolean;
+    up_to_date: boolean;
+    installed_version: string | null;
+    importer_installed?: boolean;
+    importer_version?: string | null;
+    error: string | null;
+  }>;
 }
 
 export interface ResolveScriptInstallResult extends ResolveScriptStatus {
   changed: boolean;
   previous_version: string | null;
+  migrated_paths?: string[];
+  backup_paths?: string[];
 }
 
 export interface ResolveConnectionStatus {
@@ -75,6 +93,8 @@ export interface ResolveConnectionStatus {
   project_open: boolean;
   project_id: string;
   project_name: string;
+  resolve_version?: string;
+  resolve_product?: string;
   message: string;
 }
 
