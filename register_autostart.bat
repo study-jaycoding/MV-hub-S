@@ -31,11 +31,32 @@ REM tools/. Do not register tasks that can never start; explain the repair.
 if not exist "%ROOT%tools\server_supervisor.py" goto :tools_missing
 if not exist "%ROOT%tools\server_watchdog.py" goto :tools_missing
 if not exist "%ROOT%tools\backup_replicate.py" goto :tools_missing
+if not exist "%ROOT%logs" mkdir "%ROOT%logs"
+
+REM Scheduled tasks run as SYSTEM, which does not inherit the signed-in user's
+REM PATH. Resolve the working Python/Node locations now and persist only their
+REM absolute paths for task_launch.bat.
+set "PYEXE="
+for /f "delims=" %%p in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%p"
+if not defined PYEXE for /f "delims=" %%p in ('python -c "import sys; print(sys.executable)" 2^>nul') do if not defined PYEXE set "PYEXE=%%p"
+if not defined PYEXE goto :python_missing
+if not exist "%PYEXE%" goto :python_missing
+
+set "NPMCMD="
+for /f "delims=" %%p in ('where npm.cmd 2^>nul') do if not defined NPMCMD set "NPMCMD=%%p"
+if not defined NPMCMD goto :node_missing
+if not exist "%NPMCMD%" goto :node_missing
+for %%p in ("%NPMCMD%") do set "NODEDIR=%%~dpp"
+
+>"%ROOT%logs\scheduled_python.txt" echo(%PYEXE%
+>"%ROOT%logs\scheduled_node_dir.txt" echo(%NODEDIR%
 
 echo.
 echo ============================================
 echo  MV Hub server one-click setup
 echo ============================================
+echo  Python: %PYEXE%
+echo  Node:   %NODEDIR%
 echo.
 
 REM ---- step 1: NAS backup replica path (optional) ---------------------------
@@ -76,7 +97,6 @@ findstr /b /l /c:"\\" "%ROOT%tools\backup_replica_target.txt" >nul || (
 :nas_done
 
 REM ---- step 2: register scheduled tasks -------------------------------------
-if not exist "%ROOT%logs" mkdir "%ROOT%logs"
 echo.
 echo [2/3] Registering auto-start tasks...
 
@@ -153,6 +173,22 @@ echo.
 echo [ERROR] Required server tools are missing from this checkout.
 echo         Run update_git.bat once more, then run register_autostart.bat.
 echo         Manual repair: git sparse-checkout add tools
+echo.
+pause
+exit /b 1
+
+:python_missing
+echo.
+echo [ERROR] Python is installed for another account or could not be resolved.
+echo         Run update_git.bat from this Windows account, then retry.
+echo.
+pause
+exit /b 1
+
+:node_missing
+echo.
+echo [ERROR] Node.js/npm could not be resolved for server auto-start.
+echo         Install Node.js, reopen this window, then retry.
 echo.
 pause
 exit /b 1

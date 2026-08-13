@@ -42,3 +42,17 @@ def test_autostart_escapes_parentheses_inside_command_block():
 
     assert "auto-start ^(the running one will be stopped^)..." in script
     assert "auto-start (the running one will be stopped)..." not in script
+
+
+def test_autostart_persists_runtime_paths_for_system_account():
+    register = _read("register_autostart.bat")
+    launcher = _read("task_launch.bat")
+
+    assert 'py -3 -c "import sys; print(sys.executable)"' in register
+    assert "where npm.cmd" in register
+    assert "logs\\scheduled_python.txt" in register
+    assert "logs\\scheduled_node_dir.txt" in register
+    assert "logs\\scheduled_python.txt" in launcher
+    assert 'set "PYEXE=%%p"' in launcher
+    assert "logs\\scheduled_node_dir.txt" in launcher
+    assert 'set "PATH=%%p;%PATH%"' in launcher
