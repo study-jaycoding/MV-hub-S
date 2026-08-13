@@ -9,8 +9,10 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import subprocess
 import sys
 import threading
+import time
 import unicodedata
 import uuid
 from collections import Counter
@@ -27,12 +29,54 @@ _DEFAULT_SCRIPT_MODULES = Path(
     )
 )
 _IMPORT_LOCK = threading.Lock()
+_CONNECT_ATTEMPTS = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_CONNECT_ATTEMPTS", "3"))
+)
+_CONNECT_RETRY_DELAY_SECONDS = max(
+    0.0, float(os.environ.get("CONTENT_HUB_RESOLVE_CONNECT_RETRY_DELAY_SECONDS", "0.4"))
+)
+_MEDIA_IMPORT_ATTEMPTS = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_IMPORT_ATTEMPTS", "2"))
+)
+_MEDIA_IMPORT_BATCH_SIZE = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_IMPORT_BATCH_SIZE", "50"))
+)
+_MEDIA_IMPORT_RETRY_DELAY_SECONDS = max(
+    0.0, float(os.environ.get("CONTENT_HUB_RESOLVE_IMPORT_RETRY_DELAY_SECONDS", "0.35"))
+)
 _UNSAFE_FOLDER_CHARS = re.compile(r"[\\/\x00-\x1f]")
 _NATURAL_NAME_CHUNKS = re.compile(r"(\d+)")
 
 
 class ResolveBridgeError(RuntimeError):
     """Resolve 연결이나 Media Pool 조작을 완료할 수 없는 오류."""
+
+    def __init__(self, message: str, *, code: str = "resolve_error"):
+        super().__init__(message)
+        self.code = code
+
+
+def _resolve_process_running() -> bool | None:
+    """Windows에서 Resolve.exe 실행 여부를 짧게 확인한다.
+
+    ``None``은 운영체제나 프로세스 조회 자체가 확인을 지원하지 않는 경우다. 이때
+    실행 중이 아니라고 단정하지 않아 잘못된 안내를 피한다.
+    """
+    if os.name != "nt":
+        return None
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        completed = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/FO", "CSV", "/NH"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            creationflags=creation_flags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return '"resolve.exe"' in completed.stdout.casefold()
 
 
 def _connect_resolve() -> Any:
@@ -44,15 +88,128 @@ def _connect_resolve() -> Any:
         module = importlib.import_module("DaVinciResolveScript")
     except (ImportError, OSError) as exc:
         raise ResolveBridgeError(
-            "DaVinci Resolve 스크립팅 모듈을 불러올 수 없습니다"
+            "DaVinci Resolve 스크립팅 모듈을 불러올 수 없습니다",
+            code="module_unavailable",
         ) from exc
+    last_error: Exception | None = None
+    for attempt in range(_CONNECT_ATTEMPTS):
+        try:
+            resolve = module.scriptapp("Resolve")
+        except Exception as exc:  # noqa: BLE001 - 일시적 외부 API 오류는 짧게 재시도한다.
+            last_error = exc
+            resolve = None
+        if resolve:
+            return resolve
+        if attempt + 1 < _CONNECT_ATTEMPTS and _CONNECT_RETRY_DELAY_SECONDS:
+            time.sleep(_CONNECT_RETRY_DELAY_SECONDS)
+
+    if last_error is not None:
+        raise ResolveBridgeError(
+            "DaVinci Resolve에 연결할 수 없습니다", code="api_unavailable"
+        ) from last_error
+    process_running = _resolve_process_running()
+    if process_running:
+        raise ResolveBridgeError(
+            "DaVinci Resolve는 실행 중이지만 내부 연결 기능을 사용할 수 없습니다. "
+            "작업을 저장하고 Resolve를 완전히 종료한 뒤 다시 실행하세요",
+            code="api_unavailable",
+        )
+    if process_running is False:
+        raise ResolveBridgeError(
+            "DaVinci Resolve가 실행 중이지 않습니다", code="not_running"
+        )
+    raise ResolveBridgeError(
+        "DaVinci Resolve 실행 여부를 확인할 수 없고 연결에도 실패했습니다",
+        code="api_unavailable",
+    )
+
+
+def _project_identity(project: Any) -> tuple[str, str]:
+    """Resolve 프로젝트의 안정적인 ID와 표시 이름을 반환한다."""
+    name = str(project.GetName() or "")
+    get_unique_id = getattr(project, "GetUniqueId", None)
+    if not callable(get_unique_id):
+        return "", name
     try:
-        resolve = module.scriptapp("Resolve")
-    except Exception as exc:  # noqa: BLE001 - 외부 프로그램 연결 오류를 사용자 메시지로 변환한다.
-        raise ResolveBridgeError("DaVinci Resolve에 연결할 수 없습니다") from exc
-    if not resolve:
-        raise ResolveBridgeError("DaVinci Resolve가 실행 중이지 않습니다")
-    return resolve
+        return str(get_unique_id() or ""), name
+    except Exception:  # noqa: BLE001 - Resolve 버전별 미지원은 이름 확인으로 폴백한다.
+        return "", name
+
+
+def resolve_connection_status() -> dict[str, Any]:
+    """현재 Resolve 연결과 열린 프로젝트 상태를 사용자 안내용 구조로 반환한다."""
+    try:
+        # Resolve 스크립팅 API는 동시 호출 안정성을 보장하지 않으므로 가져오기와 같은 잠금을 쓴다.
+        with _IMPORT_LOCK:
+            resolve = _connect_resolve()
+            project_manager = resolve.GetProjectManager()
+            project = project_manager.GetCurrentProject() if project_manager else None
+            project_identity = _project_identity(project) if project else None
+        if not project:
+            return {
+                "status": "no_project",
+                "connected": True,
+                "process_running": True,
+                "project_open": False,
+                "project_id": "",
+                "project_name": "",
+                "message": "DaVinci Resolve는 연결됐지만 열려 있는 프로젝트가 없습니다",
+            }
+        project_id, project_name = project_identity or ("", "")
+        return {
+            "status": "ready",
+            "connected": True,
+            "process_running": True,
+            "project_open": True,
+            "project_id": project_id,
+            "project_name": project_name,
+            "message": f"DaVinci Resolve 연결됨 · {project_name}",
+        }
+    except ResolveBridgeError as exc:
+        process_running = exc.code != "not_running"
+        return {
+            "status": exc.code,
+            "connected": False,
+            "process_running": process_running,
+            "project_open": False,
+            "project_id": "",
+            "project_name": "",
+            "message": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001 - 외부 API 상태 확인 실패도 HTTP 500으로 만들지 않는다.
+        return {
+            "status": "api_unavailable",
+            "connected": False,
+            "process_running": True,
+            "project_open": False,
+            "project_id": "",
+            "project_name": "",
+            "message": f"DaVinci Resolve 연결 상태를 확인할 수 없습니다: {exc}",
+        }
+
+
+def _assert_expected_project(manifest: dict[str, Any], project: Any) -> None:
+    """보내기를 누를 때 고정한 프로젝트와 현재 프로젝트가 같은지 확인한다."""
+    target = manifest.get("resolve_target") or {}
+    expected_id = str(target.get("project_id") or "")
+    expected_name = str(target.get("project_name") or "")
+    if not expected_id and not expected_name:
+        return
+
+    current_id, current_name = _project_identity(project)
+    id_mismatch = bool(expected_id and current_id and expected_id != current_id)
+    name_fallback_mismatch = bool(
+        expected_name and (not expected_id or not current_id) and expected_name != current_name
+    )
+    if id_mismatch or name_fallback_mismatch:
+        expected_label = expected_name or expected_id
+        current_label = current_name or current_id or "확인 불가"
+        raise ResolveBridgeError(
+            "Resolve 프로젝트가 전송 시작 때와 달라졌습니다 "
+            f"(예정: {expected_label}, 현재: {current_label}). "
+            "예정된 프로젝트를 다시 연 뒤 준비된 원본 다시 가져오기를 실행하세요",
+            code="project_changed",
+        )
 
 
 def _folder_name(value: str, fallback: str) -> str:
@@ -199,6 +356,66 @@ def _existing_paths(folder: Any) -> set[str]:
         for clip in (folder.GetClipList() or [])
         if (normalized := _normal_path(_clip_file_path(clip)))
     }
+
+
+def _import_media_batch(
+    media_pool: Any,
+    target: Any,
+    entries: list[tuple[dict[str, Any], Path, str]],
+    result: dict[str, Any],
+) -> None:
+    """한 Bin의 원본을 묶어 가져오고, 빠진 항목만 한 번 더 시도한다."""
+    remaining = list(entries)
+    last_error = ""
+    for attempt in range(_MEDIA_IMPORT_ATTEMPTS):
+        if not remaining:
+            break
+        returned_paths: set[str] = set()
+        returned_all = False
+        try:
+            if not media_pool.SetCurrentFolder(target):
+                raise ResolveBridgeError("Resolve Media Pool 대상 폴더를 선택할 수 없습니다")
+            imported = media_pool.ImportMedia([str(source) for _item, source, _path in remaining])
+            if not imported:
+                last_error = "Resolve가 원본 파일을 가져오지 못했습니다"
+            elif isinstance(imported, (list, tuple)):
+                returned_paths = {
+                    normalized
+                    for clip in imported
+                    if (normalized := _normal_path(_clip_file_path(clip)))
+                }
+                # 일부 Resolve 버전/파일 형식은 반환 객체의 File Path 속성이 즉시 비어
+                # 있어도 요청 수와 같은 객체를 돌려준다. 이 경우 기존 API 성공 계약을 믿는다.
+                returned_all = len(imported) == len(remaining) and not returned_paths
+        except Exception as exc:  # noqa: BLE001 - 부분 성공 여부를 실제 Bin 경로로 다시 확인한다.
+            last_error = str(exc)
+
+        try:
+            _refresh_folders(media_pool)
+            current_paths = _existing_paths(target) | returned_paths
+        except Exception as exc:  # noqa: BLE001 - 확인 불가 항목은 재시도 후 개별 실패로 남긴다.
+            current_paths = set()
+            last_error = str(exc)
+
+        next_remaining: list[tuple[dict[str, Any], Path, str]] = []
+        for item, source, normalized in remaining:
+            if returned_all or normalized in current_paths:
+                item["status"] = "imported"
+                result["imported"] += 1
+            else:
+                next_remaining.append((item, source, normalized))
+        remaining = next_remaining
+        if (
+            remaining
+            and attempt + 1 < _MEDIA_IMPORT_ATTEMPTS
+            and _MEDIA_IMPORT_RETRY_DELAY_SECONDS
+        ):
+            time.sleep(_MEDIA_IMPORT_RETRY_DELAY_SECONDS)
+
+    for item, _source, _normalized in remaining:
+        item["status"] = "error"
+        item["error"] = last_error or "Resolve가 원본 파일을 가져오지 못했습니다"
+        result["error_count"] += 1
 
 
 def _path_identity(parts: tuple[str, ...]) -> tuple[str, ...]:
@@ -466,6 +683,7 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
     project = project_manager.GetCurrentProject() if project_manager else None
     if not project:
         raise ResolveBridgeError("현재 열려 있는 Resolve 프로젝트가 없습니다")
+    _assert_expected_project(manifest, project)
     media_pool = project.GetMediaPool()
     root = media_pool.GetRootFolder() if media_pool else None
     if not media_pool or not root:
@@ -540,6 +758,11 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             except Exception as exc:  # noqa: BLE001 - 해당 경로 항목만 실패 처리한다.
                 folder_errors[parts_key] = str(exc)
 
+        import_batches: dict[
+            tuple[str, ...], list[tuple[dict[str, Any], Path, str]]
+        ] = {}
+        existing_paths_by_folder: dict[tuple[str, ...], set[str]] = {}
+        queued_paths_by_folder: dict[tuple[str, ...], set[str]] = {}
         for source_item in source_items:
             item = {
                 "generation_id": str(source_item.get("generation_id") or ""),
@@ -569,21 +792,33 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                     [MEDIA_POOL_ROOT, project_label, *parts]
                 )
                 normalized = _normal_path(str(source))
-                if normalized in _existing_paths(target):
+                if parts_key not in existing_paths_by_folder:
+                    existing_paths_by_folder[parts_key] = _existing_paths(target)
+                if normalized in existing_paths_by_folder[parts_key]:
                     item["status"] = "skipped"
                     result["skipped"] += 1
                     continue
-                if not media_pool.SetCurrentFolder(target):
-                    raise ResolveBridgeError("Resolve Media Pool 대상 폴더를 선택할 수 없습니다")
-                imported = media_pool.ImportMedia([str(source)])
-                if not imported:
-                    raise ResolveBridgeError("Resolve가 원본 파일을 가져오지 못했습니다")
-                item["status"] = "imported"
-                result["imported"] += 1
+                queued = queued_paths_by_folder.setdefault(parts_key, set())
+                if normalized in queued:
+                    item["status"] = "skipped"
+                    result["skipped"] += 1
+                    continue
+                queued.add(normalized)
+                import_batches.setdefault(parts_key, []).append((item, source, normalized))
             except Exception as exc:  # noqa: BLE001 - 항목별 실패를 격리한다.
                 item["status"] = "error"
                 item["error"] = str(exc)
                 result["error_count"] += 1
+
+        for parts_key in sorted(import_batches, key=_folder_path_sort_key):
+            entries = import_batches[parts_key]
+            for start in range(0, len(entries), _MEDIA_IMPORT_BATCH_SIZE):
+                _import_media_batch(
+                    media_pool,
+                    prepared_targets[parts_key],
+                    entries[start : start + _MEDIA_IMPORT_BATCH_SIZE],
+                    result,
+                )
 
         success_count = result["imported"] + result["skipped"]
         if not result["total"]:

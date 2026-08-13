@@ -5,7 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from app.services import resolve_bridge
 from app.services.resolve_bridge import import_manifest_to_current_project
 
 
@@ -45,6 +47,7 @@ class FakeMediaPool:
     def __init__(self):
         self.root = FakeFolder("Master")
         self.current = self.root
+        self.import_calls = []
 
     def GetRootFolder(self):
         return self.root
@@ -105,6 +108,7 @@ class FakeMediaPool:
         return True
 
     def ImportMedia(self, paths):
+        self.import_calls.append(list(paths))
         clips = [FakeClip(path) for path in paths]
         self.current.clips.extend(clips)
         return clips
@@ -113,9 +117,13 @@ class FakeMediaPool:
 class FakeProject:
     def __init__(self, media_pool):
         self.media_pool = media_pool
+        self.unique_id = "resolve-project-1"
 
     def GetName(self):
         return "임시 테스트"
+
+    def GetUniqueId(self):
+        return self.unique_id
 
     def GetMediaPool(self):
         return self.media_pool
@@ -222,6 +230,82 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual((second["imported"], second["skipped"]), (0, 2))
         self.assertEqual(self.manager.saved, 1)
 
+    def test_same_bin_files_are_imported_in_one_batch(self):
+        manifest = self._manifest()
+        manifest["items"][1]["folder_path"] = "ep001/c0010"
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(self.pool.import_calls), 1)
+        self.assertEqual(len(self.pool.import_calls[0]), 2)
+
+    def test_large_same_bin_import_is_chunked(self):
+        manifest = self._manifest()
+        template = manifest["items"][0]
+        items = []
+        for index in range(105):
+            source = self.root / f"bulk-{index}.mp4"
+            source.write_bytes(f"video-{index}".encode())
+            items.append(
+                {
+                    **template,
+                    "generation_id": f"bulk-{index}",
+                    "folder_path": "ep001/c0010",
+                    "local_path": str(source),
+                }
+            )
+        manifest["items"] = items
+
+        with mock.patch.object(resolve_bridge, "_MEDIA_IMPORT_BATCH_SIZE", 50):
+            result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["imported"], 105)
+        self.assertEqual([len(call) for call in self.pool.import_calls], [50, 50, 5])
+
+    def test_missing_batch_items_are_retried_once(self):
+        manifest = self._manifest()
+        manifest["items"][1]["folder_path"] = "ep001/c0010"
+        original_import = self.pool.ImportMedia
+        attempts = 0
+
+        def flaky_import(paths):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                self.pool.import_calls.append(list(paths))
+                return []
+            return original_import(paths)
+
+        self.pool.ImportMedia = flaky_import
+        with mock.patch.object(resolve_bridge, "_MEDIA_IMPORT_RETRY_DELAY_SECONDS", 0):
+            result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual((result["imported"], attempts), (2, 2))
+
+    def test_connect_retries_transient_script_server_failure(self):
+        expected = object()
+
+        class FakeModule:
+            def __init__(self):
+                self.calls = 0
+
+            def scriptapp(self, _name):
+                self.calls += 1
+                return expected if self.calls == 2 else None
+
+        module = FakeModule()
+        with (
+            mock.patch.object(resolve_bridge.importlib, "import_module", return_value=module),
+            mock.patch.object(resolve_bridge, "_CONNECT_ATTEMPTS", 3),
+            mock.patch.object(resolve_bridge, "_CONNECT_RETRY_DELAY_SECONDS", 0),
+        ):
+            connected = resolve_bridge._connect_resolve()
+
+        self.assertIs(connected, expected)
+        self.assertEqual(module.calls, 2)
+
     def test_new_bins_are_created_in_natural_folder_name_order(self):
         manifest = self._manifest()
         manifest["items"][0]["folder_path"] = "ep001/c10"
@@ -307,6 +391,27 @@ class ResolveBridgeTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("현재 열려 있는", result["error"])
+
+    def test_connection_status_reports_current_project_identity(self):
+        with mock.patch.object(resolve_bridge, "_connect_resolve", return_value=self.resolve):
+            result = resolve_bridge.resolve_connection_status()
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["project_id"], "resolve-project-1")
+        self.assertEqual(result["project_name"], "임시 테스트")
+
+    def test_changed_project_is_rejected_before_media_pool_changes(self):
+        manifest = self._manifest()
+        manifest["resolve_target"] = {
+            "project_id": "different-project",
+            "project_name": "원래 프로젝트",
+        }
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("전송 시작 때와 달라졌습니다", result["error"])
+        self.assertEqual(self.pool.root.children, [])
 
     def test_unexpected_resolve_api_error_does_not_escape(self):
         class BrokenResolve:

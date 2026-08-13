@@ -67,6 +67,8 @@ export function LibrarySelectionActionBar({
   projects,
   onDownload,
   onResolveTransfer,
+  onResolveRetry,
+  resolveRetryProjectName,
   resolveTransferBusy,
   resolveTransferPendingCount,
   onCompare,
@@ -80,6 +82,8 @@ export function LibrarySelectionActionBar({
   selectedGenerations: Generation[];
   onDownload: (selected: Generation[]) => void;
   onResolveTransfer: (selected: Generation[]) => void;
+  onResolveRetry: (() => void) | null;
+  resolveRetryProjectName: string;
   resolveTransferBusy: boolean;
   resolveTransferPendingCount: number;
   onCompare: (selected: Generation[]) => void;
@@ -119,6 +123,15 @@ export function LibrarySelectionActionBar({
           ? `${t("◆ Resolve에 추가")} (${resolveTransferPendingCount})`
           : t("◆ Resolve로 보내기")}
       </button>
+      {onResolveRetry && (
+        <button
+          className="sb-resolve"
+          onClick={onResolveRetry}
+          title={`이미 준비된 원본을 다시 복사하지 않고 ${resolveRetryProjectName || "예정된 Resolve 프로젝트"}에 가져오기`}
+        >
+          ↻ 준비 원본 다시 가져오기
+        </button>
+      )}
       {selectedCount >= 2 && (
         <button
           onClick={() => onCompare(selectedGenerations)}

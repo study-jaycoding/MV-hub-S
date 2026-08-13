@@ -26,7 +26,13 @@ export interface ResolveTransferResult {
   skipped: number;
   error_count: number;
   items: ResolveTransferItem[];
+  resolve_target?: ResolveProjectTarget;
   resolve_import: ResolveImportResult;
+}
+
+export interface ResolveProjectTarget {
+  project_id: string;
+  project_name: string;
 }
 
 export interface ResolveImportItem {
@@ -60,6 +66,16 @@ export interface ResolveScriptStatus {
 export interface ResolveScriptInstallResult extends ResolveScriptStatus {
   changed: boolean;
   previous_version: string | null;
+}
+
+export interface ResolveConnectionStatus {
+  status: "ready" | "no_project" | "not_running" | "api_unavailable" | "module_unavailable";
+  connected: boolean;
+  process_running: boolean;
+  project_open: boolean;
+  project_id: string;
+  project_name: string;
+  message: string;
 }
 
 export type ResolveSelectionCheck =
@@ -127,10 +143,31 @@ export function resolveTransferSummary(result: ResolveTransferResult): string {
   return `Resolve ${imported.imported}개 가져오기 완료${existing} · ${imported.target_root}`;
 }
 
-export function createResolveTransfer(genIds: string[]): Promise<ResolveTransferResult> {
+export function createResolveTransfer(
+  genIds: string[],
+  target?: ResolveProjectTarget,
+): Promise<ResolveTransferResult> {
   return jsonFetch<ResolveTransferResult>("/api/resolve/transfers", {
     method: "POST",
-    body: jsonBody({ gen_ids: genIds }),
+    body: jsonBody({
+      gen_ids: genIds,
+      resolve_project_id: target?.project_id || "",
+      resolve_project_name: target?.project_name || "",
+    }),
+  });
+}
+
+export function getResolveConnectionStatus(): Promise<ResolveConnectionStatus> {
+  return jsonFetch<ResolveConnectionStatus>("/api/resolve/status", { cache: "no-store" });
+}
+
+export function retryResolveTransfer(
+  projectId: string,
+  transferId: string,
+): Promise<ResolveTransferResult> {
+  return jsonFetch<ResolveTransferResult>("/api/resolve/transfers/retry", {
+    method: "POST",
+    body: jsonBody({ project_id: projectId, transfer_id: transferId }),
   });
 }
 

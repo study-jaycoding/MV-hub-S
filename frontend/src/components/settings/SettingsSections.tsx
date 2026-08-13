@@ -1,7 +1,7 @@
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
-import type { ResolveScriptStatus } from "../../lib/resolveTransfer";
+import type { ResolveConnectionStatus, ResolveScriptStatus } from "../../lib/resolveTransfer";
 
 export function AppearanceSettingsSection({
   accent,
@@ -272,14 +272,20 @@ export function SyncToolsSection({
 
 export function ResolveScriptSettingsSection({
   status,
+  connection,
+  connectionBusy,
   busy,
   msg,
   onInstall,
+  onRefreshConnection,
 }: {
   status: ResolveScriptStatus | null;
+  connection: ResolveConnectionStatus | null;
+  connectionBusy: boolean;
   busy: boolean;
   msg: string;
   onInstall: () => void;
+  onRefreshConnection: () => void;
 }) {
   const version = status?.installed_version || status?.bundled_version;
   const stateText = status
@@ -292,9 +298,17 @@ export function ResolveScriptSettingsSection({
   return (
     <section className="settings-section">
       <h4>DaVinci Resolve</h4>
-      <button className="settings-action" onClick={onInstall} disabled={busy}>
-        ◆ {busy ? "설치 중…" : "Resolve 스크립트 설치"}
-      </button>
+      <div className="settings-row">
+        <button className="settings-action" onClick={onRefreshConnection} disabled={connectionBusy}>
+          ◆ {connectionBusy ? "연결 확인 중…" : "Resolve 연결 다시 확인"}
+        </button>
+        <button className="settings-action" onClick={onInstall} disabled={busy}>
+          ◆ {busy ? "설치 중…" : "Resolve 스크립트 설치"}
+        </button>
+      </div>
+      <p className="settings-hint">
+        연결 상태: {connection?.message || "확인하는 중…"}
+      </p>
       <p className="settings-hint">{msg || stateText}</p>
       {status?.path && (
         <p className="settings-hint resolve-script-path" title={status.path}>

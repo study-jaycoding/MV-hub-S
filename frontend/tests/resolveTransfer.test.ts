@@ -3,8 +3,10 @@ import type { Generation } from "../src/types";
 import {
   checkResolveSelection,
   createResolveTransfer,
+  getResolveConnectionStatus,
   getResolveScriptStatus,
   installResolveScript,
+  retryResolveTransfer,
   resolveTransferSummary,
   type ResolveTransferResult,
 } from "../src/lib/resolveTransfer";
@@ -134,7 +136,68 @@ describe("Resolve 전송 API와 결과 안내", () => {
       "/api/resolve/transfers",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ gen_ids: ["g1", "g2"] }),
+        body: JSON.stringify({
+          gen_ids: ["g1", "g2"],
+          resolve_project_id: "",
+          resolve_project_name: "",
+        }),
+      }),
+    );
+  });
+
+  it("확인한 Resolve 프로젝트 ID와 이름을 전송 요청에 고정한다", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(result()),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createResolveTransfer(["g1"], {
+      project_id: "resolve-project-1",
+      project_name: "편집 프로젝트",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/resolve/transfers",
+      expect.objectContaining({
+        body: JSON.stringify({
+          gen_ids: ["g1"],
+          resolve_project_id: "resolve-project-1",
+          resolve_project_name: "편집 프로젝트",
+        }),
+      }),
+    );
+  });
+
+  it("연결 상태 확인과 준비된 원본 재가져오기는 전용 로컬 API를 사용한다", async () => {
+    const status = {
+      status: "ready",
+      connected: true,
+      process_running: true,
+      project_open: true,
+      project_id: "resolve-project-1",
+      project_name: "편집 프로젝트",
+      message: "DaVinci Resolve 연결됨 · 편집 프로젝트",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: vi.fn().mockResolvedValue(status) })
+      .mockResolvedValueOnce({ ok: true, json: vi.fn().mockResolvedValue(result()) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getResolveConnectionStatus()).resolves.toEqual(status);
+    await expect(retryResolveTransfer("p1", "t1")).resolves.toEqual(result());
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/resolve/status",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/resolve/transfers/retry",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ project_id: "p1", transfer_id: "t1" }),
       }),
     );
   });

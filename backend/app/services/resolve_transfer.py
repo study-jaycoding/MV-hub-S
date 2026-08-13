@@ -35,6 +35,9 @@ _MIN_FREE_BYTES = max(
 _TRANSFER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _NATURAL_NAME_CHUNKS = re.compile(r"(\d+)")
 _CATALOG_LOCK = threading.Lock()
+_MANIFEST_CHECKPOINT_ITEMS = max(
+    1, int(os.environ.get("CONTENT_HUB_RESOLVE_MANIFEST_CHECKPOINT_ITEMS", "10"))
+)
 
 
 class ResolveTransferError(RuntimeError):
@@ -168,6 +171,39 @@ async def save_manifest(manifest: dict[str, Any]) -> None:
     if not path.name or safe_join(manifest_root, relative) != path:
         raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다")
     await asyncio.to_thread(_write_manifest, path, manifest)
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ResolveTransferError("다시 가져올 전송 기록을 찾을 수 없습니다") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResolveTransferError(f"전송 기록을 읽을 수 없습니다: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ResolveTransferError("전송 기록 형식이 올바르지 않습니다")
+    return data
+
+
+async def load_manifest(project_id: str, transfer_id: str) -> dict[str, Any]:
+    """프로젝트의 ``@davinci`` 아래에서 재가져오기용 manifest를 안전하게 읽는다."""
+    _source_root, manifest_root = await asyncio.to_thread(
+        resolve_transfer_roots, project_id
+    )
+    path = _manifest_path(manifest_root, transfer_id)
+    manifest = await asyncio.to_thread(_read_manifest, path)
+    if manifest.get("format") != MANIFEST_FORMAT:
+        raise ResolveTransferError("MV Hub Resolve 전송 기록이 아닙니다")
+    if str(manifest.get("project_id") or "") != project_id:
+        raise ResolveTransferError("전송 기록의 프로젝트가 일치하지 않습니다")
+    recorded_path = Path(str(manifest.get("manifest_path") or ""))
+    try:
+        recorded_path = recorded_path.resolve()
+    except OSError as exc:
+        raise ResolveTransferError("전송 기록 경로를 확인할 수 없습니다") from exc
+    if recorded_path != path.resolve():
+        raise ResolveTransferError("전송 기록 경로가 현재 프로젝트 밖을 가리킵니다")
+    return manifest
 
 
 def _transfer_filename(
@@ -373,7 +409,7 @@ async def transfer_generations(
     _refresh_summary(manifest)
     await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
-    for item, asset, dest in work:
+    for index, (item, asset, dest) in enumerate(work, 1):
         try:
             source = await _cached_source(asset)
             # 다운로드 사이에 정션/경로가 바뀌지 않았는지 복사 직전 재검증한다.
@@ -387,7 +423,10 @@ async def transfer_generations(
             item["status"] = "error"
             item["error"] = str(exc)
         _refresh_summary(manifest)
-        await asyncio.to_thread(_write_manifest, manifest_path, manifest)
+        # NAS의 작은 JSON 파일을 항목마다 다시 쓰면 대량 전송이 크게 느려진다. 최대
+        # N건까지만 메모리에 두고 체크포인트하며, 원본 복사 자체는 항상 원자적으로 끝난다.
+        if index % _MANIFEST_CHECKPOINT_ITEMS == 0:
+            await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
     _refresh_summary(manifest, finished=True)
     catalog_path, folder_paths = await asyncio.to_thread(

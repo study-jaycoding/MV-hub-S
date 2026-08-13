@@ -1022,6 +1022,8 @@ export default function App() {
         projects={projects}
         onDownload={bulkDownload}
         onResolveTransfer={resolveTransfer.sendToResolve}
+        onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
+        resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
         resolveTransferBusy={resolveTransfer.busy}
         resolveTransferPendingCount={resolveTransfer.pendingCount}
         onCompare={(items) => {

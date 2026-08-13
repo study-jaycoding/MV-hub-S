@@ -33,8 +33,10 @@ import {
 } from "./settings/SettingsSections";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
 import {
+  getResolveConnectionStatus,
   getResolveScriptStatus,
   installResolveScript,
+  type ResolveConnectionStatus,
   type ResolveScriptStatus,
 } from "../lib/resolveTransfer";
 
@@ -60,6 +62,8 @@ export function SettingsPanel({
   const [dlDir, setDlDir] = useState<string | null>(null);
   const [dlErr, setDlErr] = useState("");
   const [resolveScriptStatus, setResolveScriptStatus] = useState<ResolveScriptStatus | null>(null);
+  const [resolveConnection, setResolveConnection] = useState<ResolveConnectionStatus | null>(null);
+  const [resolveConnectionBusy, setResolveConnectionBusy] = useState(false);
   const [resolveScriptBusy, setResolveScriptBusy] = useState(false);
   const [resolveScriptMsg, setResolveScriptMsg] = useState("");
 
@@ -68,7 +72,37 @@ export function SettingsPanel({
     getResolveScriptStatus().then(setResolveScriptStatus).catch(() => {
       setResolveScriptMsg("설치 상태를 확인하지 못했습니다. 로컬 MV Hub에서 다시 시도하세요.");
     });
+    getResolveConnectionStatus().then(setResolveConnection).catch(() => {
+      setResolveConnection({
+        status: "api_unavailable",
+        connected: false,
+        process_running: false,
+        project_open: false,
+        project_id: "",
+        project_name: "",
+        message: "Resolve 연결 상태를 확인하지 못했습니다",
+      });
+    });
   }, []);
+
+  const refreshResolveConnection = async () => {
+    setResolveConnectionBusy(true);
+    try {
+      setResolveConnection(await getResolveConnectionStatus());
+    } catch {
+      setResolveConnection({
+        status: "api_unavailable",
+        connected: false,
+        process_running: false,
+        project_open: false,
+        project_id: "",
+        project_name: "",
+        message: "Resolve 연결 상태를 확인하지 못했습니다",
+      });
+    } finally {
+      setResolveConnectionBusy(false);
+    }
+  };
 
   const installResolveExporter = async () => {
     setResolveScriptBusy(true);
@@ -305,9 +339,12 @@ export function SettingsPanel({
 
           <ResolveScriptSettingsSection
             status={resolveScriptStatus}
+            connection={resolveConnection}
+            connectionBusy={resolveConnectionBusy}
             busy={resolveScriptBusy}
             msg={resolveScriptMsg}
             onInstall={installResolveExporter}
+            onRefreshConnection={refreshResolveConnection}
           />
 
           <BackfillSettingsSection

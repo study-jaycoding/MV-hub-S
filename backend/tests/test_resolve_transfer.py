@@ -8,7 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from app.services import resolve_transfer
+from fastapi import HTTPException, Request
+
+from app.routers import resolve_integration
+from app.services import request_guards, resolve_transfer
 
 
 class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +120,93 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             (second["downloaded"], second["skipped"], second["error_count"]),
             (0, 3, 0),
         )
+
+    async def test_completed_manifest_can_be_loaded_for_retry(self):
+        result = await self._transfer([self._generation(1, "ep001/c0010")], "retry-me")
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            loaded = await resolve_transfer.load_manifest("p1", "retry-me")
+
+        self.assertEqual(loaded["transfer_id"], result["transfer_id"])
+        self.assertEqual(loaded["items"][0]["status"], "downloaded")
+
+    async def test_retry_route_reuses_manifest_without_copying_sources(self):
+        manifest = {
+            "project_id": "p1",
+            "transfer_id": "retry-existing",
+            "resolve_import": {"status": "unavailable"},
+        }
+        imported = {"status": "complete", "imported": 1, "skipped": 0}
+        with (
+            mock.patch.object(
+                resolve_integration,
+                "load_manifest",
+                new=mock.AsyncMock(return_value=manifest),
+            ) as load,
+            mock.patch.object(
+                resolve_integration,
+                "import_manifest_to_current_project",
+                return_value=imported,
+            ) as import_prepared,
+            mock.patch.object(
+                resolve_integration,
+                "save_manifest",
+                new=mock.AsyncMock(),
+            ) as save,
+            mock.patch.object(resolve_integration, "transfer_generations") as transfer,
+        ):
+            result = await resolve_integration.retry_resolve_transfer(
+                resolve_integration.ResolveRetryIn(
+                    project_id="p1", transfer_id="retry-existing"
+                ),
+                Request({"type": "http", "client": ("127.0.0.1", 12345)}),
+            )
+
+        load.assert_awaited_once_with("p1", "retry-existing")
+        import_prepared.assert_called_once_with(manifest)
+        save.assert_awaited_once_with(manifest)
+        transfer.assert_not_called()
+        self.assertEqual(result["resolve_import"], imported)
+
+    async def test_all_resolve_operations_reject_remote_pc_requests(self):
+        remote = Request({"type": "http", "client": ("192.168.1.50", 12345)})
+
+        with mock.patch.object(
+            request_guards,
+            "local_machine_hosts",
+            return_value=frozenset({"127.0.0.1", "192.168.1.38"}),
+        ):
+            for operation in (
+                lambda: resolve_integration.get_resolve_connection_status(remote),
+                lambda: resolve_integration.create_resolve_transfer(
+                    resolve_integration.ResolveTransferIn(gen_ids=["g1"]), remote
+                ),
+                lambda: resolve_integration.retry_resolve_transfer(
+                    resolve_integration.ResolveRetryIn(project_id="p1", transfer_id="t1"),
+                    remote,
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    await operation()
+                self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_large_transfer_checkpoints_manifest_instead_of_rewriting_every_item(self):
+        generations = [self._generation(i, "ep001/c0010") for i in range(1, 26)]
+        original = resolve_transfer._write_manifest
+        with (
+            mock.patch.object(resolve_transfer, "_MANIFEST_CHECKPOINT_ITEMS", 10),
+            mock.patch.object(
+                resolve_transfer, "_write_manifest", wraps=original
+            ) as write_manifest,
+        ):
+            result = await self._transfer(generations, "checkpointed")
+
+        self.assertEqual(result["downloaded"], 25)
+        self.assertEqual(write_manifest.call_count, 4)
 
     async def test_separate_transfers_replace_catalog_with_current_selection(self):
         await self._transfer([self._generation(1, "ep001/c0015")], "first-late")

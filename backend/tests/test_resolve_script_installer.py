@@ -5,11 +5,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi import HTTPException, Request
 
 from app.routers import resolve_integration
-from app.services import resolve_script_installer
+from app.services import request_guards, resolve_script_installer
 
 
 class ResolveScriptInstallerTests(unittest.TestCase):
@@ -78,13 +79,20 @@ class ResolveScriptInstallerTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), self.source.read_bytes())
         self.assertEqual(unrelated.read_text("utf-8"), "keep")
 
-    def test_install_api_is_limited_to_the_local_pc(self):
+    def test_resolve_api_allows_this_pc_loopback_and_lan_ip_only(self):
         local_request = Request({"type": "http", "client": ("127.0.0.1", 12345)})
+        local_lan_request = Request({"type": "http", "client": ("192.168.1.38", 12345)})
         remote_request = Request({"type": "http", "client": ("192.168.1.50", 12345)})
 
-        resolve_integration._require_local_script_install(local_request)
-        with self.assertRaises(HTTPException) as raised:
-            resolve_integration._require_local_script_install(remote_request)
+        resolve_integration._require_local_resolve(local_request)
+        with mock.patch.object(
+            request_guards,
+            "local_machine_hosts",
+            return_value=frozenset({"127.0.0.1", "192.168.1.38"}),
+        ):
+            resolve_integration._require_local_resolve(local_lan_request)
+            with self.assertRaises(HTTPException) as raised:
+                resolve_integration._require_local_resolve(remote_request)
 
         self.assertEqual(raised.exception.status_code, 403)
 
