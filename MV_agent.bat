@@ -166,10 +166,25 @@ set /a _tries=0
 :waitloop
 set /a _tries+=1
 curl -fsS -o nul "%HUB%/api/health" 2>nul && goto :hubup
-if %_tries% geq 40 (echo [warn] hub is slow to respond - continuing anyway. & goto :hubup)
+if %_tries% geq 40 (
+  if defined MVHUB_DEV_FRONTEND_DIR (
+    echo [ERROR] Test backend did not become healthy. Vite will not be started.
+    goto :err
+  )
+  echo [warn] hub is slow to respond - continuing anyway.
+  goto :hubup
+)
 timeout /t 1 /nobreak >nul
 goto :waitloop
 :hubup
+
+REM test_dev hook: only the isolated live-development launcher defines these values.
+REM Start Vite AFTER the backend health check so an already-open 5173 tab can never
+REM reconnect while 8012 is still unavailable. Normal MV_agent launches are unchanged.
+if defined MVHUB_DEV_FRONTEND_DIR (
+  call :start_dev_frontend
+  if errorlevel 1 goto :err
+)
 
 REM --- Code/CLI version gate (after hub up so the proxying hub can reach the shared server). ---
 REM The hub compares our code pin (hf_cli_version.txt) to the server's expected CLI version. If they
@@ -249,6 +264,53 @@ if "%RUN_AGENT%"=="1" (
 echo.
 echo [stopped] agent stopped. Closing this window stops the hub too.
 pause
+call :stop_dev_frontend
+exit /b 0
+
+REM ---------------------------------------------------------------------------
+REM test_dev-only Vite lifecycle. The backend is already healthy when this runs.
+REM ---------------------------------------------------------------------------
+:start_dev_frontend
+if "%MVHUB_DEV_FRONTEND_PORT%"=="" (
+  echo [ERROR] MVHUB_DEV_FRONTEND_PORT is missing.
+  exit /b 1
+)
+echo [dev] Backend is healthy. Starting Vite on %MVHUB_OPEN_URL% ...
+cd /d "%MVHUB_DEV_FRONTEND_DIR%" || exit /b 1
+set "_DEV_VITE_PID="
+set "_DEV_EXISTING_PID="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr /c:":%MVHUB_DEV_FRONTEND_PORT% "') do if not defined _DEV_EXISTING_PID set "_DEV_EXISTING_PID=%%p"
+if defined _DEV_EXISTING_PID (
+  echo [ERROR] Port %MVHUB_DEV_FRONTEND_PORT% is already in use by PID %_DEV_EXISTING_PID%.
+  echo [ERROR] Stop the existing process and run test_dev.bat again.
+  set "_DEV_EXISTING_PID="
+  cd /d "%ROOT%"
+  exit /b 1
+)
+start "" /b cmd /d /c "npm.cmd run dev -- --host 127.0.0.1 --port %MVHUB_DEV_FRONTEND_PORT% --strictPort"
+set /a _DEV_VITE_TRIES=0
+:wait_dev_frontend
+set /a _DEV_VITE_TRIES+=1
+curl -fsS -o nul "%MVHUB_OPEN_URL%" 2>nul && goto :dev_frontend_ready
+if %_DEV_VITE_TRIES% geq 30 goto :dev_frontend_error
+timeout /t 1 /nobreak >nul
+goto :wait_dev_frontend
+
+:dev_frontend_ready
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr /c:":%MVHUB_DEV_FRONTEND_PORT% "') do if not defined _DEV_VITE_PID set "_DEV_VITE_PID=%%p"
+set "_DEV_EXISTING_PID="
+cd /d "%ROOT%"
+exit /b 0
+
+:dev_frontend_error
+echo [ERROR] Vite did not start on %MVHUB_OPEN_URL%.
+call :stop_dev_frontend
+cd /d "%ROOT%"
+exit /b 1
+
+:stop_dev_frontend
+if defined _DEV_VITE_PID taskkill /f /t /pid %_DEV_VITE_PID% >nul 2>nul
+set "_DEV_VITE_PID="
 exit /b 0
 
 REM ---------------------------------------------------------------------------
@@ -265,6 +327,7 @@ if "%_CLIVER%"=="%HF_CLI_VERSION%" set "HF=%~1"
 exit /b 0
 
 :err
+call :stop_dev_frontend
 echo.
 echo [ERROR] a step above failed - aborting.
 pause

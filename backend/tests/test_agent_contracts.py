@@ -134,6 +134,32 @@ def test_test_dev_has_no_console_account_or_password_prompt():
     assert "Log in only in the browser" in launcher
 
 
+def test_test_dev_starts_vite_only_after_backend_health_check():
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
+    agent_launcher = (ROOT_DIR / "MV_agent.bat").read_text(encoding="utf-8")
+
+    assert 'set "MVHUB_DEV_FRONTEND_DIR=%ROOT%frontend"' in launcher
+    assert 'set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"' in launcher
+    assert "npm.cmd run dev" not in launcher
+    assert "Test backend did not become healthy. Vite will not be started." in agent_launcher
+
+    health_check = agent_launcher.index('curl -fsS -o nul "%HUB%/api/health"')
+    hub_ready = agent_launcher.index("\n:hubup")
+    start_dev_frontend = agent_launcher.index(
+        "if defined MVHUB_DEV_FRONTEND_DIR (", hub_ready
+    )
+    start_dev_call = agent_launcher.index("call :start_dev_frontend", start_dev_frontend)
+    browser_open = agent_launcher.index('start "" "%MVHUB_OPEN_URL%"', start_dev_frontend)
+    vite_subroutine = agent_launcher.index("\n:start_dev_frontend")
+    port_preflight = agent_launcher.index('set "_DEV_EXISTING_PID="', vite_subroutine)
+    port_in_use_error = agent_launcher.index(
+        "is already in use by PID", port_preflight
+    )
+    vite_start = agent_launcher.index("npm.cmd run dev", vite_subroutine)
+    assert health_check < hub_ready < start_dev_frontend < start_dev_call < browser_open
+    assert vite_subroutine < port_preflight < port_in_use_error < vite_start
+
+
 def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     push = (ROOT_DIR / "test_push-db.bat").read_text(encoding="utf-8")
     pull = (ROOT_DIR / "test_pull-db.bat").read_text(encoding="utf-8")

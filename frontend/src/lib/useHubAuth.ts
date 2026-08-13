@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, getAuthToken, setAuthToken } from "../api";
 import { APP_EVENTS } from "./appEvents";
 import { clearPersonalSettings } from "./personalSettings";
@@ -15,6 +15,10 @@ export interface SharedServerState {
   email: string | null;
   name: string | null;
   roles: string[];
+}
+
+export function shouldLoadSharedServer(authEnabled: boolean | null | undefined): boolean {
+  return authEnabled === false;
 }
 
 function fallbackSharedServer(): SharedServerState {
@@ -43,8 +47,11 @@ export function useHubAuth() {
   const [account, setAccount] = useState<Account | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [finalizeProjects, setFinalizeProjects] = useState<Set<string>>(new Set());
+  const sharedSrvLoadingRef = useRef(false);
 
   const loadSharedSrv = useCallback(() => {
+    if (sharedSrvLoadingRef.current) return;
+    sharedSrvLoadingRef.current = true;
     api
       .sharedServerStatus()
       .then((s) =>
@@ -57,12 +64,11 @@ export function useHubAuth() {
           roles: s.roles || [],
         }),
       )
-      .catch(() => setSharedSrv(fallbackSharedServer()));
+      .catch(() => setSharedSrv(fallbackSharedServer()))
+      .finally(() => {
+        sharedSrvLoadingRef.current = false;
+      });
   }, []);
-
-  useEffect(() => {
-    loadSharedSrv();
-  }, [loadSharedSrv]);
 
   const onProxyConnected = useCallback(async () => {
     const st = await api.sharedServerStatus().catch(() => null);
@@ -97,9 +103,13 @@ export function useHubAuth() {
       });
   }, []);
 
+  useEffect(() => {
+    if (shouldLoadSharedServer(authConfig?.auth_enabled)) loadSharedSrv();
+  }, [authConfig?.auth_enabled, loadSharedSrv]);
+
   useCustomEvent(APP_EVENTS.authRequired, () => {
     setAccount(null);
-    if (!authConfig?.auth_enabled) loadSharedSrv();
+    if (shouldLoadSharedServer(authConfig?.auth_enabled)) loadSharedSrv();
   });
 
   useCustomEvent(APP_EVENTS.accountUpdated, () => {

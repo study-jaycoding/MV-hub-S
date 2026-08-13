@@ -68,6 +68,17 @@ _PROMPT_IMPORT_PROJECT = asset_paths.PROMPT_IMPORT_PROJECT
 # 내장 스크래치 폴더(캡쳐·임포트)를 하나로 보여주는 합본 프로젝트 — 사이드바엔 두 폴더로 표시.
 _COMBINED_INTERNAL = asset_paths.COMBINED_INTERNAL_PROJECT
 _INTERNAL_FOLDERS = asset_paths.INTERNAL_FOLDERS
+_PROJECT_HIDDEN_FOLDERS: dict[str, set[str]] = {
+    "뻘뻘뻘": {"mosaic"},
+}
+
+
+def _tree_hidden_names(project: str, *, auto_project: bool) -> Optional[set[str]]:
+    """프로젝트별 표시 제외 폴더를 반환한다. 실제 폴더나 파일은 변경하지 않는다."""
+    hidden = set(_PROJECT_HIDDEN_FOLDERS.get(project, set()))
+    if auto_project:
+        hidden.add("render")
+    return hidden or None
 
 
 def _media_type(name: str) -> Optional[str]:
@@ -417,7 +428,7 @@ def project_tree(
     tree_read = asset_tree.read_project_tree(
         proj_dir,
         fresh=fresh,
-        hidden_names={"render"} if auto_project else None,
+        hidden_names=_tree_hidden_names(project, auto_project=auto_project),
     )
     children = tree_read.children
     # 폴더의 이미지·영상 썸네일/포스터를 백그라운드로 미리 구워 첫 스크롤 딜레이 제거(생성 라이브러리와 동일).

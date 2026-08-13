@@ -43,6 +43,7 @@ import { useAssetSelectionPersistence } from "./assets/useAssetSelectionPersiste
 import { useAssetViewData } from "./assets/useAssetViewData";
 import { useAssetViewPersistence } from "./assets/useAssetViewPersistence";
 import { useAssetViewerIdentity } from "./assets/useAssetViewerIdentity";
+import { isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
 
 interface Props {
   onInfo: (t: InfoTarget) => void;
@@ -85,6 +86,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setProject,
     tree,
   } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs });
+  const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
+  useEffect(() => {
+    if (isAssetFolderHidden(project, dir)) setDir("");
+  }, [dir, project]);
   const toggleDir = useCallback((path: string) => {
     setExpanded((prev) => {
       const n = new Set(prev);
@@ -208,7 +213,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       sortDir,
       sortField,
       sourceOnly,
-      tree,
+      tree: displayTree,
       typeFilter,
     });
 
@@ -739,7 +744,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             setDir("");
           }}
           loading={loading}
-          tree={tree}
+          tree={displayTree}
           expanded={expanded}
           onToggleDir={toggleDir}
           onSelectDir={(p) => {

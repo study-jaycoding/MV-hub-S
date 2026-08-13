@@ -1,19 +1,52 @@
 // Assets 폴더 트리 순회 유틸(순수 함수) — FolderTree·AssetsView 공용.
 import type { AssetNode } from "../../types";
 
-// 제작 폴더의 약속된 표시 순서: PR을 MOSAIC보다 먼저 보여준다.
+const HIDDEN_FOLDER_NAMES_BY_PROJECT: Readonly<Record<string, ReadonlySet<string>>> = {
+  뻘뻘뻘: new Set(["MOSAIC"]),
+};
+
+function hiddenFolderNames(project: string): ReadonlySet<string> | undefined {
+  return HIDDEN_FOLDER_NAMES_BY_PROJECT[project];
+}
+
+/** 프로젝트별 표시 제외 폴더를 트리와 검색 범위에서 제거한다. 원본 트리는 변경하지 않는다. */
+export function visibleAssetTree(project: string, nodes: AssetNode[]): AssetNode[] {
+  const hidden = hiddenFolderNames(project);
+  if (!hidden) return nodes;
+
+  return nodes.flatMap((node) => {
+    if (node.type !== "dir") return [node];
+    if (hidden.has(node.name.trim().toUpperCase())) return [];
+    const children = visibleAssetTree(project, node.children || []);
+    return children === node.children ? [node] : [{ ...node, children }];
+  });
+}
+
+/** 마지막으로 열었던 경로가 현재 프로젝트의 표시 제외 폴더인지 확인한다. */
+export function isAssetFolderHidden(project: string, path: string): boolean {
+  const hidden = hiddenFolderNames(project);
+  return !!hidden && path.split(/[\\/]/).some((part) => hidden.has(part.trim().toUpperCase()));
+}
+
+// 제작 폴더의 약속된 표시 순서: PR을 Reference보다 먼저 보여준다.
+// 이름 변경 전 프로젝트의 MOSAIC도 같은 폴더로 취급한다.
 // 서버가 보내준 나머지 순서는 유지하고, 원본 배열도 변경하지 않는다.
 export function orderAssetFolders(nodes: AssetNode[]): AssetNode[] {
   const ordered = [...nodes];
-  const mosaicIndex = ordered.findIndex(
-    (node) => node.type === "dir" && node.name.toUpperCase() === "MOSAIC",
+  const referenceIndex = ordered.findIndex(
+    (node) =>
+      node.type === "dir" &&
+      ["REFERENCE", "MOSAIC"].includes(node.name.trim().toUpperCase()),
   );
   const prIndex = ordered.findIndex(
     (node) => node.type === "dir" && node.name.toUpperCase() === "PR",
   );
 
-  if (mosaicIndex >= 0 && prIndex >= 0 && mosaicIndex < prIndex) {
-    [ordered[mosaicIndex], ordered[prIndex]] = [ordered[prIndex], ordered[mosaicIndex]];
+  if (referenceIndex >= 0 && prIndex >= 0 && referenceIndex < prIndex) {
+    [ordered[referenceIndex], ordered[prIndex]] = [
+      ordered[prIndex],
+      ordered[referenceIndex],
+    ];
   }
 
   return ordered;

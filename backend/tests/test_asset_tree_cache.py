@@ -152,6 +152,48 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(result["children"][0]["path"], "frame.png")
         watch.assert_called_once_with(root, "demo", hide_render=False)
 
+    def test_assets_router_hides_mosaic_only_for_target_project(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            (root / "MOSAIC").mkdir()
+            (root / "MOSAIC" / "old.png").write_bytes(b"old")
+            (root / "Reference").mkdir()
+            (root / "Reference" / "new.png").write_bytes(b"new")
+            with (
+                patch.object(assets, "_project_dir_info", return_value=(root, False)),
+                patch("app.services.asset_watcher.watch"),
+                patch.object(assets.thumbs, "prewarm_recently", return_value=True),
+            ):
+                target = assets.project_tree(
+                    SimpleNamespace(),
+                    BackgroundTasks(),
+                    project="뻘뻘뻘",
+                    fresh=True,
+                )
+                other = assets.project_tree(
+                    SimpleNamespace(),
+                    BackgroundTasks(),
+                    project="다른 프로젝트",
+                    fresh=True,
+                )
+            asset_tree.invalidate_project_tree(root)
+
+            self.assertEqual(
+                [node["name"] for node in target["children"]],
+                ["Reference"],
+            )
+            self.assertEqual(
+                [node["name"] for node in other["children"]],
+                ["MOSAIC", "Reference"],
+            )
+            self.assertTrue((root / "MOSAIC" / "old.png").is_file())
+
+    def test_target_auto_project_keeps_render_hidden_too(self):
+        self.assertEqual(
+            assets._tree_hidden_names("뻘뻘뻘", auto_project=True),
+            {"mosaic", "render"},
+        )
+
     def test_combined_assets_router_registers_internal_folder_watches(self):
         expected = [{"name": "captures", "type": "dir", "children": []}]
         with (

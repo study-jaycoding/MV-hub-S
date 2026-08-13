@@ -24,10 +24,9 @@ set "FRONTEND_PORT=5173"
 set "BACKEND_PORT=8012"
 set "FRONTEND_URL=http://127.0.0.1:%FRONTEND_PORT%"
 set "BACKEND=http://127.0.0.1:8012"
-set "VITE_PID="
 
 REM Isolated backend settings. MV_agent.bat performs the Python/CLI checks, starts
-REM the backend, opens MVHUB_OPEN_URL and keeps agent_push.py in the foreground.
+REM the backend first, waits for health, then starts the Vite frontend and opens it.
 set "PORT=%BACKEND_PORT%"
 set "CONTENT_HUB_DATA=%ROOT%backend\data_test"
 set "CONTENT_HUB_DB=%ROOT%backend\data_test\db\content_hub.db"
@@ -35,6 +34,8 @@ set "CONTENT_HUB_AUTH=1"
 set "CONTENT_HUB_NO_PROXY=1"
 set "CONTENT_HUB_SERVER_SYNC=0"
 set "MVHUB_OPEN_URL=%FRONTEND_URL%"
+set "MVHUB_DEV_FRONTEND_DIR=%ROOT%frontend"
+set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"
 
 REM One-launch, memory-only pairing key. The browser login selects the account; the local
 REM agent exchanges this key for that session, so CMD never asks for email or hub password.
@@ -83,34 +84,8 @@ echo   Generation is isolated from the team DB but spends REAL Higgsfield credit
 echo   Log in only in the browser. The local agent follows that browser account automatically.
 echo.
 
-REM Keep Vite attached to this console so closing the one launcher window stops it.
-REM MV_agent waits for the backend and opens FRONTEND_URL later, avoiding two tabs.
-start "" /b cmd /d /c "npm.cmd run dev -- --host 127.0.0.1 --strictPort"
-
-echo [wait] Starting Vite on %FRONTEND_URL% ...
-set /a VITE_TRIES=0
-:wait_vite
-set /a VITE_TRIES+=1
-curl -fsS -o nul "%FRONTEND_URL%" 2>nul && goto :vite_ready
-if %VITE_TRIES% geq 30 goto :vite_error
-timeout /t 1 /nobreak >nul
-goto :wait_vite
-
-:vite_ready
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr /c:":%FRONTEND_PORT% "') do if not defined VITE_PID set "VITE_PID=%%p"
-cd /d "%ROOT%" || goto :vite_error
+REM MV_agent owns the complete lifecycle. In test mode it starts 8012, waits for
+REM /api/health, starts 5173, then opens the browser. Closing this window stops all.
+cd /d "%ROOT%" || (echo [ERROR] Project folder not found. & pause & exit /b 1)
 call "%ROOT%MV_agent.bat"
-set "DEV_EXIT=%ERRORLEVEL%"
-call :stop_vite
-exit /b %DEV_EXIT%
-
-:vite_error
-echo.
-echo [ERROR] Vite did not start on %FRONTEND_URL%.
-call :stop_vite
-pause
-exit /b 1
-
-:stop_vite
-if defined VITE_PID taskkill /f /t /pid %VITE_PID% >nul 2>nul
-exit /b 0
+exit /b %ERRORLEVEL%
