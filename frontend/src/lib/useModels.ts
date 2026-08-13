@@ -52,14 +52,17 @@ export const HIDDEN_PARAMS = new Set([
 //  · duration: 비디오 기본 길이를 4s 로(스키마/CLI 기본 5s 대신 — 최소·최저 크레딧). duration 파라미터를
 //    가진 비디오 모델(seedance_2_0·seedance_2_0_mini·gemini_omni, 모두 min 4s)에 적용된다. enum 없는 수치.
 export const DEFAULT_OVERRIDE: Record<string, string> = { bitrate_mode: "high", duration: "4" };
+export const MODEL_DEFAULT_OVERRIDE: Record<string, Record<string, string>> = {
+  seedance_2_5: { mode: "omni_reference" },
+};
 
 // 파라미터의 '실효 기본값' — 오버라이드(enum 에 존재할 때) > 스키마 default > enum 첫값.
 export function effectiveDefault(p: {
   name: string;
   default?: unknown;
   enum?: string[] | null;
-}): string | number | undefined {
-  const ov = DEFAULT_OVERRIDE[p.name];
+}, model = ""): string | number | undefined {
+  const ov = MODEL_DEFAULT_OVERRIDE[model]?.[p.name] ?? DEFAULT_OVERRIDE[p.name];
   if (ov != null && (!p.enum?.length || p.enum.includes(ov))) return ov;
   if (p.default != null) return p.default as string | number;
   if (p.enum?.length) return p.enum[0];
@@ -162,7 +165,7 @@ export function defaultOptions(
   const init: Record<string, string | number | boolean> = {};
   for (const p of params) {
     if (HIDDEN_PARAMS.has(p.name)) continue;
-    const dv = effectiveDefault(p); // 오버라이드(bitrate=high 등) 반영
+    const dv = effectiveDefault(p, model); // 공통·모델별 오버라이드 반영
     if (dv != null) init[p.name] = dv;
   }
   // 기본값 조합에서 게이트 조건이 깨진 파라미터는 처음부터 싣지 않는다
@@ -212,7 +215,7 @@ export function correctedOptions(
       delete next[pname];
     } else if (ok && base[pname] == null) {
       const p = params.find((x) => x.name === pname);
-      const dv = p ? effectiveDefault(p) : undefined;
+      const dv = p ? effectiveDefault(p, model) : undefined;
       if (dv != null) (next ||= { ...optionValues })[pname] = dv;
     }
   }

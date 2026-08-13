@@ -71,6 +71,14 @@ export function scenePasteIntent(
   return "none";
 }
 
+/** 리스트 내부 정렬은 리스트 카드만 단독 선택한 명시적인 상태에서만 시작한다. */
+export function shouldStartListReorder(
+  selectedIds: ReadonlySet<string>,
+  listId: string,
+): boolean {
+  return selectedIds.size === 1 && selectedIds.has(listId);
+}
+
 interface AppendSceneReferenceCardsOptions {
   cards: SceneCard[];
   edges: SceneEdge[];

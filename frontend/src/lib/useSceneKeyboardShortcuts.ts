@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { KEY_COLORS } from "./appConstants";
 import {
   isSceneTextEntryTarget,
+  sceneCopyShortcut,
   sceneKeyIntent,
 } from "./sceneKeyboard";
 import { matchShortcut } from "./shortcuts";
@@ -44,6 +45,14 @@ export function useSceneKeyboardShortcuts(actions: SceneKeyboardActions): void {
     const onKeyDown = (event: KeyboardEvent) => {
       const current = actionsRef.current;
       if (isSceneTextEntryTarget(event.target as HTMLElement | null)) return;
+
+      // 실제 입력 요소에 포커스가 없는 Ctrl+C는 최우선으로 처리한다. 편집 상태나 결과 팝업이
+      // 비정상적으로 남더라도 선택 노드 복사가 새로고침 전까지 막히지 않게 한다.
+      if (sceneCopyShortcut(event, current.selectionCount())) {
+        event.preventDefault();
+        current.onCopy();
+        return;
+      }
       if (current.isTextEditing() && event.key !== "Escape") return;
 
       if (event.key === "Escape") {

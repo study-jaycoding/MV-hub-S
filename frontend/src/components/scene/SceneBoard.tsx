@@ -70,6 +70,7 @@ import { refMediaSrc, refMediaType, refThumbSrc } from "../../lib/sceneMedia";
 import {
   buildSelectedConnections,
   SCENE_GRID as GRID,
+  shouldStartListReorder,
 } from "../../lib/sceneInteractions";
 import { sceneGroupControlTargetIds } from "../../lib/sceneGroupSelection";
 import {
@@ -100,7 +101,7 @@ import {
 import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
-import { sceneEscapeTarget } from "../../lib/sceneKeyboard";
+import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
@@ -305,8 +306,8 @@ export function SceneBoard({
   const [editTextId, setEditTextId] = useState<string | null>(null); // 편집 중인 텍스트/제목 노드(그 외엔 @토큰 알약 미리보기)
   const editTextIdRef = useRef<string | null>(null);
   editTextIdRef.current = editTextId;
-  // 편집 중이던 노드가 사라지면(삭제·undo·씬 전환) 편집 상태 해제 — 유령 editTextId 가 남으면
-  // 키보드 가드("편집 중이면 캔버스 단축키 무시")가 Ctrl+C 포함 모든 키를 새로고침 전까지 차단한다.
+  // 편집 중이던 노드가 사라지면(삭제·undo·씬 전환) 편집 상태 해제 — 유령 editTextId 가 남아
+  // 일반 캔버스 단축키를 계속 차단하지 않게 한다(Ctrl+C는 키보드 훅에서 별도로 안전 우선 처리).
   useEffect(() => {
     if (editTextId && !cards.some((c) => c.id === editTextId)) setEditTextId(null);
   }, [cards, editTextId]);
@@ -1599,10 +1600,9 @@ export function SceneBoard({
     orientation: "v" | "h",
   ) => {
     if (e.button !== 0) return;
-    // ★리스트가 선택돼 있을 때만 행 순서 변경. 미선택이면 여기서 빠져(stopPropagation 안 함) 이벤트를
-    //  보드로 흘려보내 리스트 카드 이동(드래그)이 되게 한다 — 옮기려다 실수로 순서가 바뀌던 불편 해소.
-    //  (순서를 바꾸려면 먼저 리스트를 클릭해 선택한 뒤 행을 드래그한다.)
-    if (!selectedRef.current.has(listId)) return;
+    // ★리스트만 단독 선택됐을 때만 내부 순서를 바꾼다. 다른 카드도 함께 선택된 상태라면 이벤트를
+    // 보드로 흘려 선택 노드 전체 이동을 우선한다.
+    if (!shouldStartListReorder(selectedRef.current, listId)) return;
     e.preventDefault();
     e.stopPropagation(); // 카드 이동/마퀴로 번지지 않게
     const container = (e.currentTarget as HTMLElement).closest("[data-reorder]") as HTMLElement | null;
@@ -2168,23 +2168,14 @@ export function SceneBoard({
   // 등)를 클릭한 경우는 제외(그건 그 입력창을 쓰려는 것).
   const onBoardMouseDownCapture = (e: React.MouseEvent) => {
     const t = e.target as HTMLElement;
-    if (
-      t.isContentEditable ||
-      t.tagName === "INPUT" ||
-      t.tagName === "TEXTAREA" ||
-      t.closest("input, textarea, [contenteditable='true']")
-    )
-      return;
+    if (isSceneTextEntryTarget(t)) return;
     const ae = document.activeElement as HTMLElement | null;
     // 편집 요소 + 프롬프트 dock(레퍼런스 트레이 등) 포커스를 캔버스 클릭 시 해제 — 안 하면 트레이가 계속
     //  포커스로 남아, 캔버스 클릭 후 붙여넣기가 캔버스 카드 대신 트레이로 잘못 가던 문제가 생긴다.
     if (
       ae &&
       ae !== t &&
-      (ae.isContentEditable ||
-        ae.tagName === "INPUT" ||
-        ae.tagName === "TEXTAREA" ||
-        ae.closest(".sl-dockbar"))
+      isSceneTextEntryTarget(ae)
     )
       ae.blur();
   };

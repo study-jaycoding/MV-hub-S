@@ -8,6 +8,7 @@ import {
   pasteSceneClipboard,
   resizeSceneCard,
   scenePasteIntent,
+  shouldStartListReorder,
   updateSceneEjectedCards,
 } from "../src/lib/sceneInteractions";
 import type { SceneCard, SceneEdge } from "../src/lib/scenes";
@@ -59,6 +60,14 @@ describe("scenePasteIntent", () => {
   it("복사한 노드가 없으면 같은 캡처 이미지도 다시 붙여넣을 수 있다", () => {
     expect(scenePasteIntent("20:image/png", "20:image/png", 0)).toBe("image");
     expect(scenePasteIntent(null, null, 0)).toBe("none");
+  });
+});
+
+describe("shouldStartListReorder", () => {
+  it("리스트만 단독 선택했을 때만 내부 썸네일 순서 변경을 시작한다", () => {
+    expect(shouldStartListReorder(new Set(["list"]), "list")).toBe(true);
+    expect(shouldStartListReorder(new Set(["list", "other"]), "list")).toBe(false);
+    expect(shouldStartListReorder(new Set(["other"]), "list")).toBe(false);
   });
 });
 

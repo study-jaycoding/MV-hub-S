@@ -106,6 +106,15 @@ export function sceneNodeKindForKey(key: string): SceneCardKind | null {
   return NODE_KEYS[key.toLowerCase()] ?? null;
 }
 
+export function sceneCopyShortcut(event: SceneKeyLike, selectionCount: number): boolean {
+  return (
+    selectionCount > 0 &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    event.key.toLowerCase() === "c"
+  );
+}
+
 export function sceneKeyIntent(
   event: SceneKeyLike,
   context: { pickerOpen: boolean; selectionCount: number },
@@ -126,7 +135,7 @@ export function sceneKeyIntent(
   if (mod && !event.altKey && lower === "z") {
     return { type: event.shiftKey ? "redo" : "undo" };
   }
-  if (mod && !event.altKey && lower === "c" && context.selectionCount > 0) {
+  if (sceneCopyShortcut(event, context.selectionCount)) {
     return { type: "copy" };
   }
   if (mod && lower === "g") return { type: "group" };

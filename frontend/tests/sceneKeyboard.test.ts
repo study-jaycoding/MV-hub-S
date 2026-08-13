@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isSceneTextEntryTarget,
+  sceneCopyShortcut,
   sceneEscapeTarget,
   sceneKeyIntent,
   sceneNodeKindForKey,
@@ -72,6 +73,8 @@ describe("scene keyboard intent", () => {
 
   it("복사는 선택이 있을 때만 캔버스 명령이 된다", () => {
     const event = key("c", { ctrlKey: true });
+    expect(sceneCopyShortcut(event, 2)).toBe(true);
+    expect(sceneCopyShortcut(event, 0)).toBe(false);
     expect(sceneKeyIntent(event, { pickerOpen: false, selectionCount: 0 })).toBeNull();
     expect(sceneKeyIntent(event, { pickerOpen: false, selectionCount: 2 })).toEqual({ type: "copy" });
   });

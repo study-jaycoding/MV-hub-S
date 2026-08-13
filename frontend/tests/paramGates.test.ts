@@ -16,10 +16,15 @@ const SEEDANCE_2_5_PARAMS: ModelParam[] = [
 ];
 
 describe("PARAM_GATES (seedance_2_5.extension_mode)", () => {
-  it("기본값(mode=t2v)에서는 extension_mode 를 처음부터 싣지 않는다", () => {
+  it("Seedance 2.5 기본 mode는 omni_reference이고 extension_mode는 싣지 않는다", () => {
     const init = defaultOptions(SEEDANCE_2_5_PARAMS, "seedance_2_5");
-    expect(init.mode).toBe("t2v");
+    expect(init.mode).toBe("omni_reference");
     expect("extension_mode" in init).toBe(false);
+  });
+
+  it("같은 mode 파라미터라도 다른 모델의 스키마 기본값은 바꾸지 않는다", () => {
+    const init = defaultOptions(SEEDANCE_2_5_PARAMS, "another_model");
+    expect(init.mode).toBe("t2v");
   });
 
   it("mode 가 video_extension 이 아니면 잔존 extension_mode 를 제거한다", () => {

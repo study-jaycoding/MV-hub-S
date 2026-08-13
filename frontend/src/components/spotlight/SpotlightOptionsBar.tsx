@@ -72,7 +72,7 @@ export function SpotlightOptionsBar({
     .sort((a, b) => spotlightAdvancedParamRank(a.name) - spotlightAdvancedParamRank(b.name));
   const advancedDirty = advancedParams.some((p) => {
     const cur = optionValues[p.name];
-    return cur != null && cur !== "" && String(cur) !== String(effectiveDefault(p) ?? "");
+    return cur != null && cur !== "" && String(cur) !== String(effectiveDefault(p, model) ?? "");
   });
 
   return (
@@ -285,7 +285,7 @@ export function SpotlightOptionsBar({
             <div className="sl-dropdown sl-adv-pop">
               <div className="sl-dd-title">고급 옵션</div>
               {advancedParams.map((p) => {
-                const cur = optionValues[p.name] ?? p.default ?? (p.enum ? p.enum[0] : "");
+                const cur = optionValues[p.name] ?? effectiveDefault(p, model) ?? "";
                 return (
                   <div className="sl-adv-row" key={p.name}>
                     <div className="sl-adv-label">
