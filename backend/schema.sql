@@ -229,6 +229,85 @@ CREATE TABLE IF NOT EXISTS gen_request (
 CREATE INDEX IF NOT EXISTS idx_genrequest_acct ON gen_request(account_email, status);
 CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest ON gen_request(gen_id, created_at DESC, id DESC);
 
+-- 생성 상태 영구 이력. 회전 운영 로그가 오래되어 사라져도 요청→앵커→검증→완료 흐름을
+-- generation/request 기준으로 다시 확인할 수 있다. 프롬프트·결과 URL·오류 원문은 저장하지 않는다.
+-- generation/gen_request 삭제 후에도 장애 분석 이력이 남아야 하므로 의도적으로 FK를 걸지 않는다.
+CREATE TABLE IF NOT EXISTS generation_event (
+    id              TEXT PRIMARY KEY,
+    generation_id   TEXT NOT NULL,
+    request_id      TEXT,
+    job_id           TEXT,
+    event            TEXT NOT NULL,
+    from_phase       TEXT,
+    to_phase         TEXT,
+    provider_status  TEXT,
+    reason_code      TEXT,
+    actor_uid        TEXT,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_generation_event_gen
+    ON generation_event(generation_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_generation_event_request
+    ON generation_event(request_id, created_at DESC, id DESC);
+
+-- 관리자·프로젝트 중요 변경 감사 기록. details에는 허용된 짧은 메타만 들어가며
+-- 비밀번호·이메일·프롬프트·URL 같은 민감 원문은 공통 저장 함수가 제거한다.
+CREATE TABLE IF NOT EXISTS audit_event (
+    id          TEXT PRIMARY KEY,
+    action      TEXT NOT NULL,
+    actor_uid   TEXT,
+    target_type TEXT NOT NULL,
+    target_id   TEXT,
+    project_id  TEXT,
+    fields      TEXT NOT NULL DEFAULT '[]',
+    details     TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_event_created
+    ON audit_event(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_event_project
+    ON audit_event(project_id, created_at DESC, id DESC);
+
+-- 모든 상태 변경을 같은 DB 트랜잭션에서 자동 포착한다. 애플리케이션의 의미 이벤트
+-- (요청됨/앵커확보/결과대기 등)와 함께 남아, 누락 없이 상태 전이를 재구성할 수 있다.
+CREATE TRIGGER IF NOT EXISTS trg_generation_event_insert
+AFTER INSERT ON generation
+BEGIN
+    INSERT INTO generation_event(id,generation_id,job_id,event,to_phase)
+    VALUES(lower(hex(randomblob(16))),NEW.id,NEW.job_id,'generation_status_changed',NEW.status);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_generation_event_status
+AFTER UPDATE OF status ON generation
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO generation_event(id,generation_id,job_id,event,from_phase,to_phase)
+    VALUES(lower(hex(randomblob(16))),NEW.id,NEW.job_id,'generation_status_changed',OLD.status,NEW.status);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_gen_request_event_insert
+AFTER INSERT ON gen_request
+BEGIN
+    INSERT INTO generation_event(id,generation_id,request_id,event,to_phase,actor_uid)
+    VALUES(
+        lower(hex(randomblob(16))),NEW.gen_id,NEW.id,'request_status_changed',NEW.status,
+        CASE WHEN instr(COALESCE(NEW.creator_uid,''),'@')>0 THEN NULL ELSE NEW.creator_uid END
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_gen_request_event_status
+AFTER UPDATE OF status ON gen_request
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO generation_event(
+        id,generation_id,request_id,event,from_phase,to_phase,provider_status,actor_uid
+    ) VALUES(
+        lower(hex(randomblob(16))),NEW.gen_id,NEW.id,'request_status_changed',
+        OLD.status,NEW.status,NULL,
+        CASE WHEN instr(COALESCE(NEW.creator_uid,''),'@')>0 THEN NULL ELSE NEW.creator_uid END
+    );
+END;
+
 -- 분리 창(Assets 파일 브라우저)용 파일별 메타데이터(소스/태그/코멘트/컬러).
 -- 파일은 generation 이 아니므로 (project, path) 키로 별도 보관.
 -- ★계정별 개인화: owner_uid(creator_uid)별로 같은 파일에 각자 다른 설정을 가진다 — 남의 설정과

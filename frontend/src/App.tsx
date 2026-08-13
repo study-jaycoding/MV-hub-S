@@ -298,6 +298,7 @@ export default function App() {
 
   // WebSocket 진행률: 상태 전이 메시지를 받으면 해당 카드만 갱신하고, 놓친 전이는 reload 로 따라잡는다.
   useGenerationProgress({
+    enabled: !!hubAccount,
     gensRef,
     setGens,
     reload,

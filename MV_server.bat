@@ -10,7 +10,8 @@ REM
 REM  Note: Assets (local-folder browsing) and reveal do NOT work on this server
 REM        (it reads the server disk). Those run on each worker's MV_agent.
 REM
-REM  Auto-restart: if the server process dies or drops, it relaunches itself.
+REM  Auto-restart: the Python supervisor relaunches ordinary crashes with backoff.
+REM                Repeated quick failures stop and let Task Scheduler retry later.
 REM  Stop: press Ctrl+C in this window, then answer Y.
 REM
 REM  Access: same PC       http://127.0.0.1:%PORT%
@@ -62,13 +63,10 @@ echo     same PC: http://127.0.0.1:%PORT%    Login required = %CONTENT_HUB_AUTH%
 echo     Stop: Ctrl+C then Y
 echo.
 
-:serverloop
 REM Do NOT use --reload (breaks the CLI subprocess). serve.py = IPv4/IPv6 dual-stack.
-"%PYEXE%" serve.py
-echo.
-echo [restart] server exited ^(code %errorlevel%^) - relaunching in 3s... ^(full stop: Ctrl+C^)
-timeout /t 3 /nobreak >nul
-goto :serverloop
+"%PYEXE%" "%ROOT%tools\server_supervisor.py"
+if errorlevel 1 goto :err
+exit /b 0
 
 :err
 echo.

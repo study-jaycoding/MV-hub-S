@@ -7,7 +7,7 @@
 
 | 겹 | 담당 | 잡는 장애 |
 |---|---|---|
-| 1 | `MV_server.bat` :serverloop | 프로세스 **크래시**(죽으면 3초 후 재기동) |
+| 1 | `tools/server_supervisor.py` | 프로세스 **크래시** — 지수 대기 후 재기동, 빠른 실패 5회면 폭풍 차단·ALERT |
 | 2 | `MV_watchdog.bat` → `tools/server_watchdog.py` | **행**(살아있는데 무응답) — `/api/ready` 연속 3회 실패 시 serve.py 만 강제 종료 → 1겹이 재기동 |
 | 3 | 작업 스케줄러 (`register_autostart.bat`) | **PC 재부팅**(Windows 업데이트 등) — 부팅 시 로그인 없이 서버+워치독 자동 시작 |
 
@@ -49,11 +49,14 @@
   꼭 확인한다(실패는 성공으로 위장하지 않고 "복제 실패"로 찍힌다).
 - 복제 범위: 서버 자동 백업(`backups\`, 앱이 CONTENT_HUB_BACKUP_DIR 로 위치를
   옮겼으면 그 위치를 따라감) + 팀원이 업로드한 DB 백업(`db-backups\<계정슬러그>\`).
+- 자동 백업 한 세트는 `content_hub_*`(콘텐츠), `content_trash_*`(휴지통),
+  `manage_hub_*`(프로젝트 관리, 사용 중일 때)로 구성된다. 각 파일은 생성 때와
+  원격 복제 직후 모두 SQLite 무결성 검사를 통과해야 완성본으로 취급한다.
 
 ### 워치독의 안전장치 (알아둘 것)
 
-- 부팅 직후 npm 빌드 몇 분간 서버가 안 떠 있는 건 정상 — 워치독은 **첫 정상
-  응답을 받기 전엔 절대 개입하지 않는다.**
+- 부팅 직후 npm 빌드 몇 분간 서버가 안 떠 있는 건 정상 — 워치독은 기본 10분간
+  개입하지 않는다. 10분 뒤에도 한 번도 준비되지 않으면 ALERT를 남긴다.
 - 계속 죽는 비정상 상황(**1시간 내 3회** 개입)이면 재시작 폭풍을 막기 위해
   1시간 개입을 멈추고 `logs\watchdog_ALERT.txt` 를 남긴다. 이 파일이 보이면
   사람이 서버 로그를 직접 확인해야 한다.
@@ -90,12 +93,14 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
 4. 최신 백업 DB를 복원한다 (복제 위치의 폴더 구조 기준):
    - `backups\content_hub_*.db` 최신본 → `backend\data\db\content_hub.db` 로
      복사(이름 변경). 서버 메인 DB.
+   - 같은 시각의 `backups\content_trash_*.db` →
+     `backend\data\db\content_hub_trash.db` 로 복원.
+   - 같은 시각의 `backups\manage_hub_*.db` →
+     `backend\data\db\manage_hub.db` 로 복원.
    - `backups\<계정슬러그>\content_hub_*.db` 가 있으면 →
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
    - `db-backups\<계정슬러그>\` 는 팀원 로컬 허브가 올려둔 개인 DB 백업 —
      서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 팀원에게 돌려주는 용도.
-   - 휴지통 DB(`content_hub_trash.db`)는 백업 대상이 아니다 — 복원 후 앱이
-     빈 파일을 새로 만든다(휴지통 내용물만 소실, 본 데이터와 무관).
 5. `MV_server.bat` 실행(임시로는 수동 실행으로 충분).
 6. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면
    예비 PC에도 `register_autostart.bat` 를 등록한다.
@@ -110,7 +115,7 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
 
 ## 평상시 관리 루틴 (주 1회 5분)
 
-- `logs\server_console.log` 끝부분에 403/500 반복 같은 이상 패턴이 없는지
+- `MV_logs.bat`에서 5xx, 생성 확인 필요, 백업 실패가 없는지
 - `logs\watchdog.log` 에 "개입" 기록이 있는지 (있으면 행이 있었다는 뜻 — 빈도 확인)
 - 디스크 여유 공간 (백업+미디어 캐시가 쌓인다)
 - 업데이트 순서는 항상: **서버 먼저 → 팀원 에이전트** (버전 게이트가 구 에이전트를 막는다)

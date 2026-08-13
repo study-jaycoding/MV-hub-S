@@ -24,8 +24,10 @@ r"""DB 백업 원격 복제 — 서버 PC 디스크 밖(NAS/예비 PC)으로 백
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -67,17 +69,36 @@ def replica_root() -> Path | None:
     return None
 
 
+def _sqlite_valid(path: Path) -> bool:
+    try:
+        with contextlib.closing(sqlite3.connect(str(path))) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            result = conn.execute("PRAGMA quick_check").fetchone()
+            return bool(result and result[0] == "ok")
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def copy_one(src: Path, dest: Path) -> str:
     """'copied' | 'skip' | 'fail'. 실패를 skip 으로 뭉개면 성공 위장이 된다(코덱스 P1)."""
     try:
         st = src.stat()
         if dest.exists():
             d = dest.stat()
-            if st.st_size == d.st_size and int(st.st_mtime) == int(d.st_mtime):
+            if (
+                st.st_size == d.st_size
+                and int(st.st_mtime) == int(d.st_mtime)
+                and _sqlite_valid(dest)
+            ):
                 return "skip"
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_suffix(dest.suffix + ".part")
         shutil.copyfile(src, part)  # 스트리밍 — DB 크기만큼 메모리를 쓰지 않는다
+        if not _sqlite_valid(part):
+            with contextlib.suppress(OSError):
+                part.unlink()
+            log(f"복제 검증 실패 {src.name}: destination quick_check failed")
+            return "fail"
         os.utime(part, (st.st_atime, st.st_mtime))
         os.replace(part, dest)
         return "copied"

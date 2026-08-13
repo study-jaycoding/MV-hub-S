@@ -15,6 +15,7 @@ from ..deps import (
     account_actor_uid,
     account_global_roles,
     account_scope_uid,
+    actor_id,
     project_roles_of,
     require_global_cap,
     require_project_role,
@@ -31,6 +32,7 @@ from ..models import (
     ReorderProjectsIn,
 )
 from ..services.telemetry_drain import drain_isolated_telemetry
+from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -281,7 +283,7 @@ def create_project(body: ProjectCreate, request: Request):
     # 프로젝트 생성 = 전역 create_project 역량(product_director). AUTH off 면 통과.
     require_global_cap(request, "create_project")
     try:
-        return repo.create_project(
+        created = repo.create_project(
             body.name,
             kind=body.kind,
             workspace=_validated_project_workspace(body.workspace, explicit=False),
@@ -290,6 +292,16 @@ def create_project(body: ProjectCreate, request: Request):
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    journal_audit_event(
+        "project.created",
+        actor_uid=actor_id(request),
+        target_type="project",
+        target_id=created.get("id"),
+        project_id=created.get("id"),
+        fields=["name", "kind", "workspace"],
+        details={"kind": body.kind, "workspace_scope": created.get("workspace_scope")},
+    )
+    return created
 
 
 @router.post("/reorder")
@@ -299,6 +311,13 @@ def reorder_projects(body: ReorderProjectsIn, request: Request):
         return _proxy.proxy_json("POST", "/api/projects/reorder", body=body.model_dump())
     require_global_cap(request, "create_project")
     repo.reorder_projects(body.project_ids)
+    journal_audit_event(
+        "project.order_changed",
+        actor_uid=actor_id(request),
+        target_type="project_collection",
+        fields=["sort_order"],
+        details={"project_count": len(body.project_ids)},
+    )
     return {"ok": True}
 
 
@@ -321,7 +340,21 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return repo.get_project(pid)
+    updated = repo.get_project(pid)
+    changed_fields = list(body.model_dump(exclude_none=True).keys())
+    journal_audit_event(
+        "project.updated",
+        actor_uid=actor_id(request),
+        target_type="project",
+        target_id=pid,
+        project_id=pid,
+        fields=changed_fields,
+        details={
+            "archived": body.archived,
+            "workspace_scope": (updated or {}).get("workspace_scope"),
+        },
+    )
+    return updated
 
 
 @router.delete("/{pid}")
@@ -333,6 +366,14 @@ def delete_project(pid: str, request: Request):
     removed = repo.delete_project(pid)
     if not removed:
         raise HTTPException(status_code=404, detail="없는 프로젝트")
+    journal_audit_event(
+        "project.deleted",
+        actor_uid=actor_id(request),
+        target_type="project",
+        target_id=pid,
+        project_id=pid,
+        fields=["deleted"],
+    )
     return {"ok": True}
 
 
@@ -477,6 +518,15 @@ def set_member_roles(pid: str, body: ProjectRolesIn, request: Request):
         repo.set_project_roles(pid, body.creator_uid, body.project_roles)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    journal_audit_event(
+        "project.member_roles_changed",
+        actor_uid=actor_id(request),
+        target_type="project_member",
+        target_id=body.creator_uid,
+        project_id=pid,
+        fields=["project_roles"],
+        details={"roles": body.project_roles},
+    )
     return repo.list_project_members(pid)
 
 
@@ -490,4 +540,12 @@ def remove_member(pid: str, uid: str, request: Request):
     if not _can_manage_members(request, pid):
         raise HTTPException(status_code=403, detail="멤버를 관리할 권한이 없습니다")
     repo.remove_project_member(pid, uid)
+    journal_audit_event(
+        "project.member_removed",
+        actor_uid=actor_id(request),
+        target_type="project_member",
+        target_id=uid,
+        project_id=pid,
+        fields=["membership"],
+    )
     return repo.list_project_members(pid)

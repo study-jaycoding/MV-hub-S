@@ -1,6 +1,7 @@
 """운영 서버 기동 옵션 회귀 테스트."""
 
 import os
+import signal
 import unittest
 from unittest import mock
 
@@ -22,13 +23,48 @@ class ServeConfigTests(unittest.TestCase):
                 {
                     "CONTENT_HUB_SSL_CERTFILE": "",
                     "CONTENT_HUB_SSL_KEYFILE": "",
+                    "CONTENT_HUB_ACCESS_LOG": "",
                 },
             ),
         ):
             serve.main()
 
         self.assertIsNone(config.call_args.kwargs["ws_ping_interval"])
+        self.assertFalse(config.call_args.kwargs["access_log"])
+        self.assertFalse(config.call_args.kwargs["use_colors"])
         server.assert_called_once_with(fake_config)
+        fake_server.run.assert_called_once_with(sockets=[fake_socket, fake_socket])
+
+    @unittest.skipUnless(os.name == "nt", "Windows SIGBREAK 전용 회귀 테스트")
+    def test_ctrl_break_handler_is_restored_after_server_stops(self):
+        fake_server = mock.Mock()
+        original = signal.getsignal(signal.SIGBREAK)
+
+        serve._run_server(fake_server, [mock.sentinel.socket])
+
+        fake_server.run.assert_called_once_with(sockets=[mock.sentinel.socket])
+        self.assertIs(signal.getsignal(signal.SIGBREAK), original)
+
+    def test_lifespan_startup_failure_returns_nonzero_exit(self):
+        fake_socket = mock.sentinel.socket
+        fake_server = mock.Mock(started=False)
+
+        with (
+            mock.patch.object(serve, "_make_socket", return_value=fake_socket),
+            mock.patch.object(serve.uvicorn, "Config", return_value=mock.sentinel.config),
+            mock.patch.object(serve.uvicorn, "Server", return_value=fake_server),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "CONTENT_HUB_SSL_CERTFILE": "",
+                    "CONTENT_HUB_SSL_KEYFILE": "",
+                    "CONTENT_HUB_ACCESS_LOG": "",
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(SystemExit, "1"):
+                serve.main()
+
         fake_server.run.assert_called_once_with(sockets=[fake_socket, fake_socket])
 
 

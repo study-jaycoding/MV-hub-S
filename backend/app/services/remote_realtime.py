@@ -44,6 +44,17 @@ _HEARTBEAT_SECONDS = 25.0
 _MAX_ORIGINS = 32
 
 
+def _is_auth_rejection(exc: BaseException) -> bool:
+    """신·구 websockets 예외 형태에서 인증/정책 거부를 구분한다."""
+    code = getattr(exc, "code", None)
+    if code is None:
+        received = getattr(exc, "rcvd", None)
+        code = getattr(received, "code", None)
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None) or getattr(exc, "status_code", None)
+    return code == 1008 or status in (401, 403)
+
+
 class RealtimeNotifier(Protocol):
     def notify_mutation(
         self,
@@ -228,6 +239,15 @@ class RemoteRealtimeBridge:
                     raise
                 except Exception as exc:  # 네트워크·인증·프로토콜 오류 → 제한된 backoff로 재연결
                     self._connected = False
+                    if _is_auth_rejection(exc):
+                        # 같은 만료/거부 토큰으로 계속 연결하면 서버에는 403/1008이 쌓이고 로컬도
+                        # 불필요한 재시도를 한다. 로그인/계정 전환으로 설정이 실제 바뀔 때까지 쉰다.
+                        self._state = "auth_required"
+                        self._last_error = "authentication_rejected"
+                        self._reconnect_attempts += 1
+                        await self._wait_until_config_change(config)
+                        backoff = self._min_backoff_seconds
+                        continue
                     self._state = "backoff"
                     self._last_error = type(exc).__name__
                     self._reconnect_attempts += 1
@@ -238,6 +258,10 @@ class RemoteRealtimeBridge:
                     )
         finally:
             self._connected = False
+
+    async def _wait_until_config_change(self, expected_config: RemoteConfig) -> None:
+        while self._read_config() == expected_config:
+            await asyncio.sleep(self._config_poll_seconds)
 
     async def _wait_or_config_change(
         self, delay: float, expected_config: RemoteConfig

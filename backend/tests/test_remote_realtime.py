@@ -180,6 +180,50 @@ def test_bridge_reconnects_after_failure_and_stop_cleans_task():
     assert stats["connected"] is False
 
 
+def test_bridge_does_not_retry_same_token_after_policy_rejection():
+    class PolicyRejected(Exception):
+        code = 1008
+
+    async def scenario():
+        current = [("http://hub.test", "expired-token")]
+        delivered = asyncio.Event()
+        calls = []
+
+        def connect(uri, **kwargs):
+            calls.append(current[0][1])
+            if current[0][1] == "expired-token":
+                return FakeConnection(error=PolicyRejected())
+            return FakeConnection(FakeSocket([json.dumps({"type": "synced"})]))
+
+        def handle(event):
+            current[0] = None
+            delivered.set()
+
+        bridge = RemoteRealtimeBridge(
+            lambda: current[0],
+            handle,
+            connect_factory=connect,
+            config_poll_seconds=0.01,
+            connected_config_poll_seconds=0.01,
+            min_backoff_seconds=0,
+            max_backoff_seconds=0,
+        )
+        bridge.start()
+        await asyncio.sleep(0.06)
+        calls_before_login = list(calls)
+        state_before_login = bridge.stats()["state"]
+        current[0] = ("http://hub.test", "fresh-token")
+        await asyncio.wait_for(delivered.wait(), timeout=1)
+        await bridge.stop()
+        return calls_before_login, state_before_login, calls, bridge.stats()
+
+    calls_before_login, state_before_login, calls, stats = asyncio.run(scenario())
+    assert calls_before_login == ["expired-token"]
+    assert state_before_login == "auth_required"
+    assert calls == ["expired-token", "fresh-token"]
+    assert stats["reconnect_attempts"] == 1
+
+
 def test_bridge_sends_app_level_text_heartbeat(monkeypatch):
     # 서버 유령 수거(90초 무수신 1001)는 텍스트 수신만 살아있음으로 치므로, 브리지는
     # 프로토콜 ping 과 별개로 브라우저와 같은 텍스트 "ping" 하트비트를 보내야 한다.

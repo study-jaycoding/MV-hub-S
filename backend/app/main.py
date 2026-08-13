@@ -40,6 +40,7 @@ from .config import (
     AUTH_ENABLED,
     BACKEND_DIR,
     CORS_ORIGINS,
+    DATA_DIR,
     FRONTEND_DIST,
     MANAGE_ENABLED,
     MEDIA_DIR,
@@ -82,6 +83,11 @@ from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
 from .services.operational_logging import configure_operational_logging, log_event
+from .services.operational_health import (
+    OperationalAlertTracker,
+    database_readiness,
+    operations_snapshot,
+)
 from .services.request_guards import is_loopback_host
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
@@ -95,6 +101,7 @@ _METRICS_LOG_INTERVAL = max(
     0.0,
     float(os.environ.get("CONTENT_HUB_METRICS_LOG_INTERVAL", "60")),
 )
+_operational_alerts = OperationalAlertTracker()
 
 
 def _remote_realtime_config() -> tuple[str, str] | None:
@@ -117,12 +124,26 @@ async def _runtime_report_loop(interval: float) -> None:
     """주기적으로 집계 지표를 회전 로그에 남긴다. 개인 식별정보는 기록하지 않는다."""
     while True:
         await asyncio.sleep(interval)
-        # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
-        snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
-        snapshot["websocket"] = await manager.stats()
-        snapshot["remote_realtime"] = remote_realtime_bridge.stats()
-        snapshot["agents"] = agent_signals.stats()
-        log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
+        try:
+            # 디스크 스냅샷의 미디어 폴더 재귀 스캔이 이벤트 루프를 막지 않게 스레드에서 수집.
+            snapshot = await asyncio.to_thread(runtime_metrics.snapshot)
+            snapshot["websocket"] = await manager.stats()
+            snapshot["remote_realtime"] = remote_realtime_bridge.stats()
+            snapshot["agents"] = agent_signals.stats()
+            snapshot["operations"] = await asyncio.to_thread(operations_snapshot)
+            log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
+            for alert in _operational_alerts.events(snapshot):
+                event = alert.pop("event")
+                log_event(_runtime_log, event, level=logging.WARNING, **alert)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — 관측 실패가 앱을 중단하지 않게 하고 장애는 남긴다.
+            log_event(
+                _runtime_log,
+                "runtime_snapshot_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
 
 
 def _should_bootstrap_admin() -> bool:
@@ -131,9 +152,9 @@ def _should_bootstrap_admin() -> bool:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     log_path = configure_operational_logging()
-    log_event(_runtime_log, "startup_begin", log_path=str(log_path))
+    log_event(_runtime_log, "startup_begin", log_file=log_path.name)
     runtime_report_task: asyncio.Task | None = None
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
@@ -151,17 +172,35 @@ async def lifespan(app: FastAPI):
         import secrets as _secrets
 
         _ae = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
-        # ★고정 기본 비번 폐지(보안) — env 미지정이면 1회용 랜덤을 생성해 '이번 부팅에만' 출력한다.
-        # 누구나 아는 admin1985 로 LAN 서버 관리자에 바로 로그인되던 구멍 제거.
+        # 고정 기본 비번은 사용하지 않는다. env 미지정 시 1회용 비밀번호를 별도 파일에만
+        # 기록하고 콘솔/운영 로그에는 절대 출력하지 않는다.
         _ap = os.environ.get("CONTENT_HUB_ADMIN_PASSWORD")
         _ap_generated = not _ap
-        if _ap_generated:
-            _ap = _secrets.token_urlsafe(12)
-        if repo.ensure_admin_account(_ae, _ap):
-            print(f"[startup] 부트스트랩 관리자 자동 생성: {_ae}")
+        # 이미 있는 관리자는 비밀번호·역할을 절대 건드리지 않는다. 특히 사용자가 1회용
+        # 파일을 지운 뒤 재부팅해도 쓸모없는 새 비밀번호 파일을 만들지 않는다.
+        if repo.get_account(_ae) is None:
             if _ap_generated:
-                print(f"[startup] ★1회용 관리자 비밀번호(이번에만 표시): {_ap}")
-                print("[startup]   로그인 후 즉시 변경하거나 CONTENT_HUB_ADMIN_PASSWORD 로 고정하세요.")
+                _secret_path = DATA_DIR / "bootstrap_admin_password.txt"
+                if _secret_path.exists():
+                    _ap = _secret_path.read_text(encoding="utf-8").strip()
+                    if len(_ap) < 6:
+                        raise RuntimeError("bootstrap admin password file is invalid")
+                else:
+                    _ap = _secrets.token_urlsafe(12)
+                    _secret_path.parent.mkdir(parents=True, exist_ok=True)
+                    # 먼저 비밀번호를 안전하게 보관한 뒤 계정을 만든다. 파일 기록이 실패하면
+                    # 알 수 없는 비밀번호의 관리자 계정이 생기지 않고 부팅 실패 로그가 남는다.
+                    with _secret_path.open("x", encoding="utf-8") as _secret_file:
+                        _secret_file.write(_ap + "\n")
+                    try:
+                        _secret_path.chmod(0o600)
+                    except OSError:
+                        pass
+            if repo.ensure_admin_account(_ae, _ap):
+                print("[startup] 부트스트랩 관리자 자동 생성 완료")
+                if _ap_generated:
+                    print(f"[startup] 1회용 비밀번호 파일: {_secret_path}")
+                    print("[startup] 로그인 후 비밀번호를 변경하고 해당 파일을 삭제하세요.")
     # 미디어 디렉터리 샤딩(1회 이전, 멱등) — 평면 /media/<sha> → /media/<2>/<sha>. 핫 폴더 비대화 방지.
     from .services import media_cache
 
@@ -284,6 +323,29 @@ async def lifespan(app: FastAPI):
         await periodic_sync.stop()
     asset_watcher.stop()
     log_event(_runtime_log, "shutdown_complete")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """시작·종료 어느 단계에서 실패해도 원인을 구조화 로그에 남긴다."""
+    phase = "startup"
+    try:
+        async with _application_lifespan(app):
+            phase = "running"
+            try:
+                yield
+            finally:
+                phase = "shutdown"
+    except BaseException:  # noqa: BLE001 — CancelledError/종료 신호도 단계 구분 후 그대로 전달
+        if phase != "running":
+            log_event(
+                _runtime_log,
+                "startup_failed" if phase == "startup" else "shutdown_failed",
+                level=logging.ERROR,
+                phase=phase,
+                exc_info=True,
+            )
+        raise
 
 
 app = FastAPI(title="Millionvolt Hub", version="0.1.0", lifespan=lifespan)
@@ -471,9 +533,10 @@ async def runtime_observation(request: Request, call_next):
                 log_event(
                     _runtime_log,
                     "http_request",
+                    level=logging.ERROR if status >= 500 else logging.WARNING,
                     method=request.method,
-                    # 회전 로그에는 실제 경로를 남겨 운영 진단 가능성을 유지한다.
-                    path=request.url.path,
+                    # 실제 UUID/이름 대신 라우트 템플릿만 남겨 진단성과 개인정보 보호를 함께 지킨다.
+                    path=route_path,
                     status=status,
                     elapsed_ms=round(elapsed_ms, 2),
                 )
@@ -513,16 +576,21 @@ def health():
 
 @app.get("/api/ready")
 def ready():
-    """로드밸런서·운영 점검용 준비 상태. DB 읽기가 안 되면 503."""
-    from .db import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.execute("SELECT 1").fetchone()
-        return {"status": "ready"}
-    except Exception as exc:  # noqa: BLE001 — 준비 실패는 형식화해 503으로 반환
-        logging.getLogger("mvhub.ready").error("readiness 실패: %s", exc)
-        return JSONResponse({"status": "not_ready"}, status_code=503)
+    """로드밸런서·운영 점검용 준비 상태. 핵심 DB 테이블을 읽지 못하면 503."""
+    result = database_readiness()
+    if result["ready"]:
+        return {"status": "ready", "checks": result["checks"]}
+    log_event(
+        logging.getLogger("mvhub.ready"),
+        "readiness_failed",
+        level=logging.ERROR,
+        failed_checks=result["failed_checks"],
+        checks=result["checks"],
+    )
+    return JSONResponse(
+        {"status": "not_ready", "failed_checks": result["failed_checks"]},
+        status_code=503,
+    )
 
 
 @app.get("/api/admin/runtime")
@@ -536,7 +604,35 @@ async def runtime_status(request: Request):
     snapshot["websocket"] = await manager.stats()
     snapshot["remote_realtime"] = remote_realtime_bridge.stats()
     snapshot["agents"] = agent_signals.stats()
+    snapshot["operations"] = await asyncio.to_thread(operations_snapshot)
     return snapshot
+
+
+@app.get("/api/admin/generation-events")
+def generation_events(
+    request: Request,
+    generation_id: str | None = None,
+    request_id: str | None = None,
+    limit: int = 200,
+):
+    """관리자 전용 장기 생성 상태 이력. 사용자 콘텐츠·결과 URL은 포함하지 않는다."""
+    from .deps import require_admin
+
+    require_admin(request)
+    return repo.list_generation_events(
+        generation_id=generation_id,
+        request_id=request_id,
+        limit=limit,
+    )
+
+
+@app.get("/api/admin/audit-events")
+def audit_events(request: Request, project_id: str | None = None, limit: int = 200):
+    """관리자 전용 중요 변경 감사 기록."""
+    from .deps import require_admin
+
+    require_admin(request)
+    return repo.list_audit_events(project_id=project_id, limit=limit)
 
 
 @app.get("/api/cli-check")
@@ -606,6 +702,16 @@ _WS_GHOST_SECONDS = 90.0  # 하트비트 3주기 이상 무수신 = FIN 없는 �
 _WS_AUTH_RECHECK_SECONDS = 45.0
 
 
+async def _reject_websocket_policy(ws: WebSocket) -> None:
+    """핸드셰이크를 완료한 뒤 1008로 닫아 브라우저의 무한 재접속을 막는다.
+
+    accept 전에 close 하면 Uvicorn은 HTTP 403으로 거절하고 브라우저에는 1006만 보여준다.
+    클라이언트는 1008만 영구 인증 실패로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
+    """
+    await ws.accept()
+    await ws.close(code=1008, reason="authentication required")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """생성 진행률 push 채널. AUTH_ENABLED 면 세션 토큰을 검증한 뒤 수락."""
@@ -613,7 +719,7 @@ async def websocket_endpoint(ws: WebSocket):
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (ws.client.host if ws.client else "") or ""
         if not is_loopback_host(host):
-            await ws.close(code=1008)
+            await _reject_websocket_policy(ws)
             return
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE, realtime_scope
@@ -624,7 +730,7 @@ async def websocket_endpoint(ws: WebSocket):
         pcat = acc.get("password_changed_at") if acc else None
         stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
         if not acc or acc["status"] != "approved" or stale_password_token:
-            await ws.close(code=1008)  # policy violation
+            await _reject_websocket_policy(ws)
             return
         # email 기반 스코프(progress·mutation 과 동일 규칙) — creator_uid NULL·리맵에도 안정.
         account_uid = realtime_scope(acc)

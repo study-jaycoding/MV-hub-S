@@ -13,6 +13,7 @@ import { isKnownGen, observeStatus } from "./sceneRecentDoneStore";
 import type { Generation } from "../types";
 
 interface UseGenerationProgressArgs {
+  enabled: boolean;
   gensRef: MutableRefObject<Generation[]>;
   setGens: Dispatch<SetStateAction<Generation[]>>;
   reload: (silent?: boolean, light?: boolean) => void | Promise<void>;
@@ -55,6 +56,7 @@ export function refreshVisibleSyncConsumers({
 }
 
 export function useGenerationProgress({
+  enabled,
   gensRef,
   setGens,
   reload,
@@ -67,6 +69,8 @@ export function useGenerationProgress({
   const visibleConsumersRef = useRef({ historyBoardVisible, commentsVisible });
   visibleConsumersRef.current = { historyBoardVisible, commentsVisible };
   useEffect(() => {
+    // 로그인 화면·승인 대기 화면에서는 서버가 거절할 연결 자체를 만들지 않는다.
+    if (!enabled) return;
     let syncedTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingSyncOrigins: LibraryMutationOrigin[] | undefined;
     let forceFullSync = false;
@@ -160,5 +164,5 @@ export function useGenerationProgress({
       if (syncedTimer) clearTimeout(syncedTimer);
       off();
     };
-  }, [bumpBoard, gensRef, reload, setGens, setSyncTick]);
+  }, [bumpBoard, enabled, gensRef, reload, setGens, setSyncTick]);
 }

@@ -27,6 +27,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import GenerationOut, ImportIn, PublishIn
+from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api", tags=["share"])
 
@@ -232,6 +233,15 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
         repo.publish(gen_id, actor_id(request), "team")
     repo.set_final(gen_id, True, _finalizer_uid(request))
     _touch_telemetry(gen_id)
+    journal_audit_event(
+        "generation.finalized",
+        actor_uid=actor_id(request),
+        target_type="generation",
+        target_id=gen_id,
+        project_id=gen.get("project_id"),
+        fields=["is_final", "final_by", "final_at"],
+        details={"is_final": True},
+    )
     background.add_task(_preserve_final_media, gen_id)  # 최종본 원본 로컬 보존
     return repo.get_generation(gen_id)
 
@@ -264,6 +274,15 @@ def unfinalize(gen_id: str, request: Request):
         require_edit_generation(request, gen)  # 미배정 → 본인/admin 만
     repo.set_final(gen_id, False)
     _touch_telemetry(gen_id)
+    journal_audit_event(
+        "generation.unfinalized",
+        actor_uid=actor_id(request),
+        target_type="generation",
+        target_id=gen_id,
+        project_id=gen.get("project_id"),
+        fields=["is_final", "final_by", "final_at"],
+        details={"is_final": False},
+    )
     return repo.get_generation(gen_id)
 
 

@@ -1,9 +1,11 @@
 """주기 백업 원자성 테스트 — 잘린/미검증 파일이 정상 백업 이름으로 남지 않는 불변식."""
 
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -75,6 +77,56 @@ class BackupAtomicityTests(unittest.TestCase):
         p2 = backup.backup_now()
         self.assertNotEqual(p1, p2)
         self.assertEqual(len(self._backups()), 2)
+
+    def test_content_trash_and_manage_are_published_as_one_backup_set(self):
+        trash = self.root / "content_hub_trash.db"
+        manage = self.root / "manage_hub.db"
+        with closing(sqlite3.connect(trash)) as conn:
+            conn.execute("CREATE TABLE trashed(id TEXT PRIMARY KEY, data TEXT)")
+            conn.execute("INSERT INTO trashed VALUES('trash-1', 'kept')")
+            conn.commit()
+        with closing(sqlite3.connect(manage)) as conn:
+            conn.execute(
+                "CREATE TABLE team_generation_fact(id TEXT PRIMARY KEY, status TEXT)"
+            )
+            conn.execute("INSERT INTO team_generation_fact VALUES('fact-1', 'done')")
+            conn.commit()
+
+        primary = backup.backup_now(stamp="20260813_120000_000001")
+        trash_copy = self.backup_dir / "content_trash_20260813_120000_000001.db"
+        manage_copy = self.backup_dir / "manage_hub_20260813_120000_000001.db"
+
+        self.assertTrue(primary.is_file())
+        self.assertTrue(trash_copy.is_file())
+        self.assertTrue(manage_copy.is_file())
+        with closing(sqlite3.connect(trash_copy)) as conn:
+            self.assertEqual(conn.execute("SELECT data FROM trashed").fetchone()[0], "kept")
+        with closing(sqlite3.connect(manage_copy)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT status FROM team_generation_fact").fetchone()[0],
+                "done",
+            )
+        info = backup.list_backups_info()[0]
+        self.assertEqual(
+            set(info["files"]), {primary.name, trash_copy.name, manage_copy.name}
+        )
+
+    def test_sidecar_validation_failure_does_not_publish_primary(self):
+        trash = self.root / "content_hub_trash.db"
+        with closing(sqlite3.connect(trash)) as conn:
+            conn.execute("CREATE TABLE trashed(id TEXT PRIMARY KEY)")
+            conn.commit()
+
+        with mock.patch.object(
+            backup, "_validate_sidecar", side_effect=sqlite3.DatabaseError("bad sidecar")
+        ):
+            with self.assertRaises(sqlite3.DatabaseError):
+                backup.backup_now(stamp="20260813_120000_000002")
+
+        self.assertFalse(
+            (self.backup_dir / "content_hub_20260813_120000_000002.db").exists()
+        )
+        self.assertEqual(list(self.backup_dir.glob(".*.tmp-*")), [])
 
 
 if __name__ == "__main__":

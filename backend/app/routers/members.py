@@ -10,8 +10,9 @@ from fastapi import APIRouter, Request
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED
-from ..deps import account_global_roles, current_account, require_global_cap
+from ..deps import account_global_roles, actor_id, current_account, require_global_cap
 from ..models import GlobalRolesIn, MemberOut
+from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api/members", tags=["members"])
 
@@ -53,4 +54,12 @@ def set_member_global_roles(uid: str, body: GlobalRolesIn, request: Request):
     """v02 전역 역할(복수) 부여 — grant_global 역량(admin)만. 갱신된 멤버 목록 반환."""
     require_global_cap(request, "grant_global")
     repo.set_member_global_roles(uid, body.global_roles)
+    journal_audit_event(
+        "member.global_roles_changed",
+        actor_uid=actor_id(request),
+        target_type="member",
+        target_id=uid,
+        fields=["global_roles"],
+        details={"roles": body.global_roles},
+    )
     return repo.list_members(viewer_uid=_viewer_uid(request))

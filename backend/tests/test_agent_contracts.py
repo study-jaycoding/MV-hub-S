@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from app.models import PendingRequestOut
+from app.services import cli_bridge
 from app.services.test_snapshot import (
     SNAPSHOT_STAGING_ENV,
     SNAPSHOT_TOKEN_HEADER,
@@ -64,6 +65,15 @@ def test_agent_remains_single_file_standard_library_only():
         name for name in imported_roots if name != "__future__" and name not in sys.stdlib_module_names
     )
     assert non_stdlib == []
+
+
+def test_agent_and_server_share_provider_status_classification_contract():
+    """에이전트와 서버 상태표가 달라져 완료를 한쪽만 놓치는 회귀를 막는다."""
+    agent = _load_agent()
+    assert agent._SUCCESS_RAW == cli_bridge._PROVIDER_SUCCESS
+    assert agent._FAILURE_RAW == cli_bridge._PROVIDER_FAILURE
+    assert agent._PROCESSING_RAW == cli_bridge._PROVIDER_PROCESSING
+    assert agent._ACTION_REQUIRED_RAW == cli_bridge._PROVIDER_ACTION_REQUIRED
 
 
 def test_masked_password_input_never_writes_plaintext():

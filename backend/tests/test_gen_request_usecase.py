@@ -5,6 +5,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.models import RegenerateIn
 from app.usecases.gen_requests import (
     GenRequestCommand,
@@ -17,12 +19,22 @@ from app.usecases.gen_requests import (
 )
 
 
+@pytest.fixture(autouse=True)
+def generation_journal(monkeypatch):
+    """순수 오케스트레이션 단위 테스트가 실제 사용자 DB에 관측 기록을 쓰지 않게 격리한다."""
+    mocked = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        "app.usecases.gen_requests.journal_generation_event", mocked
+    )
+    return mocked
+
+
 def _names(parent):
     """attach 된 자식 mock 들의 전역 호출 순서를 'repo.create_local_generation' 형태 이름 리스트로."""
     return [c[0] for c in parent.mock_calls if c[0]]
 
 
-def test_create_path_calls_in_order_and_returns_gen():
+def test_create_path_calls_in_order_and_returns_gen(generation_journal):
     with patch("app.usecases.gen_requests.repo") as repo, patch(
         "app.usecases.gen_requests.agent_signals"
     ) as sig, patch("app.usecases.gen_requests.MANAGE_ENABLED", False):
@@ -55,6 +67,13 @@ def test_create_path_calls_in_order_and_returns_gen():
         args = repo.create_gen_request.call_args.args
         assert args[0] == "a@b.com" and args[1] == "u" and args[2] == "gen1" and args[3] == "create"
         assert args[4]["source_gen_id"] is None
+        generation_journal.assert_called_once_with(
+            "generation_requested",
+            "gen1",
+            request_id=repo.create_gen_request.return_value,
+            to_phase="pending",
+            actor_uid="u",
+        )
 
 
 def test_regenerate_path_applies_tweaks_only_when_set():

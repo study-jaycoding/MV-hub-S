@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from starlette.websockets import WebSocketDisconnect
 
@@ -67,6 +68,15 @@ class WsGhostCollectionTests(unittest.TestCase):
             for _ in range(3):
                 ws.send_text("ping")
             # 닫혔다면 send 가 실패했을 것 — 정상 종료 경로로 나가면 성공.
+
+    def test_auth_rejection_reaches_browser_as_policy_violation(self):
+        # accept 전 close(HTTP 403)는 브라우저에서 1006이 되어 무한 재연결된다.
+        # 연결 직후 1008로 닫아 기존 프론트도 재시도를 멈추게 한다.
+        with mock.patch.object(self.main, "AUTH_ENABLED", True):
+            with self.client.websocket_connect("/ws") as ws:
+                with self.assertRaises(WebSocketDisconnect) as raised:
+                    ws.receive_text()
+        self.assertEqual(raised.exception.code, 1008)
 
 
 if __name__ == "__main__":

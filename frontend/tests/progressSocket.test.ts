@@ -58,4 +58,17 @@ describe("connectProgress", () => {
 
     off();
   });
+
+  it("인증 정책 종료 1008은 재시도해도 해결되지 않으므로 다시 연결하지 않는다", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { protocol: "http:", host: "192.168.1.199:8010" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const off = connectProgress(() => {});
+
+    FakeWebSocket.instances[0].onclose?.({ code: 1008 });
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    off();
+  });
 });

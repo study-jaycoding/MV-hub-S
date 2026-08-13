@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 
 import uvicorn
@@ -36,6 +37,26 @@ def _make_socket(family: int, addr: tuple) -> socket.socket:
     return s
 
 
+def _run_server(server: uvicorn.Server, sockets: list[socket.socket]) -> None:
+    """Windows Ctrl+Break 종료를 감독기가 크래시로 오해하지 않게 한다.
+
+    Uvicorn은 실행 중 SIGBREAK를 정상 종료 신호로 처리하지만, 종료가 끝난 뒤 원래
+    핸들러로 같은 신호를 다시 올린다. Windows 기본 핸들러는 이때 종료코드 3을 남겨
+    감독기가 서버를 재시작한다. 실행 중 처리는 Uvicorn에 맡기고, 마지막 재전파만
+    무시한 뒤 원래 핸들러를 복원한다.
+    """
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    previous = None
+    if os.name == "nt" and sigbreak is not None:
+        previous = signal.getsignal(sigbreak)
+        signal.signal(sigbreak, lambda _sig, _frame: None)
+    try:
+        server.run(sockets=sockets)
+    finally:
+        if previous is not None:
+            signal.signal(sigbreak, previous)
+
+
 def main() -> None:
     ssl_certfile = os.environ.get("CONTENT_HUB_SSL_CERTFILE", "").strip() or None
     ssl_keyfile = os.environ.get("CONTENT_HUB_SSL_KEYFILE", "").strip() or None
@@ -44,6 +65,12 @@ def main() -> None:
             "HTTPS 사용 시 CONTENT_HUB_SSL_CERTFILE과 CONTENT_HUB_SSL_KEYFILE을 모두 지정해야 합니다."
         )
     scheme = "https" if ssl_certfile else "http"
+    access_log = os.environ.get("CONTENT_HUB_ACCESS_LOG", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     sockets = [_make_socket(socket.AF_INET, (HOST, PORT))]
     # localhost(::1) 빠른 접속용 IPv6 루프백. 실패해도(IPv6 비활성/이미 사용중) IPv4 로 계속.
     try:
@@ -58,6 +85,11 @@ def main() -> None:
         host=HOST,
         port=PORT,
         log_level="info",
+        # 생성물·코멘트 폴링의 정상 200 로그로 운영 창이 계속 밀리지 않게 한다.
+        # 진단할 때만 CONTENT_HUB_ACCESS_LOG=1 로 요청 로그를 다시 켤 수 있다.
+        access_log=access_log,
+        # 구형 Windows 콘솔에서 ANSI 색상 코드가 글자로 보이는 문제를 막는다.
+        use_colors=False,
         # 브라우저가 25초마다 텍스트 ping을 보내고 앱이 45초마다 세션을 재검증한다.
         # Uvicorn의 별도 프로토콜 ping까지 켜면 100명 연결에서 같은 시각에 ping/pong이
         # 몰려 정상 연결도 keepalive timeout(1011)으로 끊길 수 있어 중복 ping을 끈다.
@@ -66,7 +98,12 @@ def main() -> None:
         ssl_keyfile=ssl_keyfile,
     )
     server = uvicorn.Server(config)
-    server.run(sockets=sockets)
+    _run_server(server, sockets)
+    # Uvicorn은 lifespan startup 실패도 run()에서 예외를 삼키고 정상 반환할 수 있다.
+    # 실제 리스너가 한 번도 시작되지 않았다면 작업 스케줄러·감독기가 성공으로 오해하지
+    # 않도록 반드시 비정상 종료코드를 남긴다.
+    if not server.started:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

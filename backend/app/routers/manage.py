@@ -33,6 +33,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..services import cli_bridge, media_cache, project_folders
+from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
@@ -421,7 +422,24 @@ def get_planning(pid: str, request: Request):
 @router.put("/planning/{pid}")
 def put_planning(pid: str, body: PlanningIn, request: Request):
     _require_project_manage(request, pid)
-    return repo_manage.set_planning(pid, **body.model_dump())
+    result = repo_manage.set_planning(pid, **body.model_dump())
+    changed = body.model_dump(exclude_none=True)
+    journal_audit_event(
+        "project.planning_changed",
+        actor_uid=actor_id(request),
+        target_type="project_planning",
+        target_id=pid,
+        project_id=pid,
+        fields=list(changed.keys()),
+        details={
+            "status": body.status,
+            "budget_credits": body.budget_credits,
+            "budget_period": body.budget_period,
+            "start_date": body.start_date,
+            "due_date": body.due_date,
+        },
+    )
+    return result
 
 
 # ── 작업(Task) ────────────────────────────────────────────────────────────────

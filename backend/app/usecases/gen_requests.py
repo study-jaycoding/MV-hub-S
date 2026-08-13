@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 
 from .. import repo
@@ -16,8 +19,15 @@ from ..generation_result import ACTIVE_STATUSES, normalize_job_result
 from ..models import RegenerateIn
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
+from ..services.event_journal import journal_generation_event
+from ..services.operational_logging import log_event
 from ..ws import manager
 
+
+_generation_log = logging.getLogger("mvhub.generation")
+_pm_failure_log_lock = threading.Lock()
+_pm_last_failure_log_at = 0.0
+_PM_FAILURE_LOG_INTERVAL = 300.0
 
 _HF_ENDED_RE = re.compile(
     r"\bjob\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
@@ -41,7 +51,24 @@ def _has_usable_asset_path(value: object) -> bool:
     )
 
 
-def pm_best_effort(action) -> None:
+def _log_pm_failure(operation: str, exc: BaseException) -> None:
+    """부가 통계 장애는 생성을 막지 않되, 같은 장애의 로그 폭주는 5분에 1회로 제한한다."""
+    global _pm_last_failure_log_at
+    now = time.monotonic()
+    with _pm_failure_log_lock:
+        if now - _pm_last_failure_log_at < _PM_FAILURE_LOG_INTERVAL:
+            return
+        _pm_last_failure_log_at = now
+    log_event(
+        _generation_log,
+        "pm_metrics_failed",
+        level=logging.WARNING,
+        operation=operation,
+        error_type=type(exc).__name__,
+    )
+
+
+def pm_best_effort(action, *, operation: str = "record") -> None:
     """PM 메트릭 best-effort 실행(분리형). MANAGE_ENABLED off 거나 실패해도 생성 흐름·응답에
     영향 0 — 메트릭 수집은 절대 생성을 막지 않는다(PM_DASHBOARD_DESIGN.md §6-1).
     action 은 manage 모듈을 받는 콜러블."""
@@ -51,8 +78,8 @@ def pm_best_effort(action) -> None:
         from ..repo import manage as _m
 
         action(_m)
-    except Exception:  # noqa: BLE001 — 메트릭 실패가 생성을 막지 않게
-        pass
+    except Exception as exc:  # noqa: BLE001 — 메트릭 실패가 생성을 막지 않게
+        _log_pm_failure(operation, exc)
 
 
 @dataclass
@@ -89,6 +116,23 @@ async def claim_gen_requests(
     for item in claimed:
         gen_id = item["gen_id"]
         repo.set_status(gen_id, "running", None)
+        log_event(
+            _generation_log,
+            "generation_claimed",
+            generation_id=gen_id,
+            request_id=item["id"],
+            kind=item.get("kind"),
+            model=item.get("model"),
+            workspace_scope=(item.get("workspace") or {}).get("scope"),
+        )
+        journal_generation_event(
+            "generation_claimed",
+            gen_id,
+            request_id=item["id"],
+            from_phase="pending",
+            to_phase="submitting",
+            actor_uid=account_uid,
+        )
         pm_best_effort(lambda manage, gid=gen_id: manage.record_started(gid))
         await manager.broadcast(
             {"type": "progress", "generation_id": gen_id, "status": "running"},
@@ -115,6 +159,26 @@ async def fulfill_request(
             next_seconds=15,
         )
         repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        if request_row.get("status") != "verifying":
+            log_event(
+                _generation_log,
+                "generation_result_waiting",
+                level=logging.WARNING,
+                generation_id=gen_id,
+                request_id=request_id,
+                provider_status=str(job.get("status") or job.get("job_status") or ""),
+                reason="result_location_missing",
+            )
+            journal_generation_event(
+                "generation_result_waiting",
+                gen_id,
+                request_id=request_id,
+                from_phase=request_row.get("status"),
+                to_phase="verifying",
+                provider_status=str(job.get("status") or job.get("job_status") or ""),
+                reason_code="result_location_missing",
+                actor_uid=account_uid,
+            )
         return repo.get_generation(gen_id)
     applied = repo.apply_local_fulfillment(
         gen_id,
@@ -132,6 +196,25 @@ async def fulfill_request(
     if not applied:
         return repo.get_generation(gen_id)
 
+    log_event(
+        _generation_log,
+        "generation_finalized",
+        level=logging.ERROR if result.status == "failed" else logging.INFO,
+        generation_id=gen_id,
+        request_id=request_id,
+        job_id=result.job_id,
+        status=result.status,
+        asset_saved=bool(result.asset_path),
+    )
+    journal_generation_event(
+        "generation_finalized",
+        gen_id,
+        request_id=request_id,
+        job_id=result.job_id,
+        from_phase=request_row.get("status"),
+        to_phase=result.status,
+        actor_uid=account_uid,
+    )
     pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
     await manager.broadcast(
         {
@@ -157,6 +240,23 @@ async def anchor_request(
     gen_id = request_row["gen_id"]
     applied = repo.apply_local_anchor(gen_id, request_id, job_id, verifying=verifying)
     if applied:
+        log_event(
+            _generation_log,
+            "generation_job_anchored",
+            generation_id=gen_id,
+            request_id=request_id,
+            job_id=job_id,
+            verifying=verifying,
+        )
+        journal_generation_event(
+            "generation_job_anchored",
+            gen_id,
+            request_id=request_id,
+            job_id=job_id,
+            from_phase=request_row.get("status"),
+            to_phase="verifying" if verifying else "tracking",
+            actor_uid=account_uid,
+        )
         await manager.broadcast(
             {
                 "type": "progress",
@@ -197,6 +297,29 @@ async def reconcile_request(
             provider_status=raw_provider_status,
         )
         if applied:
+            log_event(
+                _generation_log,
+                "generation_finalized",
+                level=logging.ERROR,
+                generation_id=gen_id,
+                request_id=request_row.get("id"),
+                job_id=job_id,
+                status="failed",
+                provider_status=raw_provider_status,
+                asset_saved=False,
+                reason="forced_failure",
+            )
+            journal_generation_event(
+                "generation_finalized",
+                gen_id,
+                request_id=request_row.get("id"),
+                job_id=job_id,
+                from_phase=request_row.get("status"),
+                to_phase="failed",
+                provider_status=raw_provider_status,
+                reason_code="forced_failure",
+                actor_uid=account_uid,
+            )
             pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=job_id))
             await manager.broadcast(
                 {
@@ -220,6 +343,25 @@ async def reconcile_request(
     expected_job_id = (current or {}).get("job_id")
 
     if expected_job_id and parsed_job_id and expected_job_id != parsed_job_id:
+        log_event(
+            _generation_log,
+            "generation_job_conflict",
+            level=logging.WARNING,
+            generation_id=gen_id,
+            request_id=request_row.get("id"),
+            expected_job_id=expected_job_id,
+            received_job_id=parsed_job_id,
+        )
+        journal_generation_event(
+            "generation_job_conflict",
+            gen_id,
+            request_id=request_row.get("id"),
+            job_id=expected_job_id,
+            from_phase=request_row.get("status"),
+            to_phase=request_row.get("status"),
+            reason_code="job_id_mismatch",
+            actor_uid=account_uid,
+        )
         return {
             "ok": True,
             "applied": False,
@@ -247,6 +389,35 @@ async def reconcile_request(
             next_seconds=30,
         )
         repo.set_status(gen_id, "running", note)
+        if (
+            provider_kind in ("unknown", "action_required")
+            and (
+                request_row.get("status") != phase
+                or request_row.get("provider_status") != raw_provider_status
+            )
+        ):
+            log_event(
+                _generation_log,
+                "generation_attention_required",
+                level=logging.WARNING,
+                generation_id=gen_id,
+                request_id=request_row.get("id"),
+                job_id=parsed_job_id,
+                phase=phase,
+                provider_status=raw_provider_status or "missing",
+                reason=provider_kind,
+            )
+            journal_generation_event(
+                "generation_attention_required",
+                gen_id,
+                request_id=request_row.get("id"),
+                job_id=parsed_job_id,
+                from_phase=request_row.get("status"),
+                to_phase=phase,
+                provider_status=raw_provider_status,
+                reason_code=provider_kind,
+                actor_uid=account_uid,
+            )
         if note:
             await manager.broadcast(
                 {
@@ -276,6 +447,31 @@ async def reconcile_request(
             next_seconds=15,
         )
         repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        if (
+            request_row.get("status") != "verifying"
+            or request_row.get("provider_status") != raw_provider_status
+        ):
+            log_event(
+                _generation_log,
+                "generation_result_waiting",
+                level=logging.WARNING,
+                generation_id=gen_id,
+                request_id=request_row.get("id"),
+                job_id=result.job_id,
+                provider_status=raw_provider_status,
+                reason="result_location_missing",
+            )
+            journal_generation_event(
+                "generation_result_waiting",
+                gen_id,
+                request_id=request_row.get("id"),
+                job_id=result.job_id,
+                from_phase=request_row.get("status"),
+                to_phase="verifying",
+                provider_status=raw_provider_status,
+                reason_code="result_location_missing",
+                actor_uid=account_uid,
+            )
         await manager.broadcast(
             {
                 "type": "progress",
@@ -307,6 +503,27 @@ async def reconcile_request(
         provider_status=raw_provider_status,
     )
     if applied:
+        log_event(
+            _generation_log,
+            "generation_finalized",
+            level=logging.ERROR if result.status == "failed" else logging.INFO,
+            generation_id=gen_id,
+            request_id=request_row.get("id"),
+            job_id=result.job_id,
+            status=result.status,
+            provider_status=raw_provider_status,
+            asset_saved=bool(result.asset_path),
+        )
+        journal_generation_event(
+            "generation_finalized",
+            gen_id,
+            request_id=request_row.get("id"),
+            job_id=result.job_id,
+            from_phase=request_row.get("status"),
+            to_phase=result.status,
+            provider_status=raw_provider_status,
+            actor_uid=account_uid,
+        )
         pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
         await manager.broadcast(
             {
@@ -374,6 +591,27 @@ async def fail_request(
     if not applied:
         return False
 
+    log_event(
+        _generation_log,
+        "generation_finalized",
+        level=logging.ERROR,
+        generation_id=gen_id,
+        request_id=request_id,
+        job_id=final_job_id,
+        status=final_status,
+        asset_saved=False,
+        reason="agent_reported_failure",
+    )
+    journal_generation_event(
+        "generation_finalized",
+        gen_id,
+        request_id=request_id,
+        job_id=final_job_id,
+        from_phase=request_row.get("status"),
+        to_phase=final_status,
+        reason_code="agent_reported_failure",
+        actor_uid=account_uid,
+    )
     pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=final_job_id))
     await manager.broadcast(
         {
@@ -413,7 +651,24 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
 
     payload = repo.gen_recipe(gen_id)
     payload["source_gen_id"] = cmd.source_gen_id
-    repo.create_gen_request(cmd.email, cmd.creator_uid, gen_id, cmd.kind, payload)
+    request_id = repo.create_gen_request(cmd.email, cmd.creator_uid, gen_id, cmd.kind, payload)
+    log_event(
+        _generation_log,
+        "generation_requested",
+        generation_id=gen_id,
+        request_id=request_id,
+        kind=cmd.kind,
+        model=payload.get("model"),
+        workspace_scope=(payload.get("workspace") or {}).get("scope"),
+        reference_count=len(payload.get("references") or []),
+    )
+    journal_generation_event(
+        "generation_requested",
+        gen_id,
+        request_id=request_id,
+        to_phase="pending",
+        actor_uid=cmd.creator_uid,
+    )
     # 요청자 에이전트를 즉시 깨움(이벤트 방식) — 30초 폴링 대기 없이 바로 실행.
     agent_signals.signal(cmd.email, "gen-request")
 
@@ -428,8 +683,9 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
                 )
                 v = (cc or {}).get("credits")
                 est = int(v) if v else None
-        except Exception:  # noqa: BLE001 — 견적 실패가 생성을 막지 않게
+        except Exception as exc:  # noqa: BLE001 — 견적 실패가 생성을 막지 않게
             est = None
+            _log_pm_failure("estimate_cost", exc)
         pm_best_effort(lambda _m: _m.record_request(gen_id, est_credits=est))
 
     return repo.get_generation(gen_id)

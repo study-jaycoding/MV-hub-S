@@ -148,7 +148,7 @@ HTTP 요청
 | `syncer.py` | 주기 동기화(과도기: 서버 PC 로컬 결과 흡수) |
 | `media_cache.py` | 원격 URL → 로컬 샤딩 캐시 |
 | `thumbs.py` | 썸네일 사전생성·리사이즈 |
-| `backup.py` | SQLite 온라인 백업 |
+| `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
@@ -228,6 +228,8 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 | `creator` | 생성자 uid→이름·전역역할 | uid, name, global_role(CSV) |
 | `account` | 로그인 계정 | email, password_hash(pbkdf2), status, global_role(CSV), **creator_uid**, approved_at |
 | **`gen_request`** | 로컬 실행 생성요청 큐 | account_email, creator_uid, gen_id(placeholder), kind(create/regenerate), payload(레시피 JSON), status, error |
+| **`generation_event`** | 장기 생성 상태 이력(append-only 운용) | generation/request/job id, event, from/to phase, provider_status, reason_code |
+| **`audit_event`** | 중요 관리자·프로젝트 변경 감사 기록 | action, actor uid, target/project id, 변경 필드와 허용된 짧은 메타 |
 | `app_setting` | key-value | provider_uid/name/email, my_creator_uid, auth_secret, **hf_status:\<email\>**(크레딧 보고) |
 | `asset_meta`+`asset_comment`(+`_read`) | Assets 분리창 파일별 메타/코멘트 | (project, path) 키, owner_uid 개인화 |
 | `trashed`(별도 DB) | 휴지통 | id, trashed_at, payload(본체+자식 전부) |
@@ -310,6 +312,9 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 - **검색**: SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.
 - **성능**: 키셋 페이지네이션·content-visibility 가상스크롤·썸네일 사전생성·미디어 2단계 샤딩.
 - **휴지통**: 삭제 즉시 별도 DB 로 원자 이동(메인 항상 가벼움).
+- **운영 관측 2계층**: 회전 JSON 로그는 현재 상황을 빠르게 보고, `generation_event`/`audit_event`는
+  로그 회전 뒤에도 생성 전이와 중요 변경을 재구성한다. DB 트리거가 모든 상태 변경을 같은
+  트랜잭션에서 포착하고 usecase가 의미 이벤트를 보강한다. 프롬프트·결과 URL·비밀번호는 넣지 않는다.
 
 ---
 
@@ -335,7 +340,7 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 
 ```
 content-hub-server/
-├─ MV_server.bat            프론트 빌드 → 백엔드 기동(포트 8010, AUTH=1)
+├─ MV_server.bat            프론트 빌드 → 폭풍 차단 감독기 → 백엔드 기동(포트 8010, AUTH=1)
 ├─ agent_push.py             팀원 각 PC 에이전트(표준 라이브러리만)
 ├─ ARCHITECTURE.md           이 문서(설계 구조)
 ├─ 기능설명서.md / 사용설명서.md / SERVER.md / AI_CONTEXT.md / README.md / DESIGN.md / CLAUDE.md

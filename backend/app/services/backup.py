@@ -1,4 +1,4 @@
-"""DB 자동 백업 (서버 운영).
+"""DB 세트 자동 백업 (서버 운영).
 
 단일 DB 파일 리스크(파일 손상·실수 삭제·랜섬)를 대비한다. 로드맵 §2-6·§6-1.
 
@@ -6,7 +6,9 @@
 (shutil.copy)는 아직 메인 DB 로 체크포인트되지 않은 -wal 분을 놓쳐 깨진 스냅샷이 된다.
 .backup 은 잠금 없이 일관된 스냅샷을 떠 준다(서버는 계속 쓰기 가능).
 
-동작: 시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루). 최근 N개만 보관(회전).
+동작: 콘텐츠 DB를 기준으로 휴지통·프로젝트 관리 DB가 존재하면 같은 시각의 세트로 함께
+백업한다. 시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루).
+최근 N세트만 보관(회전).
 백업 폴더는 CONTENT_HUB_BACKUP_DIR 로 다른 디스크/NAS 지정 권장(같은 디스크면 동반 손실).
 """
 
@@ -18,6 +20,7 @@ import os
 import sqlite3
 import threading
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,6 +29,9 @@ from uuid import uuid4
 from ..config import DATA_DIR
 from ..db import get_db_path
 from .sqlite_db import validate_hub_db
+from .operational_logging import log_event
+
+_backup_log = logging.getLogger("mvhub.backup")
 
 # 백업 보관 폴더 — 기본은 데이터 루트 아래. 실서버에선 다른 디스크/NAS 로 지정 권장.
 BACKUP_DIR = Path(
@@ -44,6 +50,8 @@ BACKUP_KEEP = max(1, int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7")))
 _STARTUP_SKIP_IF_YOUNGER = min(BACKUP_INTERVAL, 3600.0)
 
 _PREFIX = "content_hub_"
+_TRASH_PREFIX = "content_trash_"
+_MANAGE_PREFIX = "manage_hub_"
 
 
 def _backup_dir() -> Path:
@@ -72,15 +80,22 @@ def _newest_age_seconds() -> Optional[float]:
 
 
 def list_backups_info() -> list[dict]:
-    """보관 중인 백업 목록(최신순) — 파일명·크기·수정시각. 운영/관리자용."""
+    """보관 중인 백업 세트(최신순). 콘텐츠 파일은 기존 API의 대표 파일로 유지한다."""
     out: list[dict] = []
     for p in reversed(_list_backups()):
         st = p.stat()
+        stamp = p.name[len(_PREFIX):-3]
+        related = [p]
+        for prefix in (_TRASH_PREFIX, _MANAGE_PREFIX):
+            candidate = p.parent / f"{prefix}{stamp}.db"
+            if candidate.is_file():
+                related.append(candidate)
         out.append(
             {
                 "file": p.name,
-                "size": st.st_size,
+                "size": sum(item.stat().st_size for item in related),
                 "mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                "files": [item.name for item in related],
             }
         )
     return out
@@ -91,8 +106,10 @@ def _rotate() -> None:
     backups = _list_backups()  # 이름이 타임스탬프라 사전순 = 시간순
     excess = len(backups) - BACKUP_KEEP
     for old in backups[: max(0, excess)]:
-        with contextlib.suppress(OSError):
-            old.unlink()
+        stamp = old.name[len(_PREFIX):-3]
+        for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
+            with contextlib.suppress(OSError):
+                (old.parent / f"{prefix}{stamp}.db").unlink()
 
 
 # 주기 백업과 관리자 수동 백업(POST /api/backup)이 겹칠 수 있어 파일 작업을 직렬화.
@@ -105,14 +122,67 @@ def _cleanup_stale_tmp(d: Path) -> None:
     """크래시가 남긴 임시 백업 잔재 청소 — 이 모듈이 만든 이름만, 1일 이상 묵은 것만.
     (락 안에서 호출 — 지금 만들고 있는 tmp 를 지울 일이 없다.)"""
     cutoff = time.time() - 86400.0
-    for p in d.glob(f".{_PREFIX}*{_TMP_MARK}*"):
+    for p in d.glob(f".*.db{_TMP_MARK}*"):
         with contextlib.suppress(OSError):
             if p.stat().st_mtime < cutoff:
                 p.unlink()
 
 
+def _validate_sidecar(path: Path, expected_table: str) -> None:
+    """휴지통/관리 DB의 SQLite 무결성과 핵심 테이블 존재를 확인한다."""
+    uri = f"file:{path.as_posix()}?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
+        result = conn.execute("PRAGMA quick_check").fetchone()
+        if not result or result[0] != "ok":
+            raise sqlite3.DatabaseError(f"quick_check failed: {result}")
+        fk_rows = conn.execute("PRAGMA foreign_key_check").fetchmany(1)
+        if fk_rows:
+            raise sqlite3.DatabaseError("foreign_key_check failed")
+        found = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (expected_table,)
+        ).fetchone()
+        if not found:
+            raise sqlite3.DatabaseError(f"required table missing: {expected_table}")
+
+
+def _snapshot_database_set(
+    sources: list[tuple[str, Path, str, str | None]],
+    snapshots: list[tuple[str, Path, Path, str | None]],
+) -> None:
+    """첨부 DB 전체의 읽기 시점을 먼저 고정한 뒤 각각 온라인 백업한다.
+
+    콘텐츠 삭제가 메인→휴지통으로 이동하는 찰나에도 두 스냅샷 사이에서 사라지거나
+    중복되지 않게 한다. WAL 읽기 트랜잭션이라 서버 쓰기를 장시간 막지는 않는다.
+    """
+    main_source = next(source for label, source, _, _ in sources if label == "content")
+    src_conn = sqlite3.connect(str(main_source), isolation_level=None)
+    try:
+        aliases = {"content": "main"}
+        for label, source, _, _ in sources:
+            if label == "content":
+                continue
+            alias = f"side_{label}"
+            src_conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(source),))
+            aliases[label] = alias
+        src_conn.execute("BEGIN")
+        try:
+            # 각 첨부 DB를 트랜잭션 안에서 읽어 동일한 스냅샷 경계를 확정한다.
+            for alias in aliases.values():
+                src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
+            for label, _, tmp, _ in snapshots:
+                dest_conn = sqlite3.connect(str(tmp))
+                try:
+                    src_conn.backup(dest_conn, name=aliases[label])
+                finally:
+                    dest_conn.close()
+        finally:
+            src_conn.execute("ROLLBACK")
+    finally:
+        src_conn.close()
+
+
 def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
-    """DB 의 일관 스냅샷을 백업 폴더에 생성하고 경로를 반환(블로킹).
+    """DB 세트의 일관 스냅샷을 생성하고 대표 콘텐츠 경로를 반환(블로킹).
     DB 파일이 아직 없으면 None. 회전까지 수행.
 
     ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤
@@ -127,26 +197,40 @@ def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
         _cleanup_stale_tmp(d)
         # 마이크로초 포함 — 같은 초의 연속 백업(수동+주기)이 같은 최종 이름을 덮지 않게.
         stamp = stamp or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        dest_path = d / f"{_PREFIX}{stamp}.db"
-        tmp = d / f".{_PREFIX}{stamp}.db{_TMP_MARK}{uuid4().hex[:8]}"
+        sources: list[tuple[str, Path, str, str | None]] = [
+            ("content", src, _PREFIX, None),
+        ]
+        trash_src = src.parent / "content_hub_trash.db"
+        manage_src = src.parent / "manage_hub.db"
+        if trash_src.is_file():
+            sources.append(("trash", trash_src, _TRASH_PREFIX, "trashed"))
+        if manage_src.is_file():
+            sources.append(("manage", manage_src, _MANAGE_PREFIX, "team_generation_fact"))
+
+        snapshots: list[tuple[str, Path, Path, str | None]] = []
+        for label, source, prefix, expected_table in sources:
+            dest = d / f"{prefix}{stamp}.db"
+            tmp = d / f".{prefix}{stamp}.db{_TMP_MARK}{uuid4().hex[:8]}"
+            snapshots.append((label, dest, tmp, expected_table))
         try:
-            src_conn = sqlite3.connect(str(src))
-            try:
-                dest_conn = sqlite3.connect(str(tmp))
-                try:
-                    src_conn.backup(dest_conn)  # 온라인 일관 스냅샷(WAL 포함, 잠금 없음)
-                finally:
-                    dest_conn.close()
-            finally:
-                src_conn.close()
-            validate_hub_db(tmp, require_integrity=True)
-            os.replace(tmp, dest_path)
+            _snapshot_database_set(sources, snapshots)
+            for label, _, tmp, expected_table in snapshots:
+                if label == "content":
+                    validate_hub_db(tmp, require_integrity=True)
+                else:
+                    _validate_sidecar(tmp, expected_table or "")
+
+            # 콘텐츠 대표 파일을 마지막에 공개한다. 중간 크래시가 나도 목록에는 불완전한
+            # 세트가 나타나지 않는다(앞서 공개된 sidecar는 다음 회전에서 함께 정리됨).
+            for label, dest, tmp, _ in sorted(snapshots, key=lambda item: item[0] == "content"):
+                os.replace(tmp, dest)
         except BaseException:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
+            for _, _, tmp, _ in snapshots:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
             raise
         _rotate()  # 교체 성공 후에만 — 실패 시 기존 정상 백업은 손대지 않는다
-        return dest_path
+        return d / f"{_PREFIX}{stamp}.db"
 
 
 class PeriodicBackup:
@@ -183,11 +267,19 @@ class PeriodicBackup:
             # sqlite backup 은 블로킹 → 스레드로 빼 이벤트 루프를 막지 않는다.
             path = await asyncio.to_thread(backup_now)
             if path:
-                print(f"[backup] DB 백업 생성 → {path.name}")
+                latest = list_backups_info()[0]
+                log_event(
+                    _backup_log,
+                    "backup_completed",
+                    backup_set_files=len(latest.get("files") or [path.name]),
+                    backup_set_bytes=latest.get("size"),
+                )
+                print(f"[backup] DB 세트 백업 생성 → {path.name}")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 워커가 죽지 않도록 격리
-            print(f"[backup] 오류: {e}")
+            log_event(_backup_log, "backup_failed", level=logging.ERROR, exc_info=True)
+            print(f"[backup] 오류({type(e).__name__}) — MV_logs.bat에서 상세 확인")
 
 
 periodic_backup = PeriodicBackup()

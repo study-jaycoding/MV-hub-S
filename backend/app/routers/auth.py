@@ -17,10 +17,11 @@ from pydantic import BaseModel
 from .. import repo
 from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..emailnorm import norm_email
-from ..deps import SESSION_COOKIE, require_admin, require_global_cap
+from ..deps import SESSION_COOKIE, actor_id, require_admin, require_global_cap, session_token
 from ..services import auth
 from ..services import local_agent_pair
 from ..services.agent_signals import agent_signals
+from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -191,11 +192,17 @@ def access(body: RegisterIn, response: Response, request: Request):
 
 
 @router.get("/me")
-def me(request: Request):
-    """현재 세션의 계정. 미들웨어가 채운 request.state.account 사용."""
+def me(request: Request, response: Response):
+    """현재 계정 확인과 함께 미디어·WebSocket용 쿠키를 복구한다."""
     acc = getattr(request.state, "account", None)
     if not acc:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    # 일반 API는 localStorage의 Bearer 토큰으로 정상이어도 ch_session 쿠키가 없거나
+    # 예전 값이면 브라우저 WebSocket만 403이 된다. /me 부트 검증 때 검증된 토큰을
+    # HttpOnly 쿠키로 다시 발급해 두 인증 경로를 항상 같은 상태로 맞춘다.
+    token = session_token(request)
+    if token and request.cookies.get(SESSION_COOKIE) != token:
+        _set_session_cookie(response, token)
     _activate_local_agent(request, acc["email"])
     return acc
 
@@ -227,6 +234,14 @@ def set_status(email: str, body: StatusIn, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     if not acc:
         raise HTTPException(status_code=404, detail="없는 계정")
+    journal_audit_event(
+        "account.status_changed",
+        actor_uid=actor_id(request),
+        target_type="account",
+        target_id=repo.account_target(email),
+        fields=["status"],
+        details={"status": body.status},
+    )
     return acc
 
 
@@ -237,6 +252,14 @@ def set_global_roles(email: str, body: AccountGlobalRolesIn, request: Request):
     acc = repo.set_account_global_roles(email, body.global_roles)
     if not acc:
         raise HTTPException(status_code=404, detail="없는 계정")
+    journal_audit_event(
+        "account.global_roles_changed",
+        actor_uid=actor_id(request),
+        target_type="account",
+        target_id=repo.account_target(email),
+        fields=["global_roles"],
+        details={"roles": body.global_roles},
+    )
     return acc
 
 
@@ -283,6 +306,13 @@ def reset_password(email: str, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     if not acc:
         raise HTTPException(status_code=404, detail="없는 계정")
+    journal_audit_event(
+        "account.password_reset",
+        actor_uid=actor_id(request),
+        target_type="account",
+        target_id=repo.account_target(email),
+        fields=["password"],
+    )
     return {"ok": True, "account": acc}
 
 
@@ -296,4 +326,12 @@ def set_hidden(email: str, body: HiddenIn, request: Request):
     acc = repo.set_account_hidden(email, body.hidden)
     if not acc:
         raise HTTPException(status_code=404, detail="없는 계정")
+    journal_audit_event(
+        "account.visibility_changed",
+        actor_uid=actor_id(request),
+        target_type="account",
+        target_id=repo.account_target(email),
+        fields=["hidden"],
+        details={"hidden": body.hidden},
+    )
     return acc

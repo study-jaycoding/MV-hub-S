@@ -1,12 +1,9 @@
 @echo off
-REM Live server log viewer - the auto-started server has no console window,
-REM so this replaces it. Double-click to follow the log (Ctrl+C to quit).
+chcp 65001 >nul
+REM Clean operational log viewer. Shows structured lifecycle/generation/error events
+REM instead of raw HTTP access noise. Ctrl+C to stop following.
 setlocal
 set "ROOT=%~dp0"
-if not exist "%ROOT%logs\server_console.log" (
-  echo No log yet: %ROOT%logs\server_console.log
-  echo Run register_autostart.bat first, or wait for the server to start.
-  pause
-  exit /b 1
-)
-powershell -NoProfile -Command "Get-Content -Path '%ROOT%logs\server_console.log' -Tail 50 -Wait"
+call "%ROOT%run_py.bat" "%ROOT%tools\log_viewer.py"
+if errorlevel 1 pause
+exit /b %errorlevel%

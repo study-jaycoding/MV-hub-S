@@ -19,6 +19,8 @@ import unittest
 EXPECTED_SERVER_ROUTES = frozenset(
     {
         "/api/account/hf",
+        "/api/admin/audit-events",
+        "/api/admin/generation-events",
         "/api/admin/runtime",
         "/api/auth/access",
         "/api/auth/accounts",

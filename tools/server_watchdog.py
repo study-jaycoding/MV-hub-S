@@ -9,7 +9,8 @@ r"""공유 서버 워치독 — 죽음(크래시)과 멈춤(행) 둘 다에서 �
 
 안전장치(설계 합의 사항 — 코덱스 리뷰 반영):
   · 시작 유예: 첫 정상 응답을 받기 전에는 절대 개입하지 않는다
-    (부팅 직후 npm build 수 분간 서버가 안 떠 있는 것은 정상).
+    (부팅 직후 npm build 수 분간 서버가 안 떠 있는 것은 정상). 단, 유예가 끝난 뒤에도
+    정상 응답이 한 번도 없으면 시작 실패/행으로 판단해 ALERT 또는 안전한 개입을 한다.
   · 대상 특정: "포트를 실제로 점유한 프로세스"를 찾고, 그 커맨드라인에 serve.py 가
     있는지 확인한 뒤에만 종료한다. 포트 주인이 없으면 커맨드라인 검색으로 폴백하되
     후보가 2개 이상이면 오살 위험이 있으므로 개입하지 않고 로그만 남긴다.
@@ -177,6 +178,7 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=60.0, help="확인 주기(초)")
     ap.add_argument("--timeout", type=float, default=10.0, help="요청 타임아웃(초)")
     ap.add_argument("--fail-threshold", type=int, default=3, help="연속 실패 몇 회에 개입")
+    ap.add_argument("--startup-grace", type=float, default=600.0, help="첫 정상 전 시작 유예(초)")
     ap.add_argument("--post-kill-grace", type=float, default=300.0, help="개입 후 대기(초)")
     ap.add_argument("--storm-window", type=float, default=3600.0, help="폭풍 판정 창(초)")
     ap.add_argument("--storm-limit", type=int, default=3, help="창 내 개입 상한(회)")
@@ -194,6 +196,8 @@ def main() -> int:
     kills: list[float] = []  # 개입 시각 기록(폭풍 판정)
     pause_until = 0.0
     hold_alerted = False   # "포트 뺏김" ALERT 는 상태 지속 중 1회만(매분 스팸 방지)
+    startup_deadline = time.monotonic() + max(0.0, args.startup_grace)
+    startup_alerted = False
 
     while True:
         ok, reason = check_ready(url, args.timeout)
@@ -206,9 +210,10 @@ def main() -> int:
             armed = True
             fails = 0
             hold_alerted = False
-        elif armed:
+        elif armed or now >= startup_deadline:
             fails += 1
-            log(args, f"응답 이상 {fails}/{args.fail_threshold} — {reason}")
+            prefix = "응답 이상" if armed else "시작 실패"
+            log(args, f"{prefix} {fails}/{args.fail_threshold} — {reason}")
             if fails >= args.fail_threshold:
                 if now < pause_until:
                     log(args, f"폭풍 차단 중 — 개입 보류(남은 {int(pause_until - now)}s)")
@@ -257,9 +262,22 @@ def main() -> int:
                                 log(args, "포트 점유 지속 — 개입 보류(ALERT 기록됨)")
                         else:
                             log(args, f"종료 대상 특정 실패({how}) — 개입 보류")
-                            # not-found 면 프로세스가 이미 죽어 bat 루프가 살리는 중일 수 있다.
-                            fails = 0  # 다음 창에서 다시 판단
-        # armed 전 실패는 조용히 대기(부팅/빌드 중)
+                            if not armed and not startup_alerted:
+                                startup_alerted = True
+                                alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                                msg = (
+                                    f"{datetime.now():%Y-%m-%d %H:%M:%S} 서버가 시작 유예 "
+                                    f"{int(args.startup_grace)}초 안에 한 번도 준비되지 않았습니다 "
+                                    f"(대상: {how}). server_console.log를 확인하세요."
+                                )
+                                log(args, "★ALERT★ " + msg)
+                                try:
+                                    alert.write_text(msg + "\n", encoding="utf-8")
+                                except OSError:
+                                    pass
+                            # 프로세스가 없으면 감독기/작업 스케줄러의 재시도를 기다린다.
+                            fails = 0
+        # 시작 유예 중 실패는 조용히 대기(부팅/빌드 중)
         time.sleep(args.interval)
 
 

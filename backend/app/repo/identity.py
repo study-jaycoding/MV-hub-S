@@ -468,6 +468,8 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
 _REMAP_EXEMPT: dict[tuple[str, str], str] = {
     ("generation", "worker_id"): "PC/워크스테이션 축(사용자 actor 아님) — remap 제외",
     ("account", "creator_uid"): "remap authority/소스 — 이 값 기준으로 acct:<email>→user_ 매핑을 만든다",
+    ("generation_event", "actor_uid"): "append-only 장애 이력 actor — 이메일 기반 임시 신원은 저장 전에 비가역 지문화",
+    ("audit_event", "actor_uid"): "append-only 감사 actor — 당시 기록을 수정하지 않고 이메일 기반 신원은 비가역 지문화",
 }
 
 

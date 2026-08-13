@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+def _module():
+    path = Path(__file__).resolve().parents[2] / "tools" / "log_viewer.py"
+    spec = importlib.util.spec_from_file_location("log_viewer", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_generation_event_is_compact_and_traceable():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "level": "INFO",
+            "event": "generation_finalized",
+            "generation_id": "gen-1",
+            "request_id": "req-1",
+            "job_id": "job-1",
+            "status": "done",
+        }
+    )
+    assert "생성 최종 확정" in line
+    assert "gen-1" in line and "req-1" in line and "job-1" in line
+
+
+def test_runtime_snapshot_is_one_clean_summary_line():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "level": "INFO",
+            "event": "runtime_snapshot",
+            "snapshot": {
+                "requests": {"total": 30, "status": {"5xx": 1}},
+                "agents": {"connected_accounts": 2},
+                "operations": {
+                    "generation_queue": {"active_total": 3},
+                    "backups": {"set_count": 7},
+                },
+            },
+        }
+    )
+    assert line == (
+        "[2026-08-13 12:00:00] 상태 | 요청 30 (5xx 1) | 활성 생성 3"
+        " | 연결 에이전트 2 | 관리전송 대기 0 (실패 0) | 백업 7세트"
+    )
+
+
+def test_unimportant_info_event_is_hidden_but_warning_is_shown():
+    viewer = _module()
+    assert viewer.format_event({"level": "INFO", "event": "library_cache_hit"}) is None
+    assert "unexpected" in viewer.format_event(
+        {"level": "WARNING", "event": "unexpected"}
+    )
+
+
+def test_backup_completion_is_visible_with_set_summary():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "level": "INFO",
+            "event": "backup_completed",
+            "backup_set_files": 3,
+            "backup_set_bytes": 2048,
+        }
+    )
+    assert "백업 완료" in line
+    assert "백업파일수=3" in line
+    assert "백업크기byte=2048" in line

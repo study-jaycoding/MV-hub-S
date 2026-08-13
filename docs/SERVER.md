@@ -45,7 +45,8 @@ MV_server.bat
 ```
 
 하는 일: ① 프론트 의존성 확인·동기화(`npm install`) → ② `npm run build`(dist 생성)
-→ ③ 백엔드를 `0.0.0.0:8010` 으로 기동(빌드된 dist 서빙). 프로세스가 죽으면 3초 뒤 자동 재기동.
+→ ③ 백엔드를 `0.0.0.0:8010` 으로 기동(빌드된 dist 서빙). 일반 크래시는 대기 시간을
+늘리며 자동 재기동하고, 빠른 실패 5회면 폭풍을 차단해 작업 스케줄러의 지연 재시도로 넘긴다.
 
 MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로그인 필수)·
 `CONTENT_HUB_MANAGE=1`(관리 대시보드 on). 끄려면 실행 전 해당 환경변수를 0 으로 설정.
@@ -77,6 +78,8 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 | `CONTENT_HUB_LOG_KEEP` | `5` | 회전 로그 보관 개수 |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `60` | CPU·메모리·요청 집계를 로그에 남기는 주기(초), 0=비활성 |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `1000` | 개별 느린 요청을 운영 로그에 기록하는 기준(ms) |
+| `CONTENT_HUB_RESTART_LIMIT` | `5` | 빠른 서버 종료를 연속 허용하는 횟수 |
+| `CONTENT_HUB_STABLE_SECONDS` | `120` | 이 시간 이상 정상 실행하면 빠른 종료 횟수 초기화 |
 
 ## 로그인/계정 승인 보안 (CONTENT_HUB_AUTH=1)
 
@@ -96,7 +99,8 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 
 ## DB 자동 백업
 
-단일 SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 일관 스냅샷을 뜬다
+SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 콘텐츠·휴지통·프로젝트
+관리 DB를 하나의 읽기 시점으로 고정한 세트 스냅샷으로 뜬다
 (WAL 모드에서 단순 파일복사는 위험 — `-wal` 미반영분 누락). 서버 시작 시 1회(최근 백업이
 1시간 내면 생략) + 주기 실행, 최근 `BACKUP_KEEP` 개만 회전 보관.
 
@@ -119,12 +123,27 @@ python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_202
 
 ## 운영 상태 확인
 
-- 준비 상태: `GET /api/ready` — DB 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
+- 준비 상태: `GET /api/ready` — 콘텐츠·생성 큐 및 활성화된 관리/휴지통 DB의 핵심
+  테이블 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
 - 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
-  프로세스 CPU·RSS, WebSocket·에이전트 연결, DB/WAL·미디어·썸네일 용량.
-- 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 5xx·느린 요청을 JSON 한 줄로 기록.
+  프로세스 CPU·RSS, WebSocket·에이전트 연결, 생성 단계/지연, 최근 백업,
+  관리 데이터 전송 대기·실패, DB/WAL·미디어·썸네일 용량.
+- 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 생성 상태 전이,
+  5xx·느린 요청을 JSON 한 줄로 기록. 평상시에는 `MV_logs.bat`로 정돈된 로그를 본다.
+- 장기 생성 이력: `GET /api/admin/generation-events?generation_id=...` — 회전 로그와 별개로
+  DB의 `generation_event`에 요청·작업 ID 확보·검증·완료/실패 전이를 보관한다.
+- 중요 변경 감사: `GET /api/admin/audit-events?project_id=...` — 계정 상태/역할,
+  프로젝트 생성·변경·삭제/멤버 역할, 일정·예산, 최종 선택 변경을 `audit_event`에 보관한다.
 
-관리자 지표와 로그에는 이메일·프롬프트·미디어 URL을 기록하지 않는다. 부하 테스트 중에는
+생성 확인 지연, 10분 이상 밀린 관리 데이터, 전송 실패, DB 준비 실패는 `WARNING`으로 남는다.
+같은 상태를 매분 반복하지 않고 상태가 바뀌거나 30분 이상 계속될 때만 다시 알려 로그 폭주를 막는다.
+
+초기 관리자 비밀번호를 환경변수로 주지 않은 첫 설치는
+`<DATA>/bootstrap_admin_password.txt`에만 1회용 비밀번호를 기록한다. 콘솔 로그에는
+비밀번호가 나오지 않는다. 로그인 후 비밀번호를 변경하고 이 파일을 삭제한다.
+
+관리자 지표·회전 로그·장기 이력에는 비밀번호·이메일 원문·프롬프트·미디어 URL을 기록하지 않는다.
+이메일 기반 임시 신원은 복구 불가능한 지문으로 바꿔 기록한다. 부하 테스트 중에는
 `sqlite_locked_total=0`, 애플리케이션 `5xx=0`, 메모리 워밍업 이후 안정 여부를 우선 확인한다.
 
 ## 실서버 이전 체크리스트
