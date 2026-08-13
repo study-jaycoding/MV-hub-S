@@ -35,3 +35,10 @@ def test_autostart_fails_early_when_server_tools_are_missing():
     ):
         assert required in script
     assert ":tools_missing" in script
+
+
+def test_autostart_escapes_parentheses_inside_command_block():
+    script = _read("register_autostart.bat")
+
+    assert "auto-start ^(the running one will be stopped^)..." in script
+    assert "auto-start (the running one will be stopped)..." not in script

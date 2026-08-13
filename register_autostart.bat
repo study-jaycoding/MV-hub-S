@@ -111,7 +111,9 @@ REM scheduled task can own the port from now on.
 netstat -ano | findstr /c:":%PORT% " | findstr LISTENING >nul
 if not errorlevel 1 (
   echo       A server is already running on port %PORT% - moving it under
-  echo       auto-start (the running one will be stopped)...
+  REM Parentheses are command-group syntax inside this IF block and therefore
+  REM must be escaped, even though this is only an echo message.
+  echo       auto-start ^(the running one will be stopped^)...
   powershell -NoProfile -Command "$p=(Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess); if($p){ $c=(Get-CimInstance Win32_Process -Filter \"ProcessId=$p\").CommandLine; if($c -like '*serve.py*'){ taskkill /PID $p /T /F | Out-Null; Write-Output '      stopped old server.' } else { Write-Output '      WARNING: port is used by another program - not touching it.' } }"
   timeout /t 3 /nobreak >nul
 )
