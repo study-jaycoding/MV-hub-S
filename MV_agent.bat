@@ -84,8 +84,8 @@ if not exist dist (
     exit /b 1
   )
   if not exist node_modules (
-    echo     node_modules missing - running npm install ^(first time, a few minutes^)
-    call %NPM_CMD% install || goto :err
+    echo     node_modules missing - restoring locked packages ^(npm ci^)
+    call %NPM_CMD% ci --include=dev --no-audit --no-fund || goto :err
   )
   echo     dist missing - building once. ^(Use update_git.bat to refresh later.^)
   call %NPM_CMD% run build || goto :err

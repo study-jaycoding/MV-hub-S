@@ -42,5 +42,7 @@ release/publish_target.txt
 
 # 서버 운영 로그(워치독·백업 복제·자동시작 콘솔) — 머신 로컬 상태
 /logs/
+# 서버 자동시작 런타임 경로(Python·Node) — 로그 삭제와 분리한 머신 로컬 설정
+/.mvhub-runtime/
 # 백업 원격 복제 대상 경로(머신별 설정)
 tools/backup_replica_target.txt

@@ -38,7 +38,7 @@ uvicorn app.main:app          # http://127.0.0.1:8000
 ### 2) 프론트엔드 (Vite + React, 5173)
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev                    # http://localhost:5173
 ```
 > 백엔드 포트를 바꿨다면 `BACKEND=http://127.0.0.1:<port> npm run dev` 로 프록시 재지정.

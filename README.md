@@ -25,14 +25,20 @@ git sparse-checkout set backend frontend tools
 - **공유 서버**(팀의 단일 DB, 로그인 필요): `MV_server.bat` → http://localhost:8010
 - **내 PC 허브 + 에이전트**(로컬 생성·push): `MV_agent.bat`
 
-최초 1회는 자동으로 `npm install` + 프론트 빌드가 돌아 몇 분 걸립니다(이후엔 빠름).
+최초 1회는 잠금 파일 기준 `npm ci` + 프론트 빌드가 돌아 몇 분 걸립니다. 이후 서버
+부팅은 기존 빌드를 바로 사용하므로 인터넷 연결이나 npm 설치를 기다리지 않습니다.
 
 ## 업데이트
 
 ```sh
-update_git.bat       # git pull --ff-only 후 바뀐 부분만 갱신 (sparse-checkout 유지됨)
+update_git.bat       # 변경분 설치·빌드. 등록된 공유 서버는 안전 재시작+ready 확인까지 수행
 update_cli.bat   # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로 맞춤
 ```
+
+서버 PC는 최초 한 번 `register_autostart.bat`을 관리자 승인으로 실행합니다. 이후에는
+`update_git.bat` 하나로 업데이트와 서버 재시작까지 처리하며, 서버 부팅 시에는 기존
+프론트 빌드를 그대로 사용합니다. Python·Node 경로는 `.mvhub-runtime/`에 보관되어
+로그 파일을 정리해도 자동시작 설정이 사라지지 않습니다.
 
 > **CLI 버전을 올릴 때**는 [docs/HF_CLI_UPGRADE.md](docs/HF_CLI_UPGRADE.md) 절차를 따르세요
 > (pin 올림 → `python tools/hf_cli_contract_smoke.py` 로 계약 검증 → FAIL 고친 뒤 릴리스).

@@ -51,7 +51,7 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 - **백엔드**: Python / FastAPI / Uvicorn. DB는 **SQLite(WAL)만 지원**. PostgreSQL 런타임·이관 도구는 제거되어 환경변수로 전환할 수 없다.
 - **프론트**: React + TypeScript + Vite. 빌드 산출물(`frontend/dist`)을 백엔드가 직접 서빙.
 - **단일 오리진**: 프론트는 상대경로(`/api`·`/ws`·`/media`)만 → 폴더째 올려도 무변경, CORS 불필요.
-- **실행**: `MV_server.bat`(프론트 빌드 → 백엔드 기동). 기본 **포트 8010**, **로그인 강제 ON**(`CONTENT_HUB_AUTH=1`, bat 기본값). `serve.py` 가 IPv4 0.0.0.0 + IPv6 ::1 듀얼스택(Windows localhost IPv6 폴백 ~200ms 지연 제거).
+- **실행**: `MV_server.bat`(기존 프론트 빌드 확인 → 백엔드 기동, dist가 없을 때만 `npm ci`+빌드). 기본 **포트 8010**, **로그인 강제 ON**(`CONTENT_HUB_AUTH=1`, bat 기본값). `serve.py` 가 IPv4 0.0.0.0 + IPv6 ::1 듀얼스택(Windows localhost IPv6 폴백 ~200ms 지연 제거).
 - ⚠️ **`--reload` 금지**: CLI subprocess 가 깨진다. 백엔드 변경은 **서버 재시작**으로 반영. 프론트 변경은 `npm run build` 후 브라우저 **Ctrl+F5**(dist 는 즉시 서빙되어 재시작 불필요).
 - 미디어: `backend/data/media/<sha[:2]>/<sha>.ext`(2단계 샤딩). DB: `backend/data/db/content_hub.db`. 휴지통: `content_hub_trash.db`(별도).
 - 접속: 같은 PC `http://127.0.0.1:8010`(localhost보다 빠름), LAN 팀원 `http://<서버IP>:8010`.

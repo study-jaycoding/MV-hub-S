@@ -7,7 +7,7 @@ REM  Why this exists:
 REM   - rotates the console log BEFORE the redirect handle opens (>50MB -> .old)
 REM   - sets CONTENT_HUB_TASK=1 so child scripts skip interactive "pause" on
 REM     errors and exit nonzero instead -> Task Scheduler can retry (boot-time
-REM     npm/network failures are transient)
+REM     boot-time runtime/environment failures can be retried with a limit)
 REM   - keeps the schtasks /TR command line short (261-char limit)
 REM ============================================================================
 setlocal
@@ -18,8 +18,13 @@ if not exist "%ROOT%logs" mkdir "%ROOT%logs"
 
 REM SYSTEM does not see user-scoped Python/Node PATH entries. The one-click
 REM registration records the verified absolute paths used by the admin user.
-if exist "%ROOT%logs\scheduled_python.txt" for /f "usebackq delims=" %%p in ("%ROOT%logs\scheduled_python.txt") do if exist "%%p" set "PYEXE=%%p"
-if exist "%ROOT%logs\scheduled_node_dir.txt" for /f "usebackq delims=" %%p in ("%ROOT%logs\scheduled_node_dir.txt") do if exist "%%p\npm.cmd" set "PATH=%%p;%PATH%"
+set "RUNTIME_CONFIG=%ROOT%.mvhub-runtime"
+if not exist "%RUNTIME_CONFIG%" mkdir "%RUNTIME_CONFIG%"
+REM One-time migration from the short-lived logs/ location used by 1bf19404.
+if not exist "%RUNTIME_CONFIG%\python.txt" if exist "%ROOT%logs\scheduled_python.txt" copy /y "%ROOT%logs\scheduled_python.txt" "%RUNTIME_CONFIG%\python.txt" >nul
+if not exist "%RUNTIME_CONFIG%\node_dir.txt" if exist "%ROOT%logs\scheduled_node_dir.txt" copy /y "%ROOT%logs\scheduled_node_dir.txt" "%RUNTIME_CONFIG%\node_dir.txt" >nul
+if exist "%RUNTIME_CONFIG%\python.txt" for /f "usebackq delims=" %%p in ("%RUNTIME_CONFIG%\python.txt") do if exist "%%p" set "PYEXE=%%p"
+if exist "%RUNTIME_CONFIG%\node_dir.txt" for /f "usebackq delims=" %%p in ("%RUNTIME_CONFIG%\node_dir.txt") do if exist "%%p\npm.cmd" set "PATH=%%p;%PATH%"
 
 set "LOG="
 if "%MODE%"=="server"   set "LOG=%ROOT%logs\server_console.log"

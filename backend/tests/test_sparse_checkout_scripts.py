@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,12 +16,39 @@ def test_update_adds_server_tools_only_for_sparse_checkout():
 
 
 def test_clone_setup_includes_server_tools_for_existing_and_new_clones():
-    script = _read("setup_clone_git.bat")
+    script = _read("setup_clone_git.ps1")
 
-    assert script.count("git sparse-checkout set backend frontend tools") == 2
-    assert not re.search(
-        r"git sparse-checkout set backend frontend(?! tools)", script
-    )
+    assert script.count('"backend", "frontend", "tools"') == 2
+    assert "Invoke-Native \"Update repository\"" in script
+
+
+def test_production_launchers_use_locked_frontend_install_without_boot_rebuild():
+    server = _read("MV_server.bat")
+    updater = _read("update_git.bat")
+    agent = _read("MV_agent.bat")
+    setup = _read("setup_clone_git.ps1")
+
+    assert 'if exist "%ROOT%frontend\\dist\\index.html"' in server
+    assert "npm ci --include=dev --no-audit --no-fund" in server
+    assert "npm install" not in server
+    assert server.index("if exist \"%ROOT%frontend\\dist\\index.html\"") < server.index("where npm.cmd")
+    assert "npm ci --include=dev --no-audit --no-fund" in updater
+    assert "call npm install" not in updater
+    assert "tools\\verify_requirements.py" in updater
+    assert "-m pip check" not in updater
+    assert "ci --include=dev --no-audit --no-fund" in agent
+    assert '"ci", "--include=dev", "--no-audit", "--no-fund"' in setup
+    assert "tools\\verify_requirements.py" in setup
+
+
+def test_first_time_setup_propagates_each_native_failure():
+    batch = _read("setup_clone_git.bat")
+    script = _read("setup_clone_git.ps1")
+
+    assert 'setup_clone_git.ps1"' in batch
+    assert "if errorlevel 1" in batch
+    assert "function Invoke-Native" in script
+    assert 'throw "$Label failed (exit $LASTEXITCODE)"' in script
 
 
 def test_autostart_fails_early_when_server_tools_are_missing():
@@ -37,11 +63,16 @@ def test_autostart_fails_early_when_server_tools_are_missing():
     assert ":tools_missing" in script
 
 
-def test_autostart_escapes_parentheses_inside_command_block():
+def test_autostart_delegates_restart_instead_of_embedding_fragile_cmd_logic():
     script = _read("register_autostart.bat")
 
-    assert "auto-start ^(the running one will be stopped^)..." in script
-    assert "auto-start (the running one will be stopped)..." not in script
+    assert 'call "%ROOT%restart_server_task.bat"' in script
+    assert "Get-NetTCPConnection" not in script
+    assert "UPSTATE" not in script
+    assert "WindowsBuiltInRole]::Administrator" in script
+    assert "net session" not in "\n".join(
+        line for line in script.splitlines() if not line.startswith("REM")
+    )
 
 
 def test_autostart_persists_runtime_paths_for_system_account():
@@ -50,9 +81,38 @@ def test_autostart_persists_runtime_paths_for_system_account():
 
     assert 'py -3 -c "import sys; print(sys.executable)"' in register
     assert "where npm.cmd" in register
-    assert "logs\\scheduled_python.txt" in register
-    assert "logs\\scheduled_node_dir.txt" in register
-    assert "logs\\scheduled_python.txt" in launcher
+    assert "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog" in register
+    assert ":python_deps_missing" in register
+    assert ".mvhub-runtime" in register
+    assert "python.txt" in register
+    assert "node_dir.txt" in register
+    assert "logs\\scheduled_python.txt" not in register
+    assert "logs\\scheduled_node_dir.txt" not in register
+    assert "logs\\scheduled_python.txt" in launcher  # one-time migration
     assert 'set "PYEXE=%%p"' in launcher
-    assert "logs\\scheduled_node_dir.txt" in launcher
+    assert "logs\\scheduled_node_dir.txt" in launcher  # one-time migration
     assert 'set "PATH=%%p;%PATH%"' in launcher
+
+
+def test_scheduled_watchdog_uses_bounded_task_scheduler_retry():
+    watchdog = _read("MV_watchdog.bat")
+
+    assert 'if "%CONTENT_HUB_TASK%"=="1"' in watchdog
+    assert "handing retry to Task Scheduler" in watchdog
+    assert "exit /b %WATCHDOG_RC%" in watchdog
+
+
+def test_update_restarts_registered_server_and_checks_readiness():
+    updater = _read("update_git.bat")
+    wrapper = _read("restart_server_task.bat")
+    restart = _read("restart_server_task.ps1")
+
+    assert 'schtasks /Query /TN "MVHub Server"' in updater
+    assert 'call "%ROOT%restart_server_task.bat"' in updater
+    assert "Start-Process" in wrapper and "-Verb RunAs" in wrapper
+    assert "WindowsBuiltInRole]::Administrator" in wrapper
+    assert 'Start-ScheduledTask -TaskName $serverTask' in restart
+    assert 'Start-ScheduledTask -TaskName $watchdogTask' in restart
+    assert "/api/ready" in restart
+    assert "Get-ScheduledTaskInfo" in restart
+    assert "server_console.log" in restart

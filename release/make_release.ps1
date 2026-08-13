@@ -285,9 +285,9 @@ try {
     $TscCmd = Join-Path $PWD "node_modules\.bin\tsc.cmd"
     $ViteCmd = Join-Path $PWD "node_modules\.bin\vite.cmd"
     if ((-not (Test-Path -LiteralPath $TscCmd)) -or (-not (Test-Path -LiteralPath $ViteCmd))) {
-        Write-Host "      frontend build tools missing - running npm install"
-        & npm.cmd install --include=dev
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        Write-Host "      frontend build tools missing - running npm ci"
+        & npm.cmd ci --include=dev --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
     }
     & npm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }

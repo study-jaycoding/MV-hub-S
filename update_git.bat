@@ -19,6 +19,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 where git >nul 2>nul || (echo [ERROR] git not found - install from git-scm.com and retry. & pause & exit /b 1)
+where npm.cmd >nul 2>nul || (echo [ERROR] Node.js/npm not found - run setup_clone_git.bat first. & pause & exit /b 1)
 if not exist "%ROOT%.git" (
   echo [ERROR] this folder is not a git clone ^(no .git^).
   echo         Get it ^(code only, skips docs/^):
@@ -44,7 +45,35 @@ if not errorlevel 1 (
     exit /b 1
   )
 )
+
+REM Resolve all required runtimes before changing the working tree. A previous
+REM updater silently skipped Python and still printed success, leaving the next
+REM server boot to fail much later.
+set "PYEXE="
+set "PYARGS="
+if exist "%ROOT%runtime\python\python.exe" set "PYEXE=%ROOT%runtime\python\python.exe"
+if defined PYEXE goto :update_python_ready
+py -3 --version >nul 2>nul
+if not errorlevel 1 (
+  set "PYEXE=py"
+  set "PYARGS=-3"
+)
+if defined PYEXE goto :update_python_ready
+python --version 2>nul | findstr /b /c:"Python 3" >nul
+if not errorlevel 1 set "PYEXE=python"
+:update_python_ready
+if not defined PYEXE (
+  echo [ERROR] Real Python 3 not found - run setup_clone_git.bat first.
+  pause
+  exit /b 1
+)
+node --version >nul 2>nul || (echo [ERROR] Node.js executable is not usable. & pause & exit /b 1)
+
+REM Old npm install runs may have reordered JSON keys in the tracked lock file.
+REM Restore it only when parsed JSON is exactly equal to HEAD (no real edit).
+if exist "%ROOT%tools\repair_package_lock.py" "!PYEXE!" !PYARGS! "%ROOT%tools\repair_package_lock.py" || goto :err
 git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & pause & exit /b 1)
+if exist "%ROOT%tools\repair_package_lock.py" "!PYEXE!" !PYARGS! "%ROOT%tools\repair_package_lock.py" || goto :err
 
 set "AFTER="
 for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "AFTER=%%i"
@@ -66,37 +95,33 @@ if "!BEFORE!"=="!AFTER!" (
 )
 
 echo [2/3] Backend dependencies...
-REM Resolve a REAL Python (ignore the Microsoft Store stub that prints "Python" and exits).
-REM Prefer the 'py' launcher (never shadowed by the Store alias); else a real python3.
-set "PY="
-py -3 --version >nul 2>nul && set "PY=py -3"
-if defined PY goto :py_resolved
-python --version 2>nul | findstr /b /c:"Python 3" >nul && set "PY=python"
-:py_resolved
-if not defined PY (echo     real Python not found - skipping backend deps ^(run setup_clone_git.bat to install it^). & goto :after_deps)
-echo     Using Python: !PY!
+echo     Using Python: !PYEXE! !PYARGS!
 if defined REQ_CHANGED (
   echo     requirements.txt changed - installing...
-  !PY! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
+  "!PYEXE!" !PYARGS! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
 ) else (
-  !PY! -c "import fastapi, uvicorn" 2>nul && (
+  "!PYEXE!" !PYARGS! -c "import fastapi, uvicorn" 2>nul && (
     echo     unchanged - skip.
   ) || (
     echo     deps missing - installing...
-    !PY! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
+    "!PYEXE!" !PYARGS! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
   )
 )
-:after_deps
+"!PYEXE!" !PYARGS! -c "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog" 2>nul || (
+  echo [ERROR] Backend dependency verification failed after install/check.
+  goto :err
+)
+"!PYEXE!" !PYARGS! "%ROOT%tools\verify_requirements.py" "%ROOT%backend\requirements.txt" || goto :err
 
 echo [3/3] Frontend...
 cd /d "%ROOT%frontend" || goto :err
 if not exist node_modules set "FE_CHANGED=1"
 if not exist "%ROOT%frontend\dist\index.html" set "FE_CHANGED=1"
 if defined FE_CHANGED (
-  REM Sync packages before building. package.json may have added a new dependency,
-  REM so building without npm install would fail. npm install is fast when in sync.
-  echo     syncing packages ^(npm install^)...
-  call npm install || goto :err
+  REM Recreate exactly what package-lock.json declares. Unlike npm install this
+  REM never rewrites the tracked lock file just because the npm version differs.
+  echo     restoring locked packages ^(npm ci^)...
+  call npm ci --include=dev --no-audit --no-fund || goto :err
   echo     building frontend...
   call npm run build || goto :err
 ) else (
@@ -105,8 +130,18 @@ if defined FE_CHANGED (
 cd /d "%ROOT%"
 
 echo.
+schtasks /Query /TN "MVHub Server" >nul 2>nul
+if not errorlevel 1 (
+  echo [server] Registered shared server detected - applying update by restart...
+  set "CONTENT_HUB_NO_PAUSE=1"
+  call "%ROOT%restart_server_task.bat" || goto :err
+) else (
+  echo [server] No shared-server task on this PC - no server restart needed.
+)
+
+echo.
 echo [done] updated to the latest version.
-echo        - shared server PC:  run MV_server.bat again
+echo        - registered server: restarted and readiness-checked automatically
 echo        - worker PC:         run MV_agent.bat again
 echo        - Higgsfield CLI:    run update_cli.bat separately if you want to update it
 pause

@@ -4,11 +4,11 @@ REM  MV Hub - server WATCHDOG launcher  [auto-restart]
 REM
 REM  Watches /api/ready on the shared server. If the server process hangs
 REM  (alive but not responding), kills ONLY the serve.py process so the
-REM  MV_server.bat :serverloop restarts it. Crash restarts are already
-REM  handled by MV_server.bat itself.
+REM  server supervisor restarts it. Crash restarts are already handled by
+REM  that bounded supervisor.
 REM
 REM  Safe by design: never intervenes before the first healthy response
-REM  (boot/npm build grace), refuses to kill when the target is ambiguous,
+REM  (boot/database migration grace), refuses to kill when the target is ambiguous,
 REM  and stops intervening on a restart storm (3 kills / 60 min -> ALERT).
 REM
 REM  Run on the SERVER PC only. Logs: logs\watchdog.log
@@ -36,6 +36,15 @@ if "%PYEXE%"=="" (
 echo [watchdog] python: %PYEXE%  port: %PORT%
 :watchloop
 "%PYEXE%" "%ROOT%tools\server_watchdog.py" --port %PORT%
-echo [watchdog] exited (code %errorlevel%) - relaunching in 10s...
+set "WATCHDOG_RC=%errorlevel%"
+REM Under Task Scheduler, return control so its bounded 5-minute retry policy
+REM applies. A local 10-second forever loop would turn a persistent code/config
+REM error into a CPU/log storm and hide the task failure result.
+if "%CONTENT_HUB_TASK%"=="1" (
+  echo [watchdog] exited ^(code %WATCHDOG_RC%^) - handing retry to Task Scheduler.
+  if "%WATCHDOG_RC%"=="0" exit /b 1
+  exit /b %WATCHDOG_RC%
+)
+echo [watchdog] exited ^(code %WATCHDOG_RC%^) - relaunching in 10s...
 timeout /t 10 /nobreak >nul
 goto :watchloop

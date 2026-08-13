@@ -44,8 +44,9 @@ pending 으로 남으므로, 서버 업데이트 후 **워커 PC(에이전트)�
 MV_server.bat
 ```
 
-하는 일: ① 프론트 의존성 확인·동기화(`npm install`) → ② `npm run build`(dist 생성)
-→ ③ 백엔드를 `0.0.0.0:8010` 으로 기동(빌드된 dist 서빙). 일반 크래시는 대기 시간을
+하는 일: ① 기존 `frontend/dist` 확인 → ② 없을 때만 잠금 파일 기준 `npm ci`와 빌드
+→ ③ 백엔드를 `0.0.0.0:8010` 으로 기동(빌드된 dist 서빙). 평소 부팅은 npm 설치나
+외부 네트워크에 의존하지 않는다. 일반 크래시는 대기 시간을
 늘리며 자동 재기동하고, 빠른 실패 5회면 폭풍을 차단해 작업 스케줄러의 지연 재시도로 넘긴다.
 
 MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로그인 필수)·
@@ -56,6 +57,18 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 
 포트/바인딩 변경: `set PORT=9000 & MV_server.bat`, 또는 환경변수
 `CONTENT_HUB_PORT` / `CONTENT_HUB_HOST`.
+
+### Windows 자동시작과 업데이트
+
+서버 PC에서 최초 한 번 `register_autostart.bat`을 관리자 승인으로 실행한다. 서버·감시·
+백업 작업이 SYSTEM 계정으로 등록되며, 현재 검증된 Python·Node 절대 경로는 로그가 아닌
+`.mvhub-runtime/`에 저장된다. 구버전의 `logs/scheduled_*.txt`는 첫 실행 때 자동 이전한다.
+
+이후 `update_git.bat`은 잠금 파일 기준 `npm ci`로 필요한 경우에만 프론트를 갱신한다.
+`MVHub Server` 예약 작업이 있으면 관리자 승인 후 서버·감시 작업을 안전하게 다시 시작하고
+`/api/ready`가 200인지 확인한다. 실패하면 예약 작업의 상태·결과 코드와
+`logs/server_console.log` 마지막 부분을 즉시 보여준다. 따라서 등록 후에는
+`MV_server.bat`을 별도 창에서 수동 실행하지 않는다.
 
 ## 설정 (모두 환경변수, 하드코딩 없음)
 
@@ -148,11 +161,11 @@ python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_202
 
 ## 실서버 이전 체크리스트
 
-1. 이 폴더 전체를 서버로 복사(`node_modules`·`dist`·`__pycache__` 제외 — 서버에서 재생성).
+1. 이 폴더 전체를 서버로 복사(`node_modules`·`dist`·`__pycache__` 제외 — 설치 과정에서 재생성).
 2. `pip install -r backend/requirements.txt`, Node 설치.
 3. 데이터 경로를 서버 디스크에 맞춰 `CONTENT_HUB_DATA` 지정(권장: 영속 볼륨).
-4. `MV_server.bat`(Windows) 또는 동등한 쉘에서
-   `npm run build` → `python serve.py`(IPv4/IPv6 듀얼스택, `--reload` 금지). 직접 uvicorn 이면
+4. Windows는 `register_autostart.bat`으로 설치·기동한다. 수동 구성은
+   `npm ci` → `npm run build` → `python serve.py`(IPv4/IPv6 듀얼스택, `--reload` 금지). 직접 uvicorn 이면
    `python -m uvicorn app.main:app --host 0.0.0.0 --port 8010`.
 5. 방화벽에서 해당 포트 인바운드 허용.
 6. Higgsfield CLI 는 **각 사용자 개인 PC**에서 본인 계정으로 — 서버엔 토큰을 두지 않는다

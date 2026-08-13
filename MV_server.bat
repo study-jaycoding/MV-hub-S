@@ -41,18 +41,20 @@ if "%PYEXE%"=="" (
   echo [ERROR] Python not found - install from python.org and retry.
   goto :fail
 )
-where npm    >nul 2>nul || (echo [ERROR] Node.js/npm not found - install from nodejs.org and retry. & goto :fail)
-
 echo.
 echo [python] %PYEXE%
-echo [1/2] Building frontend (dist)...
+echo [1/2] Checking frontend build ^(dist^)...
 cd /d "%ROOT%frontend" || goto :err
-REM Always sync packages first. Checking only "node_modules exists" would skip
-REM install after package.json adds a new dependency, breaking the build.
-REM npm install is fast (a few seconds) when everything is already up to date.
-echo     Syncing frontend packages ^(npm install^)...
-call npm install || goto :err
-call npm run build || goto :err
+REM update_git.bat owns dependency sync/build. A boot must not depend on the npm
+REM registry or mutate package-lock.json. Only repair a genuinely missing dist.
+if exist "%ROOT%frontend\dist\index.html" (
+  echo     existing build found - skip install/build.
+) else (
+  where npm.cmd >nul 2>nul || (echo [ERROR] Frontend build is missing and Node.js/npm is unavailable. & goto :fail)
+  echo     build missing - restoring exact locked packages once ^(npm ci^)...
+  call npm ci --include=dev --no-audit --no-fund || goto :err
+  call npm run build || goto :err
+)
 
 cd /d "%ROOT%backend" || goto :err
 set "CONTENT_HUB_HOST=%HOST%"
@@ -75,6 +77,6 @@ echo [ERROR] a step above failed - aborting.
 REM Under the scheduled task (CONTENT_HUB_TASK=1) there is no console user:
 REM "pause" would hang the hidden window forever and Task Scheduler could never
 REM retry. Exit nonzero instead -> the task's RestartCount retries in 5 min
-REM (covers boot-time transients: network not up yet, npm registry hiccup).
+REM (covers boot-time transients such as a temporarily unavailable data drive).
 if not "%CONTENT_HUB_TASK%"=="1" pause
 exit /b 1

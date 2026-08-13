@@ -340,7 +340,7 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 
 ```
 content-hub-server/
-├─ MV_server.bat            프론트 빌드 → 폭풍 차단 감독기 → 백엔드 기동(포트 8010, AUTH=1)
+├─ MV_server.bat            기존 프론트 빌드 확인 → 폭풍 차단 감독기 → 백엔드 기동(포트 8010, AUTH=1)
 ├─ agent_push.py             팀원 각 PC 에이전트(표준 라이브러리만)
 ├─ ARCHITECTURE.md           이 문서(설계 구조)
 ├─ 기능설명서.md / 사용설명서.md / SERVER.md / AI_CONTEXT.md / README.md / DESIGN.md / CLAUDE.md
