@@ -39,3 +39,8 @@ release/publish_target.txt
 
 # 배포 전 자동 게이트의 로컬 결과(머신 경로·성능 수치 포함)
 /predeploy-reports/
+
+# 서버 운영 로그(워치독·백업 복제·자동시작 콘솔) — 머신 로컬 상태
+/logs/
+# 백업 원격 복제 대상 경로(머신별 설정)
+tools/backup_replica_target.txt
