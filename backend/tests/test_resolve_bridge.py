@@ -19,13 +19,20 @@ class FakeClip:
 
 
 class FakeFolder:
+    _next_id = 0
+
     def __init__(self, name: str):
+        type(self)._next_id += 1
+        self.unique_id = f"folder-{type(self)._next_id}"
         self.name = name
         self.children = []
         self.clips = []
 
     def GetName(self):
         return self.name
+
+    def GetUniqueId(self):
+        return self.unique_id
 
     def GetSubFolderList(self):
         return self.children
@@ -53,6 +60,49 @@ class FakeMediaPool:
         folder = FakeFolder(name)
         parent.children.append(folder)
         return folder
+
+    def _parent_of(self, target, parent=None):
+        parent = parent or self.root
+        if target in parent.children:
+            return parent
+        for child in parent.children:
+            found = self._parent_of(target, child)
+            if found:
+                return found
+        return None
+
+    def MoveFolders(self, folders, target):
+        raise AssertionError("안전한 정렬은 MoveFolders를 호출하면 안 됩니다")
+
+    def MoveClips(self, clips, target):
+        for clip in clips:
+            source = self._folder_containing_clip(clip)
+            if source is None:
+                return False
+            source.clips.remove(clip)
+            target.clips.append(clip)
+        return True
+
+    def _folder_containing_clip(self, target, folder=None):
+        folder = folder or self.root
+        if target in folder.clips:
+            return folder
+        for child in folder.children:
+            found = self._folder_containing_clip(target, child)
+            if found:
+                return found
+        return None
+
+    def DeleteFolders(self, folders):
+        for folder in folders:
+            parent = self._parent_of(folder)
+            if parent is None or folder.children or folder.clips:
+                return False
+            parent.children.remove(folder)
+        return True
+
+    def RefreshFolders(self):
+        return True
 
     def ImportMedia(self, paths):
         clips = [FakeClip(path) for path in paths]
@@ -83,13 +133,28 @@ class FakeProjectManager:
         self.saved += 1
         return True
 
+    def ExportProject(self, _project_name, path, _with_stills):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"fake resolve backup")
+        return True
+
 
 class FakeResolve:
     def __init__(self, project_manager):
         self.project_manager = project_manager
+        self.page = "media"
+        self.opened_pages = []
 
     def GetProjectManager(self):
         return self.project_manager
+
+    def GetCurrentPage(self):
+        return self.page
+
+    def OpenPage(self, page):
+        self.page = page
+        self.opened_pages.append(page)
+        return True
 
 
 class ResolveBridgeTests(unittest.TestCase):
@@ -121,6 +186,11 @@ class ResolveBridgeTests(unittest.TestCase):
         return {
             "project_id": "p1",
             "project_name": "프로젝트/테스트",
+            "manifest_root": str(self.root / "@davinci"),
+            "folder_catalog_path": str(
+                self.root / "@davinci" / ".mvhub" / "folder-catalog.json"
+            ),
+            "folder_paths": [item["folder_path"] for item in items],
             "items": items,
         }
 
@@ -151,6 +221,85 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(first["imported"], 2)
         self.assertEqual((second["imported"], second["skipped"]), (0, 2))
         self.assertEqual(self.manager.saved, 1)
+
+    def test_new_bins_are_created_in_natural_folder_name_order(self):
+        manifest = self._manifest()
+        manifest["items"][0]["folder_path"] = "ep001/c10"
+        manifest["items"][1]["folder_path"] = "ep001/c2"
+        manifest["folder_paths"] = ["ep001/c10", "ep001/c2"]
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "complete")
+        managed = self._child(self.pool.root, "MV Hub")
+        project = self._child(managed, "프로젝트_테스트")
+        episode = self._child(project, "ep001")
+        self.assertEqual([folder.name for folder in episode.children], ["c2", "c10"])
+        self.assertEqual(
+            [item["generation_id"] for item in result["items"]], ["g1", "g2"]
+        )
+
+    def test_previous_folder_catalog_does_not_create_unselected_bins(self):
+        manifest = self._manifest()
+        manifest["items"] = [manifest["items"][0]]
+        manifest["folder_paths"] = ["ep001/c0010", "ep999/c9999"]
+        catalog_path = Path(manifest["folder_catalog_path"])
+        catalog_path.parent.mkdir(parents=True)
+        catalog_path.write_text(
+            '{"format":"mvhub.resolve-folder-catalog","paths":["ep999/c9999"]}',
+            encoding="utf-8",
+        )
+
+        result = import_manifest_to_current_project(manifest, resolve=self.resolve)
+
+        self.assertEqual(result["status"], "complete")
+        managed = self._child(self.pool.root, "MV Hub")
+        project = self._child(managed, "프로젝트_테스트")
+        self.assertEqual([folder.name for folder in project.children], ["ep001"])
+        episode = self._child(project, "ep001")
+        self.assertEqual([folder.name for folder in episode.children], ["c0010"])
+
+    def test_separate_imports_reorder_existing_bins_without_copy_suffixes(self):
+        manifest = self._manifest()
+        first_item = manifest["items"][0]
+        second_item = manifest["items"][1]
+        first_item["folder_path"] = "ep001/c0015"
+        second_item["folder_path"] = "ep001/c0010"
+
+        first = import_manifest_to_current_project(
+            {
+                **manifest,
+                "folder_paths": ["ep001/c0015"],
+                "items": [first_item],
+            },
+            resolve=self.resolve,
+        )
+        managed = self._child(self.pool.root, "MV Hub")
+        project = self._child(managed, "프로젝트_테스트")
+        episode = self._child(project, "ep001")
+        old_c0015 = self._child(episode, "c0015")
+        self.pool.current = old_c0015
+        second = import_manifest_to_current_project(
+            {
+                **manifest,
+                "folder_paths": ["ep001/c0010"],
+                "items": [second_item],
+            },
+            resolve=self.resolve,
+        )
+
+        self.assertEqual(
+            (first["status"], second["status"]), ("complete", "complete")
+        )
+        episode = self._child(project, "ep001")
+        self.assertEqual([folder.name for folder in episode.children], ["c0010", "c0015"])
+        self.assertFalse(any(folder.name.endswith(" copy") for folder in episode.children))
+        self.assertEqual(len(self._child(episode, "c0015").clips), 1)
+        self.assertEqual(len(self._child(episode, "c0010").clips), 1)
+        self.assertTrue(Path(second["folder_order_backup"]).is_file())
+        self.assertEqual(self.resolve.opened_pages, [])
+        self.assertIs(self.pool.current, self._child(episode, "c0015"))
+        self.assertIsNot(self.pool.current, old_c0015)
 
     def test_missing_current_project_is_reported_as_unavailable(self):
         resolve = FakeResolve(FakeProjectManager(None))

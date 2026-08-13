@@ -12,6 +12,12 @@ from . import _proxy
 from .. import repo
 from ..deps import account_scope_uid, require_view_generation
 from ..services.resolve_bridge import import_manifest_to_current_project
+from ..services.request_guards import require_loopback_request
+from ..services.resolve_script_installer import (
+    ResolveScriptInstallError,
+    install_resolve_script,
+    resolve_script_status,
+)
 from ..services.resolve_transfer import (
     ResolveTransferError,
     save_manifest,
@@ -24,6 +30,32 @@ router = APIRouter(prefix="/api/resolve", tags=["resolve"])
 
 class ResolveTransferIn(BaseModel):
     gen_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+def _require_local_script_install(request: Request) -> None:
+    require_loopback_request(
+        request, "Resolve 스크립트 설치는 이 PC의 로컬 MV Hub에서만 사용할 수 있습니다"
+    )
+
+
+@router.get("/script")
+def get_resolve_script_status(request: Request):
+    """현재 PC의 Resolve 사용자 스크립트 설치 상태."""
+    _require_local_script_install(request)
+    try:
+        return resolve_script_status()
+    except ResolveScriptInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/script/install")
+def post_resolve_script_install(request: Request):
+    """MV Hub에 포함된 최신 Clip Exporter를 현재 Windows 사용자에게 설치한다."""
+    _require_local_script_install(request)
+    try:
+        return install_resolve_script()
+    except ResolveScriptInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _generation_for_transfer(gen_id: str, request: Request) -> dict:

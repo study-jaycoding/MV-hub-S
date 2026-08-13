@@ -28,9 +28,15 @@ import {
   BackfillSettingsSection,
   DownloadLocationSection,
   MetadataContinuitySection,
+  ResolveScriptSettingsSection,
   SyncToolsSection,
 } from "./settings/SettingsSections";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
+import {
+  getResolveScriptStatus,
+  installResolveScript,
+  type ResolveScriptStatus,
+} from "../lib/resolveTransfer";
 
 export function SettingsPanel({
   onClose,
@@ -53,10 +59,36 @@ export function SettingsPanel({
   const [hfMsg, setHfMsg] = useState("");
   const [dlDir, setDlDir] = useState<string | null>(null);
   const [dlErr, setDlErr] = useState("");
+  const [resolveScriptStatus, setResolveScriptStatus] = useState<ResolveScriptStatus | null>(null);
+  const [resolveScriptBusy, setResolveScriptBusy] = useState(false);
+  const [resolveScriptMsg, setResolveScriptMsg] = useState("");
 
   useEffect(() => {
     downloadDirName().then(setDlDir).catch(() => {});
+    getResolveScriptStatus().then(setResolveScriptStatus).catch(() => {
+      setResolveScriptMsg("설치 상태를 확인하지 못했습니다. 로컬 MV Hub에서 다시 시도하세요.");
+    });
   }, []);
+
+  const installResolveExporter = async () => {
+    setResolveScriptBusy(true);
+    setResolveScriptMsg("Resolve 스크립트 설치 중…");
+    try {
+      const result = await installResolveScript();
+      setResolveScriptStatus(result);
+      setResolveScriptMsg(
+        result.changed
+          ? `설치 완료 · v${result.bundled_version || "확인 불가"} · Resolve를 다시 실행하세요.`
+          : `이미 최신 버전입니다 · v${result.bundled_version || "확인 불가"}`,
+      );
+    } catch (error) {
+      setResolveScriptMsg(
+        "설치 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""),
+      );
+    } finally {
+      setResolveScriptBusy(false);
+    }
+  };
 
   const pickDir = async () => {
     setDlErr("");
@@ -270,6 +302,13 @@ export function SettingsPanel({
           </section>
 
           <ComfyConnectionSection />
+
+          <ResolveScriptSettingsSection
+            status={resolveScriptStatus}
+            busy={resolveScriptBusy}
+            msg={resolveScriptMsg}
+            onInstall={installResolveExporter}
+          />
 
           <BackfillSettingsSection
             uploading={uploading}

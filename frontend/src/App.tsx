@@ -1023,6 +1023,7 @@ export default function App() {
         onDownload={bulkDownload}
         onResolveTransfer={resolveTransfer.sendToResolve}
         resolveTransferBusy={resolveTransfer.busy}
+        resolveTransferPendingCount={resolveTransfer.pendingCount}
         onCompare={(items) => {
           if (items.length >= 2) setCompareGens(items);
         }}

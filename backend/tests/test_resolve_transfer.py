@@ -1,4 +1,4 @@
-"""ResolveSource 폴더 전송 기반 — 구조 보존·멱등·경로 안전성 검증."""
+"""Render 폴더 Resolve 전송 — 구조 보존·manifest 분리·경로 안전성 검증."""
 
 from __future__ import annotations
 
@@ -74,13 +74,36 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             path = Path(item["local_path"])
             self.assertTrue(path.is_file())
             self.assertEqual(
-                path.parent.relative_to(self.root / "ResolveSource").as_posix(),
+                path.parent.relative_to(self.render).as_posix(),
                 item["folder_path"],
             )
         manifest_path = Path(result["manifest_path"])
+        self.assertEqual(Path(result["source_root"]), self.render)
+        self.assertEqual(Path(result["manifest_root"]), self.root / "@davinci")
+        self.assertEqual(
+            manifest_path.parent,
+            self.root / "@davinci" / ".mvhub" / "transfers",
+        )
+        self.assertFalse((self.root / "ResolveSource").exists())
         saved = json.loads(manifest_path.read_text("utf-8"))
         self.assertEqual(saved["status"], "complete")
         self.assertEqual(saved["format"], resolve_transfer.MANIFEST_FORMAT)
+        catalog_path = Path(result["folder_catalog_path"])
+        self.assertEqual(
+            catalog_path,
+            self.root / "@davinci" / ".mvhub" / "folder-catalog.json",
+        )
+        catalog = json.loads(catalog_path.read_text("utf-8"))
+        self.assertEqual(catalog["format"], resolve_transfer.FOLDER_CATALOG_FORMAT)
+        self.assertEqual(
+            catalog["paths"],
+            ["ep001/c0010", "ep001/c0020", "ep002/c0010"],
+        )
+        self.assertEqual(result["folder_paths"], catalog["paths"])
+        result["resolve_import"] = {"status": "complete", "imported": 3}
+        await resolve_transfer.save_manifest(result)
+        saved = json.loads(manifest_path.read_text("utf-8"))
+        self.assertEqual(saved["resolve_import"]["imported"], 3)
         # 만료 가능한 CDN 주소·토큰은 편집 패키지 manifest에 남기지 않는다.
         self.assertNotIn("cdn.example", manifest_path.read_text("utf-8"))
 
@@ -94,6 +117,16 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             (second["downloaded"], second["skipped"], second["error_count"]),
             (0, 3, 0),
         )
+
+    async def test_separate_transfers_replace_catalog_with_current_selection(self):
+        await self._transfer([self._generation(1, "ep001/c0015")], "first-late")
+        second = await self._transfer(
+            [self._generation(2, "ep001/c0010")], "second-early"
+        )
+
+        catalog = json.loads(Path(second["folder_catalog_path"]).read_text("utf-8"))
+        self.assertEqual(catalog["paths"], ["ep001/c0010"])
+        self.assertEqual(second["folder_paths"], catalog["paths"])
 
     async def test_unsafe_folder_is_reported_without_escape(self):
         result = await self._transfer(
@@ -113,7 +146,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             generation["assets"][0]["source_url"],
             "video",
         )
-        dest = self.root / "ResolveSource" / "ep001" / "c0010" / filename
+        dest = self.render / "ep001" / "c0010" / filename
         dest.parent.mkdir(parents=True)
         source = self.media / generation["assets"][0]["file_path"].removeprefix("/media/")
         different_same_size = b"x" * source.stat().st_size
@@ -129,7 +162,17 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsafe_transfer_id_is_rejected_before_manifest_write(self):
         with self.assertRaises(resolve_transfer.ResolveTransferError):
             await self._transfer([self._generation(1, "ep001/c0010")], "../escape")
-        self.assertFalse((self.root / "ResolveSource" / "escape.json").exists())
+        self.assertFalse((self.root / "@davinci" / "escape.json").exists())
+
+    async def test_existing_davinci_file_is_not_overwritten(self):
+        davinci = self.root / "@davinci"
+        davinci.write_text("keep", encoding="utf-8")
+
+        with self.assertRaises(resolve_transfer.ResolveTransferError):
+            await self._transfer([self._generation(1, "ep001/c0010")], "blocked")
+
+        self.assertEqual(davinci.read_text("utf-8"), "keep")
+        self.assertFalse((self.render / "ep001" / "c0010").exists())
 
     async def test_remote_original_is_cached_then_copied_without_url_in_manifest(self):
         generation = self._generation(1, "ep001/c0010")

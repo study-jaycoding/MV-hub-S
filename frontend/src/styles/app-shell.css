@@ -226,6 +226,7 @@
 .settings-section:last-child { border-bottom: none; }
 .settings-section h4 { margin: 0 0 10px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
 .settings-hint { font-size: 11px; color: var(--muted2); line-height: 1.5; margin: 9px 0 0; }
+.resolve-script-path { overflow-wrap: anywhere; user-select: text; }
 /* 팀 크레딧 집계 */
 .team-credits { display: flex; flex-direction: column; gap: 2px; }
 .tc-total { display: flex; justify-content: space-between; align-items: baseline;

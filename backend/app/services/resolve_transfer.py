@@ -1,7 +1,7 @@
 """DaVinci Resolve 편집 원본 전송 기반.
 
-선택한 생성물 원본을 프로젝트의 ``ResolveSource/<folder_path>`` 아래에 안전하게
-모으고, Resolve 연결 계층이 읽을 수 있는 manifest JSON을 남긴다.
+선택한 생성물 원본을 기존 ``Render/<folder_path>`` 아래에 안전하게 모으고,
+Resolve 연결 계층이 읽을 manifest JSON은 ``@davinci/.mvhub``에 분리한다.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,12 +25,16 @@ from .path_safety import safe_join
 
 
 MANIFEST_FORMAT = "mvhub.resolve-transfer"
-MANIFEST_VERSION = 1
-SOURCE_DIR_NAME = "ResolveSource"
+MANIFEST_VERSION = 2
+FOLDER_CATALOG_FORMAT = "mvhub.resolve-folder-catalog"
+FOLDER_CATALOG_VERSION = 1
+DAVINCI_DIR_NAME = "@davinci"
 _MIN_FREE_BYTES = max(
     0, int(os.environ.get("CONTENT_HUB_RESOLVE_MIN_FREE_BYTES", str(256 * 1024 * 1024)))
 )
 _TRANSFER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_NATURAL_NAME_CHUNKS = re.compile(r"(\d+)")
+_CATALOG_LOCK = threading.Lock()
 
 
 class ResolveTransferError(RuntimeError):
@@ -45,13 +50,8 @@ def _new_transfer_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
-def resolve_source_root(project_id: str) -> Path:
-    """프로젝트 Render 폴더의 형제 ``ResolveSource``를 반환한다.
-
-    기존 Render 완료본과 편집 원본이 섞이지 않게 물리 루트를 분리한다. 이미
-    존재하는 ResolveSource가 심링크/정션으로 프로젝트 밖을 가리키면 safe_join이
-    거부한다.
-    """
+def resolve_transfer_roots(project_id: str) -> tuple[Path, Path]:
+    """미디어를 둘 Render와 manifest를 둘 ``@davinci`` 폴더를 반환한다."""
     state = project_folders.render_root_state(project_id)
     if state.get("error"):
         raise ResolveTransferError(str(state["error"]))
@@ -61,30 +61,90 @@ def resolve_source_root(project_id: str) -> Path:
 
     render = Path(render_raw).resolve()
     project_root = render.parent
-    source_root = safe_join(project_root, SOURCE_DIR_NAME)
-    if source_root is None:
-        raise ResolveTransferError("ResolveSource 경로가 프로젝트 밖을 가리킵니다")
-    if source_root.exists() and not source_root.is_dir():
-        raise ResolveTransferError(f"ResolveSource 위치가 폴더가 아닙니다: {source_root}")
+    manifest_root = safe_join(project_root, DAVINCI_DIR_NAME)
+    if manifest_root is None:
+        raise ResolveTransferError("@davinci 경로가 프로젝트 밖을 가리킵니다")
+    if manifest_root.exists() and not manifest_root.is_dir():
+        raise ResolveTransferError(f"@davinci 위치가 폴더가 아닙니다: {manifest_root}")
     try:
-        source_root.mkdir(parents=True, exist_ok=True)
+        manifest_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise ResolveTransferError(f"ResolveSource 폴더를 만들 수 없습니다: {exc}") from exc
+        raise ResolveTransferError(f"@davinci 폴더를 만들 수 없습니다: {exc}") from exc
 
     # mkdir 직후 다시 해석해 생성 중 경로가 바뀌었거나 정션인 경우도 차단한다.
-    checked = safe_join(project_root, SOURCE_DIR_NAME)
-    if checked is None or checked != source_root:
-        raise ResolveTransferError("ResolveSource 경로 안전성을 확인할 수 없습니다")
-    return source_root
+    checked = safe_join(project_root, DAVINCI_DIR_NAME)
+    if checked is None or checked != manifest_root:
+        raise ResolveTransferError("@davinci 경로 안전성을 확인할 수 없습니다")
+    return render, manifest_root
 
 
-def _manifest_path(source_root: Path, transfer_id: str) -> Path:
+def _manifest_path(manifest_root: Path, transfer_id: str) -> Path:
     if not _TRANSFER_ID_RE.fullmatch(transfer_id):
         raise ResolveTransferError("전송 ID 형식이 안전하지 않습니다")
-    path = safe_join(source_root, Path(".mvhub") / "transfers" / f"{transfer_id}.json")
+    path = safe_join(
+        manifest_root,
+        Path(".mvhub") / "transfers" / f"{transfer_id}.json",
+    )
     if path is None:
         raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다")
     return path
+
+
+def _folder_catalog_path(manifest_root: Path) -> Path:
+    path = safe_join(manifest_root, Path(".mvhub") / "folder-catalog.json")
+    if path is None:
+        raise ResolveTransferError("Resolve 폴더 목록 저장 경로가 안전하지 않습니다")
+    return path
+
+
+def _normalized_folder_path(value: str) -> str:
+    raw_parts = [part.strip() for part in value.replace("\\", "/").split("/")]
+    if any(part in {".", ".."} for part in raw_parts):
+        return ""
+    parts = [part for part in raw_parts if part]
+    return "/".join(parts)
+
+
+def _natural_name_key(value: str) -> tuple[Any, ...]:
+    chunks = tuple(
+        (1, int(chunk)) if chunk.isdigit() else (0, chunk.casefold())
+        for chunk in _NATURAL_NAME_CHUNKS.split(value)
+        if chunk
+    )
+    return chunks, value.casefold(), value
+
+
+def _folder_path_sort_key(value: str) -> tuple[Any, ...]:
+    return tuple(_natural_name_key(part) for part in value.split("/") if part)
+
+
+def _update_folder_catalog(manifest: dict[str, Any]) -> tuple[Path, list[str]]:
+    """이번 전송에서 선택한 경로만 자연 정렬해 원자 저장한다."""
+    manifest_root = Path(str(manifest.get("manifest_root") or "")).resolve()
+    catalog_path = _folder_catalog_path(manifest_root)
+    project_id = str(manifest.get("project_id") or "")
+    with _CATALOG_LOCK:
+        paths: set[str] = set()
+        for item in manifest.get("items") or []:
+            if item.get("status") not in {"downloaded", "skipped"}:
+                continue
+            if normalized := _normalized_folder_path(str(item.get("folder_path") or "")):
+                paths.add(normalized)
+
+        ordered = sorted(paths, key=_folder_path_sort_key)
+        payload = {
+            "format": FOLDER_CATALOG_FORMAT,
+            "version": FOLDER_CATALOG_VERSION,
+            "project_id": project_id,
+            "project_name": str(manifest.get("project_name") or ""),
+            "updated_at": _utc_now(),
+            "paths": ordered,
+        }
+        atomic_write_text(
+            catalog_path,
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+        return catalog_path, ordered
 
 
 def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
@@ -97,12 +157,15 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
 async def save_manifest(manifest: dict[str, Any]) -> None:
     """후속 Resolve 가져오기 결과까지 같은 manifest에 원자적으로 저장한다."""
     path = Path(str(manifest.get("manifest_path") or ""))
-    source_root = Path(str(manifest.get("source_root") or ""))
+    # v1 manifest는 ResolveSource 하나가 미디어·manifest 공통 루트였다.
+    manifest_root = Path(
+        str(manifest.get("manifest_root") or manifest.get("source_root") or "")
+    )
     try:
-        relative = path.relative_to(source_root)
+        relative = path.relative_to(manifest_root)
     except ValueError as exc:
         raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다") from exc
-    if not path.name or safe_join(source_root, relative) != path:
+    if not path.name or safe_join(manifest_root, relative) != path:
         raise ResolveTransferError("전송 목록 저장 경로가 안전하지 않습니다")
     await asyncio.to_thread(_write_manifest, path, manifest)
 
@@ -235,9 +298,11 @@ async def transfer_generations(
     if any((gen.get("project_id") or "") != project_id for gen in generations):
         raise ResolveTransferError("한 번에 하나의 프로젝트만 전송할 수 있습니다")
 
-    source_root = await asyncio.to_thread(resolve_source_root, project_id)
+    source_root, manifest_root = await asyncio.to_thread(
+        resolve_transfer_roots, project_id
+    )
     transfer_id = transfer_id or _new_transfer_id()
-    manifest_path = _manifest_path(source_root, transfer_id)
+    manifest_path = _manifest_path(manifest_root, transfer_id)
     manifest: dict[str, Any] = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
@@ -245,7 +310,10 @@ async def transfer_generations(
         "project_id": project_id,
         "project_name": generations[0].get("project_name") or "",
         "source_root": str(source_root),
+        "manifest_root": str(manifest_root),
         "manifest_path": str(manifest_path),
+        "folder_catalog_path": str(_folder_catalog_path(manifest_root)),
+        "folder_paths": [],
         "created_at": _utc_now(),
         "completed_at": None,
         "status": "pending",
@@ -322,5 +390,10 @@ async def transfer_generations(
         await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
     _refresh_summary(manifest, finished=True)
+    catalog_path, folder_paths = await asyncio.to_thread(
+        _update_folder_catalog, manifest
+    )
+    manifest["folder_catalog_path"] = str(catalog_path)
+    manifest["folder_paths"] = folder_paths
     await asyncio.to_thread(_write_manifest, manifest_path, manifest)
     return manifest

@@ -68,6 +68,7 @@ export function LibrarySelectionActionBar({
   onDownload,
   onResolveTransfer,
   resolveTransferBusy,
+  resolveTransferPendingCount,
   onCompare,
   onAssign,
   onCreateAndAssign,
@@ -80,6 +81,7 @@ export function LibrarySelectionActionBar({
   onDownload: (selected: Generation[]) => void;
   onResolveTransfer: (selected: Generation[]) => void;
   resolveTransferBusy: boolean;
+  resolveTransferPendingCount: number;
   onCompare: (selected: Generation[]) => void;
   onDelete: () => void;
   onRestore: () => void;
@@ -105,12 +107,17 @@ export function LibrarySelectionActionBar({
       </button>
       <button
         className="sb-resolve"
-        disabled={resolveTransferBusy}
         aria-busy={resolveTransferBusy}
         onClick={() => onResolveTransfer(selectedGenerations)}
-        title="선택한 완료본을 프로젝트의 ResolveSource 폴더 구조로 저장"
+        title={
+          resolveTransferBusy
+            ? `Resolve 작업 ${resolveTransferPendingCount}건 처리 중 · 선택 항목을 대기열에 추가`
+            : "선택한 완료본을 프로젝트의 Render 폴더 구조로 저장하고 Resolve로 가져오기"
+        }
       >
-        {resolveTransferBusy ? t("Resolve 전송 중…") : t("◆ Resolve로 보내기")}
+        {resolveTransferBusy
+          ? `${t("◆ Resolve에 추가")} (${resolveTransferPendingCount})`
+          : t("◆ Resolve로 보내기")}
       </button>
       {selectedCount >= 2 && (
         <button

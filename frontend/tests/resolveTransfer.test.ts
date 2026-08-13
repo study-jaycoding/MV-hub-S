@@ -3,6 +3,8 @@ import type { Generation } from "../src/types";
 import {
   checkResolveSelection,
   createResolveTransfer,
+  getResolveScriptStatus,
+  installResolveScript,
   resolveTransferSummary,
   type ResolveTransferResult,
 } from "../src/lib/resolveTransfer";
@@ -59,12 +61,13 @@ function generation(overrides: Partial<Generation> = {}): Generation {
 function result(overrides: Partial<ResolveTransferResult> = {}): ResolveTransferResult {
   return {
     format: "mvhub.resolve-transfer",
-    version: 1,
+    version: 2,
     transfer_id: "t1",
     project_id: "p1",
     project_name: "P1",
-    source_root: "D:\\Project\\ResolveSource",
-    manifest_path: "D:\\Project\\ResolveSource\\.mvhub\\transfers\\t1.json",
+    source_root: "D:\\Project\\render",
+    manifest_root: "D:\\Project\\@davinci",
+    manifest_path: "D:\\Project\\@davinci\\.mvhub\\transfers\\t1.json",
     status: "complete",
     total: 1,
     downloaded: 1,
@@ -200,5 +203,38 @@ describe("Resolve 전송 API와 결과 안내", () => {
         }),
       ),
     ).toContain("Resolve 프로젝트 저장을 확인하지 못했습니다");
+  });
+});
+
+describe("Resolve 스크립트 설치 API", () => {
+  it("설치 상태와 설치 요청은 로컬 Resolve API를 사용한다", async () => {
+    const status = {
+      installed: true,
+      up_to_date: true,
+      bundled_version: "0.6.1",
+      installed_version: "0.6.1",
+      path: "C:\\Resolve\\MVHub Clip Exporter.py",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: vi.fn().mockResolvedValue(status) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ ...status, changed: false, previous_version: "0.6.1" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getResolveScriptStatus()).resolves.toEqual(status);
+    await expect(installResolveScript()).resolves.toMatchObject({ changed: false });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/resolve/script",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/resolve/script/install",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

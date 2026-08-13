@@ -1,6 +1,7 @@
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
+import type { ResolveScriptStatus } from "../../lib/resolveTransfer";
 
 export function AppearanceSettingsSection({
   accent,
@@ -264,6 +265,45 @@ export function SyncToolsSection({
       <p className="settings-hint">
         <b>외부 생성물 올리기</b> — 허브 밖(Claude·웹·CLI)에서 만든 결과물을 지금 올립니다.{" "}
         <b>힉스필드 삭제물 검토</b> — 힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.
+      </p>
+    </section>
+  );
+}
+
+export function ResolveScriptSettingsSection({
+  status,
+  busy,
+  msg,
+  onInstall,
+}: {
+  status: ResolveScriptStatus | null;
+  busy: boolean;
+  msg: string;
+  onInstall: () => void;
+}) {
+  const version = status?.installed_version || status?.bundled_version;
+  const stateText = status
+    ? status.up_to_date
+      ? `설치됨 · v${version || "확인 불가"}`
+      : status.installed
+        ? `업데이트 필요 · 현재 v${status.installed_version || "확인 불가"}`
+        : "아직 설치되지 않았습니다."
+    : "설치 상태를 확인하는 중…";
+  return (
+    <section className="settings-section">
+      <h4>DaVinci Resolve</h4>
+      <button className="settings-action" onClick={onInstall} disabled={busy}>
+        ◆ {busy ? "설치 중…" : "Resolve 스크립트 설치"}
+      </button>
+      <p className="settings-hint">{msg || stateText}</p>
+      {status?.path && (
+        <p className="settings-hint resolve-script-path" title={status.path}>
+          {status.path}
+        </p>
+      )}
+      <p className="settings-hint">
+        설치 또는 업데이트 후 Resolve를 완전히 종료했다가 다시 실행하세요. 이후 작업 공간 → 스크립트
+        → MV Hub에서 사용할 수 있습니다.
       </p>
     </section>
   );

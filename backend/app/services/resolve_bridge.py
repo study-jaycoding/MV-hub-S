@@ -11,6 +11,10 @@ import os
 import re
 import sys
 import threading
+import unicodedata
+import uuid
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +28,7 @@ _DEFAULT_SCRIPT_MODULES = Path(
 )
 _IMPORT_LOCK = threading.Lock()
 _UNSAFE_FOLDER_CHARS = re.compile(r"[\\/\x00-\x1f]")
+_NATURAL_NAME_CHUNKS = re.compile(r"(\d+)")
 
 
 class ResolveBridgeError(RuntimeError):
@@ -55,13 +60,106 @@ def _folder_name(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
-def _subfolder(parent: Any, name: str, media_pool: Any) -> Any:
+def _folder_parts(value: str) -> list[str]:
+    return [
+        part
+        for part in value.replace("\\", "/").split("/")
+        if part and part not in {".", ".."}
+    ]
+
+
+def _natural_name_key(value: str) -> tuple[Any, ...]:
+    """숫자 덩어리를 실제 숫자로 비교해 c2가 c10보다 먼저 오게 한다."""
+    chunks = tuple(
+        (1, int(chunk)) if chunk.isdigit() else (0, chunk.casefold())
+        for chunk in _NATURAL_NAME_CHUNKS.split(value)
+        if chunk
+    )
+    return chunks, value.casefold(), value
+
+
+def _folder_path_sort_key(parts: tuple[str, ...]) -> tuple[Any, ...]:
+    return tuple(
+        _natural_name_key(_folder_name(part, "미분류")) for part in parts
+    )
+
+
+def _refresh_folders(media_pool: Any) -> None:
+    refresh = getattr(media_pool, "RefreshFolders", None)
+    if callable(refresh):
+        refresh()
+
+
+def _folder_identity(value: str) -> str:
+    """Resolve/Windows 사이 한글 정규화 차이도 같은 Bin 이름으로 본다."""
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _find_subfolder(parent: Any, name: str) -> Any | None:
+    wanted = _folder_identity(name)
     for folder in parent.GetSubFolderList() or []:
-        if folder.GetName() == name:
+        if _folder_identity(str(folder.GetName() or "")) == wanted:
             return folder
+    return None
+
+
+def _folder_path_from_root(root: Any, target: Any) -> tuple[str, ...] | None:
+    """재생성 뒤에도 같은 위치를 다시 선택할 수 있게 현재 Bin 경로를 기록한다."""
+    try:
+        target_id = str(target.GetUniqueId() or "")
+    except (AttributeError, TypeError):
+        target_id = ""
+
+    def visit(folder: Any, path: tuple[str, ...]) -> tuple[str, ...] | None:
+        try:
+            folder_id = str(folder.GetUniqueId() or "")
+        except (AttributeError, TypeError):
+            folder_id = ""
+        if folder is target or (target_id and folder_id == target_id):
+            return path
+        for child in folder.GetSubFolderList() or []:
+            found = visit(child, (*path, str(child.GetName() or "")))
+            if found is not None:
+                return found
+        return None
+
+    return visit(root, ())
+
+
+def _folder_at_path(root: Any, parts: tuple[str, ...]) -> Any | None:
+    folder = root
+    for name in parts:
+        folder = _find_subfolder(folder, name)
+        if folder is None:
+            return None
+    return folder
+
+
+def _subfolder(parent: Any, name: str, media_pool: Any) -> Any:
+    existing = _find_subfolder(parent, name)
+    if existing is not None:
+        return existing
     created = media_pool.AddSubFolder(parent, name)
     if not created:
         raise ResolveBridgeError(f"Resolve Media Pool 폴더를 만들 수 없습니다: {name}")
+    if _folder_identity(str(created.GetName() or "")) != _folder_identity(name):
+        # 스캔 직후 다른 요청이 같은 Bin을 만든 경합이면 Resolve가 `name copy`를
+        # 반환할 수 있다. 방금 만든 빈 복제본만 치우고 먼저 생긴 정상 Bin을 쓴다.
+        winner = _find_subfolder(parent, name)
+        is_empty = not (created.GetSubFolderList() or []) and not (
+            created.GetClipList() or []
+        )
+        delete_folders = getattr(media_pool, "DeleteFolders", None)
+        if (
+            winner is not None
+            and is_empty
+            and callable(delete_folders)
+            and delete_folders([created])
+        ):
+            return winner
+        raise ResolveBridgeError(
+            f"Resolve가 중복 폴더를 만들었습니다: {created.GetName()}"
+        )
     return created
 
 
@@ -103,6 +201,266 @@ def _existing_paths(folder: Any) -> set[str]:
     }
 
 
+def _path_identity(parts: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(_folder_identity(part) for part in parts)
+
+
+def _desired_tree(
+    folder_paths: set[tuple[str, ...]],
+) -> tuple[
+    dict[tuple[str, ...], tuple[str, ...]],
+    dict[tuple[str, ...], list[tuple[str, str]]],
+]:
+    """카탈로그 경로를 정규 경로와 부모별 자연 정렬 목록으로 바꾼다."""
+    nodes: dict[tuple[str, ...], tuple[str, ...]] = {(): ()}
+    children: dict[tuple[str, ...], dict[str, str]] = {}
+    for raw_parts in folder_paths:
+        clean = tuple(_folder_name(part, "미분류") for part in raw_parts if part)
+        for depth, name in enumerate(clean):
+            parent = clean[:depth]
+            path = clean[: depth + 1]
+            parent_id = _path_identity(parent)
+            path_id = _path_identity(path)
+            nodes[path_id] = path
+            children.setdefault(parent_id, {})[_folder_identity(name)] = name
+    ordered_children = {
+        parent_id: sorted(
+            values.items(), key=lambda item: _natural_name_key(item[1])
+        )
+        for parent_id, values in children.items()
+    }
+    return nodes, ordered_children
+
+
+def _scan_actual_tree(
+    folder: Any,
+    *,
+    path: tuple[str, ...] = (),
+    nodes: dict[tuple[str, ...], tuple[tuple[str, ...], Any]] | None = None,
+    children: dict[tuple[str, ...], list[tuple[str, str]]] | None = None,
+) -> tuple[
+    dict[tuple[str, ...], tuple[tuple[str, ...], Any]],
+    dict[tuple[str, ...], list[tuple[str, str]]],
+]:
+    nodes = nodes if nodes is not None else {(): ((), folder)}
+    children = children if children is not None else {}
+    parent_id = _path_identity(path)
+    seen: set[str] = set()
+    child_rows: list[tuple[str, str]] = []
+    for child in folder.GetSubFolderList() or []:
+        name = str(child.GetName() or "")
+        identity = _folder_identity(name)
+        if identity in seen:
+            raise ResolveBridgeError(f"Resolve에 같은 이름의 Bin이 중복되어 있습니다: {name}")
+        seen.add(identity)
+        child_rows.append((identity, name))
+        child_path = (*path, name)
+        child_id = _path_identity(child_path)
+        nodes[child_id] = (child_path, child)
+        _scan_actual_tree(child, path=child_path, nodes=nodes, children=children)
+    children[parent_id] = child_rows
+    return nodes, children
+
+
+def _clip_identity(clip: Any) -> str:
+    normalized = _normal_path(_clip_file_path(clip))
+    if normalized:
+        return f"path:{normalized}"
+    try:
+        media_id = str(clip.GetMediaId() or "")
+    except (AttributeError, TypeError):
+        media_id = ""
+    return f"id:{media_id}" if media_id else f"object:{id(clip)}"
+
+
+def _create_tree(
+    media_pool: Any, root: Any, paths: set[tuple[str, ...]]
+) -> dict[tuple[str, ...], Any]:
+    nodes: dict[tuple[str, ...], Any] = {(): root}
+    all_nodes = {
+        parts[:depth]
+        for parts in paths
+        for depth in range(1, len(parts) + 1)
+    }
+    for parts in sorted(
+        all_nodes, key=lambda value: (len(value), _folder_path_sort_key(value))
+    ):
+        parent = nodes[parts[:-1]]
+        nodes[parts] = _subfolder(parent, _folder_name(parts[-1], "미분류"), media_pool)
+    return nodes
+
+
+def _delete_empty_children(media_pool: Any, parent: Any) -> None:
+    delete_folders = getattr(media_pool, "DeleteFolders", None)
+    if not callable(delete_folders):
+        raise ResolveBridgeError("현재 Resolve가 빈 Bin 삭제를 지원하지 않습니다")
+    for child in list(parent.GetSubFolderList() or []):
+        _delete_empty_children(media_pool, child)
+        if (child.GetClipList() or []) or (child.GetSubFolderList() or []):
+            raise ResolveBridgeError(f"비어 있지 않은 Bin은 정리하지 않습니다: {child.GetName()}")
+        if not delete_folders([child]):
+            raise ResolveBridgeError(f"빈 Bin을 정리하지 못했습니다: {child.GetName()}")
+        _refresh_folders(media_pool)
+
+
+def _export_rebuild_backup(
+    manifest: dict[str, Any], project_manager: Any, project: Any
+) -> str:
+    manifest_root_raw = str(manifest.get("manifest_root") or "").strip()
+    if not manifest_root_raw:
+        raise ResolveBridgeError("Resolve 구조 변경 전 백업 경로가 없습니다")
+    manifest_root = Path(manifest_root_raw).resolve()
+    backup_dir = (manifest_root / ".mvhub" / "resolve-backups").resolve()
+    try:
+        backup_dir.relative_to(manifest_root)
+    except ValueError as exc:
+        raise ResolveBridgeError("Resolve 백업 경로가 프로젝트 밖을 가리킵니다") from exc
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    project_name = str(project.GetName() or "Resolve")
+    backup_path = backup_dir / f"resolve-{stamp}-{uuid.uuid4().hex[:8]}.drp"
+    if not project_manager.SaveProject():
+        raise ResolveBridgeError("Resolve 구조 변경 전 프로젝트를 저장하지 못했습니다")
+    export_project = getattr(project_manager, "ExportProject", None)
+    if not callable(export_project) or not export_project(
+        project_name, str(backup_path), False
+    ):
+        raise ResolveBridgeError("Resolve 구조 변경 전 프로젝트 백업을 만들지 못했습니다")
+    return str(backup_path)
+
+
+def _reconcile_folder_tree_visible(
+    manifest: dict[str, Any],
+    project_manager: Any,
+    project: Any,
+    media_pool: Any,
+    root: Any,
+    managed_root: Any,
+    desired_paths: set[tuple[str, ...]],
+) -> tuple[bool, str]:
+    """MoveFolders 없이 클립을 보존하며 MV Hub Bin을 카탈로그 순서로 맞춘다."""
+    actual_nodes, actual_children = _scan_actual_tree(managed_root)
+    # 과거 목록 파일은 읽지 않는다. Resolve에 이미 있는 Bin은 보존하고,
+    # 이번에 선택한 경로만 더해 자연 정렬 대상을 만든다.
+    desired_paths = set(desired_paths)
+    desired_paths.update(
+        path for identity, (path, _folder) in actual_nodes.items() if identity
+    )
+    desired_nodes, desired_children = _desired_tree(desired_paths)
+
+    rebuild_needed = False
+    for parent_id, desired_rows in desired_children.items():
+        actual_ids = [identity for identity, _name in actual_children.get(parent_id, [])]
+        desired_ids = [identity for identity, _name in desired_rows]
+        if actual_ids != desired_ids[: len(actual_ids)]:
+            rebuild_needed = True
+            break
+
+    if not rebuild_needed:
+        before_count = len(actual_nodes)
+        _create_tree(media_pool, managed_root, desired_paths)
+        return len(desired_nodes) > before_count, ""
+
+    move_clips = getattr(media_pool, "MoveClips", None)
+    if not callable(move_clips):
+        raise ResolveBridgeError("현재 Resolve가 클립을 보존한 Bin 재정렬을 지원하지 않습니다")
+    backup_path = _export_rebuild_backup(manifest, project_manager, project)
+    snapshots: dict[tuple[str, ...], tuple[list[Any], Counter[str]]] = {}
+    for identity, desired_path in desired_nodes.items():
+        if not identity or identity not in actual_nodes:
+            continue
+        clips = list(actual_nodes[identity][1].GetClipList() or [])
+        if clips:
+            snapshots[desired_path] = (clips, Counter(map(_clip_identity, clips)))
+
+    staging_name = f"__MVHUB_REBUILD_{uuid.uuid4().hex}__"
+    staging = media_pool.AddSubFolder(root, staging_name)
+    if not staging or _folder_identity(str(staging.GetName() or "")) != _folder_identity(
+        staging_name
+    ):
+        raise ResolveBridgeError(
+            f"Resolve 정렬용 임시 Bin을 만들지 못했습니다. 백업: {backup_path}"
+        )
+    staged_nodes: dict[tuple[str, ...], Any] = {(): staging}
+    try:
+        staged_nodes = _create_tree(media_pool, staging, set(snapshots))
+        for path, (clips, _identities) in snapshots.items():
+            if clips and not move_clips(clips, staged_nodes[path]):
+                raise ResolveBridgeError(f"클립을 정렬용 공간으로 옮기지 못했습니다: {'/'.join(path)}")
+        for identity, (_path, folder) in actual_nodes.items():
+            if identity and (folder.GetClipList() or []):
+                raise ResolveBridgeError(f"기존 Bin에 클립이 남아 있습니다: {folder.GetName()}")
+
+        _delete_empty_children(media_pool, managed_root)
+        final_nodes = _create_tree(media_pool, managed_root, desired_paths)
+        for path, (_clips, expected) in snapshots.items():
+            staged_clips = list(staged_nodes[path].GetClipList() or [])
+            if staged_clips and not move_clips(staged_clips, final_nodes[path]):
+                raise ResolveBridgeError(f"클립을 정렬된 Bin으로 되돌리지 못했습니다: {'/'.join(path)}")
+            actual = Counter(map(_clip_identity, final_nodes[path].GetClipList() or []))
+            if actual != expected:
+                raise ResolveBridgeError(f"정렬 후 클립 검증이 일치하지 않습니다: {'/'.join(path)}")
+
+        _delete_empty_children(media_pool, staging)
+        if not media_pool.DeleteFolders([staging]):
+            raise ResolveBridgeError("Resolve 정렬용 임시 Bin을 정리하지 못했습니다")
+        _refresh_folders(media_pool)
+
+        _actual_nodes, final_children = _scan_actual_tree(managed_root)
+        for parent_id, desired_rows in desired_children.items():
+            if [row[0] for row in final_children.get(parent_id, [])] != [
+                row[0] for row in desired_rows
+            ]:
+                raise ResolveBridgeError("Resolve 화면의 최종 Bin 순서가 일치하지 않습니다")
+        return True, backup_path
+    except Exception as exc:
+        recovery_errors: list[str] = []
+        try:
+            remaining: dict[tuple[str, ...], list[Any]] = {}
+            if staging:
+                staged_actual, _children = _scan_actual_tree(staging)
+                for _identity, (path, folder) in staged_actual.items():
+                    if path and (clips := list(folder.GetClipList() or [])):
+                        remaining[path] = clips
+            if remaining:
+                recovery_nodes = _create_tree(media_pool, managed_root, set(remaining))
+                for path, clips in remaining.items():
+                    if clips and not move_clips(clips, recovery_nodes[path]):
+                        recovery_errors.append(f"클립 복구 실패: {'/'.join(path)}")
+            if staging and not recovery_errors:
+                _delete_empty_children(media_pool, staging)
+                if not media_pool.DeleteFolders([staging]):
+                    recovery_errors.append("임시 Bin 정리 실패")
+            project_manager.SaveProject()
+        except Exception as recovery_exc:  # noqa: BLE001 - 복구 결과를 원인과 함께 보고한다.
+            recovery_errors.append(str(recovery_exc))
+        suffix = f" 백업: {backup_path}"
+        if recovery_errors:
+            suffix += "; 자동 복구 확인 필요: " + ", ".join(recovery_errors)
+        raise ResolveBridgeError(f"{exc}.{suffix}") from exc
+
+
+def _reconcile_folder_tree(
+    manifest: dict[str, Any],
+    project_manager: Any,
+    project: Any,
+    media_pool: Any,
+    root: Any,
+    managed_root: Any,
+    desired_paths: set[tuple[str, ...]],
+) -> tuple[bool, str]:
+    """카탈로그 구조를 현재 Resolve Media Pool에 적용한다."""
+    return _reconcile_folder_tree_visible(
+        manifest,
+        project_manager,
+        project,
+        media_pool,
+        root,
+        managed_root,
+        desired_paths,
+    )
+
+
 def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str, Any]:
     project_manager = resolve.GetProjectManager()
     project = project_manager.GetCurrentProject() if project_manager else None
@@ -114,6 +472,9 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         raise ResolveBridgeError("현재 Resolve 프로젝트의 Media Pool을 열 수 없습니다")
 
     previous_folder = media_pool.GetCurrentFolder()
+    previous_folder_path = (
+        _folder_path_from_root(root, previous_folder) if previous_folder else None
+    )
     project_label = _folder_name(
         str(manifest.get("project_name") or ""),
         str(manifest.get("project_id") or "프로젝트"),
@@ -127,14 +488,59 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         "skipped": 0,
         "error_count": 0,
         "error": None,
+        "folder_order_backup": "",
         "items": [],
     }
 
     try:
         managed_root = _destination_folder(media_pool, root, [MEDIA_POOL_ROOT, project_label])
-        for source_item in manifest.get("items") or []:
-            if source_item.get("status") not in {"downloaded", "skipped"}:
+        source_items = [
+            source_item
+            for source_item in manifest.get("items") or []
+            if source_item.get("status") in {"downloaded", "skipped"}
+        ]
+
+        # Resolve에는 정렬 API가 없다. 현재 Resolve 구조와 이번 선택 경로만 합쳐,
+        # 삽입 순서가 깨질 때만 백업 후 클립 보존 재생성으로 화면 순서까지 맞춘다.
+        folder_paths: set[tuple[str, ...]] = set()
+        for source_item in source_items:
+            source = Path(str(source_item.get("local_path") or ""))
+            try:
+                if not source.is_file() or source.stat().st_size <= 0:
+                    continue
+            except OSError:
                 continue
+            folder_paths.add(
+                tuple(_folder_parts(str(source_item.get("folder_path") or "")))
+            )
+
+        ordering_errors: list[str] = []
+        reordered = False
+        try:
+            reordered, backup_path = _reconcile_folder_tree(
+                manifest,
+                project_manager,
+                project,
+                media_pool,
+                root,
+                managed_root,
+                folder_paths,
+            )
+            result["folder_order_backup"] = backup_path
+        except Exception as exc:  # noqa: BLE001 - 가져오기는 유지하고 정렬 실패를 보고한다.
+            ordering_errors.append(str(exc))
+
+        prepared_targets = {(): managed_root}
+        folder_errors: dict[tuple[str, ...], str] = {}
+        for parts_key in sorted(folder_paths, key=_folder_path_sort_key):
+            try:
+                prepared_targets[parts_key] = _destination_folder(
+                    media_pool, managed_root, list(parts_key)
+                )
+            except Exception as exc:  # noqa: BLE001 - 해당 경로 항목만 실패 처리한다.
+                folder_errors[parts_key] = str(exc)
+
+        for source_item in source_items:
             item = {
                 "generation_id": str(source_item.get("generation_id") or ""),
                 "local_path": str(source_item.get("local_path") or ""),
@@ -148,14 +554,17 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
                 source = Path(item["local_path"])
                 if not source.is_file() or source.stat().st_size <= 0:
                     raise ResolveBridgeError("Resolve로 가져올 원본 파일이 없습니다")
-                parts = [
-                    part
-                    for part in str(source_item.get("folder_path") or "")
-                    .replace("\\", "/")
-                    .split("/")
-                    if part and part not in {".", ".."}
-                ]
-                target = _destination_folder(media_pool, managed_root, parts)
+                parts = _folder_parts(str(source_item.get("folder_path") or ""))
+                parts_key = tuple(parts)
+                if parts_key in folder_errors:
+                    raise ResolveBridgeError(folder_errors[parts_key])
+                if parts_key not in prepared_targets:
+                    # 준비 검사와 실제 가져오기 사이에 파일 상태가 바뀐 경우에도
+                    # 이전 동작처럼 해당 항목을 가져올 수 있게 한다.
+                    prepared_targets[parts_key] = _destination_folder(
+                        media_pool, managed_root, parts
+                    )
+                target = prepared_targets[parts_key]
                 item["media_pool_path"] = "/".join(
                     [MEDIA_POOL_ROOT, project_label, *parts]
                 )
@@ -187,13 +596,28 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         else:
             result["status"] = "failed"
 
-        if result["imported"] and not project_manager.SaveProject():
+        if ordering_errors:
             result["status"] = "partial" if success_count else "failed"
-            result["error"] = "Resolve 프로젝트 저장을 확인하지 못했습니다"
+            result["error"] = "Resolve 폴더 카탈로그 적용 실패: " + "; ".join(
+                ordering_errors
+            )
+
+        if (result["imported"] or reordered) and not project_manager.SaveProject():
+            result["status"] = "partial" if success_count else "failed"
+            save_error = "Resolve 프로젝트 저장을 확인하지 못했습니다"
+            result["error"] = (
+                f"{result['error']}; {save_error}" if result["error"] else save_error
+            )
     finally:
         if previous_folder:
             try:
-                media_pool.SetCurrentFolder(previous_folder)
+                _refresh_folders(media_pool)
+                restored = (
+                    _folder_at_path(root, previous_folder_path)
+                    if previous_folder_path is not None
+                    else None
+                )
+                media_pool.SetCurrentFolder(restored or previous_folder)
             except Exception:  # noqa: BLE001 - 복원 실패가 원래 결과를 덮지 않게 한다.
                 pass
     return result

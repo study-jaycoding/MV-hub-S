@@ -18,6 +18,7 @@ export interface ResolveTransferResult {
   project_id: string;
   project_name: string;
   source_root: string;
+  manifest_root: string;
   manifest_path: string;
   status: "pending" | "complete" | "partial" | "failed";
   total: number;
@@ -46,6 +47,19 @@ export interface ResolveImportResult {
   error_count: number;
   error: string | null;
   items: ResolveImportItem[];
+}
+
+export interface ResolveScriptStatus {
+  installed: boolean;
+  up_to_date: boolean;
+  bundled_version: string | null;
+  installed_version: string | null;
+  path: string;
+}
+
+export interface ResolveScriptInstallResult extends ResolveScriptStatus {
+  changed: boolean;
+  previous_version: string | null;
 }
 
 export type ResolveSelectionCheck =
@@ -117,5 +131,15 @@ export function createResolveTransfer(genIds: string[]): Promise<ResolveTransfer
   return jsonFetch<ResolveTransferResult>("/api/resolve/transfers", {
     method: "POST",
     body: jsonBody({ gen_ids: genIds }),
+  });
+}
+
+export function getResolveScriptStatus(): Promise<ResolveScriptStatus> {
+  return jsonFetch<ResolveScriptStatus>("/api/resolve/script");
+}
+
+export function installResolveScript(): Promise<ResolveScriptInstallResult> {
+  return jsonFetch<ResolveScriptInstallResult>("/api/resolve/script/install", {
+    method: "POST",
   });
 }
