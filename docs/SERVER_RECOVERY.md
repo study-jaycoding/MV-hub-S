@@ -14,20 +14,26 @@
 여기에 더해 앱 자체가 로컬 우선 구조라, 서버가 죽어도 팀원 개인 작업(생성)은
 각자 로컬 허브에서 계속된다. 멈추는 건 팀 공유·팀 탭·매니징 집계뿐.
 
-### 설치 (서버 PC에서 1회)
+### 설치 (서버 PC에서 1회 — 더블클릭 한 번)
 
-1. `register_autostart.bat` 를 **관리자 권한으로 실행** (우클릭 → 관리자 권한).
-2. 등록되는 작업 3개:
+`register_autostart.bat` 를 **더블클릭**한다. 관리자 권한은 스스로 요청하고,
+안에서 전부 처리한다:
+
+1. NAS 백업 복제 경로를 물어본다(Enter 로 건너뛰기 가능, 나중에 설정 가능)
+2. 자동시작 작업 3개 등록:
    - `MVHub Server` — 부팅 +1분에 MV_server.bat (콘솔 출력 → `logs\server_console.log`)
    - `MVHub Watchdog` — 부팅 +2분에 MV_watchdog.bat (→ `logs\watchdog_console.log`)
    - `MVHub BackupCopy` — 매일 03:30 백업 원격 복제 (→ `logs\backup_console.log`)
-3. 재부팅 없이 바로 시작: `schtasks /Run /TN "MVHub Server"` → `schtasks /Run /TN "MVHub Watchdog"`
-4. **주의: 등록 후에는 MV_server.bat 를 수동으로 또 띄우지 말 것**(포트 충돌).
-   서버 상태는 창 대신 `logs\` 로그 파일로 본다. 예:
-   `powershell Get-Content logs\server_console.log -Tail 50 -Wait`
+3. 서버·워치독을 즉시 시작한다(재부팅 불필요). 이미 콘솔 창에서 돌던 서버가
+   있으면 안전하게 멈추고 자동시작 쪽으로 넘긴다.
 
-### 백업 원격 복제 대상 설정 (필수 — 안 하면 복제 안 됨)
+이후 일상 사용에서 할 일은 없다. **MV_server.bat 를 수동으로 띄우지 말 것**
+(이미 배경에서 돌고 있어 포트 충돌). 예전 콘솔 창 대신 로그는
+**`MV_logs.bat` 더블클릭**으로 실시간 확인한다.
 
+### 백업 원격 복제 대상 설정
+
+설치 때 물어보는 NAS 경로가 이것이다. 건너뛰었다면 나중에
 `tools\backup_replica_target.txt` 파일을 만들고 첫 줄에 대상 경로를 적는다.
 
 ```
