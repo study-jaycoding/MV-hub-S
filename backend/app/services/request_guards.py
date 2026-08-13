@@ -11,7 +11,20 @@ LOOPBACK_CLIENTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
 def client_host(request: Request) -> str:
-    return (request.client.host if request.client else "") or ""
+    direct = (request.client.host if request.client else "") or ""
+    # 개발용 Vite 프록시는 같은 PC의 loopback으로 백엔드에 연결한다. 이 경우에만
+    # 프록시가 마지막에 기록한 직접 접속 주소를 사용해, 다른 LAN PC가 로컬 기능을
+    # 우회하지 못하게 한다. 앞쪽에 사용자가 임의로 넣은 주소는 신뢰하지 않는다.
+    if is_loopback_host(direct):
+        forwarded = ""
+        for name, value in request.scope.get("headers") or ():
+            if name.lower() == b"x-forwarded-for":
+                forwarded = value.decode("latin-1")
+                break
+        original = forwarded.rsplit(",", 1)[-1].strip()
+        if original:
+            return original
+    return direct
 
 
 def is_loopback_host(host: str) -> bool:

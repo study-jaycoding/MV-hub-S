@@ -10,9 +10,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: BACKEND, changeOrigin: true },
-      "/ws": { target: BACKEND, ws: true, changeOrigin: true },
-      "/media": { target: BACKEND, changeOrigin: true },
+      // 백엔드가 실제 접속 PC를 구분할 수 있게 전달한다. Resolve 로컬 기능은
+      // 이 PC의 주소만 허용하므로, LAN의 다른 PC가 Vite를 경유해 우회하지 못한다.
+      "/api": { target: BACKEND, changeOrigin: true, xfwd: true },
+      "/ws": { target: BACKEND, ws: true, changeOrigin: true, xfwd: true },
+      "/media": { target: BACKEND, changeOrigin: true, xfwd: true },
     },
   },
 });

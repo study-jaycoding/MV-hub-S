@@ -275,6 +275,7 @@ if "%MVHUB_DEV_FRONTEND_PORT%"=="" (
   echo [ERROR] MVHUB_DEV_FRONTEND_PORT is missing.
   exit /b 1
 )
+if "%MVHUB_DEV_FRONTEND_HOST%"=="" set "MVHUB_DEV_FRONTEND_HOST=127.0.0.1"
 echo [dev] Backend is healthy. Starting Vite on %MVHUB_OPEN_URL% ...
 cd /d "%MVHUB_DEV_FRONTEND_DIR%" || exit /b 1
 set "_DEV_VITE_PID="
@@ -287,7 +288,7 @@ if defined _DEV_EXISTING_PID (
   cd /d "%ROOT%"
   exit /b 1
 )
-start "" /b cmd /d /c "npm.cmd run dev -- --host 127.0.0.1 --port %MVHUB_DEV_FRONTEND_PORT% --strictPort"
+start "" /b cmd /d /c "npm.cmd run dev -- --host %MVHUB_DEV_FRONTEND_HOST% --port %MVHUB_DEV_FRONTEND_PORT% --strictPort"
 set /a _DEV_VITE_TRIES=0
 :wait_dev_frontend
 set /a _DEV_VITE_TRIES+=1

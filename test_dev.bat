@@ -6,7 +6,7 @@ REM  MV Hub - ONE-CLICK LOCAL DEV   run on YOUR OWN PC
 REM
 REM  One double-click starts all local development processes:
 REM    - isolated test backend + generation agent: 127.0.0.1:8012
-REM    - Vite live frontend:                       127.0.0.1:5173
+REM    - Vite live frontend:                       this PC:5173 (localhost + LAN IP)
 REM    - browser:                                  Vite URL above
 REM    - login:                                    copied real account
 REM
@@ -36,6 +36,7 @@ set "CONTENT_HUB_SERVER_SYNC=0"
 set "MVHUB_OPEN_URL=%FRONTEND_URL%"
 set "MVHUB_DEV_FRONTEND_DIR=%ROOT%frontend"
 set "MVHUB_DEV_FRONTEND_PORT=%FRONTEND_PORT%"
+set "MVHUB_DEV_FRONTEND_HOST=0.0.0.0"
 
 REM One-launch, memory-only pairing key. The browser login selects the account; the local
 REM agent exchanges this key for that session, so CMD never asks for email or hub password.
