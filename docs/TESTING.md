@@ -144,15 +144,26 @@ python tools\load_test_100.py --users 100 --duration 60 --cycles 2 --generations
 - 워크로드 5xx·전송 실패 0
 - `sqlite_locked_total=0`
 - 전체 p95 500ms 이하
+- 100명 동시 로그인 p95 10초 이하
 - WebSocket 100개 연결
 - 에이전트 롱폴 90개 이상 동시 대기
+- 시험 중 주기 표본에서도 WebSocket 100개·에이전트 연결 계정 90개 이상 유지
 - 첫 전체 연결 사이클 이후 2차 사이클 RSS 증가 20% 이하
 
 짧은 테스트 통과 후 운영 서버와 같은 사양의 스테이징 PC에서 8시간 지속 테스트를 실행한다.
+현재 기준의 100명·저사양·TLS 실측값은 [2026-08-14 지속 시험 결과](LOAD_TEST_2026-08-14.md)에 기록했다.
 
 ```powershell
-python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 --output soak-result.json
+python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 `
+  --server-cpu-cores 4 --server-priority below-normal `
+  --sample-interval 30 --max-rss-mb 512 --output soak-result.json
 ```
+
+`--server-cpu-cores`는 격리 서버 프로세스만 지정한 논리 CPU 수로 제한한다. `--max-rss-mb`는
+메모리를 강제로 자르는 옵션이 아니라, 시험 중 한 번이라도 상한을 넘으면 실패로 판정하는 기준이다.
+HTTPS/WSS까지 확인할 때는 시험 인증서와 키를 `--tls-certfile`, `--tls-keyfile`, `--tls-ca-file`에
+지정한다. 장기 시험의 지연시간은 전체 요청 수를 정확히 세면서 고정 크기 무작위 표본으로 계산해,
+시험 도구 자체의 메모리가 실행 시간에 비례해 증가하지 않게 한다.
 
 > 주의: 8011 포트가 이미 사용 중이면 `test_push-db.bat`과 `test_dev_server.bat`은 기존 프로세스를
 > 강제 종료하지 않고 안내 후 종료한다. 같은 PC에서 이전 8011 테스트 창을 닫은 뒤 다시 실행한다.

@@ -61,8 +61,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1 -Sk
 - `sqlite_locked_total`이 증가함
 - 일반 API p95가 5분 연속 500ms 초과
 - RSS가 워밍업 고수위보다 20% 이상 계속 증가
+- 저사양 기준 시험에서 서버 RSS가 정한 절대 상한을 한 번이라도 초과
 - 디스크 여유가 20% 미만
-- WebSocket 또는 에이전트 연결이 목표 인원의 90% 미만
+- 주기 측정 중 WebSocket 100개 또는 에이전트 연결 계정이 목표 인원의 90% 미만
 - 권한 밖 프로젝트·개인 메타데이터가 보이는 데이터 격리 문제
 
 관리자는 `/api/admin/runtime`에서 요청 지연, SQLite 잠금, 메모리, CPU, 연결 수와 디스크를 확인한다.

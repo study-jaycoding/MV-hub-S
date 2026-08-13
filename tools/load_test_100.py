@@ -10,7 +10,9 @@ r"""MV Hub 100명 격리 부하 테스트.
   python tools\load_test_100.py --users 100 --duration 60 --generations-per-user 20
 
 8시간 지속(4시간씩 2회 비교):
-  python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 --output soak-result.json
+  python tools\load_test_100.py --users 100 --duration 14400 --cycles 2 ^
+    --server-cpu-cores 4 --server-priority below-normal --max-rss-mb 512 ^
+    --output soak-result.json
 """
 
 from __future__ import annotations
@@ -69,6 +71,22 @@ def _percentile(values: list[float], p: float) -> float:
     return round(ordered[index], 2)
 
 
+def _reservoir_add(
+    samples: list[float],
+    value: float,
+    seen: int,
+    limit: int,
+    rng: random.Random,
+) -> None:
+    """전체 개수는 버리지 않고, 장기 지연시간 분포만 고정 메모리로 표본화한다."""
+    if len(samples) < limit:
+        samples.append(value)
+        return
+    replace_at = rng.randrange(seen)
+    if replace_at < limit:
+        samples[replace_at] = value
+
+
 def _operational_error_tail(path: Path, limit: int = 20) -> list[dict[str, Any]]:
     """격리 서버 운영 로그에서 ERROR/CRITICAL만 읽어 실패 보고서에 남긴다."""
     try:
@@ -86,10 +104,55 @@ def _operational_error_tail(path: Path, limit: int = 20) -> list[dict[str, Any]]
     return errors[-max(1, limit) :]
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """장기 시험 진행 파일이 중간 쓰기 상태로 남지 않게 같은 폴더에서 교체한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _apply_server_limits(
+    pid: int,
+    *,
+    cpu_cores: int = 0,
+    priority: str = "normal",
+) -> dict[str, Any]:
+    """격리 서버 프로세스에만 저사양 조건을 적용하고 실제 적용값을 반환한다."""
+    import psutil
+
+    process = psutil.Process(pid)
+    available_affinity = process.cpu_affinity()
+    if cpu_cores:
+        if cpu_cores > len(available_affinity):
+            raise ValueError(
+                f"요청한 서버 CPU {cpu_cores}개가 사용 가능한 {len(available_affinity)}개보다 큽니다"
+            )
+        process.cpu_affinity(available_affinity[:cpu_cores])
+
+    if priority == "below-normal":
+        if os.name == "nt":
+            process.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            process.nice(10)
+
+    applied_priority = process.nice()
+    applied_affinity = process.cpu_affinity()
+    return {
+        "requested_cpu_cores": cpu_cores or None,
+        "cpu_affinity": applied_affinity,
+        "priority": priority,
+        "platform_priority_value": str(applied_priority),
+    }
 
 
 @contextmanager
@@ -399,6 +462,88 @@ async def _runtime_snapshot(
     return body
 
 
+async def _monitor_runtime(
+    base_url: str,
+    admin_token: str,
+    stop: asyncio.Event,
+    interval: float,
+    samples: list[dict[str, Any]],
+    errors: list[str],
+    ssl_context: Optional[ssl.SSLContext] = None,
+    progress_path: Optional[Path] = None,
+    cycle_number: int = 1,
+) -> None:
+    """장기 시험 중 자원·연결 최고점과 순간 저하를 놓치지 않도록 계속 측정한다."""
+    started = time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            snapshot = await _runtime_snapshot(base_url, admin_token, ssl_context)
+            samples.append(
+                {
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "snapshot": snapshot,
+                }
+            )
+            if progress_path is not None:
+                await asyncio.to_thread(
+                    _atomic_write_json,
+                    progress_path,
+                    {
+                        "state": "running",
+                        "updated_at_unix": round(time.time(), 3),
+                        "cycle": cycle_number,
+                        "elapsed_seconds_in_cycle": round(time.monotonic() - started, 3),
+                        "snapshot": snapshot,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — 시험 결과에 진단용으로 보존
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+
+def _resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    snapshots = [item.get("snapshot", item) for item in samples]
+    rss_values = [
+        snapshot.get("process", {}).get("rss_bytes")
+        for snapshot in snapshots
+        if snapshot.get("process", {}).get("rss_bytes") is not None
+    ]
+    cpu_values = [
+        snapshot.get("process", {}).get("cpu_percent_one_core")
+        for snapshot in snapshots
+        if snapshot.get("process", {}).get("cpu_percent_one_core") is not None
+    ]
+    websocket_values = [
+        snapshot.get("websocket", {}).get("connections")
+        for snapshot in snapshots
+        if snapshot.get("websocket", {}).get("connections") is not None
+    ]
+    agent_values = [
+        snapshot.get("agents", {}).get("long_poll_waiters")
+        for snapshot in snapshots
+        if snapshot.get("agents", {}).get("long_poll_waiters") is not None
+    ]
+    agent_connected_values = [
+        snapshot.get("agents", {}).get("connected_accounts")
+        for snapshot in snapshots
+        if snapshot.get("agents", {}).get("connected_accounts") is not None
+    ]
+    return {
+        "sample_count": len(snapshots),
+        "max_rss_bytes": max(rss_values) if rss_values else None,
+        "max_cpu_percent_one_core": max(cpu_values) if cpu_values else None,
+        "min_websocket_connections": min(websocket_values) if websocket_values else None,
+        "min_agent_long_poll_waiters": min(agent_values) if agent_values else None,
+        "min_agent_connected_accounts": (
+            min(agent_connected_values) if agent_connected_values else None
+        ),
+    }
+
+
 async def _websocket_worker(
     ws_url: str,
     token: str,
@@ -450,9 +595,16 @@ async def _workload_user(
     think_min: float,
     think_max: float,
     ssl_context: Optional[ssl.SSLContext] = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     rng = random.Random(10_000 + index)
-    results: list[dict[str, Any]] = []
+    sample_rng = random.Random(20_000 + index)
+    sample_limit = 2_000
+    request_count = 0
+    statuses: Counter[int] = Counter()
+    endpoint_counts: Counter[str] = Counter()
+    latency_samples: list[float] = []
+    endpoint_latency_samples: dict[str, list[float]] = {}
+    errors: list[dict[str, Any]] = []
     colors = [None, "#e85d5d", "#58a6ff", "#6bcB77"]
     client = _KeepAliveJsonClient(
         base_url,
@@ -492,18 +644,44 @@ async def _workload_user(
                 method=method,
                 body=body,
             )
-            results.append(
-                {
-                    "name": name,
-                    "status": status,
-                    "elapsed_ms": elapsed,
-                    "error": response if status == 0 or status >= 500 else None,
-                }
+            request_count += 1
+            statuses[status] += 1
+            endpoint_counts[name] += 1
+            _reservoir_add(
+                latency_samples,
+                elapsed,
+                request_count,
+                sample_limit,
+                sample_rng,
             )
+            endpoint_samples = endpoint_latency_samples.setdefault(name, [])
+            _reservoir_add(
+                endpoint_samples,
+                elapsed,
+                endpoint_counts[name],
+                sample_limit,
+                sample_rng,
+            )
+            if (status == 0 or status >= 500) and len(errors) < 20:
+                errors.append(
+                    {
+                        "name": name,
+                        "status": status,
+                        "elapsed_ms": elapsed,
+                        "error": response,
+                    }
+                )
             await asyncio.sleep(rng.uniform(think_min, think_max))
     finally:
         client.close()
-    return results
+    return {
+        "requests": request_count,
+        "statuses": dict(statuses),
+        "endpoint_counts": dict(endpoint_counts),
+        "latency_samples": latency_samples,
+        "endpoint_latency_samples": endpoint_latency_samples,
+        "errors": errors,
+    }
 
 
 async def _long_poll_worker(
@@ -540,7 +718,10 @@ async def _run_load(
     duration: float,
     think_min: float,
     think_max: float,
+    sample_interval: float,
     ssl_context: Optional[ssl.SSLContext] = None,
+    progress_path: Optional[Path] = None,
+    cycle_number: int = 1,
 ) -> dict[str, Any]:
     tokens, login_latencies, login_statuses = await _login_all(
         base_url,
@@ -621,8 +802,28 @@ async def _run_load(
 
     await asyncio.sleep(min(3.0, max(1.0, duration / 4)))
     during = await _runtime_snapshot(base_url, tokens[0], ssl_context)
+    runtime_samples: list[dict[str, Any]] = [{"elapsed_seconds": 0.0, "snapshot": during}]
+    runtime_monitor_errors: list[str] = []
+    stop_monitor = asyncio.Event()
+    monitor_task = asyncio.create_task(
+        _monitor_runtime(
+            base_url,
+            tokens[0],
+            stop_monitor,
+            sample_interval,
+            runtime_samples,
+            runtime_monitor_errors,
+            ssl_context,
+            progress_path,
+            cycle_number,
+        )
+    )
     started = time.perf_counter()
-    nested_results = await asyncio.gather(*workload_tasks)
+    try:
+        nested_results = await asyncio.gather(*workload_tasks)
+    finally:
+        stop_monitor.set()
+        await monitor_task
     workload_seconds = max(0.001, time.perf_counter() - started + min(3.0, max(1.0, duration / 4)))
 
     # 짧은 테스트에서도 25초 롱폴을 즉시 정리한다.
@@ -645,13 +846,23 @@ async def _run_load(
     await asyncio.gather(*ws_tasks, return_exceptions=True)
     after = await _runtime_snapshot(base_url, tokens[0], ssl_context)
 
-    results = [item for group in nested_results for item in group]
-    status_counts = Counter(int(item["status"]) for item in results)
-    endpoint_counts = Counter(str(item["name"]) for item in results)
-    latencies = [float(item["elapsed_ms"]) for item in results]
+    request_count = sum(int(group["requests"]) for group in nested_results)
+    status_counts: Counter[int] = Counter()
+    endpoint_counts: Counter[str] = Counter()
+    latencies: list[float] = []
+    endpoint_samples_combined: dict[str, list[float]] = {}
+    errors: list[dict[str, Any]] = []
+    for group in nested_results:
+        status_counts.update({int(key): value for key, value in group["statuses"].items()})
+        endpoint_counts.update(group["endpoint_counts"])
+        latencies.extend(float(value) for value in group["latency_samples"])
+        for name, values in group["endpoint_latency_samples"].items():
+            endpoint_samples_combined.setdefault(name, []).extend(values)
+        if len(errors) < 20:
+            errors.extend(group["errors"][: 20 - len(errors)])
     endpoint_latency: dict[str, dict[str, float]] = {}
     for name in endpoint_counts:
-        values = [float(item["elapsed_ms"]) for item in results if item["name"] == name]
+        values = endpoint_samples_combined.get(name, [])
         endpoint_latency[name] = {
             "p50": _percentile(values, 0.50),
             "p95": _percentile(values, 0.95),
@@ -666,17 +877,19 @@ async def _run_load(
         if baseline_rss
         else None
     )
-    return {
+    report = {
         "login": {
             "statuses": dict(login_statuses),
             "p95_ms": _percentile(login_latencies, 0.95),
             "max_ms": round(max(login_latencies), 2) if login_latencies else 0.0,
         },
         "workload": {
-            "requests": len(results),
-            "requests_per_second": round(len(results) / workload_seconds, 2),
+            "requests": request_count,
+            "requests_per_second": round(request_count / workload_seconds, 2),
             "statuses": dict(status_counts),
             "endpoint_counts": dict(endpoint_counts),
+            "latency_sample_size": len(latencies),
+            "latency_percentiles_sampled": len(latencies) < request_count,
             "latency_ms": {
                 "p50": _percentile(latencies, 0.50),
                 "p95": _percentile(latencies, 0.95),
@@ -684,9 +897,7 @@ async def _run_load(
                 "max": round(max(latencies), 2) if latencies else 0.0,
             },
             "endpoint_latency_ms": endpoint_latency,
-            "errors": [item for item in results if item["status"] == 0 or item["status"] >= 500][
-                :20
-            ],
+            "errors": errors,
         },
         "connections_during_load": {
             "websocket": during.get("websocket", {}),
@@ -699,8 +910,22 @@ async def _run_load(
             "during": during,
             "after": after,
             "memory_growth_percent_after_warmup": memory_growth,
+            "runtime_samples": runtime_samples,
+            "runtime_monitor_errors": runtime_monitor_errors,
+            # 종료 후에는 정상적으로 WS/롱폴이 0이 되므로 연결 최저치는 부하가
+            # 살아 있는 표본만 본다. 종료 RSS는 아래에서 메모리 최고점에만 합친다.
+            "resource_summary": _resource_summary([baseline, *runtime_samples]),
         },
     }
+
+    after_rss_for_peak = after.get("process", {}).get("rss_bytes")
+    resource_summary = report["server"]["resource_summary"]
+    if after_rss_for_peak is not None:
+        current_peak = resource_summary.get("max_rss_bytes")
+        resource_summary["max_rss_bytes"] = max(
+            value for value in (current_peak, after_rss_for_peak) if value is not None
+        )
+    return report
 
 
 def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -718,16 +943,35 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
         "workload_non_2xx_zero": non_2xx == 0,
         "sqlite_locked_zero": after_requests.get("sqlite_locked_total", 0) == 0,
         "p95_within_target": workload["latency_ms"]["p95"] <= args.max_p95_ms,
+        "login_p95_within_target": report["login"]["p95_ms"]
+        <= args.max_login_p95_ms,
         "websockets_connected": during["websocket"].get("connections", 0) >= users,
         "agent_long_polls_connected": during["agents"].get("long_poll_waiters", 0)
         >= max(1, int(users * 0.90)),
         "websocket_client_errors_zero": not during.get("websocket_client_errors", []),
         "long_poll_client_errors_zero": not during.get("long_poll_client_errors", []),
+        "runtime_monitor_errors_zero": not report["server"].get(
+            "runtime_monitor_errors", []
+        ),
         "prior_cycles_functional_ok": report.get("prior_cycles_functional_ok", True),
     }
     growth = report["server"].get("memory_growth_percent_after_warmup")
     if growth is not None:
         checks["memory_growth_within_target"] = growth <= args.max_memory_growth_percent
+    resource_summary = report["server"].get("resource_summary", {})
+    max_rss = resource_summary.get("max_rss_bytes")
+    if args.max_rss_mb > 0 and max_rss is not None:
+        checks["rss_within_target"] = max_rss <= args.max_rss_mb * 1024 * 1024
+    min_websockets = resource_summary.get("min_websocket_connections")
+    if min_websockets is not None:
+        checks["sampled_websockets_healthy"] = min_websockets >= users
+    min_agents = resource_summary.get("min_agent_connected_accounts")
+    if min_agents is not None:
+        # long_poll_waiters는 정상적인 25초 응답→즉시 재요청 사이에도 잠깐 감소한다.
+        # 실제 연결 안정성은 서버가 추적하는 connected_accounts로 판정한다.
+        checks["sampled_agent_connections_healthy"] = min_agents >= max(
+            1, int(users * 0.90)
+        )
     return {"passed": all(checks.values()), "checks": checks}
 
 
@@ -770,6 +1014,11 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 creationflags=creationflags,
             )
             try:
+                server_limits = _apply_server_limits(
+                    process.pid,
+                    cpu_cores=args.server_cpu_cores,
+                    priority=args.server_priority,
+                )
                 await asyncio.to_thread(
                     _wait_ready,
                     base_url,
@@ -785,18 +1034,45 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 loop.set_default_executor(executor)
                 try:
                     cycle_reports = []
-                    for _ in range(args.cycles):
-                        cycle_reports.append(
-                            await _run_load(
-                                base_url,
-                                ws_url,
-                                accounts,
-                                args.duration,
-                                args.think_min,
-                                args.think_max,
-                                ssl_context,
-                            )
+                    progress_path = (
+                        args.output.with_name(args.output.name + ".progress.json")
+                        if args.output
+                        else None
+                    )
+                    for cycle_index in range(args.cycles):
+                        cycle_report = await _run_load(
+                            base_url,
+                            ws_url,
+                            accounts,
+                            args.duration,
+                            args.think_min,
+                            args.think_max,
+                            args.sample_interval,
+                            ssl_context,
+                            progress_path,
+                            cycle_index + 1,
                         )
+                        cycle_reports.append(cycle_report)
+                        if progress_path is not None:
+                            await asyncio.to_thread(
+                                _atomic_write_json,
+                                progress_path,
+                                {
+                                    "state": "cycle_completed",
+                                    "updated_at_unix": round(time.time(), 3),
+                                    "cycle": cycle_index + 1,
+                                    "cycles": args.cycles,
+                                    "workload": cycle_report["workload"],
+                                    "server": {
+                                        "resource_summary": cycle_report["server"][
+                                            "resource_summary"
+                                        ],
+                                        "runtime_monitor_errors": cycle_report["server"][
+                                            "runtime_monitor_errors"
+                                        ],
+                                    },
+                                },
+                            )
                     report = cycle_reports[-1]
                 finally:
                     executor.shutdown(wait=True, cancel_futures=True)
@@ -824,10 +1100,27 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "requests": cycle["workload"]["requests"],
                 "statuses": cycle["workload"]["statuses"],
                 "p95_ms": cycle["workload"]["latency_ms"]["p95"],
+                "p99_ms": cycle["workload"]["latency_ms"]["p99"],
+                "requests_per_second": cycle["workload"]["requests_per_second"],
                 "sqlite_locked_total": cycle["server"]["after"]["requests"].get(
                     "sqlite_locked_total", 0
                 ),
                 "after_rss_bytes": cycle["server"]["after"]["process"].get("rss_bytes"),
+                "max_rss_bytes": cycle["server"]["resource_summary"].get(
+                    "max_rss_bytes"
+                ),
+                "max_cpu_percent_one_core": cycle["server"]["resource_summary"].get(
+                    "max_cpu_percent_one_core"
+                ),
+                "runtime_sample_count": cycle["server"]["resource_summary"].get(
+                    "sample_count"
+                ),
+                "min_agent_connected_accounts": cycle["server"][
+                    "resource_summary"
+                ].get("min_agent_connected_accounts"),
+                "min_agent_long_poll_waiters": cycle["server"][
+                    "resource_summary"
+                ].get("min_agent_long_poll_waiters"),
                 "within_cycle_memory_growth_percent": cycle["server"].get(
                     "memory_growth_percent_after_warmup"
                 ),
@@ -855,6 +1148,31 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             >= max(1, int(args.users * 0.90))
             and not cycle["connections_during_load"]["websocket_client_errors"]
             and not cycle["connections_during_load"]["long_poll_client_errors"]
+            and not cycle["server"].get("runtime_monitor_errors")
+            and cycle["workload"]["latency_ms"]["p95"] <= args.max_p95_ms
+            and cycle["login"]["p95_ms"] <= args.max_login_p95_ms
+            and (
+                cycle["server"]["resource_summary"].get(
+                    "min_websocket_connections"
+                )
+                or 0
+            )
+            >= args.users
+            and (
+                cycle["server"]["resource_summary"].get(
+                    "min_agent_connected_accounts"
+                )
+                or 0
+            )
+            >= max(1, int(args.users * 0.90))
+            and (
+                args.max_rss_mb <= 0
+                or (
+                    cycle["server"]["resource_summary"].get("max_rss_bytes")
+                    or 0
+                )
+                <= args.max_rss_mb * 1024 * 1024
+            )
             for cycle in cycle_reports
         )
         report["config"] = {
@@ -866,8 +1184,22 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "isolated_temp_data": True,
             "tls_enabled": tls_enabled,
             "tls_certificate_verified": tls_enabled,
+            "sample_interval_seconds": args.sample_interval,
+            "max_rss_mb": args.max_rss_mb,
+            "max_login_p95_ms": args.max_login_p95_ms,
         }
+        report["server_limits"] = server_limits
         report["acceptance"] = _evaluate(report, args)
+        if progress_path is not None:
+            _atomic_write_json(
+                progress_path,
+                {
+                    "state": "completed",
+                    "updated_at_unix": round(time.time(), 3),
+                    "acceptance": report["acceptance"],
+                    "cycle_summaries": report["cycle_summaries"],
+                },
+            )
         if not report["acceptance"]["passed"]:
             report["operational_error_tail"] = _operational_error_tail(
                 data_dir / "logs" / "mvhub-runtime.jsonl"
@@ -907,7 +1239,32 @@ def main() -> int:
     parser.add_argument("--think-min", type=float, default=0.25)
     parser.add_argument("--think-max", type=float, default=0.75)
     parser.add_argument("--max-p95-ms", type=float, default=500.0)
+    parser.add_argument("--max-login-p95-ms", type=float, default=10_000.0)
     parser.add_argument("--max-memory-growth-percent", type=float, default=20.0)
+    parser.add_argument(
+        "--max-rss-mb",
+        type=float,
+        default=0.0,
+        help="서버 프로세스 RSS 상한(MB). 0이면 상한 판정을 생략",
+    )
+    parser.add_argument(
+        "--server-cpu-cores",
+        type=int,
+        default=0,
+        help="격리 서버에 허용할 논리 CPU 수. 0이면 제한하지 않음",
+    )
+    parser.add_argument(
+        "--server-priority",
+        choices=("normal", "below-normal"),
+        default="normal",
+        help="격리 서버 프로세스 우선순위",
+    )
+    parser.add_argument(
+        "--sample-interval",
+        type=float,
+        default=30.0,
+        help="장기 시험 중 자원·연결 측정 간격(초)",
+    )
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--tls-certfile", type=Path)
     parser.add_argument("--tls-keyfile", type=Path)
@@ -927,6 +1284,12 @@ def main() -> int:
         parser.error("--cycles는 1~10")
     if args.generations_per_user < 1:
         parser.error("--generations-per-user는 1 이상")
+    if args.server_cpu_cores < 0:
+        parser.error("--server-cpu-cores는 0 이상")
+    if args.max_rss_mb < 0:
+        parser.error("--max-rss-mb는 0 이상")
+    if args.sample_interval <= 0:
+        parser.error("--sample-interval은 0보다 커야 합니다")
     if bool(args.tls_certfile) != bool(args.tls_keyfile):
         parser.error("HTTPS 사용 시 --tls-certfile과 --tls-keyfile을 모두 지정해야 합니다")
     if args.tls_ca_file and not args.tls_certfile:
@@ -958,14 +1321,16 @@ def main() -> int:
             "memory_growth_percent_after_warmup": report["server"][
                 "memory_growth_percent_after_warmup"
             ],
+            "resource_summary": report["server"]["resource_summary"],
+            "server_limits": report["server_limits"],
+            "cycle_summaries": report["cycle_summaries"],
             "server_process_during": report["server"]["during"]["process"],
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     else:
         print(text)
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(text + "\n", encoding="utf-8")
+        _atomic_write_json(args.output, report)
     return exit_code
 
 
