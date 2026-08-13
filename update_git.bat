@@ -23,7 +23,7 @@ if not exist "%ROOT%.git" (
   echo [ERROR] this folder is not a git clone ^(no .git^).
   echo         Get it ^(code only, skips docs/^):
   echo           git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
-  echo           cd MV-hub-S ^&^& git sparse-checkout set backend frontend
+  echo           cd MV-hub-S ^&^& git sparse-checkout set backend frontend tools
   pause & exit /b 1
 )
 
@@ -33,6 +33,17 @@ for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "BEFORE=%%i"
 
 echo.
 echo [1/3] Pulling latest ^(git pull^)...
+REM Older sparse clones only included backend/frontend. Server auto-start,
+REM backup and log tools live under tools/, so make that directory part of the
+REM working tree before pulling. Full clones are deliberately left unchanged.
+git sparse-checkout list >nul 2>nul
+if not errorlevel 1 (
+  git sparse-checkout add tools || (
+    echo [ERROR] could not enable the required tools folder.
+    pause
+    exit /b 1
+  )
+)
 git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & pause & exit /b 1)
 
 set "AFTER="

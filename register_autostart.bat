@@ -26,6 +26,12 @@ if errorlevel 1 (
 )
 cd /d "%ROOT%"
 
+REM A code-only sparse clone made before the supervisor rollout may not have
+REM tools/. Do not register tasks that can never start; explain the repair.
+if not exist "%ROOT%tools\server_supervisor.py" goto :tools_missing
+if not exist "%ROOT%tools\server_watchdog.py" goto :tools_missing
+if not exist "%ROOT%tools\backup_replicate.py" goto :tools_missing
+
 echo.
 echo ============================================
 echo  MV Hub server one-click setup
@@ -139,6 +145,15 @@ echo  - Everything auto-recovers: crash, hang, reboot.
 echo.
 pause
 exit /b 0
+
+:tools_missing
+echo.
+echo [ERROR] Required server tools are missing from this checkout.
+echo         Run update_git.bat once more, then run register_autostart.bat.
+echo         Manual repair: git sparse-checkout add tools
+echo.
+pause
+exit /b 1
 
 :err
 echo.

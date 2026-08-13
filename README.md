@@ -11,11 +11,12 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 # docs/ 를 받지 않는 부분 체크아웃(blob 다운로드도 생략)
 git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
 cd MV-hub-S
-git sparse-checkout set backend frontend
+git sparse-checkout set backend frontend tools
 ```
 
 이러면 `backend/`·`frontend/`·루트 실행 파일만 받고, `docs/`·`deploy/` 는 제외됩니다.
 나중에 문서까지 보려면: `git sparse-checkout add docs` (배포 설정은 `add deploy`).
+`tools`는 서버 자동 시작·복구·백업과 개발 점검에 필요한 실행 파일이므로 기본으로 포함한다.
 
 > 일반 `git clone` 으로 받으면 `docs/` 까지 전부 받습니다 — 코드만 원하면 위 명령을 쓰세요.
 
