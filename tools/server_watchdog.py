@@ -91,16 +91,24 @@ def clear_recovered_alert(args) -> bool:
         return False
 
 
-def check_ready(url: str, timeout: float) -> tuple[bool, str]:
-    """(정상 여부, 사유). 200 이면 정상 — /api/ready 는 DB 읽기 실패 시 503 을 준다."""
+def check_ready(url: str, timeout: float) -> tuple[str, str]:
+    """('ok'|'busy'|'dead', 사유).
+
+    ★'busy'와 'dead'를 구분한다 — HTTP 응답이 온 비-200(503 등)은 프로세스가 살아서
+    응답 중이라는 증거다(예: 대량 삭제로 DB 검사가 잠시 타임아웃). 이걸 사망과 똑같이
+    세면 멀쩡히 일하던 서버를 taskkill 해 오히려 장애를 만든다(오탐 재시작).
+    연결거부/타임아웃처럼 응답 자체가 없는 것만 'dead' 로 개입 카운트에 넣는다.
+    """
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "mvhub-watchdog"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status == 200:
-                return True, "ok"
-            return False, f"HTTP {r.status}"
-    except Exception as e:  # noqa: BLE001 — 연결거부/타임아웃/HTTPError 전부 '실패 1회'
-        return False, f"{type(e).__name__}: {e}"
+                return "ok", "ok"
+            return "busy", f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return "busy", f"HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001 — 연결거부/타임아웃 등 무응답
+        return "dead", f"{type(e).__name__}: {e}"
 
 
 def _powershell_json(script: str) -> list[dict]:
@@ -207,6 +215,8 @@ def main() -> int:
     ap.add_argument("--interval", type=float, default=60.0, help="확인 주기(초)")
     ap.add_argument("--timeout", type=float, default=10.0, help="요청 타임아웃(초)")
     ap.add_argument("--fail-threshold", type=int, default=3, help="연속 실패 몇 회에 개입")
+    ap.add_argument("--busy-threshold", type=int, default=30,
+                    help="연속 busy(HTTP 응답은 오나 준비 안 됨) 몇 회에 ALERT(개입은 안 함)")
     ap.add_argument("--startup-grace", type=float, default=600.0, help="첫 정상 전 시작 유예(초)")
     ap.add_argument("--post-kill-grace", type=float, default=300.0, help="개입 후 대기(초)")
     ap.add_argument("--storm-window", type=float, default=3600.0, help="폭풍 판정 창(초)")
@@ -228,20 +238,44 @@ def main() -> int:
     startup_deadline = time.monotonic() + max(0.0, args.startup_grace)
     startup_alerted = False
 
+    busy_streak = 0
+    busy_alerted = False
     while True:
-        ok, reason = check_ready(url, args.timeout)
+        status, reason = check_ready(url, args.timeout)
         now = time.monotonic()
-        if ok:
+        if status == "ok":
             if not armed:
                 log(args, "서버 정상 확인 — 감시 활성화")
-            elif fails:
-                log(args, f"복구 확인 (연속 실패 {fails}회 후 정상)")
+            elif fails or busy_streak:
+                log(args, f"복구 확인 (연속 실패 {fails}회·busy {busy_streak}회 후 정상)")
             armed = True
             fails = 0
+            busy_streak = 0
+            busy_alerted = False
             hold_alerted = False
             clear_recovered_alert(args)
+        elif status == "busy":
+            # HTTP 응답이 왔다 = 프로세스 생존. 개입(kill) 카운트는 리셋하고 관찰만 한다.
+            # 대신 busy 가 오래 지속되면(기본 30주기≈30분) 사람에게 ALERT 로 알린다 —
+            # 재시작으로 나아질 상태가 아니므로 자동 개입은 하지 않는다.
+            fails = 0
+            busy_streak += 1
+            if armed or now >= startup_deadline:
+                log(args, f"준비 안 됨(busy) {busy_streak}/{args.busy_threshold} — {reason}")
+            if busy_streak >= args.busy_threshold and not busy_alerted:
+                busy_alerted = True
+                alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                msg = (f"{datetime.now():%Y-%m-%d %H:%M:%S} 서버가 살아 있지만 "
+                       f"{busy_streak}주기 연속 준비 안 됨({reason}) — 자동 재시작 대상이 "
+                       "아니므로 서버 로그(DB 검사 실패 등)를 직접 확인하세요.")
+                log(args, "★ALERT★ " + msg)
+                try:
+                    alert.write_text(msg + "\n", encoding="utf-8")
+                except OSError:
+                    pass
         elif armed or now >= startup_deadline:
             fails += 1
+            busy_streak = 0
             prefix = "응답 이상" if armed else "시작 실패"
             log(args, f"{prefix} {fails}/{args.fail_threshold} — {reason}")
             if fails >= args.fail_threshold:
