@@ -84,3 +84,19 @@ def schedule_telemetry_drain() -> bool:
     if _drain_task is None or _drain_task.done():
         _drain_task = loop.create_task(_drain_soon(), name="telemetry-drain")
     return True
+
+
+async def wait_for_telemetry_drain(timeout: float = 10.0) -> bool:
+    """앱 종료 전 예약된 전송이 DB 작업을 끝낼 짧은 시간을 준다.
+
+    재시작을 무기한 막지는 않으며, 제한시간이 지나도 작업 자체를 강제 취소하지 않아 전송 중인
+    동기 스레드가 갑자기 끊겼다고 오인하지 않게 한다.
+    """
+    task = _drain_task
+    if task is None or task.done():
+        return True
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=max(0.01, float(timeout)))
+        return True
+    except asyncio.TimeoutError:
+        return False

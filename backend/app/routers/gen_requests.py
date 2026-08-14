@@ -34,6 +34,7 @@ from ..models import (
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
+from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     GenRequestCommand,
     anchor_request,
@@ -110,6 +111,11 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
     라우터는 HTTP/인증/권한/입력검증만 하고, 오케스트레이션(생성·큐잉·signal·PM)은
     usecases.gen_requests.submit_gen_request 가 수행한다(ARCHITECTURE.md)."""
+    if update_in_progress():
+        raise HTTPException(
+            status_code=409,
+            detail="프로그램 업데이트가 진행 중이라 새 생성을 시작할 수 없습니다",
+        )
     acc = _require_account(request)
     workspace = _validated_generation_workspace(body.workspace, acc["email"])
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면

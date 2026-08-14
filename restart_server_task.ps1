@@ -145,6 +145,14 @@ try {
         throw "$watchdogTask did not stay running: $(Get-TaskResultText $watchdogTask)"
     }
 
+    # 복구가 확인됐는데 예전 경고 표식이 남아 사용자를 계속 불안하게 하지 않도록 정리한다.
+    foreach ($alertName in @("server_ALERT.txt", "watchdog_ALERT.txt")) {
+        $alertPath = Join-Path $Root "logs\$alertName"
+        if (Test-Path -LiteralPath $alertPath) {
+            Remove-Item -LiteralPath $alertPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Write-Host "Server is UP: http://127.0.0.1:$Port" -ForegroundColor Green
     Write-Host "${serverTask}: $(Get-TaskResultText $serverTask)"
     Write-Host "${watchdogTask}: $(Get-TaskResultText $watchdogTask)"

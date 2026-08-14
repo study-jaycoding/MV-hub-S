@@ -70,3 +70,26 @@ def test_management_disabled_never_schedules_or_drains():
         _reset_scheduler()
 
     asyncio.run(scenario())
+
+
+def test_shutdown_waits_for_scheduled_drain_to_finish():
+    release = threading.Event()
+
+    async def scenario():
+        _reset_scheduler()
+
+        def slow_drain():
+            release.wait(timeout=1)
+
+        with patch.object(_telemetry, "MANAGE_ENABLED", True), patch.object(
+            _telemetry, "_DEBOUNCE_SECONDS", 0
+        ), patch.object(_telemetry, "drain_telemetry", side_effect=slow_drain):
+            assert _telemetry.schedule_telemetry_drain()
+            waiter = asyncio.create_task(_telemetry.wait_for_telemetry_drain(timeout=1))
+            await asyncio.sleep(0.02)
+            assert not waiter.done()
+            release.set()
+            assert await waiter is True
+        _reset_scheduler()
+
+    asyncio.run(scenario())

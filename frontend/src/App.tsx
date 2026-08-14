@@ -399,8 +399,6 @@ export default function App() {
   const {
     assignSelectedToProject,
     boardAssign,
-    boardCreateAssign,
-    createAndAssign,
     dropOnFolder,
     dropUnassign,
   } = useGenerationProjectActions({
@@ -409,7 +407,6 @@ export default function App() {
     flash,
     reload,
     selectedRef,
-    workspace: workspaceContext,
   });
 
   // 모든 필터(project_id·컬러·태그·타입 포함)가 서버 쿼리에 들어가므로, 무엇이 바뀌든
@@ -1166,9 +1163,13 @@ export default function App() {
             onShare={boardShare}
             onDownload={bulkDownload}
             onCompare={(items) => setCompareGens(items)}
-            onAssign={(pid) => boardAssign(sceneSelGens, pid)}
-            onCreateAndAssign={(name) => boardCreateAssign(sceneSelGens, name)}
+            onAssign={(pid, folder) => boardAssign(sceneSelGens, pid, folder)}
             onDelete={() => sceneActionRef.current?.deleteSelected()}
+            onResolveTransfer={resolveTransfer.sendToResolve}
+            onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
+            resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
+            resolveTransferBusy={resolveTransfer.busy}
+            resolveTransferPendingCount={resolveTransfer.pendingCount}
           />
         ) : undefined
       ) : boardSelected.length > 0 ? (
@@ -1178,9 +1179,13 @@ export default function App() {
           onShare={boardShare}
           onDownload={bulkDownload}
           onCompare={(items) => setCompareGens(items)}
-          onAssign={(pid) => boardAssign(boardSelected, pid)}
-          onCreateAndAssign={(name) => boardCreateAssign(boardSelected, name)}
+          onAssign={(pid, folder) => boardAssign(boardSelected, pid, folder)}
           onDelete={boardDelete}
+          onResolveTransfer={resolveTransfer.sendToResolve}
+          onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
+          resolveRetryProjectName={resolveTransfer.retryable?.target.project_name || ""}
+          resolveTransferBusy={resolveTransfer.busy}
+          resolveTransferPendingCount={resolveTransfer.pendingCount}
         />
       ) : undefined
     ) : selected.size > 0 ? (
@@ -1188,6 +1193,8 @@ export default function App() {
         selectedCount={selected.size}
         selectedGenerations={selectedGenerations}
         projects={projects}
+        onShare={boardShare}
+        onGradeStep={filters.tab === "team" ? onBulkGradeStep : undefined}
         onDownload={bulkDownload}
         onResolveTransfer={resolveTransfer.sendToResolve}
         onResolveRetry={resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null}
@@ -1198,7 +1205,6 @@ export default function App() {
           if (items.length >= 2) setCompareGens(items);
         }}
         onAssign={assignSelectedToProject}
-        onCreateAndAssign={createAndAssign}
         onDelete={bulkDelete}
         onRestore={bulkRestore}
         onPurge={bulkPurge}
@@ -1336,7 +1342,13 @@ export default function App() {
                 onVariantCompare={setCompareGens}
                 onSelectionCompare={setSceneCompareMedia}
                 onVariantAssign={boardAssign}
-                onVariantCreateAssign={boardCreateAssign}
+                variantResolve={{
+                  send: resolveTransfer.sendToResolve,
+                  retry: resolveTransfer.retryable ? resolveTransfer.retryPreparedTransfer : null,
+                  retryProjectName: resolveTransfer.retryable?.target.project_name || "",
+                  busy: resolveTransfer.busy,
+                  pendingCount: resolveTransfer.pendingCount,
+                }}
                 onVariantDelete={deleteReturningIds}
                 onSelectionGens={setSceneSelGens}
                 actionRef={sceneActionRef}

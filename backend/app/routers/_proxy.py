@@ -262,6 +262,7 @@ _LOCAL_PREFIXES = (
     "/api/models",         # CLI 모델 목록·params
     "/api/comfy",          # ComfyUI 연결·파싱·실행(이 PC 의 로컬/Cloud 자원 — 서버 위임 금지)
     "/api/resolve/",       # Render 원본·@davinci 기록 저장 및 Resolve 제어(이 PC 디스크/앱 대상)
+    "/api/release-update/",  # 작업자 설치본·프로세스를 교체하는 이 PC 전용 업데이트
     "/api/workspaces",     # CLI 워크스페이스
     "/api/shared-server/", # 공유 서버 로그인/토큰/주소(이 허브의 로컬 설정)
     # ── 로컬 우선: 내 작업 데이터는 로컬 DB가 정답. 핸들러가 tab=team/팀항목일 때만 서버로 위임.

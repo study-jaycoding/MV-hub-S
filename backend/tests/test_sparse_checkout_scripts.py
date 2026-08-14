@@ -151,3 +151,16 @@ def test_update_persists_commit_and_restart_result():
         '"stage=!UPDATE_STAGE! before=!BEFORE! after=!AFTER! '
         'server=!SERVER_RESULT! exit=!UPDATE_RC!"'
     ) in updater
+
+
+def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
+    launcher = _read("task_launch.bat")
+    updater = _read("update_git.bat")
+    restart = _read("restart_server_task.ps1")
+
+    assert "tools\\rotate_text_log.py" in launcher
+    assert "--max-bytes 10485760 --keep 3" in launcher
+    assert "tools\\rotate_text_log.py" in updater
+    assert "--max-bytes 2097152 --keep 3" in updater
+    assert 'server_ALERT.txt", "watchdog_ALERT.txt' in restart
+    assert "Remove-Item -LiteralPath $alertPath" in restart

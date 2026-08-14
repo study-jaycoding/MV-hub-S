@@ -43,6 +43,8 @@ def _prepare_batch(*, filter_uid: str | None, include_all_creators: bool) -> dic
     built_ids = {fact["local_gen_id"] for fact in facts}
 
     tomb_facts: list[dict[str, Any]] = []
+    sendable_tomb_rows: list[dict[str, Any]] = []
+    foreign_tomb_rows: list[dict[str, Any]] = []
     for row in tomb_rows:
         snapshot: dict[str, Any] = {}
         if row.get("tomb_snapshot"):
@@ -50,20 +52,31 @@ def _prepare_batch(*, filter_uid: str | None, include_all_creators: bool) -> dic
                 snapshot = json.loads(row["tomb_snapshot"]) or {}
             except (TypeError, ValueError):
                 snapshot = {}
+        creator_uid = str(
+            row.get("tomb_creator_uid") or snapshot.get("creator_uid") or ""
+        ).strip()
+        # 로컬 DB에는 과거 다른 작업자의 삭제 흔적도 남을 수 있다. 현재 로그인 작업자의
+        # 원격 전송에서는 그 항목을 성공 처리해 재시도만 끝내고, 서버 데이터는 건드리지 않는다.
+        # 작성자 정보가 없는 옛 항목은 기존 계약대로 현재 작업자 항목으로 전송한다.
+        if not include_all_creators and filter_uid and creator_uid and creator_uid != filter_uid:
+            foreign_tomb_rows.append(row)
+            continue
+        sendable_tomb_rows.append(row)
         tomb_facts.append(
             {
                 **snapshot,
                 "local_gen_id": row["local_gen_id"],
                 "job_id": snapshot.get("job_id") or row.get("tomb_job_id"),
-                "creator_uid": row.get("tomb_creator_uid")
-                or snapshot.get("creator_uid")
-                or filter_uid,
+                "creator_uid": creator_uid or filter_uid,
                 "is_deleted": True,
             }
         )
 
-    sent = [row for row in normal_rows if row["local_gen_id"] in built_ids] + tomb_rows
-    non_sent = [row for row in normal_rows if row["local_gen_id"] not in built_ids]
+    sent = [row for row in normal_rows if row["local_gen_id"] in built_ids] + sendable_tomb_rows
+    non_sent = (
+        [row for row in normal_rows if row["local_gen_id"] not in built_ids]
+        + foreign_tomb_rows
+    )
     return {
         "dirty": dirty,
         "facts": facts + tomb_facts,

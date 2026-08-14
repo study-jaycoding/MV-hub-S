@@ -14,6 +14,10 @@ from app.ws import ConnectionManager
 class FakeWS:
     def __init__(self):
         self.received: list[dict] = []
+        self.accepted = False
+
+    async def accept(self):
+        self.accepted = True
 
     async def send_json(self, message):
         self.received.append(message)
@@ -86,6 +90,25 @@ class WsBroadcastScopeTests(unittest.TestCase):
         self.assertEqual(stats["authenticated_connections"], 100)
         self.assertEqual(stats["authenticated_accounts"], 50)
         self.assertEqual(stats["local_connections"], 1)
+
+    def test_connect_and_disconnect_return_anonymous_counts_once(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            first, second = FakeWS(), FakeWS()
+            after_first = await mgr.connect(first, "acct:a")
+            after_second = await mgr.connect(second, "acct:a")
+            after_leave = await mgr.disconnect(first)
+            duplicate_leave = await mgr.disconnect(first)
+            return after_first, after_second, after_leave, duplicate_leave, first.accepted
+
+        first, second, leave, duplicate, accepted = self._run(scenario())
+        self.assertTrue(accepted)
+        self.assertEqual(first["connections"], 1)
+        self.assertEqual(first["authenticated_accounts"], 1)
+        self.assertEqual(second["connections"], 2)
+        self.assertEqual(second["authenticated_accounts"], 1)
+        self.assertEqual(leave["connections"], 1)
+        self.assertIsNone(duplicate)
 
     def test_mutation_notifications_coalesce_and_preserve_known_origins(self):
         async def scenario():

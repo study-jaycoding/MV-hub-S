@@ -34,6 +34,87 @@ _QUERY_SECRET_RE = re.compile(
     r"(?i)([?&](?:access_token|api_key|key|password|secret|token)=)[^&#\s]+"
 )
 _RESERVED_FIELDS = {"ts", "level", "logger", "service", "run_id", "pid", "message"}
+_EXPECTED_LONG_POLL_MS = {"/api/agent/wait": 35_000.0}
+
+
+def should_log_http_request(
+    path: str,
+    status: int,
+    elapsed_ms: float,
+    *,
+    slow_request_ms: float,
+) -> bool:
+    """실제 오류와 비정상 지연만 개별 요청 로그로 남긴다.
+
+    에이전트 wait는 최대 약 25초를 기다리는 정상 롱폴이다. 일반 1초 지연 기준을 그대로
+    적용하면 정상 사용자 수만큼 경고가 쌓이므로, 이 경로만 35초를 넘을 때 기록한다.
+    """
+    if int(status) >= 500:
+        return True
+    threshold = max(
+        float(slow_request_ms),
+        _EXPECTED_LONG_POLL_MS.get(str(path), 0.0),
+    )
+    return float(elapsed_ms) >= threshold
+
+
+def compact_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """분 단위 로그에는 운영 판단에 필요한 작은 집계만 보존한다.
+
+    관리자 API는 원본 전체 스냅샷을 계속 반환하므로 상세 진단 능력은 유지된다. 로그에서는
+    매분 반복되는 경로별 요청 목록 등을 빼 파일 증가 속도와 사람이 읽는 소음을 줄인다.
+    """
+    requests = snapshot.get("requests") or {}
+    process = snapshot.get("process") or {}
+    disk = snapshot.get("disk") or {}
+    websocket = snapshot.get("websocket") or {}
+    remote_realtime = snapshot.get("remote_realtime") or {}
+    agents = snapshot.get("agents") or {}
+    operations = snapshot.get("operations") or {}
+    return {
+        "requests": {
+            key: requests.get(key)
+            for key in (
+                "total",
+                "in_flight",
+                "status",
+                "latency_ms",
+                "sqlite_locked_total",
+            )
+        },
+        "process": {
+            key: process.get(key)
+            for key in ("cpu_percent_one_core", "rss_bytes", "threads")
+        },
+        "disk": {
+            key: disk.get(key)
+            for key in (
+                "volume_free_bytes",
+                "db_bytes",
+                "wal_bytes",
+                "media_bytes",
+                "thumb_cache_bytes",
+            )
+        },
+        "websocket": {
+            key: websocket.get(key)
+            for key in ("connections", "authenticated_accounts", "local_connections")
+        },
+        "remote_realtime": {
+            key: remote_realtime.get(key)
+            for key in ("state", "connected", "reconnect_attempts", "last_error")
+        },
+        "agents": {
+            key: agents.get(key)
+            for key in ("connected_accounts", "long_poll_waiters", "pending_signal_accounts")
+        },
+        "operations": {
+            "generation_queue": dict(operations.get("generation_queue") or {}),
+            "telemetry": dict(operations.get("telemetry") or {}),
+            "backups": dict(operations.get("backups") or {}),
+            "databases": dict(operations.get("databases") or {}),
+        },
+    }
 
 
 def _redact(value: Any, *, key: str = "") -> Any:

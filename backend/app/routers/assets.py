@@ -69,7 +69,7 @@ _PROMPT_IMPORT_PROJECT = asset_paths.PROMPT_IMPORT_PROJECT
 _COMBINED_INTERNAL = asset_paths.COMBINED_INTERNAL_PROJECT
 _INTERNAL_FOLDERS = asset_paths.INTERNAL_FOLDERS
 _PROJECT_HIDDEN_FOLDERS: dict[str, set[str]] = {
-    "뻘뻘뻘": {"mosaic"},
+    "뻘뻘뻘": {"mosaic", "reference"},
 }
 
 

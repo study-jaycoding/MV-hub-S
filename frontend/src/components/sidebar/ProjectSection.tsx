@@ -450,7 +450,10 @@ export function ProjectSection({
                 ? (e) => {
                     e.preventDefault();
                     setUnassignOver(false);
-                    const genId = e.dataTransfer.getData(DRAG_TYPES.generation);
+                    // 복수 드래그(genlist, 쉼표구분)를 우선 — 없으면 단일(generation).
+                    const genId =
+                      e.dataTransfer.getData(DRAG_TYPES.generationList) ||
+                      e.dataTransfer.getData(DRAG_TYPES.generation);
                     if (genId) onDropToUnassigned(genId);
                   }
                 : undefined
@@ -567,7 +570,10 @@ export function ProjectSection({
                     onDropFolder={
                       onDropToFolder
                         ? (path, e) => {
-                            const genId = e.dataTransfer.getData(DRAG_TYPES.generation);
+                            // 복수 드래그(genlist, 쉼표구분)를 우선 — 없으면 단일(generation).
+                            const genId =
+                              e.dataTransfer.getData(DRAG_TYPES.generationList) ||
+                              e.dataTransfer.getData(DRAG_TYPES.generation);
                             if (genId) onDropToFolder(project.id, path, genId);
                           }
                         : undefined

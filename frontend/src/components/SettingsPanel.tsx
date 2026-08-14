@@ -28,6 +28,7 @@ import {
   BackfillSettingsSection,
   DownloadLocationSection,
   MetadataContinuitySection,
+  ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
   SyncToolsSection,
 } from "./settings/SettingsSections";
@@ -39,6 +40,13 @@ import {
   type ResolveConnectionStatus,
   type ResolveScriptStatus,
 } from "../lib/resolveTransfer";
+import {
+  getReleaseUpdateStatus,
+  isReleaseUpdateRunning,
+  startReleaseUpdate,
+  UPDATE_WAIT_VERSION_KEY,
+  type ReleaseUpdateStatus,
+} from "../lib/releaseUpdate";
 
 export function SettingsPanel({
   onClose,
@@ -66,6 +74,10 @@ export function SettingsPanel({
   const [resolveConnectionBusy, setResolveConnectionBusy] = useState(false);
   const [resolveScriptBusy, setResolveScriptBusy] = useState(false);
   const [resolveScriptMsg, setResolveScriptMsg] = useState("");
+  const [releaseUpdateStatus, setReleaseUpdateStatus] = useState<ReleaseUpdateStatus | null>(null);
+  const [releaseUpdateBusy, setReleaseUpdateBusy] = useState(false);
+  const [releaseUpdateMsg, setReleaseUpdateMsg] = useState("");
+  const [releaseUpdatePolling, setReleaseUpdatePolling] = useState(false);
 
   useEffect(() => {
     downloadDirName().then(setDlDir).catch(() => {});
@@ -83,7 +95,135 @@ export function SettingsPanel({
         message: "Resolve 연결 상태를 확인하지 못했습니다",
       });
     });
+    getReleaseUpdateStatus(true).then((status) => {
+      setReleaseUpdateStatus(status);
+      let waitingVersion = "";
+      try {
+        waitingVersion = window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY) || "";
+      } catch {
+        // sessionStorage를 막은 브라우저에서도 설정 창은 정상 사용한다.
+      }
+      if (isReleaseUpdateRunning(status.state)) {
+        if (!waitingVersion && status.latest_version) {
+          try {
+            window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+          } catch {
+            // 상태 폴링 자체는 계속 가능하다.
+          }
+        }
+        setReleaseUpdatePolling(true);
+      } else if (waitingVersion) {
+        setReleaseUpdatePolling(true);
+      }
+    }).catch(() => {
+      setReleaseUpdateMsg("업데이트 상태를 확인하지 못했습니다.");
+    });
   }, []);
+
+  useEffect(() => {
+    if (!releaseUpdatePolling) return;
+    let cancelled = false;
+    let timer = 0;
+    const deadline = Date.now() + 5 * 60 * 1000;
+
+    const poll = async () => {
+      let expected = "";
+      try {
+        expected = window.sessionStorage.getItem(UPDATE_WAIT_VERSION_KEY) || "";
+      } catch {
+        // 아래 status.latest_version으로 폴백한다.
+      }
+      try {
+        const status = await getReleaseUpdateStatus(false);
+        if (cancelled) return;
+        setReleaseUpdateStatus(status);
+        const target = expected || status.latest_version;
+        if (status.state === "failed") {
+          setReleaseUpdateMsg(status.message || "업데이트에 실패했습니다.");
+          setReleaseUpdateBusy(false);
+          setReleaseUpdatePolling(false);
+          try {
+            window.sessionStorage.removeItem(UPDATE_WAIT_VERSION_KEY);
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        if (
+          target
+          && (status.state === "complete" || status.state === "up_to_date")
+          && status.current_version === target
+        ) {
+          setReleaseUpdateMsg("업데이트 완료 · 새 화면을 여는 중…");
+          try {
+            window.sessionStorage.removeItem(UPDATE_WAIT_VERSION_KEY);
+          } catch {
+            // ignore
+          }
+          window.setTimeout(() => window.location.reload(), 500);
+          return;
+        }
+      } catch {
+        // 기존 허브가 종료되고 새 허브가 뜨는 동안 연결 실패는 정상이다.
+        if (!cancelled) setReleaseUpdateMsg("프로그램을 교체하고 다시 시작하는 중…");
+      }
+      if (!cancelled && Date.now() < deadline) {
+        timer = window.setTimeout(poll, 1500);
+      } else if (!cancelled) {
+        setReleaseUpdateBusy(false);
+        setReleaseUpdatePolling(false);
+        setReleaseUpdateMsg("자동 확인 시간이 초과됐습니다. 프로그램 창을 확인한 뒤 다시 열어주세요.");
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [releaseUpdatePolling]);
+
+  const refreshReleaseUpdate = async () => {
+    setReleaseUpdateBusy(true);
+    setReleaseUpdateMsg("최신 릴리스를 확인하는 중…");
+    try {
+      const status = await getReleaseUpdateStatus(true);
+      setReleaseUpdateStatus(status);
+      setReleaseUpdateMsg(status.message);
+    } catch (error) {
+      setReleaseUpdateMsg("확인 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setReleaseUpdateBusy(false);
+    }
+  };
+
+  const runReleaseUpdate = async () => {
+    const status = releaseUpdateStatus;
+    if (!status?.can_update || !status.latest_version) return;
+    if (!window.confirm(
+      `MV Hub를 ${status.latest_version} 버전으로 업데이트합니다.\n프로그램이 자동으로 다시 시작됩니다.\n계속할까요?`,
+    )) return;
+    setReleaseUpdateBusy(true);
+    setReleaseUpdateMsg("업데이트를 준비하는 중…");
+    try {
+      window.sessionStorage.setItem(UPDATE_WAIT_VERSION_KEY, status.latest_version);
+    } catch {
+      // 저장 불가 시에도 현재 설정 창에서 폴링한다.
+    }
+    try {
+      const started = await startReleaseUpdate();
+      setReleaseUpdateStatus(started);
+      setReleaseUpdateMsg(started.message);
+      setReleaseUpdatePolling(true);
+    } catch (error) {
+      try {
+        window.sessionStorage.removeItem(UPDATE_WAIT_VERSION_KEY);
+      } catch {
+        // ignore
+      }
+      setReleaseUpdateMsg("업데이트 시작 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+      setReleaseUpdateBusy(false);
+    }
+  };
 
   const refreshResolveConnection = async () => {
     setResolveConnectionBusy(true);
@@ -314,6 +454,14 @@ export function SettingsPanel({
             onAccent={pickAccent}
             onLang={pickLang}
             onReduceMotion={pickReduceMotion}
+          />
+
+          <ReleaseUpdateSettingsSection
+            status={releaseUpdateStatus}
+            busy={releaseUpdateBusy}
+            msg={releaseUpdateMsg}
+            onRefresh={refreshReleaseUpdate}
+            onUpdate={runReleaseUpdate}
           />
 
           <section className="settings-section">

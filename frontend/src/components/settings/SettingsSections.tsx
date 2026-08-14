@@ -2,6 +2,10 @@ import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
 import type { ResolveConnectionStatus, ResolveScriptStatus } from "../../lib/resolveTransfer";
+import {
+  isReleaseUpdateRunning,
+  type ReleaseUpdateStatus,
+} from "../../lib/releaseUpdate";
 
 export function AppearanceSettingsSection({
   accent,
@@ -348,6 +352,71 @@ export function ResolveScriptSettingsSection({
         환경에서도 작업 공간 → 스크립트 → MV Hub → MVHub Importer를 누르면 준비된 원본을 직접
         가져올 수 있습니다.
       </p>
+    </section>
+  );
+}
+
+export function ReleaseUpdateSettingsSection({
+  status,
+  busy,
+  msg,
+  onRefresh,
+  onUpdate,
+}: {
+  status: ReleaseUpdateStatus | null;
+  busy: boolean;
+  msg: string;
+  onRefresh: () => void;
+  onUpdate: () => void;
+}) {
+  const running = busy || isReleaseUpdateRunning(status?.state);
+  const releaseInstall = status?.install_mode === "release";
+  const active = status?.active_total || 0;
+  const versionText = status
+    ? status.latest_version && status.latest_version !== status.current_version
+      ? `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
+      : `현재 버전 ${status.current_version || "미확인"}`
+    : "버전을 확인하는 중…";
+  const actionText = running
+    ? status?.state === "restarting"
+      ? "프로그램 다시 시작 중…"
+      : "업데이트 중…"
+    : !releaseInstall
+      ? "작업자 설치본 전용"
+      : active > 0
+      ? `생성 ${active}건 완료 후 업데이트`
+      : status?.can_update
+        ? "프로그램 업데이트"
+        : "최신 버전";
+
+  return (
+    <section className="settings-section">
+      <h4>프로그램 업데이트</h4>
+      <div className="settings-row">
+        <button
+          className={"settings-action" + (running ? " is-busy" : "")}
+          onClick={onUpdate}
+          disabled={!status?.can_update || running || active > 0}
+        >
+          ↻ {actionText}
+        </button>
+        <button className="settings-action ghost" onClick={onRefresh} disabled={running}>
+          다시 확인
+        </button>
+      </div>
+      <p className="settings-hint">{versionText}</p>
+      <p className="settings-hint">{msg || status?.message || "릴리스 서버를 확인하고 있습니다."}</p>
+      {releaseInstall && active > 0 && (
+        <p className="settings-hint" style={{ color: "#f5a623" }}>
+          유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
+        </p>
+      )}
+      {releaseInstall && (
+        <p className="settings-hint">
+          업데이트하면 검증된 릴리스를 설치하고 MV Hub를 자동으로 다시 시작합니다. 작업 파일과
+          로컬 DB는 건드리지 않습니다.
+        </p>
+      )}
     </section>
   );
 }

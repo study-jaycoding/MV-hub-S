@@ -87,25 +87,33 @@ Z:\mvutil\MV_hub_S\MVHub_Install.bat
 %USERPROFILE%\Desktop\MV-hub-S\MV_agent.bat
 ```
 
-업데이트만:
+업데이트만(최초 1회 또는 비상 복구):
 
 ```text
 %USERPROFILE%\Desktop\MV-hub-S\update_release.bat
 ```
 
-처음 설치하면 `INSTALL_SOURCE.txt`에 서버 `packages` 경로가 저장됩니다. 이후 업데이트는 작업자 PC 안의
-`update_release.bat`가 이 값을 읽어서 진행하므로, 작업자가 서버 폴더를 다시 찾을 필요가 없습니다.
+처음 설치하면 `INSTALL_SOURCE.txt`에 서버 `packages` 경로가 저장됩니다. 자동 업데이트 기능이 포함된
+릴리스를 한 번 설치한 뒤부터는 MV Hub **설정 → 프로그램 업데이트**만 누르면 됩니다. 프로그램이
+새 릴리스를 검증·설치하고 자동으로 다시 시작하므로 작업자가 서버 폴더를 다시 찾을 필요가 없습니다.
 
-업데이트 중 기존 MV Hub가 실행 중이면 설치 폴더 안의 Python/Node 프로세스를 먼저 종료하고 파일을 교체합니다.
-그래서 작업자는 가능하면 MV Agent 창을 닫고 업데이트하는 것이 가장 깔끔합니다.
+이 버튼이 없던 구버전 작업자 PC에는 새 버튼을 원격으로 만들 수 없으므로, 첫 전환 때만 위의
+`update_release.bat`를 한 번 실행합니다. 그 다음 릴리스부터는 프로그램 안의 버튼만 사용합니다.
+
+프로그램 안에서 업데이트하면 진행 중인 생성·Comfy 작업이 없는지 먼저 확인합니다. 안전할 때만 기존
+MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지 확인합니다. 수동 `update_release.bat`는
+비상 복구용이라 실행 전에 MV Agent 창을 닫는 것이 가장 깔끔합니다.
 
 ## 업데이트 흐름
 
 1. 관리자가 `make_release.bat`로 새 zip 생성 (→ `publish_target.txt` 설정 시 서버 `packages`로 자동 복사)
 2. (자동 복사 안 쓰면) 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 수동 복사
-3. 작업자는 로컬 `Desktop\MV-hub-S\update_release.bat` 실행
+3. 작업자는 MV Hub 설정에서 `프로그램 업데이트` 클릭
 4. 앱 또는 번들 CLI 버전이 다르면 자동 다운로드/검증/설치
-5. 업데이트 후 필요할 때 `MV_agent.bat` 실행
+5. MV Hub가 자동 재시작되고 새 버전의 준비 완료를 확인
+
+공유 서버 코드는 기존처럼 서버 PC에서 `update_git.bat`으로 갱신합니다. 작업자 릴리스 버튼과 서버 Git
+업데이트는 서로 다른 경로이며, 한쪽이 다른 쪽을 대신 실행하지 않습니다.
 
 ## 직전 버전으로 롤백
 

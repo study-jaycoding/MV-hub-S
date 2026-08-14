@@ -36,11 +36,16 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+from rotate_text_log import rotate_text_log
+
 ROOT = Path(__file__).resolve().parent.parent  # 저장소 루트(MV_server.bat 위치)
 SELF_PID = os.getpid()
 
 _LOG_MAX_BYTES = 2 * 1024 * 1024
-_LOG_KEEP_LINES = 500
+_LOG_KEEP = 3
 
 
 def _log_path(args) -> Path:
@@ -59,18 +64,31 @@ def _print_console(line: str) -> None:
 
 def log(args, msg: str) -> None:
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    _print_console(line)
+    # 예약 작업의 정상 상태는 watchdog.log 한 곳에만 남긴다. 예외 traceback은 stderr를 통해
+    # watchdog_console.log에 계속 기록되므로 장애 진단 정보는 사라지지 않는다.
+    if os.environ.get("CONTENT_HUB_TASK") != "1":
+        _print_console(line)
     p = _log_path(args)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        # 단순 크기 상한 — 넘치면 뒷부분만 남긴다(외부 로테이션 도구 없이 자급).
-        if p.exists() and p.stat().st_size > _LOG_MAX_BYTES:
-            tail = p.read_text(encoding="utf-8", errors="replace").splitlines()[-_LOG_KEEP_LINES:]
-            p.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        rotate_text_log(p, max_bytes=_LOG_MAX_BYTES, keep=_LOG_KEEP)
         with p.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
         pass  # 로그 실패가 감시를 멈추면 안 된다
+
+
+def clear_recovered_alert(args) -> bool:
+    """현재 워치독이 만든 경고만 서버 정상 확인 뒤 제거한다."""
+    alert = _log_path(args).with_name("watchdog_ALERT.txt")
+    try:
+        if not alert.is_file():
+            return False
+        alert.unlink()
+        log(args, "ALERT 해제 — 서버 정상")
+        return True
+    except OSError:
+        return False
 
 
 def check_ready(url: str, timeout: float) -> tuple[bool, str]:
@@ -221,6 +239,7 @@ def main() -> int:
             armed = True
             fails = 0
             hold_alerted = False
+            clear_recovered_alert(args)
         elif armed or now >= startup_deadline:
             fails += 1
             prefix = "응답 이상" if armed else "시작 실패"

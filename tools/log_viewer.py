@@ -38,6 +38,8 @@ _LABELS = {
     "generation_queue_attention": "생성 큐 확인 필요",
     "telemetry_backlog": "관리 데이터 전송 지연",
     "worker_telemetry_received": "생성 정보",
+    "browser_connected": "브라우저 연결",
+    "browser_disconnected": "브라우저 연결 종료",
     "database_unready": "데이터베이스 준비 실패",
     "generation_journal_write_failed": "생성 이력 저장 실패",
     "audit_journal_write_failed": "감사 기록 저장 실패",
@@ -65,6 +67,7 @@ def format_event(payload: dict[str, Any]) -> str | None:
         websocket = snapshot.get("websocket") or {}
         backups = operations.get("backups") or {}
         telemetry = operations.get("telemetry") or {}
+        databases = operations.get("databases") or {}
         status = requests.get("status") or {}
         connected_accounts = max(
             int(agents.get("connected_accounts") or 0),
@@ -80,11 +83,13 @@ def format_event(payload: dict[str, Any]) -> str | None:
             if queue.get("applicable", True)
             else ""
         )
+        database_text = " | DB 정상" if databases.get("ready", True) else " | DB 오류"
         return (
             f"[{stamp}] 상태 | 요청 {requests.get('total', 0)} (5xx {status.get('5xx', 0)})"
             f"{queue_text}"
             f" | 접속 계정 {connected_accounts}"
             f"{telemetry_text}"
+            f"{database_text}"
             f" | 백업 {backups.get('set_count', 0)}세트"
         )
 
@@ -96,6 +101,8 @@ def format_event(payload: dict[str, Any]) -> str | None:
     for key, title in (
         ("generation_id", "생성"),
         ("worker_name", "작업자"),
+        ("connections", "연결"),
+        ("connected_accounts", "접속계정"),
         ("request_id", "요청"),
         ("job_id", "작업"),
         ("status", "상태"),

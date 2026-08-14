@@ -31,6 +31,7 @@ from ..deps import (
     require_project_role,
 )
 from ..services import comfy_client, comfy_workflow, video_convert
+from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 
 log = logging.getLogger("comfy")
@@ -87,6 +88,17 @@ _RUN_FAILED = "failed"
 
 _RUN_JOBS_LOCK = threading.Lock()
 _RUN_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def active_run_job_count() -> int:
+    """업데이트 안전 게이트가 확인할 현재 Comfy 실행 수."""
+    with _RUN_JOBS_LOCK:
+        _sweep_run_jobs_locked()
+        return sum(
+            1
+            for job in _RUN_JOBS.values()
+            if job.get("state") in (_RUN_PENDING, _RUN_RUNNING)
+        )
 
 # ── 동시 실행 게이트 ──────────────────────────────────────────────────────────
 # comfy_concurrency 설정만큼만 동시에 제출·폴링하도록 워커 스레드를 대기시킨다.
@@ -671,6 +683,8 @@ def run(
     (긴 HTTP 연결을 붙잡지 않아 배치 병렬 시 연결 끊김='Failed to fetch' 오판을 없앤다.)
     프론트는 /run_status?job_id= 를 폴링해 완료 시 기존과 동일한 {outputs, prompt_id} 를 받는다.
     멀티파트: content(워크플로우), param_values(JSON 플랫), media_meta(JSON [{type}]), media(파일들))."""
+    if update_in_progress():
+        raise HTTPException(409, "프로그램 업데이트가 진행 중이라 새 Comfy 작업을 시작할 수 없습니다")
     try:
         wf = json.loads(content)
         pvals = json.loads(param_values or "{}")

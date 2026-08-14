@@ -87,7 +87,7 @@ import {
 import { useT } from "../../lib/i18n";
 import type { Generation, InfoTarget, PreviewItem, PreviewTarget, Project } from "../../types";
 import { SceneMinimap } from "./SceneMinimap";
-import { SceneVariantPopup } from "./SceneVariantPopup";
+import { SceneVariantPopup, type VariantResolveControls } from "./SceneVariantPopup";
 import { SceneModelModal } from "./SceneModelModal";
 import { SceneComfyModal } from "./SceneComfyModal";
 import { comfyApi } from "../../lib/comfyApi";
@@ -115,6 +115,10 @@ import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
 import { displayThumb, thumbOf } from "../../lib/media";
 import { useClickSeparation } from "../../lib/useClickSeparation";
 import { settleCanvasGenerationAttempt } from "../../lib/canvasGenerationRecovery";
+import { formatGenerationDateTime, generationListMeta } from "../../lib/generationDisplay";
+import { useModelDisplayName } from "../../lib/modelCatalog";
+import { InlinePromptRefs } from "../common/InlinePromptRefs";
+import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "../generation/GenerationCardIcons";
 import { OutputCard } from "./cards/OutputCard";
 import { ReferenceCard } from "./cards/ReferenceCard";
 import { TextCard } from "./cards/TextCard";
@@ -177,8 +181,12 @@ interface Props {
   onVariantCompare?: (sel: Generation[]) => void;
   // 레퍼런스 등 비생성 미디어가 섞인 선택 → 상단 선택바가 '미디어 비교'를 띄우게 App 에 보고(없으면 null).
   onSelectionCompare?: (media: CompareMediaItem[] | null) => void;
-  onVariantAssign?: (sel: Generation[], projectId: string | null) => void;
-  onVariantCreateAssign?: (sel: Generation[], name: string) => void;
+  onVariantAssign?: (
+    sel: Generation[],
+    projectId: string | null,
+    folderPath?: string | null,
+  ) => void;
+  variantResolve?: VariantResolveControls; // ▤ 팝업 선택바의 Resolve 전송(캔버스 선택바와 동일)
   onVariantDelete?: (sel: Generation[]) => Promise<string[]>; // 삭제 성공 id 반환
   // 캔버스에서 선택된 '결과 카드'들의 Generation 을 App 에 올려 프롬프트 위 선택바를 띄운다.
   onSelectionGens?: (gens: Generation[]) => void;
@@ -249,7 +257,7 @@ export function SceneBoard({
   onVariantCompare,
   onSelectionCompare,
   onVariantAssign,
-  onVariantCreateAssign,
+  variantResolve,
   onVariantDelete,
   onSelectionGens,
   actionRef,
@@ -315,6 +323,7 @@ export function SceneBoard({
     claimingId: string | null;
     error: string | null;
   } | null>(null);
+  const recoveryModelName = useModelDisplayName(); // 복구 목록을 라이브러리 카드와 같은 표기로
   // Tab 노드 피커(Houdini식) — 커서 위치에 New/Model/List/Text 메뉴. sx/sy=보드기준 화면좌표(팝업 배치), cx/cy=새 노드 캔버스좌표.
   const [nodePicker, setNodePicker] = useState<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
   const nodePickerRef = useRef<{ sx: number; sy: number; cx: number; cy: number } | null>(null);
@@ -717,11 +726,23 @@ export function SceneBoard({
     setCanvasRecovery({ ...target, claimingId: generation.id, error: null });
     try {
       await onCanvasRecoveryClaim(generation.id, scene.id, target.cardId);
-      const nextCards = settleCanvasGenerationAttempt(
+      const settled = settleCanvasGenerationAttempt(
         cardsRef.current,
         target.cardId,
         generation.id,
       );
+      // 복구 후 카드의 결과 목록을 생성 시각순으로 정렬 — 클릭 순서가 아니라 만들어진 순서대로 쌓이게.
+      // created_at 은 UTC "YYYY-MM-DD HH:MM:SS" 고정 형식이라 문자열 비교가 곧 시간 비교다.
+      // 시각을 모르는 id(genData 미로드)는 빈 키 → 정렬 안정성으로 기존 상대 순서 유지(맨 앞).
+      const createdOf = (id: string) =>
+        (id === generation.id ? generation.created_at : genDataRef.current[id]?.created_at) || "";
+      const nextCards = settled.map((card) => {
+        if (card.id !== target.cardId) return card;
+        const sortedIds = [...variantIds(card)].sort((a, b) =>
+          createdOf(a) < createdOf(b) ? -1 : createdOf(a) > createdOf(b) ? 1 : 0,
+        );
+        return { ...card, genIds: sortedIds };
+      });
       applyCards(nextCards, "persistUser");
       setGenData((previous) => ({ ...previous, [generation.id]: generation }));
       setCanvasRecovery(null);
@@ -3697,20 +3718,68 @@ export function SceneBoard({
               ) : canvasRecovery.error ? (
                 <div className="scene-recovery-error">{canvasRecovery.error}</div>
               ) : canvasRecovery.items.length ? (
-                canvasRecovery.items.map((generation) => (
-                  <button
-                    key={generation.id}
-                    className="scene-recovery-item"
-                    disabled={!!canvasRecovery.claimingId}
-                    onClick={() => void claimCanvasRecovery(generation)}
-                  >
-                    <b>{generation.prompt || "프롬프트 없음"}</b>
-                    <span>
-                      {generation.model || "모델 미상"} · {generation.status} · {generation.created_at}
-                    </span>
-                    {canvasRecovery.claimingId === generation.id && <i>복구 중…</i>}
-                  </button>
-                ))
+                // 라이브러리 리스트 카드와 같은 부품(썸네일·모델명·레퍼런스 칩 프롬프트·파라미터 칩)으로 표시.
+                // 프롬프트 칩이 자체 <button>이라 겹침(중첩 버튼)이 안 되게 항목은 div+role=button.
+                canvasRecovery.items.map((generation) => {
+                  const meta = generationListMeta((generation.params || {}) as Record<string, unknown>);
+                  const thumb = thumbOf(generation, 256);
+                  const busy = !!canvasRecovery.claimingId;
+                  return (
+                    <div
+                      key={generation.id}
+                      className={"scene-recovery-item" + (busy ? " busy" : "")}
+                      role="button"
+                      tabIndex={busy ? -1 : 0}
+                      onClick={() => !busy && void claimCanvasRecovery(generation)}
+                      onKeyDown={(event) => {
+                        if (!busy && (event.key === "Enter" || event.key === " ")) {
+                          event.preventDefault();
+                          void claimCanvasRecovery(generation);
+                        }
+                      }}
+                    >
+                      {thumb ? (
+                        <img className="scene-recovery-thumb" src={thumb} alt="" loading="lazy" />
+                      ) : (
+                        <span className="scene-recovery-thumb scene-recovery-thumb-empty" />
+                      )}
+                      <span className="scene-recovery-detail">
+                        <span className="scene-recovery-model">
+                          <ModelIcon /> {recoveryModelName(generation.model) || generation.model || "모델 미상"}
+                        </span>
+                        <InlinePromptRefs
+                          displayPrompt={generation.display_prompt}
+                          prompt={generation.prompt || "(프롬프트 없음)"}
+                          references={generation.references}
+                          onPreview={(target) => onPreview?.(target)}
+                          className="scene-recovery-prompt"
+                          stopPropagation
+                        />
+                        <span className="scene-recovery-sub">
+                          {meta.resolution && (
+                            <span className="cd-chip">
+                              <GemIcon /> {meta.resolution}
+                            </span>
+                          )}
+                          {meta.duration && (
+                            <span className="cd-chip">
+                              <ClockIcon /> {meta.duration}
+                            </span>
+                          )}
+                          {meta.aspect && (
+                            <span className="cd-chip">
+                              <FrameIcon /> {meta.aspect}
+                            </span>
+                          )}
+                          <span className="scene-recovery-date">
+                            {formatGenerationDateTime(generation.created_at)}
+                          </span>
+                          {canvasRecovery.claimingId === generation.id && <i>복구 중…</i>}
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })
               ) : (
                 <div className="scene-recovery-empty">연결이 빠진 이전 생성 요청이 없습니다.</div>
               )}
@@ -3775,7 +3844,7 @@ export function SceneBoard({
             onVariantDownload,
             onVariantCompare,
             onVariantAssign,
-            onVariantCreateAssign,
+            variantResolve,
           }}
         />
       )}
