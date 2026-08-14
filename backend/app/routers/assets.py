@@ -239,7 +239,7 @@ def _index_by_sha(
             except (OSError, ValueError):
                 continue
             # 숨김 파일/폴더(부모 포함)는 트리에서 안 보이므로 재매칭 대상에서도 제외.
-            if any(_hidden(part) for part in rel.parts):
+            if any(asset_tree.is_hidden_name(part) for part in rel.parts):
                 continue
             count += 1
             if count > limit:

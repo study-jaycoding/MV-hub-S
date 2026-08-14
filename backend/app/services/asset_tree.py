@@ -37,8 +37,12 @@ class AssetTreeRead:
     scanned: bool
 
 
-def _hidden(name: str) -> bool:
+def is_hidden_name(name: str) -> bool:
+    """트리에서 숨기는 이름(숨김 폴더/파일 + readme) — 라우터의 재매칭 스캔도 같은 규칙을 쓴다."""
     return hidden_folder(name) or name.lower() == "readme.md"
+
+
+_hidden = is_hidden_name
 
 
 def _hidden_key(hidden_names: Optional[set[str]]) -> tuple[str, ...]:
