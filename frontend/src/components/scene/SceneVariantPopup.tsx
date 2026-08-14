@@ -2,6 +2,7 @@
 //  상태(선택·마퀴·태그편집 위치)와 키보드/마퀴 배선은 SceneBoard 가 소유하고, 여기는 표시+로컬 파생만.
 //  refs(varGridRef·varpopWrapRef)는 부모 소유를 그대로 attach — 부모의 마퀴·태그위치 측정 effect 가 계속 동작.
 import type React from "react";
+import { useRef } from "react";
 import type { MutableRefObject, RefObject } from "react";
 import type { SceneCard } from "../../lib/scenes";
 import { variantIds } from "../../lib/scenes";
@@ -15,6 +16,15 @@ import { MediaThumbnail } from "../MediaThumbnail";
 import { TagEditor } from "../TagEditor";
 import { GenerationConfirmOverlay } from "../generation/GenerationConfirmOverlay";
 import { BoardSelectionActionBar } from "../app/SelectionActionBar";
+
+// Resolve 전송 컨트롤 묶음 — App 의 resolveTransfer 파이프라인을 SceneBoard 를 거쳐 그대로 전달.
+export interface VariantResolveControls {
+  send: (selected: Generation[]) => void;
+  retry: (() => void) | null;
+  retryProjectName: string;
+  busy: boolean;
+  pendingCount: number;
+}
 
 export function SceneVariantPopup({
   cardId,
@@ -76,10 +86,18 @@ export function SceneVariantPopup({
     onVariantShare?: (sel: Generation[]) => void;
     onVariantDownload?: (sel: Generation[]) => void;
     onVariantCompare?: (sel: Generation[]) => void;
-    onVariantAssign?: (sel: Generation[], projectId: string | null) => void;
-    onVariantCreateAssign?: (sel: Generation[], name: string) => void;
+    onVariantAssign?: (
+      sel: Generation[],
+      projectId: string | null,
+      folderPath?: string | null,
+    ) => void;
+    // Resolve 전송(캔버스 선택바와 동일 파이프라인) — 있으면 팝업 선택바에도 버튼 노출.
+    variantResolve?: VariantResolveControls;
   };
 }) {
+  // 배경 클릭 닫기는 '배경에서 누르기 시작한' 경우만. 팝업 안에서 시작한 드래그(마퀴·타일 끌기)가
+  // 박스 밖에서 끝나면 브라우저가 공통 조상(배경)에 click 을 합성해 팝업이 닫히던 버그 방지.
+  const backdropDownRef = useRef(false);
   const c = cards.find((x) => x.id === cardId);
   if (!c) return null;
   // 최신순(최근 생성이 맨 위) — sort_ts(정밀 epoch) 우선, 없으면 created_at. genData 없는 변형은 뒤로.
@@ -147,11 +165,34 @@ export function SceneVariantPopup({
     toggleSel(gid, e.ctrlKey || e.metaKey);
     ui.popupAnchorRef.current = gid;
   };
+  // 드래그 페이로드 — 잡은 타일이 팝업 다중선택에 포함되면 선택 전체를 실어 폴더 드롭이
+  // 한 번에 담게 한다. generation(단일)은 프롬프트 재사용 호환용으로 잡은 것 하나만.
+  const setDragPayload = (e: React.DragEvent, gid: string, gg: Generation) => {
+    e.dataTransfer.setData(DRAG_TYPES.generation, gg.id);
+    const gids = ui.popupSel.has(gid) ? [...ui.popupSel] : [gid];
+    const ids = gids.map((g) => genData[g]?.id).filter((id): id is string => !!id);
+    e.dataTransfer.setData(DRAG_TYPES.generationList, (ids.length ? ids : [gg.id]).join(","));
+    e.dataTransfer.effectAllowed = "copy";
+    // 고스트 = 타일 카드 전체 — 드래그 소스(투명 레이어·작은 그립)를 그대로 쓰면 고스트가 안 보여
+    // "드래그가 안 된다"로 느껴진다(실측: dragstart 는 정상 발생). 라이브러리 카드와 같은 체감으로.
+    const tile = (e.currentTarget as HTMLElement).closest(".scene-varpop-item");
+    if (tile instanceof HTMLElement) {
+      const r = tile.getBoundingClientRect();
+      e.dataTransfer.setDragImage(tile, e.clientX - r.left, e.clientY - r.top);
+    }
+  };
   return (
     <div
       className={"scene-varpop-backdrop" + (ui.gripDragging ? " drag-through" : "")}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={() => actions.setCardMenu(null)}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        backdropDownRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        const armed = backdropDownRef.current;
+        backdropDownRef.current = false;
+        if (armed && e.target === e.currentTarget) actions.setCardMenu(null);
+      }}
     >
       <div
         className="scene-varpop-wrap"
@@ -247,6 +288,20 @@ export function SceneVariantPopup({
                         )
                       }
                     />
+                    {/* 카드 본체 드래그의 실제 시작점. 이미지 위 투명 레이어 자체가 draggable 이어야
+                        실제 마우스에서도 dragstart 가 발생한다. 부모 타일까지 이벤트가 올라가기를
+                        기대하면 Chrome 환경에 따라 카드가 전혀 잡히지 않는다. */}
+                    {gg && a && (
+                      <span
+                        className="scene-varpop-draglayer"
+                        draggable
+                        title="사이드바 프로젝트 폴더로 드래그"
+                        onDragStart={(e) => {
+                          e.stopPropagation();
+                          setDragPayload(e, gid, gg);
+                        }}
+                      />
+                    )}
                     {isVideo && <span className="scene-varpop-vid">▶</span>}
                     {/* 좌상단 S/T/C — 생성탭 카드(.card-tl)와 동일 룩·조작(공유/태그/코멘트) */}
                     {gg && (
@@ -327,8 +382,7 @@ export function SceneVariantPopup({
                         }}
                         onDragStart={(e) => {
                           e.stopPropagation();
-                          e.dataTransfer.setData(DRAG_TYPES.generation, gg.id);
-                          e.dataTransfer.effectAllowed = "copy";
+                          setDragPayload(e, gid, gg);
                           ui.setGripDragging(true);
                         }}
                         onDragEnd={() => ui.setGripDragging(false)}
@@ -425,9 +479,13 @@ export function SceneVariantPopup({
               onShare={(s) => actions.onVariantShare?.(s)}
               onDownload={(s) => actions.onVariantDownload?.(s)}
               onCompare={(s) => actions.onVariantCompare?.(s)}
-              onAssign={(pid) => actions.onVariantAssign?.(selected, pid)}
-              onCreateAndAssign={(name) => actions.onVariantCreateAssign?.(selected, name)}
+              onAssign={(pid, folder) => actions.onVariantAssign?.(selected, pid, folder)}
               onDelete={() => void closeAndTrash()}
+              onResolveTransfer={actions.variantResolve?.send}
+              onResolveRetry={actions.variantResolve?.retry ?? null}
+              resolveRetryProjectName={actions.variantResolve?.retryProjectName || ""}
+              resolveTransferBusy={actions.variantResolve?.busy}
+              resolveTransferPendingCount={actions.variantResolve?.pendingCount}
             />
           </div>
         )}

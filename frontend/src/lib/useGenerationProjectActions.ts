@@ -1,7 +1,7 @@
 import type { MutableRefObject } from "react";
 import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
-import type { Filters, Generation, WorkspaceContext } from "../types";
+import type { Filters, Generation } from "../types";
 
 interface UseGenerationProjectActionsArgs {
   bumpBoard: () => void;
@@ -9,7 +9,6 @@ interface UseGenerationProjectActionsArgs {
   flash: (message: string) => void;
   reload: () => Promise<void>;
   selectedRef: MutableRefObject<Set<string>>;
-  workspace: WorkspaceContext;
 }
 
 export function useGenerationProjectActions({
@@ -18,7 +17,6 @@ export function useGenerationProjectActions({
   flash,
   reload,
   selectedRef,
-  workspace,
 }: UseGenerationProjectActionsArgs) {
   const assignIdsToProject = async (
     ids: string[],
@@ -59,56 +57,36 @@ export function useGenerationProjectActions({
     await assignIdsToProject([...selectedRef.current], projectId, false, folderPath);
   };
 
-  const createAndAssign = async (name: string) => {
-    if (workspace.scope !== "team") {
-      flash("팀 워크스페이스를 선택한 뒤 프로젝트를 만들어 주세요.");
-      return;
-    }
-    try {
-      const p = await api.createProject(name, "team", workspace);
-      await assignSelectedToProject(p.id);
-    } catch (e) {
-      flash("프로젝트 생성 실패: " + String(e));
-    }
+  const boardAssign = async (
+    sel: Generation[],
+    projectId: string | null,
+    folderPath?: string | null,
+  ) => {
+    await assignIdsToProject(sel.map((g) => g.id), projectId, true, folderPath);
   };
 
-  const boardAssign = async (sel: Generation[], projectId: string | null) => {
-    await assignIdsToProject(sel.map((g) => g.id), projectId, true);
-  };
-
-  const boardCreateAssign = async (sel: Generation[], name: string) => {
-    if (workspace.scope !== "team") {
-      flash("팀 워크스페이스를 선택한 뒤 프로젝트를 만들어 주세요.");
-      return;
-    }
-    try {
-      const p = await api.createProject(name, "team", workspace);
-      await boardAssign(sel, p.id);
-    } catch (e) {
-      flash("프로젝트 생성 실패: " + String(e));
-    }
-  };
-
-  // 카드를 사이드바 폴더로 드래그해 담기. 드래그한 카드가 현재 선택에 포함되면 선택 전체를,
-  // 아니면 그 카드 1개만 그 프로젝트+폴더로 귀속한다.
-  const dropOnFolder = async (genId: string, projectId: string, folderPath: string) => {
+  // 드래그 페이로드 → 담을 id 목록. 복수 드래그(쉼표구분 genlist)면 그 목록 그대로,
+  // 단일이면 라이브러리 선택(selectedRef)에 포함될 때 선택 전체로 확장(기존 동작).
+  const dropIds = (genId: string): string[] => {
+    const dragged = genId.split(",").filter(Boolean);
+    if (dragged.length > 1) return dragged;
     const sel = selectedRef.current;
-    const ids = sel.has(genId) ? [...sel] : [genId];
-    await assignIdsToProject(ids, projectId, false, folderPath);
+    return dragged[0] && sel.has(dragged[0]) ? [...sel] : dragged;
+  };
+
+  // 카드를 사이드바 폴더로 드래그해 담기.
+  const dropOnFolder = async (genId: string, projectId: string, folderPath: string) => {
+    await assignIdsToProject(dropIds(genId), projectId, false, folderPath);
   };
 
   // 카드를 '미분류'로 드래그 — 프로젝트+폴더 귀속 해제(project_id=null → 폴더도 함께 해제).
   const dropUnassign = async (genId: string) => {
-    const sel = selectedRef.current;
-    const ids = sel.has(genId) ? [...sel] : [genId];
-    await assignIdsToProject(ids, null, false);
+    await assignIdsToProject(dropIds(genId), null, false);
   };
 
   return {
     assignSelectedToProject,
     boardAssign,
-    boardCreateAssign,
-    createAndAssign,
     dropOnFolder,
     dropUnassign,
   };

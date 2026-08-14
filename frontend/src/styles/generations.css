@@ -796,6 +796,9 @@
   padding: 7px 14px; border-radius: 12px;
   background: var(--grad-soft); border: 1px solid var(--accent);
   backdrop-filter: blur(10px);
+  /* backdrop-filter 가 스태킹 컨텍스트를 만들어 바가 z:auto(≈0)로 깔린다 — 담기 드롭다운(z:50)이
+     변형 팝업 카드 배지(z:6)에 뚫리던 원인. 바 전체를 배지·태그에디터(z:40) 위로 올린다. */
+  position: relative; z-index: 45;
 }
 /* Ctrl+K 로 프롬프트를 숨겼을 때 — 멀티선택 액션바를 화면 상단 중앙에 띄운다(상단바 아래). */
 .selbar-top-float {
@@ -815,4 +818,8 @@
 .select-bar button:disabled:hover { background: rgba(255,255,255,0.12); }
 .select-bar button.sb-del { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.5); }
 .select-bar button.sb-del:hover { background: rgba(244,63,94,0.32); }
+/* 공유&리뷰 탭 — '팀에 공유' 자리의 ↑/↓ 등급 버튼 2개. 합쳐서 공유 버튼 하나 폭 정도가 되게
+   각각을 절반 크기(가로 패딩만 축소, 높이·폰트는 다른 버튼과 동일)로. */
+.sb-grade { display: inline-flex; gap: 4px; }
+.sb-grade button { min-width: 40px; padding: 6px 8px; font-weight: 800; }
 

@@ -5,7 +5,8 @@
 import type { Generation } from "../types";
 
 export type GradeAction = "publish" | "unpublish" | "finalize" | "unfinalize";
-export type GradeMode = "single" | "double";
+// single/double = 카드 S 버튼(방향은 선택 상태에서 추론), up/down = 공유&리뷰 탭 ↑/↓ 버튼(방향 명시).
+export type GradeMode = "single" | "double" | "up" | "down";
 
 export interface GradeOp {
   gen: Generation;
@@ -34,6 +35,23 @@ export function computeGradeStep(
   const total = selected.length;
   let ops: GradeOp[] = [];
   let direction: "up" | "down" | "none" = "none";
+
+  if (mode === "up" || mode === "down") {
+    // 방향이 명시된 한 칸 이동 — single/double 의 추론 가드 없이, 그 방향으로 움직일 수 있는
+    // 카드만 각자 한 칸(2단계 건너뛰기 없음). 못 움직이는 카드는 유지(kept)로 집계.
+    for (const g of selected) {
+      const lv = level(g);
+      if (mode === "up") {
+        if (lv === 0 && g.is_mine && g.status === "done") ops.push({ gen: g, action: "publish" });
+        else if (lv === 1 && canFinalize(g)) ops.push({ gen: g, action: "finalize" });
+      } else {
+        if (lv === 2 && canFinalize(g)) ops.push({ gen: g, action: "unfinalize" });
+        else if (lv === 1 && (g.is_mine || canFinalize(g))) ops.push({ gen: g, action: "unpublish" });
+      }
+    }
+    if (ops.length) direction = mode;
+    return { mode, direction, ops, total, applied: ops.length, kept: total - ops.length };
+  }
 
   if (mode === "single") {
     // 공유 단계: 올림=내 완료·일반→공유, 내림=내 공유→일반. 최종은 항상 유지(단일클릭 잠금).
@@ -84,6 +102,18 @@ export function describeGradeStep(r: GradeStepResult): { title: string; body: st
   const keptNote = r.kept > 0 ? ` (${r.kept}개는 유지·권한없음)` : "";
   if (r.applied === 0) {
     return { title: "적용할 항목 없음", body: "선택한 카드에 지금 바꿀 수 있는 항목이 없습니다." };
+  }
+  if (r.mode === "up") {
+    return {
+      title: "한 단계 올리기",
+      body: `선택한 ${r.applied}개를 한 단계 올릴까요? (일반→공유, 공유→최종)${keptNote}`,
+    };
+  }
+  if (r.mode === "down") {
+    return {
+      title: "한 단계 내리기",
+      body: `선택한 ${r.applied}개를 한 단계 내릴까요? (최종→공유, 공유→일반)${keptNote}`,
+    };
   }
   if (r.mode === "single") {
     return r.direction === "up"
