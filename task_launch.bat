@@ -15,7 +15,7 @@ set "ROOT=%~dp0"
 set "MODE=%~1"
 set "CONTENT_HUB_TASK=1"
 REM Scheduled tasks have no interactive console, so Windows otherwise selects
-REM cp949 and crashes Python when operational logs contain characters such as —.
+REM cp949 and crashes Python when operational logs contain non-ASCII characters.
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8:replace"
 if not exist "%ROOT%logs" mkdir "%ROOT%logs"
