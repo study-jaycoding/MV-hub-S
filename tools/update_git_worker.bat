@@ -27,6 +27,7 @@ cd /d "%ROOT%"
 set "UPDATE_LOG=%ROOT%logs\update.log"
 set "FRONTEND_PENDING=%ROOT%logs\frontend-build.pending"
 set "BACKEND_PENDING=%ROOT%logs\backend-deps.pending"
+set "ISOLATED_UPDATER_READY=%ROOT%logs\isolated-updater-v1.ready"
 set "UPDATE_STAGE=preflight"
 set "SERVER_RESULT=not-checked"
 set "BEFORE="
@@ -122,6 +123,14 @@ if exist "!BACKEND_PENDING!" (
   echo     Previous backend dependency refresh was incomplete - retrying it.
   set "REQ_CHANGED=1"
 )
+REM The first run through the isolated updater repairs a server that may already
+REM have advanced HEAD while the old self-overwriting batch aborted. Do not rely
+REM on BEFORE..AFTER for this one-time transition: refresh both runtime layers.
+if not exist "!ISOLATED_UPDATER_READY!" (
+  echo     First safe updater run - refreshing backend and frontend once.
+  set "REQ_CHANGED=1"
+  set "FE_CHANGED=1"
+)
 if defined FE_CHANGED (
   >"!FRONTEND_PENDING!" echo !AFTER!
   if errorlevel 1 (
@@ -199,6 +208,11 @@ if not errorlevel 1 (
 
 echo.
 set "UPDATE_STAGE=complete"
+>"!ISOLATED_UPDATER_READY!" echo !AFTER!
+if errorlevel 1 (
+  echo [ERROR] could not persist the safe-updater completion marker.
+  goto :err
+)
 call :write_update_log "SUCCESS" "before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"
 echo [done] updated to the latest version.
 echo        - registered server: restarted and readiness-checked automatically

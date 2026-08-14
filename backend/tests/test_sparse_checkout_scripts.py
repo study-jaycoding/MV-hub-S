@@ -197,6 +197,24 @@ def test_failed_backend_dependency_refresh_is_retried():
     assert updater.index(verify) < updater.index(clear_pending)
 
 
+def test_first_isolated_update_repairs_an_interrupted_legacy_update_once():
+    updater = _read_updater()
+
+    marker = 'set "ISOLATED_UPDATER_READY=%ROOT%logs\\isolated-updater-v1.ready"'
+    first_run = 'if not exist "!ISOLATED_UPDATER_READY!" ('
+    force_backend = 'set "REQ_CHANGED=1"'
+    force_frontend = 'set "FE_CHANGED=1"'
+    persist = '>"!ISOLATED_UPDATER_READY!" echo !AFTER!'
+    success = 'call :write_update_log "SUCCESS"'
+
+    for contract in (marker, first_run, persist):
+        assert contract in updater
+    transition = updater[updater.index(first_run) : updater.index(first_run) + 320]
+    assert force_backend in transition
+    assert force_frontend in transition
+    assert updater.index(persist) < updater.index(success)
+
+
 def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
     launcher = _read("task_launch.bat")
     updater = _read_updater()
