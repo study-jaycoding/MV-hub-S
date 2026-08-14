@@ -172,6 +172,22 @@ def test_failed_frontend_refresh_is_retried_before_server_restart():
     assert updater.index(clear_pending) < updater.index(restart)
 
 
+def test_failed_backend_dependency_refresh_is_retried():
+    updater = _read("update_git.bat")
+
+    marker = 'set "BACKEND_PENDING=%ROOT%logs\\backend-deps.pending"'
+    detect_pending = 'if exist "!BACKEND_PENDING!" ('
+    persist_pending = '>"!BACKEND_PENDING!" echo !AFTER!'
+    install = '-m pip install -r "%ROOT%backend\\requirements.txt"'
+    verify = 'tools\\verify_requirements.py'
+    clear_pending = 'del /q "!BACKEND_PENDING!"'
+
+    for contract in (marker, detect_pending, persist_pending, install, verify, clear_pending):
+        assert contract in updater
+    assert updater.index(persist_pending) < updater.index(install)
+    assert updater.index(verify) < updater.index(clear_pending)
+
+
 def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
     launcher = _read("task_launch.bat")
     updater = _read("update_git.bat")

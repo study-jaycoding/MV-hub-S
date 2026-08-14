@@ -19,6 +19,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 set "UPDATE_LOG=%ROOT%logs\update.log"
 set "FRONTEND_PENDING=%ROOT%logs\frontend-build.pending"
+set "BACKEND_PENDING=%ROOT%logs\backend-deps.pending"
 set "UPDATE_STAGE=preflight"
 set "SERVER_RESULT=not-checked"
 set "BEFORE="
@@ -110,6 +111,10 @@ if exist "!FRONTEND_PENDING!" (
   echo     Previous frontend refresh was incomplete - retrying it.
   set "FE_CHANGED=1"
 )
+if exist "!BACKEND_PENDING!" (
+  echo     Previous backend dependency refresh was incomplete - retrying it.
+  set "REQ_CHANGED=1"
+)
 if defined FE_CHANGED (
   >"!FRONTEND_PENDING!" echo !AFTER!
   if errorlevel 1 (
@@ -121,6 +126,14 @@ if defined FE_CHANGED (
 echo [2/3] Backend dependencies...
 set "UPDATE_STAGE=backend-dependencies"
 echo     Using Python: !PYEXE! !PYARGS!
+REM Persist the backend stage before touching pip. If install or exact-version
+REM verification fails, the next update run must retry even though git HEAD has
+REM already advanced and BEFORE..AFTER is then empty.
+>"!BACKEND_PENDING!" echo !AFTER!
+if errorlevel 1 (
+  echo [ERROR] could not persist the pending backend dependency marker.
+  goto :err
+)
 if defined REQ_CHANGED (
   echo     requirements.txt changed - installing...
   "!PYEXE!" !PYARGS! -m pip install -r "%ROOT%backend\requirements.txt" || goto :err
@@ -137,6 +150,11 @@ if defined REQ_CHANGED (
   goto :err
 )
 "!PYEXE!" !PYARGS! "%ROOT%tools\verify_requirements.py" "%ROOT%backend\requirements.txt" || goto :err
+del /q "!BACKEND_PENDING!" >nul 2>nul
+if exist "!BACKEND_PENDING!" (
+  echo [ERROR] backend verification succeeded but its pending marker could not be cleared.
+  goto :err
+)
 
 echo [3/3] Frontend...
 set "UPDATE_STAGE=frontend-build"

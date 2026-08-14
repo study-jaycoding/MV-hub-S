@@ -23,12 +23,13 @@ cd D:\ClaudeCode\MV-hub-S\release
 release\packages\
   latest.json
   MVHub-<버전>.zip
+  MVHub_Install.bat
 ```
 
 ### 서버로 자동 복사
 
 `release\publish_target.txt`에 서버 `packages` 폴더 경로가 있으면, `make_release.bat`이 빌드 후
-**zip과 latest.json을 그 폴더로 자동 복사**합니다(수동 복사 불필요). latest.json을 맨 나중에 복사해
+**zip, 설치기, latest.json을 그 폴더로 자동 복사**합니다(수동 복사 불필요). latest.json을 맨 나중에 복사해
 작업자가 배포 중간본을 받는 일이 없습니다. 경로 파일이 없으면 기존처럼 수동 안내만 뜹니다.
 
 ```text
@@ -59,26 +60,21 @@ Higgsfield CLI가 함께 갱신되며, 릴리즈 설치본에서는 `update_git.
 서버에는 아래 구조만 있으면 됩니다.
 
 ```text
-Z:\mvutil\MV_hub_S
-  MVHub_Install.bat
-
-  packages
+Z:\mvutil\MV_hub_S\packages
+    MVHub_Install.bat
     latest.json
     MVHub-<버전>.zip
 ```
 
-`MVHub_Install.bat` 안의 `BASE_URL`은 서버의 `packages` 폴더를 가리켜야 합니다.
-
-```bat
-set "BASE_URL=Z:\mvutil\MV_hub_S\packages"
-```
+설치기는 자신과 같은 폴더의 `latest.json`을 자동으로 사용하므로 서버 경로를 직접 편집하지 않습니다.
+한 단계 위에 두더라도 바로 아래 `packages\latest.json`을 자동으로 찾습니다.
 
 ## 작업자 사용법
 
 처음 설치:
 
 ```text
-Z:\mvutil\MV_hub_S\MVHub_Install.bat
+Z:\mvutil\MV_hub_S\packages\MVHub_Install.bat
 ```
 
 평소 실행:
@@ -109,7 +105,7 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 1. 관리자가 `make_release.bat`로 새 zip 생성 (→ `publish_target.txt` 설정 시 서버 `packages`로 자동 복사)
 2. (자동 복사 안 쓰면) 서버 `packages`에 새 `latest.json`과 `MVHub-<버전>.zip` 수동 복사
 3. 작업자는 MV Hub 설정에서 `프로그램 업데이트` 클릭
-4. 앱 또는 번들 CLI 버전이 다르면 자동 다운로드/검증/설치
+4. 버전 차이 또는 설치 손상을 발견하면 자동 다운로드/검증/복구 설치
 5. MV Hub가 자동 재시작되고 새 버전의 준비 완료를 확인
 
 공유 서버 코드는 기존처럼 서버 PC에서 `update_git.bat`으로 갱신합니다. 작업자 릴리스 버튼과 서버 Git
@@ -127,9 +123,10 @@ MV Hub를 종료하고 파일을 교체한 뒤 새 버전의 준비 완료까지
 `VERSION.txt`와 SHA256으로 새 `latest.json`을 만든 뒤 작업자가 `update_release.bat`를 실행하면
 이전 버전으로 전환됩니다.
 
-설치/업데이트는 앱 파일만 덮어씁니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
+설치/업데이트는 DB·미디어를 보존하고, 프로그램 영역은 폴더 단위로 깨끗하게 교체합니다. 릴리즈는 `backend\app`과 필요한 실행 파일만 허용 목록으로
 복사하며, `backend\data`, `data_test`, 테스트 스냅샷, DB, 미디어, 캐시는 zip에 포함하지 않습니다.
-압축 후에도 필수 런타임 존재와 로컬 데이터 부재를 자동 검증하고 실패하면 zip을 폐기합니다.
+압축 후에도 필수 런타임 존재와 로컬 데이터 부재를 확인하고, ZIP을 다시 풀어 Python 표준 라이브러리와
+백엔드 의존성을 실제 실행합니다. Python 버전 DLL이 둘 이상 섞여도 배포 전에 ZIP을 폐기합니다.
 
 저장소 관리자만 사용하는 `backfill_import.py`, `cleanup_orphan_creators.py`, `reset_db.py`도
 작업자 릴리즈에서는 제외합니다. 테스트 BAT·테스트 코드·개발 문서와 도구·프론트 소스맵·로컬

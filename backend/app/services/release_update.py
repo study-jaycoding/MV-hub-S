@@ -38,6 +38,14 @@ _ACTIVE_STATES = frozenset({"starting", "checking", "downloading", "installing",
 _STATE_STALE_SECONDS = 30 * 60
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _START_LOCK = threading.Lock()
+_PYTHON_DLL_RE = re.compile(r"python3\d{2}\.dll", re.IGNORECASE)
+_RUNTIME_PROBE = (
+    "import sys,glob,pathlib,ssl,sqlite3,json,asyncio;"
+    "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog;"
+    "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions;"
+    "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip;"
+    "print('%d.%d.%d' % sys.version_info[:3])"
+)
 
 
 class ReleaseUpdateError(RuntimeError):
@@ -67,8 +75,93 @@ def install_mode(root: Path = APP_ROOT) -> str:
     """
     if AUTH_ENABLED:
         return "server"
-    required = ("INSTALL_SOURCE.txt", "VERSION.txt", "update_release.bat", "MV_agent.bat")
+    # VERSION/MV_agent may be absent after an interrupted or damaged install. The
+    # durable release identity is the trusted source plus updater itself; keeping
+    # repair mode available is more important than misclassifying damage as dev.
+    required = ("INSTALL_SOURCE.txt", "update_release.bat")
     return "release" if all((root / name).is_file() for name in required) else "development"
+
+
+def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bool, str]:
+    """완료 버전 표식만 믿지 않고 실제 설치본이 실행 가능한지 확인한다."""
+    required = (
+        "MV_agent.bat",
+        "update_release.bat",
+        "run_agent_session.py",
+        "agent_push.py",
+        "backend/serve.py",
+        "backend/app/main.py",
+        "frontend/dist/index.html",
+    )
+    missing = [name for name in required if not (root / Path(name)).is_file()]
+    if missing:
+        return False, f"필수 파일 누락: {missing[0]}"
+
+    runtime = root / "runtime" / "python"
+    python_exe = runtime / "python.exe"
+    if not python_exe.is_file():
+        return False, "내장 Python 실행 파일 누락"
+    try:
+        completed = subprocess.run(  # noqa: S603 — 설치 폴더의 고정 실행 파일
+            [str(python_exe), "-I", "-c", _RUNTIME_PROBE],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"내장 Python 실행 실패: {exc}"
+    version = completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
+    if completed.returncode != 0 or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        return False, f"내장 Python 모듈 검사 실패: {(detail[-1] if detail else 'unknown error')}"
+    major, minor, _patch = version.split(".", 2)
+    expected_dll = f"python{major}{minor}.dll".casefold()
+    version_dlls = sorted(path.name for path in runtime.glob("python*.dll") if _PYTHON_DLL_RE.fullmatch(path.name))
+    if len(version_dlls) != 1 or version_dlls[0].casefold() != expected_dll:
+        return False, f"Python DLL 혼합 감지: {', '.join(version_dlls) or '없음'}"
+
+    pin_path = root / "hf_cli_version.txt"
+    manifest_path = root / "runtime" / "higgsfield" / "node_modules" / "@higgsfield" / "cli" / "package.json"
+    node_exe = root / "runtime" / "node" / "node.exe"
+    cli_entry = manifest_path.parent / "bin" / "higgsfield.js"
+    if not all(path.is_file() for path in (pin_path, manifest_path, node_exe, cli_entry)):
+        return False, "내장 Higgsfield CLI 파일 누락"
+    try:
+        pin = pin_path.read_text("utf-8-sig").strip()
+        package_version = str(json.loads(manifest_path.read_text("utf-8-sig")).get("version") or "").strip()
+    except (OSError, ValueError, TypeError) as exc:
+        return False, f"내장 Higgsfield CLI 정보 손상: {exc}"
+    if not pin or package_version != pin or (expected_cli_version and pin != expected_cli_version):
+        return False, f"내장 Higgsfield CLI 버전 불일치: pin={pin}, package={package_version}"
+    try:
+        cli_result = subprocess.run(  # noqa: S603 — 설치 폴더의 고정 Node/CLI
+            [str(node_exe), str(cli_entry), "version"],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"내장 Higgsfield CLI 실행 실패: {exc}"
+    cli_version = cli_result.stdout.strip()
+    expected_prefix = f"higgsfield {pin}"
+    if cli_result.returncode != 0 or not (
+        cli_version == expected_prefix or cli_version.startswith(expected_prefix + " ")
+    ):
+        detail = (cli_result.stderr or cli_result.stdout).strip()
+        return False, f"내장 Higgsfield CLI 실행 검사 실패: {detail or 'unknown error'}"
+    return True, ""
 
 
 def state_path(root: Path = APP_ROOT) -> Path:
@@ -248,6 +341,16 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
         )
 
     if not refresh and stored:
+        if stored.get("state") == "up_to_date":
+            healthy, reason = _installation_health(root)
+            if not healthy:
+                latest_version = str(stored.get("latest_version") or _read_version(root))
+                return write_state(
+                    "available",
+                    f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
+                    root=root,
+                    latest_version=latest_version,
+                ) | {"install_mode": "release", "can_update": True, "repair_required": True}
         return {
             **base,
             **stored,
@@ -267,6 +370,15 @@ def get_status(*, refresh: bool = False, root: Path = APP_ROOT) -> dict[str, Any
         }
     current = _read_version(root)
     if current == latest["version"]:
+        healthy, reason = _installation_health(root, latest["higgsfield_cli_version"])
+        if not healthy:
+            return write_state(
+                "available",
+                f"현재 버전 설치가 손상되어 복구가 필요합니다: {reason}",
+                root=root,
+                current_version=current,
+                latest_version=latest["version"],
+            ) | {"install_mode": "release", "can_update": True, "repair_required": True}
         return write_state(
             "up_to_date",
             "최신 버전입니다.",
@@ -333,13 +445,15 @@ def start_update(
             latest = fetch_latest(root)
             latest_version = latest["version"]
             if current == latest["version"]:
-                return write_state(
-                    "up_to_date",
-                    "이미 최신 버전입니다.",
-                    root=root,
-                    current_version=current,
-                    latest_version=latest["version"],
-                ) | {"install_mode": "release", "can_update": False}
+                healthy, _reason = _installation_health(root, latest["higgsfield_cli_version"])
+                if healthy:
+                    return write_state(
+                        "up_to_date",
+                        "이미 최신 버전입니다.",
+                        root=root,
+                        current_version=current,
+                        latest_version=latest["version"],
+                    ) | {"install_mode": "release", "can_update": False}
             if activity_check() > 0:
                 raise ReleaseUpdateBusyError("확인 중 생성 작업이 시작됐습니다. 완료된 뒤 다시 시도하세요")
 
