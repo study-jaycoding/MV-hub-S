@@ -210,6 +210,8 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "Restart-MvHubAndWaitReady" in updater
     assert "unsafe release filename" in updater
     assert "Assert-PythonRuntime" in updater
+    assert "expected 64-bit runtime" in updater
+    assert "release runtime must be Python 3.14 x64" in updater
     assert '$_.Name -ne "VERSION.txt"' in updater
     assert "VERSION is the transaction commit marker" in updater
     assert "Replace-ImmutableDirectory" in updater
@@ -223,6 +225,20 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "backend/app/routers/release_update.py" in builder
     assert "backend/app/services/release_update.py" in builder
     assert "Assert-PythonRuntimeTree" in builder
+    assert "expected 64-bit runtime" in builder
+
+
+def test_release_builder_requires_verified_python_314_without_an_unproven_resolve_range():
+    project_root = Path(__file__).resolve().parents[2]
+    builder = (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8")
+
+    assert '-3.14 -c "import sys; print(sys.executable)"' in builder
+    assert "Assert-SupportedPython" in builder
+    assert "Python 3.14 x64 is required" in builder
+    assert "release runtime must be Python 3.14 x64" in builder
+    assert "require 64-bit Python" in builder
+    assert "3.10-3.12" not in builder
+    assert "AllowResolveIncompatiblePython" not in builder
 
 
 def test_worker_launcher_keeps_startup_failure_visible():

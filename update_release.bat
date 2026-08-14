@@ -317,20 +317,27 @@ function Assert-PythonRuntime {
         throw "Bundled Python validation failed ($Label): python.exe is missing."
     }
     $Probe = @(
-        "import sys,glob,pathlib,ssl,sqlite3,json,asyncio",
+        "import sys,struct,glob,pathlib,ssl,sqlite3,json,asyncio",
         "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog",
         "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions",
         "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
-        "print('%d.%d.%d' % sys.version_info[:3])"
+        "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
     ) -join ";"
     $Output = @(& $Exe -I -c $Probe 2>&1)
     if ($LASTEXITCODE -ne 0 -or -not $Output) {
         throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
     }
 
-    $Parts = ([string]$Output[-1]).Trim().Split(".")
+    $RuntimeIdentity = ([string]$Output[-1]).Trim().Split("|")
+    if ($RuntimeIdentity.Count -ne 2 -or [int]$RuntimeIdentity[1] -ne 64) {
+        throw "Bundled Python validation failed ($Label): expected 64-bit runtime, got '$($Output[-1])'."
+    }
+    $Parts = $RuntimeIdentity[0].Split(".")
     if ($Parts.Count -lt 2) {
         throw "Bundled Python validation failed ($Label): invalid version output."
+    }
+    if ([int]$Parts[0] -ne 3 -or [int]$Parts[1] -ne 14) {
+        throw "Bundled Python validation failed ($Label): release runtime must be Python 3.14 x64."
     }
     $ExpectedDll = "python$($Parts[0])$($Parts[1]).dll"
     $VersionDlls = @(Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "python*.dll" | Where-Object {
@@ -340,7 +347,7 @@ function Assert-PythonRuntime {
         $Found = ($VersionDlls | ForEach-Object Name) -join ", "
         throw "Bundled Python validation failed ($Label): expected only $ExpectedDll, found [$Found]."
     }
-    Write-Host "[$Label] Python runtime verified: $($Output[-1]), $ExpectedDll"
+    Write-Host "[$Label] Python runtime verified: $($RuntimeIdentity[0]) 64-bit, $ExpectedDll"
 }
 
 function Assert-AppLayout {

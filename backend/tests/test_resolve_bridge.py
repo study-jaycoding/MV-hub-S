@@ -360,6 +360,8 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "python_incompatible")
         self.assertIn("파이썬", str(raised.exception))
         self.assertIn("fusionscript", str(raised.exception))
+        self.assertIn("Python 3.14 x64", str(raised.exception))
+        self.assertNotIn("3.11 권장", str(raised.exception))
 
     def test_new_bins_are_created_in_natural_folder_name_order(self):
         manifest = self._manifest()
