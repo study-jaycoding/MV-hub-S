@@ -8,8 +8,7 @@ param(
     [switch]$SkipPythonRuntime,
     [switch]$SkipNodeRuntime,
     [switch]$SkipHiggsfieldCli,
-    [switch]$SkipPublish,
-    [switch]$AllowResolveIncompatiblePython
+    [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,20 +63,27 @@ function Assert-PythonRuntimeTree {
     # pathlib + 3.11 glob mix was one such production failure). Exercise both the
     # standard library and every backend dependency from the finished runtime.
     $Probe = @(
-        "import sys,glob,pathlib,ssl,sqlite3,json,asyncio",
+        "import sys,struct,glob,pathlib,ssl,sqlite3,json,asyncio",
         "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog",
         "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions",
         "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
-        "print('%d.%d.%d' % sys.version_info[:3])"
+        "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
     ) -join ";"
     $Output = @(& $Exe -I -c $Probe 2>&1)
     if ($LASTEXITCODE -ne 0 -or -not $Output) {
         throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
     }
 
-    $VersionParts = ([string]$Output[-1]).Trim().Split(".")
+    $RuntimeIdentity = ([string]$Output[-1]).Trim().Split("|")
+    if ($RuntimeIdentity.Count -ne 2 -or [int]$RuntimeIdentity[1] -ne 64) {
+        throw "Bundled Python validation failed ($Label): expected 64-bit runtime, got '$($Output[-1])'."
+    }
+    $VersionParts = $RuntimeIdentity[0].Split(".")
     if ($VersionParts.Count -lt 2) {
         throw "Bundled Python validation failed ($Label): invalid version output '$($Output[-1])'."
+    }
+    if ([int]$VersionParts[0] -ne 3 -or [int]$VersionParts[1] -ne 14) {
+        throw "Bundled Python validation failed ($Label): release runtime must be Python 3.14 x64."
     }
     $ExpectedDll = "python$($VersionParts[0])$($VersionParts[1]).dll"
     $VersionDlls = @(Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "python*.dll" | Where-Object {
@@ -88,7 +94,7 @@ function Assert-PythonRuntimeTree {
         throw "Bundled Python validation failed ($Label): expected only $ExpectedDll, found [$Found]."
     }
 
-    Write-Host "      Python runtime verified ($Label): $($Output[-1]), $ExpectedDll"
+    Write-Host "      Python runtime verified ($Label): $($RuntimeIdentity[0]) 64-bit, $ExpectedDll"
 }
 
 function Assert-ReleaseArchive {
@@ -237,6 +243,17 @@ function Resolve-PythonRuntime {
         $Candidates += $PreferredExe
     }
 
+    # 릴리스 기본 런타임은 현재 제품 검증 기준인 CPython 3.14 x64다. Python
+    # Launcher가 있으면 PATH나 Microsoft Store 별칭보다 먼저 정확한 버전을 찾는다.
+    $PythonLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($PythonLauncher) {
+        $PythonLauncherExe = [string]$PythonLauncher.Source
+        $Python314 = @(& $PythonLauncherExe -3.14 -c "import sys; print(sys.executable)" 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $Python314) {
+            $Candidates += ([string]$Python314[-1]).Trim()
+        }
+    }
+
     $LocalPython = Join-Path $env:LOCALAPPDATA "Python\bin\python.exe"
     if (Test-Path -LiteralPath $LocalPython) {
         $Candidates += $LocalPython
@@ -270,34 +287,28 @@ function Resolve-PythonRuntime {
     throw "No real Python runtime found. Pass -PythonExe C:\Path\To\python.exe or install Python first."
 }
 
-function Assert-ResolveCompatiblePython {
+function Assert-SupportedPython {
     param([object]$Python)
 
-    # DaVinci Resolve 연동(fusionscript)은 파이썬 버전에 민감하다. Resolve 21 기준
-    # 3.10~3.12만 지원하고 3.13+는 "initialization of fusionscript failed" 로 연결이
-    # 전멸한다(실측: 동봉 3.14 + Resolve 21.0.4). 빌드 PC 기본 파이썬이 최신(3.14)이라
-    # -PythonExe 없이 빌드하면 재발하므로, 범위 밖이면 빌드를 중단한다.
-    $Raw = & $Python.Exe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $Raw) {
+    # 현재 설치된 Resolve 20.3.2의 공식 Scripting README는 Python >= 3.6 64-bit를 요구한다.
+    # 그 범위 안에서 실제 Resolve 20.3.2 연결까지 검증한 CPython 3.14 x64를 제품
+    # 릴리스 런타임으로 고정한다. 빌드 PC의 PATH 순서에 따라 3.11/3.12가 다시
+    # 번들되어 PC마다 동작이 달라지는 일을 막기 위한 재현 가능한 빌드 계약이다.
+    $Raw = @(& $Python.Exe -c "import struct,sys; print('%d.%d.%d' % sys.version_info[:3]); print(struct.calcsize('P') * 8)" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $Raw -or $Raw.Count -lt 2) {
         throw "Could not read bundled Python version: $($Python.Exe)"
     }
-    $VersionText = ([string]$Raw).Trim()
+    $VersionText = ([string]$Raw[0]).Trim()
+    $Bits = [int](([string]$Raw[1]).Trim())
     $Parts = $VersionText.Split(".")
     $Minor = [int]$Parts[1]
-    if ([int]$Parts[0] -ne 3 -or $Minor -lt 10 -or $Minor -ge 13) {
-        if ($AllowResolveIncompatiblePython) {
-            Write-Host "      [warn] Python $VersionText is OUTSIDE the DaVinci Resolve-compatible range (3.10-3.12)."
-            Write-Host "      [warn] Proceeding because -AllowResolveIncompatiblePython was passed."
-        }
-        else {
-            throw ("Bundled Python $VersionText is not DaVinci Resolve-compatible (need 3.10-3.12; Resolve 21 " +
-                "fusionscript fails on 3.13+). Install Python 3.11 x64 and pass -PythonExe, " +
-                "or pass -AllowResolveIncompatiblePython to override.")
-        }
+    if ([int]$Parts[0] -ne 3 -or $Minor -ne 14) {
+        throw "Bundled Python $VersionText is not the verified release runtime. Python 3.14 x64 is required."
     }
-    else {
-        Write-Host "      Bundled Python $VersionText (Resolve-compatible: 3.10-3.12)"
+    if ($Bits -ne 64) {
+        throw "Bundled Python $VersionText is $Bits-bit. MV Hub and DaVinci Resolve require 64-bit Python."
     }
+    Write-Host "      Bundled Python $VersionText ($Bits-bit; Resolve official prerequisite satisfied)"
 }
 
 function Resolve-NodeRuntime {
@@ -433,7 +444,7 @@ Set-Content -LiteralPath (Join-Path $Stage "VERSION.txt") -Value $Version -Encod
 if (-not $SkipPythonRuntime) {
     Write-Host "[4/8] Copying bundled Python runtime..."
     $Python = Resolve-PythonRuntime -PreferredExe $PythonExe
-    Assert-ResolveCompatiblePython -Python $Python
+    Assert-SupportedPython -Python $Python
     $RuntimeDir = Join-Path $Stage "runtime\python"
     $SitePackages = Join-Path $RuntimeDir "Lib\site-packages"
 

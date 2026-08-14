@@ -39,12 +39,13 @@ _STATE_STALE_SECONDS = 30 * 60
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _START_LOCK = threading.Lock()
 _PYTHON_DLL_RE = re.compile(r"python3\d{2}\.dll", re.IGNORECASE)
+_RELEASE_PYTHON = (3, 14)
 _RUNTIME_PROBE = (
-    "import sys,glob,pathlib,ssl,sqlite3,json,asyncio;"
+    "import sys,struct,glob,pathlib,ssl,sqlite3,json,asyncio;"
     "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog;"
     "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions;"
     "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip;"
-    "print('%d.%d.%d' % sys.version_info[:3])"
+    "print('%d.%d.%d|%d' % (*sys.version_info[:3], struct.calcsize('P') * 8))"
 )
 
 
@@ -116,11 +117,16 @@ def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bo
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"내장 Python 실행 실패: {exc}"
-    version = completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
-    if completed.returncode != 0 or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    identity = completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
+    if completed.returncode != 0 or not re.fullmatch(r"\d+\.\d+\.\d+\|\d+", identity):
         detail = (completed.stderr or completed.stdout).strip().splitlines()
         return False, f"내장 Python 모듈 검사 실패: {(detail[-1] if detail else 'unknown error')}"
+    version, bits = identity.split("|", 1)
+    if bits != "64":
+        return False, f"내장 Python 비트 수 불일치: {bits}비트"
     major, minor, _patch = version.split(".", 2)
+    if (int(major), int(minor)) != _RELEASE_PYTHON:
+        return False, f"내장 Python 버전 불일치: {version} (필요: 3.14 x64)"
     expected_dll = f"python{major}{minor}.dll".casefold()
     version_dlls = sorted(path.name for path in runtime.glob("python*.dll") if _PYTHON_DLL_RE.fullmatch(path.name))
     if len(version_dlls) != 1 or version_dlls[0].casefold() != expected_dll:
