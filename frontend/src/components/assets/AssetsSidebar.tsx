@@ -94,6 +94,7 @@ export function AssetsSidebar({
           typeFilter={typeFilter}
           meta={meta}
           sourceOnly={sourceOnly}
+          project={project}
         />
       )}
     </aside>

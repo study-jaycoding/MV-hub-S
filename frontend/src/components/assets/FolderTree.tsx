@@ -11,6 +11,7 @@ function toFolderItem(
   typeFilter: TypeFilter,
   meta: Record<string, AssetMeta>,
   sourceOnly: boolean,
+  project?: string,
 ): FolderTreeItem {
   const children = node.children || [];
   const files = flattenFiles(children);
@@ -22,8 +23,8 @@ function toFolderItem(
     name: node.name,
     path: node.path,
     count,
-    children: orderAssetFolders(children.filter((child) => child.type === "dir"))
-      .map((child) => toFolderItem(child, typeFilter, meta, sourceOnly)),
+    children: orderAssetFolders(children.filter((child) => child.type === "dir"), project)
+      .map((child) => toFolderItem(child, typeFilter, meta, sourceOnly, project)),
   };
 }
 
@@ -36,6 +37,7 @@ export function FolderTree({
   typeFilter = null,
   meta,
   sourceOnly = false,
+  project,
 }: {
   nodes: AssetNode[];
   current: string;
@@ -45,14 +47,15 @@ export function FolderTree({
   typeFilter?: TypeFilter;
   meta: Record<string, AssetMeta>;
   sourceOnly?: boolean;
+  project?: string; // 프로젝트별 표시 순서 규칙(예: assets 는 CLIP 맨 아래)
 }) {
   // 배지 카운트(재귀 flatten)는 tree/meta/필터에만 의존 — 폴더 전환(current 변경)으로는 재계산 안 되게
   // memo. 예전엔 매 렌더(setDir 포함)마다 전체 트리를 재귀로 세어 큰 프로젝트에서 전환 딜레이의 한 원인.
   const items = useMemo(
     () =>
-      orderAssetFolders(nodes.filter((node) => node.type === "dir"))
-        .map((node) => toFolderItem(node, typeFilter, meta, sourceOnly)),
-    [nodes, typeFilter, meta, sourceOnly],
+      orderAssetFolders(nodes.filter((node) => node.type === "dir"), project)
+        .map((node) => toFolderItem(node, typeFilter, meta, sourceOnly, project)),
+    [nodes, typeFilter, meta, sourceOnly, project],
   );
   return (
     <FolderTreeView

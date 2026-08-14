@@ -178,20 +178,18 @@ class AssetTreeCacheTests(unittest.TestCase):
                 )
             asset_tree.invalidate_project_tree(root)
 
-            self.assertEqual(
-                [node["name"] for node in target["children"]],
-                ["Reference"],
-            )
+            self.assertEqual([node["name"] for node in target["children"]], [])
             self.assertEqual(
                 [node["name"] for node in other["children"]],
                 ["MOSAIC", "Reference"],
             )
             self.assertTrue((root / "MOSAIC" / "old.png").is_file())
+            self.assertTrue((root / "Reference" / "new.png").is_file())
 
     def test_target_auto_project_keeps_render_hidden_too(self):
         self.assertEqual(
             assets._tree_hidden_names("뻘뻘뻘", auto_project=True),
-            {"mosaic", "render"},
+            {"mosaic", "reference", "render"},
         )
 
     def test_combined_assets_router_registers_internal_folder_watches(self):

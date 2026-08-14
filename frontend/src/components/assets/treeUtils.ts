@@ -2,7 +2,12 @@
 import type { AssetNode } from "../../types";
 
 const HIDDEN_FOLDER_NAMES_BY_PROJECT: Readonly<Record<string, ReadonlySet<string>>> = {
-  뻘뻘뻘: new Set(["MOSAIC"]),
+  뻘뻘뻘: new Set(["MOSAIC", "REFERENCE"]),
+};
+
+// 프로젝트별 '맨 아래로 보낼' 폴더 이름(대문자) — 뻘뻘뻘은 Reference 를 숨기고 그 자리에 CLIP.
+const BOTTOM_FOLDER_NAMES_BY_PROJECT: Readonly<Record<string, readonly string[]>> = {
+  뻘뻘뻘: ["CLIP"],
 };
 
 function hiddenFolderNames(project: string): ReadonlySet<string> | undefined {
@@ -30,8 +35,9 @@ export function isAssetFolderHidden(project: string, path: string): boolean {
 
 // 제작 폴더의 약속된 표시 순서: PR을 Reference보다 먼저 보여준다.
 // 이름 변경 전 프로젝트의 MOSAIC도 같은 폴더로 취급한다.
+// 프로젝트별 '맨 아래' 폴더(BOTTOM_...)가 있으면 그 폴더들을 끝으로 보낸다.
 // 서버가 보내준 나머지 순서는 유지하고, 원본 배열도 변경하지 않는다.
-export function orderAssetFolders(nodes: AssetNode[]): AssetNode[] {
+export function orderAssetFolders(nodes: AssetNode[], project?: string): AssetNode[] {
   const ordered = [...nodes];
   const referenceIndex = ordered.findIndex(
     (node) =>
@@ -47,6 +53,18 @@ export function orderAssetFolders(nodes: AssetNode[]): AssetNode[] {
       ordered[prIndex],
       ordered[referenceIndex],
     ];
+  }
+
+  const bottomNames = project ? BOTTOM_FOLDER_NAMES_BY_PROJECT[project] : undefined;
+  if (bottomNames?.length) {
+    const nameOf = (node: AssetNode) => node.name.trim().toUpperCase();
+    const isBottom = (node: AssetNode) =>
+      node.type === "dir" && bottomNames.includes(nameOf(node));
+    const rest = ordered.filter((node) => !isBottom(node));
+    const bottom = bottomNames.flatMap((name) =>
+      ordered.filter((node) => isBottom(node) && nameOf(node) === name),
+    );
+    if (bottom.length) return [...rest, ...bottom];
   }
 
   return ordered;
