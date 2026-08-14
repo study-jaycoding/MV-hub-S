@@ -33,7 +33,7 @@ from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services import auth as auth_service
 from ..services import local_agent_pair
-from ..services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
+from ._telemetry import drain_telemetry
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 from ..services.request_guards import is_loopback_request
@@ -221,7 +221,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
         repo.record_account_status(acc["email"], account_status)
 
     # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
-    # 실제 서버 전송은 ingest 엔드포인트가 _drain_telemetry 로 처리한다.
+    # 실제 서버 전송은 ingest 엔드포인트가 공용 drain_telemetry로 처리한다.
     if MANAGE_ENABLED and seen_job_ids:
         try:
             from ..repo import manage as _m
@@ -238,20 +238,6 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
         errors=errors,
         linked_uid=linked,
     )
-
-
-def _drain_telemetry() -> None:
-    """dirty 텔레메트리를 현재 실행 모드에 맞는 단 하나의 대상으로 반영한다."""
-    if _proxy.proxying():
-        drain_remote_telemetry(
-            lambda items: _proxy.proxy_json(
-                "POST", "/api/manage/telemetry/push", body={"items": items}
-            ),
-            my_uid=repo.get_my_uid(),
-        )
-        return
-    # test_dev/test_dev_server는 운영 서버로 보내지 않고 복사된 테스트 폴더 안에서만 집계한다.
-    drain_isolated_telemetry()
 
 
 @router.post("/ingest", response_model=IngestOut)
@@ -295,7 +281,7 @@ def ingest(body: IngestIn, request: Request):
     # 팀 매니징: dirty 텔레메트리를 서버로 flush(신규 적재분 + 이전 실패분 재시도). best-effort.
     if MANAGE_ENABLED:
         try:
-            _drain_telemetry()
+            drain_telemetry()
         except Exception:  # noqa: BLE001
             pass
     return out
@@ -319,7 +305,7 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     # 밀리지 않는다. drain 은 프록시 없으면 no-op, 실패분은 큐에 남아 재시도. best-effort.
     if MANAGE_ENABLED:
         try:
-            _drain_telemetry()
+            drain_telemetry()
         except Exception:  # noqa: BLE001
             pass
     return out

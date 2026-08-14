@@ -44,6 +44,7 @@ from ..usecases.gen_requests import (
     repair_canvas_generation_links,
     submit_gen_request,
 )
+from ._telemetry import schedule_telemetry_drain
 
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
@@ -175,6 +176,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     gen = await submit_gen_request(cmd)
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
+    schedule_telemetry_drain()
     return gen
 
 
@@ -239,13 +241,16 @@ async def pending_gen_requests(
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
     caps = {c.strip() for c in capability.split(",") if c.strip()}
-    return await claim_gen_requests(
+    claimed = await claim_gen_requests(
         acc["email"],
         realtime_scope(acc),
         limit,
         workspace_capable="workspace" in caps,
         lease_owner=agent_id,
     )
+    if claimed:
+        schedule_telemetry_drain()
+    return claimed
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)
@@ -268,6 +273,7 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     gen = await fulfill_request(req, rid, body.job, realtime_scope(acc))
     if not gen:
         raise HTTPException(status_code=500, detail="결과 조회 실패")
+    schedule_telemetry_drain()
     return gen
 
 
@@ -314,7 +320,10 @@ async def reconcile_gen_request(
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    return await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
+    result = await reconcile_request(req, body.job, force_fail_reason, realtime_scope(acc))
+    if result.get("applied"):
+        schedule_telemetry_drain()
+    return result
 
 
 @router.post("/gen-requests/{rid}/fail")
@@ -337,5 +346,7 @@ async def fail_gen_request(
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         return {"ok": True}  # 이미 종결 — 멱등 무시(완료된 것을 실패로 뒤집지 않음)
-    await fail_request(req, rid, reason, job_id, hf_status, realtime_scope(acc))
+    applied = await fail_request(req, rid, reason, job_id, hf_status, realtime_scope(acc))
+    if applied:
+        schedule_telemetry_drain()
     return {"ok": True}

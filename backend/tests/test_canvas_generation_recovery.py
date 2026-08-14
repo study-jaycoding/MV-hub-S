@@ -159,7 +159,11 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["id"], link["generation_id"])
         self.assertLess(elapsed, 0.10)
-        pm.assert_called_once()
+        self.assertEqual(pm.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["operation"] for call in pm.call_args_list],
+            ["record_request", "record_request_estimate"],
+        )
 
     def test_placeholder_only_crash_window_is_requeued_for_same_owner(self):
         link = self._link("orphan")

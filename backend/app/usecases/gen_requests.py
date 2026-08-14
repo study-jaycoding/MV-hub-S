@@ -70,16 +70,24 @@ def _log_pm_failure(operation: str, exc: BaseException) -> None:
     )
 
 
-def pm_best_effort(action, *, operation: str = "record") -> None:
+def pm_best_effort(
+    action,
+    *,
+    operation: str = "record",
+    dirty_gen_id: str | None = None,
+) -> None:
     """PM 메트릭 best-effort 실행(분리형). MANAGE_ENABLED off 거나 실패해도 생성 흐름·응답에
     영향 0 — 메트릭 수집은 절대 생성을 막지 않는다(PM_DASHBOARD_DESIGN.md §6-1).
-    action 은 manage 모듈을 받는 콜러블."""
+    action은 manage 모듈을 받는 콜러블이다. dirty_gen_id가 있으면 메트릭 저장 뒤 해당 생성물을
+    중앙 전송 대기열에 함께 표시한다."""
     if not MANAGE_ENABLED:
         return
     try:
         from ..repo import manage as _m
 
         action(_m)
+        if dirty_gen_id:
+            _m.mark_telemetry_dirty([dirty_gen_id])
     except Exception as exc:  # noqa: BLE001 — 메트릭 실패가 생성을 막지 않게
         _log_pm_failure(operation, exc)
 
@@ -96,7 +104,11 @@ async def _record_request_estimate(gen_id: str, payload: dict) -> None:
             est = int(value) if value else None
     except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
         _log_pm_failure("estimate_cost", exc)
-    pm_best_effort(lambda _m: _m.record_request(gen_id, est_credits=est))
+    pm_best_effort(
+        lambda _m: _m.record_request(gen_id, est_credits=est),
+        operation="record_request_estimate",
+        dirty_gen_id=gen_id,
+    )
 
 
 def _schedule_request_estimate(gen_id: str, payload: dict) -> None:
@@ -182,7 +194,11 @@ async def claim_gen_requests(
             to_phase="submitting",
             actor_uid=account_uid,
         )
-        pm_best_effort(lambda manage, gid=gen_id: manage.record_started(gid))
+        pm_best_effort(
+            lambda manage, gid=gen_id: manage.record_started(gid),
+            operation="record_started",
+            dirty_gen_id=gen_id,
+        )
         await manager.broadcast(
             {"type": "progress", "generation_id": gen_id, "status": "running"},
             account_uid=account_uid,
@@ -264,7 +280,11 @@ async def fulfill_request(
         to_phase=result.status,
         actor_uid=account_uid,
     )
-    pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
+    pm_best_effort(
+        lambda manage: manage.record_completed(gen_id, job_id=result.job_id),
+        operation="record_completed",
+        dirty_gen_id=gen_id,
+    )
     await manager.broadcast(
         {
             "type": "progress",
@@ -369,7 +389,11 @@ async def reconcile_request(
                 reason_code="forced_failure",
                 actor_uid=account_uid,
             )
-            pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=job_id))
+            pm_best_effort(
+                lambda manage: manage.record_completed(gen_id, job_id=job_id),
+                operation="record_completed",
+                dirty_gen_id=gen_id,
+            )
             await manager.broadcast(
                 {
                     "type": "progress",
@@ -573,7 +597,11 @@ async def reconcile_request(
             provider_status=raw_provider_status,
             actor_uid=account_uid,
         )
-        pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=result.job_id))
+        pm_best_effort(
+            lambda manage: manage.record_completed(gen_id, job_id=result.job_id),
+            operation="record_completed",
+            dirty_gen_id=gen_id,
+        )
         await manager.broadcast(
             {
                 "type": "progress",
@@ -661,7 +689,11 @@ async def fail_request(
         reason_code="agent_reported_failure",
         actor_uid=account_uid,
     )
-    pm_best_effort(lambda manage: manage.record_completed(gen_id, job_id=final_job_id))
+    pm_best_effort(
+        lambda manage: manage.record_completed(gen_id, job_id=final_job_id),
+        operation="record_completed",
+        dirty_gen_id=gen_id,
+    )
     await manager.broadcast(
         {
             "type": "progress",
@@ -737,6 +769,14 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     )
     # 요청자 에이전트를 즉시 깨움(이벤트 방식) — 30초 폴링 대기 없이 바로 실행.
     agent_signals.signal(cmd.email, "gen-request")
+
+    # pending 상태도 중앙 운영 로그에 즉시 보이게, 느린 견적 조회 전에 기본 요청 시점을 기록한다.
+    if MANAGE_ENABLED:
+        pm_best_effort(
+            lambda manage: manage.record_request(gen_id),
+            operation="record_request",
+            dirty_gen_id=gen_id,
+        )
 
     # 요청 시점 견적은 부가 통계다. 느린 CLI 응답 때문에 브라우저가 닫히기 전 generation id를
     # 못 받는 일이 없도록 응답 경로에서 분리한다.

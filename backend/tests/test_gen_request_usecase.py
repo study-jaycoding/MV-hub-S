@@ -15,6 +15,7 @@ from app.usecases.gen_requests import (
     fail_request,
     fulfill_request,
     reconcile_request,
+    pm_best_effort,
     submit_gen_request,
 )
 
@@ -98,8 +99,8 @@ def test_regenerate_path_applies_tweaks_only_when_set():
         repo.create_local_generation.assert_not_called()
 
 
-def test_pm_branch_estimates_only_when_manage_on_and_cli_available():
-    # MANAGE on + CLI 있음 → 견적 await + pm_best_effort 1회.
+def test_pm_branch_records_pending_then_refreshes_estimate_when_manage_on():
+    # MANAGE on + CLI 있음 → pending 즉시 기록 후 견적 결과로 한 번 갱신한다.
     with patch("app.usecases.gen_requests.repo") as repo, patch(
         "app.usecases.gen_requests.agent_signals"
     ), patch("app.usecases.gen_requests.cli_bridge") as cli, patch(
@@ -118,7 +119,12 @@ def test_pm_branch_estimates_only_when_manage_on_and_cli_available():
         asyncio.run(submit_gen_request(cmd))
 
         cli.estimate_cost.assert_awaited_once()
-        pm.assert_called_once()
+        assert pm.call_count == 2
+        assert [call.kwargs["operation"] for call in pm.call_args_list] == [
+            "record_request",
+            "record_request_estimate",
+        ]
+        assert all(call.kwargs["dirty_gen_id"] == "gen1" for call in pm.call_args_list)
 
     # MANAGE off → 견적·PM 완전 스킵.
     with patch("app.usecases.gen_requests.repo") as repo, patch(
@@ -139,6 +145,21 @@ def test_pm_branch_estimates_only_when_manage_on_and_cli_available():
 
         cli.estimate_cost.assert_not_awaited()
         pm.assert_not_called()
+
+
+def test_pm_best_effort_marks_generation_dirty_only_after_metric_write():
+    order = []
+    with patch("app.usecases.gen_requests.MANAGE_ENABLED", True), patch(
+        "app.repo.manage.mark_telemetry_dirty",
+        side_effect=lambda ids: order.append(("dirty", ids)),
+    ):
+        pm_best_effort(
+            lambda _manage: order.append(("metric", "g1")),
+            operation="record_started",
+            dirty_gen_id="g1",
+        )
+
+    assert order == [("metric", "g1"), ("dirty", ["g1"])]
 
 
 def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
