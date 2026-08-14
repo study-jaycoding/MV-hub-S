@@ -25,6 +25,14 @@ function Show-LogTail([string]$Name) {
     }
 }
 
+function Stop-ProcessTree([int]$TargetPid, [string]$Description) {
+    Write-Host "Stopping $Description PID $TargetPid..."
+    & taskkill.exe /PID $TargetPid /T /F | Out-Null
+    if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue)) {
+        throw "Could not stop $Description PID $TargetPid."
+    }
+}
+
 try {
     foreach ($name in @($serverTask, $watchdogTask)) {
         Get-ScheduledTask -TaskName $name -ErrorAction Stop | Out-Null
@@ -34,6 +42,24 @@ try {
     Stop-ScheduledTask -TaskName $watchdogTask -ErrorAction SilentlyContinue
     Stop-ScheduledTask -TaskName $serverTask -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
+
+    # Stopping a scheduled cmd task can leave its Python supervisor detached.
+    # Killing only serve.py is insufficient because that parent immediately
+    # launches a replacement, which makes readiness pass while the task itself
+    # has already exited. Remove only supervisors belonging to this repo first.
+    $rootPath = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\")
+    $supervisors = @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $command = [string]$_.CommandLine
+                $command.IndexOf("server_supervisor.py", [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                $command.IndexOf($rootPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            }
+    )
+    foreach ($supervisor in $supervisors) {
+        Stop-ProcessTree -TargetPid ([int]$supervisor.ProcessId) -Description "previous MV Hub supervisor"
+    }
+    Start-Sleep -Seconds 1
 
     $owners = @(
         Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
@@ -45,9 +71,20 @@ try {
         if ($command -notlike "*serve.py*") {
             throw "Port $Port is owned by another program (PID $ownerPid). It was not stopped."
         }
-        Write-Host "Stopping previous MV Hub server process PID $ownerPid..."
-        & taskkill.exe /PID $ownerPid /T /F | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not stop previous server PID $ownerPid." }
+        Stop-ProcessTree -TargetPid $ownerPid -Description "previous MV Hub server process"
+    }
+
+    $portDeadline = (Get-Date).AddSeconds(15)
+    do {
+        $remainingOwners = @(
+            Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty OwningProcess -Unique
+        )
+        if (-not $remainingOwners) { break }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $portDeadline)
+    if ($remainingOwners) {
+        throw "Port $Port did not become free after stopping the previous server (PID $($remainingOwners -join ', '))."
     }
 
     Write-Host "Starting scheduled server..."
@@ -70,6 +107,10 @@ try {
     }
 
     Start-Sleep -Seconds 2
+    $server = Get-ScheduledTask -TaskName $serverTask -ErrorAction Stop
+    if ($server.State -ne "Running") {
+        throw "$serverTask did not stay running: $(Get-TaskResultText $serverTask)"
+    }
     $watchdog = Get-ScheduledTask -TaskName $watchdogTask -ErrorAction Stop
     if ($watchdog.State -ne "Running") {
         throw "$watchdogTask did not stay running: $(Get-TaskResultText $watchdogTask)"

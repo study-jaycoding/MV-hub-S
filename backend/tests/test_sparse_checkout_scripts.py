@@ -121,6 +121,10 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert "watchdog_console.log" in restart
     assert "$Root = $PSScriptRoot" in restart
     assert '-Root "%ROOT%"' not in wrapper
+    assert 'IndexOf("server_supervisor.py"' in restart
+    assert "previous MV Hub supervisor" in restart
+    assert "Port $Port did not become free" in restart
+    assert "$server.State -ne \"Running\"" in restart
 
 
 def test_update_persists_commit_and_restart_result():
