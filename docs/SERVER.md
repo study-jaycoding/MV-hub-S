@@ -1,7 +1,8 @@
 # Content Hub — 서버 운영 가이드
 
-이 폴더(`content-hub-server`)는 **서버 배포용 클론**이다. 원본 `content-hub` 는 개인
-작업용으로 그대로 두고, 서버화·추가기능은 여기서 진행한다.
+이 저장소(`MV-hub-S`)를 **서버 PC에 git 클론**해 공유 서버로 운영한다. 작업자 PC는
+릴리스 설치본(`release/README.md`)을 쓰고, 서버는 이 클론에서 `update_git.bat` 으로
+업데이트한다.
 
 ## 핵심 구조 — 단일 오리진
 
@@ -21,6 +22,10 @@
 ```
 
 ## 업데이트(롤아웃) 순서 — ★공유 서버 먼저
+
+경로가 둘이다: **서버 = git 클론에서 `update_git.bat`**, **작업자 = 릴리스 ZIP 배포 후
+앱 안 "설정 → 프로그램 업데이트" 버튼**(수동은 `update_release.bat`). 릴리스 제작·게시는
+`release/README.md` 참고.
 
 새 버전을 배포할 때는 **공유 서버를 먼저(또는 동시에) 업데이트**하고, 그 다음 워커 PC
 로컬 허브를 올린다. 새 허브의 배치 쓰기(작업 순서/삭제/담당해제·팀 카드 색/태그)는 구서버
@@ -72,13 +77,18 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 
 ## 설정 (모두 환경변수, 하드코딩 없음)
 
+> 아래 표는 **운영에서 자주 만지는 것만** 추린 것이다. 전체 `CONTENT_HUB_*` 변수는 70개가
+> 넘으며(Comfy `_COMFY_*`, Resolve `_RESOLVE_*`, HTTPS `_SSL_CERTFILE/_SSL_KEYFILE`,
+> 백업 복제 `_BACKUP_REPLICA_DIR`, 캐시 상한 `_MEDIA_CACHE_MAX_BYTES`/`_THUMB_*` 등)
+> 기본값과 정의는 `backend/app/config.py` 와 각 서비스 모듈 상단이 정답이다.
+
 | 변수 | 기본값 | 용도 |
 |------|--------|------|
 | `CONTENT_HUB_HOST` | `0.0.0.0` | 바인딩 주소 |
 | `CONTENT_HUB_PORT` | `8000`(코드) · **MV_server.bat=8010** | 포트 |
 | `CONTENT_HUB_DATA` | `backend/data` | DB·미디어·공유 루트 |
 | `CONTENT_HUB_FRONTEND_DIST` | `frontend/dist` | 서빙할 빌드 산출물(없으면 API 전용) |
-| `CONTENT_HUB_ASSETS_DIR` | `D:/ClaudeCode-data/projects` | Assets(구성) 패널 루트 |
+| `CONTENT_HUB_ASSETS_DIR` | `<DATA>/assets` | Assets(구성) 패널 루트 |
 | `CONTENT_HUB_WORKER_ID` / `_NAME` | `me` / `나` | 기본 작업자 |
 | `CONTENT_HUB_BACKUP_DIR` | `<DATA>/backups` | DB 백업 보관 폴더(실서버: 다른 디스크/NAS 권장) |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `86400`(하루) | 백업 주기(초). 0 이하 = 비활성 |

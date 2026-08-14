@@ -55,14 +55,15 @@ npm.cmd run build
 
 테스트 클론은 **`backend frontend tools` 3개**를 sparse-checkout 해야 한다.
 `tools/`가 빠지면 `test_push-db.bat`이 쓰는 `tools\refresh_pm_test_data.py`가 없어 DB 복사가 실패한다.
-(worker용 `setup_clone_git.bat`은 tools가 필요없어 `backend frontend`만 받으므로, 테스트 클론은 별도로 tools를 포함해야 한다.)
+(`setup_clone_git.ps1` 도 신규·기존 클론 양쪽 모두 `backend frontend tools` 를 설정한다 —
+회귀 테스트 `backend/tests/test_sparse_checkout_scripts.py` 가 이를 강제.)
 
 ```powershell
 cd E:\
 git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git MV-hub-test2
 cd E:\MV-hub-test2
 git sparse-checkout set backend frontend tools
-git checkout feature/pm-dashboard
+git checkout dev
 ```
 
 이후 업데이트는 그 폴더에서 `git pull` 한 줄.

@@ -47,6 +47,19 @@ CLI 1.1.23에는 조직 전체 멤버 조회 명령이 없다. 각 인증 계정
 
 이 등록부는 “MV-Hub에서 확인된 멤버”이며 Higgsfield 조직 전체 명단과 동일하다고 가정하지 않는다.
 
+등록부는 id 기준 upsert 만 하고 행을 지우지 않는다. 힉스필드에서 워크스페이스를
+지웠다 다시 만들면 id 가 바뀌어 “이름은 같고 멤버 0명”인 유령 행이 남아 프로젝트
+설정 드롭다운에 같은 이름이 2개로 보인다. 정리는 전용 스크립트로 한다(서버 PC,
+저장소 루트에서):
+
+```powershell
+.\run_py.bat tools\cleanup_workspace_registry.py           # 미리보기(유지/유령 표)
+.\run_py.bat tools\cleanup_workspace_registry.py --apply   # 실제 삭제
+```
+
+가용 멤버가 1명이라도 있거나 workspace_id 컬럼을 가진 어떤 테이블에서든 참조되는
+행은 자동으로 보호된다(동적 스키마 스캔). 다른 DB 는 `--db <경로>`.
+
 ## 정합성 규칙
 
 1. 불완전한 `team` 컨텍스트(`id` 없음)는 `unknown`으로 저장한다.

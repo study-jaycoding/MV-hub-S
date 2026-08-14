@@ -37,7 +37,7 @@ shared     여러 feature 가 공유 — ui(공통 컴포넌트) / lib(순수 �
 - `domain(순수) → types` 만. domain 은 React·fetch·localStorage 를 import 하지 않는다.
 - **feature 끼리 직접 import 금지** (scene 이 manage 내부를 직접 가져다 쓰지 않는다). 공유가 필요하면 `shared` 로 올린다.
 
-> 지금 실제 폴더는 `components/{scene,assets,manage,spotlight,…}` + `lib/`(105개) 형태로,
+> 지금 실제 폴더는 `components/{scene,assets,manage,spotlight,…}` + `lib/`(161개) 형태로,
 > 이미 feature 성격의 그룹이 잡혀 있다. 위 구조는 그걸 **명시적 규칙으로 굳히는 것**이지
 > 폴더를 대이사하자는 게 아니다. (대이사는 P 단계에서 필요할 때만, 조각으로.)
 
