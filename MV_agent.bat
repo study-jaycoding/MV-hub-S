@@ -67,6 +67,19 @@ if not defined PY_EXE (
   pause
   exit /b 1
 )
+REM Put the complete launcher tree in a Windows kill-on-close Job Object. A
+REM plain `start /b` child can otherwise survive after its visible CMD parent
+REM is closed. The guarded inner launch inherits every test_dev environment
+REM setting and does the actual work below.
+if "%MVHUB_SESSION_GUARDED%"=="1" goto :session_guarded
+if not exist "%ROOT%run_agent_session.py" (
+  echo [ERROR] run_agent_session.py is missing. Run update_git.bat first.
+  pause
+  exit /b 1
+)
+"%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" "%~f0"
+exit /b %errorlevel%
+:session_guarded
 echo     Using Python: "%PY_EXE%" %PY_ARGS%
 
 set "HAVE_NPM="
@@ -244,7 +257,7 @@ if errorlevel 1 (
 :agent_stage
 echo [5/5] Opening the app + keeping the generation agent running ^(closing this window stops it^)
 echo     Browser: %MVHUB_OPEN_URL%
-start "" "%MVHUB_OPEN_URL%"
+if not "%MVHUB_NO_BROWSER%"=="1" start "" "%MVHUB_OPEN_URL%"
 echo.
 if "%RUN_AGENT%"=="1" (
   if not "%CONTENT_HUB_LOCAL_AGENT_PAIR_SECRET%"=="" (

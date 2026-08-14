@@ -63,6 +63,7 @@ function Assert-ReleaseArchive {
             "MV_agent.bat",
             "update_release.bat",
             "agent_push.py",
+            "run_agent_session.py",
             "hf_cli_version.txt",
             "backend/serve.py",
             "backend/app/main.py",
@@ -104,6 +105,7 @@ function Assert-ReleaseArchive {
             "MV_agent.bat",
             "update_release.bat",
             "agent_push.py",
+            "run_agent_session.py",
             "hf_cli_version.txt"
         )
         $UnexpectedTopLevel = @($Names | Where-Object {
@@ -331,6 +333,7 @@ $RootFiles = @(
     "MV_agent.bat",
     "update_release.bat",
     "agent_push.py",
+    "run_agent_session.py",
     "hf_cli_version.txt"
 )
 foreach ($Name in $RootFiles) {
