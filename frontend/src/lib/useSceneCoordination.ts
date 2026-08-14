@@ -2,7 +2,7 @@
 //  · 씬 목록/활성/바인딩/선택 상태 + 씬 CRUD(선택·추가·이름변경·삭제)를 한곳에.
 //  · patchSceneById/patchActiveScene: 대상 씬을 갱신하고 목록을 다시 읽는 반복 패턴을 DRY.
 // 씬은 프로젝트 무관 전역(S1) — 모든 scenes 호출에 projectId=null. localStorage 데이터계층(scenes.ts).
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Scene, SceneRef, SceneSnapshot } from "./scenes";
 import {
   createScene,
@@ -110,9 +110,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   } | null>(null);
   // 비동기 결과가 현재 씬에 합쳐지기 직전, 아직 SceneBoard 메모리에만 있는 입력을 먼저 저장한다.
   // patchSceneById 안에서 자동 호출하면 flush→onChange→patch 재귀가 되므로 명시 관문으로 분리한다.
-  const flushScenePending = (sceneId: string) => {
+  // ★참조 안정성(useCallback deps []): App 의 캔버스 복구 이펙트가 이 두 함수를 의존성으로
+  //  갖는다. 매 렌더 새 함수를 만들면 이펙트가 렌더마다 재실행돼 2.5초 백오프 폴링이
+  //  '렌더 주기 폴링'으로 변질된다(생성 중 초당 수 건의 복구 API 폭주). 내부는 ref/모듈
+  //  함수만 쓰므로 빈 deps 가 안전하다.
+  const flushScenePending = useCallback((sceneId: string) => {
     if (activeSceneIdRef.current === sceneId) sceneActionRef.current?.flushPending();
-  };
+  }, []);
 
   const refreshScenes = () => setScenes(listScenes(null));
   const selectScene = (id: string | null) => {
@@ -146,13 +150,13 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
   };
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.
-  const patchSceneById = (sceneId: string, patch: Partial<Scene>) => {
+  const patchSceneById = useCallback((sceneId: string, patch: Partial<Scene>) => {
     updateScene(null, sceneId, patch);
     const latest = listScenes(null);
     setScenes((previous) =>
       mergePatchedSceneList(previous, latest, activeSceneIdRef.current, sceneId),
     );
-  };
+  }, []);
   // 동기 UI 편집용 활성 씬 관문.
   const patchActiveScene = (patch: Partial<Scene>) => {
     if (!activeScene) return;
