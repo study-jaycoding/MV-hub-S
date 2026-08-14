@@ -94,3 +94,20 @@ def test_recent_update_history_is_trimmed_and_bounded(tmp_path):
     assert viewer.recent_update_lines(update_log, count=1) == [
         "[2026-08-14 09:00:03] SUCCESS before=abc after=def server=restarted-ready"
     ]
+
+
+def test_follower_releases_file_and_follows_rotation(tmp_path):
+    viewer = _module()
+    runtime_log = tmp_path / "mvhub-runtime.jsonl"
+    runtime_log.write_text('{"event":"startup_ready"}\n', encoding="utf-8")
+    _, position, identity = viewer._tail_snapshot(runtime_log, 10)
+    follower = viewer.LogFollower(runtime_log, position, identity)
+
+    with runtime_log.open("a", encoding="utf-8") as handle:
+        handle.write('{"event":"runtime_snapshot"}\n')
+    assert follower.poll() == ['{"event":"runtime_snapshot"}']
+
+    rotated = tmp_path / "mvhub-runtime.jsonl.1"
+    runtime_log.replace(rotated)
+    runtime_log.write_text('{"event":"startup_begin"}\n', encoding="utf-8")
+    assert follower.poll() == ['{"event":"startup_begin"}']

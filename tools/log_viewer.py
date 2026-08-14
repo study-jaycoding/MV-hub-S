@@ -110,6 +110,69 @@ def _tail(path: Path, count: int) -> list[str]:
         return list(deque(handle, maxlen=max(1, count)))
 
 
+def _file_identity(stat_result: os.stat_result) -> tuple[int, int, int]:
+    # Windows의 st_ctime_ns는 내용 추가에도 바뀌므로 파일 교체 판별에 쓸 수 없다.
+    # st_birthtime_ns는 생성 시각이라 안정적이고, 없는 플랫폼은 inode만으로 판별한다.
+    birth_time = int(getattr(stat_result, "st_birthtime_ns", 0))
+    return (stat_result.st_dev, stat_result.st_ino, birth_time)
+
+
+def _tail_snapshot(path: Path, count: int) -> tuple[list[str], int, tuple[int, int, int]]:
+    """최근 줄과 이어 읽을 위치를 같은 파일 핸들에서 얻는다."""
+    with path.open("rb") as handle:
+        lines = deque(handle, maxlen=max(1, count))
+        position = handle.tell()
+        identity = _file_identity(os.fstat(handle.fileno()))
+    return [line.decode("utf-8", errors="replace") for line in lines], position, identity
+
+
+class LogFollower:
+    """Windows 로그 회전을 막지 않도록 새 내용이 있을 때만 파일을 짧게 연다."""
+
+    def __init__(
+        self,
+        path: Path,
+        position: int,
+        identity: tuple[int, int, int],
+    ) -> None:
+        self.path = path
+        self.position = position
+        self.identity = identity
+        self.pending = b""
+
+    def poll(self) -> list[str]:
+        try:
+            current = self.path.stat()
+        except OSError:
+            return []
+
+        current_identity = _file_identity(current)
+        if current_identity != self.identity or current.st_size < self.position:
+            self.position = 0
+            self.identity = current_identity
+            self.pending = b""
+        if current.st_size <= self.position:
+            return []
+
+        try:
+            with self.path.open("rb") as handle:
+                opened_identity = _file_identity(os.fstat(handle.fileno()))
+                if opened_identity != self.identity:
+                    self.position = 0
+                    self.identity = opened_identity
+                    self.pending = b""
+                handle.seek(self.position)
+                chunk = handle.read()
+                self.position = handle.tell()
+        except OSError:
+            return []
+
+        self.pending += chunk
+        parts = self.pending.split(b"\n")
+        self.pending = parts.pop()
+        return [part.decode("utf-8", errors="replace").rstrip("\r") for part in parts]
+
+
 def recent_update_lines(path: Path = UPDATE_LOG, count: int = 5) -> list[str]:
     if not path.is_file():
         return []
@@ -157,36 +220,19 @@ def main() -> int:
         print(f"초기 빌드/실행 오류는 {ROOT / 'logs' / 'server_console.log'} 에서 확인하세요.")
         return 1
 
+    recent, position, identity = _tail_snapshot(path, args.tail)
     print(f"MV Hub 운영 로그: {path} (Ctrl+C 종료)")
-    for raw in _tail(path, args.tail):
+    for raw in recent:
         _show_line(raw)
     if args.once:
         return 0
 
     try:
-        handle = path.open("r", encoding="utf-8", errors="replace")
-        try:
-            handle.seek(0, os.SEEK_END)
-            opened = path.stat()
-            opened_identity = (opened.st_ino, opened.st_ctime_ns)
-            while True:
-                raw = handle.readline()
-                if raw:
-                    _show_line(raw)
-                else:
-                    try:
-                        current = path.stat()
-                        current_identity = (current.st_ino, current.st_ctime_ns)
-                        if current_identity != opened_identity or current.st_size < handle.tell():
-                            handle.close()
-                            handle = path.open("r", encoding="utf-8", errors="replace")
-                            opened_identity = current_identity
-                            continue
-                    except OSError:
-                        pass
-                    time.sleep(0.5)
-        finally:
-            handle.close()
+        follower = LogFollower(path, position, identity)
+        while True:
+            for raw in follower.poll():
+                _show_line(raw)
+            time.sleep(0.5)
     except KeyboardInterrupt:
         return 0
 
