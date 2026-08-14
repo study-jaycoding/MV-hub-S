@@ -8,7 +8,7 @@ import type { ModelInfo, ModelParam, ModelParamsOut } from "../types";
 
 // 노출 모델 화이트리스트(타입별, 표시 순서대로).
 //  이미지: Nano Banana 2(nano_banana_flash) · Nano Banana 2 Lite(nano_banana_2_lite) · Nano Banana Pro(nano_banana_pro) · GPT Image 2(gpt_image_2)
-//  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·최대 720p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p) · Gemini Omni Flash(gemini_omni, duration 4~10s)
+//  비디오: Seedance 2.5(seedance_2_5, duration 4~30s·오디오 생성 지원·480p/720p/1080p) · Seedance 2.0(seedance_2_0) · Seedance 2.0 Mini(seedance_2_0_mini, 저가·빠름·최대 720p) · Gemini Omni Flash(gemini_omni, duration 4~10s)
 // 각 모델의 옵션은 CLI 스키마(get_model_params)로 동적 렌더 — 모델마다 다른 파라미터 자동 반영.
 // ※ CLI 업데이트로 Nano Banana Pro 코드가 nano_banana_2 → nano_banana_pro 로 개명됨(옛 코드는 CLI 목록에서 사라져 매칭 실패→드롭다운 누락이었음).
 //   ai_stylist/skin_enhancer/shots 변형도 표시명은 "Nano Banana Pro"지만 프리셋 전용(프롬프트 없음)이라 일반 드롭다운엔 제외.
