@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 from fastapi import HTTPException
@@ -147,3 +149,52 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "JOB_OBJECT_LIMIT_BREAKAWAY_OK" in launcher
     assert "backend/app/routers/release_update.py" in builder
     assert "backend/app/services/release_update.py" in builder
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch bootstrap regression")
+def test_manual_updater_survives_its_installed_batch_being_overwritten(tmp_path: Path):
+    """The installed wrapper must finish from TEMP after the target copy is replaced."""
+    project_root = Path(__file__).resolve().parents[2]
+    installed = tmp_path / "installed"
+    temp_dir = tmp_path / "temp"
+    installed.mkdir()
+    temp_dir.mkdir()
+    marker = "### MVHUB_UPDATE_POWERSHELL ###"
+    wrapper = (project_root / "update_release.bat").read_text(encoding="utf-8").split(marker, 1)[0]
+    overwrite_payload = """param(
+    [string]$TargetDir,
+    [string]$StateFile = "",
+    [string]$RestartAfterInstall = "0",
+    [string]$ReadyUrl = ""
+)
+Set-Content -LiteralPath (Join-Path $TargetDir "update_release.bat") -Value "@echo off" -Encoding ASCII
+Write-Host "[3/3] Update complete."
+"""
+    (installed / "update_release.bat").write_text(
+        wrapper + marker + "\n" + overwrite_payload,
+        encoding="ascii",
+    )
+
+    env = os.environ.copy()
+    env["TEMP"] = str(temp_dir)
+    env["TMP"] = str(temp_dir)
+    env["MVHUB_NO_PAUSE"] = "1"
+    env.pop("MVHUB_UPDATE_TARGET_DIR", None)
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(installed / "update_release.bat")],
+        cwd=installed,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert "[done] Update check finished" in output
+    assert "not recognized" not in output
+    assert "Failed to prepare MV Hub updater" not in output
+    assert not list(temp_dir.glob("mvhub-update-bootstrap-*.bat"))

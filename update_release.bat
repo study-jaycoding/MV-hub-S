@@ -6,8 +6,35 @@ REM MV Hub local updater.
 REM Run this from the installed MV-hub-S folder. It reads INSTALL_SOURCE.txt,
 REM checks the company release folder, updates app files, and does NOT launch.
 
-for %%I in ("%~dp0.") do set "TARGET_DIR=%%~fI"
+for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
+set "TARGET_DIR=%SCRIPT_DIR%"
 if defined MVHUB_UPDATE_TARGET_DIR for %%I in ("%MVHUB_UPDATE_TARGET_DIR%") do set "TARGET_DIR=%%~fI"
+set "UPDATE_BOOTSTRAP=%TEMP%\mvhub-update-bootstrap-%RANDOM%-%RANDOM%.bat"
+
+REM A manual launch runs inside the folder that will be replaced. Hand off to a
+REM temporary copy first so cmd never resumes reading a newly overwritten batch.
+REM The in-app updater already runs a detached temporary copy, so its script
+REM directory differs from the target and it skips this one-time bootstrap.
+if /I "%SCRIPT_DIR%"=="%TARGET_DIR%" (
+  set "MVHUB_UPDATE_TARGET_DIR=%TARGET_DIR%"
+  copy /y "%~f0" "%UPDATE_BOOTSTRAP%" >nul 2>nul
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Failed to copy the temporary MV Hub update launcher.
+    if not "%MVHUB_NO_PAUSE%"=="1" pause
+    exit /b 1
+  )
+  (
+    call "%UPDATE_BOOTSTRAP%"
+    if errorlevel 1 (
+      del "%UPDATE_BOOTSTRAP%" >nul 2>nul
+      exit /b 1
+    )
+    del "%UPDATE_BOOTSTRAP%" >nul 2>nul
+    exit /b 0
+  )
+)
+
 set "UPDATE_PS1=%TEMP%\mvhub-update-%RANDOM%-%RANDOM%.ps1"
 
 REM NOTE: keep this whole file ASCII-only. On stock Korean Windows (ANSI=CP949) a

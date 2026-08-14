@@ -18,6 +18,7 @@ set "PYTHONUTF8=1"
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 set "UPDATE_LOG=%ROOT%logs\update.log"
+set "FRONTEND_PENDING=%ROOT%logs\frontend-build.pending"
 set "UPDATE_STAGE=preflight"
 set "SERVER_RESULT=not-checked"
 set "BEFORE="
@@ -101,6 +102,22 @@ if "!BEFORE!"=="!AFTER!" (
   )
 )
 
+REM A failed dependency install/build must survive the next run. Git is already at
+REM AFTER by then, so BEFORE..AFTER alone would otherwise hide the unfinished work.
+if not exist "%ROOT%frontend\node_modules" set "FE_CHANGED=1"
+if not exist "%ROOT%frontend\dist\index.html" set "FE_CHANGED=1"
+if exist "!FRONTEND_PENDING!" (
+  echo     Previous frontend refresh was incomplete - retrying it.
+  set "FE_CHANGED=1"
+)
+if defined FE_CHANGED (
+  >"!FRONTEND_PENDING!" echo !AFTER!
+  if errorlevel 1 (
+    echo [ERROR] could not persist the pending frontend refresh marker.
+    goto :err
+  )
+)
+
 echo [2/3] Backend dependencies...
 set "UPDATE_STAGE=backend-dependencies"
 echo     Using Python: !PYEXE! !PYARGS!
@@ -124,8 +141,6 @@ if defined REQ_CHANGED (
 echo [3/3] Frontend...
 set "UPDATE_STAGE=frontend-build"
 cd /d "%ROOT%frontend" || goto :err
-if not exist node_modules set "FE_CHANGED=1"
-if not exist "%ROOT%frontend\dist\index.html" set "FE_CHANGED=1"
 if defined FE_CHANGED (
   REM Recreate exactly what package-lock.json declares. Unlike npm install this
   REM never rewrites the tracked lock file just because the npm version differs.
@@ -133,6 +148,11 @@ if defined FE_CHANGED (
   call npm ci --include=dev --no-audit --no-fund || goto :err
   echo     building frontend...
   call npm run build || goto :err
+  del /q "!FRONTEND_PENDING!" >nul 2>nul
+  if exist "!FRONTEND_PENDING!" (
+    echo [ERROR] frontend build succeeded but its pending marker could not be cleared.
+    goto :err
+  )
 ) else (
   echo     no frontend changes - skip build.
 )
