@@ -393,9 +393,12 @@ def test_git_updater_runs_from_an_isolated_temp_copy():
     assert len(launcher.splitlines()) == 1
     assert "tools\\run_update_git.ps1" in launcher
     assert "git pull" not in launcher
-    assert "Copy-Item -LiteralPath $Worker -Destination $TempWorker" in bootstrap
+    assert "Copy-Item -LiteralPath $WorkerPath -Destination $TempWorker" in bootstrap
     assert "[Guid]::NewGuid()" in bootstrap
     assert "Remove-Item -LiteralPath $TempWorker" in bootstrap
+    assert "$InitialWorkerHash" in bootstrap
+    assert "$CurrentWorkerHash -ne $InitialWorkerHash" in bootstrap
+    assert "retrying once with the new worker" in bootstrap
     assert 'set "ROOT=%~1"' in worker
 
 
@@ -457,3 +460,43 @@ def test_git_updater_propagates_the_isolated_worker_exit_code(tmp_path: Path):
     )
 
     assert completed.returncode == 23
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater migration regression")
+def test_git_updater_retries_once_when_git_pull_replaces_a_failed_worker(tmp_path: Path):
+    root = tmp_path / "repo"
+    tools = root / "tools"
+    temp_dir = tmp_path / "temp"
+    tools.mkdir(parents=True)
+    temp_dir.mkdir()
+    shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
+    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    (tools / "replacement-worker.bat").write_text(
+        '@echo off\n>"%~1\\retry-finished.txt" echo recovered\nexit /b 0\n',
+        encoding="ascii",
+    )
+    (tools / "update_git_worker.bat").write_text(
+        '@echo off\ncopy /y "%~1\\tools\\replacement-worker.bat" '
+        '"%~1\\tools\\update_git_worker.bat" >nul\nexit /b 23\n',
+        encoding="ascii",
+    )
+
+    env = os.environ.copy()
+    env["TEMP"] = str(temp_dir)
+    env["TMP"] = str(temp_dir)
+    env["MVHUB_NO_PAUSE"] = "1"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(root / "update_git.bat")],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert "retrying once with the new worker" in output
+    assert (root / "retry-finished.txt").read_text(encoding="ascii").strip() == "recovered"
+    assert not list(temp_dir.glob("mvhub-update-*.bat"))
