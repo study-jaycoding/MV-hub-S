@@ -19,12 +19,15 @@ import {
 } from "../lib/workspaceContext";
 import { ManageAccount } from "./ManageAccount";
 import { SettingsPanel } from "./SettingsPanel";
+import { manageApi } from "../lib/manageApi";
 import type { Account, ReportedHfStatus, Workspace, WorkspaceContext } from "../types";
 
-// 힉스필드 팀 플랜 월 크레딧 한도(게이지 분모). CLI 가 총 한도를 안 주므로(account status·
-// workspace list·transactions 모두 잔액/차감만) 힉스필드 웹처럼 비율 게이지를 그리려면
-// 총량이 필요 → Jay 지정 상수. 팀 플랜 기준이며, 바꾸려면 이 값만 고치면 된다.
-const MONTHLY_CREDIT_MAX = 200010;
+// 게이지 분모 규칙(Jay 지정): MILLIONVOLT(본사 공용 워크스페이스)는 고정 200,000.
+// 그 외 워크스페이스는 배정된 프로젝트들의 '예산 한도' 합(관리창 프로젝트 설정)을 분모로
+// 쓰고, 예산 미설정·조회 실패일 때만 이 상수로 폴백한다. (CLI 는 총 한도를 안 줌 —
+// account status·workspace list·transactions 모두 잔액/차감만.)
+const MONTHLY_CREDIT_MAX = 200000;
+const FIXED_MAX_WORKSPACE = "MILLIONVOLT";
 // 점 세그먼트 게이지(힉스필드 스타일)의 총 칸 수.
 const DOT_COUNT = 20;
 
@@ -136,6 +139,37 @@ export function AccountMenu({
       : workspaceContext.scope === "personal"
         ? wsList.find((w) => !w.name)
         : current || wsList.find((w) => !w.name);
+  // 게이지 분모 = 활성 워크스페이스에 배정된 프로젝트들의 '예산 한도' 합(관리창 프로젝트 설정).
+  // 프로젝트마다 예산이 달라 워크스페이스별로 다른 분모가 적용된다. 메뉴를 열 때마다 재조회해
+  // 예산 수정이 곧 반영되고, 미설정·실패면 null → 아래에서 상수 폴백.
+  // MILLIONVOLT 는 고정 한도(상수) 사용 — 예산 조회를 건너뛴다.
+  const [budgetMax, setBudgetMax] = useState<number | null>(null);
+  const activeWsId = activeWs?.id || null;
+  const fixedMaxWs = activeWs?.name === FIXED_MAX_WORKSPACE;
+  useEffect(() => {
+    if (!activeWsId || fixedMaxWs) {
+      setBudgetMax(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const r = await api.projects("my", false, activeWsId);
+        const plans = await Promise.all(
+          (r.projects || []).map((p) => manageApi.getPlanning(p.id).catch(() => null)),
+        );
+        const sum = plans.reduce((acc, plan) => acc + (plan?.budget_credits ?? 0), 0);
+        if (alive) setBudgetMax(sum > 0 ? sum : null);
+      } catch {
+        if (alive) setBudgetMax(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [activeWsId, fixedMaxWs, open]);
+  const gaugeMax = budgetMax ?? MONTHLY_CREDIT_MAX;
+
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
   // 숫자로 정규화 — CLI 가 문자열/누락/이상값을 줘도 NaN·Infinity 로 링/aria/CSS 가 깨지지 않게 한다.
   const rawCredits = activeWs?.credits ?? (liveMode ? null : reported?.credits);
@@ -144,10 +178,10 @@ export function AccountMenu({
   const activeCredits =
     parsedCredits != null && Number.isFinite(parsedCredits) ? parsedCredits : null;
   const gaugeCredits = activeCredits != null ? Math.max(0, activeCredits) : null; // 음수는 0으로(빈 게이지)
-  // 게이지 채움 비율 = 남은 크레딧 / 월 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
+  // 게이지 채움 비율 = 남은 크레딧 / 예산 한도(0~100% 클램프 — 탑업으로 한도 초과해도 안 넘침).
   const creditPct =
-    gaugeCredits != null && MONTHLY_CREDIT_MAX > 0
-      ? Math.max(0, Math.min(100, (gaugeCredits / MONTHLY_CREDIT_MAX) * 100))
+    gaugeCredits != null && gaugeMax > 0
+      ? Math.max(0, Math.min(100, (gaugeCredits / gaugeMax) * 100))
       : null;
   // 켜진 점 개수 = 비율×칸수. 크레딧이 조금이라도 남았으면 최소 1칸은 켠다.
   const litDots =
@@ -303,7 +337,7 @@ export function AccountMenu({
                 role="meter"
                 aria-label="Credits remaining"
                 aria-valuemin={0}
-                aria-valuemax={MONTHLY_CREDIT_MAX}
+                aria-valuemax={gaugeMax}
                 aria-valuenow={Math.round(gaugeCredits ?? 0)}
               >
                 {Array.from({ length: DOT_COUNT }, (_, i) => (
