@@ -107,12 +107,16 @@ _RUN_GATE = threading.Condition()
 _RUN_SLOTS_ACTIVE = 0
 
 
-def _acquire_run_slot(capacity: int) -> None:
+def _acquire_run_slot(capacity: int, job_id: Optional[str] = None) -> None:
     global _RUN_SLOTS_ACTIVE
     cap = max(1, capacity)
     with _RUN_GATE:
         while _RUN_SLOTS_ACTIVE >= cap:
-            _RUN_GATE.wait()
+            # 유한 대기 + 하트비트 — 큰 배치의 후순위 잡이 슬롯을 기다리는 동안에도
+            # updated_at 이 갱신돼, 살아 있는 대기 잡이 스윕으로 증발하지 않는다.
+            _RUN_GATE.wait(timeout=30.0)
+            if job_id:
+                _update_run_job(job_id)
         _RUN_SLOTS_ACTIVE += 1
 
 
@@ -133,7 +137,11 @@ def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
             base = job.get("finished_at") or job.get("updated_at") or job.get("created_at") or now
             ttl = _RUN_JOB_TTL_SEC
         else:
-            base = job.get("created_at") or now
+            # 활성 잡은 '마지막 하트비트' 기준. created_at 기준이면 큰 배치의 후순위 잡이
+            # 큐 대기시간 때문에 실행 도중 스윕돼 결과가 증발했다(크레딧은 소모된 채 404).
+            # 워커가 대기/폴링 중 주기적으로 updated_at 을 갱신하므로, 살아 있는 잡은 절대
+            # 안 걸리고 죽은 스레드의 잔재만 TTL 뒤 정리된다.
+            base = job.get("updated_at") or job.get("created_at") or now
             ttl = _RUN_ACTIVE_JOB_TTL_SEC
         if now - float(base) > ttl:
             stale.append(job_id)
@@ -377,7 +385,12 @@ def _coerce(val, like):
     return val
 
 
-def _wait(target: dict, prompt_id: str) -> dict:
+def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
+    def _heartbeat() -> None:
+        # 폴링이 살아 있다는 표식 — 활성 잡 스윕(updated_at 기준)에서 안 걸리게.
+        if job_id:
+            _update_run_job(job_id)
+
     deadline = time.monotonic() + _JOB_TIMEOUT
     if target["cloud"]:
         last = None
@@ -414,6 +427,7 @@ def _wait(target: dict, prompt_id: str) -> dict:
                 raise comfy_client.ComfyError(
                     f"Cloud 상태를 해석할 수 없습니다 (status={st or '(empty)'}) — "
                     "잡이 제출됐지만 응답 형식/엔드포인트를 확인해야 할 수 있습니다")
+            _heartbeat()
             time.sleep(_POLL_CLOUD)
 
     entry = None
@@ -425,6 +439,7 @@ def _wait(target: dict, prompt_id: str) -> dict:
                     or status.get("status_str") == "success"
                     or (not status and entry.get("outputs"))):
                 break
+        _heartbeat()
         time.sleep(_POLL_LOCAL)
     else:
         raise comfy_client.ComfyError(f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다")
@@ -605,7 +620,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         prompt_id = comfy_client.submit(target, wf, settings["comfy_api_key"])
         _update_run_job(job_id, prompt_id=prompt_id)
         log.info("comfy submit ok target=%s prompt_id=%s", tgt_kind, prompt_id)  # api_key 는 절대 안 찍음
-        entry = _wait(target, prompt_id)
+        entry = _wait(target, prompt_id, job_id)
     except comfy_client.ComfyError as e:
         log.warning("comfy run 실패 target=%s: %s", tgt_kind, e)
         code = 402 if getattr(e, "auth_error", False) else 502
@@ -656,7 +671,7 @@ def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
                           uploads: list[tuple[str, bytes]], settings: dict) -> None:
     """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
     설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
-    _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3))
+    _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3), job_id)
     try:
         _update_run_job(job_id, state=_RUN_RUNNING)
         try:
