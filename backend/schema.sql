@@ -231,8 +231,9 @@ CREATE TABLE IF NOT EXISTS gen_request (
 );
 CREATE INDEX IF NOT EXISTS idx_genrequest_acct ON gen_request(account_email, status);
 CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest ON gen_request(gen_id, created_at DESC, id DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_canvas_attempt
-    ON gen_request(account_email, canvas_attempt_id) WHERE canvas_attempt_id IS NOT NULL;
+-- idx_genrequest_canvas_attempt 는 db_migrations._migrate 에서 만든다.
+-- 기존 DB 는 canvas_attempt_id 컬럼을 ALTER 로 먼저 추가해야 하므로 여기서 만들면
+-- schema.sql 적용이 마이그레이션보다 앞서 실행되어 앱 시작이 실패한다.
 
 -- 생성 상태 영구 이력. 회전 운영 로그가 오래되어 사라져도 요청→앵커→검증→완료 흐름을
 -- generation/request 기준으로 다시 확인할 수 있다. 프롬프트·결과 URL·오류 원문은 저장하지 않는다.
