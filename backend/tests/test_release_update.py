@@ -227,6 +227,9 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "UseShellExecute = $true" in updater
     assert 'MVHUB_NO_BROWSER = "1"' not in updater
     assert "taskkill /T" not in updater
+    assert "Get-MvHubProcessIds" in updater
+    assert "Get-CimInstance Win32_Process" in updater
+    assert 'Join-Path $ResolvedRoot "MV_agent.bat"' in updater
     assert "CREATE_BREAKAWAY_FROM_JOB" in launcher
     assert "JOB_OBJECT_LIMIT_BREAKAWAY_OK" in launcher
     assert "backend/app/routers/release_update.py" in builder
@@ -257,6 +260,62 @@ def test_worker_launcher_keeps_startup_failure_visible():
     assert 'set "SESSION_EXIT=%ERRORLEVEL%"' in launcher
     assert "Run update_release.bat to verify and repair this installation." in launcher
     assert 'if not "%MVHUB_NO_PAUSE%"=="1" pause' in launcher
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process cleanup regression")
+def test_release_update_cleanup_closes_the_old_visible_launcher(tmp_path: Path):
+    project_root = Path(__file__).resolve().parents[2]
+    updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
+    function_start = updater.index("function Get-MvHubProcessIds")
+    function_end = updater.index("function Install-Package", function_start)
+    cleanup_functions = updater[function_start:function_end]
+
+    install_root = tmp_path / "MV Hub installed"
+    install_root.mkdir()
+    launcher = install_root / "MV_agent.bat"
+    launcher.write_text("@echo off\r\n:wait\r\ngoto wait\r\n", encoding="ascii")
+    process = subprocess.Popen(  # noqa: S603 - isolated test-owned batch process
+        [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(launcher)],
+        cwd=install_root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    harness = tmp_path / "verify_cleanup.ps1"
+    harness.write_text(
+        "param([string]$Root)\n$ErrorActionPreference = 'Stop'\n"
+        + cleanup_functions
+        + "\nStop-MvHubProcesses -Root $Root\n",
+        encoding="utf-8-sig",
+    )
+    try:
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(harness),
+                "-Root",
+                str(install_root),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+        output = completed.stdout + completed.stderr
+        assert completed.returncode == 0, output
+        assert "Stopping running MV Hub processes" in output
+        assert process.wait(timeout=3) != 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
 
 
 def test_first_installer_delegates_to_the_verified_package_updater():

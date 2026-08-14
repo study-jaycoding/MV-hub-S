@@ -21,10 +21,56 @@ from pathlib import Path
 
 CREATE_SUSPENDED = 0x00000004
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+CREATE_NO_WINDOW = 0x08000000
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 INFINITE = 0xFFFFFFFF
+
+
+_STALE_LAUNCHER_CLEANUP = r"""
+$ErrorActionPreference = "SilentlyContinue"
+$launcher = $env:MVHUB_CLEANUP_LAUNCHER
+$root = $env:MVHUB_CLEANUP_ROOT
+$current = [int]$env:MVHUB_CLEANUP_CURRENT
+$guardScript = Join-Path $root "run_agent_session.py"
+$all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+
+function Test-MvHubSessionProcess($process) {
+    if (-not $process) { return $false }
+    $executable = [string]$process.ExecutablePath
+    $commandLine = [string]$process.CommandLine
+    return (
+        ($executable -and $executable.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($commandLine.IndexOf($guardScript, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    )
+}
+
+foreach ($candidate in $all) {
+    $commandLine = [string]$candidate.CommandLine
+    if (
+        $candidate.ProcessId -eq $current -or
+        $candidate.Name -ine "cmd.exe" -or
+        $commandLine.IndexOf($launcher, [StringComparison]::OrdinalIgnoreCase) -lt 0
+    ) {
+        continue
+    }
+
+    $parent = $all | Where-Object { $_.ProcessId -eq $candidate.ParentProcessId } | Select-Object -First 1
+    $hasSessionRelative = Test-MvHubSessionProcess $parent
+    if (-not $hasSessionRelative) {
+        foreach ($child in $all) {
+            if ($child.ParentProcessId -eq $candidate.ProcessId -and (Test-MvHubSessionProcess $child)) {
+                $hasSessionRelative = $true
+                break
+            }
+        }
+    }
+    if (-not $hasSessionRelative) {
+        Stop-Process -Id $candidate.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+"""
 
 
 class IO_COUNTERS(ctypes.Structure):
@@ -165,6 +211,43 @@ def _create_suspended_process(kernel32, script: Path) -> PROCESS_INFORMATION:
     raise OSError(errors[-1], f"guarded launcher creation failed ({errors})")
 
 
+def _close_stale_launcher_shells(script: Path) -> None:
+    """Close only orphaned visible launchers left by a pre-fix release update."""
+    if os.name != "nt":
+        return
+
+    root = str(script.parent.resolve()).rstrip("\\/") + "\\"
+    env = os.environ.copy()
+    env.update(
+        {
+            "MVHUB_CLEANUP_LAUNCHER": str(script.resolve()),
+            "MVHUB_CLEANUP_ROOT": root,
+            "MVHUB_CLEANUP_CURRENT": str(os.getppid()),
+        }
+    )
+    powershell = str(
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    try:
+        subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", _STALE_LAUNCHER_CLEANUP],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Cleanup is compatibility polish, not a reason to block a valid launch.
+        pass
+
+
 def run_guarded(script: Path) -> int:
     if os.name != "nt":
         raise OSError("MV Hub agent session guard is Windows-only")
@@ -230,7 +313,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("script", type=Path)
     args = parser.parse_args(argv)
     try:
-        return run_guarded(args.script)
+        script = args.script.resolve()
+        _close_stale_launcher_shells(script)
+        return run_guarded(script)
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Agent session guard failed: {exc}", file=sys.stderr)
         return 1

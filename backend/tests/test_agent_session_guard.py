@@ -98,6 +98,45 @@ def test_guard_closes_foreground_child_when_guard_is_forced_closed(tmp_path):
             )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows stale-launcher cleanup test")
+def test_new_guard_closes_a_stale_pre_update_launcher_window(tmp_path):
+    install_root = tmp_path / "old release folder"
+    install_root.mkdir()
+    launcher = install_root / "MV_agent.bat"
+    launcher.write_text("@echo off\r\n:wait\r\ngoto wait\r\n", encoding="ascii")
+    stale = subprocess.Popen(  # noqa: S603 - isolated test-owned batch process
+        [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(launcher)],
+        cwd=install_root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "from run_agent_session import _close_stale_launcher_shells; "
+                    f"_close_stale_launcher_shells(Path({str(launcher)!r}))"
+                ),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert stale.wait(timeout=3) != 0
+    finally:
+        if stale.poll() is None:
+            stale.kill()
+            stale.wait(timeout=3)
+
+
 def test_agent_launcher_enters_guard_before_starting_children():
     script = (ROOT / "MV_agent.bat").read_text(encoding="utf-8")
 

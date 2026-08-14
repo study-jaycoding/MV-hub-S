@@ -387,6 +387,38 @@ function Replace-ImmutableDirectory {
     }
 }
 
+function Get-MvHubProcessIds {
+    param([string]$ResolvedRoot)
+
+    $Launcher = Join-Path $ResolvedRoot "MV_agent.bat"
+    $Ids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.ProcessId -eq $PID) {
+            return
+        }
+
+        $ExecutablePath = [string]$_.ExecutablePath
+        if (
+            $ExecutablePath -and
+            $ExecutablePath.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)
+        ) {
+            [int]$_.ProcessId
+            return
+        }
+
+        # The visible launcher is a system cmd.exe, so its executable lives outside
+        # the install folder. Match only shells running this exact MV_agent.bat.
+        $CommandLine = [string]$_.CommandLine
+        if (
+            $_.Name -ieq "cmd.exe" -and
+            $CommandLine.IndexOf($Launcher, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        ) {
+            [int]$_.ProcessId
+        }
+    })
+
+    return @($Ids | Sort-Object -Unique)
+}
+
 function Stop-MvHubProcesses {
     param([string]$Root)
 
@@ -395,58 +427,39 @@ function Stop-MvHubProcesses {
     }
 
     $ResolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\") + "\"
-    $Running = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($_.Id -eq $PID) {
-            return
-        }
-        try {
-            $Path = $_.Path
-        }
-        catch {
-            return
-        }
-        if ($Path -and $Path.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            $_
-        }
-    })
+    $RunningIds = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot)
 
-    if (-not $Running.Count) {
+    if (-not $RunningIds.Count) {
         return
     }
 
     Write-Host "[update] Stopping running MV Hub processes before replacing files..."
-    foreach ($Proc in $Running) {
+    foreach ($ProcessId in $RunningIds) {
         try {
-            Write-Host "      stop pid=$($Proc.Id) $($Proc.ProcessName)"
-            Stop-Process -Id $Proc.Id -Force -ErrorAction Stop
+            $Proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+            if (-not $Proc) {
+                continue
+            }
+            Write-Host "      stop pid=$ProcessId $($Proc.ProcessName)"
+            Stop-Process -Id $ProcessId -Force -ErrorAction Stop
         }
         catch {
-            Write-Host "      warn: could not stop pid=$($Proc.Id): $($_.Exception.Message)"
+            Write-Host "      warn: could not stop pid=$ProcessId`: $($_.Exception.Message)"
         }
     }
 
     for ($i = 0; $i -lt 20; $i++) {
-        $StillRunning = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_.Id -eq $PID) {
-                return
-            }
-            try {
-                $Path = $_.Path
-            }
-            catch {
-                return
-            }
-            if ($Path -and $Path.StartsWith($ResolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-                $_
-            }
-        })
-        if (-not $StillRunning.Count) {
+        $StillRunningIds = @(Get-MvHubProcessIds -ResolvedRoot $ResolvedRoot)
+        if (-not $StillRunningIds.Count) {
             return
         }
         Start-Sleep -Milliseconds 500
     }
 
-    $Names = ($StillRunning | ForEach-Object { "$($_.ProcessName)(pid=$($_.Id))" }) -join ", "
+    $Names = ($StillRunningIds | ForEach-Object {
+        $Proc = Get-Process -Id $_ -ErrorAction SilentlyContinue
+        if ($Proc) { "$($Proc.ProcessName)(pid=$_)" } else { "pid=$_" }
+    }) -join ", "
     throw "Some MV Hub processes are still running: $Names. Close MV_agent windows and try again."
 }
 
