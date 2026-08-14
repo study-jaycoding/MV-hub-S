@@ -1,4 +1,9 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -8,8 +13,12 @@ def _read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
 
 
+def _read_updater() -> str:
+    return _read("tools/update_git_worker.bat")
+
+
 def test_update_adds_server_tools_only_for_sparse_checkout():
-    script = _read("update_git.bat")
+    script = _read_updater()
 
     assert "git sparse-checkout list >nul 2>nul" in script
     assert "git sparse-checkout add tools" in script
@@ -24,7 +33,7 @@ def test_clone_setup_includes_server_tools_for_existing_and_new_clones():
 
 def test_production_launchers_use_locked_frontend_install_without_boot_rebuild():
     server = _read("MV_server.bat")
-    updater = _read("update_git.bat")
+    updater = _read_updater()
     agent = _read("MV_agent.bat")
     setup = _read("setup_clone_git.ps1")
 
@@ -105,7 +114,7 @@ def test_scheduled_watchdog_uses_bounded_task_scheduler_retry():
 
 
 def test_update_restarts_registered_server_and_checks_readiness():
-    updater = _read("update_git.bat")
+    updater = _read_updater()
     wrapper = _read("restart_server_task.bat")
     restart = _read("restart_server_task.ps1")
 
@@ -136,7 +145,7 @@ def test_update_restarts_registered_server_and_checks_readiness():
 
 
 def test_update_persists_commit_and_restart_result():
-    updater = _read("update_git.bat")
+    updater = _read_updater()
 
     assert 'set "UPDATE_LOG=%ROOT%logs\\update.log"' in updater
     assert 'call :write_update_log "START" "update requested"' in updater
@@ -154,7 +163,7 @@ def test_update_persists_commit_and_restart_result():
 
 
 def test_failed_frontend_refresh_is_retried_before_server_restart():
-    updater = _read("update_git.bat")
+    updater = _read_updater()
 
     marker = 'set "FRONTEND_PENDING=%ROOT%logs\\frontend-build.pending"'
     detect_pending = 'if exist "!FRONTEND_PENDING!" ('
@@ -173,7 +182,7 @@ def test_failed_frontend_refresh_is_retried_before_server_restart():
 
 
 def test_failed_backend_dependency_refresh_is_retried():
-    updater = _read("update_git.bat")
+    updater = _read_updater()
 
     marker = 'set "BACKEND_PENDING=%ROOT%logs\\backend-deps.pending"'
     detect_pending = 'if exist "!BACKEND_PENDING!" ('
@@ -190,7 +199,7 @@ def test_failed_backend_dependency_refresh_is_retried():
 
 def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
     launcher = _read("task_launch.bat")
-    updater = _read("update_git.bat")
+    updater = _read_updater()
     restart = _read("restart_server_task.ps1")
 
     assert "tools\\rotate_text_log.py" in launcher
@@ -199,3 +208,77 @@ def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts()
     assert "--max-bytes 2097152 --keep 3" in updater
     assert 'server_ALERT.txt", "watchdog_ALERT.txt' in restart
     assert "Remove-Item -LiteralPath $alertPath" in restart
+
+
+def test_git_updater_runs_from_an_isolated_temp_copy():
+    launcher = _read("update_git.bat")
+    bootstrap = _read("tools/run_update_git.ps1")
+    worker = _read_updater()
+
+    assert len(launcher.splitlines()) == 1
+    assert "tools\\run_update_git.ps1" in launcher
+    assert "git pull" not in launcher
+    assert "Copy-Item -LiteralPath $Worker -Destination $TempWorker" in bootstrap
+    assert "[Guid]::NewGuid()" in bootstrap
+    assert "Remove-Item -LiteralPath $TempWorker" in bootstrap
+    assert 'set "ROOT=%~1"' in worker
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch self-update regression")
+def test_git_updater_finishes_after_repository_scripts_are_overwritten(tmp_path: Path):
+    root = tmp_path / "repo with spaces"
+    tools = root / "tools"
+    temp_dir = tmp_path / "temp"
+    tools.mkdir(parents=True)
+    temp_dir.mkdir()
+    shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
+    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    (tools / "update_git_worker.bat").write_text(
+        """@echo off
+set "ROOT=%~1"
+>"%ROOT%\\update_git.bat" echo @echo off
+>"%ROOT%\\tools\\update_git_worker.bat" echo @echo off
+>"%ROOT%\\update-finished.txt" echo safe
+exit /b 0
+""",
+        encoding="ascii",
+    )
+
+    env = os.environ.copy()
+    env["TEMP"] = str(temp_dir)
+    env["TMP"] = str(temp_dir)
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(root / "update_git.bat")],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (root / "update-finished.txt").read_text(encoding="ascii").strip() == "safe"
+    assert not list(temp_dir.glob("mvhub-update-*.bat"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch exit-code regression")
+def test_git_updater_propagates_the_isolated_worker_exit_code(tmp_path: Path):
+    root = tmp_path / "repo"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    shutil.copy2(ROOT / "update_git.bat", root / "update_git.bat")
+    shutil.copy2(ROOT / "tools" / "run_update_git.ps1", tools / "run_update_git.ps1")
+    (tools / "update_git_worker.bat").write_text("@exit /b 23\n", encoding="ascii")
+
+    env = os.environ.copy()
+    env["MVHUB_NO_PAUSE"] = "1"
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(root / "update_git.bat")],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 23
