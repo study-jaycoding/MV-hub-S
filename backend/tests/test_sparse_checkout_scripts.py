@@ -113,8 +113,9 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert 'call "%ROOT%restart_server_task.bat"' in updater
     assert "Start-Process" in wrapper and "-Verb RunAs" in wrapper
     assert "WindowsBuiltInRole]::Administrator" in wrapper
-    assert 'Start-ScheduledTask -TaskName $serverTask' in restart
-    assert 'Start-ScheduledTask -TaskName $watchdogTask' in restart
+    assert "Start-ScheduledTask -TaskName $TaskName" in restart
+    assert "Start-TaskAndWaitRunning -TaskName $serverTask" in restart
+    assert "Start-TaskAndWaitRunning -TaskName $watchdogTask" in restart
     assert "/api/ready" in restart
     assert "Get-ScheduledTaskInfo" in restart
     assert "server_console.log" in restart
@@ -123,6 +124,13 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert '-Root "%ROOT%"' not in wrapper
     assert 'IndexOf("server_supervisor.py"' in restart
     assert "previous MV Hub supervisor" in restart
+    assert 'IndexOf("server_watchdog.py"' in restart
+    assert "previous MV Hub watchdog" in restart
+    assert '$rootPrefix = $rootPath + "\\"' in restart
+    assert "IndexOf($rootPrefix" in restart
+    assert "Wait-TaskStopped" in restart
+    assert "Start-TaskAndWaitRunning" in restart
+    assert "Get-Content -LiteralPath $log -Encoding UTF8" in restart
     assert "Port $Port did not become free" in restart
     assert "$server.State -ne \"Running\"" in restart
 

@@ -21,7 +21,7 @@ function Show-LogTail([string]$Name) {
     $log = Join-Path $Root "logs\$Name"
     if (Test-Path -LiteralPath $log) {
         Write-Host "--- $Name (last 40 lines) ---" -ForegroundColor Yellow
-        Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $log -Encoding UTF8 -Tail 40 -ErrorAction SilentlyContinue
     }
 }
 
@@ -33,6 +33,27 @@ function Stop-ProcessTree([int]$TargetPid, [string]$Description) {
     }
 }
 
+function Wait-TaskStopped([string]$TaskName, [int]$WaitSeconds = 15) {
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    do {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($task.State -ne "Running") { return }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    throw "$TaskName did not stop: $(Get-TaskResultText $TaskName)"
+}
+
+function Start-TaskAndWaitRunning([string]$TaskName, [int]$WaitSeconds = 15) {
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    do {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($task.State -eq "Running") { return }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    throw "$TaskName did not enter Running state: $(Get-TaskResultText $TaskName)"
+}
+
 try {
     foreach ($name in @($serverTask, $watchdogTask)) {
         Get-ScheduledTask -TaskName $name -ErrorAction Stop | Out-Null
@@ -41,23 +62,31 @@ try {
     Write-Host "Stopping existing scheduled server/watchdog..."
     Stop-ScheduledTask -TaskName $watchdogTask -ErrorAction SilentlyContinue
     Stop-ScheduledTask -TaskName $serverTask -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+    Wait-TaskStopped -TaskName $watchdogTask
+    Wait-TaskStopped -TaskName $serverTask
 
-    # Stopping a scheduled cmd task can leave its Python supervisor detached.
-    # Killing only serve.py is insufficient because that parent immediately
-    # launches a replacement, which makes readiness pass while the task itself
-    # has already exited. Remove only supervisors belonging to this repo first.
+    # Stopping a scheduled cmd task can leave its Python supervisor or watchdog
+    # detached. Remove only managed processes belonging to this repo so a new
+    # scheduled task cannot exit early because an old process is still active.
     $rootPath = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\")
-    $supervisors = @(
+    $rootPrefix = $rootPath + "\"
+    $managedProcesses = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
                 $command = [string]$_.CommandLine
-                $command.IndexOf("server_supervisor.py", [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-                $command.IndexOf($rootPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+                ($command.IndexOf("server_supervisor.py", [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                    $command.IndexOf("server_watchdog.py", [StringComparison]::OrdinalIgnoreCase) -ge 0) -and
+                $command.IndexOf($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0
             }
     )
-    foreach ($supervisor in $supervisors) {
-        Stop-ProcessTree -TargetPid ([int]$supervisor.ProcessId) -Description "previous MV Hub supervisor"
+    foreach ($managedProcess in $managedProcesses) {
+        $command = [string]$managedProcess.CommandLine
+        $description = if ($command.IndexOf("server_watchdog.py", [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            "previous MV Hub watchdog"
+        } else {
+            "previous MV Hub supervisor"
+        }
+        Stop-ProcessTree -TargetPid ([int]$managedProcess.ProcessId) -Description $description
     }
     Start-Sleep -Seconds 1
 
@@ -88,9 +117,9 @@ try {
     }
 
     Write-Host "Starting scheduled server..."
-    Start-ScheduledTask -TaskName $serverTask -ErrorAction Stop
+    Start-TaskAndWaitRunning -TaskName $serverTask
     Write-Host "Starting scheduled watchdog..."
-    Start-ScheduledTask -TaskName $watchdogTask -ErrorAction Stop
+    Start-TaskAndWaitRunning -TaskName $watchdogTask
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $ready = $false
