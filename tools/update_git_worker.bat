@@ -25,9 +25,9 @@ for %%i in ("%ROOT%") do set "ROOT=%%~fi"
 if not "!ROOT:~-1!"=="\" set "ROOT=!ROOT!\"
 cd /d "%ROOT%"
 set "UPDATE_LOG=%ROOT%logs\update.log"
-set "FRONTEND_PENDING=%ROOT%logs\frontend-build.pending"
-set "BACKEND_PENDING=%ROOT%logs\backend-deps.pending"
-set "ISOLATED_UPDATER_READY=%ROOT%logs\isolated-updater-v1.ready"
+set "LEGACY_FRONTEND_PENDING=%ROOT%logs\frontend-build.pending"
+set "LEGACY_BACKEND_PENDING=%ROOT%logs\backend-deps.pending"
+set "LEGACY_ISOLATED_UPDATER_READY=%ROOT%logs\isolated-updater-v1.ready"
 set "UPDATE_STAGE=preflight"
 set "SERVER_RESULT=not-checked"
 set "BEFORE="
@@ -43,6 +43,26 @@ if not exist "%ROOT%.git" (
   echo         Get it ^(code only, skips docs/^):
   echo           git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
   echo           cd MV-hub-S ^&^& git sparse-checkout set backend frontend tools
+  goto :err
+)
+
+REM Recovery markers belong inside Git's own writable state directory. If git pull
+REM can update this clone, this location is writable even when an operational logs
+REM directory is redirected, locked, or governed by a different ACL. rev-parse also
+REM resolves linked worktrees whose .git entry is a file instead of a directory.
+set "GIT_DIR="
+for /f "delims=" %%i in ('git rev-parse --absolute-git-dir 2^>nul') do set "GIT_DIR=%%i"
+if not defined GIT_DIR (
+  echo [ERROR] could not resolve the writable Git state directory.
+  goto :err
+)
+set "UPDATE_STATE_DIR=!GIT_DIR!\mvhub-update"
+set "FRONTEND_PENDING=!UPDATE_STATE_DIR!\frontend-build.pending"
+set "BACKEND_PENDING=!UPDATE_STATE_DIR!\backend-deps.pending"
+set "ISOLATED_UPDATER_READY=!UPDATE_STATE_DIR!\isolated-updater-v2.ready"
+if not exist "!UPDATE_STATE_DIR!" mkdir "!UPDATE_STATE_DIR!" >nul 2>nul
+if not exist "!UPDATE_STATE_DIR!" (
+  echo [ERROR] could not prepare the Git update state directory: !UPDATE_STATE_DIR!
   goto :err
 )
 
@@ -119,20 +139,28 @@ if exist "!FRONTEND_PENDING!" (
   echo     Previous frontend refresh was incomplete - retrying it.
   set "FE_CHANGED=1"
 )
+if not exist "!ISOLATED_UPDATER_READY!" if exist "!LEGACY_FRONTEND_PENDING!" (
+  echo     Previous legacy frontend refresh was incomplete - retrying it.
+  set "FE_CHANGED=1"
+)
 if exist "!BACKEND_PENDING!" (
   echo     Previous backend dependency refresh was incomplete - retrying it.
+  set "REQ_CHANGED=1"
+)
+if not exist "!ISOLATED_UPDATER_READY!" if exist "!LEGACY_BACKEND_PENDING!" (
+  echo     Previous legacy backend refresh was incomplete - retrying it.
   set "REQ_CHANGED=1"
 )
 REM The first run through the isolated updater repairs a server that may already
 REM have advanced HEAD while the old self-overwriting batch aborted. Do not rely
 REM on BEFORE..AFTER for this one-time transition: refresh both runtime layers.
-if not exist "!ISOLATED_UPDATER_READY!" (
+if not exist "!ISOLATED_UPDATER_READY!" if not exist "!LEGACY_ISOLATED_UPDATER_READY!" (
   echo     First safe updater run - refreshing backend and frontend once.
   set "REQ_CHANGED=1"
   set "FE_CHANGED=1"
 )
 if defined FE_CHANGED (
-  >"!FRONTEND_PENDING!" echo !AFTER!
+  call :persist_marker "!FRONTEND_PENDING!" "!AFTER!"
   if errorlevel 1 (
     echo [ERROR] could not persist the pending frontend refresh marker.
     goto :err
@@ -145,7 +173,7 @@ echo     Using Python: !PYEXE! !PYARGS!
 REM Persist the backend stage before touching pip. If install or exact-version
 REM verification fails, the next update run must retry even though git HEAD has
 REM already advanced and BEFORE..AFTER is then empty.
->"!BACKEND_PENDING!" echo !AFTER!
+call :persist_marker "!BACKEND_PENDING!" "!AFTER!"
 if errorlevel 1 (
   echo [ERROR] could not persist the pending backend dependency marker.
   goto :err
@@ -167,6 +195,7 @@ if defined REQ_CHANGED (
 )
 "!PYEXE!" !PYARGS! "%ROOT%tools\verify_requirements.py" "%ROOT%backend\requirements.txt" || goto :err
 del /q "!BACKEND_PENDING!" >nul 2>nul
+del /q "!LEGACY_BACKEND_PENDING!" >nul 2>nul
 if exist "!BACKEND_PENDING!" (
   echo [ERROR] backend verification succeeded but its pending marker could not be cleared.
   goto :err
@@ -183,6 +212,7 @@ if defined FE_CHANGED (
   echo     building frontend...
   call npm run build || goto :err
   del /q "!FRONTEND_PENDING!" >nul 2>nul
+  del /q "!LEGACY_FRONTEND_PENDING!" >nul 2>nul
   if exist "!FRONTEND_PENDING!" (
     echo [ERROR] frontend build succeeded but its pending marker could not be cleared.
     goto :err
@@ -208,11 +238,12 @@ if not errorlevel 1 (
 
 echo.
 set "UPDATE_STAGE=complete"
->"!ISOLATED_UPDATER_READY!" echo !AFTER!
+call :persist_marker "!ISOLATED_UPDATER_READY!" "!AFTER!"
 if errorlevel 1 (
   echo [ERROR] could not persist the safe-updater completion marker.
   goto :err
 )
+del /q "!LEGACY_ISOLATED_UPDATER_READY!" >nul 2>nul
 call :write_update_log "SUCCESS" "before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"
 echo [done] updated to the latest version.
 echo        - registered server: restarted and readiness-checked automatically
@@ -229,6 +260,27 @@ echo.
 echo [ERROR] update failed - aborting.
 pause
 exit /b 1
+
+:persist_marker
+REM cmd.exe's ECHO redirection preserves a previous non-zero ERRORLEVEL even when
+REM the write succeeds. Write to a sibling temp file, verify the exact commit, then
+REM replace the marker and verify again. The returned code now describes this write.
+set "MARKER_FILE=%~1"
+set "MARKER_VALUE=%~2"
+set "MARKER_TEMP=%~1.tmp-!RANDOM!-!RANDOM!"
+>"!MARKER_TEMP!" echo(!MARKER_VALUE!
+%SystemRoot%\System32\findstr.exe /l /x /c:"!MARKER_VALUE!" "!MARKER_TEMP!" >nul 2>nul
+if errorlevel 1 (
+  del /q "!MARKER_TEMP!" >nul 2>nul
+  exit /b 1
+)
+move /y "!MARKER_TEMP!" "!MARKER_FILE!" >nul 2>nul
+if errorlevel 1 (
+  del /q "!MARKER_TEMP!" >nul 2>nul
+  exit /b 1
+)
+%SystemRoot%\System32\findstr.exe /l /x /c:"!MARKER_VALUE!" "!MARKER_FILE!" >nul 2>nul
+exit /b !errorlevel!
 
 :write_update_log
 ver >nul
