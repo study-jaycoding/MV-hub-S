@@ -67,6 +67,8 @@ function Assert-ReleaseArchive {
             "hf_cli_version.txt",
             "backend/serve.py",
             "backend/app/main.py",
+            "backend/app/routers/release_update.py",
+            "backend/app/services/release_update.py",
             "backend/requirements.txt",
             "frontend/dist/index.html",
             "runtime/python/python.exe",

@@ -74,6 +74,7 @@ from .routers import (
     members,
     projects,
     publish,
+    release_update,
     resolve_integration,
     scenes,
     share,
@@ -388,6 +389,7 @@ app.include_router(members.router)
 app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
+app.include_router(release_update.router)
 app.include_router(resolve_integration.router)
 app.include_router(auth.router)
 app.include_router(db_transfer.router)

@@ -22,6 +22,7 @@ from pathlib import Path
 CREATE_SUSPENDED = 0x00000004
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 INFINITE = 0xFFFFFFFF
 
@@ -180,7 +181,12 @@ def run_guarded(script: Path) -> int:
     os.environ["MVHUB_SESSION_GUARDED"] = "1"
     try:
         limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # 평소 하위 프로세스는 전부 Job에 남겨 창을 닫을 때 정리한다. 단, 명시적으로
+        # CREATE_BREAKAWAY_FROM_JOB을 요청한 검증된 업데이트 부트스트랩만 빠져나가 기존
+        # 런처를 종료한 뒤 새 버전을 설치·재실행할 수 있게 한다.
+        limits.BasicLimitInformation.LimitFlags = (
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+        )
         if not kernel32.SetInformationJobObject(
             job,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
