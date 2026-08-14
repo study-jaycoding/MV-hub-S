@@ -75,3 +75,22 @@ def test_backup_completion_is_visible_with_set_summary():
     assert "백업 완료" in line
     assert "백업파일수=3" in line
     assert "백업크기byte=2048" in line
+
+
+def test_recent_update_history_is_trimmed_and_bounded(tmp_path):
+    viewer = _module()
+    update_log = tmp_path / "update.log"
+    update_log.write_text(
+        "\n".join(
+            [
+                "[2026-08-14 09:00:00] START update requested",
+                "[2026-08-14 09:00:03] SUCCESS before=abc after=def server=restarted-ready",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert viewer.recent_update_lines(update_log, count=1) == [
+        "[2026-08-14 09:00:03] SUCCESS before=abc after=def server=restarted-ready"
+    ]

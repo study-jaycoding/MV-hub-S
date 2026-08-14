@@ -16,6 +16,7 @@ DEFAULT_LOG = Path(
         "CONTENT_HUB_LOG_DIR", ROOT / "backend" / "data" / "logs"
     )
 ) / "mvhub-runtime.jsonl"
+UPDATE_LOG = ROOT / "logs" / "update.log"
 
 _LABELS = {
     "startup_begin": "서버 시작",
@@ -109,6 +110,15 @@ def _tail(path: Path, count: int) -> list[str]:
         return list(deque(handle, maxlen=max(1, count)))
 
 
+def recent_update_lines(path: Path = UPDATE_LOG, count: int = 5) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        return [line.strip() for line in _tail(path, count) if line.strip()]
+    except OSError:
+        return []
+
+
 def _show_line(raw: str) -> None:
     try:
         payload = json.loads(raw)
@@ -134,6 +144,12 @@ def main() -> int:
             text = alert.read_text(encoding="utf-8", errors="replace").strip()
             if text:
                 print(f"[ALERT] {text}")
+
+    update_lines = recent_update_lines()
+    if update_lines:
+        print("최근 프로그램 업데이트:")
+        for line in update_lines:
+            print(f"  {line}")
 
     path = args.log.resolve()
     if not path.is_file():

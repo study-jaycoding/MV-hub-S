@@ -17,15 +17,22 @@ REM Korean Windows cp949 codec (UnicodeDecodeError on non-ASCII bytes).
 set "PYTHONUTF8=1"
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
+set "UPDATE_LOG=%ROOT%logs\update.log"
+set "UPDATE_STAGE=preflight"
+set "SERVER_RESULT=not-checked"
+set "BEFORE="
+set "AFTER="
+if not exist "%ROOT%logs" mkdir "%ROOT%logs"
+call :write_update_log "START" "update requested"
 
-where git >nul 2>nul || (echo [ERROR] git not found - install from git-scm.com and retry. & pause & exit /b 1)
-where npm.cmd >nul 2>nul || (echo [ERROR] Node.js/npm not found - run setup_clone_git.bat first. & pause & exit /b 1)
+where git >nul 2>nul || (echo [ERROR] git not found - install from git-scm.com and retry. & goto :err)
+where npm.cmd >nul 2>nul || (echo [ERROR] Node.js/npm not found - run setup_clone_git.bat first. & goto :err)
 if not exist "%ROOT%.git" (
   echo [ERROR] this folder is not a git clone ^(no .git^).
   echo         Get it ^(code only, skips docs/^):
   echo           git clone --filter=blob:none --sparse https://github.com/study-jaycoding/MV-hub-S.git
   echo           cd MV-hub-S ^&^& git sparse-checkout set backend frontend tools
-  pause & exit /b 1
+  goto :err
 )
 
 REM Remember the commit before pulling so we can see exactly what changed.
@@ -34,6 +41,7 @@ for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do set "BEFORE=%%i"
 
 echo.
 echo [1/3] Pulling latest ^(git pull^)...
+set "UPDATE_STAGE=git-pull"
 REM Older sparse clones only included backend/frontend. Server auto-start,
 REM backup and log tools live under tools/, so make that directory part of the
 REM working tree before pulling. Full clones are deliberately left unchanged.
@@ -41,8 +49,7 @@ git sparse-checkout list >nul 2>nul
 if not errorlevel 1 (
   git sparse-checkout add tools || (
     echo [ERROR] could not enable the required tools folder.
-    pause
-    exit /b 1
+    goto :err
   )
 )
 
@@ -64,15 +71,14 @@ if not errorlevel 1 set "PYEXE=python"
 :update_python_ready
 if not defined PYEXE (
   echo [ERROR] Real Python 3 not found - run setup_clone_git.bat first.
-  pause
-  exit /b 1
+  goto :err
 )
-node --version >nul 2>nul || (echo [ERROR] Node.js executable is not usable. & pause & exit /b 1)
+node --version >nul 2>nul || (echo [ERROR] Node.js executable is not usable. & goto :err)
 
 REM Old npm install runs may have reordered JSON keys in the tracked lock file.
 REM Restore it only when parsed JSON is exactly equal to HEAD (no real edit).
 if exist "%ROOT%tools\repair_package_lock.py" "!PYEXE!" !PYARGS! "%ROOT%tools\repair_package_lock.py" || goto :err
-git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & pause & exit /b 1)
+git pull --ff-only || (echo [ERROR] git pull failed - resolve local changes and retry. & goto :err)
 if exist "%ROOT%tools\repair_package_lock.py" "!PYEXE!" !PYARGS! "%ROOT%tools\repair_package_lock.py" || goto :err
 
 set "AFTER="
@@ -95,6 +101,7 @@ if "!BEFORE!"=="!AFTER!" (
 )
 
 echo [2/3] Backend dependencies...
+set "UPDATE_STAGE=backend-dependencies"
 echo     Using Python: !PYEXE! !PYARGS!
 if defined REQ_CHANGED (
   echo     requirements.txt changed - installing...
@@ -114,6 +121,7 @@ if defined REQ_CHANGED (
 "!PYEXE!" !PYARGS! "%ROOT%tools\verify_requirements.py" "%ROOT%backend\requirements.txt" || goto :err
 
 echo [3/3] Frontend...
+set "UPDATE_STAGE=frontend-build"
 cd /d "%ROOT%frontend" || goto :err
 if not exist node_modules set "FE_CHANGED=1"
 if not exist "%ROOT%frontend\dist\index.html" set "FE_CHANGED=1"
@@ -130,16 +138,22 @@ if defined FE_CHANGED (
 cd /d "%ROOT%"
 
 echo.
+set "UPDATE_STAGE=server-restart"
+set "SERVER_RESULT=not-registered"
 schtasks /Query /TN "MVHub Server" >nul 2>nul
 if not errorlevel 1 (
   echo [server] Registered shared server detected - applying update by restart...
+  set "SERVER_RESULT=restart-failed"
   set "CONTENT_HUB_NO_PAUSE=1"
   call "%ROOT%restart_server_task.bat" || goto :err
+  set "SERVER_RESULT=restarted-ready"
 ) else (
   echo [server] No shared-server task on this PC - no server restart needed.
 )
 
 echo.
+set "UPDATE_STAGE=complete"
+call :write_update_log "SUCCESS" "before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"
 echo [done] updated to the latest version.
 echo        - registered server: restarted and readiness-checked automatically
 echo        - worker PC:         run MV_agent.bat again
@@ -148,7 +162,16 @@ pause
 exit /b 0
 
 :err
+set "UPDATE_RC=!errorlevel!"
+if "!UPDATE_RC!"=="0" set "UPDATE_RC=1"
+call :write_update_log "FAILED" "stage=!UPDATE_STAGE! before=!BEFORE! after=!AFTER! server=!SERVER_RESULT! exit=!UPDATE_RC!"
 echo.
 echo [ERROR] update failed - aborting.
 pause
 exit /b 1
+
+:write_update_log
+ver >nul
+>>"!UPDATE_LOG!" echo [!date! !time!] %~1 %~2
+if errorlevel 1 echo [WARN] Could not write update history: !UPDATE_LOG!
+exit /b 0

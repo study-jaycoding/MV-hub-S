@@ -116,3 +116,21 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert "/api/ready" in restart
     assert "Get-ScheduledTaskInfo" in restart
     assert "server_console.log" in restart
+
+
+def test_update_persists_commit_and_restart_result():
+    updater = _read("update_git.bat")
+
+    assert 'set "UPDATE_LOG=%ROOT%logs\\update.log"' in updater
+    assert 'call :write_update_log "START" "update requested"' in updater
+    assert (
+        'call :write_update_log "SUCCESS" '
+        '"before=!BEFORE! after=!AFTER! server=!SERVER_RESULT!"'
+    ) in updater
+    assert 'set "SERVER_RESULT=restart-failed"' in updater
+    assert 'set "SERVER_RESULT=restarted-ready"' in updater
+    assert (
+        'call :write_update_log "FAILED" '
+        '"stage=!UPDATE_STAGE! before=!BEFORE! after=!AFTER! '
+        'server=!SERVER_RESULT! exit=!UPDATE_RC!"'
+    ) in updater
