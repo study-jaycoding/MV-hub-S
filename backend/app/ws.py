@@ -58,9 +58,13 @@ class ConnectionManager:
         """운영 관측용 연결 수. 계정 식별자는 반환하지 않는다."""
         async with self._lock:
             scoped = sum(1 for account in self._active.values() if account is not None)
+            authenticated_accounts = len(
+                {account for account in self._active.values() if account is not None}
+            )
             return {
                 "connections": len(self._active),
                 "authenticated_connections": scoped,
+                "authenticated_accounts": authenticated_accounts,
                 "local_connections": len(self._active) - scoped,
                 "pending_notify_accounts": len(self._pending_accounts),
                 "pending_notify_domains": len(self._pending_domains),

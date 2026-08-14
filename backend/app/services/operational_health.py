@@ -5,23 +5,40 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..config import MANAGE_ENABLED
+from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..db import get_connection, get_db_path
 from ..manage_db import MANAGE_DB_PATH
 from ..repo.manage_telemetry import telemetry_outbox_status
 from .backup import list_backups_info
 
 _ACTIVE_PHASES = ("pending", "submitting", "running", "tracking", "verifying", "blocked")
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _shared_server_runtime() -> bool:
+    no_proxy = os.environ.get("CONTENT_HUB_NO_PROXY", "").strip().lower()
+    return AUTH_ENABLED and no_proxy not in _TRUE_VALUES
 
 
 def generation_queue_snapshot() -> dict[str, Any]:
     """생성 큐가 어느 단계에 있고 어디서 오래 머무는지 개인식별 없이 집계한다."""
+    if _shared_server_runtime():
+        return {
+            "phase_counts": {},
+            "active_total": 0,
+            "oldest_active_age_seconds": 0,
+            "overdue_checks": 0,
+            "check_failures_total": 0,
+            "unanchored_over_10m": 0,
+            "applicable": False,
+        }
     placeholders = ",".join("?" for _ in _ACTIVE_PHASES)
     with get_connection() as conn:
         rows = conn.execute(
@@ -62,6 +79,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
         "overdue_checks": int(overdue_checks),
         "check_failures_total": int(check_failures),
         "unanchored_over_10m": int(unanchored_stale),
+        "applicable": True,
     }
 
 
@@ -131,6 +149,15 @@ def database_readiness() -> dict[str, Any]:
 
 def telemetry_snapshot() -> dict[str, Any]:
     """관리 대시보드 전송 대기량·지연만 반환한다. 오류 원문은 운영 스냅샷에 싣지 않는다."""
+    # 인증 공유 서버는 텔레메트리의 수신지라 로컬 outbox를 전송하지 않는다. 과거 단일형 DB에
+    # 남은 행을 대기 장애로 표시하면 작업자 전송 문제로 오해하므로 서버 상태에서는 제외한다.
+    if _shared_server_runtime():
+        return {
+            "pending": 0,
+            "failed": 0,
+            "oldest_age_seconds": None,
+            "applicable": False,
+        }
     status = telemetry_outbox_status()
     oldest_age: int | None = None
     raw_oldest = status.get("oldest_dirty")
@@ -147,6 +174,7 @@ def telemetry_snapshot() -> dict[str, Any]:
         "pending": int(status.get("pending") or 0),
         "failed": int(status.get("failed") or 0),
         "oldest_age_seconds": oldest_age,
+        "applicable": True,
     }
 
 

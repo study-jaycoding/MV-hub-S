@@ -73,6 +73,20 @@ class WsBroadcastScopeTests(unittest.TestCase):
         # None 소켓: account_uid=None broadcast + broadcast_all
         self.assertEqual([m["type"] for m in none_msgs], ["progress", "synced"])
 
+    def test_stats_count_unique_accounts_under_100_connections(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            for index in range(100):
+                mgr._active[FakeWS()] = f"acct:{index // 2}"
+            mgr._active[FakeWS()] = None
+            return await mgr.stats()
+
+        stats = self._run(scenario())
+        self.assertEqual(stats["connections"], 101)
+        self.assertEqual(stats["authenticated_connections"], 100)
+        self.assertEqual(stats["authenticated_accounts"], 50)
+        self.assertEqual(stats["local_connections"], 1)
+
     def test_mutation_notifications_coalesce_and_preserve_known_origins(self):
         async def scenario():
             mgr = ConnectionManager()

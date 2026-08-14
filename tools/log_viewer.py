@@ -37,6 +37,7 @@ _LABELS = {
     "pm_metrics_failed": "관리 통계 기록 실패",
     "generation_queue_attention": "생성 큐 확인 필요",
     "telemetry_backlog": "관리 데이터 전송 지연",
+    "worker_telemetry_received": "작업자 생성정보 수신",
     "database_unready": "데이터베이스 준비 실패",
     "generation_journal_write_failed": "생성 이력 저장 실패",
     "audit_journal_write_failed": "감사 기록 저장 실패",
@@ -61,14 +62,29 @@ def format_event(payload: dict[str, Any]) -> str | None:
         operations = snapshot.get("operations") or {}
         queue = operations.get("generation_queue") or {}
         agents = snapshot.get("agents") or {}
+        websocket = snapshot.get("websocket") or {}
         backups = operations.get("backups") or {}
         telemetry = operations.get("telemetry") or {}
         status = requests.get("status") or {}
+        connected_accounts = max(
+            int(agents.get("connected_accounts") or 0),
+            int(websocket.get("authenticated_accounts") or 0),
+        )
+        telemetry_text = (
+            f" | 관리전송 대기 {telemetry.get('pending', 0)} (실패 {telemetry.get('failed', 0)})"
+            if telemetry.get("applicable", True)
+            else ""
+        )
+        queue_text = (
+            f" | 활성 생성 {queue.get('active_total', 0)}"
+            if queue.get("applicable", True)
+            else ""
+        )
         return (
             f"[{stamp}] 상태 | 요청 {requests.get('total', 0)} (5xx {status.get('5xx', 0)})"
-            f" | 활성 생성 {queue.get('active_total', 0)}"
-            f" | 연결 에이전트 {agents.get('connected_accounts', 0)}"
-            f" | 관리전송 대기 {telemetry.get('pending', 0)} (실패 {telemetry.get('failed', 0)})"
+            f"{queue_text}"
+            f" | 접속 계정 {connected_accounts}"
+            f"{telemetry_text}"
             f" | 백업 {backups.get('set_count', 0)}세트"
         )
 
@@ -88,6 +104,12 @@ def format_event(payload: dict[str, Any]) -> str | None:
         ("failed_checks", "실패검사"),
         ("pending", "전송대기"),
         ("failed", "전송실패"),
+        ("received_items", "수신"),
+        ("upserted_items", "반영"),
+        ("skipped_items", "제외"),
+        ("active_items", "진행중"),
+        ("completed_items", "완료"),
+        ("failed_items", "실패"),
         ("oldest_age_seconds", "최장대기초"),
         ("unanchored_over_10m", "작업ID없음"),
         ("audit_action", "변경"),

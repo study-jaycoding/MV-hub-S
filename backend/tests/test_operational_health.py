@@ -72,12 +72,13 @@ def test_database_readiness_checks_core_tables(monkeypatch):
             db.flush_pool()
 
 
-def test_telemetry_snapshot_exposes_backlog_without_error_text():
+def test_telemetry_snapshot_exposes_backlog_without_error_text(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         old = os.environ.get("CONTENT_HUB_DB")
         os.environ["CONTENT_HUB_DB"] = str(Path(tmp) / "content_hub.db")
         db.flush_pool()
         try:
+            monkeypatch.setattr(operational_health, "AUTH_ENABLED", False)
             db.init_db()
             repo.ensure_default_worker()
             gen_id = repo.create_local_generation(
@@ -106,6 +107,43 @@ def test_telemetry_snapshot_exposes_backlog_without_error_text():
             else:
                 os.environ["CONTENT_HUB_DB"] = old
             db.flush_pool()
+
+
+def test_shared_server_ignores_legacy_local_telemetry_outbox(monkeypatch):
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", True)
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
+    monkeypatch.setattr(
+        operational_health,
+        "telemetry_outbox_status",
+        lambda: (_ for _ in ()).throw(AssertionError("shared server must not read local outbox")),
+    )
+
+    assert operational_health.telemetry_snapshot() == {
+        "pending": 0,
+        "failed": 0,
+        "oldest_age_seconds": None,
+        "applicable": False,
+    }
+
+
+def test_shared_server_ignores_local_generation_queue(monkeypatch):
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", True)
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
+    monkeypatch.setattr(
+        operational_health,
+        "get_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("shared server must not read local queue")),
+    )
+
+    assert operational_health.generation_queue_snapshot() == {
+        "phase_counts": {},
+        "active_total": 0,
+        "oldest_active_age_seconds": 0,
+        "overdue_checks": 0,
+        "check_failures_total": 0,
+        "unanchored_over_10m": 0,
+        "applicable": False,
+    }
 
 
 def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_clear():

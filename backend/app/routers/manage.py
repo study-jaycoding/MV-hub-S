@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import uuid
@@ -37,8 +38,10 @@ from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 from ..services.path_safety import safe_join
+from ..services.operational_logging import log_event
 
 router = APIRouter(prefix="/api/manage", tags=["manage"])
+_manage_log = logging.getLogger("mvhub.manage")
 
 
 _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
@@ -126,6 +129,23 @@ class TelemetryPushIn(BaseModel):
     items: list[TelemetryFactIn] = Field(default_factory=list)
 
 
+def _telemetry_activity_summary(
+    items: list[dict], upserted: int, skipped: list[str]
+) -> dict[str, int]:
+    statuses = [str(item.get("status") or "").strip().lower() for item in items]
+    return {
+        "received_items": len(items),
+        "upserted_items": int(upserted),
+        "skipped_items": len(skipped),
+        "active_items": sum(
+            status in {"pending", "submitting", "running", "tracking", "verifying", "blocked"}
+            for status in statuses
+        ),
+        "completed_items": sum(status in {"done", "completed", "success"} for status in statuses),
+        "failed_items": sum(status in {"failed", "error"} for status in statuses),
+    }
+
+
 def _push_acc(request: Request) -> dict:
     """텔레메트리 push 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
@@ -140,6 +160,12 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
 
     items = [it.model_dump() for it in body.items]
     n, skipped = upsert_facts(acc.get("email") or "local", acc.get("creator_uid"), items)
+    if items:
+        log_event(
+            _manage_log,
+            "worker_telemetry_received",
+            **_telemetry_activity_summary(items, n, skipped),
+        )
     # skipped = 서버가 반영 안 한 항목(미링크 전체·남의 것). 클라가 이것만 재시도로 남기고 나머지는 정리.
     return {"upserted": n, "skipped": skipped}
 

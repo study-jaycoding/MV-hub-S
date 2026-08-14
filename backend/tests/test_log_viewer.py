@@ -40,6 +40,7 @@ def test_runtime_snapshot_is_one_clean_summary_line():
             "snapshot": {
                 "requests": {"total": 30, "status": {"5xx": 1}},
                 "agents": {"connected_accounts": 2},
+                "websocket": {"authenticated_accounts": 3},
                 "operations": {
                     "generation_queue": {"active_total": 3},
                     "backups": {"set_count": 7},
@@ -49,8 +50,61 @@ def test_runtime_snapshot_is_one_clean_summary_line():
     )
     assert line == (
         "[2026-08-13 12:00:00] 상태 | 요청 30 (5xx 1) | 활성 생성 3"
-        " | 연결 에이전트 2 | 관리전송 대기 0 (실패 0) | 백업 7세트"
+        " | 접속 계정 3 | 관리전송 대기 0 (실패 0) | 백업 7세트"
     )
+
+
+def test_shared_server_snapshot_hides_non_applicable_local_outbox():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "event": "runtime_snapshot",
+            "snapshot": {
+                "requests": {"total": 1, "status": {"5xx": 0}},
+                "websocket": {"authenticated_accounts": 4},
+                "operations": {
+                    "generation_queue": {"active_total": 0},
+                    "telemetry": {"pending": 258, "failed": 0, "applicable": False},
+                    "backups": {"set_count": 7},
+                },
+            },
+        }
+    )
+    assert "접속 계정 4" in line
+    assert "258" not in line and "관리전송" not in line
+
+
+def test_shared_server_snapshot_hides_non_applicable_local_generation_queue():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "event": "runtime_snapshot",
+            "snapshot": {
+                "operations": {
+                    "generation_queue": {"active_total": 0, "applicable": False},
+                    "telemetry": {"applicable": False},
+                }
+            },
+        }
+    )
+    assert "활성 생성" not in line
+
+
+def test_worker_telemetry_event_is_visible_without_identity():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "event": "worker_telemetry_received",
+            "received_items": 3,
+            "upserted_items": 3,
+            "completed_items": 2,
+            "failed_items": 1,
+        }
+    )
+    assert "작업자 생성정보 수신" in line
+    assert "수신=3" in line and "완료=2" in line and "실패=1" in line
 
 
 def test_unimportant_info_event_is_hidden_but_warning_is_shown():
