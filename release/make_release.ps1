@@ -8,7 +8,8 @@ param(
     [switch]$SkipPythonRuntime,
     [switch]$SkipNodeRuntime,
     [switch]$SkipHiggsfieldCli,
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    [switch]$AllowResolveIncompatiblePython
 )
 
 $ErrorActionPreference = "Stop"
@@ -217,6 +218,36 @@ function Resolve-PythonRuntime {
     throw "No real Python runtime found. Pass -PythonExe C:\Path\To\python.exe or install Python first."
 }
 
+function Assert-ResolveCompatiblePython {
+    param([object]$Python)
+
+    # DaVinci Resolve 연동(fusionscript)은 파이썬 버전에 민감하다. Resolve 21 기준
+    # 3.10~3.12만 지원하고 3.13+는 "initialization of fusionscript failed" 로 연결이
+    # 전멸한다(실측: 동봉 3.14 + Resolve 21.0.4). 빌드 PC 기본 파이썬이 최신(3.14)이라
+    # -PythonExe 없이 빌드하면 재발하므로, 범위 밖이면 빌드를 중단한다.
+    $Raw = & $Python.Exe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $Raw) {
+        throw "Could not read bundled Python version: $($Python.Exe)"
+    }
+    $VersionText = ([string]$Raw).Trim()
+    $Parts = $VersionText.Split(".")
+    $Minor = [int]$Parts[1]
+    if ([int]$Parts[0] -ne 3 -or $Minor -lt 10 -or $Minor -ge 13) {
+        if ($AllowResolveIncompatiblePython) {
+            Write-Host "      [warn] Python $VersionText is OUTSIDE the DaVinci Resolve-compatible range (3.10-3.12)."
+            Write-Host "      [warn] Proceeding because -AllowResolveIncompatiblePython was passed."
+        }
+        else {
+            throw ("Bundled Python $VersionText is not DaVinci Resolve-compatible (need 3.10-3.12; Resolve 21 " +
+                "fusionscript fails on 3.13+). Install Python 3.11 x64 and pass -PythonExe, " +
+                "or pass -AllowResolveIncompatiblePython to override.")
+        }
+    }
+    else {
+        Write-Host "      Bundled Python $VersionText (Resolve-compatible: 3.10-3.12)"
+    }
+}
+
 function Resolve-NodeRuntime {
     param([string]$PreferredRoot)
 
@@ -350,6 +381,7 @@ Set-Content -LiteralPath (Join-Path $Stage "VERSION.txt") -Value $Version -Encod
 if (-not $SkipPythonRuntime) {
     Write-Host "[4/8] Copying bundled Python runtime..."
     $Python = Resolve-PythonRuntime -PreferredExe $PythonExe
+    Assert-ResolveCompatiblePython -Python $Python
     $RuntimeDir = Join-Path $Stage "runtime\python"
     $SitePackages = Join-Path $RuntimeDir "Lib\site-packages"
 

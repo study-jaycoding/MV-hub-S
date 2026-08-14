@@ -87,7 +87,13 @@ export interface ResolveScriptInstallResult extends ResolveScriptStatus {
 }
 
 export interface ResolveConnectionStatus {
-  status: "ready" | "no_project" | "not_running" | "api_unavailable" | "module_unavailable";
+  status:
+    | "ready"
+    | "no_project"
+    | "not_running"
+    | "api_unavailable"
+    | "module_unavailable"
+    | "python_incompatible";
   connected: boolean;
   process_running: boolean;
   project_open: boolean;
