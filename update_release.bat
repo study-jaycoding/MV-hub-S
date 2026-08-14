@@ -10,10 +10,16 @@ for %%I in ("%~dp0.") do set "TARGET_DIR=%%~fI"
 if defined MVHUB_UPDATE_TARGET_DIR for %%I in ("%MVHUB_UPDATE_TARGET_DIR%") do set "TARGET_DIR=%%~fI"
 set "UPDATE_PS1=%TEMP%\mvhub-update-%RANDOM%-%RANDOM%.ps1"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw; $marker = '### MVHUB_' + 'UPDATE_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Update payload not found.' }; Set-Content -LiteralPath '%UPDATE_PS1%' -Value $parts[1] -Encoding UTF8"
+REM NOTE: keep this whole file ASCII-only. On stock Korean Windows (ANSI=CP949) a
+REM PowerShell default-encoding read of UTF-8 Korean text eats adjacent ASCII bytes
+REM (closing quotes/braces), which corrupted the extracted payload and killed every
+REM update with "The term 'catch' is not recognized". -Encoding UTF8 below is the
+REM second layer of the same defense.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'UPDATE_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Update payload not found.' }; Set-Content -LiteralPath '%UPDATE_PS1%' -Value $parts[1] -Encoding UTF8"
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to prepare MV Hub updater.
+  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "@{state='failed';message='Update launcher failed to prepare. Replace update_release.bat from the release share and retry.';updated_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:MVHUB_UPDATE_STATE_FILE -Encoding UTF8"
   if not "%MVHUB_NO_PAUSE%"=="1" pause
   exit /b 1
 )
@@ -25,6 +31,9 @@ del "%UPDATE_PS1%" >nul 2>nul
 if not "%UPDATE_EXIT%"=="0" (
   echo.
   echo [ERROR] MV Hub update failed.
+  REM Keep the payload's detailed failed state (e.g. SHA mismatch); write this generic
+  REM fallback only when the payload died before recording its own failure.
+  if defined MVHUB_UPDATE_STATE_FILE powershell -NoProfile -Command "$f=$env:MVHUB_UPDATE_STATE_FILE; $keep=$false; if (Test-Path -LiteralPath $f) { try { if ((Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).state -eq 'failed') { $keep=$true } } catch {} }; if (-not $keep) { @{state='failed';message='Update script failed (exit %UPDATE_EXIT%). Check %%LOCALAPPDATA%%\MVHub\updates\update.log.';updated_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $f -Encoding UTF8 }"
   if not "%MVHUB_NO_PAUSE%"=="1" pause
   exit /b %UPDATE_EXIT%
 )
@@ -60,7 +69,8 @@ function Write-UpdateState {
     param(
         [string]$State,
         [string]$Message,
-        [string]$Latest = $LatestVersion
+        [string]$Latest = $LatestVersion,
+        [int]$Percent = -1
     )
     if (-not $StateFile) {
         return
@@ -79,6 +89,9 @@ function Write-UpdateState {
         latest_version = $Latest
         updated_at = [DateTime]::UtcNow.ToString("o")
     }
+    if ($Percent -ge 0) {
+        $Payload["percent"] = [Math]::Min(100, $Percent)
+    }
     $TempState = "$StateFile.$PID.tmp"
     $Payload | ConvertTo-Json | Set-Content -LiteralPath $TempState -Encoding UTF8
     Move-Item -LiteralPath $TempState -Destination $StateFile -Force
@@ -96,7 +109,7 @@ function Restart-MvHubAndWaitReady {
     if (-not $ReadyUrl) {
         $ReadyUrl = "http://127.0.0.1:8010/api/ready"
     }
-    Write-UpdateState -State "restarting" -Message "새 버전으로 프로그램을 다시 시작하는 중…" -Latest $ExpectedVersion
+    Write-UpdateState -State "restarting" -Message "Restarting MV Hub on the new version..." -Latest $ExpectedVersion -Percent 95
     $PreviousNoBrowser = $env:MVHUB_NO_BROWSER
     $env:MVHUB_NO_BROWSER = "1"
     try {
@@ -117,12 +130,12 @@ function Restart-MvHubAndWaitReady {
             $Ready = Invoke-RestMethod -Uri $ReadyUrl -TimeoutSec 2
             $Installed = (Get-Content -LiteralPath (Join-Path $TargetDir "VERSION.txt") -Raw).Trim()
             if ($Ready.status -eq "ready" -and $Installed -eq $ExpectedVersion) {
-                Write-UpdateState -State "complete" -Message "업데이트 완료 · 프로그램이 다시 시작됐습니다." -Latest $ExpectedVersion
+                Write-UpdateState -State "complete" -Message "Update finished. MV Hub restarted." -Latest $ExpectedVersion -Percent 100
                 return
             }
         }
         catch {
-            # 기존 프로세스 종료와 새 허브 부팅 사이에는 연결 실패가 정상이다.
+            # Connection failures are expected between old-process exit and new-hub boot.
         }
         Start-Sleep -Seconds 1
     }
@@ -134,9 +147,14 @@ if (-not (Test-Path -LiteralPath $SourceFile)) {
     throw "INSTALL_SOURCE.txt not found. Run MVHub_Install.bat from the server once, then use this updater."
 }
 
-$BaseUrl = (Get-Content -LiteralPath $SourceFile -Raw).Trim()
+$BaseUrl = (Get-Content -LiteralPath $SourceFile -Raw -Encoding UTF8).Trim()
 if (-not $BaseUrl) {
     throw "INSTALL_SOURCE.txt is empty."
+}
+if ($BaseUrl -match "^https://") {
+    # PS 5.1 defaults can exclude TLS 1.2; enable it for both Invoke-WebRequest and WebRequest.
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 }
 
 function Get-ReleaseFile {
@@ -155,6 +173,58 @@ function Get-ReleaseFile {
             throw "Server file not found: $Src"
         }
         Copy-Item -LiteralPath $Src -Destination $Destination -Force
+    }
+}
+
+function Get-ReleaseFileWithProgress {
+    # Streams the big release ZIP in 1MB chunks so both the console window and the
+    # in-app state file can show percent progress. Download maps to 10-60% overall.
+    param(
+        [string]$Name,
+        [string]$Destination,
+        [long]$ExpectedSize = 0
+    )
+    $Response = $null
+    $In = $null
+    $Out = $null
+    try {
+        if ($BaseUrl -match "^https?://") {
+            $Uri = $BaseUrl.TrimEnd("/") + "/" + $Name
+            $Response = [System.Net.WebRequest]::Create($Uri).GetResponse()
+            $In = $Response.GetResponseStream()
+            if ($ExpectedSize -le 0) { $ExpectedSize = [long]$Response.ContentLength }
+        }
+        else {
+            $Src = Join-Path $BaseUrl $Name
+            if (-not (Test-Path -LiteralPath $Src)) {
+                throw "Server file not found: $Src"
+            }
+            if ($ExpectedSize -le 0) { $ExpectedSize = (Get-Item -LiteralPath $Src).Length }
+            $In = [System.IO.File]::OpenRead($Src)
+        }
+        $Out = [System.IO.File]::Create($Destination)
+        $Buffer = New-Object byte[] 1048576
+        [long]$Done = 0
+        $LastPct = -1
+        while (($Read = $In.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+            $Out.Write($Buffer, 0, $Read)
+            $Done += $Read
+            if ($ExpectedSize -gt 0) {
+                # Server-reported size may be wrong; clamp so progress never exceeds 100%.
+                $Pct = [Math]::Min(100, [int][Math]::Floor(100 * $Done / $ExpectedSize))
+                if ($Pct -ge ($LastPct + 5)) {
+                    $LastPct = $Pct
+                    $Overall = 10 + [int][Math]::Floor($Pct / 2)
+                    Write-Host ("[update] {0,3}%  downloading {1} ({2}%)" -f $Overall, $Name, $Pct)
+                    Write-UpdateState -State "downloading" -Message "Downloading update package... ($Pct%)" -Percent $Overall
+                }
+            }
+        }
+    }
+    finally {
+        if ($Out) { $Out.Dispose() }
+        if ($In) { $In.Dispose() }
+        if ($Response) { $Response.Dispose() }
     }
 }
 
@@ -270,28 +340,34 @@ function Install-Package {
     $ZipPath = Join-Path $TempRoot $Latest.file
     $ExtractDir = Join-Path $TempRoot "extract"
 
-    Write-Host "[update] Downloading $($Latest.file)..."
-    Write-UpdateState -State "downloading" -Message "업데이트 파일을 내려받는 중…" -Latest ([string]$Latest.version)
-    Get-ReleaseFile -Name $Latest.file -Destination $ZipPath
+    Write-Host "[update]  10%  Downloading $($Latest.file)..."
+    Write-UpdateState -State "downloading" -Message "Downloading update package..." -Latest ([string]$Latest.version) -Percent 10
+    $ExpectedSize = 0
+    try { $ExpectedSize = [long]$Latest.size } catch { $ExpectedSize = 0 }
+    Get-ReleaseFileWithProgress -Name $Latest.file -Destination $ZipPath -ExpectedSize $ExpectedSize
 
+    Write-Host "[update]  62%  Verifying SHA256..."
+    Write-UpdateState -State "downloading" -Message "Verifying package integrity..." -Latest ([string]$Latest.version) -Percent 62
     $Actual = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($Actual -ne ([string]$Latest.sha256).ToLowerInvariant()) {
         throw "SHA256 mismatch. Expected $($Latest.sha256), got $Actual"
     }
 
-    Write-Host "[update] Extracting..."
+    Write-Host "[update]  65%  Extracting..."
+    Write-UpdateState -State "installing" -Message "Extracting update package..." -Latest ([string]$Latest.version) -Percent 65
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
     $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
     Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
 
-    Write-Host "[update] Installing to $TargetDir..."
-    Write-UpdateState -State "installing" -Message "검증된 새 버전을 설치하는 중…" -Latest ([string]$Latest.version)
+    Write-Host "[update]  75%  Installing to $TargetDir..."
+    Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 75
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     Stop-MvHubProcesses -Root $TargetDir
 
-    # runtime\python 은 overlay 복사(잔재가 남는 병합)에서 제외하고 아래에서 rename 스왑으로
-    # 통째 교체한다. 파이썬 버전이 바뀌는 업데이트(예 3.14→3.11)에서 옛 python314.dll·Lib
-    # 잔재가 남으면 런타임이 뒤섞여 DaVinci Resolve(fusionscript) 연동이 깨지기 때문.
+    # runtime\python is excluded from the overlay copy (a merge that leaves stale files
+    # behind) and replaced wholesale via the rename swap below. When the bundled Python
+    # version changes (e.g. 3.14 -> 3.11), leftover python314.dll / old Lib files would
+    # mix the runtimes and break the DaVinci Resolve (fusionscript) integration.
     Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
         if ($_.Name -eq "runtime") {
             $RuntimeTarget = Join-Path $TargetDir "runtime"
@@ -309,15 +385,17 @@ function Install-Package {
 
     $NewPython = Join-Path $ExtractDir "runtime\python"
     if (Test-Path -LiteralPath $NewPython) {
-        # 새 런타임을 python.next.<토큰>에 먼저 완성·검증한 뒤 rename 두 번으로 교체한다.
-        # 두 번째 rename 실패 시 previous 를 즉시 원복 — 어느 시점에 끊겨도 실행 가능한
-        # 런타임이 남는다(원자적 스왑). 검증 성공 후에만 previous 를 삭제한다.
+        # Stage the new runtime fully in python.next.<token>, verify it runs, then swap
+        # with two renames. If the second rename fails, restore previous immediately -
+        # whatever point this dies at, a runnable runtime remains (atomic swap).
+        # The previous backup is deleted only after the swap verifies.
         $Token = [Guid]::NewGuid().ToString("N").Substring(0, 8)
         $PythonDir = Join-Path $TargetDir "runtime\python"
         $NextDir = Join-Path $TargetDir "runtime\python.next.$Token"
         $PrevDir = Join-Path $TargetDir "runtime\python.previous.$Token"
 
-        Write-Host "[update] Staging new Python runtime..."
+        Write-Host "[update]  85%  Staging new Python runtime..."
+        Write-UpdateState -State "installing" -Message "Swapping Python runtime..." -Latest ([string]$Latest.version) -Percent 85
         New-Item -ItemType Directory -Force -Path (Join-Path $TargetDir "runtime") | Out-Null
         Copy-Item -LiteralPath $NewPython -Destination $NextDir -Recurse -Force
         $NextExe = Join-Path $NextDir "python.exe"
@@ -347,6 +425,8 @@ function Install-Package {
         }
     }
 
+    Write-Host "[update]  92%  Verifying installed files..."
+    Write-UpdateState -State "installing" -Message "Verifying installed files..." -Latest ([string]$Latest.version) -Percent 92
     Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
     Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
 }
@@ -357,11 +437,11 @@ New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 try {
     Write-Host "[1/3] Checking MV Hub release server..."
     Write-Host "      Source: $BaseUrl"
-    Write-UpdateState -State "checking" -Message "최신 릴리스를 확인하는 중…"
+    Write-UpdateState -State "checking" -Message "Checking the release server..." -Percent 5
 
     $LatestPath = Join-Path $TempRoot "latest.json"
     Get-ReleaseFile -Name "latest.json" -Destination $LatestPath
-    $Latest = Get-Content -LiteralPath $LatestPath -Raw | ConvertFrom-Json
+    $Latest = Get-Content -LiteralPath $LatestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $Latest.version -or -not $Latest.file -or -not $Latest.sha256) {
         throw "latest.json must contain version, file, and sha256."
     }
@@ -389,7 +469,7 @@ try {
                 -ExpectedVersion ([string]$Latest.higgsfield_cli_version) `
                 -Label "installed" | Out-Null
             Write-Host "[2/3] Already up to date: $CurrentVersion"
-            Write-UpdateState -State "up_to_date" -Message "이미 최신 버전입니다." -Latest $LatestVersion
+            Write-UpdateState -State "up_to_date" -Message "Already up to date." -Latest $LatestVersion
         }
         catch {
             Write-Host "[2/3] App version matches, but bundled CLI needs repair: $($_.Exception.Message)"
@@ -403,14 +483,14 @@ try {
             Restart-MvHubAndWaitReady -ExpectedVersion $LatestVersion
         }
         else {
-            Write-UpdateState -State "complete" -Message "업데이트 설치가 완료됐습니다. 프로그램을 다시 실행하세요." -Latest $LatestVersion
+            Write-UpdateState -State "complete" -Message "Update installed. Start MV Hub again." -Latest $LatestVersion -Percent 100
         }
     }
 
     Write-Host "[3/3] Update complete."
 }
 catch {
-    Write-UpdateState -State "failed" -Message ("업데이트 실패: " + $_.Exception.Message) -Latest $LatestVersion
+    Write-UpdateState -State "failed" -Message ("Update failed: " + $_.Exception.Message) -Latest $LatestVersion
     throw
 }
 finally {
