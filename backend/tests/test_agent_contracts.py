@@ -137,6 +137,32 @@ def test_agent_requests_browser_pair_without_credentials():
     )
 
 
+def test_bat_launchers_are_ascii_only():
+    """루트의 모든 .bat 은 ASCII 만 허용 — 임베디드 PowerShell 페이로드 포함.
+
+    회귀: update_release.bat 의 한글 메시지가 표준 한국어 Windows(ACP=CP949)에서
+    페이로드 추출을 깨뜨려(오독이 뒤따르는 ASCII 따옴표를 삼킴) 업데이트가 전멸했다
+    (2026-08-14, "The term 'catch' is not recognized"). 빌드 PC 가 ACP=65001 이면
+    재현되지 않아 수동 테스트로는 못 잡는다 — 이 테스트가 유일한 방어선이다.
+    """
+    offenders: list[str] = []
+    for bat in sorted(ROOT_DIR.glob("*.bat")):
+        data = bat.read_bytes()
+        bad_lines = sorted(
+            {
+                1 + data[:index].count(b"\n")
+                for index, byte in enumerate(data)
+                if byte > 0x7F
+            }
+        )
+        if bad_lines:
+            offenders.append(f"{bat.name} lines {bad_lines[:5]}")
+    assert offenders == [], (
+        "비ASCII 문자가 든 .bat 발견 — 한글 UI 문구는 프론트(state 매핑)로 옮겨라: "
+        + "; ".join(offenders)
+    )
+
+
 def test_test_dev_has_no_console_account_or_password_prompt():
     launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
     assert "set /p \"MVHUB_AGENT_EMAIL=" not in launcher
