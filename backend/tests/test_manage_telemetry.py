@@ -259,6 +259,49 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertEqual(status["pending"], 1)
         self.assertEqual(status["failed"], 1)
 
+    def test_remote_drain_settles_foreign_tombstone_without_sending_it(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_tombstone(
+            "foreign-gone",
+            {"job_id": "foreign-job", "creator_uid": "u_other", "status": "done"},
+        )
+        captured = []
+
+        result = drain_remote_telemetry(
+            lambda items: captured.extend(items) or {"upserted": len(items), "skipped": []},
+            my_uid="u_me",
+        )
+
+        self.assertEqual(result, {"target": "remote", "upserted": 0, "failed": 0})
+        self.assertEqual(captured, [])
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT is_tombstone,pushed_at,last_error FROM telemetry_outbox "
+                "WHERE local_gen_id='foreign-gone'"
+            ).fetchone()
+        self.assertEqual(row["is_tombstone"], 1)
+        self.assertIsNotNone(row["pushed_at"])
+        self.assertIsNone(row["last_error"])
+
+    def test_remote_drain_still_sends_own_tombstone(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_tombstone(
+            "own-gone",
+            {"job_id": "own-job", "creator_uid": "u_me", "status": "done"},
+        )
+        captured = []
+
+        result = drain_remote_telemetry(
+            lambda items: captured.extend(items) or {"upserted": len(items), "skipped": []},
+            my_uid="u_me",
+        )
+
+        self.assertEqual(result, {"target": "remote", "upserted": 1, "failed": 0})
+        self.assertEqual([item["local_gen_id"] for item in captured], ["own-gone"])
+        self.assertTrue(captured[0]["is_deleted"])
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

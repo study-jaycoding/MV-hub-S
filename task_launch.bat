@@ -4,7 +4,7 @@ REM  Scheduled-task launcher (used by register_autostart.bat - not run by hand)
 REM  Usage: task_launch.bat server | watchdog | backup
 REM
 REM  Why this exists:
-REM   - rotates the console log BEFORE the redirect handle opens (>50MB -> .old)
+REM   - rotates the console log BEFORE the redirect handle opens (10MB, 3 generations)
 REM   - sets CONTENT_HUB_TASK=1 so child scripts skip interactive "pause" on
 REM     errors and exit nonzero instead -> Task Scheduler can retry (boot-time
 REM     boot-time runtime/environment failures can be retried with a limit)
@@ -39,13 +39,10 @@ if not defined LOG (
   exit /b 1
 )
 
-if defined PYEXE >> "%LOG%" echo [task_launch] configured python: %PYEXE%
-
 REM Rotate before the redirect below opens the file (open handle = no rename).
-if exist "%LOG%" for %%F in ("%LOG%") do if %%~zF gtr 52428800 (
-  del "%LOG%.old" 2>nul
-  move /y "%LOG%" "%LOG%.old" >nul
-)
+if defined PYEXE "%PYEXE%" "%ROOT%tools\rotate_text_log.py" "%LOG%" --max-bytes 10485760 --keep 3 >nul 2>&1
+if not defined PYEXE if exist "%LOG%" for %%F in ("%LOG%") do if %%~zF gtr 10485760 move /y "%LOG%" "%LOG%.1" >nul
+if defined PYEXE >> "%LOG%" echo [task_launch] configured python: %PYEXE%
 
 if "%MODE%"=="server"   call "%ROOT%MV_server.bat" >> "%LOG%" 2>&1
 if "%MODE%"=="watchdog" call "%ROOT%MV_watchdog.bat" >> "%LOG%" 2>&1

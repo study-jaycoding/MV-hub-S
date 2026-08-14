@@ -23,6 +23,7 @@ set "SERVER_RESULT=not-checked"
 set "BEFORE="
 set "AFTER="
 if not exist "%ROOT%logs" mkdir "%ROOT%logs"
+if exist "%ROOT%tools\rotate_text_log.py" call "%ROOT%run_py.bat" "%ROOT%tools\rotate_text_log.py" "%UPDATE_LOG%" --max-bytes 2097152 --keep 3 >nul 2>&1
 call :write_update_log "START" "update requested"
 
 where git >nul 2>nul || (echo [ERROR] git not found - install from git-scm.com and retry. & goto :err)

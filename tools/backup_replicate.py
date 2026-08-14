@@ -32,11 +32,18 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+from rotate_text_log import rotate_text_log
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "backend" / "data"
 TARGET_FILE = Path(__file__).resolve().parent / "backup_replica_target.txt"
 LOG = ROOT / "logs" / "backup_replicate.log"
 KEEP_PER_DIR = 30
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_KEEP = 3
 
 
 def _sources() -> list[tuple[str, Path]]:
@@ -51,6 +58,7 @@ def log(msg: str) -> None:
     print(line, flush=True)
     try:
         LOG.parent.mkdir(parents=True, exist_ok=True)
+        rotate_text_log(LOG, max_bytes=LOG_MAX_BYTES, keep=LOG_KEEP)
         with LOG.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:

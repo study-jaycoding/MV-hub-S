@@ -44,13 +44,14 @@ def test_runtime_snapshot_is_one_clean_summary_line():
                 "operations": {
                     "generation_queue": {"active_total": 3},
                     "backups": {"set_count": 7},
+                    "databases": {"ready": True},
                 },
             },
         }
     )
     assert line == (
         "[2026-08-13 12:00:00] 상태 | 요청 30 (5xx 1) | 활성 생성 3"
-        " | 접속 계정 3 | 관리전송 대기 0 (실패 0) | 백업 7세트"
+        " | 접속 계정 3 | 관리전송 대기 0 (실패 0) | DB 정상 | 백업 7세트"
     )
 
 
@@ -107,6 +108,21 @@ def test_worker_telemetry_event_is_visible_without_identity():
     assert "생성 정보" in line
     assert "작업자=Paul" in line
     assert "수신=3" in line and "완료=2" in line and "실패=1" in line
+
+
+def test_browser_connection_event_shows_counts_without_identity():
+    viewer = _module()
+    line = viewer.format_event(
+        {
+            "ts": "2026-08-13T12:00:00+00:00",
+            "event": "browser_connected",
+            "connections": 4,
+            "connected_accounts": 3,
+        }
+    )
+    assert "브라우저 연결" in line
+    assert "연결=4" in line and "접속계정=3" in line
+    assert "email" not in line.lower() and "uid" not in line.lower()
 
 
 def test_unimportant_info_event_is_hidden_but_warning_is_shown():

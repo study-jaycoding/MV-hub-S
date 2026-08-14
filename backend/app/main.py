@@ -82,7 +82,12 @@ from .routers import (
 from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
-from .services.operational_logging import configure_operational_logging, log_event
+from .services.operational_logging import (
+    compact_runtime_snapshot,
+    configure_operational_logging,
+    log_event,
+    should_log_http_request,
+)
 from .services.operational_health import (
     OperationalAlertTracker,
     database_readiness,
@@ -131,10 +136,14 @@ async def _runtime_report_loop(interval: float) -> None:
             snapshot["remote_realtime"] = remote_realtime_bridge.stats()
             snapshot["agents"] = agent_signals.stats()
             snapshot["operations"] = await asyncio.to_thread(operations_snapshot)
-            log_event(_runtime_log, "runtime_snapshot", snapshot=snapshot)
             for alert in _operational_alerts.events(snapshot):
                 event = alert.pop("event")
                 log_event(_runtime_log, event, level=logging.WARNING, **alert)
+            log_event(
+                _runtime_log,
+                "runtime_snapshot",
+                snapshot=compact_runtime_snapshot(snapshot),
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — 관측 실패가 앱을 중단하지 않게 하고 장애는 남긴다.
@@ -303,6 +312,11 @@ async def _application_lifespan(app: FastAPI):
     # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
     if _proxy.is_worker_hub():
         remote_realtime_bridge.start()
+        # 업데이트/재시작 전에 남은 생성정보 전송 대기열도 자동으로 한 번 정리한다.
+        # 로그인 토큰이 없는 PC에서는 drain_telemetry가 조용히 건너뛴다.
+        from .routers._telemetry import schedule_telemetry_drain
+
+        schedule_telemetry_drain()
     if _METRICS_LOG_INTERVAL > 0:
         runtime_report_task = asyncio.create_task(
             _runtime_report_loop(_METRICS_LOG_INTERVAL),
@@ -319,6 +333,11 @@ async def _application_lifespan(app: FastAPI):
             pass
     await periodic_backup.stop()
     await remote_realtime_bridge.stop()
+    if MANAGE_ENABLED:
+        # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
+        from .routers._telemetry import wait_for_telemetry_drain
+
+        await wait_for_telemetry_drain()
     if AUTH_ENABLED:
         await periodic_sync.stop()
     asset_watcher.stop()
@@ -528,7 +547,12 @@ async def runtime_observation(request: Request, call_next):
             method=request.method,
             path=route_path,
         )
-        if status >= 500 or elapsed_ms >= _SLOW_REQUEST_MS:
+        if should_log_http_request(
+            route_path,
+            status,
+            elapsed_ms,
+            slow_request_ms=_SLOW_REQUEST_MS,
+        ):
             try:
                 log_event(
                     _runtime_log,
@@ -712,6 +736,22 @@ async def _reject_websocket_policy(ws: WebSocket) -> None:
     await ws.close(code=1008, reason="authentication required")
 
 
+def _log_browser_presence(event: str, counts: dict[str, int]) -> None:
+    """개인 식별정보 없이 현재 브라우저 연결 수만 즉시 기록한다."""
+    log_event(
+        _runtime_log,
+        event,
+        connections=counts.get("connections", 0),
+        connected_accounts=counts.get("authenticated_accounts", 0),
+    )
+
+
+async def _disconnect_websocket(ws: WebSocket) -> None:
+    counts = await manager.disconnect(ws)
+    if counts is not None:
+        _log_browser_presence("browser_disconnected", counts)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """생성 진행률 push 채널. AUTH_ENABLED 면 세션 토큰을 검증한 뒤 수락."""
@@ -734,7 +774,8 @@ async def websocket_endpoint(ws: WebSocket):
             return
         # email 기반 스코프(progress·mutation 과 동일 규칙) — creator_uid NULL·리맵에도 안정.
         account_uid = realtime_scope(acc)
-    await manager.connect(ws, account_uid)
+    counts = await manager.connect(ws, account_uid)
+    _log_browser_presence("browser_connected", counts)
     try:
         # 프로토콜 ping 은 껐으므로(100명 ping 몰림 1011 방지 — serve.py) 살아있음 판정은
         # 앱 레벨 텍스트 수신으로 한다: 브라우저 25초 "ping"(progressSocket)·원격 브리지
@@ -755,7 +796,7 @@ async def websocket_endpoint(ws: WebSocket):
                 last_received = now
             elif now - last_received >= _WS_GHOST_SECONDS:
                 await ws.close(code=1001)  # going away — 유령 연결 수거
-                await manager.disconnect(ws)
+                await _disconnect_websocket(ws)
                 return
             # ★연결 시점에만 인증하면, 그 뒤 관리자가 계정을 정지(rejected/pending)하거나 비번을
             # 리셋해도 기존 소켓은 계속 진행률·알림을 받는다 → 주기 재검증으로 끊는다.
@@ -771,10 +812,10 @@ async def websocket_endpoint(ws: WebSocket):
                     or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
                 ):
                     await ws.close(code=1008)
-                    await manager.disconnect(ws)
+                    await _disconnect_websocket(ws)
                     return
     except WebSocketDisconnect:
-        await manager.disconnect(ws)
+        await _disconnect_websocket(ws)
     except Exception:
         # 예상한 WebSocketDisconnect 외의 예외를 숨기면 장시간 연결이 끊겨도 운영 로그에는
         # 원인이 전혀 남지 않는다. 토큰·이메일은 기록하지 않고 인증 스코프 존재 여부만 남긴다.
@@ -782,7 +823,7 @@ async def websocket_endpoint(ws: WebSocket):
             "WebSocket handler error (authenticated_scope=%s)",
             account_uid is not None,
         )
-        await manager.disconnect(ws)
+        await _disconnect_websocket(ws)
 
 
 # ── 서버 모드: 빌드된 프론트엔드(dist) 서빙 ──────────────────────────────────
