@@ -91,7 +91,9 @@ _SCHEMA = (
         is_tombstone     INTEGER NOT NULL DEFAULT 0,
         tomb_job_id      TEXT,
         tomb_creator_uid TEXT,
-        tomb_snapshot    TEXT
+        tomb_snapshot    TEXT,
+        fail_streak      INTEGER NOT NULL DEFAULT 0,  -- 연속 실패 수(성공·재dirty 시 0)
+        next_retry_at    TEXT                          -- 이 시각 전에는 드레인이 건너뜀(백오프)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
@@ -142,6 +144,12 @@ def ensure_manage_schema(conn) -> None:
     for column in ("tomb_job_id", "tomb_creator_uid", "tomb_snapshot"):
         if column not in outbox_columns:
             conn.execute(f"ALTER TABLE telemetry_outbox ADD COLUMN {column} TEXT")
+    if "fail_streak" not in outbox_columns:
+        conn.execute(
+            "ALTER TABLE telemetry_outbox ADD COLUMN fail_streak INTEGER NOT NULL DEFAULT 0"
+        )
+    if "next_retry_at" not in outbox_columns:
+        conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN next_retry_at TEXT")
 
     export_columns = {row[1] for row in conn.execute("PRAGMA table_info(final_export)")}
     if "project_id" not in export_columns:

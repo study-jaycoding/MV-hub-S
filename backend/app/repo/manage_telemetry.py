@@ -23,7 +23,7 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
                 "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-                "pushed_at=NULL, is_tombstone=0",
+                "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
                 (gen_id,),
             )
 
@@ -41,7 +41,7 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
             "ON CONFLICT(local_gen_id) DO UPDATE SET "
             "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=1, "
             "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
-            "tomb_snapshot=excluded.tomb_snapshot",
+            "tomb_snapshot=excluded.tomb_snapshot, fail_streak=0, next_retry_at=NULL",
             (
                 gen_id,
                 snapshot.get("job_id"),
@@ -74,7 +74,7 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
                 "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-                "pushed_at=NULL, is_tombstone=0",
+                "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
                 (gen_id,),
             )
     return len(local_ids)
@@ -110,13 +110,21 @@ def telemetry_outbox_status() -> dict[str, Any]:
 
 
 def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
-    """아직 전송되지 않은 항목을 오래된 순서로 반환한다."""
+    """아직 전송되지 않은 항목을 오래된 순서로 반환한다.
+
+    ★백오프 게이트: 실패한 항목은 next_retry_at 전까지 제외한다. 이게 없으면
+    ①영구 실패 항목(서버 미링크 계정 등)이 드레인 주기(≈30초)마다 그대로 재전송돼
+    폭주하고 ②오래된 실패 500행이 LIMIT 창을 선점해 그 뒤의 새 변경이 영원히
+    선택되지 않았다(head-of-line blocking).
+    """
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
             "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, "
             "tomb_creator_uid, tomb_snapshot FROM telemetry_outbox "
-            "WHERE pushed_at IS NULL ORDER BY dirty_at ASC LIMIT ?",
+            "WHERE pushed_at IS NULL "
+            "AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+            "ORDER BY dirty_at ASC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -205,22 +213,38 @@ def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
                 continue
             conn.execute(
                 "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
-                "attempts=attempts+1, last_error=NULL "
+                "attempts=attempts+1, last_error=NULL, fail_streak=0, next_retry_at=NULL "
                 "WHERE local_gen_id=? AND dirty_at=? AND pushed_at IS NULL",
                 (gen_id, item.get("dirty_at")),
             )
 
 
-def mark_telemetry_failed(gen_ids: list[str], error: str) -> None:
-    """전송 실패 횟수와 오류를 기록하고 다음 드레인에서 재시도하게 둔다."""
-    ids = [gen_id for gen_id in (gen_ids or []) if gen_id]
-    if not ids:
-        return
+def mark_telemetry_failed(items: list[dict[str, Any]], error: str) -> None:
+    """전송 실패를 기록하고 다음 재시도 시각을 뒤로 민다(백오프).
+
+    지연 = min(1시간, 60초 × 연속실패수²) — 1회 60s, 2회 4분, 3회 9분, … 8회부터 1시간.
+    일시 장애는 금방 복귀하고, 영구 실패(서버 미링크 등)는 시간당 1회로 수렴해
+    폭주하지 않는다. attempts 는 누적 전송수(성공 포함)라 백오프에 못 쓴다 — fail_streak 사용.
+    ★성공 처리(mark_telemetry_pushed)와 같은 dirty_at CAS — 전송 중 그 항목이 다시
+    dirty 됐다면 옛 전송의 실패가 새 변경에 백오프를 걸면 안 된다(새 변경은 즉시 재시도).
+    """
     with get_connection() as conn:
         _ensure_schema(conn)
-        for gen_id in ids:
+        for item in items or []:
+            gen_id = item.get("local_gen_id") if isinstance(item, dict) else item
+            dirty_at = item.get("dirty_at") if isinstance(item, dict) else None
+            if not gen_id:
+                continue
+            where = "WHERE local_gen_id=?"
+            args: list[Any] = [error[:500], gen_id]
+            if dirty_at is not None:
+                where += " AND dirty_at=?"
+                args.append(dirty_at)
             conn.execute(
-                "UPDATE telemetry_outbox SET attempts=attempts+1, last_error=? "
-                "WHERE local_gen_id=?",
-                (error[:500], gen_id),
+                "UPDATE telemetry_outbox SET attempts=attempts+1, last_error=?, "
+                "fail_streak=fail_streak+1, "
+                "next_retry_at=strftime('%Y-%m-%dT%H:%M:%fZ','now', "
+                "  printf('+%d seconds', MIN(3600, 60*(fail_streak+1)*(fail_streak+1)))) "
+                + where,
+                args,
             )

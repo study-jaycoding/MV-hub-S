@@ -88,7 +88,8 @@ def _prepare_batch(*, filter_uid: str | None, include_all_creators: bool) -> dic
 def _settle(batch: dict[str, Any], skipped_ids: set[str], error: str) -> tuple[int, int]:
     sent = batch["sent"]
     pushed = [row for row in sent if row["local_gen_id"] not in skipped_ids]
-    failed = [row["local_gen_id"] for row in sent if row["local_gen_id"] in skipped_ids]
+    # 실패도 행 그대로 넘긴다(dirty_at CAS) — 전송 중 재dirty 된 항목엔 백오프를 걸지 않는다.
+    failed = [row for row in sent if row["local_gen_id"] in skipped_ids]
     if pushed:
         repo_manage.mark_telemetry_pushed(pushed)
     if failed:
@@ -127,9 +128,9 @@ def drain_remote_telemetry(
         )
         return {"target": "remote", "upserted": pushed, "failed": failed}
     except Exception as exc:  # noqa: BLE001 - 오프라인 큐로 남겨 다음 동기화 때 재시도
-        ids = [row["local_gen_id"] for row in batch["sent"]]
-        repo_manage.mark_telemetry_failed(ids, str(exc))
-        return {"target": "remote", "upserted": 0, "failed": len(ids), "error": str(exc)}
+        rows = list(batch["sent"])
+        repo_manage.mark_telemetry_failed(rows, str(exc))
+        return {"target": "remote", "upserted": 0, "failed": len(rows), "error": str(exc)}
 
 
 def drain_isolated_telemetry() -> dict[str, Any]:
@@ -196,7 +197,8 @@ def drain_isolated_telemetry() -> dict[str, Any]:
             repo_manage.mark_telemetry_pushed(pushed_rows)
         if failed_ids:
             error = "; ".join(errors) or "local telemetry identity unavailable"
-            repo_manage.mark_telemetry_failed(sorted(failed_ids), error)
+            failed_rows = [sent_by_id.get(gid) or gid for gid in sorted(failed_ids)]
+            repo_manage.mark_telemetry_failed(failed_rows, error)
         return {
             "target": "local",
             "upserted": len(pushed_rows),

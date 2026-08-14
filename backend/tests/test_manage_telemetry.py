@@ -88,6 +88,58 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertTrue(facts[0]["is_final"])
         self.assertNotIn("prompt", facts[0])
 
+    def test_failed_item_backs_off_and_does_not_block_fresh_items(self):
+        # 실패한 항목은 next_retry_at 전까지 드레인 선택에서 빠지고(폭주 방지),
+        # 오래된 실패가 LIMIT 창을 선점해 새 항목을 가리지도 않는다(head-of-line 방지).
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid) VALUES('g2','me','p2','done','2026-08-02',2,'u_me')"
+            )
+        manage.mark_telemetry_dirty(["g1"])  # g1 이 먼저 dirty(더 오래됨)
+        manage.mark_telemetry_failed(["g1"], "server skipped")
+        manage.mark_telemetry_dirty(["g2"])
+
+        pending_ids = [item["local_gen_id"] for item in manage.list_dirty_telemetry(limit=1)]
+        self.assertEqual(pending_ids, ["g2"])  # 실패한 g1 은 백오프로 제외, 신규 g2 선택
+
+        # 같은 항목이 다시 dirty 되면 백오프가 풀려 즉시 재선택된다.
+        manage.mark_telemetry_dirty(["g1"])
+        pending_ids = [item["local_gen_id"] for item in manage.list_dirty_telemetry()]
+        self.assertIn("g1", pending_ids)
+
+    def test_stale_failure_does_not_backoff_a_newer_dirty_update(self):
+        # 전송 중 그 항목이 다시 dirty 되면(dirty_at 변경), 옛 전송의 실패 CAS 가 빗나가
+        # 새 변경엔 백오프가 걸리지 않는다 — 새 변경은 즉시 재시도돼야 한다.
+        manage.mark_telemetry_dirty(["g1"])
+        stale_item = manage.list_dirty_telemetry()[0]
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE telemetry_outbox SET dirty_at='9999-12-31T23:59:59Z' "
+                "WHERE local_gen_id='g1'"
+            )
+        manage.mark_telemetry_failed([stale_item], "late failure")
+        pending = [item["local_gen_id"] for item in manage.list_dirty_telemetry()]
+        self.assertIn("g1", pending)
+
+    def test_backoff_delay_grows_with_consecutive_failures(self):
+        manage.mark_telemetry_dirty(["g1"])
+        manage.mark_telemetry_failed(["g1"], "e1")
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT fail_streak, next_retry_at FROM telemetry_outbox WHERE local_gen_id='g1'"
+            ).fetchone()
+            self.assertEqual(row["fail_streak"], 1)
+            first_retry = row["next_retry_at"]
+            self.assertIsNotNone(first_retry)
+        manage.mark_telemetry_failed(["g1"], "e2")
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT fail_streak, next_retry_at FROM telemetry_outbox WHERE local_gen_id='g1'"
+            ).fetchone()
+            self.assertEqual(row["fail_streak"], 2)
+            self.assertGreater(row["next_retry_at"], first_retry)
+
     def test_stale_push_ack_does_not_clear_a_newer_dirty_update(self):
         manage.mark_telemetry_dirty(["g1"])
         stale_item = manage.list_dirty_telemetry()[0]
@@ -160,6 +212,14 @@ class ManageTelemetryTests(unittest.TestCase):
             [tuple(row) for row in rows],
             [("g1", "me@example.com"), ("g2", "other@example.com")],
         )
+        # 미매핑 g3 는 대기열에 보존되지만(pending), 실패 백오프 동안은 즉시 재선택 목록에서
+        # 빠진다(매 드레인 주기 재전송 폭주 방지). 백오프가 풀리면 다시 선택된다.
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
+        self.assertEqual(manage.list_dirty_telemetry(), [])
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE telemetry_outbox SET next_retry_at=NULL WHERE local_gen_id='g3'"
+            )
         pending = manage.list_dirty_telemetry()
         self.assertEqual([row["local_gen_id"] for row in pending], ["g3"])
 
