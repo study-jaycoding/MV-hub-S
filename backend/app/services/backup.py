@@ -28,6 +28,7 @@ from uuid import uuid4
 
 from ..config import DATA_DIR
 from ..db import get_db_path
+from ..manage_db import MANAGE_DB_PATH
 from .sqlite_db import validate_hub_db
 from .operational_logging import log_event
 
@@ -201,7 +202,12 @@ def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
             ("content", src, _PREFIX, None),
         ]
         trash_src = src.parent / "content_hub_trash.db"
+        # 관리 DB는 계정과 무관한 고정 경로(manage_db.MANAGE_DB_PATH)에 산다. 계정 로그인으로
+        # 콘텐츠 DB가 acct/<slug>/ 아래로 옮겨가면 src.parent 에는 manage_hub.db 가 없어
+        # 백업 세트에서 조용히 빠졌다 — 같은 폴더(레거시/서버 배치) 우선, 없으면 고정 경로.
         manage_src = src.parent / "manage_hub.db"
+        if not manage_src.is_file():
+            manage_src = MANAGE_DB_PATH
         if trash_src.is_file():
             sources.append(("trash", trash_src, _TRASH_PREFIX, "trashed"))
         if manage_src.is_file():

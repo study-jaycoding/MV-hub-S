@@ -111,6 +111,29 @@ class BackupAtomicityTests(unittest.TestCase):
             set(info["files"]), {primary.name, trash_copy.name, manage_copy.name}
         )
 
+    def test_manage_db_outside_content_folder_is_still_backed_up(self):
+        # 계정 로그인 시 콘텐츠 DB는 acct/<slug>/ 아래로 가지만 manage_hub.db 는 고정
+        # 경로에 남는다 — src.parent 만 보면 관리 DB가 백업 세트에서 조용히 빠진다(회귀).
+        fixed_manage = self.root / "fixed" / "manage_hub.db"
+        fixed_manage.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(fixed_manage)) as conn:
+            conn.execute(
+                "CREATE TABLE team_generation_fact(id TEXT PRIMARY KEY, status TEXT)"
+            )
+            conn.execute("INSERT INTO team_generation_fact VALUES('fact-2', 'done')")
+            conn.commit()
+
+        with mock.patch.object(backup, "MANAGE_DB_PATH", fixed_manage):
+            backup.backup_now(stamp="20260815_120000_000001")
+
+        manage_copy = self.backup_dir / "manage_hub_20260815_120000_000001.db"
+        self.assertTrue(manage_copy.is_file())
+        with closing(sqlite3.connect(manage_copy)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT status FROM team_generation_fact").fetchone()[0],
+                "done",
+            )
+
     def test_sidecar_validation_failure_does_not_publish_primary(self):
         trash = self.root / "content_hub_trash.db"
         with closing(sqlite3.connect(trash)) as conn:
