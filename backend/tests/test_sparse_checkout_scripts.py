@@ -153,6 +153,41 @@ def test_update_persists_commit_and_restart_result():
     ) in updater
 
 
+def test_failed_frontend_refresh_is_retried_before_server_restart():
+    updater = _read("update_git.bat")
+
+    marker = 'set "FRONTEND_PENDING=%ROOT%logs\\frontend-build.pending"'
+    detect_pending = 'if exist "!FRONTEND_PENDING!" ('
+    persist_pending = '>"!FRONTEND_PENDING!" echo !AFTER!'
+    install = "call npm ci --include=dev --no-audit --no-fund"
+    build = "call npm run build"
+    clear_pending = 'del /q "!FRONTEND_PENDING!"'
+    restart = 'call "%ROOT%restart_server_task.bat"'
+
+    for contract in (marker, detect_pending, persist_pending, clear_pending):
+        assert contract in updater
+    assert updater.index(persist_pending) < updater.index(install)
+    assert updater.index(install) < updater.index(build)
+    assert updater.index(build) < updater.index(clear_pending)
+    assert updater.index(clear_pending) < updater.index(restart)
+
+
+def test_failed_backend_dependency_refresh_is_retried():
+    updater = _read("update_git.bat")
+
+    marker = 'set "BACKEND_PENDING=%ROOT%logs\\backend-deps.pending"'
+    detect_pending = 'if exist "!BACKEND_PENDING!" ('
+    persist_pending = '>"!BACKEND_PENDING!" echo !AFTER!'
+    install = '-m pip install -r "%ROOT%backend\\requirements.txt"'
+    verify = 'tools\\verify_requirements.py'
+    clear_pending = 'del /q "!BACKEND_PENDING!"'
+
+    for contract in (marker, detect_pending, persist_pending, install, verify, clear_pending):
+        assert contract in updater
+    assert updater.index(persist_pending) < updater.index(install)
+    assert updater.index(verify) < updater.index(clear_pending)
+
+
 def test_operational_text_logs_use_bounded_rotation_and_recovery_clears_alerts():
     launcher = _read("task_launch.bat")
     updater = _read("update_git.bat")

@@ -6,12 +6,10 @@ REM MV Hub first installer.
 REM Run this from the company server release folder. It installs/updates MV Hub
 REM to the worker's Desktop, remembers the release source, and does NOT launch.
 
-REM Edit this path before distribution.
-REM UNC example:
-REM   set "BASE_URL=\\YOUR-SERVER\MVHub\packages"
-REM HTTP example:
-REM   set "BASE_URL=http://YOUR-SERVER/mvhub/packages"
-set "BASE_URL=\\YOUR-SERVER\MVHub\packages"
+REM Keep this installer beside latest.json, or one folder above a packages folder.
+REM It discovers the release source from its own location, including UNC paths.
+for %%I in ("%~dp0.") do set "BASE_URL=%%~fI"
+if exist "%~dp0packages\latest.json" for %%I in ("%~dp0packages\.") do set "BASE_URL=%%~fI"
 
 REM Local install/update location.
 set "TARGET_DIR=%USERPROFILE%\Desktop\MV-hub-S"
@@ -22,7 +20,7 @@ if not "%MVHUB_TARGET_DIR%"=="" set "TARGET_DIR=%MVHUB_TARGET_DIR%"
 
 set "INSTALL_PS1=%TEMP%\mvhub-install-%RANDOM%-%RANDOM%.ps1"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw; $marker = '### MVHUB_' + 'INSTALL_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Install payload not found.' }; Set-Content -LiteralPath '%INSTALL_PS1%' -Value $parts[1] -Encoding UTF8"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'INSTALL_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Install payload not found.' }; Set-Content -LiteralPath '%INSTALL_PS1%' -Value $parts[1] -Encoding UTF8"
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to prepare MV Hub installer.
@@ -56,8 +54,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $BaseUrl -or $BaseUrl -like "\\YOUR-SERVER*") {
-    throw "Edit BASE_URL in MVHub_Install.bat first."
+if (-not $BaseUrl) {
+    throw "Release source is empty. Keep MVHub_Install.bat beside latest.json."
+}
+if ($BaseUrl -match "^https://") {
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+        [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 }
 
 function Get-ReleaseFile {
@@ -201,17 +203,40 @@ function Install-Package {
 
     Write-Host "[install] Extracting..."
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
-    $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
-    Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
-
-    Write-Host "[install] Installing to $TargetDir..."
-    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-    Stop-MvHubProcesses -Root $TargetDir
-    Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
+    $PackageUpdater = Join-Path $ExtractDir "update_release.bat"
+    if (-not (Test-Path -LiteralPath $PackageUpdater -PathType Leaf)) {
+        throw "Release package is missing update_release.bat."
     }
-    Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
-    Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
+
+    # One installation engine owns all replacement rules. The updater from the
+    # SHA-verified package performs package/runtime validation, clean directory
+    # swaps, rollback and the final VERSION commit. This prevents the installer
+    # and updater from drifting into two different (and unsafe) copy behaviours.
+    Write-Host "[install] Running the verified package installer..."
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $TempRoot -Encoding UTF8
+    $PreviousTarget = $env:MVHUB_UPDATE_TARGET_DIR
+    $PreviousPause = $env:MVHUB_NO_PAUSE
+    $PreviousRestart = $env:MVHUB_UPDATE_RESTART
+    $env:MVHUB_UPDATE_TARGET_DIR = $TargetDir
+    $env:MVHUB_NO_PAUSE = "1"
+    $env:MVHUB_UPDATE_RESTART = "0"
+    try {
+        $Command = 'call "' + $PackageUpdater + '"'
+        & $env:ComSpec /d /c $Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "Verified package updater failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        if ($null -eq $PreviousTarget) { Remove-Item Env:MVHUB_UPDATE_TARGET_DIR -ErrorAction SilentlyContinue }
+        else { $env:MVHUB_UPDATE_TARGET_DIR = $PreviousTarget }
+        if ($null -eq $PreviousPause) { Remove-Item Env:MVHUB_NO_PAUSE -ErrorAction SilentlyContinue }
+        else { $env:MVHUB_NO_PAUSE = $PreviousPause }
+        if ($null -eq $PreviousRestart) { Remove-Item Env:MVHUB_UPDATE_RESTART -ErrorAction SilentlyContinue }
+        else { $env:MVHUB_UPDATE_RESTART = $PreviousRestart }
+        Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
+    }
 }
 
 $TempRoot = Join-Path $env:TEMP ("mvhub-install-" + [Guid]::NewGuid().ToString("N"))
@@ -227,6 +252,14 @@ try {
     if (-not $Latest.version -or -not $Latest.file -or -not $Latest.sha256) {
         throw "latest.json must contain version, file, and sha256."
     }
+    $ReleaseFileName = [string]$Latest.file
+    if ([IO.Path]::GetFileName($ReleaseFileName) -ne $ReleaseFileName -or
+        $ReleaseFileName.Contains("/") -or $ReleaseFileName.Contains("\")) {
+        throw "latest.json contains an unsafe release filename."
+    }
+    if (-not ([string]$Latest.sha256 -match "^[0-9a-fA-F]{64}$")) {
+        throw "latest.json contains an invalid SHA256 value."
+    }
 
     $VersionPath = Join-Path $TargetDir "VERSION.txt"
     $CurrentVersion = ""
@@ -234,25 +267,8 @@ try {
         $CurrentVersion = (Get-Content -LiteralPath $VersionPath -Raw).Trim()
     }
 
-    $NeedsInstall = $CurrentVersion -ne [string]$Latest.version
-    if (-not $NeedsInstall) {
-        try {
-            Assert-BundledCli `
-                -Root $TargetDir `
-                -ExpectedVersion ([string]$Latest.higgsfield_cli_version) `
-                -Label "installed" | Out-Null
-            Write-Host "[2/3] Already installed: $CurrentVersion"
-            Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
-        }
-        catch {
-            Write-Host "[2/3] App version matches, but bundled CLI needs repair: $($_.Exception.Message)"
-            $NeedsInstall = $true
-        }
-    }
-    if ($NeedsInstall) {
-        Write-Host "[2/3] Installing/updating: '$CurrentVersion' -> '$($Latest.version)'"
-        Install-Package -Latest $Latest -TempRoot $TempRoot
-    }
+    Write-Host "[2/3] Installing/updating: '$CurrentVersion' -> '$($Latest.version)'"
+    Install-Package -Latest $Latest -TempRoot $TempRoot
 
     Write-Host "[3/3] Install/update complete."
 }

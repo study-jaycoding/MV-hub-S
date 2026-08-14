@@ -78,7 +78,15 @@ if not exist "%ROOT%run_agent_session.py" (
   exit /b 1
 )
 "%PY_EXE%" %PY_ARGS% "%ROOT%run_agent_session.py" "%~f0"
-exit /b %errorlevel%
+set "SESSION_EXIT=%ERRORLEVEL%"
+if not "%SESSION_EXIT%"=="0" (
+  echo.
+  echo [ERROR] MV Hub could not start ^(exit %SESSION_EXIT%^).
+  echo         Run update_release.bat to verify and repair this installation.
+  echo         If repair also fails, keep this window open and send its error text.
+  if not "%MVHUB_NO_PAUSE%"=="1" pause
+)
+exit /b %SESSION_EXIT%
 :session_guarded
 echo     Using Python: "%PY_EXE%" %PY_ARGS%
 

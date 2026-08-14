@@ -6,8 +6,35 @@ REM MV Hub local updater.
 REM Run this from the installed MV-hub-S folder. It reads INSTALL_SOURCE.txt,
 REM checks the company release folder, updates app files, and does NOT launch.
 
-for %%I in ("%~dp0.") do set "TARGET_DIR=%%~fI"
+for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
+set "TARGET_DIR=%SCRIPT_DIR%"
 if defined MVHUB_UPDATE_TARGET_DIR for %%I in ("%MVHUB_UPDATE_TARGET_DIR%") do set "TARGET_DIR=%%~fI"
+set "UPDATE_BOOTSTRAP=%TEMP%\mvhub-update-bootstrap-%RANDOM%-%RANDOM%.bat"
+
+REM A manual launch runs inside the folder that will be replaced. Hand off to a
+REM temporary copy first so cmd never resumes reading a newly overwritten batch.
+REM The in-app updater already runs a detached temporary copy, so its script
+REM directory differs from the target and it skips this one-time bootstrap.
+if /I "%SCRIPT_DIR%"=="%TARGET_DIR%" (
+  set "MVHUB_UPDATE_TARGET_DIR=%TARGET_DIR%"
+  copy /y "%~f0" "%UPDATE_BOOTSTRAP%" >nul 2>nul
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Failed to copy the temporary MV Hub update launcher.
+    if not "%MVHUB_NO_PAUSE%"=="1" pause
+    exit /b 1
+  )
+  (
+    call "%UPDATE_BOOTSTRAP%"
+    if errorlevel 1 (
+      del "%UPDATE_BOOTSTRAP%" >nul 2>nul
+      exit /b 1
+    )
+    del "%UPDATE_BOOTSTRAP%" >nul 2>nul
+    exit /b 0
+  )
+)
+
 set "UPDATE_PS1=%TEMP%\mvhub-update-%RANDOM%-%RANDOM%.ps1"
 
 REM NOTE: keep this whole file ASCII-only. On stock Korean Windows (ANSI=CP949) a
@@ -110,18 +137,29 @@ function Restart-MvHubAndWaitReady {
         $ReadyUrl = "http://127.0.0.1:8010/api/ready"
     }
     Write-UpdateState -State "restarting" -Message "Restarting MV Hub on the new version..." -Latest $ExpectedVersion -Percent 95
+    # The updater itself is intentionally hidden, but the newly installed app must
+    # not be hidden with it. Start a fresh, visible cmd so users get one durable
+    # control window and the normal launcher opens the browser after readiness.
+    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $StartInfo.FileName = $env:ComSpec
+    $StartInfo.Arguments = '/d /c call "' + $Launcher + '"'
+    $StartInfo.WorkingDirectory = $TargetDir
+    $StartInfo.UseShellExecute = $true
+    $StartInfo.CreateNoWindow = $false
+    $StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
     $PreviousNoBrowser = $env:MVHUB_NO_BROWSER
-    $env:MVHUB_NO_BROWSER = "1"
+    $PreviousNoPause = $env:MVHUB_NO_PAUSE
+    Remove-Item Env:MVHUB_NO_BROWSER -ErrorAction SilentlyContinue
+    Remove-Item Env:MVHUB_NO_PAUSE -ErrorAction SilentlyContinue
     try {
-        Start-Process -FilePath $Launcher -WorkingDirectory $TargetDir | Out-Null
+        $Started = [System.Diagnostics.Process]::Start($StartInfo)
     }
     finally {
-        if ($null -eq $PreviousNoBrowser) {
-            Remove-Item Env:MVHUB_NO_BROWSER -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:MVHUB_NO_BROWSER = $PreviousNoBrowser
-        }
+        if ($null -ne $PreviousNoBrowser) { $env:MVHUB_NO_BROWSER = $PreviousNoBrowser }
+        if ($null -ne $PreviousNoPause) { $env:MVHUB_NO_PAUSE = $PreviousNoPause }
+    }
+    if (-not $Started) {
+        throw "Could not start MV_agent.bat after update."
     }
 
     $Deadline = (Get-Date).AddMinutes(3)
@@ -268,6 +306,100 @@ function Assert-BundledCli {
     return $Pin
 }
 
+function Assert-PythonRuntime {
+    param(
+        [string]$RuntimeDir,
+        [string]$Label = "runtime"
+    )
+
+    $Exe = Join-Path $RuntimeDir "python.exe"
+    if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
+        throw "Bundled Python validation failed ($Label): python.exe is missing."
+    }
+    $Probe = @(
+        "import sys,glob,pathlib,ssl,sqlite3,json,asyncio",
+        "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog",
+        "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions",
+        "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
+        "print('%d.%d.%d' % sys.version_info[:3])"
+    ) -join ";"
+    $Output = @(& $Exe -I -c $Probe 2>&1)
+    if ($LASTEXITCODE -ne 0 -or -not $Output) {
+        throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
+    }
+
+    $Parts = ([string]$Output[-1]).Trim().Split(".")
+    if ($Parts.Count -lt 2) {
+        throw "Bundled Python validation failed ($Label): invalid version output."
+    }
+    $ExpectedDll = "python$($Parts[0])$($Parts[1]).dll"
+    $VersionDlls = @(Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "python*.dll" | Where-Object {
+        $_.Name -match "^python3\d{2}\.dll$"
+    })
+    if ($VersionDlls.Count -ne 1 -or $VersionDlls[0].Name -ine $ExpectedDll) {
+        $Found = ($VersionDlls | ForEach-Object Name) -join ", "
+        throw "Bundled Python validation failed ($Label): expected only $ExpectedDll, found [$Found]."
+    }
+    Write-Host "[$Label] Python runtime verified: $($Output[-1]), $ExpectedDll"
+}
+
+function Assert-AppLayout {
+    param(
+        [string]$Root,
+        [string]$Label = "install"
+    )
+    $Required = @(
+        "MV_agent.bat",
+        "update_release.bat",
+        "run_agent_session.py",
+        "agent_push.py",
+        "backend\serve.py",
+        "backend\app\main.py",
+        "frontend\dist\index.html"
+    )
+    foreach ($Relative in $Required) {
+        $Path = Join-Path $Root $Relative
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw "MV Hub validation failed ($Label): missing $Relative"
+        }
+    }
+}
+
+function Replace-ImmutableDirectory {
+    param(
+        [string]$SourceDir,
+        [string]$TargetDir,
+        [string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "Update package is missing $Label."
+    }
+    $Parent = Split-Path -Parent $TargetDir
+    $Leaf = Split-Path -Leaf $TargetDir
+    $Token = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+    $NextDir = Join-Path $Parent "$Leaf.next.$Token"
+    $PrevDir = Join-Path $Parent "$Leaf.previous.$Token"
+    New-Item -ItemType Directory -Force -Path $Parent | Out-Null
+    Copy-Item -LiteralPath $SourceDir -Destination $NextDir -Recurse -Force
+    $HadPrevious = Test-Path -LiteralPath $TargetDir
+    if ($HadPrevious) {
+        Rename-Item -LiteralPath $TargetDir -NewName (Split-Path -Leaf $PrevDir)
+    }
+    try {
+        Rename-Item -LiteralPath $NextDir -NewName $Leaf
+    }
+    catch {
+        if ($HadPrevious -and (Test-Path -LiteralPath $PrevDir)) {
+            Rename-Item -LiteralPath $PrevDir -NewName $Leaf
+        }
+        Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw "Atomic replacement failed for $Label; previous directory restored. $($_.Exception.Message)"
+    }
+    if ($HadPrevious) {
+        Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Stop-MvHubProcesses {
     param([string]$Root)
 
@@ -357,33 +489,51 @@ function Install-Package {
     Write-UpdateState -State "installing" -Message "Extracting update package..." -Latest ([string]$Latest.version) -Percent 65
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractDir -Force
     $ExpectedCliVersion = [string]$Latest.higgsfield_cli_version
+    Assert-AppLayout -Root $ExtractDir -Label "package"
     Assert-BundledCli -Root $ExtractDir -ExpectedVersion $ExpectedCliVersion -Label "package" | Out-Null
+    $NewPython = Join-Path $ExtractDir "runtime\python"
+    Assert-PythonRuntime -RuntimeDir $NewPython -Label "package"
 
     Write-Host "[update]  75%  Installing to $TargetDir..."
     Write-UpdateState -State "installing" -Message "Installing verified files..." -Latest ([string]$Latest.version) -Percent 75
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     Stop-MvHubProcesses -Root $TargetDir
 
-    # runtime\python is excluded from the overlay copy (a merge that leaves stale files
-    # behind) and replaced wholesale via the rename swap below. When the bundled Python
-    # version changes (e.g. 3.14 -> 3.11), leftover python314.dll / old Lib files would
-    # mix the runtimes and break the DaVinci Resolve (fusionscript) integration.
+    # Mutable backend data/media stays in place. Immutable application trees are not
+    # merged: a merge leaves files removed by newer releases behind. Copy only stable
+    # root/backend metadata here, then replace app/dist/runtimes wholesale below.
     Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
-        if ($_.Name -eq "runtime") {
-            $RuntimeTarget = Join-Path $TargetDir "runtime"
-            New-Item -ItemType Directory -Force -Path $RuntimeTarget | Out-Null
+        if ($_.Name -eq "backend") {
+            $BackendTarget = Join-Path $TargetDir "backend"
+            New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
             Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
-                if ($_.Name -ne "python") {
-                    Copy-Item -LiteralPath $_.FullName -Destination $RuntimeTarget -Recurse -Force
+                if ($_.Name -ne "app") {
+                    Copy-Item -LiteralPath $_.FullName -Destination $BackendTarget -Recurse -Force
                 }
             }
         }
-        else {
+        elseif ($_.Name -ne "runtime" -and $_.Name -ne "frontend" -and $_.Name -ne "VERSION.txt") {
             Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
         }
     }
 
-    $NewPython = Join-Path $ExtractDir "runtime\python"
+    Replace-ImmutableDirectory `
+        -SourceDir (Join-Path $ExtractDir "backend\app") `
+        -TargetDir (Join-Path $TargetDir "backend\app") `
+        -Label "backend\app"
+    Replace-ImmutableDirectory `
+        -SourceDir (Join-Path $ExtractDir "frontend\dist") `
+        -TargetDir (Join-Path $TargetDir "frontend\dist") `
+        -Label "frontend\dist"
+    Replace-ImmutableDirectory `
+        -SourceDir (Join-Path $ExtractDir "runtime\node") `
+        -TargetDir (Join-Path $TargetDir "runtime\node") `
+        -Label "runtime\node"
+    Replace-ImmutableDirectory `
+        -SourceDir (Join-Path $ExtractDir "runtime\higgsfield") `
+        -TargetDir (Join-Path $TargetDir "runtime\higgsfield") `
+        -Label "runtime\higgsfield"
+
     if (Test-Path -LiteralPath $NewPython) {
         # Stage the new runtime fully in python.next.<token>, verify it runs, then swap
         # with two renames. If the second rename fails, restore previous immediately -
@@ -398,14 +548,15 @@ function Install-Package {
         Write-UpdateState -State "installing" -Message "Swapping Python runtime..." -Latest ([string]$Latest.version) -Percent 85
         New-Item -ItemType Directory -Force -Path (Join-Path $TargetDir "runtime") | Out-Null
         Copy-Item -LiteralPath $NewPython -Destination $NextDir -Recurse -Force
-        $NextExe = Join-Path $NextDir "python.exe"
-        $NextVersion = @(& $NextExe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>&1)
-        if ($LASTEXITCODE -ne 0 -or -not $NextVersion) {
+        try {
+            Assert-PythonRuntime -RuntimeDir $NextDir -Label "staged"
+        }
+        catch {
             Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
-            throw "Staged Python runtime failed to run; keeping the current runtime."
+            throw
         }
 
-        Write-Host "[update] Swapping Python runtime (new: $(([string[]]$NextVersion)[0]))..."
+        Write-Host "[update] Swapping verified Python runtime..."
         $HadPrevious = Test-Path -LiteralPath $PythonDir
         if ($HadPrevious) {
             Rename-Item -LiteralPath $PythonDir -NewName (Split-Path -Leaf $PrevDir)
@@ -420,15 +571,34 @@ function Install-Package {
             Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
             throw "Python runtime swap failed; previous runtime restored. $($_.Exception.Message)"
         }
+        try {
+            Assert-PythonRuntime -RuntimeDir $PythonDir -Label "installed"
+        }
+        catch {
+            Remove-Item -LiteralPath $PythonDir -Recurse -Force -ErrorAction SilentlyContinue
+            if ($HadPrevious -and (Test-Path -LiteralPath $PrevDir)) {
+                Rename-Item -LiteralPath $PrevDir -NewName "python"
+            }
+            throw "New Python runtime failed after swap; previous runtime restored. $($_.Exception.Message)"
+        }
         if ($HadPrevious) {
             Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+    else {
+        throw "Update package is missing runtime\python."
+    }
 
     Write-Host "[update]  92%  Verifying installed files..."
     Write-UpdateState -State "installing" -Message "Verifying installed files..." -Latest ([string]$Latest.version) -Percent 92
+    Assert-AppLayout -Root $TargetDir -Label "installed"
+    Assert-PythonRuntime -RuntimeDir (Join-Path $TargetDir "runtime\python") -Label "installed"
     Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
     Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
+    # VERSION is the transaction commit marker. Never advertise the new version
+    # before every file and runtime validation above has passed; a failed update
+    # must be retried instead of being mistaken for an up-to-date installation.
+    Set-Content -LiteralPath (Join-Path $TargetDir "VERSION.txt") -Value ([string]$Latest.version) -Encoding ASCII
 }
 
 $TempRoot = Join-Path $env:TEMP ("mvhub-update-" + [Guid]::NewGuid().ToString("N"))
@@ -464,6 +634,10 @@ try {
     $NeedsInstall = $CurrentVersion -ne [string]$Latest.version
     if (-not $NeedsInstall) {
         try {
+            Assert-AppLayout -Root $TargetDir -Label "installed"
+            Assert-PythonRuntime `
+                -RuntimeDir (Join-Path $TargetDir "runtime\python") `
+                -Label "installed"
             Assert-BundledCli `
                 -Root $TargetDir `
                 -ExpectedVersion ([string]$Latest.higgsfield_cli_version) `
@@ -472,7 +646,7 @@ try {
             Write-UpdateState -State "up_to_date" -Message "Already up to date." -Latest $LatestVersion
         }
         catch {
-            Write-Host "[2/3] App version matches, but bundled CLI needs repair: $($_.Exception.Message)"
+            Write-Host "[2/3] App version matches, but the installation needs repair: $($_.Exception.Message)"
             $NeedsInstall = $true
         }
     }

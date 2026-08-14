@@ -48,6 +48,49 @@ function Read-ArchiveText {
     }
 }
 
+function Assert-PythonRuntimeTree {
+    param(
+        [string]$RuntimeDir,
+        [string]$Label = "runtime"
+    )
+
+    $Exe = Join-Path $RuntimeDir "python.exe"
+    if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
+        throw "Bundled Python validation failed ($Label): python.exe is missing."
+    }
+
+    # A successful `python --version` is not enough. A stale Lib tree from another
+    # version can still start and then fail on the first real import (the 3.14
+    # pathlib + 3.11 glob mix was one such production failure). Exercise both the
+    # standard library and every backend dependency from the finished runtime.
+    $Probe = @(
+        "import sys,glob,pathlib,ssl,sqlite3,json,asyncio",
+        "import fastapi,uvicorn,pydantic,websockets,multipart,PIL,watchdog",
+        "import starlette,pydantic_core,annotated_types,annotated_doc,typing_inspection,typing_extensions",
+        "import anyio,idna,click,h11,httptools,dotenv,yaml,watchfiles,colorama,pip",
+        "print('%d.%d.%d' % sys.version_info[:3])"
+    ) -join ";"
+    $Output = @(& $Exe -I -c $Probe 2>&1)
+    if ($LASTEXITCODE -ne 0 -or -not $Output) {
+        throw "Bundled Python validation failed ($Label): $($Output -join ' ')"
+    }
+
+    $VersionParts = ([string]$Output[-1]).Trim().Split(".")
+    if ($VersionParts.Count -lt 2) {
+        throw "Bundled Python validation failed ($Label): invalid version output '$($Output[-1])'."
+    }
+    $ExpectedDll = "python$($VersionParts[0])$($VersionParts[1]).dll"
+    $VersionDlls = @(Get-ChildItem -LiteralPath $RuntimeDir -File -Filter "python*.dll" | Where-Object {
+        $_.Name -match "^python3\d{2}\.dll$"
+    })
+    if ($VersionDlls.Count -ne 1 -or $VersionDlls[0].Name -ine $ExpectedDll) {
+        $Found = ($VersionDlls | ForEach-Object Name) -join ", "
+        throw "Bundled Python validation failed ($Label): expected only $ExpectedDll, found [$Found]."
+    }
+
+    Write-Host "      Python runtime verified ($Label): $($Output[-1]), $ExpectedDll"
+}
+
 function Assert-ReleaseArchive {
     param(
         [string]$ArchivePath,
@@ -95,6 +138,15 @@ function Assert-ReleaseArchive {
         foreach ($Name in $Required) {
             if ($Names -notcontains $Name) {
                 throw "Release archive is missing required file: $Name"
+            }
+        }
+
+        if (-not $SkipPythonRuntime) {
+            $PythonVersionDlls = @($Names | Where-Object {
+                $_ -match "^runtime/python/python3\d{2}\.dll$"
+            })
+            if ($PythonVersionDlls.Count -ne 1) {
+                throw "Release archive must contain exactly one version-specific Python DLL; found $($PythonVersionDlls.Count)."
             }
         }
 
@@ -415,6 +467,8 @@ if (-not $SkipPythonRuntime) {
         throw "pip install into bundled runtime failed"
     }
 
+    Assert-PythonRuntimeTree -RuntimeDir $RuntimeDir -Label "staging"
+
     $RequirementsHash = (Get-FileHash -LiteralPath (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $Stage "backend\.deps_installed") -Value $RequirementsHash -Encoding ASCII
 }
@@ -485,7 +539,21 @@ Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $ZipPath -CompressionLevel Optimal
 try {
     Assert-ReleaseArchive -ArchivePath $ZipPath -ExpectedVersion $Version
-    Write-Host "      Archive contents validated (required runtime present, local data absent)."
+    if (-not $SkipPythonRuntime) {
+        # Verify what users will actually unzip, not only the pre-compression staging
+        # directory. This catches damaged/truncated archives before latest.json moves.
+        $ArchiveVerifyRoot = Join-Path $env:TEMP ("mvhub-release-verify-" + [Guid]::NewGuid().ToString("N"))
+        try {
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $ArchiveVerifyRoot -Force
+            Assert-PythonRuntimeTree `
+                -RuntimeDir (Join-Path $ArchiveVerifyRoot "runtime\python") `
+                -Label "finished archive"
+        }
+        finally {
+            Remove-Item -LiteralPath $ArchiveVerifyRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host "      Archive contents and bundled runtime validated."
 }
 catch {
     Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
@@ -505,11 +573,14 @@ $Latest = [ordered]@{
 }
 $LatestPath = Join-Path $OutputDir "latest.json"
 $Latest | ConvertTo-Json | Set-Content -LiteralPath $LatestPath -Encoding UTF8
+$InstallerPath = Join-Path $OutputDir "MVHub_Install.bat"
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "MVHub_Install.bat") -Destination $InstallerPath -Force
 
 Write-Host ""
 Write-Host "Release ready:"
 Write-Host "  $ZipPath"
 Write-Host "  $LatestPath"
+Write-Host "  $InstallerPath"
 Write-Host ""
 
 # ── Auto-publish to the server packages folder (optional) ──────────────────
@@ -540,6 +611,7 @@ elseif (-not (Test-Path -LiteralPath $PublishTarget)) {
 else {
     Write-Host "[publish] copying to server: $PublishTarget"
     Copy-Item -LiteralPath $ZipPath -Destination $PublishTarget -Force
+    Copy-Item -LiteralPath $InstallerPath -Destination $PublishTarget -Force
     Copy-Item -LiteralPath $LatestPath -Destination $PublishTarget -Force
-    Write-Host "[publish] done - team can now update via update_release.bat."
+    Write-Host "[publish] done - latest.json was published last; installer/update are ready."
 }
