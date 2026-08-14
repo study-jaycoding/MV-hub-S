@@ -97,13 +97,15 @@ def test_worker_telemetry_event_is_visible_without_identity():
         {
             "ts": "2026-08-13T12:00:00+00:00",
             "event": "worker_telemetry_received",
+            "worker_name": "Paul",
             "received_items": 3,
             "upserted_items": 3,
             "completed_items": 2,
             "failed_items": 1,
         }
     )
-    assert "작업자 생성정보 수신" in line
+    assert "생성 정보" in line
+    assert "작업자=Paul" in line
     assert "수신=3" in line and "완료=2" in line and "실패=1" in line
 
 

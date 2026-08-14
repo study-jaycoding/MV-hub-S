@@ -161,9 +161,11 @@ def telemetry_push(body: TelemetryPushIn, request: Request):
     items = [it.model_dump() for it in body.items]
     n, skipped = upsert_facts(acc.get("email") or "local", acc.get("creator_uid"), items)
     if items:
+        worker_name = str(acc.get("name") or "").strip() or "이름 미설정"
         log_event(
             _manage_log,
             "worker_telemetry_received",
+            worker_name=worker_name,
             **_telemetry_activity_summary(items, n, skipped),
         )
     # skipped = 서버가 반영 안 한 항목(미링크 전체·남의 것). 클라가 이것만 재시도로 남기고 나머지는 정리.

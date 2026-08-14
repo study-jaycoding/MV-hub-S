@@ -37,7 +37,7 @@ _LABELS = {
     "pm_metrics_failed": "관리 통계 기록 실패",
     "generation_queue_attention": "생성 큐 확인 필요",
     "telemetry_backlog": "관리 데이터 전송 지연",
-    "worker_telemetry_received": "작업자 생성정보 수신",
+    "worker_telemetry_received": "생성 정보",
     "database_unready": "데이터베이스 준비 실패",
     "generation_journal_write_failed": "생성 이력 저장 실패",
     "audit_journal_write_failed": "감사 기록 저장 실패",
@@ -95,6 +95,7 @@ def format_event(payload: dict[str, Any]) -> str | None:
     details = []
     for key, title in (
         ("generation_id", "생성"),
+        ("worker_name", "작업자"),
         ("request_id", "요청"),
         ("job_id", "작업"),
         ("status", "상태"),

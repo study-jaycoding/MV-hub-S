@@ -29,7 +29,11 @@ def test_telemetry_push_logs_only_aggregate_activity(monkeypatch):
     monkeypatch.setattr(
         manage_router,
         "_push_acc",
-        lambda _request: {"email": "private@example.com", "creator_uid": "private-uid"},
+        lambda _request: {
+            "email": "private@example.com",
+            "creator_uid": "private-uid",
+            "name": "Paul",
+        },
     )
     monkeypatch.setattr(manage_db, "upsert_facts", lambda *_args: (1, []))
 
@@ -53,6 +57,7 @@ def test_telemetry_push_logs_only_aggregate_activity(monkeypatch):
     }
     assert captured == {
         "event": "worker_telemetry_received",
+        "worker_name": "Paul",
         "received_items": 1,
         "upserted_items": 1,
         "skipped_items": 0,
