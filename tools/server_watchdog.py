@@ -47,9 +47,19 @@ def _log_path(args) -> Path:
     return Path(args.log) if args.log else ROOT / "logs" / "watchdog.log"
 
 
+def _print_console(line: str) -> None:
+    """운영 로그 문자가 Windows 콘솔 코드페이지와 달라도 감시를 멈추지 않는다."""
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        safe = line.encode(encoding, errors="backslashreplace").decode(encoding)
+        print(safe, flush=True)
+
+
 def log(args, msg: str) -> None:
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
-    print(line, flush=True)
+    _print_console(line)
     p = _log_path(args)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

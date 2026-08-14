@@ -90,6 +90,8 @@ def test_autostart_persists_runtime_paths_for_system_account():
     assert "logs\\scheduled_node_dir.txt" not in register
     assert "logs\\scheduled_python.txt" in launcher  # one-time migration
     assert 'set "PYEXE=%%p"' in launcher
+    assert 'set "PYTHONUTF8=1"' in launcher
+    assert 'set "PYTHONIOENCODING=utf-8:replace"' in launcher
     assert "logs\\scheduled_node_dir.txt" in launcher  # one-time migration
     assert 'set "PATH=%%p;%PATH%"' in launcher
 
@@ -116,6 +118,9 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert "/api/ready" in restart
     assert "Get-ScheduledTaskInfo" in restart
     assert "server_console.log" in restart
+    assert "watchdog_console.log" in restart
+    assert "$Root = $PSScriptRoot" in restart
+    assert '-Root "%ROOT%"' not in wrapper
 
 
 def test_update_persists_commit_and_restart_result():

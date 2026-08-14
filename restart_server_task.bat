@@ -17,7 +17,7 @@ if errorlevel 1 (
   exit /b !errorlevel!
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%restart_server_task.ps1" -Root "%ROOT%" -Port %PORT%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%restart_server_task.ps1" -Port %PORT%
 set "RC=%errorlevel%"
 if not "%CONTENT_HUB_NO_PAUSE%"=="1" pause
 exit /b %RC%

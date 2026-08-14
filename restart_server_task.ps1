@@ -1,10 +1,10 @@
 param(
-    [Parameter(Mandatory = $true)][string]$Root,
     [int]$Port = 8010,
     [int]$TimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
+$Root = $PSScriptRoot
 $serverTask = "MVHub Server"
 $watchdogTask = "MVHub Watchdog"
 
@@ -17,10 +17,10 @@ function Get-TaskResultText([string]$TaskName) {
     catch { return "unavailable: $($_.Exception.Message)" }
 }
 
-function Show-ServerLogTail {
-    $log = Join-Path $Root "logs\server_console.log"
+function Show-LogTail([string]$Name) {
+    $log = Join-Path $Root "logs\$Name"
     if (Test-Path -LiteralPath $log) {
-        Write-Host "--- server_console.log (last 40 lines) ---" -ForegroundColor Yellow
+        Write-Host "--- $Name (last 40 lines) ---" -ForegroundColor Yellow
         Get-Content -LiteralPath $log -Tail 40 -ErrorAction SilentlyContinue
     }
 }
@@ -84,6 +84,7 @@ catch {
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "${serverTask}: $(Get-TaskResultText $serverTask)"
     Write-Host "${watchdogTask}: $(Get-TaskResultText $watchdogTask)"
-    Show-ServerLogTail
+    Show-LogTail "server_console.log"
+    Show-LogTail "watchdog_console.log"
     exit 1
 }
