@@ -112,6 +112,8 @@ function Assert-ReleaseArchive {
             "VERSION.txt",
             "MV_agent.bat",
             "update_release.bat",
+            "run_release_update.ps1",
+            "update_release_worker.bat",
             "agent_push.py",
             "run_agent_session.py",
             "hf_cli_version.txt",
@@ -165,6 +167,8 @@ function Assert-ReleaseArchive {
             "runtime",
             "MV_agent.bat",
             "update_release.bat",
+            "run_release_update.ps1",
+            "update_release_worker.bat",
             "agent_push.py",
             "run_agent_session.py",
             "hf_cli_version.txt"
@@ -428,6 +432,8 @@ Copy-RoboChecked `
 $RootFiles = @(
     "MV_agent.bat",
     "update_release.bat",
+    "run_release_update.ps1",
+    "update_release_worker.bat",
     "agent_push.py",
     "run_agent_session.py",
     "hf_cli_version.txt"

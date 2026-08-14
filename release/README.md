@@ -41,8 +41,10 @@ release\publish_target.txt   ← 예: Z:\mvutil\MV_hub_S\packages  (머신별 �
 zip 안에는 실행에 필요한 portable runtime과 로컬 업데이트 파일이 같이 들어갑니다.
 
 ```text
-MV_agent.bat          # 평소 실행
-update_release.bat      # 설치 후 업데이트만
+MV_agent.bat              # 평소 실행
+update_release.bat        # 설치 후 업데이트 실행기
+run_release_update.ps1    # 안전한 임시 실행 준비
+update_release_worker.bat # 실제 검증·설치 작업
 runtime\python        # 백엔드 실행용 Python
 runtime\node          # Node.js/npm
 runtime\higgsfield    # Higgsfield CLI

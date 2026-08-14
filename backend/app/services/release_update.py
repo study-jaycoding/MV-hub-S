@@ -2,7 +2,7 @@
 
 공유 서버의 ``update_git.bat``과 역할을 섞지 않는다. 이 모듈은 작업자 PC에
 ``MVHub_Install.bat``으로 설치된 릴리스만 다루며, 신뢰된 ``INSTALL_SOURCE.txt``의
-``latest.json``을 읽어 이미 설치된 ``update_release.bat`` 복사본을 임시 폴더에서 실행한다.
+``latest.json``을 읽어 이미 설치된 안전 실행기로 격리된 업데이트 작업을 시작한다.
 """
 
 from __future__ import annotations
@@ -11,14 +11,12 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -88,6 +86,8 @@ def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bo
     required = (
         "MV_agent.bat",
         "update_release.bat",
+        "run_release_update.ps1",
+        "update_release_worker.bat",
         "run_agent_session.py",
         "agent_push.py",
         "backend/serve.py",
@@ -412,7 +412,7 @@ def _launch_bootstrap(script: Path, env: dict[str, str], log_path: Path) -> int:
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
-        process = subprocess.Popen(  # noqa: S603 — 고정된 로컬 배치 복사본만 실행
+        process = subprocess.Popen(  # noqa: S603 — 설치 폴더의 고정된 안전 실행기만 실행
             [comspec, "/d", "/c", "call", str(script)],
             cwd=str(script.parent),
             env=env,
@@ -463,9 +463,7 @@ def start_update(
             if activity_check() > 0:
                 raise ReleaseUpdateBusyError("확인 중 생성 작업이 시작됐습니다. 완료된 뒤 다시 시도하세요")
 
-            source_script = root / "update_release.bat"
-            bootstrap = Path(tempfile.gettempdir()) / f"mvhub-update-bootstrap-{uuid.uuid4().hex}.bat"
-            shutil.copy2(source_script, bootstrap)
+            launcher = root / "update_release.bat"
             status_file = state_path(root)
             env = os.environ.copy()
             # 현재 백엔드는 guarded MV_agent의 내부 세션이라 이 표식이 1이다. 새 런처가
@@ -487,7 +485,7 @@ def start_update(
                 current_version=current,
                 latest_version=latest["version"],
             )
-            _launch_bootstrap(bootstrap, env, UPDATE_STATE_BASE / "update.log")
+            _launch_bootstrap(launcher, env, UPDATE_STATE_BASE / "update.log")
             return {
                 **_read_state(root),
                 "install_mode": "release",

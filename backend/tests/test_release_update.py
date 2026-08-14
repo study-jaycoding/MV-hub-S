@@ -21,6 +21,8 @@ def _release_root(tmp_path: Path, *, version: str = "1.0.0") -> tuple[Path, Path
     (root / "VERSION.txt").write_text(version, encoding="utf-8")
     (root / "INSTALL_SOURCE.txt").write_text(str(source), encoding="utf-8")
     (root / "update_release.bat").write_text("@echo off\r\necho updater\r\n", encoding="utf-8")
+    (root / "run_release_update.ps1").write_text("exit 0\n", encoding="utf-8")
+    (root / "update_release_worker.bat").write_text("@exit /b 0\r\n", encoding="utf-8")
     (root / "MV_agent.bat").write_text("@echo off\r\n", encoding="utf-8")
     return root, source
 
@@ -118,7 +120,7 @@ def test_release_mode_survives_missing_version_or_launcher(tmp_path: Path):
     assert release_update.install_mode(root) == "release"
 
 
-def test_start_update_uses_detached_temp_bootstrap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_start_update_uses_installed_safe_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root, source = _release_root(tmp_path)
     _latest(source)
     launched: dict[str, object] = {}
@@ -126,8 +128,7 @@ def test_start_update_uses_detached_temp_bootstrap(tmp_path: Path, monkeypatch: 
 
     def fake_launch(script: Path, env: dict[str, str], log_path: Path) -> int:
         launched.update(script=script, env=env, log_path=log_path)
-        assert script.parent == Path(release_update.tempfile.gettempdir())
-        assert script.read_text(encoding="utf-8") == (root / "update_release.bat").read_text(encoding="utf-8")
+        assert script == root / "update_release.bat"
         return 4321
 
     monkeypatch.setattr(release_update, "_launch_bootstrap", fake_launch)
@@ -202,11 +203,17 @@ def test_shared_server_never_becomes_a_worker_release_updater(tmp_path: Path, mo
 
 def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_breakaway():
     project_root = Path(__file__).resolve().parents[2]
-    updater = (project_root / "update_release.bat").read_text(encoding="utf-8")
+    update_launcher = (project_root / "update_release.bat").read_text(encoding="utf-8")
+    update_runner = (project_root / "run_release_update.ps1").read_text(encoding="utf-8")
+    updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
     launcher = (project_root / "run_agent_session.py").read_text(encoding="utf-8")
     builder = (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8")
 
     assert "MVHUB_UPDATE_TARGET_DIR" in updater
+    assert len(update_launcher.splitlines()) == 1
+    assert "run_release_update.ps1" in update_launcher
+    assert "Copy-Item -LiteralPath $Worker -Destination $TempWorker" in update_runner
+    assert "mvhub-release-update-" in update_runner
     assert "Restart-MvHubAndWaitReady" in updater
     assert "unsafe release filename" in updater
     assert "Assert-PythonRuntime" in updater
@@ -224,6 +231,8 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "JOB_OBJECT_LIMIT_BREAKAWAY_OK" in launcher
     assert "backend/app/routers/release_update.py" in builder
     assert "backend/app/services/release_update.py" in builder
+    assert '"run_release_update.ps1"' in builder
+    assert '"update_release_worker.bat"' in builder
     assert "Assert-PythonRuntimeTree" in builder
     assert "expected 64-bit runtime" in builder
 
@@ -267,25 +276,27 @@ def test_first_installer_delegates_to_the_verified_package_updater():
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch bootstrap regression")
 def test_manual_updater_survives_its_installed_batch_being_overwritten(tmp_path: Path):
-    """The installed wrapper must finish from TEMP after the target copy is replaced."""
+    """The installed launcher and runner may both be replaced while TEMP keeps running."""
     project_root = Path(__file__).resolve().parents[2]
     installed = tmp_path / "installed"
     temp_dir = tmp_path / "temp"
     installed.mkdir()
     temp_dir.mkdir()
-    marker = "### MVHUB_UPDATE_POWERSHELL ###"
-    wrapper = (project_root / "update_release.bat").read_text(encoding="utf-8").split(marker, 1)[0]
-    overwrite_payload = """param(
-    [string]$TargetDir,
-    [string]$StateFile = "",
-    [string]$RestartAfterInstall = "0",
-    [string]$ReadyUrl = ""
-)
-Set-Content -LiteralPath (Join-Path $TargetDir "update_release.bat") -Value "@echo off" -Encoding ASCII
-Write-Host "[3/3] Update complete."
-"""
     (installed / "update_release.bat").write_text(
-        wrapper + marker + "\n" + overwrite_payload,
+        (project_root / "update_release.bat").read_text(encoding="utf-8"), encoding="ascii"
+    )
+    (installed / "run_release_update.ps1").write_text(
+        (project_root / "run_release_update.ps1").read_text(encoding="utf-8"), encoding="ascii"
+    )
+    (installed / "update_release_worker.bat").write_text(
+        """@echo off
+>"%MVHUB_UPDATE_TARGET_DIR%\\update_release.bat" echo @echo off
+>"%MVHUB_UPDATE_TARGET_DIR%\\run_release_update.ps1" echo exit 99
+>"%MVHUB_UPDATE_TARGET_DIR%\\update_release_worker.bat" echo @exit /b 99
+>"%MVHUB_UPDATE_TARGET_DIR%\\update-finished.txt" echo safe
+echo [3/3] Update complete.
+exit /b 0
+""",
         encoding="ascii",
     )
 
@@ -308,7 +319,49 @@ Write-Host "[3/3] Update complete."
 
     output = completed.stdout + completed.stderr
     assert completed.returncode == 0, output
-    assert "[done] Update check finished" in output
+    assert "[3/3] Update complete." in output
+    assert (installed / "update-finished.txt").read_text(encoding="ascii").strip() == "safe"
     assert "not recognized" not in output
     assert "Failed to prepare MV Hub updater" not in output
-    assert not list(temp_dir.glob("mvhub-update-bootstrap-*.bat"))
+    assert not list(temp_dir.glob("mvhub-release-update-*.bat"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch bootstrap regression")
+def test_manual_updater_propagates_isolated_worker_failure(tmp_path: Path):
+    """A real worker failure must remain visible to callers and automation."""
+    project_root = Path(__file__).resolve().parents[2]
+    installed = tmp_path / "installed"
+    temp_dir = tmp_path / "temp"
+    installed.mkdir()
+    temp_dir.mkdir()
+    (installed / "update_release.bat").write_text(
+        (project_root / "update_release.bat").read_text(encoding="utf-8"), encoding="ascii"
+    )
+    (installed / "run_release_update.ps1").write_text(
+        (project_root / "run_release_update.ps1").read_text(encoding="utf-8"), encoding="ascii"
+    )
+    (installed / "update_release_worker.bat").write_text(
+        "@echo off\r\necho worker failed\r\nexit /b 23\r\n",
+        encoding="ascii",
+    )
+
+    env = os.environ.copy()
+    env["TEMP"] = str(temp_dir)
+    env["TMP"] = str(temp_dir)
+    env["MVHUB_NO_PAUSE"] = "1"
+    env.pop("MVHUB_UPDATE_TARGET_DIR", None)
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", str(installed / "update_release.bat")],
+        cwd=installed,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 23
+    assert "worker failed" in completed.stdout
+    assert not list(temp_dir.glob("mvhub-release-update-*.bat"))
