@@ -4,6 +4,7 @@ import { useT } from "../../lib/i18n";
 import type { ResolveConnectionStatus, ResolveScriptStatus } from "../../lib/resolveTransfer";
 import {
   isReleaseUpdateRunning,
+  releaseUpdateMessage,
   type ReleaseUpdateStatus,
 } from "../../lib/releaseUpdate";
 
@@ -372,6 +373,9 @@ export function ReleaseUpdateSettingsSection({
   const running = busy || isReleaseUpdateRunning(status?.state);
   const releaseInstall = status?.install_mode === "release";
   const active = status?.active_total || 0;
+  // 실행기(bat)가 기록하는 전체 진행률 — 버튼·문구에 함께 보여 멈춘 건지 진행 중인지 구분되게.
+  const pct = typeof status?.percent === "number" ? Math.min(100, status.percent) : null;
+  const pctText = running && pct !== null ? ` ${pct}%` : "";
   const versionText = status
     ? status.latest_version && status.latest_version !== status.current_version
       ? `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
@@ -379,8 +383,8 @@ export function ReleaseUpdateSettingsSection({
     : "버전을 확인하는 중…";
   const actionText = running
     ? status?.state === "restarting"
-      ? "프로그램 다시 시작 중…"
-      : "업데이트 중…"
+      ? `프로그램 다시 시작 중…${pctText}`
+      : `업데이트 중…${pctText}`
     : !releaseInstall
       ? "작업자 설치본 전용"
       : active > 0
@@ -405,7 +409,9 @@ export function ReleaseUpdateSettingsSection({
         </button>
       </div>
       <p className="settings-hint">{versionText}</p>
-      <p className="settings-hint">{msg || status?.message || "릴리스 서버를 확인하고 있습니다."}</p>
+      <p className="settings-hint">
+        {msg || releaseUpdateMessage(status) || "릴리스 서버를 확인하고 있습니다."}
+      </p>
       {releaseInstall && active > 0 && (
         <p className="settings-hint" style={{ color: "#f5a623" }}>
           유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
