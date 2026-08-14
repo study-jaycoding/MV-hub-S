@@ -288,9 +288,65 @@ function Install-Package {
     Write-UpdateState -State "installing" -Message "검증된 새 버전을 설치하는 중…" -Latest ([string]$Latest.version)
     New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
     Stop-MvHubProcesses -Root $TargetDir
+
+    # runtime\python 은 overlay 복사(잔재가 남는 병합)에서 제외하고 아래에서 rename 스왑으로
+    # 통째 교체한다. 파이썬 버전이 바뀌는 업데이트(예 3.14→3.11)에서 옛 python314.dll·Lib
+    # 잔재가 남으면 런타임이 뒤섞여 DaVinci Resolve(fusionscript) 연동이 깨지기 때문.
     Get-ChildItem -LiteralPath $ExtractDir -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
+        if ($_.Name -eq "runtime") {
+            $RuntimeTarget = Join-Path $TargetDir "runtime"
+            New-Item -ItemType Directory -Force -Path $RuntimeTarget | Out-Null
+            Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
+                if ($_.Name -ne "python") {
+                    Copy-Item -LiteralPath $_.FullName -Destination $RuntimeTarget -Recurse -Force
+                }
+            }
+        }
+        else {
+            Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
+        }
     }
+
+    $NewPython = Join-Path $ExtractDir "runtime\python"
+    if (Test-Path -LiteralPath $NewPython) {
+        # 새 런타임을 python.next.<토큰>에 먼저 완성·검증한 뒤 rename 두 번으로 교체한다.
+        # 두 번째 rename 실패 시 previous 를 즉시 원복 — 어느 시점에 끊겨도 실행 가능한
+        # 런타임이 남는다(원자적 스왑). 검증 성공 후에만 previous 를 삭제한다.
+        $Token = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+        $PythonDir = Join-Path $TargetDir "runtime\python"
+        $NextDir = Join-Path $TargetDir "runtime\python.next.$Token"
+        $PrevDir = Join-Path $TargetDir "runtime\python.previous.$Token"
+
+        Write-Host "[update] Staging new Python runtime..."
+        New-Item -ItemType Directory -Force -Path (Join-Path $TargetDir "runtime") | Out-Null
+        Copy-Item -LiteralPath $NewPython -Destination $NextDir -Recurse -Force
+        $NextExe = Join-Path $NextDir "python.exe"
+        $NextVersion = @(& $NextExe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>&1)
+        if ($LASTEXITCODE -ne 0 -or -not $NextVersion) {
+            Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
+            throw "Staged Python runtime failed to run; keeping the current runtime."
+        }
+
+        Write-Host "[update] Swapping Python runtime (new: $(([string[]]$NextVersion)[0]))..."
+        $HadPrevious = Test-Path -LiteralPath $PythonDir
+        if ($HadPrevious) {
+            Rename-Item -LiteralPath $PythonDir -NewName (Split-Path -Leaf $PrevDir)
+        }
+        try {
+            Rename-Item -LiteralPath $NextDir -NewName "python"
+        }
+        catch {
+            if ($HadPrevious) {
+                Rename-Item -LiteralPath $PrevDir -NewName "python"
+            }
+            Remove-Item -LiteralPath $NextDir -Recurse -Force -ErrorAction SilentlyContinue
+            throw "Python runtime swap failed; previous runtime restored. $($_.Exception.Message)"
+        }
+        if ($HadPrevious) {
+            Remove-Item -LiteralPath $PrevDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Assert-BundledCli -Root $TargetDir -ExpectedVersion $ExpectedCliVersion -Label "installed" | Out-Null
     Set-Content -LiteralPath (Join-Path $TargetDir "INSTALL_SOURCE.txt") -Value $BaseUrl -Encoding UTF8
 }

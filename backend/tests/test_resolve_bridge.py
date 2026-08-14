@@ -343,6 +343,24 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertIn("External scripting using", str(raised.exception))
         self.assertIn("Local", str(raised.exception))
 
+    def test_fusionscript_init_failure_explains_python_incompatibility(self):
+        # DaVinciResolveScript 임포트 중 fusionscript.dll(C 확장) 초기화가 SystemError로
+        # 실패하면(파이썬 버전 비호환), 날것의 영어 대신 원인·해결을 한국어로 안내해야 한다.
+        def raise_system_error(_name):
+            raise SystemError(
+                "initialization of fusionscript failed without raising an exception"
+            )
+
+        with mock.patch.object(
+            resolve_bridge.importlib, "import_module", side_effect=raise_system_error
+        ):
+            with self.assertRaises(resolve_bridge.ResolveBridgeError) as raised:
+                resolve_bridge._connect_resolve()
+
+        self.assertEqual(raised.exception.code, "python_incompatible")
+        self.assertIn("파이썬", str(raised.exception))
+        self.assertIn("fusionscript", str(raised.exception))
+
     def test_new_bins_are_created_in_natural_folder_name_order(self):
         manifest = self._manifest()
         manifest["items"][0]["folder_path"] = "ep001/c10"

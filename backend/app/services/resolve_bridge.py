@@ -163,6 +163,22 @@ def _connect_resolve() -> Any:
             f"확인한 위치: {searched}",
             code="module_unavailable",
         ) from exc
+    except SystemError as exc:
+        # fusionscript.dll(C 확장) 초기화 실패 — CPython 은 이 경우 SystemError
+        # ("initialization of fusionscript failed without raising an exception")를 낸다.
+        # 백엔드 파이썬 버전이 설치된 Resolve 의 연결 부품과 호환되지 않을 때 발생한다
+        # (예: Resolve 21 은 Python 3.10~3.12 만 지원, 3.13+ 는 이 에러). 좁게 SystemError 만
+        # 잡아 실제 코드 버그를 오진하지 않게 하고, 날것의 영어 대신 원인·해결을 한국어로 안내한다.
+        py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        bits = 64 if sys.maxsize > 2**32 else 32
+        raise ResolveBridgeError(
+            "DaVinci Resolve 연결 부품(fusionscript)을 현재 파이썬에서 불러오지 못했습니다. "
+            f"이 PC 백엔드 파이썬({py_version}, {bits}비트)이 설치된 DaVinci Resolve 가 지원하는 "
+            "버전이 아닙니다. Resolve 호환 파이썬(3.11 권장)을 동봉한 정식 릴리스 패키지로 업데이트하세요. "
+            "지원 버전은 Resolve 의 Developer\\Scripting\\README.txt 에서 확인할 수 있습니다. "
+            f"(원인: {exc})",
+            code="python_incompatible",
+        ) from exc
     last_error: Exception | None = None
     for attempt in range(_CONNECT_ATTEMPTS):
         try:
