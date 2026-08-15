@@ -217,7 +217,10 @@ def main() -> int:
     ap.add_argument("--fail-threshold", type=int, default=3, help="연속 실패 몇 회에 개입")
     ap.add_argument("--busy-threshold", type=int, default=30,
                     help="연속 busy(HTTP 응답은 오나 준비 안 됨) 몇 회에 ALERT(개입은 안 함)")
-    ap.add_argument("--startup-grace", type=float, default=600.0, help="첫 정상 전 시작 유예(초)")
+    # ★부팅-살해 루프 방지: 서버는 소켓을 먼저 열고(listen) 마이그레이션·백필을 돈다 —
+    # DB 가 크면 그동안 /api/ready 가 무응답(dead 분류)이라, 유예가 짧으면 부팅 중인
+    # 서버를 죽이고 재부팅→또 죽이는 루프가 가능했다. 30분이면 대형 DB 부팅도 덮는다.
+    ap.add_argument("--startup-grace", type=float, default=1800.0, help="첫 정상 전 시작 유예(초)")
     ap.add_argument("--post-kill-grace", type=float, default=300.0, help="개입 후 대기(초)")
     ap.add_argument("--storm-window", type=float, default=3600.0, help="폭풍 판정 창(초)")
     ap.add_argument("--storm-limit", type=int, default=3, help="창 내 개입 상한(회)")
@@ -297,11 +300,26 @@ def main() -> int:
                             pass
                     else:
                         pids, how = find_target_pids(args.port)
-                        if pids:
+                        if pids and hold_alerted:
+                            # 포트 뺏김이 방금 풀려 우리 serve.py 가 다시 포트를 잡았다 —
+                            # 점유 기간에 누적된 fails 로 부팅 중인 새 서버를 즉시 죽이면
+                            # 안 된다(코덱스 P1). 이번 주기는 개입하지 않고 부팅 유예를 새로 준다.
+                            log(args, "포트 점유 해제 감지 — 새 서버에 시작 유예 부여(개입 보류)")
+                            hold_alerted = False
+                            fails = 0
+                            armed = False
+                            startup_deadline = time.monotonic() + args.startup_grace
+                        elif pids:
                             log(args, f"개입 — 대상 PID {pids} (판별: {how})")
                             if kill_pids(args, pids):
                                 kills.append(now)
                                 fails = 0
+                                # 재기동에도 부팅과 같은 유예를 준다 — 재기동 부팅이
+                                # 마이그레이션으로 길어질 때 또 죽이는 루프 방지.
+                                armed = False
+                                startup_deadline = (
+                                    time.monotonic() + args.post_kill_grace + args.startup_grace
+                                )
                                 log(args, f"재기동 대기 {int(args.post_kill_grace)}s")
                                 time.sleep(args.post_kill_grace)
                                 continue
