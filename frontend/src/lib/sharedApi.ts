@@ -54,6 +54,8 @@ export const sharedApi = {
     jsonFetch<{
       ok: boolean;
       published: number;
+      blocked?: number;
+      message?: string;
       remote: { inserted: number; updated: number; unchanged: number; skipped: number };
     }>("/api/publish-to-shared", {
       method: "POST",

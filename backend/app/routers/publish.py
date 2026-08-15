@@ -389,17 +389,34 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
         raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인).")
     if status != 200 or not isinstance(resp, dict):
         raise HTTPException(status_code=502, detail=f"발행 실패(status={status}): {resp}")
+    # ★서버가 거부(blocked)한 항목은 로컬 share 표식을 남기지 않는다 — 예전엔 200 하나로
+    #  전부 "공유됨" 처리해서, 작성자 불일치로 서버가 조용히 무시한 발행이 로컬 뱃지만
+    #  붙은 채 팀에는 영영 안 보였다. 앵커는 번들과 같은 규칙(job_id 우선, 없으면 id).
+    blocked_anchors = {str(a) for a in (resp.get("blocked_ids") or []) if a}
     published = 0
+    blocked = 0
     for gid in gen_ids:
         gen = repo.get_generation(gid)
-        if gen and gen.get("status") == "done":
-            repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
-            _touch_telemetry(gid)
-            published += 1
-    return {
+        if not (gen and gen.get("status") == "done"):
+            continue
+        anchor = str(gen.get("job_id") or gid)
+        if anchor in blocked_anchors:
+            blocked += 1
+            continue
+        repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
+        _touch_telemetry(gid)
+        published += 1
+    out = {
         "published": published,
-        "remote": {k: resp.get(k) for k in ("inserted", "updated", "unchanged", "skipped")},
+        "remote": {k: resp.get(k) for k in ("inserted", "updated", "unchanged", "skipped", "blocked")},
     }
+    if blocked:
+        out["blocked"] = blocked
+        out["message"] = (
+            f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유 등) — "
+            "공유 표시를 남기지 않았습니다."
+        )
+    return out
 
 
 @router.post("/publish-to-shared")

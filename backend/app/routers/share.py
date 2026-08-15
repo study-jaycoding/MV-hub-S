@@ -178,7 +178,16 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
                 raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
             from .publish import publish_bundle_to_server
 
-            publish_bundle_to_server([local_id or gen_id])
+            pub = publish_bundle_to_server([local_id or gen_id])
+            # ★발행이 차단(blocked — 작성자 불일치 등)됐으면 골드 진행을 즉시 중단한다.
+            #  계속 가면 서버엔 없는 항목에 finalize 를 시도하고, 실패 보상이 원래부터
+            #  공유돼 있던 항목까지 unpublish 할 수 있다(코덱스 P1).
+            if not pub.get("published"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=pub.get("message")
+                    or "서버가 발행을 반영하지 않아 최종 지정을 중단했습니다",
+                )
             newly_published = True
         try:
             out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")

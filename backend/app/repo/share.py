@@ -347,7 +347,7 @@ def import_bundle_item(
     """번들 항목 1건을 병합. 사실은 upsert(uuid 멱등), 오버레이는 union/append.
     shared_by(제공자 worker id)가 오면 '받은 공유' 표식으로 share 행을 1개 기록한다 —
     received 필터(shared_by <> 'me')가 가져온 작업물을 사이드바에 띄울 수 있게.
-    반환: 'inserted'|'updated'|'unchanged'|'skipped'."""
+    반환: 'inserted'|'updated'|'unchanged'|'skipped'|'blocked'(작성자 불일치로 미반영)."""
     g = item.get("generation") or {}
     job_id = g.get("id")
     if not job_id:
@@ -399,7 +399,10 @@ def import_bundle_item(
                 and existing["creator_uid"] != shared_by
             )
             if fact_blocked:
-                result = "unchanged"
+                # ★'unchanged' 가 아니라 'blocked' — 예전엔 발행자 화면에서 구분이 안 돼,
+                #  서버가 조용히 무시한 발행(작성자 불일치 재공유)이 로컬에선 "공유됨"으로
+                #  확정되는 무음 유실이 났다. 발신 측이 이 값으로 share 표식을 건너뛴다.
+                result = "blocked"
             else:
                 result = generation_sync._upsert_synced(conn, parsed, worker_id)
             # 오버레이 병합 — display_prompt(레퍼런스 위치)·태그(union)·코멘트(append).
@@ -457,7 +460,7 @@ def import_bundle_item(
 
 def import_bundle_payload(
     bundle: dict[str, Any], worker_id: str = DEFAULT_WORKER_ID
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """번들 1개(provider + generations)를 통째로 병합. 항목별 결과를 카운트로 집계.
     provider.name 이 있으면 그 uid 의 creator 이름을 보강해 받은 작업물의 작성자가 표시되게."""
     # 작성자 이름 맵 적용 — 각 작업의 creator_uid(user_<id>) 가 'user_xxx' 아닌 사람 이름으로 뜨게.
@@ -481,12 +484,21 @@ def import_bundle_payload(
             identity.set_creator_name(shared_by, prov["name"], overwrite=False)
     else:
         shared_by = None
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0}
+    counts: dict[str, Any] = {
+        "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "blocked": 0,
+    }
+    blocked_ids: list[str] = []
     for it in bundle.get("generations") or []:
         if not isinstance(it, dict):
             counts["skipped"] += 1
             continue
-        counts[import_bundle_item(it, worker_id, shared_by)] += 1
+        result = import_bundle_item(it, worker_id, shared_by)
+        counts[result] += 1
+        if result == "blocked":
+            anchor = (it.get("generation") or {}).get("id")
+            if anchor:
+                blocked_ids.append(str(anchor))
+    counts["blocked_ids"] = blocked_ids
     # 계보 엣지 — 생성물 import 후에 넣는다. 양끝(parent·child)이 모두 서버에 실재할 때만(FK 보호,
     # 멱등). 공유된 조상끼리만 연결돼 팀원이 공유물 사이 계보를 본다(미공유 조상은 자동 생략).
     for e in bundle.get("history") or []:

@@ -77,7 +77,9 @@ class ShareAuthorityTests(unittest.TestCase):
 
         result = repo.import_bundle_item(item, "me", shared_by="user_attacker")
 
-        self.assertEqual(result, "unchanged")
+        # 'unchanged' 가 아니라 'blocked' — 발신 측이 이 값으로 로컬 share 표식을 건너뛰어
+        # "내 화면엔 공유됨 / 팀엔 안 보임" 무음 유실을 막는다.
+        self.assertEqual(result, "blocked")
         with db.get_connection() as conn:
             gen = conn.execute(
                 "SELECT prompt, status, display_prompt, project_id, folder_path "
@@ -117,6 +119,19 @@ class ShareAuthorityTests(unittest.TestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_bundle_payload_reports_blocked_anchor_to_sender(self):
+        # 발신 측(publish_bundle_to_server)이 blocked 항목을 식별해 로컬 share 표식을
+        # 건너뛸 수 있도록, payload 집계가 blocked 수와 앵커(job id)를 돌려준다.
+        bundle = {
+            "provider": {"uid": "user_attacker", "name": "Attacker"},
+            "generations": [
+                {"generation": {"id": "job-1", "creator_uid": "user_owner", "prompt": "x"}},
+            ],
+        }
+        counts = repo.import_bundle_payload(bundle, "me")
+        self.assertEqual(counts["blocked"], 1)
+        self.assertEqual(counts["blocked_ids"], ["job-1"])
 
 
 if __name__ == "__main__":

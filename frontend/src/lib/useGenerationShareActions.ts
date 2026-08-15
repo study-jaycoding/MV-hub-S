@@ -18,7 +18,9 @@ export function useGenerationShareActions({
     if (!ids.length) return 0;
     try {
       const r = await api.publishToShared(ids);
-      flash(`${r.published}개 팀에 공유.`);
+      // 서버가 반영하지 않은(blocked) 항목은 조용히 넘기지 않고 사유를 보여준다 —
+      // 무음 유실이면 사용자는 "공유됨"으로 믿는다.
+      flash(r.message ? `${r.published}개 팀에 공유. ${r.message}` : `${r.published}개 팀에 공유.`);
       if (r.published) postLibraryChanged(); // 관리탭 즉시 재조회(공유→게시 상태 반영)
       return r.published;
     } catch (e) {
