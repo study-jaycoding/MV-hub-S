@@ -72,12 +72,17 @@ def _list_backups() -> list[Path]:
 
 
 def _newest_age_seconds() -> Optional[float]:
-    """가장 최근 백업의 나이(초). 백업이 없으면 None."""
-    backups = _list_backups()
-    if not backups:
+    """가장 최근 백업의 나이(초). 백업이 없으면 None.
+
+    stat 는 NAS 순단·수동 정리와 경합할 수 있다 — 여기서 예외가 새면 주기 백업 루프
+    자체가 죽으므로(코덱스 리뷰), 읽기 실패한 파일은 건너뛴다."""
+    mtimes: list[float] = []
+    for p in _list_backups():
+        with contextlib.suppress(OSError):
+            mtimes.append(p.stat().st_mtime)
+    if not mtimes:
         return None
-    newest_mtime = max(p.stat().st_mtime for p in backups)
-    return max(0.0, time.time() - newest_mtime)
+    return max(0.0, time.time() - max(mtimes))
 
 
 def list_backups_info() -> list[dict]:
@@ -111,6 +116,17 @@ def _rotate() -> None:
         for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
             with contextlib.suppress(OSError):
                 (old.parent / f"{prefix}{stamp}.db").unlink()
+    # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 회전이 .db 만 지워
+    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것과
+    # 회전으로 방금 .db 가 사라진 것 모두 여기서 정리된다. 열려 있으면 unlink 가 거부되므로
+    # 사용 중 파일을 지울 위험은 없다(suppress).
+    d = _backup_dir()
+    if d.is_dir():
+        for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
+            base = d / side.name.rsplit("-", 1)[0]
+            if not base.is_file():
+                with contextlib.suppress(OSError):
+                    side.unlink()
 
 
 # 주기 백업과 관리자 수동 백업(POST /api/backup)이 겹칠 수 있어 파일 작업을 직렬화.
@@ -265,7 +281,13 @@ class PeriodicBackup:
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once()
         while True:
-            await asyncio.sleep(self._interval)
+            # ★고정 sleep(interval) 이 아니라 '최신 백업 나이' 기준으로 다음 시각을 잡는다.
+            # 서버가 interval(기본 24h)보다 짧은 주기로 재시작되면 — 워치독 개입·잦은 배포 —
+            # 시작 백업은 매번 생략되고 고정 sleep 은 끝까지 못 가서 백업이 영영 안 만들어졌다.
+            # 나이 기반이면 재시작이 아무리 잦아도 나이가 interval 을 넘는 순간 백업된다.
+            age = _newest_age_seconds()
+            wait = self._interval if age is None else max(60.0, self._interval - age)
+            await asyncio.sleep(wait)
             await self._backup_once()
 
     async def _backup_once(self) -> None:

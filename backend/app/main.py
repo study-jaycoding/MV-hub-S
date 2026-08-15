@@ -83,6 +83,7 @@ from .routers import (
 from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
+from .services.temp_sweeper import periodic_sweeper
 from .services.operational_logging import (
     compact_runtime_snapshot,
     configure_operational_logging,
@@ -176,6 +177,9 @@ async def _application_lifespan(app: FastAPI):
         init_manage_db()
         backfill_workspace_names(repo.list_workspace_options())
     repo.ensure_default_worker()
+    # Comfy in-flight 잡은 메모리만으로는 재시작 뒤 결과를 회수할 수 없다. 풀 자동복구 대신
+    # 이전 prompt_id 를 운영 로그에 남기고 Cloud 취소를 best-effort 로 시도한 뒤 흔적을 비운다.
+    comfy.recover_interrupted_run_jobs()
     # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
     # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
     if _should_bootstrap_admin():
@@ -303,6 +307,7 @@ async def _application_lifespan(app: FastAPI):
     if AUTH_ENABLED:
         periodic_sync.start()
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
+    periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
     # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
     # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
     # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
@@ -333,6 +338,7 @@ async def _application_lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await periodic_backup.stop()
+    await periodic_sweeper.stop()
     await remote_realtime_bridge.stop()
     if MANAGE_ENABLED:
         # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.

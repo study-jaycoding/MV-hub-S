@@ -16,7 +16,12 @@ from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..db import get_connection, get_db_path
 from ..manage_db import MANAGE_DB_PATH
 from ..repo.manage_telemetry import telemetry_outbox_status
-from .backup import list_backups_info
+from .backup import BACKUP_INTERVAL, list_backups_info
+
+
+def backup_interval_seconds() -> float:
+    """백업 주기(초) — 경보 임계 계산용(테스트에서 패치 가능하도록 함수로)."""
+    return BACKUP_INTERVAL
 
 _ACTIVE_PHASES = ("pending", "submitting", "running", "tracking", "verifying", "blocked")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -220,6 +225,21 @@ class OperationalAlertTracker:
                 "failed_checks": list(databases.get("failed_checks") or []),
             }
 
+        # 백업 노후 — 수집만 하고 경보가 없어서 "백업이 며칠째 없다"를 아무도 몰랐다.
+        # 주기의 2배(기본 48h)를 넘으면 경보. 백업 비활성(interval<=0)이나 무백업 신규
+        # 설치(latest None + set_count 0)는 대상 아님 — set 이 하나라도 있었는데 늙는
+        # 경우와, set 은 없는데 서버가 오래 돈 경우 둘 다 잡으려면 age None 도 후보에 넣되
+        # set_count 로 구분한다.
+        backups = operations.get("backups") or {}
+        backup_age = backups.get("latest_age_seconds")
+        if backup_interval_seconds() > 0 and backup_age is not None:
+            stale_after = backup_interval_seconds() * 2
+            if backup_age >= stale_after:
+                candidates["backup_stale"] = {
+                    "latest_age_seconds": int(backup_age),
+                    "stale_after_seconds": int(stale_after),
+                }
+
         emitted: list[dict[str, Any]] = []
         for event, fields in candidates.items():
             # oldest_age_seconds는 시간이 흐르면 매초 달라진다. 이를 상태 변화로 보면 같은
@@ -230,6 +250,11 @@ class OperationalAlertTracker:
                 fingerprint_fields = {
                     "pending": fields.get("pending"),
                     "failed": fields.get("failed"),
+                }
+            elif event == "backup_stale":
+                # 나이는 매 스냅샷 커진다 — 시간 단위 버킷으로 지문을 굳혀 60초마다 재방출되지 않게.
+                fingerprint_fields = {
+                    "age_hours": int(fields.get("latest_age_seconds") or 0) // 3600,
                 }
             fingerprint = tuple(
                 (key, repr(value)) for key, value in sorted(fingerprint_fields.items())
