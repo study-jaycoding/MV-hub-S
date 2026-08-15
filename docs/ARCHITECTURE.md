@@ -102,14 +102,25 @@ HTTP 요청
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
 | `members.py` | 등급(전역 역할) 관리 |
-| `assets.py` | Assets 분리창(폴더 마운트·파일메타·파일 코멘트) |
-| `sync.py` | 수동 동기화 트리거 |
+| `assets.py` / `assets_metadata.py` | Assets 분리창(폴더 마운트·트리·파일 서빙·업로드) / 파일메타·코멘트 |
+| `sync.py` | 수동 동기화 트리거·sync-status |
+| `publish.py` | 공유 서버 번들 발행 수신(`/share/publish-bundle`)·공유 서버 로그인/토큰 |
+| `manage.py` | PM 관리창 API(작업·일정·대시보드·팀 텔레메트리 push·완료본 저장) |
+| `comfy.py` | ComfyUI 연결·워크플로 파싱·비동기 실행(`/run`+`/run_status`)·라이브러리 저장 |
+| `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
+| `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
+| `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
+| `db_backup.py` / `db_transfer.py` | DB 백업 스트리밍 / 로컬 DB 내보내기·가져오기·복원(유지보수 게이트) |
+| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 텔레메트리 드레인 스케줄 / Assets 접근 가드 |
 
 ### 4.3 유스케이스 (`backend/app/usecases/`)
 
 | 모듈 | 담당 |
 |---|---|
 | `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
+| `generation_media_cache.py` | 미디어 보관(⤓ byte-cache) 오케스트레이션 |
+| `generation_personal_meta.py` | 팀 카드 개인 메타(색·태그 오버레이) 업무 흐름 |
+| `hf_missing.py` | Higgsfield 쪽에 없는 로컬 카드 점검·정리 |
 
 > usecase 는 FastAPI 를 직접 import 하지 않는다(test_architecture_boundaries 가 강제).
 > 알려진 예외: `gen_requests.py` 가 진행률 브로드캐스트를 위해 `app.ws` 를 직접 의존한다
@@ -151,6 +162,15 @@ HTTP 요청
 | `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
+| `comfy_client.py` / `comfy_workflow.py` | ComfyUI(로컬·Cloud) HTTP 클라이언트 / 워크플로 슬롯·파라미터 파싱 |
+| `resolve_bridge.py` / `resolve_transfer.py` / `resolve_probe.py` / `resolve_status_runner.py` / `resolve_script_installer.py` | Resolve Media Pool 가져오기 / 렌더폴더 전송·manifest / 프로세스 격리 상태 조회 / 스크립트 설치 |
+| `release_update.py` | 작업자 릴리스 자동 업데이트 상태·부트스트랩 실행기 |
+| `telemetry_drain.py` | PM 텔레메트리 outbox 드레인(백오프·격리 모드) |
+| `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
+| `backup_verify.py` / `db_scrub.py` / `test_snapshot.py` | 백업 복원 검증 / 개인정보 스크럽 / 테스트 스냅샷 |
+| `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로 |
+| `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별 / 경로 안전 / 원자 쓰기 / SSRF 가드 |
+| `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
 
 ### 4.6 보조 스크립트 (`backend/`)
@@ -204,10 +224,10 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
 - **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
-- **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
+- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`·`useAssetBroadcastSync`). 메인 창 없이도 WS를 직접 구독한다.
 - **PM 분리창**: `ManageWindow` + `manage/`(`DashboardView`·`WorkBoard`·`ExportView`). 전용 실시간 신호를 활성 탭의 한 번짜리 재조회로 합친다.
-- **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`HowItWorks`.
+- **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`ShortcutsWindow`.
 
 ---
 
@@ -327,7 +347,7 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
    전송하지 않는다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하고,
    개별 `/api/generations/{id}/cache`·전체 `/api/cache-all` 보관도 지원한다. 아직 보관하지 않은
    일반 생성물의 원격 URL은 만료될 수 있다.
-5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB / 미디어 샤딩 / 이중 백엔드(SQLite·PG)**.
+5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB(WAL) / 미디어 샤딩**. DB 는 SQLite 단일(§4.6).
 6. **마이그레이션 순서 함정**(§6) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화**(provenance) — `source_url` 보존으로 재사용·변형 가능(최우선 가치).
 8. **자동 태그 격리** — 일반 태그와 완전 분리 네임스페이스.
@@ -339,30 +359,27 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 ## 10. 디렉터리 트리 (요약)
 
 ```
-content-hub-server/
-├─ MV_server.bat            기존 프론트 빌드 확인 → 폭풍 차단 감독기 → 백엔드 기동(포트 8010, AUTH=1)
-├─ agent_push.py             팀원 각 PC 에이전트(표준 라이브러리만)
-├─ ARCHITECTURE.md           이 문서(설계 구조)
-├─ 기능설명서.md / 사용설명서.md / SERVER.md / AI_CONTEXT.md / README.md / DESIGN.md / CLAUDE.md
-├─ deploy/                   nginx.conf · Caddyfile · POSTGRES.md · README.md
+MV-hub-S/
+├─ MV_server.bat / MV_agent.bat / MV_watchdog.bat / MV_logs.bat   서버·작업자·워치독·로그 런처
+├─ register_autostart.bat / update_git.bat / update_release.bat   자동시작 등록 / 업데이트(서버·작업자)
+├─ agent_push.py / run_agent_session.py                           push 에이전트 / Job Object 감시 런처
+├─ docs/                     ARCHITECTURE(이 문서)·SERVER·SERVER_RECOVERY·TESTING·설명서들
+├─ deploy/  release/  tools/ 배포 설정 / 릴리스 패키징 / 운영·점검 스크립트(워치독·백업복제·등록부정리)
 ├─ backend/
 │  ├─ serve.py               듀얼스택 기동
 │  ├─ schema.sql             DDL(SQLite)
-│  ├─ backfill_import.py     일괄 적재
 │  └─ app/
-│     ├─ main.py db.py models.py config.py deps.py rbac.py ws.py
-│     ├─ routers/   library generation gen_requests ingest share projects auth members assets sync
-│     ├─ repo/      _common generations gen_requests identity tags assets share projects accounts trash
-│     └─ services/  cli_bridge syncer media_cache thumbs backup auth agent_signals mcp_ingest jobs
+│     ├─ main.py db.py db_migrations.py models.py config.py deps.py rbac.py ws.py manage_db.py
+│     ├─ routers/   §4.2 의 22개 + 내부(_proxy·_telemetry·_assets_access)
+│     ├─ usecases/  gen_requests generation_media_cache generation_personal_meta hf_missing
+│     ├─ repo/      §4.4 의 30개 모듈(파사드 __init__)
+│     ├─ services/  §4.5 의 40개
+│     └─ resources/resolve/  MVHub_Importer.py 등 Resolve 배포 스크립트
 └─ frontend/
    ├─ dist/                  빌드 산출물(백엔드가 서빙)
    └─ src/
-      ├─ App.tsx api.ts types.ts main.tsx styles.css
-      ├─ lib/         i18n theme storage useFloatingPanel useModels promptParts prompt promptEditor
-      │               format media download commentTree useClickSeparation useAccountStatus
-      └─ components/  ThumbnailGrid GenerationCard MediaThumbnail FilterSidebar LibraryToolbar SearchBox TopBar
-                      SpotlightPrompt FloatingPrompt HistoryBoard HistoryPanel HistoryMiniTree CompareModal
-                      SceneBoard SceneBar GenCommentPanel LoginScreen AccountMenu ManageAccount AdminWindow
-                      SettingsPanel WorkspaceSelector AssetsWindow AssetsView InfoPopup MediaPreview
-                      ProjectAssignMenu HowItWorks  + assets/(AssetCell FolderTree MountManager …)
+      ├─ App.tsx api.ts types.ts main.tsx
+      ├─ lib/         160+ 훅·유틸(§5.1)
+      └─ components/  12개 서브폴더 — scene/ assets/ manage/ spotlight/ settings/ history/
+                      sidebar/ app/ generation/ compare/ common/ admin/ + 최상위 창·패널들
 ```

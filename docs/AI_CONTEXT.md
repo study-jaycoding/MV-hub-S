@@ -119,10 +119,12 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 
 ## 6. push 에이전트 (`agent_push.py`) + 적재(ingest)
 
-`content-hub-server/agent_push.py` — **표준 라이브러리만**(팀원 무설치). 각 PC에서 실행:
+`agent_push.py` — **표준 라이브러리만**. 실운영 진입점은 **`MV_agent.bat` → `run_agent_session.py`**
+(Job Object 로 전체 트리 감시 — 창 닫으면 전부 종료). 개발에서 단독 실행:
 ```
-python agent_push.py --server http://<서버IP>:8010 --email <내이메일> [--watch 30]
-# --token <세션토큰> 으로 로그인 생략 가능(자동화/테스트용)
+python agent_push.py --server http://<서버IP>:8010 --email <내이메일>
+# --watch 의 숫자 값은 호환용(무시) — 롱폴 이벤트 상주 모드라 즉시 반응
+# --token <세션토큰> 로그인 생략(자동화/테스트) · --pair-secret 브라우저 로그인 자동 승계
 ```
 - **cycle = ① execute_pending(허브 요청 제출→목록 추적→reconcile) + ② reconcile_pass(재시작 복구) + ③ push_once(내 로컬 결과물을 서버로 적재)**.
 - push_once: 로컬 `generate list --json`의 job_id를 `POST /api/ingest/known-jobs`로 보내
@@ -137,8 +139,9 @@ python agent_push.py --server http://<서버IP>:8010 --email <내이메일> [--w
 ## 7. 크레딧 집계
 
 - 생성정보엔 크레딧 잔액이 없으므로, **에이전트가 push 때 함께 보고한 `account status`** 의 마지막값으로 집계.
-- `GET /api/credits`(로그인 필수) → `repo.credit_summary()` = `{total, accounts:[{email,name,credits,plan}]}`.
-- 설정창(⚙) **"팀 크레딧"** 섹션에 전체 합계 + 구성원별 표시(실시간 아님, 마지막 보고 기준).
+- `GET /api/credits` 는 정의만 남고 프론트 호출처 0건(레거시). 표시 는 **AccountMenu 의 크레딧
+  게이지**: 활성 워크스페이스 잔여 ÷ 분모(그 워크스페이스에 배정된 프로젝트들의 예산 한도 합,
+  MILLIONVOLT 는 200,000 고정, 폴백 상수). 팀 크레딧 대시보드는 PM 관리창(§9 참조).
 
 ---
 
@@ -154,7 +157,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·사이드바 전용·'무장'시 새 생성 자동적용) | name |
 | **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
 | `share` | 팀 공유 발행 | generation_id, shared_by, visibility |
-| `generation_comment`+`_read` | 공유 코멘트 스레드+읽음 | gen_id, author, text, parent_id, muted |
+| `generation_comment`+`_seen` | 공유 코멘트 스레드+코멘트 단위 확인 | gen_id, author, text, parent_id, muted |
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived(콜드분리) / project_id, creator_uid, project_role |
 | `creator` | 생성자 uid→이름·전역역할 | uid, name, global_role(CSV) |
 | `account` | 로그인 계정 | email, password_hash(pbkdf2), status, global_role(CSV), **creator_uid**(생성자 연결), approved_at |
@@ -180,11 +183,21 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - ✅ **소스 라이브러리**: is_source/source_name + @·# 프롬프트 피커로 재사용.
 - ✅ **Assets 분리창**: 임의 폴더 마운트·파일 브라우저·파일별 메타/코멘트(`/?embed=assets`).
 - ✅ **크레딧 집계**(§7), **다국어**(ko/en, i18n 반응형), **테마**(강조색·모션 끄기), **관리자 창**(승인·등급·프로젝트).
+- ✅ **씬 서버 백업**: 씬 원본은 localStorage, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`).
+- ✅ **ComfyUI 연동**: 캔버스 comfy 카드 — 워크플로 파싱·파라미터 노출·미디어 자동주입·비동기 실행(`routers/comfy.py`).
+- ✅ **DaVinci Resolve 연동**: 렌더폴더 전송 + Media Pool 가져오기 + 수동 Importer(`routers/resolve_integration.py`).
+- ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db).
+- ✅ **릴리스 자동 업데이트**: 설정 → 프로그램 업데이트(`routers/release_update.py`, 작업자 전용).
+- ✅ **로컬 DB 내보내기/가져오기**(교차 PC): `routers/db_transfer.py`(유지보수 게이트로 안전 교체).
 - 🔸 명시적 리비전 diff·콘텐츠 게시 승인 게이트·외부 DAM 커넥터는 없음.
 
 ---
 
 ## 10. 백엔드 모듈 지도 (`backend/app/`)
+
+> ⚠️ 아래는 핵심 요약이다. **전체 지도(라우터 22개·usecases 4개·repo 30모듈·services 40개)는
+> [ARCHITECTURE.md](ARCHITECTURE.md) §4** 가 정답 — 여기 없는 모듈(comfy·resolve·manage·
+> release_update·scenes·db_transfer 등)은 그쪽을 봐라.
 
 - `main.py` — 앱·**미들웨어(auth_enforcement: 토큰→request.state.account / mutation_notify: 쓰기 후 영역별 WS 알림)**·lifespan(init_db·고아잡 정리·중복병합·레거시 이전·creator_uid 백필·**계정↔creator 연결**·제공자 신원 캡처·썸네일 사전생성·동기화/백업). `/media`·SPA 마운트. `mutation_notify.py`는 본 서버·데이터 프록시가 공유하는 library/assets/manage 판정과 안전한 요청 출처·응답 영역 헤더 계약이다.
 - `db.py`(SQLite 스키마·마이그레이션·인덱스·FTS5), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
@@ -198,7 +211,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
 - `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer, 401→로그인), `types.ts`(응답 타입), `lib/`(`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
-- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스·표시이름)·`ManageAccount`·**`SettingsPanel`(강조색·모션·팀 크레딧·언어·전체 가져오기)**, `LoginScreen`, `TopBar`, `InfoPopup`·`MediaPreview`·`CompareModal`·`HowItWorks`·`WorkspaceSelector`·`ProjectAssignMenu`.
+- **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(12개 섹션 — `settings/SettingsSections.tsx`: 강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·Resolve·프로그램 업데이트·재점검·단축키·ComfyUI)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
 
 ---
 
@@ -210,7 +223,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 4. **미디어 공개 URL + 선택 보존** — push 는 메타만 전송한다. 최종(골드)은 자동 byte-cache,
    필요하면 개별 `/api/generations/{id}/cache` 또는 전체 `/api/cache-all`로 보관한다.
    보관하지 않은 일반 생성물의 원격 URL은 만료될 수 있다.
-5. **단일 오리진 / 키셋 페이지네이션 / FTS5 검색 / 휴지통 별도 DB / 미디어 샤딩 / 썸네일 사전생성 / 이중 백엔드(SQLite·PG)** — (기존 Phase 0~3, 전부 구현·검증).
+5. **단일 오리진 / 키셋 페이지네이션 / FTS5 검색 / 휴지통 별도 DB(WAL) / 미디어 샤딩 / 썸네일 사전생성** — (기존 Phase 0~3, 전부 구현·검증). DB 는 SQLite 단일(PG 런타임 제거·차단).
 6. **마이그레이션 순서 함정**(§8) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화** — 원격 URL(`source_url`) 보존 → 재사용·변형 가능(provenance 최우선).
 8. **자동 태그 격리** — 일반 태그와 완전 분리 네임스페이스.
@@ -321,11 +334,13 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 
 ## 13. 남은 과제
 
+- **안정성 백로그**: 전체 코드 감사(2026-08-15)의 남은 P1·P2 목록은 [AUDIT_2026-08-15.md](AUDIT_2026-08-15.md) 가 정답 — 다음 작업은 그 문서 순서대로.
 - **byte-cache 운영 보강**: 최종본 자동 보관과 개별·전체 수동 보관은 구현됨. 남은 것은
   자동 보관 실패 가시화·재시도 정책과 디스크 용량/정리 정책이다.
-- **옛 서버측 생성 제거**: `POST /api/generations`·`/regenerate`·`services/jobs.py` 큐 — **완료(제거됨)**.
 - **create 로컬파일/asset: 레퍼런스**: 타 PC 에이전트 resolve 불가(현재 URL·텍스트만). 바이트 업로드 경로 필요.
 - (선택) 워크스페이스/크레딧 실시간성, 콘텐츠 게시 승인 게이트.
+- 완료된 큰 것들: 옛 서버측 생성 제거 / ComfyUI·Resolve 연동 / PM 대시보드 / 릴리스 자동
+  업데이트 / DB 복원 유지보수 게이트 / 이벤트 루프 비블로킹화(§9 인벤토리 참조).
 
 ---
 

@@ -1,5 +1,10 @@
 # Content Hub — 프로젝트 헌법
 
+> ⚠️ **구(舊) 명세 포함 주의**: 이 문서의 "디렉토리 구조(목표)"·"개발 순서" 등은 초기 설계
+> 기록이다. **현행 구조·모듈 지도는 [ARCHITECTURE.md](ARCHITECTURE.md)**, 문서 신선도는
+> [신원과_모드_가이드.md](신원과_모드_가이드.md)의 문서 위상 표가 정답이다.
+> 아래 "설계 원칙"과 "컨벤션"은 현행 유효.
+
 이 파일은 Claude Code가 세션 시작 시 자동으로 읽는 프로젝트 규칙이다.
 상세 설계는 @DESIGN.md 를 참조한다.
 
@@ -12,9 +17,9 @@ Higgsfield CLI로 이미지/영상을 생성하고, 생성에 쓰인 프롬프�
 - 로컬 DB: SQLite (WAL 모드)
 - CLI 브리지: `asyncio` subprocess 로 `higgsfield` CLI 래핑
 - 실시간: WebSocket (생성 진행률 / 공유 알림)
-- 프론트엔드: Vite + React + react-window (썸네일 가상 스크롤)
-- 공유 서버(현재): FastAPI + SQLite(WAL). PostgreSQL + MinIO는 규모 신호가 확인된 뒤 재설계
-- 패키지: 백엔드는 `uv` 또는 `pip`, 프론트는 `pnpm`
+- 프론트엔드: Vite + React + **virtua** (썸네일 가상 스크롤)
+- 공유 서버(현재): FastAPI + SQLite(WAL). PostgreSQL 런타임은 제거·차단 상태(db.py 가드)
+- 패키지: 백엔드는 `pip`, 프론트는 **npm**(`package-lock.json` 기준 `npm ci`)
 
 ## 설계 원칙 (불변 규칙)
 1. **개인 작업은 100% 로컬에서 즉시 처리한다.** 내 작업물 탐색은 네트워크를 절대 타지 않는다.
@@ -63,7 +68,8 @@ content-hub/
 - 모든 ID는 UUID 문자열(TEXT).
 
 ## 개발 명령
-- 백엔드 실행: `cd backend && uvicorn app.main:app` (http://127.0.0.1:8000)
+- 운영 진입점: 서버 PC `MV_server.bat`(8010), 작업자 PC `MV_agent.bat`. 개발 백엔드는 아래.
+- 백엔드 실행(개발): `cd backend && uvicorn app.main:app` (http://127.0.0.1:8000) 또는 `python serve.py`
   - ⚠️ **Windows 에서 `--reload` 금지** — uvicorn 리로더가 SelectorEventLoop 을 강제해
     CLI 브리지(asyncio subprocess)가 `NotImplementedError` 로 깨진다. Proactor 가 필요하므로
     `--reload` 없이 실행하고, 코드 변경 시 수동 재시작한다.

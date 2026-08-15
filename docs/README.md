@@ -53,34 +53,31 @@ npm run dev                    # http://localhost:5173
    팀 공간은 계정 보고에서 id와 이름이 모두 확인된 뒤 요청되어 생성정보에 워크스페이스명이 보존됩니다.
    ⚠️ 실제 Higgsfield 크레딧을 소모합니다.
 
-## 아키텍처
+## 아키텍처 (요약 — 상세 지도는 [ARCHITECTURE.md](ARCHITECTURE.md))
+
+계층: `routers → usecases → repo/services` (경계는 pytest `test_architecture_boundaries.py` 가 강제).
 
 ```
 backend/
-  schema.sql              # 9개 엔티티 DDL (WAL/FK)
+  schema.sql              # DDL (WAL/FK)
   app/
-    db.py                 # 커넥션 팩토리(WAL+FK) / init_db / check
-    config.py             # 경로·기본 작업자·CORS
-    models.py             # Pydantic 요청·응답 (snake_case)
-    repo.py               # 데이터 접근·직렬화 (라우터·잡·동기화 공유)
-    services/
-      cli_bridge.py       # higgsfield CLI asyncio 래퍼 (검증된 필드 매핑)
-      media_cache.py      # 원격 미디어 byte-cache
-      syncer.py           # 명시적 CLI 히스토리 동기화
-    ws.py                 # WebSocket 진행률 broadcast
-    routers/
-      library.py          # GET /generations, /facets
-      generation.py       # 워크스페이스·비용·히스토리·코멘트·미디어 보관
-      gen_requests.py     # 로컬 에이전트가 처리할 생성·재생성 요청
-      ingest.py           # 에이전트 결과·계정 상태 적재
-      share.py            # publish / import
-      sync.py             # POST /sync (명시적, 자동 아님)
-    main.py               # 앱 팩토리 (lifespan: init_db + seed)
+    db.py / db_migrations.py  # 커넥션 풀(스레드별)·유지보수 게이트 / 멱등 마이그레이션
+    config.py / models.py     # 환경변수 설정 / Pydantic 요청·응답
+    main.py                   # 앱 팩토리·미들웨어·lifespan·/ws
+    routers/   (22개)         # library·generation·gen_requests·ingest·share·publish·sync·
+                              # projects·members·manage·assets(+metadata)·comfy·
+                              # resolve_integration·release_update·scenes·auth·db_backup·
+                              # db_transfer + 내부(_proxy·_telemetry·_assets_access)
+    usecases/  (4개)          # gen_requests·generation_media_cache·generation_personal_meta·hf_missing
+    repo/      (30개 모듈)     # 데이터 접근 — generations·share·projects·identity·manage·trash 등
+    services/  (40개)          # cli_bridge·media_cache·syncer·thumbs·backup·comfy_*·resolve_*·
+                              # telemetry_drain·operational_*·release_update·asset_* 등
 frontend/
   src/
     api.ts, types.ts      # 타입 안전 클라이언트 + WS
     App.tsx               # 상태·WS·액션 오케스트레이션
-    components/           # TopBar, FilterSidebar, ThumbnailGrid, GenerationCard, SpotlightPrompt
+    components/           # 12개 서브폴더(scene·assets·manage·spotlight·settings·…)
+    lib/                  # 160+ 훅·유틸
 ```
 
 ## 기술 노트 (검증됨)
