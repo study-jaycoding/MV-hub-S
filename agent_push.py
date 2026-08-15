@@ -300,11 +300,15 @@ def _workspace_context_from_list(workspaces) -> dict:
 def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
     """요청 워크스페이스로 CLI를 전환하고 실제 선택 상태를 다시 확인한다.
 
-    unknown은 구버전 요청 호환을 위해 현재 상태를 유지한다. 신규 UI 요청은 team/personal을 보낸다.
+    요청 공간이 unknown이면 현재 CLI 선택값을 추측해 사용하지 않는다. CLI의 마지막 선택 공간은
+    다른 요청이나 사용자의 수동 전환이 남긴 전역 상태라, 그대로 생성하면 다른 팀에 과금될 수 있다.
     """
     target = _request_workspace(value)
     if target["scope"] == "unknown":
-        return True, None
+        return False, (
+            "요청의 워크스페이스 정보가 없습니다. 허브와 에이전트를 최신 버전으로 업데이트한 뒤 "
+            "워크스페이스를 다시 선택하고 생성해 주세요"
+        )
     workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
     if error or not isinstance(workspaces, list):
         return False, error or "워크스페이스 목록을 확인할 수 없습니다"

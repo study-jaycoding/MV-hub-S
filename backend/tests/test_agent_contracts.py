@@ -649,6 +649,55 @@ def test_agent_refuses_missing_team_workspace_without_falling_back():
     command.assert_not_called()
 
 
+def test_agent_refuses_unknown_workspace_without_using_current_cli_selection():
+    agent = _load_agent()
+    with patch.object(agent, "_run_cli_json") as read_workspaces, patch.object(
+        agent, "_run_cli_command"
+    ) as command:
+        ok, error = agent._ensure_request_workspace("higgsfield", None)
+
+    assert ok is False
+    assert "워크스페이스 정보가 없습니다" in str(error)
+    assert "다시 선택" in str(error)
+    read_workspaces.assert_not_called()
+    command.assert_not_called()
+
+
+def test_agent_unknown_workspace_fails_request_before_generate_create():
+    agent = _load_agent()
+    request = {
+        "id": "request-unknown-workspace",
+        "model": "nano-banana",
+        "prompt": "test",
+        "params": {},
+        "references": [],
+    }
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_run_cli_json"
+    ) as run_cli_json, patch.object(agent, "_fail") as fail:
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            request,
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+        )
+
+    assert result is None
+    run_cli_json.assert_not_called()
+    fail.assert_called_once()
+    assert fail.call_args.args[:3] == (
+        "http://hub",
+        "token-1",
+        "request-unknown-workspace",
+    )
+    assert "생성하지 않음" in fail.call_args.args[3]
+
+
 def test_agent_failure_report_url_encodes_reason_and_authenticates():
     agent = _load_agent()
     reason = "한글 실패 (입력 이미지 없음)"
