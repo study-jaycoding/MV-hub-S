@@ -20,7 +20,6 @@ const pureDomainFiles = [
   "src/lib/setUtils.ts",
   "src/lib/spotlightSubmit.ts",
   "src/components/assets/treeUtils.ts",
-  "src/components/manage/dashboardModel.ts",
   "src/features/**/domain/**/*.{ts,tsx}",
 ];
 
