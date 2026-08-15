@@ -24,6 +24,22 @@ _drain_version = 0
 _DEBOUNCE_SECONDS = 0.05
 
 
+def touch_generation_telemetry(gen_id: str | None) -> None:
+    """공유/최종/발행으로 상태 차원이 바뀐 내 로컬 생성물을 텔레메트리 dirty 표시.
+
+    best-effort·MANAGE 게이트 — 실패해도 호출 흐름(공유·발행·최종)엔 무영향이고, 전송은
+    다음 drain 이 처리한다. ★단일 정의: 예전엔 share.py 와 publish.py 에 같은 함수가
+    복붙돼 있었고, 실제로 발행 경로에만 누락돼 is_shared 팩트가 안 오르던 사고가 있었다."""
+    if not MANAGE_ENABLED or not gen_id:
+        return
+    try:
+        from ..repo import manage as _m
+
+        _m.mark_telemetry_dirty([gen_id])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def drain_telemetry() -> None:
     """dirty 텔레메트리를 현재 실행 모드에 맞는 단 하나의 대상으로 반영한다."""
     if not MANAGE_ENABLED:

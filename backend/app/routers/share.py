@@ -16,7 +16,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from . import _proxy
 from .. import rbac, repo
-from ..config import DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..config import DEFAULT_WORKER_ID
+from ._telemetry import touch_generation_telemetry
 from ..db import get_connection
 from ..deps import (
     account_global_roles,
@@ -32,17 +33,8 @@ from ..services.event_journal import journal_audit_event
 router = APIRouter(prefix="/api", tags=["share"])
 
 
-def _touch_telemetry(gen_id: str | None) -> None:
-    """공유/최종 상태가 바뀐 내 로컬 생성물을 텔레메트리 dirty 표시(is_shared·is_final 차원 갱신).
-    best-effort·플래그 게이트 — 실패해도 공유/최종 흐름엔 무영향. 전송은 다음 ingest drain 이 처리."""
-    if not MANAGE_ENABLED or not gen_id:
-        return
-    try:
-        from ..repo import manage as _m
-
-        _m.mark_telemetry_dirty([gen_id])
-    except Exception:  # noqa: BLE001
-        pass
+# 단일 정의로 통합(_telemetry.touch_generation_telemetry) — publish.py 와 복붙돼 있던 것.
+_touch_telemetry = touch_generation_telemetry
 
 
 def _local_id_from_out(out) -> str | None:
