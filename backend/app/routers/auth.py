@@ -318,7 +318,10 @@ def set_hidden(email: str, body: HiddenIn, request: Request):
     """관리자: 계정 숨김/표시 토글. 자기 계정은 숨길 수 없다(잠금 방지)."""
     require_admin(request)
     me = getattr(request.state, "account", None)
-    if body.hidden and me and (me.get("email") or "").lower() == email.strip().lower():
+    # ★양변 모두 norm_email — 예전엔 좌변이 strip 없이 lower 만 해서, 세션 계정 이메일에
+    #  앞뒤 공백이 있는 legacy 데이터면 자기 계정 판정이 빗나가 스스로를 숨길 수 있었다
+    #  (관리자 잠금 방지 가드 우회). 정규화 규칙은 단일 정의(emailnorm)만 쓴다.
+    if body.hidden and me and norm_email(me.get("email")) == norm_email(email):
         raise HTTPException(status_code=400, detail="자기 계정은 숨길 수 없습니다")
     acc = repo.set_account_hidden(email, body.hidden)
     if not acc:
