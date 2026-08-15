@@ -117,7 +117,16 @@ def raw_request(
         req.add_header(MUTATION_ID_HEADER, mutation_origin[1])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read().decode() or "null")
+            raw = r.read()
+            try:
+                return r.status, json.loads(raw.decode() or "null")
+            except (ValueError, UnicodeDecodeError) as exc:
+                # 캡티브 포털·게이트웨이가 200 + HTML 을 주는 경우 — 서버 문제인데 그대로
+                # 올리면 로컬 허브의 500(우리 버그처럼)이 됐다. 502 로 정확히 진단.
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"공유 서버 응답이 JSON 이 아닙니다(프록시/포털 간섭 의심): {raw[:120]!r}",
+                ) from exc
     except urllib.error.HTTPError as e:
         detail: Any = e.read().decode("utf-8", "replace")
         try:
