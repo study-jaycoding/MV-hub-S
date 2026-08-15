@@ -235,7 +235,8 @@ def mark_telemetry_failed(items: list[dict[str, Any]], error: str) -> None:
             dirty_at = item.get("dirty_at") if isinstance(item, dict) else None
             if not gen_id:
                 continue
-            where = "WHERE local_gen_id=?"
+            # pushed_at IS NULL — 다른 드레인이 이미 성공 처리한 행에 늦은 실패를 덮지 않게.
+            where = "WHERE local_gen_id=? AND pushed_at IS NULL"
             args: list[Any] = [error[:500], gen_id]
             if dirty_at is not None:
                 where += " AND dirty_at=?"
