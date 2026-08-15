@@ -73,6 +73,17 @@ def _validated_generation_workspace(
     workspace: WorkspaceContext, account_email: str
 ) -> WorkspaceContext:
     """팀 생성 요청을 계정이 실제 접근 가능한 등록부 정보로 정규화한다."""
+    if workspace.scope == "unknown":
+        # 생성은 CLI의 현재 선택값을 추측해 실행할 수 없다. 구 프론트·직접 API가 workspace를
+        # 빼먹더라도 placeholder/큐를 만들기 전에 막아, 구 에이전트가 직전 팀 공간에 과금하는
+        # 배포 버전 혼합 사고를 차단한다. unknown 보존이 필요한 ingest/마이그레이션과는 별도 경계다.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "생성할 워크스페이스 정보가 확인되지 않았습니다 — 프로그램을 최신 버전으로 "
+                "업데이트한 뒤 워크스페이스를 다시 선택하세요"
+            ),
+        )
     if workspace.scope != "team":
         return workspace
 

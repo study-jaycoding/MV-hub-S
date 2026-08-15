@@ -181,7 +181,7 @@ class IdentityPermissionTests(unittest.TestCase):
 
     def test_gen_request_create_rejects_foreign_project(self):
         # p_river 는 river 만 멤버. 비멤버(other)가 그 project_id 로 생성요청 → 403(팀영역 주입 차단).
-        from app.models import GenerationCreate, GenRequestIn
+        from app.models import GenerationCreate, GenRequestIn, WorkspaceContext
 
         req = DummyRequest(
             {
@@ -193,11 +193,39 @@ class IdentityPermissionTests(unittest.TestCase):
         )
         body = GenRequestIn(
             kind="create",
+            workspace=WorkspaceContext(scope="personal"),
             create=GenerationCreate(prompt="x", model="seedance_2_0", project_id="p_river"),
         )
         with auth_on(), self.assertRaises(HTTPException) as ctx:
             asyncio.run(gen_requests_router.create_gen_request(body, req))
         self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_gen_request_rejects_unknown_workspace_before_creating_placeholder(self):
+        from app.models import GenerationCreate, GenRequestIn
+
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        body = GenRequestIn(
+            kind="create",
+            create=GenerationCreate(prompt="x", model="seedance_2_0"),
+        )
+        with auth_on(), mock.patch.object(
+            gen_requests_router,
+            "submit_gen_request",
+            new=mock.AsyncMock(return_value={"id": "must-not-exist"}),
+        ) as submit, self.assertRaises(HTTPException) as ctx:
+            asyncio.run(gen_requests_router.create_gen_request(body, req))
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("워크스페이스 정보", str(ctx.exception.detail))
+        self.assertIn("다시 선택", str(ctx.exception.detail))
+        submit.assert_not_awaited()
 
     def test_gen_request_workspace_uses_accessible_registry_name(self):
         from app.models import GenerationCreate, GenRequestIn, WorkspaceContext
