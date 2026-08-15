@@ -47,6 +47,17 @@ ALERT_COMMENT_PREDICATE = (
     "s.comment_id IS NULL AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
 )
 
+# ── 생성물 조회 공통 FROM/JOIN 조각 ────────────────────────────────────────
+# 목록(generations_query)과 단건(generation_rows)이 같은 행 모양을 반환해야 한다 — 예전엔
+# 이 문자열이 두 파일에 복붙돼 있어, 한쪽만 조인을 바꾸면 목록과 팝업의 필드가 조용히
+# 어긋나는 종류의 버그가 가능했다. 별칭 전제: g=generation, w=worker, gr=그 생성물의
+# 최신 gen_request(진행 문구·확인 시각 — idx_genrequest_gen_latest 인덱스가 서브쿼리 가속).
+GEN_BASE_JOINS = (
+    "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
+    "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
+    "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
+)
+
 
 # ── 생성자(팀 워크스페이스 작성자) ────────────────────────────────────────
 _UID_RE = re.compile(r"(user_[A-Za-z0-9]+)")

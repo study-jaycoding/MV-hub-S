@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from ..config import DEFAULT_WORKER_ID
 from ..db import get_connection
-from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE
+from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, GEN_BASE_JOINS
 from .generation_rows import (  # 조회 응답 보강·행 페치 — 단방향 import
     _attach_children,
     _fetch_generation,
@@ -236,9 +236,7 @@ def list_generations(
         "g.project_id, g.folder_path, g.deleted_at, "
         "g.is_final, g.final_by, g.job_id, "  # job_id: 팀 카드(서버 UUID)↔로컬 개인메타 매핑 앵커
         "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-        "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
-        "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
-        "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
+        f"{GEN_BASE_JOINS}"
         # 정렬키: 힉스필드 created_at(sub-second) 보존 sort_ts. 동률은 id 로 안정화(키셋 total order).
         f"{clause} ORDER BY g.sort_ts DESC, g.id DESC LIMIT ?"
     )

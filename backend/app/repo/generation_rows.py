@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any, Optional
 
 from ..config import DEFAULT_WORKER_ID
-from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE
+from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, GEN_BASE_JOINS
 from .identity import get_my_uid, resolve_display_names
 
 
@@ -197,9 +197,7 @@ _GEN_SELECT_COLS = (
     # 행을 잇는 앵커이고, 프론트 확인(ack)·개인메타 매칭이 job_id||id 키로 이 값을 쓴다.
     "g.job_id, "
     "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-    "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
-    "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
-    "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
+    f"{GEN_BASE_JOINS}"
 )
 
 
