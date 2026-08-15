@@ -201,12 +201,6 @@ def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvh
     return f"{sub}/{name}" if sub else name
 
 
-def upload_input(target: dict, path: str, subfolder: str = "mvhub") -> str:
-    """로컬 파일 경로를 업로드(upload_bytes 래퍼)."""
-    p = Path(path)
-    return upload_bytes(target, p.name, p.read_bytes(), subfolder)
-
-
 def _encode_multipart(fields: dict, file_field: str, filename: str,
                       file_bytes: bytes, file_ctype: str) -> tuple[bytes, str]:
     """stdlib 로 multipart/form-data 본문 구성(httpx.files 대체)."""
