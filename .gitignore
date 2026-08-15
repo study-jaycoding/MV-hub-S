@@ -19,6 +19,7 @@ backend/sample_real.json
 backend/.deps_installed
 # pytest 격리 실행 잔재(샌드박스가 못 지운 임시 DB 폴더 — 추적 금지)
 backend/.pytest-tmp-*/
+backend/.codex-pytest-*/
 __pycache__/
 *.pyc
 .venv/
