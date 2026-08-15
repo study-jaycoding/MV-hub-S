@@ -18,6 +18,17 @@ from ..services import auth
 _PUBLIC = "email, name, status, global_role, creator_uid, created_at, approved_at, password_changed_at, COALESCE(hidden,0) AS hidden"
 
 
+def _link_accounts_to_creators() -> None:
+    """계정 쓰기 완료 뒤 creator 연결을 보장한다.
+
+    목록 조회는 읽기 전용으로 남기고, 새 계정/승인 계정이 즉시 멤버·배정 후보가 되게 한다.
+    지역 import는 identity ↔ accounts 재export 순환을 피한다.
+    """
+    from .identity import link_accounts_to_creators
+
+    link_accounts_to_creators()
+
+
 def _my_creator_uid(conn) -> Optional[str]:
     """서버 힉스필드 신원(하우스 계정 판별 기준) — 목록에선 1회만 조회해 행마다 재조회하지 않게 분리."""
     r = conn.execute("SELECT value FROM app_setting WHERE key='my_creator_uid'").fetchone()
@@ -74,7 +85,9 @@ def register(email: str, password: str, name: Optional[str] = None) -> dict[str,
             f"VALUES(?,?,?,?,?,{approved_at})",
             (email, (name or "").strip() or None, auth.hash_password(password), status, global_role),
         )
-        return _row(conn, email)
+        account = _row(conn, email)
+    _link_accounts_to_creators()
+    return get_account(email) or account
 
 
 def ensure_admin_account(email: str, password: str) -> bool:
@@ -98,6 +111,7 @@ def ensure_admin_account(email: str, password: str) -> bool:
                 f"{rbac.ADMIN},{rbac.PRODUCT_MANAGER}",
             ),
         )
+    _link_accounts_to_creators()
     return True
 
 
@@ -191,7 +205,11 @@ def set_account_status(email: str, status: str) -> Optional[dict[str, Any]]:
             )
         else:
             conn.execute("UPDATE account SET status=? WHERE email=?", (status, email))
-        return _row(conn, email)
+        account = _row(conn, email)
+    if status == "approved":
+        _link_accounts_to_creators()
+        return get_account(email) or account
+    return account
 
 
 def set_account_name(email: str, name: Optional[str]) -> Optional[dict[str, Any]]:

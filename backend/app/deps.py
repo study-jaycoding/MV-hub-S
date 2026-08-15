@@ -187,6 +187,17 @@ def can_view_generation(request: Request, gen: dict[str, Any]) -> bool:
 
     ★⑥: 예전엔 shared 면 누구나 통과라, 목록엔 멤버십으로 가려진 공유물을 id 만 알면 단건/코멘트/
     import 로 열람하던 우회가 있었다. 단건 가시성을 list 와 일치시켜 그 간극을 닫는다."""
+    return can_view_generation_with_member_projects(request, gen)
+
+
+def can_view_generation_with_member_projects(
+    request: Request, gen: dict[str, Any], member_project_ids: Optional[set[str]] = None
+) -> bool:
+    """can_view_generation의 배치 조회용 변형.
+
+    ``member_project_ids``가 주어지면 해당 요청에서 이미 계산한 프로젝트 멤버십을 재사용한다.
+    None이면 단건 경로와 같이 직접 조회하므로 기존 호출의 동작은 변하지 않는다.
+    """
     if not AUTH_ENABLED:
         return True
     uid = account_actor_uid(request)
@@ -197,6 +208,8 @@ def can_view_generation(request: Request, gen: dict[str, Any]) -> bool:
     if gen.get("shared"):
         pid = gen.get("project_id")
         if pid and uid:
+            if member_project_ids is not None:
+                return pid in member_project_ids
             from . import repo  # 지역 import(순환 회피)
 
             return pid in set(repo.my_member_projects(uid))

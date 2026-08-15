@@ -127,8 +127,6 @@ def register(body: RegisterIn, response: Response):
         acc = repo.register(body.email, body.password, body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # 가입 즉시 생성자 연결 — 멤버 목록·프로젝트 배정 후보에 바로 뜨게(생성물 0이어도).
-    repo.link_accounts_to_creators()
     acc = repo.get_account(acc["email"]) or acc
     # 첫 계정(부트스트랩 관리자)은 즉시 승인 → 바로 토큰 발급(자동 로그인) + 쿠키.
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
@@ -182,7 +180,6 @@ def access(body: RegisterIn, response: Response, request: Request):
         acc = repo.register(email, body.password, body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    repo.link_accounts_to_creators()  # 멤버 목록·프로젝트 후보에 바로 뜨게
     acc = repo.get_account(acc["email"]) or acc
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:

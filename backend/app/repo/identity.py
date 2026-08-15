@@ -322,46 +322,56 @@ def _single_shared_creator_uid(conn, account_uid: str) -> Optional[str]:
 def link_accounts_to_creators() -> int:
     """각 account 에 creator_uid 를 보장하고 creator 행 이름·역할을 account 기준으로 맞춘다(멱등).
     이래야 신규 로그인 계정이 멤버 목록·프로젝트 배정 후보에 뜨고(생성물 0이어도),
-    카드 작성자 표기도 계정 이름을 따른다. 시작 시 + 가입 직후 호출."""
+    카드 작성자 표기도 계정 이름을 따른다. 시작 시 + 계정 생성·승인 직후 호출."""
+    # get_setting은 별도 connection을 연다. BEGIN IMMEDIATE 뒤에 부르면 중첩 context가
+    # 바깥 transaction을 조기 commit할 수 있으므로 잠금 전에 읽는다.
+    owner_email = get_setting("provider_email")
+    my_uid = get_setting("my_creator_uid")
     n = 0
     with get_connection() as conn:
-        owner_email = get_setting("provider_email")
-        my_uid = get_setting("my_creator_uid")
-        rows = conn.execute(
-            "SELECT email, name, global_role, creator_uid FROM account"
-        ).fetchall()
-        for r in rows:
-            uid = r["creator_uid"] or account_creator_uid(r["email"], owner_email, my_uid)
-            updated_account = False
-            if uid and str(uid).startswith("acct:"):
-                inferred = _single_shared_creator_uid(conn, uid)
-                if inferred and inferred != uid:
-                    ensure_worker(conn, inferred, (r["name"] or "").strip() or inferred, "team")
+        # account uid 전환·creator 미러·과거 acct: remap을 한 transaction으로 묶는다.
+        # 이전에는 context manager의 autocommit에만 의존해 중간 예외 때 부분 연결이 남을 수 있었다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                "SELECT email, name, global_role, creator_uid FROM account"
+            ).fetchall()
+            for r in rows:
+                uid = r["creator_uid"] or account_creator_uid(r["email"], owner_email, my_uid)
+                updated_account = False
+                if uid and str(uid).startswith("acct:"):
+                    inferred = _single_shared_creator_uid(conn, uid)
+                    if inferred and inferred != uid:
+                        ensure_worker(conn, inferred, (r["name"] or "").strip() or inferred, "team")
+                        conn.execute(
+                            "UPDATE account SET creator_uid=? WHERE email=?", (inferred, r["email"])
+                        )
+                        remap_creator_uid(conn, uid, inferred)
+                        uid = inferred
+                        updated_account = True
+                        n += 1
+                if not r["creator_uid"] and not updated_account:
                     conn.execute(
-                        "UPDATE account SET creator_uid=? WHERE email=?", (inferred, r["email"])
+                        "UPDATE account SET creator_uid=? WHERE email=?", (uid, r["email"])
                     )
-                    remap_creator_uid(conn, uid, inferred)
-                    uid = inferred
-                    updated_account = True
                     n += 1
-            if not r["creator_uid"] and not updated_account:
+                display_name = (r["name"] or "").strip() or r["email"] or uid
+                ensure_worker(conn, uid, display_name, "team")
+                # creator 행 보장 + 전역역할 미러. 계정에 연결된 creator 의 표시이름은 **계정 이름이
+                # 우선**(authoritative) — 계정은 허브 신원이고 사용자가 정한 이름이라, 과거 잘못 박힌
+                # 라벨(relink 사고로 남의 이름이 stick)을 시작 시 자동 교정한다. 계정명이 비면 기존 보존.
+                # (계정에 연결 안 된 동기화 카드 creator 는 이 루프 밖이라 자기 이름 그대로 유지.)
                 conn.execute(
-                    "UPDATE account SET creator_uid=? WHERE email=?", (uid, r["email"])
+                    "INSERT INTO creator(uid, name, global_role) VALUES(?,?,?) "
+                    "ON CONFLICT(uid) DO UPDATE SET "
+                    "name=COALESCE(excluded.name, creator.name), "
+                    "global_role=COALESCE(excluded.global_role, creator.global_role)",
+                    (uid, (r["name"] or "").strip() or None, r["global_role"] or None),
                 )
-                n += 1
-            display_name = (r["name"] or "").strip() or r["email"] or uid
-            ensure_worker(conn, uid, display_name, "team")
-            # creator 행 보장 + 전역역할 미러. 계정에 연결된 creator 의 표시이름은 **계정 이름이
-            # 우선**(authoritative) — 계정은 허브 신원이고 사용자가 정한 이름이라, 과거 잘못 박힌
-            # 라벨(relink 사고로 남의 이름이 stick)을 시작 시 자동 교정한다. 계정명이 비면 기존 보존.
-            # (계정에 연결 안 된 동기화 카드 creator 는 이 루프 밖이라 자기 이름 그대로 유지.)
-            conn.execute(
-                "INSERT INTO creator(uid, name, global_role) VALUES(?,?,?) "
-                "ON CONFLICT(uid) DO UPDATE SET "
-                "name=COALESCE(excluded.name, creator.name), "
-                "global_role=COALESCE(excluded.global_role, creator.global_role)",
-                (uid, (r["name"] or "").strip() or None, r["global_role"] or None),
-            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return n
 
 
@@ -878,7 +888,6 @@ def list_members(viewer_uid: Optional[str] = None) -> list[dict[str, Any]]:
     섞으면(is_mine 을 provider 로) 모든 사용자가 서버 provider 를 '나'로 보게 된다(멤버탭 오표시 버그)."""
     provider = get_my_uid()
     my = viewer_uid if viewer_uid is not None else provider
-    link_accounts_to_creators()  # 계정↔creator 연결 보장(멱등) — 신규 계정 즉시 후보화
     with get_connection() as conn:
         counts = {
             r["uid"]: r["cnt"]

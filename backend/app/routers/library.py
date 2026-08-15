@@ -23,7 +23,13 @@ from starlette.background import BackgroundTask
 from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED
-from ..deps import account_global_roles, account_scope_uid, require_view_generation
+from ..deps import (
+    account_actor_uid,
+    account_global_roles,
+    account_scope_uid,
+    can_view_generation_with_member_projects,
+    require_view_generation,
+)
 from ..models import FacetsOut, GenerationOut
 from ..services import media_cache, thumbs
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
@@ -489,7 +495,10 @@ def list_generations(
         # 서버는 공유본을 번들 앵커(job_id)로 안다 → 로컬 id ↔ server id 변환:
         # 요청은 server id 로 보내고 응답(서버 id 키)을 로컬 id 로 되매핑한다. (로컬 id 로 그대로
         # 위임하면 서버가 못 찾아 공유본 C 뱃지가 항상 0 으로 떴다 — 엔드포인트와 동일한 수정.)
-        srv_of = {g["id"]: repo.finalize_id_map(g["id"])[1] for g in result if g.get("shared")}
+        # list_generations가 이미 같은 generation 행의 id·job_id를 반환한다. 이는
+        # finalize_id_map의 ``row["job_id"] or row["id"]`` 규칙과 같으므로 행마다
+        # 해석 쿼리를 다시 열 필요가 없다.
+        srv_of = {g["id"]: g.get("job_id") or g["id"] for g in result if g.get("shared")}
         if srv_of:
             try:
                 counts = _proxy.proxy_json(
@@ -595,12 +604,24 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
 
     account_uid = _account_uid(request)
     local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
+    # 공유물 권한은 프로젝트 멤버십에만 의존한다. 이전에는 아래 카드 루프의
+    # require_view_generation이 shared 카드마다 my_member_projects를 다시 조회했다.
+    # 요청 안에서는 멤버십이 변하지 않으므로 필요한 경우 한 번만 집합으로 고정한다.
+    member_project_ids: set[str] | None = None
+    viewer_uid = account_actor_uid(request) if AUTH_ENABLED else None
+    if (
+        viewer_uid
+        and not rbac.has_global_cap(account_global_roles(request), "read_all")
+        and any(
+            gen.get("shared") and gen.get("creator_uid") != viewer_uid
+            for gen in local_items.values()
+        )
+    ):
+        member_project_ids = set(repo.my_member_projects(viewer_uid))
     visible_items: dict[str, dict] = {}
     visible_materials: dict[str, list[str]] = {}
     for gen_id, gen in local_items.items():
-        try:
-            require_view_generation(request, gen)
-        except HTTPException:
+        if not can_view_generation_with_member_projects(request, gen, member_project_ids):
             continue  # 단건 GET과 같은 존재 은닉 — batch에서는 missing으로 합친다.
         visible_items[gen_id] = gen
         visible_materials[gen_id] = local_materials.get(gen_id, [])
