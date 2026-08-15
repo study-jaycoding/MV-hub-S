@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from ..generation_result import stored_error
-from ..workspace_context import workspace_columns
+from ..workspace_context import normalize_workspace_context, workspace_columns
 from ._common import _cached_or_remote, new_id
 from .generation_references import _link_reference, _upsert_reference
 
@@ -34,7 +34,20 @@ def _upsert_synced(
     생성물이 CLI 목록에 남아 있는 한 다음 동기화마다 새 행으로 되살아난다(삭제 후 재등장 버그).
     트랜잭션 안에서는 휴지통 DB 를 ATTACH 조회할 수 없어(sqlite 제약), 호출측이 미리 넘겨준다."""
     g = parsed["generation"]
-    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace or g)
+    # 잡 자체가 생성 당시 workspace 를 알고 있으면 배치 조회 시점의 현재 선택값보다 우선한다.
+    # MCP 백필처럼 서로 다른 workspace 이력이 한 묶음에 들어오는 경로에서 ``workspace or g``를
+    # 쓰면 전 이력을 마지막 선택 공간으로 오귀속한다. 개별 값이 unknown일 때만 호출측이 검증한
+    # 동기화 묶음 컨텍스트를 fallback으로 사용한다. 기존 DB의 확정 귀속은 아래 UPDATE가 보존한다.
+    # 내부 parsed generation의 workspace 표현은 평면 ``workspace_*``만 허용한다. 일반 generation의
+    # 다른 의미 ``scope``를 workspace로 오인하지 않는다(parse_job이 외부 중첩 객체를 평면화).
+    has_job_workspace = any(
+        key in g for key in ("workspace_scope", "workspace_id", "workspace_name")
+    )
+    job_workspace = normalize_workspace_context(g)
+    # 개별 필드가 아예 없을 때만 배치 fallback을 허용한다. 개별 필드가 있는데 검증에 실패해
+    # unknown이 된 경우까지 현재 선택값으로 채우면 fail-closed 규칙을 다시 우회하게 된다.
+    workspace_source = job_workspace if has_job_workspace else workspace
+    workspace_scope, workspace_id, workspace_name = workspace_columns(workspace_source)
     # CLI 로 넘길 때 붙인 zero-width space sentinel(통째 JSON 프롬프트를 CLI 가 문자열로 받게 하는 방어)이
     # generate list 를 통해 되돌아오면 저장 데이터에 안 보이는 문자가 낀다 → sync/ingest/공유 import 가
     # 모두 지나는 이 공통 관문에서 선행분을 떼어낸다(display_prompt 는 이 경로에서 안 만들어져 제외).

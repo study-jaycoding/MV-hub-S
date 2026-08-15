@@ -16,6 +16,8 @@ from app import manage_db
 from app.models import GenerationOut, ProjectOut, WorkspaceContext
 from app.repo import manage
 from app.repo import manage_telemetry
+from app.services import cli_bridge
+from app.services.mcp_ingest import mcp_item_to_cli
 from app.workspace_context import normalize_workspace_context
 
 
@@ -385,6 +387,87 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
                 "SELECT workspace_scope, workspace_id, workspace_name FROM generation WHERE job_id='job-1'"
             ).fetchone()
         self.assertEqual(tuple(row), ("team", "ws-millionvolt", "MILLIONVOLT"))
+
+    def test_synced_job_workspace_wins_over_batch_current_selection(self):
+        parsed = {
+            "generation": {
+                "id": "job-own-workspace",
+                "prompt": "p",
+                "model": "m",
+                "params": {},
+                "status": "done",
+                "created_at": "2026-08-06T00:00:00Z",
+                "sort_ts": 1.0,
+                "creator_uid": "user-me",
+                "workspace_scope": "team",
+                "workspace_id": "ws-original",
+                "workspace_name": "ORIGINAL",
+            },
+            "asset": None,
+            "references": [],
+        }
+
+        repo.apply_synced_jobs(
+            [parsed],
+            "me",
+            workspace={"scope": "team", "id": "ws-current", "name": "CURRENT"},
+        )
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name "
+                "FROM generation WHERE job_id='job-own-workspace'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("team", "ws-original", "ORIGINAL"))
+
+    def test_invalid_explicit_job_workspace_does_not_fall_back_to_batch(self):
+        parsed = {
+            "generation": {
+                "id": "job-invalid-workspace",
+                "prompt": "p",
+                "model": "m",
+                "params": {},
+                "status": "done",
+                "created_at": "2026-08-06T00:00:00Z",
+                "sort_ts": 1.0,
+                "creator_uid": "user-me",
+                "workspace_scope": "team",
+                "workspace_id": None,
+                "workspace_name": "BROKEN",
+            },
+            "asset": None,
+            "references": [],
+        }
+
+        repo.apply_synced_jobs([parsed], "me", workspace=self._team())
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name "
+                "FROM generation WHERE job_id='job-invalid-workspace'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("unknown", None, None))
+
+    def test_mcp_conversion_preserves_per_job_workspace_through_parse(self):
+        raw = {
+            "id": "mcp-job",
+            "status": "done",
+            "model": "image-model",
+            "createdAt": "2026-08-06T00:00:00Z",
+            "params": {"prompt": "p"},
+            "workspace_scope": "team",
+            "workspace_id": "ws-history",
+            "workspace_name": "HISTORY",
+        }
+
+        parsed = cli_bridge.parse_job(mcp_item_to_cli(raw))
+        generation = parsed["generation"]
+        self.assertEqual(
+            (
+                generation["workspace_scope"],
+                generation["workspace_id"],
+                generation["workspace_name"],
+            ),
+            ("team", "ws-history", "HISTORY"),
+        )
 
     def test_account_reports_build_workspace_member_registry(self):
         with db.get_connection() as conn:

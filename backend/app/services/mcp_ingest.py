@@ -64,4 +64,15 @@ def mcp_item_to_cli(item: dict[str, Any]) -> dict[str, Any]:
         "min_result_url": min_url,
         "created_at": item.get("createdAt"),
         "params": params,
+        # MCP/덤프가 제공한 생성 당시 workspace 를 parse_job까지 전달한다. 값이 불완전하면
+        # parse_job의 공통 정규화가 unknown으로 축소하며, 현재 선택값으로 추측하지 않는다.
+        **(
+            {"workspace": item.get("workspace")}
+            if "workspace" in item
+            else {
+                key: item.get(key)
+                for key in ("workspace_scope", "workspace_id", "workspace_name")
+                if key in item
+            }
+        ),
     }

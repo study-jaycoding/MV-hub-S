@@ -276,6 +276,17 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     params = job.get("params") or {}
     result_url = job.get("result_url")
 
+    # CLI 1.1.23 목록에는 현재 workspace 필드가 없지만, MCP/향후 CLI 응답 또는 오프라인
+    # 백필에는 개별 잡 컨텍스트가 포함될 수 있다. 변환 중 버리지 않고 내부 평면 규격으로 보존한다.
+    # 명시된 ``workspace`` 객체가 있으면 그것만 읽는다(불완전하면 unknown, 평면값 추측 금지).
+    from ..workspace_context import normalize_workspace_context
+
+    has_job_workspace = "workspace" in job or any(
+        key in job for key in ("workspace_scope", "workspace_id", "workspace_name")
+    )
+    raw_workspace = job.get("workspace") if "workspace" in job else job
+    job_workspace = normalize_workspace_context(raw_workspace)
+
     references: list[dict[str, Any]] = []
     from ..repo._common import _UID_RE  # 생성자 uid 패턴 단일 정의(중복 하드코딩 방지)
 
@@ -322,6 +333,15 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
             "created_at": epoch_to_iso(job.get("created_at")),
             "sort_ts": _to_epoch(job.get("created_at")),  # 정밀 정렬키(sub-second 보존)
             "creator_uid": creator_uid,  # 생성자(team 워크스페이스에서 작성자 구분)
+            **(
+                {
+                    "workspace_scope": job_workspace["scope"],
+                    "workspace_id": job_workspace["id"],
+                    "workspace_name": job_workspace["name"],
+                }
+                if has_job_workspace
+                else {}
+            ),
             # 실패 사유(rc=0 인데 잡 자체가 실패한 경우 — NSFW 거부 등). 키는 방어적으로 탐색.
             # 힉스필드 실패 잡 JSON 은 보통 사유 필드를 안 주지만(검증됨), 줄 때를 대비해 폭넓게 탐색.
             "error": (
