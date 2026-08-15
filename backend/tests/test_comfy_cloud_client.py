@@ -156,12 +156,14 @@ class WaitCloudTests(unittest.TestCase):
         # 정상 pending 이 오래 지속되면 타임아웃까지 대기하되, 마지막 상태를 메시지에 담아 진단 가능하게.
         ticks = iter([0.0, 0.0, 100.0, 100.0])
         with mock.patch.object(comfy.comfy_client, "cloud_job_status", lambda t, p: "in_progress"), \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel, \
              mock.patch.object(comfy.time, "sleep", lambda s: None), \
              mock.patch.object(comfy.time, "monotonic", lambda: next(ticks)), \
              mock.patch.object(comfy, "_JOB_TIMEOUT", 10):
             with self.assertRaises(comfy_client.ComfyError) as cm:
                 comfy._wait(_cloud_target(), "pid")
         self.assertIn("in_progress", str(cm.exception))
+        cancel.assert_called_once_with(_cloud_target(), "pid")
 
     def test_wait_unknown_status_grace_fail(self):
         # 미지/빈 상태가 grace 넘게 지속되면 30분 안 기다리고 조기 실패(형식 어긋남 진단).

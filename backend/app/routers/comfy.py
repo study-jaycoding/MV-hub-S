@@ -55,6 +55,9 @@ _K_TARGET = "comfy_target"          # "local" | "cloud"
 _K_API_KEY = "comfy_api_key"
 _K_CONCURRENCY = "comfy_concurrency"
 _K_INPUT_DIR = "comfy_input_dir"
+# 제출은 됐지만 아직 이 프로세스가 결과를 회수하지 못한 잡. app_setting 은 이 PC 로컬 DB라
+# 별도 파일 경로·권한 문제 없이 재시작 흔적을 남길 수 있다(키·워크플로우는 저장하지 않는다).
+_K_INFLIGHT_RUNS = "comfy_inflight_runs"
 
 _DEFAULT_URL = (os.environ.get("CONTENT_HUB_COMFY_URL") or "http://127.0.0.1:8188").rstrip("/")
 _MASK = "***"
@@ -73,6 +76,10 @@ _JOB_TIMEOUT = _env_int("CONTENT_HUB_COMFY_TIMEOUT_SEC", 60 * 30, minimum=30)  #
 _POLL_LOCAL = 2.0
 _POLL_CLOUD = 4.0
 _CLOUD_UNKNOWN_GRACE = 90  # 알 수 없는 Cloud 상태가 이 시간(초) 넘게 지속되면 실패(형식 어긋남 조기 진단)
+# 일시적인 Comfy 재시작/프록시 연결 끊김이 30분 전체 실행 실패가 되지 않게 한다. N번째 연속
+# 오류에서만 실패하며, 그 전에는 폴링 간격을 지수 백오프로 늘려 서버에 재접속 폭주도 막는다.
+_POLL_ERROR_RETRY_LIMIT = _env_int("CONTENT_HUB_COMFY_POLL_ERROR_RETRIES", 5)
+_POLL_ERROR_BACKOFF_MAX_SEC = 30.0
 
 # ── 비동기 실행 잡 스토어 ─────────────────────────────────────────────────────
 # /run 이 긴 HTTP 연결을 붙잡던 구조(제출→폴링→다운로드)를 백그라운드 스레드로 분리한다.
@@ -88,6 +95,7 @@ _RUN_FAILED = "failed"
 
 _RUN_JOBS_LOCK = threading.Lock()
 _RUN_JOBS: dict[str, dict[str, Any]] = {}
+_RUN_PERSIST_LOCK = threading.Lock()
 
 
 def active_run_job_count() -> int:
@@ -124,7 +132,9 @@ def _release_run_slot() -> None:
     global _RUN_SLOTS_ACTIVE
     with _RUN_GATE:
         _RUN_SLOTS_ACTIVE = max(0, _RUN_SLOTS_ACTIVE - 1)
-        _RUN_GATE.notify()
+        # 설정별 cap 이 다른 대기자가 섞일 수 있다. 하나만 깨우면 아직 cap 미달인 대기자를
+        # 깨워 다시 재우고, 이미 들어갈 수 있는 대기자는 30초 timeout 까지 놓칠 수 있다.
+        _RUN_GATE.notify_all()
 
 
 def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
@@ -164,6 +174,7 @@ def _create_run_job() -> str:
             "code": None,
             "auth_error": False,
             "prompt_id": None,
+            "cancel_attempted": False,
         }
     return job_id
 
@@ -187,6 +198,7 @@ def _finish_run_job(job_id: str, result: dict) -> None:
             "state": _RUN_DONE, "updated_at": now, "finished_at": now,
             "result": result, "prompt_id": result.get("prompt_id"),
         })
+    _forget_inflight_run(job_id)
 
 
 def _fail_run_job(job_id: str, code: int, detail: Any) -> None:
@@ -200,6 +212,66 @@ def _fail_run_job(job_id: str, code: int, detail: Any) -> None:
             "state": _RUN_FAILED, "updated_at": now, "finished_at": now,
             "error": error, "code": code, "auth_error": code == 402,
         })
+    _forget_inflight_run(job_id)
+
+
+def _stored_inflight_runs_locked() -> list[dict[str, Any]]:
+    """app_setting JSON 을 읽어 최소 필드가 있는 항목만 되돌린다(_RUN_PERSIST_LOCK 보유 전제)."""
+    raw = repo.get_setting(_K_INFLIGHT_RUNS) or "[]"
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        log.warning("comfy in-flight 영속 저장 형식이 손상돼 비웁니다")
+        return []
+    if not isinstance(value, list):
+        log.warning("comfy in-flight 영속 저장 형식이 목록이 아니어서 비웁니다")
+        return []
+    return [
+        item for item in value
+        if isinstance(item, dict)
+        and isinstance(item.get("job_id"), str)
+        and isinstance(item.get("prompt_id"), str)
+        and item.get("target") in ("local", "cloud")
+    ]
+
+
+def _write_inflight_runs_locked(runs: list[dict[str, Any]]) -> None:
+    """작은 JSON 목록 전체를 원자적으로 교체한다(_RUN_PERSIST_LOCK 보유 전제)."""
+    repo.set_setting(
+        _K_INFLIGHT_RUNS,
+        json.dumps(runs, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _track_inflight_run(job_id: str, prompt_id: str, target_kind: str) -> None:
+    """원격 제출 성공 직후 재시작 진단용 최소 흔적을 남긴다.
+
+    ★best-effort — 이 기록이 실패해도(순간 DB 잠금 등) 호출부는 실행을 계속한다.
+    이미 제출·과금된 멀쩡한 잡을 진단 기록 실패 때문에 취소하면 손해가 더 크다.
+    잃는 것은 '재시작 시 이 잡의 흔적 로그·Cloud 취소' 뿐이다.
+    """
+    record = {
+        "job_id": job_id,
+        "prompt_id": prompt_id,
+        "target": "cloud" if target_kind == "cloud" else "local",
+        "created_at": time.time(),
+    }
+    with _RUN_PERSIST_LOCK:
+        runs = [r for r in _stored_inflight_runs_locked() if r["job_id"] != job_id]
+        runs.append(record)
+        _write_inflight_runs_locked(runs)
+
+
+def _forget_inflight_run(job_id: str) -> None:
+    """완료/실패가 확정된 잡의 재시작 흔적을 best-effort 로 제거한다."""
+    try:
+        with _RUN_PERSIST_LOCK:
+            runs = _stored_inflight_runs_locked()
+            kept = [r for r in runs if r["job_id"] != job_id]
+            if len(kept) != len(runs):
+                _write_inflight_runs_locked(kept)
+    except Exception as e:  # noqa: BLE001 — 이미 끝난 실행 결과를 영속 정리 실패로 뒤집지 않는다.
+        log.warning("comfy in-flight 영속 정리 실패 job_id=%s: %s", job_id, e)
 
 
 def _raw_settings() -> dict:
@@ -211,6 +283,99 @@ def _raw_settings() -> dict:
         "comfy_concurrency": _to_int(repo.get_setting(_K_CONCURRENCY), 3),
         "comfy_input_dir": repo.get_setting(_K_INPUT_DIR) or "",
     }
+
+
+def _cancel_remote_run(target: dict, prompt_id: str, reason: str,
+                       job_id: Optional[str] = None) -> None:
+    """실패 뒤 원격 잡을 best-effort 로 멈춘다.
+
+    Cloud·로컬 모두 **지정 prompt 를 대기열에서 삭제**(/queue delete)만 한다 — 로컬의
+    blanket interrupt 는 '현재 실행 중'을 멈추는데 그게 우리 다른 배치 잡이거나 사용자가
+    ComfyUI 로 직접 돌리는 작업일 수 있어 표적 없는 중단은 피해가 더 크다. 이미 실행에
+    들어간 로컬 프롬프트는 끝까지 돌게 둔다(로컬은 크레딧 소모가 없다). 동일 잡의
+    타임아웃→worker 실패 경로가 두 번 취소하지 않도록 메모리 잡에 시도 표식을 남긴다.
+    취소 실패는 원래 실행 오류보다 우선하지 않는다.
+    """
+    if not prompt_id:
+        return
+    if job_id:
+        with _RUN_JOBS_LOCK:
+            job = _RUN_JOBS.get(job_id)
+            if job:
+                if job.get("cancel_attempted"):
+                    return
+                job["cancel_attempted"] = True
+                job["updated_at"] = time.time()
+    try:
+        if target.get("cloud"):
+            comfy_client.cloud_cancel_pending(target, prompt_id)
+        else:
+            # ★로컬은 대기열에서 이 prompt 만 지운다(/queue delete 는 로컬도 지원).
+            #  블랭킷 interrupt 는 '현재 실행 중'을 멈추는데, 배치에서는 그게 우리 다른
+            #  잡이거나 사용자가 ComfyUI 로 직접 돌리는 작업일 수 있다 — 표적 없는 중단은
+            #  피해가 더 크다(통합 검토에서 완화). 이미 실행에 들어간 프롬프트는 그냥
+            #  끝까지 돌게 둔다(로컬은 크레딧 소모가 없어 낭비도 전기값뿐).
+            comfy_client.cloud_cancel_pending(target, prompt_id)
+    except Exception as e:  # noqa: BLE001 — 취소 실패가 원래 실패를 가리면 안 된다.
+        log.warning(
+            "comfy 원격 잡 취소 실패 target=%s prompt_id=%s reason=%s: %s",
+            "cloud" if target.get("cloud") else "local", prompt_id, reason, e,
+        )
+
+
+def _cancel_failed_run(settings: dict, job_id: str, reason: str) -> None:
+    """worker 에서 실패가 확정되기 전, 제출 완료된 prompt 만 취소한다."""
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS.get(job_id)
+        prompt_id = str(job.get("prompt_id") or "") if job else ""
+    if not prompt_id:
+        return
+    try:
+        _cancel_remote_run(comfy_client.make_target(settings), prompt_id, reason, job_id)
+    except Exception as e:  # noqa: BLE001 — settings 손상 등도 실행 실패를 덮지 않게 한다.
+        log.warning("comfy 원격 잡 취소 준비 실패 job_id=%s: %s", job_id, e)
+
+
+def recover_interrupted_run_jobs() -> None:
+    """부팅 시 이전 프로세스의 in-flight 흔적을 운영 로그로 남기고 비운다.
+
+    풀 자동복구는 하지 않는다. 특히 Cloud 는 현재 저장된 API 키로 지정 prompt 취소를 한 번
+    시도해 재시작 뒤의 크레딧 누수를 줄인다. 키가 바뀌었거나 완료된 잡이면 실패/거절도 로그만
+    남기고, 이 PC는 더 이상 그 잡을 추적하지 않는다는 사실을 명확히 한다.
+    """
+    try:
+        with _RUN_PERSIST_LOCK:
+            runs = _stored_inflight_runs_locked()
+    except Exception as e:  # noqa: BLE001 — 재시작 정리 실패가 서버 부팅을 막으면 안 된다.
+        log.warning("comfy in-flight 재시작 정리 조회 실패: %s", e)
+        return
+
+    try:
+        for run in runs:
+            job_id = run["job_id"]
+            prompt_id = run["prompt_id"]
+            target_kind = run["target"]
+            log.warning(
+                "comfy 서버 재시작으로 추적이 끊긴 잡 job_id=%s prompt_id=%s target=%s "
+                "(결과는 ComfyUI 히스토리에서 수동 확인 필요)",
+                job_id, prompt_id, target_kind,
+            )
+            if target_kind == "cloud":
+                # 당시 키는 보관하지 않는다. 현재 Cloud 키로만 취소를 시도한다(없거나 바뀌면 로그만).
+                try:
+                    settings = _raw_settings()
+                    settings["comfy_target"] = "cloud"
+                    _cancel_remote_run(comfy_client.make_target(settings), prompt_id, "server restart")
+                except Exception as e:  # noqa: BLE001 — 한 항목 오류가 다른 Cloud 취소를 막지 않게 한다.
+                    log.warning("comfy 재시작 Cloud 취소 준비 실패 prompt_id=%s: %s", prompt_id, e)
+    finally:
+        # 이 라이트 버전은 재연결/결과 수집을 하지 않는다. 같은 흔적을 다음 부팅마다 반복하지 않게
+        # 취소 성공 여부와 무관하게 비운다.
+        try:
+            with _RUN_PERSIST_LOCK:
+                _write_inflight_runs_locked([])
+        except Exception as e:  # noqa: BLE001
+            log.warning("comfy in-flight 재시작 정리 저장 실패: %s", e)
 
 
 def _to_int(v, default: int) -> int:
@@ -391,17 +556,39 @@ def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
         if job_id:
             _update_run_job(job_id)
 
+    def _retry_delay(poll_interval: float, failures: int) -> float:
+        return min(poll_interval * (2 ** (failures - 1)), _POLL_ERROR_BACKOFF_MAX_SEC)
+
     deadline = time.monotonic() + _JOB_TIMEOUT
     if target["cloud"]:
         last = None
         unknown_since = None  # 알 수 없는 상태를 처음 본 시각(grace 초과 시 실패)
+        poll_errors = 0
         while True:
             now = time.monotonic()
             if now >= deadline:
+                _cancel_remote_run(target, prompt_id, "poll timeout", job_id)
                 raise comfy_client.ComfyError(
                     f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다 "
                     f"(마지막 상태={last or '(empty)'})")
-            st = comfy_client.cloud_job_status(target, prompt_id)
+            try:
+                st = comfy_client.cloud_job_status(target, prompt_id)
+            except comfy_client.ComfyError as e:
+                poll_errors += 1
+                if poll_errors >= _POLL_ERROR_RETRY_LIMIT:
+                    raise comfy_client.ComfyError(
+                        f"Cloud 상태 조회가 {poll_errors}회 연속 실패했습니다: {e}",
+                        auth_error=getattr(e, "auth_error", False),
+                    ) from e
+                delay = _retry_delay(_POLL_CLOUD, poll_errors)
+                log.warning(
+                    "comfy cloud 상태 조회 일시 오류(%s/%s), %.1f초 뒤 재시도 prompt_id=%s: %s",
+                    poll_errors, _POLL_ERROR_RETRY_LIMIT, delay, prompt_id, e,
+                )
+                _heartbeat()
+                time.sleep(delay)
+                continue
+            poll_errors = 0
             if st != last:
                 log.info("comfy cloud job %s status=%s", prompt_id, st or "(empty)")
                 last = st
@@ -431,8 +618,26 @@ def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
             time.sleep(_POLL_CLOUD)
 
     entry = None
+    poll_errors = 0
     while time.monotonic() < deadline:
-        entry = comfy_client.get_history(target, prompt_id)
+        try:
+            entry = comfy_client.get_history(target, prompt_id)
+        except comfy_client.ComfyError as e:
+            poll_errors += 1
+            if poll_errors >= _POLL_ERROR_RETRY_LIMIT:
+                raise comfy_client.ComfyError(
+                    f"로컬 ComfyUI 상태 조회가 {poll_errors}회 연속 실패했습니다: {e}",
+                    auth_error=getattr(e, "auth_error", False),
+                ) from e
+            delay = _retry_delay(_POLL_LOCAL, poll_errors)
+            log.warning(
+                "comfy local 상태 조회 일시 오류(%s/%s), %.1f초 뒤 재시도 prompt_id=%s: %s",
+                poll_errors, _POLL_ERROR_RETRY_LIMIT, delay, prompt_id, e,
+            )
+            _heartbeat()
+            time.sleep(delay)
+            continue
+        poll_errors = 0
         if entry is not None:
             status = entry.get("status") or {}
             if (comfy_client.history_error(entry) or status.get("completed") is True
@@ -442,6 +647,7 @@ def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
         _heartbeat()
         time.sleep(_POLL_LOCAL)
     else:
+        _cancel_remote_run(target, prompt_id, "poll timeout", job_id)
         raise comfy_client.ComfyError(f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다")
     err = comfy_client.history_error(entry)
     if err:
@@ -625,15 +831,30 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         raise HTTPException(400, f"워크플로우 파싱 실패: {e}")
 
     tgt_kind = "cloud" if target["cloud"] else "local"
+    prompt_id: Optional[str] = None
     try:
         prompt_id = comfy_client.submit(target, wf, settings["comfy_api_key"])
+        # 원격 제출 성공과 메모리 등록 사이의 재시작에도 prompt_id 를 잃지 않게 먼저 영속화한다.
+        # ★단, 이 기록은 재시작 진단용 best-effort 다 — 기록 실패(순간 DB 잠금 등)가
+        #  이미 제출·과금된 멀쩡한 잡을 취소·실패시키면 손해가 더 크다(통합 검토에서 완화).
+        try:
+            _track_inflight_run(job_id, prompt_id, tgt_kind)
+        except Exception as e:  # noqa: BLE001
+            log.warning("comfy in-flight 영속 기록 실패(실행은 계속) job_id=%s: %s", job_id, e)
         _update_run_job(job_id, prompt_id=prompt_id)
         log.info("comfy submit ok target=%s prompt_id=%s", tgt_kind, prompt_id)  # api_key 는 절대 안 찍음
         entry = _wait(target, prompt_id, job_id)
     except comfy_client.ComfyError as e:
+        if prompt_id:
+            _cancel_remote_run(target, prompt_id, "run failure", job_id)
         log.warning("comfy run 실패 target=%s: %s", tgt_kind, e)
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, str(e))
+    except Exception:
+        # 영속 저장 실패처럼 ComfyError 가 아닌 예외도 제출 뒤라면 원격 잡은 남기지 않는다.
+        if prompt_id:
+            _cancel_remote_run(target, prompt_id, "run failure", job_id)
+        raise
 
     # 출력 수집 — 저장(OUTPUT) 노드가 내놓은 결과 전부. 미디어(이미지/영상)와 텍스트가 섞일 수 있고,
     # 복수일 수 있다(SaveText/SaveImage/VideoCombine 등). 미디어는 MEDIA_DIR 로 받아 /media URL 로.
@@ -647,6 +868,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         try:
             comfy_client.download_view(target, item, MEDIA_DIR / rel)
         except comfy_client.ComfyError as e:
+            _cancel_remote_run(target, prompt_id, "output download failure", job_id)
             raise HTTPException(502, f"출력물 다운로드 실패: {e}")
         results.append({"kind": kind, "url": f"/media/{rel}"})
 
@@ -670,6 +892,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
                         json.dumps(entry.get("outputs"), ensure_ascii=False)[:4000])
         except Exception:  # noqa: BLE001
             log.warning("comfy /run 출력 없음(직렬화 실패). keys=%s", list((entry.get("outputs") or {})))
+        _cancel_remote_run(target, prompt_id, "empty output", job_id)
         raise HTTPException(
             502, "실행은 끝났지만 표시할 출력물이 없습니다(ShowText/SaveImage/VideoCombine 등 결과 노드 필요). "
             f"실제 출력 구조: {comfy_client.outputs_debug(entry, wf)}")
@@ -686,9 +909,11 @@ def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
         try:
             result = _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings)
         except HTTPException as e:
+            _cancel_failed_run(settings, job_id, "worker failure")
             _fail_run_job(job_id, int(e.status_code or 500), e.detail)
         except Exception as e:  # noqa: BLE001
             log.exception("comfy async run 예외 job_id=%s", job_id)
+            _cancel_failed_run(settings, job_id, "worker unexpected failure")
             _fail_run_job(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
         else:
             _finish_run_job(job_id, result)

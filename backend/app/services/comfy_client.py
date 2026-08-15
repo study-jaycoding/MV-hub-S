@@ -338,11 +338,17 @@ def cloud_error_message(detail: dict) -> str:
 
 
 def cloud_cancel_pending(target: dict, prompt_id: str) -> None:
-    try:
-        _request("POST", _url(target, "/queue"), headers=target["headers"],
-                 json_body={"delete": [prompt_id]}, timeout=10)
-    except ComfyError:
-        pass
+    """Cloud 대기열에서 지정 잡을 취소한다.
+
+    취소 자체는 호출부가 best-effort 로 처리한다. 여기서 오류를 삼키면 호출부가 운영 로그를
+    남길 수 없으므로, 연결/HTTP 오류는 ComfyError 로 그대로 올린다.
+    """
+    status, body = _request(
+        "POST", _url(target, "/queue"), headers=target["headers"],
+        json_body={"delete": [prompt_id]}, timeout=10,
+    )
+    if not 200 <= status < 300:
+        raise _classify(status, body.decode("utf-8", "replace"))
 
 
 # ---------- 공통 ----------
@@ -453,8 +459,13 @@ def download_view(target: dict, item: dict, dst: Path) -> None:
 
 
 def interrupt(target: dict) -> None:
-    """실행 중 작업 중단 — 로컬·Cloud 모두 '현재 실행 중 전체'가 대상."""
-    try:
-        _request("POST", _url(target, "/interrupt"), headers=target["headers"], timeout=5)
-    except ComfyError:
-        pass
+    """실행 중 작업 중단 — 로컬·Cloud 모두 '현재 실행 중 전체'가 대상.
+
+    취소 호출자는 실패를 사용자 실행 실패에 덧붙이지 않고 로그만 남긴다. 그 판단을 할 수
+    있도록 이 저수준 함수는 오류를 삼키지 않는다.
+    """
+    status, body = _request(
+        "POST", _url(target, "/interrupt"), headers=target["headers"], timeout=5,
+    )
+    if not 200 <= status < 300:
+        raise _classify(status, body.decode("utf-8", "replace"))

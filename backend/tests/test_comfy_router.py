@@ -5,10 +5,13 @@
  · 동시 실행 게이트가 설정한 슬롯 수만큼만 동시 진입 허용
 """
 
+import json
 import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from app.routers import comfy
 from app.services import comfy_workflow
@@ -127,6 +130,7 @@ class RunGateTests(unittest.TestCase):
         # 게이트 카운터를 다른 테스트에 안 넘기도록 0 으로 되돌린다.
         with comfy._RUN_GATE:
             comfy._RUN_SLOTS_ACTIVE = 0
+            comfy._RUN_GATE.notify_all()
 
     def test_gate_limits_active_slots(self):
         comfy._acquire_run_slot(2)
@@ -143,6 +147,113 @@ class RunGateTests(unittest.TestCase):
         comfy._release_run_slot()             # 하나 반납 → 대기하던 3번째 진입
         self.assertTrue(entered.wait(1.0))
         self.assertEqual(comfy._RUN_SLOTS_ACTIVE, 2)
+
+    def test_release_wakes_mixed_capacity_waiters(self):
+        # active=3 에 cap 2/3 대기자가 함께 있으면, 한 슬롯 반납(active=2) 뒤에는 cap=3만
+        # 들어갈 수 있다. notify()가 먼저 온 cap=2만 깨우면 cap=3은 30초 wait timeout까지
+        # 잠든다. notify_all()은 둘을 깨워 cap=3이 즉시 진행하게 한다.
+        low_entered = threading.Event()
+        high_entered = threading.Event()
+
+        def low_cap_waiter():
+            comfy._acquire_run_slot(2)
+            low_entered.set()
+
+        def high_cap_waiter():
+            comfy._acquire_run_slot(3)
+            high_entered.set()
+
+        def wait_for_waiters(count: int) -> None:
+            until = time.monotonic() + 1.0
+            while time.monotonic() < until:
+                with comfy._RUN_GATE:
+                    if len(comfy._RUN_GATE._waiters) >= count:  # Condition 내부 대기열(테스트 동기화용)
+                        return
+                time.sleep(0.01)
+            self.fail(f"게이트 대기자 {count}명이 준비되지 않았습니다")
+
+        with comfy._RUN_GATE:
+            comfy._RUN_SLOTS_ACTIVE = 3
+        threading.Thread(target=low_cap_waiter, daemon=True).start()
+        wait_for_waiters(1)  # 낮은 cap을 먼저 대기열에 넣어 기존 notify() 결함도 재현 가능하게 한다.
+        threading.Thread(target=high_cap_waiter, daemon=True).start()
+        wait_for_waiters(2)
+
+        comfy._release_run_slot()  # active=2 → cap=3 대기자가 즉시 들어가야 한다.
+        self.assertTrue(high_entered.wait(0.5))
+        self.assertFalse(low_entered.is_set())
+        # 남은 가상 슬롯 두 개를 반납하면 cap=2 대기자도 끝까지 진행한다.
+        comfy._release_run_slot()
+        comfy._release_run_slot()
+        self.assertTrue(low_entered.wait(0.5))
+
+
+class WaitResilienceTests(unittest.TestCase):
+    def test_local_poll_transient_errors_below_limit_survive(self):
+        # N-1회의 일시 연결 오류 뒤 실제 완료 history를 받으면, 전체 30분 잡을 502로 끝내지 않는다.
+        errors = [comfy.comfy_client.ComfyError("temporary") for _ in range(2)]
+        history = {"status": {"completed": True}, "outputs": {}}
+        target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+        with mock.patch.object(comfy, "_POLL_ERROR_RETRY_LIMIT", 3), \
+             mock.patch.object(comfy.comfy_client, "get_history", side_effect=[*errors, history]) as get_history, \
+             mock.patch.object(comfy.time, "sleep", lambda _s: None):
+            self.assertEqual(comfy._wait(target, "pid"), history)
+        self.assertEqual(get_history.call_count, 3)
+
+    def test_cloud_poll_transient_errors_below_limit_survive(self):
+        errors = [comfy.comfy_client.ComfyError("temporary") for _ in range(2)]
+        target = {"cloud": True, "base": "https://cloud.comfy.org", "prefix": "/api", "headers": {}}
+        with mock.patch.object(comfy, "_POLL_ERROR_RETRY_LIMIT", 3), \
+             mock.patch.object(comfy.comfy_client, "cloud_job_status",
+                               side_effect=[*errors, "completed"]), \
+             mock.patch.object(comfy.comfy_client, "cloud_job_detail", return_value={"outputs": {}}), \
+             mock.patch.object(comfy.time, "sleep", lambda _s: None):
+            self.assertEqual(comfy._wait(target, "pid"), {"outputs": {}})
+
+
+class InflightRunPersistenceTests(unittest.TestCase):
+    def test_submitted_run_is_persisted_then_removed_on_finish(self):
+        values: dict[str, str] = {}
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting):
+            comfy._track_inflight_run("job-1", "prompt-1", "cloud")
+            rows = json.loads(values[comfy._K_INFLIGHT_RUNS])
+            self.assertEqual(rows[0]["job_id"], "job-1")
+            self.assertEqual(rows[0]["prompt_id"], "prompt-1")
+            self.assertEqual(rows[0]["target"], "cloud")
+            self.assertIn("created_at", rows[0])
+            comfy._forget_inflight_run("job-1")
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+
+    def test_restart_logs_cloud_job_cancels_and_clears_store(self):
+        values = {
+            comfy._K_INFLIGHT_RUNS: (
+                '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1},'
+                '{"job_id":"job-2","prompt_id":"local-prompt","target":"local","created_at":2}]'
+            )
+        }
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy, "_raw_settings", return_value={"comfy_api_key": "key"}), \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
+            comfy.recover_interrupted_run_jobs()
+        cancel.assert_called_once()
+        self.assertEqual(cancel.call_args.args[1], "cloud-prompt")
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
 
 
 class ComboChoiceTests(unittest.TestCase):
