@@ -226,7 +226,26 @@ def claim_pending_requests(
     lease_owner: 요청을 선점한 에이전트 인스턴스. 제출 도중 에이전트가 끊긴 요청을 구분한다."""
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
+    # 비-capable(구) 에이전트는 워크스페이스 지정(team/personal) 요청을 SQL 에서 제외하고
+    # 고른다 — Python 측 상한 스캔이면 지정 요청이 상한 이상 쌓였을 때 뒤의 일반 요청이
+    # 영구히 굶는다. 손상된 payload(json_valid 실패)는 기존 파싱 실패와 동일하게 일반
+    # 요청(unknown) 취급. capable 에이전트는 전부 claim 가능.
+    ws_gate = (
+        "" if workspace_capable else
+        " AND NOT (json_valid(payload) AND "
+        "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
+    )
     with get_connection() as conn:
+        # 빈 폴은 가장 흔한 경로다. 먼저 읽기로 claim 가능한 pending 존재만 확인해, 0건이면
+        # BEGIN IMMEDIATE(전역 쓰기락)를 잡지 않고 끝낸다. 이 읽기와 실제 claim 사이의 레이스는
+        # 무해하다 — 새 요청을 못 본 경우에도 다음 폴에서 claim한다.
+        has_pending = conn.execute(
+            "SELECT 1 FROM gen_request "
+            f"WHERE account_email=? AND status='pending'{ws_gate} LIMIT 1",
+            (email,),
+        ).fetchone()
+        if not has_pending:
+            return []
         # ★원자 claim: 커넥션이 autocommit(isolation_level=None)이라 SELECT→UPDATE 사이에 트랜잭션
         # 경계가 없으면, 같은 계정의 에이전트/폴 둘이 동시에 같은 pending 행을 SELECT→둘 다 running 으로
         # 표시→로컬 CLI 가 두 번 실행돼 크레딧이 이중 소모된다. BEGIN IMMEDIATE 로 즉시 쓰기락을 잡아
@@ -253,15 +272,6 @@ def claim_pending_requests(
                     "error='에이전트 응답 없음(30분 초과)' WHERE id=? AND status IN ('pending','running')",
                     (stale["gen_id"],),
                 )
-        # 비-capable(구) 에이전트는 워크스페이스 지정(team/personal) 요청을 SQL 에서 제외하고
-        # 고른다 — Python 측 상한 스캔이면 지정 요청이 상한 이상 쌓였을 때 뒤의 일반 요청이
-        # 영구히 굶는다. 손상된 payload(json_valid 실패)는 기존 파싱 실패와 동일하게 일반
-        # 요청(unknown) 취급. capable 에이전트는 전부 claim 가능.
-        ws_gate = (
-            "" if workspace_capable else
-            " AND NOT (json_valid(payload) AND "
-            "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
-        )
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
             f"WHERE account_email=? AND status='pending'{ws_gate} "

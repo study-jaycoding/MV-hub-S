@@ -450,7 +450,9 @@ async def auth_enforcement(request: Request, call_next):
     if token:
         email = auth_svc.verify_token(token)
         if email:
-            acc = repo.get_account(email)
+            # SQLite busy_timeout 대기는 이벤트 루프가 아니라 워커 스레드에서 기다린다.
+            # 계정 상태는 즉시 반영해야 하므로 여기서는 TTL 캐시를 두지 않는다.
+            acc = await asyncio.to_thread(repo.get_account, email)
             if acc and acc["status"] == "approved":
                 # 비번 변경/리셋 후엔 그 이전 발급 토큰을 거부(탈취 대응). 스탬프 없는 계정
                 # (한 번도 안 바꿈)은 검사 생략 → 배포 시 기존 세션 일괄 로그아웃 방지.
@@ -768,7 +770,7 @@ async def websocket_endpoint(ws: WebSocket):
 
         token = _websocket_session_token(ws, SESSION_COOKIE)
         email = auth_svc.verify_token(token) if token else None
-        acc = repo.get_account(email) if email else None
+        acc = await asyncio.to_thread(repo.get_account, email) if email else None
         pcat = acc.get("password_changed_at") if acc else None
         stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
         if not acc or acc["status"] != "approved" or stale_password_token:
@@ -806,7 +808,7 @@ async def websocket_endpoint(ws: WebSocket):
             # 되던 부하를 줄인다(정지 반영 지연 상한은 기존과 같은 ~45초).
             if AUTH_ENABLED and now - last_auth_check >= _WS_AUTH_RECHECK_SECONDS:
                 last_auth_check = now
-                acc2 = repo.get_account(email) if email else None
+                acc2 = await asyncio.to_thread(repo.get_account, email) if email else None
                 pcat2 = acc2.get("password_changed_at") if acc2 else None
                 if (
                     not acc2

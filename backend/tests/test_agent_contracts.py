@@ -691,6 +691,33 @@ def test_agent_anchor_and_reconcile_payloads_match_server_contract():
     assert reconcile_call.kwargs == {"token": "token-1", "body": {"job": job}}
 
 
+def test_agent_anchor_keeps_outbox_when_server_rejects_a_live_request():
+    # 서버가 applied=False + 살아있는 요청 상태를 주면 앵커는 실패로 취급해 outbox 에
+    # 남겨 재전송해야 한다 — 예전엔 빈 200 만 보고 성공 처리해 유료 잡의 앵커가 유실됐다.
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(200, {"ok": True, "applied": False, "request_status": "submitting"}),
+    ):
+        assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is False
+
+
+def test_agent_anchor_drops_outbox_when_request_is_terminal_or_missing():
+    agent = _load_agent()
+    for status in ("done", "canceled", "failed", "missing"):
+        with patch.object(
+            agent,
+            "_http",
+            return_value=(200, {"ok": True, "applied": False, "request_status": status}),
+        ):
+            assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is True
+    # applied=True·구서버(빈 200)도 성공.
+    for body in ({"ok": True, "applied": True}, {}):
+        with patch.object(agent, "_http", return_value=(200, body)):
+            assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is True
+
+
 def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():
     agent = _load_agent()
     candidate = {"rid": "request-1", "gen_id": "gen-1", "job_id": "job-1"}

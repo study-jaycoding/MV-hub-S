@@ -1132,8 +1132,13 @@ def _tracked_remove(server: str, account_email: str | None, job_id: str) -> None
 
 def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
     """placeholder 에 job_id 를 박고 running 유지 — create-first(verifying=False)는 '생성중'으로,
-    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시. 서버 200 이면 True."""
-    st, _ = _http(
+    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시.
+
+    True = 서버가 앵커를 반영했거나 재전송이 무의미(요청 종결/소멸) → outbox 에서 제거해도 됨.
+    False = 실패 또는 서버가 거부했는데 요청이 아직 살아 있음 → outbox 에 남겨 재전송.
+    (예전엔 HTTP 200 만 보고 성공 처리해서, 서버가 조용히 거부한 앵커가 outbox 에서
+    지워져 유료 잡이 카드에 영영 안 붙었다.)"""
+    st, body = _http(
         "POST",
         _gen_request_url(
             server,
@@ -1143,7 +1148,14 @@ def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = Fa
         ),
         token=token,
     )
-    return st == 200
+    if st != 200:
+        return False
+    if not isinstance(body, dict) or "applied" not in body:
+        return True  # 구서버(빈 200) 호환 — 기존 동작 유지
+    if body.get("applied"):
+        return True
+    # 서버가 거부 — 요청이 이미 종결/소멸이면 같은 앵커를 다시 보내도 똑같이 거부된다.
+    return str(body.get("request_status") or "") in ("done", "canceled", "failed", "missing")
 
 
 def _anchor_with_retry(

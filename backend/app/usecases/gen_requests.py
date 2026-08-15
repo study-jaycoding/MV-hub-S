@@ -38,6 +38,15 @@ _HF_ENDED_RE = re.compile(
 )
 
 
+async def _sync_io(action, /, *args, **kwargs):
+    """동기 SQLite 작업을 워커 스레드에서 끝낸다.
+
+    repo 함수 하나가 여는 get_connection 컨텍스트를 한 번의 to_thread 호출 안에서 완료한다.
+    따라서 트랜잭션/스레드-로컬 커넥션이 이벤트 루프와 워커 스레드 사이를 넘지 않는다.
+    """
+    return await asyncio.to_thread(action, *args, **kwargs)
+
+
 def _has_usable_asset_path(value: object) -> bool:
     """완료를 확정할 수 있는 실제 결과 위치인지 확인한다.
 
@@ -104,7 +113,8 @@ async def _record_request_estimate(gen_id: str, payload: dict) -> None:
             est = int(value) if value else None
     except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
         _log_pm_failure("estimate_cost", exc)
-    pm_best_effort(
+    await _sync_io(
+        pm_best_effort,
         lambda _m: _m.record_request(gen_id, est_credits=est),
         operation="record_request_estimate",
         dirty_gen_id=gen_id,
@@ -168,7 +178,8 @@ async def claim_gen_requests(
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
-    claimed = repo.claim_pending_requests(
+    claimed = await _sync_io(
+        repo.claim_pending_requests,
         email,
         limit=max(1, min(limit, 16)),
         workspace_capable=workspace_capable,
@@ -176,7 +187,7 @@ async def claim_gen_requests(
     )
     for item in claimed:
         gen_id = item["gen_id"]
-        repo.set_status(gen_id, "running", None)
+        await _sync_io(repo.set_status, gen_id, "running", None)
         log_event(
             _generation_log,
             "generation_claimed",
@@ -186,7 +197,8 @@ async def claim_gen_requests(
             model=item.get("model"),
             workspace_scope=(item.get("workspace") or {}).get("scope"),
         )
-        journal_generation_event(
+        await _sync_io(
+            journal_generation_event,
             "generation_claimed",
             gen_id,
             request_id=item["id"],
@@ -194,7 +206,8 @@ async def claim_gen_requests(
             to_phase="submitting",
             actor_uid=account_uid,
         )
-        pm_best_effort(
+        await _sync_io(
+            pm_best_effort,
             lambda manage, gid=gen_id: manage.record_started(gid),
             operation="record_started",
             dirty_gen_id=gen_id,
@@ -216,14 +229,15 @@ async def fulfill_request(
     gen_id = request_row["gen_id"]
     result = normalize_job_result(cli_bridge.parse_job(job))
     if result.status == "done" and not _has_usable_asset_path(result.asset_path):
-        repo.record_request_check(
+        await _sync_io(
+            repo.record_request_check,
             request_id,
             str(job.get("status") or job.get("job_status") or ""),
             phase="verifying",
             error=repo.VERIFYING_NOTE,
             next_seconds=15,
         )
-        repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        await _sync_io(repo.set_status, gen_id, "running", repo.VERIFYING_NOTE)
         if request_row.get("status") != "verifying":
             log_event(
                 _generation_log,
@@ -234,7 +248,8 @@ async def fulfill_request(
                 provider_status=str(job.get("status") or job.get("job_status") or ""),
                 reason="result_location_missing",
             )
-            journal_generation_event(
+            await _sync_io(
+                journal_generation_event,
                 "generation_result_waiting",
                 gen_id,
                 request_id=request_id,
@@ -244,8 +259,9 @@ async def fulfill_request(
                 reason_code="result_location_missing",
                 actor_uid=account_uid,
             )
-        return repo.get_generation(gen_id)
-    applied = repo.apply_local_fulfillment(
+        return await _sync_io(repo.get_generation, gen_id)
+    applied = await _sync_io(
+        repo.apply_local_fulfillment,
         gen_id,
         request_id,
         asset_type=result.asset_type,
@@ -259,7 +275,7 @@ async def fulfill_request(
         request_status="done" if result.status == "done" else "failed",
     )
     if not applied:
-        return repo.get_generation(gen_id)
+        return await _sync_io(repo.get_generation, gen_id)
 
     log_event(
         _generation_log,
@@ -271,7 +287,8 @@ async def fulfill_request(
         status=result.status,
         asset_saved=bool(result.asset_path),
     )
-    journal_generation_event(
+    await _sync_io(
+        journal_generation_event,
         "generation_finalized",
         gen_id,
         request_id=request_id,
@@ -280,7 +297,8 @@ async def fulfill_request(
         to_phase=result.status,
         actor_uid=account_uid,
     )
-    pm_best_effort(
+    await _sync_io(
+        pm_best_effort,
         lambda manage: manage.record_completed(gen_id, job_id=result.job_id),
         operation="record_completed",
         dirty_gen_id=gen_id,
@@ -295,7 +313,7 @@ async def fulfill_request(
         },
         account_uid=account_uid,
     )
-    return repo.get_generation(gen_id)
+    return await _sync_io(repo.get_generation, gen_id)
 
 
 async def anchor_request(
@@ -307,7 +325,9 @@ async def anchor_request(
 ) -> bool:
     """job_id를 placeholder에 앵커하고, 실제 변경된 경우에만 진행 상태를 알린다."""
     gen_id = request_row["gen_id"]
-    applied = repo.apply_local_anchor(gen_id, request_id, job_id, verifying=verifying)
+    applied = await _sync_io(
+        repo.apply_local_anchor, gen_id, request_id, job_id, verifying=verifying
+    )
     if applied:
         log_event(
             _generation_log,
@@ -317,7 +337,8 @@ async def anchor_request(
             job_id=job_id,
             verifying=verifying,
         )
-        journal_generation_event(
+        await _sync_io(
+            journal_generation_event,
             "generation_job_anchored",
             gen_id,
             request_id=request_id,
@@ -352,7 +373,8 @@ async def reconcile_request(
     parsed_job_id = (parsed.get("generation") or {}).get("id")
     if force_fail_reason:
         job_id = (parsed.get("generation") or {}).get("id")
-        applied = repo.apply_reconcile(
+        applied = await _sync_io(
+            repo.apply_reconcile,
             gen_id,
             job_id,
             asset_type=None,
@@ -378,7 +400,8 @@ async def reconcile_request(
                 asset_saved=False,
                 reason="forced_failure",
             )
-            journal_generation_event(
+            await _sync_io(
+                journal_generation_event,
                 "generation_finalized",
                 gen_id,
                 request_id=request_row.get("id"),
@@ -389,7 +412,8 @@ async def reconcile_request(
                 reason_code="forced_failure",
                 actor_uid=account_uid,
             )
-            pm_best_effort(
+            await _sync_io(
+                pm_best_effort,
                 lambda manage: manage.record_completed(gen_id, job_id=job_id),
                 operation="record_completed",
                 dirty_gen_id=gen_id,
@@ -403,16 +427,30 @@ async def reconcile_request(
                 },
                 account_uid=account_uid,
             )
+        # ★미적용 사유 구분: 예전엔 무조건 already_final_same_job(성공형)을 돌려줘, 앵커가
+        #  유실돼 아무것도 못 바꾼 경우까지 에이전트가 성공으로 보고 추적을 끝냈다 —
+        #  레퍼런스 미부착(이미 과금) 잡이 서버엔 '생성중'으로 영영 남는 유령 카드.
+        #  비-force 경로의 final_matches 판정과 대칭으로, 실제 같은 잡으로 종결된 경우만
+        #  성공형을 준다. 그 외(앵커 유실 등)는 rejected → 에이전트가 다음 사이클에 재시도.
+        if applied:
+            outcome = "applied"
+        else:
+            current_row = await _sync_io(repo.get_generation, gen_id)
+            same_final = (
+                (current_row or {}).get("status") in ("done", "failed")
+                and (current_row or {}).get("job_id") == job_id
+            )
+            outcome = "already_final_same_job" if same_final else "rejected"
         return {
             "ok": True,
             "applied": applied,
-            "outcome": "applied" if applied else "already_final_same_job",
+            "outcome": outcome,
             "status": "failed",
             "job_id": job_id,
             "asset_saved": False,
         }
 
-    current = repo.get_generation(gen_id)
+    current = await _sync_io(repo.get_generation, gen_id)
     expected_job_id = (current or {}).get("job_id")
 
     if expected_job_id and parsed_job_id and expected_job_id != parsed_job_id:
@@ -425,7 +463,8 @@ async def reconcile_request(
             expected_job_id=expected_job_id,
             received_job_id=parsed_job_id,
         )
-        journal_generation_event(
+        await _sync_io(
+            journal_generation_event,
             "generation_job_conflict",
             gen_id,
             request_id=request_row.get("id"),
@@ -454,14 +493,15 @@ async def reconcile_request(
             note = f"{repo.VERIFYING_NOTE} (알 수 없는 상태: {raw_provider_status or '없음'})"
         elif provider_kind == "action_required":
             note = f"조치 필요 — Higgsfield 상태: {raw_provider_status}"
-        repo.record_request_check(
+        await _sync_io(
+            repo.record_request_check,
             request_row["id"],
             raw_provider_status,
             phase=phase,
             error=note,
             next_seconds=30,
         )
-        repo.set_status(gen_id, "running", note)
+        await _sync_io(repo.set_status, gen_id, "running", note)
         if (
             provider_kind in ("unknown", "action_required")
             and (
@@ -480,7 +520,8 @@ async def reconcile_request(
                 provider_status=raw_provider_status or "missing",
                 reason=provider_kind,
             )
-            journal_generation_event(
+            await _sync_io(
+                journal_generation_event,
                 "generation_attention_required",
                 gen_id,
                 request_id=request_row.get("id"),
@@ -512,14 +553,15 @@ async def reconcile_request(
 
     # 공급자가 완료를 먼저 알리고 CDN 결과 URL을 나중에 붙이는 경우가 있다. 빈 완료로 닫지 않는다.
     if provider_kind == "success" and not _has_usable_asset_path(result.asset_path):
-        repo.record_request_check(
+        await _sync_io(
+            repo.record_request_check,
             request_row["id"],
             raw_provider_status,
             phase="verifying",
             error=repo.VERIFYING_NOTE,
             next_seconds=15,
         )
-        repo.set_status(gen_id, "running", repo.VERIFYING_NOTE)
+        await _sync_io(repo.set_status, gen_id, "running", repo.VERIFYING_NOTE)
         if (
             request_row.get("status") != "verifying"
             or request_row.get("provider_status") != raw_provider_status
@@ -534,7 +576,8 @@ async def reconcile_request(
                 provider_status=raw_provider_status,
                 reason="result_location_missing",
             )
-            journal_generation_event(
+            await _sync_io(
+                journal_generation_event,
                 "generation_result_waiting",
                 gen_id,
                 request_id=request_row.get("id"),
@@ -563,7 +606,8 @@ async def reconcile_request(
             "asset_saved": False,
         }
 
-    applied = repo.apply_reconcile(
+    applied = await _sync_io(
+        repo.apply_reconcile,
         gen_id,
         result.job_id,
         asset_type=result.asset_type,
@@ -587,7 +631,8 @@ async def reconcile_request(
             provider_status=raw_provider_status,
             asset_saved=bool(result.asset_path),
         )
-        journal_generation_event(
+        await _sync_io(
+            journal_generation_event,
             "generation_finalized",
             gen_id,
             request_id=request_row.get("id"),
@@ -597,7 +642,8 @@ async def reconcile_request(
             provider_status=raw_provider_status,
             actor_uid=account_uid,
         )
-        pm_best_effort(
+        await _sync_io(
+            pm_best_effort,
             lambda manage: manage.record_completed(gen_id, job_id=result.job_id),
             operation="record_completed",
             dirty_gen_id=gen_id,
@@ -612,7 +658,7 @@ async def reconcile_request(
             },
             account_uid=account_uid,
         )
-    final = repo.get_generation(gen_id)
+    final = await _sync_io(repo.get_generation, gen_id)
     asset_saved = bool((final or {}).get("assets"))
     same_job = bool(final and final.get("job_id") == result.job_id)
     final_matches = bool(
@@ -658,7 +704,8 @@ async def fail_request(
         final_status = "failed"
 
     gen_id = request_row["gen_id"]
-    applied = repo.apply_local_failure(
+    applied = await _sync_io(
+        repo.apply_local_failure,
         gen_id,
         request_id,
         reason,
@@ -679,7 +726,8 @@ async def fail_request(
         asset_saved=False,
         reason="agent_reported_failure",
     )
-    journal_generation_event(
+    await _sync_io(
+        journal_generation_event,
         "generation_finalized",
         gen_id,
         request_id=request_id,
@@ -689,7 +737,8 @@ async def fail_request(
         reason_code="agent_reported_failure",
         actor_uid=account_uid,
     )
-    pm_best_effort(
+    await _sync_io(
+        pm_best_effort,
         lambda manage: manage.record_completed(gen_id, job_id=final_job_id),
         operation="record_completed",
         dirty_gen_id=gen_id,
@@ -712,11 +761,12 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     생성 연결에 필요한 저장과 signal까지 마친 뒤 즉시 응답한다. PM 견적은 백그라운드에서 기록한다.
     """
     if cmd.canvas_link:
-        existing = repo.get_canvas_generation_link(
+        existing = await _sync_io(
+            repo.get_canvas_generation_link,
             cmd.email, cmd.canvas_link["attempt_id"]
         )
         if existing:
-            return repo.get_generation(existing["generation_id"])
+            return await _sync_io(repo.get_generation, existing["generation_id"])
 
     if cmd.kind == "create":
         create_kwargs = {"creator_uid": cmd.creator_uid}
@@ -724,25 +774,32 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
             create_kwargs["workspace"] = cmd.workspace
         if cmd.canvas_link:
             create_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
-        gen_id = repo.create_local_generation(cmd.data, cmd.worker_id, **create_kwargs)
+        gen_id = await _sync_io(
+            repo.create_local_generation, cmd.data, cmd.worker_id, **create_kwargs
+        )
     else:  # regenerate
         import_kwargs = {"creator_uid": cmd.creator_uid}
         if cmd.workspace is not None:
             import_kwargs["workspace"] = cmd.workspace
         if cmd.canvas_link:
             import_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
-        gen_id = repo.import_generation(cmd.source_gen_id, cmd.worker_id, **import_kwargs)
+        gen_id = await _sync_io(
+            repo.import_generation, cmd.source_gen_id, cmd.worker_id, **import_kwargs
+        )
         reg = cmd.regenerate or RegenerateIn()
         if reg.color is not None:
-            repo.set_color(gen_id, reg.color)
+            await _sync_io(repo.set_color, gen_id, reg.color)
         if reg.prompt or reg.model:
-            repo.override_prompt_model(gen_id, prompt=reg.prompt, model=reg.model)
+            await _sync_io(
+                repo.override_prompt_model, gen_id, prompt=reg.prompt, model=reg.model
+            )
         if reg.auto_tags:
-            repo.add_auto_tags(gen_id, reg.auto_tags)
+            await _sync_io(repo.add_auto_tags, gen_id, reg.auto_tags)
 
-    payload = repo.gen_recipe(gen_id)
+    payload = await _sync_io(repo.gen_recipe, gen_id)
     payload["source_gen_id"] = cmd.source_gen_id
-    request_id = repo.create_gen_request(
+    request_id = await _sync_io(
+        repo.create_gen_request,
         cmd.email,
         cmd.creator_uid,
         gen_id,
@@ -760,7 +817,8 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
         workspace_scope=(payload.get("workspace") or {}).get("scope"),
         reference_count=len(payload.get("references") or []),
     )
-    journal_generation_event(
+    await _sync_io(
+        journal_generation_event,
         "generation_requested",
         gen_id,
         request_id=request_id,
@@ -772,7 +830,8 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
 
     # pending 상태도 중앙 운영 로그에 즉시 보이게, 느린 견적 조회 전에 기본 요청 시점을 기록한다.
     if MANAGE_ENABLED:
-        pm_best_effort(
+        await _sync_io(
+            pm_best_effort,
             lambda manage: manage.record_request(gen_id),
             operation="record_request",
             dirty_gen_id=gen_id,
@@ -782,4 +841,4 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     # 못 받는 일이 없도록 응답 경로에서 분리한다.
     _schedule_request_estimate(gen_id, payload)
 
-    return repo.get_generation(gen_id)
+    return await _sync_io(repo.get_generation, gen_id)

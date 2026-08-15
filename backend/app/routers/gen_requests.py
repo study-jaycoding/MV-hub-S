@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
@@ -47,6 +49,9 @@ from ..usecases.gen_requests import (
 )
 from ._telemetry import schedule_telemetry_drain
 
+# 규율: 이 파일의 async 핸들러에서 동기 repo(SQLite) 호출을 직접 하지 않는다.
+# DB만 쓰는 핸들러는 def로 FastAPI 워커 스레드에서 실행하고, WebSocket 알림 등 await가
+# 필요한 핸들러의 DB 호출은 asyncio.to_thread로 이관한다.
 router = APIRouter(prefix="/api", tags=["gen-requests"])
 
 
@@ -117,7 +122,9 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             detail="프로그램 업데이트가 진행 중이라 새 생성을 시작할 수 없습니다",
         )
     acc = _require_account(request)
-    workspace = _validated_generation_workspace(body.workspace, acc["email"])
+    workspace = await asyncio.to_thread(
+        _validated_generation_workspace, body.workspace, acc["email"]
+    )
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
     # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
@@ -135,9 +142,15 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if pid == "none":
             data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
         elif pid:
-            _require_matching_project_workspace(pid, workspace)
-            require_project_role(
-                request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            await asyncio.to_thread(_require_matching_project_workspace, pid, workspace)
+            await asyncio.to_thread(
+                require_project_role,
+                request,
+                pid,
+                rbac.CREATOR,
+                rbac.SUPERVISOR,
+                rbac.PROJECT_MANAGER,
+                read_only=True,
             )
         cmd = GenRequestCommand(
             kind="create",
@@ -152,19 +165,25 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     else:  # regenerate
         if not body.source_gen_id:
             raise HTTPException(status_code=400, detail="source_gen_id 가 필요합니다")
-        parent = repo.get_generation(body.source_gen_id)
+        parent = await asyncio.to_thread(repo.get_generation, body.source_gen_id)
         if not parent:
             raise HTTPException(status_code=404, detail="원본 generation 없음")
         # 비공개·공유 안 된 남의 원본을 id 만 알고 재생성(=프롬프트·소스 복제)하는 우회 차단.
-        require_view_generation(request, parent)
+        await asyncio.to_thread(require_view_generation, request, parent)
         # 재생성본은 부모 project_id 를 상속(import_generation) — 부모가 프로젝트에 속하면 그 프로젝트
         # 접근권도 확인한다. 안 하면 '옛날엔 그 프로젝트 멤버였다가 빠진' 사용자가 자기 옛 생성물을
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
         ppid = (parent.get("project_id") or "").strip()
         if ppid and ppid != "none":
-            _require_matching_project_workspace(ppid, workspace)
-            require_project_role(
-                request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            await asyncio.to_thread(_require_matching_project_workspace, ppid, workspace)
+            await asyncio.to_thread(
+                require_project_role,
+                request,
+                ppid,
+                rbac.CREATOR,
+                rbac.SUPERVISOR,
+                rbac.PROJECT_MANAGER,
+                read_only=True,
             )
         reg = body.regenerate or RegenerateIn()
         # worker_id 는 parent 기준으로 라우터가 계산(usecase 가 parent 를 다시 읽으면 동작이 달라짐).
@@ -187,7 +206,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
 
 
 @router.post("/gen-requests/canvas-links/resolve")
-async def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
+def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
     """재시작한 캔버스가 요청 전 저장한 attempt와 실제 generation 연결을 복구한다."""
     acc = _require_account(request)
     return {
@@ -196,7 +215,7 @@ async def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Re
 
 
 @router.post("/gen-requests/canvas-links/repair")
-async def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
+def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
     """placeholder만 저장된 비정상 종료 지점을 소유권 확인 후 다시 큐잉한다."""
     acc = _require_account(request)
     creator_uid = (
@@ -211,7 +230,7 @@ async def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Reques
 
 
 @router.get("/gen-requests/canvas-candidates")
-async def canvas_generation_candidates(request: Request, limit: int = 30):
+def canvas_generation_candidates(request: Request, limit: int = 30):
     """구버전에서 연결을 잃은 내 생성 요청만 수동 복구 후보로 돌려준다."""
     acc = _require_account(request)
     ids = repo.list_canvas_generation_candidates(acc["email"], limit=limit)
@@ -220,7 +239,7 @@ async def canvas_generation_candidates(request: Request, limit: int = 30):
 
 
 @router.post("/gen-requests/canvas-candidates/claim")
-async def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
+def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
     """선택한 구버전 생성물을 한 캔버스 카드에 1회 귀속한다."""
     acc = _require_account(request)
     claimed = repo.claim_canvas_generation_candidate(
@@ -264,14 +283,14 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     """에이전트가 로컬 실행 완료 후 호출 — 결과(raw 잡)를 placeholder 에 채우고 done 표시."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         # 이미 종결된 요청 → 멱등 무시(에이전트 재시작·중복 보고로 done↔failed 뒤집힘 방지).
-        gen = repo.get_generation(req["gen_id"])
+        gen = await asyncio.to_thread(repo.get_generation, req["gen_id"])
         if not gen:
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
@@ -291,17 +310,32 @@ async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying:
     결말·재시작 복구): '확인중'으로 표시. terminal 완료는 되돌리지 않는다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    await anchor_request(req, rid, job_id, verifying, realtime_scope(acc))
-    return {"ok": True}
+    applied = await anchor_request(req, rid, job_id, verifying, realtime_scope(acc))
+    if applied:
+        return {"ok": True, "applied": True}
+    # ★미적용을 성공처럼 응답하면 에이전트가 크래시-세이프 outbox 에서 앵커를 지워버려
+    #  유료 잡의 job_id 가 영영 카드에 안 붙었다(빈 200 이 원인).
+    #  - 요청이 이미 종결/소멸: 재전송 무의미 → 200 + applied=False (구 에이전트가 200 을
+    #    성공으로 보고 outbox 를 지워도 결과가 같아 무해).
+    #  - 요청이 살아 있는데 거부(레이스 등): 재전송해야 함 → **409** — 구 에이전트도 비-200 을
+    #    실패로 해석해 outbox 에 남긴다(혼합 배포에서도 앵커 유실 없음).
+    latest = await asyncio.to_thread(repo.get_gen_request, rid)
+    status = (latest or {}).get("status") or "missing"
+    if status in ("done", "canceled", "failed", "missing"):
+        return {"ok": True, "applied": False, "request_status": status}
+    raise HTTPException(
+        status_code=409,
+        detail=f"앵커가 아직 반영되지 않았습니다(요청 상태={status}) — 재시도하세요",
+    )
 
 
 @router.get("/gen-requests/reconcile-candidates")
-async def reconcile_candidates(request: Request):
+def reconcile_candidates(request: Request):
     """에이전트가 주기적으로 호출 — 이 계정의 '실제 상태 미확정' 로컬 카드 목록을 받아, 각 job_id 를
     자기 CLI 계정으로 generate get 해 확정하고 /reconcile 로 보정 push 한다(push 모델·계정 소유권).
     조회만이라 과금 없음. [{rid, gen_id, job_id}]."""
@@ -321,7 +355,7 @@ async def reconcile_gen_request(
     force_fail_reason: create-first 에서 레퍼런스 미부착 등 '로컬 검증 실패'를 되살림 금지로 확정할 때."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
@@ -345,7 +379,7 @@ async def fail_gen_request(
     앵커한다 → generate list ingest 가 새 유령 행을 안 만들고 이 행을 UPDATE(멱등)한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
