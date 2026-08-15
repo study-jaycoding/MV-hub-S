@@ -71,6 +71,8 @@ interface Props {
   loadingMore?: boolean;
   onLoadMore?: () => void;
   resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
+  loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
+  onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
 export function ThumbnailGrid(props: Props) {
@@ -450,6 +452,23 @@ export function ThumbnailGrid(props: Props) {
   };
 
   if (generations.length === 0) {
+    // 로드 실패는 "항목 없음"과 화면상 구분한다 — 안 하면 서버 순단 한 번에 사용자가
+    // "내 생성물이 다 사라졌다"로 인지한다(토스트는 2.5초 뒤 사라져 증거가 안 남음).
+    if (props.loadError) {
+      return (
+        <div className="grid-wrap">
+          <div className="empty">
+            <div>{t("목록을 불러오지 못했습니다.")}</div>
+            <div style={{ opacity: 0.7, fontSize: "0.85em", margin: "6px 0" }}>{props.loadError}</div>
+            {props.onRetryLoad && (
+              <button className="settings-action" onClick={props.onRetryLoad}>
+                ↻ {t("다시 시도")}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="grid-wrap">
         <div className="empty">

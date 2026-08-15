@@ -237,6 +237,7 @@ export default function App() {
     gens,
     gensRef,
     hasMore,
+    loadError,
     loadMore,
     loading,
     loadingMore,
@@ -1535,6 +1536,8 @@ export default function App() {
                 loadingMore={loadingMore}
                 onLoadMore={loadMore}
                 resetKey={serverFilterKey}
+                loadError={loadError}
+                onRetryLoad={() => void reload()}
               />
             </main>
           </>
