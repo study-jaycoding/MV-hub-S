@@ -729,13 +729,6 @@ def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]
         ]
 
 
-def get_generation_identity(gen_id: str) -> tuple[Optional[str], Optional[str]]:
-    """서버 재검증용 (creator_uid, job_id) — 공개 get_generation dict 엔 job_id 가 없어 직접 조회한다.
-    HF 삭제 검토 적용 시 '내 것이고 job_id 일치'를 확인하는 데 쓴다. 없으면 (None, None)."""
-    identity_map = get_generation_identities_batch([gen_id])
-    return identity_map.get(gen_id, (None, None))
-
-
 def get_generation_identities_batch(
     gen_ids: list[str],
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
@@ -756,11 +749,6 @@ def get_generation_identities_batch(
                 {row["id"]: (row["creator_uid"], row["job_id"]) for row in rows}
             )
     return out
-
-
-def set_hf_missing(gen_id: str, missing: bool) -> None:
-    """힉스필드 삭제 검증 결과 반영(로컬-only 흐림 처리/필터에 사용)."""
-    set_hf_missing_batch([(gen_id, missing)])
 
 
 def set_hf_missing_batch(items: list[tuple[str, bool]]) -> int:
