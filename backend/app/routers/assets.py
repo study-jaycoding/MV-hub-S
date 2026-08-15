@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -120,12 +122,54 @@ def _owner_mounts(owner: str) -> list[dict[str, str]]:
     return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
 
 
+# 마운트 경로 해석 TTL 캐시 — 응답 없는 SMB 공유의 resolve()/is_dir() 는 요청마다 수 초~
+# 수십 초 블로킹해(그리드 200장 = /thumb 200회) 스레드풀을 통째로 잠식했다.
+# ★코덱스 리뷰 반영 2가지: ①TTL 은 I/O 가 '끝난 시점'부터 센다 — 시작 시점 기준이면
+#   resolve 가 30초 걸리는 죽은 공유에서 실패 캐시가 저장 즉시 만료돼 무의미했다.
+#   ②같은 경로의 동시 캐시 미스는 한 스레드만 실제 I/O 를 하고 나머지는 그 결과를
+#   기다린다(in-flight 단일화) — 안 하면 첫 미스 폭주는 그대로였다.
+_MOUNT_PATH_CACHE: dict[str, tuple[float, Optional[Path]]] = {}
+_MOUNT_PATH_PENDING: dict[str, threading.Event] = {}
+_MOUNT_PATH_LOCK = threading.Lock()
+_MOUNT_PATH_TTL_OK = 5.0
+_MOUNT_PATH_TTL_DEAD = 30.0
+
+
+def _resolve_mount_path(raw: str) -> Optional[Path]:
+    """경로 문자열 → 실재하는 폴더 Path(없으면 None). TTL 캐시 + 동시 미스 단일화."""
+    while True:
+        with _MOUNT_PATH_LOCK:
+            hit = _MOUNT_PATH_CACHE.get(raw)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+            pending = _MOUNT_PATH_PENDING.get(raw)
+            if pending is None:
+                pending = threading.Event()
+                _MOUNT_PATH_PENDING[raw] = pending
+                break  # 이 스레드가 해석 담당
+        # 다른 스레드가 해석 중 — 끝나면 캐시를 다시 읽는다(해석이 아주 오래 걸리면 재대기).
+        pending.wait(timeout=35.0)
+    try:
+        try:
+            p = Path(raw).resolve()
+            result = p if p.is_dir() else None
+        except OSError:
+            result = None
+        ttl = _MOUNT_PATH_TTL_OK if result is not None else _MOUNT_PATH_TTL_DEAD
+        with _MOUNT_PATH_LOCK:
+            _MOUNT_PATH_CACHE[raw] = (time.monotonic() + ttl, result)
+        return result
+    finally:
+        with _MOUNT_PATH_LOCK:
+            _MOUNT_PATH_PENDING.pop(raw, None)
+        pending.set()
+
+
 def _mount_dir(name: str, owner: str) -> Optional[Path]:
     """등록 이름 → 실제 폴더(그 계정 소유 안에서만 해석 — 남의 마운트엔 접근 못 함)."""
     for m in _owner_mounts(owner):
         if m["name"] == name:
-            p = Path(m["path"]).resolve()
-            return p if p.is_dir() else None
+            return _resolve_mount_path(m["path"])
     return None
 
 
@@ -167,20 +211,19 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
         root = str(p.get("render_root_path") or link.get("root_path") or "").strip()
         if not (pid and name and root) or name in used:
             continue
-        try:
-            path = Path(root).expanduser().resolve()
-        except OSError:
-            path = Path(root).expanduser()
+        # ★여기서 resolve() 하지 않는다(디스크 I/O 없음) — 죽은 NAS 루트가 섞여 있으면
+        #  /mounts·/projects 요청마다 블로킹됐다. 실제 해석은 사용 시점에 TTL 캐시
+        #  (_resolve_mount_path)가 담당하고, 여기선 문자열 정규화만 한다.
+        path = os.path.normpath(str(Path(root).expanduser()))
         used.add(name)
-        out.append({"name": name, "path": str(path), "owner": "project"})
+        out.append({"name": name, "path": path, "owner": "project"})
     return out
 
 
 def _auto_mount_dir(name: str, request: Request) -> Optional[Path]:
     for m in _auto_project_mounts(request):
         if m["name"] == name:
-            p = Path(m["path"]).resolve()
-            return p if p.is_dir() else None
+            return _resolve_mount_path(m["path"])
     return None
 
 
@@ -336,12 +379,12 @@ def _mounts_payload(request: Request) -> dict:
     셋이 같은 스키마를 돌려줘야 등록/삭제 직후와 새로고침 목록이 어긋나지 않는다
     (auto 폴더가 사라졌다 되살아나 보이는 현상 방지)."""
     manual = [
-        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
+        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None}
         for m in _owner_mounts(actor_id(request))
     ]
     names = {m["name"] for m in manual}
     auto = [
-        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir(), "auto": True}
+        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None, "auto": True}
         for m in _auto_project_mounts(request)
         if m["name"] not in names
     ]
@@ -372,6 +415,8 @@ def add_mount(body: MountIn, request: Request):
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
     asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
+    with _MOUNT_PATH_LOCK:  # 방금 검증한 경로가 실패로 캐시돼 있으면(복구 직후 재등록) 즉시 무효화
+        _MOUNT_PATH_CACHE.clear()
     return _mounts_payload(request)
 
 
@@ -557,9 +602,10 @@ def get_thumb(
     else:
         raise HTTPException(status_code=415, detail="썸네일은 이미지·영상만 지원")
     if not cache:
-        # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
-        # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
-        raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
+        # 손상 파일·미지원 서브포맷·잠금 등 '그 파일의 문제'다 — 서버 오류(500)로 내면 손상 파일
+        # 하나가 그리드 스크롤마다 에러 로그 폭탄을 만든다. 이미지·비디오 모두 404 로 통일
+        # (그 타일만 조용히 비고, 배포·서버 상태 경보를 오염시키지 않는다).
+        raise HTTPException(status_code=404, detail="썸네일 생성 실패(손상되었거나 열 수 없는 파일)")
     thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     # v(파일 버전)가 붙은 URL 은 그 내용에 1:1 대응 → 영구·immutable 캐시로 다음부턴 요청 없이 즉시 표시.
     # v 가 없으면(옛 저장 URL·직접 호출) 매번 재검증(no-cache)해, 원본을 같은 이름으로 덮어써도
