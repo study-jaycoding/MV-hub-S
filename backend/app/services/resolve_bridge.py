@@ -437,13 +437,52 @@ def _destination_folder(media_pool: Any, root: Any, parts: list[str]) -> Any:
     return folder
 
 
+# 매핑 드라이브 문자("z:") → UNC 루트("\\nas\share") 캐시. 조회 실패(로컬 디스크 등)는
+# None 으로 캐시해 드라이브당 1회만 시스템 호출한다.
+_DRIVE_UNC_CACHE: dict[str, "str | None"] = {}
+
+
+def _drive_unc(drive: str) -> "str | None":
+    """네트워크 매핑 드라이브면 UNC 루트를 반환, 아니면 None (Windows 전용)."""
+    if os.name != "nt" or len(drive) != 2 or drive[1] != ":":
+        return None
+    key = drive.lower()
+    if key in _DRIVE_UNC_CACHE:
+        return _DRIVE_UNC_CACHE[key]
+    unc: "str | None" = None
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(1024)
+        length = ctypes.c_ulong(len(buf))
+        if ctypes.windll.mpr.WNetGetConnectionW(drive, buf, ctypes.byref(length)) == 0:
+            unc = buf.value or None
+    except Exception:  # noqa: BLE001 — 조회 실패는 '매핑 아님'과 동일 취급
+        unc = None
+    _DRIVE_UNC_CACHE[key] = unc
+    return unc
+
+
 def _normal_path(value: str) -> str:
+    """경로를 비교 가능한 정규형으로.
+
+    ★Z:↔UNC 통일: Resolve 의 GetClipProperty('File Path')는 클립이 등록된 표기를 그대로
+    돌려준다. 우리는 Z:\\... 로 ImportMedia 했는데 Resolve 가 \\\\NAS\\... 로 기록하면(또는
+    반대) dedupe 매칭이 전부 빗나가 ①같은 파일을 한 번 더 import(Media Pool 중복)
+    ②성공한 가져오기를 전 항목 실패로 보고했다. 매핑 드라이브는 UNC 루트로 치환해
+    양쪽 표기가 같은 정규형이 되게 한다."""
     if not value:
         return ""
     try:
-        return os.path.normcase(os.path.normpath(str(Path(value).resolve(strict=False))))
+        normalized = os.path.normcase(os.path.normpath(str(Path(value).resolve(strict=False))))
     except OSError:
-        return os.path.normcase(os.path.normpath(value))
+        normalized = os.path.normcase(os.path.normpath(value))
+    drive, rest = os.path.splitdrive(normalized)
+    if drive and not drive.startswith("\\\\"):
+        unc = _drive_unc(drive)
+        if unc:
+            normalized = os.path.normcase(os.path.normpath(unc + rest))
+    return normalized
 
 
 def _clip_file_path(clip: Any) -> str:
