@@ -16,9 +16,13 @@ import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
 import {
   assetVersionsSnapshot,
-  ingestAssetTreeVersions,
   subscribeAssetVersions,
 } from "../../lib/assetVersions";
+import {
+  addFocusRefreshListener,
+  assetProjectsFromRefs,
+  runAssetVersionRefresh,
+} from "../../lib/assetVersionRefresh";
 import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/appEvents";
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
 import { toggleDisabledGen } from "../../lib/deactivated";
@@ -491,27 +495,9 @@ export function SceneBoard({
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
   const assetVerInFlight = useRef<Set<string>>(new Set());
   const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[], fresh = false) => {
-    const projs = new Set<string>();
     // srcCards 를 주면 그 목록으로(씬 전환 직후엔 내부 cardsRef 가 아직 이전 씬이라, prop scene.cards 를 넘겨 정확히).
-    for (const c of srcCards ?? cardsRef.current) {
-      for (const r of c.refs || []) {
-        if (r.file_path?.startsWith("asset:")) {
-          const proj = r.file_path.slice(6).split("|")[0];
-          if (proj && (!only || only.includes(proj))) projs.add(proj);
-        }
-      }
-    }
-    projs.forEach((proj) => {
-      if (assetVerInFlight.current.has(proj)) return;
-      assetVerInFlight.current.add(proj);
-      api
-        .assetTree(proj, fresh) // 실시간 신호는 무효화된 캐시 재사용, 초기/포커스 안전망은 강제 재탐색
-        .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
-        .catch(() => {
-          /* 조회 실패는 무시(다음 신호에 재시도) */
-        })
-        .finally(() => assetVerInFlight.current.delete(proj));
-    });
+    const refs = (srcCards ?? cardsRef.current).flatMap((c) => c.refs || []);
+    runAssetVersionRefresh(assetProjectsFromRefs(refs, only), assetVerInFlight.current, fresh);
   }, []);
 
   // Phase 0(초기 로드): 카드가 처음 생기면 즉시 최신 버전 확인 — 포커스/WS 신호를 기다리지 않는다.
@@ -527,22 +513,10 @@ export function SceneBoard({
   }, [scene.id, scene.cards, refreshAssetVersions]);
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
-  useEffect(() => {
-    let lastAt = 0; // 포커스 왕복 때 네트워크 폴더를 반복 순회하지 않도록 스로틀
-    const onFocus = () => {
-      if (document.hidden) return;
-      const now = Date.now();
-      if (now - lastAt < 30_000) return;
-      lastAt = now;
-      refreshAssetVersions(undefined, undefined, true);
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
-  }, [refreshAssetVersions]);
+  useEffect(
+    () => addFocusRefreshListener(() => refreshAssetVersions(undefined, undefined, true)),
+    [refreshAssetVersions],
+  );
 
   // Phase 2(실시간): 어셋 파일 변경 신호(WS→BroadcastChannel) 수신 → 변경된 프로젝트 중 카드가 참조하는
   // 것만 즉시 다시 읽어 버전 표 갱신(새로고침·포커스 불필요). 변경 목록이 비면 카드의 전 프로젝트를 갱신.
