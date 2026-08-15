@@ -54,6 +54,74 @@ class VideoPathSanitizeTests(unittest.TestCase):
             self.assertTrue(written.exists())
 
 
+class UploadNameCollisionTests(unittest.TestCase):
+    """병렬 배치에서 잡 간 업로드 파일명 충돌 방지 — 잡 uuid 접두로 유일화.
+
+    프론트가 주는 이름은 image1.png 식이라, 잡 B 의 업로드(overwrite=true)가 잡 A 의
+    input/mvhub/image1.png 를 덮어써 A 가 B 의 이미지로 실행되는 무오류 오답이 났다."""
+
+    def _run_inject(self, job_id: str) -> list[str]:
+        wf = {"1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}}}
+        uploaded: list[str] = []
+        orig = comfy.comfy_client.upload_bytes
+
+        def fake_upload(target, fname, data, subfolder="mvhub"):
+            uploaded.append(fname)
+            return f"mvhub/{fname}"
+
+        comfy.comfy_client.upload_bytes = fake_upload
+        try:
+            target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+            comfy._inject_media_bytes(
+                target, wf, [{"type": "image"}], [("image1.png", b"a")], "", job_id
+            )
+        finally:
+            comfy.comfy_client.upload_bytes = orig
+        # 노드 입력에도 업로드된(접두 붙은) 이름이 그대로 주입된다.
+        self.assertEqual(wf["1"]["inputs"]["image"], f"mvhub/{uploaded[0]}")
+        return uploaded
+
+    def test_two_jobs_upload_distinct_names(self):
+        a = self._run_inject("aaaaaaaaaaaa1111")
+        b = self._run_inject("bbbbbbbbbbbb2222")
+        self.assertNotEqual(a[0], b[0])
+        self.assertTrue(a[0].startswith("aaaaaaaaaaaa-"))
+        self.assertTrue(a[0].endswith("image1.png"))
+
+    def test_same_filename_twice_in_one_job_stays_distinct(self):
+        # 한 잡 안에서 같은 원본 이름 2개(두 슬롯) — 순번 접두가 없으면 둘 다 같은 이름이 돼
+        # overwrite=true 로 두 번째가 첫 번째를 덮는다(코덱스 P1).
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}},
+            "2": {"class_type": "LoadImage", "inputs": {"image": "y.png"}},
+        }
+        uploaded: list[str] = []
+        orig = comfy.comfy_client.upload_bytes
+
+        def fake_upload(target, fname, data, subfolder="mvhub"):
+            uploaded.append(fname)
+            return f"mvhub/{fname}"
+
+        comfy.comfy_client.upload_bytes = fake_upload
+        try:
+            target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+            comfy._inject_media_bytes(
+                target, wf,
+                [{"type": "image"}, {"type": "image"}],
+                [("image1.png", b"a"), ("image1.png", b"b")],
+                "", "cccccccccccc3333",
+            )
+        finally:
+            comfy.comfy_client.upload_bytes = orig
+        self.assertEqual(len(uploaded), 2)
+        self.assertNotEqual(uploaded[0], uploaded[1])
+
+    def test_without_job_id_keeps_original_name(self):
+        # 하위 호환 — job_id 없이 호출되면 기존 이름 유지.
+        uploaded = self._run_inject("")
+        self.assertEqual(uploaded[0], "image1.png")
+
+
 class RunGateTests(unittest.TestCase):
     def tearDown(self):
         # 게이트 카운터를 다른 테스트에 안 넘기도록 0 으로 되돌린다.

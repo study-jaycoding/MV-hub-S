@@ -539,12 +539,21 @@ def _read_media_uploads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
 
 
 def _inject_media_bytes(target: dict, wf: dict, meta: list, uploads: list[tuple[str, bytes]],
-                        input_dir: str) -> dict:
+                        input_dir: str, job_id: str = "") -> dict:
     """meta[i] 는 uploads[i] 와 순서 대응({type}). 타입별로 분리해 이미지→image_slots,
     영상→video_slots 에 순서대로 채우고 미사용 슬롯 prune. 실제 채운 개수를 반환(표시용).
     잘못된 요청(타입 누락/불일치, 슬롯 초과)은 업로드 전에 400 으로 거부한다."""
     if len(meta) != len(uploads):
         raise HTTPException(400, "media 파일 수와 media_meta 수가 일치하지 않습니다")
+    # ★잡별 유일 파일명: 프론트가 주는 이름은 image1.png 식이라 병렬 배치에서 잡 B 의
+    #  업로드(overwrite=true)가 잡 A 의 input/mvhub/image1.png 를 덮어써, A 가 B 의
+    #  이미지를 입력으로 실행되는 무오류 오답이 났다. 잡 uuid + **업로드 순번** 접두로
+    #  잡 간·잡 내(같은 원본 이름 2개 업로드) 충돌을 모두 차단한다
+    #  (반환된 이름이 그대로 노드에 주입되므로 이 한 곳이 유일한 관문이다).
+    if job_id:
+        prefix = job_id[:12]
+        uploads = [(f"{prefix}-{i}-{Path(fname).name or 'input.bin'}", data)
+                   for i, (fname, data) in enumerate(uploads)]
     slots = comfy_workflow.detect_slots(wf, set())
     images: list[tuple[str, bytes]] = []
     videos: list[tuple[str, bytes]] = []
@@ -608,7 +617,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
     # 연결된 레퍼런스를 타입별 슬롯에 자동 주입(+미사용 슬롯 prune)
     try:
-        _inject_media_bytes(target, wf, meta, uploads, settings["comfy_input_dir"])
+        _inject_media_bytes(target, wf, meta, uploads, settings["comfy_input_dir"], job_id)
     except comfy_client.ComfyError as e:
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, f"입력 미디어 업로드 실패: {e}")
