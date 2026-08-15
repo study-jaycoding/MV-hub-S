@@ -125,32 +125,62 @@ def _install_db(tmp: Path) -> dict:
     현재 DB 는 .bak 으로 백업, 스키마 마이그레이션, 신원 캐시 리셋, 세션 키 제거 + auth_secret 재발급."""
     path = db.get_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file():
+    # tempfile 는 DB 폴더와 다른 드라이브일 수 있다. 우선 대상 폴더 안에 복사한 뒤 os.replace 를
+    # 써야 Windows 에서도 기존 파일을 원자적으로 교체할 수 있다.
+    staged = path.with_name(f".{path.name}.restore-{secrets.token_hex(8)}.tmp")
+    try:
+        with db.maintenance_gate():
+            # 게이트가 새 요청을 막고 기존 컨텍스트가 모두 끝난 뒤라, 여기서만 전 스레드 풀을
+            # 닫아도 진행 중 요청의 커넥션을 끊지 않는다. 이 뒤 게이트 해제 전에는 옛 파일을
+            # 다시 여는 요청도 없다.
+            db.flush_pool()
+            if path.is_file():
+                try:
+                    conn = db._connect(path)
+                    try:
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        conn.close()
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"현재 DB WAL 정리 실패로 가져오기를 중단했습니다(원본 보호): {exc}",
+                    ) from exc
+                # ★백업이 실패하면 덮어쓰기를 '중단'한다 — 예전엔 except: pass 로 삼키고 그대로 move 해,
+                # "현재 DB 를 .bak 으로 백업한다"는 약속이 거짓이 되고(백업 없음) 가져온 DB 가 불량이면 원본을
+                # 복구할 길이 없었다. 디스크 가득·권한 등으로 백업 못 하면 원본을 지키려 교체를 안 한다.
+                bak = path.with_name(f"{path.stem}.bak-{int(time.time())}.db")
+                try:
+                    shutil.copy2(path, bak)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"현재 DB 백업 실패로 가져오기를 중단했습니다(원본 보호): {e}. "
+                            "디스크 여유·쓰기 권한을 확인하세요."
+                        ),
+                    ) from e
+            # checkpoint 뒤 모든 SQLite 핸들이 닫힌 상태에서만 sidecar 를 지운다. Windows 는 열린
+            # -wal/-shm 을 unlink 하지 못하므로 파일 교체보다 먼저 이 순서를 지켜야 한다.
+            for suf in ("-wal", "-shm"):
+                Path(str(path) + suf).unlink(missing_ok=True)
+            shutil.copy2(tmp, staged)
+            os.replace(staged, path)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass  # 교체는 이미 끝났으므로 임시 원본 정리 실패가 복원 성공을 500으로 바꾸지 않게
+            db.init_db()
+    except db.DatabaseMaintenanceTimeout as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="다른 DB 요청이 진행 중이라 복원을 잠시 뒤에 다시 시도하세요",
+        ) from exc
+    finally:
         try:
-            with db.get_connection() as conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:  # noqa: BLE001
-            pass
-        # ★백업이 실패하면 덮어쓰기를 '중단'한다 — 예전엔 except: pass 로 삼키고 그대로 move 해,
-        # "현재 DB 를 .bak 으로 백업한다"는 약속이 거짓이 되고(백업 없음) 가져온 DB 가 불량이면 원본을
-        # 복구할 길이 없었다. 디스크 가득·권한 등으로 백업 못 하면 원본을 지키려 교체를 안 한다.
-        bak = path.with_name(f"{path.stem}.bak-{int(time.time())}.db")
-        try:
-            shutil.copy2(path, bak)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"현재 DB 백업 실패로 가져오기를 중단했습니다(원본 보호): {e}. "
-                    "디스크 여유·쓰기 권한을 확인하세요."
-                ),
-            )
-    for suf in ("-wal", "-shm"):
-        Path(str(path) + suf).unlink(missing_ok=True)
-    shutil.move(str(tmp), str(path))
-    db.init_db()
-    # DB 파일을 같은 경로에 통째 교체했다 → 풀 커넥션이 옛 파일을 계속 잡고 있지 않게 전 스레드 무효화.
-    db.flush_pool()
+            staged.unlink(missing_ok=True)
+        except OSError:
+            pass  # 실패 시 다음 임포트에서 새 난수 staging 파일을 쓰므로 기존 DB에는 영향 없음
     identity._MY_UID_CACHE[0] = None
     # FTS 존재 여부도 새 DB 기준으로 재확인(경로 동일이라 자동 재검출 안 됨 → 명시 리셋).
     from ..repo import generations as _gens
