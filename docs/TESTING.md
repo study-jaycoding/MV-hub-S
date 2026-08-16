@@ -392,6 +392,46 @@ WS 오류·send timeout·send failure·SQLite lock 0건, 최대 RSS 198,844,416�
 전환됐으며 앱 출처 콘솔 오류는 없었다. 이 결과는 단기 연결 계약 검증이며 공유 서버 5분 단절·복구와
 8시간 soak를 대신하지 않는다.
 
+## 워치독 busy·maintenance·사망 판정 회귀(RL-20)
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev
+$env:PYTHONPATH="backend"
+py -3 -m pytest `
+  backend\tests\test_server_watchdog_console.py `
+  backend\tests\test_server_supervisor.py `
+  backend\tests\test_operational_health.py `
+  backend\tests\test_db_restore_gate.py -q
+```
+
+집중 합격 기준은 21개다.
+
+- `/api/ready`는 유지보수 중 DB readiness를 실행하지 않고 즉시 503·`Retry-After: 5`를 반환한다.
+- busy·maintenance는 dead 횟수를 초기화하며 자동 개입하지 않는다. 각각의 장기 임계치에서는 ALERT를
+  한 번만 남긴다.
+- 시작 유예 중 dead는 세지 않고, 유예 뒤 또는 한 번 정상화된 뒤의 연속 dead만 개입한다.
+- HTTP 오류 본문은 허용된 `status`만 최대 4KiB에서 읽으며 임의 메시지·인증정보는 로그에 남기지 않는다.
+- 별도 TCP 프로세스의 ready→busy→maintenance→ready는 무개입으로 복구돼야 한다.
+- 실제 포트 소유 테스트 프로세스가 hang한 경우 정확한 PID만 dry-run 종료 대상으로 표시돼야 한다.
+
+저사양 100명 단기 실측은 운영 DB가 아닌 임시 DB와 포트에서 다음처럼 실행했다.
+
+```powershell
+py -3 tools\load_test_100.py `
+  --users 100 --duration 12 --cycles 1 --generations-per-user 2 `
+  --think-min 0.2 --think-max 0.4 --sample-interval 2 `
+  --server-cpu-cores 2 --server-priority below-normal `
+  --max-p95-ms 1000 --output .\rl20-load.json --quiet
+```
+
+로그인 100건과 작업 요청 3,706건이 모두 성공했다. 작업 p50 16.17ms·p95 64.69ms·p99 173.56ms,
+WS 100개와 장기 폴링 100개 유지, WS·장기 폴링·send timeout·send failure·SQLite lock 오류 0건,
+최대 RSS 198,799,360바이트였다. 같은 작업 트리에서 백엔드 전체 845개·21 subtests, 프론트 76개
+파일·535개, 프로덕션 빌드와 아키텍처 검사가 통과했다.
+
+이 검증은 워치독의 오판 방지와 단기 부하를 확인한다. 운영 공유 서버의 5분 단절·복구와 8시간
+soak, 실제 DB 세트 복원은 대신하지 않는다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

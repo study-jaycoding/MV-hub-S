@@ -147,7 +147,8 @@ python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_202
 ## 운영 상태 확인
 
 - 준비 상태: `GET /api/ready` — 콘텐츠·생성 큐 및 활성화된 관리/휴지통 DB의 핵심
-  테이블 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
+  테이블 읽기까지 성공하면 `ready`, 실패하면 HTTP 503. DB 복원 유지보수 중에는 DB 연결을
+  기다리지 않고 즉시 `503 {"status":"maintenance"}`와 `Retry-After: 5`를 반환한다.
 - 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
   프로세스 CPU·RSS, WebSocket·에이전트 연결, 생성 단계/지연, 최근 백업,
   관리 데이터 전송 대기·실패, DB/WAL·미디어·썸네일 용량.

@@ -400,6 +400,10 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 - **운영 관측 2계층**: 회전 JSON 로그는 현재 상황을 빠르게 보고, `generation_event`/`audit_event`는
   로그 회전 뒤에도 생성 전이와 중요 변경을 재구성한다. DB 트리거가 모든 상태 변경을 같은
   트랜잭션에서 포착하고 usecase가 의미 이벤트를 보강한다. 프롬프트·결과 URL·비밀번호는 넣지 않는다.
+- **readiness와 워치독 판정 분리**: `/api/ready`는 정상 DB 읽기 성공을 `ready`, DB 복원 게이트를
+  즉시 `maintenance`로 응답한다. 워치독은 HTTP 응답이 있는 일반 오류를 `busy`, 명시적 유지보수를
+  `maintenance`, 연결 거부·timeout을 `dead`로 분류한다. busy·maintenance는 관측·경보만 하며,
+  시작 유예 이후 또는 한 번 정상화된 뒤의 연속 dead만 정확한 포트 소유 서버 PID 개입으로 이어진다.
 
 ---
 
