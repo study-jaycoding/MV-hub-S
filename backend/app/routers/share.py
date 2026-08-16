@@ -1,11 +1,8 @@
-"""공유·가져오기 라우터 (Phase 5, 로컬 구현).
+"""공유·가져오기·최종 선택 라우터.
 
-⚠️ 스코프: 원격 공유 서버(PostgreSQL + MinIO)는 의도적으로 보류했다.
-publish/import + history 를 로컬 단일 SQLite 에 구현해 전체 루프
-(발행 → 팀 공유 탭 → 가져오기 → history)가 로컬에서 동작하게 한다.
-원격 서버 연동은 이 라우터의 구현만 교체하면 되도록 repo 계층 뒤에 격리돼 있다.
-
-CLAUDE.md 원칙 2(명시적 발행만), 3(원본 보존), 4(history 기록).
+단독·공유 서버 모드에서는 로컬 SQLite를 직접 변경하고, 작업자 프록시 모드에서는 공유 서버의
+성공을 확인한 뒤 로컬 표시를 미러링한다. 공유 해제·최종 해제의 실패 보상 규칙은
+``docs/SHARE_STATE_COMPENSATION.md``를 따른다.
 """
 
 from __future__ import annotations

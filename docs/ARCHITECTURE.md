@@ -98,7 +98,7 @@ HTTP 요청
 | `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·리니지(옛 서버측 생성 경로 잔존·미사용) |
 | `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
 | `ingest.py` | **push 적재**·known-jobs·`/credits`. 생성 텔레메트리는 outbox 표시 후 백그라운드 drain만 예약 |
-| `share.py` | 발행/가져오기/번들 export·import |
+| `share.py` | 발행/가져오기/번들 export·import. 프록시 공유 해제·최종 해제는 로컬/서버 보상 계약 적용 |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
 | `members.py` | 등급(전역 역할) 관리 |
@@ -351,6 +351,10 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 - **멀티계정 신원**: `account`(로그인) 과 `creator`(작성자)는 별개 축, `account.creator_uid` 로 연결. 첫 가입자=부트스트랩 관리자, 이후 pending→승인.
 - **RBAC**: 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
 - **개인화 vs 공유**: 컬러·태그·소스명·파일메타는 계정별 개인 소유(owner_uid). 코멘트 스레드·공유여부·프롬프트·소스는 공유.
+- **공유·최종 상태 일관성**: `is_final`이면 반드시 공유 상태다. 프록시 변경은 원격 성공을 확인한
+  뒤 로컬에 반영하고, 로컬 반영 실패 시 재조회·원격 보상으로 이전의 일관된 상태를 복구한다.
+  구버전 라우트 부재를 상태 부재로 추측하지 않는다. 자세한 규칙은
+  [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
 - **표시이름 단일 해석**: `resolve_display_names`(creator.name → account.name → email) 읽기 시점에만.
 - **실시간**: 성공한 쓰기는 `library`→`synced`, `assets`→`assets_changed`, `manage`→`manage_changed`로 분리한다. 요청 id·영역 응답 헤더로 자기 알림 재조회를 생략하며 독립 Assets/PM 창은 자체 WS를 가진다.
 - **검색**: SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.

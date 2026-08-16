@@ -58,6 +58,7 @@ git sparse-checkout set backend frontend tools
 | [docs/DESIGN.md](docs/DESIGN.md) · [docs/CLAUDE.md](docs/CLAUDE.md) | 초기 설계 보존 기록 — 현행 구현 판단에 사용하지 않음 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 현재 위험 상태와 다음 작업의 단일 목록 |
 | [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답과 관리 텔레메트리 원격 전송의 분리 계약 |
+| [docs/SHARE_STATE_COMPENSATION.md](docs/SHARE_STATE_COMPENSATION.md) | 공유 해제·최종 해제의 로컬/서버 일관성 계약 |
 | [docs/SERVER.md](docs/SERVER.md) · [docs/SERVER_RECOVERY.md](docs/SERVER_RECOVERY.md) | 서버 운영·자동복구 |
 | [docs/TESTING.md](docs/TESTING.md) | 테스트·검증 절차 |
 | [docs/DATA_OWNERSHIP.md](docs/DATA_OWNERSHIP.md) · [docs/WORKSPACE_DATA_CONTRACT.md](docs/WORKSPACE_DATA_CONTRACT.md) | 데이터 소유권·워크스페이스 계약 |
