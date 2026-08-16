@@ -33,6 +33,7 @@ def test_generation_queue_snapshot_reports_stalled_work_without_identity():
             assert snapshot["phase_counts"]["submitting"] == 1
             assert snapshot["active_total"] == 1
             assert snapshot["unanchored_over_10m"] == 1
+            assert snapshot["recovery_required_total"] == 0
             assert snapshot["check_failures_total"] == 2
             assert "private@example.com" not in repr(snapshot)
             assert "secret prompt" not in repr(snapshot)
@@ -142,6 +143,7 @@ def test_shared_server_ignores_local_generation_queue(monkeypatch):
         "overdue_checks": 0,
         "check_failures_total": 0,
         "unanchored_over_10m": 0,
+        "recovery_required_total": 0,
         "applicable": False,
     }
 

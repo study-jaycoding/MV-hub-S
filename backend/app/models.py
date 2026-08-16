@@ -100,7 +100,7 @@ class GenerationOut(BaseModel):
     source_name: Optional[str] = None  # @이름
     comment: Optional[str] = None  # 카드 코멘트(메모, 레거시 — UI 미사용)
     error: Optional[str] = None  # 실패 사유(status=failed 일 때)
-    execution_phase: Optional[str] = None  # pending|submitting|tracking|verifying|blocked|done|failed
+    execution_phase: Optional[str] = None  # pending|claimed|submitting|tracking|verifying|blocked|recovery_required|done|failed
     provider_status: Optional[str] = None  # Higgsfield 원시 상태(진단용)
     last_checked_at: Optional[str] = None
     next_check_at: Optional[str] = None
@@ -264,6 +264,13 @@ class PendingRequestOut(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     references: list[dict[str, Any]] = Field(default_factory=list)  # [{file_path(url), type, role}]
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
+    claim_phase: Optional[str] = None  # 신 서버 claimed, 구 서버 응답에는 없음(혼합 배포 호환)
+
+
+class RecoveryDecisionIn(BaseModel):
+    """외부 Higgsfield 기록에서 미제출을 직접 확인한 뒤에만 재큐잉하는 명시적 승인."""
+
+    confirmed_not_submitted: bool = False
 
 
 class FulfillIn(BaseModel):

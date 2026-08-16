@@ -35,6 +35,10 @@ export function useGenerationCardActions({
     canvasLink?: CanvasGenerationLink,
     onDefinitiveReject?: () => void,
   ): Promise<Generation | null> => {
+    if (g.execution_phase === "recovery_required") {
+      flash("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 복구 확인을 진행하세요.");
+      return null;
+    }
     if (!isGenerationWorkspaceReady(workspace)) {
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
       return null;
@@ -58,6 +62,29 @@ export function useGenerationCardActions({
       }
       flash("재생성 실패: " + String(e));
       return null;
+    }
+  };
+
+  const onRecoveryRequeue = async (g: Generation): Promise<boolean> => {
+    if (g.execution_phase !== "recovery_required") return false;
+    if (
+      !window.confirm(
+        "Higgsfield에서 이 요청의 작업이 생성되지 않은 것을 직접 확인했습니까?\n\n" +
+          "확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다.",
+      )
+    ) {
+      return false;
+    }
+    try {
+      await api.confirmGenerationNotSubmitted(g.id);
+      flash("미제출 확인을 기록하고 기존 요청을 다시 대기열에 넣었습니다.");
+      await reload();
+      bumpBoard();
+      postLibraryChanged();
+      return true;
+    } catch (e) {
+      flash("복구 요청 실패: " + String(e));
+      return false;
     }
   };
 
@@ -140,6 +167,7 @@ export function useGenerationCardActions({
     onColor,
     onFinalize,
     onImport,
+    onRecoveryRequeue,
     onRegenerate,
     onSetSource,
     onTags,

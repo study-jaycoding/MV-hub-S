@@ -23,7 +23,16 @@ def backup_interval_seconds() -> float:
     """백업 주기(초) — 경보 임계 계산용(테스트에서 패치 가능하도록 함수로)."""
     return BACKUP_INTERVAL
 
-_ACTIVE_PHASES = ("pending", "submitting", "running", "tracking", "verifying", "blocked")
+_ACTIVE_PHASES = (
+    "pending",
+    "claimed",
+    "submitting",
+    "running",
+    "tracking",
+    "verifying",
+    "blocked",
+    "recovery_required",
+)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
@@ -42,6 +51,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "overdue_checks": 0,
             "check_failures_total": 0,
             "unanchored_over_10m": 0,
+            "recovery_required_total": 0,
             "applicable": False,
         }
     placeholders = ",".join("?" for _ in _ACTIVE_PHASES)
@@ -67,9 +77,12 @@ def generation_queue_snapshot() -> dict[str, Any]:
         ).fetchone()[0]
         unanchored_stale = conn.execute(
             "SELECT COUNT(*) FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-            "WHERE r.status IN ('submitting','running') "
+            "WHERE r.status IN ('claimed','submitting','running','recovery_required') "
             "AND (g.job_id IS NULL OR g.job_id='') "
             "AND r.updated_at < datetime('now','-10 minutes')"
+        ).fetchone()[0]
+        recovery_required = conn.execute(
+            "SELECT COUNT(*) FROM gen_request WHERE status='recovery_required'"
         ).fetchone()[0]
 
     phase_counts = {row["status"]: int(row["count"]) for row in rows}
@@ -84,6 +97,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
         "overdue_checks": int(overdue_checks),
         "check_failures_total": int(check_failures),
         "unanchored_over_10m": int(unanchored_stale),
+        "recovery_required_total": int(recovery_required),
         "applicable": True,
     }
 

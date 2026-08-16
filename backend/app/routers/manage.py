@@ -147,7 +147,10 @@ def _telemetry_activity_summary(
         "upserted_items": int(upserted),
         "skipped_items": len(skipped),
         "active_items": sum(
-            status in {"pending", "submitting", "running", "tracking", "verifying", "blocked"}
+            status in {
+                "pending", "claimed", "submitting", "running", "tracking", "verifying",
+                "blocked", "recovery_required",
+            }
             for status in statuses
         ),
         "completed_items": sum(status in {"done", "completed", "success"} for status in statuses),

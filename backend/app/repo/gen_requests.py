@@ -15,6 +15,261 @@ from ._common import new_id
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..workspace_context import normalize_workspace_context
+from .generations import RECOVERY_REQUIRED_NOTE
+
+
+_AMBIGUOUS_ACTIVE_PHASES = (
+    "submitting",
+    "running",
+    "tracking",
+    "verifying",
+    "blocked",
+)
+
+
+def sweep_expired_generation_claims(
+    account_email: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """만료 claim을 안전하게 정리한다.
+
+    claimed는 새 에이전트가 아직 CLI 생성 호출을 시작하지 않았다고 서버가 증명할 수 있으므로
+    pending으로 되돌린다. submitting 이후 job_id가 없는 요청은 외부 과금 여부를 알 수 없어
+    recovery_required로 격리하며 절대 자동 재큐잉하지 않는다. 흔한 빈 폴에서는 읽기만 한다.
+    """
+    email = norm_email(account_email) if account_email is not None else None
+    account_sql = " AND r.account_email=?" if email is not None else ""
+    params: tuple[Any, ...] = (email,) if email is not None else ()
+    expiry_sql = (
+        "((r.lease_expires_at IS NOT NULL AND r.lease_expires_at < datetime('now')) "
+        "OR (r.lease_expires_at IS NULL AND r.updated_at < datetime('now','-30 minutes')))"
+    )
+    phases = ("claimed", *_AMBIGUOUS_ACTIVE_PHASES)
+    placeholders = ",".join("?" for _ in phases)
+    select_sql = (
+        "SELECT r.id, r.gen_id, r.status FROM gen_request r "
+        "JOIN generation g ON g.id=r.gen_id "
+        f"WHERE r.status IN ({placeholders}) "
+        "AND (g.job_id IS NULL OR g.job_id='') AND "
+        f"{expiry_sql}{account_sql} ORDER BY r.updated_at, r.id"
+    )
+    query_params = (*phases, *params)
+    transitions: list[dict[str, Any]] = []
+    with get_connection() as conn:
+        if not conn.execute(select_sql + " LIMIT 1", query_params).fetchone():
+            return []
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(select_sql, query_params).fetchall()
+        for row in rows:
+            if row["status"] == "claimed":
+                cur = conn.execute(
+                    "UPDATE gen_request SET status='pending', error=NULL, lease_owner=NULL, "
+                    "lease_expires_at=NULL, next_check_at=NULL, updated_at=datetime('now') "
+                    "WHERE id=? AND status='claimed'",
+                    (row["id"],),
+                )
+                if cur.rowcount:
+                    conn.execute(
+                        "UPDATE generation SET status='pending', error=NULL "
+                        "WHERE id=? AND status IN ('pending','running') "
+                        "AND (job_id IS NULL OR job_id='')",
+                        (row["gen_id"],),
+                    )
+                    transitions.append(
+                        {
+                            "id": row["id"],
+                            "gen_id": row["gen_id"],
+                            "from_phase": "claimed",
+                            "to_phase": "pending",
+                            "action": "requeued",
+                        }
+                    )
+                continue
+            cur = conn.execute(
+                "UPDATE gen_request SET status='recovery_required', error=?, lease_owner=NULL, "
+                "lease_expires_at=NULL, next_check_at=NULL, updated_at=datetime('now') "
+                f"WHERE id=? AND status IN ({','.join('?' for _ in _AMBIGUOUS_ACTIVE_PHASES)})",
+                (RECOVERY_REQUIRED_NOTE, row["id"], *_AMBIGUOUS_ACTIVE_PHASES),
+            )
+            if cur.rowcount:
+                conn.execute(
+                    "UPDATE generation SET status='running', error=? "
+                    "WHERE id=? AND status IN ('pending','running') "
+                    "AND (job_id IS NULL OR job_id='')",
+                    (RECOVERY_REQUIRED_NOTE, row["gen_id"]),
+                )
+                transitions.append(
+                    {
+                        "id": row["id"],
+                        "gen_id": row["gen_id"],
+                        "from_phase": row["status"],
+                        "to_phase": "recovery_required",
+                        "action": "quarantined",
+                    }
+                )
+    return transitions
+
+
+def begin_request_submission(
+    rid: str,
+    account_email: str,
+    lease_owner: str,
+) -> Optional[dict[str, Any]]:
+    """claimed 요청을 CLI 호출 직전 submitting으로 전환한다.
+
+    같은 owner의 응답 유실 재시도는 멱등 성공한다. lease가 만료됐거나 다른 에이전트가 다시
+    claim한 요청은 거부해 두 프로세스가 같은 유료 생성을 실행하지 못하게 한다.
+    """
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT r.gen_id, r.status, r.lease_owner, r.lease_expires_at, g.job_id "
+            "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.id=? AND r.account_email=?",
+            (rid, email),
+        ).fetchone()
+        if (
+            not row
+            or row["status"] not in ("claimed", "submitting")
+            or not lease_owner
+            or row["lease_owner"] != lease_owner
+            or not row["lease_expires_at"]
+            or conn.execute(
+                "SELECT ? <= datetime('now')", (row["lease_expires_at"],)
+            ).fetchone()[0]
+            or row["job_id"] not in (None, "")
+        ):
+            conn.execute("ROLLBACK")
+            return None
+        transitioned = row["status"] == "claimed"
+        if transitioned:
+            conn.execute(
+                "UPDATE gen_request SET status='submitting', error=NULL, "
+                "lease_expires_at=datetime('now','+30 minutes'), updated_at=datetime('now') "
+                "WHERE id=? AND status='claimed' AND lease_owner=?",
+                (rid, lease_owner),
+            )
+            conn.execute(
+                "UPDATE generation SET status='running', error=NULL "
+                "WHERE id=? AND status IN ('pending','running')",
+                (row["gen_id"],),
+            )
+        return {"gen_id": row["gen_id"], "transitioned": transitioned}
+
+
+def release_claimed_request(
+    rid: str,
+    account_email: str,
+    lease_owner: str,
+) -> Optional[str]:
+    """CLI를 호출하지 않은 staged claim을 같은 owner가 즉시 pending으로 반환한다.
+
+    begin-submission 전이가 서버에 적용됐지만 응답만 모두 유실된 경우에는 상태가 submitting일 수
+    있다. 에이전트는 ACK 없이는 CLI를 호출하지 않으므로 같은 owner의 명시 반환은 두 상태 모두
+    안전하다.
+    """
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT gen_id FROM gen_request r WHERE id=? AND account_email=? "
+            "AND status IN ('claimed','submitting') AND lease_owner=? "
+            "AND NOT EXISTS (SELECT 1 FROM generation g WHERE g.id=r.gen_id "
+            "AND g.job_id IS NOT NULL AND g.job_id<>'')",
+            (rid, email, lease_owner),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return None
+        conn.execute(
+            "UPDATE gen_request SET status='pending', error=NULL, lease_owner=NULL, "
+            "lease_expires_at=NULL, updated_at=datetime('now') WHERE id=?",
+            (rid,),
+        )
+        conn.execute(
+            "UPDATE generation SET status='pending', error=NULL "
+            "WHERE id=? AND status IN ('pending','running') AND (job_id IS NULL OR job_id='')",
+            (row["gen_id"],),
+        )
+        return str(row["gen_id"])
+
+
+def mark_request_recovery_required(
+    rid: str,
+    account_email: str,
+) -> Optional[dict[str, Any]]:
+    """CLI 호출 뒤 job_id를 확보하지 못한 요청을 즉시 수동 복구 상태로 격리한다."""
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT r.gen_id, r.status FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.id=? AND r.account_email=? "
+            "AND r.status IN ('submitting','running','recovery_required') "
+            "AND (g.job_id IS NULL OR g.job_id='')",
+            (rid, email),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return None
+        transitioned = row["status"] != "recovery_required"
+        if transitioned:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required', error=?, lease_owner=NULL, "
+                "lease_expires_at=NULL, next_check_at=NULL, updated_at=datetime('now') WHERE id=?",
+                (RECOVERY_REQUIRED_NOTE, rid),
+            )
+            conn.execute(
+                "UPDATE generation SET status='running', error=? "
+                "WHERE id=? AND status IN ('pending','running')",
+                (RECOVERY_REQUIRED_NOTE, row["gen_id"]),
+            )
+        return {"gen_id": str(row["gen_id"]), "transitioned": transitioned}
+
+
+def get_recovery_request_id_for_generation(
+    gen_id: str,
+    account_email: str,
+) -> Optional[str]:
+    """화면의 generation id를 같은 계정의 복구 보류 요청 id로 안전하게 해석한다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM gen_request WHERE gen_id=? AND account_email=? "
+            "AND status='recovery_required' ORDER BY created_at DESC, id DESC LIMIT 1",
+            (gen_id, norm_email(account_email)),
+        ).fetchone()
+    return str(row["id"]) if row else None
+
+
+def requeue_recovery_request(
+    rid: str,
+    account_email: str,
+) -> Optional[str]:
+    """외부 작업이 없음을 사람이 확인한 recovery_required 요청만 명시적으로 재큐잉한다."""
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.id=? AND r.account_email=? AND r.status='recovery_required' "
+            "AND (g.job_id IS NULL OR g.job_id='')",
+            (rid, email),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return None
+        conn.execute(
+            "UPDATE gen_request SET status='pending', error=NULL, provider_status=NULL, "
+            "last_checked_at=NULL, next_check_at=NULL, check_failures=0, lease_owner=NULL, "
+            "lease_expires_at=NULL, terminal_at=NULL, updated_at=datetime('now') WHERE id=?",
+            (rid,),
+        )
+        conn.execute(
+            "UPDATE generation SET status='pending', error=NULL "
+            "WHERE id=? AND status IN ('pending','running','failed')",
+            (row["gen_id"],),
+        )
+        return str(row["gen_id"])
 
 
 def gen_recipe(gen_id: str) -> dict[str, Any]:
@@ -213,9 +468,14 @@ def claim_pending_requests(
     *,
     workspace_capable: bool = False,
     lease_owner: Optional[str] = None,
+    submission_stage_capable: bool = False,
+    sweep_expired: bool = True,
 ) -> list[dict[str, Any]]:
-    """이 계정의 대기 요청을 가져오면서 submitting으로 표시(claim) — 중복 실행 방지.
-    limit 는 호출자가 현재 제출 가능한 수만큼 전달한다. 저장소는 그 수만 running 으로 선점한다.
+    """이 계정의 대기 요청을 원자적으로 claim한다.
+
+    신 에이전트(submission_stage_capable)는 CLI 호출 전임을 증명할 수 있는 claimed 상태로 받고,
+    구 에이전트는 호환을 위해 기존 submitting 상태로 받는다. limit는 호출자가 현재 제출 가능한
+    수만큼 전달한다.
     반환: [{id, gen_id, kind, model, prompt, params, references}].
 
     workspace_capable: 에이전트가 제출 전 워크스페이스 전환·검증을 할 수 있는지(?capability=workspace).
@@ -223,9 +483,13 @@ def claim_pending_requests(
     지정을 무시하고 현재 CLI 워크스페이스에서 실행해 다른 팀 크레딧으로 과금될 수 있다.
     건너뛴 요청은 pending 으로 남아 에이전트 업데이트 후 처리된다(SERVER.md 롤아웃 예외 참고).
 
-    lease_owner: 요청을 선점한 에이전트 인스턴스. 제출 도중 에이전트가 끊긴 요청을 구분한다."""
+    lease_owner: 요청을 선점한 에이전트 인스턴스. 제출 도중 에이전트가 끊긴 요청을 구분한다.
+    sweep_expired: 직접 호출자의 안전망. usecase는 전이 알림을 위해 먼저 별도 sweep하고 False로 호출한다.
+    """
     email = norm_email(account_email)
     out: list[dict[str, Any]] = []
+    if sweep_expired:
+        sweep_expired_generation_claims(email)
     # 비-capable(구) 에이전트는 워크스페이스 지정(team/personal) 요청을 SQL 에서 제외하고
     # 고른다 — Python 측 상한 스캔이면 지정 요청이 상한 이상 쌓였을 때 뒤의 일반 요청이
     # 영구히 굶는다. 손상된 payload(json_valid 실패)는 기존 파싱 실패와 동일하게 일반
@@ -251,38 +515,18 @@ def claim_pending_requests(
         # 표시→로컬 CLI 가 두 번 실행돼 크레딧이 이중 소모된다. BEGIN IMMEDIATE 로 즉시 쓰기락을 잡아
         # SELECT+UPDATE 를 한 트랜잭션으로 직렬화한다(둘째 폴은 busy_timeout 대기 후 running 을 보고 건너뜀).
         conn.execute("BEGIN IMMEDIATE")
-        # 제출 중 job_id를 받기 전에 에이전트가 30분 넘게 사라진 경우만 조치 필요로 닫는다.
-        # tracking/verifying는 이미 유료 작업이 존재하므로 절대 실패·재큐잉하지 않고 조회로 복구한다.
-        for stale in conn.execute(
-            "SELECT r.id, r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-            "WHERE r.account_email=? AND r.status IN ('running','submitting') "
-            "AND r.updated_at < datetime('now','-30 minutes') "
-            "AND (g.job_id IS NULL OR g.job_id='')",
-            (email,),
-        ).fetchall():
-            conn.execute(
-                "UPDATE gen_request SET status='failed', "
-                "error='에이전트 응답 없음(30분 초과) — 에이전트 상태 확인 후 다시 시도하세요', "
-                "terminal_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
-                (stale["id"],),
-            )
-            if stale["gen_id"]:
-                conn.execute(
-                    "UPDATE generation SET status='failed', "
-                    "error='에이전트 응답 없음(30분 초과)' WHERE id=? AND status IN ('pending','running')",
-                    (stale["gen_id"],),
-                )
         rows = conn.execute(
             "SELECT id, gen_id, kind, payload FROM gen_request "
             f"WHERE account_email=? AND status='pending'{ws_gate} "
             "ORDER BY created_at, rowid LIMIT ?",
             (email, limit),
         ).fetchall()
+        claim_phase = "claimed" if submission_stage_capable and lease_owner else "submitting"
         for r in rows:
             conn.execute(
-                "UPDATE gen_request SET status='submitting', error=NULL, lease_owner=?, "
+                "UPDATE gen_request SET status=?, error=NULL, lease_owner=?, "
                 "lease_expires_at=datetime('now','+30 minutes'), updated_at=datetime('now') WHERE id=?",
-                (lease_owner, r["id"]),
+                (claim_phase, lease_owner, r["id"]),
             )
     # payload 파싱은 트랜잭션(쓰기락) 밖에서 — 락 보유 시간을 SELECT+UPDATE 만으로 최소화.
     for r in rows:
@@ -300,6 +544,7 @@ def claim_pending_requests(
                 "params": p.get("params") or {},
                 "references": p.get("references") or [],
                 "workspace": normalize_workspace_context(p.get("workspace")),
+                "claim_phase": claim_phase,
             }
         )
     return out

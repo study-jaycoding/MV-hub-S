@@ -2,8 +2,8 @@
 
 흐름(project_content_hub_push_model):
   버튼 → POST /gen-requests : placeholder 카드 즉시 생성 + 요청 큐잉(요청자 계정 소유)
-  에이전트 → GET /gen-requests/pending : 자기 계정 대기 요청을 claim(running)
-            → 로컬 CLI 로 실행 →
+  에이전트 → GET /gen-requests/pending : 자기 계정 대기 요청을 claim(claimed)
+            → begin-submission ACK → 로컬 CLI 로 실행 →
             POST /gen-requests/{id}/fulfill : 결과를 placeholder 에 채움(done)
             (실패 시 /fail)
 서버는 힉스필드 CLI 를 돌리지 않는다. 모든 엔드포인트는 허브 세션 인증 필수.
@@ -32,6 +32,7 @@ from ..models import (
     GenerationOut,
     GenRequestIn,
     PendingRequestOut,
+    RecoveryDecisionIn,
     RegenerateIn,
     WorkspaceContext,
 )
@@ -40,11 +41,16 @@ from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     GenRequestCommand,
     anchor_request,
+    begin_submission,
     claim_gen_requests,
+    confirm_generation_not_submitted_and_requeue,
+    confirm_not_submitted_and_requeue,
     fail_request,
     fulfill_request,
     reconcile_request,
+    release_claim,
     repair_canvas_generation_links,
+    require_submission_recovery,
     submit_gen_request,
 )
 from ._telemetry import schedule_telemetry_drain
@@ -181,6 +187,21 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             raise HTTPException(status_code=404, detail="원본 generation 없음")
         # 비공개·공유 안 된 남의 원본을 id 만 알고 재생성(=프롬프트·소스 복제)하는 우회 차단.
         await asyncio.to_thread(require_view_generation, request, parent)
+        # 외부 제출 여부가 불명확한 카드를 일반 재생성으로 우회하면 같은 유료 작업이 두 번
+        # 만들어질 수 있다. 복구 확인을 먼저 끝내야 기존 요청을 안전하게 다시 실행할 수 있다.
+        recovery_request_id = await asyncio.to_thread(
+            repo.get_recovery_request_id_for_generation,
+            body.source_gen_id,
+            acc["email"],
+        )
+        if recovery_request_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "외부 제출 여부를 먼저 확인해야 합니다 — 생성 정보에서 "
+                    "'미제출 확인 후 다시 실행'을 사용하세요"
+                ),
+            )
         # 재생성본은 부모 project_id 를 상속(import_generation) — 부모가 프로젝트에 속하면 그 프로젝트
         # 접근권도 확인한다. 안 하면 '옛날엔 그 프로젝트 멤버였다가 빠진' 사용자가 자기 옛 생성물을
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
@@ -268,25 +289,120 @@ async def pending_gen_requests(
     capability: str = "",
     agent_id: str | None = None,
 ):
-    """에이전트가 호출 — 자기 계정 대기 요청을 claim(submitting)하고 레시피 반환.
-    claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
-    에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
-    완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
+    """에이전트가 호출 — 자기 계정 대기 요청을 원자적으로 claim하고 레시피를 반환한다.
+
+    submission-stage 신 에이전트는 claimed로 받아 준비를 끝내고 begin-submission ACK 뒤에만
+    placeholder가 running이 된다. 구 에이전트는 호환을 위해 claim 즉시 submitting/running으로
+    전환한다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
+    """
     acc = _require_account(request)
-    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다(?capability=workspace).
+    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
     caps = {c.strip() for c in capability.split(",") if c.strip()}
+    # submission-stage는 owner id가 있어야 안전하다. 둘 중 하나라도 빠진 혼합 버전은 기존
+    # submitting claim으로 내려 구 에이전트가 별도 begin 호출 없이 계속 동작하게 한다.
+    staged_submission = "submission-stage" in caps and bool(agent_id)
     claimed = await claim_gen_requests(
         acc["email"],
         realtime_scope(acc),
         limit,
         workspace_capable="workspace" in caps,
         lease_owner=agent_id,
+        submission_stage_capable=staged_submission,
     )
     if claimed:
         schedule_telemetry_drain()
     return claimed
+
+
+@router.post("/gen-requests/{rid}/begin-submission")
+async def begin_gen_request_submission(
+    rid: str,
+    request: Request,
+    agent_id: str,
+):
+    """신 에이전트의 실제 `generate create` 직전 CAS. 성공 전에는 유료 CLI를 호출하면 안 된다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    applied = await begin_submission(acc["email"], realtime_scope(acc), rid, agent_id)
+    if not applied:
+        raise HTTPException(
+            status_code=409,
+            detail="제출 권한이 만료됐거나 다른 에이전트가 인계했습니다 — 생성하지 않습니다",
+        )
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/{rid}/release-claim")
+async def release_gen_request_claim(
+    rid: str,
+    request: Request,
+    agent_id: str,
+):
+    """CLI 호출 전에 서버 확인이 실패한 staged claim을 같은 에이전트가 안전하게 반환한다."""
+    acc = _require_account(request)
+    applied = await release_claim(acc["email"], realtime_scope(acc), rid, agent_id)
+    if not applied:
+        raise HTTPException(status_code=409, detail="반환할 준비 단계 요청이 없습니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/{rid}/recovery-required")
+async def mark_gen_request_recovery_required(rid: str, request: Request):
+    """CLI 호출은 시작했지만 job_id를 얻지 못한 모호한 결말을 자동 재생성 금지로 격리한다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    applied = await require_submission_recovery(
+        acc["email"], realtime_scope(acc), rid
+    )
+    if not applied:
+        raise HTTPException(status_code=409, detail="복구 보류로 전환할 수 없는 요청 상태입니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/{rid}/confirm-not-submitted")
+async def confirm_gen_request_not_submitted(
+    rid: str,
+    body: RecoveryDecisionIn,
+    request: Request,
+):
+    """Higgsfield 기록에 외부 작업이 없음을 직접 확인한 경우에만 재큐잉한다."""
+    if not body.confirmed_not_submitted:
+        raise HTTPException(
+            status_code=400,
+            detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
+        )
+    acc = _require_account(request)
+    applied = await confirm_not_submitted_and_requeue(
+        acc["email"], realtime_scope(acc), rid
+    )
+    if not applied:
+        raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/by-generation/{gen_id}/confirm-not-submitted")
+async def confirm_generation_not_submitted(
+    gen_id: str,
+    body: RecoveryDecisionIn,
+    request: Request,
+):
+    """정보창에서 generation id로 호출하는 명시적 복구 동작."""
+    if not body.confirmed_not_submitted:
+        raise HTTPException(
+            status_code=400,
+            detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
+        )
+    acc = _require_account(request)
+    applied = await confirm_generation_not_submitted_and_requeue(
+        acc["email"],
+        realtime_scope(acc),
+        gen_id,
+    )
+    if not applied:
+        raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
+    return {"ok": True, "applied": True}
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)

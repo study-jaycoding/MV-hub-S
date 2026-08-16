@@ -19,6 +19,7 @@ interface Props {
   projects?: Project[]; // 프로젝트 이름 표시용(목록에서 uuid→이름 매핑)
   onOpenInBoard?: (g: Generation) => void; // 구성탭에서 원본→파생 트리로 보기
   onOpenCanvas?: (g: Generation) => void; // recipe(어떻게 만들었나)를 캔버스 노드로 열기
+  onRecoveryRequeue?: (g: Generation) => Promise<boolean>; // 외부 미제출 확인 뒤 기존 요청 재큐잉
 }
 
 const POP_W = 380;
@@ -47,7 +48,15 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard, onOpenCanvas }: Props) {
+export function InfoPopup({
+  target,
+  onClose,
+  onPreview,
+  projects,
+  onOpenInBoard,
+  onOpenCanvas,
+  onRecoveryRequeue,
+}: Props) {
   // 레퍼런스(소스) → 크게 보기. 원본(asset 토큰/URL/로컬) 우선, 없으면 썸네일.
   const openSource = (r: Reference) => {
     const url = refSrc(r.file_path) || refSrc(r.thumbnail_path) || refSrc(r.source_url);
@@ -76,6 +85,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
   } | null>(null); // 실제 크레딧·소요시간(있으면 우선)
   // Comfy 생성물은 Cloud 가 건별 크레딧을 API 로 안 준다(정액 구독제) → 견적 대신 구독 정보를 보여준다.
   const [comfySub, setComfySub] = useState<{ target: "cloud" | "local"; tier: string | null } | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -140,6 +150,32 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     const params = (g.params || {}) as Record<string, unknown>;
     rows = (
       <>
+        {g.execution_phase === "recovery_required" && (
+          <div className="info-recovery">
+            <span className="info-recovery-label">⚠ 복구 확인 필요</span>
+            <span className="info-recovery-text">
+              외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의
+              Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.
+            </span>
+            {onRecoveryRequeue && (
+              <button
+                type="button"
+                className="info-recovery-btn"
+                disabled={recoveryBusy}
+                onClick={async () => {
+                  setRecoveryBusy(true);
+                  try {
+                    if (await onRecoveryRequeue(g)) onClose();
+                  } finally {
+                    setRecoveryBusy(false);
+                  }
+                }}
+              >
+                {recoveryBusy ? "처리 중…" : "미제출 확인 후 다시 실행"}
+              </button>
+            )}
+          </div>
+        )}
         <Row
           label="모델"
           // Comfy 생성물은 g.model 이 판별자('comfy')라, 워크플로에서 뽑아 저장한 실제 모델명을 보여준다.

@@ -164,6 +164,194 @@ class TestGenerationStateEngine:
         assert generation["status"] == "running"
         assert generation["job_id"] == "job-paid"
 
+    def test_staged_claim_requires_same_live_owner_before_submission(self):
+        rid, gen_id = self._request()
+        claimed = repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        assert claimed[0]["claim_phase"] == "claimed"
+        assert repo.get_gen_request(rid)["status"] == "claimed"
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+        assert repo.begin_request_submission(rid, "worker@example.com", "agent-2") is None
+        first = repo.begin_request_submission(rid, "worker@example.com", "agent-1")
+        assert first == {"gen_id": gen_id, "transitioned": True}
+        assert repo.get_gen_request(rid)["status"] == "submitting"
+        assert repo.get_generation(gen_id)["status"] == "running"
+
+        # ACK가 유실돼 같은 owner가 재호출해도 다시 시작된 것으로 집계하지 않는다.
+        second = repo.begin_request_submission(rid, "worker@example.com", "agent-1")
+        assert second == {"gen_id": gen_id, "transitioned": False}
+
+    def test_missing_begin_ack_can_release_server_applied_transition_before_cli(self):
+        rid, gen_id = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        # 서버에는 begin이 반영됐지만 응답을 에이전트가 받지 못한 상황을 재현한다.
+        assert repo.begin_request_submission(
+            rid, "worker@example.com", "agent-1"
+        ) == {"gen_id": gen_id, "transitioned": True}
+
+        assert (
+            repo.release_claimed_request(rid, "worker@example.com", "agent-1")
+            == gen_id
+        )
+        assert repo.get_gen_request(rid)["status"] == "pending"
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+        # job_id가 이미 생긴 제출은 같은 owner라도 반환할 수 없다.
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        repo.begin_request_submission(rid, "worker@example.com", "agent-1")
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET job_id='job-paid' WHERE id=?", (gen_id,))
+        assert repo.release_claimed_request(rid, "worker@example.com", "agent-1") is None
+        assert repo.get_gen_request(rid)["status"] == "submitting"
+
+    def test_expired_pre_submit_claim_is_safe_to_requeue_and_reclaim(self):
+        rid, gen_id = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-old",
+            submission_stage_capable=True,
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET lease_expires_at=datetime('now','-1 minute') "
+                "WHERE id=?",
+                (rid,),
+            )
+
+        transitions = repo.sweep_expired_generation_claims("worker@example.com")
+        assert transitions == [
+            {
+                "id": rid,
+                "gen_id": gen_id,
+                "from_phase": "claimed",
+                "to_phase": "pending",
+                "action": "requeued",
+            }
+        ]
+        assert repo.get_gen_request(rid)["status"] == "pending"
+        assert repo.get_generation(gen_id)["status"] == "pending"
+
+        reclaimed = repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-new",
+            submission_stage_capable=True,
+        )
+        assert [item["id"] for item in reclaimed] == [rid]
+
+    def test_expired_post_submit_claim_is_quarantined_never_requeued(self):
+        rid, gen_id = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        assert repo.begin_request_submission(
+            rid, "worker@example.com", "agent-1"
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET lease_expires_at=datetime('now','-1 minute') "
+                "WHERE id=?",
+                (rid,),
+            )
+
+        transitions = repo.sweep_expired_generation_claims("worker@example.com")
+        assert transitions[0]["to_phase"] == "recovery_required"
+        request = repo.get_gen_request(rid)
+        generation = repo.get_generation(gen_id)
+        assert request["status"] == "recovery_required"
+        assert request["terminal_at"] is None
+        assert request["lease_owner"] is None
+        assert generation["status"] == "running"
+        assert "자동 재생성을 차단" in generation["error"]
+        assert repo.claim_pending_requests("worker@example.com", limit=16) == []
+
+    def test_unknown_cli_outcome_can_anchor_existing_job_or_explicitly_requeue(self):
+        rid, gen_id = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        repo.begin_request_submission(rid, "worker@example.com", "agent-1")
+        assert repo.mark_request_recovery_required(rid, "worker@example.com") == {
+            "gen_id": gen_id,
+            "transitioned": True,
+        }
+        # 보고 응답이 유실돼 에이전트가 다시 보내도 상태·이벤트 의미는 한 번만 전이한다.
+        assert repo.mark_request_recovery_required(rid, "worker@example.com") == {
+            "gen_id": gen_id,
+            "transitioned": False,
+        }
+        assert repo.get_gen_request(rid)["status"] == "recovery_required"
+        assert (
+            repo.get_recovery_request_id_for_generation(gen_id, "worker@example.com")
+            == rid
+        )
+        assert repo.get_recovery_request_id_for_generation(gen_id, "other@example.com") is None
+
+        # 외부 이력에서 job을 찾은 경우 기존 anchor 경로로 새 생성 없이 추적을 복구한다.
+        assert repo.apply_local_anchor(gen_id, rid, "job-found", verifying=True) is True
+        assert repo.get_gen_request(rid)["status"] == "verifying"
+        assert repo.get_generation(gen_id)["job_id"] == "job-found"
+
+        rid2, gen_id2 = self._request()
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?", (rid2,)
+            )
+            conn.execute(
+                "UPDATE generation SET status='running' WHERE id=?", (gen_id2,)
+            )
+        # 외부 작업이 없다는 명시 확인 경로만 pending 복귀를 허용한다.
+        assert repo.requeue_recovery_request(rid2, "other@example.com") is None
+        assert repo.requeue_recovery_request(rid2, "worker@example.com") == gen_id2
+        assert repo.get_gen_request(rid2)["status"] == "pending"
+        assert repo.get_generation(gen_id2)["status"] == "pending"
+
+    def test_server_restart_preserves_persistent_queue_and_recovery_hold(self):
+        pending_rid, pending_gen = self._request()
+        recovery_rid, recovery_gen = self._request()
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?",
+                (recovery_rid,),
+            )
+            conn.execute(
+                "UPDATE generation SET status='running' WHERE id=?", (recovery_gen,)
+            )
+        orphan = repo.create_local_generation(
+            {"prompt": "legacy orphan", "model": "model", "params": {}},
+            "me",
+            creator_uid="creator-1",
+        )
+
+        assert repo.fail_orphaned_jobs() == 1
+        assert repo.get_generation(pending_gen)["status"] == "pending"
+        assert repo.get_gen_request(pending_rid)["status"] == "pending"
+        assert repo.get_generation(recovery_gen)["status"] == "running"
+        assert repo.get_gen_request(recovery_rid)["status"] == "recovery_required"
+        assert repo.get_generation(orphan)["status"] == "failed"
+
     def test_empty_claim_skips_immediate_write_transaction(self):
         """1초 폴링의 빈 경로는 BEGIN IMMEDIATE 쓰기락을 잡으면 안 된다."""
         statements: list[str] = []

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from app import db, repo
 from app import deps as deps_mod
+from app.config import DEFAULT_WORKER_ID
 from app.routers import generation as generation_router
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
@@ -226,6 +227,94 @@ class IdentityPermissionTests(unittest.TestCase):
         self.assertIn("워크스페이스 정보", str(ctx.exception.detail))
         self.assertIn("다시 선택", str(ctx.exception.detail))
         submit.assert_not_awaited()
+
+    def test_regenerate_requires_recovery_confirmation_before_new_paid_request(self):
+        from app.models import GenRequestIn, WorkspaceContext
+
+        gen_id = repo.create_local_generation(
+            {"prompt": "ambiguous", "model": "seedance_2_0", "params": {}},
+            DEFAULT_WORKER_ID,
+            creator_uid="user_river",
+            workspace={"scope": "personal", "id": None, "name": None},
+        )
+        rid = repo.create_gen_request(
+            "river@example.com",
+            "user_river",
+            gen_id,
+            "create",
+            repo.gen_recipe(gen_id),
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?", (rid,)
+            )
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        body = GenRequestIn(
+            kind="regenerate",
+            workspace=WorkspaceContext(scope="personal"),
+            source_gen_id=gen_id,
+        )
+        with auth_on(), mock.patch.object(
+            gen_requests_router,
+            "submit_gen_request",
+            new=mock.AsyncMock(return_value={"id": "must-not-exist"}),
+        ) as submit, self.assertRaises(HTTPException) as ctx:
+            asyncio.run(gen_requests_router.create_gen_request(body, request))
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("외부 제출 여부", str(ctx.exception.detail))
+        submit.assert_not_awaited()
+
+    def test_generation_recovery_confirmation_requeues_owned_request(self):
+        from app.models import RecoveryDecisionIn
+
+        gen_id = repo.create_local_generation(
+            {"prompt": "ambiguous", "model": "seedance_2_0", "params": {}},
+            DEFAULT_WORKER_ID,
+            creator_uid="user_river",
+        )
+        rid = repo.create_gen_request(
+            "river@example.com",
+            "user_river",
+            gen_id,
+            "create",
+            repo.gen_recipe(gen_id),
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?", (rid,)
+            )
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with auth_on():
+            result = asyncio.run(
+                gen_requests_router.confirm_generation_not_submitted(
+                    gen_id,
+                    RecoveryDecisionIn(confirmed_not_submitted=True),
+                    request,
+                )
+            )
+
+        self.assertTrue(result["applied"])
+        self.assertEqual(repo.get_gen_request(rid)["status"], "pending")
+        self.assertEqual(repo.get_generation(gen_id)["status"], "pending")
 
     def test_gen_request_workspace_uses_accessible_registry_name(self):
         from app.models import GenerationCreate, GenRequestIn, WorkspaceContext

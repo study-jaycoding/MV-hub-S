@@ -379,6 +379,15 @@ export const api = {
     });
   },
 
+  confirmGenerationNotSubmitted: (generationId: string) =>
+    jsonFetch<{ ok: boolean; applied: boolean }>(
+      `/api/gen-requests/by-generation/${pathPart(generationId)}/confirm-not-submitted`,
+      {
+        method: "POST",
+        body: jsonBody({ confirmed_not_submitted: true }),
+      },
+    ),
+
   resolveCanvasGenerationLinks: async (attemptIds: string[]) => {
     const links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[] = [];
     for (const page of chunked(Array.from(new Set(attemptIds)), 200)) {

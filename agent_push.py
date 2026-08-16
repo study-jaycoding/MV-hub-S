@@ -551,9 +551,10 @@ def _gen_request_url(
 
 
 def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = None):
-    # capability=workspace: 이 에이전트는 제출 전 워크스페이스 전환·검증을 한다는 선언 —
-    # 신 서버는 워크스페이스 지정 요청을 이 선언이 있는 claim 에만 내려준다. 구 서버는 무시(하위호환).
-    query = {"limit": limit, "capability": "workspace"}
+    # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
+    # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
+    # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
+    query = {"limit": limit, "capability": "workspace,submission-stage"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -561,6 +562,59 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
         _gen_request_url(server, action="pending", query=query),
         token=token,
     )
+
+
+def _begin_submission(
+    server: str,
+    token: str,
+    rid: str,
+    agent_id: str,
+) -> bool:
+    """신 서버의 staged claim을 실제 CLI 호출 직전에 submitting으로 전환한다.
+
+    서버가 전이를 적용한 직후 응답만 유실될 수 있으므로 일시 장애는 멱등 API로 재확인한다.
+    명시적인 4xx는 소유권 상실이므로 즉시 중단한다.
+    """
+    url = _gen_request_url(
+        server,
+        rid,
+        "begin-submission",
+        {"agent_id": agent_id},
+    )
+    for _ in range(3):
+        status, body = _http("POST", url, token=token, timeout=15)
+        if status == 200:
+            return not isinstance(body, dict) or body.get("applied", True) is not False
+        if 400 <= status < 500:
+            return False
+    return False
+
+
+def _release_claim(
+    server: str,
+    token: str,
+    rid: str,
+    agent_id: str,
+) -> bool:
+    """유료 CLI를 호출하지 못한 claimed 요청을 즉시 pending으로 반환한다."""
+    status, _ = _http(
+        "POST",
+        _gen_request_url(server, rid, "release-claim", {"agent_id": agent_id}),
+        token=token,
+    )
+    return status == 200
+
+
+def _require_submission_recovery(server: str, token: str, rid: str) -> bool:
+    """CLI 호출 뒤 job_id가 없는 모호한 결말을 자동 재생성 금지 상태로 보고한다."""
+    url = _gen_request_url(server, rid, "recovery-required")
+    for _ in range(3):
+        status, body = _http("POST", url, token=token, timeout=15)
+        if status == 200:
+            return not isinstance(body, dict) or body.get("applied", True) is not False
+        if 400 <= status < 500:
+            return False
+    return False
 
 
 def _list_reconcile_candidates(server: str, token: str):
@@ -811,6 +865,11 @@ def _upload_cache_key(upload_cache: dict, digest: str) -> str:
 
 
 def _invalidate_upload_cache(upload_cache: dict, path: str, upload_lock: Lock) -> None:
+    """모호한 생성 실패에 쓰인 오래된 업로드 ID만 제거한다.
+
+    여기서는 CLI 생성을 다시 호출하지 않는다. 사용자가 외부 미제출을 확인하고 기존 요청을
+    명시적으로 재큐잉했을 때 다음 시도가 파일을 새로 업로드하게 만들기 위한 정리다.
+    """
     if "_items" not in upload_cache:
         with upload_lock:
             upload_cache.pop(path, None)
@@ -831,7 +890,6 @@ def _upload_for_media(
     path: str,
     upload_cache: dict,
     upload_lock: Lock,
-    force: bool = False,
 ) -> tuple[dict | None, bool]:
     """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환.
     in-flight 잠금: 같은 파일을 여러 스레드가 동시에 올리면 한 스레드만 업로드하고 나머지는 그 결과를
@@ -843,7 +901,7 @@ def _upload_for_media(
     if legacy:  # 플랫 dict 캐시 — 실사용 경로 아님(_load_upload_cache 는 항상 _items 생성). 그대로 둔다.
         with upload_lock:
             cached = upload_cache.get(path)
-            if cached is not None and not force:
+            if cached is not None:
                 return cached, True
     else:
         fp = _file_fingerprint(path)
@@ -854,18 +912,17 @@ def _upload_for_media(
         while True:  # 캐시 재확인 + in-flight 조정 루프
             wait_ev = None
             with upload_lock:
-                if not force:
-                    cached = upload_cache.get("_memory", {}).get(key)
-                    if cached is not None:
-                        return cached, True
-                    entry = upload_cache.get("_items", {}).get(key)
-                    data = entry.get("data") if isinstance(entry, dict) else None
-                    if isinstance(data, dict) and data.get("id"):
-                        upload_cache.setdefault("_memory", {})[key] = data
-                        return data, True
+                cached = upload_cache.get("_memory", {}).get(key)
+                if cached is not None:
+                    return cached, True
+                entry = upload_cache.get("_items", {}).get(key)
+                data = entry.get("data") if isinstance(entry, dict) else None
+                if isinstance(data, dict) and data.get("id"):
+                    upload_cache.setdefault("_memory", {})[key] = data
+                    return data, True
                 inflight = upload_cache.setdefault("_inflight", {})
                 ev = inflight.get(key)
-                if ev is None or force:  # 내가 업로드 담당(또는 force 재업로드) — 자리표로 대기자에 알림
+                if ev is None:  # 내가 업로드 담당 — 자리표로 대기자에 알림
                     my_ev = Event()
                     inflight[key] = my_ev
                     break
@@ -1286,6 +1343,7 @@ def _submit_one(
     upload_cache: dict,
     upload_lock: Lock,
     workspace_lock: Lock,
+    agent_id: str,
 ) -> dict | None:
     """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
     제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
@@ -1323,8 +1381,7 @@ def _submit_one(
     unresolved: list = []
     upload_failed: list = []
     seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
-    seedance_media_inputs: list[tuple[str, str]] = []
-    seedance_used_cached_media = False
+    seedance_cached_paths: list[str] = []
     expected_image_inputs = 0  # 우리가 실제로 CLI 에 넣은 입력 이미지 개수(사후 부착 검증용)
     for ref in refs:
         val = ref.get("file_path")
@@ -1343,9 +1400,9 @@ def _submit_one(
             if not data:
                 upload_failed.append(val)
                 continue
+            if from_cache:
+                seedance_cached_paths.append(resolved)
             media_role = _media_role(ref)
-            seedance_media_inputs.append((resolved, media_role))
-            seedance_used_cached_media = seedance_used_cached_media or from_cache
             seedance_media_ids.append((media_role, data["id"]))
             if media_role == "image":
                 expected_image_inputs += 1
@@ -1377,37 +1434,32 @@ def _submit_one(
             _fail(server, token, rid, reason)
             print(f"  ✗ {reason}")
             return None
-        created, cli_error = _run_cli_json(cli, *args, timeout=300)
-        if (
-            not _extract_created_id(created, None)
-            and cli_error
-            and seedance_media_inputs
-            and seedance_used_cached_media
-            and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
+        # 신 서버가 claim_phase=claimed를 보낸 경우에만 2단계 제출 계약을 적용한다. ACK가 없으면
+        # generate create를 절대 호출하지 않는다. 구 서버 응답에는 이 필드가 없어 기존 흐름 유지.
+        if r.get("claim_phase") == "claimed" and not _begin_submission(
+            server, token, rid, agent_id
         ):
-            print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
-            retry_ids: list = []
-            retry_failed = False
-            for path, media_role in seedance_media_inputs:
-                _invalidate_upload_cache(upload_cache, path, upload_lock)
-                data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
-                if not data:
-                    retry_failed = True
-                    break
-                retry_ids.append((media_role, data["id"]))
-            if not retry_failed:
-                # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
-                base_args = args[:len(args) - len(seedance_ref_args)]
-                retry_args = base_args + _seedance_ref_args(retry_ids)
-                created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
+            _release_claim(server, token, rid, agent_id)
+            print("  ✗ 서버 제출 허가를 확인하지 못해 생성하지 않았습니다")
+            return None
+        created, cli_error = _run_cli_json(cli, *args, timeout=300)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
-        # job_id 를 못 얻음 = 제출 자체 실패(레퍼런스 오류 등은 위에서 이미 걸러짐). 진짜 실패이므로 hard fail.
-        reason = "제출 실패(잡 id 없음)" if not cli_error else f"제출 실패: {cli_error[:700]}"
+        # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
+        # 자동 fail/재시도하면 이미 결제된 작업을 한 번 더 만들 수 있으므로 수동 복구 상태로 격리한다.
+        reason = "잡 id를 확인하지 못했습니다" if not cli_error else cli_error[:700]
         if cli_error:
             print(f"[경고] {cli_error}")
-        _fail(server, token, rid, reason)
-        print(f"  ✗ 제출 실패: {job_id or ''}")
+        if seedance_cached_paths and cli_error and any(
+            marker in cli_error.lower()
+            for marker in ("media", "reference", "upload", "uuid", "input")
+        ):
+            for cached_path in seedance_cached_paths:
+                _invalidate_upload_cache(upload_cache, cached_path, upload_lock)
+            print("  ↻ 다음 명시적 재실행을 위해 실패한 레퍼런스 업로드 캐시를 비웠습니다")
+        reported = _require_submission_recovery(server, token, rid)
+        suffix = "" if reported else " (서버 보고 실패 — lease 만료 시 자동 격리)"
+        print(f"  ⚠ 제출 결과 확인 필요: {reason}{suffix}")
         return None
     # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
     #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
@@ -1725,6 +1777,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                             upload_cache,
                             upload_lock,
                             workspace_lock,
+                            agent_id,
                         )
                         submitting[future] = request
                         total += 1

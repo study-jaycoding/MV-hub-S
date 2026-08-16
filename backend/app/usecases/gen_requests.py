@@ -175,19 +175,54 @@ async def claim_gen_requests(
     *,
     workspace_capable: bool = False,
     lease_owner: str | None = None,
+    submission_stage_capable: bool = False,
 ) -> list[dict]:
     """에이전트의 빈 슬롯만큼 대기 요청을 claim하고 카드 상태·알림을 함께 갱신한다."""
     agent_signals.touch(email)
+    expired = await _sync_io(repo.sweep_expired_generation_claims, email)
+    for transition in expired:
+        gen_id = transition["gen_id"]
+        log_event(
+            _generation_log,
+            "generation_claim_expired",
+            level=(logging.WARNING if transition["action"] == "quarantined" else logging.INFO),
+            generation_id=gen_id,
+            request_id=transition["id"],
+            from_phase=transition["from_phase"],
+            to_phase=transition["to_phase"],
+            recovery_action=transition["action"],
+        )
+        await _sync_io(
+            journal_generation_event,
+            "generation_claim_expired",
+            gen_id,
+            request_id=transition["id"],
+            from_phase=transition["from_phase"],
+            to_phase=transition["to_phase"],
+            actor_uid=account_uid,
+            details={"action": transition["action"]},
+        )
+    if any(item["action"] == "requeued" for item in expired):
+        agent_signals.signal(email, "gen-request")
+    if expired:
+        # execution_phase와 error까지 새로 받아야 하므로 status 한 필드만 바꾸는 progress 대신
+        # 계정 범위 전체 재조회 신호를 보낸다.
+        await manager.broadcast({"type": "synced"}, account_uid=account_uid)
     claimed = await _sync_io(
         repo.claim_pending_requests,
         email,
         limit=max(1, min(limit, 16)),
         workspace_capable=workspace_capable,
         lease_owner=lease_owner,
+        submission_stage_capable=submission_stage_capable,
+        sweep_expired=False,
     )
+    claimed_needs_refresh = False
     for item in claimed:
         gen_id = item["gen_id"]
-        await _sync_io(repo.set_status, gen_id, "running", None)
+        claim_phase = item.get("claim_phase") or "submitting"
+        if claim_phase == "submitting":
+            await _sync_io(repo.set_status, gen_id, "running", None)
         log_event(
             _generation_log,
             "generation_claimed",
@@ -196,6 +231,7 @@ async def claim_gen_requests(
             kind=item.get("kind"),
             model=item.get("model"),
             workspace_scope=(item.get("workspace") or {}).get("scope"),
+            claim_phase=claim_phase,
         )
         await _sync_io(
             journal_generation_event,
@@ -203,20 +239,182 @@ async def claim_gen_requests(
             gen_id,
             request_id=item["id"],
             from_phase="pending",
-            to_phase="submitting",
+            to_phase=claim_phase,
             actor_uid=account_uid,
         )
-        await _sync_io(
-            pm_best_effort,
-            lambda manage, gid=gen_id: manage.record_started(gid),
-            operation="record_started",
-            dirty_gen_id=gen_id,
-        )
-        await manager.broadcast(
-            {"type": "progress", "generation_id": gen_id, "status": "running"},
-            account_uid=account_uid,
-        )
+        if claim_phase == "submitting":
+            await _sync_io(
+                pm_best_effort,
+                lambda manage, gid=gen_id: manage.record_started(gid),
+                operation="record_started",
+                dirty_gen_id=gen_id,
+            )
+            await manager.broadcast(
+                {"type": "progress", "generation_id": gen_id, "status": "running"},
+                account_uid=account_uid,
+            )
+        else:
+            claimed_needs_refresh = True
+    if claimed_needs_refresh:
+        await manager.broadcast({"type": "synced"}, account_uid=account_uid)
     return claimed
+
+
+async def begin_submission(
+    email: str,
+    account_uid: str | None,
+    request_id: str,
+    lease_owner: str,
+) -> bool:
+    """신 에이전트가 실제 CLI 생성 호출 직전에 claimed를 submitting으로 올린다."""
+    result = await _sync_io(
+        repo.begin_request_submission,
+        request_id,
+        email,
+        lease_owner,
+    )
+    if not result:
+        return False
+    if not result["transitioned"]:
+        return True
+    gen_id = result["gen_id"]
+    log_event(
+        _generation_log,
+        "generation_submission_started",
+        generation_id=gen_id,
+        request_id=request_id,
+    )
+    await _sync_io(
+        journal_generation_event,
+        "generation_submission_started",
+        gen_id,
+        request_id=request_id,
+        from_phase="claimed",
+        to_phase="submitting",
+        actor_uid=account_uid,
+    )
+    await _sync_io(
+        pm_best_effort,
+        lambda manage, gid=gen_id: manage.record_started(gid),
+        operation="record_started",
+        dirty_gen_id=gen_id,
+    )
+    await manager.broadcast(
+        {"type": "progress", "generation_id": gen_id, "status": "running"},
+        account_uid=account_uid,
+    )
+    return True
+
+
+async def release_claim(
+    email: str,
+    account_uid: str | None,
+    request_id: str,
+    lease_owner: str,
+) -> bool:
+    """서버 제출 허가를 받기 전에 멈춘 claim을 즉시 안전하게 반환한다."""
+    gen_id = await _sync_io(
+        repo.release_claimed_request,
+        request_id,
+        email,
+        lease_owner,
+    )
+    if not gen_id:
+        return False
+    log_event(
+        _generation_log,
+        "generation_claim_released",
+        generation_id=gen_id,
+        request_id=request_id,
+    )
+    agent_signals.signal(email, "gen-request")
+    await manager.broadcast({"type": "synced"}, account_uid=account_uid)
+    return True
+
+
+async def require_submission_recovery(
+    email: str,
+    account_uid: str | None,
+    request_id: str,
+) -> bool:
+    """CLI 호출 결말이 불명확한 요청을 새 과금이 일어나지 않는 보류 상태로 격리한다."""
+    result = await _sync_io(repo.mark_request_recovery_required, request_id, email)
+    if not result:
+        return False
+    if not result["transitioned"]:
+        return True
+    gen_id = result["gen_id"]
+    log_event(
+        _generation_log,
+        "generation_recovery_required",
+        level=logging.WARNING,
+        generation_id=gen_id,
+        request_id=request_id,
+        reason_code="job_id_unavailable_after_submit",
+    )
+    await _sync_io(
+        journal_generation_event,
+        "generation_recovery_required",
+        gen_id,
+        request_id=request_id,
+        to_phase="recovery_required",
+        actor_uid=account_uid,
+        details={"reason_code": "job_id_unavailable_after_submit"},
+    )
+    await manager.broadcast({"type": "synced"}, account_uid=account_uid)
+    return True
+
+
+async def confirm_not_submitted_and_requeue(
+    email: str,
+    account_uid: str | None,
+    request_id: str,
+) -> bool:
+    """사용자가 외부 작업 부재를 확인한 경우에만 recovery_required를 pending으로 되돌린다."""
+    gen_id = await _sync_io(repo.requeue_recovery_request, request_id, email)
+    if not gen_id:
+        return False
+    log_event(
+        _generation_log,
+        "generation_recovery_requeued",
+        level=logging.WARNING,
+        generation_id=gen_id,
+        request_id=request_id,
+        confirmation="external_job_absent",
+    )
+    await _sync_io(
+        journal_generation_event,
+        "generation_recovery_requeued",
+        gen_id,
+        request_id=request_id,
+        from_phase="recovery_required",
+        to_phase="pending",
+        actor_uid=account_uid,
+        details={"confirmation": "external_job_absent"},
+    )
+    agent_signals.signal(email, "gen-request")
+    await manager.broadcast({"type": "synced"}, account_uid=account_uid)
+    return True
+
+
+async def confirm_generation_not_submitted_and_requeue(
+    email: str,
+    account_uid: str | None,
+    gen_id: str,
+) -> bool:
+    """화면 generation id를 자기 복구 요청으로 해석한 뒤 기존 명시 재큐잉 계약을 사용한다."""
+    request_id = await _sync_io(
+        repo.get_recovery_request_id_for_generation,
+        gen_id,
+        email,
+    )
+    if not request_id:
+        return False
+    return await confirm_not_submitted_and_requeue(
+        email,
+        account_uid,
+        request_id,
+    )
 
 
 async def fulfill_request(
@@ -702,6 +900,22 @@ async def fail_request(
     final_status = cli_bridge.normalize_status(hf_status) if hf_status else (parsed_status or "failed")
     if final_status in ACTIVE_STATUSES:
         final_status = "failed"
+
+    # 혼합 업데이트 안전망: 구 에이전트는 create 호출 뒤 job_id를 얻지 못하면 새 전용 복구 API
+    # 대신 /fail에 아래 문구를 보낸다. 이 요청을 failed로 닫으면 사용자가 일반 재생성으로 같은
+    # 유료 작업을 다시 만들 수 있다. 실제 job_id가 없고 제출 이후일 수 있는 경우만 보수적으로
+    # recovery_required에 격리한다. claimed 단계의 입력·업로드 검증 실패는 기존 failed를 유지한다.
+    ambiguous_legacy_failure = (
+        request_row.get("status") == "submitting"
+        and not final_job_id
+        and (reason or "").startswith(("제출 실패", "제출 처리 예외"))
+    )
+    if ambiguous_legacy_failure:
+        return await require_submission_recovery(
+            request_row.get("account_email") or "",
+            account_uid,
+            request_id,
+        )
 
     gen_id = request_row["gen_id"]
     applied = await _sync_io(

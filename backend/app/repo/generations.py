@@ -225,16 +225,21 @@ def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
 
 
 def fail_orphaned_jobs() -> int:
-    """서버 시작 시 호출 — 인메모리 잡 큐는 부팅 시 비어 있으므로, DB 의 pending/running 은 이전
-    프로세스에서 끊긴 고아다. ★단, job_id 를 가진 카드는 재조정(generate get)으로 실제 상태를 되살릴
-    수 있으므로 실패시키지 않고 running 유지 + '확인중' 문구만 단다(재조정 패스가 done/failed 로 확정).
-    job_id 없는 것(제출 전 끊김·앵커 도달 실패)만 failed 로 정리해 UI 가 '생성중'에 멈추지 않게 한다.
-    반환: 실제로 failed 로 정리한 수(job_id 없는 고아)."""
+    """서버 시작 시 호출 — 영속 gen_request가 없는 옛 인메모리 잡만 고아로 정리한다.
+
+    현재 생성 큐는 DB에 영속된다. 따라서 정상 pending/claimed 요청이나 제출 여부가 불명확한
+    recovery_required 요청의 placeholder를 서버 재시작만으로 failed로 만들면 안 된다. job_id가
+    있는 카드는 기존 작업을 재조정하고, 활성 gen_request가 전혀 없는 옛 카드만 실패 처리한다.
+    반환: 실제로 failed로 정리한 옛 고아 수."""
     with get_connection() as conn:
         cur = conn.execute(
             "UPDATE generation SET status='failed', "
             "error=COALESCE(error, '서버 재시작으로 생성이 중단되었습니다. 동기화로 결과를 가져오거나 재생성하세요.') "
-            "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='')"
+            "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='') "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM gen_request r WHERE r.gen_id=generation.id "
+            "  AND r.status IN ('pending','claimed','submitting','running','tracking','verifying','blocked','recovery_required')"
+            ")"
         )
         # job_id 보유분 → running 유지 + '확인중'(재조정 대기). 이미 문구가 있으면 덮지 않는다.
         conn.execute(
@@ -520,6 +525,9 @@ def apply_local_fulfillment(
 #  status 는 running 유지(새 enum 안 만듦 — fail_orphaned_jobs 등 상태판정과 충돌 방지). 프론트는 이
 #  문구로 '확인중' 라벨을 띄우고, 재조정이 done/failed 로 확정하면 error 를 지우거나 실제 사유로 덮는다.
 VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
+RECOVERY_REQUIRED_NOTE = (
+    "복구 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다"
+)
 
 
 def apply_local_anchor(gen_id: str, rid: str, job_id: str, *, verifying: bool = True) -> bool:

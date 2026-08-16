@@ -23,10 +23,12 @@ export const VERIFYING_MARK = "확인중";
 
 const EXECUTION_PHASE_LABEL: Record<string, string> = {
   pending: "대기",
+  claimed: "준비 중",
   submitting: "제출 중",
   tracking: "생성 중",
   verifying: "확인 중",
   blocked: "조치 필요",
+  recovery_required: "복구 확인 필요",
   done: "완료",
   failed: "실패",
 };

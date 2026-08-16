@@ -221,10 +221,20 @@ async def _application_lifespan(app: FastAPI):
     sharded = media_cache.migrate_sharding()
     if sharded:
         print(f"[startup] 미디어 {sharded}개를 샤딩 디렉터리로 이전")
-    # 크래시/재시작 복구: 이전 프로세스에서 끊긴 진행중 잡(pending/running)을 failed 로 정리.
+    # 크래시/재시작 복구: CLI 호출 전 만료 claim은 재큐잉하고, 호출 뒤 job_id가 없는 모호한
+    # 결말은 recovery_required로 격리한다. lease 만료만으로 유료 생성을 다시 실행하지 않는다.
+    expired_claims = repo.sweep_expired_generation_claims()
+    if expired_claims:
+        requeued = sum(item["action"] == "requeued" for item in expired_claims)
+        quarantined = len(expired_claims) - requeued
+        print(
+            f"[startup] 만료 생성 claim 복구: 재큐잉 {requeued}개, "
+            f"수동 확인 격리 {quarantined}개"
+        )
+    # 영속 gen_request가 없는 옛 인메모리 고아만 failed로 정리한다.
     orphaned = repo.fail_orphaned_jobs()
     if orphaned:
-        print(f"[startup] 고아 잡 {orphaned}개를 failed 로 정리")
+        print(f"[startup] 요청 기록 없는 옛 고아 잡 {orphaned}개를 failed 로 정리")
     # create/sync 레이스로 생긴 중복(같은 결과물 2행) 병합 정리
     dups = repo.reconcile_duplicates()
     if dups:

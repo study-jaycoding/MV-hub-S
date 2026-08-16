@@ -1074,6 +1074,7 @@ export default function App() {
     onColor,
     onFinalize,
     onImport,
+    onRecoveryRequeue,
     onRegenerate,
     onSetSource,
     onTags,
@@ -1628,6 +1629,7 @@ export default function App() {
           setInfo(null);
           onShowHistory(g);
         }}
+        onRecoveryRequeue={onRecoveryRequeue}
         onOpenInBoard={onOpenInBoard}
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}

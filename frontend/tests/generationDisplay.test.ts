@@ -10,6 +10,9 @@ describe("generation execution phase display", () => {
     expect(generationStatusLabelFor("running", null, "tracking")).toBe("생성 중");
     expect(generationStatusLabelFor("running", null, "verifying")).toBe("확인 중");
     expect(generationStatusLabelFor("running", null, "blocked")).toBe("조치 필요");
+    expect(generationStatusLabelFor("running", null, "recovery_required")).toBe(
+      "복구 확인 필요",
+    );
   });
 
   it("공급자 원시 상태와 확인 시각을 진단 제목에 보존한다", () => {

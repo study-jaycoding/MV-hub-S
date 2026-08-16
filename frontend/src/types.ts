@@ -57,7 +57,7 @@ export interface Generation {
   source_name: string | null; // @이름
   comment: string | null; // 카드 코멘트(메모, 레거시 — UI 미사용)
   error: string | null; // 실패 사유(status=failed 일 때)
-  execution_phase?: "pending" | "submitting" | "tracking" | "verifying" | "blocked" | "done" | "failed" | null;
+  execution_phase?: "pending" | "claimed" | "submitting" | "tracking" | "verifying" | "blocked" | "recovery_required" | "done" | "failed" | null;
   provider_status?: string | null;
   last_checked_at?: string | null;
   next_check_at?: string | null;

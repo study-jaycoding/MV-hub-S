@@ -42,6 +42,7 @@ export function AppOverlays({
   onInfoClose,
   onInfoOpenInBoard,
   onInfoOpenCanvas,
+  onRecoveryRequeue,
   onOpenInBoard,
   onOpenInBoardFromPreview,
   onPreview,
@@ -68,6 +69,7 @@ export function AppOverlays({
   onInfoClose: () => void;
   onInfoOpenInBoard: (generation: Generation) => void;
   onInfoOpenCanvas: (generation: Generation) => void;
+  onRecoveryRequeue: (generation: Generation) => Promise<boolean>;
   onOpenInBoard: (generation: Generation) => void;
   onOpenInBoardFromPreview: (generationId: string) => void;
   onPreview: (target: PreviewTarget) => void;
@@ -92,6 +94,7 @@ export function AppOverlays({
           projects={projects}
           onOpenInBoard={onInfoOpenInBoard}
           onOpenCanvas={onInfoOpenCanvas}
+          onRecoveryRequeue={onRecoveryRequeue}
         />
       )}
       {preview && (
