@@ -98,7 +98,13 @@ def compact_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "websocket": {
             key: websocket.get(key)
-            for key in ("connections", "authenticated_accounts", "local_connections")
+            for key in (
+                "connections",
+                "authenticated_accounts",
+                "local_connections",
+                "send_timeouts",
+                "send_failures",
+            )
         },
         "remote_realtime": {
             key: remote_realtime.get(key)

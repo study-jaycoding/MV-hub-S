@@ -15,12 +15,26 @@ class FakeWS:
     def __init__(self):
         self.received: list[dict] = []
         self.accepted = False
+        self.closed: tuple[int, str] | None = None
 
     async def accept(self):
         self.accepted = True
 
     async def send_json(self, message):
         self.received.append(message)
+
+    async def close(self, code=1000, reason=""):
+        self.closed = (code, reason)
+
+
+class SlowWS(FakeWS):
+    async def send_json(self, message):
+        await asyncio.Event().wait()
+
+
+class FailingWS(FakeWS):
+    async def send_json(self, message):
+        raise ConnectionError("client disconnected")
 
 
 class RealtimeScopeTests(unittest.TestCase):
@@ -90,6 +104,64 @@ class WsBroadcastScopeTests(unittest.TestCase):
         self.assertEqual(stats["authenticated_connections"], 100)
         self.assertEqual(stats["authenticated_accounts"], 50)
         self.assertEqual(stats["local_connections"], 1)
+        self.assertEqual(stats["send_timeouts"], 0)
+        self.assertEqual(stats["send_failures"], 0)
+
+    def test_slow_client_does_not_block_fast_client_and_is_collected(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            slow, fast = SlowWS(), FakeWS()
+            mgr._active[slow] = "acct:a"
+            mgr._active[fast] = "acct:a"
+            with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.05):
+                sending = asyncio.create_task(
+                    mgr.broadcast({"type": "progress"}, account_uid="acct:a")
+                )
+                await asyncio.sleep(0.005)
+                delivered_before_slow_timeout = list(fast.received)
+                self.assertFalse(sending.done())
+                await sending
+            return delivered_before_slow_timeout, slow.closed, await mgr.stats()
+
+        fast_messages, slow_closed, stats = self._run(scenario())
+        self.assertEqual(fast_messages, [{"type": "progress"}])
+        self.assertEqual(slow_closed, (1011, "realtime send timeout"))
+        self.assertEqual(stats["connections"], 1)
+        self.assertEqual(stats["send_timeouts"], 1)
+        self.assertEqual(stats["send_failures"], 0)
+
+    def test_failed_client_does_not_hide_message_from_other_clients(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            failed, fast = FailingWS(), FakeWS()
+            mgr._active[failed] = None
+            mgr._active[fast] = None
+            await mgr.broadcast_all({"type": "synced"})
+            return fast.received, failed.closed, await mgr.stats()
+
+        fast_messages, failed_closed, stats = self._run(scenario())
+        self.assertEqual(fast_messages, [{"type": "synced"}])
+        self.assertEqual(failed_closed, (1011, "realtime send failed"))
+        self.assertEqual(stats["connections"], 1)
+        self.assertEqual(stats["send_timeouts"], 0)
+        self.assertEqual(stats["send_failures"], 1)
+
+    def test_overlapping_broadcasts_count_one_slow_client_only_once(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            slow = SlowWS()
+            mgr._active[slow] = None
+            with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.02):
+                await asyncio.gather(
+                    mgr.broadcast_all({"type": "first"}),
+                    mgr.broadcast_all({"type": "second"}),
+                )
+            return await mgr.stats()
+
+        stats = self._run(scenario())
+        self.assertEqual(stats["connections"], 0)
+        self.assertEqual(stats["send_timeouts"], 1)
+        self.assertEqual(stats["send_failures"], 0)
 
     def test_connect_and_disconnect_return_anonymous_counts_once(self):
         async def scenario():

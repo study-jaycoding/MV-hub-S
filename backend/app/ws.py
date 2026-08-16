@@ -12,12 +12,14 @@ higgsfield 는 퍼센트가 아니라 상태 전이를 주므로, 가짜 진행�
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Optional
 
 from fastapi import WebSocket
 
 from .mutation_notify import DOMAIN_LIBRARY, MutationOrigin
+from .services.operational_logging import log_event
 
 # 변경 알림 디바운스(초) — 일괄 트리아지(컬러 연타 등)에서 한 번만 broadcast 하도록 합친다.
 _NOTIFY_DEBOUNCE = 0.4
@@ -27,12 +29,20 @@ _ALL = "*"
 _MAX_NOTIFY_ORIGINS = 32  # 비정상 연타로 WS payload·메모리가 커지면 출처 생략(전원 reload가 안전)
 _RECENT_ORIGIN_TTL = 30.0
 _MAX_RECENT_ORIGINS = 4096
+_WS_SEND_TIMEOUT_SECONDS = 2.0
+_WS_CLOSE_TIMEOUT_SECONDS = 0.5
+
+_log = logging.getLogger("mvhub.websocket")
 
 
 class ConnectionManager:
     def __init__(self) -> None:
         # 소켓 → 그 연결의 account_uid(creator_uid). AUTH off 면 None.
         self._active: dict[WebSocket, Optional[str]] = {}
+        # 같은 소켓에 여러 broadcast가 겹쳐도 ASGI send_json을 동시에 호출하지 않는다.
+        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+        self._send_timeouts = 0
+        self._send_failures = 0
         self._lock = asyncio.Lock()
         self._pending_notify: Optional[asyncio.Task] = None
         # 스코프 → {브라우저 client id: 요청 mutation id 집합}. None이면 출처 불명 변경이 섞여
@@ -57,6 +67,8 @@ class ConnectionManager:
             "local_connections": len(self._active) - scoped,
             "pending_notify_accounts": len(self._pending_accounts),
             "pending_notify_domains": len(self._pending_domains),
+            "send_timeouts": self._send_timeouts,
+            "send_failures": self._send_failures,
         }
 
     async def connect(
@@ -65,6 +77,7 @@ class ConnectionManager:
         await ws.accept()
         async with self._lock:
             self._active[ws] = account_uid
+            self._send_locks.setdefault(ws, asyncio.Lock())
             return self._stats_unlocked()
 
     async def disconnect(self, ws: WebSocket) -> dict[str, int] | None:
@@ -72,6 +85,7 @@ class ConnectionManager:
             if ws not in self._active:
                 return None
             self._active.pop(ws)
+            self._send_locks.pop(ws, None)
             return self._stats_unlocked()
 
     async def stats(self) -> dict[str, int]:
@@ -100,16 +114,96 @@ class ConnectionManager:
         await self._send_to(targets, message)
 
     async def _send_to(self, targets: list[WebSocket], message: dict[str, Any]) -> None:
-        dead: list[WebSocket] = []
-        for ws in targets:
-            try:
-                await ws.send_json(message)
-            except Exception:
-                dead.append(ws)
-        if dead:
-            async with self._lock:
-                for ws in dead:
-                    self._active.pop(ws, None)
+        # 대상마다 독립 task+timeout을 사용한다. 한 브라우저의 네트워크 버퍼가 막혀도 다른
+        # 브라우저의 진행률·갱신 신호는 기다리지 않는다. 소켓별 lock은 서로 다른 broadcast가
+        # 겹쳤을 때 동일 ASGI 연결에 send_json을 동시에 호출하는 문제도 막는다.
+        async with self._lock:
+            prepared = [
+                (ws, self._send_locks.setdefault(ws, asyncio.Lock()))
+                for ws in targets
+                if ws in self._active
+            ]
+        if not prepared:
+            return
+
+        results = await asyncio.gather(
+            *(self._send_one(ws, send_lock, message) for ws, send_lock in prepared)
+        )
+        dead = [(ws, failure) for ws, failure in results if failure is not None]
+        if not dead:
+            return
+
+        removed: list[tuple[WebSocket, str]] = []
+        async with self._lock:
+            for ws, failure in dead:
+                # 동시에 겹친 broadcast가 같은 사망 소켓을 발견해도 최초 한 번만 집계·로그한다.
+                if ws not in self._active:
+                    continue
+                self._active.pop(ws, None)
+                self._send_locks.pop(ws, None)
+                removed.append((ws, failure))
+            timeout_count = sum(1 for _ws, failure in removed if failure == "timeout")
+            failure_count = len(removed) - timeout_count
+            self._send_timeouts += timeout_count
+            self._send_failures += failure_count
+        if not removed:
+            return
+
+        log_event(
+            _log,
+            "websocket_clients_dropped",
+            level=logging.WARNING,
+            dropped=len(removed),
+            send_timeouts=timeout_count,
+            send_failures=failure_count,
+        )
+        # manager에서만 빼면 endpoint의 receive loop가 계속 살아 유령 연결이 된다. close도
+        # 짧게 제한해 시도하되, 이미 끊어진 소켓이나 막힌 전송 때문에 broadcast를 다시 막지 않는다.
+        await asyncio.gather(
+            *(
+                self._close_quietly(
+                    ws,
+                    "realtime send timeout" if failure == "timeout" else "realtime send failed",
+                )
+                for ws, failure in removed
+            )
+        )
+
+    @staticmethod
+    async def _send_locked(
+        ws: WebSocket,
+        send_lock: asyncio.Lock,
+        message: dict[str, Any],
+    ) -> None:
+        async with send_lock:
+            await ws.send_json(message)
+
+    async def _send_one(
+        self,
+        ws: WebSocket,
+        send_lock: asyncio.Lock,
+        message: dict[str, Any],
+    ) -> tuple[WebSocket, str | None]:
+        try:
+            await asyncio.wait_for(
+                self._send_locked(ws, send_lock, message),
+                timeout=_WS_SEND_TIMEOUT_SECONDS,
+            )
+            return ws, None
+        except asyncio.TimeoutError:
+            return ws, "timeout"
+        except Exception:
+            return ws, "failure"
+
+    @staticmethod
+    async def _close_quietly(ws: WebSocket, reason: str) -> None:
+        try:
+            await asyncio.wait_for(
+                ws.close(code=1011, reason=reason),
+                timeout=_WS_CLOSE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            pass
 
     def notify_mutation(
         self,
