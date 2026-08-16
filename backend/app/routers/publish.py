@@ -171,6 +171,17 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
             },
         }
     counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID)
+    # 공유 서버도 받은 원본을 보존한다. 번들에는 원격 URL만 오므로 서버 측 byte-cache가
+    # 없으면 CDN 만료 뒤 팀 공유본 전체가 깨진다. ID/job_id 양쪽을 해석해 멱등 등록한다.
+    for item in bundle.get("generations") or []:
+        if not isinstance(item, dict):
+            continue
+        anchor = str((item.get("generation") or {}).get("id") or "").strip()
+        if not anchor:
+            continue
+        local_id = repo.resolve_local_id(anchor)
+        if repo.get_generation(local_id):
+            repo.request_media_preservation(local_id, "shared")
     return {"ok": True, **counts}
 
 
@@ -395,6 +406,7 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
             blocked += 1
             continue
         repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
+        repo.request_media_preservation(gid, "shared")
         _touch_telemetry(gid)
         published += 1
     out = {

@@ -121,6 +121,14 @@ class GenerationOut(BaseModel):
     is_final: bool = False  # v02 CMS: Supervisor 가 지정한 최종(골드)
     final_by: Optional[str] = None  # 최종 지정자 creator_uid
     job_id: Optional[str] = None  # 힉스필드 잡 앵커 — 팀 카드(서버 UUID)↔로컬 행 매핑·확인(ack) 키(단건·목록 모두 채움)
+    media_preservation_reason: Optional[str] = None  # shared|final|manual|admin
+    media_preservation_status: str = "none"  # none|pending|running|complete|partial|failed|capacity
+    media_preservation_attempts: int = 0
+    media_preservation_cached: int = 0
+    media_preservation_failed: int = 0
+    media_preservation_error: Optional[str] = None  # 안전한 분류값(URL·예외 원문 아님)
+    media_preservation_next_retry_at: Optional[str] = None
+    media_preservation_updated_at: Optional[str] = None
 
 
 class HistoryOut(BaseModel):

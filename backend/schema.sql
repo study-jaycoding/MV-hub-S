@@ -46,6 +46,25 @@ CREATE TABLE IF NOT EXISTS generation (
     workspace_name TEXT                              -- 현재 귀속 워크스페이스 표시 이름(생성 시 기본값, 수동 변경 가능)
 );
 
+-- 공유·최종 생성물 원본 보존 작업. 다운로드를 요청 응답과 분리하고 상태를 영속화해
+-- 프로세스 재시작 뒤에도 이어서 처리한다. 원격 URL·프롬프트는 이 테이블에 기록하지 않는다.
+CREATE TABLE IF NOT EXISTS media_preservation (
+    generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,
+    reason        TEXT NOT NULL,                    -- shared | final | manual | admin
+    status        TEXT NOT NULL DEFAULT 'pending',  -- pending|running|complete|partial|failed|capacity
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    cached_count  INTEGER NOT NULL DEFAULT 0,
+    failed_count  INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    bytes_cached  INTEGER NOT NULL DEFAULT 0,
+    error_code    TEXT,                             -- 안전한 분류값만(URL·예외 원문 금지)
+    next_retry_at TEXT,
+    requested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_media_preservation_due
+    ON media_preservation(status, next_retry_at, updated_at);
+
 -- 생성자(워크스페이스 멤버) uid → 사용자 지정 이름. CLI 가 uid→이름을 안 주므로 직접 라벨링.
 CREATE TABLE IF NOT EXISTS creator (
     uid  TEXT PRIMARY KEY,

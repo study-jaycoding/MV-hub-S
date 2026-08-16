@@ -146,6 +146,23 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
+    # RL-22: 공유·최종 생성물 원본 보존 상태. 옛 DB도 멱등 보강한다. URL·프롬프트는
+    # 저장하지 않고 상태와 안전한 집계만 기록한다.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS media_preservation ("
+        "generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,"
+        "reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+        "attempts INTEGER NOT NULL DEFAULT 0, cached_count INTEGER NOT NULL DEFAULT 0,"
+        "failed_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0,"
+        "bytes_cached INTEGER NOT NULL DEFAULT 0, error_code TEXT, next_retry_at TEXT,"
+        "requested_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_preservation_due "
+        "ON media_preservation(status, next_retry_at, updated_at)"
+    )
     for table in ("asset", "reference"):
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if "source_url" not in cols:

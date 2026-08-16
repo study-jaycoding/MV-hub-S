@@ -169,6 +169,41 @@ class MediaCacheTests(unittest.TestCase):
                 )
         self.assertEqual(call.call_count, 1)
 
+    def test_preserved_media_quota_rejects_only_new_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old = root / "aa" / "old.mp4"
+            new = root / "bb" / "new.mp4"
+            old.parent.mkdir(parents=True)
+            new.parent.mkdir(parents=True)
+            old.write_bytes(b"o" * 8)
+            new.write_bytes(b"n" * 8)
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 10),
+            ):
+                with self.assertRaises(media_cache.MediaCacheCapacityError):
+                    media_cache._enforce_preserved_quota(new, newly_created=True)
+            self.assertTrue(old.exists())
+            self.assertFalse(new.exists())
+
+    def test_detailed_cache_result_hides_capacity_error_details(self):
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", Path(td)),
+                mock.patch.object(
+                    media_cache,
+                    "_download",
+                    side_effect=media_cache.MediaCacheCapacityError("secret path and sizes"),
+                ),
+            ):
+                result = asyncio.run(
+                    media_cache.cache_url_result("https://cdn.example.com/a.mp4?sig=secret")
+                )
+            self.assertEqual(result.status, "capacity")
+            self.assertEqual(result.error_code, "capacity")
+            self.assertNotIn("secret", repr(result))
+
 
 if __name__ == "__main__":
     unittest.main()

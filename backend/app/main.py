@@ -84,6 +84,7 @@ from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
 from .services.temp_sweeper import periodic_sweeper
+from .services.media_preservation import periodic_media_preservation
 from .services.operational_logging import (
     compact_runtime_snapshot,
     configure_operational_logging,
@@ -320,6 +321,7 @@ async def _application_lifespan(app: FastAPI):
         periodic_sync.start()
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
     periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
+    periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
     # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
     # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
     # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
@@ -358,6 +360,7 @@ async def _application_lifespan(app: FastAPI):
     await shutdown_request_estimates()
     await periodic_backup.stop()
     await periodic_sweeper.stop()
+    await periodic_media_preservation.stop()
     await remote_realtime_bridge.stop()
     if MANAGE_ENABLED or _proxy.is_worker_hub():
         # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.

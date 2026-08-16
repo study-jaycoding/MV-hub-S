@@ -16,6 +16,7 @@ from ..config import AUTH_ENABLED, MANAGE_ENABLED
 from ..db import get_connection, get_db_path
 from ..manage_db import MANAGE_DB_PATH
 from ..repo.manage_telemetry import telemetry_outbox_status
+from ..repo.media_preservation import media_preservation_counts
 from .backup import BACKUP_INTERVAL, list_backups_info
 
 
@@ -198,6 +199,20 @@ def telemetry_snapshot() -> dict[str, Any]:
     }
 
 
+def media_preservation_snapshot() -> dict[str, Any]:
+    """원본 보존 큐 상태 집계. 생성물 식별자·URL·오류 원문은 포함하지 않는다."""
+    counts = media_preservation_counts()
+    return {
+        "status_counts": counts,
+        "active": int(counts.get("pending", 0)) + int(counts.get("running", 0)),
+        "attention": (
+            int(counts.get("partial", 0))
+            + int(counts.get("failed", 0))
+            + int(counts.get("capacity", 0))
+        ),
+    }
+
+
 class OperationalAlertTracker:
     """같은 경고를 매 분 반복하지 않고, 상태 변경 또는 장기 지속 때만 다시 알린다."""
 
@@ -210,6 +225,7 @@ class OperationalAlertTracker:
         operations = snapshot.get("operations") or snapshot
         queue = operations.get("generation_queue") or {}
         telemetry = operations.get("telemetry") or {}
+        preservation = operations.get("media_preservation") or {}
         databases = operations.get("databases") or {}
         candidates: dict[str, dict[str, Any]] = {}
 
@@ -238,6 +254,15 @@ class OperationalAlertTracker:
         if databases and not databases.get("ready", True):
             candidates["database_unready"] = {
                 "failed_checks": list(databases.get("failed_checks") or []),
+            }
+
+        preservation_counts = preservation.get("status_counts") or {}
+        preservation_attention = int(preservation.get("attention") or 0)
+        if preservation_attention:
+            candidates["media_preservation_attention"] = {
+                "partial": int(preservation_counts.get("partial") or 0),
+                "failed": int(preservation_counts.get("failed") or 0),
+                "capacity": int(preservation_counts.get("capacity") or 0),
             }
 
         # 백업 노후 — 수집만 하고 경보가 없어서 "백업이 며칠째 없다"를 아무도 몰랐다.
@@ -287,6 +312,7 @@ def operations_snapshot() -> dict[str, Any]:
     return {
         "generation_queue": generation_queue_snapshot(),
         "telemetry": telemetry_snapshot(),
+        "media_preservation": media_preservation_snapshot(),
         "backups": backup_snapshot(),
         "databases": database_readiness(),
     }

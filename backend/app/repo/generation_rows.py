@@ -46,6 +46,32 @@ def _attach_children(
             g["is_source"] = bool(g["is_source"])
         if "is_final" in g:
             g["is_final"] = bool(g["is_final"])  # v02 CMS 최종(골드) 여부
+        # 원본 보존 상태는 행이 없는 생성물도 명시적인 none으로 직렬화한다. 프론트가
+        # shared/final 여부를 보고 상태를 추측하지 않게 서버가 단일 진실을 제공한다.
+        g["media_preservation_reason"] = None
+        g["media_preservation_status"] = "none"
+        g["media_preservation_attempts"] = 0
+        g["media_preservation_cached"] = 0
+        g["media_preservation_failed"] = 0
+        g["media_preservation_error"] = None
+        g["media_preservation_next_retry_at"] = None
+        g["media_preservation_updated_at"] = None
+
+    for r in conn.execute(
+        f"SELECT generation_id, reason, status, attempts, cached_count, failed_count, "
+        f"error_code, next_retry_at, updated_at FROM media_preservation "
+        f"WHERE generation_id IN ({placeholders})",
+        ids,
+    ).fetchall():
+        g = by_id[r["generation_id"]]
+        g["media_preservation_reason"] = r["reason"]
+        g["media_preservation_status"] = r["status"]
+        g["media_preservation_attempts"] = int(r["attempts"] or 0)
+        g["media_preservation_cached"] = int(r["cached_count"] or 0)
+        g["media_preservation_failed"] = int(r["failed_count"] or 0)
+        g["media_preservation_error"] = r["error_code"]
+        g["media_preservation_next_retry_at"] = r["next_retry_at"]
+        g["media_preservation_updated_at"] = r["updated_at"]
 
     # 생성자(creator_uid) → is_mine + 사용자 지정 이름.
     # is_mine 기준은 '보고 있는 로그인 계정'(viewer_uid)이 우선 — house 가 아닌 계정도 자기 작업이

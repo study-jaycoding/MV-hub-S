@@ -27,6 +27,7 @@ from ..deps import (
 )
 from ..models import GenerationOut, ImportIn, PublishIn
 from ..services.event_journal import journal_audit_event
+from ..services.media_preservation import preserve_generation_now
 
 router = APIRouter(prefix="/api", tags=["share"])
 logger = logging.getLogger(__name__)
@@ -171,6 +172,7 @@ def publish(gen_id: str, body: PublishIn, request: Request):
     # 프론트는 이 필드를 보내지 않으므로 동작 변화 없음(필드는 하위호환용으로만 남김).
     shared_by = actor_id(request)
     repo.publish(gen_id, shared_by, body.visibility)
+    repo.request_media_preservation(gen_id, "shared")
     _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
 
@@ -233,16 +235,12 @@ async def _preserve_final_media(local_id: str) -> None:
     """최종(골드) 지정 시 그 생성물의 원본을 로컬로 byte-cache 한다 — 힉스필드 CDN URL 이 나중에 죽어도
     최종본은 로컬 보존본으로 남는다(선택 보존). best-effort: 실패해도 finalize 결과엔 영향 없음.
     ★썸네일 LRU 삭제는 .thumbs 만 대상이라, 여기서 MEDIA_DIR 에 받은 원본 보존본은 지워지지 않는다."""
-    try:
-        from .generation import cache_generation_media  # 지연 import(라우터 간 순환 방지)
-
-        gen = repo.get_generation(local_id)
-        # 백그라운드 실행 사이 최종 해제/삭제됐으면 보존 안 함 — '최종본만 원본 보존' 정책 유지.
-        if not gen or not gen.get("is_final"):
-            return
-        await cache_generation_media(gen)
-    except Exception:  # noqa: BLE001 — 보존 실패는 비핵심(원격 URL 폴백 유지)
-        pass
+    # 요청을 먼저 영속화하므로 프로세스가 여기서 중단돼도 다음 시작의 주기 워커가 이어간다.
+    gen = repo.get_generation(local_id)
+    if not gen or not gen.get("is_final"):
+        return
+    repo.request_media_preservation(local_id, "final")
+    await preserve_generation_now(local_id)
 
 
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)

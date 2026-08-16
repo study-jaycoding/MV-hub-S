@@ -171,6 +171,26 @@ def test_shared_server_ignores_local_generation_queue(monkeypatch):
     }
 
 
+def test_media_preservation_snapshot_exposes_only_safe_counts(monkeypatch):
+    monkeypatch.setattr(
+        operational_health,
+        "media_preservation_counts",
+        lambda: {"pending": 3, "running": 1, "partial": 2, "failed": 1, "capacity": 4},
+    )
+
+    assert operational_health.media_preservation_snapshot() == {
+        "status_counts": {
+            "pending": 3,
+            "running": 1,
+            "partial": 2,
+            "failed": 1,
+            "capacity": 4,
+        },
+        "active": 4,
+        "attention": 7,
+    }
+
+
 def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_clear():
     tracker = operational_health.OperationalAlertTracker(repeat_seconds=100)
     bad = {
@@ -181,6 +201,10 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
                 "unanchored_over_10m": 0,
             },
             "telemetry": {"pending": 4, "failed": 1, "oldest_age_seconds": 800},
+            "media_preservation": {
+                "attention": 2,
+                "status_counts": {"partial": 1, "failed": 0, "capacity": 1},
+            },
             "databases": {"ready": True},
         }
     }
@@ -188,6 +212,7 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
     assert {row["event"] for row in first} == {
         "generation_queue_attention",
         "telemetry_backlog",
+        "media_preservation_attention",
     }
     assert tracker.events(bad, now=10) == []
     aging = {
@@ -197,7 +222,7 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
         }
     }
     assert tracker.events(aging, now=11) == []
-    assert len(tracker.events(bad, now=101)) == 2
+    assert len(tracker.events(bad, now=101)) == 3
 
     healthy = {
         "operations": {
@@ -207,4 +232,4 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
         }
     }
     assert tracker.events(healthy, now=102) == []
-    assert len(tracker.events(bad, now=103)) == 2
+    assert len(tracker.events(bad, now=103)) == 3

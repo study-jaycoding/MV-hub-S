@@ -39,8 +39,9 @@ from ..models import (
     TagsIn,
 )
 from ..services import cli_bridge, syncer
+from ..services.media_preservation import preserve_generation_now
 from ..services.telemetry_drain import drain_isolated_telemetry
-from ..usecases import generation_media_cache, generation_personal_meta, hf_missing
+from ..usecases import generation_personal_meta, hf_missing
 
 logger = logging.getLogger(__name__)
 
@@ -964,7 +965,10 @@ async def cache_one(gen_id: str, request: Request):
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
-    res = await generation_media_cache.cache_generation_media(gen)
+    repo.request_media_preservation(gen_id, "manual", force=True)
+    res = await preserve_generation_now(gen_id)
+    if res is None:
+        res = {"status": (repo.get_media_preservation(gen_id) or {}).get("status", "running")}
     res["generation"] = repo.get_generation(gen_id)
     return res
 
@@ -975,4 +979,11 @@ async def cache_all(request: Request):
     from ..deps import require_admin
 
     require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
-    return await generation_media_cache.cache_all_generation_media()
+    queued = 0
+    for gen_id in repo.all_generation_ids():
+        generation = repo.get_generation(gen_id)
+        if not generation or generation.get("status") != "done":
+            continue
+        if repo.request_media_preservation(gen_id, "admin", force=True):
+            queued += 1
+    return {"queued": queued, "message": "용량 한도 안에서 백그라운드 보존을 시작했습니다"}

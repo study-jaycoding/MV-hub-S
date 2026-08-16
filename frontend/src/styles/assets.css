@@ -637,6 +637,22 @@
 }
 .info-recovery-btn:hover:not(:disabled) { background: rgba(255, 174, 65, 0.24); }
 .info-recovery-btn:disabled { opacity: 0.55; cursor: wait; }
+.info-preservation {
+  display: grid; grid-template-columns: 80px 1fr; gap: 6px 10px;
+  margin: 2px 0; padding: 8px 10px; border-radius: 8px;
+  background: rgba(190, 255, 59, 0.06); border: 1px solid rgba(190, 255, 59, 0.2);
+}
+.info-preservation.is-failed, .info-preservation.is-partial, .info-preservation.is-capacity {
+  background: rgba(255, 174, 65, 0.08); border-color: rgba(255, 174, 65, 0.35);
+}
+.info-preservation-label { color: var(--muted2); font-size: 11px; font-weight: 700; }
+.info-preservation-text { color: var(--text); font-size: 12px; }
+.info-preservation-btn {
+  grid-column: 2; justify-self: start; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(190, 255, 59, 0.5); background: rgba(190, 255, 59, 0.1);
+  color: var(--accent); font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.info-preservation-btn:disabled { opacity: 0.55; cursor: wait; }
 .info-path { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); }
 /* 경로 클릭 → 탐색기에서 원본 위치 열기 */
 .info-path-btn {
