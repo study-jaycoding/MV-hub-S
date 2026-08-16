@@ -115,6 +115,19 @@ def set_project_folder(
 _TYPE_KEYS = ("image", "video", "3d", "audio")
 
 
+def _workspace_filter(alias: str, workspace_id: Optional[str]) -> tuple[str, list[str]]:
+    """선택 워크스페이스의 팀 데이터만 읽는 공통 SQL 조건.
+
+    workspace_id가 없으면 개인 탭의 '전체 워크스페이스' 계약을 유지한다.
+    """
+    if not workspace_id:
+        return "", []
+    return (
+        f" AND {alias}.workspace_scope='team' AND {alias}.workspace_id=?",
+        [workspace_id],
+    )
+
+
 def _classify_type(model: Optional[str], asset_type: Optional[str], type_map: dict) -> str:
     """생성물 출력 타입 — 모델 카탈로그(정답) 우선, 없으면 asset_type(URL 추측) 폴백.
     type_map: {job_set_type: 'image'|'video'|'3d'|'audio'} (라우터가 model list 로 채움)."""
@@ -127,6 +140,7 @@ def _classify_type(model: Optional[str], asset_type: Optional[str], type_map: di
 def _project_model_breakdowns(
     conn,
     project_ids: Optional[list[str]] = None,
+    workspace_id: Optional[str] = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
     """프로젝트별 모델 집계와 현재 예산 주기 모델 집계를 한 번씩 조회한다."""
     params: list[str] = []
@@ -137,6 +151,9 @@ def _project_model_breakdowns(
         marks = ",".join("?" for _ in project_ids)
         project_filter = f" AND g.project_id IN ({marks})"
         params = project_ids
+    workspace_filter, workspace_params = _workspace_filter("g", workspace_id)
+    project_filter += workspace_filter
+    params += workspace_params
 
     columns = """g.project_id AS pid,
                  COALESCE(NULLIF(TRIM(g.model), ''), '알 수 없음') AS model,
@@ -197,9 +214,11 @@ def _project_model_breakdowns(
 def _project_folder_breakdowns(
     conn,
     project_ids: Optional[list[str]] = None,
+    workspace_id: Optional[str] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """프로젝트의 등록 폴더와 실제 생성물을 합쳐 시퀀스별 사용량을 만든다."""
-    params: list[str] = []
+    task_params: list[str] = []
+    generation_params: list[str] = []
     task_filter = ""
     generation_filter = ""
     if project_ids is not None:
@@ -208,7 +227,11 @@ def _project_folder_breakdowns(
         marks = ",".join("?" for _ in project_ids)
         task_filter = f" AND pt.project_id IN ({marks})"
         generation_filter = f" AND g.project_id IN ({marks})"
-        params = project_ids
+        task_params = list(project_ids)
+        generation_params = list(project_ids)
+    workspace_filter, workspace_params = _workspace_filter("g", workspace_id)
+    generation_filter += workspace_filter
+    generation_params += workspace_params
 
     def normalized(value: Optional[str]) -> str:
         path = (value or "").strip().replace("\\", "/").strip("/")
@@ -220,9 +243,10 @@ def _project_folder_breakdowns(
     task_rows = conn.execute(
         f"""SELECT pt.project_id AS pid, pt.folder_path
             FROM project_task pt
-            WHERE pt.folder_path IS NOT NULL AND TRIM(pt.folder_path) <> ''{task_filter}
+            WHERE pt.folder_path IS NOT NULL AND TRIM(pt.folder_path) <> ''
+              AND COALESCE(pt.archived, 0)=0{task_filter}
             ORDER BY pt.project_id, pt.folder_path COLLATE NOCASE""",
-        params,
+        task_params,
     ).fetchall()
     for row in task_rows:
         pid = row["pid"]
@@ -259,7 +283,7 @@ def _project_folder_breakdowns(
             GROUP BY g.project_id, g.folder_path, g.creator_uid,
                      COALESCE(NULLIF(TRIM(g.model), ''), '알 수 없음')
             ORDER BY g.project_id, g.folder_path COLLATE NOCASE, credits DESC""",
-        params,
+        generation_params,
     ).fetchall()
     creator_uids = {row["creator_uid"] for row in generation_rows if row["creator_uid"]}
     creator_names = resolve_display_names(conn, creator_uids) if creator_uids else {}
@@ -353,7 +377,10 @@ def _project_folder_breakdowns(
     return result
 
 
-def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
+def dashboard_summary(
+    model_type_map: Optional[dict] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
     """프로젝트별·작업자별 생성수·크레딧·소요시간 + 출력타입·영상길이 + 환불·워크스페이스 요약.
 
     크레딧 = COALESCE(실제, 견적). 출력타입은 model_type_map(라우터가 CLI model list 로 채움)
@@ -361,8 +388,10 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
     tmap = model_type_map or {}
     with get_connection() as conn:
         _ensure_schema(conn)
+        generation_filter, generation_params = _workspace_filter("g", workspace_id)
+        project_filter, project_params = _workspace_filter("p", workspace_id)
         proj = conn.execute(
-            """SELECT g.project_id AS pid, p.name AS name,
+            f"""SELECT g.project_id AS pid, p.name AS name,
                       COUNT(*) AS gen_count,
                       SUM(CASE WHEN g.status='done' THEN 1 ELSE 0 END) AS done_count,
                       SUM(CASE WHEN g.is_final=1 THEN 1 ELSE 0 END) AS final_count,
@@ -375,23 +404,28 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
                LEFT JOIN project p ON p.id = g.project_id
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
                LEFT JOIN share s ON s.generation_id = g.id
+               WHERE 1=1{generation_filter}
                GROUP BY g.project_id
-               ORDER BY gen_count DESC"""
+               ORDER BY gen_count DESC""",
+            generation_params,
         ).fetchall()
         # 설정된 프로젝트(레지스트리) — 미분류(null) 제외, 보관 제외. 생성물이 없어도 0으로 표시.
         reg = conn.execute(
-            "SELECT id, name FROM project WHERE archived = 0 "
-            "ORDER BY COALESCE(sort_order, 1000000), created_at"
+            f"SELECT id, name FROM project p WHERE archived = 0{project_filter} "
+            "ORDER BY COALESCE(sort_order, 1000000), created_at",
+            project_params,
         ).fetchall()
         workers = conn.execute(
-            """SELECT g.creator_uid AS uid,
+            f"""SELECT g.creator_uid AS uid,
                       COUNT(*) AS gen_count,
                       COALESCE(SUM(COALESCE(m.real_credits, m.est_credits)), 0) AS credits,
                       COALESCE(SUM(m.elapsed_seconds), 0) AS elapsed_total
                FROM generation g
                LEFT JOIN generation_metrics m ON m.gen_id = g.id
+               WHERE 1=1{generation_filter}
                GROUP BY g.creator_uid
-               ORDER BY gen_count DESC"""
+               ORDER BY gen_count DESC""",
+            generation_params,
         ).fetchall()
         uids = [w["uid"] for w in workers if w["uid"]]
         names = resolve_display_names(conn, uids) if uids else {}
@@ -399,8 +433,11 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
             r["project_id"]: dict(r)
             for r in conn.execute("SELECT * FROM project_planning").fetchall()
         }
-        project_models, budget_models = _project_model_breakdowns(conn)
-        project_folders = _project_folder_breakdowns(conn)
+        registry_ids = [row["id"] for row in reg]
+        project_models, budget_models = _project_model_breakdowns(
+            conn, registry_ids, workspace_id
+        )
+        project_folders = _project_folder_breakdowns(conn, registry_ids, workspace_id)
         # 예산은 프로젝트 누적이 아니라 설정된 현재 일/주/월 모델 사용량 합과 비교한다.
         budget_usage = {
             pid: sum(row["credits"] for row in rows)
@@ -409,16 +446,19 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
         # 출력타입·영상길이 — 모델 카탈로그(정답)로 분류, params.duration 합(영상만).
         # 한 생성물의 대표 에셋 타입(URL 추측)은 폴백용. 모델→type 가 있으면 그것이 우선.
         per_gen = conn.execute(
-            """SELECT g.project_id AS pid, g.model AS model,
+            f"""SELECT g.project_id AS pid, g.model AS model,
                       json_extract(g.params, '$.duration') AS duration,
                       a.type AS asset_type
                FROM generation g
                LEFT JOIN (
                    SELECT generation_id, MIN(type) AS type FROM asset GROUP BY generation_id
-               ) a ON a.generation_id = g.id"""
+               ) a ON a.generation_id = g.id
+               WHERE 1=1{generation_filter}""",
+            generation_params,
         ).fetchall()
         # 환불·지급 — credit_txn 의 action 별 합(절대값). spend 는 실매칭으로 이미 잡힘.
-        io_rows = conn.execute(
+        # credit_txn에는 workspace 차원이 없다. 선택 범위에 전사 합계를 섞어 거짓 수치를 만들지 않는다.
+        io_rows = [] if workspace_id else conn.execute(
             "SELECT action, COALESCE(SUM(ABS(credits)), 0) AS amt FROM credit_txn GROUP BY action"
         ).fetchall()
 
@@ -493,11 +533,13 @@ def dashboard_summary(model_type_map: Optional[dict] = None) -> dict[str, Any]:
         "projects": projects,
         "workers": worker_list,
         "totals": totals,
-        "workspaces": _workspace_credits(),
+        "workspaces": _workspace_credits(workspace_id),
     }
 
 
-def project_dashboard_summary(project_ids: list[str]) -> dict[str, Any]:
+def project_dashboard_summary(
+    project_ids: list[str], workspace_id: Optional[str] = None
+) -> dict[str, Any]:
     """접근 가능한 프로젝트의 작업 현황에 필요한 최소 집계만 반환한다.
 
     전사 작업자·워크스페이스 통계는 의도적으로 읽지 않는다. 호출측이 멤버십으로 허용된
@@ -511,11 +553,17 @@ def project_dashboard_summary(project_ids: list[str]) -> dict[str, Any]:
     marks = ",".join("?" for _ in ids)
     with get_connection() as conn:
         _ensure_schema(conn)
+        project_filter, project_params = _workspace_filter("p", workspace_id)
         registry = conn.execute(
-            f"SELECT id, name FROM project WHERE archived=0 AND id IN ({marks}) "
+            f"SELECT id, name FROM project p WHERE archived=0 AND id IN ({marks}){project_filter} "
             "ORDER BY COALESCE(sort_order, 1000000), created_at",
-            ids,
+            ids + project_params,
         ).fetchall()
+        scoped_ids = [row["id"] for row in registry]
+        if not scoped_ids:
+            return {"projects": []}
+        marks = ",".join("?" for _ in scoped_ids)
+        workspace_filter, workspace_params = _workspace_filter("g", workspace_id)
         stats = conn.execute(
             f"""SELECT g.project_id AS pid,
                        COUNT(*) AS gen_count,
@@ -529,18 +577,20 @@ def project_dashboard_summary(project_ids: list[str]) -> dict[str, Any]:
                 FROM generation g
                 LEFT JOIN generation_metrics m ON m.gen_id = g.id
                 LEFT JOIN share s ON s.generation_id = g.id
-                WHERE g.project_id IN ({marks})
+                WHERE g.project_id IN ({marks}){workspace_filter}
                 GROUP BY g.project_id""",
-            ids,
+            scoped_ids + workspace_params,
         ).fetchall()
         planning = {
             row["project_id"]: dict(row)
             for row in conn.execute(
-                f"SELECT * FROM project_planning WHERE project_id IN ({marks})", ids
+                f"SELECT * FROM project_planning WHERE project_id IN ({marks})", scoped_ids
             ).fetchall()
         }
-        project_models, budget_models = _project_model_breakdowns(conn, ids)
-        project_folders = _project_folder_breakdowns(conn, ids)
+        project_models, budget_models = _project_model_breakdowns(
+            conn, scoped_ids, workspace_id
+        )
+        project_folders = _project_folder_breakdowns(conn, scoped_ids, workspace_id)
         budget_usage = {
             pid: sum(row["credits"] for row in rows)
             for pid, rows in budget_models.items()
@@ -573,7 +623,7 @@ def project_dashboard_summary(project_ids: list[str]) -> dict[str, Any]:
     return {"projects": projects}
 
 
-def _workspace_credits() -> list[dict[str, Any]]:
+def _workspace_credits(workspace_id: Optional[str] = None) -> list[dict[str, Any]]:
     """계정들이 보고한 워크스페이스별 크레딧 풀(account status.workspaces 집계). 같은 워크스페이스는
     가장 최근 보고값으로 dedup. CLI 가 주는 팀 과금 풀 차원 — 이미 수집된 데이터(hf_status:*) 활용."""
     from .identity import list_account_statuses
@@ -588,6 +638,8 @@ def _workspace_credits() -> list[dict[str, Any]]:
             continue
         for ws in st.get("workspaces") or []:
             if not isinstance(ws, dict) or not ws.get("id"):
+                continue
+            if workspace_id and ws.get("id") != workspace_id:
                 continue
             # 팀 과금 풀만 — 개인(free/personal) 플랜은 제외(PM 관점에서 팀 크레딧만 의미).
             if (ws.get("plan_type") or "").lower() != "team":
@@ -620,6 +672,7 @@ def set_planning(
     due_date: Optional[str] = None,
     budget_credits: Optional[int] = None,
     budget_period: Optional[str] = None,
+    archive_after_days: Optional[int] = None,
     note: Optional[str] = None,
 ) -> dict[str, Any]:
     """프로젝트 일정/예산 upsert. project_planning 사이드카만 건드린다(코어 project 무수정)."""
@@ -629,22 +682,39 @@ def set_planning(
         # 최초 저장일 때만 매월을 기본값으로 사용한다.
         if budget_period not in {"day", "week", "month"}:
             existing = conn.execute(
-                "SELECT budget_period FROM project_planning WHERE project_id=?", (pid,)
+                "SELECT budget_period, archive_after_days FROM project_planning WHERE project_id=?",
+                (pid,),
             ).fetchone()
             budget_period = (
                 existing["budget_period"]
                 if existing and existing["budget_period"] in {"day", "week", "month"}
                 else "month"
             )
+        else:
+            existing = conn.execute(
+                "SELECT archive_after_days FROM project_planning WHERE project_id=?", (pid,)
+            ).fetchone()
+        if archive_after_days is None:
+            archive_after_days = (
+                existing["archive_after_days"]
+                if existing and existing["archive_after_days"] is not None
+                else 30
+            )
+        archive_after_days = max(1, min(int(archive_after_days), 3650))
         conn.execute(
             """INSERT INTO project_planning
-                   (project_id, status, start_date, due_date, budget_credits, budget_period, note)
-               VALUES (?,?,?,?,?,?,?)
+                   (project_id, status, start_date, due_date, budget_credits, budget_period,
+                    archive_after_days, note)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(project_id) DO UPDATE SET
                    status=excluded.status, start_date=excluded.start_date,
                    due_date=excluded.due_date, budget_credits=excluded.budget_credits,
-                   budget_period=excluded.budget_period, note=excluded.note""",
-            (pid, status, start_date, due_date, budget_credits, budget_period, note),
+                   budget_period=excluded.budget_period,
+                   archive_after_days=excluded.archive_after_days, note=excluded.note""",
+            (
+                pid, status, start_date, due_date, budget_credits, budget_period,
+                archive_after_days, note,
+            ),
         )
         return dict(
             conn.execute(
@@ -656,9 +726,11 @@ def set_planning(
 # ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
 def finals_to_export(project_id: str) -> list[dict[str, Any]]:
     """저장 대상 = 완료(done) 작업의 최종본(is_final)이면서 생성 잡도 완료(status=done)인 컷.
-    list_tasks 의 파생 상태를 그대로 재사용해 '생략(omit)' 수동 종결은 자동 제외된다.
+    과거 기록으로 전환된 완료 작업도 내보내기 대상에서 사라지면 안 되므로 보관 행까지
+    조회한다. list_tasks 의 파생 상태를 그대로 재사용해 '생략(omit)' 수동 종결은 자동
+    제외된다.
     반환: [{gen_id, folder_path, file_path, media_type}] — folder_path 로 저장 위치를 정한다."""
-    tasks = list_tasks(project_id)
+    tasks = list_tasks(project_id, include_archived=True)
     gen_ids: set[str] = set()
     for t in tasks:
         if t.get("status") != "done":

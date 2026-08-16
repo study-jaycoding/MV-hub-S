@@ -387,13 +387,16 @@ export function WorkspaceUsageDashboard({
   reloadSignal = 0,
   canCreateProject = false,
   onCreateProject,
+  workspaceId = "",
+  onWorkspaceIdChange,
 }: {
   reloadSignal?: number;
   canCreateProject?: boolean;
   onCreateProject?: () => void;
+  workspaceId?: string;
+  onWorkspaceIdChange?: (workspaceId?: string) => void;
 }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
-  const [workspaceId, setWorkspaceId] = useState("");
   const [chartPeriodUnit, setChartPeriodUnit] = useState<UsagePeriodUnit>("week");
   const [chartAnchorDate, setChartAnchorDate] = useState(() => new Date());
   const [chartMetric, setChartMetric] = useState<Metric>("credits");
@@ -436,9 +439,6 @@ export function WorkspaceUsageDashboard({
         if (!active) return;
         const items = response.workspaces || [];
         setWorkspaces(items);
-        setWorkspaceId((current) =>
-          current && items.some((item) => item.id === current) ? current : items[0]?.id || "",
-        );
       })
       .catch((reason) => active && setError(`사용량을 불러오지 못했습니다. ${String(reason)}`))
       .finally(() => active && setLoading(false));
@@ -446,14 +446,10 @@ export function WorkspaceUsageDashboard({
   }, [reloadSignal]);
 
   useEffect(() => {
-    if (!workspaceId) {
-      setOverview(null);
-      return;
-    }
     let active = true;
     setLoading(true);
     setError("");
-    manageApi.teamOverview({ workspaceId })
+    manageApi.teamOverview({ workspaceId: workspaceId || undefined })
       .then((nextOverview) => {
         if (!active) return;
         setOverview(nextOverview);
@@ -464,7 +460,7 @@ export function WorkspaceUsageDashboard({
   }, [reloadSignal, workspaceId]);
 
   useEffect(() => {
-    if (!workspaceId || !drillTargetKey) {
+    if (!drillTargetKey) {
       setDrillSnapshot(null);
       setDrillErrorKey("");
       return;
@@ -472,7 +468,7 @@ export function WorkspaceUsageDashboard({
     let active = true;
     setDrillErrorKey("");
     manageApi.teamOverview({
-      workspaceId,
+      workspaceId: workspaceId || undefined,
       creatorUid: selectedCreatorFilter,
       projectId: selectedProjectFilter,
     })
@@ -496,18 +492,13 @@ export function WorkspaceUsageDashboard({
   ].join("|");
   const trendKeyRef = useRef("");
   useEffect(() => {
-    if (!workspaceId) {
-      setTrend([]);
-      trendKeyRef.current = "";
-      return;
-    }
     if (trendKeyRef.current !== trendDisplayKey) {
       trendKeyRef.current = trendDisplayKey;
       setTrend([]);
     }
     let active = true;
     manageApi.teamTimeseries(chartRange.bucket, {
-      workspaceId,
+      workspaceId: workspaceId || undefined,
       dateFrom: chartRange.dateFrom,
       dateTo: chartRange.dateTo,
       timeFrom: chartRange.timeFrom,
@@ -566,7 +557,7 @@ export function WorkspaceUsageDashboard({
     setError("");
     try {
       const response = await manageApi.usageExport({
-        workspaceId,
+        workspaceId: workspaceId || undefined,
       });
       const csv = buildHfUsageCsv(response.rows || [], modelDisplayName);
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -597,7 +588,7 @@ export function WorkspaceUsageDashboard({
     </button>
   ) : null;
 
-  if (!loading && !workspaces.length) {
+  if (!loading && !workspaces.length && !overview) {
     return (
       <section className="usage-dashboard usage-empty">
         <header className="usage-head">
@@ -618,22 +609,26 @@ export function WorkspaceUsageDashboard({
     <section className="usage-dashboard">
       <header className="usage-head">
         <div className="usage-title">
-          <span className="usage-avatar">{(selectedWorkspace?.name || "W").slice(0, 1).toUpperCase()}</span>
+          <span className="usage-avatar">{(selectedWorkspace?.name || "전체").slice(0, 1).toUpperCase()}</span>
           <div>
             <select
               aria-label="워크스페이스 선택"
               value={workspaceId}
               onChange={(event) => {
-                setWorkspaceId(event.target.value);
+                onWorkspaceIdChange?.(event.target.value || undefined);
                 setChartModel("");
                 clearDrill();
               }}
             >
+              <option value="">개인 · 전체 워크스페이스</option>
+              {workspaceId && !workspaces.some((workspace) => workspace.id === workspaceId) ? (
+                <option value={workspaceId}>선택 워크스페이스 ({workspaceId.slice(0, 8)})</option>
+              ) : null}
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
               ))}
             </select>
-            <p>{selectedWorkspace?.member_count || 0} members · 전체 기간</p>
+            <p>{selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간</p>
           </div>
         </div>
         <div className="usage-actions">

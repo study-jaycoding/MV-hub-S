@@ -22,11 +22,15 @@ class SaveFinalsDelegationTests(unittest.TestCase):
         db.init_db()
         repo.ensure_default_worker()
         with db.get_connection() as conn:
-            conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p1','P1','team',0)")
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived, workspace_scope, workspace_id) "
+                "VALUES('p1','P1','team',0,'team','ws-1')"
+            )
             conn.execute(
                 "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
-                "creator_uid, project_id, folder_path) "
-                "VALUES('g1','me','p','done','2026-06-30',1,'u_me','p1','ep001/c0010')"
+                "creator_uid, project_id, folder_path, workspace_scope, workspace_id) "
+                "VALUES('g1','me','p','done','2026-06-30',1,'u_me','p1','ep001/c0010',"
+                "'team','ws-1')"
             )
 
     def tearDown(self):

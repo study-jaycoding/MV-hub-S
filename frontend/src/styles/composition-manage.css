@@ -395,6 +395,18 @@
 
 /* ── 작업(Work) 보드/테이블 공통 ── */
 .work-head-ctl { display: flex; align-items: center; gap: 10px; }
+.work-source-label {
+  margin: 4px 0 0; color: var(--muted); font-size: 11px;
+}
+.work-history-toggle {
+  font-family: inherit; border: 1px solid var(--border); background: transparent;
+  color: var(--muted); border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+.work-history-toggle:hover { border-color: var(--accent); color: var(--text); }
+.work-history-toggle.on {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent); font-weight: 700;
+}
 
 /* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
 .work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }

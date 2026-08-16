@@ -60,9 +60,18 @@ def _refresh_isolated_telemetry() -> None:
         pass
 
 
-def _require_project_read(request: Request, pid: str) -> None:
-    if not repo.get_project(pid):
+def _require_project_read(
+    request: Request, pid: str, workspace_id: Optional[str] = None
+) -> None:
+    project = repo.get_project(pid)
+    if not project:
         raise HTTPException(status_code=404, detail="없는 프로젝트")
+    if workspace_id and not (
+        project.get("workspace_scope") == "team"
+        and project.get("workspace_id") == workspace_id
+    ):
+        # 다른 워크스페이스 프로젝트의 존재 자체를 노출하지 않는다.
+        raise HTTPException(status_code=404, detail="선택한 워크스페이스에 없는 프로젝트")
     require_project_role(request, pid, *_PROJECT_READ_ROLES, read_only=True)
 
 
@@ -310,7 +319,7 @@ def hf_missing_apply(body: HfMissingApplyIn, request: Request):
 
 
 @router.get("/summary")
-async def summary(request: Request):
+async def summary(request: Request, workspace_id: Optional[str] = None):
     """프로젝트별·작업자별 생성수·크레딧·시간 + 출력타입·영상길이·환불·워크스페이스 요약.
     출력타입 정확화를 위해 CLI model list 로 (job_set_type→type) 맵을 만들어 넘긴다 —
     CLI 없으면(공유 서버) 빈 맵 → asset.type 추측으로 폴백(graceful)."""
@@ -323,11 +332,11 @@ async def summary(request: Request):
                 type_map[jt] = t
     except Exception:  # noqa: BLE001 — 모델목록 실패해도 요약은 폴백으로 동작
         type_map = {}
-    return repo_manage.dashboard_summary(type_map)
+    return repo_manage.dashboard_summary(type_map, workspace_id)
 
 
 @router.get("/project-summary")
-def project_summary(request: Request):
+def project_summary(request: Request, workspace_id: Optional[str] = None):
     """프로젝트 작업 현황용 요약.
 
     read_all 보유자는 전체 프로젝트, 일반 멤버는 project_member에 들어간 프로젝트만 반환한다.
@@ -337,7 +346,9 @@ def project_summary(request: Request):
         account_global_roles(request), "read_all"
     )
     member_uid = None if read_all else (account_scope_uid(request) or "\x00")
-    visible = repo.list_projects(include_archived=False, member_uid=member_uid)
+    visible = repo.list_projects(
+        include_archived=False, member_uid=member_uid, workspace_id=workspace_id
+    )
     project_ids = [
         project.get("id")
         for project in visible.get("projects") or []
@@ -348,7 +359,7 @@ def project_summary(request: Request):
             repo.projects_where_role(member_uid, list(_PROJECT_READ_ROLES))
         )
         project_ids = [pid for pid in project_ids if pid in readable_ids]
-    return repo_manage.project_dashboard_summary(project_ids)
+    return repo_manage.project_dashboard_summary(project_ids, workspace_id)
 
 
 # ── 프로젝트 일정/예산 ────────────────────────────────────────────────────────
@@ -358,6 +369,7 @@ class PlanningIn(BaseModel):
     due_date: Optional[str] = None
     budget_credits: Optional[int] = None
     budget_period: Optional[Literal["day", "week", "month"]] = None
+    archive_after_days: Optional[int] = Field(default=None, ge=1, le=3650)
     note: Optional[str] = None
 
 
@@ -465,6 +477,7 @@ def put_planning(pid: str, body: PlanningIn, request: Request):
             "budget_period": body.budget_period,
             "start_date": body.start_date,
             "due_date": body.due_date,
+            "archive_after_days": body.archive_after_days,
         },
     )
     return result
@@ -535,13 +548,23 @@ def _require_tasks_manage(
 
 
 @router.get("/tasks")
-def list_tasks(project_id: str, request: Request):
-    _require_project_read(request, project_id)
-    return repo_manage.list_tasks(project_id)
+def list_tasks(
+    project_id: str,
+    request: Request,
+    workspace_id: Optional[str] = None,
+    include_archived: bool = False,
+):
+    _require_project_read(request, project_id, workspace_id)
+    return repo_manage.list_tasks(project_id, include_archived=include_archived)
 
 
 @router.get("/tasks-batch")
-def list_tasks_batch(request: Request, project_id: list[str] = Query(default_factory=list)):
+def list_tasks_batch(
+    request: Request,
+    project_id: list[str] = Query(default_factory=list),
+    workspace_id: Optional[str] = None,
+    include_archived: bool = False,
+):
     """여러 프로젝트의 작업을 한 번에 반환 — WorkBoard 가 프로젝트 수만큼 GET /tasks 하던 fan-out 을
     1요청으로. ★GET(읽기)이라 mutation 알림을 유발하지 않는다(POST 였으면 폴링마다 라이브러리 reload).
     pid 별로 기존 read 게이트(_require_project_read)를 그대로 적용해 **접근 가능한 프로젝트만**
@@ -549,19 +572,19 @@ def list_tasks_batch(request: Request, project_id: list[str] = Query(default_fac
     allowed: list[str] = []
     for pid in list(dict.fromkeys(project_id))[:500]:  # 중복제거·순서보존·소프트캡
         try:
-            _require_project_read(request, pid)
+            _require_project_read(request, pid, workspace_id)
             allowed.append(pid)
         except HTTPException:
             continue
     if not allowed:
         return {}
     try:
-        return repo_manage.list_tasks_batch(allowed)
+        return repo_manage.list_tasks_batch(allowed, include_archived=include_archived)
     except Exception:  # noqa: BLE001 — 구 데이터 한 프로젝트 오류에도 기존 부분성공 의미 유지
         out: dict[str, list] = {}
         for pid in allowed:
             try:
-                out[pid] = repo_manage.list_tasks(pid)
+                out[pid] = repo_manage.list_tasks(pid, include_archived=include_archived)
             except Exception:  # noqa: BLE001
                 continue
         return out

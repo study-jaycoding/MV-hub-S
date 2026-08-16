@@ -30,6 +30,11 @@ class TaskGenBatchParityTests(unittest.TestCase):
                 "ON CONFLICT(id) DO NOTHING"
             )
             conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p1','P1','team',0)")
+            # 이 파일은 레인 배치 동등성 테스트다. 수명주기 보관은 별도 테스트에서 검증하므로
+            # 오래된 고정 fixture가 현재 날짜에 따라 숨지 않게 충분히 긴 기간을 둔다.
+            conn.execute(
+                "INSERT INTO project_planning(project_id, archive_after_days) VALUES('p1', 3650)"
+            )
 
             def gen(gid, folder, sort_ts, is_final=0, status="done"):
                 conn.execute(
@@ -146,6 +151,9 @@ class TaskGenBatchParityTests(unittest.TestCase):
         """같은 폴더·시퀀스 이름을 쓰는 다른 프로젝트의 컷이 섞이면 안 된다."""
         with db.get_connection() as conn:
             conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p2','P2','team',0)")
+            conn.execute(
+                "INSERT INTO project_planning(project_id, archive_after_days) VALUES('p2', 3650)"
+            )
             conn.execute(
                 "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
                 "creator_uid, project_id, folder_path, is_final, job_id) "

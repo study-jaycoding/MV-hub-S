@@ -24,9 +24,12 @@ function warnLegacyBatchOnce(): void {
 }
 
 export const manageApi = {
-  summary: () => jsonFetch<ManageSummary>("/api/manage/summary"),
-  projectSummary: () =>
-    jsonFetch<Pick<ManageSummary, "projects">>("/api/manage/project-summary"),
+  summary: (workspaceId?: string) =>
+    jsonFetch<ManageSummary>(withQuery("/api/manage/summary", { workspace_id: workspaceId })),
+  projectSummary: (workspaceId?: string) =>
+    jsonFetch<Pick<ManageSummary, "projects">>(
+      withQuery("/api/manage/project-summary", { workspace_id: workspaceId }),
+    ),
   workspaces: () =>
     jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/manage/workspaces"),
   getPlanning: (pid: string) =>
@@ -36,13 +39,21 @@ export const manageApi = {
       method: "PUT",
       body: jsonBody(body),
     }),
-  listTasks: (projectId: string) =>
-    jsonFetch<Task[]>(withQuery("/api/manage/tasks", { project_id: projectId })),
+  listTasks: (projectId: string, workspaceId?: string, includeArchived = false) =>
+    jsonFetch<Task[]>(withQuery("/api/manage/tasks", {
+      project_id: projectId,
+      workspace_id: workspaceId,
+      include_archived: includeArchived || undefined,
+    })),
   // 여러 프로젝트 작업을 1요청으로(WorkBoard fan-out 제거). GET(읽기)이라 mutation 알림 없음.
   // 반환 {pid: Task[]}, 접근불가/오류 pid 는 생략(부분성공).
-  listTasksBatch: (projectIds: string[]) =>
+  listTasksBatch: (projectIds: string[], workspaceId?: string, includeArchived = false) =>
     jsonFetch<Record<string, Task[]>>(
-      withQuery("/api/manage/tasks-batch", { project_id: projectIds }),
+      withQuery("/api/manage/tasks-batch", {
+        project_id: projectIds,
+        workspace_id: workspaceId,
+        include_archived: includeArchived || undefined,
+      }),
     ),
   updateTask: (tid: string, body: Partial<Task>) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {

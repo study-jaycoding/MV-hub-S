@@ -288,9 +288,13 @@ function ProjectDetail({
 export function DashboardView({
   reloadSignal = 0,
   caps,
+  workspaceId,
+  onWorkspaceIdChange,
 }: {
   reloadSignal?: number;
   caps: ManageCaps;
+  workspaceId?: string;
+  onWorkspaceIdChange?: (workspaceId?: string) => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -315,8 +319,8 @@ export function DashboardView({
     // 성공한 응답만 반영하고 실패는 이전 데이터를 유지한다 — 일시 장애 폴링 1회가
     // 잘 보이던 대시보드를 "프로젝트 없음"으로 초기화하지 않게(null 덮어쓰기 금지).
     const summaryP = (canViewWorkspaceUsage
-      ? manageApi.summary()
-      : manageApi.projectSummary()
+      ? manageApi.summary(workspaceId)
+      : manageApi.projectSummary(workspaceId)
     )
       .then((d) => {
         setSummary((previous) => reconcileValueState(previous, d));
@@ -347,8 +351,10 @@ export function DashboardView({
     return request;
   };
   useEffect(() => {
+    setSelectedPid(null);
+    setSummaryPage(1);
     void reload();
-  }, []);
+  }, [workspaceId]);
   const reloadRef = useRef(reload);
   const seenReloadSignalRef = useRef(reloadSignal);
   reloadRef.current = reload;
@@ -510,6 +516,8 @@ export function DashboardView({
           reloadSignal={reloadSignal}
           canCreateProject={canManageProjects}
           onCreateProject={() => setShowPanel(true)}
+          workspaceId={workspaceId}
+          onWorkspaceIdChange={onWorkspaceIdChange}
         />
       )}
 

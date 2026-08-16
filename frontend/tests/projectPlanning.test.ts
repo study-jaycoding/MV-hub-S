@@ -21,6 +21,7 @@ describe("project planning", () => {
         due_date: "2026-08-31",
         budget_credits: 1200,
         budget_period: "week",
+        archive_after_days: 30,
         note: "1차 일정",
       },
       error: "",
@@ -40,6 +41,12 @@ describe("project planning", () => {
   it("rejects negative or non-numeric budgets", () => {
     expect(validateProjectPlanning({}, "-1").planning).toBeNull();
     expect(validateProjectPlanning({}, "not-a-number").planning).toBeNull();
+  });
+
+  it("validates the automatic task history transition period", () => {
+    expect(validateProjectPlanning({ archive_after_days: 0 }, "").error).not.toBe("");
+    expect(validateProjectPlanning({ archive_after_days: 3651 }, "").error).not.toBe("");
+    expect(validateProjectPlanning({ archive_after_days: 31 }, "").planning?.archive_after_days).toBe(31);
   });
 
   it("formats an existing budget for the settings form", () => {

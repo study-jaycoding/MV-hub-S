@@ -72,7 +72,7 @@ class TaskBatchTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
         self.assertEqual(require_read.call_count, 2)
-        batch.assert_called_once_with(["p1", "p2"])
+        batch.assert_called_once_with(["p1", "p2"], include_archived=False)
         single.assert_not_called()
 
     def test_bulk_assignment_resolves_all_task_projects_once(self) -> None:

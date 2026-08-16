@@ -9,6 +9,7 @@ export interface Planning {
   due_date?: string | null;
   budget_credits?: number | null;
   budget_period?: "day" | "week" | "month" | null;
+  archive_after_days?: number | null;
   note?: string | null;
 }
 
@@ -250,6 +251,9 @@ export interface Task {
   sequence?: string | null; // 전역 태그명 또는 폴더 2단계(자동 작업)
   description?: string | null;
   folder_path?: string | null; // 렌더 루트 상대 경로(예 ep001/c0010) — 폴더 자동 작업
+  source_kind?: "manual" | "generation" | string;
+  source_last_seen_at?: string | null;
+  archived?: number | boolean;
   project_name?: string | null; // 소속 프로젝트명(전체 프로젝트 병합 뷰에서 프론트가 부착)
   created_at: string;
   // 파생(연결 생성물에서)

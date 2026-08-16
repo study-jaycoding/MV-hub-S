@@ -36,6 +36,7 @@ _SCHEMA = (
         due_date       TEXT,
         budget_credits INTEGER,
         budget_period  TEXT NOT NULL DEFAULT 'month',
+        archive_after_days INTEGER NOT NULL DEFAULT 30,
         note           TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS project_folder_link (
@@ -56,6 +57,9 @@ _SCHEMA = (
         note         TEXT,
         sequence     TEXT,
         description  TEXT,
+        source_kind  TEXT NOT NULL DEFAULT 'manual',
+        source_last_seen_at TEXT,
+        archived     INTEGER NOT NULL DEFAULT 0,
         created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
     """CREATE TABLE IF NOT EXISTS task_generation (
@@ -118,12 +122,30 @@ def ensure_manage_schema(conn) -> None:
         conn.execute(statement)
 
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
-    for column in ("sequence", "description", "folder_path"):
+    for column in ("sequence", "description", "folder_path", "source_last_seen_at"):
         if column not in task_columns:
             conn.execute(f"ALTER TABLE project_task ADD COLUMN {column} TEXT")
+    if "source_kind" not in task_columns:
+        conn.execute(
+            "ALTER TABLE project_task ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'"
+        )
+    if "archived" not in task_columns:
+        conn.execute(
+            "ALTER TABLE project_task ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+        )
+    # 기존 폴더 자동 작업은 수동 작업과 구분한다. 상태·일정·설명은 건드리지 않는다.
+    conn.execute(
+        "UPDATE project_task SET source_kind='generation' "
+        "WHERE folder_path IS NOT NULL AND TRIM(folder_path)<>'' "
+        "AND COALESCE(source_kind, 'manual')='manual'"
+    )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder "
         "ON project_task(project_id, folder_path) WHERE folder_path IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_task_active "
+        "ON project_task(project_id, archived, source_kind)"
     )
 
     transaction_columns = {row[1] for row in conn.execute("PRAGMA table_info(credit_txn)")}
@@ -134,6 +156,11 @@ def ensure_manage_schema(conn) -> None:
     if "budget_period" not in planning_columns:
         conn.execute(
             "ALTER TABLE project_planning ADD COLUMN budget_period TEXT NOT NULL DEFAULT 'month'"
+        )
+    if "archive_after_days" not in planning_columns:
+        conn.execute(
+            "ALTER TABLE project_planning ADD COLUMN archive_after_days "
+            "INTEGER NOT NULL DEFAULT 30"
         )
 
     outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_outbox)")}

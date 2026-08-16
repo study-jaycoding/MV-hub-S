@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
+import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { useManageCaps } from "../lib/useManageCaps";
 import { useManageRealtime } from "../lib/useManageRealtime";
 import { DashboardView } from "./manage/DashboardView";
@@ -26,6 +27,10 @@ export function ManageWindow() {
     return TABS.some((t) => t.v === saved) ? (saved as Tab) : "dashboard";
   });
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>(
+    () => loadManageWorkspaceScope().workspaceId,
+  );
+  const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({});
   const reloadSignal = useManageRealtime(enabled === true);
   // 대시보드 탭은 모두에게 연다. read_all 보유자는 워크스페이스 전체 통계까지,
   // 일반 멤버는 자신이 참여한 프로젝트 작업 현황만 본다.
@@ -35,6 +40,29 @@ export function ManageWindow() {
   useEffect(() => {
     document.title = "Millionvolt Hub — 프로젝트 관리";
   }, []);
+
+  // 메인 창에서 개인/워크스페이스를 바꾸면 별도 관리 창도 같은 범위를 즉시 따른다.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      setWorkspaceId(loadManageWorkspaceScope().workspaceId);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    api.workspaceOptions()
+      .then((response) => {
+        if (!active) return;
+        setWorkspaceNames(Object.fromEntries(
+          (response.workspaces || []).map((workspace) => [workspace.id, workspace.name]),
+        ));
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [reloadSignal]);
 
   useEffect(() => {
     let alive = true;
@@ -84,7 +112,12 @@ export function ManageWindow() {
         <div className="manage-empty">권한 확인 중...</div>
       )}
       {tab === "dashboard" && caps.loaded && (
-        <DashboardView reloadSignal={reloadSignal} caps={caps} />
+        <DashboardView
+          reloadSignal={reloadSignal}
+          caps={caps}
+          workspaceId={workspaceId}
+          onWorkspaceIdChange={(value) => setWorkspaceId(value || undefined)}
+        />
       )}
       {tab === "tasks" && !caps.loaded && (
         <div className="manage-empty">권한 확인 중...</div>
@@ -94,6 +127,8 @@ export function ManageWindow() {
           reloadSignal={reloadSignal}
           viewerUid={caps.viewerUid}
           personalByDefault={!caps.readAll}
+          workspaceId={workspaceId}
+          workspaceName={workspaceId ? workspaceNames[workspaceId] : "개인 · 전체 워크스페이스"}
         />
       )}
       {tab === "export" && <ExportView reloadSignal={reloadSignal} />}

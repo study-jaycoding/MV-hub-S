@@ -119,10 +119,14 @@ export function WorkBoard({
   reloadSignal = 0,
   viewerUid = null,
   personalByDefault = false,
+  workspaceId,
+  workspaceName,
 }: {
   reloadSignal?: number;
   viewerUid?: string | null;
   personalByDefault?: boolean;
+  workspaceId?: string;
+  workspaceName?: string;
 }) {
   useT(); // 언어 토글 시 라벨 리렌더
   const [projects, setProjects] = useState<{ pid: string; name: string }[]>([]);
@@ -136,6 +140,7 @@ export function WorkBoard({
   );
   const [filters, setFilters] = useState<WorkFilters>(loadFilters);
   const [err, setErr] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   // d 로 비활성화(회색)된 생성물 id — localStorage 기준. 컷 회색 표시 + effective 생략 판정에 쓴다.
   const [disabled, setDisabled] = useState<Set<string>>(() => loadDisabledGen());
   const [disabledFolders, setDisabledFolders] = useState(() => loadDisabledFolders()); // 폴더 단위 비활성
@@ -202,6 +207,9 @@ export function WorkBoard({
   const loadingRef = useRef(false);
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingLoadRef = useRef(false);
+  const scopeKey = `${workspaceId || "personal"}:${showHistory ? "history" : "active"}`;
+  const scopeKeyRef = useRef(scopeKey);
+  scopeKeyRef.current = scopeKey;
   const orderSaveRef = useRef<ReturnType<typeof createLatestMutationQueue> | null>(null);
   const orderRevisionRef = useRef(0);
   const optimisticOrderRef = useRef<{ revision: number; tasks: Task[] } | null>(null);
@@ -216,9 +224,10 @@ export function WorkBoard({
       return Promise.resolve();
     }
     const my = ++reqRef.current;
+    const requestScope = scopeKey;
     loadingRef.current = true;
     const finish = (tasks: Task[]) => {
-      if (reqRef.current === my) {
+      if (reqRef.current === my && scopeKeyRef.current === requestScope) {
         const ordered = tasks.sort(bySort);
         // 30초 안전망·실시간 신호가 같은 JSON을 돌려줘도 작업표 전체를 다시 그리지 않는다.
         setTasks((previous) => reconcileArrayState(previous, ordered));
@@ -230,14 +239,14 @@ export function WorkBoard({
       Promise.all(
         ps.map((p) =>
           manageApi
-            .listTasks(p.pid)
+            .listTasks(p.pid, workspaceId, showHistory)
             .then((r) => r.map((t) => ({ ...t, project_name: p.name })))
             .catch(() => [] as Task[]),
         ),
       ).then((all) => finish(all.flat()));
     // 우선 1요청(tasks-batch). 서버가 pid 별 read 게이트를 적용해 {pid: tasks} 반환.
     const request = manageApi
-      .listTasksBatch(ps.map((p) => p.pid))
+      .listTasksBatch(ps.map((p) => p.pid), workspaceId, showHistory)
       .then((byPid) => {
         finish(ps.flatMap((p) => (byPid[p.pid] || []).map((t) => ({ ...t, project_name: p.name }))));
       })
@@ -248,7 +257,7 @@ export function WorkBoard({
           loadPromiseRef.current = null;
           if (pendingLoadRef.current) {
             pendingLoadRef.current = false;
-            await loadAll();
+            await loadAllRef.current();
           }
         }
       });
@@ -256,7 +265,10 @@ export function WorkBoard({
     return request;
   };
   const loadAllRef = useRef(loadAll);
+  const loadProjectsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const projectReqRef = useRef(0);
   const seenReloadSignalRef = useRef(reloadSignal);
+  const seenHistoryRef = useRef(showHistory);
   loadAllRef.current = loadAll;
   if (!orderSaveRef.current) {
     orderSaveRef.current = createLatestMutationQueue(async () => {
@@ -269,24 +281,47 @@ export function WorkBoard({
     });
   }
 
-  useEffect(() => {
-    api
-      .projects("team")
+  const loadProjects = (): Promise<void> => {
+    const requestId = ++projectReqRef.current;
+    setErr(null);
+    return api
+      .projects("team", showHistory, workspaceId)
       .then((r) => {
+        if (projectReqRef.current !== requestId) return;
         const ps = r.projects.map((p) => ({ pid: p.id, name: p.name }));
         projectsRef.current = ps;
         setProjects(ps);
-        loadAll();
+        return loadAllRef.current();
       })
-      .catch((e) => setErr(String(e?.message || e)));
+      .catch((e) => {
+        if (projectReqRef.current === requestId) setErr(String(e?.message || e));
+      });
+  };
+  loadProjectsRef.current = loadProjects;
+
+  useEffect(() => {
+    projectsRef.current = [];
+    setProjects([]);
+    setTasks([]);
+    void loadProjectsRef.current();
+  }, [workspaceId]);
+
+  useEffect(() => {
     api.facets().then((f) => setSeqOptions(f.auto_tags || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (seenReloadSignalRef.current === reloadSignal) return;
     seenReloadSignalRef.current = reloadSignal;
-    void loadAllRef.current();
+    void loadProjectsRef.current();
   }, [reloadSignal]);
+
+  useEffect(() => {
+    if (seenHistoryRef.current === showHistory) return;
+    seenHistoryRef.current = showHistory;
+    // 과거 기록은 보관된 작업뿐 아니라 보관된 프로젝트도 포함한다.
+    void loadProjectsRef.current();
+  }, [showHistory]);
 
   const onPatch = async (tid: string, patch: Partial<Task>) => {
     await manageApi.updateTask(tid, patch);
@@ -432,8 +467,20 @@ export function WorkBoard({
   return (
     <div className="manage-dash work-root">
       <header className="manage-head">
-        <h1>작업</h1>
+        <div>
+          <h1>작업</h1>
+          <p className="work-source-label">
+            공유 서버 작업 기록 · {workspaceName || (workspaceId ? "선택 워크스페이스" : "개인 · 전체 워크스페이스")}
+          </p>
+        </div>
         <div className="work-head-ctl">
+          <button
+            className={"work-history-toggle" + (showHistory ? " on" : "")}
+            onClick={() => setShowHistory((value) => !value)}
+            title="오래된 자동 작업 기록 포함"
+          >
+            과거 기록
+          </button>
           {/* 실제로 만든 생성물 + 수동 배정 작업을 현재 작업자 기준으로 표시한다. */}
           {myUid ? (
             <button

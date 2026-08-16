@@ -49,6 +49,20 @@ export function ProjectPlanningFields({
         })}
       />
       <label className="manage-field">
+        <span>과거 기록 전환</span>
+        <div className="manage-budget-limit">
+          <input
+            type="number"
+            min={1}
+            max={3650}
+            value={form.archive_after_days ?? 30}
+            aria-label="자동 작업 보관 기준 일수"
+            onChange={(event) => update("archive_after_days", Number(event.target.value) || 30)}
+          />
+          <em>일 동안 새 생성 없음</em>
+        </div>
+      </label>
+      <label className="manage-field">
         <span>예산 한도</span>
         <div className="manage-budget-limit">
           <input
