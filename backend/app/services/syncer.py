@@ -15,14 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from typing import Optional
 
 from .. import repo
-from ..config import DEFAULT_WORKER_ID
+from ..config import DEFAULT_WORKER_ID, MANAGE_ENABLED
 from ..generation_result import normalize_job_result
 from ..ws import manager
 from . import cli_bridge
+from .operational_logging import log_event
+
+
+_log = logging.getLogger("mvhub.syncer")
 
 # 서버측 주기 동기화 on/off(과도기 게이트). 0/false 면 주기 루프를 아예 안 띄운다 — 서버가
 # 하우스 PC 밖으로 이전됐을 때 전원 push 에이전트로 일원화하는 스위치. 기본 on.
@@ -52,8 +57,33 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체)."""
     jobs = await cli_bridge.list_jobs()
     wid = worker_id or DEFAULT_WORKER_ID
-    counts = await asyncio.to_thread(repo.apply_synced_jobs, jobs, wid)
+    changed_job_ids: set[str] = set()
+    counts = await asyncio.to_thread(
+        repo.apply_synced_jobs,
+        jobs,
+        wid,
+        changed_job_ids=changed_job_ids,
+        track_telemetry=MANAGE_ENABLED,
+    )
     counts["fetched"] = len(jobs)
+    counts["telemetry_pending"] = 0
+    if MANAGE_ENABLED:
+        # 실제 outbox 표시는 generation 업서트와 같은 트랜잭션에서 끝났다. 여기서는 전송 실패로
+        # 남아 있는 과거 대기열까지 포함해 다음 드레인 여부만 읽는다.
+        from ..repo import manage as manage_repo
+        try:
+            status = await asyncio.to_thread(manage_repo.telemetry_outbox_status)
+            counts["telemetry_pending"] = int(status.get("pending") or 0)
+        except Exception as exc:  # noqa: BLE001 — 데이터는 원자적으로 보존됐고 다음 주기에 재조회
+            counts["telemetry_pending"] = int(counts.get("telemetry_dirty") or 0) + int(
+                counts.get("telemetry_backfilled") or 0
+            )
+            log_event(
+                _log,
+                "sync_telemetry_status_failed",
+                level=logging.WARNING,
+                error_type=type(exc).__name__,
+            )
     # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
     # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
     # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
@@ -161,6 +191,12 @@ class PeriodicSync:
             await asyncio.sleep(self._interval)
             try:
                 c = await sync_now()
+                if c.get("telemetry_pending") or c.get("telemetry_dirty"):
+                    # 주기 동기화는 AUTH on 공유 서버에서만 시작되므로 로컬 관리 DB로 즉시 반영한다.
+                    # 네트워크 프록시를 거치지 않아 이벤트 루프 밖 워커에서 안전하게 처리할 수 있다.
+                    from .telemetry_drain import drain_isolated_telemetry
+
+                    await asyncio.to_thread(drain_isolated_telemetry)
                 if c.get("gap_warning"):
                     print(
                         f"[periodic-sync] ⚠ 갭 경보: 신규 {c['inserted']}건 — "

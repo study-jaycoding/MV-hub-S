@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..repo import manage
 from ..services import cli_bridge, syncer
+from ._telemetry import schedule_telemetry_drain
 
 router = APIRouter(prefix="/api", tags=["sync"])
 
@@ -39,4 +40,6 @@ async def sync_from_cli(worker_id: str | None = None):
         c = await syncer.sync_now(worker_id)
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=f"CLI 동기화 실패: {e}")
+    if c.get("telemetry_pending") or c.get("telemetry_dirty"):
+        schedule_telemetry_drain()
     return SyncResult(fetched=c["fetched"], inserted=c["inserted"], updated=c["updated"])

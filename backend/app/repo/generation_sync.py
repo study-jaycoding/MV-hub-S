@@ -68,7 +68,7 @@ def _upsert_synced(
         # 이미 이 잡을 대표하는 행이 있는가? — 동기화본(id=job_id) 이거나
         # 로컬 생성본(job_id 컬럼=job_id). 있으면 그 행을 갱신해 중복 삽입을 막는다.
         existing = conn.execute(
-            "SELECT id, status, error, workspace_scope FROM generation "
+            "SELECT id, status, error, workspace_scope, creator_uid, model FROM generation "
             "WHERE id = ? OR job_id = ? LIMIT 1",
             (job_id, job_id),
         ).fetchone()
@@ -77,7 +77,8 @@ def _upsert_synced(
         adopt = False
         if not existing and result_url:
             existing = conn.execute(
-                "SELECT g.id, g.status, g.error, g.workspace_scope FROM generation g "
+                "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model "
+                "FROM generation g "
                 "JOIN asset a ON a.generation_id=g.id "
                 "WHERE a.file_path=? OR a.source_url=? LIMIT 1",
                 (result_url, result_url),
@@ -94,9 +95,17 @@ def _upsert_synced(
             workspace_filled = (
                 existing["workspace_scope"] == "unknown" and workspace_scope != "unknown"
             )
+            creator_filled = not existing["creator_uid"] and bool(g.get("creator_uid"))
+            model_filled = not existing["model"] and bool(g.get("model"))
             result = (
                 "updated"
-                if existing["status"] != g["status"] or workspace_filled
+                if (
+                    existing["status"] != g["status"]
+                    or workspace_filled
+                    or creator_filled
+                    or model_filled
+                    or adopt
+                )
                 else "unchanged"
             )
             # adopt(URL 매칭)면 job_id 를 권위값으로 덮어씀, 아니면 기존 보존(COALESCE).
@@ -335,6 +344,9 @@ def apply_synced_jobs(
     jobs: list[dict[str, Any]],
     worker_id: str,
     workspace: Optional[dict[str, Any]] = None,
+    *,
+    changed_job_ids: Optional[set[str]] = None,
+    track_telemetry: bool = False,
 ) -> dict[str, int]:
     """동기화 잡 묶음을 **한 커넥션·한 트랜잭션**으로 업서트 + hf_missing 해제. 카운트 반환.
 
@@ -344,12 +356,22 @@ def apply_synced_jobs(
     from . import trash  # 지연 import(순환 회피)
 
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "errors": 0}
+    if track_telemetry:
+        counts.update(telemetry_dirty=0, telemetry_backfilled=0)
+    committed_changes: set[str] = set()
+    processed_job_ids: set[str] = set()
     job_ids = [
         p["generation"]["id"]
         for p in jobs
         if p.get("generation") and p["generation"].get("id")
     ]
     with get_connection() as conn:
+        if track_telemetry:
+            # 스키마 보장은 트랜잭션 밖에서 1회 캐시하고, 실제 outbox 변경만 아래 generation
+            # 업서트와 같은 트랜잭션에 넣는다. 그래야 COMMIT 직후 프로세스가 종료돼도 누락이 없다.
+            from .manage_schema import ensure_manage_schema
+
+            ensure_manage_schema(conn)
         trash.attach_trash(conn)  # 휴지통 ATTACH(트랜잭션 밖) — 아래 BEGIN 안에서 최신 삭제상태 조회
         try:
             conn.execute("BEGIN IMMEDIATE")  # 전체 묶음을 1회 커밋(fsync 1회) + 즉시 쓰기락
@@ -361,7 +383,17 @@ def apply_synced_jobs(
                     # 잡별 SAVEPOINT 격리 — 한 잡이 깨져도(ROLLBACK TO) 나머지는 그대로 반영.
                     conn.execute("SAVEPOINT j")
                     try:
-                        counts[_upsert_synced(conn, parsed, worker_id, tombstoned, workspace)] += 1
+                        result = _upsert_synced(
+                            conn, parsed, worker_id, tombstoned, workspace
+                        )
+                        counts[result] += 1
+                        if result in {"inserted", "updated"}:
+                            job_id = (parsed.get("generation") or {}).get("id")
+                            if job_id:
+                                committed_changes.add(str(job_id))
+                        job_id = (parsed.get("generation") or {}).get("id")
+                        if job_id:
+                            processed_job_ids.add(str(job_id))
                     except Exception as e:  # noqa: BLE001 — 잡 1건 실패가 전체 동기화를 막지 않게
                         conn.execute("ROLLBACK TO j")
                         counts["errors"] += 1
@@ -373,10 +405,25 @@ def apply_synced_jobs(
                     conn.execute(
                         f"UPDATE generation SET hf_missing=0 WHERE job_id IN ({ph})", job_ids
                     )
+                if track_telemetry and processed_job_ids:
+                    from .manage_telemetry import track_ingested_in_connection
+
+                    dirty_count, backfilled_count = track_ingested_in_connection(
+                        conn,
+                        sorted(processed_job_ids),
+                        committed_changes,
+                        None,
+                    )
+                    counts["telemetry_dirty"] = dirty_count
+                    counts["telemetry_backfilled"] = backfilled_count
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
         finally:
             trash.detach_trash(conn)  # 성공/실패 무관 반드시 뗀다(풀 커넥션 재사용 대비)
+    # 전체 COMMIT이 성공한 뒤에만 호출측에 변경 목록을 공개한다. 중간 롤백 시 outbox가 실제보다
+    # 앞서 dirty 처리되는 것을 막는다.
+    if changed_job_ids is not None:
+        changed_job_ids.update(committed_changes)
     return counts

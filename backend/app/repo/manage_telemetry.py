@@ -51,23 +51,68 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
         )
 
 
-def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
-    """적재된 외부 job id를 로컬 generation id로 바꿔 outbox에 표시한다."""
+def _ingested_local_ids(conn, job_ids: list[str], my_uid: Optional[str]) -> list[str]:
+    """외부 job id를 현재 살아 있는 로컬 generation id로 해석한다."""
     ids = [job_id for job_id in (job_ids or []) if job_id]
     if not ids:
-        return 0
+        return []
     placeholders = ",".join("?" for _ in ids)
     where = f"(id IN ({placeholders}) OR job_id IN ({placeholders}))"
     args: list[Any] = ids + ids
     if my_uid:
         where += " AND creator_uid = ?"
         args.append(my_uid)
+    rows = conn.execute(
+        f"SELECT id FROM generation WHERE {where} AND deleted_at IS NULL", args
+    ).fetchall()
+    return list(dict.fromkeys(str(row["id"]) for row in rows))
+
+
+def track_ingested_in_connection(
+    conn,
+    job_ids: list[str],
+    changed_job_ids: list[str] | set[str],
+    my_uid: Optional[str],
+) -> tuple[int, int]:
+    """호출자가 연 트랜잭션 안에서 동기화 결과를 outbox와 원자적으로 맞춘다.
+
+    반환값은 ``(dirty_count, backfilled_count)``다. 실제 변경분은 기존 pushed 행도 다시 dirty로
+    만들고, 변경 없는 과거 행은 outbox 자체가 없을 때만 1회 넣는다. 이 함수는 스키마가 이미
+    보장됐다는 전제로 동작해 호출자의 COMMIT/ROLLBACK 경계를 그대로 따른다.
+    """
+    all_local_ids = _ingested_local_ids(conn, job_ids, my_uid)
+    changed_local_ids = set(_ingested_local_ids(conn, list(changed_job_ids), my_uid))
+    dirty_count = 0
+    backfilled_count = 0
+    for gen_id in all_local_ids:
+        if gen_id in changed_local_ids:
+            conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "ON CONFLICT(local_gen_id) DO UPDATE SET "
+                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
+                (gen_id,),
+            )
+            dirty_count += 1
+            continue
+        cur = conn.execute(
+            "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
+            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+            "ON CONFLICT(local_gen_id) DO NOTHING",
+            (gen_id,),
+        )
+        backfilled_count += max(0, int(cur.rowcount or 0))
+    return dirty_count, backfilled_count
+
+
+def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
+    """적재된 외부 job id를 로컬 generation id로 바꿔 outbox에 표시한다."""
+    if not any(job_ids or []):
+        return 0
     with get_connection() as conn:
         _ensure_schema(conn)
-        rows = conn.execute(
-            f"SELECT id FROM generation WHERE {where} AND deleted_at IS NULL", args
-        ).fetchall()
-        local_ids = [row["id"] for row in rows]
+        local_ids = _ingested_local_ids(conn, job_ids, my_uid)
         for gen_id in local_ids:
             conn.execute(
                 "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
@@ -78,6 +123,29 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
                 (gen_id,),
             )
     return len(local_ids)
+
+
+def ensure_ingested_tracked(job_ids: list[str], my_uid: Optional[str]) -> int:
+    """과거 동기화분 중 outbox 행 자체가 없는 생성물만 1회 추적 대상으로 보강한다.
+
+    주기 동기화 때마다 기존 pushed 행을 다시 dirty로 만들면 20초마다 같은 팩트를 재전송한다.
+    따라서 ``ON CONFLICT DO NOTHING``으로 RL-03 이전 누락분만 메우고, 실제 변경분은
+    ``mark_ingested_dirty``가 별도로 다시 dirty 처리한다.
+    """
+    if not any(job_ids or []):
+        return 0
+    inserted = 0
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for gen_id in _ingested_local_ids(conn, job_ids, my_uid):
+            cur = conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "ON CONFLICT(local_gen_id) DO NOTHING",
+                (gen_id,),
+            )
+            inserted += max(0, int(cur.rowcount or 0))
+    return inserted
 
 
 def telemetry_outbox_status() -> dict[str, Any]:

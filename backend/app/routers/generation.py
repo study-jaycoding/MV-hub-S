@@ -16,7 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from . import _proxy
+from . import _proxy, _telemetry
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
@@ -224,6 +224,8 @@ async def select_workspace(body: WorkspaceSelectIn, request: Request):
         raise HTTPException(status_code=502, detail=f"워크스페이스 전환 실패: {e}")
     workspaces = await _verify_workspace(body.workspace_id)  # 반영 확인(불일치면 502)
     counts = await syncer.sync_now()  # 새 컨텍스트의 잡을 즉시 반영
+    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
+        _telemetry.schedule_telemetry_drain()
     return {"workspaces": workspaces, "sync": counts}
 
 
@@ -237,6 +239,8 @@ async def unselect_workspace(request: Request):
         raise HTTPException(status_code=502, detail=f"워크스페이스 해제 실패: {e}")
     workspaces = await _verify_workspace(None)
     counts = await syncer.sync_now()
+    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
+        _telemetry.schedule_telemetry_drain()
     return {"workspaces": workspaces, "sync": counts}
 
 

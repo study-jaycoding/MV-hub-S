@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app import db, repo
+from app.repo import manage
 
 
 class GenerationSyncTests(unittest.TestCase):
@@ -108,8 +110,11 @@ class GenerationSyncTests(unittest.TestCase):
     def test_bad_item_rolls_back_only_its_savepoint(self) -> None:
         broken = self.parsed("job-bad")
         del broken["generation"]["prompt"]
+        changed_job_ids: set[str] = set()
         result = repo.apply_synced_jobs(
-            [self.parsed("job-good-1"), broken, self.parsed("job-good-2")], "me"
+            [self.parsed("job-good-1"), broken, self.parsed("job-good-2")],
+            "me",
+            changed_job_ids=changed_job_ids,
         )
         self.assertEqual(
             result,
@@ -118,6 +123,49 @@ class GenerationSyncTests(unittest.TestCase):
         self.assertEqual(
             set(repo.known_job_ids("u_one")), {"job-good-1", "job-good-2"}
         )
+        self.assertEqual(changed_job_ids, {"job-good-1", "job-good-2"})
+
+    def test_telemetry_tracking_is_atomic_and_backfills_only_once(self) -> None:
+        first = repo.apply_synced_jobs(
+            [self.parsed("job-atomic")], "me", track_telemetry=True
+        )
+        self.assertEqual(first["telemetry_dirty"], 1)
+        self.assertEqual(first["telemetry_backfilled"], 0)
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
+
+        item = manage.list_dirty_telemetry()[0]
+        manage.mark_telemetry_pushed([item])
+        same = repo.apply_synced_jobs(
+            [self.parsed("job-atomic")], "me", track_telemetry=True
+        )
+        self.assertEqual(same["telemetry_dirty"], 0)
+        self.assertEqual(same["telemetry_backfilled"], 0)
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+
+        repo.apply_synced_jobs([self.parsed("job-historical")], "me")
+        backfill = repo.apply_synced_jobs(
+            [self.parsed("job-historical")], "me", track_telemetry=True
+        )
+        self.assertEqual(backfill["telemetry_dirty"], 0)
+        self.assertEqual(backfill["telemetry_backfilled"], 1)
+
+    def test_telemetry_failure_rolls_back_generation_and_change_report(self) -> None:
+        changed_job_ids: set[str] = set()
+        with patch(
+            "app.repo.manage_telemetry.track_ingested_in_connection",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "outbox unavailable"):
+                repo.apply_synced_jobs(
+                    [self.parsed("job-rollback")],
+                    "me",
+                    changed_job_ids=changed_job_ids,
+                    track_telemetry=True,
+                )
+
+        self.assertEqual(repo.known_job_ids("u_one"), [])
+        self.assertEqual(changed_job_ids, set())
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
 
     def test_trashed_job_is_not_revived_by_sync(self) -> None:
         parsed = self.parsed("job-trashed")
