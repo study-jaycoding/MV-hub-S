@@ -358,7 +358,7 @@ async def _application_lifespan(app: FastAPI):
     await periodic_backup.stop()
     await periodic_sweeper.stop()
     await remote_realtime_bridge.stop()
-    if MANAGE_ENABLED:
+    if MANAGE_ENABLED or _proxy.is_worker_hub():
         # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
         from .routers._telemetry import wait_for_telemetry_drain
 

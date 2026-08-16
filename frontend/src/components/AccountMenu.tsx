@@ -10,7 +10,13 @@ import {
 import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
-import { formatTelemetryLastSuccess, useSyncStatus } from "../lib/useSyncStatus";
+import {
+  formatTelemetryLastSuccess,
+  latestSyncSuccess,
+  syncFailedCount,
+  syncPendingCount,
+  useSyncStatus,
+} from "../lib/useSyncStatus";
 import {
   reconcileReportedWorkspaceContext,
   sameWorkspace,
@@ -73,6 +79,12 @@ export function AccountMenu({
   }, []);
   // 이 상태는 이 PC의 로컬 outbox에만 의미가 있다. 공유 서버 화면에서는 불필요한 폴링을 하지 않는다.
   const sync = useSyncStatus(!!localHub);
+  const syncPending = sync ? syncPendingCount(sync) : 0;
+  const syncFailed = sync ? syncFailedCount(sync) : 0;
+  const syncError = sync?.account_report_last_error || sync?.last_error || undefined;
+  const syncBreakdown = sync
+    ? `생성정보 ${sync.pending || 0}건 · 계정/거래 ${sync.account_report_pending || 0}건`
+    : undefined;
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
   //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
@@ -262,16 +274,16 @@ export function AccountMenu({
           </div>
 
           {localHub && sync && (
-            <div className="acct-sync-state">
-              <span>{formatTelemetryLastSuccess(sync.last_success_at)}</span>
-              <span>{sync.pending > 0 ? `대기 ${sync.pending}건` : "대기 없음"}</span>
+            <div className="acct-sync-state" title={syncBreakdown}>
+              <span>{formatTelemetryLastSuccess(latestSyncSuccess(sync))}</span>
+              <span>{syncPending > 0 ? `대기 ${syncPending}건` : "대기 없음"}</span>
             </div>
           )}
 
-          {/* 매니징 push 실패 경고 — 조용히 묻히던 텔레메트리 push 실패를 노출(failed>0 때만). */}
-          {sync && sync.failed > 0 && (
-            <div className="acct-sync-warn" title={sync.last_error || undefined}>
-              ⚠ 매니징 동기화 {sync.failed}건 실패 — 다음 동기화 때 재시도{sync.pending > sync.failed ? ` (대기 ${sync.pending})` : ""}
+          {/* 생성정보와 계정·거래 보고 실패를 합쳐 노출한다. 세부 대기 건수는 위 상태 title로 확인. */}
+          {sync && syncFailed > 0 && (
+            <div className="acct-sync-warn" title={syncError}>
+              ⚠ 매니징 동기화 {syncFailed}건 실패 — 다음 동기화 때 재시도{syncPending > syncFailed ? ` (대기 ${syncPending})` : ""}
             </div>
           )}
 

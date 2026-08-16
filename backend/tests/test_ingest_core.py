@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from app.models import IngestIn, IngestMcpIn, IngestOut
+from app.models import AccountReportIn, IngestIn, IngestMcpIn, IngestOut
 from app.routers import ingest
 
 
@@ -61,6 +61,77 @@ class IngestCoreTests(unittest.TestCase):
 
         self.assertIs(result, expected)
         schedule.assert_called_once_with()
+
+    def test_ingest_queues_account_reports_without_synchronous_proxy(self):
+        from app.repo import manage
+
+        expected = IngestOut(linked_uid="u_me")
+        body = IngestIn(
+            account_status={"email": "me@example.com", "credits": 10},
+            account_transactions=[
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest._proxy, "proxying", return_value=True),
+            mock.patch.object(ingest._proxy, "proxy_json") as proxy_json,
+            mock.patch.object(manage, "record_transactions"),
+            mock.patch.object(
+                manage,
+                "queue_account_reports",
+                return_value={"status": 1, "transactions": 1},
+            ) as queue,
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest(body, SimpleNamespace())
+
+        self.assertIs(result, expected)
+        queue.assert_called_once_with(body.account_status, body.account_transactions)
+        proxy_json.assert_not_called()
+        schedule.assert_called_once_with()
+
+    def test_account_report_endpoint_acknowledges_only_after_both_writes(self):
+        from app.repo import manage
+
+        body = AccountReportIn(
+            account_status={"email": "me@example.com", "credits": 10},
+            account_transactions=[
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+            creator_uid="u_me",
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=IngestOut(linked_uid="u_me")) as core,
+            mock.patch.object(
+                manage,
+                "record_transactions",
+                return_value={"inserted": 1, "matched": 1},
+            ) as record,
+        ):
+            result = ingest.ingest_account_report(body, SimpleNamespace())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.transactions_inserted, 1)
+        self.assertEqual(result.transactions_matched, 1)
+        core.assert_called_once_with(
+            {"email": "me@example.com"}, [], "u_me", body.account_status
+        )
+        record.assert_called_once_with("u_me", "me@example.com", body.account_transactions)
 
     def test_mcp_backfill_schedules_telemetry_without_synchronous_network_drain(self):
         expected = IngestOut(

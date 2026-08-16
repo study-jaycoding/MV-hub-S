@@ -419,6 +419,20 @@ class IngestMcpIn(BaseModel):
         return normalize_workspace_context(v)
 
 
+class AccountReportIn(BaseModel):
+    """작업자 로컬 outbox가 공유 서버에 재시도하는 계정·거래 보고."""
+
+    account_status: dict
+    account_transactions: list[dict] = Field(default_factory=list)
+    creator_uid: Optional[str] = None
+
+
+class AccountReportOut(BaseModel):
+    accepted: bool = True
+    transactions_inserted: int = 0
+    transactions_matched: int = 0
+
+
 class IngestOut(BaseModel):
     inserted: int = 0
     updated: int = 0

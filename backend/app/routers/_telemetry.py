@@ -14,6 +14,7 @@ import time
 from .. import repo
 from ..config import MANAGE_ENABLED
 from ..services.operational_logging import log_event
+from ..services.account_report_delivery import drain_remote_account_reports
 from ..services.telemetry_drain import drain_isolated_telemetry, drain_remote_telemetry
 from . import _proxy
 
@@ -48,11 +49,19 @@ def touch_generation_telemetry(gen_id: str | None) -> None:
 def _drain_once() -> None:
     """현재 outbox 스냅샷을 한 번 반영한다. 상태 락 밖에서만 호출한다."""
     if _proxy.proxying():
-        drain_remote_telemetry(
-            lambda items: _proxy.proxy_json(
-                "POST", "/api/manage/telemetry/push", body={"items": items}
+        my_uid = repo.get_my_uid()
+        if MANAGE_ENABLED:
+            drain_remote_telemetry(
+                lambda items: _proxy.proxy_json(
+                    "POST", "/api/manage/telemetry/push", body={"items": items}
+                ),
+                my_uid=my_uid,
+            )
+        drain_remote_account_reports(
+            lambda payload: _proxy.proxy_json(
+                "POST", "/api/ingest/account-report", body=payload
             ),
-            my_uid=repo.get_my_uid(),
+            creator_uid=my_uid,
         )
         return
     # test_dev는 운영 서버로 보내지 않고 복사된 테스트 폴더 안에서만 집계한다.
@@ -66,7 +75,7 @@ def drain_telemetry() -> bool:
     표시를 확인해 outbox를 한 번 더 읽으므로 전송 중 생긴 변경도 빠뜨리지 않는다.
     """
     global _drain_in_flight, _drain_requested
-    if not MANAGE_ENABLED:
+    if not MANAGE_ENABLED and not _proxy.proxying():
         return False
 
     # 이 락은 소유권 표시를 바꾸는 몇 줄에만 사용한다. DB 준비·네트워크·DB 정산은 모두 락 밖이다.
@@ -113,7 +122,7 @@ def unbind_telemetry_loop(loop: asyncio.AbstractEventLoop | None = None) -> None
 def _schedule_on_loop() -> None:
     """바인딩된 이벤트 루프 스레드에서만 task 상태를 변경한다."""
     global _drain_task, _drain_version
-    if not MANAGE_ENABLED:
+    if not MANAGE_ENABLED and not _proxy.proxying():
         return
     _drain_version += 1
     if _drain_task is None or _drain_task.done():
@@ -151,7 +160,7 @@ def schedule_telemetry_drain() -> bool:
     워커에서도 시작 때 연결한 메인 루프로 게시하며, 앱 밖 동기 문맥처럼 연결된 루프가 없으면
     False를 반환하고 outbox는 다음 기회의 안전망으로 남는다.
     """
-    if not MANAGE_ENABLED:
+    if not MANAGE_ENABLED and not _proxy.proxying():
         return False
     try:
         loop = asyncio.get_running_loop()

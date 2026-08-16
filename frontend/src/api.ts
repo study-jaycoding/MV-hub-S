@@ -314,6 +314,11 @@ export const api = {
       last_error: string | null;
       oldest_dirty: string | null;
       last_success_at: string | null;
+      account_report_pending: number;
+      account_report_failed: number;
+      account_report_last_error: string | null;
+      account_report_oldest_dirty: string | null;
+      account_report_last_success_at: string | null;
     }>(
       "/api/sync-status",
     ),

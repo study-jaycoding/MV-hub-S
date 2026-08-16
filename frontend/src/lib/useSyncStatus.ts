@@ -10,6 +10,31 @@ export interface SyncStatus {
   last_error: string | null;
   oldest_dirty: string | null;
   last_success_at: string | null;
+  account_report_pending: number;
+  account_report_failed: number;
+  account_report_last_error: string | null;
+  account_report_oldest_dirty: string | null;
+  account_report_last_success_at: string | null;
+}
+
+export function syncPendingCount(status: SyncStatus): number {
+  return Math.max(0, status.pending || 0) + Math.max(0, status.account_report_pending || 0);
+}
+
+export function syncFailedCount(status: SyncStatus): number {
+  return Math.max(0, status.failed || 0) + Math.max(0, status.account_report_failed || 0);
+}
+
+export function latestSyncSuccess(status: SyncStatus): string | null {
+  const reported = [status.last_success_at, status.account_report_last_success_at]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const candidates = reported
+    .map((value) => ({ value, timestamp: Date.parse(value) }))
+    .filter((item) => Number.isFinite(item.timestamp));
+  if (!candidates.length) return reported[0] || null;
+  return candidates.reduce((latest, item) =>
+    item.timestamp > latest.timestamp ? item : latest,
+  ).value;
 }
 
 export function formatTelemetryLastSuccess(value: string | null): string {

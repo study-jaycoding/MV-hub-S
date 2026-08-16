@@ -79,6 +79,21 @@ class ManageTransactionsTests(unittest.TestCase):
             row = conn.execute("SELECT matched_gen_id FROM credit_txn").fetchone()
         self.assertIsNone(row["matched_gen_id"])
 
+    def test_repeated_transaction_can_fill_missing_model_without_duplicate(self):
+        transaction = self._transaction()
+        transaction.pop("model")
+        first = manage.record_transactions("u_me", "me@example.com", [transaction])
+        second = manage.record_transactions(
+            "u_me", "me@example.com", [{**transaction, "model": "model-a"}]
+        )
+
+        with db.get_connection() as conn:
+            rows = conn.execute("SELECT model FROM credit_txn").fetchall()
+        self.assertEqual(first["inserted"], 1)
+        self.assertEqual(second["inserted"], 0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["model"], "model-a")
+
 
 if __name__ == "__main__":
     unittest.main()

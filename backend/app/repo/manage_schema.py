@@ -104,7 +104,26 @@ _SCHEMA = (
         id              INTEGER PRIMARY KEY CHECK(id = 1),
         last_success_at TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS account_report_outbox (
+        report_key      TEXT PRIMARY KEY,
+        report_type     TEXT NOT NULL CHECK(report_type IN ('status', 'transaction')),
+        payload_json    TEXT NOT NULL,
+        payload_hash    TEXT NOT NULL,
+        dirty_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        dirty_rev       INTEGER NOT NULL DEFAULT 1,
+        pushed_at       TEXT,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        fail_streak     INTEGER NOT NULL DEFAULT 0,
+        next_retry_at   TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS account_report_delivery_state (
+        id              INTEGER PRIMARY KEY CHECK(id = 1),
+        last_success_at TEXT
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_account_report_outbox_pushed "
+    "ON account_report_outbox(pushed_at, next_retry_at, dirty_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
     "WHERE action='spend' AND matched_gen_id IS NULL",

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 from collections import Counter
 
 from fastapi import APIRouter, HTTPException, Request
@@ -29,10 +30,11 @@ from ..config import (
 )
 from ..emailnorm import norm_email
 from ..deps import account_scope_uid, require_agent_account
-from ..models import IngestIn, IngestMcpIn, IngestOut
+from ..models import AccountReportIn, AccountReportOut, IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services import auth as auth_service
 from ..services import local_agent_pair
+from ..services.operational_logging import log_event
 from ._telemetry import schedule_telemetry_drain
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
@@ -42,6 +44,7 @@ from ..services.request_guards import is_loopback_request
 _AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
 
 router = APIRouter(prefix="/api", tags=["ingest"])
+_logger = logging.getLogger("mvhub.account_reports")
 
 
 class LocalAgentPairIn(BaseModel):
@@ -263,26 +266,80 @@ def ingest(body: IngestIn, request: Request):
             _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions)
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
+    report_queued = False
     if _proxy.proxying() and (body.account_status or body.account_transactions):
-        try:
-            _proxy.proxy_json(
-                "POST",
-                "/api/ingest",
-                body={
-                    "jobs": [],
-                    "account_status": body.account_status,
-                    "account_transactions": body.account_transactions,
-                    "creator_uid": body.creator_uid,
-                    "workspace": body.workspace.model_dump(),
-                },
-            )
-        except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
-            pass
+        if MANAGE_ENABLED:
+            try:
+                from ..repo import manage as _m
+
+                queued = _m.queue_account_reports(
+                    body.account_status, body.account_transactions
+                )
+                report_queued = bool(queued["status"] or queued["transactions"])
+            except Exception as exc:  # noqa: BLE001 — 로컬 생성 적재는 보존하되 로그로 노출
+                log_event(
+                    _logger,
+                    "account_report_queue_failed",
+                    level=logging.ERROR,
+                    error_type=type(exc).__name__,
+                )
+        else:
+            # 명시적으로 PM 기능을 끈 설치본은 사이드카 큐 테이블을 만들지 않는 기존 계약을
+            # 유지한다. 기본 운영값은 on이며, 이 호환 경로는 예전과 같은 best-effort다.
+            try:
+                _proxy.proxy_json(
+                    "POST",
+                    "/api/ingest",
+                    body={
+                        "jobs": [],
+                        "account_status": body.account_status,
+                        "account_transactions": body.account_transactions,
+                        "creator_uid": body.creator_uid,
+                        "workspace": body.workspace.model_dump(),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 기능 off의 레거시 호환 경로
+                pass
     # 팀 매니징: 응답을 네트워크에 묶지 않고 dirty 텔레메트리 전송을 예약한다. 동시 요청은
     # 단일 drain으로 합쳐지며 신규 적재분과 이전 실패분을 함께 재시도한다.
-    if MANAGE_ENABLED:
+    if MANAGE_ENABLED or report_queued:
         schedule_telemetry_drain()
     return out
+
+
+@router.post("/ingest/account-report", response_model=AccountReportOut)
+def ingest_account_report(body: AccountReportIn, request: Request):
+    """로컬 outbox 보고의 공유 서버 전용 수신점.
+
+    상태와 거래를 모두 DB에 반영한 뒤에만 ``accepted=true``를 반환한다. 중간 실패를 삼키지
+    않으므로 클라이언트는 응답이 없거나 비정상이면 같은 revision을 안전하게 재시도할 수 있다.
+    """
+    if not MANAGE_ENABLED:
+        raise HTTPException(status_code=503, detail="관리 텔레메트리가 비활성입니다")
+    acc = _agent_acc(request)
+    out = _ingest_core(
+        acc,
+        [],
+        body.creator_uid,
+        body.account_status,
+    )
+    if body.account_transactions and not out.linked_uid:
+        raise HTTPException(
+            status_code=409,
+            detail="크레딧 거래를 연결할 Higgsfield 계정 식별자가 없습니다",
+        )
+    from ..repo import manage as _m
+
+    result = _m.record_transactions(
+        out.linked_uid,
+        acc.get("email"),
+        body.account_transactions,
+    )
+    return AccountReportOut(
+        accepted=True,
+        transactions_inserted=int(result.get("inserted") or 0),
+        transactions_matched=int(result.get("matched") or 0),
+    )
 
 
 @router.post("/ingest/mcp", response_model=IngestOut)

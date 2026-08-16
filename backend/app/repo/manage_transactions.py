@@ -64,6 +64,14 @@ def record_transactions(
                     ),
                 )
                 inserted += cursor.rowcount
+                # CLI 모델 목록 조회가 늦게 성공하면 같은 거래에 model 정보가 뒤늦게 붙을 수 있다.
+                # 거래 자체는 중복 삽입하지 않고, 비어 있던 모델 키만 안전하게 보강한다.
+                if model:
+                    conn.execute(
+                        "UPDATE credit_txn SET model=? WHERE id=? "
+                        "AND (model IS NULL OR TRIM(model)='')",
+                        (model, transaction_id),
+                    )
             matched_ids = _match_transactions(conn, owner_uid)
             conn.execute("COMMIT")
         except Exception:

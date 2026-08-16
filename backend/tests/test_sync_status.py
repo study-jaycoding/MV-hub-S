@@ -73,7 +73,8 @@ class SyncStatusTests(unittest.TestCase):
                 row["name"]
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name IN ('telemetry_outbox','telemetry_delivery_state')"
+                    "AND name IN ('telemetry_outbox','telemetry_delivery_state',"
+                    "'account_report_outbox','account_report_delivery_state')"
                 )
             }
         self.assertEqual(tables, set(), "sync-status 가 telemetry 테이블을 만들면 안 됨")
@@ -94,6 +95,29 @@ class SyncStatusTests(unittest.TestCase):
         d = self.client.get("/api/sync-status").json()
         self.assertEqual(d["pending"], 0)  # pushed_at 있으면 대기 아님
         self.assertRegex(d["last_success_at"], r"^\d{4}-\d{2}-\d{2}T.*Z$")
+
+    def test_account_report_queue_is_exposed_separately(self):
+        from app.repo import manage
+
+        manage.queue_account_reports(
+            {"email": "artist@example.com", "credits": 10},
+            [
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+        )
+        rows = manage.list_due_account_reports()
+        manage.mark_account_reports_failed(rows, "shared server offline")
+
+        d = self.client.get("/api/sync-status").json()
+        self.assertEqual(d["pending"], 0)
+        self.assertEqual(d["account_report_pending"], 2)
+        self.assertEqual(d["account_report_failed"], 2)
+        self.assertEqual(d["account_report_last_error"], "shared server offline")
 
 
 if __name__ == "__main__":
