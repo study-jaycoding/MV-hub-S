@@ -42,7 +42,11 @@ from ..deps import (
     account_scope_uid,
     actor_id,
 )
-from ..services.media_types import VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
+from ..services.media_types import (
+    AUDIO_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    asset_content_type,
+)
 from ..services.request_guards import require_loopback_request
 from ..services import asset_io, asset_mounts, asset_paths, asset_tree, thumbs
 from ..services.path_safety import safe_join
@@ -571,7 +575,25 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     target = _safe_resolve(proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
-    return FileResponse(target)
+    content_type = asset_content_type(target.name)
+    if content_type is None:
+        # 마운트 폴더에는 미디어 외 파일도 있을 수 있다. 트리에서 숨기는 것만으로는 직접 URL을
+        # 막지 못하므로 HTTP 경계에서도 차단한다. 특히 HTML/SVG/스크립트를 같은 오리진으로
+        # 실행하지 않는 것이 핵심이다.
+        raise HTTPException(status_code=415, detail="지원하지 않는 Assets 파일 형식입니다")
+    return FileResponse(
+        target,
+        media_type=content_type,
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            # 원본은 같은 경로에서 외부 편집기로 교체될 수 있으므로 매번 유효성을 확인한다.
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 @router.get("/thumb", dependencies=[Depends(_require_local_assets)])
@@ -614,7 +636,12 @@ def get_thumb(
     return FileResponse(
         cache,
         media_type="image/jpeg",
-        headers={"Cache-Control": cache_control},
+        headers={
+            "Cache-Control": cache_control,
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
     )
 
 
@@ -840,6 +867,7 @@ def export_zip(
         tmp_path,
         media_type="application/zip",
         filename=f"assets-{len(used)}.zip",
+        headers={"X-Content-Type-Options": "nosniff"},
         background=BackgroundTask(os.unlink, tmp_path),  # 전송 후 임시 zip 삭제
     )
 
