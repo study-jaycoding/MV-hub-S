@@ -1,6 +1,7 @@
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
+import type { BackupContinuityStatus } from "../../lib/assetsApi";
 import type { ResolveConnectionStatus, ResolveScriptStatus } from "../../lib/resolveTransfer";
 import {
   isReleaseUpdateRunning,
@@ -180,17 +181,34 @@ export function BackfillSettingsSection({
 export function MetadataContinuitySection({
   dbBusy,
   dbMsg,
+  backupContinuity,
   onServerBackup,
+  onRetryServerBackup,
   onServerRestore,
   onImportDb,
 }: {
   dbBusy: boolean;
   dbMsg: string;
+  backupContinuity: BackupContinuityStatus | null;
   onServerBackup: () => void;
+  onRetryServerBackup: () => void;
   onServerRestore: () => void;
   onImportDb: (file: File | null | undefined) => void;
 }) {
   const t = useT();
+  const stateLabels: Record<string, string> = {
+    waiting_for_backup: "첫 자동 백업 대기",
+    pending: "전송 대기",
+    uploading: "전송 중",
+    success: "정상",
+    login_required: "로그인 대기",
+    failed: "재시도 대기",
+    server_update_required: "서버 업데이트 필요",
+  };
+  const shared = backupContinuity?.shared;
+  const lastSuccess = shared?.last_success_at
+    ? new Date(shared.last_success_at).toLocaleString()
+    : "아직 없음";
   return (
     <section className="settings-section">
       <h4>{t("내 메타데이터 (작업 연속성)")}</h4>
@@ -205,7 +223,21 @@ export function MetadataContinuitySection({
         <button className="settings-action" onClick={onServerRestore} disabled={dbBusy}>
           ⬇ 서버에서 가져오기
         </button>
+        {shared && shared.state !== "success" && shared.state !== "waiting_for_backup" && (
+          <button className="settings-action" onClick={onRetryServerBackup} disabled={dbBusy}>
+            다시 시도
+          </button>
+        )}
       </div>
+      <p className="settings-hint" aria-live="polite">
+        로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
+        {backupContinuity?.local.latest_file_count
+          ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
+          : ""}
+        {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
+        {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
+        {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
+      </p>
       <p className="settings-hint">
         백업은 <b>내 계정으로만</b> 저장·복원됩니다(남의 백업은 안 보임). 토큰 등 민감정보는
         올리기 전에 제거되며, 가져오기는 현재 로컬 DB를 통째 교체(자동 백업) 후 재로그인합니다.

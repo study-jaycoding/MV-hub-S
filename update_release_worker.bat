@@ -507,7 +507,9 @@ function Install-Package {
             $BackendTarget = Join-Path $TargetDir "backend"
             New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
             Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
-                if ($_.Name -ne "app") {
+                # backend\data owns user DBs, backup outbox, and replica status.
+                # Never overwrite it even if a malformed package unexpectedly contains data.
+                if ($_.Name -ne "app" -and $_.Name -ne "data") {
                     Copy-Item -LiteralPath $_.FullName -Destination $BackendTarget -Recurse -Force
                 }
             }

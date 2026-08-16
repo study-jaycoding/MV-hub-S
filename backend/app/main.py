@@ -83,6 +83,11 @@ from .routers import (
 from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
+from .services.worker_backup import (
+    periodic_worker_backup,
+    queue_backup_set,
+    queue_latest_local_backup,
+)
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
 from .services.operational_logging import (
@@ -319,6 +324,22 @@ async def _application_lifespan(app: FastAPI):
     # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
     if AUTH_ENABLED:
         periodic_sync.start()
+    if _proxy.is_worker_hub():
+        # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
+        # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
+        periodic_backup.set_completed_callback(queue_backup_set)
+        try:
+            await asyncio.to_thread(queue_latest_local_backup)
+        except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 다음 주기에서 다시 보강한다.
+            log_event(
+                _runtime_log,
+                "worker_backup_bootstrap_queue_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
+        periodic_worker_backup.start()
+    else:
+        periodic_backup.set_completed_callback(None)
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
     periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
     periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
@@ -358,7 +379,10 @@ async def _application_lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await shutdown_request_estimates()
+    # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
     await periodic_backup.stop()
+    await periodic_worker_backup.stop()
+    periodic_backup.set_completed_callback(None)
     await periodic_sweeper.stop()
     await periodic_media_preservation.stop()
     await remote_realtime_bridge.stop()

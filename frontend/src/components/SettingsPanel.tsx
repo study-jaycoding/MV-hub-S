@@ -20,6 +20,7 @@ import {
   pickDownloadDir,
 } from "../lib/downloadDir";
 import { api } from "../api";
+import type { BackupContinuityStatus } from "../lib/assetsApi";
 import { buildBackfillInstructions, parseMcpItems } from "../lib/settingsBackfill";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { ShortcutsWindow } from "./ShortcutsWindow";
@@ -64,6 +65,7 @@ export function SettingsPanel({
   const [scOpen, setScOpen] = useState(false);
   const [dbBusy, setDbBusy] = useState(false);
   const [dbMsg, setDbMsg] = useState("");
+  const [backupContinuity, setBackupContinuity] = useState<BackupContinuityStatus | null>(null);
   const [syncMsg, setSyncMsg] = useState("");
   const [reinspectMsg, setReinspectMsg] = useState("");
   const [hfMsg, setHfMsg] = useState("");
@@ -117,6 +119,9 @@ export function SettingsPanel({
       }
     }).catch(() => {
       setReleaseUpdateMsg("업데이트 상태를 확인하지 못했습니다.");
+    });
+    api.backupContinuity().then(setBackupContinuity).catch(() => {
+      setDbMsg("백업 상태를 확인하지 못했습니다.");
     });
   }, []);
 
@@ -389,9 +394,38 @@ export function SettingsPanel({
     setDbMsg("서버에 백업 중…");
     try {
       const r = await api.serverBackup();
-      setDbMsg(`✓ 서버에 백업 완료 (보관 ${r.count}개)`);
+      if (r.ok) {
+        setDbMsg(`✓ 개인 DB 세트 서버 백업 완료 (보관 ${r.count}개)`);
+      } else if (r.state === "server_update_required") {
+        setDbMsg(
+          r.legacy_content_saved
+            ? "서버가 구버전이라 콘텐츠 DB만 보관했습니다. 서버 업데이트가 필요합니다."
+            : "서버 업데이트가 필요합니다. 백업 세트는 로컬 대기열에 안전하게 남아 있습니다.",
+        );
+      } else {
+        setDbMsg("백업이 대기 중입니다. 연결 복구 뒤 자동으로 다시 시도합니다.");
+      }
+      setBackupContinuity(await api.backupContinuity());
     } catch (e) {
       setDbMsg("백업 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const retryServerBackup = async () => {
+    setDbBusy(true);
+    setDbMsg("대기 중인 백업을 다시 보내는 중…");
+    try {
+      const result = await api.retryBackup();
+      setDbMsg(
+        result.ok
+          ? "✓ 백업 재시도를 마쳤습니다."
+          : "아직 전송하지 못했습니다. 대기열은 보존되며 자동 재시도합니다.",
+      );
+      setBackupContinuity(await api.backupContinuity());
+    } catch (error) {
+      setDbMsg("재시도 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
     } finally {
       setDbBusy(false);
     }
@@ -511,7 +545,9 @@ export function SettingsPanel({
           <MetadataContinuitySection
             dbBusy={dbBusy}
             dbMsg={dbMsg}
+            backupContinuity={backupContinuity}
             onServerBackup={serverBackup}
+            onRetryServerBackup={retryServerBackup}
             onServerRestore={serverRestore}
             onImportDb={importDb}
           />

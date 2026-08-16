@@ -16,6 +16,24 @@ import {
 import { authFormHeaders, jsonBody, jsonFetch, throwHttpError } from "./http";
 import { pathPart, withQuery } from "./url";
 
+export interface BackupContinuityStatus {
+  local: {
+    set_count: number;
+    latest_created_at: string | null;
+    latest_file_count: number;
+  };
+  shared: {
+    automatic: boolean;
+    state: string;
+    pending: number;
+    failed: number;
+    oldest_pending_at?: string | null;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    last_error_code: string | null;
+  };
+}
+
 export const assetsApi = {
   // Assets(구성) 패널
   assetProjects: () => jsonFetch<ProjectsInfo>("/api/assets/projects"),
@@ -119,8 +137,21 @@ export const assetsApi = {
 
   // ☁ 서버에 백업 — 내 계정 DB(메타데이터)를 공유 서버에 올린다(계정별 보관).
   serverBackup: () =>
-    jsonFetch<{ ok: boolean; name: string; size: number; count: number }>(
+    jsonFetch<{
+      ok: boolean;
+      state: string;
+      count: number;
+      legacy_content_saved: boolean;
+      error_code?: string;
+    }>(
       "/api/db/server-backup",
+      { method: "POST" },
+    ),
+  backupContinuity: () =>
+    jsonFetch<BackupContinuityStatus>("/api/db/backup-continuity"),
+  retryBackup: () =>
+    jsonFetch<{ ok: boolean; state: string; error_code?: string }>(
+      "/api/db/backup-retry",
       { method: "POST" },
     ),
   serverRestore: () =>

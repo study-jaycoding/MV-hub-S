@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 from pathlib import Path
 
@@ -188,6 +189,88 @@ def test_media_preservation_snapshot_exposes_only_safe_counts(monkeypatch):
         },
         "active": 4,
         "attention": 7,
+    }
+
+
+def test_replica_snapshot_exposes_structured_status_without_paths(tmp_path, monkeypatch):
+    status_file = tmp_path / "backup_replica_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "format": "mvhub-backup-replica-status",
+                "state": "failed",
+                "configured": True,
+                "last_attempt_at": "2026-08-17T00:00:00+00:00",
+                "last_success_at": None,
+                "error_code": "target_unavailable",
+                "failed": 2,
+                "private_path": r"\\NAS\private\person@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", True)
+    monkeypatch.setattr(operational_health, "_REPLICA_STATUS_FILE", status_file)
+
+    result = operational_health.backup_replica_snapshot()
+    assert result["state"] == "failed"
+    assert result["error_code"] == "target_unavailable"
+    assert result["failed"] == 2
+    assert "private" not in repr(result).lower()
+    assert "person@example.com" not in repr(result)
+
+
+def test_worker_backup_snapshot_reports_only_safe_counts(monkeypatch):
+    from app.services import worker_backup
+
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", False)
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
+    monkeypatch.setattr(
+        worker_backup,
+        "status_snapshot",
+        lambda: {
+            "state": "failed",
+            "pending": 3,
+            "failed": 1,
+            "last_error_code": "network_unavailable",
+            "oldest_pending_at": "2026-08-17T00:00:00+00:00",
+            "private_path": r"C:\Users\Person\secret.db",
+        },
+    )
+
+    result = operational_health.worker_backup_snapshot()
+    assert result["state"] == "failed"
+    assert result["pending"] == 3
+    assert result["last_error_code"] == "network_unavailable"
+    assert "secret.db" not in repr(result)
+
+
+def test_backup_attention_includes_login_wait_and_replica_never_run():
+    tracker = operational_health.OperationalAlertTracker(repeat_seconds=100)
+    snapshot = {
+        "operations": {
+            "generation_queue": {},
+            "telemetry": {},
+            "media_preservation": {},
+            "worker_backup": {
+                "applicable": True,
+                "state": "login_required",
+                "pending": 2,
+                "failed": 0,
+            },
+            "backup_replica": {
+                "applicable": True,
+                "state": "never_run",
+                "configured": False,
+                "failed": 0,
+            },
+            "databases": {"ready": True},
+        }
+    }
+
+    assert {row["event"] for row in tracker.events(snapshot, now=0)} == {
+        "worker_backup_attention",
+        "backup_replica_attention",
     }
 
 

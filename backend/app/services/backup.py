@@ -23,7 +23,7 @@ import time
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from uuid import uuid4
 
 from ..config import DATA_DIR
@@ -69,6 +69,12 @@ def _list_backups() -> list[Path]:
     if not d.is_dir():
         return []
     return sorted(d.glob(f"{_PREFIX}*.db"))
+
+
+def latest_backup_path() -> Optional[Path]:
+    """활성 계정의 최신 완성 콘텐츠 백업. 업데이트 뒤 outbox 보강 등에 사용한다."""
+    backups = _list_backups()
+    return backups[-1] if backups else None
 
 
 def _newest_age_seconds() -> Optional[float]:
@@ -261,6 +267,11 @@ class PeriodicBackup:
     def __init__(self, interval: float = BACKUP_INTERVAL) -> None:
         self._interval = interval
         self._task: Optional[asyncio.Task] = None
+        self._completed_callback: Callable[[Path], object] | None = None
+
+    def set_completed_callback(self, callback: Callable[[Path], object] | None) -> None:
+        """검증된 세트가 공개된 뒤 실행할 부수효과. 서버·테스트는 기본 None이다."""
+        self._completed_callback = callback
 
     def start(self) -> None:
         if self._interval <= 0:
@@ -286,15 +297,29 @@ class PeriodicBackup:
             # 시작 백업은 매번 생략되고 고정 sleep 은 끝까지 못 가서 백업이 영영 안 만들어졌다.
             # 나이 기반이면 재시작이 아무리 잦아도 나이가 interval 을 넘는 순간 백업된다.
             age = _newest_age_seconds()
-            wait = self._interval if age is None else max(60.0, self._interval - age)
-            await asyncio.sleep(wait)
-            await self._backup_once()
+            if age is None or age >= self._interval:
+                await self._backup_once()
+                await asyncio.sleep(min(60.0, max(1.0, self._interval)))
+                continue
+            # 활성 계정이 바뀌면 _backup_dir도 바뀐다. 하루짜리 sleep 하나로 묶으면 새 계정은
+            # 최대 하루 동안 백업이 없으므로, 가벼운 stat 확인만 최대 60초마다 다시 한다.
+            await asyncio.sleep(min(60.0, max(1.0, self._interval - age)))
 
     async def _backup_once(self) -> None:
         try:
             # sqlite backup 은 블로킹 → 스레드로 빼 이벤트 루프를 막지 않는다.
             path = await asyncio.to_thread(backup_now)
             if path:
+                if self._completed_callback is not None:
+                    try:
+                        await asyncio.to_thread(self._completed_callback, path)
+                    except Exception:  # noqa: BLE001 — 로컬 백업 성공과 외부 전달 실패를 분리
+                        log_event(
+                            _backup_log,
+                            "backup_offdisk_queue_failed",
+                            level=logging.ERROR,
+                            exc_info=True,
+                        )
                 latest = list_backups_info()[0]
                 log_event(
                     _backup_log,

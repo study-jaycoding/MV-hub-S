@@ -222,6 +222,7 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert '$_.Name -ne "VERSION.txt"' in updater
     assert "VERSION is the transaction commit marker" in updater
     assert "Replace-ImmutableDirectory" in updater
+    assert '$_.Name -ne "app" -and $_.Name -ne "data"' in updater
     assert '-TargetDir (Join-Path $TargetDir "backend\\app")' in updater
     assert '-TargetDir (Join-Path $TargetDir "frontend\\dist")' in updater
     assert "UseShellExecute = $true" in updater
@@ -238,6 +239,19 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert '"update_release_worker.bat"' in builder
     assert "Assert-PythonRuntimeTree" in builder
     assert "expected 64-bit runtime" in builder
+
+
+def test_release_update_contract_preserves_worker_backup_state_and_outbox():
+    project_root = Path(__file__).resolve().parents[2]
+    updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
+    builder = (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8")
+
+    # 상태 DB와 staging은 backend/data 아래에 있으므로 이 폴더는 패키징·교체 양쪽에서 제외해야 한다.
+    assert '"data"' not in builder[builder.index("$BackendFiles = @(") : builder.index(")", builder.index("$BackendFiles = @("))]
+    assert '$_.Name -ne "app" -and $_.Name -ne "data"' in updater
+    assert '-TargetDir (Join-Path $TargetDir "backend\\data")' not in updater
+    assert "worker_backup_state.db" not in builder
+    assert "worker-backup-outbox" not in builder
 
 
 def test_release_builder_requires_verified_python_314_without_an_unproven_resolve_range():

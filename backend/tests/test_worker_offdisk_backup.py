@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import io
+import json
+import sqlite3
+import threading
+import urllib.error
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+from app import active_account
+from app.routers import db_backup, db_transfer
+from app.services import worker_backup
+
+
+def _content_db(path: Path, *, secret: bool = True) -> bytes:
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE generation(id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)")
+        if secret:
+            conn.execute(
+                "INSERT INTO app_setting VALUES('shared_server_token','private-token')"
+            )
+        conn.commit()
+    return path.read_bytes()
+
+
+def _trash_db(path: Path) -> bytes:
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE trashed(id TEXT PRIMARY KEY)")
+        conn.commit()
+    return path.read_bytes()
+
+
+@pytest.fixture
+def worker_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(worker_backup, "STATE_DB", tmp_path / "worker-state.db")
+    monkeypatch.setattr(worker_backup, "OUTBOX_DIR", tmp_path / "outbox")
+    token = active_account.set_override("artist@example.com")
+    try:
+        yield tmp_path
+    finally:
+        active_account.reset_override(token)
+
+
+def _queued(worker_store: Path) -> tuple[str, Path, dict]:
+    backup_dir = worker_store / "local"
+    backup_dir.mkdir()
+    content = backup_dir / "content_hub_20260817_120000_000001.db"
+    trash = backup_dir / "content_trash_20260817_120000_000001.db"
+    _content_db(content)
+    _trash_db(trash)
+    backup_set_id = worker_backup.queue_backup_set(content)
+    assert backup_set_id
+    stage = worker_backup.OUTBOX_DIR / active_account.slug("artist@example.com") / backup_set_id
+    manifest = json.loads((stage / "manifest.json").read_text("utf-8"))
+    return backup_set_id, stage, manifest
+
+
+def test_queue_is_atomic_deduplicated_and_strips_secrets(worker_store: Path):
+    backup_set_id, stage, manifest = _queued(worker_store)
+
+    assert set(manifest["roles"]) == {"content", "trash"}
+    assert manifest["backup_set_id"] == backup_set_id
+    with sqlite3.connect(stage / "content.db") as conn:
+        assert conn.execute(
+            "SELECT value FROM app_setting WHERE key='shared_server_token'"
+        ).fetchone() is None
+
+    source = worker_store / "local" / "content_hub_20260817_120000_000001.db"
+    assert worker_backup.queue_backup_set(source) == backup_set_id
+    with worker_backup._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM worker_backup_outbox").fetchone()[0] == 1
+    assert not list(stage.parent.glob(".stage-*"))
+
+
+def test_explicit_ack_is_required_before_staging_is_removed(
+    worker_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    backup_set_id, stage, manifest = _queued(worker_store)
+    monkeypatch.setattr(
+        worker_backup.repo,
+        "get_setting",
+        lambda key: "token" if key == "shared_server_token" else "http://server",
+    )
+    monkeypatch.setattr(
+        worker_backup,
+        "_multipart_set_upload",
+        lambda *_args, **_kwargs: (
+            200,
+            {"accepted": True, "backup_set_id": "0" * 64, "files": manifest["roles"]},
+        ),
+    )
+
+    result = worker_backup.drain_one()
+    assert result == {"state": "failed", "error_code": "ack_mismatch"}
+    assert stage.is_dir()
+    with worker_backup._connect() as conn:
+        row = conn.execute(
+            "SELECT status,last_error_code FROM worker_backup_outbox WHERE backup_set_id=?",
+            (backup_set_id,),
+        ).fetchone()
+    assert tuple(row) == ("pending", "ack_mismatch")
+
+
+def test_successful_ack_completes_exact_set(worker_store: Path, monkeypatch: pytest.MonkeyPatch):
+    backup_set_id, stage, manifest = _queued(worker_store)
+    monkeypatch.setattr(
+        worker_backup.repo,
+        "get_setting",
+        lambda key: "token" if key == "shared_server_token" else "http://server",
+    )
+    monkeypatch.setattr(
+        worker_backup,
+        "_multipart_set_upload",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "accepted": True,
+                "backup_set_id": backup_set_id,
+                "files": manifest["roles"],
+                "count": 1,
+            },
+        ),
+    )
+
+    result = worker_backup.drain_one()
+    assert result["state"] == "success"
+    assert result["server_count"] == 1
+    assert not stage.exists()
+    assert worker_backup.status_snapshot()["state"] == "success"
+
+
+def test_network_outage_keeps_set_and_recovers_after_manual_retry(
+    worker_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    backup_set_id, stage, manifest = _queued(worker_store)
+    monkeypatch.setattr(
+        worker_backup.repo,
+        "get_setting",
+        lambda key: "token" if key == "shared_server_token" else "http://server",
+    )
+    monkeypatch.setattr(
+        worker_backup,
+        "_multipart_set_upload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("offline")),
+    )
+
+    failed = worker_backup.drain_one()
+    assert failed == {"state": "failed", "error_code": "network_unavailable"}
+    assert stage.is_dir()
+    assert worker_backup.status_snapshot()["pending"] == 1
+
+    worker_backup.retry_pending()
+    monkeypatch.setattr(
+        worker_backup,
+        "_multipart_set_upload",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "accepted": True,
+                "backup_set_id": backup_set_id,
+                "files": manifest["roles"],
+                "count": 1,
+            },
+        ),
+    )
+    recovered = worker_backup.drain_one()
+    assert recovered["state"] == "success"
+    assert worker_backup.status_snapshot()["pending"] == 0
+    assert worker_backup.status_snapshot()["last_success_at"]
+
+
+def test_login_expiry_never_discards_pending_set(
+    worker_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    backup_set_id, stage, manifest = _queued(worker_store)
+    settings: dict[str, str | None] = {
+        "shared_server_token": None,
+        "shared_server_url": "http://server",
+    }
+    monkeypatch.setattr(worker_backup.repo, "get_setting", settings.get)
+
+    waiting = worker_backup.drain_one()
+    assert waiting["state"] == "login_required"
+    assert stage.is_dir()
+    assert worker_backup.status_snapshot()["state"] == "login_required"
+
+    settings["shared_server_token"] = "new-token"
+    worker_backup.retry_pending()
+    monkeypatch.setattr(
+        worker_backup,
+        "_multipart_set_upload",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "accepted": True,
+                "backup_set_id": backup_set_id,
+                "files": manifest["roles"],
+                "count": 1,
+            },
+        ),
+    )
+    assert worker_backup.drain_one()["state"] == "success"
+    assert not stage.exists()
+
+
+def test_interrupted_running_row_is_recovered(worker_store: Path):
+    backup_set_id, _stage, _manifest = _queued(worker_store)
+    with worker_backup._connect() as conn:
+        conn.execute(
+            "UPDATE worker_backup_outbox SET status='running' WHERE backup_set_id=?",
+            (backup_set_id,),
+        )
+    assert worker_backup.recover_in_progress() == 1
+    with worker_backup._connect() as conn:
+        row = conn.execute(
+            "SELECT status,last_error_code FROM worker_backup_outbox WHERE backup_set_id=?",
+            (backup_set_id,),
+        ).fetchone()
+    assert tuple(row) == ("pending", "interrupted")
+
+
+def test_restart_cleanup_keeps_pending_set_and_removes_only_stale_staging(
+    worker_store: Path,
+):
+    backup_set_id, stage, _manifest = _queued(worker_store)
+    abandoned = stage.parent / ".stage-abandoned"
+    abandoned.mkdir()
+    completed = stage.parent / ("f" * 64)
+    completed.mkdir()
+    with worker_backup._connect() as conn:
+        conn.execute(
+            "INSERT INTO worker_backup_outbox"
+            "(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) "
+            "VALUES(?,?,?,?,?,'done')",
+            (
+                completed.name,
+                active_account.slug("artist@example.com"),
+                "2026-08-17T12:00:00+00:00",
+                "20260817_120000_000002",
+                "{}",
+            ),
+        )
+
+    result = worker_backup.cleanup_stale_state()
+
+    assert result["directories"] == 2
+    assert stage.is_dir()
+    assert not abandoned.exists()
+    assert not completed.exists()
+    with worker_backup._connect() as conn:
+        assert conn.execute(
+            "SELECT status FROM worker_backup_outbox WHERE backup_set_id=?",
+            (backup_set_id,),
+        ).fetchone()[0] == "pending"
+
+
+def _server_manifest(content: bytes, trash: bytes) -> dict:
+    roles = {
+        "content": {"size": len(content), "sha256": hashlib.sha256(content).hexdigest()},
+        "trash": {"size": len(trash), "sha256": hashlib.sha256(trash).hexdigest()},
+    }
+    identity = json.dumps(roles, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "format": db_backup._SET_FORMAT,
+        "format_version": db_backup._SET_FORMAT_VERSION,
+        "backup_set_id": hashlib.sha256(identity).hexdigest(),
+        "created_at": "2026-08-17T12:00:00+00:00",
+        "local_stamp": "20260817_120000_000001",
+        "schema_version": 0,
+        "app_version": "test",
+        "roles": roles,
+    }
+
+
+def test_same_set_twenty_concurrent_stores_publish_one_directory(tmp_path: Path):
+    content_path = tmp_path / "content-source.db"
+    trash_path = tmp_path / "trash-source.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest(content, trash)
+    root = tmp_path / "account"
+
+    def store(_index: int):
+        return db_backup._store_backup_set(
+            root,
+            manifest,
+            {"content": io.BytesIO(content), "trash": io.BytesIO(trash)},
+        )
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        acknowledgements = list(pool.map(store, range(20)))
+
+    folders = list((root / "sets").glob("[0-9a-f]*"))
+    assert [folder.name for folder in folders] == [manifest["backup_set_id"]]
+    assert all(ack["accepted"] is True for ack in acknowledgements)
+    assert all(ack["backup_set_id"] == manifest["backup_set_id"] for ack in acknowledgements)
+    assert sum(ack["duplicate"] is False for ack in acknowledgements) == 1
+    assert db_backup._ack_for_stored_set(
+        folders[0], manifest, duplicate=True, count=1
+    ) is not None
+
+
+def test_server_publish_failure_restores_previous_set(tmp_path: Path, monkeypatch):
+    content_path = tmp_path / "content-source.db"
+    trash_path = tmp_path / "trash-source.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest(content, trash)
+    root = tmp_path / "account"
+    original_ack = db_backup._store_backup_set(
+        root,
+        manifest,
+        {"content": io.BytesIO(content), "trash": io.BytesIO(trash)},
+    )
+    assert original_ack["accepted"] is True
+    final = root / "sets" / manifest["backup_set_id"]
+    original_manifest = (final / "manifest.json").read_bytes()
+    (final / "content.db").write_bytes(b"old-incomplete-copy")
+
+    real_replace = db_backup.os.replace
+
+    def fail_publish(source, destination):
+        source_path = Path(source)
+        if source_path.parent == final.parent and source_path.name.startswith(".upload-"):
+            raise OSError("disk full")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(db_backup.os, "replace", fail_publish)
+    with pytest.raises(OSError):
+        db_backup._store_backup_set(
+            root,
+            manifest,
+            {"content": io.BytesIO(content), "trash": io.BytesIO(trash)},
+        )
+
+    assert final.is_dir()
+    assert (final / "content.db").read_bytes() == b"old-incomplete-copy"
+    assert (final / "manifest.json").read_bytes() == original_manifest
+    assert not list(final.parent.glob(".upload-*"))
+    assert not list(final.parent.glob(".replace-*"))
+
+
+def test_worker_upload_streams_a_complete_multipart_set(tmp_path: Path):
+    content_path = tmp_path / "content.db"
+    trash_path = tmp_path / "trash.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest(content, trash)
+    received: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers["Content-Length"])
+            received["authorization"] = self.headers["Authorization"]
+            received["body"] = self.rfile.read(length)
+            response = json.dumps(
+                {
+                    "accepted": True,
+                    "backup_set_id": manifest["backup_set_id"],
+                    "files": manifest["roles"],
+                    "count": 1,
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, response = worker_backup._multipart_set_upload(
+            f"http://127.0.0.1:{server.server_port}/api/db-backup/sets",
+            "private-token",
+            manifest,
+            {"content": content_path, "trash": trash_path},
+            timeout=5,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+    assert status == 200
+    assert worker_backup._verify_ack(response, manifest)
+    assert received["authorization"] == "Bearer private-token"
+    body = received["body"]
+    assert isinstance(body, bytes)
+    assert content in body and trash in body
+    assert body.endswith(b"--\r\n")
+
+
+def test_restore_archive_checks_manifest_hashes_and_extracts_both_roles(tmp_path: Path):
+    content_path = tmp_path / "content-source.db"
+    trash_path = tmp_path / "trash-source.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest(content, trash)
+    archive = tmp_path / "set.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest))
+        bundle.writestr("content.db", content)
+        bundle.writestr("trash.db", trash)
+
+    extracted_content, extracted_trash = db_transfer._extract_backup_set(
+        archive, tmp_path / "extracted"
+    )
+    assert extracted_content.read_bytes() == content
+    assert extracted_trash is not None and extracted_trash.read_bytes() == trash
+
+
+def test_restore_archive_rejects_a_file_that_does_not_match_manifest(tmp_path: Path):
+    content_path = tmp_path / "content-source.db"
+    trash_path = tmp_path / "trash-source.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest(content, trash)
+    archive = tmp_path / "bad-set.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest))
+        bundle.writestr("content.db", content)
+        bundle.writestr("trash.db", b"corrupt")
+
+    with pytest.raises(Exception) as caught:
+        db_transfer._extract_backup_set(archive, tmp_path / "bad-extracted")
+    assert getattr(caught.value, "status_code", None) == 400
+
+
+def test_new_worker_with_old_server_keeps_set_pending_and_uses_legacy_compatibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "content_hub_20260817_120000_000001.db"
+    _content_db(source, secret=False)
+    monkeypatch.setattr(db_transfer, "require_admin", lambda _request: None)
+    monkeypatch.setattr(db_transfer, "_require_local_when_open", lambda _request: None)
+    monkeypatch.setattr(db_transfer._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(db_transfer, "backup_now", lambda: source)
+    monkeypatch.setattr(db_transfer, "queue_backup_set", lambda _path: "a" * 64)
+    monkeypatch.setattr(db_transfer, "retry_pending", lambda: 1)
+
+    async def old_server_result():
+        return {"state": "server_update_required", "error_code": "server_update_required"}
+
+    monkeypatch.setattr(db_transfer.periodic_worker_backup, "run_now", old_server_result)
+    monkeypatch.setattr(
+        db_transfer,
+        "_legacy_server_backup",
+        lambda _path: (200, {"ok": True, "count": 4}),
+    )
+
+    result = asyncio.run(db_transfer.server_backup(object()))
+    assert result == {
+        "ok": False,
+        "state": "server_update_required",
+        "count": 4,
+        "legacy_content_saved": True,
+    }

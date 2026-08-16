@@ -1,0 +1,863 @@
+"""작업자 개인 DB 백업 세트의 공유 서버 자동 전달.
+
+개인 content DB 안에 outbox를 넣지 않는다. 그 DB는 다른 PC로 복원되므로 이전 PC의 staging
+경로·전송 상태가 따라가면 안 된다. 상태와 전송 사본은 DATA_DIR 아래 머신 전용 저장소에 두고,
+릴리스 업데이트가 앱 파일을 교체해도 그대로 보존한다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import hashlib
+import json
+import logging
+import os
+import re
+import secrets
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from .. import active_account, repo
+from ..config import BACKEND_DIR, DATA_DIR
+from .atomic_io import atomic_write_text
+from .db_scrub import SESSION_KEYS, strip_transfer_secrets
+from .operational_logging import log_event
+from .sqlite_db import validate_hub_db
+
+STATE_DB = Path(
+    os.environ.get(
+        "CONTENT_HUB_WORKER_BACKUP_STATE_DB",
+        str(DATA_DIR / "worker_backup_state.db"),
+    )
+).resolve()
+OUTBOX_DIR = Path(
+    os.environ.get(
+        "CONTENT_HUB_WORKER_BACKUP_OUTBOX_DIR",
+        str(DATA_DIR / "worker-backup-outbox"),
+    )
+).resolve()
+
+UPLOAD_INTERVAL = max(
+    15.0,
+    float(os.environ.get("CONTENT_HUB_WORKER_BACKUP_UPLOAD_INTERVAL", "60")),
+)
+UPLOAD_TIMEOUT = max(
+    10.0,
+    float(os.environ.get("CONTENT_HUB_WORKER_BACKUP_UPLOAD_TIMEOUT", "120")),
+)
+_MAX_PENDING_PER_ACCOUNT = max(
+    1,
+    int(os.environ.get("CONTENT_HUB_WORKER_BACKUP_PENDING_KEEP", "10")),
+)
+_HISTORY_KEEP_PER_ACCOUNT = 100
+_FORMAT = "mvhub-worker-backup-set"
+_FORMAT_VERSION = 1
+_SET_ID_RE = re.compile(r"[0-9a-f]{64}")
+_PREFIX = "content_hub_"
+_TRASH_PREFIX = "content_trash_"
+_log = logging.getLogger("mvhub.worker_backup")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _connect() -> sqlite3.Connection:
+    STATE_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(STATE_DB), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    _ensure_schema(conn)
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS worker_backup_outbox (
+            backup_set_id   TEXT PRIMARY KEY,
+            account_slug    TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            local_stamp     TEXT NOT NULL,
+            roles_json      TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            last_error_code TEXT,
+            next_retry_ts   REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_backup_due
+        ON worker_backup_outbox(account_slug, status, next_retry_ts, created_at);
+        CREATE TABLE IF NOT EXISTS worker_backup_delivery_state (
+            account_slug      TEXT PRIMARY KEY,
+            last_attempt_at   TEXT,
+            last_success_at   TEXT,
+            last_backup_set_id TEXT,
+            last_error_code   TEXT
+        );
+        """
+    )
+    conn.commit()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_user_version(path: Path) -> int:
+    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def _validate_trash(path: Path) -> None:
+    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        result = conn.execute("PRAGMA quick_check").fetchone()
+        if not result or result[0] != "ok":
+            raise sqlite3.DatabaseError("trash quick_check failed")
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trashed'"
+        ).fetchone():
+            raise sqlite3.DatabaseError("trash table missing")
+
+
+def _verify_transfer_secrets_removed(path: Path) -> None:
+    """정제가 실제 적용됐는지 확인한다.
+
+    기존 정제 함수는 구형 DB 호환 때문에 SQLite 오류를 삼킨다. 자동 외부 전송은 보안상
+    실패를 성공으로 간주할 수 없으므로 별도 확인을 통과하지 못하면 staging을 중단한다.
+    """
+    with contextlib.closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        placeholders = ",".join("?" for _ in SESSION_KEYS)
+        found = conn.execute(
+            f"SELECT 1 FROM app_setting WHERE key IN ({placeholders}) LIMIT 1",
+            SESSION_KEYS,
+        ).fetchone()
+        if found is not None:
+            raise sqlite3.DatabaseError("transfer secrets remain")
+
+
+def _app_version() -> str:
+    try:
+        return (BACKEND_DIR.parent / "VERSION.txt").read_text("utf-8-sig").strip()
+    except OSError:
+        return ""
+
+
+def _stamp_from_content(path: Path) -> str:
+    name = path.name
+    if not name.startswith(_PREFIX) or not name.endswith(".db"):
+        raise ValueError("unexpected backup filename")
+    stamp = name[len(_PREFIX) : -3]
+    if not stamp or any(ch not in "0123456789_" for ch in stamp):
+        raise ValueError("invalid backup stamp")
+    return stamp
+
+
+def _stage_dir(account_slug: str, backup_set_id: str) -> Path:
+    if not _SET_ID_RE.fullmatch(backup_set_id):
+        raise ValueError("invalid backup set id")
+    return OUTBOX_DIR / account_slug / backup_set_id
+
+
+def _role_info(path: Path) -> dict[str, Any]:
+    return {"size": path.stat().st_size, "sha256": _sha256(path)}
+
+
+def record_queue_failure(error_code: str, *, account_email: str | None = None) -> None:
+    """staging 자체가 실패한 경우에도 마지막 오류를 머신 상태 DB에 남긴다."""
+    email = account_email or active_account.account_key()
+    if not email:
+        return
+    account_slug = active_account.slug(email)
+    now = _utc_now()
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO worker_backup_delivery_state"
+                "(account_slug,last_attempt_at,last_error_code) VALUES(?,?,?) "
+                "ON CONFLICT(account_slug) DO UPDATE SET "
+                "last_attempt_at=excluded.last_attempt_at,last_error_code=excluded.last_error_code",
+                (account_slug, now, str(error_code)[:64]),
+            )
+    except sqlite3.Error:
+        pass
+
+
+def queue_backup_set(
+    content_backup: Path,
+    *,
+    account_email: str | None = None,
+) -> str | None:
+    """검증된 로컬 백업에서 전송 전용 content·trash 사본을 원자적으로 staging한다."""
+    email = account_email or active_account.account_key()
+    if not email:
+        return None
+    content_backup = Path(content_backup).resolve()
+    if not content_backup.is_file():
+        raise FileNotFoundError(content_backup)
+    stamp = _stamp_from_content(content_backup)
+    account_slug = active_account.slug(email)
+    account_root = OUTBOX_DIR / account_slug
+    account_root.mkdir(parents=True, exist_ok=True)
+    temp = account_root / f".stage-{secrets.token_hex(8)}"
+    temp.mkdir(exist_ok=False)
+    try:
+        content = temp / "content.db"
+        shutil.copyfile(content_backup, content)
+        strip_transfer_secrets(content)
+        _verify_transfer_secrets_removed(content)
+        validate_hub_db(content, require_integrity=True)
+
+        role_paths: dict[str, Path] = {"content": content}
+        trash_source = content_backup.parent / f"{_TRASH_PREFIX}{stamp}.db"
+        if trash_source.is_file():
+            trash = temp / "trash.db"
+            shutil.copyfile(trash_source, trash)
+            _validate_trash(trash)
+            role_paths["trash"] = trash
+
+        roles = {role: _role_info(path) for role, path in sorted(role_paths.items())}
+        identity = json.dumps(
+            {"account_slug": account_slug, "local_stamp": stamp, "roles": roles},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        backup_set_id = hashlib.sha256(identity).hexdigest()
+        manifest = {
+            "format": _FORMAT,
+            "format_version": _FORMAT_VERSION,
+            "backup_set_id": backup_set_id,
+            "created_at": _utc_now(),
+            "local_stamp": stamp,
+            "schema_version": _sqlite_user_version(content),
+            "app_version": _app_version(),
+            "roles": roles,
+        }
+        atomic_write_text(
+            temp / "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        final = _stage_dir(account_slug, backup_set_id)
+        if final.exists():
+            shutil.rmtree(temp)
+        else:
+            os.replace(temp, final)
+
+        superseded: list[str] = []
+        with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "INSERT INTO worker_backup_outbox"
+                    "(backup_set_id,account_slug,created_at,local_stamp,roles_json,status) "
+                    "VALUES(?,?,?,?,?,'pending') ON CONFLICT(backup_set_id) DO NOTHING",
+                    (
+                        backup_set_id,
+                        account_slug,
+                        manifest["created_at"],
+                        stamp,
+                        json.dumps(roles, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+                rows = conn.execute(
+                    "SELECT backup_set_id FROM worker_backup_outbox "
+                    "WHERE account_slug=? AND status='pending' "
+                    "ORDER BY created_at DESC",
+                    (account_slug,),
+                ).fetchall()
+                superseded = [row[0] for row in rows[_MAX_PENDING_PER_ACCOUNT:]]
+                if superseded:
+                    placeholders = ",".join("?" for _ in superseded)
+                    conn.execute(
+                        f"UPDATE worker_backup_outbox SET status='superseded' "
+                        f"WHERE backup_set_id IN ({placeholders})",
+                        superseded,
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        for old_id in superseded:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(_stage_dir(account_slug, old_id))
+        log_event(
+            _log,
+            "worker_backup_queued",
+            backup_roles=len(roles),
+            superseded=len(superseded),
+        )
+        return backup_set_id
+    except BaseException:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(temp)
+        record_queue_failure("staging_failed", account_email=email)
+        log_event(_log, "worker_backup_queue_failed", level=logging.ERROR, exc_info=True)
+        raise
+
+
+def queue_latest_local_backup() -> str | None:
+    """기능 업데이트 전에 이미 만들어진 최신 로컬 세트도 outbox에 보강한다."""
+    from .backup import latest_backup_path
+
+    latest = latest_backup_path()
+    return queue_backup_set(latest) if latest is not None else None
+
+
+def recover_in_progress() -> int:
+    """비정상 종료가 남긴 running을 재시도 가능 상태로 되돌린다."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE worker_backup_outbox SET status='pending',last_error_code='interrupted',"
+            "next_retry_ts=NULL WHERE status='running'"
+        )
+        return max(0, int(cursor.rowcount or 0))
+
+
+def cleanup_stale_state() -> dict[str, int]:
+    """재시작 뒤 불완전 임시폴더·전송이 끝난 사본·오래된 상태 이력을 제한한다.
+
+    pending/running 행의 최종 staging은 절대 지우지 않는다. 서버 전송이 끝난 사본만 지우며,
+    로컬 ``backups`` 원본과 공유 서버/NAS의 백업은 이 함수 범위 밖이다.
+    """
+    active_ids: set[str] = set()
+    removed_rows = 0
+    with _connect() as conn:
+        active_ids = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT backup_set_id FROM worker_backup_outbox "
+                "WHERE status IN ('pending','running')"
+            ).fetchall()
+        }
+        accounts = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT account_slug FROM worker_backup_outbox"
+            ).fetchall()
+        ]
+        for account_slug in accounts:
+            rows = conn.execute(
+                "SELECT backup_set_id FROM worker_backup_outbox "
+                "WHERE account_slug=? AND status IN ('done','superseded') "
+                "ORDER BY COALESCE(last_success_at,created_at) DESC",
+                (account_slug,),
+            ).fetchall()
+            old_ids = [str(row[0]) for row in rows[_HISTORY_KEEP_PER_ACCOUNT:]]
+            if not old_ids:
+                continue
+            placeholders = ",".join("?" for _ in old_ids)
+            cursor = conn.execute(
+                f"DELETE FROM worker_backup_outbox WHERE backup_set_id IN ({placeholders})",
+                old_ids,
+            )
+            removed_rows += max(0, int(cursor.rowcount or 0))
+
+    removed_dirs = 0
+    if OUTBOX_DIR.is_dir():
+        try:
+            account_dirs = list(OUTBOX_DIR.iterdir())
+        except OSError:
+            account_dirs = []
+        for account_dir in account_dirs:
+            if not account_dir.is_dir():
+                continue
+            try:
+                children = list(account_dir.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir():
+                    continue
+                removable = child.name.startswith(".stage-") or (
+                    _SET_ID_RE.fullmatch(child.name) is not None and child.name not in active_ids
+                )
+                if not removable:
+                    continue
+                try:
+                    shutil.rmtree(child)
+                    removed_dirs += 1
+                except OSError:
+                    continue
+    return {"rows": removed_rows, "directories": removed_dirs}
+
+
+def retry_pending() -> int:
+    """활성 계정의 대기 작업을 즉시 재시도 가능하게 만든다."""
+    account_slug = _active_slug()
+    if not account_slug:
+        return 0
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE worker_backup_outbox SET next_retry_ts=NULL "
+            "WHERE account_slug=? AND status='pending'",
+            (account_slug,),
+        )
+        return max(0, int(cursor.rowcount or 0))
+
+
+def _active_slug() -> str | None:
+    email = active_account.account_key()
+    return active_account.slug(email) if email else None
+
+
+def has_due_backup() -> bool:
+    account_slug = _active_slug()
+    if not account_slug:
+        return False
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM worker_backup_outbox WHERE account_slug=? AND status='pending' "
+            "AND (next_retry_ts IS NULL OR next_retry_ts<=?) LIMIT 1",
+            (account_slug, time.time()),
+        ).fetchone() is not None
+
+
+def _claim_due() -> dict[str, Any] | None:
+    account_slug = _active_slug()
+    if not account_slug:
+        return None
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT * FROM worker_backup_outbox WHERE account_slug=? AND status='pending' "
+                "AND (next_retry_ts IS NULL OR next_retry_ts<=?) "
+                "ORDER BY created_at ASC LIMIT 1",
+                (account_slug, time.time()),
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return None
+            now = _utc_now()
+            cursor = conn.execute(
+                "UPDATE worker_backup_outbox SET status='running',attempts=attempts+1,"
+                "last_attempt_at=?,last_error_code=NULL WHERE backup_set_id=? AND status='pending'",
+                (now, row["backup_set_id"]),
+            )
+            if cursor.rowcount != 1:
+                conn.execute("ROLLBACK")
+                return None
+            conn.execute(
+                "INSERT INTO worker_backup_delivery_state(account_slug,last_attempt_at,last_error_code) "
+                "VALUES(?,?,NULL) ON CONFLICT(account_slug) DO UPDATE SET "
+                "last_attempt_at=excluded.last_attempt_at,last_error_code=NULL",
+                (account_slug, now),
+            )
+            conn.execute("COMMIT")
+            result = dict(row)
+            result["attempts"] = int(row["attempts"] or 0) + 1
+            result["last_attempt_at"] = now
+            return result
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _safe_json(raw: bytes) -> Any:
+    try:
+        return json.loads(raw.decode("utf-8") or "null")
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _multipart_set_upload(
+    url: str,
+    token: str,
+    manifest: dict[str, Any],
+    role_paths: dict[str, Path],
+    *,
+    timeout: float,
+) -> tuple[int, Any]:
+    boundary = "----mvhubset" + secrets.token_hex(8)
+    boundary_bytes = boundary.encode("ascii")
+    manifest_bytes = json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    parts: list[tuple[bytes, Path | None]] = []
+    parts.append(
+        (
+            b"--" + boundary_bytes + b"\r\n"
+            + b'Content-Disposition: form-data; name="manifest"\r\n'
+            + b"Content-Type: application/json; charset=utf-8\r\n\r\n"
+            + manifest_bytes
+            + b"\r\n",
+            None,
+        )
+    )
+    for role in sorted(role_paths):
+        header = (
+            b"--" + boundary_bytes + b"\r\n"
+            + f'Content-Disposition: form-data; name="{role}"; filename="{role}.db"\r\n'.encode("ascii")
+            + b"Content-Type: application/octet-stream\r\n\r\n"
+        )
+        parts.append((header, role_paths[role]))
+    suffix = b"--" + boundary_bytes + b"--\r\n"
+    content_length = len(suffix)
+    for header, path in parts:
+        content_length += len(header)
+        if path is not None:
+            content_length += path.stat().st_size + 2  # trailing CRLF
+
+    def chunks():
+        for header, path in parts:
+            yield header
+            if path is not None:
+                with path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        yield chunk
+                yield b"\r\n"
+        yield suffix
+
+    request = urllib.request.Request(url, data=chunks(), method="POST")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    request.add_header("Content-Length", str(content_length))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, _safe_json(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, _safe_json(exc.read())
+
+
+def _verify_ack(
+    response: Any,
+    manifest: dict[str, Any],
+) -> bool:
+    if not isinstance(response, dict) or response.get("accepted") is not True:
+        return False
+    if response.get("backup_set_id") != manifest["backup_set_id"]:
+        return False
+    files = response.get("files")
+    if not isinstance(files, dict) or set(files) != set(manifest["roles"]):
+        return False
+    for role, expected in manifest["roles"].items():
+        actual = files.get(role)
+        if not isinstance(actual, dict):
+            return False
+        if actual.get("sha256") != expected["sha256"]:
+            return False
+        if int(actual.get("size") or -1) != int(expected["size"]):
+            return False
+    return True
+
+
+def _mark_failure(row: dict[str, Any], error_code: str) -> None:
+    attempts = max(1, int(row.get("attempts") or 1))
+    if error_code == "login_required":
+        delay = 300
+    elif error_code == "server_update_required":
+        delay = 3600
+    else:
+        delay = min(3600, 60 * attempts * attempts)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "UPDATE worker_backup_outbox SET status='pending',last_error_code=?,"
+                "next_retry_ts=? WHERE backup_set_id=? AND status='running'",
+                (error_code, time.time() + delay, row["backup_set_id"]),
+            )
+            conn.execute(
+                "INSERT INTO worker_backup_delivery_state"
+                "(account_slug,last_attempt_at,last_error_code) VALUES(?,?,?) "
+                "ON CONFLICT(account_slug) DO UPDATE SET "
+                "last_attempt_at=excluded.last_attempt_at,last_error_code=excluded.last_error_code",
+                (row["account_slug"], row["last_attempt_at"], error_code),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    log_event(_log, "worker_backup_delivery_failed", level=logging.WARNING, error_code=error_code)
+
+
+def _mark_success(row: dict[str, Any]) -> None:
+    now = _utc_now()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "UPDATE worker_backup_outbox SET status='done',last_success_at=?,"
+                "last_error_code=NULL,next_retry_ts=NULL WHERE backup_set_id=? AND status='running'",
+                (now, row["backup_set_id"]),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("backup outbox revision changed")
+            conn.execute(
+                "INSERT INTO worker_backup_delivery_state"
+                "(account_slug,last_attempt_at,last_success_at,last_backup_set_id,last_error_code) "
+                "VALUES(?,?,?,?,NULL) ON CONFLICT(account_slug) DO UPDATE SET "
+                "last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,"
+                "last_backup_set_id=excluded.last_backup_set_id,last_error_code=NULL",
+                (row["account_slug"], row["last_attempt_at"], now, row["backup_set_id"]),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    with contextlib.suppress(OSError):
+        shutil.rmtree(_stage_dir(row["account_slug"], row["backup_set_id"]))
+    log_event(_log, "worker_backup_delivery_succeeded")
+
+
+def drain_one() -> dict[str, Any]:
+    """활성 계정의 전송 가능 세트 한 건을 보낸다. 예외 원문은 상태·출력에 저장하지 않는다."""
+    row = _claim_due()
+    if row is None:
+        return {"state": "idle"}
+    stage = _stage_dir(row["account_slug"], row["backup_set_id"])
+    try:
+        manifest = json.loads((stage / "manifest.json").read_text("utf-8"))
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("backup_set_id") != row["backup_set_id"]
+            or manifest.get("format") != _FORMAT
+            or manifest.get("format_version") != _FORMAT_VERSION
+        ):
+            raise ValueError("invalid manifest")
+        roles = manifest.get("roles")
+        if not isinstance(roles, dict) or "content" not in roles or not set(roles) <= {"content", "trash"}:
+            raise ValueError("invalid roles")
+        role_paths = {role: stage / f"{role}.db" for role in roles}
+        for role, path in role_paths.items():
+            expected = roles[role]
+            if (
+                not path.is_file()
+                or path.stat().st_size != int(expected.get("size") or -1)
+                or _sha256(path) != expected.get("sha256")
+            ):
+                raise ValueError("staged file mismatch")
+        if role_paths.get("content"):
+            validate_hub_db(role_paths["content"], require_integrity=True)
+        if role_paths.get("trash"):
+            _validate_trash(role_paths["trash"])
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        _mark_failure(row, "staging_invalid")
+        return {"state": "failed", "error_code": "staging_invalid"}
+
+    token = repo.get_setting("shared_server_token")
+    if not token:
+        _mark_failure(row, "login_required")
+        return {"state": "login_required", "error_code": "login_required"}
+    server = (repo.get_setting("shared_server_url") or os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
+    try:
+        status, response = _multipart_set_upload(
+            f"{server}/api/db-backup/sets",
+            token,
+            manifest,
+            role_paths,
+            timeout=UPLOAD_TIMEOUT,
+        )
+    except (urllib.error.URLError, TimeoutError, OSError):
+        _mark_failure(row, "network_unavailable")
+        return {"state": "failed", "error_code": "network_unavailable"}
+    if status == 401:
+        _mark_failure(row, "login_required")
+        return {"state": "login_required", "error_code": "login_required"}
+    if status in {404, 405}:
+        _mark_failure(row, "server_update_required")
+        return {"state": "server_update_required", "error_code": "server_update_required"}
+    if not (200 <= status < 300):
+        _mark_failure(row, "server_rejected")
+        return {"state": "failed", "error_code": "server_rejected"}
+    if not _verify_ack(response, manifest):
+        _mark_failure(row, "ack_mismatch")
+        return {"state": "failed", "error_code": "ack_mismatch"}
+    _mark_success(row)
+    return {
+        "state": "success",
+        "backup_set_id": row["backup_set_id"],
+        "server_count": max(0, int(response.get("count") or 0)),
+    }
+
+
+def status_snapshot() -> dict[str, Any]:
+    """활성 작업자 계정의 로컬·원격 백업 상태. 이메일·경로·세트 ID는 노출하지 않는다."""
+    account_slug = _active_slug()
+    if not account_slug:
+        return {
+            "automatic": True,
+            "state": "login_required",
+            "pending": 0,
+            "failed": 0,
+            "last_attempt_at": None,
+            "last_success_at": None,
+            "last_error_code": "login_required",
+        }
+    with _connect() as conn:
+        counts = conn.execute(
+            "SELECT "
+            "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,"
+            "SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) running,"
+            "SUM(CASE WHEN status='pending' AND last_error_code IS NOT NULL THEN 1 ELSE 0 END) failed,"
+            "MIN(CASE WHEN status IN ('pending','running') THEN created_at END) oldest "
+            "FROM worker_backup_outbox WHERE account_slug=?",
+            (account_slug,),
+        ).fetchone()
+        state = conn.execute(
+            "SELECT * FROM worker_backup_delivery_state WHERE account_slug=?",
+            (account_slug,),
+        ).fetchone()
+    pending = int((counts["pending"] if counts else 0) or 0)
+    running = int((counts["running"] if counts else 0) or 0)
+    failed = int((counts["failed"] if counts else 0) or 0)
+    last_error = state["last_error_code"] if state else None
+    last_success = state["last_success_at"] if state else None
+    if running:
+        display_state = "uploading"
+    elif pending and last_error in {"login_required", "server_update_required"}:
+        display_state = last_error
+    elif pending and failed:
+        display_state = "failed"
+    elif pending:
+        display_state = "pending"
+    elif last_success:
+        display_state = "success"
+    else:
+        display_state = "waiting_for_backup"
+    return {
+        "automatic": True,
+        "state": display_state,
+        "pending": pending + running,
+        "failed": failed,
+        "oldest_pending_at": counts["oldest"] if counts else None,
+        "last_attempt_at": state["last_attempt_at"] if state else None,
+        "last_success_at": last_success,
+        "last_error_code": last_error,
+    }
+
+
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None and os.name == "nt" and process.pid:
+        killer: asyncio.subprocess.Process | None = None
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                shutil.which("taskkill.exe") or r"C:\Windows\System32\taskkill.exe",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5)
+        except (OSError, asyncio.TimeoutError):
+            if killer and killer.returncode is None:
+                with contextlib.suppress(OSError):
+                    killer.kill()
+    if process.returncode is None:
+        with contextlib.suppress(OSError):
+            process.kill()
+    with contextlib.suppress(OSError, asyncio.TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=5)
+
+
+class PeriodicWorkerBackupUpload:
+    """전송을 별도 Python 프로세스에서 실행해 NAS·네트워크 hang이 앱 종료를 붙잡지 않게 한다."""
+
+    def __init__(self, interval: float = UPLOAD_INTERVAL) -> None:
+        self._interval = max(15.0, float(interval))
+        self._task: Optional[asyncio.Task] = None
+        self._run_lock = asyncio.Lock()
+        self._process: asyncio.subprocess.Process | None = None
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            recover_in_progress()
+            cleanup_stale_state()
+            self._task = asyncio.create_task(self._run(), name="periodic-worker-backup")
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        if self._process and self._process.returncode is None:
+            await _terminate_process(self._process)
+            recover_in_progress()
+        self._process = None
+
+    async def _run(self) -> None:
+        await asyncio.sleep(3)
+        while True:
+            if has_due_backup():
+                await self.run_now()
+            await asyncio.sleep(self._interval)
+
+    async def run_now(self) -> dict[str, Any]:
+        async with self._run_lock:
+            if not has_due_backup():
+                return {"state": "idle"}
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "app.services.worker_backup",
+                "--drain-one",
+                cwd=str(BACKEND_DIR),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=flags,
+            )
+            self._process = process
+            try:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=UPLOAD_TIMEOUT + 15
+                )
+            except asyncio.CancelledError:
+                await _terminate_process(process)
+                recover_in_progress()
+                raise
+            except asyncio.TimeoutError:
+                await _terminate_process(process)
+                recover_in_progress()
+                return {"state": "failed", "error_code": "timeout"}
+            finally:
+                if self._process is process:
+                    self._process = None
+            try:
+                # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
+                output = (stdout or b"{}").decode("utf-8").splitlines()
+                parsed = json.loads(output[-1] if output else "{}")
+                return parsed if isinstance(parsed, dict) else {"state": "failed"}
+            except (UnicodeDecodeError, ValueError):
+                return {"state": "failed", "error_code": "worker_failed"}
+
+
+periodic_worker_backup = PeriodicWorkerBackupUpload()
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--drain-one", action="store_true")
+    args = parser.parse_args(argv)
+    if not args.drain_one:
+        return 2
+    result = drain_one()
+    print(json.dumps(result, separators=(",", ":")), flush=True)
+    return 0 if result.get("state") in {"idle", "success", "login_required", "server_update_required"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

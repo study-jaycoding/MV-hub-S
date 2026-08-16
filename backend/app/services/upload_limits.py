@@ -57,6 +57,7 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/comfy/run": COMFY_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db/import": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
+    "/api/db-backup/sets": DB_UPLOAD_FILE_MAX_BYTES * 2 + _MULTIPART_OVERHEAD_BYTES,
 }
 
 _log = logging.getLogger("mvhub.upload")

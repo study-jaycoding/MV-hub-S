@@ -58,6 +58,13 @@ class DbRestoreGateTests(unittest.TestCase):
         db.init_db(path)
         self._set_marker(path, marker)
 
+    @staticmethod
+    def _make_trash(path: Path, marker: str) -> None:
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("CREATE TABLE trashed(id TEXT PRIMARY KEY, payload TEXT)")
+            conn.execute("INSERT INTO trashed VALUES('row', ?)", (marker,))
+            conn.commit()
+
     def test_maintenance_flush_closes_all_worker_pool_files(self):
         """유지보수 flush 뒤 DB와 sidecar의 rename/delete가 즉시 가능해야 한다."""
         ready = threading.Barrier(4)
@@ -121,6 +128,61 @@ class DbRestoreGateTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "relogin_required": True})
         with db.get_connection() as conn:
             self.assertEqual(self._marker(conn), "new")
+
+    def test_install_db_set_replaces_content_and_trash_together(self):
+        self._set_marker(self.path, "old")
+        current_trash = self.path.parent / "content_hub_trash.db"
+        self._make_trash(current_trash, "old-trash")
+        incoming = self.root / "incoming.db"
+        incoming_trash = self.root / "incoming-trash.db"
+        self._make_db(incoming, "new")
+        self._make_trash(incoming_trash, "new-trash")
+
+        with mock.patch.object(db_transfer, "AUTH_ENABLED", True):
+            result = db_transfer._install_db(
+                incoming,
+                trash_tmp=incoming_trash,
+                restore_trash_set=True,
+            )
+
+        self.assertEqual(result, {"ok": True, "relogin_required": True})
+        with db.get_connection() as conn:
+            self.assertEqual(self._marker(conn), "new")
+        with closing(sqlite3.connect(current_trash)) as conn:
+            self.assertEqual(conn.execute("SELECT payload FROM trashed").fetchone()[0], "new-trash")
+
+    def test_install_db_set_rolls_back_both_files_when_second_replace_fails(self):
+        self._set_marker(self.path, "old")
+        current_trash = self.path.parent / "content_hub_trash.db"
+        self._make_trash(current_trash, "old-trash")
+        incoming = self.root / "incoming.db"
+        incoming_trash = self.root / "incoming-trash.db"
+        self._make_db(incoming, "new")
+        self._make_trash(incoming_trash, "new-trash")
+        real_replace = os.replace
+
+        def fail_trash_restore(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if destination_path == current_trash and ".restore-" in source_path.name:
+                raise OSError("simulated second-file failure")
+            return real_replace(source, destination)
+
+        with (
+            mock.patch.object(db_transfer, "AUTH_ENABLED", True),
+            mock.patch.object(db_transfer.os, "replace", side_effect=fail_trash_restore),
+            self.assertRaises(OSError),
+        ):
+            db_transfer._install_db(
+                incoming,
+                trash_tmp=incoming_trash,
+                restore_trash_set=True,
+            )
+
+        with db.get_connection() as conn:
+            self.assertEqual(self._marker(conn), "old")
+        with closing(sqlite3.connect(current_trash)) as conn:
+            self.assertEqual(conn.execute("SELECT payload FROM trashed").fetchone()[0], "old-trash")
 
     def test_connection_waiting_at_gate_opens_replaced_db(self):
         """게이트 중 시작한 get_connection은 해제 후 교체된 DB만 열어야 한다."""

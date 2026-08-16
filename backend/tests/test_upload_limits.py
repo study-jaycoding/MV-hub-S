@@ -247,6 +247,7 @@ def test_every_upload_route_has_a_positive_request_limit() -> None:
         "/api/comfy/run",
         "/api/db/import",
         "/api/db-backup",
+        "/api/db-backup/sets",
     }
     assert all(value > 0 for value in upload_limits.UPLOAD_REQUEST_LIMITS.values())
 
