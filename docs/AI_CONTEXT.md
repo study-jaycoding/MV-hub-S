@@ -142,7 +142,7 @@ python agent_push.py --server http://<서버IP>:8010 --email <내이메일>
   `POST /api/ingest {jobs, creator_uid, account_status}`로 적재한다.
   구버전 서버가 POST를 지원하지 않을 때만 `GET /api/ingest/known-jobs` 전량 응답으로 폴백한다.
   - **내 힉스필드 uid = 로컬 전체 목록의 최다 user_<id>**(fresh 부분집합만 보면 남의 레퍼런스에 오염되어 잘못 연결되는 실측 버그가 있어, 반드시 전체 기준으로 산출해 명시 전송).
-- **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장.
+- **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장. 생성 텔레메트리는 outbox에 표시한 뒤 메인 이벤트 루프의 백그라운드 drain만 예약하므로 일반 적재 응답이 해당 원격 전송을 기다리지 않는다. 계정 상태·거래 원격 보고는 별도 `RL-13` 잔여다.
 
 ---
 

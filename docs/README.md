@@ -15,6 +15,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 로컬·공유 서버 데이터 경계 | [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT.md](WORKSPACE_DATA_CONTRACT.md) |
 | 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
 | 401 인증 실패·로그인 보존 계약 | [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md) |
+| 텔레메트리 백그라운드 전송 계약 | [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md) |
 | 현재 위험과 다음 작업 | [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md) |
 | 캔버스 생성 재시도 계약 | [CANVAS_GENERATION_IDEMPOTENCY.md](CANVAS_GENERATION_IDEMPOTENCY.md) |
 | 견적 CLI 동시 실행·취소 계약 | [CLI_ESTIMATE_LIFECYCLE.md](CLI_ESTIMATE_LIFECYCLE.md) |
@@ -37,7 +38,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 기준** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` | 구현 전에 반드시 확인한다. |
 | **현재 현황 요약** | `CURRENT_STATUS` | 완료·잔여·검증 상태를 빠르게 확인한다. |
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
-| **현재 세부 계약** | `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
+| **현재 세부 계약** | `GENERATION_SUBMISSION_RECOVERY`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `AUTH_FAILURE_SEMANTICS`, `TELEMETRY_DRAIN_LIFECYCLE` | 기능별 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
 | **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `CANVAS_MERGE_OPTIMIZATION_PLAN`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |

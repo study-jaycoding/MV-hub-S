@@ -135,6 +135,30 @@ npm.cmd test -- --run tests\httpAuthPolicy.test.ts
 격리 브라우저에서는 로그인 후 `작업 공간`과 `공유 & 리뷰`를 전환해 화면이 유지되고 콘솔 오류가
 0건인지 확인한다. 이 검증은 실제 공유 서버의 만료 토큰·혼합 버전 업데이트를 대신하지 않는다.
 
+## 텔레메트리 네트워크·로컬 응답 분리 회귀(RL-10)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_telemetry_delivery.py `
+  tests\test_manage_telemetry.py `
+  tests\test_ingest_core.py `
+  tests\test_syncer_telemetry.py `
+  tests\test_touch_telemetry.py -q
+```
+
+`dfaa2672`의 합격 기준은 37개 통과다. 동기 작업자 100개의 예약 합치기, 느린 원격 전송
+중 다른 drain의 0.2초 이내 반환, 네트워크 대기 중 SQLite 유지보수 게이트와 새 dirty 쓰기,
+동일 밀리초 재변경의 정수 revision CAS, 구버전 DB 마이그레이션, 전송 실패 뒤 상태 해제·재시도,
+종료 대기를 확인한다. 이 묶음은 실제 공유 서버가 아니라 제어 가능한
+느린 전송 함수를 사용한다. 따라서 실제 운영 공유 서버의 장시간 지연과 혼합 버전은 Gate 6에서
+별도로 확인한다. 세부 계약은 [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)를
+따른다.
+
+로컬 앱 실측은 `test_dev.bat`을 실행해 `/api/ready`, 작업 공간→공유 & 리뷰→캔버스 전환,
+앱 출처의 콘솔 오류 0건, 종료 뒤 5173·8012 포트 반환을 확인한다. 생성 버튼은 누르지 않아도 된다.
+운영용 8010 프로세스가 이미 있다면 테스트 종료 뒤에도 그대로 살아 있어야 한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

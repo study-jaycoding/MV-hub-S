@@ -97,7 +97,7 @@ HTTP 요청
 | `library.py` | 목록·검색·통계·facets·휴지통·**미디어 썸네일**·`tab=my` 계정 스코프 |
 | `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·리니지(옛 서버측 생성 경로 잔존·미사용) |
 | `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
-| `ingest.py` | **push 적재**·known-jobs·`/credits` |
+| `ingest.py` | **push 적재**·known-jobs·`/credits`. 생성 텔레메트리는 outbox 표시 후 백그라운드 drain만 예약 |
 | `share.py` | 발행/가져오기/번들 export·import |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
@@ -111,7 +111,7 @@ HTTP 요청
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
 | `db_backup.py` / `db_transfer.py` | DB 백업 스트리밍 / 로컬 DB 내보내기·가져오기·복원(유지보수 게이트) |
-| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 텔레메트리 드레인 스케줄 / Assets 접근 가드 |
+| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하는 텔레메트리 drain / Assets 접근 가드 |
 
 ### 4.3 유스케이스 (`backend/app/usecases/`)
 
@@ -316,6 +316,17 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 
 > 내 Higgsfield uid 는 **로컬 전체 목록의 최다 user_\<id\>** 로 산출해 명시 전송한다(fresh 부분집합만
 > 보면 남의 레퍼런스에 오염돼 잘못 연결되는 실측 버그 회피).
+
+생성 적재 트랜잭션은 변경된 생성물을 `telemetry_outbox`에 dirty 표시한다. 응답 경로에서는 원격
+전송을 직접 실행하지 않고 앱 시작 때 등록한 메인 이벤트 루프에 drain을 예약한다. drain은 짧은 DB
+조회 후 연결을 반환하고, 프로세스 상태 락 없이 원격 HTTP를 수행한 뒤 짧은 성공·실패 정산만 한다.
+전송 중 새 요청은 대기하지 않고 후속 drain 표시를 남긴다. 종료 때는 예약된 task와 직접 실행 중인
+소유자를 제한시간 안에서 기다린다. 각 dirty 변경은 정수 `dirty_rev`를 올리고 성공·실패 정산은
+전송 스냅샷의 revision과 현재 행이 같을 때만 반영한다. 자세한 상태 전이는
+[TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)를 따른다.
+
+`account_status`·`account_transactions` 원격 보고는 생성 outbox와 다른 경로다. 현재 동기 프록시와
+독립 재시도 큐가 남아 있으며 위험 계획의 `RL-13`으로 관리한다.
 
 ### 7.3 계보(리니지) 가시화
 
