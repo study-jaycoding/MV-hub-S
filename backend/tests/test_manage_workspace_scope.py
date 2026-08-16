@@ -146,7 +146,7 @@ class ManageWorkspaceScopeTests(unittest.TestCase):
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO project_task(id, project_id, name, folder_path, status, source_kind, "
-                "source_last_seen_at, created_at) VALUES(" 
+                "source_last_seen_at, created_at) VALUES("
                 "'legacy-task', 'p-a', 'ep099', 'ep099/c0010', 'not_started', "
                 "'generation', NULL, datetime('now', '-40 days'))"
             )
