@@ -142,7 +142,7 @@ python agent_push.py --server http://<서버IP>:8010 --email <내이메일>
   `POST /api/ingest {jobs, creator_uid, account_status}`로 적재한다.
   구버전 서버가 POST를 지원하지 않을 때만 `GET /api/ingest/known-jobs` 전량 응답으로 폴백한다.
   - **내 힉스필드 uid = 로컬 전체 목록의 최다 user_<id>**(fresh 부분집합만 보면 남의 레퍼런스에 오염되어 잘못 연결되는 실측 버그가 있어, 반드시 전체 기준으로 산출해 명시 전송).
-- **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장. 생성 텔레메트리는 outbox에 표시한 뒤 메인 이벤트 루프의 백그라운드 drain만 예약하므로 일반 적재 응답이 해당 원격 전송을 기다리지 않는다. 계정 상태·거래 원격 보고는 별도 `RL-13` 잔여다.
+- **`POST /api/ingest`**(`routers/ingest.py`): 허브 세션 인증. 각 잡은 **자기 고유 creator_uid 유지**(uid 없을 때만 내 uid로 보강). 계정이 이미 실제 uid에 연결돼 있으면 **재연결 금지**(오염 방지). `account_status`(크레딧·플랜)를 `app_setting hf_status:<email>` 에 저장한다. 생성 텔레메트리와 계정 상태·거래는 서로 다른 영속 outbox에 먼저 기록하고 메인 이벤트 루프의 백그라운드 drain만 예약하므로 일반 적재 응답은 원격 전송을 기다리지 않는다. 계정 보고는 공유 서버 **`POST /api/ingest/account-report`**가 상태·거래를 모두 쓴 뒤 명시적 ACK를 반환하고 현재 revision이 일치할 때만 완료하며, 실패는 백오프로 재시도한다.
 
 ---
 
@@ -198,7 +198,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - ✅ **씬 서버 백업**: 씬 원본은 localStorage, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`).
 - ✅ **ComfyUI 연동**: 캔버스 comfy 카드 — 워크플로 파싱·파라미터 노출·미디어 자동주입·비동기 실행(`routers/comfy.py`).
 - ✅ **DaVinci Resolve 연동**: 렌더폴더 전송 + Media Pool 가져오기 + 수동 Importer(`routers/resolve_integration.py`).
-- ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db). 로컬 계정 메뉴는 outbox의 대기·실패와 마지막 실제 반영 성공 시각을 표시한다.
+- ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db). 로컬 계정 메뉴는 생성 텔레메트리와 계정 보고 큐의 대기·실패를 구분해 표시하고 두 채널 중 가장 최근 실제 반영 성공 시각을 표시한다.
 - ✅ **릴리스 자동 업데이트**: 설정 → 프로그램 업데이트(`routers/release_update.py`, 작업자 전용).
 - ✅ **로컬 DB 내보내기/가져오기**(교차 PC): `routers/db_transfer.py`(유지보수 게이트로 안전 교체).
 - 🔸 명시적 리비전 diff·콘텐츠 게시 승인 게이트·외부 DAM 커넥터는 없음.

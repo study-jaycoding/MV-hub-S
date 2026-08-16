@@ -6,7 +6,7 @@
 > (원본 [DESIGN.md](DESIGN.md)·[CLAUDE.md](CLAUDE.md) 는 개인용 `content-hub` 시절 명세라
 > 일부는 현재 push 모델 이전 내용이다 — 충돌 시 **이 문서와 AI_CONTEXT.md 가 최신**.)
 >
-> 최종 갱신: 2026-08-05
+> 최종 갱신: 2026-08-16
 
 ---
 
@@ -97,7 +97,7 @@ HTTP 요청
 | `library.py` | 목록·검색·통계·facets·휴지통·**미디어 썸네일**·`tab=my` 계정 스코프 |
 | `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·리니지(옛 서버측 생성 경로 잔존·미사용) |
 | `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
-| `ingest.py` | **push 적재**·known-jobs·`/credits`. 생성 텔레메트리는 outbox 표시 후 백그라운드 drain만 예약 |
+| `ingest.py` | **push 적재**·known-jobs·`/credits`·`/ingest/account-report`. 생성 텔레메트리와 계정 상태·거래는 각각 영속 outbox에 기록하고 백그라운드 drain만 예약 |
 | `share.py` | 발행/가져오기/번들 export·import. 프록시 공유 해제·최종 해제는 로컬/서버 보상 계약 적용 |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
@@ -111,7 +111,7 @@ HTTP 요청
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
 | `db_backup.py` / `db_transfer.py` | DB 백업 스트리밍 / 로컬 DB 내보내기·가져오기·복원(유지보수 게이트) |
-| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하는 텔레메트리 drain / Assets 접근 가드 |
+| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
 
 ### 4.3 유스케이스 (`backend/app/usecases/`)
 
@@ -150,6 +150,7 @@ HTTP 요청
 | `manage_tasks.py` | PM 작업 조회·자동 폴더 작업·담당자 배정·작업 CRUD |
 | `manage_schema.py` / `manage_telemetry.py` | 관리 사이드카 스키마·outbox 팩트 전송 상태 |
 | `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
+| `manage_account_reports.py` | 계정 최신 상태·거래 보고의 영속 outbox, revision 정산·백오프·마지막 성공 상태 |
 
 ### 4.5 서비스 (`backend/app/services/`) — 외부 연동·부수효과
 
@@ -166,6 +167,7 @@ HTTP 요청
 | `resolve_bridge.py` / `resolve_transfer.py` / `resolve_probe.py` / `resolve_status_runner.py` / `resolve_script_installer.py` | Resolve Media Pool 가져오기 / 렌더폴더 전송·manifest / 프로세스 격리 상태 조회 / 스크립트 설치 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트 상태·부트스트랩 실행기 |
 | `telemetry_drain.py` | PM 텔레메트리 outbox 드레인(백오프·격리 모드) |
+| `account_report_delivery.py` | 계정 상태·거래 보고 배치 구성·명시적 ACK 검증·영속 큐 성공/실패 정산 |
 | `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
 | `backup_verify.py` / `db_scrub.py` / `test_snapshot.py` | 백업 복원 검증 / 개인정보 스크럽 / 테스트 스냅샷 |
 | `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로 |
@@ -331,8 +333,12 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 로컬 계정 메뉴만 이를 30초 주기로 표시한다. 전송 대상이 아닌 행 정리와 늦은 revision ACK는 성공
 시각을 갱신하지 않는다.
 
-`account_status`·`account_transactions` 원격 보고는 생성 outbox와 다른 경로다. 현재 동기 프록시와
-독립 재시도 큐가 남아 있으며 위험 계획의 `RL-13`으로 관리한다.
+`account_status`·`account_transactions`는 생성 outbox와 분리된 `account_report_outbox`에 먼저
+기록한다. 계정 상태는 최신 스냅샷 한 행, 거래는 안정 키 한 행으로 보존하며 동일 거래의 나중 모델
+정보는 같은 행에 보강한다. 공유 서버 `/api/ingest/account-report`가 두 종류를 모두 저장하고 명시적
+ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패는 제곱 백오프로 재시도하고 마지막
+성공은 `account_report_delivery_state`에 독립 보존한다. 두 큐의 대기·실패·최근 성공은
+`/api/sync-status`와 로컬 계정 메뉴에서 함께 관측한다.
 
 ### 7.3 계보(리니지) 가시화
 
