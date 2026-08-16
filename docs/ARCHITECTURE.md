@@ -89,7 +89,7 @@ HTTP 요청
 | `deps.py` | 인증/RBAC FastAPI 의존성(`actor_id`·`require_global_cap`·`require_project_role`·`require_edit_generation`) |
 | `rbac.py` | 역할·역량 정의(전역 역할 + 프로젝트 역할) |
 | `mutation_notify.py` | 본 서버·위임 프록시가 공유하는 변경 영역 판정과 요청 출처 헤더 계약 |
-| `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스) |
+| `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스). 연결 목록은 잠금 안에서 복사하고 실제 전송은 잠금 밖에서 병렬 수행하며, 연결별 잠금·2초 제한으로 느린 수신자만 격리 |
 | `services/upload_limits.py` | 업로드 원시 본문·파일 수·개별·합계 제한, 제한 복사, 413 응답·안전 로그 계약 |
 
 ### 4.2 라우터 (`backend/app/routers/`) — HTTP 경계
@@ -235,6 +235,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `sceneComfyExecutor.ts` | 미디어 확보·연결 텍스트·시드 변환 후 Comfy API를 호출하는 React 비의존 경계 |
 | `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
 | `librarySync.ts` | 쓰기 요청 id와 library/assets/manage 응답 영역을 추적해 자기 알림의 중복 reload만 안전하게 생략 |
+| `progressSocket.ts` | 앱 WS 연결·누락 보정 재조회. 지수 백오프에 ±20% jitter와 15초 상한을 적용하고 1008 인증 만료는 재시도하지 않고 로그인 화면·알림으로 전달 |
 | `assetBroadcast.ts` / `useManageRealtime.ts` | Assets 창 간 WS 전달 / 독립 PM 창의 직접 WS·숨김 상태 따라잡기 |
 
 > `format`·`media`·`download`·`commentTree`·`useClickSeparation` 은 여러 컴포넌트에 복붙돼 있던

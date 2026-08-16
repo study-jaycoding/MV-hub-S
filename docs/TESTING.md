@@ -350,6 +350,48 @@ multipart를 보냈을 때 67,109,276바이트를 완전히 받았고 본문 오
 버퍼를 포함한 전체 프로세스 RSS, 실제 Comfy Cloud·ffmpeg 대형 영상, 긴 대기열의 TEMP 디스크 용량을
 대신하지 않는다. 이 세 항목은 운영과 같은 스테이징에서 별도로 확인한다.
 
+## WebSocket 재연결·느린 수신자 회귀(RL-19)
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev
+$env:PYTHONPATH="backend"
+py -3 -m pytest `
+  backend\tests\test_realtime_ws.py `
+  backend\tests\test_operational_logging_policy.py -q
+
+cd frontend
+npm test -- --run tests\progressSocket.test.ts
+```
+
+`1f096796`의 집중 합격 기준은 백엔드 17개와 프론트 4개다.
+
+- 느린 소켓 하나가 2초를 넘겨도 정상 소켓은 먼저 수신하며, 느린 소켓만 제거·종료돼야 한다.
+- 동시에 여러 방송이 같은 느린 소켓을 만나도 timeout/failure와 제거 수는 한 번만 증가해야 한다.
+- 운영 로그용 WS 스냅샷에 `send_timeouts`·`send_failures`가 보존되되 사용자·소켓 식별자는 없어야 한다.
+- 프론트 첫 재연결은 0.8~1.2초 범위에 분산되고 지수 백오프 상한은 15초여야 한다.
+- close code 1008은 반복 재접속하지 않고 인증 토큰을 정리한 뒤 로그인 화면과 사용자 알림을 표시해야
+  한다.
+
+같은 작업 트리에서 백엔드 전체 837개·21 subtests, 프론트 76개 파일·535개, 프론트 아키텍처 검사와
+프로덕션 빌드가 통과했다.
+
+100명·2코어·below-normal 단기 실측은 운영 DB가 아닌 임시 DB와 포트에서 다음처럼 실행했다.
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev
+py -3 tools\load_test_100.py `
+  --users 100 --duration 12 --cycles 1 --generations-per-user 2 `
+  --think-min 0.2 --think-max 0.4 --sample-interval 2 `
+  --server-cpu-cores 2 --server-priority below-normal `
+  --max-p95-ms 1000 --output .\rl19-load.json --quiet
+```
+
+로그인 100건과 요청 3,700건이 모두 성공했고, 작업 p95 59.44ms·p99 176.75ms, WS 100개 유지,
+WS 오류·send timeout·send failure·SQLite lock 0건, 최대 RSS 198,844,416바이트였다. 임시 계정의
+상태를 서버에서 거부로 바꾼 브라우저 실측에서는 다음 재검증 때 1008을 받고 로그인 화면으로
+전환됐으며 앱 출처 콘솔 오류는 없었다. 이 결과는 단기 연결 계약 검증이며 공유 서버 5분 단절·복구와
+8시간 soak를 대신하지 않는다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |
