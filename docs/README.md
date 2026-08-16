@@ -25,13 +25,20 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 ## 문서 상태
 
-문서가 서로 다르면 아래 순서로 판단한다.
+문서 전체에 하나의 고정 우선순위를 적용하지 않는다. 서로 다른 내용이 보이면 먼저 **무슨 내용을
+판단하는지** 구분하고 아래 분야별 기준 문서를 따른다.
 
-1. 데이터·권한 계약 문서
-2. 현행 구조 문서
-3. 위험 감소 계획의 정규화 잔여 목록
-4. 기능별 계획과 과거 감사 기록
-5. 초기 설계 기록
+| 판단할 내용 | 단일 기준 |
+|---|---|
+| 지금 완료된 것·다음 작업·검증 결과 | `CURRENT_STATUS` 요약 후 `RISK_REDUCTION_PLAN_2026-08-15` Gate 0 표 |
+| 코드 구조·실행 흐름 | `ARCHITECTURE`, `AI_CONTEXT` |
+| 데이터 소유권·워크스페이스 귀속 | `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT` |
+| 신원·권한·실행 모드 | `신원과_모드_가이드` |
+| 기능별 상태 전이·복구 | 해당 기능의 세부 계약 문서 |
+| 설치·서버 운영·테스트 | `SERVER`, `SERVER_RECOVERY`, `TESTING` |
+
+과거 감사·초기 설계·기능 계획 문서는 판단 근거와 이력을 보존하는 자료다. 현행 기준 문서와
+충돌하면 과거 문서를 고치는 근거로 사용하고, 과거 문서의 지시를 그대로 구현하지 않는다.
 
 | 구분 | 문서 | 사용 방법 |
 |---|---|---|
@@ -46,6 +53,29 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 > 문서는 삭제하지 않고 위상만 구분한다. 과거 판단 근거가 사라지면 같은 문제를 다시 분석하거나,
 > 이미 해결된 항목을 중복 수정할 수 있기 때문이다.
+
+### 전체 문서 분류
+
+아래 표는 `docs`의 Markdown 문서를 빠짐없이 분류한다. PDF는 특정 시점에 만든 외부 배포용
+결과물이므로 현재 기술 판단의 기준으로 사용하지 않는다.
+
+| 상태 | 문서 |
+|---|---|
+| **문서 색인·갱신 규칙** | `README`(이 문서) |
+| **현황·작업 기준** | `CURRENT_STATUS`, `RISK_REDUCTION_PLAN_2026-08-15` |
+| **현행 구조·계약** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드`, `AUTH_FAILURE_SEMANTICS`, `CANVAS_GENERATION_IDEMPOTENCY`, `CLI_ESTIMATE_LIFECYCLE`, `GENERATION_SUBMISSION_RECOVERY`, `TELEMETRY_DRAIN_LIFECYCLE` |
+| **운영·검증 절차** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` |
+| **사용자 안내** | `사용설명서`, `기능설명서` |
+| **일부 구현·후속 설계** | `DESIGN_id_unification`, `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `ROADMAP_SCALE` |
+| **완료 작업의 개발 이력** | `CANVAS_MERGE_OPTIMIZATION_PLAN` |
+| **시점 고정 검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` |
+| **과거 기준·감사 보존** | `AUDIT_2026-08-15`, `DESIGN`, `CLAUDE` |
+| **외부 설명 자료** | `투자자_소개서` |
+
+`소개서.pdf`, `툴_소개서.pdf`도 외부 설명 자료 스냅샷으로 분류한다.
+
+이 분류가 바뀌면 문서를 이동하거나 삭제하는 대신 이 표와 해당 문서 상단의 상태 안내를 함께
+갱신한다.
 
 ### 문서별 갱신 책임
 
