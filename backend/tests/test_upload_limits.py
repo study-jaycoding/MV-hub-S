@@ -293,7 +293,7 @@ def test_comfy_limits_are_checked_before_media_is_copied(monkeypatch) -> None:
     second = UploadFile(io.BytesIO(b"456"), filename="two.png")
 
     with pytest.raises(HTTPException) as caught:
-        comfy._read_media_uploads([first, second])
+        comfy._stage_media_uploads([first, second])
 
     assert caught.value.status_code == 413
     assert caught.value.headers == upload_limits.limit_headers(5)

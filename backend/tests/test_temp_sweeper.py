@@ -81,6 +81,27 @@ class TempSweeperTests(unittest.TestCase):
             self.assertTrue(unrelated.exists())
             self.assertEqual(stats["temp_exports"], 1)
 
+    def test_stale_comfy_staging_is_removed_but_unrelated_file_is_preserved(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            root = Path(d)
+            staged = root / "mvhub-comfy-input-deadbeef.part"
+            converted = root / "mvhub-comfy-converted-deadbeef.mp4"
+            unrelated = root / "comfy-input-deadbeef.part"
+            for path in (staged, converted, unrelated):
+                path.write_bytes(b"x")
+                old = time.time() - 3 * 86400
+                os.utime(path, (old, old))
+
+            with mock.patch.object(
+                temp_sweeper.tempfile, "gettempdir", return_value=str(root)
+            ), mock.patch.object(temp_sweeper, "MEDIA_DIR", root / "media"):
+                stats = temp_sweeper.sweep_once()
+
+            self.assertFalse(staged.exists())
+            self.assertFalse(converted.exists())
+            self.assertTrue(unrelated.exists())
+            self.assertEqual(stats["comfy_staging"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

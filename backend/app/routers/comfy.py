@@ -12,9 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -670,13 +673,28 @@ def _prune_node(wf: dict, node_id: str) -> None:
             del inputs[key]
 
 
-def _fill_images(target: dict, wf: dict, slots: list, uploads: list) -> int:
+@dataclass(frozen=True)
+class _MediaUpload:
+    filename: str
+    path: Path
+    size: int
+
+
+def _cleanup_media_uploads(uploads: list[_MediaUpload]) -> None:
+    for upload in uploads:
+        try:
+            upload.path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("Comfy 입력 임시파일 정리 실패: %s", exc)
+
+
+def _fill_images(target: dict, wf: dict, slots: list, uploads: list[_MediaUpload]) -> int:
     """이미지 uploads 를 image_slots 에 순서대로 업로드·주입하고, 미사용 슬롯은 prune. 채운 개수 반환."""
     if not uploads:
         return 0
     used = 0
-    for slot, (fname, data) in zip(slots, uploads):
-        name = comfy_client.upload_bytes(target, fname, data)
+    for slot, upload in zip(slots, uploads):
+        name = comfy_client.upload_file(target, upload.filename, upload.path)
         node = wf.get(slot["node_id"])
         if isinstance(node, dict):
             node.setdefault("inputs", {})[slot["field"]] = name
@@ -686,7 +704,13 @@ def _fill_images(target: dict, wf: dict, slots: list, uploads: list) -> int:
     return used
 
 
-def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: str) -> int:
+def _fill_videos(
+    target: dict,
+    wf: dict,
+    slots: list,
+    uploads: list[_MediaUpload],
+    input_dir: str,
+) -> int:
     """영상 uploads 를 video_slots 에 채우고 미사용 슬롯 prune.
     파일 선택형(VHS_LoadVideo 등)은 /upload/image 로 올려 그 이름을 주입.
     경로 입력형(VHS_LoadVideoPath)은 절대경로를 요구 → comfy_input_dir 에 저장해 그 경로를 주입.
@@ -694,7 +718,8 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
     if not uploads:
         return 0
     used = 0
-    for slot, (fname, data) in zip(slots, uploads):
+    for slot, upload in zip(slots, uploads):
+        fname = upload.filename
         node = wf.get(slot["node_id"])
         if not isinstance(node, dict):
             used += 1
@@ -710,24 +735,35 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
             safe = Path(fname).name or "input.bin"
             dest = Path(input_dir) / "mvhub" / safe
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            shutil.copyfile(upload.path, dest)
             node.setdefault("inputs", {})[slot["field"]] = str(dest.resolve())
         else:
+            source = upload.path
+            converted: Path | None = None
             if target["cloud"]:
                 # Cloud 는 표준 코덱·정상 프레임레이트만 받는다 → 업로드 전에 H.264 MP4 로 자동 변환한다.
                 # (ffmpeg 없으면 원본 그대로 — 최선 노력. 변환 실패면 명확한 사유로 502.)
                 try:
-                    conv = video_convert.to_cloud_mp4(data)
+                    converted = video_convert.to_cloud_mp4_path(source)
                 except video_convert.VideoConvertError as e:
                     raise HTTPException(
                         502,
                         f"입력 영상을 클라우드용(H.264 MP4)으로 변환하지 못했습니다: {e}. "
                         "영상을 표준 MP4로 다시 내보내거나 설정에서 Local 을 쓰세요.",
                     )
-                if conv is not data:  # 실제로 변환됐으면 이름도 .mp4 로(클라우드 인식용)
-                    data = conv
+                if converted != source:  # 실제로 변환됐으면 이름도 .mp4 로(클라우드 인식용)
+                    source = converted
                     fname = os.path.splitext(fname)[0] + ".mp4"
-            name = comfy_client.upload_bytes(target, fname, data)
+            try:
+                name = comfy_client.upload_file(target, fname, source)
+            finally:
+                if converted is not None and converted != upload.path:
+                    try:
+                        converted.unlink(missing_ok=True)
+                    except OSError as exc:
+                        # 업로드는 이미 끝났으므로 임시파일 정리 실패가 정상 잡을 실패로 바꾸면 안 된다.
+                        # 24시간 이상 남은 앱 접두 파일은 temp_sweeper가 다시 회수한다.
+                        log.warning("Comfy 변환 임시파일 정리 실패: %s", exc)
             node.setdefault("inputs", {})[slot["field"]] = name
         used += 1
     for slot in slots[used:]:
@@ -735,12 +771,33 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
     return used
 
 
-def _read_media_uploads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
-    """UploadFile 은 응답 후 FastAPI 가 닫을 수 있으므로 request 안에서 bytes 로 고정한다.
-    (worker thread 에는 UploadFile 객체가 아니라 (filename, bytes) 만 넘긴다.)
+def _raise_comfy_upload_limit(exc: upload_limits.UploadLimitExceeded) -> None:
+    if exc.kind == "file_count":
+        raise HTTPException(
+            400,
+            f"Comfy 입력은 한 번에 최대 {upload_limits.COMFY_UPLOAD_MAX_FILES}개입니다",
+        ) from exc
+    if exc.kind == "file_size":
+        raise HTTPException(
+            413,
+            f"{(exc.index or 0) + 1}번째 Comfy 입력이 너무 큽니다"
+            f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
+            headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
+        ) from exc
+    raise HTTPException(
+        413,
+        "Comfy 입력 파일 합계가 너무 큽니다"
+        f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
+        headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
+    ) from exc
 
-    메모리 고정 전에 파일 수·개별 크기·합계를 검사한다. size가 없는 직접 호출까지 우회하지
-    못하도록 실제 read도 파일당 상한+1바이트에서 끊고 합계를 다시 센다.
+
+def _stage_media_uploads(files: list[UploadFile]) -> list[_MediaUpload]:
+    """요청 spool을 앱 소유 임시파일로 제한 복사해 백그라운드 스레드에 넘긴다.
+
+    FastAPI는 응답 뒤 UploadFile을 닫으므로 그대로 넘길 수 없다. 전체 bytes로 고정하지 않고 1MiB
+    청크로 복사해 작업 스레드는 경로만 소유한다. 정상·오류·스레드 시작 실패는 즉시 지우고, 프로세스
+    비정상 종료 잔재는 temp_sweeper의 앱 접두 계약이 회수한다.
     """
     try:
         upload_limits.validate_upload_batch(
@@ -750,50 +807,52 @@ def _read_media_uploads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
             max_total_bytes=upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES,
         )
     except upload_limits.UploadLimitExceeded as exc:
-        if exc.kind == "file_count":
-            raise HTTPException(
-                400,
-                f"Comfy 입력은 한 번에 최대 {upload_limits.COMFY_UPLOAD_MAX_FILES}개입니다",
-            ) from exc
-        if exc.kind == "file_size":
-            raise HTTPException(
-                413,
-                f"{(exc.index or 0) + 1}번째 Comfy 입력이 너무 큽니다"
-                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
-                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
-            ) from exc
-        raise HTTPException(
-            413,
-            "Comfy 입력 파일 합계가 너무 큽니다"
-            f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
-            headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
-        ) from exc
+        _raise_comfy_upload_limit(exc)
 
-    uploads: list[tuple[str, bytes]] = []
+    uploads: list[_MediaUpload] = []
     total = 0
-    for i, uf in enumerate(files):
-        data = uf.file.read(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES + 1)
-        if len(data) > upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES:
-            raise HTTPException(
-                413,
-                f"{i + 1}번째 Comfy 입력이 너무 큽니다"
-                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
-                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
+    try:
+        for i, upload in enumerate(files):
+            upload.file.seek(0)
+            handle = tempfile.NamedTemporaryFile(
+                prefix="mvhub-comfy-input-", suffix=".part", delete=False
             )
-        total += len(data)
-        if total > upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES:
-            raise HTTPException(
-                413,
-                "Comfy 입력 파일 합계가 너무 큽니다"
-                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
-                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
-            )
-        uploads.append((uf.filename or f"input_{i}.bin", data))
-    return uploads
+            path = Path(handle.name)
+            try:
+                with handle:
+                    size = upload_limits.copy_stream_limited(
+                        upload.file,
+                        handle,
+                        max_bytes=upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES,
+                    )
+            except upload_limits.UploadLimitExceeded as exc:
+                path.unlink(missing_ok=True)
+                _raise_comfy_upload_limit(replace(exc, index=i))
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            total += size
+            uploads.append(_MediaUpload(upload.filename or f"input_{i}.bin", path, size))
+            if total > upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES:
+                _raise_comfy_upload_limit(
+                    upload_limits.UploadLimitExceeded(
+                        "total_size", upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES, total
+                    )
+                )
+        return uploads
+    except Exception:
+        _cleanup_media_uploads(uploads)
+        raise
 
 
-def _inject_media_bytes(target: dict, wf: dict, meta: list, uploads: list[tuple[str, bytes]],
-                        input_dir: str, job_id: str = "") -> dict:
+def _inject_media_files(
+    target: dict,
+    wf: dict,
+    meta: list,
+    uploads: list[_MediaUpload],
+    input_dir: str,
+    job_id: str = "",
+) -> dict:
     """meta[i] 는 uploads[i] 와 순서 대응({type}). 타입별로 분리해 이미지→image_slots,
     영상→video_slots 에 순서대로 채우고 미사용 슬롯 prune. 실제 채운 개수를 반환(표시용).
     잘못된 요청(타입 누락/불일치, 슬롯 초과)은 업로드 전에 400 으로 거부한다."""
@@ -806,11 +865,16 @@ def _inject_media_bytes(target: dict, wf: dict, meta: list, uploads: list[tuple[
     #  (반환된 이름이 그대로 노드에 주입되므로 이 한 곳이 유일한 관문이다).
     if job_id:
         prefix = job_id[:12]
-        uploads = [(f"{prefix}-{i}-{Path(fname).name or 'input.bin'}", data)
-                   for i, (fname, data) in enumerate(uploads)]
+        uploads = [
+            replace(
+                upload,
+                filename=f"{prefix}-{i}-{Path(upload.filename).name or 'input.bin'}",
+            )
+            for i, upload in enumerate(uploads)
+        ]
     slots = comfy_workflow.detect_slots(wf, set())
-    images: list[tuple[str, bytes]] = []
-    videos: list[tuple[str, bytes]] = []
+    images: list[_MediaUpload] = []
+    videos: list[_MediaUpload] = []
     for i, entry in enumerate(uploads):
         m = meta[i] if isinstance(meta[i], dict) else {}
         t = m.get("type")
@@ -863,7 +927,7 @@ def _read_saved_texts(target: dict, wf: dict) -> list[str]:
 
 
 def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
-                        uploads: list[tuple[str, bytes]], settings: dict) -> dict:
+                        uploads: list[_MediaUpload], settings: dict) -> dict:
     """실제 무거운 실행 — 미디어 주입 → 제출 → 폴링 → 출력 수집. 백그라운드 스레드에서 돈다.
     (예전 /run 동기 핸들러 본문을 그대로 옮긴 것. 에러는 HTTPException 으로 던져 worker 가 잡는다.)"""
     target = comfy_client.make_target(settings)
@@ -871,12 +935,16 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
     # 연결된 레퍼런스를 타입별 슬롯에 자동 주입(+미사용 슬롯 prune)
     try:
-        _inject_media_bytes(target, wf, meta, uploads, settings["comfy_input_dir"], job_id)
+        _inject_media_files(target, wf, meta, uploads, settings["comfy_input_dir"], job_id)
     except comfy_client.ComfyError as e:
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, f"입력 미디어 업로드 실패: {e}")
     except ValueError as e:
         raise HTTPException(400, f"워크플로우 파싱 실패: {e}")
+    finally:
+        # Comfy 업로드 또는 로컬 input 복사가 끝나면 원격 실행을 기다리는 동안 원본 임시파일을
+        # 붙잡아 둘 이유가 없다. worker의 finally에서도 멱등 정리해 이 앞 단계 예외까지 덮는다.
+        _cleanup_media_uploads(uploads)
 
     tgt_kind = "cloud" if target["cloud"] else "local"
     prompt_id: Optional[str] = None
@@ -948,7 +1016,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
 
 def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
-                          uploads: list[tuple[str, bytes]], settings: dict) -> None:
+                          uploads: list[_MediaUpload], settings: dict) -> None:
     """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
     설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
     _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3), job_id)
@@ -966,6 +1034,7 @@ def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
         else:
             _finish_run_job(job_id, result)
     finally:
+        _cleanup_media_uploads(uploads)
         _release_run_slot()
 
 
@@ -997,11 +1066,14 @@ def run(
     if len(meta) != len(media_files):
         raise HTTPException(400, "media 파일 수와 media_meta 수가 일치하지 않습니다")
 
-    # UploadFile 은 응답 후 닫힐 수 있다 → request 안에서 bytes 로 읽어 두고, 스레드엔 bytes 만 넘긴다.
-    uploads = _read_media_uploads(media_files)
-    settings = _raw_settings()
-
-    job_id = _create_run_job()
+    # UploadFile은 응답 후 닫히므로 앱 전용 임시파일에 제한 복사하고 스레드에는 경로만 넘긴다.
+    uploads = _stage_media_uploads(media_files)
+    try:
+        settings = _raw_settings()
+        job_id = _create_run_job()
+    except Exception:
+        _cleanup_media_uploads(uploads)
+        raise
     thread = threading.Thread(
         target=_run_comfy_job_worker,
         args=(job_id, wf, pvals, meta, uploads, settings),
@@ -1010,7 +1082,8 @@ def run(
     )
     try:
         thread.start()
-    except RuntimeError as e:
+    except Exception as e:  # noqa: BLE001 - 스레드 생성의 OS 오류도 같은 정리 경계를 적용한다.
+        _cleanup_media_uploads(uploads)
         _fail_run_job(job_id, 500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
         raise HTTPException(500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
     return {"job_id": job_id}

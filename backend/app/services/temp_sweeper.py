@@ -8,6 +8,8 @@
     이름이라 겹치지도 않아 영구 누적).
   · %TEMP% 의 `mvhub-export-*.db`(DB 내보내기)·`mvhub-update-bootstrap-*.bat` — 클라이언트
     중단 시 BackgroundTask 가 못 돌아 잔류.
+  · %TEMP% 의 `mvhub-comfy-input-*.part`·`mvhub-comfy-converted-*.mp4` — Comfy 백그라운드
+    작업 전에 프로세스가 비정상 종료되면 정상 finally가 실행되지 못해 잔류.
 
 전부 '다시 만들 수 있는 것'만, 그리고 우리가 만든 이름 패턴만 지운다. 진행 중 파일을
 지우지 않도록 24시간 이상 묵은 것만 대상(가장 긴 정상 작업도 시간 단위를 넘지 않는다).
@@ -95,6 +97,12 @@ def sweep_once(now: Optional[float] = None) -> dict[str, int]:
                 "mvhub-update-bootstrap-*.bat",
                 "mvhub-update-*.ps1",
             ),
+            cutoff,
+            recursive=False,
+        ),
+        "comfy_staging": _sweep_dir(
+            Path(tempfile.gettempdir()),
+            ("mvhub-comfy-input-*.part", "mvhub-comfy-converted-*.mp4"),
             cutoff,
             recursive=False,
         ),

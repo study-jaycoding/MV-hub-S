@@ -6,6 +6,7 @@
 """
 
 import json
+import io
 import threading
 import time
 import unittest
@@ -15,6 +16,16 @@ from unittest import mock
 
 from app.routers import comfy
 from app.services import comfy_workflow
+
+
+class _TrackingStream(io.BytesIO):
+    def __init__(self, data: bytes):
+        super().__init__(data)
+        self.max_requested = 0
+
+    def read(self, size=-1):
+        self.max_requested = max(self.max_requested, size)
+        return super().read(size)
 
 
 class MalformedWorkflowTests(unittest.TestCase):
@@ -47,8 +58,10 @@ class VideoPathSanitizeTests(unittest.TestCase):
         slots = comfy_workflow.detect_slots(wf, set())
         target = {"cloud": False, "base": "http://127.0.0.1:8188", "prefix": "", "headers": {}}
         with TemporaryDirectory() as d:
+            source = Path(d) / "source.mp4"
+            source.write_bytes(b"data")
             comfy._fill_videos(target, wf, slots["video_slots"],
-                               [("../../evil.mp4", b"data")], d)
+                               [comfy._MediaUpload("../../evil.mp4", source, 4)], d)
             written = Path(wf["1"]["inputs"]["video"]).resolve()
             mvhub = (Path(d) / "mvhub").resolve()
             # mvhub 안에 evil.mp4 로만 저장(상위로 탈출 금지).
@@ -66,20 +79,29 @@ class UploadNameCollisionTests(unittest.TestCase):
     def _run_inject(self, job_id: str) -> list[str]:
         wf = {"1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}}}
         uploaded: list[str] = []
-        orig = comfy.comfy_client.upload_bytes
+        orig = comfy.comfy_client.upload_file
 
-        def fake_upload(target, fname, data, subfolder="mvhub"):
+        def fake_upload(target, fname, path, subfolder="mvhub"):
             uploaded.append(fname)
+            self.assertTrue(Path(path).is_file())
             return f"mvhub/{fname}"
 
-        comfy.comfy_client.upload_bytes = fake_upload
-        try:
-            target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
-            comfy._inject_media_bytes(
-                target, wf, [{"type": "image"}], [("image1.png", b"a")], "", job_id
-            )
-        finally:
-            comfy.comfy_client.upload_bytes = orig
+        comfy.comfy_client.upload_file = fake_upload
+        with TemporaryDirectory() as d:
+            path = Path(d) / "image1.png"
+            path.write_bytes(b"a")
+            try:
+                target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+                comfy._inject_media_files(
+                    target,
+                    wf,
+                    [{"type": "image"}],
+                    [comfy._MediaUpload("image1.png", path, 1)],
+                    "",
+                    job_id,
+                )
+            finally:
+                comfy.comfy_client.upload_file = orig
         # 노드 입력에도 업로드된(접두 붙은) 이름이 그대로 주입된다.
         self.assertEqual(wf["1"]["inputs"]["image"], f"mvhub/{uploaded[0]}")
         return uploaded
@@ -99,23 +121,31 @@ class UploadNameCollisionTests(unittest.TestCase):
             "2": {"class_type": "LoadImage", "inputs": {"image": "y.png"}},
         }
         uploaded: list[str] = []
-        orig = comfy.comfy_client.upload_bytes
+        orig = comfy.comfy_client.upload_file
 
-        def fake_upload(target, fname, data, subfolder="mvhub"):
+        def fake_upload(target, fname, path, subfolder="mvhub"):
             uploaded.append(fname)
             return f"mvhub/{fname}"
 
-        comfy.comfy_client.upload_bytes = fake_upload
-        try:
-            target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
-            comfy._inject_media_bytes(
-                target, wf,
-                [{"type": "image"}, {"type": "image"}],
-                [("image1.png", b"a"), ("image1.png", b"b")],
-                "", "cccccccccccc3333",
-            )
-        finally:
-            comfy.comfy_client.upload_bytes = orig
+        comfy.comfy_client.upload_file = fake_upload
+        with TemporaryDirectory() as d:
+            first = Path(d) / "first.png"
+            second = Path(d) / "second.png"
+            first.write_bytes(b"a")
+            second.write_bytes(b"b")
+            try:
+                target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+                comfy._inject_media_files(
+                    target, wf,
+                    [{"type": "image"}, {"type": "image"}],
+                    [
+                        comfy._MediaUpload("image1.png", first, 1),
+                        comfy._MediaUpload("image1.png", second, 1),
+                    ],
+                    "", "cccccccccccc3333",
+                )
+            finally:
+                comfy.comfy_client.upload_file = orig
         self.assertEqual(len(uploaded), 2)
         self.assertNotEqual(uploaded[0], uploaded[1])
 
@@ -123,6 +153,63 @@ class UploadNameCollisionTests(unittest.TestCase):
         # 하위 호환 — job_id 없이 호출되면 기존 이름 유지.
         uploaded = self._run_inject("")
         self.assertEqual(uploaded[0], "image1.png")
+
+
+class MediaStagingTests(unittest.TestCase):
+    def test_stage_uses_bounded_copy_and_cleanup(self):
+        from starlette.datastructures import UploadFile
+
+        stream = _TrackingStream(b"x" * (2 * 1024 * 1024 + 17))
+        upload = UploadFile(stream, filename="large.png")
+        staged = comfy._stage_media_uploads([upload])
+        try:
+            self.assertEqual(len(staged), 1)
+            self.assertEqual(staged[0].size, 2 * 1024 * 1024 + 17)
+            self.assertEqual(staged[0].path.stat().st_size, staged[0].size)
+            self.assertLessEqual(stream.max_requested, 1024 * 1024)
+        finally:
+            paths = [item.path for item in staged]
+            comfy._cleanup_media_uploads(staged)
+        self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_run_impl_cleans_staging_when_injection_fails(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "staged.part"
+            path.write_bytes(b"x")
+            upload = comfy._MediaUpload("x.png", path, 1)
+            settings = {
+                "comfy_target": "local",
+                "comfy_url": "http://127.0.0.1:8188",
+                "comfy_api_key": "",
+                "comfy_input_dir": "",
+            }
+            with mock.patch.object(
+                comfy, "_inject_media_files", side_effect=ValueError("bad workflow")
+            ):
+                with self.assertRaises(comfy.HTTPException) as cm:
+                    comfy._run_comfy_job_impl("job", {"1": {}}, {}, [], [upload], settings)
+            self.assertEqual(cm.exception.status_code, 400)
+            self.assertFalse(path.exists())
+
+    def test_run_cleans_staging_when_thread_start_fails(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "staged.part"
+            path.write_bytes(b"x")
+            staged = [comfy._MediaUpload("x.png", path, 1)]
+            with mock.patch.object(comfy, "_stage_media_uploads", return_value=staged), \
+                 mock.patch.object(comfy, "_raw_settings", return_value={}), \
+                 mock.patch.object(comfy, "_create_run_job", return_value="job"), \
+                 mock.patch.object(comfy, "_fail_run_job"), \
+                 mock.patch.object(comfy.threading.Thread, "start", side_effect=OSError("no thread")):
+                with self.assertRaises(comfy.HTTPException) as cm:
+                    comfy.run(
+                        content='{"1":{"class_type":"LoadImage","inputs":{}}}',
+                        param_values="{}",
+                        media_meta='[{"type":"image"}]',
+                        media=[mock.Mock()],
+                    )
+            self.assertEqual(cm.exception.status_code, 500)
+            self.assertFalse(path.exists())
 
 
 class RunGateTests(unittest.TestCase):
