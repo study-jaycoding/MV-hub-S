@@ -112,7 +112,7 @@ HTTP 요청
 | `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
-| `db_backup.py` / `db_transfer.py` | 제한된 DB 백업 스트리밍 / 로컬 DB 내보내기·스트리밍 가져오기·복원(유지보수 게이트) |
+| `db_backup.py` / `db_transfer.py` | 계정별 `content + trash` 백업 세트의 멱등 업로드·명시적 ACK·최신 세트 다운로드 / 로컬 DB 내보내기·스트리밍 가져오기·세트 복원(유지보수 게이트). 기존 단일 DB 경로는 혼합 버전 호환용으로 유지 |
 | 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
 
 ### 4.2.1 업로드 입구 계약
@@ -181,6 +181,7 @@ HTTP 요청
 | `media_cache.py` | 원격 URL → 로컬 샤딩 캐시 |
 | `thumbs.py` | 썸네일 사전생성·리사이즈 |
 | `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
+| `worker_backup.py` | 작업자 개인 `content + trash` 세트 staging·비밀정보 제거·영속 outbox·백오프·명시적 서버 ACK·재시작 복구. 상태 DB와 staging은 업데이트가 보존하는 `backend/data`에 위치 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
 | `comfy_client.py` / `comfy_workflow.py` | ComfyUI(로컬·Cloud) 파일 스트리밍 HTTP 클라이언트 / 워크플로 슬롯·파라미터 파싱 |

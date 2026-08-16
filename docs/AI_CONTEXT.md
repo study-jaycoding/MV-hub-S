@@ -217,7 +217,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - `db.py`(SQLite 스키마·마이그레이션·인덱스·FTS5), `models.py`(Pydantic), `config.py`(경로·포트·AUTH), `deps.py`(인증/RBAC 의존성), `ws.py`(진행률 broadcast), `rbac.py`(역할·역량).
 - **routers/**: `library.py`(목록·검색·통계·facets·휴지통·**미디어 썸네일**·**tab=my 계정 스코프**), `generation.py`(옛 서버측 생성·태그/컬러/소스/코멘트·삭제·복원·힉스필드검증·리니지), **`gen_requests.py`(로컬 실행 큐: 생성요청·pending·fulfill·fail)**, **`ingest.py`(push 적재·known-jobs·`/credits`)**, `share.py`, `projects.py`, `auth.py`(로그인·가입·계정승인), `members.py`(등급), `assets.py`(분리창), `sync.py`.
 - **repo/**: `generations.py`(중심: list_generations 키셋·검색·업서트·재생성·**account_uid 스코프**·리니지 그래프), **`gen_requests.py`(gen_recipe·claim·fulfill mark)**, `identity.py`(생성자·신원·**link_accounts_to_creators·set_account_hf_creator·credit_summary·list_members**), `tags.py`, `projects.py`, `share.py`, `accounts.py`(가입·인증·승인), `assets.py`, `trash.py`.
-- **services/**: `syncer.py`(주기 동기화), `cli_bridge.py`(Higgsfield CLI 래퍼: parse_job·generate list·account status·workspace·**셰임/Proactor 함정**), `media_cache.py`(원격→로컬·샤딩), `thumbs.py`(썸네일), `backup.py`(SQLite 온라인 백업), `auth.py`(pbkdf2 해시·무상태 hmac 토큰). (옛 `jobs.py` 서버측 잡 큐·서버측 create_job 은 push 모델 전환으로 제거됨.)
+- **services/**: `syncer.py`(주기 동기화), `cli_bridge.py`(Higgsfield CLI 래퍼: parse_job·generate list·account status·workspace·**셰임/Proactor 함정**), `media_cache.py`(원격→로컬·샤딩), `thumbs.py`(썸네일), `backup.py`(SQLite 온라인 백업), `worker_backup.py`(작업자 content+trash 세트·영속 outbox·공유 서버 ACK), `auth.py`(pbkdf2 해시·무상태 hmac 토큰). (옛 `jobs.py` 서버측 잡 큐·서버측 create_job 은 push 모델 전환으로 제거됨.)
 
 ---
 

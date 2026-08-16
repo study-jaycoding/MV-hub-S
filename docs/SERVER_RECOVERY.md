@@ -52,6 +52,11 @@
 - 자동 백업 한 세트는 `content_hub_*`(콘텐츠), `content_trash_*`(휴지통),
   `manage_hub_*`(프로젝트 관리, 사용 중일 때)로 구성된다. 각 파일은 생성 때와
   원격 복제 직후 모두 SQLite 무결성 검사를 통과해야 완성본으로 취급한다.
+- 새 작업자가 올린 개인 세트는 `db-backups\<계정슬러그>\sets\<backup_set_id>\`에
+  `manifest.json`, `content.db`, 존재할 때 `trash.db`로 저장된다. 복제는 manifest의 크기·
+  SHA-256과 각 SQLite 무결성이 모두 맞을 때만 세트 폴더를 공개한다.
+- 마지막 복제 상태는 `backend\data\backup_replica_status.json`에 원자적으로 기록된다.
+  `success`만 성공이며 `never_run`, `disabled`, `failed`, `state_unavailable`은 운영 확인 대상이다.
 
 ### 워치독의 안전장치 (알아둘 것)
 
@@ -119,7 +124,9 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
    - `backups\<계정슬러그>\content_hub_*.db` 가 있으면 →
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
    - `db-backups\<계정슬러그>\` 는 팀원 로컬 허브가 올려둔 개인 DB 백업 —
-     서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 팀원에게 돌려주는 용도.
+     서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 계정으로 로그인한 작업자 설정의
+     `서버 DB 가져오기`로 최신 `content + trash` 세트를 복원하는 용도. 새 세트가 없는 구버전
+     저장소만 기존 단일 콘텐츠 DB 복원을 사용한다.
 6. `MV_server.bat` 실행(임시로는 수동 실행으로 충분).
 7. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면
    예비 PC에도 `register_autostart.bat` 를 등록한다.
@@ -127,8 +134,11 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
 ### 월 1회 리허설 체크리스트
 
 - [ ] 복제 위치에 어제 날짜 백업이 있는가 (`logs\backup_replicate.log` 확인)
+- [ ] `backend\data\backup_replica_status.json`의 `state`가 `success`이고 마지막 성공 시각이
+      예약 주기 안에 있는가
 - [ ] 같은 시각의 content·trash·manage 세트에 `--backup-set` 드릴을 실행해 ready·로그인·핵심 수
       대조와 테스트 프로세스 회수가 모두 통과하는가
+- [ ] 실제 작업자 계정 세트 하나를 예비 PC에 복원해 개인 생성물과 휴지통 상태가 함께 보이는가
 - [ ] 서버 PC 재부팅 → 로그인 없이 자동으로 서버·워치독이 뜨는가
 - [ ] `logs\watchdog_ALERT.txt` 가 없는가 (있으면 원인 확인 후 삭제)
 

@@ -510,6 +510,49 @@ npm.cmd run lint:architecture
 이 검증은 내부 영속 큐·UI·재시작 계약을 확인한다. 실제 CDN URL 장기 만료, 물리 디스크 50GiB
 도달, 다른 PC·혼합 버전 공유 서버는 운영 배포 전 별도 실측 대상이다.
 
+## 작업자 PC 오프디스크 백업(RL-23)
+
+현재 작업 트리 기준 검증 명령:
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev\backend
+py -3 -m pytest -q `
+  tests\test_worker_offdisk_backup.py `
+  tests\test_backup_replicate.py `
+  tests\test_db_restore_gate.py `
+  tests\test_operational_health.py `
+  tests\test_release_update.py `
+  tests\test_upload_limits.py `
+  tests\test_proxy_ownership.py
+py -3 -m pytest -q
+
+cd D:\ClaudeCode\MV-hub-S-dev\frontend
+npm.cmd test -- --run
+npm.cmd run lint:architecture
+npm.cmd run build
+```
+
+핵심 계약과 결과:
+
+- 작업자 `content + trash` 세트는 비밀정보를 제거한 별도 staging과 영속 outbox를 사용한다.
+- 서버는 세션 계정별로 역할·크기·SHA-256·SQLite 무결성을 검사하고, 20개 동시 동일 세트 전송도
+  한 세트만 공개한다. 작업자는 ACK의 세트 ID와 모든 역할이 일치할 때만 완료한다.
+- 중단된 `running`, 로그인 만료, 네트워크 실패, 디스크 쓰기 실패, 손상 파일, 새 작업자↔구버전
+  서버, 업데이트 전후 `backend/data` 보존을 회귀로 확인했다.
+- 외부 복제는 기존 단일 DB와 새 세트를 모두 다루며 `success`, `disabled`, `failed`, `no_source`를
+  구조화 상태로 기록한다. 상태 기록 자체가 실패해도 성공으로 끝내지 않는다.
+- 관련 회귀 84개, 백엔드 전체 887개·21 subtests, 프론트 76개 파일·535개, 프로덕션 빌드와
+  아키텍처 검사가 통과했다.
+- 격리 브라우저에서 `로컬 백업`, 최신 세트 구성, 공유 서버 상태, 재시도 버튼과 앱 출처 콘솔 오류
+  0건을 확인했다. 테스트 계정·프로세스와 5173/8012 포트를 회수했다.
+- 2코어·below-normal·256MiB 상한의 100명 단기 실측은 요청 2,920건 모두 200, p95 36.68ms,
+  p99 231.80ms, WebSocket·장기 폴링 각 100개, 오류·SQLite lock 0건, 최대 RSS
+  196,182,016바이트로 통과했다.
+
+이 결과는 내부 전송·복원 계약과 낮은 사양에서의 단기 동작을 확인한다. 실제 NAS/다른 물리 장치에
+복제한 작업자 세트로 예비 PC 복원을 수행한 것은 아니므로, 운영 완료 판정에는
+[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md)의 마지막 외부 훈련이 필요하다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

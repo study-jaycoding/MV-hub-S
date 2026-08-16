@@ -152,6 +152,18 @@ SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 �
 - 백업 목록:   `GET /api/backups`
 - ⚠️ 실서버에선 `CONTENT_HUB_BACKUP_DIR` 를 **다른 디스크/NAS**로 — 같은 디스크면 동반 손실.
 
+### 작업자 PC 백업
+
+로그인한 작업자 허브는 로컬 온라인 백업 뒤 개인 `content + trash` 세트를 영속 outbox에 넣고
+공유 서버의 `POST /api/db-backup/sets`로 자동 전송한다. 공유 서버는 세션 계정별
+`backend/data/db-backups/<계정>/sets/<backup_set_id>/`에 저장하며, 크기·SHA-256·SQLite
+무결성과 정확한 ACK가 모두 맞아야 성공이다. 설정의 `서버에 백업`은 같은 경로를 즉시 실행한다.
+
+공유 서버 디스크는 두 번째 물리 사본이 아니다. `tools/backup_replicate.py`와
+`register_autostart.bat`의 `MVHub BackupCopy`를 사용해 서버 자체 백업과 작업자 세트를 NAS·다른
+디스크로 한 번 더 복제해야 한다. 자세한 완료 조건은
+[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md)를 따른다.
+
 ### 백업 복원 훈련
 
 운영 DB를 교체하지 않고 임시 파일에 온라인 백업→복원→무결성·외래키·테이블 행 수 비교를 수행한다.
@@ -185,7 +197,7 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 - 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
   프로세스 CPU·RSS, WebSocket·에이전트 연결, 생성 단계/지연, 최근 백업,
   관리 데이터 전송 대기·실패, 원본 보존 pending/running/partial/failed/capacity 집계,
-  DB/WAL·미디어·썸네일 용량.
+  작업자 백업 대기·마지막 성공, 외부 복제 상태, DB/WAL·미디어·썸네일 용량.
 - 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 생성 상태 전이,
   5xx·느린 요청을 JSON 한 줄로 기록. 평상시에는 `MV_logs.bat`로 정돈된 로그를 본다.
 - 장기 생성 이력: `GET /api/admin/generation-events?generation_id=...` — 회전 로그와 별개로
