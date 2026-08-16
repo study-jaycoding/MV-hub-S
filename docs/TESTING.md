@@ -253,6 +253,38 @@ py -3 -m pytest `
 정상 표시되고 실제 HTTP 응답이 `image/png`, `inline`, `nosniff`, CSP/CORP, `no-cache`인지 확인한다.
 같은 프로젝트의 HTML 직접 요청은 415여야 하며, 종료 뒤 8214 포트가 반환돼야 한다.
 
+## 업로드 전체 용량 경계 회귀(RL-15)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_upload_limits.py `
+  tests\test_temp_sweeper.py `
+  tests\test_db_backup_streaming.py `
+  tests\test_comfy_router.py `
+  tests\test_comfy_save.py `
+  tests\test_asset_services.py `
+  tests\test_asset_permissions.py -q
+```
+
+`5b2cf434`의 관련 회귀 묶음은 위 명령의 백엔드 79개다.
+
+- Assets·Comfy·DB 업로드 본문은 multipart 파싱 전에 제한되어야 한다.
+- `Content-Length`가 없거나 실제보다 작아도 수신 바이트가 상한을 넘으면 413이어야 한다.
+- 잘못된·음수·상충하는 `Content-Length`는 400이고 정상 경계값은 통과해야 한다.
+- 파싱 뒤에는 파일 수·개별 파일·파일 합계를 실제 크기로 다시 검사해야 한다.
+- DB import는 전체 파일을 메모리에 읽지 않고 제한된 TEMP 스트림을 사용하며 모든 종료 경로에서
+  부분파일을 지워야 한다.
+- 제한 로그에는 경로·상태·상한·수신 크기만 남고 파일명·본문·프롬프트·URL은 없어야 한다.
+
+같은 작업 트리에서 백엔드 전체 820개, 프론트 76개 파일·534개, 업데이트 관련 40개,
+프론트 아키텍처 검사와 프로덕션 빌드가 통과했다.
+
+실측은 작은 환경변수 상한과 임시 DB·Assets 루트, 8215 포트에서 수행한다. 정상 PNG는 200,
+Assets 합계·Comfy 개별·DB·`Content-Length` 없는 청크 초과 요청은 413이어야 한다. 거부 뒤
+`/api/ready`가 200이고 저장된 부분파일과 앱 전용 DB 임시파일이 없으며 종료 뒤 8215 포트가
+반환돼야 한다. 현재 HTTP ZIP 업로드 API는 없고, 테스트 스냅샷 ZIP 추출 제한은 별도 테스트한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

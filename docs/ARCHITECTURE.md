@@ -66,6 +66,7 @@ HTTP 요청
    │
    ▼  app/main.py 미들웨어
    ├─ auth_enforcement : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
+   ├─ upload_body_limit: 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
    └─ mutation_notify  : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
@@ -89,6 +90,7 @@ HTTP 요청
 | `rbac.py` | 역할·역량 정의(전역 역할 + 프로젝트 역할) |
 | `mutation_notify.py` | 본 서버·위임 프록시가 공유하는 변경 영역 판정과 요청 출처 헤더 계약 |
 | `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스) |
+| `services/upload_limits.py` | 업로드 원시 본문·파일 수·개별·합계 제한, 제한 복사, 413 응답·안전 로그 계약 |
 
 ### 4.2 라우터 (`backend/app/routers/`) — HTTP 경계
 
@@ -106,12 +108,25 @@ HTTP 요청
 | `sync.py` | 수동 동기화 트리거·sync-status |
 | `publish.py` | 공유 서버 번들 발행 수신(`/share/publish-bundle`)·공유 서버 로그인/토큰 |
 | `manage.py` | PM 관리창 API(작업·일정·대시보드·팀 텔레메트리 push·완료본 저장) |
-| `comfy.py` | ComfyUI 연결·워크플로 파싱·비동기 실행(`/run`+`/run_status`)·라이브러리 저장 |
+| `comfy.py` | ComfyUI 연결·워크플로 파싱·제한된 입력 업로드·비동기 실행(`/run`+`/run_status`)·라이브러리 저장 |
 | `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
 | `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
-| `db_backup.py` / `db_transfer.py` | DB 백업 스트리밍 / 로컬 DB 내보내기·가져오기·복원(유지보수 게이트) |
+| `db_backup.py` / `db_transfer.py` | 제한된 DB 백업 스트리밍 / 로컬 DB 내보내기·스트리밍 가져오기·복원(유지보수 게이트) |
 | 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
+
+### 4.2.1 업로드 입구 계약
+
+- `UploadBodyLimitMiddleware`는 Assets·Comfy·DB의 POST 업로드만 정확한 경로로 선별해
+  Starlette multipart spool 전에 실제 수신 바이트를 센다. `Content-Length`가 없거나 작게 속여도
+  수신 중 상한을 넘으면 413이며, 잘못된·음수·상충 헤더는 400이다.
+- 라우터는 파싱 후 실제 파일 크기로 파일 수·개별·합계를 다시 검사한다. 기본값은 Assets 합계
+  1GiB, Comfy 64개·개별 256MiB·합계 512MiB, DB 개별 512MiB다. 원시 요청 상한에는 multipart
+  경계용 2MiB만 추가하고 각 값은 `CONTENT_HUB_*_UPLOAD_*` 환경변수로 낮출 수 있다.
+- DB import는 전체 `bytes`를 만들지 않고 1MiB씩 앱 전용 TEMP 파일로 복사한 뒤 검증·설치한다.
+  성공·실패 뒤 즉시 삭제하며, 비정상 종료로 남은 파일은 `temp_sweeper`가 앱 접두 범위에서만 치운다.
+- 현재 ZIP을 받는 HTTP 업로드 API는 없다. 테스트 스냅샷 ZIP은 내려받기·추출 경로이며 기존
+  파일 수·manifest·압축 해제 총량 제한을 별도로 적용한다.
 
 ### 4.3 유스케이스 (`backend/app/usecases/`)
 
