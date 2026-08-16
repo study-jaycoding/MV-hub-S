@@ -11,6 +11,7 @@ import { loadString, removeStorage, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 const TOKEN_KEY = STORAGE_KEYS.authToken;
+export const AUTH_STATE_HEADER = "X-MVHub-Auth-State";
 let authToken: string | null = (() => {
   const token = loadString(TOKEN_KEY);
   return token || null;
@@ -55,8 +56,15 @@ export function isHttpStatus(error: unknown, ...codes: number[]): boolean {
   return error instanceof HttpError && codes.includes(error.status);
 }
 
+export function shouldInvalidateAuth(res: Response, url: string): boolean {
+  if (res.status !== 401 || url.includes("/api/auth/")) return false;
+  // 새 서버·로컬 프록시는 요청별 401과 세션 만료를 구분한다. 헤더가 없는 구버전은 기존처럼
+  // 로그아웃해 안전한 롤링 업데이트를 유지한다.
+  return res.headers.get(AUTH_STATE_HEADER) !== "preserved";
+}
+
 export async function throwHttpError(res: Response, url: string, fallback?: string): Promise<never> {
-  if (res.status === 401 && !url.includes("/api/auth/")) {
+  if (shouldInvalidateAuth(res, url)) {
     setAuthToken(null);
     dispatchAppEvent(APP_EVENTS.authRequired);
   }

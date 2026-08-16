@@ -486,8 +486,21 @@ async def auth_enforcement(request: Request, call_next):
     api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:
-        return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)
-    return await call_next(request)
+        return JSONResponse(
+            {"detail": "로그인이 필요합니다"},
+            status_code=401,
+            headers={_proxy.AUTH_STATE_HEADER: _proxy.AUTH_STATE_INVALID},
+        )
+    response = await call_next(request)
+    if response.status_code == 401:
+        # 인증된 요청 자체가 업무 규칙(예: 현재 비밀번호 불일치)으로 거부된 401은
+        # 세션 만료가 아니다. 브라우저가 저장 토큰을 지우지 않도록 의미를 명시한다.
+        response.headers[_proxy.AUTH_STATE_HEADER] = (
+            _proxy.AUTH_STATE_PRESERVED
+            if request.state.account is not None
+            else _proxy.AUTH_STATE_INVALID
+        )
+    return response
 
 
 # ── 변경 전파 미들웨어 ────────────────────────────────────────────────────────

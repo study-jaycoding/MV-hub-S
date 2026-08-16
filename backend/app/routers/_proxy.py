@@ -15,6 +15,8 @@ import asyncio
 import json
 import os
 import shutil
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +42,20 @@ from ..mutation_notify import (
 _K_URL = "shared_server_url"
 _K_TOKEN = "shared_server_token"
 _K_ELEV_TOKEN = "shared_server_elev_token"  # 임시 관리자 권한 토큰(계정관리 호출에만)
+
+# 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는
+# 요청 자체가 거부됐을 뿐 저장된 로그인은 유지됐다는 뜻이다.
+AUTH_STATE_HEADER = "X-MVHub-Auth-State"
+AUTH_STATE_INVALID = "invalid"
+AUTH_STATE_PRESERVED = "preserved"
+
+# 같은 화면의 여러 요청이 한꺼번에 401을 받아도 /api/auth/me 확인을 한 번만 수행한다.
+# 네트워크 왕복은 짧은 TTL 동안만 공유하고, 판정 불가도 잠깐 캐시해 장애 중 확인 폭주를 막는다.
+_AUTH_PROBE_TTL_SECONDS = 2.0
+_AUTH_PROBE_TIMEOUT_SECONDS = 5
+_AUTH_PROBE_LOCK = threading.Lock()
+_AUTH_PROBE_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_AUTH_PROBE_IN_FLIGHT: set[tuple[str, str]] = set()
 
 # 로컬 처리 라우터가 내부에서 proxy_json을 호출해도 원 브라우저 요청의 출처를 서버까지 보존한다.
 # ContextVar라 동시 요청·FastAPI threadpool·asyncio.to_thread 사이에서 서로 섞이지 않는다.
@@ -138,6 +154,85 @@ def raw_request(
         raise HTTPException(status_code=502, detail=f"공유 서버 연결 실패: {e}")
 
 
+def _probe_token_state(tok: Optional[str]) -> str:
+    """같은 토큰의 `/api/auth/me`로 세션 상태를 확정한다.
+
+    401만 `invalid`다. 2xx는 `valid`, 연결 실패·5xx·예상 밖 응답은 `unknown`으로 보존한다.
+    확인 중 네트워크 오류를 세션 만료로 추측하면 원래 문제(로컬 모드 오전환)가 재발한다.
+    """
+    if not tok:
+        return AUTH_STATE_INVALID
+    server = base_url()
+    key = (server, tok)
+    now = time.monotonic()
+    with _AUTH_PROBE_LOCK:
+        cached = _AUTH_PROBE_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if key in _AUTH_PROBE_IN_FLIGHT:
+            # 첫 확인 요청만 네트워크를 사용한다. 같은 순간의 나머지 401은 기다리지 않고
+            # 판정 불가로 로그인 상태를 보존해 FastAPI/asyncio threadpool 고갈을 막는다.
+            return "unknown"
+        _AUTH_PROBE_IN_FLIGHT.add(key)
+
+    try:
+        try:
+            status, _ = raw_request(
+                "GET",
+                f"{server}/api/auth/me",
+                token=tok,
+                timeout=_AUTH_PROBE_TIMEOUT_SECONDS,
+            )
+            if status == 401:
+                state = AUTH_STATE_INVALID
+            elif 200 <= status < 300:
+                state = "valid"
+            else:
+                state = "unknown"
+        except HTTPException:
+            state = "unknown"
+    finally:
+        with _AUTH_PROBE_LOCK:
+            _AUTH_PROBE_IN_FLIGHT.discard(key)
+
+    with _AUTH_PROBE_LOCK:
+        # 현재 프로세스에는 일반·임시 관리자 토큰 몇 개만 존재한다. 그래도 테스트·계정 전환으로
+        # 오래된 키가 쌓이지 않게 만료 항목을 지우고 작은 상한을 둔다.
+        expired = [cache_key for cache_key, value in _AUTH_PROBE_CACHE.items() if value[0] <= now]
+        for cache_key in expired:
+            _AUTH_PROBE_CACHE.pop(cache_key, None)
+        if len(_AUTH_PROBE_CACHE) >= 8:
+            oldest = min(_AUTH_PROBE_CACHE, key=lambda cache_key: _AUTH_PROBE_CACHE[cache_key][0])
+            _AUTH_PROBE_CACHE.pop(oldest, None)
+        _AUTH_PROBE_CACHE[key] = (time.monotonic() + _AUTH_PROBE_TTL_SECONDS, state)
+    return state
+
+
+def _handle_auth_failure(setting_key: str, sent_token: Optional[str], path: str) -> str:
+    """401을 확정 만료와 요청별 거부로 분류하고, 확정 만료 토큰만 지운다.
+
+    `/api/auth/me` 자체의 401은 이미 권위 확인 결과라 재조회하지 않는다. 다른 경로는 같은
+    토큰으로 me를 확인한다. 확인 뒤 토큰이 바뀌었으면 늦은 응답이 새 로그인을 지우지 않는다.
+    """
+    state = (
+        AUTH_STATE_INVALID
+        if path.rstrip("/") == "/api/auth/me"
+        else _probe_token_state(sent_token)
+    )
+    if state != AUTH_STATE_INVALID:
+        return AUTH_STATE_PRESERVED
+    if sent_token:
+        try:
+            if repo.get_setting(setting_key) != sent_token:
+                # 확인하는 사이 계정 전환·재로그인이 끝났다. 늦은 옛 응답은 새 세션의
+                # UI 상태까지 만료로 바꾸면 안 된다.
+                return AUTH_STATE_PRESERVED
+            repo.set_setting(setting_key, None)
+        except Exception:  # noqa: BLE001 — 판정 응답은 보존하고 다음 요청에서 다시 확인한다.
+            return AUTH_STATE_PRESERVED
+    return AUTH_STATE_INVALID
+
+
 def proxy_json(
     method: str,
     path: str,
@@ -173,12 +268,14 @@ def proxy_json(
         return parsed
     detail = parsed.get("detail") if isinstance(parsed, dict) and "detail" in parsed else parsed
     if status == 401:
-        # 토큰 만료/무효 → 다음 status 조회가 게이트를 다시 띄우게 토큰을 비운다.
-        try:
-            repo.set_setting(_K_TOKEN, None)
-        except Exception:  # noqa: BLE001
-            pass
-        raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인)")
+        auth_state = _handle_auth_failure(_K_TOKEN, tok, path)
+        if auth_state == AUTH_STATE_INVALID:
+            detail = "공유 서버 로그인이 만료됐습니다(다시 로그인)"
+        raise HTTPException(
+            status_code=401,
+            detail=detail,
+            headers={AUTH_STATE_HEADER: auth_state},
+        )
     raise HTTPException(status_code=status, detail=detail)
 
 
@@ -245,7 +342,14 @@ def stream_download(
         _cleanup_file(dest)
         if e.code == 404:
             raise HTTPException(status_code=404, detail="서버에 원본이 없습니다")
-        raise HTTPException(status_code=e.code, detail=f"서버 다운로드 실패({e.code})")
+        headers = None
+        if e.code == 401:
+            headers = {AUTH_STATE_HEADER: _handle_auth_failure(_K_TOKEN, tok, path)}
+        raise HTTPException(
+            status_code=e.code,
+            detail=f"서버 다운로드 실패({e.code})",
+            headers=headers,
+        )
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         _cleanup_file(dest)
         raise HTTPException(status_code=502, detail=f"공유 서버 다운로드 실패: {e}")
@@ -361,13 +465,17 @@ async def _forward(request: Request) -> Response:
             return 502, payload, "application/json"
 
     status, raw, resp_ctype = await asyncio.to_thread(_do)
+    auth_state = None
     if status == 401:
-        try:
-            # elev 토큰으로 보낸 계정관리 호출이 401 → 임시 권한만 해제(본인 세션 토큰은 보존).
-            repo.set_setting(_K_ELEV_TOKEN if used_elev else _K_TOKEN, None)
-        except Exception:  # noqa: BLE001
-            pass
+        auth_state = await asyncio.to_thread(
+            _handle_auth_failure,
+            _K_ELEV_TOKEN if used_elev else _K_TOKEN,
+            tok,
+            request.url.path,
+        )
     response = Response(content=raw, status_code=status, media_type=resp_ctype)
+    if auth_state:
+        response.headers[AUTH_STATE_HEADER] = auth_state
     domains = notification_domains(method, request.url.path, status)
     if domains:
         # 위임 성공한 쓰기 → 원격 서버의 WS와 별개로 이 로컬 허브의 창에도 즉시 알린다.
@@ -411,7 +519,12 @@ async def _forward_stream(request: Request) -> Response:
         upstream = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=300))
     except urllib.error.HTTPError as e:
         ct = e.headers.get_content_type() if e.headers else "application/json"
-        return Response(content=e.read(), status_code=e.code, media_type=ct or "application/json")
+        response = Response(content=e.read(), status_code=e.code, media_type=ct or "application/json")
+        if e.code == 401:
+            response.headers[AUTH_STATE_HEADER] = await asyncio.to_thread(
+                _handle_auth_failure, _K_TOKEN, tok, request.url.path
+            )
+        return response
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         return Response(
             content=json.dumps({"detail": f"공유 서버 연결 실패: {e}"}).encode(),
