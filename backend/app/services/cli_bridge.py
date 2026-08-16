@@ -28,7 +28,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import threading
 import time
+import weakref
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -61,6 +64,48 @@ class CLIError(RuntimeError):
     """CLI 호출 실패(0이 아닌 종료코드 또는 미설치)."""
 
 
+async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
+    """취소·타임아웃된 CLI의 부모와 자식 프로세스를 끝내고 반드시 회수한다."""
+    if proc.returncode is None and os.name == "nt" and proc.pid:
+        killer = None
+        try:
+            taskkill = shutil.which("taskkill.exe") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "taskkill.exe",
+            )
+            killer = await asyncio.create_subprocess_exec(
+                taskkill,
+                "/PID",
+                str(proc.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5.0)
+        except (OSError, asyncio.TimeoutError):
+            if killer and killer.returncode is None:
+                try:
+                    killer.kill()
+                except OSError:
+                    pass
+                try:
+                    await killer.wait()
+                except OSError:
+                    pass
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except (OSError, asyncio.TimeoutError):
+        pass
+
+
 def cli_path() -> str:
     global _CLI_PATH
     if _CLI_PATH is None:
@@ -90,13 +135,11 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
-        proc.kill()
-        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
-        try:
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        await _terminate_cli_process(proc)
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
+    except asyncio.CancelledError:
+        await _terminate_cli_process(proc)
+        raise
     if proc.returncode != 0:
         msg = (err or b"").decode("utf-8", "replace").strip()
         raise CLIError(f"higgsfield {' '.join(args)} 실패(rc={proc.returncode}): {msg}")
@@ -151,13 +194,11 @@ async def _run_capture(*args: str, timeout: float = 600.0) -> tuple[str, str, in
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
-        proc.kill()
-        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
-        try:
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        await _terminate_cli_process(proc)
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
+    except asyncio.CancelledError:
+        await _terminate_cli_process(proc)
+        raise
     return (
         (out or b"").decode("utf-8", "replace"),
         (err or b"").decode("utf-8", "replace"),
@@ -472,6 +513,46 @@ _COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7
 _cost_loaded = False
 
 
+def _bounded_env_int(name: str, default: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+# 견적은 부가 통계라 실제 생성 응답을 늦추지 않아야 한다. 여러 사용자·탭이 동시에 요청해도
+# Higgsfield CLI 프로세스는 기본 2개만 실행하고 나머지는 코루틴으로 대기한다.
+_ESTIMATE_CONCURRENCY = _bounded_env_int("CONTENT_HUB_ESTIMATE_CONCURRENCY", 2, 8)
+_loop_gate_lock = threading.Lock()
+_estimate_gates: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+_cost_write_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Lock
+] = weakref.WeakKeyDictionary()
+
+
+def _estimate_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _loop_gate_lock:
+        gate = _estimate_gates.get(loop)
+        if gate is None:
+            gate = asyncio.Semaphore(_ESTIMATE_CONCURRENCY)
+            _estimate_gates[loop] = gate
+        return gate
+
+
+def _cost_write_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _loop_gate_lock:
+        lock = _cost_write_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _cost_write_locks[loop] = lock
+        return lock
+
+
 def _cost_key(model: str, param_args: list[str]) -> str:
     # 키는 '실제 CLI 로 나가는 인자'(_param_args 결과)만으로 만든다 — 스키마 밖 잔여값
     # (medias/prompt/width/height …)은 CLI 호출에서 걸러지므로 키에도 없어야 비용이 같은 조합의
@@ -543,32 +624,41 @@ async def estimate_cost(
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
-    _load_cost_cache()
-    # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
-    # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
-    param_args = await _param_args(model, params)
-    key = _cost_key(model, param_args)
-    entry = _COST_CACHE.get(key)
-    if entry is not None and (time.time() - entry[1]) < _COST_TTL:
-        return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
-    args: list[str] = ["generate", "cost", model, "--prompt", _shield_json_prompt(prompt or "preview")]
-    args += param_args
-    data = await _run_json(*args, timeout=timeout)
-    if not isinstance(data, dict):
-        return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
-    credits = data.get("credits_exact")
-    if credits is None:
-        credits = data.get("credits", 0)
-    try:
-        credits_int = int(round(float(credits)))
-    except (TypeError, ValueError):
-        return {"credits": entry[0]} if entry else {"credits": 0}
-    if len(_COST_CACHE) >= _COST_CACHE_MAX:
-        _COST_CACHE.clear()  # 소프트 캡(드묾)
-    _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
-    payload = _serialize_cost_cache()  # dict 스냅샷은 메인에서(race 방지)
-    await asyncio.to_thread(_write_cost_cache, payload)  # 디스크 쓰기만 스레드로(루프 비블로킹)
-    return {"credits": credits_int}
+    async with _estimate_gate():
+        _load_cost_cache()
+        # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
+        # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
+        param_args = await _param_args(model, params)
+        key = _cost_key(model, param_args)
+        entry = _COST_CACHE.get(key)
+        if entry is not None and (time.time() - entry[1]) < _COST_TTL:
+            return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
+        args: list[str] = [
+            "generate",
+            "cost",
+            model,
+            "--prompt",
+            _shield_json_prompt(prompt or "preview"),
+        ]
+        args += param_args
+        data = await _run_json(*args, timeout=timeout)
+        if not isinstance(data, dict):
+            return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
+        credits = data.get("credits_exact")
+        if credits is None:
+            credits = data.get("credits", 0)
+        try:
+            credits_int = int(round(float(credits)))
+        except (TypeError, ValueError):
+            return {"credits": entry[0]} if entry else {"credits": 0}
+        if len(_COST_CACHE) >= _COST_CACHE_MAX:
+            _COST_CACHE.clear()  # 소프트 캡(드묾)
+        _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
+        # 두 견적이 병렬 완료돼도 오래된 스냅샷이 나중에 파일을 덮지 않도록 파일 저장은 직렬화한다.
+        async with _cost_write_lock():
+            payload = _serialize_cost_cache()
+            await asyncio.to_thread(_write_cost_cache, payload)
+        return {"credits": credits_int}
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:

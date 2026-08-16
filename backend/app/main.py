@@ -100,6 +100,7 @@ from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
 from .services.syncer import periodic_sync
+from .usecases.gen_requests import shutdown_request_estimates
 from .ws import manager
 
 _runtime_log = logging.getLogger("mvhub.runtime")
@@ -347,6 +348,7 @@ async def _application_lifespan(app: FastAPI):
             await runtime_report_task
         except asyncio.CancelledError:
             pass
+    await shutdown_request_estimates()
     await periodic_backup.stop()
     await periodic_sweeper.stop()
     await remote_realtime_bridge.stop()

@@ -132,6 +132,16 @@ def _schedule_request_estimate(gen_id: str, payload: dict) -> None:
     task.add_done_callback(_estimate_tasks.discard)
 
 
+async def shutdown_request_estimates() -> None:
+    """서버 종료 시 대기·실행 중 견적을 취소하고 CLI 자식 회수까지 기다린다."""
+    tasks = tuple(_estimate_tasks)
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @dataclass
 class GenRequestCommand:
     """라우터가 인증·권한·입력검증을 끝내고 만든 '검증된 제출 명령'. usecase 는 이걸 실행만 한다.

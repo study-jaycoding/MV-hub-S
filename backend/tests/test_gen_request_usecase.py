@@ -157,6 +157,33 @@ def test_pm_branch_records_pending_then_refreshes_estimate_when_manage_on():
         pm.assert_not_called()
 
 
+def test_shutdown_cancels_and_waits_for_background_estimates():
+    async def scenario():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def estimate_worker():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(estimate_worker())
+        gen_request_usecases._estimate_tasks.add(task)
+        task.add_done_callback(gen_request_usecases._estimate_tasks.discard)
+        await started.wait()
+        await gen_request_usecases.shutdown_request_estimates()
+        return task, cancelled.is_set()
+
+    task, cancelled = asyncio.run(scenario())
+
+    assert cancelled
+    assert task.cancelled()
+    assert not gen_request_usecases._estimate_tasks
+
+
 def test_pm_best_effort_marks_generation_dirty_only_after_metric_write():
     order = []
     with patch("app.usecases.gen_requests.MANAGE_ENABLED", True), patch(
