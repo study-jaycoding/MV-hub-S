@@ -102,7 +102,7 @@ HTTP 요청
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
 | `members.py` | 등급(전역 역할) 관리 |
-| `assets.py` / `assets_metadata.py` | Assets 분리창(폴더 마운트·트리·파일 서빙·업로드) / 파일메타·코멘트 |
+| `assets.py` / `assets_metadata.py` | Assets 분리창(폴더 마운트·트리·지원 미디어만 고정 MIME/nosniff로 파일 서빙·업로드) / 파일메타·코멘트 |
 | `sync.py` | 수동 동기화 트리거·sync-status |
 | `publish.py` | 공유 서버 번들 발행 수신(`/share/publish-bundle`)·공유 서버 로그인/토큰 |
 | `manage.py` | PM 관리창 API(작업·일정·대시보드·팀 텔레메트리 push·완료본 저장) |
@@ -171,7 +171,7 @@ HTTP 요청
 | `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
 | `backup_verify.py` / `db_scrub.py` / `test_snapshot.py` | 백업 복원 검증 / 개인정보 스크럽 / 테스트 스냅샷 |
 | `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로 |
-| `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별 / 경로 안전 / 원자 쓰기 / SSRF 가드 |
+| `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별·Assets 브라우저 응답 고정 MIME / 경로 안전 / 원자 쓰기 / SSRF 가드 |
 | `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
 

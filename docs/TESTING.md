@@ -228,6 +228,31 @@ npm.cmd test -- --run tests\syncStatus.test.ts
 재시도해 `pushed: 2`, 대기·실패 0건, 계정 보고 마지막 성공 시각과 앱 출처 콘솔 오류 0건을
 확인했다. 임시 DB와 테스트 계정만 사용하므로 실제 운영 공유 서버·실제 크레딧 왕복을 대신하지 않는다.
 
+## Assets 파일 응답 보안 회귀(RL-14)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_asset_file_responses.py `
+  tests\test_asset_services.py `
+  tests\test_asset_permissions.py -q
+```
+
+`2a4a46f4`의 직접 합격 기준은 백엔드 19개와 허용 확장자 21개 하위 검증이다.
+
+- 지원 이미지·영상·오디오 확장자마다 고정 `Content-Type`이 있어야 한다.
+- 허용 파일은 `inline`, `nosniff`, CSP sandbox, 동일 출처 정책을 반환해야 한다.
+- `.html`, `.svg`, `.js`, 이중 확장자는 파일이 존재해도 415여야 한다.
+- HTML 내용이 `.png` 이름을 가져도 `text/html`로 응답하거나 실행되어서는 안 된다.
+- 썸네일은 기존 캐시 정책과 nosniff를 함께 유지하고 ZIP은 attachment 다운로드를 유지해야 한다.
+
+같은 작업 트리에서 백엔드 전체 795개, 프론트 76개 파일·534개, 업데이트 관련 40개,
+프론트 아키텍처 검사와 프로덕션 빌드가 통과했다.
+
+실측은 임시 DB와 기존 공개 PNG·HTML 파일을 사용해 8214 포트에서 수행한다. 브라우저에서 PNG가
+정상 표시되고 실제 HTTP 응답이 `image/png`, `inline`, `nosniff`, CSP/CORP, `no-cache`인지 확인한다.
+같은 프로젝트의 HTML 직접 요청은 415여야 하며, 종료 뒤 8214 포트가 반환돼야 한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |
