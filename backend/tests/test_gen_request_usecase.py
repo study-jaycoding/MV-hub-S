@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models import RegenerateIn
+from app.usecases import gen_requests as gen_request_usecases
 from app.usecases.gen_requests import (
     GenRequestCommand,
     anchor_request,
@@ -116,7 +117,16 @@ def test_pm_branch_records_pending_then_refreshes_estimate_when_manage_on():
             kind="create", email="a@b.com", creator_uid="u", worker_id="w",
             source_gen_id=None, data={},
         )
-        asyncio.run(submit_gen_request(cmd))
+
+        async def submit_and_wait_for_estimate():
+            before = set(gen_request_usecases._estimate_tasks)
+            result = await submit_gen_request(cmd)
+            scheduled = set(gen_request_usecases._estimate_tasks) - before
+            if scheduled:
+                await asyncio.gather(*scheduled)
+            return result
+
+        asyncio.run(submit_and_wait_for_estimate())
 
         cli.estimate_cost.assert_awaited_once()
         assert pm.call_count == 2
