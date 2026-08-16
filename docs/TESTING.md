@@ -174,6 +174,29 @@ py -3 -m pytest tests\test_share_state_consistency.py -q
 서버의 서로 다른 두 계정 왕복을 대신하지 않는다. 세부 계약은
 [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
 
+## 텔레메트리 마지막 성공 관측 회귀(RL-12)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_sync_status.py `
+  tests\test_manage_telemetry.py `
+  tests\test_telemetry_delivery.py `
+  tests\test_operational_health.py -q
+
+cd ..\frontend
+npm.cmd test -- --run tests\syncStatus.test.ts
+```
+
+`46c6198b`의 합격 기준은 백엔드 38개와 프론트 3개다. 실제 CAS 성공만 마지막 성공 시각을
+갱신하고, 같은 생성물의 재dirty·늦은 ACK·전송 없는 큐 정리는 거짓 성공을 만들지 않아야 한다.
+프레시 DB의 `/api/sync-status`는 outbox나 상태 테이블을 만들지 않아야 하며, 기존 DB의
+`pushed_at`은 최초 마이그레이션에서 UTC ISO 시각으로 보존돼야 한다.
+
+브라우저에서는 로컬 계정 메뉴를 열어 `마지막 성공 …`과 `대기 N건/대기 없음`이 한 줄에 보이는지,
+화면 잘림과 앱 출처 콘솔 오류가 없는지 확인한다. 공유 서버 화면은 작업자 로컬 큐가 아니므로 이
+상태를 폴링하거나 표시하지 않는다. 이 내부 검증은 실제 공유 서버 장애·복구 왕복을 대신하지 않는다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

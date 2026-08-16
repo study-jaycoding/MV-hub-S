@@ -325,6 +325,12 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 전송 스냅샷의 revision과 현재 행이 같을 때만 반영한다. 자세한 상태 전이는
 [TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)를 따른다.
 
+마지막 실제 반영 성공 시각은 outbox 행의 `pushed_at`과 분리한 단일
+`telemetry_delivery_state` 행에 UTC로 보존한다. 같은 생성물이 다시 dirty 되어도 과거 성공 기록은
+유지된다. `/api/sync-status`는 스키마를 만들지 않고 대기·실패·가장 오래된 변경·마지막 성공을 읽으며,
+로컬 계정 메뉴만 이를 30초 주기로 표시한다. 전송 대상이 아닌 행 정리와 늦은 revision ACK는 성공
+시각을 갱신하지 않는다.
+
 `account_status`·`account_transactions` 원격 보고는 생성 outbox와 다른 경로다. 현재 동기 프록시와
 독립 재시도 큐가 남아 있으며 위험 계획의 `RL-13`으로 관리한다.
 

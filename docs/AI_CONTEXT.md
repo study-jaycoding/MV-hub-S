@@ -198,7 +198,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 - ✅ **씬 서버 백업**: 씬 원본은 localStorage, 계정별 로컬 SQLite 로 자동 미러(`/api/scenes/backup`).
 - ✅ **ComfyUI 연동**: 캔버스 comfy 카드 — 워크플로 파싱·파라미터 노출·미디어 자동주입·비동기 실행(`routers/comfy.py`).
 - ✅ **DaVinci Resolve 연동**: 렌더폴더 전송 + Media Pool 가져오기 + 수동 Importer(`routers/resolve_integration.py`).
-- ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db).
+- ✅ **PM 관리 대시보드**(분리창): 작업 칸반·일정·완료본 저장·팀 텔레메트리(`routers/manage.py`, manage_hub.db). 로컬 계정 메뉴는 outbox의 대기·실패와 마지막 실제 반영 성공 시각을 표시한다.
 - ✅ **릴리스 자동 업데이트**: 설정 → 프로그램 업데이트(`routers/release_update.py`, 작업자 전용).
 - ✅ **로컬 DB 내보내기/가져오기**(교차 PC): `routers/db_transfer.py`(유지보수 게이트로 안전 교체).
 - 🔸 명시적 리비전 diff·콘텐츠 게시 승인 게이트·외부 DAM 커넥터는 없음.
