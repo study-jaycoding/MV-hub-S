@@ -185,9 +185,9 @@ HTTP 요청
 ```
 App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 신호
   │
-  ├─ api.ts        타입세이프 클라이언트(create/regenerate→ /api/gen-requests, Bearer, 401→로그인)
+  ├─ api.ts        타입세이프 클라이언트(create/regenerate→ /api/gen-requests, Bearer)
   ├─ types.ts      응답 타입
-  ├─ lib/          순수 유틸·훅(아래 §5.1)
+  ├─ lib/          순수 유틸·훅(공통 HTTP 401 의미 판정 포함, 아래 §5.1)
   └─ components/    화면 컴포넌트(아래 §5.2)
 ```
 
@@ -333,6 +333,10 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 ## 8. 횡단 관심사
 
 - **두 종류 로그인 구분**: ① 허브 세션(브라우저 계정, 신원·권한) ② Higgsfield CLI 인증(각 PC, 생성 주체). 완전 별개.
+- **401 의미 보존**: 임의 업무 API의 401은 같은 허브 세션 토큰으로 `/api/auth/me`를 확인한다.
+  이 확인도 401일 때만 현재 토큰을 지우고, 요청별 거부·네트워크 장애는 로그인 상태를 보존한다.
+  서버는 `X-MVHub-Auth-State`로 판정을 브라우저에 전달한다. 세부 계약은
+  [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md)를 따른다.
 - **멀티계정 신원**: `account`(로그인) 과 `creator`(작성자)는 별개 축, `account.creator_uid` 로 연결. 첫 가입자=부트스트랩 관리자, 이후 pending→승인.
 - **RBAC**: 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
 - **개인화 vs 공유**: 컬러·태그·소스명·파일메타는 계정별 개인 소유(owner_uid). 코멘트 스레드·공유여부·프롬프트·소스는 공유.

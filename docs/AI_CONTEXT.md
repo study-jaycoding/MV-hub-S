@@ -69,6 +69,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 
 - 둘은 완전 별개. "허브에 oz1로 로그인"해도, 그 PC의 힉스필드 CLI가 jay면 동기화는 jay 것이 된다 — 그래서 push 모델이 필요(§5).
 - 힉스필드 CLI는 머신당 1계정(HOME env 리다이렉트로 분리 가능함은 실증). `--token`/env 토큰 주입은 미지원, 브라우저 디바이스 로그인.
+- 허브 업무 API의 임의 `401`은 세션 만료로 단정하지 않는다. 같은 토큰의 `/api/auth/me`가
+  `401`일 때만 현재 토큰을 지우고, 요청별 거부·확인 불가는 `X-MVHub-Auth-State: preserved`로
+  브라우저 로그인 상태를 유지한다. 상세 규칙은 [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md)를 따른다.
 
 ---
 
@@ -217,7 +220,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 ## 11. 프론트엔드 모듈 지도 (`frontend/src/`)
 
 - `App.tsx` — 최상위 상태·reload/loadMore(무한 스크롤)·벌크·필터 합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 보드 신호·onCreated 리니지 연결.
-- `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer, 401→로그인), `types.ts`(응답 타입), `lib/`(`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
+- `api.ts`(타입세이프 클라이언트: `create`/`regenerate` 는 이제 **`/api/gen-requests`** 호출, `credits`, 인증 Bearer), `types.ts`(응답 타입), `lib/`(`http.ts`(401 세션 만료 의미 판정)·`librarySync.ts`(자기 변경 요청↔library/assets/manage 갱신 상관관계)·`useManageRealtime.ts`(독립 PM 창 직접 WS)·`assetBroadcast.ts`(Assets 창 전달)·`i18n.ts`·`theme.ts`(강조색·모션·언어)·`prompt.tsx`·`promptEditor.ts`·`useModels.ts`).
 - **components/**: `ThumbnailGrid`·`GenerationCard`(카드·오버레이·대기/생성 중 로고·상태 툴팁·썸네일·드래그 재사용), `FilterSidebar`·`LibraryToolbar`·`SearchBox`, `SpotlightPrompt`(생성 입력·@/# 피커), **`HistoryBoard`(캔버스 탭 계보 트리)·`HistoryPanel`(가계 패널)·`HistoryMiniTree`**, **`SceneBoard`/`SceneBar`(씬 캔버스)**·`FloatingPrompt`, `AssetsView/AssetsWindow`(분리창), `GenCommentPanel`, `AdminWindow`(승인·등급·프로젝트), `AccountMenu`(아바타·워크스페이스 전환·크레딧 게이지)·`ManageAccount`·**`SettingsPanel`(12개 섹션 — `settings/SettingsSections.tsx`: 강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·Resolve·프로그램 업데이트·재점검·단축키·ComfyUI)**, `LoginScreen`, `TopBar`(Assets·PM 보드 버튼 포함), `ManageWindow`+`manage/`(PM 분리창), `InfoPopup`·`MediaPreview`·`CompareModal`·`ShortcutsWindow`·`ProjectAssignMenu`.
 
 ---
