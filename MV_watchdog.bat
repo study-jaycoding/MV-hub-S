@@ -7,8 +7,8 @@ REM  (alive but not responding), kills ONLY the serve.py process so the
 REM  server supervisor restarts it. Crash restarts are already handled by
 REM  that bounded supervisor.
 REM
-REM  Safe by design: never intervenes before the first healthy response
-REM  (boot/database migration grace), refuses to kill when the target is ambiguous,
+REM  Safe by design: does not intervene during the boot/database migration grace,
+REM  treats busy/maintenance as alert-only, refuses to kill when the target is ambiguous,
 REM  and stops intervening on a restart storm (3 kills / 60 min -> ALERT).
 REM
 REM  Run on the SERVER PC only. Logs: logs\watchdog.log

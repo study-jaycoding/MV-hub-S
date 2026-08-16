@@ -46,7 +46,7 @@ from .config import (
     MEDIA_DIR,
     ensure_dirs,
 )
-from .db import init_db
+from .db import init_db, maintenance_active
 from .deps import session_token
 from .mutation_notify import (
     CLIENT_ID_HEADER,
@@ -651,6 +651,14 @@ def health():
 @app.get("/api/ready")
 def ready():
     """로드밸런서·운영 점검용 준비 상태. 핵심 DB 테이블을 읽지 못하면 503."""
+    if maintenance_active():
+        # 의도적인 DB 교체는 서버 사망이 아니다. DB 게이트가 풀릴 때까지 여기서 기다리면
+        # 워치독에는 HTTP 무응답으로 보여 정상 유지보수 중인 서버를 종료할 수 있다.
+        return JSONResponse(
+            {"status": "maintenance", "retry_after_seconds": 5},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
     result = database_readiness()
     if result["ready"]:
         return {"status": "ready", "checks": result["checks"]}

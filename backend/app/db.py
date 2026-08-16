@@ -184,6 +184,16 @@ class DatabaseMaintenanceTimeout(RuntimeError):
     """진행 중 DB 요청이 유지보수 대기 시간 안에 끝나지 않았을 때의 안전 중단."""
 
 
+def maintenance_active() -> bool:
+    """DB 파일 교체 게이트가 올라가 있는지 잠금 안에서 즉시 확인한다.
+
+    `/api/ready` 같은 생존 점검은 유지보수 종료를 기다리면 워치독에 무응답으로 보일 수 있다.
+    이 함수는 DB 커넥션을 열지 않고 현재 상태만 반환해 유지보수를 명시적인 503으로 알리게 한다.
+    """
+    with _pool_condition:
+        return _maintenance_active
+
+
 def _thread_pooled_holder() -> _PooledConnectionHolder:
     """현재 워커의 풀 상태를 만들고 약한 전역 레지스트리에 등록한다."""
     holder = getattr(_tls, "holder", None)

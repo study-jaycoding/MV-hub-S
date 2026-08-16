@@ -73,6 +73,29 @@ def test_database_readiness_checks_core_tables(monkeypatch):
             db.flush_pool()
 
 
+def test_ready_endpoint_reports_maintenance_without_waiting_for_database(monkeypatch):
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main, "maintenance_active", lambda: True)
+    monkeypatch.setattr(
+        app_main,
+        "database_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("maintenance must not probe the DB")),
+    )
+
+    response = app_main.ready()
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.body == b'{"status":"maintenance","retry_after_seconds":5}'
+
+
+def test_database_maintenance_flag_is_scoped_to_the_gate():
+    assert db.maintenance_active() is False
+    with db.maintenance_gate():
+        assert db.maintenance_active() is True
+    assert db.maintenance_active() is False
+
+
 def test_telemetry_snapshot_exposes_backlog_without_error_text(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         old = os.environ.get("CONTENT_HUB_DB")
