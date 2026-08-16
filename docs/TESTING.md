@@ -82,6 +82,24 @@ python tools\verify_generation_submission_recovery.py
 
 출력의 `database`는 `temporary`, `paid_cli_called`는 `false`, 마지막 `ok`는 `true`여야 한다.
 
+## Git 업데이트 bootstrap 회귀(RL-25)
+
+서버 Git 클론의 `update_git.bat`은 저장소 안 작업 스크립트가 업데이트 도중 교체돼도 현재 실행이
+깨지지 않도록 임시 복사본을 실행한다. 해시 비교는 PowerShell 부가 모듈 자동 로딩에 의존하지 않고
+.NET SHA-256을 사용한다.
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_sparse_checkout_scripts.py `
+  tests\test_release_update.py `
+  tests\test_verify_requirements.py -q
+```
+
+합격 조건은 40개 통과다. 여기에는 빈 `TEMP`, 공백이 있는 설치 경로, 실행 중 작업자 교체,
+교체된 새 작업자로 정확히 한 번 재시도, 원래 실패 코드 전달, 임시 작업자 파일 회수가 포함된다.
+테스트는 별도 임시 저장소와 가짜 작업자를 사용하므로 현재 클론을 pull하거나 서버를 재시작하지 않는다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |
