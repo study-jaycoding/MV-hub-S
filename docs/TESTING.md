@@ -285,6 +285,38 @@ Assets 합계·Comfy 개별·DB·`Content-Length` 없는 청크 초과 요청은
 `/api/ready`가 200이고 저장된 부분파일과 앱 전용 DB 임시파일이 없으며 종료 뒤 8215 포트가
 반환돼야 한다. 현재 HTTP ZIP 업로드 API는 없고, 테스트 스냅샷 ZIP 추출 제한은 별도 테스트한다.
 
+## Assets watcher 수명주기 회귀(RL-16)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_asset_watcher.py `
+  tests\test_asset_tree_cache.py `
+  tests\test_asset_services.py `
+  tests\test_asset_permissions.py `
+  tests\test_project_name_integrity.py `
+  tests\test_project_folder_cache.py `
+  tests\test_project_budget_period.py -q
+```
+
+`bb8b5843`의 집중 합격 기준은 위 명령의 백엔드 48개다.
+
+- 같은 실제 폴더를 여러 등록자가 공유해도 watchdog 핸들은 하나여야 한다.
+- 한 등록자만 해제하면 다른 등록자는 계속 감시되고 마지막 등록자 해제 때만 unschedule되어야 한다.
+- 같은 등록 ID의 경로가 바뀌면 이전 핸들을 회수하고 새 경로만 알림을 보내야 한다.
+- 수동 마운트 교체·삭제, 성공한 자동 프로젝트 이름/보관/렌더 루트 변경·삭제가 등록을 해제해야 한다.
+- 실패한 프로젝트 수정은 기존 감시를 끊지 않아야 한다.
+- 종료는 timer·pending·등록표를 비우고 Observer 스레드를 끝내며 늦은 이벤트를 무시해야 한다.
+
+같은 작업 트리에서 백엔드 전체 826개·21 subtests, 프론트 76개 파일·534개, 업데이트 관련 40개,
+프론트 아키텍처 검사와 프로덕션 빌드가 통과했다.
+
+Windows 실측은 실제 watchdog Observer로 같은 등록의 경로 이동 100회와 같은 폴더 공유 등록 50개를
+반복한다. 각각 실제 핸들·emitter가 하나만 유지되고 마지막 해제 뒤 0개, `stop()` 뒤 Observer가
+종료되어야 한다. HTTP/WS 실측은 임시 Assets 루트와 8216 포트에서 수동 마운트를 이전 경로→새 경로로
+교체한다. 이전 경로 변경은 무알림, 새 경로 변경은 `assets_changed`, 마운트 삭제 뒤 새 경로 변경은
+무알림이어야 하며 종료 뒤 포트와 프로세스가 반환되어야 한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

@@ -185,7 +185,7 @@ HTTP 요청
 | `account_report_delivery.py` | 계정 상태·거래 보고 배치 구성·명시적 ACK 검증·영속 큐 성공/실패 정산 |
 | `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
 | `backup_verify.py` / `db_scrub.py` / `test_snapshot.py` | 백업 복원 검증 / 개인정보 스크럽 / 테스트 스냅샷 |
-| `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로 |
+| `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로. watcher는 등록 ID와 실제 폴더를 분리하고 같은 폴더를 참조 수로 공유하며 이동·삭제·종료 때 마지막 핸들을 해제 |
 | `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별·Assets 브라우저 응답 고정 MIME / 경로 안전 / 원자 쓰기 / SSRF 가드 |
 | `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
@@ -384,6 +384,10 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
   [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
 - **표시이름 단일 해석**: `resolve_display_names`(creator.name → account.name → email) 읽기 시점에만.
 - **실시간**: 성공한 쓰기는 `library`→`synced`, `assets`→`assets_changed`, `manage`→`manage_changed`로 분리한다. 요청 id·영역 응답 헤더로 자기 알림 재조회를 생략하며 독립 Assets/PM 창은 자체 WS를 가진다.
+- **Assets 감시 수명주기**: 수동 마운트는 owner+프로젝트 이름, 자동 프로젝트는 project ID, 합본은
+  실제 하위 폴더별 등록 ID로 watcher 소유권을 추적한다. 같은 실제 폴더의 별칭·계정은 watchdog 핸들
+  하나를 공유하며 마지막 등록 해제 때만 unschedule한다. 성공한 경로·이름·보관·루트 변경과 삭제,
+  앱 종료에서 명시 해제하고, 해제 뒤 늦은 이벤트는 방송하지 않는다.
 - **검색**: SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.
 - **성능**: 키셋 페이지네이션·content-visibility 가상스크롤·썸네일 사전생성·미디어 2단계 샤딩.
 - **휴지통**: 삭제 즉시 별도 DB 로 원자 이동(메인 항상 가벼움).
