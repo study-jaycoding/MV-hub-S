@@ -48,7 +48,15 @@ from ..services.media_types import (
     asset_content_type,
 )
 from ..services.request_guards import require_loopback_request
-from ..services import asset_io, asset_mounts, asset_paths, asset_tree, thumbs, upload_limits
+from ..services import (
+    asset_io,
+    asset_mounts,
+    asset_paths,
+    asset_tree,
+    asset_watcher,
+    thumbs,
+    upload_limits,
+)
 from ..services.path_safety import safe_join
 
 
@@ -255,40 +263,45 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
         #  (_resolve_mount_path)가 담당하고, 여기선 문자열 정규화만 한다.
         path = os.path.normpath(str(Path(root).expanduser()))
         used.add(name)
-        out.append({"name": name, "path": path, "owner": "project"})
+        out.append({"name": name, "path": path, "owner": "project", "project_id": pid})
     return out
 
 
-def _auto_mount_dir(name: str, request: Request) -> Optional[Path]:
+def _auto_mount_dir(name: str, request: Request) -> Optional[tuple[Path, str]]:
     for m in _auto_project_mounts(request):
         if m["name"] == name:
-            return _resolve_mount_path(m["path"])
+            directory = _resolve_mount_path(m["path"])
+            if directory is not None:
+                return directory, m["project_id"]
     return None
 
 
-def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bool]]:
-    """프로젝트 이름 → 실제 폴더 + 자동 PM 경로 여부.
+def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bool, str]]:
+    """프로젝트 이름 → 실제 폴더 + 자동 PM 경로 여부 + watcher 등록 ID.
 
     두 번째 값이 True 면 PM 프로젝트 설정에서 온 경로다. 이 경우 Assets 트리에서
     Render 폴더는 숨기고, 나머지 제작 폴더만 보여준다.
     """
     # 합본(imp/cap)은 ASSETS_ROOT 기준 — 파일/썸네일 경로가 captures/xxx, imports/xxx 로 해석된다.
     if project == _COMBINED_INTERNAL:
-        return ASSETS_ROOT, False
+        return ASSETS_ROOT, False, f"combined-root:{project}"
     owner = actor_id(request)
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
-        return md, False
+        return md, False, asset_watcher.manual_registration_id(owner, project)
     auto = _auto_mount_dir(project, request)
     if auto:
-        return auto, True
+        directory, project_id = auto
+        return directory, True, asset_watcher.auto_registration_id(project_id)
     cand = (ASSETS_ROOT / project).resolve()
     try:
         cand.relative_to(ASSETS_ROOT)
     except ValueError:
         return None
-    return (cand, False) if cand.is_dir() else None
+    if not cand.is_dir():
+        return None
+    return cand, False, asset_watcher.manual_registration_id(owner, project)
 
 
 def _safe_project_dir(project: str, request: Request) -> Optional[Path]:
@@ -453,7 +466,12 @@ def add_mount(body: MountIn, request: Request):
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
+    previous = next((m for m in _owner_mounts(owner) if m["name"] == name), None)
     asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
+    if previous and os.path.normcase(
+        os.path.normpath(previous["path"])
+    ) != os.path.normcase(str(p)):
+        asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
     with _MOUNT_PATH_LOCK:  # 방금 검증한 경로가 실패로 캐시돼 있으면(복구 직후 재등록) 즉시 무효화
         _MOUNT_PATH_CACHE.clear()
     return _mounts_payload(request)
@@ -464,6 +482,7 @@ def del_mount(name: str, request: Request):
     """등록된 외부 폴더 해제 — **내 것만** 지운다(남의 등록엔 영향 없음). 원본 폴더는 안 건드림."""
     owner = actor_id(request)
     asset_mounts.remove(_mounts_file(), name=name, owner=owner)
+    asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
     return _mounts_payload(request)
 
 
@@ -479,8 +498,6 @@ def project_tree(
     if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
         # 합본도 실제 하위 폴더를 감시해야 외부 편집기의 같은 이름 덮어쓰기를 즉시 감지한다.
         try:
-            from ..services import asset_watcher
-
             asset_watcher.watch_combined(
                 ASSETS_ROOT,
                 project,
@@ -500,13 +517,16 @@ def project_tree(
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    proj_dir, auto_project = info
+    proj_dir, auto_project, registration_id = info
     # 지금 보고 있는 이 프로젝트 폴더를 실시간 감시 등록(이미 감시 중이면 무시).
     # 파일이 바뀌면 watchdog 가 WS 로 알려 프론트가 새로고침 없이 갱신한다(Phase 2). 감시 불가 환경은 무해.
     try:
-        from ..services import asset_watcher
-
-        asset_watcher.watch(proj_dir, project, hide_render=auto_project)
+        asset_watcher.watch(
+            proj_dir,
+            project,
+            hide_render=auto_project,
+            registration_id=registration_id,
+        )
     except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
         pass
     tree_read = asset_tree.read_project_tree(

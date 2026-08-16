@@ -31,8 +31,9 @@ from ..models import (
     ProjectUpdate,
     ReorderProjectsIn,
 )
-from ..services.telemetry_drain import drain_isolated_telemetry
+from ..services import asset_watcher
 from ..services.event_journal import journal_audit_event
+from ..services.telemetry_drain import drain_isolated_telemetry
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -324,7 +325,10 @@ def reorder_projects(body: ReorderProjectsIn, request: Request):
 @router.patch("/{pid}", response_model=ProjectOut)
 def update_project(pid: str, body: ProjectUpdate, request: Request):
     if _proxy.proxying():
-        return _proxy.proxy_json("PATCH", f"/api/projects/{pid}", body=body.model_dump())
+        updated = _proxy.proxy_json("PATCH", f"/api/projects/{pid}", body=body.model_dump())
+        if body.name is not None or body.archived is not None or body.render_root_path is not None:
+            asset_watcher.unwatch(asset_watcher.auto_registration_id(pid))
+        return updated
     require_global_cap(request, "create_project")  # 이름변경·보관도 생성/삭제와 같은 역량으로 게이트
     if not repo.get_project(pid):
         raise HTTPException(status_code=404, detail="없는 프로젝트")
@@ -341,6 +345,10 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     updated = repo.get_project(pid)
+    if body.name is not None or body.archived is not None or body.render_root_path is not None:
+        # 성공한 이름·보관·루트 변경 뒤에만 끊는다. 실패한 PATCH가 정상 감시를 잃지 않게 하고,
+        # 다음 Assets 조회가 새 경로와 라벨로 다시 등록하게 한다.
+        asset_watcher.unwatch(asset_watcher.auto_registration_id(pid))
     changed_fields = list(body.model_dump(exclude_none=True).keys())
     journal_audit_event(
         "project.updated",
@@ -361,11 +369,14 @@ def update_project(pid: str, body: ProjectUpdate, request: Request):
 def delete_project(pid: str, request: Request):
     """프로젝트 삭제 — 귀속 결과물은 미분류로 되돌리고 프로젝트만 제거."""
     if _proxy.proxying():
-        return _proxy.proxy_json("DELETE", f"/api/projects/{pid}")
+        result = _proxy.proxy_json("DELETE", f"/api/projects/{pid}")
+        asset_watcher.unwatch(asset_watcher.auto_registration_id(pid))
+        return result
     require_global_cap(request, "create_project")  # 생성·삭제는 같은 역량(product_director)
     removed = repo.delete_project(pid)
     if not removed:
         raise HTTPException(status_code=404, detail="없는 프로젝트")
+    asset_watcher.unwatch(asset_watcher.auto_registration_id(pid))
     journal_audit_event(
         "project.deleted",
         actor_uid=actor_id(request),
