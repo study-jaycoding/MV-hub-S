@@ -53,6 +53,7 @@ git sparse-checkout set backend frontend tools
 | 파일 | 내용 |
 |------|------|
 | [docs/README.md](docs/README.md) | 문서 색인·문서 우선순위·구현 요약 |
+| [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) | 현재 완료 항목·남은 위험·검증 상태 한눈에 보기 |
 | [docs/DESIGN.md](docs/DESIGN.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 설계·구조 |
 | [docs/CLAUDE.md](docs/CLAUDE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | AI 보조 개발 규칙·맥락 |
 | [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 현재 위험 상태와 다음 작업의 단일 목록 |
