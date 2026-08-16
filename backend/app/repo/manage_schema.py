@@ -100,6 +100,10 @@ _SCHEMA = (
         fail_streak      INTEGER NOT NULL DEFAULT 0,  -- 연속 실패 수(성공·재dirty 시 0)
         next_retry_at    TEXT                          -- 이 시각 전에는 드레인이 건너뜀(백오프)
     )""",
+    """CREATE TABLE IF NOT EXISTS telemetry_delivery_state (
+        id              INTEGER PRIMARY KEY CHECK(id = 1),
+        last_success_at TEXT
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_telemetry_outbox_pushed ON telemetry_outbox(pushed_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_owner ON credit_txn(owner_uid, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_credit_txn_unmatched ON credit_txn(owner_uid) "
@@ -184,6 +188,15 @@ def ensure_manage_schema(conn) -> None:
         conn.execute(
             "ALTER TABLE telemetry_outbox ADD COLUMN dirty_rev INTEGER NOT NULL DEFAULT 1"
         )
+
+    # 과거 설치본은 outbox의 pushed_at만 가지고 있다. 최초 마이그레이션 때 그중 가장 최근
+    # 성공 시각을 단일 상태 행으로 옮겨, 같은 항목이 다시 dirty 되어도 성공 이력이 사라지지
+    # 않게 한다. 이미 상태 행이 있으면 절대 덮어쓰지 않는다.
+    conn.execute(
+        "INSERT OR IGNORE INTO telemetry_delivery_state(id, last_success_at) "
+        "SELECT 1, strftime('%Y-%m-%dT%H:%M:%fZ', MAX(pushed_at)) "
+        "FROM telemetry_outbox"
+    )
 
     export_columns = {row[1] for row in conn.execute("PRAGMA table_info(final_export)")}
     if "project_id" not in export_columns:

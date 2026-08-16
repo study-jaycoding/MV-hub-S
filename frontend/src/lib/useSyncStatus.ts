@@ -9,12 +9,30 @@ export interface SyncStatus {
   failed: number;
   last_error: string | null;
   oldest_dirty: string | null;
+  last_success_at: string | null;
 }
 
-export function useSyncStatus(): SyncStatus | null {
+export function formatTelemetryLastSuccess(value: string | null): string {
+  if (!value) return "마지막 성공 기록 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "마지막 성공 시각 확인 불가";
+  const formatted = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `마지막 성공 ${formatted}`;
+}
+
+export function useSyncStatus(enabled = true): SyncStatus | null {
   const [status, setStatus] = useState<SyncStatus | null>(null);
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     const check = () => {
       if (document.visibilityState === "hidden") return; // 숨은 탭에선 폴링 쉼(복귀 시 아래 리스너가 1회 갱신)
@@ -36,7 +54,7 @@ export function useSyncStatus(): SyncStatus | null {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [enabled]);
 
-  return status;
+  return enabled ? status : null;
 }

@@ -104,7 +104,9 @@ def drain_remote_telemetry(
 ) -> dict[str, Any]:
     """기존 운영 계약대로 현재 로컬 사용자의 팩트를 공유 서버로 전송한다."""
     batch = _prepare_batch(filter_uid=my_uid, include_all_creators=False)
-    repo_manage.mark_telemetry_pushed(batch["non_sent"])
+    # 현재 계정 소유가 아니거나 로컬 원본이 없어 큐에서만 치우는 행이다. 서버 반영 성공으로
+    # 기록하면 마지막 성공 시각이 거짓으로 갱신되므로 관측값에서는 제외한다.
+    repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
     facts = batch["facts"]
     if not facts:
         return {"target": "remote", "upserted": 0, "failed": 0}
@@ -144,7 +146,7 @@ def drain_isolated_telemetry() -> dict[str, Any]:
 
     with _LOCAL_DRAIN_LOCK:
         batch = _prepare_batch(filter_uid=None, include_all_creators=True)
-        repo_manage.mark_telemetry_pushed(batch["non_sent"])
+        repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
         facts: list[dict[str, Any]] = batch["facts"]
         if not facts:
             return {"target": "local", "upserted": 0, "failed": 0}

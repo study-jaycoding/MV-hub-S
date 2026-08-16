@@ -155,7 +155,13 @@ def ensure_ingested_tracked(job_ids: list[str], my_uid: Optional[str]) -> int:
 
 def telemetry_outbox_status() -> dict[str, Any]:
     """스키마를 만들지 않는 읽기 전용 outbox 상태를 반환한다."""
-    empty = {"pending": 0, "failed": 0, "last_error": None, "oldest_dirty": None}
+    empty = {
+        "pending": 0,
+        "failed": 0,
+        "last_error": None,
+        "oldest_dirty": None,
+        "last_success_at": None,
+    }
     with get_connection() as conn:
         if not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetry_outbox'"
@@ -174,11 +180,28 @@ def telemetry_outbox_status() -> dict[str, Any]:
             "WHERE pushed_at IS NULL AND last_error IS NOT NULL "
             "ORDER BY dirty_at DESC LIMIT 1"
         ).fetchone()
+        state_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='telemetry_delivery_state'"
+        ).fetchone()
+        success_row = None
+        if state_exists:
+            success_row = conn.execute(
+                "SELECT last_success_at FROM telemetry_delivery_state WHERE id=1"
+            ).fetchone()
+        # sync-status는 읽기 전용이라 여기서 새 상태 테이블을 만들지 않는다. RL-12 이전 DB를
+        # 읽는 경우에만 기존 pushed_at을 임시 호환값으로 사용한다.
+        if success_row is None:
+            success_row = conn.execute(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', MAX(pushed_at)) AS last_success_at "
+                "FROM telemetry_outbox"
+            ).fetchone()
     return {
         "pending": (row["pending"] if row else 0) or 0,
         "failed": (row["failed"] if row else 0) or 0,
         "last_error": error_row["last_error"] if error_row else None,
         "oldest_dirty": row["oldest_dirty"] if row else None,
+        "last_success_at": success_row["last_success_at"] if success_row else None,
     }
 
 
@@ -276,8 +299,15 @@ def build_telemetry_facts(
     return facts
 
 
-def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
-    """전송 성공 시 dirty_rev CAS로 그 사이 생긴 새 변경을 보존하며 완료 처리한다."""
+def mark_telemetry_pushed(
+    items: list[dict[str, Any]], *, record_success: bool = True
+) -> int:
+    """dirty_rev CAS로 전송 완료를 정산하고 실제 성공 시각을 보존한다.
+
+    ``record_success=False``는 전송 대상이 아닌 로컬 잔여 행을 큐에서 정리할 때만 쓴다.
+    오래된 ACK처럼 CAS에 실패한 항목도 실제 반영 성공으로 세지 않는다.
+    """
+    updated_count = 0
     with get_connection() as conn:
         _ensure_schema(conn)
         for item in items or []:
@@ -285,12 +315,21 @@ def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
             dirty_rev = item.get("dirty_rev")
             if not gen_id or dirty_rev is None:
                 continue
-            conn.execute(
-                "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
+            cur = conn.execute(
+                "UPDATE telemetry_outbox "
+                "SET pushed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
                 "attempts=attempts+1, last_error=NULL, fail_streak=0, next_retry_at=NULL "
                 "WHERE local_gen_id=? AND dirty_rev=? AND pushed_at IS NULL",
                 (gen_id, dirty_rev),
             )
+            updated_count += max(0, int(cur.rowcount or 0))
+        if record_success and updated_count > 0:
+            conn.execute(
+                "INSERT INTO telemetry_delivery_state(id, last_success_at) "
+                "VALUES(1, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "ON CONFLICT(id) DO UPDATE SET last_success_at=excluded.last_success_at"
+            )
+    return updated_count
 
 
 def mark_telemetry_failed(items: list[dict[str, Any] | str], error: str) -> None:

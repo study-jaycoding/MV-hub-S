@@ -90,11 +90,12 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertNotIn("prompt", facts[0])
 
     def test_legacy_outbox_migrates_revision_without_losing_pending_row(self):
-        """기존 설치 DB에도 revision 칼럼을 추가하고 대기 행을 그대로 보존한다."""
+        """기존 설치 DB의 revision·마지막 성공 기록을 보존한다."""
         from app.repo import manage_schema
 
         with db.get_connection() as conn:
             conn.execute("DROP TABLE telemetry_outbox")
+            conn.execute("DROP TABLE telemetry_delivery_state")
             conn.execute(
                 "CREATE TABLE telemetry_outbox ("
                 "local_gen_id TEXT PRIMARY KEY, dirty_at TEXT NOT NULL, pushed_at TEXT, "
@@ -102,6 +103,10 @@ class ManageTelemetryTests(unittest.TestCase):
             )
             conn.execute(
                 "INSERT INTO telemetry_outbox(local_gen_id,dirty_at) VALUES('g1','2026-08-01')"
+            )
+            conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id,dirty_at,pushed_at) "
+                "VALUES('done1','2026-08-01','2026-08-02 03:04:05')"
             )
             manage_schema._SCHEMA_ENSURED.clear()
             manage._ensure_schema(conn)
@@ -113,6 +118,10 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertIn("dirty_rev", columns)
         self.assertEqual(row["dirty_rev"], 1)
         self.assertIsNone(row["pushed_at"])
+        self.assertEqual(
+            manage.telemetry_outbox_status()["last_success_at"],
+            "2026-08-02T03:04:05.000Z",
+        )
         manage.mark_telemetry_dirty(["g1"])
         self.assertEqual(manage.list_dirty_telemetry()[0]["dirty_rev"], 2)
 
@@ -224,12 +233,36 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertEqual(current_item["dirty_at"], stale_item["dirty_at"])
         self.assertEqual(current_item["dirty_rev"], stale_item["dirty_rev"] + 1)
 
-        manage.mark_telemetry_pushed([stale_item])
+        self.assertEqual(manage.mark_telemetry_pushed([stale_item]), 0)
         self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
+        self.assertIsNone(manage.telemetry_outbox_status()["last_success_at"])
 
         current_item = manage.list_dirty_telemetry()[0]
-        manage.mark_telemetry_pushed([current_item])
+        self.assertEqual(manage.mark_telemetry_pushed([current_item]), 1)
         self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+        self.assertRegex(
+            manage.telemetry_outbox_status()["last_success_at"],
+            r"^\d{4}-\d{2}-\d{2}T.*Z$",
+        )
+
+    def test_success_timestamp_survives_same_generation_becoming_dirty_again(self):
+        manage.mark_telemetry_dirty(["g1"])
+        self.assertEqual(manage.mark_telemetry_pushed(manage.list_dirty_telemetry()), 1)
+        first_success = manage.telemetry_outbox_status()["last_success_at"]
+        self.assertIsNotNone(first_success)
+
+        manage.mark_telemetry_dirty(["g1"])
+        status = manage.telemetry_outbox_status()
+        self.assertEqual(status["pending"], 1)
+        self.assertEqual(status["last_success_at"], first_success)
+
+    def test_local_queue_cleanup_does_not_record_a_delivery_success(self):
+        manage.mark_telemetry_dirty(["g1"])
+        item = manage.list_dirty_telemetry()[0]
+        self.assertEqual(manage.mark_telemetry_pushed([item], record_success=False), 1)
+        status = manage.telemetry_outbox_status()
+        self.assertEqual(status["pending"], 0)
+        self.assertIsNone(status["last_success_at"])
 
     def test_isolated_drain_upserts_and_refreshes_local_dashboard_fact(self):
         manage.mark_telemetry_dirty(["g1"])
@@ -440,7 +473,9 @@ class ManageTelemetryTests(unittest.TestCase):
 
         self.assertEqual(result, {"target": "remote", "upserted": 0, "failed": 0})
         self.assertEqual(captured, [])
-        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
+        status = manage.telemetry_outbox_status()
+        self.assertEqual(status["pending"], 0)
+        self.assertIsNone(status["last_success_at"])
         with db.get_connection() as conn:
             row = conn.execute(
                 "SELECT is_tombstone,pushed_at,last_error FROM telemetry_outbox "

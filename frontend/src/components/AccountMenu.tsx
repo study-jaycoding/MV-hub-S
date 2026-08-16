@@ -10,7 +10,7 @@ import {
 import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
-import { useSyncStatus } from "../lib/useSyncStatus";
+import { formatTelemetryLastSuccess, useSyncStatus } from "../lib/useSyncStatus";
 import {
   reconcileReportedWorkspaceContext,
   sameWorkspace,
@@ -71,7 +71,8 @@ export function AccountMenu({
     setOpen(false);
     avatarRef.current?.focus();
   }, []);
-  const sync = useSyncStatus(); // 로컬 텔레메트리 push 실패 관측(failed>0 때만 경고)
+  // 이 상태는 이 PC의 로컬 outbox에만 의미가 있다. 공유 서버 화면에서는 불필요한 폴링을 하지 않는다.
+  const sync = useSyncStatus(!!localHub);
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
   //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
@@ -260,7 +261,14 @@ export function AccountMenu({
             </div>
           </div>
 
-          {/* 매니징 push 실패 경고 — 조용히 묻히던 텔레메트리 push 실패를 노출(failed>0 때만). pending 은 정상 backlog. */}
+          {localHub && sync && (
+            <div className="acct-sync-state">
+              <span>{formatTelemetryLastSuccess(sync.last_success_at)}</span>
+              <span>{sync.pending > 0 ? `대기 ${sync.pending}건` : "대기 없음"}</span>
+            </div>
+          )}
+
+          {/* 매니징 push 실패 경고 — 조용히 묻히던 텔레메트리 push 실패를 노출(failed>0 때만). */}
           {sync && sync.failed > 0 && (
             <div className="acct-sync-warn" title={sync.last_error || undefined}>
               ⚠ 매니징 동기화 {sync.failed}건 실패 — 다음 동기화 때 재시도{sync.pending > sync.failed ? ` (대기 ${sync.pending})` : ""}
