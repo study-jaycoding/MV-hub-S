@@ -10,6 +10,7 @@ CLAUDE.md 원칙 2(명시적 발행만), 3(원본 보존), 4(history 기록).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -31,6 +32,11 @@ from ..models import GenerationOut, ImportIn, PublishIn
 from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api", tags=["share"])
+logger = logging.getLogger(__name__)
+
+_FINAL_UNPUBLISH_DETAIL = (
+    "최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
+)
 
 
 # 단일 정의로 통합(_telemetry.touch_generation_telemetry) — publish.py 와 복붙돼 있던 것.
@@ -44,6 +50,97 @@ def _local_id_from_out(out) -> str | None:
     if isinstance(out, dict) and out.get("job_id"):
         return repo.finalize_id_map(out["job_id"])[0]
     return None
+
+
+def _ensure_not_final_before_unpublish(gen: dict[str, Any] | None) -> None:
+    """로컬 미러가 최종이면 서버를 변경하기 전에 공유 해제를 차단한다.
+
+    서버 404를 목표 달성으로 취급하는 프록시 경로에서도 이 검사를 먼저 해야
+    ``is_final => shared`` 로컬 불변식이 깨지지 않는다.
+    """
+    if gen and gen.get("is_final"):
+        raise HTTPException(status_code=409, detail=_FINAL_UNPUBLISH_DETAIL)
+
+
+def _is_remote_generation_missing(exc: HTTPException) -> bool:
+    """라우트 자체가 없는 404와 서버에 generation 행이 없는 404를 구분한다.
+
+    업데이트 중 구버전 서버의 FastAPI 기본 404(``Not Found``)를 목표 달성으로 오판하면
+    서버 공유는 남아 있는데 로컬 배지만 사라질 수 있다. 현재 서버가 generation 조회 실패에
+    쓰는 명시적 detail만 멱등 성공으로 인정하고, 모르는 404는 안전하게 전파한다.
+    """
+    detail = exc.detail
+    if isinstance(detail, dict):
+        detail = detail.get("detail")
+    return str(detail or "").strip().lower() in {
+        "generation 없음",
+        "generation not found",
+    }
+
+
+def _mirror_remote_unfinalize(
+    local_id: str,
+    server_id: str,
+    *,
+    known_local: dict[str, Any] | None,
+) -> None:
+    """서버의 최종 해제를 로컬에 반영하고, 실패하면 가능한 경우 서버를 되돌린다.
+
+    로컬 쓰기가 예외를 냈더라도 커밋 여부가 모호할 수 있으므로 먼저 다시 읽는다.
+    실제로 ``is_final=0``이면 성공으로 확정하고, 여전히 최종일 때만 서버 ``finalize``로
+    이전의 일치 상태를 복구한다.
+    """
+    current = known_local
+    if not current or current.get("id") != local_id:
+        current = repo.get_generation(local_id)
+    if not current or not current.get("is_final"):
+        return
+
+    try:
+        try:
+            repo.set_final(local_id, False)
+        except Exception:
+            repo.set_final(local_id, False)  # 일시적인 SQLite 잠금은 한 번만 재시도
+        return
+    except Exception as local_error:
+        # 예외가 커밋 뒤 발생한 경우를 포함해 실제 로컬 상태를 다시 확인한다.
+        try:
+            confirmed = repo.get_generation(local_id)
+        except Exception:  # noqa: BLE001 — 아래 보상 경계에서 처리
+            confirmed = None
+        if confirmed is not None and not confirmed.get("is_final"):
+            return
+
+        try:
+            _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")
+        except Exception as compensation_error:
+            logger.error(
+                "unfinalize compensation failed local_id=%s server_id=%s",
+                local_id,
+                server_id,
+                exc_info=compensation_error,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "최종 해제 상태 동기화에 실패했습니다. "
+                    "새로고침 후 다시 시도해 주세요"
+                ),
+            ) from local_error
+
+        logger.warning(
+            "local unfinalize mirror failed; remote state restored "
+            "local_id=%s server_id=%s",
+            local_id,
+            server_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "최종 해제를 로컬에 반영하지 못해 서버 변경을 되돌렸습니다. "
+                "잠시 후 다시 시도해 주세요"
+            ),
+        ) from local_error
 
 
 def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
@@ -91,6 +188,9 @@ def unpublish(gen_id: str, request: Request):
     # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
     # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
     if _proxy.proxying():
+        # 서버가 이미 없다고 404를 주더라도 로컬 최종을 비공유로 만들 수는 없다.
+        # 원격 요청보다 먼저 검사해 서버만 해제되는 부분 성공도 막는다.
+        _ensure_not_final_before_unpublish(gen)
         # 팀 탭 카드는 서버 번들 앵커(job_id)로 식별 → 로컬 generation.id 와 다르다(내 카드라도
         # job_id≠로컬id). 그래서 위 get_generation(gen_id) 이 None 이어도 404 로 막으면 안 된다 —
         # finalize_id_map 으로 변환해 서버에 위임한다(권한·골드 가드는 서버가 가진다. finalize 와 동형).
@@ -98,7 +198,7 @@ def unpublish(gen_id: str, request: Request):
         try:
             out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
         except HTTPException as e:
-            if e.status_code != 404:
+            if e.status_code != 404 or not _is_remote_generation_missing(e):
                 raise  # 서버 전파 실패(권한 403·골드 409·연결 502 등) → 로컬도 해제 안 함(불일치 차단)
             out = None
         if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
@@ -114,10 +214,7 @@ def unpublish(gen_id: str, request: Request):
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     _require_unpublish(request, gen)  # 공유 해제 = 본인/admin, 또는 그 프로젝트 슈퍼바이저(B안)
-    if gen.get("is_final"):
-        raise HTTPException(
-            status_code=409, detail="최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
-        )
+    _ensure_not_final_before_unpublish(gen)
     repo.unpublish(gen_id)
     _touch_telemetry(gen_id)
     return repo.get_generation(gen_id)
@@ -258,11 +355,12 @@ def unfinalize(gen_id: str, request: Request):
         if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
             local_id = _local_id_from_out(out)
         if local_id:
-            try:
-                repo.set_final(local_id, False)
-            except Exception:
-                repo.set_final(local_id, False)  # 1회 재시도(보통 일시적 DB 락) — 실패 시 전파해 알림
-        _touch_telemetry(local_id)
+            _mirror_remote_unfinalize(
+                local_id,
+                server_id,
+                known_local=gen,
+            )
+            _touch_telemetry(local_id)
         return out
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
