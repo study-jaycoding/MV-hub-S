@@ -396,6 +396,9 @@ def test_git_updater_runs_from_an_isolated_temp_copy():
     assert "Copy-Item -LiteralPath $WorkerPath -Destination $TempWorker" in bootstrap
     assert "[Guid]::NewGuid()" in bootstrap
     assert "Remove-Item -LiteralPath $TempWorker" in bootstrap
+    assert "Get-FileHash -LiteralPath" not in bootstrap
+    assert "[System.Security.Cryptography.SHA256]::Create()" in bootstrap
+    assert "$Stream.Dispose()" in bootstrap
     assert "$InitialWorkerHash" in bootstrap
     assert "$CurrentWorkerHash -ne $InitialWorkerHash" in bootstrap
     assert "retrying once with the new worker" in bootstrap
