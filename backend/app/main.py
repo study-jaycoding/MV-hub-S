@@ -324,7 +324,13 @@ async def _application_lifespan(app: FastAPI):
     # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
     from .services import asset_watcher
 
-    asset_watcher.start(asyncio.get_running_loop())
+    runtime_loop = asyncio.get_running_loop()
+    asset_watcher.start(runtime_loop)
+    # 동기 ingest 라우터(anyio 워커)가 텔레메트리 네트워크 전송을 기다리지 않고 이 루프의
+    # 단일 백그라운드 drain에 예약할 수 있게 한다.
+    from .routers._telemetry import bind_telemetry_loop
+
+    bind_telemetry_loop(runtime_loop)
     # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
     # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
     if _proxy.is_worker_hub():
@@ -357,6 +363,9 @@ async def _application_lifespan(app: FastAPI):
         from .routers._telemetry import wait_for_telemetry_drain
 
         await wait_for_telemetry_drain()
+    from .routers._telemetry import unbind_telemetry_loop
+
+    unbind_telemetry_loop(runtime_loop)
     if AUTH_ENABLED:
         await periodic_sync.stop()
     asset_watcher.stop()

@@ -89,6 +89,7 @@ _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS telemetry_outbox (
         local_gen_id     TEXT PRIMARY KEY,
         dirty_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        dirty_rev        INTEGER NOT NULL DEFAULT 1,
         pushed_at        TEXT,
         attempts         INTEGER NOT NULL DEFAULT 0,
         last_error       TEXT,
@@ -177,6 +178,12 @@ def ensure_manage_schema(conn) -> None:
         )
     if "next_retry_at" not in outbox_columns:
         conn.execute("ALTER TABLE telemetry_outbox ADD COLUMN next_retry_at TEXT")
+    if "dirty_rev" not in outbox_columns:
+        # dirty_at은 SQLite 밀리초 정밀도라 같은 tick의 재변경을 CAS로 구분할 수 없다.
+        # 기존 행은 첫 revision으로 간주하고 이후 dirty마다 1씩 증가시킨다.
+        conn.execute(
+            "ALTER TABLE telemetry_outbox ADD COLUMN dirty_rev INTEGER NOT NULL DEFAULT 1"
+        )
 
     export_columns = {row[1] for row in conn.execute("PRAGMA table_info(final_export)")}
     if "project_id" not in export_columns:

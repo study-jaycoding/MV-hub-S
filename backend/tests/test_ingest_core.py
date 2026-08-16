@@ -1,6 +1,8 @@
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
+from app.models import IngestIn, IngestMcpIn, IngestOut
 from app.routers import ingest
 
 
@@ -44,6 +46,36 @@ class IngestCoreTests(unittest.TestCase):
         self.assertEqual(upsert.call_count, 1)
         self.assertEqual(len(upsert.call_args[0][0]), 1)  # 중복 제거 후 1건만 배치로 전달
         record_status.assert_called_once()
+
+    def test_ingest_schedules_telemetry_without_synchronous_network_drain(self):
+        expected = IngestOut(
+            inserted=0, updated=0, unchanged=0, skipped=0, errors=0, linked_uid="u_me"
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest(IngestIn(), SimpleNamespace())
+
+        self.assertIs(result, expected)
+        schedule.assert_called_once_with()
+
+    def test_mcp_backfill_schedules_telemetry_without_synchronous_network_drain(self):
+        expected = IngestOut(
+            inserted=0, updated=0, unchanged=0, skipped=0, errors=0, linked_uid="u_me"
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest_mcp(IngestMcpIn(), SimpleNamespace())
+
+        self.assertIs(result, expected)
+        schedule.assert_called_once_with()
 
 
 if __name__ == "__main__":

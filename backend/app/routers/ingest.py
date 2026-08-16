@@ -33,7 +33,7 @@ from ..models import IngestIn, IngestMcpIn, IngestOut
 from ..services import cli_bridge
 from ..services import auth as auth_service
 from ..services import local_agent_pair
-from ._telemetry import drain_telemetry
+from ._telemetry import schedule_telemetry_drain
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 from ..services.request_guards import is_loopback_request
@@ -221,7 +221,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
         repo.record_account_status(acc["email"], account_status)
 
     # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
-    # 실제 서버 전송은 ingest 엔드포인트가 공용 drain_telemetry로 처리한다.
+    # 실제 서버 전송은 ingest 엔드포인트가 공용 백그라운드 drain으로 처리한다.
     if MANAGE_ENABLED and seen_job_ids:
         try:
             from ..repo import manage as _m
@@ -278,12 +278,10 @@ def ingest(body: IngestIn, request: Request):
             )
         except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
             pass
-    # 팀 매니징: dirty 텔레메트리를 서버로 flush(신규 적재분 + 이전 실패분 재시도). best-effort.
+    # 팀 매니징: 응답을 네트워크에 묶지 않고 dirty 텔레메트리 전송을 예약한다. 동시 요청은
+    # 단일 drain으로 합쳐지며 신규 적재분과 이전 실패분을 함께 재시도한다.
     if MANAGE_ENABLED:
-        try:
-            drain_telemetry()
-        except Exception:  # noqa: BLE001
-            pass
+        schedule_telemetry_drain()
     return out
 
 
@@ -302,12 +300,9 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     )
     # 팀 매니징: 백필도 일반 ingest 와 동일하게 dirty 텔레메트리를 flush 한다. MCP 백필은 페이지를
     # 여러 번 POST 하고 '마지막 페이지' 신호가 없어, 매 페이지 drain 해야 백필만 한 사용자도 대시보드가
-    # 밀리지 않는다. drain 은 프록시 없으면 no-op, 실패분은 큐에 남아 재시도. best-effort.
+    # 밀리지 않는다. 예약은 즉시 반환하고, 실패분은 큐에 남아 재시도한다.
     if MANAGE_ENABLED:
-        try:
-            drain_telemetry()
-        except Exception:  # noqa: BLE001
-            pass
+        schedule_telemetry_drain()
     return out
 
 

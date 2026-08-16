@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -88,6 +89,52 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertTrue(facts[0]["is_final"])
         self.assertNotIn("prompt", facts[0])
 
+    def test_legacy_outbox_migrates_revision_without_losing_pending_row(self):
+        """기존 설치 DB에도 revision 칼럼을 추가하고 대기 행을 그대로 보존한다."""
+        from app.repo import manage_schema
+
+        with db.get_connection() as conn:
+            conn.execute("DROP TABLE telemetry_outbox")
+            conn.execute(
+                "CREATE TABLE telemetry_outbox ("
+                "local_gen_id TEXT PRIMARY KEY, dirty_at TEXT NOT NULL, pushed_at TEXT, "
+                "attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO telemetry_outbox(local_gen_id,dirty_at) VALUES('g1','2026-08-01')"
+            )
+            manage_schema._SCHEMA_ENSURED.clear()
+            manage._ensure_schema(conn)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_outbox)")}
+            row = conn.execute(
+                "SELECT dirty_rev,pushed_at FROM telemetry_outbox WHERE local_gen_id='g1'"
+            ).fetchone()
+
+        self.assertIn("dirty_rev", columns)
+        self.assertEqual(row["dirty_rev"], 1)
+        self.assertIsNone(row["pushed_at"])
+        manage.mark_telemetry_dirty(["g1"])
+        self.assertEqual(manage.list_dirty_telemetry()[0]["dirty_rev"], 2)
+
+    def test_tombstone_and_restore_each_advance_revision(self):
+        """삭제 표시와 복원도 서로 다른 전송 세대로 구분한다."""
+        manage.mark_telemetry_dirty(["g1"])
+        dirty = manage.list_dirty_telemetry()[0]
+        self.assertEqual(dirty["dirty_rev"], 1)
+        self.assertFalse(dirty["is_tombstone"])
+
+        manage.mark_telemetry_tombstone(
+            "g1", {"job_id": "job-1", "creator_uid": "u_me", "is_deleted": True}
+        )
+        deleted = manage.list_dirty_telemetry()[0]
+        self.assertEqual(deleted["dirty_rev"], 2)
+        self.assertTrue(deleted["is_tombstone"])
+
+        manage.mark_telemetry_dirty(["g1"])
+        restored = manage.list_dirty_telemetry()[0]
+        self.assertEqual(restored["dirty_rev"], 3)
+        self.assertFalse(restored["is_tombstone"])
+
     def test_periodic_backfill_tracks_missing_job_once_without_redirtying(self):
         self.assertEqual(manage.ensure_ingested_tracked(["job-1"], None), 1)
         first = manage.list_dirty_telemetry()[0]
@@ -123,18 +170,28 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertIn("g1", pending_ids)
 
     def test_stale_failure_does_not_backoff_a_newer_dirty_update(self):
-        # 전송 중 그 항목이 다시 dirty 되면(dirty_at 변경), 옛 전송의 실패 CAS 가 빗나가
+        # 전송 중 그 항목이 같은 밀리초에 다시 dirty 돼도 revision이 증가해 옛 실패 CAS가 빗나가고
         # 새 변경엔 백오프가 걸리지 않는다 — 새 변경은 즉시 재시도돼야 한다.
         manage.mark_telemetry_dirty(["g1"])
         stale_item = manage.list_dirty_telemetry()[0]
+        manage.mark_telemetry_dirty(["g1"])
         with db.get_connection() as conn:
             conn.execute(
-                "UPDATE telemetry_outbox SET dirty_at='9999-12-31T23:59:59Z' "
-                "WHERE local_gen_id='g1'"
+                "UPDATE telemetry_outbox SET dirty_at=? WHERE local_gen_id='g1'",
+                (stale_item["dirty_at"],),
             )
+        current_item = manage.list_dirty_telemetry()[0]
+        self.assertEqual(current_item["dirty_at"], stale_item["dirty_at"])
+        self.assertEqual(current_item["dirty_rev"], stale_item["dirty_rev"] + 1)
         manage.mark_telemetry_failed([stale_item], "late failure")
         pending = [item["local_gen_id"] for item in manage.list_dirty_telemetry()]
         self.assertIn("g1", pending)
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT fail_streak,next_retry_at FROM telemetry_outbox WHERE local_gen_id='g1'"
+            ).fetchone()
+        self.assertEqual(row["fail_streak"], 0)
+        self.assertIsNone(row["next_retry_at"])
 
     def test_backoff_delay_grows_with_consecutive_failures(self):
         manage.mark_telemetry_dirty(["g1"])
@@ -157,11 +214,15 @@ class ManageTelemetryTests(unittest.TestCase):
     def test_stale_push_ack_does_not_clear_a_newer_dirty_update(self):
         manage.mark_telemetry_dirty(["g1"])
         stale_item = manage.list_dirty_telemetry()[0]
+        manage.mark_telemetry_dirty(["g1"])
         with db.get_connection() as conn:
             conn.execute(
-                "UPDATE telemetry_outbox SET dirty_at='9999-12-31T23:59:59Z' "
-                "WHERE local_gen_id='g1'"
+                "UPDATE telemetry_outbox SET dirty_at=? WHERE local_gen_id='g1'",
+                (stale_item["dirty_at"],),
             )
+        current_item = manage.list_dirty_telemetry()[0]
+        self.assertEqual(current_item["dirty_at"], stale_item["dirty_at"])
+        self.assertEqual(current_item["dirty_rev"], stale_item["dirty_rev"] + 1)
 
         manage.mark_telemetry_pushed([stale_item])
         self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
@@ -320,6 +381,37 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertEqual([item["local_gen_id"] for item in captured], ["g1"])
         self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
         self.assertFalse(manage_db.MANAGE_DB_PATH.exists())
+
+    def test_slow_remote_push_holds_no_db_context_and_preserves_redirty(self):
+        os.environ.pop("CONTENT_HUB_NO_PROXY", None)
+        manage.mark_telemetry_dirty(["g1"])
+        started = threading.Event()
+        release = threading.Event()
+        result: dict = {}
+
+        def push(items):
+            self.assertEqual([item["local_gen_id"] for item in items], ["g1"])
+            started.set()
+            self.assertTrue(release.wait(timeout=2))
+            return {"upserted": len(items), "skipped": []}
+
+        worker = threading.Thread(
+            target=lambda: result.update(drain_remote_telemetry(push, my_uid="u_me"))
+        )
+        worker.start()
+        self.assertTrue(started.wait(timeout=1))
+
+        # 네트워크가 멈춰 있어도 활성 DB 컨텍스트가 없어 유지보수 게이트와 새 dirty 쓰기가 된다.
+        with db.maintenance_gate(timeout=0.2):
+            pass
+        # sleep 없이 즉시 같은 행을 다시 dirty 처리한다. 시각이 같아도 revision CAS가 보존해야 한다.
+        manage.mark_telemetry_dirty(["g1"])
+        release.set()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result["upserted"], 1)
+        self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
 
     def test_remote_drain_leaves_server_skips_for_retry(self):
         os.environ.pop("CONTENT_HUB_NO_PROXY", None)

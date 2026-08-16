@@ -2,7 +2,10 @@
 
 import asyncio
 import threading
+import time
 from unittest.mock import patch
+
+import pytest
 
 from app.routers import _telemetry
 
@@ -13,6 +16,11 @@ def _reset_scheduler() -> None:
         task.cancel()
     _telemetry._drain_task = None
     _telemetry._drain_version = 0
+    _telemetry.unbind_telemetry_loop()
+    with _telemetry._drain_state:
+        _telemetry._drain_in_flight = False
+        _telemetry._drain_requested = False
+        _telemetry._drain_state.notify_all()
 
 
 def test_rapid_status_changes_are_coalesced_into_one_background_drain():
@@ -93,3 +101,70 @@ def test_shutdown_waits_for_scheduled_drain_to_finish():
         _reset_scheduler()
 
     asyncio.run(scenario())
+
+
+def test_100_sync_workers_coalesce_on_bound_runtime_loop_without_waiting():
+    async def scenario():
+        _reset_scheduler()
+        with patch.object(_telemetry, "MANAGE_ENABLED", True), patch.object(
+            _telemetry, "_DEBOUNCE_SECONDS", 0.05
+        ), patch.object(_telemetry, "drain_telemetry") as drain:
+            _telemetry.bind_telemetry_loop(asyncio.get_running_loop())
+            scheduled = await asyncio.gather(
+                *(asyncio.to_thread(_telemetry.schedule_telemetry_drain) for _ in range(100))
+            )
+            assert all(scheduled)
+            assert await _telemetry.wait_for_telemetry_drain(timeout=1)
+            drain.assert_called_once_with()
+        _reset_scheduler()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_drain_returns_immediately_and_owner_runs_followup():
+    _reset_scheduler()
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_remote(_push, *, my_uid):
+        nonlocal calls
+        assert my_uid == "u_me"
+        calls += 1
+        if calls == 1:
+            started.set()
+            assert release.wait(timeout=2)
+        return {"target": "remote", "upserted": 0, "failed": 0}
+
+    with patch.object(_telemetry, "MANAGE_ENABLED", True), patch.object(
+        _telemetry._proxy, "proxying", return_value=True
+    ), patch.object(_telemetry.repo, "get_my_uid", return_value="u_me"), patch.object(
+        _telemetry, "drain_remote_telemetry", side_effect=slow_remote
+    ):
+        owner = threading.Thread(target=_telemetry.drain_telemetry)
+        owner.start()
+        assert started.wait(timeout=1)
+        before = time.monotonic()
+        assert _telemetry.drain_telemetry() is False
+        assert time.monotonic() - before < 0.2
+        release.set()
+        owner.join(timeout=2)
+
+    assert not owner.is_alive()
+    assert calls == 2
+    assert _telemetry._wait_for_drain_idle(0.1)
+    _reset_scheduler()
+
+
+def test_failed_owner_releases_state_for_next_retry():
+    _reset_scheduler()
+    with patch.object(_telemetry, "MANAGE_ENABLED", True), patch.object(
+        _telemetry, "_drain_once", side_effect=[RuntimeError("boom"), None]
+    ) as drain_once:
+        with pytest.raises(RuntimeError, match="boom"):
+            _telemetry.drain_telemetry()
+        assert _telemetry._wait_for_drain_idle(0.1)
+        assert _telemetry.drain_telemetry() is True
+
+    assert drain_once.call_count == 2
+    _reset_scheduler()

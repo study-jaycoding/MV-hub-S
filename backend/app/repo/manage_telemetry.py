@@ -19,10 +19,11 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
         _ensure_schema(conn)
         for gen_id in ids:
             conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, dirty_rev) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                "dirty_rev=telemetry_outbox.dirty_rev+1, "
                 "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
                 (gen_id,),
             )
@@ -36,10 +37,12 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
         _ensure_schema(conn)
         conn.execute(
             "INSERT INTO telemetry_outbox"
-            "(local_gen_id, dirty_at, is_tombstone, tomb_job_id, tomb_creator_uid, tomb_snapshot) "
-            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, ?, ?, ?) "
+            "(local_gen_id, dirty_at, dirty_rev, is_tombstone, tomb_job_id, "
+            "tomb_creator_uid, tomb_snapshot) "
+            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, 1, ?, ?, ?) "
             "ON CONFLICT(local_gen_id) DO UPDATE SET "
-            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), pushed_at=NULL, is_tombstone=1, "
+            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "dirty_rev=telemetry_outbox.dirty_rev+1, pushed_at=NULL, is_tombstone=1, "
             "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
             "tomb_snapshot=excluded.tomb_snapshot, fail_streak=0, next_retry_at=NULL",
             (
@@ -87,10 +90,11 @@ def track_ingested_in_connection(
     for gen_id in all_local_ids:
         if gen_id in changed_local_ids:
             conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, dirty_rev) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                "dirty_rev=telemetry_outbox.dirty_rev+1, "
                 "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
                 (gen_id,),
             )
@@ -115,10 +119,11 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
         local_ids = _ingested_local_ids(conn, job_ids, my_uid)
         for gen_id in local_ids:
             conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, dirty_rev) "
+                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1) "
                 "ON CONFLICT(local_gen_id) DO UPDATE SET "
                 "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                "dirty_rev=telemetry_outbox.dirty_rev+1, "
                 "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
                 (gen_id,),
             )
@@ -188,7 +193,7 @@ def list_dirty_telemetry(limit: int = 200) -> list[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT local_gen_id, dirty_at, is_tombstone, tomb_job_id, "
+            "SELECT local_gen_id, dirty_at, dirty_rev, is_tombstone, tomb_job_id, "
             "tomb_creator_uid, tomb_snapshot FROM telemetry_outbox "
             "WHERE pushed_at IS NULL "
             "AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
@@ -272,43 +277,47 @@ def build_telemetry_facts(
 
 
 def mark_telemetry_pushed(items: list[dict[str, Any]]) -> None:
-    """전송 성공 시 dirty_at CAS로 그 사이 생긴 새 변경을 보존하며 완료 처리한다."""
+    """전송 성공 시 dirty_rev CAS로 그 사이 생긴 새 변경을 보존하며 완료 처리한다."""
     with get_connection() as conn:
         _ensure_schema(conn)
         for item in items or []:
             gen_id = item.get("local_gen_id")
-            if not gen_id:
+            dirty_rev = item.get("dirty_rev")
+            if not gen_id or dirty_rev is None:
                 continue
             conn.execute(
                 "UPDATE telemetry_outbox SET pushed_at=datetime('now'), "
                 "attempts=attempts+1, last_error=NULL, fail_streak=0, next_retry_at=NULL "
-                "WHERE local_gen_id=? AND dirty_at=? AND pushed_at IS NULL",
-                (gen_id, item.get("dirty_at")),
+                "WHERE local_gen_id=? AND dirty_rev=? AND pushed_at IS NULL",
+                (gen_id, dirty_rev),
             )
 
 
-def mark_telemetry_failed(items: list[dict[str, Any]], error: str) -> None:
+def mark_telemetry_failed(items: list[dict[str, Any] | str], error: str) -> None:
     """전송 실패를 기록하고 다음 재시도 시각을 뒤로 민다(백오프).
 
     지연 = min(1시간, 60초 × 연속실패수²) — 1회 60s, 2회 4분, 3회 9분, … 8회부터 1시간.
     일시 장애는 금방 복귀하고, 영구 실패(서버 미링크 등)는 시간당 1회로 수렴해
     폭주하지 않는다. attempts 는 누적 전송수(성공 포함)라 백오프에 못 쓴다 — fail_streak 사용.
-    ★성공 처리(mark_telemetry_pushed)와 같은 dirty_at CAS — 전송 중 그 항목이 다시
+    ★성공 처리(mark_telemetry_pushed)와 같은 dirty_rev CAS — 전송 중 그 항목이 다시
     dirty 됐다면 옛 전송의 실패가 새 변경에 백오프를 걸면 안 된다(새 변경은 즉시 재시도).
     """
     with get_connection() as conn:
         _ensure_schema(conn)
         for item in items or []:
             gen_id = item.get("local_gen_id") if isinstance(item, dict) else item
-            dirty_at = item.get("dirty_at") if isinstance(item, dict) else None
+            dirty_rev = item.get("dirty_rev") if isinstance(item, dict) else None
             if not gen_id:
                 continue
             # pushed_at IS NULL — 다른 드레인이 이미 성공 처리한 행에 늦은 실패를 덮지 않게.
             where = "WHERE local_gen_id=? AND pushed_at IS NULL"
             args: list[Any] = [error[:500], gen_id]
-            if dirty_at is not None:
-                where += " AND dirty_at=?"
-                args.append(dirty_at)
+            if isinstance(item, dict):
+                # 스냅샷인데 revision이 없으면 현재 변경을 잘못 정산할 수 있으므로 fail-closed.
+                if dirty_rev is None:
+                    continue
+                where += " AND dirty_rev=?"
+                args.append(dirty_rev)
             conn.execute(
                 "UPDATE telemetry_outbox SET attempts=attempts+1, last_error=?, "
                 "fail_streak=fail_streak+1, "

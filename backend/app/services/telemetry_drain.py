@@ -88,7 +88,7 @@ def _prepare_batch(*, filter_uid: str | None, include_all_creators: bool) -> dic
 def _settle(batch: dict[str, Any], skipped_ids: set[str], error: str) -> tuple[int, int]:
     sent = batch["sent"]
     pushed = [row for row in sent if row["local_gen_id"] not in skipped_ids]
-    # 실패도 행 그대로 넘긴다(dirty_at CAS) — 전송 중 재dirty 된 항목엔 백오프를 걸지 않는다.
+    # 실패도 행 그대로 넘긴다(dirty_rev CAS) — 전송 중 재dirty 된 항목엔 백오프를 걸지 않는다.
     failed = [row for row in sent if row["local_gen_id"] in skipped_ids]
     if pushed:
         repo_manage.mark_telemetry_pushed(pushed)
