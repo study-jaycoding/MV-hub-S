@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import json
 import re
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ from ..services.agent_signals import agent_signals
 from ..services.event_journal import journal_generation_event
 from ..services.operational_logging import log_event
 from ..ws import manager
+from ..workspace_context import normalize_workspace_context
 
 
 _generation_log = logging.getLogger("mvhub.generation")
@@ -143,6 +146,116 @@ class GenRequestCommand:
     data: dict | None = None  # kind=create 의 정규화된 GenerationCreate dump
     regenerate: RegenerateIn | None = None  # kind=regenerate 옵션
     canvas_link: dict[str, str] | None = None
+
+
+class CanvasGenerationConflict(RuntimeError):
+    """같은 캔버스 시도 ID가 서로 다른 생성 명령/목적지를 가리킬 때의 안전 중단."""
+
+
+def _canvas_command_contract(cmd: GenRequestCommand) -> dict:
+    """재시도가 최초 제출과 같은 명령인지 판별할 최소 계약."""
+    return {
+        "kind": cmd.kind,
+        "worker_id": cmd.worker_id,
+        "source_gen_id": cmd.source_gen_id,
+        "workspace": normalize_workspace_context(cmd.workspace),
+        "create": cmd.data if cmd.kind == "create" else None,
+        "regenerate": (
+            (cmd.regenerate or RegenerateIn()).model_dump()
+            if cmd.kind == "regenerate"
+            else None
+        ),
+    }
+
+
+def _reservation_matches(
+    reservation: dict,
+    canvas_link: dict[str, str],
+    kind: str,
+    contract: dict,
+) -> bool:
+    if (
+        reservation.get("gen_id") != canvas_link["generation_id"]
+        or reservation.get("kind") != kind
+        or reservation.get("scene_id") != canvas_link["scene_id"]
+        or reservation.get("card_id") != canvas_link["card_id"]
+    ):
+        return False
+    try:
+        stored = json.loads(reservation.get("payload") or "{}")
+    except (TypeError, ValueError):
+        stored = {}
+    stored_contract = stored.get("_canvas_contract")
+    # RL-06 이전 요청은 계약 필드가 없다. 링크 4종이 정확히 같으면 기존 요청을 재사용한다.
+    return stored_contract is None or stored_contract == contract
+
+
+def _expected_create_recipe(cmd: GenRequestCommand) -> dict:
+    data = cmd.data or {}
+    return {
+        "model": data.get("model"),
+        "prompt": data.get("prompt"),
+        "params": data.get("params") or {},
+        "references": [
+            {
+                "file_path": (
+                    ref.get("source_url")
+                    if ref.get("source_url") is not None
+                    else ref.get("file_path")
+                ),
+                "type": ref.get("type", "image"),
+                "role": ref.get("role"),
+            }
+            for ref in (data.get("references") or [])
+        ],
+        "workspace": normalize_workspace_context(cmd.workspace),
+    }
+
+
+async def _resolve_canvas_placeholder_collision(
+    cmd: GenRequestCommand,
+    contract: dict,
+) -> dict | None:
+    """동시 재시도가 placeholder를 먼저 만든/활성화한 경우를 권위 DB로 판정한다.
+
+    반환값이 generation이면 다른 요청이 이미 끝낸 것이고, None이면 현재 요청이 preparing
+    예약을 이어서 활성화해야 한다. 안전한 동일 요청이 아니면 409용 예외를 낸다.
+    """
+    link = cmd.canvas_link
+    if not link:
+        raise CanvasGenerationConflict("캔버스 생성 연결 정보가 없습니다")
+    fresh = await _sync_io(
+        repo.reserve_canvas_gen_request,
+        cmd.email,
+        cmd.creator_uid,
+        link["generation_id"],
+        cmd.kind,
+        link,
+        contract,
+    )
+    if not _reservation_matches(fresh, link, cmd.kind, contract):
+        raise CanvasGenerationConflict(
+            "같은 캔버스 생성 시도 ID가 다른 카드 또는 생성 명령에 이미 사용되었습니다"
+        )
+    if fresh.get("status") != "preparing":
+        generation = await _sync_io(repo.get_generation, link["generation_id"])
+        if generation:
+            return generation
+        raise CanvasGenerationConflict(
+            "기존 캔버스 생성 요청의 placeholder를 찾을 수 없습니다"
+        )
+    if not await _sync_io(
+        repo.canvas_placeholder_is_resumable,
+        cmd.email,
+        cmd.creator_uid,
+        link,
+        cmd.kind,
+        cmd.source_gen_id,
+    ):
+        raise CanvasGenerationConflict(
+            "같은 생성 ID가 다른 요청에 사용 중이라 안전하게 이어갈 수 없습니다"
+        )
+    return None
 
 
 def repair_canvas_generation_links(
@@ -974,53 +1087,160 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
 
     생성 연결에 필요한 저장과 signal까지 마친 뒤 즉시 응답한다. PM 견적은 백그라운드에서 기록한다.
     """
+    canvas_contract = _canvas_command_contract(cmd) if cmd.canvas_link else None
+    reservation: dict | None = None
     if cmd.canvas_link:
-        existing = await _sync_io(
-            repo.get_canvas_generation_link,
-            cmd.email, cmd.canvas_link["attempt_id"]
+        reservation = await _sync_io(
+            repo.reserve_canvas_gen_request,
+            cmd.email,
+            cmd.creator_uid,
+            cmd.canvas_link["generation_id"],
+            cmd.kind,
+            cmd.canvas_link,
+            canvas_contract,
         )
-        if existing:
-            return await _sync_io(repo.get_generation, existing["generation_id"])
-
-    if cmd.kind == "create":
-        create_kwargs = {"creator_uid": cmd.creator_uid}
-        if cmd.workspace is not None:
-            create_kwargs["workspace"] = cmd.workspace
-        if cmd.canvas_link:
-            create_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
-        gen_id = await _sync_io(
-            repo.create_local_generation, cmd.data, cmd.worker_id, **create_kwargs
-        )
-    else:  # regenerate
-        import_kwargs = {"creator_uid": cmd.creator_uid}
-        if cmd.workspace is not None:
-            import_kwargs["workspace"] = cmd.workspace
-        if cmd.canvas_link:
-            import_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
-        gen_id = await _sync_io(
-            repo.import_generation, cmd.source_gen_id, cmd.worker_id, **import_kwargs
-        )
-        reg = cmd.regenerate or RegenerateIn()
-        if reg.color is not None:
-            await _sync_io(repo.set_color, gen_id, reg.color)
-        if reg.prompt or reg.model:
-            await _sync_io(
-                repo.override_prompt_model, gen_id, prompt=reg.prompt, model=reg.model
+        if not _reservation_matches(
+            reservation, cmd.canvas_link, cmd.kind, canvas_contract
+        ):
+            if reservation.get("created"):
+                await _sync_io(
+                    repo.delete_canvas_gen_request_reservation,
+                    cmd.email,
+                    cmd.canvas_link["attempt_id"],
+                    cmd.canvas_link["generation_id"],
+                )
+            raise CanvasGenerationConflict(
+                "같은 캔버스 생성 시도 ID가 다른 카드 또는 생성 명령에 이미 사용되었습니다"
             )
-        if reg.auto_tags:
-            await _sync_io(repo.add_auto_tags, gen_id, reg.auto_tags)
+        if reservation.get("status") != "preparing":
+            existing_gen = await _sync_io(
+                repo.get_generation, cmd.canvas_link["generation_id"]
+            )
+            if not existing_gen:
+                raise CanvasGenerationConflict(
+                    "기존 캔버스 생성 요청의 placeholder를 찾을 수 없습니다"
+                )
+            return existing_gen
 
-    payload = await _sync_io(repo.gen_recipe, gen_id)
-    payload["source_gen_id"] = cmd.source_gen_id
-    request_id = await _sync_io(
-        repo.create_gen_request,
-        cmd.email,
-        cmd.creator_uid,
-        gen_id,
-        cmd.kind,
-        payload,
-        canvas_link=cmd.canvas_link,
+    gen_id = cmd.canvas_link["generation_id"] if cmd.canvas_link else ""
+    existing_placeholder = bool(
+        cmd.canvas_link and await _sync_io(repo.get_generation, gen_id)
     )
+    try:
+        if existing_placeholder:
+            resumable = await _sync_io(
+                repo.canvas_placeholder_is_resumable,
+                cmd.email,
+                cmd.creator_uid,
+                cmd.canvas_link,
+                cmd.kind,
+                cmd.source_gen_id,
+            )
+            if not resumable:
+                raise CanvasGenerationConflict(
+                    "같은 생성 ID가 다른 요청에 사용 중이라 안전하게 이어갈 수 없습니다"
+                )
+        elif cmd.kind == "create":
+            create_kwargs = {"creator_uid": cmd.creator_uid}
+            if cmd.workspace is not None:
+                create_kwargs["workspace"] = cmd.workspace
+            if cmd.canvas_link:
+                create_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
+            try:
+                gen_id = await _sync_io(
+                    repo.create_local_generation, cmd.data, cmd.worker_id, **create_kwargs
+                )
+            except sqlite3.IntegrityError:
+                # 다른 동시 재시도가 같은 placeholder를 먼저 저장했는지 권위 DB로 재확인한다.
+                if not cmd.canvas_link:
+                    raise
+                completed = await _resolve_canvas_placeholder_collision(
+                    cmd, canvas_contract
+                )
+                if completed:
+                    return completed
+                gen_id = cmd.canvas_link["generation_id"]
+        else:  # regenerate
+            import_kwargs = {"creator_uid": cmd.creator_uid}
+            if cmd.workspace is not None:
+                import_kwargs["workspace"] = cmd.workspace
+            if cmd.canvas_link:
+                import_kwargs["generation_id"] = cmd.canvas_link["generation_id"]
+            try:
+                gen_id = await _sync_io(
+                    repo.import_generation, cmd.source_gen_id, cmd.worker_id, **import_kwargs
+                )
+            except sqlite3.IntegrityError:
+                if not cmd.canvas_link:
+                    raise
+                completed = await _resolve_canvas_placeholder_collision(
+                    cmd, canvas_contract
+                )
+                if completed:
+                    return completed
+                gen_id = cmd.canvas_link["generation_id"]
+
+        # regenerate의 후처리는 멱등이라, import 직후 종료된 재시도에서도 그대로 다시 적용한다.
+        if cmd.kind == "regenerate":
+            reg = cmd.regenerate or RegenerateIn()
+            if reg.color is not None:
+                await _sync_io(repo.set_color, gen_id, reg.color)
+            if reg.prompt or reg.model:
+                await _sync_io(
+                    repo.override_prompt_model, gen_id, prompt=reg.prompt, model=reg.model
+                )
+            if reg.auto_tags:
+                await _sync_io(repo.add_auto_tags, gen_id, reg.auto_tags)
+
+        payload = await _sync_io(repo.gen_recipe, gen_id)
+        if not payload:
+            raise RuntimeError("placeholder 레시피를 만들 수 없습니다")
+        if (
+            cmd.canvas_link
+            and cmd.kind == "create"
+            and existing_placeholder
+            and payload != _expected_create_recipe(cmd)
+        ):
+            raise CanvasGenerationConflict(
+                "기존 placeholder 내용이 재시도한 생성 명령과 달라 자동 연결을 중단했습니다"
+            )
+        payload["source_gen_id"] = cmd.source_gen_id
+
+        if cmd.canvas_link:
+            activation = await _sync_io(
+                repo.activate_canvas_gen_request,
+                cmd.email,
+                cmd.canvas_link["attempt_id"],
+                gen_id,
+                payload,
+                canvas_contract,
+            )
+            if not activation:
+                raise CanvasGenerationConflict(
+                    "캔버스 생성 예약이 다른 요청으로 바뀌어 활성화를 중단했습니다"
+                )
+            request_id = activation["id"]
+            if not activation["activated"]:
+                return await _sync_io(repo.get_generation, gen_id)
+        else:
+            request_id = await _sync_io(
+                repo.create_gen_request,
+                cmd.email,
+                cmd.creator_uid,
+                gen_id,
+                cmd.kind,
+                payload,
+                canvas_link=None,
+            )
+    except CanvasGenerationConflict:
+        if cmd.canvas_link and reservation and reservation.get("created"):
+            await _sync_io(
+                repo.delete_canvas_gen_request_reservation,
+                cmd.email,
+                cmd.canvas_link["attempt_id"],
+                cmd.canvas_link["generation_id"],
+            )
+        raise
     log_event(
         _generation_log,
         "generation_requested",

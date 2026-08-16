@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from app import db, repo
+from app.models import RegenerateIn
 from app.usecases.gen_requests import (
+    CanvasGenerationConflict,
     GenRequestCommand,
     repair_canvas_generation_links,
     submit_gen_request,
@@ -78,6 +82,277 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 (link["attempt_id"],),
             ).fetchone()["n"]
         self.assertEqual((generation_count, request_count), (1, 1))
+
+    def test_concurrent_same_attempt_creates_and_queues_exactly_once(self):
+        link = self._link("concurrent")
+        command = GenRequestCommand(
+            kind="create",
+            email="artist@example.com",
+            creator_uid="artist",
+            worker_id="me",
+            source_gen_id=None,
+            data={"prompt": "canvas", "model": "model", "params": {}},
+            canvas_link=link,
+        )
+        original_create = repo.create_local_generation
+        both_at_create = threading.Barrier(2)
+
+        def synchronized_create(*args, **kwargs):
+            both_at_create.wait(timeout=5)
+            return original_create(*args, **kwargs)
+
+        def submit():
+            return asyncio.run(submit_gen_request(command))
+
+        with mock.patch(
+            "app.usecases.gen_requests.repo.create_local_generation",
+            side_effect=synchronized_create,
+        ), mock.patch(
+            "app.usecases.gen_requests.MANAGE_ENABLED", False
+        ), mock.patch(
+            "app.usecases.gen_requests.agent_signals.signal"
+        ) as signal, mock.patch(
+            "app.usecases.gen_requests.journal_generation_event"
+        ) as journal, concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _index: submit(), range(2)))
+
+        self.assertEqual([result["id"] for result in results], [link["generation_id"]] * 2)
+        signal.assert_called_once_with("artist@example.com", "gen-request")
+        journal.assert_called_once()
+        with db.get_connection() as conn:
+            counts = (
+                conn.execute(
+                    "SELECT count(*) n FROM generation WHERE id=?",
+                    (link["generation_id"],),
+                ).fetchone()["n"],
+                conn.execute(
+                    "SELECT count(*) n FROM gen_request WHERE canvas_attempt_id=?",
+                    (link["attempt_id"],),
+                ).fetchone()["n"],
+            )
+        self.assertEqual(counts, (1, 1))
+
+    def test_direct_retry_finishes_preparing_reservation_after_crash_window(self):
+        link = self._link("direct-retry")
+        with mock.patch(
+            "app.usecases.gen_requests.repo.activate_canvas_gen_request",
+            side_effect=RuntimeError("simulated stop before activation"),
+        ), self.assertRaisesRegex(RuntimeError, "simulated stop"):
+            self._submit(link)
+
+        with db.get_connection() as conn:
+            before = conn.execute(
+                "SELECT status FROM gen_request WHERE canvas_attempt_id=?",
+                (link["attempt_id"],),
+            ).fetchone()
+        self.assertEqual(before["status"], "preparing")
+        self.assertEqual(repo.claim_pending_requests("artist@example.com", 1), [])
+
+        retried = self._submit(link)
+
+        self.assertEqual(retried["id"], link["generation_id"])
+        claimed = repo.claim_pending_requests("artist@example.com", 1)
+        self.assertEqual([item["gen_id"] for item in claimed], [link["generation_id"]])
+
+    def test_restart_repair_activates_preparing_request_only_when_placeholder_exists(self):
+        link = self._link("restart-preparing")
+        with mock.patch(
+            "app.usecases.gen_requests.repo.activate_canvas_gen_request",
+            side_effect=RuntimeError("simulated stop before activation"),
+        ), self.assertRaises(RuntimeError):
+            self._submit(link)
+
+        self.assertEqual(
+            repo.resolve_canvas_generation_links(
+                "artist@example.com", [link["attempt_id"]]
+            ),
+            [],
+        )
+        self.assertEqual(repo.fail_orphaned_jobs(), 0)
+        self.assertEqual(repo.get_generation(link["generation_id"])["status"], "pending")
+        with mock.patch("app.usecases.gen_requests.agent_signals.signal") as signal:
+            repaired = repair_canvas_generation_links(
+                "artist@example.com", "artist", [link]
+            )
+
+        self.assertEqual(repaired[0]["generation_id"], link["generation_id"])
+        self.assertEqual(repaired[0]["request_status"], "pending")
+        signal.assert_called_once_with("artist@example.com", "gen-request")
+
+    def test_reservation_without_placeholder_is_not_exposed_and_expires(self):
+        link = self._link("reservation-only")
+        repo.reserve_canvas_gen_request(
+            "artist@example.com",
+            "artist",
+            link["generation_id"],
+            "create",
+            link,
+            {"kind": "create"},
+        )
+
+        self.assertEqual(
+            repo.resolve_canvas_generation_links(
+                "artist@example.com", [link["attempt_id"]]
+            ),
+            [],
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET created_at=datetime('now','-11 minutes') "
+                "WHERE canvas_attempt_id=?",
+                (link["attempt_id"],),
+            )
+        repo.resolve_canvas_generation_links(
+            "artist@example.com", [link["attempt_id"]]
+        )
+        with db.get_connection() as conn:
+            count = conn.execute(
+                "SELECT count(*) n FROM gen_request WHERE canvas_attempt_id=?",
+                (link["attempt_id"],),
+            ).fetchone()["n"]
+        self.assertEqual(count, 0)
+
+    def test_same_attempt_with_changed_contract_is_rejected_without_new_generation(self):
+        link = self._link("changed")
+        self._submit(link)
+        changed = GenRequestCommand(
+            kind="create",
+            email="artist@example.com",
+            creator_uid="artist",
+            worker_id="me",
+            source_gen_id=None,
+            data={"prompt": "different", "model": "model", "params": {}},
+            canvas_link=link,
+        )
+        with mock.patch(
+            "app.usecases.gen_requests.MANAGE_ENABLED", False
+        ), self.assertRaises(CanvasGenerationConflict):
+            asyncio.run(submit_gen_request(changed))
+
+        with db.get_connection() as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT count(*) n FROM generation WHERE id=?",
+                    (link["generation_id"],),
+                ).fetchone()["n"],
+                1,
+            )
+
+    def test_restart_repair_rejects_completed_attempt_pointing_to_another_card(self):
+        link = self._link("completed-mismatch")
+        self._submit(link)
+        mismatched = {
+            **link,
+            "generation_id": "generation_1234567890_other",
+            "card_id": "card-other",
+        }
+
+        repaired = repo.repair_orphaned_canvas_generation(
+            "artist@example.com",
+            "artist",
+            mismatched,
+            {"prompt": "other", "model": "model", "params": {}},
+        )
+
+        self.assertFalse(repaired)
+        self.assertIsNone(repo.get_generation(mismatched["generation_id"]))
+
+    def test_regenerate_retry_resumes_same_child_and_preserves_override(self):
+        source_id = repo.create_local_generation(
+            {"prompt": "source", "model": "model", "params": {}},
+            "me",
+            creator_uid="artist",
+        )
+        link = self._link("regenerate")
+        command = GenRequestCommand(
+            kind="regenerate",
+            email="artist@example.com",
+            creator_uid="artist",
+            worker_id="me",
+            source_gen_id=source_id,
+            regenerate=RegenerateIn(prompt="changed"),
+            canvas_link=link,
+        )
+        common = (
+            mock.patch("app.usecases.gen_requests.MANAGE_ENABLED", False),
+            mock.patch("app.usecases.gen_requests.agent_signals.signal"),
+            mock.patch("app.usecases.gen_requests.journal_generation_event"),
+        )
+        with common[0], common[1], common[2], mock.patch(
+            "app.usecases.gen_requests.repo.activate_canvas_gen_request",
+            side_effect=RuntimeError("simulated stop"),
+        ), self.assertRaises(RuntimeError):
+            asyncio.run(submit_gen_request(command))
+        with mock.patch(
+            "app.usecases.gen_requests.MANAGE_ENABLED", False
+        ), mock.patch(
+            "app.usecases.gen_requests.agent_signals.signal"
+        ), mock.patch(
+            "app.usecases.gen_requests.journal_generation_event"
+        ):
+            retried = asyncio.run(submit_gen_request(command))
+
+        self.assertEqual(retried["id"], link["generation_id"])
+        self.assertEqual(retried["prompt"], "changed")
+        with db.get_connection() as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT count(*) n FROM history WHERE parent_gen_id=? AND child_gen_id=?",
+                    (source_id, link["generation_id"]),
+                ).fetchone()["n"],
+                1,
+            )
+
+    def test_restart_repair_applies_regenerate_options_missed_before_crash(self):
+        source_id = repo.create_local_generation(
+            {"prompt": "source", "model": "old-model", "params": {}},
+            "me",
+            creator_uid="artist",
+        )
+        link = self._link("regenerate-repair")
+        contract = {
+            "kind": "regenerate",
+            "worker_id": "me",
+            "source_gen_id": source_id,
+            "workspace": {"scope": "unknown", "id": None, "name": None},
+            "create": None,
+            "regenerate": RegenerateIn(
+                prompt="recovered prompt",
+                model="new-model",
+                color="#abcdef",
+                auto_tags=["recovered"],
+            ).model_dump(),
+        }
+        repo.reserve_canvas_gen_request(
+            "artist@example.com",
+            "artist",
+            link["generation_id"],
+            "regenerate",
+            link,
+            contract,
+        )
+        # import까지만 끝나고 override 직전에 프로세스가 종료된 상태를 재현한다.
+        repo.import_generation(
+            source_id,
+            "me",
+            creator_uid="artist",
+            generation_id=link["generation_id"],
+        )
+
+        with mock.patch("app.usecases.gen_requests.agent_signals.signal"):
+            repaired = repair_canvas_generation_links(
+                "artist@example.com", "artist", [link]
+            )
+
+        self.assertEqual(repaired[0]["request_status"], "pending")
+        generation = repo.get_generation(link["generation_id"])
+        self.assertEqual(generation["prompt"], "recovered prompt")
+        self.assertEqual(generation["model"], "new-model")
+        self.assertEqual(generation["color"], "#abcdef")
+        self.assertIn("recovered", generation["auto_tags"])
+        claimed = repo.claim_pending_requests("artist@example.com", 1)[0]
+        self.assertEqual(claimed["prompt"], "recovered prompt")
+        self.assertEqual(claimed["model"], "new-model")
 
     def test_resolve_and_manual_candidates_are_account_scoped(self):
         linked = self._link("linked")

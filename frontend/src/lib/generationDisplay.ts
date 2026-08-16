@@ -22,6 +22,7 @@ export function generationStatusLabel(status: string): string {
 export const VERIFYING_MARK = "확인중";
 
 const EXECUTION_PHASE_LABEL: Record<string, string> = {
+  preparing: "요청 준비 중",
   pending: "대기",
   claimed: "준비 중",
   submitting: "제출 중",

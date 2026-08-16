@@ -100,7 +100,7 @@ class GenerationOut(BaseModel):
     source_name: Optional[str] = None  # @이름
     comment: Optional[str] = None  # 카드 코멘트(메모, 레거시 — UI 미사용)
     error: Optional[str] = None  # 실패 사유(status=failed 일 때)
-    execution_phase: Optional[str] = None  # pending|claimed|submitting|tracking|verifying|blocked|recovery_required|done|failed
+    execution_phase: Optional[str] = None  # preparing|pending|claimed|submitting|tracking|verifying|blocked|recovery_required|done|failed
     provider_status: Optional[str] = None  # Higgsfield 원시 상태(진단용)
     last_checked_at: Optional[str] = None
     next_check_at: Optional[str] = None

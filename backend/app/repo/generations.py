@@ -238,7 +238,7 @@ def fail_orphaned_jobs() -> int:
             "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='') "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM gen_request r WHERE r.gen_id=generation.id "
-            "  AND r.status IN ('pending','claimed','submitting','running','tracking','verifying','blocked','recovery_required')"
+            "  AND r.status IN ('preparing','pending','claimed','submitting','running','tracking','verifying','blocked','recovery_required')"
             ")"
         )
         # job_id 보유분 → running 유지 + '확인중'(재조정 대기). 이미 문구가 있으면 덮지 않는다.

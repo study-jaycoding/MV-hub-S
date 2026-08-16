@@ -24,6 +24,7 @@ def backup_interval_seconds() -> float:
     return BACKUP_INTERVAL
 
 _ACTIVE_PHASES = (
+    "preparing",
     "pending",
     "claimed",
     "submitting",
@@ -77,7 +78,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
         ).fetchone()[0]
         unanchored_stale = conn.execute(
             "SELECT COUNT(*) FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-            "WHERE r.status IN ('claimed','submitting','running','recovery_required') "
+            "WHERE r.status IN ('preparing','claimed','submitting','running','recovery_required') "
             "AND (g.job_id IS NULL OR g.job_id='') "
             "AND r.updated_at < datetime('now','-10 minutes')"
         ).fetchone()[0]

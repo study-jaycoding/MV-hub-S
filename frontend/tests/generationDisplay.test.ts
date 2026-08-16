@@ -6,6 +6,7 @@ import {
 
 describe("generation execution phase display", () => {
   it("generation status보다 상세 실행 단계를 우선 표시한다", () => {
+    expect(generationStatusLabelFor("pending", null, "preparing")).toBe("요청 준비 중");
     expect(generationStatusLabelFor("running", null, "submitting")).toBe("제출 중");
     expect(generationStatusLabelFor("running", null, "tracking")).toBe("생성 중");
     expect(generationStatusLabelFor("running", null, "verifying")).toBe("확인 중");

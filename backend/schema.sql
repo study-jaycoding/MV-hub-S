@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS gen_request (
     gen_id        TEXT NOT NULL,                  -- 즉시 만든 placeholder generation(여기 결과가 채워짐)
     kind          TEXT NOT NULL DEFAULT 'create', -- 'create' | 'regenerate'
     payload       TEXT,                           -- JSON: {model, prompt, params, references, source_gen_id}
-    status        TEXT NOT NULL DEFAULT 'pending',-- pending | claimed | submitting | tracking | verifying | blocked | recovery_required | done | failed | canceled
+    status        TEXT NOT NULL DEFAULT 'pending',-- preparing | pending | claimed | submitting | tracking | verifying | blocked | recovery_required | done | failed | canceled
     error         TEXT,
     provider_status TEXT,                         -- Higgsfield 원시 상태(알 수 없는 신규값도 그대로 보존)
     last_checked_at TEXT,                         -- generate get 마지막 확인 시각

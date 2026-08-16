@@ -39,6 +39,7 @@ from ..models import (
 from ..services.agent_signals import agent_signals
 from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
+    CanvasGenerationConflict,
     GenRequestCommand,
     anchor_request,
     begin_submission,
@@ -230,7 +231,10 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             canvas_link=canvas_link,
         )
 
-    gen = await submit_gen_request(cmd)
+    try:
+        gen = await submit_gen_request(cmd)
+    except CanvasGenerationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
     schedule_telemetry_drain()

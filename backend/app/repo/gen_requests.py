@@ -15,6 +15,7 @@ from ._common import new_id
 from ..db import get_connection
 from ..emailnorm import norm_email
 from ..workspace_context import normalize_workspace_context
+from . import tags
 from .generations import RECOVERY_REQUIRED_NOTE
 
 
@@ -341,12 +342,186 @@ def create_gen_request(
     return rid
 
 
+def reserve_canvas_gen_request(
+    account_email: str,
+    creator_uid: Optional[str],
+    gen_id: str,
+    kind: str,
+    canvas_link: dict[str, str],
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """캔버스 생성 시도 1건을 placeholder 생성 전에 예약한다.
+
+    gen_request의 (계정, attempt) 유니크 인덱스를 실제 멱등 키로 사용한다. 예약행은
+    ``preparing``이라 에이전트가 claim하지 않으며, placeholder와 최종 payload가 모두
+    준비된 뒤 :func:`activate_canvas_gen_request`가 ``pending``으로 바꾼다.
+    """
+    email = norm_email(account_email)
+    rid = new_id()
+    preparing_payload = json.dumps(
+        {"_canvas_contract": contract}, ensure_ascii=False, sort_keys=True
+    )
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT id, creator_uid, gen_id, kind, payload, status, "
+                "canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
+                "canvas_card_id card_id FROM gen_request "
+                "WHERE account_email=? AND canvas_attempt_id=? LIMIT 1",
+                (email, canvas_link["attempt_id"]),
+            ).fetchone()
+            if existing:
+                conn.execute("COMMIT")
+                result = dict(existing)
+                result["created"] = False
+                return result
+            conn.execute(
+                "INSERT INTO gen_request("
+                "id, account_email, creator_uid, gen_id, kind, payload, status, "
+                "canvas_attempt_id, canvas_scene_id, canvas_card_id) "
+                "VALUES(?,?,?,?,?,?,'preparing',?,?,?)",
+                (
+                    rid,
+                    email,
+                    creator_uid,
+                    gen_id,
+                    kind,
+                    preparing_payload,
+                    canvas_link["attempt_id"],
+                    canvas_link["scene_id"],
+                    canvas_link["card_id"],
+                ),
+            )
+            conn.execute("COMMIT")
+            return {
+                "id": rid,
+                "creator_uid": creator_uid,
+                "gen_id": gen_id,
+                "kind": kind,
+                "payload": preparing_payload,
+                "status": "preparing",
+                "attempt_id": canvas_link["attempt_id"],
+                "scene_id": canvas_link["scene_id"],
+                "card_id": canvas_link["card_id"],
+                "created": True,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def activate_canvas_gen_request(
+    account_email: str,
+    attempt_id: str,
+    gen_id: str,
+    payload: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    """준비가 끝난 예약을 claim 가능한 pending 요청으로 한 번만 활성화한다."""
+    email = norm_email(account_email)
+    final_payload = dict(payload)
+    # 활성화 뒤 재시도도 처음 요청과 같은 명령인지 확인할 수 있게 내부 계약을 보존한다.
+    # 에이전트 claim 응답은 필요한 키만 골라 내보내므로 이 내부 키는 외부 실행에 전달되지 않는다.
+    final_payload["_canvas_contract"] = contract
+    encoded = json.dumps(final_payload, ensure_ascii=False, sort_keys=True)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, gen_id, status FROM gen_request "
+                "WHERE account_email=? AND canvas_attempt_id=? LIMIT 1",
+                (email, attempt_id),
+            ).fetchone()
+            if not row or row["gen_id"] != gen_id:
+                conn.execute("ROLLBACK")
+                return None
+            activated = False
+            if row["status"] == "preparing":
+                cur = conn.execute(
+                    "UPDATE gen_request SET payload=?, status='pending', "
+                    "updated_at=datetime('now') WHERE id=? AND status='preparing'",
+                    (encoded, row["id"]),
+                )
+                activated = cur.rowcount > 0
+            conn.execute("COMMIT")
+            return {
+                "id": row["id"],
+                "gen_id": row["gen_id"],
+                "status": "pending" if activated else row["status"],
+                "activated": activated,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def canvas_placeholder_is_resumable(
+    account_email: str,
+    creator_uid: Optional[str],
+    canvas_link: dict[str, str],
+    kind: str,
+    source_gen_id: Optional[str] = None,
+) -> bool:
+    """예약과 같은 placeholder를 중단 지점부터 이어도 안전한지 확인한다."""
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        request = conn.execute(
+            "SELECT id FROM gen_request WHERE account_email=? AND canvas_attempt_id=? "
+            "AND gen_id=? AND kind=? AND status='preparing' LIMIT 1",
+            (email, canvas_link["attempt_id"], canvas_link["generation_id"], kind),
+        ).fetchone()
+        generation = conn.execute(
+            "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
+            (canvas_link["generation_id"],),
+        ).fetchone()
+        other_request = conn.execute(
+            "SELECT 1 FROM gen_request WHERE gen_id=? AND NOT "
+            "(account_email=? AND canvas_attempt_id=?) LIMIT 1",
+            (canvas_link["generation_id"], email, canvas_link["attempt_id"]),
+        ).fetchone()
+        if not (
+            request
+            and generation
+            and (creator_uid is None or generation["creator_uid"] == creator_uid)
+            and generation["origin"] == "local"
+            and generation["status"] == "pending"
+            and not generation["job_id"]
+            and not other_request
+        ):
+            return False
+        if kind != "regenerate":
+            return True
+        lineage = conn.execute(
+            "SELECT 1 FROM history WHERE parent_gen_id=? AND child_gen_id=? "
+            "AND relation='derived' LIMIT 1",
+            (source_gen_id, canvas_link["generation_id"]),
+        ).fetchone()
+        return bool(lineage)
+
+
+def delete_canvas_gen_request_reservation(
+    account_email: str,
+    attempt_id: str,
+    gen_id: str,
+) -> bool:
+    """준비 실패 시 아직 활성화되지 않은 예약행만 안전하게 제거한다."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM gen_request WHERE account_email=? AND canvas_attempt_id=? "
+            "AND gen_id=? AND status='preparing'",
+            (norm_email(account_email), attempt_id, gen_id),
+        )
+    return cur.rowcount > 0
+
+
 def get_canvas_generation_link(account_email: str, attempt_id: str) -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
             "canvas_card_id card_id, gen_id generation_id, status request_status, created_at "
             "FROM gen_request WHERE account_email=? AND canvas_attempt_id=? "
+            "AND status<>'preparing' "
             "ORDER BY created_at DESC, id DESC LIMIT 1",
             (norm_email(account_email), attempt_id),
         ).fetchone()
@@ -361,10 +536,19 @@ def resolve_canvas_generation_links(
         return []
     placeholders = ",".join("?" for _ in ids)
     with get_connection() as conn:
+        # 예약만 남고 placeholder가 만들어지지 않은 장기 중단 흔적은 확정 연결이 아니다.
+        # 클라이언트의 2분 복구 유예보다 넉넉히 둔 뒤 정리해 영구 찌꺼기를 막는다.
+        conn.execute(
+            "DELETE FROM gen_request WHERE account_email=? AND status='preparing' "
+            "AND created_at < datetime('now','-10 minutes') "
+            "AND NOT EXISTS(SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id)",
+            (norm_email(account_email),),
+        )
         rows = conn.execute(
             "SELECT canvas_attempt_id attempt_id, canvas_scene_id scene_id, "
             "canvas_card_id card_id, gen_id generation_id, status request_status, created_at "
             f"FROM gen_request WHERE account_email=? AND canvas_attempt_id IN ({placeholders}) "
+            "AND status<>'preparing' "
             "ORDER BY created_at, id",
             [norm_email(account_email), *ids],
         ).fetchall()
@@ -414,12 +598,22 @@ def repair_orphaned_canvas_generation(
         conn.execute("BEGIN IMMEDIATE")
         try:
             existing = conn.execute(
-                "SELECT 1 FROM gen_request WHERE account_email=? AND canvas_attempt_id=?",
+                "SELECT id, gen_id, kind, payload, status, canvas_scene_id scene_id, "
+                "canvas_card_id card_id FROM gen_request "
+                "WHERE account_email=? AND canvas_attempt_id=?",
                 (email, canvas_link["attempt_id"]),
             ).fetchone()
-            if existing:
-                conn.execute("COMMIT")
-                return True
+            if existing and existing["status"] != "preparing":
+                exact_existing = bool(
+                    existing["gen_id"] == canvas_link["generation_id"]
+                    and existing["scene_id"] == canvas_link["scene_id"]
+                    and existing["card_id"] == canvas_link["card_id"]
+                )
+                if exact_existing:
+                    conn.execute("COMMIT")
+                    return True
+                conn.execute("ROLLBACK")
+                return False
             generation = conn.execute(
                 "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
                 (canvas_link["generation_id"],),
@@ -431,13 +625,87 @@ def repair_orphaned_canvas_generation(
                 and generation["status"] == "pending"
                 and not generation["job_id"]
                 and not conn.execute(
-                    "SELECT 1 FROM gen_request WHERE gen_id=? LIMIT 1",
-                    (canvas_link["generation_id"],),
+                    "SELECT 1 FROM gen_request WHERE gen_id=? "
+                    "AND NOT (account_email=? AND canvas_attempt_id=?) LIMIT 1",
+                    (
+                        canvas_link["generation_id"],
+                        email,
+                        canvas_link["attempt_id"],
+                    ),
                 ).fetchone()
             )
             if not owned_orphan:
                 conn.execute("ROLLBACK")
                 return False
+            if existing:
+                exact_reservation = bool(
+                    existing["gen_id"] == canvas_link["generation_id"]
+                    and existing["scene_id"] == canvas_link["scene_id"]
+                    and existing["card_id"] == canvas_link["card_id"]
+                )
+                if not exact_reservation:
+                    conn.execute("ROLLBACK")
+                    return False
+                try:
+                    preparing = json.loads(existing["payload"] or "{}")
+                except (TypeError, ValueError):
+                    preparing = {}
+                contract = preparing.get("_canvas_contract")
+                final_payload = dict(payload)
+                if contract:
+                    final_payload["_canvas_contract"] = contract
+                    final_payload["source_gen_id"] = contract.get("source_gen_id")
+                else:
+                    final_payload.setdefault("source_gen_id", None)
+                if existing["kind"] == "regenerate":
+                    source_gen_id = final_payload.get("source_gen_id")
+                    lineage = conn.execute(
+                        "SELECT 1 FROM history WHERE parent_gen_id=? AND child_gen_id=? "
+                        "AND relation='derived' LIMIT 1",
+                        (source_gen_id, canvas_link["generation_id"]),
+                    ).fetchone()
+                    if not lineage:
+                        conn.execute("ROLLBACK")
+                        return False
+                    # import_generation 직후, 옵션 덮어쓰기 전에 종료된 경우도 최초 명령대로
+                    # 복구한다. 이 보정과 pending 활성화를 같은 쓰기 트랜잭션에 둔다.
+                    regenerate = (contract or {}).get("regenerate") or {}
+                    color = regenerate.get("color")
+                    prompt = regenerate.get("prompt")
+                    model = regenerate.get("model")
+                    if color is not None:
+                        conn.execute(
+                            "UPDATE generation SET color=? WHERE id=?",
+                            (color, canvas_link["generation_id"]),
+                        )
+                    if prompt or model:
+                        conn.execute(
+                            "UPDATE generation SET prompt=COALESCE(?,prompt), "
+                            "model=COALESCE(?,model), "
+                            "display_prompt=CASE WHEN ? IS NOT NULL "
+                            "THEN NULL ELSE display_prompt END WHERE id=?",
+                            (prompt, model, prompt, canvas_link["generation_id"]),
+                        )
+                        if prompt:
+                            final_payload["prompt"] = prompt
+                        if model:
+                            final_payload["model"] = model
+                    if regenerate.get("auto_tags"):
+                        tags._set_auto_tags(
+                            conn,
+                            canvas_link["generation_id"],
+                            regenerate["auto_tags"],
+                        )
+                conn.execute(
+                    "UPDATE gen_request SET payload=?, status='pending', "
+                    "updated_at=datetime('now') WHERE id=? AND status='preparing'",
+                    (
+                        json.dumps(final_payload, ensure_ascii=False, sort_keys=True),
+                        existing["id"],
+                    ),
+                )
+                conn.execute("COMMIT")
+                return True
             conn.execute(
                 "INSERT INTO gen_request("
                 "id, account_email, creator_uid, gen_id, kind, payload, status, "
