@@ -52,9 +52,10 @@ git sparse-checkout set backend frontend tools
 
 | 파일 | 내용 |
 |------|------|
-| [docs/README.md](docs/README.md) | 구현 현황·아키텍처·검증된 기술 노트 |
+| [docs/README.md](docs/README.md) | 문서 색인·문서 우선순위·구현 요약 |
 | [docs/DESIGN.md](docs/DESIGN.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 설계·구조 |
 | [docs/CLAUDE.md](docs/CLAUDE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | AI 보조 개발 규칙·맥락 |
+| [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 현재 위험 상태와 다음 작업의 단일 목록 |
 | [docs/SERVER.md](docs/SERVER.md) · [docs/SERVER_RECOVERY.md](docs/SERVER_RECOVERY.md) | 서버 운영·자동복구 |
 | [docs/TESTING.md](docs/TESTING.md) | 테스트·검증 절차 |
 | [docs/DATA_OWNERSHIP.md](docs/DATA_OWNERSHIP.md) · [docs/WORKSPACE_DATA_CONTRACT.md](docs/WORKSPACE_DATA_CONTRACT.md) | 데이터 소유권·워크스페이스 계약 |

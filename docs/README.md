@@ -1,10 +1,44 @@
-# Content Hub
+# MV Hub 개발 문서 안내
 
 Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·공유 툴.
 현행 설계는 [ARCHITECTURE.md](ARCHITECTURE.md)와 [AI_CONTEXT.md](AI_CONTEXT.md)를 참조한다.
 [DESIGN.md](DESIGN.md)는 서버가 직접 생성하던 초기 설계의 보존 문서다.
 
-## 초기 구현 기록 (Phase 1~5)
+## 먼저 볼 문서
+
+| 목적 | 기준 문서 |
+|---|---|
+| 프로그램 사용 | [사용설명서.md](사용설명서.md), [기능설명서.md](기능설명서.md) |
+| 현재 구조와 데이터 흐름 | [ARCHITECTURE.md](ARCHITECTURE.md), [AI_CONTEXT.md](AI_CONTEXT.md) |
+| 로컬·공유 서버 데이터 경계 | [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT.md](WORKSPACE_DATA_CONTRACT.md) |
+| 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
+| 현재 위험과 다음 작업 | [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md) |
+| 테스트와 배포 전 검증 | [TESTING.md](TESTING.md), [PREDEPLOY_100_USERS.md](PREDEPLOY_100_USERS.md) |
+| 서버 설치·운영·복구 | [SERVER.md](SERVER.md), [SERVER_RECOVERY.md](SERVER_RECOVERY.md) |
+
+## 문서 상태
+
+문서가 서로 다르면 아래 순서로 판단한다.
+
+1. 데이터·권한 계약 문서
+2. 현행 구조 문서
+3. 위험 감소 계획의 정규화 잔여 목록
+4. 기능별 계획과 과거 감사 기록
+5. 초기 설계 기록
+
+| 구분 | 문서 | 사용 방법 |
+|---|---|---|
+| **현행 기준** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` | 구현 전에 반드시 확인한다. |
+| **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태와 다음 작업의 단일 출처다. |
+| **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
+| **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `CANVAS_MERGE_OPTIMIZATION_PLAN`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
+| **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
+| **과거 기록** | `AUDIT_2026-08-15`, `DESIGN` | 문제 발견 이력과 초기 설계 보존용이다. 현재 할 일 목록으로 사용하지 않는다. |
+
+> 문서는 삭제하지 않고 위상만 구분한다. 과거 판단 근거가 사라지면 같은 문제를 다시 분석하거나,
+> 이미 해결된 항목을 중복 수정할 수 있기 때문이다.
+
+## 과거 초기 구현 기록 (Phase 1~5)
 
 > 아래 표는 개발 이력이며 현재 생성 구조를 뜻하지 않는다. 현행 생성은 서버 잡 큐가 아니라
 > 각 사용자 PC의 `agent_push.py`와 `/api/gen-requests`가 담당한다.
@@ -101,4 +135,3 @@ frontend/
 - **진행률**: higgsfield 는 퍼센트가 아니라 상태 전이를 주므로 가짜 진행바 대신
   coarse 상태(pending/running/done/failed)를 WS 로 push한다. 생성 완료는 `generate list`가 아니라
   저장한 job_id의 `generate get` 직접 응답, 결과 URL, 서버 asset 저장 ACK를 모두 확인해 확정한다.
-```
