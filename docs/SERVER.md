@@ -134,15 +134,27 @@ SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 �
 ### 백업 복원 훈련
 
 운영 DB를 교체하지 않고 임시 파일에 온라인 백업→복원→무결성·외래키·테이블 행 수 비교를 수행한다.
+운영 복구 가능성을 확인할 때는 단일 DB가 아니라 **같은 시각의 콘텐츠·휴지통·관리 DB 세트**를
+검증해야 한다.
 
 ```powershell
-python tools\verify_backup_restore.py
-python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_20260731_120000.db"
+py -3 tools\verify_backup_restore.py
+py -3 tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_20260731_120000.db"
+py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
 ```
 
-`"ok": true`, `"integrity": "ok"`, `"foreign_key_errors": 0`을 확인한다. 실제 장애 복원은
-서버를 중지하고 원본 DB를 별도 보존한 뒤 검증된 백업을 사용해야 한다. 이 도구는 운영 DB를
-자동 교체하지 않으므로 복구 훈련 중 실데이터를 덮어쓰지 않는다.
+`--backup-set`은 같은 폴더에서 정확히 같은 시각의 `content_trash_*.db`와 `manage_hub_*.db`를
+찾는다. 세 파일 중 하나라도 없으면 아무것도 복원하지 않는다. 성공 JSON에서 다음을 확인한다.
+
+- 최상위 `"ok": true`, `"mode": "database_set"`
+- `isolated_server.ready_checks`의 `content`, `trash`, `manage`가 모두 `"ok"`
+- `isolated_server.login`이 `"ok"`, `process_stopped`가 `true`
+- `files.*.source_unchanged`가 모두 `true`
+
+별도 `--restored-dir`을 주지 않으면 복원 사본과 격리 서버 로그는 성공·실패 후 임시 폴더와 함께
+삭제된다. `--restored-dir`로 남긴 사본에는 로그인 실측용 임시 account·creator가 각 1건 추가되므로
+**운영 DB로 직접 교체하면 안 된다.** 실제 장애 복원은 서버를 중지하고 기존 운영 DB를 별도 보존한
+뒤 검증된 원본 백업 3개를 사용한다. 이 도구 자체는 운영 DB와 원본 백업을 자동 교체·수정하지 않는다.
 
 ## 운영 상태 확인
 

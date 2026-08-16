@@ -99,7 +99,17 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
    IP가 같으면 팀원들은 아무 설정도 바꿀 필요 없다.
 3. 예비 PC에 저장소가 없으면 `setup_clone_git.bat` 로 클론, 있으면
    `update_git.bat` 로 최신화.
-4. 최신 백업 DB를 복원한다 (복제 위치의 폴더 구조 기준):
+4. 최신 백업 **세트**를 운영 경로에 복사하기 전에 격리 드릴로 검증한다. 대표 파일과 정확히 같은
+   시각의 `content_trash`·`manage_hub` 파일이 모두 있어야 한다.
+
+   ```powershell
+   cd E:\MV-hub-S
+   py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
+   ```
+
+   `ok=true`, 세 DB의 ready가 모두 `ok`, 로그인 `ok`, `process_stopped=true`, 원본 불변을 확인한다.
+   `--restored-dir`로 남긴 드릴 사본에는 임시 로그인 계정이 추가되므로 운영 DB로 쓰지 않는다.
+5. 검증한 원본 백업 DB를 복원한다 (복제 위치의 폴더 구조 기준):
    - `backups\content_hub_*.db` 최신본 → `backend\data\db\content_hub.db` 로
      복사(이름 변경). 서버 메인 DB.
    - 같은 시각의 `backups\content_trash_*.db` →
@@ -110,15 +120,15 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
    - `db-backups\<계정슬러그>\` 는 팀원 로컬 허브가 올려둔 개인 DB 백업 —
      서버 복구에는 불필요하고, 팀원 PC 가 죽었을 때 그 팀원에게 돌려주는 용도.
-5. `MV_server.bat` 실행(임시로는 수동 실행으로 충분).
-6. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면
+6. `MV_server.bat` 실행(임시로는 수동 실행으로 충분).
+7. 검증: 팀원 1명에게 접속·로그인·팀 탭 확인 요청. 서버 PC 교체가 길어지면
    예비 PC에도 `register_autostart.bat` 를 등록한다.
 
 ### 월 1회 리허설 체크리스트
 
 - [ ] 복제 위치에 어제 날짜 백업이 있는가 (`logs\backup_replicate.log` 확인)
-- [ ] 백업 하나를 임시 폴더에 복원해 SQLite 로 열리는가
-      (`python -c "import sqlite3;sqlite3.connect(r'복원.db').execute('PRAGMA integrity_check').fetchone()"`)
+- [ ] 같은 시각의 content·trash·manage 세트에 `--backup-set` 드릴을 실행해 ready·로그인·핵심 수
+      대조와 테스트 프로세스 회수가 모두 통과하는가
 - [ ] 서버 PC 재부팅 → 로그인 없이 자동으로 서버·워치독이 뜨는가
 - [ ] `logs\watchdog_ALERT.txt` 가 없는가 (있으면 원인 확인 후 삭제)
 

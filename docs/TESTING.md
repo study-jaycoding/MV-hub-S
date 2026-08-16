@@ -430,7 +430,49 @@ WS 100개와 장기 폴링 100개 유지, WS·장기 폴링·send timeout·send 
 파일·535개, 프로덕션 빌드와 아키텍처 검사가 통과했다.
 
 이 검증은 워치독의 오판 방지와 단기 부하를 확인한다. 운영 공유 서버의 5분 단절·복구와 8시간
-soak, 실제 DB 세트 복원은 대신하지 않는다.
+soak를 대신하지 않는다.
+
+## content·trash·manage DB 세트 복원 드릴(RL-21)
+
+같은 시각에 만들어진 백업 3개를 운영 DB와 분리된 폴더에 복원하고, 그 사본만 사용하는 실제
+loopback 서버를 띄워 ready·로그인·핵심 데이터 수를 검증한다.
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev
+$env:PYTHONPATH="backend"
+py -3 -m pytest backend\tests\test_backup_restore.py -q
+py -3 -m pytest `
+  backend\tests\test_backup_restore.py `
+  backend\tests\test_backup_atomicity.py `
+  backend\tests\test_backup_replicate.py `
+  backend\tests\test_db_backup_streaming.py `
+  backend\tests\test_db_restore_gate.py `
+  backend\tests\test_operational_health.py `
+  backend\tests\test_auth_session_cookie.py `
+  backend\tests\test_architecture_boundaries.py -q
+```
+
+집중 합격 기준은 8개, 관련 회귀는 39개다.
+
+- 대표 `content_hub_<시각>.db`와 정확히 같은 시각의 trash·manage 파일이 모두 있어야 한다.
+- 세 파일과 복원 대상 충돌을 먼저 검사하며, 실패 시 부분 복원 파일을 남기지 않는다.
+- 공백·한글·`#`가 있는 Windows 경로에서도 SQLite URI가 안전해야 한다.
+- 미반영된 비어 있지 않은 `-wal`, 필수 테이블 누락, 무결성·스키마·행 수 불일치를 거부해야 한다.
+- 격리 서버의 content·trash·manage ready와 관리자 로그인이 성공하고 핵심 수가 유지돼야 한다.
+- 종료 뒤 격리 서버 프로세스가 남지 않고 원본 백업의 해시와 폴더 내용이 바뀌지 않아야 한다.
+
+운영 또는 NAS 백업 세트는 다음 명령으로 별도 확인한다. 이 명령은 실제 크레딧 생성이나 운영 DB
+교체를 수행하지 않는다.
+
+```powershell
+py -3 tools\verify_backup_restore.py `
+  --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
+```
+
+RL-21 구현 기준에서 집중 8개·관련 39개·전체 백엔드 851개와 21 subtests가 통과했다. 합성 백업
+파일을 사용한 실제 Windows CLI·서버 프로세스 드릴도 종료 코드 0, 원본 불변,
+`process_stopped=true`로 끝났다. 이는 도구의 복원 계약을 확인하지만 NAS 최신성·예비 PC 전환 시간은
+운영 리허설로 따로 측정해야 한다.
 
 ## 런처 한눈에 보기
 

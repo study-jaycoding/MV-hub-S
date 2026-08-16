@@ -189,7 +189,8 @@ HTTP 요청
 | `telemetry_drain.py` | PM 텔레메트리 outbox 드레인(백오프·격리 모드) |
 | `account_report_delivery.py` | 계정 상태·거래 보고 배치 구성·명시적 ACK 검증·영속 큐 성공/실패 정산 |
 | `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
-| `backup_verify.py` / `db_scrub.py` / `test_snapshot.py` | 백업 복원 검증 / 개인정보 스크럽 / 테스트 스냅샷 |
+| `backup_verify.py` / `restore_runtime_verify.py` | 단일·동일 시각 3개 DB 세트의 무결성·복원 검증 / 복원 사본 격리 서버 ready·로그인·핵심 수 검증 |
+| `db_scrub.py` / `test_snapshot.py` | 개인정보 스크럽 / 테스트 스냅샷 |
 | `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로. watcher는 등록 ID와 실제 폴더를 분리하고 같은 폴더를 참조 수로 공유하며 이동·삭제·종료 때 마지막 핸들을 해제 |
 | `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별·Assets 브라우저 응답 고정 MIME / 경로 안전 / 원자 쓰기 / SSRF 가드 |
 | `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
