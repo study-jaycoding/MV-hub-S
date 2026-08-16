@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -32,6 +33,7 @@ from ..services.db_scrub import SESSION_KEYS as _SESSION_KEYS
 from ..services.db_scrub import strip_transfer_secrets as _strip_session
 from ..services.request_guards import require_loopback_request
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
+from ..services import upload_limits
 from ..services.test_snapshot import (
     SNAPSHOT_EXPORT_ENV,
     SNAPSHOT_TOKEN_ENV,
@@ -324,18 +326,61 @@ async def import_db(request: Request, file: UploadFile = File(...)):
     AUTH on(공유 서버)에선 admin 만 — 임의 DB 로 서버를 덮어쓰는 행위 차단. AUTH off(로컬)면 통과."""
     require_admin(request)
     _require_local_when_open(request)
-    data = await file.read()
-    # 임시파일에 받아 유효성(generation 테이블 존재) 검증.
-    tmp = Path(tempfile.gettempdir()) / f"mvhub-import-{int(time.time())}.db"
-    tmp.write_bytes(data)
     try:
-        validate_hub_db(tmp)
-    except HubDbValidationError as exc:
-        tmp.unlink(missing_ok=True)
-        _raise_validation_error(exc)
+        upload_limits.validate_upload_batch(
+            [file],
+            max_files=1,
+            max_file_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
+            max_total_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
+        )
+    except upload_limits.UploadLimitExceeded as exc:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "가져올 DB가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(upload_limits.DB_UPLOAD_FILE_MAX_BYTES)})"
+            ),
+            headers=upload_limits.limit_headers(upload_limits.DB_UPLOAD_FILE_MAX_BYTES),
+        ) from exc
 
-    # 검증 통과 → 현재 활성 DB 로 통째 교체 + 보안 리셋(import/복원 공용 헬퍼).
-    return _install_db(tmp)
+    # 전체 파일을 bytes로 복제하지 않고 1MiB씩 임시파일로 옮긴 뒤 검증한다. 난수 이름으로
+    # 동시 가져오기 충돌을 막고, 성공·실패 어느 경로에서도 finally로 정리한다.
+    tmp = Path(tempfile.gettempdir()) / f"mvhub-import-{secrets.token_hex(8)}.db"
+    try:
+        try:
+            await file.seek(0)
+            with tmp.open("xb") as target:
+                await asyncio.to_thread(
+                    upload_limits.copy_stream_limited,
+                    file.file,
+                    target,
+                    max_bytes=upload_limits.DB_UPLOAD_FILE_MAX_BYTES,
+                )
+            validate_hub_db(tmp)
+        except HubDbValidationError as exc:
+            _raise_validation_error(exc)
+        except upload_limits.UploadLimitExceeded as exc:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "가져올 DB가 너무 큽니다"
+                    f"(최대 {upload_limits.format_byte_limit(upload_limits.DB_UPLOAD_FILE_MAX_BYTES)})"
+                ),
+                headers=upload_limits.limit_headers(upload_limits.DB_UPLOAD_FILE_MAX_BYTES),
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=507,
+                detail=f"DB 가져오기 임시파일을 저장할 수 없습니다: {exc}",
+            ) from exc
+
+        # 검증 통과 → 현재 활성 DB 로 통째 교체 + 보안 리셋(import/복원 공용 헬퍼).
+        return _install_db(tmp)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass  # 원래 검증/설치 결과를 임시파일 정리 오류가 덮지 않게 한다.
 
 
 # ── 서버 계정별 백업/복원 (로컬 허브 → 공유 서버) ──────────────────────────────

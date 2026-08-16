@@ -28,11 +28,12 @@ from ..active_account import slug
 from ..config import DATA_DIR
 from ..deps import current_account
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
+from ..services import upload_limits
 
 router = APIRouter(prefix="/api/db-backup", tags=["db-backup"])
 
 _KEEP = 10  # 계정별 보관 버전 수(오래된 것부터 정리)
-_MAX_BYTES = 512 * 1024 * 1024  # 업로드 상한 512MB(메타 DB 는 보통 수 MB)
+_MAX_BYTES = upload_limits.DB_UPLOAD_FILE_MAX_BYTES  # 메타 DB는 보통 수 MB, 기본 상한 512MB
 _CHUNK_BYTES = 1024 * 1024  # 파일 전체를 메모리에 올리지 않고 1MiB씩 복사
 _MAX_CONCURRENT_STORES = 4  # 디스크 쓰기·quick_check 동시 실행 상한
 _store_slots = asyncio.Semaphore(_MAX_CONCURRENT_STORES)
@@ -139,7 +140,14 @@ async def upload_backup(request: Request, file: UploadFile = File(...)):
         # 통째로 스레드에 넘겨 읽기·쓰기·quick_check 를 모두 이벤트 루프 밖에서 실행한다.
         size, count = await _store_backup_limited(d, name, file.file)
     except BackupTooLargeError:
-        raise HTTPException(status_code=413, detail="백업 파일이 너무 큽니다(512MB 초과)")
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "백업 파일이 너무 큽니다"
+                f"({upload_limits.format_byte_limit(_MAX_BYTES)} 초과)"
+            ),
+            headers=upload_limits.limit_headers(_MAX_BYTES),
+        )
     except HubDbValidationError as exc:
         raise HTTPException(status_code=400, detail=hub_db_validation_detail(exc))
     return {"ok": True, "name": name, "size": size, "count": count}

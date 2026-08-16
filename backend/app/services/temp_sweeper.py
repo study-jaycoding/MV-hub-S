@@ -89,7 +89,12 @@ def sweep_once(now: Optional[float] = None) -> dict[str, int]:
         # %TEMP% 는 루트에만 만들므로 비재귀 — 다른 프로그램 하위 폴더를 훑지 않는다.
         "temp_exports": _sweep_dir(
             Path(tempfile.gettempdir()),
-            ("mvhub-export-*.db", "mvhub-update-bootstrap-*.bat", "mvhub-update-*.ps1"),
+            (
+                "mvhub-export-*.db",
+                "mvhub-import-*.db",
+                "mvhub-update-bootstrap-*.bat",
+                "mvhub-update-*.ps1",
+            ),
             cutoff,
             recursive=False,
         ),

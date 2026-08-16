@@ -30,7 +30,7 @@ from ..deps import (
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_client, comfy_workflow, video_convert
+from ..services import comfy_client, comfy_workflow, upload_limits, video_convert
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 
@@ -737,10 +737,58 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
 
 def _read_media_uploads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
     """UploadFile 은 응답 후 FastAPI 가 닫을 수 있으므로 request 안에서 bytes 로 고정한다.
-    (worker thread 에는 UploadFile 객체가 아니라 (filename, bytes) 만 넘긴다.)"""
+    (worker thread 에는 UploadFile 객체가 아니라 (filename, bytes) 만 넘긴다.)
+
+    메모리 고정 전에 파일 수·개별 크기·합계를 검사한다. size가 없는 직접 호출까지 우회하지
+    못하도록 실제 read도 파일당 상한+1바이트에서 끊고 합계를 다시 센다.
+    """
+    try:
+        upload_limits.validate_upload_batch(
+            files,
+            max_files=upload_limits.COMFY_UPLOAD_MAX_FILES,
+            max_file_bytes=upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES,
+            max_total_bytes=upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES,
+        )
+    except upload_limits.UploadLimitExceeded as exc:
+        if exc.kind == "file_count":
+            raise HTTPException(
+                400,
+                f"Comfy 입력은 한 번에 최대 {upload_limits.COMFY_UPLOAD_MAX_FILES}개입니다",
+            ) from exc
+        if exc.kind == "file_size":
+            raise HTTPException(
+                413,
+                f"{(exc.index or 0) + 1}번째 Comfy 입력이 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
+                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
+            ) from exc
+        raise HTTPException(
+            413,
+            "Comfy 입력 파일 합계가 너무 큽니다"
+            f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
+            headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
+        ) from exc
+
     uploads: list[tuple[str, bytes]] = []
+    total = 0
     for i, uf in enumerate(files):
-        uploads.append((uf.filename or f"input_{i}.bin", uf.file.read()))
+        data = uf.file.read(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES + 1)
+        if len(data) > upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES:
+            raise HTTPException(
+                413,
+                f"{i + 1}번째 Comfy 입력이 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
+                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
+            )
+        total += len(data)
+        if total > upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES:
+            raise HTTPException(
+                413,
+                "Comfy 입력 파일 합계가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
+                headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
+            )
+        uploads.append((uf.filename or f"input_{i}.bin", data))
     return uploads
 
 

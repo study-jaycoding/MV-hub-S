@@ -48,7 +48,7 @@ from ..services.media_types import (
     asset_content_type,
 )
 from ..services.request_guards import require_loopback_request
-from ..services import asset_io, asset_mounts, asset_paths, asset_tree, thumbs
+from ..services import asset_io, asset_mounts, asset_paths, asset_tree, thumbs, upload_limits
 from ..services.path_safety import safe_join
 
 
@@ -103,6 +103,7 @@ def _find_same_media(
 
 # ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
 _UPLOAD_MAX_FILES = asset_io.UPLOAD_MAX_FILES
+_UPLOAD_TOTAL_MAX_BYTES = upload_limits.ASSET_UPLOAD_TOTAL_MAX_BYTES
 _ZIP_MAX_FILES = asset_io.ZIP_MAX_FILES
 _UploadTooLarge = asset_io.UploadTooLarge
 
@@ -119,6 +120,40 @@ def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
         return asset_io.commit_unique_tmp(tmp, dest_dir, raw_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _validate_upload_batch(files: list[UploadFile]) -> None:
+    """Starlette가 실제로 받은 파일 바이트 합계를 저장 시작 전에 검사한다."""
+    try:
+        upload_limits.validate_upload_batch(
+            files,
+            max_files=_UPLOAD_MAX_FILES,
+            max_file_bytes=asset_io.UPLOAD_MAX_BYTES,
+            max_total_bytes=_UPLOAD_TOTAL_MAX_BYTES,
+        )
+    except upload_limits.UploadLimitExceeded as exc:
+        if exc.kind == "file_count":
+            raise HTTPException(
+                status_code=400,
+                detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다",
+            ) from exc
+        if exc.kind == "file_size":
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{(exc.index or 0) + 1}번째 파일이 너무 큽니다"
+                    f"(최대 {upload_limits.format_byte_limit(asset_io.UPLOAD_MAX_BYTES)})"
+                ),
+                headers=upload_limits.limit_headers(asset_io.UPLOAD_MAX_BYTES),
+            ) from exc
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "한 번에 올릴 수 있는 파일 합계가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(_UPLOAD_TOTAL_MAX_BYTES)})"
+            ),
+            headers=upload_limits.limit_headers(_UPLOAD_TOTAL_MAX_BYTES),
+        ) from exc
 
 
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
@@ -665,8 +700,7 @@ async def upload_assets(
     dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
     if not dest or not dest.is_dir():
         raise HTTPException(status_code=400, detail="대상 폴더 없음")
-    if len(files) > _UPLOAD_MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
+    _validate_upload_batch(files)
 
     saved: list[str] = []
     skipped: list[str] = []
@@ -701,12 +735,20 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
     저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
     captures 는 내장 ASSETS_ROOT/captures 폴더(마운트 아님)라 owner 무관하게 thumb/file 서빙됨."""
+    _validate_upload_batch([file])
     cap_dir = (ASSETS_ROOT / "captures").resolve()
     cap_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
-        raise HTTPException(status_code=413, detail="캡쳐가 너무 큽니다")
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "캡쳐가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(asset_io.UPLOAD_MAX_BYTES)})"
+            ),
+            headers=upload_limits.limit_headers(asset_io.UPLOAD_MAX_BYTES),
+        )
     if size == 0:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
@@ -746,8 +788,7 @@ async def upload_reference_import(
     except ValueError:
         raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
-    if len(files) > _UPLOAD_MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
+    _validate_upload_batch(files)
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []

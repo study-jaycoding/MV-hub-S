@@ -62,6 +62,25 @@ class TempSweeperTests(unittest.TestCase):
         self.assertEqual(stats["thumb_source_parts"], 0)
         self.assertEqual(stats["thumb_tmps"], 0)
 
+    def test_stale_db_import_temp_is_removed_but_unrelated_db_is_preserved(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            root = Path(d)
+            stale_import = root / "mvhub-import-deadbeef.db"
+            unrelated = root / "another-app-import.db"
+            for path in (stale_import, unrelated):
+                path.write_bytes(b"db")
+                old = time.time() - 3 * 86400
+                os.utime(path, (old, old))
+
+            with mock.patch.object(
+                temp_sweeper.tempfile, "gettempdir", return_value=str(root)
+            ), mock.patch.object(temp_sweeper, "MEDIA_DIR", root / "media"):
+                stats = temp_sweeper.sweep_once()
+
+            self.assertFalse(stale_import.exists())
+            self.assertTrue(unrelated.exists())
+            self.assertEqual(stats["temp_exports"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

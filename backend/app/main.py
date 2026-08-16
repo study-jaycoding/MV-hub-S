@@ -96,6 +96,7 @@ from .services.operational_health import (
     operations_snapshot,
 )
 from .services.request_guards import is_loopback_host
+from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
@@ -554,6 +555,11 @@ async def mutation_notify(request: Request, call_next):
 @app.middleware("http")
 async def data_proxy(request: Request, call_next):
     return await _proxy.data_proxy_middleware(request, call_next)
+
+
+# multipart 파싱·로컬→공유서버 프록시가 본문을 읽기 전에 전체 바이트 상한을 강제한다.
+# AUTH off 원격 가드는 이 뒤에 등록되어 더 바깥에서 불필요한 원격 본문을 먼저 거부한다.
+app.add_middleware(UploadBodyLimitMiddleware)
 
 
 # ★최외곽 가드(가장 마지막 등록 = 가장 먼저 실행) — AUTH off 인데 LAN 에 노출된 경우, data_proxy
