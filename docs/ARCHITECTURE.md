@@ -125,6 +125,11 @@ HTTP 요청
   경계용 2MiB만 추가하고 각 값은 `CONTENT_HUB_*_UPLOAD_*` 환경변수로 낮출 수 있다.
 - DB import는 전체 `bytes`를 만들지 않고 1MiB씩 앱 전용 TEMP 파일로 복사한 뒤 검증·설치한다.
   성공·실패 뒤 즉시 삭제하며, 비정상 종료로 남은 파일은 `temp_sweeper`가 앱 접두 범위에서만 치운다.
+- Comfy 입력은 요청 spool을 1MiB씩 `mvhub-comfy-input-*.part` 하나로 복사한 뒤 백그라운드 작업에
+  경로만 전달한다. 로컬 입력 복사와 Cloud ffmpeg 변환도 경로 기반이며, HTTP multipart는 정확한
+  `Content-Length`와 재생 가능한 1MiB iterable로 전송한다. 주입 완료·오류·스레드 시작 실패 뒤
+  즉시 삭제하고 강제 종료 잔재는 24시간 sweeper가 회수한다. 실행 슬롯을 기다리는 동안에는 메모리
+  대신 TEMP 디스크를 사용하므로 긴 대기열의 디스크 용량은 운영 관측 대상이다.
 - 현재 ZIP을 받는 HTTP 업로드 API는 없다. 테스트 스냅샷 ZIP은 내려받기·추출 경로이며 기존
   파일 수·manifest·압축 해제 총량 제한을 별도로 적용한다.
 
@@ -178,7 +183,7 @@ HTTP 요청
 | `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
-| `comfy_client.py` / `comfy_workflow.py` | ComfyUI(로컬·Cloud) HTTP 클라이언트 / 워크플로 슬롯·파라미터 파싱 |
+| `comfy_client.py` / `comfy_workflow.py` | ComfyUI(로컬·Cloud) 파일 스트리밍 HTTP 클라이언트 / 워크플로 슬롯·파라미터 파싱 |
 | `resolve_bridge.py` / `resolve_transfer.py` / `resolve_probe.py` / `resolve_status_runner.py` / `resolve_script_installer.py` | Resolve Media Pool 가져오기 / 렌더폴더 전송·manifest / 프로세스 격리 상태 조회 / 스크립트 설치 |
 | `release_update.py` | 작업자 릴리스 자동 업데이트 상태·부트스트랩 실행기 |
 | `telemetry_drain.py` | PM 텔레메트리 outbox 드레인(백오프·격리 모드) |

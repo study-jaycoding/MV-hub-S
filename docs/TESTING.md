@@ -317,6 +317,39 @@ Windows 실측은 실제 watchdog Observer로 같은 등록의 경로 이동 100
 교체한다. 이전 경로 변경은 무알림, 새 경로 변경은 `assets_changed`, 마운트 삭제 뒤 새 경로 변경은
 무알림이어야 하며 종료 뒤 포트와 프로세스가 반환되어야 한다.
 
+## Comfy 대형 입력 스트리밍 회귀(RL-17)
+
+```powershell
+cd backend
+py -3 -m pytest `
+  tests\test_comfy_cloud_client.py `
+  tests\test_comfy_router.py `
+  tests\test_upload_limits.py `
+  tests\test_video_convert.py `
+  tests\test_temp_sweeper.py `
+  tests\test_comfy_save.py -q
+```
+
+`d5077be6`의 집중 합격 기준은 위 명령의 백엔드 99개다.
+
+- 요청 spool은 전체 `bytes`로 읽지 않고 1MiB 이하 청크로 앱 전용 TEMP 파일에 복사해야 한다.
+- 백그라운드 작업에는 이름·경로·크기만 넘기며, 잡별 파일명 변경이 파일 payload 복사를 만들면 안 된다.
+- 로컬 경로 입력·Cloud 영상 변환·Comfy multipart 업로드는 파일 경로를 사용해야 한다.
+- 실제 `urllib` 요청은 정확한 `Content-Length`를 보내고 `Transfer-Encoding: chunked` 없이 수신 길이가
+  일치해야 한다.
+- 정상 주입·업로드/파싱 실패·작업 스레드 시작 실패 뒤 입력과 변환 임시파일을 지워야 한다. 프로세스
+  강제 종료 잔재는 24시간 이상 지난 앱 접두 파일만 sweeper가 회수해야 한다.
+
+같은 작업 트리에서 백엔드 전체 834개·21 subtests, 프론트 76개 파일·534개, 업데이트 관련 40개,
+프론트 아키텍처 검사와 프로덕션 빌드가 통과했다.
+
+64MiB(67,108,864바이트) 실제 파일 실측은 두 단계다. 스테이징 결과 파일 크기가 원본과 같고 정리
+뒤 남지 않아야 하며, Python `tracemalloc` 최대 할당은 2,232,179바이트였다. 로컬 HTTP 서버로 실제
+multipart를 보냈을 때 67,109,276바이트를 완전히 받았고 본문 오버헤드는 412바이트, 최대 할당은
+4,554,937바이트였다. 이는 Python 전체 `bytes` 사본 제거와 실제 stdlib 전송을 검증하지만 OS 소켓
+버퍼를 포함한 전체 프로세스 RSS, 실제 Comfy Cloud·ffmpeg 대형 영상, 긴 대기열의 TEMP 디스크 용량을
+대신하지 않는다. 이 세 항목은 운영과 같은 스테이징에서 별도로 확인한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |
