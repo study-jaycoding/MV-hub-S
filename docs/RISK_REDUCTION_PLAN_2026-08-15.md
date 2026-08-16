@@ -140,7 +140,7 @@ P0라고 해서 기존 `main`에도 이미 존재하는 문제 때문에 안정�
 | RL-20 | P1 | ✅ | 워치독 busy·maintenance·사망 오판 | `f56811b9`. `/api/ready`는 유지보수 중 즉시 503+Retry-After, 워치독은 busy·maintenance에 경보만 남기고 연속 dead만 개입한다. 전체 회귀·Windows 격리 실측 통과 |
 | RL-21 | P1 | ✅ | content·trash·manage DB 세트 복원 드릴 | `562f83c7`. 동일 타임스탬프 3개를 사전 검증한 뒤 격리 경로에만 복원한다. 원본 해시·스키마·전체 테이블 수를 대조하고 실제 Windows loopback 서버의 content/trash/manage ready, 임시 관리자 로그인, generation/project/share/trashed/team_generation_fact 수, 자식 프로세스 회수를 확인. 집중 8개·관련 39개·전체 백엔드 851개 통과 |
 | RL-22 | P1 | ✅ | 원격 URL 만료 대비 원본 보존 정책 | `2a8dab18`. 공유·최종 완료본을 DB 영속 큐에 멱등 등록하고 기존 공유·최종본도 시작 시 백필한다. 저사양 워커는 30초마다 최대 2건을 처리하고 재시작 시 running을 복구한다. 기본 50GiB 한도에서는 기존 보존본을 자동 삭제하지 않고 새 파일만 되돌린다. 상태·수동 재시도·안전한 운영 집계를 노출한다. 동시 요청 20회, 전체 백엔드 862개·21 subtests, 프론트 535개·격리 브라우저 통과 |
-| RL-23 | P1 | ⬜ | 작업자 오프디스크 백업이 자동·필수·관측 계약이 아님(신규) | 백업이 같은 디스크(`data/backups`). 서버용 `backup_replicate` 계약을 작업자에 확장 |
+| RL-23 | P1 | ⬜ | 작업자 오프디스크 백업이 자동·필수·관측 계약이 아님(신규) | [WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md). `작업자 → 공유 서버 → NAS·다른 디스크`를 두 단계로 분리하고, 세트 단위 멱등 전송·영속 재시도·명시적 ACK·각 단계 마지막 성공을 구현해야 함 |
 | RL-24 | P2 | ⬜ | CLI 파라미터 스키마 실패 영구 캐시(신규) | `cli_bridge._PARAM_NAMES_CACHE` — 실패는 TTL 또는 미저장 |
 | RL-25 | P1 | ✅ | Windows 업데이트 bootstrap이 PowerShell 모듈 자동 로딩에 의존(신규) | `ce346560`. `Get-FileHash`를 자립적인 .NET SHA-256으로 교체하고 스트림을 항상 회수한다. 실제 cmd/PowerShell 격리 프로세스로 빈 TEMP·공백 경로·자체 교체·재시도·종료 코드 전달을 검증. 업데이트 40개·전체 백엔드 742개 통과 |
 
