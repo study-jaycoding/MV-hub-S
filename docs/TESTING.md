@@ -40,6 +40,48 @@ npm.cmd run build
 
 자동 테스트는 운영 DB가 아닌 `CONTENT_HUB_DB` 또는 `CONTENT_HUB_DATA` 임시 경로를 사용한다.
 
+## 생성 제출 중단 복구(RL-05)
+
+이 검증은 같은 유료 생성을 자동으로 두 번 제출하지 않는 상태 계약을 확인한다. 먼저 비용이 들지
+않는 대상 테스트를 실행하고, 그다음 전체 회귀를 실행한다. PowerShell에서 프로젝트 루트를 기준으로
+실행한다.
+
+```powershell
+cd backend
+python -m pytest -q -p no:cacheprovider `
+  tests\test_generation_state_engine.py `
+  tests\test_gen_request_usecase.py `
+  tests\test_identity_permissions.py `
+  tests\test_agent_contracts.py `
+  tests\test_operational_health.py
+
+cd ..\frontend
+npm.cmd test -- --run `
+  tests\generationDisplay.test.ts `
+  tests\generationRecoveryApi.test.ts
+```
+
+필수 판정은 다음과 같다.
+
+- CLI 호출 전 `claimed` 중단은 만료 뒤 `pending`으로 돌아간다.
+- CLI 호출 후 결과가 불명확한 `submitting`은 `recovery_required`로 격리된다.
+- 일반 재생성 API와 버튼으로 `recovery_required`를 우회할 수 없다.
+- 사용자가 외부 작업이 없음을 명시적으로 확인한 경우에만 다시 `pending`으로 돌릴 수 있다.
+- ACK 응답이 유실된 경우 같은 멱등 요청을 재전송하되 유료 CLI를 중복 호출하지 않는다.
+
+대상 테스트가 통과해도 완료는 아니다. 백엔드·프론트 전체 회귀, 프론트 빌드, 업데이트 경로 테스트,
+비용이 들지 않는 중단·재시작 DB 드릴과 적대적 리뷰까지 통과해야 한다. 실제 Higgsfield 생성과
+실제 제출 중단은 크레딧을 사용할 수 있으므로 사용자 승인 없이 실행하지 않는다. 세부 완료 조건은
+[GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md)를 따른다.
+
+비용 없는 중단·재시작 DB 드릴은 프로젝트 루트에서 실행한다.
+
+```powershell
+python tools\verify_generation_submission_recovery.py
+```
+
+출력의 `database`는 `temporary`, `paid_cli_called`는 `false`, 마지막 `ok`는 `true`여야 한다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

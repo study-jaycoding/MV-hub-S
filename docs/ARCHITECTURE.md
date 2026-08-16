@@ -269,8 +269,10 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
    │ POST /api/gen-requests (kind=create|regenerate)
    ▼ 서버: placeholder 카드 즉시 생성(status=pending, 요청자 소유) + 큐잉
    │       (재생성은 placeholder + 'derived' 리니지까지)
-   ▼ GET /api/gen-requests/pending  (요청자 PC 에이전트가 claim → running)
+   ▼ GET /api/gen-requests/pending  (새 에이전트: claim → claimed)
 요청자 PC 에이전트(agent_push.py --watch):
+   │   레퍼런스·워크스페이스 준비
+   │   POST /begin-submission ACK → submitting
    │   제출 워커(기본 8): higgsfield generate create <model> --prompt …  ← 자기 로컬 CLI(유료)
    │   job_id 즉시 anchor → 원격 작업 최대 64개 추적
    │   기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
@@ -282,6 +284,13 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 `generate list` 는 로컬 히스토리 적재(§7.2)에 사용한다. 생성 요청의 완료 판정에는 쓰지 않는다.
 목록 반영이 늦거나 작업이 목록에서 빠져도 이미 제출한 유료 작업의 `job_id` 추적은 유지되며,
 에이전트 재시작 뒤에는 로컬 추적 파일·서버 reconcile 후보로 복구한다.
+
+CLI 호출 전 `claimed`는 lease 만료 시 안전하게 대기열로 돌아갈 수 있다. CLI 호출 후 `job_id`가
+없는 `submitting`은 외부 과금 여부를 확정할 수 없으므로 자동 재실행하지 않고
+`recovery_required`로 격리한다. 상태 전이·혼합 버전·운영 복구 절차는
+[GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md)를 따른다. RL-05는
+`1252b52d`에서 내부 계약·전체 회귀·비용 없는 중단 드릴·격리 브라우저 실측을 완료했다.
+실제 유료 생성 중단과 혼합 PC 업데이트는 외부 통합 검증으로 남긴다.
 
 팀 워크스페이스 생성은 id와 표시 이름이 모두 준비된 뒤에만 제출한다. 브라우저 저장 필터에서
 id만 먼저 복원된 경우 `AccountMenu`가 계정 에이전트의 최신 워크스페이스 보고와 같은 id를 찾아

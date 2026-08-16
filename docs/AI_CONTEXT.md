@@ -94,8 +94,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 서버: placeholder 카드 즉시 생성(status=pending, 요청자 소유) + gen_request 큐잉
       (재생성은 import_generation 으로 placeholder + 'derived' 리니지)
    │
-   ▼  GET /api/gen-requests/pending  (요청자 PC의 에이전트가 claim → running)
+   ▼  GET /api/gen-requests/pending  (새 에이전트가 claim → claimed)
 요청자 PC 에이전트(agent_push.py --watch):
+      레퍼런스·워크스페이스 준비 → POST /begin-submission ACK → submitting
       제출 워커(기본 8): higgsfield generate create <model> --prompt … [params] [미디어]
       job_id 즉시 anchor → 원격 작업 최대 64개 추적
       기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
@@ -108,6 +109,10 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 - **버튼·UX는 그대로**, 실행 주체만 "서버 1개 CLI" → "각자 로컬 CLI"로 바뀜. 결과·크레딧·귀속 모두 실행한 사람 것.
 - **전제**: 그 사람 에이전트가 `--watch` 로 떠 있어야 동작한다. 꺼져 있으면 pending 카드로 남고,
   다시 켜면 실행을 이어간다. jay 포함.
+- **RL-05 완료(`1252b52d`)**: 유료 CLI 호출 전 `claimed`만 lease 만료 시 재큐잉하고, 호출 후
+  `job_id`가 없는 요청은 `recovery_required`로 격리해 자동 재생성하지 않는다. 새 에이전트는
+  `submission-stage`, 구 에이전트는 호환 경로를 사용하며 새 서버가 알려진 모호한 실패를 격리한다.
+  상세 계약과 외부 검증 잔여는 [GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md)를 따른다.
 - pending/running 카드의 미디어 영역은 Higgsfield 로고만 표시한다. 대기·제출·생성·확인·조치 같은
   세부 상태 글씨는 카드 위에 겹치지 않고 툴팁·정보창에서 확인한다 [GenerationCard].
 - 팀 생성·재생성은 workspace id와 이름이 모두 확인된 뒤에만 전송한다. 새로고침으로 id만 복원된
@@ -163,7 +168,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 | `project`+`project_member` | 작업 묶음(공유·이동 단위) | name, kind, archived(콜드분리) / project_id, creator_uid, project_role |
 | `creator` | 생성자 uid→이름·전역역할 | uid, name, global_role(CSV) |
 | `account` | 로그인 계정 | email, password_hash(pbkdf2), status, global_role(CSV), **creator_uid**(생성자 연결), approved_at |
-| **`gen_request`** | 로컬 실행 생성요청 큐 | id, account_email, creator_uid, gen_id(placeholder), kind(create/regenerate), payload(JSON 레시피), status(pending/running/done/failed), error |
+| **`gen_request`** | 로컬 실행 생성요청 큐 | id, account_email, creator_uid, gen_id(placeholder), kind(create/regenerate), payload(JSON 레시피), status(pending/claimed/submitting/running/tracking/verifying/recovery_required/done/failed/canceled), lease_owner, lease_expires_at, error |
 | `app_setting` | key-value | provider_uid/name/email, my_creator_uid, auth_secret, **hf_status:<email>**(크레딧 보고) |
 | `asset_meta`+`asset_comment(_read)` | Assets 분리창 파일별 메타/코멘트 | (project, path) 키 |
 | `trashed`(별도 DB) | 휴지통 | id, trashed_at, payload(JSON: 본체+자식 전부) |

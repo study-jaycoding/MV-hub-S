@@ -15,6 +15,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | 로컬·공유 서버 데이터 경계 | [DATA_OWNERSHIP.md](DATA_OWNERSHIP.md), [WORKSPACE_DATA_CONTRACT.md](WORKSPACE_DATA_CONTRACT.md) |
 | 신원·권한·실행 모드 | [신원과_모드_가이드.md](신원과_모드_가이드.md) |
 | 현재 위험과 다음 작업 | [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md) |
+| 생성 제출 중단·중복 과금 방지 | [GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md) |
 | 테스트와 배포 전 검증 | [TESTING.md](TESTING.md), [PREDEPLOY_100_USERS.md](PREDEPLOY_100_USERS.md) |
 | 서버 설치·운영·복구 | [SERVER.md](SERVER.md), [SERVER_RECOVERY.md](SERVER_RECOVERY.md) |
 
@@ -33,6 +34,7 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 | **현행 기준** | `ARCHITECTURE`, `AI_CONTEXT`, `DATA_OWNERSHIP`, `WORKSPACE_DATA_CONTRACT`, `신원과_모드_가이드` | 구현 전에 반드시 확인한다. |
 | **현재 현황 요약** | `CURRENT_STATUS` | 완료·잔여·검증 상태를 빠르게 확인한다. |
 | **현재 작업 목록** | `RISK_REDUCTION_PLAN_2026-08-15` | 위험 상태를 변경하는 단일 출처다. |
+| **현재 세부 계약** | `GENERATION_SUBMISSION_RECOVERY` | RL-05의 상태 전이·복구·검증 기준이다. 완료 여부는 위험 계획의 Gate 0 표를 따른다. |
 | **운영 기준** | `SERVER`, `SERVER_RECOVERY`, `TESTING`, `HF_CLI_UPGRADE` | 설치·업데이트·복구·검증 때 사용한다. |
 | **기능별 설계** | `PM_DASHBOARD_DESIGN`, `관리대시보드_통합계획`, `CANVAS_MERGE_OPTIMIZATION_PLAN`, `DESIGN_id_unification`, `ROADMAP_SCALE` | 일부 구현·일부 계획이 섞여 있으므로 현행 코드와 대조한다. |
 | **검증 기록** | `LOAD_TEST_2026-08-14`, `PREDEPLOY_100_USERS` | 해당 시점의 결과다. 새 배포를 자동 보증하지 않는다. |
@@ -40,6 +42,21 @@ Higgsfield CLI 기반 **로컬 우선(Local-first)** 콘텐츠 생성·관리·�
 
 > 문서는 삭제하지 않고 위상만 구분한다. 과거 판단 근거가 사라지면 같은 문제를 다시 분석하거나,
 > 이미 해결된 항목을 중복 수정할 수 있기 때문이다.
+
+### 문서별 갱신 책임
+
+같은 내용을 여러 문서에서 각각 확정하지 않는다.
+
+| 변경 내용 | 먼저 고칠 문서 | 함께 맞출 문서 |
+|---|---|---|
+| 위험 항목 상태·우선순위 | `RISK_REDUCTION_PLAN_2026-08-15` Gate 0 표 | `CURRENT_STATUS` 요약 |
+| 구조·데이터 흐름 | `ARCHITECTURE`, `AI_CONTEXT` | 관련 세부 계약 |
+| 기능별 상태 전이·안전 규칙 | 해당 세부 계약 | `ARCHITECTURE`, `TESTING` |
+| 실제 테스트 결과 | `CURRENT_STATUS` | 관련 위험 항목의 근거 |
+| 설치·운영 절차 | `SERVER`, `SERVER_RECOVERY`, `TESTING` | `CURRENT_STATUS`의 잔여 확인 |
+
+`검증 통과`, `완료`, `배포 가능`은 서로 다른 말이다. 자동 테스트만 통과한 작업은 외부 프로그램과
+운영 설치본까지 확인하기 전에는 `배포 완료`로 기록하지 않는다.
 
 ## 과거 초기 구현 기록 (Phase 1~5)
 
