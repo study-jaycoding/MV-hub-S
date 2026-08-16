@@ -138,7 +138,7 @@ HTTP 요청
 | 모듈 | 담당 |
 |---|---|
 | `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
-| `generation_media_cache.py` | 미디어 보관(⤓ byte-cache) 오케스트레이션 |
+| `generation_media_cache.py` | 생성물 asset/reference 원격 URL을 로컬 보존 경로로 전환하고 상세 결과를 집계 |
 | `generation_personal_meta.py` | 팀 카드 개인 메타(색·태그 오버레이) 업무 흐름 |
 | `hf_missing.py` | Higgsfield 쪽에 없는 로컬 카드 점검·정리 |
 
@@ -263,6 +263,7 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 |---|---|---|
 | `generation` | 생성 1건(중심) | id, prompt, display_prompt(@칩 보존), model, params(JSON), color, status, **sort_ts**(정밀 epoch=정렬키), job_id, is_source, source_name, **creator_uid**, project_id, deleted_at, hf_missing, **is_final/final_by/final_at**(골드) |
 | `asset` | 결과물 미디어 | generation_id, type(image/video), file_path(/media 또는 원격 URL), thumbnail_path, **source_url**(원격 원본 보존) |
+| **`media_preservation`** | 공유·최종 원본 보존 영속 큐 | generation_id, reason(shared/final/manual/admin), status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·owner 스코프·'무장' 시 새 생성 자동적용) | name |
 | **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
@@ -413,10 +414,12 @@ ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패
 1. **서버는 생성 안 함** — 전원 로컬 CLI + push(§2). 옛 서버측 직접 생성 엔드포인트와 잡 큐는 제거됐다.
 2. **두 로그인 구분** — 허브 세션 ≠ Higgsfield CLI 인증(§8).
 3. **계정↔creator 재연결 오염** 방지 — 잡 고유 uid 유지 + 이미 실제 uid 면 재연결 금지 + 에이전트가 전체목록 최다 uid 전송.
-4. **미디어 공개 URL + 선택 보존** — 일반 생성물은 Higgsfield 원격 URL을 참조해 push 시 바이트를
-   전송하지 않는다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하고,
-   개별 `/api/generations/{id}/cache`·전체 `/api/cache-all` 보관도 지원한다. 아직 보관하지 않은
-   일반 생성물의 원격 URL은 만료될 수 있다.
+4. **미디어 공개 URL + 공유·최종 자동 보존** — 일반 생성물은 Higgsfield 원격 URL을 참조해 push 시
+   바이트를 전송하지 않는다. 공유·최종 완료본은 `media_preservation`에 먼저 기록한 뒤 저속 워커가
+   자동 byte-cache한다. 시작 시 기존 공유·최종본 백필과 중단된 `running` 복구를 수행한다.
+   개별 `/api/generations/{id}/cache`는 수동 재시도, 관리자 `/api/cache-all`은 완료본 일괄 큐 등록이다.
+   기본 50GiB 한도에서는 새 초과 파일만 되돌리고 기존 보존본은 자동 삭제하지 않는다. 아직 보존하지
+   않은 일반 생성물의 원격 URL은 만료될 수 있다.
 5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB(WAL) / 미디어 샤딩**. DB 는 SQLite 단일(§4.6).
 6. **마이그레이션 순서 함정**(§6) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화**(provenance) — `source_url` 보존으로 재사용·변형 가능(최우선 가치).

@@ -474,6 +474,42 @@ RL-21 구현 기준에서 집중 8개·관련 39개·전체 백엔드 851개와 
 `process_stopped=true`로 끝났다. 이는 도구의 복원 계약을 확인하지만 NAS 최신성·예비 PC 전환 시간은
 운영 리허설로 따로 측정해야 한다.
 
+## 공유·최종 원본 보존(RL-22)
+
+`2a8dab18` 기준 검증 명령:
+
+```powershell
+cd D:\ClaudeCode\MV-hub-S-dev\backend
+py -3 -m pytest -q tests\test_media_preservation.py tests\test_generation_media_cache.py tests\test_media_cache.py tests\test_operational_health.py
+py -3 -m pytest -q
+py -3 -m compileall -q app
+
+cd D:\ClaudeCode\MV-hub-S-dev\frontend
+npm.cmd run build
+npm.cmd test -- --run
+npm.cmd run lint:architecture
+```
+
+핵심 계약과 결과:
+
+- 공유·최종 요청은 다운로드 전에 `media_preservation`에 저장되고 같은 생성물은 한 행만 가진다.
+- 공유·최종·수동·관리자 요청이 동시에 들어와도 가장 강한 `final` 사유가 남는다. 이 동시성 시험은
+  20회 반복 통과했다.
+- 업데이트 전 기존 공유·최종 완료본도 시작 시 한 번만 백필되고, 중단된 `running`은 다음 시작에
+  `pending`으로 복구된다.
+- 같은 원격 URL을 여러 asset/reference가 사용해도 모든 DB 행이 로컬 `/media/` 경로로 바뀐다.
+- 50GiB 기본 한도를 넘으면 새 파일만 되돌리고 기존 보존본은 삭제하지 않는다.
+- 집중 묶음 31개, 백엔드 전체 862개·21 subtests, 프론트 76개 파일·535개, 프로덕션 빌드와
+  아키텍처 검사가 통과했다.
+- 격리 서버 `8012`와 Vite `5173`에서 기존 최종본 자동 백필 → `원본 보존 완료`를 확인했다.
+  테스트 DB 상태를 `capacity`로 바꿔 `저장공간 한도 도달`과 재시도 버튼을 확인하고, 버튼 실행 뒤
+  `완료`로 돌아오는 것을 확인했다. 앱 출처 콘솔 오류는 0건이었다.
+- 유료 Higgsfield 생성은 실행하지 않았다. 테스트 프로세스와 5173/8012 포트를 회수했고 운영 포트
+  8010에는 개입하지 않았다.
+
+이 검증은 내부 영속 큐·UI·재시작 계약을 확인한다. 실제 CDN URL 장기 만료, 물리 디스크 50GiB
+도달, 다른 PC·혼합 버전 공유 서버는 운영 배포 전 별도 실측 대상이다.
+
 ## 런처 한눈에 보기
 
 | 파일 | 실행 위치 | 하는 일 |

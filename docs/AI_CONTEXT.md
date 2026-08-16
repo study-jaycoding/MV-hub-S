@@ -38,8 +38,9 @@ CLI**로 생성하고, 결과물 메타데이터만 서버로 **push** 한다. �
 
 - **생성·재생성 = 전원 각자 로컬 CLI**(자기 크레딧). 서버는 어떤 CLI에도 의존하지 않음 → 클라우드로 옮겨도 동작.
 - **결과물은 push 로 서버에 적재**. 일반 미디어는 힉스필드 CloudFront **공개 URL**을 참조해
-  push 시 메타데이터만 전송한다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하며,
-  개별·전체 수동 보관 API도 있다. 보관 전 일반 생성물의 원격 URL은 만료될 수 있다.
+  push 시 메타데이터만 전송한다. 공유·최종 완료본은 영속 큐로 자동 byte-cache하며, 업데이트 전
+  기존 공유·최종본도 시작 시 백필한다. 기본 50GiB 한도에서는 기존 보존본을 삭제하지 않고 새
+  다운로드만 거절한다. 상태와 수동 재시도는 생성물 정보창에 표시된다.
 - **토큰은 로컬 보관**: 서버는 힉스필드 자격증명을 절대 저장하지 않는다(사용자 보안 요구).
 - **허브의 생성/재생성 버튼은 "서버에 요청만" 남긴다** → 그 사람 PC의 **에이전트**가 가져가 로컬 CLI로 실행 → 결과를 placeholder 카드에 채움(§5).
 - 과도기 편의: 서버가 jay PC에 떠 있어 jay 결과는 서버측 주기 동기화로도 들어올 수 있으나, 본질은 jay도 로컬→push. "하우스 계정/서버 생성" 개념은 폐기됨.
@@ -163,6 +164,7 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 |---|---|---|
 | `generation` | 생성 1건(중심) | id, prompt, display_prompt(@칩 보존), model, params(JSON), color, status, created_at, **sort_ts**(정밀 epoch=정렬키), job_id, is_source, source_name, **creator_uid**, project_id, deleted_at, hf_missing, **is_final/final_by/final_at**(골드) |
 | `asset` | 결과물 미디어 | generation_id, type(image/video), file_path(/media 또는 원격 URL), thumbnail_path, source_url(원격 원본 보존) |
+| `media_preservation` | 공유·최종 원본 보존 영속 큐 | generation_id, reason, status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·사이드바 전용·'무장'시 새 생성 자동적용) | name |
 | **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**('derived'=재생성/가져오기 강한 1부모, 'reference'=@소스 생성 약한 다부모), UNIQUE(parent,child,relation) |
@@ -232,9 +234,10 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 1. **서버는 생성 안 함**(§1) — 생성은 전원 로컬 CLI + push. 옛 서버측 생성 버튼·엔드포인트·잡 큐는 제거됨.
 2. **두 종류 로그인 구분**(§3) — 허브 세션 ≠ 힉스필드 CLI 인증.
 3. **계정↔creator 재연결 오염**(실측 버그·수정됨): jay `generate list` 에 섞인 남의 레퍼런스가 "새 잡"으로 잡혀 계정이 잘못 재연결됨 → ①잡 고유 uid 유지 ②이미 실제 uid면 재연결 금지 ③에이전트가 전체목록 최다 uid 명시 전송.
-4. **미디어 공개 URL + 선택 보존** — push 는 메타만 전송한다. 최종(골드)은 자동 byte-cache,
-   필요하면 개별 `/api/generations/{id}/cache` 또는 전체 `/api/cache-all`로 보관한다.
-   보관하지 않은 일반 생성물의 원격 URL은 만료될 수 있다.
+4. **미디어 공개 URL + 공유·최종 자동 보존** — push 는 메타만 전송한다. 공유·최종 완료본은
+   `media_preservation` 큐로 자동 byte-cache하고, 개별 `/api/generations/{id}/cache`는 즉시
+   재시도, 관리자 `/api/cache-all`은 전체 완료본을 저속 큐에 등록한다. 기본 총량 50GiB를 넘으면
+   새 파일만 되돌리고 기존 보존본은 자동 삭제하지 않는다. 일반 미보존 생성물의 URL은 만료될 수 있다.
 5. **단일 오리진 / 키셋 페이지네이션 / FTS5 검색 / 휴지통 별도 DB(WAL) / 미디어 샤딩 / 썸네일 사전생성** — (기존 Phase 0~3, 전부 구현·검증). DB 는 SQLite 단일(PG 런타임 제거·차단).
 6. **마이그레이션 순서 함정**(§8) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화** — 원격 URL(`source_url`) 보존 → 재사용·변형 가능(provenance 최우선).
@@ -381,8 +384,9 @@ SQLite 스키마(`backend/schema.sql` + `db.py` 마이그레이션). PK 는 전�
 ## 13. 남은 과제
 
 - **안정성 백로그**: 현재 위험 상태와 다음 작업은 [RISK_REDUCTION_PLAN_2026-08-15.md](RISK_REDUCTION_PLAN_2026-08-15.md)의 `Gate 0 산출물 — 정규화 잔여 목록`을 단일 기준으로 삼는다. [AUDIT_2026-08-15.md](AUDIT_2026-08-15.md)는 최초 발견 근거를 보존한 과거 기록이다.
-- **byte-cache 운영 보강**: 최종본 자동 보관과 개별·전체 수동 보관은 구현됨. 남은 것은
-  자동 보관 실패 가시화·재시도 정책과 디스크 용량/정리 정책이다.
+- **byte-cache 운영 보강 완료(RL-22)**: 공유·최종 자동 보존, 기존 데이터 백필, 영속 상태,
+  재시작 복구, 실패·용량 표시와 수동 재시도, 기본 50GiB 한도를 구현했다. 운영 실측에서는 실제
+  장기 CDN 만료와 디스크 한도 도달 시나리오를 계속 확인한다.
 - **create 로컬파일/asset: 레퍼런스**: 타 PC 에이전트 resolve 불가(현재 URL·텍스트만). 바이트 업로드 경로 필요.
 - (선택) 워크스페이스/크레딧 실시간성, 콘텐츠 게시 승인 게이트.
 - 완료된 큰 것들: 옛 서버측 생성 제거 / ComfyUI·Resolve 연동 / PM 대시보드 / 릴리스 자동

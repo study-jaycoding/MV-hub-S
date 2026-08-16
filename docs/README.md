@@ -200,9 +200,11 @@ frontend/
   는 SelectorEventLoop 을 강제해 여전히 깨진다**(`NotImplementedError`). 그래서 백엔드는
   `--reload` 없이 실행한다(실측 확인).
 - **출처 영속화(byte-cache)**: 소스·결과물이 Higgsfield 원격 URL(계정 귀속·만료 가능)에만
-  있으면 재사용이 깨진다. `⤓ 보관`(`/api/cache-all`) 이 바이트를 `media/` 로 내려받아
-  `file_path` 를 `/media/..` 로 전환하고 원본 URL 은 `source_url` 에 보존한다. dedupe(sha1)·
-  재동기 보존을 적용하며, 최종(골드) 지정본은 백그라운드에서 자동 보관한다(실측 확인).
+  있으면 재사용이 깨진다. 공유·최종 완료본은 영속 큐로 자동 보존하고, 업데이트 전 기존 항목도
+  시작 시 백필한다. 개별 `⤓ 보관`(`/api/generations/{id}/cache`)은 즉시 재시도하고 관리자
+  `/api/cache-all`은 완료본 전체를 저속 큐에 등록한다. 바이트는 `media/`로 내려받고 `file_path`를
+  `/media/..`로 전환하며 원본 URL은 `source_url`에 보존한다. 기본 50GiB 한도에서는 기존 보존본을
+  삭제하지 않고 새 초과 파일만 되돌린다(실측 확인).
 - **CLI 필드 매핑**: `generate list --json` 실제 출력으로 검증(★CLI 1.x 대응, `docs/HF_CLI_UPGRADE.md`) —
   `id→PK`, `job_set_type|job_type→model`(1.x 개명, 폴백), `result_url`(확장자로 image/video),
   `created_at`(epoch 또는 1.x ISO문자열→파싱), `params.prompt`, `params.medias[]→reference`

@@ -101,6 +101,10 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 | `CONTENT_HUB_LOG_KEEP` | `5` | 회전 로그 보관 개수 |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `60` | CPU·메모리·요청 집계를 로그에 남기는 주기(초), 0=비활성 |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `1000` | 개별 느린 요청을 운영 로그에 기록하는 기준(ms) |
+| `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `53687091200`(50GiB) | 공유·최종 원본 영구 보존 총량. 기존 보존본은 자동 삭제하지 않음 |
+| `CONTENT_HUB_MEDIA_PRESERVATION_INTERVAL_SECONDS` | `30` | 원본 보존 워커 주기(초), 한 주기 최대 2건 |
+| `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `10` | 서버 시작 뒤 원본 보존 다운로드 시작 유예(초) |
+| `CONTENT_HUB_MEDIA_PRESERVATION_MAX_ATTEMPTS` | `5` | 자동 재시도 최대 횟수. 이후 정보창에서 수동 재시도 가능 |
 | `CONTENT_HUB_RESTART_LIMIT` | `5` | 빠른 서버 종료를 연속 허용하는 횟수 |
 | `CONTENT_HUB_STABLE_SECONDS` | `120` | 이 시간 이상 정상 실행하면 빠른 종료 횟수 초기화 |
 
@@ -119,6 +123,23 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
   - 인증 전달: API 는 `Authorization: Bearer` 헤더, 미디어·WS 는 **httpOnly 세션 쿠키**(ch_session,
     헤더를 못 붙이는 img 태그·WebSocket 용). 로그인 시 토큰+쿠키 동시 발급, 로그아웃 시 둘 다 폐기.
   - 정적 SPA(로그인 화면)와 로그인·가입·헬스 엔드포인트는 공개(그래야 로그인 화면이 뜬다).
+
+## 공유·최종 원본 보존
+
+공유하거나 최종으로 지정한 완료 생성물은 원격 URL만 남기지 않고 서버·작업자 PC의 `media/`에
+자동 보존한다. 요청은 먼저 `media_preservation` DB 큐에 기록되므로 다운로드 중 프로세스가
+종료돼도 다음 시작에 이어진다. 업데이트 전부터 공유·최종이었던 기존 항목도 시작 시 자동 등록된다.
+
+- 워커는 기본 10초 뒤 시작해 30초마다 최대 2건만 처리한다.
+- 기본 총량은 50GiB다. 한도 초과 시 방금 받은 파일만 되돌리고 기존 보존본은 삭제하지 않는다.
+- 네트워크 일시 오류는 제한된 백오프로 재시도한다. `capacity`·`partial`·`failed`는 생성물
+  정보창의 **원본 보존 재시도**로 다시 처리할 수 있다.
+- 관리자 `POST /api/cache-all`은 즉시 전부 내려받지 않고 완료 생성물을 저속 큐에 등록한다.
+- 상태 DB와 운영 로그에는 URL·프롬프트·예외 원문을 넣지 않는다. 상태별 개수와 안전한 오류
+  코드만 남긴다.
+
+50GiB는 기본 안전값일 뿐 자동 용량 계획이 아니다. 운영 전 `media/`가 있는 실제 디스크 여유와
+백업 정책을 확인하고 필요할 때만 `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES`를 조정한다.
 
 ## DB 자동 백업
 
@@ -163,7 +184,8 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
   기다리지 않고 즉시 `503 {"status":"maintenance"}`와 `Retry-After: 5`를 반환한다.
 - 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
   프로세스 CPU·RSS, WebSocket·에이전트 연결, 생성 단계/지연, 최근 백업,
-  관리 데이터 전송 대기·실패, DB/WAL·미디어·썸네일 용량.
+  관리 데이터 전송 대기·실패, 원본 보존 pending/running/partial/failed/capacity 집계,
+  DB/WAL·미디어·썸네일 용량.
 - 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 생성 상태 전이,
   5xx·느린 요청을 JSON 한 줄로 기록. 평상시에는 `MV_logs.bat`로 정돈된 로그를 본다.
 - 장기 생성 이력: `GET /api/admin/generation-events?generation_id=...` — 회전 로그와 별개로
@@ -171,7 +193,8 @@ py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_
 - 중요 변경 감사: `GET /api/admin/audit-events?project_id=...` — 계정 상태/역할,
   프로젝트 생성·변경·삭제/멤버 역할, 일정·예산, 최종 선택 변경을 `audit_event`에 보관한다.
 
-생성 확인 지연, 10분 이상 밀린 관리 데이터, 전송 실패, DB 준비 실패는 `WARNING`으로 남는다.
+생성 확인 지연, 10분 이상 밀린 관리 데이터, 전송 실패, 원본 보존 일부 실패·실패·용량 부족,
+DB 준비 실패는 `WARNING`으로 남는다.
 같은 상태를 매분 반복하지 않고 상태가 바뀌거나 30분 이상 계속될 때만 다시 알려 로그 폭주를 막는다.
 
 초기 관리자 비밀번호를 환경변수로 주지 않은 첫 설치는
