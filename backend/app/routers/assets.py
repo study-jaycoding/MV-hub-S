@@ -220,11 +220,17 @@ def _mount_dir(name: str, owner: str) -> Optional[Path]:
     return None
 
 
-def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
+def _auto_project_mounts(
+    request: Request, workspace_id: Optional[str] = None
+) -> list[dict[str, str]]:
     """PM 프로젝트 설정의 root_path 를 Assets 자동 마운트로 노출한다.
 
     수동 asset_mounts.json 에 쓰지 않고 매번 읽어 합친다. 프로젝트 설정을 바꾸면
     에셋창도 다음 로드부터 그대로 따라가게 하기 위해서다.
+
+    workspace_id 가 오면 그 팀 워크스페이스의 프로젝트만 남긴다(생성 탭과 같은 규칙:
+    팀 선택 시만 좁히고 개인·미선택은 전체). 수동 마운트는 이 경로를 타지 않으므로
+    워크스페이스와 무관하게 항상 보인다 — 내가 직접 추가한 폴더는 팀 소속이 아니다.
     """
     if not MANAGE_ENABLED:
         return []
@@ -242,7 +248,9 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
     member_uid = None if read_all else (account_scope_uid(request) or "\x00")
     try:
-        visible = repo.list_projects(include_archived=False, member_uid=member_uid).get("projects") or []
+        visible = repo.list_projects(
+            include_archived=False, member_uid=member_uid, workspace_id=workspace_id
+        ).get("projects") or []
     except Exception:  # noqa: BLE001
         visible = []
 
@@ -398,11 +406,14 @@ class ProjectsOut(BaseModel):
     response_model=ProjectsOut,
     dependencies=[Depends(_require_local_assets)],
 )
-def list_projects(request: Request, background: BackgroundTasks):
+def list_projects(
+    request: Request, background: BackgroundTasks, workspace_id: Optional[str] = None
+):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
-    디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
+    디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다.
+    workspace_id 가 오면 프로젝트 유래 폴더만 그 팀으로 좁힌다(수동 등록은 항상 노출)."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
-    for m in _auto_project_mounts(request):
+    for m in _auto_project_mounts(request, workspace_id):
         if m["name"] not in projects:
             projects.append(m["name"])
     # 내장 스크래치 폴더(captures/imports)는 하나로 합쳐 'imp/cap' 한 항목으로 노출(둘 중 하나라도 파일 있으면).
@@ -426,7 +437,7 @@ class MountIn(BaseModel):
     path: str
 
 
-def _mounts_payload(request: Request) -> dict:
+def _mounts_payload(request: Request, workspace_id: Optional[str] = None) -> dict:
     """마운트 목록 응답(수동 + 프로젝트 자동, 이름 중복 제거) — GET/POST/DELETE 공통.
     셋이 같은 스키마를 돌려줘야 등록/삭제 직후와 새로고침 목록이 어긋나지 않는다
     (auto 폴더가 사라졌다 되살아나 보이는 현상 방지)."""
@@ -437,16 +448,17 @@ def _mounts_payload(request: Request) -> dict:
     names = {m["name"] for m in manual}
     auto = [
         {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None, "auto": True}
-        for m in _auto_project_mounts(request)
+        for m in _auto_project_mounts(request, workspace_id)
         if m["name"] not in names
     ]
     return {"mounts": manual + auto}
 
 
 @router.get("/mounts", dependencies=[Depends(_require_local_assets)])
-def list_mounts(request: Request):
-    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
-    return _mounts_payload(request)
+def list_mounts(request: Request, workspace_id: Optional[str] = None):
+    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록.
+    workspace_id 가 오면 프로젝트 유래(auto) 항목만 그 팀으로 좁힌다."""
+    return _mounts_payload(request, workspace_id)
 
 
 @router.post("/mounts", dependencies=[Depends(_require_mount_manager)])

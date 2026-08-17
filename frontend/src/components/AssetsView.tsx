@@ -11,6 +11,7 @@ import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
+import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
@@ -54,6 +55,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const t = useT();
   // 내 신원(로그인 계정 creator_uid, 단독이면 'me') — 코멘트 '내 것' 판별용. 독립 창이라 자체 조회.
   const myId = useAssetViewerIdentity();
+  // 선택 워크스페이스 — 프로젝트 유래 폴더를 생성 탭과 같은 범위로 좁힌다(수동 등록 폴더는 무관).
+  // 분리 창이라 메인 창의 상태를 직접 못 받는다. 관리 창과 같은 방식으로 저장된 필터를 읽고
+  // storage 이벤트로 따라간다(메인에서 팀을 바꾸면 이 창도 즉시 반영).
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>(
+    () => loadManageWorkspaceScope().workspaceId,
+  );
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      setWorkspaceId(loadManageWorkspaceScope().workspaceId);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   // 마지막으로 보던 상태를 기억(localStorage) → 다음에 열 때 그대로 복원
   const [dir, setDir] = useState<string>(() => LS.get("dir", ""));
   // 타입별 필터(이미지/영상/오디오) — 클릭하면 프로젝트 전체에서 그 타입만
@@ -85,7 +100,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta,
     setProject,
     tree,
-  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs });
+  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
   useEffect(() => {
     if (isAssetFolderHidden(project, dir)) setDir("");
@@ -727,6 +742,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         <MountManager
           onClose={() => setMountOpen(false)}
           onChanged={() => reloadProjects(true)}
+          workspaceId={workspaceId}
         />
       )}
 

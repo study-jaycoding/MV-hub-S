@@ -34,12 +34,22 @@ export interface BackupContinuityStatus {
   };
 }
 
+// 선택 워크스페이스를 쿼리로 — 팀을 고른 동안에는 그 팀 프로젝트 폴더만 보이게 한다
+// (생성 탭과 같은 규칙). 개인·미선택이면 파라미터 없이 전체. 수동 등록 폴더는 서버에서
+// 이 필터를 타지 않으므로 언제나 보인다.
+function workspaceQuery(workspaceId?: string): string {
+  const id = workspaceId?.trim();
+  return id ? `?workspace_id=${encodeURIComponent(id)}` : "";
+}
+
 export const assetsApi = {
   // Assets(구성) 패널
-  assetProjects: () => jsonFetch<ProjectsInfo>("/api/assets/projects"),
+  assetProjects: (workspaceId?: string) =>
+    jsonFetch<ProjectsInfo>(`/api/assets/projects${workspaceQuery(workspaceId)}`),
 
   // 외부 폴더 등록(마운트) — 임의 경로 폴더에 이름을 붙여 프로젝트처럼 추가
-  assetMounts: () => jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts"),
+  assetMounts: (workspaceId?: string) =>
+    jsonFetch<{ mounts: AssetMount[] }>(`/api/assets/mounts${workspaceQuery(workspaceId)}`),
   addAssetMount: (name: string, path: string) =>
     jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts", {
       method: "POST",
