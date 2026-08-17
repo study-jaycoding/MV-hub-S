@@ -22,6 +22,10 @@ from .operational_logging import log_event
 MIB = 1024 * 1024
 KIB = 1024
 _MULTIPART_OVERHEAD_BYTES = 2 * MIB
+# comfy /run 은 파일 외에 워크플로우 JSON(content)·param_values·media_meta 폼 필드가 함께
+# 실린다 — 대형 워크플로우 + 상한 근접 배치 조합에서 파일은 규정 이내인데 경계 413 이 나지
+# 않게 여유를 더 준다(파일 합계는 라우터 validate_upload_batch 가 정확히 다시 강제한다).
+_COMFY_FORM_OVERHEAD_BYTES = 16 * MIB
 UPLOAD_LIMIT_HEADER = "X-MVHub-Upload-Limit"
 
 
@@ -54,7 +58,7 @@ UPLOAD_REQUEST_LIMITS: dict[str, int] = {
     "/api/assets/upload": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/assets/capture": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/assets/reference-import": ASSET_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
-    "/api/comfy/run": COMFY_UPLOAD_TOTAL_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
+    "/api/comfy/run": COMFY_UPLOAD_TOTAL_MAX_BYTES + _COMFY_FORM_OVERHEAD_BYTES,
     "/api/db/import": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup": DB_UPLOAD_FILE_MAX_BYTES + _MULTIPART_OVERHEAD_BYTES,
     "/api/db-backup/sets": DB_UPLOAD_FILE_MAX_BYTES * 2 + _MULTIPART_OVERHEAD_BYTES,

@@ -7,6 +7,7 @@ loopback 서버를 띄운 뒤 ready·로그인·핵심 데이터 수와 프로�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import socket
@@ -218,7 +219,13 @@ def verify_restored_set_runtime(
                 f"복원 서버 실측 실패: {exc}\n--- server log tail ---\n{tail}"
             ) from exc
         finally:
-            _stop_test_process(process)
+            # finally 의 종료 실패가 원래 실패 원인(위 raise)을 가리지 않게 한다.
+            try:
+                _stop_test_process(process)
+            except Exception as stop_error:  # noqa: BLE001
+                logging.getLogger("mvhub.restore").warning(
+                    "복원 드릴 서버 종료 중 오류(원인 예외 우선): %s", stop_error
+                )
             process_stopped = process.poll() is not None
 
     after_counts = {

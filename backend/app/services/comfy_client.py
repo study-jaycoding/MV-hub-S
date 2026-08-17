@@ -189,10 +189,12 @@ _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class _MultipartFileBody:
-    """재생 가능한 multipart 파일 본문.
+    """multipart 파일 본문을 조립 없이 스트리밍하는 iterable.
 
     urllib는 명시적인 Content-Length와 iterable body를 받으면 chunked 인코딩이나 전체 조립 없이
-    각 조각을 바로 소켓으로 보낸다. 리다이렉트·인증 재시도가 생겨도 매 반복마다 파일을 다시 연다.
+    각 조각을 바로 소켓으로 보낸다. __iter__ 가 매번 파일을 다시 열지만, urllib 기본 리다이렉트
+    핸들러는 3xx 에서 body 를 버리므로 이것이 리다이렉트 재전송을 보장하지는 않는다(현재
+    ComfyUI/Cloud 업로드 엔드포인트는 리다이렉트를 반환하지 않는다).
     """
 
     def __init__(self, prefix: bytes, path: Path, suffix: bytes) -> None:
