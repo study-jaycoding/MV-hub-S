@@ -342,6 +342,34 @@ class InflightRunPersistenceTests(unittest.TestCase):
         self.assertEqual(cancel.call_args.args[1], "cloud-prompt")
         self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
 
+    def test_restart_skips_cloud_cancel_when_external_recovery_disabled(self):
+        """복원 드릴(격리 서버) 계약 — 사본 DB의 키로 라이브 Cloud 잡을 취소하면 안 된다.
+
+        CONTENT_HUB_EXTERNAL_RECOVERY=0 이면 취소 호출 없이 로그만 남기고 흔적은 비운다
+        (사본이므로 비워도 무해, 반복 로그 방지).
+        """
+        values = {
+            comfy._K_INFLIGHT_RUNS: (
+                '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1}]'
+            )
+        }
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy, "EXTERNAL_RECOVERY_ENABLED", False), \
+             mock.patch.object(comfy, "_raw_settings") as raw_settings, \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
+            comfy.recover_interrupted_run_jobs()
+        cancel.assert_not_called()
+        raw_settings.assert_not_called()  # 설정(키) 접근 자체가 없어야 한다
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+
 
 class ComboChoiceTests(unittest.TestCase):
     """ComfyUI /object_info 의 COMBO 위젯 후보를 dropdown 선택지로 자동 채우는 로직."""

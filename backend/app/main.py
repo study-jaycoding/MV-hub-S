@@ -41,6 +41,7 @@ from .config import (
     BACKEND_DIR,
     CORS_ORIGINS,
     DATA_DIR,
+    EXTERNAL_RECOVERY_ENABLED,
     FRONTEND_DIST,
     MANAGE_ENABLED,
     MEDIA_DIR,
@@ -290,14 +291,17 @@ async def _application_lifespan(app: FastAPI):
         print(f"[startup] 생성자 uid {cu}개 백필")
     # 제공자 신원 — CLI account status 이메일로 기본값 캡처(공유 파일명·작성자 표기 기준).
     # 사용자가 바꾼 이름은 절대 안 덮어씀. CLI 오프라인이면 조용히 건너뜀(다음 기회).
-    try:
-        from .services import cli_bridge
+    if EXTERNAL_RECOVERY_ENABLED:
+        try:
+            from .services import cli_bridge
 
-        # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
-        status = await cli_bridge.get_account_status(timeout=8.0)
-        repo.capture_provider_identity(status.get("email") or None)
-    except Exception as e:  # noqa: BLE001 — 신원 캡처 실패가 부팅을 막지 않게
-        print(f"[startup] 제공자 신원 캡처 건너뜀: {e}")
+            # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
+            status = await cli_bridge.get_account_status(timeout=8.0)
+            repo.capture_provider_identity(status.get("email") or None)
+        except Exception as e:  # noqa: BLE001 — 신원 캡처 실패가 부팅을 막지 않게
+            print(f"[startup] 제공자 신원 캡처 건너뜀: {e}")
+    else:
+        print("[startup] 외부 복구 비활성(CONTENT_HUB_EXTERNAL_RECOVERY=0) — CLI 신원 캡처 생략")
     # 로그인 계정 ↔ 생성자(creator) 연결 보장(멱등) — 소유자=힉스필드 uid, 그 외=acct:<email>.
     # 이래야 신규 계정이 멤버·프로젝트 후보에 뜨고, '내 작업'이 계정별로 분리된다.
     linked = repo.link_accounts_to_creators()

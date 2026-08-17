@@ -26,7 +26,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from pydantic import BaseModel
 
 from .. import rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED, MEDIA_DIR
+from ..config import (
+    AUTH_ENABLED,
+    DEFAULT_WORKER_ID,
+    EXTERNAL_RECOVERY_ENABLED,
+    MANAGE_ENABLED,
+    MEDIA_DIR,
+)
 from ..deps import (
     account_actor_uid,
     can_view_generation,
@@ -364,6 +370,13 @@ def recover_interrupted_run_jobs() -> None:
                 job_id, prompt_id, target_kind,
             )
             if target_kind == "cloud":
+                if not EXTERNAL_RECOVERY_ENABLED:
+                    # 격리 드릴 서버 등 — 사본 DB의 키로 라이브 잡을 취소하면 안 된다. 로그만 남긴다.
+                    log.warning(
+                        "comfy Cloud 취소 생략(CONTENT_HUB_EXTERNAL_RECOVERY=0) prompt_id=%s",
+                        prompt_id,
+                    )
+                    continue
                 # 당시 키는 보관하지 않는다. 현재 Cloud 키로만 취소를 시도한다(없거나 바뀌면 로그만).
                 try:
                     settings = _raw_settings()

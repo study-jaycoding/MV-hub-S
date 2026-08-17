@@ -144,6 +144,9 @@ def verify_restored_set_runtime(
             "CONTENT_HUB_METRICS_LOG_INTERVAL": "0",
             "CONTENT_HUB_ACCESS_LOG": "0",
             "CONTENT_HUB_NO_PROXY": "1",
+            # 사본 DB의 in-flight 마커·API 키로 라이브 Comfy 잡을 취소하거나 로컬 CLI 를
+            # 호출하지 않게 — 드릴의 격리는 파일뿐 아니라 외부 서비스 상태에도 성립해야 한다.
+            "CONTENT_HUB_EXTERNAL_RECOVERY": "0",
             "CONTENT_HUB_AUTH": "1",
             "CONTENT_HUB_MANAGE": "1",
             "CONTENT_HUB_HOST": "127.0.0.1",
