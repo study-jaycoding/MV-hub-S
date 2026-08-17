@@ -57,12 +57,16 @@ def _drain_once() -> None:
                 ),
                 my_uid=my_uid,
             )
-        drain_remote_account_reports(
-            lambda payload: _proxy.proxy_json(
-                "POST", "/api/ingest/account-report", body=payload
-            ),
-            creator_uid=my_uid,
-        )
+            # 계정 보고 outbox 도 MANAGE 사이드카다 — off 설치본에서 이 드레인이 돌면
+            # list_due_account_reports 의 _ensure_schema 가 "사이드카 테이블을 만들지 않는다"는
+            # 계약(ingest.py 의 레거시 인라인 경로 주석)을 깨고 테이블을 몰래 생성한다.
+            # off 는 예전처럼 ingest 인라인 best-effort 만 쓴다.
+            drain_remote_account_reports(
+                lambda payload: _proxy.proxy_json(
+                    "POST", "/api/ingest/account-report", body=payload
+                ),
+                creator_uid=my_uid,
+            )
         return
     # test_dev는 운영 서버로 보내지 않고 복사된 테스트 폴더 안에서만 집계한다.
     drain_isolated_telemetry()

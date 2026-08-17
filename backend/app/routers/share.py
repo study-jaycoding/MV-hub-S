@@ -202,6 +202,11 @@ def unpublish(gen_id: str, request: Request):
             out = None
         if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
             local_id = _local_id_from_out(out)
+            # 이 경로의 로컬 행은 위(192행) final 가드를 안 거쳤다 — 선행 장애로 "로컬만
+            # final"인 어긋남이 있으면 골드 공유 표식을 무음으로 지우지 않고 크게 실패시킨다
+            # (서버는 이미 해제됐지만, 어긋남을 조용히 넓히는 것보다 드러내는 쪽이 안전).
+            if local_id:
+                _ensure_not_final_before_unpublish(repo.get_generation(local_id))
         if local_id:  # 내 로컬 카드도 미러 해제(tab=my·히스토리 즉시 반영)
             repo.unpublish(local_id)
             _touch_telemetry(local_id)
@@ -294,15 +299,22 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
             except Exception:
                 # 미러 실패 → "서버는 골드, 로컬은 아님" 어긋남(+ unpublish 가드 우회) 방지:
                 # 서버 골드를 되돌리고(필요시 새 공유도 해제) 에러를 알린다.
+                # 보상 자체가 실패하면 어긋남이 남는다 — 침묵하지 말고 운영 로그로 드러낸다.
                 try:
                     _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as compensation_error:  # noqa: BLE001
+                    logger.error(
+                        "finalize compensation(unfinalize) failed local_id=%s server_id=%s",
+                        local_id, server_id, exc_info=compensation_error,
+                    )
                 if newly_published:
                     try:
                         _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as compensation_error:  # noqa: BLE001
+                        logger.error(
+                            "finalize compensation(unpublish) failed local_id=%s server_id=%s",
+                            local_id, server_id, exc_info=compensation_error,
+                        )
                     repo.unpublish(local_id)
                 raise
         _touch_telemetry(local_id)

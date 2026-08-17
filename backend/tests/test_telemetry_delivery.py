@@ -168,3 +168,23 @@ def test_failed_owner_releases_state_for_next_retry():
 
     assert drain_once.call_count == 2
     _reset_scheduler()
+
+
+def test_manage_off_proxy_drain_does_not_touch_account_report_sidecar():
+    """MANAGE off 설치본 계약 — 프록시 모드라도 드레인이 사이드카(계정 보고 outbox)
+    스키마 생성·조회를 하지 않는다. off 는 ingest 인라인 레거시 경로만 쓴다."""
+    _reset_scheduler()
+    with patch.object(_telemetry, "MANAGE_ENABLED", False), patch.object(
+        _telemetry._proxy, "proxying", return_value=True
+    ), patch.object(
+        _telemetry.repo, "get_my_uid", return_value="u_me"
+    ), patch.object(
+        _telemetry, "drain_remote_telemetry"
+    ) as telemetry_drain, patch.object(
+        _telemetry, "drain_remote_account_reports"
+    ) as report_drain:
+        assert _telemetry.drain_telemetry() is True
+
+    telemetry_drain.assert_not_called()
+    report_drain.assert_not_called()
+    _reset_scheduler()

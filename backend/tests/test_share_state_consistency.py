@@ -112,6 +112,39 @@ def test_proxy_unpublish_404_reconciles_nonfinal_local_share():
     touch.assert_called_once_with("local-1")
 
 
+def test_proxy_unpublish_recovered_local_row_still_respects_final_guard():
+    """팀 탭(서버 UUID) 경로 — 로컬 행을 out.job_id 로 되찾은 뒤에도 final 가드를 다시
+    거쳐야 한다. 선행 장애로 '로컬만 final'인 어긋남이 있으면 골드 공유 표식을 무음으로
+    지우지 않고 409 로 드러낸다."""
+    local_final = {"id": "local-1", "job_id": "server-1", "is_final": True, "shared": True}
+
+    def finalize_id_map(gen_id):
+        # 서버 UUID 는 로컬 매칭 실패(None), out.job_id('server-1')로는 로컬 행을 찾는다.
+        return ("local-1", "server-1") if gen_id == "server-1" else (None, gen_id)
+
+    def get_generation(gen_id):
+        # 서버 UUID 로는 로컬 행이 없고(초입 가드 통과), 되찾은 local-1 만 final 로컬 행.
+        return local_final if gen_id == "local-1" else None
+
+    with (
+        mock.patch.object(share.repo, "resolve_local_id", side_effect=lambda g: g),
+        mock.patch.object(share.repo, "get_generation", side_effect=get_generation),
+        mock.patch.object(share.repo, "finalize_id_map", side_effect=finalize_id_map),
+        mock.patch.object(share._proxy, "proxying", return_value=True),
+        mock.patch.object(
+            share._proxy,
+            "proxy_json",
+            return_value={"id": "uuid-9", "job_id": "server-1", "shared": False},
+        ),
+        mock.patch.object(share.repo, "unpublish") as local_unpublish,
+        pytest.raises(HTTPException) as raised,
+    ):
+        share.unpublish("uuid-9", SimpleNamespace())
+
+    assert raised.value.status_code == 409
+    local_unpublish.assert_not_called()
+
+
 def test_proxy_unpublish_unknown_route_404_does_not_change_local_badge():
     generation = {"id": "local-1", "job_id": "server-1", "is_final": False, "shared": True}
 
