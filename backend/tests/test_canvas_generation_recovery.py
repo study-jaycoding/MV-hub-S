@@ -56,6 +56,9 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             creator_uid="artist",
             worker_id="me",
             source_gen_id=None,
+            # 실운영 제출은 라우터의 RL-04 가드를 지나 항상 워크스페이스가 확정돼 있다 —
+            # repair 재큐잉도 그 전제를 검사하므로 픽스처도 확정 워크스페이스로 만든다.
+            workspace={"scope": "team", "id": "ws-1", "name": "팀"},
             data={"prompt": "canvas", "model": "model", "params": {}},
             canvas_link=link,
         )
@@ -146,12 +149,17 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
                 (link["attempt_id"],),
             ).fetchone()
         self.assertEqual(before["status"], "preparing")
-        self.assertEqual(repo.claim_pending_requests("artist@example.com", 1), [])
+        self.assertEqual(
+            repo.claim_pending_requests("artist@example.com", 1, workspace_capable=True),
+            [],
+        )
 
         retried = self._submit(link)
 
         self.assertEqual(retried["id"], link["generation_id"])
-        claimed = repo.claim_pending_requests("artist@example.com", 1)
+        claimed = repo.claim_pending_requests(
+            "artist@example.com", 1, workspace_capable=True
+        )
         self.assertEqual([item["gen_id"] for item in claimed], [link["generation_id"]])
 
     def test_restart_repair_activates_preparing_request_only_when_placeholder_exists(self):
@@ -178,6 +186,30 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
         self.assertEqual(repaired[0]["generation_id"], link["generation_id"])
         self.assertEqual(repaired[0]["request_status"], "pending")
         signal.assert_called_once_with("artist@example.com", "gen-request")
+
+    def test_repair_refuses_unknown_workspace_and_fails_placeholder(self):
+        """RL-04 는 repair 재큐잉에도 적용 — unknown 워크스페이스 payload 를 pending 에
+        넣으면 구 에이전트(claim 게이트가 team/personal 제외)가 이것만 골라 현재 CLI
+        공간으로 실행해 오귀속 과금이 재현된다. 유령 placeholder 대신 명확한 실패로 종결."""
+        link = self._link("unknown-ws")
+        repo.create_local_generation(
+            {"prompt": "legacy", "model": "model", "params": {}},
+            "me",
+            creator_uid="artist",
+            generation_id=link["generation_id"],  # 워크스페이스 미기록(레거시 placeholder)
+        )
+
+        with mock.patch("app.usecases.gen_requests.agent_signals.signal") as signal:
+            repaired = repair_canvas_generation_links(
+                "artist@example.com", "artist", [link]
+            )
+
+        self.assertEqual(repaired, [])  # 요청행이 만들어지지 않음
+        signal.assert_not_called()
+        self.assertEqual(repo.claim_pending_requests("artist@example.com", 5), [])
+        generation = repo.get_generation(link["generation_id"])
+        self.assertEqual(generation["status"], "failed")
+        self.assertIn("워크스페이스", generation["error"])
 
     def test_reservation_without_placeholder_is_not_exposed_and_expires(self):
         link = self._link("reservation-only")
@@ -337,6 +369,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             "me",
             creator_uid="artist",
             generation_id=link["generation_id"],
+            workspace={"scope": "team", "id": "ws-1", "name": "팀"},
         )
 
         with mock.patch("app.usecases.gen_requests.agent_signals.signal"):
@@ -350,7 +383,9 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
         self.assertEqual(generation["model"], "new-model")
         self.assertEqual(generation["color"], "#abcdef")
         self.assertIn("recovered", generation["auto_tags"])
-        claimed = repo.claim_pending_requests("artist@example.com", 1)[0]
+        claimed = repo.claim_pending_requests(
+            "artist@example.com", 1, workspace_capable=True
+        )[0]
         self.assertEqual(claimed["prompt"], "recovered prompt")
         self.assertEqual(claimed["model"], "new-model")
 
@@ -447,6 +482,7 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             "me",
             creator_uid="artist",
             generation_id=link["generation_id"],
+            workspace={"scope": "team", "id": "ws-1", "name": "팀"},
         )
         with mock.patch("app.usecases.gen_requests.agent_signals.signal") as signal:
             repaired = repair_canvas_generation_links(
@@ -456,7 +492,9 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
         self.assertEqual(repaired[0]["generation_id"], link["generation_id"])
         signal.assert_called_once_with("artist@example.com", "gen-request")
         self.assertEqual(
-            repo.claim_pending_requests("artist@example.com", 1)[0]["gen_id"],
+            repo.claim_pending_requests(
+                "artist@example.com", 1, workspace_capable=True
+            )[0]["gen_id"],
             link["generation_id"],
         )
 

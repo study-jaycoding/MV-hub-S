@@ -33,6 +33,48 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         self.assertEqual(result["job_set_type"], "nano_banana_flash")
         self.assertEqual(result["params"], [{"name": "prompt"}])
 
+    async def test_param_schema_failure_is_not_cached_forever(self):
+        """RL-24 — CLI 일시 장애가 프로세스 수명 캐시로 굳으면 그 모델은 영영 필터 없이
+        전송된다. 실패는 짧은 TTL 백오프 후 재조회돼야 한다."""
+        from app.services import cli_bridge
+
+        cli_bridge._PARAM_NAMES_CACHE.clear()
+        cli_bridge._PARAM_NAMES_RETRY_AT.clear()
+        ok = {"params": [{"name": "prompt"}, {"name": "seed"}]}
+        calls = AsyncMock(side_effect=[cli_bridge.CLIError("cli 죽음"), ok])
+        with patch.object(cli_bridge, "get_model_params", new=calls):
+            # 1) 실패 → 빈 집합(필터 없음) + 백오프 기록, 캐시엔 안 들어감
+            self.assertEqual(await cli_bridge._allowed_param_names("m1"), set())
+            self.assertNotIn("m1", cli_bridge._PARAM_NAMES_CACHE)
+            # 2) 백오프 중 재호출 — CLI 재기동 없이 빈 집합
+            self.assertEqual(await cli_bridge._allowed_param_names("m1"), set())
+            self.assertEqual(calls.await_count, 1)
+            # 3) TTL 경과(백오프 만료 시뮬레이션) → 재조회 성공이 정상 캐시됨
+            cli_bridge._PARAM_NAMES_RETRY_AT.clear()
+            self.assertEqual(
+                await cli_bridge._allowed_param_names("m1"), {"prompt", "seed"}
+            )
+            self.assertEqual(cli_bridge._PARAM_NAMES_CACHE["m1"], {"prompt", "seed"})
+            # 4) 성공 캐시는 프로세스 수명 유지(추가 CLI 호출 없음)
+            await cli_bridge._allowed_param_names("m1")
+            self.assertEqual(calls.await_count, 2)
+        cli_bridge._PARAM_NAMES_CACHE.clear()
+        cli_bridge._PARAM_NAMES_RETRY_AT.clear()
+
+    async def test_parse_job_null_workspace_key_keeps_batch_fallback(self):
+        """`workspace: null` 처럼 값 없는 키만 실린 잡은 '잡 자체 명시'가 아니다 —
+        검증된 배치 컨텍스트 폴백을 잃고 전부 unknown 이 되면 안 된다(RL-01 보강).
+        빈 문자열 등 깨진 명시값은 종전대로 unknown(fail-closed)."""
+        from app.services import cli_bridge
+
+        base = {"id": "job-x", "status": "completed"}
+        # null 키 → workspace 필드 자체가 없어야 배치 폴백이 산다
+        parsed = cli_bridge.parse_job({**base, "workspace": None, "workspace_id": None})
+        self.assertNotIn("workspace_scope", parsed["generation"])
+        # 깨진 명시값(빈 문자열 아이디) → 명시로 취급하고 unknown 으로 좁힘
+        parsed_broken = cli_bridge.parse_job({**base, "workspace_id": ""})
+        self.assertEqual(parsed_broken["generation"].get("workspace_scope"), "unknown")
+
     async def test_estimate_cost_limits_concurrent_cli_processes(self):
         from app.services import cli_bridge
 

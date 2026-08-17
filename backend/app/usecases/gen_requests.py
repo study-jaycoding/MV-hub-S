@@ -281,6 +281,17 @@ def repair_canvas_generation_links(
         payload = repo.gen_recipe(link["generation_id"])
         if not payload:
             continue
+        # RL-04 fail-closed 는 repair 재큐잉에도 적용한다 — unknown 워크스페이스 payload 를
+        # pending 에 넣으면 신 에이전트는 거부하지만 구 에이전트가 이것만 골라(claim 게이트가
+        # team/personal 을 제외하므로) 현재 CLI 공간으로 실행해 오귀속 과금이 재현된다.
+        # 유령 placeholder 로 남기지 않게 명확한 실패로 종결한다(재생성은 사용자가 명시로).
+        if (payload.get("workspace") or {}).get("scope") not in ("team", "personal"):
+            repo.set_status(
+                link["generation_id"],
+                "failed",
+                error="워크스페이스를 확정할 수 없어 자동 복구를 중단했습니다 — 다시 생성해 주세요",
+            )
+            continue
         payload["source_gen_id"] = None
         if repo.repair_orphaned_canvas_generation(email, creator_uid, link, payload):
             repaired = True

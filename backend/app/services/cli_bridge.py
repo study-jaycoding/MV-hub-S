@@ -322,8 +322,12 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     # 명시된 ``workspace`` 객체가 있으면 그것만 읽는다(불완전하면 unknown, 평면값 추측 금지).
     from ..workspace_context import normalize_workspace_context
 
-    has_job_workspace = "workspace" in job or any(
-        key in job for key in ("workspace_scope", "workspace_id", "workspace_name")
+    # 값이 None(JSON null)인 키는 "잡 자체 워크스페이스 명시"로 치지 않는다 — MCP/덤프가
+    # 관행적으로 `workspace: null` 을 실어 보내면 검증된 배치 컨텍스트까지 잃고 전부
+    # unknown 이 되는 것을 막는다. 빈 문자열 등 깨진 명시값은 종전대로 unknown(fail-closed).
+    has_job_workspace = job.get("workspace") is not None or any(
+        job.get(key) is not None
+        for key in ("workspace_scope", "workspace_id", "workspace_name")
     )
     raw_workspace = job.get("workspace") if "workspace" in job else job
     job_workspace = normalize_workspace_context(raw_workspace)
@@ -460,20 +464,30 @@ async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str
 # 모델별 허용 파라미터 이름 캐시(프로세스 수명). 동기화/재사용 시 힉스필드가 채운
 # 잔여 필드(width/height/batch_size/input_images …)가 --param 으로 새어 나가 CLI 가
 # "Unknown params" 로 거부하는 것을 막는다.
+# 조회 실패는 캐시하지 않는다(RL-24) — CLI 일시 장애 한 번이 프로세스 수명 내내
+# "필터 없음"으로 굳지 않게, 짧은 TTL 뒤 다음 호출에서 다시 조회한다.
 _PARAM_NAMES_CACHE: dict[str, set[str]] = {}
+_PARAM_NAMES_RETRY_AT: dict[str, float] = {}
+_PARAM_NAMES_FAIL_TTL = 120.0
 
 
 async def _allowed_param_names(model: str) -> set[str]:
     """모델이 받는 파라미터 이름 집합. 조회 실패 시 빈 집합(→ 필터하지 않음=전부 전송)."""
-    if model not in _PARAM_NAMES_CACHE:
-        try:
-            data = await get_model_params(model)
-            _PARAM_NAMES_CACHE[model] = {
-                p.get("name") for p in data.get("params", []) if p.get("name")
-            }
-        except CLIError:
-            _PARAM_NAMES_CACHE[model] = set()
-    return _PARAM_NAMES_CACHE[model]
+    cached = _PARAM_NAMES_CACHE.get(model)
+    if cached is not None:
+        return cached
+    retry_at = _PARAM_NAMES_RETRY_AT.get(model)
+    if retry_at is not None and time.monotonic() < retry_at:
+        return set()  # 백오프 중 — CLI 를 매 호출 재기동하지 않는다
+    try:
+        data = await get_model_params(model)
+    except CLIError:
+        _PARAM_NAMES_RETRY_AT[model] = time.monotonic() + _PARAM_NAMES_FAIL_TTL
+        return set()
+    _PARAM_NAMES_RETRY_AT.pop(model, None)
+    names = {p.get("name") for p in data.get("params", []) if p.get("name")}
+    _PARAM_NAMES_CACHE[model] = names
+    return names
 
 
 async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]:
