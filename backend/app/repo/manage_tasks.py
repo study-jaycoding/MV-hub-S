@@ -279,6 +279,18 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
         "GROUP BY g.project_id, g.folder_path",
         project_ids,
     ).fetchall()
+    # ★읽기(list_tasks*)마다 호출된다 — 변화가 없는 정상 상태에선 write 0회를 보장해야
+    # 여러 클라이언트가 30초 폴링하는 공유 서버에서 GET 이 SQLite 쓰기락을 다투지 않는다.
+    # (같은 값 UPDATE 도 행 재기록 = WAL 증가이므로, 기존 값을 먼저 읽어 달라진 행만 쓴다.)
+    existing = {
+        (r["project_id"], r["folder_path"]): r
+        for r in conn.execute(
+            "SELECT project_id, folder_path, source_kind, source_last_seen_at, archived "
+            "FROM project_task WHERE project_id IN (" + placeholders + ") "
+            "AND folder_path IS NOT NULL AND folder_path<>''",
+            project_ids,
+        )
+    }
     for row in fps:
         fp = row["folder_path"]
         parts = [seg for seg in fp.replace("\\", "/").split("/") if seg]
@@ -286,36 +298,50 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
             continue
         name = parts[0]
         sequence = parts[1] if len(parts) > 1 else None
-        conn.execute(
-            "INSERT OR IGNORE INTO project_task"
-            "(id, project_id, name, status, sequence, folder_path, source_kind, "
-            " source_last_seen_at, archived) VALUES(?,?,?,?,?,?,?,?,0)",
-            (
-                new_id(), row["project_id"], name, "not_started", sequence, fp,
-                "generation", row["source_last_seen_at"],
-            ),
-        )
-        # PM이 편집한 이름·상태·일정은 보존하고 자동 수명주기 필드만 갱신한다.
-        conn.execute(
-            "UPDATE project_task SET source_kind='generation', source_last_seen_at=?, archived=0 "
-            "WHERE project_id=? AND folder_path=?",
-            (row["source_last_seen_at"], row["project_id"], fp),
-        )
+        cur = existing.get((row["project_id"], fp))
+        if cur is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO project_task"
+                "(id, project_id, name, status, sequence, folder_path, source_kind, "
+                " source_last_seen_at, archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                (
+                    new_id(), row["project_id"], name, "not_started", sequence, fp,
+                    "generation", row["source_last_seen_at"],
+                ),
+            )
+            continue
+        # PM이 편집한 이름·상태·일정은 보존하고 자동 수명주기 필드만, 달라졌을 때만 갱신한다.
+        if (
+            cur["source_kind"] != "generation"
+            or cur["source_last_seen_at"] != row["source_last_seen_at"]
+            or cur["archived"]
+        ):
+            conn.execute(
+                "UPDATE project_task SET source_kind='generation', source_last_seen_at=?, archived=0 "
+                "WHERE project_id=? AND folder_path=?",
+                (row["source_last_seen_at"], row["project_id"], fp),
+            )
 
     # 구 DB에서 생성 기반 작업으로 분류됐지만 마지막 관측 시각이 없는 행은
     # 작업 생성 시각을 최초 기준으로 삼는다. 이값조차 추측하지 않고 남겨두지 않게 한다.
-    conn.execute(
-        "UPDATE project_task SET source_last_seen_at=created_at "
-        "WHERE project_id IN (" + placeholders + ") "
-        "AND source_kind='generation' AND source_last_seen_at IS NULL",
-        project_ids,
+    # (대상이 있을 때만 UPDATE — 읽기 무쓰기 유지)
+    backfill_where = (
+        "project_id IN (" + placeholders + ") "
+        "AND source_kind='generation' AND source_last_seen_at IS NULL"
     )
+    if conn.execute(
+        "SELECT 1 FROM project_task WHERE " + backfill_where + " LIMIT 1", project_ids
+    ).fetchone():
+        conn.execute(
+            "UPDATE project_task SET source_last_seen_at=created_at WHERE " + backfill_where,
+            project_ids,
+        )
 
     # 보관 조건 = 마지막 관측+N일이 지났고, 작업/프로젝트 계획 마감일도 모두 지남.
     # 삭제가 아니라 archived 플래그만 바꾸므로 PM 메모·배정·수동 링크는 보존된다.
-    conn.execute(
-        "UPDATE project_task SET archived=1 "
-        "WHERE project_id IN (" + placeholders + ") "
+    # (동일 조건 SELECT 로 대상 유무를 먼저 확인 — 정상 상태 GET 은 쓰기 트랜잭션이 되지 않는다)
+    archive_where = (
+        "project_id IN (" + placeholders + ") "
         "AND source_kind='generation' AND archived=0 "
         "AND source_last_seen_at IS NOT NULL "
         "AND datetime(source_last_seen_at, printf('+%d days', "
@@ -326,9 +352,14 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
         "AND NOT EXISTS (SELECT 1 FROM project_planning pp "
         "                WHERE pp.project_id=project_task.project_id "
         "                  AND pp.due_date IS NOT NULL AND TRIM(pp.due_date)<>'' "
-        "                  AND date(pp.due_date)>=date('now'))",
-        project_ids,
+        "                  AND date(pp.due_date)>=date('now'))"
     )
+    if conn.execute(
+        "SELECT 1 FROM project_task WHERE " + archive_where + " LIMIT 1", project_ids
+    ).fetchone():
+        conn.execute(
+            "UPDATE project_task SET archived=1 WHERE " + archive_where, project_ids
+        )
 
 
 def list_tasks_batch(

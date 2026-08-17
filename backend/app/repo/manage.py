@@ -399,7 +399,7 @@ def dashboard_summary(
         generation_filter, generation_params = _workspace_filter("g", workspace_id)
         project_filter, project_params = _workspace_filter("p", workspace_id)
         proj = conn.execute(
-            f"""SELECT g.project_id AS pid, p.name AS name,
+            f"""SELECT g.project_id AS pid, p.name AS name, p.archived AS project_archived,
                       COUNT(*) AS gen_count,
                       SUM(CASE WHEN g.status='done' THEN 1 ELSE 0 END) AS done_count,
                       SUM(CASE WHEN g.is_final=1 THEN 1 ELSE 0 END) AS final_count,
@@ -442,10 +442,21 @@ def dashboard_summary(
             for r in conn.execute("SELECT * FROM project_planning").fetchall()
         }
         registry_ids = [row["id"] for row in reg]
+        # 워크스페이스를 떠난(이동된) 프로젝트라도 이 공간에 생성 기록이 있으면 행으로 표시한다.
+        # 정책: 생성물의 workspace 는 생성 당시 과금 스냅샷이라 기록은 이전 공간에 남는다 — 행에서
+        # 빼면 totals(생성물 기준)와 행 합이 어긋나는 유령 수치가 된다. 미분류(pid 없음)·삭제된
+        # 프로젝트(name 없음)·보관(archived)은 종전대로 행에서 제외(합계 주석 참조).
+        registry_set = set(registry_ids)
+        moved = [
+            r for r in proj
+            if r["pid"] and r["pid"] not in registry_set
+            and r["name"] is not None and not r["project_archived"]
+        ]
+        breakdown_ids = registry_ids + [r["pid"] for r in moved]
         project_models, budget_models = _project_model_breakdowns(
-            conn, registry_ids, workspace_id
+            conn, breakdown_ids, workspace_id
         )
-        project_folders = _project_folder_breakdowns(conn, registry_ids, workspace_id)
+        project_folders = _project_folder_breakdowns(conn, breakdown_ids, workspace_id)
         # 예산은 프로젝트 누적이 아니라 설정된 현재 일/주/월 모델 사용량 합과 비교한다.
         budget_usage = {
             pid: sum(row["credits"] for row in rows)
@@ -488,15 +499,22 @@ def dashboard_summary(
             except (ValueError, TypeError):
                 pass
 
-    # 표시 프로젝트 = 설정된 프로젝트(레지스트리). 생성물 통계는 pid 로 매칭(없으면 0).
+    # 표시 프로젝트 = 설정된 프로젝트(레지스트리) + 이 공간에 기록이 남은 이동 프로젝트.
+    # 생성물 통계는 pid 로 매칭(없으면 0). 이동 행은 workspace_moved=True 로 구분한다.
     stats_by_pid = {r["pid"]: r for r in proj}
+    row_sources = [
+        {"id": r["id"], "name": r["name"], "moved": False} for r in reg
+    ] + [
+        {"id": r["pid"], "name": r["name"], "moved": True} for r in moved
+    ]
     projects = []
-    for rp in reg:
+    for rp in row_sources:
         pid = rp["id"]
         s = stats_by_pid.get(pid)
         d = {
             "pid": pid,
             "name": rp["name"] or pid,
+            "workspace_moved": rp["moved"],
             "gen_count": s["gen_count"] if s else 0,
             "done_count": s["done_count"] if s else 0,
             "shared_count": s["shared_count"] if s else 0,

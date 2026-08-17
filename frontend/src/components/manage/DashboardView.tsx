@@ -309,6 +309,10 @@ export function DashboardView({
 
   const reloadPromiseRef = useRef<Promise<void> | null>(null);
   const pendingReloadRef = useRef(false);
+  // 워크스페이스 전환 경합 가드 — in-flight 응답이 끝난 뒤 화면은 이미 다른 워크스페이스일 수
+  // 있다. 요청 시점 스코프와 현재 스코프가 다르면 반영하지 않는다(WorkBoard 의 scopeKey 와 동일).
+  const scopeRef = useRef(workspaceId);
+  scopeRef.current = workspaceId;
 
   // 프로젝트 요약과 멤버를 함께 갱신한다. 작업 롤업 KPI 제거 후 작업 목록은 읽지 않는다.
   const reload = () => {
@@ -316,6 +320,8 @@ export function DashboardView({
       pendingReloadRef.current = true;
       return reloadPromiseRef.current;
     }
+    const scopeAtStart = workspaceId;
+    const inScope = () => scopeRef.current === scopeAtStart;
     // 성공한 응답만 반영하고 실패는 이전 데이터를 유지한다 — 일시 장애 폴링 1회가
     // 잘 보이던 대시보드를 "프로젝트 없음"으로 초기화하지 않게(null 덮어쓰기 금지).
     const summaryP = (canViewWorkspaceUsage
@@ -323,7 +329,7 @@ export function DashboardView({
       : manageApi.projectSummary(workspaceId)
     )
       .then((d) => {
-        setSummary((previous) => reconcileValueState(previous, d));
+        if (inScope()) setSummary((previous) => reconcileValueState(previous, d));
         return null as string | null;
       })
       .catch((e) => String(e?.message || e) || "요약 조회 실패");
@@ -331,20 +337,26 @@ export function DashboardView({
       ? projectApi.allProjectMembers()
       : projectApi.visibleProjectMembers())
       .then((membersByPid) => {
-        setMembers((previous) =>
-          reconcileMapState(previous, new Map(Object.entries(membersByPid))),
-        );
+        if (inScope()) {
+          setMembers((previous) =>
+            reconcileMapState(previous, new Map(Object.entries(membersByPid))),
+          );
+        }
         return null as string | null;
       })
       .catch((e) => String(e?.message || e) || "멤버 조회 실패");
     const request = Promise.all([summaryP, membersP])
-      .then(([summaryError, membersError]) => setErr(summaryError || membersError || ""))
+      .then(([summaryError, membersError]) => {
+        if (inScope()) setErr(summaryError || membersError || "");
+      })
       .finally(() => {
         setLoading(false);
         if (reloadPromiseRef.current === request) reloadPromiseRef.current = null;
         if (pendingReloadRef.current) {
           pendingReloadRef.current = false;
-          void reload();
+          // stale 클로저(옛 workspaceId)가 아니라 최신 렌더의 reload 를 호출해야
+          // 전환 직후 대기 중이던 재조회가 새 워크스페이스로 나간다.
+          void reloadRef.current();
         }
       });
     reloadPromiseRef.current = request;

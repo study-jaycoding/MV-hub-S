@@ -76,6 +76,56 @@ class ManageWorkspaceScopeTests(unittest.TestCase):
         db.flush_pool()
         self.tmp.cleanup()
 
+    def test_moved_project_history_stays_visible_in_old_workspace_summary(self) -> None:
+        """정책: 생성물 workspace 는 과금 스냅샷 — 프로젝트가 다른 공간으로 이동해도
+        이전 공간 summary 에 그 기록이 행으로 남아야 한다(행에서 빼면 totals 와 어긋나는
+        유령 합계가 된다)."""
+        with db.get_connection() as conn:
+            conn.execute("UPDATE project SET workspace_id='ws-b', workspace_name='B' WHERE id='p-a'")
+
+        summary = manage.dashboard_summary(workspace_id="ws-a")
+
+        # 이동한 p-a 가 여전히 ws-a 행에 있고(이동 표식), 수치는 ws-a 기록 그대로.
+        rows = {row["pid"]: row for row in summary["projects"]}
+        self.assertIn("p-a", rows)
+        self.assertTrue(rows["p-a"]["workspace_moved"])
+        self.assertEqual(rows["p-a"]["credits"], 7)
+        # 합계 = 행 합 (유령 수치 없음).
+        self.assertEqual(
+            summary["totals"]["credits"],
+            sum(row["credits"] for row in summary["projects"]),
+        )
+        # 정상(비이동) 행에는 표식이 없다.
+        summary_b = manage.dashboard_summary(workspace_id="ws-b")
+        rows_b = {row["pid"]: row for row in summary_b["projects"]}
+        self.assertFalse(rows_b["p-b"]["workspace_moved"])
+
+    def test_folder_task_sync_is_write_free_in_steady_state(self) -> None:
+        """읽기 무쓰기 계약 — 변화가 없으면 두 번째 동기화는 write 0회.
+
+        작업 목록 GET 은 매 폴링마다 이 동기화를 지나므로, 무조건 UPDATE(같은 값 재기록)면
+        여러 클라이언트의 30초 폴링이 공유 서버 SQLite 쓰기락을 다투게 된다."""
+        from app.repo import manage_tasks
+
+        with db.get_connection() as conn:
+            manage_tasks.sync_folder_tasks_batch(conn, ["p-a", "p-b"])  # 최초 — 작업 생성(쓰기 발생)
+        with db.get_connection() as conn:
+            before = conn.total_changes
+            manage_tasks.sync_folder_tasks_batch(conn, ["p-a", "p-b"])  # 변화 없음 — 쓰기 0 이어야
+            self.assertEqual(conn.total_changes - before, 0)
+        # 새 생성물이 오면 그 행만 갱신된다(무쓰기 최적화가 갱신 자체를 막지 않음).
+        with db.get_connection() as conn:
+            self._generation(
+                conn, "g-a2", "p-a", "ws-a", "u-a", "model-a", "ep001/c0010", 3,
+                created_sql="datetime('now', '+1 hour')",
+            )
+            manage_tasks.sync_folder_tasks_batch(conn, ["p-a", "p-b"])
+            row = conn.execute(
+                "SELECT source_last_seen_at FROM project_task "
+                "WHERE project_id='p-a' AND folder_path='ep001/c0010'"
+            ).fetchone()
+        self.assertIsNotNone(row["source_last_seen_at"])
+
     def test_dashboard_and_project_summary_share_exact_workspace_scope(self) -> None:
         summary = manage.dashboard_summary(workspace_id="ws-a")
 

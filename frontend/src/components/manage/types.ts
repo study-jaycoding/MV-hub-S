@@ -65,6 +65,7 @@ export interface ManageProject {
   final_count: number; // 완료(최종선택·골드) 생성물 수
   real_credits: number;
   credits: number; // COALESCE(실제, 견적)
+  workspace_moved?: boolean; // 다른 워크스페이스로 이동한 프로젝트의 과거 기록 행(구서버는 미제공)
   budget_used_credits?: number; // 설정된 일/주/월의 현재 기간 사용량(구서버는 미제공)
   models?: ProjectModelUsage[]; // 프로젝트 전체 모델별 생성·크레딧·최종 집계
   budget_models?: ProjectModelUsage[]; // 현재 예산 주기의 모델별 사용 집계
