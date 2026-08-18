@@ -99,8 +99,7 @@ function FolderTreeRow({
   const countHint =
     node.count === null || fileCount === null
       ? ""
-      : `\n생성물 ${count}개 · 폴더 파일 ${fileCount}개` +
-        (fileCount > count ? " (파일이 더 많으면 앱 밖에서 들어온 것입니다)" : "");
+      : `\n생성물 ${count}개 · 폴더 파일 ${fileCount}개`;
   const [dropOver, setDropOver] = useState(false);
   const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
