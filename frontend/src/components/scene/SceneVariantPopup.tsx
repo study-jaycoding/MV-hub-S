@@ -429,7 +429,7 @@ export function SceneVariantPopup({
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => {
                               e.stopPropagation();
-                              downloadOne(a.file_path, downloadName(gg, a.type));
+                              downloadOne(a.file_path, downloadName(gg, a.type), gg.id);
                             }}
                           >
                             ⤓

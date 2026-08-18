@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -22,7 +23,7 @@ from starlette.background import BackgroundTask
 
 from . import _proxy
 from .. import rbac, repo
-from ..config import AUTH_ENABLED
+from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
     account_actor_uid,
     account_global_roles,
@@ -31,7 +32,8 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import FacetsOut, GenerationOut
-from ..services import media_cache, thumbs
+from ..services import file_stamp, media_cache, thumbs
+from ..services.path_safety import safe_join
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
@@ -180,14 +182,70 @@ def _remote_thumb_urls(data) -> list[str]:
     return list(seen.keys())
 
 
+STAMP_MAX_BYTES = 512 * 1024 * 1024  # 이보다 크면 각인 없이 그냥 흘려보낸다(디스크·시간 보호).
+
+
+def _new_temp_file(suffix: str) -> Path:
+    """빈 임시 파일 경로. mkstemp 가 연 fd 를 반드시 닫는다 — Windows 는 열린 파일을 교체하지
+    못해, fd 를 쥔 채로 두면 각인이 '액세스 거부'로 조용히 실패한다."""
+    fd, path = tempfile.mkstemp(suffix=suffix or ".bin")
+    os.close(fd)
+    return Path(path)
+
+
+def _stamped_download(
+    upstream, ctype: str, safe: str, tags: dict[str, str], background: BackgroundTasks
+):
+    """받은 바이트를 임시 파일에 담아 각인한 뒤 내려준다. 실패하면 각인 없이 그대로 내려준다."""
+    suffix = Path(safe).suffix or ""
+    tmp = _new_temp_file(suffix)
+    try:
+        with tmp.open("wb") as out:
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+        file_stamp.stamp_file(tmp, tags, suffix)
+    finally:
+        upstream.close()
+    background.add_task(lambda: tmp.unlink(missing_ok=True))
+    return FileResponse(
+        tmp, media_type=ctype, filename=safe,
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
+
+
 @router.get("/download")
-def download_media(url: str = Query(...), name: str = Query("download")):
+def download_media(
+    background: BackgroundTasks,
+    url: str = Query(...),
+    name: str = Query("download"),
+    gen_id: Optional[str] = Query(None),
+):
     """원격 미디어(cloudfront 등)를 서버가 받아 attachment 로 스트리밍한다.
 
     원격 URL 은 브라우저의 a[download] 가 무시돼 '다운로드' 대신 새 탭으로 열린다. 같은 오리진
     프록시(이 엔드포인트)로 받으면 Content-Disposition: attachment 로 '진짜 다운로드'(크롬 다운로드
     목록)가 된다. http(s) 만 허용 + 내부 호스트 차단(기본 SSRF 방어). 로컬 보관본(/media·/api)은
-    프론트가 직접 a[download] 로 받으므로 여기로 오지 않는다."""
+    로컬 보관본(/media/...)도 gen_id 가 오면 여기서 각인해 내려준다(각인 경로 일원화)."""
+    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+
+    # 로컬 보관본(byte-cache) — 원격이 아니라 우리 디스크에 있는 파일. 각인해서 사본으로 내려준다.
+    if url.startswith("/media/"):
+        src = safe_join(MEDIA_DIR, url.removeprefix("/media/"))
+        if src is None or not src.exists():
+            raise HTTPException(status_code=404, detail="로컬 보관본을 찾을 수 없습니다")
+        tags = file_stamp.tags_for_generation(gen_id) if gen_id else {}
+        if not tags or src.stat().st_size > STAMP_MAX_BYTES:
+            return FileResponse(src, filename=safe)  # 각인 없이 원본 그대로
+        suffix = src.suffix or Path(safe).suffix
+        tmp = _new_temp_file(suffix)
+        shutil.copy2(src, tmp)
+        file_stamp.stamp_file(tmp, tags, suffix)
+        background.add_task(lambda: tmp.unlink(missing_ok=True))
+        return FileResponse(tmp, filename=safe)
+
     try:
         assert_public_http_url(url)  # http(s) + 내부/사설 대역 차단(SSRF 방어)
     except BlockedURLError as e:
@@ -205,8 +263,19 @@ def download_media(url: str = Query(...), name: str = Query("download")):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"원격 미디어 다운로드 실패: {e}")
     ctype = upstream.headers.get_content_type() or "application/octet-stream"
-    # 파일명 위생 — 헤더 인젝션·경로문자 제거.
-    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+
+    # 각인 — 이 파일이 어느 생성물인지 새겨 내보낸다(나중에 캔버스에 끌어다 놓으면 복원된다).
+    #  · 스트리밍으로는 각인할 수 없어(끝까지 받아야 컨테이너를 다시 쓴다) 임시 파일에 받는다.
+    #  · gen_id 가 없거나(구 프론트) 너무 큰 파일이면 종전대로 스트리밍 — 다운로드는 절대 안 막힌다.
+    if gen_id:
+        try:
+            size = int(upstream.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= STAMP_MAX_BYTES:
+            tags = file_stamp.tags_for_generation(gen_id)
+            if tags:
+                return _stamped_download(upstream, ctype, safe, tags, background)
 
     def _stream():
         try:

@@ -24,7 +24,25 @@ function _anchor(href: string, name?: string, newTab = false) {
 
 // bytes 를 Blob 으로 받는다(실패 시 null). 로컬(/...)은 쿠키 동봉·직접, 원격은 CDN CORS(*)로 직접
 // 받고, CORS 막힌 호스트면 같은 오리진 서버 프록시(/api/download)로 재시도.
-export async function fetchBlob(url: string, name: string): Promise<Blob | null> {
+export async function fetchBlob(
+  url: string,
+  name: string,
+  genId?: string,
+): Promise<Blob | null> {
+  // genId 를 아는 다운로드는 허브를 거친다 — 허브가 파일에 '이 생성물이다'를 새겨서 준다(각인).
+  // 브라우저가 CDN 에서 직접 받으면 각인할 기회가 없다. 허브가 실패하면 아래 직접 받기로 폴백해
+  // 다운로드 자체는 막히지 않는다(각인은 있으면 좋은 것이지 필수 조건이 아니다).
+  if (genId) {
+    try {
+      const res = await fetch(
+        withQuery("/api/download", { url, name, gen_id: genId }),
+        { credentials: "include" },
+      );
+      if (res.ok) return await res.blob();
+    } catch {
+      /* 허브 경유 실패 → 아래 기존 경로로 폴백 */
+    }
+  }
   try {
     const res = await fetch(url, url.startsWith("/") ? { credentials: "include" } : {});
     if (res.ok) return await res.blob();
@@ -49,8 +67,9 @@ export async function fetchBlob(url: string, name: string): Promise<Blob | null>
 async function _download(
   url: string,
   name: string,
+  genId?: string,
 ): Promise<{ ok: boolean; savedToDir: boolean }> {
-  const blob = await fetchBlob(url, name);
+  const blob = await fetchBlob(url, name, genId);
   if (blob) {
     // 지정 다운로드 폴더가 있으면 프롬프트 없이 그곳에 직접 저장. 없거나 실패하면 일반 다운로드.
     if (await saveToDownloadDir(name, blob)) return { ok: true, savedToDir: true };
@@ -80,16 +99,18 @@ function notifyAssetsMaybeChanged(): void {
 
 // true = 파일명대로 디스크에 깔끔히 저장됨. false = 직접 저장 실패 → 새 탭 폴백(파일명 미적용·에러
 // 페이지/팝업차단 가능). 예전엔 fire-and-forget 라 실패해도 사용자가 '저장됨'으로 오인했다.
-export async function download(url: string, name: string): Promise<boolean> {
-  return (await _download(url, name)).ok;
+export async function download(url: string, name: string, genId?: string): Promise<boolean> {
+  return (await _download(url, name, genId)).ok;
 }
 
 // 단건 다운로드(카드·보드·에셋 호버 버튼 공용) — 클릭 즉시 '1개 다운로드 시작…' 토스트로
 // 피드백을 준다(일괄 다운로드와 동일 문구). 원격 저장 실패 시엔 _download 가 안내 토스트를 띄운다.
 // bulk 는 downloadMany 가 시작/결과 토스트를 따로 내므로 이 래퍼를 쓰지 않는다(토스트 중복 방지).
-export async function downloadOne(url: string, name: string): Promise<boolean> {
+// genId 를 주면 허브가 파일에 각인해서 내려준다(나중에 캔버스에 끌어다 놓으면 복원). 폴더에서
+// 고른 외부 파일처럼 생성물이 아닌 것은 genId 없이 부르면 된다.
+export async function downloadOne(url: string, name: string, genId?: string): Promise<boolean> {
   flashMsg("1개 다운로드 시작…");
-  const { ok, savedToDir } = await _download(url, name);
+  const { ok, savedToDir } = await _download(url, name, genId);
   if (savedToDir) notifyAssetsMaybeChanged();
   return ok;
 }
@@ -111,10 +132,14 @@ export function downloadName(gen: Generation, type: string): string {
   return `${base || gen.id}.${isVid ? "mp4" : "png"}`;
 }
 
-export function downloadItemsForGenerations(gens: Generation[]): { url: string; name: string }[] {
+export function downloadItemsForGenerations(
+  gens: Generation[],
+): { url: string; name: string; genId: string }[] {
   return gens.flatMap((g) => {
     const asset = g.assets?.[0];
-    return asset ? [{ url: asset.file_path, name: downloadName(g, asset.type) }] : [];
+    return asset
+      ? [{ url: asset.file_path, name: downloadName(g, asset.type), genId: g.id }]
+      : [];
   });
 }
 
@@ -122,13 +147,13 @@ export function downloadItemsForGenerations(gens: Generation[]): { url: string; 
 // 넘어가고, 짧은 스태거로 브라우저의 '다중 다운로드 차단'을 회피한다. Assets 갱신 알림은 매 건마다가
 // 아니라 배치 끝에 1회만(스팸·부하 방지).
 export async function downloadMany(
-  items: { url: string; name: string }[],
+  items: { url: string; name: string; genId?: string }[],
 ): Promise<{ ok: number; failed: number }> {
   let ok = 0;
   let failed = 0;
   let anySaved = false;
   for (const it of items) {
-    const r = await _download(it.url, it.name);
+    const r = await _download(it.url, it.name, it.genId);
     if (r.ok) ok++;
     else failed++;
     if (r.savedToDir) anySaved = true;

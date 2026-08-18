@@ -33,7 +33,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..repo import manage as repo_manage
-from ..services import cli_bridge, media_cache, project_folders
+from ..services import cli_bridge, file_stamp, media_cache, project_folders
 from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
@@ -936,6 +936,9 @@ async def save_finals(project_id: str, request: Request):
                         f"/api/manage/save-finals/content/{gen_id}",
                         tmp,
                     )
+                    await asyncio.to_thread(
+                        file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
+                    )
                     os.replace(tmp, dest)
                 except OSError:
                     try:
@@ -996,6 +999,9 @@ async def save_finals(project_id: str, request: Request):
             tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.part")
             try:
                 await asyncio.to_thread(shutil.copy2, src, tmp)
+                await asyncio.to_thread(
+                    file_stamp.stamp_file, tmp, file_stamp.tags_for_generation(gen_id), dest.suffix
+                )
                 os.replace(tmp, dest)
             except OSError:
                 try:

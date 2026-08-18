@@ -67,7 +67,7 @@ export function GenerationThumbOverlay({
           <button
             className="ov-icon"
             title="다운로드"
-            onClick={() => downloadOne(asset.file_path, downloadName(gen, asset.type))}
+            onClick={() => downloadOne(asset.file_path, downloadName(gen, asset.type), gen.id)}
           >
             ⤓
           </button>

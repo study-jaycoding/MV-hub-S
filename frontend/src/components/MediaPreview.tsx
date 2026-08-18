@@ -122,7 +122,11 @@ export function MediaPreview({ target, onClose, onOpenInBoard }: Props) {
               className="lin-board-btn preview-dl-btn"
               title="원본 다운로드"
               onClick={() =>
-                downloadOne(cur.url, previewDownloadName(cur.url, cur.name, cur.type, cur.genId))
+                downloadOne(
+                  cur.url,
+                  previewDownloadName(cur.url, cur.name, cur.type, cur.genId),
+                  cur.genId,
+                )
               }
             >
               ⤓ 다운로드
