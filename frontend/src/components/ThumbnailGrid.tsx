@@ -424,6 +424,9 @@ export function ThumbnailGrid(props: Props) {
     if ((e.target as HTMLElement).closest("button, input, label")) return; // 오버레이 컨트롤 제외
     gridRef.current?.focus(); // 그리드로 포커스 → 방향키 네비 활성(프롬프트와 분리)
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
+    // 빈 곳에서 시작한 드래그 = 마퀴. 브라우저 기본 글자 선택을 막는다 — 안 막으면 포인터가
+    // 툴바·상단바 위를 지날 때 그쪽 글자가 파랗게 긁히고 마퀴가 묻힌다(포커스는 위에서 직접 준다).
+    if (!cellEl) e.preventDefault();
     dragRef.current = {
       x: e.clientX,
       y: e.clientY,

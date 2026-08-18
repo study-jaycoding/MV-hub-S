@@ -1,4 +1,4 @@
-﻿/* ── 생성 그리드/리스트 (에셋 파트와 동일한 선택 시스템) ── */
+/* ── 생성 그리드/리스트 (에셋 파트와 동일한 선택 시스템) ── */
 .gen-grid {
   flex: 1; min-height: 0; overflow-y: auto; position: relative;
   /* 최소 카드 크기에서 가상 행 높이가 경계값을 오갈 때 스크롤바가 생겼다 사라지며
@@ -452,6 +452,8 @@
   display: flex; align-items: center; gap: 14px;
   padding: 10px 18px 8px;
   border-bottom: 1px solid var(--border);
+  /* 카드 마퀴 드래그가 이 줄을 지날 때 라벨이 파랗게 긁히지 않게 — 조작용 줄이라 글자 선택이 필요 없다. */
+  user-select: none; -webkit-user-select: none;
 }
 .lib-tabs { display: flex; gap: 4px; }
 .lib-tabs button {
