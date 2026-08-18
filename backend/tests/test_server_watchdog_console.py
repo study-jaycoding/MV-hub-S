@@ -280,10 +280,17 @@ server.serve_forever()
     )
     try:
         deadline = time.monotonic() + 5
-        while not port_path.is_file() and time.monotonic() < deadline:
+        port_text = ""
+        while time.monotonic() < deadline:
+            if port_path.is_file():
+                # Windows에서는 파일 생성과 내용 기록 사이의 아주 짧은 구간이 보일 수 있다.
+                # 존재 여부만 보고 즉시 읽으면 빈 문자열을 정수로 바꾸다 간헐 실패한다.
+                port_text = port_path.read_text(encoding="ascii").strip()
+                if port_text.isdigit():
+                    break
             time.sleep(0.02)
-        assert port_path.is_file(), "isolated serve.py did not publish its port"
-        port = int(port_path.read_text(encoding="ascii"))
+        assert port_text.isdigit(), "isolated serve.py did not publish its port"
+        port = int(port_text)
         log_path = tmp_path / "hung-watchdog.log"
         watchdog_script = Path(__file__).resolve().parents[2] / "tools" / "server_watchdog.py"
         result = subprocess.run(

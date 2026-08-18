@@ -27,6 +27,7 @@ from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals
+from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api", tags=["publish"])
 
@@ -171,6 +172,36 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
             },
         }
     counts = repo.import_bundle_payload(bundle, DEFAULT_WORKER_ID)
+    # 공유 서버의 정식 발행 입구는 개별 publish 라우트가 아니라 이 번들 수신이다.
+    # 따라서 운영자가 나중에 "누가 어떤 생성물을 공유했나"를 복원할 수 있도록 여기서
+    # 요청 단위 감사 이력을 남긴다. 500개 전체를 빠뜨리지 않되 DB 쓰기는 50개 묶음으로 제한한다.
+    anchors: list[str] = []
+    seen_anchors: set[str] = set()
+    for item in bundle.get("generations") or []:
+        generation = item.get("generation") if isinstance(item, dict) else None
+        if not isinstance(generation, dict):
+            continue
+        anchor = str(generation.get("id") or "").strip()
+        if anchor and anchor not in seen_anchors:
+            seen_anchors.add(anchor)
+            anchors.append(anchor)
+    for offset in range(0, len(anchors), 50):
+        chunk = anchors[offset : offset + 50]
+        journal_audit_event(
+            "generation.publish_bundle_received",
+            actor_uid=actor_id(request),
+            target_type="generation_batch",
+            target_id=chunk[0] if len(anchors) == 1 else None,
+            fields=["shared"],
+            details={
+                "shared": True,
+                "generation_ids": chunk,
+                "item_count": len(anchors),
+                "chunk_index": offset // 50,
+                "inserted": int(counts.get("inserted") or 0),
+                "updated": int(counts.get("updated") or 0),
+            },
+        )
     # 공유 서버도 받은 원본을 보존한다. 번들에는 원격 URL만 오므로 서버 측 byte-cache가
     # 없으면 CDN 만료 뒤 팀 공유본 전체가 깨진다. ID/job_id 양쪽을 해석해 멱등 등록한다.
     for item in bundle.get("generations") or []:

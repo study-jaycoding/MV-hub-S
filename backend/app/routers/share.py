@@ -60,6 +60,22 @@ def _ensure_not_final_before_unpublish(gen: dict[str, Any] | None) -> None:
         raise HTTPException(status_code=409, detail=_FINAL_UNPUBLISH_DETAIL)
 
 
+def _journal_share_change(request: Request, gen: dict[str, Any], *, shared: bool) -> None:
+    """실제로 바뀐 공유 상태만 장기 감사 이력에 남긴다.
+
+    프롬프트와 결과 URL은 넣지 않고 생성물·프로젝트 식별자와 공개 여부만 기록한다.
+    """
+    journal_audit_event(
+        "generation.published" if shared else "generation.unpublished",
+        actor_uid=actor_id(request),
+        target_type="generation",
+        target_id=gen.get("id"),
+        project_id=gen.get("project_id"),
+        fields=["shared"],
+        details={"shared": shared},
+    )
+
+
 def _is_remote_generation_missing(exc: HTTPException) -> bool:
     """라우트 자체가 없는 404와 서버에 generation 행이 없는 404를 구분한다.
 
@@ -171,10 +187,14 @@ def publish(gen_id: str, body: PublishIn, request: Request):
     # 공유자는 항상 인증된 본인 — body.shared_by 는 신뢰하지 않는다(위장 방지).
     # 프론트는 이 필드를 보내지 않으므로 동작 변화 없음(필드는 하위호환용으로만 남김).
     shared_by = actor_id(request)
+    was_shared = bool(gen.get("shared"))
     repo.publish(gen_id, shared_by, body.visibility)
     repo.request_media_preservation(gen_id, "shared")
     _touch_telemetry(gen_id)
-    return repo.get_generation(gen_id)
+    out = repo.get_generation(gen_id)
+    if out and not was_shared and out.get("shared"):
+        _journal_share_change(request, out, shared=True)
+    return out
 
 
 @router.post("/generations/{gen_id}/unpublish", response_model=GenerationOut)
@@ -219,9 +239,13 @@ def unpublish(gen_id: str, request: Request):
         raise HTTPException(status_code=404, detail="generation 없음")
     _require_unpublish(request, gen)  # 공유 해제 = 본인/admin, 또는 그 프로젝트 슈퍼바이저(B안)
     _ensure_not_final_before_unpublish(gen)
+    was_shared = bool(gen.get("shared"))
     repo.unpublish(gen_id)
     _touch_telemetry(gen_id)
-    return repo.get_generation(gen_id)
+    out = repo.get_generation(gen_id)
+    if out and was_shared and not out.get("shared"):
+        _journal_share_change(request, out, shared=False)
+    return out
 
 
 # ── v02 CMS — Supervisor 최종(골드) 선별 (로드맵 PART 2) ────────────────────
