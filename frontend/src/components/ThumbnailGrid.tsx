@@ -438,17 +438,23 @@ export function ThumbnailGrid(props: Props) {
     [onDragMove, onDragUp],
   );
 
-  // 카드가 몇 개 없으면 빈 곳 대부분이 그리드 밖(툴바 줄)이라 마퀴가 아예 시작되지 않았다.
-  // 같은 화면(.main) 안이면 그리드 밖에서 시작한 드래그도 마퀴로 잡는다. 조작 요소(버튼·입력·
-  // 슬라이더·링크) 위에서는 시작하지 않아 툴바 사용과 부딪히지 않는다.
+  // 카드 영역(.gen-grid) 밖에서 시작한 드래그도 선택으로 잡는다. 카드가 몇 개 없으면 화면
+  // 대부분이 그리드 밖이라, 툴바 줄이나 사이드바 여백에서 끌기 시작하면 아무 일도 안 났다.
+  // 범위는 화면 본체(.body — 사이드바+본문) 전체. 아래 것들 위에서는 시작하지 않는다:
+  //  · 조작 요소(버튼·입력·슬라이더·링크·편집 영역) — 툴바·폴더 클릭과 부딪히지 않게
+  //  · 떠 있는 창·패널(관리창·정보팝업·미리보기·프롬프트 바) — 그 안의 드래그는 그쪽 것
   useEffect(() => {
-    const host = gridRef.current?.closest(".main") as HTMLElement | null;
+    const host = gridRef.current?.closest(".body") as HTMLElement | null;
     if (!host) return;
+    const SKIP = [
+      ".gen-grid", // 그리드 안은 onGridMouseDown 이 처리
+      "button", "input", "label", "select", "textarea", "a", "[contenteditable]",
+      '[role="button"]', '[role="dialog"]',
+      ".manage-float", ".info-popup", ".sl-dockbar", ".preview-wrap", ".cmp-window",
+    ].join(", ");
     const onHostMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
-      const target = e.target as HTMLElement;
-      if (target.closest(".gen-grid")) return; // 그리드 안은 아래 onGridMouseDown 이 처리
-      if (target.closest("button, input, label, select, textarea, a, [contenteditable]")) return;
+      if ((e.target as HTMLElement).closest(SKIP)) return;
       e.preventDefault(); // 글자 선택·네이티브 드래그 방지
       gridRef.current?.focus();
       beginDrag(e, null);
