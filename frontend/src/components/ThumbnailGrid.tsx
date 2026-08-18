@@ -75,6 +75,14 @@ interface Props {
   onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
+// 드래그 선택(빈 곳을 끌어 여러 카드 고르기)을 시작하지 않는 곳 — 원래 기능이 우선인 자리.
+const MARQUEE_SKIP = [
+  ".gen-grid", // 카드 영역 안은 onGridMouseDown 이 처리한다
+  "button", "input", "label", "select", "textarea", "a", "[contenteditable]",
+  '[role="button"]', '[role="dialog"]',
+  ".manage-float", ".info-popup", ".sl-dockbar", ".preview-wrap", ".cmp-window",
+].join(", ");
+
 export function ThumbnailGrid(props: Props) {
   const { generations, scale, layout, groupByDate, selectedIds, onSelectedChange } = props;
   const isList = layout === "list";
@@ -439,28 +447,27 @@ export function ThumbnailGrid(props: Props) {
   );
 
   // 카드 영역(.gen-grid) 밖에서 시작한 드래그도 선택으로 잡는다. 카드가 몇 개 없으면 화면
-  // 대부분이 그리드 밖이라, 툴바 줄이나 사이드바 여백에서 끌기 시작하면 아무 일도 안 났다.
-  // 범위는 화면 전체(.app — 상단바+사이드바+본문). 아래 것들 위에서는 시작하지 않는다:
-  //  · 조작 요소(버튼·입력·슬라이더·링크·편집 영역) — 툴바·폴더 클릭과 부딪히지 않게
+  // 대부분이 그리드 밖이라, 상단바·툴바 줄·사이드바 여백에서 끌기 시작하면 아무 일도 안 났다.
+  //
+  // 문서 캡처 단계에서 잡는다 — 상단바·사이드바에는 팝업 닫기 감시자처럼 이벤트를 중간에서
+  // 멈추는(stopPropagation) 핸들러가 있어, 위쪽 컨테이너에 붙이면 아예 도달하지 않는다.
+  // 이 그리드는 라이브러리 화면에서만 살아 있으므로 문서 전역이어도 다른 탭과 겹치지 않는다.
+  //
+  // 아래 것들 위에서는 시작하지 않는다(원래 기능이 우선):
+  //  · 조작 요소(버튼·입력·슬라이더·링크·편집 영역) — 탭 전환·폴더 클릭·툴바 조작
   //  · 떠 있는 창·패널(관리창·정보팝업·미리보기·프롬프트 바) — 그 안의 드래그는 그쪽 것
   useEffect(() => {
-    const host = gridRef.current?.closest(".app") as HTMLElement | null;
-    if (!host) return;
-    const SKIP = [
-      ".gen-grid", // 그리드 안은 onGridMouseDown 이 처리
-      "button", "input", "label", "select", "textarea", "a", "[contenteditable]",
-      '[role="button"]', '[role="dialog"]',
-      ".manage-float", ".info-popup", ".sl-dockbar", ".preview-wrap", ".cmp-window",
-    ].join(", ");
-    const onHostMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      if ((e.target as HTMLElement).closest(SKIP)) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0 || !gridRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest) return;
+      if (target.closest(MARQUEE_SKIP)) return;
       e.preventDefault(); // 글자 선택·네이티브 드래그 방지
-      gridRef.current?.focus();
+      gridRef.current.focus();
       beginDrag(e, null);
     };
-    host.addEventListener("mousedown", onHostMouseDown);
-    return () => host.removeEventListener("mousedown", onHostMouseDown);
+    document.addEventListener("mousedown", onDocMouseDown, true);
+    return () => document.removeEventListener("mousedown", onDocMouseDown, true);
   }, [beginDrag]);
 
   const onGridMouseDown = (e: React.MouseEvent) => {
