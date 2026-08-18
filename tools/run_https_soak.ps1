@@ -4,6 +4,14 @@ param(
     [int]$QualificationCycles = 2,
     [double]$SoakDurationSeconds = 14400,
     [int]$SoakCycles = 2,
+    [int]$ServerCpuCores = 4,
+    [ValidateSet("normal", "below-normal")]
+    [string]$ServerPriority = "below-normal",
+    [double]$SampleIntervalSeconds = 30,
+    [double]$MaxRssMb = 512,
+    [double]$MaxP95Ms = 500,
+    [double]$MaxLoginP95Ms = 10000,
+    [double]$MaxMemoryGrowthPercent = 20,
     [string]$CertFile = "",
     [string]$KeyFile = "",
     [string]$ReportDirectory = ""
@@ -16,6 +24,10 @@ if (-not $ReportDirectory) {
     $ReportDirectory = Join-Path $ProjectRoot "predeploy-reports"
 }
 $ReportDirectory = [System.IO.Path]::GetFullPath($ReportDirectory)
+$UsesManagedLocalTls = -not $CertFile -and -not $KeyFile
+if ([bool]$CertFile -ne [bool]$KeyFile) {
+    throw "CertFile and KeyFile must be supplied together."
+}
 if (-not $CertFile) {
     $CertFile = Join-Path $ReportDirectory "tls-local\localhost-cert.pem"
 }
@@ -33,6 +45,152 @@ $CurrentStage = "initializing"
 $CurrentReport = ""
 $BaselineCommit = ""
 
+if ($Users -lt 1 -or $Users -gt 500) {
+    throw "Users must be between 1 and 500."
+}
+if ($QualificationDurationSeconds -le 0 -or $SoakDurationSeconds -le 0) {
+    throw "QualificationDurationSeconds and SoakDurationSeconds must be greater than 0."
+}
+if ($QualificationCycles -lt 1 -or $SoakCycles -lt 1) {
+    throw "QualificationCycles and SoakCycles must be at least 1."
+}
+if ($ServerCpuCores -lt 1) {
+    throw "ServerCpuCores must be at least 1 for the low-spec soak profile."
+}
+if ($SampleIntervalSeconds -le 0 -or $MaxRssMb -le 0) {
+    throw "SampleIntervalSeconds and MaxRssMb must be greater than 0."
+}
+if (
+    $MaxP95Ms -le 0 -or
+    $MaxLoginP95Ms -le 0 -or
+    $MaxMemoryGrowthPercent -lt 0
+) {
+    throw "Latency limits must be greater than 0 and memory growth must not be negative."
+}
+
+function Test-TlsCertificatePair {
+    param(
+        [string]$CertificatePath,
+        [string]$PrivateKeyPath,
+        [datetime]$ValidUntil = (Get-Date).ToUniversalTime().AddHours(24)
+    )
+
+    if (
+        -not (Test-Path -LiteralPath $CertificatePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)
+    ) {
+        return $false
+    }
+
+    $Certificate = $null
+    try {
+        $Certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
+            $CertificatePath,
+            $PrivateKeyPath
+        )
+        $Now = (Get-Date).ToUniversalTime()
+        return (
+            $Certificate.HasPrivateKey -and
+            $Certificate.NotBefore.ToUniversalTime() -le $Now -and
+            $Certificate.NotAfter.ToUniversalTime() -gt $ValidUntil
+        )
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($Certificate) {
+            $Certificate.Dispose()
+        }
+    }
+}
+
+function New-LocalTlsCertificatePair {
+    param(
+        [string]$CertificatePath,
+        [string]$PrivateKeyPath
+    )
+
+    $CertificateDirectory = Split-Path -Parent $CertificatePath
+    $PrivateKeyDirectory = Split-Path -Parent $PrivateKeyPath
+    New-Item -ItemType Directory -Force -Path $CertificateDirectory | Out-Null
+    New-Item -ItemType Directory -Force -Path $PrivateKeyDirectory | Out-Null
+
+    $Rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    $Certificate = $null
+    $CertificateTemp = "$CertificatePath.tmp"
+    $PrivateKeyTemp = "$PrivateKeyPath.tmp"
+    try {
+        if (-not ($Rsa.PSObject.Methods.Name -contains "ExportPkcs8PrivateKeyPem")) {
+            throw "Automatic local TLS certificate creation requires PowerShell 7 or newer."
+        }
+
+        $Request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=MV Hub Local TLS Test",
+            $Rsa,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        )
+        $San = [System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
+        $San.AddIpAddress([System.Net.IPAddress]::Parse("127.0.0.1"))
+        $San.AddDnsName("localhost")
+        $Request.CertificateExtensions.Add($San.Build())
+        $Request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new(
+                $false,
+                $false,
+                0,
+                $true
+            )
+        )
+        $KeyUsage = (
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature -bor
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment
+        )
+        $Request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                $KeyUsage,
+                $true
+            )
+        )
+        $ServerAuthOids = [System.Security.Cryptography.OidCollection]::new()
+        [void]$ServerAuthOids.Add([System.Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.1"))
+        $Request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new(
+                $ServerAuthOids,
+                $true
+            )
+        )
+
+        $Now = [DateTimeOffset]::UtcNow
+        $Certificate = $Request.CreateSelfSigned($Now.AddMinutes(-5), $Now.AddDays(30))
+        $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText(
+            $CertificateTemp,
+            $Certificate.ExportCertificatePem(),
+            $Utf8NoBom
+        )
+        [System.IO.File]::WriteAllText(
+            $PrivateKeyTemp,
+            $Rsa.ExportPkcs8PrivateKeyPem(),
+            $Utf8NoBom
+        )
+        Move-Item -LiteralPath $CertificateTemp -Destination $CertificatePath -Force
+        Move-Item -LiteralPath $PrivateKeyTemp -Destination $PrivateKeyPath -Force
+    }
+    finally {
+        foreach ($TemporaryPath in @($CertificateTemp, $PrivateKeyTemp)) {
+            if (Test-Path -LiteralPath $TemporaryPath -PathType Leaf) {
+                Remove-Item -LiteralPath $TemporaryPath -Force
+            }
+        }
+        if ($Certificate) {
+            $Certificate.Dispose()
+        }
+        $Rsa.Dispose()
+    }
+}
+
 function Write-State {
     param(
         [string]$Status,
@@ -46,6 +204,13 @@ function Write-State {
         message = $Message
         pid = $PID
         users = $Users
+        server_cpu_cores = $ServerCpuCores
+        server_priority = $ServerPriority
+        sample_interval_seconds = $SampleIntervalSeconds
+        max_rss_mb = $MaxRssMb
+        max_p95_ms = $MaxP95Ms
+        max_login_p95_ms = $MaxLoginP95Ms
+        max_memory_growth_percent = $MaxMemoryGrowthPercent
         commit = $script:BaselineCommit
         started_at = $script:StartedAt
         updated_at = (Get-Date).ToString("s")
@@ -87,6 +252,13 @@ function Invoke-LoadStage {
         --duration $DurationSeconds `
         --cycles $Cycles `
         --generations-per-user 20 `
+        --server-cpu-cores $ServerCpuCores `
+        --server-priority $ServerPriority `
+        --sample-interval $SampleIntervalSeconds `
+        --max-rss-mb $MaxRssMb `
+        --max-p95-ms $MaxP95Ms `
+        --max-login-p95-ms $MaxLoginP95Ms `
+        --max-memory-growth-percent $MaxMemoryGrowthPercent `
         --tls-certfile $CertFile `
         --tls-keyfile $KeyFile `
         --tls-ca-file $CertFile `
@@ -101,6 +273,13 @@ function Invoke-LoadStage {
 }
 
 New-Item -ItemType Directory -Force -Path $ReportDirectory | Out-Null
+if ($UsesManagedLocalTls -and -not (Test-TlsCertificatePair $CertFile $KeyFile)) {
+    Write-Host "[tls] local test certificate is missing or stale - creating a new 30-day pair."
+    New-LocalTlsCertificatePair $CertFile $KeyFile
+}
+if (-not (Test-TlsCertificatePair $CertFile $KeyFile)) {
+    throw "TLS certificate/key is invalid, mismatched, expired, or expires within 24 hours."
+}
 foreach ($RequiredFile in @($PythonExe, $LoadTool, $CertFile, $KeyFile)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
         throw "필수 파일을 찾을 수 없습니다: $RequiredFile"

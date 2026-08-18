@@ -324,6 +324,27 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(tls["CONTENT_HUB_SSL_CERTFILE"], r"C:\Temp\cert.pem")
         self.assertEqual(tls["CONTENT_HUB_SSL_KEYFILE"], r"C:\Temp\key.pem")
 
+    def test_wait_ready_reports_the_last_connection_error(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        expired = {"error": "certificate verify failed: certificate has expired"}
+
+        with (
+            mock.patch.object(
+                load_tool.time,
+                "monotonic",
+                side_effect=[0.0, 0.0, 1.0],
+            ),
+            mock.patch.object(load_tool.time, "sleep"),
+            mock.patch.object(
+                load_tool,
+                "_http_json",
+                return_value=(0, expired, 1.0),
+            ),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "certificate has expired"):
+                load_tool._wait_ready("https://127.0.0.1:8443", process, timeout=0.5)
+
     def test_websocket_client_matches_browser_keepalive(self):
         captured = {}
 

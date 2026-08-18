@@ -401,10 +401,12 @@ def _wait_ready(
     ssl_context: Optional[ssl.SSLContext] = None,
 ) -> None:
     deadline = time.monotonic() + timeout
+    last_status = 0
+    last_detail: Any = {"error": "no response"}
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(f"테스트 서버가 조기 종료했습니다(code={process.returncode})")
-        status, _, _ = _http_json(
+        status, detail, _ = _http_json(
             base_url,
             "/api/ready",
             timeout=2,
@@ -412,8 +414,17 @@ def _wait_ready(
         )
         if status == 200:
             return
+        last_status = status
+        last_detail = detail
         time.sleep(0.25)
-    raise TimeoutError("테스트 서버 준비 시간 초과")
+    try:
+        detail_text = json.dumps(last_detail, ensure_ascii=False)
+    except (TypeError, ValueError):
+        detail_text = repr(last_detail)
+    raise TimeoutError(
+        "테스트 서버 준비 시간 초과"
+        f"(last_status={last_status}, detail={detail_text[:500]})"
+    )
 
 
 async def _login_all(

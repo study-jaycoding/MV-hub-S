@@ -263,6 +263,30 @@ def test_predeploy_gate_defaults_to_a_repeatable_low_spec_server_profile():
     assert "load_max_rss_bytes_observed" in gate
 
 
+def test_https_soak_runner_enforces_the_documented_low_spec_profile():
+    project_root = Path(__file__).resolve().parents[2]
+    soak = (project_root / "tools" / "run_https_soak.ps1").read_text(encoding="utf-8")
+
+    assert '[int]$ServerCpuCores = 4' in soak
+    assert '[string]$ServerPriority = "below-normal"' in soak
+    assert '[double]$SampleIntervalSeconds = 30' in soak
+    assert '[double]$MaxRssMb = 512' in soak
+    assert "--server-cpu-cores $ServerCpuCores" in soak
+    assert "--server-priority $ServerPriority" in soak
+    assert "--sample-interval $SampleIntervalSeconds" in soak
+    assert "--max-rss-mb $MaxRssMb" in soak
+    assert "--max-p95-ms $MaxP95Ms" in soak
+    assert "--max-login-p95-ms $MaxLoginP95Ms" in soak
+    assert "--max-memory-growth-percent $MaxMemoryGrowthPercent" in soak
+    assert "server_cpu_cores = $ServerCpuCores" in soak
+    assert "max_rss_mb = $MaxRssMb" in soak
+    assert "$UsesManagedLocalTls" in soak
+    assert "Test-TlsCertificatePair" in soak
+    assert "New-LocalTlsCertificatePair" in soak
+    assert "CreateSelfSigned" in soak
+    assert "ExportPkcs8PrivateKeyPem" in soak
+
+
 def test_release_update_contract_preserves_worker_backup_state_and_outbox():
     project_root = Path(__file__).resolve().parents[2]
     updater = (project_root / "update_release_worker.bat").read_text(encoding="utf-8")
