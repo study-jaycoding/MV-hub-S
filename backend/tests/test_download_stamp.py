@@ -75,5 +75,50 @@ class DownloadStampTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 404)
 
 
+class ReadStampRouteTests(unittest.IsolatedAsyncioTestCase):
+    """끌어다 놓은 파일의 각인 읽기 — 각인이 없으면 '우리 파일이 아니다'로 답해야 한다."""
+
+    async def _read(self, data: bytes, filename: str) -> dict:
+        upload = _FakeUpload(data, filename)
+        return await library.read_file_stamp(upload)  # type: ignore[arg-type]
+
+    async def test_reads_gen_id_from_stamped_png(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            _png(path)
+            stamped = file_stamp.stamp_bytes(
+                path.read_bytes(), file_stamp.build_tags("gen-9", "job-9")
+            )
+
+            out = await self._read(stamped, "a.png")
+
+        self.assertEqual(out["gen_id"], "gen-9")
+        self.assertEqual(out["job_id"], "job-9")
+        self.assertEqual(out["hub"], file_stamp.HUB_TAG)
+
+    async def test_plain_file_has_no_stamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.png"
+            _png(path)
+
+            out = await self._read(path.read_bytes(), "a.png")
+
+        self.assertIsNone(out["gen_id"])
+
+
+class _FakeUpload:
+    """UploadFile 흉내 — 라우터를 HTTP 없이 직접 부르기 위한 최소 구현."""
+
+    def __init__(self, data: bytes, filename: str):
+        self._data = data
+        self._pos = 0
+        self.filename = filename
+
+    async def read(self, size: int = -1) -> bytes:
+        chunk = self._data[self._pos :] if size < 0 else self._data[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+
 if __name__ == "__main__":
     unittest.main()

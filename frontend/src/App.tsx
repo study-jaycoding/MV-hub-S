@@ -656,12 +656,38 @@ export default function App() {
     setFilters,
   });
   // 히스토리 버튼 → 그 생성물 recipe(어떻게 만들었나)를 새 씬 탭으로 연다(편집·재생성 가능). 팀 결과물도 동일.
-  const openRecipe = (g: Generation, history: History) => {
+  // history 없이도 연다 — 파일 드롭 복원처럼 계보 조회가 실패해도 레시피 본체(레퍼런스·모델·
+  // 프롬프트)는 생성물 자체에 있어 그릴 수 있다(buildRecipeScene 이 null 을 허용).
+  const openRecipe = (g: Generation, history: History | null) => {
     importSceneSnapshot(buildRecipeScene(g, history));
     setSceneBinding(null);
     setSceneSelGens([]);
     navTab("compose");
     flash(`"${g.model || "생성물"}" 을(를) 노드로 열었습니다.`);
+  };
+  // 캔버스에 떨어뜨린 파일이 우리가 내보낸 생성물이면(각인) 그 레시피를 노드로 펼친다.
+  //  · 각인이 없거나 카탈로그에서 못 찾으면 false — 호출측이 평소대로 레퍼런스 카드로 넣는다.
+  //  · 새 씬 탭으로 열리므로 지금 작업 중인 씬은 그대로 남는다.
+  const openRecipeFromFile = async (file: File): Promise<boolean> => {
+    let genId: string | null = null;
+    try {
+      genId = (await api.readFileStamp(file)).gen_id;
+    } catch {
+      return false; // 판독 실패(구버전 허브 등) — 평범한 파일로 처리
+    }
+    if (!genId) return false;
+    try {
+      const [gen, history] = await Promise.all([
+        api.getGeneration(genId),
+        api.history(genId).catch(() => null),
+      ]);
+      openRecipe(gen, history);
+      return true;
+    } catch {
+      // 각인은 있는데 카탈로그에 없다 — 다른 PC·계정에서 만든 것일 수 있다.
+      flash("이 파일의 생성 기록을 찾지 못했습니다 — 레퍼런스로 넣습니다.");
+      return false;
+    }
   };
   const {
     bulkDownload,
@@ -1328,6 +1354,7 @@ export default function App() {
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
+                onDroppedGenerationFile={openRecipeFromFile}
                 ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.

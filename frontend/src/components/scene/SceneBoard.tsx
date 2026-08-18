@@ -163,6 +163,9 @@ interface Props {
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
+  // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
+  //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
+  onDroppedGenerationFile?: (file: File) => Promise<boolean>;
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
@@ -244,6 +247,7 @@ export function SceneBoard({
   topCenterOverlay,
   onSaveScene,
   onLoadSceneFile,
+  onDroppedGenerationFile,
   ioPanelHot,
   onBindingChange,
   onCameraChange,
@@ -994,6 +998,7 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
     onLoadSceneFile,
+    onDroppedGenerationFile,
     cardWidth: CARD_W,
     cardHeight: CARD_H,
   });

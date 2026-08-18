@@ -184,6 +184,20 @@ export function partitionSceneDropFiles<T extends { name: string }>(files: reado
   };
 }
 
+/**
+ * 떨어뜨린 파일에서 '각인 → 레시피 복원'을 시도할지 판단한다.
+ *
+ * 한 개만 놓았을 때만 시도한다 — 여러 개를 놓는 것은 "레퍼런스로 넣겠다"는 뜻이고, 그때 씬 탭이
+ * 여러 개 열리면 곤란하다. Shift 를 누른 채 놓으면 각인이 있어도 레퍼런스로 간다(우리 결과물을
+ * 다시 재료로 쓰는 경우).
+ */
+export function shouldRestoreRecipeFromDrop(
+  files: readonly unknown[],
+  options: { shiftKey?: boolean; hasHandler: boolean },
+): boolean {
+  return files.length === 1 && options.hasHandler && !options.shiftKey;
+}
+
 export function moveCardsFromOrigins(
   cards: SceneCard[],
   origins: Readonly<Record<string, { x: number; y: number }>>,

@@ -1,4 +1,4 @@
-﻿// 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
+// 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
 import type {
   Facets,
   GenQuery,
@@ -13,6 +13,7 @@ import { authApi } from "./lib/authApi";
 import { assetsApi } from "./lib/assetsApi";
 import { chunked } from "./lib/batching";
 import {
+  authFormHeaders,
   getAuthToken,
   jsonBody,
   jsonFetch,
@@ -205,6 +206,25 @@ export const api = {
 
   getGeneration: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}`),
+
+  // 끌어다 놓은 파일의 각인 읽기 — 우리 프로그램을 거쳐 나간 파일이면 어느 생성물인지 알려준다.
+  // 각인이 없으면 gen_id=null(외부에서 들어온 파일). 나머지 정보는 이 열쇠로 기존 조회 API 가 가져온다.
+  readFileStamp: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    // multipart 라 jsonFetch 미사용(Content-Type 을 브라우저가 boundary 와 함께 정해야 한다).
+    const res = await fetch("/api/stamp/read", {
+      method: "POST",
+      body: fd,
+      headers: authFormHeaders(),
+    });
+    if (!res.ok) await throwHttpError(res, "/api/stamp/read");
+    return res.json() as Promise<{
+      gen_id: string | null;
+      job_id: string | null;
+      hub: string | null;
+    }>;
+  },
 
   // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
   getGenerationsBatch,

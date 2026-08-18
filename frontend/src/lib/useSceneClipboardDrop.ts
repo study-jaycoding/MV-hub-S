@@ -9,6 +9,7 @@ import {
   partitionSceneDropFiles,
   pasteSceneClipboard,
   scenePasteIntent,
+  shouldRestoreRecipeFromDrop,
   type SceneClipboard,
 } from "./sceneInteractions";
 import {
@@ -35,6 +36,9 @@ interface UseSceneClipboardDropOptions {
   reconcileGenerationRefs: (cards: SceneCard[], edges: SceneEdge[]) => SceneCard[];
   persist: (cards: SceneCard[], edges: SceneEdge[]) => void;
   onLoadSceneFile?: (file: File) => void;
+  // 각인된 생성물 파일을 떨어뜨렸을 때 — 레시피를 노드로 여는 데 성공하면 true.
+  // false 면 평범한 미디어 파일로 보고 레퍼런스 카드가 된다.
+  onDroppedGenerationFile?: (file: File) => Promise<boolean>;
   cardWidth: number;
   cardHeight: number;
 }
@@ -179,6 +183,22 @@ export function useSceneClipboardDrop(
       }
       if (mediaFiles.length) {
         const point = current.toCanvas(event.clientX, event.clientY);
+        // 우리 프로그램에서 나간 파일(각인 있음)을 한 개만 떨어뜨리면 '어떻게 만들었나'를 노드로
+        // 펼친다(ComfyUI 에서 워크플로 PNG 를 여는 것과 같은 동작). 각인이 없거나 카탈로그에서
+        // 못 찾으면 아래 기존 동작(레퍼런스 카드로 추가)으로 그대로 흘러간다.
+        // Shift 를 누른 채 놓으면 각인을 보지 않고 무조건 레퍼런스로 넣는다.
+        const openRecipe = current.onDroppedGenerationFile;
+        if (
+          shouldRestoreRecipeFromDrop(mediaFiles, {
+            shiftKey: event.shiftKey,
+            hasHandler: !!openRecipe,
+          }) && openRecipe
+        ) {
+          void openRecipe(mediaFiles[0]).then((handled) => {
+            if (!handled) void importExternalFiles(mediaFiles, point.x, point.y);
+          });
+          return;
+        }
         void importExternalFiles(mediaFiles, point.x, point.y);
       }
     },

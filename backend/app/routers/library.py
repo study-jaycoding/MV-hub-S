@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -214,6 +214,36 @@ def _stamped_download(
         tmp, media_type=ctype, filename=safe,
         headers={"Content-Disposition": f'attachment; filename="{safe}"'},
     )
+
+
+@router.post("/stamp/read")
+async def read_file_stamp(file: UploadFile = File(...)):
+    """파일에 새겨진 각인을 읽어 '어느 생성물인지'만 돌려준다.
+
+    캔버스에 끌어다 놓은 파일의 정체를 알아낼 때 쓴다. 나머지 정보(프롬프트·모델·계보)는 이
+    열쇠로 기존 조회 API 가 카탈로그에서 가져오므로 여기서는 읽지 않는다.
+    각인이 없으면 gen_id=None — '우리 프로그램을 거쳐 나간 파일이 아니다'라는 뜻이다.
+    """
+    tmp = _new_temp_file(Path(file.filename or "").suffix)
+    try:
+        size = 0
+        with tmp.open("wb") as out:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > STAMP_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="파일이 너무 큽니다")
+                out.write(chunk)
+        stamp = file_stamp.read_stamp(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {
+        "gen_id": file_stamp.gen_id_of(stamp),
+        "job_id": stamp.get(file_stamp.KEY_JOB),
+        "hub": stamp.get(file_stamp.KEY_HUB),
+    }
 
 
 @router.get("/download")

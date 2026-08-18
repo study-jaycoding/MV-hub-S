@@ -8,6 +8,7 @@ import {
   pasteSceneClipboard,
   resizeSceneCard,
   scenePasteIntent,
+  shouldRestoreRecipeFromDrop,
   shouldStartListReorder,
   updateSceneEjectedCards,
 } from "../src/lib/sceneInteractions";
@@ -369,5 +370,26 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     const pasted = pasteSceneClipboard([], [], clipboard, idSequence("new-card"));
 
     expect(pasted.edges).toEqual([]);
+  });
+});
+
+describe("각인 파일 드롭 — 레시피 복원 판단", () => {
+  const one = ["clip.mp4"];
+
+  it("한 개만 놓으면 레시피 복원을 시도한다", () => {
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true })).toBe(true);
+  });
+
+  it("Shift 를 누르고 놓으면 각인을 보지 않고 레퍼런스로 넣는다", () => {
+    // 우리 결과물을 다시 재료(레퍼런스)로 쓰는 흐름이 막히면 안 된다.
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true, shiftKey: true })).toBe(false);
+  });
+
+  it("여러 개를 놓으면 시도하지 않는다(씬 탭이 여러 개 열리는 것 방지)", () => {
+    expect(shouldRestoreRecipeFromDrop(["a.png", "b.png"], { hasHandler: true })).toBe(false);
+  });
+
+  it("복원 핸들러가 없는 화면에서는 종전 동작 그대로", () => {
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: false })).toBe(false);
   });
 });
