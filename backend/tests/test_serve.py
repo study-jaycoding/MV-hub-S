@@ -67,6 +67,14 @@ class ServeConfigTests(unittest.TestCase):
 
         fake_server.run.assert_called_once_with(sockets=[fake_socket, fake_socket])
 
+    def test_ctrl_c_after_clean_shutdown_is_not_reported_as_a_crash(self):
+        fake_server = mock.Mock()
+        fake_server.run.side_effect = KeyboardInterrupt
+
+        serve._run_server(fake_server, [mock.sentinel.socket])
+
+        fake_server.run.assert_called_once_with(sockets=[mock.sentinel.socket])
+
 
 if __name__ == "__main__":
     unittest.main()

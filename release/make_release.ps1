@@ -478,7 +478,10 @@ if (-not $SkipPythonRuntime) {
     Write-Host "      Installing backend packages into runtime..."
     # 원본 Python의 site-packages는 복사하지 않으므로 pip도 명시적으로 넣는다. MV_agent.bat이
     # 누락된 앱 의존성을 자동 복구할 때 `python -m pip`가 실제로 동작해야 한다.
-    & $Python.Exe -m pip install --upgrade --ignore-installed --target $SitePackages `
+    # 설치 대상은 원본 Python의 site-packages와 완전히 분리된 빈 폴더다. pip는 그래도 빌드 PC에
+    # 설치된 무관한 패키지 충돌을 경고하므로(예: scenedetect↔click), 운영자가 릴리즈 실패로
+    # 오해하지 않게 그 거짓 경고만 숨긴다. 완성 런타임은 아래 import/ZIP 검증으로 별도 확정한다.
+    & $Python.Exe -m pip install --upgrade --ignore-installed --no-warn-conflicts --target $SitePackages `
         "pip==25.3" -r (Join-Path $ProjectRoot "backend\requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "pip install into bundled runtime failed"

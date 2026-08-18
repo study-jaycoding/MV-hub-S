@@ -51,7 +51,13 @@ def _run_server(server: uvicorn.Server, sockets: list[socket.socket]) -> None:
         previous = signal.getsignal(sigbreak)
         signal.signal(sigbreak, lambda _sig, _frame: None)
     try:
-        server.run(sockets=sockets)
+        try:
+            server.run(sockets=sockets)
+        except KeyboardInterrupt:
+            # Python 3.14의 asyncio.Runner는 Uvicorn이 정상 shutdown을 끝낸 뒤에도
+            # Ctrl+C를 다시 KeyboardInterrupt로 올릴 수 있다. 서버가 이미 종료 절차를
+            # 마친 정상 사용자 종료이므로 불필요한 오류 스택을 남기지 않는다.
+            pass
     finally:
         if previous is not None:
             signal.signal(sigbreak, previous)

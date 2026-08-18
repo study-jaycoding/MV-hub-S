@@ -267,6 +267,16 @@ def test_release_builder_requires_verified_python_314_without_an_unproven_resolv
     assert "AllowResolveIncompatiblePython" not in builder
 
 
+def test_release_builder_ignores_unrelated_build_machine_package_conflicts():
+    project_root = Path(__file__).resolve().parents[2]
+    builder = (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8")
+
+    # Runtime site-packages is created empty and verified after install. Conflicts from unrelated
+    # packages installed on the builder must not look like a failed release in the operator log.
+    assert 'Join-Path $Python.Root "Lib\\site-packages"' in builder
+    assert "--ignore-installed --no-warn-conflicts --target $SitePackages" in builder
+
+
 def test_worker_launcher_keeps_startup_failure_visible():
     project_root = Path(__file__).resolve().parents[2]
     launcher = (project_root / "MV_agent.bat").read_text(encoding="utf-8")
