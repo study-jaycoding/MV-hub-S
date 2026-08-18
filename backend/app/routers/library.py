@@ -28,6 +28,7 @@ from ..deps import (
     account_actor_uid,
     account_global_roles,
     account_scope_uid,
+    actor_id,
     can_view_generation_with_member_projects,
     require_view_generation,
 )
@@ -196,19 +197,56 @@ def _new_temp_file(suffix: str) -> Path:
 def _stamped_download(
     upstream, ctype: str, safe: str, tags: dict[str, str], background: BackgroundTasks
 ):
-    """받은 바이트를 임시 파일에 담아 각인한 뒤 내려준다. 실패하면 각인 없이 그대로 내려준다."""
+    """받은 바이트를 제한된 임시 파일에 담아 각인한 뒤 내려준다.
+
+    Content-Length가 없는 원격 응답도 있으므로 읽는 도중 상한을 직접 검사한다. 상한을 넘으면
+    각인만 포기하고, 이미 임시에 받은 앞부분 + upstream 나머지를 이어서 스트리밍한다. 다운로드를
+    막지 않으면서도 알 수 없는 크기의 파일이 디스크를 무제한 점유하지 않게 한다.
+    """
     suffix = Path(safe).suffix or ""
     tmp = _new_temp_file(suffix)
+    overflow = False
     try:
         with tmp.open("wb") as out:
+            size = 0
             while True:
                 chunk = upstream.read(65536)
                 if not chunk:
                     break
                 out.write(chunk)
+                size += len(chunk)
+                if size > STAMP_MAX_BYTES:
+                    overflow = True
+                    break
+        if overflow:
+            def _stream_unstamped():
+                try:
+                    with tmp.open("rb") as prefix:
+                        while True:
+                            chunk = prefix.read(65536)
+                            if not chunk:
+                                break
+                            yield chunk
+                    while True:
+                        chunk = upstream.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    upstream.close()
+                    tmp.unlink(missing_ok=True)
+
+            return StreamingResponse(
+                _stream_unstamped(),
+                media_type=ctype,
+                headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+            )
         file_stamp.stamp_file(tmp, tags, suffix)
-    finally:
         upstream.close()
+    except Exception:
+        upstream.close()
+        tmp.unlink(missing_ok=True)
+        raise
     background.add_task(lambda: tmp.unlink(missing_ok=True))
     return FileResponse(
         tmp, media_type=ctype, filename=safe,
@@ -606,11 +644,16 @@ def list_generations(
                     timeout=5,  # 비핵심 보강 — 서버가 느리거나 다운이면 목록을 60초씩 막지 말고 빨리 포기(로컬값 유지)
                 )
                 if isinstance(counts, dict):
+                    private_counts = repo.private_generation_comment_counts(
+                        list(srv_of), actor_id(request)
+                    )
                     for g in result:
                         sid = srv_of.get(g["id"])
                         c = counts.get(sid) if sid else None
                         if isinstance(c, dict):
-                            g["comment_count"] = c.get("comment_count", g.get("comment_count"))
+                            g["comment_count"] = int(c.get("comment_count") or 0) + private_counts.get(
+                                g["id"], 0
+                            )
                             g["has_unread"] = c.get("has_unread", g.get("has_unread"))
             except Exception:  # noqa: BLE001 — 보강 실패는 로컬 값 유지(치명적 아님)
                 pass

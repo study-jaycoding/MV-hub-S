@@ -284,14 +284,14 @@ def generation_comment_counts(
         ph = ",".join("?" * len(ids))
         for r in conn.execute(
             f"SELECT gen_id, COUNT(*) AS cnt FROM generation_comment "
-            f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
-            ids,
+            f"WHERE gen_id IN ({ph}) AND (is_private=0 OR author=?) GROUP BY gen_id",
+            [*ids, cviewer],
         ).fetchall():
             out[r["gen_id"]]["comment_count"] = r["cnt"]
         for r in conn.execute(
             f"SELECT DISTINCT c.gen_id FROM generation_comment c "
             f"{ALERT_COMMENT_JOINS} "
-            f"WHERE c.gen_id IN ({ph}) AND {ALERT_COMMENT_PREDICATE}",
+            f"WHERE c.gen_id IN ({ph}) AND c.is_private=0 AND {ALERT_COMMENT_PREDICATE}",
             [cviewer, *ids, cviewer, cviewer, cviewer],
         ).fetchall():
             out[r["gen_id"]]["has_unread"] = True

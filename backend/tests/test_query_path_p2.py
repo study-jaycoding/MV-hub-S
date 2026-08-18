@@ -62,6 +62,11 @@ class QueryPathP2Tests(unittest.TestCase):
                 "finalize_id_map",
                 side_effect=AssertionError("목록 앵커는 행의 job_id/id로 충분합니다"),
             ),
+            mock.patch.object(
+                library.repo,
+                "private_generation_comment_counts",
+                return_value={"local-1": 1},
+            ) as private_counts,
         ):
             result = library.list_generations(
                 _Request(),
@@ -79,11 +84,12 @@ class QueryPathP2Tests(unittest.TestCase):
             body={"gen_ids": ["server-1", "local-2"]},
             timeout=5,
         )
-        self.assertEqual(result[0]["comment_count"], 7)
+        self.assertEqual(result[0]["comment_count"], 8)
         self.assertTrue(result[0]["has_unread"])
         self.assertEqual(result[1]["comment_count"], 2)
         self.assertFalse(result[1]["has_unread"])
         self.assertEqual(result[2]["comment_count"], 3)
+        private_counts.assert_called_once_with(["local-1", "local-2"], "me")
 
     def test_batch_visibility_reuses_one_membership_lookup(self):
         """F12: 4개 카드의 기존 가시성 결과를 1회 멤버십 조회로 만든다."""

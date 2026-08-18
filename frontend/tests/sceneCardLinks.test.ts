@@ -129,6 +129,47 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     ]);
   });
 
+  it("제거 전송 실패는 앱을 다시 열어도 대기열에서 재시도한다", async () => {
+    putFails = true;
+    let loaded = await boot();
+    await loaded.links.markCardGenerationsRemoved("s1", "c1", ["g1"]);
+    expect(puts().length).toBe(1);
+
+    putFails = false;
+    loaded = await boot(); // 모듈 재시작 — 메모리가 아니라 localStorage 대기열에서 복구해야 한다
+    loaded.links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+
+    expect(puts().length).toBe(2);
+    expect(putBody(puts()[1]).removed[0]).toEqual({
+      scene_id: "s1",
+      card_id: "c1",
+      generation_id: "g1",
+    });
+  });
+
+  it("제거 전송이 성공하면 재시작 뒤 중복 전송하지 않는다", async () => {
+    let loaded = await boot();
+    await loaded.links.markCardGenerationsRemoved("s1", "c1", ["g1"]);
+    expect(puts().length).toBe(1);
+
+    loaded = await boot();
+    loaded.links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(puts().length).toBe(1);
+  });
+
+  it("제거 직후 서버 읽기가 낡아도 자동 추가가 같은 소속을 되살리지 않는다", async () => {
+    const { scenes, links } = await boot();
+    scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1"])]); // 화면 저장이 늦은 최악 조건
+
+    await links.markCardGenerationsRemoved("s1", "c1", ["g1"]);
+
+    expect(puts().length).toBe(1);
+    expect(putBody(puts()[0]).removed[0].generation_id).toBe("g1");
+    expect(putBody(puts()[0]).added).toEqual([]);
+  });
+
   it("서버 읽기 실패 시 아무것도 올리지 않는다(무엇이 새 것인지 모르므로)", async () => {
     getLinks = () => Promise.reject(new Error("401"));
     const { scenes, links } = await boot();

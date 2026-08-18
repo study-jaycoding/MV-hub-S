@@ -41,6 +41,67 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let pushing = false;
 let rerun = false;
+let pendingRemovals: CardLink[] = [];
+
+const pendingKey = (scope: string) => `ch.sceneCardRemovals.v1.${encodeURIComponent(scope)}`;
+
+function readPending(scope: string): CardLink[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pendingKey(scope)) || "[]");
+    if (!Array.isArray(raw)) return [];
+    const dedup = new Map<string, CardLink>();
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const link = item as Partial<CardLink>;
+      if (!link.scene_id || !link.card_id || !link.generation_id) continue;
+      const clean = {
+        scene_id: String(link.scene_id),
+        card_id: String(link.card_id),
+        generation_id: String(link.generation_id),
+      };
+      dedup.set(keyOf(clean), clean);
+    }
+    return [...dedup.values()];
+  } catch {
+    return [];
+  }
+}
+
+function writePending(scope: string, links: CardLink[]): void {
+  try {
+    if (links.length) localStorage.setItem(pendingKey(scope), JSON.stringify(links));
+    else localStorage.removeItem(pendingKey(scope));
+  } catch {
+    // 저장공간이 막힌 환경도 현재 세션 메모리 대기열로는 계속 재시도한다.
+  }
+}
+
+function enqueueRemovals(scope: string, links: CardLink[]): void {
+  const merged = new Map(readPending(scope).map((link) => [keyOf(link), link]));
+  for (const link of links) merged.set(keyOf(link), link);
+  pendingRemovals = [...merged.values()];
+  writePending(scope, pendingRemovals);
+}
+
+function clearSentRemovals(scope: string, links: CardLink[]): void {
+  const sent = new Set(links.map(keyOf));
+  const remaining = readPending(scope).filter((link) => !sent.has(keyOf(link)));
+  writePending(scope, remaining);
+  if (curScope === scope) pendingRemovals = remaining;
+}
+
+function applyRemovedToLoadedState(links: CardLink[]): void {
+  const removedKeys = new Set(links.map(keyOf));
+  const removedAt = new Date().toISOString();
+  for (const link of links) known?.add(keyOf(link));
+  serverLinks = serverLinks.map((link) =>
+    removedKeys.has(keyOf(link)) ? { ...link, removed_at: removedAt } : link,
+  );
+  const present = new Set(serverLinks.map(keyOf));
+  for (const link of links) {
+    if (!present.has(keyOf(link))) serverLinks.push({ ...link, removed_at: removedAt });
+  }
+}
 
 function enterScope(): string {
   const s = ns();
@@ -50,6 +111,7 @@ function enterScope(): string {
     serverLinks = [];
     loadPromise = null;
     rerun = false;
+    pendingRemovals = readPending(s);
     if (timer) clearTimeout(timer);
     timer = null;
     if (retryTimer) clearTimeout(retryTimer);
@@ -183,11 +245,28 @@ async function pushNew(): Promise<void> {
   pushing = true;
   try {
     const scope = enterScope();
+    // 사용자가 명시적으로 뺀 기록이 자동 백필보다 항상 먼저다. 실패하면 로컬 대기열을 지우지 않아
+    // 온라인 복귀·앱 재시작 뒤에도 재시도된다. 추가와 같은 직렬화 안에서 보내 race로 되살아나지 않는다.
+    const removals = [...pendingRemovals];
+    if (removals.length) {
+      try {
+        await send([], removals);
+      } catch {
+        scheduleRetry();
+        return;
+      }
+      clearSentRemovals(scope, removals);
+      if (ns() !== scope) return;
+      applyRemovedToLoadedState(removals);
+    }
     if (!(await ensureLoaded(scope))) {
       scheduleRetry();
       return;
     }
     if (ns() !== scope || !known) return;
+    // ensureLoaded가 직전에 받은 낡은 응답으로 known/serverLinks를 교체했더라도, 이번 요청에서 서버가
+    // 수락한 제거 의도를 다시 덮어씌운다. 그래야 바로 뒤의 자동 추가가 같은 소속을 되살리지 않는다.
+    if (removals.length) applyRemovedToLoadedState(removals);
     const fresh: CardLink[] = [];
     const seen = new Set<string>();
     for (const link of localCardLinks()) {
@@ -247,18 +326,8 @@ export async function markCardGenerationsRemoved(
     .map((generation_id) => ({ scene_id: sceneId, card_id: cardId, generation_id }));
   if (!links.length) return;
   const scope = enterScope();
-  try {
-    await send([], links);
-  } catch {
-    return; // 다음 기회에 사용자가 다시 비우면 반영된다 — 조용히 되살리는 것보다 안전
-  }
-  if (ns() !== scope) return;
-  const removedKeys = new Set(links.map(keyOf));
-  // 뺀 것도 known 에 넣는다 — 백필이 다시 담아 되살리지 않게.
-  for (const link of links) known?.add(keyOf(link));
-  serverLinks = serverLinks.map((l) =>
-    removedKeys.has(keyOf(l)) ? { ...l, removed_at: new Date().toISOString() } : l,
-  );
+  enqueueRemovals(scope, links); // 네트워크보다 먼저 기록 — 실패·재시작에도 제거 의도를 잃지 않는다.
+  await pushNew();
 }
 
 /** 부팅 배선 — useSceneCoordination 이 마운트마다 호출(내부는 scope 당 1회). */

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from fastapi import BackgroundTasks, HTTPException
 from PIL import Image
+from starlette.responses import StreamingResponse
 
 from app.routers import library
 from app.services import file_stamp
@@ -73,6 +75,47 @@ class DownloadStampTests(unittest.TestCase):
             )
 
         self.assertEqual(caught.exception.status_code, 404)
+
+    def test_unknown_remote_size_over_cap_streams_without_unbounded_temp(self):
+        payload = b"0123456789" * 20
+
+        class _Remote(io.BytesIO):
+            closed_by_route = False
+
+            def close(self):
+                self.closed_by_route = True
+                super().close()
+
+        upstream = _Remote(payload)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            temp_path = Path(tmpdir) / "bounded.bin"
+            with (
+                patch.object(library, "STAMP_MAX_BYTES", 32),
+                patch.object(library, "_new_temp_file", return_value=temp_path),
+                patch.object(
+                    library.file_stamp,
+                    "stamp_file",
+                    side_effect=AssertionError("상한 초과 파일을 각인하면 안 됩니다"),
+                ),
+            ):
+                response = library._stamped_download(
+                    upstream,
+                    "application/octet-stream",
+                    "large.bin",
+                    {"mvhub.gen_id": "g1"},
+                    BackgroundTasks(),
+                )
+                self.assertIsInstance(response, StreamingResponse)
+
+                async def _body() -> bytes:
+                    chunks = []
+                    async for chunk in response.body_iterator:
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+
+                self.assertEqual(asyncio.run(_body()), payload)
+                self.assertFalse(temp_path.exists())
+                self.assertTrue(upstream.closed_by_route)
 
 
 class ReadStampRouteTests(unittest.IsolatedAsyncioTestCase):

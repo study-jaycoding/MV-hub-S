@@ -26,6 +26,7 @@ import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
+import { getAccountNamespace } from "./lib/accountScope";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -171,9 +172,13 @@ function historyFetch(path: string, init?: RequestInit): Promise<History> {
 // ★상한 LRU — 긴 세션에서 카드 수천 개 호버 시 무한 적재 방지. Map 삽입순서로 오래된 것부터 제거.
 const GEN_COMMENTS_CACHE_MAX = 500;
 const genCommentsCache = new Map<string, import("./types").GenComment[]>();
+function genCommentsCacheKey(genId: string): string {
+  return `${getAccountNamespace()}\u0000${genId}`;
+}
 function putGenComments(genId: string, comments: import("./types").GenComment[]) {
-  genCommentsCache.delete(genId); // 최신 접근을 맨 뒤로(recency)
-  genCommentsCache.set(genId, comments);
+  const key = genCommentsCacheKey(genId);
+  genCommentsCache.delete(key); // 최신 접근을 맨 뒤로(recency)
+  genCommentsCache.set(key, comments);
   if (genCommentsCache.size > GEN_COMMENTS_CACHE_MAX) {
     const oldest = genCommentsCache.keys().next().value;
     if (oldest !== undefined) genCommentsCache.delete(oldest);
@@ -603,11 +608,11 @@ export const api = {
     }),
   // 캐시된 코멘트(없으면 undefined) — 패널이 먼저 그려놓고 뒤에서 갱신해 체감 딜레이 제거
   genCommentsCached: (genId: string): import("./types").GenComment[] | undefined =>
-    genCommentsCache.get(genId),
+    genCommentsCache.get(genCommentsCacheKey(genId)),
   // 호버 시 미리 불러와 캐시를 채운다(에러 무시) — 클릭 전에 준비되게.
   // 이미 캐시에 있으면 재요청 안 함(호버 연타 방지) — 최신화는 패널이 열릴 때 한다.
   prefetchGenComments: (genId: string): void => {
-    if (genCommentsCache.has(genId)) return;
+    if (genCommentsCache.has(genCommentsCacheKey(genId))) return;
     void api.genComments(genId).catch(() => {});
   },
   addGenComment: (

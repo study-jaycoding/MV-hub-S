@@ -119,6 +119,27 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         self.assertEqual(peak, min(100, cli_bridge._ESTIMATE_CONCURRENCY))
         self.assertEqual(len(cache_snapshots[-1]), 100)
 
+    async def test_estimate_cost_uses_stale_cache_when_cli_refresh_fails(self):
+        from app.services import cli_bridge
+
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._COST_CACHE["model-a|--size=large"] = (9, 0.0)
+        cli_bridge._cost_loaded = True
+        cli_bridge._estimate_gates.clear()
+
+        with patch.object(
+            cli_bridge,
+            "_param_args",
+            new=AsyncMock(return_value=["--size", "large"]),
+        ), patch.object(
+            cli_bridge,
+            "_run_json",
+            new=AsyncMock(side_effect=cli_bridge.CLIError("temporary failure")),
+        ):
+            result = await cli_bridge.estimate_cost("model-a")
+
+        self.assertEqual(result, {"credits": 9})
+
     async def test_timed_out_cli_call_terminates_and_reaps_process(self):
         from app.services import cli_bridge
 

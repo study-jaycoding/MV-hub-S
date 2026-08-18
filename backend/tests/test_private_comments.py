@@ -1,4 +1,6 @@
-"""비공개 코멘트(is_private) — "내 로컬 DB 밖으로 절대 안 나간다"는 계약 고정.
+"""비공개 코멘트(is_private) — 팀 공유 경계 밖으로 나가지 않는 계약 고정.
+
+개인 DB 자체의 복구용 백업에는 포함될 수 있지만, 팀 스레드·발행 번들·통계에는 노출하지 않는다.
 
 여기서 잠그는 유출 경로:
   ① 공유 번들 내보내기(export_bundle) — 발행이 비공개 메모를 팀에 실어 보내면 안 된다.
@@ -9,8 +11,18 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from app import db, repo
+from app.routers import generation
+
+
+class _State:
+    account = {"email": "u1@example.com", "creator_uid": "u1"}
+
+
+class _Request:
+    state = _State()
 
 
 class PrivateCommentTests(unittest.TestCase):
@@ -64,6 +76,38 @@ class PrivateCommentTests(unittest.TestCase):
         mine = repo.list_private_generation_comments("g1", "u1")
         self.assertEqual([c["text"] for c in mine], ["내 비공개"])
         self.assertTrue(all(c["private"] and not c["unread"] for c in mine))
+
+    def test_generation_badge_counts_only_shared_and_my_private(self):
+        repo.add_generation_comment("g1", "u1", "내 비공개", is_private=True)
+        repo.add_generation_comment("g1", "u2", "남의 비공개", is_private=True)
+        repo.add_generation_comment("g1", "u2", "남의 공유")
+
+        counts = repo.generation_comment_counts(["g1"], "u1", read_all=True)
+        self.assertEqual(counts["g1"]["comment_count"], 2)
+        self.assertEqual(repo.private_generation_comment_counts(["g1"], "u1"), {"g1": 1})
+        self.assertEqual(repo.private_generation_comment_counts(["g1"], "u2"), {"g1": 1})
+
+    def test_proxy_badge_merges_server_shared_and_local_private_counts(self):
+        with (
+            mock.patch.object(generation._proxy, "proxying", return_value=True),
+            mock.patch.object(
+                generation._proxy,
+                "proxy_json",
+                return_value={"server-g1": {"comment_count": 2, "has_unread": True}},
+            ),
+            mock.patch.object(generation.repo, "finalize_id_map", return_value=("g1", "server-g1")),
+            mock.patch.object(
+                generation.repo,
+                "private_generation_comment_counts",
+                return_value={"g1": 1},
+            ) as private_counts,
+        ):
+            result = generation.gen_comment_counts(
+                generation.CommentCountsIn(gen_ids=["g1"]), _Request()  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(result["g1"], {"comment_count": 3, "has_unread": True})
+        private_counts.assert_called_once_with(["g1"], "u1")
 
     def test_by_id_private_lookup(self):
         cid = repo.add_generation_comment("g1", "u1", "비공개", is_private=True)

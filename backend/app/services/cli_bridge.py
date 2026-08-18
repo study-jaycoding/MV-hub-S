@@ -655,7 +655,16 @@ async def estimate_cost(
             _shield_json_prompt(prompt or "preview"),
         ]
         args += param_args
-        data = await _run_json(*args, timeout=timeout)
+        try:
+            data = await _run_json(*args, timeout=timeout)
+        except CLIError:
+            # 가격 갱신은 생성 자체가 아닌 보조 정보다. CLI/네트워크가 잠깐 불안정할 때
+            # 이미 검증한 예전 가격까지 버려 502를 내면 화면의 예상 크레딧이 깜박이고
+            # 서버 로그도 불필요하게 오염된다. 만료된 값이라도 있으면 이번 한 번은
+            # 안전한 폴백으로 쓰고, 다음 조회에서 다시 최신 가격 갱신을 시도한다.
+            if entry is not None:
+                return {"credits": entry[0]}
+            raise
         if not isinstance(data, dict):
             return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
         credits = data.get("credits_exact")

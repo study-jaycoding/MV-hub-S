@@ -840,7 +840,7 @@ def _comments_on_server(gen: dict | None) -> bool:
 
 
 class CommentCountsIn(BaseModel):
-    gen_ids: list[str] = []
+    gen_ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 @router.post("/generations/comment-counts")
@@ -850,12 +850,21 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
     if _proxy.proxying():
         # 로컬 id ↔ 서버 id(job_id) 변환: 요청은 서버 id 로 보내고 응답 키를 로컬 id 로 되돌린다
         # (로컬 카드 id 로 그대로 위임하면 서버가 못 찾아 공유본 C 뱃지가 0 으로 떴다).
-        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in (body.gen_ids or [])}
-        local_of = {sid: gid for gid, sid in srv_of.items()}
+        requested = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
+        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in requested}
         resp = _proxy.proxy_json(
             "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
         )
-        return {local_of.get(k, k): v for k, v in (resp or {}).items()}
+        remote = resp if isinstance(resp, dict) else {}
+        private = repo.private_generation_comment_counts(requested, actor_id(request))
+        merged: dict[str, dict[str, Any]] = {}
+        for gid, sid in srv_of.items():
+            value = remote.get(sid)
+            slot = value.copy() if isinstance(value, dict) else {}
+            slot["comment_count"] = int(slot.get("comment_count") or 0) + private.get(gid, 0)
+            slot["has_unread"] = bool(slot.get("has_unread"))
+            merged[gid] = slot
+        return merged
     viewer_uid, read_all = _viewer_scope(request)
     member = repo.my_member_projects(viewer_uid) if (viewer_uid and not read_all) else []
     return repo.generation_comment_counts(

@@ -279,6 +279,25 @@ def list_private_generation_comments(gen_id: str, author: str) -> list[dict[str,
         return out
 
 
+def private_generation_comment_counts(gen_ids: list[str], author: str) -> dict[str, int]:
+    """생성물별 *내* 비공개 코멘트 수.
+
+    공유 생성물의 공개 스레드는 서버가 정답이지만, 비공개 코멘트는 계정 로컬 DB가 정답이다.
+    카드 뱃지를 만들 때 서버 수에 이 결과를 더해야 패널에 보이는 개수와 카드 숫자가 일치한다.
+    """
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    if not ids or not author:
+        return {}
+    ph = ",".join("?" * len(ids))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT gen_id, COUNT(*) AS cnt FROM generation_comment "
+            f"WHERE gen_id IN ({ph}) AND is_private=1 AND author=? GROUP BY gen_id",
+            [*ids, author],
+        ).fetchall()
+    return {str(row["gen_id"]): int(row["cnt"]) for row in rows}
+
+
 def add_generation_comment(
     gen_id: str,
     author: str,

@@ -37,7 +37,7 @@ export interface CommentPanelItem {
   created_at: string;
   parent_id: string | null;
   unread?: boolean;
-  private?: boolean; // 비공개 — 내 로컬에만 있고 팀에게 안 보임(글씨색 구분)
+  private?: boolean; // 비공개 — 팀 공유 스레드·발행·통계에는 안 보임(글씨색 구분)
 }
 
 export function CommentPanel<T extends CommentPanelItem>({
@@ -122,7 +122,7 @@ export function CommentPanel<T extends CommentPanelItem>({
         }
         title={
           c.private
-            ? "비공개 — 내 PC 에만 저장, 팀에게 보이지 않음"
+            ? "비공개 — 팀 공유 스레드·발행·통계에 표시되지 않음"
             : c.unread
               ? "클릭해 확인 (새 코멘트)"
               : undefined
@@ -268,7 +268,7 @@ export function CommentPanel<T extends CommentPanelItem>({
       </form>
 
       <div className="cmt-opt">
-        <label title="체크하고 쓰면 내 PC 에만 저장 — 팀에게 절대 보이지 않습니다">
+        <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
           <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
           비공개 코멘트
         </label>
