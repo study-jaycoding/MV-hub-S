@@ -66,6 +66,12 @@
   overscroll-behavior: contain;
   padding-right: 2px;
 }
+/* 사이드바에서는 프로젝트 영역(.sidebar-main)이 통째로 스크롤되므로 트리마다 15행 캡을 두지
+   않는다 — 스크롤이 하나로 합쳐지고 폴더가 화면 높이만큼 보인다. (에셋·관리창 트리는 그대로) */
+.sidebar-main .folder-tree.sidebar-folder-tree.scroll-15 {
+  max-height: none;
+  overflow-y: visible;
+}
 .folder-tree-node { min-width: 0; }
 .folder-tree-row {
   width: 100%; height: 25px;

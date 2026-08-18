@@ -397,7 +397,16 @@
   background: var(--glass);
   backdrop-filter: blur(12px);
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  display: flex; flex-direction: column; min-height: 0;
+  overflow: hidden; /* 스크롤은 아래 두 영역이 각자 담당 */
+}
+/* 프로젝트/폴더 = 남는 높이를 전부 차지(폴더가 최대한 많이 보이게) */
+.sidebar-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* 컬러·전역태그·생성자 = 항상 맨 아래. 길어지면 이 영역만 스크롤 */
+/* 생성자가 많아도 아래 영역이 폴더 자리를 뺏지 않도록 절반 이하로 묶는다 */
+.sidebar-foot {
+  flex: 0 1 auto; min-height: 0; max-height: 45%;
+  overflow-y: auto; padding-top: 12px;
 }
 .sidebar h4 {
   margin: 18px 0 10px; font-size: 11px; font-weight: 700;

@@ -30,6 +30,7 @@ interface Props {
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
   onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
+  workspaceName?: string; // 머리말 = 현재 워크스페이스 이름
 }
 
 export function FilterSidebar({
@@ -55,91 +56,98 @@ export function FilterSidebar({
   projects,
   unassignedCount,
   archivedCount,
+  workspaceName,
 }: Props) {
   const tr = useT();
   return (
     <aside className="sidebar">
-      <ProjectSection
-        projects={projects}
-        unassignedCount={unassignedCount}
-        archivedCount={archivedCount}
-        activeId={filters.project_id}
-        tab={filters.tab === "team" ? "team" : "my"}
-        deletedOnly={!!filters.deleted_only}
-        armedFolder={armedFolder}
-        // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)
-        onFilter={(pid) =>
-          onChange({
-            project_id: pid,
-            folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제 → 전체 보기
-            deleted_only: undefined,
-            include_deleted: undefined,
-          })
-        }
-        onViewDeleted={() =>
-          onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
-        }
-        onArmFolder={onArmFolder}
-        onDropToFolder={onDropToFolder}
-        onDropToUnassigned={onDropToUnassigned}
-      />
+      {/* 위 = 프로젝트/폴더(남는 높이를 다 쓰고 스스로 스크롤), 아래 = 컬러·전역태그·생성자 고정 */}
+      <div className="sidebar-main">
+        <ProjectSection
+          workspaceName={workspaceName}
+          projects={projects}
+          unassignedCount={unassignedCount}
+          archivedCount={archivedCount}
+          activeId={filters.project_id}
+          tab={filters.tab === "team" ? "team" : "my"}
+          deletedOnly={!!filters.deleted_only}
+          armedFolder={armedFolder}
+          // 프로젝트/라이브러리/미분류 선택 시 휴지통 보기는 해제(메인으로 복귀)
+          onFilter={(pid) =>
+            onChange({
+              project_id: pid,
+              folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제 → 전체 보기
+              deleted_only: undefined,
+              include_deleted: undefined,
+            })
+          }
+          onViewDeleted={() =>
+            onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
+          }
+          onArmFolder={onArmFolder}
+          onDropToFolder={onDropToFolder}
+          onDropToUnassigned={onDropToUnassigned}
+        />
+      </div>
 
-      <section>
-        <h4>{tr("컬러")}</h4>
-        <div className="color-dots">
-          <ColorFilterDots
-            colorDots={colorDots}
-            activeColors={colorFilter}
-            onToggleColor={onToggleColor}
-            grayOn={grayOn}
-            onToggleGray={onToggleGray}
-            finalOnly={finalOnly}
-            onToggleFinal={onToggleFinal}
-          />
-        </div>
-      </section>
+      <div className="sidebar-foot">
+        <section>
+          <h4>{tr("컬러")}</h4>
+          <div className="color-dots">
+            <ColorFilterDots
+              colorDots={colorDots}
+              activeColors={colorFilter}
+              onToggleColor={onToggleColor}
+              grayOn={grayOn}
+              onToggleGray={onToggleGray}
+              finalOnly={finalOnly}
+              onToggleFinal={onToggleFinal}
+            />
+          </div>
+        </section>
 
-      <section>
-        <h4 className="auto-tag-head">
-          {tr("전역 태그")}
-          <button className="auto-tag-add" title={tr("전역 태그")} onClick={onAddAutoTag}>
-            +
-          </button>
-        </h4>
-        <div className="chips">
-          {facets.auto_tags.length === 0 && <span className="muted">{tr("없음")}</span>}
-          {facets.auto_tags.map((t) => (
-            <span key={t} className={"auto-tag-chip" + (armedAutoTags.has(t) ? " on" : "")}>
-              <button
-                className="auto-tag-name"
-                title={armedAutoTags.has(t) ? "해제 (생성 시 자동 적용 중)" : "선택 — 다음 생성에 자동 적용"}
-                onClick={() => onToggleAutoTag(t)}
-              >
-                {t}
-              </button>
-              <button
-                className="auto-tag-x"
-                title="전역 태그 삭제"
-                onClick={() => onDeleteAutoTag(t)}
-              >
-                ✕
-              </button>
-            </span>
-          ))}
-        </div>
-      </section>
+        <section>
+          <h4 className="auto-tag-head">
+            {tr("전역 태그")}
+            <button className="auto-tag-add" title={tr("전역 태그")} onClick={onAddAutoTag}>
+              +
+            </button>
+          </h4>
+          <div className="chips">
+            {facets.auto_tags.length === 0 && <span className="muted">{tr("없음")}</span>}
+            {facets.auto_tags.map((t) => (
+              <span key={t} className={"auto-tag-chip" + (armedAutoTags.has(t) ? " on" : "")}>
+                <button
+                  className="auto-tag-name"
+                  title={armedAutoTags.has(t) ? "해제 (생성 시 자동 적용 중)" : "선택 — 다음 생성에 자동 적용"}
+                  onClick={() => onToggleAutoTag(t)}
+                >
+                  {t}
+                </button>
+                <button
+                  className="auto-tag-x"
+                  title="전역 태그 삭제"
+                  onClick={() => onDeleteAutoTag(t)}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        </section>
 
-      <CreatorSection
-        activeUid={filters.creator_uid}
-        onFilter={(uid) => onChange({ creator_uid: uid })}
-        onChanged={onCreatorChanged}
-        tab={filters.tab === "team" ? "team" : "my"}
-        projectId={
-          filters.project_id && filters.project_id !== "none"
-            ? filters.project_id
-            : undefined
-        }
-      />
+        <CreatorSection
+          activeUid={filters.creator_uid}
+          onFilter={(uid) => onChange({ creator_uid: uid })}
+          onChanged={onCreatorChanged}
+          tab={filters.tab === "team" ? "team" : "my"}
+          projectId={
+            filters.project_id && filters.project_id !== "none"
+              ? filters.project_id
+              : undefined
+          }
+        />
+      </div>
 
       {/* 공유(SHARED) 섹션 제거 — 불필요. 휴지통(TRASH)도 프로젝트 섹션으로 통합됨. */}
     </aside>

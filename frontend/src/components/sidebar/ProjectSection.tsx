@@ -109,6 +109,7 @@ export function ProjectSection({
   onDropToFolder,
   onDropToUnassigned,
   enableFolderDrag = false,
+  workspaceName,
 }: {
   projects: Project[];
   unassignedCount: number;
@@ -128,6 +129,8 @@ export function ProjectSection({
   onDropToUnassigned?: (genId: string) => void;
   // 캔버스에서만 폴더 → Set 드래그를 켠다. 일반 작업공간에서는 기존 클릭 UX 유지.
   enableFolderDrag?: boolean;
+  // 머리말에 표시할 현재 워크스페이스 이름(아래 목록이 어느 공간 것인지 드러낸다).
+  workspaceName?: string;
 }) {
   const tr = useT();
   const disabledFolders = useDisabledFolders(); // 폴더 단위 비활성(생략) — d 로 토글, 회색 표시
@@ -416,7 +419,9 @@ export function ProjectSection({
   return (
     <>
       <section>
-        <h4 className="auto-tag-head">Millionvolt</h4>
+        <h4 className="auto-tag-head" title={workspaceName || undefined}>
+          {workspaceName || "Millionvolt"}
+        </h4>
         <div className="proj-list">
           <button
             className={

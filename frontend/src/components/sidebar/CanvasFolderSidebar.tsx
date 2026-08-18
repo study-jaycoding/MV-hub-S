@@ -15,6 +15,7 @@ export function CanvasFolderSidebar({
   onArmFolder,
   onDropToFolder,
   onDropToUnassigned,
+  workspaceName,
 }: {
   filters: Filters;
   onChange: (patch: Partial<Filters>) => void;
@@ -25,35 +26,39 @@ export function CanvasFolderSidebar({
   onArmFolder?: (projectId: string, path: string) => void;
   onDropToFolder?: (projectId: string, path: string, genId: string) => void;
   onDropToUnassigned?: (genId: string) => void;
+  workspaceName?: string; // 머리말 = 현재 워크스페이스 이름(작업 공간 사이드바와 동일)
 }) {
   // 닫기는 라이브러리(내작업) 탭과 동일하게 툴바의 필터 토글(▢/▷)에 위임한다 — 사이드바 내부에 별도
   // ✕ 를 두지 않는다(두 탭 UX 일치).
   return (
     <aside className="sidebar">
-      <ProjectSection
-        projects={projects}
-        unassignedCount={unassignedCount}
-        archivedCount={archivedCount}
-        activeId={filters.project_id}
-        tab={filters.tab === "team" ? "team" : "my"}
-        deletedOnly={!!filters.deleted_only}
-        armedFolder={armedFolder}
-        onFilter={(pid) =>
-          onChange({
-            project_id: pid,
-            folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제
-            deleted_only: undefined,
-            include_deleted: undefined,
-          })
-        }
-        onViewDeleted={() =>
-          onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
-        }
-        onArmFolder={onArmFolder}
-        onDropToFolder={onDropToFolder}
-        onDropToUnassigned={onDropToUnassigned}
-        enableFolderDrag
-      />
+      <div className="sidebar-main">
+        <ProjectSection
+          workspaceName={workspaceName}
+          projects={projects}
+          unassignedCount={unassignedCount}
+          archivedCount={archivedCount}
+          activeId={filters.project_id}
+          tab={filters.tab === "team" ? "team" : "my"}
+          deletedOnly={!!filters.deleted_only}
+          armedFolder={armedFolder}
+          onFilter={(pid) =>
+            onChange({
+              project_id: pid,
+              folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제
+              deleted_only: undefined,
+              include_deleted: undefined,
+            })
+          }
+          onViewDeleted={() =>
+            onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
+          }
+          onArmFolder={onArmFolder}
+          onDropToFolder={onDropToFolder}
+          onDropToUnassigned={onDropToUnassigned}
+          enableFolderDrag
+        />
+      </div>
     </aside>
   );
 }
