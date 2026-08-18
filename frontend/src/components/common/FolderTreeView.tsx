@@ -93,10 +93,14 @@ function FolderTreeRow({
   const selected = selectedPath === node.path;
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
-  // 폴더의 실제 파일 수. 생성물 수와 다를 때만 흐리게 덧붙인다 — 두 값이 같은 폴더(대부분)는
-  // 숫자 하나만 남아 지금과 똑같이 보이고, 어긋난 폴더만 눈에 띈다.
+  // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
+  // '폴더엔 파일이 있는데 카탈로그엔 없다'를 확인할 수 있게 한다.
   const fileCount = node.fileCount ?? null;
-  const showFileCount = fileCount !== null && fileCount !== count;
+  const countHint =
+    node.count === null || fileCount === null
+      ? ""
+      : `\n생성물 ${count}개 · 폴더 파일 ${fileCount}개` +
+        (fileCount > count ? " (파일이 더 많으면 앱 밖에서 들어온 것입니다)" : "");
   const [dropOver, setDropOver] = useState(false);
   const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
@@ -129,7 +133,11 @@ function FolderTreeRow({
           (dropOver ? " drop-over" : "")
         }
         style={{ paddingLeft: 6 + depth * 14 }}
-        title={node.virtual ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)` : node.path || node.name}
+        title={
+          (node.virtual
+            ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)`
+            : node.path || node.name) + countHint
+        }
         onClick={(e) => {
           e.stopPropagation();
           // 일부 브라우저는 HTML5 drag 종료 뒤 click까지 발화한다. Set으로 끌었는데
@@ -188,17 +196,6 @@ function FolderTreeRow({
         {node.count !== null && (
           <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
             {count > 0 ? count : "-"}
-          </span>
-        )}
-        {showFileCount && (
-          <span
-            className="folder-tree-filecount"
-            title={
-              `생성물 ${count}개 · 폴더 파일 ${fileCount}개` +
-              (fileCount! > count ? " — 파일이 더 많으면 앱 밖에서 들어온 것입니다" : "")
-            }
-          >
-            {fileCount}
           </span>
         )}
       </button>

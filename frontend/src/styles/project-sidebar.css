@@ -135,10 +135,6 @@
   min-width: 24px; text-align: right; color: var(--muted); font-size: 11px; flex: none;
 }
 .folder-tree-count.zero { color: var(--muted2); }
-/* 폴더 안 실제 파일 수 — 생성물 수와 다를 때만 흐리게 덧붙는다(카탈로그에 없는 파일의 신호). */
-.folder-tree-filecount {
-  font-size: 10px; color: var(--muted2); opacity: 0.6; flex: none; margin-left: 3px;
-}
 /* 확인 전 신규 공유 개수(팀 탭) — 총 개수 왼쪽에 라임으로 '+N' (폴더 행/프로젝트·미분류 행 공용) */
 .folder-tree-newcount {
   flex: none; color: var(--accent); font-size: 11px; font-weight: 800; margin-right: 2px;
