@@ -43,7 +43,16 @@ export function ComfyConnectionSection() {
     );
   }
 
-  const patch = (p: Partial<ComfySettings>) => setS({ ...s, ...p });
+  const patch = (p: Partial<ComfySettings>) => {
+    setS((current) => (current ? { ...current, ...p } : current));
+    // 이 문구는 마지막으로 저장된 연결값의 검사 결과다. 초안을 바꾼 뒤에도
+    // 이전 "연결됨"이 남으면 새 값이 검증된 것처럼 보이므로 즉시 지운다.
+    setMsg("");
+  };
+  const patchApiKey = (value: string) => {
+    setApiKeyEdit(value);
+    setMsg("");
+  };
   const hasUnsavedChanges = hasUnsavedComfySettings(s, saved, apiKeyEdit);
 
   const save = async () => {
@@ -146,7 +155,7 @@ export function ComfyConnectionSection() {
           value={apiKeyEdit}
           disabled={saving || checking}
           placeholder={s.has_api_key ? "저장됨 (바꾸려면 새로 입력)" : "comfy.org API 키 (Gemini·Seedance 등 API 노드용)"}
-          onChange={(e) => setApiKeyEdit(e.target.value)}
+          onChange={(e) => patchApiKey(e.target.value)}
         />
       </div>
 

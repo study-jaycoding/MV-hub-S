@@ -358,9 +358,9 @@ export function ResolveScriptSettingsSection({
         </button>
       </div>
       <p className="settings-hint">
-        연결 상태: {connection?.message || "확인하는 중…"}
+        연결 상태: {connectionBusy ? "확인하는 중…" : connection?.message || "확인하지 못했습니다"}
       </p>
-      {connection?.connected && connection.resolve_version && (
+      {!connectionBusy && connection?.connected && connection.resolve_version && (
         <p className="settings-hint">
           확인된 프로그램: {connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}
         </p>
