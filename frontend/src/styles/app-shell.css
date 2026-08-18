@@ -4,6 +4,9 @@
   align-items: center;
   gap: 14px;
   padding: 12px 20px;
+  /* 카드 마퀴 드래그가 이 줄을 지날 때 라벨이 긁히고, 그 선택을 끌면 페이지가 통째로 끌리는
+     고스트가 생겼다. 상단바는 조작용이라 글자 선택이 필요 없다(검색 입력칸만 예외). */
+  user-select: none; -webkit-user-select: none;
   background: var(--glass);
   backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--border);
@@ -53,6 +56,7 @@
   color: var(--text);
 }
 .search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.18); }
+.topbar input { user-select: text; -webkit-user-select: text; }
 .topbar .sync { margin-left: auto; background: rgba(255,255,255,0.05); }
 
 /* 동기화 아이콘(축소) — 자동 주기 동기화가 돌고 있어 작게. margin-left:auto 는 상속 유지 */

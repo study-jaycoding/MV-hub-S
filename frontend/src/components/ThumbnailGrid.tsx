@@ -270,6 +270,9 @@ export function ThumbnailGrid(props: Props) {
   // 최신 props 를 ref 로 — 드래그 콜백을 안정 참조로 유지(stale 방지).
   const opsRef = useRef({ generations, onSelectedChange, onPreview: props.onPreview });
   opsRef.current = { generations, onSelectedChange, onPreview: props.onPreview };
+  // 드래그 시작 시점의 선택·앵커도 ref 로 — 창 전역 리스너에서 낡은 값을 잡지 않게.
+  const startRef = useRef({ selectedIds, focusIdx });
+  startRef.current = { selectedIds, focusIdx };
 
   // 마퀴 히트 계산을 프레임당 1회로 코얼레스(러버밴드 드래그의 mousemove 폭주 → 셀 전체
   // querySelectorAll+getBoundingClientRect 반복을 프레임당 한 번으로).
@@ -415,6 +418,45 @@ export function ThumbnailGrid(props: Props) {
     if (target) props.onPreview(target);
   };
 
+  // 드래그 시작(그리드 안·밖 공용). cellId 가 있으면 카드 위에서 시작한 것 = 마퀴 아님.
+  const beginDrag = useCallback(
+    (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
+     cellId: string | null) => {
+      const { selectedIds: base, focusIdx: anchorIdx } = startRef.current;
+      dragRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        base: new Set(base),
+        additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
+        range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
+        anchor: anchorIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
+        moved: false,
+        cellId,
+      };
+      addWindowMouseDrag(onDragMove, onDragUp);
+    },
+    [onDragMove, onDragUp],
+  );
+
+  // 카드가 몇 개 없으면 빈 곳 대부분이 그리드 밖(툴바 줄)이라 마퀴가 아예 시작되지 않았다.
+  // 같은 화면(.main) 안이면 그리드 밖에서 시작한 드래그도 마퀴로 잡는다. 조작 요소(버튼·입력·
+  // 슬라이더·링크) 위에서는 시작하지 않아 툴바 사용과 부딪히지 않는다.
+  useEffect(() => {
+    const host = gridRef.current?.closest(".main") as HTMLElement | null;
+    if (!host) return;
+    const onHostMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      if (target.closest(".gen-grid")) return; // 그리드 안은 아래 onGridMouseDown 이 처리
+      if (target.closest("button, input, label, select, textarea, a, [contenteditable]")) return;
+      e.preventDefault(); // 글자 선택·네이티브 드래그 방지
+      gridRef.current?.focus();
+      beginDrag(e, null);
+    };
+    host.addEventListener("mousedown", onHostMouseDown);
+    return () => host.removeEventListener("mousedown", onHostMouseDown);
+  }, [beginDrag]);
+
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
@@ -427,17 +469,7 @@ export function ThumbnailGrid(props: Props) {
     // 빈 곳에서 시작한 드래그 = 마퀴. 브라우저 기본 글자 선택을 막는다 — 안 막으면 포인터가
     // 툴바·상단바 위를 지날 때 그쪽 글자가 파랗게 긁히고 마퀴가 묻힌다(포커스는 위에서 직접 준다).
     if (!cellEl) e.preventDefault();
-    dragRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      base: new Set(selectedIds),
-      additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
-      range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
-      anchor: focusIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
-      moved: false,
-      cellId: cellEl?.dataset.id ?? null,
-    };
-    addWindowMouseDrag(onDragMove, onDragUp);
+    beginDrag(e, cellEl?.dataset.id ?? null);
   };
 
   const onGridDblClick = (e: React.MouseEvent) => {
