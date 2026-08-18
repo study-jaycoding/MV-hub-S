@@ -137,11 +137,62 @@ def test_update_restarts_registered_server_and_checks_readiness():
     assert "previous MV Hub watchdog" in restart
     assert '$rootPrefix = $rootPath + "\\"' in restart
     assert "IndexOf($rootPrefix" in restart
+    assert '$expectedServePath = Join-Path $rootPath "backend\\serve.py"' in restart
+    assert "Test-MvHubServerCommandLine" in restart
+    assert "not owned by this MV Hub installation" in restart
+    assert '$command -notlike "*serve.py*"' not in restart
     assert "Wait-TaskStopped" in restart
     assert "Start-TaskAndWaitRunning" in restart
     assert "Get-Content -LiteralPath $log -Encoding UTF8" in restart
     assert "Port $Port did not become free" in restart
     assert "$server.State -ne \"Running\"" in restart
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows PowerShell process identity boundary"
+)
+def test_restart_identity_accepts_only_the_current_installation_path(tmp_path: Path):
+    restart = _read("restart_server_task.ps1")
+    function_start = restart.index("function Test-MvHubServerCommandLine")
+    function_end = restart.index("\nfunction Wait-TaskStopped", function_start)
+    identity_function = restart[function_start:function_end]
+
+    root = tmp_path / "한글 설치 폴더 with spaces"
+    expected = root / "backend" / "serve.py"
+    unrelated = tmp_path / "other app" / "serve.py"
+    probe = tmp_path / "identity-probe.ps1"
+    probe.write_text(
+        identity_function
+        + "\n"
+        + "$expected = $env:MVHUB_EXPECTED_SERVE\n"
+        + "$unrelated = $env:MVHUB_UNRELATED_SERVE\n"
+        + "$matching = '\"C:\\Python314\\python.exe\" \"' + $expected + '\"'\n"
+        + "$foreign = '\"C:\\Python314\\python.exe\" \"' + $unrelated + '\"'\n"
+        + "if (-not (Test-MvHubServerCommandLine $matching $expected)) { exit 11 }\n"
+        + "if (Test-MvHubServerCommandLine $foreign $expected) { exit 12 }\n"
+        + "if (Test-MvHubServerCommandLine '' $expected) { exit 13 }\n"
+        + "exit 0\n",
+        encoding="utf-8-sig",
+    )
+    env = os.environ.copy()
+    env["MVHUB_EXPECTED_SERVE"] = str(expected)
+    env["MVHUB_UNRELATED_SERVE"] = str(unrelated)
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_update_persists_commit_and_restart_result():

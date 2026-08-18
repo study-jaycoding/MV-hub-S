@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"
+SERVER_ENTRYPOINT = BACKEND / "serve.py"
 
 
 def alert_path() -> Path:
@@ -52,7 +53,10 @@ def main() -> int:
     while True:
         started = time.monotonic()
         try:
-            process = subprocess.Popen([sys.executable, "serve.py"], cwd=BACKEND)
+            # Use the absolute entrypoint in the child command line.  The
+            # Windows restart helper can then prove that a listener belongs to
+            # this exact MV Hub installation before it ever terminates it.
+            process = subprocess.Popen([sys.executable, str(SERVER_ENTRYPOINT)], cwd=BACKEND)
             return_code = process.wait()
         except KeyboardInterrupt:
             if "process" in locals() and process.poll() is None:

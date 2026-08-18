@@ -33,6 +33,14 @@ function Stop-ProcessTree([int]$TargetPid, [string]$Description) {
     }
 }
 
+function Test-MvHubServerCommandLine([string]$CommandLine, [string]$ExpectedServePath) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine) -or
+        [string]::IsNullOrWhiteSpace($ExpectedServePath)) {
+        return $false
+    }
+    return $CommandLine.IndexOf($ExpectedServePath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
 function Wait-TaskStopped([string]$TaskName, [int]$WaitSeconds = 15) {
     $deadline = (Get-Date).AddSeconds($WaitSeconds)
     do {
@@ -70,6 +78,7 @@ try {
     # scheduled task cannot exit early because an old process is still active.
     $rootPath = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\")
     $rootPrefix = $rootPath + "\"
+    $expectedServePath = Join-Path $rootPath "backend\serve.py"
     $managedProcesses = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
@@ -97,8 +106,8 @@ try {
     foreach ($ownerPid in $owners) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
         $command = [string]$process.CommandLine
-        if ($command -notlike "*serve.py*") {
-            throw "Port $Port is owned by another program (PID $ownerPid). It was not stopped."
+        if (-not (Test-MvHubServerCommandLine -CommandLine $command -ExpectedServePath $expectedServePath)) {
+            throw "Port $Port is not owned by this MV Hub installation (PID $ownerPid). It was not stopped."
         }
         Stop-ProcessTree -TargetPid $ownerPid -Description "previous MV Hub server process"
     }
