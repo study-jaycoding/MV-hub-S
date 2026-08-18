@@ -360,6 +360,77 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     expect(pasted.cards.find((item) => item.id === "new-list")?.listOrder).toEqual(["new-ref"]);
   });
 
+  it("렌더 카드와 생성카드를 함께 복사하면 '렌더 제외' 목록도 새 카드 id로 바꾼다", () => {
+    // 안 바꾸면 옛 번호를 가리켜 빼놨던 체크가 전부 풀린 채 붙는다.
+    const cards = [
+      card("gen1", "generation", 0, 0),
+      card("gen2", "generation", 100, 0),
+      card("render", "render", 200, 0, { unchecked: ["gen2", "outside"] }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["gen1", "gen2", "render"]);
+    const pasted = pasteSceneClipboard(
+      cards,
+      [],
+      clipboard,
+      idSequence("new-gen1", "new-gen2", "new-render"),
+    );
+
+    // 같이 복사된 것은 새 번호로, 이번 복사에 없던 것(outside)은 원래 카드를 가리키므로 그대로.
+    expect(pasted.cards.find((item) => item.id === "new-render")?.unchecked).toEqual([
+      "new-gen2",
+      "outside",
+    ]);
+  });
+
+  it("붙여넣은 생성카드는 설정만 오고 쌓인 결과는 딸려오지 않는다", () => {
+    const cards = [
+      card("gen", "generation", 0, 0, {
+        genId: "g2",
+        genIds: ["g1", "g2"],
+        status: "done",
+        prompt: "고양이",
+        pendingGenerationAttempts: [{ attemptId: "a1", createdAt: 1 }],
+      }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["gen"]);
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-gen"));
+
+    const copied = pasted.cards.find((item) => item.id === "new-gen");
+    expect(copied?.genIds).toEqual([]);
+    expect(copied?.genId).toBeNull();
+    expect(copied?.pendingGenerationAttempts).toEqual([]);
+    expect(copied?.status).toBe("empty"); // 결과 0개인데 "완료"로 보이는 유령 카드 방지
+    expect(copied?.prompt).toBe("고양이"); // 설정은 그대로 온다
+    // 원본은 건드리지 않는다
+    expect(cards[0].genIds).toEqual(["g1", "g2"]);
+  });
+
+  it("붙여넣은 comfy 카드는 워크플로는 남고 실행 결과만 비워진다", () => {
+    const cards = [
+      card("comfy", "comfy", 0, 0, {
+        genIds: ["g1"],
+        comfyCfg: {
+          name: "wf.json",
+          content: "{}",
+          paramValues: { "n|seed": 7 },
+          outputs: [{ kind: "image", url: "u" }],
+          status: "done",
+          error: "이전 오류",
+        },
+      }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["comfy"]);
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-comfy"));
+
+    const cfg = pasted.cards.find((item) => item.id === "new-comfy")?.comfyCfg;
+    expect(cfg?.name).toBe("wf.json");
+    expect(cfg?.paramValues).toEqual({ "n|seed": 7 });
+    expect(cfg?.outputs).toEqual([]);
+    expect(cfg?.status).toBe("idle");
+    expect(cfg?.error).toBeNull();
+    expect(pasted.cards.find((item) => item.id === "new-comfy")?.genIds).toEqual([]);
+  });
+
   it("다른 씬에서 외부 입력 소스가 없으면 유령 연결을 복원하지 않는다", () => {
     const clipboard = {
       cards: [card("copied", "generation", 0, 0)],

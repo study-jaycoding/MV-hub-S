@@ -312,6 +312,26 @@ export function buildSelectedConnections(
   return additions;
 }
 
+// 붙여넣은 카드는 '설정만 복제' — 쌓인 결과는 딸려오지 않는다(Jay 결정 2026-08-18).
+//  결과 목록만 지우면 안 된다: 대표·진행표식·상태까지 같이 비워야 결과가 0개인데 "완료"로
+//  보이는 유령 카드가 안 생긴다. comfy 는 워크플로·파라미터는 남기고 실행 결과만 비운다
+//  (설정을 복사해 다시 돌리는 게 붙여넣기의 목적).
+function clearPastedResults(card: SceneCard): SceneCard {
+  if (card.kind === "comfy") {
+    const cfg = card.comfyCfg;
+    return {
+      ...card,
+      genId: null,
+      genIds: [],
+      pendingGenerationAttempts: [],
+      status: "empty",
+      comfyCfg: cfg ? { ...cfg, outputs: [], output: null, status: "idle", error: null } : cfg,
+    };
+  }
+  if (card.kind !== "generation") return card;
+  return { ...card, genId: null, genIds: [], pendingGenerationAttempts: [], status: "empty" };
+}
+
 export function copySceneSelection(
   cards: SceneCard[],
   edges: SceneEdge[],
@@ -368,7 +388,11 @@ export function pasteSceneClipboard(
       next = { ...next, channel: idMap.get(card.channel) };
     if (card.kind === "list" && card.listOrder)
       next = { ...next, listOrder: card.listOrder.map((id) => idMap.get(id) || id) };
-    return next;
+    // 렌더 노드의 '렌더 제외' 목록도 새 카드 번호로. 같이 복사한 생성카드는 새 번호를 받으므로
+    // 안 바꾸면 빼놨던 체크가 전부 풀린다. 이번 복사에 없던 번호는 원래 카드를 가리키므로 그대로.
+    if (card.kind === "render" && card.unchecked)
+      next = { ...next, unchecked: card.unchecked.map((id) => idMap.get(id) || id) };
+    return clearPastedResults(next);
   });
   const internalEdges = clipboard.edges.map((edge) => ({
     ...edge,
