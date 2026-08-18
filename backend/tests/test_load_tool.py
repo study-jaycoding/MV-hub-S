@@ -119,6 +119,16 @@ class LoadToolTests(unittest.TestCase):
         report["workload"]["statuses"] = {200: 99, 404: 1}
         self.assertFalse(load_tool._evaluate(report, args)["passed"])
 
+        report["workload"]["statuses"] = {200: 100}
+        report["login"]["control_probe"] = {
+            "samples": 2,
+            "statuses": {200: 2},
+            "p95_ms": 600,
+        }
+        result = load_tool._evaluate(report, args)
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["checks"]["login_control_probe_healthy"])
+
     def test_acceptance_rejects_resource_peak_and_sampled_connection_drop(self):
         report = {
             "login": {"p95_ms": 100},

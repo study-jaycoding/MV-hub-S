@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
-from typing import Optional
+from collections.abc import Callable
+from typing import Any, Optional, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -33,6 +36,48 @@ _COOKIE_MAX_AGE = 14 * 24 * 3600  # 토큰 TTL 과 동일(2주)
 _RL_WINDOW = 300.0  # 5분
 _RL_MAX = 8
 _rl_fails: dict[str, list[float]] = {}
+
+# PBKDF2는 의도적으로 CPU를 많이 쓰는 보안 경계다. 동시 로그인 100건을 FastAPI의
+# 공용 sync threadpool에서 모두 실행하면 저사양 서버의 다른 sync API까지 굶는다.
+# 대기 요청은 event loop에서 가볍게 기다리고 실제 DB+해시 검증만 전용 용량으로 제한한다.
+_LOGIN_VERIFY_MAX = 8
+_LOGIN_LIMITER_ATTR = "_mvhub_login_verify_limiter"
+_T = TypeVar("_T")
+
+
+def _login_verify_capacity() -> int:
+    configured = os.environ.get("CONTENT_HUB_LOGIN_VERIFY_CONCURRENCY", "").strip()
+    if configured:
+        try:
+            return max(1, min(_LOGIN_VERIFY_MAX, int(configured)))
+        except ValueError:
+            pass
+    process_cpu_count = getattr(os, "process_cpu_count", os.cpu_count)
+    return max(1, min(_LOGIN_VERIFY_MAX, int(process_cpu_count() or 1)))
+
+
+def _login_limiter() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    limiter = getattr(loop, _LOGIN_LIMITER_ATTR, None)
+    if limiter is None:
+        limiter = asyncio.Semaphore(_login_verify_capacity())
+        setattr(loop, _LOGIN_LIMITER_ATTR, limiter)
+    return limiter
+
+
+async def _run_login_work(action: Callable[..., _T], *args: Any) -> _T:
+    async with _login_limiter():
+        worker = asyncio.create_task(asyncio.to_thread(action, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # to_thread의 실제 PBKDF2/DB 작업은 요청 취소로 멈추지 않는다. 여기서
+            # permit을 먼저 돌려주면 취소 폭주 때 설정값보다 많은 해시가 겹친다.
+            try:
+                await worker
+            except BaseException:
+                pass
+            raise
 
 
 def _rl_key(request: Request, email: str) -> str:
@@ -122,12 +167,12 @@ def auth_config():
 
 
 @router.post("/register")
-def register(body: RegisterIn, response: Response):
+async def register(body: RegisterIn, response: Response):
     try:
-        acc = repo.register(body.email, body.password, body.name)
+        acc = await _run_login_work(repo.register, body.email, body.password, body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    acc = repo.get_account(acc["email"]) or acc
+    acc = await asyncio.to_thread(repo.get_account, acc["email"]) or acc
     # 첫 계정(부트스트랩 관리자)은 즉시 승인 → 바로 토큰 발급(자동 로그인) + 쿠키.
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
@@ -136,10 +181,10 @@ def register(body: RegisterIn, response: Response):
 
 
 @router.post("/login")
-def login(body: LoginIn, response: Response, request: Request):
+async def login(body: LoginIn, response: Response, request: Request):
     key = _rl_key(request, body.email)
     _rl_check(key)
-    acc = repo.authenticate(body.email, body.password)
+    acc = await _run_login_work(repo.authenticate, body.email, body.password)
     if not acc:
         _rl_fail(key)
         raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
@@ -155,16 +200,16 @@ def login(body: LoginIn, response: Response, request: Request):
 
 
 @router.post("/access")
-def access(body: RegisterIn, response: Response, request: Request):
+async def access(body: RegisterIn, response: Response, request: Request):
     """로그인=가입 통합 — 힉스필드 이메일+비밀번호 하나로. 처음 보는 이메일이면 자동 등록(승인 대기),
     이미 있으면 로그인. 별도 '가입' 단계를 없앤다(계정 식별자 = 힉스필드 이메일). push_agent 는 여전히
     /login 사용. 반환: {account, token(승인 전이면 null), pending}."""
     email = norm_email(body.email)
     key = _rl_key(request, email)
     _rl_check(key)
-    existing = repo.get_account(email)
+    existing = await asyncio.to_thread(repo.get_account, email)
     if existing:
-        acc = repo.authenticate(email, body.password)
+        acc = await _run_login_work(repo.authenticate, email, body.password)
         if not acc:
             _rl_fail(key)
             raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다")
@@ -177,10 +222,10 @@ def access(body: RegisterIn, response: Response, request: Request):
         return {"account": acc, "token": token, "pending": False}
     # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
     try:
-        acc = repo.register(email, body.password, body.name)
+        acc = await _run_login_work(repo.register, email, body.password, body.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    acc = repo.get_account(acc["email"]) or acc
+    acc = await asyncio.to_thread(repo.get_account, acc["email"]) or acc
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:
         _set_session_cookie(response, token)

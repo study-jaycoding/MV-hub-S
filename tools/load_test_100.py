@@ -445,6 +445,33 @@ async def _login_all(
     return tokens, latencies, statuses
 
 
+async def _probe_during_login(
+    base_url: str,
+    login_task: asyncio.Task,
+    ssl_context: Optional[ssl.SSLContext] = None,
+) -> dict[str, Any]:
+    """CPU 해시 폭주 중에도 일반 sync API가 공용 스레드풀에서 굶지 않는지 측정한다."""
+    latencies: list[float] = []
+    statuses: Counter[int] = Counter()
+    while not login_task.done() or not latencies:
+        status, _body, elapsed = await asyncio.to_thread(
+            _http_json,
+            base_url,
+            "/api/auth/config",
+            ssl_context=ssl_context,
+        )
+        statuses[status] += 1
+        latencies.append(elapsed)
+        if not login_task.done():
+            await asyncio.sleep(0.05)
+    return {
+        "samples": len(latencies),
+        "statuses": dict(statuses),
+        "p95_ms": _percentile(latencies, 0.95),
+        "max_ms": round(max(latencies), 2) if latencies else 0.0,
+    }
+
+
 async def _runtime_snapshot(
     base_url: str,
     admin_token: str,
@@ -723,11 +750,20 @@ async def _run_load(
     progress_path: Optional[Path] = None,
     cycle_number: int = 1,
 ) -> dict[str, Any]:
-    tokens, login_latencies, login_statuses = await _login_all(
-        base_url,
-        accounts,
-        ssl_context,
+    login_task = asyncio.create_task(
+        _login_all(
+            base_url,
+            accounts,
+            ssl_context,
+        )
     )
+    login_probe_task = asyncio.create_task(
+        _probe_during_login(base_url, login_task, ssl_context)
+    )
+    try:
+        tokens, login_latencies, login_statuses = await login_task
+    finally:
+        login_control_probe = await login_probe_task
 
     # 연결·SQLite 풀·목록 캐시를 한 번 데운 뒤 메모리 기준점을 잡는다.
     await asyncio.gather(
@@ -882,6 +918,7 @@ async def _run_load(
             "statuses": dict(login_statuses),
             "p95_ms": _percentile(login_latencies, 0.95),
             "max_ms": round(max(login_latencies), 2) if login_latencies else 0.0,
+            "control_probe": login_control_probe,
         },
         "workload": {
             "requests": request_count,
@@ -955,6 +992,16 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
         ),
         "prior_cycles_functional_ok": report.get("prior_cycles_functional_ok", True),
     }
+    login_probe = report["login"].get("control_probe")
+    if login_probe is not None:
+        probe_statuses = {
+            int(k): v for k, v in login_probe.get("statuses", {}).items()
+        }
+        checks["login_control_probe_healthy"] = (
+            login_probe.get("samples", 0) > 0
+            and set(probe_statuses) == {200}
+            and login_probe.get("p95_ms", float("inf")) <= args.max_p95_ms
+        )
     growth = report["server"].get("memory_growth_percent_after_warmup")
     if growth is not None:
         checks["memory_growth_within_target"] = growth <= args.max_memory_growth_percent
