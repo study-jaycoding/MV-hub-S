@@ -35,7 +35,6 @@ interface Props {
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
   onDropToFolder?: (projectId: string, path: string, genId: string) => void; // 카드 드래그 → 폴더 담기
   onDropToUnassigned?: (genId: string) => void; // 카드 드래그 → 미분류(귀속 해제)
-  workspaceName?: string; // 머리말 = 현재 워크스페이스 이름
 }
 
 export function FilterSidebar({
@@ -61,7 +60,6 @@ export function FilterSidebar({
   projects,
   unassignedCount,
   archivedCount,
-  workspaceName,
 }: Props) {
   const tr = useT();
   const [footOpen, setFootOpen] = useState<boolean>(
@@ -77,7 +75,6 @@ export function FilterSidebar({
       {/* 위 = 프로젝트/폴더(남는 높이를 다 쓰고 스스로 스크롤), 아래 = 컬러·전역태그·생성자 고정 */}
       <div className="sidebar-main">
         <ProjectSection
-          workspaceName={workspaceName}
           projects={projects}
           unassignedCount={unassignedCount}
           archivedCount={archivedCount}
@@ -108,7 +105,7 @@ export function FilterSidebar({
         onClick={toggleFoot}
         title={footOpen ? "접기 — 폴더를 더 넓게 본다" : "펼치기"}
       >
-        <span className="sidebar-foot-caret">{footOpen ? "▾" : "▴"}</span>
+        <span className="sidebar-foot-pin">📌</span>
         {tr("컬러")} · {tr("전역 태그")} · {tr("생성자")}
       </button>
 

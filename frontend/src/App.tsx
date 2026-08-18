@@ -117,7 +117,6 @@ import {
   isGenerationWorkspaceReady,
   UNKNOWN_WORKSPACE,
   sameWorkspace,
-  workspaceShortLabel,
 } from "./lib/workspaceContext";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
@@ -1276,7 +1275,6 @@ export default function App() {
           <>
             {showFilters && (
               <CanvasFolderSidebar
-                workspaceName={workspaceShortLabel(workspaceContext)}
                 filters={filters}
                 onChange={patch}
                 projects={projects}
@@ -1448,7 +1446,6 @@ export default function App() {
           <>
             {showFilters && (
               <FilterSidebar
-                workspaceName={workspaceShortLabel(workspaceContext)}
                 facets={facets}
                 filters={filters}
                 onChange={patch}

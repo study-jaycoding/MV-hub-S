@@ -64,13 +64,6 @@ export function activeWorkspaceOf<T extends Workspace>(
   return items.find((item) => item.is_selected) || items.find((item) => !item.name);
 }
 
-/** 사이드바 머리말용 짧은 이름 — 설명 없이 지금 보고 있는 공간 이름만. */
-export function workspaceShortLabel(context: WorkspaceContext): string {
-  if (context.scope === "team") return context.name || "팀 워크스페이스";
-  if (context.scope === "personal") return "개인";
-  return "워크스페이스";
-}
-
 export function workspaceLabel(context: WorkspaceContext): string {
   if (context.scope === "team") return context.name || "팀 워크스페이스";
   if (context.scope === "personal") return "개인 · 전체 보기";
