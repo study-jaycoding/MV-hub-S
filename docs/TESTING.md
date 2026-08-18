@@ -16,6 +16,7 @@
 
 백엔드 테스트 의존성은 운영용 `requirements.txt`와 분리된 `requirements-dev.txt`로 설치한다.
 Windows PowerShell에서 `backend` 폴더를 기준으로 실행한다.
+이 파일에는 일반 테스트용 `pytest`뿐 아니라 100명 부하 시험의 자원 측정용 `psutil`도 포함된다.
 
 ```powershell
 python -m venv .venv
@@ -39,6 +40,20 @@ npm.cmd run build
 표시된 경고는 현재 구조 부채이며, 새 경고를 만들지 않는 것을 원칙으로 한다.
 
 자동 테스트는 운영 DB가 아닌 `CONTENT_HUB_DB` 또는 `CONTENT_HUB_DATA` 임시 경로를 사용한다.
+
+### 사전 배포 통합 게이트
+
+프로젝트 루트의 깨끗한 작업 트리에서 아래 명령 하나로 백엔드·프론트 전체 테스트, production build,
+SQLite 백업·복원과 100명 부하를 순서대로 실행한다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1
+```
+
+100명 부하는 기본적으로 격리 서버에 논리 CPU 2개와 `below-normal` 우선순위를 적용해 60초씩 2회
+실행한다. 다른 조건이 꼭 필요하면 `-LoadServerCpuCores`와 `-LoadServerPriority`를 명시하고 결과 JSON에
+남은 값을 함께 보고한다. `-SkipLoad`, `-SkipBackupDrill`, `-AllowDirty` 결과는 빠른 개발 확인용이며
+최종 배포 승인 근거로 사용하지 않는다.
 
 ## 생성 제출 중단 복구(RL-05)
 
@@ -349,6 +364,51 @@ multipart를 보냈을 때 67,109,276바이트를 완전히 받았고 본문 오
 4,554,937바이트였다. 이는 Python 전체 `bytes` 사본 제거와 실제 stdlib 전송을 검증하지만 OS 소켓
 버퍼를 포함한 전체 프로세스 RSS, 실제 Comfy Cloud·ffmpeg 대형 영상, 긴 대기열의 TEMP 디스크 용량을
 대신하지 않는다. 이 세 항목은 운영과 같은 스테이징에서 별도로 확인한다.
+
+## Comfy·Resolve 외부 실행 경계 실측(Gate 6 준비)
+
+Comfy 실행은 실제 계정이나 크레딧을 사용하지 않고도 MV Hub 백엔드부터 외부 HTTP 경계까지
+반복 검증할 수 있다. 프로젝트 루트에서 다음 명령을 실행한다.
+
+```powershell
+py -3 tools\verify_comfy_live.py
+```
+
+도구는 현재 사용자 DB와 실행 중인 개발 서버를 사용하지 않는다. 고유 임시 DB·미디어·TEMP와
+별도 포트에 MV Hub를 띄우고, 실제 HTTP 가짜 ComfyUI에 이미지 3개를 업로드한다. 합격 조건은
+다음과 같다.
+
+- `cloud_requests=0`, `user_server_touched=false`여야 한다.
+- 실행 3개 중 2개는 출력 PNG까지 내려받고 1개는 의도한 노드 오류로 실패해야 한다.
+- 설정한 동시 실행 2를 넘지 않고 실제 최대 동시 실행이 2여야 한다.
+- 실패한 prompt 하나만 `/queue delete`되고 전체 `/interrupt`는 호출되지 않아야 한다.
+- 완료 뒤 앱 TEMP 입력과 `comfy_inflight_runs`가 모두 0이어야 한다.
+
+이 검증은 로컬 Comfy 호환 HTTP 계약, 병렬 제한, 오류 격리와 정리를 확인한다. 실제 Comfy Cloud의
+노드 지원 여부·계정 권한·유료 생성 결과는 확인하지 않으므로 배포 직전 실제 워크플로우 1건은
+사용자 승인 뒤 별도로 수행한다.
+
+Resolve는 실행 중인 Studio에 최신 MV Hub 스크립트가 설치된 상태에서 다음 명령으로 확인한다.
+
+```powershell
+py -3 tools\verify_resolve_live.py
+```
+
+도구는 고유한 임시 Resolve 프로젝트만 만들고 원래 프로젝트를 복원한다. `c0015`를 먼저 넣어도
+`c0010, c0015`로 자연 정렬되는지, 같은 원본 재가져오기 방지, 두 클립 Render All, 출력 파일과
+시퀀스 폴더 생성, 렌더 잡·테스트 프로젝트 정리까지 모두 `ok=true`여야 한다. 사용자가 작업 중인
+프로젝트에는 미디어나 타임라인을 추가하지 않는다.
+
+2026-08-19 실측에서는 Comfy 경계 3건(성공 2·의도한 실패 1), 최대 병렬 2, PNG 다운로드,
+실패 prompt 한 건만 삭제, `/interrupt`·TEMP·in-flight 잔재 0을 확인했다. Resolve Studio 20.3.2에서는
+Importer 0.1.1·Exporter 0.6.2로 자연 정렬·중복 방지·두 출력 렌더·시퀀스 폴더·정리를 모두 통과했다.
+이 결과는 실제 유료 Comfy Cloud 노드와 계정 권한을 대신하지 않는다.
+
+같은 작업 트리의 사전 배포 게이트는 백엔드 940개·21 subtests, 프론트 79개 파일·569개,
+production build와 SQLite 복원을 통과했다. 2코어·below-normal 100명 시험은 60초씩 2회 실행해
+합계 23,025건 모두 200, 2회차 p95 44.40ms·p99 131.84ms, WebSocket·에이전트 롱폴 각 100,
+SQLite lock·클라이언트 오류 0, 워밍업 뒤 RSS 증가 1.62%였다. 동시 로그인 p95 7.98초는
+PBKDF2 200,000회 보안 검증을 2코어에서 100개 동시에 실행한 값이며 10초 합격 기준 안이다.
 
 ## WebSocket 재연결·느린 수신자 회귀(RL-19)
 
