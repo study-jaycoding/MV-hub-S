@@ -234,15 +234,18 @@ function loadAll(): ScenesByProject {
   return loadJSON<ScenesByProject>(STORAGE_KEYS.scenes) || {};
 }
 
-// DB 백업 미러 훅 — saveAll(단일 쓰기 관문) 뒤 호출된다. sceneBackup.ts 가 등록(순환 import 회피).
-let onScenesPersisted: (() => void) | null = null;
-export function setOnScenesPersisted(fn: (() => void) | null): void {
-  onScenesPersisted = fn;
+// DB 미러 훅 — saveAll(단일 쓰기 관문) 뒤 호출된다. sceneBackup.ts(씬 전체)와
+// sceneCardLinks.ts(카드 소속)가 각각 등록한다(순환 import 회피). 둘은 저장 대상이 달라
+// 서로 대체하지 않으므로 구독 목록으로 둔다 — 단일 슬롯이면 나중에 등록한 쪽이 앞을 지운다.
+const scenesPersistedSubs = new Set<() => void>();
+export function subscribeScenesPersisted(fn: () => void): () => void {
+  scenesPersistedSubs.add(fn);
+  return () => scenesPersistedSubs.delete(fn);
 }
 
 function saveAll(all: ScenesByProject) {
   saveJSON(STORAGE_KEYS.scenes, all);
-  onScenesPersisted?.();
+  scenesPersistedSubs.forEach((fn) => fn());
 }
 
 // 이 계정의 씬 버킷 '키'가 존재하는가 — DB 복구 허용 판정(코덱스 P1: 빈 배열 버킷은 정상 삭제의

@@ -125,6 +125,8 @@ class ProxyOwnershipTests(unittest.TestCase):
             "/api/cache-all",
             "/api/generations/g1/comments/read",
             "/api/sync-status",  # 로컬 허브 자기 상태 — 서버 위임 금지
+            "/api/scenes/backup",  # 개인 캔버스 — 팀 서버 전송 금지
+            "/api/scenes/cards",   # 개인 캔버스 카드 소속 — 위와 같은 이유
         ):
             self.assertTrue(is_local_path(p), f"{p} 는 로컬로 들어와 핸들러가 재분기해야 한다(서버 오프록시 금지)")
 

@@ -434,6 +434,27 @@ CREATE TABLE IF NOT EXISTS scene_backup (
     PRIMARY KEY (owner_uid, project_id, scene_id)
 );
 
+-- 캔버스 생성카드 소속 — "이 카드에 이 생성물이 담겨 있다"는 사실 하나당 한 줄.
+-- scene_backup 이 씬 전체를 통째로 덮어쓰는 미러라, 늦게 저장한 브라우저가 이겨 다른 브라우저에서
+-- 쌓은 결과가 사라졌다(실측: 카드-생성물 57건 중 서버가 기억하는 건 1건). 소속만 여기로 분리해
+-- 더하기 전용으로 쌓으면 덮어쓰기 자체가 없어 브라우저끼리 싸우지 않는다.
+--   · 삭제는 실제 삭제가 아니라 removed_at 표시 — 안 그러면 아직 모르는 다른 브라우저가
+--     자기 로컬 목록으로 그 생성물을 되살린다(합치기는 합집합이므로).
+--   · owner_uid = deps.actor_id(개인 편집물) — identity._REMAP_PLAN 리맵 대상.
+--   · 개인 편집물이라 팀 서버로 보내지 않는다(_proxy._LOCAL_PREFIXES '/api/scenes').
+CREATE TABLE IF NOT EXISTS scene_card_generation (
+    owner_uid     TEXT NOT NULL,
+    scene_id      TEXT NOT NULL,
+    card_id       TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    removed_at    TEXT,                                  -- 카드에서 뺐음(다른 브라우저에도 전파)
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_uid, scene_id, card_id, generation_id)
+);
+-- 씬 열 때 그 씬 전체를 한 번에 읽는다(카드별 N번 조회 금지).
+CREATE INDEX IF NOT EXISTS idx_scene_card_gen_scene
+    ON scene_card_generation(owner_uid, scene_id);
+
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_share_gen   ON share(generation_id);  -- generation 당 공유 1개

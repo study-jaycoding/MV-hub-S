@@ -15,6 +15,7 @@ import {
 } from "./scenes";
 import { clearSceneHistory } from "./sceneUndoStore";
 import { initSceneBackup, subscribeSceneRestore } from "./sceneBackup";
+import { initSceneCardLinks } from "./sceneCardLinks";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -63,7 +64,11 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
       setScenes(listScenes(null));
       flashRef.current?.("씬을 DB 백업에서 복구했습니다.");
     });
-    void initSceneBackup();
+    // ★순서: 씬 복구 판정(initSceneBackup)이 먼저다. 카드 소속 백필이 앞서면 아직 복구 안 된
+    //  빈 로컬을 기준으로 "올릴 게 없다"고 판단한다(멱등이라 사고는 아니지만 한 사이클 헛돈다).
+    void initSceneBackup()
+      .catch(() => false)
+      .then(() => initSceneCardLinks());
     return unsubscribe;
   }, []);
   const lastNotifyRef = useRef(0);

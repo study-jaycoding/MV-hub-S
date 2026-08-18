@@ -17,7 +17,7 @@
 //    이후는 세션 내 lastPushed 문자열 비교로 변경분만.
 import { jsonFetch } from "./http";
 import { getAccountNamespace } from "./accountScope";
-import { hasSceneBucket, listScenes, saveScenes, setOnScenesPersisted, type Scene } from "./scenes";
+import { hasSceneBucket, listScenes, saveScenes, subscribeScenesPersisted, type Scene } from "./scenes";
 
 const API = "/api/scenes/backup";
 const DEBOUNCE_MS = 2000;
@@ -266,7 +266,7 @@ let installed = false;
 export async function initSceneBackup(): Promise<boolean> {
   if (!installed) {
     installed = true;
-    setOnScenesPersisted(schedule);
+    subscribeScenesPersisted(schedule);
     window.addEventListener("online", () => void syncNow());
   }
   const scope = enterScope();

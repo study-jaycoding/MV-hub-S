@@ -469,6 +469,9 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
     # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
     ("scene_backup", "owner_uid", "ignore_del"),
+    # 캔버스 카드 소속 owner(PK 선두) — 충돌 시 user_ 행 유지. 같은 (씬,카드,생성물)이 양 신원으로
+    # 있으면 사실이 같으므로 어느 쪽을 남겨도 동일(removed_at 만 다를 수 있어 user_ 것을 신뢰).
+    ("scene_card_generation", "owner_uid", "ignore_del"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로
