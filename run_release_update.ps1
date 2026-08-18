@@ -68,4 +68,8 @@ finally {
     Remove-Item -LiteralPath $TempWorker -Force -ErrorAction SilentlyContinue
 }
 
-exit $ExitCode
+# `powershell.exe -Command "& script.ps1"` normalizes a nested script's non-zero
+# `exit` to 1 on Windows PowerShell 5.1. The updater must preserve the worker's
+# exact exit code for automation while still using explicit invocation (which
+# avoids the intermittent cross-language-mode dot-source failure of `-File`).
+[Environment]::Exit($ExitCode)

@@ -210,6 +210,9 @@ def test_replica_snapshot_exposes_structured_status_without_paths(tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(operational_health, "AUTH_ENABLED", True)
+    # 공식 전체 테스트 명령은 외부 서버 차단을 위해 NO_PROXY=1로 실행한다. 이 테스트는
+    # 공유 서버 런타임 자체를 검증하므로 자신의 조건을 완전히 설정해 외부 env에 의존하지 않는다.
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
     monkeypatch.setattr(operational_health, "_REPLICA_STATUS_FILE", status_file)
 
     result = operational_health.backup_replica_snapshot()

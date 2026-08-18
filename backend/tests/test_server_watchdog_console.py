@@ -291,6 +291,29 @@ server.serve_forever()
             time.sleep(0.02)
         assert port_text.isdigit(), "isolated serve.py did not publish its port"
         port = int(port_text)
+        # venv의 python.exe는 Windows에서 실제 인터프리터 자식을 띄우고 기다리는
+        # 리다이렉터일 수 있다. Popen PID가 아니라 커널이 보고하는 LISTEN 소유자가
+        # 워치독이 종료해야 할 정확한 대상이다.
+        owner_result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+                    "-ErrorAction Stop | Select-Object -First 1 "
+                    "-ExpandProperty OwningProcess"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert owner_result.returncode == 0, owner_result.stderr
+        listener_pid_text = owner_result.stdout.strip()
+        assert listener_pid_text.isdigit(), owner_result.stdout
+        listener_pid = int(listener_pid_text)
         log_path = tmp_path / "hung-watchdog.log"
         watchdog_script = Path(__file__).resolve().parents[2] / "tools" / "server_watchdog.py"
         result = subprocess.run(
@@ -324,8 +347,8 @@ server.serve_forever()
         assert result.returncode == 0, result.stderr
         log_text = log_path.read_text(encoding="utf-8")
         assert "응답 이상 2/2" in log_text
-        assert f"개입 — 대상 PID [{server_process.pid}] (판별: port-owner)" in log_text
-        assert f"[DRY-RUN] taskkill /PID {server_process.pid} /T /F" in log_text
+        assert f"개입 — 대상 PID [{listener_pid}] (판별: port-owner)" in log_text
+        assert f"[DRY-RUN] taskkill /PID {listener_pid} /T /F" in log_text
         assert "검증 종료 — 3회 확인" in log_text
         assert server_process.poll() is None
     finally:

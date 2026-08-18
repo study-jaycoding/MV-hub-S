@@ -4,5 +4,8 @@
 # 테스트 러너
 pytest==9.1.1
 
+# 격리 부하 시험의 CPU affinity·우선순위·메모리 측정
+psutil==7.2.2
+
 # Starlette 1.3 TestClient가 요구하는 별도 테스트 HTTP 클라이언트
 httpx2==2.9.1

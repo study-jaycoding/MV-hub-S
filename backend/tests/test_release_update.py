@@ -212,6 +212,9 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert "MVHUB_UPDATE_TARGET_DIR" in updater
     assert len(update_launcher.splitlines()) == 1
     assert "run_release_update.ps1" in update_launcher
+    assert "-Command" in update_launcher
+    assert "& $env:MVHUB_UPDATE_RUNNER -Root $env:MVHUB_UPDATE_ROOT" in update_launcher
+    assert "[Environment]::Exit($ExitCode)" in update_runner
     assert "Copy-Item -LiteralPath $Worker -Destination $TempWorker" in update_runner
     assert "mvhub-release-update-" in update_runner
     assert "Restart-MvHubAndWaitReady" in updater
@@ -239,6 +242,21 @@ def test_update_scripts_keep_normal_process_cleanup_and_allow_only_explicit_brea
     assert '"update_release_worker.bat"' in builder
     assert "Assert-PythonRuntimeTree" in builder
     assert "expected 64-bit runtime" in builder
+
+
+def test_predeploy_gate_defaults_to_a_repeatable_low_spec_server_profile():
+    project_root = Path(__file__).resolve().parents[2]
+    gate = (project_root / "tools" / "predeploy_gate.ps1").read_text(encoding="utf-8")
+
+    assert '[int]$LoadServerCpuCores = 2' in gate
+    assert '[string]$LoadServerPriority = "below-normal"' in gate
+    assert "--server-cpu-cores $LoadServerCpuCores" in gate
+    assert "--server-priority $LoadServerPriority" in gate
+    assert "load_server_cpu_cores" in gate
+    assert "load_server_priority" in gate
+    assert "LoadResult.server_limits.requested_cpu_cores" in gate
+    assert "LoadResult.server_limits.priority" in gate
+    assert "load_server_cpu_affinity" in gate
 
 
 def test_release_update_contract_preserves_worker_backup_state_and_outbox():
