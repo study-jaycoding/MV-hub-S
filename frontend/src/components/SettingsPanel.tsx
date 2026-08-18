@@ -73,7 +73,9 @@ export function SettingsPanel({
   const [dlErr, setDlErr] = useState("");
   const [resolveScriptStatus, setResolveScriptStatus] = useState<ResolveScriptStatus | null>(null);
   const [resolveConnection, setResolveConnection] = useState<ResolveConnectionStatus | null>(null);
-  const [resolveConnectionBusy, setResolveConnectionBusy] = useState(false);
+  // 설정 창을 열면 바로 연결 검사를 시작한다. 첫 응답 전에도 버튼을 잠가
+  // 느린 Resolve API 검사가 겹쳐 실행되거나 늦은 응답이 최신 상태를 덮지 않게 한다.
+  const [resolveConnectionBusy, setResolveConnectionBusy] = useState(true);
   const [resolveScriptBusy, setResolveScriptBusy] = useState(false);
   const [resolveScriptMsg, setResolveScriptMsg] = useState("");
   const [releaseUpdateStatus, setReleaseUpdateStatus] = useState<ReleaseUpdateStatus | null>(null);
@@ -86,17 +88,22 @@ export function SettingsPanel({
     getResolveScriptStatus().then(setResolveScriptStatus).catch(() => {
       setResolveScriptMsg("설치 상태를 확인하지 못했습니다. 로컬 MV Hub에서 다시 시도하세요.");
     });
-    getResolveConnectionStatus().then(setResolveConnection).catch(() => {
-      setResolveConnection({
-        status: "api_unavailable",
-        connected: false,
-        process_running: false,
-        project_open: false,
-        project_id: "",
-        project_name: "",
-        message: "Resolve 연결 상태를 확인하지 못했습니다",
+    getResolveConnectionStatus()
+      .then(setResolveConnection)
+      .catch(() => {
+        setResolveConnection({
+          status: "api_unavailable",
+          connected: false,
+          process_running: false,
+          project_open: false,
+          project_id: "",
+          project_name: "",
+          message: "Resolve 연결 상태를 확인하지 못했습니다",
+        });
+      })
+      .finally(() => {
+        setResolveConnectionBusy(false);
       });
-    });
     getReleaseUpdateStatus(true).then((status) => {
       setReleaseUpdateStatus(status);
       let waitingVersion = "";
@@ -255,9 +262,10 @@ export function SettingsPanel({
     try {
       const result = await installResolveScript();
       setResolveScriptStatus(result);
+      const versions = `내보내기 v${result.bundled_version || "확인 불가"} · 가져오기 v${result.importer_bundled_version || "확인 불가"}`;
       const summary = result.changed
-        ? `가져오기·내보내기 도구 설치 완료 · v${result.bundled_version || "확인 불가"} · Resolve를 완전히 종료하고 다시 실행하세요.`
-        : `가져오기·내보내기 도구가 이미 최신입니다 · v${result.bundled_version || "확인 불가"}`;
+        ? `가져오기·내보내기 도구 설치 완료 · ${versions} · Resolve를 완전히 종료하고 다시 실행하세요.`
+        : `가져오기·내보내기 도구가 이미 최신입니다 · ${versions}`;
       const migration = result.backup_paths?.length
         ? ` · 예전 사용자용 스크립트 ${result.backup_paths.length}개 안전 백업`
         : "";

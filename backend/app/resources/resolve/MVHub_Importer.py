@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - Resolve의 구형 Python 2 폴백
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 WINDOW_ID = "com.millionvolt.mvhub.importer-result"
 HUB_URLS = tuple(
     value.strip().rstrip("/")

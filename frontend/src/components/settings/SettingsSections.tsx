@@ -324,12 +324,26 @@ export function ResolveScriptSettingsSection({
   onInstall: () => void;
   onRefreshConnection: () => void;
 }) {
-  const version = status?.installed_version || status?.bundled_version;
+  const activeInstallation = status?.installations?.find((installation) => installation.installed);
+  const exporterCurrent = activeInstallation?.installed_version || status?.installed_version;
+  const importerCurrent = activeInstallation?.importer_version;
+  const exporterBundled = status?.bundled_version;
+  const importerBundled = status?.importer_bundled_version;
+  const currentVersions = `내보내기 ${exporterCurrent ? `v${exporterCurrent}` : "미설치"} · 가져오기 ${importerCurrent ? `v${importerCurrent}` : "미설치"}`;
+  const bundledVersions = `내보내기 ${exporterBundled ? `v${exporterBundled}` : "확인 불가"} · 가져오기 ${importerBundled ? `v${importerBundled}` : "확인 불가"}`;
+  const versionChanges = [
+    exporterCurrent !== exporterBundled
+      ? `내보내기 ${exporterCurrent ? `v${exporterCurrent}` : "미설치"} → ${exporterBundled ? `v${exporterBundled}` : "확인 불가"}`
+      : "",
+    importerCurrent !== importerBundled
+      ? `가져오기 ${importerCurrent ? `v${importerCurrent}` : "미설치"} → ${importerBundled ? `v${importerBundled}` : "확인 불가"}`
+      : "",
+  ].filter(Boolean).join(" · ");
   const stateText = status
     ? status.up_to_date
-      ? `Resolve 도구 2개 설치됨 · v${version || "확인 불가"}`
+      ? `Resolve 도구 2개 설치됨 · ${bundledVersions}`
       : status.installed
-        ? `Resolve 도구 업데이트 필요 · 현재 v${status.installed_version || "확인 불가"}`
+        ? `Resolve 도구 업데이트 필요 · ${versionChanges || `${currentVersions} · 최신 파일로 교체 필요`}`
         : "Resolve 가져오기·내보내기 도구가 아직 설치되지 않았습니다."
     : "설치 상태를 확인하는 중…";
   return (
