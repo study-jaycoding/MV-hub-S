@@ -4,7 +4,8 @@ import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 export interface FolderTreeItem {
   name: string;
   path: string;
-  count?: number | null;
+  count?: number | null; // 이 폴더(하위 포함)의 카탈로그 생성물 수. null = 아직 조회 전
+  fileCount?: number | null; // 폴더 안 실제 파일 수(디스크). count 와 다를 때만 흐리게 덧붙는다
   newCount?: number | null; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
   children?: FolderTreeItem[];
   virtual?: boolean; // 디스크에 없는 논리 폴더(팀 데이터의 folder_path로 합성) — 표식만 다르게
@@ -92,6 +93,10 @@ function FolderTreeRow({
   const selected = selectedPath === node.path;
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
+  // 폴더의 실제 파일 수. 생성물 수와 다를 때만 흐리게 덧붙인다 — 두 값이 같은 폴더(대부분)는
+  // 숫자 하나만 남아 지금과 똑같이 보이고, 어긋난 폴더만 눈에 띈다.
+  const fileCount = node.fileCount ?? null;
+  const showFileCount = fileCount !== null && fileCount !== count;
   const [dropOver, setDropOver] = useState(false);
   const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
@@ -180,9 +185,22 @@ function FolderTreeRow({
             +{node.newCount}
           </span>
         )}
-        <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
-          {count > 0 ? count : "-"}
-        </span>
+        {node.count !== null && (
+          <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
+            {count > 0 ? count : "-"}
+          </span>
+        )}
+        {showFileCount && (
+          <span
+            className="folder-tree-filecount"
+            title={
+              `생성물 ${count}개 · 폴더 파일 ${fileCount}개` +
+              (fileCount! > count ? " — 파일이 더 많으면 앱 밖에서 들어온 것입니다" : "")
+            }
+          >
+            {fileCount}
+          </span>
+        )}
       </button>
       {hasChildren &&
         open &&

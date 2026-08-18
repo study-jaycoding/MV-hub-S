@@ -1,7 +1,10 @@
 export interface FolderCountTreeNode {
   name: string;
   path: string;
+  /** 이 폴더(하위 포함)에 담긴 카탈로그 생성물 수. 백엔드 트리에서는 디스크 파일 수로 들어온다. */
   count?: number | null;
+  /** 디스크에 실제로 있는 파일 수. 생성물 수로 덮어쓰기 전의 원래 값을 보존한 것. */
+  fileCount?: number | null;
   newCount?: number | null;
   children?: FolderCountTreeNode[];
   virtual?: boolean;
@@ -113,6 +116,10 @@ function overlayFolderCounts(
   return nodes.map((node) => ({
     ...node,
     count: counts[node.path] || 0,
+    // 들어온 count 는 디스크 파일 수다(백엔드 폴더 스캔). 생성물 수로 덮기 전에 보존해,
+    // '폴더엔 파일이 있는데 카탈로그엔 없다'를 화면에서 구분할 수 있게 한다.
+    // 가상 폴더(디스크에 없는 folder_path)는 파일이 없으므로 0.
+    fileCount: node.virtual ? 0 : node.count ?? 0,
     newCount: newCounts?.[node.path] || 0,
     children: node.children
       ? overlayFolderCounts(node.children, counts, newCounts)
@@ -126,14 +133,26 @@ function overlayFolderCounts(
  * The previous component implementation scanned every count key for every node
  * (O(nodes × paths)).  This builds parent totals once, then performs O(1) lookups per node.
  */
+function diskOnly(nodes: FolderCountTreeNode[]): FolderCountTreeNode[] {
+  // 생성물 수를 아직 모르는 상태(조회 전). 디스크 파일 수만 알려주고 생성물 수는 비워 둔다 —
+  // 여기서 파일 수를 생성물 수인 척 보여주면, 데이터가 도착하는 순간 숫자가 뒤집혀 보인다.
+  return nodes.map((node) => ({
+    ...node,
+    count: null,
+    fileCount: node.count ?? 0,
+    children: node.children ? diskOnly(node.children) : node.children,
+  }));
+}
+
 export function buildFolderCountTree(
   roots: FolderCountTreeNode[],
   counts?: Record<string, number>,
   newCounts?: Record<string, number>,
 ): FolderCountTreeNode[] {
-  if (!counts) return roots;
+  if (!counts) return diskOnly(roots);
+  // counts 가 비어 있어도(이 워크스페이스에 생성물 0건) 덮어쓴다 — 예전에는 디스크 파일 수를
+  // 그대로 뒀는데, 그러면 같은 자리 숫자가 '생성물 수'와 '파일 수' 사이를 오갔다.
   const normalizedCounts = normalizeFolderCounts(counts);
-  if (!Object.keys(normalizedCounts).length) return roots;
   const normalizedNewCounts = newCounts ? normalizeFolderCounts(newCounts) : undefined;
   const withVirtualFolders = mergeVirtualFolders(roots, normalizedCounts);
   return overlayFolderCounts(

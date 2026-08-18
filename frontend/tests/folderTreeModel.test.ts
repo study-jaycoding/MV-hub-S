@@ -86,11 +86,48 @@ describe("프로젝트 폴더 카운트 트리", () => {
     expect(find(tree, "__proto__")?.count).toBe(3);
   });
 
-  it("개수 데이터가 없으면 디스크 트리 참조를 그대로 재사용한다", () => {
-    const roots: FolderCountTreeNode[] = [{ name: "ep001", path: "ep001", children: [] }];
+  it("조회 전에는 생성물 수를 비워 두고 파일 수만 알려준다", () => {
+    // 파일 수를 생성물 수인 척 보여주면, 데이터가 도착하는 순간 숫자가 뒤집혀 보인다.
+    const roots: FolderCountTreeNode[] = [{ name: "ep001", path: "ep001", count: 229, children: [] }];
 
-    expect(buildFolderCountTree(roots)).toBe(roots);
-    expect(buildFolderCountTree(roots, {})).toBe(roots);
+    const tree = buildFolderCountTree(roots);
+
+    expect(find(tree, "ep001")?.count).toBeNull();
+    expect(find(tree, "ep001")?.fileCount).toBe(229);
+  });
+
+  it("이 워크스페이스에 생성물이 0건이어도 파일 수로 대신 채우지 않는다", () => {
+    // 예전에는 counts 가 비면 디스크 파일 수를 그대로 뒀다 — 같은 자리 숫자가 '생성물 수'와
+    // '파일 수' 사이를 오가 "폴더엔 224개인데 목록은 0건"으로 보였다.
+    const roots: FolderCountTreeNode[] = [{ name: "e003", path: "e003", count: 229, children: [] }];
+
+    const tree = buildFolderCountTree(roots, {});
+
+    expect(find(tree, "e003")?.count).toBe(0);
+    expect(find(tree, "e003")?.fileCount).toBe(229);
+  });
+
+  it("생성물 수로 덮어써도 디스크 파일 수는 보존한다", () => {
+    const roots: FolderCountTreeNode[] = [
+      {
+        name: "e001", path: "e001", count: 5,
+        children: [{ name: "c0010", path: "e001/c0010", count: 1, children: [] }],
+      },
+    ];
+
+    const tree = buildFolderCountTree(roots, { "e001/c0010": 1 });
+
+    expect(find(tree, "e001")?.count).toBe(1);       // 생성물(하위 누적)
+    expect(find(tree, "e001")?.fileCount).toBe(5);   // 디스크 파일
+    expect(find(tree, "e001/c0010")?.count).toBe(1);
+    expect(find(tree, "e001/c0010")?.fileCount).toBe(1);
+  });
+
+  it("디스크에 없는 가상 폴더는 파일 수가 0이다", () => {
+    const tree = buildFolderCountTree([], { "ep002/new": 5 });
+
+    expect(find(tree, "ep002/new")?.virtual).toBe(true);
+    expect(find(tree, "ep002/new")?.fileCount).toBe(0);
   });
 
   it("스크롤 임계값은 깊은 트리를 재귀 없이 판정한다", () => {
