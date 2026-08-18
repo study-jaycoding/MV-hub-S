@@ -169,7 +169,7 @@
 | 2026-08-19 100명 저사양 60초×2회 | 실제 CPU affinity `[0,1]`·below-normal, 합계 23,025건 전부 200, 2회차 189.56 RPS·p95 44.40ms·p99 131.84ms, WS/롱폴 각 100, 오류·SQLite lock 0, RSS 증가 1.62% |
 | 2026-08-19 Comfy HTTP 경계 실측 | 격리 백엔드에서 3건 제출·성공 2·의도한 실패 1, 최대 병렬 2, 결과 PNG 다운로드, 실패 prompt 정밀 삭제, 전체 interrupt·TEMP·in-flight 잔재 0 |
 | 2026-08-19 Resolve 실제 가져오기·내보내기 | Studio 20.3.2, Importer 0.1.1·Exporter 0.6.2, `c0010,c0015` 자연 정렬·중복 1건 차단·Render All 2건·출력/폴더/정리/원래 프로젝트 복원 통과 |
-| 2026-08-19 로컬 사전 릴리즈 | `MVHub-2026.08.19-predeploy.zip` 79,747,998바이트, SHA-256 `2189fca1f92e309c209f68be82f6ff49ebdf894d32eda5e6563f143d389d73ae`, Python·Node·백엔드·프론트 포함 확인, 게시 생략 |
+| 2026-08-19 최신 dev 로컬 릴리즈 | `MVHub-2026.08.19-adversarial-219469df.zip` 77,877,800바이트, SHA-256 `a57c5505a9fffff2dc3aefc4a2637ca4d94c431f79bc29f1522a76bca974cb93`, Python 3.14.3·Node·CLI 1.1.23·백엔드·프론트 허용 구조 검증. 한글·공백 빈 폴더 첫 설치, content/trash/manage ready, 정적 화면 200·로그인 화면 오류 0, 실행 중 설치본만 종료한 동일 버전 손상 복구, `backend/data` 보존, 복구 뒤 재기동, 3.75초 무변경 재확인 통과. 서버 게시 생략 |
 | 2026-08-18 외부 도구 릴리즈 검증 | `2026.08.18-connection-status-audit` 로컬 패키지 생성(SHA-256 `2f36422901e259d70047f1edc8e656eb5393fdf054cc816cb56a39eb5d1bc20e`), Python 3.14.3·CLI 1.1.23·허용 구조 검증, 빈 폴더 설치·content/trash/manage ready·정적 화면 200·CLI health 통과, 서버 게시 생략 |
 | 업데이트 경로 테스트 | RL-25 직접 대상 4개, 백엔드 관련 40개·프론트 3개 통과 |
 | RL-05 대상 테스트 | 백엔드 98개, 프론트 2개 파일·3개 통과 |
