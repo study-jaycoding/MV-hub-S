@@ -150,6 +150,18 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     expect(addedKeys(puts()[1])).toEqual(["c1:g1"]);
   });
 
+  it("서버 읽기 성공 시 화면에 합치라고 알린다(빈 응답이면 안 알림)", async () => {
+    getLinks = () =>
+      Promise.resolve({ items: [{ scene_id: "s1", card_id: "c1", generation_id: "g1", removed_at: null }] });
+    const { scenes, links } = await boot();
+    scenes.saveScenes(null, [sceneWith("s1", "c1", [])]);
+    let notified = 0;
+    links.subscribeCardLinksLoaded(() => (notified += 1));
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(notified).toBe(1);
+  });
+
   it("여러 씬·여러 카드를 한 번에 모은다", async () => {
     const { scenes, links } = await boot();
     scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1"]), sceneWith("s2", "c2", ["g2"])]);
@@ -157,5 +169,77 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     await vi.advanceTimersByTimeAsync(2500);
     const body = putBody(puts()[0]);
     expect(body.added.map((a: { scene_id: string }) => a.scene_id)).toEqual(["s1", "s2"]);
+  });
+});
+
+// ── 합치기(2단계) — 순수 함수라 타이머·fetch 없이 검사 ─────────────────
+describe("mergeCardLinksIntoScenes (씬 열 때 합치기)", () => {
+  type Card = { id: string; kind: string; genId?: string | null; genIds?: string[] };
+  const scene = (id: string, cards: Card[]) => ({ id, cards });
+  const link = (s: string, c: string, g: string, removed_at: string | null = null) => ({
+    scene_id: s,
+    card_id: c,
+    generation_id: g,
+    removed_at,
+  });
+  let merge: typeof import("../src/lib/sceneCardLinks").mergeCardLinksIntoScenes;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    merge = (await import("../src/lib/sceneCardLinks")).mergeCardLinksIntoScenes;
+  });
+
+  it("서버에만 있는 생성물이 카드에 더해진다(다른 브라우저에서 담은 것)", () => {
+    const out = merge(
+      [scene("s1", [{ id: "c1", kind: "generation", genIds: ["g1"] }])],
+      [link("s1", "c1", "g1"), link("s1", "c1", "g2")],
+    );
+    expect(out?.[0].cards[0].genIds).toEqual(["g1", "g2"]);
+  });
+
+  it("서버가 뺐다고 표시한 생성물은 카드에서 빠진다", () => {
+    const out = merge(
+      [scene("s1", [{ id: "c1", kind: "generation", genIds: ["g1", "g2"] }])],
+      [link("s1", "c1", "g2", "2026-08-18 00:00:00")],
+    );
+    expect(out?.[0].cards[0].genIds).toEqual(["g1"]);
+  });
+
+  it("★바뀐 게 없으면 null — 저장→알림→합치기 고리를 끊는다", () => {
+    expect(
+      merge([scene("s1", [{ id: "c1", kind: "generation", genIds: ["g1"] }])], [link("s1", "c1", "g1")]),
+    ).toBeNull();
+    expect(merge([scene("s1", [{ id: "c1", kind: "generation", genIds: [] }])], [])).toBeNull();
+  });
+
+  it("서버에만 있는 카드 번호는 무시한다(카드는 씬이 소유)", () => {
+    expect(
+      merge(
+        [scene("s1", [{ id: "c1", kind: "generation", genIds: ["g1"] }])],
+        [link("s1", "c1", "g1"), link("s1", "cGhost", "g9")],
+      ),
+    ).toBeNull();
+  });
+
+  it("대표가 빠지면 남은 것 중 마지막으로 옮긴다(빈 카드로 보이지 않게)", () => {
+    const out = merge(
+      [scene("s1", [{ id: "c1", kind: "generation", genId: "g2", genIds: ["g1", "g2"] }])],
+      [link("s1", "c1", "g2", "2026-08-18 00:00:00")],
+    );
+    expect(out?.[0].cards[0].genId).toBe("g1");
+    expect(out?.[0].cards[0].genIds).toEqual(["g1"]);
+  });
+
+  it("결과가 쌓이지 않는 카드는 건드리지 않는다", () => {
+    expect(merge([scene("s1", [{ id: "c1", kind: "text" }])], [link("s1", "c1", "g1")])).toBeNull();
+  });
+
+  it("안 바뀐 씬은 원래 객체를 그대로 둔다(불필요한 재렌더 방지)", () => {
+    const keep = scene("s2", [{ id: "c2", kind: "generation", genIds: ["gx"] }]);
+    const out = merge(
+      [scene("s1", [{ id: "c1", kind: "generation", genIds: [] }]), keep],
+      [link("s1", "c1", "g1")],
+    );
+    expect(out?.[1]).toBe(keep);
   });
 });

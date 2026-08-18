@@ -11,11 +11,17 @@ import {
   importScene,
   listScenes,
   setActiveSceneId as persistActiveScene,
+  saveScenes,
   updateScene,
 } from "./scenes";
 import { clearSceneHistory } from "./sceneUndoStore";
 import { initSceneBackup, subscribeSceneRestore } from "./sceneBackup";
-import { initSceneCardLinks } from "./sceneCardLinks";
+import {
+  initSceneCardLinks,
+  mergeCardLinksIntoScenes,
+  serverCardLinks,
+  subscribeCardLinksLoaded,
+} from "./sceneCardLinks";
 import { STORAGE_KEYS } from "./storageKeys";
 import type { Generation } from "../types";
 
@@ -66,10 +72,21 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     });
     // ★순서: 씬 복구 판정(initSceneBackup)이 먼저다. 카드 소속 백필이 앞서면 아직 복구 안 된
     //  빈 로컬을 기준으로 "올릴 게 없다"고 판단한다(멱등이라 사고는 아니지만 한 사이클 헛돈다).
+    // 카드 소속 합치기 — DB 가 아는 소속을 화면 씬에 반영한다(다른 브라우저에서 담은 결과가 보이게).
+    //  바뀐 게 없으면 merge 가 null 을 주므로 저장→알림 고리가 돌지 않는다.
+    const unsubscribeLinks = subscribeCardLinksLoaded(() => {
+      const merged = mergeCardLinksIntoScenes(listScenes(null), serverCardLinks());
+      if (!merged) return;
+      saveScenes(null, merged);
+      setScenes(merged);
+    });
     void initSceneBackup()
       .catch(() => false)
       .then(() => initSceneCardLinks());
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      unsubscribeLinks();
+    };
   }, []);
   const lastNotifyRef = useRef(0);
   useEffect(() => {

@@ -85,6 +85,7 @@ function ensureLoaded(scope: string): Promise<boolean> {
     if (ns() !== scope) return false; // 계정 전환 중 응답 — 폐기
     serverLinks = items;
     known = new Set(items.map(keyOf)); // ★뺀 표시가 된 것도 넣는다(백필이 되살리지 않게)
+    if (items.length) loadedSubs.forEach((fn) => fn()); // 화면이 합치기를 돌리게
     return true;
   })();
   loadPromise = p;
@@ -94,9 +95,66 @@ function ensureLoaded(scope: string): Promise<boolean> {
   return p;
 }
 
-/** 마지막으로 읽은 서버 소속(2단계 합치기용). 아직 못 읽었으면 빈 배열. */
+/** 마지막으로 읽은 서버 소속(합치기용). 아직 못 읽었으면 빈 배열. */
 export function serverCardLinks(sceneId?: string): CardLink[] {
   return sceneId ? serverLinks.filter((l) => l.scene_id === sceneId) : serverLinks;
+}
+
+// 서버 소속을 처음 읽었을 때 알림 — 화면(useSceneCoordination)이 그때 합치기를 돌린다.
+const loadedSubs = new Set<() => void>();
+export function subscribeCardLinksLoaded(fn: () => void): () => void {
+  loadedSubs.add(fn);
+  return () => loadedSubs.delete(fn);
+}
+
+/**
+ * 서버가 아는 소속을 씬에 합친다 — 다른 브라우저에서 담은 결과가 이 브라우저에도 보이게.
+ *
+ *   카드의 생성물 = (로컬에 있는 것 ∪ 서버에 있는 것) − (서버가 뺐다고 한 것)
+ *
+ * 바뀐 게 없으면 null 을 돌려준다(그대로 저장하면 저장→알림→합치기 고리가 돈다).
+ * 서버에만 있는 카드 번호는 무시한다 — 카드 자체(위치·크기)는 씬이 소유하므로 여기서 못 만든다.
+ * 변경 없으면 원본 배열·객체를 그대로 재사용한다(React 참조 비교로 불필요한 재렌더 방지).
+ */
+export function mergeCardLinksIntoScenes<
+  S extends { id: string; cards: { id: string; kind: string; genId?: string | null; genIds?: string[] }[] },
+>(scenes: S[], links: CardLink[]): S[] | null {
+  if (!links.length) return null;
+  const byCard = new Map<string, CardLink[]>();
+  for (const link of links) {
+    const key = `${link.scene_id}|${link.card_id}`;
+    const list = byCard.get(key);
+    if (list) list.push(link);
+    else byCard.set(key, [link]);
+  }
+  let touched = false;
+  const next = scenes.map((scene) => {
+    let sceneTouched = false;
+    const cards = scene.cards.map((card) => {
+      // 결과가 쌓이는 카드만 — 다른 종류에 소속이 끼면 화면 규칙이 깨진다.
+      if (card.kind !== "generation" && card.kind !== "comfy") return card;
+      const mine = byCard.get(`${scene.id}|${card.id}`);
+      if (!mine?.length) return card;
+      const removed = new Set(mine.filter((l) => l.removed_at).map((l) => l.generation_id));
+      const local = variantIds(card);
+      const merged = local.filter((id) => !removed.has(id));
+      for (const link of mine) {
+        if (!link.removed_at && !merged.includes(link.generation_id)) merged.push(link.generation_id);
+      }
+      const sameOrder =
+        merged.length === local.length && merged.every((id, i) => id === local[i]);
+      if (sameOrder) return card;
+      sceneTouched = true;
+      // 대표가 빠졌으면 남은 것 중 마지막(가장 최근에 담긴 것)으로 — 빈 카드로 보이지 않게.
+      const genId =
+        card.genId && !removed.has(card.genId) ? card.genId : merged[merged.length - 1] ?? null;
+      return { ...card, genIds: merged, genId };
+    });
+    if (!sceneTouched) return scene;
+    touched = true;
+    return { ...scene, cards };
+  });
+  return touched ? next : null;
 }
 
 async function send(added: CardLink[], removed: CardLink[]): Promise<void> {
