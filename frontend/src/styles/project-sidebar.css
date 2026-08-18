@@ -168,11 +168,9 @@
 .folder-tree.sidebar-folder-tree:has(.folder-tree-row.selected)
   .folder-tree-row:not(.selected)
   .folder-tree-icon {
-  /* 비활성(d 토글) 폴더의 아이콘과 같은 회색 — 색이 남아 있으면 '고른 것'과 헷갈린다.
-     비활성 폴더는 취소선과 행 전체 투명도로 여전히 구분된다(취소선은 비활성 전용). */
-  filter: grayscale(1);
-  opacity: 0.65;
-  transition: filter 0.12s ease, opacity 0.12s ease;
+  /* 색은 그대로 두고 투명도만 낮춘다 — 고른 폴더가 또렷하고 나머지는 뒤로 물러난다. */
+  opacity: 0.5;
+  transition: opacity 0.12s ease;
 }
 /* 고른 폴더의 상위 폴더 — 원래 색 유지(뒤 규칙이라 위 회색 처리를 덮는다). */
 .folder-tree.sidebar-folder-tree
