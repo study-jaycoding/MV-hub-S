@@ -194,6 +194,89 @@ class GenerationReadRouteTests(unittest.TestCase):
             self.assertEqual(generation["workspace_scope"], "personal")
             self.assertIsNone(generation["workspace_id"])
 
+    def test_workspace_command_uses_exact_id_when_names_are_duplicated(self):
+        from app import db, repo
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO workspace_registry(id,name) VALUES('ws-teatime-other','티타임')"
+            )
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1"],
+                "operation": "assign",
+                "workspace_id": "ws-teatime-other",
+                "workspace_name": "티타임",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["workspace"]["id"], "ws-teatime-other")
+        self.assertEqual(repo.get_generation("loc1")["workspace_id"], "ws-teatime-other")
+
+    def test_workspace_command_rejects_unavailable_id_without_falling_back_to_name(self):
+        from app import repo
+
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1"],
+                "operation": "assign",
+                "workspace_id": "ws-not-available",
+                "workspace_name": "티타임",
+            },
+        )
+
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertIn("접근 가능한", response.json()["detail"])
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+
+    def test_workspace_command_keeps_legacy_name_ambiguity_safe(self):
+        from app import db, repo
+
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO workspace_registry(id,name) VALUES('ws-teatime-other','티타임')"
+            )
+        response = self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": ["loc1"],
+                "operation": "assign",
+                "workspace_name": "티타임",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("여러 개", response.json()["detail"])
+        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+
+    def test_workspace_resolve_proxy_rejects_different_id_from_legacy_server(self):
+        from app.routers import generation
+
+        with (
+            patch.object(generation._proxy, "proxying", return_value=True),
+            patch.object(
+                generation._proxy,
+                "proxy_json",
+                return_value={"id": "ws-name-match-but-different", "name": "티타임"},
+            ),
+        ):
+            response = self.client.get(
+                "/api/workspaces/resolve",
+                params={"workspace_id": "ws-teatime", "name": "티타임"},
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("서버를 먼저 업데이트", response.json()["detail"])
+
+    def test_workspace_resolve_requires_id_or_name(self):
+        response = self.client.get("/api/workspaces/resolve")
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("워크스페이스를 선택", response.json()["detail"])
+
     def test_available_workspaces_lists_registered_names_for_picker(self):
         response = self.client.get("/api/workspaces/available")
 

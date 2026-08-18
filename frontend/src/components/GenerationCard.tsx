@@ -28,7 +28,7 @@ import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay"
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
-import type { WorkspaceCommandOperation } from "../lib/workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
   gen: Generation;
@@ -73,7 +73,7 @@ interface Props {
   onWorkspaceCommand?: (
     g: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>;
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
   fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)

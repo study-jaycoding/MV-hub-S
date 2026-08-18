@@ -10,6 +10,7 @@ import {
 import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
+import { workspaceCommandLabels } from "../lib/workspaceCommand";
 import {
   formatTelemetryLastSuccess,
   latestSyncSuccess,
@@ -145,6 +146,11 @@ export function AccountMenu({
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
+  const workspaceLabels = workspaceCommandLabels(
+    wsList.flatMap((workspace) => workspace.name
+      ? [{ id: workspace.id, name: workspace.name }]
+      : []),
+  );
   const current = wsList.find((w) => w.is_selected); // CLI 가 실제로 물고 있는 공간(플랜 라벨용)
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
   // 하단 상태줄(useAccountStatus)도 같은 규칙을 쓴다 — 두 곳의 숫자가 어긋나지 않게.
@@ -300,7 +306,7 @@ export function AccountMenu({
               const inner = (
                 <span className="acct-item-main">
                   <span className="acct-item-name">
-                    {isPersonal ? displayName : w.name}
+                    {isPersonal ? displayName : workspaceLabels.get(w.id) ?? w.name}
                   </span>
                   <span className="acct-item-meta">
                     {isPersonal ? t("개인 · ") : ""}

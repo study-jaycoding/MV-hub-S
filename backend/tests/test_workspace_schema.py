@@ -357,6 +357,28 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         with self.assertRaises(repo.WorkspaceNameAmbiguous):
             repo.resolve_workspace_name("teatime")
 
+    def test_workspace_id_resolution_selects_duplicate_name_exactly(self):
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-a','TeaTime')")
+            conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-b','TeaTime')")
+            conn.execute(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES('ws-b','artist@example.com',1)"
+            )
+
+        self.assertEqual(
+            repo.resolve_workspace_id("ws-b"),
+            {"id": "ws-b", "name": "TeaTime"},
+        )
+        with self.assertRaises(repo.WorkspaceNameNotFound):
+            repo.resolve_workspace_id("ws-missing")
+        self.assertEqual(
+            repo.resolve_workspace_id("ws-b", account_email="artist@example.com"),
+            {"id": "ws-b", "name": "TeaTime"},
+        )
+        with self.assertRaises(repo.WorkspaceNameNotFound):
+            repo.resolve_workspace_id("ws-b", account_email="viewer@example.com")
+
     def test_synced_unknown_can_be_filled_but_known_context_cannot_be_overwritten(self):
         parsed = {
             "generation": {

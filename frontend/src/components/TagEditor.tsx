@@ -7,11 +7,13 @@
 // 일괄 추가/부여가 낙관 반영되면 즉시 같이 갱신된다('모두 같이 보이게').
 // 칩·전역칩 버튼은 onMouseDown preventDefault 로 포커스 입력의 blur(닫힘)를 막아, 다른 카드의 칩을
 // 눌러도 편집 세션이 끊기지 않는다.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import {
   parseWorkspacePickerCommand,
   type WorkspaceCommandOperation,
+  type WorkspaceCommandTarget,
+  workspaceCommandLabels,
 } from "../lib/workspaceCommand";
 
 export interface TagEditorGlobal {
@@ -31,6 +33,7 @@ export function TagEditor({
   global = null,
   onGlobalModeChange,
   onWorkspaceCommand,
+  currentWorkspaceId,
   currentWorkspaceName,
   showInput = true,
   forcedGlobalMode,
@@ -46,8 +49,9 @@ export function TagEditor({
   onGlobalModeChange?: (on: boolean) => void; // 전역 모드 토글을 부모로 보고(다른 선택 카드 표시 동기화)
   onWorkspaceCommand?: (
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>; // ## 모드의 #+ 적용/#- 제거 선택. 태그 저장과 완전히 분리.
+  currentWorkspaceId?: string | null; // 이름은 중복될 수 있으므로 현재 귀속은 UUID로 판정.
   currentWorkspaceName?: string | null; // 포커스 카드의 현재 귀속 — 목록에서 활성 칩 표시.
   showInput?: boolean; // false = 비포커스 선택 카드(입력 없음)
   forcedGlobalMode?: boolean; // 비포커스 카드: 전역 picker 표시를 포커스 카드 모드에 맞춤
@@ -62,6 +66,13 @@ export function TagEditor({
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [workspaceOptions, setWorkspaceOptions] = useState<{ id: string; name: string }[]>([]);
   const [workspaceOptionsLoading, setWorkspaceOptionsLoading] = useState(false);
+  const workspaceLabels = useMemo(
+    () => workspaceCommandLabels(workspaceOptions),
+    [workspaceOptions],
+  );
+  const currentWorkspaceNameMatches = currentWorkspaceName
+    ? workspaceOptions.filter((workspace) => workspace.name === currentWorkspaceName)
+    : [];
   const multi = selectedCount > 1;
   const globalMode = forcedGlobalMode !== undefined ? forcedGlobalMode : internalGlobalMode;
   const workspacePicker = parseWorkspacePickerCommand(draft, globalMode);
@@ -104,7 +115,7 @@ export function TagEditor({
   };
   const applyWorkspaceCommand = async (
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ): Promise<boolean> => {
     if (!onWorkspaceCommand) {
       setWorkspaceError("이 화면에서는 워크스페이스를 변경할 수 없습니다");
@@ -113,7 +124,7 @@ export function TagEditor({
     setWorkspaceBusy(true);
     setWorkspaceError(null);
     try {
-      const ok = await onWorkspaceCommand(operation, workspaceName);
+      const ok = await onWorkspaceCommand(operation, workspace);
       if (ok) setDraft("");
       return ok;
     } finally {
@@ -241,23 +252,27 @@ export function TagEditor({
             <span className="te-empty">등록된 워크스페이스가 없습니다</span>
           ) : (
             workspaceOptions.map((workspace) => {
-              const current = workspace.name === currentWorkspaceName;
+              const current = currentWorkspaceId
+                ? workspace.id === currentWorkspaceId
+                : currentWorkspaceNameMatches.length === 1
+                  && workspace.name === currentWorkspaceName;
               const sign = workspacePicker.operation === "assign" ? "+" : "−";
+              const label = workspaceLabels.get(workspace.id) ?? workspace.name;
               return (
                 <button
                   key={workspace.id}
                   className={"te-gchip te-wchip" + (current ? " on" : "")}
                   onMouseDown={keepFocus}
                   onClick={() => {
-                    void applyWorkspaceCommand(workspacePicker.operation, workspace.name);
+                    void applyWorkspaceCommand(workspacePicker.operation, workspace);
                   }}
                   disabled={workspaceBusy}
                   role="option"
                   aria-selected={current}
-                  title={`${workspace.name} 워크스페이스 ${workspacePicker.operation === "assign" ? "적용" : "제거"}`}
+                  title={`${label} 워크스페이스 ${workspacePicker.operation === "assign" ? "적용" : "제거"}`}
                 >
                   <span className="te-wsign">{sign}</span>
-                  {workspace.name}
+                  {label}
                 </button>
               );
             })

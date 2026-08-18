@@ -1,6 +1,6 @@
 import type { Generation } from "../../types";
 import { TagEditor } from "../TagEditor";
-import type { WorkspaceCommandOperation } from "../../lib/workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../../lib/workspaceCommand";
 
 interface Props {
   gen: Generation;
@@ -22,7 +22,7 @@ interface Props {
   onWorkspaceCommand?: (
     generation: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>;
   onEditDone: () => void;
 }
@@ -62,9 +62,10 @@ export function GenerationCardStatusBar({
           onBulkRemove={(names) => onBulkRemoveTags?.(gen, names)}
           selectedCount={selectedCount}
           onGlobalModeChange={onGlobalModeChange}
-          onWorkspaceCommand={(operation, workspaceName) =>
-            onWorkspaceCommand?.(gen, operation, workspaceName) ?? Promise.resolve(false)
+          onWorkspaceCommand={(operation, workspace) =>
+            onWorkspaceCommand?.(gen, operation, workspace) ?? Promise.resolve(false)
           }
+          currentWorkspaceId={gen.workspace_id}
           currentWorkspaceName={gen.workspace_name}
           global={
             onSetAutoTags

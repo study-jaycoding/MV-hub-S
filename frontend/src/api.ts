@@ -496,7 +496,7 @@ export const api = {
   setGenerationWorkspace: (
     generationIds: string[],
     operation: "assign" | "remove",
-    workspaceName: string,
+    workspace: { id: string; name: string },
   ) => {
     if (generationIds.length > 500) {
       return Promise.reject(new Error("한 번에 최대 500개 생성물까지 변경할 수 있습니다"));
@@ -506,7 +506,8 @@ export const api = {
       body: jsonBody({
         generation_ids: generationIds,
         operation,
-        workspace_name: workspaceName,
+        workspace_id: workspace.id,
+        workspace_name: workspace.name,
       }),
     }).then((result) => ({
       ...result,

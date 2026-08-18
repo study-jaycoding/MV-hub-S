@@ -19,6 +19,7 @@ import {
   type OutputModelUsage,
 } from "../../lib/usageReport";
 import { paginateUsageItems, USAGE_PAGE_SIZES } from "../../lib/usagePagination";
+import { workspaceCommandLabels } from "../../lib/workspaceCommand";
 import {
   fillUsageTrendBuckets,
   formatUsageTrendBucket,
@@ -539,6 +540,7 @@ export function WorkspaceUsageDashboard({
   const maxModelCredits = Math.max(1, ...scopedModels.map((row) => row.credits));
   const totals = overview?.totals;
   const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
+  const workspaceLabels = workspaceCommandLabels(workspaces);
   const paginationScope = baseScopeKey;
   const detailPaginationScope = drillDisplayKey || baseScopeKey;
   const memberPage = useUsagePagination(overview?.by_worker || [], paginationScope);
@@ -625,7 +627,9 @@ export function WorkspaceUsageDashboard({
                 <option value={workspaceId}>선택 워크스페이스 ({workspaceId.slice(0, 8)})</option>
               ) : null}
               {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+                <option key={workspace.id} value={workspace.id}>
+                  {workspaceLabels.get(workspace.id) ?? workspace.name}
+                </option>
               ))}
             </select>
             <p>{selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간</p>

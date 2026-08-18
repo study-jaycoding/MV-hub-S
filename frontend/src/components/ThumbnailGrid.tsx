@@ -24,7 +24,7 @@ import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
 import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
-import type { WorkspaceCommandOperation } from "../lib/workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
   generations: Generation[];
@@ -49,7 +49,7 @@ interface Props {
   onWorkspaceCommand?: (
     g: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>;
   onBulkGradeStep?: (mode: GradeMode) => void; // 다중선택 시 S(단일/더블)를 선택 전체에 등급 규칙 적용
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
@@ -178,8 +178,8 @@ export function ThumbnailGrid(props: Props) {
         propsRef.current.onBulkAddAutoTags?.(g, names),
       onBulkRemoveAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onBulkRemoveAutoTags?.(g, names),
-      onWorkspaceCommand: (g: Generation, operation: WorkspaceCommandOperation, workspaceName: string) =>
-        propsRef.current.onWorkspaceCommand?.(g, operation, workspaceName) ?? Promise.resolve(false),
+      onWorkspaceCommand: (g: Generation, operation: WorkspaceCommandOperation, workspace: WorkspaceCommandTarget) =>
+        propsRef.current.onWorkspaceCommand?.(g, operation, workspace) ?? Promise.resolve(false),
       onBulkGradeStep: (mode: GradeMode) => propsRef.current.onBulkGradeStep?.(mode),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
       onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),

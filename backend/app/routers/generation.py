@@ -159,20 +159,50 @@ def _workspace_account_email(request: Request) -> str | None:
     return None
 
 
-def _resolve_workspace_target(name: str, request: Request) -> dict[str, str]:
-    """로컬 프록시는 로그인된 본 서버의 목록을, 그 외에는 현재 DB 등록부를 사용한다."""
+def _resolve_workspace_target(
+    request: Request,
+    *,
+    workspace_id: str | None = None,
+    workspace_name: str | None = None,
+) -> dict[str, str]:
+    """UUID를 우선 사용해 현재 계정이 접근 가능한 실제 워크스페이스를 확인한다.
+
+    이름만 보내는 구버전 화면은 계속 지원하되, 동명 워크스페이스를 안전하게 구분할 수 있는
+    새 화면의 UUID를 절대 다시 이름 검색으로 약화하지 않는다.
+    """
+    cleaned_id = str(workspace_id or "").strip()
+    cleaned_name = str(workspace_name or "").strip()
+    if not cleaned_id and not cleaned_name:
+        raise HTTPException(status_code=422, detail="워크스페이스를 선택하세요")
     if _proxy.proxying():
+        if cleaned_id:
+            query = f"workspace_id={quote(cleaned_id, safe='')}"
+            # 구서버는 workspace_id 쿼리를 무시하고 name 필수 계약만 검사한다. 표시명도 함께
+            # 보내면 고유 이름은 롤링 업데이트 중에도 동작하고, 중복 이름은 안전하게 거절된다.
+            if cleaned_name:
+                query += f"&name={quote(cleaned_name, safe='')}"
+        else:
+            query = f"name={quote(cleaned_name, safe='')}"
         result = _proxy.proxy_json(
-            "GET", f"/api/workspaces/resolve?name={quote(name, safe='')}", timeout=15
+            "GET", f"/api/workspaces/resolve?{query}", timeout=15
         )
         if not isinstance(result, dict) or not result.get("id") or not result.get("name"):
             raise HTTPException(status_code=502, detail="서버의 워크스페이스 확인 응답이 올바르지 않습니다")
-        return {"id": str(result["id"]), "name": str(result["name"])}
+        resolved_id = str(result["id"])
+        if cleaned_id and resolved_id != cleaned_id:
+            # 롤링 업데이트 중인 구서버는 workspace_id 쿼리를 무시하고 같은 표시명만
+            # 해석할 수 있다. 이때 다른 UUID가 돌아오면 선택하지 않은 공간으로 배정하지
+            # 말고 서버 업데이트를 요구하는 쪽이 안전하다.
+            raise HTTPException(
+                status_code=409,
+                detail="선택한 워크스페이스와 서버의 확인 결과가 다릅니다. 서버를 먼저 업데이트하세요",
+            )
+        return {"id": resolved_id, "name": str(result["name"])}
     try:
-        return repo.resolve_workspace_name(
-            name,
-            account_email=_workspace_account_email(request),
-        )
+        account_email = _workspace_account_email(request)
+        if cleaned_id:
+            return repo.resolve_workspace_id(cleaned_id, account_email=account_email)
+        return repo.resolve_workspace_name(cleaned_name, account_email=account_email)
     except repo.WorkspaceNameNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except repo.WorkspaceNameAmbiguous as exc:
@@ -205,10 +235,15 @@ def available_workspaces(request: Request):
 @router.get("/workspaces/resolve")
 def resolve_workspace_by_name(
     request: Request,
-    name: str = Query(..., min_length=1, max_length=200),
+    name: str | None = Query(default=None, min_length=1, max_length=200),
+    workspace_id: str | None = Query(default=None, min_length=1, max_length=200),
 ):
-    """입력한 표시명이 현재 계정이 접근 가능한 실제 팀 워크스페이스인지 확인한다."""
-    return _resolve_workspace_target(name, request)
+    """UUID(우선) 또는 구버전 표시명이 현재 계정에서 사용 가능한지 확인한다."""
+    return _resolve_workspace_target(
+        request,
+        workspace_id=workspace_id,
+        workspace_name=name,
+    )
 
 
 class WorkspaceSelectIn(BaseModel):
@@ -441,7 +476,8 @@ class GenerationTagsBatchIn(BaseModel):
 class GenerationWorkspaceBatchIn(BaseModel):
     generation_ids: list[str] = Field(min_length=1, max_length=500)
     operation: str = Field(pattern="^(assign|remove)$")
-    workspace_name: str = Field(min_length=1, max_length=200)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=200)
+    workspace_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 def _workspace_assignment_error(exc: repo.WorkspaceAssignmentError) -> HTTPException:
@@ -454,12 +490,16 @@ def _workspace_assignment_error(exc: repo.WorkspaceAssignmentError) -> HTTPExcep
 
 @router.put("/generations/workspace/batch")
 def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Request):
-    """선택한 내 카드의 현재 워크스페이스 귀속을 이름 명령으로 일괄 변경한다.
+    """선택한 내 카드의 현재 워크스페이스 귀속을 일괄 변경한다.
 
     일반/전역 태그 테이블은 건드리지 않는다. 공유본은 팀 서버를 먼저 갱신하고, 실패하면
     로컬 변경을 시작하지 않아 양쪽에 서로 다른 귀속이 남는 경우를 최소화한다.
     """
-    workspace = _resolve_workspace_target(body.workspace_name, request)
+    workspace = _resolve_workspace_target(
+        request,
+        workspace_id=body.workspace_id,
+        workspace_name=body.workspace_name,
+    )
     owner_uid = _my_uid(request)
     if _proxy.proxying() and not owner_uid:
         raise HTTPException(
@@ -492,6 +532,7 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
                 body={
                     "generation_ids": shared_server_ids,
                     "operation": body.operation,
+                    "workspace_id": workspace["id"],
                     "workspace_name": workspace["name"],
                 },
                 timeout=30,
