@@ -1,9 +1,14 @@
 // 좌측 필터 사이드바 (~150px, DESIGN.md §4): 프로젝트 / 컬러 / 자동태그 / 생성자 / 공유.
+import { useState } from "react";
 import { useT } from "../lib/i18n";
+import { loadJSON, saveJSON } from "../lib/storage";
 import { ColorFilterDots } from "./common/ColorFilterDots";
 import type { Facets, Filters, Project } from "../types";
 import { ProjectSection } from "./sidebar/ProjectSection";
 import { CreatorSection } from "./sidebar/CreatorSection";
+
+// 하단 블록(컬러·전역태그·생성자) 접기 상태 — 접으면 그만큼 프로젝트 폴더가 넓어진다. 영속.
+const FOOT_OPEN_KEY = "ch.sidebarFootOpen";
 
 interface Props {
   facets: Facets;
@@ -59,6 +64,14 @@ export function FilterSidebar({
   workspaceName,
 }: Props) {
   const tr = useT();
+  const [footOpen, setFootOpen] = useState<boolean>(
+    () => loadJSON<boolean>(FOOT_OPEN_KEY) ?? true,
+  );
+  const toggleFoot = () =>
+    setFootOpen((open) => {
+      saveJSON(FOOT_OPEN_KEY, !open);
+      return !open;
+    });
   return (
     <aside className="sidebar">
       {/* 위 = 프로젝트/폴더(남는 높이를 다 쓰고 스스로 스크롤), 아래 = 컬러·전역태그·생성자 고정 */}
@@ -90,7 +103,16 @@ export function FilterSidebar({
         />
       </div>
 
-      <div className="sidebar-foot">
+      <button
+        className={"sidebar-foot-toggle" + (footOpen ? " on" : "")}
+        onClick={toggleFoot}
+        title={footOpen ? "접기 — 폴더를 더 넓게 본다" : "펼치기"}
+      >
+        <span className="sidebar-foot-caret">{footOpen ? "▾" : "▴"}</span>
+        {tr("컬러")} · {tr("전역 태그")} · {tr("생성자")}
+      </button>
+
+      <div className="sidebar-foot" hidden={!footOpen}>
         <section>
           <h4>{tr("컬러")}</h4>
           <div className="color-dots">
