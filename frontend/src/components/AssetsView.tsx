@@ -45,6 +45,7 @@ import { useAssetViewData } from "./assets/useAssetViewData";
 import { useAssetViewPersistence } from "./assets/useAssetViewPersistence";
 import { useAssetViewerIdentity } from "./assets/useAssetViewerIdentity";
 import { isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
+import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 
 interface Props {
   onInfo: (t: InfoTarget) => void;
@@ -578,6 +579,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     reloadProjects,
     refreshComments,
   });
+  // 격자 밖(사이드바 여백·툴바 줄)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
+  useOutsideDragSelect(".assets-grid-wrap", (e) => {
+    e.preventDefault(); // 글자 선택·네이티브 드래그 방지(격자 안 경로는 자체 처리)
+    onGridMouseDown(e as unknown as React.MouseEvent);
+  });
+
   const gridHandlers = {
     ref: gridRef,
     tabIndex: 0,

@@ -28,6 +28,7 @@ import { useHistoryBoardShortcuts } from "./history/useHistoryBoardShortcuts";
 import { useHistoryGraph } from "./history/useHistoryGraph";
 import { useHistoryManualPositions } from "./history/useHistoryManualPositions";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
+import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 
 // 비활성화(회색) 표시는 lib/deactivated 로 이동(생성/공유 라이브러리와 한 소스 공유).
 
@@ -406,6 +407,11 @@ export function HistoryBoard({
     saveView(); // 패닝 끝 — 카메라 저장(재진입 시 복원)
   }, [onPanMove, reportView, saveView]);
   onPanUpRef.current = onPanUp; // onPanMove 안전장치가 부를 최신 cleanup
+
+  // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
+  useOutsideDragSelect(".linb-scroll", (e) =>
+    onBoardMouseDown(e as unknown as React.MouseEvent),
+  );
 
   const onBoardMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {

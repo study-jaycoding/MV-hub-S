@@ -77,6 +77,7 @@ import {
   shouldStartListReorder,
 } from "../../lib/sceneInteractions";
 import { sceneGroupControlTargetIds } from "../../lib/sceneGroupSelection";
+import { useOutsideDragSelect } from "../../lib/useOutsideDragSelect";
 import {
   isComfyRunning,
   subscribeComfyRunning,
@@ -2326,6 +2327,12 @@ export function SceneBoard({
       setRowSel({ listId: "", cids: new Set() });
     },
   });
+
+  // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
+  //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.
+  useOutsideDragSelect(".scene-board", (e) =>
+    beginBoardMarquee(e as unknown as React.MouseEvent),
+  );
 
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
