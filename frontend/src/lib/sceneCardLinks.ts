@@ -19,6 +19,7 @@ import { listScenes, subscribeScenesPersisted, variantIds } from "./scenes";
 const API = "/api/scenes/cards";
 const DEBOUNCE_MS = 2000;
 const RETRY_MS = 30_000;
+const REFRESH_MS = 30_000; // 다른 브라우저 변경을 새로고침 없이 가져오는 상한
 const MAX_PER_REQUEST = 1000; // 서버 상한(2000)의 절반 — 추가+제거가 한 요청에 섞여도 안전
 
 export interface CardLink {
@@ -39,6 +40,7 @@ let serverLinks: CardLink[] = []; // 마지막으로 읽은 서버 소속 — 2�
 let loadPromise: Promise<boolean> | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pushing = false;
 let rerun = false;
 let pendingRemovals: CardLink[] = [];
@@ -133,8 +135,25 @@ export function localCardLinks(): CardLink[] {
   return out;
 }
 
-/** 서버 소속 읽기(scope 당 1회, 실패 시 다음 기회에 재시도). 성공하면 known 을 채운다. */
+/** 최초 서버 소속 읽기(실패 시 다음 기회에 재시도). 성공하면 known 을 채운다. */
 function ensureLoaded(scope: string): Promise<boolean> {
+  return load(scope, false);
+}
+
+function sameLinks(a: CardLink[], b: CardLink[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((link, index) => {
+    const other = b[index];
+    return keyOf(link) === keyOf(other) && (link.removed_at || null) === (other.removed_at || null);
+  });
+}
+
+/**
+ * 서버 소속 읽기. 최초 백필은 캐시를 쓰고, 화면 복귀·주기 갱신은 force=true 로 다시 읽는다.
+ * 진행 중인 GET은 공유해 느린 서버에서 중복 요청이 쌓이지 않게 한다.
+ */
+function load(scope: string, force: boolean): Promise<boolean> {
+  if (!force && known !== null) return Promise.resolve(true);
   if (loadPromise) return loadPromise;
   const p = (async () => {
     let items: CardLink[];
@@ -145,16 +164,24 @@ function ensureLoaded(scope: string): Promise<boolean> {
       return false; // 오프라인·미로그인(401)·구백엔드 — 판정 미상. known 을 비워두면 백필이 안 돈다
     }
     if (ns() !== scope) return false; // 계정 전환 중 응답 — 폐기
+    const changed = !sameLinks(serverLinks, items);
     serverLinks = items;
     known = new Set(items.map(keyOf)); // ★뺀 표시가 된 것도 넣는다(백필이 되살리지 않게)
-    if (items.length) loadedSubs.forEach((fn) => fn()); // 화면이 합치기를 돌리게
+    if (changed) loadedSubs.forEach((fn) => fn()); // 화면이 합치기를 돌리게
     return true;
   })();
   loadPromise = p;
-  void p.then((ok) => {
-    if (!ok && loadPromise === p) loadPromise = null; // 실패는 캐시하지 않음
-  });
+  const clearLoad = () => {
+    if (loadPromise === p) loadPromise = null;
+  };
+  void p.then(clearLoad, clearLoad);
   return p;
+}
+
+/** 다른 브라우저에서 바뀐 카드 소속을 명시적으로 다시 읽는다. */
+export function refreshSceneCardLinks(): Promise<boolean> {
+  const scope = enterScope();
+  return load(scope, true);
 }
 
 /** 마지막으로 읽은 서버 소속(합치기용). 아직 못 읽었으면 빈 배열. */
@@ -330,13 +357,39 @@ export async function markCardGenerationsRemoved(
   await pushNew();
 }
 
+function scheduleRefresh(): void {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    const refresh = hidden ? Promise.resolve(false) : refreshSceneCardLinks();
+    void refresh.then(scheduleRefresh, scheduleRefresh);
+  }, REFRESH_MS);
+}
+
+function refreshOnReturn(): void {
+  const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+  if (!hidden) {
+    scheduleRefresh(); // 복귀 직후 읽었으면 다음 주기는 지금부터 30초 뒤 — 연속 GET 방지
+    void refreshSceneCardLinks().catch(() => false);
+  }
+}
+
 /** 부팅 배선 — useSceneCoordination 이 마운트마다 호출(내부는 scope 당 1회). */
 let installed = false;
 export function initSceneCardLinks(): void {
   if (!installed) {
     installed = true;
     subscribeScenesPersisted(schedule);
-    window.addEventListener("online", () => void pushNew());
+    window.addEventListener("online", () => {
+      scheduleRefresh();
+      void refreshSceneCardLinks().then(pushNew, pushNew);
+    });
+    window.addEventListener("focus", refreshOnReturn);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", refreshOnReturn);
+    }
+    scheduleRefresh();
   }
   enterScope();
   schedule(); // 초기 백필 — 서버에 없는 소속을 한 번 올린다(멱등이라 매번 돌아도 무해)

@@ -203,6 +203,41 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     expect(notified).toBe(1);
   });
 
+  it("다른 브라우저에서 뒤늦게 담은 결과를 30초 안에 다시 읽어 알린다", async () => {
+    let remoteItems: unknown[] = [];
+    getLinks = () => Promise.resolve({ items: remoteItems });
+    const { scenes, links } = await boot();
+    scenes.saveScenes(null, [sceneWith("s1", "c1", [])]);
+    let notified = 0;
+    links.subscribeCardLinksLoaded(() => (notified += 1));
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(calls.filter((call) => !call.init?.method).length).toBe(1);
+
+    remoteItems = [{ scene_id: "s1", card_id: "c1", generation_id: "g-other", removed_at: null }];
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(calls.filter((call) => !call.init?.method).length).toBe(2);
+    expect(notified).toBe(1);
+    expect(links.serverCardLinks("s1").map((link) => link.generation_id)).toEqual(["g-other"]);
+  });
+
+  it("주기 갱신 응답이 같으면 화면 합치기를 반복 호출하지 않는다", async () => {
+    getLinks = () =>
+      Promise.resolve({
+        items: [{ scene_id: "s1", card_id: "c1", generation_id: "g1", removed_at: null }],
+      });
+    const { links } = await boot();
+    let notified = 0;
+    links.subscribeCardLinksLoaded(() => (notified += 1));
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(notified).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(notified).toBe(1);
+  });
+
   it("여러 씬·여러 카드를 한 번에 모은다", async () => {
     const { scenes, links } = await boot();
     scenes.saveScenes(null, [sceneWith("s1", "c1", ["g1"]), sceneWith("s2", "c2", ["g2"])]);
