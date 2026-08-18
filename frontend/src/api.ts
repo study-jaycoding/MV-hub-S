@@ -614,11 +614,11 @@ export const api = {
     genId: string,
     text: string,
     parent_id?: string | null,
-    muted = false,
+    isPrivate = false,
   ) =>
     jsonFetch<{ id: string }>(`/api/generations/${pathPart(genId)}/comments`, {
       method: "POST",
-      body: jsonBody({ text, parent_id: parent_id ?? null, muted }),
+      body: jsonBody({ text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
   editGenComment: (commentId: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/generation-comments/${pathPart(commentId)}`, {

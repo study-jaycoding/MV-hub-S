@@ -68,11 +68,11 @@ export function GenCommentPanel({
       );
   };
 
-  const sendComment = (text: string, parentId?: string | null) => {
+  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean) => {
     const t = text.trim();
     if (!t) return;
     api
-      .addGenComment(genId, t, parentId)
+      .addGenComment(genId, t, parentId, isPrivate)
       .then(refresh)
       .then(onChanged)
       .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));

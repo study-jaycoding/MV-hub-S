@@ -269,6 +269,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     gc_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_comment)")}
     if gc_cols and "muted" not in gc_cols:
         conn.execute("ALTER TABLE generation_comment ADD COLUMN muted INTEGER NOT NULL DEFAULT 0")
+    # 비공개 코멘트(is_private) — 작성자 로컬 DB 에만 존재, 서버·공유 번들로 나가지 않는다
+    if ac_cols and "is_private" not in ac_cols:
+        conn.execute("ALTER TABLE asset_comment ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
+    if gc_cols and "is_private" not in gc_cols:
+        conn.execute("ALTER TABLE generation_comment ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
     # 프로젝트 수동 정렬 순서(관리자 탭 ↑/↓) — NULL=미지정(생성물 순 폴백).
     proj_cols = {row[1] for row in conn.execute("PRAGMA table_info(project)")}
     if proj_cols and "sort_order" not in proj_cols:

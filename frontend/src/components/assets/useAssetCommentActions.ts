@@ -1,4 +1,4 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { api } from "../../api";
 import { flashMsg } from "../../lib/flash";
 import type { AssetComment } from "../../types";
@@ -6,7 +6,6 @@ import type { AssetComment } from "../../types";
 interface Params {
   project: string;
   commentPath: string | null;
-  muteOwnRef: MutableRefObject<boolean>;
   setCommentPath: Dispatch<SetStateAction<string | null>>;
   setComments: Dispatch<SetStateAction<AssetComment[]>>;
   reconcile: () => Promise<void>;
@@ -15,7 +14,6 @@ interface Params {
 export function useAssetCommentActions({
   project,
   commentPath,
-  muteOwnRef,
   setCommentPath,
   setComments,
   reconcile,
@@ -37,11 +35,11 @@ export function useAssetCommentActions({
     return api.assetComments(project, commentPath).then(setComments);
   };
 
-  const sendComment = (text: string, parentId?: string | null) => {
+  const sendComment = (text: string, parentId: string | null | undefined, isPrivate: boolean) => {
     const trimmed = text.trim();
     if (!commentPath || !trimmed) return;
     api
-      .addAssetComment(project, commentPath, trimmed, parentId, muteOwnRef.current)
+      .addAssetComment(project, commentPath, trimmed, parentId, isPrivate)
       .then(refreshComments)
       .then(reconcile)
       .catch(() => flashMsg("코멘트 전송 실패 — 다시 시도하세요"));

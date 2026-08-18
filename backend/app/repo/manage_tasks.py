@@ -423,8 +423,9 @@ def list_tasks_batch(
                 ):
                     metrics_by_gen[m["gen_id"]] = (m["credits"] or 0, m["elapsed"])
                 for c in conn.execute(
+                    # 비공개 코멘트는 팀 통계에 세지 않는다(존재 자체가 개인 정보)
                     f"SELECT gen_id, COUNT(*) AS c FROM generation_comment "
-                    f"WHERE gen_id IN ({ph}) GROUP BY gen_id",
+                    f"WHERE gen_id IN ({ph}) AND is_private=0 GROUP BY gen_id",
                     id_batch,
                 ):
                     comments_by_gen[c["gen_id"]] = c["c"]

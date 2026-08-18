@@ -188,10 +188,12 @@ def export_bundle(
             by_id[r["generation_id"]]["_auto_tags"].append(r["name"])
 
         # 코멘트(작성자 표기 포함) — 작성자 이름까지 실어 받는 쪽에서 표시되게.
+        # ★비공개(is_private)는 절대 번들에 싣지 않는다 — 발행이 비공개 메모를 팀에 유출하는 경로가 된다.
         crows = conn.execute(
             f"SELECT c.gen_id, c.id, c.author, w.name AS worker_name, c.text, "
             f"c.created_at, c.parent_id, c.muted FROM generation_comment c "
             f"LEFT JOIN worker w ON w.id=c.author WHERE c.gen_id IN ({ph}) "
+            f"AND c.is_private=0 "
             f"ORDER BY c.created_at ASC, c.id ASC",
             ids,
         ).fetchall()

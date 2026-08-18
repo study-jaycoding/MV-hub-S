@@ -86,8 +86,11 @@ def asset_meta(request: Request, project: str = Query(...)):
                 remote = None
             if not isinstance(remote, dict):
                 continue
-            for path, remote_meta in remote.items():
-                if not isinstance(remote_meta, dict):
+            # 서버는 내 비공개 코멘트를 모른다 — 뱃지 수에 로컬 비공개를 합산(스레드 목록과 일치).
+            private_counts = repo.private_asset_comment_counts(real_project, actor)
+            for path in set(remote) | set(private_counts):
+                remote_meta = remote.get(path)
+                if remote_meta is not None and not isinstance(remote_meta, dict):
                     continue
                 key = prefix + path
                 slot = local.get(key)
@@ -102,8 +105,10 @@ def asset_meta(request: Request, project: str = Query(...)):
                         "has_unread": False,
                     }
                     local[key] = slot
-                slot["comment_count"] = remote_meta.get("comment_count", 0)
-                slot["has_unread"] = remote_meta.get("has_unread", False)
+                slot["comment_count"] = (remote_meta or {}).get(
+                    "comment_count", 0
+                ) + private_counts.get(path, 0)
+                slot["has_unread"] = (remote_meta or {}).get("has_unread", False)
     return local
 
 
@@ -113,7 +118,8 @@ class CommentAddIn(BaseModel):
     text: str
     author: Optional[str] = None
     parent_id: Optional[str] = None
-    muted: bool = False
+    muted: bool = False  # [구] '내 알림 끄기' — private 로 대체, 구클라 호환용으로만 받는다
+    private: bool = False  # 비공개 — 내 로컬 DB 에만 저장, 서버로 절대 안 보냄
 
 
 class CommentEditIn(BaseModel):
@@ -135,25 +141,32 @@ def list_comments(
 ):
     project, path = real_meta_key(project, path)
     if _proxy.proxying():
-        return _proxy.proxy_json(
+        # 공유 스레드(서버) + 내 비공개(로컬)를 시간순으로 합친다 — 비공개는 서버에 없다.
+        shared = _proxy.proxy_json(
             "GET",
             "/api/assets/comments",
             params={"project": project, "path": path},
         )
+        mine = repo.list_private_asset_comments(project, path, actor_id(request))
+        merged = ([*shared, *mine] if isinstance(shared, list) else mine)
+        merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
+        return merged
     _assets_access.require_asset_comment_access(project, request, write=False)
-    return repo.list_asset_comments(project, path)
+    return repo.list_asset_comments(project, path, actor_id(request))
 
 
 @router.post("/comments")
 def add_comment(body: CommentAddIn, request: Request):
     project, path = real_meta_key(body.project, body.path)
-    if _proxy.proxying():
+    # ★비공개는 프록시를 타지 않는다 — 내 로컬 DB 에만 남아야 팀에 안 보인다.
+    if _proxy.proxying() and not body.private:
         return _proxy.proxy_json(
             "POST",
             "/api/assets/comments",
             body={**body.model_dump(), "project": project, "path": path},
         )
-    _assets_access.require_asset_comment_access(project, request, write=True)
+    if not body.private:
+        _assets_access.require_asset_comment_access(project, request, write=True)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
@@ -164,13 +177,15 @@ def add_comment(body: CommentAddIn, request: Request):
         text,
         body.parent_id,
         body.muted,
+        body.private,
     )
     return {"id": comment_id}
 
 
 @router.put("/comments/{comment_id}")
 def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
-    if _proxy.proxying():
+    # 비공개 코멘트는 로컬에만 있다 — 서버로 보내면 404 만 받고 수정이 안 된다.
+    if _proxy.proxying() and repo.asset_comment_is_private(comment_id) is not True:
         return _proxy.proxy_json(
             "PUT",
             f"/api/assets/comments/{comment_id}",
@@ -179,7 +194,8 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
     scope = repo.get_asset_comment_scope(comment_id)
     if not scope:
         raise HTTPException(status_code=404, detail="코멘트 없음")
-    _assets_access.require_asset_comment_access(scope["project"], request, write=True)
+    if not _proxy.proxying():
+        _assets_access.require_asset_comment_access(scope["project"], request, write=True)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
@@ -194,12 +210,14 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
 
 @router.delete("/comments/{comment_id}")
 def delete_comment(comment_id: str, request: Request):
-    if _proxy.proxying():
+    # 비공개 코멘트는 로컬에만 있다(edit 와 같은 분기).
+    if _proxy.proxying() and repo.asset_comment_is_private(comment_id) is not True:
         return _proxy.proxy_json("DELETE", f"/api/assets/comments/{comment_id}")
     scope = repo.get_asset_comment_scope(comment_id)
     if not scope:
         raise HTTPException(status_code=404, detail="코멘트 없음")
-    _assets_access.require_asset_comment_access(scope["project"], request, write=True)
+    if not _proxy.proxying():
+        _assets_access.require_asset_comment_access(scope["project"], request, write=True)
     try:
         repo.delete_asset_comment(comment_id, actor_id(request))
     except PermissionError as exc:

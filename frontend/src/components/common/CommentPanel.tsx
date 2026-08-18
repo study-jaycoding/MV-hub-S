@@ -13,6 +13,22 @@ function loadFontPx(): number {
   return v >= FS_MIN && v <= FS_MAX ? v : FS_DEF;
 }
 
+// 비공개 작성 상태·같이 보기 — 패널 공통(에셋·생성), localStorage 로 유지.
+//  같이 보기 기본 켬: 방금 쓴 비공개가 바로 안 보이면 "전송이 안 됐나?" 로 읽힌다.
+const PRIV_KEY = "ch.cmt.private"; // 다음 코멘트를 비공개로 쓸지
+const SHOW_KEY = "ch.cmt.showPrivate"; // 목록에 내 비공개를 섞어 보여줄지
+const loadFlag = (key: string, def: boolean): boolean => {
+  const v = localStorage.getItem(key);
+  return v === null ? def : v === "1";
+};
+const saveFlag = (key: string, v: boolean) => {
+  try {
+    localStorage.setItem(key, v ? "1" : "0");
+  } catch {
+    /* localStorage 불가 환경 무시 */
+  }
+};
+
 export interface CommentPanelItem {
   id: string;
   author: string;
@@ -21,6 +37,7 @@ export interface CommentPanelItem {
   created_at: string;
   parent_id: string | null;
   unread?: boolean;
+  private?: boolean; // 비공개 — 내 로컬에만 있고 팀에게 안 보임(글씨색 구분)
 }
 
 export function CommentPanel<T extends CommentPanelItem>({
@@ -37,8 +54,6 @@ export function CommentPanel<T extends CommentPanelItem>({
   onEdit,
   onDelete,
   onSeen,
-  muteOwn,
-  onToggleMuteOwn,
 }: {
   comments: T[];
   label: string;
@@ -49,16 +64,19 @@ export function CommentPanel<T extends CommentPanelItem>({
   fallbackPos?: { x: number; y: number };
   onHeadMouseDown: (e: ReactMouseEvent, fallback?: { x: number; y: number }) => void;
   onClose: () => void;
-  onSend: (text: string, parentId?: string | null) => void;
+  onSend: (text: string, parentId: string | null | undefined, isPrivate: boolean) => void;
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
   onSeen?: (comment: T) => void;
-  muteOwn?: boolean;
-  onToggleMuteOwn?: () => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
   const [fontPx, setFontPx] = useState<number>(loadFontPx);
+  // 비공개로 쓰기 + 같이 보기(내 비공개를 목록에 섞어 표시) — 패널 공통 설정.
+  const [writePrivate, setWritePrivate] = useState<boolean>(() => loadFlag(PRIV_KEY, false));
+  const [showPrivate, setShowPrivate] = useState<boolean>(() => loadFlag(SHOW_KEY, true));
+  const togglePrivate = () => setWritePrivate((v) => (saveFlag(PRIV_KEY, !v), !v));
+  const toggleShow = () => setShowPrivate((v) => (saveFlag(SHOW_KEY, !v), !v));
   const setFs = (px: number) => {
     const n = Math.max(FS_MIN, Math.min(FS_MAX, px));
     setFontPx(n);
@@ -68,14 +86,21 @@ export function CommentPanel<T extends CommentPanelItem>({
       /* localStorage 불가 환경 무시 */
     }
   };
+  // 같이 보기 끔 = 팀이 보는 그대로(공유만). 켬 = 내 비공개를 시간순으로 섞어 표시.
+  const visible = useMemo(
+    () => (showPrivate ? comments : comments.filter((c) => !c.private)),
+    [comments, showPrivate],
+  );
   const { byParent, byId, roots, descendantsOf } = useMemo(
-    () => buildCommentTree(comments),
-    [comments],
+    () => buildCommentTree(visible),
+    [visible],
   );
 
   const submitComment = (text: string, parentId?: string | null) => {
     setReplyingId(null);
-    onSend(text, parentId);
+    // 비공개 코멘트에 단 답글은 무조건 비공개 — 공유로 나가면 팀에겐 부모 없는 답글이 된다.
+    const parentPrivate = !!(parentId && byId[parentId]?.private);
+    onSend(text, parentId, parentPrivate || writePrivate);
   };
 
   const submitEdit = (id: string, text: string) => {
@@ -89,8 +114,19 @@ export function CommentPanel<T extends CommentPanelItem>({
     return (
       <div
         key={c.id}
-        className={"cmt-item" + (isReply ? " reply" : "") + (c.unread ? " unread" : "")}
-        title={c.unread ? "클릭해 확인 (새 코멘트)" : undefined}
+        className={
+          "cmt-item" +
+          (isReply ? " reply" : "") +
+          (c.unread ? " unread" : "") +
+          (c.private ? " private" : "")
+        }
+        title={
+          c.private
+            ? "비공개 — 내 PC 에만 저장, 팀에게 보이지 않음"
+            : c.unread
+              ? "클릭해 확인 (새 코멘트)"
+              : undefined
+        }
         onClick={
           c.unread && onSeen
             ? (e) => {
@@ -102,6 +138,7 @@ export function CommentPanel<T extends CommentPanelItem>({
       >
         <div className="cmt-meta">
           {c.unread && <span className="cmt-new">NEW</span>}
+          {c.private && <span className="cmt-priv-tag">비공개</span>}
           <span className="cmt-author">{c.author_name || "팀원"}</span>
           {replyToName && <span className="cmt-replyto">↳ {replyToName}</span>}
           <span className="cmt-when">{fmtWhen(c.created_at)}</span>
@@ -191,7 +228,7 @@ export function CommentPanel<T extends CommentPanelItem>({
     >
       <div className="cmt-head" onMouseDown={(e) => onHeadMouseDown(e, fallbackPos)}>
         <span className="cmt-title">
-          💬 코멘트 <span className="muted">({comments.length})</span>
+          💬 코멘트 <span className="muted">({visible.length})</span>
         </span>
         <span className="cmt-file">{label}</span>
         <div className="cmt-fs" onMouseDown={(e) => e.stopPropagation()}>
@@ -208,7 +245,7 @@ export function CommentPanel<T extends CommentPanelItem>({
       </div>
 
       <div className="cmt-thread">
-        {comments.length === 0 && <div className="cmt-empty">아직 코멘트가 없습니다.</div>}
+        {visible.length === 0 && <div className="cmt-empty">아직 코멘트가 없습니다.</div>}
         {roots.map((root) => renderThread(root))}
       </div>
 
@@ -221,16 +258,25 @@ export function CommentPanel<T extends CommentPanelItem>({
           el.value = "";
         }}
       >
-        <input name="c" autoComplete="off" placeholder="코멘트 작성 ⏎" autoFocus />
+        <input
+          name="c"
+          autoComplete="off"
+          placeholder={writePrivate ? "비공개 코멘트 작성 ⏎ (팀에게 안 보임)" : "코멘트 작성 ⏎"}
+          autoFocus
+        />
         <button type="submit">전송</button>
       </form>
 
-      {onToggleMuteOwn && (
-        <label className="cmt-opt">
-          <input type="checkbox" checked={!!muteOwn} onChange={onToggleMuteOwn} />
-          내가 작성한 코멘트 알림 끄기
+      <div className="cmt-opt">
+        <label title="체크하고 쓰면 내 PC 에만 저장 — 팀에게 절대 보이지 않습니다">
+          <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
+          비공개 코멘트
         </label>
-      )}
+        <label title="끄면 팀이 보는 그대로(공유 코멘트만) 표시">
+          <input type="checkbox" checked={showPrivate} onChange={toggleShow} />
+          같이 보기
+        </label>
+      </div>
     </div>
   );
 }

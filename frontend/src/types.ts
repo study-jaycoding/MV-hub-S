@@ -409,6 +409,7 @@ export interface AssetComment {
   created_at: string;
   parent_id: string | null; // 답글이면 부모 id
   unread?: boolean; // 생성본 코멘트 전용 — 내가 아직 확인 안 한 새 코멘트(NEW 표시·클릭해 확인)
+  private?: boolean; // 비공개 — 내 로컬 DB 에만 있고 팀에게 안 보임(글씨색 구분)
 }
 
 // 중간클릭 정보 팝업 대상 (generation 카드 또는 Assets 파일)

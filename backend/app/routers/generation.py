@@ -820,7 +820,8 @@ class GenCommentAddIn(BaseModel):
     text: str
     author: str | None = None
     parent_id: str | None = None
-    muted: bool = False  # 작성 시점 '내 알림 끄기' 상태(코멘트별 캡처)
+    muted: bool = False  # [구] '내 알림 끄기' — private 로 대체, 구클라 호환용으로만 받는다
+    private: bool = False  # 비공개 — 내 로컬 DB 에만 저장, 서버로 절대 안 보냄
 
 
 class GenCommentEditIn(BaseModel):
@@ -864,11 +865,17 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
 
 @router.get("/generations/{gen_id}/comments")
 def list_gen_comments(gen_id: str, request: Request):
-    """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신)."""
+    """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신). 공유 스레드에 내 비공개(로컬)를 합친다."""
     gen = repo.get_generation(gen_id)
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
-        return _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
+        shared = _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
+        # 비공개는 서버에 없다 — 로컬(작성 시와 같은 앵커: 로컬 행 있으면 로컬 id)에서 합친다.
+        anchor = gen["id"] if gen else gen_id
+        mine = repo.list_private_generation_comments(anchor, actor_id(request))
+        merged = ([*shared, *mine] if isinstance(shared, list) else mine)
+        merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
+        return merged
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
@@ -878,6 +885,17 @@ def list_gen_comments(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/comments")
 def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     gen = repo.get_generation(gen_id)
+    # ★비공개는 프록시를 타지 않는다 — 공유 생성물에 단 것이어도 내 로컬 DB 에만 남는다.
+    #  앵커는 목록과 같은 규칙(로컬 행 있으면 로컬 id) — 어디서 열어도 같은 스레드에 보이게.
+    if body.private:
+        anchor = gen["id"] if gen else gen_id
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="빈 코멘트")
+        cid = repo.add_generation_comment(
+            anchor, actor_id(request), text, body.parent_id, body.muted, is_private=True
+        )
+        return {"id": cid}
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)
         return _proxy.proxy_json(
@@ -902,6 +920,9 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
 # 내 비공개 작업 코멘트(share 없음)만 로컬에서 처리. comment_gen_shared: None=서버전용/True=공유본/False=비공개.
 def _comment_local(comment_id: str) -> bool:
     if not _proxy.proxying():
+        return True
+    # 비공개는 공유 생성물에 달렸어도 로컬이 정답(서버에 애초에 없다) — shared 판정보다 먼저.
+    if repo.generation_comment_is_private(comment_id) is True:
         return True
     return repo.comment_gen_shared(comment_id) is False
 

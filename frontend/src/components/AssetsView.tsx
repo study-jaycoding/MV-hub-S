@@ -166,10 +166,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     onHeadMouseDown: onTagHeadDown,
   } = useFloatingPanel(LS, "tagPos", "tagSize", tagPanelOpen);
 
-  // 코멘트 창(공유 스레드) + 내 코멘트 알림 끄기 옵션
-  const [muteOwn, setMuteOwn] = useState(() => LS.get("muteOwn", "1") !== "0");
-  const muteOwnRef = useRef(muteOwn);
-  muteOwnRef.current = muteOwn;
+  // 코멘트 창(공유 스레드 + 내 비공개 — 비공개 작성·같이 보기는 CommentPanel 이 자체 관리)
   const [commentPath, setCommentPath] = useState<string | null>(null);
   const [comments, setComments] = useState<AssetComment[]>([]);
   const {
@@ -554,20 +551,16 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     reloadMeta,
   });
 
-  const { selectActiveTag, toggleColor, toggleMuteOwn, toggleTagPanel } = useAssetFilterActions({
-    muteOwn,
+  const { selectActiveTag, toggleColor, toggleTagPanel } = useAssetFilterActions({
     setActiveColors,
     setActiveTags,
-    setMuteOwn,
     setTagPanelOpen,
-    store: LS,
     tagPanelOpen,
   });
 
   const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
-    muteOwnRef,
     setCommentPath,
     setComments,
     reconcile,
@@ -855,8 +848,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               onSend={sendComment}
               onEdit={editComment}
               onDelete={delComment}
-              muteOwn={muteOwn}
-              onToggleMuteOwn={toggleMuteOwn}
             />
           )}
 

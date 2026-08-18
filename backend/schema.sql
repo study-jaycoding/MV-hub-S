@@ -359,7 +359,8 @@ CREATE TABLE IF NOT EXISTS asset_comment (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     parent_id  TEXT,                                 -- 답글이면 부모 코멘트 id
-    muted      INTEGER NOT NULL DEFAULT 0            -- 작성 시점 '내 알림 끄기' 캡처(작성자 본인 알림만 억제)
+    muted      INTEGER NOT NULL DEFAULT 0,           -- [구] '내 알림 끄기' 캡처 — 비공개 코멘트로 대체, 잔존 데이터용
+    is_private INTEGER NOT NULL DEFAULT 0            -- 1=비공개(작성자 로컬 DB 에만 존재, 서버·번들로 안 나감)
 );
 CREATE INDEX IF NOT EXISTS idx_asset_comment_pp ON asset_comment(project, path);
 
@@ -381,7 +382,8 @@ CREATE TABLE IF NOT EXISTS generation_comment (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     parent_id  TEXT,                                 -- 답글이면 부모 코멘트 id
-    muted      INTEGER NOT NULL DEFAULT 0            -- 작성 시점 '내 알림 끄기' 캡처(작성자 본인 알림만 억제)
+    muted      INTEGER NOT NULL DEFAULT 0,           -- [구] '내 알림 끄기' 캡처 — 비공개 코멘트로 대체, 잔존 데이터용
+    is_private INTEGER NOT NULL DEFAULT 0            -- 1=비공개(작성자 로컬 DB 에만 존재, 서버·번들로 안 나감)
 );
 CREATE INDEX IF NOT EXISTS idx_generation_comment_gen ON generation_comment(gen_id);
 

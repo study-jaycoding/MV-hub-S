@@ -195,11 +195,11 @@ export const assetsApi = {
     path: string,
     text: string,
     parent_id?: string | null,
-    muted = false,
+    isPrivate = false,
   ) =>
     jsonFetch<{ id: string }>(`/api/assets/comments`, {
       method: "POST",
-      body: jsonBody({ project, path, text, parent_id: parent_id ?? null, muted }),
+      body: jsonBody({ project, path, text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
   editAssetComment: (id: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/assets/comments/${pathPart(id)}`, {

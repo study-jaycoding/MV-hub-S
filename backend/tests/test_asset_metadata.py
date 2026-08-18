@@ -92,6 +92,9 @@ class AssetMetadataTests(unittest.TestCase):
             patch.object(_assets_access, "AUTH_ENABLED", False),
             patch.object(assets_metadata, "actor_id", return_value="me"),
             patch.object(assets_metadata.repo, "get_asset_meta", return_value=personal),
+            patch.object(
+                assets_metadata.repo, "private_asset_comment_counts", return_value={}
+            ),
             patch.object(assets_metadata._proxy, "proxying", return_value=True),
             patch.object(assets_metadata._proxy, "proxy_json", return_value=remote),
         ):
@@ -139,6 +142,7 @@ class AssetMetadataTests(unittest.TestCase):
             "review",
             None,
             False,
+            False,  # private — 기본은 공유
         )
 
     def test_batch_tags_map_combined_paths_before_one_repo_call(self) -> None:
