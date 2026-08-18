@@ -32,7 +32,8 @@
 
 커밋된 깨끗한 작업 트리에서 실행한다. 백엔드 테스트, 프론트 테스트와 production build, 운영 DB의
 온라인 백업·비파괴 복원 훈련, 격리 100명 부하를 순서대로 실행한다. 현재 게이트의 기본 부하 조건은
-논리 CPU 2개·`below-normal` 우선순위·60초·2회이며 결과 JSON에도 적용값이 기록된다.
+논리 CPU 2개·`below-normal` 우선순위·최대 RSS 512MB·60초·2회이며 결과 JSON에도 적용값과
+실제 최대 RSS가 기록된다.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1

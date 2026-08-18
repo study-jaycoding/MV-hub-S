@@ -250,13 +250,17 @@ def test_predeploy_gate_defaults_to_a_repeatable_low_spec_server_profile():
 
     assert '[int]$LoadServerCpuCores = 2' in gate
     assert '[string]$LoadServerPriority = "below-normal"' in gate
+    assert '[double]$LoadMaxRssMb = 512.0' in gate
     assert "--server-cpu-cores $LoadServerCpuCores" in gate
     assert "--server-priority $LoadServerPriority" in gate
+    assert "--max-rss-mb $LoadMaxRssMb" in gate
     assert "load_server_cpu_cores" in gate
     assert "load_server_priority" in gate
     assert "LoadResult.server_limits.requested_cpu_cores" in gate
     assert "LoadResult.server_limits.priority" in gate
     assert "load_server_cpu_affinity" in gate
+    assert "LoadResult.acceptance.checks.rss_within_target" in gate
+    assert "load_max_rss_bytes_observed" in gate
 
 
 def test_release_update_contract_preserves_worker_backup_state_and_outbox():

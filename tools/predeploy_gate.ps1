@@ -6,6 +6,8 @@ param(
     [int]$LoadServerCpuCores = 2,
     [ValidateSet("normal", "below-normal")]
     [string]$LoadServerPriority = "below-normal",
+    [ValidateRange(64.0, 32768.0)]
+    [double]$LoadMaxRssMb = 512.0,
     [switch]$SkipLoad,
     [switch]$SkipBackupDrill,
     [switch]$AllowDirty,
@@ -156,6 +158,7 @@ try {
                 --generations-per-user 20 `
                 --server-cpu-cores $LoadServerCpuCores `
                 --server-priority $LoadServerPriority `
+                --max-rss-mb $LoadMaxRssMb `
                 --output $LoadReport `
                 --quiet
         }
@@ -168,6 +171,12 @@ try {
         }
         if ([string]$LoadResult.server_limits.priority -ne $LoadServerPriority) {
             throw "Load report process priority does not match the requested predeploy profile."
+        }
+        if ([double]$LoadResult.config.max_rss_mb -ne $LoadMaxRssMb) {
+            throw "Load report RSS limit does not match the requested predeploy profile."
+        }
+        if (-not $LoadResult.acceptance.checks.rss_within_target) {
+            throw "Load report did not enforce the predeploy RSS limit."
         }
     }
     else {
@@ -190,6 +199,8 @@ try {
         load_server_cpu_cores = $(if ($SkipLoad) { $null } else { $LoadServerCpuCores })
         load_server_priority = $(if ($SkipLoad) { $null } else { $LoadServerPriority })
         load_server_cpu_affinity = $(if ($SkipLoad) { $null } else { @($LoadResult.server_limits.cpu_affinity) })
+        load_max_rss_mb = $(if ($SkipLoad) { $null } else { $LoadMaxRssMb })
+        load_max_rss_bytes_observed = $(if ($SkipLoad) { $null } else { $LoadResult.server.resource_summary.max_rss_bytes })
         load_report = $LoadReport
     }
     $SummaryPath = Join-Path $ReportDirectory "predeploy-latest.json"

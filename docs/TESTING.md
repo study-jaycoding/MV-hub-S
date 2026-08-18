@@ -50,10 +50,11 @@ SQLite 백업·복원과 100명 부하를 순서대로 실행한다.
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1
 ```
 
-100명 부하는 기본적으로 격리 서버에 논리 CPU 2개와 `below-normal` 우선순위를 적용해 60초씩 2회
-실행한다. 다른 조건이 꼭 필요하면 `-LoadServerCpuCores`와 `-LoadServerPriority`를 명시하고 결과 JSON에
-남은 값을 함께 보고한다. `-SkipLoad`, `-SkipBackupDrill`, `-AllowDirty` 결과는 빠른 개발 확인용이며
-최종 배포 승인 근거로 사용하지 않는다.
+100명 부하는 기본적으로 격리 서버에 논리 CPU 2개와 `below-normal` 우선순위, 최대 RSS 512MB를
+적용해 60초씩 2회 실행한다. 다른 조건이 꼭 필요하면 `-LoadServerCpuCores`,
+`-LoadServerPriority`, `-LoadMaxRssMb`를 명시하고 결과 JSON에 남은 값을 함께 보고한다.
+`-SkipLoad`, `-SkipBackupDrill`, `-AllowDirty` 결과는 빠른 개발 확인용이며 최종 배포 승인 근거로
+사용하지 않는다.
 
 ## 생성 제출 중단 복구(RL-05)
 
