@@ -13,6 +13,29 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-FileDigestHex {
+    param(
+        [string]$Path,
+        [ValidateSet("MD5", "SHA256")]
+        [string]$Algorithm
+    )
+
+    $Stream = [System.IO.File]::OpenRead($Path)
+    if ($Algorithm -eq "MD5") {
+        $Hasher = [System.Security.Cryptography.MD5]::Create()
+    }
+    else {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    }
+    try {
+        return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
+    }
+}
+
 function Copy-RoboChecked {
     param(
         [string]$Source,
@@ -489,7 +512,7 @@ if (-not $SkipPythonRuntime) {
 
     Assert-PythonRuntimeTree -RuntimeDir $RuntimeDir -Label "staging"
 
-    $RequirementsHash = (Get-FileHash -LiteralPath (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5).Hash.ToLowerInvariant()
+    $RequirementsHash = Get-FileDigestHex -Path (Join-Path $ProjectRoot "backend\requirements.txt") -Algorithm MD5
     Set-Content -LiteralPath (Join-Path $Stage "backend\.deps_installed") -Value $RequirementsHash -Encoding ASCII
 }
 else {
@@ -582,7 +605,7 @@ catch {
 
 Write-Host "[8/8] Writing latest.json..."
 $Zip = Get-Item -LiteralPath $ZipPath
-$Hash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$Hash = Get-FileDigestHex -Path $ZipPath -Algorithm SHA256
 $Latest = [ordered]@{
     version = $Version
     higgsfield_cli_version = $ReleaseCliVersion

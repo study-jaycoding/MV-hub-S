@@ -277,6 +277,25 @@ def test_release_builder_ignores_unrelated_build_machine_package_conflicts():
     assert "--ignore-installed --no-warn-conflicts --target $SitePackages" in builder
 
 
+def test_release_tooling_hashes_without_powershell_module_autoloading():
+    project_root = Path(__file__).resolve().parents[2]
+    scripts = {
+        "installer": (project_root / "release" / "MVHub_Install.bat").read_text(encoding="utf-8"),
+        "updater": (project_root / "update_release_worker.bat").read_text(encoding="utf-8"),
+        "builder": (project_root / "release" / "make_release.ps1").read_text(encoding="utf-8"),
+        "selector": (project_root / "release" / "select_release.ps1").read_text(encoding="utf-8"),
+    }
+
+    # Get-FileHash depends on Microsoft.PowerShell.Utility auto-loading. Some managed
+    # Windows PCs disable it, so every release path must use the .NET hash primitive.
+    for name, script in scripts.items():
+        assert "Get-FileHash" not in script, name
+        assert "System.Security.Cryptography.SHA256" in script, name
+    assert "System.Security.Cryptography.MD5" in scripts["builder"]
+    assert "$env:MVHUB_INSTALL_SCRIPT" in scripts["installer"]
+    assert "$env:MVHUB_UPDATE_SCRIPT" in scripts["updater"]
+
+
 def test_worker_launcher_keeps_startup_failure_visible():
     project_root = Path(__file__).resolve().parents[2]
     launcher = (project_root / "MV_agent.bat").read_text(encoding="utf-8")
@@ -407,6 +426,49 @@ exit /b 0
     assert "not recognized" not in output
     assert "Failed to prepare MV Hub updater" not in output
     assert not list(temp_dir.glob("mvhub-release-update-*.bat"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows temporary-folder fallback regression")
+def test_manual_updater_uses_local_app_data_when_temp_variables_are_empty(tmp_path: Path):
+    project_root = Path(__file__).resolve().parents[2]
+    installed = tmp_path / "설치 폴더 with spaces"
+    local_app_data = tmp_path / "로컬 앱 데이터"
+    installed.mkdir()
+    (installed / "update_release.bat").write_text(
+        (project_root / "update_release.bat").read_text(encoding="utf-8"), encoding="ascii"
+    )
+    (installed / "run_release_update.ps1").write_text(
+        (project_root / "run_release_update.ps1").read_text(encoding="utf-8"), encoding="utf-8-sig"
+    )
+    (installed / "update_release_worker.bat").write_text(
+        '@echo off\r\n>"%MVHUB_UPDATE_TARGET_DIR%\\fallback-finished.txt" echo safe\r\nexit /b 0\r\n',
+        encoding="ascii",
+    )
+
+    env = os.environ.copy()
+    env["TEMP"] = ""
+    env["TMP"] = ""
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["MVHUB_NO_PAUSE"] = "1"
+    env.pop("MVHUB_UPDATE_TARGET_DIR", None)
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "call", "update_release.bat"],
+        cwd=installed,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        check=False,
+    )
+
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert (installed / "fallback-finished.txt").read_text(encoding="ascii").strip() == "safe"
+    fallback_temp = local_app_data / "Temp"
+    assert fallback_temp.is_dir()
+    assert not list(fallback_temp.glob("mvhub-release-update-*.bat"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch bootstrap regression")

@@ -13,14 +13,25 @@ if not defined MVHUB_UPDATE_TARGET_DIR (
 )
 for %%I in ("%MVHUB_UPDATE_TARGET_DIR%") do set "TARGET_DIR=%%~fI"
 
+if not defined TEMP if defined TMP set "TEMP=%TMP%"
+if not defined TEMP if defined LOCALAPPDATA set "TEMP=%LOCALAPPDATA%\Temp"
+if not defined TEMP set "TEMP=%SystemRoot%\Temp"
+if not exist "%TEMP%\" mkdir "%TEMP%" >nul 2>nul
+if not exist "%TEMP%\" (
+  echo [ERROR] No writable temporary folder is available.
+  if not "%MVHUB_NO_PAUSE%"=="1" pause
+  exit /b 1
+)
 set "UPDATE_PS1=%TEMP%\mvhub-update-%RANDOM%-%RANDOM%.ps1"
+set "MVHUB_UPDATE_SCRIPT=%~f0"
+set "MVHUB_UPDATE_PAYLOAD=%UPDATE_PS1%"
 
 REM NOTE: keep this whole file ASCII-only. On stock Korean Windows (ANSI=CP949) a
 REM PowerShell default-encoding read of UTF-8 Korean text eats adjacent ASCII bytes
 REM (closing quotes/braces), which corrupted the extracted payload and killed every
 REM update with "The term 'catch' is not recognized". -Encoding UTF8 below is the
 REM second layer of the same defense.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'UPDATE_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Update payload not found.' }; Set-Content -LiteralPath '%UPDATE_PS1%' -Value $parts[1] -Encoding UTF8"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath $env:MVHUB_UPDATE_SCRIPT -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'UPDATE_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Update payload not found.' }; Set-Content -LiteralPath $env:MVHUB_UPDATE_PAYLOAD -Value $parts[1] -Encoding UTF8"
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to prepare MV Hub updater.
@@ -189,6 +200,20 @@ function Get-ReleaseFile {
             throw "Server file not found: $Src"
         }
         Copy-Item -LiteralPath $Src -Destination $Destination -Force
+    }
+}
+
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $Stream = [System.IO.File]::OpenRead($Path)
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
     }
 }
 
@@ -480,7 +505,7 @@ function Install-Package {
 
     Write-Host "[update]  62%  Verifying SHA256..."
     Write-UpdateState -State "downloading" -Message "Verifying package integrity..." -Latest ([string]$Latest.version) -Percent 62
-    $Actual = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Actual = Get-Sha256Hex -Path $ZipPath
     if ($Actual -ne ([string]$Latest.sha256).ToLowerInvariant()) {
         throw "SHA256 mismatch. Expected $($Latest.sha256), got $Actual"
     }

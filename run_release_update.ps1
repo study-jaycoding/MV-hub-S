@@ -5,7 +5,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ExitCode = 1
-$TempWorker = Join-Path $env:TEMP ("mvhub-release-update-{0}.bat" -f [Guid]::NewGuid().ToString("N"))
+
+function Resolve-MvHubTempDirectory {
+    $Candidates = @(
+        $env:TEMP,
+        $env:TMP,
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Temp" }),
+        $(if ($env:SystemRoot) { Join-Path $env:SystemRoot "Temp" })
+    )
+    foreach ($Candidate in $Candidates) {
+        if (-not $Candidate) {
+            continue
+        }
+        try {
+            return [System.IO.Directory]::CreateDirectory($Candidate).FullName
+        }
+        catch {
+            continue
+        }
+    }
+    throw "No writable temporary folder is available."
+}
+
+$TempDirectory = Resolve-MvHubTempDirectory
+$TempWorker = Join-Path $TempDirectory ("mvhub-release-update-{0}.bat" -f [Guid]::NewGuid().ToString("N"))
 
 try {
     $RootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
