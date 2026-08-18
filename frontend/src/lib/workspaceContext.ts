@@ -48,6 +48,22 @@ export function sameWorkspace(a: WorkspaceContext, b: WorkspaceContext): boolean
   return a.scope === b.scope && a.id === b.id;
 }
 
+/**
+ * 목록에서 '지금 활성인 워크스페이스' 한 건을 고른다.
+ *
+ * 기준은 앱에서 고른 컨텍스트다 — 팀이면 그 id, 개인이면 이름 없는 항목. 아직 확정 전(unknown)
+ * 일 때만 CLI 가 선택 중인 항목으로 폴백한다. 계정 메뉴 게이지와 하단 상태줄이 같은 값을 쓰도록
+ * 이 규칙을 한 곳에 둔다.
+ */
+export function activeWorkspaceOf<T extends Workspace>(
+  items: T[],
+  context: WorkspaceContext,
+): T | undefined {
+  if (context.scope === "team") return items.find((item) => item.id === context.id);
+  if (context.scope === "personal") return items.find((item) => !item.name);
+  return items.find((item) => item.is_selected) || items.find((item) => !item.name);
+}
+
 /** 사이드바 머리말용 짧은 이름 — 설명 없이 지금 보고 있는 공간 이름만. */
 export function workspaceShortLabel(context: WorkspaceContext): string {
   if (context.scope === "team") return context.name || "팀 워크스페이스";

@@ -202,7 +202,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
     return () => document.removeEventListener("pointerdown", onDown, true);
   }, [open]);
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
-  const { account, checkAccount } = useAccountStatus();
+  const { account, checkAccount } = useAccountStatus(workspace);
   const agentOn = useSpotlightAgentStatus();
   // @/# 피커
   const [mention, setMention] = useState<SpotlightMention>(null);

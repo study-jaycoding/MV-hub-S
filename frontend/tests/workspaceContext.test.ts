@@ -3,6 +3,7 @@ import { api } from "../src/api";
 import { buildGenerationQuery } from "../src/lib/appGenerationQuery";
 import { manageApi } from "../src/lib/manageApi";
 import {
+  activeWorkspaceOf,
   isGenerationWorkspaceReady,
   reconcileReportedWorkspaceContext,
   selectedWorkspaceContext,
@@ -123,5 +124,18 @@ describe("workspace context", () => {
     expect(url).toContain("model=nano");
     expect(url).toContain("creator_uid=member-1");
     expect(url).toContain("project_id=project-1");
+  });
+
+  it("잔액 표시는 CLI 선택이 아니라 앱에서 고른 워크스페이스를 따른다", () => {
+    // account status(=CLI 선택 공간) 숫자를 그대로 쓰면 앱에서 팀을 바꿔도 이전 팀 잔액이 남는다.
+    const ws = (id: string, name: string | null, credits: number, is_selected = false) => ({
+      id, name, credits, is_selected, plan_type: "enterprise", user_role: "member",
+    });
+    const list = [ws("p", null, 8.5), ws("a", "MILLIONVOLT", 90172, true), ws("b", "뻘뻘뻘", 1020)];
+
+    expect(activeWorkspaceOf(list, { scope: "team", id: "b", name: "뻘뻘뻘" })?.credits).toBe(1020);
+    expect(activeWorkspaceOf(list, { scope: "personal", id: null, name: null })?.credits).toBe(8.5);
+    // 아직 확정 전(unknown)일 때만 CLI 가 물고 있는 공간으로 폴백한다.
+    expect(activeWorkspaceOf(list, { scope: "unknown", id: null, name: null })?.credits).toBe(90172);
   });
 });

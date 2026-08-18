@@ -18,6 +18,7 @@ import {
   useSyncStatus,
 } from "../lib/useSyncStatus";
 import {
+  activeWorkspaceOf,
   reconcileReportedWorkspaceContext,
   sameWorkspace,
   selectedWorkspaceContext,
@@ -144,14 +145,10 @@ export function AccountMenu({
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
-  const current = wsList.find((w) => w.is_selected);
+  const current = wsList.find((w) => w.is_selected); // CLI 가 실제로 물고 있는 공간(플랜 라벨용)
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
-  const activeWs =
-    workspaceContext.scope === "team"
-      ? wsList.find((w) => w.id === workspaceContext.id)
-      : workspaceContext.scope === "personal"
-        ? wsList.find((w) => !w.name)
-        : current || wsList.find((w) => !w.name);
+  // 하단 상태줄(useAccountStatus)도 같은 규칙을 쓴다 — 두 곳의 숫자가 어긋나지 않게.
+  const activeWs = activeWorkspaceOf(wsList, workspaceContext);
   // 게이지 분모 = 활성 워크스페이스에 배정된 프로젝트들의 '예산 한도' 합(관리창 프로젝트 설정).
   // 프로젝트마다 예산이 달라 워크스페이스별로 다른 분모가 적용된다. 메뉴를 열 때마다 재조회해
   // 예산 수정이 곧 반영되고, 미설정·실패면 null → 아래에서 상수 폴백.
