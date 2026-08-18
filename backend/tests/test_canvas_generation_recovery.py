@@ -415,6 +415,22 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
         )
         self.assertIn(old_id, repo.list_canvas_generation_candidates("artist@example.com"))
         self.assertNotIn(old_id, repo.list_canvas_generation_candidates("other@example.com"))
+        # 카드 소속표에 이미 담긴 것은 후보에서 빠진다 — 씬 열 때 자동으로 합쳐지므로
+        # 목록에 남으면 이미 잘 있는 생성물을 또 붙이게 된다.
+        repo.sync_scene_card_links(
+            "u-artist",
+            [{"scene_id": "scene-a", "card_id": "card-a", "generation_id": old_id}],
+            [],
+        )
+        self.assertNotIn(
+            old_id,
+            repo.list_canvas_generation_candidates("artist@example.com", owner_uid="u-artist"),
+        )
+        # 다른 사람 소속표는 내 후보에 영향을 주지 않는다
+        self.assertIn(
+            old_id,
+            repo.list_canvas_generation_candidates("artist@example.com", owner_uid="u-other"),
+        )
         self.assertFalse(
             repo.claim_canvas_generation_candidate(
                 "other@example.com", old_id, "scene-other", "card-other"

@@ -19,6 +19,7 @@ from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
+    actor_id,
     realtime_scope,
     require_agent_account,
     require_project_role,
@@ -267,9 +268,14 @@ def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
 
 @router.get("/gen-requests/canvas-candidates")
 def canvas_generation_candidates(request: Request, limit: int = 30):
-    """구버전에서 연결을 잃은 내 생성 요청만 수동 복구 후보로 돌려준다."""
+    """어느 카드에도 안 담긴 내 생성물(진짜 고아)만 수동 복구 후보로 돌려준다.
+
+    카드 소속표에 이미 있는 것은 씬을 열 때 자동으로 합쳐지므로 여기 나오면 안 된다.
+    """
     acc = _require_account(request)
-    ids = repo.list_canvas_generation_candidates(acc["email"], limit=limit)
+    ids = repo.list_canvas_generation_candidates(
+        acc["email"], limit=limit, owner_uid=actor_id(request)
+    )
     items = [repo.get_generation(gen_id) for gen_id in ids]
     return {"items": [item for item in items if item]}
 

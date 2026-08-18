@@ -555,14 +555,31 @@ def resolve_canvas_generation_links(
     return [dict(row) for row in rows]
 
 
-def list_canvas_generation_candidates(account_email: str, limit: int = 30) -> list[str]:
+def list_canvas_generation_candidates(
+    account_email: str, limit: int = 30, owner_uid: str = ""
+) -> list[str]:
+    """수동 복구 후보 = 어느 카드에도 안 담긴 내 생성물(진짜 고아).
+
+    owner_uid 를 주면 카드 소속표(scene_card_generation)에 이미 담긴 것도 뺀다. 씬을 열 때
+    소속이 자동으로 합쳐지므로(sceneCardLinks), 그렇게 채워진 것까지 목록에 남으면 이미
+    카드에 잘 있는 생성물이 '빠진 것'처럼 보여 사용자가 중복으로 또 붙이게 된다.
+    """
+    sql = (
+        "SELECT r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+        "WHERE r.account_email=? AND r.kind='create' AND r.canvas_attempt_id IS NULL "
+        "AND g.deleted_at IS NULL"
+    )
+    args: list[Any] = [norm_email(account_email)]
+    if owner_uid:
+        sql += (
+            " AND r.gen_id NOT IN (SELECT generation_id FROM scene_card_generation "
+            "WHERE owner_uid=? AND removed_at IS NULL)"
+        )
+        args.append(owner_uid)
+    sql += " ORDER BY r.created_at DESC, r.id DESC LIMIT ?"
+    args.append(max(1, min(limit, 100)))
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-            "WHERE r.account_email=? AND r.kind='create' AND r.canvas_attempt_id IS NULL "
-            "AND g.deleted_at IS NULL ORDER BY r.created_at DESC, r.id DESC LIMIT ?",
-            (norm_email(account_email), max(1, min(limit, 100))),
-        ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     return list(dict.fromkeys(str(row["gen_id"]) for row in rows if row["gen_id"]))
 
 
