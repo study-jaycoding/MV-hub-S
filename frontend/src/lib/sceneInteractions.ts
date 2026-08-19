@@ -349,12 +349,22 @@ export function copySceneSelection(
   };
 }
 
+// 붙여넣기 기준점 — 마우스가 캔버스 위에 있을 때 그 지점(캔버스 좌표)에 묶음 중심을 맞춘다.
+// 카드 크기(w/h)가 없는 카드는 기본 크기로 중심을 어림한다(레퍼런스는 자동 높이라 근사치).
+export interface ScenePastePoint {
+  x: number;
+  y: number;
+  cardWidth: number;
+  cardHeight: number;
+}
+
 export function pasteSceneClipboard(
   currentCards: SceneCard[],
   currentEdges: SceneEdge[],
   clipboard: SceneClipboard,
   makeId: () => string,
   grid = SCENE_GRID,
+  at?: ScenePastePoint,
 ): {
   cards: SceneCard[];
   edges: SceneEdge[];
@@ -362,15 +372,29 @@ export function pasteSceneClipboard(
   nextClipboard: SceneClipboard;
   shift: number;
 } {
+  // 기준점이 주어지면 복사한 묶음의 상대 배치는 유지한 채, 묶음 전체의 중심이 그 지점에
+  // 오도록 평행이동량(dx, dy)을 먼저 정한다. 없으면 기존처럼 원본 자리 기준(이동량 0).
+  let dx = 0;
+  let dy = 0;
+  if (at && clipboard.cards.length) {
+    const left = Math.min(...clipboard.cards.map((card) => card.x));
+    const top = Math.min(...clipboard.cards.map((card) => card.y));
+    const right = Math.max(...clipboard.cards.map((card) => card.x + (card.w ?? at.cardWidth)));
+    const bottom = Math.max(...clipboard.cards.map((card) => card.y + (card.h ?? at.cardHeight)));
+    dx = at.x - (left + right) / 2;
+    dy = at.y - (top + bottom) / 2;
+  }
+
   const baseOffset = grid * 2;
-  let shift = baseOffset;
-  for (let step = 1; step <= 20; step++) {
+  // 마우스 기준이면 정확히 그 지점(shift 0)부터 시도하고, 기존 카드와 겹칠 때만 어긋나게 민다.
+  let shift = at ? 0 : baseOffset;
+  for (let step = at ? 0 : 1; step <= 20; step++) {
     shift = baseOffset * step;
     const fullyOverlaps = clipboard.cards.some((copied) =>
       currentCards.some(
         (current) =>
-          Math.abs(copied.x + shift - current.x) < grid &&
-          Math.abs(copied.y + shift - current.y) < grid,
+          Math.abs(copied.x + dx + shift - current.x) < grid &&
+          Math.abs(copied.y + dy + shift - current.y) < grid,
       ),
     );
     if (!fullyOverlaps) break;
@@ -380,7 +404,7 @@ export function pasteSceneClipboard(
   const pastedCards = clipboard.cards.map((card) => {
     const id = makeId();
     idMap.set(card.id, id);
-    return { ...card, id, x: card.x + shift, y: card.y + shift };
+    return { ...card, id, x: card.x + dx + shift, y: card.y + dy + shift };
   });
   const remappedCards = pastedCards.map((card) => {
     let next = card;

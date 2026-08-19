@@ -343,6 +343,52 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     ]);
   });
 
+  it("기준점(at)이 있으면 상대 배치를 유지한 채 묶음 중심을 그 지점에 맞춰 붙인다", () => {
+    const cards = [card("a", "reference", 0, 0), card("b", "generation", 100, 0)];
+    const clipboard = copySceneSelection(cards, [], ["a", "b"]);
+    const pasted = pasteSceneClipboard(
+      cards,
+      [],
+      clipboard,
+      idSequence("new-a", "new-b"),
+      undefined,
+      { x: 500, y: 300, cardWidth: 100, cardHeight: 60 },
+    );
+
+    // 묶음 bbox = (0,0)~(200,60) → 중심 (100,30) → 기준점 (500,300)까지 dx=400, dy=270.
+    // 기존 카드와 안 겹치므로 어긋내기(shift) 없이 정확히 그 지점에 붙는다.
+    expect(pasted.shift).toBe(0);
+    expect(
+      pasted.cards
+        .filter((item) => pasted.pastedCardIds.has(item.id))
+        .map(({ id, x, y }) => ({ id, x, y })),
+    ).toEqual([
+      { id: "new-a", x: 400, y: 270 },
+      { id: "new-b", x: 500, y: 270 },
+    ]);
+  });
+
+  it("기준점 자리에 기존 카드가 겹치면 그때만 어긋나게 민다", () => {
+    const cards = [card("occupied", "reference", 450, 270)];
+    const clipboard: ReturnType<typeof copySceneSelection> = {
+      cards: [card("a", "reference", 0, 0)],
+      edges: [],
+      inEdges: [],
+    };
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-a"), undefined, {
+      x: 500,
+      y: 300,
+      cardWidth: 100,
+      cardHeight: 60,
+    });
+
+    // 카드 한 장 bbox 중심 (50,30) → (500,300) 이동 시 (450,270)이 기존 카드와 정확히 겹침
+    // → 한 칸(그리드 2배 = 44) 어긋나서 붙는다.
+    expect(pasted.shift).toBe(44);
+    const copied = pasted.cards.find((item) => item.id === "new-a");
+    expect({ x: copied?.x, y: copied?.y }).toEqual({ x: 494, y: 314 });
+  });
+
   it("리스트와 레퍼런스를 함께 복사하면 리스트 전용 순서 id도 새 카드 id로 바꾼다", () => {
     const cards = [
       card("ref", "reference", 0, 0),

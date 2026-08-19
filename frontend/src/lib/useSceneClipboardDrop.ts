@@ -251,11 +251,23 @@ export function useSceneClipboardDrop(
     const clipboard = clipboardRef.current;
     if (!clipboard?.cards.length) return false;
     const current = optionsRef.current;
+    // 마우스가 캔버스 위에 있으면 그 지점에 붙인다(캡처 붙여넣기와 같은 규칙).
+    // 캔버스 밖(단축키만 캔버스로 온 경우)이면 기존처럼 원본 자리에서 어긋나게 붙인다.
+    const mouse = current.lastMouseRef.current;
+    const pasteAt = mouse.over
+      ? {
+          ...current.toCanvas(mouse.x, mouse.y),
+          cardWidth: current.cardWidth,
+          cardHeight: current.cardHeight,
+        }
+      : undefined;
     const pasted = pasteSceneClipboard(
       current.cardsRef.current,
       current.edgesRef.current,
       clipboard,
       uid,
+      undefined,
+      pasteAt,
     );
     const nextCards = current.reconcileGenerationRefs(pasted.cards, pasted.edges);
     current.cardsRef.current = nextCards;
