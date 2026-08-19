@@ -291,7 +291,7 @@ def generation_comment_counts(
         for r in conn.execute(
             f"SELECT DISTINCT c.gen_id FROM generation_comment c "
             f"{ALERT_COMMENT_JOINS} "
-            f"WHERE c.gen_id IN ({ph}) AND c.is_private=0 AND {ALERT_COMMENT_PREDICATE}",
+            f"WHERE c.gen_id IN ({ph}) AND {ALERT_COMMENT_PREDICATE}",
             [cviewer, *ids, cviewer, cviewer, cviewer],
         ).fetchall():
             out[r["gen_id"]]["has_unread"] = True

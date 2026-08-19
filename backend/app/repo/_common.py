@@ -38,13 +38,17 @@ def clean_folder_path(path: Optional[str]) -> Optional[str]:
 #   ALERT_COMMENT_PREDICATE : 알림 대상 판정. ? 3개(c.author<>뷰어, g.creator_uid=뷰어, p.author=뷰어).
 # 바인딩은 위치식(?)이라 최종 SQL 에서 ? 가 나타나는 텍스트 순서대로 인자를 넘겨야 한다
 # (예: WHERE 경로는 JOIN ? → 예측부 3?, SELECT-CASE 경로는 예측부 3? → JOIN ?).
+# 뷰어에게 안 보이는 코멘트는 알림도 못 울린다 — 휴지통 생성물(g.deleted_at)·남의 비공개
+# (c.is_private, 이관 DB 등으로 로컬에 남의 행이 있어도)는 제외. 안 그러면 전역 C 뱃지만
+# 켜지고 필터엔 아무 카드도 안 나오는 '유령 알림'이 된다.
 ALERT_COMMENT_JOINS = (
     "JOIN generation g ON g.id = c.gen_id "
     "LEFT JOIN generation_comment p ON p.id = c.parent_id "
     "LEFT JOIN generation_comment_seen s ON s.worker_id=? AND s.comment_id=c.id"
 )
 ALERT_COMMENT_PREDICATE = (
-    "s.comment_id IS NULL AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
+    "s.comment_id IS NULL AND c.is_private=0 AND g.deleted_at IS NULL "
+    "AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
 )
 
 # ── 생성물 조회 공통 FROM/JOIN 조각 ────────────────────────────────────────
