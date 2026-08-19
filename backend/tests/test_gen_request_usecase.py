@@ -315,7 +315,10 @@ def test_recovery_report_is_idempotent_and_generation_requeue_resolves_owned_req
         assert broadcast.await_count == 1
 
         repo.get_recovery_request_id_for_generation.return_value = "r1"
-        repo.requeue_recovery_request.return_value = "g1"
+        repo.prepare_recovery_requeue.return_value = {
+            "status": "requeued",
+            "gen_id": "g1",
+        }
         assert asyncio.run(
             confirm_generation_not_submitted_and_requeue(
                 "a@b.com", "acct:a", "g1"
@@ -325,8 +328,37 @@ def test_recovery_report_is_idempotent_and_generation_requeue_resolves_owned_req
     repo.get_recovery_request_id_for_generation.assert_called_once_with(
         "g1", "a@b.com"
     )
-    repo.requeue_recovery_request.assert_called_once_with("r1", "a@b.com")
+    repo.prepare_recovery_requeue.assert_called_once_with("r1", "a@b.com")
     signals.signal.assert_called_once_with("a@b.com", "gen-request")
+
+
+def test_recovery_requeue_reports_auto_probe_candidate_instead_of_requeueing():
+    from app.usecases.gen_requests import (
+        RecoveryRequeueBlocked,
+        confirm_not_submitted_and_requeue,
+    )
+
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.agent_signals"
+    ) as signals:
+        repo.prepare_recovery_requeue.return_value = {
+            "status": "candidate_found",
+            "gen_id": "g1",
+            "candidate_count": 2,
+        }
+        try:
+            asyncio.run(
+                confirm_not_submitted_and_requeue(
+                    "a@b.com", "acct:a", "r1"
+                )
+            )
+        except RecoveryRequeueBlocked as exc:
+            assert "기존 Higgsfield 생성 후보" in str(exc)
+        else:
+            raise AssertionError("자동 조사 후보가 있는데 재큐가 허용됨")
+
+    repo.prepare_recovery_requeue.assert_called_once_with("r1", "a@b.com")
+    signals.signal.assert_not_called()
 
 
 def test_fulfill_request_applies_result_once_and_broadcasts():

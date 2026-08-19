@@ -34,7 +34,9 @@ from ..models import (
     GenRequestIn,
     PendingRequestOut,
     RecoveryDecisionIn,
+    RecoveryProbeResultIn,
     RegenerateIn,
+    SubmissionFingerprintIn,
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
@@ -42,6 +44,7 @@ from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     CanvasGenerationConflict,
     GenRequestCommand,
+    RecoveryRequeueBlocked,
     anchor_request,
     begin_submission,
     claim_gen_requests,
@@ -273,8 +276,16 @@ def canvas_generation_candidates(request: Request, limit: int = 30):
     카드 소속표에 이미 있는 것은 씬을 열 때 자동으로 합쳐지므로 여기 나오면 안 된다.
     """
     acc = _require_account(request)
+    creator_uid = (
+        account_actor_uid(request)
+        if AUTH_ENABLED
+        else acc.get("creator_uid") or repo.get_my_uid()
+    )
     ids = repo.list_canvas_generation_candidates(
-        acc["email"], limit=limit, owner_uid=actor_id(request)
+        acc["email"],
+        limit=limit,
+        owner_uid=actor_id(request),
+        creator_uid=creator_uid or "",
     )
     items = [repo.get_generation(gen_id) for gen_id in ids]
     return {"items": [item for item in items if item]}
@@ -284,8 +295,18 @@ def canvas_generation_candidates(request: Request, limit: int = 30):
 def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
     """선택한 구버전 생성물을 한 캔버스 카드에 1회 귀속한다."""
     acc = _require_account(request)
+    creator_uid = (
+        account_actor_uid(request)
+        if AUTH_ENABLED
+        else acc.get("creator_uid") or repo.get_my_uid()
+    )
     claimed = repo.claim_canvas_generation_candidate(
-        acc["email"], body.generation_id, body.scene_id, body.card_id
+        acc["email"],
+        body.generation_id,
+        body.scene_id,
+        body.card_id,
+        owner_uid=actor_id(request),
+        creator_uid=creator_uid or "",
     )
     if not claimed:
         raise HTTPException(status_code=404, detail="복구할 수 있는 내 생성 요청이 아닙니다")
@@ -344,17 +365,50 @@ async def begin_gen_request_submission(
     rid: str,
     request: Request,
     agent_id: str,
+    body: SubmissionFingerprintIn | None = None,
 ):
     """신 에이전트의 실제 `generate create` 직전 CAS. 성공 전에는 유료 CLI를 호출하면 안 된다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    applied = await begin_submission(acc["email"], realtime_scope(acc), rid, agent_id)
+    applied = await begin_submission(
+        acc["email"],
+        realtime_scope(acc),
+        rid,
+        agent_id,
+        body.model_dump() if body else None,
+    )
     if not applied:
         raise HTTPException(
             status_code=409,
             detail="제출 권한이 만료됐거나 다른 에이전트가 인계했습니다 — 생성하지 않습니다",
         )
     return {"ok": True, "applied": True}
+
+
+@router.get("/gen-requests/recovery-probes")
+def recovery_probe_requests(request: Request, limit: int = 16):
+    """에이전트가 최신 HF 목록과 대조할 자기 계정의 모호한 제출 지문."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    return {"requests": repo.list_recovery_probe_requests(acc["email"], limit=limit)}
+
+
+@router.post("/gen-requests/{rid}/recovery-probe")
+def record_recovery_probe(rid: str, body: RecoveryProbeResultIn, request: Request):
+    """읽기 전용 자동 조사의 후보 수를 ledger에 반영한다. 생성 호출은 이 경로에 없다."""
+    acc = _require_account(request)
+    if body.outcome == "unique" and (body.candidate_count != 1 or not body.job_id):
+        raise HTTPException(status_code=400, detail="유일 후보 결과에는 job_id 1개가 필요합니다")
+    if body.outcome == "no_match" and body.candidate_count != 0:
+        raise HTTPException(status_code=400, detail="후보 없음 결과의 개수가 올바르지 않습니다")
+    if body.outcome == "multiple" and body.candidate_count < 2:
+        raise HTTPException(status_code=400, detail="복수 후보 결과의 개수가 올바르지 않습니다")
+    recorded = repo.record_recovery_probe_result(
+        rid, acc["email"], body.outcome, body.candidate_count, body.job_id
+    )
+    if not recorded:
+        raise HTTPException(status_code=409, detail="조사 결과를 반영할 복구 보류 요청이 없습니다")
+    return {"ok": True, "applied": True, **recorded}
 
 
 @router.post("/gen-requests/{rid}/release-claim")
@@ -397,9 +451,12 @@ async def confirm_gen_request_not_submitted(
             detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
         )
     acc = _require_account(request)
-    applied = await confirm_not_submitted_and_requeue(
-        acc["email"], realtime_scope(acc), rid
-    )
+    try:
+        applied = await confirm_not_submitted_and_requeue(
+            acc["email"], realtime_scope(acc), rid
+        )
+    except RecoveryRequeueBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not applied:
         raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
     return {"ok": True, "applied": True}
@@ -418,11 +475,14 @@ async def confirm_generation_not_submitted(
             detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
         )
     acc = _require_account(request)
-    applied = await confirm_generation_not_submitted_and_requeue(
-        acc["email"],
-        realtime_scope(acc),
-        gen_id,
-    )
+    try:
+        applied = await confirm_generation_not_submitted_and_requeue(
+            acc["email"],
+            realtime_scope(acc),
+            gen_id,
+        )
+    except RecoveryRequeueBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not applied:
         raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
     return {"ok": True, "applied": True}

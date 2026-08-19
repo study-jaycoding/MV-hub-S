@@ -34,6 +34,10 @@ _pm_last_failure_log_at = 0.0
 _PM_FAILURE_LOG_INTERVAL = 300.0
 _estimate_tasks: set[asyncio.Task[None]] = set()
 
+
+class RecoveryRequeueBlocked(RuntimeError):
+    """자동 조사 결론을 먼저 반영해야 해 명시 재큐를 보류할 때의 사용자 안내."""
+
 _HF_ENDED_RE = re.compile(
     r"\bjob\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
     r"\s+ended with status\s+['\"]?([A-Za-z_ -]+)['\"]?",
@@ -399,6 +403,7 @@ async def begin_submission(
     account_uid: str | None,
     request_id: str,
     lease_owner: str,
+    submission_fingerprint: dict | None = None,
 ) -> bool:
     """신 에이전트가 실제 CLI 생성 호출 직전에 claimed를 submitting으로 올린다."""
     result = await _sync_io(
@@ -406,6 +411,7 @@ async def begin_submission(
         request_id,
         email,
         lease_owner,
+        submission_fingerprint,
     )
     if not result:
         return False
@@ -505,9 +511,21 @@ async def confirm_not_submitted_and_requeue(
     request_id: str,
 ) -> bool:
     """사용자가 외부 작업 부재를 확인한 경우에만 recovery_required를 pending으로 되돌린다."""
-    gen_id = await _sync_io(repo.requeue_recovery_request, request_id, email)
-    if not gen_id:
+    decision = await _sync_io(repo.prepare_recovery_requeue, request_id, email)
+    if decision.get("status") == "probe_required":
+        # 사용자의 첫 클릭이 곧 에이전트를 깨워 최신 list를 다시 읽게 한다. create 호출은 없으며,
+        # 결과가 기록되기 전에는 재큐하지 않아 오클릭 이중 과금 창을 닫는다.
+        agent_signals.signal(email, "recovery-probe")
+        raise RecoveryRequeueBlocked(
+            "자동 제출 조사를 요청했습니다. 잠시 후 다시 시도해 주세요."
+        )
+    if decision.get("status") == "candidate_found":
+        raise RecoveryRequeueBlocked(
+            "자동 조사에서 기존 Higgsfield 생성 후보를 찾았습니다. 재실행하지 않고 자동 연결을 기다립니다."
+        )
+    if decision.get("status") != "requeued":
         return False
+    gen_id = decision["gen_id"]
     log_event(
         _generation_log,
         "generation_recovery_requeued",

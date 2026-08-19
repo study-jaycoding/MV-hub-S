@@ -38,6 +38,7 @@ import webbrowser
 import uuid
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
+from datetime import datetime, timezone
 from threading import Event, Lock
 from urllib.parse import quote, urlencode, urlparse
 
@@ -582,6 +583,7 @@ def _begin_submission(
     token: str,
     rid: str,
     agent_id: str,
+    submission_fingerprint: dict | None = None,
 ) -> bool:
     """신 서버의 staged claim을 실제 CLI 호출 직전에 submitting으로 전환한다.
 
@@ -595,7 +597,10 @@ def _begin_submission(
         {"agent_id": agent_id},
     )
     for _ in range(3):
-        status, body = _http("POST", url, token=token, timeout=15)
+        kwargs = {"token": token, "timeout": 15}
+        if submission_fingerprint is not None:
+            kwargs["body"] = submission_fingerprint
+        status, body = _http("POST", url, **kwargs)
         if status == 200:
             return not isinstance(body, dict) or body.get("applied", True) is not False
         if 400 <= status < 500:
@@ -632,6 +637,193 @@ def _require_submission_recovery(server: str, token: str, rid: str) -> bool:
 
 def _list_reconcile_candidates(server: str, token: str):
     return _http("GET", _gen_request_url(server, action="reconcile-candidates"), token=token)
+
+
+def _list_recovery_probes(server: str, token: str):
+    return _http("GET", _gen_request_url(server, action="recovery-probes"), token=token)
+
+
+def _report_recovery_probe(
+    server: str,
+    token: str,
+    rid: str,
+    outcome: str,
+    candidate_count: int,
+    job_id: str | None = None,
+) -> dict | None:
+    body = {"outcome": outcome, "candidate_count": candidate_count}
+    if job_id:
+        body["job_id"] = job_id
+    status, data = _http(
+        "POST",
+        _gen_request_url(server, rid, "recovery-probe"),
+        token=token,
+        body=body,
+    )
+    if status != 200 or not isinstance(data, dict) or data.get("applied") is False:
+        return None
+    return data
+
+
+_GENERATE_READ_ACTIONS = frozenset({"list", "get"})
+
+
+def _read_generate_json(cli: str, action: str, *args: str, timeout: int = 120):
+    """자동 조사가 쓸 수 있는 HF 명령을 list/get으로 구조적으로 제한한다."""
+    if action not in _GENERATE_READ_ACTIONS:
+        raise ValueError(f"읽기 전용 조사에서 금지된 generate action: {action}")
+    return _cli_json(cli, "generate", action, *args, timeout=timeout)
+
+
+def _probe_epoch(value) -> float | None:
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _probe_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip().lower()
+
+
+def _job_reference_roles(medias) -> list[str]:
+    roles: list[str] = []
+    if not isinstance(medias, list):
+        return roles
+    for media in medias:
+        if not isinstance(media, dict):
+            continue
+        data = media.get("data")
+        fallback = data.get("type") if isinstance(data, dict) else ""
+        roles.append(_probe_role(media.get("role"), fallback))
+    return sorted(roles)
+
+
+def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
+    """계정 범위 최신 목록에서 제출 시각·모델·프롬프트·옵션·레퍼런스를 보수적으로 대조한다."""
+    fingerprint = request.get("fingerprint")
+    if not isinstance(fingerprint, dict) or not job.get("id"):
+        return False
+    model = job.get("job_set_type") or job.get("job_type")
+    if str(model or "") != str(fingerprint.get("model") or ""):
+        return False
+    params = job.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
+        return False
+    candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
+    if hashlib.sha256(candidate_prompt.encode("utf-8")).hexdigest() != fingerprint.get(
+        "prompt_sha256"
+    ):
+        return False
+
+    created_at = _probe_epoch(job.get("created_at"))
+    submitted_at = _probe_epoch(request.get("submission_started_at"))
+    recovery_at = _probe_epoch(request.get("recovery_required_at"))
+    if created_at is None or submitted_at is None:
+        return False
+    # 서버 begin 직전/CLI 시계 오차 2분을 허용하되, 복구 격리 뒤 생긴 동명 작업은 후보에서 뺀다.
+    if created_at < submitted_at - 120:
+        return False
+    if recovery_at is not None and created_at > recovery_at + 120:
+        return False
+
+    candidate_options = params
+    for key, expected in (fingerprint.get("params") or {}).items():
+        # HF 목록이 기본값을 생략할 수 있어 없는 키는 중립으로 둔다. 명시된 값의 충돌은 제외한다.
+        if key in candidate_options and _probe_value(candidate_options[key]) != _probe_value(expected):
+            return False
+
+    expected_roles = sorted(str(role) for role in (fingerprint.get("reference_roles") or []))
+    candidate_roles = _job_reference_roles(params.get("medias"))
+    # 공급자가 입력 메타를 통째로 누락한 검증실패 결과도 찾을 수 있게 빈 목록은 중립으로 둔다.
+    if candidate_roles and candidate_roles != expected_roles:
+        return False
+    if not expected_roles and candidate_roles:
+        return False
+    return True
+
+
+def recovery_probe_pass(server: str, token: str, cli: str) -> int:
+    """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다."""
+    status, data = _list_recovery_probes(server, token)
+    requests = data.get("requests") if status == 200 and isinstance(data, dict) else None
+    if not isinstance(requests, list) or not requests:
+        return 0
+    anchored = 0
+    pending_requests: list[dict] = []
+    for request in requests:
+        if not isinstance(request, dict) or not request.get("id"):
+            continue
+        # 유일 후보 기록 뒤 앵커 응답만 유실된 경우 최신 목록을 다시 추측하지 않고, ledger에
+        # 저장한 같은 job_id만 재전송한다. create 계열 호출은 여전히 이 경로에 없다.
+        recorded_job_id = request.get("recovery_probe_job_id")
+        if request.get("recovery_probe_status") == "unique" and recorded_job_id:
+            if _anchor(
+                server, token, str(request["id"]), str(recorded_job_id), verifying=True
+            ):
+                anchored += 1
+                print(f"  ✓ 모호한 제출 자동 복구 재시도: {str(recorded_job_id)[:8]}")
+            continue
+        pending_requests.append(request)
+    if not pending_requests:
+        return anchored
+    jobs = _read_generate_json(cli, "list", "--size", "100", timeout=120)
+    if not isinstance(jobs, list):
+        return anchored
+    list_saturated = len(jobs) >= 100
+    for request in pending_requests:
+        matches_by_id = {
+            str(job["id"]): job
+            for job in jobs
+            if isinstance(job, dict) and _matches_submission_fingerprint(request, job)
+        }
+        matches = list(matches_by_id.values())
+        if len(matches) == 1:
+            outcome = "unique"
+        elif matches:
+            outcome = "multiple"
+        else:
+            # 최신 창이 꽉 찼으면 후보가 100건 밖으로 밀렸을 수 있다. CLI list에는 cursor 계약이
+            # 없으므로 '없음'으로 확정해 재큐 문을 열지 않고, 다음 주기/수동 확인까지 보류한다.
+            if list_saturated:
+                print("  ⚠ 모호한 제출 조사 보류 — 최신 100건 창이 가득 참")
+                continue
+            outcome = "no_match"
+        job_id = str(matches[0]["id"]) if len(matches) == 1 else None
+        recorded = _report_recovery_probe(
+            server, token, str(request["id"]), outcome, len(matches), job_id
+        )
+        if not recorded:
+            continue
+        effective_outcome = recorded.get("outcome", outcome)
+        effective_job_id = recorded.get("job_id") if effective_outcome == "unique" else None
+        if effective_job_id and _anchor(
+            server, token, str(request["id"]), str(effective_job_id), verifying=True
+        ):
+            anchored += 1
+            print(f"  ✓ 모호한 제출 자동 복구: {str(effective_job_id)[:8]}")
+        elif effective_outcome in {"unique", "multiple"}:
+            print(
+                f"  ⚠ 모호한 제출 후보 {recorded.get('candidate_count', len(matches))}개 "
+                "— 자동 재실행 보류"
+            )
+    return anchored
 
 
 def _wait_event(server: str, token: str, timeout: int = 35):
@@ -840,8 +1032,11 @@ def _load_suppressed() -> "set[str]":
 
 
 def _suppress_job(job_id: "str | None") -> None:
-    """레퍼런스 미부착으로 실패한 고아 잡을 '카드화 금지' 목록에 넣는다 — 다음 push 사이클의
-    generate list 에 남아 있어도 서버로 올리지 않는다(실패는 실패로 끝, 엉뚱한 카드가 안 생긴다)."""
+    """레퍼런스 미부착으로 실패한 잡을 '원래 카드 자동 부착 금지' 목록에 넣는다.
+
+    유료 결과 자체는 다음 push에서 서버 라이브러리에 별도 격리 저장한다. 이 로컬 목록은
+    검증 실패를 기억하고 로그로 구분하기 위한 표식이며, 결과 은폐 필터로 사용하지 않는다.
+    """
     if not job_id:
         return
     ids = _load_suppressed()
@@ -1005,6 +1200,42 @@ def _param_flags(params: dict, allowed: set) -> list[str]:
         else:
             out += [f"--{k}", str(v)]
     return out
+
+
+def _fingerprint_params(params: dict, allowed: set) -> dict:
+    """CLI에 실제 플래그로 전달되는 스칼라 옵션만 제출 지문에 남긴다."""
+    return {
+        str(key): value
+        for key, value in (params or {}).items()
+        if key != "prompt"
+        and value not in (None, "")
+        and not isinstance(value, (list, dict))
+        and (not allowed or key in allowed)
+    }
+
+
+def _probe_role(value, fallback: str = "") -> str:
+    raw = str(value or fallback or "").strip().lower()
+    raw = raw.replace("simage", "startimage").replace("eimage", "endimage")
+    raw = raw.replace("vedio", "video")
+    return re.sub(r"[^a-z0-9]", "", raw)
+
+
+def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set, refs: list) -> dict:
+    """원문 프롬프트를 저장하지 않고 같은 HF 목록 항목을 대조할 안정 지문을 만든다."""
+    normalized_prompt = re.sub(r"\s+", " ", prompt.lstrip(_ZWSP)).strip()
+    roles = sorted(
+        _probe_role(ref.get("role"), ref.get("type") or "image")
+        for ref in refs
+        if isinstance(ref, dict)
+    )
+    return {
+        "version": 1,
+        "model": model,
+        "prompt_sha256": hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest(),
+        "params": _fingerprint_params(params, allowed),
+        "reference_roles": roles,
+    }
 
 
 def _fail(server: str, token: str, rid: str, reason: str) -> None:
@@ -1384,7 +1615,8 @@ def _submit_one(
     if str(params.get("batch_size", "1")) != "1":
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
-    args += _param_flags(params, _allowed_params(cli, model))
+    allowed_params = _allowed_params(cli, model)
+    args += _param_flags(params, allowed_params)
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
@@ -1436,6 +1668,9 @@ def _submit_one(
         return None
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args
+    submission_fingerprint = _submission_fingerprint(
+        model, prompt, params, allowed_params, refs
+    )
     print(f"  → {model}: {prompt[:40]}")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
     # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
@@ -1450,7 +1685,7 @@ def _submit_one(
         # 신 서버가 claim_phase=claimed를 보낸 경우에만 2단계 제출 계약을 적용한다. ACK가 없으면
         # generate create를 절대 호출하지 않는다. 구 서버 응답에는 이 필드가 없어 기존 흐름 유지.
         if r.get("claim_phase") == "claimed" and not _begin_submission(
-            server, token, rid, agent_id
+            server, token, rid, agent_id, submission_fingerprint
         ):
             _release_claim(server, token, rid, agent_id)
             print("  ✗ 서버 제출 허가를 확인하지 못해 생성하지 않았습니다")
@@ -1978,13 +2213,14 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             if isinstance(t, dict) and t.get("display_name") in dn2key:
                 t["model"] = dn2key[t["display_name"]]
 
-    # 3) 새 것만 추림(서버에 없는 job_id) — 단, 미부착으로 실패한 고아 잡은 카드로 안 올린다.
-    #    reinspect 면 차집합(fresh_ids)을 무시하고 최신 전량을 대상으로(억제 목록은 그대로 존중).
+    # 3) 새 것만 추림(서버에 없거나 격리 라이브러리 행이 아직 없는 job_id).
+    # suppression은 이제 결과 은폐가 아니라 원래 카드 자동 부착 금지 표식이다. 서버가 실패
+    # placeholder와 별도 synced 행으로 저장하므로, suppressed 잡도 정상 적재 대상으로 보낸다.
     suppressed = _load_suppressed()
     fresh = [
         j
         for j in jobs
-        if isinstance(j, dict) and j.get("id") and (reinspect or j["id"] in fresh_ids) and j["id"] not in suppressed
+        if isinstance(j, dict) and j.get("id") and (reinspect or j["id"] in fresh_ids)
     ]
     n_suppressed = sum(
         1 for j in jobs
@@ -1993,7 +2229,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 내 힉스필드 uid = 내 전체 목록의 최다 user_<id>(= 내 본인 것). fresh 만 보면 남의 레퍼런스에
     # 오염될 수 있으므로 반드시 '전체 목록' 기준으로 산출해 명시 전송 → 서버가 올바르게 연결.
     my_uid = _dominant_uid(jobs)
-    skip_note = f" · 미부착 억제 {n_suppressed}개" if n_suppressed else ""
+    skip_note = f" · 원카드 부착 금지 {n_suppressed}개(라이브러리 적재)" if n_suppressed else ""
     mode_note = "재점검(전량 재전송)" if reinspect else "새 잡"
     print(f"[로컬] 잡 {len(jobs)}개 중 {mode_note} {len(fresh)}개{skip_note} · 내 uid={my_uid}")
     if not fresh and not acct:
@@ -2076,6 +2312,8 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
     account_email = _cli_account_email(cli)
     active = _runtime_active(server, account_email)
     finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
+    # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
+    recovery_probe_pass(server, token, cli)
     reconcile_pass(server, token, cli, account_email, skip_job_ids=set(active))
     return finished
 

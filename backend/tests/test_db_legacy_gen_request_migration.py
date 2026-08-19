@@ -41,7 +41,49 @@ class LegacyGenRequestMigrationTests(unittest.TestCase):
             self.assertTrue(
                 {"canvas_attempt_id", "canvas_scene_id", "canvas_card_id"} <= columns
             )
+            self.assertTrue(
+                {
+                    "submission_fingerprint",
+                    "submission_started_at",
+                    "recovery_probe_status",
+                    "recovery_probe_at",
+                    "recovery_probe_matches",
+                    "recovery_probe_job_id",
+                }
+                <= columns
+            )
             self.assertIn("idx_genrequest_canvas_attempt", indexes)
+
+    def test_init_db_adds_synced_claim_anchor_before_scene_index(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db_path = Path(tmp) / "content_hub.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "CREATE TABLE scene_card_generation ("
+                    "owner_uid TEXT NOT NULL, scene_id TEXT NOT NULL, card_id TEXT NOT NULL, "
+                    "generation_id TEXT NOT NULL, removed_at TEXT, "
+                    "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+                    "PRIMARY KEY(owner_uid,scene_id,card_id,generation_id))"
+                )
+
+            db.init_db(db_path)
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(scene_card_generation)"
+                    )
+                }
+                indexes = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA index_list(scene_card_generation)"
+                    )
+                }
+
+            self.assertIn("canvas_attempt_id", columns)
+            self.assertIn("idx_scene_card_gen_attempt", indexes)
 
 
 if __name__ == "__main__":

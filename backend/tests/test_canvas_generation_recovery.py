@@ -447,6 +447,77 @@ class CanvasGenerationRecoveryTests(unittest.TestCase):
             )
         )
 
+    def test_synced_candidate_without_request_is_owner_scoped_and_claimable(self):
+        parsed = {
+            "generation": {
+                "id": "job-synced-claim",
+                "prompt": "history result",
+                "model": "model",
+                "params": {"prompt": "history result"},
+                "status": "done",
+                "created_at": "2026-08-20T00:00:00Z",
+                "sort_ts": 1_755_648_000.0,
+                "creator_uid": "u-artist",
+            },
+            "asset": {
+                "type": "image",
+                "file_path": "https://cdn.example/job-synced-claim.png",
+            },
+            "references": [],
+        }
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "inserted")
+        with db.get_connection() as conn:
+            synced_id = conn.execute(
+                "SELECT id FROM generation WHERE job_id='job-synced-claim'"
+            ).fetchone()["id"]
+
+        mine = repo.list_canvas_generation_candidates(
+            "artist@example.com", owner_uid="u-artist", creator_uid="u-artist"
+        )
+        others = repo.list_canvas_generation_candidates(
+            "other@example.com", owner_uid="u-other", creator_uid="u-other"
+        )
+        self.assertIn(synced_id, mine)
+        self.assertNotIn(synced_id, others)
+        self.assertFalse(
+            repo.claim_canvas_generation_candidate(
+                "other@example.com",
+                synced_id,
+                "scene-other",
+                "card-other",
+                owner_uid="u-other",
+                creator_uid="u-other",
+            )
+        )
+        self.assertTrue(
+            repo.claim_canvas_generation_candidate(
+                "artist@example.com",
+                synced_id,
+                "scene-a",
+                "card-a",
+                owner_uid="u-artist",
+                creator_uid="u-artist",
+            )
+        )
+        with db.get_connection() as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT id FROM gen_request WHERE gen_id=?", (synced_id,)
+                ).fetchone()
+            )
+            link = conn.execute(
+                "SELECT canvas_attempt_id FROM scene_card_generation "
+                "WHERE owner_uid='u-artist' AND generation_id=?",
+                (synced_id,),
+            ).fetchone()
+        self.assertTrue(link["canvas_attempt_id"].startswith("manual_"))
+        self.assertNotIn(
+            synced_id,
+            repo.list_canvas_generation_candidates(
+                "artist@example.com", owner_uid="u-artist", creator_uid="u-artist"
+            ),
+        )
+
     def test_slow_cost_estimate_does_not_delay_generation_response(self):
         link = self._link("slow")
 

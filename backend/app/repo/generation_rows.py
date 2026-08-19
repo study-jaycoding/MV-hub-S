@@ -56,6 +56,16 @@ def _attach_children(
         g["media_preservation_error"] = None
         g["media_preservation_next_retry_at"] = None
         g["media_preservation_updated_at"] = None
+        g["invalid_input_result"] = False
+
+    # 개인 로컬 격리 표식은 generation/share 데이터와 분리한다. API에는 표시용 bool만 붙이고
+    # export_bundle이 읽는 generation 공개 필드에는 넣지 않아 팀 공유로 새지 않게 한다.
+    for r in conn.execute(
+        f"SELECT generation_id FROM generation_local_flag "
+        f"WHERE invalid_input_result=1 AND generation_id IN ({placeholders})",
+        ids,
+    ).fetchall():
+        by_id[r["generation_id"]]["invalid_input_result"] = True
 
     for r in conn.execute(
         f"SELECT generation_id, reason, status, attempts, cached_count, failed_count, "

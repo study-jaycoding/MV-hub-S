@@ -444,6 +444,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("canvas_attempt_id", "TEXT"),
             ("canvas_scene_id", "TEXT"),
             ("canvas_card_id", "TEXT"),
+            ("submission_fingerprint", "TEXT"),
+            ("submission_started_at", "TEXT"),
+            ("recovery_probe_status", "TEXT"),
+            ("recovery_probe_at", "TEXT"),
+            ("recovery_probe_matches", "INTEGER NOT NULL DEFAULT 0"),
+            ("recovery_probe_job_id", "TEXT"),
         ):
             if name not in gr_cols:
                 conn.execute(f"ALTER TABLE gen_request ADD COLUMN {name} {ddl}")
@@ -475,6 +481,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_canvas_attempt "
             "ON gen_request(account_email, canvas_attempt_id) "
+            "WHERE canvas_attempt_id IS NOT NULL"
+        )
+
+    # 검증 실패 결과 표식은 개인 로컬 메타라 generation 본체에 넣지 않는다. 그래야 선택 공유
+    # 번들이 이 내부 표식을 팀 서버 데이터로 직렬화할 여지가 없다.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS generation_local_flag ("
+        "generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE, "
+        "invalid_input_result INTEGER NOT NULL DEFAULT 0)"
+    )
+    scene_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
+    }
+    if scene_cols and "canvas_attempt_id" not in scene_cols:
+        conn.execute("ALTER TABLE scene_card_generation ADD COLUMN canvas_attempt_id TEXT")
+        scene_cols.add("canvas_attempt_id")
+    if "canvas_attempt_id" in scene_cols:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_card_gen_attempt "
+            "ON scene_card_generation(owner_uid, canvas_attempt_id) "
             "WHERE canvas_attempt_id IS NOT NULL"
         )
 

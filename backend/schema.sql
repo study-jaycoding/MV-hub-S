@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS generation (
     workspace_name TEXT                              -- 현재 귀속 워크스페이스 표시 이름(생성 시 기본값, 수동 변경 가능)
 );
 
+-- 이 PC에서만 쓰는 생성물 표식. 공유 번들은 generation의 공개 필드만 직렬화하므로 이 값은
+-- 팀 서버로 나가지 않는다. 레퍼런스 검증에 실패했지만 이미 과금된 결과를 숨기지 않고 구분한다.
+CREATE TABLE IF NOT EXISTS generation_local_flag (
+    generation_id        TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,
+    invalid_input_result INTEGER NOT NULL DEFAULT 0
+);
+
 -- 공유·최종 생성물 원본 보존 작업. 다운로드를 요청 응답과 분리하고 상태를 영속화해
 -- 프로세스 재시작 뒤에도 이어서 처리한다. 원격 URL·프롬프트는 이 테이블에 기록하지 않는다.
 CREATE TABLE IF NOT EXISTS media_preservation (
@@ -255,6 +262,12 @@ CREATE TABLE IF NOT EXISTS gen_request (
     canvas_attempt_id TEXT,                       -- 캔버스가 요청 전에 저장한 복구 표식
     canvas_scene_id TEXT,                         -- 개인 캔버스 씬 ID(로컬 허브에만 저장)
     canvas_card_id TEXT,                          -- 결과가 돌아갈 생성카드 ID
+    submission_fingerprint TEXT,                  -- 실제 CLI 제출 직전 명령 지문(JSON, prompt는 sha256)
+    submission_started_at TEXT,                   -- begin-submission이 승인된 서버 시각
+    recovery_probe_status TEXT,                   -- unique | multiple | no_match (읽기 전용 자동 조사)
+    recovery_probe_at TEXT,
+    recovery_probe_matches INTEGER NOT NULL DEFAULT 0,
+    recovery_probe_job_id TEXT,                   -- 유일 후보 앵커가 유실돼도 같은 job만 재시도
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -459,6 +472,7 @@ CREATE TABLE IF NOT EXISTS scene_card_generation (
     scene_id      TEXT NOT NULL,
     card_id       TEXT NOT NULL,
     generation_id TEXT NOT NULL,
+    canvas_attempt_id TEXT,                              -- gen_request 없는 synced 결과의 수동 claim 앵커
     removed_at    TEXT,                                  -- 카드에서 뺐음(다른 브라우저에도 전파)
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (owner_uid, scene_id, card_id, generation_id)
@@ -466,6 +480,7 @@ CREATE TABLE IF NOT EXISTS scene_card_generation (
 -- 씬 열 때 그 씬 전체를 한 번에 읽는다(카드별 N번 조회 금지).
 CREATE INDEX IF NOT EXISTS idx_scene_card_gen_scene
     ON scene_card_generation(owner_uid, scene_id);
+-- idx_scene_card_gen_attempt는 기존 DB에 canvas_attempt_id를 ALTER한 뒤 db_migrations에서 만든다.
 
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);

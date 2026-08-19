@@ -108,6 +108,7 @@ class GenerationOut(BaseModel):
     comment_count: int = 0  # 공유 코멘트 스레드 글 수
     has_unread: bool = False  # 미확인 코멘트 존재(뷰어 기준 — C 뱃지)
     local_only: bool = False  # 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)
+    invalid_input_result: bool = False  # 개인 로컬 표식: 입력 검증 실패지만 이미 생성된 유료 결과
     creator_uid: Optional[str] = None  # 생성자 식별자(팀 워크스페이스)
     creator_name: Optional[str] = None  # 사용자 지정 이름(uid→이름)
     is_mine: bool = True  # 내 생성물인가(아니면 팀원)
@@ -273,6 +274,24 @@ class PendingRequestOut(BaseModel):
     references: list[dict[str, Any]] = Field(default_factory=list)  # [{file_path(url), type, role}]
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     claim_phase: Optional[str] = None  # 신 서버 claimed, 구 서버 응답에는 없음(혼합 배포 호환)
+
+
+class SubmissionFingerprintIn(BaseModel):
+    """실제 create 직전 명령의 비교 가능한 지문. 프롬프트 원문 대신 sha256만 저장한다."""
+
+    version: int = 1
+    model: str = Field(min_length=1, max_length=200)
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    params: dict[str, Any] = Field(default_factory=dict)
+    reference_roles: list[str] = Field(default_factory=list, max_length=32)
+
+
+class RecoveryProbeResultIn(BaseModel):
+    """에이전트의 읽기 전용 최신 목록 조사 결과."""
+
+    outcome: str = Field(pattern="^(unique|multiple|no_match)$")
+    candidate_count: int = Field(ge=0, le=100)
+    job_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class RecoveryDecisionIn(BaseModel):

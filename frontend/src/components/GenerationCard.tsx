@@ -288,6 +288,14 @@ function GenerationCardImpl({
           @{gen.source_name || "source"}
         </span>
       )}
+      {gen.invalid_input_result && (
+        <span
+          className="invalid-input-badge"
+          title="입력 레퍼런스 검증에 실패한 결과입니다. 원래 카드에는 자동으로 붙지 않았습니다."
+        >
+          입력 검증 실패
+        </span>
+      )}
       {/* 다른 작업자가 만든 결과물 — 카드 우측 상단 뱃지(상시 표시). */}
       {!gen.is_mine && (
         <span

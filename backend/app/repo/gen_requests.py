@@ -114,6 +114,7 @@ def begin_request_submission(
     rid: str,
     account_email: str,
     lease_owner: str,
+    submission_fingerprint: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """claimed 요청을 CLI 호출 직전 submitting으로 전환한다.
 
@@ -143,9 +144,25 @@ def begin_request_submission(
             conn.execute("ROLLBACK")
             return None
         transitioned = row["status"] == "claimed"
+        encoded_fingerprint = (
+            json.dumps(submission_fingerprint, ensure_ascii=False, sort_keys=True)
+            if submission_fingerprint
+            else None
+        )
         if transitioned:
+            if encoded_fingerprint:
+                # 재큐 뒤 새 제출은 과거 제출의 시각/지문을 물려받으면 안 된다. 실제 create 직전
+                # claimed→submitting 전이에서 이번 제출 ledger를 한 번만 새 값으로 확정한다.
+                conn.execute(
+                    "UPDATE gen_request SET submission_fingerprint=?, "
+                    "submission_started_at=datetime('now'), recovery_probe_status=NULL, "
+                    "recovery_probe_at=NULL, recovery_probe_matches=0, "
+                    "recovery_probe_job_id=NULL WHERE id=?",
+                    (encoded_fingerprint, rid),
+                )
             conn.execute(
                 "UPDATE gen_request SET status='submitting', error=NULL, "
+                "submission_started_at=COALESCE(submission_started_at,datetime('now')), "
                 "lease_expires_at=datetime('now','+30 minutes'), updated_at=datetime('now') "
                 "WHERE id=? AND status='claimed' AND lease_owner=?",
                 (rid, lease_owner),
@@ -217,7 +234,10 @@ def mark_request_recovery_required(
         if transitioned:
             conn.execute(
                 "UPDATE gen_request SET status='recovery_required', error=?, lease_owner=NULL, "
-                "lease_expires_at=NULL, next_check_at=NULL, updated_at=datetime('now') WHERE id=?",
+                "lease_expires_at=NULL, next_check_at=NULL, recovery_probe_status=NULL, "
+                "recovery_probe_at=NULL, recovery_probe_matches=0, recovery_probe_job_id=NULL, "
+                "updated_at=datetime('now') "
+                "WHERE id=?",
                 (RECOVERY_REQUIRED_NOTE, rid),
             )
             conn.execute(
@@ -242,6 +262,158 @@ def get_recovery_request_id_for_generation(
     return str(row["id"]) if row else None
 
 
+def list_recovery_probe_requests(
+    account_email: str, limit: int = 16
+) -> list[dict[str, Any]]:
+    """같은 계정 에이전트가 읽기 전용으로 조사할 지문 보유 복구 요청 목록."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT r.id, r.gen_id, r.submission_fingerprint, r.submission_started_at, "
+            "r.recovery_probe_status, r.recovery_probe_job_id, "
+            "r.updated_at recovery_required_at FROM gen_request r "
+            "JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.account_email=? AND r.status='recovery_required' "
+            "AND r.submission_fingerprint IS NOT NULL "
+            "AND COALESCE(r.recovery_probe_status,'') <> 'multiple' "
+            "AND (g.job_id IS NULL OR g.job_id='') "
+            "ORDER BY r.updated_at, r.id LIMIT ?",
+            (norm_email(account_email), max(1, min(limit, 100))),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            fingerprint = json.loads(row["submission_fingerprint"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(fingerprint, dict):
+            continue
+        out.append(
+            {
+                "id": str(row["id"]),
+                "gen_id": str(row["gen_id"]),
+                "fingerprint": fingerprint,
+                "submission_started_at": row["submission_started_at"],
+                "recovery_required_at": row["recovery_required_at"],
+                "recovery_probe_status": row["recovery_probe_status"],
+                "recovery_probe_job_id": row["recovery_probe_job_id"],
+            }
+        )
+    return out
+
+
+def record_recovery_probe_result(
+    rid: str,
+    account_email: str,
+    outcome: str,
+    candidate_count: int,
+    job_id: str | None = None,
+) -> Optional[dict[str, Any]]:
+    """읽기 전용 조사 결론만 ledger에 기록한다. job 앵커는 기존 CAS API가 따로 맡는다."""
+    if outcome not in {"unique", "multiple", "no_match"}:
+        return None
+    count = max(0, min(int(candidate_count), 100))
+    if (outcome == "unique" and (count != 1 or not job_id)) or (
+        outcome == "multiple" and count < 2
+    ) or (outcome == "no_match" and count != 0):
+        return None
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT recovery_probe_status, COALESCE(recovery_probe_matches,0) matches, "
+            "recovery_probe_job_id FROM gen_request WHERE id=? AND account_email=? "
+            "AND status='recovery_required' AND EXISTS (SELECT 1 FROM generation g "
+            "WHERE g.id=gen_request.gen_id AND (g.job_id IS NULL OR g.job_id=''))",
+            (rid, norm_email(account_email)),
+        ).fetchone()
+        if not current:
+            conn.execute("ROLLBACK")
+            return None
+        # 한 번 찾은 후보 증거를 뒤의 짧은 최신 목록이 지우게 두면 이중 과금 문이 다시 열린다.
+        # multiple은 영구 보류, unique는 최초에 저장한 정확한 job_id만 앵커 재시도한다.
+        if current["recovery_probe_status"] in {"unique", "multiple"}:
+            return {
+                "outcome": str(current["recovery_probe_status"]),
+                "candidate_count": int(current["matches"]),
+                "job_id": current["recovery_probe_job_id"],
+            }
+        cursor = conn.execute(
+            "UPDATE gen_request SET recovery_probe_status=?, recovery_probe_matches=?, "
+            "recovery_probe_at=datetime('now'), recovery_probe_job_id=? "
+            "WHERE id=? AND account_email=? AND status='recovery_required' "
+            "AND EXISTS (SELECT 1 FROM generation g WHERE g.id=gen_request.gen_id "
+            "AND (g.job_id IS NULL OR g.job_id=''))",
+            (
+                outcome,
+                count,
+                job_id if outcome == "unique" else None,
+                rid,
+                norm_email(account_email),
+            ),
+        )
+        if cursor.rowcount <= 0:
+            conn.execute("ROLLBACK")
+            return None
+        return {
+            "outcome": outcome,
+            "candidate_count": count,
+            "job_id": job_id if outcome == "unique" else None,
+        }
+
+
+def prepare_recovery_requeue(rid: str, account_email: str) -> dict[str, Any]:
+    """최신 자동 조사 결론과 재큐를 한 트랜잭션에서 판정해 후보 발견 레이스를 막는다."""
+    email = norm_email(account_email)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT r.gen_id, r.status, r.submission_fingerprint, r.recovery_probe_status, "
+            "COALESCE(r.recovery_probe_matches,0) recovery_probe_matches, "
+            "CASE WHEN r.recovery_probe_at >= datetime('now','-2 minutes') THEN 1 ELSE 0 END probe_fresh, "
+            "g.job_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+            "WHERE r.id=? AND r.account_email=?",
+            (rid, email),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return {"status": "invalid"}
+        if row["job_id"]:
+            conn.execute("ROLLBACK")
+            return {"status": "candidate_found", "gen_id": str(row["gen_id"])}
+        if row["status"] != "recovery_required":
+            conn.execute("ROLLBACK")
+            return {"status": "invalid", "gen_id": str(row["gen_id"])}
+        # 새 ledger는 후보가 1개 이상이면 절대 재큐하지 않는다. unique 앵커가 잠시 실패해도
+        # 다음 조사에서 이어 붙일 수 있게 보류한다.
+        if row["recovery_probe_status"] in {"unique", "multiple"} or row["recovery_probe_matches"] > 0:
+            conn.execute("ROLLBACK")
+            return {
+                "status": "candidate_found",
+                "gen_id": str(row["gen_id"]),
+                "candidate_count": int(row["recovery_probe_matches"]),
+            }
+        # 지문 없는 구버전 요청은 조사할 수 없으므로 종전의 명시 확인 동작을 보존한다.
+        if row["submission_fingerprint"] and not (
+            row["recovery_probe_status"] == "no_match" and row["probe_fresh"]
+        ):
+            conn.execute("ROLLBACK")
+            return {"status": "probe_required", "gen_id": str(row["gen_id"])}
+        conn.execute(
+            "UPDATE gen_request SET status='pending', error=NULL, provider_status=NULL, "
+            "last_checked_at=NULL, next_check_at=NULL, check_failures=0, lease_owner=NULL, "
+            "lease_expires_at=NULL, terminal_at=NULL, recovery_probe_status=NULL, "
+            "recovery_probe_at=NULL, recovery_probe_matches=0, submission_fingerprint=NULL, "
+            "submission_started_at=NULL, recovery_probe_job_id=NULL, updated_at=datetime('now') "
+            "WHERE id=?",
+            (rid,),
+        )
+        conn.execute(
+            "UPDATE generation SET status='pending', error=NULL "
+            "WHERE id=? AND status IN ('pending','running','failed')",
+            (row["gen_id"],),
+        )
+        return {"status": "requeued", "gen_id": str(row["gen_id"])}
+
+
 def requeue_recovery_request(
     rid: str,
     account_email: str,
@@ -262,7 +434,10 @@ def requeue_recovery_request(
         conn.execute(
             "UPDATE gen_request SET status='pending', error=NULL, provider_status=NULL, "
             "last_checked_at=NULL, next_check_at=NULL, check_failures=0, lease_owner=NULL, "
-            "lease_expires_at=NULL, terminal_at=NULL, updated_at=datetime('now') WHERE id=?",
+            "lease_expires_at=NULL, terminal_at=NULL, recovery_probe_status=NULL, "
+            "recovery_probe_at=NULL, recovery_probe_matches=0, submission_fingerprint=NULL, "
+            "submission_started_at=NULL, recovery_probe_job_id=NULL, updated_at=datetime('now') "
+            "WHERE id=?",
             (rid,),
         )
         conn.execute(
@@ -556,7 +731,10 @@ def resolve_canvas_generation_links(
 
 
 def list_canvas_generation_candidates(
-    account_email: str, limit: int = 30, owner_uid: str = ""
+    account_email: str,
+    limit: int = 30,
+    owner_uid: str = "",
+    creator_uid: str = "",
 ) -> list[str]:
     """수동 복구 후보 = 어느 카드에도 안 담긴 내 생성물(진짜 고아).
 
@@ -564,19 +742,34 @@ def list_canvas_generation_candidates(
     소속이 자동으로 합쳐지므로(sceneCardLinks), 그렇게 채워진 것까지 목록에 남으면 이미
     카드에 잘 있는 생성물이 '빠진 것'처럼 보여 사용자가 중복으로 또 붙이게 된다.
     """
-    sql = (
-        "SELECT r.gen_id FROM gen_request r JOIN generation g ON g.id=r.gen_id "
+    request_sql = (
+        "SELECT r.gen_id, r.created_at sort_at, r.id sort_id "
+        "FROM gen_request r JOIN generation g ON g.id=r.gen_id "
         "WHERE r.account_email=? AND r.kind='create' AND r.canvas_attempt_id IS NULL "
         "AND g.deleted_at IS NULL"
     )
     args: list[Any] = [norm_email(account_email)]
     if owner_uid:
-        sql += (
-            " AND r.gen_id NOT IN (SELECT generation_id FROM scene_card_generation "
-            "WHERE owner_uid=? AND removed_at IS NULL)"
+        request_sql += (
+            " AND NOT EXISTS (SELECT 1 FROM scene_card_generation s "
+            "WHERE s.owner_uid=? AND s.generation_id=r.gen_id AND s.removed_at IS NULL)"
         )
         args.append(owner_uid)
-    sql += " ORDER BY r.created_at DESC, r.id DESC LIMIT ?"
+    parts = [request_sql]
+    synced_owner = creator_uid or owner_uid
+    if owner_uid and synced_owner:
+        # history/list에서 들어온 순수 synced 행은 요청표가 없다. creator_uid로 본인 소유를
+        # 증명하고, 개인 카드 소속표에 아직 없는 행만 같은 수동 복구 목록에 합친다.
+        parts.append(
+            "SELECT g.id gen_id, g.created_at sort_at, g.id sort_id FROM generation g "
+            "WHERE g.origin='synced' AND g.creator_uid=? AND g.deleted_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id) "
+            "AND NOT EXISTS (SELECT 1 FROM scene_card_generation s "
+            "WHERE s.owner_uid=? AND s.generation_id=g.id AND s.removed_at IS NULL)"
+        )
+        args.extend((synced_owner, owner_uid))
+    sql = "SELECT gen_id FROM (" + " UNION ALL ".join(parts) + ") "
+    sql += "ORDER BY sort_at DESC, sort_id DESC LIMIT ?"
     args.append(max(1, min(limit, 100)))
     with get_connection() as conn:
         rows = conn.execute(sql, args).fetchall()
@@ -584,10 +777,16 @@ def list_canvas_generation_candidates(
 
 
 def claim_canvas_generation_candidate(
-    account_email: str, generation_id: str, scene_id: str, card_id: str
+    account_email: str,
+    generation_id: str,
+    scene_id: str,
+    card_id: str,
+    owner_uid: str = "",
+    creator_uid: str = "",
 ) -> bool:
     attempt_id = "manual_" + uuid.uuid4().hex
     with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE gen_request SET canvas_attempt_id=?, canvas_scene_id=?, canvas_card_id=?, "
             "updated_at=datetime('now') WHERE id=("
@@ -595,7 +794,34 @@ def claim_canvas_generation_candidate(
             "AND canvas_attempt_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1)",
             (attempt_id, scene_id, card_id, norm_email(account_email), generation_id),
         )
-    return cursor.rowcount > 0
+        if cursor.rowcount > 0:
+            return True
+
+        synced_owner = creator_uid or owner_uid
+        if not owner_uid or not synced_owner:
+            conn.execute("ROLLBACK")
+            return False
+        owned = conn.execute(
+            "SELECT 1 FROM generation g WHERE g.id=? AND g.origin='synced' "
+            "AND g.creator_uid=? AND g.deleted_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id) "
+            "AND NOT EXISTS (SELECT 1 FROM scene_card_generation s WHERE s.owner_uid=? "
+            "AND s.generation_id=g.id AND s.removed_at IS NULL)",
+            (generation_id, synced_owner, owner_uid),
+        ).fetchone()
+        if not owned:
+            conn.execute("ROLLBACK")
+            return False
+        # gen_request가 없는 행에 가짜 요청을 만들지 않는다. generation 기반 개인 소속표에
+        # attempt 앵커를 함께 심어 재조회·다른 브라우저에서도 claim 완료를 알 수 있게 한다.
+        cursor = conn.execute(
+            "INSERT INTO scene_card_generation"
+            "(owner_uid,scene_id,card_id,generation_id,canvas_attempt_id,removed_at) "
+            "VALUES(?,?,?,?,?,NULL) ON CONFLICT(owner_uid,scene_id,card_id,generation_id) "
+            "DO UPDATE SET canvas_attempt_id=excluded.canvas_attempt_id, removed_at=NULL",
+            (owner_uid, scene_id, card_id, generation_id, attempt_id),
+        )
+        return cursor.rowcount > 0
 
 
 def repair_orphaned_canvas_generation(

@@ -318,8 +318,8 @@ def apply_reconcile(
       · 이미 done 확정본은 절대 뒤집지 않는다(에셋 있는 완료본 보호).
       · 상태 변화가 없으면 no-op(False).
     force_fail_reason 이 주어지면(레퍼런스 미부착 등 '로컬 검증 실패') — 힉스필드엔 (엉뚱한) 결과가
-    완료로 있어도 failed 로 확정하되 **job_id 는 유지**(sync 가 중복 synced 카드를 새로 만들지 않게)하고
-    error 에 NO_REVIVE_ERROR 를 박아, 이후 재조정·동기화가 이 행을 done 으로 되살리지 못하게 한다.
+    완료로 있어도 원래 행은 failed 로 확정하고 job_id·NO_REVIVE_ERROR 를 남긴다. 동기화 저장소는 이
+    표식을 보고 실제 유료 결과를 별도 synced 행으로 격리하므로, 원래 카드에는 자동 부착되지 않는다.
     (status=failed 라 backstop 후보에서도 제외됨). done 확정본은 여기서도 건드리지 않는다.
     적용했으면 True(호출부가 브로드캐스트)."""
     with get_connection() as conn:

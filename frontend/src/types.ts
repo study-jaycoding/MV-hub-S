@@ -65,6 +65,7 @@ export interface Generation {
   comment_count: number; // 공유 코멘트 스레드 글 수
   has_unread: boolean; // 미확인 코멘트 존재(C 뱃지)
   local_only: boolean; // 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)
+  invalid_input_result?: boolean; // 로컬 전용: 입력 검증 실패지만 이미 생성된 결과
   creator_uid: string | null; // 생성자 식별자(팀 워크스페이스)
   creator_name: string | null; // 사용자 지정 이름
   is_mine: boolean; // 내 생성물인가(아니면 팀원)

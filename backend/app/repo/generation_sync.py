@@ -68,8 +68,9 @@ def _upsert_synced(
         # 이미 이 잡을 대표하는 행이 있는가? — 동기화본(id=job_id) 이거나
         # 로컬 생성본(job_id 컬럼=job_id). 있으면 그 행을 갱신해 중복 삽입을 막는다.
         existing = conn.execute(
-            "SELECT id, status, error, workspace_scope, creator_uid, model FROM generation "
-            "WHERE id = ? OR job_id = ? LIMIT 1",
+            "SELECT id, status, error, workspace_scope, creator_uid, model, origin "
+            "FROM generation WHERE id = ? OR job_id = ? "
+            "ORDER BY CASE WHEN origin='synced' THEN 0 ELSE 1 END LIMIT 1",
             (job_id, job_id),
         ).fetchone()
         # URL 매칭 — id/job_id 로 못 찾았고 결과 URL 이 있으면, 같은 결과물을 가진 로컬 생성본을
@@ -77,7 +78,7 @@ def _upsert_synced(
         adopt = False
         if not existing and result_url:
             existing = conn.execute(
-                "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model "
+                "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model, g.origin "
                 "FROM generation g "
                 "JOIN asset a ON a.generation_id=g.id "
                 "WHERE a.file_path=? OR a.source_url=? LIMIT 1",
@@ -86,11 +87,15 @@ def _upsert_synced(
             adopt = existing is not None
 
         result = "inserted"
+        invalid_input_result = False
         if existing:
-            # ★되살림 금지 실패(레퍼런스 미부착) 행은 sync 가 done 으로 되살리지 않는다 — 힉스필드 목록엔
-            #  완료로 있어도 우리가 실패 확정한 '엉뚱한 결과'라 재등장시키면 안 됨.
+            # 원래 placeholder는 실패로 보존하되, 이미 과금된 실제 결과까지 숨기지는 않는다.
+            # 같은 job_id의 별도 synced 행으로 넣어 자동 카드 부착만 막고 라이브러리에는 격리 표시한다.
             if existing["status"] == "failed" and (existing["error"] or "") == NO_REVIVE_ERROR:
-                return "unchanged"
+                existing = None
+                invalid_input_result = True
+
+        if existing:
             target_id = existing["id"]
             workspace_filled = (
                 existing["workspace_scope"] == "unknown" and workspace_scope != "unknown"
@@ -134,6 +139,7 @@ def _upsert_synced(
                     target_id,
                 ),
             )
+
         else:
             # 삭제(휴지통)된 잡은 새 행으로 되살리지 않는다 — 여기(existing 없음=신규 INSERT 직전)에서만
             # 거른다. 위 existing 분기(id/job_id/URL 매칭된 live 행)는 정상 갱신되게 둔다(같은 job_id 가
@@ -169,6 +175,13 @@ def _upsert_synced(
                     workspace_id,
                     workspace_name,
                 ),
+            )
+
+        if invalid_input_result:
+            conn.execute(
+                "INSERT INTO generation_local_flag(generation_id, invalid_input_result) "
+                "VALUES(?,1) ON CONFLICT(generation_id) DO UPDATE SET invalid_input_result=1",
+                (target_id,),
             )
 
         # asset: generation 당 1개로 단순화(재동기 시 교체).
@@ -288,20 +301,35 @@ def job_id_sync_diff(
     if not ids:
         return {"unknown": [], "refresh": []}
     ph = ",".join("?" * len(ids))
-    sql = f"SELECT job_id, status FROM generation WHERE job_id IN ({ph})"
+    sql = f"SELECT job_id, status, origin, error FROM generation WHERE job_id IN ({ph})"
     args: list[Any] = list(ids)
     if creator_uid:
         sql += " AND creator_uid = ?"
         args.append(creator_uid)
     with get_connection() as conn:
-        known = {
-            r["job_id"]: str(r["status"] or "").strip().lower()
-            for r in conn.execute(sql, args).fetchall()
-        }
+        rows = conn.execute(sql, args).fetchall()
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["job_id"]), []).append(row)
     return {
-        "unknown": [j for j in ids if j not in known],
+        "unknown": [j for j in ids if j not in grouped],
         "refresh": [
-            j for j in ids if j in known and known[j] in _REFRESHABLE_JOB_STATUSES
+            j
+            for j in ids
+            if j in grouped
+            and (
+                any(
+                    str(row["status"] or "").strip().lower() in _REFRESHABLE_JOB_STATUSES
+                    for row in grouped[j]
+                )
+                or (
+                    any(
+                        row["status"] == "failed" and (row["error"] or "") == NO_REVIVE_ERROR
+                        for row in grouped[j]
+                    )
+                    and not any(row["origin"] == "synced" for row in grouped[j])
+                )
+            )
         ],
     }
 

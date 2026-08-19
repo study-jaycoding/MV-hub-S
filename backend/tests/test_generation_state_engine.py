@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from contextlib import contextmanager
@@ -327,6 +328,128 @@ class TestGenerationStateEngine:
         assert repo.requeue_recovery_request(rid2, "worker@example.com") == gen_id2
         assert repo.get_gen_request(rid2)["status"] == "pending"
         assert repo.get_generation(gen_id2)["status"] == "pending"
+
+    def test_recovery_probe_ledger_holds_multiple_candidates_and_allows_fresh_no_match(self):
+        rid, _ = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        fingerprint = {
+            "version": 1,
+            "model": "model",
+            "prompt_sha256": "a" * 64,
+            "params": {},
+            "reference_roles": [],
+        }
+        repo.begin_request_submission(
+            rid, "worker@example.com", "agent-1", fingerprint
+        )
+        repo.mark_request_recovery_required(rid, "worker@example.com")
+
+        probes = repo.list_recovery_probe_requests("worker@example.com")
+        assert len(probes) == 1
+        assert probes[0]["id"] == rid
+        assert probes[0]["fingerprint"] == fingerprint
+        assert probes[0]["submission_started_at"]
+
+        assert repo.record_recovery_probe_result(
+            rid, "worker@example.com", "multiple", 2
+        ) == {"outcome": "multiple", "candidate_count": 2, "job_id": None}
+        blocked = repo.prepare_recovery_requeue(rid, "worker@example.com")
+        assert blocked["status"] == "candidate_found"
+        assert blocked["candidate_count"] == 2
+        assert repo.get_gen_request(rid)["status"] == "recovery_required"
+
+        # 뒤의 짧은 최신 목록이 비어도 이전 복수 후보 증거를 지우지 않는다.
+        assert repo.record_recovery_probe_result(
+            rid, "worker@example.com", "no_match", 0
+        ) == {"outcome": "multiple", "candidate_count": 2, "job_id": None}
+        assert repo.prepare_recovery_requeue(rid, "worker@example.com")["status"] == (
+            "candidate_found"
+        )
+
+        # 처음부터 후보가 없다고 확인된 별도 요청만 명시 재큐를 허용한다.
+        rid, gen_id = self._request()
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-2",
+            submission_stage_capable=True,
+        )
+        repo.begin_request_submission(
+            rid, "worker@example.com", "agent-2", fingerprint
+        )
+        repo.mark_request_recovery_required(rid, "worker@example.com")
+        assert repo.record_recovery_probe_result(
+            rid, "worker@example.com", "no_match", 0
+        ) == {"outcome": "no_match", "candidate_count": 0, "job_id": None}
+        assert repo.prepare_recovery_requeue(rid, "worker@example.com") == {
+            "status": "requeued",
+            "gen_id": gen_id,
+        }
+        requeued = repo.get_gen_request(rid)
+        assert requeued["status"] == "pending"
+        assert requeued["submission_fingerprint"] is None
+        assert requeued["submission_started_at"] is None
+
+        # 새 제출의 복구 조사는 과거 시각/지문이 아니라 이번 시도를 기준으로 해야 한다.
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-2",
+            submission_stage_capable=True,
+        )
+        next_fingerprint = {**fingerprint, "prompt_sha256": "b" * 64}
+        repo.begin_request_submission(
+            rid, "worker@example.com", "agent-2", next_fingerprint
+        )
+        next_request = repo.get_gen_request(rid)
+        assert json.loads(next_request["submission_fingerprint"]) == next_fingerprint
+        assert next_request["submission_started_at"]
+
+    def test_unique_probe_job_is_persisted_for_exact_anchor_retry(self):
+        rid, gen_id = self._request()
+        fingerprint = {
+            "version": 1,
+            "model": "model",
+            "prompt_sha256": "c" * 64,
+            "params": {},
+            "reference_roles": [],
+        }
+        repo.claim_pending_requests(
+            "worker@example.com",
+            limit=1,
+            lease_owner="agent-1",
+            submission_stage_capable=True,
+        )
+        repo.begin_request_submission(
+            rid, "worker@example.com", "agent-1", fingerprint
+        )
+        repo.mark_request_recovery_required(rid, "worker@example.com")
+
+        expected = {
+            "outcome": "unique",
+            "candidate_count": 1,
+            "job_id": "job-exact",
+        }
+        assert repo.record_recovery_probe_result(
+            rid, "worker@example.com", "unique", 1, "job-exact"
+        ) == expected
+        # 뒤의 no_match가 유일 후보 증거와 정확한 job id를 지우지 못한다.
+        assert repo.record_recovery_probe_result(
+            rid, "worker@example.com", "no_match", 0
+        ) == expected
+        probes = repo.list_recovery_probe_requests("worker@example.com")
+        assert probes[0]["recovery_probe_status"] == "unique"
+        assert probes[0]["recovery_probe_job_id"] == "job-exact"
+        assert repo.prepare_recovery_requeue(rid, "worker@example.com") == {
+            "status": "candidate_found",
+            "gen_id": gen_id,
+            "candidate_count": 1,
+        }
 
     def test_server_restart_preserves_persistent_queue_and_recovery_hold(self):
         pending_rid, pending_gen = self._request()

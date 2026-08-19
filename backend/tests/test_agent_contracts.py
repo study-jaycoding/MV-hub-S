@@ -786,7 +786,15 @@ def test_staged_agent_gets_server_ack_before_paid_cli_create():
         )
 
     assert result and result["job_id"] == job_id
-    begin.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
+    begin.assert_called_once()
+    assert begin.call_args.args[:4] == (
+        "http://hub",
+        "token-1",
+        "request-1",
+        "agent-1",
+    )
+    assert begin.call_args.args[4]["model"] == "nano-banana"
+    assert len(begin.call_args.args[4]["prompt_sha256"]) == 64
     create.assert_called_once()
     outbox.assert_called_once_with(
         "http://hub", "user@example.com", "request-1", job_id
@@ -961,6 +969,194 @@ def test_agent_submission_stage_adapters_match_server_contract():
     assert begin_call.kwargs == {"token": "token-1", "timeout": 15}
     assert release_call.kwargs == {"token": "token-1"}
     assert recovery_call.kwargs == {"token": "token-1", "timeout": 15}
+
+
+def test_recovery_probe_read_adapter_rejects_create_by_structure():
+    agent = _load_agent()
+    with patch.object(agent, "_cli_json") as cli_json:
+        try:
+            agent._read_generate_json("higgsfield", "create", "model")
+        except ValueError as exc:
+            assert "금지된" in str(exc)
+        else:
+            raise AssertionError("읽기 전용 조사에서 create가 허용됨")
+    cli_json.assert_not_called()
+
+
+def test_recovery_probe_uniquely_matches_and_anchors_without_create():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "same prompt", {"seed": 7}, {"seed"}, []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    job = {
+        "id": "job-found",
+        "job_type": "nano-banana",
+        "created_at": "2026-08-20T00:00:10Z",
+        "params": {"prompt": "same prompt", "seed": 7},
+    }
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(
+        agent, "_read_generate_json", return_value=[job]
+    ) as read_jobs, patch.object(
+        agent, "_report_recovery_probe", return_value={
+            "applied": True,
+            "outcome": "unique",
+            "candidate_count": 1,
+            "job_id": "job-found",
+        }
+    ) as report, patch.object(
+        agent, "_anchor", return_value=True
+    ) as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 1
+
+    read_jobs.assert_called_once_with(
+        "higgsfield", "list", "--size", "100", timeout=120
+    )
+    report.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "unique", 1, "job-found"
+    )
+    anchor.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "job-found", verifying=True
+    )
+
+
+def test_recovery_probe_keeps_multiple_matches_on_hold():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "same prompt", {}, set(), []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    jobs = [
+        {
+            "id": f"job-{index}",
+            "job_type": "nano-banana",
+            "created_at": f"2026-08-20T00:00:{index + 10:02d}Z",
+            "params": {"prompt": "same prompt"},
+        }
+        for index in range(2)
+    ]
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(
+        agent, "_read_generate_json", return_value=jobs
+    ), patch.object(
+        agent, "_report_recovery_probe", return_value={
+            "applied": True,
+            "outcome": "multiple",
+            "candidate_count": 2,
+            "job_id": None,
+        }
+    ) as report, patch.object(agent, "_anchor") as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 0
+
+    report.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "multiple", 2, None
+    )
+    anchor.assert_not_called()
+
+
+def test_recovery_probe_retries_only_persisted_unique_job_without_listing():
+    agent = _load_agent()
+    request = {
+        "id": "request-1",
+        "fingerprint": {},
+        "recovery_probe_status": "unique",
+        "recovery_probe_job_id": "job-recorded",
+    }
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(agent, "_read_generate_json") as read_jobs, patch.object(
+        agent, "_anchor", return_value=True
+    ) as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 1
+
+    read_jobs.assert_not_called()
+    anchor.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "job-recorded", verifying=True
+    )
+
+
+def test_recovery_probe_does_not_confirm_absence_when_latest_window_is_full():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "missing prompt", {}, set(), []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    jobs = [
+        {
+            "id": f"other-{index}",
+            "job_type": "nano-banana",
+            "created_at": "2026-08-20T00:00:10Z",
+            "params": {"prompt": f"other prompt {index}"},
+        }
+        for index in range(100)
+    ]
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(agent, "_read_generate_json", return_value=jobs), patch.object(
+        agent, "_report_recovery_probe"
+    ) as report:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 0
+
+    report.assert_not_called()
+
+
+def test_suppressed_result_is_still_sent_to_library_ingest():
+    agent = _load_agent()
+    job = {
+        "id": "job-invalid",
+        "status": "completed",
+        "job_type": "nano-banana",
+        "created_at": "2026-08-20T00:00:10Z",
+        "params": {"prompt": "paid result"},
+    }
+    cli_results = [
+        [job],
+        {"email": "user@example.com"},
+        [],
+        [],
+    ]
+    with patch.object(agent, "_cli_json", side_effect=cli_results), patch.object(
+        agent, "_job_ids_to_sync", return_value={"job-invalid"}
+    ), patch.object(agent, "_cached_models", return_value=[]), patch.object(
+        agent, "_load_suppressed", return_value={"job-invalid"}
+    ), patch.object(agent, "_dominant_uid", return_value="u-me"), patch.object(
+        agent,
+        "_http",
+        return_value=(
+            200,
+            {
+                "inserted": 1,
+                "updated": 0,
+                "unchanged": 0,
+                "skipped": 0,
+                "errors": 0,
+                "linked_uid": "u-me",
+            },
+        ),
+    ) as http:
+        agent.push_once("http://hub", "token-1", "higgsfield", 100)
+
+    ingest_call = http.call_args
+    assert ingest_call.args[:2] == ("POST", "http://hub/api/ingest")
+    assert ingest_call.kwargs["body"]["jobs"] == [job]
 
 
 def test_submission_stage_adapters_retry_only_transient_response_loss():

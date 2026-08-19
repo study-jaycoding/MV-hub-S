@@ -156,6 +156,20 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   box-shadow: 0 2px 8px rgba(0,0,0,0.45);
 }
+
+.invalid-input-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  z-index: 3;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 174, 66, 0.75);
+  border-radius: 5px;
+  background: rgba(46, 28, 8, 0.9);
+  color: #ffbd66;
+  font-size: 10px;
+  line-height: 1.3;
+}
 /* 생성자 뱃지 — 다른 작업자가 만든 것(팀 워크스페이스). 카드 우측 상단(상시).
    z-index:1 — 호버 오버레이(z2)보다 아래라 호버 시 ⓘ(정보) 버튼이 위로 떠 클릭 가능. */
 .creator-badge {

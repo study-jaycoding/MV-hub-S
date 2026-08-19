@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app import db, repo
 from app.repo import manage
+from app.repo.generation_sync import NO_REVIVE_ERROR
 
 
 class GenerationSyncTests(unittest.TestCase):
@@ -183,6 +184,70 @@ class GenerationSyncTests(unittest.TestCase):
                     "SELECT id FROM generation WHERE job_id='job-trashed'"
                 ).fetchone()
             )
+
+    def test_invalid_input_result_is_visible_as_separate_local_quarantine(self) -> None:
+        original_id = repo.create_local_generation(
+            {"prompt": "prompt", "model": "image-model", "params": {}},
+            "me",
+            creator_uid="u_one",
+        )
+        repo.create_gen_request(
+            "artist@example.com",
+            "u_one",
+            original_id,
+            "create",
+            repo.gen_recipe(original_id),
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET status='failed', error=?, job_id='job-invalid' WHERE id=?",
+                (NO_REVIVE_ERROR, original_id),
+            )
+            conn.execute(
+                "UPDATE gen_request SET status='failed', error=? WHERE gen_id=?",
+                (NO_REVIVE_ERROR, original_id),
+            )
+
+        # 실패 placeholder만 있을 때는 agent가 실제 유료 결과를 한 번 더 보내도록 refresh한다.
+        self.assertEqual(
+            repo.job_id_sync_diff(["job-invalid"], "u_one"),
+            {"unknown": [], "refresh": ["job-invalid"]},
+        )
+        self.assertEqual(
+            repo.upsert_synced_generation(self.parsed("job-invalid"), "me"),
+            "inserted",
+        )
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, origin, status FROM generation WHERE job_id='job-invalid' "
+                "ORDER BY origin"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            synced_id = next(row["id"] for row in rows if row["origin"] == "synced")
+            self.assertFalse(
+                conn.execute(
+                    "SELECT 1 FROM gen_request WHERE gen_id=?", (synced_id,)
+                ).fetchone()
+            )
+            self.assertFalse(
+                conn.execute(
+                    "SELECT 1 FROM scene_card_generation WHERE generation_id=?", (synced_id,)
+                ).fetchone()
+            )
+
+        synced = repo.get_generation(synced_id)
+        self.assertTrue(synced["invalid_input_result"])
+        self.assertEqual(synced["status"], "done")
+        self.assertEqual(len(synced["assets"]), 1)
+        self.assertEqual(repo.get_generation(original_id)["status"], "failed")
+        self.assertEqual(
+            repo.job_id_sync_diff(["job-invalid"], "u_one"),
+            {"unknown": [], "refresh": []},
+        )
+
+        # 로컬 격리 표식은 선택 공유 번들의 generation 데이터에 포함되지 않는다.
+        bundle_item = repo.export_bundle(gen_ids=[synced_id])["generations"][0]
+        self.assertNotIn("invalid_input_result", bundle_item)
 
 
 if __name__ == "__main__":
