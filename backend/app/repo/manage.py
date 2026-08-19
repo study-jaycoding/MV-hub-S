@@ -16,6 +16,11 @@ from ..db import get_connection
 from .identity import resolve_display_names
 from .manage_schema import _SCHEMA_ENSURED, _ensure_schema
 from .manage_tasks import (
+    TaskMissingError,
+    TaskProjectMissingError,
+    TaskWorkspaceConflictError,
+    _assert_tasks_current_for_write,
+    _batched,
     _batch_task_gen_rows,
     _task_gen_rows,
     add_assignment,
@@ -29,7 +34,10 @@ from .manage_tasks import (
     list_tasks_batch,
     remove_assignment,
     sync_folder_tasks,
+    task_context,
+    task_contexts,
     task_projects,
+    task_projects_for_workspace,
     task_project_id,
     update_task,
 )
@@ -888,12 +896,60 @@ def record_elapsed(gen_id: str, seconds: float) -> None:
 
 
 def link_generations(task_id: str, gen_ids: list[str]) -> int:
-    """생성물들을 작업에 연결(멱등). 변경 행수 반환."""
+    """생성물들을 작업에 연결(멱등).
+
+    작업 스냅샷과 프로젝트가 모두 같은 생성물만 한 트랜잭션으로 연결한다. 하나라도
+    불일치/누락이면 일부만 연결하지 않고 요청 전체를 취소한다.
+    """
+    gen_ids = list(dict.fromkeys(str(gen_id or "").strip() for gen_id in gen_ids))
+    gen_ids = [gen_id for gen_id in gen_ids if gen_id]
     if not gen_ids:
         return 0
     n = 0
     with get_connection() as conn:
         _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        _assert_tasks_current_for_write(conn, [task_id])
+        task = conn.execute(
+            "SELECT project_id, workspace_scope, workspace_id FROM project_task WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not task:
+            raise ValueError("없는 작업입니다")
+        task_scope = str(task["workspace_scope"] or "").strip().lower()
+        task_workspace_id = str(task["workspace_id"] or "").strip() or None
+        if task_scope not in {"team", "personal"}:
+            raise ValueError("작업의 워크스페이스 귀속을 먼저 확인해야 합니다")
+
+        generations: dict[str, Any] = {}
+        for id_batch in _batched(gen_ids):
+            placeholders = ",".join("?" * len(id_batch))
+            rows = conn.execute(
+                f"SELECT id, project_id, workspace_scope, workspace_id FROM generation "
+                f"WHERE deleted_at IS NULL AND id IN ({placeholders})",
+                id_batch,
+            ).fetchall()
+            generations.update({row["id"]: row for row in rows})
+        missing = [gen_id for gen_id in gen_ids if gen_id not in generations]
+        if missing:
+            raise ValueError(f"연결할 수 없는 생성물입니다: {missing[0]}")
+
+        for gid in gen_ids:
+            generation = generations[gid]
+            generation_scope = str(generation["workspace_scope"] or "").strip().lower()
+            generation_workspace_id = str(generation["workspace_id"] or "").strip() or None
+            if generation["project_id"] != task["project_id"]:
+                raise ValueError("다른 프로젝트의 생성물은 연결할 수 없습니다")
+            same_workspace = (
+                task_scope == "personal" and generation_scope == "personal"
+            ) or (
+                task_scope == "team"
+                and generation_scope == "team"
+                and task_workspace_id == generation_workspace_id
+            )
+            if not same_workspace:
+                raise ValueError("다른 워크스페이스의 생성물은 연결할 수 없습니다")
+
         for gid in gen_ids:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO task_generation(task_id, gen_id) VALUES(?,?)",
@@ -907,6 +963,9 @@ def unlink_generation(task_id: str, gen_id: str) -> bool:
     """작업에서 컷(생성물) 연결 해제. 멱등."""
     with get_connection() as conn:
         _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        if task_id not in _assert_tasks_current_for_write(conn, [task_id]):
+            return False
         cur = conn.execute(
             "DELETE FROM task_generation WHERE task_id=? AND gen_id=?", (task_id, gen_id)
         )

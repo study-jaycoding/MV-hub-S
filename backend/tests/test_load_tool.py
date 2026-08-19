@@ -1,6 +1,7 @@
 """부하 테스트 순수 집계·판정 테스트."""
 
 import asyncio
+import gzip
 import importlib.util
 import json
 import sys
@@ -64,6 +65,16 @@ class LoadToolTests(unittest.TestCase):
 
         self.assertEqual(result, {"state": "completed", "cycle": 2})
         self.assertEqual(temporary_files, [])
+
+    def test_atomic_write_json_cleans_temporary_file_when_replace_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "progress.json"
+            with mock.patch.object(load_tool.os, "replace", side_effect=OSError("locked")):
+                with self.assertRaisesRegex(OSError, "locked"):
+                    load_tool._atomic_write_json(path, {"state": "partial"})
+
+            self.assertFalse(path.exists())
+            self.assertEqual(list(path.parent.glob(".*.tmp")), [])
 
     def test_ssl_close_filter_only_suppresses_exact_cleanup_warning(self):
         close_record = load_tool.logging.LogRecord(
@@ -200,6 +211,41 @@ class LoadToolTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertTrue(result["checks"]["sampled_agent_connections_healthy"])
 
+    def test_task_read_acceptance_rejects_any_database_commit_or_row_change(self):
+        report = {
+            "login": {"p95_ms": 100},
+            "workload": {"statuses": {200: 100}, "latency_ms": {"p95": 100}},
+            "connections_during_load": {
+                "websocket": {"connections": 10},
+                "agents": {"long_poll_waiters": 10},
+                "websocket_client_errors": [],
+                "long_poll_client_errors": [],
+            },
+            "server": {
+                "after": {"requests": {"sqlite_locked_total": 0}},
+                "memory_growth_percent_after_warmup": 0.0,
+                "runtime_monitor_errors": [],
+                "resource_summary": {"max_rss_bytes": 100 * 1024 * 1024},
+            },
+            "task_workspace_read_integrity": {
+                "data_version_unchanged": False,
+                "signature_unchanged": True,
+            },
+        }
+        args = SimpleNamespace(
+            users=10,
+            max_p95_ms=500,
+            max_login_p95_ms=10_000,
+            max_memory_growth_percent=20,
+            max_rss_mb=512,
+        )
+
+        result = load_tool._evaluate(report, args)
+
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["checks"]["task_read_commits_zero"])
+        self.assertTrue(result["checks"]["task_rows_unchanged"])
+
     def test_apply_server_limits_uses_selected_affinity_and_low_priority(self):
         fake_process = mock.Mock()
         fake_process.cpu_affinity.side_effect = [
@@ -229,15 +275,26 @@ class LoadToolTests(unittest.TestCase):
         self.assertEqual(result["priority"], "below-normal")
 
     def test_keep_alive_client_reuses_connection(self):
+        compressed = gzip.compress(b'{"ok": true}', mtime=0)
+
         class FakeResponse:
-            status = 200
+            def __init__(self, status):
+                self.status = status
 
             def read(self):
-                return b'{"ok": true}'
+                return compressed if self.status == 200 else b""
+
+            def getheader(self, name):
+                headers = {
+                    "content-encoding": "gzip" if self.status == 200 else None,
+                    "etag": '"stable"',
+                }
+                return headers.get(name.lower())
 
         class FakeConnection:
             instances = 0
             requests = 0
+            request_headers = []
 
             def __init__(self, host, port, timeout):
                 self.host = host
@@ -247,9 +304,10 @@ class LoadToolTests(unittest.TestCase):
 
             def request(self, method, path, body=None, headers=None):
                 FakeConnection.requests += 1
+                FakeConnection.request_headers.append(headers or {})
 
             def getresponse(self):
-                return FakeResponse()
+                return FakeResponse(200 if FakeConnection.requests == 1 else 304)
 
             def close(self):
                 pass
@@ -263,12 +321,20 @@ class LoadToolTests(unittest.TestCase):
                 "http://127.0.0.1:8010",
                 token="test-token",
             )
-            self.assertEqual(client.request("/api/ready")[0], 200)
-            self.assertEqual(client.request("/api/ready")[0], 200)
+            first = client.request("/api/ready")
+            second = client.request("/api/ready")
             client.close()
 
+        self.assertEqual(first[:2], (200, {"ok": True}))
+        self.assertEqual(second[:2], first[:2])
         self.assertEqual(FakeConnection.instances, 1)
         self.assertEqual(FakeConnection.requests, 2)
+        self.assertNotIn("If-None-Match", FakeConnection.request_headers[0])
+        self.assertEqual(FakeConnection.request_headers[1]["If-None-Match"], '"stable"')
+
+    def test_decode_response_rejects_invalid_gzip(self):
+        with self.assertRaises(OSError):
+            load_tool._decode_response(b"not-gzip", "gzip")
 
     def test_https_keep_alive_client_uses_verifying_context(self):
         ssl_context = mock.sentinel.ssl_context

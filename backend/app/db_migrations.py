@@ -232,6 +232,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE generation ADD COLUMN workspace_name TEXT")
     # 부분 배포/수동 DB에서 생긴 불완전 값을 멱등 정규화. team은 id가 없으면 unknown으로 강등하고,
     # personal/unknown에는 팀 id를 남기지 않는다(필터 오분류 방지).
+    # 대소문자·바깥 공백만 다른 유효값은 먼저 보존 가능한 정규형으로 고친다. 이를 생략하면
+    # ` TEAM ` 같은 중간 배포 값도 아래 invalid 분기에 걸려 실제 워크스페이스 ID를 잃는다.
+    conn.execute(
+        "UPDATE generation SET workspace_scope=LOWER(TRIM(workspace_scope)) "
+        "WHERE workspace_scope IS NOT NULL "
+        "AND LOWER(TRIM(workspace_scope)) IN ('team','personal','unknown') "
+        "AND workspace_scope<>LOWER(TRIM(workspace_scope))"
+    )
+    conn.execute(
+        "UPDATE generation SET workspace_id=TRIM(workspace_id) "
+        "WHERE workspace_scope='team' AND workspace_id IS NOT NULL "
+        "AND workspace_id<>TRIM(workspace_id)"
+    )
     conn.execute(
         "UPDATE generation SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
         "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
@@ -291,6 +304,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if proj_cols and "workspace_name" not in proj_cols:
         conn.execute("ALTER TABLE project ADD COLUMN workspace_name TEXT")
     if proj_cols:
+        conn.execute(
+            "UPDATE project SET workspace_scope=LOWER(TRIM(workspace_scope)) "
+            "WHERE workspace_scope IS NOT NULL "
+            "AND LOWER(TRIM(workspace_scope)) IN ('team','personal','unknown') "
+            "AND workspace_scope<>LOWER(TRIM(workspace_scope))"
+        )
+        conn.execute(
+            "UPDATE project SET workspace_id=TRIM(workspace_id) "
+            "WHERE workspace_scope='team' AND workspace_id IS NOT NULL "
+            "AND workspace_id<>TRIM(workspace_id)"
+        )
         conn.execute(
             "UPDATE project SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
             "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "

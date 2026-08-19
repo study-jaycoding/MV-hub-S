@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from app import db, repo
 from app import deps as deps_mod
 from app.config import DEFAULT_WORKER_ID
+from app.repo import manage as repo_manage
 from app.routers import generation as generation_router
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
@@ -392,6 +393,76 @@ class IdentityPermissionTests(unittest.TestCase):
             result,
             {"workspaces": [{"id": "ws-river", "name": "RIVER TEAM"}]},
         )
+
+    def test_task_history_requires_selected_workspace_membership_and_project_role(self):
+        with db.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO workspace_registry(id,name) VALUES(?,?)",
+                [("ws-river", "RIVER TEAM"), ("ws-other", "OTHER TEAM")],
+            )
+            conn.execute(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES('ws-river','river@example.com',1)"
+            )
+            conn.execute(
+                "UPDATE project SET workspace_scope='team',workspace_id='ws-river',"
+                "workspace_name='RIVER TEAM' WHERE id='p_river'"
+            )
+        repo_manage.create_task("p_river", "과거 작업")
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE project SET workspace_id='ws-other',workspace_name='OTHER TEAM' "
+                "WHERE id='p_river'"
+            )
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with auth_on():
+            # 현재 위치와 다른 과거 프로젝트지만, 선택 공간 멤버+프로젝트 역할이면 조회 가능.
+            manage_router._require_project_read(
+                request, "p_river", "ws-river", allow_historical=True
+            )
+            with self.assertRaises(HTTPException) as current_only:
+                manage_router._require_project_read(request, "p_river", "ws-river")
+            self.assertEqual(current_only.exception.status_code, 404)
+            with self.assertRaises(HTTPException) as unavailable:
+                manage_router._require_workspace_read(request, "ws-other")
+            self.assertEqual(unavailable.exception.status_code, 404)
+
+    def test_unresolved_task_is_hidden_from_regular_project_members(self):
+        rows = [
+            {"id": "known", "workspace_unresolved": False},
+            {"id": "unknown", "workspace_unresolved": True},
+        ]
+        member = DummyRequest(
+            {
+                "email": "river@example.com",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        admin = DummyRequest(
+            {
+                "email": "admin@example.com",
+                "global_role": "admin",
+                "creator_uid": "admin",
+            }
+        )
+        with auth_on():
+            self.assertEqual(
+                [row["id"] for row in manage_router._visible_tasks(member, rows)],
+                ["known"],
+            )
+            self.assertEqual(
+                [row["id"] for row in manage_router._visible_tasks(admin, rows)],
+                ["known", "unknown"],
+            )
 
     def test_local_gen_request_keeps_agent_name_without_registry(self):
         from app.models import WorkspaceContext

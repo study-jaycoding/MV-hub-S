@@ -621,6 +621,43 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         self.assertIn("idx_generation_workspace_sort", indexes)
         self.assertIn("idx_project_workspace", indexes)
 
+    def test_intermediate_workspace_values_are_canonicalized_without_losing_identity(self):
+        """복구 가능한 대소문자·공백 값은 unknown으로 버리지 않는다."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id,name,kind,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('legacy-case-p','Legacy Case','team','team','ws-a','A')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id,worker_id,prompt,status,project_id,workspace_scope,"
+                "workspace_id,workspace_name,created_at,sort_ts) VALUES("
+                "'legacy-case-g','me','keep-team','done','legacy-case-p','team','ws-a','A',"
+                "'2026-01-01',1)"
+            )
+            # 실제 중간 배포·수동 복구 DB처럼 현행 CHECK 밖의 값을 재현한다.
+            conn.execute("PRAGMA ignore_check_constraints=ON")
+            conn.execute(
+                "UPDATE project SET workspace_scope=' TEAM ', workspace_id=' ws-a ' "
+                "WHERE id='legacy-case-p'"
+            )
+            conn.execute(
+                "UPDATE generation SET workspace_scope=' TEAM ', workspace_id=' ws-a ' "
+                "WHERE id='legacy-case-g'"
+            )
+            conn.execute("PRAGMA ignore_check_constraints=OFF")
+
+            db_migrations._migrate(conn)
+
+            project = conn.execute(
+                "SELECT workspace_scope,workspace_id FROM project WHERE id='legacy-case-p'"
+            ).fetchone()
+            generation = conn.execute(
+                "SELECT workspace_scope,workspace_id FROM generation WHERE id='legacy-case-g'"
+            ).fetchone()
+
+        self.assertEqual(tuple(project), ("team", "ws-a"))
+        self.assertEqual(tuple(generation), ("team", "ws-a"))
+
 
 class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):
     def setUp(self):

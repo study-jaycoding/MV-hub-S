@@ -50,6 +50,7 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/planning/{pid}",
         "/api/manage/project-summary",
         "/api/manage/summary",
+        "/api/manage/task-projects",
         "/api/manage/tasks",
         "/api/manage/tasks-batch",
         "/api/manage/tasks-batch/delete",

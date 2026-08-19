@@ -8,14 +8,20 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import hashlib
+import json
 import logging
 import os
 import shutil
+import threading
+import time
 import uuid
+import weakref
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, NoReturn, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from . import _proxy
@@ -26,6 +32,7 @@ from ..deps import (
     account_global_roles,
     account_scope_uid,
     actor_id,
+    current_account,
     project_roles_of,
     require_agent_account,
     require_global_cap,
@@ -33,6 +40,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..repo import manage as repo_manage
+from ..repo import manage_tasks as repo_manage_tasks
 from ..services import cli_bridge, file_stamp, media_cache, project_folders
 from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
@@ -45,6 +53,161 @@ _manage_log = logging.getLogger("mvhub.manage")
 
 
 _PROJECT_READ_ROLES = (rbac.PROJECT_MANAGER, rbac.SUPERVISOR, rbac.CREATOR)
+_TASK_RESPONSE_TTL = max(
+    0.0, float(os.environ.get("CONTENT_HUB_TASK_READ_CACHE_TTL", "0.75"))
+)
+_TASK_RESPONSE_GUARD = threading.Lock()
+_TASK_RESPONSE_CACHE: dict[tuple, tuple[float, tuple, bytes]] = {}
+_TASK_RESPONSE_FLIGHTS: weakref.WeakValueDictionary[tuple, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _task_response_lock(key: tuple) -> threading.Lock:
+    with _TASK_RESPONSE_GUARD:
+        # 실행·대기 중인 인코딩은 같은 잠금을 공유하고, 마지막 사용 뒤에는 약한 참조가
+        # 자동 정리한다. 잠금의 순간 상태만 보고 지우는 경쟁 조건을 만들지 않는다.
+        return _TASK_RESPONSE_FLIGHTS.setdefault(key, threading.Lock())
+
+
+def _accepts_gzip(value: str | None) -> bool:
+    """``Accept-Encoding``에서 gzip 허용 여부를 보수적으로 판정한다."""
+    explicit: float | None = None
+    wildcard: float | None = None
+    for part in str(value or "").split(","):
+        fields = [field.strip() for field in part.split(";")]
+        token = fields[0].lower()
+        if not token:
+            continue
+        quality = 1.0
+        for parameter in fields[1:]:
+            name, separator, raw_quality = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = max(0.0, min(1.0, float(raw_quality.strip())))
+                except ValueError:
+                    quality = 0.0
+        if token == "gzip":
+            explicit = quality
+        elif token == "*":
+            wildcard = quality
+    quality = explicit if explicit is not None else wildcard
+    return quality is not None and quality > 0
+
+
+def _task_response_etag(key: tuple, stamp: tuple | None) -> str | None:
+    if stamp is None:
+        return None
+    digest = hashlib.sha256(repr((key, stamp)).encode("utf-8")).hexdigest()
+    return f'"{digest}"'
+
+
+def _etag_matches(value: str | None, etag: str | None) -> bool:
+    if not value or not etag:
+        return False
+
+    def weak_value(token: str) -> str:
+        token = token.strip()
+        return token[2:].strip() if token.lower().startswith("w/") else token
+
+    expected = weak_value(etag)
+    return any(
+        token.strip() == "*" or weak_value(token) == expected
+        for token in str(value).split(",")
+    )
+
+
+def _task_response_headers(*, gzip_encoded: bool, etag: str | None) -> dict[str, str]:
+    headers = {
+        # 브라우저 개인 캐시에만 저장하고 매번 ETag를 확인한다. 변경 신호 직후에도 오래된
+        # 본문을 임의로 쓰지 않으면서, 불변인 대형 작업표를 다시 전송·파싱하지 않는다.
+        "Cache-Control": "private, no-cache",
+        "Vary": "Accept-Encoding",
+    }
+    if gzip_encoded:
+        headers["Content-Encoding"] = "gzip"
+    if etag:
+        headers["ETag"] = etag
+    return headers
+
+
+def _encoded_task_response(
+    encoded: bytes, *, gzip_encoded: bool, etag: str | None
+) -> Response:
+    headers = _task_response_headers(gzip_encoded=gzip_encoded, etag=etag)
+    return Response(content=encoded, media_type="application/json", headers=headers)
+
+
+def _task_json_response(
+    key: tuple,
+    payload: dict,
+    *,
+    expected_stamp: tuple | None,
+    gzip_encoded: bool = False,
+    etag: str | None = None,
+) -> Response:
+    """동일 권한 범위의 최종 JSON 인코딩도 동시 요청끼리 한 번만 수행한다.
+
+    ``expected_stamp``는 작업 조회를 시작하기 직전의 DB 표식이다. 조회 뒤 현재 표식과 다르면
+    결과 자체는 해당 요청의 일관된 스냅샷으로 반환하되 캐시에는 넣지 않는다. 그렇지 않으면
+    조회가 끝난 직후 쓰기가 완료된 경우 이전 payload를 새 DB 표식으로 잘못 저장할 수 있다.
+    """
+    current_stamp = repo_manage_tasks._task_cache_stamp()
+    stamp = expected_stamp if expected_stamp == current_stamp else None
+    now = time.monotonic()
+    if stamp is not None and _TASK_RESPONSE_TTL > 0:
+        with _TASK_RESPONSE_GUARD:
+            cached = _TASK_RESPONSE_CACHE.get(key)
+            if cached and cached[0] >= now and cached[1] == stamp:
+                return _encoded_task_response(
+                    cached[2], gzip_encoded=gzip_encoded, etag=etag
+                )
+            if cached:
+                _TASK_RESPONSE_CACHE.pop(key, None)
+
+    lock = _task_response_lock(key)
+    with lock:
+        current_stamp = repo_manage_tasks._task_cache_stamp()
+        stamp = expected_stamp if expected_stamp == current_stamp else None
+        now = time.monotonic()
+        if stamp is not None and _TASK_RESPONSE_TTL > 0:
+            with _TASK_RESPONSE_GUARD:
+                cached = _TASK_RESPONSE_CACHE.get(key)
+                if cached and cached[0] >= now and cached[1] == stamp:
+                    return _encoded_task_response(
+                        cached[2], gzip_encoded=gzip_encoded, etag=etag
+                    )
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if gzip_encoded:
+            # 대형 작업 목록은 짧은 TTL 동안 같은 결과를 여러 사용자가 반복해서 읽는다.
+            # 압축 결과 자체를 캐시해 요청마다 JSON 인코딩·gzip CPU를 다시 쓰지 않는다.
+            encoded = gzip.compress(encoded, compresslevel=1, mtime=0)
+        if (
+            stamp is not None
+            and _TASK_RESPONSE_TTL > 0
+            and repo_manage_tasks._task_cache_stamp() == stamp
+        ):
+            with _TASK_RESPONSE_GUARD:
+                _TASK_RESPONSE_CACHE[key] = (
+                    time.monotonic() + _TASK_RESPONSE_TTL,
+                    stamp,
+                    encoded,
+                )
+                if len(_TASK_RESPONSE_CACHE) > 128:
+                    oldest = min(
+                        _TASK_RESPONSE_CACHE,
+                        key=lambda item: _TASK_RESPONSE_CACHE[item][0],
+                    )
+                    if oldest != key:
+                        _TASK_RESPONSE_CACHE.pop(oldest, None)
+        return _encoded_task_response(
+            encoded, gzip_encoded=gzip_encoded, etag=etag
+        )
 
 
 def _require_manage_read(request: Request) -> None:
@@ -60,13 +223,41 @@ def _refresh_isolated_telemetry() -> None:
         pass
 
 
+def _require_workspace_read(request: Request, workspace_id: Optional[str]) -> None:
+    """선택한 워크스페이스 자체의 열람 권한을 먼저 확인한다.
+
+    프로젝트가 다른 공간으로 이동한 뒤에도 과거 작업은 남으므로 프로젝트의 *현재*
+    workspace_id만으로는 멤버십을 검사할 수 없다. 전사 read_all 보유자는 예외다.
+    """
+    workspace_id = str(workspace_id or "").strip() or None
+    if not workspace_id or not AUTH_ENABLED:
+        return
+    if rbac.has_global_cap(account_global_roles(request), "read_all"):
+        return
+    account = current_account(request)
+    if not account:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    try:
+        repo.resolve_workspace_id(workspace_id, account_email=account.get("email"))
+    except repo.WorkspaceAssignmentError as exc:
+        # 접근할 수 없는 UUID와 존재하지 않는 UUID를 같은 404로 다뤄 정보 노출을 막는다.
+        raise HTTPException(status_code=404, detail="접근 가능한 워크스페이스가 아닙니다") from exc
+
+
 def _require_project_read(
-    request: Request, pid: str, workspace_id: Optional[str] = None
+    request: Request,
+    pid: str,
+    workspace_id: Optional[str] = None,
+    *,
+    allow_historical: bool = False,
+    workspace_checked: bool = False,
 ) -> None:
+    if not workspace_checked:
+        _require_workspace_read(request, workspace_id)
     project = repo.get_project(pid)
     if not project:
         raise HTTPException(status_code=404, detail="없는 프로젝트")
-    if workspace_id and not (
+    if workspace_id and not allow_historical and not (
         project.get("workspace_scope") == "team"
         and project.get("workspace_id") == workspace_id
     ):
@@ -100,6 +291,57 @@ def _task_project_or_404(tid: str) -> str:
     if not pid:
         raise HTTPException(status_code=404, detail="없는 작업")
     return pid
+
+
+def _require_task_current(tid: str) -> dict:
+    """쓰기 전에 작업 스냅샷이 현재 프로젝트 위치와 같은지 강제한다."""
+    context = repo_manage.task_context(tid)
+    if not context:
+        raise HTTPException(status_code=404, detail="없는 작업")
+    if context.get("workspace_unresolved"):
+        raise HTTPException(
+            status_code=409,
+            detail="작업의 워크스페이스 귀속을 확인해야 수정할 수 있습니다",
+        )
+    if not context.get("is_current"):
+        raise HTTPException(
+            status_code=409,
+            detail="과거 워크스페이스 작업은 읽기 전용입니다",
+        )
+    return context
+
+
+def _require_task_manage_current(tid: str, request: Request) -> dict:
+    """작업 상태를 노출하기 전에 프로젝트 관리 권한부터 확인한다.
+
+    과거/귀속 미확정 작업은 409로 구분되므로 권한 검사보다 먼저 확인하면, 작업 ID를
+    아는 비멤버가 그 상태를 추측할 수 있다. 프로젝트를 찾고 manage 권한을 통과한 뒤에만
+    현재성 검사를 수행한다. 실제 쓰기 함수의 트랜잭션 재검사는 별도로 계속 적용된다.
+    """
+    project_id = _task_project_or_404(tid)
+    _require_project_manage(request, project_id)
+    return _require_task_current(tid)
+
+
+def _task_write_conflict(exc: repo_manage.TaskWorkspaceConflictError) -> NoReturn:
+    """라우터 검사 뒤 발생한 프로젝트 이동도 사용자에게 읽기 전용 충돌로 알린다."""
+    raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _task_write_missing(exc: repo_manage.TaskMissingError) -> NoReturn:
+    """라우터 검사 뒤 삭제된 작업을 거짓 성공으로 응답하지 않는다."""
+    raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _visible_tasks(request: Request, tasks: list[dict]) -> list[dict]:
+    """귀속 미확정 행은 전사 관리 화면에서만 노출한다.
+
+    미상 작업의 과거 수동 링크에는 여러 워크스페이스 생성물이 섞였을 수 있어 일반 프로젝트
+    멤버에게 보여주면 다른 공간의 썸네일/생성자 정보가 새어 나갈 수 있다.
+    """
+    if not AUTH_ENABLED or rbac.has_global_cap(account_global_roles(request), "read_all"):
+        return tasks
+    return [task for task in tasks if not task.get("workspace_unresolved")]
 
 
 # ── 팀 매니징 텔레메트리(manage-T2) — 요청 모델 인라인(models.py 무수정 → 격리) ──────
@@ -541,13 +783,59 @@ def _require_tasks_manage(
         raise HTTPException(status_code=400, detail="중복 작업 id가 있습니다")
     if len(unique_ids) > limit:
         raise HTTPException(status_code=400, detail=f"한 번에 최대 {limit}개 작업까지 변경할 수 있습니다")
-    projects = repo_manage.task_projects(unique_ids)
-    missing = [task_id for task_id in unique_ids if task_id not in projects]
+    contexts = repo_manage.task_contexts(unique_ids)
+    # 찾은 작업의 권한부터 확인한다. 아래 409 상태를 먼저 반환하면 비멤버가 과거/미확정
+    # 여부를 구분할 수 있다. 모두 없는 입력은 확인할 프로젝트가 없으므로 그대로 404다.
+    for project_id in dict.fromkeys(context["project_id"] for context in contexts.values()):
+        _require_project_manage(request, project_id)
+    missing = [task_id for task_id in unique_ids if task_id not in contexts]
     if missing:
         raise HTTPException(status_code=404, detail=f"없는 작업: {missing[0]}")
-    for project_id in dict.fromkeys(projects.values()):
-        _require_project_manage(request, project_id)
+    unresolved = [task_id for task_id in unique_ids if contexts[task_id].get("workspace_unresolved")]
+    if unresolved:
+        raise HTTPException(
+            status_code=409,
+            detail=f"워크스페이스 귀속 확인이 필요한 작업: {unresolved[0]}",
+        )
+    historical = [task_id for task_id in unique_ids if not contexts[task_id].get("is_current")]
+    if historical:
+        raise HTTPException(
+            status_code=409,
+            detail=f"과거 워크스페이스의 읽기 전용 작업: {historical[0]}",
+        )
     return unique_ids
+
+
+@router.get("/task-projects")
+def list_task_projects(
+    request: Request,
+    workspace_id: str,
+    include_historical: bool = False,
+):
+    """작업 화면용 프로젝트 목록. 과거 모드에서는 다른 공간으로 이동한 프로젝트도 반환한다."""
+    _require_workspace_read(request, workspace_id)
+    projects = repo_manage.task_projects_for_workspace(
+        workspace_id, include_historical=include_historical
+    )
+    allowed: list[dict] = []
+    for project in projects:
+        try:
+            _require_project_read(
+                request,
+                project["id"],
+                workspace_id,
+                allow_historical=True,
+                workspace_checked=True,
+            )
+            allowed.append(project)
+        except HTTPException as exc:
+            # 프로젝트 단위의 비가시성만 목록에서 제외한다. 로그인 만료나 서버 오류까지
+            # 빈 목록으로 숨기면 사용자는 데이터가 사라진 것으로 오인하고 운영 로그도 원인을
+            # 추적하기 어렵다. tasks-batch와 같은 경계를 유지한다.
+            if exc.status_code not in (403, 404):
+                raise
+            continue
+    return {"projects": allowed}
 
 
 @router.get("/tasks")
@@ -557,8 +845,15 @@ def list_tasks(
     workspace_id: Optional[str] = None,
     include_archived: bool = False,
 ):
-    _require_project_read(request, project_id, workspace_id)
-    return repo_manage.list_tasks(project_id, include_archived=include_archived)
+    _require_project_read(
+        request, project_id, workspace_id, allow_historical=include_archived
+    )
+    return _visible_tasks(
+        request,
+        repo_manage.list_tasks(
+            project_id, include_archived=include_archived, workspace_id=workspace_id
+        ),
+    )
 
 
 @router.get("/tasks-batch")
@@ -571,26 +866,67 @@ def list_tasks_batch(
     """여러 프로젝트의 작업을 한 번에 반환 — WorkBoard 가 프로젝트 수만큼 GET /tasks 하던 fan-out 을
     1요청으로. ★GET(읽기)이라 mutation 알림을 유발하지 않는다(POST 였으면 폴링마다 라이브러리 reload).
     pid 별로 기존 read 게이트(_require_project_read)를 그대로 적용해 **접근 가능한 프로젝트만**
-    {pid:[tasks]} 로 반환. 접근불가/없는 pid·내부오류는 생략 = 부분성공(기존 per-project catch 와 동일 의미)."""
+    {pid:[tasks]} 로 반환한다. 내부 DB 오류는 빈 목록으로 숨기지 않고 500으로 드러내 재시도와
+    운영 로그 추적이 가능하게 한다."""
+    unique_ids = list(dict.fromkeys(project_id))
+    if len(unique_ids) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 프로젝트까지 조회할 수 있습니다")
+    # 같은 workspace 멤버십을 프로젝트마다 반복 조회하지 않는다. 로그인 만료나 접근할 수 없는
+    # workspace 오류도 빈 작업표로 삼키지 않고 여기서 한 번 정확히 반환한다.
+    _require_workspace_read(request, workspace_id)
     allowed: list[str] = []
-    for pid in list(dict.fromkeys(project_id))[:500]:  # 중복제거·순서보존·소프트캡
+    for pid in unique_ids:
         try:
-            _require_project_read(request, pid, workspace_id)
-            allowed.append(pid)
-        except HTTPException:
+            _require_project_read(
+                request,
+                pid,
+                workspace_id,
+                allow_historical=include_archived,
+                workspace_checked=True,
+            )
+        except HTTPException as exc:
+            if exc.status_code not in (403, 404):
+                raise
             continue
+        allowed.append(pid)
     if not allowed:
         return {}
-    try:
-        return repo_manage.list_tasks_batch(allowed, include_archived=include_archived)
-    except Exception:  # noqa: BLE001 — 구 데이터 한 프로젝트 오류에도 기존 부분성공 의미 유지
-        out: dict[str, list] = {}
-        for pid in allowed:
-            try:
-                out[pid] = repo_manage.list_tasks(pid, include_archived=include_archived)
-            except Exception:  # noqa: BLE001
-                continue
-        return out
+    # 이 표식을 결과 조립보다 먼저 잡아야 이전 결과를 쓰기 완료 뒤의 새 표식으로 캐시하지 않는다.
+    response_stamp = repo_manage_tasks._task_cache_stamp()
+    can_read_unresolved = not AUTH_ENABLED or rbac.has_global_cap(
+        account_global_roles(request), "read_all"
+    )
+    gzip_encoded = _accepts_gzip(request.headers.get("accept-encoding"))
+    response_key = (
+        str(repo_manage_tasks.get_db_path()),
+        tuple(allowed),
+        bool(include_archived),
+        str(workspace_id or ""),
+        can_read_unresolved,
+        gzip_encoded,
+    )
+    response_etag = _task_response_etag(response_key, response_stamp)
+    if _etag_matches(request.headers.get("if-none-match"), response_etag):
+        return Response(
+            status_code=304,
+            headers=_task_response_headers(
+                gzip_encoded=False,
+                etag=response_etag,
+            ),
+        )
+    result = repo_manage.list_tasks_batch(
+        allowed, include_archived=include_archived, workspace_id=workspace_id
+    )
+    visible = {
+        project_id: _visible_tasks(request, tasks) for project_id, tasks in result.items()
+    }
+    return _task_json_response(
+        response_key,
+        visible,
+        expected_stamp=response_stamp,
+        gzip_encoded=gzip_encoded,
+        etag=response_etag,
+    )
 
 
 @router.post("/tasks", status_code=201)
@@ -602,7 +938,10 @@ def create_task(body: TaskIn, request: Request):
     data = body.model_dump()
     data.pop("project_id")
     data.pop("name")
-    return repo_manage.create_task(body.project_id, name, **data)
+    try:
+        return repo_manage.create_task(body.project_id, name, **data)
+    except repo_manage.TaskProjectMissingError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.patch("/tasks/{tid}")
@@ -615,7 +954,13 @@ def patch_task(tid: str, body: TaskPatch, request: Request):
         _require_project_read(request, pid)
     else:
         _require_project_manage(request, pid)
-    r = repo_manage.update_task(tid, fields)
+    _require_task_current(tid)
+    try:
+        r = repo_manage.update_task(tid, fields)
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
     if not r:
         raise HTTPException(status_code=404, detail="없는 작업(또는 변경 필드 없음)")
     return r
@@ -623,8 +968,13 @@ def patch_task(tid: str, body: TaskPatch, request: Request):
 
 @router.delete("/tasks/{tid}")
 def remove_task(tid: str, request: Request):
-    _require_project_manage(request, _task_project_or_404(tid))
-    return {"ok": repo_manage.delete_task(tid)}
+    _require_task_manage_current(tid, request)
+    try:
+        return {"ok": repo_manage.delete_task(tid)}
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
 
 
 @router.patch("/tasks-batch/order")
@@ -633,50 +983,80 @@ def update_task_order_batch(body: TaskOrderBatchIn, request: Request):
         # 전체 스냅샷 모드 — 리스트 위치로 순번(i*10)을 서버가 한 트랜잭션에 부여한다.
         # 보드 전체가 오므로 상한은 delta(500)보다 넉넉히 2000(권한 조회는 단일 IN 쿼리).
         ids = _require_tasks_manage(body.ordered_task_ids, request, limit=2000)
-        count = repo_manage.bulk_update_task_orders(
-            [(task_id, index * 10) for index, task_id in enumerate(ids)]
-        )
+        try:
+            count = repo_manage.bulk_update_task_orders(
+                [(task_id, index * 10) for index, task_id in enumerate(ids)]
+            )
+        except repo_manage.TaskMissingError as exc:
+            _task_write_missing(exc)
+        except repo_manage.TaskWorkspaceConflictError as exc:
+            _task_write_conflict(exc)
         return {"ok": True, "count": count}
     task_ids = [item.task_id for item in body.items]
     _require_tasks_manage(task_ids, request)
-    count = repo_manage.bulk_update_task_orders(
-        [(item.task_id, item.sort_order) for item in body.items]
-    )
+    try:
+        count = repo_manage.bulk_update_task_orders(
+            [(item.task_id, item.sort_order) for item in body.items]
+        )
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
     return {"ok": True, "count": count}
 
 
 @router.post("/tasks-batch/delete")
 def delete_tasks_batch(body: TaskIdsIn, request: Request):
     task_ids = _require_tasks_manage(body.task_ids, request)
-    count = repo_manage.bulk_delete_tasks(task_ids)
+    try:
+        count = repo_manage.bulk_delete_tasks(task_ids)
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
     return {"ok": True, "count": count}
 
 
 @router.post("/tasks/{tid}/generations")
 def link_generations(tid: str, body: TaskLinkIn, request: Request):
-    _require_project_manage(request, _task_project_or_404(tid))
+    _require_task_manage_current(tid, request)
+    if len(body.gen_ids) > 500:
+        raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 연결할 수 있습니다")
     for gid in body.gen_ids:
         gen = repo.get_generation(gid)
         if gen:
             require_view_generation(request, gen)
-    return {"linked": repo_manage.link_generations(tid, body.gen_ids)}
+    try:
+        return {"linked": repo_manage.link_generations(tid, body.gen_ids)}
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/tasks/{tid}/assignees/{uid}")
 def add_assignee(tid: str, uid: str, request: Request):
     """작업에 담당(배정) 추가 — PM 이 대시보드에서 작업자를 배정(=컷 분배). manage 권한."""
-    pid = _task_project_or_404(tid)
-    _require_project_manage(request, pid)
-    repo_manage.add_assignment(tid, uid, actor_id(request))
+    _require_task_manage_current(tid, request)
+    try:
+        repo_manage.add_assignment(tid, uid, actor_id(request))
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
     return {"ok": True}
 
 
 @router.delete("/tasks/{tid}/assignees/{uid}")
 def remove_assignee(tid: str, uid: str, request: Request):
     """작업 담당(배정)에서 특정 작업자 제거 — manage 권한."""
-    pid = _task_project_or_404(tid)
-    _require_project_manage(request, pid)
-    return {"removed": repo_manage.remove_assignment(tid, uid)}
+    _require_task_manage_current(tid, request)
+    try:
+        return {"removed": repo_manage.remove_assignment(tid, uid)}
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
 
 
 class BulkAssignItem(BaseModel):
@@ -709,15 +1089,25 @@ def bulk_set_assignments(body: BulkAssignIn, request: Request):
     # 같은 task를 여러 줄로 보낸 기존 입력 순서 의미는 유지하므로 이 경로만 중복을 허용한다.
     task_ids = [it["task_id"] for it in items]
     _require_tasks_manage(task_ids, request, reject_duplicates=False)
-    n = repo_manage.bulk_set_assignments(items, body.mode, actor)
+    try:
+        n = repo_manage.bulk_set_assignments(items, body.mode, actor)
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
     return {"ok": True, "count": n}
 
 
 @router.delete("/tasks/{tid}/generations/{gen_id}")
 def unlink_generation(tid: str, gen_id: str, request: Request):
     """컷(생성물) 연결 해제 — 드래그로 뺀 컷 제거."""
-    _require_project_manage(request, _task_project_or_404(tid))
-    return {"ok": repo_manage.unlink_generation(tid, gen_id)}
+    _require_task_manage_current(tid, request)
+    try:
+        return {"ok": repo_manage.unlink_generation(tid, gen_id)}
+    except repo_manage.TaskMissingError as exc:
+        _task_write_missing(exc)
+    except repo_manage.TaskWorkspaceConflictError as exc:
+        _task_write_conflict(exc)
 
 
 # ── 완료본 렌더폴더 저장(Phase 3 + 위임 모드) ────────────────────────────────

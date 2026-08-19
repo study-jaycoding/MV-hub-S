@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
+from collections import defaultdict
+from typing import Any
+
 from ..db import get_db_path, pool_epoch
 
 # FK/ON DELETE CASCADE는 일부러 두지 않는다. 코어 project 삭제 경로와 사이드카 수명을 분리한다.
@@ -60,7 +64,16 @@ _SCHEMA = (
         source_kind  TEXT NOT NULL DEFAULT 'manual',
         source_last_seen_at TEXT,
         archived     INTEGER NOT NULL DEFAULT 0,
+        workspace_scope TEXT NOT NULL DEFAULT 'unknown',
+        workspace_id TEXT,
+        workspace_name TEXT,
+        workspace_origin TEXT NOT NULL DEFAULT 'snapshot',
         created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS manage_schema_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
     """CREATE TABLE IF NOT EXISTS task_generation (
         task_id TEXT NOT NULL,
@@ -135,6 +148,309 @@ _SCHEMA = (
 
 # 계정 DB 전환과 DB 파일 교체를 구분하도록 (경로, 풀 에폭)별로 보장 여부를 기억한다.
 _SCHEMA_ENSURED: set[tuple[str, int]] = set()
+_TASK_WORKSPACE_MIGRATION_KEY = "task_workspace_snapshot_v1"
+
+
+def unresolved_workspace_sql(alias: str = "") -> str:
+    """DB의 불완전한 워크스페이스 값을 ``unknown``과 같은 의미로 판별한다.
+
+    일부 중간 배포 DB에는 ``workspace_scope='team'``이지만 ID가 비어 있는 행이 남아
+    있다. Python 정규화기만 unknown으로 보고 SQL은 team으로 보면 목록·권한·이관의
+    의미가 갈라지므로 모든 조회가 공유하는 판정식을 제공한다.
+    """
+    prefix = f"{alias}." if alias else ""
+    scope = f"LOWER(TRIM(COALESCE({prefix}workspace_scope, '')))"
+    workspace_id = f"NULLIF(TRIM(COALESCE({prefix}workspace_id, '')), '')"
+    return (
+        f"({scope} NOT IN ('team', 'personal') OR "
+        f"({scope}='team' AND {workspace_id} IS NULL))"
+    )
+
+
+def _workspace_snapshot(row: Any) -> tuple[str, str | None, str | None]:
+    """불완전한 구 데이터도 세 가지 작업 범위로 정규화한다."""
+    scope = str(row["workspace_scope"] or "").strip().lower()
+    workspace_id = str(row["workspace_id"] or "").strip() or None
+    workspace_name = str(row["workspace_name"] or "").strip() or None
+    if scope == "team" and workspace_id:
+        return "team", workspace_id, workspace_name
+    if scope == "personal":
+        return "personal", None, None
+    return "unknown", None, None
+
+
+def task_workspace_migration_preflight(conn) -> dict[str, int]:
+    """RL-02 마이그레이션 전 데이터 모양을 읽기 전용으로 센다.
+
+    운영 DB 복사본에서 먼저 호출해 모호한 프로젝트·폴더·수동 작업의 규모를 확인할 수 있다.
+    이 함수는 테이블이나 행을 절대 변경하지 않는다.
+    """
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    generation_columns = (
+        {row[1] for row in conn.execute("PRAGMA table_info(generation)")}
+        if "generation" in tables
+        else set()
+    )
+    task_columns = (
+        {row[1] for row in conn.execute("PRAGMA table_info(project_task)")}
+        if "project_task" in tables
+        else set()
+    )
+
+    # 이 점검은 스키마 변경보다 먼저 실행된다. 아주 오래된 DB에는 folder/workspace 컬럼이
+    # 없을 수 있으므로 없는 사실을 추측해서 채우지 않고 unknown/NULL 읽기 표현으로 다룬다.
+    # ALTER TABLE을 먼저 하면 원본 읽기 전용이라는 도구 계약이 깨진다.
+    generation_rows = []
+    if generation_columns and "project_id" in generation_columns:
+        generation_rows = conn.execute(
+            "SELECT project_id, "
+            + ("folder_path" if "folder_path" in generation_columns else "NULL")
+            + " AS folder_path, "
+            + ("workspace_scope" if "workspace_scope" in generation_columns else "'unknown'")
+            + " AS workspace_scope, "
+            + ("workspace_id" if "workspace_id" in generation_columns else "NULL")
+            + " AS workspace_id, "
+            + ("workspace_name" if "workspace_name" in generation_columns else "NULL")
+            + " AS workspace_name FROM generation WHERE project_id IS NOT NULL"
+        ).fetchall()
+    project_scopes: dict[str, set[tuple[str, str | None]]] = defaultdict(set)
+    folder_scopes: dict[tuple[str, str], set[tuple[str, str | None]]] = defaultdict(set)
+    for row in generation_rows:
+        scope, workspace_id, _workspace_name = _workspace_snapshot(row)
+        key = (scope, workspace_id)
+        project_id = row["project_id"]
+        project_scopes[project_id].add(key)
+        folder_path = str(row["folder_path"] or "").strip()
+        if folder_path:
+            folder_scopes[(project_id, folder_path)].add(key)
+
+    manual_where = []
+    if "source_kind" in task_columns:
+        manual_where.append("COALESCE(t.source_kind, 'manual')='manual'")
+    if "folder_path" in task_columns:
+        manual_where.append("(t.folder_path IS NULL OR TRIM(t.folder_path)='')")
+    manual_where_sql = " AND ".join(manual_where) or "1=1"
+    manual_rows = []
+    if "project_task" in tables and "task_generation" in tables and generation_columns:
+        manual_rows = conn.execute(
+            "SELECT t.id, "
+            + (
+                "g.workspace_scope"
+                if "workspace_scope" in generation_columns
+                else "CASE WHEN g.id IS NULL THEN NULL ELSE 'unknown' END"
+            )
+            + " AS workspace_scope, "
+            + ("g.workspace_id" if "workspace_id" in generation_columns else "NULL")
+            + " AS workspace_id, "
+            + ("g.workspace_name" if "workspace_name" in generation_columns else "NULL")
+            + " AS workspace_name FROM project_task t "
+            "LEFT JOIN task_generation tg ON tg.task_id=t.id "
+            "LEFT JOIN generation g ON g.id=tg.gen_id WHERE "
+            + manual_where_sql
+        ).fetchall()
+    manual_scopes: dict[str, set[tuple[str, str | None]]] = defaultdict(set)
+    manual_with_generation: set[str] = set()
+    manual_ids = (
+        {
+            row["id"]
+            for row in conn.execute(
+                "SELECT t.id FROM project_task t WHERE " + manual_where_sql
+            )
+        }
+        if "project_task" in tables
+        else set()
+    )
+    for row in manual_rows:
+        if row["workspace_scope"] is None:
+            continue
+        manual_with_generation.add(row["id"])
+        scope, workspace_id, _workspace_name = _workspace_snapshot(row)
+        manual_scopes[row["id"]].add((scope, workspace_id))
+
+    return {
+        "multi_workspace_projects": sum(len(scopes) > 1 for scopes in project_scopes.values()),
+        "multi_workspace_folders": sum(len(scopes) > 1 for scopes in folder_scopes.values()),
+        "multi_workspace_manual_tasks": sum(len(scopes) > 1 for scopes in manual_scopes.values()),
+        "manual_tasks_without_generations": len(manual_ids - manual_with_generation),
+    }
+
+
+def _migrate_task_workspace_snapshots(conn) -> None:
+    """기존 작업의 워크스페이스를 근거 생성물로만 확정한다(재실행 안전)."""
+    # 자동 폴더 작업의 근거를 한 번에 모은다. 삭제된 생성물도 과거 귀속의 증거이므로 포함한다.
+    folder_groups: dict[
+        tuple[str, str], dict[tuple[str, str | None], dict[str, Any]]
+    ] = defaultdict(dict)
+    for row in conn.execute(
+        "SELECT project_id, folder_path, workspace_scope, workspace_id, workspace_name, "
+        "MAX(COALESCE(NULLIF(created_at, ''), datetime(sort_ts, 'unixepoch'))) AS last_seen "
+        "FROM generation WHERE project_id IS NOT NULL "
+        "AND folder_path IS NOT NULL AND TRIM(folder_path)<>'' "
+        "GROUP BY project_id, folder_path, workspace_scope, workspace_id, workspace_name"
+    ):
+        scope, workspace_id, workspace_name = _workspace_snapshot(row)
+        key = (scope, workspace_id)
+        current = folder_groups[(row["project_id"], row["folder_path"])].get(key)
+        candidate = {
+            "scope": scope,
+            "id": workspace_id,
+            "name": workspace_name,
+            "last_seen": row["last_seen"],
+        }
+        if current is None or str(candidate["last_seen"] or "") > str(current["last_seen"] or ""):
+            folder_groups[(row["project_id"], row["folder_path"])][key] = candidate
+
+    # 수동 작업은 사용자가 명시 연결한 생성물만 근거로 삼는다.
+    manual_groups: dict[str, dict[tuple[str, str | None], dict[str, Any]]] = defaultdict(dict)
+    for row in conn.execute(
+        "SELECT t.id AS task_id, g.workspace_scope, g.workspace_id, g.workspace_name "
+        "FROM project_task t JOIN task_generation tg ON tg.task_id=t.id "
+        "JOIN generation g ON g.id=tg.gen_id "
+        "WHERE COALESCE(t.source_kind, 'manual')='manual'"
+    ):
+        scope, workspace_id, workspace_name = _workspace_snapshot(row)
+        manual_groups[row["task_id"]][(scope, workspace_id)] = {
+            "scope": scope,
+            "id": workspace_id,
+            "name": workspace_name,
+        }
+
+    unresolved_sql = unresolved_workspace_sql()
+    tasks = conn.execute(
+        "SELECT * FROM project_task WHERE " + unresolved_sql + " AND ("
+        "COALESCE(workspace_origin, 'unknown')='unknown' OR "
+        "LOWER(TRIM(COALESCE(workspace_scope, ''))) <> 'unknown')"
+    ).fetchall()
+    for task in tasks:
+        folder_path = str(task["folder_path"] or "").strip()
+        if folder_path and task["source_kind"] == "generation":
+            groups = folder_groups.get((task["project_id"], folder_path), {})
+        else:
+            groups = manual_groups.get(task["id"], {})
+
+        provable = [group for group in groups.values() if group["scope"] != "unknown"]
+        if len(groups) == 1 and len(provable) == 1:
+            group = provable[0]
+            conn.execute(
+                "UPDATE project_task SET workspace_scope=?, workspace_id=?, workspace_name=?, "
+                "workspace_origin='generation', "
+                "source_last_seen_at=COALESCE(?, source_last_seen_at) WHERE id=?",
+                (
+                    group["scope"], group["id"], group["name"], group.get("last_seen"), task["id"],
+                ),
+            )
+            continue
+
+        # 여러 공간의 자동 작업은 원본 PM 메타를 unknown으로 보존하고, 공간별 파생 행만 만든다.
+        if folder_path and task["source_kind"] == "generation" and len(provable) > 0:
+            parts = [part for part in folder_path.replace("\\", "/").split("/") if part]
+            name = parts[0] if parts else task["name"]
+            sequence = parts[1] if len(parts) > 1 else None
+            for group in provable:
+                conn.execute(
+                    "INSERT OR IGNORE INTO project_task("
+                    "id, project_id, name, status, sequence, folder_path, source_kind, "
+                    "source_last_seen_at, archived, workspace_scope, workspace_id, workspace_name, "
+                    "workspace_origin, created_at) VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex,
+                        task["project_id"],
+                        name,
+                        "not_started",
+                        sequence,
+                        folder_path,
+                        "generation",
+                        group.get("last_seen"),
+                        group["scope"],
+                        group["id"],
+                        group["name"],
+                        "generation",
+                        task["created_at"],
+                    ),
+                )
+
+
+def _ensure_task_workspace_schema_in_transaction(conn, task_columns: set[str]) -> None:
+    """project_task 워크스페이스 컬럼·데이터·부분 고유 인덱스를 순서대로 보장한다."""
+    added_workspace_columns = "workspace_scope" not in task_columns
+    if "workspace_scope" not in task_columns:
+        conn.execute(
+            "ALTER TABLE project_task ADD COLUMN workspace_scope TEXT NOT NULL DEFAULT 'unknown'"
+        )
+    for column in ("workspace_id", "workspace_name"):
+        if column not in task_columns:
+            conn.execute(f"ALTER TABLE project_task ADD COLUMN {column} TEXT")
+    added_workspace_origin = "workspace_origin" not in task_columns
+    if added_workspace_origin:
+        conn.execute(
+            "ALTER TABLE project_task ADD COLUMN workspace_origin TEXT NOT NULL DEFAULT 'snapshot'"
+        )
+    # ALTER로 처음 추가된 구 DB 행은 신규 기본값(snapshot)이 아니라 미확정 이관 대상이다.
+    # workspace 컬럼만 먼저 들어간 중간 설치본도 origin 추가 시 빠짐없이 복구한다.
+    if added_workspace_columns or added_workspace_origin:
+        conn.execute(
+            "UPDATE project_task SET workspace_origin='unknown' WHERE workspace_scope='unknown'"
+        )
+
+    # 예전 인덱스는 프로젝트 이동 전제라 같은 폴더의 공간별 작업 생성을 막는다.
+    conn.execute("DROP INDEX IF EXISTS idx_project_task_folder")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder_team "
+        "ON project_task(project_id, workspace_id, folder_path) "
+        "WHERE folder_path IS NOT NULL AND TRIM(folder_path)<>'' "
+        "AND workspace_scope='team' AND workspace_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder_personal "
+        "ON project_task(project_id, folder_path) "
+        "WHERE folder_path IS NOT NULL AND TRIM(folder_path)<>'' AND workspace_scope='personal'"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder_unknown "
+        "ON project_task(project_id, folder_path) "
+        "WHERE folder_path IS NOT NULL AND TRIM(folder_path)<>'' AND workspace_scope='unknown'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_task_workspace "
+        "ON project_task(workspace_scope, workspace_id, project_id, archived)"
+    )
+    migrated = conn.execute(
+        "SELECT 1 FROM manage_schema_state WHERE key=?",
+        (_TASK_WORKSPACE_MIGRATION_KEY,),
+    ).fetchone()
+    if not migrated:
+        # 과거 실행이 컬럼 추가 직후 비정상 종료된 DB는 네 컬럼이 모두 있어 added_*가
+        # False여도 기본값 snapshot/unknown이 남을 수 있다. 완료 표식이 없는 경우에만
+        # 이런 불완전 행을 다시 이관 대상으로 돌려 다음 실행이 증거 기반으로 복구한다.
+        conn.execute(
+            "UPDATE project_task SET workspace_origin='unknown' "
+            "WHERE workspace_origin='snapshot' AND " + unresolved_workspace_sql()
+        )
+        # 생성물이 많은 운영 DB에서 이 스캔을 재시작마다 반복하지 않는다. 바깥 래퍼가
+        # 컬럼 추가부터 데이터 이관·완료 표식까지 같은 트랜잭션으로 묶는다.
+        _migrate_task_workspace_snapshots(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO manage_schema_state(key,value) VALUES(?,?)",
+            (_TASK_WORKSPACE_MIGRATION_KEY, "complete"),
+        )
+
+
+def _ensure_task_workspace_schema(conn, task_columns: set[str]) -> None:
+    """워크스페이스 DDL·데이터 이관·완료 표식을 하나의 원자 작업으로 보장한다."""
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        _ensure_task_workspace_schema_in_transaction(conn, task_columns)
+        if owns_transaction:
+            conn.execute("COMMIT")
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def ensure_manage_schema(conn) -> None:
@@ -157,16 +473,15 @@ def ensure_manage_schema(conn) -> None:
         conn.execute(
             "ALTER TABLE project_task ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
         )
-    # 기존 폴더 자동 작업은 수동 작업과 구분한다. 상태·일정·설명은 건드리지 않는다.
+    # 구 DB에 source_kind 컬럼이 없었거나 기본값(manual)만 채워졌어도 folder_path 자체가
+    # 자동 생성 작업의 확정 근거다. 워크스페이스 이관보다 먼저 분류해야 폴더 생성물 근거를
+    # 수동 링크로 오인하지 않는다.
     conn.execute(
         "UPDATE project_task SET source_kind='generation' "
         "WHERE folder_path IS NOT NULL AND TRIM(folder_path)<>'' "
         "AND COALESCE(source_kind, 'manual')='manual'"
     )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_task_folder "
-        "ON project_task(project_id, folder_path) WHERE folder_path IS NOT NULL"
-    )
+    _ensure_task_workspace_schema(conn, task_columns)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_project_task_active "
         "ON project_task(project_id, archived, source_kind)"
