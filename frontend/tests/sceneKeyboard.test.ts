@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isSceneTextEntryTarget,
   sceneCopyShortcut,
+  scenePasteShortcut,
   sceneEscapeTarget,
   sceneKeyIntent,
   sceneNodeKindForKey,
@@ -77,6 +78,13 @@ describe("scene keyboard intent", () => {
     expect(sceneCopyShortcut(event, 0)).toBe(false);
     expect(sceneKeyIntent(event, { pickerOpen: false, selectionCount: 0 })).toBeNull();
     expect(sceneKeyIntent(event, { pickerOpen: false, selectionCount: 2 })).toEqual({ type: "copy" });
+  });
+
+  it("붙여넣기 안전 폴백은 내부 복사 노드가 있을 때만 켜진다", () => {
+    const event = key("v", { ctrlKey: true });
+    expect(scenePasteShortcut(event, 1)).toBe(true);
+    expect(scenePasteShortcut(event, 0)).toBe(false);
+    expect(scenePasteShortcut(key("v", { ctrlKey: true, altKey: true }), 1)).toBe(false);
   });
 
   it("두 카드 이상의 C는 자동 연결이고 Delete는 선택 삭제다", () => {

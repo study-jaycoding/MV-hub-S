@@ -283,7 +283,10 @@
 /* T 태그 패널(플로팅 — 헤더로 이동, 모서리로 크기조절) */
 .tag-panel {
   position: fixed; z-index: 80;
-  width: 290px; height: 300px; min-width: 200px; min-height: 150px;
+  width: 290px; height: 300px;
+  min-width: min(200px, calc(100vw - 16px));
+  min-height: min(150px, calc(100vh - 16px));
+  max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
   resize: both; overflow: hidden;
   display: flex; flex-direction: column;
   background: #14151a; border: 1px solid var(--border2); border-radius: 12px;
@@ -322,7 +325,10 @@
 /* 코멘트 창(공유 스레드 — 플로팅, 이동·크기조절) */
 .cmt-panel {
   position: fixed; z-index: 82;
-  width: 320px; height: 380px; min-width: 240px; min-height: 220px;
+  width: 320px; height: 380px;
+  min-width: min(240px, calc(100vw - 16px));
+  min-height: min(220px, calc(100vh - 16px));
+  max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
   resize: both; overflow: hidden;
   display: flex; flex-direction: column;
   background: #14151a; border: 1px solid var(--border2); border-radius: 12px;

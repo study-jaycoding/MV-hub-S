@@ -2250,6 +2250,10 @@ export function SceneBoard({
       isSceneTextEntryTarget(ae)
     )
       ae.blur();
+    // 캔버스 자체를 명시적인 키보드 포커스 대상으로 만든다. 단순 div 배경은 브라우저/확장에 따라
+    // body 포커스로 남아 전역 Ctrl+C/V가 간헐적으로 빠질 수 있다. 카드·배경을 누른 뒤에는 항상
+    // 이 보드가 키 이벤트의 출발점이 되고, 실제 버튼은 이후 기본 동작으로 자기 포커스를 받는다.
+    (e.currentTarget as HTMLElement).focus({ preventScroll: true });
   };
 
   // '생성에 쓰인 노드 전체' — 시작 카드 + 위로 연결된 모든 소스(조상)를 모은다. 엣지를 거꾸로(to→from)
@@ -2804,6 +2808,7 @@ export function SceneBoard({
     <div
       className={"scene-board" + (cutHeld ? " cutting" : "") + (tempWire ? " wiring" : "")}
       ref={scrollRef}
+      tabIndex={-1}
       onMouseDownCapture={onBoardMouseDownCapture}
       onMouseDown={onMouseDown}
       onMouseMove={(e) => {

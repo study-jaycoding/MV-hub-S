@@ -12,6 +12,7 @@ import {
   shouldRestoreRecipeFromDrop,
   type SceneClipboard,
 } from "./sceneInteractions";
+import { isSceneTextEntryTarget, scenePasteShortcut } from "./sceneKeyboard";
 import {
   notifySpotlightAssetsChanged,
   parseSpotlightAssetItems,
@@ -49,6 +50,10 @@ interface SceneClipboardDropHandlers {
   onDrop: (event: ReactDragEvent) => void;
 }
 
+// 캔버스가 탭 전환 등으로 다시 마운트돼도 방금 복사한 노드는 유지한다. 시스템 클립보드에는
+// 안내 문구만 쓰므로, 실제 노드 구조는 이 메모리 스냅샷이 유일한 원본이다.
+let sceneClipboardSnapshot: SceneClipboard | null = null;
+
 const hasAssetDrag = (dataTransfer: DataTransfer) =>
   Array.from(dataTransfer.types).includes(DRAG_TYPES.asset);
 
@@ -71,17 +76,12 @@ const clipboardImage = (event: ClipboardEvent): File | null => {
   return null;
 };
 
-const isTextEntryPaste = (event: ClipboardEvent): boolean => {
-  const target = event.target as HTMLElement | null;
+const isTextEntryTarget = (target: EventTarget | null): boolean => {
+  const element = target as HTMLElement | null;
   const active = document.activeElement as HTMLElement | null;
-  return !!(
-    (target &&
-      (target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable ||
-        target.closest?.("input, textarea, [contenteditable=true], .sl-dockbar"))) ||
-    active?.closest(".sl-dockbar")
-  );
+  // ClipboardEvent.target 이 브라우저에 따라 document/body 로 잡혀도 실제 포커스가 입력창이면
+  // 캔버스 붙여넣기를 실행하지 않는다. dockbar 포함 여부도 공용 판정 함수가 함께 처리한다.
+  return isSceneTextEntryTarget(element) || isSceneTextEntryTarget(active);
 };
 
 /** SceneBoard의 노드 복사, 캡처 붙여넣기, 에셋/파일 드롭 수명주기를 관리한다. */
@@ -90,8 +90,10 @@ export function useSceneClipboardDrop(
 ): SceneClipboardDropHandlers {
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const clipboardRef = useRef<SceneClipboard | null>(null);
+  const clipboardRef = useRef<SceneClipboard | null>(sceneClipboardSnapshot);
   const lastImageKeyRef = useRef<string | null>(null);
+  const pasteFallbackTimerRef = useRef<number | null>(null);
+  const fallbackPasteAtRef = useRef(0);
 
   const addReferenceCards = useCallback(
     (refs: SceneRef[], centerX: number, centerY: number, connectToGenerationIds?: string[]) => {
@@ -212,6 +214,7 @@ export function useSceneClipboardDrop(
       current.edgesRef.current,
       new Set(current.selectedRef.current),
     );
+    sceneClipboardSnapshot = clipboardRef.current;
 
     void (async () => {
       try {
@@ -239,9 +242,42 @@ export function useSceneClipboardDrop(
     })();
   }, []);
 
+  const pasteCopiedNodes = useCallback((): boolean => {
+    const clipboard = clipboardRef.current;
+    if (!clipboard?.cards.length) return false;
+    const current = optionsRef.current;
+    const pasted = pasteSceneClipboard(
+      current.cardsRef.current,
+      current.edgesRef.current,
+      clipboard,
+      uid,
+    );
+    const nextCards = current.reconcileGenerationRefs(pasted.cards, pasted.edges);
+    current.cardsRef.current = nextCards;
+    current.edgesRef.current = pasted.edges;
+    current.setCards(nextCards);
+    current.setEdges(pasted.edges);
+    current.setSelected(pasted.pastedCardIds);
+    current.persist(nextCards, pasted.edges);
+    clipboardRef.current = pasted.nextClipboard;
+    sceneClipboardSnapshot = pasted.nextClipboard;
+    return true;
+  }, []);
+
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      if (isTextEntryPaste(event)) return;
+      if (pasteFallbackTimerRef.current !== null) {
+        window.clearTimeout(pasteFallbackTimerRef.current);
+        pasteFallbackTimerRef.current = null;
+      }
+      // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
+      // 같은 키 입력을 중복 처리하지 않는다.
+      if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
+        event.preventDefault();
+        fallbackPasteAtRef.current = 0;
+        return;
+      }
+      if (isTextEntryTarget(event.target)) return;
 
       const image = clipboardImage(event);
       const imageKey = image ? `${image.size}:${image.type}` : null;
@@ -323,27 +359,39 @@ export function useSceneClipboardDrop(
 
       if (intent === "nodes" && clipboard) {
         event.preventDefault();
-        const current = optionsRef.current;
-        const pasted = pasteSceneClipboard(
-          current.cardsRef.current,
-          current.edgesRef.current,
-          clipboard,
-          uid,
-        );
-        const nextCards = current.reconcileGenerationRefs(pasted.cards, pasted.edges);
-        current.cardsRef.current = nextCards;
-        current.edgesRef.current = pasted.edges;
-        current.setCards(nextCards);
-        current.setEdges(pasted.edges);
-        current.setSelected(pasted.pastedCardIds);
-        current.persist(nextCards, pasted.edges);
-        clipboardRef.current = pasted.nextClipboard;
+        pasteCopiedNodes();
       }
     };
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || isTextEntryTarget(event.target)) return;
+      if (!scenePasteShortcut(event, clipboardRef.current?.cards.length || 0)) return;
+      // 직전 폴백 직후 사용자가 빠르게 Ctrl+V를 한 번 더 누른 것은 새로운 명령이다. 뒤늦게 도착한
+      // 이전 paste 이벤트와 구분할 수 있도록 새 keydown에서 중복 방지 표식을 해제한다.
+      fallbackPasteAtRef.current = 0;
+
+      // 정상 브라우저에서는 곧바로 paste 이벤트가 와서 이 타이머를 취소한다. 브라우저·확장·포커스
+      // 문제로 paste 이벤트 자체가 빠진 경우에만 내부 노드 복사본을 직접 붙인다.
+      if (pasteFallbackTimerRef.current !== null) {
+        window.clearTimeout(pasteFallbackTimerRef.current);
+      }
+      pasteFallbackTimerRef.current = window.setTimeout(() => {
+        pasteFallbackTimerRef.current = null;
+        if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
+      }, 180);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [addReferenceCards]);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("paste", onPaste);
+      if (pasteFallbackTimerRef.current !== null) {
+        window.clearTimeout(pasteFallbackTimerRef.current);
+        pasteFallbackTimerRef.current = null;
+      }
+    };
+  }, [addReferenceCards, pasteCopiedNodes]);
 
   return { copySelectedNodes, onDragOver, onDrop };
 }

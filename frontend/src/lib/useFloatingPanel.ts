@@ -1,16 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Store } from "./storage";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "./windowDrag";
 
 // 저장된 위치가 화면 밖이면 안으로 끌어온다. 창을 화면 밖까지 끌고 놓거나 더 큰 화면에서 저장된
 // 좌표가 남으면, 다음부터는 열어도 안 보이는 '유령 창'이 된다(에셋 코멘트 창 실측 2026-08-19 —
-// DOM 엔 있는데 (2600,1500) 에 렌더). 머리(잡는 부분)가 반드시 화면 안에 남게 보정한다.
-function clampToViewport(p: { x: number; y: number } | null): { x: number; y: number } | null {
-  if (!p) return p;
-  const x = Math.min(Math.max(0, p.x), Math.max(0, window.innerWidth - 120));
-  const y = Math.min(Math.max(0, p.y), Math.max(0, window.innerHeight - 60));
+// DOM 엔 있는데 (2600,1500) 에 렌더). 저장 크기와 실제 렌더 크기를 함께 써서 창 전체를 보정한다.
+export function clampFloatingPanelPosition(
+  p: { x: number; y: number },
+  panel: { width: number; height: number },
+  viewport: { width: number; height: number },
+  margin = 8,
+): { x: number; y: number } {
+  const width = Math.min(Math.max(0, panel.width), Math.max(0, viewport.width - margin * 2));
+  const height = Math.min(Math.max(0, panel.height), Math.max(0, viewport.height - margin * 2));
+  const x = Math.min(Math.max(margin, p.x), Math.max(margin, viewport.width - width - margin));
+  const y = Math.min(Math.max(margin, p.y), Math.max(margin, viewport.height - height - margin));
   return x === p.x && y === p.y ? p : { x, y };
+}
+
+function clampToViewport(
+  p: { x: number; y: number } | null,
+  panel: { width: number; height: number } = { width: 120, height: 60 },
+): { x: number; y: number } | null {
+  if (!p) return p;
+  return clampFloatingPanelPosition(
+    p,
+    panel,
+    { width: window.innerWidth, height: window.innerHeight },
+  );
 }
 
 // 겹친 떠있는 창의 앞뒤 — 마지막으로 잡은(누른) 창이 앞으로. CSS 의 고정 z(태그 80·코멘트 82)를
@@ -42,7 +60,11 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
   const onDrag = useCallback((e: MouseEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    setPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
+    const el = panelRef.current;
+    setPos(clampToViewport(
+      { x: e.clientX - d.dx, y: e.clientY - d.dy },
+      el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined,
+    ));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -61,8 +83,15 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
 
   useEffect(() => { if (pos) LS.setJSON(keyPos, pos); }, [pos]);
   // 다시 열 때도 보정 — 같은 세션에서 화면 밖으로 끌고 닫았다 열면 초기 로드 보정만으론 못 잡는다.
-  useEffect(() => {
-    if (isOpen) setPos((prev) => clampToViewport(prev));
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setPos((prev) => clampToViewport(
+      prev || { x: rect.left, y: rect.top },
+      { width: rect.width, height: rect.height },
+    ));
   }, [isOpen]);
   useEffect(() => { if (size) LS.setJSON(keySize, size); }, [size]);
   useEffect(() => () => onDragEnd(), [onDragEnd]);
@@ -73,7 +102,19 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
     const ro = new ResizeObserver(() => {
       // 0 크기는 저장하지 않는다 — 패널이 remount/detach 될 때 RO 가 0 으로 fire 해 저장 크기를
       // 덮어쓰는 것 방어(카드 전환 시 코멘트창 크기 초기화 버그의 안전망).
-      if (el.offsetWidth > 0 && el.offsetHeight > 0) setSize({ w: el.offsetWidth, h: el.offsetHeight });
+      if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+        const measured = { width: el.offsetWidth, height: el.offsetHeight };
+        setSize((prev) =>
+          prev?.w === measured.width && prev?.h === measured.height
+            ? prev
+            : { w: measured.width, h: measured.height },
+        );
+        const rect = el.getBoundingClientRect();
+        setPos((prev) => clampToViewport(
+          prev || { x: rect.left, y: rect.top },
+          measured,
+        ));
+      }
     });
     ro.observe(el);
     // 앞뒤 전환 — 새로 열린 창은 맨 앞, 이후엔 잡은 창이 앞. 리스너는 문서 캡처 단계에 두고
@@ -92,9 +133,20 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
       }
     };
     document.addEventListener("mousedown", onDown, true);
+    const onWindowResize = () => {
+      const cur = panelRef.current;
+      if (!cur) return;
+      const rect = cur.getBoundingClientRect();
+      setPos((prev) => clampToViewport(
+        prev || { x: rect.left, y: rect.top },
+        { width: rect.width, height: rect.height },
+      ));
+    };
+    window.addEventListener("resize", onWindowResize);
     return () => {
       ro.disconnect();
       document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("resize", onWindowResize);
       floatPanels.delete(el);
       const cur = panelRef.current;
       if (cur) floatPanels.delete(cur);

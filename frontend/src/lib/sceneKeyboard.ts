@@ -115,6 +115,15 @@ export function sceneCopyShortcut(event: SceneKeyLike, selectionCount: number): 
   );
 }
 
+export function scenePasteShortcut(event: SceneKeyLike, clipboardNodeCount: number): boolean {
+  return (
+    clipboardNodeCount > 0 &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.altKey &&
+    event.key.toLowerCase() === "v"
+  );
+}
+
 export function sceneKeyIntent(
   event: SceneKeyLike,
   context: { pickerOpen: boolean; selectionCount: number },
