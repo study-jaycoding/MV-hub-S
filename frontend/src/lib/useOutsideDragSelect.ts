@@ -27,6 +27,18 @@ export const DRAG_SELECT_SKIP = [
   ".cmp-window",
 ].join(", ");
 
+// 떠 있는 요소(fixed/absolute 조상) 위에서도 시작하지 않는다 — 코멘트·태그 창, 모달, 토스트,
+// 드롭다운 전부. 위의 클래스 나열만으로는 새 창이 생길 때마다 구멍이 났다(코멘트/태그 창을
+// 잡아 옮기면 뒤에서 선택이 시작되던 실측 버그). 화면 골격(.topbar 는 sticky, 격자는 relative)은
+// fixed/absolute 가 아니라 걸리지 않는다 — 격자 내부의 absolute(카드 등)는 insideSelector 가 먼저 거른다.
+function onFloatingSurface(el: HTMLElement): boolean {
+  for (let cur: HTMLElement | null = el; cur && cur !== document.body; cur = cur.parentElement) {
+    const pos = getComputedStyle(cur).position;
+    if (pos === "fixed" || pos === "absolute") return true;
+  }
+  return false;
+}
+
 /**
  * @param insideSelector 이 화면의 격자·보드 자체(그 안에서 시작한 드래그는 각 화면 핸들러가 처리)
  * @param start 바깥에서 시작했을 때 부를 '드래그 선택 시작' 함수
@@ -48,6 +60,7 @@ export function useOutsideDragSelect(
       const target = event.target as HTMLElement | null;
       if (!target?.closest) return;
       if (target.closest(insideSelector) || target.closest(DRAG_SELECT_SKIP)) return;
+      if (onFloatingSurface(target)) return;
       startRef.current(event);
     };
     document.addEventListener("mousedown", onMouseDown, true);
