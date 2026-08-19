@@ -18,7 +18,14 @@ function Resolve-MvHubTempDirectory {
             continue
         }
         try {
-            return [System.IO.Directory]::CreateDirectory($Candidate).FullName
+            $Resolved = [System.IO.Directory]::CreateDirectory($Candidate).FullName
+            # CreateDirectory succeeds on an existing folder even when its ACL is
+            # read-only, and then the worker copy below fails without trying the
+            # next candidate. Prove writability with a real create+delete first.
+            $ProbePath = Join-Path $Resolved ("mvhub-temp-probe-{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+            [System.IO.File]::WriteAllText($ProbePath, "probe")
+            [System.IO.File]::Delete($ProbePath)
+            return $Resolved
         }
         catch {
             continue

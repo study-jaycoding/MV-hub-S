@@ -168,9 +168,14 @@ def test_restart_identity_accepts_only_the_current_installation_path(tmp_path: P
         + "$unrelated = $env:MVHUB_UNRELATED_SERVE\n"
         + "$matching = '\"C:\\Python314\\python.exe\" \"' + $expected + '\"'\n"
         + "$foreign = '\"C:\\Python314\\python.exe\" \"' + $unrelated + '\"'\n"
+        + "$backup = '\"C:\\Python314\\python.exe\" \"' + $expected + '.backup\"'\n"
+        + "$embedded = '\"C:\\other\\app.exe\" \"--config=' + $expected + '\"'\n"
         + "if (-not (Test-MvHubServerCommandLine $matching $expected)) { exit 11 }\n"
         + "if (Test-MvHubServerCommandLine $foreign $expected) { exit 12 }\n"
         + "if (Test-MvHubServerCommandLine '' $expected) { exit 13 }\n"
+        # 부분 문자열 매칭의 오탐 케이스 — 경로가 '포함'만 된 남의 프로세스를 죽이면 안 된다.
+        + "if (Test-MvHubServerCommandLine $backup $expected) { exit 14 }\n"
+        + "if (Test-MvHubServerCommandLine $embedded $expected) { exit 15 }\n"
         + "exit 0\n",
         encoding="utf-8-sig",
     )

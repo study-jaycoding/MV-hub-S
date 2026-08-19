@@ -38,7 +38,32 @@ function Test-MvHubServerCommandLine([string]$CommandLine, [string]$ExpectedServ
         [string]::IsNullOrWhiteSpace($ExpectedServePath)) {
         return $false
     }
-    return $CommandLine.IndexOf($ExpectedServePath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    # Substring matching can hit a foreign process whose arguments merely contain
+    # this path (serve.py.backup, --config=...\serve.py) and then taskkill /T /F it.
+    # Tokenize with Windows quote rules and require one standalone argument to be
+    # exactly the expected absolute serve.py path.
+    $expected = $ExpectedServePath
+    try { $expected = [System.IO.Path]::GetFullPath($ExpectedServePath) } catch { }
+    $tokens = New-Object System.Collections.Generic.List[string]
+    $current = New-Object System.Text.StringBuilder
+    $inQuote = $false
+    foreach ($ch in $CommandLine.ToCharArray()) {
+        if ($ch -eq '"') { $inQuote = -not $inQuote; continue }
+        if (-not $inQuote -and ($ch -eq ' ' -or $ch -eq "`t")) {
+            if ($current.Length -gt 0) { [void]$tokens.Add($current.ToString()); [void]$current.Clear() }
+            continue
+        }
+        [void]$current.Append($ch)
+    }
+    if ($current.Length -gt 0) { [void]$tokens.Add($current.ToString()) }
+    foreach ($token in $tokens) {
+        $candidate = $token
+        try { $candidate = [System.IO.Path]::GetFullPath($token) } catch { }
+        if ([string]::Equals($candidate, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Wait-TaskStopped([string]$TaskName, [int]$WaitSeconds = 15) {

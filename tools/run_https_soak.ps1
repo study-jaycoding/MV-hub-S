@@ -269,6 +269,9 @@ function Invoke-LoadStage {
         Write-State -Status "failed" -Message "$Stage 시험 실패" -ExitCode $StageExitCode
         throw "$Stage 시험 실패(exit code $StageExitCode)"
     }
+    # 시작 시점 검사만으론 부족하다 — 몇 시간짜리 시험 '도중' 커밋/수정이 끼어들면 보고서가
+    # 배포 대상과 다른 코드의 합격 증거가 된다. 합격 기록 직전에 같은 코드였음을 다시 증명한다.
+    Assert-BaselineCommit
     Write-State -Status "passed" -Message "$Stage 시험 합격" -ExitCode 0
 }
 
@@ -314,6 +317,7 @@ try {
         -DurationSeconds $SoakDurationSeconds `
         -Cycles $SoakCycles `
         -OutputPath $SoakReport
+    Assert-BaselineCommit  # 최종 완료 기록도 같은 코드에서 나온 결과임을 못박는다
     $CurrentStage = "complete"
     $CurrentReport = $SoakReport
     Write-State -Status "complete" -Message "HTTPS 30분 및 8시간 시험 합격" -ExitCode 0

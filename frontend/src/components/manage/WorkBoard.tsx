@@ -664,6 +664,15 @@ export function WorkBoard({
       window.alert("필터·검색 중에는 순서를 바꿀 수 없습니다. 필터를 해제한 뒤 정렬해 주세요.");
       return;
     }
+    // 전체 스냅샷 계약이라 페이로드에 미확정(귀속 확인 필요) 행이 섞이면 서버가 요청 전체를
+    // 409 로 거절한다 — 옮기는 두 행만 검사하면 남의 미확정 행 때문에 조용히 실패한다(합의 C-2).
+    // 미확정 행만 뺀 부분 전송은 상대 앵커를 훼손하므로, 스코프에 하나라도 있으면 정렬을 막는다.
+    if (filtered.some((t) => t.workspace_unresolved)) {
+      window.alert(
+        "귀속 확인이 필요한 작업이 있어 순서를 바꿀 수 없습니다. 해당 작업의 워크스페이스 귀속을 먼저 정리해 주세요.",
+      );
+      return;
+    }
     const ids = filtered.map((t) => t.id);
     if (draggedId === targetId || !ids.includes(draggedId) || !ids.includes(targetId)) return;
     const [moved] = ids.splice(ids.indexOf(draggedId), 1);

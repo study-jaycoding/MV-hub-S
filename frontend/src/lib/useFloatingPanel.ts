@@ -55,12 +55,20 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
   );
   const [size, setSize] = useState<{ w: number; h: number } | null>(() => LS.loadJSON(keySize));
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  // ★콜백 ref — key 리마운트(코멘트 창 파일 전환)로 DOM 이 갈리는 순간을 state 로 잡는다.
+  //   객체 ref + [isOpen] 이펙트만으론 리마운트를 감지 못해, ResizeObserver 가 떼어진 옛 DOM 을
+  //   계속 관찰하고(크기 저장·보정 중단) 분리된 DOM 이 z-order 집합에 누적됐다(적대 리뷰 P2).
+  const nodeRef = useRef<HTMLDivElement | null>(null); // 이벤트 핸들러용 동기 읽기
+  const [panelNode, setPanelNode] = useState<HTMLDivElement | null>(null); // 이펙트 재배선 트리거
+  const panelRef = useCallback((node: HTMLDivElement | null) => {
+    nodeRef.current = node;
+    setPanelNode(node);
+  }, []);
 
   const onDrag = useCallback((e: MouseEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    const el = panelRef.current;
+    const el = nodeRef.current;
     setPos(clampToViewport(
       { x: e.clientX - d.dx, y: e.clientY - d.dy },
       el ? { width: el.offsetWidth, height: el.offsetHeight } : undefined,
@@ -82,23 +90,23 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
   );
 
   useEffect(() => { if (pos) LS.setJSON(keyPos, pos); }, [pos]);
-  // 다시 열 때도 보정 — 같은 세션에서 화면 밖으로 끌고 닫았다 열면 초기 로드 보정만으론 못 잡는다.
+  // 다시 열 때·리마운트로 새 DOM 이 붙을 때 보정 — 같은 세션에서 화면 밖으로 끌고 닫았다 열면
+  // 초기 로드 보정만으론 못 잡는다.
   useLayoutEffect(() => {
-    if (!isOpen) return;
-    const el = panelRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
+    if (!isOpen || !panelNode) return;
+    const rect = panelNode.getBoundingClientRect();
     setPos((prev) => clampToViewport(
       prev || { x: rect.left, y: rect.top },
       { width: rect.width, height: rect.height },
     ));
-  }, [isOpen]);
+  }, [isOpen, panelNode]);
   useEffect(() => { if (size) LS.setJSON(keySize, size); }, [size]);
   useEffect(() => () => onDragEnd(), [onDragEnd]);
   useEffect(() => {
-    if (!isOpen) return;
-    const el = panelRef.current;
-    if (!el) return;
+    // panelNode 의존 — 리마운트로 노드가 갈리면 옛 노드는 cleanup 에서 관찰·등록 해제되고
+    // 새 노드에 ResizeObserver·z-order 등록이 즉시 다시 배선된다.
+    if (!isOpen || !panelNode) return;
+    const el = panelNode;
     const ro = new ResizeObserver(() => {
       // 0 크기는 저장하지 않는다 — 패널이 remount/detach 될 때 RO 가 0 으로 fire 해 저장 크기를
       // 덮어쓰는 것 방어(카드 전환 시 코멘트창 크기 초기화 버그의 안전망).
@@ -117,26 +125,18 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
       }
     });
     ro.observe(el);
-    // 앞뒤 전환 — 새로 열린 창은 맨 앞, 이후엔 잡은 창이 앞. 리스너는 문서 캡처 단계에 두고
-    // 매번 panelRef.current 를 읽는다: ① 내부 버튼의 stopPropagation(머리 A−/A+ 등 드래그
-    // 방지용)에 가려지지 않고 ② key 리마운트로 DOM 이 갈려도(코멘트 창의 파일 전환) 계속 동작.
+    // 앞뒤 전환 — 새로 열린 창은 맨 앞, 이후엔 잡은 창이 앞. 리스너는 문서 캡처 단계에 둬서
+    // 내부 버튼의 stopPropagation(머리 A−/A+ 등 드래그 방지용)에 가려지지 않게 한다.
     floatPanels.add(el);
     bringPanelToFront(el);
     const onDown = (event: MouseEvent) => {
-      const cur = panelRef.current;
-      if (cur && event.target instanceof Node && cur.contains(event.target)) {
-        if (!floatPanels.has(cur)) {
-          floatPanels.delete(el);
-          floatPanels.add(cur); // 리마운트로 갈린 새 노드를 정규화 대상에 반영
-        }
-        bringPanelToFront(cur);
+      if (event.target instanceof Node && el.contains(event.target)) {
+        bringPanelToFront(el);
       }
     };
     document.addEventListener("mousedown", onDown, true);
     const onWindowResize = () => {
-      const cur = panelRef.current;
-      if (!cur) return;
-      const rect = cur.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
       setPos((prev) => clampToViewport(
         prev || { x: rect.left, y: rect.top },
         { width: rect.width, height: rect.height },
@@ -148,9 +148,7 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
       document.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("resize", onWindowResize);
       floatPanels.delete(el);
-      const cur = panelRef.current;
-      if (cur) floatPanels.delete(cur);
     };
-  }, [isOpen]);
+  }, [isOpen, panelNode]);
   return { pos, setPos, size, setSize, dragRef, panelRef, onHeadMouseDown };
 }

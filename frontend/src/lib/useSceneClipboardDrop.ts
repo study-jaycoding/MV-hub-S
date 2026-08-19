@@ -53,6 +53,10 @@ interface SceneClipboardDropHandlers {
 // 캔버스가 탭 전환 등으로 다시 마운트돼도 방금 복사한 노드는 유지한다. 시스템 클립보드에는
 // 안내 문구만 쓰므로, 실제 노드 구조는 이 메모리 스냅샷이 유일한 원본이다.
 let sceneClipboardSnapshot: SceneClipboard | null = null;
+// 복사 때 시스템 클립보드에 심는 고유 표식 — 붙여넣기 시 클립보드 텍스트가 이 표식과 다르면
+// 사용자가 그 사이 외부에서 다른 것을 복사한 것이므로 옛 노드 스냅샷을 붙이지 않는다.
+// null = 표식 기록 실패(클립보드 권한 등) — 그땐 기존 이미지 지문 휴리스틱만 쓴다.
+let sceneClipboardMarker: string | null = null;
 
 const hasAssetDrag = (dataTransfer: DataTransfer) =>
   Array.from(dataTransfer.types).includes(DRAG_TYPES.asset);
@@ -217,13 +221,14 @@ export function useSceneClipboardDrop(
     sceneClipboardSnapshot = clipboardRef.current;
 
     void (async () => {
+      const marker = `[MV-hub#${uid()}] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기`;
       try {
-        await navigator.clipboard?.writeText?.(
-          "[MV-hub] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기",
-        );
+        await navigator.clipboard?.writeText?.(marker);
+        sceneClipboardMarker = marker;
         lastImageKeyRef.current = null;
         return;
       } catch {
+        sceneClipboardMarker = null;
         // write 미지원/실패 시 이미지 지문 읽기로 폴백한다.
       }
       try {
@@ -270,6 +275,9 @@ export function useSceneClipboardDrop(
         window.clearTimeout(pasteFallbackTimerRef.current);
         pasteFallbackTimerRef.current = null;
       }
+      // ★입력창 판정이 폴백 중복 방지보다 먼저 — 캔버스 폴백 직후 0.5초 안에 입력창에서
+      //   Ctrl+V 하면 정상 텍스트 붙여넣기가 preventDefault 로 막히던 문제(합의 C-3b).
+      if (isTextEntryTarget(event.target)) return;
       // 일부 브라우저가 keydown 뒤 paste 이벤트를 늦게 보내는 경우, 이미 실행한 안전 폴백과
       // 같은 키 입력을 중복 처리하지 않는다.
       if (fallbackPasteAtRef.current && performance.now() - fallbackPasteAtRef.current < 500) {
@@ -277,7 +285,6 @@ export function useSceneClipboardDrop(
         fallbackPasteAtRef.current = 0;
         return;
       }
-      if (isTextEntryTarget(event.target)) return;
 
       const image = clipboardImage(event);
       const imageKey = image ? `${image.size}:${image.type}` : null;
@@ -358,6 +365,11 @@ export function useSceneClipboardDrop(
       }
 
       if (intent === "nodes" && clipboard) {
+        // 복사 때 심은 고유 표식과 클립보드 텍스트가 다르면, 그 사이 외부에서 다른 것을
+        // 복사한 것 — 옛 노드 스냅샷을 붙이지 않는다(합의 FE-P3-1). 표식 기록에 실패했거나
+        // 브라우저가 텍스트를 안 주면(빈 값) 기존 동작을 유지한다.
+        const clipText = event.clipboardData?.getData("text/plain") || "";
+        if (sceneClipboardMarker && clipText && clipText !== sceneClipboardMarker) return;
         event.preventDefault();
         pasteCopiedNodes();
       }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, RefObject } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { buildCommentTree } from "../../lib/commentTree";
 import { fmtWhen } from "../../lib/format";
 
@@ -58,7 +58,7 @@ export function CommentPanel<T extends CommentPanelItem>({
   comments: T[];
   label: string;
   myId: string;
-  panelRef: RefObject<HTMLDivElement>;
+  panelRef: Ref<HTMLDivElement>; // useFloatingPanel 의 콜백 ref — 리마운트 감지용
   pos: { x: number; y: number } | null;
   size?: { w: number; h: number } | null;
   fallbackPos?: { x: number; y: number };
@@ -91,10 +91,14 @@ export function CommentPanel<T extends CommentPanelItem>({
     () => (showPrivate ? comments : comments.filter((c) => !c.private)),
     [comments, showPrivate],
   );
-  const { byParent, byId, roots, descendantsOf } = useMemo(
+  const { byId, roots, descendantsOf } = useMemo(
     () => buildCommentTree(visible),
     [visible],
   );
+  // 수정·삭제 잠금 판정은 '같이 보기'로 숨긴 비공개 답글까지 포함한 전체 목록 기준 —
+  // 표시 목록(visible)으로 판정하면 숨겨둔 내 비공개 답글이 있는 부모를 지울 수 있게 되고,
+  // 공유 부모는 서버에서 지워지는데 비공개 답글은 로컬에 남아 부모 없는 고아가 된다(적대 리뷰 P2).
+  const fullTree = useMemo(() => buildCommentTree(comments), [comments]);
 
   const submitComment = (text: string, parentId?: string | null) => {
     setReplyingId(null);
@@ -110,7 +114,11 @@ export function CommentPanel<T extends CommentPanelItem>({
 
   const renderRow = (c: T, isReply: boolean, replyToName: string | null) => {
     const mine = c.author === myId;
-    const lockedByReply = (byParent[c.id] || []).some((ch) => ch.author !== myId);
+    // 깊은 후손까지 본다 — 중간 답글을 지워도 그 아래(남의 답글·내 비공개)가 고아가 되는 건 같다.
+    const deepChildren = fullTree.descendantsOf(c.id);
+    const lockedByReply = deepChildren.some((ch) => ch.author !== myId);
+    // 공유 코멘트 아래 내 비공개 답글 — 부모만 서버에서 지워지면 비공개가 로컬 고아로 남는다.
+    const lockedByPrivateChild = !c.private && deepChildren.some((ch) => ch.private);
     return (
       <div
         key={c.id}
@@ -147,11 +155,22 @@ export function CommentPanel<T extends CommentPanelItem>({
             {mine && !lockedByReply && (
               <>
                 <button onClick={() => { setEditingId(c.id); setReplyingId(null); }}>수정</button>
-                <button onClick={() => onDelete(c.id)}>삭제</button>
+                {!lockedByPrivateChild && (
+                  <button onClick={() => onDelete(c.id)}>삭제</button>
+                )}
               </>
             )}
-            {mine && lockedByReply && (
-              <span className="cmt-lock" title="답글이 달려 수정·삭제 불가">🔒</span>
+            {mine && (lockedByReply || lockedByPrivateChild) && (
+              <span
+                className="cmt-lock"
+                title={
+                  lockedByReply
+                    ? "답글이 달려 수정·삭제 불가"
+                    : "비공개 답글이 달려 있어 삭제 불가 — 비공개 답글을 먼저 지우세요"
+                }
+              >
+                🔒
+              </span>
             )}
           </div>
         </div>
