@@ -294,6 +294,17 @@ export function WorkBoard({
   const orderSaveQueuesRef = useRef(
     new Map<string, ReturnType<typeof createLatestMutationQueue>>(),
   );
+  // 스코프 큐는 나뉘어도 실제 네트워크 PUT 은 하나로 직렬화한다 — personal 스코프가 워크스페이스
+  // 작업을 포함하므로, 병렬 PUT 은 느린 옛 스냅샷이 나중에 도착해 최신 순서를 덮을 수 있다(검증 P2).
+  const orderWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const serializeOrderWrite = (op: () => Promise<void>): Promise<void> => {
+    const run = orderWriteChainRef.current.then(op);
+    orderWriteChainRef.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
   const taskPatchQueueRef = useRef<KeyedMutationQueue<string> | null>(null);
   const taskDataRevisionRef = useRef(0);
   const orderRevisionRef = useRef(0);
@@ -395,6 +406,9 @@ export function WorkBoard({
     if (!queue) {
       queue = createLatestMutationQueue(async (error) => {
         if (!mountedRef.current) return;
+        // 떠난 스코프의 뒤늦은 실패로 현재 화면에 경고창을 띄우지 않는다(검증 P3) —
+        // 그 스코프로 돌아가면 loadAll 재조회가 서버 정본으로 화면을 맞춘다.
+        if (!scopeIsActive(scope)) return;
         const activeErrors = mutationErrorsForScope([error], scope);
         if (!activeErrors.length) return;
         const [activeError] = activeErrors;
@@ -685,19 +699,22 @@ export function WorkBoard({
     const requestScope = scopeKey;
     optimisticOrderRef.current = { revision, scope: requestScope, tasks: optimisticTasks };
     setTasks(optimisticTasks);
-    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 '같은 스코프의' 최신 순서 하나로 교체한다.
-    orderQueueFor(requestScope).enqueue(async () => {
-      try {
-        await manageApi.updateTaskOrderSnapshot(ids);
-        taskDataRevisionRef.current += 1;
-        const latest = optimisticOrderRef.current;
-        if (scopeIsActive(requestScope) && latest?.scope === requestScope) {
-          setTasks(latest.tasks);
+    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 '같은 스코프의' 최신 순서 하나로 교체하고,
+    // 실제 PUT 은 전역 체인으로 직렬화한다(겹치는 스코프의 병렬 PUT 순서 역전 방지 — 검증 P2).
+    orderQueueFor(requestScope).enqueue(() =>
+      serializeOrderWrite(async () => {
+        try {
+          await manageApi.updateTaskOrderSnapshot(ids);
+          taskDataRevisionRef.current += 1;
+          const latest = optimisticOrderRef.current;
+          if (scopeIsActive(requestScope) && latest?.scope === requestScope) {
+            setTasks(latest.tasks);
+          }
+        } catch (error) {
+          throw scopedMutationError(requestScope, error);
         }
-      } catch (error) {
-        throw scopedMutationError(requestScope, error);
-      }
-    });
+      }),
+    );
   };
 
   // 선택 일괄 삭제 — 확인 후 작업 행 삭제. (폴더 자동 작업은 생성물이 남아 있으면 다음 동기화 때

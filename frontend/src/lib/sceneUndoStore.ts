@@ -4,10 +4,20 @@
 //  같은 '언마운트 생존' 패턴. LRU 상한 + 씬 삭제 정리로 메모리 무한 증가를 막는다.
 import type { SceneCard, SceneEdge, SceneGroup } from "./scenes";
 
+// 한 undo 엔트리에서 '앞으로' 진행하는 전이가 명시적으로 제거한 카드 소속(comfy 워크플로 교체 등).
+// undo(역방향)는 이걸 부활시키고, redo(정방향)는 다시 제거한다 — "스냅샷에 있으니 부활" 추론은
+// 관련 없는 undo 가 다른 브라우저의 제거까지 되살리는 오탐이라 전이 메타데이터로만 판정한다(검증 P1).
+export interface SceneCardRemoval {
+  cardId: string;
+  genIds: string[];
+}
 export interface SceneSnap {
   cards: SceneCard[];
   edges: SceneEdge[];
   groups: SceneGroup[];
+  // 스택 엔트리에만 실린다 — lastCommit·복원 결과는 항상 이 필드가 없는 순수 상태
+  // (sameSnap 전체 지문 비교가 현재 씬 props 와 일치해야 하므로).
+  removedForward?: SceneCardRemoval[];
 }
 export interface SceneHistory {
   undo: SceneSnap[];

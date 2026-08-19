@@ -174,6 +174,19 @@ def asset_comment_is_private(comment_id: str) -> Optional[bool]:
     return None if row is None else bool(row["is_private"])
 
 
+def asset_comment_has_private_children(comment_id: str) -> bool:
+    """이 코멘트를 부모로 둔 로컬 비공개 답글 존재 여부 — 부모 삭제 고아 방지 가드(검증 P2).
+
+    프론트 잠금(🔒)은 조언일 뿐이다: 목록을 읽은 뒤 다른 탭에서 비공개 답글이 달리거나
+    API 를 직접 부르면 우회된다. 삭제 경로가 서버 위임 직전에 이걸로 다시 검사해야 한다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM asset_comment WHERE parent_id=? AND is_private=1 LIMIT 1",
+            (comment_id,),
+        ).fetchone()
+    return row is not None
+
+
 def _comment_owner_locked(
     conn: sqlite3.Connection,
     comment_id: str,
@@ -395,6 +408,17 @@ def generation_comment_is_private(comment_id: str) -> Optional[bool]:
             "SELECT is_private FROM generation_comment WHERE id=?", (comment_id,)
         ).fetchone()
     return None if row is None else bool(row["is_private"])
+
+
+def generation_comment_has_private_children(comment_id: str) -> bool:
+    """이 코멘트를 부모로 둔 로컬 비공개 답글 존재 여부 — 부모 삭제 고아 방지 가드(검증 P2).
+    asset_comment_has_private_children 과 같은 이유(프론트 잠금은 조언일 뿐)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM generation_comment WHERE parent_id=? AND is_private=1 LIMIT 1",
+            (comment_id,),
+        ).fetchone()
+    return row is not None
 
 
 def mark_generation_comment_seen(worker_id: str, comment_id: str) -> None:

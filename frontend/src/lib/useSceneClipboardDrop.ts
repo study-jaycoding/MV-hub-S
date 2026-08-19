@@ -220,6 +220,7 @@ export function useSceneClipboardDrop(
     );
     sceneClipboardSnapshot = clipboardRef.current;
 
+    sceneClipboardMarker = null; // 새 복사 시작 — 이전 표식은 즉시 무효(쓰기 완료 전 오판 방지)
     void (async () => {
       const marker = `[MV-hub#${uid()}] 노드 복사됨 — 캔버스에서 Ctrl+V 로 붙여넣기`;
       try {
@@ -228,7 +229,6 @@ export function useSceneClipboardDrop(
         lastImageKeyRef.current = null;
         return;
       } catch {
-        sceneClipboardMarker = null;
         // write 미지원/실패 시 이미지 지문 읽기로 폴백한다.
       }
       try {
@@ -389,7 +389,19 @@ export function useSceneClipboardDrop(
       }
       pasteFallbackTimerRef.current = window.setTimeout(() => {
         pasteFallbackTimerRef.current = null;
-        if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
+        void (async () => {
+          // 폴백도 표식을 검사한다(검증 P3) — 노드 복사 후 외부에서 다른 것을 복사했다면
+          // 옛 노드 스냅샷을 붙이면 안 된다. readText 미지원/권한 거부면 기존 동작 유지.
+          if (sceneClipboardMarker) {
+            try {
+              const text = await navigator.clipboard?.readText?.();
+              if (text && text !== sceneClipboardMarker) return;
+            } catch {
+              /* 권한 없음 — 표식 검사 생략(폴백은 최후 수단) */
+            }
+          }
+          if (pasteCopiedNodes()) fallbackPasteAtRef.current = performance.now();
+        })();
       }, 180);
     };
 

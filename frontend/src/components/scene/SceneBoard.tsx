@@ -672,7 +672,11 @@ export function SceneBoard({
   //   · persistUser   : 사용자 편집 확정 저장(undo 스택에 쌓임)
   //   · persistDerived: 실행상태·파생 저장(undo 스택 제외)
   type ApplyCardsMode = "live" | "deferUser" | "persistUser" | "persistDerived";
-  const applyCards = (nextCards: SceneCard[], mode: ApplyCardsMode) => {
+  const applyCards = (
+    nextCards: SceneCard[],
+    mode: ApplyCardsMode,
+    persistOpts?: { removedForward?: { cardId: string; genIds: string[] }[] },
+  ) => {
     cardsRef.current = nextCards;
     setCards(nextCards);
     if (mode === "live") return;
@@ -680,14 +684,23 @@ export function SceneBoard({
       scheduleInputPersist();
       return;
     }
-    persist(nextCards, edgesRef.current, groupsRef.current, { undo: mode !== "persistDerived" });
+    persist(nextCards, edgesRef.current, groupsRef.current, {
+      undo: mode !== "persistDerived",
+      ...persistOpts,
+    });
   };
   // 카드를 비울 때 DB 소속에도 '뺐음'을 남긴다. 화면에서 안 보인다고 부르면 안 되고, 사용자가
   // 실제로 비운 순간(comfy 워크플로 교체)에만 부른다 — 아니면 다른 브라우저가 방금 담은 게 지워진다.
-  const forgetCardGenerations = (sceneId: string, cardId: string) => {
+  // 반환값 = 제거 delta — 이 커밋의 undo 엔트리에 실어야 undo 부활/redo 재제거가 정확해진다(검증 P1).
+  const forgetCardGenerations = (
+    sceneId: string,
+    cardId: string,
+  ): { cardId: string; genIds: string[] }[] => {
     const card = cardsRef.current.find((c) => c.id === cardId);
-    if (!card) return;
-    void markCardGenerationsRemoved(sceneId, cardId, variantIds(card));
+    const genIds = card ? variantIds(card).filter(Boolean) : [];
+    if (!genIds.length) return [];
+    void markCardGenerationsRemoved(sceneId, cardId, genIds);
+    return [{ cardId, genIds }];
   };
   const openCanvasRecovery = async (cardId: string) => {
     if (!onCanvasRecoveryCandidates) return;
@@ -1331,7 +1344,7 @@ export function SceneBoard({
       // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
       // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
       // 사용자가 실제로 비운 것이므로 DB 소속에도 '뺐음'을 남긴다 — 안 남기면 다른 브라우저가 되살린다.
-      forgetCardGenerations(sid, cardId);
+      const removedForward = forgetCardGenerations(sid, cardId);
       const nextCards = cardsRef.current.map((c) =>
         c.id === cardId && c.kind === "comfy"
           ? {
@@ -1354,7 +1367,7 @@ export function SceneBoard({
             }
           : c,
       );
-      applyCards(nextCards, "persistUser");
+      applyCards(nextCards, "persistUser", { removedForward });
       return true;
     } catch {
       return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
@@ -3623,7 +3636,7 @@ export function SceneBoard({
                 const contentChanged = (prev?.content || "") !== (cfg.content || "");
                 if (contentChanged) {
                   // content 교체 → 카드에 쌓인 생성물(대표·목록)까지 초기화(applyComfyApi 와 동일 규칙).
-                  forgetCardGenerations(scene.id, comfyModalId);
+                  const removedForward = forgetCardGenerations(scene.id, comfyModalId);
                   const nextCards = cardsRef.current.map((c) =>
                     c.id === comfyModalId && c.kind === "comfy"
                       ? {
@@ -3636,7 +3649,7 @@ export function SceneBoard({
                   );
                   cardsRef.current = nextCards;
                   setCards(nextCards);
-                  persist(nextCards, edgesRef.current);
+                  persist(nextCards, edgesRef.current, groupsRef.current, { removedForward });
                 } else {
                   patchComfyCfg(comfyModalId, cfg);
                 }

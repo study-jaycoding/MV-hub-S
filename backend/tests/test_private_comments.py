@@ -115,6 +115,30 @@ class PrivateCommentTests(unittest.TestCase):
         )
         self.assertEqual(repo.list_private_generation_comments("S1", "u1"), [])
 
+    # ── ①-d 비공개 답글 달린 부모 삭제는 서버 경로에서도 차단 ─────────
+    # 프론트 잠금(🔒)은 조언일 뿐 — 다른 탭/직접 API 로 우회되면 부모만 서버에서 지워지고
+    # 로컬 비공개 답글이 고아로 남는다. 삭제 라우트가 강제 지점이다(검증 P2).
+    def test_delete_parent_with_private_reply_is_blocked(self):
+        from fastapi import HTTPException
+
+        from app.routers import assets_metadata
+
+        pid = repo.add_generation_comment("g1", "u1", "부모 공유")
+        repo.add_generation_comment("g1", "u1", "비공개 답글", pid, False, True)
+        with self.assertRaises(HTTPException) as ctx:
+            generation.delete_gen_comment(pid, _Request())
+        self.assertEqual(ctx.exception.status_code, 409)
+        # 부모가 그대로 남아 있어야 한다
+        self.assertIn(
+            "부모 공유", [c["text"] for c in repo.list_generation_comments("g1", "u1")]
+        )
+
+        apid = repo.add_asset_comment("p", "a.png", "u1", "부모")
+        repo.add_asset_comment("p", "a.png", "u1", "비공개 답글", apid, False, True)
+        with self.assertRaises(HTTPException) as ctx2:
+            assets_metadata.delete_comment(apid, _Request())
+        self.assertEqual(ctx2.exception.status_code, 409)
+
     # ── ② 목록 가시성 ────────────────────────────────────────────────
     def test_list_hides_others_private(self):
         repo.add_generation_comment("g1", "u1", "내 비공개", is_private=True)

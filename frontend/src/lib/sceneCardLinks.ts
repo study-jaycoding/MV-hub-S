@@ -336,11 +336,16 @@ async function send(
   });
   const longest = Math.max(backfill.length, explicit.length, removed.length);
   for (let i = 0; i < longest; i += MAX_PER_REQUEST) {
+    const explicitChunk = explicit.slice(i, i + MAX_PER_REQUEST).map(strip);
     await jsonFetch(API, {
       method: "PUT",
       body: JSON.stringify({
         backfill: backfill.slice(i, i + MAX_PER_REQUEST).map(strip),
-        explicit: explicit.slice(i, i + MAX_PER_REQUEST).map(strip),
+        explicit: explicitChunk,
+        // 구서버 호환(검증 P2): 새 필드를 모르는 구서버는 added 만 반영한다. explicit 의
+        // 의미(=tombstone 해제 upsert)는 구서버의 added 처리와 동일하므로 중복 전송이 안전하다.
+        // backfill 은 구서버 added 로 보내면 안 된다(그쪽 upsert 가 남의 제거를 되살리는 원래 버그).
+        added: explicitChunk,
         removed: removed.slice(i, i + MAX_PER_REQUEST).map(strip),
       }),
     });

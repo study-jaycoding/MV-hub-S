@@ -1012,6 +1012,13 @@ def edit_gen_comment(comment_id: str, body: GenCommentEditIn, request: Request):
 
 @router.delete("/generation-comments/{comment_id}")
 def delete_gen_comment(comment_id: str, request: Request):
+    # 로컬 비공개 답글이 달린 부모는 지우지 못한다(검증 P2) — 부모만 서버에서 사라지면
+    # 비공개 답글이 부모 없는 고아로 남는다. 프론트 잠금은 조언일 뿐이라 여기서 강제한다.
+    if repo.generation_comment_has_private_children(comment_id):
+        raise HTTPException(
+            status_code=409,
+            detail="비공개 답글이 달려 있어 삭제할 수 없습니다 — 비공개 답글을 먼저 지우세요",
+        )
     if not _comment_local(comment_id):
         return _proxy.proxy_json("DELETE", f"/api/generation-comments/{comment_id}")
     try:

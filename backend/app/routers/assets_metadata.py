@@ -215,6 +215,12 @@ def edit_comment(comment_id: str, body: CommentEditIn, request: Request):
 
 @router.delete("/comments/{comment_id}")
 def delete_comment(comment_id: str, request: Request):
+    # 로컬 비공개 답글이 달린 부모는 지우지 못한다(검증 P2 — generation 쪽과 동일 가드).
+    if repo.asset_comment_has_private_children(comment_id):
+        raise HTTPException(
+            status_code=409,
+            detail="비공개 답글이 달려 있어 삭제할 수 없습니다 — 비공개 답글을 먼저 지우세요",
+        )
     # 비공개 코멘트는 로컬에만 있다(edit 와 같은 분기).
     if _proxy.proxying() and repo.asset_comment_is_private(comment_id) is not True:
         return _proxy.proxy_json("DELETE", f"/api/assets/comments/{comment_id}")
