@@ -564,6 +564,19 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     )
 
 
+def _pending_exists(server: str, token: str) -> bool:
+    status, body = _http(
+        "GET",
+        _gen_request_url(
+            server,
+            action="pending-exists",
+            query={"capability": "workspace"},
+        ),
+        token=token,
+    )
+    return status == 200 and isinstance(body, dict) and body.get("pending") is True
+
+
 def _begin_submission(
     server: str,
     token: str,
@@ -1991,7 +2004,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     status, body = _http(
         "POST", f"{server}/api/ingest", token=token,
         body={"jobs": fresh, "creator_uid": my_uid, "workspace": workspace, "account_status": acct,
-              "account_transactions": txns},
+              "account_transactions": txns, "list_fetched": len(jobs)},
     )
     if status != 200 or not isinstance(body, dict):
         # 적재 실패로 watch 루프를 죽이지 않는다(소프트 보류) — 로그인 전(401·인증 필요)이나
@@ -2065,6 +2078,23 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
     finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
     reconcile_pass(server, token, cli, account_email, skip_job_ids=set(active))
     return finished
+
+
+def _execute_pending_for_watch_cycle(
+    server: str,
+    token: str,
+    cli: str,
+    reasons: set[str],
+) -> None:
+    if "gen-request" in reasons:
+        print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
+        execute_pending(server, token, cli)
+        return
+    if not reasons and _pending_exists(server, token):
+        # 깨움 신호는 지연 단축용일 뿐이다. 프로세스 재시작으로 신호가 사라져도 매 idle마다
+        # DB의 pending을 다시 확인해 정확성 책임을 영속 큐에 둔다.
+        print("[idle] 대기 요청 재확인 — 내 CLI로 실행")
+        execute_pending(server, token, cli)
 
 
 def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
@@ -2183,9 +2213,7 @@ def main() -> None:
             # 사유가 콤마로 합쳐 올 수 있다(gen-request 와 sync 가 함께 쌓인 경우) → 멤버십으로 검사.
             reasons = set((reason or "").split(",")) if reason else set()
             try:
-                if "gen-request" in reasons:
-                    print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
-                    execute_pending(server, token, cli)  # 제출 워커와 원격 작업 추적을 분리해 처리
+                _execute_pending_for_watch_cycle(server, token, cli, reasons)
                 # 매 사이클(이벤트·idle 타임아웃 모두) '실제 상태 미확정' 카드를 보정 — 확인중 카드를
                 #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
                 #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.

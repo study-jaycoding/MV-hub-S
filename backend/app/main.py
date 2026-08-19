@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import warnings
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 # Windows 함정: CLI 브리지(asyncio subprocess)는 Proactor 이벤트 루프가 필요하다.
 # 아래처럼 import 시점에 Proactor 정책을 박아두면 일반 실행(uvicorn app.main:app)에서는
@@ -176,6 +176,7 @@ async def _application_lifespan(app: FastAPI):
     log_path = configure_operational_logging()
     log_event(_runtime_log, "startup_begin", log_file=log_path.name)
     runtime_report_task: asyncio.Task | None = None
+    history_audit_task: asyncio.Task | None = None
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
@@ -359,6 +360,14 @@ async def _application_lifespan(app: FastAPI):
     from .routers._telemetry import bind_telemetry_loop
 
     bind_telemetry_loop(runtime_loop)
+    from .services.history_autofill import bind_history_loop, startup_history_audit
+
+    bind_history_loop(runtime_loop)
+    # 공유 팀 서버는 계정별 CLI 자격이 없으므로 절대 실행하지 않는다. 로컬 허브만 최근 성공
+    # audit을 백그라운드로 시작하며, 미로그인은 경고만 남기고 다음 시작·gap 기회로 넘긴다.
+    history_audit_task = asyncio.create_task(
+        startup_history_audit(), name="history-startup-audit"
+    )
     # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
     # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
     if _proxy.is_worker_hub():
@@ -398,6 +407,14 @@ async def _application_lifespan(app: FastAPI):
     from .routers._telemetry import unbind_telemetry_loop
 
     unbind_telemetry_loop(runtime_loop)
+    from .services.history_autofill import stop_history_imports, unbind_history_loop
+
+    if history_audit_task and not history_audit_task.done():
+        history_audit_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await history_audit_task
+    await stop_history_imports()
+    unbind_history_loop(runtime_loop)
     if AUTH_ENABLED:
         await periodic_sync.stop()
     asset_watcher.stop()

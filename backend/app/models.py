@@ -399,6 +399,7 @@ class IngestIn(BaseModel):
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     account_status: Optional[dict] = None  # {email, credits, plan, workspaces} — 크레딧 집계용
     account_transactions: Optional[list] = None  # PM: account transactions 원본(실제 차감액 매칭용). 선택.
+    list_fetched: Optional[int] = None  # 차집합 전 generate list 원본 수 — 100-window gap 판정용
 
     @field_validator("workspace", mode="before")
     @classmethod

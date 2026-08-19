@@ -53,6 +53,11 @@ export interface HistoryImportStatus {
   message: string;
   started_at: string | null;
   finished_at: string | null;
+  // 자동 보충(gap) 확장 필드 — 구백엔드는 안 보내므로 선택 필드로 둔다(순차 배포 호환).
+  automatic?: boolean;
+  gap_detected_at?: string | null;
+  gap_resolved?: boolean;
+  gap_auto_started?: boolean;
 }
 
 // 모든 필터(기본 + 서버사이드 인스턴트)를 쿼리스트링으로. project_id·컬러·태그·타입까지

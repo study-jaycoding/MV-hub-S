@@ -292,6 +292,19 @@ def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Reques
     return {"ok": True}
 
 
+@router.get("/gen-requests/pending-exists")
+def pending_gen_requests_exist(request: Request, capability: str = ""):
+    """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    caps = {c.strip() for c in capability.split(",") if c.strip()}
+    return {
+        "pending": repo.has_pending_requests(
+            acc["email"], workspace_capable="workspace" in caps
+        )
+    }
+
+
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
 async def pending_gen_requests(
     request: Request,

@@ -79,6 +79,16 @@ CREATE TABLE IF NOT EXISTS app_setting (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- 최신 100건 창을 넘어선 누락 위험과 과거 이력 자동 보충의 계정별 감사 상태.
+-- 프로세스 메모리가 아니라 DB에 두어 재시작 뒤에도 gap·쿨다운·최근 성공 판정을 이어간다.
+CREATE TABLE IF NOT EXISTS history_import_audit (
+    account_email        TEXT PRIMARY KEY,
+    gap_detected_at      TEXT,
+    gap_resolved_at      TEXT,
+    last_auto_started_at TEXT,
+    last_success_at      TEXT
+);
 -- 주의: idx_generation_job 인덱스는 db.py 의 _migrate 에서 생성한다
 -- (기존 DB 는 ALTER 로 컬럼을 먼저 추가해야 하므로 여기서 만들면 executescript 가 실패).
 

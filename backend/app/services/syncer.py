@@ -20,10 +20,10 @@ import os
 from typing import Optional
 
 from .. import repo
-from ..config import DEFAULT_WORKER_ID, MANAGE_ENABLED
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, LOCAL_AGENT_PAIR_SECRET, MANAGE_ENABLED
 from ..generation_result import normalize_job_result
 from ..ws import manager
-from . import cli_bridge
+from . import cli_bridge, history_autofill
 from .operational_logging import log_event
 
 
@@ -94,6 +94,14 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     counts["gap_warning"] = 1 if (
         counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100
     ) else 0
+    if counts["gap_warning"]:
+        email = await _house_account_email()
+        if email:
+            await asyncio.to_thread(repo.mark_history_gap, email)
+            # 공유 팀 서버는 계정별 CLI 자격을 갖지 않으므로 기록·경보만 남긴다. 로컬 허브와
+            # test_dev pairing 모드만 history 자동 보충(서비스 계층)을 시작한다.
+            if not AUTH_ENABLED or LOCAL_AGENT_PAIR_SECRET:
+                await history_autofill.auto_start_history_import(email, reason="gap")
     return counts
 
 

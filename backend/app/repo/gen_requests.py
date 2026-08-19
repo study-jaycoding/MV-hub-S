@@ -747,6 +747,26 @@ def repair_orphaned_canvas_generation(
             raise
 
 
+def has_pending_requests(
+    account_email: str,
+    *,
+    workspace_capable: bool = False,
+) -> bool:
+    """쓰기 상태를 바꾸지 않고 이 계정에서 실행 가능한 대기 요청 존재만 확인한다."""
+    ws_gate = (
+        "" if workspace_capable else
+        " AND NOT (json_valid(payload) AND "
+        "lower(coalesce(json_extract(payload, '$.workspace.scope'), '')) IN ('team','personal'))"
+    )
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM gen_request "
+            f"WHERE account_email=? AND status='pending'{ws_gate} LIMIT 1",
+            (norm_email(account_email),),
+        ).fetchone()
+    return row is not None
+
+
 def claim_pending_requests(
     account_email: str,
     limit: int = 16,

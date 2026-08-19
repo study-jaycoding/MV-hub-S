@@ -11,11 +11,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import hmac
 import logging
 from collections import Counter
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -34,14 +32,13 @@ from ..config import (
 from ..emailnorm import norm_email
 from ..deps import account_scope_uid, require_agent_account
 from ..models import AccountReportIn, AccountReportOut, IngestIn, IngestMcpIn, IngestOut
-from ..services import cli_bridge
+from ..services import cli_bridge, history_autofill, syncer
 from ..services import auth as auth_service
 from ..services import local_agent_pair
 from ..services.operational_logging import log_event
 from ._telemetry import schedule_telemetry_drain
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
-from ..services import higgsfield_history
 from ..services.request_guards import is_loopback_request
 
 # agent_push.py — 저장소 최상단(content-hub-server/). 팀원이 허브에서 받아 자기 PC에서 실행.
@@ -50,12 +47,10 @@ _AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
 router = APIRouter(prefix="/api", tags=["ingest"])
 _logger = logging.getLogger("mvhub.account_reports")
 
-# 과거 전체 가져오기는 여러 페이지라 HTTP 한 요청을 오래 붙잡지 않는다. 작업은 이 로컬 허브의
-# 백그라운드 task로 돌고 설정 화면은 상태만 짧게 조회한다. 토큰은 state에 넣지 않으며 작업 함수의
-# 지역 변수에서만 사용한다. 앱을 재시작하면 작업 상태도 사라지지만 DB 반영은 페이지마다 끝나므로
-# 같은 버튼을 다시 누르면 멱등 업서트로 안전하게 처음부터 보충된다.
-_HISTORY_STATES: dict[str, dict[str, Any]] = {}
-_HISTORY_TASKS: dict[str, asyncio.Task] = {}
+# 과거 이력 자동 보충 오케스트레이션은 services/history_autofill 로 이동 —
+# syncer(서비스)가 gap 자동 실행을 부르는데 services→routers 역방향은 계층 위반이었다.
+# 라우트가 쓰는 이름은 여기 모듈 전역으로 바인딩해 둔다(테스트 패치 지점 유지).
+schedule_history_auto_start = history_autofill.schedule_history_auto_start
 
 
 class LocalAgentPairIn(BaseModel):
@@ -268,6 +263,16 @@ def ingest(body: IngestIn, request: Request):
         body.account_status,
         workspace=body.workspace.model_dump(),
     )
+    # 에이전트는 최신 목록의 차집합만 보내므로 len(body.jobs)가 아니라 차집합 전 원본 수로
+    # 100-window 포화를 판정한다. 옛 에이전트는 필드가 없어 전량 100건을 보낼 때만 감지된다.
+    fetched = body.list_fetched if body.list_fetched is not None else len(body.jobs)
+    if fetched >= 100 and out.inserted >= syncer.SYNC_WATERMARK:
+        gap_email = norm_email((body.account_status or {}).get("email"))
+        if not gap_email and norm_email(acc.get("email")) != "local":
+            gap_email = norm_email(acc.get("email"))
+        if gap_email:
+            repo.mark_history_gap(gap_email)
+            schedule_history_auto_start(gap_email)
     # PM: 실제 차감액 수집·매칭(분리형). 플래그 게이트 + best-effort — 실패해도 적재엔 무영향.
     # 거래는 out.linked_uid(이 계정의 힉스필드 uid) 소유로 적재하고, 같은 소유자 생성물과 시각 매칭.
     if MANAGE_ENABLED and body.account_transactions:
@@ -374,141 +379,41 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     return out
 
 
-def _history_key() -> str:
-    """현재 로컬 계정별 작업 키. 서버 모드에서는 이 기능 자체를 막는다."""
-    from ..active_account import account_key
-
-    # test_dev는 AUTH on이지만 일회성 로컬 pairing key로 작업자 PC임을 확정할 수 있다.
-    # 이때 account_key()는 서버 규칙상 None이므로 실제 로그인 계정 이메일을 호출부에서 덧붙인다.
-    return norm_email(account_key()) or "local"
+# 라우트가 쓰는 오케스트레이션 심볼 — 본체는 services/history_autofill (계층 규칙).
+history_autofill.bind_ingest_hooks(_ingest_core, schedule_telemetry_drain)
 
 
-def _history_idle() -> dict[str, Any]:
-    return {
-        "state": "idle",
-        "pages": 0,
-        "received": 0,
-        "inserted": 0,
-        "updated": 0,
-        "unchanged": 0,
-        "skipped": 0,
-        "errors": 0,
-        "message": "",
-        "started_at": None,
-        "finished_at": None,
-    }
-
-
-def _history_snapshot(key: str) -> dict[str, Any]:
-    return dict(_HISTORY_STATES.get(key) or _history_idle())
-
-
-async def _run_history_import(key: str, acc: dict) -> None:
-    state = _HISTORY_STATES[key]
-    token = ""
-    try:
-        account_status = await cli_bridge.get_account_status(timeout=30.0)
-        if not account_status.get("connected") or not account_status.get("email"):
-            raise higgsfield_history.HistoryFetchError(
-                "Higgsfield CLI 로그인이 필요합니다. CLI에 로그인한 뒤 다시 눌러주세요."
-            )
-        token = await cli_bridge.get_auth_token(timeout=30.0)
-        cursor: int | float | str | None = None
-        seen_cursors: set[str] = set()
-        for _page_number in range(10_000):
-            page = await higgsfield_history.fetch_page(token, cursor, size=100)
-            jobs = [mcp_item_to_cli(item) for item in page.items]
-            out = await asyncio.to_thread(
-                _ingest_core,
-                acc,
-                jobs,
-                None,
-                account_status,
-            )
-            state["pages"] += 1
-            state["received"] += len(page.items)
-            state["inserted"] += out.inserted
-            state["updated"] += out.updated
-            state["unchanged"] += out.unchanged
-            state["skipped"] += out.skipped
-            state["errors"] += out.errors
-            state["message"] = f"과거 생성물 확인 중 · {state['received']}건"
-            next_cursor = page.next_cursor
-            if next_cursor is None:
-                state["state"] = "complete"
-                state["message"] = f"가져오기 완료 · 총 {state['received']}건 확인"
-                state["finished_at"] = datetime.now(timezone.utc).isoformat()
-                if MANAGE_ENABLED:
-                    schedule_telemetry_drain()
-                return
-            marker = str(next_cursor).strip()
-            if not marker or marker in seen_cursors:
-                raise higgsfield_history.HistoryFetchError(
-                    "Higgsfield 페이지 정보가 반복되어 안전하게 중단했습니다"
-                )
-            seen_cursors.add(marker)
-            cursor = next_cursor
-            await asyncio.sleep(0)
-        raise higgsfield_history.HistoryFetchError(
-            "과거 이력이 너무 많아 안전 상한에서 중단했습니다"
-        )
-    except asyncio.CancelledError:
-        state["state"] = "failed"
-        state["message"] = "프로그램이 종료되어 중단됐습니다. 다시 누르면 이어서 보충됩니다."
-        state["finished_at"] = datetime.now(timezone.utc).isoformat()
-        raise
-    except (cli_bridge.CLIError, higgsfield_history.HistoryFetchError, HTTPException) as exc:
-        state["state"] = "failed"
-        state["message"] = str(getattr(exc, "detail", None) or exc)
-        state["finished_at"] = datetime.now(timezone.utc).isoformat()
-    except Exception as exc:  # noqa: BLE001 — 백그라운드 task 예외 유실 방지
-        _logger.exception("history_import_failed", extra={"error_type": type(exc).__name__})
-        state["state"] = "failed"
-        state["message"] = "과거 생성물 가져오기에 실패했습니다. 다시 시도해 주세요."
-        state["finished_at"] = datetime.now(timezone.utc).isoformat()
-    finally:
-        token = ""  # 토큰을 전역 상태나 로그에 남기지 않는다.
-        _HISTORY_TASKS.pop(key, None)
+def _history_route_key(acc: dict) -> str:
+    key = history_autofill._history_key()
+    if key == "local":
+        key = norm_email(acc.get("email")) or key
+    return key
 
 
 @router.post("/ingest/history/start")
 async def start_history_import(request: Request):
     """로컬 CLI 계정의 일반 생성 이력을 MCP cursor 끝까지 가져오는 한 번 클릭 작업."""
-    if AUTH_ENABLED and not LOCAL_AGENT_PAIR_SECRET:
+    if history_autofill._history_server_forbidden():
         raise HTTPException(
             status_code=409,
             detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
         )
     acc = _agent_acc(request)
-    key = _history_key()
-    if key == "local":
-        key = norm_email(acc.get("email")) or key
-    running = _HISTORY_TASKS.get(key)
-    if running and not running.done():
-        return _history_snapshot(key)
-    _HISTORY_STATES[key] = {
-        **_history_idle(),
-        "state": "running",
-        "message": "Higgsfield 과거 이력을 확인하는 중…",
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _HISTORY_TASKS[key] = asyncio.create_task(_run_history_import(key, dict(acc)))
-    return _history_snapshot(key)
+    key = _history_route_key(acc)
+    history_autofill._start_history_task(key, dict(acc), automatic=False)
+    return history_autofill._history_snapshot(key)
 
 
 @router.get("/ingest/history/status")
 async def history_import_status(request: Request):
     """현재 로컬 계정의 과거 이력 가져오기 진행 상태."""
-    if AUTH_ENABLED and not LOCAL_AGENT_PAIR_SECRET:
+    if history_autofill._history_server_forbidden():
         raise HTTPException(
             status_code=409,
             detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
         )
     acc = _agent_acc(request)
-    key = _history_key()
-    if key == "local":
-        key = norm_email(acc.get("email")) or key
-    return _history_snapshot(key)
+    return history_autofill._history_snapshot(_history_route_key(acc))
 
 
 @router.get("/credits")

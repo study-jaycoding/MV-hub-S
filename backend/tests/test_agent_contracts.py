@@ -353,6 +353,21 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     assert call.kwargs == {"token": "token-1"}
 
 
+def test_agent_pending_exists_uses_read_only_workspace_capable_route():
+    agent = _load_agent()
+    with patch.object(
+        agent, "_http", return_value=(200, {"pending": True})
+    ) as http:
+        assert agent._pending_exists("http://hub", "token-1") is True
+
+    call = http.call_args
+    parsed = urlsplit(call.args[1])
+    assert call.args[0] == "GET"
+    assert parsed.path == "/api/gen-requests/pending-exists"
+    assert parse_qs(parsed.query) == {"capability": ["workspace"]}
+    assert call.kwargs == {"token": "token-1"}
+
+
 def test_agent_separates_local_submit_workers_from_remote_in_flight_jobs():
     with patch.dict(
         os.environ,
@@ -544,6 +559,20 @@ def test_agent_startup_keeps_no_push_mode_local() -> None:
     execute.assert_called_once()
     tracking.assert_called_once()
     push.assert_not_called()
+
+
+def test_agent_idle_rechecks_db_pending_without_signal() -> None:
+    """서버 재시작으로 메모리 신호가 사라져도 다음 idle이 영속 큐를 집어간다."""
+    agent = _load_agent()
+    with patch.object(agent, "_pending_exists", return_value=True) as pending, patch.object(
+        agent, "execute_pending"
+    ) as execute:
+        agent._execute_pending_for_watch_cycle(
+            "http://hub", "token-1", "higgsfield", set()
+        )
+
+    pending.assert_called_once_with("http://hub", "token-1")
+    execute.assert_called_once_with("http://hub", "token-1", "higgsfield")
 
 
 def test_agent_has_no_removed_cycle_callback_references() -> None:
