@@ -11,6 +11,7 @@ import {
   GEN_MIME,
   statusColor,
   statusLabel,
+  taskIsReadOnly,
   workActivityStatusLabel,
   type Task,
   type WorkViewProps,
@@ -50,6 +51,7 @@ export function TableView(props: WorkViewProps) {
     thumb,
     disabled,
     colorMap,
+    readOnly,
     selected,
     onToggleSelect,
     onToggleSelectAll,
@@ -65,7 +67,7 @@ export function TableView(props: WorkViewProps) {
     if ((t.description || "") !== value) onPatch(t.id, { description: value });
   };
 
-  const allIds = tasks.map((t) => t.id);
+  const allIds = tasks.filter((task) => !taskIsReadOnly(task, readOnly)).map((t) => t.id);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected?.has(id));
   const toggleDetails = (id: string) =>
     setExpanded((previous) => {
@@ -83,6 +85,7 @@ export function TableView(props: WorkViewProps) {
               <input
                 type="checkbox"
                 checked={allSelected}
+                disabled={!allIds.length}
                 onChange={(e) => onToggleSelectAll?.(allIds, e.target.checked)}
                 title="전체 선택"
               />
@@ -106,15 +109,17 @@ export function TableView(props: WorkViewProps) {
             const modelUsage = taskModelUsage(t);
             const stateColor = statusColor(t.status);
             const detailsOpen = expanded.has(t.id);
+            const locked = taskIsReadOnly(t, readOnly);
             const detailId = `work-detail-${t.id}`;
             return (
               <Fragment key={t.id}>
               <tr
                 className={isSel ? "work-row-sel" : ""}
                 onDragOver={(e) => {
-                  if (e.dataTransfer.types.includes(ROW_MIME)) e.preventDefault();
+                  if (!locked && e.dataTransfer.types.includes(ROW_MIME)) e.preventDefault();
                 }}
                 onDrop={(e) => {
+                  if (locked) return;
                   if (!e.dataTransfer.types.includes(ROW_MIME)) return;
                   const src = e.dataTransfer.getData(ROW_MIME);
                   if (src && src !== t.id) onReorder?.(src, t.id);
@@ -123,8 +128,8 @@ export function TableView(props: WorkViewProps) {
                 <td className="work-sel-col">
                   <span
                     className="work-row-handle"
-                    draggable
-                    title="드래그해 순서 변경"
+                    draggable={!locked}
+                    title={locked ? "읽기 전용 작업" : "드래그해 순서 변경"}
                     onDragStart={(e) => {
                       e.dataTransfer.setData(ROW_MIME, t.id);
                       e.dataTransfer.effectAllowed = "move";
@@ -135,6 +140,7 @@ export function TableView(props: WorkViewProps) {
                   <input
                     type="checkbox"
                     checked={isSel}
+                    disabled={locked}
                     onChange={() => onToggleSelect?.(t.id)}
                   />
                   <button
@@ -176,6 +182,7 @@ export function TableView(props: WorkViewProps) {
                     <select
                       className="work-cell-sel"
                       value={t.sequence || ""}
+                      disabled={locked}
                       onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
                     >
                       <option value="">—</option>
@@ -190,14 +197,21 @@ export function TableView(props: WorkViewProps) {
                 <td
                   className="work-cut-cell"
                   onDragOver={(e) => {
-                    if (e.dataTransfer.types.includes(GEN_MIME)) e.preventDefault();
+                    if (!locked && e.dataTransfer.types.includes(GEN_MIME)) e.preventDefault();
                   }}
                   onDrop={(e) => {
+                    if (locked) return;
                     const gid = e.dataTransfer.getData(GEN_MIME);
                     if (gid) onLinkGen(t.id, gid);
                   }}
                 >
-                  <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
+                  <CutThumbs
+                    task={t}
+                    thumb={thumb}
+                    disabled={disabled}
+                    readOnly={locked}
+                    onUnlinkGen={onUnlinkGen}
+                  />
                 </td>
                 <td className="work-creators">
                   {/* 실제 생성자(연결 컷 파생)만. 담당(배정)은 대시보드에서 관리. */}
@@ -219,6 +233,16 @@ export function TableView(props: WorkViewProps) {
                   >
                     {workActivityStatusLabel(t.status)}
                   </span>
+                  {t.workspace_unresolved && (
+                    <span className="work-readonly-badge" title="기존 기록의 워크스페이스를 확인해야 합니다">
+                      귀속 확인 필요
+                    </span>
+                  )}
+                  {t.workspace_historical && (
+                    <span className="work-readonly-badge" title="과거 워크스페이스 기록">
+                      읽기 전용
+                    </span>
+                  )}
                 </td>
                 <td className="work-credit-cell">
                   <HoverMetric
@@ -237,6 +261,7 @@ export function TableView(props: WorkViewProps) {
                     className="work-cell-in"
                     type="date"
                     value={t.due_date || t.derived_due || ""}
+                    disabled={locked}
                     onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
                   />
                   {t.derived_start && t.derived_due && (
@@ -250,6 +275,7 @@ export function TableView(props: WorkViewProps) {
                   <input
                     className="work-cell-in"
                     defaultValue={t.description || ""}
+                    disabled={locked}
                     placeholder="설명"
                     onBlur={(e) => commitText(t, e.target.value)}
                     onKeyDown={(e) => {
@@ -273,6 +299,7 @@ export function TableView(props: WorkViewProps) {
                           className="work-cell-in"
                           type="date"
                           value={t.due_date || t.derived_due || ""}
+                          disabled={locked}
                           onChange={(e) => onPatch(t.id, { due_date: e.target.value })}
                         />
                         {t.derived_start && t.derived_due && (
@@ -289,6 +316,7 @@ export function TableView(props: WorkViewProps) {
                         <input
                           className="work-cell-in"
                           defaultValue={t.description || ""}
+                          disabled={locked}
                           placeholder="설명"
                           onBlur={(e) => commitText(t, e.target.value)}
                           onKeyDown={(e) => {

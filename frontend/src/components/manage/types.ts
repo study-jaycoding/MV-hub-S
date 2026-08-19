@@ -209,6 +209,7 @@ export interface WorkViewProps {
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
   myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
+  readOnly?: boolean; // 과거 워크스페이스 기록 화면 — 모든 변경 동작 차단
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -255,6 +256,12 @@ export interface Task {
   source_kind?: "manual" | "generation" | string;
   source_last_seen_at?: string | null;
   archived?: number | boolean;
+  workspace_scope?: "team" | "personal" | "unknown" | string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  workspace_origin?: "snapshot" | "generation" | "unknown" | string;
+  workspace_unresolved?: boolean;
+  workspace_historical?: boolean;
   project_name?: string | null; // 소속 프로젝트명(전체 프로젝트 병합 뷰에서 프론트가 부착)
   created_at: string;
   // 파생(연결 생성물에서)
@@ -268,4 +275,8 @@ export interface Task {
   credits?: number;
   elapsed?: number;
   comment_count?: number;
+}
+
+export function taskIsReadOnly(task: Task, viewReadOnly = false): boolean {
+  return viewReadOnly || !!task.workspace_historical || !!task.workspace_unresolved;
 }

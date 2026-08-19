@@ -407,6 +407,16 @@
   border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent); font-weight: 700;
 }
+.work-readonly-notice {
+  margin: 0 0 12px; padding: 9px 12px; border: 1px solid rgba(255, 190, 70, .35);
+  border-radius: 9px; background: rgba(255, 190, 70, .08); color: #e9bc62; font-size: 12px;
+}
+.work-readonly-badge {
+  display: inline-flex; align-items: center; margin-left: 5px; padding: 2px 6px;
+  border: 1px solid rgba(255, 190, 70, .3); border-radius: 6px;
+  background: rgba(255, 190, 70, .09); color: #e9bc62; font-size: 9px; font-weight: 700;
+}
+.work-card.read-only { opacity: .78; cursor: default; }
 
 /* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
 .work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }

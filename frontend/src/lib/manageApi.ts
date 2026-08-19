@@ -1,6 +1,6 @@
 ﻿// PM 대시보드 API 클라이언트 — 인증/에러 처리는 공용 jsonFetch 를 재사용한다.
 import { chunked } from "./batching";
-import { isHttpStatus, jsonBody, jsonFetch } from "./http";
+import { isHttpStatus, isRouteMissing, jsonBody, jsonFetch } from "./http";
 import { pathPart, withQuery } from "./url";
 import type {
   ManageSummary,
@@ -12,7 +12,7 @@ import type { WorkspaceOption } from "../types";
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
 function isLegacyServer(error: unknown): boolean {
-  return isHttpStatus(error, 404, 405);
+  return isRouteMissing(error);
 }
 
 let warnedLegacyBatch = false;
@@ -32,6 +32,13 @@ export const manageApi = {
     ),
   workspaces: () =>
     jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/manage/workspaces"),
+  taskProjects: (workspaceId: string, includeHistorical = false) =>
+    jsonFetch<{
+      projects: { id: string; name: string; archived?: number | boolean; workspace_moved?: boolean }[];
+    }>(withQuery("/api/manage/task-projects", {
+      workspace_id: workspaceId,
+      include_historical: includeHistorical || undefined,
+    })),
   getPlanning: (pid: string) =>
     jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`),
   setPlanning: (pid: string, body: Partial<Planning>) =>
@@ -45,16 +52,24 @@ export const manageApi = {
       workspace_id: workspaceId,
       include_archived: includeArchived || undefined,
     })),
-  // 여러 프로젝트 작업을 1요청으로(WorkBoard fan-out 제거). GET(읽기)이라 mutation 알림 없음.
-  // 반환 {pid: Task[]}, 접근불가/오류 pid 는 생략(부분성공).
-  listTasksBatch: (projectIds: string[], workspaceId?: string, includeArchived = false) =>
-    jsonFetch<Record<string, Task[]>>(
-      withQuery("/api/manage/tasks-batch", {
-        project_id: projectIds,
-        workspace_id: workspaceId,
-        include_archived: includeArchived || undefined,
-      }),
-    ),
+  // 여러 프로젝트 작업을 배치 조회한다. 500개를 넘으면 서버 상한에 맞춰 순차 분할하며,
+  // 한 조각이라도 실패하면 불완전한 목록을 정상 결과로 돌려주지 않는다.
+  listTasksBatch: async (projectIds: string[], workspaceId?: string, includeArchived = false) => {
+    const result: Record<string, Task[]> = {};
+    for (const projectChunk of chunked([...new Set(projectIds)])) {
+      Object.assign(
+        result,
+        await jsonFetch<Record<string, Task[]>>(
+          withQuery("/api/manage/tasks-batch", {
+            project_id: projectChunk,
+            workspace_id: workspaceId,
+            include_archived: includeArchived || undefined,
+          }),
+        ),
+      );
+    }
+    return result;
+  },
   updateTask: (tid: string, body: Partial<Task>) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",

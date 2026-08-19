@@ -9,6 +9,18 @@ function okResponse(result: unknown): Pick<Response, "ok" | "json"> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("PM task batch API", () => {
+  it("과거 작업용 프로젝트 목록을 선택 워크스페이스 ID로 요청한다", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ projects: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await manageApi.taskProjects("ws-a", true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/manage/task-projects?workspace_id=ws-a&include_historical=true",
+      expect.any(Object),
+    );
+  });
+
   it("순서 저장은 전체 스냅샷 + 구배치 호환 items 이중 페이로드를 한 PATCH 로 보낸다", async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true, count: 2 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -44,14 +56,35 @@ describe("PM task batch API", () => {
       expect.objectContaining({ method: "POST", body: JSON.stringify({ task_ids: ["t1", "t2"] }) }),
     );
   });
+
+  it("프로젝트가 500개를 넘으면 누락 없이 여러 요청으로 나눈다", async () => {
+    const projectIds = Array.from({ length: 501 }, (_, index) => `p${index}`);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ p0: [{ id: "t0" }] }))
+      .mockResolvedValueOnce(okResponse({ p500: [{ id: "t500" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await manageApi.listTasksBatch(projectIds, "ws-a");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstUrl = new URL(String(fetchMock.mock.calls[0][0]), "http://local");
+    const secondUrl = new URL(String(fetchMock.mock.calls[1][0]), "http://local");
+    expect(firstUrl.searchParams.getAll("project_id")).toHaveLength(500);
+    expect(secondUrl.searchParams.getAll("project_id")).toEqual(["p500"]);
+    expect(result).toEqual({ p0: [{ id: "t0" }], p500: [{ id: "t500" }] });
+  });
 });
 
-function errorResponse(status: number): Pick<Response, "ok" | "status" | "statusText" | "json"> {
+function errorResponse(
+  status: number,
+  detail = status === 404 ? "Not Found" : status === 405 ? "Method Not Allowed" : "err",
+): Pick<Response, "ok" | "status" | "statusText" | "json"> {
   return {
     ok: false,
     status,
     statusText: `status-${status}`,
-    json: vi.fn().mockResolvedValue({ detail: "err" }),
+    json: vi.fn().mockResolvedValue({ detail }),
   };
 }
 
@@ -79,6 +112,14 @@ describe("구서버 폴백 (404/405 한정)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(manageApi.updateTaskOrderSnapshot(["t1"])).rejects.toThrow("502");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("현재 서버의 도메인 404는 구버전으로 오인해 단건 쓰기로 우회하지 않는다", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(errorResponse(404, "없는 작업: t1"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(manageApi.updateTaskOrderSnapshot(["t1"])).rejects.toThrow("없는 작업");
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
