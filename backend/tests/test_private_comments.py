@@ -91,6 +91,30 @@ class PrivateCommentTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(repo.list_private_asset_comments("p", "a.png", "u1"), [])
 
+    # ── ①-c 팀 탭(서버 UUID) 앵커 정규화 ─────────────────────────────
+    # 같은 생성물이 팀 탭에선 서버 UUID(S), 내 탭에선 로컬 id(L)로 보인다. 비공개를 S 로
+    # 저장하면 L 로 열 때 스레드가 갈라진다 — 서버에서 job_id 를 되찾아 L 로 저장해야 한다.
+    def test_private_anchor_reclaims_local_row_for_team_card(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, creator_uid, job_id) "
+                "VALUES('L1','me','p','u1','J1')"
+            )
+        body = generation.GenCommentAddIn(text="팀탭 비공개", private=True)
+        with (
+            mock.patch.object(generation._proxy, "proxying", return_value=True),
+            mock.patch.object(
+                generation._proxy, "proxy_get", return_value={"id": "S1", "job_id": "J1"}
+            ),
+        ):
+            generation.add_gen_comment("S1", body, _Request())
+        # 서버 UUID(S1)가 아니라 로컬 행(L1)에 저장 — 내 탭 스레드와 합쳐진다
+        self.assertEqual(
+            [c["text"] for c in repo.list_private_generation_comments("L1", "u1")],
+            ["팀탭 비공개"],
+        )
+        self.assertEqual(repo.list_private_generation_comments("S1", "u1"), [])
+
     # ── ② 목록 가시성 ────────────────────────────────────────────────
     def test_list_hides_others_private(self):
         repo.add_generation_comment("g1", "u1", "내 비공개", is_private=True)

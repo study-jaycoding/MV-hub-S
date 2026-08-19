@@ -71,11 +71,21 @@ class SceneCardLinkTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertIsNotNone(items[0]["removed_at"])
 
-    def test_readd_clears_removed_mark(self):
-        """뺐다가 도로 넣는 건 정상 조작 — 표시가 풀려야 한다."""
+    def test_backfill_readd_never_revives_tombstone(self):
+        """자동 백필은 제거 표시를 절대 해제 못 한다(합의 B — 적대 리뷰 P2).
+
+        낡은 로컬 목록을 가진 브라우저 A 의 자동 백필이, 브라우저 B 가 그 사이 뺀 것을
+        되살리면 안 된다 — 제거 의도가 항상 이긴다."""
         repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
         repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")])
+        repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])  # 자동 백필
+        self.assertIsNotNone(repo.list_scene_card_links("u1")[0]["removed_at"])
+
+    def test_explicit_readd_clears_removed_mark(self):
+        """뺐다가 도로 넣는 '사용자 의도'(undo 부활 등)만 표시를 푼다."""
         repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
+        repo.sync_scene_card_links("u1", [], [_link("s1", "c1", "g1")])
+        repo.sync_scene_card_links("u1", [], [], explicit=[_link("s1", "c1", "g1")])
         self.assertIsNone(repo.list_scene_card_links("u1")[0]["removed_at"])
 
     def test_identity_remap_preserves_tombstone(self):

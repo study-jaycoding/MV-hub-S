@@ -44,12 +44,19 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pushing = false;
 let rerun = false;
 let pendingRemovals: CardLink[] = [];
+// 명시적 부활 의도(undo 로 복원 등) — 제거처럼 localStorage 에 영속시켜 오프라인·재시작에도
+// 안 잃는다. 서버 tombstone 을 해제할 수 있는 건 이 명시 의도뿐이다(자동 백필은 못 한다).
+let pendingRevives: CardLink[] = [];
+// 제거·부활 의도가 바뀔 때마다 +1 — 그보다 먼저 시작된 GET 응답은 낡은 것이므로 폐기하고
+// 다시 읽는다(제거 직후 도착한 옛 응답이 지운 생성물을 화면에 되살리던 레이스 — 합의 C-3a).
+let mutationEpoch = 0;
 
 const pendingKey = (scope: string) => `ch.sceneCardRemovals.v1.${encodeURIComponent(scope)}`;
+const revivesKey = (scope: string) => `ch.sceneCardRevives.v1.${encodeURIComponent(scope)}`;
 
-function readPending(scope: string): CardLink[] {
+function readIntentList(storageKey: string): CardLink[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(pendingKey(scope)) || "[]");
+    const raw = JSON.parse(localStorage.getItem(storageKey) || "[]");
     if (!Array.isArray(raw)) return [];
     const dedup = new Map<string, CardLink>();
     for (const item of raw) {
@@ -69,27 +76,53 @@ function readPending(scope: string): CardLink[] {
   }
 }
 
-function writePending(scope: string, links: CardLink[]): void {
+function writeIntentList(storageKey: string, links: CardLink[]): void {
   try {
-    if (links.length) localStorage.setItem(pendingKey(scope), JSON.stringify(links));
-    else localStorage.removeItem(pendingKey(scope));
+    if (links.length) localStorage.setItem(storageKey, JSON.stringify(links));
+    else localStorage.removeItem(storageKey);
   } catch {
     // 저장공간이 막힌 환경도 현재 세션 메모리 대기열로는 계속 재시도한다.
   }
 }
 
+const readPending = (scope: string) => readIntentList(pendingKey(scope));
+const readRevives = (scope: string) => readIntentList(revivesKey(scope));
+
 function enqueueRemovals(scope: string, links: CardLink[]): void {
   const merged = new Map(readPending(scope).map((link) => [keyOf(link), link]));
+  const incoming = new Set(links.map(keyOf));
   for (const link of links) merged.set(keyOf(link), link);
   pendingRemovals = [...merged.values()];
-  writePending(scope, pendingRemovals);
+  writeIntentList(pendingKey(scope), pendingRemovals);
+  // 반대 의도 상쇄 — 같은 소속의 대기 중 부활은 이 제거가 대체한다(마지막 의도가 이긴다).
+  pendingRevives = readRevives(scope).filter((link) => !incoming.has(keyOf(link)));
+  writeIntentList(revivesKey(scope), pendingRevives);
+  mutationEpoch += 1;
+}
+
+function enqueueRevives(scope: string, links: CardLink[]): void {
+  const merged = new Map(readRevives(scope).map((link) => [keyOf(link), link]));
+  const incoming = new Set(links.map(keyOf));
+  for (const link of links) merged.set(keyOf(link), link);
+  pendingRevives = [...merged.values()];
+  writeIntentList(revivesKey(scope), pendingRevives);
+  pendingRemovals = readPending(scope).filter((link) => !incoming.has(keyOf(link)));
+  writeIntentList(pendingKey(scope), pendingRemovals);
+  mutationEpoch += 1;
 }
 
 function clearSentRemovals(scope: string, links: CardLink[]): void {
   const sent = new Set(links.map(keyOf));
   const remaining = readPending(scope).filter((link) => !sent.has(keyOf(link)));
-  writePending(scope, remaining);
+  writeIntentList(pendingKey(scope), remaining);
   if (curScope === scope) pendingRemovals = remaining;
+}
+
+function clearSentRevives(scope: string, links: CardLink[]): void {
+  const sent = new Set(links.map(keyOf));
+  const remaining = readRevives(scope).filter((link) => !sent.has(keyOf(link)));
+  writeIntentList(revivesKey(scope), remaining);
+  if (curScope === scope) pendingRevives = remaining;
 }
 
 function applyRemovedToLoadedState(links: CardLink[]): void {
@@ -105,6 +138,40 @@ function applyRemovedToLoadedState(links: CardLink[]): void {
   }
 }
 
+function applyRevivedToLoadedState(links: CardLink[]): void {
+  const revivedKeys = new Set(links.map(keyOf));
+  for (const link of links) known?.add(keyOf(link));
+  serverLinks = serverLinks.map((link) =>
+    revivedKeys.has(keyOf(link)) && link.removed_at ? { ...link, removed_at: null } : link,
+  );
+  const present = new Set(serverLinks.map(keyOf));
+  for (const link of links) {
+    if (!present.has(keyOf(link))) serverLinks.push({ ...link });
+  }
+}
+
+/**
+ * 서버 목록 위에 '아직 서버에 못 보낸 내 의도'(제거·부활)를 덧입힌다 — 네트워크 순서와 무관하게
+ * 이 브라우저의 마지막 조작이 화면 병합에 항상 반영되게(합의 C-3a·B).
+ */
+function overlayPendingIntents(items: CardLink[]): CardLink[] {
+  if (!pendingRemovals.length && !pendingRevives.length) return items;
+  const removedK = new Set(pendingRemovals.map(keyOf));
+  const revivedK = new Set(pendingRevives.map(keyOf));
+  const stamp = new Date().toISOString();
+  const out = items.map((link) => {
+    const k = keyOf(link);
+    if (removedK.has(k) && !link.removed_at) return { ...link, removed_at: stamp };
+    if (revivedK.has(k) && link.removed_at) return { ...link, removed_at: null };
+    return link;
+  });
+  const present = new Set(items.map(keyOf));
+  for (const link of pendingRemovals) {
+    if (!present.has(keyOf(link))) out.push({ ...link, removed_at: stamp });
+  }
+  return out;
+}
+
 function enterScope(): string {
   const s = ns();
   if (curScope !== s) {
@@ -114,6 +181,7 @@ function enterScope(): string {
     loadPromise = null;
     rerun = false;
     pendingRemovals = readPending(s);
+    pendingRevives = readRevives(s);
     if (timer) clearTimeout(timer);
     timer = null;
     if (retryTimer) clearTimeout(retryTimer);
@@ -156,6 +224,7 @@ function load(scope: string, force: boolean): Promise<boolean> {
   if (!force && known !== null) return Promise.resolve(true);
   if (loadPromise) return loadPromise;
   const p = (async () => {
+    const epochAtStart = mutationEpoch;
     let items: CardLink[];
     try {
       const r = await jsonFetch<{ items: CardLink[] }>(API);
@@ -164,6 +233,12 @@ function load(scope: string, force: boolean): Promise<boolean> {
       return false; // 오프라인·미로그인(401)·구백엔드 — 판정 미상. known 을 비워두면 백필이 안 돈다
     }
     if (ns() !== scope) return false; // 계정 전환 중 응답 — 폐기
+    if (epochAtStart !== mutationEpoch) {
+      // 이 응답은 내 제거/부활 조작(또는 그 전송)보다 먼저 시작됐다 — 낡은 상태이므로 버리고
+      // 다시 읽는다. 안 그러면 방금 지운 생성물이 옛 응답으로 화면에 되살아난다(합의 C-3a).
+      setTimeout(() => void load(scope, true), 0);
+      return false;
+    }
     const changed = !sameLinks(serverLinks, items);
     serverLinks = items;
     known = new Set(items.map(keyOf)); // ★뺀 표시가 된 것도 넣는다(백필이 되살리지 않게)
@@ -184,9 +259,10 @@ export function refreshSceneCardLinks(): Promise<boolean> {
   return load(scope, true);
 }
 
-/** 마지막으로 읽은 서버 소속(합치기용). 아직 못 읽었으면 빈 배열. */
+/** 마지막으로 읽은 서버 소속 + 아직 못 보낸 내 의도(제거·부활) 오버레이(합치기용). */
 export function serverCardLinks(sceneId?: string): CardLink[] {
-  return sceneId ? serverLinks.filter((l) => l.scene_id === sceneId) : serverLinks;
+  const adjusted = overlayPendingIntents(serverLinks);
+  return sceneId ? adjusted.filter((l) => l.scene_id === sceneId) : adjusted;
 }
 
 // 서버 소속을 처음 읽었을 때 알림 — 화면(useSceneCoordination)이 그때 합치기를 돌린다.
@@ -246,17 +322,25 @@ export function mergeCardLinksIntoScenes<
   return touched ? next : null;
 }
 
-async function send(added: CardLink[], removed: CardLink[]): Promise<void> {
+// 전송 계약(합의 B): backfill=자동 스캔(서버 tombstone 을 절대 해제하지 않음, INSERT OR IGNORE),
+// explicit=사용자 의도(undo 부활 등 — tombstone 해제 허용), removed=제거 표시.
+async function send(
+  backfill: CardLink[],
+  explicit: CardLink[],
+  removed: CardLink[],
+): Promise<void> {
   const strip = (l: CardLink) => ({
     scene_id: l.scene_id,
     card_id: l.card_id,
     generation_id: l.generation_id,
   });
-  for (let i = 0; i < Math.max(added.length, removed.length); i += MAX_PER_REQUEST) {
+  const longest = Math.max(backfill.length, explicit.length, removed.length);
+  for (let i = 0; i < longest; i += MAX_PER_REQUEST) {
     await jsonFetch(API, {
       method: "PUT",
       body: JSON.stringify({
-        added: added.slice(i, i + MAX_PER_REQUEST).map(strip),
+        backfill: backfill.slice(i, i + MAX_PER_REQUEST).map(strip),
+        explicit: explicit.slice(i, i + MAX_PER_REQUEST).map(strip),
         removed: removed.slice(i, i + MAX_PER_REQUEST).map(strip),
       }),
     });
@@ -272,19 +356,23 @@ async function pushNew(): Promise<void> {
   pushing = true;
   try {
     const scope = enterScope();
-    // 사용자가 명시적으로 뺀 기록이 자동 백필보다 항상 먼저다. 실패하면 로컬 대기열을 지우지 않아
+    // 사용자의 명시 의도(제거·부활)가 자동 백필보다 항상 먼저다. 실패하면 로컬 대기열을 지우지 않아
     // 온라인 복귀·앱 재시작 뒤에도 재시도된다. 추가와 같은 직렬화 안에서 보내 race로 되살아나지 않는다.
     const removals = [...pendingRemovals];
-    if (removals.length) {
+    const revives = [...pendingRevives];
+    if (removals.length || revives.length) {
       try {
-        await send([], removals);
+        await send([], revives, removals);
       } catch {
         scheduleRetry();
         return;
       }
+      mutationEpoch += 1; // 이 쓰기와 겹쳐 진행 중이던 GET 응답은 낡은 것 — 폐기 대상(합의 C-3a)
       clearSentRemovals(scope, removals);
+      clearSentRevives(scope, revives);
       if (ns() !== scope) return;
       applyRemovedToLoadedState(removals);
+      applyRevivedToLoadedState(revives);
     }
     if (!(await ensureLoaded(scope))) {
       scheduleRetry();
@@ -292,8 +380,9 @@ async function pushNew(): Promise<void> {
     }
     if (ns() !== scope || !known) return;
     // ensureLoaded가 직전에 받은 낡은 응답으로 known/serverLinks를 교체했더라도, 이번 요청에서 서버가
-    // 수락한 제거 의도를 다시 덮어씌운다. 그래야 바로 뒤의 자동 추가가 같은 소속을 되살리지 않는다.
+    // 수락한 제거·부활 의도를 다시 덮어씌운다. 그래야 바로 뒤의 자동 추가가 이를 무르지 않는다.
     if (removals.length) applyRemovedToLoadedState(removals);
+    if (revives.length) applyRevivedToLoadedState(revives);
     const fresh: CardLink[] = [];
     const seen = new Set<string>();
     for (const link of localCardLinks()) {
@@ -304,7 +393,7 @@ async function pushNew(): Promise<void> {
     }
     if (!fresh.length) return;
     try {
-      await send(fresh, []);
+      await send(fresh, [], []); // 자동 스캔은 backfill — 서버 tombstone 을 해제하지 못한다
     } catch {
       scheduleRetry(); // 서버 실패 — known 을 안 채우므로 다음 시도에 그대로 다시 올린다
       return;
@@ -355,6 +444,26 @@ export async function markCardGenerationsRemoved(
   const scope = enterScope();
   enqueueRemovals(scope, links); // 네트워크보다 먼저 기록 — 실패·재시작에도 제거 의도를 잃지 않는다.
   await pushNew();
+}
+
+/**
+ * 카드의 생성물 소속을 명시적으로 되살린다 — undo 로 제거를 되돌린 순간에만 부른다.
+ * 자동 백필과 달리 서버의 '뺐음' 표시를 해제할 수 있다(사용자 의도이므로).
+ * 네트워크보다 먼저 영속 기록 — 그 즉시 serverCardLinks() 오버레이가 tombstone 을 가려,
+ * 복원 직후의 병합이 방금 살린 결과를 도로 지우지 않는다(합의 B).
+ */
+export function reviveCardGenerations(
+  sceneId: string,
+  cardId: string,
+  generationIds: string[],
+): void {
+  const links = generationIds
+    .filter(Boolean)
+    .map((generation_id) => ({ scene_id: sceneId, card_id: cardId, generation_id }));
+  if (!links.length) return;
+  const scope = enterScope();
+  enqueueRevives(scope, links);
+  void pushNew();
 }
 
 function scheduleRefresh(): void {

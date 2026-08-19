@@ -38,7 +38,7 @@ vi.mock("../src/lib/http", () => ({
 const puts = () => calls.filter((c) => c.init?.method === "PUT");
 const putBody = (c: Call) => JSON.parse(String(c.init?.body));
 const addedKeys = (c: Call) =>
-  putBody(c).added.map((a: { card_id: string; generation_id: string }) => `${a.card_id}:${a.generation_id}`);
+  putBody(c).backfill.map((a: { card_id: string; generation_id: string }) => `${a.card_id}:${a.generation_id}`);
 
 let acctSeq = 0;
 async function boot() {
@@ -122,7 +122,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     const { links } = await boot();
     await links.markCardGenerationsRemoved("s1", "c1", ["g1", "g2"]);
     expect(puts().length).toBe(1);
-    expect(putBody(puts()[0]).added).toEqual([]);
+    expect(putBody(puts()[0]).backfill).toEqual([]);
     expect(putBody(puts()[0]).removed.map((r: { generation_id: string }) => r.generation_id)).toEqual([
       "g1",
       "g2",
@@ -167,7 +167,37 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
 
     expect(puts().length).toBe(1);
     expect(putBody(puts()[0]).removed[0].generation_id).toBe("g1");
-    expect(putBody(puts()[0]).added).toEqual([]);
+    expect(putBody(puts()[0]).backfill).toEqual([]);
+  });
+
+  it("명시적 부활(undo)은 explicit 로 전송되고 tombstone 을 오버레이로 즉시 가린다", async () => {
+    const { links } = await boot();
+    getLinks = () =>
+      Promise.resolve({
+        items: [{ scene_id: "s1", card_id: "c1", generation_id: "g1", removed_at: "2026-01-01" }],
+      });
+    links.initSceneCardLinks();
+    await vi.advanceTimersByTimeAsync(2500);
+    // 부활 의도 즉시: 네트워크 왕복 전에도 serverCardLinks() 에서 tombstone 이 가려진다 —
+    // undo 복원 직후의 병합이 방금 살린 결과를 도로 지우지 않는 근거.
+    links.reviveCardGenerations("s1", "c1", ["g1"]);
+    const masked = links.serverCardLinks("s1").find((l) => l.generation_id === "g1");
+    expect(masked?.removed_at ?? null).toBeNull();
+    await vi.advanceTimersByTimeAsync(2500);
+    const withExplicit = puts().find((c) => (putBody(c).explicit || []).length > 0);
+    expect(withExplicit).toBeTruthy();
+    expect(putBody(withExplicit!).explicit[0]).toEqual({
+      scene_id: "s1",
+      card_id: "c1",
+      generation_id: "g1",
+    });
+    // 자동 백필(backfill)로는 절대 안 나간다 — tombstone 해제는 명시 의도만 가능.
+    for (const c of puts()) {
+      const backfillIds = (putBody(c).backfill || []).map(
+        (a: { generation_id: string }) => a.generation_id,
+      );
+      expect(backfillIds).not.toContain("g1");
+    }
   });
 
   it("서버 읽기 실패 시 아무것도 올리지 않는다(무엇이 새 것인지 모르므로)", async () => {
@@ -244,7 +274,7 @@ describe("sceneCardLinks (카드 소속 기록)", () => {
     links.initSceneCardLinks();
     await vi.advanceTimersByTimeAsync(2500);
     const body = putBody(puts()[0]);
-    expect(body.added.map((a: { scene_id: string }) => a.scene_id)).toEqual(["s1", "s2"]);
+    expect(body.backfill.map((a: { scene_id: string }) => a.scene_id)).toEqual(["s1", "s2"]);
   });
 });
 

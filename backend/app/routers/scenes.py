@@ -36,8 +36,10 @@ class CardLinkIn(BaseModel):
 
 
 class CardLinkSyncIn(BaseModel):
-    added: list[CardLinkIn] = []    # 카드에 담김
-    removed: list[CardLinkIn] = []  # 카드에서 뺌(행 삭제가 아니라 표시 — repo 주석 참고)
+    added: list[CardLinkIn] = []     # [구클라] 자동 백필 — backfill 로 해석(tombstone 해제 불가)
+    backfill: list[CardLinkIn] = []  # 자동 스캔 — 새 행만, 제거 표시를 절대 해제하지 않음
+    explicit: list[CardLinkIn] = []  # 사용자 의도(undo 부활 등) — 제거 표시 해제 허용
+    removed: list[CardLinkIn] = []   # 카드에서 뺌(행 삭제가 아니라 표시 — repo 주석 참고)
 
 
 @router.get("/backup")
@@ -71,12 +73,13 @@ def list_scene_card_links(request: Request, scene_id: str = ""):
 
 @router.put("/cards")
 def sync_scene_card_links(body: CardLinkSyncIn, request: Request):
-    """담김/뺌 반영. 더하기 전용이라 이 요청이 남의 브라우저 기록을 지우는 일은 없다."""
+    """담김/뺌/부활 반영. 더하기 전용이라 이 요청이 남의 브라우저 기록을 지우는 일은 없다."""
     try:
         res = repo.sync_scene_card_links(
             actor_id(request),
-            [a.model_dump() for a in body.added],
+            [a.model_dump() for a in [*body.added, *body.backfill]],
             [r.model_dump() for r in body.removed],
+            explicit=[e.model_dump() for e in body.explicit],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

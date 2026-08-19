@@ -36,6 +36,10 @@ _COOKIE_MAX_AGE = 14 * 24 * 3600  # 토큰 TTL 과 동일(2주)
 _RL_WINDOW = 300.0  # 5분
 _RL_MAX = 8
 _rl_fails: dict[str, list[float]] = {}
+# 검증 '진행 중' 예약 수 — 실패는 해시 검증이 끝나야 기록되므로, 예약 없이는 같은 키의 동시
+# 요청 수백 건이 전부 검사를 통과해 창(MAX)을 우회한다(적대 리뷰 P2). 검사+예약은 async 핸들러의
+# sync 구간에서 원자적(이벤트 루프가 끼어들 수 없음)이고, 완료 시 성공·실패·예외 모두 finally 로 푼다.
+_rl_inflight: dict[str, int] = {}
 
 # PBKDF2는 의도적으로 CPU를 많이 쓰는 보안 경계다. 동시 로그인 100건을 FastAPI의
 # 공용 sync threadpool에서 모두 실행하면 저사양 서버의 다른 sync API까지 굶는다.
@@ -85,7 +89,12 @@ def _rl_key(request: Request, email: str) -> str:
     return f"{ip}|{norm_email(email)}"
 
 
-def _rl_check(key: str) -> None:
+def _rl_reserve(key: str) -> None:
+    """검사 + in-flight 예약(원자적). 창 초과면 예약 없이 429.
+
+    최근 실패 수에 '아직 결과가 안 나온 진행 중 검증'을 더해 판정한다 — 동시 폭주가
+    실패 기록 전의 창을 우회하지 못하게. 통과하면 예약 1을 잡고, 호출부는 결과와 무관하게
+    finally 에서 _rl_release 로 반드시 푼다."""
     now = time.monotonic()
     hits = [t for t in _rl_fails.get(key, []) if now - t < _RL_WINDOW]
     # 빈 리스트는 키 자체를 제거 — 안 그러면 (IP|email) 조합마다 빈 항목이 영구히 쌓여(성공 시에만
@@ -94,11 +103,20 @@ def _rl_check(key: str) -> None:
         _rl_fails[key] = hits
     else:
         _rl_fails.pop(key, None)
-    if len(hits) >= _RL_MAX:
+    if len(hits) + _rl_inflight.get(key, 0) >= _RL_MAX:
         raise HTTPException(
             status_code=429,
             detail="로그인 시도가 너무 많습니다. 잠시 후(몇 분) 다시 시도하세요.",
         )
+    _rl_inflight[key] = _rl_inflight.get(key, 0) + 1
+
+
+def _rl_release(key: str) -> None:
+    remaining = _rl_inflight.get(key, 0) - 1
+    if remaining > 0:
+        _rl_inflight[key] = remaining
+    else:
+        _rl_inflight.pop(key, None)
 
 
 def _rl_fail(key: str) -> None:
@@ -183,16 +201,19 @@ async def register(body: RegisterIn, response: Response):
 @router.post("/login")
 async def login(body: LoginIn, response: Response, request: Request):
     key = _rl_key(request, body.email)
-    _rl_check(key)
-    acc = await _run_login_work(repo.authenticate, body.email, body.password)
-    if not acc:
-        _rl_fail(key)
-        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
-    if acc["status"] == "pending":
-        raise HTTPException(status_code=403, detail="관리자 승인 대기 중입니다")
-    if acc["status"] != "approved":
-        raise HTTPException(status_code=403, detail="접근이 거부된 계정입니다")
-    _rl_ok(key)
+    _rl_reserve(key)
+    try:
+        acc = await _run_login_work(repo.authenticate, body.email, body.password)
+        if not acc:
+            _rl_fail(key)
+            raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다")
+        if acc["status"] == "pending":
+            raise HTTPException(status_code=403, detail="관리자 승인 대기 중입니다")
+        if acc["status"] != "approved":
+            raise HTTPException(status_code=403, detail="접근이 거부된 계정입니다")
+        _rl_ok(key)
+    finally:
+        _rl_release(key)
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
     _set_session_cookie(response, token)  # /media·/ws 용 쿠키 동반 발급
     _activate_local_agent(request, acc["email"])
@@ -206,25 +227,28 @@ async def access(body: RegisterIn, response: Response, request: Request):
     /login 사용. 반환: {account, token(승인 전이면 null), pending}."""
     email = norm_email(body.email)
     key = _rl_key(request, email)
-    _rl_check(key)
-    existing = await asyncio.to_thread(repo.get_account, email)
-    if existing:
-        acc = await _run_login_work(repo.authenticate, email, body.password)
-        if not acc:
-            _rl_fail(key)
-            raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다")
-        _rl_ok(key)
-        if acc["status"] != "approved":  # 승인 전(거부 포함) — 토큰 없이 상태만
-            return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
-        token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
-        _set_session_cookie(response, token)
-        _activate_local_agent(request, acc["email"])
-        return {"account": acc, "token": token, "pending": False}
-    # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
+    _rl_reserve(key)
     try:
-        acc = await _run_login_work(repo.register, email, body.password, body.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        existing = await asyncio.to_thread(repo.get_account, email)
+        if existing:
+            acc = await _run_login_work(repo.authenticate, email, body.password)
+            if not acc:
+                _rl_fail(key)
+                raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다")
+            _rl_ok(key)
+            if acc["status"] != "approved":  # 승인 전(거부 포함) — 토큰 없이 상태만
+                return {"account": acc, "token": None, "pending": acc["status"] == "pending"}
+            token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at"))
+            _set_session_cookie(response, token)
+            _activate_local_agent(request, acc["email"])
+            return {"account": acc, "token": token, "pending": False}
+        # 처음 보는 이메일 → 자동 등록(첫 계정=관리자+승인, 그 외=member/pending)
+        try:
+            acc = await _run_login_work(repo.register, email, body.password, body.name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        _rl_release(key)
     acc = await asyncio.to_thread(repo.get_account, acc["email"]) or acc
     token = auth.make_token(acc["email"], pwd_stamp=acc.get("password_changed_at")) if acc["status"] == "approved" else None
     if token:

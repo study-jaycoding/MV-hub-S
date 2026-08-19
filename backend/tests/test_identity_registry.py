@@ -68,7 +68,7 @@ class IdentityRegistryTests(unittest.TestCase):
     def test_remap_plan_strategies_valid(self):
         # 전략 문자열 오타(예: "plian")는 registry 엔 등록된 듯 보이지만 remap 분기에 안 걸려 조용히 no-op 된다.
         # 유효 전략 집합으로 고정 — remap_creator_uid 의 분기와 일치해야 한다.
-        valid = {"plain", "ignore_del", "member", "autotag", "assetmeta"}
+        valid = {"plain", "ignore_del", "member", "autotag", "assetmeta", "scenecard"}
         bad = [(t, c, s) for t, c, s in identity._REMAP_PLAN if s not in valid]
         self.assertEqual(bad, [], f"_REMAP_PLAN 에 알 수 없는 전략(오타 의심): {bad}")
 

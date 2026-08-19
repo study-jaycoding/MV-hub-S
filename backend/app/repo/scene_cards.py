@@ -3,11 +3,13 @@
 씬 백업(scene_backup)은 씬 전체를 통째로 덮어쓰는 미러라, 늦게 저장한 브라우저가 이겨
 다른 브라우저에서 쌓은 결과가 사라진다. 소속만 여기로 분리해 **더하기 전용**으로 쌓는다.
 
-계약:
-  · 추가는 upsert(멱등) — 같은 (씬,카드,생성물)을 몇 번 보내도 한 줄. 백필을 반복해도 안전.
+계약(합의 B — backfill/explicit 분리):
+  · backfill(자동 스캔) = INSERT OR IGNORE(멱등) — **removed_at 을 절대 해제하지 않는다**.
+    낡은 로컬 목록을 가진 브라우저의 자동 백필이, 다른 브라우저가 그 사이 뺀 것을 되살리면
+    안 된다(제거 의도가 항상 이긴다 — 적대 리뷰 P2).
+  · explicit(사용자 의도 — undo 부활 등) = upsert, removed_at=NULL 해제 허용.
   · 제거는 행 삭제가 아니라 removed_at 표시 — 행을 지우면 아직 모르는 다른 브라우저가
     자기 로컬 목록으로 그 생성물을 되살린다(합치기가 합집합이므로).
-  · 다시 담으면 removed_at=NULL 로 되돌린다(뺐다가 도로 넣는 건 정상 조작).
   · 읽기는 휴지통에 간 생성물만 제외. 이 DB 에 아직 없는 생성물은 남긴다 — 다른 설치본에서
     만들어 아직 동기화 안 된 경우라, 지우면 동기화 뒤에도 카드에 못 돌아온다(0단계 실측:
     카드가 가리키는 57건 중 54건이 다른 설치본 DB 에 있었다).
@@ -82,21 +84,35 @@ def sync_scene_card_links(
     owner_uid: str,
     added: list[dict[str, Any]],
     removed: list[dict[str, Any]],
+    explicit: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, int]:
-    """담김/뺌을 한 트랜잭션으로 반영. 검증 실패는 ValueError(라우터가 400 변환)."""
+    """담김/뺌/부활을 한 트랜잭션으로 반영. 검증 실패는 ValueError(라우터가 400 변환).
+
+    added = 자동 백필(구클라의 'added' 포함) — 새 행만 만들고 기존 tombstone 은 못 건드린다.
+    explicit = 사용자 의도 — tombstone(removed_at) 해제 허용.
+    """
     add = _clean(added)
+    exp = _clean(explicit or [])
     rem = _clean(removed)
-    if len(add) + len(rem) > MAX_SCENE_CARD_LINKS:
+    if len(add) + len(exp) + len(rem) > MAX_SCENE_CARD_LINKS:
         raise ValueError(f"한 요청 상한 초과(최대 {MAX_SCENE_CARD_LINKS}) — 분할 전송 필요")
-    both = set(add) & set(rem)
+    both = (set(add) | set(exp)) & set(rem)
     if both:
-        raise ValueError("같은 (씬,카드,생성물)이 added 와 removed 에 동시에 있음")
+        raise ValueError("같은 (씬,카드,생성물)이 추가와 removed 에 동시에 있음")
 
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             for scene_id, card_id, generation_id in add:
-                # 다시 담는 경우 removed_at 을 지운다 — 뺐다가 도로 넣는 건 정상 조작.
+                # 자동 백필 — 기존 행(특히 removed_at 표시)은 그대로 둔다. 낡은 로컬 목록이
+                # 다른 브라우저의 제거를 무르면 안 된다(합의 B / 적대 리뷰 P2).
+                conn.execute(
+                    "INSERT OR IGNORE INTO scene_card_generation"
+                    "(owner_uid, scene_id, card_id, generation_id) VALUES(?,?,?,?)",
+                    (owner_uid, scene_id, card_id, generation_id),
+                )
+            for scene_id, card_id, generation_id in exp:
+                # 사용자 의도(undo 부활 등) — 뺐다가 도로 넣는 정상 조작이므로 표시를 해제한다.
                 conn.execute(
                     "INSERT INTO scene_card_generation"
                     "(owner_uid, scene_id, card_id, generation_id) VALUES(?,?,?,?) "
@@ -118,4 +134,4 @@ def sync_scene_card_links(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-    return {"added": len(add), "removed": len(rem)}
+    return {"added": len(add) + len(exp), "removed": len(rem)}

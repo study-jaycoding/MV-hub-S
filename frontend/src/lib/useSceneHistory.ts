@@ -16,6 +16,11 @@ import {
   type SceneHistory,
   type SceneSnap,
 } from "./sceneUndoStore";
+import {
+  mergeCardLinksIntoScenes,
+  reviveCardGenerations,
+  serverCardLinks,
+} from "./sceneCardLinks";
 
 interface UseSceneHistoryOptions {
   sceneId: string;
@@ -124,9 +129,32 @@ export function useSceneHistory({
 
   const restoreState = (snapshot: SceneSnap) => {
     // 결과 대표 선택은 편집 이력과 별개이므로 현재 화면 값을 유지한다.
+    const restoredCards = preserveRepresentatives(snapshot.cards, cardsRef.current);
+    const sceneIdNow = sceneIdRef.current;
+    // ① 복원으로 되살아나는 소속이 서버에 '뺐음'(tombstone)으로 남아 있으면 명시적 부활로
+    //    기록한다(합의 B — undo 는 사용자 의도이므로 tombstone 해제 가능). 기록이 ②병합보다
+    //    먼저라야, 병합이 방금 복원한 결과를 tombstone 으로 도로 지우지 않는다.
+    const tomb = new Set(
+      serverCardLinks(sceneIdNow)
+        .filter((l) => l.removed_at)
+        .map((l) => `${l.card_id}|${l.generation_id}`),
+    );
+    if (tomb.size) {
+      for (const card of restoredCards) {
+        if (card.kind !== "generation" && card.kind !== "comfy") continue;
+        const revive = variantIds(card).filter((gid) => tomb.has(`${card.id}|${gid}`));
+        if (revive.length) reviveCardGenerations(sceneIdNow, card.id, revive);
+      }
+    }
+    // ② 서버가 아는 소속(다른 브라우저에서 담은 결과)을 복원본에도 합친다 — 과거 스냅샷엔
+    //    없어서 undo 가 세션 내내 그 결과를 숨기던 문제(합의 FE-P1-4).
+    const merged = mergeCardLinksIntoScenes(
+      [{ id: sceneIdNow, cards: restoredCards }],
+      serverCardLinks(sceneIdNow),
+    );
     const restored = {
       ...snapshot,
-      cards: preserveRepresentatives(snapshot.cards, cardsRef.current),
+      cards: merged ? (merged[0].cards as SceneCard[]) : restoredCards,
     };
     lastCommitRef.current = restored;
     cardsRef.current = restored.cards;

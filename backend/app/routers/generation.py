@@ -897,6 +897,9 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
             "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
         )
         remote = resp if isinstance(resp, dict) else {}
+        # 한계: 요청 id 가 서버 UUID(팀 탭)이고 비공개가 로컬 id 앵커로 저장된 경우, 여기선
+        # 배치 규모(≤500) 때문에 서버 재조회 없이 로컬 해석만 하므로 그 조합의 뱃지 수가
+        # 빠질 수 있다(스레드 자체는 add/list 의 되찾기 앵커로 항상 온전).
         private = repo.private_generation_comment_counts(requested, actor_id(request))
         merged: dict[str, dict[str, Any]] = {}
         for gid, sid in srv_of.items():
@@ -920,8 +923,10 @@ def list_gen_comments(gen_id: str, request: Request):
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
         shared = _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
-        # 비공개는 서버에 없다 — 로컬(작성 시와 같은 앵커: 로컬 행 있으면 로컬 id)에서 합친다.
-        anchor = gen["id"] if gen else gen_id
+        # 비공개는 서버에 없다 — 작성과 같은 앵커 규칙(로컬 행 되찾기 포함)으로 합쳐야
+        # 팀 탭(서버 UUID)에서 연 스레드에도 내 비공개가 보인다(합의 BE-P1-4).
+        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+        anchor = r_local_id or r_server_id
         mine = repo.list_private_generation_comments(anchor, actor_id(request))
         merged = ([*shared, *mine] if isinstance(shared, list) else mine)
         merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
@@ -944,7 +949,11 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
             raise HTTPException(
                 status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
             )
-        anchor = gen["id"] if gen else gen_id
+        # 앵커 해석(합의 BE-P1-4) — 팀 탭 카드(서버 UUID)는 서버에서 job_id 를 되찾아
+        # 내 로컬 행(L)으로 정규화한다. 서버 UUID 그대로 저장하면 같은 생성물을 내 작업
+        # 탭(L)으로 열 때 스레드가 갈라져 비공개 메모가 사라져 보인다.
+        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+        anchor = r_local_id or r_server_id
         text = (body.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="빈 코멘트")
