@@ -41,6 +41,20 @@ export interface GenCursor {
   id: string;
 }
 
+export interface HistoryImportStatus {
+  state: "idle" | "running" | "complete" | "failed";
+  pages: number;
+  received: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  errors: number;
+  message: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 // 모든 필터(기본 + 서버사이드 인스턴트)를 쿼리스트링으로. project_id·컬러·태그·타입까지
 // 서버가 거르므로, 클라이언트가 전량 로드해서 거를 필요가 없다(어떤 규모든 일정 성능).
 function buildQuery(q: GenQuery, cursor: GenCursor | null = null, limit = GEN_PAGE): string {
@@ -349,12 +363,11 @@ export const api = {
   // "생성물 재점검" — 최신 N개를 known-필터 없이 강제 재전송해 힉스필드 상태와 대조·정정
   agentReinspect: () =>
     jsonFetch<{ ok: boolean; connected: boolean }>("/api/agent/reinspect", { method: "POST" }),
-  // 과거 백필 — MCP show_generations 원시 아이템 배열을 웹 세션으로 직접 적재(파일 업로드 경로). 멱등.
-  ingestMcp: (items: unknown[]) =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number; linked_uid: string | null }>(
-      "/api/ingest/mcp",
-      { method: "POST", body: jsonBody({ items }) },
-    ),
+  // 과거 전체 가져오기 — 로컬 CLI 로그인 권한으로 MCP cursor를 끝까지 순회한다.
+  historyImportStart: () =>
+    jsonFetch<HistoryImportStatus>("/api/ingest/history/start", { method: "POST" }),
+  historyImportStatus: () =>
+    jsonFetch<HistoryImportStatus>("/api/ingest/history/status"),
 
   ...authApi,
 

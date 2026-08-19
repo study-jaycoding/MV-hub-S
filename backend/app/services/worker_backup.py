@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -46,6 +47,12 @@ OUTBOX_DIR = Path(
         str(DATA_DIR / "worker-backup-outbox"),
     )
 ).resolve()
+DEVICE_IDENTITY_PATH = Path(
+    os.environ.get(
+        "CONTENT_HUB_DEVICE_IDENTITY_FILE",
+        str(DATA_DIR / "device_identity.json"),
+    )
+).resolve()
 
 UPLOAD_INTERVAL = max(
     15.0,
@@ -66,6 +73,14 @@ _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
 _PREFIX = "content_hub_"
 _TRASH_PREFIX = "content_trash_"
 _log = logging.getLogger("mvhub.worker_backup")
+
+_SUMMARY_TABLES = {
+    "generations": ("generation",),
+    "tags": ("tag", "auto_tag", "gen_tag_overlay"),
+    "canvases": ("scene_backup", "scene_card_generation"),
+    "assets": ("asset_meta",),
+    "projects": ("project",),
+}
 
 
 def _utc_now() -> str:
@@ -181,6 +196,114 @@ def _role_info(path: Path) -> dict[str, Any]:
     return {"size": path.stat().st_size, "sha256": _sha256(path)}
 
 
+def _device_identity() -> dict[str, str]:
+    """DB 밖에 유지되는 이 PC의 공개 식별정보를 반환한다.
+
+    복원한 DB 안에 기기 ID를 넣으면 다른 PC의 ID까지 복제된다. 릴리스 업데이트에도 보존되는
+    DATA_DIR 별도 파일에 두어 서버 백업 목록에서 어느 PC가 만든 버전인지 구분한다.
+    """
+    try:
+        value = json.loads(DEVICE_IDENTITY_PATH.read_text("utf-8"))
+    except (OSError, ValueError, TypeError):
+        value = None
+    device_id = str(value.get("device_id") or "") if isinstance(value, dict) else ""
+    device_name = str(value.get("device_name") or "") if isinstance(value, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{32}", device_id):
+        device_id = secrets.token_hex(16)
+    if not device_name:
+        device_name = platform.node().strip() or os.environ.get("COMPUTERNAME", "").strip() or "내 PC"
+    device_name = device_name[:80]
+    normal = {"device_id": device_id, "device_name": device_name}
+    if value != normal:
+        DEVICE_IDENTITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            DEVICE_IDENTITY_PATH,
+            json.dumps(normal, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+    return normal
+
+
+def _table_count(conn: sqlite3.Connection, table: str) -> int:
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is None:
+        return 0
+    return max(0, int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] or 0))
+
+
+def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]:
+    """민감한 본문 없이 동기화 비교에 필요한 개수만 계산한다."""
+    summary: dict[str, int] = {}
+    with contextlib.closing(
+        sqlite3.connect(f"file:{Path(content).as_posix()}?mode=ro", uri=True)
+    ) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        for label, tables in _SUMMARY_TABLES.items():
+            summary[label] = sum(_table_count(conn, table) for table in tables)
+    summary["trash"] = 0
+    if trash is not None and Path(trash).is_file():
+        with contextlib.closing(
+            sqlite3.connect(f"file:{Path(trash).as_posix()}?mode=ro", uri=True)
+        ) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            summary["trash"] = _table_count(conn, "trashed")
+    summary["meaningful_records"] = sum(summary.values())
+    return summary
+
+
+def _lineage_parent(account_slug: str) -> str | None:
+    """이 PC가 마지막으로 알고 있는 계정 백업을 새 스냅샷의 부모로 사용한다."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT backup_set_id FROM worker_backup_outbox "
+            "WHERE account_slug=? AND status IN ('pending','running','done') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (account_slug,),
+        ).fetchone()
+        if row is not None:
+            return str(row[0])
+        state = conn.execute(
+            "SELECT last_backup_set_id FROM worker_backup_delivery_state WHERE account_slug=?",
+            (account_slug,),
+        ).fetchone()
+        return str(state[0]) if state and state[0] else None
+
+
+def adopt_restored_backup(backup_set_id: str, *, account_email: str) -> None:
+    """선택 복원 뒤 옛 PC 전송 대기열을 폐기하고 새 작업의 부모 버전을 고정한다."""
+    if not _SET_ID_RE.fullmatch(backup_set_id):
+        raise ValueError("invalid backup set id")
+    account_slug = active_account.slug(account_email)
+    superseded: list[str] = []
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                "SELECT backup_set_id FROM worker_backup_outbox "
+                "WHERE account_slug=? AND status IN ('pending','running')",
+                (account_slug,),
+            ).fetchall()
+            superseded = [str(row[0]) for row in rows]
+            conn.execute(
+                "UPDATE worker_backup_outbox SET status='superseded',last_error_code='restored_new_base' "
+                "WHERE account_slug=? AND status IN ('pending','running','done')",
+                (account_slug,),
+            )
+            conn.execute(
+                "INSERT INTO worker_backup_delivery_state(account_slug,last_backup_set_id,last_error_code) "
+                "VALUES(?,?,NULL) ON CONFLICT(account_slug) DO UPDATE SET "
+                "last_backup_set_id=excluded.last_backup_set_id,last_error_code=NULL",
+                (account_slug, backup_set_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    for old_id in superseded:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(_stage_dir(account_slug, old_id))
+
+
 def record_queue_failure(error_code: str, *, account_email: str | None = None) -> None:
     """staging 자체가 실패한 경우에도 마지막 오류를 머신 상태 DB에 남긴다."""
     email = account_email or active_account.account_key()
@@ -235,8 +358,47 @@ def queue_backup_set(
             role_paths["trash"] = trash
 
         roles = {role: _role_info(path) for role, path in sorted(role_paths.items())}
+        summary = metadata_summary(content, role_paths.get("trash"))
+        # 새 PC 로그인 직후 만들어지는 스키마/기본 작업자뿐인 DB가 서버 최신본처럼 올라가면
+        # 기존 작업을 찾기 어려워진다. 의미 있는 개인 기록이 생기기 전에는 자동 전송하지 않는다.
+        if summary["meaningful_records"] <= 0:
+            shutil.rmtree(temp)
+            now = _utc_now()
+            with _connect() as conn:
+                conn.execute(
+                    "INSERT INTO worker_backup_delivery_state"
+                    "(account_slug,last_attempt_at,last_error_code) VALUES(?,?,?) "
+                    "ON CONFLICT(account_slug) DO UPDATE SET "
+                    "last_attempt_at=excluded.last_attempt_at,last_error_code=excluded.last_error_code",
+                    (account_slug, now, "empty_metadata"),
+                )
+            log_event(_log, "worker_backup_empty_skipped")
+            return None
+
+        device = _device_identity()
+        parent_backup_set_id = _lineage_parent(account_slug)
+        roles_json = json.dumps(roles, sort_keys=True, separators=(",", ":"))
+        # 같은 PC에서 DB 파일의 수정 시각만 달라진 경우에는 새 세트를 만들지 않는다.
+        # 단, 사용자가 과거 버전을 복원해 기존 행이 superseded 된 경우에는 아래 ID 계산으로
+        # 복원본을 부모로 둔 새 불변 세트를 만들어 계보를 이어간다.
+        with _connect() as conn:
+            unchanged = conn.execute(
+                "SELECT backup_set_id FROM worker_backup_outbox "
+                "WHERE account_slug=? AND roles_json=? "
+                "AND status IN ('pending','running','done') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (account_slug, roles_json),
+            ).fetchone()
+        if unchanged is not None:
+            shutil.rmtree(temp)
+            return str(unchanged[0])
         identity = json.dumps(
-            {"account_slug": account_slug, "local_stamp": stamp, "roles": roles},
+            {
+                "account_slug": account_slug,
+                "device_id": device["device_id"],
+                "parent_backup_set_id": parent_backup_set_id,
+                "roles": roles,
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -249,6 +411,9 @@ def queue_backup_set(
             "local_stamp": stamp,
             "schema_version": _sqlite_user_version(content),
             "app_version": _app_version(),
+            "device": device,
+            "parent_backup_set_id": parent_backup_set_id,
+            "summary": summary,
             "roles": roles,
         }
         atomic_write_text(
@@ -256,10 +421,17 @@ def queue_backup_set(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         )
         final = _stage_dir(account_slug, backup_set_id)
-        if final.exists():
+        with _connect() as conn:
+            existing = conn.execute(
+                "SELECT status FROM worker_backup_outbox WHERE backup_set_id=?",
+                (backup_set_id,),
+            ).fetchone()
+        if existing is not None and str(existing[0]) in {"pending", "running", "done"}:
             shutil.rmtree(temp)
-        else:
-            os.replace(temp, final)
+            return backup_set_id
+        if final.exists():
+            shutil.rmtree(final)
+        os.replace(temp, final)
 
         superseded: list[str] = []
         with _connect() as conn:
@@ -274,7 +446,7 @@ def queue_backup_set(
                         account_slug,
                         manifest["created_at"],
                         stamp,
-                        json.dumps(roles, sort_keys=True, separators=(",", ":")),
+                        roles_json,
                     ),
                 )
                 rows = conn.execute(
@@ -686,6 +858,8 @@ def drain_one() -> dict[str, Any]:
         "state": "success",
         "backup_set_id": row["backup_set_id"],
         "server_count": max(0, int(response.get("count") or 0)),
+        "conflict": bool(response.get("conflict")),
+        "is_current": bool(response.get("is_current", True)),
     }
 
 
@@ -731,6 +905,8 @@ def status_snapshot() -> dict[str, Any]:
         display_state = "pending"
     elif last_success:
         display_state = "success"
+    elif last_error == "empty_metadata":
+        display_state = "waiting_for_data"
     else:
         display_state = "waiting_for_backup"
     return {

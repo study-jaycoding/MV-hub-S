@@ -713,6 +713,29 @@ async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
     return result
 
 
+async def get_auth_token(timeout: float = 30.0) -> str:
+    """현재 CLI OAuth 토큰을 메모리로만 읽는다.
+
+    과거 이력 MCP 조회처럼 공식 CLI와 같은 Higgsfield 계정 권한이 필요한 로컬 기능용이다.
+    토큰은 파일/DB/로그에 저장하지 않으며, 호출부도 예외 문자열에 값을 포함하면 안 된다.
+    CLI 버전에 따라 평문 또는 JSON 객체로 올 수 있어 둘 다 수용한다.
+    """
+    raw = (await _run("auth", "token", "--json", timeout=timeout)).strip()
+    if not raw:
+        raise CLIError("Higgsfield CLI 로그인이 필요합니다")
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CLIError("Higgsfield CLI 로그인 정보를 읽지 못했습니다") from exc
+        if isinstance(data, dict):
+            token = str(data.get("access_token") or data.get("token") or "").strip()
+            if token:
+                return token
+        raise CLIError("Higgsfield CLI 로그인이 필요합니다")
+    return raw
+
+
 # ── 워크스페이스(팀 공유 UUID 공간) ───────────────────────────────────────
 async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     """워크스페이스 목록 [{id, name, plan_type, credits, is_selected, user_role}].

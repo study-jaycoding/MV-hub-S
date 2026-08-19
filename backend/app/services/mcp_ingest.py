@@ -6,8 +6,9 @@ MCP `show_generations`(cursor/next_cursor 페이지네이션 지원)로만 닿�
 공통 경로(cli_bridge.parse_job → repo.upsert_synced_generation)로 흘려보낸다.
 
 사용처:
-  · routers/ingest.py `POST /api/ingest/mcp` — Claude 가 cursor 순회하며 페이지를 자동 적재.
-  · backfill_import.py — 오프라인 JSON 덤프 import(같은 매핑 재사용).
+  · routers/ingest.py 과거 전체 가져오기 — 앱이 cursor 끝까지 자동 조회·적재.
+  · routers/ingest.py `POST /api/ingest/mcp` — 구버전 수동 가져오기 호환 API.
+  · backfill_import.py — 오프라인 복구 도구(같은 매핑 재사용).
 """
 
 from __future__ import annotations

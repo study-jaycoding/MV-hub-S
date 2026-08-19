@@ -13,10 +13,13 @@ from app.services.resolve_probe import RESULT_PREFIX
 
 class ResolveStatusRunnerTests(unittest.TestCase):
     def test_timeout_returns_actionable_unavailable_status(self):
-        with mock.patch.object(
-            resolve_status_runner.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(["python"], 8),
+        with (
+            mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True),
+            mock.patch.object(
+                resolve_status_runner.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["python"], 8),
+            ),
         ):
             result = resolve_status_runner.resolve_connection_status_bounded()
 
@@ -35,12 +38,24 @@ class ResolveStatusRunnerTests(unittest.TestCase):
             stdout="Resolve log\n" + RESULT_PREFIX + json.dumps(expected) + "\n",
             stderr="",
         )
-        with mock.patch.object(
-            resolve_status_runner.subprocess, "run", return_value=completed
+        with (
+            mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=True),
+            mock.patch.object(resolve_status_runner.subprocess, "run", return_value=completed),
         ):
             result = resolve_status_runner.resolve_connection_status_bounded()
 
         self.assertEqual(result, expected)
+
+    def test_closed_resolve_returns_immediately_without_starting_probe(self):
+        with (
+            mock.patch.object(resolve_status_runner, "resolve_process_running", return_value=False),
+            mock.patch.object(resolve_status_runner.subprocess, "run") as run,
+        ):
+            result = resolve_status_runner.resolve_connection_status_bounded()
+
+        self.assertEqual(result["status"], "not_running")
+        self.assertFalse(result["process_running"])
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -39,6 +39,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/db-backup/latest",
         "/api/db-backup/latest-set",
         "/api/db-backup/sets",
+        "/api/db-backup/sets/{backup_set_id}",
+        "/api/db-backup/sets/{backup_set_id}/activate",
         "/api/manage/breakdown",
         "/api/manage/hf-missing-apply",
         "/api/manage/hf-missing-candidates",

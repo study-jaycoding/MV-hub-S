@@ -4,6 +4,7 @@ import {
   checkResolveSelection,
   createResolveTransfer,
   getResolveConnectionStatus,
+  getResolveEnvironmentDiagnostics,
   getResolveScriptStatus,
   installResolveScript,
   retryResolveTransfer,
@@ -298,6 +299,54 @@ describe("Resolve 스크립트 설치 API", () => {
       2,
       "/api/resolve/script/install",
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("환경 진단은 설치와 연결 결과를 한 번에 가져온다", async () => {
+    const diagnostics = {
+      status: "menu_ready",
+      summary: "Resolve 메뉴 스크립트는 사용할 수 있습니다.",
+      checks: [],
+      recommendations: [],
+      script: {
+        installed: true,
+        up_to_date: true,
+        bundled_version: "0.6.1",
+        installed_version: "0.6.1",
+        path: "C:\\Resolve\\MVHub Clip Exporter.py",
+      },
+      connection: {
+        status: "not_running",
+        connected: false,
+        process_running: false,
+        project_open: false,
+        project_id: "",
+        project_name: "",
+        message: "Resolve가 실행 중이지 않습니다",
+      },
+      environment: {
+        windows_user: "worker",
+        mvhub_python: { version: "3.14.0", bits: 64, path: "python.exe" },
+        system_pythons: [],
+        resolve_installations: [],
+        api: {
+          module_candidates: [],
+          existing_module_paths: [],
+          library_candidates: [],
+          library_path: "",
+        },
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(diagnostics),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getResolveEnvironmentDiagnostics()).resolves.toEqual(diagnostics);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/resolve/diagnostics",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 });

@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app import active_account
 from app.routers import db_backup, db_transfer
@@ -22,6 +23,7 @@ from app.services import worker_backup
 def _content_db(path: Path, *, secret: bool = True) -> bytes:
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE generation(id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO generation(id) VALUES('generation-1')")
         conn.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)")
         if secret:
             conn.execute(
@@ -42,6 +44,7 @@ def _trash_db(path: Path) -> bytes:
 def worker_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(worker_backup, "STATE_DB", tmp_path / "worker-state.db")
     monkeypatch.setattr(worker_backup, "OUTBOX_DIR", tmp_path / "outbox")
+    monkeypatch.setattr(worker_backup, "DEVICE_IDENTITY_PATH", tmp_path / "device.json")
     token = active_account.set_override("artist@example.com")
     try:
         yield tmp_path
@@ -278,6 +281,251 @@ def _server_manifest(content: bytes, trash: bytes) -> dict:
         "app_version": "test",
         "roles": roles,
     }
+
+
+def _server_manifest_with_parent(
+    content: bytes,
+    trash: bytes,
+    *,
+    parent: str | None,
+    device_id: str,
+) -> dict:
+    manifest = _server_manifest(content, trash)
+    identity = json.dumps(
+        {"roles": manifest["roles"], "device_id": device_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    manifest.update(
+        {
+            "backup_set_id": hashlib.sha256(identity).hexdigest(),
+            "parent_backup_set_id": parent,
+            "device": {"device_id": device_id, "device_name": f"PC-{device_id[:4]}"},
+            "summary": {
+                "generations": 1,
+                "tags": 0,
+                "canvases": 0,
+                "assets": 0,
+                "projects": 0,
+                "trash": 0,
+                "meaningful_records": 1,
+            },
+        }
+    )
+    return manifest
+
+
+def test_empty_personal_database_is_not_queued(worker_store: Path):
+    backup_dir = worker_store / "empty-local"
+    backup_dir.mkdir()
+    content = backup_dir / "content_hub_20260817_120000_000001.db"
+    with sqlite3.connect(content) as conn:
+        conn.execute("CREATE TABLE generation(id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE app_setting(key TEXT PRIMARY KEY,value TEXT)")
+    assert worker_backup.queue_backup_set(content) is None
+    assert worker_backup.status_snapshot()["state"] == "waiting_for_data"
+    with worker_backup._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM worker_backup_outbox").fetchone()[0] == 0
+
+
+def test_manifest_has_safe_device_summary_and_unchanged_data_is_not_requeued(
+    worker_store: Path,
+):
+    backup_set_id, _stage, manifest = _queued(worker_store)
+    assert manifest["summary"]["generations"] == 1
+    assert manifest["summary"]["meaningful_records"] >= 1
+    assert len(manifest["device"]["device_id"]) == 32
+    assert manifest["device"]["device_name"]
+
+    second = worker_store / "local" / "content_hub_20260817_130000_000001.db"
+    second_trash = worker_store / "local" / "content_trash_20260817_130000_000001.db"
+    second.write_bytes((worker_store / "local" / "content_hub_20260817_120000_000001.db").read_bytes())
+    second_trash.write_bytes((worker_store / "local" / "content_trash_20260817_120000_000001.db").read_bytes())
+    assert worker_backup.queue_backup_set(second) == backup_set_id
+    with worker_backup._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM worker_backup_outbox").fetchone()[0] == 1
+
+
+def test_restore_same_device_content_creates_new_immutable_child(worker_store: Path):
+    first_id, _stage, first_manifest = _queued(worker_store)
+    worker_backup.adopt_restored_backup(first_id, account_email="artist@example.com")
+
+    source = worker_store / "local" / "content_hub_20260817_120000_000001.db"
+    child_id = worker_backup.queue_backup_set(source)
+
+    assert child_id and child_id != first_id
+    child_stage = worker_backup.OUTBOX_DIR / active_account.slug("artist@example.com") / child_id
+    child_manifest = json.loads((child_stage / "manifest.json").read_text("utf-8"))
+    assert child_manifest["parent_backup_set_id"] == first_id
+    assert child_manifest["roles"] == first_manifest["roles"]
+
+
+def test_server_rejects_same_id_with_different_manifest(tmp_path: Path):
+    content_path = tmp_path / "content-source.db"
+    trash_path = tmp_path / "trash-source.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest_with_parent(
+        content, trash, parent=None, device_id="4" * 32
+    )
+    root = tmp_path / "account"
+    db_backup._store_backup_set(
+        root,
+        manifest,
+        {"content": io.BytesIO(content), "trash": io.BytesIO(trash)},
+    )
+    collision = dict(manifest)
+    collision["parent_backup_set_id"] = "f" * 64
+
+    with pytest.raises(db_backup.BackupSetValidationError, match="id collision"):
+        db_backup._store_backup_set(
+            root,
+            collision,
+            {"content": io.BytesIO(content), "trash": io.BytesIO(trash)},
+        )
+
+    stored = json.loads(
+        (root / "sets" / manifest["backup_set_id"] / "manifest.json").read_text("utf-8")
+    )
+    assert stored == manifest
+
+
+def test_server_keeps_stale_device_as_conflict_until_user_activates_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    trash_path = tmp_path / "trash.db"
+    trash = _trash_db(trash_path)
+    root = tmp_path / "account"
+
+    first_path = tmp_path / "first.db"
+    first = _content_db(first_path, secret=False)
+    first_manifest = _server_manifest_with_parent(
+        first, trash, parent=None, device_id="1" * 32
+    )
+    first_ack = db_backup._store_backup_set(
+        root, first_manifest, {"content": io.BytesIO(first), "trash": io.BytesIO(trash)}
+    )
+    assert first_ack["is_current"] is True
+
+    second_path = tmp_path / "second.db"
+    second = _content_db(second_path, secret=False)
+    with sqlite3.connect(second_path) as conn:
+        conn.execute("INSERT INTO generation(id) VALUES('generation-2')")
+    second = second_path.read_bytes()
+    second_manifest = _server_manifest_with_parent(
+        second, trash, parent=first_manifest["backup_set_id"], device_id="1" * 32
+    )
+    second_ack = db_backup._store_backup_set(
+        root, second_manifest, {"content": io.BytesIO(second), "trash": io.BytesIO(trash)}
+    )
+    assert second_ack["is_current"] is True
+
+    stale_path = tmp_path / "stale.db"
+    stale = _content_db(stale_path, secret=False)
+    with sqlite3.connect(stale_path) as conn:
+        conn.execute("INSERT INTO generation(id) VALUES('stale-generation')")
+    stale = stale_path.read_bytes()
+    stale_manifest = _server_manifest_with_parent(
+        stale, trash, parent=first_manifest["backup_set_id"], device_id="2" * 32
+    )
+    stale_ack = db_backup._store_backup_set(
+        root, stale_manifest, {"content": io.BytesIO(stale), "trash": io.BytesIO(trash)}
+    )
+    assert stale_ack["conflict"] is True
+    assert stale_ack["is_current"] is False
+    assert db_backup._read_head(root / "sets") == second_manifest["backup_set_id"]
+    monkeypatch.setattr(db_backup, "_acct", lambda _request: {"email": "artist@example.com"})
+    monkeypatch.setattr(db_backup, "_dir", lambda _email: root)
+    versions = db_backup.list_backups(object())["backups"]
+    by_id = {item.get("backup_set_id"): item for item in versions if item.get("kind") == "set"}
+    assert by_id[second_manifest["backup_set_id"]]["branch_status"] == "current"
+    assert by_id[first_manifest["backup_set_id"]]["branch_status"] == "history"
+    assert by_id[stale_manifest["backup_set_id"]]["branch_status"] == "conflict"
+    assert by_id[stale_manifest["backup_set_id"]]["device"]["device_name"] == "PC-2222"
+
+    selected, _manifest, count = db_backup._select_valid_set(
+        root, stale_manifest["backup_set_id"]
+    )
+    assert selected.name == stale_manifest["backup_set_id"]
+    assert count == 3
+    db_backup._write_head(root / "sets", stale_manifest["backup_set_id"])
+    assert db_backup._read_head(root / "sets") == stale_manifest["backup_set_id"]
+
+
+def test_selected_restore_uses_exact_version_and_adopts_it(
+    worker_store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    content_path = tmp_path / "selected-content.db"
+    trash_path = tmp_path / "selected-trash.db"
+    content = _content_db(content_path, secret=False)
+    trash = _trash_db(trash_path)
+    manifest = _server_manifest_with_parent(
+        content, trash, parent=None, device_id="3" * 32
+    )
+    archive = tmp_path / "selected.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest))
+        bundle.writestr("content.db", content)
+        bundle.writestr("trash.db", trash)
+
+    monkeypatch.setattr(db_transfer, "require_admin", lambda _request: None)
+    monkeypatch.setattr(db_transfer, "_require_local_when_open", lambda _request: None)
+    monkeypatch.setattr(db_transfer._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(db_transfer._proxy, "base_url", lambda: "http://server")
+    monkeypatch.setattr(db_transfer._proxy, "token", lambda: "token")
+    monkeypatch.setattr(
+        db_transfer,
+        "_download_to",
+        lambda url, _token, destination: (
+            destination.write_bytes(archive.read_bytes()) and 200
+        ),
+    )
+    monkeypatch.setattr(
+        db_transfer,
+        "_install_db",
+        lambda _content, **_kwargs: {"ok": True, "relogin_required": True},
+    )
+    adopted: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        db_transfer,
+        "adopt_restored_backup",
+        lambda backup_set_id, *, account_email: adopted.append((backup_set_id, account_email)),
+    )
+    activated: list[str] = []
+    monkeypatch.setattr(
+        db_transfer._proxy,
+        "raw_request",
+        lambda _method, url, **_kwargs: (activated.append(url) or 200, {"ok": True}),
+    )
+
+    result = db_transfer.server_restore_version(manifest["backup_set_id"], object())
+
+    assert result["ok"] is True
+    assert result["continuity_updated"] is True
+    assert result["activation_synced"] is True
+    assert adopted == [(manifest["backup_set_id"], "artist@example.com")]
+    assert activated == [
+        f"http://server/api/db-backup/sets/{manifest['backup_set_id']}/activate"
+    ]
+
+
+def test_server_backup_list_does_not_disguise_server_failure_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(db_transfer, "_require_local_when_open", lambda _request: None)
+    monkeypatch.setattr(db_transfer._proxy, "proxying", lambda: True)
+    monkeypatch.setattr(db_transfer._proxy, "base_url", lambda: "http://server")
+    monkeypatch.setattr(db_transfer._proxy, "token", lambda: "token")
+    monkeypatch.setattr(
+        db_transfer._proxy,
+        "raw_request",
+        lambda *_args, **_kwargs: (503, {"detail": "unavailable"}),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        db_transfer.server_backups(object())
+
+    assert raised.value.status_code == 502
 
 
 def test_same_set_twenty_concurrent_stores_publish_one_directory(tmp_path: Path):

@@ -276,7 +276,7 @@ function GenerationCardImpl({
       {broken && gen.status === "done" && (
         <div
           className="thumb-broken"
-          title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 '힉스필드 삭제물 검토'로 정리하세요."
+          title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 'HF 삭제물 체크'로 정리하세요."
         >
           <span className="thumb-broken-ic">⚠</span>
           <span className="thumb-broken-label">원본 없음</span>

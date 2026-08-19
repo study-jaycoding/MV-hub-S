@@ -2,6 +2,7 @@
 // 캔버스 Comfy 노드가 이 설정으로 워크플로우를 실행한다. 저장은 app_setting(로컬 DB) — 재시작 불필요.
 import { useEffect, useState } from "react";
 import { comfyApi, type ComfySettings } from "../../lib/comfyApi";
+import { SettingsDescription } from "./SettingsDescription";
 
 export function hasUnsavedComfySettings(
   draft: ComfySettings,
@@ -37,7 +38,7 @@ export function ComfyConnectionSection() {
   if (!s) {
     return (
       <section className="settings-section">
-        <h4>ComfyUI 연결</h4>
+        <h4>ComfyUI</h4>
         <p className="settings-hint">{msg || "불러오는 중…"}</p>
       </section>
     );
@@ -97,7 +98,7 @@ export function ComfyConnectionSection() {
 
   return (
     <section className="settings-section">
-      <h4>ComfyUI 연결</h4>
+      <h4>ComfyUI</h4>
       <div className="comfy-set-row">
         <label>연결 대상</label>
         <select
@@ -167,14 +168,11 @@ export function ComfyConnectionSection() {
           {checking ? "연결 확인 중…" : hasUnsavedChanges ? "저장 후 연결 확인" : "연결 확인"}
         </button>
       </div>
-      {msg && <p className="settings-hint">{msg}</p>}
-      <p className="settings-hint">
-        캔버스에서 <b>Comfy</b> 노드(Tab → Comfy / 단축키 C)를 만들어 ComfyUI API 워크플로우를 얹어 실행합니다.
-      </p>
-      <p className="settings-hint">
-        Gemini·Seedance 같은 <b>comfy.org API 노드</b>가 “Unauthorized(로그인 필요)”를 내면 위 <b>API 키</b>를
-        넣어야 합니다. ComfyUI 웹에 로그인돼 있어도 외부 실행에는 키가 별도로 필요합니다.
-      </p>
+      <SettingsDescription summary="ComfyUI 연결을 설정하고 상태를 확인합니다.">
+        {msg && <p>{msg}</p>}
+        <p>캔버스에서 Comfy 노드(Tab → Comfy 또는 단축키 C)를 만들어 워크플로우를 실행합니다.</p>
+        <p>API 노드에서 로그인 오류가 나면 comfy.org API 키를 입력하세요.</p>
+      </SettingsDescription>
     </section>
   );
 }

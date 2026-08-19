@@ -53,6 +53,12 @@ _SET_ID_RE = re.compile(r"[0-9a-f]{64}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SET_KEEP = 10
 _MANIFEST_MAX_CHARS = 64 * 1024
+_HEAD_NAME = "head.json"
+_SERVER_META_NAME = "server.json"
+_DEVICE_ID_RE = re.compile(r"[0-9a-f]{32}")
+_SUMMARY_KEYS = frozenset(
+    {"generations", "tags", "canvases", "assets", "projects", "trash", "meaningful_records"}
+)
 
 
 class BackupTooLargeError(ValueError):
@@ -206,6 +212,31 @@ def _normalise_set_manifest(raw: str) -> dict:
         schema_version = int(value.get("schema_version") or 0)
     except (TypeError, ValueError):
         schema_version = 0
+    parent_backup_set_id = str(value.get("parent_backup_set_id") or "")
+    if parent_backup_set_id and not _SET_ID_RE.fullmatch(parent_backup_set_id):
+        raise BackupSetValidationError("invalid parent backup set id")
+    raw_device = value.get("device")
+    device: dict[str, str] = {}
+    if isinstance(raw_device, dict):
+        device_id = str(raw_device.get("device_id") or "")
+        device_name = str(raw_device.get("device_name") or "").strip()[:80]
+        if device_id and not _DEVICE_ID_RE.fullmatch(device_id):
+            raise BackupSetValidationError("invalid device id")
+        if device_id:
+            device["device_id"] = device_id
+        if device_name:
+            device["device_name"] = device_name
+    raw_summary = value.get("summary")
+    summary: dict[str, int] = {}
+    if isinstance(raw_summary, dict):
+        for key in _SUMMARY_KEYS:
+            try:
+                count = int(raw_summary.get(key) or 0)
+            except (TypeError, ValueError) as exc:
+                raise BackupSetValidationError("invalid backup summary") from exc
+            if count < 0 or count > 1_000_000_000:
+                raise BackupSetValidationError("invalid backup summary")
+            summary[key] = count
     return {
         "format": _SET_FORMAT,
         "format_version": _SET_FORMAT_VERSION,
@@ -214,6 +245,9 @@ def _normalise_set_manifest(raw: str) -> dict:
         "local_stamp": local_stamp,
         "schema_version": max(0, schema_version),
         "app_version": app_version,
+        "device": device,
+        "parent_backup_set_id": parent_backup_set_id or None,
+        "summary": summary,
         "roles": normal_roles,
     }
 
@@ -228,6 +262,40 @@ def _read_stored_manifest(folder: Path) -> dict | None:
     except (OSError, ValueError, TypeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _read_json_object(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _read_head(root: Path) -> str | None:
+    backup_set_id = str(_read_json_object(root / _HEAD_NAME).get("backup_set_id") or "")
+    if not _SET_ID_RE.fullmatch(backup_set_id):
+        return None
+    if not (root / backup_set_id / "manifest.json").is_file():
+        return None
+    return backup_set_id
+
+
+def _write_head(root: Path, backup_set_id: str) -> None:
+    if not _SET_ID_RE.fullmatch(backup_set_id):
+        raise ValueError("invalid backup set id")
+    atomic_write_text(
+        root / _HEAD_NAME,
+        json.dumps(
+            {"backup_set_id": backup_set_id, "updated_at": time.time()},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+def _server_meta(folder: Path) -> dict:
+    return _read_json_object(folder / _SERVER_META_NAME)
 
 
 def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count: int) -> dict | None:
@@ -245,12 +313,15 @@ def _ack_for_stored_set(folder: Path, manifest: dict, *, duplicate: bool, count:
         if size != expected["size"] or digest != expected["sha256"]:
             return None
         files[role] = {"size": size, "sha256": digest}
+    server_meta = _server_meta(folder)
     return {
         "accepted": True,
         "backup_set_id": manifest["backup_set_id"],
         "files": files,
         "duplicate": duplicate,
         "count": count,
+        "conflict": bool(server_meta.get("conflict")),
+        "is_current": _read_head(folder.parent) == manifest["backup_set_id"],
     }
 
 
@@ -272,7 +343,10 @@ def _valid_set_dirs(root: Path) -> list[Path]:
 
 def _rotate_sets(root: Path) -> int:
     folders = _valid_set_dirs(root)
-    for old in folders[:-_SET_KEEP]:
+    head = _read_head(root)
+    removable = [folder for folder in folders if folder.name != head]
+    excess = max(0, len(folders) - _SET_KEEP)
+    for old in removable[:excess]:
         shutil.rmtree(old)
     return len(_valid_set_dirs(root))
 
@@ -286,12 +360,24 @@ def _store_backup_set(
     with _dir_lock(d):
         root = _set_root(d)
         root.mkdir(parents=True, exist_ok=True)
+        head_before = _read_head(root)
+        if head_before is None:
+            previous_folders = _valid_set_dirs(root)
+            if previous_folders:
+                head_before = previous_folders[-1].name
+                _write_head(root, head_before)
         final = root / manifest["backup_set_id"]
         existing_count = len(_valid_set_dirs(root))
         if final.is_dir():
             ack = _ack_for_stored_set(final, manifest, duplicate=True, count=existing_count)
             if ack is not None:
                 return ack
+            # backup_set_id는 manifest 전체 계보를 포함한 불변 객체의 식별자다. 같은 ID로
+            # 다른 manifest가 오면 기존 정상 버전을 교체하지 않는다. 저장 파일만 손상되고
+            # manifest가 같은 경우에는 아래 원자 교체 경로로 자가 복구를 허용한다.
+            stored_manifest = _read_stored_manifest(final)
+            if stored_manifest is not None and stored_manifest != manifest:
+                raise BackupSetValidationError("backup set id collision")
 
         staged = root / f".upload-{uuid.uuid4().hex}"
         staged.mkdir(exist_ok=False)
@@ -328,6 +414,22 @@ def _store_backup_set(
                 raise
             if previous is not None:
                 shutil.rmtree(previous, ignore_errors=True)
+            parent = manifest.get("parent_backup_set_id")
+            conflict = bool(head_before and parent != head_before)
+            is_current = head_before is None or not conflict
+            atomic_write_text(
+                final / _SERVER_META_NAME,
+                json.dumps(
+                    {
+                        "received_at": time.time(),
+                        "conflict": conflict,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            if is_current:
+                _write_head(root, manifest["backup_set_id"])
             count = _rotate_sets(root)
             ack = _ack_for_stored_set(final, manifest, duplicate=False, count=count)
             if ack is None:
@@ -438,7 +540,21 @@ def list_backups(request: Request):
         except OSError:
             continue
         out.append({"name": p.name, "size": st.st_size, "mtime": int(st.st_mtime)})
-    for folder in reversed(_valid_set_dirs(_set_root(d))):
+    root = _set_root(d)
+    folders = _valid_set_dirs(root)
+    manifests = {
+        folder.name: manifest
+        for folder in folders
+        if (manifest := _read_stored_manifest(folder)) is not None
+    }
+    head = _read_head(root)
+    history: set[str] = set()
+    cursor = head
+    while cursor and cursor not in history and cursor in manifests:
+        history.add(cursor)
+        parent = str(manifests[cursor].get("parent_backup_set_id") or "")
+        cursor = parent if _SET_ID_RE.fullmatch(parent) else None
+    for folder in reversed(folders):
         manifest = _read_stored_manifest(folder)
         content = folder / "content.db"
         if manifest is None or not content.is_file():
@@ -454,14 +570,74 @@ def list_backups(request: Request):
         out.append(
             {
                 "name": folder.name,
+                "backup_set_id": folder.name,
                 "size": total,
-                "mtime": int(st.st_mtime),
+                "mtime": int(_server_meta(folder).get("received_at") or st.st_mtime),
                 "kind": "set",
                 "roles": sorted(manifest.get("roles", {})),
+                "created_at": manifest.get("created_at"),
+                "app_version": manifest.get("app_version"),
+                "schema_version": manifest.get("schema_version"),
+                "device": manifest.get("device") or {},
+                "summary": manifest.get("summary") or {},
+                "parent_backup_set_id": manifest.get("parent_backup_set_id"),
+                "is_current": folder.name == head,
+                "branch_status": (
+                    "current" if folder.name == head else "history" if folder.name in history else "conflict"
+                ),
             }
         )
     out.sort(key=lambda item: int(item.get("mtime") or 0), reverse=True)
     return {"backups": out}
+
+
+def _select_valid_set(d: Path, backup_set_id: str | None = None) -> tuple[Path, dict, int]:
+    root = _set_root(d)
+    folders = _valid_set_dirs(root)
+    candidates: list[Path]
+    if backup_set_id is not None:
+        if not _SET_ID_RE.fullmatch(backup_set_id):
+            raise HTTPException(status_code=400, detail="백업 식별자가 올바르지 않습니다")
+        candidates = [root / backup_set_id]
+    else:
+        head = _read_head(root)
+        candidates = ([root / head] if head else []) + list(reversed(folders))
+    seen: set[str] = set()
+    for folder in candidates:
+        if folder.name in seen:
+            continue
+        seen.add(folder.name)
+        manifest = _read_stored_manifest(folder)
+        if manifest and _ack_for_stored_set(
+            folder, manifest, duplicate=True, count=len(folders)
+        ):
+            return folder, manifest, len(folders)
+    raise HTTPException(status_code=404, detail="이 계정의 백업 세트가 없습니다")
+
+
+def _download_set_response(d: Path, backup_set_id: str | None = None) -> FileResponse:
+    archive: Path | None = None
+    with _dir_lock(d):
+        folder, manifest, _count = _select_valid_set(d, backup_set_id)
+        handle, raw_path = tempfile.mkstemp(
+            prefix="mvhub-restore-set-", suffix=".zip", dir=str(DATA_DIR)
+        )
+        os.close(handle)
+        archive = Path(raw_path)
+        try:
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+                bundle.write(folder / "manifest.json", "manifest.json")
+                for role in sorted(manifest["roles"]):
+                    bundle.write(folder / f"{role}.db", f"{role}.db")
+        except BaseException:
+            archive.unlink(missing_ok=True)
+            raise
+    return FileResponse(
+        archive,
+        filename=f"MV-hub-restore-{folder.name[:12]}.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
+    )
 
 
 @router.get("/latest")
@@ -493,39 +669,24 @@ def download_latest(request: Request):
 
 @router.get("/latest-set")
 def download_latest_set(request: Request):
-    """가장 최근의 검증된 content·trash 세트를 복원용 ZIP으로 내려준다."""
+    """서버가 가리키는 현재 검증 content·trash 세트를 복원용 ZIP으로 내려준다."""
+    acc = _acct(request)
+    return _download_set_response(_dir(acc["email"]))
+
+
+@router.get("/sets/{backup_set_id}")
+def download_backup_set(backup_set_id: str, request: Request):
+    """사용자가 고른 특정 계정 백업 버전을 내려준다."""
+    acc = _acct(request)
+    return _download_set_response(_dir(acc["email"]), backup_set_id)
+
+
+@router.post("/sets/{backup_set_id}/activate")
+def activate_backup_set(backup_set_id: str, request: Request):
+    """명시적으로 복원한 버전을 이 계정의 새 작업 기준점으로 지정한다."""
     acc = _acct(request)
     d = _dir(acc["email"])
-    archive: Path | None = None
     with _dir_lock(d):
-        selected: tuple[Path, dict] | None = None
-        folders = _valid_set_dirs(_set_root(d))
-        for folder in reversed(folders):
-            manifest = _read_stored_manifest(folder)
-            if manifest and _ack_for_stored_set(
-                folder, manifest, duplicate=True, count=len(folders)
-            ):
-                selected = (folder, manifest)
-                break
-        if selected is None:
-            raise HTTPException(status_code=404, detail="이 계정의 백업 세트가 없습니다")
-        folder, manifest = selected
-        handle, raw_path = tempfile.mkstemp(
-            prefix="mvhub-restore-set-", suffix=".zip", dir=str(DATA_DIR)
-        )
-        os.close(handle)
-        archive = Path(raw_path)
-        try:
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
-                bundle.write(folder / "manifest.json", "manifest.json")
-                for role in sorted(manifest["roles"]):
-                    bundle.write(folder / f"{role}.db", f"{role}.db")
-        except BaseException:
-            archive.unlink(missing_ok=True)
-            raise
-    return FileResponse(
-        archive,
-        filename="MV-hub-restore-set.zip",
-        media_type="application/zip",
-        background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
-    )
+        folder, _manifest, count = _select_valid_set(d, backup_set_id)
+        _write_head(folder.parent, folder.name)
+    return {"ok": True, "backup_set_id": backup_set_id, "count": count}

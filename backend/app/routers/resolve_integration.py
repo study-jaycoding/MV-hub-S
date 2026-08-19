@@ -17,6 +17,7 @@ from ..services.resolve_bridge import (
     import_manifest_to_current_project,
 )
 from ..services.resolve_status_runner import resolve_connection_status_bounded
+from ..services.resolve_diagnostics import resolve_environment_diagnostics
 from ..services.request_guards import require_local_machine_request
 from ..services.resolve_script_installer import (
     ResolveScriptInstallError,
@@ -88,6 +89,13 @@ async def get_resolve_connection_status(request: Request):
     """현재 PC의 Resolve 연결과 열린 프로젝트를 확인한다."""
     _require_local_resolve(request)
     return await asyncio.to_thread(resolve_connection_status_bounded)
+
+
+@router.get("/diagnostics")
+async def get_resolve_environment_diagnostics(request: Request):
+    """설치·Python·API·실제 연결을 분리해 현재 PC의 Resolve 환경을 진단한다."""
+    _require_local_resolve(request)
+    return await asyncio.to_thread(resolve_environment_diagnostics)
 
 
 async def _generation_for_transfer(gen_id: str, request: Request) -> dict:

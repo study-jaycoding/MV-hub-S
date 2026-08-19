@@ -127,6 +127,24 @@ def _prepare_resolve_api() -> tuple[list[Path], Path | None]:
     return existing_module_dirs, library
 
 
+def resolve_api_environment() -> dict[str, Any]:
+    """공식 Resolve API 후보와 실제 발견 경로를 연결 시도 없이 반환한다."""
+    module_candidates = _script_module_candidates()
+    library_candidates = _script_library_candidates()
+    existing_modules = [
+        path / "DaVinciResolveScript.py"
+        for path in module_candidates
+        if (path / "DaVinciResolveScript.py").is_file()
+    ]
+    library = next((path for path in library_candidates if path.is_file()), None)
+    return {
+        "module_candidates": [str(path) for path in module_candidates],
+        "existing_module_paths": [str(path) for path in existing_modules],
+        "library_candidates": [str(path) for path in library_candidates],
+        "library_path": str(library) if library else "",
+    }
+
+
 def _resolve_process_running() -> bool | None:
     """Windows에서 Resolve.exe 실행 여부를 짧게 확인한다.
 
@@ -148,6 +166,11 @@ def _resolve_process_running() -> bool | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return '"resolve.exe"' in completed.stdout.casefold()
+
+
+def resolve_process_running() -> bool | None:
+    """다른 진단 계층이 Resolve 실행 여부를 안전하게 재사용하도록 공개한다."""
+    return _resolve_process_running()
 
 
 def _connect_resolve() -> Any:

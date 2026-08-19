@@ -1,13 +1,18 @@
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
-import type { BackupContinuityStatus } from "../../lib/assetsApi";
-import type { ResolveConnectionStatus, ResolveScriptStatus } from "../../lib/resolveTransfer";
+import type { BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
+import type {
+  ResolveConnectionStatus,
+  ResolveEnvironmentDiagnostics,
+  ResolveScriptStatus,
+} from "../../lib/resolveTransfer";
 import {
   isReleaseUpdateRunning,
   releaseUpdateMessage,
   type ReleaseUpdateStatus,
 } from "../../lib/releaseUpdate";
+import { SettingsDescription } from "./SettingsDescription";
 
 export function AppearanceSettingsSection({
   accent,
@@ -51,7 +56,7 @@ export function AppearanceSettingsSection({
             <span className="accent-check">{isCustom ? "✓" : "＋"}</span>
           </label>
         </div>
-        <p className="settings-hint">{t("선택 즉시 적용되고 다음 접속에도 유지됩니다.")}</p>
+        <SettingsDescription summary={t("강조색을 바로 적용하고 다음 접속에도 유지합니다.")} />
       </section>
 
       <section className="settings-section">
@@ -64,9 +69,9 @@ export function AppearanceSettingsSection({
             English
           </button>
         </div>
-        <p className="settings-hint">
-          {t("선택은 저장됩니다. 영어 UI 번역은 순차 적용 예정입니다.")}
-        </p>
+        <SettingsDescription summary={t("화면 언어를 선택하고 자동 저장합니다.")}>
+          <p>{t("영어 UI 번역은 순차적으로 적용되고 있습니다.")}</p>
+        </SettingsDescription>
       </section>
 
       <section className="settings-section">
@@ -79,9 +84,9 @@ export function AppearanceSettingsSection({
             OFF
           </button>
         </div>
-        <p className="settings-hint">
-          {t("ON이면 최종(골드) 카드의 흐르는 빛 같은 장식 애니메이션이 재생되고, OFF면 멈춥니다.")}
-        </p>
+        <SettingsDescription summary={t("카드 장식 애니메이션을 켜거나 끕니다.")}>
+          <p>{t("ON은 최종 카드의 흐르는 빛을 재생하고, OFF는 장식 움직임을 멈춥니다.")}</p>
+        </SettingsDescription>
       </section>
     </>
   );
@@ -106,7 +111,7 @@ export function DownloadLocationSection({
         <>
           <div className="settings-row">
             <button className="settings-action" onClick={onPickDir}>
-              📁 {dlDir ? t("폴더 변경") : t("폴더 선택")}
+              📁 {dlDir ? t("다운로드 폴더 위치 변경") : t("다운로드 폴더 위치 선택")}
             </button>
             {dlDir && (
               <button className="settings-action ghost" onClick={onClearDir}>
@@ -114,66 +119,26 @@ export function DownloadLocationSection({
               </button>
             )}
           </div>
-          <p className="settings-hint">
-            {dlDir
-              ? `${t("저장 위치")}: ${dlDir} — ${t("이제 다운로드가 묻지 않고 이 폴더에 바로 저장됩니다.")}`
-              : t("폴더를 지정하면 다운로드 때마다 묻지 않고 그 폴더에 바로 저장됩니다(미지정 시 브라우저 기본).")}
-          </p>
+          <SettingsDescription
+            summary={
+              dlDir
+                ? `${t("선택된 폴더")}: ${dlDir}`
+                : t("다운로드할 기본 폴더를 선택합니다.")
+            }
+          >
+            <p>
+              {dlDir
+                ? t("다운로드 파일을 선택한 폴더에 바로 저장합니다.")
+                : t("폴더를 정하지 않으면 브라우저의 기본 다운로드 위치를 사용합니다.")}
+            </p>
+          </SettingsDescription>
         </>
       ) : (
-        <p className="settings-hint">
-          {t("이 접속에서는 폴더 자동저장을 쓸 수 없습니다(localhost 또는 HTTPS 필요). 브라우저 다운로드 설정을 사용하세요.")}
-        </p>
+        <SettingsDescription summary={t("현재 접속에서는 다운로드 폴더를 직접 지정할 수 없습니다.")}>
+          <p>{t("localhost 또는 HTTPS로 접속하거나 브라우저 다운로드 설정을 사용하세요.")}</p>
+        </SettingsDescription>
       )}
       {dlErr && <p className="settings-hint" style={{ color: "#f5a623" }}>{dlErr}</p>}
-    </section>
-  );
-}
-
-export function BackfillSettingsSection({
-  uploading,
-  msg,
-  onDownloadBackfill,
-  onBackfillFile,
-}: {
-  uploading: boolean;
-  msg: string;
-  onDownloadBackfill: () => void;
-  onBackfillFile: (file: File | null | undefined) => void;
-}) {
-  const t = useT();
-  return (
-    <section className="settings-section">
-      <h4>{t("과거 생성물 가져오기")}</h4>
-      <p className="settings-hint">
-        허브에서 만든 결과물과 최신분은 <b>자동으로</b> 올라갑니다. 여기서는 CLI가 못 가져오는{" "}
-        <b>100건 밖 과거 전체</b>만 보충합니다.
-      </p>
-      <div className="settings-row">
-        <button className="settings-action" onClick={onDownloadBackfill}>
-          ① ⬇ History 지시문 .md 받기
-        </button>
-        <label className={"settings-action" + (uploading ? " is-busy" : "")}>
-          {uploading ? "적재 중…" : "② ⬆ 만든 파일 올려서 적용"}
-          <input
-            type="file"
-            accept=".json,.jsonl,.txt,application/json"
-            style={{ display: "none" }}
-            disabled={uploading}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              onBackfillFile(file);
-            }}
-          />
-        </label>
-      </div>
-      <p className="settings-hint">
-        <b>①</b> 받은 <b>.md</b>를 <b>힉스필드 MCP가 붙은 Claude</b>에 주면 전체 이력을{" "}
-        <b>파일</b>로 만들어 줍니다(허브 접속·명령어 불필요).{" "}
-        <b>②</b> Claude가 만든 <b>JSON/JSONL 파일</b>을 올리면 멱등으로 적재됩니다(중복 안 생김).
-      </p>
-      {msg && <p className="manage-msg">{msg}</p>}
     </section>
   );
 }
@@ -182,22 +147,31 @@ export function MetadataContinuitySection({
   dbBusy,
   dbMsg,
   backupContinuity,
-  onServerBackup,
-  onRetryServerBackup,
+  serverBackups,
+  serverBackupsLoading,
+  metadataSyncTarget,
+  metadataSyncTargetState,
+  onSyncMetadata,
+  onLoadServerBackups,
   onServerRestore,
   onImportDb,
 }: {
   dbBusy: boolean;
   dbMsg: string;
   backupContinuity: BackupContinuityStatus | null;
-  onServerBackup: () => void;
-  onRetryServerBackup: () => void;
-  onServerRestore: () => void;
+  serverBackups: ServerBackupVersion[] | null;
+  serverBackupsLoading: boolean;
+  metadataSyncTarget: ServerBackupVersion | null;
+  metadataSyncTargetState: "loading" | "ready" | "empty" | "error";
+  onSyncMetadata: () => void;
+  onLoadServerBackups: () => void;
+  onServerRestore: (backup: ServerBackupVersion) => void;
   onImportDb: (file: File | null | undefined) => void;
 }) {
   const t = useT();
   const stateLabels: Record<string, string> = {
     waiting_for_backup: "첫 자동 백업 대기",
+    waiting_for_data: "작업 데이터 대기",
     pending: "전송 대기",
     uploading: "전송 중",
     success: "정상",
@@ -209,100 +183,117 @@ export function MetadataContinuitySection({
   const lastSuccess = shared?.last_success_at
     ? new Date(shared.last_success_at).toLocaleString()
     : "아직 없음";
+  const formatBytes = (size: number) =>
+    size >= 1024 * 1024
+      ? `${(size / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(size / 1024))} KB`;
+  const syncTargetText = metadataSyncTargetState === "loading"
+    ? "동기화 대상 확인 중…"
+    : metadataSyncTargetState === "error"
+      ? "동기화 대상을 확인하지 못했습니다."
+      : metadataSyncTargetState === "empty" || !metadataSyncTarget
+        ? "동기화할 서버 메타데이터가 없습니다."
+        : `동기화 대상: ${metadataSyncTarget.device?.device_name || "알 수 없는 PC"} · ${
+          metadataSyncTarget.created_at
+            ? new Date(metadataSyncTarget.created_at).toLocaleString()
+            : new Date(metadataSyncTarget.mtime * 1000).toLocaleString()
+        } · 앱 ${metadataSyncTarget.app_version || "—"}`;
   return (
     <section className="settings-section">
-      <h4>{t("내 메타데이터 (작업 연속성)")}</h4>
-      <p className="settings-hint">
-        내 라이브러리·태그·컬러·계보가 담긴 <b>로컬 DB</b>를 <b>서버에 백업</b>해두고, 다른
-        PC에서 내 계정으로 로그인해 <b>서버에서 가져오기</b>로 그대로 이어 작업합니다(계정별 보관).
-      </p>
+      <h4>{t("메타데이터")}</h4>
       <div className="settings-row">
-        <button className="settings-action" onClick={onServerBackup} disabled={dbBusy}>
-          ☁ 서버에 백업
+        <button
+          className="settings-action metadata-sync-primary"
+          onClick={onSyncMetadata}
+          disabled={dbBusy || serverBackupsLoading}
+        >
+          {dbBusy ? "동기화 중…" : serverBackupsLoading ? "확인 중…" : "🔄 메타데이터 동기화"}
         </button>
-        <button className="settings-action" onClick={onServerRestore} disabled={dbBusy}>
-          ⬇ 서버에서 가져오기
-        </button>
-        {shared && shared.state !== "success" && shared.state !== "waiting_for_backup" && (
-          <button className="settings-action" onClick={onRetryServerBackup} disabled={dbBusy}>
-            다시 시도
-          </button>
-        )}
       </div>
-      <p className="settings-hint" aria-live="polite">
-        로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
-        {backupContinuity?.local.latest_file_count
-          ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
-          : ""}
-        {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
-        {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
-        {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
-      </p>
-      <p className="settings-hint">
-        백업은 <b>내 계정으로만</b> 저장·복원됩니다(남의 백업은 안 보임). 토큰 등 민감정보는
-        올리기 전에 제거되며, 가져오기는 현재 로컬 DB를 통째 교체(자동 백업) 후 재로그인합니다.
-      </p>
-      <details className="settings-details">
-        <summary className="settings-hint" style={{ cursor: "pointer" }}>
-          서버 없이 파일로 직접 주고받기 (고급)
-        </summary>
-        <a className="settings-action" href="/api/db/export" download="MV-hub-mydb.db">
-          ⬇ 내 DB 내보내기
-        </a>
-        <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
-          {dbBusy ? "가져오는 중…" : "⬆ DB 가져오기 (통째 교체)"}
-          <input
-            type="file"
-            accept=".db,application/octet-stream"
-            style={{ display: "none" }}
-            disabled={dbBusy}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              onImportDb(file);
-            }}
-          />
-        </label>
-        <p className="settings-hint">
-          ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
-          작업자=1PC라 한 번에 한 PC에서만 쓰세요.
+      <SettingsDescription summary={syncTargetText}>
+        <p>{t("자동 백업은 서버로 올리기만 하며 로컬 작업을 자동으로 덮어쓰지 않습니다.")}</p>
+        <p>{t("동기화 전 백업 날짜와 PC를 확인하며, 적용 전 현재 DB를 안전하게 보관합니다.")}</p>
+        <p aria-live="polite">
+          로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
+          {backupContinuity?.local.latest_file_count
+            ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
+            : ""}
+          {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
+          {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
+          {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
         </p>
-      </details>
+        <button className="settings-action ghost" onClick={onLoadServerBackups} disabled={dbBusy || serverBackupsLoading}>
+          {serverBackupsLoading ? "확인 중…" : serverBackups === null ? "백업 버전 선택" : "백업 목록 닫기"}
+        </button>
+        {serverBackups !== null && (
+          <div className="metadata-backup-list" aria-label="서버 메타데이터 백업 목록">
+            {serverBackups.length === 0 ? (
+              <p className="metadata-backup-empty">적용할 서버 백업이 없습니다.</p>
+            ) : (
+              serverBackups.map((backup) => {
+                const summary = backup.summary || {};
+                const created = backup.created_at
+                  ? new Date(backup.created_at).toLocaleString()
+                  : new Date(backup.mtime * 1000).toLocaleString();
+                const label = backup.is_current
+                  ? "현재"
+                  : backup.branch_status === "conflict"
+                    ? "다른 PC 버전"
+                    : "이전";
+                return (
+                  <article className="metadata-backup-item" key={backup.backup_set_id || backup.name}>
+                    <div className="metadata-backup-main">
+                      <div>
+                        <b>{backup.device?.device_name || "알 수 없는 PC"}</b>
+                        <span className={`metadata-backup-badge is-${backup.branch_status || "history"}`}>
+                          {label}
+                        </span>
+                      </div>
+                      <span>{created} · {formatBytes(backup.size)} · 앱 {backup.app_version || "—"}</span>
+                      <span>
+                        생성물 {summary.generations ?? 0} · 태그 {summary.tags ?? 0} · 캔버스 {summary.canvases ?? 0}
+                        {` · 에셋 ${summary.assets ?? 0}`}
+                      </span>
+                    </div>
+                    <button
+                      className="settings-action"
+                      onClick={() => onServerRestore(backup)}
+                      disabled={dbBusy}
+                    >
+                      이 데이터 적용
+                    </button>
+                  </article>
+                );
+              })
+            )}
+          </div>
+        )}
+        <details className="settings-details">
+          <summary style={{ cursor: "pointer" }}>서버 없이 파일로 직접 주고받기 (고급)</summary>
+          <a className="settings-action" href="/api/db/export" download="MV-hub-mydb.db">
+            ⬆ 내 DB 내보내기
+          </a>
+          <label className={"settings-action" + (dbBusy ? " is-busy" : "")}>
+            {dbBusy ? "가져오는 중…" : "⬇ DB 가져오기 (통째 교체)"}
+            <input
+              type="file"
+              accept=".db,application/octet-stream"
+              style={{ display: "none" }}
+              disabled={dbBusy}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                onImportDb(file);
+              }}
+            />
+          </label>
+          <p>
+            ⚠️ 가져오기는 <b>현재 로컬 DB를 통째로 덮어씁니다</b>(현재 DB는 자동 백업). 보통
+            작업자=1PC라 한 번에 한 PC에서만 쓰세요.
+          </p>
+        </details>
+      </SettingsDescription>
       {dbMsg && <p className="manage-msg">{dbMsg}</p>}
-    </section>
-  );
-}
-
-export function SyncToolsSection({
-  syncMsg,
-  hfMsg,
-  onSyncMine,
-  onReviewHfDeleted,
-}: {
-  syncMsg: string;
-  hfMsg: string;
-  onSyncMine: () => void;
-  onReviewHfDeleted: () => void;
-}) {
-  const t = useT();
-  return (
-    <section className="settings-section">
-      <h4>{t("동기화 · 점검")}</h4>
-      <p className="settings-hint">
-        허브에서 만든 결과물·최신분은 <b>자동</b>으로 올라갑니다. 아래는 수동 동기화·점검용입니다.
-      </p>
-      <div className="settings-row">
-        <button className="settings-action" onClick={onSyncMine} disabled={!!syncMsg}>
-          📤 {syncMsg || "외부 생성물 올리기"}
-        </button>
-        <button className="settings-action" onClick={onReviewHfDeleted} disabled={!!hfMsg}>
-          🗑 {hfMsg || "힉스필드 삭제물 검토"}
-        </button>
-      </div>
-      <p className="settings-hint">
-        <b>외부 생성물 올리기</b> — 허브 밖(Claude·웹·CLI)에서 만든 결과물을 지금 올립니다.{" "}
-        <b>힉스필드 삭제물 검토</b> — 힉스필드에서 지워진 내 생성물을 찾아 휴지통으로 보냅니다.
-      </p>
     </section>
   );
 }
@@ -310,6 +301,7 @@ export function SyncToolsSection({
 export function ResolveScriptSettingsSection({
   status,
   connection,
+  diagnostics,
   connectionBusy,
   busy,
   msg,
@@ -318,6 +310,7 @@ export function ResolveScriptSettingsSection({
 }: {
   status: ResolveScriptStatus | null;
   connection: ResolveConnectionStatus | null;
+  diagnostics: ResolveEnvironmentDiagnostics | null;
   connectionBusy: boolean;
   busy: boolean;
   msg: string;
@@ -351,54 +344,84 @@ export function ResolveScriptSettingsSection({
       <h4>DaVinci Resolve</h4>
       <div className="settings-row">
         <button className="settings-action" onClick={onRefreshConnection} disabled={connectionBusy}>
-          ◆ {connectionBusy ? "연결 확인 중…" : "Resolve 연결 다시 확인"}
+          ◆ {connectionBusy ? "진단 중…" : "Resolve 진단"}
         </button>
         <button className="settings-action" onClick={onInstall} disabled={busy}>
-          ◆ {busy ? "설치 중…" : "Resolve 스크립트 설치"}
+          ◆ {busy ? "설치 중…" : "Script 설치"}
         </button>
       </div>
-      <p className="settings-hint">
-        연결 상태: {connectionBusy ? "확인하는 중…" : connection?.message || "확인하지 못했습니다"}
-      </p>
-      {!connectionBusy && connection?.connected && connection.resolve_version && (
-        <p className="settings-hint">
-          확인된 프로그램: {connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}
+      <SettingsDescription summary="Resolve 연결을 확인하고 도구를 설치합니다.">
+        <p>
+          연결 상태: {connectionBusy ? "확인하는 중…" : connection?.message || "확인하지 못했습니다"}
         </p>
-      )}
-      <p className="settings-hint">{msg || stateText}</p>
-      {status?.installations?.length
-        ? status.installations.map((installation) => (
-            <p
-              key={installation.scope}
-              className="settings-hint resolve-script-path"
-              title={installation.path}
-            >
-              {installation.scope === "all_users" ? "모든 사용자" : "현재 사용자"}: {" "}
-              {installation.up_to_date
-                ? "가져오기·내보내기 설치됨"
-                : installation.installed
-                  ? "업데이트 필요"
-                  : "설치 안 됨"}
-              {" · "}{installation.path}
-              {installation.importer_path && (
-                <><br />가져오기 도구 · {installation.importer_path}</>
+        {!connectionBusy && connection?.connected && connection.resolve_version && (
+          <p>확인된 프로그램: {connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}</p>
+        )}
+        {diagnostics && (
+          <div className={`resolve-diagnostics is-${diagnostics.status}`}>
+            <p className="resolve-diagnostics-summary">{diagnostics.summary}</p>
+            <div className="resolve-diagnostics-list">
+              {diagnostics.checks.map((check) => (
+                <div className="resolve-diagnostic-row" key={check.key}>
+                  <span className={`resolve-diagnostic-state is-${check.state}`} aria-hidden="true" />
+                  <span className="resolve-diagnostic-label">{check.label}</span>
+                  <span className="resolve-diagnostic-message" title={check.detail || undefined}>
+                    {check.message}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {!!diagnostics.recommendations.length && (
+              <ul className="resolve-diagnostics-actions">
+                {diagnostics.recommendations.map((recommendation) => (
+                  <li key={recommendation}>{recommendation}</li>
+                ))}
+              </ul>
+            )}
+            <details className="resolve-diagnostics-details">
+              <summary>진단 상세 경로</summary>
+              <p>Windows 계정 · {diagnostics.environment.windows_user}</p>
+              <p>
+                MV Hub Python · {diagnostics.environment.mvhub_python.version} · {diagnostics.environment.mvhub_python.bits}비트
+                <br />{diagnostics.environment.mvhub_python.path}
+              </p>
+              {!!diagnostics.environment.resolve_installations.length && (
+                <p>Resolve · {diagnostics.environment.resolve_installations[0].executable}</p>
               )}
-            </p>
-          ))
-        : status?.path && (
-            <p className="settings-hint resolve-script-path" title={status.path}>
-              {status.path}
-            </p>
-          )}
-      {!!status?.warnings?.length && (
-        <p className="settings-hint">설치 참고: {status.warnings[0]}</p>
-      )}
-      <p className="settings-hint">
-        설치 또는 업데이트 후 Resolve를 완전히 종료했다가 다시 실행하세요. 자동 연결은 Resolve 환경설정
-        → 시스템 → 일반 → External scripting using이 Local이어야 합니다. 자동 연결이 지원되지 않는
-        환경에서도 작업 공간 → 스크립트 → MV Hub → MVHub Importer를 누르면 준비된 원본을 직접
-        가져올 수 있습니다.
-      </p>
+              {!!diagnostics.environment.api.existing_module_paths.length && (
+                <p>API · {diagnostics.environment.api.existing_module_paths[0]}</p>
+              )}
+              {diagnostics.environment.api.library_path && (
+                <p>DLL · {diagnostics.environment.api.library_path}</p>
+              )}
+            </details>
+          </div>
+        )}
+        <p>{msg || stateText}</p>
+        {status?.installations?.length
+          ? status.installations.map((installation) => (
+              <p key={installation.scope} className="resolve-script-path" title={installation.path}>
+                {installation.scope === "all_users" ? "모든 사용자" : "현재 사용자"}: {" "}
+                {installation.up_to_date
+                  ? "가져오기·내보내기 설치됨"
+                  : installation.installed
+                    ? "업데이트 필요"
+                    : "설치 안 됨"}
+                {" · "}{installation.path}
+                {installation.importer_path && (
+                  <><br />가져오기 도구 · {installation.importer_path}</>
+                )}
+              </p>
+            ))
+          : status?.path && (
+              <p className="resolve-script-path" title={status.path}>{status.path}</p>
+            )}
+        {!!status?.warnings?.length && <p>설치 참고: {status.warnings[0]}</p>}
+        <p>
+          설치 후 Resolve를 완전히 종료했다가 다시 실행하세요. 자동 연결은 Resolve 환경설정의
+          External scripting using을 Local로 설정해야 합니다.
+        </p>
+      </SettingsDescription>
     </section>
   );
 }
@@ -432,7 +455,7 @@ export function ReleaseUpdateSettingsSection({
       ? `프로그램 다시 시작 중…${pctText}`
       : `업데이트 중…${pctText}`
     : !releaseInstall
-      ? "작업자 설치본 전용"
+      ? "업데이트"
       : active > 0
       ? `생성 ${active}건 완료 후 업데이트`
       : status?.can_update
@@ -444,7 +467,11 @@ export function ReleaseUpdateSettingsSection({
       <h4>프로그램 업데이트</h4>
       <div className="settings-row">
         <button
-          className={"settings-action" + (running ? " is-busy" : "")}
+          className={
+            "settings-action release-update-action" +
+            (status?.can_update ? " is-update-available" : "") +
+            (running ? " is-busy" : "")
+          }
           onClick={onUpdate}
           disabled={!status?.can_update || running || active > 0}
         >
@@ -454,21 +481,20 @@ export function ReleaseUpdateSettingsSection({
           다시 확인
         </button>
       </div>
-      <p className="settings-hint">{versionText}</p>
-      <p className="settings-hint">
-        {msg || releaseUpdateMessage(status) || "릴리스 서버를 확인하고 있습니다."}
-      </p>
-      {releaseInstall && active > 0 && (
-        <p className="settings-hint" style={{ color: "#f5a623" }}>
-          유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
+      <SettingsDescription summary="새 버전을 확인하고 안전하게 업데이트합니다.">
+        <p>{versionText}</p>
+        <p>{msg || releaseUpdateMessage(status) || "릴리스 서버를 확인하고 있습니다."}</p>
+        {releaseInstall && active > 0 && (
+          <p style={{ color: "#f5a623" }}>
+            유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
+          </p>
+        )}
+        <p>
+          {releaseInstall
+            ? "검증된 릴리스를 설치한 뒤 MV Hub를 자동으로 다시 시작합니다. 작업 파일과 로컬 DB는 유지됩니다."
+            : "공유 서버 설치본은 update_git.bat으로 업데이트합니다."}
         </p>
-      )}
-      {releaseInstall && (
-        <p className="settings-hint">
-          업데이트하면 검증된 릴리스를 설치하고 MV Hub를 자동으로 다시 시작합니다. 작업 파일과
-          로컬 DB는 건드리지 않습니다.
-        </p>
-      )}
+      </SettingsDescription>
     </section>
   );
 }

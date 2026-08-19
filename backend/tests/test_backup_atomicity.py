@@ -78,6 +78,17 @@ class BackupAtomicityTests(unittest.TestCase):
         self.assertNotEqual(p1, p2)
         self.assertEqual(len(self._backups()), 2)
 
+    def test_changed_metadata_waits_for_quiet_and_minimum_interval(self):
+        with (
+            mock.patch.object(backup, "BACKUP_CHANGE_DEBOUNCE", 300.0),
+            mock.patch.object(backup, "BACKUP_MIN_INTERVAL", 900.0),
+        ):
+            self.assertFalse(backup._change_backup_due(100.0, 1_000.0, now=399.9))
+            self.assertFalse(backup._change_backup_due(100.0, 899.9, now=400.0))
+            self.assertTrue(backup._change_backup_due(100.0, 900.0, now=400.0))
+            self.assertTrue(backup._change_backup_due(100.0, None, now=400.0))
+            self.assertFalse(backup._change_backup_due(None, 1_000.0, now=400.0))
+
     def test_content_trash_and_manage_are_published_as_one_backup_set(self):
         trash = self.root / "content_hub_trash.db"
         manage = self.root / "manage_hub.db"

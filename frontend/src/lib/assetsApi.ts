@@ -34,6 +34,48 @@ export interface BackupContinuityStatus {
   };
 }
 
+export interface ServerBackupVersion {
+  name: string;
+  backup_set_id?: string;
+  size: number;
+  mtime: number;
+  kind?: "set";
+  roles?: string[];
+  created_at?: string | null;
+  app_version?: string | null;
+  schema_version?: number;
+  device?: { device_id?: string; device_name?: string };
+  summary?: {
+    generations?: number;
+    tags?: number;
+    canvases?: number;
+    assets?: number;
+    projects?: number;
+    trash?: number;
+    meaningful_records?: number;
+  };
+  parent_backup_set_id?: string | null;
+  is_current?: boolean;
+  branch_status?: "current" | "history" | "conflict";
+}
+
+/** 자동 동기화에 사용할 서버 기준본을 고른다.
+ * 충돌본이 더 최근에 올라왔더라도 서버가 활성화한 current를 우선한다.
+ * 구버전 서버처럼 current 표식이 없을 때만 수신 시각이 가장 최신인 세트를 사용한다.
+ */
+export function selectCurrentServerBackup(
+  backups: ServerBackupVersion[],
+): ServerBackupVersion | null {
+  const sets = backups.filter((backup) => backup.kind === "set");
+  return (
+    sets.find((backup) => backup.is_current || backup.branch_status === "current")
+    ?? sets.reduce<ServerBackupVersion | null>(
+      (latest, backup) => (!latest || backup.mtime > latest.mtime ? backup : latest),
+      null,
+    )
+  );
+}
+
 // 선택 워크스페이스를 쿼리로 — 팀을 고른 동안에는 그 팀 프로젝트 폴더만 보이게 한다
 // (생성 탭과 같은 규칙). 개인·미선택이면 파라미터 없이 전체. 수동 등록 폴더는 서버에서
 // 이 필터를 타지 않으므로 언제나 보인다.
@@ -164,10 +206,16 @@ export const assetsApi = {
       "/api/db/backup-retry",
       { method: "POST" },
     ),
-  serverRestore: () =>
-    jsonFetch<{ ok: boolean; relogin_required: boolean }>("/api/db/server-restore", {
-      method: "POST",
-    }),
+  serverBackups: () =>
+    jsonFetch<{ backups: ServerBackupVersion[] }>("/api/db/server-backups"),
+  serverRestore: (backupSetId: string) =>
+    jsonFetch<{
+      ok: boolean;
+      relogin_required: boolean;
+      backup_set_id: string;
+      continuity_updated: boolean;
+      activation_synced: boolean;
+    }>(`/api/db/server-restore/${pathPart(backupSetId)}`, { method: "POST" }),
 
   // OS 파일 탐색기에서 원본 위치 열기(해당 파일 선택)
   revealAsset: (project: string, path: string) =>

@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -28,7 +29,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from . import _proxy
-from .. import db, repo
+from .. import active_account, db, repo
 from ..config import AUTH_ENABLED, DATA_DIR
 from ..deps import require_admin
 from ..repo import identity
@@ -39,6 +40,7 @@ from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail,
 from ..services import upload_limits
 from ..services.backup import backup_now, list_backups_info
 from ..services.worker_backup import (
+    adopt_restored_backup,
     periodic_worker_backup,
     queue_backup_set,
     retry_pending,
@@ -53,6 +55,7 @@ from ..services.test_snapshot import (
 )
 
 router = APIRouter(prefix="/api/db", tags=["db-transfer"])
+_BACKUP_SET_ID_RE = re.compile(r"[0-9a-f]{64}")
 
 _snapshot_token_lock = threading.Lock()
 _snapshot_token_in_progress: str | None = None
@@ -561,7 +564,10 @@ async def server_backup(request: Request):
             raise HTTPException(status_code=404, detail="로컬 DB가 아직 없습니다")
         backup_set_id = await asyncio.to_thread(queue_backup_set, path)
         if not backup_set_id:
-            raise HTTPException(status_code=400, detail="활성 계정을 확인할 수 없습니다")
+            raise HTTPException(
+                status_code=409,
+                detail="아직 서버에 백업할 개인 작업 데이터가 없습니다",
+            )
         await asyncio.to_thread(retry_pending)
         result = await periodic_worker_backup.run_now()
     except HTTPException:
@@ -574,6 +580,13 @@ async def server_backup(request: Request):
             "ok": True,
             "state": "success",
             "count": int(result.get("server_count") or 0),
+            "legacy_content_saved": False,
+        }
+    if result.get("state") == "idle":
+        return {
+            "ok": True,
+            "state": "unchanged",
+            "count": 0,
             "legacy_content_saved": False,
         }
     if result.get("state") == "server_update_required":
@@ -629,7 +642,72 @@ def server_backups(request: Request):
     status, body = _proxy.raw_request(
         "GET", f"{_proxy.base_url()}/api/db-backup", token=_proxy.token()
     )
-    return body if status == 200 and isinstance(body, dict) else {"backups": []}
+    if status == 200 and isinstance(body, dict):
+        return body
+    if status == 401:
+        raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료되었습니다")
+    raise HTTPException(
+        status_code=502,
+        detail=f"공유 서버 백업 목록을 확인하지 못했습니다(status={status})",
+    )
+
+
+@router.post("/server-restore/{backup_set_id}")
+def server_restore_version(backup_set_id: str, request: Request):
+    """사용자가 선택한 서버 버전만 검증·복원하고 이후 백업의 기준점으로 채택한다."""
+    require_admin(request)
+    _require_local_when_open(request)
+    if not _BACKUP_SET_ID_RE.fullmatch(backup_set_id):
+        raise HTTPException(status_code=400, detail="백업 식별자가 올바르지 않습니다")
+    if not _proxy.proxying():
+        raise HTTPException(status_code=400, detail="공유 서버에 로그인된 로컬 허브에서만 가능합니다")
+
+    account_email = active_account.account_key()
+    server_url = _proxy.base_url()
+    token = _proxy.token()
+    archive = Path(tempfile.gettempdir()) / f"mvhub-srvrestore-{secrets.token_hex(8)}.zip"
+    status = _download_to(
+        f"{server_url}/api/db-backup/sets/{backup_set_id}", token, archive
+    )
+    if status == 404:
+        archive.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="선택한 서버 백업을 찾을 수 없습니다")
+    if status != 200:
+        archive.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"선택한 서버 백업을 받지 못했습니다(status={status})",
+        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="mvhub-restore-set-") as temp_dir:
+            content, trash = _extract_backup_set(archive, Path(temp_dir))
+            result = _install_db(content, trash_tmp=trash, restore_trash_set=True)
+    finally:
+        archive.unlink(missing_ok=True)
+
+    continuity_updated = False
+    if account_email:
+        try:
+            adopt_restored_backup(backup_set_id, account_email=account_email)
+            continuity_updated = True
+        except (OSError, sqlite3.Error, ValueError):
+            continuity_updated = False
+    activation_synced = False
+    try:
+        activate_status, _body = _proxy.raw_request(
+            "POST",
+            f"{server_url}/api/db-backup/sets/{backup_set_id}/activate",
+            token=token,
+        )
+        activation_synced = 200 <= activate_status < 300
+    except (OSError, urllib.error.URLError, TimeoutError):
+        activation_synced = False
+    return {
+        **result,
+        "backup_set_id": backup_set_id,
+        "continuity_updated": continuity_updated,
+        "activation_synced": activation_synced,
+    }
 
 
 @router.post("/server-restore")

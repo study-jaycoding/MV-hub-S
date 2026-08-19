@@ -50,6 +50,19 @@ BACKUP_KEEP = max(1, int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7")))
 # (서버 재기동·개발 리스타트가 잦아도 백업이 난립하지 않게.)
 _STARTUP_SKIP_IF_YOUNGER = min(BACKUP_INTERVAL, 3600.0)
 
+# 개인 메타데이터 변경은 하루를 기다리지 않고 조용해진 뒤 서버 전송용 백업을 만든다.
+# 매 수정마다 SQLite 스냅샷을 뜨지 않도록 디바운스와 최소 간격을 함께 둔다.
+BACKUP_CHANGE_DEBOUNCE = max(
+    5.0, float(os.environ.get("CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE", "300"))
+)
+BACKUP_MIN_INTERVAL = max(
+    BACKUP_CHANGE_DEBOUNCE,
+    float(os.environ.get("CONTENT_HUB_BACKUP_MIN_INTERVAL", "900")),
+)
+BACKUP_POLL_INTERVAL = max(
+    5.0, float(os.environ.get("CONTENT_HUB_BACKUP_POLL_INTERVAL", "30"))
+)
+
 _PREFIX = "content_hub_"
 _TRASH_PREFIX = "content_trash_"
 _MANAGE_PREFIX = "manage_hub_"
@@ -89,6 +102,50 @@ def _newest_age_seconds() -> Optional[float]:
     if not mtimes:
         return None
     return max(0.0, time.time() - max(mtimes))
+
+
+def _db_change_signature() -> tuple[tuple[str, int, int], ...]:
+    """개인 콘텐츠·휴지통의 파일/WAL 변화를 값싼 stat으로 감지한다."""
+    content = get_db_path()
+    trash = content.parent / "content_hub_trash.db"
+    result: list[tuple[str, int, int]] = []
+    for label, path in (
+        ("content", content),
+        ("content-wal", Path(str(content) + "-wal")),
+        ("trash", trash),
+        ("trash-wal", Path(str(trash) + "-wal")),
+    ):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        result.append((label, int(stat.st_mtime_ns), int(stat.st_size)))
+    return tuple(result)
+
+
+def _db_is_newer_than_backup() -> bool:
+    latest = latest_backup_path()
+    if latest is None:
+        return bool(_db_change_signature())
+    try:
+        backup_mtime = latest.stat().st_mtime_ns
+    except OSError:
+        return True
+    return any(mtime_ns > backup_mtime for _label, mtime_ns, _size in _db_change_signature())
+
+
+def _change_backup_due(
+    changed_at: float | None,
+    backup_age: float | None,
+    *,
+    now: float,
+) -> bool:
+    """편집이 잠잠하고 최소 백업 간격도 지난 경우에만 변경 백업을 허용한다."""
+    return bool(
+        changed_at is not None
+        and now - changed_at >= BACKUP_CHANGE_DEBOUNCE
+        and (backup_age is None or backup_age >= BACKUP_MIN_INTERVAL)
+    )
 
 
 def list_backups_info() -> list[dict]:
@@ -291,19 +348,25 @@ class PeriodicBackup:
         age = _newest_age_seconds()
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once()
+        signature = _db_change_signature()
+        changed_at = time.monotonic() if _db_is_newer_than_backup() else None
         while True:
-            # ★고정 sleep(interval) 이 아니라 '최신 백업 나이' 기준으로 다음 시각을 잡는다.
-            # 서버가 interval(기본 24h)보다 짧은 주기로 재시작되면 — 워치독 개입·잦은 배포 —
-            # 시작 백업은 매번 생략되고 고정 sleep 은 끝까지 못 가서 백업이 영영 안 만들어졌다.
-            # 나이 기반이면 재시작이 아무리 잦아도 나이가 interval 을 넘는 순간 백업된다.
+            await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
+            current_signature = _db_change_signature()
+            if current_signature != signature:
+                signature = current_signature
+                changed_at = time.monotonic()
             age = _newest_age_seconds()
-            if age is None or age >= self._interval:
+            daily_due = age is None or age >= self._interval
+            quiet_dirty_due = _change_backup_due(
+                changed_at,
+                age,
+                now=time.monotonic(),
+            )
+            if daily_due or quiet_dirty_due:
                 await self._backup_once()
-                await asyncio.sleep(min(60.0, max(1.0, self._interval)))
-                continue
-            # 활성 계정이 바뀌면 _backup_dir도 바뀐다. 하루짜리 sleep 하나로 묶으면 새 계정은
-            # 최대 하루 동안 백업이 없으므로, 가벼운 stat 확인만 최대 60초마다 다시 한다.
-            await asyncio.sleep(min(60.0, max(1.0, self._interval - age)))
+                signature = _db_change_signature()
+                changed_at = None
 
     async def _backup_once(self) -> None:
         try:

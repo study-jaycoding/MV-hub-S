@@ -373,7 +373,7 @@ export function AccountMenu({
             <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
           )}
 
-          {/* '외부 생성물 올리기'·'힉스필드 삭제물 검토'는 설정 패널로 이동(중복 제거). */}
+          {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}
           <div className="acct-sep" />
           <button
             className="acct-action"
@@ -382,7 +382,7 @@ export function AccountMenu({
               setSettingsOpen(true);
             }}
           >
-            {t("⚙ 설정")}
+            {t("⚙ Setting")}
           </button>
           <button
             className="acct-action"
