@@ -1116,11 +1116,19 @@ export default function App() {
     workspace: workspaceContext,
   });
 
-  // 히스토리 패널 '구성에서 보기' → 구성탭 트리(뒤로가기로 직전 화면 복원).
-  const onOpenInBoard = (g: Generation) => enterBoard(g.id);
+  // 정보팝업 '⧉ 히스토리' → 구성탭 계보 트리(뒤로가기로 직전 화면 복원).
+  // ★씬 탭 바에서 고정 '히스토리' 탭이 빠져 이 버튼들이 유일한 진입로다 — 활성 씬을 내려놓아야
+  //   (activeScene null) 캔버스 대신 트리가 실제로 렌더된다. 돌아갈 땐 씬 탭을 클릭.
+  const onOpenInBoard = (g: Generation) => {
+    selectScene(null);
+    enterBoard(g.id);
+  };
 
-  // 미리보기(크게 보기) '구성에서 보기' → 구성탭 트리(뒤로가기로 직전 화면 복원).
-  const onOpenInBoardFromPreview = (genId: string) => enterBoard(genId);
+  // 미리보기(크게 보기) '구성에서 보기' → 구성탭 계보 트리(위와 동일).
+  const onOpenInBoardFromPreview = (genId: string) => {
+    selectScene(null);
+    enterBoard(genId);
+  };
 
   const onLogout = async () => {
     setGens([]); // 로그아웃 즉시 데이터 비우기

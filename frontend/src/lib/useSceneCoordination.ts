@@ -168,7 +168,12 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     deleteScene(null, id);
     clearSceneHistory(id); // 삭제된 씬의 undo 히스토리(모듈 store)도 정리 — 메모리 누적 방지
     refreshScenes();
-    if (activeSceneId === id) selectScene(null);
+    // 활성 씬을 지우면 남은 씬으로 이동 — null(계보 뷰)로 떨어뜨리면 '히스토리' 고정 탭이
+    // 없어진 지금은 아무 탭도 안 켜진 낯선 화면에 갇힌 느낌을 준다. 씬이 하나도 없을 때만 null.
+    if (activeSceneId === id) {
+      const next = listScenes(null).find((s) => s.id !== id);
+      selectScene(next ? next.id : null);
+    }
   };
   // 명시한 씬 patch + 목록 재읽기. 비동기 작업은 완료 시 활성 씬이 바뀔 수 있으므로 반드시 시작할 때
   // 캡처한 sceneId 로 이 관문을 호출한다. 삭제된 씬은 updateScene 이 재생성하지 않는다.

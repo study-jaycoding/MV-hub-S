@@ -1,5 +1,6 @@
-// 씬 선택/추가 바 — 구성 탭 상단. '히스토리'(기존 계보 뷰)와 씬들을 전환하고, 씬을 추가/이름변경/삭제한다.
-import { useT } from "../../lib/i18n";
+// 씬 선택/추가 바 — 구성 탭 상단. 씬을 전환/추가/이름변경/삭제한다.
+// 계보(히스토리) 뷰는 고정 탭이 아니라 정보팝업 '⧉ 히스토리'·미리보기 '구성에서 보기'로만 진입
+// (activeId=null 상태 — 그때는 어떤 씬 탭도 켜지지 않는다).
 import type { Scene } from "../../lib/scenes";
 
 interface Props {
@@ -13,20 +14,12 @@ interface Props {
 }
 
 export function SceneBar({ scenes, activeId, onSelect, onAdd, onRename, onDelete, onHoverChange }: Props) {
-  const t = useT();
   return (
     <div
       className="scene-bar"
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
     >
-      <button
-        className={"scene-tab" + (activeId === null ? " on" : "")}
-        onClick={() => onSelect(null)}
-        title={t("히스토리 보기")}
-      >
-        {t("히스토리")}
-      </button>
       {scenes.map((s) => (
         <span key={s.id} className={"scene-tab-wrap" + (activeId === s.id ? " on" : "")}>
           <button
