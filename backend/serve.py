@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import socket
@@ -23,6 +24,16 @@ import socket
 import uvicorn
 
 from app.config import HOST, PORT
+
+
+def _parse_args(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "MV Hub backend server. Host and port are configured with "
+            "CONTENT_HUB_HOST/CONTENT_HUB_PORT."
+        )
+    )
+    parser.parse_args(argv)
 
 
 def _make_socket(family: int, addr: tuple) -> socket.socket:
@@ -112,5 +123,11 @@ def main() -> None:
         raise SystemExit(1)
 
 
-if __name__ == "__main__":
+def cli(argv: list[str] | None = None) -> None:
+    """Validate command-line arguments before opening any listening socket."""
+    _parse_args(argv)
     main()
+
+
+if __name__ == "__main__":
+    cli()
