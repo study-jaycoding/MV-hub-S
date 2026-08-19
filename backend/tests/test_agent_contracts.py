@@ -196,6 +196,25 @@ def test_test_dev_starts_vite_only_after_backend_health_check():
     assert vite_subroutine < port_preflight < port_in_use_error < vite_start
 
 
+def test_test_dev_safely_replaces_only_its_own_previous_session():
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
+    helper = (ROOT_DIR / "tools" / "replace_dev_session.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    helper_call = launcher.index("replace_dev_session.ps1")
+    frontend_guard = launcher.index('findstr /c:\":%FRONTEND_PORT% \"')
+    backend_guard = launcher.index('findstr /c:\":%BACKEND_PORT% \"')
+    assert helper_call < frontend_guard < backend_guard
+    assert '-Root "%ROOT%."' in launcher
+    assert "Find-SessionStopTarget" in helper
+    assert "Validate every occupied port before stopping anything" in helper
+    assert "run_agent_session.py" in helper
+    assert "test_dev.bat" in helper
+    assert "taskkill.exe" in helper
+    assert "relatedPid" not in helper
+
+
 def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     push = (ROOT_DIR / "test_push-db.bat").read_text(encoding="utf-8")
     pull = (ROOT_DIR / "test_pull-db.bat").read_text(encoding="utf-8")

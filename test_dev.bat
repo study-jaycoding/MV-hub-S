@@ -56,6 +56,23 @@ if errorlevel 1 (
   call npm.cmd install || (echo [ERROR] npm install failed. & pause & exit /b 1)
 )
 
+REM Replace only a previous dev session launched from THIS project root. The helper
+REM validates the full process ancestry before stopping anything; unrelated programs
+REM using either port are left untouched and still fail the safety checks below.
+set "DEV_RESTART_HELPER=%ROOT%tools\replace_dev_session.ps1"
+if not exist "%DEV_RESTART_HELPER%" (
+  echo [ERROR] Dev restart helper is missing: %DEV_RESTART_HELPER%
+  pause
+  exit /b 1
+)
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%DEV_RESTART_HELPER%" -Root "%ROOT%." -FrontendPort %FRONTEND_PORT% -BackendPort %BACKEND_PORT%
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Could not safely replace the previous dev session.
+  pause
+  exit /b 1
+)
+
 set "PORT_PID="
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr /c:":%FRONTEND_PORT% "') do set "PORT_PID=%%p"
 if defined PORT_PID (
