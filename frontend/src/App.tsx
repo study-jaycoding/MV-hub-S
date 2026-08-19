@@ -161,7 +161,6 @@ export default function App() {
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
   const [sceneCompareMedia, setSceneCompareMedia] = useState<CompareMedia[] | null>(null);
-  const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const { flash, toast } = useAppToast();
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
@@ -647,7 +646,6 @@ export default function App() {
     lastBoardFocusRef,
     setPreview,
     setCommentGenId,
-    setHistory,
     setAdminOpen,
     setInfo,
     setBoardFocusId,
@@ -1638,7 +1636,6 @@ export default function App() {
         commentGenId={commentGenId}
         commentLabel={commentLabel}
         compareGens={compareGens}
-        history={history}
         info={info}
         myId={account?.creator_uid || "me"}
         preview={preview}
@@ -1651,10 +1648,8 @@ export default function App() {
         }}
         onCloseOverlay={closeOverlay}
         onCommentClose={() => setCommentGenId(null)}
-        onCompare={setCompareGens}
         onCompareClose={() => setCompareGens(null)}
         onHistoryChanged={reload}
-        onInfo={setInfo}
         onInfoClose={() => setInfo(null)}
         onInfoOpenInBoard={(g) => {
           setInfo(null);
@@ -1665,7 +1660,6 @@ export default function App() {
           onShowHistory(g);
         }}
         onRecoveryRequeue={onRecoveryRequeue}
-        onOpenInBoard={onOpenInBoard}
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />

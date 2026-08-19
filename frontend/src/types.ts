@@ -89,7 +89,7 @@ export interface Generation {
   media_preservation_updated_at?: string | null;
 }
 
-// 한 결과물의 가계(히스토리) — 카드 뱃지 클릭 시 패널 표시. relation 별 분리.
+// 한 결과물의 가계(히스토리) — 레시피 씬('어떻게 만들었나' 노드) 구성 재료. relation 별 분리.
 export interface History {
   ancestors: Generation[]; // 파생 부모 → … → 루트(버전 체인)
   materials: Generation[]; // 이 결과물이 @소스로 쓴 재료 ⬆

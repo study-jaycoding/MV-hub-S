@@ -234,7 +234,7 @@ export const api = {
   // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
   getGenerationsBatch,
 
-  // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 히스토리 패널용
+  // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 레시피 씬('어떻게 만들었나' 노드) 구성용
   history: (id: string) => historyFetch(`/api/generations/${pathPart(id)}/history`),
 
   // 연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리용
@@ -264,19 +264,6 @@ export const api = {
   // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
   comfySubscription: () =>
     jsonFetch<{ target: "cloud" | "local"; tier: string | null }>(`/api/comfy/subscription`),
-
-  // 수동 히스토리 연결 — id 의 부모를 parentId 로 지정(동기화 잡 등 자동 히스토리 없는 것 묶기)
-  addHistory: (id: string, parentId: string, relation: "derived" | "reference" = "derived") =>
-    historyFetch(`/api/generations/${pathPart(id)}/history`, {
-      method: "POST",
-      body: jsonBody({ parent_gen_id: parentId, relation }),
-    }),
-
-  // 히스토리 엣지 해제 — id 와 그 부모 parentId 의 연결 풀기
-  removeHistory: (id: string, parentId: string) =>
-    historyFetch(`/api/generations/${pathPart(id)}/history/${pathPart(parentId)}`, {
-      method: "DELETE",
-    }),
 
   // 생성 직후 파생 부모(들) 일괄 기록 — 서버가 전이 축소(조상 잉여 엣지 제거)해 가장 가까운 부모만 남김
   deriveFrom: (id: string, parentIds: string[]) =>
