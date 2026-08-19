@@ -22,6 +22,26 @@ SPEC.loader.exec_module(load_tool)
 
 
 class LoadToolTests(unittest.TestCase):
+    def test_listening_pid_finds_port_owner(self):
+        """저사양 제한은 실제 LISTEN PID 에 걸어야 한다(실측 M10 — 런처 PID ≠ 서버 PID)."""
+        fake_psutil = SimpleNamespace(
+            CONN_LISTEN="LISTEN",
+            net_connections=lambda kind: [
+                SimpleNamespace(
+                    status="LISTEN", laddr=SimpleNamespace(port=18092), pid=52304
+                ),
+                SimpleNamespace(
+                    status="ESTABLISHED", laddr=SimpleNamespace(port=18092), pid=111
+                ),
+                SimpleNamespace(
+                    status="LISTEN", laddr=SimpleNamespace(port=9999), pid=222
+                ),
+            ],
+        )
+        with mock.patch.dict(sys.modules, {"psutil": fake_psutil}):
+            self.assertEqual(load_tool._listening_pid(18092), 52304)
+            self.assertIsNone(load_tool._listening_pid(12345))
+
     def test_percentile(self):
         self.assertEqual(load_tool._percentile(list(range(1, 101)), 0.95), 95)
         self.assertEqual(load_tool._percentile([], 0.95), 0.0)

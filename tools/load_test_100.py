@@ -167,6 +167,24 @@ def _apply_server_limits(
     }
 
 
+def _listening_pid(port: int) -> Optional[int]:
+    """이 포트를 LISTEN 중인 프로세스 PID — 없으면 None.
+
+    실측(M10)에서 serve.py 를 Popen 으로 띄우면 런처 PID 와 실제 LISTEN PID 가 다름이
+    확인됐다. 저사양 제한은 이 함수로 찾은 '실제 서버' PID 에 걸어야 한다."""
+    import psutil
+
+    for conn in psutil.net_connections(kind="tcp"):
+        if (
+            conn.status == psutil.CONN_LISTEN
+            and conn.laddr
+            and conn.laddr.port == port
+            and conn.pid
+        ):
+            return conn.pid
+    return None
+
+
 @contextmanager
 def _temporary_load_root():
     """Windows의 일시적인 로그 파일 잠금을 기다리며 테스트 폴더를 정리한다."""
@@ -1233,16 +1251,27 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 creationflags=creationflags,
             )
             try:
-                server_limits = _apply_server_limits(
-                    process.pid,
-                    cpu_cores=args.server_cpu_cores,
-                    priority=args.server_priority,
-                )
                 await asyncio.to_thread(
                     _wait_ready,
                     base_url,
                     process,
                     ssl_context=ssl_context,
+                )
+                # ★제한은 '실제 LISTEN 프로세스'에 건다(실측 M10 FAIL 반영) — Popen 런처 PID 에만
+                #   걸면 실제 서버는 전체 CPU·정상 우선순위로 돌면서 보고서만 저사양 합격이 된다.
+                #   준비 완료 후에야 자식이 LISTEN 하므로 이 시점에 조회·적용하고 두 PID 를 기록한다.
+                listen_pid = _listening_pid(port)
+                limited_pid = listen_pid or process.pid
+                server_limits = _apply_server_limits(
+                    limited_pid,
+                    cpu_cores=args.server_cpu_cores,
+                    priority=args.server_priority,
+                )
+                server_limits["launcher_pid"] = process.pid
+                server_limits["listen_pid"] = listen_pid
+                server_limits["limited_pid"] = limited_pid
+                server_limits["listen_pid_matches_launcher"] = (
+                    listen_pid == process.pid if listen_pid else None
                 )
                 loop = asyncio.get_running_loop()
                 # 100 롱폴 + 100 HTTP 가 서로 클라이언트 스레드를 굶기지 않도록 격리 클라이언트 풀 확보.
