@@ -165,6 +165,11 @@ def add_comment(body: CommentAddIn, request: Request):
             "/api/assets/comments",
             body={**body.model_dump(), "project": project, "path": path},
         )
+    if body.private and _proxy.is_shared_team_server():
+        # 공유 팀 서버 본체엔 비공개를 저장하지 않는다(중앙 DB 유출 차단 — 적대 리뷰 P1).
+        raise HTTPException(
+            status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
+        )
     if not body.private:
         _assets_access.require_asset_comment_access(project, request, write=True)
     text = (body.text or "").strip()

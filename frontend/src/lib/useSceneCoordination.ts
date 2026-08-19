@@ -75,6 +75,10 @@ export function useSceneCoordination(flash?: (msg: string) => void) {
     // 카드 소속 합치기 — DB 가 아는 소속을 화면 씬에 반영한다(다른 브라우저에서 담은 결과가 보이게).
     //  바뀐 게 없으면 merge 가 null 을 주므로 저장→알림 고리가 돌지 않는다.
     const unsubscribeLinks = subscribeCardLinksLoaded(() => {
+      // ★병합 전에 활성 캔버스의 디바운스 저장을 먼저 확정한다 — listScenes()는 저장본이라,
+      //  막 입력한 텍스트/파라미터가 아직 디바운스 중이면 그걸 지운 옛 상태로 병합·저장해
+      //  입력이 유실된다(적대 리뷰 P2). flush 가 저장본을 최신으로 만든 뒤 병합한다.
+      sceneActionRef.current?.flushPending();
       const merged = mergeCardLinksIntoScenes(listScenes(null), serverCardLinks());
       if (!merged) return;
       saveScenes(null, merged);

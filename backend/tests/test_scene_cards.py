@@ -78,6 +78,28 @@ class SceneCardLinkTests(unittest.TestCase):
         repo.sync_scene_card_links("u1", [_link("s1", "c1", "g1")], [])
         self.assertIsNone(repo.list_scene_card_links("u1")[0]["removed_at"])
 
+    def test_identity_remap_preserves_tombstone(self):
+        """acct:→user_ 신원 병합에서 '뺐음' 표시가 사라지면 안 된다(적대 리뷰 P1).
+
+        같은 소속이 acct:(제거 표시)와 user_(활성) 양쪽에 있을 때 acct: 행을 그냥 버리면
+        제거 의도가 사라져 add-only 병합이 지웠던 생성물을 되살린다 — 제거가 항상 이겨야 한다."""
+        from app.repo import identity
+
+        old, new = "acct:a@b.c", "user_new"
+        repo.sync_scene_card_links(old, [_link("s1", "c1", "g1")], [])
+        repo.sync_scene_card_links(old, [], [_link("s1", "c1", "g1")])  # acct: 쪽 제거 표시
+        repo.sync_scene_card_links(new, [_link("s1", "c1", "g1")], [])  # user_ 쪽 활성
+        repo.sync_scene_card_links(old, [_link("s2", "c2", "g2")], [])  # 비충돌 — 그대로 이관
+        with db.get_connection() as conn:
+            identity.remap_creator_uid(conn, old, new)
+        self.assertEqual(repo.list_scene_card_links(old), [])  # 옛 신원 행 정리
+        items = {
+            (i["scene_id"], i["card_id"], i["generation_id"]): i["removed_at"]
+            for i in repo.list_scene_card_links(new)
+        }
+        self.assertIsNotNone(items[("s1", "c1", "g1")])  # ★제거 표시 보존
+        self.assertIsNone(items[("s2", "c2", "g2")])  # 비충돌 행은 활성 그대로
+
     def test_same_link_in_both_lists_rejected(self):
         with self.assertRaises(ValueError):
             repo.sync_scene_card_links(

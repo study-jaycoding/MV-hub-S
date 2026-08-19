@@ -289,7 +289,11 @@ export function WorkBoard({
   const scopeKey = `${workspaceId || "personal"}:${showHistory ? "history" : "active"}`;
   const scopeKeyRef = useRef(scopeKey);
   scopeKeyRef.current = scopeKey;
-  const orderSaveRef = useRef<ReturnType<typeof createLatestMutationQueue> | null>(null);
+  // ★스코프(워크스페이스×이력)별 저장 큐 — 하나의 latest 큐를 공유하면 A 스코프의 대기 중
+  //   순서 저장을 B 스코프 저장이 덮어써 A 의 마지막 드래그가 영구 유실된다(적대 리뷰 P1).
+  const orderSaveQueuesRef = useRef(
+    new Map<string, ReturnType<typeof createLatestMutationQueue>>(),
+  );
   const taskPatchQueueRef = useRef<KeyedMutationQueue<string> | null>(null);
   const taskDataRevisionRef = useRef(0);
   const orderRevisionRef = useRef(0);
@@ -384,32 +388,38 @@ export function WorkBoard({
   const seenReloadSignalRef = useRef(reloadSignal);
   const seenHistoryRef = useRef(showHistory);
   loadAllRef.current = loadAll;
-  if (!orderSaveRef.current) {
-    orderSaveRef.current = createLatestMutationQueue(async (error) => {
-      if (!mountedRef.current) return;
-      const requestScope = scopeKeyRef.current;
-      const activeErrors = mutationErrorsForScope([error], requestScope);
-      if (!activeErrors.length) return;
-      const [activeError] = activeErrors;
-      const revisionBeforeReload = orderRevisionRef.current;
-      await recoverTaskWriteFailure(
-        "순서 저장",
-        activeError,
-        (message) => window.alert(message),
-        async () => {
-          if (scopeIsActive(requestScope)) await loadProjectsRef.current();
-        },
-      );
-      const optimistic = optimisticOrderRef.current;
-      if (
-        scopeIsActive(requestScope) &&
-        optimistic?.scope === requestScope &&
-        optimistic.revision !== revisionBeforeReload
-      ) {
-        setTasks(optimistic.tasks);
-      }
-    });
-  }
+  // 실패 복구는 '저장을 시작한 스코프'에 귀속 — 전환 후 도착한 실패가 현재 화면을 흔들지 않는다.
+  const orderQueueFor = (scope: string) => {
+    const queues = orderSaveQueuesRef.current;
+    let queue = queues.get(scope);
+    if (!queue) {
+      queue = createLatestMutationQueue(async (error) => {
+        if (!mountedRef.current) return;
+        const activeErrors = mutationErrorsForScope([error], scope);
+        if (!activeErrors.length) return;
+        const [activeError] = activeErrors;
+        const revisionBeforeReload = orderRevisionRef.current;
+        await recoverTaskWriteFailure(
+          "순서 저장",
+          activeError,
+          (message) => window.alert(message),
+          async () => {
+            if (scopeIsActive(scope)) await loadProjectsRef.current();
+          },
+        );
+        const optimistic = optimisticOrderRef.current;
+        if (
+          scopeIsActive(scope) &&
+          optimistic?.scope === scope &&
+          optimistic.revision !== revisionBeforeReload
+        ) {
+          setTasks(optimistic.tasks);
+        }
+      });
+      queues.set(scope, queue);
+    }
+    return queue;
+  };
 
   const loadProjects = (): Promise<void> => {
     if (!mountedRef.current) return Promise.resolve();
@@ -666,8 +676,8 @@ export function WorkBoard({
     const requestScope = scopeKey;
     optimisticOrderRef.current = { revision, scope: requestScope, tasks: optimisticTasks };
     setTasks(optimisticTasks);
-    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 최신 순서 하나로 교체한다(전체 상태라 안전).
-    orderSaveRef.current?.enqueue(async () => {
+    // 실행 중 1건은 유지하되 대기 중인 중간 스냅샷은 '같은 스코프의' 최신 순서 하나로 교체한다.
+    orderQueueFor(requestScope).enqueue(async () => {
       try {
         await manageApi.updateTaskOrderSnapshot(ids);
         taskDataRevisionRef.current += 1;

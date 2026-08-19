@@ -469,9 +469,10 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("task_assignment", "added_by", "plain"),  # 배정한 PM actor(routers add_assignment 가 actor_id 저장 → acct: 가능) — plain
     # 캔버스 씬 백업 owner(PK 선두) — 충돌(양 신원 행 공존) 시 user_ 행 유지·acct: 행 폐기(백업 미러라 손실 무해).
     ("scene_backup", "owner_uid", "ignore_del"),
-    # 캔버스 카드 소속 owner(PK 선두) — 충돌 시 user_ 행 유지. 같은 (씬,카드,생성물)이 양 신원으로
-    # 있으면 사실이 같으므로 어느 쪽을 남겨도 동일(removed_at 만 다를 수 있어 user_ 것을 신뢰).
-    ("scene_card_generation", "owner_uid", "ignore_del"),
+    # 캔버스 카드 소속 owner(PK 선두) — 충돌 시 '제거 표시(removed_at)' 를 보존하며 병합.
+    # ignore_del 로 acct: 행을 그냥 버리면 acct: 쪽에만 있던 tombstone 이 사라져, add-only 병합
+    # 규칙상 지웠던 생성물이 카드에 되살아난다(적대 리뷰 P1 — 제거 의도가 항상 이긴다).
+    ("scene_card_generation", "owner_uid", "scenecard"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로
@@ -571,6 +572,46 @@ def _remap_assetmeta(conn, old: str, new: str) -> int:
     return c
 
 
+def _remap_scene_card(conn, old: str, new: str) -> int:
+    """scene_card_generation: PK(owner_uid,scene_id,card_id,generation_id).
+
+    충돌(양 신원에 같은 소속 행) 시 removed_at 을 보존하며 병합 — 어느 한쪽이라도 '뺐음' 표시가
+    있으면 남는 행에 그 표시를 남긴다. add-only 병합 규칙에서 tombstone 이 사라지면 지웠던
+    생성물이 카드에 되살아나므로, 제거 의도가 항상 이겨야 한다."""
+    c = 0
+    for r in conn.execute(
+        "SELECT scene_id, card_id, generation_id, removed_at "
+        "FROM scene_card_generation WHERE owner_uid=?",
+        (old,),
+    ).fetchall():
+        key = (r["scene_id"], r["card_id"], r["generation_id"])
+        ex = conn.execute(
+            "SELECT removed_at FROM scene_card_generation "
+            "WHERE owner_uid=? AND scene_id=? AND card_id=? AND generation_id=?",
+            (new, *key),
+        ).fetchone()
+        if ex is None:
+            conn.execute(
+                "UPDATE scene_card_generation SET owner_uid=? "
+                "WHERE owner_uid=? AND scene_id=? AND card_id=? AND generation_id=?",
+                (new, old, *key),
+            )
+        else:
+            if r["removed_at"] and not ex["removed_at"]:
+                conn.execute(
+                    "UPDATE scene_card_generation SET removed_at=? "
+                    "WHERE owner_uid=? AND scene_id=? AND card_id=? AND generation_id=?",
+                    (r["removed_at"], new, *key),
+                )
+            conn.execute(
+                "DELETE FROM scene_card_generation "
+                "WHERE owner_uid=? AND scene_id=? AND card_id=? AND generation_id=?",
+                (old, *key),
+            )
+        c += 1
+    return c
+
+
 def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> int:
     """한 계정의 옛 신원(old=acct:<email>)을 새 신원(new=user_<id>)으로 _REMAP_PLAN 전 테이블 리맵.
 
@@ -602,6 +643,8 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
             n += _remap_autotag(conn, old_uid, new_uid)
         elif strat == "assetmeta":
             n += _remap_assetmeta(conn, old_uid, new_uid)
+        elif strat == "scenecard":
+            n += _remap_scene_card(conn, old_uid, new_uid)
         else:
             # 전략 문자열 오타(예: "plian")가 조용히 no-op 되어 신원이 안 옮겨지는 걸 막는다(런타임 방어).
             raise ValueError(f"_REMAP_PLAN 알 수 없는 전략: {table}.{col} = {strat!r}")

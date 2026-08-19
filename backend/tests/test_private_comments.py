@@ -60,6 +60,37 @@ class PrivateCommentTests(unittest.TestCase):
         self.assertIn("공유 코멘트", comments)
         self.assertNotIn("비공개 메모", comments)
 
+    # ── ①-b 공유 팀 서버 본체는 비공개 저장 자체를 거절 ──────────────
+    # 브라우저가 팀 서버에 직결된 배포에서 private=true 가 중앙 DB 에 남으면
+    # '비공개=내 로컬에만' 불변식이 깨진다 — 서버가 강제 지점이다.
+    def test_team_server_rejects_private_generation_comment(self):
+        from fastapi import HTTPException
+
+        body = generation.GenCommentAddIn(text="pv", private=True)
+        with mock.patch.object(
+            generation._proxy, "is_shared_team_server", return_value=True
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                generation.add_gen_comment("g1", body, _Request())
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(repo.list_private_generation_comments("g1", "u1"), [])
+
+    def test_team_server_rejects_private_asset_comment(self):
+        from fastapi import HTTPException
+
+        from app.routers import assets_metadata
+
+        body = assets_metadata.CommentAddIn(
+            project="p", path="a.png", text="pv", private=True
+        )
+        with mock.patch.object(
+            assets_metadata._proxy, "is_shared_team_server", return_value=True
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                assets_metadata.add_comment(body, _Request())
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(repo.list_private_asset_comments("p", "a.png", "u1"), [])
+
     # ── ② 목록 가시성 ────────────────────────────────────────────────
     def test_list_hides_others_private(self):
         repo.add_generation_comment("g1", "u1", "내 비공개", is_private=True)

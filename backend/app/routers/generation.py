@@ -938,6 +938,12 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     # ★비공개는 프록시를 타지 않는다 — 공유 생성물에 단 것이어도 내 로컬 DB 에만 남는다.
     #  앵커는 목록과 같은 규칙(로컬 행 있으면 로컬 id) — 어디서 열어도 같은 스레드에 보이게.
     if body.private:
+        # 공유 팀 서버 본체는 비공개 저장을 거절한다 — 브라우저가 서버에 직결된 배포에서
+        # private=true 가 중앙 DB 에 남으면 '비공개=내 로컬에만' 불변식이 깨진다(적대 리뷰 P1).
+        if _proxy.is_shared_team_server():
+            raise HTTPException(
+                status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
+            )
         anchor = gen["id"] if gen else gen_id
         text = (body.text or "").strip()
         if not text:

@@ -90,6 +90,17 @@ def is_worker_hub() -> bool:
     return not AUTH_ENABLED
 
 
+def is_shared_team_server() -> bool:
+    """이 프로세스가 '공유 팀 서버 본체'인가 — AUTH 켜짐 + 격리(NO_PROXY) 아님.
+
+    비공개 데이터(비공개 코멘트 등)는 작성자의 로컬 DB 에만 존재해야 하므로, 여기가 True 면
+    비공개 저장 요청을 거절한다. test_dev(AUTH+NO_PROXY 격리 단독 실행)는 로컬 허브를 겸하므로
+    False — 격리 DB 에 비공개를 저장해도 팀에 새지 않는다(operational_health 의 런타임 판별과 동일)."""
+    if os.environ.get("CONTENT_HUB_NO_PROXY", "").lower() in ("1", "true", "yes", "on"):
+        return False
+    return AUTH_ENABLED
+
+
 def proxying() -> bool:
     """이 프로세스가 '로컬 허브'(데이터를 공유 서버에 위임)인가?
 
