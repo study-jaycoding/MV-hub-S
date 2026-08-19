@@ -13,6 +13,24 @@ function clampToViewport(p: { x: number; y: number } | null): { x: number; y: nu
   return x === p.x && y === p.y ? p : { x, y };
 }
 
+// 겹친 떠있는 창의 앞뒤 — 마지막으로 잡은(누른) 창이 앞으로. CSS 의 고정 z(태그 80·코멘트 82)를
+// 인라인 스타일로 덮는다. 다른 오버레이(정보팝업 240, 미리보기 1000 등)보다는 항상 아래 머물게
+// 좁은 밴드(100~199)만 쓰고, 상한에 닿으면 현재 순서를 유지한 채 아래로 눌러 담는다(정규화).
+const FLOAT_Z_BASE = 100;
+const FLOAT_Z_MAX = 199;
+let floatZ = FLOAT_Z_BASE;
+const floatPanels = new Set<HTMLElement>();
+function bringPanelToFront(el: HTMLElement): void {
+  if (floatZ >= FLOAT_Z_MAX) {
+    const ordered = [...floatPanels].sort(
+      (a, b) => Number(a.style.zIndex || 0) - Number(b.style.zIndex || 0),
+    );
+    floatZ = FLOAT_Z_BASE;
+    for (const p of ordered) p.style.zIndex = String(floatZ++);
+  }
+  el.style.zIndex = String(++floatZ);
+}
+
 export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isOpen: boolean) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(() =>
     clampToViewport(LS.loadJSON(keyPos)),
@@ -58,7 +76,29 @@ export function useFloatingPanel(LS: Store, keyPos: string, keySize: string, isO
       if (el.offsetWidth > 0 && el.offsetHeight > 0) setSize({ w: el.offsetWidth, h: el.offsetHeight });
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    // 앞뒤 전환 — 새로 열린 창은 맨 앞, 이후엔 잡은 창이 앞. 리스너는 문서 캡처 단계에 두고
+    // 매번 panelRef.current 를 읽는다: ① 내부 버튼의 stopPropagation(머리 A−/A+ 등 드래그
+    // 방지용)에 가려지지 않고 ② key 리마운트로 DOM 이 갈려도(코멘트 창의 파일 전환) 계속 동작.
+    floatPanels.add(el);
+    bringPanelToFront(el);
+    const onDown = (event: MouseEvent) => {
+      const cur = panelRef.current;
+      if (cur && event.target instanceof Node && cur.contains(event.target)) {
+        if (!floatPanels.has(cur)) {
+          floatPanels.delete(el);
+          floatPanels.add(cur); // 리마운트로 갈린 새 노드를 정규화 대상에 반영
+        }
+        bringPanelToFront(cur);
+      }
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => {
+      ro.disconnect();
+      document.removeEventListener("mousedown", onDown, true);
+      floatPanels.delete(el);
+      const cur = panelRef.current;
+      if (cur) floatPanels.delete(cur);
+    };
   }, [isOpen]);
   return { pos, setPos, size, setSize, dragRef, panelRef, onHeadMouseDown };
 }
