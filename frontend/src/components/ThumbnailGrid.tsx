@@ -463,6 +463,8 @@ export function ThumbnailGrid(props: Props) {
   };
 
   const onGridDblClick = (e: React.MouseEvent) => {
+    // 버튼(S·T·C 등)·입력 위 더블클릭은 그 요소의 몫 — 클릭 2번이 미리보기로 승격되면 안 된다.
+    if ((e.target as HTMLElement).closest("button, input, a, [contenteditable]")) return;
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
     if (!cellEl) return;
     const g = opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
