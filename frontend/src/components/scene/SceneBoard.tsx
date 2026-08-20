@@ -227,6 +227,8 @@ interface Props {
   fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
   typeFilter?: "all" | "image" | "video" | "audio";
+  // 툴바 카운트용 — 타입 필터를 통과한 생성카드 수를 보고(딤 판정과 같은 규칙).
+  onTypeCount?: (count: number) => void;
   colorFilter?: Set<string>;
   tagFilter?: Set<string>;
   sharedOnly?: boolean;
@@ -280,6 +282,7 @@ export function SceneBoard({
   grayOn,
   fill = true,
   typeFilter = "all",
+  onTypeCount,
   colorFilter,
   tagFilter,
   sharedOnly = false,
@@ -323,6 +326,21 @@ export function SceneBoard({
       }
     }
   }, [genData, cards]);
+  // 툴바 카운트 — 생성카드를 딤 판정과 같은 규칙(대표 asset 타입)으로 센다.
+  //  '전체'는 빈(new)·미로드 카드도 포함, 특정 타입은 그 타입 asset 이 확인된 카드만
+  //  (타입 미상이 비디오/오디오 수에 잡히는 오해 방지 — 딤과 일치).
+  const typeCount = useMemo(() => {
+    let n = 0;
+    for (const c of cards) {
+      if (c.kind !== "generation") continue;
+      if (typeFilter === "all") n += 1;
+      else if ((c.genId && genData[c.genId]?.assets?.[0]?.type) === typeFilter) n += 1;
+    }
+    return n;
+  }, [cards, genData, typeFilter]);
+  useEffect(() => {
+    onTypeCount?.(typeCount);
+  }, [typeCount, onTypeCount]);
   const [cardMenu, setCardMenu] = useState<string | null>(null); // 변형(결과) 팝업이 열린 카드 id
   const [tagEditCardId, setTagEditCardId] = useState<string | null>(null); // 태그 편집 팝업이 열린 카드 id(같은 생성물이 여러 카드여도 하나만)
   const [tagEditNodeGenId, setTagEditNodeGenId] = useState<string | null>(null); // 카드 내부 HistoryBoardNode 의 태그 편집 대상 gen id
