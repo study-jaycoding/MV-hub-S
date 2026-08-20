@@ -1278,7 +1278,13 @@ export default function App() {
               onToggleGroupByDate={() => setGroupByDate((v) => !v)}
               filtersOpen={showFilters}
               onToggleFilters={() => setShowFilters((v) => !v)}
-              count={boardStats.count}
+              // 씬(캔버스) 활성 시 boardStats 는 히스토리 보드 것(0으로 방치)이라 못 쓴다 —
+              // 캔버스에선 현재 씬의 생성카드 수를 그대로 센다.
+              count={
+                activeScene
+                  ? activeScene.cards.filter((c) => c.kind === "generation").length
+                  : boardStats.count
+              }
               grayOn={grayOn}
               onToggleGray={() => setGrayOn((v) => !v)}
               loading={loading}
