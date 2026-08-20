@@ -218,7 +218,7 @@ interface Props {
   fill?: boolean; // 툴바 fill 토글 — true=꽉채우기(cover), false=전체보기(contain). 결과·레퍼런스 카드에 적용.
   // 라이브러리/계보와 동일한 필터 — 결과 카드(HistoryBoardNode)에 dim 처리로 그대로 적용.
   typeFilter?: "all" | "image" | "video" | "audio";
-  // 툴바 카운트용 — 타입 필터를 통과한 생성카드 수를 보고(딤 판정과 같은 규칙).
+  // 툴바 카운트용 — 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고(딤 판정과 같은 규칙).
   onTypeCount?: (count: number) => void;
   colorFilter?: Set<string>;
   tagFilter?: Set<string>;
@@ -316,15 +316,17 @@ export function SceneBoard({
       }
     }
   }, [genData, cards]);
-  // 툴바 카운트 — 생성카드를 딤 판정과 같은 규칙(대표 asset 타입)으로 센다.
-  //  '전체'는 빈(new)·미로드 카드도 포함, 특정 타입은 그 타입 asset 이 확인된 카드만
-  //  (타입 미상이 비디오/오디오 수에 잡히는 오해 방지 — 딤과 일치).
+  // 툴바 카운트 — 생성카드 '안의 생성물(변형 전부)'을 센다. 카드 수가 아니다.
+  //  '전체'=모든 생성물(타입 미로드 포함), 특정 타입=asset 타입이 그 타입으로 확인된 생성물만
+  //  (딤 판정과 같은 기준이라 화면에서 밝게 남는 것과 숫자가 일치).
   const typeCount = useMemo(() => {
     let n = 0;
     for (const c of cards) {
       if (c.kind !== "generation") continue;
-      if (typeFilter === "all") n += 1;
-      else if ((c.genId && genData[c.genId]?.assets?.[0]?.type) === typeFilter) n += 1;
+      for (const gid of variantIds(c)) {
+        if (typeFilter === "all") n += 1;
+        else if (genData[gid]?.assets?.[0]?.type === typeFilter) n += 1;
+      }
     }
     return n;
   }, [cards, genData, typeFilter]);
