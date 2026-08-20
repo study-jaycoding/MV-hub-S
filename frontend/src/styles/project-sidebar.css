@@ -200,7 +200,17 @@
   font-size: 12px;
 }
 
-.assets-root-row { margin-bottom: 4px; }
+.assets-root-row {
+  margin-bottom: 4px;
+  /* 트리 폴더 행(inline paddingLeft 6px)과 같은 들여쓰기 — UA 기본 버튼 패딩이 만들던
+     미묘한 어긋남 제거(Jay). 프로젝트 루트는 다른 폴더보다 조금 크게(높이·글씨·아이콘). */
+  padding: 0 6px;
+  height: 30px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.assets-root-row .folder-tree-icon { width: 19px; height: 15px; }
+.assets-root-row .folder-tree-icon::before { width: 9px; height: 5px; top: -4px; }
 .assets-root-row.selected {
   background: transparent;
   color: var(--text);
