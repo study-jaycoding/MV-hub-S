@@ -114,6 +114,103 @@ function generationFetch(path: string, init?: RequestInit): Promise<Generation> 
   return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
 }
 
+export interface GenerationCreateBody {
+  prompt: string;
+  display_prompt?: string;
+  model: string;
+  params?: Record<string, unknown>;
+  color?: string | null;
+  tags?: string[];
+  auto_tags?: string[];
+  references?: {
+    file_path: string;
+    type: string;
+    role: string;
+    name?: string;
+    thumbnail?: string;
+    source_url?: string;
+    source_gen_id?: string;
+  }[];
+  project_id?: string;
+  folder_path?: string;
+}
+
+type RegenerateBody = {
+  prompt?: string;
+  color?: string | null;
+  auto_tags?: string[];
+};
+
+function newGenerationRequestKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+function createGeneration(
+  body: GenerationCreateBody,
+  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  canvasLink?: CanvasGenerationLink,
+  idempotencyKey?: string,
+): Promise<Generation> {
+  if (!isGenerationWorkspaceReady(workspace)) {
+    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
+  }
+  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
+  return generationFetch("/api/gen-requests", {
+    method: "POST",
+    body: jsonBody({
+      kind: "create",
+      workspace,
+      create: body,
+      canvas_link: canvasLink,
+      ...(requestKey ? { idempotency_key: requestKey } : {}),
+    }),
+  });
+}
+
+function regenerateGeneration(
+  id: string,
+  body: RegenerateBody,
+  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  canvasLink?: CanvasGenerationLink,
+  idempotencyKey?: string,
+): Promise<Generation> {
+  if (!isGenerationWorkspaceReady(workspace)) {
+    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
+  }
+  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
+  return generationFetch("/api/gen-requests", {
+    method: "POST",
+    body: jsonBody({
+      kind: "regenerate",
+      workspace,
+      source_gen_id: id,
+      regenerate: body,
+      canvas_link: canvasLink,
+      ...(requestKey ? { idempotency_key: requestKey } : {}),
+    }),
+  });
+}
+
 interface GenerationBatchResponse {
   items: Record<string, Generation>;
   materials: Record<string, string[]>;
@@ -376,58 +473,28 @@ export const api = {
 
   ...authApi,
 
-  create: (body: {
-    prompt: string;
-    display_prompt?: string;
-    model: string;
-    params?: Record<string, unknown>;
-    color?: string | null;
-    tags?: string[];
-    auto_tags?: string[];
-    references?: {
-      file_path: string;
-      type: string;
-      role: string;
-      name?: string;
-      thumbnail?: string;
-      source_url?: string;
-      source_gen_id?: string; // 출처 generation → 히스토리 reference 엣지
-    }[];
-    project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
-    folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
-  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }, canvasLink?: CanvasGenerationLink) => {
-    if (!isGenerationWorkspaceReady(workspace)) {
-      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
-    }
-    // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
-    // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
-    return generationFetch("/api/gen-requests", {
-      method: "POST",
-      body: jsonBody({ kind: "create", workspace, create: body, canvas_link: canvasLink }),
-    });
-  },
-
-  regenerate: (
-    id: string,
-    body: { prompt?: string; color?: string | null; auto_tags?: string[] },
-    workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  // prepare*가 제출 버튼 1회의 UUID를 클로저에 보관한다. 같은 클로저를 HTTP 재시도에
+  // 다시 호출하면 키가 유지되고, 새 버튼 동작은 새 클로저라 별도 유료 요청이 된다.
+  prepareCreate: (
+    body: GenerationCreateBody,
+    workspace: WorkspaceContext,
     canvasLink?: CanvasGenerationLink,
   ) => {
-    if (!isGenerationWorkspaceReady(workspace)) {
-      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
-    }
-    // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
-    return generationFetch("/api/gen-requests", {
-      method: "POST",
-      body: jsonBody({
-        kind: "regenerate",
-        workspace,
-        source_gen_id: id,
-        regenerate: body,
-        canvas_link: canvasLink,
-      }),
-    });
+    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
+    return () => createGeneration(body, workspace, canvasLink, requestKey);
   },
+  create: createGeneration,
+
+  prepareRegenerate: (
+    id: string,
+    body: RegenerateBody,
+    workspace: WorkspaceContext,
+    canvasLink?: CanvasGenerationLink,
+  ) => {
+    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
+    return () => regenerateGeneration(id, body, workspace, canvasLink, requestKey);
+  },
+  regenerate: regenerateGeneration,
 
   confirmGenerationNotSubmitted: (generationId: string) =>
     jsonFetch<{ ok: boolean; applied: boolean }>(

@@ -173,7 +173,8 @@ export function useSpotlightSubmit({
         Array.from({ length: batch }, async (_, index) => {
           const link = canvasLinks[index];
           try {
-            const generation = await api.create(body, workspace, link);
+            const submit = api.prepareCreate(body, workspace, link);
+            const generation = await submit();
             if (link) settleCanvasGeneration?.(link, generation);
             return { generation };
           } catch (error) {

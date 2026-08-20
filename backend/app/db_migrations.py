@@ -444,6 +444,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("canvas_attempt_id", "TEXT"),
             ("canvas_scene_id", "TEXT"),
             ("canvas_card_id", "TEXT"),
+            ("idempotency_key", "TEXT"),
             ("submission_fingerprint", "TEXT"),
             ("submission_started_at", "TEXT"),
             ("recovery_probe_status", "TEXT"),
@@ -482,6 +483,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_canvas_attempt "
             "ON gen_request(account_email, canvas_attempt_id) "
             "WHERE canvas_attempt_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_idempotency "
+            "ON gen_request(account_email, idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL"
         )
 
     # 검증 실패 결과 표식은 개인 로컬 메타라 generation 본체에 넣지 않는다. 그래야 선택 공유

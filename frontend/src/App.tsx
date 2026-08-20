@@ -967,7 +967,8 @@ export default function App() {
       },
       async ({ body, canvasLink }) => {
         try {
-          return await api.create(body, workspaceContext, canvasLink);
+          const submit = api.prepareCreate(body, workspaceContext, canvasLink);
+          return await submit();
         } catch (error) {
           const status = Number((error as { status?: number })?.status);
           if (

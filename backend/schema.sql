@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS gen_request (
     canvas_attempt_id TEXT,                       -- 캔버스가 요청 전에 저장한 복구 표식
     canvas_scene_id TEXT,                         -- 개인 캔버스 씬 ID(로컬 허브에만 저장)
     canvas_card_id TEXT,                          -- 결과가 돌아갈 생성카드 ID
+    idempotency_key TEXT,                         -- 일반 제출 1회 의도 UUID(계정 안에서 유일)
     submission_fingerprint TEXT,                  -- 실제 CLI 제출 직전 명령 지문(JSON, prompt는 sha256)
     submission_started_at TEXT,                   -- begin-submission이 승인된 서버 시각
     recovery_probe_status TEXT,                   -- unique | multiple | no_match (읽기 전용 자동 조사)
@@ -274,7 +275,8 @@ CREATE TABLE IF NOT EXISTS gen_request (
 CREATE INDEX IF NOT EXISTS idx_genrequest_acct ON gen_request(account_email, status);
 CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest ON gen_request(gen_id, created_at DESC, id DESC);
 -- idx_genrequest_canvas_attempt 는 db_migrations._migrate 에서 만든다.
--- 기존 DB 는 canvas_attempt_id 컬럼을 ALTER 로 먼저 추가해야 하므로 여기서 만들면
+-- idx_genrequest_idempotency 도 db_migrations._migrate 에서 만든다.
+-- 기존 DB 는 해당 컬럼을 ALTER 로 먼저 추가해야 하므로 여기서 만들면
 -- schema.sql 적용이 마이그레이션보다 앞서 실행되어 앱 시작이 실패한다.
 
 -- 생성 상태 영구 이력. 회전 운영 로그가 오래되어 사라져도 요청→앵커→검증→완료 흐름을

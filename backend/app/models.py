@@ -7,6 +7,7 @@ DB row(sqlite3.Row) → 응답 모델 변환은 라우터의 직렬화 헬퍼에
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -260,6 +261,17 @@ class GenRequestIn(BaseModel):
     source_gen_id: Optional[str] = None  # kind=regenerate 일 때 원본
     regenerate: Optional[RegenerateIn] = None  # kind=regenerate 옵션(프롬프트/모델/색 덮어쓰기)
     canvas_link: Optional[CanvasGenerationLinkIn] = None  # 캔버스 재시작 복구용(로컬 전용)
+    idempotency_key: Optional[str] = None  # 일반 제출 1회 의도 UUID(캔버스는 attempt_id 사용)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def normalize_idempotency_key(cls, value):
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("idempotency_key는 UUID여야 합니다") from exc
 
 
 class PendingRequestOut(BaseModel):

@@ -77,6 +77,8 @@ describe("workspace context", () => {
     await api.create(
       { prompt: "test", model: "nano", params: {}, references: [] },
       { scope: "team", id: "ws-a", name: "MILLIONVOLT" },
+      undefined,
+      "11111111-1111-4111-8111-111111111111",
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -87,6 +89,7 @@ describe("workspace context", () => {
           kind: "create",
           workspace: { scope: "team", id: "ws-a", name: "MILLIONVOLT" },
           create: { prompt: "test", model: "nano", params: {}, references: [] },
+          idempotency_key: "11111111-1111-4111-8111-111111111111",
         }),
       }),
     );

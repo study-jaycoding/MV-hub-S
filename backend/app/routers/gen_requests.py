@@ -44,6 +44,7 @@ from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     CanvasGenerationConflict,
     GenRequestCommand,
+    GenerationIdempotencyConflict,
     RecoveryRequeueBlocked,
     anchor_request,
     begin_submission,
@@ -183,6 +184,18 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             workspace=workspace.model_dump(),
             data=data,
             canvas_link=canvas_link,
+            idempotency_key=body.idempotency_key if not canvas_link else None,
+            request_contract=(
+                {
+                    "kind": "create",
+                    "workspace": body.workspace.model_dump(),
+                    "create": data,
+                    "source_gen_id": body.source_gen_id,
+                    "regenerate": None,
+                }
+                if body.idempotency_key and not canvas_link
+                else None
+            ),
         )
     else:  # regenerate
         if not body.source_gen_id:
@@ -233,11 +246,23 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             workspace=workspace.model_dump(),
             regenerate=reg,
             canvas_link=canvas_link,
+            idempotency_key=body.idempotency_key if not canvas_link else None,
+            request_contract=(
+                {
+                    "kind": "regenerate",
+                    "workspace": body.workspace.model_dump(),
+                    "create": None,
+                    "source_gen_id": body.source_gen_id,
+                    "regenerate": reg.model_dump(),
+                }
+                if body.idempotency_key and not canvas_link
+                else None
+            ),
         )
 
     try:
         gen = await submit_gen_request(cmd)
-    except CanvasGenerationConflict as exc:
+    except (CanvasGenerationConflict, GenerationIdempotencyConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")

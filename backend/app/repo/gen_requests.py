@@ -8,6 +8,7 @@ placeholder 카드를 즉시 만든다. 요청자의 PC 에이전트가 대기 �
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from typing import Any, Optional
 
@@ -483,6 +484,148 @@ def gen_recipe(gen_id: str) -> dict[str, Any]:
             "name": g["workspace_name"],
         },
     }
+
+
+def reserve_idempotent_gen_request(
+    account_email: str,
+    creator_uid: Optional[str],
+    kind: str,
+    idempotency_key: str,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """일반 생성 의도를 placeholder보다 먼저 예약한다.
+
+    유니크 INSERT 충돌은 같은 계정·키의 기존 예약을 읽어 반환한다. 미리 배정한 gen_id를
+    모든 동시 요청이 공유하므로, 요청행뿐 아니라 placeholder도 한 건으로 수렴한다.
+    """
+    email = norm_email(account_email)
+    rid = new_id()
+    gen_id = new_id()
+    preparing_payload = json.dumps(
+        {"_idempotency_contract": contract}, ensure_ascii=False, sort_keys=True
+    )
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO gen_request("
+                "id, account_email, creator_uid, gen_id, kind, payload, status, "
+                "idempotency_key) VALUES(?,?,?,?,?,?,'preparing',?)",
+                (
+                    rid,
+                    email,
+                    creator_uid,
+                    gen_id,
+                    kind,
+                    preparing_payload,
+                    idempotency_key,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            existing = conn.execute(
+                "SELECT id, creator_uid, gen_id, kind, payload, status, idempotency_key "
+                "FROM gen_request WHERE account_email=? AND idempotency_key=? LIMIT 1",
+                (email, idempotency_key),
+            ).fetchone()
+            if not existing:
+                raise
+            result = dict(existing)
+            result["created"] = False
+            return result
+    return {
+        "id": rid,
+        "creator_uid": creator_uid,
+        "gen_id": gen_id,
+        "kind": kind,
+        "payload": preparing_payload,
+        "status": "preparing",
+        "idempotency_key": idempotency_key,
+        "created": True,
+    }
+
+
+def activate_idempotent_gen_request(
+    account_email: str,
+    idempotency_key: str,
+    gen_id: str,
+    payload: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any] | None:
+    """placeholder 준비가 끝난 일반 요청 예약을 한 번만 pending으로 활성화한다."""
+    encoded_payload = dict(payload)
+    encoded_payload["_idempotency_contract"] = contract
+    encoded = json.dumps(encoded_payload, ensure_ascii=False, sort_keys=True)
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, gen_id, status FROM gen_request "
+                "WHERE account_email=? AND idempotency_key=? LIMIT 1",
+                (norm_email(account_email), idempotency_key),
+            ).fetchone()
+            if not row or row["gen_id"] != gen_id:
+                conn.execute("ROLLBACK")
+                return None
+            activated = False
+            if row["status"] == "preparing":
+                cur = conn.execute(
+                    "UPDATE gen_request SET payload=?, status='pending', "
+                    "updated_at=datetime('now') WHERE id=? AND status='preparing'",
+                    (encoded, row["id"]),
+                )
+                activated = cur.rowcount > 0
+            conn.execute("COMMIT")
+            return {
+                "id": row["id"],
+                "gen_id": row["gen_id"],
+                "status": "pending" if activated else row["status"],
+                "activated": activated,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def idempotent_placeholder_is_resumable(
+    account_email: str,
+    creator_uid: Optional[str],
+    idempotency_key: str,
+    gen_id: str,
+    kind: str,
+    source_gen_id: Optional[str] = None,
+) -> bool:
+    """같은 일반 요청 예약의 반쯤 만들어진 placeholder만 이어갈 수 있게 확인한다."""
+    with get_connection() as conn:
+        request = conn.execute(
+            "SELECT id FROM gen_request WHERE account_email=? AND idempotency_key=? "
+            "AND gen_id=? AND kind=? AND status='preparing' LIMIT 1",
+            (norm_email(account_email), idempotency_key, gen_id, kind),
+        ).fetchone()
+        generation = conn.execute(
+            "SELECT creator_uid, origin, status, job_id FROM generation WHERE id=?",
+            (gen_id,),
+        ).fetchone()
+        other_request = conn.execute(
+            "SELECT 1 FROM gen_request WHERE gen_id=? AND id<>? LIMIT 1",
+            (gen_id, request["id"] if request else ""),
+        ).fetchone()
+        if not (
+            request
+            and generation
+            and (creator_uid is None or generation["creator_uid"] == creator_uid)
+            and generation["origin"] == "local"
+            and generation["status"] == "pending"
+            and not generation["job_id"]
+            and not other_request
+        ):
+            return False
+        if kind != "regenerate":
+            return True
+        lineage = conn.execute(
+            "SELECT 1 FROM history WHERE parent_gen_id=? AND child_gen_id=? "
+            "AND relation='derived' LIMIT 1",
+            (source_gen_id, gen_id),
+        ).fetchone()
+        return bool(lineage)
 
 
 def create_gen_request(

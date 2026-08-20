@@ -33,13 +33,20 @@ class LegacyGenRequestMigrationTests(unittest.TestCase):
                 )
 
             db.init_db(db_path)
+            db.init_db(db_path)  # 컬럼·부분 유니크 인덱스 마이그레이션 자체도 멱등
 
             with sqlite3.connect(db_path) as conn:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(gen_request)")}
                 indexes = {row[1] for row in conn.execute("PRAGMA index_list(gen_request)")}
 
             self.assertTrue(
-                {"canvas_attempt_id", "canvas_scene_id", "canvas_card_id"} <= columns
+                {
+                    "canvas_attempt_id",
+                    "canvas_scene_id",
+                    "canvas_card_id",
+                    "idempotency_key",
+                }
+                <= columns
             )
             self.assertTrue(
                 {
@@ -53,6 +60,7 @@ class LegacyGenRequestMigrationTests(unittest.TestCase):
                 <= columns
             )
             self.assertIn("idx_genrequest_canvas_attempt", indexes)
+            self.assertIn("idx_genrequest_idempotency", indexes)
 
     def test_init_db_adds_synced_claim_anchor_before_scene_index(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
