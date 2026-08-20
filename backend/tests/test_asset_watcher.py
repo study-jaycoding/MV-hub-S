@@ -1,8 +1,11 @@
 """어셋 파일 감시 등록·합본 캐시 무효화 회귀 테스트."""
 
+import asyncio
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from time import monotonic, sleep
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
@@ -32,6 +35,7 @@ class _FakeObserver:
 
     def stop(self) -> None:
         self.stopped = True
+        self.alive = False
 
     def join(self, timeout=None) -> None:
         self.joined_with.append(timeout)
@@ -123,6 +127,200 @@ class AssetWatcherTests(unittest.TestCase):
         self.assertNotIn(str(first), watcher._watches)
         self.assertIn(str(second), watcher._watches)
         self.assertEqual(watcher._registration_dirs["auto:p1"], str(second))
+
+    def test_reschedule_increments_generation_and_ignores_old_handler(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            key = str(root)
+            watcher = asset_watcher._Watcher()
+            observer = _FakeObserver()
+            watcher._observer = observer
+            watcher.watch(root, "demo", registration_id="owner")
+            old_handler = observer.scheduled[0][0]
+            old_generation = watcher._watches[key].generation
+            observer.alive = True
+            clock = [0.0]
+
+            with (
+                patch.object(watcher, "_ensure_health_timer_locked"),
+                patch.object(watcher, "_start_timer_locked"),
+                patch.object(asset_watcher.time, "monotonic", side_effect=lambda: clock[0]),
+            ):
+                old_handler.on_any_event(
+                    SimpleNamespace(
+                        is_directory=True,
+                        event_type="deleted",
+                        src_path=key,
+                        dest_path="",
+                    )
+                )
+                clock[0] = asset_watcher._MISSING_RETRY_INITIAL
+                watcher._health_check()
+
+                new_handler = observer.scheduled[1][0]
+                old_handler.on_any_event(
+                    SimpleNamespace(
+                        is_directory=False,
+                        event_type="created",
+                        src_path=str(root / "old.jpg"),
+                        dest_path="",
+                    )
+                )
+                self.assertEqual(watcher._pending, set())
+
+                new_handler.on_any_event(
+                    SimpleNamespace(
+                        is_directory=False,
+                        event_type="created",
+                        src_path=str(root / "new.jpg"),
+                        dest_path="",
+                    )
+                )
+
+        self.assertEqual(observer.unscheduled, [observer.handles[0]])
+        self.assertGreater(watcher._watches[key].generation, old_generation)
+        self.assertEqual(watcher._pending, {key})
+
+    def test_nas_transient_missing_waits_for_grace_then_recovers(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            key = str(root)
+            watcher = asset_watcher._Watcher()
+            observer = _FakeObserver()
+            watcher._observer = observer
+            watcher.watch(root, "nas", registration_id="owner")
+            old_handle = observer.handles[0]
+            old_generation = watcher._watches[key].generation
+            old_identity = watcher._watches[key].identity
+            observer.alive = True
+            clock = [0.0]
+            available = [False]
+
+            with (
+                patch.object(watcher, "_ensure_health_timer_locked"),
+                patch.object(
+                    asset_watcher,
+                    "_directory_identity",
+                    side_effect=lambda _key: old_identity if available[0] else None,
+                ),
+                patch.object(asset_watcher.time, "monotonic", side_effect=lambda: clock[0]),
+            ):
+                # 첫 단절은 7초 안에 회복한다. 기존 핸들과 세대가 그대로여야 한다.
+                for clock[0] in (0.0, 1.0, 3.0):
+                    watcher._health_check()
+                available[0] = True
+                clock[0] = 7.0
+                watcher._health_check()
+
+                self.assertEqual(observer.unscheduled, [])
+                self.assertIs(watcher._watches[key].handle, old_handle)
+                self.assertEqual(watcher._watches[key].generation, old_generation)
+                self.assertNotIn(key, watcher._recoveries)
+
+                # 두 번째 단절은 30초 유예를 넘긴다. 그때만 옛 핸들을 죽은 것으로 확정한다.
+                available[0] = False
+                for clock[0] in (10.0, 11.0, 13.0, 17.0, 25.0, 33.0):
+                    watcher._health_check()
+                    self.assertEqual(observer.unscheduled, [])
+                clock[0] = 41.0
+                watcher._health_check()
+
+                self.assertEqual(observer.unscheduled, [old_handle])
+                self.assertIsNone(watcher._watches[key].handle)
+                self.assertIn(key, watcher._registrations_by_dir)
+
+                available[0] = True
+                clock[0] = 49.0
+                watcher._health_check()
+
+        self.assertEqual(len(observer.scheduled), 2)
+        self.assertIs(watcher._watches[key].handle, observer.handles[1])
+        self.assertGreater(watcher._watches[key].generation, old_generation)
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and asset_watcher._HAS_WATCHDOG,
+        "Windows watchdog 실측 전용",
+    )
+    def test_windows_delete_and_rename_recreate_reschedule_real_handle(self):
+        def wait_until(predicate, message: str, timeout: float = 8.0) -> None:
+            deadline = monotonic() + timeout
+            while monotonic() < deadline:
+                if predicate():
+                    return
+                sleep(0.02)
+            self.fail(message)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp) / "watched"
+            root.mkdir()
+            key = str(root)
+            watcher = asset_watcher._Watcher()
+            loop = asyncio.new_event_loop()
+            try:
+                with (
+                    patch.object(asset_watcher, "_WATCH_HEALTH_INTERVAL", 0.05),
+                    patch.object(asset_watcher, "_MISSING_RETRY_INITIAL", 0.05),
+                    patch.object(asset_watcher, "_MISSING_RETRY_MAX", 0.1),
+                    patch.object(asset_watcher, "_MISSING_GRACE", 0.5),
+                    patch.object(asset_watcher, "_DEBOUNCE", 10.0),
+                ):
+                    watcher.start(loop)
+                    watcher.watch(root, "windows-real", registration_id="owner")
+                    old_generation = watcher._watches[key].generation
+                    old_handle = watcher._watches[key].handle
+
+                    root.rmdir()
+                    root.mkdir()
+
+                    wait_until(
+                        lambda: (
+                            watcher._watches[key].generation > old_generation
+                            and watcher._watches[key].handle is not None
+                            and watcher._watches[key].handle is not old_handle
+                        ),
+                        "삭제·재생성 뒤 새 watchdog 핸들이 등록되지 않음",
+                    )
+
+                    watcher._on_change(key, old_generation)
+                    self.assertNotIn(key, watcher._pending)
+
+                    (root / "after-recreate.jpg").write_bytes(b"jpg")
+                    wait_until(
+                        lambda: key in watcher._pending,
+                        "재생성된 폴더의 실제 파일 이벤트를 받지 못함",
+                    )
+
+                    with watcher._lock:
+                        if watcher._timer:
+                            watcher._timer.cancel()
+                            watcher._timer = None
+                        watcher._pending.clear()
+                        rename_generation = watcher._watches[key].generation
+                        rename_handle = watcher._watches[key].handle
+
+                    renamed = root.with_name("watched-renamed")
+                    root.rename(renamed)
+                    root.mkdir()
+
+                    wait_until(
+                        lambda: (
+                            watcher._watches[key].generation > rename_generation
+                            and watcher._watches[key].handle is not None
+                            and watcher._watches[key].handle is not rename_handle
+                        ),
+                        "이름변경·원래 이름 재생성 뒤 새 watchdog 핸들이 등록되지 않음",
+                    )
+                    watcher._on_change(key, rename_generation)
+                    self.assertNotIn(key, watcher._pending)
+
+                    (root / "after-rename.jpg").write_bytes(b"jpg")
+                    wait_until(
+                        lambda: key in watcher._pending,
+                        "이름변경 뒤 재생성된 폴더의 실제 파일 이벤트를 받지 못함",
+                    )
+            finally:
+                watcher.stop()
+                loop.close()
 
     def test_hide_render_policy_recomputes_after_shared_registration_leaves(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
