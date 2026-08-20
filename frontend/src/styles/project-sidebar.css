@@ -5,9 +5,10 @@
 .proj-row-wrap { display: flex; align-items: center; gap: 2px; }
 .proj-row-wrap.on { background: var(--grad-soft); border-radius: 7px; }
 .proj-row {
-  flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 7px;
+  flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 6px;
   min-width: 0; background: transparent; border: none; cursor: pointer; text-align: left;
-  padding: 5px 8px; border-radius: 7px; color: var(--muted2); font-size: 12px;
+  /* 좌 6px + 접기 9px + 6 + 손잡이 15px + 6 = 이름 42px — 아래 폴더 행(캐럿9·아이콘15)과 같은 그리드. */
+  padding: 5px 8px 5px 6px; border-radius: 7px; color: var(--muted2); font-size: 12px;
 }
 .proj-row:hover { background: rgba(255,255,255,0.06); }
 .proj-row.on { background: transparent; color: var(--text); font-weight: 700; }
@@ -20,15 +21,17 @@
 .proj-row.sel-target { background: rgba(255,79,138,0.2); color: #fff; font-weight: 700; }
 .proj-row.sel-target:hover { background: rgba(255,79,138,0.28); }
 .proj-row.sel-target .proj-count { color: #ffd6e5; }
-/* 프로젝트 접기 토글(▾/▸) — 폴더 트리가 없는 프로젝트는 ghost 로 자리만 맞춘다. */
+/* 프로젝트 접기 토글(▾/▸) — 폴더 캐럿(9px)과 같은 폭·열. 트리 없는 프로젝트는 ghost 로 자리만. */
 .proj-fold {
-  flex: none; width: 14px; padding: 0; background: transparent; border: none;
+  flex: none; width: 9px; padding: 0; background: transparent; border: none;
   color: var(--muted2); font-size: 10px; cursor: pointer; text-align: center;
 }
 .proj-fold:hover { color: var(--text); }
 .proj-fold.ghost { cursor: default; }
-/* 순서 드래그 손잡이(⠿) — hover 시에만 보이고, 잡았을 때만 행이 draggable. */
-.proj-row .proj-drag-handle { opacity: 0; margin-right: 2px; font-size: 11px; flex: none; cursor: grab; }
+/* 순서 드래그 손잡이(⠿) — 폴더 아이콘(15px) 자리에 상시 폭 확보(이름 열 정렬), hover 에만 보임. */
+.proj-row .proj-drag-handle {
+  opacity: 0; width: 15px; text-align: center; font-size: 11px; flex: none; cursor: grab;
+}
 .proj-row:hover .proj-drag-handle { opacity: 0.5; }
 .proj-row .proj-drag-handle:hover { opacity: 1; }
 .proj-row .proj-drag-handle:active { cursor: grabbing; }
