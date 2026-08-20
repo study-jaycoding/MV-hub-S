@@ -590,7 +590,19 @@ export function SettingsPanel({
                 🗑️ {hfMsg || t("HF 삭제물 체크")}
               </button>
             </div>
-            <SettingsDescription summary={t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")}>
+            {/* 실시간 정보(과거 가져오기 진행·결과)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
+            <SettingsDescription
+              summary={
+                historyImport?.state === "running"
+                  ? `과거 생성물 가져오는 중… ${historyImport.received}건`
+                  : historyImport?.message
+                    ? historyImport.message +
+                      (historyImport.state === "complete"
+                        ? ` · 신규 ${historyImport.inserted} · 갱신 ${historyImport.updated} · 기존 ${historyImport.unchanged}`
+                        : "")
+                    : t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")
+              }
+            >
               <p>{t("생성물 재점검은 최근 결과의 잘못된 상태를 정정합니다.")}</p>
               <p>{t("HF 생성물 체크는 힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}</p>
               <p>{t("HF 삭제물 체크는 힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}</p>
@@ -604,14 +616,6 @@ export function SettingsPanel({
                   : "⏱ 과거 생성물 전체 가져오기"}
               </button>
               <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
-              {historyImport?.message && (
-                <p className="manage-msg" aria-live="polite">
-                  {historyImport.message}
-                  {historyImport.state === "complete"
-                    ? ` · 신규 ${historyImport.inserted} · 갱신 ${historyImport.updated} · 기존 ${historyImport.unchanged}`
-                    : ""}
-                </p>
-              )}
             </SettingsDescription>
           </section>
 

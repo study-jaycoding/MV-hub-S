@@ -210,18 +210,26 @@ export function MetadataContinuitySection({
           {dbBusy ? "동기화 중…" : serverBackupsLoading ? "확인 중…" : "🔄 메타데이터 동기화"}
         </button>
       </div>
-      <SettingsDescription summary={syncTargetText}>
+      {/* 실시간 정보(동기화 대상·백업 상태)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
+      <SettingsDescription
+        summary={
+          <>
+            {syncTargetText}
+            <br />
+            <span aria-live="polite">
+              로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
+              {backupContinuity?.local.latest_file_count
+                ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
+                : ""}
+              {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
+              {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
+              {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
+            </span>
+          </>
+        }
+      >
         <p>{t("자동 백업은 서버로 올리기만 하며 로컬 작업을 자동으로 덮어쓰지 않습니다.")}</p>
         <p>{t("동기화 전 백업 날짜와 PC를 확인하며, 적용 전 현재 DB를 안전하게 보관합니다.")}</p>
-        <p aria-live="polite">
-          로컬 백업 <b>{backupContinuity?.local.set_count ?? "—"}세트</b>
-          {backupContinuity?.local.latest_file_count
-            ? ` · 최신 ${backupContinuity.local.latest_file_count}개 DB 구성`
-            : ""}
-          {" · "}공유 서버 <b>{shared ? (stateLabels[shared.state] || shared.state) : "확인 중"}</b>
-          {shared?.pending ? ` · 대기 ${shared.pending}건` : ""}
-          {shared ? ` · 마지막 성공 ${lastSuccess}` : ""}
-        </p>
         <button className="settings-action ghost" onClick={onLoadServerBackups} disabled={dbBusy || serverBackupsLoading}>
           {serverBackupsLoading ? "확인 중…" : serverBackups === null ? "백업 버전 선택" : "백업 목록 닫기"}
         </button>
@@ -504,17 +512,28 @@ export function ReleaseUpdateSettingsSection({
           다시 확인
         </button>
       </div>
-      {/* 새 버전이 있으면 접기 안이 아니라 항상 보이는 캡션 자리에 버전 이동을 보여준다. */}
+      {/* 실시간 정보(버전·진행 메시지·대기 경고)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
       <SettingsDescription
-        summary={updateAvailable ? versionText : "새 버전을 확인하고 안전하게 업데이트합니다."}
+        summary={
+          <>
+            {versionText}
+            {(msg || releaseUpdateMessage(status)) && (
+              <>
+                <br />
+                {msg || releaseUpdateMessage(status)}
+              </>
+            )}
+            {releaseInstall && active > 0 && (
+              <>
+                <br />
+                <span style={{ color: "#f5a623" }}>
+                  유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
+                </span>
+              </>
+            )}
+          </>
+        }
       >
-        {!updateAvailable && <p>{versionText}</p>}
-        <p>{msg || releaseUpdateMessage(status) || "릴리스 서버를 확인하고 있습니다."}</p>
-        {releaseInstall && active > 0 && (
-          <p style={{ color: "#f5a623" }}>
-            유료 생성 또는 Comfy 작업이 끝나기 전에는 업데이트하지 않습니다.
-          </p>
-        )}
         <p>
           {releaseInstall
             ? "검증된 릴리스를 설치한 뒤 MV Hub를 자동으로 다시 시작합니다. 작업 파일과 로컬 DB는 유지됩니다."
