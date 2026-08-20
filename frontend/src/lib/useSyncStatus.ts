@@ -12,6 +12,7 @@ export interface SyncStatus {
   last_success_at: string | null;
   account_report_pending: number;
   account_report_failed: number;
+  account_report_dead?: number;
   account_report_last_error: string | null;
   account_report_oldest_dirty: string | null;
   account_report_last_success_at: string | null;
@@ -22,7 +23,9 @@ export function syncPendingCount(status: SyncStatus): number {
 }
 
 export function syncFailedCount(status: SyncStatus): number {
-  return Math.max(0, status.failed || 0) + Math.max(0, status.account_report_failed || 0);
+  return Math.max(0, status.failed || 0)
+    + Math.max(0, status.account_report_failed || 0)
+    + Math.max(0, status.account_report_dead || 0);
 }
 
 export function latestSyncSuccess(status: SyncStatus): string | null {

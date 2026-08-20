@@ -1012,12 +1012,22 @@ class PeriodicWorkerBackupUpload:
             finally:
                 if self._process is process:
                     self._process = None
+            # ACK 뒤 로컬 done 기록에서 자식이 죽은 경우를 포함한다. 서버의 backup_set_id
+            # 저장은 멱등이므로 다음 전송이 가능하도록 남은 running claim을 즉시 되돌린다.
+            if process.returncode != 0:
+                recover_in_progress()
             try:
                 # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
                 output = (stdout or b"{}").decode("utf-8").splitlines()
                 parsed = json.loads(output[-1] if output else "{}")
-                return parsed if isinstance(parsed, dict) else {"state": "failed"}
+                if not isinstance(parsed, dict):
+                    recover_in_progress()
+                    return {"state": "failed", "error_code": "worker_failed"}
+                if process.returncode != 0 and parsed.get("state") != "failed":
+                    return {"state": "failed", "error_code": "worker_failed"}
+                return parsed
             except (UnicodeDecodeError, ValueError):
+                recover_in_progress()
                 return {"state": "failed", "error_code": "worker_failed"}
 
 

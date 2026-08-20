@@ -39,7 +39,7 @@
 |---|---|---|
 | 0 | 읽기 전용 기준선 측정: HF 계약 보존, 고아 분류 보고서, 레거시 workspace/시각 포맷 분포, 부팅 백업·쿼터 스캔 소요. RL-23 물리 훈련은 별도 병렬 트랙 | 코덱스 조사 → 클로드 판단 |
 | 1 | 과금 경계: ✅MV-hub 일반 생성 요청 멱등키(2026-08-20 코덱스 구현·클로드 검토·전 회귀 통과) → 혼합 배포 게이트(Jay 결정 대기) | 코덱스 → 클로드 |
-| 2 | 수신·전달 무결성: `_mark_success` 비정상 종료 복구 → poison 행 격리(디코드 오류만 즉시) → 거래 stable ID/remap | 코덱스 → 클로드 |
+| 2 | ✅수신·전달 무결성(2026-08-20 코덱스 구현·클로드 검토·전 회귀 통과): `_mark_success` 비정상 종료 복구 + poison 행 dead-letter(디코드 오류만, 409는 재시도 유지, 행별 전송) + 거래 stable ID(이메일 기반, 옛 ID 재사용 이중 대조 + 중복 병합 마이그레이션) | 코덱스 → 클로드 |
 | 3 | RL-11 desired-state reconciliation 설계(blind replay 아님을 테스트로 고정) | 클로드 설계 → 코덱스 적대 리뷰 |
 | 4 | 이벤트 루프·부팅: media_preservation DB 호출 to_thread → worker_backup 루프 호출점 → startup 중복 선확인 | 코덱스 → 클로드 |
 | 5 | 워치독 단독: 200 본문 status 확인 + 절대경로 PID 판별 + kill 직전 재확인 + Windows dry-run 격리 시험. fail-closed(확신 없으면 경보만) | 코덱스 → 클로드 |

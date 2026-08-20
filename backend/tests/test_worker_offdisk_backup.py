@@ -230,6 +230,49 @@ def test_interrupted_running_row_is_recovered(worker_store: Path):
     assert tuple(row) == ("pending", "interrupted")
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [(1, b""), (0, b"not-json")],
+)
+def test_child_failure_or_invalid_result_recovers_running_claim(
+    worker_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: bytes,
+):
+    backup_set_id, _stage, _manifest = _queued(worker_store)
+
+    class FailedChild:
+        def __init__(self):
+            self.returncode = returncode
+
+        async def communicate(self):
+            # 실제 자식의 _claim_due 직후, ACK 처리나 결과 출력 중 죽은 상태를 재현한다.
+            with worker_backup._connect() as conn:
+                conn.execute(
+                    "UPDATE worker_backup_outbox SET status='running' WHERE backup_set_id=?",
+                    (backup_set_id,),
+                )
+            return stdout, b""
+
+    child = FailedChild()
+
+    async def create_child(*_args, **_kwargs):
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_child)
+
+    result = asyncio.run(worker_backup.PeriodicWorkerBackupUpload().run_now())
+
+    assert result == {"state": "failed", "error_code": "worker_failed"}
+    with worker_backup._connect() as conn:
+        row = conn.execute(
+            "SELECT status,last_error_code FROM worker_backup_outbox WHERE backup_set_id=?",
+            (backup_set_id,),
+        ).fetchone()
+    assert tuple(row) == ("pending", "interrupted")
+
+
 def test_restart_cleanup_keeps_pending_set_and_removes_only_stale_staging(
     worker_store: Path,
 ):

@@ -83,9 +83,10 @@ export function AccountMenu({
   const sync = useSyncStatus(!!localHub);
   const syncPending = sync ? syncPendingCount(sync) : 0;
   const syncFailed = sync ? syncFailedCount(sync) : 0;
+  const syncDead = Math.max(0, sync?.account_report_dead || 0);
   const syncError = sync?.account_report_last_error || sync?.last_error || undefined;
   const syncBreakdown = sync
-    ? `생성정보 ${sync.pending || 0}건 · 계정/거래 ${sync.account_report_pending || 0}건`
+    ? `생성정보 ${sync.pending || 0}건 · 계정/거래 ${sync.account_report_pending || 0}건 · 격리 ${syncDead}건`
     : undefined;
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
@@ -286,7 +287,7 @@ export function AccountMenu({
           {/* 생성정보와 계정·거래 보고 실패를 합쳐 노출한다. 세부 대기 건수는 위 상태 title로 확인. */}
           {sync && syncFailed > 0 && (
             <div className="acct-sync-warn" title={syncError}>
-              ⚠ 매니징 동기화 {syncFailed}건 실패 — 다음 동기화 때 재시도{syncPending > syncFailed ? ` (대기 ${syncPending})` : ""}
+              ⚠ 매니징 동기화 {syncFailed}건 실패{syncDead > 0 ? ` · ${syncDead}건 격리` : ""}{syncFailed > syncDead ? " — 다음 동기화 때 재시도" : ""}{syncPending > syncFailed ? ` (대기 ${syncPending})` : ""}
             </div>
           )}
 

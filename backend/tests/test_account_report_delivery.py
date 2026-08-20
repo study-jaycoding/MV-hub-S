@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from fastapi import HTTPException
+
 from app import db, repo
 from app.repo import manage
 from app.services.account_report_delivery import drain_remote_account_reports
@@ -122,7 +124,90 @@ class AccountReportDeliveryTests(unittest.TestCase):
             r"^\d{4}-\d{2}-\d{2}T.*Z$",
         )
         self.assertEqual(sent_payloads[0]["creator_uid"], "user_artist")
-        self.assertEqual(len(sent_payloads[0]["account_transactions"]), 1)
+        self.assertEqual(
+            sum(len(payload["account_transactions"]) for payload in sent_payloads),
+            1,
+        )
+
+    def test_invalid_local_row_is_dead_lettered_while_valid_rows_continue(self):
+        good = self._transaction()
+        bad = {**self._transaction(), "created_at": "2026-08-16T02:00:00Z"}
+        manage.queue_account_reports(self._status(), [good, bad])
+        rows = manage.list_due_account_reports()
+        bad_row = [row for row in rows if row["report_type"] == "transaction"][0]
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE account_report_outbox SET payload_json='{' WHERE report_key=?",
+                (bad_row["report_key"],),
+            )
+        sent = []
+
+        result = drain_remote_account_reports(
+            lambda payload: sent.append(payload) or {"accepted": True},
+            creator_uid="user_artist",
+        )
+
+        self.assertEqual(result, {"target": "remote", "pushed": 2, "failed": 1})
+        self.assertEqual(
+            sum(len(payload["account_transactions"]) for payload in sent),
+            1,
+        )
+        status = manage.account_report_outbox_status()
+        self.assertEqual(status["account_report_pending"], 0)
+        self.assertEqual(status["account_report_failed"], 0)
+        self.assertEqual(status["account_report_dead"], 1)
+        self.assertEqual(manage.list_due_account_reports(), [])
+        with db.get_connection() as conn:
+            poison = conn.execute(
+                "SELECT pushed_at,dead_lettered_at FROM account_report_outbox "
+                "WHERE report_key=?",
+                (bad_row["report_key"],),
+            ).fetchone()
+        self.assertIsNone(poison["pushed_at"])
+        self.assertIsNotNone(poison["dead_lettered_at"])
+
+    def test_one_server_rejection_does_not_hold_valid_rows_hostage(self):
+        good = self._transaction()
+        bad = {
+            **self._transaction(),
+            "created_at": "2026-08-16T02:00:00Z",
+            "display_name": "Rejected Model",
+        }
+        manage.queue_account_reports(self._status(), [good, bad])
+
+        def push(payload):
+            transactions = payload["account_transactions"]
+            if transactions and transactions[0]["display_name"] == "Rejected Model":
+                raise RuntimeError("row rejected")
+            return {"accepted": True}
+
+        result = drain_remote_account_reports(push, creator_uid="user_artist")
+
+        self.assertEqual(result["pushed"], 2)
+        self.assertEqual(result["failed"], 1)
+        status = manage.account_report_outbox_status()
+        self.assertEqual(status["account_report_pending"], 1)
+        self.assertEqual(status["account_report_failed"], 1)
+        self.assertEqual(status["account_report_dead"], 0)
+
+    def test_http_409_remains_retryable_and_is_not_dead_lettered(self):
+        manage.queue_account_reports(self._status(), [])
+
+        result = drain_remote_account_reports(
+            mock.Mock(
+                side_effect=HTTPException(
+                    status_code=409, detail="account identity mismatch"
+                )
+            ),
+            creator_uid="user_artist",
+        )
+
+        self.assertEqual(result["pushed"], 0)
+        self.assertEqual(result["failed"], 1)
+        status = manage.account_report_outbox_status()
+        self.assertEqual(status["account_report_pending"], 1)
+        self.assertEqual(status["account_report_failed"], 1)
+        self.assertEqual(status["account_report_dead"], 0)
 
     def test_missing_status_email_never_sends_transactions_under_guessed_identity(self):
         manage.queue_account_reports(None, [self._transaction()])

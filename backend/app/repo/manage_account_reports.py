@@ -42,7 +42,7 @@ def _queue_row(
         "payload_hash=excluded.payload_hash, "
         "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
         "dirty_rev=account_report_outbox.dirty_rev+1, pushed_at=NULL, "
-        "last_error=NULL, fail_streak=0, next_retry_at=NULL "
+        "last_error=NULL, fail_streak=0, next_retry_at=NULL, dead_lettered_at=NULL "
         "WHERE account_report_outbox.payload_hash<>excluded.payload_hash",
         (report_key, report_type, serialized, payload_hash),
     )
@@ -104,6 +104,7 @@ def list_due_account_reports(limit: int = 100) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT report_key, report_type, payload_json, dirty_at, dirty_rev "
             "FROM account_report_outbox WHERE pushed_at IS NULL "
+            "AND dead_lettered_at IS NULL "
             "AND (next_retry_at IS NULL OR "
             "next_retry_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
             "ORDER BY dirty_at ASC LIMIT ?",
@@ -117,7 +118,8 @@ def latest_account_status_payload() -> Optional[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
         row = conn.execute(
-            "SELECT payload_json FROM account_report_outbox WHERE report_key=?",
+            "SELECT payload_json FROM account_report_outbox "
+            "WHERE report_key=? AND dead_lettered_at IS NULL",
             (_STATUS_KEY,),
         ).fetchone()
     if not row:
@@ -143,7 +145,8 @@ def mark_account_reports_pushed(items: list[dict[str, Any]]) -> int:
                 "UPDATE account_report_outbox SET "
                 "pushed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
                 "attempts=attempts+1, last_error=NULL, fail_streak=0, next_retry_at=NULL "
-                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL",
+                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL "
+                "AND dead_lettered_at IS NULL",
                 (report_key, dirty_rev),
             )
             updated_count += max(0, int(cursor.rowcount or 0))
@@ -171,7 +174,32 @@ def mark_account_reports_failed(items: list[dict[str, Any]], error: str) -> int:
                 "fail_streak=fail_streak+1, "
                 "next_retry_at=strftime('%Y-%m-%dT%H:%M:%fZ','now', "
                 "printf('+%d seconds', MIN(3600, 60*(fail_streak+1)*(fail_streak+1)))) "
-                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL",
+                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL "
+                "AND dead_lettered_at IS NULL",
+                (str(error)[:500], report_key, dirty_rev),
+            )
+            updated_count += max(0, int(cursor.rowcount or 0))
+    return updated_count
+
+
+def mark_account_reports_dead_lettered(
+    items: list[dict[str, Any]], error: str
+) -> int:
+    """현재 revision의 로컬 영구 오류를 삭제하지 않고 재시도 대상에서 격리한다."""
+    updated_count = 0
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for item in items or []:
+            report_key = item.get("report_key")
+            dirty_rev = item.get("dirty_rev")
+            if not report_key or dirty_rev is None:
+                continue
+            cursor = conn.execute(
+                "UPDATE account_report_outbox SET attempts=attempts+1, last_error=?, "
+                "fail_streak=fail_streak+1, next_retry_at=NULL, "
+                "dead_lettered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL "
+                "AND dead_lettered_at IS NULL",
                 (str(error)[:500], report_key, dirty_rev),
             )
             updated_count += max(0, int(cursor.rowcount or 0))
@@ -183,6 +211,7 @@ def account_report_outbox_status() -> dict[str, Any]:
     empty = {
         "account_report_pending": 0,
         "account_report_failed": 0,
+        "account_report_dead": 0,
         "account_report_last_error": None,
         "account_report_oldest_dirty": None,
         "account_report_last_success_at": None,
@@ -194,12 +223,21 @@ def account_report_outbox_status() -> dict[str, Any]:
         ).fetchone()
         if not table_exists:
             return empty
+        columns = {
+            item[1] for item in conn.execute("PRAGMA table_info(account_report_outbox)")
+        }
+        # 관측 API는 스키마를 만들지 않는다. 아직 write 경로가 새 컬럼을 보장하지 않은 구 DB도
+        # 읽을 수 있도록 없는 컬럼은 dead-letter 0건으로 취급한다.
+        active_sql = "dead_lettered_at IS NULL" if "dead_lettered_at" in columns else "1=1"
+        dead_sql = "dead_lettered_at IS NOT NULL" if "dead_lettered_at" in columns else "0"
         row = conn.execute(
             "SELECT "
-            "SUM(CASE WHEN pushed_at IS NULL THEN 1 ELSE 0 END) AS pending, "
-            "SUM(CASE WHEN pushed_at IS NULL AND last_error IS NOT NULL THEN 1 ELSE 0 END) "
+            f"SUM(CASE WHEN pushed_at IS NULL AND {active_sql} THEN 1 ELSE 0 END) AS pending, "
+            f"SUM(CASE WHEN pushed_at IS NULL AND {active_sql} "
+            "AND last_error IS NOT NULL THEN 1 ELSE 0 END) "
             "AS failed, "
-            "MIN(CASE WHEN pushed_at IS NULL THEN dirty_at END) AS oldest_dirty "
+            f"SUM(CASE WHEN pushed_at IS NULL AND {dead_sql} THEN 1 ELSE 0 END) AS dead, "
+            f"MIN(CASE WHEN pushed_at IS NULL AND {active_sql} THEN dirty_at END) AS oldest_dirty "
             "FROM account_report_outbox"
         ).fetchone()
         error_row = conn.execute(
@@ -219,6 +257,7 @@ def account_report_outbox_status() -> dict[str, Any]:
     return {
         "account_report_pending": (row["pending"] if row else 0) or 0,
         "account_report_failed": (row["failed"] if row else 0) or 0,
+        "account_report_dead": (row["dead"] if row else 0) or 0,
         "account_report_last_error": error_row["last_error"] if error_row else None,
         "account_report_oldest_dirty": row["oldest_dirty"] if row else None,
         "account_report_last_success_at": (

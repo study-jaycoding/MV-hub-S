@@ -70,8 +70,9 @@ describe("telemetry sync status", () => {
       failed: 1,
       account_report_pending: 3,
       account_report_failed: 2,
+      account_report_dead: 4,
     });
     expect(syncPendingCount(value)).toBe(5);
-    expect(syncFailedCount(value)).toBe(3);
+    expect(syncFailedCount(value)).toBe(7);
   });
 });

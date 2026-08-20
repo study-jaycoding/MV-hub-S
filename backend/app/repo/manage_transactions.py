@@ -23,6 +23,18 @@ def _epoch(iso: Optional[str]) -> Optional[float]:
         return None
 
 
+def _stable_transaction_id(
+    account_email: str,
+    created_at,
+    credits,
+    action,
+    display_name,
+) -> str:
+    """owner_uid remap과 무관한 서버 계정 키로 새 거래 ID를 만든다."""
+    raw = f"account:{account_email}|{created_at}|{credits}|{action}|{display_name}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
 def record_transactions(
     owner_uid: Optional[str],
     account_email: Optional[str],
@@ -44,10 +56,27 @@ def record_transactions(
                 action = transaction.get("action")
                 display_name = transaction.get("display_name")
                 model = transaction.get("model")
-                raw = (
-                    f"{owner_uid}|{created_at}|{credits}|{action}|{display_name}"
-                )
-                transaction_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+                account_key = str(account_email or "").strip().lower()
+                existing = None
+                if account_key:
+                    # 배포 전 owner 기반 ID 행도 안정 필드로 찾아 그 PK를 그대로 재사용한다.
+                    # 따라서 remap 사이 재전송과 새 ID 산식 전환 모두 별도 행을 만들지 않는다.
+                    existing = conn.execute(
+                        "SELECT id FROM credit_txn WHERE LOWER(TRIM(account_email))=? "
+                        "AND created_at IS ? AND credits IS ? AND action IS ? "
+                        "AND display_name IS ? LIMIT 1",
+                        (account_key, created_at, credits, action, display_name),
+                    ).fetchone()
+                if existing is not None:
+                    transaction_id = existing["id"]
+                elif account_key:
+                    transaction_id = _stable_transaction_id(
+                        account_key, created_at, credits, action, display_name
+                    )
+                else:
+                    # 이메일이 없는 레거시 내부 호출은 서로 다른 계정을 합치지 않도록 옛 산식을 유지한다.
+                    raw = f"{owner_uid}|{created_at}|{credits}|{action}|{display_name}"
+                    transaction_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO credit_txn"
                     "(id, owner_uid, account_email, display_name, credits, action, created_at, model) "
@@ -55,7 +84,7 @@ def record_transactions(
                     (
                         transaction_id,
                         owner_uid,
-                        account_email,
+                        account_key or account_email,
                         display_name,
                         credits,
                         action,

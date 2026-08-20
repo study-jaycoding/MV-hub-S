@@ -128,7 +128,8 @@ _SCHEMA = (
         attempts        INTEGER NOT NULL DEFAULT 0,
         last_error      TEXT,
         fail_streak     INTEGER NOT NULL DEFAULT 0,
-        next_retry_at   TEXT
+        next_retry_at   TEXT,
+        dead_lettered_at TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS account_report_delivery_state (
         id              INTEGER PRIMARY KEY CHECK(id = 1),
@@ -149,6 +150,7 @@ _SCHEMA = (
 # 계정 DB 전환과 DB 파일 교체를 구분하도록 (경로, 풀 에폭)별로 보장 여부를 기억한다.
 _SCHEMA_ENSURED: set[tuple[str, int]] = set()
 _TASK_WORKSPACE_MIGRATION_KEY = "task_workspace_snapshot_v1"
+_CREDIT_TXN_IDENTITY_INDEX = "idx_credit_txn_stable_identity"
 
 
 def unresolved_workspace_sql(alias: str = "") -> str:
@@ -453,6 +455,106 @@ def _ensure_task_workspace_schema(conn, task_columns: set[str]) -> None:
         raise
 
 
+def _ensure_credit_transaction_identity(conn) -> None:
+    """옛 owner 기반 ID 행을 보존하며 안정 계정 키 중복을 원자적으로 병합·차단한다."""
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+        (_CREDIT_TXN_IDENTITY_INDEX,),
+    ).fetchone():
+        return
+
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute("SAVEPOINT credit_txn_identity_migration")
+    try:
+        rows = conn.execute(
+            "SELECT rowid AS _rowid, id, owner_uid, account_email, created_at, credits, "
+            "action, display_name, matched_gen_id, model FROM credit_txn "
+            "WHERE account_email IS NOT NULL AND TRIM(account_email)<>'' ORDER BY rowid"
+        ).fetchall()
+        groups: dict[tuple[Any, ...], list[Any]] = defaultdict(list)
+        for row in rows:
+            groups[
+                (
+                    str(row["account_email"]).strip().lower(),
+                    row["created_at"],
+                    row["credits"],
+                    row["action"],
+                    row["display_name"],
+                )
+            ].append(row)
+
+        for duplicates in groups.values():
+            if len(duplicates) < 2:
+                continue
+
+            def survivor_rank(row: Any) -> tuple[int, int, int, int]:
+                owner = str(row["owner_uid"] or "")
+                return (
+                    int(bool(row["matched_gen_id"])),
+                    int(bool(owner) and not owner.startswith("acct:")),
+                    int(bool(str(row["model"] or "").strip())),
+                    -int(row["_rowid"]),
+                )
+
+            survivor = max(duplicates, key=survivor_rank)
+            preferred_owner = next(
+                (
+                    row["owner_uid"]
+                    for row in duplicates
+                    if row["owner_uid"]
+                    and not str(row["owner_uid"]).startswith("acct:")
+                ),
+                survivor["owner_uid"],
+            )
+            preferred_model = next(
+                (
+                    row["model"]
+                    for row in duplicates
+                    if str(row["model"] or "").strip()
+                ),
+                survivor["model"],
+            )
+            conn.execute(
+                "UPDATE credit_txn SET owner_uid=?, model=? WHERE id=?",
+                (preferred_owner, preferred_model, survivor["id"]),
+            )
+            for duplicate in duplicates:
+                if duplicate["id"] == survivor["id"]:
+                    continue
+                duplicate_match = duplicate["matched_gen_id"]
+                if duplicate_match and duplicate_match != survivor["matched_gen_id"]:
+                    # 같은 거래의 중복 행이 다른 생성물까지 과금한 경우, 거래 유래 실제값만 되돌린다.
+                    conn.execute(
+                        "UPDATE generation_metrics SET real_credits=NULL, credit_source=NULL, matched=0 "
+                        "WHERE gen_id=? AND credit_source='transaction'",
+                        (duplicate_match,),
+                    )
+                conn.execute("DELETE FROM credit_txn WHERE id=?", (duplicate["id"],))
+
+        # 이메일은 서버 로그인 계정의 불변 키다. 나머지는 기존 거래 ID의 네 필드와 같으며,
+        # BLOB sentinel로 NULL도 서로 같은 값으로 취급해 UNIQUE의 NULL 예외를 막는다.
+        conn.execute(
+            f"CREATE UNIQUE INDEX {_CREDIT_TXN_IDENTITY_INDEX} ON credit_txn("
+            "LOWER(TRIM(account_email)), IFNULL(created_at, X'00'), "
+            "IFNULL(credits, X'00'), IFNULL(action, X'00'), IFNULL(display_name, X'00')) "
+            "WHERE account_email IS NOT NULL AND TRIM(account_email)<>''"
+        )
+        if owns_transaction:
+            conn.execute("COMMIT")
+        else:
+            conn.execute("RELEASE credit_txn_identity_migration")
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        elif conn.in_transaction:
+            conn.execute("ROLLBACK TO credit_txn_identity_migration")
+            conn.execute("RELEASE credit_txn_identity_migration")
+        raise
+
+
 def ensure_manage_schema(conn) -> None:
     """현재 계정 DB에 사이드카 테이블·인덱스·호환 컬럼을 멱등으로 보장한다."""
     key = (str(get_db_path()), pool_epoch())
@@ -490,6 +592,7 @@ def ensure_manage_schema(conn) -> None:
     transaction_columns = {row[1] for row in conn.execute("PRAGMA table_info(credit_txn)")}
     if "model" not in transaction_columns:
         conn.execute("ALTER TABLE credit_txn ADD COLUMN model TEXT")
+    _ensure_credit_transaction_identity(conn)
 
     planning_columns = {row[1] for row in conn.execute("PRAGMA table_info(project_planning)")}
     if "budget_period" not in planning_columns:
@@ -521,6 +624,14 @@ def ensure_manage_schema(conn) -> None:
         # 기존 행은 첫 revision으로 간주하고 이후 dirty마다 1씩 증가시킨다.
         conn.execute(
             "ALTER TABLE telemetry_outbox ADD COLUMN dirty_rev INTEGER NOT NULL DEFAULT 1"
+        )
+
+    account_report_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(account_report_outbox)")
+    }
+    if "dead_lettered_at" not in account_report_columns:
+        conn.execute(
+            "ALTER TABLE account_report_outbox ADD COLUMN dead_lettered_at TEXT"
         )
 
     # 과거 설치본은 outbox의 pushed_at만 가지고 있다. 최초 마이그레이션 때 그중 가장 최근
