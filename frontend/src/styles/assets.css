@@ -483,6 +483,9 @@
    min-content 가 0 이 아니라 항상 '너비만큼'이라 항목이 많아도 납작해지지 않음. */
 .assets-masonry .asset-media {
   width: 100%; height: 0; padding-bottom: 100%; box-sizing: content-box;
+  /* 생성탭 카드(.card-thumb)와 동일하게 셀 폭 기준 컨테이너로 — 좁은 셀에서
+     generations.css 의 @container 축소 규칙(ⓘ·S/T/C)이 여기에도 적용되게 한다. */
+  container-type: inline-size;
 }
 .assets-masonry .asset-media img,
 .assets-masonry .asset-media video,

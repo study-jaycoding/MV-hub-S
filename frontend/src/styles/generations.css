@@ -188,6 +188,7 @@
 /* S·C 공통 — 비활성: 호버 때만 보임 + 그때만 클릭 가능(invisible 버튼이 카드 선택 클릭을 가로채지 않게). */
 .card-sf, .card-cm {
   width: 26px; height: 26px; border-radius: 8px;
+  padding: 0; /* base.css 전역 button padding(6px 12px)이 폭 하한 26px를 만들어 @container 축소를 막음 */
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(12,13,17,0.82); border: 1px solid var(--border);
   color: var(--muted2); font-size: 12px; font-weight: 900; line-height: 1;
@@ -677,6 +678,7 @@
 .thumb-overlay button, .thumb-overlay .ov-check { pointer-events: auto; }
 .ov-icon {
   width: 28px; height: 28px; border-radius: 8px; flex: none;
+  padding: 0; /* base.css 전역 button padding이 폭 하한 26px를 만들어 @container 23px 축소를 막음 */
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
   border: 1px solid rgba(255,255,255,0.16); color: #fff; font-size: 14px;
@@ -700,6 +702,14 @@
   .ov-icon-on { font-size: 13px; }
   .ov-lineage { min-width: 23px; padding: 0 4px; }
   .ov-lineage .lineage-count { font-size: 10px; }
+}
+/* 더 좁은 셀(어셋탭 최소 줌 ~126px): S/T/C(card-tl)도 줄여야 우측 ⓘ와 안 겹침
+   (7 + 22×3 + 4×2 + 23 + 7 = 111px 까지 무충돌) */
+@container (max-width: 130px) {
+  .card-tl { gap: 4px; }
+  .card-sf, .card-cm { width: 22px; height: 22px; font-size: 11px; }
+  .card-sf.on { font-size: 12px; }
+  .card-sf.final { font-size: 14px; }
 }
 .ov-check { display: inline-flex; cursor: pointer; }
 .ov-check input {

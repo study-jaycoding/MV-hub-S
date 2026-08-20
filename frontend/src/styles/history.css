@@ -174,6 +174,7 @@
   width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
   background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
   color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  padding: 0; /* base.css 전역 button padding이 폭 하한 26px를 만들어 씬카드 22px 축소를 막음 */
   display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
 /* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */
