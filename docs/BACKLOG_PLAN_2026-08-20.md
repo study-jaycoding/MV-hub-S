@@ -42,8 +42,8 @@
 | 2 | ✅수신·전달 무결성(2026-08-20 코덱스 구현·클로드 검토·전 회귀 통과): `_mark_success` 비정상 종료 복구 + poison 행 dead-letter(디코드 오류만, 409는 재시도 유지, 행별 전송) + 거래 stable ID(이메일 기반, 옛 ID 재사용 이중 대조 + 중복 병합 마이그레이션) | 코덱스 → 클로드 |
 | 3 | ✅설계 확정(2026-08-20, 클로드 v1 → 코덱스 P0 6건 리뷰 → v2 = docs/SHARE_STATE_RECONCILIATION_DESIGN.md). **구현은 배치 5~7 뒤로 순연**(대형 diff — 실사용 체감 큰 워치독·WS 먼저) | 클로드 설계 → 코덱스 리뷰 완료 |
 | 4 | ✅이벤트 루프·부팅(2026-08-20 코덱스 구현·클로드 검토·백엔드 1070 통과, 커밋 700315ed) | 코덱스 → 클로드 |
-| 5 | 워치독 단독: 200 본문 status 확인 + 절대경로 PID 판별 + kill 직전 재확인 + Windows dry-run 격리 시험. fail-closed(확신 없으면 경보만) | 코덱스 → 클로드 |
-| 6 | WS 단독: 연결별 단일 sender + 크기 제한 queue + reload 메시지 병합(락 안 timeout 이동 금지 — coroutine 무제한 적체 위험) | 클로드 → 코덱스 |
+| 5 | ✅워치독 단독(2026-08-20 코덱스 구현·클로드 검토, 커밋 81f7b4ca): 200 본문 계약 검증 + 절대경로 정확 일치 PID 판별 + kill 직전 재확인(TOCTOU) + port_hijacked/identity_mismatch 경보 전용, fail-closed | 코덱스 → 클로드 |
+| 6 | ✅WS 단독(2026-08-20 클로드 구현·코덱스 적대 리뷰 P0 1+P1 3 반영·전 회귀 통과): 연결별 단일 sender + 크기 제한 queue(64) + reload 병합(빈 배열='전체' 보존) + 수거 시 sender 종료 대기 후 close + overflow 수거 백그라운드화 + 원격 브리지 재연결 catch-up | 클로드 → 코덱스 완료 |
 | 7 | asset watcher 단독: 재스케줄 감지 + 핸들 세대 번호 + NAS 일시 단절 오판 방지, Windows 실측 동반 | 코덱스 → 클로드 |
 | 8 | 관리 UI: selector 정책 확정(Jay 결정) → archived 표시 → 출처 라벨 → AUTH-off 1008 구분 → 레거시 시각 보정(측정 후) | 클로드 → 코덱스 |
 | 9 | 측정 후 성능·청소: 쿼터 증분 회계(시작 시 전체 재계산+주기 drift 대조 필수) → hotspot reducer → `ensure_ingested_tracked` 제거 | 코덱스 → 클로드 |

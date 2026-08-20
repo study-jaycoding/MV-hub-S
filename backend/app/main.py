@@ -899,12 +899,16 @@ async def websocket_endpoint(ws: WebSocket):
                 got_message = True
             except asyncio.TimeoutError:
                 pass
+            # manager 가 이 연결을 수거(전송 timeout/큐 초과)했는데 close 가 유실된 드문 경우,
+            # receive loop 만 살아남아 유령이 된다 — 스스로 닫고 나간다(브라우저 재연결 유도).
+            if not manager.is_tracked(ws):
+                await ws.close(code=1001)
+                return
             now = time.monotonic()
             if got_message:
                 last_received = now
             elif now - last_received >= _WS_GHOST_SECONDS:
-                await ws.close(code=1001)  # going away — 유령 연결 수거
-                await _disconnect_websocket(ws)
+                await ws.close(code=1001)  # going away — 유령 연결 수거(정리는 finally)
                 return
             # ★연결 시점에만 인증하면, 그 뒤 관리자가 계정을 정지(rejected/pending)하거나 비번을
             # 리셋해도 기존 소켓은 계속 진행률·알림을 받는다 → 주기 재검증으로 끊는다.
@@ -920,10 +924,9 @@ async def websocket_endpoint(ws: WebSocket):
                     or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
                 ):
                     await ws.close(code=1008)
-                    await _disconnect_websocket(ws)
                     return
     except WebSocketDisconnect:
-        await _disconnect_websocket(ws)
+        pass
     except Exception:
         # 예상한 WebSocketDisconnect 외의 예외를 숨기면 장시간 연결이 끊겨도 운영 로그에는
         # 원인이 전혀 남지 않는다. 토큰·이메일은 기록하지 않고 인증 스코프 존재 여부만 남긴다.
@@ -931,6 +934,9 @@ async def websocket_endpoint(ws: WebSocket):
             "WebSocket handler error (authenticated_scope=%s)",
             account_uid is not None,
         )
+    finally:
+        # CancelledError(강제 종료·테스트 lifespan 재사용)까지 포함해 어떤 경로로 나가도
+        # manager 등록과 sender task 를 정리한다. disconnect 는 멱등이라 중복 호출 무해.
         await _disconnect_websocket(ws)
 
 

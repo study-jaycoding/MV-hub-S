@@ -2,6 +2,10 @@
 
 이번 세션에서 잡은 누출(계정 uid 가 None 이면 전체로 새던 것)과 회귀(syncer 전체 reload 가 끊기던 것)를
 불변식으로 고정한다. realtime_scope 는 email 기반이라 creator_uid 리맵·NULL 에도 안정적이어야 한다.
+
+전송 모델(배치 6): 연결별 단일 sender + 크기 제한 큐. broadcast 는 큐 적재 후 즉시 반환하고
+전송 timeout 은 순수 send 에만 적용된다 — 겹친 broadcast 의 락 대기가 예산을 갉아먹어
+정상 클라이언트가 억울하게 수거되던 문제의 회귀 테스트를 포함한다.
 """
 import asyncio
 import unittest
@@ -37,6 +41,86 @@ class FailingWS(FakeWS):
         raise ConnectionError("client disconnected")
 
 
+class SlowishWS(FakeWS):
+    """전송마다 일정 시간이 걸리지만 timeout 안에는 항상 성공하는 '건강한 느린' 클라이언트."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+
+    async def send_json(self, message):
+        await asyncio.sleep(self.delay)
+        self.received.append(message)
+
+
+class GateWS(FakeWS):
+    """첫 전송만 게이트에 막히는 클라이언트 — 그 사이 큐에 쌓인 병합 결과를 관찰한다."""
+
+    def __init__(self):
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.blocked_once = False
+
+    async def send_json(self, message):
+        if not self.blocked_once:
+            self.blocked_once = True
+            await self.gate.wait()
+        self.received.append(message)
+
+
+class OverlapGuardWS(FakeWS):
+    """전송이 게이트에 막혀 있는 동안 close 가 겹치면 실제 ASGI 처럼 거부하는 fake —
+    수거가 sender 의 실제 종료를 기다리지 않고 close 하면 close 가 유실된다(코덱스 P0)."""
+
+    def __init__(self):
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.sending = False
+        self.close_during_send = False
+
+    async def send_json(self, message):
+        self.sending = True
+        try:
+            await self.gate.wait()
+        finally:
+            self.sending = False
+        self.received.append(message)
+
+    async def close(self, code=1000, reason=""):
+        if self.sending:
+            self.close_during_send = True
+            raise RuntimeError("concurrent close during send")
+        self.closed = (code, reason)
+
+
+class SlowCloseWS(SlowWS):
+    """전송은 영원히 막히고 close 도 느린 fake — 대량 수거가 broadcast 를 붙잡는지 검증."""
+
+    async def close(self, code=1000, reason=""):
+        await asyncio.sleep(0.05)
+        self.closed = (code, reason)
+
+
+async def drain(mgr: ConnectionManager, timeout: float = 2.0) -> None:
+    """모든 연결의 큐가 비고 전송 중 메시지가 없을 때까지 기다린다.
+    ★수거(close 완료)까지 보장하지 않는다 — closed 를 단언하려면 wait_until 로 기다릴 것."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while (await mgr.stats())["queued_messages"] > 0:
+        if loop.time() > deadline:
+            raise TimeoutError("WS 큐가 비워지지 않음")
+        await asyncio.sleep(0.001)
+
+
+async def wait_until(predicate, timeout: float = 2.0) -> None:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() > deadline:
+            raise TimeoutError("조건이 제한시간 안에 참이 되지 않음")
+        await asyncio.sleep(0.001)
+
+
 class RealtimeScopeTests(unittest.TestCase):
     def test_realtime_scope_email_based_stable_across_uid(self):
         with mock.patch.object(deps_mod, "AUTH_ENABLED", True):
@@ -63,15 +147,25 @@ class RealtimeScopeTests(unittest.TestCase):
 
 class WsBroadcastScopeTests(unittest.TestCase):
     def _run(self, coro):
-        return asyncio.new_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            # 시나리오가 남긴 sender 태스크를 정리해 경고 없이 루프를 닫는다.
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
 
     def test_scoped_broadcast_isolates_and_broadcast_all_reaches_everyone(self):
         async def scenario():
             mgr = ConnectionManager()
             a, b, none_sock = FakeWS(), FakeWS(), FakeWS()
-            mgr._active[a] = "acct:a"
-            mgr._active[b] = "acct:b"
-            mgr._active[none_sock] = None
+            await mgr.connect(a, "acct:a")
+            await mgr.connect(b, "acct:b")
+            await mgr.connect(none_sock, None)
 
             # 계정 스코프 → 정확히 그 소켓만(진행률·result_url 누출 방지)
             await mgr.broadcast({"type": "progress", "url": "secretA"}, account_uid="acct:a")
@@ -79,6 +173,7 @@ class WsBroadcastScopeTests(unittest.TestCase):
             await mgr.broadcast({"type": "progress", "url": "x"}, account_uid=None)
             # 전체 reload 신호는 broadcast_all 로만(syncer)
             await mgr.broadcast_all({"type": "synced"})
+            await drain(mgr)
 
             return a.received, b.received, none_sock.received
 
@@ -95,8 +190,8 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             for index in range(100):
-                mgr._active[FakeWS()] = f"acct:{index // 2}"
-            mgr._active[FakeWS()] = None
+                await mgr.connect(FakeWS(), f"acct:{index // 2}")
+            await mgr.connect(FakeWS(), None)
             return await mgr.stats()
 
         stats = self._run(scenario())
@@ -104,23 +199,27 @@ class WsBroadcastScopeTests(unittest.TestCase):
         self.assertEqual(stats["authenticated_connections"], 100)
         self.assertEqual(stats["authenticated_accounts"], 50)
         self.assertEqual(stats["local_connections"], 1)
+        self.assertEqual(stats["queued_messages"], 0)
         self.assertEqual(stats["send_timeouts"], 0)
         self.assertEqual(stats["send_failures"], 0)
+        self.assertEqual(stats["send_overflows"], 0)
 
     def test_slow_client_does_not_block_fast_client_and_is_collected(self):
         async def scenario():
             mgr = ConnectionManager()
             slow, fast = SlowWS(), FakeWS()
-            mgr._active[slow] = "acct:a"
-            mgr._active[fast] = "acct:a"
+            await mgr.connect(slow, "acct:a")
+            await mgr.connect(fast, "acct:a")
             with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.05):
-                sending = asyncio.create_task(
-                    mgr.broadcast({"type": "progress"}, account_uid="acct:a")
-                )
-                await asyncio.sleep(0.005)
+                await mgr.broadcast({"type": "progress"}, account_uid="acct:a")
+                # fast 는 slow 의 timeout(0.05s)을 기다리지 않고 즉시 받아야 한다.
+                loop = asyncio.get_event_loop()
+                deadline = loop.time() + 0.04
+                while not fast.received and loop.time() < deadline:
+                    await asyncio.sleep(0.001)
                 delivered_before_slow_timeout = list(fast.received)
-                self.assertFalse(sending.done())
-                await sending
+                await drain(mgr)  # slow 가 timeout 으로 수거될 때까지
+                await wait_until(lambda: slow.closed is not None)
             return delivered_before_slow_timeout, slow.closed, await mgr.stats()
 
         fast_messages, slow_closed, stats = self._run(scenario())
@@ -134,9 +233,11 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             failed, fast = FailingWS(), FakeWS()
-            mgr._active[failed] = None
-            mgr._active[fast] = None
+            await mgr.connect(failed, None)
+            await mgr.connect(fast, None)
             await mgr.broadcast_all({"type": "synced"})
+            await drain(mgr)
+            await wait_until(lambda: failed.closed is not None)
             return fast.received, failed.closed, await mgr.stats()
 
         fast_messages, failed_closed, stats = self._run(scenario())
@@ -150,18 +251,200 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             slow = SlowWS()
-            mgr._active[slow] = None
+            await mgr.connect(slow, None)
             with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.02):
                 await asyncio.gather(
                     mgr.broadcast_all({"type": "first"}),
                     mgr.broadcast_all({"type": "second"}),
                 )
+                await drain(mgr)
             return await mgr.stats()
 
         stats = self._run(scenario())
         self.assertEqual(stats["connections"], 0)
         self.assertEqual(stats["send_timeouts"], 1)
         self.assertEqual(stats["send_failures"], 0)
+
+    def test_healthy_client_survives_overlapping_broadcasts(self):
+        """★배치 6 핵심 회귀 — 예전엔 timeout 예산에 락 대기가 포함돼, 전송에 0.03s 걸리는
+        건강한 클라이언트가 겹친 broadcast(0.03 대기 + 0.03 전송 > 0.05 예산)에서 수거됐다.
+        단일 sender 큐에선 각 전송이 자기 시간만 계산되므로 살아남고, FIFO 순서도 보장된다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            client = SlowishWS(0.03)
+            await mgr.connect(client, None)
+            with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.05):
+                await asyncio.gather(
+                    mgr.broadcast_all({"type": "progress", "n": 1}),
+                    mgr.broadcast_all({"type": "progress", "n": 2}),
+                )
+                await drain(mgr)
+            return client.received, client.closed, await mgr.stats()
+
+        received, closed, stats = self._run(scenario())
+        self.assertEqual([m["n"] for m in received], [1, 2])
+        self.assertIsNone(closed)
+        self.assertEqual(stats["connections"], 1)
+        self.assertEqual(stats["send_timeouts"], 0)
+
+    def test_queue_overflow_collects_only_that_connection(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            stuck, fast = SlowWS(), FakeWS()
+            await mgr.connect(stuck, None)
+            await mgr.connect(fast, None)
+            with mock.patch("app.ws._WS_QUEUE_MAX", 4):
+                # progress 는 병합되지 않으므로 상한을 넘기면 그 연결만 수거된다.
+                for n in range(6):
+                    await mgr.broadcast_all({"type": "progress", "n": n})
+                await drain(mgr)
+                await wait_until(lambda: stuck.closed is not None)
+            return fast.received, stuck.closed, await mgr.stats()
+
+        fast_messages, stuck_closed, stats = self._run(scenario())
+        self.assertEqual([m["n"] for m in fast_messages], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(stuck_closed, (1011, "realtime queue overflow"))
+        self.assertEqual(stats["connections"], 1)
+        self.assertEqual(stats["send_overflows"], 1)
+
+    def test_overflow_collect_waits_for_inflight_send_before_close(self):
+        """★코덱스 P0 회귀 — 외부 수거(overflow)가 전송 중인 sender 를 기다리지 않고 같은
+        소켓에 close 를 겹쳐 부르면 ASGI 가 거부해 close 가 유실된다(브라우저는 열린 줄 알고
+        재연결을 안 함). 수거는 sender 의 실제 종료를 기다린 뒤 close 해야 한다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = OverlapGuardWS()
+            await mgr.connect(ws, None)
+            with mock.patch("app.ws._WS_QUEUE_MAX", 1):
+                await mgr.broadcast_all({"type": "progress", "n": 0})
+                await wait_until(lambda: ws.sending)  # sender 가 첫 전송을 물고 막힘
+                await mgr.broadcast_all({"type": "progress", "n": 1})  # 큐(상한 1) 채움
+                await mgr.broadcast_all({"type": "progress", "n": 2})  # overflow → 수거
+                await wait_until(lambda: ws.closed is not None)
+            return ws.close_during_send, ws.closed, await mgr.stats()
+
+        close_during_send, closed, stats = self._run(scenario())
+        self.assertFalse(close_during_send)
+        self.assertEqual(closed, (1011, "realtime queue overflow"))
+        self.assertEqual(stats["connections"], 0)
+        self.assertEqual(stats["send_overflows"], 1)
+
+    def test_mass_overflow_does_not_block_broadcast(self):
+        """여러 연결이 동시에 넘쳐도 broadcast 는 'enqueue 후 즉시 반환' — 수거(sender 대기
+        + close)는 백그라운드로 넘어가 호출처(gen_requests·syncer)를 붙잡지 않는다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            stuck = [SlowCloseWS() for _ in range(3)]
+            for sock in stuck:
+                await mgr.connect(sock, None)
+            with mock.patch("app.ws._WS_QUEUE_MAX", 1):
+                for n in range(3):
+                    await mgr.broadcast_all({"type": "progress", "n": n})
+                # 마지막 broadcast 반환 시점엔 어느 close(0.05s)도 끝나 있으면 안 된다
+                # (= 수거를 기다리지 않고 반환했다는 증거).
+                closed_at_return = [sock.closed for sock in stuck]
+                await wait_until(lambda: all(sock.closed is not None for sock in stuck))
+            return closed_at_return, await mgr.stats()
+
+        closed_at_return, stats = self._run(scenario())
+        self.assertEqual(closed_at_return, [None, None, None])
+        self.assertEqual(stats["connections"], 0)
+        self.assertEqual(stats["send_overflows"], 3)
+
+    def test_reload_signals_merge_in_queue(self):
+        """전송이 막힌 동안 쌓인 reload 신호는 타입별로 병합된다 — origins 는 합집합,
+        projects 는 합집합, 한쪽에만 있는 필드는 생략(=프론트가 안전한 전체 갱신으로 읽음)."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = GateWS()
+            await mgr.connect(ws, None)
+            await mgr.broadcast_all({"type": "progress", "n": 0})  # 게이트에 걸릴 첫 전송
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 1.0
+            while not ws.blocked_once and loop.time() < deadline:
+                await asyncio.sleep(0.001)
+            origin_1 = {"client_id": "c", "mutation_id": "m1"}
+            origin_2 = {"client_id": "c", "mutation_id": "m2"}
+            origin_3 = {"client_id": "c", "mutation_id": "m3"}
+            await mgr.broadcast_all({"type": "synced", "origins": [origin_1]})
+            await mgr.broadcast_all({"type": "synced", "origins": [origin_2]})
+            await mgr.broadcast_all({"type": "assets_changed", "projects": ["A"]})
+            await mgr.broadcast_all({"type": "assets_changed", "projects": ["B"]})
+            await mgr.broadcast_all({"type": "assets_changed", "origins": [origin_3]})
+            ws.gate.set()
+            await drain(mgr)
+            return ws.received, await mgr.stats()
+
+        received, stats = self._run(scenario())
+        self.assertEqual(
+            received,
+            [
+                {"type": "progress", "n": 0},
+                {
+                    "type": "synced",
+                    "origins": [
+                        {"client_id": "c", "mutation_id": "m1"},
+                        {"client_id": "c", "mutation_id": "m2"},
+                    ],
+                },
+                # projects 병합([A,B]) 뒤 origins 만 있는 신호와 다시 병합 —
+                # 서로 다른 필드는 생략되어 '전체 갱신·생략 불가'라는 안전한 상위집합이 된다.
+                {"type": "assets_changed"},
+            ],
+        )
+        self.assertEqual(stats["connections"], 1)
+        self.assertEqual(stats["send_overflows"], 0)
+
+    def test_merged_origins_beyond_cap_fall_back_to_full_reload(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = GateWS()
+            await mgr.connect(ws, None)
+            await mgr.broadcast_all({"type": "progress"})
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 1.0
+            while not ws.blocked_once and loop.time() < deadline:
+                await asyncio.sleep(0.001)
+            first = [{"client_id": "c", "mutation_id": f"a{i}"} for i in range(20)]
+            second = [{"client_id": "c", "mutation_id": f"b{i}"} for i in range(20)]
+            await mgr.broadcast_all({"type": "synced", "origins": first})
+            await mgr.broadcast_all({"type": "synced", "origins": second})
+            ws.gate.set()
+            await drain(mgr)
+            return ws.received
+
+        received = self._run(scenario())
+        # 합집합 40 > 32(_MAX_NOTIFY_ORIGINS) → 출처 생략(전원 reload 가 안전).
+        self.assertEqual(received[1], {"type": "synced"})
+
+    def test_merge_treats_empty_arrays_as_full_refresh(self):
+        """★코덱스 P1 회귀 — 빈 배열은 합집합의 항등원이 아니라 '전체'다. origins:[] 는
+        '자기 알림 생략 불가(전부 reload)', projects:[] 는 '전체 프로젝트 갱신'이므로,
+        병합이 이를 부분 갱신([own]·["A"])으로 축소하면 갱신 누락이 생긴다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = GateWS()
+            await mgr.connect(ws, None)
+            await mgr.broadcast_all({"type": "progress"})
+            await wait_until(lambda: ws.blocked_once)
+            await mgr.broadcast_all({"type": "synced", "origins": []})
+            await mgr.broadcast_all(
+                {"type": "synced", "origins": [{"client_id": "c", "mutation_id": "m1"}]}
+            )
+            await mgr.broadcast_all({"type": "assets_changed", "projects": []})
+            await mgr.broadcast_all({"type": "assets_changed", "projects": ["A"]})
+            ws.gate.set()
+            await drain(mgr)
+            return ws.received
+
+        received = self._run(scenario())
+        self.assertEqual(received[1], {"type": "synced"})
+        self.assertEqual(received[2], {"type": "assets_changed"})
 
     def test_connect_and_disconnect_return_anonymous_counts_once(self):
         async def scenario():
@@ -186,11 +469,12 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             sock = FakeWS()
-            mgr._active[sock] = "acct:a"
+            await mgr.connect(sock, "acct:a")
             with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
                 mgr.notify_mutation("acct:a", ("client_a_123", "mutation_001"))
                 mgr.notify_mutation("acct:a", ("client_a_123", "mutation_002"))
                 await mgr._pending_notify
+                await drain(mgr)
             return sock.received
 
         messages = self._run(scenario())
@@ -207,11 +491,12 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             sock = FakeWS()
-            mgr._active[sock] = "acct:a"
+            await mgr.connect(sock, "acct:a")
             with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
                 mgr.notify_mutation("acct:a", ("client_a_123", "mutation_001"))
                 mgr.notify_mutation("acct:a")
                 await mgr._pending_notify
+                await drain(mgr)
             return sock.received
 
         messages = self._run(scenario())
@@ -221,13 +506,14 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             a, b = FakeWS(), FakeWS()
-            mgr._active[a] = "acct:a"
-            mgr._active[b] = "acct:b"
+            await mgr.connect(a, "acct:a")
+            await mgr.connect(b, "acct:b")
             with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
                 mgr.notify_domain("assets_changed", ("client_a_123", "mutation_001"))
                 mgr.notify_domain("assets_changed", ("client_a_123", "mutation_002"))
                 mgr.notify_domain("manage_changed")
                 await mgr._pending_notify
+                await drain(mgr)
             return a.received, b.received
 
         a_messages, b_messages = self._run(scenario())
@@ -250,7 +536,7 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             sock = FakeWS()
-            mgr._active[sock] = None
+            await mgr.connect(sock, None)
             origin = ("client_a_123", "mutation_001")
             with (
                 mock.patch("app.ws._NOTIFY_DEBOUNCE", 0),
@@ -258,6 +544,7 @@ class WsBroadcastScopeTests(unittest.TestCase):
             ):
                 mgr.notify_mutation(origin=origin)
                 await mgr._pending_notify
+                await drain(mgr)
 
                 # 로컬 프록시 알림 뒤 원격 브리지가 같은 요청을 늦게 echo해도 두 번째 reload 없음.
                 clock.return_value = 101.0
@@ -268,6 +555,7 @@ class WsBroadcastScopeTests(unittest.TestCase):
                 clock.return_value = 131.0
                 mgr.notify_mutation(origin=origin)
                 await mgr._pending_notify
+                await drain(mgr)
             return sock.received
 
         messages = self._run(scenario())
@@ -278,13 +566,15 @@ class WsBroadcastScopeTests(unittest.TestCase):
         async def scenario():
             mgr = ConnectionManager()
             sock = FakeWS()
-            mgr._active[sock] = None
+            await mgr.connect(sock, None)
             origin = ("client_a_123", "mutation_001")
             with mock.patch("app.ws._NOTIFY_DEBOUNCE", 0):
                 mgr.notify_mutation(origin=origin)
                 await mgr._pending_notify
+                await drain(mgr)
                 mgr.notify_mutation(origin=origin)
                 await mgr._pending_notify
+                await drain(mgr)
             return sock.received
 
         self.assertEqual(len(self._run(scenario())), 2)

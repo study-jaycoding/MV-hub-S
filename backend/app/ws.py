@@ -7,6 +7,13 @@ higgsfield 는 퍼센트가 아니라 상태 전이를 주므로, 가짜 진행�
 ★계정 스코프: AUTH on(다계정 서버)에선 진행률·변경 알림을 '그 계정'의 소켓에만 보낸다.
 예전엔 전체 소켓에 보내 ① 남의 진행상황·result_url 이 새고 ② 누가 뭘 해도 전원이 reload 하는
 폭주가 있었다. account_uid=None(AUTH off/단독)이면 전체로 보낸다(소켓이 곧 그 한 사람).
+
+★전송 모델(배치 6): 연결마다 sender 태스크 1개 + FIFO 큐. broadcast 는 큐에 넣고 즉시
+반환하고, 전송 timeout 은 순수 send_json 에만 적용된다 — 예전엔 broadcast 마다 소켓별
+태스크가 '락 대기까지 포함한' 2초 예산으로 보내서, 겹친 broadcast 에서 정상 클라이언트가
+앞 전송의 락 대기 때문에 억울하게 수거됐다. 락 안으로 timeout 을 옮기는 수선은 금지
+(막힌 소켓 하나에 대기 코루틴이 무한 적체) — 단일 sender 는 연결당 코루틴이 항상 1개다.
+큐가 상한을 넘으면 그 연결만 닫는다(프론트 progressSocket 이 자동 재연결 + 따라잡기 reload).
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Any, Optional
 
 from fastapi import WebSocket
@@ -31,18 +39,59 @@ _RECENT_ORIGIN_TTL = 30.0
 _MAX_RECENT_ORIGINS = 4096
 _WS_SEND_TIMEOUT_SECONDS = 2.0
 _WS_CLOSE_TIMEOUT_SECONDS = 0.5
+# 연결별 대기 메시지 상한. 64건 적체 = 클라이언트가 분 단위로 못 받는 상태라 끊는 게 맞다
+# (reload 신호는 병합되므로 여기까지 차는 건 progress 폭주 + 수신 불능 조합뿐).
+_WS_QUEUE_MAX = 64
+# 큐 안에서 병합해도 되는 멱등 reload 신호. 데이터가 실리는 progress·gap_warning 은 병합 금지.
+_MERGEABLE_RELOAD_TYPES = frozenset({"synced", "assets_changed", "manage_changed"})
 
 _log = logging.getLogger("mvhub.websocket")
 
 
+def _merge_reload_messages(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """같은 타입의 미전송 reload 신호 둘을 하나로 합친다(원본 dict 는 변형하지 않는다).
+
+    필드 규칙은 '확신 없으면 뺀다' — 프론트는 origins 없음=자기 알림 생략 불가(전부 reload),
+    projects 없음=전체 프로젝트 갱신으로 읽으므로, 빠진 필드는 항상 안전한 상위집합이 된다.
+    """
+    merged: dict[str, Any] = {"type": first["type"]}
+    # ★빈 배열은 합집합의 항등원이 아니라 '전체'다(프론트 계약: origins 없음/빈배열=자기 알림
+    # 생략 불가, projects 없음/빈배열=전체 프로젝트 갱신) — 한쪽이 비었거나 없으면 필드를
+    # 생략해 '전체'로 승격한다. 그러지 않으면 전체 갱신 신호가 부분 갱신으로 축소돼 누락된다.
+    if first.get("origins") and second.get("origins"):
+        seen = {(o["client_id"], o["mutation_id"]) for o in first["origins"]}
+        origins = list(first["origins"]) + [
+            o for o in second["origins"] if (o["client_id"], o["mutation_id"]) not in seen
+        ]
+        # 병합 누적으로 payload 가 커지면 출처를 생략한다(_MAX_NOTIFY_ORIGINS 와 같은 정책).
+        if len(origins) <= _MAX_NOTIFY_ORIGINS:
+            merged["origins"] = origins
+    if first.get("projects") and second.get("projects"):
+        merged["projects"] = list(dict.fromkeys([*first["projects"], *second["projects"]]))
+    return merged
+
+
+class _Client:
+    """연결 하나의 전송 상태 — 소켓·스코프·대기 큐·단일 sender 태스크."""
+
+    __slots__ = ("ws", "account_uid", "queue", "wakeup", "sender", "in_flight")
+
+    def __init__(self, ws: WebSocket, account_uid: Optional[str]) -> None:
+        self.ws = ws
+        self.account_uid = account_uid
+        self.queue: deque[dict[str, Any]] = deque()
+        self.wakeup = asyncio.Event()
+        self.sender: Optional[asyncio.Task] = None
+        self.in_flight = False
+
+
 class ConnectionManager:
     def __init__(self) -> None:
-        # 소켓 → 그 연결의 account_uid(creator_uid). AUTH off 면 None.
-        self._active: dict[WebSocket, Optional[str]] = {}
-        # 같은 소켓에 여러 broadcast가 겹쳐도 ASGI send_json을 동시에 호출하지 않는다.
-        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+        # 소켓 → 연결 상태(스코프·큐·sender). AUTH off 면 account_uid=None.
+        self._clients: dict[WebSocket, _Client] = {}
         self._send_timeouts = 0
         self._send_failures = 0
+        self._send_overflows = 0
         self._lock = asyncio.Lock()
         self._pending_notify: Optional[asyncio.Task] = None
         # 스코프 → {브라우저 client id: 요청 mutation id 집합}. None이면 출처 불명 변경이 섞여
@@ -56,37 +105,48 @@ class ConnectionManager:
         self._recent_origins: dict[tuple[str, str, MutationOrigin], tuple[float, str]] = {}
 
     def _stats_unlocked(self) -> dict[str, int]:
-        scoped = sum(1 for account in self._active.values() if account is not None)
+        scoped = sum(1 for c in self._clients.values() if c.account_uid is not None)
         authenticated_accounts = len(
-            {account for account in self._active.values() if account is not None}
+            {c.account_uid for c in self._clients.values() if c.account_uid is not None}
         )
         return {
-            "connections": len(self._active),
+            "connections": len(self._clients),
             "authenticated_connections": scoped,
             "authenticated_accounts": authenticated_accounts,
-            "local_connections": len(self._active) - scoped,
+            "local_connections": len(self._clients) - scoped,
             "pending_notify_accounts": len(self._pending_accounts),
             "pending_notify_domains": len(self._pending_domains),
+            "queued_messages": sum(
+                len(c.queue) + (1 if c.in_flight else 0) for c in self._clients.values()
+            ),
             "send_timeouts": self._send_timeouts,
             "send_failures": self._send_failures,
+            "send_overflows": self._send_overflows,
         }
 
     async def connect(
         self, ws: WebSocket, account_uid: Optional[str] = None
     ) -> dict[str, int]:
         await ws.accept()
+        client = _Client(ws, account_uid)
         async with self._lock:
-            self._active[ws] = account_uid
-            self._send_locks.setdefault(ws, asyncio.Lock())
+            self._clients[ws] = client
+            client.sender = asyncio.create_task(self._sender_loop(client))
             return self._stats_unlocked()
 
     async def disconnect(self, ws: WebSocket) -> dict[str, int] | None:
         async with self._lock:
-            if ws not in self._active:
+            client = self._clients.pop(ws, None)
+            if client is None:
                 return None
-            self._active.pop(ws)
-            self._send_locks.pop(ws, None)
-            return self._stats_unlocked()
+            stats = self._stats_unlocked()
+        await self._stop_sender(client)
+        return stats
+
+    def is_tracked(self, ws: WebSocket) -> bool:
+        """endpoint receive loop 용 — 수거된 연결의 close 가 유실돼 브라우저가 안 끊겨도
+        receive loop 가 유령으로 남지 않게, 추적 여부를 확인해 스스로 닫고 나가게 한다."""
+        return ws in self._clients
 
     async def stats(self) -> dict[str, int]:
         """운영 관측용 연결 수. 계정 식별자는 반환하지 않는다."""
@@ -101,99 +161,131 @@ class ConnectionManager:
         None 을 전체로 취급해, 계정 스코프 호출의 uid 가 우연히 None(레거시/미이행 creator_uid)
         이면 남의 소켓에 result_url 포함 progress 가 새는 누출이 있었다. AUTH off 는 모든 소켓이
         a=None 이라 여전히 전원 수신(정당), AUTH on 은 uid 로 정확히 격리된다."""
-        async with self._lock:
-            targets = [ws for ws, a in self._active.items() if a == account_uid]
-        await self._send_to(targets, message)
+        await self._deliver(message, scope_all=False, account_uid=account_uid)
 
     async def broadcast_all(self, message: dict[str, Any]) -> None:
         """스코프 무관 전 소켓에 보낸다(진짜 '전체'). 데이터가 아니라 reload 신호(synced·gap_warning)
         전용 — 주기 동기화(syncer)가 AUTH on 다계정 서버에서도 모두에게 '새로고침해' 알릴 때 쓴다.
         (account_uid 스코프 broadcast 는 진행률·result_url 같은 개인 데이터라 절대 여기로 보내지 않는다.)"""
-        async with self._lock:
-            targets = list(self._active.keys())
-        await self._send_to(targets, message)
+        await self._deliver(message, scope_all=True)
 
-    async def _send_to(self, targets: list[WebSocket], message: dict[str, Any]) -> None:
-        # 대상마다 독립 task+timeout을 사용한다. 한 브라우저의 네트워크 버퍼가 막혀도 다른
-        # 브라우저의 진행률·갱신 신호는 기다리지 않는다. 소켓별 lock은 서로 다른 broadcast가
-        # 겹쳤을 때 동일 ASGI 연결에 send_json을 동시에 호출하는 문제도 막는다.
+    async def _deliver(
+        self,
+        message: dict[str, Any],
+        *,
+        scope_all: bool,
+        account_uid: Optional[str] = None,
+    ) -> None:
+        """대상 연결의 큐에 넣는다(전송은 각 연결의 sender 가 담당). 큐가 가득 찬 연결만 수거.
+        ★message 는 enqueue 후에도 참조된다 — 호출측은 반환 뒤 dict/중첩 배열을 수정하면 안
+        된다(현 호출처는 모두 호출마다 새 literal 을 만든다)."""
+        overflowed: list[_Client] = []
         async with self._lock:
-            prepared = [
-                (ws, self._send_locks.setdefault(ws, asyncio.Lock()))
-                for ws in targets
-                if ws in self._active
-            ]
-        if not prepared:
-            return
-
-        results = await asyncio.gather(
-            *(self._send_one(ws, send_lock, message) for ws, send_lock in prepared)
-        )
-        dead = [(ws, failure) for ws, failure in results if failure is not None]
-        if not dead:
-            return
-
-        removed: list[tuple[WebSocket, str]] = []
-        async with self._lock:
-            for ws, failure in dead:
-                # 동시에 겹친 broadcast가 같은 사망 소켓을 발견해도 최초 한 번만 집계·로그한다.
-                if ws not in self._active:
+            for client in self._clients.values():
+                if not scope_all and client.account_uid != account_uid:
                     continue
-                self._active.pop(ws, None)
-                self._send_locks.pop(ws, None)
-                removed.append((ws, failure))
-            timeout_count = sum(1 for _ws, failure in removed if failure == "timeout")
-            failure_count = len(removed) - timeout_count
-            self._send_timeouts += timeout_count
-            self._send_failures += failure_count
-        if not removed:
-            return
+                if not self._enqueue(client, message):
+                    overflowed.append(client)
+        for client in overflowed:
+            # 수거는 백그라운드로 — broadcast 는 'enqueue 후 즉시 반환' 계약을 지킨다
+            # (여러 연결이 동시에 넘치면 sender 대기+close 가 N×1초까지 호출처를 붙잡을 수 있다).
+            # 다음 broadcast 가 같은 연결을 또 넘겨도 _collect 의 identity 체크가 한 번만 집계한다.
+            asyncio.create_task(self._collect(client, "overflow"))
+        # 연속 broadcast burst 는 그 사이 어떤 await 도 양보하지 않을 수 있어 sender 태스크가
+        # 굶는다 — 그러면 즉시 받을 수 있는 클라이언트까지 enqueue 속도만으로 큐가 차 수거된다.
+        # broadcast 마다 한 번 양보해 각 연결의 sender 가 따라올 기회를 준다.
+        await asyncio.sleep(0)
 
+    @staticmethod
+    def _enqueue(client: _Client, message: dict[str, Any]) -> bool:
+        """큐에 추가. reload 신호는 이미 대기 중인 같은 타입과 병합(자리 유지) — 폭주 흡수.
+        상한 초과면 False(호출측이 그 연결을 수거한다)."""
+        message_type = message.get("type")
+        if message_type in _MERGEABLE_RELOAD_TYPES:
+            for index, queued in enumerate(client.queue):
+                if queued.get("type") == message_type:
+                    client.queue[index] = _merge_reload_messages(queued, message)
+                    client.wakeup.set()
+                    return True
+        if len(client.queue) >= _WS_QUEUE_MAX:
+            return False
+        client.queue.append(message)
+        client.wakeup.set()
+        return True
+
+    async def _sender_loop(self, client: _Client) -> None:
+        """연결당 단일 sender — 같은 소켓에 send_json 이 동시에 겹칠 수 없고(FIFO 순서 보장),
+        timeout 은 자기 전송에만 적용된다(다른 broadcast 의 대기가 예산을 갉아먹지 않음)."""
+        while True:
+            if not client.queue:
+                client.wakeup.clear()
+                await client.wakeup.wait()
+                continue
+            message = client.queue.popleft()
+            client.in_flight = True
+            failure: str | None = None
+            try:
+                await asyncio.wait_for(
+                    client.ws.send_json(message), timeout=_WS_SEND_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                failure = "timeout"
+            except asyncio.CancelledError:
+                client.in_flight = False
+                raise
+            except Exception:
+                failure = "failure"
+            client.in_flight = False
+            if failure is not None:
+                await self._collect(client, failure)
+                return
+
+    async def _collect(self, client: _Client, reason: str) -> None:
+        """죽은/막힌 연결 수거 — manager 에서 빼고, 집계·로그 후 소켓을 짧게 닫는다.
+        (manager 에서만 빼면 endpoint 의 receive loop 가 계속 살아 유령 연결이 된다.)"""
+        async with self._lock:
+            if self._clients.get(client.ws) is not client:
+                return  # 이미 수거됐거나 같은 소켓으로 재등록된 새 연결이다
+            self._clients.pop(client.ws, None)
+            if reason == "timeout":
+                self._send_timeouts += 1
+            elif reason == "overflow":
+                self._send_overflows += 1
+            else:
+                self._send_failures += 1
         log_event(
             _log,
             "websocket_clients_dropped",
             level=logging.WARNING,
-            dropped=len(removed),
-            send_timeouts=timeout_count,
-            send_failures=failure_count,
+            dropped=1,
+            reason=reason,
         )
-        # manager에서만 빼면 endpoint의 receive loop가 계속 살아 유령 연결이 된다. close도
-        # 짧게 제한해 시도하되, 이미 끊어진 소켓이나 막힌 전송 때문에 broadcast를 다시 막지 않는다.
-        await asyncio.gather(
-            *(
-                self._close_quietly(
-                    ws,
-                    "realtime send timeout" if failure == "timeout" else "realtime send failed",
-                )
-                for ws, failure in removed
-            )
-        )
+        await self._stop_sender(client)
+        close_reason = {
+            "timeout": "realtime send timeout",
+            "overflow": "realtime queue overflow",
+        }.get(reason, "realtime send failed")
+        await self._close_quietly(client.ws, close_reason)
 
     @staticmethod
-    async def _send_locked(
-        ws: WebSocket,
-        send_lock: asyncio.Lock,
-        message: dict[str, Any],
-    ) -> None:
-        async with send_lock:
-            await ws.send_json(message)
-
-    async def _send_one(
-        self,
-        ws: WebSocket,
-        send_lock: asyncio.Lock,
-        message: dict[str, Any],
-    ) -> tuple[WebSocket, str | None]:
+    async def _stop_sender(client: _Client) -> None:
+        """sender 를 멈추고 '실제 종료'까지 기다린다 — 전송 중(cancel 처리 전)인 sender 와 같은
+        소켓에 close 를 겹쳐 부르면 ASGI 가 거부해 close 가 유실될 수 있다. 그러면 브라우저는
+        열린 연결로 믿고 재연결(따라잡기 reload)을 안 해 이후 신호를 영구 누락한다(코덱스 P0).
+        sender 가 자기 자신을 수거하는 경로에선 아무것도 안 한다(직후 return 으로 끝난다)."""
+        sender = client.sender
+        if sender is None or sender is asyncio.current_task():
+            return
+        sender.cancel()
         try:
+            # gather(return_exceptions=True) 는 sender 의 CancelledError 를 결과로 삼켜,
+            # '우리가 취소된 것'과 구분한다. wait_for 는 취소를 안 받는 sender 대비 상한.
             await asyncio.wait_for(
-                self._send_locked(ws, send_lock, message),
-                timeout=_WS_SEND_TIMEOUT_SECONDS,
+                asyncio.gather(sender, return_exceptions=True),
+                timeout=_WS_CLOSE_TIMEOUT_SECONDS,
             )
-            return ws, None
         except asyncio.TimeoutError:
-            return ws, "timeout"
-        except Exception:
-            return ws, "failure"
+            pass
 
     @staticmethod
     async def _close_quietly(ws: WebSocket, reason: str) -> None:
