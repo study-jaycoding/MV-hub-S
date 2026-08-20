@@ -339,6 +339,16 @@ export function ResolveScriptSettingsSection({
         ? `Resolve 도구 업데이트 필요 · ${versionChanges || `${currentVersions} · 최신 파일로 교체 필요`}`
         : "Resolve 가져오기·내보내기 도구가 아직 설치되지 않았습니다."
     : "설치 상태를 확인하는 중…";
+  // 연결 상태·확인된 프로그램은 접기 밖 캡션에 상시 표시(Jay 요청 — 업데이트 섹션과 같은 패턴).
+  const connectionLine = connectionBusy
+    ? "연결 상태: 확인하는 중…"
+    : connection
+      ? `연결 상태: ${connection.message || "확인하지 못했습니다"}`
+      : null;
+  const programLine =
+    !connectionBusy && connection?.connected && connection.resolve_version
+      ? `확인된 프로그램: ${connection.resolve_product || "DaVinci Resolve"} ${connection.resolve_version}`
+      : null;
   return (
     <section className="settings-section">
       <h4>DaVinci Resolve</h4>
@@ -350,13 +360,23 @@ export function ResolveScriptSettingsSection({
           ◆ {busy ? "설치 중…" : "Script 설치"}
         </button>
       </div>
-      <SettingsDescription summary="Resolve 연결을 확인하고 도구를 설치합니다.">
-        <p>
-          연결 상태: {connectionBusy ? "확인하는 중…" : connection?.message || "확인하지 못했습니다"}
-        </p>
-        {!connectionBusy && connection?.connected && connection.resolve_version && (
-          <p>확인된 프로그램: {connection.resolve_product || "DaVinci Resolve"} {connection.resolve_version}</p>
-        )}
+      <SettingsDescription
+        summary={
+          connectionLine ? (
+            <>
+              {connectionLine}
+              {programLine && (
+                <>
+                  <br />
+                  {programLine}
+                </>
+              )}
+            </>
+          ) : (
+            "Resolve 연결을 확인하고 도구를 설치합니다."
+          )
+        }
+      >
         {diagnostics && (
           <div className={`resolve-diagnostics is-${diagnostics.status}`}>
             <p className="resolve-diagnostics-summary">{diagnostics.summary}</p>
