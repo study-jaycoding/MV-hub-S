@@ -17,6 +17,7 @@ import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
+import { FolderIcon } from "./FolderIcon";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
@@ -701,7 +702,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           title={t("폴더 등록")}
           onClick={() => setMountOpen(true)}
         >
-          <span className="assets-thumb sm" /> Assets
+          <FolderIcon size={16} /> Assets
         </button>
         <select
           className={

@@ -7,6 +7,7 @@ import type { Filters, WorkspaceContext } from "../types";
 import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
 import { AccountMenu } from "./AccountMenu";
+import { FolderIcon } from "./FolderIcon";
 import { SearchBox } from "./SearchBox";
 
 interface Props {
@@ -94,7 +95,7 @@ export function TopBar({
 
       {/* Assets(구성) 버튼 — 분리된 브라우저 창으로 연다 */}
       <button className="assets-btn" onClick={onOpenAssets} title={t("Assets (구성) — 별도 창")}>
-        <span className="assets-thumb" />
+        <FolderIcon size={20} />
         <span className="assets-label">Assets</span>
       </button>
 
