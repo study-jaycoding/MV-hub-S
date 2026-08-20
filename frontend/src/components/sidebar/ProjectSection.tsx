@@ -474,7 +474,10 @@ export function ProjectSection({
           {order.length === 0 && <span className="muted">{tr("없음")}</span>}
           {order.map((project, index) => {
             const projectActive = activeId === project.id && !deletedOnly;
-            const hasTree = linkedFolderIds.includes(project.id);
+            // 트리는 캐시로 즉시 그려지는데 링크 목록은 비동기라, 링크 기준으로만 판정하면
+            // 로딩 초반에 토글이 ghost 로 렌더돼 정렬·기능이 흔들린다 — 실제 트리 존재를 함께 본다.
+            const hasTree =
+              !!folders[project.id]?.tree || linkedFolderIds.includes(project.id);
             const isCollapsed = collapsed.has(project.id);
             return (
               <div key={project.id} className={"proj-tree-wrap" + (projectActive ? " on" : "")}>
