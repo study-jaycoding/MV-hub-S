@@ -683,6 +683,9 @@
 }
 /* 호버 = '이걸 누른다' 라임 강조(보드 .linb-ov-btn:hover 와 동일 — 전역 일관) */
 .ov-icon:hover { background: var(--grad); color: var(--accent-ink); border-color: var(--accent); }
+/* ⓘ(U+24D8) 글리프는 폴백 폰트 메트릭 때문에 중앙보다 1px 아래로 렌더됨(실측) —
+   ⓘ 버튼에만 보정. 다른 글리프(⤓ ↺ ↻ S)는 이미 정중앙이라 전체 이동 금지. */
+.ov-info { padding: 0 0 2px; }
 /* 공유됨 → 해제 버튼: accent 강조(클릭하면 공유 해제). 라임 위 굵은 검은 아이콘(시인성) */
 .ov-icon-on { background: var(--accent); color: var(--accent-ink); font-weight: 900; font-size: 17px; }
 .ov-icon-on:hover { background: var(--accent); filter: brightness(1.12); }

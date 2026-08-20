@@ -43,7 +43,7 @@ export function GenerationThumbOverlay({
           </label>
         )}
         <button
-          className="ov-icon"
+          className="ov-icon ov-info"
           style={{ marginLeft: "auto" }}
           title="정보"
           onClick={(event) =>

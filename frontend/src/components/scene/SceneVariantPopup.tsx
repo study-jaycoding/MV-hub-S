@@ -410,7 +410,7 @@ export function SceneVariantPopup({
                       <div className="thumb-overlay">
                         <div className="ov-top">
                           <button
-                            className="ov-icon"
+                            className="ov-icon ov-info"
                             style={{ marginLeft: "auto" }}
                             title="정보"
                             onMouseDown={(e) => e.stopPropagation()}

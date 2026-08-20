@@ -223,7 +223,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
             </button>
           )}
           <button
-            className="linb-ov-btn"
+            className="linb-ov-btn ov-info"
             style={{ marginLeft: "auto" }}
             title="정보"
             onClick={(e) => onInfo({ kind: "generation", gen: generation, x: e.clientX, y: e.clientY })}
