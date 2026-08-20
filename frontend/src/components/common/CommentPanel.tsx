@@ -289,11 +289,11 @@ export function CommentPanel<T extends CommentPanelItem>({
       <div className="cmt-opt">
         <label title="개인 기록으로 저장 — 팀 공유 스레드·발행·통계에 표시되지 않습니다">
           <input type="checkbox" checked={writePrivate} onChange={togglePrivate} />
-          비공개 코멘트
+          비공개 코멘트(쓰기)
         </label>
         <label title="끄면 팀이 보는 그대로(공유 코멘트만) 표시">
           <input type="checkbox" checked={showPrivate} onChange={toggleShow} />
-          같이 보기
+          비공개 코멘트(읽기)
         </label>
       </div>
     </div>
