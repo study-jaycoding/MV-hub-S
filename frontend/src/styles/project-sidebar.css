@@ -7,7 +7,8 @@
 .proj-row {
   flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 6px;
   min-width: 0; background: transparent; border: none; cursor: pointer; text-align: left;
-  /* 좌 6px + 접기 9px + 6 + 손잡이 15px + 6 = 이름 42px — 아래 폴더 행(캐럿9·아이콘15)과 같은 그리드. */
+  /* 좌 6px + 접기 14px + 6 + 손잡이 15px + 6 = 이름 47px — 아래 폴더 행(캐럿14·아이콘15)과 같은 그리드.
+     우 8px 도 폴더 행과 동일해 숫자(개수) 오른끝이 같은 세로선에 선다. */
   padding: 5px 8px 5px 6px; border-radius: 7px; color: var(--muted2); font-size: 12px;
 }
 .proj-row:hover { background: rgba(255,255,255,0.06); }
@@ -21,14 +22,14 @@
 .proj-row.sel-target { background: rgba(255,79,138,0.2); color: #fff; font-weight: 700; }
 .proj-row.sel-target:hover { background: rgba(255,79,138,0.28); }
 .proj-row.sel-target .proj-count { color: #ffd6e5; }
-/* 프로젝트 접기 토글(▾/▸) — 폴더 캐럿(9px)과 같은 폭·열. 트리 없는 프로젝트는 ghost 로 자리만.
+/* 프로젝트 접기 토글(▾/▸) — 폴더 캐럿과 같은 14px 열. 트리 없는 프로젝트는 ghost 로 자리만.
    ghost 는 span(inline)이라 width 가 무시되던 함정 → inline-flex 로 강제해 두 경우 폭이 같다. */
 .proj-fold {
   flex: none; display: inline-flex; align-items: center; justify-content: center;
-  width: 9px; padding: 0; background: transparent; border: none;
-  color: var(--muted2); font-size: 10px; cursor: pointer; text-align: center;
+  width: 14px; padding: 0; background: transparent; border: none;
+  color: var(--text); opacity: 0.7; font-size: 13px; cursor: pointer; text-align: center;
 }
-.proj-fold:hover { color: var(--text); }
+.proj-fold:hover { opacity: 1; }
 .proj-fold.ghost { cursor: default; }
 /* 순서 드래그 손잡이(⠿) — 폴더 아이콘(15px) 자리에 상시 폭 확보(이름 열 정렬), hover 에만 보임. */
 .proj-row .proj-drag-handle {
@@ -77,6 +78,7 @@
 .sidebar-main .folder-tree.sidebar-folder-tree.scroll-15 {
   max-height: none;
   overflow-y: visible;
+  padding-right: 0; /* scroll-15 의 2px 가 개수 열을 프로젝트 행과 어긋나게 하던 것 제거 */
 }
 .folder-tree-node { min-width: 0; }
 .folder-tree-row {
@@ -86,6 +88,9 @@
   background: transparent; color: var(--text);
   cursor: pointer; text-align: left; font-size: 12px;
   font-family: inherit;
+  /* 전역 button 기본 padding(6px 12px)이 남아 개수 숫자가 프로젝트 행과 어긋나던 것 정리 —
+     우 8px 로 프로젝트 행(.proj-row)과 같은 오른끝. 좌는 depth 인라인 스타일이 정한다. */
+  padding-top: 0; padding-bottom: 0; padding-right: 8px;
 }
 .folder-tree-row:hover { background: rgba(255,255,255,0.06); }
 /* 카드를 드래그해 올렸을 때 드롭 타깃 폴더 강조 */
@@ -110,8 +115,9 @@
   border: 1px dashed var(--muted2);
   box-shadow: none;
 }
+/* 접기 캐럿 — 14px 열·13px 글자로 또렷하게(작아서 안 보인다는 피드백). 프로젝트 토글(.proj-fold)과 동일 열. */
 .folder-tree-caret {
-  width: 9px; flex: none; color: var(--muted); font-size: 10px;
+  width: 14px; flex: none; color: var(--text); opacity: 0.7; font-size: 13px; text-align: center;
 }
 .folder-tree-caret.hidden { visibility: hidden; }
 .folder-tree-icon {
