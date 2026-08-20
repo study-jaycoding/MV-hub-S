@@ -214,7 +214,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }, 150);
   }, [scrollKey]);
 
-  const { allTags, breadcrumb, files, hasAnyUnread, searchActive, typeCounts } =
+  const { allTags, breadcrumb, files, hasAnyUnread, searchActive } =
     useAssetViewData({
       activeColors,
       activeTags,
@@ -801,8 +801,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         <AssetsSidebar
           project={project}
           typeFilter={typeFilter}
-          typeCounts={typeCounts}
-          onTypeFilterChange={setTypeFilter}
           dir={dir}
           meta={meta}
           sourceOnly={sourceOnly}

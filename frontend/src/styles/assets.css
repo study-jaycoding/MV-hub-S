@@ -127,31 +127,6 @@
 
 .assets-loading, .assets-empty { color: var(--muted); font-size: 13px; padding: 14px; }
 
-/* 타입별 필터(이미지/영상/오디오) */
-.type-filter {
-  display: flex; flex-direction: column; gap: 2px;
-  padding-bottom: 8px; margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.type-row {
-  display: flex; align-items: center; gap: 8px;
-  width: 100%; border: 0; background: transparent; text-align: left; font: inherit;
-  padding: 6px 8px; border-radius: 7px; cursor: pointer;
-  font-size: 13px; color: var(--text-1, var(--text));
-}
-.type-row:hover { background: rgba(255, 255, 255, 0.05); }
-.type-row.active { background: var(--grad-soft); color: var(--accent); font-weight: 700; }
-.type-icon { width: 16px; text-align: center; flex-shrink: 0; }
-.type-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.type-count {
-  margin-left: auto; flex-shrink: 0;
-  font-size: 11px; font-weight: 600; color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.type-row.active .type-count { color: var(--accent); }
-.type-row.zero { cursor: default; opacity: 0.45; }
-.type-row.zero:hover { background: transparent; }
-
 .assets-grid-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 
 /* 외부 파일 드롭 가져오기 오버레이 */
