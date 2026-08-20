@@ -94,6 +94,8 @@
   border-right: 1px solid var(--border);
   overflow-y: auto; padding: 8px 6px;
 }
+/* 사이드바로 옮긴 프로젝트 선택 — 폴더 트리 위, 사이드바 폭에 꽉 차게 */
+.assets-tree .assets-project { width: 100%; margin-bottom: 8px; padding: 6px 8px; }
 /* 사이드바 상단 검색바 (파일명 / #태그) */
 .assets-search {
   display: flex; align-items: center; gap: 6px;

@@ -24,6 +24,7 @@ export function AssetsCrumbBar({
   activeColors,
   typeFilter,
   onTypeFilterChange,
+  fileCount,
   onToggleColor,
   grayOn,
   onToggleGray,
@@ -60,6 +61,7 @@ export function AssetsCrumbBar({
   activeColors: Set<string>;
   typeFilter: AssetTypeFilter;
   onTypeFilterChange: (value: AssetTypeFilter) => void;
+  fileCount: number;
   onToggleColor: (hex: string) => void;
   grayOn: boolean;
   onToggleGray: () => void;
@@ -141,6 +143,11 @@ export function AssetsCrumbBar({
           />
         </div>
       </div>
+      {/* 생성탭 툴바와 동일 — 슬라이더 옆에 '타입 · 건수' 표시 */}
+      <span className="lib-count">
+        {t(MEDIA_FILTER_OPTIONS[typeIndex].label)} · {fileCount}
+        {t("개")}
+      </span>
 
       <div className="assets-tools">
         <div className="assets-filters">

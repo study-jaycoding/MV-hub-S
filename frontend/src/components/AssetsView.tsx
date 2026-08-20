@@ -25,7 +25,6 @@ import { MountManager } from "./assets/MountManager";
 import { setSingleFileDrag, setZipDrag } from "./assets/exportDrag";
 import {
   EMPTY_ASSET_META,
-  INTERNAL_COMBINED_PROJECT,
   assetDragItemsForPath,
   assetPreviewTarget,
   toggleAssetDateSelection,
@@ -705,35 +704,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         >
           <FolderIcon width={20} height={16} /> Assets
         </button>
-        <select
-          className={
-            "assets-project"
-            + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
-            + (linkedProjects.has(project) ? " linked" : "")
-          }
-          value={project}
-          onChange={(e) => {
-            setProject(e.target.value);
-            setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
-          }}
-        >
-          {projects.map((p) => (
-            <option
-              key={p}
-              value={p}
-              className={
-                p === INTERNAL_COMBINED_PROJECT
-                  ? "internal"
-                  : linkedProjects.has(p)
-                    ? "linked"
-                    : undefined
-              }
-            >
-              {p}
-            </option>
-          ))}
-        </select>
-        {/* 하단 crumb 바에서 올라온 경로·건수 정보 — 타입 슬라이더와 자리 교환(Jay 요청). */}
+        {/* 하단 crumb 바에서 올라온 경로 정보 — 타입 슬라이더와 자리 교환(Jay 요청).
+            프로젝트 선택은 사이드바(폴더 트리 위)로, 건수는 하단 슬라이더 옆으로 이동. */}
         <div className="assets-head-crumb">
           {searchActive ? (
             <span className="crumb-search">
@@ -761,17 +733,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               ))}
             </>
           )}
-          <span className="crumb-count">
-            {typeFilter === "image"
-              ? t("이미지")
-              : typeFilter === "video"
-                ? t("영상")
-                : typeFilter === "audio"
-                  ? t("오디오")
-                  : t("전체")}{" "}
-            · {files.length}
-            {t("개")}
-          </span>
         </div>
         {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
         <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
@@ -800,6 +761,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       <div className="assets-body">
         <AssetsSidebar
           project={project}
+          projects={projects}
+          linkedProjects={linkedProjects}
+          onProjectChange={(p) => {
+            setProject(p);
+            setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
+          }}
           typeFilter={typeFilter}
           dir={dir}
           meta={meta}
@@ -850,6 +817,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             activeColors={activeColors}
             typeFilter={typeFilter}
             onTypeFilterChange={setTypeFilter}
+            fileCount={files.length}
             onToggleColor={toggleColor}
             grayOn={grayOn}
             onToggleGray={() => setGrayOn((v) => !v)}
