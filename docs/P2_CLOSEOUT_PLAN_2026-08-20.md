@@ -16,16 +16,19 @@ A9 archived 구분(배치 8)· A13 이벤트 루프 동기 SQLite(배치 4).
 ## B. 지금 고친다
 
 ### B-P1 배치 (최우선 — 경계·정합, 코덱스 구현 → 클로드 검토)
-- P1-1. **혼합 배포 rollout fence** (A11 잔여): 게이트 A안은 '새 claim'만 차단 — 구 서버에서
-  이미 submitting 받은 구 에이전트의 지연 create 창은 남는다. 배포 절차를 도구로 강제:
-  생성 일시중지 → non-terminal/submitting·진행 중 provider 작업 0 확인 → 서버/에이전트 전환.
-  (체크 스크립트 + 배포 문서. RISK_REDUCTION_PLAN:573-576 전제와 일치)
-- P1-2. **URL cross-owner adopt** (generation_sync.py:76-140): URL만으로 전역 행을 찾아
-  creator 무검증 갱신 — 타 사용자 행 오염 차단(소유 조건 추가).
-- P1-3. **MV_agent.bat 무차별 포트 kill** (:174-182): 경로 확인 없는 taskkill —
-  워치독과 같은 절대경로 판별 재사용.
-- P1-4. **잠금 키 드리프트** (B7, feat/share-reconciliation): share.py·publish.py 의
-  잠금 전 id 매핑이 잠금 후 재매핑과 어긋날 수 있음 — 재잠금/키 재검증 정합. ★백엔드 배치.
+- ✅P1-1. **혼합 배포 rollout fence** (2026-08-20, dev 55a878bd — 코덱스 구현·클로드 검토):
+  generation_deployment_paused 스위치(관리자 GET/PUT, 접수·pending·claim 503) +
+  tools/deploy_fence_check.py(미종결 gen_request·진행 중 generation 0 검사, 종료코드 계약) +
+  SERVER.md 배포 절차(일시중지→fence→서버→에이전트→재개).
+- ✅P1-2. **URL cross-owner adopt** (55a878bd): 소유자 범위 제한 — incoming creator 정확 일치
+  + 이메일 검증된 계정의 acct: 전환 별칭만. 무소유 행은 adopt 대신 새 행(fail-closed).
+- ✅P1-3. **MV_agent.bat 포트 kill 정밀화** (55a878bd): tools/stop_local_hub_on_port.ps1 —
+  전 PID CommandLine·CreationDate 검증, kill 직전 재확인, 혼합 소유 전체 거부. 구 런처
+  (상대경로) 프로세스는 번들 파이썬 경로로 소유권 인정(클로드 리뷰 반영 — 최초 업데이트
+  전 PC 멈춤 방지, 판별 6케이스 검증). 실전 수동 검증은 배포 시(E 트랙).
+- ✅P1-4. **잠금 키 드리프트** (55a878bd): _stable_proxy_identity_lock — 잠금 후 재매핑이
+  잠금 키와 다르면 원장 prepare 전 409 안전 실패(자동 재잠금 대신), 번들은 부분집합 검사.
+  ※주: 55a878bd 는 apply --3way 스테이징 특성으로 P1-1~4 가 한 커밋에 합쳐짐(내역은 이 장부가 권위).
 - P1-5. **원장 위생 상태표** (B4, feat/share-reconciliation): "로컬 없음+서버 missing=종결"
   단일 규칙 금지 — 원격 전용 카드(local 불필요)/로컬 소실(전환·유실 구분)/prepared+base 일치
   (rejected)/서버 존재·로컬만 없음(materialize 기회 보존) 상태표 + 유한 유예 후
