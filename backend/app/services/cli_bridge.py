@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -591,14 +592,71 @@ async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+# ── 현재 선택 워크스페이스 상태 — Assets 자동 마운트의 워크스페이스 스코프 판정용 ──
+# 삼중 상태를 유지한다: 확정 팀(id) / 확정 개인(None) / 미확인(known=False).
+#  · 미확인은 호출측이 fail-close(자동 마운트 숨김) — 타 워크스페이스 폴더 노출·업로드 차단.
+#  · 전환(set/unset) 성공 시 결과를 즉시 '확정'으로 기록(조회 불필요) + 세대(gen) 증가로
+#    진행 중이던 옛 workspace list 응답이 새 상태를 덮는 경쟁을 차단한다(코덱스 P1).
+#  · 상태는 단일 튜플 교체로만 갱신(GIL 원자성) — set/unset(메인 루프)이 락을 기다리지 않는다.
+_WS_STATE_TTL = 600.0  # 확정 상태 재검증 주기 — 앱 밖(터미널)에서 CLI 를 만진 경우 자가치유
+_ws_gen = 0
+_ws_state: tuple[int, bool, Optional[str], float] = (0, False, None, 0.0)  # (gen, known, id, t)
+_ws_resolve_lock = threading.Lock()  # sync(threadpool) 경로 single-flight — CLI 중복 실행 방지
+
+
+def _ws_set_known(workspace_id: Optional[str]) -> None:
+    global _ws_gen, _ws_state
+    _ws_gen += 1
+    _ws_state = (_ws_gen, True, workspace_id, time.monotonic())
+
+
+def selected_workspace_state() -> tuple[bool, Optional[str]]:
+    """(known, id) — known=False 는 미확인(호출측 fail-close). CLI 호출 없음(async 경로 안전)."""
+    _gen, known, wid, t = _ws_state
+    if known and (time.monotonic() - t) < _WS_STATE_TTL:
+        return True, wid
+    return False, wid
+
+
+async def _resolve_selected_workspace(timeout: float = 30.0) -> None:
+    """CLI 로 현재 선택을 조회해 확정 기록. 조회 실패([])면 미확인 유지(fail-close)."""
+    global _ws_state
+    start_gen = _ws_gen
+    workspaces = await list_workspaces(timeout=timeout)
+    if not workspaces:
+        return
+    sel = next((w for w in workspaces if w.get("is_selected")), None)
+    wid = str(sel["id"]) if sel and sel.get("id") else None
+    if _ws_gen == start_gen:  # 조회 중 전환이 있었으면 버린다(늦은 응답이 새 상태를 못 덮게)
+        _ws_state = (start_gen, True, wid, time.monotonic())
+
+
+def resolve_selected_workspace_blocking() -> tuple[bool, Optional[str]]:
+    """sync(threadpool) 경로용 — 미확인이면 single-flight 로 CLI 1회 조회 후 상태 반환."""
+    known, wid = selected_workspace_state()
+    if known:
+        return True, wid
+    with _ws_resolve_lock:
+        known, wid = selected_workspace_state()  # 락 대기 중 다른 스레드가 확정했으면 재사용
+        if known:
+            return True, wid
+        try:
+            asyncio.run(_resolve_selected_workspace())
+        except Exception:  # noqa: BLE001 - 루프 정책 등 환경 문제도 미확인으로(fail-close)
+            return False, None
+    return selected_workspace_state()
+
+
 async def set_workspace(workspace_id: str, timeout: float = 30.0) -> None:
     """이후 모든 요청을 이 워크스페이스(팀 공유 UUID 공간)로 스코프. CLI 전역 상태."""
     await _run("workspace", "set", workspace_id, timeout=timeout)
+    _ws_set_known(str(workspace_id))  # 성공 = 상태 확정(조회 불필요) + 세대 증가
 
 
 async def unset_workspace(timeout: float = 30.0) -> None:
     """워크스페이스 해제 → 개인 계정 컨텍스트로 복귀."""
     await _run("workspace", "unset", timeout=timeout)
+    _ws_set_known(None)
 
 
 # (create_job/get_job 제거 — 푸시 모델에선 서버가 CLI 로 직접 생성하지 않는다. 생성은 각 PC 의

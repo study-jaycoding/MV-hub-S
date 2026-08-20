@@ -27,6 +27,8 @@ export function useAssetProjectData({
   onTreeLoaded?: (children: AssetNode[]) => void;
 }) {
   const [projects, setProjects] = useState<string[]>([]);
+  // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운에서 라임색으로 구분 표시.
+  const [linkedProjects, setLinkedProjects] = useState<Set<string>>(new Set());
   const [project, setProject] = useState("");
   const [tree, setTree] = useState<AssetNode[]>([]);
   const [meta, setMeta] = useState<Record<string, AssetMeta>>({});
@@ -87,6 +89,7 @@ export function useAssetProjectData({
       .assetProjects()
       .then((info) => {
         setProjects((prev) => reconcileArrayState(prev, info.projects));
+        setLinkedProjects(new Set(info.linked || []));
         setProject((current) => {
           if (keepCurrent && current && info.projects.includes(current)) return current;
           const saved = STORE.get("project", "");
@@ -193,6 +196,7 @@ export function useAssetProjectData({
     meta,
     project,
     projects,
+    linkedProjects,
     refreshProjectData,
     reloadMeta,
     reloadProjects,

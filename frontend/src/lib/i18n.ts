@@ -84,7 +84,6 @@ const EN: Record<string, string> = {
   "항목이 없습니다.": "Nothing here yet.",
   "+ 새 생성": "+ New",
   // Assets
-  "MV 라이브러리": "MV Library",
   "폴더 등록": "Folders",
   "파일 날짜별로 구분": "Group by date",
   "이 폴더에 미디어가 없습니다.": "No media in this folder.",

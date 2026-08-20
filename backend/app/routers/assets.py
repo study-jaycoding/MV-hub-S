@@ -42,7 +42,7 @@ from ..deps import (
 )
 from ..services.media_types import VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 from ..services.request_guards import require_loopback_request
-from ..services import asset_io, asset_mounts, asset_paths, asset_tree, thumbs
+from ..services import asset_io, asset_mounts, asset_paths, asset_tree, cli_bridge, thumbs
 from ..services.path_safety import safe_join
 
 
@@ -129,11 +129,26 @@ def _mount_dir(name: str, owner: str) -> Optional[Path]:
     return None
 
 
+def _selected_workspace_scope() -> tuple[bool, Optional[str]]:
+    """(known, workspace_id) — 미확인(known=False)은 호출측 fail-close.
+
+    sync 엔드포인트(threadpool)에서는 미확인 시 CLI 를 single-flight 로 1회 조회,
+    async 경로(업로드 등 이벤트 루프 안)에서는 블로킹 금지라 확정 상태만 읽는다
+    (대개 목록/트리 조회(sync)가 먼저 확정해 둔다)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return cli_bridge.resolve_selected_workspace_blocking()
+    return cli_bridge.selected_workspace_state()
+
+
 def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
     """PM 프로젝트 설정의 root_path 를 Assets 자동 마운트로 노출한다.
 
     수동 asset_mounts.json 에 쓰지 않고 매번 읽어 합친다. 프로젝트 설정을 바꾸면
     에셋창도 다음 로드부터 그대로 따라가게 하기 위해서다.
+    ★워크스페이스 스코프: 팀 워크스페이스 선택 중엔 그 워크스페이스 프로젝트만
+    (라이브러리 사이드바와 동일 규칙), 개인 컨텍스트면 내가 볼 수 있는 전체.
     """
     if not MANAGE_ENABLED:
         return []
@@ -148,10 +163,19 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
     # 로컬 링크가 비어도 진행한다 — 팀 공유 렌더 루트(p.render_root_path)만 있는 PC 에서도
     # 프로젝트가 Assets 자동 마운트로 잡히게 한다(아래 루프에서 render_root_path 우선).
 
+    known, ws_id = _selected_workspace_scope()
+    if not known:
+        # 워크스페이스 미확인은 fail-close — 타 워크스페이스 프로젝트 폴더가 노출되거나
+        # 그쪽으로 업로드되는 것을 막는다(수동 등록 마운트는 영향 없음).
+        return []
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
     member_uid = None if read_all else (account_scope_uid(request) or "\x00")
     try:
-        visible = repo.list_projects(include_archived=False, member_uid=member_uid).get("projects") or []
+        visible = repo.list_projects(
+            include_archived=False,
+            member_uid=member_uid,
+            workspace_id=ws_id,
+        ).get("projects") or []
     except Exception:  # noqa: BLE001
         visible = []
 
@@ -296,6 +320,7 @@ class ProjectsOut(BaseModel):
     projects: list[str]
     default: str
     root: str
+    linked: list[str] = []  # PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운 색 구분용
 
 
 @router.get(
@@ -307,9 +332,10 @@ def list_projects(request: Request, background: BackgroundTasks):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
-    for m in _auto_project_mounts(request):
-        if m["name"] not in projects:
-            projects.append(m["name"])
+    auto_names = [m["name"] for m in _auto_project_mounts(request)]
+    for name in auto_names:
+        if name not in projects:
+            projects.append(name)
     # 내장 스크래치 폴더(captures/imports)는 하나로 합쳐 'imp/cap' 한 항목으로 노출(둘 중 하나라도 파일 있으면).
     #  → 사이드바에서 두 폴더로 갈라 보여준다(asset_tree.read_combined_tree).
     if _COMBINED_INTERNAL not in projects:
@@ -322,7 +348,13 @@ def list_projects(request: Request, background: BackgroundTasks):
     # 현재 프로젝트에서만 수행한다(등록된 모든 네트워크 폴더를 미리 훑던 지연 제거).
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
-    return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
+    linked_set = set(auto_names)
+    return ProjectsOut(
+        projects=projects,
+        default=default,
+        root=str(ASSETS_ROOT),
+        linked=[p for p in projects if p in linked_set],
+    )
 
 
 # ── 외부 폴더 등록(마운트) 관리 ──────────────────────────────────────────────
