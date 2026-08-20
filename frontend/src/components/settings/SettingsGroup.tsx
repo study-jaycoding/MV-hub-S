@@ -13,7 +13,11 @@ import { createPortal } from "react-dom";
 const FLYOUT_GAP = 8;
 const FLYOUT_WIDTH = 330;
 const VIEWPORT_MARGIN = 8;
-const CLOSE_DELAY_MS = 250;
+
+// 패널은 클릭으로 열고 ✕/Esc 로만 닫는다(호버 여닫음 없음 — Jay 요청).
+// 동시에 한 그룹만 열리게 모듈 수준에서 조율 — 다른 그룹이 열리는 순간 이전 패널을
+// 즉시 닫아 두 패널이 겹쳐 보이던 문제를 없앤다.
+let closeActiveFlyout: (() => void) | null = null;
 
 export function SettingsGroup({
   title,
@@ -26,23 +30,8 @@ export function SettingsGroup({
   const [flyoutStyle, setFlyoutStyle] = useState<CSSProperties>({});
   const triggerRef = useRef<HTMLButtonElement>(null);
   const flyoutRef = useRef<HTMLElement>(null);
-  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const contentId = useId();
-
-  const cancelClose = useCallback(() => {
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleClose = useCallback(() => {
-    cancelClose();
-    closeTimerRef.current = setTimeout(() => {
-      setOpen(false);
-      closeTimerRef.current = null;
-    }, CLOSE_DELAY_MS);
-  }, [cancelClose]);
+  const instanceClose = useRef(() => setOpen(false));
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -77,10 +66,18 @@ export function SettingsGroup({
   }, []);
 
   const showFlyout = useCallback(() => {
-    cancelClose();
+    if (closeActiveFlyout && closeActiveFlyout !== instanceClose.current) {
+      closeActiveFlyout();
+    }
+    closeActiveFlyout = instanceClose.current;
     updatePosition();
     setOpen(true);
-  }, [cancelClose, updatePosition]);
+  }, [updatePosition]);
+
+  const closeFlyout = useCallback(() => {
+    if (closeActiveFlyout === instanceClose.current) closeActiveFlyout = null;
+    setOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -94,12 +91,17 @@ export function SettingsGroup({
     };
   }, [open, updatePosition]);
 
-  useEffect(() => () => cancelClose(), [cancelClose]);
+  // 언마운트(설정 창 닫힘) 시 조율 등록을 정리해 닫힌 인스턴스로의 호출을 막는다.
+  useEffect(
+    () => () => {
+      if (closeActiveFlyout === instanceClose.current) closeActiveFlyout = null;
+    },
+    [],
+  );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Escape") {
-      cancelClose();
-      setOpen(false);
+      closeFlyout();
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -117,13 +119,10 @@ export function SettingsGroup({
           role="dialog"
           aria-label={title}
           style={flyoutStyle}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             event.stopPropagation();
-            cancelClose();
-            setOpen(false);
+            closeFlyout();
             triggerRef.current?.focus();
           }}
         >
@@ -133,7 +132,7 @@ export function SettingsGroup({
               type="button"
               className="assets-x"
               aria-label={`${title} 닫기`}
-              onClick={() => setOpen(false)}
+              onClick={closeFlyout}
             >
               ✕
             </button>
@@ -145,11 +144,7 @@ export function SettingsGroup({
     : null;
 
   return (
-    <section
-      className={"settings-group" + (open ? " is-open" : "")}
-      onMouseEnter={showFlyout}
-      onMouseLeave={scheduleClose}
-    >
+    <section className={"settings-group" + (open ? " is-open" : "")}>
       <button
         ref={triggerRef}
         type="button"
@@ -157,7 +152,6 @@ export function SettingsGroup({
         aria-expanded={open}
         aria-controls={contentId}
         aria-haspopup="dialog"
-        onFocus={showFlyout}
         onClick={showFlyout}
         onKeyDown={handleKeyDown}
       >
