@@ -9,6 +9,8 @@ from fastapi import HTTPException
 
 from app import db, repo
 from app import deps as deps_mod
+from app.config import DEFAULT_WORKER_ID
+from app.repo import manage as repo_manage
 from app.routers import generation as generation_router
 from app.routers import gen_requests as gen_requests_router
 from app.routers import ingest as ingest_router
@@ -181,7 +183,7 @@ class IdentityPermissionTests(unittest.TestCase):
 
     def test_gen_request_create_rejects_foreign_project(self):
         # p_river 는 river 만 멤버. 비멤버(other)가 그 project_id 로 생성요청 → 403(팀영역 주입 차단).
-        from app.models import GenerationCreate, GenRequestIn
+        from app.models import GenerationCreate, GenRequestIn, WorkspaceContext
 
         req = DummyRequest(
             {
@@ -193,11 +195,127 @@ class IdentityPermissionTests(unittest.TestCase):
         )
         body = GenRequestIn(
             kind="create",
+            workspace=WorkspaceContext(scope="personal"),
             create=GenerationCreate(prompt="x", model="seedance_2_0", project_id="p_river"),
         )
         with auth_on(), self.assertRaises(HTTPException) as ctx:
             asyncio.run(gen_requests_router.create_gen_request(body, req))
         self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_gen_request_rejects_unknown_workspace_before_creating_placeholder(self):
+        from app.models import GenerationCreate, GenRequestIn
+
+        req = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        body = GenRequestIn(
+            kind="create",
+            create=GenerationCreate(prompt="x", model="seedance_2_0"),
+        )
+        with auth_on(), mock.patch.object(
+            gen_requests_router,
+            "submit_gen_request",
+            new=mock.AsyncMock(return_value={"id": "must-not-exist"}),
+        ) as submit, self.assertRaises(HTTPException) as ctx:
+            asyncio.run(gen_requests_router.create_gen_request(body, req))
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("워크스페이스 정보", str(ctx.exception.detail))
+        self.assertIn("다시 선택", str(ctx.exception.detail))
+        submit.assert_not_awaited()
+
+    def test_regenerate_requires_recovery_confirmation_before_new_paid_request(self):
+        from app.models import GenRequestIn, WorkspaceContext
+
+        gen_id = repo.create_local_generation(
+            {"prompt": "ambiguous", "model": "seedance_2_0", "params": {}},
+            DEFAULT_WORKER_ID,
+            creator_uid="user_river",
+            workspace={"scope": "personal", "id": None, "name": None},
+        )
+        rid = repo.create_gen_request(
+            "river@example.com",
+            "user_river",
+            gen_id,
+            "create",
+            repo.gen_recipe(gen_id),
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?", (rid,)
+            )
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        body = GenRequestIn(
+            kind="regenerate",
+            workspace=WorkspaceContext(scope="personal"),
+            source_gen_id=gen_id,
+        )
+        with auth_on(), mock.patch.object(
+            gen_requests_router,
+            "submit_gen_request",
+            new=mock.AsyncMock(return_value={"id": "must-not-exist"}),
+        ) as submit, self.assertRaises(HTTPException) as ctx:
+            asyncio.run(gen_requests_router.create_gen_request(body, request))
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("외부 제출 여부", str(ctx.exception.detail))
+        submit.assert_not_awaited()
+
+    def test_generation_recovery_confirmation_requeues_owned_request(self):
+        from app.models import RecoveryDecisionIn
+
+        gen_id = repo.create_local_generation(
+            {"prompt": "ambiguous", "model": "seedance_2_0", "params": {}},
+            DEFAULT_WORKER_ID,
+            creator_uid="user_river",
+        )
+        rid = repo.create_gen_request(
+            "river@example.com",
+            "user_river",
+            gen_id,
+            "create",
+            repo.gen_recipe(gen_id),
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE gen_request SET status='recovery_required' WHERE id=?", (rid,)
+            )
+            conn.execute("UPDATE generation SET status='running' WHERE id=?", (gen_id,))
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with auth_on():
+            result = asyncio.run(
+                gen_requests_router.confirm_generation_not_submitted(
+                    gen_id,
+                    RecoveryDecisionIn(confirmed_not_submitted=True),
+                    request,
+                )
+            )
+
+        self.assertTrue(result["applied"])
+        self.assertEqual(repo.get_gen_request(rid)["status"], "pending")
+        self.assertEqual(repo.get_generation(gen_id)["status"], "pending")
 
     def test_gen_request_workspace_uses_accessible_registry_name(self):
         from app.models import GenerationCreate, GenRequestIn, WorkspaceContext
@@ -275,6 +393,76 @@ class IdentityPermissionTests(unittest.TestCase):
             result,
             {"workspaces": [{"id": "ws-river", "name": "RIVER TEAM"}]},
         )
+
+    def test_task_history_requires_selected_workspace_membership_and_project_role(self):
+        with db.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO workspace_registry(id,name) VALUES(?,?)",
+                [("ws-river", "RIVER TEAM"), ("ws-other", "OTHER TEAM")],
+            )
+            conn.execute(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES('ws-river','river@example.com',1)"
+            )
+            conn.execute(
+                "UPDATE project SET workspace_scope='team',workspace_id='ws-river',"
+                "workspace_name='RIVER TEAM' WHERE id='p_river'"
+            )
+        repo_manage.create_task("p_river", "과거 작업")
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE project SET workspace_id='ws-other',workspace_name='OTHER TEAM' "
+                "WHERE id='p_river'"
+            )
+        request = DummyRequest(
+            {
+                "email": "river@example.com",
+                "status": "approved",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+
+        with auth_on():
+            # 현재 위치와 다른 과거 프로젝트지만, 선택 공간 멤버+프로젝트 역할이면 조회 가능.
+            manage_router._require_project_read(
+                request, "p_river", "ws-river", allow_historical=True
+            )
+            with self.assertRaises(HTTPException) as current_only:
+                manage_router._require_project_read(request, "p_river", "ws-river")
+            self.assertEqual(current_only.exception.status_code, 404)
+            with self.assertRaises(HTTPException) as unavailable:
+                manage_router._require_workspace_read(request, "ws-other")
+            self.assertEqual(unavailable.exception.status_code, 404)
+
+    def test_unresolved_task_is_hidden_from_regular_project_members(self):
+        rows = [
+            {"id": "known", "workspace_unresolved": False},
+            {"id": "unknown", "workspace_unresolved": True},
+        ]
+        member = DummyRequest(
+            {
+                "email": "river@example.com",
+                "global_role": "member",
+                "creator_uid": "user_river",
+            }
+        )
+        admin = DummyRequest(
+            {
+                "email": "admin@example.com",
+                "global_role": "admin",
+                "creator_uid": "admin",
+            }
+        )
+        with auth_on():
+            self.assertEqual(
+                [row["id"] for row in manage_router._visible_tasks(member, rows)],
+                ["known"],
+            )
+            self.assertEqual(
+                [row["id"] for row in manage_router._visible_tasks(admin, rows)],
+                ["known", "unknown"],
+            )
 
     def test_local_gen_request_keeps_agent_name_without_registry(self):
         from app.models import WorkspaceContext

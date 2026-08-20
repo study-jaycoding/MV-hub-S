@@ -1,7 +1,7 @@
 import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../api";
 import type { Generation } from "../types";
-import type { WorkspaceCommandOperation } from "./workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "./workspaceCommand";
 
 interface UseGenerationWorkspaceActionsArgs {
   activeWorkspaceId?: string;
@@ -40,7 +40,7 @@ export function useGenerationWorkspaceActions({
   const onWorkspaceCommand = async (
     focus: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ): Promise<boolean> => {
     if (runningRef.current) return false;
     // 적용 범위는 태그와 동일 규칙 — 포커스가 선택에 포함된 다중 선택일 때만 선택 전체,
@@ -61,7 +61,7 @@ export function useGenerationWorkspaceActions({
 
     runningRef.current = true;
     try {
-      const result = await api.setGenerationWorkspace(ids, operation, workspaceName);
+      const result = await api.setGenerationWorkspace(ids, operation, workspace);
       // 응답 매핑은 요청 앵커 기준 — 카드 객체의 id 는 절대 바꾸지 않고 워크스페이스 필드만
       // 패치한다(팀 카드 id 를 로컬 id 로 치환하면 선택·코멘트 패널·읽음 표시가 어긋난다).
       const byRequested = new Map(

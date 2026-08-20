@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +13,7 @@ from unittest import mock
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
+from app import db
 from app.routers import resolve_integration
 from app.services import request_guards, resolve_transfer
 
@@ -155,6 +158,28 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["transfer_id"] for item in found], ["manual-pending"])
         self.assertEqual(found[0]["manifest_path"], pending["manifest_path"])
 
+    async def test_completed_newest_manifest_does_not_hide_older_pending_limit(self):
+        pending = await self._transfer(
+            [self._generation(1, "ep001/c0010")], "older-pending"
+        )
+        completed = await self._transfer(
+            [self._generation(2, "ep001/c0020")], "newer-completed"
+        )
+        completed["resolve_import"] = {"status": "complete", "imported": 1}
+        await resolve_transfer.save_manifest(completed)
+        now = time.time()
+        os.utime(pending["manifest_path"], (now - 10, now - 10))
+        os.utime(completed["manifest_path"], (now, now))
+
+        with mock.patch.object(
+            resolve_transfer.project_folders,
+            "render_root_state",
+            return_value={"render_path": str(self.render), "error": None},
+        ):
+            found = resolve_transfer.list_pending_manifests(["p1"], limit=1)
+
+        self.assertEqual([item["transfer_id"] for item in found], ["older-pending"])
+
     async def test_manual_importer_rejects_media_outside_project_render(self):
         pending = await self._transfer(
             [self._generation(1, "ep001/c0010")], "unsafe-manual"
@@ -279,22 +304,32 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
     async def test_manual_importer_endpoint_works_without_browser_cookie_only_locally(self):
         from app import main as main_module
 
-        with (
-            mock.patch.object(main_module, "AUTH_ENABLED", True),
-            mock.patch.object(
-                request_guards,
-                "local_machine_hosts",
-                return_value=frozenset({"127.0.0.1", "testclient"}),
-            ),
-            mock.patch.object(
-                resolve_integration.repo,
-                "list_projects",
-                return_value={"projects": []},
-            ),
+        with mock.patch.dict(
+            os.environ,
+            {"CONTENT_HUB_DB": str(self.root / "endpoint-content-hub.db")},
+            clear=False,
         ):
-            response = TestClient(main_module.app).get(
-                "/api/resolve/transfers/pending"
-            )
+            db.flush_pool()
+            db.init_db()
+            try:
+                with (
+                    mock.patch.object(main_module, "AUTH_ENABLED", True),
+                    mock.patch.object(
+                        request_guards,
+                        "local_machine_hosts",
+                        return_value=frozenset({"127.0.0.1", "testclient"}),
+                    ),
+                    mock.patch.object(
+                        resolve_integration.repo,
+                        "list_projects",
+                        return_value={"projects": []},
+                    ),
+                ):
+                    response = TestClient(main_module.app).get(
+                        "/api/resolve/transfers/pending"
+                    )
+            finally:
+                db.flush_pool()
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"items": []})

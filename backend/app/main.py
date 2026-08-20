@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import warnings
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 # Windows 함정: CLI 브리지(asyncio subprocess)는 Proactor 이벤트 루프가 필요하다.
 # 아래처럼 import 시점에 Proactor 정책을 박아두면 일반 실행(uvicorn app.main:app)에서는
@@ -41,12 +41,13 @@ from .config import (
     BACKEND_DIR,
     CORS_ORIGINS,
     DATA_DIR,
+    EXTERNAL_RECOVERY_ENABLED,
     FRONTEND_DIST,
     MANAGE_ENABLED,
     MEDIA_DIR,
     ensure_dirs,
 )
-from .db import init_db
+from .db import init_db, maintenance_active
 from .deps import session_token
 from .mutation_notify import (
     CLIENT_ID_HEADER,
@@ -72,6 +73,7 @@ from .routers import (
     ingest,
     library,
     members,
+    notifications,
     projects,
     publish,
     release_update,
@@ -83,6 +85,17 @@ from .routers import (
 from .services import auth as auth_svc
 from .services.agent_signals import agent_signals
 from .services.backup import periodic_backup
+from .services.worker_backup import (
+    periodic_worker_backup,
+    queue_backup_set,
+    queue_latest_local_backup,
+)
+from .services.temp_sweeper import periodic_sweeper
+from .services.media_preservation import periodic_media_preservation
+from .services.share_state_reconciler import (
+    configure_share_state_router_deps,
+    periodic_share_state_reconciler,
+)
 from .services.operational_logging import (
     compact_runtime_snapshot,
     configure_operational_logging,
@@ -95,10 +108,12 @@ from .services.operational_health import (
     operations_snapshot,
 )
 from .services.request_guards import is_loopback_host
+from .services.upload_limits import UploadBodyLimitMiddleware
 from .services.runtime_metrics import metrics as runtime_metrics
 from .services.path_safety import safe_join
 from .services.remote_realtime import RemoteRealtimeBridge, relay_event
 from .services.syncer import periodic_sync
+from .usecases.gen_requests import shutdown_request_estimates
 from .ws import manager
 
 _runtime_log = logging.getLogger("mvhub.runtime")
@@ -161,11 +176,49 @@ def _should_bootstrap_admin() -> bool:
     return AUTH_ENABLED and os.environ.get(SNAPSHOT_EXPORT_ENV, "").strip() != "1"
 
 
+def _log_worker_backup_bootstrap_failure() -> None:
+    log_event(
+        _runtime_log,
+        "worker_backup_bootstrap_queue_failed",
+        level=logging.ERROR,
+        exc_info=True,
+    )
+
+
+async def _worker_backup_bootstrap() -> None:
+    """기존 로컬 백업의 outbox 보강을 readiness 밖에서 수행하고 실제 스레드까지 추적한다."""
+    loop = asyncio.get_running_loop()
+    work = loop.run_in_executor(None, queue_latest_local_backup)
+    try:
+        await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # run_in_executor 작업은 Task.cancel()만으로 멈추지 않는다. 종료 중에도 실제 복사·검증이
+        # 끝날 때까지 기다려 상태 DB를 periodic worker 정리와 겹치지 않게 한다.
+        try:
+            await asyncio.shield(work)
+        except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 실패만 운영 로그에 남긴다.
+            _log_worker_backup_bootstrap_failure()
+        raise
+    except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 다음 주기에서 다시 보강한다.
+        _log_worker_backup_bootstrap_failure()
+    finally:
+        # 기존 순서(queue 보강 뒤 worker 시작)는 유지하되 둘 다 readiness와 분리한다.
+        periodic_worker_backup.start()
+
+
+def _start_worker_backup_bootstrap() -> asyncio.Task[None]:
+    return asyncio.create_task(
+        _worker_backup_bootstrap(), name="worker-backup-bootstrap"
+    )
+
+
 @asynccontextmanager
 async def _application_lifespan(app: FastAPI):
     log_path = configure_operational_logging()
     log_event(_runtime_log, "startup_begin", log_file=log_path.name)
     runtime_report_task: asyncio.Task | None = None
+    history_audit_task: asyncio.Task | None = None
+    worker_backup_bootstrap_task: asyncio.Task | None = None
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
@@ -176,6 +229,9 @@ async def _application_lifespan(app: FastAPI):
         init_manage_db()
         backfill_workspace_names(repo.list_workspace_options())
     repo.ensure_default_worker()
+    # Comfy in-flight 잡은 메모리만으로는 재시작 뒤 결과를 회수할 수 없다. 풀 자동복구 대신
+    # 이전 prompt_id 를 운영 로그에 남기고 Cloud 취소를 best-effort 로 시도한 뒤 흔적을 비운다.
+    comfy.recover_interrupted_run_jobs()
     # 부트스트랩 관리자 — 서버(AUTH on)면 admin 계정을 자동 생성(없을 때만). '따로 안 만들어도
     # 처음부터 admin 이 있게'. 기본 admin@millionvolt.com / admin1985, env 로 변경 가능.
     if _should_bootstrap_admin():
@@ -217,10 +273,20 @@ async def _application_lifespan(app: FastAPI):
     sharded = media_cache.migrate_sharding()
     if sharded:
         print(f"[startup] 미디어 {sharded}개를 샤딩 디렉터리로 이전")
-    # 크래시/재시작 복구: 이전 프로세스에서 끊긴 진행중 잡(pending/running)을 failed 로 정리.
+    # 크래시/재시작 복구: CLI 호출 전 만료 claim은 재큐잉하고, 호출 뒤 job_id가 없는 모호한
+    # 결말은 recovery_required로 격리한다. lease 만료만으로 유료 생성을 다시 실행하지 않는다.
+    expired_claims = repo.sweep_expired_generation_claims()
+    if expired_claims:
+        requeued = sum(item["action"] == "requeued" for item in expired_claims)
+        quarantined = len(expired_claims) - requeued
+        print(
+            f"[startup] 만료 생성 claim 복구: 재큐잉 {requeued}개, "
+            f"수동 확인 격리 {quarantined}개"
+        )
+    # 영속 gen_request가 없는 옛 인메모리 고아만 failed로 정리한다.
     orphaned = repo.fail_orphaned_jobs()
     if orphaned:
-        print(f"[startup] 고아 잡 {orphaned}개를 failed 로 정리")
+        print(f"[startup] 요청 기록 없는 옛 고아 잡 {orphaned}개를 failed 로 정리")
     # create/sync 레이스로 생긴 중복(같은 결과물 2행) 병합 정리
     dups = repo.reconcile_duplicates()
     if dups:
@@ -268,14 +334,17 @@ async def _application_lifespan(app: FastAPI):
         print(f"[startup] 생성자 uid {cu}개 백필")
     # 제공자 신원 — CLI account status 이메일로 기본값 캡처(공유 파일명·작성자 표기 기준).
     # 사용자가 바꾼 이름은 절대 안 덮어씀. CLI 오프라인이면 조용히 건너뜀(다음 기회).
-    try:
-        from .services import cli_bridge
+    if EXTERNAL_RECOVERY_ENABLED:
+        try:
+            from .services import cli_bridge
 
-        # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
-        status = await cli_bridge.get_account_status(timeout=8.0)
-        repo.capture_provider_identity(status.get("email") or None)
-    except Exception as e:  # noqa: BLE001 — 신원 캡처 실패가 부팅을 막지 않게
-        print(f"[startup] 제공자 신원 캡처 건너뜀: {e}")
+            # 부팅이 외부 CLI 응답에 오래 묶이지 않게 짧은 타임아웃 — 실패 시 다음 기회에 캡처(무해).
+            status = await cli_bridge.get_account_status(timeout=8.0)
+            repo.capture_provider_identity(status.get("email") or None)
+        except Exception as e:  # noqa: BLE001 — 신원 캡처 실패가 부팅을 막지 않게
+            print(f"[startup] 제공자 신원 캡처 건너뜀: {e}")
+    else:
+        print("[startup] 외부 복구 비활성(CONTENT_HUB_EXTERNAL_RECOVERY=0) — CLI 신원 캡처 생략")
     # 로그인 계정 ↔ 생성자(creator) 연결 보장(멱등) — 소유자=힉스필드 uid, 그 외=acct:<email>.
     # 이래야 신규 계정이 멤버·프로젝트 후보에 뜨고, '내 작업'이 계정별로 분리된다.
     linked = repo.link_accounts_to_creators()
@@ -302,13 +371,45 @@ async def _application_lifespan(app: FastAPI):
     # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
     if AUTH_ENABLED:
         periodic_sync.start()
+    if _proxy.is_worker_hub():
+        # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
+        # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
+        periodic_backup.set_completed_callback(queue_backup_set)
+        worker_backup_bootstrap_task = _start_worker_backup_bootstrap()
+    else:
+        periodic_backup.set_completed_callback(None)
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
+    periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
+    periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
+    # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
+    from .routers import _proxy as _share_proxy
+    from .routers._telemetry import touch_generation_telemetry
+
+    configure_share_state_router_deps(
+        proxy=_share_proxy, touch_telemetry=touch_generation_telemetry
+    )
+    periodic_share_state_reconciler.start()  # 공유 서버 권위 상태 → 로컬 공유/골드 미러 수렴
     # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
     # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
     # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
     from .services import asset_watcher
 
-    asset_watcher.start(asyncio.get_running_loop())
+    runtime_loop = asyncio.get_running_loop()
+    agent_signals.bind_loop(runtime_loop)
+    asset_watcher.start(runtime_loop)
+    # 동기 ingest 라우터(anyio 워커)가 텔레메트리 네트워크 전송을 기다리지 않고 이 루프의
+    # 단일 백그라운드 drain에 예약할 수 있게 한다.
+    from .routers._telemetry import bind_telemetry_loop
+
+    bind_telemetry_loop(runtime_loop)
+    from .services.history_autofill import bind_history_loop, startup_history_audit
+
+    bind_history_loop(runtime_loop)
+    # 공유 팀 서버는 계정별 CLI 자격이 없으므로 절대 실행하지 않는다. 로컬 허브만 최근 성공
+    # audit을 백그라운드로 시작하며, 미로그인은 경고만 남기고 다음 시작·gap 기회로 넘긴다.
+    history_audit_task = asyncio.create_task(
+        startup_history_audit(), name="history-startup-audit"
+    )
     # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
     # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
     if _proxy.is_worker_hub():
@@ -324,25 +425,50 @@ async def _application_lifespan(app: FastAPI):
             name="runtime-metrics-log",
         )
     log_event(_runtime_log, "startup_ready")
-    yield
-    # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
-    if runtime_report_task:
-        runtime_report_task.cancel()
-        try:
-            await runtime_report_task
-        except asyncio.CancelledError:
-            pass
-    await periodic_backup.stop()
-    await remote_realtime_bridge.stop()
-    if MANAGE_ENABLED:
-        # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
-        from .routers._telemetry import wait_for_telemetry_drain
+    try:
+        yield
+    finally:
+        # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
+        if runtime_report_task:
+            runtime_report_task.cancel()
+            try:
+                await runtime_report_task
+            except asyncio.CancelledError:
+                pass
+        await shutdown_request_estimates()
+        # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
+        await periodic_backup.stop()
+        if worker_backup_bootstrap_task:
+            worker_backup_bootstrap_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_backup_bootstrap_task
+        await periodic_worker_backup.stop()
+        periodic_backup.set_completed_callback(None)
+        await periodic_sweeper.stop()
+        await periodic_share_state_reconciler.stop()
+        await periodic_media_preservation.stop()
+        await remote_realtime_bridge.stop()
+        if MANAGE_ENABLED or _proxy.is_worker_hub():
+            # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
+            from .routers._telemetry import wait_for_telemetry_drain
 
-        await wait_for_telemetry_drain()
-    if AUTH_ENABLED:
-        await periodic_sync.stop()
-    asset_watcher.stop()
-    log_event(_runtime_log, "shutdown_complete")
+            await wait_for_telemetry_drain()
+        from .routers._telemetry import unbind_telemetry_loop
+
+        unbind_telemetry_loop(runtime_loop)
+        from .services.history_autofill import stop_history_imports, unbind_history_loop
+
+        if history_audit_task and not history_audit_task.done():
+            history_audit_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await history_audit_task
+        await stop_history_imports()
+        unbind_history_loop(runtime_loop)
+        agent_signals.unbind_loop(runtime_loop)
+        if AUTH_ENABLED:
+            await periodic_sync.stop()
+        asset_watcher.stop()
+        log_event(_runtime_log, "shutdown_complete")
 
 
 @asynccontextmanager
@@ -386,6 +512,7 @@ app.include_router(sync.router)
 app.include_router(assets.router)
 app.include_router(projects.router)
 app.include_router(members.router)
+app.include_router(notifications.router)
 app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
@@ -450,7 +577,9 @@ async def auth_enforcement(request: Request, call_next):
     if token:
         email = auth_svc.verify_token(token)
         if email:
-            acc = repo.get_account(email)
+            # SQLite busy_timeout 대기는 이벤트 루프가 아니라 워커 스레드에서 기다린다.
+            # 계정 상태는 즉시 반영해야 하므로 여기서는 TTL 캐시를 두지 않는다.
+            acc = await asyncio.to_thread(repo.get_account, email)
             if acc and acc["status"] == "approved":
                 # 비번 변경/리셋 후엔 그 이전 발급 토큰을 거부(탈취 대응). 스탬프 없는 계정
                 # (한 번도 안 바꿈)은 검사 생략 → 배포 시 기존 세션 일괄 로그아웃 방지.
@@ -466,8 +595,21 @@ async def auth_enforcement(request: Request, call_next):
     api_protected = path.startswith("/api/") and not api_public
     media_protected = path.startswith("/media")
     if (api_protected or media_protected) and request.state.account is None:
-        return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)
-    return await call_next(request)
+        return JSONResponse(
+            {"detail": "로그인이 필요합니다"},
+            status_code=401,
+            headers={_proxy.AUTH_STATE_HEADER: _proxy.AUTH_STATE_INVALID},
+        )
+    response = await call_next(request)
+    if response.status_code == 401:
+        # 인증된 요청 자체가 업무 규칙(예: 현재 비밀번호 불일치)으로 거부된 401은
+        # 세션 만료가 아니다. 브라우저가 저장 토큰을 지우지 않도록 의미를 명시한다.
+        response.headers[_proxy.AUTH_STATE_HEADER] = (
+            _proxy.AUTH_STATE_PRESERVED
+            if request.state.account is not None
+            else _proxy.AUTH_STATE_INVALID
+        )
+    return response
 
 
 # ── 변경 전파 미들웨어 ────────────────────────────────────────────────────────
@@ -512,6 +654,11 @@ async def mutation_notify(request: Request, call_next):
 @app.middleware("http")
 async def data_proxy(request: Request, call_next):
     return await _proxy.data_proxy_middleware(request, call_next)
+
+
+# multipart 파싱·로컬→공유서버 프록시가 본문을 읽기 전에 전체 바이트 상한을 강제한다.
+# AUTH off 원격 가드는 이 뒤에 등록되어 더 바깥에서 불필요한 원격 본문을 먼저 거부한다.
+app.add_middleware(UploadBodyLimitMiddleware)
 
 
 # ★최외곽 가드(가장 마지막 등록 = 가장 먼저 실행) — AUTH off 인데 LAN 에 노출된 경우, data_proxy
@@ -603,6 +750,14 @@ def health():
 @app.get("/api/ready")
 def ready():
     """로드밸런서·운영 점검용 준비 상태. 핵심 DB 테이블을 읽지 못하면 503."""
+    if maintenance_active():
+        # 의도적인 DB 교체는 서버 사망이 아니다. DB 게이트가 풀릴 때까지 여기서 기다리면
+        # 워치독에는 HTTP 무응답으로 보여 정상 유지보수 중인 서버를 종료할 수 있다.
+        return JSONResponse(
+            {"status": "maintenance", "retry_after_seconds": 5},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
     result = database_readiness()
     if result["ready"]:
         return {"status": "ready", "checks": result["checks"]}
@@ -728,14 +883,22 @@ _WS_GHOST_SECONDS = 90.0  # 하트비트 3주기 이상 무수신 = FIN 없는 �
 _WS_AUTH_RECHECK_SECONDS = 45.0
 
 
-async def _reject_websocket_policy(ws: WebSocket) -> None:
+# WS 1008 사유 토큰 — 프론트(progressSocket)가 이 문자열로 분기하므로 바꾸면 계약 위반.
+# "authentication required" = 진짜 인증 실패(토큰 무효·미승인·비번 변경) → 재로그인 유도.
+# "auth-off-local-only"   = AUTH off 서버에 원격(비-loopback) 접속 — 인증 실패가 아니라
+#                            HTTP 403 "AUTH off 모드는 로컬 전용"과 같은 정책 거부.
+_WS_REASON_AUTH_REQUIRED = "authentication required"
+_WS_REASON_AUTH_OFF_LOCAL_ONLY = "auth-off-local-only"
+
+
+async def _reject_websocket_policy(ws: WebSocket, reason: str = _WS_REASON_AUTH_REQUIRED) -> None:
     """핸드셰이크를 완료한 뒤 1008로 닫아 브라우저의 무한 재접속을 막는다.
 
     accept 전에 close 하면 Uvicorn은 HTTP 403으로 거절하고 브라우저에는 1006만 보여준다.
-    클라이언트는 1008만 영구 인증 실패로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
+    클라이언트는 1008만 영구 정책 거부로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
     """
     await ws.accept()
-    await ws.close(code=1008, reason="authentication required")
+    await ws.close(code=1008, reason=reason)
 
 
 def _log_browser_presence(event: str, counts: dict[str, int]) -> None:
@@ -761,14 +924,16 @@ async def websocket_endpoint(ws: WebSocket):
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (ws.client.host if ws.client else "") or ""
         if not is_loopback_host(host):
-            await _reject_websocket_policy(ws)
+            # 인증 실패가 아니라 "로컬 전용" 정책 거부 — 프론트가 토큰을 지우거나
+            # 로그인 화면으로 보내지 않도록 사유를 구분해 보낸다.
+            await _reject_websocket_policy(ws, reason=_WS_REASON_AUTH_OFF_LOCAL_ONLY)
             return
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE, realtime_scope
 
         token = _websocket_session_token(ws, SESSION_COOKIE)
         email = auth_svc.verify_token(token) if token else None
-        acc = repo.get_account(email) if email else None
+        acc = await asyncio.to_thread(repo.get_account, email) if email else None
         pcat = acc.get("password_changed_at") if acc else None
         stale_password_token = bool(pcat and auth_svc.token_password_stamp(token) != pcat)
         if not acc or acc["status"] != "approved" or stale_password_token:
@@ -793,12 +958,16 @@ async def websocket_endpoint(ws: WebSocket):
                 got_message = True
             except asyncio.TimeoutError:
                 pass
+            # manager 가 이 연결을 수거(전송 timeout/큐 초과)했는데 close 가 유실된 드문 경우,
+            # receive loop 만 살아남아 유령이 된다 — 스스로 닫고 나간다(브라우저 재연결 유도).
+            if not manager.is_tracked(ws):
+                await ws.close(code=1001)
+                return
             now = time.monotonic()
             if got_message:
                 last_received = now
             elif now - last_received >= _WS_GHOST_SECONDS:
-                await ws.close(code=1001)  # going away — 유령 연결 수거
-                await _disconnect_websocket(ws)
+                await ws.close(code=1001)  # going away — 유령 연결 수거(정리는 finally)
                 return
             # ★연결 시점에만 인증하면, 그 뒤 관리자가 계정을 정지(rejected/pending)하거나 비번을
             # 리셋해도 기존 소켓은 계속 진행률·알림을 받는다 → 주기 재검증으로 끊는다.
@@ -806,18 +975,19 @@ async def websocket_endpoint(ws: WebSocket):
             # 되던 부하를 줄인다(정지 반영 지연 상한은 기존과 같은 ~45초).
             if AUTH_ENABLED and now - last_auth_check >= _WS_AUTH_RECHECK_SECONDS:
                 last_auth_check = now
-                acc2 = repo.get_account(email) if email else None
+                acc2 = await asyncio.to_thread(repo.get_account, email) if email else None
                 pcat2 = acc2.get("password_changed_at") if acc2 else None
                 if (
                     not acc2
                     or acc2["status"] != "approved"
                     or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
                 ):
-                    await ws.close(code=1008)
-                    await _disconnect_websocket(ws)
+                    # 주기 재검증 실패 = 진짜 인증 실패 — 최초 거부와 같은 사유를 붙여
+                    # 프론트가 reason 없는 1008을 추측하지 않게 한다.
+                    await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
                     return
     except WebSocketDisconnect:
-        await _disconnect_websocket(ws)
+        pass
     except Exception:
         # 예상한 WebSocketDisconnect 외의 예외를 숨기면 장시간 연결이 끊겨도 운영 로그에는
         # 원인이 전혀 남지 않는다. 토큰·이메일은 기록하지 않고 인증 스코프 존재 여부만 남긴다.
@@ -825,6 +995,9 @@ async def websocket_endpoint(ws: WebSocket):
             "WebSocket handler error (authenticated_scope=%s)",
             account_uid is not None,
         )
+    finally:
+        # CancelledError(강제 종료·테스트 lifespan 재사용)까지 포함해 어떤 경로로 나가도
+        # manager 등록과 sender task 를 정리한다. disconnect 는 멱등이라 중복 호출 무해.
         await _disconnect_websocket(ws)
 
 

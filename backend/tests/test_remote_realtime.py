@@ -176,8 +176,63 @@ def test_bridge_reconnects_after_failure_and_stop_cleans_task():
     assert calls == 2
     assert stats["reconnect_attempts"] == 1
     assert stats["relayed_events"] == 1
+    # 첫 시도는 연결 자체가 실패(established 아님) — 재연결이어도 catch-up reload 는 없다.
+    assert stats["catchup_reloads"] == 0
     assert stats["state"] == "stopped"
     assert stats["connected"] is False
+
+
+def test_bridge_reconnect_after_established_connection_fires_catchup_reload():
+    """★코덱스 P1 — 브리지가 끊긴 동안의 신호는 복구 불가(서버에 cursor 없음)이므로,
+    '실제로 연결됐다가 끊긴' 재연결이면 세 도메인에 출처 없는 reload 를 한 번씩 흘려
+    로컬 브라우저가 전체 재조회로 따라잡아야 한다(브라우저 progressSocket 과 같은 계약)."""
+
+    async def scenario():
+        current = [("http://hub.test", "token")]
+        received = []
+        done = asyncio.Event()
+        calls = 0
+
+        class DyingSocket(FakeSocket):
+            async def recv(self):
+                raise OSError("connection lost")
+
+        def connect(uri, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return FakeConnection(DyingSocket([]))  # 연결은 됐다가 곧 죽는다
+            return FakeConnection(FakeSocket([json.dumps({"type": "synced"})]))
+
+        def handle(event):
+            received.append(event)
+            if len(received) >= 4:  # catch-up 3건 + 실제 synced 1건
+                current[0] = None
+                done.set()
+
+        bridge = RemoteRealtimeBridge(
+            lambda: current[0],
+            handle,
+            connect_factory=connect,
+            config_poll_seconds=0.01,
+            connected_config_poll_seconds=0.01,
+            min_backoff_seconds=0,
+            max_backoff_seconds=0,
+        )
+        bridge.start()
+        await asyncio.wait_for(done.wait(), timeout=1)
+        await bridge.stop()
+        return received, bridge.stats()
+
+    received, stats = asyncio.run(scenario())
+    catchup = received[:3]
+    assert {event.event_type for event in catchup} == {
+        "synced",
+        "assets_changed",
+        "manage_changed",
+    }
+    assert all(event.origins is None for event in catchup)
+    assert stats["catchup_reloads"] == 1
 
 
 def test_bridge_does_not_retry_same_token_after_policy_rejection():

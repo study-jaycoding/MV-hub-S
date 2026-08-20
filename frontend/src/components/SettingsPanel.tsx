@@ -2,7 +2,7 @@
 //  · 강조색 팔레트(프리셋 → CSS 변수 즉시 적용·영속)
 //  · 언어 한글/English (선택 영속 — 전체 번역은 단계 적용)
 //  · 단축키(변경은 별도 플로팅 창 ShortcutsWindow)
-//  · 과거 생성물 가져오기(100건 밖 과거 전체를 MCP 백필 .md→파일 업로드로 서버에 적재)
+//  · 생성물 점검(HF 최신분 동기화·삭제물 확인) + 100건 밖 과거 전체 MCP 백필
 import { useEffect, useState } from "react";
 import {
   loadAccent,
@@ -13,31 +13,36 @@ import {
   type Lang,
 } from "../lib/theme";
 import { setLang, useT } from "../lib/i18n";
-import { downloadText } from "../lib/download";
 import {
   clearDownloadDir,
   downloadDirName,
   pickDownloadDir,
 } from "../lib/downloadDir";
-import { api } from "../api";
-import { buildBackfillInstructions, parseMcpItems } from "../lib/settingsBackfill";
+import { api, type HistoryImportStatus } from "../api";
+import {
+  selectCurrentServerBackup,
+  type BackupContinuityStatus,
+  type ServerBackupVersion,
+} from "../lib/assetsApi";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { ShortcutsWindow } from "./ShortcutsWindow";
 import {
   AppearanceSettingsSection,
-  BackfillSettingsSection,
   DownloadLocationSection,
   MetadataContinuitySection,
   ReleaseUpdateSettingsSection,
   ResolveScriptSettingsSection,
-  SyncToolsSection,
 } from "./settings/SettingsSections";
 import { ComfyConnectionSection } from "./settings/ComfyConnectionSection";
+import { SettingsDescription } from "./settings/SettingsDescription";
+import { SettingsGroup } from "./settings/SettingsGroup";
 import {
   getResolveConnectionStatus,
+  getResolveEnvironmentDiagnostics,
   getResolveScriptStatus,
   installResolveScript,
   type ResolveConnectionStatus,
+  type ResolveEnvironmentDiagnostics,
   type ResolveScriptStatus,
 } from "../lib/resolveTransfer";
 import {
@@ -59,11 +64,17 @@ export function SettingsPanel({
   const [accent, setAccent] = useState(loadAccent());
   const [lang, setLangState] = useState<Lang>(loadLang());
   const [reduceMotion, setReduceMotion] = useState(loadReduceMotion());
-  const [msg, setMsg] = useState("");
-  const [uploading, setUploading] = useState(false);
+  const [historyImport, setHistoryImport] = useState<HistoryImportStatus | null>(null);
   const [scOpen, setScOpen] = useState(false);
   const [dbBusy, setDbBusy] = useState(false);
   const [dbMsg, setDbMsg] = useState("");
+  const [backupContinuity, setBackupContinuity] = useState<BackupContinuityStatus | null>(null);
+  const [serverBackups, setServerBackups] = useState<ServerBackupVersion[] | null>(null);
+  const [serverBackupsLoading, setServerBackupsLoading] = useState(false);
+  const [metadataSyncTarget, setMetadataSyncTarget] = useState<ServerBackupVersion | null>(null);
+  const [metadataSyncTargetState, setMetadataSyncTargetState] = useState<
+    "loading" | "ready" | "empty" | "error"
+  >("loading");
   const [syncMsg, setSyncMsg] = useState("");
   const [reinspectMsg, setReinspectMsg] = useState("");
   const [hfMsg, setHfMsg] = useState("");
@@ -71,7 +82,10 @@ export function SettingsPanel({
   const [dlErr, setDlErr] = useState("");
   const [resolveScriptStatus, setResolveScriptStatus] = useState<ResolveScriptStatus | null>(null);
   const [resolveConnection, setResolveConnection] = useState<ResolveConnectionStatus | null>(null);
-  const [resolveConnectionBusy, setResolveConnectionBusy] = useState(false);
+  const [resolveDiagnostics, setResolveDiagnostics] = useState<ResolveEnvironmentDiagnostics | null>(null);
+  // 설정 창을 열면 바로 연결 검사를 시작한다. 첫 응답 전에도 버튼을 잠가
+  // 느린 Resolve API 검사가 겹쳐 실행되거나 늦은 응답이 최신 상태를 덮지 않게 한다.
+  const [resolveConnectionBusy, setResolveConnectionBusy] = useState(true);
   const [resolveScriptBusy, setResolveScriptBusy] = useState(false);
   const [resolveScriptMsg, setResolveScriptMsg] = useState("");
   const [releaseUpdateStatus, setReleaseUpdateStatus] = useState<ReleaseUpdateStatus | null>(null);
@@ -84,17 +98,22 @@ export function SettingsPanel({
     getResolveScriptStatus().then(setResolveScriptStatus).catch(() => {
       setResolveScriptMsg("설치 상태를 확인하지 못했습니다. 로컬 MV Hub에서 다시 시도하세요.");
     });
-    getResolveConnectionStatus().then(setResolveConnection).catch(() => {
-      setResolveConnection({
-        status: "api_unavailable",
-        connected: false,
-        process_running: false,
-        project_open: false,
-        project_id: "",
-        project_name: "",
-        message: "Resolve 연결 상태를 확인하지 못했습니다",
+    getResolveConnectionStatus()
+      .then(setResolveConnection)
+      .catch(() => {
+        setResolveConnection({
+          status: "api_unavailable",
+          connected: false,
+          process_running: false,
+          project_open: false,
+          project_id: "",
+          project_name: "",
+          message: "Resolve 연결 상태를 확인하지 못했습니다",
+        });
+      })
+      .finally(() => {
+        setResolveConnectionBusy(false);
       });
-    });
     getReleaseUpdateStatus(true).then((status) => {
       setReleaseUpdateStatus(status);
       let waitingVersion = "";
@@ -118,7 +137,46 @@ export function SettingsPanel({
     }).catch(() => {
       setReleaseUpdateMsg("업데이트 상태를 확인하지 못했습니다.");
     });
+    api.backupContinuity().then(setBackupContinuity).catch(() => {
+      setDbMsg("백업 상태를 확인하지 못했습니다.");
+    });
+    api.serverBackups()
+      .then((result) => {
+        const target = selectCurrentServerBackup(result.backups);
+        setMetadataSyncTarget(target);
+        setMetadataSyncTargetState(target ? "ready" : "empty");
+      })
+      .catch(() => setMetadataSyncTargetState("error"));
+    api.historyImportStatus().then(setHistoryImport).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (historyImport?.state !== "running") return;
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const status = await api.historyImportStatus();
+        if (cancelled) return;
+        setHistoryImport(status);
+        if (status.state === "complete") {
+          onImported?.(
+            `과거 생성물 확인 완료 · 신규 ${status.inserted} · 갱신 ${status.updated} · 기존 ${status.unchanged}`,
+          );
+          return;
+        }
+        if (status.state === "failed") return;
+      } catch {
+        // 백엔드가 잠깐 바쁜 경우 다음 조회에서 이어간다.
+      }
+      if (!cancelled) timer = window.setTimeout(poll, 1000);
+    };
+    timer = window.setTimeout(poll, 600);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [historyImport?.state, onImported]);
 
   useEffect(() => {
     if (!releaseUpdatePolling) return;
@@ -228,7 +286,10 @@ export function SettingsPanel({
   const refreshResolveConnection = async () => {
     setResolveConnectionBusy(true);
     try {
-      setResolveConnection(await getResolveConnectionStatus());
+      const diagnostics = await getResolveEnvironmentDiagnostics();
+      setResolveDiagnostics(diagnostics);
+      setResolveConnection(diagnostics.connection);
+      setResolveScriptStatus(diagnostics.script);
     } catch {
       setResolveConnection({
         status: "api_unavailable",
@@ -246,13 +307,14 @@ export function SettingsPanel({
 
   const installResolveExporter = async () => {
     setResolveScriptBusy(true);
-    setResolveScriptMsg("Resolve 스크립트 설치 중…");
+    setResolveScriptMsg("Resolve 설치 중…");
     try {
       const result = await installResolveScript();
       setResolveScriptStatus(result);
+      const versions = `내보내기 v${result.bundled_version || "확인 불가"} · 가져오기 v${result.importer_bundled_version || "확인 불가"}`;
       const summary = result.changed
-        ? `가져오기·내보내기 도구 설치 완료 · v${result.bundled_version || "확인 불가"} · Resolve를 완전히 종료하고 다시 실행하세요.`
-        : `가져오기·내보내기 도구가 이미 최신입니다 · v${result.bundled_version || "확인 불가"}`;
+        ? `가져오기·내보내기 도구 설치 완료 · ${versions} · Resolve를 완전히 종료하고 다시 실행하세요.`
+        : `가져오기·내보내기 도구가 이미 최신입니다 · ${versions}`;
       const migration = result.backup_paths?.length
         ? ` · 예전 사용자용 스크립트 ${result.backup_paths.length}개 안전 백업`
         : "";
@@ -284,7 +346,7 @@ export function SettingsPanel({
     setDlDir(null);
   };
 
-  // '외부 생성물 올리기' — 내 에이전트를 깨워 허브 밖(Claude·웹·CLI)에서 만든 결과물을 push.
+  // 'HF 생성물 체크' — 내 에이전트를 깨워 허브 밖(HF 웹·CLI)에서 만든 결과물을 push.
   const syncMine = async () => {
     setSyncMsg("요청 보냄…");
     try {
@@ -309,7 +371,7 @@ export function SettingsPanel({
     setTimeout(() => setReinspectMsg(""), 3000);
   };
 
-  // '힉스필드 삭제물 검토' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다.
+  // 'HF 삭제물 체크' — 내 생성물 중 힉스필드에서 삭제된 것을 찾아 휴지통으로 보낸다.
   const reviewHfDeleted = async () => {
     setHfMsg("힉스필드 점검 중…");
     try {
@@ -321,48 +383,6 @@ export function SettingsPanel({
       setHfMsg("실패");
     }
     setTimeout(() => setHfMsg(""), 2800);
-  };
-
-  const downloadBackfillMd = () => {
-    downloadText(
-      "MV_history_backfill.md",
-      buildBackfillInstructions(window.location.origin),
-      "text/markdown",
-    );
-    setMsg("MV_history_backfill.md 를 받았습니다. 힉스필드 MCP가 연결된 Claude 세션에 이 파일을 주면 결과 파일을 만들어 줍니다.");
-  };
-
-  const onBackfillFile = async (file: File | null | undefined) => {
-    if (!file) return;
-    setUploading(true);
-    setMsg("파일 읽는 중…");
-    try {
-      const items = parseMcpItems(await file.text());
-      if (!items.length) {
-        setMsg("올린 파일에서 항목을 못 찾았습니다 (JSON 배열·{items:[...]}·JSONL 형식이어야 함).");
-        return;
-      }
-      let inserted = 0;
-      let updated = 0;
-      let unchanged = 0;
-      let skipped = 0;
-      const batchSize = 200;
-      for (let i = 0; i < items.length; i += batchSize) {
-        setMsg(`적재 중… ${Math.min(i + batchSize, items.length)}/${items.length}`);
-        const r = await api.ingestMcp(items.slice(i, i + batchSize));
-        inserted += r.inserted;
-        updated += r.updated;
-        unchanged += r.unchanged;
-        skipped += r.skipped;
-      }
-      setMsg(
-        `적재 완료 · 신규 ${inserted} · 갱신 ${updated} · 중복 ${unchanged} · 건너뜀 ${skipped}. 새로고침하면 보입니다.`,
-      );
-    } catch (e) {
-      setMsg("적재 실패: " + String(e));
-    } finally {
-      setUploading(false);
-    }
   };
 
   // 내 DB 가져오기(통째 교체) — 성공하면 라이브러리를 새로 읽도록 전체 새로고침.
@@ -384,37 +404,92 @@ export function SettingsPanel({
     }
   };
 
-  const serverBackup = async () => {
-    setDbBusy(true);
-    setDbMsg("서버에 백업 중…");
+  const startHistoryImport = async () => {
     try {
-      const r = await api.serverBackup();
-      setDbMsg(`✓ 서버에 백업 완료 (보관 ${r.count}개)`);
+      setHistoryImport(await api.historyImportStart());
+    } catch (error) {
+      setHistoryImport({
+        state: "failed",
+        pages: 0,
+        received: 0,
+        inserted: 0,
+        updated: 0,
+        unchanged: 0,
+        skipped: 0,
+        errors: 0,
+        message: String(error).replace(/^Error:\s*\d+:\s*/, ""),
+        started_at: null,
+        finished_at: null,
+      });
+    }
+  };
+
+  const loadServerBackups = async () => {
+    if (serverBackups !== null) {
+      setServerBackups(null);
+      return;
+    }
+    setServerBackupsLoading(true);
+    setDbMsg("서버 메타데이터 목록을 확인하는 중…");
+    try {
+      const result = await api.serverBackups();
+      const versions = result.backups.filter((item) => item.kind === "set");
+      setServerBackups(versions);
+      setDbMsg(versions.length ? "적용할 서버 백업을 선택하세요." : "서버 백업이 없습니다.");
+    } catch (error) {
+      setDbMsg("서버 백업 목록 확인 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
+    } finally {
+      setServerBackupsLoading(false);
+    }
+  };
+
+  const serverRestore = async (backup: ServerBackupVersion) => {
+    const backupSetId = backup.backup_set_id || backup.name;
+    const when = backup.created_at
+      ? new Date(backup.created_at).toLocaleString()
+      : new Date(backup.mtime * 1000).toLocaleString();
+    const device = backup.device?.device_name || "알 수 없는 PC";
+    if (
+      !window.confirm(
+        `${device}에서 만든 ${when} 메타데이터를 적용합니다.\n현재 로컬 데이터는 먼저 안전하게 보관되며, 적용 후 재로그인합니다.\n계속할까요?`,
+      )
+    ) {
+      setDbMsg("메타데이터 동기화를 취소했습니다.");
+      return false;
+    }
+    setDbBusy(true);
+    setDbMsg("서버에서 가져오는 중…");
+    try {
+      await api.serverRestore(backupSetId);
+      setDbMsg("복원 완료 — 다시 로그인해 주세요…");
+      setTimeout(() => window.location.reload(), 900);
+      return true;
     } catch (e) {
-      setDbMsg("백업 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      return false;
     } finally {
       setDbBusy(false);
     }
   };
 
-  const serverRestore = async () => {
-    if (
-      !window.confirm(
-        "서버에 백업해둔 내 계정 DB로 현재 로컬을 통째 교체합니다.\n(현재 DB는 자동 백업, 복원 후 재로그인)\n계속할까요?",
-      )
-    ) {
-      return;
-    }
-    setDbBusy(true);
-    setDbMsg("서버에서 가져오는 중…");
+  const syncMetadata = async () => {
+    setServerBackupsLoading(true);
+    setDbMsg("서버의 최신 메타데이터를 확인하는 중…");
     try {
-      await api.serverRestore();
-      setDbMsg("복원 완료 — 다시 로그인해 주세요…");
-      setTimeout(() => window.location.reload(), 900);
-    } catch (e) {
-      setDbMsg("가져오기 실패: " + String(e).replace(/^Error:\s*\d+:\s*/, ""));
+      const result = await api.serverBackups();
+      const backup = selectCurrentServerBackup(result.backups);
+      setMetadataSyncTarget(backup);
+      setMetadataSyncTargetState(backup ? "ready" : "empty");
+      if (!backup) {
+        setDbMsg("서버에 적용할 메타데이터 백업이 없습니다.");
+        return;
+      }
+      await serverRestore(backup);
+    } catch (error) {
+      setMetadataSyncTargetState("error");
+      setDbMsg("메타데이터 동기화 실패: " + String(error).replace(/^Error:\s*\d+:\s*/, ""));
     } finally {
-      setDbBusy(false);
+      setServerBackupsLoading(false);
     }
   };
 
@@ -447,14 +522,102 @@ export function SettingsPanel({
         </header>
 
         <div className="admin-body">
-          <AppearanceSettingsSection
-            accent={accent}
-            lang={lang}
-            reduceMotion={reduceMotion}
-            onAccent={pickAccent}
-            onLang={pickLang}
-            onReduceMotion={pickReduceMotion}
-          />
+          <SettingsGroup title={t("기본 설정")}>
+            <AppearanceSettingsSection
+              accent={accent}
+              lang={lang}
+              reduceMotion={reduceMotion}
+              onAccent={pickAccent}
+              onLang={pickLang}
+              onReduceMotion={pickReduceMotion}
+            />
+
+            <DownloadLocationSection
+              dlDir={dlDir}
+              dlErr={dlErr}
+              onPickDir={pickDir}
+              onClearDir={clearDir}
+            />
+
+            <section className="settings-section">
+              <h4>{t("단축키")}</h4>
+              <button className="settings-action" onClick={() => setScOpen(true)}>
+                ⌨️ {t("단축키 설정")}
+              </button>
+              <SettingsDescription summary={t("현재 단축키를 확인하고 원하는 키로 변경합니다.")} />
+            </section>
+
+            <MetadataContinuitySection
+              dbBusy={dbBusy}
+              dbMsg={dbMsg}
+              backupContinuity={backupContinuity}
+              serverBackups={serverBackups}
+              serverBackupsLoading={serverBackupsLoading}
+              metadataSyncTarget={metadataSyncTarget}
+              metadataSyncTargetState={metadataSyncTargetState}
+              onSyncMetadata={syncMetadata}
+              onLoadServerBackups={loadServerBackups}
+              onServerRestore={serverRestore}
+              onImportDb={importDb}
+            />
+          </SettingsGroup>
+
+          <SettingsGroup title={t("외부 프로그램")}>
+            <ComfyConnectionSection />
+
+            <ResolveScriptSettingsSection
+              status={resolveScriptStatus}
+              connection={resolveConnection}
+              diagnostics={resolveDiagnostics}
+              connectionBusy={resolveConnectionBusy}
+              busy={resolveScriptBusy}
+              msg={resolveScriptMsg}
+              onInstall={installResolveExporter}
+              onRefreshConnection={refreshResolveConnection}
+            />
+          </SettingsGroup>
+
+          <section className="settings-section">
+            <h4>{t("생성물 재점검")}</h4>
+            <button className="settings-action" onClick={reinspectGenerations} disabled={!!reinspectMsg}>
+              🔄 {reinspectMsg || t("생성물 재점검")}
+            </button>
+            <div className="settings-row">
+              <button className="settings-action" onClick={syncMine} disabled={!!syncMsg}>
+                📤 {syncMsg || t("HF 생성물 체크")}
+              </button>
+              <button className="settings-action" onClick={reviewHfDeleted} disabled={!!hfMsg}>
+                🗑️ {hfMsg || t("HF 삭제물 체크")}
+              </button>
+            </div>
+            {/* 실시간 정보(과거 가져오기 진행·결과)는 접기 밖 캡션에 상시 표시(Jay 규칙). */}
+            <SettingsDescription
+              summary={
+                historyImport?.state === "running"
+                  ? `과거 생성물 가져오는 중… ${historyImport.received}건`
+                  : historyImport?.message
+                    ? historyImport.message +
+                      (historyImport.state === "complete"
+                        ? ` · 신규 ${historyImport.inserted} · 갱신 ${historyImport.updated} · 기존 ${historyImport.unchanged}`
+                        : "")
+                    : t("HF 생성물의 누락·상태·삭제 여부를 한곳에서 확인합니다.")
+              }
+            >
+              <p>{t("생성물 재점검은 최근 결과의 잘못된 상태를 정정합니다.")}</p>
+              <p>{t("HF 생성물 체크는 힉스필드에서 직접 만든 최신 결과물을 가져옵니다.")}</p>
+              <p>{t("HF 삭제물 체크는 힉스필드에서 지워진 생성물을 허브 휴지통으로 보냅니다.")}</p>
+              <button
+                className={"settings-action" + (historyImport?.state === "running" ? " is-busy" : "")}
+                onClick={startHistoryImport}
+                disabled={historyImport?.state === "running"}
+              >
+                {historyImport?.state === "running"
+                  ? `가져오는 중… ${historyImport.received}건`
+                  : "⏱ 과거 생성물 전체 가져오기"}
+              </button>
+              <p>{t("과거 생성물 전체 가져오기는 최신 100건 밖의 오래된 결과까지 보충합니다.")}</p>
+            </SettingsDescription>
+          </section>
 
           <ReleaseUpdateSettingsSection
             status={releaseUpdateStatus}
@@ -464,64 +627,6 @@ export function SettingsPanel({
             onUpdate={runReleaseUpdate}
           />
 
-          <section className="settings-section">
-            <h4>{t("생성물 재점검")}</h4>
-            <button className="settings-action" onClick={reinspectGenerations}>
-              🔄 {reinspectMsg || t("생성물 재점검")}
-            </button>
-            <p className="settings-hint">
-              {t("최신 결과물을 힉스필드와 다시 대조해 상태가 어긋난 것(실패로 떠 있지만 실제로는 생성된 것 등)을 정정합니다. 눌렀을 때만 작동합니다.")}
-            </p>
-          </section>
-
-          <DownloadLocationSection
-            dlDir={dlDir}
-            dlErr={dlErr}
-            onPickDir={pickDir}
-            onClearDir={clearDir}
-          />
-
-          <section className="settings-section">
-            <h4>{t("단축키")}</h4>
-            <button className="settings-action" onClick={() => setScOpen(true)}>
-              ⌨ {t("단축키 설정")}
-            </button>
-            <p className="settings-hint">{t("지정된 단축키를 보고 원하는 키로 바꿀 수 있습니다.")}</p>
-          </section>
-
-          <ComfyConnectionSection />
-
-          <ResolveScriptSettingsSection
-            status={resolveScriptStatus}
-            connection={resolveConnection}
-            connectionBusy={resolveConnectionBusy}
-            busy={resolveScriptBusy}
-            msg={resolveScriptMsg}
-            onInstall={installResolveExporter}
-            onRefreshConnection={refreshResolveConnection}
-          />
-
-          <BackfillSettingsSection
-            uploading={uploading}
-            msg={msg}
-            onDownloadBackfill={downloadBackfillMd}
-            onBackfillFile={onBackfillFile}
-          />
-
-          <MetadataContinuitySection
-            dbBusy={dbBusy}
-            dbMsg={dbMsg}
-            onServerBackup={serverBackup}
-            onServerRestore={serverRestore}
-            onImportDb={importDb}
-          />
-
-          <SyncToolsSection
-            syncMsg={syncMsg}
-            hfMsg={hfMsg}
-            onSyncMine={syncMine}
-            onReviewHfDeleted={reviewHfDeleted}
-          />
         </div>
       </div>
 

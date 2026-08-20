@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { BOARD_STATUS_VALUES } from "../src/components/manage/KanbanBoard";
 import {
+  mutationErrorsForScope,
+  recoverTaskWriteFailure,
+  taskLoadResultIsCurrent,
+  taskWriteErrorMessage,
+} from "../src/components/manage/WorkBoard";
+import {
   taskCalendarTitle,
   taskSpan,
 } from "../src/components/manage/MonthlyTaskCalendar";
-import type { Task } from "../src/components/manage/types";
+import { taskIsReadOnly, type Task } from "../src/components/manage/types";
+import { HttpError } from "../src/lib/http";
 
 function task(patch: Partial<Task> = {}): Task {
   return {
@@ -24,6 +31,75 @@ describe("work board flow", () => {
     expect(BOARD_STATUS_VALUES).toEqual(["in_progress", "publish", "done"]);
     expect(BOARD_STATUS_VALUES).not.toContain("not_started");
     expect(BOARD_STATUS_VALUES).not.toContain("omit");
+  });
+
+  it("locks historical and unresolved workspace tasks", () => {
+    expect(taskIsReadOnly(task())).toBe(false);
+    expect(taskIsReadOnly(task(), true)).toBe(true);
+    expect(taskIsReadOnly(task({ workspace_historical: true }))).toBe(true);
+    expect(taskIsReadOnly(task({ workspace_unresolved: true }))).toBe(true);
+  });
+
+  it("explains stale writes and tells the user that the list will refresh", () => {
+    expect(taskWriteErrorMessage("작업 수정", new HttpError(404, "404: 작업 없음"))).toContain(
+      "작업 목록이 다른 사용자에 의해 변경",
+    );
+    expect(taskWriteErrorMessage("작업 수정", new HttpError(409, "409: 과거 작업"))).toContain(
+      "워크스페이스가 변경",
+    );
+    expect(taskWriteErrorMessage("작업 수정", new Error("network down"))).toBe(
+      "작업 수정 실패: network down",
+    );
+  });
+
+  it("notifies before reloading after a stale write", async () => {
+    const events: string[] = [];
+
+    await recoverTaskWriteFailure(
+      "작업 수정",
+      new HttpError(409, "409: 과거 작업"),
+      (message) => events.push(`alert:${message}`),
+      async () => {
+        events.push("reload");
+      },
+    );
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toContain("alert:작업 수정 실패");
+    expect(events[0]).toContain("최신 목록을 다시 불러옵니다");
+    expect(events[1]).toBe("reload");
+  });
+
+  it("drops late mutation failures from a workspace scope that is no longer visible", () => {
+    const currentError = new Error("current scope failed");
+    const unscopedError = new Error("legacy operation failed");
+
+    expect(
+      mutationErrorsForScope(
+        [
+          { mutationScope: "workspace-old:active", cause: new Error("stale") },
+          { mutationScope: "workspace-new:active", cause: currentError },
+          unscopedError,
+        ],
+        "workspace-new:active",
+      ),
+    ).toEqual([currentError, unscopedError]);
+  });
+
+  it("keeps an undefined rejection reason when it belongs to the active scope", () => {
+    const errors = mutationErrorsForScope(
+      [{ mutationScope: "workspace-new:active", cause: undefined }],
+      "workspace-new:active",
+    );
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeUndefined();
+  });
+
+  it("drops a full task reload that started before another task save completed", () => {
+    expect(taskLoadResultIsCurrent("workspace-a:active", "workspace-a:active", 7, 7)).toBe(true);
+    expect(taskLoadResultIsCurrent("workspace-a:active", "workspace-a:active", 7, 8)).toBe(false);
+    expect(taskLoadResultIsCurrent("workspace-a:active", "workspace-b:active", 7, 7)).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ import { postLibraryChanged } from "./libraryBroadcast";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
+import { withMirrorPendingNotice } from "./shareMirrorPending";
 
 type AskPrompt = (
   title: string,
@@ -35,6 +36,10 @@ export function useGenerationCardActions({
     canvasLink?: CanvasGenerationLink,
     onDefinitiveReject?: () => void,
   ): Promise<Generation | null> => {
+    if (g.execution_phase === "recovery_required") {
+      flash("외부 제출 여부를 먼저 확인해야 합니다. 생성 정보에서 복구 확인을 진행하세요.");
+      return null;
+    }
     if (!isGenerationWorkspaceReady(workspace)) {
       flash("워크스페이스 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.");
       return null;
@@ -42,10 +47,16 @@ export function useGenerationCardActions({
     try {
       // API 경계에서 구버전 PromptPart[] 문자열은 읽을 수 있는 prompt로 복원돼 있다. prompt를 명시해
       // 보내야 백엔드가 DB에 남은 옛 JSON 원문으로 다시 생성하지 않는다(정상 생성은 같은 값이라 무해).
-      const ng = await api.regenerate(g.id, {
-        prompt: g.prompt,
-        auto_tags: [...armedAutoTags],
-      }, workspace, canvasLink);
+      const submit = api.prepareRegenerate(
+        g.id,
+        {
+          prompt: g.prompt,
+          auto_tags: [...armedAutoTags],
+        },
+        workspace,
+        canvasLink,
+      );
+      const ng = await submit();
       flash("재생성 잡을 큐에 등록했습니다.");
       await reload();
       bumpBoard();
@@ -61,10 +72,33 @@ export function useGenerationCardActions({
     }
   };
 
+  const onRecoveryRequeue = async (g: Generation): Promise<boolean> => {
+    if (g.execution_phase !== "recovery_required") return false;
+    if (
+      !window.confirm(
+        "Higgsfield에서 이 요청의 작업이 생성되지 않은 것을 직접 확인했습니까?\n\n" +
+          "확인을 누르면 기존 요청을 다시 실행하며 크레딧이 사용될 수 있습니다.",
+      )
+    ) {
+      return false;
+    }
+    try {
+      await api.confirmGenerationNotSubmitted(g.id);
+      flash("미제출 확인을 기록하고 기존 요청을 다시 대기열에 넣었습니다.");
+      await reload();
+      bumpBoard();
+      postLibraryChanged();
+      return true;
+    } catch (e) {
+      flash("복구 요청 실패: " + String(e));
+      return false;
+    }
+  };
+
   const onUnpublish = async (g: Generation) => {
     try {
-      await api.unpublish(g.id);
-      flash("팀 공유를 해제했습니다.");
+      const result = await api.unpublish(g.id);
+      flash(withMirrorPendingNotice("팀 공유를 해제했습니다.", result));
       await reload();
       bumpBoard();
       postLibraryChanged();
@@ -75,8 +109,8 @@ export function useGenerationCardActions({
 
   const onFinalize = async (g: Generation) => {
     try {
-      await api.finalize(g.id);
-      flash("최종(골드)으로 지정했습니다.");
+      const result = await api.finalize(g.id);
+      flash(withMirrorPendingNotice("최종(골드)으로 지정했습니다.", result));
       await reload();
       postLibraryChanged();
     } catch (e) {
@@ -86,8 +120,8 @@ export function useGenerationCardActions({
 
   const onUnfinalize = async (g: Generation) => {
     try {
-      await api.unfinalize(g.id);
-      flash("최종 지정을 해제했습니다.");
+      const result = await api.unfinalize(g.id);
+      flash(withMirrorPendingNotice("최종 지정을 해제했습니다.", result));
       await reload();
       postLibraryChanged();
     } catch (e) {
@@ -140,6 +174,7 @@ export function useGenerationCardActions({
     onColor,
     onFinalize,
     onImport,
+    onRecoveryRequeue,
     onRegenerate,
     onSetSource,
     onTags,

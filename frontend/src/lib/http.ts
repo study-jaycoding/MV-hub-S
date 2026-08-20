@@ -11,6 +11,7 @@ import { loadString, removeStorage, saveString } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 
 const TOKEN_KEY = STORAGE_KEYS.authToken;
+export const AUTH_STATE_HEADER = "X-MVHub-Auth-State";
 let authToken: string | null = (() => {
   const token = loadString(TOKEN_KEY);
   return token || null;
@@ -43,11 +44,13 @@ async function responseErrorDetail(res: Response, fallback?: string): Promise<st
 // 파싱에 의존하지 않게 한다. message 형식("<status>: <detail>")은 기존과 동일하게 유지.
 export class HttpError extends Error {
   status: number;
+  detail: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail = message) {
     super(message);
     this.name = "HttpError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -55,12 +58,36 @@ export function isHttpStatus(error: unknown, ...codes: number[]): boolean {
   return error instanceof HttpError && codes.includes(error.status);
 }
 
+/**
+ * 라우트 자체가 없는 구서버 응답만 판별한다.
+ *
+ * 같은 404라도 "없는 작업", "접근 가능한 워크스페이스가 아님"은 정상 권한/도메인 오류다.
+ * 상태코드만 보고 폴백하면 그 오류를 다른 API로 우회해 버릴 수 있으므로 FastAPI의 표준
+ * 라우트 부재 본문만 구버전으로 인정한다.
+ */
+export function isRouteMissing(error: unknown): boolean {
+  if (!(error instanceof HttpError)) return false;
+  const detail = error.detail.trim();
+  return (
+    (error.status === 404 && detail === "Not Found") ||
+    (error.status === 405 && detail === "Method Not Allowed")
+  );
+}
+
+export function shouldInvalidateAuth(res: Response, url: string): boolean {
+  if (res.status !== 401 || url.includes("/api/auth/")) return false;
+  // 새 서버·로컬 프록시는 요청별 401과 세션 만료를 구분한다. 헤더가 없는 구버전은 기존처럼
+  // 로그아웃해 안전한 롤링 업데이트를 유지한다.
+  return res.headers.get(AUTH_STATE_HEADER) !== "preserved";
+}
+
 export async function throwHttpError(res: Response, url: string, fallback?: string): Promise<never> {
-  if (res.status === 401 && !url.includes("/api/auth/")) {
+  if (shouldInvalidateAuth(res, url)) {
     setAuthToken(null);
     dispatchAppEvent(APP_EVENTS.authRequired);
   }
-  throw new HttpError(res.status, `${res.status}: ${await responseErrorDetail(res, fallback)}`);
+  const detail = await responseErrorDetail(res, fallback);
+  throw new HttpError(res.status, `${res.status}: ${detail}`, detail);
 }
 
 export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {

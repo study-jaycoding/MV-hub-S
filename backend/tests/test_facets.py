@@ -65,11 +65,60 @@ class GetFacetsTests(unittest.TestCase):
         f = repo.get_facets("u_me")
         self.assertEqual(f["auto_tags"], ["mytag"])
 
-    def test_workers_list_all(self):
+    def test_colors_and_tags_exclude_archived_projects_like_default_listing(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_archived','Archived','personal',1)"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, color, project_id) VALUES("
+                "'g_archived','me','p','done','2026-06-30',2,'u_me','#gray','p_archived')"
+            )
+            conn.execute("INSERT INTO tag(id, name) VALUES('t_wolf','wolf')")
+            conn.execute(
+                "INSERT INTO gen_tag(generation_id, tag_id) VALUES('g_archived','t_wolf')"
+            )
+
+        facets = repo.get_facets("u_me")
+        self.assertEqual(facets["colors"], ["#red"])
+        self.assertEqual(facets["tags"], ["cat"])
+
+    def test_workers_scoped_to_visible_generations(self):
+        # 계정 스코프면 '내 생성물 ∪ 공유된 생성물'의 생성자만 — 남의 비공유 작업자는 안 보인다.
         f = repo.get_facets("u_me")
         ids = {w["id"] for w in f["workers"]}
         self.assertIn("u_me", ids)
+        self.assertNotIn("u_other", ids)
+        # u_other 의 생성물이 공유되면 필터 후보에 나타난다(카드가 보이므로 정보 노출 아님).
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                "VALUES('sh1','g_other','u_other','team')"
+            )
+        f = repo.get_facets("u_me")
+        ids = {w["id"] for w in f["workers"]}
         self.assertIn("u_other", ids)
+
+    def test_workers_unscoped_lists_all_creators(self):
+        # AUTH off/단독(스코프 없음)은 로컬 단일 사용자 — 기존처럼 전체 생성자.
+        f = repo.get_facets(None)
+        ids = {w["id"] for w in f["workers"]}
+        self.assertIn("u_me", ids)
+        self.assertIn("u_other", ids)
+
+    def test_workers_exclude_accounts_without_generations(self):
+        # 생성물 없는 계정(이름 미설정이면 name 칸이 이메일)은 facets 로 새면 안 된다 —
+        # members 라우터가 일반 사용자에게 감추는 식별자가 여기로 우회 노출됐던 회귀.
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO worker(id, name, account_type) "
+                "VALUES('acct:dormant@example.com','dormant@example.com','team')"
+            )
+        f = repo.get_facets("u_me")
+        ids = {w["id"] for w in f["workers"]}
+        self.assertNotIn("acct:dormant@example.com", ids)
 
 
 if __name__ == "__main__":

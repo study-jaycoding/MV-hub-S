@@ -4,6 +4,7 @@ import subprocess
 import types
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from app.services import video_convert
@@ -47,6 +48,25 @@ class ToCloudMp4Tests(unittest.TestCase):
              mock.patch.object(video_convert.subprocess, "run", fake_run):
             with self.assertRaises(video_convert.VideoConvertError):
                 video_convert.to_cloud_mp4(b"RAWVIDEO")
+
+    def test_path_api_returns_file_without_loading_result_bytes(self):
+        def fake_run(cmd, **_kw):
+            Path(cmd[-1]).write_bytes(b"MP4DATA")
+            return types.SimpleNamespace(returncode=0, stderr=b"")
+
+        with TemporaryDirectory() as d:
+            source = Path(d) / "source.mov"
+            source.write_text("source")
+            with mock.patch.object(video_convert, "find_ffmpeg", lambda: "ffmpeg"), \
+                 mock.patch.object(video_convert, "_probe_fps", return_value=24.0), \
+                 mock.patch.object(video_convert.subprocess, "run", fake_run), \
+                 mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes 금지")):
+                    result = video_convert.to_cloud_mp4_path(source)
+            try:
+                self.assertTrue(result.exists())
+                self.assertNotEqual(result, source)
+            finally:
+                result.unlink(missing_ok=True)
 
 
 class FindFfmpegTests(unittest.TestCase):

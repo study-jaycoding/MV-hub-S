@@ -223,7 +223,7 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
             </button>
           )}
           <button
-            className="linb-ov-btn"
+            className="linb-ov-btn ov-info"
             style={{ marginLeft: "auto" }}
             title="정보"
             onClick={(e) => onInfo({ kind: "generation", gen: generation, x: e.clientX, y: e.clientY })}
@@ -252,7 +252,9 @@ export const HistoryBoardNode = memo(function HistoryBoardNode({
             <button
               className="linb-ov-btn"
               title="다운로드"
-              onClick={() => downloadOne(asset.file_path, downloadName(generation, asset.type))}
+              onClick={() =>
+                downloadOne(asset.file_path, downloadName(generation, asset.type), generation.id)
+              }
             >
               ⤓
             </button>

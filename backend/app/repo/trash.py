@@ -43,6 +43,12 @@ def _trash_path() -> Path:
 
 def _ensure_trash_schema(conn) -> None:
     """trash.trashed 보장(IF NOT EXISTS, 멱등). 검색용 컬럼 + JSON 페이로드."""
+    # 메인 DB 는 schema.sql 의 PRAGMA 로 WAL 인데, ATTACH 로 처음 만들어지는 휴지통은
+    # 기본 rollback journal 로 생성돼 쓰기마다 DB 전체 EXCLUSIVE 락을 잡았다(대량 삭제 중
+    # /api/ready 의 휴지통 검사가 2초 타임아웃 → 워치독 오탐 재시작까지 연쇄). WAL 은 파일
+    # 헤더에 남는 영속 설정이라 매번 실행해도 이미 WAL 이면 사실상 무비용. 트랜잭션 밖에서만
+    # 유효하므로 attach 직후(BEGIN 전)에 호출되는 이 위치가 맞다.
+    conn.execute("PRAGMA trash.journal_mode=WAL")
     conn.execute(_TRASHED_DDL)
     _ensure_trash_job_id_col(conn)
     conn.execute(

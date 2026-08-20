@@ -8,6 +8,7 @@ import {
   GEN_MIME,
   STATUSES,
   TASK_MIME,
+  taskIsReadOnly,
   workActivityStatusLabel,
   type WorkViewProps,
 } from "./types";
@@ -32,7 +33,7 @@ function fmtDuration(seconds?: number): string {
 }
 
 export function BoardView(props: WorkViewProps) {
-  const { tasks, seqOptions, thumb, disabled, colorMap, onPatch, onLinkGen, onUnlinkGen } = props;
+  const { tasks, seqOptions, thumb, disabled, colorMap, readOnly, onPatch, onLinkGen, onUnlinkGen } = props;
   useT(); // 언어 변경 시 상태·그룹 라벨 리렌더
   const [dragOver, setDragOver] = useState<string | null>(null);
 
@@ -53,18 +54,23 @@ export function BoardView(props: WorkViewProps) {
             onDrop={(e) => {
               setDragOver(null);
               const tid = e.dataTransfer.getData(TASK_MIME);
-              if (tid) onPatch(tid, { status: col.v });
+              const task = tasks.find((item) => item.id === tid);
+              if (task && !taskIsReadOnly(task, readOnly)) onPatch(tid, { status: col.v });
             }}
           >
             <div className="kanban-col-head">
               <span className="status-dot" style={{ background: col.color }} />
               {workActivityStatusLabel(col.v)} <span className="kanban-count">{items.length}</span>
             </div>
-            {items.map((t) => (
+            {items.map((t) => {
+              const locked = taskIsReadOnly(t, readOnly);
+              return (
               <div
                 key={t.id}
-                className="kanban-card work-card"
-                draggable
+                className={
+                  "kanban-card work-card" + (locked ? " read-only" : "") + (t.archived ? " work-row-archived" : "")
+                }
+                draggable={!locked}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(TASK_MIME, t.id);
                   e.dataTransfer.effectAllowed = "move";
@@ -93,6 +99,11 @@ export function BoardView(props: WorkViewProps) {
                     </div>
                   )}
                   <span className="kanban-card-name" title={t.folder_path || t.name}>
+                    {!!t.archived && (
+                      <span className="work-readonly-badge work-archived-badge" title="보관 처리된 작업 — 과거 기록에서만 표시됩니다">
+                        보관됨
+                      </span>
+                    )}
                     <ColorTag field="episode" value={t.name} colorMap={colorMap} />
                     {t.folder_path ? (
                       <ColorTag
@@ -106,6 +117,7 @@ export function BoardView(props: WorkViewProps) {
                       <select
                         className="work-seq"
                         value={t.sequence || ""}
+                        disabled={locked}
                         onChange={(e) => onPatch(t.id, { sequence: e.target.value })}
                         title="시퀀스(전역 태그)"
                       >
@@ -123,15 +135,28 @@ export function BoardView(props: WorkViewProps) {
                 <div
                   className="work-cut-drop"
                   onDragOver={(e) => {
-                    if (e.dataTransfer.types.includes(GEN_MIME)) e.preventDefault();
+                    if (!locked && e.dataTransfer.types.includes(GEN_MIME)) e.preventDefault();
                   }}
                   onDrop={(e) => {
+                    if (locked) return;
                     const gid = e.dataTransfer.getData(GEN_MIME);
                     if (gid) onLinkGen(t.id, gid);
                   }}
                 >
-                  <CutThumbs task={t} thumb={thumb} disabled={disabled} onUnlinkGen={onUnlinkGen} />
+                  <CutThumbs
+                    task={t}
+                    thumb={thumb}
+                    disabled={disabled}
+                    readOnly={locked}
+                    onUnlinkGen={onUnlinkGen}
+                  />
                 </div>
+
+                {locked && (
+                  <span className="work-readonly-badge">
+                    {t.workspace_unresolved ? "귀속 확인 필요" : "읽기 전용"}
+                  </span>
+                )}
 
                 <div className="work-card-meta">
                   {!!t.gen_count && <span title="생성 수">생성 {t.gen_count.toLocaleString()}개</span>}
@@ -145,7 +170,8 @@ export function BoardView(props: WorkViewProps) {
 
                 {t.description && <div className="work-card-desc">{t.description}</div>}
               </div>
-            ))}
+              );
+            })}
           </div>
     );
   };

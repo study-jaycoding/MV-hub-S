@@ -7,6 +7,7 @@ urllib 로 이식한 것. 로컬/Cloud 를 target 기술자로 통일한다.
 일부러 통과하지 않는다 — 사용자가 설정에서 지정한 신뢰 호스트이기 때문.
 """
 import json
+import logging
 import mimetypes
 import re
 import time
@@ -14,9 +15,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from .net_guard import assert_public_http_url, guarded_opener, BlockedURLError
+
+log = logging.getLogger("comfy.client")
 
 CLIENT_ID = f"mvhub-{uuid.uuid4().hex[:8]}"
 CLOUD_BASE = "https://cloud.comfy.org"
@@ -77,8 +81,9 @@ _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _request(method: str, url: str, *, headers: dict | None = None,
-             json_body=None, data: bytes | None = None,
-             content_type: str | None = None, timeout: int = 60) -> tuple[int, bytes]:
+             json_body=None, data: bytes | Iterable[bytes] | None = None,
+             content_type: str | None = None, content_length: int | None = None,
+             timeout: int = 60) -> tuple[int, bytes]:
     """(status, body_bytes) 반환. 비-2xx 는 HTTPError 를 잡아 (code, body) 로 되돌린다.
     연결 실패는 ComfyError 로 올린다."""
     if json_body is not None:
@@ -90,6 +95,8 @@ def _request(method: str, url: str, *, headers: dict | None = None,
     req = urllib.request.Request(url, data=data, method=method.upper())
     if content_type:
         req.add_header("Content-Type", content_type)
+    if content_length is not None:
+        req.add_header("Content-Length", str(content_length))
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -178,18 +185,83 @@ def get_subscription_tier(target: dict, *, use_cache: bool = True) -> "str | Non
     return tier
 
 
-def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvhub") -> str:
-    """바이트를 ComfyUI /upload/image 로 업로드하고 노드 입력에 쓸 이름을 반환.
-    (이미지·영상 모두 이 엔드포인트로 올린다 — VHS 영상도 input 폴더 기준으로 받는다.)
-    로컬: input/<subfolder>/ 에 저장 → 'subfolder/파일명'. Cloud: 반환 이름을 그대로 사용."""
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class _MultipartFileBody:
+    """multipart 파일 본문을 조립 없이 스트리밍하는 iterable.
+
+    urllib는 명시적인 Content-Length와 iterable body를 받으면 chunked 인코딩이나 전체 조립 없이
+    각 조각을 바로 소켓으로 보낸다. __iter__ 가 매번 파일을 다시 열지만, urllib 기본 리다이렉트
+    핸들러는 3xx 에서 body 를 버리므로 이것이 리다이렉트 재전송을 보장하지는 않는다(현재
+    ComfyUI/Cloud 업로드 엔드포인트는 리다이렉트를 반환하지 않는다).
+    """
+
+    def __init__(self, prefix: bytes, path: Path, suffix: bytes) -> None:
+        self._prefix = prefix
+        self._path = path
+        self._suffix = suffix
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._prefix
+        with self._path.open("rb") as stream:
+            while True:
+                chunk = stream.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        yield self._suffix
+
+
+def _safe_multipart_filename(filename: str) -> str:
+    """Content-Disposition 한 줄 밖으로 파일명이 빠져나가지 않게 경로·개행·따옴표를 제거한다."""
+    return (Path(filename or "input.bin").name or "input.bin").replace("\r", "_").replace(
+        "\n", "_"
+    ).replace('"', "_")
+
+
+def _multipart_file_body(
+    fields: dict,
+    file_field: str,
+    filename: str,
+    path: Path,
+    file_ctype: str,
+) -> tuple[_MultipartFileBody, str, int]:
+    boundary = f"----mvhub{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+    for key, value in fields.items():
+        parts.append(f"--{boundary}\r\n".encode())
+        parts.append(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
+        parts.append(f"{value}\r\n".encode())
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode()
+    )
+    parts.append(f"Content-Type: {file_ctype}\r\n\r\n".encode())
+    prefix = b"".join(parts)
+    suffix = f"\r\n--{boundary}--\r\n".encode()
+    size = path.stat().st_size
+    return _MultipartFileBody(prefix, path, suffix), boundary, len(prefix) + size + len(suffix)
+
+
+def upload_file(target: dict, filename: str, path: Path, subfolder: str = "mvhub") -> str:
+    """파일을 메모리에 합치지 않고 ComfyUI /upload/image로 스트리밍한다."""
     fname = filename or "input.bin"
+    fname = _safe_multipart_filename(fname)
+    source = Path(path)
     fields = ({"type": "input"} if target["cloud"]
               else {"subfolder": subfolder, "overwrite": "true"})
     ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
-    body, boundary = _encode_multipart(fields, "image", fname, data, ctype)
+    body, boundary, content_length = _multipart_file_body(
+        fields, "image", fname, source, ctype
+    )
     status, resp = _request(
         "POST", _url(target, "/upload/image"), headers=target["headers"],
-        data=body, content_type=f"multipart/form-data; boundary={boundary}", timeout=600)
+        data=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+        content_length=content_length,
+        timeout=600,
+    )
     if status != 200:
         raise _classify(status, resp.decode("utf-8", "replace"))
     try:
@@ -201,29 +273,22 @@ def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvh
     return f"{sub}/{name}" if sub else name
 
 
-def upload_input(target: dict, path: str, subfolder: str = "mvhub") -> str:
-    """로컬 파일 경로를 업로드(upload_bytes 래퍼)."""
-    p = Path(path)
-    return upload_bytes(target, p.name, p.read_bytes(), subfolder)
+def upload_bytes(target: dict, filename: str, data: bytes, subfolder: str = "mvhub") -> str:
+    """하위 호환 바이트 업로드. 운영 Comfy 실행은 ``upload_file``을 사용한다."""
+    import tempfile
 
-
-def _encode_multipart(fields: dict, file_field: str, filename: str,
-                      file_bytes: bytes, file_ctype: str) -> tuple[bytes, str]:
-    """stdlib 로 multipart/form-data 본문 구성(httpx.files 대체)."""
-    boundary = f"----mvhub{uuid.uuid4().hex}"
-    parts: list[bytes] = []
-    for k, v in fields.items():
-        parts.append(f"--{boundary}\r\n".encode())
-        parts.append(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
-        parts.append(f"{v}\r\n".encode())
-    parts.append(f"--{boundary}\r\n".encode())
-    parts.append(
-        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
-        .encode())
-    parts.append(f"Content-Type: {file_ctype}\r\n\r\n".encode())
-    parts.append(file_bytes)
-    parts.append(f"\r\n--{boundary}--\r\n".encode())
-    return b"".join(parts), boundary
+    handle = tempfile.NamedTemporaryFile(prefix="mvhub-comfy-input-", suffix=".part", delete=False)
+    path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(data)
+        return upload_file(target, filename, path, subfolder)
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            # 업로드 결과를 정리 실패로 뒤집지 않는다. 앱 접두 잔재는 temp_sweeper가 재회수한다.
+            log.warning("Comfy 바이트 업로드 임시파일 정리 실패: %s", exc)
 
 
 # Cloud 제출 검증오류에서 '미지원 노드'를 뽑는 패턴(예: unsupported node type 'SaveText|pysssss')
@@ -338,11 +403,17 @@ def cloud_error_message(detail: dict) -> str:
 
 
 def cloud_cancel_pending(target: dict, prompt_id: str) -> None:
-    try:
-        _request("POST", _url(target, "/queue"), headers=target["headers"],
-                 json_body={"delete": [prompt_id]}, timeout=10)
-    except ComfyError:
-        pass
+    """Cloud 대기열에서 지정 잡을 취소한다.
+
+    취소 자체는 호출부가 best-effort 로 처리한다. 여기서 오류를 삼키면 호출부가 운영 로그를
+    남길 수 없으므로, 연결/HTTP 오류는 ComfyError 로 그대로 올린다.
+    """
+    status, body = _request(
+        "POST", _url(target, "/queue"), headers=target["headers"],
+        json_body={"delete": [prompt_id]}, timeout=10,
+    )
+    if not 200 <= status < 300:
+        raise _classify(status, body.decode("utf-8", "replace"))
 
 
 # ---------- 공통 ----------
@@ -453,8 +524,13 @@ def download_view(target: dict, item: dict, dst: Path) -> None:
 
 
 def interrupt(target: dict) -> None:
-    """실행 중 작업 중단 — 로컬·Cloud 모두 '현재 실행 중 전체'가 대상."""
-    try:
-        _request("POST", _url(target, "/interrupt"), headers=target["headers"], timeout=5)
-    except ComfyError:
-        pass
+    """실행 중 작업 중단 — 로컬·Cloud 모두 '현재 실행 중 전체'가 대상.
+
+    취소 호출자는 실패를 사용자 실행 실패에 덧붙이지 않고 로그만 남긴다. 그 판단을 할 수
+    있도록 이 저수준 함수는 오류를 삼키지 않는다.
+    """
+    status, body = _request(
+        "POST", _url(target, "/interrupt"), headers=target["headers"], timeout=5,
+    )
+    if not 200 <= status < 300:
+        raise _classify(status, body.decode("utf-8", "replace"))

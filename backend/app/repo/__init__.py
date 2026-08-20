@@ -25,18 +25,22 @@ from .id_resolve import *  # noqa: F401,F403  (id 해석 — generation_rows 뒤
 from .lineage import *  # noqa: F401,F403  (generations 앞 — generations 가 lineage private helper 를 import)
 from .history import *  # noqa: F401,F403  (가계 조회 get_history/graph — lineage·generation_rows 헬퍼 사용)
 from .generation_sync import *  # noqa: F401,F403  (CLI 결과 단건/배치 적재·known job 경계)
+from .history_import_audit import *  # noqa: F401,F403  (과거 이력 gap·자동 보충 감사 상태)
 from .generations import *  # noqa: F401,F403
 from .generations_query import *  # noqa: F401,F403  (조회/직렬화 — generations 에서 분리, leaf)
 from .facets import *  # noqa: F401,F403  (generations 에서 분리 — get_facets)
 from .sources import *  # noqa: F401,F403  (generations 뒤 — search_sources 가 _attach_children import)
 from .gen_requests import *  # noqa: F401,F403  (generations 뒤 — placeholder gen 을 다룸)
 from .event_journal import *  # noqa: F401,F403  (장기 생성 이력·감사 기록 — leaf)
+from .media_preservation import *  # noqa: F401,F403  (공유·최종 원본 보존 작업 상태 — leaf)
+from .share_state_intents import *  # noqa: F401,F403  (공유/골드 desired-state 원장 — leaf)
 from .trash import *  # noqa: F401,F403  (generations·tags 뒤 — trash 가 둘을 import)
 from .assets import *  # noqa: F401,F403
 from .share import *  # noqa: F401,F403
 from .projects import *  # noqa: F401,F403
 from .workspace_assignments import *  # noqa: F401,F403  (현재 워크스페이스 귀속 수동 보정)
 from .scenes_backup import *  # noqa: F401,F403  (캔버스 씬 DB 백업 — leaf)
+from .scene_cards import *  # noqa: F401,F403  (캔버스 카드 소속 — leaf)
 from .accounts import *  # noqa: F401,F403
 
 # ── cross-module/외부에서 쓰일 수 있는 private 명시 re-export ──────────────

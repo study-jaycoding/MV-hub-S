@@ -104,6 +104,46 @@ export interface ResolveConnectionStatus {
   message: string;
 }
 
+export interface ResolveDiagnosticCheck {
+  key: string;
+  label: string;
+  state: "ok" | "warning" | "error" | "info";
+  message: string;
+  detail: string;
+}
+
+export interface ResolveEnvironmentDiagnostics {
+  status: "ready" | "menu_ready" | "action_required";
+  summary: string;
+  checks: ResolveDiagnosticCheck[];
+  recommendations: string[];
+  script: ResolveScriptStatus;
+  connection: ResolveConnectionStatus;
+  environment: {
+    windows_user: string;
+    mvhub_python: { version: string; bits: number; path: string };
+    system_pythons: Array<{
+      scope: "current_user" | "all_users";
+      version: string;
+      bits: number | null;
+      path: string;
+      resolve_menu_compatible: boolean;
+    }>;
+    resolve_installations: Array<{
+      path: string;
+      executable: string;
+      version: string;
+      name: string;
+    }>;
+    api: {
+      module_candidates: string[];
+      existing_module_paths: string[];
+      library_candidates: string[];
+      library_path: string;
+    };
+  };
+}
+
 export type ResolveSelectionCheck =
   | { ok: true; genIds: string[] }
   | { ok: false; message: string };
@@ -185,6 +225,12 @@ export function createResolveTransfer(
 
 export function getResolveConnectionStatus(): Promise<ResolveConnectionStatus> {
   return jsonFetch<ResolveConnectionStatus>("/api/resolve/status", { cache: "no-store" });
+}
+
+export function getResolveEnvironmentDiagnostics(): Promise<ResolveEnvironmentDiagnostics> {
+  return jsonFetch<ResolveEnvironmentDiagnostics>("/api/resolve/diagnostics", {
+    cache: "no-store",
+  });
 }
 
 export function retryResolveTransfer(

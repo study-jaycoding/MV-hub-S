@@ -6,8 +6,9 @@
 (shutil.copy)는 아직 메인 DB 로 체크포인트되지 않은 -wal 분을 놓쳐 깨진 스냅샷이 된다.
 .backup 은 잠금 없이 일관된 스냅샷을 떠 준다(서버는 계속 쓰기 가능).
 
-동작: 콘텐츠 DB를 기준으로 휴지통·프로젝트 관리 DB가 존재하면 같은 시각의 세트로 함께
-백업한다. 시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루).
+동작: 콘텐츠 DB를 기준으로 휴지통·프로젝트 관리 DB가 존재하면 같은 stamp의 세트로 함께
+백업한다. 각 DB의 읽기 시점은 미세하게 다를 수 있다(아래 스냅샷 주석 참고).
+시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루).
 최근 N세트만 보관(회전).
 백업 폴더는 CONTENT_HUB_BACKUP_DIR 로 다른 디스크/NAS 지정 권장(같은 디스크면 동반 손실).
 """
@@ -23,11 +24,12 @@ import time
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from uuid import uuid4
 
 from ..config import DATA_DIR
 from ..db import get_db_path
+from ..manage_db import MANAGE_DB_PATH
 from .sqlite_db import validate_hub_db
 from .operational_logging import log_event
 
@@ -48,6 +50,19 @@ BACKUP_KEEP = max(1, int(os.environ.get("CONTENT_HUB_BACKUP_KEEP", "7")))
 # 시작 시 중복 백업 방지: 가장 최근 백업이 이 시간(초)보다 새것이면 시작 백업 생략.
 # (서버 재기동·개발 리스타트가 잦아도 백업이 난립하지 않게.)
 _STARTUP_SKIP_IF_YOUNGER = min(BACKUP_INTERVAL, 3600.0)
+
+# 개인 메타데이터 변경은 하루를 기다리지 않고 조용해진 뒤 서버 전송용 백업을 만든다.
+# 매 수정마다 SQLite 스냅샷을 뜨지 않도록 디바운스와 최소 간격을 함께 둔다.
+BACKUP_CHANGE_DEBOUNCE = max(
+    5.0, float(os.environ.get("CONTENT_HUB_BACKUP_CHANGE_DEBOUNCE", "300"))
+)
+BACKUP_MIN_INTERVAL = max(
+    BACKUP_CHANGE_DEBOUNCE,
+    float(os.environ.get("CONTENT_HUB_BACKUP_MIN_INTERVAL", "900")),
+)
+BACKUP_POLL_INTERVAL = max(
+    5.0, float(os.environ.get("CONTENT_HUB_BACKUP_POLL_INTERVAL", "30"))
+)
 
 _PREFIX = "content_hub_"
 _TRASH_PREFIX = "content_trash_"
@@ -70,13 +85,68 @@ def _list_backups() -> list[Path]:
     return sorted(d.glob(f"{_PREFIX}*.db"))
 
 
-def _newest_age_seconds() -> Optional[float]:
-    """가장 최근 백업의 나이(초). 백업이 없으면 None."""
+def latest_backup_path() -> Optional[Path]:
+    """활성 계정의 최신 완성 콘텐츠 백업. 업데이트 뒤 outbox 보강 등에 사용한다."""
     backups = _list_backups()
-    if not backups:
+    return backups[-1] if backups else None
+
+
+def _newest_age_seconds() -> Optional[float]:
+    """가장 최근 백업의 나이(초). 백업이 없으면 None.
+
+    stat 는 NAS 순단·수동 정리와 경합할 수 있다 — 여기서 예외가 새면 주기 백업 루프
+    자체가 죽으므로(코덱스 리뷰), 읽기 실패한 파일은 건너뛴다."""
+    mtimes: list[float] = []
+    for p in _list_backups():
+        with contextlib.suppress(OSError):
+            mtimes.append(p.stat().st_mtime)
+    if not mtimes:
         return None
-    newest_mtime = max(p.stat().st_mtime for p in backups)
-    return max(0.0, time.time() - newest_mtime)
+    return max(0.0, time.time() - max(mtimes))
+
+
+def _db_change_signature() -> tuple[tuple[str, int, int], ...]:
+    """개인 콘텐츠·휴지통의 파일/WAL 변화를 값싼 stat으로 감지한다."""
+    content = get_db_path()
+    trash = content.parent / "content_hub_trash.db"
+    result: list[tuple[str, int, int]] = []
+    for label, path in (
+        ("content", content),
+        ("content-wal", Path(str(content) + "-wal")),
+        ("trash", trash),
+        ("trash-wal", Path(str(trash) + "-wal")),
+    ):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        result.append((label, int(stat.st_mtime_ns), int(stat.st_size)))
+    return tuple(result)
+
+
+def _db_is_newer_than_backup() -> bool:
+    latest = latest_backup_path()
+    if latest is None:
+        return bool(_db_change_signature())
+    try:
+        backup_mtime = latest.stat().st_mtime_ns
+    except OSError:
+        return True
+    return any(mtime_ns > backup_mtime for _label, mtime_ns, _size in _db_change_signature())
+
+
+def _change_backup_due(
+    changed_at: float | None,
+    backup_age: float | None,
+    *,
+    now: float,
+) -> bool:
+    """편집이 잠잠하고 최소 백업 간격도 지난 경우에만 변경 백업을 허용한다."""
+    return bool(
+        changed_at is not None
+        and now - changed_at >= BACKUP_CHANGE_DEBOUNCE
+        and (backup_age is None or backup_age >= BACKUP_MIN_INTERVAL)
+    )
 
 
 def list_backups_info() -> list[dict]:
@@ -110,6 +180,17 @@ def _rotate() -> None:
         for prefix in (_PREFIX, _TRASH_PREFIX, _MANAGE_PREFIX):
             with contextlib.suppress(OSError):
                 (old.parent / f"{prefix}{stamp}.db").unlink()
+    # 검증·조회가 백업본(WAL 헤더)을 열 때 생긴 -wal/-shm 부산물 청소 — 회전이 .db 만 지워
+    # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것과
+    # 회전으로 방금 .db 가 사라진 것 모두 여기서 정리된다. 열려 있으면 unlink 가 거부되므로
+    # 사용 중 파일을 지울 위험은 없다(suppress).
+    d = _backup_dir()
+    if d.is_dir():
+        for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
+            base = d / side.name.rsplit("-", 1)[0]
+            if not base.is_file():
+                with contextlib.suppress(OSError):
+                    side.unlink()
 
 
 # 주기 백업과 관리자 수동 백업(POST /api/backup)이 겹칠 수 있어 파일 작업을 직렬화.
@@ -149,10 +230,13 @@ def _snapshot_database_set(
     sources: list[tuple[str, Path, str, str | None]],
     snapshots: list[tuple[str, Path, Path, str | None]],
 ) -> None:
-    """첨부 DB 전체의 읽기 시점을 먼저 고정한 뒤 각각 온라인 백업한다.
+    """첨부 DB를 한 연결의 읽기 트랜잭션에서 연 뒤 각각 온라인 백업한다.
 
-    콘텐츠 삭제가 메인→휴지통으로 이동하는 찰나에도 두 스냅샷 사이에서 사라지거나
-    중복되지 않게 한다. WAL 읽기 트랜잭션이라 서버 쓰기를 장시간 막지는 않는다.
+    SQLite/WAL은 ATTACH된 여러 DB 세트의 원자적 스냅샷을 보장하지 않는다. 별칭별 첫 읽기가
+    순차적이므로 DB 사이에는 미세한 시점 차와 이동 중 행의 중복·누락 가능성이 남는다. 복원 때는
+    세트 무결성·ready·핵심 수를 검사하고, content/trash 중복은 부팅 정합기가 main을 우선한다.
+    한쪽 누락·manage 의미 불일치는 완전히 검출할 수 없으므로 이전 세트와 요약을 대조하고,
+    의심되면 이전 정상 세트를 선택한다. WAL 읽기라 서버 쓰기를 장시간 막지는 않는다.
     """
     main_source = next(source for label, source, _, _ in sources if label == "content")
     src_conn = sqlite3.connect(str(main_source), isolation_level=None)
@@ -166,7 +250,7 @@ def _snapshot_database_set(
             aliases[label] = alias
         src_conn.execute("BEGIN")
         try:
-            # 각 첨부 DB를 트랜잭션 안에서 읽어 동일한 스냅샷 경계를 확정한다.
+            # 각 DB의 스냅샷 경계를 가능한 한 가깝게 잡는다. DB 간 동일 시점 보장은 아니다.
             for alias in aliases.values():
                 src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
             for label, _, tmp, _ in snapshots:
@@ -182,7 +266,7 @@ def _snapshot_database_set(
 
 
 def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
-    """DB 세트의 일관 스냅샷을 생성하고 대표 콘텐츠 경로를 반환(블로킹).
+    """검증 가능한 DB 백업 세트를 생성하고 대표 콘텐츠 경로를 반환(블로킹).
     DB 파일이 아직 없으면 None. 회전까지 수행.
 
     ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤
@@ -201,7 +285,12 @@ def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
             ("content", src, _PREFIX, None),
         ]
         trash_src = src.parent / "content_hub_trash.db"
+        # 관리 DB는 계정과 무관한 고정 경로(manage_db.MANAGE_DB_PATH)에 산다. 계정 로그인으로
+        # 콘텐츠 DB가 acct/<slug>/ 아래로 옮겨가면 src.parent 에는 manage_hub.db 가 없어
+        # 백업 세트에서 조용히 빠졌다 — 같은 폴더(레거시/서버 배치) 우선, 없으면 고정 경로.
         manage_src = src.parent / "manage_hub.db"
+        if not manage_src.is_file():
+            manage_src = MANAGE_DB_PATH
         if trash_src.is_file():
             sources.append(("trash", trash_src, _TRASH_PREFIX, "trashed"))
         if manage_src.is_file():
@@ -239,6 +328,11 @@ class PeriodicBackup:
     def __init__(self, interval: float = BACKUP_INTERVAL) -> None:
         self._interval = interval
         self._task: Optional[asyncio.Task] = None
+        self._completed_callback: Callable[[Path], object] | None = None
+
+    def set_completed_callback(self, callback: Callable[[Path], object] | None) -> None:
+        """검증된 세트가 공개된 뒤 실행할 부수효과. 서버·테스트는 기본 None이다."""
+        self._completed_callback = callback
 
     def start(self) -> None:
         if self._interval <= 0:
@@ -258,15 +352,41 @@ class PeriodicBackup:
         age = _newest_age_seconds()
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once()
+        signature = _db_change_signature()
+        changed_at = time.monotonic() if _db_is_newer_than_backup() else None
         while True:
-            await asyncio.sleep(self._interval)
-            await self._backup_once()
+            await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
+            current_signature = _db_change_signature()
+            if current_signature != signature:
+                signature = current_signature
+                changed_at = time.monotonic()
+            age = _newest_age_seconds()
+            daily_due = age is None or age >= self._interval
+            quiet_dirty_due = _change_backup_due(
+                changed_at,
+                age,
+                now=time.monotonic(),
+            )
+            if daily_due or quiet_dirty_due:
+                await self._backup_once()
+                signature = _db_change_signature()
+                changed_at = None
 
     async def _backup_once(self) -> None:
         try:
             # sqlite backup 은 블로킹 → 스레드로 빼 이벤트 루프를 막지 않는다.
             path = await asyncio.to_thread(backup_now)
             if path:
+                if self._completed_callback is not None:
+                    try:
+                        await asyncio.to_thread(self._completed_callback, path)
+                    except Exception:  # noqa: BLE001 — 로컬 백업 성공과 외부 전달 실패를 분리
+                        log_event(
+                            _backup_log,
+                            "backup_offdisk_queue_failed",
+                            level=logging.ERROR,
+                            exc_info=True,
+                        )
                 latest = list_backups_info()[0]
                 log_event(
                     _backup_log,

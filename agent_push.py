@@ -38,6 +38,7 @@ import webbrowser
 import uuid
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
+from datetime import datetime, timezone
 from threading import Event, Lock
 from urllib.parse import quote, urlencode, urlparse
 
@@ -300,11 +301,15 @@ def _workspace_context_from_list(workspaces) -> dict:
 def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
     """요청 워크스페이스로 CLI를 전환하고 실제 선택 상태를 다시 확인한다.
 
-    unknown은 구버전 요청 호환을 위해 현재 상태를 유지한다. 신규 UI 요청은 team/personal을 보낸다.
+    요청 공간이 unknown이면 현재 CLI 선택값을 추측해 사용하지 않는다. CLI의 마지막 선택 공간은
+    다른 요청이나 사용자의 수동 전환이 남긴 전역 상태라, 그대로 생성하면 다른 팀에 과금될 수 있다.
     """
     target = _request_workspace(value)
     if target["scope"] == "unknown":
-        return True, None
+        return False, (
+            "요청의 워크스페이스 정보가 없습니다. 허브와 에이전트를 최신 버전으로 업데이트한 뒤 "
+            "워크스페이스를 다시 선택하고 생성해 주세요"
+        )
     workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
     if error or not isinstance(workspaces, list):
         return False, error or "워크스페이스 목록을 확인할 수 없습니다"
@@ -547,9 +552,10 @@ def _gen_request_url(
 
 
 def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = None):
-    # capability=workspace: 이 에이전트는 제출 전 워크스페이스 전환·검증을 한다는 선언 —
-    # 신 서버는 워크스페이스 지정 요청을 이 선언이 있는 claim 에만 내려준다. 구 서버는 무시(하위호환).
-    query = {"limit": limit, "capability": "workspace"}
+    # submission-stage: claim과 실제 유료 CLI 호출 사이를 서버 상태로 분리한다. 신 서버는 claimed로
+    # 내려주고 begin-submission ACK 뒤에만 submitting으로 올린다. 구 서버는 capability를 무시하고
+    # 기존 submitting 응답(새 필드 없음)을 주므로 혼합 업데이트 중에도 하위호환된다.
+    query = {"limit": limit, "capability": "workspace,submission-stage"}
     if agent_id:
         query["agent_id"] = agent_id
     return _http(
@@ -559,8 +565,270 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
     )
 
 
+def _pending_exists(server: str, token: str) -> bool:
+    # 깨움 조회도 유료 claim 가능성을 묻는 에이전트 계약의 일부다. 신 서버는 이 선언으로
+    # 구 에이전트만 차단하고, 구 서버는 모르는 query를 무시해 그대로 동작한다.
+    status, body = _http(
+        "GET",
+        _gen_request_url(
+            server,
+            action="pending-exists",
+            query={
+                "capability": "workspace,submission-stage",
+                "agent_id": _agent_instance_id(),
+            },
+        ),
+        token=token,
+    )
+    return status == 200 and isinstance(body, dict) and body.get("pending") is True
+
+
+def _begin_submission(
+    server: str,
+    token: str,
+    rid: str,
+    agent_id: str,
+    submission_fingerprint: dict | None = None,
+) -> bool:
+    """신 서버의 staged claim을 실제 CLI 호출 직전에 submitting으로 전환한다.
+
+    서버가 전이를 적용한 직후 응답만 유실될 수 있으므로 일시 장애는 멱등 API로 재확인한다.
+    명시적인 4xx는 소유권 상실이므로 즉시 중단한다.
+    """
+    url = _gen_request_url(
+        server,
+        rid,
+        "begin-submission",
+        {"agent_id": agent_id},
+    )
+    for _ in range(3):
+        kwargs = {"token": token, "timeout": 15}
+        if submission_fingerprint is not None:
+            kwargs["body"] = submission_fingerprint
+        status, body = _http("POST", url, **kwargs)
+        if status == 200:
+            return not isinstance(body, dict) or body.get("applied", True) is not False
+        if 400 <= status < 500:
+            return False
+    return False
+
+
+def _release_claim(
+    server: str,
+    token: str,
+    rid: str,
+    agent_id: str,
+) -> bool:
+    """유료 CLI를 호출하지 못한 claimed 요청을 즉시 pending으로 반환한다."""
+    status, _ = _http(
+        "POST",
+        _gen_request_url(server, rid, "release-claim", {"agent_id": agent_id}),
+        token=token,
+    )
+    return status == 200
+
+
+def _require_submission_recovery(server: str, token: str, rid: str) -> bool:
+    """CLI 호출 뒤 job_id가 없는 모호한 결말을 자동 재생성 금지 상태로 보고한다."""
+    url = _gen_request_url(server, rid, "recovery-required")
+    for _ in range(3):
+        status, body = _http("POST", url, token=token, timeout=15)
+        if status == 200:
+            return not isinstance(body, dict) or body.get("applied", True) is not False
+        if 400 <= status < 500:
+            return False
+    return False
+
+
 def _list_reconcile_candidates(server: str, token: str):
     return _http("GET", _gen_request_url(server, action="reconcile-candidates"), token=token)
+
+
+def _list_recovery_probes(server: str, token: str):
+    return _http("GET", _gen_request_url(server, action="recovery-probes"), token=token)
+
+
+def _report_recovery_probe(
+    server: str,
+    token: str,
+    rid: str,
+    outcome: str,
+    candidate_count: int,
+    job_id: str | None = None,
+) -> dict | None:
+    body = {"outcome": outcome, "candidate_count": candidate_count}
+    if job_id:
+        body["job_id"] = job_id
+    status, data = _http(
+        "POST",
+        _gen_request_url(server, rid, "recovery-probe"),
+        token=token,
+        body=body,
+    )
+    if status != 200 or not isinstance(data, dict) or data.get("applied") is False:
+        return None
+    return data
+
+
+_GENERATE_READ_ACTIONS = frozenset({"list", "get"})
+
+
+def _read_generate_json(cli: str, action: str, *args: str, timeout: int = 120):
+    """자동 조사가 쓸 수 있는 HF 명령을 list/get으로 구조적으로 제한한다."""
+    if action not in _GENERATE_READ_ACTIONS:
+        raise ValueError(f"읽기 전용 조사에서 금지된 generate action: {action}")
+    return _cli_json(cli, "generate", action, *args, timeout=timeout)
+
+
+def _probe_epoch(value) -> float | None:
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+        return number / 1000.0 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _probe_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip().lower()
+
+
+def _job_reference_roles(medias) -> list[str]:
+    roles: list[str] = []
+    if not isinstance(medias, list):
+        return roles
+    for media in medias:
+        if not isinstance(media, dict):
+            continue
+        data = media.get("data")
+        fallback = data.get("type") if isinstance(data, dict) else ""
+        roles.append(_probe_role(media.get("role"), fallback))
+    return sorted(roles)
+
+
+def _matches_submission_fingerprint(request: dict, job: dict) -> bool:
+    """계정 범위 최신 목록에서 제출 시각·모델·프롬프트·옵션·레퍼런스를 보수적으로 대조한다."""
+    fingerprint = request.get("fingerprint")
+    if not isinstance(fingerprint, dict) or not job.get("id"):
+        return False
+    model = job.get("job_set_type") or job.get("job_type")
+    if str(model or "") != str(fingerprint.get("model") or ""):
+        return False
+    params = job.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("prompt"), str):
+        return False
+    candidate_prompt = re.sub(r"\s+", " ", params["prompt"].lstrip(_ZWSP)).strip()
+    if hashlib.sha256(candidate_prompt.encode("utf-8")).hexdigest() != fingerprint.get(
+        "prompt_sha256"
+    ):
+        return False
+
+    created_at = _probe_epoch(job.get("created_at"))
+    submitted_at = _probe_epoch(request.get("submission_started_at"))
+    recovery_at = _probe_epoch(request.get("recovery_required_at"))
+    if created_at is None or submitted_at is None:
+        return False
+    # 서버 begin 직전/CLI 시계 오차 2분을 허용하되, 복구 격리 뒤 생긴 동명 작업은 후보에서 뺀다.
+    if created_at < submitted_at - 120:
+        return False
+    if recovery_at is not None and created_at > recovery_at + 120:
+        return False
+
+    candidate_options = params
+    for key, expected in (fingerprint.get("params") or {}).items():
+        # HF 목록이 기본값을 생략할 수 있어 없는 키는 중립으로 둔다. 명시된 값의 충돌은 제외한다.
+        if key in candidate_options and _probe_value(candidate_options[key]) != _probe_value(expected):
+            return False
+
+    expected_roles = sorted(str(role) for role in (fingerprint.get("reference_roles") or []))
+    candidate_roles = _job_reference_roles(params.get("medias"))
+    # 공급자가 입력 메타를 통째로 누락한 검증실패 결과도 찾을 수 있게 빈 목록은 중립으로 둔다.
+    if candidate_roles and candidate_roles != expected_roles:
+        return False
+    if not expected_roles and candidate_roles:
+        return False
+    return True
+
+
+def recovery_probe_pass(server: str, token: str, cli: str) -> int:
+    """모호한 제출을 최신 목록에서 읽기만 해 찾고, 유일 후보만 기존 placeholder에 앵커한다."""
+    status, data = _list_recovery_probes(server, token)
+    requests = data.get("requests") if status == 200 and isinstance(data, dict) else None
+    if not isinstance(requests, list) or not requests:
+        return 0
+    anchored = 0
+    pending_requests: list[dict] = []
+    for request in requests:
+        if not isinstance(request, dict) or not request.get("id"):
+            continue
+        # 유일 후보 기록 뒤 앵커 응답만 유실된 경우 최신 목록을 다시 추측하지 않고, ledger에
+        # 저장한 같은 job_id만 재전송한다. create 계열 호출은 여전히 이 경로에 없다.
+        recorded_job_id = request.get("recovery_probe_job_id")
+        if request.get("recovery_probe_status") == "unique" and recorded_job_id:
+            if _anchor(
+                server, token, str(request["id"]), str(recorded_job_id), verifying=True
+            ):
+                anchored += 1
+                print(f"  ✓ 모호한 제출 자동 복구 재시도: {str(recorded_job_id)[:8]}")
+            continue
+        pending_requests.append(request)
+    if not pending_requests:
+        return anchored
+    jobs = _read_generate_json(cli, "list", "--size", "100", timeout=120)
+    if not isinstance(jobs, list):
+        return anchored
+    list_saturated = len(jobs) >= 100
+    for request in pending_requests:
+        matches_by_id = {
+            str(job["id"]): job
+            for job in jobs
+            if isinstance(job, dict) and _matches_submission_fingerprint(request, job)
+        }
+        matches = list(matches_by_id.values())
+        if len(matches) == 1:
+            outcome = "unique"
+        elif matches:
+            outcome = "multiple"
+        else:
+            # 최신 창이 꽉 찼으면 후보가 100건 밖으로 밀렸을 수 있다. CLI list에는 cursor 계약이
+            # 없으므로 '없음'으로 확정해 재큐 문을 열지 않고, 다음 주기/수동 확인까지 보류한다.
+            if list_saturated:
+                print("  ⚠ 모호한 제출 조사 보류 — 최신 100건 창이 가득 참")
+                continue
+            outcome = "no_match"
+        job_id = str(matches[0]["id"]) if len(matches) == 1 else None
+        recorded = _report_recovery_probe(
+            server, token, str(request["id"]), outcome, len(matches), job_id
+        )
+        if not recorded:
+            continue
+        effective_outcome = recorded.get("outcome", outcome)
+        effective_job_id = recorded.get("job_id") if effective_outcome == "unique" else None
+        if effective_job_id and _anchor(
+            server, token, str(request["id"]), str(effective_job_id), verifying=True
+        ):
+            anchored += 1
+            print(f"  ✓ 모호한 제출 자동 복구: {str(effective_job_id)[:8]}")
+        elif effective_outcome in {"unique", "multiple"}:
+            print(
+                f"  ⚠ 모호한 제출 후보 {recorded.get('candidate_count', len(matches))}개 "
+                "— 자동 재실행 보류"
+            )
+    return anchored
 
 
 def _wait_event(server: str, token: str, timeout: int = 35):
@@ -769,8 +1037,11 @@ def _load_suppressed() -> "set[str]":
 
 
 def _suppress_job(job_id: "str | None") -> None:
-    """레퍼런스 미부착으로 실패한 고아 잡을 '카드화 금지' 목록에 넣는다 — 다음 push 사이클의
-    generate list 에 남아 있어도 서버로 올리지 않는다(실패는 실패로 끝, 엉뚱한 카드가 안 생긴다)."""
+    """레퍼런스 미부착으로 실패한 잡을 '원래 카드 자동 부착 금지' 목록에 넣는다.
+
+    유료 결과 자체는 다음 push에서 서버 라이브러리에 별도 격리 저장한다. 이 로컬 목록은
+    검증 실패를 기억하고 로그로 구분하기 위한 표식이며, 결과 은폐 필터로 사용하지 않는다.
+    """
     if not job_id:
         return
     ids = _load_suppressed()
@@ -807,6 +1078,11 @@ def _upload_cache_key(upload_cache: dict, digest: str) -> str:
 
 
 def _invalidate_upload_cache(upload_cache: dict, path: str, upload_lock: Lock) -> None:
+    """모호한 생성 실패에 쓰인 오래된 업로드 ID만 제거한다.
+
+    여기서는 CLI 생성을 다시 호출하지 않는다. 사용자가 외부 미제출을 확인하고 기존 요청을
+    명시적으로 재큐잉했을 때 다음 시도가 파일을 새로 업로드하게 만들기 위한 정리다.
+    """
     if "_items" not in upload_cache:
         with upload_lock:
             upload_cache.pop(path, None)
@@ -827,7 +1103,6 @@ def _upload_for_media(
     path: str,
     upload_cache: dict,
     upload_lock: Lock,
-    force: bool = False,
 ) -> tuple[dict | None, bool]:
     """로컬 레퍼런스 파일을 Higgsfield media_input 으로 업로드하고 (medias[].data, 캐시사용여부) 반환.
     in-flight 잠금: 같은 파일을 여러 스레드가 동시에 올리면 한 스레드만 업로드하고 나머지는 그 결과를
@@ -839,7 +1114,7 @@ def _upload_for_media(
     if legacy:  # 플랫 dict 캐시 — 실사용 경로 아님(_load_upload_cache 는 항상 _items 생성). 그대로 둔다.
         with upload_lock:
             cached = upload_cache.get(path)
-            if cached is not None and not force:
+            if cached is not None:
                 return cached, True
     else:
         fp = _file_fingerprint(path)
@@ -850,18 +1125,17 @@ def _upload_for_media(
         while True:  # 캐시 재확인 + in-flight 조정 루프
             wait_ev = None
             with upload_lock:
-                if not force:
-                    cached = upload_cache.get("_memory", {}).get(key)
-                    if cached is not None:
-                        return cached, True
-                    entry = upload_cache.get("_items", {}).get(key)
-                    data = entry.get("data") if isinstance(entry, dict) else None
-                    if isinstance(data, dict) and data.get("id"):
-                        upload_cache.setdefault("_memory", {})[key] = data
-                        return data, True
+                cached = upload_cache.get("_memory", {}).get(key)
+                if cached is not None:
+                    return cached, True
+                entry = upload_cache.get("_items", {}).get(key)
+                data = entry.get("data") if isinstance(entry, dict) else None
+                if isinstance(data, dict) and data.get("id"):
+                    upload_cache.setdefault("_memory", {})[key] = data
+                    return data, True
                 inflight = upload_cache.setdefault("_inflight", {})
                 ev = inflight.get(key)
-                if ev is None or force:  # 내가 업로드 담당(또는 force 재업로드) — 자리표로 대기자에 알림
+                if ev is None:  # 내가 업로드 담당 — 자리표로 대기자에 알림
                     my_ev = Event()
                     inflight[key] = my_ev
                     break
@@ -931,6 +1205,42 @@ def _param_flags(params: dict, allowed: set) -> list[str]:
         else:
             out += [f"--{k}", str(v)]
     return out
+
+
+def _fingerprint_params(params: dict, allowed: set) -> dict:
+    """CLI에 실제 플래그로 전달되는 스칼라 옵션만 제출 지문에 남긴다."""
+    return {
+        str(key): value
+        for key, value in (params or {}).items()
+        if key != "prompt"
+        and value not in (None, "")
+        and not isinstance(value, (list, dict))
+        and (not allowed or key in allowed)
+    }
+
+
+def _probe_role(value, fallback: str = "") -> str:
+    raw = str(value or fallback or "").strip().lower()
+    raw = raw.replace("simage", "startimage").replace("eimage", "endimage")
+    raw = raw.replace("vedio", "video")
+    return re.sub(r"[^a-z0-9]", "", raw)
+
+
+def _submission_fingerprint(model: str, prompt: str, params: dict, allowed: set, refs: list) -> dict:
+    """원문 프롬프트를 저장하지 않고 같은 HF 목록 항목을 대조할 안정 지문을 만든다."""
+    normalized_prompt = re.sub(r"\s+", " ", prompt.lstrip(_ZWSP)).strip()
+    roles = sorted(
+        _probe_role(ref.get("role"), ref.get("type") or "image")
+        for ref in refs
+        if isinstance(ref, dict)
+    )
+    return {
+        "version": 1,
+        "model": model,
+        "prompt_sha256": hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest(),
+        "params": _fingerprint_params(params, allowed),
+        "reference_roles": roles,
+    }
 
 
 def _fail(server: str, token: str, rid: str, reason: str) -> None:
@@ -1132,8 +1442,13 @@ def _tracked_remove(server: str, account_email: str | None, job_id: str) -> None
 
 def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
     """placeholder 에 job_id 를 박고 running 유지 — create-first(verifying=False)는 '생성중'으로,
-    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시. 서버 200 이면 True."""
-    st, _ = _http(
+    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시.
+
+    True = 서버가 앵커를 반영했거나 재전송이 무의미(요청 종결/소멸) → outbox 에서 제거해도 됨.
+    False = 실패 또는 서버가 거부했는데 요청이 아직 살아 있음 → outbox 에 남겨 재전송.
+    (예전엔 HTTP 200 만 보고 성공 처리해서, 서버가 조용히 거부한 앵커가 outbox 에서
+    지워져 유료 잡이 카드에 영영 안 붙었다.)"""
+    st, body = _http(
         "POST",
         _gen_request_url(
             server,
@@ -1143,7 +1458,14 @@ def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = Fa
         ),
         token=token,
     )
-    return st == 200
+    if st != 200:
+        return False
+    if not isinstance(body, dict) or "applied" not in body:
+        return True  # 구서버(빈 200) 호환 — 기존 동작 유지
+    if body.get("applied"):
+        return True
+    # 서버가 거부 — 요청이 이미 종결/소멸이면 같은 앵커를 다시 보내도 똑같이 거부된다.
+    return str(body.get("request_status") or "") in ("done", "canceled", "failed", "missing")
 
 
 def _anchor_with_retry(
@@ -1270,6 +1592,7 @@ def _submit_one(
     upload_cache: dict,
     upload_lock: Lock,
     workspace_lock: Lock,
+    agent_id: str,
 ) -> dict | None:
     """대기 요청 1건을 내 로컬 CLI 로 제출하고 추적 정보를 반환한다.
     제출 워커에서 호출되므로 정상적인 입력·CLI 실패는 여기서 보고하고 None 을 반환한다.
@@ -1297,7 +1620,8 @@ def _submit_one(
     if str(params.get("batch_size", "1")) != "1":
         print(f"  ⚠ batch_size={params.get('batch_size')} → 1 강제(카드 1개=잡 1개 원칙)")
         params["batch_size"] = 1
-    args += _param_flags(params, _allowed_params(cli, model))
+    allowed_params = _allowed_params(cli, model)
+    args += _param_flags(params, allowed_params)
     refs, ref_error = _refs_for_cli(model, r.get("references") or [])
     if ref_error:
         _fail(server, token, rid, ref_error)
@@ -1307,8 +1631,7 @@ def _submit_one(
     unresolved: list = []
     upload_failed: list = []
     seedance_media_ids: list = []  # [(role, upload_id)] — 1.x references 플래그용
-    seedance_media_inputs: list[tuple[str, str]] = []
-    seedance_used_cached_media = False
+    seedance_cached_paths: list[str] = []
     expected_image_inputs = 0  # 우리가 실제로 CLI 에 넣은 입력 이미지 개수(사후 부착 검증용)
     for ref in refs:
         val = ref.get("file_path")
@@ -1327,9 +1650,9 @@ def _submit_one(
             if not data:
                 upload_failed.append(val)
                 continue
+            if from_cache:
+                seedance_cached_paths.append(resolved)
             media_role = _media_role(ref)
-            seedance_media_inputs.append((resolved, media_role))
-            seedance_used_cached_media = seedance_used_cached_media or from_cache
             seedance_media_ids.append((media_role, data["id"]))
             if media_role == "image":
                 expected_image_inputs += 1
@@ -1350,6 +1673,9 @@ def _submit_one(
         return None
     seedance_ref_args = _seedance_ref_args(seedance_media_ids)
     args += seedance_ref_args
+    submission_fingerprint = _submission_fingerprint(
+        model, prompt, params, allowed_params, refs
+    )
     print(f"  → {model}: {prompt[:40]}")
     # 1) 비대기 제출 → job_id 즉시 확보(create 가 과금원). 응답 실측은 ["<uuid>"] 배열.
     # workspace 선택은 CLI 전역 상태다. 전환·검증부터 generate create 반환까지 한 요청만 진입시켜,
@@ -1361,37 +1687,32 @@ def _submit_one(
             _fail(server, token, rid, reason)
             print(f"  ✗ {reason}")
             return None
-        created, cli_error = _run_cli_json(cli, *args, timeout=300)
-        if (
-            not _extract_created_id(created, None)
-            and cli_error
-            and seedance_media_inputs
-            and seedance_used_cached_media
-            and any(s in cli_error.lower() for s in ("media", "reference", "upload", "uuid", "input"))
+        # 신 서버가 claim_phase=claimed를 보낸 경우에만 2단계 제출 계약을 적용한다. ACK가 없으면
+        # generate create를 절대 호출하지 않는다. 구 서버 응답에는 이 필드가 없어 기존 흐름 유지.
+        if r.get("claim_phase") == "claimed" and not _begin_submission(
+            server, token, rid, agent_id, submission_fingerprint
         ):
-            print("  ↻ 캐시된 Higgsfield media id 실패 의심 — 캐시를 버리고 재업로드 후 1회 재시도")
-            retry_ids: list = []
-            retry_failed = False
-            for path, media_role in seedance_media_inputs:
-                _invalidate_upload_cache(upload_cache, path, upload_lock)
-                data, _ = _upload_for_media(cli, path, upload_cache, upload_lock, force=True)
-                if not data:
-                    retry_failed = True
-                    break
-                retry_ids.append((media_role, data["id"]))
-            if not retry_failed:
-                # 새 id 로 references 플래그만 교체(base = seedance ref 를 뺀 나머지).
-                base_args = args[:len(args) - len(seedance_ref_args)]
-                retry_args = base_args + _seedance_ref_args(retry_ids)
-                created, cli_error = _run_cli_json(cli, *retry_args, timeout=300)
+            _release_claim(server, token, rid, agent_id)
+            print("  ✗ 서버 제출 허가를 확인하지 못해 생성하지 않았습니다")
+            return None
+        created, cli_error = _run_cli_json(cli, *args, timeout=300)
     job_id = _extract_created_id(created, cli_error)
     if not job_id:
-        # job_id 를 못 얻음 = 제출 자체 실패(레퍼런스 오류 등은 위에서 이미 걸러짐). 진짜 실패이므로 hard fail.
-        reason = "제출 실패(잡 id 없음)" if not cli_error else f"제출 실패: {cli_error[:700]}"
+        # generate create를 호출한 뒤에는 exit code·타임아웃만으로 외부 미제출을 증명할 수 없다.
+        # 자동 fail/재시도하면 이미 결제된 작업을 한 번 더 만들 수 있으므로 수동 복구 상태로 격리한다.
+        reason = "잡 id를 확인하지 못했습니다" if not cli_error else cli_error[:700]
         if cli_error:
             print(f"[경고] {cli_error}")
-        _fail(server, token, rid, reason)
-        print(f"  ✗ 제출 실패: {job_id or ''}")
+        if seedance_cached_paths and cli_error and any(
+            marker in cli_error.lower()
+            for marker in ("media", "reference", "upload", "uuid", "input")
+        ):
+            for cached_path in seedance_cached_paths:
+                _invalidate_upload_cache(upload_cache, cached_path, upload_lock)
+            print("  ↻ 다음 명시적 재실행을 위해 실패한 레퍼런스 업로드 캐시를 비웠습니다")
+        reported = _require_submission_recovery(server, token, rid)
+        suffix = "" if reported else " (서버 보고 실패 — lease 만료 시 자동 격리)"
+        print(f"  ⚠ 제출 결과 확인 필요: {reason}{suffix}")
         return None
     # 2) 즉시 앵커(크래시 세이프) — outbox 에 먼저 남기고 서버 ACK 재시도. ACK 실패해도 outbox 가
     #    재조정 패스/재시작 때 재전송하므로 계속 진행한다(잡은 이미 힉스필드에 떠 있음).
@@ -1709,6 +2030,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
                             upload_cache,
                             upload_lock,
                             workspace_lock,
+                            agent_id,
                         )
                         submitting[future] = request
                         total += 1
@@ -1896,13 +2218,14 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             if isinstance(t, dict) and t.get("display_name") in dn2key:
                 t["model"] = dn2key[t["display_name"]]
 
-    # 3) 새 것만 추림(서버에 없는 job_id) — 단, 미부착으로 실패한 고아 잡은 카드로 안 올린다.
-    #    reinspect 면 차집합(fresh_ids)을 무시하고 최신 전량을 대상으로(억제 목록은 그대로 존중).
+    # 3) 새 것만 추림(서버에 없거나 격리 라이브러리 행이 아직 없는 job_id).
+    # suppression은 이제 결과 은폐가 아니라 원래 카드 자동 부착 금지 표식이다. 서버가 실패
+    # placeholder와 별도 synced 행으로 저장하므로, suppressed 잡도 정상 적재 대상으로 보낸다.
     suppressed = _load_suppressed()
     fresh = [
         j
         for j in jobs
-        if isinstance(j, dict) and j.get("id") and (reinspect or j["id"] in fresh_ids) and j["id"] not in suppressed
+        if isinstance(j, dict) and j.get("id") and (reinspect or j["id"] in fresh_ids)
     ]
     n_suppressed = sum(
         1 for j in jobs
@@ -1911,7 +2234,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # 내 힉스필드 uid = 내 전체 목록의 최다 user_<id>(= 내 본인 것). fresh 만 보면 남의 레퍼런스에
     # 오염될 수 있으므로 반드시 '전체 목록' 기준으로 산출해 명시 전송 → 서버가 올바르게 연결.
     my_uid = _dominant_uid(jobs)
-    skip_note = f" · 미부착 억제 {n_suppressed}개" if n_suppressed else ""
+    skip_note = f" · 원카드 부착 금지 {n_suppressed}개(라이브러리 적재)" if n_suppressed else ""
     mode_note = "재점검(전량 재전송)" if reinspect else "새 잡"
     print(f"[로컬] 잡 {len(jobs)}개 중 {mode_note} {len(fresh)}개{skip_note} · 내 uid={my_uid}")
     if not fresh and not acct:
@@ -1922,7 +2245,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     status, body = _http(
         "POST", f"{server}/api/ingest", token=token,
         body={"jobs": fresh, "creator_uid": my_uid, "workspace": workspace, "account_status": acct,
-              "account_transactions": txns},
+              "account_transactions": txns, "list_fetched": len(jobs)},
     )
     if status != 200 or not isinstance(body, dict):
         # 적재 실패로 watch 루프를 죽이지 않는다(소프트 보류) — 로그인 전(401·인증 필요)이나
@@ -1994,8 +2317,27 @@ def tracking_pass(server: str, token: str, cli: str) -> int:
     account_email = _cli_account_email(cli)
     active = _runtime_active(server, account_email)
     finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
+    # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
+    recovery_probe_pass(server, token, cli)
     reconcile_pass(server, token, cli, account_email, skip_job_ids=set(active))
     return finished
+
+
+def _execute_pending_for_watch_cycle(
+    server: str,
+    token: str,
+    cli: str,
+    reasons: set[str],
+) -> None:
+    if "gen-request" in reasons:
+        print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
+        execute_pending(server, token, cli)
+        return
+    if not reasons and _pending_exists(server, token):
+        # 깨움 신호는 지연 단축용일 뿐이다. 프로세스 재시작으로 신호가 사라져도 매 idle마다
+        # DB의 pending을 다시 확인해 정확성 책임을 영속 큐에 둔다.
+        print("[idle] 대기 요청 재확인 — 내 CLI로 실행")
+        execute_pending(server, token, cli)
 
 
 def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
@@ -2114,9 +2456,7 @@ def main() -> None:
             # 사유가 콤마로 합쳐 올 수 있다(gen-request 와 sync 가 함께 쌓인 경우) → 멤버십으로 검사.
             reasons = set((reason or "").split(",")) if reason else set()
             try:
-                if "gen-request" in reasons:
-                    print("[이벤트] 허브 생성/재생성 요청 — 내 CLI로 실행")
-                    execute_pending(server, token, cli)  # 제출 워커와 원격 작업 추적을 분리해 처리
+                _execute_pending_for_watch_cycle(server, token, cli, reasons)
                 # 매 사이클(이벤트·idle 타임아웃 모두) '실제 상태 미확정' 카드를 보정 — 확인중 카드를
                 #  다음 idle(≈35초) 안에 실제 done/failed 로 확정. reason None/idle 이어도 조용히 돈다.
                 #  ★push_once 보다 먼저 — 갓 생성한 카드의 PM 완료시각이 ingest 의 done 처리보다 앞서 기록되게.

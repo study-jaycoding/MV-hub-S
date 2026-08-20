@@ -165,6 +165,33 @@ class FakeResolve:
         return True
 
 
+class NormalPathUncTests(unittest.TestCase):
+    """Z:↔UNC 표기 통일 — Resolve 가 UNC 로 기록한 클립과 Z: 로 보낸 원본이 같은 정규형이어야
+    dedupe 가 맞고, 성공한 가져오기가 실패·중복으로 보고되지 않는다."""
+
+    def setUp(self):
+        resolve_bridge._DRIVE_UNC_CACHE.clear()
+
+    def tearDown(self):
+        resolve_bridge._DRIVE_UNC_CACHE.clear()
+
+    def test_mapped_drive_and_unc_normalize_to_same_path(self):
+        # 실제 매핑이 있을 수 없는 드라이브 문자(Q:)를 쓴다 — 실존 매핑(Z: 등)은
+        # Path.resolve 가 환경에 따라 먼저 실제 UNC 로 바꿔버려 테스트가 기계 의존이 된다.
+        with mock.patch.object(
+            resolve_bridge, "_drive_unc",
+            side_effect=lambda d: r"\\nas\share" if d.lower() == "q:" else None,
+        ):
+            a = resolve_bridge._normal_path(r"Q:\renders\ep01\cut01.mp4")
+            b = resolve_bridge._normal_path(r"\\NAS\share\renders\ep01\cut01.mp4")
+        self.assertEqual(a, b)
+
+    def test_local_drive_is_left_alone(self):
+        with mock.patch.object(resolve_bridge, "_drive_unc", return_value=None):
+            p = resolve_bridge._normal_path(r"D:\media\cut01.mp4")
+        self.assertTrue(p.lower().startswith("d:"))
+
+
 class ResolveBridgeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

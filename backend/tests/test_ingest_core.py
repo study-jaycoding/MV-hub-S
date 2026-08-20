@@ -1,6 +1,8 @@
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
+from app.models import AccountReportIn, IngestIn, IngestMcpIn, IngestOut
 from app.routers import ingest
 
 
@@ -44,6 +46,161 @@ class IngestCoreTests(unittest.TestCase):
         self.assertEqual(upsert.call_count, 1)
         self.assertEqual(len(upsert.call_args[0][0]), 1)  # 중복 제거 후 1건만 배치로 전달
         record_status.assert_called_once()
+
+    def test_ingest_schedules_telemetry_without_synchronous_network_drain(self):
+        expected = IngestOut(
+            inserted=0, updated=0, unchanged=0, skipped=0, errors=0, linked_uid="u_me"
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest(IngestIn(), SimpleNamespace())
+
+        self.assertIs(result, expected)
+        schedule.assert_called_once_with()
+
+    def test_ingest_queues_account_reports_without_synchronous_proxy(self):
+        from app.repo import manage
+
+        expected = IngestOut(linked_uid="u_me")
+        body = IngestIn(
+            account_status={"email": "me@example.com", "credits": 10},
+            account_transactions=[
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest._proxy, "proxying", return_value=True),
+            mock.patch.object(ingest._proxy, "proxy_json") as proxy_json,
+            mock.patch.object(manage, "record_transactions"),
+            mock.patch.object(
+                manage,
+                "queue_account_reports",
+                return_value={"status": 1, "transactions": 1},
+            ) as queue,
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest(body, SimpleNamespace())
+
+        self.assertIs(result, expected)
+        queue.assert_called_once_with(body.account_status, body.account_transactions)
+        proxy_json.assert_not_called()
+        schedule.assert_called_once_with()
+
+    def test_account_report_endpoint_acknowledges_only_after_both_writes(self):
+        from app.repo import manage
+
+        body = AccountReportIn(
+            account_status={"email": "me@example.com", "credits": 10},
+            account_transactions=[
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+            creator_uid="u_me",
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=IngestOut(linked_uid="u_me")) as core,
+            mock.patch.object(
+                manage,
+                "record_transactions",
+                return_value={"inserted": 1, "matched": 1},
+            ) as record,
+        ):
+            result = ingest.ingest_account_report(body, SimpleNamespace())
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.transactions_inserted, 1)
+        self.assertEqual(result.transactions_matched, 1)
+        core.assert_called_once_with(
+            {"email": "me@example.com"}, [], "u_me", body.account_status
+        )
+        record.assert_called_once_with("u_me", "me@example.com", body.account_transactions)
+
+    def test_mcp_backfill_schedules_telemetry_without_synchronous_network_drain(self):
+        expected = IngestOut(
+            inserted=0, updated=0, unchanged=0, skipped=0, errors=0, linked_uid="u_me"
+        )
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", True),
+            mock.patch.object(ingest, "_agent_acc", return_value={"email": "me@example.com"}),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected),
+            mock.patch.object(ingest, "schedule_telemetry_drain", return_value=True) as schedule,
+        ):
+            result = ingest.ingest_mcp(IngestMcpIn(), SimpleNamespace())
+
+        self.assertIs(result, expected)
+        schedule.assert_called_once_with()
+
+    def test_mcp_backfill_preserves_job_workspace_and_falls_back_only_when_missing(self):
+        items = [
+            {
+                "id": "job-own",
+                "workspace": {"scope": "team", "id": "ws-old", "name": "OLD"},
+            },
+            {"id": "job-missing"},
+            {
+                "id": "job-broken",
+                "workspace": {"scope": "team", "id": "", "name": "BROKEN"},
+            },
+        ]
+        body = IngestMcpIn(
+            items=items,
+            workspace={"scope": "team", "id": "ws-current", "name": "CURRENT"},
+        )
+        expected = IngestOut(linked_uid="u_me")
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", False),
+            mock.patch.object(
+                ingest, "_agent_acc", return_value={"email": "me@example.com"}
+            ),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected) as core,
+        ):
+            result = ingest.ingest_mcp(body, SimpleNamespace())
+
+        self.assertIs(result, expected)
+        jobs = core.call_args.args[1]
+        workspaces = [ingest.cli_bridge.parse_job(job)["generation"] for job in jobs]
+        self.assertEqual(
+            (
+                workspaces[0]["workspace_scope"],
+                workspaces[0]["workspace_id"],
+                workspaces[0]["workspace_name"],
+            ),
+            ("team", "ws-old", "OLD"),
+        )
+        self.assertEqual(
+            (
+                workspaces[1]["workspace_scope"],
+                workspaces[1]["workspace_id"],
+                workspaces[1]["workspace_name"],
+            ),
+            ("team", "ws-current", "CURRENT"),
+        )
+        self.assertEqual(
+            (
+                workspaces[2]["workspace_scope"],
+                workspaces[2]["workspace_id"],
+                workspaces[2]["workspace_name"],
+            ),
+            ("unknown", None, None),
+        )
 
 
 if __name__ == "__main__":

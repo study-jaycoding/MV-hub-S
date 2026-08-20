@@ -12,6 +12,56 @@ import sqlite3
 _PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
 
 
+def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
+    """공유 서버 권위 상태를 로컬 미러로 수렴시키는 write-ahead 원장을 보장한다."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS share_state_intent ("
+        "intent_id TEXT PRIMARY KEY,"
+        "server_origin TEXT NOT NULL,"
+        "server_generation_id TEXT,"
+        "job_anchor TEXT,"
+        "local_id TEXT,"
+        "operation_kind TEXT NOT NULL,"
+        "desired_shared INTEGER NOT NULL CHECK(desired_shared IN (0,1)),"
+        "desired_final INTEGER NOT NULL CHECK(desired_final IN (0,1)),"
+        "base_shared INTEGER NOT NULL CHECK(base_shared IN (0,1)),"
+        "base_final INTEGER NOT NULL CHECK(base_final IN (0,1)),"
+        "expected_final_by TEXT,"
+        "intent_seq INTEGER NOT NULL,"
+        "status TEXT NOT NULL CHECK(status IN ("
+        "'prepared','pending','waiting_local','auth_required',"
+        "'converged','superseded','blocked','rejected'"
+        ")),"
+        "claim_token TEXT,"
+        "lease_until TEXT,"
+        "fail_streak INTEGER NOT NULL DEFAULT 0,"
+        "next_retry_at TEXT,"
+        "last_error_code TEXT,"
+        "observed_state_json TEXT,"
+        "observed_at TEXT,"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL,"
+        "last_attempt_at TEXT,"
+        "CHECK (desired_final=0 OR desired_shared=1),"
+        "CHECK (server_generation_id IS NOT NULL OR job_anchor IS NOT NULL)"
+        ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_uuid "
+        "ON share_state_intent(server_origin, server_generation_id) "
+        "WHERE server_generation_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_anchor "
+        "ON share_state_intent(server_origin, job_anchor) "
+        "WHERE job_anchor IS NOT NULL AND server_generation_id IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ssi_due "
+        "ON share_state_intent(status, next_retry_at)"
+    )
+
+
 def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
     """기존 ``hf_status:<email>`` JSON에서 확인 가능한 팀 워크스페이스 접근관계를 1회성 보강한다.
 
@@ -146,6 +196,24 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
+    _migrate_share_state_intent(conn)
+    # RL-22: 공유·최종 생성물 원본 보존 상태. 옛 DB도 멱등 보강한다. URL·프롬프트는
+    # 저장하지 않고 상태와 안전한 집계만 기록한다.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS media_preservation ("
+        "generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,"
+        "reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+        "attempts INTEGER NOT NULL DEFAULT 0, cached_count INTEGER NOT NULL DEFAULT 0,"
+        "failed_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0,"
+        "bytes_cached INTEGER NOT NULL DEFAULT 0, error_code TEXT, next_retry_at TEXT,"
+        "requested_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_preservation_due "
+        "ON media_preservation(status, next_retry_at, updated_at)"
+    )
     for table in ("asset", "reference"):
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if "source_url" not in cols:
@@ -215,6 +283,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE generation ADD COLUMN workspace_name TEXT")
     # 부분 배포/수동 DB에서 생긴 불완전 값을 멱등 정규화. team은 id가 없으면 unknown으로 강등하고,
     # personal/unknown에는 팀 id를 남기지 않는다(필터 오분류 방지).
+    # 대소문자·바깥 공백만 다른 유효값은 먼저 보존 가능한 정규형으로 고친다. 이를 생략하면
+    # ` TEAM ` 같은 중간 배포 값도 아래 invalid 분기에 걸려 실제 워크스페이스 ID를 잃는다.
+    conn.execute(
+        "UPDATE generation SET workspace_scope=LOWER(TRIM(workspace_scope)) "
+        "WHERE workspace_scope IS NOT NULL "
+        "AND LOWER(TRIM(workspace_scope)) IN ('team','personal','unknown') "
+        "AND workspace_scope<>LOWER(TRIM(workspace_scope))"
+    )
+    conn.execute(
+        "UPDATE generation SET workspace_id=TRIM(workspace_id) "
+        "WHERE workspace_scope='team' AND workspace_id IS NOT NULL "
+        "AND workspace_id<>TRIM(workspace_id)"
+    )
     conn.execute(
         "UPDATE generation SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
         "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
@@ -252,6 +333,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     gc_cols = {row[1] for row in conn.execute("PRAGMA table_info(generation_comment)")}
     if gc_cols and "muted" not in gc_cols:
         conn.execute("ALTER TABLE generation_comment ADD COLUMN muted INTEGER NOT NULL DEFAULT 0")
+    # 비공개 코멘트(is_private) — 작성자 로컬 DB 에만 존재, 서버·공유 번들로 나가지 않는다
+    if ac_cols and "is_private" not in ac_cols:
+        conn.execute("ALTER TABLE asset_comment ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
+    if gc_cols and "is_private" not in gc_cols:
+        conn.execute("ALTER TABLE generation_comment ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
     # 프로젝트 수동 정렬 순서(관리자 탭 ↑/↓) — NULL=미지정(생성물 순 폴백).
     proj_cols = {row[1] for row in conn.execute("PRAGMA table_info(project)")}
     if proj_cols and "sort_order" not in proj_cols:
@@ -269,6 +355,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if proj_cols and "workspace_name" not in proj_cols:
         conn.execute("ALTER TABLE project ADD COLUMN workspace_name TEXT")
     if proj_cols:
+        conn.execute(
+            "UPDATE project SET workspace_scope=LOWER(TRIM(workspace_scope)) "
+            "WHERE workspace_scope IS NOT NULL "
+            "AND LOWER(TRIM(workspace_scope)) IN ('team','personal','unknown') "
+            "AND workspace_scope<>LOWER(TRIM(workspace_scope))"
+        )
+        conn.execute(
+            "UPDATE project SET workspace_id=TRIM(workspace_id) "
+            "WHERE workspace_scope='team' AND workspace_id IS NOT NULL "
+            "AND workspace_id<>TRIM(workspace_id)"
+        )
         conn.execute(
             "UPDATE project SET workspace_scope='unknown', workspace_id=NULL, workspace_name=NULL "
             "WHERE workspace_scope IS NULL OR workspace_scope NOT IN ('team','personal','unknown') "
@@ -398,6 +495,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             ("canvas_attempt_id", "TEXT"),
             ("canvas_scene_id", "TEXT"),
             ("canvas_card_id", "TEXT"),
+            ("idempotency_key", "TEXT"),
+            ("submission_fingerprint", "TEXT"),
+            ("submission_started_at", "TEXT"),
+            ("recovery_probe_status", "TEXT"),
+            ("recovery_probe_at", "TEXT"),
+            ("recovery_probe_matches", "INTEGER NOT NULL DEFAULT 0"),
+            ("recovery_probe_job_id", "TEXT"),
         ):
             if name not in gr_cols:
                 conn.execute(f"ALTER TABLE gen_request ADD COLUMN {name} {ddl}")
@@ -429,6 +533,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_canvas_attempt "
             "ON gen_request(account_email, canvas_attempt_id) "
+            "WHERE canvas_attempt_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_genrequest_idempotency "
+            "ON gen_request(account_email, idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL"
+        )
+
+    # 검증 실패 결과 표식은 개인 로컬 메타라 generation 본체에 넣지 않는다. 그래야 선택 공유
+    # 번들이 이 내부 표식을 팀 서버 데이터로 직렬화할 여지가 없다.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS generation_local_flag ("
+        "generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE, "
+        "invalid_input_result INTEGER NOT NULL DEFAULT 0)"
+    )
+    scene_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scene_card_generation)")
+    }
+    if scene_cols and "canvas_attempt_id" not in scene_cols:
+        conn.execute("ALTER TABLE scene_card_generation ADD COLUMN canvas_attempt_id TEXT")
+        scene_cols.add("canvas_attempt_id")
+    if "canvas_attempt_id" in scene_cols:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_card_gen_attempt "
+            "ON scene_card_generation(owner_uid, canvas_attempt_id) "
             "WHERE canvas_attempt_id IS NOT NULL"
         )
 

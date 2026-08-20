@@ -7,6 +7,7 @@ DB row(sqlite3.Row) → 응답 모델 변환은 라우터의 직렬화 헬퍼에
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -100,7 +101,7 @@ class GenerationOut(BaseModel):
     source_name: Optional[str] = None  # @이름
     comment: Optional[str] = None  # 카드 코멘트(메모, 레거시 — UI 미사용)
     error: Optional[str] = None  # 실패 사유(status=failed 일 때)
-    execution_phase: Optional[str] = None  # pending|submitting|tracking|verifying|blocked|done|failed
+    execution_phase: Optional[str] = None  # preparing|pending|claimed|submitting|tracking|verifying|blocked|recovery_required|done|failed
     provider_status: Optional[str] = None  # Higgsfield 원시 상태(진단용)
     last_checked_at: Optional[str] = None
     next_check_at: Optional[str] = None
@@ -108,6 +109,7 @@ class GenerationOut(BaseModel):
     comment_count: int = 0  # 공유 코멘트 스레드 글 수
     has_unread: bool = False  # 미확인 코멘트 존재(뷰어 기준 — C 뱃지)
     local_only: bool = False  # 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)
+    invalid_input_result: bool = False  # 개인 로컬 표식: 입력 검증 실패지만 이미 생성된 유료 결과
     creator_uid: Optional[str] = None  # 생성자 식별자(팀 워크스페이스)
     creator_name: Optional[str] = None  # 사용자 지정 이름(uid→이름)
     is_mine: bool = True  # 내 생성물인가(아니면 팀원)
@@ -121,6 +123,14 @@ class GenerationOut(BaseModel):
     is_final: bool = False  # v02 CMS: Supervisor 가 지정한 최종(골드)
     final_by: Optional[str] = None  # 최종 지정자 creator_uid
     job_id: Optional[str] = None  # 힉스필드 잡 앵커 — 팀 카드(서버 UUID)↔로컬 행 매핑·확인(ack) 키(단건·목록 모두 채움)
+    media_preservation_reason: Optional[str] = None  # shared|final|manual|admin
+    media_preservation_status: str = "none"  # none|pending|running|complete|partial|failed|capacity
+    media_preservation_attempts: int = 0
+    media_preservation_cached: int = 0
+    media_preservation_failed: int = 0
+    media_preservation_error: Optional[str] = None  # 안전한 분류값(URL·예외 원문 아님)
+    media_preservation_next_retry_at: Optional[str] = None
+    media_preservation_updated_at: Optional[str] = None
 
 
 class HistoryOut(BaseModel):
@@ -241,6 +251,12 @@ class CanvasManualClaimIn(BaseModel):
 
 
 # ── 로컬 실행 생성요청(gen-request) — 버튼은 요청만, 실행은 각자 로컬 에이전트 ──────
+class GenerationDeploymentPauseIn(BaseModel):
+    """혼합 배포 창 동안 생성 접수·claim을 멈추는 관리자 스위치."""
+
+    paused: bool
+
+
 class GenRequestIn(BaseModel):
     """허브의 생성/재생성 버튼이 서버에 남기는 '로컬 실행 요청'. 서버는 placeholder 카드만
     즉시 만들고, 요청자의 PC 에이전트가 가져가 자기 로컬 CLI 로 실행한다."""
@@ -251,6 +267,17 @@ class GenRequestIn(BaseModel):
     source_gen_id: Optional[str] = None  # kind=regenerate 일 때 원본
     regenerate: Optional[RegenerateIn] = None  # kind=regenerate 옵션(프롬프트/모델/색 덮어쓰기)
     canvas_link: Optional[CanvasGenerationLinkIn] = None  # 캔버스 재시작 복구용(로컬 전용)
+    idempotency_key: Optional[str] = None  # 일반 제출 1회 의도 UUID(캔버스는 attempt_id 사용)
+
+    @field_validator("idempotency_key", mode="before")
+    @classmethod
+    def normalize_idempotency_key(cls, value):
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("idempotency_key는 UUID여야 합니다") from exc
 
 
 class PendingRequestOut(BaseModel):
@@ -264,6 +291,31 @@ class PendingRequestOut(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     references: list[dict[str, Any]] = Field(default_factory=list)  # [{file_path(url), type, role}]
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
+    claim_phase: Optional[str] = None  # 신 서버 claimed, 구 서버 응답에는 없음(혼합 배포 호환)
+
+
+class SubmissionFingerprintIn(BaseModel):
+    """실제 create 직전 명령의 비교 가능한 지문. 프롬프트 원문 대신 sha256만 저장한다."""
+
+    version: int = 1
+    model: str = Field(min_length=1, max_length=200)
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    params: dict[str, Any] = Field(default_factory=dict)
+    reference_roles: list[str] = Field(default_factory=list, max_length=32)
+
+
+class RecoveryProbeResultIn(BaseModel):
+    """에이전트의 읽기 전용 최신 목록 조사 결과."""
+
+    outcome: str = Field(pattern="^(unique|multiple|no_match)$")
+    candidate_count: int = Field(ge=0, le=100)
+    job_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class RecoveryDecisionIn(BaseModel):
+    """외부 Higgsfield 기록에서 미제출을 직접 확인한 뒤에만 재큐잉하는 명시적 승인."""
+
+    confirmed_not_submitted: bool = False
 
 
 class FulfillIn(BaseModel):
@@ -384,6 +436,7 @@ class IngestIn(BaseModel):
     workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
     account_status: Optional[dict] = None  # {email, credits, plan, workspaces} — 크레딧 집계용
     account_transactions: Optional[list] = None  # PM: account transactions 원본(실제 차감액 매칭용). 선택.
+    list_fetched: Optional[int] = None  # 차집합 전 generate list 원본 수 — 100-window gap 판정용
 
     @field_validator("workspace", mode="before")
     @classmethod
@@ -410,6 +463,20 @@ class IngestMcpIn(BaseModel):
         from .workspace_context import normalize_workspace_context
 
         return normalize_workspace_context(v)
+
+
+class AccountReportIn(BaseModel):
+    """작업자 로컬 outbox가 공유 서버에 재시도하는 계정·거래 보고."""
+
+    account_status: dict
+    account_transactions: list[dict] = Field(default_factory=list)
+    creator_uid: Optional[str] = None
+
+
+class AccountReportOut(BaseModel):
+    accepted: bool = True
+    transactions_inserted: int = 0
+    transactions_matched: int = 0
 
 
 class IngestOut(BaseModel):

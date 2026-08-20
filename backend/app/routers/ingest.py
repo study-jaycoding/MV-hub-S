@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import hmac
+import logging
 from collections import Counter
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -29,11 +31,12 @@ from ..config import (
 )
 from ..emailnorm import norm_email
 from ..deps import account_scope_uid, require_agent_account
-from ..models import IngestIn, IngestMcpIn, IngestOut
-from ..services import cli_bridge
+from ..models import AccountReportIn, AccountReportOut, IngestIn, IngestMcpIn, IngestOut
+from ..services import cli_bridge, history_autofill, syncer
 from ..services import auth as auth_service
 from ..services import local_agent_pair
-from ._telemetry import drain_telemetry
+from ..services.operational_logging import log_event
+from ._telemetry import schedule_telemetry_drain
 from ..services.agent_signals import agent_signals
 from ..services.mcp_ingest import mcp_item_to_cli
 from ..services.request_guards import is_loopback_request
@@ -42,6 +45,12 @@ from ..services.request_guards import is_loopback_request
 _AGENT_PATH = BACKEND_DIR.parent / "agent_push.py"
 
 router = APIRouter(prefix="/api", tags=["ingest"])
+_logger = logging.getLogger("mvhub.account_reports")
+
+# 과거 이력 자동 보충 오케스트레이션은 services/history_autofill 로 이동 —
+# syncer(서비스)가 gap 자동 실행을 부르는데 services→routers 역방향은 계층 위반이었다.
+# 라우트가 쓰는 이름은 여기 모듈 전역으로 바인딩해 둔다(테스트 패치 지점 유지).
+schedule_history_auto_start = history_autofill.schedule_history_auto_start
 
 
 class LocalAgentPairIn(BaseModel):
@@ -82,6 +91,25 @@ def _acc(request: Request) -> dict:
 def _agent_acc(request: Request) -> dict:
     """에이전트·계정상태용 신원. 공용 require_agent_account 로 단일화(신원 규칙 분산 방지)."""
     return require_agent_account(request)
+
+
+def _mcp_backfill_jobs(
+    items: list[dict[str, Any]], fallback_workspace: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """MCP 잡별 workspace를 보존하고 메타가 없는 잡에만 요청 컨텍스트를 채운다."""
+    jobs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        job = mcp_item_to_cli(item)
+        has_job_workspace = job.get("workspace") is not None or any(
+            job.get(key) is not None
+            for key in ("workspace_scope", "workspace_id", "workspace_name")
+        )
+        if not has_job_workspace:
+            job["workspace"] = dict(fallback_workspace)
+        jobs.append(job)
+    return jobs
 
 
 def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> IngestOut:
@@ -189,10 +217,17 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
     # 나머지는 반영되고, 실패분은 skipped 와 구분해 errors 로 응답(코덱스: 계약 명시).
     errors = 0
     if staged:
-        if workspace is None:
-            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID)
-        else:
-            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID, workspace=workspace)
+        # 계정의 실제 user_* uid와 다른 incoming creator를 같은 사람으로 추측하지 않는다.
+        # 최초 연결 전 합성 acct: uid만, 위에서 이메일이 검증된 계정의 전환 별칭으로 허용한다.
+        adopt_owner_uid = (
+            str(cur_uid) if cur_uid and str(cur_uid).startswith("acct:") else None
+        )
+        sync_kwargs = {}
+        if workspace is not None:
+            sync_kwargs["workspace"] = workspace
+        if adopt_owner_uid is not None:
+            sync_kwargs["adopt_owner_uid"] = adopt_owner_uid
+        bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID, **sync_kwargs)
         for k in ("inserted", "updated", "unchanged"):
             counts[k] += bcounts.get(k, 0)
         errors = bcounts.get("errors", 0)
@@ -221,7 +256,7 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
         repo.record_account_status(acc["email"], account_status)
 
     # 팀 매니징: 적재된 내 생성물을 텔레메트리 outbox 에 dirty 표시(메타만, best-effort).
-    # 실제 서버 전송은 ingest 엔드포인트가 공용 drain_telemetry로 처리한다.
+    # 실제 서버 전송은 ingest 엔드포인트가 공용 백그라운드 drain으로 처리한다.
     if MANAGE_ENABLED and seen_job_ids:
         try:
             from ..repo import manage as _m
@@ -254,6 +289,16 @@ def ingest(body: IngestIn, request: Request):
         body.account_status,
         workspace=body.workspace.model_dump(),
     )
+    # 에이전트는 최신 목록의 차집합만 보내므로 len(body.jobs)가 아니라 차집합 전 원본 수로
+    # 100-window 포화를 판정한다. 옛 에이전트는 필드가 없어 전량 100건을 보낼 때만 감지된다.
+    fetched = body.list_fetched if body.list_fetched is not None else len(body.jobs)
+    if fetched >= 100 and out.inserted >= syncer.SYNC_WATERMARK:
+        gap_email = norm_email((body.account_status or {}).get("email"))
+        if not gap_email and norm_email(acc.get("email")) != "local":
+            gap_email = norm_email(acc.get("email"))
+        if gap_email:
+            repo.mark_history_gap(gap_email)
+            schedule_history_auto_start(gap_email)
     # PM: 실제 차감액 수집·매칭(분리형). 플래그 게이트 + best-effort — 실패해도 적재엔 무영향.
     # 거래는 out.linked_uid(이 계정의 힉스필드 uid) 소유로 적재하고, 같은 소유자 생성물과 시각 매칭.
     if MANAGE_ENABLED and body.account_transactions:
@@ -263,28 +308,80 @@ def ingest(body: IngestIn, request: Request):
             _m.record_transactions(out.linked_uid, acc.get("email"), body.account_transactions)
         except Exception:  # noqa: BLE001 — 메트릭 수집 실패가 적재를 막지 않게
             pass
+    report_queued = False
     if _proxy.proxying() and (body.account_status or body.account_transactions):
-        try:
-            _proxy.proxy_json(
-                "POST",
-                "/api/ingest",
-                body={
-                    "jobs": [],
-                    "account_status": body.account_status,
-                    "account_transactions": body.account_transactions,
-                    "creator_uid": body.creator_uid,
-                    "workspace": body.workspace.model_dump(),
-                },
-            )
-        except Exception:  # noqa: BLE001 — 크레딧 보고 실패는 로컬 적재를 막지 않음
-            pass
-    # 팀 매니징: dirty 텔레메트리를 서버로 flush(신규 적재분 + 이전 실패분 재시도). best-effort.
-    if MANAGE_ENABLED:
-        try:
-            drain_telemetry()
-        except Exception:  # noqa: BLE001
-            pass
+        if MANAGE_ENABLED:
+            try:
+                from ..repo import manage as _m
+
+                queued = _m.queue_account_reports(
+                    body.account_status, body.account_transactions
+                )
+                report_queued = bool(queued["status"] or queued["transactions"])
+            except Exception as exc:  # noqa: BLE001 — 로컬 생성 적재는 보존하되 로그로 노출
+                log_event(
+                    _logger,
+                    "account_report_queue_failed",
+                    level=logging.ERROR,
+                    error_type=type(exc).__name__,
+                )
+        else:
+            # 명시적으로 PM 기능을 끈 설치본은 사이드카 큐 테이블을 만들지 않는 기존 계약을
+            # 유지한다. 기본 운영값은 on이며, 이 호환 경로는 예전과 같은 best-effort다.
+            try:
+                _proxy.proxy_json(
+                    "POST",
+                    "/api/ingest",
+                    body={
+                        "jobs": [],
+                        "account_status": body.account_status,
+                        "account_transactions": body.account_transactions,
+                        "creator_uid": body.creator_uid,
+                        "workspace": body.workspace.model_dump(),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 기능 off의 레거시 호환 경로
+                pass
+    # 팀 매니징: 응답을 네트워크에 묶지 않고 dirty 텔레메트리 전송을 예약한다. 동시 요청은
+    # 단일 drain으로 합쳐지며 신규 적재분과 이전 실패분을 함께 재시도한다.
+    if MANAGE_ENABLED or report_queued:
+        schedule_telemetry_drain()
     return out
+
+
+@router.post("/ingest/account-report", response_model=AccountReportOut)
+def ingest_account_report(body: AccountReportIn, request: Request):
+    """로컬 outbox 보고의 공유 서버 전용 수신점.
+
+    상태와 거래를 모두 DB에 반영한 뒤에만 ``accepted=true``를 반환한다. 중간 실패를 삼키지
+    않으므로 클라이언트는 응답이 없거나 비정상이면 같은 revision을 안전하게 재시도할 수 있다.
+    """
+    if not MANAGE_ENABLED:
+        raise HTTPException(status_code=503, detail="관리 텔레메트리가 비활성입니다")
+    acc = _agent_acc(request)
+    out = _ingest_core(
+        acc,
+        [],
+        body.creator_uid,
+        body.account_status,
+    )
+    if body.account_transactions and not out.linked_uid:
+        raise HTTPException(
+            status_code=409,
+            detail="크레딧 거래를 연결할 Higgsfield 계정 식별자가 없습니다",
+        )
+    from ..repo import manage as _m
+
+    result = _m.record_transactions(
+        out.linked_uid,
+        acc.get("email"),
+        body.account_transactions,
+    )
+    return AccountReportOut(
+        accepted=True,
+        transactions_inserted=int(result.get("inserted") or 0),
+        transactions_matched=int(result.get("matched") or 0),
+    )
 
 
 @router.post("/ingest/mcp", response_model=IngestOut)
@@ -292,23 +389,56 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     """과거 전체 백필 — MCP `show_generations` 원시 아이템(100개 밖)을 내 로컬 DB 에 적재. 멱등.
     흐름: Claude 가 그 사용자 세션으로 show_generations 를 next_cursor 끝까지 순회하며 각 페이지를
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
-    jobs = [mcp_item_to_cli(it) for it in body.items if isinstance(it, dict)]
+    jobs = _mcp_backfill_jobs(body.items, body.workspace.model_dump())
     out = _ingest_core(
         _agent_acc(request),
         jobs,
         None,
         body.account_status,
-        workspace=body.workspace.model_dump(),
     )
     # 팀 매니징: 백필도 일반 ingest 와 동일하게 dirty 텔레메트리를 flush 한다. MCP 백필은 페이지를
     # 여러 번 POST 하고 '마지막 페이지' 신호가 없어, 매 페이지 drain 해야 백필만 한 사용자도 대시보드가
-    # 밀리지 않는다. drain 은 프록시 없으면 no-op, 실패분은 큐에 남아 재시도. best-effort.
+    # 밀리지 않는다. 예약은 즉시 반환하고, 실패분은 큐에 남아 재시도한다.
     if MANAGE_ENABLED:
-        try:
-            drain_telemetry()
-        except Exception:  # noqa: BLE001
-            pass
+        schedule_telemetry_drain()
     return out
+
+
+# 라우트가 쓰는 오케스트레이션 심볼 — 본체는 services/history_autofill (계층 규칙).
+history_autofill.bind_ingest_hooks(_ingest_core, schedule_telemetry_drain)
+
+
+def _history_route_key(acc: dict) -> str:
+    key = history_autofill._history_key()
+    if key == "local":
+        key = norm_email(acc.get("email")) or key
+    return key
+
+
+@router.post("/ingest/history/start")
+async def start_history_import(request: Request):
+    """로컬 CLI 계정의 일반 생성 이력을 MCP cursor 끝까지 가져오는 한 번 클릭 작업."""
+    if history_autofill._history_server_forbidden():
+        raise HTTPException(
+            status_code=409,
+            detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
+        )
+    acc = _agent_acc(request)
+    key = _history_route_key(acc)
+    history_autofill._start_history_task(key, dict(acc), automatic=False)
+    return history_autofill._history_snapshot(key)
+
+
+@router.get("/ingest/history/status")
+async def history_import_status(request: Request):
+    """현재 로컬 계정의 과거 이력 가져오기 진행 상태."""
+    if history_autofill._history_server_forbidden():
+        raise HTTPException(
+            status_code=409,
+            detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
+        )
+    acc = _agent_acc(request)
+    return history_autofill._history_snapshot(_history_route_key(acc))
 
 
 @router.get("/credits")

@@ -16,7 +16,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from . import _proxy
+from . import _proxy, _telemetry
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
@@ -39,8 +39,9 @@ from ..models import (
     TagsIn,
 )
 from ..services import cli_bridge, syncer
+from ..services.media_preservation import preserve_generation_now
 from ..services.telemetry_drain import drain_isolated_telemetry
-from ..usecases import generation_media_cache, generation_personal_meta, hf_missing
+from ..usecases import generation_personal_meta, hf_missing
 
 logger = logging.getLogger(__name__)
 
@@ -158,20 +159,50 @@ def _workspace_account_email(request: Request) -> str | None:
     return None
 
 
-def _resolve_workspace_target(name: str, request: Request) -> dict[str, str]:
-    """로컬 프록시는 로그인된 본 서버의 목록을, 그 외에는 현재 DB 등록부를 사용한다."""
+def _resolve_workspace_target(
+    request: Request,
+    *,
+    workspace_id: str | None = None,
+    workspace_name: str | None = None,
+) -> dict[str, str]:
+    """UUID를 우선 사용해 현재 계정이 접근 가능한 실제 워크스페이스를 확인한다.
+
+    이름만 보내는 구버전 화면은 계속 지원하되, 동명 워크스페이스를 안전하게 구분할 수 있는
+    새 화면의 UUID를 절대 다시 이름 검색으로 약화하지 않는다.
+    """
+    cleaned_id = str(workspace_id or "").strip()
+    cleaned_name = str(workspace_name or "").strip()
+    if not cleaned_id and not cleaned_name:
+        raise HTTPException(status_code=422, detail="워크스페이스를 선택하세요")
     if _proxy.proxying():
+        if cleaned_id:
+            query = f"workspace_id={quote(cleaned_id, safe='')}"
+            # 구서버는 workspace_id 쿼리를 무시하고 name 필수 계약만 검사한다. 표시명도 함께
+            # 보내면 고유 이름은 롤링 업데이트 중에도 동작하고, 중복 이름은 안전하게 거절된다.
+            if cleaned_name:
+                query += f"&name={quote(cleaned_name, safe='')}"
+        else:
+            query = f"name={quote(cleaned_name, safe='')}"
         result = _proxy.proxy_json(
-            "GET", f"/api/workspaces/resolve?name={quote(name, safe='')}", timeout=15
+            "GET", f"/api/workspaces/resolve?{query}", timeout=15
         )
         if not isinstance(result, dict) or not result.get("id") or not result.get("name"):
             raise HTTPException(status_code=502, detail="서버의 워크스페이스 확인 응답이 올바르지 않습니다")
-        return {"id": str(result["id"]), "name": str(result["name"])}
+        resolved_id = str(result["id"])
+        if cleaned_id and resolved_id != cleaned_id:
+            # 롤링 업데이트 중인 구서버는 workspace_id 쿼리를 무시하고 같은 표시명만
+            # 해석할 수 있다. 이때 다른 UUID가 돌아오면 선택하지 않은 공간으로 배정하지
+            # 말고 서버 업데이트를 요구하는 쪽이 안전하다.
+            raise HTTPException(
+                status_code=409,
+                detail="선택한 워크스페이스와 서버의 확인 결과가 다릅니다. 서버를 먼저 업데이트하세요",
+            )
+        return {"id": resolved_id, "name": str(result["name"])}
     try:
-        return repo.resolve_workspace_name(
-            name,
-            account_email=_workspace_account_email(request),
-        )
+        account_email = _workspace_account_email(request)
+        if cleaned_id:
+            return repo.resolve_workspace_id(cleaned_id, account_email=account_email)
+        return repo.resolve_workspace_name(cleaned_name, account_email=account_email)
     except repo.WorkspaceNameNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except repo.WorkspaceNameAmbiguous as exc:
@@ -204,10 +235,15 @@ def available_workspaces(request: Request):
 @router.get("/workspaces/resolve")
 def resolve_workspace_by_name(
     request: Request,
-    name: str = Query(..., min_length=1, max_length=200),
+    name: str | None = Query(default=None, min_length=1, max_length=200),
+    workspace_id: str | None = Query(default=None, min_length=1, max_length=200),
 ):
-    """입력한 표시명이 현재 계정이 접근 가능한 실제 팀 워크스페이스인지 확인한다."""
-    return _resolve_workspace_target(name, request)
+    """UUID(우선) 또는 구버전 표시명이 현재 계정에서 사용 가능한지 확인한다."""
+    return _resolve_workspace_target(
+        request,
+        workspace_id=workspace_id,
+        workspace_name=name,
+    )
 
 
 class WorkspaceSelectIn(BaseModel):
@@ -224,6 +260,8 @@ async def select_workspace(body: WorkspaceSelectIn, request: Request):
         raise HTTPException(status_code=502, detail=f"워크스페이스 전환 실패: {e}")
     workspaces = await _verify_workspace(body.workspace_id)  # 반영 확인(불일치면 502)
     counts = await syncer.sync_now()  # 새 컨텍스트의 잡을 즉시 반영
+    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
+        _telemetry.schedule_telemetry_drain()
     return {"workspaces": workspaces, "sync": counts}
 
 
@@ -237,6 +275,8 @@ async def unselect_workspace(request: Request):
         raise HTTPException(status_code=502, detail=f"워크스페이스 해제 실패: {e}")
     workspaces = await _verify_workspace(None)
     counts = await syncer.sync_now()
+    if counts.get("telemetry_pending") or counts.get("telemetry_dirty"):
+        _telemetry.schedule_telemetry_drain()
     return {"workspaces": workspaces, "sync": counts}
 
 
@@ -436,7 +476,8 @@ class GenerationTagsBatchIn(BaseModel):
 class GenerationWorkspaceBatchIn(BaseModel):
     generation_ids: list[str] = Field(min_length=1, max_length=500)
     operation: str = Field(pattern="^(assign|remove)$")
-    workspace_name: str = Field(min_length=1, max_length=200)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=200)
+    workspace_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 def _workspace_assignment_error(exc: repo.WorkspaceAssignmentError) -> HTTPException:
@@ -449,12 +490,16 @@ def _workspace_assignment_error(exc: repo.WorkspaceAssignmentError) -> HTTPExcep
 
 @router.put("/generations/workspace/batch")
 def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Request):
-    """선택한 내 카드의 현재 워크스페이스 귀속을 이름 명령으로 일괄 변경한다.
+    """선택한 내 카드의 현재 워크스페이스 귀속을 일괄 변경한다.
 
     일반/전역 태그 테이블은 건드리지 않는다. 공유본은 팀 서버를 먼저 갱신하고, 실패하면
     로컬 변경을 시작하지 않아 양쪽에 서로 다른 귀속이 남는 경우를 최소화한다.
     """
-    workspace = _resolve_workspace_target(body.workspace_name, request)
+    workspace = _resolve_workspace_target(
+        request,
+        workspace_id=body.workspace_id,
+        workspace_name=body.workspace_name,
+    )
     owner_uid = _my_uid(request)
     if _proxy.proxying() and not owner_uid:
         raise HTTPException(
@@ -487,6 +532,7 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
                 body={
                     "generation_ids": shared_server_ids,
                     "operation": body.operation,
+                    "workspace_id": workspace["id"],
                     "workspace_name": workspace["name"],
                 },
                 timeout=30,
@@ -815,7 +861,8 @@ class GenCommentAddIn(BaseModel):
     text: str
     author: str | None = None
     parent_id: str | None = None
-    muted: bool = False  # 작성 시점 '내 알림 끄기' 상태(코멘트별 캡처)
+    muted: bool = False  # [구] '내 알림 끄기' — private 로 대체, 구클라 호환용으로만 받는다
+    private: bool = False  # 비공개 — 내 로컬 DB 에만 저장, 서버로 절대 안 보냄
 
 
 class GenCommentEditIn(BaseModel):
@@ -834,7 +881,7 @@ def _comments_on_server(gen: dict | None) -> bool:
 
 
 class CommentCountsIn(BaseModel):
-    gen_ids: list[str] = []
+    gen_ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 @router.post("/generations/comment-counts")
@@ -844,12 +891,24 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
     if _proxy.proxying():
         # 로컬 id ↔ 서버 id(job_id) 변환: 요청은 서버 id 로 보내고 응답 키를 로컬 id 로 되돌린다
         # (로컬 카드 id 로 그대로 위임하면 서버가 못 찾아 공유본 C 뱃지가 0 으로 떴다).
-        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in (body.gen_ids or [])}
-        local_of = {sid: gid for gid, sid in srv_of.items()}
+        requested = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
+        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in requested}
         resp = _proxy.proxy_json(
             "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
         )
-        return {local_of.get(k, k): v for k, v in (resp or {}).items()}
+        remote = resp if isinstance(resp, dict) else {}
+        # 한계: 요청 id 가 서버 UUID(팀 탭)이고 비공개가 로컬 id 앵커로 저장된 경우, 여기선
+        # 배치 규모(≤500) 때문에 서버 재조회 없이 로컬 해석만 하므로 그 조합의 뱃지 수가
+        # 빠질 수 있다(스레드 자체는 add/list 의 되찾기 앵커로 항상 온전).
+        private = repo.private_generation_comment_counts(requested, actor_id(request))
+        merged: dict[str, dict[str, Any]] = {}
+        for gid, sid in srv_of.items():
+            value = remote.get(sid)
+            slot = value.copy() if isinstance(value, dict) else {}
+            slot["comment_count"] = int(slot.get("comment_count") or 0) + private.get(gid, 0)
+            slot["has_unread"] = bool(slot.get("has_unread"))
+            merged[gid] = slot
+        return merged
     viewer_uid, read_all = _viewer_scope(request)
     member = repo.my_member_projects(viewer_uid) if (viewer_uid and not read_all) else []
     return repo.generation_comment_counts(
@@ -859,11 +918,19 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
 
 @router.get("/generations/{gen_id}/comments")
 def list_gen_comments(gen_id: str, request: Request):
-    """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신)."""
+    """생성본 코멘트 스레드(작성자·시각 포함, 오래된→최신). 공유 스레드에 내 비공개(로컬)를 합친다."""
     gen = repo.get_generation(gen_id)
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)  # 공유본은 서버가 job_id 로 안다
-        return _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
+        shared = _proxy.proxy_get(f"/api/generations/{server_id}/comments", request)
+        # 비공개는 서버에 없다 — 작성과 같은 앵커 규칙(로컬 행 되찾기 포함)으로 합쳐야
+        # 팀 탭(서버 UUID)에서 연 스레드에도 내 비공개가 보인다(합의 BE-P1-4).
+        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+        anchor = r_local_id or r_server_id
+        mine = repo.list_private_generation_comments(anchor, actor_id(request))
+        merged = ([*shared, *mine] if isinstance(shared, list) else mine)
+        merged.sort(key=lambda c: (str(c.get("created_at") or ""), str(c.get("id") or "")))
+        return merged
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 비공개 남의 코멘트 열람 차단(공유/본인만)
@@ -873,6 +940,27 @@ def list_gen_comments(gen_id: str, request: Request):
 @router.post("/generations/{gen_id}/comments")
 def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
     gen = repo.get_generation(gen_id)
+    # ★비공개는 프록시를 타지 않는다 — 공유 생성물에 단 것이어도 내 로컬 DB 에만 남는다.
+    #  앵커는 목록과 같은 규칙(로컬 행 있으면 로컬 id) — 어디서 열어도 같은 스레드에 보이게.
+    if body.private:
+        # 공유 팀 서버 본체는 비공개 저장을 거절한다 — 브라우저가 서버에 직결된 배포에서
+        # private=true 가 중앙 DB 에 남으면 '비공개=내 로컬에만' 불변식이 깨진다(적대 리뷰 P1).
+        if _proxy.is_shared_team_server():
+            raise HTTPException(
+                status_code=400, detail="비공개 코멘트는 로컬 허브에서만 저장할 수 있습니다"
+            )
+        # 앵커 해석(합의 BE-P1-4) — 팀 탭 카드(서버 UUID)는 서버에서 job_id 를 되찾아
+        # 내 로컬 행(L)으로 정규화한다. 서버 UUID 그대로 저장하면 같은 생성물을 내 작업
+        # 탭(L)으로 열 때 스레드가 갈라져 비공개 메모가 사라져 보인다.
+        _, r_local_id, r_server_id = _resolve_local_or_reclaim(gen_id, request)
+        anchor = r_local_id or r_server_id
+        text = (body.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="빈 코멘트")
+        cid = repo.add_generation_comment(
+            anchor, actor_id(request), text, body.parent_id, body.muted, is_private=True
+        )
+        return {"id": cid}
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)
         return _proxy.proxy_json(
@@ -898,6 +986,9 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
 def _comment_local(comment_id: str) -> bool:
     if not _proxy.proxying():
         return True
+    # 비공개는 공유 생성물에 달렸어도 로컬이 정답(서버에 애초에 없다) — shared 판정보다 먼저.
+    if repo.generation_comment_is_private(comment_id) is True:
+        return True
     return repo.comment_gen_shared(comment_id) is False
 
 
@@ -921,6 +1012,13 @@ def edit_gen_comment(comment_id: str, body: GenCommentEditIn, request: Request):
 
 @router.delete("/generation-comments/{comment_id}")
 def delete_gen_comment(comment_id: str, request: Request):
+    # 로컬 비공개 답글이 달린 부모는 지우지 못한다(검증 P2) — 부모만 서버에서 사라지면
+    # 비공개 답글이 부모 없는 고아로 남는다. 프론트 잠금은 조언일 뿐이라 여기서 강제한다.
+    if repo.generation_comment_has_private_children(comment_id):
+        raise HTTPException(
+            status_code=409,
+            detail="비공개 답글이 달려 있어 삭제할 수 없습니다 — 비공개 답글을 먼저 지우세요",
+        )
     if not _comment_local(comment_id):
         return _proxy.proxy_json("DELETE", f"/api/generation-comments/{comment_id}")
     try:
@@ -960,7 +1058,10 @@ async def cache_one(gen_id: str, request: Request):
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     require_view_generation(request, gen)  # 남의 비공개 프롬프트·params·에셋 URL 열람 차단(공유/본인만)
-    res = await generation_media_cache.cache_generation_media(gen)
+    repo.request_media_preservation(gen_id, "manual", force=True)
+    res = await preserve_generation_now(gen_id)
+    if res is None:
+        res = {"status": (repo.get_media_preservation(gen_id) or {}).get("status", "running")}
     res["generation"] = repo.get_generation(gen_id)
     return res
 
@@ -971,4 +1072,11 @@ async def cache_all(request: Request):
     from ..deps import require_admin
 
     require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
-    return await generation_media_cache.cache_all_generation_media()
+    queued = 0
+    for gen_id in repo.all_generation_ids():
+        generation = repo.get_generation(gen_id)
+        if not generation or generation.get("status") != "done":
+            continue
+        if repo.request_media_preservation(gen_id, "admin", force=True):
+            queued += 1
+    return {"queued": queued, "message": "용량 한도 안에서 백그라운드 보존을 시작했습니다"}

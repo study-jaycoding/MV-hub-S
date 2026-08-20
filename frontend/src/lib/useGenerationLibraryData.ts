@@ -21,6 +21,7 @@ export function useGenerationLibraryData({
   const [gens, setGens] = useState<Generation[]>([]);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -114,7 +115,10 @@ export function useGenerationLibraryData({
         if (pr || f) finishSync(true);
         return;
       }
-      if (!silent) setLoading(true);
+      if (!silent) {
+        setLoading(true);
+        setLoadError(null); // 탭·필터가 바뀐 새 로드에 이전 화면의 실패가 잠깐 비치지 않게
+      }
       const seq = ++reloadSeqRef.current;
       const query = genQueryRef.current;
       const trashMode = !!filtersRef.current.deleted_only;
@@ -129,12 +133,17 @@ export function useGenerationLibraryData({
         if (seq !== reloadSeqRef.current) return;
         setGens((prev) => reconcileArrayState(prev, g));
         setHasMore(g.length >= GEN_PAGE);
+        setLoadError(null);
         lastLoadedTabRef.current = tab;
         tabCacheRef.current[tab] = { gens: g, hasMore: g.length >= GEN_PAGE, sig };
         // 이 목록 요청을 시작하기 전에 성공한 내 변경 id들은 이제 화면 데이터에 포함됐다.
         finishSync(true);
       } catch (e) {
-        if (seq === reloadSeqRef.current) flash("로드 실패: " + String(e));
+        if (seq === reloadSeqRef.current) {
+          flash("로드 실패: " + String(e));
+          // 화면에 남는 실패 상태 — 빈 그리드가 "항목 없음"으로 오인되지 않게(재시도 UI 근거).
+          setLoadError(String(e).replace(/^Error:\s*/, ""));
+        }
       } finally {
         if (!silent && seq === reloadSeqRef.current) setLoading(false);
       }
@@ -252,6 +261,7 @@ export function useGenerationLibraryData({
     gens,
     gensRef,
     hasMore,
+    loadError,
     loadMore,
     loading,
     loadingMore,

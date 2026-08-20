@@ -16,7 +16,6 @@ function task(): Task {
     elapsed: 999,
     comment_count: 9,
     creators: ["제이", "리버"],
-    assigned_creators: [],
     cuts: [
       {
         id: "jay-1",
@@ -73,22 +72,14 @@ describe("scopeTaskToCreator", () => {
     });
   });
 
-  it("생성물도 배정도 없는 다른 작업은 개인 목록에서 제외한다", () => {
+  it("만든 컷이 없는 다른 작업은 개인 목록에서 제외한다", () => {
     expect(scopeTaskToCreator(task(), "user-other")).toBeNull();
   });
 
-  it("배정만 된 작업은 0건인 예정 작업으로 유지한다", () => {
-    const source = task();
-    source.assigned_creators = [{ uid: "user-other", name: "오지짱" }];
-
-    expect(scopeTaskToCreator(source, "user-other")).toMatchObject({
-      gen_count: 0,
-      cuts: [],
-      credits: 0,
-      elapsed: 0,
-      comment_count: 0,
-      creators: [],
-    });
+  it("휴면 백엔드가 보내는 assigned_creators 는 무시한다 — 배정 개념 폐기 계약", () => {
+    // 백엔드 payload 는 여전히 이 필드를 실어올 수 있다(휴면 유지 결정). 프론트 계약은 "무시".
+    const source = { ...task(), assigned_creators: [{ uid: "user-other", name: "오지짱" }] } as Task;
+    expect(scopeTaskToCreator(source, "user-other")).toBeNull();
   });
 
   it("구버전 서버에서도 행 전체가 내 컷이면 기존 총 시간을 안전하게 이어 쓴다", () => {

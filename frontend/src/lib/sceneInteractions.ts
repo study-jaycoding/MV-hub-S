@@ -184,6 +184,20 @@ export function partitionSceneDropFiles<T extends { name: string }>(files: reado
   };
 }
 
+/**
+ * 떨어뜨린 파일에서 '각인 → 레시피 복원'을 시도할지 판단한다.
+ *
+ * 한 개만 놓았을 때만 시도한다 — 여러 개를 놓는 것은 "레퍼런스로 넣겠다"는 뜻이고, 그때 씬 탭이
+ * 여러 개 열리면 곤란하다. Shift 를 누른 채 놓으면 각인이 있어도 레퍼런스로 간다(우리 결과물을
+ * 다시 재료로 쓰는 경우).
+ */
+export function shouldRestoreRecipeFromDrop(
+  files: readonly unknown[],
+  options: { shiftKey?: boolean; hasHandler: boolean },
+): boolean {
+  return files.length === 1 && options.hasHandler && !options.shiftKey;
+}
+
 export function moveCardsFromOrigins(
   cards: SceneCard[],
   origins: Readonly<Record<string, { x: number; y: number }>>,
@@ -298,6 +312,26 @@ export function buildSelectedConnections(
   return additions;
 }
 
+// 붙여넣은 카드는 '설정만 복제' — 쌓인 결과는 딸려오지 않는다(Jay 결정 2026-08-18).
+//  결과 목록만 지우면 안 된다: 대표·진행표식·상태까지 같이 비워야 결과가 0개인데 "완료"로
+//  보이는 유령 카드가 안 생긴다. comfy 는 워크플로·파라미터는 남기고 실행 결과만 비운다
+//  (설정을 복사해 다시 돌리는 게 붙여넣기의 목적).
+function clearPastedResults(card: SceneCard): SceneCard {
+  if (card.kind === "comfy") {
+    const cfg = card.comfyCfg;
+    return {
+      ...card,
+      genId: null,
+      genIds: [],
+      pendingGenerationAttempts: [],
+      status: "empty",
+      comfyCfg: cfg ? { ...cfg, outputs: [], output: null, status: "idle", error: null } : cfg,
+    };
+  }
+  if (card.kind !== "generation") return card;
+  return { ...card, genId: null, genIds: [], pendingGenerationAttempts: [], status: "empty" };
+}
+
 export function copySceneSelection(
   cards: SceneCard[],
   edges: SceneEdge[],
@@ -315,12 +349,22 @@ export function copySceneSelection(
   };
 }
 
+// 붙여넣기 기준점 — 마우스가 캔버스 위에 있을 때 그 지점(캔버스 좌표)에 묶음 중심을 맞춘다.
+// 카드 크기(w/h)가 없는 카드는 기본 크기로 중심을 어림한다(레퍼런스는 자동 높이라 근사치).
+export interface ScenePastePoint {
+  x: number;
+  y: number;
+  cardWidth: number;
+  cardHeight: number;
+}
+
 export function pasteSceneClipboard(
   currentCards: SceneCard[],
   currentEdges: SceneEdge[],
   clipboard: SceneClipboard,
   makeId: () => string,
   grid = SCENE_GRID,
+  at?: ScenePastePoint,
 ): {
   cards: SceneCard[];
   edges: SceneEdge[];
@@ -328,15 +372,29 @@ export function pasteSceneClipboard(
   nextClipboard: SceneClipboard;
   shift: number;
 } {
+  // 기준점이 주어지면 복사한 묶음의 상대 배치는 유지한 채, 묶음 전체의 중심이 그 지점에
+  // 오도록 평행이동량(dx, dy)을 먼저 정한다. 없으면 기존처럼 원본 자리 기준(이동량 0).
+  let dx = 0;
+  let dy = 0;
+  if (at && clipboard.cards.length) {
+    const left = Math.min(...clipboard.cards.map((card) => card.x));
+    const top = Math.min(...clipboard.cards.map((card) => card.y));
+    const right = Math.max(...clipboard.cards.map((card) => card.x + (card.w ?? at.cardWidth)));
+    const bottom = Math.max(...clipboard.cards.map((card) => card.y + (card.h ?? at.cardHeight)));
+    dx = at.x - (left + right) / 2;
+    dy = at.y - (top + bottom) / 2;
+  }
+
   const baseOffset = grid * 2;
-  let shift = baseOffset;
-  for (let step = 1; step <= 20; step++) {
+  // 마우스 기준이면 정확히 그 지점(shift 0)부터 시도하고, 기존 카드와 겹칠 때만 어긋나게 민다.
+  let shift = at ? 0 : baseOffset;
+  for (let step = at ? 0 : 1; step <= 20; step++) {
     shift = baseOffset * step;
     const fullyOverlaps = clipboard.cards.some((copied) =>
       currentCards.some(
         (current) =>
-          Math.abs(copied.x + shift - current.x) < grid &&
-          Math.abs(copied.y + shift - current.y) < grid,
+          Math.abs(copied.x + dx + shift - current.x) < grid &&
+          Math.abs(copied.y + dy + shift - current.y) < grid,
       ),
     );
     if (!fullyOverlaps) break;
@@ -346,7 +404,7 @@ export function pasteSceneClipboard(
   const pastedCards = clipboard.cards.map((card) => {
     const id = makeId();
     idMap.set(card.id, id);
-    return { ...card, id, x: card.x + shift, y: card.y + shift };
+    return { ...card, id, x: card.x + dx + shift, y: card.y + dy + shift };
   });
   const remappedCards = pastedCards.map((card) => {
     let next = card;
@@ -354,7 +412,11 @@ export function pasteSceneClipboard(
       next = { ...next, channel: idMap.get(card.channel) };
     if (card.kind === "list" && card.listOrder)
       next = { ...next, listOrder: card.listOrder.map((id) => idMap.get(id) || id) };
-    return next;
+    // 렌더 노드의 '렌더 제외' 목록도 새 카드 번호로. 같이 복사한 생성카드는 새 번호를 받으므로
+    // 안 바꾸면 빼놨던 체크가 전부 풀린다. 이번 복사에 없던 번호는 원래 카드를 가리키므로 그대로.
+    if (card.kind === "render" && card.unchecked)
+      next = { ...next, unchecked: card.unchecked.map((id) => idMap.get(id) || id) };
+    return clearPastedResults(next);
   });
   const internalEdges = clipboard.edges.map((edge) => ({
     ...edge,

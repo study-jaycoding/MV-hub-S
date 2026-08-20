@@ -18,9 +18,20 @@ REM Optional overrides for admin testing.
 if not "%MVHUB_BASE_URL%"=="" set "BASE_URL=%MVHUB_BASE_URL%"
 if not "%MVHUB_TARGET_DIR%"=="" set "TARGET_DIR=%MVHUB_TARGET_DIR%"
 
+if not defined TEMP if defined TMP set "TEMP=%TMP%"
+if not defined TEMP if defined LOCALAPPDATA set "TEMP=%LOCALAPPDATA%\Temp"
+if not defined TEMP set "TEMP=%SystemRoot%\Temp"
+if not exist "%TEMP%\" mkdir "%TEMP%" >nul 2>nul
+if not exist "%TEMP%\" (
+  echo [ERROR] No writable temporary folder is available.
+  if not "%MVHUB_NO_PAUSE%"=="1" pause
+  exit /b 1
+)
 set "INSTALL_PS1=%TEMP%\mvhub-install-%RANDOM%-%RANDOM%.ps1"
+set "MVHUB_INSTALL_SCRIPT=%~f0"
+set "MVHUB_INSTALL_PAYLOAD=%INSTALL_PS1%"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'INSTALL_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Install payload not found.' }; Set-Content -LiteralPath '%INSTALL_PS1%' -Value $parts[1] -Encoding UTF8"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath $env:MVHUB_INSTALL_SCRIPT -Raw -Encoding UTF8; $marker = '### MVHUB_' + 'INSTALL_POWERSHELL ###'; $parts = $raw -split [regex]::Escape($marker), 2; if ($parts.Count -lt 2) { throw 'Install payload not found.' }; Set-Content -LiteralPath $env:MVHUB_INSTALL_PAYLOAD -Value $parts[1] -Encoding UTF8"
 if errorlevel 1 (
   echo.
   echo [ERROR] Failed to prepare MV Hub installer.
@@ -78,6 +89,20 @@ function Get-ReleaseFile {
             throw "Server file not found: $Src"
         }
         Copy-Item -LiteralPath $Src -Destination $Destination -Force
+    }
+}
+
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $Stream = [System.IO.File]::OpenRead($Path)
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
     }
 }
 
@@ -196,7 +221,7 @@ function Install-Package {
     Write-Host "[install] Downloading $($Latest.file)..."
     Get-ReleaseFile -Name $Latest.file -Destination $ZipPath
 
-    $Actual = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Actual = Get-Sha256Hex -Path $ZipPath
     if ($Actual -ne ([string]$Latest.sha256).ToLowerInvariant()) {
         throw "SHA256 mismatch. Expected $($Latest.sha256), got $Actual"
     }

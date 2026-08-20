@@ -28,7 +28,7 @@ import { GenerationConfirmOverlay } from "./generation/GenerationConfirmOverlay"
 import { GenerationCardStatusBar } from "./generation/GenerationCardStatusBar";
 import { ClockIcon, FrameIcon, GemIcon, ModelIcon } from "./generation/GenerationCardIcons";
 import { GenerationThumbOverlay } from "./generation/GenerationThumbOverlay";
-import type { WorkspaceCommandOperation } from "../lib/workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
   gen: Generation;
@@ -73,7 +73,7 @@ interface Props {
   onWorkspaceCommand?: (
     g: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>;
   thumbSize?: number; // 썸네일 요청 폭(px) — 그리드가 카드 표시크기×DPR 로 산출(작게 보이면 256). 없으면 512.
   fresh?: boolean; // 팀 탭 '새로 들어옴' — 라임 글로우(캔버스 방금생성과 같은 시각 언어)
@@ -121,7 +121,7 @@ function GenerationCardImpl({
   onShowHistory,
 }: Props) {
   const modelName = useModelDisplayName();
-  const asset = gen.assets[0];
+  const asset = gen.assets?.[0]; // 프록시·백필 스키마 어긋남 방어 — assets 부재 시 카드만 빈 썸네일
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
   // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.
@@ -276,7 +276,7 @@ function GenerationCardImpl({
       {broken && gen.status === "done" && (
         <div
           className="thumb-broken"
-          title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 '힉스필드 삭제물 검토'로 정리하세요."
+          title="원본 미디어를 불러올 수 없습니다 — 힉스필드에서 삭제됐을 수 있어요. 설정의 'HF 삭제물 체크'로 정리하세요."
         >
           <span className="thumb-broken-ic">⚠</span>
           <span className="thumb-broken-label">원본 없음</span>
@@ -286,6 +286,14 @@ function GenerationCardImpl({
       {gen.is_source && (
         <span className="source-badge" title="소스로 등록됨">
           @{gen.source_name || "source"}
+        </span>
+      )}
+      {gen.invalid_input_result && (
+        <span
+          className="invalid-input-badge"
+          title="입력 레퍼런스 검증에 실패한 결과입니다. 원래 카드에는 자동으로 붙지 않았습니다."
+        >
+          입력 검증 실패
         </span>
       )}
       {/* 다른 작업자가 만든 결과물 — 카드 우측 상단 뱃지(상시 표시). */}

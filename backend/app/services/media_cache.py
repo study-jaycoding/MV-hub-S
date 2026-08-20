@@ -21,8 +21,9 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ..config import MEDIA_DIR
@@ -38,6 +39,25 @@ _RETRY_BACKOFF = 0.4
 _CONCURRENT_CACHE_WAIT = float(os.getenv("CONTENT_HUB_MEDIA_CACHE_WAIT_SECONDS", "3.0"))
 _MAX_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MAX_BYTES", str(1024 * 1024 * 1024)))
 _MIN_FREE_BYTES = int(os.getenv("CONTENT_HUB_MEDIA_CACHE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
+# 공유·최종 원본 영구 보존 총량. 기존 보존본은 자동 삭제하지 않고, 상한에 닿으면 새 파일만
+# 거부한다. 기본 50GiB이며 운영 환경에서 명시적으로 조정할 수 있다.
+PRESERVED_MEDIA_MAX_BYTES = max(
+    1,
+    int(os.getenv("CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES", str(50 * 1024 * 1024 * 1024))),
+)
+_PRESERVED_QUOTA_RESCAN_PERCENT = 95
+
+
+@dataclass
+class _PreservedQuotaState:
+    """프로세스 안에서만 공유하는 영구 미디어 물리 사용량 원장."""
+
+    total_bytes: int = 0
+    initialized: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+_PRESERVED_QUOTA_STATE = _PreservedQuotaState()
 # 팀 목록 썸네일을 만들기 위해 잠깐 보관하는 원격 원본은 영구 보존 미디어와 분리한다. 예전에는
 # MEDIA_DIR 본 경로에 계속 쌓여 .thumbs 1GB 상한과 무관하게 디스크가 증가했다.
 THUMB_SOURCE_CACHE_MAX_BYTES = max(1, int(
@@ -77,6 +97,22 @@ class MediaCachePermanentError(MediaCacheError):
     """재시도해도 의미 없는 응답/환경 문제."""
 
 
+class MediaCacheCapacityError(MediaCachePermanentError):
+    """영구 보존 총량 또는 최소 여유공간 제한으로 새 파일을 유지할 수 없음."""
+
+
+@dataclass(frozen=True)
+class MediaCacheResult:
+    path: Optional[str]
+    status: Literal["cached", "already", "skipped", "transient", "permanent", "capacity"]
+    bytes_added: int = 0
+    error_code: Optional[str] = None
+
+    @property
+    def retryable(self) -> bool:
+        return self.status in {"transient", "capacity"}
+
+
 def _ext_of(url: str) -> str:
     path = url.split("?", 1)[0]
     for e in CACHE_MEDIA_EXTENSIONS:
@@ -101,6 +137,11 @@ def thumb_source_rel_for(url: str) -> str:
 
 def _local_path(rel: str) -> Path:
     return MEDIA_DIR / rel.removeprefix("/media/")
+
+
+def local_media_exists(rel: str) -> bool:
+    """DB의 /media 상대경로가 실제 완성 파일을 가리키는지 확인한다."""
+    return rel.startswith("/media/") and _is_complete_file(_local_path(rel))
 
 
 def is_cached(url: str) -> bool:
@@ -132,8 +173,101 @@ def _content_length(resp) -> Optional[int]:
 def _ensure_disk_space(path: Path, incoming_bytes: int = 0) -> None:
     free = shutil.disk_usage(path).free
     if free - max(0, incoming_bytes) < _MIN_FREE_BYTES:
-        raise MediaCachePermanentError(
+        raise MediaCacheCapacityError(
             f"insufficient free disk space: free={free}, incoming={incoming_bytes}, reserve={_MIN_FREE_BYTES}"
+        )
+
+
+def _preserved_media_entries() -> list[Path]:
+    """영구 미디어 파일만 열거한다. 점(.) 캐시와 심링크·부분 파일은 제외한다."""
+    if not MEDIA_DIR.is_dir() or MEDIA_DIR.is_symlink():
+        return []
+    files: list[Path] = []
+    try:
+        for child in MEDIA_DIR.iterdir():
+            if child.name.startswith(".") or child.is_symlink():
+                continue
+            if child.is_file():
+                if not child.name.endswith(".part"):
+                    files.append(child)
+                continue
+            if not child.is_dir():
+                continue
+            for item in child.iterdir():
+                if item.is_symlink() or not item.is_file() or item.name.endswith(".part"):
+                    continue
+                files.append(item)
+    except OSError:
+        return files
+    return files
+
+
+def preserved_media_usage_bytes() -> int:
+    total = 0
+    for path in _preserved_media_entries():
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _recalculate_preserved_media_usage_locked(state: _PreservedQuotaState) -> int:
+    """호출자가 state.lock을 잡은 상태에서 디스크 권위값으로 원장을 교체한다."""
+    total = preserved_media_usage_bytes()
+    state.total_bytes = total
+    state.initialized = True
+    return total
+
+
+def recalculate_preserved_media_usage() -> int:
+    """외부 파일 변경·크래시로 생긴 누계 오차를 실제 디스크 사용량으로 교정한다."""
+    state = _PRESERVED_QUOTA_STATE
+    with state.lock:
+        return _recalculate_preserved_media_usage_locked(state)
+
+
+def _enforce_preserved_quota(target: Path, *, newly_created: bool) -> int:
+    """새 다운로드를 원장에 반영한다. 초과 시 새 파일만 되돌리고 기존 파일은 보존한다."""
+    if not newly_created:
+        return 0
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return 0
+
+    state = _PRESERVED_QUOTA_STATE
+    with state.lock:
+        # 최초 요청의 전체 스캔은 이 락 안에서 단 한 번만 한다. _download가 파일을 원자적으로
+        # 확정한 뒤 여기 오므로 첫 스캔에는 target도 이미 포함되어 있어 별도 증가하지 않는다.
+        freshly_scanned = not state.initialized
+        if freshly_scanned:
+            total = _recalculate_preserved_media_usage_locked(state)
+        else:
+            state.total_bytes += size
+            total = state.total_bytes
+
+        # 파일 확정과 이 증가 사이에 프로세스가 죽으면 다음 일일/상한 근처 재계산까지
+        # 과소계상될 수 있다. 예약·저널을 두지 않는 대신 계약상 허용한 유계 크래시 경계다.
+        if (
+            not freshly_scanned
+            and total * 100
+            >= PRESERVED_MEDIA_MAX_BYTES * _PRESERVED_QUOTA_RESCAN_PERCENT
+        ):
+            total = _recalculate_preserved_media_usage_locked(state)
+
+        if total <= PRESERVED_MEDIA_MAX_BYTES:
+            return size
+        try:
+            target.unlink()
+        except OSError as exc:
+            # 삭제 실패 시 실제 파일은 공간을 계속 쓰므로 방금 반영한 카운터도 유지한다.
+            raise MediaCacheCapacityError("preserved media quota exceeded and rollback failed") from exc
+        # 실제 unlink가 성공한 뒤에만 감소한다. 외부 삭제와 경합해 FileNotFoundError가 나도
+        # 보수적으로 카운터를 유지하고 다음 재계산에 맡긴다.
+        state.total_bytes = max(0, state.total_bytes - size)
+        raise MediaCacheCapacityError(
+            f"preserved media quota exceeded: total={total}, max={PRESERVED_MEDIA_MAX_BYTES}"
         )
 
 
@@ -378,41 +512,61 @@ def _clear_thumb_failure(rel: str) -> None:
         _THUMB_FAILURES.pop(rel, None)
 
 
-async def _cache_http_url(
+def _cache_error_result(exc: BaseException) -> MediaCacheResult:
+    if isinstance(exc, MediaCacheCapacityError):
+        return MediaCacheResult(None, "capacity", error_code="capacity")
+    if isinstance(exc, BlockedURLError):
+        return MediaCacheResult(None, "permanent", error_code="blocked_url")
+    if isinstance(exc, MediaCachePermanentError):
+        return MediaCacheResult(None, "permanent", error_code="remote_unavailable")
+    return MediaCacheResult(None, "transient", error_code="network_error")
+
+
+async def _cache_http_url_result(
     url: str,
     rel: str,
     max_bytes: Optional[int] = None,
     *,
     negative_thumb_cache: bool = False,
-) -> Optional[str]:
+    enforce_preserved_quota: bool = False,
+) -> MediaCacheResult:
     """검증·락·다운로드 공용 구현. max_bytes=None이면 영구 미디어 기본 상한을 쓴다."""
     target = _local_path(rel)
     if _is_complete_file(target):
         if negative_thumb_cache:
             _clear_thumb_failure(rel)
-        return rel
+        return MediaCacheResult(rel, "already")
     if negative_thumb_cache and _thumb_failure_active(rel):
-        return None
+        return MediaCacheResult(None, "permanent", error_code="negative_cache")
     lock = await _acquire_lock(rel)
     try:
         async with lock:
             if _is_complete_file(target):
                 if negative_thumb_cache:
                     _clear_thumb_failure(rel)
-                return rel
+                return MediaCacheResult(rel, "already")
             # 같은 URL의 앞선 동시 요청이 영구 실패를 기록했으면 락 대기 후 재다운로드하지 않는다.
             if negative_thumb_cache and _thumb_failure_active(rel):
-                return None
+                return MediaCacheResult(None, "permanent", error_code="negative_cache")
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                existed_before = _is_complete_file(target)
                 if max_bytes is None:
                     await asyncio.to_thread(_download, url, target)
                 else:
                     await asyncio.to_thread(_download, url, target, max_bytes)
-                result = rel if _is_complete_file(target) else None
-                if result and negative_thumb_cache:
+                if not _is_complete_file(target):
+                    return MediaCacheResult(None, "transient", error_code="incomplete_download")
+                bytes_added = 0
+                if enforce_preserved_quota:
+                    bytes_added = await asyncio.to_thread(
+                        _enforce_preserved_quota,
+                        target,
+                        newly_created=not existed_before,
+                    )
+                if negative_thumb_cache:
                     _clear_thumb_failure(rel)
-                return result
+                return MediaCacheResult(rel, "cached", bytes_added=bytes_added)
             except Exception as e:  # noqa: BLE001 — 호출부 동작 보존: 실패 시 원격 URL 유지
                 permanent = isinstance(e, (MediaCachePermanentError, BlockedURLError))
                 # 영구 실패(403/404/차단)는 같은 프로세스 락 안에서 복구될 수 없으므로 3초 대기를 생략.
@@ -425,16 +579,32 @@ async def _cache_http_url(
                     )
                     if negative_thumb_cache:
                         _clear_thumb_failure(rel)
-                    return rel
+                    return MediaCacheResult(rel, "already")
                 if negative_thumb_cache and permanent:
                     _remember_thumb_failure(rel)
                 log.warning(
                     "media cache download failed url=%s target=%s reason=%s",
                     _safe_url_for_log(url), target, e,
                 )
-                return None
+                return _cache_error_result(e)
     finally:
         await _release_lock(rel)
+
+
+async def _cache_http_url(
+    url: str,
+    rel: str,
+    max_bytes: Optional[int] = None,
+    *,
+    negative_thumb_cache: bool = False,
+) -> Optional[str]:
+    result = await _cache_http_url_result(
+        url,
+        rel,
+        max_bytes,
+        negative_thumb_cache=negative_thumb_cache,
+    )
+    return result.path
 
 
 async def cache_url(url: Optional[str]) -> Optional[str]:
@@ -451,7 +621,26 @@ async def cache_url(url: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         return None
 
-    return await _cache_http_url(url, local_rel_for(url))
+    return (await cache_url_result(url)).path
+
+
+async def cache_url_result(url: Optional[str]) -> MediaCacheResult:
+    """보존 작업용 상세 결과. 호출부가 용량·영구·일시 실패를 구분해 상태/재시도를 남긴다."""
+    if not url:
+        return MediaCacheResult(None, "skipped", error_code="missing_url")
+    if url.startswith("/media/"):
+        return (
+            MediaCacheResult(url, "already")
+            if _is_complete_file(_local_path(url))
+            else MediaCacheResult(None, "permanent", error_code="missing_local_file")
+        )
+    if not url.startswith(("http://", "https://")):
+        return MediaCacheResult(None, "skipped", error_code="non_http_source")
+    return await _cache_http_url_result(
+        url,
+        local_rel_for(url),
+        enforce_preserved_quota=True,
+    )
 
 
 async def cache_thumb_source(url: Optional[str]) -> Optional[str]:

@@ -68,17 +68,46 @@ def to_cloud_mp4(data: bytes, timeout: int = 180) -> bytes:
     · 프레임레이트는 강제하지 않는다 — 재인코딩만으로 유효한 fps 헤더가 새로 써져 0-fps 문제가 해소되고,
       원본 프레임 타이밍(r2v 레퍼런스 길이)이 최대한 보존된다.
     """
-    ff = find_ffmpeg()
-    if not ff:
-        return data  # ffmpeg 없음 → 변환 못 함(원본 유지)
     with tempfile.TemporaryDirectory(prefix="mvhub_vid_") as td:
         src = Path(td) / "in"
-        dst = Path(td) / "out.mp4"
         src.write_bytes(data)
+        converted = to_cloud_mp4_path(src, timeout=timeout)
+        if converted == src:
+            return data
+        try:
+            result = converted.read_bytes()
+        finally:
+            try:
+                converted.unlink(missing_ok=True)
+            except OSError as exc:
+                # 변환 결과 읽기는 성공했으므로 임시파일 정리 실패로 성공을 뒤집지 않는다.
+                log.warning("cloud video legacy temp cleanup failed: %s", exc)
+        return result
+
+
+def to_cloud_mp4_path(source: Path, timeout: int = 180) -> Path:
+    """파일 경로를 H.264 MP4로 변환하고 결과 경로를 반환한다.
+
+    ffmpeg가 없으면 원본 경로를 그대로 반환한다. 새 결과는 호출자가 사용 후 지워야 하며, 변환 실패
+    시에는 이 함수가 부분 결과를 지운다. 운영 Comfy 경로는 이 함수를 써 원본·변환본을 bytes로
+    동시에 올리지 않는다.
+    """
+    src = Path(source)
+    ff = find_ffmpeg()
+    if not ff:
+        return src
+    fd, raw_path = tempfile.mkstemp(prefix="mvhub-comfy-converted-", suffix=".mp4")
+    os.close(fd)
+    dst = Path(raw_path)
+    try:
         # 원본 fps 를 감지해 유효하면 보존, 못 읽으면(깨진 0-fps) 기본값 강제 — 명시적 CFR 로 출력해야
         # Cloud VHS 가 프레임레이트를 0(Fraction(1,0))으로 읽지 않는다.
         fps = _probe_fps(ff, src) or _DEFAULT_FPS
-        log.info("cloud video transcode: %d bytes, fps=%s", len(data), fps)
+        try:
+            source_size = src.stat().st_size
+        except OSError:
+            source_size = -1
+        log.info("cloud video transcode: %d bytes, fps=%s", source_size, fps)
         cmd = [
             ff, "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(src),
@@ -100,7 +129,9 @@ def to_cloud_mp4(data: bytes, timeout: int = 180) -> bytes:
         if proc.returncode != 0 or not dst.exists():
             err = (proc.stderr or b"").decode("utf-8", "replace").strip()[-400:]
             raise VideoConvertError(f"영상 변환 실패(ffmpeg): {err or '알 수 없는 오류'}")
-        out = dst.read_bytes()
-        if not out:
+        if dst.stat().st_size <= 0:
             raise VideoConvertError("영상 변환 결과가 비어 있습니다(ffmpeg)")
-        return out
+        return dst
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise

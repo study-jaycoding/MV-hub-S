@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -51,5 +52,7 @@ def test_restart_storm_stops_and_writes_isolated_alert(tmp_path, monkeypatch):
 
     assert supervisor.main() == 1
     assert len(launches) == 2
+    assert launches[0][0][0] == [sys.executable, str(supervisor.SERVER_ENTRYPOINT)]
+    assert launches[0][1]["cwd"] == supervisor.BACKEND
     assert sleeps == [3]
     assert "restart storm blocked" in alert.read_text(encoding="utf-8")

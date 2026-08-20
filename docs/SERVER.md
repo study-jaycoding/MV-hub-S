@@ -1,7 +1,8 @@
 # Content Hub — 서버 운영 가이드
 
-이 폴더(`content-hub-server`)는 **서버 배포용 클론**이다. 원본 `content-hub` 는 개인
-작업용으로 그대로 두고, 서버화·추가기능은 여기서 진행한다.
+이 저장소(`MV-hub-S`)를 **서버 PC에 git 클론**해 공유 서버로 운영한다. 작업자 PC는
+릴리스 설치본(`release/README.md`)을 쓰고, 서버는 이 클론에서 `update_git.bat` 으로
+업데이트한다.
 
 ## 핵심 구조 — 단일 오리진
 
@@ -20,14 +21,54 @@
                        └─ /media/*      → 로컬 미디어
 ```
 
-## 업데이트(롤아웃) 순서 — ★공유 서버 먼저
+## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 
-새 버전을 배포할 때는 **공유 서버를 먼저(또는 동시에) 업데이트**하고, 그 다음 워커 PC
-로컬 허브를 올린다. 새 허브의 배치 쓰기(작업 순서/삭제/담당해제·팀 카드 색/태그)는 구서버
-상대로 404/400 폴백 안전망이 있지만, 폴백은 과도기용이지 정상 운영 경로가 아니다 —
-순서를 지키면 폴백 자체가 발동하지 않는다. (반대 순서 = 구 허브 + 신 서버는 항상 안전.)
+경로가 둘이다: **서버 = git 클론에서 `update_git.bat`**, **작업자 = 릴리스 ZIP 배포 후
+앱 안 "설정 → 프로그램 업데이트" 버튼**(수동은 `update_release.bat`). 릴리스 제작·게시는
+`release/README.md` 참고.
 
-예외 — 워크스페이스 지정 생성요청: 신 서버는 워크스페이스가 지정된 대기 요청을
+혼합 버전에서 구 에이전트가 이미 받은 유료 생성 요청을 나중에 실행하는 창을 닫기 위해 다음 순서를
+반드시 지킨다. 관리자 API 호출에는 로그인으로 받은 관리자 Bearer 토큰을
+`$env:MVHUB_ADMIN_TOKEN`에 넣어 둔다(토큰을 문서나 명령 기록에 직접 붙여 넣지 않는다).
+
+1. 생성 접수·claim 일시중지:
+
+   ```powershell
+   Invoke-RestMethod -Method Put -Uri "http://localhost:8010/api/gen-requests/deployment-pause" -Headers @{Authorization="Bearer $env:MVHUB_ADMIN_TOKEN"} -ContentType "application/json" -Body '{"paused":true}'
+   ```
+
+2. 서버 PC의 저장소 루트에서 아래 **한 줄**을 한 번 실행하고 종료 코드 `0`과 `[통과]`를 확인:
+
+   ```powershell
+   py -3 tools\deploy_fence_check.py
+   ```
+
+   기본 위치가 아닌 DB는 `--db "D:\실제경로\content_hub.db"`를 붙인다. 검사는 DB를 읽기 전용으로
+   열며, 다음 중 하나라도 만족하지 않으면 배포를 막는 종료 코드 `2`를 반환한다.
+
+   - DB의 `generation_deployment_paused` 스위치가 ON
+   - `gen_request.status`가 `done/failed/canceled`가 아닌 행이 0건. 알려지지 않은 새 상태도 안전하게 미종결로 센다.
+   - `generation.status`가 `pending/running`인 행이 0건. 요청표와 연결되지 않은 placeholder,
+     동기화본, provider 진행 흔적도 빠뜨리지 않고 보수적으로 센다.
+
+   DB 파일·스키마를 읽지 못하면 종료 코드 `3`이다. `2`나 `3`을 무시하고 업데이트하지 않는다.
+   일시중지 전에 이미 시작된 `anchor/fulfill/reconcile/fail` 보고는 계속 받아 자연히 종결되지만,
+   남은 `pending/blocked/recovery_required`는 자동으로 숨기지 않으므로 원인을 확인해 명시적으로
+   종결한 뒤 fence를 다시 실행한다.
+
+3. `update_git.bat`으로 **공유 서버를 먼저** 배포하고 `/api/ready` 200을 확인한다.
+4. `release/README.md` 절차로 모든 작업자 PC의 허브·에이전트를 새 릴리스로 전환한다.
+5. 생성 접수 재개:
+
+   ```powershell
+   Invoke-RestMethod -Method Put -Uri "http://localhost:8010/api/gen-requests/deployment-pause" -Headers @{Authorization="Bearer $env:MVHUB_ADMIN_TOKEN"} -ContentType "application/json" -Body '{"paused":false}'
+   ```
+
+스위치는 `app_setting`에 영속되므로 서버 재시작·롤백 뒤에도 자동으로 풀리지 않는다. 에이전트 전환과
+준비 상태 확인이 끝난 뒤 반드시 5단계를 실행한다. 새 허브의 배치 쓰기(작업 순서/삭제/담당해제·팀
+카드 색/태그)는 구서버 상대로 404/400 폴백 안전망이 있지만, 폴백은 과도기용이지 정상 운영 경로다.
+
+워크스페이스 지정 생성요청: 신 서버는 워크스페이스가 지정된 대기 요청을
 capability 를 밝힌 신 에이전트에게만 내려준다. 구 에이전트는 그 요청을 집지 못하고
 pending 으로 남으므로, 서버 업데이트 후 **워커 PC(에이전트)도 곧 업데이트**해야
 지정 요청이 처리된다(잘못된 워크스페이스에서 실행·과금되는 것을 막기 위한 게이트).
@@ -72,13 +113,18 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 
 ## 설정 (모두 환경변수, 하드코딩 없음)
 
+> 아래 표는 **운영에서 자주 만지는 것만** 추린 것이다. 전체 `CONTENT_HUB_*` 변수는 70개가
+> 넘으며(Comfy `_COMFY_*`, Resolve `_RESOLVE_*`, HTTPS `_SSL_CERTFILE/_SSL_KEYFILE`,
+> 백업 복제 `_BACKUP_REPLICA_DIR`, 캐시 상한 `_MEDIA_CACHE_MAX_BYTES`/`_THUMB_*` 등)
+> 기본값과 정의는 `backend/app/config.py` 와 각 서비스 모듈 상단이 정답이다.
+
 | 변수 | 기본값 | 용도 |
 |------|--------|------|
 | `CONTENT_HUB_HOST` | `0.0.0.0` | 바인딩 주소 |
 | `CONTENT_HUB_PORT` | `8000`(코드) · **MV_server.bat=8010** | 포트 |
 | `CONTENT_HUB_DATA` | `backend/data` | DB·미디어·공유 루트 |
 | `CONTENT_HUB_FRONTEND_DIST` | `frontend/dist` | 서빙할 빌드 산출물(없으면 API 전용) |
-| `CONTENT_HUB_ASSETS_DIR` | `D:/ClaudeCode-data/projects` | Assets(구성) 패널 루트 |
+| `CONTENT_HUB_ASSETS_DIR` | `<DATA>/assets` | Assets(구성) 패널 루트 |
 | `CONTENT_HUB_WORKER_ID` / `_NAME` | `me` / `나` | 기본 작업자 |
 | `CONTENT_HUB_BACKUP_DIR` | `<DATA>/backups` | DB 백업 보관 폴더(실서버: 다른 디스크/NAS 권장) |
 | `CONTENT_HUB_BACKUP_INTERVAL` | `86400`(하루) | 백업 주기(초). 0 이하 = 비활성 |
@@ -91,6 +137,10 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 | `CONTENT_HUB_LOG_KEEP` | `5` | 회전 로그 보관 개수 |
 | `CONTENT_HUB_METRICS_LOG_INTERVAL` | `60` | CPU·메모리·요청 집계를 로그에 남기는 주기(초), 0=비활성 |
 | `CONTENT_HUB_SLOW_REQUEST_MS` | `1000` | 개별 느린 요청을 운영 로그에 기록하는 기준(ms) |
+| `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES` | `53687091200`(50GiB) | 공유·최종 원본 영구 보존 총량. 기존 보존본은 자동 삭제하지 않음 |
+| `CONTENT_HUB_MEDIA_PRESERVATION_INTERVAL_SECONDS` | `30` | 원본 보존 워커 주기(초), 한 주기 최대 2건 |
+| `CONTENT_HUB_MEDIA_PRESERVATION_STARTUP_DELAY_SECONDS` | `10` | 서버 시작 뒤 원본 보존 다운로드 시작 유예(초) |
+| `CONTENT_HUB_MEDIA_PRESERVATION_MAX_ATTEMPTS` | `5` | 자동 재시도 최대 횟수. 이후 정보창에서 수동 재시도 가능 |
 | `CONTENT_HUB_RESTART_LIMIT` | `5` | 빠른 서버 종료를 연속 허용하는 횟수 |
 | `CONTENT_HUB_STABLE_SECONDS` | `120` | 이 시간 이상 정상 실행하면 빠른 종료 횟수 초기화 |
 
@@ -110,37 +160,87 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
     헤더를 못 붙이는 img 태그·WebSocket 용). 로그인 시 토큰+쿠키 동시 발급, 로그아웃 시 둘 다 폐기.
   - 정적 SPA(로그인 화면)와 로그인·가입·헬스 엔드포인트는 공개(그래야 로그인 화면이 뜬다).
 
+## 공유·최종 원본 보존
+
+공유하거나 최종으로 지정한 완료 생성물은 원격 URL만 남기지 않고 서버·작업자 PC의 `media/`에
+자동 보존한다. 요청은 먼저 `media_preservation` DB 큐에 기록되므로 다운로드 중 프로세스가
+종료돼도 다음 시작에 이어진다. 업데이트 전부터 공유·최종이었던 기존 항목도 시작 시 자동 등록된다.
+
+- 워커는 기본 10초 뒤 시작해 30초마다 최대 2건만 처리한다.
+- 기본 총량은 50GiB다. 한도 초과 시 방금 받은 파일만 되돌리고 기존 보존본은 삭제하지 않는다.
+- 네트워크 일시 오류는 제한된 백오프로 재시도한다. `capacity`·`partial`·`failed`는 생성물
+  정보창의 **원본 보존 재시도**로 다시 처리할 수 있다.
+- 관리자 `POST /api/cache-all`은 즉시 전부 내려받지 않고 완료 생성물을 저속 큐에 등록한다.
+- 상태 DB와 운영 로그에는 URL·프롬프트·예외 원문을 넣지 않는다. 상태별 개수와 안전한 오류
+  코드만 남긴다.
+
+50GiB는 기본 안전값일 뿐 자동 용량 계획이 아니다. 운영 전 `media/`가 있는 실제 디스크 여유와
+백업 정책을 확인하고 필요할 때만 `CONTENT_HUB_PRESERVED_MEDIA_MAX_BYTES`를 조정한다.
+
 ## DB 자동 백업
 
 SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 콘텐츠·휴지통·프로젝트
-관리 DB를 하나의 읽기 시점으로 고정한 세트 스냅샷으로 뜬다
-(WAL 모드에서 단순 파일복사는 위험 — `-wal` 미반영분 누락). 서버 시작 시 1회(최근 백업이
+관리 DB를 같은 stamp의 세트로 뜬다(WAL 모드에서 단순 파일복사는 위험 — `-wal` 미반영분 누락).
+단, SQLite/WAL은 여러 attached DB 전체의 원자적 동일 시점을 보장하지 않아 별칭별 첫 읽기 사이에
+미세한 시점 차와 이동 중 행의 중복·누락 가능성이 있다. 서버 시작 시 1회(최근 백업이
 1시간 내면 생략) + 주기 실행, 최근 `BACKUP_KEEP` 개만 회전 보관.
 
 - 수동 백업:   `POST /api/backup`
 - 백업 목록:   `GET /api/backups`
 - ⚠️ 실서버에선 `CONTENT_HUB_BACKUP_DIR` 를 **다른 디스크/NAS**로 — 같은 디스크면 동반 손실.
 
+### 작업자 PC 백업
+
+로그인한 작업자 허브는 로컬 온라인 백업 뒤 개인 `content + trash` 세트를 영속 outbox에 넣고
+공유 서버의 `POST /api/db-backup/sets`로 자동 전송한다. 공유 서버는 세션 계정별
+`backend/data/db-backups/<계정>/sets/<backup_set_id>/`에 저장하며, 크기·SHA-256·SQLite
+무결성과 정확한 ACK가 모두 맞아야 성공이다. 설정의 `서버에 백업`은 같은 경로를 즉시 실행한다.
+
+공유 서버 디스크는 두 번째 물리 사본이 아니다. `tools/backup_replicate.py`와
+`register_autostart.bat`의 `MVHub BackupCopy`를 사용해 서버 자체 백업과 작업자 세트를 NAS·다른
+디스크로 한 번 더 복제해야 한다. 자세한 완료 조건은
+[WORKER_OFFDISK_BACKUP_CONTRACT.md](WORKER_OFFDISK_BACKUP_CONTRACT.md)를 따른다.
+
 ### 백업 복원 훈련
 
 운영 DB를 교체하지 않고 임시 파일에 온라인 백업→복원→무결성·외래키·테이블 행 수 비교를 수행한다.
+운영 복구 가능성을 확인할 때는 단일 DB가 아니라 **같은 stamp의 콘텐츠·휴지통·관리 DB 세트**를
+검증해야 한다. 이 stamp는 세트 구성 표식이지 DB 간 완전히 동일한 트랜잭션 시점의 증명이 아니다.
 
 ```powershell
-python tools\verify_backup_restore.py
-python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_20260731_120000.db"
+py -3 tools\verify_backup_restore.py
+py -3 tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_20260731_120000.db"
+py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
 ```
 
-`"ok": true`, `"integrity": "ok"`, `"foreign_key_errors": 0`을 확인한다. 실제 장애 복원은
-서버를 중지하고 원본 DB를 별도 보존한 뒤 검증된 백업을 사용해야 한다. 이 도구는 운영 DB를
-자동 교체하지 않으므로 복구 훈련 중 실데이터를 덮어쓰지 않는다.
+`--backup-set`은 같은 폴더에서 정확히 같은 stamp의 `content_trash_*.db`와 `manage_hub_*.db`를
+찾는다. 세 파일 중 하나라도 없으면 아무것도 복원하지 않는다. 성공 JSON에서 다음을 확인한다.
+
+- 최상위 `"ok": true`, `"mode": "database_set"`
+- `isolated_server.ready_checks`의 `content`, `trash`, `manage`가 모두 `"ok"`
+- `isolated_server.login`이 `"ok"`, `process_stopped`가 `true`
+- `files.*.source_unchanged`가 모두 `true`
+
+검사 실패나 핵심 수의 예상 밖 변화가 있으면 그 세트를 운영에 설치하지 말고 이전 완성 세트로 같은
+드릴을 다시 실행한다. content와 trash에 같은 generation ID가 함께 남은 경우에만 부팅 정합기가
+살아 있는 content 행을 우선하고 trash 중복을 제거한다. 한쪽에만 빠진 행이나 manage 의미 불일치는
+드릴만으로 완전 검출할 수 없고 자동 추측 복구도 하지 않는다. 화면·세트 요약을 이전 세트와 대조해
+차이가 의심되면 이전 정상 세트를 선택하고 별도 조사한다.
+
+별도 `--restored-dir`을 주지 않으면 복원 사본과 격리 서버 로그는 성공·실패 후 임시 폴더와 함께
+삭제된다. `--restored-dir`로 남긴 사본에는 로그인 실측용 임시 account·creator가 각 1건 추가되므로
+**운영 DB로 직접 교체하면 안 된다.** 실제 장애 복원은 서버를 중지하고 기존 운영 DB를 별도 보존한
+뒤 검증된 원본 백업 3개를 사용한다. 이 도구 자체는 운영 DB와 원본 백업을 자동 교체·수정하지 않는다.
 
 ## 운영 상태 확인
 
 - 준비 상태: `GET /api/ready` — 콘텐츠·생성 큐 및 활성화된 관리/휴지통 DB의 핵심
-  테이블 읽기까지 성공하면 `ready`, 실패하면 HTTP 503.
+  테이블 읽기까지 성공하면 `ready`, 실패하면 HTTP 503. DB 복원 유지보수 중에는 DB 연결을
+  기다리지 않고 즉시 `503 {"status":"maintenance"}`와 `Retry-After: 5`를 반환한다.
 - 관리자 지표: `GET /api/admin/runtime` — 요청 p50/p95/p99, 5xx, SQLite 잠금,
   프로세스 CPU·RSS, WebSocket·에이전트 연결, 생성 단계/지연, 최근 백업,
-  관리 데이터 전송 대기·실패, DB/WAL·미디어·썸네일 용량.
+  관리 데이터 전송 대기·실패, 원본 보존 pending/running/partial/failed/capacity 집계,
+  작업자 백업 대기·마지막 성공, 외부 복제 상태, DB/WAL·미디어·썸네일 용량.
 - 회전 로그: `<DATA>/logs/mvhub-runtime.jsonl` — 60초 집계와 생성 상태 전이,
   5xx·느린 요청을 JSON 한 줄로 기록. 평상시에는 `MV_logs.bat`로 정돈된 로그를 본다.
 - 장기 생성 이력: `GET /api/admin/generation-events?generation_id=...` — 회전 로그와 별개로
@@ -148,7 +248,8 @@ python tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_202
 - 중요 변경 감사: `GET /api/admin/audit-events?project_id=...` — 계정 상태/역할,
   프로젝트 생성·변경·삭제/멤버 역할, 일정·예산, 최종 선택 변경을 `audit_event`에 보관한다.
 
-생성 확인 지연, 10분 이상 밀린 관리 데이터, 전송 실패, DB 준비 실패는 `WARNING`으로 남는다.
+생성 확인 지연, 10분 이상 밀린 관리 데이터, 전송 실패, 원본 보존 일부 실패·실패·용량 부족,
+DB 준비 실패는 `WARNING`으로 남는다.
 같은 상태를 매분 반복하지 않고 상태가 바뀌거나 30분 이상 계속될 때만 다시 알려 로그 폭주를 막는다.
 
 초기 관리자 비밀번호를 환경변수로 주지 않은 첫 설치는

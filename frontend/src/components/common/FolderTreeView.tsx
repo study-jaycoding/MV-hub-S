@@ -4,7 +4,8 @@ import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 export interface FolderTreeItem {
   name: string;
   path: string;
-  count?: number | null;
+  count?: number | null; // 이 폴더(하위 포함)의 카탈로그 생성물 수. null = 아직 조회 전
+  fileCount?: number | null; // 폴더 안 실제 파일 수(디스크). count 와 다를 때만 흐리게 덧붙는다
   newCount?: number | null; // 마지막 방문 이후 새로 공유된 개수(팀 탭) — 라임 배지
   children?: FolderTreeItem[];
   virtual?: boolean; // 디스크에 없는 논리 폴더(팀 데이터의 folder_path로 합성) — 표식만 다르게
@@ -92,6 +93,13 @@ function FolderTreeRow({
   const selected = selectedPath === node.path;
   const disabled = isDisabled ? isDisabled(node.path) : false;
   const count = node.count || 0;
+  // 배지에는 생성물 수만 둔다(좁은 사이드바). 폴더의 실제 파일 수는 호버 설명에 덧붙여,
+  // '폴더엔 파일이 있는데 카탈로그엔 없다'를 확인할 수 있게 한다.
+  const fileCount = node.fileCount ?? null;
+  const countHint =
+    node.count === null || fileCount === null
+      ? ""
+      : `\n생성물 ${count}개 · 폴더 파일 ${fileCount}개`;
   const [dropOver, setDropOver] = useState(false);
   const folderDraggingRef = useRef(false);
   // 하위가 있는 부모 폴더(예 ep001)는 드롭 대상에서 제외 — 말단 폴더(c0010 등)에만 담는다.
@@ -124,7 +132,11 @@ function FolderTreeRow({
           (dropOver ? " drop-over" : "")
         }
         style={{ paddingLeft: 6 + depth * 14 }}
-        title={node.virtual ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)` : node.path || node.name}
+        title={
+          (node.virtual
+            ? `${node.path} (팀 데이터 폴더 — 내 디스크엔 없음)`
+            : node.path || node.name) + countHint
+        }
         onClick={(e) => {
           e.stopPropagation();
           // 일부 브라우저는 HTML5 drag 종료 뒤 click까지 발화한다. Set으로 끌었는데
@@ -180,9 +192,11 @@ function FolderTreeRow({
             +{node.newCount}
           </span>
         )}
-        <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
-          {count > 0 ? count : "-"}
-        </span>
+        {node.count !== null && (
+          <span className={"folder-tree-count" + (count > 0 ? "" : " zero")}>
+            {count > 0 ? count : "-"}
+          </span>
+        )}
       </button>
       {hasChildren &&
         open &&

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import socket
@@ -23,6 +24,16 @@ import socket
 import uvicorn
 
 from app.config import HOST, PORT
+
+
+def _parse_args(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "MV Hub backend server. Host and port are configured with "
+            "CONTENT_HUB_HOST/CONTENT_HUB_PORT."
+        )
+    )
+    parser.parse_args(argv)
 
 
 def _make_socket(family: int, addr: tuple) -> socket.socket:
@@ -51,7 +62,13 @@ def _run_server(server: uvicorn.Server, sockets: list[socket.socket]) -> None:
         previous = signal.getsignal(sigbreak)
         signal.signal(sigbreak, lambda _sig, _frame: None)
     try:
-        server.run(sockets=sockets)
+        try:
+            server.run(sockets=sockets)
+        except KeyboardInterrupt:
+            # Python 3.14의 asyncio.Runner는 Uvicorn이 정상 shutdown을 끝낸 뒤에도
+            # Ctrl+C를 다시 KeyboardInterrupt로 올릴 수 있다. 서버가 이미 종료 절차를
+            # 마친 정상 사용자 종료이므로 불필요한 오류 스택을 남기지 않는다.
+            pass
     finally:
         if previous is not None:
             signal.signal(sigbreak, previous)
@@ -106,5 +123,11 @@ def main() -> None:
         raise SystemExit(1)
 
 
-if __name__ == "__main__":
+def cli(argv: list[str] | None = None) -> None:
+    """Validate command-line arguments before opening any listening socket."""
+    _parse_args(argv)
     main()
+
+
+if __name__ == "__main__":
+    cli()

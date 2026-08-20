@@ -1,137 +1,13 @@
 ﻿/* ── 히스토리(가계) ── */
-/* 카드 히스토리 뱃지 — 우상단(정보 오버레이와 안 겹치게 살짝 아래). 라임 배경엔 검은 글씨(--accent-ink) */
-.lineage-badge {
-  position: absolute; top: 8px; left: 8px; z-index: 4;
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 11px; font-weight: 800; line-height: 1;
-  padding: 4px 7px; border-radius: 20px; border: 1px solid var(--border2);
-  background: var(--grad); color: var(--accent-ink); cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.45);
-}
-.lineage-badge svg { display: block; opacity: 0.65; }
+/* 카드 ⑂ 버튼의 파생·사용 수 뱃지(GenerationThumbOverlay) */
 .lineage-count { font-size: 11px; font-weight: 800; }
-.lineage-badge:hover { filter: brightness(1.12) saturate(1.1); }
-/* 팀원 카드(생성자 뱃지 👤)가 좌상단에 있으면 히스토리는 그 아래로 — 겹침 방지 */
-.creator-badge ~ .lineage-badge { top: 36px; }
 
-/* 가계 점프 하이라이트(잠깐 번쩍) */
-.lin-flash { animation: linFlash 1.2s ease; }
-@keyframes linFlash {
-  0%, 100% { box-shadow: none; }
-  20%, 60% { box-shadow: 0 0 0 3px var(--accent), 0 0 18px var(--accent); }
-}
-
-.lin-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 210; display: flex; align-items: center; justify-content: center; }
-.lin-panel {
-  width: min(92vw, 920px); max-height: 86vh; display: flex; flex-direction: column;
-  background: var(--panel, #16171c); border: 1px solid var(--border2); border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0,0,0,0.65);
-}
-.lin-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.lin-title { font-size: 14px; font-weight: 800; color: var(--text); }
-.lin-busy { color: var(--accent); font-weight: 800; }
-.lin-close { margin-left: auto; background: none; border: none; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
-.lin-close:hover { color: var(--text); }
-.lin-err { padding: 8px 16px; color: #ff8a8a; font-size: 12px; background: rgba(255,80,80,0.08); border-bottom: 1px solid var(--border); }
-/* 가계 패널: 섹션을 세로 컬럼으로 나란히(세로 점선 구분), 각 컬럼 안에서 카드는 세로로 쌓임 */
-.lin-body { display: flex; flex-direction: row; align-items: stretch; overflow-x: auto; overflow-y: hidden; flex: 1; min-height: 0; padding: 0; }
-.lin-row { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; min-width: 150px; min-height: 0; border-right: 1px dashed rgba(255,255,255,0.08); }
-.lin-row:last-child { border-right: none; }
-.lin-row-label { flex: none; font-size: 12px; font-weight: 700; color: var(--muted); }
-.lin-row-label.lin-row-target { color: var(--accent); }
-.lin-row-n { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 10px; background: rgba(255,255,255,0.08); color: var(--text); font-size: 11px; text-align: center; }
-.lin-strip { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-x: hidden; align-items: center; flex: 1; min-height: 0; padding-right: 2px; }
-.lin-node { display: flex; flex-direction: column; align-items: center; gap: 5px; flex: none; width: 112px; transition: transform 0.12s ease; }
-/* 선택 카드 — 살짝 확대(시인성) */
-.lin-node.sel { transform: scale(1.08); }
-.lin-thumb {
-  position: relative; width: 104px; height: 104px; border-radius: 10px; overflow: hidden;
-  border: 2px solid var(--border2); background: #0c0d11; cursor: pointer; padding: 0;
-}
-.lin-node.target .lin-thumb { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(196,232,74,0.22); }
-/* 선택(클릭=단일, Shift+클릭=복수) — 라임 테두리 강조 */
-.lin-node.sel .lin-thumb { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent); }
-/* 해제된 카드 — 흑백 처리(연결로 되돌릴 수 있음) */
-.lin-node.grayed .lin-thumb { filter: grayscale(1) brightness(0.62); border-color: #4a4d54; }
-.lin-node.grayed .lin-cap { color: #9aa; }
-.lin-node.grayed.sel .lin-thumb { filter: none; } /* 선택하면 원래 색으로 확인 */
-/* 같은 소스 컬럼의 깊이별 소제목 */
-.lin-depth-label {
-  align-self: stretch; margin-top: 2px; padding: 2px 4px;
-  font-size: 10px; font-weight: 800; color: var(--muted2);
-  border-top: 1px dashed rgba(255,255,255,0.1);
-}
-.lin-strip > .lin-depth-label:first-child { border-top: none; margin-top: 0; }
-/* 우측 간략 트리(이 카드의 연결된 가계) */
-.lin-tree { flex: 1 1 320px; min-width: 280px; display: flex; flex-direction: column; padding: 12px 14px; border-left: 1px solid var(--border2); min-height: 0; }
-.lin-tree-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 8px; }
-.lin-tree-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.lin-tree-svg { flex: 1; width: 100%; min-height: 0; }
-.lin-tedge { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 2.5; }
-.lin-tedge.ref { stroke-dasharray: 5 4; stroke: rgba(196,232,74,0.5); }
-.lin-tnode { cursor: pointer; }
-.lin-tph { fill: #0c0d11; }
-.lin-tframe { stroke: var(--border2); stroke-width: 2; }
-.lin-tnode:hover .lin-tframe { stroke: var(--accent); }
-.lin-tnode.root .lin-tframe { stroke: #ffd24a; stroke-width: 2.5; }
-.lin-tnode.focus .lin-tframe { stroke: var(--accent); stroke-width: 4; }
-.lin-tnode.final .lin-tframe { stroke: #ffcf33; stroke-width: 3; }
-.lin-tstar { fill: #ffd24a; font-size: 18px; font-weight: 900; }
-/* 현재 카드 위치 강조 — 라임 글로우 링 + '현재' 라벨 */
-.lin-tnow-ring { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 6px rgba(196,232,74,0.85)); }
-.lin-tnow-bg { fill: var(--accent); }
-.lin-tnow { fill: var(--accent-ink); font-size: 11px; font-weight: 900; }
-/* 헤더의 선택/비교 바 */
-.lin-selbar { display: inline-flex; align-items: center; gap: 8px; }
-.lin-selcount { font-size: 12px; font-weight: 700; color: var(--accent); }
-.lin-cmp {
-  font-size: 12px; font-weight: 800; padding: 4px 12px; border-radius: 9px;
-  border: 1px solid var(--accent); background: var(--grad); color: var(--accent-ink); cursor: pointer;
-}
-.lin-cmp:hover { filter: brightness(1.1); }
-.lin-cmp:disabled { opacity: 0.4; cursor: default; filter: none; }
-.lin-selclear {
-  font-size: 12px; padding: 3px 9px; border-radius: 8px;
-  border: 1px solid var(--border2); background: transparent; color: var(--muted); cursor: pointer;
-}
-.lin-selclear:hover { color: var(--text); }
-.lin-thumb img,
-.lin-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
-.lin-thumb:hover { border-color: var(--accent); }
-/* 영상 표시 뱃지 — 좌하단 ▶ */
-.lin-vid {
-  position: absolute; left: 4px; bottom: 4px; z-index: 2;
-  width: 17px; height: 17px; border-radius: 50%;
-  background: rgba(8,9,12,0.78); color: #fff;
-  font-size: 9px; line-height: 17px; text-align: center;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.6); pointer-events: none;
-}
-.lin-thumb-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
-/* 구성 카드 번호 뱃지(좌상단) — 라임 배경엔 검은 글씨(--accent-ink) */
-.lin-seq {
-  position: absolute; top: 4px; left: 4px; z-index: 3;
-  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 10px;
-  background: var(--accent); color: var(--accent-ink);
-  font-size: 11px; font-weight: 900; line-height: 18px; text-align: center;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.55);
-}
-/* 구성 카드 로딩 안내 */
-.lin-mini-empty { font-size: 11px; color: var(--muted); padding: 8px 2px; }
-.lin-final { position: absolute; top: 4px; right: 4px; font-size: 20px; line-height: 1; color: #ffd24a; text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 1px 2px #000; }
-.lin-cap { font-size: 11px; color: var(--muted); text-align: center; max-width: 108px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lin-node-actions { display: flex; gap: 4px; }
-.lin-act { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 8px; border: 1px solid var(--border2); background: var(--grad-soft, rgba(196,232,74,0.12)); color: var(--accent); cursor: pointer; }
-.lin-act:hover { background: var(--grad); color: var(--accent-ink); }
-.lin-act-del { color: #ff8a8a; background: rgba(255,80,80,0.08); }
-.lin-act-del:hover { background: rgba(255,80,80,0.85); color: #fff; }
-.lin-empty { padding: 14px 16px; color: var(--muted); font-size: 13px; }
-.lin-foot { padding: 10px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+/* 미리보기 헤더의 '구성에서 보기'·다운로드 버튼(MediaPreview 공용) */
 .lin-board-btn {
   margin-left: auto; font-size: 12px; font-weight: 700; padding: 5px 11px; border-radius: 9px;
   border: 1px solid var(--accent); background: var(--grad-soft, rgba(196,232,74,0.12)); color: var(--accent); cursor: pointer;
 }
 .lin-board-btn:hover { background: var(--grad); color: var(--accent-ink); }
-.lin-head .lin-close { margin-left: 8px; }
 
 /* ── 구성탭 히스토리 트리(HistoryBoard) ── */
 .linb { display: flex; flex-direction: column; height: 100%; min-height: 0; flex: 1; }
@@ -298,6 +174,7 @@
   width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
   background: rgba(12,13,16,0.6); backdrop-filter: blur(6px);
   color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  padding: 0; /* base.css 전역 button padding이 폭 하한 26px를 만들어 씬카드 22px 축소를 막음 */
   display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
 /* 호버 때만 버튼 클릭 가능 — 비호버 시 노드 선택/더블클릭을 가로채지 않게 */

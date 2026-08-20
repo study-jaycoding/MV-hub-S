@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..repo import manage
 from ..services import cli_bridge, syncer
+from ._telemetry import schedule_telemetry_drain
 
 router = APIRouter(prefix="/api", tags=["sync"])
 
@@ -22,7 +23,10 @@ router = APIRouter(prefix="/api", tags=["sync"])
 def sync_status():
     """로컬 텔레메트리 outbox 의 push 대기·실패 상태(관측성) — 조용히 묻히던 매니징 push 실패를 노출.
     ★로컬 허브 자기 상태라 프록시하지 않는다(_proxy _LOCAL_EXACT). 동작은 안 바꾸고 '기록만' 읽는다."""
-    return manage.telemetry_outbox_status()
+    return {
+        **manage.telemetry_outbox_status(),
+        **manage.account_report_outbox_status(),
+    }
 
 
 class SyncResult(BaseModel):
@@ -39,4 +43,6 @@ async def sync_from_cli(worker_id: str | None = None):
         c = await syncer.sync_now(worker_id)
     except cli_bridge.CLIError as e:
         raise HTTPException(status_code=502, detail=f"CLI 동기화 실패: {e}")
+    if c.get("telemetry_pending") or c.get("telemetry_dirty"):
+        schedule_telemetry_drain()
     return SyncResult(fetched=c["fetched"], inserted=c["inserted"], updated=c["updated"])

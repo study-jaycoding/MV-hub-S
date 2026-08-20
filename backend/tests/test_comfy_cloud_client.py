@@ -1,4 +1,4 @@
-"""Comfy Cloud 클라이언트/폴링 검증 — 네트워크 없이 _request·폴링 함수를 monkeypatch.
+"""Comfy Cloud 클라이언트/폴링 검증 — 외부 네트워크 없이 요청·상태 전이를 검증.
 
 라이브 클라우드(api_key)에 접근하지 않고, 다음을 고정한다:
  · 제출 엔드포인트/헤더/body 형태(POST /api/prompt, X-API-Key, prompt·extra_data)
@@ -7,7 +7,12 @@
  · 인증/크레딧 오류 분류(401/402/403), check_alive 는 200 만 alive
 """
 
+import json
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from app.services import comfy_client
@@ -70,6 +75,128 @@ class SubmitTests(unittest.TestCase):
         msg = str(cm.exception)
         self.assertIn("SaveText|pysssss", msg)
         self.assertIn("Local", msg)
+
+
+class StreamingUploadTests(unittest.TestCase):
+    def test_upload_file_streams_bounded_chunks_with_exact_length(self):
+        seen = {}
+
+        def fake_request(
+            method,
+            url,
+            *,
+            headers=None,
+            json_body=None,
+            data=None,
+            content_type=None,
+            content_length=None,
+            timeout=60,
+        ):
+            chunk_sizes = []
+            total = 0
+            for chunk in data:
+                chunk_sizes.append(len(chunk))
+                total += len(chunk)
+            seen.update(
+                method=method,
+                url=url,
+                content_type=content_type,
+                content_length=content_length,
+                total=total,
+                chunk_sizes=chunk_sizes,
+            )
+            return 200, b'{"name":"stored.bin","subfolder":"mvhub"}'
+
+        with TemporaryDirectory() as d:
+            source = Path(d) / "large.bin"
+            source.write_bytes(b"x" * (2 * 1024 * 1024 + 17))
+            with mock.patch.object(comfy_client, "_request", fake_request):
+                name = comfy_client.upload_file(
+                    {
+                        "cloud": False,
+                        "base": "http://127.0.0.1:8188",
+                        "prefix": "",
+                        "headers": {},
+                    },
+                    "large.bin",
+                    source,
+                )
+
+        self.assertEqual(name, "mvhub/stored.bin")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["total"], seen["content_length"])
+        # 파일 구간은 1MiB 이하이며, 작은 multipart 머리·꼬리만 별도 조각이다.
+        self.assertLessEqual(max(seen["chunk_sizes"]), 1024 * 1024)
+        self.assertIn("multipart/form-data", seen["content_type"])
+
+    def test_upload_filename_cannot_inject_headers(self):
+        captured = {}
+
+        def fake_request(*_args, data=None, **_kwargs):
+            captured["body"] = b"".join(data)
+            return 200, b'{}'
+
+        with TemporaryDirectory() as d:
+            source = Path(d) / "x"
+            source.write_bytes(b"x")
+            with mock.patch.object(comfy_client, "_request", fake_request):
+                comfy_client.upload_file(
+                    {"cloud": False, "base": "http://x", "prefix": "", "headers": {}},
+                    'bad"\r\nX-Evil: yes.png',
+                    source,
+                )
+        self.assertNotIn(b"\r\nX-Evil:", captured["body"])
+
+    def test_real_urllib_sends_iterable_with_content_length(self):
+        received = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                remaining = int(self.headers["Content-Length"])
+                received["content_length"] = remaining
+                received["transfer_encoding"] = self.headers.get("Transfer-Encoding")
+                total = 0
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    remaining -= len(chunk)
+                received["total"] = total
+                body = json.dumps({"name": "stored.bin", "subfolder": "mvhub"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.handle_request, daemon=True)
+        worker.start()
+        try:
+            with TemporaryDirectory() as d:
+                source = Path(d) / "large.bin"
+                source.write_bytes(b"x" * (2 * 1024 * 1024 + 17))
+                name = comfy_client.upload_file(
+                    {
+                        "cloud": False,
+                        "base": f"http://127.0.0.1:{server.server_port}",
+                        "prefix": "",
+                        "headers": {},
+                    },
+                    "large.bin",
+                    source,
+                )
+        finally:
+            worker.join(timeout=5)
+            server.server_close()
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(name, "mvhub/stored.bin")
+        self.assertEqual(received["total"], received["content_length"])
+        self.assertIsNone(received["transfer_encoding"])
 
 
 class UnsupportedNodeMessageTests(unittest.TestCase):
@@ -156,12 +283,14 @@ class WaitCloudTests(unittest.TestCase):
         # 정상 pending 이 오래 지속되면 타임아웃까지 대기하되, 마지막 상태를 메시지에 담아 진단 가능하게.
         ticks = iter([0.0, 0.0, 100.0, 100.0])
         with mock.patch.object(comfy.comfy_client, "cloud_job_status", lambda t, p: "in_progress"), \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel, \
              mock.patch.object(comfy.time, "sleep", lambda s: None), \
              mock.patch.object(comfy.time, "monotonic", lambda: next(ticks)), \
              mock.patch.object(comfy, "_JOB_TIMEOUT", 10):
             with self.assertRaises(comfy_client.ComfyError) as cm:
                 comfy._wait(_cloud_target(), "pid")
         self.assertIn("in_progress", str(cm.exception))
+        cancel.assert_called_once_with(_cloud_target(), "pid")
 
     def test_wait_unknown_status_grace_fail(self):
         # 미지/빈 상태가 grace 넘게 지속되면 30분 안 기다리고 조기 실패(형식 어긋남 진단).

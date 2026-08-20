@@ -46,6 +46,32 @@ CREATE TABLE IF NOT EXISTS generation (
     workspace_name TEXT                              -- 현재 귀속 워크스페이스 표시 이름(생성 시 기본값, 수동 변경 가능)
 );
 
+-- 이 PC에서만 쓰는 생성물 표식. 공유 번들은 generation의 공개 필드만 직렬화하므로 이 값은
+-- 팀 서버로 나가지 않는다. 레퍼런스 검증에 실패했지만 이미 과금된 결과를 숨기지 않고 구분한다.
+CREATE TABLE IF NOT EXISTS generation_local_flag (
+    generation_id        TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,
+    invalid_input_result INTEGER NOT NULL DEFAULT 0
+);
+
+-- 공유·최종 생성물 원본 보존 작업. 다운로드를 요청 응답과 분리하고 상태를 영속화해
+-- 프로세스 재시작 뒤에도 이어서 처리한다. 원격 URL·프롬프트는 이 테이블에 기록하지 않는다.
+CREATE TABLE IF NOT EXISTS media_preservation (
+    generation_id TEXT PRIMARY KEY REFERENCES generation(id) ON DELETE CASCADE,
+    reason        TEXT NOT NULL,                    -- shared | final | manual | admin
+    status        TEXT NOT NULL DEFAULT 'pending',  -- pending|running|complete|partial|failed|capacity
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    cached_count  INTEGER NOT NULL DEFAULT 0,
+    failed_count  INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    bytes_cached  INTEGER NOT NULL DEFAULT 0,
+    error_code    TEXT,                             -- 안전한 분류값만(URL·예외 원문 금지)
+    next_retry_at TEXT,
+    requested_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_media_preservation_due
+    ON media_preservation(status, next_retry_at, updated_at);
+
 -- 생성자(워크스페이스 멤버) uid → 사용자 지정 이름. CLI 가 uid→이름을 안 주므로 직접 라벨링.
 CREATE TABLE IF NOT EXISTS creator (
     uid  TEXT PRIMARY KEY,
@@ -59,6 +85,16 @@ CREATE TABLE IF NOT EXISTS creator (
 CREATE TABLE IF NOT EXISTS app_setting (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- 최신 100건 창을 넘어선 누락 위험과 과거 이력 자동 보충의 계정별 감사 상태.
+-- 프로세스 메모리가 아니라 DB에 두어 재시작 뒤에도 gap·쿨다운·최근 성공 판정을 이어간다.
+CREATE TABLE IF NOT EXISTS history_import_audit (
+    account_email        TEXT PRIMARY KEY,
+    gap_detected_at      TEXT,
+    gap_resolved_at      TEXT,
+    last_auto_started_at TEXT,
+    last_success_at      TEXT
 );
 -- 주의: idx_generation_job 인덱스는 db.py 의 _migrate 에서 생성한다
 -- (기존 DB 는 ALTER 로 컬럼을 먼저 추가해야 하므로 여기서 만들면 executescript 가 실패).
@@ -194,6 +230,45 @@ CREATE TABLE IF NOT EXISTS share (
     shared_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 프록시 공유/골드 권위 상태 → 로컬 미러 desired-state write-ahead 원장.
+CREATE TABLE IF NOT EXISTS share_state_intent (
+    intent_id            TEXT PRIMARY KEY,
+    server_origin        TEXT NOT NULL,
+    server_generation_id TEXT,
+    job_anchor           TEXT,
+    local_id             TEXT,
+    operation_kind       TEXT NOT NULL,
+    desired_shared       INTEGER NOT NULL CHECK(desired_shared IN (0,1)),
+    desired_final        INTEGER NOT NULL CHECK(desired_final IN (0,1)),
+    base_shared          INTEGER NOT NULL CHECK(base_shared IN (0,1)),
+    base_final           INTEGER NOT NULL CHECK(base_final IN (0,1)),
+    expected_final_by    TEXT,
+    intent_seq           INTEGER NOT NULL,
+    status               TEXT NOT NULL CHECK(status IN (
+        'prepared','pending','waiting_local','auth_required',
+        'converged','superseded','blocked','rejected')),
+    claim_token          TEXT,
+    lease_until          TEXT,
+    fail_streak          INTEGER NOT NULL DEFAULT 0,
+    next_retry_at        TEXT,
+    last_error_code      TEXT,
+    observed_state_json  TEXT,
+    observed_at          TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    last_attempt_at      TEXT,
+    CHECK (desired_final=0 OR desired_shared=1),
+    CHECK (server_generation_id IS NOT NULL OR job_anchor IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_uuid
+    ON share_state_intent(server_origin, server_generation_id)
+    WHERE server_generation_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_anchor
+    ON share_state_intent(server_origin, job_anchor)
+    WHERE job_anchor IS NOT NULL AND server_generation_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ssi_due
+    ON share_state_intent(status, next_retry_at);
+
 -- 히스토리(parent_gen → child_gen). relation: 'derived'(재생성/가져오기) | 'reference'(@소스로 생성)
 -- ※ relation 컬럼·유니크 인덱스(idx_history_edge)는 _migrate 에서 생성한다(기존 DB ALTER 순서 때문).
 -- ※ 옛 이름 lineage → history 리네임은 db._pre_migrate 가 executescript 이전에 처리(빈 테이블 충돌 회피).
@@ -214,7 +289,7 @@ CREATE TABLE IF NOT EXISTS gen_request (
     gen_id        TEXT NOT NULL,                  -- 즉시 만든 placeholder generation(여기 결과가 채워짐)
     kind          TEXT NOT NULL DEFAULT 'create', -- 'create' | 'regenerate'
     payload       TEXT,                           -- JSON: {model, prompt, params, references, source_gen_id}
-    status        TEXT NOT NULL DEFAULT 'pending',-- pending | submitting | tracking | verifying | blocked | done | failed | canceled
+    status        TEXT NOT NULL DEFAULT 'pending',-- preparing | pending | claimed | submitting | tracking | verifying | blocked | recovery_required | done | failed | canceled
     error         TEXT,
     provider_status TEXT,                         -- Higgsfield 원시 상태(알 수 없는 신규값도 그대로 보존)
     last_checked_at TEXT,                         -- generate get 마지막 확인 시각
@@ -226,13 +301,21 @@ CREATE TABLE IF NOT EXISTS gen_request (
     canvas_attempt_id TEXT,                       -- 캔버스가 요청 전에 저장한 복구 표식
     canvas_scene_id TEXT,                         -- 개인 캔버스 씬 ID(로컬 허브에만 저장)
     canvas_card_id TEXT,                          -- 결과가 돌아갈 생성카드 ID
+    idempotency_key TEXT,                         -- 일반 제출 1회 의도 UUID(계정 안에서 유일)
+    submission_fingerprint TEXT,                  -- 실제 CLI 제출 직전 명령 지문(JSON, prompt는 sha256)
+    submission_started_at TEXT,                   -- begin-submission이 승인된 서버 시각
+    recovery_probe_status TEXT,                   -- unique | multiple | no_match (읽기 전용 자동 조사)
+    recovery_probe_at TEXT,
+    recovery_probe_matches INTEGER NOT NULL DEFAULT 0,
+    recovery_probe_job_id TEXT,                   -- 유일 후보 앵커가 유실돼도 같은 job만 재시도
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_genrequest_acct ON gen_request(account_email, status);
 CREATE INDEX IF NOT EXISTS idx_genrequest_gen_latest ON gen_request(gen_id, created_at DESC, id DESC);
 -- idx_genrequest_canvas_attempt 는 db_migrations._migrate 에서 만든다.
--- 기존 DB 는 canvas_attempt_id 컬럼을 ALTER 로 먼저 추가해야 하므로 여기서 만들면
+-- idx_genrequest_idempotency 도 db_migrations._migrate 에서 만든다.
+-- 기존 DB 는 해당 컬럼을 ALTER 로 먼저 추가해야 하므로 여기서 만들면
 -- schema.sql 적용이 마이그레이션보다 앞서 실행되어 앱 시작이 실패한다.
 
 -- 생성 상태 영구 이력. 회전 운영 로그가 오래되어 사라져도 요청→앵커→검증→완료 흐름을
@@ -340,7 +423,8 @@ CREATE TABLE IF NOT EXISTS asset_comment (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     parent_id  TEXT,                                 -- 답글이면 부모 코멘트 id
-    muted      INTEGER NOT NULL DEFAULT 0            -- 작성 시점 '내 알림 끄기' 캡처(작성자 본인 알림만 억제)
+    muted      INTEGER NOT NULL DEFAULT 0,           -- [구] '내 알림 끄기' 캡처 — 비공개 코멘트로 대체, 잔존 데이터용
+    is_private INTEGER NOT NULL DEFAULT 0            -- 1=비공개(작성자 로컬 DB 에만 존재, 서버·번들로 안 나감)
 );
 CREATE INDEX IF NOT EXISTS idx_asset_comment_pp ON asset_comment(project, path);
 
@@ -362,9 +446,11 @@ CREATE TABLE IF NOT EXISTS generation_comment (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     parent_id  TEXT,                                 -- 답글이면 부모 코멘트 id
-    muted      INTEGER NOT NULL DEFAULT 0            -- 작성 시점 '내 알림 끄기' 캡처(작성자 본인 알림만 억제)
+    muted      INTEGER NOT NULL DEFAULT 0,           -- [구] '내 알림 끄기' 캡처 — 비공개 코멘트로 대체, 잔존 데이터용
+    is_private INTEGER NOT NULL DEFAULT 0            -- 1=비공개(작성자 로컬 DB 에만 존재, 서버·번들로 안 나감)
 );
 CREATE INDEX IF NOT EXISTS idx_generation_comment_gen ON generation_comment(gen_id);
+CREATE INDEX IF NOT EXISTS idx_generation_comment_created ON generation_comment(created_at DESC, id DESC);
 
 -- 사용자별 생성본 코멘트 마지막 확인 시각(미확인 C 뱃지 계산용 — 레거시 gen 단위)
 CREATE TABLE IF NOT EXISTS generation_comment_read (
@@ -414,6 +500,29 @@ CREATE TABLE IF NOT EXISTS scene_backup (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (owner_uid, project_id, scene_id)
 );
+
+-- 캔버스 생성카드 소속 — "이 카드에 이 생성물이 담겨 있다"는 사실 하나당 한 줄.
+-- scene_backup 이 씬 전체를 통째로 덮어쓰는 미러라, 늦게 저장한 브라우저가 이겨 다른 브라우저에서
+-- 쌓은 결과가 사라졌다(실측: 카드-생성물 57건 중 서버가 기억하는 건 1건). 소속만 여기로 분리해
+-- 더하기 전용으로 쌓으면 덮어쓰기 자체가 없어 브라우저끼리 싸우지 않는다.
+--   · 삭제는 실제 삭제가 아니라 removed_at 표시 — 안 그러면 아직 모르는 다른 브라우저가
+--     자기 로컬 목록으로 그 생성물을 되살린다(합치기는 합집합이므로).
+--   · owner_uid = deps.actor_id(개인 편집물) — identity._REMAP_PLAN 리맵 대상.
+--   · 개인 편집물이라 팀 서버로 보내지 않는다(_proxy._LOCAL_PREFIXES '/api/scenes').
+CREATE TABLE IF NOT EXISTS scene_card_generation (
+    owner_uid     TEXT NOT NULL,
+    scene_id      TEXT NOT NULL,
+    card_id       TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    canvas_attempt_id TEXT,                              -- gen_request 없는 synced 결과의 수동 claim 앵커
+    removed_at    TEXT,                                  -- 카드에서 뺐음(다른 브라우저에도 전파)
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_uid, scene_id, card_id, generation_id)
+);
+-- 씬 열 때 그 씬 전체를 한 번에 읽는다(카드별 N번 조회 금지).
+CREATE INDEX IF NOT EXISTS idx_scene_card_gen_scene
+    ON scene_card_generation(owner_uid, scene_id);
+-- idx_scene_card_gen_attempt는 기존 DB에 canvas_attempt_id를 ALTER한 뒤 db_migrations에서 만든다.
 
 CREATE INDEX IF NOT EXISTS idx_generation_worker  ON generation(worker_id);
 CREATE INDEX IF NOT EXISTS idx_generation_created ON generation(created_at);

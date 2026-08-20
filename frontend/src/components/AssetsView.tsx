@@ -11,11 +11,13 @@ import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
+import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
 import { STORAGE_KEYS } from "../lib/storageKeys";
 import { useFloatingPanel } from "../lib/useFloatingPanel";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { AssetComment, AssetNode, InfoTarget, PreviewTarget } from "../types";
 import { AssetCell } from "./assets/AssetCell";
+import { FolderIcon } from "./FolderIcon";
 import { loadDisabledAssets, toggleDisabledAssets } from "../lib/deactivated";
 import { AssetsCrumbBar } from "./assets/AssetsCrumbBar";
 import { AssetsSidebar } from "./assets/AssetsSidebar";
@@ -44,6 +46,7 @@ import { useAssetViewData } from "./assets/useAssetViewData";
 import { useAssetViewPersistence } from "./assets/useAssetViewPersistence";
 import { useAssetViewerIdentity } from "./assets/useAssetViewerIdentity";
 import { isAssetFolderHidden, visibleAssetTree } from "./assets/treeUtils";
+import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 
 interface Props {
   onInfo: (t: InfoTarget) => void;
@@ -54,6 +57,20 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   const t = useT();
   // 내 신원(로그인 계정 creator_uid, 단독이면 'me') — 코멘트 '내 것' 판별용. 독립 창이라 자체 조회.
   const myId = useAssetViewerIdentity();
+  // 선택 워크스페이스 — 프로젝트 유래 폴더를 생성 탭과 같은 범위로 좁힌다(수동 등록 폴더는 무관).
+  // 분리 창이라 메인 창의 상태를 직접 못 받는다. 관리 창과 같은 방식으로 저장된 필터를 읽고
+  // storage 이벤트로 따라간다(메인에서 팀을 바꾸면 이 창도 즉시 반영).
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>(
+    () => loadManageWorkspaceScope().workspaceId,
+  );
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      setWorkspaceId(loadManageWorkspaceScope().workspaceId);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   // 마지막으로 보던 상태를 기억(localStorage) → 다음에 열 때 그대로 복원
   const [dir, setDir] = useState<string>(() => LS.get("dir", ""));
   // 타입별 필터(이미지/영상/오디오) — 클릭하면 프로젝트 전체에서 그 타입만
@@ -86,7 +103,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     setMeta,
     setProject,
     tree,
-  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs });
+  } = useAssetProjectData({ onTreeLoaded: seedInitialExpandedDirs, workspaceId });
   const displayTree = useMemo(() => visibleAssetTree(project, tree), [project, tree]);
   useEffect(() => {
     if (isAssetFolderHidden(project, dir)) setDir("");
@@ -151,10 +168,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     onHeadMouseDown: onTagHeadDown,
   } = useFloatingPanel(LS, "tagPos", "tagSize", tagPanelOpen);
 
-  // 코멘트 창(공유 스레드) + 내 코멘트 알림 끄기 옵션
-  const [muteOwn, setMuteOwn] = useState(() => LS.get("muteOwn", "1") !== "0");
-  const muteOwnRef = useRef(muteOwn);
-  muteOwnRef.current = muteOwn;
+  // 코멘트 창(공유 스레드 + 내 비공개 — 비공개 작성·같이 보기는 CommentPanel 이 자체 관리)
   const [commentPath, setCommentPath] = useState<string | null>(null);
   const [comments, setComments] = useState<AssetComment[]>([]);
   const {
@@ -200,7 +214,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     }, 150);
   }, [scrollKey]);
 
-  const { allTags, breadcrumb, files, hasAnyUnread, searchActive, typeCounts } =
+  const { allTags, breadcrumb, files, hasAnyUnread, searchActive } =
     useAssetViewData({
       activeColors,
       activeTags,
@@ -460,6 +474,8 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   );
 
   const onGridDblClick = (e: React.MouseEvent) => {
+    // 버튼(S·T·C 등)·입력 위 더블클릭은 그 요소의 몫 — 클릭 2번이 미리보기로 승격되면 안 된다.
+    if ((e.target as HTMLElement).closest("button, input, a, [contenteditable]")) return;
     const cellEl = (e.target as HTMLElement).closest(".asset-cell") as HTMLElement | null;
     if (!cellEl) return;
     const f = filesRef.current[Number(cellEl.dataset.idx)];
@@ -539,20 +555,16 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     reloadMeta,
   });
 
-  const { selectActiveTag, toggleColor, toggleMuteOwn, toggleTagPanel } = useAssetFilterActions({
-    muteOwn,
+  const { selectActiveTag, toggleColor, toggleTagPanel } = useAssetFilterActions({
     setActiveColors,
     setActiveTags,
-    setMuteOwn,
     setTagPanelOpen,
-    store: LS,
     tagPanelOpen,
   });
 
   const { openComments, refreshComments, sendComment, editComment, delComment } = useAssetCommentActions({
     project,
     commentPath,
-    muteOwnRef,
     setCommentPath,
     setComments,
     reconcile,
@@ -564,6 +576,12 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     reloadProjects,
     refreshComments,
   });
+  // 격자 밖(사이드바 여백·툴바 줄)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
+  useOutsideDragSelect(".assets-grid-wrap", (e) => {
+    e.preventDefault(); // 글자 선택·네이티브 드래그 방지(격자 안 경로는 자체 처리)
+    onGridMouseDown(e as unknown as React.MouseEvent);
+  });
+
   const gridHandlers = {
     ref: gridRef,
     tabIndex: 0,
@@ -685,36 +703,74 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           title={t("폴더 등록")}
           onClick={() => setMountOpen(true)}
         >
-          <span className="assets-thumb sm" /> Assets
+          <FolderIcon width={20} height={16} /> Assets
         </button>
-        <select
+        {/* 하단 crumb 바에서 올라온 경로 정보 — 타입 슬라이더와 자리 교환(Jay 요청).
+            프로젝트 선택은 사이드바(폴더 트리 위)로, 건수는 하단 슬라이더 옆으로 이동.
+            색 규칙은 프로젝트 select 와 동일: PM 연결=라임 · 직접 등록=흰색 · 합본=회색. */}
+        <div
           className={
-            "assets-project"
-            + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
-            + (linkedProjects.has(project) ? " linked" : "")
+            "assets-head-crumb"
+            + (project === INTERNAL_COMBINED_PROJECT
+              ? " internal"
+              : linkedProjects.has(project)
+                ? " linked"
+                : "")
           }
-          value={project}
-          onChange={(e) => {
-            setProject(e.target.value);
-            setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
-          }}
         >
-          {projects.map((p) => (
-            <option
-              key={p}
-              value={p}
-              className={
-                p === INTERNAL_COMBINED_PROJECT
-                  ? "internal"
-                  : linkedProjects.has(p)
-                    ? "linked"
-                    : undefined
-              }
-            >
-              {p}
-            </option>
-          ))}
-        </select>
+          {/* 경로 첫 자리 = 프로젝트 선택 드롭다운(사이드바에서 이동, Jay 요청) */}
+          <select
+            className={
+              "assets-project"
+              + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
+              + (linkedProjects.has(project) ? " linked" : "")
+            }
+            value={project}
+            onChange={(e) => {
+              setProject(e.target.value);
+              setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
+            }}
+          >
+            {projects.map((p) => (
+              <option
+                key={p}
+                value={p}
+                className={
+                  p === INTERNAL_COMBINED_PROJECT
+                    ? "internal"
+                    : linkedProjects.has(p)
+                      ? "linked"
+                      : undefined
+                }
+              >
+                {p}
+              </option>
+            ))}
+          </select>
+          {searchActive ? (
+            <span className="crumb-search">
+              {activeTags.size
+                ? [...activeTags].map((tag) => `#${tag}`).join(" ")
+                : sourceOnly
+                  ? "소스"
+                  : activeColors.size
+                    ? "컬러"
+                    : query.trim().startsWith("#")
+                      ? "태그"
+                      : "이름"}{" "}
+              필터{query.trim() && !query.trim().startsWith("#") ? `: ${query.trim()}` : ""}
+            </span>
+          ) : (
+            breadcrumb.map((segment, index) => (
+              <span key={index}>
+                <span className="crumb-sep">/</span>
+                <button onClick={() => setDir(breadcrumb.slice(0, index + 1).join("/"))}>
+                  {segment}
+                </button>
+              </span>
+            ))
+          )}
+        </div>
         {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
         <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
           <span className="as-icon">⌕</span>
@@ -735,6 +791,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         <MountManager
           onClose={() => setMountOpen(false)}
           onChanged={() => reloadProjects(true)}
+          workspaceId={workspaceId}
         />
       )}
 
@@ -742,8 +799,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         <AssetsSidebar
           project={project}
           typeFilter={typeFilter}
-          typeCounts={typeCounts}
-          onTypeFilterChange={setTypeFilter}
           dir={dir}
           meta={meta}
           sourceOnly={sourceOnly}
@@ -789,15 +844,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onClearTags={() => setActiveTags(new Set())}
             onSelectTag={selectActiveTag}
             onDeleteTag={deleteTag}
-            searchActive={searchActive}
             sourceOnly={sourceOnly}
             activeColors={activeColors}
-            query={query}
-            project={project}
-            breadcrumb={breadcrumb}
-            onProjectRoot={() => setDir("")}
-            onBreadcrumb={setDir}
             typeFilter={typeFilter}
+            onTypeFilterChange={setTypeFilter}
             fileCount={files.length}
             onToggleColor={toggleColor}
             grayOn={grayOn}
@@ -840,8 +890,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               onSend={sendComment}
               onEdit={editComment}
               onDelete={delComment}
-              muteOwn={muteOwn}
-              onToggleMuteOwn={toggleMuteOwn}
             />
           )}
 

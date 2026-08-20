@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any, Optional
 
 from ..config import DEFAULT_WORKER_ID
-from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE
+from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, GEN_BASE_JOINS
 from .identity import get_my_uid, resolve_display_names
 
 
@@ -46,6 +46,42 @@ def _attach_children(
             g["is_source"] = bool(g["is_source"])
         if "is_final" in g:
             g["is_final"] = bool(g["is_final"])  # v02 CMS 최종(골드) 여부
+        # 원본 보존 상태는 행이 없는 생성물도 명시적인 none으로 직렬화한다. 프론트가
+        # shared/final 여부를 보고 상태를 추측하지 않게 서버가 단일 진실을 제공한다.
+        g["media_preservation_reason"] = None
+        g["media_preservation_status"] = "none"
+        g["media_preservation_attempts"] = 0
+        g["media_preservation_cached"] = 0
+        g["media_preservation_failed"] = 0
+        g["media_preservation_error"] = None
+        g["media_preservation_next_retry_at"] = None
+        g["media_preservation_updated_at"] = None
+        g["invalid_input_result"] = False
+
+    # 개인 로컬 격리 표식은 generation/share 데이터와 분리한다. API에는 표시용 bool만 붙이고
+    # export_bundle이 읽는 generation 공개 필드에는 넣지 않아 팀 공유로 새지 않게 한다.
+    for r in conn.execute(
+        f"SELECT generation_id FROM generation_local_flag "
+        f"WHERE invalid_input_result=1 AND generation_id IN ({placeholders})",
+        ids,
+    ).fetchall():
+        by_id[r["generation_id"]]["invalid_input_result"] = True
+
+    for r in conn.execute(
+        f"SELECT generation_id, reason, status, attempts, cached_count, failed_count, "
+        f"error_code, next_retry_at, updated_at FROM media_preservation "
+        f"WHERE generation_id IN ({placeholders})",
+        ids,
+    ).fetchall():
+        g = by_id[r["generation_id"]]
+        g["media_preservation_reason"] = r["reason"]
+        g["media_preservation_status"] = r["status"]
+        g["media_preservation_attempts"] = int(r["attempts"] or 0)
+        g["media_preservation_cached"] = int(r["cached_count"] or 0)
+        g["media_preservation_failed"] = int(r["failed_count"] or 0)
+        g["media_preservation_error"] = r["error_code"]
+        g["media_preservation_next_retry_at"] = r["next_retry_at"]
+        g["media_preservation_updated_at"] = r["updated_at"]
 
     # 생성자(creator_uid) → is_mine + 사용자 지정 이름.
     # is_mine 기준은 '보고 있는 로그인 계정'(viewer_uid)이 우선 — house 가 아닌 계정도 자기 작업이
@@ -197,9 +233,7 @@ _GEN_SELECT_COLS = (
     # 행을 잇는 앵커이고, 프론트 확인(ack)·개인메타 매칭이 job_id||id 키로 이 값을 쓴다.
     "g.job_id, "
     "(g.job_id IS NULL OR g.job_id='' OR g.hf_missing=1) AS local_only "
-    "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
-    "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
-    "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
+    f"{GEN_BASE_JOINS}"
 )
 
 

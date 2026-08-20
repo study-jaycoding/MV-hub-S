@@ -10,6 +10,7 @@ import unicodedata
 from typing import Any, Optional
 
 from ..db import get_connection
+from ..emailnorm import norm_email
 
 
 class WorkspaceAssignmentError(ValueError):
@@ -75,6 +76,41 @@ def resolve_workspace_name(
         )
     row = next(iter(matches.values()))
     return {"id": str(row["id"]), "name": str(row["name"]).strip()}
+
+
+def resolve_workspace_id(
+    workspace_id: str,
+    *,
+    account_email: Optional[str] = None,
+) -> dict[str, str]:
+    """현재 계정이 사용할 수 있는 워크스페이스를 UUID로 정확히 해석한다.
+
+    표시명은 서로 다른 워크스페이스에서 중복될 수 있다. 선택 UI가 이미 UUID를 알고 있을
+    때는 이름을 다시 검색하지 않고 이 경로를 사용해야 엉뚱한 공간을 고르거나 모호성 오류가
+    발생하지 않는다. 계정이 접근할 수 없는 UUID도 존재하지 않는 값과 똑같이 거절한다.
+    """
+    cleaned = str(workspace_id or "").strip()
+    if not cleaned:
+        raise WorkspaceNameNotFound("워크스페이스 식별자를 확인할 수 없습니다")
+    with get_connection() as conn:
+        if account_email:
+            row = conn.execute(
+                "SELECT w.id, w.name FROM workspace_registry w "
+                "JOIN workspace_member m ON m.workspace_id=w.id "
+                "WHERE w.id=? AND m.account_email=? AND m.is_available=1 LIMIT 1",
+                (cleaned, norm_email(account_email)),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, name FROM workspace_registry WHERE id=? LIMIT 1",
+                (cleaned,),
+            ).fetchone()
+    if row:
+        row_id = str(row["id"] or "").strip()
+        row_name = str(row["name"] or "").strip()
+        if row_id and row_name:
+            return {"id": row_id, "name": row_name}
+    raise WorkspaceNameNotFound("접근 가능한 워크스페이스를 찾을 수 없습니다")
 
 
 def _dedupe_refs(generation_ids: list[str]) -> list[str]:

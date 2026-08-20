@@ -58,6 +58,34 @@ class ThumbLruTests(unittest.TestCase):
         _make_jpg(self.dir, "a.jpg", 100, 86400)
         self.assertEqual(thumbs.evict_thumb_cache(max_bytes=1024), 0)
 
+    def test_ensure_thumb_maps_stat_race_to_missing(self):
+        class VanishingImage:
+            suffix = ".jpg"
+
+            @staticmethod
+            def is_file() -> bool:
+                return True
+
+            @staticmethod
+            def stat():
+                raise FileNotFoundError("replaced after is_file")
+
+        self.assertIsNone(thumbs.ensure_thumb(VanishingImage(), 256))
+
+    def test_evict_scan_guard_skips_repeat_but_force_rechecks(self):
+        _make_jpg(self.dir, "a.jpg", 1024, 3 * 86400)
+        _make_jpg(self.dir, "b.jpg", 1024, 2 * 86400)
+        _make_jpg(self.dir, "c.jpg", 1024, 86400)
+        self.assertEqual(thumbs.evict_thumb_cache(max_bytes=2560), 1)
+
+        added = _make_jpg(self.dir, "new.jpg", 2048, 0)
+        self.assertEqual(thumbs.evict_thumb_cache(max_bytes=2560), 0)
+        self.assertTrue(added.exists())  # 같은 주기 안에는 평면 폴더를 다시 스캔하지 않는다.
+        self.assertGreater(thumbs.evict_thumb_cache(max_bytes=2560, force=True), 0)
+        self.assertLessEqual(
+            sum(path.stat().st_size for path in self.dir.glob("*.jpg")), 2560
+        )
+
     def test_remote_prewarm_concurrency_is_global_across_calls(self):
         """동시 목록 요청마다 제한이 복제되지 않고 프로세스 전체 상한을 공유한다."""
         from app.services import media_cache

@@ -57,7 +57,7 @@ export interface Generation {
   source_name: string | null; // @이름
   comment: string | null; // 카드 코멘트(메모, 레거시 — UI 미사용)
   error: string | null; // 실패 사유(status=failed 일 때)
-  execution_phase?: "pending" | "submitting" | "tracking" | "verifying" | "blocked" | "done" | "failed" | null;
+  execution_phase?: "preparing" | "pending" | "claimed" | "submitting" | "tracking" | "verifying" | "blocked" | "recovery_required" | "done" | "failed" | null;
   provider_status?: string | null;
   last_checked_at?: string | null;
   next_check_at?: string | null;
@@ -65,6 +65,7 @@ export interface Generation {
   comment_count: number; // 공유 코멘트 스레드 글 수
   has_unread: boolean; // 미확인 코멘트 존재(C 뱃지)
   local_only: boolean; // 힉스필드에 없고 로컬에만 있음(흐림 처리 + '로컬 보기' 필터)
+  invalid_input_result?: boolean; // 로컬 전용: 입력 검증 실패지만 이미 생성된 결과
   creator_uid: string | null; // 생성자 식별자(팀 워크스페이스)
   creator_name: string | null; // 사용자 지정 이름
   is_mine: boolean; // 내 생성물인가(아니면 팀원)
@@ -77,11 +78,20 @@ export interface Generation {
   deleted: boolean; // 휴지통(soft delete) — 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
   is_final?: boolean; // v02 CMS: Supervisor 가 지정한 최종(골드)
   final_by?: string | null; // 최종 지정자 creator_uid
+  mirror_pending?: boolean; // 서버 성공·로컬 미러 대기 — 실패가 아니며 재조회 후 자동 수렴
   depth?: number; // 히스토리 형제 전용: 자기 'derived' 체인 깊이(루트=0) — 깊이별 그룹화·연결 방향용
   _comfyPending?: boolean; // 클라이언트 전용: comfy 실행 중 '내 작업'에 잠깐 띄우는 임시 카드(Comfy 로고). 서버 미저장.
+  media_preservation_reason?: "shared" | "final" | "manual" | "admin" | null;
+  media_preservation_status?: "none" | "pending" | "running" | "complete" | "partial" | "failed" | "capacity";
+  media_preservation_attempts?: number;
+  media_preservation_cached?: number;
+  media_preservation_failed?: number;
+  media_preservation_error?: string | null;
+  media_preservation_next_retry_at?: string | null;
+  media_preservation_updated_at?: string | null;
 }
 
-// 한 결과물의 가계(히스토리) — 카드 뱃지 클릭 시 패널 표시. relation 별 분리.
+// 한 결과물의 가계(히스토리) — 레시피 씬('어떻게 만들었나' 노드) 구성 재료. relation 별 분리.
 export interface History {
   ancestors: Generation[]; // 파생 부모 → … → 루트(버전 체인)
   materials: Generation[]; // 이 결과물이 @소스로 쓴 재료 ⬆
@@ -349,6 +359,19 @@ export interface GenQuery extends Filters {
 export interface GenStats {
   failed_count: number;
   has_unread: boolean;
+  unread_count?: number; // 신백엔드: 알림 대상 미확인 코멘트 수(구백엔드는 필드 없음)
+}
+
+export interface NotificationComment {
+  id: string;
+  text: string;
+  author: string;
+  author_name: string | null;
+  created_at: string;
+  gen_id: string;
+  thumbnail_url: string | null;
+  project_id: string | null;
+  unread: boolean;
 }
 
 // Assets(구성) 패널 — PV 구성탭(폴더 트리)
@@ -402,6 +425,7 @@ export interface AssetComment {
   created_at: string;
   parent_id: string | null; // 답글이면 부모 id
   unread?: boolean; // 생성본 코멘트 전용 — 내가 아직 확인 안 한 새 코멘트(NEW 표시·클릭해 확인)
+  private?: boolean; // 비공개 — 내 로컬 DB 에만 있고 팀에게 안 보임(글씨색 구분)
 }
 
 // 중간클릭 정보 팝업 대상 (generation 카드 또는 Assets 파일)
@@ -428,11 +452,12 @@ export interface PreviewTarget {
 
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
-  type: "queued" | "progress" | "synced" | "assets_changed" | "manage_changed";
+  type: "queued" | "progress" | "synced" | "assets_changed" | "manage_changed" | "flash";
   generation_id?: string;
   status?: GenStatus;
   result_url?: string | null;
   error?: string;
+  message?: string; // flash: 계정 범위 사용자 안내
   projects?: string[]; // assets_changed: 변경된 어셋 프로젝트 이름들(관련 창만 갱신)
   origins?: Array<{ client_id: string; mutation_id: string }>; // 변경 알림에 병합된 요청 출처
 }

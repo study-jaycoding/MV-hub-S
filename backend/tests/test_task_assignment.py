@@ -19,6 +19,11 @@ class TaskAssignmentTests(unittest.TestCase):
         db.flush_pool()
         db.init_db()
         repo.ensure_default_worker()
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id,name,kind,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('p1','담당 테스트','personal','personal',NULL,NULL)"
+            )
 
     def tearDown(self):
         db.flush_pool()

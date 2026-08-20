@@ -33,6 +33,39 @@ function Stop-ProcessTree([int]$TargetPid, [string]$Description) {
     }
 }
 
+function Test-MvHubServerCommandLine([string]$CommandLine, [string]$ExpectedServePath) {
+    if ([string]::IsNullOrWhiteSpace($CommandLine) -or
+        [string]::IsNullOrWhiteSpace($ExpectedServePath)) {
+        return $false
+    }
+    # Substring matching can hit a foreign process whose arguments merely contain
+    # this path (serve.py.backup, --config=...\serve.py) and then taskkill /T /F it.
+    # Tokenize with Windows quote rules and require one standalone argument to be
+    # exactly the expected absolute serve.py path.
+    $expected = $ExpectedServePath
+    try { $expected = [System.IO.Path]::GetFullPath($ExpectedServePath) } catch { }
+    $tokens = New-Object System.Collections.Generic.List[string]
+    $current = New-Object System.Text.StringBuilder
+    $inQuote = $false
+    foreach ($ch in $CommandLine.ToCharArray()) {
+        if ($ch -eq '"') { $inQuote = -not $inQuote; continue }
+        if (-not $inQuote -and ($ch -eq ' ' -or $ch -eq "`t")) {
+            if ($current.Length -gt 0) { [void]$tokens.Add($current.ToString()); [void]$current.Clear() }
+            continue
+        }
+        [void]$current.Append($ch)
+    }
+    if ($current.Length -gt 0) { [void]$tokens.Add($current.ToString()) }
+    foreach ($token in $tokens) {
+        $candidate = $token
+        try { $candidate = [System.IO.Path]::GetFullPath($token) } catch { }
+        if ([string]::Equals($candidate, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Wait-TaskStopped([string]$TaskName, [int]$WaitSeconds = 15) {
     $deadline = (Get-Date).AddSeconds($WaitSeconds)
     do {
@@ -70,6 +103,7 @@ try {
     # scheduled task cannot exit early because an old process is still active.
     $rootPath = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\")
     $rootPrefix = $rootPath + "\"
+    $expectedServePath = Join-Path $rootPath "backend\serve.py"
     $managedProcesses = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
@@ -97,8 +131,8 @@ try {
     foreach ($ownerPid in $owners) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
         $command = [string]$process.CommandLine
-        if ($command -notlike "*serve.py*") {
-            throw "Port $Port is owned by another program (PID $ownerPid). It was not stopped."
+        if (-not (Test-MvHubServerCommandLine -CommandLine $command -ExpectedServePath $expectedServePath)) {
+            throw "Port $Port is not owned by this MV Hub installation (PID $ownerPid). It was not stopped."
         }
         Stop-ProcessTree -TargetPid $ownerPid -Description "previous MV Hub server process"
     }

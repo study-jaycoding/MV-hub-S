@@ -13,9 +13,16 @@ import {
   loadSceneHistory,
   sameSnap,
   saveSceneHistory as saveStoredSceneHistory,
+  type SceneCardRemoval,
   type SceneHistory,
   type SceneSnap,
 } from "./sceneUndoStore";
+import {
+  markCardGenerationsRemoved,
+  mergeCardLinksIntoScenes,
+  reviveCardGenerations,
+  serverCardLinks,
+} from "./sceneCardLinks";
 
 interface UseSceneHistoryOptions {
   sceneId: string;
@@ -94,7 +101,7 @@ export function useSceneHistory({
     nextCards: SceneCard[],
     nextEdges: SceneEdge[],
     nextGroups: SceneGroup[] = groupsRef.current,
-    opts?: { undo?: boolean },
+    opts?: { undo?: boolean; removedForward?: SceneCardRemoval[] },
   ) => {
     // 실행 중 표시는 화면 전용이다. 저장·undo 스냅샷에는 완료/대기 상태만 남긴다.
     const next = {
@@ -103,7 +110,13 @@ export function useSceneHistory({
       groups: nextGroups,
     };
     if (opts?.undo !== false) {
-      undoStackRef.current.push(lastCommitRef.current);
+      // 이 커밋이 카드 소속을 명시적으로 제거했다면(comfy 워크플로 교체 등), 그 전이 정보를
+      // undo 엔트리에 싣는다 — undo 는 이걸 근거로만 부활시키고 redo 는 다시 제거한다(검증 P1).
+      undoStackRef.current.push(
+        opts?.removedForward?.length
+          ? { ...lastCommitRef.current, removedForward: opts.removedForward }
+          : lastCommitRef.current,
+      );
       if (undoStackRef.current.length > 200) undoStackRef.current.shift();
       redoStackRef.current = [];
     }
@@ -122,11 +135,34 @@ export function useSceneHistory({
   const hasUncommittedCardsOrEdges = (nextCards: SceneCard[], nextEdges: SceneEdge[]) =>
     nextCards !== lastCommitRef.current.cards || nextEdges !== lastCommitRef.current.edges;
 
-  const restoreState = (snapshot: SceneSnap) => {
+  const restoreState = (
+    snapshot: SceneSnap,
+    transition?: { revive?: SceneCardRemoval[]; remove?: SceneCardRemoval[] },
+  ) => {
     // 결과 대표 선택은 편집 이력과 별개이므로 현재 화면 값을 유지한다.
+    const restoredCards = preserveRepresentatives(snapshot.cards, cardsRef.current);
+    const sceneIdNow = sceneIdRef.current;
+    // ① 전이 의도를 먼저 기록한다(검증 P1 — "스냅샷에 있으니 부활" 추론 금지, 전이 메타만).
+    //    · undo(역방향): 그 커밋이 제거했던 소속을 명시적으로 부활
+    //    · redo(정방향): 같은 소속을 다시 제거
+    //    기록이 ②병합보다 먼저라야, 병합이 이 전이를 도로 무르지 않는다(오버레이가 가림).
+    for (const delta of transition?.revive || []) {
+      reviveCardGenerations(sceneIdNow, delta.cardId, delta.genIds);
+    }
+    for (const delta of transition?.remove || []) {
+      void markCardGenerationsRemoved(sceneIdNow, delta.cardId, delta.genIds);
+    }
+    // ② 서버가 아는 소속(다른 브라우저에서 담은 결과)을 복원본에도 합친다 — 과거 스냅샷엔
+    //    없어서 undo 가 세션 내내 그 결과를 숨기던 문제(합의 FE-P1-4).
+    const merged = mergeCardLinksIntoScenes(
+      [{ id: sceneIdNow, cards: restoredCards }],
+      serverCardLinks(sceneIdNow),
+    );
+    // removedForward 는 스택 엔트리 전용 전이 메타 — 복원 상태(lastCommit·저장분)에는 싣지 않는다.
+    const { removedForward: _transitionMeta, ...stateOnly } = snapshot;
     const restored = {
-      ...snapshot,
-      cards: preserveRepresentatives(snapshot.cards, cardsRef.current),
+      ...stateOnly,
+      cards: merged ? (merged[0].cards as SceneCard[]) : restoredCards,
     };
     lastCommitRef.current = restored;
     cardsRef.current = restored.cards;
@@ -184,15 +220,24 @@ export function useSceneHistory({
   const undo = () => {
     const previous = undoStackRef.current.pop();
     if (!previous) return;
-    redoStackRef.current.push(lastCommitRef.current);
-    restoreState(previous);
+    // 전이 메타는 그 전이의 양쪽 끝을 오갈 때 계속 쓰이므로 redo 엔트리에 그대로 옮겨 싣는다.
+    redoStackRef.current.push(
+      previous.removedForward?.length
+        ? { ...lastCommitRef.current, removedForward: previous.removedForward }
+        : lastCommitRef.current,
+    );
+    restoreState(previous, { revive: previous.removedForward });
   };
 
   const redo = () => {
     const next = redoStackRef.current.pop();
     if (!next) return;
-    undoStackRef.current.push(lastCommitRef.current);
-    restoreState(next);
+    undoStackRef.current.push(
+      next.removedForward?.length
+        ? { ...lastCommitRef.current, removedForward: next.removedForward }
+        : lastCommitRef.current,
+    );
+    restoreState(next, { remove: next.removedForward });
   };
 
   return {

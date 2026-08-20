@@ -7,58 +7,100 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
+from typing import Any
 
 from .. import repo
 from ..services import media_cache
 
 
-MediaTarget = tuple[str, str, str, bool]
+MediaTarget = tuple[str, str, str, bool, str | None]
 
 
-async def cache_generation_media(generation: dict) -> dict[str, int]:
+async def cache_generation_media(generation: dict) -> dict[str, Any]:
     """한 생성물의 원격 asset/reference를 내려받고 성공한 경로만 DB에 반영한다."""
-    targets: list[MediaTarget] = []  # (kind, id, url, is_image)
+    targets: list[MediaTarget] = []  # (kind, id, current_path, is_image, source_url)
     for asset in generation.get("assets", []):
-        if not asset["file_path"].startswith("/media/"):
-            targets.append(
-                (
-                    "asset",
-                    asset["id"],
-                    asset["file_path"],
-                    asset["type"] == "image",
-                )
+        targets.append(
+            (
+                "asset",
+                asset["id"],
+                asset.get("file_path") or "",
+                asset.get("type") == "image",
+                asset.get("source_url"),
             )
+        )
     for reference in generation.get("references", []):
-        if not reference["file_path"].startswith("/media/"):
-            targets.append(
-                (
-                    "ref",
-                    reference["id"],
-                    reference["file_path"],
-                    reference["type"] == "image",
-                )
+        targets.append(
+            (
+                "ref",
+                reference["id"],
+                reference.get("file_path") or "",
+                reference.get("type") == "image",
+                reference.get("source_url"),
             )
+        )
 
     if not targets:
-        return {"cached": 0, "failed": 0, "skipped": 0}
+        return {
+            "cached": 0, "already": 0, "failed": 0, "skipped": 0,
+            "bytes_cached": 0, "failure_codes": {}, "retryable": 0,
+        }
 
-    results = await asyncio.gather(*(media_cache.cache_url(target[2]) for target in targets))
+    # 로컬 보존 경로가 DB에 있으나 파일만 유실됐으면 source_url로 자기치유한다.
+    urls = [
+        source_url
+        if current_path.startswith("/media/") and source_url and not media_cache.local_media_exists(current_path)
+        else current_path
+        for _kind, _id, current_path, _is_image, source_url in targets
+    ]
+    results = await asyncio.gather(*(media_cache.cache_url_result(url) for url in urls))
 
     cached = 0
     failed = 0
-    for (kind, media_id, source_url, is_image), local_path in zip(targets, results):
-        if not local_path:
+    already = 0
+    skipped = 0
+    bytes_cached = 0
+    retryable = 0
+    failure_codes: Counter[str] = Counter()
+    for (kind, media_id, current_path, is_image, source_url), requested_url, result in zip(
+        targets, urls, results
+    ):
+        if result.status == "skipped":
+            skipped += 1
+            continue
+        if not result.path:
             failed += 1
+            if result.retryable:
+                retryable += 1
+            failure_codes[result.error_code or "unknown"] += 1
             continue
 
-        thumb_path = local_path if is_image else None
-        if kind == "asset":
-            repo.update_asset_cache(media_id, local_path, thumb_path, source_url)
+        if result.status == "cached":
+            cached += 1
+            bytes_cached += result.bytes_added
         else:
-            repo.update_reference_cache(media_id, local_path, thumb_path, source_url)
-        cached += 1
+            already += 1
 
-    return {"cached": cached, "failed": failed, "skipped": 0}
+        # 같은 URL을 여러 에셋이 공유하거나 파일이 이전 실행에서 이미 내려받아졌어도,
+        # DB가 아직 원격 URL이면 모든 행을 로컬 경로로 바꿔야 CDN 만료 뒤에도 실제로 살아남는다.
+        if current_path != result.path:
+            thumb_path = result.path if is_image else None
+            preserved_source = source_url or (requested_url if requested_url.startswith(("http://", "https://")) else None)
+            if kind == "asset":
+                repo.update_asset_cache(media_id, result.path, thumb_path, preserved_source)
+            else:
+                repo.update_reference_cache(media_id, result.path, thumb_path, preserved_source)
+
+    return {
+        "cached": cached,
+        "already": already,
+        "failed": failed,
+        "skipped": skipped,
+        "bytes_cached": bytes_cached,
+        "failure_codes": dict(failure_codes),
+        "retryable": retryable,
+    }
 
 
 async def cache_all_generation_media() -> dict[str, int]:
@@ -66,7 +108,7 @@ async def cache_all_generation_media() -> dict[str, int]:
     total = {"cached": 0, "failed": 0, "generations": 0}
     sem = asyncio.Semaphore(6)
 
-    async def cache_one(gen_id: str) -> dict[str, int] | None:
+    async def cache_one(gen_id: str) -> dict[str, Any] | None:
         async with sem:
             generation = repo.get_generation(gen_id)
             if not generation:

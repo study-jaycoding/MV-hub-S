@@ -269,11 +269,3 @@ def tags_overlay_by_anchors(anchor_ids: list[str]) -> dict[str, list[str]]:
     for r in rows:
         out.setdefault(r["anchor"], []).append(r["tag"])
     return out
-
-
-def all_overlay_tags() -> list[str]:
-    """내가 남의 카드에 단 태그 이름 전체(중복 제거) — 팀 '등록된 태그' 레지스트리 보강용."""
-    with get_connection() as conn:
-        _ensure_tag_overlay(conn)
-        rows = conn.execute("SELECT DISTINCT tag FROM gen_tag_overlay ORDER BY tag").fetchall()
-    return [r["tag"] for r in rows]

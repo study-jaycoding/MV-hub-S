@@ -98,7 +98,13 @@ def compact_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "websocket": {
             key: websocket.get(key)
-            for key in ("connections", "authenticated_accounts", "local_connections")
+            for key in (
+                "connections",
+                "authenticated_accounts",
+                "local_connections",
+                "send_timeouts",
+                "send_failures",
+            )
         },
         "remote_realtime": {
             key: remote_realtime.get(key)
@@ -112,6 +118,8 @@ def compact_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "generation_queue": dict(operations.get("generation_queue") or {}),
             "telemetry": dict(operations.get("telemetry") or {}),
             "backups": dict(operations.get("backups") or {}),
+            "worker_backup": dict(operations.get("worker_backup") or {}),
+            "backup_replica": dict(operations.get("backup_replica") or {}),
             "databases": dict(operations.get("databases") or {}),
         },
     }

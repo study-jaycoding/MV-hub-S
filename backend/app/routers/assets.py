@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -40,9 +42,21 @@ from ..deps import (
     account_scope_uid,
     actor_id,
 )
-from ..services.media_types import VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
+from ..services.media_types import (
+    AUDIO_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    asset_content_type,
+)
 from ..services.request_guards import require_loopback_request
-from ..services import asset_io, asset_mounts, asset_paths, asset_tree, cli_bridge, thumbs
+from ..services import (
+    asset_io,
+    asset_mounts,
+    asset_paths,
+    asset_tree,
+    asset_watcher,
+    thumbs,
+    upload_limits,
+)
 from ..services.path_safety import safe_join
 
 
@@ -97,6 +111,7 @@ def _find_same_media(
 
 # ── 업로드 스트리밍(청크) — 큰 파일을 통째로 메모리에 read 하지 않는다 ─────────────────
 _UPLOAD_MAX_FILES = asset_io.UPLOAD_MAX_FILES
+_UPLOAD_TOTAL_MAX_BYTES = upload_limits.ASSET_UPLOAD_TOTAL_MAX_BYTES
 _ZIP_MAX_FILES = asset_io.ZIP_MAX_FILES
 _UploadTooLarge = asset_io.UploadTooLarge
 
@@ -115,40 +130,107 @@ def _commit_unique_tmp(tmp: Path, dest_dir: Path, raw_name: str) -> Path:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _validate_upload_batch(files: list[UploadFile]) -> None:
+    """Starlette가 실제로 받은 파일 바이트 합계를 저장 시작 전에 검사한다."""
+    try:
+        upload_limits.validate_upload_batch(
+            files,
+            max_files=_UPLOAD_MAX_FILES,
+            max_file_bytes=asset_io.UPLOAD_MAX_BYTES,
+            max_total_bytes=_UPLOAD_TOTAL_MAX_BYTES,
+        )
+    except upload_limits.UploadLimitExceeded as exc:
+        if exc.kind == "file_count":
+            raise HTTPException(
+                status_code=400,
+                detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다",
+            ) from exc
+        if exc.kind == "file_size":
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{(exc.index or 0) + 1}번째 파일이 너무 큽니다"
+                    f"(최대 {upload_limits.format_byte_limit(asset_io.UPLOAD_MAX_BYTES)})"
+                ),
+                headers=upload_limits.limit_headers(asset_io.UPLOAD_MAX_BYTES),
+            ) from exc
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "한 번에 올릴 수 있는 파일 합계가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(_UPLOAD_TOTAL_MAX_BYTES)})"
+            ),
+            headers=upload_limits.limit_headers(_UPLOAD_TOTAL_MAX_BYTES),
+        ) from exc
+
+
 def _owner_mounts(owner: str) -> list[dict[str, str]]:
     """그 계정(owner)이 등록한 마운트만 — 각자 자기 것만 본다."""
     return asset_mounts.owner_mounts(_mounts_file(), owner, DEFAULT_WORKER_ID)
+
+
+# 마운트 경로 해석 TTL 캐시 — 응답 없는 SMB 공유의 resolve()/is_dir() 는 요청마다 수 초~
+# 수십 초 블로킹해(그리드 200장 = /thumb 200회) 스레드풀을 통째로 잠식했다.
+# ★코덱스 리뷰 반영 2가지: ①TTL 은 I/O 가 '끝난 시점'부터 센다 — 시작 시점 기준이면
+#   resolve 가 30초 걸리는 죽은 공유에서 실패 캐시가 저장 즉시 만료돼 무의미했다.
+#   ②같은 경로의 동시 캐시 미스는 한 스레드만 실제 I/O 를 하고 나머지는 그 결과를
+#   기다린다(in-flight 단일화) — 안 하면 첫 미스 폭주는 그대로였다.
+_MOUNT_PATH_CACHE: dict[str, tuple[float, Optional[Path]]] = {}
+_MOUNT_PATH_PENDING: dict[str, threading.Event] = {}
+_MOUNT_PATH_LOCK = threading.Lock()
+_MOUNT_PATH_TTL_OK = 5.0
+_MOUNT_PATH_TTL_DEAD = 30.0
+
+
+def _resolve_mount_path(raw: str) -> Optional[Path]:
+    """경로 문자열 → 실재하는 폴더 Path(없으면 None). TTL 캐시 + 동시 미스 단일화."""
+    while True:
+        with _MOUNT_PATH_LOCK:
+            hit = _MOUNT_PATH_CACHE.get(raw)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+            pending = _MOUNT_PATH_PENDING.get(raw)
+            if pending is None:
+                pending = threading.Event()
+                _MOUNT_PATH_PENDING[raw] = pending
+                break  # 이 스레드가 해석 담당
+        # 다른 스레드가 해석 중 — 끝나면 캐시를 다시 읽는다(해석이 아주 오래 걸리면 재대기).
+        pending.wait(timeout=35.0)
+    try:
+        try:
+            p = Path(raw).resolve()
+            result = p if p.is_dir() else None
+        except OSError:
+            result = None
+        ttl = _MOUNT_PATH_TTL_OK if result is not None else _MOUNT_PATH_TTL_DEAD
+        with _MOUNT_PATH_LOCK:
+            _MOUNT_PATH_CACHE[raw] = (time.monotonic() + ttl, result)
+        return result
+    finally:
+        with _MOUNT_PATH_LOCK:
+            _MOUNT_PATH_PENDING.pop(raw, None)
+        pending.set()
 
 
 def _mount_dir(name: str, owner: str) -> Optional[Path]:
     """등록 이름 → 실제 폴더(그 계정 소유 안에서만 해석 — 남의 마운트엔 접근 못 함)."""
     for m in _owner_mounts(owner):
         if m["name"] == name:
-            p = Path(m["path"]).resolve()
-            return p if p.is_dir() else None
+            return _resolve_mount_path(m["path"])
     return None
 
 
-def _selected_workspace_scope() -> tuple[bool, Optional[str]]:
-    """(known, workspace_id) — 미확인(known=False)은 호출측 fail-close.
-
-    sync 엔드포인트(threadpool)에서는 미확인 시 CLI 를 single-flight 로 1회 조회,
-    async 경로(업로드 등 이벤트 루프 안)에서는 블로킹 금지라 확정 상태만 읽는다
-    (대개 목록/트리 조회(sync)가 먼저 확정해 둔다)."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return cli_bridge.resolve_selected_workspace_blocking()
-    return cli_bridge.selected_workspace_state()
-
-
-def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
+def _auto_project_mounts(
+    request: Request, workspace_id: Optional[str] = None
+) -> list[dict[str, str]]:
     """PM 프로젝트 설정의 root_path 를 Assets 자동 마운트로 노출한다.
 
     수동 asset_mounts.json 에 쓰지 않고 매번 읽어 합친다. 프로젝트 설정을 바꾸면
     에셋창도 다음 로드부터 그대로 따라가게 하기 위해서다.
-    ★워크스페이스 스코프: 팀 워크스페이스 선택 중엔 그 워크스페이스 프로젝트만
-    (라이브러리 사이드바와 동일 규칙), 개인 컨텍스트면 내가 볼 수 있는 전체.
+
+    workspace_id 가 오면 그 팀 워크스페이스의 프로젝트만 남긴다(생성 탭과 같은 규칙:
+    팀 선택 시만 좁히고 개인·미선택은 전체). 수동 마운트는 이 경로를 타지 않으므로
+    워크스페이스와 무관하게 항상 보인다 — 내가 직접 추가한 폴더는 팀 소속이 아니다.
     """
     if not MANAGE_ENABLED:
         return []
@@ -163,18 +245,11 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
     # 로컬 링크가 비어도 진행한다 — 팀 공유 렌더 루트(p.render_root_path)만 있는 PC 에서도
     # 프로젝트가 Assets 자동 마운트로 잡히게 한다(아래 루프에서 render_root_path 우선).
 
-    known, ws_id = _selected_workspace_scope()
-    if not known:
-        # 워크스페이스 미확인은 fail-close — 타 워크스페이스 프로젝트 폴더가 노출되거나
-        # 그쪽으로 업로드되는 것을 막는다(수동 등록 마운트는 영향 없음).
-        return []
     read_all = (not AUTH_ENABLED) or rbac.has_global_cap(account_global_roles(request), "read_all")
     member_uid = None if read_all else (account_scope_uid(request) or "\x00")
     try:
         visible = repo.list_projects(
-            include_archived=False,
-            member_uid=member_uid,
-            workspace_id=ws_id,
+            include_archived=False, member_uid=member_uid, workspace_id=workspace_id
         ).get("projects") or []
     except Exception:  # noqa: BLE001
         visible = []
@@ -191,46 +266,50 @@ def _auto_project_mounts(request: Request) -> list[dict[str, str]]:
         root = str(p.get("render_root_path") or link.get("root_path") or "").strip()
         if not (pid and name and root) or name in used:
             continue
-        try:
-            path = Path(root).expanduser().resolve()
-        except OSError:
-            path = Path(root).expanduser()
+        # ★여기서 resolve() 하지 않는다(디스크 I/O 없음) — 죽은 NAS 루트가 섞여 있으면
+        #  /mounts·/projects 요청마다 블로킹됐다. 실제 해석은 사용 시점에 TTL 캐시
+        #  (_resolve_mount_path)가 담당하고, 여기선 문자열 정규화만 한다.
+        path = os.path.normpath(str(Path(root).expanduser()))
         used.add(name)
-        out.append({"name": name, "path": str(path), "owner": "project"})
+        out.append({"name": name, "path": path, "owner": "project", "project_id": pid})
     return out
 
 
-def _auto_mount_dir(name: str, request: Request) -> Optional[Path]:
+def _auto_mount_dir(name: str, request: Request) -> Optional[tuple[Path, str]]:
     for m in _auto_project_mounts(request):
         if m["name"] == name:
-            p = Path(m["path"]).resolve()
-            return p if p.is_dir() else None
+            directory = _resolve_mount_path(m["path"])
+            if directory is not None:
+                return directory, m["project_id"]
     return None
 
 
-def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bool]]:
-    """프로젝트 이름 → 실제 폴더 + 자동 PM 경로 여부.
+def _project_dir_info(project: str, request: Request) -> Optional[tuple[Path, bool, str]]:
+    """프로젝트 이름 → 실제 폴더 + 자동 PM 경로 여부 + watcher 등록 ID.
 
     두 번째 값이 True 면 PM 프로젝트 설정에서 온 경로다. 이 경우 Assets 트리에서
     Render 폴더는 숨기고, 나머지 제작 폴더만 보여준다.
     """
     # 합본(imp/cap)은 ASSETS_ROOT 기준 — 파일/썸네일 경로가 captures/xxx, imports/xxx 로 해석된다.
     if project == _COMBINED_INTERNAL:
-        return ASSETS_ROOT, False
+        return ASSETS_ROOT, False, f"combined-root:{project}"
     owner = actor_id(request)
     # 내(owner)가 등록한 외부 폴더(마운트)가 있으면 그 경로 우선 — 임의 위치 허용.
     md = _mount_dir(project, owner)
     if md:
-        return md, False
+        return md, False, asset_watcher.manual_registration_id(owner, project)
     auto = _auto_mount_dir(project, request)
     if auto:
-        return auto, True
+        directory, project_id = auto
+        return directory, True, asset_watcher.auto_registration_id(project_id)
     cand = (ASSETS_ROOT / project).resolve()
     try:
         cand.relative_to(ASSETS_ROOT)
     except ValueError:
         return None
-    return (cand, False) if cand.is_dir() else None
+    if not cand.is_dir():
+        return None
+    return cand, False, asset_watcher.manual_registration_id(owner, project)
 
 
 def _safe_project_dir(project: str, request: Request) -> Optional[Path]:
@@ -240,6 +319,20 @@ def _safe_project_dir(project: str, request: Request) -> Optional[Path]:
 
 def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
     return safe_join(project_dir, rel)  # 경로 이탈 차단은 공용 path_safety.safe_join 으로 단일화
+
+
+def _safe_project_resolve(project: str, project_dir: Path, rel: str) -> Optional[Path]:
+    """합본 뷰는 ASSETS_ROOT 전체가 아니라 captures/imports 아래만 파일 경계로 쓴다."""
+    target = _safe_resolve(project_dir, rel)
+    if target is None or project != _COMBINED_INTERNAL:
+        return target
+    for folder in _INTERNAL_FOLDERS:
+        try:
+            target.relative_to((project_dir / folder).resolve())
+            return target
+        except ValueError:
+            continue
+    return None
 
 
 def _index_by_sha(
@@ -263,7 +356,7 @@ def _index_by_sha(
             except (OSError, ValueError):
                 continue
             # 숨김 파일/폴더(부모 포함)는 트리에서 안 보이므로 재매칭 대상에서도 제외.
-            if any(_hidden(part) for part in rel.parts):
+            if any(asset_tree.is_hidden_name(part) for part in rel.parts):
                 continue
             count += 1
             if count > limit:
@@ -328,11 +421,14 @@ class ProjectsOut(BaseModel):
     response_model=ProjectsOut,
     dependencies=[Depends(_require_local_assets)],
 )
-def list_projects(request: Request, background: BackgroundTasks):
+def list_projects(
+    request: Request, background: BackgroundTasks, workspace_id: Optional[str] = None
+):
     """등록된 외부 폴더(마운트)만 프로젝트로 노출 — **내가 등록한 것만**(계정별 개인 목록).
-    디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다."""
+    디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다.
+    workspace_id 가 오면 프로젝트 유래 폴더만 그 팀으로 좁힌다(수동 등록은 항상 노출)."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
-    auto_names = [m["name"] for m in _auto_project_mounts(request)]
+    auto_names = [m["name"] for m in _auto_project_mounts(request, workspace_id)]
     for name in auto_names:
         if name not in projects:
             projects.append(name)
@@ -363,27 +459,28 @@ class MountIn(BaseModel):
     path: str
 
 
-def _mounts_payload(request: Request) -> dict:
+def _mounts_payload(request: Request, workspace_id: Optional[str] = None) -> dict:
     """마운트 목록 응답(수동 + 프로젝트 자동, 이름 중복 제거) — GET/POST/DELETE 공통.
     셋이 같은 스키마를 돌려줘야 등록/삭제 직후와 새로고침 목록이 어긋나지 않는다
     (auto 폴더가 사라졌다 되살아나 보이는 현상 방지)."""
     manual = [
-        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir()}
+        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None}
         for m in _owner_mounts(actor_id(request))
     ]
     names = {m["name"] for m in manual}
     auto = [
-        {"name": m["name"], "path": m["path"], "exists": Path(m["path"]).is_dir(), "auto": True}
-        for m in _auto_project_mounts(request)
+        {"name": m["name"], "path": m["path"], "exists": _resolve_mount_path(m["path"]) is not None, "auto": True}
+        for m in _auto_project_mounts(request, workspace_id)
         if m["name"] not in names
     ]
     return {"mounts": manual + auto}
 
 
 @router.get("/mounts", dependencies=[Depends(_require_local_assets)])
-def list_mounts(request: Request):
-    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록."""
-    return _mounts_payload(request)
+def list_mounts(request: Request, workspace_id: Optional[str] = None):
+    """**내가 등록한** 외부 폴더 목록(+실제 존재 여부) — 계정별 개인 목록.
+    workspace_id 가 오면 프로젝트 유래(auto) 항목만 그 팀으로 좁힌다."""
+    return _mounts_payload(request, workspace_id)
 
 
 @router.post("/mounts", dependencies=[Depends(_require_mount_manager)])
@@ -403,7 +500,14 @@ def add_mount(body: MountIn, request: Request):
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"폴더가 존재하지 않습니다: {path}")
     # 내 항목 중 같은 이름만 교체(남의 마운트는 그대로 보존).
+    previous = next((m for m in _owner_mounts(owner) if m["name"] == name), None)
     asset_mounts.upsert(_mounts_file(), name=name, location=str(p), owner=owner)
+    if previous and os.path.normcase(
+        os.path.normpath(previous["path"])
+    ) != os.path.normcase(str(p)):
+        asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
+    with _MOUNT_PATH_LOCK:  # 방금 검증한 경로가 실패로 캐시돼 있으면(복구 직후 재등록) 즉시 무효화
+        _MOUNT_PATH_CACHE.clear()
     return _mounts_payload(request)
 
 
@@ -412,6 +516,7 @@ def del_mount(name: str, request: Request):
     """등록된 외부 폴더 해제 — **내 것만** 지운다(남의 등록엔 영향 없음). 원본 폴더는 안 건드림."""
     owner = actor_id(request)
     asset_mounts.remove(_mounts_file(), name=name, owner=owner)
+    asset_watcher.unwatch(asset_watcher.manual_registration_id(owner, name))
     return _mounts_payload(request)
 
 
@@ -427,8 +532,6 @@ def project_tree(
     if project == _COMBINED_INTERNAL:  # 합본 — captures/imports 를 두 폴더로 묶어 반환
         # 합본도 실제 하위 폴더를 감시해야 외부 편집기의 같은 이름 덮어쓰기를 즉시 감지한다.
         try:
-            from ..services import asset_watcher
-
             asset_watcher.watch_combined(
                 ASSETS_ROOT,
                 project,
@@ -448,13 +551,16 @@ def project_tree(
     info = _project_dir_info(project, request)
     if not info:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    proj_dir, auto_project = info
+    proj_dir, auto_project, registration_id = info
     # 지금 보고 있는 이 프로젝트 폴더를 실시간 감시 등록(이미 감시 중이면 무시).
     # 파일이 바뀌면 watchdog 가 WS 로 알려 프론트가 새로고침 없이 갱신한다(Phase 2). 감시 불가 환경은 무해.
     try:
-        from ..services import asset_watcher
-
-        asset_watcher.watch(proj_dir, project, hide_render=auto_project)
+        asset_watcher.watch(
+            proj_dir,
+            project,
+            hide_render=auto_project,
+            registration_id=registration_id,
+        )
     except Exception:  # noqa: BLE001 — 감시 등록 실패가 트리 조회를 막지 않게
         pass
     tree_read = asset_tree.read_project_tree(
@@ -555,10 +661,28 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _safe_project_resolve(project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
-    return FileResponse(target)
+    content_type = asset_content_type(target.name)
+    if content_type is None:
+        # 마운트 폴더에는 미디어 외 파일도 있을 수 있다. 트리에서 숨기는 것만으로는 직접 URL을
+        # 막지 못하므로 HTTP 경계에서도 차단한다. 특히 HTML/SVG/스크립트를 같은 오리진으로
+        # 실행하지 않는 것이 핵심이다.
+        raise HTTPException(status_code=415, detail="지원하지 않는 Assets 파일 형식입니다")
+    return FileResponse(
+        target,
+        media_type=content_type,
+        filename=target.name,
+        content_disposition_type="inline",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            # 원본은 같은 경로에서 외부 편집기로 교체될 수 있으므로 매번 유효성을 확인한다.
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 @router.get("/thumb", dependencies=[Depends(_require_local_assets)])
@@ -575,7 +699,7 @@ def get_thumb(
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _safe_project_resolve(project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     # 썸네일 생성·캐시키는 thumbs 서비스로 단일화 — 엔드포인트와 pre-warm 이 같은 키를 써야
@@ -589,9 +713,10 @@ def get_thumb(
     else:
         raise HTTPException(status_code=415, detail="썸네일은 이미지·영상만 지원")
     if not cache:
-        # 비디오 포스터 실패(ffmpeg 없음·손상 파일 등)는 404. 그 타일은 포스터 없이 재생버튼만 뜬다
-        # (preload=none 이라 첫 프레임은 안 뜸 — 드문 경우). 이미지 실패는 500.
-        raise HTTPException(status_code=404 if mt == "video" else 500, detail="썸네일 생성 실패")
+        # 손상 파일·미지원 서브포맷·잠금 등 '그 파일의 문제'다 — 서버 오류(500)로 내면 손상 파일
+        # 하나가 그리드 스크롤마다 에러 로그 폭탄을 만든다. 이미지·비디오 모두 404 로 통일
+        # (그 타일만 조용히 비고, 배포·서버 상태 경보를 오염시키지 않는다).
+        raise HTTPException(status_code=404, detail="썸네일 생성 실패(손상되었거나 열 수 없는 파일)")
     thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     # v(파일 버전)가 붙은 URL 은 그 내용에 1:1 대응 → 영구·immutable 캐시로 다음부턴 요청 없이 즉시 표시.
     # v 가 없으면(옛 저장 URL·직접 호출) 매번 재검증(no-cache)해, 원본을 같은 이름으로 덮어써도
@@ -600,7 +725,12 @@ def get_thumb(
     return FileResponse(
         cache,
         media_type="image/jpeg",
-        headers={"Cache-Control": cache_control},
+        headers={
+            "Cache-Control": cache_control,
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
     )
 
 
@@ -621,11 +751,10 @@ async def upload_assets(
     #  최상위에 저장돼 합본 트리에 안 보이고 루트를 오염시킨다 → imports 폴더로 보낸다(외부 파일 버킷).
     if project == _COMBINED_INTERNAL and not dir:
         dir = _PROMPT_IMPORT_PROJECT
-    dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
+    dest = _safe_project_resolve(project, proj_dir, dir) if dir else proj_dir
     if not dest or not dest.is_dir():
         raise HTTPException(status_code=400, detail="대상 폴더 없음")
-    if len(files) > _UPLOAD_MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
+    _validate_upload_batch(files)
 
     saved: list[str] = []
     skipped: list[str] = []
@@ -660,12 +789,20 @@ async def upload_capture(request: Request, file: UploadFile = File(...)):
     """클립보드 캡쳐(이미지)를 내장 'captures' 폴더에 저장 + asset 토큰용 정보 반환.
     저장 즉시 레퍼런스(asset:captures|name)로 쓸 수 있고, Assets 에서도 탐색·태그·소스지정 가능.
     captures 는 내장 ASSETS_ROOT/captures 폴더(마운트 아님)라 owner 무관하게 thumb/file 서빙됨."""
+    _validate_upload_batch([file])
     cap_dir = (ASSETS_ROOT / "captures").resolve()
     cap_dir.mkdir(parents=True, exist_ok=True)
     try:
         tmp, size, digest = await _stream_upload_tmp(file, cap_dir)
     except _UploadTooLarge:
-        raise HTTPException(status_code=413, detail="캡쳐가 너무 큽니다")
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "캡쳐가 너무 큽니다"
+                f"(최대 {upload_limits.format_byte_limit(asset_io.UPLOAD_MAX_BYTES)})"
+            ),
+            headers=upload_limits.limit_headers(asset_io.UPLOAD_MAX_BYTES),
+        )
     if size == 0:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="빈 캡쳐")
@@ -705,8 +842,7 @@ async def upload_reference_import(
     except ValueError:
         raise HTTPException(status_code=500, detail="imports 경로 오류")
     dest.mkdir(parents=True, exist_ok=True)
-    if len(files) > _UPLOAD_MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"한 번에 최대 {_UPLOAD_MAX_FILES}개까지 올릴 수 있습니다")
+    _validate_upload_batch(files)
 
     saved: list[dict[str, Any]] = []
     skipped: list[str] = []
@@ -795,7 +931,7 @@ def export_zip(
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for rel in paths:
-                target = _safe_resolve(proj_dir, rel)
+                target = _safe_project_resolve(project, proj_dir, rel)
                 if not target or not target.is_file():
                     continue
                 key = str(target).lower()
@@ -826,6 +962,7 @@ def export_zip(
         tmp_path,
         media_type="application/zip",
         filename=f"assets-{len(used)}.zip",
+        headers={"X-Content-Type-Options": "nosniff"},
         background=BackgroundTask(os.unlink, tmp_path),  # 전송 후 임시 zip 삭제
     )
 
@@ -841,7 +978,7 @@ def reveal_file(body: RevealIn, request: Request):
     proj_dir = _safe_project_dir(body.project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {body.project}")
-    target = _safe_resolve(proj_dir, body.path)
+    target = _safe_project_resolve(body.project, proj_dir, body.path)
     if not target or not target.exists():
         raise HTTPException(status_code=404, detail="파일 없음")
     try:
@@ -893,7 +1030,7 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
     seen: set[str] = set()
     skipped = 0
     for rel in body.paths:
-        target = _safe_resolve(proj_dir, rel)  # 경로 이탈 차단(safe_join)
+        target = _safe_project_resolve(body.project, proj_dir, rel)
         # is_file() 로 폴더 배제 + 허용 미디어(이미지·영상·오디오) 확장자만.
         if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_MEDIA_EXT:
             skipped += 1

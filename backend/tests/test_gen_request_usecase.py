@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models import RegenerateIn
+from app.usecases import gen_requests as gen_request_usecases
 from app.usecases.gen_requests import (
     GenRequestCommand,
     anchor_request,
@@ -116,7 +117,16 @@ def test_pm_branch_records_pending_then_refreshes_estimate_when_manage_on():
             kind="create", email="a@b.com", creator_uid="u", worker_id="w",
             source_gen_id=None, data={},
         )
-        asyncio.run(submit_gen_request(cmd))
+
+        async def submit_and_wait_for_estimate():
+            before = set(gen_request_usecases._estimate_tasks)
+            result = await submit_gen_request(cmd)
+            scheduled = set(gen_request_usecases._estimate_tasks) - before
+            if scheduled:
+                await asyncio.gather(*scheduled)
+            return result
+
+        asyncio.run(submit_and_wait_for_estimate())
 
         cli.estimate_cost.assert_awaited_once()
         assert pm.call_count == 2
@@ -147,6 +157,33 @@ def test_pm_branch_records_pending_then_refreshes_estimate_when_manage_on():
         pm.assert_not_called()
 
 
+def test_shutdown_cancels_and_waits_for_background_estimates():
+    async def scenario():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def estimate_worker():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(estimate_worker())
+        gen_request_usecases._estimate_tasks.add(task)
+        task.add_done_callback(gen_request_usecases._estimate_tasks.discard)
+        await started.wait()
+        await gen_request_usecases.shutdown_request_estimates()
+        return task, cancelled.is_set()
+
+    task, cancelled = asyncio.run(scenario())
+
+    assert cancelled
+    assert task.cancelled()
+    assert not gen_request_usecases._estimate_tasks
+
+
 def test_pm_best_effort_marks_generation_dirty_only_after_metric_write():
     order = []
     with patch("app.usecases.gen_requests.MANAGE_ENABLED", True), patch(
@@ -169,6 +206,7 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
     ) as signals, patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
         "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
     ) as broadcast:
+        repo.sweep_expired_generation_claims.return_value = []
         repo.claim_pending_requests.return_value = claimed
 
         out = asyncio.run(claim_gen_requests("A@B.COM", "acct:a", limit=99))
@@ -176,7 +214,12 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
         assert out == claimed
         signals.touch.assert_called_once_with("A@B.COM")
         repo.claim_pending_requests.assert_called_once_with(
-            "A@B.COM", limit=16, workspace_capable=False, lease_owner=None
+            "A@B.COM",
+            limit=16,
+            workspace_capable=False,
+            lease_owner=None,
+            submission_stage_capable=False,
+            sweep_expired=False,
         )
         assert repo.set_status.call_args_list == [
             (("g1", "running", None),),
@@ -191,6 +234,131 @@ def test_claim_requests_updates_each_placeholder_and_broadcasts_in_scope():
             "g1",
             "g2",
         ]
+
+
+def test_staged_claim_waits_for_begin_before_marking_generation_started():
+    claimed = [{"id": "r1", "gen_id": "g1", "claim_phase": "claimed"}]
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.agent_signals"
+    ), patch("app.usecases.gen_requests.pm_best_effort") as pm, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.sweep_expired_generation_claims.return_value = []
+        repo.claim_pending_requests.return_value = claimed
+
+        out = asyncio.run(
+            claim_gen_requests(
+                "a@b.com",
+                "acct:a",
+                limit=1,
+                lease_owner="agent-1",
+                submission_stage_capable=True,
+            )
+        )
+
+    assert out == claimed
+    repo.set_status.assert_not_called()
+    pm.assert_not_called()
+    broadcast.assert_awaited_once_with({"type": "synced"}, account_uid="acct:a")
+
+
+def test_begin_submission_records_started_only_on_first_transition():
+    from app.usecases.gen_requests import begin_submission
+
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.pm_best_effort"
+    ) as pm, patch(
+        "app.usecases.gen_requests.journal_generation_event"
+    ) as journal, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast:
+        repo.begin_request_submission.side_effect = [
+            {"gen_id": "g1", "transitioned": True},
+            {"gen_id": "g1", "transitioned": False},
+        ]
+
+        assert asyncio.run(
+            begin_submission("a@b.com", "acct:a", "r1", "agent-1")
+        ) is True
+        assert asyncio.run(
+            begin_submission("a@b.com", "acct:a", "r1", "agent-1")
+        ) is True
+
+    assert pm.call_count == 1
+    assert journal.call_count == 1
+    assert broadcast.await_count == 1
+
+
+def test_recovery_report_is_idempotent_and_generation_requeue_resolves_owned_request():
+    from app.usecases.gen_requests import (
+        confirm_generation_not_submitted_and_requeue,
+        require_submission_recovery,
+    )
+
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.journal_generation_event"
+    ) as journal, patch(
+        "app.usecases.gen_requests.manager.broadcast", new_callable=AsyncMock
+    ) as broadcast, patch("app.usecases.gen_requests.agent_signals") as signals:
+        repo.mark_request_recovery_required.side_effect = [
+            {"gen_id": "g1", "transitioned": True},
+            {"gen_id": "g1", "transitioned": False},
+        ]
+        assert asyncio.run(
+            require_submission_recovery("a@b.com", "acct:a", "r1")
+        ) is True
+        assert asyncio.run(
+            require_submission_recovery("a@b.com", "acct:a", "r1")
+        ) is True
+
+        assert journal.call_count == 1
+        assert broadcast.await_count == 1
+
+        repo.get_recovery_request_id_for_generation.return_value = "r1"
+        repo.prepare_recovery_requeue.return_value = {
+            "status": "requeued",
+            "gen_id": "g1",
+        }
+        assert asyncio.run(
+            confirm_generation_not_submitted_and_requeue(
+                "a@b.com", "acct:a", "g1"
+            )
+        ) is True
+
+    repo.get_recovery_request_id_for_generation.assert_called_once_with(
+        "g1", "a@b.com"
+    )
+    repo.prepare_recovery_requeue.assert_called_once_with("r1", "a@b.com")
+    signals.signal.assert_called_once_with("a@b.com", "gen-request")
+
+
+def test_recovery_requeue_reports_auto_probe_candidate_instead_of_requeueing():
+    from app.usecases.gen_requests import (
+        RecoveryRequeueBlocked,
+        confirm_not_submitted_and_requeue,
+    )
+
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.agent_signals"
+    ) as signals:
+        repo.prepare_recovery_requeue.return_value = {
+            "status": "candidate_found",
+            "gen_id": "g1",
+            "candidate_count": 2,
+        }
+        try:
+            asyncio.run(
+                confirm_not_submitted_and_requeue(
+                    "a@b.com", "acct:a", "r1"
+                )
+            )
+        except RecoveryRequeueBlocked as exc:
+            assert "기존 Higgsfield 생성 후보" in str(exc)
+        else:
+            raise AssertionError("자동 조사 후보가 있는데 재큐가 허용됨")
+
+    repo.prepare_recovery_requeue.assert_called_once_with("r1", "a@b.com")
+    signals.signal.assert_not_called()
 
 
 def test_fulfill_request_applies_result_once_and_broadcasts():
@@ -486,6 +654,36 @@ def test_fail_request_recovers_legacy_job_id_and_broadcasts():
             },
             account_uid="acct:a",
         )
+
+
+def test_legacy_ambiguous_submission_failure_is_quarantined_not_finalized():
+    request = {
+        "id": "r1",
+        "gen_id": "g1",
+        "account_email": "worker@example.com",
+        "status": "submitting",
+    }
+    with patch("app.usecases.gen_requests.repo") as repo, patch(
+        "app.usecases.gen_requests.require_submission_recovery",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as recovery:
+        applied = asyncio.run(
+            fail_request(
+                request,
+                "r1",
+                "제출 실패: CLI 응답에서 잡 id 없음",
+                None,
+                None,
+                "acct:a",
+            )
+        )
+
+    assert applied is True
+    recovery.assert_awaited_once_with(
+        "worker@example.com", "acct:a", "r1"
+    )
+    repo.apply_local_failure.assert_not_called()
 
 
 def test_fail_request_cas_noop_does_not_repeat_side_effects():

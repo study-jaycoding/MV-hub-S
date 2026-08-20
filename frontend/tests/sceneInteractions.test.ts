@@ -8,6 +8,7 @@ import {
   pasteSceneClipboard,
   resizeSceneCard,
   scenePasteIntent,
+  shouldRestoreRecipeFromDrop,
   shouldStartListReorder,
   updateSceneEjectedCards,
 } from "../src/lib/sceneInteractions";
@@ -342,6 +343,52 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     ]);
   });
 
+  it("기준점(at)이 있으면 상대 배치를 유지한 채 묶음 중심을 그 지점에 맞춰 붙인다", () => {
+    const cards = [card("a", "reference", 0, 0), card("b", "generation", 100, 0)];
+    const clipboard = copySceneSelection(cards, [], ["a", "b"]);
+    const pasted = pasteSceneClipboard(
+      cards,
+      [],
+      clipboard,
+      idSequence("new-a", "new-b"),
+      undefined,
+      { x: 500, y: 300, cardWidth: 100, cardHeight: 60 },
+    );
+
+    // 묶음 bbox = (0,0)~(200,60) → 중심 (100,30) → 기준점 (500,300)까지 dx=400, dy=270.
+    // 기존 카드와 안 겹치므로 어긋내기(shift) 없이 정확히 그 지점에 붙는다.
+    expect(pasted.shift).toBe(0);
+    expect(
+      pasted.cards
+        .filter((item) => pasted.pastedCardIds.has(item.id))
+        .map(({ id, x, y }) => ({ id, x, y })),
+    ).toEqual([
+      { id: "new-a", x: 400, y: 270 },
+      { id: "new-b", x: 500, y: 270 },
+    ]);
+  });
+
+  it("기준점 자리에 기존 카드가 겹치면 그때만 어긋나게 민다", () => {
+    const cards = [card("occupied", "reference", 450, 270)];
+    const clipboard: ReturnType<typeof copySceneSelection> = {
+      cards: [card("a", "reference", 0, 0)],
+      edges: [],
+      inEdges: [],
+    };
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-a"), undefined, {
+      x: 500,
+      y: 300,
+      cardWidth: 100,
+      cardHeight: 60,
+    });
+
+    // 카드 한 장 bbox 중심 (50,30) → (500,300) 이동 시 (450,270)이 기존 카드와 정확히 겹침
+    // → 한 칸(그리드 2배 = 44) 어긋나서 붙는다.
+    expect(pasted.shift).toBe(44);
+    const copied = pasted.cards.find((item) => item.id === "new-a");
+    expect({ x: copied?.x, y: copied?.y }).toEqual({ x: 494, y: 314 });
+  });
+
   it("리스트와 레퍼런스를 함께 복사하면 리스트 전용 순서 id도 새 카드 id로 바꾼다", () => {
     const cards = [
       card("ref", "reference", 0, 0),
@@ -359,6 +406,77 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     expect(pasted.cards.find((item) => item.id === "new-list")?.listOrder).toEqual(["new-ref"]);
   });
 
+  it("렌더 카드와 생성카드를 함께 복사하면 '렌더 제외' 목록도 새 카드 id로 바꾼다", () => {
+    // 안 바꾸면 옛 번호를 가리켜 빼놨던 체크가 전부 풀린 채 붙는다.
+    const cards = [
+      card("gen1", "generation", 0, 0),
+      card("gen2", "generation", 100, 0),
+      card("render", "render", 200, 0, { unchecked: ["gen2", "outside"] }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["gen1", "gen2", "render"]);
+    const pasted = pasteSceneClipboard(
+      cards,
+      [],
+      clipboard,
+      idSequence("new-gen1", "new-gen2", "new-render"),
+    );
+
+    // 같이 복사된 것은 새 번호로, 이번 복사에 없던 것(outside)은 원래 카드를 가리키므로 그대로.
+    expect(pasted.cards.find((item) => item.id === "new-render")?.unchecked).toEqual([
+      "new-gen2",
+      "outside",
+    ]);
+  });
+
+  it("붙여넣은 생성카드는 설정만 오고 쌓인 결과는 딸려오지 않는다", () => {
+    const cards = [
+      card("gen", "generation", 0, 0, {
+        genId: "g2",
+        genIds: ["g1", "g2"],
+        status: "done",
+        prompt: "고양이",
+        pendingGenerationAttempts: [{ attemptId: "a1", createdAt: 1 }],
+      }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["gen"]);
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-gen"));
+
+    const copied = pasted.cards.find((item) => item.id === "new-gen");
+    expect(copied?.genIds).toEqual([]);
+    expect(copied?.genId).toBeNull();
+    expect(copied?.pendingGenerationAttempts).toEqual([]);
+    expect(copied?.status).toBe("empty"); // 결과 0개인데 "완료"로 보이는 유령 카드 방지
+    expect(copied?.prompt).toBe("고양이"); // 설정은 그대로 온다
+    // 원본은 건드리지 않는다
+    expect(cards[0].genIds).toEqual(["g1", "g2"]);
+  });
+
+  it("붙여넣은 comfy 카드는 워크플로는 남고 실행 결과만 비워진다", () => {
+    const cards = [
+      card("comfy", "comfy", 0, 0, {
+        genIds: ["g1"],
+        comfyCfg: {
+          name: "wf.json",
+          content: "{}",
+          paramValues: { "n|seed": 7 },
+          outputs: [{ kind: "image", url: "u" }],
+          status: "done",
+          error: "이전 오류",
+        },
+      }),
+    ];
+    const clipboard = copySceneSelection(cards, [], ["comfy"]);
+    const pasted = pasteSceneClipboard(cards, [], clipboard, idSequence("new-comfy"));
+
+    const cfg = pasted.cards.find((item) => item.id === "new-comfy")?.comfyCfg;
+    expect(cfg?.name).toBe("wf.json");
+    expect(cfg?.paramValues).toEqual({ "n|seed": 7 });
+    expect(cfg?.outputs).toEqual([]);
+    expect(cfg?.status).toBe("idle");
+    expect(cfg?.error).toBeNull();
+    expect(pasted.cards.find((item) => item.id === "new-comfy")?.genIds).toEqual([]);
+  });
+
   it("다른 씬에서 외부 입력 소스가 없으면 유령 연결을 복원하지 않는다", () => {
     const clipboard = {
       cards: [card("copied", "generation", 0, 0)],
@@ -369,5 +487,26 @@ describe("copySceneSelection / pasteSceneClipboard", () => {
     const pasted = pasteSceneClipboard([], [], clipboard, idSequence("new-card"));
 
     expect(pasted.edges).toEqual([]);
+  });
+});
+
+describe("각인 파일 드롭 — 레시피 복원 판단", () => {
+  const one = ["clip.mp4"];
+
+  it("한 개만 놓으면 레시피 복원을 시도한다", () => {
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true })).toBe(true);
+  });
+
+  it("Shift 를 누르고 놓으면 각인을 보지 않고 레퍼런스로 넣는다", () => {
+    // 우리 결과물을 다시 재료(레퍼런스)로 쓰는 흐름이 막히면 안 된다.
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: true, shiftKey: true })).toBe(false);
+  });
+
+  it("여러 개를 놓으면 시도하지 않는다(씬 탭이 여러 개 열리는 것 방지)", () => {
+    expect(shouldRestoreRecipeFromDrop(["a.png", "b.png"], { hasHandler: true })).toBe(false);
+  });
+
+  it("복원 핸들러가 없는 화면에서는 종전 동작 그대로", () => {
+    expect(shouldRestoreRecipeFromDrop(one, { hasHandler: false })).toBe(false);
   });
 });

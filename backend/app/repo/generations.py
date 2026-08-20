@@ -210,25 +210,36 @@ def create_comfy_generation(
 
 def set_status(gen_id: str, status: str, error: Optional[str] = None) -> None:
     """상태 전이. 터미널(failed·nsfw 등)이면 error(사유)를 저장하고, 그 외 전이는 error 를 비운다
-    (재시도/재생성으로 성공·진행 시 옛 사유가 남지 않게)."""
+    (재시도/재생성으로 성공·진행 시 옛 사유가 남지 않게).
+
+    ★done 보호: 완료된 카드는 절대 되돌리지 않는다. 호출처 4곳 전부 'running' 으로 내리는
+    경로인데, 주기 동기화가 먼저 done 으로 확정한 직후 늦은 reconcile(캐시된 generate get,
+    빈 바디 POST /reconcile 포함)이 도착하면 완료본이 '생성중'으로 회귀해 사용자가 재생성
+    → 크레딧 이중 지출로 이어졌다. 형제 함수들(apply_reconcile·apply_local_anchor·
+    apply_local_fulfillment)과 같은 규약. failed→running 은 허용(고아 복구 경로)."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE generation SET status=?, error=? WHERE id=?",
+            "UPDATE generation SET status=?, error=? WHERE id=? AND status <> 'done'",
             (status, stored_error(status, error), gen_id),
         )
 
 
 def fail_orphaned_jobs() -> int:
-    """서버 시작 시 호출 — 인메모리 잡 큐는 부팅 시 비어 있으므로, DB 의 pending/running 은 이전
-    프로세스에서 끊긴 고아다. ★단, job_id 를 가진 카드는 재조정(generate get)으로 실제 상태를 되살릴
-    수 있으므로 실패시키지 않고 running 유지 + '확인중' 문구만 단다(재조정 패스가 done/failed 로 확정).
-    job_id 없는 것(제출 전 끊김·앵커 도달 실패)만 failed 로 정리해 UI 가 '생성중'에 멈추지 않게 한다.
-    반환: 실제로 failed 로 정리한 수(job_id 없는 고아)."""
+    """서버 시작 시 호출 — 영속 gen_request가 없는 옛 인메모리 잡만 고아로 정리한다.
+
+    현재 생성 큐는 DB에 영속된다. 따라서 정상 pending/claimed 요청이나 제출 여부가 불명확한
+    recovery_required 요청의 placeholder를 서버 재시작만으로 failed로 만들면 안 된다. job_id가
+    있는 카드는 기존 작업을 재조정하고, 활성 gen_request가 전혀 없는 옛 카드만 실패 처리한다.
+    반환: 실제로 failed로 정리한 옛 고아 수."""
     with get_connection() as conn:
         cur = conn.execute(
             "UPDATE generation SET status='failed', "
             "error=COALESCE(error, '서버 재시작으로 생성이 중단되었습니다. 동기화로 결과를 가져오거나 재생성하세요.') "
-            "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='')"
+            "WHERE status IN ('pending','running') AND (job_id IS NULL OR job_id='') "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM gen_request r WHERE r.gen_id=generation.id "
+            "  AND r.status IN ('preparing','pending','claimed','submitting','running','tracking','verifying','blocked','recovery_required')"
+            ")"
         )
         # job_id 보유분 → running 유지 + '확인중'(재조정 대기). 이미 문구가 있으면 덮지 않는다.
         conn.execute(
@@ -307,8 +318,8 @@ def apply_reconcile(
       · 이미 done 확정본은 절대 뒤집지 않는다(에셋 있는 완료본 보호).
       · 상태 변화가 없으면 no-op(False).
     force_fail_reason 이 주어지면(레퍼런스 미부착 등 '로컬 검증 실패') — 힉스필드엔 (엉뚱한) 결과가
-    완료로 있어도 failed 로 확정하되 **job_id 는 유지**(sync 가 중복 synced 카드를 새로 만들지 않게)하고
-    error 에 NO_REVIVE_ERROR 를 박아, 이후 재조정·동기화가 이 행을 done 으로 되살리지 못하게 한다.
+    완료로 있어도 원래 행은 failed 로 확정하고 job_id·NO_REVIVE_ERROR 를 남긴다. 동기화 저장소는 이
+    표식을 보고 실제 유료 결과를 별도 synced 행으로 격리하므로, 원래 카드에는 자동 부착되지 않는다.
     (status=failed 라 backstop 후보에서도 제외됨). done 확정본은 여기서도 건드리지 않는다.
     적용했으면 True(호출부가 브로드캐스트)."""
     with get_connection() as conn:
@@ -514,6 +525,9 @@ def apply_local_fulfillment(
 #  status 는 running 유지(새 enum 안 만듦 — fail_orphaned_jobs 등 상태판정과 충돌 방지). 프론트는 이
 #  문구로 '확인중' 라벨을 띄우고, 재조정이 done/failed 로 확정하면 error 를 지우거나 실제 사유로 덮는다.
 VERIFYING_NOTE = "확인중 — 실제 상태 재확인 대기"
+RECOVERY_REQUIRED_NOTE = (
+    "복구 확인 필요 — 외부 제출 여부가 불명확하여 자동 재생성을 차단했습니다"
+)
 
 
 def apply_local_anchor(gen_id: str, rid: str, job_id: str, *, verifying: bool = True) -> bool:
@@ -723,13 +737,6 @@ def gens_with_job_id(account_uid: Optional[str] = None) -> list[tuple[str, str]]
         ]
 
 
-def get_generation_identity(gen_id: str) -> tuple[Optional[str], Optional[str]]:
-    """서버 재검증용 (creator_uid, job_id) — 공개 get_generation dict 엔 job_id 가 없어 직접 조회한다.
-    HF 삭제 검토 적용 시 '내 것이고 job_id 일치'를 확인하는 데 쓴다. 없으면 (None, None)."""
-    identity_map = get_generation_identities_batch([gen_id])
-    return identity_map.get(gen_id, (None, None))
-
-
 def get_generation_identities_batch(
     gen_ids: list[str],
 ) -> dict[str, tuple[Optional[str], Optional[str]]]:
@@ -750,11 +757,6 @@ def get_generation_identities_batch(
                 {row["id"]: (row["creator_uid"], row["job_id"]) for row in rows}
             )
     return out
-
-
-def set_hf_missing(gen_id: str, missing: bool) -> None:
-    """힉스필드 삭제 검증 결과 반영(로컬-only 흐림 처리/필터에 사용)."""
-    set_hf_missing_batch([(gen_id, missing)])
 
 
 def set_hf_missing_batch(items: list[tuple[str, bool]]) -> int:

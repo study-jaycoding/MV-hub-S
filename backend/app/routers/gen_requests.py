@@ -2,8 +2,8 @@
 
 흐름(project_content_hub_push_model):
   버튼 → POST /gen-requests : placeholder 카드 즉시 생성 + 요청 큐잉(요청자 계정 소유)
-  에이전트 → GET /gen-requests/pending : 자기 계정 대기 요청을 claim(running)
-            → 로컬 CLI 로 실행 →
+  에이전트 → GET /gen-requests/pending : 자기 계정 대기 요청을 claim(claimed)
+            → begin-submission ACK → 로컬 CLI 로 실행 →
             POST /gen-requests/{id}/fulfill : 결과를 placeholder 에 채움(done)
             (실패 시 /fail)
 서버는 힉스필드 CLI 를 돌리지 않는다. 모든 엔드포인트는 허브 세션 인증 필수.
@@ -11,13 +11,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID
 from ..deps import (
     account_actor_uid,
+    actor_id,
     realtime_scope,
+    require_admin,
     require_agent_account,
     require_project_role,
     require_view_generation,
@@ -27,27 +33,135 @@ from ..models import (
     CanvasLinkRepairIn,
     CanvasManualClaimIn,
     FulfillIn,
+    GenerationDeploymentPauseIn,
     GenerationOut,
     GenRequestIn,
     PendingRequestOut,
+    RecoveryDecisionIn,
+    RecoveryProbeResultIn,
     RegenerateIn,
+    SubmissionFingerprintIn,
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
+from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
+    CanvasGenerationConflict,
     GenRequestCommand,
+    GenerationIdempotencyConflict,
+    RecoveryRequeueBlocked,
     anchor_request,
+    begin_submission,
     claim_gen_requests,
+    confirm_generation_not_submitted_and_requeue,
+    confirm_not_submitted_and_requeue,
     fail_request,
     fulfill_request,
     reconcile_request,
+    release_claim,
     repair_canvas_generation_links,
+    require_submission_recovery,
     submit_gen_request,
 )
+from ..ws import manager
 from ._telemetry import schedule_telemetry_drain
 
+# 규율: 이 파일의 async 핸들러에서 동기 repo(SQLite) 호출을 직접 하지 않는다.
+# DB만 쓰는 핸들러는 def로 FastAPI 워커 스레드에서 실행하고, WebSocket 알림 등 await가
+# 필요한 핸들러의 DB 호출은 asyncio.to_thread로 이관한다.
 router = APIRouter(prefix="/api", tags=["gen-requests"])
+
+_generation_log = logging.getLogger("mvhub.generation")
+_AGENT_UPDATE_REQUIRED_MESSAGE = (
+    "에이전트 업데이트가 필요합니다. 최신 에이전트로 업데이트한 후 다시 이용해 주세요."
+)
+_GENERATION_DEPLOYMENT_PAUSE_KEY = "generation_deployment_paused"
+_GENERATION_DEPLOYMENT_PAUSE_MESSAGE = (
+    "배포 준비로 새 생성 요청과 에이전트 실행 접수를 잠시 중지했습니다. 잠시 후 다시 시도해 주세요."
+)
+_TRUE_SETTING_VALUES = frozenset({"1", "true", "yes", "on"})
+# 구 에이전트는 idle마다 폴링하므로 계정별 안내·운영 로그를 짧게 합친다. 영구 1회성으로
+# 만들면 안내 순간 브라우저가 닫혀 있던 사용자가 이후에도 원인을 못 보므로 5분 뒤 재안내한다.
+_AGENT_UPDATE_NOTICE_THROTTLE_SECONDS = 300.0
+_AGENT_UPDATE_NOTICE_MAX_ACCOUNTS = 4096
+_agent_update_notice_at: dict[str, float] = {}
+
+
+def _generation_deployment_paused() -> bool:
+    """DB에 영속된 배포 창 스위치. 키가 없으면 기존 동작(open)을 유지한다."""
+    value = repo.get_setting(_GENERATION_DEPLOYMENT_PAUSE_KEY, "0")
+    return str(value or "").strip().lower() in _TRUE_SETTING_VALUES
+
+
+async def _require_generation_deployment_open() -> None:
+    if await asyncio.to_thread(_generation_deployment_paused):
+        raise HTTPException(
+            status_code=503,
+            detail=_GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+            headers={"Retry-After": "60"},
+        )
+
+
+def _submission_stage_capable(caps: set[str], agent_id: str | None) -> bool:
+    """유료 claim 최소 계약. 버전 숫자가 아니라 도장 기능과 인스턴스 신원을 함께 요구한다."""
+    return "submission-stage" in caps and bool(agent_id and agent_id.strip())
+
+
+def _reserve_agent_update_notice(account_email: str) -> bool:
+    """같은 계정의 연속 폴링을 안내·로그 한 건으로 합치고 메모리에도 상한을 둔다."""
+    now = time.monotonic()
+    key = account_email.strip().lower()
+    last = _agent_update_notice_at.get(key)
+    if last is not None and now - last < _AGENT_UPDATE_NOTICE_THROTTLE_SECONDS:
+        return False
+    _agent_update_notice_at[key] = now
+    if len(_agent_update_notice_at) > _AGENT_UPDATE_NOTICE_MAX_ACCOUNTS:
+        cutoff = now - _AGENT_UPDATE_NOTICE_THROTTLE_SECONDS
+        for email, notified_at in list(_agent_update_notice_at.items()):
+            if notified_at < cutoff:
+                _agent_update_notice_at.pop(email, None)
+        while len(_agent_update_notice_at) > _AGENT_UPDATE_NOTICE_MAX_ACCOUNTS:
+            oldest = min(_agent_update_notice_at, key=_agent_update_notice_at.get)
+            _agent_update_notice_at.pop(oldest, None)
+    return True
+
+
+async def _paid_claim_blocked(
+    acc: dict,
+    caps: set[str],
+    agent_id: str | None,
+    *,
+    route: str,
+) -> bool:
+    """능력 미달 에이전트의 유료 claim을 막고, 실제 pending이 있을 때만 안내한다."""
+    if _submission_stage_capable(caps, agent_id):
+        return False
+
+    email = acc["email"]
+    agent_signals.touch(email)
+    # 안내 판정은 workspace 게이트와 별개다. 어떤 workspace 요청이든 이 계정에 유료 pending이
+    # 있으면 구 에이전트로는 처리할 수 없다는 사실을 사용자에게 알려야 한다.
+    has_pending = await asyncio.to_thread(
+        repo.has_pending_requests,
+        email,
+        workspace_capable=True,
+    )
+    if has_pending and _reserve_agent_update_notice(email):
+        log_event(
+            _generation_log,
+            "generation_claim_capability_blocked",
+            level=logging.WARNING,
+            route=route,
+            submission_stage_declared="submission-stage" in caps,
+            agent_id_present=bool(agent_id and agent_id.strip()),
+            notice_throttle_seconds=int(_AGENT_UPDATE_NOTICE_THROTTLE_SECONDS),
+        )
+        await manager.broadcast(
+            {"type": "flash", "message": _AGENT_UPDATE_REQUIRED_MESSAGE},
+            account_uid=realtime_scope(acc),
+        )
+    return True
 
 
 def _require_matching_project_workspace(pid: str, workspace) -> None:
@@ -68,6 +182,17 @@ def _validated_generation_workspace(
     workspace: WorkspaceContext, account_email: str
 ) -> WorkspaceContext:
     """팀 생성 요청을 계정이 실제 접근 가능한 등록부 정보로 정규화한다."""
+    if workspace.scope == "unknown":
+        # 생성은 CLI의 현재 선택값을 추측해 실행할 수 없다. 구 프론트·직접 API가 workspace를
+        # 빼먹더라도 placeholder/큐를 만들기 전에 막아, 구 에이전트가 직전 팀 공간에 과금하는
+        # 배포 버전 혼합 사고를 차단한다. unknown 보존이 필요한 ingest/마이그레이션과는 별도 경계다.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "생성할 워크스페이스 정보가 확인되지 않았습니다 — 프로그램을 최신 버전으로 "
+                "업데이트한 뒤 워크스페이스를 다시 선택하세요"
+            ),
+        )
     if workspace.scope != "team":
         return workspace
 
@@ -117,7 +242,10 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             detail="프로그램 업데이트가 진행 중이라 새 생성을 시작할 수 없습니다",
         )
     acc = _require_account(request)
-    workspace = _validated_generation_workspace(body.workspace, acc["email"])
+    await _require_generation_deployment_open()
+    workspace = await asyncio.to_thread(
+        _validated_generation_workspace, body.workspace, acc["email"]
+    )
     # AUTH on 미링크 계정도 자기 신원(acct:email)으로 귀속 — acc.get("creator_uid")가 None이면
     # repo 가 get_my_uid()(서버 하우스 uid)로 폴백해 '내 요청'이 남(하우스)의 신원에 귀속되던 것을 막는다.
     # 나중에 실제 uid 확보 시 remap_creator_uid 가 acct:email→user_ 로 정합한다. AUTH off 는 기존대로.
@@ -135,9 +263,15 @@ async def create_gen_request(body: GenRequestIn, request: Request):
         if pid == "none":
             data["project_id"] = None  # UI sentinel '미분류' 를 저장 전에 정규화(API 직접 호출 대비)
         elif pid:
-            _require_matching_project_workspace(pid, workspace)
-            require_project_role(
-                request, pid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            await asyncio.to_thread(_require_matching_project_workspace, pid, workspace)
+            await asyncio.to_thread(
+                require_project_role,
+                request,
+                pid,
+                rbac.CREATOR,
+                rbac.SUPERVISOR,
+                rbac.PROJECT_MANAGER,
+                read_only=True,
             )
         cmd = GenRequestCommand(
             kind="create",
@@ -148,23 +282,56 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             workspace=workspace.model_dump(),
             data=data,
             canvas_link=canvas_link,
+            idempotency_key=body.idempotency_key if not canvas_link else None,
+            request_contract=(
+                {
+                    "kind": "create",
+                    "workspace": body.workspace.model_dump(),
+                    "create": data,
+                    "source_gen_id": body.source_gen_id,
+                    "regenerate": None,
+                }
+                if body.idempotency_key and not canvas_link
+                else None
+            ),
         )
     else:  # regenerate
         if not body.source_gen_id:
             raise HTTPException(status_code=400, detail="source_gen_id 가 필요합니다")
-        parent = repo.get_generation(body.source_gen_id)
+        parent = await asyncio.to_thread(repo.get_generation, body.source_gen_id)
         if not parent:
             raise HTTPException(status_code=404, detail="원본 generation 없음")
         # 비공개·공유 안 된 남의 원본을 id 만 알고 재생성(=프롬프트·소스 복제)하는 우회 차단.
-        require_view_generation(request, parent)
+        await asyncio.to_thread(require_view_generation, request, parent)
+        # 외부 제출 여부가 불명확한 카드를 일반 재생성으로 우회하면 같은 유료 작업이 두 번
+        # 만들어질 수 있다. 복구 확인을 먼저 끝내야 기존 요청을 안전하게 다시 실행할 수 있다.
+        recovery_request_id = await asyncio.to_thread(
+            repo.get_recovery_request_id_for_generation,
+            body.source_gen_id,
+            acc["email"],
+        )
+        if recovery_request_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "외부 제출 여부를 먼저 확인해야 합니다 — 생성 정보에서 "
+                    "'미제출 확인 후 다시 실행'을 사용하세요"
+                ),
+            )
         # 재생성본은 부모 project_id 를 상속(import_generation) — 부모가 프로젝트에 속하면 그 프로젝트
         # 접근권도 확인한다. 안 하면 '옛날엔 그 프로젝트 멤버였다가 빠진' 사용자가 자기 옛 생성물을
         # 재생성해 그 팀 영역에 다시 주입하는 우회가 남는다(create 가드와 동일 기준).
         ppid = (parent.get("project_id") or "").strip()
         if ppid and ppid != "none":
-            _require_matching_project_workspace(ppid, workspace)
-            require_project_role(
-                request, ppid, rbac.CREATOR, rbac.SUPERVISOR, rbac.PROJECT_MANAGER, read_only=True
+            await asyncio.to_thread(_require_matching_project_workspace, ppid, workspace)
+            await asyncio.to_thread(
+                require_project_role,
+                request,
+                ppid,
+                rbac.CREATOR,
+                rbac.SUPERVISOR,
+                rbac.PROJECT_MANAGER,
+                read_only=True,
             )
         reg = body.regenerate or RegenerateIn()
         # worker_id 는 parent 기준으로 라우터가 계산(usecase 가 parent 를 다시 읽으면 동작이 달라짐).
@@ -177,17 +344,56 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             workspace=workspace.model_dump(),
             regenerate=reg,
             canvas_link=canvas_link,
+            idempotency_key=body.idempotency_key if not canvas_link else None,
+            request_contract=(
+                {
+                    "kind": "regenerate",
+                    "workspace": body.workspace.model_dump(),
+                    "create": None,
+                    "source_gen_id": body.source_gen_id,
+                    "regenerate": reg.model_dump(),
+                }
+                if body.idempotency_key and not canvas_link
+                else None
+            ),
         )
 
-    gen = await submit_gen_request(cmd)
+    try:
+        gen = await submit_gen_request(cmd)
+    except (CanvasGenerationConflict, GenerationIdempotencyConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not gen:
         raise HTTPException(status_code=500, detail="placeholder 생성 실패")
     schedule_telemetry_drain()
     return gen
 
 
+@router.get("/gen-requests/deployment-pause")
+def generation_deployment_pause(request: Request):
+    """현재 배포 창 생성 일시중지 상태(관리자 전용)."""
+    require_admin(request)
+    return {
+        "paused": _generation_deployment_paused(),
+        "message": _GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+    }
+
+
+@router.put("/gen-requests/deployment-pause")
+def set_generation_deployment_pause(
+    body: GenerationDeploymentPauseIn,
+    request: Request,
+):
+    """배포 창 생성 접수·claim 일시중지를 DB에 영속한다(관리자 전용)."""
+    require_admin(request)
+    repo.set_setting(_GENERATION_DEPLOYMENT_PAUSE_KEY, "1" if body.paused else "0")
+    return {
+        "paused": body.paused,
+        "message": _GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+    }
+
+
 @router.post("/gen-requests/canvas-links/resolve")
-async def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
+def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
     """재시작한 캔버스가 요청 전 저장한 attempt와 실제 generation 연결을 복구한다."""
     acc = _require_account(request)
     return {
@@ -196,7 +402,7 @@ async def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Re
 
 
 @router.post("/gen-requests/canvas-links/repair")
-async def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
+def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Request):
     """placeholder만 저장된 비정상 종료 지점을 소유권 확인 후 다시 큐잉한다."""
     acc = _require_account(request)
     creator_uid = (
@@ -211,24 +417,76 @@ async def repair_orphaned_canvas_links(body: CanvasLinkRepairIn, request: Reques
 
 
 @router.get("/gen-requests/canvas-candidates")
-async def canvas_generation_candidates(request: Request, limit: int = 30):
-    """구버전에서 연결을 잃은 내 생성 요청만 수동 복구 후보로 돌려준다."""
+def canvas_generation_candidates(request: Request, limit: int = 30):
+    """어느 카드에도 안 담긴 내 생성물(진짜 고아)만 수동 복구 후보로 돌려준다.
+
+    카드 소속표에 이미 있는 것은 씬을 열 때 자동으로 합쳐지므로 여기 나오면 안 된다.
+    """
     acc = _require_account(request)
-    ids = repo.list_canvas_generation_candidates(acc["email"], limit=limit)
+    creator_uid = (
+        account_actor_uid(request)
+        if AUTH_ENABLED
+        else acc.get("creator_uid") or repo.get_my_uid()
+    )
+    ids = repo.list_canvas_generation_candidates(
+        acc["email"],
+        limit=limit,
+        owner_uid=actor_id(request),
+        creator_uid=creator_uid or "",
+    )
     items = [repo.get_generation(gen_id) for gen_id in ids]
     return {"items": [item for item in items if item]}
 
 
 @router.post("/gen-requests/canvas-candidates/claim")
-async def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
+def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Request):
     """선택한 구버전 생성물을 한 캔버스 카드에 1회 귀속한다."""
     acc = _require_account(request)
+    creator_uid = (
+        account_actor_uid(request)
+        if AUTH_ENABLED
+        else acc.get("creator_uid") or repo.get_my_uid()
+    )
     claimed = repo.claim_canvas_generation_candidate(
-        acc["email"], body.generation_id, body.scene_id, body.card_id
+        acc["email"],
+        body.generation_id,
+        body.scene_id,
+        body.card_id,
+        owner_uid=actor_id(request),
+        creator_uid=creator_uid or "",
     )
     if not claimed:
         raise HTTPException(status_code=404, detail="복구할 수 있는 내 생성 요청이 아닙니다")
     return {"ok": True}
+
+
+@router.get("/gen-requests/pending-exists")
+async def pending_gen_requests_exist(
+    request: Request,
+    capability: str = "",
+    agent_id: str | None = None,
+):
+    """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
+    acc = _require_account(request)
+    await _require_generation_deployment_open()
+    agent_signals.touch(acc["email"])
+    caps = {c.strip() for c in capability.split(",") if c.strip()}
+    if await _paid_claim_blocked(
+        acc,
+        caps,
+        agent_id,
+        route="pending-exists",
+    ):
+        # 구 에이전트를 실행 루프로 깨우지 않는다. 실제 요청은 그대로 pending이라 신 에이전트가
+        # 붙는 즉시 아래 정상 경로에서 발견한다.
+        return {"pending": False}
+    return {
+        "pending": await asyncio.to_thread(
+            repo.has_pending_requests,
+            acc["email"],
+            workspace_capable="workspace" in caps,
+        )
+    }
 
 
 @router.get("/gen-requests/pending", response_model=list[PendingRequestOut])
@@ -238,25 +496,161 @@ async def pending_gen_requests(
     capability: str = "",
     agent_id: str | None = None,
 ):
-    """에이전트가 호출 — 자기 계정 대기 요청을 claim(submitting)하고 레시피 반환.
-    claim 즉시 placeholder 카드를 'running'(로컬 생성중)으로 올려 브로드캐스트한다 —
-    에이전트가 실제로 내 PC에서 돌리기 시작했다는 피드백(이전엔 pending=로컬 대기 그대로라
-    완료될 때까지 '생성중'이 안 보였음). limit=에이전트가 지금 제출할 수 있는 요청 수."""
+    """에이전트가 호출 — 자기 계정 대기 요청을 원자적으로 claim하고 레시피를 반환한다.
+
+    submission-stage 신 에이전트는 claimed로 받아 준비를 끝내고 begin-submission ACK 뒤에만
+    placeholder가 running이 된다. 도장 기능이나 agent_id가 없는 에이전트에는 유료 요청을
+    내리지 않는다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
+    """
     acc = _require_account(request)
-    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다(?capability=workspace).
+    await _require_generation_deployment_open()
+    # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
     caps = {c.strip() for c in capability.split(",") if c.strip()}
+    if await _paid_claim_blocked(acc, caps, agent_id, route="pending"):
+        return []
+    # 위 게이트를 통과한 claim은 항상 staged다. agent_id는 공백을 제거해 lease owner로 고정한다.
+    lease_owner = agent_id.strip() if agent_id else None
     claimed = await claim_gen_requests(
         acc["email"],
         realtime_scope(acc),
         limit,
         workspace_capable="workspace" in caps,
-        lease_owner=agent_id,
+        lease_owner=lease_owner,
+        submission_stage_capable=True,
     )
     if claimed:
         schedule_telemetry_drain()
     return claimed
+
+
+@router.post("/gen-requests/{rid}/begin-submission")
+async def begin_gen_request_submission(
+    rid: str,
+    request: Request,
+    agent_id: str,
+    body: SubmissionFingerprintIn | None = None,
+):
+    """신 에이전트의 실제 `generate create` 직전 CAS. 성공 전에는 유료 CLI를 호출하면 안 된다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    applied = await begin_submission(
+        acc["email"],
+        realtime_scope(acc),
+        rid,
+        agent_id,
+        body.model_dump() if body else None,
+    )
+    if not applied:
+        raise HTTPException(
+            status_code=409,
+            detail="제출 권한이 만료됐거나 다른 에이전트가 인계했습니다 — 생성하지 않습니다",
+        )
+    return {"ok": True, "applied": True}
+
+
+@router.get("/gen-requests/recovery-probes")
+def recovery_probe_requests(request: Request, limit: int = 16):
+    """에이전트가 최신 HF 목록과 대조할 자기 계정의 모호한 제출 지문."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    return {"requests": repo.list_recovery_probe_requests(acc["email"], limit=limit)}
+
+
+@router.post("/gen-requests/{rid}/recovery-probe")
+def record_recovery_probe(rid: str, body: RecoveryProbeResultIn, request: Request):
+    """읽기 전용 자동 조사의 후보 수를 ledger에 반영한다. 생성 호출은 이 경로에 없다."""
+    acc = _require_account(request)
+    if body.outcome == "unique" and (body.candidate_count != 1 or not body.job_id):
+        raise HTTPException(status_code=400, detail="유일 후보 결과에는 job_id 1개가 필요합니다")
+    if body.outcome == "no_match" and body.candidate_count != 0:
+        raise HTTPException(status_code=400, detail="후보 없음 결과의 개수가 올바르지 않습니다")
+    if body.outcome == "multiple" and body.candidate_count < 2:
+        raise HTTPException(status_code=400, detail="복수 후보 결과의 개수가 올바르지 않습니다")
+    recorded = repo.record_recovery_probe_result(
+        rid, acc["email"], body.outcome, body.candidate_count, body.job_id
+    )
+    if not recorded:
+        raise HTTPException(status_code=409, detail="조사 결과를 반영할 복구 보류 요청이 없습니다")
+    return {"ok": True, "applied": True, **recorded}
+
+
+@router.post("/gen-requests/{rid}/release-claim")
+async def release_gen_request_claim(
+    rid: str,
+    request: Request,
+    agent_id: str,
+):
+    """CLI 호출 전에 서버 확인이 실패한 staged claim을 같은 에이전트가 안전하게 반환한다."""
+    acc = _require_account(request)
+    applied = await release_claim(acc["email"], realtime_scope(acc), rid, agent_id)
+    if not applied:
+        raise HTTPException(status_code=409, detail="반환할 준비 단계 요청이 없습니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/{rid}/recovery-required")
+async def mark_gen_request_recovery_required(rid: str, request: Request):
+    """CLI 호출은 시작했지만 job_id를 얻지 못한 모호한 결말을 자동 재생성 금지로 격리한다."""
+    acc = _require_account(request)
+    agent_signals.touch(acc["email"])
+    applied = await require_submission_recovery(
+        acc["email"], realtime_scope(acc), rid
+    )
+    if not applied:
+        raise HTTPException(status_code=409, detail="복구 보류로 전환할 수 없는 요청 상태입니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/{rid}/confirm-not-submitted")
+async def confirm_gen_request_not_submitted(
+    rid: str,
+    body: RecoveryDecisionIn,
+    request: Request,
+):
+    """Higgsfield 기록에 외부 작업이 없음을 직접 확인한 경우에만 재큐잉한다."""
+    if not body.confirmed_not_submitted:
+        raise HTTPException(
+            status_code=400,
+            detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
+        )
+    acc = _require_account(request)
+    try:
+        applied = await confirm_not_submitted_and_requeue(
+            acc["email"], realtime_scope(acc), rid
+        )
+    except RecoveryRequeueBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not applied:
+        raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
+    return {"ok": True, "applied": True}
+
+
+@router.post("/gen-requests/by-generation/{gen_id}/confirm-not-submitted")
+async def confirm_generation_not_submitted(
+    gen_id: str,
+    body: RecoveryDecisionIn,
+    request: Request,
+):
+    """정보창에서 generation id로 호출하는 명시적 복구 동작."""
+    if not body.confirmed_not_submitted:
+        raise HTTPException(
+            status_code=400,
+            detail="외부 생성이 없음을 확인해야 다시 실행할 수 있습니다",
+        )
+    acc = _require_account(request)
+    try:
+        applied = await confirm_generation_not_submitted_and_requeue(
+            acc["email"],
+            realtime_scope(acc),
+            gen_id,
+        )
+    except RecoveryRequeueBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not applied:
+        raise HTTPException(status_code=409, detail="재큐잉할 복구 보류 요청이 아닙니다")
+    return {"ok": True, "applied": True}
 
 
 @router.post("/gen-requests/{rid}/fulfill", response_model=GenerationOut)
@@ -264,14 +658,14 @@ async def fulfill_gen_request(rid: str, body: FulfillIn, request: Request):
     """에이전트가 로컬 실행 완료 후 호출 — 결과(raw 잡)를 placeholder 에 채우고 done 표시."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
     if req.get("status") in ("done", "failed"):
         # 이미 종결된 요청 → 멱등 무시(에이전트 재시작·중복 보고로 done↔failed 뒤집힘 방지).
-        gen = repo.get_generation(req["gen_id"])
+        gen = await asyncio.to_thread(repo.get_generation, req["gen_id"])
         if not gen:
             raise HTTPException(status_code=500, detail="결과 조회 실패")
         return gen
@@ -291,17 +685,32 @@ async def anchor_gen_request(rid: str, request: Request, job_id: str, verifying:
     결말·재시작 복구): '확인중'으로 표시. terminal 완료는 되돌리지 않는다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
         raise HTTPException(status_code=403, detail="내 요청이 아닙니다")
-    await anchor_request(req, rid, job_id, verifying, realtime_scope(acc))
-    return {"ok": True}
+    applied = await anchor_request(req, rid, job_id, verifying, realtime_scope(acc))
+    if applied:
+        return {"ok": True, "applied": True}
+    # ★미적용을 성공처럼 응답하면 에이전트가 크래시-세이프 outbox 에서 앵커를 지워버려
+    #  유료 잡의 job_id 가 영영 카드에 안 붙었다(빈 200 이 원인).
+    #  - 요청이 이미 종결/소멸: 재전송 무의미 → 200 + applied=False (구 에이전트가 200 을
+    #    성공으로 보고 outbox 를 지워도 결과가 같아 무해).
+    #  - 요청이 살아 있는데 거부(레이스 등): 재전송해야 함 → **409** — 구 에이전트도 비-200 을
+    #    실패로 해석해 outbox 에 남긴다(혼합 배포에서도 앵커 유실 없음).
+    latest = await asyncio.to_thread(repo.get_gen_request, rid)
+    status = (latest or {}).get("status") or "missing"
+    if status in ("done", "canceled", "failed", "missing"):
+        return {"ok": True, "applied": False, "request_status": status}
+    raise HTTPException(
+        status_code=409,
+        detail=f"앵커가 아직 반영되지 않았습니다(요청 상태={status}) — 재시도하세요",
+    )
 
 
 @router.get("/gen-requests/reconcile-candidates")
-async def reconcile_candidates(request: Request):
+def reconcile_candidates(request: Request):
     """에이전트가 주기적으로 호출 — 이 계정의 '실제 상태 미확정' 로컬 카드 목록을 받아, 각 job_id 를
     자기 CLI 계정으로 generate get 해 확정하고 /reconcile 로 보정 push 한다(push 모델·계정 소유권).
     조회만이라 과금 없음. [{rid, gen_id, job_id}]."""
@@ -321,7 +730,7 @@ async def reconcile_gen_request(
     force_fail_reason: create-first 에서 레퍼런스 미부착 등 '로컬 검증 실패'를 되살림 금지로 확정할 때."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():
@@ -345,7 +754,7 @@ async def fail_gen_request(
     앵커한다 → generate list ingest 가 새 유령 행을 안 만들고 이 행을 UPDATE(멱등)한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
-    req = repo.get_gen_request(rid)
+    req = await asyncio.to_thread(repo.get_gen_request, rid)
     if not req:
         raise HTTPException(status_code=404, detail="없는 요청")
     if req["account_email"] != (acc.get("email") or "").lower():

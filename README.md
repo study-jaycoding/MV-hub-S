@@ -30,10 +30,14 @@ git sparse-checkout set backend frontend tools
 
 ## 업데이트
 
-```sh
-update_git.bat       # 변경분 설치·빌드. 등록된 공유 서버는 안전 재시작+ready 확인까지 수행
-update_cli.bat   # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로 맞춤
-```
+- **git 클론(서버 PC·개발)**:
+  ```sh
+  update_git.bat       # 변경분 설치·빌드. 등록된 공유 서버는 안전 재시작+ready 확인까지 수행
+  update_cli.bat       # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로 맞춤
+  ```
+- **릴리스 설치본(작업자 PC)**: 평소에는 앱 안 **설정 → 프로그램 업데이트** 버튼이 전부입니다
+  (진행 중 생성이 없을 때만 안전하게 종료·교체·재시작). 수동으로는 `update_release.bat`.
+  릴리스 제작·배포는 [release/README.md](release/README.md) 참고.
 
 서버 PC는 최초 한 번 `register_autostart.bat`을 관리자 승인으로 실행합니다. 이후에는
 `update_git.bat` 하나로 업데이트와 서버 재시작까지 처리하며, 서버 부팅 시에는 기존
@@ -44,18 +48,19 @@ update_cli.bat   # higgsfield CLI 를 hf_cli_version.txt 의 고정 버전으로
 > (pin 올림 → `python tools/hf_cli_contract_smoke.py` 로 계약 검증 → FAIL 고친 뒤 릴리스).
 > CLI 는 필드/플래그를 조용히 바꾸므로 스모크 없이 올리면 데이터가 조용히 깨질 수 있습니다.
 
-## 도커로 실행(선택)
-
-루트의 `docker-compose.yml` 로 컨테이너 기동도 가능합니다(`docker compose up -d --build`).
-단, 컨테이너엔 higgsfield CLI 가 없어 모델 목록/비용 엔드포인트는 동작하지 않습니다
-(팀-뷰/공유 서버 용도엔 무방).
-
 ## 문서 (docs/ — 개발자용)
 
 | 파일 | 내용 |
 |------|------|
-| [docs/README.md](docs/README.md) | 구현 현황·아키텍처·검증된 기술 노트 |
-| [docs/DESIGN.md](docs/DESIGN.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 설계·구조 |
-| [docs/CLAUDE.md](docs/CLAUDE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | AI 보조 개발 규칙·맥락 |
-| [docs/SERVER.md](docs/SERVER.md) | 서버 운영 |
+| [docs/README.md](docs/README.md) | 문서 색인·문서 우선순위·구현 요약 |
+| [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) | 현재 완료 항목·남은 위험·검증 상태 한눈에 보기 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/AI_CONTEXT.md](docs/AI_CONTEXT.md) | 현행 구조·데이터 흐름·AI 작업 맥락 |
+| [docs/DESIGN.md](docs/DESIGN.md) · [docs/CLAUDE.md](docs/CLAUDE.md) | 초기 설계 보존 기록 — 현행 구현 판단에 사용하지 않음 |
+| [docs/RISK_REDUCTION_PLAN_2026-08-15.md](docs/RISK_REDUCTION_PLAN_2026-08-15.md) | 현재 위험 상태와 다음 작업의 단일 목록 |
+| [docs/TELEMETRY_DRAIN_LIFECYCLE.md](docs/TELEMETRY_DRAIN_LIFECYCLE.md) | 로컬 응답·관리 텔레메트리 전송·마지막 성공 관측 계약 |
+| [docs/SHARE_STATE_COMPENSATION.md](docs/SHARE_STATE_COMPENSATION.md) | 공유 해제·최종 해제의 로컬/서버 일관성 계약 |
+| [docs/SERVER.md](docs/SERVER.md) · [docs/SERVER_RECOVERY.md](docs/SERVER_RECOVERY.md) | 서버 운영·자동복구 |
+| [docs/TESTING.md](docs/TESTING.md) | 테스트·검증 절차 |
+| [docs/DATA_OWNERSHIP.md](docs/DATA_OWNERSHIP.md) · [docs/WORKSPACE_DATA_CONTRACT.md](docs/WORKSPACE_DATA_CONTRACT.md) | 데이터 소유권·워크스페이스 계약 |
+| [docs/신원과_모드_가이드.md](docs/신원과_모드_가이드.md) | 신원·실행 모드 기준 문서(문서 위상 표 포함) |
 | docs/사용설명서.md · docs/기능설명서.md | 사용자·기능 설명 |

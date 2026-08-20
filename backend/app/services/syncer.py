@@ -15,14 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from typing import Optional
 
 from .. import repo
-from ..config import DEFAULT_WORKER_ID
+from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, LOCAL_AGENT_PAIR_SECRET, MANAGE_ENABLED
 from ..generation_result import normalize_job_result
 from ..ws import manager
-from . import cli_bridge
+from . import cli_bridge, history_autofill
+from .operational_logging import log_event
+
+
+_log = logging.getLogger("mvhub.syncer")
 
 # 서버측 주기 동기화 on/off(과도기 게이트). 0/false 면 주기 루프를 아예 안 띄운다 — 서버가
 # 하우스 PC 밖으로 이전됐을 때 전원 push 에이전트로 일원화하는 스위치. 기본 on.
@@ -52,8 +57,33 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체)."""
     jobs = await cli_bridge.list_jobs()
     wid = worker_id or DEFAULT_WORKER_ID
-    counts = await asyncio.to_thread(repo.apply_synced_jobs, jobs, wid)
+    changed_job_ids: set[str] = set()
+    counts = await asyncio.to_thread(
+        repo.apply_synced_jobs,
+        jobs,
+        wid,
+        changed_job_ids=changed_job_ids,
+        track_telemetry=MANAGE_ENABLED,
+    )
     counts["fetched"] = len(jobs)
+    counts["telemetry_pending"] = 0
+    if MANAGE_ENABLED:
+        # 실제 outbox 표시는 generation 업서트와 같은 트랜잭션에서 끝났다. 여기서는 전송 실패로
+        # 남아 있는 과거 대기열까지 포함해 다음 드레인 여부만 읽는다.
+        from ..repo import manage as manage_repo
+        try:
+            status = await asyncio.to_thread(manage_repo.telemetry_outbox_status)
+            counts["telemetry_pending"] = int(status.get("pending") or 0)
+        except Exception as exc:  # noqa: BLE001 — 데이터는 원자적으로 보존됐고 다음 주기에 재조회
+            counts["telemetry_pending"] = int(counts.get("telemetry_dirty") or 0) + int(
+                counts.get("telemetry_backfilled") or 0
+            )
+            log_event(
+                _log,
+                "sync_telemetry_status_failed",
+                level=logging.WARNING,
+                error_type=type(exc).__name__,
+            )
     # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
     # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
     # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
@@ -64,6 +94,14 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     counts["gap_warning"] = 1 if (
         counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100
     ) else 0
+    if counts["gap_warning"]:
+        email = await _house_account_email()
+        if email:
+            await asyncio.to_thread(repo.mark_history_gap, email)
+            # 공유 팀 서버는 계정별 CLI 자격을 갖지 않으므로 기록·경보만 남긴다. 로컬 허브와
+            # test_dev pairing 모드만 history 자동 보충(서비스 계층)을 시작한다.
+            if not AUTH_ENABLED or LOCAL_AGENT_PAIR_SECRET:
+                await history_autofill.auto_start_history_import(email, reason="gap")
     return counts
 
 
@@ -161,6 +199,12 @@ class PeriodicSync:
             await asyncio.sleep(self._interval)
             try:
                 c = await sync_now()
+                if c.get("telemetry_pending") or c.get("telemetry_dirty"):
+                    # 주기 동기화는 AUTH on 공유 서버에서만 시작되므로 로컬 관리 DB로 즉시 반영한다.
+                    # 네트워크 프록시를 거치지 않아 이벤트 루프 밖 워커에서 안전하게 처리할 수 있다.
+                    from .telemetry_drain import drain_isolated_telemetry
+
+                    await asyncio.to_thread(drain_isolated_telemetry)
                 if c.get("gap_warning"):
                     print(
                         f"[periodic-sync] ⚠ 갭 경보: 신규 {c['inserted']}건 — "
@@ -186,11 +230,23 @@ class PeriodicSync:
                     await manager.broadcast_all({"type": "synced"})
             except asyncio.CancelledError:
                 raise
-            except cli_bridge.CLIError:
-                # CLI 일시 불가(네트워크/로그아웃 등) — 조용히 다음 주기 재시도.
-                pass
-            except Exception as e:  # noqa: BLE001 — 워커가 죽지 않도록 격리
-                print(f"[periodic-sync] 오류: {e}")
+            except cli_bridge.CLIError as exc:
+                # CLI 일시 불가도 운영 상태에 남기고 다음 주기에 재시도한다. 예외 원문은 토큰·URL이
+                # 섞일 수 있으므로 구조화 로그에는 안전한 타입만 기록한다.
+                log_event(
+                    _log,
+                    "periodic_sync_cli_failed",
+                    level=logging.WARNING,
+                    error_type=type(exc).__name__,
+                )
+            except Exception as exc:  # noqa: BLE001 — 워커가 죽지 않도록 격리
+                log_event(
+                    _log,
+                    "periodic_sync_failed",
+                    level=logging.ERROR,
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
 
 
 periodic_sync = PeriodicSync()

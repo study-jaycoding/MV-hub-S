@@ -5,13 +5,27 @@
  · 동시 실행 게이트가 설정한 슬롯 수만큼만 동시 진입 허용
 """
 
+import json
+import io
 import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from app.routers import comfy
 from app.services import comfy_workflow
+
+
+class _TrackingStream(io.BytesIO):
+    def __init__(self, data: bytes):
+        super().__init__(data)
+        self.max_requested = 0
+
+    def read(self, size=-1):
+        self.max_requested = max(self.max_requested, size)
+        return super().read(size)
 
 
 class MalformedWorkflowTests(unittest.TestCase):
@@ -44,8 +58,10 @@ class VideoPathSanitizeTests(unittest.TestCase):
         slots = comfy_workflow.detect_slots(wf, set())
         target = {"cloud": False, "base": "http://127.0.0.1:8188", "prefix": "", "headers": {}}
         with TemporaryDirectory() as d:
+            source = Path(d) / "source.mp4"
+            source.write_bytes(b"data")
             comfy._fill_videos(target, wf, slots["video_slots"],
-                               [("../../evil.mp4", b"data")], d)
+                               [comfy._MediaUpload("../../evil.mp4", source, 4)], d)
             written = Path(wf["1"]["inputs"]["video"]).resolve()
             mvhub = (Path(d) / "mvhub").resolve()
             # mvhub 안에 evil.mp4 로만 저장(상위로 탈출 금지).
@@ -54,11 +70,154 @@ class VideoPathSanitizeTests(unittest.TestCase):
             self.assertTrue(written.exists())
 
 
+class UploadNameCollisionTests(unittest.TestCase):
+    """병렬 배치에서 잡 간 업로드 파일명 충돌 방지 — 잡 uuid 접두로 유일화.
+
+    프론트가 주는 이름은 image1.png 식이라, 잡 B 의 업로드(overwrite=true)가 잡 A 의
+    input/mvhub/image1.png 를 덮어써 A 가 B 의 이미지로 실행되는 무오류 오답이 났다."""
+
+    def _run_inject(self, job_id: str) -> list[str]:
+        wf = {"1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}}}
+        uploaded: list[str] = []
+        orig = comfy.comfy_client.upload_file
+
+        def fake_upload(target, fname, path, subfolder="mvhub"):
+            uploaded.append(fname)
+            self.assertTrue(Path(path).is_file())
+            return f"mvhub/{fname}"
+
+        comfy.comfy_client.upload_file = fake_upload
+        with TemporaryDirectory() as d:
+            path = Path(d) / "image1.png"
+            path.write_bytes(b"a")
+            try:
+                target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+                comfy._inject_media_files(
+                    target,
+                    wf,
+                    [{"type": "image"}],
+                    [comfy._MediaUpload("image1.png", path, 1)],
+                    "",
+                    job_id,
+                )
+            finally:
+                comfy.comfy_client.upload_file = orig
+        # 노드 입력에도 업로드된(접두 붙은) 이름이 그대로 주입된다.
+        self.assertEqual(wf["1"]["inputs"]["image"], f"mvhub/{uploaded[0]}")
+        return uploaded
+
+    def test_two_jobs_upload_distinct_names(self):
+        a = self._run_inject("aaaaaaaaaaaa1111")
+        b = self._run_inject("bbbbbbbbbbbb2222")
+        self.assertNotEqual(a[0], b[0])
+        self.assertTrue(a[0].startswith("aaaaaaaaaaaa-"))
+        self.assertTrue(a[0].endswith("image1.png"))
+
+    def test_same_filename_twice_in_one_job_stays_distinct(self):
+        # 한 잡 안에서 같은 원본 이름 2개(두 슬롯) — 순번 접두가 없으면 둘 다 같은 이름이 돼
+        # overwrite=true 로 두 번째가 첫 번째를 덮는다(코덱스 P1).
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "x.png"}},
+            "2": {"class_type": "LoadImage", "inputs": {"image": "y.png"}},
+        }
+        uploaded: list[str] = []
+        orig = comfy.comfy_client.upload_file
+
+        def fake_upload(target, fname, path, subfolder="mvhub"):
+            uploaded.append(fname)
+            return f"mvhub/{fname}"
+
+        comfy.comfy_client.upload_file = fake_upload
+        with TemporaryDirectory() as d:
+            first = Path(d) / "first.png"
+            second = Path(d) / "second.png"
+            first.write_bytes(b"a")
+            second.write_bytes(b"b")
+            try:
+                target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+                comfy._inject_media_files(
+                    target, wf,
+                    [{"type": "image"}, {"type": "image"}],
+                    [
+                        comfy._MediaUpload("image1.png", first, 1),
+                        comfy._MediaUpload("image1.png", second, 1),
+                    ],
+                    "", "cccccccccccc3333",
+                )
+            finally:
+                comfy.comfy_client.upload_file = orig
+        self.assertEqual(len(uploaded), 2)
+        self.assertNotEqual(uploaded[0], uploaded[1])
+
+    def test_without_job_id_keeps_original_name(self):
+        # 하위 호환 — job_id 없이 호출되면 기존 이름 유지.
+        uploaded = self._run_inject("")
+        self.assertEqual(uploaded[0], "image1.png")
+
+
+class MediaStagingTests(unittest.TestCase):
+    def test_stage_uses_bounded_copy_and_cleanup(self):
+        from starlette.datastructures import UploadFile
+
+        stream = _TrackingStream(b"x" * (2 * 1024 * 1024 + 17))
+        upload = UploadFile(stream, filename="large.png")
+        staged = comfy._stage_media_uploads([upload])
+        try:
+            self.assertEqual(len(staged), 1)
+            self.assertEqual(staged[0].size, 2 * 1024 * 1024 + 17)
+            self.assertEqual(staged[0].path.stat().st_size, staged[0].size)
+            self.assertLessEqual(stream.max_requested, 1024 * 1024)
+        finally:
+            paths = [item.path for item in staged]
+            comfy._cleanup_media_uploads(staged)
+        self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_run_impl_cleans_staging_when_injection_fails(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "staged.part"
+            path.write_bytes(b"x")
+            upload = comfy._MediaUpload("x.png", path, 1)
+            settings = {
+                "comfy_target": "local",
+                "comfy_url": "http://127.0.0.1:8188",
+                "comfy_api_key": "",
+                "comfy_input_dir": "",
+            }
+            with mock.patch.object(
+                comfy, "_inject_media_files", side_effect=ValueError("bad workflow")
+            ):
+                with self.assertRaises(comfy.HTTPException) as cm:
+                    comfy._run_comfy_job_impl("job", {"1": {}}, {}, [], [upload], settings)
+            self.assertEqual(cm.exception.status_code, 400)
+            self.assertFalse(path.exists())
+
+    def test_run_cleans_staging_when_thread_start_fails(self):
+        with TemporaryDirectory() as d:
+            path = Path(d) / "staged.part"
+            path.write_bytes(b"x")
+            staged = [comfy._MediaUpload("x.png", path, 1)]
+            with mock.patch.object(comfy, "_stage_media_uploads", return_value=staged), \
+                 mock.patch.object(comfy, "_raw_settings", return_value={}), \
+                 mock.patch.object(comfy, "_create_run_job", return_value="job"), \
+                 mock.patch.object(comfy, "_fail_run_job"), \
+                 mock.patch.object(comfy.threading.Thread, "start", side_effect=OSError("no thread")):
+                with self.assertRaises(comfy.HTTPException) as cm:
+                    comfy.run(
+                        content='{"1":{"class_type":"LoadImage","inputs":{}}}',
+                        param_values="{}",
+                        media_meta='[{"type":"image"}]',
+                        media=[mock.Mock()],
+                    )
+            self.assertEqual(cm.exception.status_code, 500)
+            self.assertFalse(path.exists())
+
+
 class RunGateTests(unittest.TestCase):
     def tearDown(self):
         # 게이트 카운터를 다른 테스트에 안 넘기도록 0 으로 되돌린다.
         with comfy._RUN_GATE:
             comfy._RUN_SLOTS_ACTIVE = 0
+            comfy._RUN_GATE.notify_all()
 
     def test_gate_limits_active_slots(self):
         comfy._acquire_run_slot(2)
@@ -75,6 +234,141 @@ class RunGateTests(unittest.TestCase):
         comfy._release_run_slot()             # 하나 반납 → 대기하던 3번째 진입
         self.assertTrue(entered.wait(1.0))
         self.assertEqual(comfy._RUN_SLOTS_ACTIVE, 2)
+
+    def test_release_wakes_mixed_capacity_waiters(self):
+        # active=3 에 cap 2/3 대기자가 함께 있으면, 한 슬롯 반납(active=2) 뒤에는 cap=3만
+        # 들어갈 수 있다. notify()가 먼저 온 cap=2만 깨우면 cap=3은 30초 wait timeout까지
+        # 잠든다. notify_all()은 둘을 깨워 cap=3이 즉시 진행하게 한다.
+        low_entered = threading.Event()
+        high_entered = threading.Event()
+
+        def low_cap_waiter():
+            comfy._acquire_run_slot(2)
+            low_entered.set()
+
+        def high_cap_waiter():
+            comfy._acquire_run_slot(3)
+            high_entered.set()
+
+        def wait_for_waiters(count: int) -> None:
+            until = time.monotonic() + 1.0
+            while time.monotonic() < until:
+                with comfy._RUN_GATE:
+                    if len(comfy._RUN_GATE._waiters) >= count:  # Condition 내부 대기열(테스트 동기화용)
+                        return
+                time.sleep(0.01)
+            self.fail(f"게이트 대기자 {count}명이 준비되지 않았습니다")
+
+        with comfy._RUN_GATE:
+            comfy._RUN_SLOTS_ACTIVE = 3
+        threading.Thread(target=low_cap_waiter, daemon=True).start()
+        wait_for_waiters(1)  # 낮은 cap을 먼저 대기열에 넣어 기존 notify() 결함도 재현 가능하게 한다.
+        threading.Thread(target=high_cap_waiter, daemon=True).start()
+        wait_for_waiters(2)
+
+        comfy._release_run_slot()  # active=2 → cap=3 대기자가 즉시 들어가야 한다.
+        self.assertTrue(high_entered.wait(0.5))
+        self.assertFalse(low_entered.is_set())
+        # 남은 가상 슬롯 두 개를 반납하면 cap=2 대기자도 끝까지 진행한다.
+        comfy._release_run_slot()
+        comfy._release_run_slot()
+        self.assertTrue(low_entered.wait(0.5))
+
+
+class WaitResilienceTests(unittest.TestCase):
+    def test_local_poll_transient_errors_below_limit_survive(self):
+        # N-1회의 일시 연결 오류 뒤 실제 완료 history를 받으면, 전체 30분 잡을 502로 끝내지 않는다.
+        errors = [comfy.comfy_client.ComfyError("temporary") for _ in range(2)]
+        history = {"status": {"completed": True}, "outputs": {}}
+        target = {"cloud": False, "base": "http://x", "prefix": "", "headers": {}}
+        with mock.patch.object(comfy, "_POLL_ERROR_RETRY_LIMIT", 3), \
+             mock.patch.object(comfy.comfy_client, "get_history", side_effect=[*errors, history]) as get_history, \
+             mock.patch.object(comfy.time, "sleep", lambda _s: None):
+            self.assertEqual(comfy._wait(target, "pid"), history)
+        self.assertEqual(get_history.call_count, 3)
+
+    def test_cloud_poll_transient_errors_below_limit_survive(self):
+        errors = [comfy.comfy_client.ComfyError("temporary") for _ in range(2)]
+        target = {"cloud": True, "base": "https://cloud.comfy.org", "prefix": "/api", "headers": {}}
+        with mock.patch.object(comfy, "_POLL_ERROR_RETRY_LIMIT", 3), \
+             mock.patch.object(comfy.comfy_client, "cloud_job_status",
+                               side_effect=[*errors, "completed"]), \
+             mock.patch.object(comfy.comfy_client, "cloud_job_detail", return_value={"outputs": {}}), \
+             mock.patch.object(comfy.time, "sleep", lambda _s: None):
+            self.assertEqual(comfy._wait(target, "pid"), {"outputs": {}})
+
+
+class InflightRunPersistenceTests(unittest.TestCase):
+    def test_submitted_run_is_persisted_then_removed_on_finish(self):
+        values: dict[str, str] = {}
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting):
+            comfy._track_inflight_run("job-1", "prompt-1", "cloud")
+            rows = json.loads(values[comfy._K_INFLIGHT_RUNS])
+            self.assertEqual(rows[0]["job_id"], "job-1")
+            self.assertEqual(rows[0]["prompt_id"], "prompt-1")
+            self.assertEqual(rows[0]["target"], "cloud")
+            self.assertIn("created_at", rows[0])
+            comfy._forget_inflight_run("job-1")
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+
+    def test_restart_logs_cloud_job_cancels_and_clears_store(self):
+        values = {
+            comfy._K_INFLIGHT_RUNS: (
+                '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1},'
+                '{"job_id":"job-2","prompt_id":"local-prompt","target":"local","created_at":2}]'
+            )
+        }
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy, "_raw_settings", return_value={"comfy_api_key": "key"}), \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
+            comfy.recover_interrupted_run_jobs()
+        cancel.assert_called_once()
+        self.assertEqual(cancel.call_args.args[1], "cloud-prompt")
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
+
+    def test_restart_skips_cloud_cancel_when_external_recovery_disabled(self):
+        """복원 드릴(격리 서버) 계약 — 사본 DB의 키로 라이브 Cloud 잡을 취소하면 안 된다.
+
+        CONTENT_HUB_EXTERNAL_RECOVERY=0 이면 취소 호출 없이 로그만 남기고 흔적은 비운다
+        (사본이므로 비워도 무해, 반복 로그 방지).
+        """
+        values = {
+            comfy._K_INFLIGHT_RUNS: (
+                '[{"job_id":"job-1","prompt_id":"cloud-prompt","target":"cloud","created_at":1}]'
+            )
+        }
+
+        def get_setting(key, default=None):
+            return values.get(key, default)
+
+        def set_setting(key, value):
+            values[key] = value
+
+        with mock.patch.object(comfy.repo, "get_setting", get_setting), \
+             mock.patch.object(comfy.repo, "set_setting", set_setting), \
+             mock.patch.object(comfy, "EXTERNAL_RECOVERY_ENABLED", False), \
+             mock.patch.object(comfy, "_raw_settings") as raw_settings, \
+             mock.patch.object(comfy.comfy_client, "cloud_cancel_pending") as cancel:
+            comfy.recover_interrupted_run_jobs()
+        cancel.assert_not_called()
+        raw_settings.assert_not_called()  # 설정(키) 접근 자체가 없어야 한다
+        self.assertEqual(json.loads(values[comfy._K_INFLIGHT_RUNS]), [])
 
 
 class ComboChoiceTests(unittest.TestCase):

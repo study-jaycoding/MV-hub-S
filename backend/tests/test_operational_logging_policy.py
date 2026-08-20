@@ -36,7 +36,12 @@ def test_runtime_log_snapshot_drops_high_cardinality_details_but_keeps_health():
             },
             "process": {"cpu_percent_one_core": 2, "rss_bytes": 3, "pid": 999},
             "disk": {"volume_free_bytes": 4, "data_root": "private-path"},
-            "websocket": {"connections": 5, "authenticated_accounts": 2},
+            "websocket": {
+                "connections": 5,
+                "authenticated_accounts": 2,
+                "send_timeouts": 3,
+                "send_failures": 1,
+            },
             "agents": {"connected_accounts": 1},
             "operations": {
                 "generation_queue": {"active_total": 1},
@@ -53,3 +58,5 @@ def test_runtime_log_snapshot_drops_high_cardinality_details_but_keeps_health():
     assert "methods" not in compact["requests"]
     assert "pid" not in compact["process"]
     assert "data_root" not in compact["disk"]
+    assert compact["websocket"]["send_timeouts"] == 3
+    assert compact["websocket"]["send_failures"] == 1

@@ -8,11 +8,13 @@ export function CutThumbs({
   task,
   thumb,
   disabled,
+  readOnly = false,
   onUnlinkGen,
 }: {
   task: Task;
   thumb: WorkViewProps["thumb"];
   disabled?: Set<string>; // d 로 비활성화된 컷 → 회색 표시
+  readOnly?: boolean;
   onUnlinkGen: WorkViewProps["onUnlinkGen"];
 }) {
   const cuts = task.cuts || [];
@@ -50,7 +52,7 @@ export function CutThumbs({
                 ↗
               </span>
             ) : null}
-            {c.linked ? (
+            {c.linked && !readOnly ? (
               <button
                 className="work-cut-x"
                 title="연결 해제(수동)"

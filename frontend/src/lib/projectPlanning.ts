@@ -46,6 +46,11 @@ export function validateProjectPlanning(
     return { planning: null, error: "예산은 0 이상의 숫자로 입력하세요." };
   }
 
+  const archiveAfterDays = Number(form.archive_after_days ?? 30);
+  if (!Number.isInteger(archiveAfterDays) || archiveAfterDays < 1 || archiveAfterDays > 3650) {
+    return { planning: null, error: "과거 기록 전환 기간은 1~3650일 사이의 정수로 입력하세요." };
+  }
+
   return {
     planning: {
       status: form.status || null,
@@ -53,6 +58,7 @@ export function validateProjectPlanning(
       due_date: form.due_date || null,
       budget_credits: budget,
       budget_period: planningBudgetPeriod(form),
+      archive_after_days: archiveAfterDays,
       note: form.note?.trim() || null,
     },
     error: "",

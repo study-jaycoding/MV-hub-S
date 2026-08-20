@@ -28,8 +28,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
+import weakref
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -62,6 +64,48 @@ class CLIError(RuntimeError):
     """CLI 호출 실패(0이 아닌 종료코드 또는 미설치)."""
 
 
+async def _terminate_cli_process(proc: asyncio.subprocess.Process) -> None:
+    """취소·타임아웃된 CLI의 부모와 자식 프로세스를 끝내고 반드시 회수한다."""
+    if proc.returncode is None and os.name == "nt" and proc.pid:
+        killer = None
+        try:
+            taskkill = shutil.which("taskkill.exe") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "taskkill.exe",
+            )
+            killer = await asyncio.create_subprocess_exec(
+                taskkill,
+                "/PID",
+                str(proc.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            await asyncio.wait_for(killer.wait(), timeout=5.0)
+        except (OSError, asyncio.TimeoutError):
+            if killer and killer.returncode is None:
+                try:
+                    killer.kill()
+                except OSError:
+                    pass
+                try:
+                    await killer.wait()
+                except OSError:
+                    pass
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except (OSError, asyncio.TimeoutError):
+        pass
+
+
 def cli_path() -> str:
     global _CLI_PATH
     if _CLI_PATH is None:
@@ -91,13 +135,11 @@ async def _run(*args: str, timeout: float = 60.0) -> str:
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
-        proc.kill()
-        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
-        try:
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        await _terminate_cli_process(proc)
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
+    except asyncio.CancelledError:
+        await _terminate_cli_process(proc)
+        raise
     if proc.returncode != 0:
         msg = (err or b"").decode("utf-8", "replace").strip()
         raise CLIError(f"higgsfield {' '.join(args)} 실패(rc={proc.returncode}): {msg}")
@@ -152,13 +194,11 @@ async def _run_capture(*args: str, timeout: float = 600.0) -> tuple[str, str, in
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as e:
-        proc.kill()
-        # kill 후 반드시 회수 — 안 하면 좀비/파이프가 남는다(Windows npm shim 은 자식 트리도 남을 수 있음).
-        try:
-            await proc.wait()
-        except ProcessLookupError:
-            pass
+        await _terminate_cli_process(proc)
         raise CLIError(f"CLI 타임아웃: higgsfield {' '.join(args)}") from e
+    except asyncio.CancelledError:
+        await _terminate_cli_process(proc)
+        raise
     return (
         (out or b"").decode("utf-8", "replace"),
         (err or b"").decode("utf-8", "replace"),
@@ -277,6 +317,21 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     params = job.get("params") or {}
     result_url = job.get("result_url")
 
+    # CLI 1.1.23 목록에는 현재 workspace 필드가 없지만, MCP/향후 CLI 응답 또는 오프라인
+    # 백필에는 개별 잡 컨텍스트가 포함될 수 있다. 변환 중 버리지 않고 내부 평면 규격으로 보존한다.
+    # 명시된 ``workspace`` 객체가 있으면 그것만 읽는다(불완전하면 unknown, 평면값 추측 금지).
+    from ..workspace_context import normalize_workspace_context
+
+    # 값이 None(JSON null)인 키는 "잡 자체 워크스페이스 명시"로 치지 않는다 — MCP/덤프가
+    # 관행적으로 `workspace: null` 을 실어 보내면 검증된 배치 컨텍스트까지 잃고 전부
+    # unknown 이 되는 것을 막는다. 빈 문자열 등 깨진 명시값은 종전대로 unknown(fail-closed).
+    has_job_workspace = job.get("workspace") is not None or any(
+        job.get(key) is not None
+        for key in ("workspace_scope", "workspace_id", "workspace_name")
+    )
+    raw_workspace = job.get("workspace") if "workspace" in job else job
+    job_workspace = normalize_workspace_context(raw_workspace)
+
     references: list[dict[str, Any]] = []
     from ..repo._common import _UID_RE  # 생성자 uid 패턴 단일 정의(중복 하드코딩 방지)
 
@@ -323,6 +378,15 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
             "created_at": epoch_to_iso(job.get("created_at")),
             "sort_ts": _to_epoch(job.get("created_at")),  # 정밀 정렬키(sub-second 보존)
             "creator_uid": creator_uid,  # 생성자(team 워크스페이스에서 작성자 구분)
+            **(
+                {
+                    "workspace_scope": job_workspace["scope"],
+                    "workspace_id": job_workspace["id"],
+                    "workspace_name": job_workspace["name"],
+                }
+                if has_job_workspace
+                else {}
+            ),
             # 실패 사유(rc=0 인데 잡 자체가 실패한 경우 — NSFW 거부 등). 키는 방어적으로 탐색.
             # 힉스필드 실패 잡 JSON 은 보통 사유 필드를 안 주지만(검증됨), 줄 때를 대비해 폭넓게 탐색.
             "error": (
@@ -400,20 +464,30 @@ async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str
 # 모델별 허용 파라미터 이름 캐시(프로세스 수명). 동기화/재사용 시 힉스필드가 채운
 # 잔여 필드(width/height/batch_size/input_images …)가 --param 으로 새어 나가 CLI 가
 # "Unknown params" 로 거부하는 것을 막는다.
+# 조회 실패는 캐시하지 않는다(RL-24) — CLI 일시 장애 한 번이 프로세스 수명 내내
+# "필터 없음"으로 굳지 않게, 짧은 TTL 뒤 다음 호출에서 다시 조회한다.
 _PARAM_NAMES_CACHE: dict[str, set[str]] = {}
+_PARAM_NAMES_RETRY_AT: dict[str, float] = {}
+_PARAM_NAMES_FAIL_TTL = 120.0
 
 
 async def _allowed_param_names(model: str) -> set[str]:
     """모델이 받는 파라미터 이름 집합. 조회 실패 시 빈 집합(→ 필터하지 않음=전부 전송)."""
-    if model not in _PARAM_NAMES_CACHE:
-        try:
-            data = await get_model_params(model)
-            _PARAM_NAMES_CACHE[model] = {
-                p.get("name") for p in data.get("params", []) if p.get("name")
-            }
-        except CLIError:
-            _PARAM_NAMES_CACHE[model] = set()
-    return _PARAM_NAMES_CACHE[model]
+    cached = _PARAM_NAMES_CACHE.get(model)
+    if cached is not None:
+        return cached
+    retry_at = _PARAM_NAMES_RETRY_AT.get(model)
+    if retry_at is not None and time.monotonic() < retry_at:
+        return set()  # 백오프 중 — CLI 를 매 호출 재기동하지 않는다
+    try:
+        data = await get_model_params(model)
+    except CLIError:
+        _PARAM_NAMES_RETRY_AT[model] = time.monotonic() + _PARAM_NAMES_FAIL_TTL
+        return set()
+    _PARAM_NAMES_RETRY_AT.pop(model, None)
+    names = {p.get("name") for p in data.get("params", []) if p.get("name")}
+    _PARAM_NAMES_CACHE[model] = names
+    return names
 
 
 async def _param_args(model: str, params: Optional[dict[str, Any]]) -> list[str]:
@@ -451,6 +525,46 @@ _COST_CACHE: dict[str, tuple[int, float]] = {}  # key → (credits, saved_epoch)
 _COST_CACHE_MAX = 4096
 _COST_TTL = float(os.environ.get("CONTENT_HUB_COST_TTL", 7 * 86400))  # 기본 7일(가격 변동 자동 반영)
 _cost_loaded = False
+
+
+def _bounded_env_int(name: str, default: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+# 견적은 부가 통계라 실제 생성 응답을 늦추지 않아야 한다. 여러 사용자·탭이 동시에 요청해도
+# Higgsfield CLI 프로세스는 기본 2개만 실행하고 나머지는 코루틴으로 대기한다.
+_ESTIMATE_CONCURRENCY = _bounded_env_int("CONTENT_HUB_ESTIMATE_CONCURRENCY", 2, 8)
+_loop_gate_lock = threading.Lock()
+_estimate_gates: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
+_cost_write_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Lock
+] = weakref.WeakKeyDictionary()
+
+
+def _estimate_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _loop_gate_lock:
+        gate = _estimate_gates.get(loop)
+        if gate is None:
+            gate = asyncio.Semaphore(_ESTIMATE_CONCURRENCY)
+            _estimate_gates[loop] = gate
+        return gate
+
+
+def _cost_write_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _loop_gate_lock:
+        lock = _cost_write_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _cost_write_locks[loop] = lock
+        return lock
 
 
 def _cost_key(model: str, param_args: list[str]) -> str:
@@ -524,32 +638,50 @@ async def estimate_cost(
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
-    _load_cost_cache()
-    # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
-    # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
-    param_args = await _param_args(model, params)
-    key = _cost_key(model, param_args)
-    entry = _COST_CACHE.get(key)
-    if entry is not None and (time.time() - entry[1]) < _COST_TTL:
-        return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
-    args: list[str] = ["generate", "cost", model, "--prompt", _shield_json_prompt(prompt or "preview")]
-    args += param_args
-    data = await _run_json(*args, timeout=timeout)
-    if not isinstance(data, dict):
-        return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
-    credits = data.get("credits_exact")
-    if credits is None:
-        credits = data.get("credits", 0)
-    try:
-        credits_int = int(round(float(credits)))
-    except (TypeError, ValueError):
-        return {"credits": entry[0]} if entry else {"credits": 0}
-    if len(_COST_CACHE) >= _COST_CACHE_MAX:
-        _COST_CACHE.clear()  # 소프트 캡(드묾)
-    _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
-    payload = _serialize_cost_cache()  # dict 스냅샷은 메인에서(race 방지)
-    await asyncio.to_thread(_write_cost_cache, payload)  # 디스크 쓰기만 스레드로(루프 비블로킹)
-    return {"credits": credits_int}
+    async with _estimate_gate():
+        _load_cost_cache()
+        # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
+        # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
+        param_args = await _param_args(model, params)
+        key = _cost_key(model, param_args)
+        entry = _COST_CACHE.get(key)
+        if entry is not None and (time.time() - entry[1]) < _COST_TTL:
+            return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
+        args: list[str] = [
+            "generate",
+            "cost",
+            model,
+            "--prompt",
+            _shield_json_prompt(prompt or "preview"),
+        ]
+        args += param_args
+        try:
+            data = await _run_json(*args, timeout=timeout)
+        except CLIError:
+            # 가격 갱신은 생성 자체가 아닌 보조 정보다. CLI/네트워크가 잠깐 불안정할 때
+            # 이미 검증한 예전 가격까지 버려 502를 내면 화면의 예상 크레딧이 깜박이고
+            # 서버 로그도 불필요하게 오염된다. 만료된 값이라도 있으면 이번 한 번은
+            # 안전한 폴백으로 쓰고, 다음 조회에서 다시 최신 가격 갱신을 시도한다.
+            if entry is not None:
+                return {"credits": entry[0]}
+            raise
+        if not isinstance(data, dict):
+            return {"credits": entry[0]} if entry else {"credits": 0}  # 실패 시 옛 값 폴백
+        credits = data.get("credits_exact")
+        if credits is None:
+            credits = data.get("credits", 0)
+        try:
+            credits_int = int(round(float(credits)))
+        except (TypeError, ValueError):
+            return {"credits": entry[0]} if entry else {"credits": 0}
+        if len(_COST_CACHE) >= _COST_CACHE_MAX:
+            _COST_CACHE.clear()  # 소프트 캡(드묾)
+        _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
+        # 두 견적이 병렬 완료돼도 오래된 스냅샷이 나중에 파일을 덮지 않도록 파일 저장은 직렬화한다.
+        async with _cost_write_lock():
+            payload = _serialize_cost_cache()
+            await asyncio.to_thread(_write_cost_cache, payload)
+        return {"credits": credits_int}
 
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
@@ -581,6 +713,29 @@ async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
     return result
 
 
+async def get_auth_token(timeout: float = 30.0) -> str:
+    """현재 CLI OAuth 토큰을 메모리로만 읽는다.
+
+    과거 이력 MCP 조회처럼 공식 CLI와 같은 Higgsfield 계정 권한이 필요한 로컬 기능용이다.
+    토큰은 파일/DB/로그에 저장하지 않으며, 호출부도 예외 문자열에 값을 포함하면 안 된다.
+    CLI 버전에 따라 평문 또는 JSON 객체로 올 수 있어 둘 다 수용한다.
+    """
+    raw = (await _run("auth", "token", "--json", timeout=timeout)).strip()
+    if not raw:
+        raise CLIError("Higgsfield CLI 로그인이 필요합니다")
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CLIError("Higgsfield CLI 로그인 정보를 읽지 못했습니다") from exc
+        if isinstance(data, dict):
+            token = str(data.get("access_token") or data.get("token") or "").strip()
+            if token:
+                return token
+        raise CLIError("Higgsfield CLI 로그인이 필요합니다")
+    return raw
+
+
 # ── 워크스페이스(팀 공유 UUID 공간) ───────────────────────────────────────
 async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     """워크스페이스 목록 [{id, name, plan_type, credits, is_selected, user_role}].
@@ -592,71 +747,14 @@ async def list_workspaces(timeout: float = 30.0) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-# ── 현재 선택 워크스페이스 상태 — Assets 자동 마운트의 워크스페이스 스코프 판정용 ──
-# 삼중 상태를 유지한다: 확정 팀(id) / 확정 개인(None) / 미확인(known=False).
-#  · 미확인은 호출측이 fail-close(자동 마운트 숨김) — 타 워크스페이스 폴더 노출·업로드 차단.
-#  · 전환(set/unset) 성공 시 결과를 즉시 '확정'으로 기록(조회 불필요) + 세대(gen) 증가로
-#    진행 중이던 옛 workspace list 응답이 새 상태를 덮는 경쟁을 차단한다(코덱스 P1).
-#  · 상태는 단일 튜플 교체로만 갱신(GIL 원자성) — set/unset(메인 루프)이 락을 기다리지 않는다.
-_WS_STATE_TTL = 600.0  # 확정 상태 재검증 주기 — 앱 밖(터미널)에서 CLI 를 만진 경우 자가치유
-_ws_gen = 0
-_ws_state: tuple[int, bool, Optional[str], float] = (0, False, None, 0.0)  # (gen, known, id, t)
-_ws_resolve_lock = threading.Lock()  # sync(threadpool) 경로 single-flight — CLI 중복 실행 방지
-
-
-def _ws_set_known(workspace_id: Optional[str]) -> None:
-    global _ws_gen, _ws_state
-    _ws_gen += 1
-    _ws_state = (_ws_gen, True, workspace_id, time.monotonic())
-
-
-def selected_workspace_state() -> tuple[bool, Optional[str]]:
-    """(known, id) — known=False 는 미확인(호출측 fail-close). CLI 호출 없음(async 경로 안전)."""
-    _gen, known, wid, t = _ws_state
-    if known and (time.monotonic() - t) < _WS_STATE_TTL:
-        return True, wid
-    return False, wid
-
-
-async def _resolve_selected_workspace(timeout: float = 30.0) -> None:
-    """CLI 로 현재 선택을 조회해 확정 기록. 조회 실패([])면 미확인 유지(fail-close)."""
-    global _ws_state
-    start_gen = _ws_gen
-    workspaces = await list_workspaces(timeout=timeout)
-    if not workspaces:
-        return
-    sel = next((w for w in workspaces if w.get("is_selected")), None)
-    wid = str(sel["id"]) if sel and sel.get("id") else None
-    if _ws_gen == start_gen:  # 조회 중 전환이 있었으면 버린다(늦은 응답이 새 상태를 못 덮게)
-        _ws_state = (start_gen, True, wid, time.monotonic())
-
-
-def resolve_selected_workspace_blocking() -> tuple[bool, Optional[str]]:
-    """sync(threadpool) 경로용 — 미확인이면 single-flight 로 CLI 1회 조회 후 상태 반환."""
-    known, wid = selected_workspace_state()
-    if known:
-        return True, wid
-    with _ws_resolve_lock:
-        known, wid = selected_workspace_state()  # 락 대기 중 다른 스레드가 확정했으면 재사용
-        if known:
-            return True, wid
-        try:
-            asyncio.run(_resolve_selected_workspace())
-        except Exception:  # noqa: BLE001 - 루프 정책 등 환경 문제도 미확인으로(fail-close)
-            return False, None
-    return selected_workspace_state()
-
-
 async def set_workspace(workspace_id: str, timeout: float = 30.0) -> None:
     """이후 모든 요청을 이 워크스페이스(팀 공유 UUID 공간)로 스코프. CLI 전역 상태."""
     await _run("workspace", "set", workspace_id, timeout=timeout)
-    _ws_set_known(str(workspace_id))  # 성공 = 상태 확정(조회 불필요) + 세대 증가
 
 
 async def unset_workspace(timeout: float = 30.0) -> None:
     """워크스페이스 해제 → 개인 계정 컨텍스트로 복귀."""
     await _run("workspace", "unset", timeout=timeout)
-    _ws_set_known(None)
 
 
 # (create_job/get_job 제거 — 푸시 모델에선 서버가 CLI 로 직접 생성하지 않는다. 생성은 각 PC 의

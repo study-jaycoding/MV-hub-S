@@ -1,97 +1,75 @@
-"""Assets 자동 마운트의 워크스페이스 스코프 — fail-close·필터·전환 경쟁 회귀.
+"""에셋 폴더 목록의 워크스페이스 범위 계약.
 
-배경: 팀 워크스페이스 선택 중에도 다른 워크스페이스 프로젝트 폴더가 Assets 에
-노출되던 버그. 규칙 = 팀 선택 중엔 그 워크스페이스 프로젝트만(라이브러리와 동일),
-개인 컨텍스트는 전체, '미확인'은 자동 마운트 숨김(fail-close — 노출·업로드 차단).
+생성 탭과 같은 규칙이다 — 팀을 고른 동안에는 그 팀 프로젝트에서 파생된 폴더만 보이고,
+사용자가 직접 등록한 수동 폴더는 팀 소속이 아니므로 언제나 보인다. 예전에는 워크스페이스가
+아예 전달되지 않아 다른 팀(그리고 read_all 보유자에겐 전 조직)의 폴더가 섞여 나왔다.
 """
 
 from __future__ import annotations
 
-import asyncio
+import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
-import pytest
-
-from app.routers import assets as assets_router
-from app.services import cli_bridge
+from app.routers import assets
 
 
-REQ = SimpleNamespace(state=SimpleNamespace(account=None))
+class AssetWorkspaceScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.request = SimpleNamespace(state=SimpleNamespace(account=None))
+        self.captured: dict = {}
 
-
-@pytest.fixture(autouse=True)
-def _reset_workspace_state(monkeypatch):
-    monkeypatch.setattr(cli_bridge, "_ws_gen", 0)
-    monkeypatch.setattr(cli_bridge, "_ws_state", (0, False, None, 0.0))
-    monkeypatch.setattr(assets_router, "MANAGE_ENABLED", True)
-
-
-def _fake_projects(seen: dict):
-    def fake_list_projects(include_archived=False, member_uid=None, workspace_id=None, **_kw):
-        seen["workspace_id"] = workspace_id
-        return {
-            "projects": [
-                {"id": "p1", "name": "P1", "render_root_path": r"C:\tmp\p1"},
+        def fake_list_projects(**kwargs):
+            self.captured = kwargs
+            rows = [
+                {"id": "p-a", "name": "팀A폴더", "render_root_path": r"Z:\A",
+                 "workspace_scope": "team", "workspace_id": "ws-a"},
+                {"id": "p-b", "name": "팀B폴더", "render_root_path": r"Z:\B",
+                 "workspace_scope": "team", "workspace_id": "ws-b"},
             ]
-        }
+            wid = kwargs.get("workspace_id")
+            if wid:  # repo.list_projects 의 실제 필터와 같은 의미
+                rows = [r for r in rows if r["workspace_id"] == wid]
+            return {"projects": rows}
 
-    return fake_list_projects
+        self.patches = [
+            patch.object(assets.repo, "list_projects", side_effect=fake_list_projects),
+            patch.object(assets, "MANAGE_ENABLED", True),
+            patch.object(assets, "AUTH_ENABLED", False),  # read_all 경로(가장 넓은 가시성)
+        ]
+        for p in self.patches:
+            p.start()
 
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
 
-def test_unknown_workspace_fails_closed(monkeypatch):
-    """미확인(CLI 조회 실패) → 자동 마운트 없음 — 타 워크스페이스 노출 차단."""
+    def test_team_selection_keeps_only_that_workspace(self):
+        names = [m["name"] for m in assets._auto_project_mounts(self.request, "ws-a")]
 
-    async def broken_list_workspaces(timeout=30.0):
-        return []  # CLI 실패와 동일한 계약(list_workspaces 는 실패 시 [])
+        self.assertEqual(names, ["팀A폴더"])
+        self.assertEqual(self.captured.get("workspace_id"), "ws-a")
 
-    monkeypatch.setattr(cli_bridge, "list_workspaces", broken_list_workspaces)
-    monkeypatch.setattr(assets_router.repo, "list_projects", _fake_projects({}))
-    assert assets_router._auto_project_mounts(REQ) == []
+    def test_personal_or_no_selection_shows_all(self):
+        # 개인·미선택은 좁히지 않는다(생성 탭과 동일) — workspace_id 를 넘기지 않는다.
+        names = [m["name"] for m in assets._auto_project_mounts(self.request, None)]
 
+        self.assertEqual(sorted(names), ["팀A폴더", "팀B폴더"])
+        self.assertIsNone(self.captured.get("workspace_id"))
 
-def test_team_workspace_filters_projects(monkeypatch):
-    """확정 팀 컨텍스트 → repo.list_projects 에 그 workspace_id 로 필터."""
-    cli_bridge._ws_set_known("ws-1")
-    seen: dict = {}
-    monkeypatch.setattr(assets_router.repo, "list_projects", _fake_projects(seen))
-    mounts = assets_router._auto_project_mounts(REQ)
-    assert seen["workspace_id"] == "ws-1"
-    assert [m["name"] for m in mounts] == ["P1"]
+    def test_manual_mounts_are_never_filtered_by_workspace(self):
+        """수동 등록 폴더는 프로젝트 조회 경로를 타지 않아 팀 선택과 무관하게 남는다."""
+        manual = [{"name": "내폴더", "path": r"D:\내자료", "owner": "me"}]
+        with patch.object(assets, "_owner_mounts", return_value=manual), \
+             patch.object(assets, "_resolve_mount_path", return_value=None), \
+             patch.object(assets, "actor_id", return_value="me"):
+            payload = assets._mounts_payload(self.request, "ws-a")
 
-
-def test_personal_context_shows_all(monkeypatch):
-    """확정 개인 컨텍스트(None) → 필터 없이 전체(기존 동작)."""
-    cli_bridge._ws_set_known(None)
-    seen: dict = {}
-    monkeypatch.setattr(assets_router.repo, "list_projects", _fake_projects(seen))
-    mounts = assets_router._auto_project_mounts(REQ)
-    assert seen["workspace_id"] is None
-    assert [m["name"] for m in mounts] == ["P1"]
-
-
-def test_late_lookup_does_not_override_switch(monkeypatch):
-    """조회 중 전환이 일어나면 늦게 온 옛 결과를 버린다(세대 가드 — 코덱스 P1)."""
-
-    async def slow_list_workspaces(timeout=30.0):
-        # 조회가 도는 사이 사용자가 ws-new 로 전환한 상황 재현
-        cli_bridge._ws_set_known("ws-new")
-        return [{"id": "ws-old", "is_selected": True}]
-
-    monkeypatch.setattr(cli_bridge, "list_workspaces", slow_list_workspaces)
-    asyncio.run(cli_bridge._resolve_selected_workspace())
-    known, wid = cli_bridge.selected_workspace_state()
-    assert (known, wid) == (True, "ws-new")
+        names = [m["name"] for m in payload["mounts"]]
+        self.assertIn("내폴더", names)      # 수동 — 항상
+        self.assertIn("팀A폴더", names)     # 선택 팀 — 보임
+        self.assertNotIn("팀B폴더", names)  # 다른 팀 — 숨김
 
 
-def test_resolve_records_state_and_single_flight_reuses_it(monkeypatch):
-    """미확인 → blocking 조회 1회로 확정, 이후 호출은 CLI 없이 재사용."""
-    calls = {"n": 0}
-
-    async def fake_list_workspaces(timeout=30.0):
-        calls["n"] += 1
-        return [{"id": "ws-9", "is_selected": True}]
-
-    monkeypatch.setattr(cli_bridge, "list_workspaces", fake_list_workspaces)
-    assert cli_bridge.resolve_selected_workspace_blocking() == (True, "ws-9")
-    assert cli_bridge.resolve_selected_workspace_blocking() == (True, "ws-9")
-    assert calls["n"] == 1
+if __name__ == "__main__":
+    unittest.main()

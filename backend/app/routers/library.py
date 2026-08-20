@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -15,17 +16,25 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import _proxy
 from .. import rbac, repo
-from ..config import AUTH_ENABLED
-from ..deps import account_global_roles, account_scope_uid, require_view_generation
+from ..config import AUTH_ENABLED, MEDIA_DIR
+from ..deps import (
+    account_actor_uid,
+    account_global_roles,
+    account_scope_uid,
+    actor_id,
+    can_view_generation_with_member_projects,
+    require_view_generation,
+)
 from ..models import FacetsOut, GenerationOut
-from ..services import media_cache, thumbs
+from ..services import file_stamp, media_cache, thumbs
+from ..services.path_safety import safe_join
 from ..services.media_types import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
 
@@ -174,14 +183,137 @@ def _remote_thumb_urls(data) -> list[str]:
     return list(seen.keys())
 
 
+STAMP_MAX_BYTES = 512 * 1024 * 1024  # 이보다 크면 각인 없이 그냥 흘려보낸다(디스크·시간 보호).
+
+
+def _new_temp_file(suffix: str) -> Path:
+    """빈 임시 파일 경로. mkstemp 가 연 fd 를 반드시 닫는다 — Windows 는 열린 파일을 교체하지
+    못해, fd 를 쥔 채로 두면 각인이 '액세스 거부'로 조용히 실패한다."""
+    fd, path = tempfile.mkstemp(suffix=suffix or ".bin")
+    os.close(fd)
+    return Path(path)
+
+
+def _stamped_download(
+    upstream, ctype: str, safe: str, tags: dict[str, str], background: BackgroundTasks
+):
+    """받은 바이트를 제한된 임시 파일에 담아 각인한 뒤 내려준다.
+
+    Content-Length가 없는 원격 응답도 있으므로 읽는 도중 상한을 직접 검사한다. 상한을 넘으면
+    각인만 포기하고, 이미 임시에 받은 앞부분 + upstream 나머지를 이어서 스트리밍한다. 다운로드를
+    막지 않으면서도 알 수 없는 크기의 파일이 디스크를 무제한 점유하지 않게 한다.
+    """
+    suffix = Path(safe).suffix or ""
+    tmp = _new_temp_file(suffix)
+    overflow = False
+    try:
+        with tmp.open("wb") as out:
+            size = 0
+            while True:
+                chunk = upstream.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+                size += len(chunk)
+                if size > STAMP_MAX_BYTES:
+                    overflow = True
+                    break
+        if overflow:
+            def _stream_unstamped():
+                try:
+                    with tmp.open("rb") as prefix:
+                        while True:
+                            chunk = prefix.read(65536)
+                            if not chunk:
+                                break
+                            yield chunk
+                    while True:
+                        chunk = upstream.read(65536)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    upstream.close()
+                    tmp.unlink(missing_ok=True)
+
+            return StreamingResponse(
+                _stream_unstamped(),
+                media_type=ctype,
+                headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+            )
+        file_stamp.stamp_file(tmp, tags, suffix)
+        upstream.close()
+    except Exception:
+        upstream.close()
+        tmp.unlink(missing_ok=True)
+        raise
+    background.add_task(lambda: tmp.unlink(missing_ok=True))
+    return FileResponse(
+        tmp, media_type=ctype, filename=safe,
+        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+    )
+
+
+@router.post("/stamp/read")
+async def read_file_stamp(file: UploadFile = File(...)):
+    """파일에 새겨진 각인을 읽어 '어느 생성물인지'만 돌려준다.
+
+    캔버스에 끌어다 놓은 파일의 정체를 알아낼 때 쓴다. 나머지 정보(프롬프트·모델·계보)는 이
+    열쇠로 기존 조회 API 가 카탈로그에서 가져오므로 여기서는 읽지 않는다.
+    각인이 없으면 gen_id=None — '우리 프로그램을 거쳐 나간 파일이 아니다'라는 뜻이다.
+    """
+    tmp = _new_temp_file(Path(file.filename or "").suffix)
+    try:
+        size = 0
+        with tmp.open("wb") as out:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > STAMP_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="파일이 너무 큽니다")
+                out.write(chunk)
+        stamp = file_stamp.read_stamp(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {
+        "gen_id": file_stamp.gen_id_of(stamp),
+        "job_id": stamp.get(file_stamp.KEY_JOB),
+        "hub": stamp.get(file_stamp.KEY_HUB),
+    }
+
+
 @router.get("/download")
-def download_media(url: str = Query(...), name: str = Query("download")):
+def download_media(
+    background: BackgroundTasks,
+    url: str = Query(...),
+    name: str = Query("download"),
+    gen_id: Optional[str] = Query(None),
+):
     """원격 미디어(cloudfront 등)를 서버가 받아 attachment 로 스트리밍한다.
 
     원격 URL 은 브라우저의 a[download] 가 무시돼 '다운로드' 대신 새 탭으로 열린다. 같은 오리진
     프록시(이 엔드포인트)로 받으면 Content-Disposition: attachment 로 '진짜 다운로드'(크롬 다운로드
     목록)가 된다. http(s) 만 허용 + 내부 호스트 차단(기본 SSRF 방어). 로컬 보관본(/media·/api)은
-    프론트가 직접 a[download] 로 받으므로 여기로 오지 않는다."""
+    로컬 보관본(/media/...)도 gen_id 가 오면 여기서 각인해 내려준다(각인 경로 일원화)."""
+    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+
+    # 로컬 보관본(byte-cache) — 원격이 아니라 우리 디스크에 있는 파일. 각인해서 사본으로 내려준다.
+    if url.startswith("/media/"):
+        src = safe_join(MEDIA_DIR, url.removeprefix("/media/"))
+        if src is None or not src.exists():
+            raise HTTPException(status_code=404, detail="로컬 보관본을 찾을 수 없습니다")
+        tags = file_stamp.tags_for_generation(gen_id) if gen_id else {}
+        if not tags or src.stat().st_size > STAMP_MAX_BYTES:
+            return FileResponse(src, filename=safe)  # 각인 없이 원본 그대로
+        suffix = src.suffix or Path(safe).suffix
+        tmp = _new_temp_file(suffix)
+        shutil.copy2(src, tmp)
+        file_stamp.stamp_file(tmp, tags, suffix)
+        background.add_task(lambda: tmp.unlink(missing_ok=True))
+        return FileResponse(tmp, filename=safe)
+
     try:
         assert_public_http_url(url)  # http(s) + 내부/사설 대역 차단(SSRF 방어)
     except BlockedURLError as e:
@@ -199,8 +331,19 @@ def download_media(url: str = Query(...), name: str = Query("download")):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"원격 미디어 다운로드 실패: {e}")
     ctype = upstream.headers.get_content_type() or "application/octet-stream"
-    # 파일명 위생 — 헤더 인젝션·경로문자 제거.
-    safe = (name or "download").replace('"', "").replace("\n", "").replace("\r", "")[:120] or "download"
+
+    # 각인 — 이 파일이 어느 생성물인지 새겨 내보낸다(나중에 캔버스에 끌어다 놓으면 복원된다).
+    #  · 스트리밍으로는 각인할 수 없어(끝까지 받아야 컨테이너를 다시 쓴다) 임시 파일에 받는다.
+    #  · gen_id 가 없거나(구 프론트) 너무 큰 파일이면 종전대로 스트리밍 — 다운로드는 절대 안 막힌다.
+    if gen_id:
+        try:
+            size = int(upstream.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= STAMP_MAX_BYTES:
+            tags = file_stamp.tags_for_generation(gen_id)
+            if tags:
+                return _stamped_download(upstream, ctype, safe, tags, background)
 
     def _stream():
         try:
@@ -368,13 +511,13 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     - http(s) URL           → 공유받은(team) 항목은 file_path 가 원격 URL(Higgsfield)이라
                               그대로면 썸네일을 못 거쳐 풀해상도 원본을 디코딩 → 표시 지연.
                               media_cache 로 바이트를 로컬화한 뒤 동일 썸네일을 만든다.
-    다운로드 실패·비이미지(비디오 등)는 원본 URL 로 리다이렉트해 깨짐을 막는다."""
+    원격 다운로드·썸네일 생성 실패는 같은 오리진 오류로 끝내 외부 리다이렉트를 만들지 않는다."""
     is_remote = src.startswith(("http://", "https://"))
     if is_remote:
         # 썸네일 생성만을 위한 원격 원본은 bounded 전용 캐시 — 영구 MEDIA_DIR에 무한 누적 금지.
         rel = await media_cache.cache_thumb_source(src)
         if not rel:
-            return RedirectResponse(src)  # 캐시 실패 → 원본 그대로(최소 깨짐 방지)
+            raise HTTPException(status_code=502, detail="원격 미디어를 가져오지 못했습니다")
         target = thumbs._media_target(rel)
     else:
         target = thumbs._media_target(src)
@@ -391,7 +534,7 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
         cache = await asyncio.to_thread(thumbs.ensure_thumb, target, w)
     if not cache:
         if is_remote:
-            return RedirectResponse(src)  # 생성 실패(손상 등) → 원본으로 폴백
+            raise HTTPException(status_code=502, detail="원격 미디어 썸네일 생성 실패")
         raise HTTPException(status_code=415, detail="썸네일 생성 불가")
     thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     return FileResponse(
@@ -489,7 +632,10 @@ def list_generations(
         # 서버는 공유본을 번들 앵커(job_id)로 안다 → 로컬 id ↔ server id 변환:
         # 요청은 server id 로 보내고 응답(서버 id 키)을 로컬 id 로 되매핑한다. (로컬 id 로 그대로
         # 위임하면 서버가 못 찾아 공유본 C 뱃지가 항상 0 으로 떴다 — 엔드포인트와 동일한 수정.)
-        srv_of = {g["id"]: repo.finalize_id_map(g["id"])[1] for g in result if g.get("shared")}
+        # list_generations가 이미 같은 generation 행의 id·job_id를 반환한다. 이는
+        # finalize_id_map의 ``row["job_id"] or row["id"]`` 규칙과 같으므로 행마다
+        # 해석 쿼리를 다시 열 필요가 없다.
+        srv_of = {g["id"]: g.get("job_id") or g["id"] for g in result if g.get("shared")}
         if srv_of:
             try:
                 counts = _proxy.proxy_json(
@@ -498,11 +644,16 @@ def list_generations(
                     timeout=5,  # 비핵심 보강 — 서버가 느리거나 다운이면 목록을 60초씩 막지 말고 빨리 포기(로컬값 유지)
                 )
                 if isinstance(counts, dict):
+                    private_counts = repo.private_generation_comment_counts(
+                        list(srv_of), actor_id(request)
+                    )
                     for g in result:
                         sid = srv_of.get(g["id"])
                         c = counts.get(sid) if sid else None
                         if isinstance(c, dict):
-                            g["comment_count"] = c.get("comment_count", g.get("comment_count"))
+                            g["comment_count"] = int(c.get("comment_count") or 0) + private_counts.get(
+                                g["id"], 0
+                            )
                             g["has_unread"] = c.get("has_unread", g.get("has_unread"))
             except Exception:  # noqa: BLE001 — 보강 실패는 로컬 값 유지(치명적 아님)
                 pass
@@ -521,11 +672,30 @@ def generation_stats(request: Request):
     실패 수는 실패 정리 API와 동일한 계정 범위, 미확인 여부는 패널 seen 기록과 동일 신원을 쓴다.
     """
     uid = _account_uid(request)
-    return (
+    local = (
         repo.generation_stats(viewer_id=uid, account_uid=uid)
         if uid
         else repo.generation_stats()
     )
+    if not _proxy.proxying():
+        return local
+    try:
+        remote = _proxy.proxy_json("GET", "/api/generations-stats", timeout=5)
+    except HTTPException as exc:
+        # 인증 오류는 숨기지 않는다. 일시적인 서버 장애만 로컬 실패 수/코멘트 상태로 폴백한다.
+        if exc.status_code in (401, 403):
+            raise
+        return local
+    if not isinstance(remote, dict):
+        return local
+    has_unread = bool(remote.get("has_unread"))
+    unread_count = remote.get("unread_count")
+    return {
+        **local,
+        "has_unread": has_unread,
+        # 구팀서버는 has_unread만 준다. 롤링 업데이트 동안 최소 1로 안전하게 폴백한다.
+        "unread_count": int(unread_count) if unread_count is not None else int(has_unread),
+    }
 
 
 # ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ───────────────────────────
@@ -595,12 +765,24 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
 
     account_uid = _account_uid(request)
     local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
+    # 공유물 권한은 프로젝트 멤버십에만 의존한다. 이전에는 아래 카드 루프의
+    # require_view_generation이 shared 카드마다 my_member_projects를 다시 조회했다.
+    # 요청 안에서는 멤버십이 변하지 않으므로 필요한 경우 한 번만 집합으로 고정한다.
+    member_project_ids: set[str] | None = None
+    viewer_uid = account_actor_uid(request) if AUTH_ENABLED else None
+    if (
+        viewer_uid
+        and not rbac.has_global_cap(account_global_roles(request), "read_all")
+        and any(
+            gen.get("shared") and gen.get("creator_uid") != viewer_uid
+            for gen in local_items.values()
+        )
+    ):
+        member_project_ids = set(repo.my_member_projects(viewer_uid))
     visible_items: dict[str, dict] = {}
     visible_materials: dict[str, list[str]] = {}
     for gen_id, gen in local_items.items():
-        try:
-            require_view_generation(request, gen)
-        except HTTPException:
+        if not can_view_generation_with_member_projects(request, gen, member_project_ids):
             continue  # 단건 GET과 같은 존재 은닉 — batch에서는 missing으로 합친다.
         visible_items[gen_id] = gen
         visible_materials[gen_id] = local_materials.get(gen_id, [])

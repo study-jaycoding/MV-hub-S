@@ -6,7 +6,7 @@
 > (원본 [DESIGN.md](DESIGN.md)·[CLAUDE.md](CLAUDE.md) 는 개인용 `content-hub` 시절 명세라
 > 일부는 현재 push 모델 이전 내용이다 — 충돌 시 **이 문서와 AI_CONTEXT.md 가 최신**.)
 >
-> 최종 갱신: 2026-08-05
+> 최종 갱신: 2026-08-16
 
 ---
 
@@ -66,6 +66,7 @@ HTTP 요청
    │
    ▼  app/main.py 미들웨어
    ├─ auth_enforcement : 토큰 → request.state.account  (CONTENT_HUB_AUTH=1 일 때 게이트)
+   ├─ upload_body_limit: 선별된 업로드의 원시 본문을 multipart 파싱 전에 제한
    └─ mutation_notify  : 성공한 쓰기를 library/assets/manage로 분류해 WS 갱신 신호 전파
    │
    ▼  routers/*.py   — HTTP 경계. 입력 검증(Pydantic) + deps(인증/RBAC) + actor_id 주입
@@ -88,7 +89,8 @@ HTTP 요청
 | `deps.py` | 인증/RBAC FastAPI 의존성(`actor_id`·`require_global_cap`·`require_project_role`·`require_edit_generation`) |
 | `rbac.py` | 역할·역량 정의(전역 역할 + 프로젝트 역할) |
 | `mutation_notify.py` | 본 서버·위임 프록시가 공유하는 변경 영역 판정과 요청 출처 헤더 계약 |
-| `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스) |
+| `ws.py` | `ConnectionManager` — 진행률·`synced`·`assets_changed`·`manage_changed` 병합 전파(0.4s 디바운스). 연결 목록은 잠금 안에서 복사하고 실제 전송은 잠금 밖에서 병렬 수행하며, 연결별 잠금·2초 제한으로 느린 수신자만 격리 |
+| `services/upload_limits.py` | 업로드 원시 본문·파일 수·개별·합계 제한, 제한 복사, 413 응답·안전 로그 계약 |
 
 ### 4.2 라우터 (`backend/app/routers/`) — HTTP 경계
 
@@ -97,19 +99,48 @@ HTTP 요청
 | `library.py` | 목록·검색·통계·facets·휴지통·**미디어 썸네일**·`tab=my` 계정 스코프 |
 | `generation.py` | 태그/컬러/소스/코멘트·삭제·복원·Higgsfield 검증·리니지(옛 서버측 생성 경로 잔존·미사용) |
 | `gen_requests.py` | **로컬 실행 큐**: 생성요청·pending claim·fulfill·fail |
-| `ingest.py` | **push 적재**·known-jobs·`/credits` |
-| `share.py` | 발행/가져오기/번들 export·import |
+| `ingest.py` | **push 적재**·known-jobs·`/credits`·`/ingest/account-report`. 생성 텔레메트리와 계정 상태·거래는 각각 영속 outbox에 기록하고 백그라운드 drain만 예약 |
+| `share.py` | 발행/가져오기/번들 export·import. 프록시 공유 해제·최종 해제는 로컬/서버 보상 계약 적용 |
 | `projects.py` | 프로젝트 CRUD·멤버·배정·보관 |
 | `auth.py` | 로그인·가입·계정 승인 |
 | `members.py` | 등급(전역 역할) 관리 |
-| `assets.py` | Assets 분리창(폴더 마운트·파일메타·파일 코멘트) |
-| `sync.py` | 수동 동기화 트리거 |
+| `assets.py` / `assets_metadata.py` | Assets 분리창(폴더 마운트·트리·지원 미디어만 고정 MIME/nosniff로 파일 서빙·업로드) / 파일메타·코멘트 |
+| `sync.py` | 수동 동기화 트리거·sync-status |
+| `publish.py` | 공유 서버 번들 발행 수신(`/share/publish-bundle`)·공유 서버 로그인/토큰 |
+| `manage.py` | PM 관리창 API(작업·일정·대시보드·팀 텔레메트리 push·완료본 저장) |
+| `comfy.py` | ComfyUI 연결·워크플로 파싱·제한된 입력 업로드·비동기 실행(`/run`+`/run_status`)·라이브러리 저장 |
+| `resolve_integration.py` | DaVinci Resolve 전송·스크립트 설치·수동 가져오기 결과 기록 |
+| `release_update.py` | 작업자 릴리스 자동 업데이트(status/start — 로컬 전용) |
+| `scenes.py` | 씬 캔버스 DB 미러 백업(PUT/GET /scenes/backup) |
+| `db_backup.py` / `db_transfer.py` | 계정별 `content + trash` 백업 세트의 멱등 업로드·명시적 ACK·최신 세트 다운로드 / 로컬 DB 내보내기·스트리밍 가져오기·세트 복원(유지보수 게이트). 기존 단일 DB 경로는 혼합 버전 호환용으로 유지 |
+| 내부: `_proxy.py` / `_telemetry.py` / `_assets_access.py` | 데이터 소유권 프록시 위임 / 이벤트 루프 연결·단일 소유자·후속 요청을 조정하며 생성·계정 보고 채널을 독립 정산하는 drain / Assets 접근 가드 |
+
+### 4.2.1 업로드 입구 계약
+
+- `UploadBodyLimitMiddleware`는 Assets·Comfy·DB의 POST 업로드만 정확한 경로로 선별해
+  Starlette multipart spool 전에 실제 수신 바이트를 센다. `Content-Length`가 없거나 작게 속여도
+  수신 중 상한을 넘으면 413이며, 잘못된·음수·상충 헤더는 400이다.
+- 라우터는 파싱 후 실제 파일 크기로 파일 수·개별·합계를 다시 검사한다. 기본값은 Assets 합계
+  1GiB, Comfy 64개·개별 256MiB·합계 512MiB, DB 개별 512MiB다. 원시 요청 상한에는 multipart
+  경계용 2MiB만 추가하고 각 값은 `CONTENT_HUB_*_UPLOAD_*` 환경변수로 낮출 수 있다.
+- DB import는 전체 `bytes`를 만들지 않고 1MiB씩 앱 전용 TEMP 파일로 복사한 뒤 검증·설치한다.
+  성공·실패 뒤 즉시 삭제하며, 비정상 종료로 남은 파일은 `temp_sweeper`가 앱 접두 범위에서만 치운다.
+- Comfy 입력은 요청 spool을 1MiB씩 `mvhub-comfy-input-*.part` 하나로 복사한 뒤 백그라운드 작업에
+  경로만 전달한다. 로컬 입력 복사와 Cloud ffmpeg 변환도 경로 기반이며, HTTP multipart는 정확한
+  `Content-Length`와 재생 가능한 1MiB iterable로 전송한다. 주입 완료·오류·스레드 시작 실패 뒤
+  즉시 삭제하고 강제 종료 잔재는 24시간 sweeper가 회수한다. 실행 슬롯을 기다리는 동안에는 메모리
+  대신 TEMP 디스크를 사용하므로 긴 대기열의 디스크 용량은 운영 관측 대상이다.
+- 현재 ZIP을 받는 HTTP 업로드 API는 없다. 테스트 스냅샷 ZIP은 내려받기·추출 경로이며 기존
+  파일 수·manifest·압축 해제 총량 제한을 별도로 적용한다.
 
 ### 4.3 유스케이스 (`backend/app/usecases/`)
 
 | 모듈 | 담당 |
 |---|---|
 | `gen_requests.py` | 생성 요청 create/claim/fulfill/fail/reconcile의 업무 순서. 라우터는 인증·HTTP 변환만 담당 |
+| `generation_media_cache.py` | 생성물 asset/reference 원격 URL을 로컬 보존 경로로 전환하고 상세 결과를 집계 |
+| `generation_personal_meta.py` | 팀 카드 개인 메타(색·태그 오버레이) 업무 흐름 |
+| `hf_missing.py` | Higgsfield 쪽에 없는 로컬 카드 점검·정리 |
 
 > usecase 는 FastAPI 를 직접 import 하지 않는다(test_architecture_boundaries 가 강제).
 > 알려진 예외: `gen_requests.py` 가 진행률 브로드캐스트를 위해 `app.ws` 를 직접 의존한다
@@ -139,6 +170,7 @@ HTTP 요청
 | `manage_tasks.py` | PM 작업 조회·자동 폴더 작업·담당자 배정·작업 CRUD |
 | `manage_schema.py` / `manage_telemetry.py` | 관리 사이드카 스키마·outbox 팩트 전송 상태 |
 | `manage_transactions.py` / `manage_analytics.py` | 실제 크레딧 거래 매칭·읽기 전용 분석 집계 |
+| `manage_account_reports.py` | 계정 최신 상태·거래 보고의 영속 outbox, revision 정산·백오프·마지막 성공 상태 |
 
 ### 4.5 서비스 (`backend/app/services/`) — 외부 연동·부수효과
 
@@ -149,8 +181,20 @@ HTTP 요청
 | `media_cache.py` | 원격 URL → 로컬 샤딩 캐시 |
 | `thumbs.py` | 썸네일 사전생성·리사이즈 |
 | `backup.py` | 콘텐츠·휴지통·관리 DB의 동일 읽기 시점 SQLite 온라인 백업 세트 |
+| `worker_backup.py` | 작업자 개인 `content + trash` 세트 staging·비밀정보 제거·영속 outbox·백오프·명시적 서버 ACK·재시작 복구. 상태 DB와 staging은 업데이트가 보존하는 `backend/data`에 위치 |
 | `auth.py` | pbkdf2 비번 해시 + 무상태 HMAC 세션 토큰 |
 | `agent_signals.py`·`mcp_ingest.py` | 에이전트·MCP 적재 보조 |
+| `comfy_client.py` / `comfy_workflow.py` | ComfyUI(로컬·Cloud) 파일 스트리밍 HTTP 클라이언트 / 워크플로 슬롯·파라미터 파싱 |
+| `resolve_bridge.py` / `resolve_transfer.py` / `resolve_probe.py` / `resolve_status_runner.py` / `resolve_script_installer.py` | Resolve Media Pool 가져오기 / 렌더폴더 전송·manifest / 프로세스 격리 상태 조회 / 스크립트 설치 |
+| `release_update.py` | 작업자 릴리스 자동 업데이트 상태·부트스트랩 실행기 |
+| `telemetry_drain.py` | PM 텔레메트리 outbox 드레인(백오프·격리 모드) |
+| `account_report_delivery.py` | 계정 상태·거래 보고 배치 구성·명시적 ACK 검증·영속 큐 성공/실패 정산 |
+| `operational_health.py` / `operational_logging.py` / `runtime_metrics.py` | /api/ready 판정·경보 / JSON 운영 로그·회전 / 요청·자원 메트릭 |
+| `backup_verify.py` / `restore_runtime_verify.py` | 단일·동일 시각 3개 DB 세트의 무결성·복원 검증 / 복원 사본 격리 서버 ready·로그인·핵심 수 검증 |
+| `db_scrub.py` / `test_snapshot.py` | 개인정보 스크럽 / 테스트 스냅샷 |
+| `asset_io.py` / `asset_tree.py` / `asset_mounts.py` / `asset_watcher.py` / `asset_paths.py` | Assets 파일 IO·트리 캐시·마운트·변경 감시·경로. watcher는 등록 ID와 실제 폴더를 분리하고 같은 폴더를 참조 수로 공유하며 이동·삭제·종료 때 마지막 핸들을 해제 |
+| `video_convert.py` / `media_types.py` / `path_safety.py` / `atomic_io.py` / `net_guard.py` | ffmpeg 변환 / 미디어 판별·Assets 브라우저 응답 고정 MIME / 경로 안전 / 원자 쓰기 / SSRF 가드 |
+| `remote_realtime.py` / `local_agent_pair.py` / `request_guards.py` / `event_journal.py` / `sqlite_db.py` | 서버 WS 중계 / 에이전트 페어링 / 로컬 요청 가드 / 생성 이벤트 저널 / SQLite 검증 |
 | ~~`jobs.py`~~ | 옛 서버측 잡 큐 — **제거됨**(push 모델 전환. POST /api/generations·/regenerate 라우트도 삭제) |
 
 ### 4.6 보조 스크립트 (`backend/`)
@@ -165,9 +209,9 @@ HTTP 요청
 ```
 App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(genQuery)·인증 부트스트랩·WS 진행률·캔버스 탭 신호
   │
-  ├─ api.ts        타입세이프 클라이언트(create/regenerate→ /api/gen-requests, Bearer, 401→로그인)
+  ├─ api.ts        타입세이프 클라이언트(create/regenerate→ /api/gen-requests, Bearer)
   ├─ types.ts      응답 타입
-  ├─ lib/          순수 유틸·훅(아래 §5.1)
+  ├─ lib/          순수 유틸·훅(공통 HTTP 401 의미 판정 포함, 아래 §5.1)
   └─ components/    화면 컴포넌트(아래 §5.2)
 ```
 
@@ -193,6 +237,7 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 | `sceneComfyExecutor.ts` | 미디어 확보·연결 텍스트·시드 변환 후 Comfy API를 호출하는 React 비의존 경계 |
 | `sceneDerive.ts` / `sceneComfySeeds.ts` | 그룹 기하·파생 상태 계산 / 워크플로 시드 변경 순수 함수 |
 | `librarySync.ts` | 쓰기 요청 id와 library/assets/manage 응답 영역을 추적해 자기 알림의 중복 reload만 안전하게 생략 |
+| `progressSocket.ts` | 앱 WS 연결·누락 보정 재조회. 지수 백오프에 ±20% jitter와 15초 상한을 적용하고 1008 인증 만료는 재시도하지 않고 로그인 화면·알림으로 전달 |
 | `assetBroadcast.ts` / `useManageRealtime.ts` | Assets 창 간 WS 전달 / 독립 PM 창의 직접 WS·숨김 상태 따라잡기 |
 
 > `format`·`media`·`download`·`commentTree`·`useClickSeparation` 은 여러 컴포넌트에 복붙돼 있던
@@ -204,10 +249,10 @@ App.tsx  ─ 최상위 상태·무한스크롤(reload/loadMore)·필터합성(ge
 - **생성**: `SpotlightPrompt`(@/# 피커)·`FloatingPrompt`.
 - **캔버스 탭**(씬 캔버스 · 히스토리 보기): `SceneBoard`는 카드 상태·선택·노드별 포인터 판정·렌더 조립을 소유한다. 저장/undo, Comfy 실행, 단축키, 드래그 세션, 팬·줌은 전용 훅에 위임한다. 계보 뷰는 `HistoryBoard`·`HistoryPanel`·`HistoryMiniTree`·`CompareModal`이 담당한다.
 - **코멘트**: `GenCommentPanel`(생성본 스레드·NEW 알림).
-- **계정/관리**: `LoginScreen`·`AccountMenu`·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·모션·팀 크레딧·언어)·`WorkspaceSelector`.
+- **계정/관리**: `LoginScreen`·`AccountMenu`(워크스페이스 전환·크레딧 게이지 — 분모는 프로젝트 예산 합)·`ManageAccount`·`AdminWindow`(승인·등급·프로젝트)·`SettingsPanel`(강조색·언어·모션·다운로드 위치·과거 가져오기·내 메타데이터·동기화 점검·DaVinci Resolve·프로그램 업데이트·생성물 재점검·단축키·ComfyUI 연결 — `settings/SettingsSections.tsx`).
 - **Assets 분리창**: `AssetsWindow`·`AssetsView` + `assets/`(`AssetCell`·`FolderTree`·`MountManager`·`treeUtils`·`exportDrag`·`useAssetBroadcastSync`). 메인 창 없이도 WS를 직접 구독한다.
 - **PM 분리창**: `ManageWindow` + `manage/`(`DashboardView`·`WorkBoard`·`ExportView`). 전용 실시간 신호를 활성 탭의 한 번짜리 재조회로 합친다.
-- **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`HowItWorks`.
+- **보조**: `InfoPopup`·`MediaPreview`·`ProjectAssignMenu`·`ShortcutsWindow`.
 
 ---
 
@@ -219,6 +264,7 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 |---|---|---|
 | `generation` | 생성 1건(중심) | id, prompt, display_prompt(@칩 보존), model, params(JSON), color, status, **sort_ts**(정밀 epoch=정렬키), job_id, is_source, source_name, **creator_uid**, project_id, deleted_at, hf_missing, **is_final/final_by/final_at**(골드) |
 | `asset` | 결과물 미디어 | generation_id, type(image/video), file_path(/media 또는 원격 URL), thumbnail_path, **source_url**(원격 원본 보존) |
+| **`media_preservation`** | 공유·최종 원본 보존 영속 큐 | generation_id, reason(shared/final/manual/admin), status, attempts, cached/failed/skipped_count, bytes_cached, 안전한 error_code, next_retry_at |
 | `reference`+`gen_reference` | 생성에 쓴 레퍼런스(N:N) | role(@Image1/@Video/@start…), source, file_path, source_url |
 | `tag`+`gen_tag` / `auto_tag`+`gen_auto_tag` | 일반 태그 / 자동태그(별도 네임스페이스·owner 스코프·'무장' 시 새 생성 자동적용) | name |
 | **`lineage`** | 계보(타입드 엣지) | parent_gen_id → child_gen_id, **relation**: `derived`(재생성/가져오기, 강한 1부모) · `reference`(@소스 생성, 약한 다부모). UNIQUE(parent,child,relation) |
@@ -249,8 +295,10 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
    │ POST /api/gen-requests (kind=create|regenerate)
    ▼ 서버: placeholder 카드 즉시 생성(status=pending, 요청자 소유) + 큐잉
    │       (재생성은 placeholder + 'derived' 리니지까지)
-   ▼ GET /api/gen-requests/pending  (요청자 PC 에이전트가 claim → running)
+   ▼ GET /api/gen-requests/pending  (새 에이전트: claim → claimed)
 요청자 PC 에이전트(agent_push.py --watch):
+   │   레퍼런스·워크스페이스 준비
+   │   POST /begin-submission ACK → submitting
    │   제출 워커(기본 8): higgsfield generate create <model> --prompt …  ← 자기 로컬 CLI(유료)
    │   job_id 즉시 anchor → 원격 작업 최대 64개 추적
    │   기한이 된 작업을 generate get <job_id> 로 직접 권위 확인
@@ -262,6 +310,13 @@ PK 는 전부 TEXT(uuid). 목록 정렬은 항상 `sort_ts DESC, id DESC`(키셋
 `generate list` 는 로컬 히스토리 적재(§7.2)에 사용한다. 생성 요청의 완료 판정에는 쓰지 않는다.
 목록 반영이 늦거나 작업이 목록에서 빠져도 이미 제출한 유료 작업의 `job_id` 추적은 유지되며,
 에이전트 재시작 뒤에는 로컬 추적 파일·서버 reconcile 후보로 복구한다.
+
+CLI 호출 전 `claimed`는 lease 만료 시 안전하게 대기열로 돌아갈 수 있다. CLI 호출 후 `job_id`가
+없는 `submitting`은 외부 과금 여부를 확정할 수 없으므로 자동 재실행하지 않고
+`recovery_required`로 격리한다. 상태 전이·혼합 버전·운영 복구 절차는
+[GENERATION_SUBMISSION_RECOVERY.md](GENERATION_SUBMISSION_RECOVERY.md)를 따른다. RL-05는
+`1252b52d`에서 내부 계약·전체 회귀·비용 없는 중단 드릴·격리 브라우저 실측을 완료했다.
+실제 유료 생성 중단과 혼합 PC 업데이트는 외부 통합 검증으로 남긴다.
 
 팀 워크스페이스 생성은 id와 표시 이름이 모두 준비된 뒤에만 제출한다. 브라우저 저장 필터에서
 id만 먼저 복원된 경우 `AccountMenu`가 계정 에이전트의 최신 워크스페이스 보고와 같은 id를 찾아
@@ -288,6 +343,27 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 > 내 Higgsfield uid 는 **로컬 전체 목록의 최다 user_\<id\>** 로 산출해 명시 전송한다(fresh 부분집합만
 > 보면 남의 레퍼런스에 오염돼 잘못 연결되는 실측 버그 회피).
 
+생성 적재 트랜잭션은 변경된 생성물을 `telemetry_outbox`에 dirty 표시한다. 응답 경로에서는 원격
+전송을 직접 실행하지 않고 앱 시작 때 등록한 메인 이벤트 루프에 drain을 예약한다. drain은 짧은 DB
+조회 후 연결을 반환하고, 프로세스 상태 락 없이 원격 HTTP를 수행한 뒤 짧은 성공·실패 정산만 한다.
+전송 중 새 요청은 대기하지 않고 후속 drain 표시를 남긴다. 종료 때는 예약된 task와 직접 실행 중인
+소유자를 제한시간 안에서 기다린다. 각 dirty 변경은 정수 `dirty_rev`를 올리고 성공·실패 정산은
+전송 스냅샷의 revision과 현재 행이 같을 때만 반영한다. 자세한 상태 전이는
+[TELEMETRY_DRAIN_LIFECYCLE.md](TELEMETRY_DRAIN_LIFECYCLE.md)를 따른다.
+
+마지막 실제 반영 성공 시각은 outbox 행의 `pushed_at`과 분리한 단일
+`telemetry_delivery_state` 행에 UTC로 보존한다. 같은 생성물이 다시 dirty 되어도 과거 성공 기록은
+유지된다. `/api/sync-status`는 스키마를 만들지 않고 대기·실패·가장 오래된 변경·마지막 성공을 읽으며,
+로컬 계정 메뉴만 이를 30초 주기로 표시한다. 전송 대상이 아닌 행 정리와 늦은 revision ACK는 성공
+시각을 갱신하지 않는다.
+
+`account_status`·`account_transactions`는 생성 outbox와 분리된 `account_report_outbox`에 먼저
+기록한다. 계정 상태는 최신 스냅샷 한 행, 거래는 안정 키 한 행으로 보존하며 동일 거래의 나중 모델
+정보는 같은 행에 보강한다. 공유 서버 `/api/ingest/account-report`가 두 종류를 모두 저장하고 명시적
+ACK를 반환한 뒤 현재 `dirty_rev`와 일치할 때만 완료한다. 실패는 제곱 백오프로 재시도하고 마지막
+성공은 `account_report_delivery_state`에 독립 보존한다. 두 큐의 대기·실패·최근 성공은
+`/api/sync-status`와 로컬 계정 메뉴에서 함께 관측한다.
+
 ### 7.3 계보(리니지) 가시화
 
 - 재생성 → `derived` 엣지(강한 1부모), @소스 참조 생성 → `reference` 엣지(약한 다부모).
@@ -304,17 +380,33 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 ## 8. 횡단 관심사
 
 - **두 종류 로그인 구분**: ① 허브 세션(브라우저 계정, 신원·권한) ② Higgsfield CLI 인증(각 PC, 생성 주체). 완전 별개.
+- **401 의미 보존**: 임의 업무 API의 401은 같은 허브 세션 토큰으로 `/api/auth/me`를 확인한다.
+  이 확인도 401일 때만 현재 토큰을 지우고, 요청별 거부·네트워크 장애는 로그인 상태를 보존한다.
+  서버는 `X-MVHub-Auth-State`로 판정을 브라우저에 전달한다. 세부 계약은
+  [AUTH_FAILURE_SEMANTICS.md](AUTH_FAILURE_SEMANTICS.md)를 따른다.
 - **멀티계정 신원**: `account`(로그인) 과 `creator`(작성자)는 별개 축, `account.creator_uid` 로 연결. 첫 가입자=부트스트랩 관리자, 이후 pending→승인.
 - **RBAC**: 전역 역할(admin/product_manager/product_director/production_director/member, CSV 복수) + 프로젝트 역할(project_manager/supervisor/editor). `CONTENT_HUB_AUTH=1` 일 때만 게이트.
 - **개인화 vs 공유**: 컬러·태그·소스명·파일메타는 계정별 개인 소유(owner_uid). 코멘트 스레드·공유여부·프롬프트·소스는 공유.
+- **공유·최종 상태 일관성**: `is_final`이면 반드시 공유 상태다. 프록시 변경은 원격 성공을 확인한
+  뒤 로컬에 반영하고, 로컬 반영 실패 시 재조회·원격 보상으로 이전의 일관된 상태를 복구한다.
+  구버전 라우트 부재를 상태 부재로 추측하지 않는다. 자세한 규칙은
+  [SHARE_STATE_COMPENSATION.md](SHARE_STATE_COMPENSATION.md)를 따른다.
 - **표시이름 단일 해석**: `resolve_display_names`(creator.name → account.name → email) 읽기 시점에만.
 - **실시간**: 성공한 쓰기는 `library`→`synced`, `assets`→`assets_changed`, `manage`→`manage_changed`로 분리한다. 요청 id·영역 응답 헤더로 자기 알림 재조회를 생략하며 독립 Assets/PM 창은 자체 WS를 가진다.
+- **Assets 감시 수명주기**: 수동 마운트는 owner+프로젝트 이름, 자동 프로젝트는 project ID, 합본은
+  실제 하위 폴더별 등록 ID로 watcher 소유권을 추적한다. 같은 실제 폴더의 별칭·계정은 watchdog 핸들
+  하나를 공유하며 마지막 등록 해제 때만 unschedule한다. 성공한 경로·이름·보관·루트 변경과 삭제,
+  앱 종료에서 명시 해제하고, 해제 뒤 늦은 이벤트는 방송하지 않는다.
 - **검색**: SQLite FTS5(trigram, 3자↑), 3자 미만 LIKE 폴백.
 - **성능**: 키셋 페이지네이션·content-visibility 가상스크롤·썸네일 사전생성·미디어 2단계 샤딩.
 - **휴지통**: 삭제 즉시 별도 DB 로 원자 이동(메인 항상 가벼움).
 - **운영 관측 2계층**: 회전 JSON 로그는 현재 상황을 빠르게 보고, `generation_event`/`audit_event`는
   로그 회전 뒤에도 생성 전이와 중요 변경을 재구성한다. DB 트리거가 모든 상태 변경을 같은
   트랜잭션에서 포착하고 usecase가 의미 이벤트를 보강한다. 프롬프트·결과 URL·비밀번호는 넣지 않는다.
+- **readiness와 워치독 판정 분리**: `/api/ready`는 정상 DB 읽기 성공을 `ready`, DB 복원 게이트를
+  즉시 `maintenance`로 응답한다. 워치독은 HTTP 응답이 있는 일반 오류를 `busy`, 명시적 유지보수를
+  `maintenance`, 연결 거부·timeout을 `dead`로 분류한다. busy·maintenance는 관측·경보만 하며,
+  시작 유예 이후 또는 한 번 정상화된 뒤의 연속 dead만 정확한 포트 소유 서버 PID 개입으로 이어진다.
 
 ---
 
@@ -323,11 +415,13 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 1. **서버는 생성 안 함** — 전원 로컬 CLI + push(§2). 옛 서버측 직접 생성 엔드포인트와 잡 큐는 제거됐다.
 2. **두 로그인 구분** — 허브 세션 ≠ Higgsfield CLI 인증(§8).
 3. **계정↔creator 재연결 오염** 방지 — 잡 고유 uid 유지 + 이미 실제 uid 면 재연결 금지 + 에이전트가 전체목록 최다 uid 전송.
-4. **미디어 공개 URL + 선택 보존** — 일반 생성물은 Higgsfield 원격 URL을 참조해 push 시 바이트를
-   전송하지 않는다. 최종(골드) 지정본은 백그라운드에서 자동 byte-cache(best-effort)하고,
-   개별 `/api/generations/{id}/cache`·전체 `/api/cache-all` 보관도 지원한다. 아직 보관하지 않은
-   일반 생성물의 원격 URL은 만료될 수 있다.
-5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB / 미디어 샤딩 / 이중 백엔드(SQLite·PG)**.
+4. **미디어 공개 URL + 공유·최종 자동 보존** — 일반 생성물은 Higgsfield 원격 URL을 참조해 push 시
+   바이트를 전송하지 않는다. 공유·최종 완료본은 `media_preservation`에 먼저 기록한 뒤 저속 워커가
+   자동 byte-cache한다. 시작 시 기존 공유·최종본 백필과 중단된 `running` 복구를 수행한다.
+   개별 `/api/generations/{id}/cache`는 수동 재시도, 관리자 `/api/cache-all`은 완료본 일괄 큐 등록이다.
+   기본 50GiB 한도에서는 새 초과 파일만 되돌리고 기존 보존본은 자동 삭제하지 않는다. 아직 보존하지
+   않은 일반 생성물의 원격 URL은 만료될 수 있다.
+5. **단일 오리진 / 키셋 / FTS5 / 휴지통 별도 DB(WAL) / 미디어 샤딩**. DB 는 SQLite 단일(§4.6).
 6. **마이그레이션 순서 함정**(§6) — 새 ALTER 컬럼 인덱스는 `_migrate` 에만.
 7. **출처 영속화**(provenance) — `source_url` 보존으로 재사용·변형 가능(최우선 가치).
 8. **자동 태그 격리** — 일반 태그와 완전 분리 네임스페이스.
@@ -339,30 +433,27 @@ push_once: 로컬 generate list → POST /api/ingest/known-jobs {job_ids}
 ## 10. 디렉터리 트리 (요약)
 
 ```
-content-hub-server/
-├─ MV_server.bat            기존 프론트 빌드 확인 → 폭풍 차단 감독기 → 백엔드 기동(포트 8010, AUTH=1)
-├─ agent_push.py             팀원 각 PC 에이전트(표준 라이브러리만)
-├─ ARCHITECTURE.md           이 문서(설계 구조)
-├─ 기능설명서.md / 사용설명서.md / SERVER.md / AI_CONTEXT.md / README.md / DESIGN.md / CLAUDE.md
-├─ deploy/                   nginx.conf · Caddyfile · POSTGRES.md · README.md
+MV-hub-S/
+├─ MV_server.bat / MV_agent.bat / MV_watchdog.bat / MV_logs.bat   서버·작업자·워치독·로그 런처
+├─ register_autostart.bat / update_git.bat / update_release.bat   자동시작 등록 / 업데이트(서버·작업자)
+├─ agent_push.py / run_agent_session.py                           push 에이전트 / Job Object 감시 런처
+├─ docs/                     ARCHITECTURE(이 문서)·SERVER·SERVER_RECOVERY·TESTING·설명서들
+├─ deploy/  release/  tools/ 배포 설정 / 릴리스 패키징 / 운영·점검 스크립트(워치독·백업복제·등록부정리)
 ├─ backend/
 │  ├─ serve.py               듀얼스택 기동
 │  ├─ schema.sql             DDL(SQLite)
-│  ├─ backfill_import.py     일괄 적재
 │  └─ app/
-│     ├─ main.py db.py models.py config.py deps.py rbac.py ws.py
-│     ├─ routers/   library generation gen_requests ingest share projects auth members assets sync
-│     ├─ repo/      _common generations gen_requests identity tags assets share projects accounts trash
-│     └─ services/  cli_bridge syncer media_cache thumbs backup auth agent_signals mcp_ingest jobs
+│     ├─ main.py db.py db_migrations.py models.py config.py deps.py rbac.py ws.py manage_db.py
+│     ├─ routers/   §4.2 의 22개 + 내부(_proxy·_telemetry·_assets_access)
+│     ├─ usecases/  gen_requests generation_media_cache generation_personal_meta hf_missing
+│     ├─ repo/      §4.4 의 30개 모듈(파사드 __init__)
+│     ├─ services/  §4.5 의 40개
+│     └─ resources/resolve/  MVHub_Importer.py 등 Resolve 배포 스크립트
 └─ frontend/
    ├─ dist/                  빌드 산출물(백엔드가 서빙)
    └─ src/
-      ├─ App.tsx api.ts types.ts main.tsx styles.css
-      ├─ lib/         i18n theme storage useFloatingPanel useModels promptParts prompt promptEditor
-      │               format media download commentTree useClickSeparation useAccountStatus
-      └─ components/  ThumbnailGrid GenerationCard MediaThumbnail FilterSidebar LibraryToolbar SearchBox TopBar
-                      SpotlightPrompt FloatingPrompt HistoryBoard HistoryPanel HistoryMiniTree CompareModal
-                      SceneBoard SceneBar GenCommentPanel LoginScreen AccountMenu ManageAccount AdminWindow
-                      SettingsPanel WorkspaceSelector AssetsWindow AssetsView InfoPopup MediaPreview
-                      ProjectAssignMenu HowItWorks  + assets/(AssetCell FolderTree MountManager …)
+      ├─ App.tsx api.ts types.ts main.tsx
+      ├─ lib/         160+ 훅·유틸(§5.1)
+      └─ components/  12개 서브폴더 — scene/ assets/ manage/ spotlight/ settings/ history/
+                      sidebar/ app/ generation/ compare/ common/ admin/ + 최상위 창·패널들
 ```

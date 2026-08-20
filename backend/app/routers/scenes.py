@@ -29,6 +29,19 @@ class SceneSyncIn(BaseModel):
     deleted_ids: list[str] = []
 
 
+class CardLinkIn(BaseModel):
+    scene_id: str
+    card_id: str
+    generation_id: str
+
+
+class CardLinkSyncIn(BaseModel):
+    added: list[CardLinkIn] = []     # [구클라] 자동 백필 — backfill 로 해석(tombstone 해제 불가)
+    backfill: list[CardLinkIn] = []  # 자동 스캔 — 새 행만, 제거 표시를 절대 해제하지 않음
+    explicit: list[CardLinkIn] = []  # 사용자 의도(undo 부활 등) — 제거 표시 해제 허용
+    removed: list[CardLinkIn] = []   # 카드에서 뺌(행 삭제가 아니라 표시 — repo 주석 참고)
+
+
 @router.get("/backup")
 def list_scene_backups(request: Request, project_id: str = "", include_data: bool = False):
     """내 백업 목록 — 기본 메타만(변경분 대조), include_data=1 은 복구용 전체."""
@@ -46,6 +59,27 @@ def sync_scene_backups(body: SceneSyncIn, request: Request):
             body.project_id,
             [u.model_dump() for u in body.upserts],
             body.deleted_ids,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **res}
+
+
+@router.get("/cards")
+def list_scene_card_links(request: Request, scene_id: str = ""):
+    """카드 소속 — scene_id 를 주면 그 씬만(씬 열 때), 없으면 전부(백필 대조용)."""
+    return {"items": repo.list_scene_card_links(actor_id(request), scene_id or None)}
+
+
+@router.put("/cards")
+def sync_scene_card_links(body: CardLinkSyncIn, request: Request):
+    """담김/뺌/부활 반영. 더하기 전용이라 이 요청이 남의 브라우저 기록을 지우는 일은 없다."""
+    try:
+        res = repo.sync_scene_card_links(
+            actor_id(request),
+            [a.model_dump() for a in [*body.added, *body.backfill]],
+            [r.model_dump() for r in body.removed],
+            explicit=[e.model_dump() for e in body.explicit],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

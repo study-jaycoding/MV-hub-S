@@ -10,8 +10,16 @@ import {
 import { useT } from "../lib/i18n";
 import { useEscapeClose } from "../lib/useEscapeClose";
 import { useOutsideMouseDown } from "../lib/useOutsideMouseDown";
-import { useSyncStatus } from "../lib/useSyncStatus";
+import { workspaceCommandLabels } from "../lib/workspaceCommand";
 import {
+  formatTelemetryLastSuccess,
+  latestSyncSuccess,
+  syncFailedCount,
+  syncPendingCount,
+  useSyncStatus,
+} from "../lib/useSyncStatus";
+import {
+  activeWorkspaceOf,
   reconcileReportedWorkspaceContext,
   sameWorkspace,
   selectedWorkspaceContext,
@@ -71,7 +79,15 @@ export function AccountMenu({
     setOpen(false);
     avatarRef.current?.focus();
   }, []);
-  const sync = useSyncStatus(); // 로컬 텔레메트리 push 실패 관측(failed>0 때만 경고)
+  // 이 상태는 이 PC의 로컬 outbox에만 의미가 있다. 공유 서버 화면에서는 불필요한 폴링을 하지 않는다.
+  const sync = useSyncStatus(!!localHub);
+  const syncPending = sync ? syncPendingCount(sync) : 0;
+  const syncFailed = sync ? syncFailedCount(sync) : 0;
+  const syncDead = Math.max(0, sync?.account_report_dead || 0);
+  const syncError = sync?.account_report_last_error || sync?.last_error || undefined;
+  const syncBreakdown = sync
+    ? `생성정보 ${sync.pending || 0}건 · 계정/거래 ${sync.account_report_pending || 0}건 · 격리 ${syncDead}건`
+    : undefined;
 
   // 워크스페이스 라이브(클릭 전환 가능) 조건 = 이 PC 에 내 CLI 가 있을 때.
   //  · 비로그인(AUTH off, 로컬 개발): 원래부터 라이브.
@@ -131,14 +147,15 @@ export function AccountMenu({
 
   // 표시할 워크스페이스 목록 — 하우스=라이브, 그 외=에이전트 보고값.
   const wsList = liveMode ? list : reported?.workspaces || [];
-  const current = wsList.find((w) => w.is_selected);
+  const workspaceLabels = workspaceCommandLabels(
+    wsList.flatMap((workspace) => workspace.name
+      ? [{ id: workspace.id, name: workspace.name }]
+      : []),
+  );
+  const current = wsList.find((w) => w.is_selected); // CLI 가 실제로 물고 있는 공간(플랜 라벨용)
   // 활성 워크스페이스 = 선택된 팀, 없으면 개인(name=null). 잔여 크레딧 표시용.
-  const activeWs =
-    workspaceContext.scope === "team"
-      ? wsList.find((w) => w.id === workspaceContext.id)
-      : workspaceContext.scope === "personal"
-        ? wsList.find((w) => !w.name)
-        : current || wsList.find((w) => !w.name);
+  // 하단 상태줄(useAccountStatus)도 같은 규칙을 쓴다 — 두 곳의 숫자가 어긋나지 않게.
+  const activeWs = activeWorkspaceOf(wsList, workspaceContext);
   // 게이지 분모 = 활성 워크스페이스에 배정된 프로젝트들의 '예산 한도' 합(관리창 프로젝트 설정).
   // 프로젝트마다 예산이 달라 워크스페이스별로 다른 분모가 적용된다. 메뉴를 열 때마다 재조회해
   // 예산 수정이 곧 반영되고, 미설정·실패면 null → 아래에서 상수 폴백.
@@ -260,10 +277,17 @@ export function AccountMenu({
             </div>
           </div>
 
-          {/* 매니징 push 실패 경고 — 조용히 묻히던 텔레메트리 push 실패를 노출(failed>0 때만). pending 은 정상 backlog. */}
-          {sync && sync.failed > 0 && (
-            <div className="acct-sync-warn" title={sync.last_error || undefined}>
-              ⚠ 매니징 동기화 {sync.failed}건 실패 — 다음 동기화 때 재시도{sync.pending > sync.failed ? ` (대기 ${sync.pending})` : ""}
+          {localHub && sync && (
+            <div className="acct-sync-state" title={syncBreakdown}>
+              <span>{formatTelemetryLastSuccess(latestSyncSuccess(sync))}</span>
+              <span>{syncPending > 0 ? `대기 ${syncPending}건` : "대기 없음"}</span>
+            </div>
+          )}
+
+          {/* 생성정보와 계정·거래 보고 실패를 합쳐 노출한다. 세부 대기 건수는 위 상태 title로 확인. */}
+          {sync && syncFailed > 0 && (
+            <div className="acct-sync-warn" title={syncError}>
+              ⚠ 매니징 동기화 {syncFailed}건 실패{syncDead > 0 ? ` · ${syncDead}건 격리` : ""}{syncFailed > syncDead ? " — 다음 동기화 때 재시도" : ""}{syncPending > syncFailed ? ` (대기 ${syncPending})` : ""}
             </div>
           )}
 
@@ -283,7 +307,7 @@ export function AccountMenu({
               const inner = (
                 <span className="acct-item-main">
                   <span className="acct-item-name">
-                    {isPersonal ? displayName : w.name}
+                    {isPersonal ? displayName : workspaceLabels.get(w.id) ?? w.name}
                   </span>
                   <span className="acct-item-meta">
                     {isPersonal ? t("개인 · ") : ""}
@@ -350,7 +374,7 @@ export function AccountMenu({
             <div className="acct-hint acct-hint-sm">마지막 동기화 기준 · 생성 직전에 에이전트가 선택 공간을 확인</div>
           )}
 
-          {/* '외부 생성물 올리기'·'힉스필드 삭제물 검토'는 설정 패널로 이동(중복 제거). */}
+          {/* 'HF 생성물 체크'·'HF 삭제물 체크'는 설정 패널로 이동(중복 제거). */}
           <div className="acct-sep" />
           <button
             className="acct-action"
@@ -359,7 +383,7 @@ export function AccountMenu({
               setSettingsOpen(true);
             }}
           >
-            {t("⚙ 설정")}
+            {t("⚙ Setting")}
           </button>
           <button
             className="acct-action"

@@ -563,7 +563,7 @@ def folder_counts(
             "AND g.deleted_at IS NULL"
         )
         args: list[Any] = [project_id]
-        if account_uid and account_uid != "\x00":
+        if account_uid:
             where += " AND g.creator_uid = ?"
             args.append(account_uid)
         if shared_only:
@@ -599,7 +599,7 @@ def folder_counts_batch(
         "AND g.folder_path IS NOT NULL AND g.folder_path <> '' AND g.deleted_at IS NULL"
     )
     args: list[Any] = [*ids]
-    if account_uid and account_uid != "\x00":
+    if account_uid:
         where += " AND g.creator_uid = ?"
         args.append(account_uid)
     if shared_only:

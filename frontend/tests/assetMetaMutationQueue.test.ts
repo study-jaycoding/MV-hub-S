@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLatestMutationQueue, createMutationQueue } from "../src/lib/mutationQueue";
+import {
+  createKeyedMutationQueue,
+  createLatestMutationQueue,
+  createMutationQueue,
+} from "../src/lib/mutationQueue";
 
 describe("asset meta mutation queue", () => {
   it("executes rapid mutations in input order", async () => {
@@ -201,5 +205,104 @@ describe("latest mutation queue", () => {
     await queue.whenIdle();
 
     expect(reconcile).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("keyed mutation queue", () => {
+  it("serializes writes for one key in input order", async () => {
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const queue = createKeyedMutationQueue<string>(vi.fn());
+
+    const first = queue.enqueue("task-1", async () => {
+      events.push("first:start");
+      await firstGate;
+      events.push("first:end");
+    });
+    const second = queue.enqueue("task-1", async () => {
+      events.push("second");
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["first:start"]);
+    releaseFirst();
+    await Promise.all([first, second, queue.whenIdle()]);
+    expect(events).toEqual(["first:start", "first:end", "second"]);
+  });
+
+  it("runs different keys without blocking each other", async () => {
+    const events: string[] = [];
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const queue = createKeyedMutationQueue<string>(vi.fn());
+
+    const slow = queue.enqueue("task-slow", async () => {
+      events.push("slow:start");
+      await slowGate;
+      events.push("slow:end");
+    });
+    const fast = queue.enqueue("task-fast", async () => {
+      events.push("fast");
+    });
+
+    await fast;
+    expect(events).toEqual(["slow:start", "fast"]);
+    releaseSlow();
+    await Promise.all([slow, queue.whenIdle()]);
+    expect(events).toEqual(["slow:start", "fast", "slow:end"]);
+  });
+
+  it("reconciles accumulated failures once and remains reusable", async () => {
+    const reconciled: unknown[][] = [];
+    const queue = createKeyedMutationQueue<string>(async (_key, errors) => {
+      reconciled.push(errors);
+    });
+
+    const first = queue.enqueue("task-1", async () => {
+      throw new Error("first");
+    });
+    const second = queue.enqueue("task-1", async () => {
+      throw new Error("second");
+    });
+    await Promise.all([first, second, queue.whenIdle()]);
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].map((error) => (error as Error).message)).toEqual(["first", "second"]);
+
+    await queue.enqueue("task-1", async () => {});
+    await queue.whenIdle();
+    expect(reconciled).toHaveLength(1);
+  });
+
+  it("keeps a same-key write queued during failure reconciliation", async () => {
+    const events: string[] = [];
+    let releaseReconcile!: () => void;
+    const reconcileGate = new Promise<void>((resolve) => {
+      releaseReconcile = resolve;
+    });
+    const queue = createKeyedMutationQueue<string>(async () => {
+      events.push("reconcile:start");
+      await reconcileGate;
+      events.push("reconcile:end");
+    });
+
+    const failed = queue.enqueue("task-1", async () => {
+      throw new Error("save failed");
+    });
+    await vi.waitFor(() => expect(events).toEqual(["reconcile:start"]));
+    const later = queue.enqueue("task-1", async () => {
+      events.push("later");
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["reconcile:start"]);
+    releaseReconcile();
+    await Promise.all([failed, later, queue.whenIdle()]);
+    expect(events).toEqual(["reconcile:start", "reconcile:end", "later"]);
   });
 });

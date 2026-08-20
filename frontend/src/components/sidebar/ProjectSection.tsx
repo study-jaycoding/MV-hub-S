@@ -17,8 +17,8 @@ import { encodeSceneFolderDrag } from "../../lib/sceneSet";
 import { onLibraryChanged } from "../../lib/libraryBroadcast";
 import { useCustomEvent } from "../../lib/useCustomEvent";
 import { useT } from "../../lib/i18n";
-import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
 import { loadJSON, saveJSON } from "../../lib/storage";
+import { reconcileArrayState, reconcileRecordState } from "../../lib/stateReconciliation";
 import { getTeamBase, getTeamSeenVersion, isAckedFor, subscribeTeamSeen } from "../../lib/teamSeen";
 import {
   cachedProjectFolderEntries,
@@ -138,6 +138,35 @@ export function ProjectSection({
     () => setOrder((previous) => reconcileArrayState(previous, projects)),
     [projects],
   );
+  // 프로젝트 순서 드래그(⠿) — 손잡이를 잡았을 때만 행이 draggable(행 클릭·카드 드롭과 충돌 방지).
+  const [dragArmed, setDragArmed] = useState(false);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const dropAt = (toIdx: number) => {
+    const from = dragIdx;
+    setDragArmed(false);
+    setDragIdx(null);
+    setOverIdx(null);
+    if (from === null || from === toIdx) return;
+    const next = order.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(toIdx, 0, moved);
+    setOrder(next);
+    api.reorderProjects(next.map((project) => project.id)).catch(() => {});
+  };
+  // 프로젝트 접기(▾/▸) — 상시 폴더 트리를 프로젝트 단위로 접었다 펼 수 있게. 영속.
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () => new Set(loadJSON<string[]>("ch.collapsedProjects") || []),
+  );
+  const toggleCollapsed = (pid: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      saveJSON("ch.collapsedProjects", [...next]);
+      return next;
+    });
+  };
   const [folders, setFolders] = useState<Record<string, ProjectFolderEntry>>(() =>
     cachedProjectFolderEntries(projects.map((project) => project.id)),
   );
@@ -156,19 +185,6 @@ export function ProjectSection({
       ack_key?: string | null;
     }[]
   >([]);
-  // 고정핀 — 켠 프로젝트는 활성이 아니어도 폴더 트리를 계속 보여준다(드래그 담기 상시 가능). 영속.
-  const [pinned, setPinned] = useState<Set<string>>(
-    () => new Set(loadJSON<string[]>("ch.pinnedProjects") || []),
-  );
-  const togglePin = (pid: string) => {
-    setPinned((prev) => {
-      const next = new Set(prev);
-      if (next.has(pid)) next.delete(pid);
-      else next.add(pid);
-      saveJSON("ch.pinnedProjects", [...next]);
-      return next;
-    });
-  };
   const [expandedFolders, setExpandedFolders] =
     useState<Record<string, Set<string>>>(loadProjectFolderExpansion);
   const projectKey = projects.map((project) => project.id).join("|");
@@ -223,16 +239,10 @@ export function ProjectSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectKey]);
 
-  // 실제 재귀 트리는 화면에 필요한 활성 프로젝트와 고정핀 프로젝트만 읽는다.
+  // 폴더 트리는 항상 보이므로, 폴더가 연결된 프로젝트는 전부 읽는다.
   useEffect(() => {
     let alive = true;
-    const linked = new Set(linkedFolderIds);
-    const ids = new Set<string>();
-    pinned.forEach((pid) => {
-      if (linked.has(pid)) ids.add(pid);
-    });
-    if (activeId && activeId !== "none" && linked.has(activeId)) ids.add(activeId);
-    ids.forEach((pid) => {
+    linkedFolderIds.forEach((pid) => {
       setFolderLoading((prev) => ({ ...prev, [pid]: true }));
       api
         .projectFolder(pid)
@@ -260,9 +270,8 @@ export function ProjectSection({
     return () => {
       alive = false;
     };
-    // pinned 는 토글할 때 새 Set 으로 교체되므로 안전한 의존성이다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, pinned, linkedFolderIds]);
+  }, [linkedFolderIds]);
 
   // 활성 + 고정핀 프로젝트의 폴더별 생성물 개수 로드(트리 뱃지). state 카운터를 먼저 올리지
   // 않고 요청을 직접 시작해, 데이터가 도착하기 전의 ProjectSection 선렌더를 없앤다.
@@ -271,9 +280,7 @@ export function ProjectSection({
   const refreshCounts = () => {
     const requestSeq = ++countRequestSeqRef.current;
     const isLatest = () => requestSeq === countRequestSeqRef.current;
-    const ids = new Set<string>(pinned);
-    if (activeId && activeId !== "none") ids.add(activeId);
-    const wanted = [...ids];
+    const wanted = projects.map((project) => project.id);
     if (wanted.length) {
       api
         .projectFolderCountsBatch(wanted, tab)
@@ -320,7 +327,7 @@ export function ProjectSection({
     };
     // 프로젝트 구성·탭·핀·활성 프로젝트가 바뀌면 조회 범위가 달라진다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, projectKey, pinned, tab]);
+  }, [activeId, projectKey, tab]);
 
   // +N 계산 — 서버 신규 목록(teamFreshItems)에서 '확인(클릭)한 항목'을 제외해 폴더/프로젝트/미분류별 집계.
   // teamSeenVer 의존 — 카드 클릭 순간 스토어가 bump 되어 배지가 즉시 하나 줄어든다.
@@ -375,22 +382,7 @@ export function ProjectSection({
     });
   };
 
-  const [dragArmed, setDragArmed] = useState(false);
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [overIdx, setOverIdx] = useState<number | null>(null);
   const [unassignOver, setUnassignOver] = useState(false); // 카드를 '미분류'로 드래그 중 강조
-  const dropAt = async (toIdx: number) => {
-    const from = dragIdx;
-    setDragArmed(false);
-    setDragIdx(null);
-    setOverIdx(null);
-    if (from === null || from === toIdx) return;
-    const next = order.slice();
-    const [moved] = next.splice(from, 1);
-    next.splice(toIdx, 0, moved);
-    setOrder(next);
-    api.reorderProjects(next.map((project) => project.id)).catch(() => {});
-  };
 
   const [archived, setArchived] = useState<Project[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -416,7 +408,6 @@ export function ProjectSection({
   return (
     <>
       <section>
-        <h4 className="auto-tag-head">Millionvolt</h4>
         <div className="proj-list">
           <button
             className={
@@ -472,7 +463,7 @@ export function ProjectSection({
             onClick={onViewDeleted}
             title="지운 것만 보기 — 힉스필드 원본엔 영향 없음(우리 카탈로그 휴지통)"
           >
-            <span className="proj-name">{tr("휴지통 보기")}</span>
+            <span className="proj-name">{tr("휴지통")}</span>
           </button>
         </div>
       </section>
@@ -483,13 +474,13 @@ export function ProjectSection({
           {order.length === 0 && <span className="muted">{tr("없음")}</span>}
           {order.map((project, index) => {
             const projectActive = activeId === project.id && !deletedOnly;
-            const isPinned = pinned.has(project.id);
-            const showTree = projectActive || isPinned;
+            // 트리는 캐시로 즉시 그려지는데 링크 목록은 비동기라, 링크 기준으로만 판정하면
+            // 로딩 초반에 토글이 ghost 로 렌더돼 정렬·기능이 흔들린다 — 실제 트리 존재를 함께 본다.
+            const hasTree =
+              !!folders[project.id]?.tree || linkedFolderIds.includes(project.id);
+            const isCollapsed = collapsed.has(project.id);
             return (
-              <div
-                key={project.id}
-                className={"proj-tree-wrap" + (projectActive ? " on" : "") + (isPinned ? " pinned" : "")}
-              >
+              <div key={project.id} className={"proj-tree-wrap" + (projectActive ? " on" : "")}>
                 <div
                   role="button"
                   tabIndex={0}
@@ -518,6 +509,7 @@ export function ProjectSection({
                     if (overIdx !== index) setOverIdx(index);
                   }}
                   onDrop={(e) => {
+                    if (dragIdx === null) return;
                     e.preventDefault();
                     dropAt(index);
                   }}
@@ -527,16 +519,21 @@ export function ProjectSection({
                     setOverIdx(null);
                   }}
                 >
-                  <button
-                    className={"proj-pin" + (isPinned ? " on" : "")}
-                    title={isPinned ? "고정 해제 — 폴더 상시 표시 끄기" : "고정 — 폴더를 항상 보이게(드래그 담기 상시)"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePin(project.id);
-                    }}
-                  >
-                    📌
-                  </button>
+                  {/* 접기 토글 — 폴더 트리가 있는 프로젝트만. 없는 프로젝트는 자리만 맞춘다. */}
+                  {hasTree ? (
+                    <button
+                      className="proj-fold"
+                      title={isCollapsed ? "폴더 펼치기" : "폴더 접기"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCollapsed(project.id);
+                      }}
+                    >
+                      {isCollapsed ? "▸" : "▾"}
+                    </button>
+                  ) : (
+                    <span className="proj-fold ghost" />
+                  )}
                   <span
                     className="proj-drag-handle"
                     title="드래그해서 순서 변경"
@@ -554,8 +551,8 @@ export function ProjectSection({
                   )}
                   <span className="proj-count">{project.count}</span>
                 </div>
-                {showTree && (
-                  <SidebarFolderTree
+                {/* 폴더 트리는 기본 상시 표시 — 프로젝트 단위 접기(▸)로만 숨긴다. */}
+                {!isCollapsed && <SidebarFolderTree
                     state={folders[project.id]}
                     loading={folderLoading[project.id]}
                     counts={folderCounts[project.id]}
@@ -600,8 +597,7 @@ export function ProjectSection({
                         toggleDisabledFolder(project.id, path);
                       }
                     }}
-                  />
-                )}
+                />}
               </div>
             );
           })}

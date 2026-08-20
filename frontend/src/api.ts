@@ -1,4 +1,4 @@
-﻿// 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
+// 타입 안전 API 클라이언트. 모든 호출은 /api 프록시를 통해 로컬 백엔드로.
 import type {
   Facets,
   GenQuery,
@@ -13,6 +13,7 @@ import { authApi } from "./lib/authApi";
 import { assetsApi } from "./lib/assetsApi";
 import { chunked } from "./lib/batching";
 import {
+  authFormHeaders,
   getAuthToken,
   jsonBody,
   jsonFetch,
@@ -25,6 +26,7 @@ import { pathPart } from "./lib/url";
 import { normalizeGenerationPromptCompatibility } from "./lib/generationPrompt";
 import { isGenerationWorkspaceReady } from "./lib/workspaceContext";
 import type { CanvasGenerationLink } from "./lib/canvasGenerationRecovery";
+import { getAccountNamespace } from "./lib/accountScope";
 
 export { getAuthToken, jsonFetch, setAuthToken };
 export { connectProgress } from "./lib/progressSocket";
@@ -37,6 +39,25 @@ export const GEN_PAGE = 200;
 export interface GenCursor {
   ts: number;
   id: string;
+}
+
+export interface HistoryImportStatus {
+  state: "idle" | "running" | "complete" | "failed";
+  pages: number;
+  received: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  errors: number;
+  message: string;
+  started_at: string | null;
+  finished_at: string | null;
+  // 자동 보충(gap) 확장 필드 — 구백엔드는 안 보내므로 선택 필드로 둔다(순차 배포 호환).
+  automatic?: boolean;
+  gap_detected_at?: string | null;
+  gap_resolved?: boolean;
+  gap_auto_started?: boolean;
 }
 
 // 모든 필터(기본 + 서버사이드 인스턴트)를 쿼리스트링으로. project_id·컬러·태그·타입까지
@@ -91,6 +112,103 @@ function normalizeHistoryGraph(graph: HistoryGraph): HistoryGraph {
 
 function generationFetch(path: string, init?: RequestInit): Promise<Generation> {
   return jsonFetch<Generation>(path, init).then(normalizeGenerationPromptCompatibility);
+}
+
+export interface GenerationCreateBody {
+  prompt: string;
+  display_prompt?: string;
+  model: string;
+  params?: Record<string, unknown>;
+  color?: string | null;
+  tags?: string[];
+  auto_tags?: string[];
+  references?: {
+    file_path: string;
+    type: string;
+    role: string;
+    name?: string;
+    thumbnail?: string;
+    source_url?: string;
+    source_gen_id?: string;
+  }[];
+  project_id?: string;
+  folder_path?: string;
+}
+
+type RegenerateBody = {
+  prompt?: string;
+  color?: string | null;
+  auto_tags?: string[];
+};
+
+function newGenerationRequestKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+function createGeneration(
+  body: GenerationCreateBody,
+  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  canvasLink?: CanvasGenerationLink,
+  idempotencyKey?: string,
+): Promise<Generation> {
+  if (!isGenerationWorkspaceReady(workspace)) {
+    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
+  }
+  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
+  return generationFetch("/api/gen-requests", {
+    method: "POST",
+    body: jsonBody({
+      kind: "create",
+      workspace,
+      create: body,
+      canvas_link: canvasLink,
+      ...(requestKey ? { idempotency_key: requestKey } : {}),
+    }),
+  });
+}
+
+function regenerateGeneration(
+  id: string,
+  body: RegenerateBody,
+  workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  canvasLink?: CanvasGenerationLink,
+  idempotencyKey?: string,
+): Promise<Generation> {
+  if (!isGenerationWorkspaceReady(workspace)) {
+    return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
+  }
+  const requestKey = canvasLink ? undefined : idempotencyKey || newGenerationRequestKey();
+  return generationFetch("/api/gen-requests", {
+    method: "POST",
+    body: jsonBody({
+      kind: "regenerate",
+      workspace,
+      source_gen_id: id,
+      regenerate: body,
+      canvas_link: canvasLink,
+      ...(requestKey ? { idempotency_key: requestKey } : {}),
+    }),
+  });
 }
 
 interface GenerationBatchResponse {
@@ -170,9 +288,13 @@ function historyFetch(path: string, init?: RequestInit): Promise<History> {
 // ★상한 LRU — 긴 세션에서 카드 수천 개 호버 시 무한 적재 방지. Map 삽입순서로 오래된 것부터 제거.
 const GEN_COMMENTS_CACHE_MAX = 500;
 const genCommentsCache = new Map<string, import("./types").GenComment[]>();
+function genCommentsCacheKey(genId: string): string {
+  return `${getAccountNamespace()}\u0000${genId}`;
+}
 function putGenComments(genId: string, comments: import("./types").GenComment[]) {
-  genCommentsCache.delete(genId); // 최신 접근을 맨 뒤로(recency)
-  genCommentsCache.set(genId, comments);
+  const key = genCommentsCacheKey(genId);
+  genCommentsCache.delete(key); // 최신 접근을 맨 뒤로(recency)
+  genCommentsCache.set(key, comments);
   if (genCommentsCache.size > GEN_COMMENTS_CACHE_MAX) {
     const oldest = genCommentsCache.keys().next().value;
     if (oldest !== undefined) genCommentsCache.delete(oldest);
@@ -190,6 +312,16 @@ export const api = {
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
 
+  notificationComments: (limit = 50) =>
+    jsonFetch<import("./types").NotificationComment[]>(
+      `/api/notifications/comments?limit=${limit}`,
+    ),
+  markAllNotificationCommentsSeen: () =>
+    jsonFetch<{ ok: boolean; seen: number }>("/api/notifications/comments/seen-all", {
+      method: "POST",
+      body: jsonBody({}),
+    }),
+
   // ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ────────────────────────
   // 지운 항목 목록(최근 삭제순, prompt·source_name 부분일치). 그리드가 그대로 그림(deleted=true).
   listTrash: (search?: string, offset = 0, limit = GEN_PAGE) => {
@@ -206,10 +338,29 @@ export const api = {
   getGeneration: (id: string) =>
     generationFetch(`/api/generations/${pathPart(id)}`),
 
+  // 끌어다 놓은 파일의 각인 읽기 — 우리 프로그램을 거쳐 나간 파일이면 어느 생성물인지 알려준다.
+  // 각인이 없으면 gen_id=null(외부에서 들어온 파일). 나머지 정보는 이 열쇠로 기존 조회 API 가 가져온다.
+  readFileStamp: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    // multipart 라 jsonFetch 미사용(Content-Type 을 브라우저가 boundary 와 함께 정해야 한다).
+    const res = await fetch("/api/stamp/read", {
+      method: "POST",
+      body: fd,
+      headers: authFormHeaders(),
+    });
+    if (!res.ok) await throwHttpError(res, "/api/stamp/read");
+    return res.json() as Promise<{
+      gen_id: string | null;
+      job_id: string | null;
+      hub: string | null;
+    }>;
+  },
+
   // 캔버스 카드용 일괄 조회 — 생성물 상태와 직접 레퍼런스 부모를 한 요청으로 받는다.
   getGenerationsBatch,
 
-  // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 히스토리 패널용
+  // 한 결과물의 가계(재료⬆/파생⬇/사용처/형제) — 레시피 씬('어떻게 만들었나' 노드) 구성용
   history: (id: string) => historyFetch(`/api/generations/${pathPart(id)}/history`),
 
   // 연결된 가계 전체 그래프(노드+엣지+루트) — 구성탭 히스토리 트리용
@@ -227,22 +378,18 @@ export const api = {
       elapsed_seconds: number | null;
     }>(`/api/generations/${pathPart(id)}/metrics`),
 
+  preserveGeneration: (id: string) =>
+    jsonFetch<{ status: string; error_code?: string | null; generation: Generation }>(
+      `/api/generations/${pathPart(id)}/cache`,
+      { method: "POST", body: jsonBody({}) },
+    ).then((result) => ({
+      ...result,
+      generation: normalizeGenerationPromptCompatibility(result.generation),
+    })),
+
   // Comfy 실행 대상의 구독 정보(크레딧 표시용) — Cloud 는 건별 크레딧 API 미노출(정액 구독제)이라 등급만.
   comfySubscription: () =>
     jsonFetch<{ target: "cloud" | "local"; tier: string | null }>(`/api/comfy/subscription`),
-
-  // 수동 히스토리 연결 — id 의 부모를 parentId 로 지정(동기화 잡 등 자동 히스토리 없는 것 묶기)
-  addHistory: (id: string, parentId: string, relation: "derived" | "reference" = "derived") =>
-    historyFetch(`/api/generations/${pathPart(id)}/history`, {
-      method: "POST",
-      body: jsonBody({ parent_gen_id: parentId, relation }),
-    }),
-
-  // 히스토리 엣지 해제 — id 와 그 부모 parentId 의 연결 풀기
-  removeHistory: (id: string, parentId: string) =>
-    historyFetch(`/api/generations/${pathPart(id)}/history/${pathPart(parentId)}`, {
-      method: "DELETE",
-    }),
 
   // 생성 직후 파생 부모(들) 일괄 기록 — 서버가 전이 축소(조상 잉여 엣지 제거)해 가장 가까운 부모만 남김
   deriveFrom: (id: string, parentIds: string[]) =>
@@ -308,7 +455,18 @@ export const api = {
   agentStatus: () => jsonFetch<{ connected: boolean }>("/api/agent/status"),
   // 로컬 텔레메트리(매니징) push 대기·실패 상태 — 조용히 묻히던 실패 가시화(read-only)
   syncStatus: () =>
-    jsonFetch<{ pending: number; failed: number; last_error: string | null; oldest_dirty: string | null }>(
+    jsonFetch<{
+      pending: number;
+      failed: number;
+      last_error: string | null;
+      oldest_dirty: string | null;
+      last_success_at: string | null;
+      account_report_pending: number;
+      account_report_failed: number;
+      account_report_last_error: string | null;
+      account_report_oldest_dirty: string | null;
+      account_report_last_success_at: string | null;
+    }>(
       "/api/sync-status",
     ),
   // "내 작업 올리기" — 내 에이전트를 깨워 로컬 결과물을 즉시 push
@@ -317,67 +475,45 @@ export const api = {
   // "생성물 재점검" — 최신 N개를 known-필터 없이 강제 재전송해 힉스필드 상태와 대조·정정
   agentReinspect: () =>
     jsonFetch<{ ok: boolean; connected: boolean }>("/api/agent/reinspect", { method: "POST" }),
-  // 과거 백필 — MCP show_generations 원시 아이템 배열을 웹 세션으로 직접 적재(파일 업로드 경로). 멱등.
-  ingestMcp: (items: unknown[]) =>
-    jsonFetch<{ inserted: number; updated: number; unchanged: number; skipped: number; linked_uid: string | null }>(
-      "/api/ingest/mcp",
-      { method: "POST", body: jsonBody({ items }) },
-    ),
+  // 과거 전체 가져오기 — 로컬 CLI 로그인 권한으로 MCP cursor를 끝까지 순회한다.
+  historyImportStart: () =>
+    jsonFetch<HistoryImportStatus>("/api/ingest/history/start", { method: "POST" }),
+  historyImportStatus: () =>
+    jsonFetch<HistoryImportStatus>("/api/ingest/history/status"),
 
   ...authApi,
 
-  create: (body: {
-    prompt: string;
-    display_prompt?: string;
-    model: string;
-    params?: Record<string, unknown>;
-    color?: string | null;
-    tags?: string[];
-    auto_tags?: string[];
-    references?: {
-      file_path: string;
-      type: string;
-      role: string;
-      name?: string;
-      thumbnail?: string;
-      source_url?: string;
-      source_gen_id?: string; // 출처 generation → 히스토리 reference 엣지
-    }[];
-    project_id?: string; // 생성 시 보던 프로젝트로 자동 귀속
-    folder_path?: string; // 무장 폴더(렌더 루트 상대 경로) — 관리탭 자동 파생·완료본 저장 경로
-  }, workspace: WorkspaceContext = { scope: "unknown", id: null, name: null }, canvasLink?: CanvasGenerationLink) => {
-    if (!isGenerationWorkspaceReady(workspace)) {
-      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 생성할 수 있습니다"));
-    }
-    // 생성은 서버가 아니라 '내 로컬 CLI'로 실행 — 서버엔 요청만 남기고 placeholder 카드를
-    // 즉시 받는다(내 PC의 push 에이전트가 실행→결과 채움). project_content_hub_push_model.
-    return generationFetch("/api/gen-requests", {
-      method: "POST",
-      body: jsonBody({ kind: "create", workspace, create: body, canvas_link: canvasLink }),
-    });
-  },
-
-  regenerate: (
-    id: string,
-    body: { prompt?: string; color?: string | null; auto_tags?: string[] },
-    workspace: WorkspaceContext = { scope: "unknown", id: null, name: null },
+  // prepare*가 제출 버튼 1회의 UUID를 클로저에 보관한다. 같은 클로저를 HTTP 재시도에
+  // 다시 호출하면 키가 유지되고, 새 버튼 동작은 새 클로저라 별도 유료 요청이 된다.
+  prepareCreate: (
+    body: GenerationCreateBody,
+    workspace: WorkspaceContext,
     canvasLink?: CanvasGenerationLink,
   ) => {
-    if (!isGenerationWorkspaceReady(workspace)) {
-      return Promise.reject(new Error("워크스페이스 id와 이름이 모두 확인된 뒤 재생성할 수 있습니다"));
-    }
-    // 재생성도 로컬 실행 요청 — placeholder 즉시 반환, 내 에이전트가 내 CLI로 실행.
-    return generationFetch("/api/gen-requests", {
-      method: "POST",
-      body: jsonBody({
-        kind: "regenerate",
-        workspace,
-        source_gen_id: id,
-        regenerate: body,
-        canvas_link: canvasLink,
-      }),
-    });
+    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
+    return () => createGeneration(body, workspace, canvasLink, requestKey);
   },
+  create: createGeneration,
+
+  prepareRegenerate: (
+    id: string,
+    body: RegenerateBody,
+    workspace: WorkspaceContext,
+    canvasLink?: CanvasGenerationLink,
+  ) => {
+    const requestKey = canvasLink ? undefined : newGenerationRequestKey();
+    return () => regenerateGeneration(id, body, workspace, canvasLink, requestKey);
+  },
+  regenerate: regenerateGeneration,
+
+  confirmGenerationNotSubmitted: (generationId: string) =>
+    jsonFetch<{ ok: boolean; applied: boolean }>(
+      `/api/gen-requests/by-generation/${pathPart(generationId)}/confirm-not-submitted`,
+      {
+        method: "POST",
+        body: jsonBody({ confirmed_not_submitted: true }),
+      },
+    ),
 
   resolveCanvasGenerationLinks: async (attemptIds: string[]) => {
     const links: import("./lib/canvasGenerationRecovery").ResolvedCanvasGenerationLink[] = [];
@@ -442,7 +578,7 @@ export const api = {
   setGenerationWorkspace: (
     generationIds: string[],
     operation: "assign" | "remove",
-    workspaceName: string,
+    workspace: { id: string; name: string },
   ) => {
     if (generationIds.length > 500) {
       return Promise.reject(new Error("한 번에 최대 500개 생성물까지 변경할 수 있습니다"));
@@ -452,7 +588,8 @@ export const api = {
       body: jsonBody({
         generation_ids: generationIds,
         operation,
-        workspace_name: workspaceName,
+        workspace_id: workspace.id,
+        workspace_name: workspace.name,
       }),
     }).then((result) => ({
       ...result,
@@ -554,22 +691,22 @@ export const api = {
     }),
   // 캐시된 코멘트(없으면 undefined) — 패널이 먼저 그려놓고 뒤에서 갱신해 체감 딜레이 제거
   genCommentsCached: (genId: string): import("./types").GenComment[] | undefined =>
-    genCommentsCache.get(genId),
+    genCommentsCache.get(genCommentsCacheKey(genId)),
   // 호버 시 미리 불러와 캐시를 채운다(에러 무시) — 클릭 전에 준비되게.
   // 이미 캐시에 있으면 재요청 안 함(호버 연타 방지) — 최신화는 패널이 열릴 때 한다.
   prefetchGenComments: (genId: string): void => {
-    if (genCommentsCache.has(genId)) return;
+    if (genCommentsCache.has(genCommentsCacheKey(genId))) return;
     void api.genComments(genId).catch(() => {});
   },
   addGenComment: (
     genId: string,
     text: string,
     parent_id?: string | null,
-    muted = false,
+    isPrivate = false,
   ) =>
     jsonFetch<{ id: string }>(`/api/generations/${pathPart(genId)}/comments`, {
       method: "POST",
-      body: jsonBody({ text, parent_id: parent_id ?? null, muted }),
+      body: jsonBody({ text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
   editGenComment: (commentId: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/generation-comments/${pathPart(commentId)}`, {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 from pathlib import Path
 
@@ -33,6 +34,7 @@ def test_generation_queue_snapshot_reports_stalled_work_without_identity():
             assert snapshot["phase_counts"]["submitting"] == 1
             assert snapshot["active_total"] == 1
             assert snapshot["unanchored_over_10m"] == 1
+            assert snapshot["recovery_required_total"] == 0
             assert snapshot["check_failures_total"] == 2
             assert "private@example.com" not in repr(snapshot)
             assert "secret prompt" not in repr(snapshot)
@@ -70,6 +72,29 @@ def test_database_readiness_checks_core_tables(monkeypatch):
             else:
                 os.environ["CONTENT_HUB_DB"] = old
             db.flush_pool()
+
+
+def test_ready_endpoint_reports_maintenance_without_waiting_for_database(monkeypatch):
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main, "maintenance_active", lambda: True)
+    monkeypatch.setattr(
+        app_main,
+        "database_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("maintenance must not probe the DB")),
+    )
+
+    response = app_main.ready()
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.body == b'{"status":"maintenance","retry_after_seconds":5}'
+
+
+def test_database_maintenance_flag_is_scoped_to_the_gate():
+    assert db.maintenance_active() is False
+    with db.maintenance_gate():
+        assert db.maintenance_active() is True
+    assert db.maintenance_active() is False
 
 
 def test_telemetry_snapshot_exposes_backlog_without_error_text(monkeypatch):
@@ -142,7 +167,113 @@ def test_shared_server_ignores_local_generation_queue(monkeypatch):
         "overdue_checks": 0,
         "check_failures_total": 0,
         "unanchored_over_10m": 0,
+        "recovery_required_total": 0,
         "applicable": False,
+    }
+
+
+def test_media_preservation_snapshot_exposes_only_safe_counts(monkeypatch):
+    monkeypatch.setattr(
+        operational_health,
+        "media_preservation_counts",
+        lambda: {"pending": 3, "running": 1, "partial": 2, "failed": 1, "capacity": 4},
+    )
+
+    assert operational_health.media_preservation_snapshot() == {
+        "status_counts": {
+            "pending": 3,
+            "running": 1,
+            "partial": 2,
+            "failed": 1,
+            "capacity": 4,
+        },
+        "active": 4,
+        "attention": 7,
+    }
+
+
+def test_replica_snapshot_exposes_structured_status_without_paths(tmp_path, monkeypatch):
+    status_file = tmp_path / "backup_replica_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "format": "mvhub-backup-replica-status",
+                "state": "failed",
+                "configured": True,
+                "last_attempt_at": "2026-08-17T00:00:00+00:00",
+                "last_success_at": None,
+                "error_code": "target_unavailable",
+                "failed": 2,
+                "private_path": r"\\NAS\private\person@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", True)
+    # 공식 전체 테스트 명령은 외부 서버 차단을 위해 NO_PROXY=1로 실행한다. 이 테스트는
+    # 공유 서버 런타임 자체를 검증하므로 자신의 조건을 완전히 설정해 외부 env에 의존하지 않는다.
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
+    monkeypatch.setattr(operational_health, "_REPLICA_STATUS_FILE", status_file)
+
+    result = operational_health.backup_replica_snapshot()
+    assert result["state"] == "failed"
+    assert result["error_code"] == "target_unavailable"
+    assert result["failed"] == 2
+    assert "private" not in repr(result).lower()
+    assert "person@example.com" not in repr(result)
+
+
+def test_worker_backup_snapshot_reports_only_safe_counts(monkeypatch):
+    from app.services import worker_backup
+
+    monkeypatch.setattr(operational_health, "AUTH_ENABLED", False)
+    monkeypatch.delenv("CONTENT_HUB_NO_PROXY", raising=False)
+    monkeypatch.setattr(
+        worker_backup,
+        "status_snapshot",
+        lambda: {
+            "state": "failed",
+            "pending": 3,
+            "failed": 1,
+            "last_error_code": "network_unavailable",
+            "oldest_pending_at": "2026-08-17T00:00:00+00:00",
+            "private_path": r"C:\Users\Person\secret.db",
+        },
+    )
+
+    result = operational_health.worker_backup_snapshot()
+    assert result["state"] == "failed"
+    assert result["pending"] == 3
+    assert result["last_error_code"] == "network_unavailable"
+    assert "secret.db" not in repr(result)
+
+
+def test_backup_attention_includes_login_wait_and_replica_never_run():
+    tracker = operational_health.OperationalAlertTracker(repeat_seconds=100)
+    snapshot = {
+        "operations": {
+            "generation_queue": {},
+            "telemetry": {},
+            "media_preservation": {},
+            "worker_backup": {
+                "applicable": True,
+                "state": "login_required",
+                "pending": 2,
+                "failed": 0,
+            },
+            "backup_replica": {
+                "applicable": True,
+                "state": "never_run",
+                "configured": False,
+                "failed": 0,
+            },
+            "databases": {"ready": True},
+        }
+    }
+
+    assert {row["event"] for row in tracker.events(snapshot, now=0)} == {
+        "worker_backup_attention",
+        "backup_replica_attention",
     }
 
 
@@ -156,6 +287,10 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
                 "unanchored_over_10m": 0,
             },
             "telemetry": {"pending": 4, "failed": 1, "oldest_age_seconds": 800},
+            "media_preservation": {
+                "attention": 2,
+                "status_counts": {"partial": 1, "failed": 0, "capacity": 1},
+            },
             "databases": {"ready": True},
         }
     }
@@ -163,6 +298,7 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
     assert {row["event"] for row in first} == {
         "generation_queue_attention",
         "telemetry_backlog",
+        "media_preservation_attention",
     }
     assert tracker.events(bad, now=10) == []
     aging = {
@@ -172,7 +308,7 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
         }
     }
     assert tracker.events(aging, now=11) == []
-    assert len(tracker.events(bad, now=101)) == 2
+    assert len(tracker.events(bad, now=101)) == 3
 
     healthy = {
         "operations": {
@@ -182,4 +318,4 @@ def test_operational_alert_tracker_suppresses_repeated_noise_and_rearms_after_cl
         }
     }
     assert tracker.events(healthy, now=102) == []
-    assert len(tracker.events(bad, now=103)) == 2
+    assert len(tracker.events(bad, now=103)) == 3

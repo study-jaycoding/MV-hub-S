@@ -2,17 +2,9 @@ import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTree } from "./FolderTree";
 import type { AssetTypeFilter } from "./assetsViewModel";
 
-const TYPE_ROWS: Array<[Exclude<AssetTypeFilter, null>, string, string]> = [
-  ["image", "🖼", "Image"],
-  ["video", "🎬", "Video"],
-  ["audio", "🎵", "Audio"],
-];
-
 export function AssetsSidebar({
   project,
   typeFilter,
-  typeCounts,
-  onTypeFilterChange,
   dir,
   meta,
   sourceOnly,
@@ -25,8 +17,6 @@ export function AssetsSidebar({
 }: {
   project: string;
   typeFilter: AssetTypeFilter;
-  typeCounts: { image: number; video: number; audio: number };
-  onTypeFilterChange: (value: AssetTypeFilter) => void;
   dir: string;
   meta: Record<string, AssetMeta>;
   sourceOnly: boolean;
@@ -37,40 +27,10 @@ export function AssetsSidebar({
   onToggleDir: (path: string) => void;
   onSelectDir: (path: string) => void;
 }) {
-  const total = typeCounts.image + typeCounts.video + typeCounts.audio;
+  // 타입 필터 행(All/Image/Video/Audio)은 하단 바의 4점 슬라이더로 대체됐고(Jay 요청),
+  // 프로젝트 선택 드롭다운은 헤더 경로 첫 자리로 갔다. typeFilter 는 트리 배지 계산용.
   return (
     <aside className="assets-tree">
-      <div className="type-filter">
-        <button
-          type="button"
-          className={"type-row type-all" + (!typeFilter ? " active" : "")}
-          aria-pressed={!typeFilter}
-          onClick={() => onTypeFilterChange(null)}
-        >
-          <span className="type-icon">▦</span>
-          <span className="type-label">All</span>
-          <span className="type-count">{total || "-"}</span>
-        </button>
-        {TYPE_ROWS.map(([type, icon, label]) => (
-          <button
-            type="button"
-            key={type}
-            className={
-              "type-row" +
-              (typeFilter === type ? " active" : "") +
-              (typeCounts[type] === 0 ? " zero" : "")
-            }
-            disabled={typeCounts[type] === 0}
-            aria-pressed={typeFilter === type}
-            onClick={() => onTypeFilterChange(typeFilter === type ? null : type)}
-          >
-            <span className="type-icon">{icon}</span>
-            <span className="type-label">{label}</span>
-            <span className="type-count">{typeCounts[type] > 0 ? typeCounts[type] : "-"}</span>
-          </button>
-        ))}
-      </div>
-
       <button
         type="button"
         className={

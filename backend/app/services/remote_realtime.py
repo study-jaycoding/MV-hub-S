@@ -165,9 +165,11 @@ class RemoteRealtimeBridge:
         self._task: Optional[asyncio.Task] = None
         self._state = "stopped"
         self._connected = False
+        self._had_connection = False
         self._reconnect_attempts = 0
         self._relayed_events = 0
         self._ignored_messages = 0
+        self._catchup_reloads = 0
         self._last_error: Optional[str] = None
 
     def start(self) -> None:
@@ -192,6 +194,7 @@ class RemoteRealtimeBridge:
             "reconnect_attempts": self._reconnect_attempts,
             "relayed_events": self._relayed_events,
             "ignored_messages": self._ignored_messages,
+            "catchup_reloads": self._catchup_reloads,
             "last_error": self._last_error,
         }
 
@@ -298,6 +301,16 @@ class RemoteRealtimeBridge:
             self._connected = True
             self._state = "connected"
             self._last_error = None
+            if self._had_connection:
+                # 끊긴 동안 놓친 신호는 복구할 수 없다(서버에 cursor/재전송 없음) — 세 도메인에
+                # 출처 없는 reload 를 한 번씩 흘려 로컬 브라우저가 전체 재조회로 따라잡게 한다.
+                # 최초 연결은 App 초기 로드와 겹치므로 생략(브라우저 progressSocket 과 같은 계약).
+                for event_type in _EVENT_TO_CHANNEL:
+                    self._event_handler(
+                        RemoteRealtimeEvent(event_type=event_type, origins=None)
+                    )
+                self._catchup_reloads += 1
+            self._had_connection = True
             recv_task: Optional[asyncio.Task] = None
             loop = asyncio.get_running_loop()
             next_config_check = loop.time() + self._connected_config_poll_seconds

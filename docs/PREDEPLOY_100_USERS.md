@@ -1,5 +1,9 @@
 # MV Hub 100명 서비스 배포 점검
 
+> **시점 고정 검증 기록**: 이 문서는 2026-07-31 당시 코드와 격리 환경의 결과를 보존한다.
+> 현재 배포 가능 여부와 최신 테스트 숫자는 [CURRENT_STATUS.md](CURRENT_STATUS.md)를 따른다.
+> 코드·CLI·운영 환경이 바뀐 뒤 이 결과를 새 배포의 자동 보증으로 사용하지 않는다.
+
 ## 현재 결론
 
 2026-07-31 기준, 격리된 Windows 로컬 환경에서 100개 계정·100개 WebSocket·100개 에이전트
@@ -27,7 +31,9 @@
 ## 자동 배포 게이트
 
 커밋된 깨끗한 작업 트리에서 실행한다. 백엔드 테스트, 프론트 테스트와 production build, 운영 DB의
-온라인 백업·비파괴 복원 훈련, 격리 100명 부하를 순서대로 실행한다.
+온라인 백업·비파괴 복원 훈련, 격리 100명 부하를 순서대로 실행한다. 현재 게이트의 기본 부하 조건은
+논리 CPU 2개·`below-normal` 우선순위·최대 RSS 512MB·60초·2회이며 결과 JSON에도 적용값과
+실제 최대 RSS가 기록된다.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\predeploy_gate.ps1

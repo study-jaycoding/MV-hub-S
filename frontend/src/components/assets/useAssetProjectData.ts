@@ -23,8 +23,11 @@ function persistCache(key: string, obj: unknown) {
 
 export function useAssetProjectData({
   onTreeLoaded,
+  workspaceId,
 }: {
   onTreeLoaded?: (children: AssetNode[]) => void;
+  /** 선택 팀 워크스페이스 — 바뀌면 프로젝트 유래 폴더 목록을 그 팀으로 다시 좁힌다. */
+  workspaceId?: string;
 }) {
   const [projects, setProjects] = useState<string[]>([]);
   // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운에서 라임색으로 구분 표시.
@@ -86,18 +89,20 @@ export function useAssetProjectData({
 
   const reloadProjects = useCallback((keepCurrent = false) => {
     api
-      .assetProjects()
+      .assetProjects(workspaceId)
       .then((info) => {
         setProjects((prev) => reconcileArrayState(prev, info.projects));
         setLinkedProjects(new Set(info.linked || []));
         setProject((current) => {
+          // 워크스페이스를 옮기면 이전 팀 폴더는 목록에서 빠진다 — 그때는 저장된 선택도
+          // 되살리지 않고 새 목록의 기본값으로 내려간다(남의 팀 폴더에 머무르지 않게).
           if (keepCurrent && current && info.projects.includes(current)) return current;
           const saved = STORE.get("project", "");
           return saved && info.projects.includes(saved) ? saved : info.default;
         });
       })
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [workspaceId]);
 
   // 화면의 tree/meta 가 바뀔 때마다(reload·드롭임포트·메타편집 등 어떤 경로든) 현재 프로젝트 캐시에 미러링
   //  → 직접 setter 로 편집해도 캐시가 어긋나지 않는다(다른 폴더 갔다 와도 최신 반영).

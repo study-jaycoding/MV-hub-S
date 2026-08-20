@@ -28,6 +28,8 @@ import shutil
 import sqlite3
 import sys
 import threading
+import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -144,50 +146,176 @@ def get_connection(db_path: Path | None = None):
 # 가능성이 있어 폐기하고 다음 요청이 새로 열게 한다. CONTENT_HUB_DB_POOL=0 으로 끌 수 있다(안전장치).
 _POOL_ENABLED = os.environ.get("CONTENT_HUB_DB_POOL", "1").strip() != "0"
 _tls = threading.local()
+# 풀 홀더는 워커 스레드의 thread-local 이 강하게 보유하고, 전역에는 약하게만 등록한다.
+# 죽은 워커 스레드의 holder/커넥션을 이 레지스트리가 영구히 붙잡아 Windows 파일 잠금을
+# 남기지 않게 WeakSet 을 쓴다.
+class _PooledConnectionHolder:
+    def __init__(self) -> None:
+        self.conn: sqlite3.Connection | None = None
+        self.path: tuple[str, int] | None = None
+
+    def __del__(self) -> None:
+        # 죽은 워커의 thread-local 이 사라질 때도 SQLite 핸들을 즉시 닫는다. WeakSet 은 holder를
+        # 살려 두지 않으므로 이 경로가 없으면 GC 시점까지 Windows 파일 잠금이 남을 수 있다.
+        conn = self.conn
+        self.conn = None
+        self.path = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+_pool_lock = threading.RLock()
+_pool_condition = threading.Condition(_pool_lock)
+_pooled_holders: weakref.WeakSet[_PooledConnectionHolder] = weakref.WeakSet()
 # 풀 에폭 — 올리면 모든 스레드의 풀 커넥션이 다음 사용 때 강제 재오픈된다(키에 포함). DB 파일을
 # 같은 경로에 통째 교체(import/복원)하면 경로 문자열은 그대로라 재오픈이 안 되므로 에폭으로 무효화한다.
 _pool_epoch = 0
+_maintenance_active = False
+_active_connection_contexts = 0
+# 복원은 오래 열린 요청을 강제로 닫지 않는다. 이 시간 안에 끝나지 않으면 교체를 취소해 원본을
+# 지키고, 게이트를 풀어 해당 요청이 계속 처리되게 한다.
+_MAINTENANCE_DRAIN_SECONDS = 5.0
+
+
+class DatabaseMaintenanceTimeout(RuntimeError):
+    """진행 중 DB 요청이 유지보수 대기 시간 안에 끝나지 않았을 때의 안전 중단."""
+
+
+def maintenance_active() -> bool:
+    """DB 파일 교체 게이트가 올라가 있는지 잠금 안에서 즉시 확인한다.
+
+    `/api/ready` 같은 생존 점검은 유지보수 종료를 기다리면 워치독에 무응답으로 보일 수 있다.
+    이 함수는 DB 커넥션을 열지 않고 현재 상태만 반환해 유지보수를 명시적인 503으로 알리게 한다.
+    """
+    with _pool_condition:
+        return _maintenance_active
+
+
+def _thread_pooled_holder() -> _PooledConnectionHolder:
+    """현재 워커의 풀 상태를 만들고 약한 전역 레지스트리에 등록한다."""
+    holder = getattr(_tls, "holder", None)
+    if holder is None:
+        holder = _PooledConnectionHolder()
+        _tls.holder = holder
+        # 등록과 레지스트리 순회/플러시는 같은 락으로 직렬화한다.
+        with _pool_condition:
+            _pooled_holders.add(holder)
+    return holder
 
 
 def _pooled_conn(db_path: Path) -> sqlite3.Connection:
-    key = (str(db_path), _pool_epoch)
-    conn = getattr(_tls, "conn", None)
-    if conn is not None and getattr(_tls, "path", None) == key:
+    holder = _thread_pooled_holder()
+    # 에폭 읽기·holder 교체·전역 flush 는 한 락 규율로 묶는다. 유지보수 게이트가 올라간
+    # 뒤에는 새 get_connection() 이 여기까지 오지 않으므로, close 뒤 옛 파일을 다시 여는
+    # 경합도 없다.
+    with _pool_condition:
+        key = (str(db_path), _pool_epoch)
+        if holder.conn is not None and holder.path == key:
+            return holder.conn
+        if holder.conn is not None:  # 경로/에폭 변경 → 옛 것 닫고 교체
+            try:
+                holder.conn.close()
+            except sqlite3.Error:
+                pass
+        conn = _connect(db_path)
+        holder.conn = conn
+        holder.path = key
         return conn
-    if conn is not None:  # 경로/에폭 변경 → 옛 것 닫고 교체
-        try:
-            conn.close()
-        except sqlite3.Error:
-            pass
-    conn = _connect(db_path)
-    _tls.conn = conn
-    _tls.path = key
-    return conn
 
 
 def pool_epoch() -> int:
     """현재 풀 에폭 — DB 파일 교체(import/복원)를 감지해야 하는 캐시 키에 쓴다(repo.manage 스키마 가드 등)."""
-    return _pool_epoch
+    with _pool_condition:
+        return _pool_epoch
 
 
 def flush_pool() -> None:
     """모든 스레드의 풀 커넥션을 무효화 — 다음 사용 때 새 파일로 재오픈한다. DB 파일을 같은 경로에
     교체(import/복원)한 직후 호출: 경로 문자열이 그대로라 _pooled_conn 이 옛 파일(이미 교체됨)을 계속
-    돌려주는 걸 막는다. 에폭을 올려 캐시 키를 어긋나게 하고, 호출 스레드 것은 즉시 닫는다."""
+    돌려주는 걸 막는다. 에폭을 올려 캐시 키를 어긋나게 하고, 레지스트리의 전 커넥션을 닫는다.
+
+    활성 컨텍스트를 닫는 것은 안전하지 않으므로, DB 파일 교체에서는 반드시 maintenance_gate() 안에서
+    호출한다. 일반 flush 는 기존처럼 호출자가 그 안전 시점을 보장해야 한다.
+    """
     global _pool_epoch
-    _pool_epoch += 1
-    _discard_pooled_conn()
+    with _pool_condition:
+        _pool_epoch += 1
+        holders = list(_pooled_holders)
+        for holder in holders:
+            conn = holder.conn
+            holder.conn = None
+            holder.path = None
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
 
 
 def _discard_pooled_conn() -> None:
-    conn = getattr(_tls, "conn", None)
-    if conn is not None:
-        try:
-            conn.close()
-        except sqlite3.Error:
-            pass
-    _tls.conn = None
-    _tls.path = None
+    holder = getattr(_tls, "holder", None)
+    if holder is None:
+        return
+    with _pool_condition:
+        conn = holder.conn
+        holder.conn = None
+        holder.path = None
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
+def _enter_connection_context() -> None:
+    """유지보수 중에는 새 DB 요청을 멈추고, 아니면 활성 요청 수를 기록한다."""
+    global _active_connection_contexts
+    with _pool_condition:
+        while _maintenance_active:
+            _pool_condition.wait()
+        _active_connection_contexts += 1
+
+
+def _leave_connection_context() -> None:
+    global _active_connection_contexts
+    with _pool_condition:
+        _active_connection_contexts -= 1
+        if _active_connection_contexts == 0:
+            _pool_condition.notify_all()
+
+
+@contextmanager
+def maintenance_gate(timeout: float = _MAINTENANCE_DRAIN_SECONDS) -> Iterator[None]:
+    """DB 파일 교체 전용 게이트.
+
+    새 get_connection() 진입을 막은 뒤 이미 실행 중인 컨텍스트가 자연 종료할 때까지 기다린다.
+    시간 안에 비워지지 않으면 열린 커넥션을 강제로 닫지 않고 교체 자체를 취소한다. 게이트 안에서는
+    flush_pool() → checkpoint/sidecar 정리 → 파일 교체 → init_db 순서만 수행해야 한다.
+    """
+    global _maintenance_active
+    with _pool_condition:
+        while _maintenance_active:
+            _pool_condition.wait()
+        _maintenance_active = True
+        deadline = time.monotonic() + timeout
+        while _active_connection_contexts:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _maintenance_active = False
+                _pool_condition.notify_all()
+                raise DatabaseMaintenanceTimeout(
+                    "진행 중인 DB 요청이 끝나지 않아 복원을 안전하게 시작할 수 없습니다"
+                )
+            _pool_condition.wait(remaining)
+    try:
+        yield
+    finally:
+        with _pool_condition:
+            _maintenance_active = False
+            _pool_condition.notify_all()
 
 
 @contextmanager
@@ -197,9 +325,11 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
     요청 경로(db_path=None)면 스레드별 풀 커넥션을 재사용(닫지 않음, 예외 시 폐기). 명시 경로나
     풀 비활성(CONTENT_HUB_DB_POOL=0)이면 1회용으로 열고 항상 닫는다. 정상 종료=commit, 예외=rollback.
     """
+    _enter_connection_context()
     pooled = db_path is None and _POOL_ENABLED
-    conn = _pooled_conn(get_db_path()) if pooled else _connect(db_path or get_db_path())
+    conn: sqlite3.Connection | None = None
     try:
+        conn = _pooled_conn(get_db_path()) if pooled else _connect(db_path or get_db_path())
         yield conn
         if conn.in_transaction:
             conn.execute("COMMIT;")
@@ -211,17 +341,21 @@ def _get_connection_sqlite(db_path: Path | None = None) -> Iterator[sqlite3.Conn
                 metrics.record_db_locked()
             except Exception:
                 pass  # 관측 실패가 원래 DB 예외를 가리지 않게
-        try:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK;")
-        except sqlite3.Error:
-            pass
+        if conn is not None:
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK;")
+            except sqlite3.Error:
+                pass
         if pooled:
             _discard_pooled_conn()  # 손상 가능 → 다음 요청이 새로 연다
         raise
     finally:
-        if not pooled:
-            conn.close()
+        try:
+            if not pooled and conn is not None:
+                conn.close()
+        finally:
+            _leave_connection_context()
 
 
 def init_db(db_path: Path | None = None) -> Path:

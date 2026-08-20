@@ -16,9 +16,13 @@ import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { api } from "../../api";
 import {
   assetVersionsSnapshot,
-  ingestAssetTreeVersions,
   subscribeAssetVersions,
 } from "../../lib/assetVersions";
+import {
+  addFocusRefreshListener,
+  assetProjectsFromRefs,
+  runAssetVersionRefresh,
+} from "../../lib/assetVersionRefresh";
 import { APP_EVENTS, ASSET_CHANNEL_MESSAGES, dispatchAppEvent } from "../../lib/appEvents";
 import { openAssetBroadcast } from "../../lib/assetBroadcast";
 import { toggleDisabledGen } from "../../lib/deactivated";
@@ -73,6 +77,7 @@ import {
   shouldStartListReorder,
 } from "../../lib/sceneInteractions";
 import { sceneGroupControlTargetIds } from "../../lib/sceneGroupSelection";
+import { useOutsideDragSelect } from "../../lib/useOutsideDragSelect";
 import {
   isComfyRunning,
   subscribeComfyRunning,
@@ -109,6 +114,7 @@ import { useSceneCardResize } from "../../lib/useSceneCardResize";
 import { useSceneCardMove } from "../../lib/useSceneCardMove";
 import { useSceneGroupMove } from "../../lib/useSceneGroupMove";
 import { useSceneMarqueeSelection } from "../../lib/useSceneMarqueeSelection";
+import { markCardGenerationsRemoved } from "../../lib/sceneCardLinks";
 import type { SceneComfyCfg } from "../../lib/scenes";
 import type { SceneGenerationAssignment } from "../../lib/sceneGenerationInputs";
 import { ViewTimeline, type TimelineClip } from "./ViewTimeline";
@@ -159,6 +165,9 @@ interface Props {
   //  · onSaveScene 은 저장 시점의 '라이브 카메라'를 받아 debounce 로 지연된 stale 카메라 대신 최신을 쓴다.
   onSaveScene?: (camera?: { z: number; x: number; y: number }) => void;
   onLoadSceneFile?: (file: File) => void;
+  // 각인된 생성물 파일을 캔버스에 떨어뜨렸을 때 — 레시피를 새 씬 탭으로 열었으면 true.
+  //  false 면 평범한 미디어로 보고 레퍼런스 카드가 된다(기존 동작).
+  onDroppedGenerationFile?: (file: File) => Promise<boolean>;
   // 씬 탭 바 호버 여부 — true 면 좌상단 씬 패널(저장/불러오기)을 보인다(평소엔 숨김).
   ioPanelHot?: boolean;
   // 씬의 생성 카드 1개만 선택되면 그 카드(id+연결된 레퍼런스)를 하단 프롬프트에 바인딩하도록 App 에 알림.
@@ -242,6 +251,7 @@ export function SceneBoard({
   topCenterOverlay,
   onSaveScene,
   onLoadSceneFile,
+  onDroppedGenerationFile,
   ioPanelHot,
   onBindingChange,
   onCameraChange,
@@ -511,27 +521,9 @@ export function SceneBoard({
   // 프로젝트별 in-flight 로 중복 조회를 막는다. 포커스 재조회(Phase 1)와 실시간 변경 수신(Phase 2) 공용.
   const assetVerInFlight = useRef<Set<string>>(new Set());
   const refreshAssetVersions = useCallback((only?: string[], srcCards?: SceneCard[], fresh = false) => {
-    const projs = new Set<string>();
     // srcCards 를 주면 그 목록으로(씬 전환 직후엔 내부 cardsRef 가 아직 이전 씬이라, prop scene.cards 를 넘겨 정확히).
-    for (const c of srcCards ?? cardsRef.current) {
-      for (const r of c.refs || []) {
-        if (r.file_path?.startsWith("asset:")) {
-          const proj = r.file_path.slice(6).split("|")[0];
-          if (proj && (!only || only.includes(proj))) projs.add(proj);
-        }
-      }
-    }
-    projs.forEach((proj) => {
-      if (assetVerInFlight.current.has(proj)) return;
-      assetVerInFlight.current.add(proj);
-      api
-        .assetTree(proj, fresh) // 실시간 신호는 무효화된 캐시 재사용, 초기/포커스 안전망은 강제 재탐색
-        .then((tree) => ingestAssetTreeVersions(proj, tree.children || []))
-        .catch(() => {
-          /* 조회 실패는 무시(다음 신호에 재시도) */
-        })
-        .finally(() => assetVerInFlight.current.delete(proj));
-    });
+    const refs = (srcCards ?? cardsRef.current).flatMap((c) => c.refs || []);
+    runAssetVersionRefresh(assetProjectsFromRefs(refs, only), assetVerInFlight.current, fresh);
   }, []);
 
   // Phase 0(초기 로드): 카드가 처음 생기면 즉시 최신 버전 확인 — 포커스/WS 신호를 기다리지 않는다.
@@ -547,22 +539,10 @@ export function SceneBoard({
   }, [scene.id, scene.cards, refreshAssetVersions]);
 
   // Phase 1(안전망): 창을 다시 볼 때(포커스/탭 전환) 최신 버전 확인 — watchdog 이 없거나 놓친 경우 대비.
-  useEffect(() => {
-    let lastAt = 0; // 포커스 왕복 때 네트워크 폴더를 반복 순회하지 않도록 스로틀
-    const onFocus = () => {
-      if (document.hidden) return;
-      const now = Date.now();
-      if (now - lastAt < 30_000) return;
-      lastAt = now;
-      refreshAssetVersions(undefined, undefined, true);
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
-  }, [refreshAssetVersions]);
+  useEffect(
+    () => addFocusRefreshListener(() => refreshAssetVersions(undefined, undefined, true)),
+    [refreshAssetVersions],
+  );
 
   // Phase 2(실시간): 어셋 파일 변경 신호(WS→BroadcastChannel) 수신 → 변경된 프로젝트 중 카드가 참조하는
   // 것만 즉시 다시 읽어 버전 표 갱신(새로고침·포커스 불필요). 변경 목록이 비면 카드의 전 프로젝트를 갱신.
@@ -712,7 +692,11 @@ export function SceneBoard({
   //   · persistUser   : 사용자 편집 확정 저장(undo 스택에 쌓임)
   //   · persistDerived: 실행상태·파생 저장(undo 스택 제외)
   type ApplyCardsMode = "live" | "deferUser" | "persistUser" | "persistDerived";
-  const applyCards = (nextCards: SceneCard[], mode: ApplyCardsMode) => {
+  const applyCards = (
+    nextCards: SceneCard[],
+    mode: ApplyCardsMode,
+    persistOpts?: { removedForward?: { cardId: string; genIds: string[] }[] },
+  ) => {
     cardsRef.current = nextCards;
     setCards(nextCards);
     if (mode === "live") return;
@@ -720,7 +704,23 @@ export function SceneBoard({
       scheduleInputPersist();
       return;
     }
-    persist(nextCards, edgesRef.current, groupsRef.current, { undo: mode !== "persistDerived" });
+    persist(nextCards, edgesRef.current, groupsRef.current, {
+      undo: mode !== "persistDerived",
+      ...persistOpts,
+    });
+  };
+  // 카드를 비울 때 DB 소속에도 '뺐음'을 남긴다. 화면에서 안 보인다고 부르면 안 되고, 사용자가
+  // 실제로 비운 순간(comfy 워크플로 교체)에만 부른다 — 아니면 다른 브라우저가 방금 담은 게 지워진다.
+  // 반환값 = 제거 delta — 이 커밋의 undo 엔트리에 실어야 undo 부활/redo 재제거가 정확해진다(검증 P1).
+  const forgetCardGenerations = (
+    sceneId: string,
+    cardId: string,
+  ): { cardId: string; genIds: string[] }[] => {
+    const card = cardsRef.current.find((c) => c.id === cardId);
+    const genIds = card ? variantIds(card).filter(Boolean) : [];
+    if (!genIds.length) return [];
+    void markCardGenerationsRemoved(sceneId, cardId, genIds);
+    return [{ cardId, genIds }];
   };
   const openCanvasRecovery = async (cardId: string) => {
     if (!onCanvasRecoveryCandidates) return;
@@ -1040,6 +1040,7 @@ export function SceneBoard({
     reconcileGenerationRefs: withGenRefs,
     persist,
     onLoadSceneFile,
+    onDroppedGenerationFile,
     cardWidth: CARD_W,
     cardHeight: CARD_H,
   });
@@ -1362,6 +1363,8 @@ export function SceneBoard({
       if (sceneIdRef.current !== sid) return false;
       // 다른 워크플로우로 교체 → 노출·값·결과뿐 아니라 카드에 쌓인 생성물(대표 genId·목록 genIds)도 초기화한다.
       // (안 지우면 옛 워크플로 결과가 대표·▤배지·렌더 입력으로 남아 새 워크플로에 잘못 딸려간다.)
+      // 사용자가 실제로 비운 것이므로 DB 소속에도 '뺐음'을 남긴다 — 안 남기면 다른 브라우저가 되살린다.
+      const removedForward = forgetCardGenerations(sid, cardId);
       const nextCards = cardsRef.current.map((c) =>
         c.id === cardId && c.kind === "comfy"
           ? {
@@ -1384,7 +1387,7 @@ export function SceneBoard({
             }
           : c,
       );
-      applyCards(nextCards, "persistUser");
+      applyCards(nextCards, "persistUser", { removedForward });
       return true;
     } catch {
       return false; // 파싱 실패 — 기존 워크플로우 그대로 둔다(교체 취소)
@@ -2280,6 +2283,10 @@ export function SceneBoard({
       isSceneTextEntryTarget(ae)
     )
       ae.blur();
+    // 캔버스 자체를 명시적인 키보드 포커스 대상으로 만든다. 단순 div 배경은 브라우저/확장에 따라
+    // body 포커스로 남아 전역 Ctrl+C/V가 간헐적으로 빠질 수 있다. 카드·배경을 누른 뒤에는 항상
+    // 이 보드가 키 이벤트의 출발점이 되고, 실제 버튼은 이후 기본 동작으로 자기 포커스를 받는다.
+    (e.currentTarget as HTMLElement).focus({ preventScroll: true });
   };
 
   // '생성에 쓰인 노드 전체' — 시작 카드 + 위로 연결된 모든 소스(조상)를 모은다. 엣지를 거꾸로(to→from)
@@ -2367,6 +2374,12 @@ export function SceneBoard({
       setRowSel({ listId: "", cids: new Set() });
     },
   });
+
+  // 보드 밖(사이드바 여백·상단바)에서 시작한 드래그도 선택으로 — 생성 탭과 같은 규칙.
+  //  카드 이동·가위·패닝은 보드 안에서만 의미가 있으므로 바깥에서는 선택만 시작한다.
+  useOutsideDragSelect(".scene-board", (e) =>
+    beginBoardMarquee(e as unknown as React.MouseEvent),
+  );
 
   const onMouseDown = (e: React.MouseEvent) => {
     // 미들 버튼 화면 이동은 뷰포트 훅이 카메라 갱신·저장·커서 정리를 함께 담당한다.
@@ -2828,6 +2841,7 @@ export function SceneBoard({
     <div
       className={"scene-board" + (cutHeld ? " cutting" : "") + (tempWire ? " wiring" : "")}
       ref={scrollRef}
+      tabIndex={-1}
       onMouseDownCapture={onBoardMouseDownCapture}
       onMouseDown={onMouseDown}
       onMouseMove={(e) => {
@@ -3642,6 +3656,7 @@ export function SceneBoard({
                 const contentChanged = (prev?.content || "") !== (cfg.content || "");
                 if (contentChanged) {
                   // content 교체 → 카드에 쌓인 생성물(대표·목록)까지 초기화(applyComfyApi 와 동일 규칙).
+                  const removedForward = forgetCardGenerations(scene.id, comfyModalId);
                   const nextCards = cardsRef.current.map((c) =>
                     c.id === comfyModalId && c.kind === "comfy"
                       ? {
@@ -3654,7 +3669,7 @@ export function SceneBoard({
                   );
                   cardsRef.current = nextCards;
                   setCards(nextCards);
-                  persist(nextCards, edgesRef.current);
+                  persist(nextCards, edgesRef.current, groupsRef.current, { removedForward });
                 } else {
                   patchComfyCfg(comfyModalId, cfg);
                 }

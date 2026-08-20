@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .resolve_probe import RESULT_PREFIX
+from .resolve_bridge import resolve_process_running
 
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -18,11 +19,11 @@ _STATUS_TIMEOUT_SECONDS = max(
 )
 
 
-def _unavailable(message: str) -> dict[str, Any]:
+def _unavailable(message: str, *, process_running: bool = True) -> dict[str, Any]:
     return {
-        "status": "api_unavailable",
+        "status": "api_unavailable" if process_running else "not_running",
         "connected": False,
-        "process_running": True,
+        "process_running": process_running,
         "project_open": False,
         "project_id": "",
         "project_name": "",
@@ -34,6 +35,11 @@ def _unavailable(message: str) -> dict[str, Any]:
 
 def resolve_connection_status_bounded() -> dict[str, Any]:
     """별도 검사 프로세스를 실행하고 제한 시간 초과 시 안전한 상태를 반환한다."""
+    running = resolve_process_running()
+    if running is False:
+        return _unavailable(
+            "DaVinci Resolve가 실행 중이지 않습니다", process_running=False
+        )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     child_env = os.environ.copy()
     child_env["PYTHONIOENCODING"] = "utf-8"

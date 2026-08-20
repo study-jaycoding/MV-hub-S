@@ -14,11 +14,15 @@ export const STORAGE_KEYS = {
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",
+  libraryFilters: "ch.lib.filters", // 메인 라이브러리의 선택 워크스페이스(관리 창 범위와 동기)
   manageColorTags: "ch.manage.colorTags",
   manageFolderTrees: "ch.manage.folderTrees", // 프로젝트관리에서 렌더폴더 트리를 펼친 프로젝트 id 목록
   manageTab: "ch.manage.tab",
   manageWorkFilters: "ch.manage.workFilters",
   manageWorkView: "ch.manage.workView",
+  notificationCurrentVersion: "ch.notifications.currentVersion",
+  notificationCompletedUpdate: "ch.notifications.completedUpdate",
+  notificationSeenAvailableVersion: "ch.notifications.seenAvailableVersion",
   projectFolderExpanded: "ch.projects.folderExpanded",
   promptHistory: "ch.promptHistory",
   scenes: "ch.scenes", // Canvas 씬(빈 캔버스) — 카드·연결·카메라, 프로젝트별

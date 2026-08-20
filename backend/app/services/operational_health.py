@@ -12,19 +12,120 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..config import AUTH_ENABLED, MANAGE_ENABLED
+from ..config import AUTH_ENABLED, BACKEND_DIR, DATA_DIR, MANAGE_ENABLED
 from ..db import get_connection, get_db_path
 from ..manage_db import MANAGE_DB_PATH
 from ..repo.manage_telemetry import telemetry_outbox_status
-from .backup import list_backups_info
+from ..repo.media_preservation import media_preservation_counts
+from .backup import BACKUP_INTERVAL, list_backups_info
 
-_ACTIVE_PHASES = ("pending", "submitting", "running", "tracking", "verifying", "blocked")
+
+def backup_interval_seconds() -> float:
+    """백업 주기(초) — 경보 임계 계산용(테스트에서 패치 가능하도록 함수로)."""
+    return BACKUP_INTERVAL
+
+_ACTIVE_PHASES = (
+    "preparing",
+    "pending",
+    "claimed",
+    "submitting",
+    "running",
+    "tracking",
+    "verifying",
+    "blocked",
+    "recovery_required",
+)
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_REPLICA_STATUS_FILE = DATA_DIR / "backup_replica_status.json"
 
 
 def _shared_server_runtime() -> bool:
     no_proxy = os.environ.get("CONTENT_HUB_NO_PROXY", "").strip().lower()
     return AUTH_ENABLED and no_proxy not in _TRUE_VALUES
+
+
+def _iso_age_seconds(value: object) -> int | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def worker_backup_snapshot() -> dict[str, Any]:
+    """작업자 개인 DB 오프디스크 outbox 상태. 서버·격리 테스트에는 적용하지 않는다."""
+    no_proxy = os.environ.get("CONTENT_HUB_NO_PROXY", "").strip().lower()
+    if AUTH_ENABLED or no_proxy in _TRUE_VALUES:
+        return {"applicable": False, "state": "not_applicable", "pending": 0, "failed": 0}
+    try:
+        from .worker_backup import status_snapshot
+
+        value = status_snapshot()
+    except Exception:  # noqa: BLE001 — 운영 스냅샷 자체가 앱을 중단하면 안 된다.
+        return {"applicable": True, "state": "state_unavailable", "pending": 0, "failed": 1}
+    return {
+        "applicable": True,
+        "state": str(value.get("state") or "unknown")[:64],
+        "pending": int(value.get("pending") or 0),
+        "failed": int(value.get("failed") or 0),
+        "oldest_pending_age_seconds": _iso_age_seconds(value.get("oldest_pending_at")),
+        "last_success_age_seconds": _iso_age_seconds(value.get("last_success_at")),
+        "last_error_code": str(value.get("last_error_code") or "")[:64] or None,
+    }
+
+
+def _replica_configured() -> bool:
+    if os.environ.get("CONTENT_HUB_BACKUP_REPLICA_DIR", "").strip():
+        return True
+    target_file = BACKEND_DIR.parent / "tools" / "backup_replica_target.txt"
+    try:
+        return any(
+            line.strip() and not line.lstrip().startswith("#")
+            for line in target_file.read_text("utf-8", errors="replace").splitlines()
+        )
+    except OSError:
+        return False
+
+
+def backup_replica_snapshot() -> dict[str, Any]:
+    """공유 서버→다른 물리 장치 복제 상태. 저장 경로와 예외 원문은 반환하지 않는다."""
+    if not _shared_server_runtime():
+        return {"applicable": False, "state": "not_applicable", "configured": False}
+    try:
+        import json
+
+        value = json.loads(_REPLICA_STATUS_FILE.read_text("utf-8"))
+        if not isinstance(value, dict) or value.get("format") != "mvhub-backup-replica-status":
+            raise ValueError("invalid status")
+    except FileNotFoundError:
+        return {
+            "applicable": True,
+            "state": "never_run",
+            "configured": _replica_configured(),
+            "last_success_age_seconds": None,
+        }
+    except (OSError, ValueError, TypeError):
+        return {
+            "applicable": True,
+            "state": "state_unavailable",
+            "configured": _replica_configured(),
+            "last_success_age_seconds": None,
+        }
+    return {
+        "applicable": True,
+        "state": str(value.get("state") or "unknown")[:64],
+        "configured": bool(value.get("configured")),
+        "last_attempt_age_seconds": _iso_age_seconds(value.get("last_attempt_at")),
+        "last_success_age_seconds": _iso_age_seconds(value.get("last_success_at")),
+        "error_code": str(value.get("error_code") or "")[:64] or None,
+        "copied": int(value.get("copied") or 0),
+        "skipped": int(value.get("skipped") or 0),
+        "failed": int(value.get("failed") or 0),
+    }
 
 
 def generation_queue_snapshot() -> dict[str, Any]:
@@ -37,6 +138,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "overdue_checks": 0,
             "check_failures_total": 0,
             "unanchored_over_10m": 0,
+            "recovery_required_total": 0,
             "applicable": False,
         }
     placeholders = ",".join("?" for _ in _ACTIVE_PHASES)
@@ -62,9 +164,12 @@ def generation_queue_snapshot() -> dict[str, Any]:
         ).fetchone()[0]
         unanchored_stale = conn.execute(
             "SELECT COUNT(*) FROM gen_request r JOIN generation g ON g.id=r.gen_id "
-            "WHERE r.status IN ('submitting','running') "
+            "WHERE r.status IN ('preparing','claimed','submitting','running','recovery_required') "
             "AND (g.job_id IS NULL OR g.job_id='') "
             "AND r.updated_at < datetime('now','-10 minutes')"
+        ).fetchone()[0]
+        recovery_required = conn.execute(
+            "SELECT COUNT(*) FROM gen_request WHERE status='recovery_required'"
         ).fetchone()[0]
 
     phase_counts = {row["status"]: int(row["count"]) for row in rows}
@@ -79,6 +184,7 @@ def generation_queue_snapshot() -> dict[str, Any]:
         "overdue_checks": int(overdue_checks),
         "check_failures_total": int(check_failures),
         "unanchored_over_10m": int(unanchored_stale),
+        "recovery_required_total": int(recovery_required),
         "applicable": True,
     }
 
@@ -178,6 +284,20 @@ def telemetry_snapshot() -> dict[str, Any]:
     }
 
 
+def media_preservation_snapshot() -> dict[str, Any]:
+    """원본 보존 큐 상태 집계. 생성물 식별자·URL·오류 원문은 포함하지 않는다."""
+    counts = media_preservation_counts()
+    return {
+        "status_counts": counts,
+        "active": int(counts.get("pending", 0)) + int(counts.get("running", 0)),
+        "attention": (
+            int(counts.get("partial", 0))
+            + int(counts.get("failed", 0))
+            + int(counts.get("capacity", 0))
+        ),
+    }
+
+
 class OperationalAlertTracker:
     """같은 경고를 매 분 반복하지 않고, 상태 변경 또는 장기 지속 때만 다시 알린다."""
 
@@ -190,7 +310,10 @@ class OperationalAlertTracker:
         operations = snapshot.get("operations") or snapshot
         queue = operations.get("generation_queue") or {}
         telemetry = operations.get("telemetry") or {}
+        preservation = operations.get("media_preservation") or {}
         databases = operations.get("databases") or {}
+        worker_backup = operations.get("worker_backup") or {}
+        backup_replica = operations.get("backup_replica") or {}
         candidates: dict[str, dict[str, Any]] = {}
 
         queue_values = (
@@ -220,6 +343,53 @@ class OperationalAlertTracker:
                 "failed_checks": list(databases.get("failed_checks") or []),
             }
 
+        preservation_counts = preservation.get("status_counts") or {}
+        preservation_attention = int(preservation.get("attention") or 0)
+        if preservation_attention:
+            candidates["media_preservation_attention"] = {
+                "partial": int(preservation_counts.get("partial") or 0),
+                "failed": int(preservation_counts.get("failed") or 0),
+                "capacity": int(preservation_counts.get("capacity") or 0),
+            }
+
+        if worker_backup.get("applicable") and int(worker_backup.get("pending") or 0):
+            worker_state = str(worker_backup.get("state") or "")
+            if worker_state in {
+                "failed",
+                "login_required",
+                "server_update_required",
+                "state_unavailable",
+            }:
+                candidates["worker_backup_attention"] = {
+                    "state": worker_state,
+                    "pending": int(worker_backup.get("pending") or 0),
+                    "failed": int(worker_backup.get("failed") or 0),
+                }
+
+        if backup_replica.get("applicable"):
+            replica_state = str(backup_replica.get("state") or "")
+            if replica_state in {"never_run", "disabled", "failed", "state_unavailable"}:
+                candidates["backup_replica_attention"] = {
+                    "state": replica_state,
+                    "configured": bool(backup_replica.get("configured")),
+                    "failed": int(backup_replica.get("failed") or 0),
+                }
+
+        # 백업 노후 — 수집만 하고 경보가 없어서 "백업이 며칠째 없다"를 아무도 몰랐다.
+        # 주기의 2배(기본 48h)를 넘으면 경보. 백업 비활성(interval<=0)이나 무백업 신규
+        # 설치(latest None + set_count 0)는 대상 아님 — set 이 하나라도 있었는데 늙는
+        # 경우와, set 은 없는데 서버가 오래 돈 경우 둘 다 잡으려면 age None 도 후보에 넣되
+        # set_count 로 구분한다.
+        backups = operations.get("backups") or {}
+        backup_age = backups.get("latest_age_seconds")
+        if backup_interval_seconds() > 0 and backup_age is not None:
+            stale_after = backup_interval_seconds() * 2
+            if backup_age >= stale_after:
+                candidates["backup_stale"] = {
+                    "latest_age_seconds": int(backup_age),
+                    "stale_after_seconds": int(stale_after),
+                }
+
         emitted: list[dict[str, Any]] = []
         for event, fields in candidates.items():
             # oldest_age_seconds는 시간이 흐르면 매초 달라진다. 이를 상태 변화로 보면 같은
@@ -230,6 +400,11 @@ class OperationalAlertTracker:
                 fingerprint_fields = {
                     "pending": fields.get("pending"),
                     "failed": fields.get("failed"),
+                }
+            elif event == "backup_stale":
+                # 나이는 매 스냅샷 커진다 — 시간 단위 버킷으로 지문을 굳혀 60초마다 재방출되지 않게.
+                fingerprint_fields = {
+                    "age_hours": int(fields.get("latest_age_seconds") or 0) // 3600,
                 }
             fingerprint = tuple(
                 (key, repr(value)) for key, value in sorted(fingerprint_fields.items())
@@ -247,6 +422,9 @@ def operations_snapshot() -> dict[str, Any]:
     return {
         "generation_queue": generation_queue_snapshot(),
         "telemetry": telemetry_snapshot(),
+        "media_preservation": media_preservation_snapshot(),
         "backups": backup_snapshot(),
+        "worker_backup": worker_backup_snapshot(),
+        "backup_replica": backup_replica_snapshot(),
         "databases": database_readiness(),
     }

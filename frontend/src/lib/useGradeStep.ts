@@ -3,6 +3,7 @@ import { api } from "../api";
 import { postLibraryChanged } from "./libraryBroadcast";
 import { computeGradeStep, type GradeMode, type GradeStepResult } from "./gradeStep";
 import type { Generation } from "../types";
+import { withMirrorPendingNotice } from "./shareMirrorPending";
 
 interface Args {
   canFinalize: (g: Generation) => boolean;
@@ -34,13 +35,18 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     const { ops } = pending;
     let ok = 0;
     let fail = 0;
+    let mirrorPending = false;
     // 공유(publish)는 벌크 1회 — 서버가 실제 발행한 개수(published)로 성공/생략 집계.
     const pubIds = ops.filter((o) => o.action === "publish").map((o) => o.gen.id);
     if (pubIds.length) {
       try {
         const r = await api.publishToShared(pubIds);
-        ok += r.published ?? 0;
-        fail += pubIds.length - (r.published ?? 0);
+        const succeeded = r.mirror_pending
+          ? Math.max(0, pubIds.length - (r.blocked ?? 0))
+          : (r.published ?? 0);
+        ok += succeeded;
+        fail += pubIds.length - succeeded;
+        mirrorPending ||= !!r.mirror_pending;
       } catch {
         fail += pubIds.length;
       }
@@ -58,9 +64,17 @@ export function useGradeStep({ canFinalize, reload, flash }: Args) {
     );
     ok += results.filter((x) => x.status === "fulfilled").length;
     fail += results.filter((x) => x.status === "rejected").length;
+    mirrorPending ||= results.some(
+      (result) => result.status === "fulfilled" && !!result.value.mirror_pending,
+    );
     setPending(null);
     setBusy(false);
-    flash(fail ? `${ok}개 적용 · ${fail}개 실패/생략` : `${ok}개 적용`);
+    flash(
+      withMirrorPendingNotice(
+        fail ? `${ok}개 적용 · ${fail}개 실패/생략` : `${ok}개 적용`,
+        { mirror_pending: mirrorPending },
+      ),
+    );
     postLibraryChanged(); // 관리탭 상태(게시/완료) 즉시 재조회
     await reload();
     // 선택은 자동 해제하지 않는다 — 더블을 한 번 더 눌러 최종까지 이어갈 수 있게.

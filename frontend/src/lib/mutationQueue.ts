@@ -7,6 +7,11 @@ export interface LatestMutationQueue {
   whenIdle(): Promise<void>;
 }
 
+export interface KeyedMutationQueue<K> {
+  enqueue(key: K, operation: () => Promise<unknown>): Promise<void>;
+  whenIdle(): Promise<void>;
+}
+
 /**
  * 낙관적 저장을 입력 순서대로 실행한다.
  * 중간 실패는 뒤에 이미 예약된 변경을 먼저 끝낸 뒤 한 번만 서버 상태와 재동기화한다.
@@ -48,6 +53,80 @@ export function createMutationQueue(
           }
         });
       return tail;
+    },
+  };
+}
+
+/**
+ * 같은 key의 저장은 입력 순서대로 실행하고, 다른 key는 서로 막지 않는다.
+ * 한 key의 대기 작업이 끝나면 오류를 한 번만 복구하고 내부 항목을 제거한다.
+ */
+export function createKeyedMutationQueue<K>(
+  reconcileAfterFailure: (key: K, errors: unknown[]) => void | Promise<void>,
+  reconcileAfterSuccess?: (key: K) => void | Promise<void>,
+): KeyedMutationQueue<K> {
+  type Entry = {
+    tail: Promise<void>;
+    issued: number;
+    errors: unknown[];
+  };
+
+  const entries = new Map<K, Entry>();
+  let idleWaiters: Array<() => void> = [];
+
+  const finishIdle = () => {
+    if (entries.size) return;
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
+
+  return {
+    enqueue(key, operation) {
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = { tail: Promise.resolve(), issued: 0, errors: [] };
+        entries.set(key, entry);
+      }
+
+      const current = entry;
+      const ticket = ++current.issued;
+      const run = current.tail
+        .then(operation)
+        .catch((error: unknown) => {
+          current.errors.push(error);
+        })
+        .then(async () => {
+          if (ticket !== current.issued) return;
+
+          const errors = current.errors;
+          current.errors = [];
+          if (errors.length) {
+            try {
+              await reconcileAfterFailure(key, errors);
+            } catch {
+              // 복구 조회가 실패해도 큐를 영구 정지시키지 않는다.
+            }
+          } else if (reconcileAfterSuccess) {
+            try {
+              await reconcileAfterSuccess(key);
+            } catch {
+              // 저장은 성공했다. 후속 조회 실패는 다음 동기화에서 다시 맞춘다.
+            }
+          }
+
+          // 복구 중 새 작업이 들어왔다면 같은 entry를 유지하고 그 작업이 마지막에 정리한다.
+          if (entries.get(key) === current && ticket === current.issued) {
+            entries.delete(key);
+            finishIdle();
+          }
+        });
+      current.tail = run;
+      return run;
+    },
+    whenIdle() {
+      if (!entries.size) return Promise.resolve();
+      return new Promise<void>((resolve) => idleWaiters.push(resolve));
     },
   };
 }

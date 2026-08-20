@@ -17,6 +17,9 @@ backend/*.log
 backend/sample_real.json
 # 의존성 설치 마커(런처가 requirements.txt 해시 기록 — 머신 로컬 상태)
 backend/.deps_installed
+# pytest 격리 실행 잔재(샌드박스가 못 지운 임시 DB 폴더 — 추적 금지)
+backend/.pytest-tmp-*/
+backend/.codex-pytest-*/
 __pycache__/
 *.pyc
 .venv/

@@ -68,7 +68,7 @@ class IdentityRegistryTests(unittest.TestCase):
     def test_remap_plan_strategies_valid(self):
         # 전략 문자열 오타(예: "plian")는 registry 엔 등록된 듯 보이지만 remap 분기에 안 걸려 조용히 no-op 된다.
         # 유효 전략 집합으로 고정 — remap_creator_uid 의 분기와 일치해야 한다.
-        valid = {"plain", "ignore_del", "member", "autotag", "assetmeta"}
+        valid = {"plain", "ignore_del", "member", "autotag", "assetmeta", "scenecard"}
         bad = [(t, c, s) for t, c, s in identity._REMAP_PLAN if s not in valid]
         self.assertEqual(bad, [], f"_REMAP_PLAN 에 알 수 없는 전략(오타 의심): {bad}")
 
@@ -90,6 +90,22 @@ class IdentityRegistryTests(unittest.TestCase):
                 "SELECT added_by FROM task_assignment WHERE task_id='t1'"
             ).fetchone()
         self.assertEqual(row[0], "user_A")
+
+    def test_get_my_uid_uses_latest_local_generation_deterministically(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, job_id, worker_id, prompt, status, created_at, "
+                "sort_ts, creator_uid) VALUES('local-old','job-old','me','p','done',"
+                "'2026-01-01',1,'user_old')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, job_id, worker_id, prompt, status, created_at, "
+                "sort_ts, creator_uid) VALUES('local-new','job-new','me','p','done',"
+                "'2026-01-02',2,'user_new')"
+            )
+        identity._MY_UID_CACHE[0] = None
+
+        self.assertEqual(identity.get_my_uid(), "user_new")
 
 
 if __name__ == "__main__":

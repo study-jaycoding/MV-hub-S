@@ -55,6 +55,21 @@ def test_important_admin_project_budget_and_final_changes_are_audited(monkeypatc
                     "UPDATE generation SET status='done', project_id=? WHERE id=?",
                     (project_id, gen_id),
                 )
+            response = client.post(
+                f"/api/generations/{gen_id}/publish", json={"visibility": "team"}
+            )
+            assert response.status_code == 200
+            # 같은 상태를 다시 요청해도 실제 변경 감사 행을 중복 생성하지 않는다.
+            assert client.post(
+                f"/api/generations/{gen_id}/publish", json={"visibility": "team"}
+            ).status_code == 200
+            assert client.post(f"/api/generations/{gen_id}/unpublish").status_code == 200
+            assert client.post(f"/api/generations/{gen_id}/unpublish").status_code == 200
+
+            bundle = repo.export_bundle(gen_ids=[gen_id])
+            response = client.post("/api/share/publish-bundle", json={"bundle": bundle})
+            assert response.status_code == 200
+
             response = client.post(f"/api/generations/{gen_id}/finalize")
             assert response.status_code == 200
 
@@ -66,8 +81,13 @@ def test_important_admin_project_budget_and_final_changes_are_audited(monkeypatc
                 "account.status_changed",
                 "project.created",
                 "project.planning_changed",
+                "generation.published",
+                "generation.unpublished",
+                "generation.publish_bundle_received",
                 "generation.finalized",
             } <= actions
+            assert sum(row["action"] == "generation.published" for row in rows) == 1
+            assert sum(row["action"] == "generation.unpublished" for row in rows) == 1
             assert "member@example.com" not in response.text
             assert "never audit this prompt" not in response.text
         finally:

@@ -22,6 +22,7 @@ import { loadJSON, saveJSON } from "../../lib/storage";
 import { STORAGE_KEYS } from "../../lib/storageKeys";
 import { useEscapeClose } from "../../lib/useEscapeClose";
 import { useManageCaps } from "../../lib/useManageCaps";
+import { workspaceCommandLabels } from "../../lib/workspaceCommand";
 import { ProjectRenderTree } from "../admin/ProjectRenderTree";
 import { ProjectMembersPanel } from "./ProjectMembersPanel";
 import { ProjectPlanningFields } from "./ProjectPlanningDialog";
@@ -65,6 +66,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspaceOptions, setWorkspaceOptions] = useState<WorkspaceOption[]>([]);
+  const workspaceLabels = workspaceCommandLabels(workspaceOptions);
   const [workspaceMembers, setWorkspaceMembers] = useState<Record<string, WorkspaceMemberCandidate[]>>({});
   const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(null);
   const [projFolders, setProjFolders] = useState<Record<string, ProjectFolderEntry>>({});
@@ -584,7 +586,7 @@ export function ProjectManagerPanel({ onClose }: { onClose: () => void }) {
                   {workspaceOptions.length === 0 && <option value="">확인된 워크스페이스 없음</option>}
                   {workspaceOptions.map((workspace) => (
                     <option key={workspace.id} value={workspace.id}>
-                      {workspace.name} · 멤버 {workspace.member_count}명
+                      {workspaceLabels.get(workspace.id) ?? workspace.name} · 멤버 {workspace.member_count}명
                     </option>
                   ))}
                 </select>

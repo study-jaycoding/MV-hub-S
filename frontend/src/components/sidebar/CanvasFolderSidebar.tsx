@@ -30,30 +30,32 @@ export function CanvasFolderSidebar({
   // ✕ 를 두지 않는다(두 탭 UX 일치).
   return (
     <aside className="sidebar">
-      <ProjectSection
-        projects={projects}
-        unassignedCount={unassignedCount}
-        archivedCount={archivedCount}
-        activeId={filters.project_id}
-        tab={filters.tab === "team" ? "team" : "my"}
-        deletedOnly={!!filters.deleted_only}
-        armedFolder={armedFolder}
-        onFilter={(pid) =>
-          onChange({
-            project_id: pid,
-            folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제
-            deleted_only: undefined,
-            include_deleted: undefined,
-          })
-        }
-        onViewDeleted={() =>
-          onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
-        }
-        onArmFolder={onArmFolder}
-        onDropToFolder={onDropToFolder}
-        onDropToUnassigned={onDropToUnassigned}
-        enableFolderDrag
-      />
+      <div className="sidebar-main">
+        <ProjectSection
+          projects={projects}
+          unassignedCount={unassignedCount}
+          archivedCount={archivedCount}
+          activeId={filters.project_id}
+          tab={filters.tab === "team" ? "team" : "my"}
+          deletedOnly={!!filters.deleted_only}
+          armedFolder={armedFolder}
+          onFilter={(pid) =>
+            onChange({
+              project_id: pid,
+              folder_path: undefined, // 프로젝트(또는 상위) 선택 시 폴더 필터 해제
+              deleted_only: undefined,
+              include_deleted: undefined,
+            })
+          }
+          onViewDeleted={() =>
+            onChange({ deleted_only: true, project_id: undefined, include_deleted: undefined })
+          }
+          onArmFolder={onArmFolder}
+          onDropToFolder={onDropToFolder}
+          onDropToUnassigned={onDropToUnassigned}
+          enableFolderDrag
+        />
+      </div>
     </aside>
   );
 }

@@ -9,9 +9,11 @@ import type { AssetMount } from "../../types";
 export function MountManager({
   onClose,
   onChanged,
+  workspaceId,
 }: {
   onClose: () => void;
   onChanged: () => void; // 등록/삭제 후 프로젝트 목록 새로고침
+  workspaceId?: string; // 프로젝트 유래(auto) 항목을 선택 팀으로 좁힌다(수동 등록은 항상 표시)
 }) {
   const [mounts, setMounts] = useState<AssetMount[]>([]);
   const [path, setPath] = useState("");
@@ -22,11 +24,11 @@ export function MountManager({
   const [err, setErr] = useState("");
 
   const reload = () =>
-    api.assetMounts().then((r) => setMounts(r.mounts)).catch(() => {});
+    api.assetMounts(workspaceId).then((r) => setMounts(r.mounts)).catch(() => {});
 
   useEffect(() => {
     reload();
-  }, []);
+  }, [workspaceId]);
   useEscapeClose(onClose);
 
   const add = async () => {

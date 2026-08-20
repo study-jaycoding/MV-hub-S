@@ -35,16 +35,35 @@ def clean_folder_path(path: Optional[str]) -> Optional[str]:
 # 똑같은 알림 규칙을 쓰도록 한곳에서 관리한다. 규칙을 바꾸면 세 경로가 자동으로 일치한다.
 # 별칭 전제: c=generation_comment, g=generation, p=부모 코멘트, s=seen.
 #   ALERT_COMMENT_JOINS     : c 뒤에 붙이는 JOIN 3종. ? 1개(s.worker_id=뷰어).
-#   ALERT_COMMENT_PREDICATE : 알림 대상 판정. ? 3개(c.author<>뷰어, g.creator_uid=뷰어, p.author=뷰어).
+#   ALERT_COMMENT_TARGET_PREDICATE : 읽음과 무관한 알림 대상 판정. ? 3개.
+#   ALERT_COMMENT_PREDICATE : 위 대상 중 아직 안 읽은 것 판정. ? 3개.
 # 바인딩은 위치식(?)이라 최종 SQL 에서 ? 가 나타나는 텍스트 순서대로 인자를 넘겨야 한다
 # (예: WHERE 경로는 JOIN ? → 예측부 3?, SELECT-CASE 경로는 예측부 3? → JOIN ?).
+# 뷰어에게 안 보이는 코멘트는 알림도 못 울린다 — 휴지통 생성물(g.deleted_at)·남의 비공개
+# (c.is_private, 이관 DB 등으로 로컬에 남의 행이 있어도)는 제외. 안 그러면 전역 C 뱃지만
+# 켜지고 필터엔 아무 카드도 안 나오는 '유령 알림'이 된다.
 ALERT_COMMENT_JOINS = (
     "JOIN generation g ON g.id = c.gen_id "
     "LEFT JOIN generation_comment p ON p.id = c.parent_id "
     "LEFT JOIN generation_comment_seen s ON s.worker_id=? AND s.comment_id=c.id"
 )
+ALERT_COMMENT_TARGET_PREDICATE = (
+    "c.is_private=0 AND g.deleted_at IS NULL "
+    "AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
+)
 ALERT_COMMENT_PREDICATE = (
-    "s.comment_id IS NULL AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
+    "s.comment_id IS NULL AND " + ALERT_COMMENT_TARGET_PREDICATE
+)
+
+# ── 생성물 조회 공통 FROM/JOIN 조각 ────────────────────────────────────────
+# 목록(generations_query)과 단건(generation_rows)이 같은 행 모양을 반환해야 한다 — 예전엔
+# 이 문자열이 두 파일에 복붙돼 있어, 한쪽만 조인을 바꾸면 목록과 팝업의 필드가 조용히
+# 어긋나는 종류의 버그가 가능했다. 별칭 전제: g=generation, w=worker, gr=그 생성물의
+# 최신 gen_request(진행 문구·확인 시각 — idx_genrequest_gen_latest 인덱스가 서브쿼리 가속).
+GEN_BASE_JOINS = (
+    "FROM generation g LEFT JOIN worker w ON w.id = g.worker_id "
+    "LEFT JOIN gen_request gr ON gr.id=(SELECT id FROM gen_request "
+    "WHERE gen_id=g.id ORDER BY created_at DESC,id DESC LIMIT 1)"
 )
 
 

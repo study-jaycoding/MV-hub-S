@@ -85,7 +85,11 @@ def ensure_thumb(target: Path, w: int) -> Optional[Path]:
     if target.suffix.lower() not in IMAGE_EXTENSIONS or not target.is_file():
         return None
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    cache = cache_path(target, w)
+    try:
+        cache = cache_path(target, w)
+    except OSError:
+        # is_file 확인 직후 원본이 교체·삭제되는 경합은 깨진 이미지와 같은 404(None)로 처리한다.
+        return None
     if _is_complete_file(cache):
         return cache
     lock_key, lock = _acquire_thumb_lock(cache)
@@ -144,7 +148,10 @@ def ensure_video_poster(target: Path, w: int) -> Optional[Path]:
     if not ff:
         return None
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    cache = cache_path(target, w)  # 키=경로+mtime+폭 (이미지와 동일 규칙, 경로가 달라 충돌 없음)
+    try:
+        cache = cache_path(target, w)  # 키=경로+mtime+폭 (이미지와 동일 규칙, 경로가 달라 충돌 없음)
+    except OSError:
+        return None  # is_file 뒤 교체·삭제 경합
     if _is_complete_file(cache):
         return cache
     lock_key, lock = _acquire_thumb_lock(cache)
@@ -179,6 +186,11 @@ def ensure_video_poster(target: Path, w: int) -> Optional[Path]:
 
 
 _TOUCH_MIN_AGE = 86400.0  # 초 — 서빙 히트 시 mtime 이 이보다 묵었을 때만 touch(파일당 하루 1회 쓰기)
+_EVICT_SCAN_INTERVAL = max(
+    0.0, float(os.environ.get("CONTENT_HUB_THUMB_EVICT_SCAN_INTERVAL", "60"))
+)
+_EVICT_SCAN_GUARD = threading.Lock()
+_EVICT_LAST_SCAN: dict[tuple[str, int], float] = {}
 
 
 def mark_thumb_used(cache: Optional[Path]) -> None:
@@ -195,7 +207,9 @@ def mark_thumb_used(cache: Optional[Path]) -> None:
         pass
 
 
-def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
+def evict_thumb_cache(
+    max_bytes: int = THUMB_CACHE_MAX_BYTES, *, force: bool = False
+) -> int:
     """.thumbs 총 용량이 max_bytes 를 넘으면 mtime 오래된 것부터 삭제해 상한 이하로.
     서빙 히트가 mark_thumb_used 로 mtime 을 갱신하므로 사실상 '안 본 지 오래된 것부터'(LRU).
     지워져도 원본에서 즉시 다시 굽는다(무해).
@@ -203,6 +217,19 @@ def evict_thumb_cache(max_bytes: int = THUMB_CACHE_MAX_BYTES) -> int:
     쓰는 중(.tmp)이나 .jpg 아닌 파일은 건너뛴다(반쯤 쓰인 파일 삭제 방지). 삭제 개수를 반환."""
     if not THUMB_DIR.exists() or THUMB_DIR.is_symlink():  # 심링크/정션이면 원본 밖을 지울 위험 → 거부
         return 0
+    # 한 번의 프리워밍이 여러 경로에서 끝나도 매번 평면 폴더 전체를 stat+정렬하지 않는다.
+    # 일일 sweeper는 force=True로 호출해, 마지막 생성 뒤 추가 호출이 없어도 상한을 다시 확인한다.
+    scan_key = (str(THUMB_DIR), int(max_bytes))
+    now = time.monotonic()
+    with _EVICT_SCAN_GUARD:
+        last_scan = _EVICT_LAST_SCAN.get(scan_key)
+        if (
+            not force
+            and last_scan is not None
+            and now - last_scan < _EVICT_SCAN_INTERVAL
+        ):
+            return 0
+        _EVICT_LAST_SCAN[scan_key] = now
     try:
         entries: list[tuple[float, int, Path]] = []
         total = 0

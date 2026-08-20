@@ -19,6 +19,7 @@ interface Props {
   projects?: Project[]; // 프로젝트 이름 표시용(목록에서 uuid→이름 매핑)
   onOpenInBoard?: (g: Generation) => void; // 구성탭에서 원본→파생 트리로 보기
   onOpenCanvas?: (g: Generation) => void; // recipe(어떻게 만들었나)를 캔버스 노드로 열기
+  onRecoveryRequeue?: (g: Generation) => Promise<boolean>; // 외부 미제출 확인 뒤 기존 요청 재큐잉
 }
 
 const POP_W = 380;
@@ -47,7 +48,15 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard, onOpenCanvas }: Props) {
+export function InfoPopup({
+  target,
+  onClose,
+  onPreview,
+  projects,
+  onOpenInBoard,
+  onOpenCanvas,
+  onRecoveryRequeue,
+}: Props) {
   // 레퍼런스(소스) → 크게 보기. 원본(asset 토큰/URL/로컬) 우선, 없으면 썸네일.
   const openSource = (r: Reference) => {
     const url = refSrc(r.file_path) || refSrc(r.thumbnail_path) || refSrc(r.source_url);
@@ -76,6 +85,9 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
   } | null>(null); // 실제 크레딧·소요시간(있으면 우선)
   // Comfy 생성물은 Cloud 가 건별 크레딧을 API 로 안 준다(정액 구독제) → 견적 대신 구독 정보를 보여준다.
   const [comfySub, setComfySub] = useState<{ target: "cloud" | "local"; tier: string | null } | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [preservation, setPreservation] = useState<Generation | null>(null);
+  const [preservationBusy, setPreservationBusy] = useState(false);
   const modelName = useModelDisplayName();
   const drag = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -99,6 +111,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
         .catch(() => setCredits(null));
     }
     api.generationMetrics(g.id).then(setMetrics).catch(() => setMetrics(null));
+    setPreservation(g);
   }, [target]);
 
   const onDragStart = (e: React.PointerEvent) => {
@@ -124,7 +137,7 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
   let sources: React.ReactNode = null;
 
   if (target.kind === "generation") {
-    const g = target.gen;
+    const g = preservation || target.gen;
     const asset = g.assets[0];
     isVideo = asset?.type === "video";
     // 영상: 실제 영상이 <video> src, thumbnail_path(CLI 정적 포스터)는 poster 로 분리(포스터를 src 로
@@ -140,6 +153,69 @@ export function InfoPopup({ target, onClose, onPreview, projects, onOpenInBoard,
     const params = (g.params || {}) as Record<string, unknown>;
     rows = (
       <>
+        {g.execution_phase === "recovery_required" && (
+          <div className="info-recovery">
+            <span className="info-recovery-label">⚠ 복구 확인 필요</span>
+            <span className="info-recovery-text">
+              외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의
+              Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.
+            </span>
+            {onRecoveryRequeue && (
+              <button
+                type="button"
+                className="info-recovery-btn"
+                disabled={recoveryBusy}
+                onClick={async () => {
+                  setRecoveryBusy(true);
+                  try {
+                    if (await onRecoveryRequeue(g)) onClose();
+                  } finally {
+                    setRecoveryBusy(false);
+                  }
+                }}
+              >
+                {recoveryBusy ? "처리 중…" : "미제출 확인 후 다시 실행"}
+              </button>
+            )}
+          </div>
+        )}
+        {g.media_preservation_status && g.media_preservation_status !== "none" && (
+          <div className={`info-preservation is-${g.media_preservation_status}`}>
+            <span className="info-preservation-label">원본 보존</span>
+            <span className="info-preservation-text">
+              {{
+                pending: "대기 중",
+                running: "보존 중",
+                complete: `완료 · ${g.media_preservation_cached || 0}개`,
+                partial: `일부 완료 · 실패 ${g.media_preservation_failed || 0}개`,
+                failed: "실패",
+                capacity: "저장공간 한도 도달",
+              }[g.media_preservation_status] || g.media_preservation_status}
+            </span>
+            {(["partial", "failed", "capacity"] as string[]).includes(
+              g.media_preservation_status,
+            ) && (
+              <button
+                type="button"
+                className="info-preservation-btn"
+                disabled={preservationBusy}
+                onClick={async () => {
+                  setPreservationBusy(true);
+                  try {
+                    const result = await api.preserveGeneration(g.id);
+                    setPreservation(result.generation);
+                  } catch (error) {
+                    alert(`원본 보존 재시도 실패: ${error}`);
+                  } finally {
+                    setPreservationBusy(false);
+                  }
+                }}
+              >
+                {preservationBusy ? "재시도 중…" : "원본 보존 재시도"}
+              </button>
+            )}
+          </div>
+        )}
         <Row
           label="모델"
           // Comfy 생성물은 g.model 이 판별자('comfy')라, 워크플로에서 뽑아 저장한 실제 모델명을 보여준다.

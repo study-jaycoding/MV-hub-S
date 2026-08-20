@@ -142,7 +142,10 @@ REM CLI on release PCs.
 set "RUN_AGENT=1"
 set "HF="
 set "HF_CLI_VERSION="
-if exist "%ROOT%hf_cli_version.txt" set /p HF_CLI_VERSION=<"%ROOT%hf_cli_version.txt"
+set "HF_CLI_PIN_FILE=%ROOT%hf_cli_version.txt"
+REM Match the backend's utf-8-sig rule. set /p leaves a UTF-8 BOM in the value.
+if exist "%HF_CLI_PIN_FILE%" for /f "delims=" %%x in ('""%PY_EXE%" %PY_ARGS% "%ROOT%backend\app\services\read_utf8_sig_first_line.py" "%HF_CLI_PIN_FILE%""') do if not defined HF_CLI_VERSION set "HF_CLI_VERSION=%%x"
+set "HF_CLI_PIN_FILE="
 REM trim stray leading/trailing spaces a re-saved pin file might add.
 for /f "tokens=* delims= " %%x in ("%HF_CLI_VERSION%") do set "HF_CLI_VERSION=%%x"
 set "BUNDLED=%ROOT%runtime\higgsfield\higgsfield.cmd"
@@ -175,11 +178,18 @@ echo [4/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
 REM Stop any hub left running on this port from a previous launch. Without this, an old
 REM backend process keeps the port and the freshly-updated code never takes effect
 REM (symptom: code updates do not apply until the machine reboots).
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":%PORT%"') do taskkill /f /pid %%p >nul 2>nul
+REM The helper verifies an exact absolute backend\serve.py command-line token and
+REM rechecks process identity immediately before stopping it. Foreign owners fail closed.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
+if errorlevel 1 (
+  echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
+  echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
+  goto :err
+)
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.
 cd /d "%ROOT%backend"
-start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% serve.py > hub.log 2>&1"
+start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% "%ROOT%backend\serve.py" > hub.log 2>&1"
 cd /d "%ROOT%"
 
 echo     Waiting for the hub to come up...

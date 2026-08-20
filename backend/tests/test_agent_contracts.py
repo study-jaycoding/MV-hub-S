@@ -196,6 +196,25 @@ def test_test_dev_starts_vite_only_after_backend_health_check():
     assert vite_subroutine < port_preflight < port_in_use_error < vite_start
 
 
+def test_test_dev_safely_replaces_only_its_own_previous_session():
+    launcher = (ROOT_DIR / "test_dev.bat").read_text(encoding="utf-8")
+    helper = (ROOT_DIR / "tools" / "replace_dev_session.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    helper_call = launcher.index("replace_dev_session.ps1")
+    frontend_guard = launcher.index('findstr /c:\":%FRONTEND_PORT% \"')
+    backend_guard = launcher.index('findstr /c:\":%BACKEND_PORT% \"')
+    assert helper_call < frontend_guard < backend_guard
+    assert '-Root "%ROOT%."' in launcher
+    assert "Find-SessionStopTarget" in helper
+    assert "Validate every occupied port before stopping anything" in helper
+    assert "run_agent_session.py" in helper
+    assert "test_dev.bat" in helper
+    assert "taskkill.exe" in helper
+    assert "relatedPid" not in helper
+
+
 def test_server_db_test_launchers_keep_live_and_local_data_isolated():
     push = (ROOT_DIR / "test_push-db.bat").read_text(encoding="utf-8")
     pull = (ROOT_DIR / "test_pull-db.bat").read_text(encoding="utf-8")
@@ -308,6 +327,7 @@ def test_pending_response_contains_every_field_the_agent_executes():
         "prompt",
         "params",
         "references",
+        "claim_phase",
     } <= fields.keys()
     assert fields["id"].is_required()
     assert fields["gen_id"].is_required()
@@ -324,10 +344,28 @@ def test_gen_request_adapter_builds_claim_url_in_one_place():
     parsed = urlsplit(call.args[1])
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending"
-    # capability=workspace: 워크스페이스 전환·검증 지원 선언 — 신 서버가 지정 요청을 내려주는 조건.
+    # submission-stage: 신 서버에서는 CLI 호출 전/후 상태를 분리한다.
     assert parse_qs(parsed.query) == {
         "limit": ["16"],
-        "capability": ["workspace"],
+        "capability": ["workspace,submission-stage"],
+        "agent_id": ["agent-1"],
+    }
+    assert call.kwargs == {"token": "token-1"}
+
+
+def test_agent_pending_exists_uses_read_only_workspace_capable_route():
+    agent = _load_agent()
+    with patch.object(
+        agent, "_http", return_value=(200, {"pending": True})
+    ) as http, patch.object(agent, "_agent_instance_id", return_value="agent-1"):
+        assert agent._pending_exists("http://hub", "token-1") is True
+
+    call = http.call_args
+    parsed = urlsplit(call.args[1])
+    assert call.args[0] == "GET"
+    assert parsed.path == "/api/gen-requests/pending-exists"
+    assert parse_qs(parsed.query) == {
+        "capability": ["workspace,submission-stage"],
         "agent_id": ["agent-1"],
     }
     assert call.kwargs == {"token": "token-1"}
@@ -526,6 +564,20 @@ def test_agent_startup_keeps_no_push_mode_local() -> None:
     push.assert_not_called()
 
 
+def test_agent_idle_rechecks_db_pending_without_signal() -> None:
+    """서버 재시작으로 메모리 신호가 사라져도 다음 idle이 영속 큐를 집어간다."""
+    agent = _load_agent()
+    with patch.object(agent, "_pending_exists", return_value=True) as pending, patch.object(
+        agent, "execute_pending"
+    ) as execute:
+        agent._execute_pending_for_watch_cycle(
+            "http://hub", "token-1", "higgsfield", set()
+        )
+
+    pending.assert_called_once_with("http://hub", "token-1")
+    execute.assert_called_once_with("http://hub", "token-1", "higgsfield")
+
+
 def test_agent_has_no_removed_cycle_callback_references() -> None:
     """계정 전환/재로그인 분기도 현재 초기화 함수를 호출해야 한다."""
     source = AGENT_PATH.read_text(encoding="utf-8")
@@ -649,6 +701,237 @@ def test_agent_refuses_missing_team_workspace_without_falling_back():
     command.assert_not_called()
 
 
+def test_agent_refuses_unknown_workspace_without_using_current_cli_selection():
+    agent = _load_agent()
+    with patch.object(agent, "_run_cli_json") as read_workspaces, patch.object(
+        agent, "_run_cli_command"
+    ) as command:
+        ok, error = agent._ensure_request_workspace("higgsfield", None)
+
+    assert ok is False
+    assert "워크스페이스 정보가 없습니다" in str(error)
+    assert "다시 선택" in str(error)
+    read_workspaces.assert_not_called()
+    command.assert_not_called()
+
+
+def test_agent_unknown_workspace_fails_request_before_generate_create():
+    agent = _load_agent()
+    request = {
+        "id": "request-unknown-workspace",
+        "model": "nano-banana",
+        "prompt": "test",
+        "params": {},
+        "references": [],
+    }
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_run_cli_json"
+    ) as run_cli_json, patch.object(agent, "_fail") as fail:
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            request,
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result is None
+    run_cli_json.assert_not_called()
+    fail.assert_called_once()
+    assert fail.call_args.args[:3] == (
+        "http://hub",
+        "token-1",
+        "request-unknown-workspace",
+    )
+    assert "생성하지 않음" in fail.call_args.args[3]
+
+
+def _submission_request(*, staged: bool = True):
+    request = {
+        "id": "request-1",
+        "model": "nano-banana",
+        "prompt": "test prompt",
+        "params": {},
+        "references": [],
+        "workspace": {"scope": "personal", "id": None, "name": None},
+    }
+    if staged:
+        request["claim_phase"] = "claimed"
+    return request
+
+
+def test_staged_agent_gets_server_ack_before_paid_cli_create():
+    agent = _load_agent()
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_begin_submission", return_value=True) as begin, patch.object(
+        agent, "_run_cli_json", return_value=([job_id], None)
+    ) as create, patch.object(agent, "_outbox_add") as outbox, patch.object(
+        agent, "_anchor_with_retry", return_value=True
+    ):
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            _submission_request(),
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result and result["job_id"] == job_id
+    begin.assert_called_once()
+    assert begin.call_args.args[:4] == (
+        "http://hub",
+        "token-1",
+        "request-1",
+        "agent-1",
+    )
+    assert begin.call_args.args[4]["model"] == "nano-banana"
+    assert len(begin.call_args.args[4]["prompt_sha256"]) == 64
+    create.assert_called_once()
+    outbox.assert_called_once_with(
+        "http://hub", "user@example.com", "request-1", job_id
+    )
+
+
+def test_staged_agent_never_creates_when_begin_ack_is_missing():
+    agent = _load_agent()
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_begin_submission", return_value=False), patch.object(
+        agent, "_release_claim", return_value=True
+    ) as release, patch.object(agent, "_run_cli_json") as create, patch.object(
+        agent, "_fail"
+    ) as fail:
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            _submission_request(),
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result is None
+    create.assert_not_called()
+    fail.assert_not_called()
+    release.assert_called_once_with("http://hub", "token-1", "request-1", "agent-1")
+
+
+def test_missing_job_id_after_create_is_quarantined_not_failed_or_retried():
+    agent = _load_agent()
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_begin_submission", return_value=True), patch.object(
+        agent, "_run_cli_json", return_value=(None, "CLI 타임아웃")
+    ) as create, patch.object(
+        agent, "_require_submission_recovery", return_value=True
+    ) as recovery, patch.object(agent, "_fail") as fail, patch.object(
+        agent, "_outbox_add"
+    ) as outbox:
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            _submission_request(),
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result is None
+    create.assert_called_once()
+    recovery.assert_called_once_with("http://hub", "token-1", "request-1")
+    fail.assert_not_called()
+    outbox.assert_not_called()
+
+
+def test_stale_reference_cache_is_cleared_without_automatic_create_retry():
+    agent = _load_agent()
+    request = _submission_request()
+    request.update(
+        {
+            "model": "seedance_2_0",
+            "references": [
+                {"file_path": "ref-1", "type": "image", "role": "@image1"}
+            ],
+        }
+    )
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_upload_for_media", return_value=({"id": "stale-id"}, True)), patch.object(
+        agent, "_begin_submission", return_value=True
+    ), patch.object(
+        agent, "_run_cli_json", return_value=(None, "Invalid media UUID")
+    ) as create, patch.object(
+        agent, "_invalidate_upload_cache"
+    ) as invalidate, patch.object(
+        agent, "_require_submission_recovery", return_value=True
+    ) as recovery:
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            request,
+            {"ref-1": r"C:\refs\input.png"},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result is None
+    create.assert_called_once()
+    invalidate.assert_called_once()
+    assert invalidate.call_args.args[1] == r"C:\refs\input.png"
+    recovery.assert_called_once_with("http://hub", "token-1", "request-1")
+
+
+def test_old_server_response_without_claim_phase_keeps_legacy_submission_compatible():
+    agent = _load_agent()
+    job_id = "12345678-1234-1234-1234-123456789abc"
+    with patch.object(agent, "_allowed_params", return_value=set()), patch.object(
+        agent, "_ensure_request_workspace", return_value=(True, None)
+    ), patch.object(agent, "_begin_submission") as begin, patch.object(
+        agent, "_run_cli_json", return_value=([job_id], None)
+    ), patch.object(agent, "_outbox_add"), patch.object(
+        agent, "_anchor_with_retry", return_value=True
+    ):
+        result = agent._submit_one(
+            "http://hub",
+            "token-1",
+            "higgsfield",
+            "user@example.com",
+            _submission_request(staged=False),
+            {},
+            {},
+            agent.Lock(),
+            agent.Lock(),
+            "agent-1",
+        )
+
+    assert result and result["job_id"] == job_id
+    begin.assert_not_called()
+
+
 def test_agent_failure_report_url_encodes_reason_and_authenticates():
     agent = _load_agent()
     reason = "한글 실패 (입력 이미지 없음)"
@@ -661,6 +944,241 @@ def test_agent_failure_report_url_encodes_reason_and_authenticates():
     assert parsed.path == "/api/gen-requests/request-1/fail"
     assert parse_qs(parsed.query) == {"reason": [reason]}
     assert call.kwargs == {"token": "token-1"}
+
+
+def test_agent_submission_stage_adapters_match_server_contract():
+    agent = _load_agent()
+    with patch.object(agent, "_http", return_value=(200, {"applied": True})) as http:
+        assert agent._begin_submission(
+            "http://hub", "token-1", "request-1", "agent-1"
+        ) is True
+        assert agent._release_claim(
+            "http://hub", "token-1", "request-1", "agent-1"
+        ) is True
+        assert agent._require_submission_recovery(
+            "http://hub", "token-1", "request-1"
+        ) is True
+
+    begin_call, release_call, recovery_call = http.call_args_list
+    begin_url = urlsplit(begin_call.args[1])
+    assert begin_url.path == "/api/gen-requests/request-1/begin-submission"
+    assert parse_qs(begin_url.query) == {"agent_id": ["agent-1"]}
+    release_url = urlsplit(release_call.args[1])
+    assert release_url.path == "/api/gen-requests/request-1/release-claim"
+    assert parse_qs(release_url.query) == {"agent_id": ["agent-1"]}
+    assert urlsplit(recovery_call.args[1]).path == (
+        "/api/gen-requests/request-1/recovery-required"
+    )
+    assert begin_call.kwargs == {"token": "token-1", "timeout": 15}
+    assert release_call.kwargs == {"token": "token-1"}
+    assert recovery_call.kwargs == {"token": "token-1", "timeout": 15}
+
+
+def test_recovery_probe_read_adapter_rejects_create_by_structure():
+    agent = _load_agent()
+    with patch.object(agent, "_cli_json") as cli_json:
+        try:
+            agent._read_generate_json("higgsfield", "create", "model")
+        except ValueError as exc:
+            assert "금지된" in str(exc)
+        else:
+            raise AssertionError("읽기 전용 조사에서 create가 허용됨")
+    cli_json.assert_not_called()
+
+
+def test_recovery_probe_uniquely_matches_and_anchors_without_create():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "same prompt", {"seed": 7}, {"seed"}, []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    job = {
+        "id": "job-found",
+        "job_type": "nano-banana",
+        "created_at": "2026-08-20T00:00:10Z",
+        "params": {"prompt": "same prompt", "seed": 7},
+    }
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(
+        agent, "_read_generate_json", return_value=[job]
+    ) as read_jobs, patch.object(
+        agent, "_report_recovery_probe", return_value={
+            "applied": True,
+            "outcome": "unique",
+            "candidate_count": 1,
+            "job_id": "job-found",
+        }
+    ) as report, patch.object(
+        agent, "_anchor", return_value=True
+    ) as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 1
+
+    read_jobs.assert_called_once_with(
+        "higgsfield", "list", "--size", "100", timeout=120
+    )
+    report.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "unique", 1, "job-found"
+    )
+    anchor.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "job-found", verifying=True
+    )
+
+
+def test_recovery_probe_keeps_multiple_matches_on_hold():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "same prompt", {}, set(), []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    jobs = [
+        {
+            "id": f"job-{index}",
+            "job_type": "nano-banana",
+            "created_at": f"2026-08-20T00:00:{index + 10:02d}Z",
+            "params": {"prompt": "same prompt"},
+        }
+        for index in range(2)
+    ]
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(
+        agent, "_read_generate_json", return_value=jobs
+    ), patch.object(
+        agent, "_report_recovery_probe", return_value={
+            "applied": True,
+            "outcome": "multiple",
+            "candidate_count": 2,
+            "job_id": None,
+        }
+    ) as report, patch.object(agent, "_anchor") as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 0
+
+    report.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "multiple", 2, None
+    )
+    anchor.assert_not_called()
+
+
+def test_recovery_probe_retries_only_persisted_unique_job_without_listing():
+    agent = _load_agent()
+    request = {
+        "id": "request-1",
+        "fingerprint": {},
+        "recovery_probe_status": "unique",
+        "recovery_probe_job_id": "job-recorded",
+    }
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(agent, "_read_generate_json") as read_jobs, patch.object(
+        agent, "_anchor", return_value=True
+    ) as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 1
+
+    read_jobs.assert_not_called()
+    anchor.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "job-recorded", verifying=True
+    )
+
+
+def test_recovery_probe_does_not_confirm_absence_when_latest_window_is_full():
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "missing prompt", {}, set(), []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 00:00:00",
+        "recovery_required_at": "2026-08-20 00:05:00",
+    }
+    jobs = [
+        {
+            "id": f"other-{index}",
+            "job_type": "nano-banana",
+            "created_at": "2026-08-20T00:00:10Z",
+            "params": {"prompt": f"other prompt {index}"},
+        }
+        for index in range(100)
+    ]
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(agent, "_read_generate_json", return_value=jobs), patch.object(
+        agent, "_report_recovery_probe"
+    ) as report:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 0
+
+    report.assert_not_called()
+
+
+def test_suppressed_result_is_still_sent_to_library_ingest():
+    agent = _load_agent()
+    job = {
+        "id": "job-invalid",
+        "status": "completed",
+        "job_type": "nano-banana",
+        "created_at": "2026-08-20T00:00:10Z",
+        "params": {"prompt": "paid result"},
+    }
+    cli_results = [
+        [job],
+        {"email": "user@example.com"},
+        [],
+        [],
+    ]
+    with patch.object(agent, "_cli_json", side_effect=cli_results), patch.object(
+        agent, "_job_ids_to_sync", return_value={"job-invalid"}
+    ), patch.object(agent, "_cached_models", return_value=[]), patch.object(
+        agent, "_load_suppressed", return_value={"job-invalid"}
+    ), patch.object(agent, "_dominant_uid", return_value="u-me"), patch.object(
+        agent,
+        "_http",
+        return_value=(
+            200,
+            {
+                "inserted": 1,
+                "updated": 0,
+                "unchanged": 0,
+                "skipped": 0,
+                "errors": 0,
+                "linked_uid": "u-me",
+            },
+        ),
+    ) as http:
+        agent.push_once("http://hub", "token-1", "higgsfield", 100)
+
+    ingest_call = http.call_args
+    assert ingest_call.args[:2] == ("POST", "http://hub/api/ingest")
+    assert ingest_call.kwargs["body"]["jobs"] == [job]
+
+
+def test_submission_stage_adapters_retry_only_transient_response_loss():
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        side_effect=[(0, "timeout"), (503, "restart"), (200, {"applied": True})],
+    ) as http:
+        assert agent._begin_submission(
+            "http://hub", "token-1", "request-1", "agent-1"
+        ) is True
+    assert http.call_count == 3
+
+    with patch.object(agent, "_http", return_value=(409, "lost lease")) as http:
+        assert agent._begin_submission(
+            "http://hub", "token-1", "request-1", "agent-1"
+        ) is False
+    http.assert_called_once()
 
 
 def test_agent_anchor_and_reconcile_payloads_match_server_contract():
@@ -689,6 +1207,33 @@ def test_agent_anchor_and_reconcile_payloads_match_server_contract():
     assert reconcile_url.path == "/api/gen-requests/request-1/reconcile"
     assert parse_qs(reconcile_url.query) == {"force_fail_reason": ["레퍼런스 미부착"]}
     assert reconcile_call.kwargs == {"token": "token-1", "body": {"job": job}}
+
+
+def test_agent_anchor_keeps_outbox_when_server_rejects_a_live_request():
+    # 서버가 applied=False + 살아있는 요청 상태를 주면 앵커는 실패로 취급해 outbox 에
+    # 남겨 재전송해야 한다 — 예전엔 빈 200 만 보고 성공 처리해 유료 잡의 앵커가 유실됐다.
+    agent = _load_agent()
+    with patch.object(
+        agent,
+        "_http",
+        return_value=(200, {"ok": True, "applied": False, "request_status": "submitting"}),
+    ):
+        assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is False
+
+
+def test_agent_anchor_drops_outbox_when_request_is_terminal_or_missing():
+    agent = _load_agent()
+    for status in ("done", "canceled", "failed", "missing"):
+        with patch.object(
+            agent,
+            "_http",
+            return_value=(200, {"ok": True, "applied": False, "request_status": status}),
+        ):
+            assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is True
+    # applied=True·구서버(빈 200)도 성공.
+    for body in ({"ok": True, "applied": True}, {}):
+        with patch.object(agent, "_http", return_value=(200, body)):
+            assert agent._anchor("http://hub", "token-1", "request-1", "job-1") is True
 
 
 def test_reconcile_pass_reads_candidates_and_reports_authoritative_job():

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
+import hashlib
 import http.client
 import json
 import logging
@@ -26,6 +28,7 @@ import os
 import random
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -43,6 +46,8 @@ from typing import Any, Optional
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 PASSWORD = "load-test-password"
+LOAD_WORKSPACE_ID = "load-workspace"
+LOAD_PROJECT_ID = "load-project"
 
 
 class _ExpectedSslCloseFilter(logging.Filter):
@@ -107,12 +112,19 @@ def _operational_error_tail(path: Path, limit: int = 20) -> list[dict[str, Any]]
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """장기 시험 진행 파일이 중간 쓰기 상태로 남지 않게 같은 폴더에서 교체한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
-    os.replace(temporary, path)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _free_port() -> int:
@@ -155,6 +167,24 @@ def _apply_server_limits(
     }
 
 
+def _listening_pid(port: int) -> Optional[int]:
+    """이 포트를 LISTEN 중인 프로세스 PID — 없으면 None.
+
+    실측(M10)에서 serve.py 를 Popen 으로 띄우면 런처 PID 와 실제 LISTEN PID 가 다름이
+    확인됐다. 저사양 제한은 이 함수로 찾은 '실제 서버' PID 에 걸어야 한다."""
+    import psutil
+
+    for conn in psutil.net_connections(kind="tcp"):
+        if (
+            conn.status == psutil.CONN_LISTEN
+            and conn.laddr
+            and conn.laddr.port == port
+            and conn.pid
+        ):
+            return conn.pid
+    return None
+
+
 @contextmanager
 def _temporary_load_root():
     """Windows의 일시적인 로그 파일 잠금을 기다리며 테스트 폴더를 정리한다."""
@@ -191,6 +221,7 @@ def _http_json(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(base_url + path, data=data, method=method)
     request.add_header("Accept", "application/json")
+    request.add_header("Accept-Encoding", "gzip")
     if data is not None:
         request.add_header("Content-Type", "application/json")
     if token:
@@ -202,23 +233,41 @@ def _http_json(
             open_kwargs["context"] = ssl_context
         with urllib.request.urlopen(request, **open_kwargs) as response:
             raw = response.read()
-            try:
-                parsed: Any = json.loads(raw.decode("utf-8")) if raw else None
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                parsed = {"bytes": len(raw)}
+            parsed = _decode_response(
+                raw,
+                _response_header(response, "Content-Encoding"),
+            )
             return response.status, parsed, (time.perf_counter() - started) * 1000.0
     except urllib.error.HTTPError as exc:
         raw = exc.read()
         try:
-            parsed = json.loads(raw.decode("utf-8")) if raw else None
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            parsed = _decode_response(
+                raw,
+                _response_header(exc, "Content-Encoding"),
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             parsed = raw.decode("utf-8", "replace")[:500]
         return exc.code, parsed, (time.perf_counter() - started) * 1000.0
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return 0, {"error": str(exc)}, (time.perf_counter() - started) * 1000.0
 
 
-def _decode_response(raw: bytes) -> Any:
+def _response_header(response: Any, name: str) -> str:
+    getter = getattr(response, "getheader", None)
+    if callable(getter):
+        return str(getter(name) or "")
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        return str(headers.get(name, "") or "")
+    return ""
+
+
+def _decode_response(raw: bytes, content_encoding: str = "") -> Any:
+    encodings = {
+        value.strip().lower() for value in content_encoding.split(",") if value.strip()
+    }
+    if "gzip" in encodings and raw:
+        raw = gzip.decompress(raw)
     try:
         return json.loads(raw.decode("utf-8")) if raw else None
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -253,6 +302,8 @@ class _KeepAliveJsonClient:
                 timeout=timeout,
             )
         self._token = token
+        # 브라우저의 private HTTP cache처럼 같은 GET의 ETag와 해석 결과를 연결별로 보존한다.
+        self._response_cache: dict[str, tuple[str, Any]] = {}
 
     def request(
         self,
@@ -262,19 +313,36 @@ class _KeepAliveJsonClient:
         body: Optional[dict[str, Any]] = None,
     ) -> tuple[int, Any, float]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Accept-Encoding": "gzip"}
         if data is not None:
             headers["Content-Type"] = "application/json"
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        cache_key = path if method.upper() == "GET" and data is None else None
+        cached = self._response_cache.get(cache_key) if cache_key else None
+        if cached:
+            headers["If-None-Match"] = cached[0]
         started = time.perf_counter()
         try:
             self._connection.request(method, path, body=data, headers=headers)
             response = self._connection.getresponse()
             raw = response.read()
+            if response.status == 304 and cached:
+                return (
+                    200,
+                    cached[1],
+                    (time.perf_counter() - started) * 1000.0,
+                )
+            parsed = _decode_response(
+                raw,
+                _response_header(response, "Content-Encoding"),
+            )
+            etag = _response_header(response, "ETag")
+            if cache_key and 200 <= response.status < 300 and etag:
+                self._response_cache[cache_key] = (etag, parsed)
             return (
                 response.status,
-                _decode_response(raw),
+                parsed,
                 (time.perf_counter() - started) * 1000.0,
             )
         except (http.client.HTTPException, TimeoutError, OSError) as exc:
@@ -306,8 +374,13 @@ def _seed_database(
     accounts: list[dict[str, str]] = []
     with db.get_connection() as conn:
         conn.execute(
-            "INSERT INTO project(id, name, kind, archived) "
-            "VALUES('load-project','Load Project','team',0)"
+            "INSERT INTO workspace_registry(id, name) VALUES(?, 'Load Workspace')",
+            (LOAD_WORKSPACE_ID,),
+        )
+        conn.execute(
+            "INSERT INTO project(id, name, kind, archived, workspace_scope, workspace_id, "
+            "workspace_name) VALUES(?, 'Load Project', 'team', 0, 'team', ?, 'Load Workspace')",
+            (LOAD_PROJECT_ID, LOAD_WORKSPACE_ID),
         )
         for index in range(users):
             email = f"load{index:03d}@example.test"
@@ -325,8 +398,14 @@ def _seed_database(
             )
             conn.execute(
                 "INSERT INTO project_member(project_id, creator_uid, project_role) "
-                "VALUES('load-project',?,'creator')",
-                (uid,),
+                "VALUES(?,?,'creator')",
+                (LOAD_PROJECT_ID, uid),
+            )
+            conn.execute(
+                "INSERT INTO workspace_member("
+                "workspace_id, account_email, creator_uid, is_available, is_selected"
+                ") VALUES(?,?,?,?,?)",
+                (LOAD_WORKSPACE_ID, email, uid, 1, 1),
             )
             first_generation = ""
             for gen_index in range(generations_per_user):
@@ -335,8 +414,8 @@ def _seed_database(
                 conn.execute(
                     "INSERT INTO generation("
                     "id, worker_id, creator_uid, prompt, model, params, color, status, "
-                    "created_at, sort_ts, project_id, origin"
-                    ") VALUES(?,?,?,?,?,?,?,?,datetime('now'),?,?,?)",
+                    "created_at, sort_ts, project_id, origin, folder_path, workspace_scope, "
+                    "workspace_id) VALUES(?,?,?,?,?,?,?,?,datetime('now'),?,?,?,?,?,?)",
                     (
                         gid,
                         "me",
@@ -347,8 +426,11 @@ def _seed_database(
                         None,
                         "done",
                         float(index * generations_per_user + gen_index),
-                        "load-project",
+                        LOAD_PROJECT_ID,
                         "local",
+                        f"ep{index:03d}/c{gen_index:04d}",
+                        "team",
+                        LOAD_WORKSPACE_ID,
                     ),
                 )
             accounts.append({"email": email, "uid": uid, "generation_id": first_generation})
@@ -401,10 +483,12 @@ def _wait_ready(
     ssl_context: Optional[ssl.SSLContext] = None,
 ) -> None:
     deadline = time.monotonic() + timeout
+    last_status = 0
+    last_detail: Any = {"error": "no response"}
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(f"테스트 서버가 조기 종료했습니다(code={process.returncode})")
-        status, _, _ = _http_json(
+        status, detail, _ = _http_json(
             base_url,
             "/api/ready",
             timeout=2,
@@ -412,8 +496,17 @@ def _wait_ready(
         )
         if status == 200:
             return
+        last_status = status
+        last_detail = detail
         time.sleep(0.25)
-    raise TimeoutError("테스트 서버 준비 시간 초과")
+    try:
+        detail_text = json.dumps(last_detail, ensure_ascii=False)
+    except (TypeError, ValueError):
+        detail_text = repr(last_detail)
+    raise TimeoutError(
+        "테스트 서버 준비 시간 초과"
+        f"(last_status={last_status}, detail={detail_text[:500]})"
+    )
 
 
 async def _login_all(
@@ -443,6 +536,33 @@ async def _login_all(
             raise RuntimeError(f"로그인 실패 status={status} body={body}")
         tokens.append(token)
     return tokens, latencies, statuses
+
+
+async def _probe_during_login(
+    base_url: str,
+    login_task: asyncio.Task,
+    ssl_context: Optional[ssl.SSLContext] = None,
+) -> dict[str, Any]:
+    """CPU 해시 폭주 중에도 일반 sync API가 공용 스레드풀에서 굶지 않는지 측정한다."""
+    latencies: list[float] = []
+    statuses: Counter[int] = Counter()
+    while not login_task.done() or not latencies:
+        status, _body, elapsed = await asyncio.to_thread(
+            _http_json,
+            base_url,
+            "/api/auth/config",
+            ssl_context=ssl_context,
+        )
+        statuses[status] += 1
+        latencies.append(elapsed)
+        if not login_task.done():
+            await asyncio.sleep(0.05)
+    return {
+        "samples": len(latencies),
+        "statuses": dict(statuses),
+        "p95_ms": _percentile(latencies, 0.95),
+        "max_ms": round(max(latencies), 2) if latencies else 0.0,
+    }
 
 
 async def _runtime_snapshot(
@@ -595,6 +715,7 @@ async def _workload_user(
     think_min: float,
     think_max: float,
     ssl_context: Optional[ssl.SSLContext] = None,
+    workload: str = "mixed",
 ) -> dict[str, Any]:
     rng = random.Random(10_000 + index)
     sample_rng = random.Random(20_000 + index)
@@ -614,7 +735,28 @@ async def _workload_user(
     try:
         while time.monotonic() < deadline:
             roll = rng.random()
-            if roll < 0.55:
+            if workload == "task-read" and roll < 0.35:
+                query = urllib.parse.urlencode({"workspace_id": LOAD_WORKSPACE_ID})
+                path, method, body, name = (
+                    f"/api/manage/task-projects?{query}",
+                    "GET",
+                    None,
+                    "task_projects",
+                )
+            elif workload == "task-read":
+                query = urllib.parse.urlencode(
+                    {
+                        "workspace_id": LOAD_WORKSPACE_ID,
+                        "project_id": LOAD_PROJECT_ID,
+                    }
+                )
+                path, method, body, name = (
+                    f"/api/manage/tasks-batch?{query}",
+                    "GET",
+                    None,
+                    "tasks_batch",
+                )
+            elif roll < 0.55:
                 path, method, body, name = (
                     "/api/generations?tab=my&limit=50",
                     "GET",
@@ -684,6 +826,21 @@ async def _workload_user(
     }
 
 
+def _task_workspace_signature(conn: sqlite3.Connection) -> dict[str, Any]:
+    """작업 읽기 부하 전후의 의미 있는 행 전체를 고정 해시로 비교한다."""
+    rows = conn.execute(
+        "SELECT id, project_id, name, status, assignee_uid, start_date, due_date, "
+        "sort_order, note, folder_path, sequence, description, source_kind, "
+        "source_last_seen_at, archived, workspace_scope, workspace_id, workspace_name, "
+        "workspace_origin, created_at FROM project_task ORDER BY id"
+    ).fetchall()
+    encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return {
+        "row_count": len(rows),
+        "sha256": hashlib.sha256(encoded).hexdigest().upper(),
+    }
+
+
 async def _long_poll_worker(
     base_url: str,
     token: str,
@@ -722,12 +879,39 @@ async def _run_load(
     ssl_context: Optional[ssl.SSLContext] = None,
     progress_path: Optional[Path] = None,
     cycle_number: int = 1,
+    db_path: Optional[Path] = None,
+    workload: str = "mixed",
 ) -> dict[str, Any]:
-    tokens, login_latencies, login_statuses = await _login_all(
-        base_url,
-        accounts,
-        ssl_context,
+    login_task = asyncio.create_task(
+        _login_all(
+            base_url,
+            accounts,
+            ssl_context,
+        )
     )
+    login_probe_task = asyncio.create_task(
+        _probe_during_login(base_url, login_task, ssl_context)
+    )
+    try:
+        tokens, login_latencies, login_statuses = await login_task
+    finally:
+        login_control_probe = await login_probe_task
+
+    # 작업 읽기 모드는 최초 파생 작업 생성까지 워밍업에 포함한다. 그 뒤의 반복 GET은
+    # project_task를 단 한 번도 쓰지 않아야 한다.
+    if workload == "task-read":
+        query = urllib.parse.urlencode(
+            {"workspace_id": LOAD_WORKSPACE_ID, "project_id": LOAD_PROJECT_ID}
+        )
+        status, body, _elapsed = await asyncio.to_thread(
+            _http_json,
+            base_url,
+            f"/api/manage/tasks-batch?{query}",
+            token=tokens[0],
+            ssl_context=ssl_context,
+        )
+        if status != 200:
+            raise RuntimeError(f"작업 읽기 워밍업 실패 status={status} body={body}")
 
     # 연결·SQLite 풀·목록 캐시를 한 번 데운 뒤 메모리 기준점을 잡는다.
     await asyncio.gather(
@@ -783,6 +967,24 @@ async def _run_load(
     await asyncio.sleep(1.0)
     baseline = await _runtime_snapshot(base_url, tokens[0], ssl_context)
 
+    task_integrity_conn: Optional[sqlite3.Connection] = None
+    task_integrity: Optional[dict[str, Any]] = None
+    if workload == "task-read":
+        if db_path is None:
+            raise ValueError("task-read 부하는 db_path가 필요합니다")
+        task_integrity_conn = sqlite3.connect(db_path, isolation_level=None, timeout=10)
+        try:
+            task_integrity = {
+                "data_version_before": int(
+                    task_integrity_conn.execute("PRAGMA data_version").fetchone()[0]
+                ),
+                "before": _task_workspace_signature(task_integrity_conn),
+            }
+        except Exception:
+            task_integrity_conn.close()
+            task_integrity_conn = None
+            raise
+
     deadline = time.monotonic() + duration
     workload_tasks = [
         asyncio.create_task(
@@ -795,6 +997,7 @@ async def _run_load(
                 think_min,
                 think_max,
                 ssl_context,
+                workload,
             )
         )
         for index, account in enumerate(accounts)
@@ -824,6 +1027,21 @@ async def _run_load(
     finally:
         stop_monitor.set()
         await monitor_task
+        if task_integrity_conn is not None and task_integrity is not None:
+            try:
+                task_integrity["data_version_after"] = int(
+                    task_integrity_conn.execute("PRAGMA data_version").fetchone()[0]
+                )
+                task_integrity["after"] = _task_workspace_signature(task_integrity_conn)
+                task_integrity["data_version_unchanged"] = (
+                    task_integrity["data_version_before"]
+                    == task_integrity["data_version_after"]
+                )
+                task_integrity["signature_unchanged"] = (
+                    task_integrity["before"] == task_integrity["after"]
+                )
+            finally:
+                task_integrity_conn.close()
     workload_seconds = max(0.001, time.perf_counter() - started + min(3.0, max(1.0, duration / 4)))
 
     # 짧은 테스트에서도 25초 롱폴을 즉시 정리한다.
@@ -882,6 +1100,7 @@ async def _run_load(
             "statuses": dict(login_statuses),
             "p95_ms": _percentile(login_latencies, 0.95),
             "max_ms": round(max(login_latencies), 2) if login_latencies else 0.0,
+            "control_probe": login_control_probe,
         },
         "workload": {
             "requests": request_count,
@@ -917,6 +1136,8 @@ async def _run_load(
             "resource_summary": _resource_summary([baseline, *runtime_samples]),
         },
     }
+    if task_integrity is not None:
+        report["task_workspace_read_integrity"] = task_integrity
 
     after_rss_for_peak = after.get("process", {}).get("rss_bytes")
     resource_summary = report["server"]["resource_summary"]
@@ -955,6 +1176,22 @@ def _evaluate(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any
         ),
         "prior_cycles_functional_ok": report.get("prior_cycles_functional_ok", True),
     }
+    task_integrity = report.get("task_workspace_read_integrity")
+    if task_integrity is not None:
+        checks["task_read_commits_zero"] = bool(
+            task_integrity.get("data_version_unchanged")
+        )
+        checks["task_rows_unchanged"] = bool(task_integrity.get("signature_unchanged"))
+    login_probe = report["login"].get("control_probe")
+    if login_probe is not None:
+        probe_statuses = {
+            int(k): v for k, v in login_probe.get("statuses", {}).items()
+        }
+        checks["login_control_probe_healthy"] = (
+            login_probe.get("samples", 0) > 0
+            and set(probe_statuses) == {200}
+            and login_probe.get("p95_ms", float("inf")) <= args.max_p95_ms
+        )
     growth = report["server"].get("memory_growth_percent_after_warmup")
     if growth is not None:
         checks["memory_growth_within_target"] = growth <= args.max_memory_growth_percent
@@ -1014,16 +1251,27 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 creationflags=creationflags,
             )
             try:
-                server_limits = _apply_server_limits(
-                    process.pid,
-                    cpu_cores=args.server_cpu_cores,
-                    priority=args.server_priority,
-                )
                 await asyncio.to_thread(
                     _wait_ready,
                     base_url,
                     process,
                     ssl_context=ssl_context,
+                )
+                # ★제한은 '실제 LISTEN 프로세스'에 건다(실측 M10 FAIL 반영) — Popen 런처 PID 에만
+                #   걸면 실제 서버는 전체 CPU·정상 우선순위로 돌면서 보고서만 저사양 합격이 된다.
+                #   준비 완료 후에야 자식이 LISTEN 하므로 이 시점에 조회·적용하고 두 PID 를 기록한다.
+                listen_pid = _listening_pid(port)
+                limited_pid = listen_pid or process.pid
+                server_limits = _apply_server_limits(
+                    limited_pid,
+                    cpu_cores=args.server_cpu_cores,
+                    priority=args.server_priority,
+                )
+                server_limits["launcher_pid"] = process.pid
+                server_limits["listen_pid"] = listen_pid
+                server_limits["limited_pid"] = limited_pid
+                server_limits["listen_pid_matches_launcher"] = (
+                    listen_pid == process.pid if listen_pid else None
                 )
                 loop = asyncio.get_running_loop()
                 # 100 롱폴 + 100 HTTP 가 서로 클라이언트 스레드를 굶기지 않도록 격리 클라이언트 풀 확보.
@@ -1051,6 +1299,8 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                             ssl_context,
                             progress_path,
                             cycle_index + 1,
+                            db_path,
+                            args.workload,
                         )
                         cycle_reports.append(cycle_report)
                         if progress_path is not None:
@@ -1136,6 +1386,20 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "long_poll_errors": len(
                     cycle["connections_during_load"]["long_poll_client_errors"]
                 ),
+                "task_read_commits_zero": (
+                    cycle.get("task_workspace_read_integrity", {}).get(
+                        "data_version_unchanged"
+                    )
+                    if cycle.get("task_workspace_read_integrity") is not None
+                    else None
+                ),
+                "task_rows_unchanged": (
+                    cycle.get("task_workspace_read_integrity", {}).get(
+                        "signature_unchanged"
+                    )
+                    if cycle.get("task_workspace_read_integrity") is not None
+                    else None
+                ),
             }
             for index, cycle in enumerate(cycle_reports)
         ]
@@ -1149,6 +1413,17 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             and not cycle["connections_during_load"]["websocket_client_errors"]
             and not cycle["connections_during_load"]["long_poll_client_errors"]
             and not cycle["server"].get("runtime_monitor_errors")
+            and (
+                cycle.get("task_workspace_read_integrity") is None
+                or (
+                    cycle["task_workspace_read_integrity"].get(
+                        "data_version_unchanged"
+                    )
+                    and cycle["task_workspace_read_integrity"].get(
+                        "signature_unchanged"
+                    )
+                )
+            )
             and cycle["workload"]["latency_ms"]["p95"] <= args.max_p95_ms
             and cycle["login"]["p95_ms"] <= args.max_login_p95_ms
             and (
@@ -1180,6 +1455,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "duration_seconds": args.duration,
             "cycles": args.cycles,
             "generations_per_user": args.generations_per_user,
+            "workload": args.workload,
             "base_url": base_url,
             "isolated_temp_data": True,
             "tls_enabled": tls_enabled,
@@ -1236,6 +1512,12 @@ def main() -> int:
         help="같은 서버에서 연속 실행할 횟수(첫 사이클은 메모리 고수위 워밍업)",
     )
     parser.add_argument("--generations-per-user", type=int, default=20)
+    parser.add_argument(
+        "--workload",
+        choices=("mixed", "task-read"),
+        default="mixed",
+        help="mixed=일반 사용 혼합, task-read=작업 대시보드 읽기·DB 무쓰기 검증",
+    )
     parser.add_argument("--think-min", type=float, default=0.25)
     parser.add_argument("--think-max", type=float, default=0.75)
     parser.add_argument("--max-p95-ms", type=float, default=500.0)

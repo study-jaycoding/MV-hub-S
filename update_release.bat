@@ -1,1 +1,1 @@
-@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_release_update.ps1" -Root "%~dp0."
+@set "MVHUB_UPDATE_RUNNER=%~dp0run_release_update.ps1"&set "MVHUB_UPDATE_ROOT=%~dp0."&powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& $env:MVHUB_UPDATE_RUNNER -Root $env:MVHUB_UPDATE_ROOT"&call exit /b %%errorlevel%%

@@ -16,6 +16,8 @@ from app import manage_db
 from app.models import GenerationOut, ProjectOut, WorkspaceContext
 from app.repo import manage
 from app.repo import manage_telemetry
+from app.services import cli_bridge
+from app.services.mcp_ingest import mcp_item_to_cli
 from app.workspace_context import normalize_workspace_context
 
 
@@ -355,6 +357,28 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         with self.assertRaises(repo.WorkspaceNameAmbiguous):
             repo.resolve_workspace_name("teatime")
 
+    def test_workspace_id_resolution_selects_duplicate_name_exactly(self):
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-a','TeaTime')")
+            conn.execute("INSERT INTO workspace_registry(id,name) VALUES('ws-b','TeaTime')")
+            conn.execute(
+                "INSERT INTO workspace_member(workspace_id,account_email,is_available) "
+                "VALUES('ws-b','artist@example.com',1)"
+            )
+
+        self.assertEqual(
+            repo.resolve_workspace_id("ws-b"),
+            {"id": "ws-b", "name": "TeaTime"},
+        )
+        with self.assertRaises(repo.WorkspaceNameNotFound):
+            repo.resolve_workspace_id("ws-missing")
+        self.assertEqual(
+            repo.resolve_workspace_id("ws-b", account_email="artist@example.com"),
+            {"id": "ws-b", "name": "TeaTime"},
+        )
+        with self.assertRaises(repo.WorkspaceNameNotFound):
+            repo.resolve_workspace_id("ws-b", account_email="viewer@example.com")
+
     def test_synced_unknown_can_be_filled_but_known_context_cannot_be_overwritten(self):
         parsed = {
             "generation": {
@@ -385,6 +409,87 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
                 "SELECT workspace_scope, workspace_id, workspace_name FROM generation WHERE job_id='job-1'"
             ).fetchone()
         self.assertEqual(tuple(row), ("team", "ws-millionvolt", "MILLIONVOLT"))
+
+    def test_synced_job_workspace_wins_over_batch_current_selection(self):
+        parsed = {
+            "generation": {
+                "id": "job-own-workspace",
+                "prompt": "p",
+                "model": "m",
+                "params": {},
+                "status": "done",
+                "created_at": "2026-08-06T00:00:00Z",
+                "sort_ts": 1.0,
+                "creator_uid": "user-me",
+                "workspace_scope": "team",
+                "workspace_id": "ws-original",
+                "workspace_name": "ORIGINAL",
+            },
+            "asset": None,
+            "references": [],
+        }
+
+        repo.apply_synced_jobs(
+            [parsed],
+            "me",
+            workspace={"scope": "team", "id": "ws-current", "name": "CURRENT"},
+        )
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name "
+                "FROM generation WHERE job_id='job-own-workspace'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("team", "ws-original", "ORIGINAL"))
+
+    def test_invalid_explicit_job_workspace_does_not_fall_back_to_batch(self):
+        parsed = {
+            "generation": {
+                "id": "job-invalid-workspace",
+                "prompt": "p",
+                "model": "m",
+                "params": {},
+                "status": "done",
+                "created_at": "2026-08-06T00:00:00Z",
+                "sort_ts": 1.0,
+                "creator_uid": "user-me",
+                "workspace_scope": "team",
+                "workspace_id": None,
+                "workspace_name": "BROKEN",
+            },
+            "asset": None,
+            "references": [],
+        }
+
+        repo.apply_synced_jobs([parsed], "me", workspace=self._team())
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_scope, workspace_id, workspace_name "
+                "FROM generation WHERE job_id='job-invalid-workspace'"
+            ).fetchone()
+        self.assertEqual(tuple(row), ("unknown", None, None))
+
+    def test_mcp_conversion_preserves_per_job_workspace_through_parse(self):
+        raw = {
+            "id": "mcp-job",
+            "status": "done",
+            "model": "image-model",
+            "createdAt": "2026-08-06T00:00:00Z",
+            "params": {"prompt": "p"},
+            "workspace_scope": "team",
+            "workspace_id": "ws-history",
+            "workspace_name": "HISTORY",
+        }
+
+        parsed = cli_bridge.parse_job(mcp_item_to_cli(raw))
+        generation = parsed["generation"]
+        self.assertEqual(
+            (
+                generation["workspace_scope"],
+                generation["workspace_id"],
+                generation["workspace_name"],
+            ),
+            ("team", "ws-history", "HISTORY"),
+        )
 
     def test_account_reports_build_workspace_member_registry(self):
         with db.get_connection() as conn:
@@ -515,6 +620,43 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         self.assertEqual(tuple(project), ("Legacy Project", "unknown", None, None))
         self.assertIn("idx_generation_workspace_sort", indexes)
         self.assertIn("idx_project_workspace", indexes)
+
+    def test_intermediate_workspace_values_are_canonicalized_without_losing_identity(self):
+        """복구 가능한 대소문자·공백 값은 unknown으로 버리지 않는다."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id,name,kind,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('legacy-case-p','Legacy Case','team','team','ws-a','A')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id,worker_id,prompt,status,project_id,workspace_scope,"
+                "workspace_id,workspace_name,created_at,sort_ts) VALUES("
+                "'legacy-case-g','me','keep-team','done','legacy-case-p','team','ws-a','A',"
+                "'2026-01-01',1)"
+            )
+            # 실제 중간 배포·수동 복구 DB처럼 현행 CHECK 밖의 값을 재현한다.
+            conn.execute("PRAGMA ignore_check_constraints=ON")
+            conn.execute(
+                "UPDATE project SET workspace_scope=' TEAM ', workspace_id=' ws-a ' "
+                "WHERE id='legacy-case-p'"
+            )
+            conn.execute(
+                "UPDATE generation SET workspace_scope=' TEAM ', workspace_id=' ws-a ' "
+                "WHERE id='legacy-case-g'"
+            )
+            conn.execute("PRAGMA ignore_check_constraints=OFF")
+
+            db_migrations._migrate(conn)
+
+            project = conn.execute(
+                "SELECT workspace_scope,workspace_id FROM project WHERE id='legacy-case-p'"
+            ).fetchone()
+            generation = conn.execute(
+                "SELECT workspace_scope,workspace_id FROM generation WHERE id='legacy-case-g'"
+            ).fetchone()
+
+        self.assertEqual(tuple(project), ("team", "ws-a"))
+        self.assertEqual(tuple(generation), ("team", "ws-a"))
 
 
 class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):

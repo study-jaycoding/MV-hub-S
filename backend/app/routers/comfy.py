@@ -12,9 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -23,14 +26,20 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from pydantic import BaseModel
 
 from .. import rbac, repo
-from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, MANAGE_ENABLED, MEDIA_DIR
+from ..config import (
+    AUTH_ENABLED,
+    DEFAULT_WORKER_ID,
+    EXTERNAL_RECOVERY_ENABLED,
+    MANAGE_ENABLED,
+    MEDIA_DIR,
+)
 from ..deps import (
     account_actor_uid,
     can_view_generation,
     require_agent_account,
     require_project_role,
 )
-from ..services import comfy_client, comfy_workflow, video_convert
+from ..services import comfy_client, comfy_workflow, upload_limits, video_convert
 from ..services.release_update import update_in_progress
 from ..services.request_guards import require_loopback_request
 
@@ -55,6 +64,9 @@ _K_TARGET = "comfy_target"          # "local" | "cloud"
 _K_API_KEY = "comfy_api_key"
 _K_CONCURRENCY = "comfy_concurrency"
 _K_INPUT_DIR = "comfy_input_dir"
+# 제출은 됐지만 아직 이 프로세스가 결과를 회수하지 못한 잡. app_setting 은 이 PC 로컬 DB라
+# 별도 파일 경로·권한 문제 없이 재시작 흔적을 남길 수 있다(키·워크플로우는 저장하지 않는다).
+_K_INFLIGHT_RUNS = "comfy_inflight_runs"
 
 _DEFAULT_URL = (os.environ.get("CONTENT_HUB_COMFY_URL") or "http://127.0.0.1:8188").rstrip("/")
 _MASK = "***"
@@ -73,6 +85,10 @@ _JOB_TIMEOUT = _env_int("CONTENT_HUB_COMFY_TIMEOUT_SEC", 60 * 30, minimum=30)  #
 _POLL_LOCAL = 2.0
 _POLL_CLOUD = 4.0
 _CLOUD_UNKNOWN_GRACE = 90  # 알 수 없는 Cloud 상태가 이 시간(초) 넘게 지속되면 실패(형식 어긋남 조기 진단)
+# 일시적인 Comfy 재시작/프록시 연결 끊김이 30분 전체 실행 실패가 되지 않게 한다. N번째 연속
+# 오류에서만 실패하며, 그 전에는 폴링 간격을 지수 백오프로 늘려 서버에 재접속 폭주도 막는다.
+_POLL_ERROR_RETRY_LIMIT = _env_int("CONTENT_HUB_COMFY_POLL_ERROR_RETRIES", 5)
+_POLL_ERROR_BACKOFF_MAX_SEC = 30.0
 
 # ── 비동기 실행 잡 스토어 ─────────────────────────────────────────────────────
 # /run 이 긴 HTTP 연결을 붙잡던 구조(제출→폴링→다운로드)를 백그라운드 스레드로 분리한다.
@@ -88,6 +104,7 @@ _RUN_FAILED = "failed"
 
 _RUN_JOBS_LOCK = threading.Lock()
 _RUN_JOBS: dict[str, dict[str, Any]] = {}
+_RUN_PERSIST_LOCK = threading.Lock()
 
 
 def active_run_job_count() -> int:
@@ -107,12 +124,16 @@ _RUN_GATE = threading.Condition()
 _RUN_SLOTS_ACTIVE = 0
 
 
-def _acquire_run_slot(capacity: int) -> None:
+def _acquire_run_slot(capacity: int, job_id: Optional[str] = None) -> None:
     global _RUN_SLOTS_ACTIVE
     cap = max(1, capacity)
     with _RUN_GATE:
         while _RUN_SLOTS_ACTIVE >= cap:
-            _RUN_GATE.wait()
+            # 유한 대기 + 하트비트 — 큰 배치의 후순위 잡이 슬롯을 기다리는 동안에도
+            # updated_at 이 갱신돼, 살아 있는 대기 잡이 스윕으로 증발하지 않는다.
+            _RUN_GATE.wait(timeout=30.0)
+            if job_id:
+                _update_run_job(job_id)
         _RUN_SLOTS_ACTIVE += 1
 
 
@@ -120,7 +141,9 @@ def _release_run_slot() -> None:
     global _RUN_SLOTS_ACTIVE
     with _RUN_GATE:
         _RUN_SLOTS_ACTIVE = max(0, _RUN_SLOTS_ACTIVE - 1)
-        _RUN_GATE.notify()
+        # 설정별 cap 이 다른 대기자가 섞일 수 있다. 하나만 깨우면 아직 cap 미달인 대기자를
+        # 깨워 다시 재우고, 이미 들어갈 수 있는 대기자는 30초 timeout 까지 놓칠 수 있다.
+        _RUN_GATE.notify_all()
 
 
 def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
@@ -133,7 +156,11 @@ def _sweep_run_jobs_locked(now: Optional[float] = None) -> None:
             base = job.get("finished_at") or job.get("updated_at") or job.get("created_at") or now
             ttl = _RUN_JOB_TTL_SEC
         else:
-            base = job.get("created_at") or now
+            # 활성 잡은 '마지막 하트비트' 기준. created_at 기준이면 큰 배치의 후순위 잡이
+            # 큐 대기시간 때문에 실행 도중 스윕돼 결과가 증발했다(크레딧은 소모된 채 404).
+            # 워커가 대기/폴링 중 주기적으로 updated_at 을 갱신하므로, 살아 있는 잡은 절대
+            # 안 걸리고 죽은 스레드의 잔재만 TTL 뒤 정리된다.
+            base = job.get("updated_at") or job.get("created_at") or now
             ttl = _RUN_ACTIVE_JOB_TTL_SEC
         if now - float(base) > ttl:
             stale.append(job_id)
@@ -156,6 +183,7 @@ def _create_run_job() -> str:
             "code": None,
             "auth_error": False,
             "prompt_id": None,
+            "cancel_attempted": False,
         }
     return job_id
 
@@ -179,6 +207,7 @@ def _finish_run_job(job_id: str, result: dict) -> None:
             "state": _RUN_DONE, "updated_at": now, "finished_at": now,
             "result": result, "prompt_id": result.get("prompt_id"),
         })
+    _forget_inflight_run(job_id)
 
 
 def _fail_run_job(job_id: str, code: int, detail: Any) -> None:
@@ -192,6 +221,66 @@ def _fail_run_job(job_id: str, code: int, detail: Any) -> None:
             "state": _RUN_FAILED, "updated_at": now, "finished_at": now,
             "error": error, "code": code, "auth_error": code == 402,
         })
+    _forget_inflight_run(job_id)
+
+
+def _stored_inflight_runs_locked() -> list[dict[str, Any]]:
+    """app_setting JSON 을 읽어 최소 필드가 있는 항목만 되돌린다(_RUN_PERSIST_LOCK 보유 전제)."""
+    raw = repo.get_setting(_K_INFLIGHT_RUNS) or "[]"
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        log.warning("comfy in-flight 영속 저장 형식이 손상돼 비웁니다")
+        return []
+    if not isinstance(value, list):
+        log.warning("comfy in-flight 영속 저장 형식이 목록이 아니어서 비웁니다")
+        return []
+    return [
+        item for item in value
+        if isinstance(item, dict)
+        and isinstance(item.get("job_id"), str)
+        and isinstance(item.get("prompt_id"), str)
+        and item.get("target") in ("local", "cloud")
+    ]
+
+
+def _write_inflight_runs_locked(runs: list[dict[str, Any]]) -> None:
+    """작은 JSON 목록 전체를 원자적으로 교체한다(_RUN_PERSIST_LOCK 보유 전제)."""
+    repo.set_setting(
+        _K_INFLIGHT_RUNS,
+        json.dumps(runs, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _track_inflight_run(job_id: str, prompt_id: str, target_kind: str) -> None:
+    """원격 제출 성공 직후 재시작 진단용 최소 흔적을 남긴다.
+
+    ★best-effort — 이 기록이 실패해도(순간 DB 잠금 등) 호출부는 실행을 계속한다.
+    이미 제출·과금된 멀쩡한 잡을 진단 기록 실패 때문에 취소하면 손해가 더 크다.
+    잃는 것은 '재시작 시 이 잡의 흔적 로그·Cloud 취소' 뿐이다.
+    """
+    record = {
+        "job_id": job_id,
+        "prompt_id": prompt_id,
+        "target": "cloud" if target_kind == "cloud" else "local",
+        "created_at": time.time(),
+    }
+    with _RUN_PERSIST_LOCK:
+        runs = [r for r in _stored_inflight_runs_locked() if r["job_id"] != job_id]
+        runs.append(record)
+        _write_inflight_runs_locked(runs)
+
+
+def _forget_inflight_run(job_id: str) -> None:
+    """완료/실패가 확정된 잡의 재시작 흔적을 best-effort 로 제거한다."""
+    try:
+        with _RUN_PERSIST_LOCK:
+            runs = _stored_inflight_runs_locked()
+            kept = [r for r in runs if r["job_id"] != job_id]
+            if len(kept) != len(runs):
+                _write_inflight_runs_locked(kept)
+    except Exception as e:  # noqa: BLE001 — 이미 끝난 실행 결과를 영속 정리 실패로 뒤집지 않는다.
+        log.warning("comfy in-flight 영속 정리 실패 job_id=%s: %s", job_id, e)
 
 
 def _raw_settings() -> dict:
@@ -203,6 +292,106 @@ def _raw_settings() -> dict:
         "comfy_concurrency": _to_int(repo.get_setting(_K_CONCURRENCY), 3),
         "comfy_input_dir": repo.get_setting(_K_INPUT_DIR) or "",
     }
+
+
+def _cancel_remote_run(target: dict, prompt_id: str, reason: str,
+                       job_id: Optional[str] = None) -> None:
+    """실패 뒤 원격 잡을 best-effort 로 멈춘다.
+
+    Cloud·로컬 모두 **지정 prompt 를 대기열에서 삭제**(/queue delete)만 한다 — 로컬의
+    blanket interrupt 는 '현재 실행 중'을 멈추는데 그게 우리 다른 배치 잡이거나 사용자가
+    ComfyUI 로 직접 돌리는 작업일 수 있어 표적 없는 중단은 피해가 더 크다. 이미 실행에
+    들어간 로컬 프롬프트는 끝까지 돌게 둔다(로컬은 크레딧 소모가 없다). 동일 잡의
+    타임아웃→worker 실패 경로가 두 번 취소하지 않도록 메모리 잡에 시도 표식을 남긴다.
+    취소 실패는 원래 실행 오류보다 우선하지 않는다.
+    """
+    if not prompt_id:
+        return
+    if job_id:
+        with _RUN_JOBS_LOCK:
+            job = _RUN_JOBS.get(job_id)
+            if job:
+                if job.get("cancel_attempted"):
+                    return
+                job["cancel_attempted"] = True
+                job["updated_at"] = time.time()
+    try:
+        if target.get("cloud"):
+            comfy_client.cloud_cancel_pending(target, prompt_id)
+        else:
+            # ★로컬은 대기열에서 이 prompt 만 지운다(/queue delete 는 로컬도 지원).
+            #  블랭킷 interrupt 는 '현재 실행 중'을 멈추는데, 배치에서는 그게 우리 다른
+            #  잡이거나 사용자가 ComfyUI 로 직접 돌리는 작업일 수 있다 — 표적 없는 중단은
+            #  피해가 더 크다(통합 검토에서 완화). 이미 실행에 들어간 프롬프트는 그냥
+            #  끝까지 돌게 둔다(로컬은 크레딧 소모가 없어 낭비도 전기값뿐).
+            comfy_client.cloud_cancel_pending(target, prompt_id)
+    except Exception as e:  # noqa: BLE001 — 취소 실패가 원래 실패를 가리면 안 된다.
+        log.warning(
+            "comfy 원격 잡 취소 실패 target=%s prompt_id=%s reason=%s: %s",
+            "cloud" if target.get("cloud") else "local", prompt_id, reason, e,
+        )
+
+
+def _cancel_failed_run(settings: dict, job_id: str, reason: str) -> None:
+    """worker 에서 실패가 확정되기 전, 제출 완료된 prompt 만 취소한다."""
+    with _RUN_JOBS_LOCK:
+        job = _RUN_JOBS.get(job_id)
+        prompt_id = str(job.get("prompt_id") or "") if job else ""
+    if not prompt_id:
+        return
+    try:
+        _cancel_remote_run(comfy_client.make_target(settings), prompt_id, reason, job_id)
+    except Exception as e:  # noqa: BLE001 — settings 손상 등도 실행 실패를 덮지 않게 한다.
+        log.warning("comfy 원격 잡 취소 준비 실패 job_id=%s: %s", job_id, e)
+
+
+def recover_interrupted_run_jobs() -> None:
+    """부팅 시 이전 프로세스의 in-flight 흔적을 운영 로그로 남기고 비운다.
+
+    풀 자동복구는 하지 않는다. 특히 Cloud 는 현재 저장된 API 키로 지정 prompt 취소를 한 번
+    시도해 재시작 뒤의 크레딧 누수를 줄인다. 키가 바뀌었거나 완료된 잡이면 실패/거절도 로그만
+    남기고, 이 PC는 더 이상 그 잡을 추적하지 않는다는 사실을 명확히 한다.
+    """
+    try:
+        with _RUN_PERSIST_LOCK:
+            runs = _stored_inflight_runs_locked()
+    except Exception as e:  # noqa: BLE001 — 재시작 정리 실패가 서버 부팅을 막으면 안 된다.
+        log.warning("comfy in-flight 재시작 정리 조회 실패: %s", e)
+        return
+
+    try:
+        for run in runs:
+            job_id = run["job_id"]
+            prompt_id = run["prompt_id"]
+            target_kind = run["target"]
+            log.warning(
+                "comfy 서버 재시작으로 추적이 끊긴 잡 job_id=%s prompt_id=%s target=%s "
+                "(결과는 ComfyUI 히스토리에서 수동 확인 필요)",
+                job_id, prompt_id, target_kind,
+            )
+            if target_kind == "cloud":
+                if not EXTERNAL_RECOVERY_ENABLED:
+                    # 격리 드릴 서버 등 — 사본 DB의 키로 라이브 잡을 취소하면 안 된다. 로그만 남긴다.
+                    log.warning(
+                        "comfy Cloud 취소 생략(CONTENT_HUB_EXTERNAL_RECOVERY=0) prompt_id=%s",
+                        prompt_id,
+                    )
+                    continue
+                # 당시 키는 보관하지 않는다. 현재 Cloud 키로만 취소를 시도한다(없거나 바뀌면 로그만).
+                try:
+                    settings = _raw_settings()
+                    settings["comfy_target"] = "cloud"
+                    _cancel_remote_run(comfy_client.make_target(settings), prompt_id, "server restart")
+                except Exception as e:  # noqa: BLE001 — 한 항목 오류가 다른 Cloud 취소를 막지 않게 한다.
+                    log.warning("comfy 재시작 Cloud 취소 준비 실패 prompt_id=%s: %s", prompt_id, e)
+    finally:
+        # 이 라이트 버전은 재연결/결과 수집을 하지 않는다. 같은 흔적을 다음 부팅마다 반복하지 않게
+        # 취소 성공 여부와 무관하게 비운다.
+        try:
+            with _RUN_PERSIST_LOCK:
+                _write_inflight_runs_locked([])
+        except Exception as e:  # noqa: BLE001
+            log.warning("comfy in-flight 재시작 정리 저장 실패: %s", e)
 
 
 def _to_int(v, default: int) -> int:
@@ -377,18 +566,45 @@ def _coerce(val, like):
     return val
 
 
-def _wait(target: dict, prompt_id: str) -> dict:
+def _wait(target: dict, prompt_id: str, job_id: Optional[str] = None) -> dict:
+    def _heartbeat() -> None:
+        # 폴링이 살아 있다는 표식 — 활성 잡 스윕(updated_at 기준)에서 안 걸리게.
+        if job_id:
+            _update_run_job(job_id)
+
+    def _retry_delay(poll_interval: float, failures: int) -> float:
+        return min(poll_interval * (2 ** (failures - 1)), _POLL_ERROR_BACKOFF_MAX_SEC)
+
     deadline = time.monotonic() + _JOB_TIMEOUT
     if target["cloud"]:
         last = None
         unknown_since = None  # 알 수 없는 상태를 처음 본 시각(grace 초과 시 실패)
+        poll_errors = 0
         while True:
             now = time.monotonic()
             if now >= deadline:
+                _cancel_remote_run(target, prompt_id, "poll timeout", job_id)
                 raise comfy_client.ComfyError(
                     f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다 "
                     f"(마지막 상태={last or '(empty)'})")
-            st = comfy_client.cloud_job_status(target, prompt_id)
+            try:
+                st = comfy_client.cloud_job_status(target, prompt_id)
+            except comfy_client.ComfyError as e:
+                poll_errors += 1
+                if poll_errors >= _POLL_ERROR_RETRY_LIMIT:
+                    raise comfy_client.ComfyError(
+                        f"Cloud 상태 조회가 {poll_errors}회 연속 실패했습니다: {e}",
+                        auth_error=getattr(e, "auth_error", False),
+                    ) from e
+                delay = _retry_delay(_POLL_CLOUD, poll_errors)
+                log.warning(
+                    "comfy cloud 상태 조회 일시 오류(%s/%s), %.1f초 뒤 재시도 prompt_id=%s: %s",
+                    poll_errors, _POLL_ERROR_RETRY_LIMIT, delay, prompt_id, e,
+                )
+                _heartbeat()
+                time.sleep(delay)
+                continue
+            poll_errors = 0
             if st != last:
                 log.info("comfy cloud job %s status=%s", prompt_id, st or "(empty)")
                 last = st
@@ -414,19 +630,40 @@ def _wait(target: dict, prompt_id: str) -> dict:
                 raise comfy_client.ComfyError(
                     f"Cloud 상태를 해석할 수 없습니다 (status={st or '(empty)'}) — "
                     "잡이 제출됐지만 응답 형식/엔드포인트를 확인해야 할 수 있습니다")
+            _heartbeat()
             time.sleep(_POLL_CLOUD)
 
     entry = None
+    poll_errors = 0
     while time.monotonic() < deadline:
-        entry = comfy_client.get_history(target, prompt_id)
+        try:
+            entry = comfy_client.get_history(target, prompt_id)
+        except comfy_client.ComfyError as e:
+            poll_errors += 1
+            if poll_errors >= _POLL_ERROR_RETRY_LIMIT:
+                raise comfy_client.ComfyError(
+                    f"로컬 ComfyUI 상태 조회가 {poll_errors}회 연속 실패했습니다: {e}",
+                    auth_error=getattr(e, "auth_error", False),
+                ) from e
+            delay = _retry_delay(_POLL_LOCAL, poll_errors)
+            log.warning(
+                "comfy local 상태 조회 일시 오류(%s/%s), %.1f초 뒤 재시도 prompt_id=%s: %s",
+                poll_errors, _POLL_ERROR_RETRY_LIMIT, delay, prompt_id, e,
+            )
+            _heartbeat()
+            time.sleep(delay)
+            continue
+        poll_errors = 0
         if entry is not None:
             status = entry.get("status") or {}
             if (comfy_client.history_error(entry) or status.get("completed") is True
                     or status.get("status_str") == "success"
                     or (not status and entry.get("outputs"))):
                 break
+        _heartbeat()
         time.sleep(_POLL_LOCAL)
     else:
+        _cancel_remote_run(target, prompt_id, "poll timeout", job_id)
         raise comfy_client.ComfyError(f"타임아웃 ({_JOB_TIMEOUT // 60}분) — 잡이 끝나지 않았습니다")
     err = comfy_client.history_error(entry)
     if err:
@@ -449,13 +686,28 @@ def _prune_node(wf: dict, node_id: str) -> None:
             del inputs[key]
 
 
-def _fill_images(target: dict, wf: dict, slots: list, uploads: list) -> int:
+@dataclass(frozen=True)
+class _MediaUpload:
+    filename: str
+    path: Path
+    size: int
+
+
+def _cleanup_media_uploads(uploads: list[_MediaUpload]) -> None:
+    for upload in uploads:
+        try:
+            upload.path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("Comfy 입력 임시파일 정리 실패: %s", exc)
+
+
+def _fill_images(target: dict, wf: dict, slots: list, uploads: list[_MediaUpload]) -> int:
     """이미지 uploads 를 image_slots 에 순서대로 업로드·주입하고, 미사용 슬롯은 prune. 채운 개수 반환."""
     if not uploads:
         return 0
     used = 0
-    for slot, (fname, data) in zip(slots, uploads):
-        name = comfy_client.upload_bytes(target, fname, data)
+    for slot, upload in zip(slots, uploads):
+        name = comfy_client.upload_file(target, upload.filename, upload.path)
         node = wf.get(slot["node_id"])
         if isinstance(node, dict):
             node.setdefault("inputs", {})[slot["field"]] = name
@@ -465,7 +717,13 @@ def _fill_images(target: dict, wf: dict, slots: list, uploads: list) -> int:
     return used
 
 
-def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: str) -> int:
+def _fill_videos(
+    target: dict,
+    wf: dict,
+    slots: list,
+    uploads: list[_MediaUpload],
+    input_dir: str,
+) -> int:
     """영상 uploads 를 video_slots 에 채우고 미사용 슬롯 prune.
     파일 선택형(VHS_LoadVideo 등)은 /upload/image 로 올려 그 이름을 주입.
     경로 입력형(VHS_LoadVideoPath)은 절대경로를 요구 → comfy_input_dir 에 저장해 그 경로를 주입.
@@ -473,7 +731,8 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
     if not uploads:
         return 0
     used = 0
-    for slot, (fname, data) in zip(slots, uploads):
+    for slot, upload in zip(slots, uploads):
+        fname = upload.filename
         node = wf.get(slot["node_id"])
         if not isinstance(node, dict):
             used += 1
@@ -489,24 +748,35 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
             safe = Path(fname).name or "input.bin"
             dest = Path(input_dir) / "mvhub" / safe
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            shutil.copyfile(upload.path, dest)
             node.setdefault("inputs", {})[slot["field"]] = str(dest.resolve())
         else:
+            source = upload.path
+            converted: Path | None = None
             if target["cloud"]:
                 # Cloud 는 표준 코덱·정상 프레임레이트만 받는다 → 업로드 전에 H.264 MP4 로 자동 변환한다.
                 # (ffmpeg 없으면 원본 그대로 — 최선 노력. 변환 실패면 명확한 사유로 502.)
                 try:
-                    conv = video_convert.to_cloud_mp4(data)
+                    converted = video_convert.to_cloud_mp4_path(source)
                 except video_convert.VideoConvertError as e:
                     raise HTTPException(
                         502,
                         f"입력 영상을 클라우드용(H.264 MP4)으로 변환하지 못했습니다: {e}. "
                         "영상을 표준 MP4로 다시 내보내거나 설정에서 Local 을 쓰세요.",
                     )
-                if conv is not data:  # 실제로 변환됐으면 이름도 .mp4 로(클라우드 인식용)
-                    data = conv
+                if converted != source:  # 실제로 변환됐으면 이름도 .mp4 로(클라우드 인식용)
+                    source = converted
                     fname = os.path.splitext(fname)[0] + ".mp4"
-            name = comfy_client.upload_bytes(target, fname, data)
+            try:
+                name = comfy_client.upload_file(target, fname, source)
+            finally:
+                if converted is not None and converted != upload.path:
+                    try:
+                        converted.unlink(missing_ok=True)
+                    except OSError as exc:
+                        # 업로드는 이미 끝났으므로 임시파일 정리 실패가 정상 잡을 실패로 바꾸면 안 된다.
+                        # 24시간 이상 남은 앱 접두 파일은 temp_sweeper가 다시 회수한다.
+                        log.warning("Comfy 변환 임시파일 정리 실패: %s", exc)
             node.setdefault("inputs", {})[slot["field"]] = name
         used += 1
     for slot in slots[used:]:
@@ -514,25 +784,110 @@ def _fill_videos(target: dict, wf: dict, slots: list, uploads: list, input_dir: 
     return used
 
 
-def _read_media_uploads(files: list[UploadFile]) -> list[tuple[str, bytes]]:
-    """UploadFile 은 응답 후 FastAPI 가 닫을 수 있으므로 request 안에서 bytes 로 고정한다.
-    (worker thread 에는 UploadFile 객체가 아니라 (filename, bytes) 만 넘긴다.)"""
-    uploads: list[tuple[str, bytes]] = []
-    for i, uf in enumerate(files):
-        uploads.append((uf.filename or f"input_{i}.bin", uf.file.read()))
-    return uploads
+def _raise_comfy_upload_limit(exc: upload_limits.UploadLimitExceeded) -> None:
+    if exc.kind == "file_count":
+        raise HTTPException(
+            400,
+            f"Comfy 입력은 한 번에 최대 {upload_limits.COMFY_UPLOAD_MAX_FILES}개입니다",
+        ) from exc
+    if exc.kind == "file_size":
+        raise HTTPException(
+            413,
+            f"{(exc.index or 0) + 1}번째 Comfy 입력이 너무 큽니다"
+            f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES)})",
+            headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES),
+        ) from exc
+    raise HTTPException(
+        413,
+        "Comfy 입력 파일 합계가 너무 큽니다"
+        f"(최대 {upload_limits.format_byte_limit(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES)})",
+        headers=upload_limits.limit_headers(upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES),
+    ) from exc
 
 
-def _inject_media_bytes(target: dict, wf: dict, meta: list, uploads: list[tuple[str, bytes]],
-                        input_dir: str) -> dict:
+def _stage_media_uploads(files: list[UploadFile]) -> list[_MediaUpload]:
+    """요청 spool을 앱 소유 임시파일로 제한 복사해 백그라운드 스레드에 넘긴다.
+
+    FastAPI는 응답 뒤 UploadFile을 닫으므로 그대로 넘길 수 없다. 전체 bytes로 고정하지 않고 1MiB
+    청크로 복사해 작업 스레드는 경로만 소유한다. 정상·오류·스레드 시작 실패는 즉시 지우고, 프로세스
+    비정상 종료 잔재는 temp_sweeper의 앱 접두 계약이 회수한다.
+    """
+    try:
+        upload_limits.validate_upload_batch(
+            files,
+            max_files=upload_limits.COMFY_UPLOAD_MAX_FILES,
+            max_file_bytes=upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES,
+            max_total_bytes=upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES,
+        )
+    except upload_limits.UploadLimitExceeded as exc:
+        _raise_comfy_upload_limit(exc)
+
+    uploads: list[_MediaUpload] = []
+    total = 0
+    try:
+        for i, upload in enumerate(files):
+            upload.file.seek(0)
+            handle = tempfile.NamedTemporaryFile(
+                prefix="mvhub-comfy-input-", suffix=".part", delete=False
+            )
+            path = Path(handle.name)
+            try:
+                with handle:
+                    size = upload_limits.copy_stream_limited(
+                        upload.file,
+                        handle,
+                        max_bytes=upload_limits.COMFY_UPLOAD_FILE_MAX_BYTES,
+                    )
+            except upload_limits.UploadLimitExceeded as exc:
+                path.unlink(missing_ok=True)
+                _raise_comfy_upload_limit(replace(exc, index=i))
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            total += size
+            uploads.append(_MediaUpload(upload.filename or f"input_{i}.bin", path, size))
+            if total > upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES:
+                _raise_comfy_upload_limit(
+                    upload_limits.UploadLimitExceeded(
+                        "total_size", upload_limits.COMFY_UPLOAD_TOTAL_MAX_BYTES, total
+                    )
+                )
+        return uploads
+    except Exception:
+        _cleanup_media_uploads(uploads)
+        raise
+
+
+def _inject_media_files(
+    target: dict,
+    wf: dict,
+    meta: list,
+    uploads: list[_MediaUpload],
+    input_dir: str,
+    job_id: str = "",
+) -> dict:
     """meta[i] 는 uploads[i] 와 순서 대응({type}). 타입별로 분리해 이미지→image_slots,
     영상→video_slots 에 순서대로 채우고 미사용 슬롯 prune. 실제 채운 개수를 반환(표시용).
     잘못된 요청(타입 누락/불일치, 슬롯 초과)은 업로드 전에 400 으로 거부한다."""
     if len(meta) != len(uploads):
         raise HTTPException(400, "media 파일 수와 media_meta 수가 일치하지 않습니다")
+    # ★잡별 유일 파일명: 프론트가 주는 이름은 image1.png 식이라 병렬 배치에서 잡 B 의
+    #  업로드(overwrite=true)가 잡 A 의 input/mvhub/image1.png 를 덮어써, A 가 B 의
+    #  이미지를 입력으로 실행되는 무오류 오답이 났다. 잡 uuid + **업로드 순번** 접두로
+    #  잡 간·잡 내(같은 원본 이름 2개 업로드) 충돌을 모두 차단한다
+    #  (반환된 이름이 그대로 노드에 주입되므로 이 한 곳이 유일한 관문이다).
+    if job_id:
+        prefix = job_id[:12]
+        uploads = [
+            replace(
+                upload,
+                filename=f"{prefix}-{i}-{Path(upload.filename).name or 'input.bin'}",
+            )
+            for i, upload in enumerate(uploads)
+        ]
     slots = comfy_workflow.detect_slots(wf, set())
-    images: list[tuple[str, bytes]] = []
-    videos: list[tuple[str, bytes]] = []
+    images: list[_MediaUpload] = []
+    videos: list[_MediaUpload] = []
     for i, entry in enumerate(uploads):
         m = meta[i] if isinstance(meta[i], dict) else {}
         t = m.get("type")
@@ -585,7 +940,7 @@ def _read_saved_texts(target: dict, wf: dict) -> list[str]:
 
 
 def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
-                        uploads: list[tuple[str, bytes]], settings: dict) -> dict:
+                        uploads: list[_MediaUpload], settings: dict) -> dict:
     """실제 무거운 실행 — 미디어 주입 → 제출 → 폴링 → 출력 수집. 백그라운드 스레드에서 돈다.
     (예전 /run 동기 핸들러 본문을 그대로 옮긴 것. 에러는 HTTPException 으로 던져 worker 가 잡는다.)"""
     target = comfy_client.make_target(settings)
@@ -593,23 +948,42 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
     # 연결된 레퍼런스를 타입별 슬롯에 자동 주입(+미사용 슬롯 prune)
     try:
-        _inject_media_bytes(target, wf, meta, uploads, settings["comfy_input_dir"])
+        _inject_media_files(target, wf, meta, uploads, settings["comfy_input_dir"], job_id)
     except comfy_client.ComfyError as e:
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, f"입력 미디어 업로드 실패: {e}")
     except ValueError as e:
         raise HTTPException(400, f"워크플로우 파싱 실패: {e}")
+    finally:
+        # Comfy 업로드 또는 로컬 input 복사가 끝나면 원격 실행을 기다리는 동안 원본 임시파일을
+        # 붙잡아 둘 이유가 없다. worker의 finally에서도 멱등 정리해 이 앞 단계 예외까지 덮는다.
+        _cleanup_media_uploads(uploads)
 
     tgt_kind = "cloud" if target["cloud"] else "local"
+    prompt_id: Optional[str] = None
     try:
         prompt_id = comfy_client.submit(target, wf, settings["comfy_api_key"])
+        # 원격 제출 성공과 메모리 등록 사이의 재시작에도 prompt_id 를 잃지 않게 먼저 영속화한다.
+        # ★단, 이 기록은 재시작 진단용 best-effort 다 — 기록 실패(순간 DB 잠금 등)가
+        #  이미 제출·과금된 멀쩡한 잡을 취소·실패시키면 손해가 더 크다(통합 검토에서 완화).
+        try:
+            _track_inflight_run(job_id, prompt_id, tgt_kind)
+        except Exception as e:  # noqa: BLE001
+            log.warning("comfy in-flight 영속 기록 실패(실행은 계속) job_id=%s: %s", job_id, e)
         _update_run_job(job_id, prompt_id=prompt_id)
         log.info("comfy submit ok target=%s prompt_id=%s", tgt_kind, prompt_id)  # api_key 는 절대 안 찍음
-        entry = _wait(target, prompt_id)
+        entry = _wait(target, prompt_id, job_id)
     except comfy_client.ComfyError as e:
+        if prompt_id:
+            _cancel_remote_run(target, prompt_id, "run failure", job_id)
         log.warning("comfy run 실패 target=%s: %s", tgt_kind, e)
         code = 402 if getattr(e, "auth_error", False) else 502
         raise HTTPException(code, str(e))
+    except Exception:
+        # 영속 저장 실패처럼 ComfyError 가 아닌 예외도 제출 뒤라면 원격 잡은 남기지 않는다.
+        if prompt_id:
+            _cancel_remote_run(target, prompt_id, "run failure", job_id)
+        raise
 
     # 출력 수집 — 저장(OUTPUT) 노드가 내놓은 결과 전부. 미디어(이미지/영상)와 텍스트가 섞일 수 있고,
     # 복수일 수 있다(SaveText/SaveImage/VideoCombine 등). 미디어는 MEDIA_DIR 로 받아 /media URL 로.
@@ -623,6 +997,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
         try:
             comfy_client.download_view(target, item, MEDIA_DIR / rel)
         except comfy_client.ComfyError as e:
+            _cancel_remote_run(target, prompt_id, "output download failure", job_id)
             raise HTTPException(502, f"출력물 다운로드 실패: {e}")
         results.append({"kind": kind, "url": f"/media/{rel}"})
 
@@ -646,6 +1021,7 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
                         json.dumps(entry.get("outputs"), ensure_ascii=False)[:4000])
         except Exception:  # noqa: BLE001
             log.warning("comfy /run 출력 없음(직렬화 실패). keys=%s", list((entry.get("outputs") or {})))
+        _cancel_remote_run(target, prompt_id, "empty output", job_id)
         raise HTTPException(
             502, "실행은 끝났지만 표시할 출력물이 없습니다(ShowText/SaveImage/VideoCombine 등 결과 노드 필요). "
             f"실제 출력 구조: {comfy_client.outputs_debug(entry, wf)}")
@@ -653,22 +1029,25 @@ def _run_comfy_job_impl(job_id: str, wf: dict, pvals: Any, meta: list,
 
 
 def _run_comfy_job_worker(job_id: str, wf: dict, pvals: Any, meta: list,
-                          uploads: list[tuple[str, bytes]], settings: dict) -> None:
+                          uploads: list[_MediaUpload], settings: dict) -> None:
     """스레드 진입점 — 실행 결과/에러를 잡 레코드에 기록. HTTPException.status_code 로 402/502 보존.
     설정한 동시 실행 수만큼만 실제 제출하도록 슬롯을 획득한 뒤 실행한다(초과분은 슬롯 날 때까지 PENDING 대기)."""
-    _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3))
+    _acquire_run_slot(_to_int(settings.get("comfy_concurrency"), 3), job_id)
     try:
         _update_run_job(job_id, state=_RUN_RUNNING)
         try:
             result = _run_comfy_job_impl(job_id, wf, pvals, meta, uploads, settings)
         except HTTPException as e:
+            _cancel_failed_run(settings, job_id, "worker failure")
             _fail_run_job(job_id, int(e.status_code or 500), e.detail)
         except Exception as e:  # noqa: BLE001
             log.exception("comfy async run 예외 job_id=%s", job_id)
+            _cancel_failed_run(settings, job_id, "worker unexpected failure")
             _fail_run_job(job_id, 500, f"Comfy 실행 중 알 수 없는 오류가 발생했습니다: {e}")
         else:
             _finish_run_job(job_id, result)
     finally:
+        _cleanup_media_uploads(uploads)
         _release_run_slot()
 
 
@@ -700,11 +1079,14 @@ def run(
     if len(meta) != len(media_files):
         raise HTTPException(400, "media 파일 수와 media_meta 수가 일치하지 않습니다")
 
-    # UploadFile 은 응답 후 닫힐 수 있다 → request 안에서 bytes 로 읽어 두고, 스레드엔 bytes 만 넘긴다.
-    uploads = _read_media_uploads(media_files)
-    settings = _raw_settings()
-
-    job_id = _create_run_job()
+    # UploadFile은 응답 후 닫히므로 앱 전용 임시파일에 제한 복사하고 스레드에는 경로만 넘긴다.
+    uploads = _stage_media_uploads(media_files)
+    try:
+        settings = _raw_settings()
+        job_id = _create_run_job()
+    except Exception:
+        _cleanup_media_uploads(uploads)
+        raise
     thread = threading.Thread(
         target=_run_comfy_job_worker,
         args=(job_id, wf, pvals, meta, uploads, settings),
@@ -713,7 +1095,8 @@ def run(
     )
     try:
         thread.start()
-    except RuntimeError as e:
+    except Exception as e:  # noqa: BLE001 - 스레드 생성의 OS 오류도 같은 정리 경계를 적용한다.
+        _cleanup_media_uploads(uploads)
         _fail_run_job(job_id, 500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
         raise HTTPException(500, f"Comfy 작업 스레드를 시작하지 못했습니다: {e}")
     return {"job_id": job_id}

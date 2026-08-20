@@ -135,7 +135,11 @@ class AssetTreeCacheTests(unittest.TestCase):
             (root / "frame.png").write_bytes(b"image")
             asset_tree.invalidate_project_tree(root)
             with (
-                patch.object(assets, "_project_dir_info", return_value=(root, False)),
+                patch.object(
+                    assets,
+                    "_project_dir_info",
+                    return_value=(root, False, "test:demo"),
+                ),
                 patch("app.services.asset_watcher.watch") as watch,
                 patch.object(assets.thumbs, "prewarm_recently", return_value=True),
             ):
@@ -150,7 +154,12 @@ class AssetTreeCacheTests(unittest.TestCase):
         self.assertEqual(result["project"], "demo")
         self.assertEqual(result["name"], root.name)
         self.assertEqual(result["children"][0]["path"], "frame.png")
-        watch.assert_called_once_with(root, "demo", hide_render=False)
+        watch.assert_called_once_with(
+            root,
+            "demo",
+            hide_render=False,
+            registration_id="test:demo",
+        )
 
     def test_assets_router_hides_mosaic_only_for_target_project(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -160,7 +169,11 @@ class AssetTreeCacheTests(unittest.TestCase):
             (root / "Reference").mkdir()
             (root / "Reference" / "new.png").write_bytes(b"new")
             with (
-                patch.object(assets, "_project_dir_info", return_value=(root, False)),
+                patch.object(
+                    assets,
+                    "_project_dir_info",
+                    return_value=(root, False, "test:project"),
+                ),
                 patch("app.services.asset_watcher.watch"),
                 patch.object(assets.thumbs, "prewarm_recently", return_value=True),
             ):

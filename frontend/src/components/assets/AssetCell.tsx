@@ -361,7 +361,7 @@ export const AssetCell = memo(function AssetCell({
           onDoubleClick={(e) => e.stopPropagation()}
         >
           <div className="ov-top">
-            <button className="ov-icon" title="정보" onClick={(e) => info(e.clientX, e.clientY)}>
+            <button className="ov-icon ov-info" title="정보" onClick={(e) => info(e.clientX, e.clientY)}>
               ⓘ
             </button>
           </div>

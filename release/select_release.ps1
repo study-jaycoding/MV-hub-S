@@ -6,6 +6,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    $Stream = [System.IO.File]::OpenRead($Path)
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
+    }
+}
+
 $Package = Get-Item -LiteralPath $PackagePath -ErrorAction Stop
 if ($Package.Extension -ne ".zip") {
     throw "PackagePath must point to an MV Hub zip package."
@@ -68,7 +82,7 @@ $Latest = [ordered]@{
     version = $Version
     higgsfield_cli_version = $CliVersion
     file = $Package.Name
-    sha256 = (Get-FileHash -LiteralPath $Package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    sha256 = Get-Sha256Hex -Path $Package.FullName
     size = $Package.Length
     created_at = (Get-Date).ToString("s")
 }

@@ -1,6 +1,6 @@
 ﻿// PM 대시보드 API 클라이언트 — 인증/에러 처리는 공용 jsonFetch 를 재사용한다.
 import { chunked } from "./batching";
-import { isHttpStatus, jsonBody, jsonFetch } from "./http";
+import { isHttpStatus, isRouteMissing, jsonBody, jsonFetch } from "./http";
 import { pathPart, withQuery } from "./url";
 import type {
   ManageSummary,
@@ -12,7 +12,7 @@ import type { WorkspaceOption } from "../types";
 // 구서버(배치 라우트 없음) 판별 — 404/405 만 폴백 사유다. 400/401/403/5xx 를 폴백하면
 // 권한·서버 장애가 "구버전"으로 오인돼 조용히 다른 경로로 재시도된다(합의 설계).
 function isLegacyServer(error: unknown): boolean {
-  return isHttpStatus(error, 404, 405);
+  return isRouteMissing(error);
 }
 
 let warnedLegacyBatch = false;
@@ -24,11 +24,21 @@ function warnLegacyBatchOnce(): void {
 }
 
 export const manageApi = {
-  summary: () => jsonFetch<ManageSummary>("/api/manage/summary"),
-  projectSummary: () =>
-    jsonFetch<Pick<ManageSummary, "projects">>("/api/manage/project-summary"),
+  summary: (workspaceId?: string) =>
+    jsonFetch<ManageSummary>(withQuery("/api/manage/summary", { workspace_id: workspaceId })),
+  projectSummary: (workspaceId?: string) =>
+    jsonFetch<Pick<ManageSummary, "projects">>(
+      withQuery("/api/manage/project-summary", { workspace_id: workspaceId }),
+    ),
   workspaces: () =>
     jsonFetch<{ workspaces: WorkspaceOption[] }>("/api/manage/workspaces"),
+  taskProjects: (workspaceId: string, includeHistorical = false) =>
+    jsonFetch<{
+      projects: { id: string; name: string; archived?: number | boolean; workspace_moved?: boolean }[];
+    }>(withQuery("/api/manage/task-projects", {
+      workspace_id: workspaceId,
+      include_historical: includeHistorical || undefined,
+    })),
   getPlanning: (pid: string) =>
     jsonFetch<Planning>(`/api/manage/planning/${pathPart(pid)}`),
   setPlanning: (pid: string, body: Partial<Planning>) =>
@@ -36,14 +46,30 @@ export const manageApi = {
       method: "PUT",
       body: jsonBody(body),
     }),
-  listTasks: (projectId: string) =>
-    jsonFetch<Task[]>(withQuery("/api/manage/tasks", { project_id: projectId })),
-  // 여러 프로젝트 작업을 1요청으로(WorkBoard fan-out 제거). GET(읽기)이라 mutation 알림 없음.
-  // 반환 {pid: Task[]}, 접근불가/오류 pid 는 생략(부분성공).
-  listTasksBatch: (projectIds: string[]) =>
-    jsonFetch<Record<string, Task[]>>(
-      withQuery("/api/manage/tasks-batch", { project_id: projectIds }),
-    ),
+  listTasks: (projectId: string, workspaceId?: string, includeArchived = false) =>
+    jsonFetch<Task[]>(withQuery("/api/manage/tasks", {
+      project_id: projectId,
+      workspace_id: workspaceId,
+      include_archived: includeArchived || undefined,
+    })),
+  // 여러 프로젝트 작업을 배치 조회한다. 500개를 넘으면 서버 상한에 맞춰 순차 분할하며,
+  // 한 조각이라도 실패하면 불완전한 목록을 정상 결과로 돌려주지 않는다.
+  listTasksBatch: async (projectIds: string[], workspaceId?: string, includeArchived = false) => {
+    const result: Record<string, Task[]> = {};
+    for (const projectChunk of chunked([...new Set(projectIds)])) {
+      Object.assign(
+        result,
+        await jsonFetch<Record<string, Task[]>>(
+          withQuery("/api/manage/tasks-batch", {
+            project_id: projectChunk,
+            workspace_id: workspaceId,
+            include_archived: includeArchived || undefined,
+          }),
+        ),
+      );
+    }
+    return result;
+  },
   updateTask: (tid: string, body: Partial<Task>) =>
     jsonFetch<Task>(`/api/manage/tasks/${pathPart(tid)}`, {
       method: "PATCH",
@@ -110,52 +136,6 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
       { method: "DELETE" },
     ),
-  // 담당(배정) — 대시보드에서 PM 이 작업자를 배정(=컷 분배). 모두 PM(manage) 권한.
-  addAssignee: (tid: string, uid: string) =>
-    jsonFetch<{ ok: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
-      { method: "POST" },
-    ),
-  removeAssignee: (tid: string, uid: string) =>
-    jsonFetch<{ removed: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
-      { method: "DELETE" },
-    ),
-  // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가) | remove(지정 담당 해제)
-  bulkSetAssignments: async (
-    items: { task_id: string; assignee_uids: string[] }[],
-    mode: "replace" | "add" | "remove",
-  ) => {
-    let count = 0;
-    for (const chunk of chunked(items)) {
-      try {
-        const res = await jsonFetch<{ ok: boolean; count: number }>(
-          "/api/manage/tasks/assignees/bulk",
-          { method: "PATCH", body: jsonBody({ mode, items: chunk }) },
-        );
-        count += res.count;
-        continue;
-      } catch (error) {
-        // 구서버 판별: 라우트 자체가 없으면 404/405, mode="remove" 미지원 구서버는 400을 낸다.
-        // remove 만 400 도 폴백 사유로 인정(다른 mode 의 400 은 진짜 입력 오류라 전파).
-        const legacy = isLegacyServer(error) || (mode === "remove" && isHttpStatus(error, 400));
-        if (!legacy) throw error;
-      }
-      warnLegacyBatchOnce();
-      if (mode === "replace") {
-        // 구 단건 API(add/remove)로는 '교체'를 원자적으로 재현할 수 없다 — 명시 오류.
-        throw new Error("공유 서버가 구버전이라 담당 일괄 교체를 지원하지 않습니다. 서버를 업데이트해 주세요.");
-      }
-      for (const item of chunk) {
-        for (const uid of item.assignee_uids) {
-          if (mode === "add") await manageApi.addAssignee(item.task_id, uid);
-          else await manageApi.removeAssignee(item.task_id, uid);
-        }
-        count += 1;
-      }
-    }
-    return { ok: true, count };
-  },
   // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.
   teamOverview: (f: TeamFilters = {}) =>
     jsonFetch<TeamOverview>(

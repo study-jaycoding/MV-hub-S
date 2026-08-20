@@ -17,13 +17,14 @@ import {
 } from "../lib/gridVirtualRows";
 import { useT } from "../lib/i18n";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
+import { useOutsideDragSelect } from "../lib/useOutsideDragSelect";
 import { matchShortcut } from "../lib/shortcuts";
 import { addWindowMouseDrag, removeWindowMouseDrag } from "../lib/windowDrag";
 import type { Generation, InfoTarget, PreviewTarget } from "../types";
 import type { GradeMode } from "../lib/gradeStep";
 import { GenerationCard } from "./GenerationCard";
 import { getTeamSeenVersion, isFreshGen, subscribeTeamSeen } from "../lib/teamSeen";
-import type { WorkspaceCommandOperation } from "../lib/workspaceCommand";
+import type { WorkspaceCommandOperation, WorkspaceCommandTarget } from "../lib/workspaceCommand";
 
 interface Props {
   generations: Generation[];
@@ -48,7 +49,7 @@ interface Props {
   onWorkspaceCommand?: (
     g: Generation,
     operation: WorkspaceCommandOperation,
-    workspaceName: string,
+    workspace: WorkspaceCommandTarget,
   ) => Promise<boolean>;
   onBulkGradeStep?: (mode: GradeMode) => void; // 다중선택 시 S(단일/더블)를 선택 전체에 등급 규칙 적용
   onOpenComments: (g: Generation) => void; // C/c → 공유 코멘트 스레드 패널
@@ -71,6 +72,8 @@ interface Props {
   loadingMore?: boolean;
   onLoadMore?: () => void;
   resetKey?: string; // 필터/정렬 변경 신호(genQuery 직렬화) — 바뀌면 점진 렌더(shown)를 초기화
+  loadError?: string | null; // 목록 첫 로드 실패 사유 — 빈 상태와 구분해 재시도 UI 를 띄운다
+  onRetryLoad?: () => void; // 로드 실패 시 "다시 시도"
 }
 
 export function ThumbnailGrid(props: Props) {
@@ -175,8 +178,8 @@ export function ThumbnailGrid(props: Props) {
         propsRef.current.onBulkAddAutoTags?.(g, names),
       onBulkRemoveAutoTags: (g: Generation, names: string[]) =>
         propsRef.current.onBulkRemoveAutoTags?.(g, names),
-      onWorkspaceCommand: (g: Generation, operation: WorkspaceCommandOperation, workspaceName: string) =>
-        propsRef.current.onWorkspaceCommand?.(g, operation, workspaceName) ?? Promise.resolve(false),
+      onWorkspaceCommand: (g: Generation, operation: WorkspaceCommandOperation, workspace: WorkspaceCommandTarget) =>
+        propsRef.current.onWorkspaceCommand?.(g, operation, workspace) ?? Promise.resolve(false),
       onBulkGradeStep: (mode: GradeMode) => propsRef.current.onBulkGradeStep?.(mode),
       onOpenComments: (g: Generation) => propsRef.current.onOpenComments(g),
       onRegenerate: (g: Generation) => propsRef.current.onRegenerate(g),
@@ -268,6 +271,9 @@ export function ThumbnailGrid(props: Props) {
   // 최신 props 를 ref 로 — 드래그 콜백을 안정 참조로 유지(stale 방지).
   const opsRef = useRef({ generations, onSelectedChange, onPreview: props.onPreview });
   opsRef.current = { generations, onSelectedChange, onPreview: props.onPreview };
+  // 드래그 시작 시점의 선택·앵커도 ref 로 — 창 전역 리스너에서 낡은 값을 잡지 않게.
+  const startRef = useRef({ selectedIds, focusIdx });
+  startRef.current = { selectedIds, focusIdx };
 
   // 마퀴 히트 계산을 프레임당 1회로 코얼레스(러버밴드 드래그의 mousemove 폭주 → 셀 전체
   // querySelectorAll+getBoundingClientRect 반복을 프레임당 한 번으로).
@@ -388,7 +394,7 @@ export function ThumbnailGrid(props: Props) {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const g = generations[focusIdx];
-      const a = g?.assets[0];
+      const a = g?.assets?.[0];
       if (g && a) onPreviewCell(g);
     } else if (e.key === " ") {
       e.preventDefault();
@@ -413,6 +419,34 @@ export function ThumbnailGrid(props: Props) {
     if (target) props.onPreview(target);
   };
 
+  // 드래그 시작(그리드 안·밖 공용). cellId 가 있으면 카드 위에서 시작한 것 = 마퀴 아님.
+  const beginDrag = useCallback(
+    (e: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
+     cellId: string | null) => {
+      const { selectedIds: base, focusIdx: anchorIdx } = startRef.current;
+      dragRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        base: new Set(base),
+        additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
+        range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
+        anchor: anchorIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
+        moved: false,
+        cellId,
+      };
+      addWindowMouseDrag(onDragMove, onDragUp);
+    },
+    [onDragMove, onDragUp],
+  );
+
+  // 카드 영역 밖(상단바·툴바 줄·사이드바 여백)에서 시작한 드래그도 선택으로 잡는다.
+  useOutsideDragSelect(".gen-grid", (e) => {
+    if (!gridRef.current) return;
+    e.preventDefault(); // 글자 선택·네이티브 드래그 방지
+    gridRef.current.focus();
+    beginDrag(e, null);
+  });
+
   const onGridMouseDown = (e: React.MouseEvent) => {
     if (e.button === 1) {
       e.preventDefault(); // 미들클릭 자동스크롤 방지(정보는 카드 auxclick 에서)
@@ -422,20 +456,15 @@ export function ThumbnailGrid(props: Props) {
     if ((e.target as HTMLElement).closest("button, input, label")) return; // 오버레이 컨트롤 제외
     gridRef.current?.focus(); // 그리드로 포커스 → 방향키 네비 활성(프롬프트와 분리)
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
-    dragRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      base: new Set(selectedIds),
-      additive: e.ctrlKey || e.metaKey, // Ctrl/Cmd = 개별 토글
-      range: e.shiftKey, // Shift = 앵커~클릭 범위 선택
-      anchor: focusIdx, // mousedown 시점 앵커 캡처(stale 클로저 회피)
-      moved: false,
-      cellId: cellEl?.dataset.id ?? null,
-    };
-    addWindowMouseDrag(onDragMove, onDragUp);
+    // 빈 곳에서 시작한 드래그 = 마퀴. 브라우저 기본 글자 선택을 막는다 — 안 막으면 포인터가
+    // 툴바·상단바 위를 지날 때 그쪽 글자가 파랗게 긁히고 마퀴가 묻힌다(포커스는 위에서 직접 준다).
+    if (!cellEl) e.preventDefault();
+    beginDrag(e, cellEl?.dataset.id ?? null);
   };
 
   const onGridDblClick = (e: React.MouseEvent) => {
+    // 버튼(S·T·C 등)·입력 위 더블클릭은 그 요소의 몫 — 클릭 2번이 미리보기로 승격되면 안 된다.
+    if ((e.target as HTMLElement).closest("button, input, a, [contenteditable]")) return;
     const cellEl = (e.target as HTMLElement).closest(".gen-cell") as HTMLElement | null;
     if (!cellEl) return;
     const g = opsRef.current.generations.find((x) => x.id === cellEl.dataset.id);
@@ -450,6 +479,23 @@ export function ThumbnailGrid(props: Props) {
   };
 
   if (generations.length === 0) {
+    // 로드 실패는 "항목 없음"과 화면상 구분한다 — 안 하면 서버 순단 한 번에 사용자가
+    // "내 생성물이 다 사라졌다"로 인지한다(토스트는 2.5초 뒤 사라져 증거가 안 남음).
+    if (props.loadError) {
+      return (
+        <div className="grid-wrap">
+          <div className="empty">
+            <div>{t("목록을 불러오지 못했습니다.")}</div>
+            <div style={{ opacity: 0.7, fontSize: "0.85em", margin: "6px 0" }}>{props.loadError}</div>
+            {props.onRetryLoad && (
+              <button className="settings-action" onClick={props.onRetryLoad}>
+                ↻ {t("다시 시도")}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="grid-wrap">
         <div className="empty">

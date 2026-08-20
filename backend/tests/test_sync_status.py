@@ -61,6 +61,7 @@ class SyncStatusTests(unittest.TestCase):
         self.assertEqual(d["pending"], 0)
         self.assertEqual(d["failed"], 0)
         self.assertIsNone(d["last_error"])
+        self.assertIsNone(d["last_success_at"])
 
     def test_readonly_does_not_create_table(self):
         # ★관측 API 는 스키마 부작용이 없어야 — telemetry_outbox 없는 프레시 DB 에서 호출해도 테이블 안 생김.
@@ -68,10 +69,15 @@ class SyncStatusTests(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/sync-status").json()["pending"], 0)
         with db.get_connection() as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetry_outbox'"
-            ).fetchone()
-        self.assertIsNone(exists, "sync-status 가 telemetry_outbox 를 생성하면 안 됨(read-only)")
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('telemetry_outbox','telemetry_delivery_state',"
+                    "'account_report_outbox','account_report_delivery_state')"
+                )
+            }
+        self.assertEqual(tables, set(), "sync-status 가 telemetry 테이블을 만들면 안 됨")
 
     def test_status_pending_and_failed(self):
         self._seed_outbox()
@@ -82,17 +88,36 @@ class SyncStatusTests(unittest.TestCase):
         self.assertEqual(d["oldest_dirty"], "2026-01-01")
 
     def test_pushed_row_not_pending(self):
-        from app import db
         from app.repo import manage
 
-        with db.get_connection() as conn:
-            manage._ensure_schema(conn)
-            conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, pushed_at, last_error) "
-                "VALUES('done1','2026-01-01','2026-01-01T00:00:01Z', NULL)"
-            )
+        manage.mark_telemetry_dirty(["done1"])
+        manage.mark_telemetry_pushed(manage.list_dirty_telemetry())
         d = self.client.get("/api/sync-status").json()
         self.assertEqual(d["pending"], 0)  # pushed_at 있으면 대기 아님
+        self.assertRegex(d["last_success_at"], r"^\d{4}-\d{2}-\d{2}T.*Z$")
+
+    def test_account_report_queue_is_exposed_separately(self):
+        from app.repo import manage
+
+        manage.queue_account_reports(
+            {"email": "artist@example.com", "credits": 10},
+            [
+                {
+                    "created_at": "2026-08-16T01:00:00Z",
+                    "credits": -2,
+                    "action": "spend",
+                    "display_name": "Model A",
+                }
+            ],
+        )
+        rows = manage.list_due_account_reports()
+        manage.mark_account_reports_failed(rows, "shared server offline")
+
+        d = self.client.get("/api/sync-status").json()
+        self.assertEqual(d["pending"], 0)
+        self.assertEqual(d["account_report_pending"], 2)
+        self.assertEqual(d["account_report_failed"], 2)
+        self.assertEqual(d["account_report_last_error"], "shared server offline")
 
 
 if __name__ == "__main__":

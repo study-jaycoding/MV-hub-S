@@ -1,12 +1,10 @@
 import { lazy, Suspense } from "react";
 import { GenCommentPanel } from "../GenCommentPanel";
-import { HistoryPanel } from "../HistoryPanel";
 import { InfoPopup } from "../InfoPopup";
 import { MediaPreview } from "../MediaPreview";
 import type {
   Account,
   Generation,
-  History,
   InfoTarget,
   PreviewTarget,
   Project,
@@ -25,7 +23,6 @@ export function AppOverlays({
   commentGenId,
   commentLabel,
   compareGens,
-  history,
   info,
   myId,
   preview,
@@ -35,14 +32,12 @@ export function AppOverlays({
   onAdminClose,
   onCloseOverlay,
   onCommentClose,
-  onCompare,
   onCompareClose,
   onHistoryChanged,
-  onInfo,
   onInfoClose,
   onInfoOpenInBoard,
   onInfoOpenCanvas,
-  onOpenInBoard,
+  onRecoveryRequeue,
   onOpenInBoardFromPreview,
   onPreview,
 }: {
@@ -51,7 +46,6 @@ export function AppOverlays({
   commentGenId: string | null;
   commentLabel: string;
   compareGens: Generation[] | null;
-  history: History | null;
   info: InfoTarget | null;
   myId: string;
   preview: PreviewTarget | null;
@@ -61,14 +55,12 @@ export function AppOverlays({
   onAdminClose: () => void;
   onCloseOverlay: () => void;
   onCommentClose: () => void;
-  onCompare: (generations: Generation[] | null) => void;
   onCompareClose: () => void;
   onHistoryChanged: () => void;
-  onInfo: (target: InfoTarget) => void;
   onInfoClose: () => void;
   onInfoOpenInBoard: (generation: Generation) => void;
   onInfoOpenCanvas: (generation: Generation) => void;
-  onOpenInBoard: (generation: Generation) => void;
+  onRecoveryRequeue: (generation: Generation) => Promise<boolean>;
   onOpenInBoardFromPreview: (generationId: string) => void;
   onPreview: (target: PreviewTarget) => void;
 }) {
@@ -92,6 +84,7 @@ export function AppOverlays({
           projects={projects}
           onOpenInBoard={onInfoOpenInBoard}
           onOpenCanvas={onInfoOpenCanvas}
+          onRecoveryRequeue={onRecoveryRequeue}
         />
       )}
       {preview && (
@@ -110,17 +103,6 @@ export function AppOverlays({
         <Suspense fallback={null}>
           <CompareModal gens={compareGens} onClose={onCompareClose} />
         </Suspense>
-      )}
-      {history && (
-        <HistoryPanel
-          history={history}
-          onClose={onCloseOverlay}
-          onPreview={onPreview}
-          onInfo={onInfo}
-          onCompare={(generations) => onCompare(generations)}
-          onChanged={onHistoryChanged}
-          onOpenInBoard={onOpenInBoard}
-        />
       )}
       {toast && <div className="toast">{toast}</div>}
     </>

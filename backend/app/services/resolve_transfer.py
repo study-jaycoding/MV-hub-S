@@ -285,12 +285,19 @@ def list_pending_manifests(
             )
         except OSError:
             continue
-        for path in paths[: max(1, limit)]:
+        # 완료 manifest가 최신 창을 차지해 더 오래된 실제 pending을 가리지 않도록 먼저
+        # 상태를 판정한다. 최종 전역 정렬 뒤에만 limit을 적용한다.
+        project_pending = 0
+        for path in paths:
             manifest = _pending_manifest(
                 project_id, path, manifest_root, source_root
             )
             if manifest is not None:
                 pending.append(manifest)
+                project_pending += 1
+                # 한 프로젝트가 최종 전역 limit보다 많이 기여할 수는 없으므로 여기서 멈춘다.
+                if project_pending >= max(1, limit):
+                    break
     pending.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return pending[: max(1, limit)]
 

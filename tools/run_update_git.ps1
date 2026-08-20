@@ -7,6 +7,32 @@ $ErrorActionPreference = "Stop"
 $ExitCode = 1
 $TempWorkers = New-Object System.Collections.Generic.List[string]
 
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LiteralPath
+    )
+
+    # Get-FileHash is loaded from Microsoft.PowerShell.Utility on demand. A fresh or
+    # redirected TEMP can prevent that module's analysis cache from loading during
+    # updater bootstrap, so use the .NET runtime that Windows PowerShell already owns.
+    $Stream = [System.IO.File]::OpenRead($LiteralPath)
+    try {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return [System.BitConverter]::ToString(
+                $Hasher.ComputeHash($Stream)
+            ).Replace("-", "")
+        }
+        finally {
+            $Hasher.Dispose()
+        }
+    }
+    finally {
+        $Stream.Dispose()
+    }
+}
+
 function Invoke-IsolatedWorker {
     param(
         [Parameter(Mandatory = $true)]
@@ -41,7 +67,7 @@ try {
     # cmd.exe executes batch files by reading from disk while they run. Running the
     # repository copy directly would therefore corrupt the current control flow when
     # git pull replaces that file. The immutable TEMP copy survives the whole update.
-    $InitialWorkerHash = (Get-FileHash -LiteralPath $Worker -Algorithm SHA256).Hash
+    $InitialWorkerHash = Get-Sha256Hex -LiteralPath $Worker
     $ExitCode = Invoke-IsolatedWorker -WorkerPath $Worker -RootPath $RootPath
 
     # A git pull may replace the repository worker while the immutable old TEMP
@@ -49,7 +75,7 @@ try {
     # newly pulled worker. This heals updater migrations without an extra click and
     # never masks an ordinary failure where the worker file did not change.
     if ($ExitCode -ne 0 -and (Test-Path -LiteralPath $Worker -PathType Leaf)) {
-        $CurrentWorkerHash = (Get-FileHash -LiteralPath $Worker -Algorithm SHA256).Hash
+        $CurrentWorkerHash = Get-Sha256Hex -LiteralPath $Worker
         if ($CurrentWorkerHash -ne $InitialWorkerHash) {
             Write-Host "[recovery] The updater changed during git pull; retrying once with the new worker..."
             $ExitCode = Invoke-IsolatedWorker -WorkerPath $Worker -RootPath $RootPath

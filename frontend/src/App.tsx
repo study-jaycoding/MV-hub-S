@@ -161,7 +161,6 @@ export default function App() {
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
   const [videoCompare, setVideoCompare] = useState<CompareMedia[] | null>(null);
   const [sceneCompareMedia, setSceneCompareMedia] = useState<CompareMedia[] | null>(null);
-  const [history, setHistory] = useState<History | null>(null); // 히스토리(가계) 패널 대상
   const { flash, toast } = useAppToast();
   // Canvas 씬(빈 캔버스) 상태·CRUD 는 useSceneCoordination 훅으로 추출. S1: 프로젝트 무관 전역(projectId=null).
   //  flash 전달 — 다른 탭이 이 씬을 바꾸면(멀티탭) 비파괴 알림용.
@@ -239,6 +238,7 @@ export default function App() {
     gens,
     gensRef,
     hasMore,
+    loadError,
     loadMore,
     loading,
     loadingMore,
@@ -457,7 +457,10 @@ export default function App() {
   useCommentBadgePoll({
     generations: gens,
     setGens,
-    onNewUnread: () => setSyncTick((t) => t + 1),
+    onNewUnread: () => {
+      setSyncTick((t) => t + 1);
+      void reload(true, true); // 공유 카드 폴링이 새 코멘트를 잡으면 전역 벨 stats도 같은 값으로 갱신
+    },
   });
 
   const {
@@ -591,8 +594,18 @@ export default function App() {
   // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
+  // 단 연쇄에 상한을 둔다 — 비활성 항목이 수십 페이지 이어지는 데이터 분포에서 무한 자동
+  // 순회(요청 폭주)를 막는다. 활성 항목이 한 번이라도 보이면 카운터는 리셋된다.
+  const grayAutoLoadCountRef = useRef(0);
   useEffect(() => {
-    if (grayOn && gridGens.length === 0 && hasMore && !loadingMore) loadMore();
+    if (!grayOn || gridGens.length > 0) {
+      grayAutoLoadCountRef.current = 0;
+      return;
+    }
+    if (hasMore && !loadingMore && grayAutoLoadCountRef.current < 10) {
+      grayAutoLoadCountRef.current += 1;
+      loadMore();
+    }
   }, [grayOn, gridGens.length, hasMore, loadingMore, loadMore]);
 
   // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).
@@ -648,7 +661,6 @@ export default function App() {
     lastBoardFocusRef,
     setPreview,
     setCommentGenId,
-    setHistory,
     setAdminOpen,
     setInfo,
     setBoardFocusId,
@@ -656,12 +668,38 @@ export default function App() {
     setFilters,
   });
   // 히스토리 버튼 → 그 생성물 recipe(어떻게 만들었나)를 새 씬 탭으로 연다(편집·재생성 가능). 팀 결과물도 동일.
-  const openRecipe = (g: Generation, history: History) => {
+  // history 없이도 연다 — 파일 드롭 복원처럼 계보 조회가 실패해도 레시피 본체(레퍼런스·모델·
+  // 프롬프트)는 생성물 자체에 있어 그릴 수 있다(buildRecipeScene 이 null 을 허용).
+  const openRecipe = (g: Generation, history: History | null) => {
     importSceneSnapshot(buildRecipeScene(g, history));
     setSceneBinding(null);
     setSceneSelGens([]);
     navTab("compose");
     flash(`"${g.model || "생성물"}" 을(를) 노드로 열었습니다.`);
+  };
+  // 캔버스에 떨어뜨린 파일이 우리가 내보낸 생성물이면(각인) 그 레시피를 노드로 펼친다.
+  //  · 각인이 없거나 카탈로그에서 못 찾으면 false — 호출측이 평소대로 레퍼런스 카드로 넣는다.
+  //  · 새 씬 탭으로 열리므로 지금 작업 중인 씬은 그대로 남는다.
+  const openRecipeFromFile = async (file: File): Promise<boolean> => {
+    let genId: string | null = null;
+    try {
+      genId = (await api.readFileStamp(file)).gen_id;
+    } catch {
+      return false; // 판독 실패(구버전 허브 등) — 평범한 파일로 처리
+    }
+    if (!genId) return false;
+    try {
+      const [gen, history] = await Promise.all([
+        api.getGeneration(genId),
+        api.history(genId).catch(() => null),
+      ]);
+      openRecipe(gen, history);
+      return true;
+    } catch {
+      // 각인은 있는데 카탈로그에 없다 — 다른 PC·계정에서 만든 것일 수 있다.
+      flash("이 파일의 생성 기록을 찾지 못했습니다 — 레퍼런스로 넣습니다.");
+      return false;
+    }
   };
   const {
     bulkDownload,
@@ -944,7 +982,8 @@ export default function App() {
       },
       async ({ body, canvasLink }) => {
         try {
-          return await api.create(body, workspaceContext, canvasLink);
+          const submit = api.prepareCreate(body, workspaceContext, canvasLink);
+          return await submit();
         } catch (error) {
           const status = Number((error as { status?: number })?.status);
           if (
@@ -1075,6 +1114,7 @@ export default function App() {
     onColor,
     onFinalize,
     onImport,
+    onRecoveryRequeue,
     onRegenerate,
     onSetSource,
     onTags,
@@ -1090,11 +1130,19 @@ export default function App() {
     workspace: workspaceContext,
   });
 
-  // 히스토리 패널 '구성에서 보기' → 구성탭 트리(뒤로가기로 직전 화면 복원).
-  const onOpenInBoard = (g: Generation) => enterBoard(g.id);
+  // 정보팝업 '⧉ 히스토리' → 구성탭 계보 트리(뒤로가기로 직전 화면 복원).
+  // ★씬 탭 바에서 고정 '히스토리' 탭이 빠져 이 버튼들이 유일한 진입로다 — 활성 씬을 내려놓아야
+  //   (activeScene null) 캔버스 대신 트리가 실제로 렌더된다. 돌아갈 땐 씬 탭을 클릭.
+  const onOpenInBoard = (g: Generation) => {
+    selectScene(null);
+    enterBoard(g.id);
+  };
 
-  // 미리보기(크게 보기) '구성에서 보기' → 구성탭 트리(뒤로가기로 직전 화면 복원).
-  const onOpenInBoardFromPreview = (genId: string) => enterBoard(genId);
+  // 미리보기(크게 보기) '구성에서 보기' → 구성탭 계보 트리(위와 동일).
+  const onOpenInBoardFromPreview = (genId: string) => {
+    selectScene(null);
+    enterBoard(genId);
+  };
 
   const onLogout = async () => {
     setGens([]); // 로그아웃 즉시 데이터 비우기
@@ -1243,6 +1291,10 @@ export default function App() {
         account={hubAccount}
         onLogout={onLogout}
         localHub={!authConfig?.auth_enabled}
+        hasUnreadComments={stats.has_unread}
+        notificationUnreadCount={stats.unread_count}
+        onOpenNotificationComment={openComment}
+        onNotificationsChanged={() => void reload(true, true)}
       />
       <div className="body">
         {filters.tab === "compose" ? (
@@ -1328,6 +1380,7 @@ export default function App() {
                 topCenterOverlay={!promptVisible ? selectionBar : undefined}
                 onSaveScene={handleSaveScene}
                 onLoadSceneFile={handleLoadSceneFile}
+                onDroppedGenerationFile={openRecipeFromFile}
                 ioPanelHot={sceneBarHover}
                 onBindingChange={setSceneBinding}
                 // 세션 중 씬 전환했다 돌아와도 복원되게 카메라도 저장.
@@ -1540,6 +1593,8 @@ export default function App() {
                 loadingMore={loadingMore}
                 onLoadMore={loadMore}
                 resetKey={serverFilterKey}
+                loadError={loadError}
+                onRetryLoad={() => void reload()}
               />
             </main>
           </>
@@ -1604,7 +1659,6 @@ export default function App() {
         commentGenId={commentGenId}
         commentLabel={commentLabel}
         compareGens={compareGens}
-        history={history}
         info={info}
         myId={account?.creator_uid || "me"}
         preview={preview}
@@ -1617,10 +1671,8 @@ export default function App() {
         }}
         onCloseOverlay={closeOverlay}
         onCommentClose={() => setCommentGenId(null)}
-        onCompare={setCompareGens}
         onCompareClose={() => setCompareGens(null)}
         onHistoryChanged={reload}
-        onInfo={setInfo}
         onInfoClose={() => setInfo(null)}
         onInfoOpenInBoard={(g) => {
           setInfo(null);
@@ -1630,7 +1682,7 @@ export default function App() {
           setInfo(null);
           onShowHistory(g);
         }}
-        onOpenInBoard={onOpenInBoard}
+        onRecoveryRequeue={onRecoveryRequeue}
         onOpenInBoardFromPreview={onOpenInBoardFromPreview}
         onPreview={openPreview}
       />

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { Filters, History, InfoTarget, PreviewTarget } from "../types";
+import type { Filters, InfoTarget, PreviewTarget } from "../types";
 
-type NavOverlay = "preview" | "comment" | "admin" | "history";
+type NavOverlay = "preview" | "comment" | "admin";
 type NavView = { tab: Filters["tab"]; focusId: string | null; ov: NavOverlay | null; key: number };
 
 export function useAppNavigation({
@@ -10,7 +10,6 @@ export function useAppNavigation({
   lastBoardFocusRef,
   setPreview,
   setCommentGenId,
-  setHistory,
   setAdminOpen,
   setInfo,
   setBoardFocusId,
@@ -21,7 +20,6 @@ export function useAppNavigation({
   lastBoardFocusRef: MutableRefObject<string | null>;
   setPreview: Dispatch<SetStateAction<PreviewTarget | null>>;
   setCommentGenId: Dispatch<SetStateAction<string | null>>;
-  setHistory: Dispatch<SetStateAction<History | null>>;
   setAdminOpen: Dispatch<SetStateAction<boolean>>;
   setInfo: Dispatch<SetStateAction<InfoTarget | null>>;
   setBoardFocusId: Dispatch<SetStateAction<string | null>>;
@@ -42,7 +40,6 @@ export function useAppNavigation({
       const payload = v.key ? navPayloadsRef.current.get(v.key) : undefined;
       setPreview(v.ov === "preview" ? ((payload as PreviewTarget) ?? null) : null);
       // 코멘트 패널은 nav 뷰(탭 전환)에 묶지 않는다 — 태그창처럼 X 로 닫을 때까지 유지(독립 상태).
-      setHistory(v.ov === "history" ? ((payload as History) ?? null) : null);
       setAdminOpen(v.ov === "admin");
       setInfo(null);
       if (v.tab === "compose") {
@@ -59,7 +56,6 @@ export function useAppNavigation({
       setBoardFocusId,
       setCommentGenId,
       setFilters,
-      setHistory,
       setInfo,
       setPreview,
     ],
@@ -79,7 +75,7 @@ export function useAppNavigation({
       if (key) {
         const m = navPayloadsRef.current;
         m.set(key, payload);
-        // 세션 내내 오버레이(미리보기·히스토리)를 여닫을 때마다 payload 가 무한 누적되던 것을 막는다.
+        // 세션 내내 오버레이(미리보기 등)를 여닫을 때마다 payload 가 무한 누적되던 것을 막는다.
         // 키는 단조 증가(삽입순=오래된 순)라 가장 오래된 것부터 잘라 최근 N개만 유지한다. 아주 깊은
         // 뒤로가기(20단계+)에서는 payload 가 없어 오버레이가 빈 상태로 열리지만(applyView 가 null 처리),
         // 실사용 뒤로가기 깊이를 훨씬 넘는 값이라 무해.

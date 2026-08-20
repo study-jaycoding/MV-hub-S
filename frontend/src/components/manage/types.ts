@@ -9,6 +9,7 @@ export interface Planning {
   due_date?: string | null;
   budget_credits?: number | null;
   budget_period?: "day" | "week" | "month" | null;
+  archive_after_days?: number | null;
   note?: string | null;
 }
 
@@ -64,6 +65,7 @@ export interface ManageProject {
   final_count: number; // 완료(최종선택·골드) 생성물 수
   real_credits: number;
   credits: number; // COALESCE(실제, 견적)
+  workspace_moved?: boolean; // 다른 워크스페이스로 이동한 프로젝트의 과거 기록 행(구서버는 미제공)
   budget_used_credits?: number; // 설정된 일/주/월의 현재 기간 사용량(구서버는 미제공)
   models?: ProjectModelUsage[]; // 프로젝트 전체 모델별 생성·크레딧·최종 집계
   budget_models?: ProjectModelUsage[]; // 현재 예산 주기의 모델별 사용 집계
@@ -207,6 +209,7 @@ export interface WorkViewProps {
   disabled: Set<string>; // d 로 비활성화(회색)된 생성물 id — 로컬(localStorage) 기준
   colorMap?: Record<string, string>; // 값 색 라벨 "field::value"->colorKey (프로젝트/시퀀스 등)
   myUid?: string | null; // 현재 로그인 uid — '내 작업' 필터·표시용
+  readOnly?: boolean; // 과거 워크스페이스 기록 화면 — 모든 변경 동작 차단
   onPatch: (tid: string, patch: Partial<Task>) => void;
   onDelete: (tid: string) => void;
   onLinkGen: (tid: string, genId: string) => void;
@@ -250,6 +253,15 @@ export interface Task {
   sequence?: string | null; // 전역 태그명 또는 폴더 2단계(자동 작업)
   description?: string | null;
   folder_path?: string | null; // 렌더 루트 상대 경로(예 ep001/c0010) — 폴더 자동 작업
+  source_kind?: "manual" | "generation" | string;
+  source_last_seen_at?: string | null;
+  archived?: number | boolean;
+  workspace_scope?: "team" | "personal" | "unknown" | string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  workspace_origin?: "snapshot" | "generation" | "unknown" | string;
+  workspace_unresolved?: boolean;
+  workspace_historical?: boolean;
   project_name?: string | null; // 소속 프로젝트명(전체 프로젝트 병합 뷰에서 프론트가 부착)
   created_at: string;
   // 파생(연결 생성물에서)
@@ -259,8 +271,11 @@ export interface Task {
   derived_due?: string | null; // 연결 컷 최종 생성일(YYYY-MM-DD) — PM 미설정 시 마감일 파생
   cuts?: Cut[];
   creators?: string[]; // 실제 생성자(연결 컷 파생)
-  assigned_creators?: { uid: string; name?: string | null }[]; // 담당(배정, 복수) — 대시보드에서 지정
   credits?: number;
   elapsed?: number;
   comment_count?: number;
+}
+
+export function taskIsReadOnly(task: Task, viewReadOnly = false): boolean {
+  return viewReadOnly || !!task.workspace_historical || !!task.workspace_unresolved;
 }

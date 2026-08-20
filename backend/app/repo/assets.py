@@ -7,7 +7,12 @@ import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
-from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, new_id
+from ._common import (
+    ALERT_COMMENT_JOINS,
+    ALERT_COMMENT_PREDICATE,
+    ALERT_COMMENT_TARGET_PREDICATE,
+    new_id,
+)
 from .identity import resolve_display_names
 
 
@@ -62,37 +67,78 @@ def get_asset_meta(
                 "comment_count": 0,
                 "has_unread": False,
             }
-        # 코멘트 개수
+        # 코멘트 개수 — 공유 전부 + 비공개는 내 것만(스레드 목록과 같은 가시성)
         for r in conn.execute(
-            "SELECT path, COUNT(*) AS cnt FROM asset_comment WHERE project=? GROUP BY path",
-            (project,),
+            "SELECT path, COUNT(*) AS cnt FROM asset_comment "
+            "WHERE project=? AND (is_private=0 OR author=?) GROUP BY path",
+            (project, worker_id),
         ):
             out.setdefault(r["path"], _empty_asset_meta())["comment_count"] = r["cnt"]
         # 미확인 여부(read_at 보다 나중에 달린 코멘트 존재).
-        # 내 코멘트라도 작성 시점 muted=1 인 것만 내 알림에서 제외(코멘트별).
-        # muted 는 "작성자 본인 알림만 억제" → 팀원에겐 그대로 알림(author=viewer 일 때만 적용).
+        # 내가 쓴 코멘트는 내 알림 대상이 아니다(생성본 코멘트와 같은 규칙 — 옛 muted 옵션 대체).
+        # 남의 비공개는 이 DB 에 있어도(이관 DB 등) 알림에서 제외.
         for r in conn.execute(
             "SELECT DISTINCT c.path FROM asset_comment c "
             "LEFT JOIN asset_comment_read rd "
             "ON rd.worker_id=? AND rd.project=c.project AND rd.path=c.path "
             "WHERE c.project=? AND (rd.read_at IS NULL OR c.created_at > rd.read_at) "
-            "AND NOT (c.author=? AND c.muted=1)",
+            "AND c.author<>? AND c.is_private=0",
             (worker_id, project, worker_id),
         ):
             out.setdefault(r["path"], _empty_asset_meta())["has_unread"] = True
     return out
 
 
-# ── 파일 코멘트 스레드(공유) ──────────────────────────────────────────────
-def list_asset_comments(project: str, path: str) -> list[dict[str, Any]]:
+# ── 파일 코멘트 스레드(공유 + 내 비공개) ──────────────────────────────────
+def list_asset_comments(
+    project: str, path: str, viewer_uid: str = ""
+) -> list[dict[str, Any]]:
+    """공유 코멘트 전부 + 비공개는 내 것만. 남의 비공개는 이 DB 에 있어도(이관 DB 등) 숨긴다."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, c.parent_id "
+            "SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
+            "c.parent_id, c.is_private AS private "
             "FROM asset_comment c LEFT JOIN worker w ON w.id = c.author "
-            "WHERE c.project=? AND c.path=? ORDER BY c.created_at ASC, c.id ASC",
-            (project, path),
+            "WHERE c.project=? AND c.path=? AND (c.is_private=0 OR c.author=?) "
+            "ORDER BY c.created_at ASC, c.id ASC",
+            (project, path, viewer_uid),
         ).fetchall()
-        return _name_comments(conn, rows)
+        out = _name_comments(conn, rows)
+        for c in out:
+            c["private"] = bool(c.get("private"))
+        return out
+
+
+def list_private_asset_comments(
+    project: str, path: str, author: str
+) -> list[dict[str, Any]]:
+    """내 비공개 코멘트만 — 서버 모드에서 서버 스레드에 로컬 비공개를 합칠 때 쓴다."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
+            "c.parent_id, 1 AS private "
+            "FROM asset_comment c LEFT JOIN worker w ON w.id = c.author "
+            "WHERE c.project=? AND c.path=? AND c.is_private=1 AND c.author=? "
+            "ORDER BY c.created_at ASC, c.id ASC",
+            (project, path, author),
+        ).fetchall()
+        out = _name_comments(conn, rows)
+        for c in out:
+            c["private"] = True
+        return out
+
+
+def private_asset_comment_counts(project: str, author: str) -> dict[str, int]:
+    """경로별 내 비공개 코멘트 수 — 서버 모드에서 배지 수에 합산."""
+    with get_connection() as conn:
+        return {
+            r["path"]: r["cnt"]
+            for r in conn.execute(
+                "SELECT path, COUNT(*) AS cnt FROM asset_comment "
+                "WHERE project=? AND is_private=1 AND author=? GROUP BY path",
+                (project, author),
+            )
+        }
 
 
 def get_asset_comment_scope(comment_id: str) -> Optional[dict[str, str]]:
@@ -112,15 +158,38 @@ def add_asset_comment(
     text: str,
     parent_id: Optional[str] = None,
     muted: bool = False,
+    is_private: bool = False,
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO asset_comment(id, project, path, author, text, parent_id, muted) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (cid, project, path, author, text, parent_id, 1 if muted else 0),
+            "INSERT INTO asset_comment(id, project, path, author, text, parent_id, muted, is_private) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (cid, project, path, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
         )
     return cid
+
+
+def asset_comment_is_private(comment_id: str) -> Optional[bool]:
+    """이 코멘트가 로컬 비공개인가. None=로컬에 없음(서버 것) — by-id 수정/삭제 분기용."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT is_private FROM asset_comment WHERE id=?", (comment_id,)
+        ).fetchone()
+    return None if row is None else bool(row["is_private"])
+
+
+def asset_comment_has_private_children(comment_id: str) -> bool:
+    """이 코멘트를 부모로 둔 로컬 비공개 답글 존재 여부 — 부모 삭제 고아 방지 가드(검증 P2).
+
+    프론트 잠금(🔒)은 조언일 뿐이다: 목록을 읽은 뒤 다른 탭에서 비공개 답글이 달리거나
+    API 를 직접 부르면 우회된다. 삭제 경로가 서버 위임 직전에 이걸로 다시 검사해야 한다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM asset_comment WHERE parent_id=? AND is_private=1 LIMIT 1",
+            (comment_id,),
+        ).fetchone()
+    return row is not None
 
 
 def _comment_owner_locked(
@@ -194,17 +263,114 @@ def list_generation_comments(gen_id: str, viewer_uid: str = "") -> list[dict[str
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, c.parent_id, "
+            f"c.is_private AS private, "
             f"CASE WHEN {ALERT_COMMENT_PREDICATE} THEN 1 ELSE 0 END AS unread "
             f"FROM generation_comment c "
             f"{ALERT_COMMENT_JOINS} "
             f"LEFT JOIN worker w ON w.id = c.author "
-            f"WHERE c.gen_id=? ORDER BY c.created_at ASC, c.id ASC",
-            (viewer_uid, viewer_uid, viewer_uid, viewer_uid, gen_id),
+            f"WHERE c.gen_id=? AND (c.is_private=0 OR c.author=?) "
+            f"ORDER BY c.created_at ASC, c.id ASC",
+            (viewer_uid, viewer_uid, viewer_uid, viewer_uid, gen_id, viewer_uid),
         ).fetchall()
         out = _name_comments(conn, rows)
         for c in out:
             c["unread"] = bool(c.get("unread"))
+            c["private"] = bool(c.get("private"))
         return out
+
+
+def list_comment_notifications(
+    viewer_uid: str, limit: int = 50
+) -> list[dict[str, Any]]:
+    """최근 30일 생성본 코멘트 알림(최신순).
+
+    읽은 항목도 ``ALERT_COMMENT_TARGET_PREDICATE``로 목록에 남기고, ``unread``만 기존
+    ``ALERT_COMMENT_PREDICATE``로 판정한다. 따라서 카드 C 뱃지·전역 stats·스레드 NEW와
+    알림 센터가 같은 단일 규칙을 사용한다.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
+            f"c.gen_id, g.project_id, "
+            f"(SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type <> 'video' THEN a.file_path END) "
+            f" FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumbnail_url, "
+            f"CASE WHEN {ALERT_COMMENT_PREDICATE} THEN 1 ELSE 0 END AS unread "
+            f"FROM generation_comment c "
+            f"{ALERT_COMMENT_JOINS} "
+            f"LEFT JOIN worker w ON w.id=c.author "
+            f"WHERE c.created_at >= datetime('now', '-30 days') "
+            f"AND {ALERT_COMMENT_TARGET_PREDICATE} "
+            f"ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
+            (
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                limit,
+            ),
+        ).fetchall()
+        out = _name_comments(conn, rows)
+        for comment in out:
+            comment["unread"] = bool(comment.get("unread"))
+        return out
+
+
+def mark_all_comment_notifications_seen(worker_id: str) -> int:
+    """현재 뷰어의 알림 대상 코멘트만 모두 seen 처리한다.
+
+    목록의 30일 표시 범위와 달리 전체 기간을 처리한다. 오래된 미확인 항목 때문에 전역 C 뱃지와
+    벨이 남는 일을 막기 위한 의도적인 차이다.
+    """
+    with get_connection() as conn:
+        before = conn.total_changes
+        conn.execute(
+            f"INSERT OR IGNORE INTO generation_comment_seen(worker_id, comment_id) "
+            f"SELECT ?, c.id FROM generation_comment c "
+            f"{ALERT_COMMENT_JOINS} "
+            f"WHERE {ALERT_COMMENT_PREDICATE}",
+            (worker_id, worker_id, worker_id, worker_id, worker_id),
+        )
+        return conn.total_changes - before
+
+
+def list_private_generation_comments(gen_id: str, author: str) -> list[dict[str, Any]]:
+    """내 비공개 코멘트만 — 공유 생성물에서 서버 스레드에 로컬 비공개를 합칠 때 쓴다."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
+            "c.parent_id, 1 AS private "
+            "FROM generation_comment c LEFT JOIN worker w ON w.id = c.author "
+            "WHERE c.gen_id=? AND c.is_private=1 AND c.author=? "
+            "ORDER BY c.created_at ASC, c.id ASC",
+            (gen_id, author),
+        ).fetchall()
+        out = _name_comments(conn, rows)
+        for c in out:
+            c["private"] = True
+            c["unread"] = False  # 내 글 — 알림 대상 아님
+        return out
+
+
+def private_generation_comment_counts(gen_ids: list[str], author: str) -> dict[str, int]:
+    """생성물별 *내* 비공개 코멘트 수.
+
+    공유 생성물의 공개 스레드는 서버가 정답이지만, 비공개 코멘트는 계정 로컬 DB가 정답이다.
+    카드 뱃지를 만들 때 서버 수에 이 결과를 더해야 패널에 보이는 개수와 카드 숫자가 일치한다.
+    """
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    if not ids or not author:
+        return {}
+    ph = ",".join("?" * len(ids))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT gen_id, COUNT(*) AS cnt FROM generation_comment "
+            f"WHERE gen_id IN ({ph}) AND is_private=1 AND author=? GROUP BY gen_id",
+            [*ids, author],
+        ).fetchall()
+    return {str(row["gen_id"]): int(row["cnt"]) for row in rows}
 
 
 def add_generation_comment(
@@ -213,13 +379,14 @@ def add_generation_comment(
     text: str,
     parent_id: Optional[str] = None,
     muted: bool = False,
+    is_private: bool = False,
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted) "
-            "VALUES(?,?,?,?,?,?)",
-            (cid, gen_id, author, text, parent_id, 1 if muted else 0),
+            "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted, is_private) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (cid, gen_id, author, text, parent_id, 1 if muted else 0, 1 if is_private else 0),
         )
         # 답글을 달면 그 부모 코멘트를 확인한 것으로 간주(작성자 본인 기준 seen 처리).
         if parent_id:
@@ -293,6 +460,27 @@ def comment_gen_shared(comment_id: str) -> Optional[bool]:
             (comment_id,),
         ).fetchone()
     return bool(row["shared"]) if row else None
+
+
+def generation_comment_is_private(comment_id: str) -> Optional[bool]:
+    """이 코멘트가 로컬 비공개인가. None=로컬에 없음. 비공개는 공유 생성물에 달렸어도 로컬이 정답
+    (서버에 애초에 없다) — comment_gen_shared 보다 먼저 판정해야 수정/삭제가 서버로 새지 않는다."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT is_private FROM generation_comment WHERE id=?", (comment_id,)
+        ).fetchone()
+    return None if row is None else bool(row["is_private"])
+
+
+def generation_comment_has_private_children(comment_id: str) -> bool:
+    """이 코멘트를 부모로 둔 로컬 비공개 답글 존재 여부 — 부모 삭제 고아 방지 가드(검증 P2).
+    asset_comment_has_private_children 과 같은 이유(프론트 잠금은 조언일 뿐)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM generation_comment WHERE parent_id=? AND is_private=1 LIMIT 1",
+            (comment_id,),
+        ).fetchone()
+    return row is not None
 
 
 def mark_generation_comment_seen(worker_id: str, comment_id: str) -> None:

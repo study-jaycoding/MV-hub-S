@@ -3,12 +3,27 @@
 import os
 import signal
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest import mock
 
 import serve
 
 
 class ServeConfigTests(unittest.TestCase):
+    def test_help_exits_before_server_starts(self):
+        output = StringIO()
+        with (
+            mock.patch.object(serve, "main") as main,
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            serve.cli(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("usage:", output.getvalue())
+        main.assert_not_called()
+
     def test_protocol_ping_is_disabled_because_browser_sends_app_ping(self):
         fake_socket = mock.sentinel.socket
         fake_config = mock.sentinel.config
@@ -66,6 +81,14 @@ class ServeConfigTests(unittest.TestCase):
                 serve.main()
 
         fake_server.run.assert_called_once_with(sockets=[fake_socket, fake_socket])
+
+    def test_ctrl_c_after_clean_shutdown_is_not_reported_as_a_crash(self):
+        fake_server = mock.Mock()
+        fake_server.run.side_effect = KeyboardInterrupt
+
+        serve._run_server(fake_server, [mock.sentinel.socket])
+
+        fake_server.run.assert_called_once_with(sockets=[mock.sentinel.socket])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent, Ref } from "react";
 import { useT } from "../../lib/i18n";
+import { MEDIA_FILTER_OPTIONS } from "../../lib/mediaTypes";
 import { ASSET_COLOR_DOTS, ColorFilterDots } from "../common/ColorFilterDots";
 import { TagFilterPanel } from "../common/TagFilterPanel";
 import { ViewControls } from "../common/ViewControls";
@@ -19,15 +20,10 @@ export function AssetsCrumbBar({
   onClearTags,
   onSelectTag,
   onDeleteTag,
-  searchActive,
   sourceOnly,
   activeColors,
-  query,
-  project,
-  breadcrumb,
-  onProjectRoot,
-  onBreadcrumb,
   typeFilter,
+  onTypeFilterChange,
   fileCount,
   onToggleColor,
   grayOn,
@@ -61,15 +57,10 @@ export function AssetsCrumbBar({
   onClearTags: () => void;
   onSelectTag: (tag: string, additive: boolean) => void;
   onDeleteTag: (tag: string) => void;
-  searchActive: boolean;
   sourceOnly: boolean;
   activeColors: Set<string>;
-  query: string;
-  project: string;
-  breadcrumb: string[];
-  onProjectRoot: () => void;
-  onBreadcrumb: (path: string) => void;
   typeFilter: AssetTypeFilter;
+  onTypeFilterChange: (value: AssetTypeFilter) => void;
   fileCount: number;
   onToggleColor: (hex: string) => void;
   grayOn: boolean;
@@ -94,6 +85,12 @@ export function AssetsCrumbBar({
   onSortDir: (dir: AssetSortDir) => void;
 }) {
   const t = useT();
+  // 미디어 타입 4점 슬라이더 — 메인 라이브러리 툴바(생성탭)와 동일 UI·동일 위치(좌측).
+  // 사이드바 타입 필터와 한 상태(typeFilter)를 조작하므로 어느 쪽으로 바꿔도 함께 움직인다.
+  const typeIndex = Math.max(
+    0,
+    MEDIA_FILTER_OPTIONS.findIndex((o) => o.v === (typeFilter ?? "all")),
+  );
   return (
     <div className="assets-crumb">
       {tagPanelOpen && (
@@ -113,41 +110,43 @@ export function AssetsCrumbBar({
         />
       )}
 
-      {searchActive ? (
-        <span className="crumb-search">
-          {activeTags.size
-            ? [...activeTags].map((tag) => `#${tag}`).join(" ")
-            : sourceOnly
-              ? "소스"
-              : activeColors.size
-                ? "컬러"
-                : query.trim().startsWith("#")
-                  ? "태그"
-                  : "이름"}{" "}
-          필터{query.trim() && !query.trim().startsWith("#") ? `: ${query.trim()}` : ""}
+      <div
+        className="lib-hist-slider"
+        data-type={typeFilter ?? "all"}
+        title="미디어 타입 — 슬라이드로 전환"
+      >
+        <span className="lib-hist-label">
+          {t(MEDIA_FILTER_OPTIONS[typeIndex].label)}
         </span>
-      ) : (
-        <>
-          <button onClick={onProjectRoot}>{project}</button>
-          {breadcrumb.map((segment, index) => (
-            <span key={index}>
-              <span className="crumb-sep">/</span>
-              <button onClick={() => onBreadcrumb(breadcrumb.slice(0, index + 1).join("/"))}>
-                {segment}
-              </button>
-            </span>
-          ))}
-        </>
-      )}
-      <span className="crumb-count">
-        {typeFilter === "image"
-          ? t("이미지")
-          : typeFilter === "video"
-            ? t("영상")
-            : typeFilter === "audio"
-              ? t("오디오")
-              : t("전체")}{" "}
-        · {fileCount}{t("개")}
+        <div className="lib-hist-range">
+          <div className="lib-hist-ticks">
+            {MEDIA_FILTER_OPTIONS.map((o, i) => (
+              <button
+                key={o.v}
+                type="button"
+                className={"lib-hist-tick" + (i === typeIndex ? " on" : "")}
+                title={t(o.label)}
+                onClick={() => onTypeFilterChange(o.v === "all" ? null : o.v)}
+              />
+            ))}
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={MEDIA_FILTER_OPTIONS.length - 1}
+            step={1}
+            value={typeIndex}
+            onChange={(e) => {
+              const next = MEDIA_FILTER_OPTIONS[Number(e.target.value)].v;
+              onTypeFilterChange(next === "all" ? null : next);
+            }}
+          />
+        </div>
+      </div>
+      {/* 생성탭 툴바와 동일 — 슬라이더 옆에 '타입 · 건수' 표시 */}
+      <span className="lib-count">
+        {t(MEDIA_FILTER_OPTIONS[typeIndex].label)} · {fileCount}
+        {t("개")}
       </span>
 
       <div className="assets-tools">

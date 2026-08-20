@@ -16,12 +16,82 @@ import {
 import { authFormHeaders, jsonBody, jsonFetch, throwHttpError } from "./http";
 import { pathPart, withQuery } from "./url";
 
+export interface BackupContinuityStatus {
+  local: {
+    set_count: number;
+    latest_created_at: string | null;
+    latest_file_count: number;
+  };
+  shared: {
+    automatic: boolean;
+    state: string;
+    pending: number;
+    failed: number;
+    oldest_pending_at?: string | null;
+    last_attempt_at: string | null;
+    last_success_at: string | null;
+    last_error_code: string | null;
+  };
+}
+
+export interface ServerBackupVersion {
+  name: string;
+  backup_set_id?: string;
+  size: number;
+  mtime: number;
+  kind?: "set";
+  roles?: string[];
+  created_at?: string | null;
+  app_version?: string | null;
+  schema_version?: number;
+  device?: { device_id?: string; device_name?: string };
+  summary?: {
+    generations?: number;
+    tags?: number;
+    canvases?: number;
+    assets?: number;
+    projects?: number;
+    trash?: number;
+    meaningful_records?: number;
+  };
+  parent_backup_set_id?: string | null;
+  is_current?: boolean;
+  branch_status?: "current" | "history" | "conflict";
+}
+
+/** 자동 동기화에 사용할 서버 기준본을 고른다.
+ * 충돌본이 더 최근에 올라왔더라도 서버가 활성화한 current를 우선한다.
+ * 구버전 서버처럼 current 표식이 없을 때만 수신 시각이 가장 최신인 세트를 사용한다.
+ */
+export function selectCurrentServerBackup(
+  backups: ServerBackupVersion[],
+): ServerBackupVersion | null {
+  const sets = backups.filter((backup) => backup.kind === "set");
+  return (
+    sets.find((backup) => backup.is_current || backup.branch_status === "current")
+    ?? sets.reduce<ServerBackupVersion | null>(
+      (latest, backup) => (!latest || backup.mtime > latest.mtime ? backup : latest),
+      null,
+    )
+  );
+}
+
+// 선택 워크스페이스를 쿼리로 — 팀을 고른 동안에는 그 팀 프로젝트 폴더만 보이게 한다
+// (생성 탭과 같은 규칙). 개인·미선택이면 파라미터 없이 전체. 수동 등록 폴더는 서버에서
+// 이 필터를 타지 않으므로 언제나 보인다.
+function workspaceQuery(workspaceId?: string): string {
+  const id = workspaceId?.trim();
+  return id ? `?workspace_id=${encodeURIComponent(id)}` : "";
+}
+
 export const assetsApi = {
   // Assets(구성) 패널
-  assetProjects: () => jsonFetch<ProjectsInfo>("/api/assets/projects"),
+  assetProjects: (workspaceId?: string) =>
+    jsonFetch<ProjectsInfo>(`/api/assets/projects${workspaceQuery(workspaceId)}`),
 
   // 외부 폴더 등록(마운트) — 임의 경로 폴더에 이름을 붙여 프로젝트처럼 추가
-  assetMounts: () => jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts"),
+  assetMounts: (workspaceId?: string) =>
+    jsonFetch<{ mounts: AssetMount[] }>(`/api/assets/mounts${workspaceQuery(workspaceId)}`),
   addAssetMount: (name: string, path: string) =>
     jsonFetch<{ mounts: AssetMount[] }>("/api/assets/mounts", {
       method: "POST",
@@ -119,14 +189,33 @@ export const assetsApi = {
 
   // ☁ 서버에 백업 — 내 계정 DB(메타데이터)를 공유 서버에 올린다(계정별 보관).
   serverBackup: () =>
-    jsonFetch<{ ok: boolean; name: string; size: number; count: number }>(
+    jsonFetch<{
+      ok: boolean;
+      state: string;
+      count: number;
+      legacy_content_saved: boolean;
+      error_code?: string;
+    }>(
       "/api/db/server-backup",
       { method: "POST" },
     ),
-  serverRestore: () =>
-    jsonFetch<{ ok: boolean; relogin_required: boolean }>("/api/db/server-restore", {
-      method: "POST",
-    }),
+  backupContinuity: () =>
+    jsonFetch<BackupContinuityStatus>("/api/db/backup-continuity"),
+  retryBackup: () =>
+    jsonFetch<{ ok: boolean; state: string; error_code?: string }>(
+      "/api/db/backup-retry",
+      { method: "POST" },
+    ),
+  serverBackups: () =>
+    jsonFetch<{ backups: ServerBackupVersion[] }>("/api/db/server-backups"),
+  serverRestore: (backupSetId: string) =>
+    jsonFetch<{
+      ok: boolean;
+      relogin_required: boolean;
+      backup_set_id: string;
+      continuity_updated: boolean;
+      activation_synced: boolean;
+    }>(`/api/db/server-restore/${pathPart(backupSetId)}`, { method: "POST" }),
 
   // OS 파일 탐색기에서 원본 위치 열기(해당 파일 선택)
   revealAsset: (project: string, path: string) =>
@@ -154,11 +243,11 @@ export const assetsApi = {
     path: string,
     text: string,
     parent_id?: string | null,
-    muted = false,
+    isPrivate = false,
   ) =>
     jsonFetch<{ id: string }>(`/api/assets/comments`, {
       method: "POST",
-      body: jsonBody({ project, path, text, parent_id: parent_id ?? null, muted }),
+      body: jsonBody({ project, path, text, parent_id: parent_id ?? null, private: isPrivate }),
     }),
   editAssetComment: (id: string, text: string) =>
     jsonFetch<{ ok: boolean }>(`/api/assets/comments/${pathPart(id)}`, {

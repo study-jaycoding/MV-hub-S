@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - Resolve의 구형 Python 2 폴백
     from urllib2 import HTTPError, Request, URLError, urlopen
 
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 WINDOW_ID = "com.millionvolt.mvhub.importer-result"
 HUB_URLS = tuple(
     value.strip().rstrip("/")
@@ -168,8 +168,40 @@ def _subfolder(media_pool, parent, name):
     return created
 
 
+# 매핑 드라이브("z:") → UNC 루트 캐시 — resolve_bridge._normal_path 와 같은 규칙.
+_DRIVE_UNC_CACHE = {}
+
+
+def _drive_unc(drive):
+    if os.name != "nt" or len(drive) != 2 or drive[1] != ":":
+        return None
+    key = drive.lower()
+    if key in _DRIVE_UNC_CACHE:
+        return _DRIVE_UNC_CACHE[key]
+    unc = None
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(1024)
+        length = ctypes.c_ulong(len(buf))
+        if ctypes.windll.mpr.WNetGetConnectionW(drive, buf, ctypes.byref(length)) == 0:
+            unc = buf.value or None
+    except Exception:
+        unc = None
+    _DRIVE_UNC_CACHE[key] = unc
+    return unc
+
+
 def _normal_path(value):
-    return os.path.normcase(os.path.normpath(os.path.abspath(str(value or ""))))
+    # Z:↔UNC 표기 통일 — Resolve 클립의 File Path 는 등록 표기를 그대로 돌려주므로,
+    # 한쪽만 UNC 면 dedupe 가 어긋나 중복 import·거짓 실패가 난다(resolve_bridge 와 동일 규칙).
+    normalized = os.path.normcase(os.path.normpath(os.path.abspath(str(value or ""))))
+    drive, rest = os.path.splitdrive(normalized)
+    if drive and not drive.startswith("\\\\"):
+        unc = _drive_unc(drive)
+        if unc:
+            normalized = os.path.normcase(os.path.normpath(unc + rest))
+    return normalized
 
 
 def _clip_path(clip):
