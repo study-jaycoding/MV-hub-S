@@ -482,8 +482,14 @@
 /* History 미디어 타입 필터 드롭다운 */
 /* 미디어 타입 4점 슬라이더(전체·이미지·영상·오디오) */
 .lib-hist-slider { display: inline-flex; align-items: center; gap: 11px; padding: 0 8px; }
+/* 선택 타입별 색 — 라벨·선택점이 같은 색이라 슬라이드만 봐도 어떤 타입인지 구분된다.
+   전체=라임(accent), 이미지=파랑, 영상=보라, 오디오=주황. */
+.lib-hist-slider[data-type="all"] { --hist-c: var(--accent); }
+.lib-hist-slider[data-type="image"] { --hist-c: #4da3ff; }
+.lib-hist-slider[data-type="video"] { --hist-c: #b06cff; }
+.lib-hist-slider[data-type="audio"] { --hist-c: #ff9f43; }
 .lib-hist-label {
-  font-size: 14px; font-weight: 700; color: #fff;
+  font-size: 14px; font-weight: 700; color: var(--hist-c, #fff);
   min-width: 36px; /* 2글자 라벨 고정폭 → 슬라이드 시 레이아웃 안 흔들림 */
 }
 .lib-hist-range { position: relative; width: 104px; height: 22px; display: flex; align-items: center; }
@@ -502,7 +508,10 @@
   background: var(--muted2); opacity: 0.7; cursor: pointer; transition: background 0.12s, box-shadow 0.12s;
 }
 .lib-hist-tick:hover { opacity: 1; }
-.lib-hist-tick.on { background: var(--accent); opacity: 1; box-shadow: 0 0 9px var(--accent); }
+.lib-hist-tick.on {
+  background: var(--hist-c, var(--accent)); opacity: 1;
+  box-shadow: 0 0 9px var(--hist-c, var(--accent));
+}
 /* 슬라이더: 투명 트랙 + 투명 thumb(클릭/드래그 영역만) — 선택 표시는 tick.on 한 개로 통일.
    (thumb 를 보이게 두면 tick.on 라임 원과 겹쳐 '원 2개·어긋남'으로 보였음) */
 .lib-hist-range input[type="range"] {
