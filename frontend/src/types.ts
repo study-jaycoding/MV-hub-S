@@ -451,11 +451,12 @@ export interface PreviewTarget {
 
 // WebSocket 진행률 메시지
 export interface ProgressMessage {
-  type: "queued" | "progress" | "synced" | "assets_changed" | "manage_changed";
+  type: "queued" | "progress" | "synced" | "assets_changed" | "manage_changed" | "flash";
   generation_id?: string;
   status?: GenStatus;
   result_url?: string | null;
   error?: string;
+  message?: string; // flash: 계정 범위 사용자 안내
   projects?: string[]; // assets_changed: 변경된 어셋 프로젝트 이름들(관련 창만 갱신)
   origins?: Array<{ client_id: string; mutation_id: string }>; // 변경 알림에 병합된 요청 출처
 }

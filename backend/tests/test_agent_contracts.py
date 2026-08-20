@@ -357,14 +357,17 @@ def test_agent_pending_exists_uses_read_only_workspace_capable_route():
     agent = _load_agent()
     with patch.object(
         agent, "_http", return_value=(200, {"pending": True})
-    ) as http:
+    ) as http, patch.object(agent, "_agent_instance_id", return_value="agent-1"):
         assert agent._pending_exists("http://hub", "token-1") is True
 
     call = http.call_args
     parsed = urlsplit(call.args[1])
     assert call.args[0] == "GET"
     assert parsed.path == "/api/gen-requests/pending-exists"
-    assert parse_qs(parsed.query) == {"capability": ["workspace"]}
+    assert parse_qs(parsed.query) == {
+        "capability": ["workspace,submission-stage"],
+        "agent_id": ["agent-1"],
+    }
     assert call.kwargs == {"token": "token-1"}
 
 

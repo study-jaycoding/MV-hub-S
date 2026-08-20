@@ -93,6 +93,45 @@ describe("connectProgress", () => {
     window.removeEventListener(APP_EVENTS.flash, flash);
   });
 
+  it("서버의 계정 범위 flash 메시지를 기존 사용자 토스트 이벤트로 전달한다", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { protocol: "http:", host: "127.0.0.1:5173" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    class TestCustomEvent<T> extends Event {
+      detail: T | undefined;
+      constructor(type: string, init?: { detail?: T }) {
+        super(type);
+        this.detail = init?.detail;
+      }
+    }
+    const eventTarget = new EventTarget();
+    vi.stubGlobal("window", eventTarget);
+    vi.stubGlobal("CustomEvent", TestCustomEvent);
+    const flash = vi.fn();
+    const onMessage = vi.fn();
+    window.addEventListener(APP_EVENTS.flash, flash);
+    const off = connectProgress(onMessage);
+
+    FakeWebSocket.instances[0].onmessage?.({
+      data: JSON.stringify({
+        type: "flash",
+        message: "에이전트 업데이트가 필요합니다.",
+      }),
+    });
+
+    expect(flash).toHaveBeenCalledTimes(1);
+    expect((flash.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+      "에이전트 업데이트가 필요합니다.",
+    );
+    expect(onMessage).toHaveBeenCalledWith({
+      type: "flash",
+      message: "에이전트 업데이트가 필요합니다.",
+    });
+
+    off();
+    window.removeEventListener(APP_EVENTS.flash, flash);
+  });
+
   it("100대가 같은 순간 끊겨도 재연결 시각을 jitter로 분산한다", () => {
     const delays = Array.from({ length: 100 }, (_, index) =>
       progressReconnectDelayMs(1000, () => index / 99),

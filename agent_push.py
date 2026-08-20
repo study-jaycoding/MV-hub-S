@@ -566,12 +566,17 @@ def _claim_pending(server: str, token: str, limit: int, agent_id: str | None = N
 
 
 def _pending_exists(server: str, token: str) -> bool:
+    # 깨움 조회도 유료 claim 가능성을 묻는 에이전트 계약의 일부다. 신 서버는 이 선언으로
+    # 구 에이전트만 차단하고, 구 서버는 모르는 query를 무시해 그대로 동작한다.
     status, body = _http(
         "GET",
         _gen_request_url(
             server,
             action="pending-exists",
-            query={"capability": "workspace"},
+            query={
+                "capability": "workspace,submission-stage",
+                "agent_id": _agent_instance_id(),
+            },
         ),
         token=token,
     )

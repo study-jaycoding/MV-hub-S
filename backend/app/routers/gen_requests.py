@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -40,6 +42,7 @@ from ..models import (
     WorkspaceContext,
 )
 from ..services.agent_signals import agent_signals
+from ..services.operational_logging import log_event
 from ..services.release_update import update_in_progress
 from ..usecases.gen_requests import (
     CanvasGenerationConflict,
@@ -59,12 +62,84 @@ from ..usecases.gen_requests import (
     require_submission_recovery,
     submit_gen_request,
 )
+from ..ws import manager
 from ._telemetry import schedule_telemetry_drain
 
 # 규율: 이 파일의 async 핸들러에서 동기 repo(SQLite) 호출을 직접 하지 않는다.
 # DB만 쓰는 핸들러는 def로 FastAPI 워커 스레드에서 실행하고, WebSocket 알림 등 await가
 # 필요한 핸들러의 DB 호출은 asyncio.to_thread로 이관한다.
 router = APIRouter(prefix="/api", tags=["gen-requests"])
+
+_generation_log = logging.getLogger("mvhub.generation")
+_AGENT_UPDATE_REQUIRED_MESSAGE = (
+    "에이전트 업데이트가 필요합니다. 최신 에이전트로 업데이트한 후 다시 이용해 주세요."
+)
+# 구 에이전트는 idle마다 폴링하므로 계정별 안내·운영 로그를 짧게 합친다. 영구 1회성으로
+# 만들면 안내 순간 브라우저가 닫혀 있던 사용자가 이후에도 원인을 못 보므로 5분 뒤 재안내한다.
+_AGENT_UPDATE_NOTICE_THROTTLE_SECONDS = 300.0
+_AGENT_UPDATE_NOTICE_MAX_ACCOUNTS = 4096
+_agent_update_notice_at: dict[str, float] = {}
+
+
+def _submission_stage_capable(caps: set[str], agent_id: str | None) -> bool:
+    """유료 claim 최소 계약. 버전 숫자가 아니라 도장 기능과 인스턴스 신원을 함께 요구한다."""
+    return "submission-stage" in caps and bool(agent_id and agent_id.strip())
+
+
+def _reserve_agent_update_notice(account_email: str) -> bool:
+    """같은 계정의 연속 폴링을 안내·로그 한 건으로 합치고 메모리에도 상한을 둔다."""
+    now = time.monotonic()
+    key = account_email.strip().lower()
+    last = _agent_update_notice_at.get(key)
+    if last is not None and now - last < _AGENT_UPDATE_NOTICE_THROTTLE_SECONDS:
+        return False
+    _agent_update_notice_at[key] = now
+    if len(_agent_update_notice_at) > _AGENT_UPDATE_NOTICE_MAX_ACCOUNTS:
+        cutoff = now - _AGENT_UPDATE_NOTICE_THROTTLE_SECONDS
+        for email, notified_at in list(_agent_update_notice_at.items()):
+            if notified_at < cutoff:
+                _agent_update_notice_at.pop(email, None)
+        while len(_agent_update_notice_at) > _AGENT_UPDATE_NOTICE_MAX_ACCOUNTS:
+            oldest = min(_agent_update_notice_at, key=_agent_update_notice_at.get)
+            _agent_update_notice_at.pop(oldest, None)
+    return True
+
+
+async def _paid_claim_blocked(
+    acc: dict,
+    caps: set[str],
+    agent_id: str | None,
+    *,
+    route: str,
+) -> bool:
+    """능력 미달 에이전트의 유료 claim을 막고, 실제 pending이 있을 때만 안내한다."""
+    if _submission_stage_capable(caps, agent_id):
+        return False
+
+    email = acc["email"]
+    agent_signals.touch(email)
+    # 안내 판정은 workspace 게이트와 별개다. 어떤 workspace 요청이든 이 계정에 유료 pending이
+    # 있으면 구 에이전트로는 처리할 수 없다는 사실을 사용자에게 알려야 한다.
+    has_pending = await asyncio.to_thread(
+        repo.has_pending_requests,
+        email,
+        workspace_capable=True,
+    )
+    if has_pending and _reserve_agent_update_notice(email):
+        log_event(
+            _generation_log,
+            "generation_claim_capability_blocked",
+            level=logging.WARNING,
+            route=route,
+            submission_stage_declared="submission-stage" in caps,
+            agent_id_present=bool(agent_id and agent_id.strip()),
+            notice_throttle_seconds=int(_AGENT_UPDATE_NOTICE_THROTTLE_SECONDS),
+        )
+        await manager.broadcast(
+            {"type": "flash", "message": _AGENT_UPDATE_REQUIRED_MESSAGE},
+            account_uid=realtime_scope(acc),
+        )
+    return True
 
 
 def _require_matching_project_workspace(pid: str, workspace) -> None:
@@ -339,14 +414,29 @@ def claim_canvas_generation_candidate(body: CanvasManualClaimIn, request: Reques
 
 
 @router.get("/gen-requests/pending-exists")
-def pending_gen_requests_exist(request: Request, capability: str = ""):
+async def pending_gen_requests_exist(
+    request: Request,
+    capability: str = "",
+    agent_id: str | None = None,
+):
     """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
     acc = _require_account(request)
     agent_signals.touch(acc["email"])
     caps = {c.strip() for c in capability.split(",") if c.strip()}
+    if await _paid_claim_blocked(
+        acc,
+        caps,
+        agent_id,
+        route="pending-exists",
+    ):
+        # 구 에이전트를 실행 루프로 깨우지 않는다. 실제 요청은 그대로 pending이라 신 에이전트가
+        # 붙는 즉시 아래 정상 경로에서 발견한다.
+        return {"pending": False}
     return {
-        "pending": repo.has_pending_requests(
-            acc["email"], workspace_capable="workspace" in caps
+        "pending": await asyncio.to_thread(
+            repo.has_pending_requests,
+            acc["email"],
+            workspace_capable="workspace" in caps,
         )
     }
 
@@ -361,24 +451,25 @@ async def pending_gen_requests(
     """에이전트가 호출 — 자기 계정 대기 요청을 원자적으로 claim하고 레시피를 반환한다.
 
     submission-stage 신 에이전트는 claimed로 받아 준비를 끝내고 begin-submission ACK 뒤에만
-    placeholder가 running이 된다. 구 에이전트는 호환을 위해 claim 즉시 submitting/running으로
-    전환한다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
+    placeholder가 running이 된다. 도장 기능이나 agent_id가 없는 에이전트에는 유료 요청을
+    내리지 않는다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
     """
     acc = _require_account(request)
     # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).
     caps = {c.strip() for c in capability.split(",") if c.strip()}
-    # submission-stage는 owner id가 있어야 안전하다. 둘 중 하나라도 빠진 혼합 버전은 기존
-    # submitting claim으로 내려 구 에이전트가 별도 begin 호출 없이 계속 동작하게 한다.
-    staged_submission = "submission-stage" in caps and bool(agent_id)
+    if await _paid_claim_blocked(acc, caps, agent_id, route="pending"):
+        return []
+    # 위 게이트를 통과한 claim은 항상 staged다. agent_id는 공백을 제거해 lease owner로 고정한다.
+    lease_owner = agent_id.strip() if agent_id else None
     claimed = await claim_gen_requests(
         acc["email"],
         realtime_scope(acc),
         limit,
         workspace_capable="workspace" in caps,
-        lease_owner=agent_id,
-        submission_stage_capable=staged_submission,
+        lease_owner=lease_owner,
+        submission_stage_capable=True,
     )
     if claimed:
         schedule_telemetry_drain()
