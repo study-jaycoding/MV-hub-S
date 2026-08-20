@@ -594,8 +594,18 @@ export default function App() {
   // 이번에 받은 페이지가 회색필터로 전부 가려지면(빈 그리드) ThumbnailGrid 가 센티넬을 못 그려
   // onLoadMore 가 영영 안 불린다 → 뒤 페이지의 활성 항목이 사라진 것처럼 보임. hasMore 인 한
   // 활성 항목이 나오거나 끝날 때까지 다음 페이지를 자동으로 당긴다(필터·페이지네이션 분리).
+  // 단 연쇄에 상한을 둔다 — 비활성 항목이 수십 페이지 이어지는 데이터 분포에서 무한 자동
+  // 순회(요청 폭주)를 막는다. 활성 항목이 한 번이라도 보이면 카운터는 리셋된다.
+  const grayAutoLoadCountRef = useRef(0);
   useEffect(() => {
-    if (grayOn && gridGens.length === 0 && hasMore && !loadingMore) loadMore();
+    if (!grayOn || gridGens.length > 0) {
+      grayAutoLoadCountRef.current = 0;
+      return;
+    }
+    if (hasMore && !loadingMore && grayAutoLoadCountRef.current < 10) {
+      grayAutoLoadCountRef.current += 1;
+      loadMore();
+    }
   }, [grayOn, gridGens.length, hasMore, loadingMore, loadMore]);
 
   // 미확인 코멘트 여부·내 실패 수는 서버 stats 에서 계산한다(전량 로드 대체).

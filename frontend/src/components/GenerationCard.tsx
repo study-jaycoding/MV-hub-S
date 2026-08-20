@@ -121,7 +121,7 @@ function GenerationCardImpl({
   onShowHistory,
 }: Props) {
   const modelName = useModelDisplayName();
-  const asset = gen.assets[0];
+  const asset = gen.assets?.[0]; // 프록시·백필 스키마 어긋남 방어 — assets 부재 시 카드만 빈 썸네일
   const isVideo = asset?.type === "video";
   const rawThumb = asset?.thumbnail_path || (!isVideo ? asset?.file_path : null);
   // 리사이즈 썸네일(작은 이미지 디코딩 → 그리드 즉시 표시). 로컬 /media·공유받은 원격 URL 모두 적용.

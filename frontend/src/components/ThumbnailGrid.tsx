@@ -394,7 +394,7 @@ export function ThumbnailGrid(props: Props) {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const g = generations[focusIdx];
-      const a = g?.assets[0];
+      const a = g?.assets?.[0];
       if (g && a) onPreviewCell(g);
     } else if (e.key === " ") {
       e.preventDefault();

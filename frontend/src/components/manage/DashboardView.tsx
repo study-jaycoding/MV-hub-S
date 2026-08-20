@@ -223,6 +223,8 @@ function ProjectDetail({
             <div className="dash-detail-title">
               <h2>에피소드 · 시퀀스</h2>
               <span className="dash-scope-chip">프로젝트 · {projName}</span>
+              {/* 프로젝트 요약과 같은 원천 — 폴더 파생 집계임을 명시(위 텔레메트리와 구분) */}
+              <span className="work-source-label">출처 · 라이브러리 생성물 집계</span>
             </div>
             <span className="meta">에피소드 {episodes.length}개 · 시퀀스 {sequenceCount}개</span>
           </div>
