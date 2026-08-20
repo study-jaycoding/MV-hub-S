@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,53 @@ def _read(name: str) -> str:
 
 def _read_updater() -> str:
     return _read("tools/update_git_worker.bat")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch BOM contract")
+def test_agent_cli_pin_reader_accepts_utf8_bom_and_keeps_batch_ascii(tmp_path):
+    launcher_path = ROOT / "MV_agent.bat"
+    launcher_bytes = launcher_path.read_bytes()
+    launcher = launcher_bytes.decode("ascii")  # 런처 자체는 계속 ASCII 전용
+    reader_line = next(
+        line
+        for line in launcher.splitlines()
+        if line.startswith('if exist "%HF_CLI_PIN_FILE%" for /f')
+    )
+    helper = ROOT / "backend" / "app" / "services" / "read_utf8_sig_first_line.py"
+    assert "utf-8-sig" in helper.read_text(encoding="utf-8")
+    assert helper.name in reader_line
+    assert "set /p HF_CLI_VERSION" not in launcher
+
+    pin = tmp_path / "hf_cli_version.txt"
+    pin.write_text("  1.2.3  \n", encoding="utf-8-sig")
+    probe = tmp_path / "probe.bat"
+    probe.write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "setlocal",
+                f'set "ROOT={ROOT}\\"',
+                f'set "PY_EXE={sys.executable}"',
+                'set "PY_ARGS="',
+                f'set "HF_CLI_PIN_FILE={pin}"',
+                'set "HF_CLI_VERSION="',
+                reader_line,
+                "echo VALUE=%HF_CLI_VERSION%",
+            ]
+        ),
+        encoding="ascii",
+    )
+    result = subprocess.run(
+        [os.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(probe)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "VALUE=1.2.3" in result.stdout
 
 
 def test_update_adds_server_tools_only_for_sparse_checkout():

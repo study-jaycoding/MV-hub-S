@@ -142,7 +142,10 @@ REM CLI on release PCs.
 set "RUN_AGENT=1"
 set "HF="
 set "HF_CLI_VERSION="
-if exist "%ROOT%hf_cli_version.txt" set /p HF_CLI_VERSION=<"%ROOT%hf_cli_version.txt"
+set "HF_CLI_PIN_FILE=%ROOT%hf_cli_version.txt"
+REM Match the backend's utf-8-sig rule. set /p leaves a UTF-8 BOM in the value.
+if exist "%HF_CLI_PIN_FILE%" for /f "delims=" %%x in ('""%PY_EXE%" %PY_ARGS% "%ROOT%backend\app\services\read_utf8_sig_first_line.py" "%HF_CLI_PIN_FILE%""') do if not defined HF_CLI_VERSION set "HF_CLI_VERSION=%%x"
+set "HF_CLI_PIN_FILE="
 REM trim stray leading/trailing spaces a re-saved pin file might add.
 for /f "tokens=* delims= " %%x in ("%HF_CLI_VERSION%") do set "HF_CLI_VERSION=%%x"
 set "BUNDLED=%ROOT%runtime\higgsfield\higgsfield.cmd"

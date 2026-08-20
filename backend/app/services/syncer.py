@@ -230,11 +230,23 @@ class PeriodicSync:
                     await manager.broadcast_all({"type": "synced"})
             except asyncio.CancelledError:
                 raise
-            except cli_bridge.CLIError:
-                # CLI 일시 불가(네트워크/로그아웃 등) — 조용히 다음 주기 재시도.
-                pass
-            except Exception as e:  # noqa: BLE001 — 워커가 죽지 않도록 격리
-                print(f"[periodic-sync] 오류: {e}")
+            except cli_bridge.CLIError as exc:
+                # CLI 일시 불가도 운영 상태에 남기고 다음 주기에 재시도한다. 예외 원문은 토큰·URL이
+                # 섞일 수 있으므로 구조화 로그에는 안전한 타입만 기록한다.
+                log_event(
+                    _log,
+                    "periodic_sync_cli_failed",
+                    level=logging.WARNING,
+                    error_type=type(exc).__name__,
+                )
+            except Exception as exc:  # noqa: BLE001 — 워커가 죽지 않도록 격리
+                log_event(
+                    _log,
+                    "periodic_sync_failed",
+                    level=logging.ERROR,
+                    error_type=type(exc).__name__,
+                    exc_info=True,
+                )
 
 
 periodic_sync = PeriodicSync()

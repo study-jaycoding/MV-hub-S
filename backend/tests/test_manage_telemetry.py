@@ -144,19 +144,9 @@ class ManageTelemetryTests(unittest.TestCase):
         self.assertEqual(restored["dirty_rev"], 3)
         self.assertFalse(restored["is_tombstone"])
 
-    def test_periodic_backfill_tracks_missing_job_once_without_redirtying(self):
-        self.assertEqual(manage.ensure_ingested_tracked(["job-1"], None), 1)
-        first = manage.list_dirty_telemetry()[0]
-        manage.mark_telemetry_pushed([first])
-        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
-
-        # 다음 20초 주기에도 같은 완료 잡이 보이지만 기존 outbox를 다시 dirty로 만들지 않는다.
-        self.assertEqual(manage.ensure_ingested_tracked(["job-1"], None), 0)
-        self.assertEqual(manage.telemetry_outbox_status()["pending"], 0)
-
-        # 실제 상태 변경으로 보고된 잡은 기존 pushed 행을 다시 전송 대상으로 되돌린다.
-        self.assertEqual(manage.mark_ingested_dirty(["job-1"], None), 1)
-        self.assertEqual(manage.telemetry_outbox_status()["pending"], 1)
+    def test_removed_rl03_backfill_is_not_reexported_as_repo_api(self):
+        # 라우터 호출처 없이 aggregate 모듈에만 남았던 API를 다시 공개하지 않는다.
+        self.assertNotIn("ensure_ingested_tracked", vars(manage))
 
     def test_failed_item_backs_off_and_does_not_block_fresh_items(self):
         # 실패한 항목은 next_retry_at 전까지 드레인 선택에서 빠지고(폭주 방지),

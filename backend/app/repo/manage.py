@@ -51,7 +51,6 @@ from .manage_transactions import (
 from .manage_telemetry import (
     account_emails_by_creator_uids,
     build_telemetry_facts,
-    ensure_ingested_tracked,
     list_dirty_telemetry,
     mark_ingested_dirty,
     mark_telemetry_dirty,

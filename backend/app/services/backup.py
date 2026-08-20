@@ -6,8 +6,9 @@
 (shutil.copy)는 아직 메인 DB 로 체크포인트되지 않은 -wal 분을 놓쳐 깨진 스냅샷이 된다.
 .backup 은 잠금 없이 일관된 스냅샷을 떠 준다(서버는 계속 쓰기 가능).
 
-동작: 콘텐츠 DB를 기준으로 휴지통·프로젝트 관리 DB가 존재하면 같은 시각의 세트로 함께
-백업한다. 시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루).
+동작: 콘텐츠 DB를 기준으로 휴지통·프로젝트 관리 DB가 존재하면 같은 stamp의 세트로 함께
+백업한다. 각 DB의 읽기 시점은 미세하게 다를 수 있다(아래 스냅샷 주석 참고).
+시작 시 1회(최근 백업이 충분히 새것이면 생략) + 주기(기본 하루).
 최근 N세트만 보관(회전).
 백업 폴더는 CONTENT_HUB_BACKUP_DIR 로 다른 디스크/NAS 지정 권장(같은 디스크면 동반 손실).
 """
@@ -229,10 +230,13 @@ def _snapshot_database_set(
     sources: list[tuple[str, Path, str, str | None]],
     snapshots: list[tuple[str, Path, Path, str | None]],
 ) -> None:
-    """첨부 DB 전체의 읽기 시점을 먼저 고정한 뒤 각각 온라인 백업한다.
+    """첨부 DB를 한 연결의 읽기 트랜잭션에서 연 뒤 각각 온라인 백업한다.
 
-    콘텐츠 삭제가 메인→휴지통으로 이동하는 찰나에도 두 스냅샷 사이에서 사라지거나
-    중복되지 않게 한다. WAL 읽기 트랜잭션이라 서버 쓰기를 장시간 막지는 않는다.
+    SQLite/WAL은 ATTACH된 여러 DB 세트의 원자적 스냅샷을 보장하지 않는다. 별칭별 첫 읽기가
+    순차적이므로 DB 사이에는 미세한 시점 차와 이동 중 행의 중복·누락 가능성이 남는다. 복원 때는
+    세트 무결성·ready·핵심 수를 검사하고, content/trash 중복은 부팅 정합기가 main을 우선한다.
+    한쪽 누락·manage 의미 불일치는 완전히 검출할 수 없으므로 이전 세트와 요약을 대조하고,
+    의심되면 이전 정상 세트를 선택한다. WAL 읽기라 서버 쓰기를 장시간 막지는 않는다.
     """
     main_source = next(source for label, source, _, _ in sources if label == "content")
     src_conn = sqlite3.connect(str(main_source), isolation_level=None)
@@ -246,7 +250,7 @@ def _snapshot_database_set(
             aliases[label] = alias
         src_conn.execute("BEGIN")
         try:
-            # 각 첨부 DB를 트랜잭션 안에서 읽어 동일한 스냅샷 경계를 확정한다.
+            # 각 DB의 스냅샷 경계를 가능한 한 가깝게 잡는다. DB 간 동일 시점 보장은 아니다.
             for alias in aliases.values():
                 src_conn.execute(f"SELECT name FROM {alias}.sqlite_master LIMIT 1").fetchone()
             for label, _, tmp, _ in snapshots:
@@ -262,7 +266,7 @@ def _snapshot_database_set(
 
 
 def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
-    """DB 세트의 일관 스냅샷을 생성하고 대표 콘텐츠 경로를 반환(블로킹).
+    """검증 가능한 DB 백업 세트를 생성하고 대표 콘텐츠 경로를 반환(블로킹).
     DB 파일이 아직 없으면 None. 회전까지 수행.
 
     ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤

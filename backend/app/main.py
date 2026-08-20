@@ -176,12 +176,49 @@ def _should_bootstrap_admin() -> bool:
     return AUTH_ENABLED and os.environ.get(SNAPSHOT_EXPORT_ENV, "").strip() != "1"
 
 
+def _log_worker_backup_bootstrap_failure() -> None:
+    log_event(
+        _runtime_log,
+        "worker_backup_bootstrap_queue_failed",
+        level=logging.ERROR,
+        exc_info=True,
+    )
+
+
+async def _worker_backup_bootstrap() -> None:
+    """기존 로컬 백업의 outbox 보강을 readiness 밖에서 수행하고 실제 스레드까지 추적한다."""
+    loop = asyncio.get_running_loop()
+    work = loop.run_in_executor(None, queue_latest_local_backup)
+    try:
+        await asyncio.shield(work)
+    except asyncio.CancelledError:
+        # run_in_executor 작업은 Task.cancel()만으로 멈추지 않는다. 종료 중에도 실제 복사·검증이
+        # 끝날 때까지 기다려 상태 DB를 periodic worker 정리와 겹치지 않게 한다.
+        try:
+            await asyncio.shield(work)
+        except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 실패만 운영 로그에 남긴다.
+            _log_worker_backup_bootstrap_failure()
+        raise
+    except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 다음 주기에서 다시 보강한다.
+        _log_worker_backup_bootstrap_failure()
+    finally:
+        # 기존 순서(queue 보강 뒤 worker 시작)는 유지하되 둘 다 readiness와 분리한다.
+        periodic_worker_backup.start()
+
+
+def _start_worker_backup_bootstrap() -> asyncio.Task[None]:
+    return asyncio.create_task(
+        _worker_backup_bootstrap(), name="worker-backup-bootstrap"
+    )
+
+
 @asynccontextmanager
 async def _application_lifespan(app: FastAPI):
     log_path = configure_operational_logging()
     log_event(_runtime_log, "startup_begin", log_file=log_path.name)
     runtime_report_task: asyncio.Task | None = None
     history_audit_task: asyncio.Task | None = None
+    worker_backup_bootstrap_task: asyncio.Task | None = None
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
@@ -338,16 +375,7 @@ async def _application_lifespan(app: FastAPI):
         # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
         # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
         periodic_backup.set_completed_callback(queue_backup_set)
-        try:
-            await asyncio.to_thread(queue_latest_local_backup)
-        except Exception:  # noqa: BLE001 — 로컬 백업은 보존하고 다음 주기에서 다시 보강한다.
-            log_event(
-                _runtime_log,
-                "worker_backup_bootstrap_queue_failed",
-                level=logging.ERROR,
-                exc_info=True,
-            )
-        periodic_worker_backup.start()
+        worker_backup_bootstrap_task = _start_worker_backup_bootstrap()
     else:
         periodic_backup.set_completed_callback(None)
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
@@ -397,44 +425,50 @@ async def _application_lifespan(app: FastAPI):
             name="runtime-metrics-log",
         )
     log_event(_runtime_log, "startup_ready")
-    yield
-    # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
-    if runtime_report_task:
-        runtime_report_task.cancel()
-        try:
-            await runtime_report_task
-        except asyncio.CancelledError:
-            pass
-    await shutdown_request_estimates()
-    # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
-    await periodic_backup.stop()
-    await periodic_worker_backup.stop()
-    periodic_backup.set_completed_callback(None)
-    await periodic_sweeper.stop()
-    await periodic_share_state_reconciler.stop()
-    await periodic_media_preservation.stop()
-    await remote_realtime_bridge.stop()
-    if MANAGE_ENABLED or _proxy.is_worker_hub():
-        # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
-        from .routers._telemetry import wait_for_telemetry_drain
+    try:
+        yield
+    finally:
+        # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
+        if runtime_report_task:
+            runtime_report_task.cancel()
+            try:
+                await runtime_report_task
+            except asyncio.CancelledError:
+                pass
+        await shutdown_request_estimates()
+        # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
+        await periodic_backup.stop()
+        if worker_backup_bootstrap_task:
+            worker_backup_bootstrap_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_backup_bootstrap_task
+        await periodic_worker_backup.stop()
+        periodic_backup.set_completed_callback(None)
+        await periodic_sweeper.stop()
+        await periodic_share_state_reconciler.stop()
+        await periodic_media_preservation.stop()
+        await remote_realtime_bridge.stop()
+        if MANAGE_ENABLED or _proxy.is_worker_hub():
+            # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
+            from .routers._telemetry import wait_for_telemetry_drain
 
-        await wait_for_telemetry_drain()
-    from .routers._telemetry import unbind_telemetry_loop
+            await wait_for_telemetry_drain()
+        from .routers._telemetry import unbind_telemetry_loop
 
-    unbind_telemetry_loop(runtime_loop)
-    from .services.history_autofill import stop_history_imports, unbind_history_loop
+        unbind_telemetry_loop(runtime_loop)
+        from .services.history_autofill import stop_history_imports, unbind_history_loop
 
-    if history_audit_task and not history_audit_task.done():
-        history_audit_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await history_audit_task
-    await stop_history_imports()
-    unbind_history_loop(runtime_loop)
-    agent_signals.unbind_loop(runtime_loop)
-    if AUTH_ENABLED:
-        await periodic_sync.stop()
-    asset_watcher.stop()
-    log_event(_runtime_log, "shutdown_complete")
+        if history_audit_task and not history_audit_task.done():
+            history_audit_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await history_audit_task
+        await stop_history_imports()
+        unbind_history_loop(runtime_loop)
+        agent_signals.unbind_loop(runtime_loop)
+        if AUTH_ENABLED:
+            await periodic_sync.stop()
+        asset_watcher.stop()
+        log_event(_runtime_log, "shutdown_complete")
 
 
 @asynccontextmanager

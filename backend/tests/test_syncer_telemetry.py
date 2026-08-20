@@ -82,6 +82,27 @@ class SyncerTelemetryTests(unittest.TestCase):
 
         drain.assert_called_once_with()
 
+    def test_periodic_sync_cli_failure_emits_structured_warning(self):
+        worker = syncer.PeriodicSync(interval=0.01)
+        with patch.object(
+            syncer.asyncio,
+            "sleep",
+            AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+        ), patch.object(
+            syncer,
+            "sync_now",
+            AsyncMock(side_effect=syncer.cli_bridge.CLIError("login token hidden")),
+        ), patch.object(syncer, "log_event") as log_event:
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(worker._run())
+
+        log_event.assert_called_once_with(
+            syncer._log,
+            "periodic_sync_cli_failed",
+            level=syncer.logging.WARNING,
+            error_type="CLIError",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

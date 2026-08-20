@@ -52,6 +52,8 @@
 - 자동 백업 한 세트는 `content_hub_*`(콘텐츠), `content_trash_*`(휴지통),
   `manage_hub_*`(프로젝트 관리, 사용 중일 때)로 구성된다. 각 파일은 생성 때와
   원격 복제 직후 모두 SQLite 무결성 검사를 통과해야 완성본으로 취급한다.
+- 같은 파일명 stamp는 세트 구성 표식일 뿐 DB 간 완전히 동일한 트랜잭션 시점을 보장하지 않는다.
+  attached DB별 첫 읽기는 순차적이라 이동 중 행이 미세하게 중복·누락될 수 있다.
 - 새 작업자가 올린 개인 세트는 `db-backups\<계정슬러그>\sets\<backup_set_id>\`에
   `manifest.json`, `content.db`, 존재할 때 `trash.db`로 저장된다. 복제는 manifest의 크기·
   SHA-256과 각 SQLite 무결성이 모두 맞을 때만 세트 폴더를 공개한다.
@@ -105,21 +107,25 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
 3. 예비 PC에 저장소가 없으면 `setup_clone_git.bat` 로 클론, 있으면
    `update_git.bat` 로 최신화.
 4. 최신 백업 **세트**를 운영 경로에 복사하기 전에 격리 드릴로 검증한다. 대표 파일과 정확히 같은
-   시각의 `content_trash`·`manage_hub` 파일이 모두 있어야 한다.
+   stamp의 `content_trash`·`manage_hub` 파일이 모두 있어야 한다.
 
    ```powershell
    cd E:\MV-hub-S
    py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
    ```
 
-   `ok=true`, 세 DB의 ready가 모두 `ok`, 로그인 `ok`, `process_stopped=true`, 원본 불변을 확인한다.
+   `ok=true`, 세 DB의 ready가 모두 `ok`, 로그인 `ok`, `process_stopped=true`, 원본 불변과 핵심
+   수의 기동 전후 불변을 확인한다. 실패하거나 예상 밖 차이가 있으면 설치하지 말고 이전 완성 세트로
+   다시 드릴한다. content/trash에 같은 ID가 중복된 경우만 부팅 시 content 우선으로 자동 정리되며,
+   한쪽 누락이나 manage 의미 불일치는 드릴만으로 완전 검출되지도, 자동 복구되지도 않는다. 화면·세트
+   요약을 이전 세트와 대조해 의심되면 이전 세트 선택 후 별도 조사한다.
    `--restored-dir`로 남긴 드릴 사본에는 임시 로그인 계정이 추가되므로 운영 DB로 쓰지 않는다.
 5. 검증한 원본 백업 DB를 복원한다 (복제 위치의 폴더 구조 기준):
    - `backups\content_hub_*.db` 최신본 → `backend\data\db\content_hub.db` 로
      복사(이름 변경). 서버 메인 DB.
-   - 같은 시각의 `backups\content_trash_*.db` →
+   - 같은 stamp의 `backups\content_trash_*.db` →
      `backend\data\db\content_hub_trash.db` 로 복원.
-   - 같은 시각의 `backups\manage_hub_*.db` →
+   - 같은 stamp의 `backups\manage_hub_*.db` →
      `backend\data\db\manage_hub.db` 로 복원.
    - `backups\<계정슬러그>\content_hub_*.db` 가 있으면 →
      `backend\data\db\acct\<계정슬러그>\content_hub.db` 로 복원(계정별 DB).
@@ -136,7 +142,7 @@ taskkill /IM python.exe /F              ← 또는 작업관리자에서 serve.p
 - [ ] 복제 위치에 어제 날짜 백업이 있는가 (`logs\backup_replicate.log` 확인)
 - [ ] `backend\data\backup_replica_status.json`의 `state`가 `success`이고 마지막 성공 시각이
       예약 주기 안에 있는가
-- [ ] 같은 시각의 content·trash·manage 세트에 `--backup-set` 드릴을 실행해 ready·로그인·핵심 수
+- [ ] 같은 stamp의 content·trash·manage 세트에 `--backup-set` 드릴을 실행해 ready·로그인·핵심 수
       대조와 테스트 프로세스 회수가 모두 통과하는가
 - [ ] 실제 작업자 계정 세트 하나를 예비 PC에 복원해 개인 생성물과 휴지통 상태가 함께 보이는가
 - [ ] 서버 PC 재부팅 → 로그인 없이 자동으로 서버·워치독이 뜨는가

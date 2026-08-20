@@ -110,7 +110,7 @@ def sweep_once(now: Optional[float] = None) -> dict[str, int]:
     try:
         from . import media_cache, thumbs
 
-        result["thumb_evicted"] = thumbs.evict_thumb_cache()
+        result["thumb_evicted"] = thumbs.evict_thumb_cache(force=True)
         result["thumb_source_evicted"] = media_cache.evict_thumb_source_cache()
     except Exception:  # noqa: BLE001 — eviction 실패가 청소 자체를 막지 않게
         pass

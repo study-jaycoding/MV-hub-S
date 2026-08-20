@@ -7,7 +7,19 @@ from unittest.mock import patch
 
 import pytest
 
+from app import db
 from app.routers import _telemetry
+
+
+@pytest.fixture
+def isolated_content_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_HUB_DB", str(tmp_path / "content_hub.db"))
+    db.flush_pool()
+    db.init_db()
+    try:
+        yield
+    finally:
+        db.flush_pool()
 
 
 def _reset_scheduler() -> None:
@@ -66,7 +78,7 @@ def test_change_while_sending_causes_one_followup_drain():
     asyncio.run(scenario())
 
 
-def test_management_disabled_never_schedules_or_drains():
+def test_management_disabled_never_schedules_or_drains(isolated_content_db):
     async def scenario():
         _reset_scheduler()
         with patch.object(_telemetry, "MANAGE_ENABLED", False), patch.object(
@@ -121,7 +133,9 @@ def test_100_sync_workers_coalesce_on_bound_runtime_loop_without_waiting():
     asyncio.run(scenario())
 
 
-def test_concurrent_drain_returns_immediately_and_owner_runs_followup():
+def test_concurrent_drain_returns_immediately_and_owner_runs_followup(
+    isolated_content_db,
+):
     _reset_scheduler()
     started = threading.Event()
     release = threading.Event()

@@ -180,8 +180,9 @@ MV_server.bat 은 **팀 서버 기본값**을 켠다: `CONTENT_HUB_AUTH=1`(로�
 ## DB 자동 백업
 
 SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 콘텐츠·휴지통·프로젝트
-관리 DB를 하나의 읽기 시점으로 고정한 세트 스냅샷으로 뜬다
-(WAL 모드에서 단순 파일복사는 위험 — `-wal` 미반영분 누락). 서버 시작 시 1회(최근 백업이
+관리 DB를 같은 stamp의 세트로 뜬다(WAL 모드에서 단순 파일복사는 위험 — `-wal` 미반영분 누락).
+단, SQLite/WAL은 여러 attached DB 전체의 원자적 동일 시점을 보장하지 않아 별칭별 첫 읽기 사이에
+미세한 시점 차와 이동 중 행의 중복·누락 가능성이 있다. 서버 시작 시 1회(최근 백업이
 1시간 내면 생략) + 주기 실행, 최근 `BACKUP_KEEP` 개만 회전 보관.
 
 - 수동 백업:   `POST /api/backup`
@@ -203,8 +204,8 @@ SQLite 파일 손상·실수 삭제 대비. **SQLite 온라인 백업 API**로 �
 ### 백업 복원 훈련
 
 운영 DB를 교체하지 않고 임시 파일에 온라인 백업→복원→무결성·외래키·테이블 행 수 비교를 수행한다.
-운영 복구 가능성을 확인할 때는 단일 DB가 아니라 **같은 시각의 콘텐츠·휴지통·관리 DB 세트**를
-검증해야 한다.
+운영 복구 가능성을 확인할 때는 단일 DB가 아니라 **같은 stamp의 콘텐츠·휴지통·관리 DB 세트**를
+검증해야 한다. 이 stamp는 세트 구성 표식이지 DB 간 완전히 동일한 트랜잭션 시점의 증명이 아니다.
 
 ```powershell
 py -3 tools\verify_backup_restore.py
@@ -212,13 +213,19 @@ py -3 tools\verify_backup_restore.py --backup "E:\MVHub-backups\content_hub_2026
 py -3 tools\verify_backup_restore.py --backup-set "E:\MVHub-backups\content_hub_20260731_120000.db"
 ```
 
-`--backup-set`은 같은 폴더에서 정확히 같은 시각의 `content_trash_*.db`와 `manage_hub_*.db`를
+`--backup-set`은 같은 폴더에서 정확히 같은 stamp의 `content_trash_*.db`와 `manage_hub_*.db`를
 찾는다. 세 파일 중 하나라도 없으면 아무것도 복원하지 않는다. 성공 JSON에서 다음을 확인한다.
 
 - 최상위 `"ok": true`, `"mode": "database_set"`
 - `isolated_server.ready_checks`의 `content`, `trash`, `manage`가 모두 `"ok"`
 - `isolated_server.login`이 `"ok"`, `process_stopped`가 `true`
 - `files.*.source_unchanged`가 모두 `true`
+
+검사 실패나 핵심 수의 예상 밖 변화가 있으면 그 세트를 운영에 설치하지 말고 이전 완성 세트로 같은
+드릴을 다시 실행한다. content와 trash에 같은 generation ID가 함께 남은 경우에만 부팅 정합기가
+살아 있는 content 행을 우선하고 trash 중복을 제거한다. 한쪽에만 빠진 행이나 manage 의미 불일치는
+드릴만으로 완전 검출할 수 없고 자동 추측 복구도 하지 않는다. 화면·세트 요약을 이전 세트와 대조해
+차이가 의심되면 이전 정상 세트를 선택하고 별도 조사한다.
 
 별도 `--restored-dir`을 주지 않으면 복원 사본과 격리 서버 로그는 성공·실패 후 임시 폴더와 함께
 삭제된다. `--restored-dir`로 남긴 사본에는 로그인 실측용 임시 account·creator가 각 1건 추가되므로

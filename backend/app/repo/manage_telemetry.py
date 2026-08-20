@@ -130,29 +130,6 @@ def mark_ingested_dirty(job_ids: list[str], my_uid: Optional[str]) -> int:
     return len(local_ids)
 
 
-def ensure_ingested_tracked(job_ids: list[str], my_uid: Optional[str]) -> int:
-    """과거 동기화분 중 outbox 행 자체가 없는 생성물만 1회 추적 대상으로 보강한다.
-
-    주기 동기화 때마다 기존 pushed 행을 다시 dirty로 만들면 20초마다 같은 팩트를 재전송한다.
-    따라서 ``ON CONFLICT DO NOTHING``으로 RL-03 이전 누락분만 메우고, 실제 변경분은
-    ``mark_ingested_dirty``가 별도로 다시 dirty 처리한다.
-    """
-    if not any(job_ids or []):
-        return 0
-    inserted = 0
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        for gen_id in _ingested_local_ids(conn, job_ids, my_uid):
-            cur = conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
-                "ON CONFLICT(local_gen_id) DO NOTHING",
-                (gen_id,),
-            )
-            inserted += max(0, int(cur.rowcount or 0))
-    return inserted
-
-
 def telemetry_outbox_status() -> dict[str, Any]:
     """스키마를 만들지 않는 읽기 전용 outbox 상태를 반환한다."""
     empty = {
