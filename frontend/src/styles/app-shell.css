@@ -117,6 +117,54 @@
   border-bottom: 1px solid var(--border);
 }
 .notification-head strong { font-size: 14px; }
+/* 카테고리 드롭다운 — 전체 알림 / 코멘트 / 시스템 */
+.notification-cat { position: relative; }
+.notification-cat-btn {
+  padding: 6px 9px; border: 0; border-radius: 8px; background: transparent;
+  color: var(--text); font-size: 13.5px; font-weight: 700;
+}
+.notification-cat-btn i { font-style: normal; color: var(--muted); font-size: 10px; }
+.notification-cat-btn:hover, .notification-cat-btn.on { background: rgba(255,255,255,0.07); }
+.notification-cat-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 3; min-width: 150px; padding: 5px;
+  background: var(--panel2, #26262e); border: 1px solid var(--border2); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0,0,0,0.55); display: flex; flex-direction: column;
+}
+.notification-cat-menu button {
+  padding: 9px 11px; border: 0; border-radius: 7px; background: transparent; color: var(--text);
+  font-size: 12.5px; font-weight: 600; text-align: left;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+.notification-cat-menu button:hover { background: rgba(255,255,255,0.08); }
+.notification-cat-menu button span { color: var(--accent); font-size: 11px; }
+/* 업데이트 확인/진행 — "예"를 누르면 그 자리에서 업데이트를 실행한다 */
+.notification-update-block { border-bottom: 1px solid var(--border); }
+.notification-update-block .notification-item { border-bottom: 0; }
+.notification-update-block:last-child { border-bottom: 0; }
+.notification-confirm {
+  padding: 9px 14px 12px 73px; display: flex; flex-direction: column; gap: 8px;
+  color: var(--text); font-size: 12px;
+}
+.notification-confirm-actions { display: flex; gap: 8px; }
+.notification-confirm-actions button {
+  padding: 6px 11px; border: 1px solid var(--border2); border-radius: 8px;
+  background: transparent; color: var(--text); font-size: 11.5px; font-weight: 700;
+}
+.notification-confirm-actions button.yes {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+}
+.notification-confirm-actions button.yes:hover { filter: brightness(1.06); }
+.notification-progress {
+  padding: 9px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px;
+  color: var(--text); font-size: 11.5px; line-height: 1.4;
+}
+.notification-progress-spin {
+  width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--border2); border-top-color: var(--accent);
+  animation: notification-spin 0.8s linear infinite;
+}
+@keyframes notification-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .notification-progress-spin { animation: none; } }
 .notification-read-all {
   padding: 5px 7px; border: 0; background: transparent; color: var(--accent);
   font-size: 11px; font-weight: 700;

@@ -51,7 +51,6 @@ export function TopBar({
   onNotificationsChanged,
 }: Props) {
   const t = useT();
-  const [settingsOpenSignal, setSettingsOpenSignal] = useState(0);
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
   const [provider, setProvider] = useState<ProviderIdentity | null>(null);
   useEffect(() => {
@@ -128,7 +127,6 @@ export function TopBar({
         commentUnreadCount={notificationUnreadCount}
         hasUnreadComments={hasUnreadComments}
         onOpenComment={onOpenNotificationComment}
-        onOpenUpdateSettings={() => setSettingsOpenSignal((value) => value + 1)}
         onChanged={onNotificationsChanged}
       />
 
@@ -143,7 +141,6 @@ export function TopBar({
         onWorkspaceContextChange={onWorkspaceContextChange}
         onImported={onImported}
         localHub={localHub}
-        openUpdateSettingsSignal={settingsOpenSignal}
       />
     </header>
   );

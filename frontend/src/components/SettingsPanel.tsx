@@ -56,11 +56,9 @@ import {
 export function SettingsPanel({
   onClose,
   onImported,
-  initialSection,
 }: {
   onClose: () => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
-  initialSection?: "release-update";
 }) {
   const t = useT();
   const [accent, setAccent] = useState(loadAccent());
@@ -151,14 +149,6 @@ export function SettingsPanel({
       .catch(() => setMetadataSyncTargetState("error"));
     api.historyImportStatus().then(setHistoryImport).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (initialSection !== "release-update") return;
-    const frame = window.requestAnimationFrame(() => {
-      document.getElementById("settings-release-update")?.scrollIntoView({ block: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [initialSection]);
 
   useEffect(() => {
     if (historyImport?.state !== "running") return;

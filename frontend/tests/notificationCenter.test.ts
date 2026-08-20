@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   filterNotificationItems,
+  filterNotificationsByCategory,
   markAllReleaseNotificationsRead,
   markNotificationListRead,
   notificationBadgeText,
@@ -41,6 +42,16 @@ describe("알림 센터 파생 상태", () => {
     expect(unreadNotificationCount(2, updates)).toBe(3);
     expect(notificationBadgeText(3)).toBe("3");
     expect(notificationBadgeText(12)).toBe("9+");
+  });
+
+  it("카테고리 드롭다운은 코멘트/시스템(업데이트)을 source로 구분한다", () => {
+    const items = [
+      { id: "c", source: "comment" as const },
+      { id: "u", source: "update" as const },
+    ];
+    expect(filterNotificationsByCategory(items, "all")).toEqual(items);
+    expect(filterNotificationsByCategory(items, "comment")).toEqual([items[0]]);
+    expect(filterNotificationsByCategory(items, "update")).toEqual([items[1]]);
   });
 
   it("전체/안읽음 탭은 unread 플래그만으로 필터한다", () => {

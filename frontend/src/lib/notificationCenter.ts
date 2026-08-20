@@ -2,7 +2,22 @@ import type { ReleaseUpdateStatus } from "./releaseUpdate";
 import { STORAGE_KEYS } from "./storageKeys";
 
 export type NotificationTab = "all" | "unread";
+export type NotificationCategory = "all" | "comment" | "update";
 export type ReleaseNotificationKind = "available" | "completed";
+
+// 카테고리 드롭다운 표기 — 코멘트(생성물 코멘트)와 시스템(업데이트 등 앱 소식)으로 나눈다.
+export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
+  all: "전체 알림",
+  comment: "코멘트",
+  update: "시스템",
+};
+
+export function filterNotificationsByCategory<T extends { source: "comment" | "update" }>(
+  items: T[],
+  category: NotificationCategory,
+): T[] {
+  return category === "all" ? items : items.filter((item) => item.source === category);
+}
 
 export interface ReleaseNotification {
   id: string;

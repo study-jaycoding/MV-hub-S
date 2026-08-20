@@ -49,7 +49,6 @@ export function AccountMenu({
   onWorkspaceContextChange,
   onImported,
   localHub,
-  openUpdateSettingsSignal = 0,
 }: {
   provider: ProviderIdentity | null;
   account?: Account | null;
@@ -60,7 +59,6 @@ export function AccountMenu({
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
-  openUpdateSettingsSignal?: number;
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -68,7 +66,6 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialSection, setSettingsInitialSection] = useState<"release-update" | undefined>();
   const [healthCliVersion, setHealthCliVersion] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
@@ -121,12 +118,6 @@ export function AccountMenu({
     if (liveMode) api.workspaces().then(acceptLiveWorkspaces).catch(() => {});
     else api.accountHf().then(acceptReportedStatus).catch(() => setReported(null));
   }, [acceptLiveWorkspaces, acceptReportedStatus, liveMode]);
-  useEffect(() => {
-    if (!openUpdateSettingsSignal) return;
-    setOpen(false);
-    setSettingsInitialSection("release-update");
-    setSettingsOpen(true);
-  }, [openUpdateSettingsSignal]);
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/health", { signal: controller.signal })
@@ -389,7 +380,6 @@ export function AccountMenu({
             className="acct-action"
             onClick={() => {
               setOpen(false);
-              setSettingsInitialSection(undefined);
               setSettingsOpen(true);
             }}
           >
@@ -434,7 +424,6 @@ export function AccountMenu({
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
           onImported={onImported}
-          initialSection={settingsInitialSection}
         />
       )}
     </div>
