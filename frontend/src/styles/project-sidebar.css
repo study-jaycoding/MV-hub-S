@@ -211,16 +211,14 @@
      미묘한 어긋남 제거(Jay). 크기는 다른 폴더 행과 동일(확대했다가 원복). */
   padding: 0 6px;
 }
+/* 프로젝트 루트는 폴더 아이콘 없이 이름만(Jay) — 이름이 하위 폴더 아이콘 열에 맞춰진다. */
+.assets-root-row .folder-tree-icon { display: none; }
 .assets-root-row.selected {
   background: transparent;
   color: var(--text);
   font-weight: 700;
 }
 .assets-root-row.selected:hover { background: rgba(255,255,255,0.06); }
-.assets-root-row.selected .folder-tree-icon {
-  background: linear-gradient(#61eaff, #279fba);
-  box-shadow: 0 0 8px rgba(97,234,255,0.24);
-}
 .side-folder-note {
   padding: 4px 8px 5px 22px;
   color: var(--muted); font-size: 11px; line-height: 1.35;
