@@ -28,6 +28,7 @@ from ..deps import (
 from ..models import GenerationOut, ImportIn, PublishIn
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
+from ..services.share_state_reconciler import kick_share_state_reconciler
 
 router = APIRouter(prefix="/api", tags=["share"])
 
@@ -139,6 +140,7 @@ def _record_proxy_failure(
     ref: dict[str, Any], exc: HTTPException, *, composite_partial: bool = False
 ) -> None:
     """확정 4xx만 종결한다. 연결/5xx는 서버 결과가 불명이라 prepared를 보존한다."""
+    should_kick = False
     try:
         if exc.status_code == 401:
             _transition_proxy_intent(
@@ -161,12 +163,21 @@ def _record_proxy_failure(
                     repo.release_share_state_intent_claim(
                         ref["intent_id"], ref["intent_seq"], ref["claim_token"]
                     )
+                    should_kick = True
             else:
                 _transition_proxy_intent(
                     ref, "rejected", last_error_code=f"remote_{exc.status_code}"
                 )
+        else:
+            # 결과가 불명인 prepared는 즉시 관측 가능하게 route lease만 반납한다.
+            repo.release_share_state_intent_claim(
+                ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+            )
+            should_kick = True
     except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않으며 prepared 잔존도 안전하다
         pass
+    if should_kick:
+        kick_share_state_reconciler()
 
 
 def _mirror_proxy_success(
@@ -219,6 +230,7 @@ def _mirror_proxy_success(
             )
         except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 재시작 안전망
             pass
+        kick_share_state_reconciler()
     return applied
 
 

@@ -92,6 +92,10 @@ from .services.worker_backup import (
 )
 from .services.temp_sweeper import periodic_sweeper
 from .services.media_preservation import periodic_media_preservation
+from .services.share_state_reconciler import (
+    configure_share_state_router_deps,
+    periodic_share_state_reconciler,
+)
 from .services.operational_logging import (
     compact_runtime_snapshot,
     configure_operational_logging,
@@ -349,6 +353,14 @@ async def _application_lifespan(app: FastAPI):
     periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
     periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
     periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
+    # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
+    from .routers import _proxy as _share_proxy
+    from .routers._telemetry import touch_generation_telemetry
+
+    configure_share_state_router_deps(
+        proxy=_share_proxy, touch_telemetry=touch_generation_telemetry
+    )
+    periodic_share_state_reconciler.start()  # 공유 서버 권위 상태 → 로컬 공유/골드 미러 수렴
     # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
     # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
     # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
@@ -398,6 +410,7 @@ async def _application_lifespan(app: FastAPI):
     await periodic_worker_backup.stop()
     periodic_backup.set_completed_callback(None)
     await periodic_sweeper.stop()
+    await periodic_share_state_reconciler.stop()
     await periodic_media_preservation.stop()
     await remote_realtime_bridge.stop()
     if MANAGE_ENABLED or _proxy.is_worker_hub():

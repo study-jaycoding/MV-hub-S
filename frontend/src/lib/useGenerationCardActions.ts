@@ -3,6 +3,7 @@ import { postLibraryChanged } from "./libraryBroadcast";
 import { isGenerationWorkspaceReady } from "./workspaceContext";
 import type { Filters, Generation, WorkspaceContext } from "../types";
 import type { CanvasGenerationLink } from "./canvasGenerationRecovery";
+import { withMirrorPendingNotice } from "./shareMirrorPending";
 
 type AskPrompt = (
   title: string,
@@ -96,8 +97,8 @@ export function useGenerationCardActions({
 
   const onUnpublish = async (g: Generation) => {
     try {
-      await api.unpublish(g.id);
-      flash("팀 공유를 해제했습니다.");
+      const result = await api.unpublish(g.id);
+      flash(withMirrorPendingNotice("팀 공유를 해제했습니다.", result));
       await reload();
       bumpBoard();
       postLibraryChanged();
@@ -108,8 +109,8 @@ export function useGenerationCardActions({
 
   const onFinalize = async (g: Generation) => {
     try {
-      await api.finalize(g.id);
-      flash("최종(골드)으로 지정했습니다.");
+      const result = await api.finalize(g.id);
+      flash(withMirrorPendingNotice("최종(골드)으로 지정했습니다.", result));
       await reload();
       postLibraryChanged();
     } catch (e) {
@@ -119,8 +120,8 @@ export function useGenerationCardActions({
 
   const onUnfinalize = async (g: Generation) => {
     try {
-      await api.unfinalize(g.id);
-      flash("최종 지정을 해제했습니다.");
+      const result = await api.unfinalize(g.id);
+      flash(withMirrorPendingNotice("최종 지정을 해제했습니다.", result));
       await reload();
       postLibraryChanged();
     } catch (e) {

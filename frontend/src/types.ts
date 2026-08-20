@@ -78,6 +78,7 @@ export interface Generation {
   deleted: boolean; // 휴지통(soft delete) — 카탈로그에서만 숨김. 힉스필드 원본 영향 없음
   is_final?: boolean; // v02 CMS: Supervisor 가 지정한 최종(골드)
   final_by?: string | null; // 최종 지정자 creator_uid
+  mirror_pending?: boolean; // 서버 성공·로컬 미러 대기 — 실패가 아니며 재조회 후 자동 수렴
   depth?: number; // 히스토리 형제 전용: 자기 'derived' 체인 깊이(루트=0) — 깊이별 그룹화·연결 방향용
   _comfyPending?: boolean; // 클라이언트 전용: comfy 실행 중 '내 작업'에 잠깐 띄우는 임시 카드(Comfy 로고). 서버 미저장.
   media_preservation_reason?: "shared" | "final" | "manual" | "admin" | null;

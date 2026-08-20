@@ -28,6 +28,7 @@ from ..deps import actor_id, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals
 from ..services.event_journal import journal_audit_event
+from ..services.share_state_reconciler import kick_share_state_reconciler
 
 router = APIRouter(prefix="/api", tags=["publish"])
 
@@ -271,6 +272,7 @@ def shared_server_login(body: SharedLoginIn):
         repo.set_provider_name(acc.get("name") or body.email)
     except Exception:  # noqa: BLE001
         pass
+    kick_share_state_reconciler()  # auth_required 원장을 새 토큰으로 즉시 재개
     return {"ok": True, "account": acc, **_shared_status()}
 
 
@@ -308,6 +310,7 @@ def shared_server_register(body: SharedRegisterIn):
             repo.set_provider_name(acc.get("name") or body.email)
         except Exception:  # noqa: BLE001
             pass
+        kick_share_state_reconciler()  # 첫 계정 자동 로그인도 대기 원장을 즉시 재개
     return {
         "ok": True,
         "account": acc,
@@ -519,12 +522,24 @@ def publish_bundle_to_server(
 
         # 타임아웃·연결 실패·프로세스 중단은 아래 전이까지 오지 않으므로 prepared가 남고,
         # 3b가 서버 현재 상태를 관측한다.
-        status, resp = _http_json(
-            "POST",
-            f"{url}/api/share/publish-bundle",
-            token=token,
-            body={"bundle": bundle},
-        )
+        try:
+            status, resp = _http_json(
+                "POST",
+                f"{url}/api/share/publish-bundle",
+                token=token,
+                body={"bundle": bundle},
+            )
+        except Exception:
+            # 응답을 못 받은 prepared는 명령을 재생하지 않고 워커가 서버를 관측해야 한다.
+            for ref in refs:
+                try:
+                    repo.release_share_state_intent_claim(
+                        ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+                    )
+                except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않는다.
+                    pass
+            kick_share_state_reconciler()
+            raise
         if status == 401:
             for ref in refs:
                 try:
@@ -543,6 +558,15 @@ def publish_bundle_to_server(
                         )
                     except Exception:  # noqa: BLE001
                         pass
+            else:
+                for ref in refs:
+                    try:
+                        repo.release_share_state_intent_claim(
+                            ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+                        )
+                    except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않는다.
+                        pass
+                kick_share_state_reconciler()
             # 5xx는 결과 불명일 수 있어 prepared 유지.
             raise HTTPException(status_code=502, detail=f"발행 실패(status={status}): {resp}")
 
@@ -619,6 +643,7 @@ def publish_bundle_to_server(
                         )
                 except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 안전망
                     pass
+                kick_share_state_reconciler()
                 continue
             _touch_telemetry(gid)
             published += 1

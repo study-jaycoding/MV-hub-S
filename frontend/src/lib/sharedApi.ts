@@ -56,6 +56,7 @@ export const sharedApi = {
       published: number;
       blocked?: number;
       message?: string;
+      mirror_pending?: boolean;
       remote: { inserted: number; updated: number; unchanged: number; skipped: number };
     }>("/api/publish-to-shared", {
       method: "POST",
