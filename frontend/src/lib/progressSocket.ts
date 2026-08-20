@@ -59,6 +59,16 @@ export function connectProgress(
       if (ping) clearInterval(ping);
       if (closed) return;
       if (ev.code === 1008) {
+        if (ev.reason === "auth-off-local-only") {
+          // AUTH off 서버에 원격 접속한 정책 거부(백엔드 _WS_REASON_AUTH_OFF_LOCAL_ONLY).
+          // 인증 실패가 아니므로 토큰을 지우거나 로그인 화면으로 보내면 오히려 오도한다 —
+          // HTTP 403과 같은 문구로 안내만 하고 재연결을 멈춘다(재시도해도 같은 거부).
+          dispatchAppEvent(
+            APP_EVENTS.flash,
+            "AUTH off 모드는 로컬에서만 접근할 수 있어 실시간 연결을 사용할 수 없습니다.",
+          );
+          return;
+        }
         // 세션 만료/무효는 재시도해도 거부된다. 조용히 멈추지 않고 기존 HTTP 401과 같은
         // 인증 이벤트를 보내 로그인 화면과 사용자 안내가 즉시 나타나게 한다.
         setAuthToken(null);

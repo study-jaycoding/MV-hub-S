@@ -77,6 +77,50 @@ class WsGhostCollectionTests(unittest.TestCase):
                 with self.assertRaises(WebSocketDisconnect) as raised:
                     ws.receive_text()
         self.assertEqual(raised.exception.code, 1008)
+        # 진짜 인증 실패 사유 — 프론트는 이 문자열이면 토큰 삭제 + 재로그인 유도.
+        self.assertEqual(raised.exception.reason, "authentication required")
+
+    def test_periodic_recheck_failure_closes_with_auth_reason(self):
+        # 접속 후 45초 주기 재검증에서 계정이 정지되면 최초 거부와 같은 사유 토큰으로 닫는다 —
+        # reason 없는 1008로 회귀하면 신프론트가 정책 거부와 구분하지 못한다.
+        self.main._WS_RECV_TIMEOUT_SECONDS = 0.05
+        self.main._WS_GHOST_SECONDS = 10.0
+        account_calls = {"n": 0}
+
+        def fake_get_account(_email):
+            account_calls["n"] += 1
+            status = "approved" if account_calls["n"] == 1 else "rejected"
+            return {"email": "worker@test", "status": status, "password_changed_at": None}
+
+        with mock.patch.object(self.main, "AUTH_ENABLED", True), mock.patch.object(
+            self.main, "_WS_AUTH_RECHECK_SECONDS", 0.05
+        ), mock.patch.object(
+            self.main.auth_svc, "verify_token", return_value="worker@test"
+        ), mock.patch.object(
+            self.main.auth_svc, "token_password_stamp", return_value=None
+        ), mock.patch.object(self.main.repo, "get_account", side_effect=fake_get_account):
+            with self.client.websocket_connect(
+                "/ws", headers={"cookie": "ch_session=token"}
+            ) as ws:
+                with self.assertRaises(WebSocketDisconnect) as raised:
+                    ws.receive_text()
+        self.assertEqual(raised.exception.code, 1008)
+        self.assertEqual(raised.exception.reason, "authentication required")
+
+    def test_auth_off_remote_rejection_carries_policy_reason(self):
+        # AUTH off 서버에 원격(비-loopback) 접속은 인증 실패가 아니라 "로컬 전용" 정책
+        # 거부 — 같은 1008이라도 사유 토큰을 구분해 프론트가 토큰을 지우지 않게 한다.
+        from fastapi.testclient import TestClient
+
+        remote = TestClient(self.main.app, client=("192.168.1.77", 50000))
+        try:
+            with remote.websocket_connect("/ws") as ws:
+                with self.assertRaises(WebSocketDisconnect) as raised:
+                    ws.receive_text()
+        finally:
+            remote.close()
+        self.assertEqual(raised.exception.code, 1008)
+        self.assertEqual(raised.exception.reason, "auth-off-local-only")
 
 
 if __name__ == "__main__":

@@ -114,7 +114,7 @@ export function TableView(props: WorkViewProps) {
             return (
               <Fragment key={t.id}>
               <tr
-                className={isSel ? "work-row-sel" : ""}
+                className={(isSel ? "work-row-sel" : "") + (t.archived ? " work-row-archived" : "")}
                 onDragOver={(e) => {
                   if (!locked && e.dataTransfer.types.includes(ROW_MIME)) e.preventDefault();
                 }}
@@ -243,6 +243,11 @@ export function TableView(props: WorkViewProps) {
                       읽기 전용
                     </span>
                   )}
+                  {!!t.archived && (
+                    <span className="work-readonly-badge work-archived-badge" title="보관 처리된 작업 — 과거 기록에서만 표시됩니다">
+                      보관됨
+                    </span>
+                  )}
                 </td>
                 <td className="work-credit-cell">
                   <HoverMetric
@@ -286,7 +291,10 @@ export function TableView(props: WorkViewProps) {
                 <td>{t.comment_count ? `💬 ${t.comment_count}` : "—"}</td>
               </tr>
               {detailsOpen && (
-                <tr id={detailId} className="work-mobile-detail-row">
+                <tr
+                  id={detailId}
+                  className={"work-mobile-detail-row" + (t.archived ? " work-row-archived" : "")}
+                >
                   <td colSpan={12}>
                     <div className="work-mobile-detail-grid">
                       <div>

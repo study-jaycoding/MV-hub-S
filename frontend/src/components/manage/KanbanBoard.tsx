@@ -67,7 +67,9 @@ export function BoardView(props: WorkViewProps) {
               return (
               <div
                 key={t.id}
-                className={"kanban-card work-card" + (locked ? " read-only" : "")}
+                className={
+                  "kanban-card work-card" + (locked ? " read-only" : "") + (t.archived ? " work-row-archived" : "")
+                }
                 draggable={!locked}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(TASK_MIME, t.id);
@@ -97,6 +99,11 @@ export function BoardView(props: WorkViewProps) {
                     </div>
                   )}
                   <span className="kanban-card-name" title={t.folder_path || t.name}>
+                    {!!t.archived && (
+                      <span className="work-readonly-badge work-archived-badge" title="보관 처리된 작업 — 과거 기록에서만 표시됩니다">
+                        보관됨
+                      </span>
+                    )}
                     <ColorTag field="episode" value={t.name} colorMap={colorMap} />
                     {t.folder_path ? (
                       <ColorTag

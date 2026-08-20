@@ -633,6 +633,14 @@ export function WorkspaceUsageDashboard({
               ))}
             </select>
             <p>{selectedWorkspace?.member_count ?? totals?.workers ?? 0} members · 전체 기간</p>
+            <p className="work-source-label">
+              출처 · 에이전트 자동 보고(팀 텔레메트리 집계)
+              {totals?.estimated_count ? (
+                <span title="실제 차감액이 확인되지 않은 생성물 수 — 견적값이 있으면 그 값으로 합산됩니다">
+                  {` · 실제 크레딧 미매칭 ${n(totals.estimated_count)}건`}
+                </span>
+              ) : null}
+            </p>
           </div>
         </div>
         <div className="usage-actions">
