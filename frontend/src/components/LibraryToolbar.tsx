@@ -125,8 +125,9 @@ export function LibraryToolbar({
           {filtersOpen ? "▢" : "▷"}
         </button>
       )}
-      {/* 미디어 타입 — 4개 점 슬라이더(전체·이미지·영상·오디오). 슬라이드/점클릭 모두 전환 */}
-      <div className="lib-hist-slider" title="미디어 타입 — 슬라이드로 전환">
+      {/* 미디어 타입 — 4개 점 슬라이더(전체·이미지·영상·오디오). 슬라이드/점클릭 모두 전환.
+          data-type 으로 선택 타입별 색(전체=라임·이미지=파랑·영상=보라·오디오=주황)을 CSS 가 입힌다. */}
+      <div className="lib-hist-slider" data-type={typeFilter} title="미디어 타입 — 슬라이드로 전환">
         <span className="lib-hist-label">{t(typeLabel)}</span>
         <div className="lib-hist-range">
           <div className="lib-hist-ticks">
