@@ -188,10 +188,13 @@
   display: flex; align-items: center; gap: 2px; min-width: 0;
   font-size: 12px; color: var(--muted);
 }
+/* 경로 색 = 프로젝트 select 와 동일 규칙: 직접 등록(기본)=흰색 · PM 연결=라임 · 합본=회색 */
 .assets-head-crumb button {
-  background: transparent; border: none; color: var(--accent);
+  background: transparent; border: none; color: var(--text);
   padding: 2px 4px; font: inherit; font-size: 12px; cursor: pointer;
 }
+.assets-head-crumb.linked button { color: var(--accent); }
+.assets-head-crumb.internal button { color: var(--muted); }
 .assets-head-crumb button:hover { text-decoration: underline; }
 
 /* 좌측 필터(컬러 dot · S · T) */

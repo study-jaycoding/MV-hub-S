@@ -25,6 +25,7 @@ import { MountManager } from "./assets/MountManager";
 import { setSingleFileDrag, setZipDrag } from "./assets/exportDrag";
 import {
   EMPTY_ASSET_META,
+  INTERNAL_COMBINED_PROJECT,
   assetDragItemsForPath,
   assetPreviewTarget,
   toggleAssetDateSelection,
@@ -705,8 +706,18 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           <FolderIcon width={20} height={16} /> Assets
         </button>
         {/* 하단 crumb 바에서 올라온 경로 정보 — 타입 슬라이더와 자리 교환(Jay 요청).
-            프로젝트 선택은 사이드바(폴더 트리 위)로, 건수는 하단 슬라이더 옆으로 이동. */}
-        <div className="assets-head-crumb">
+            프로젝트 선택은 사이드바(폴더 트리 위)로, 건수는 하단 슬라이더 옆으로 이동.
+            색 규칙은 프로젝트 select 와 동일: PM 연결=라임 · 직접 등록=흰색 · 합본=회색. */}
+        <div
+          className={
+            "assets-head-crumb"
+            + (project === INTERNAL_COMBINED_PROJECT
+              ? " internal"
+              : linkedProjects.has(project)
+                ? " linked"
+                : "")
+          }
+        >
           {searchActive ? (
             <span className="crumb-search">
               {activeTags.size
