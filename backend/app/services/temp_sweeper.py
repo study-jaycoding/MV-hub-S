@@ -108,6 +108,18 @@ def sweep_once(now: Optional[float] = None) -> dict[str, int]:
         ),
     }
     try:
+        from . import media_cache
+
+        # 외부 수동 변경이나 파일 확정 직후 크래시로 생긴 영구 미디어 누계 오차를 매일 교정한다.
+        media_cache.recalculate_preserved_media_usage()
+    except Exception:  # noqa: BLE001 — 회계 교정 실패가 다른 임시파일 청소를 막지 않게
+        log_event(
+            _log,
+            "preserved_media_recalculation_failed",
+            level=logging.WARNING,
+            exc_info=True,
+        )
+    try:
         from . import media_cache, thumbs
 
         result["thumb_evicted"] = thumbs.evict_thumb_cache(force=True)

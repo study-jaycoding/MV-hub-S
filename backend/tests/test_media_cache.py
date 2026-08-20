@@ -1,6 +1,7 @@
 import asyncio
 import os
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -181,11 +182,141 @@ class MediaCacheTests(unittest.TestCase):
             with (
                 mock.patch.object(media_cache, "MEDIA_DIR", root),
                 mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 10),
+                mock.patch.object(
+                    media_cache,
+                    "_PRESERVED_QUOTA_STATE",
+                    media_cache._PreservedQuotaState(),
+                ),
             ):
                 with self.assertRaises(media_cache.MediaCacheCapacityError):
                     media_cache._enforce_preserved_quota(new, newly_created=True)
             self.assertTrue(old.exists())
             self.assertFalse(new.exists())
+
+    def test_preserved_quota_scans_once_then_uses_incremental_total(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = media_cache._PreservedQuotaState()
+
+            def fake_download(_url: str, target: Path) -> None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"media")
+
+            async def scenario():
+                first = await media_cache.cache_url_result("https://cdn.example.com/first.mp4")
+                second = await media_cache.cache_url_result("https://cdn.example.com/second.mp4")
+                return first, second
+
+            real_scan = media_cache.preserved_media_usage_bytes
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 100),
+                mock.patch.object(media_cache, "_PRESERVED_QUOTA_STATE", state),
+                mock.patch.object(media_cache, "_download", side_effect=fake_download),
+                mock.patch.object(
+                    media_cache,
+                    "preserved_media_usage_bytes",
+                    wraps=real_scan,
+                ) as scan,
+            ):
+                first, second = asyncio.run(scenario())
+
+            self.assertEqual((first.status, second.status), ("cached", "cached"))
+            self.assertEqual(scan.call_count, 1)
+            self.assertTrue(state.initialized)
+            self.assertEqual(state.total_bytes, 10)
+
+    def test_preserved_quota_near_limit_rescans_and_absorbs_external_delete(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old = root / "aa" / "old.mp4"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"o" * 90)
+            state = media_cache._PreservedQuotaState()
+
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 100),
+                mock.patch.object(media_cache, "_PRESERVED_QUOTA_STATE", state),
+            ):
+                self.assertEqual(media_cache.recalculate_preserved_media_usage(), 90)
+                old.unlink()  # 프로세스 밖 수동 삭제를 흉내 낸다.
+                new = root / "bb" / "new.mp4"
+                new.parent.mkdir(parents=True)
+                new.write_bytes(b"n" * 10)
+                real_scan = media_cache.preserved_media_usage_bytes
+                with mock.patch.object(
+                    media_cache,
+                    "preserved_media_usage_bytes",
+                    wraps=real_scan,
+                ) as scan:
+                    added = media_cache._enforce_preserved_quota(new, newly_created=True)
+
+            self.assertEqual(added, 10)
+            self.assertEqual(scan.call_count, 1)
+            self.assertTrue(new.exists())
+            self.assertEqual(state.total_bytes, 10)
+
+    def test_preserved_quota_keeps_counter_when_rollback_delete_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old = root / "aa" / "old.mp4"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"o" * 8)
+            state = media_cache._PreservedQuotaState()
+
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 10),
+                mock.patch.object(media_cache, "_PRESERVED_QUOTA_STATE", state),
+            ):
+                media_cache.recalculate_preserved_media_usage()
+                new = root / "bb" / "new.mp4"
+                new.parent.mkdir(parents=True)
+                new.write_bytes(b"n" * 4)
+                original_unlink = Path.unlink
+
+                def fail_new_unlink(path: Path, *args, **kwargs):
+                    if path == new:
+                        raise OSError("locked")
+                    return original_unlink(path, *args, **kwargs)
+
+                with mock.patch.object(Path, "unlink", new=fail_new_unlink):
+                    with self.assertRaises(media_cache.MediaCacheCapacityError):
+                        media_cache._enforce_preserved_quota(new, newly_created=True)
+
+            self.assertTrue(new.exists())
+            self.assertEqual(state.total_bytes, 12)
+
+    def test_concurrent_preserved_finalizes_do_not_exceed_quota(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = media_cache._PreservedQuotaState(total_bytes=0, initialized=True)
+            finalized = threading.Barrier(2)
+
+            def fake_download(_url: str, target: Path) -> None:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"m" * 6)
+                finalized.wait(timeout=2)
+
+            async def scenario():
+                return await asyncio.gather(
+                    media_cache.cache_url_result("https://cdn.example.com/a.mp4"),
+                    media_cache.cache_url_result("https://cdn.example.com/b.mp4"),
+                )
+
+            with (
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "PRESERVED_MEDIA_MAX_BYTES", 10),
+                mock.patch.object(media_cache, "_PRESERVED_QUOTA_STATE", state),
+                mock.patch.object(media_cache, "_download", side_effect=fake_download),
+            ):
+                results = asyncio.run(scenario())
+
+            self.assertEqual(sorted(result.status for result in results), ["cached", "capacity"])
+            files = list(root.rglob("*.mp4"))
+            self.assertEqual(sum(path.stat().st_size for path in files), 6)
+            self.assertEqual(state.total_bytes, 6)
 
     def test_detailed_cache_result_hides_capacity_error_details(self):
         with tempfile.TemporaryDirectory() as td:

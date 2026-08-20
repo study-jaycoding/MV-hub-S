@@ -7,10 +7,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from app.services import temp_sweeper
+from app.services import media_cache, temp_sweeper, thumbs
 
 
 class TempSweeperTests(unittest.TestCase):
+    def setUp(self):
+        self._quota_state_patch = mock.patch.object(
+            media_cache,
+            "_PRESERVED_QUOTA_STATE",
+            media_cache._PreservedQuotaState(),
+        )
+        self._quota_state_patch.start()
+
+    def tearDown(self):
+        self._quota_state_patch.stop()
+
     def test_only_stale_files_are_removed(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as d:
             root = Path(d)
@@ -24,7 +35,10 @@ class TempSweeperTests(unittest.TestCase):
             os.utime(stale, (old, old))
             os.utime(keep, (old, old))
 
-            with mock.patch.object(temp_sweeper, "MEDIA_DIR", root):
+            with (
+                mock.patch.object(temp_sweeper, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+            ):
                 stats = temp_sweeper.sweep_once()
 
             self.assertFalse(stale.exists())
@@ -47,7 +61,9 @@ class TempSweeperTests(unittest.TestCase):
 
             with mock.patch.object(
                 temp_sweeper, "_comfy_input_mvhub_dir", return_value=mvhub
-            ), mock.patch.object(temp_sweeper, "MEDIA_DIR", Path(d) / "media"):
+            ), mock.patch.object(
+                temp_sweeper, "MEDIA_DIR", Path(d) / "media"
+            ), mock.patch.object(media_cache, "MEDIA_DIR", Path(d) / "media"):
                 stats = temp_sweeper.sweep_once()
 
             self.assertFalse(app_file.exists())
@@ -57,7 +73,9 @@ class TempSweeperTests(unittest.TestCase):
 
     def test_missing_dirs_are_harmless(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as d:
-            with mock.patch.object(temp_sweeper, "MEDIA_DIR", Path(d) / "nope"):
+            with mock.patch.object(
+                temp_sweeper, "MEDIA_DIR", Path(d) / "nope"
+            ), mock.patch.object(media_cache, "MEDIA_DIR", Path(d) / "nope"):
                 stats = temp_sweeper.sweep_once()
         self.assertEqual(stats["thumb_source_parts"], 0)
         self.assertEqual(stats["thumb_tmps"], 0)
@@ -74,7 +92,9 @@ class TempSweeperTests(unittest.TestCase):
 
             with mock.patch.object(
                 temp_sweeper.tempfile, "gettempdir", return_value=str(root)
-            ), mock.patch.object(temp_sweeper, "MEDIA_DIR", root / "media"):
+            ), mock.patch.object(
+                temp_sweeper, "MEDIA_DIR", root / "media"
+            ), mock.patch.object(media_cache, "MEDIA_DIR", root / "media"):
                 stats = temp_sweeper.sweep_once()
 
             self.assertFalse(stale_import.exists())
@@ -94,13 +114,42 @@ class TempSweeperTests(unittest.TestCase):
 
             with mock.patch.object(
                 temp_sweeper.tempfile, "gettempdir", return_value=str(root)
-            ), mock.patch.object(temp_sweeper, "MEDIA_DIR", root / "media"):
+            ), mock.patch.object(
+                temp_sweeper, "MEDIA_DIR", root / "media"
+            ), mock.patch.object(media_cache, "MEDIA_DIR", root / "media"):
                 stats = temp_sweeper.sweep_once()
 
             self.assertFalse(staged.exists())
             self.assertFalse(converted.exists())
             self.assertTrue(unrelated.exists())
             self.assertEqual(stats["comfy_staging"], 2)
+
+    def test_daily_sweep_recalculates_preserved_usage_after_external_changes(self):
+        with TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            root = Path(d) / "media"
+            old = root / "aa" / "old.mp4"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"o" * 8)
+            state = media_cache._PreservedQuotaState()
+
+            with (
+                mock.patch.object(temp_sweeper, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "MEDIA_DIR", root),
+                mock.patch.object(media_cache, "_PRESERVED_QUOTA_STATE", state),
+                mock.patch.object(temp_sweeper, "_comfy_input_mvhub_dir", return_value=None),
+                mock.patch.object(thumbs, "evict_thumb_cache", return_value=0),
+                mock.patch.object(media_cache, "evict_thumb_source_cache", return_value=0),
+            ):
+                self.assertEqual(media_cache.recalculate_preserved_media_usage(), 8)
+                old.unlink()
+                added = root / "bb" / "added.mp4"
+                added.parent.mkdir(parents=True)
+                added.write_bytes(b"n" * 3)
+
+                temp_sweeper.sweep_once()
+
+            self.assertTrue(state.initialized)
+            self.assertEqual(state.total_bytes, 3)
 
 
 if __name__ == "__main__":
