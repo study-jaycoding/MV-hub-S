@@ -29,6 +29,10 @@
 .brand:hover { filter: brightness(1.15); }
 /* 상단 탭 — 텍스트 전용(힉스필드 Studio 메뉴 스타일): 비활성=회색, 활성=라임, 호버=색 변화 */
 .tabs { display: flex; gap: 18px; align-items: center; }
+/* 탭 시작선을 필터 사이드바가 끝나는 곳(200px + 경계 1px)에 맞춘다 — 본문 콘텐츠 시작선과 정렬.
+   흐름에서 빼도 우측 요소들은 spacer 가 밀어주므로 레이아웃 영향 없음(.topbar 가 기준 좌표). */
+.topbar { position: relative; }
+.topbar .tabs { position: absolute; left: 201px; top: 50%; transform: translateY(-50%); }
 .tabs button {
   background: transparent;
   border: none;
