@@ -12,9 +12,11 @@ r"""공유 서버 워치독 — 죽음(크래시)과 멈춤(행) 둘 다에서 �
   · 시작 유예: 첫 정상 응답을 받기 전에는 절대 개입하지 않는다
     (부팅 직후 DB 마이그레이션 등으로 준비가 지연될 수 있다). 단, 유예가 끝난 뒤에도
     정상 응답이 한 번도 없으면 시작 실패/행으로 판단해 ALERT 또는 안전한 개입을 한다.
-  · 대상 특정: "포트를 실제로 점유한 프로세스"를 찾고, 그 커맨드라인에 serve.py 가
-    있는지 확인한 뒤에만 종료한다. 포트 주인이 없으면 커맨드라인 검색으로 폴백하되
-    후보가 2개 이상이면 오살 위험이 있으므로 개입하지 않고 로그만 남긴다.
+  · 대상 특정: "포트를 실제로 점유한 프로세스"를 찾고, 그 커맨드라인의 독립 토큰이
+    이 배포의 backend\serve.py 절대경로와 정확히 같을 때만 종료한다. 포트 주인이 없으면
+    커맨드라인 검색으로 폴백하되 후보가 2개 이상이면 개입하지 않는다.
+  · 종료 직전 재확인: CommandLine·CreationDate·포트 소유 상태가 판정 시점과
+    달라졌으면 PID 재사용/복구 가능성으로 보고 종료하지 않고 ALERT 만 남긴다.
   · 재시작 폭풍 차단: 최근 storm-window(기본 60분) 안에 storm-limit(기본 3회) 이상
     개입했으면 storm-pause(기본 60분) 동안 개입을 멈추고 ALERT 파일을 남긴다.
     (창 60분인 이유 — 개입 1회의 사이클이 '유예 5분+실패 3회×1분'≈8분이라,
@@ -44,11 +46,17 @@ if str(TOOLS_DIR) not in sys.path:
 from rotate_text_log import rotate_text_log
 
 ROOT = Path(__file__).resolve().parent.parent  # 저장소 루트(MV_server.bat 위치)
+EXPECTED_SERVE_PATH = (ROOT / "backend" / "serve.py").resolve()
 SELF_PID = os.getpid()
 
 _LOG_MAX_BYTES = 2 * 1024 * 1024
 _LOG_KEEP = 3
 _READY_BODY_LIMIT = 4096
+_READY_CHECK_VALUES = {
+    "content": frozenset({"ok"}),
+    "trash": frozenset({"ok", "not_created"}),
+    "manage": frozenset({"ok", "disabled"}),
+}
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,16 @@ class ProbeDecision:
     observable: bool
     should_intervene: bool = False
     should_alert: bool = False
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """PID 재사용을 검출하기 위해 판정 시점에 저장한 프로세스 정체성."""
+
+    pid: int
+    command_line: str
+    creation_date: str
+    owns_port: bool
 
 
 @dataclass
@@ -164,6 +182,23 @@ class ProbeTracker:
                 should_alert=should_alert,
             )
 
+        if status == "port_hijacked":
+            # HTTP 응답은 왔지만 우리 서버라고 확정할 수 없다. dead 누적을
+            # 끊어 자동 종료로 절대 흐르지 않게 하고, 시작 유예 중에도 ALERT 는 즉시 남긴다.
+            self.fails = 0
+            self.busy_streak = 0
+            self.maintenance_streak = 0
+            self.busy_alerted = False
+            self.maintenance_alerted = False
+            return ProbeDecision(
+                "port_hijacked",
+                previous_fails,
+                previous_busy,
+                previous_maintenance,
+                True,
+                should_alert=True,
+            )
+
         if status != "dead":
             raise ValueError(f"unknown watchdog probe status: {status}")
 
@@ -247,8 +282,30 @@ def _http_error_status(error: urllib.error.HTTPError) -> tuple[str, str]:
     return "busy", f"HTTP {error.code}"
 
 
+def _ready_response_status(response) -> tuple[str, str]:
+    """200 본문이 MV Hub readiness 계약일 때만 정상으로 인정한다."""
+    try:
+        raw = response.read(_READY_BODY_LIMIT + 1)
+    except Exception:  # noqa: BLE001 — 헤더만 온 불완전 응답도 종료 금지
+        return "port_hijacked", "HTTP 200 ready body unreadable"
+    if len(raw) > _READY_BODY_LIMIT:
+        return "port_hijacked", "HTTP 200 ready body too large"
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return "port_hijacked", "HTTP 200 ready body is not JSON"
+    if not isinstance(payload, dict) or payload.get("status") != "ready":
+        return "port_hijacked", "HTTP 200 ready status mismatch"
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        return "port_hijacked", "HTTP 200 ready checks missing"
+    if any(checks.get(name) not in allowed for name, allowed in _READY_CHECK_VALUES.items()):
+        return "port_hijacked", "HTTP 200 ready DB checks mismatch"
+    return "ok", "ok"
+
+
 def check_ready(url: str, timeout: float) -> tuple[str, str]:
-    """('ok'|'busy'|'maintenance'|'dead', 사유).
+    """('ok'|'busy'|'maintenance'|'dead'|'port_hijacked', 사유).
 
     ★'busy'와 'dead'를 구분한다 — HTTP 응답이 온 비-200(503 등)은 프로세스가 살아서
     응답 중이라는 증거다(예: 대량 삭제로 DB 검사가 잠시 타임아웃). 이걸 사망과 똑같이
@@ -259,7 +316,7 @@ def check_ready(url: str, timeout: float) -> tuple[str, str]:
         req = urllib.request.Request(url, headers={"User-Agent": "mvhub-watchdog"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status == 200:
-                return "ok", "ok"
+                return _ready_response_status(r)
             return "busy", f"HTTP {r.status}"
     except urllib.error.HTTPError as e:
         return _http_error_status(e)
@@ -267,88 +324,206 @@ def check_ready(url: str, timeout: float) -> tuple[str, str]:
         return "dead", f"{type(e).__name__}: {e}"
 
 
-def _powershell_json(script: str) -> list[dict]:
-    """PowerShell 조회 결과를 JSON 리스트로. 실패하면 빈 리스트(개입 보류 방향으로 실패)."""
+def _powershell_json(script: str) -> tuple[list[object], bool]:
+    """PowerShell 조회 결과와 성공 여부. '결과 없음'과 '조회 실패'를 구분한다."""
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script + " | ConvertTo-Json -Compress"],
             capture_output=True, text=True, timeout=30,
         )
+        if out.returncode != 0:
+            return [], False
         raw = (out.stdout or "").strip()
         if not raw:
-            return []
+            return [], True
         data = json.loads(raw)
-        return data if isinstance(data, list) else [data]
+        return (data if isinstance(data, list) else [data]), True
     except Exception:  # noqa: BLE001
-        return []
+        return [], False
 
 
-def find_target_pids(port: int) -> tuple[list[int], str]:
-    """(종료 대상 PID 목록, 판별 방법). 확신이 없으면 빈 목록을 돌려 개입을 보류한다."""
-    # 1순위: 포트를 LISTEN 중인 프로세스 → 커맨드라인에 serve.py 확인(정확 판별)
-    owners = _powershell_json(
-        f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue"
+def _command_line_tokens(command_line: str) -> list[str]:
+    """restart_server_task.ps1와 같은 Windows 따옴표 토큰 분리."""
+    tokens: list[str] = []
+    current: list[str] = []
+    in_quote = False
+    for char in command_line:
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if not in_quote and char in {" ", "\t"}:
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def command_line_matches_server(
+    command_line: str,
+    expected_serve_path: Path = EXPECTED_SERVE_PATH,
+) -> bool:
+    """커맨드라인의 독립 토큰 하나가 우리 serve.py 절대경로와 같은지 확인."""
+    if not command_line or not str(expected_serve_path):
+        return False
+    expected = os.path.normcase(os.path.abspath(str(expected_serve_path)))
+    for token in _command_line_tokens(command_line):
+        try:
+            candidate = os.path.normcase(os.path.abspath(token))
+        except (OSError, ValueError):
+            candidate = token
+        if candidate == expected:
+            return True
+    return False
+
+
+def _listen_owner_pids(port: int) -> tuple[list[int], bool]:
+    owners, query_ok = _powershell_json(
+        "Get-NetTCPConnection -State Listen -ErrorAction Stop"
+        f" | Where-Object {{ $_.LocalPort -eq {port} }}"
         " | Select-Object -ExpandProperty OwningProcess -Unique"
     )
     pids: list[int] = []
     for o in owners:
         pid = o if isinstance(o, int) else o.get("value") if isinstance(o, dict) else None
-        if isinstance(pid, int) and pid > 0 and pid != SELF_PID:
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and pid != SELF_PID:
             pids.append(pid)
-    confirmed = []
+    return sorted(set(pids)), query_ok
+
+
+def _process_identity(pid: int, *, owns_port: bool) -> ProcessIdentity | None:
+    rows, query_ok = _powershell_json(
+        f'Get-CimInstance Win32_Process -Filter "ProcessId = {pid}" -ErrorAction Stop'
+        " | Select-Object ProcessId, CommandLine, CreationDate"
+    )
+    if not query_ok or len(rows) != 1 or not isinstance(rows[0], dict):
+        return None
+    row = rows[0]
+    try:
+        row_pid = int(row.get("ProcessId") or 0)
+    except (TypeError, ValueError):
+        return None
+    command_line = row.get("CommandLine")
+    creation_date = row.get("CreationDate")
+    if row_pid != pid or not isinstance(command_line, str) or not command_line:
+        return None
+    if creation_date is None or not str(creation_date):
+        return None
+    return ProcessIdentity(pid, command_line, str(creation_date), owns_port)
+
+
+def _port_owner_targets(port: int) -> tuple[list[ProcessIdentity], str]:
+    """포트 점유자가 이 배포의 serve.py 하나임을 입증한다."""
+    pids, query_ok = _listen_owner_pids(port)
+    if not query_ok:
+        return [], "port-owner-query-failed"
+    if not pids:
+        return [], "port-free"
+    if len(pids) != 1:
+        return [], "port_hijacked"
+    identities: list[ProcessIdentity] = []
     for pid in pids:
-        rows = _powershell_json(
-            f'Get-CimInstance Win32_Process -Filter "ProcessId = {pid}"'
-            " | Select-Object ProcessId, CommandLine"
-        )
-        cmd = (rows[0].get("CommandLine") or "") if rows else ""
-        if "serve.py" in cmd and "server_watchdog" not in cmd:
-            confirmed.append(pid)
-    if confirmed:
-        return confirmed, "port-owner"
-    if pids:
-        # 포트 주인이 있는데 serve.py 가 아니다 — 다른 프로그램이 포트를 차지한 상황.
-        # 이때 커맨드라인 폴백으로 내려가면 무관한 serve.py 를 죽일 수 있으므로 보류.
-        return [], "port-owned-by-other"
+        identity = _process_identity(pid, owns_port=True)
+        if identity is None or not command_line_matches_server(identity.command_line):
+            return [], "port_hijacked"
+        identities.append(identity)
+    return identities, "port-owner"
+
+
+def _listen_ports(pid: int) -> tuple[set[int], bool]:
+    listens, query_ok = _powershell_json(
+        "Get-NetTCPConnection -State Listen -ErrorAction Stop"
+        f" | Where-Object {{ $_.OwningProcess -eq {pid} }}"
+        " | Select-Object -ExpandProperty LocalPort -Unique"
+    )
+    ports: set[int] = set()
+    for value in listens:
+        raw = value if isinstance(value, int) else value.get("value") if isinstance(value, dict) else None
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            ports.add(raw)
+    return ports, query_ok
+
+
+def find_target_pids(port: int) -> tuple[list[ProcessIdentity], str]:
+    """(종료 대상 정체성, 판별 방법). 확신이 없으면 빈 목록으로 개입을 보류한다."""
+    # 1순위: 포트 LISTEN 소유자의 절대경로 정체성을 확인한다.
+    targets, owner_status = _port_owner_targets(port)
+    if owner_status == "port-owner":
+        return targets, owner_status
+    if owner_status != "port-free":
+        return [], owner_status
 
     # 2순위(포트 주인 없음 = 바인딩 전에 멈췄거나 이미 죽음): 커맨드라인 검색.
-    # 함정: 같은 PC 에 다른 serve.py(테스트/개발 서버)가 떠 있을 수 있다. CommandLine 은
-    # "python serve.py" 뿐이라 저장소를 구분 못 하므로, "다른 포트에서 정상 LISTEN 중"인
-    # 후보는 남의 서버로 보고 제외한다(우리의 행 서버는 감시 포트 외를 들을 이유가 없다).
-    rows = _powershell_json(
-        "Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%'\""
-        " | Select-Object ProcessId, CommandLine"
+    # 함정: 같은 PC 에 다른 serve.py(테스트/개발 서버)가 떠 있을 수 있다. 절대경로
+    # 토큰이 정확히 같은 후보만 남기고, 다른 포트를 LISTEN 중이면 제외한다.
+    rows, query_ok = _powershell_json(
+        "Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%'\" -ErrorAction Stop"
+        " | Select-Object ProcessId, CommandLine, CreationDate"
     )
-    candidates = [
-        int(r["ProcessId"]) for r in rows
-        if isinstance(r, dict)
-        and "serve.py" in (r.get("CommandLine") or "")
-        and "server_watchdog" not in (r.get("CommandLine") or "")
-        and int(r.get("ProcessId") or 0) != SELF_PID
-    ]
-    filtered: list[int] = []
-    for pid in candidates:
-        listens = _powershell_json(
-            f"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue"
-            " | Select-Object -ExpandProperty LocalPort -Unique"
-        )
-        ports = {p if isinstance(p, int) else p.get("value") for p in listens}
-        ports.discard(None)
+    if not query_ok:
+        return [], "process-query-failed"
+    candidates: list[ProcessIdentity] = []
+    identity_incomplete = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        command_line = row.get("CommandLine")
+        if not isinstance(command_line, str) or not command_line_matches_server(command_line):
+            continue
+        try:
+            pid = int(row.get("ProcessId") or 0)
+        except (TypeError, ValueError):
+            identity_incomplete = True
+            continue
+        creation_date = row.get("CreationDate")
+        if pid <= 0 or pid == SELF_PID or creation_date is None or not str(creation_date):
+            identity_incomplete = True
+            continue
+        ports, listens_ok = _listen_ports(pid)
+        if not listens_ok:
+            return [], "listen-query-failed"
         if ports and ports != {port}:
             continue  # 다른 포트의 살아있는 서버 — 우리 대상 아님
-        filtered.append(pid)
-    if len(filtered) == 1:
-        return filtered, "cmdline"
-    if len(filtered) > 1:
-        return [], f"ambiguous({len(filtered)} candidates)"  # 오살 방지 — 개입 보류
+        candidates.append(ProcessIdentity(pid, command_line, str(creation_date), port in ports))
+    if len(candidates) == 1:
+        return candidates, "cmdline"
+    if len(candidates) > 1:
+        return [], f"ambiguous({len(candidates)} candidates)"  # 오살 방지 — 개입 보류
+    if identity_incomplete:
+        return [], "identity-incomplete"
     return [], "not-found"
 
 
-def kill_pids(args, pids: list[int]) -> bool:
-    """반환: 하나라도 실제로 종료했는가(dry-run 은 성공 취급). 실패한 개입을 성공으로
-    기록하면 5분 유예·폭풍 카운트가 진짜 복구를 늦추므로 호출부가 이 값으로 분기한다."""
+def _same_process_just_before_kill(target: ProcessIdentity, port: int) -> bool:
+    """taskkill 직전 PID 정체성과 포트 소유 상태가 판정 시점과 같은지 재확인."""
+    current = _process_identity(target.pid, owns_port=target.owns_port)
+    if current is None or not command_line_matches_server(current.command_line):
+        return False
+    if current.command_line != target.command_line or current.creation_date != target.creation_date:
+        return False
+    owners, query_ok = _listen_owner_pids(port)
+    if not query_ok:
+        return False
+    return owners == ([target.pid] if target.owns_port else [])
+
+
+def kill_pids(
+    args,
+    targets: list[ProcessIdentity],
+    port: int,
+) -> tuple[bool, str]:
+    """(종료 성공 여부, 결과 상태). dry-run 은 성공 취급하되 재확인은 거친다."""
+    if len(targets) != 1:
+        return False, "identity_mismatch"
     any_ok = False
-    for pid in pids:
+    for target in targets:
+        pid = target.pid
+        if not _same_process_just_before_kill(target, port):
+            log(args, f"identity_mismatch — PID {pid} 종료 직전 정체성 변경, 개입 보류")
+            return False, "identity_mismatch"
         if args.dry_run:
             log(args, f"[DRY-RUN] taskkill /PID {pid} /T /F (실제 종료 안 함)")
             any_ok = True
@@ -360,7 +535,7 @@ def kill_pids(args, pids: list[int]) -> bool:
         log(args, f"taskkill PID {pid} → rc={r.returncode} {(r.stdout or r.stderr or '').strip()}")
         if r.returncode == 0:
             any_ok = True
-    return any_ok
+    return any_ok, "killed" if any_ok else "kill-failed"
 
 
 def main() -> int:
@@ -410,9 +585,17 @@ def main() -> int:
     hold_alerted = False   # "포트 뺏김" ALERT 는 상태 지속 중 1회만(매분 스팸 방지)
     startup_deadline = time.monotonic() + max(0.0, args.startup_grace)
     target_alerted = False
+    identity_alerted = False
 
     while True:
         status, reason = check_ready(url, args.timeout)
+        if status in {"busy", "maintenance"}:
+            # 503 등의 응답을 보낸 LISTEN 소유자가 우리 serve.py 인지 저비용으로
+            # 확인한다. 다르거나 조회할 수 없으면 busy/dead 어느 쪽으로도 단정하지 않는다.
+            _owners, owner_status = _port_owner_targets(args.port)
+            if owner_status != "port-owner":
+                status = "port_hijacked"
+                reason = f"{reason}; {owner_status}"
         probe_count += 1
         now = time.monotonic()
         decision = tracker.observe(
@@ -435,6 +618,7 @@ def main() -> int:
                     f"{decision.previous_maintenance}회 후 정상)",
                 )
             target_alerted = False
+            identity_alerted = False
             hold_alerted = False
             clear_recovered_alert(args)
         elif status == "busy":
@@ -456,6 +640,25 @@ def main() -> int:
                     alert.write_text(msg + "\n", encoding="utf-8")
                 except OSError:
                     pass
+        elif status == "port_hijacked":
+            # 200 본문이 우리 ready 계약이 아니거나 busy 포트 주인을 입증할 수 없다.
+            # 정상/사망 둘 다로 오판하지 않고 사람에게만 즉시 알린다.
+            if decision.observable:
+                log(args, f"port_hijacked — 자동 개입 보류 ({reason})")
+                if not hold_alerted:
+                    hold_alerted = True
+                    alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                    msg = (
+                        f"{datetime.now():%Y-%m-%d %H:%M:%S} port_hijacked — 포트 "
+                        f"{args.port}의 응답/점유자가 MV Hub ready 계약과 프로세스 정체성을 "
+                        f"확신할 수 없습니다({reason}). 자동 종료하지 않으므로 점유자를 "
+                        "직접 확인하세요."
+                    )
+                    log(args, "★ALERT★ " + msg)
+                    try:
+                        alert.write_text(msg + "\n", encoding="utf-8")
+                    except OSError:
+                        pass
         elif status == "maintenance":
             # DB 교체 게이트가 명시적으로 올라간 상태. 정상 유지보수는 종료하지 않으며 첫 진입과
             # 비정상적으로 긴 지속만 기록한다. HTTP 응답 자체가 사라지면 다음 주기부터 dead로 센다.
@@ -494,23 +697,27 @@ def main() -> int:
                         except OSError:
                             pass
                     else:
-                        pids, how = find_target_pids(args.port)
-                        if pids and hold_alerted:
+                        targets, how = find_target_pids(args.port)
+                        if targets and hold_alerted:
                             # 포트 뺏김이 방금 풀려 우리 serve.py 가 다시 포트를 잡았다 —
                             # 점유 기간에 누적된 fails 로 부팅 중인 새 서버를 즉시 죽이면
                             # 안 된다(코덱스 P1). 이번 주기는 개입하지 않고 부팅 유예를 새로 준다.
                             log(args, "포트 점유 해제 감지 — 새 서버에 시작 유예 부여(개입 보류)")
                             hold_alerted = False
                             target_alerted = False
+                            identity_alerted = False
                             tracker.reset_for_startup()
                             startup_deadline = time.monotonic() + args.startup_grace
-                        elif pids:
-                            log(args, f"개입 — 대상 PID {pids} (판별: {how})")
-                            if kill_pids(args, pids):
+                        elif targets:
+                            target_pids = [target.pid for target in targets]
+                            log(args, f"개입 — 대상 PID {target_pids} (판별: {how})")
+                            kill_ok, kill_status = kill_pids(args, targets, args.port)
+                            if kill_ok:
                                 kills.append(now)
                                 # 재기동에도 부팅과 같은 유예를 준다 — 재기동 부팅이
                                 # 마이그레이션으로 길어질 때 또 죽이는 루프 방지.
                                 target_alerted = False
+                                identity_alerted = False
                                 tracker.reset_for_startup()
                                 startup_deadline = (
                                     time.monotonic() + args.post_kill_grace + args.startup_grace
@@ -521,16 +728,32 @@ def main() -> int:
                                     return 0
                                 time.sleep(args.post_kill_grace)
                                 continue
-                            # 종료 실패(접근 거부 등) — 개입으로 치지 않고 다음 주기에 재시도.
-                            log(args, "종료 실패 — 다음 주기에 재시도")
-                        elif how == "port-owned-by-other":
+                            if kill_status == "identity_mismatch":
+                                if not identity_alerted:
+                                    identity_alerted = True
+                                    alert = _log_path(args).with_name("watchdog_ALERT.txt")
+                                    msg = (
+                                        f"{datetime.now():%Y-%m-%d %H:%M:%S} identity_mismatch — "
+                                        f"PID {target_pids}의 CommandLine·CreationDate·포트 소유가 "
+                                        "종료 직전 달라져 자동 개입을 중단했습니다. "
+                                        "현재 점유자와 서버 로그를 직접 확인하세요."
+                                    )
+                                    log(args, "★ALERT★ " + msg)
+                                    try:
+                                        alert.write_text(msg + "\n", encoding="utf-8")
+                                    except OSError:
+                                        pass
+                            else:
+                                # 종료 실패(접근 거부 등) — 개입으로 치지 않고 다음 주기에 재시도.
+                                log(args, "종료 실패 — 다음 주기에 재시도")
+                        elif how == "port_hijacked":
                             # 다른 프로그램이 서버 포트를 차지 — 자동 종료는 위험해서 보류하지만,
                             # 조용히 반복하면 영구 마비를 아무도 모른다(적대 리뷰 P1) → ALERT 1회.
                             # fails 는 리셋하지 않는다: 매 주기 재확인하다 포트가 풀리면 즉시 개입.
                             if not hold_alerted:
                                 hold_alerted = True
                                 alert = _log_path(args).with_name("watchdog_ALERT.txt")
-                                msg = (f"{datetime.now():%Y-%m-%d %H:%M:%S} 포트 {args.port} 를 "
+                                msg = (f"{datetime.now():%Y-%m-%d %H:%M:%S} port_hijacked — 포트 {args.port} 를 "
                                        "다른 프로그램이 점유 중 — 서버가 못 뜨고 있는데 자동 조치가 "
                                        "불가합니다. 서버 PC에서 점유 프로그램을 확인·종료하세요.")
                                 log(args, "★ALERT★ " + msg)

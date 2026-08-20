@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import importlib.util
+import socket
 import subprocess
 import sys
 import threading
@@ -21,6 +22,18 @@ def _module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _isolated_port() -> int:
+    """운영/개발 포트를 피한 워치독 실측 전용 포트."""
+    for port in range(18091, 18191):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+            try:
+                candidate.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise AssertionError("no isolated watchdog test port is available")
 
 
 class _StrictCp949:
@@ -102,6 +115,11 @@ def test_probe_state_machine_never_intervenes_for_busy_or_maintenance():
     assert recovered.previous_maintenance == 2
     assert tracker.fails == tracker.busy_streak == tracker.maintenance_streak == 0
 
+    hijacked = _observe(watchdog, tracker, "port_hijacked")
+    assert hijacked.event == "port_hijacked"
+    assert hijacked.should_alert is True
+    assert hijacked.should_intervene is False
+
 
 def test_probe_state_machine_intervenes_only_after_consecutive_dead_probes():
     watchdog = _module()
@@ -132,6 +150,9 @@ def test_busy_during_startup_grace_does_not_raise_early_alert():
 
     assert not _observe(watchdog, tracker, "busy", now=1.0, deadline=10.0, busy=1).should_alert
     assert not _observe(watchdog, tracker, "maintenance", now=2.0, deadline=10.0, maintenance=1).should_alert
+    hijacked = _observe(watchdog, tracker, "port_hijacked", now=3.0, deadline=10.0)
+    assert hijacked.should_alert is True
+    assert hijacked.should_intervene is False
     assert _observe(watchdog, tracker, "busy", now=10.0, deadline=10.0, busy=1).should_alert
 
 
@@ -156,7 +177,120 @@ def test_http_503_maintenance_has_a_distinct_safe_status():
     assert watchdog._http_error_status(busy) == ("busy", "HTTP 503")
 
 
-def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp_path):
+class _ReadyResponse(io.BytesIO):
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def test_http_200_requires_mvhub_ready_body_and_db_checks(monkeypatch):
+    watchdog = _module()
+    bodies = iter(
+        [
+            b'{"status":"ready","checks":{"content":"ok","trash":"not_created","manage":"disabled"}}',
+            b'{"status":"ready"}',
+            b'{"status":"ok","checks":{"content":"ok","trash":"ok","manage":"ok"}}',
+            b"not-json",
+        ]
+    )
+    monkeypatch.setattr(
+        watchdog.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _ReadyResponse(next(bodies)),
+    )
+
+    assert watchdog.check_ready("http://127.0.0.1:18091/api/ready", 0.1) == ("ok", "ok")
+    assert watchdog.check_ready("http://127.0.0.1:18091/api/ready", 0.1)[0] == "port_hijacked"
+    assert watchdog.check_ready("http://127.0.0.1:18091/api/ready", 0.1)[0] == "port_hijacked"
+    assert watchdog.check_ready("http://127.0.0.1:18091/api/ready", 0.1)[0] == "port_hijacked"
+
+
+def test_command_line_requires_exact_deployment_serve_path(tmp_path):
+    watchdog = _module()
+    expected = watchdog.EXPECTED_SERVE_PATH
+    foreign = tmp_path / "serve.py"
+
+    assert watchdog.command_line_matches_server(
+        f'"C:\\Python\\python.exe" "{expected}"', expected
+    )
+    assert not watchdog.command_line_matches_server(
+        f'"C:\\Python\\python.exe" "{foreign}"', expected
+    )
+    assert not watchdog.command_line_matches_server(
+        f'"C:\\Python\\python.exe" --config="{expected}"', expected
+    )
+    assert not watchdog.command_line_matches_server(
+        f'"C:\\Python\\python.exe" "{expected}.backup"', expected
+    )
+
+
+def test_foreign_serve_port_owner_is_classified_as_hijacked(tmp_path, monkeypatch):
+    watchdog = _module()
+    foreign_command = f'python "{tmp_path / "serve.py"}"'
+    monkeypatch.setattr(watchdog, "_listen_owner_pids", lambda _port: ([43209], True))
+    monkeypatch.setattr(
+        watchdog,
+        "_process_identity",
+        lambda *_args, **_kwargs: watchdog.ProcessIdentity(
+            43209, foreign_command, "creation-foreign", True
+        ),
+    )
+
+    targets, status = watchdog._port_owner_targets(18091)
+
+    assert targets == []
+    assert status == "port_hijacked"
+
+
+def test_kill_aborts_when_identity_changes_just_before_taskkill(tmp_path, monkeypatch):
+    watchdog = _module()
+    command = f'python "{watchdog.EXPECTED_SERVE_PATH}"'
+    target = watchdog.ProcessIdentity(43210, command, "creation-old", True)
+    monkeypatch.setattr(
+        watchdog,
+        "_process_identity",
+        lambda *_args, **_kwargs: watchdog.ProcessIdentity(
+            43210, command, "creation-reused", True
+        ),
+    )
+    monkeypatch.setattr(
+        watchdog.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("taskkill must not run")),
+    )
+    log_path = tmp_path / "watchdog.log"
+
+    killed, status = watchdog.kill_pids(
+        SimpleNamespace(dry_run=False, log=str(log_path)), [target], 18091
+    )
+
+    assert killed is False
+    assert status == "identity_mismatch"
+    assert "identity_mismatch" in log_path.read_text(encoding="utf-8")
+
+
+def test_dry_run_keeps_exact_same_target_intervention_path(tmp_path, monkeypatch):
+    watchdog = _module()
+    command = f'python "{watchdog.EXPECTED_SERVE_PATH}"'
+    target = watchdog.ProcessIdentity(43211, command, "creation-same", True)
+    monkeypatch.setattr(watchdog, "_process_identity", lambda *_args, **_kwargs: target)
+    monkeypatch.setattr(watchdog, "_listen_owner_pids", lambda _port: ([43211], True))
+    log_path = tmp_path / "watchdog.log"
+
+    killed, status = watchdog.kill_pids(
+        SimpleNamespace(dry_run=True, log=str(log_path)), [target], 18091
+    )
+
+    assert killed is True
+    assert status == "killed"
+    assert "[DRY-RUN] taskkill /PID 43211 /T /F" in log_path.read_text(encoding="utf-8")
+
+
+def test_watchdog_process_treats_foreign_busy_as_hijacked_without_intervention(tmp_path):
     responses = [
         (200, "ready"),
         (503, "not_ready"),
@@ -173,7 +307,10 @@ def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp
             index = min(type(self).count, len(responses) - 1)
             type(self).count += 1
             code, status = responses[index]
-            body = json.dumps({"status": status, "secret": "must-not-log"}).encode("utf-8")
+            payload = {"status": status, "secret": "must-not-log"}
+            if status == "ready":
+                payload["checks"] = {"content": "ok", "trash": "not_created", "manage": "disabled"}
+            body = json.dumps(payload).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -183,7 +320,7 @@ def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp
         def log_message(self, _format, *_args):
             return None
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", _isolated_port()), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log_path = tmp_path / "watchdog.log"
@@ -195,6 +332,8 @@ def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp
                 str(script),
                 "--url",
                 f"http://127.0.0.1:{server.server_port}/api/ready",
+                "--port",
+                str(server.server_port),
                 "--interval",
                 "0.01",
                 "--timeout",
@@ -224,10 +363,9 @@ def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp
 
     assert result.returncode == 0, result.stderr
     log_text = log_path.read_text(encoding="utf-8")
-    assert "준비 안 됨(busy)" in log_text
-    assert "DB 유지보수 확인" in log_text
+    assert "port_hijacked" in log_text
     assert "HTTP 503 maintenance" in log_text
-    assert "복구 확인" in log_text
+    assert "ALERT 해제" in log_text
     assert "개입 — 대상" not in log_text
     assert "taskkill" not in log_text
     assert "must-not-log" not in log_text
@@ -235,7 +373,7 @@ def test_watchdog_process_observes_busy_and_maintenance_without_intervention(tmp
     assert not log_path.with_name("watchdog_ALERT.txt").exists()
 
 
-def test_watchdog_dry_run_targets_only_the_hung_port_owner(tmp_path):
+def test_watchdog_dry_run_never_targets_foreign_serve_path(tmp_path):
     if sys.platform != "win32":
         return
 
@@ -255,7 +393,10 @@ class Handler(BaseHTTPRequestHandler):
         type(self).count += 1
         if type(self).count > 1:
             time.sleep(1.0)
-        body = json.dumps({"status": "ready"}).encode("utf-8")
+        body = json.dumps({
+            "status": "ready",
+            "checks": {"content": "ok", "trash": "not_created", "manage": "disabled"},
+        }).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -267,14 +408,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
         return None
 
-server = HTTPServer(("127.0.0.1", 0), Handler)
-Path(sys.argv[1]).write_text(str(server.server_port), encoding="ascii")
+server = HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+Path(sys.argv[2]).write_text(str(server.server_port), encoding="ascii")
 server.serve_forever()
 """.lstrip(),
         encoding="utf-8",
     )
+    port = _isolated_port()
     server_process = subprocess.Popen(
-        [sys.executable, str(serve_script), str(port_path)],
+        [sys.executable, str(serve_script), str(port), str(port_path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -290,30 +432,7 @@ server.serve_forever()
                     break
             time.sleep(0.02)
         assert port_text.isdigit(), "isolated serve.py did not publish its port"
-        port = int(port_text)
-        # venv의 python.exe는 Windows에서 실제 인터프리터 자식을 띄우고 기다리는
-        # 리다이렉터일 수 있다. Popen PID가 아니라 커널이 보고하는 LISTEN 소유자가
-        # 워치독이 종료해야 할 정확한 대상이다.
-        owner_result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                    "-ErrorAction Stop | Select-Object -First 1 "
-                    "-ExpandProperty OwningProcess"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        assert owner_result.returncode == 0, owner_result.stderr
-        listener_pid_text = owner_result.stdout.strip()
-        assert listener_pid_text.isdigit(), owner_result.stdout
-        listener_pid = int(listener_pid_text)
+        assert int(port_text) == port
         log_path = tmp_path / "hung-watchdog.log"
         watchdog_script = Path(__file__).resolve().parents[2] / "tools" / "server_watchdog.py"
         result = subprocess.run(
@@ -347,8 +466,9 @@ server.serve_forever()
         assert result.returncode == 0, result.stderr
         log_text = log_path.read_text(encoding="utf-8")
         assert "응답 이상 2/2" in log_text
-        assert f"개입 — 대상 PID [{listener_pid}] (판별: port-owner)" in log_text
-        assert f"[DRY-RUN] taskkill /PID {listener_pid} /T /F" in log_text
+        assert "port_hijacked" in log_text or "port-owner-query-failed" in log_text
+        assert "개입 — 대상 PID" not in log_text
+        assert "[DRY-RUN] taskkill" not in log_text
         assert "검증 종료 — 3회 확인" in log_text
         assert server_process.poll() is None
     finally:
