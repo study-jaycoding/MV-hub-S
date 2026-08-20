@@ -168,8 +168,8 @@ export function ComfyConnectionSection() {
           {checking ? "연결 확인 중…" : hasUnsavedChanges ? "저장 후 연결 확인" : "연결 확인"}
         </button>
       </div>
-      <SettingsDescription summary="ComfyUI 연결을 설정하고 상태를 확인합니다.">
-        {msg && <p>{msg}</p>}
+      {/* 연결 결과(msg)는 접기 밖 캡션에 상시 표시(Jay 요청 — Resolve·업데이트 섹션과 같은 패턴) */}
+      <SettingsDescription summary={msg || "ComfyUI 연결을 설정하고 상태를 확인합니다."}>
         <p>캔버스에서 Comfy 노드(Tab → Comfy 또는 단축키 C)를 만들어 워크플로우를 실행합니다.</p>
         <p>API 노드에서 로그인 오류가 나면 comfy.org API 키를 입력하세요.</p>
       </SettingsDescription>
