@@ -12,6 +12,56 @@ import sqlite3
 _PROJECT_ACTIVE_NAME_INDEX = "idx_project_active_name"
 
 
+def _migrate_share_state_intent(conn: sqlite3.Connection) -> None:
+    """공유 서버 권위 상태를 로컬 미러로 수렴시키는 write-ahead 원장을 보장한다."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS share_state_intent ("
+        "intent_id TEXT PRIMARY KEY,"
+        "server_origin TEXT NOT NULL,"
+        "server_generation_id TEXT,"
+        "job_anchor TEXT,"
+        "local_id TEXT,"
+        "operation_kind TEXT NOT NULL,"
+        "desired_shared INTEGER NOT NULL CHECK(desired_shared IN (0,1)),"
+        "desired_final INTEGER NOT NULL CHECK(desired_final IN (0,1)),"
+        "base_shared INTEGER NOT NULL CHECK(base_shared IN (0,1)),"
+        "base_final INTEGER NOT NULL CHECK(base_final IN (0,1)),"
+        "expected_final_by TEXT,"
+        "intent_seq INTEGER NOT NULL,"
+        "status TEXT NOT NULL CHECK(status IN ("
+        "'prepared','pending','waiting_local','auth_required',"
+        "'converged','superseded','blocked','rejected'"
+        ")),"
+        "claim_token TEXT,"
+        "lease_until TEXT,"
+        "fail_streak INTEGER NOT NULL DEFAULT 0,"
+        "next_retry_at TEXT,"
+        "last_error_code TEXT,"
+        "observed_state_json TEXT,"
+        "observed_at TEXT,"
+        "created_at TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL,"
+        "last_attempt_at TEXT,"
+        "CHECK (desired_final=0 OR desired_shared=1),"
+        "CHECK (server_generation_id IS NOT NULL OR job_anchor IS NOT NULL)"
+        ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_uuid "
+        "ON share_state_intent(server_origin, server_generation_id) "
+        "WHERE server_generation_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_anchor "
+        "ON share_state_intent(server_origin, job_anchor) "
+        "WHERE job_anchor IS NOT NULL AND server_generation_id IS NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ssi_due "
+        "ON share_state_intent(status, next_retry_at)"
+    )
+
+
 def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
     """기존 ``hf_status:<email>`` JSON에서 확인 가능한 팀 워크스페이스 접근관계를 1회성 보강한다.
 
@@ -146,6 +196,7 @@ def _pre_migrate(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """기존 DB 에 누락된 컬럼을 추가(멱등). schema.sql 의 CREATE IF NOT EXISTS 는
     기존 테이블에 컬럼을 더하지 않으므로 여기서 보강한다."""
+    _migrate_share_state_intent(conn)
     # RL-22: 공유·최종 생성물 원본 보존 상태. 옛 DB도 멱등 보강한다. URL·프롬프트는
     # 저장하지 않고 상태와 안전한 집계만 기록한다.
     conn.execute(

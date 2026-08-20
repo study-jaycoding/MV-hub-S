@@ -1,16 +1,16 @@
 """공유·가져오기·최종 선택 라우터.
 
-단독·공유 서버 모드에서는 로컬 SQLite를 직접 변경하고, 작업자 프록시 모드에서는 공유 서버의
-성공을 확인한 뒤 로컬 표시를 미러링한다. 공유 해제·최종 해제의 실패 보상 규칙은
-``docs/SHARE_STATE_COMPENSATION.md``를 따른다.
+단독·공유 서버 모드에서는 로컬 SQLite를 직접 변경하고, 작업자 프록시 모드에서는 공유 서버를
+권위로 삼아 write-ahead 원장으로 로컬 표시를 수렴시킨다.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from . import _proxy
 from .. import rbac, repo
@@ -30,7 +30,6 @@ from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
 
 router = APIRouter(prefix="/api", tags=["share"])
-logger = logging.getLogger(__name__)
 
 _FINAL_UNPUBLISH_DETAIL = (
     "최종(골드)으로 지정된 항목은 공유를 해제할 수 없습니다 (먼저 최종 해제)"
@@ -92,69 +91,142 @@ def _is_remote_generation_missing(exc: HTTPException) -> bool:
     }
 
 
-def _mirror_remote_unfinalize(
-    local_id: str,
-    server_id: str,
+def _prepare_proxy_intent(
     *,
-    known_local: dict[str, Any] | None,
-) -> None:
-    """서버의 최종 해제를 로컬에 반영하고, 실패하면 가능한 경우 서버를 되돌린다.
-
-    로컬 쓰기가 예외를 냈더라도 커밋 여부가 모호할 수 있으므로 먼저 다시 읽는다.
-    실제로 ``is_final=0``이면 성공으로 확정하고, 여전히 최종일 때만 서버 ``finalize``로
-    이전의 일치 상태를 복구한다.
-    """
-    current = known_local
-    if not current or current.get("id") != local_id:
-        current = repo.get_generation(local_id)
-    if not current or not current.get("is_final"):
-        return
-
+    local_id: str | None,
+    server_id: str,
+    operation_kind: str,
+    desired_shared: bool,
+    desired_final: bool,
+    base_shared: bool,
+    base_final: bool,
+    expected_final_by: str | None = None,
+) -> dict[str, Any]:
+    """프록시 mutation의 서버 호출 전 prepared 기록. 실패하면 503으로 서버 호출을 막는다."""
     try:
-        try:
-            repo.set_final(local_id, False)
-        except Exception:
-            repo.set_final(local_id, False)  # 일시적인 SQLite 잠금은 한 번만 재시도
-        return
-    except Exception as local_error:
-        # 예외가 커밋 뒤 발생한 경우를 포함해 실제 로컬 상태를 다시 확인한다.
-        try:
-            confirmed = repo.get_generation(local_id)
-        except Exception:  # noqa: BLE001 — 아래 보상 경계에서 처리
-            confirmed = None
-        if confirmed is not None and not confirmed.get("is_final"):
-            return
-
-        try:
-            _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")
-        except Exception as compensation_error:
-            logger.error(
-                "unfinalize compensation failed local_id=%s server_id=%s",
-                local_id,
-                server_id,
-                exc_info=compensation_error,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "최종 해제 상태 동기화에 실패했습니다. "
-                    "새로고침 후 다시 시도해 주세요"
-                ),
-            ) from local_error
-
-        logger.warning(
-            "local unfinalize mirror failed; remote state restored "
-            "local_id=%s server_id=%s",
-            local_id,
-            server_id,
+        return repo.prepare_share_state_intent(
+            _proxy.base_url(),
+            server_generation_id=(None if local_id else server_id),
+            job_anchor=(server_id if local_id else None),
+            local_id=local_id,
+            operation_kind=operation_kind,
+            desired_shared=desired_shared,
+            desired_final=desired_final,
+            base_shared=base_shared,
+            base_final=base_final,
+            expected_final_by=expected_final_by,
         )
+    except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=(
-                "최종 해제를 로컬에 반영하지 못해 서버 변경을 되돌렸습니다. "
-                "잠시 후 다시 시도해 주세요"
-            ),
-        ) from local_error
+            detail="공유 상태 원장을 기록하지 못해 서버 호출을 중단했습니다",
+        ) from exc
+
+
+def _transition_proxy_intent(
+    ref: dict[str, Any], status: str, **fields: Any
+) -> bool:
+    return repo.transition_share_state_intent(
+        ref["intent_id"],
+        ref["intent_seq"],
+        ref["claim_token"],
+        status,
+        **fields,
+    )
+
+
+def _record_proxy_failure(
+    ref: dict[str, Any], exc: HTTPException, *, composite_partial: bool = False
+) -> None:
+    """확정 4xx만 종결한다. 연결/5xx는 서버 결과가 불명이라 prepared를 보존한다."""
+    try:
+        if exc.status_code == 401:
+            _transition_proxy_intent(
+                ref, "auth_required", last_error_code="remote_auth_required"
+            )
+        elif 400 <= exc.status_code < 500:
+            if composite_partial:
+                # 발행은 됐지만 finalize가 거절된 합성 의도다. 3b가 base_shared에 따라
+                # 조건부 unpublish 또는 공유 유지+final rejected 정책을 수행해야 한다.
+                if _transition_proxy_intent(
+                    ref,
+                    "pending",
+                    observed_state={
+                        "shared": True,
+                        "is_final": False,
+                        "publish_confirmed": True,
+                    },
+                    last_error_code=f"finalize_remote_{exc.status_code}",
+                ):
+                    repo.release_share_state_intent_claim(
+                        ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+                    )
+            else:
+                _transition_proxy_intent(
+                    ref, "rejected", last_error_code=f"remote_{exc.status_code}"
+                )
+    except Exception:  # noqa: BLE001 — 원래 서버 오류를 가리지 않으며 prepared 잔존도 안전하다
+        pass
+
+
+def _mirror_proxy_success(
+    ref: dict[str, Any],
+    out: dict[str, Any] | None,
+    *,
+    local_id: str | None,
+    shared: bool,
+    is_final: bool,
+    final_by: str | None = None,
+    shared_by: str | None = None,
+    preservation_reason: str | None = None,
+) -> bool:
+    """서버 성공 관측을 pending으로 보강한 뒤 로컬 적용+converged CAS를 원자로 수행한다."""
+    observed = {"shared": shared, "is_final": is_final}
+    if isinstance(out, dict) and out.get("final_by") is not None:
+        observed["final_by"] = out.get("final_by")
+    server_generation_id = out.get("id") if isinstance(out, dict) else None
+    job_anchor = out.get("job_id") if isinstance(out, dict) else None
+    try:
+        transitioned = _transition_proxy_intent(
+            ref,
+            "pending",
+            server_generation_id=(server_generation_id or ref.get("server_generation_id")),
+            job_anchor=(job_anchor or ref.get("job_anchor")),
+            local_id=local_id,
+            observed_state=observed,
+        )
+        applied = bool(
+            transitioned
+            and repo.apply_share_state_intent_local(
+                ref["intent_id"],
+                ref["intent_seq"],
+                ref["claim_token"],
+                local_id=local_id,
+                shared=shared,
+                is_final=is_final,
+                final_by=final_by,
+                shared_by=shared_by,
+                preservation_reason=preservation_reason,
+                observed_state=observed,
+            )
+        )
+    except Exception:
+        applied = False
+    if not applied:
+        try:
+            repo.mark_share_state_intent_waiting_local(
+                ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+            )
+        except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 재시작 안전망
+            pass
+    return applied
+
+
+def _mirror_pending_response(out: dict[str, Any] | None) -> JSONResponse:
+    """response_model 필터를 우회해 실패가 아닌 서버 성공 + 미러 대기 의미를 보존한다."""
+    payload = dict(out or {})
+    payload["mirror_pending"] = True
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
@@ -178,6 +250,13 @@ def _require_unpublish(request: Request, gen: dict[str, Any]) -> None:
 def publish(gen_id: str, body: PublishIn, request: Request):
     """generation 을 팀에 발행한다(명시적). 한 generation 은 0~1개의 share.
     발행 = share-set 에 추가(서버 발행은 publish-to-shared 번들 경로가 담당)."""
+    if _proxy.proxying():
+        # 프록시 모드의 서버 발행은 번들 write-ahead 경로만 허용한다. 이 로컬-only API를
+        # 열어 두면 서버에는 없고 이 PC에만 shared인 상태가 생긴다.
+        raise HTTPException(
+            status_code=400,
+            detail="프록시 모드에서는 /api/publish-to-shared 번들 발행을 사용하세요",
+        )
     gen = repo.get_generation(gen_id)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -201,39 +280,70 @@ def publish(gen_id: str, body: PublishIn, request: Request):
 def unpublish(gen_id: str, request: Request):
     """팀 공유 해제 — share 행을 제거한다(내가 공유한 것을 되돌림).
     ⚠️ 최종(골드)인 항목은 공유 해제 불가 — '최종인데 공유 안 됨' 모순 차단(먼저 최종 해제)."""
+    requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     # 로컬 우선: 발행은 번들로 서버에 올라가 있으므로 '서버 해제'가 진실이다. 서버를 먼저 호출해
     # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
     # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
     if _proxy.proxying():
-        # 서버가 이미 없다고 404를 주더라도 로컬 최종을 비공유로 만들 수는 없다.
-        # 원격 요청보다 먼저 검사해 서버만 해제되는 부분 성공도 막는다.
-        _ensure_not_final_before_unpublish(gen)
-        # 팀 탭 카드는 서버 번들 앵커(job_id)로 식별 → 로컬 generation.id 와 다르다(내 카드라도
-        # job_id≠로컬id). 그래서 위 get_generation(gen_id) 이 None 이어도 404 로 막으면 안 된다 —
-        # finalize_id_map 으로 변환해 서버에 위임한다(권한·골드 가드는 서버가 가진다. finalize 와 동형).
-        local_id, server_id = repo.finalize_id_map(gen_id)
-        try:
-            out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
-        except HTTPException as e:
-            if e.status_code != 404 or not _is_remote_generation_missing(e):
-                raise  # 서버 전파 실패(권한 403·골드 409·연결 502 등) → 로컬도 해제 안 함(불일치 차단)
-            out = None
-        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
-            local_id = _local_id_from_out(out)
-            # 이 경로의 로컬 행은 위(192행) final 가드를 안 거쳤다 — 선행 장애로 "로컬만
-            # final"인 어긋남이 있으면 골드 공유 표식을 무음으로 지우지 않고 크게 실패시킨다
-            # (서버는 이미 해제됐지만, 어긋남을 조용히 넓히는 것보다 드러내는 쪽이 안전).
+        local_id, server_id = repo.finalize_id_map(requested_id)
+        lock_kwargs = (
+            {"job_anchor": server_id}
+            if local_id
+            else {"server_generation_id": server_id}
+        )
+        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
+            # 잠금을 기다린 뒤 로컬 final 가드와 identity를 다시 읽어 finalize 교차 실행을 직렬화한다.
+            local_id, server_id = repo.finalize_id_map(requested_id)
+            current = repo.get_generation(local_id) if local_id else None
+            _ensure_not_final_before_unpublish(current)
+            ref = _prepare_proxy_intent(
+                local_id=local_id,
+                server_id=server_id,
+                operation_kind="unpublish",
+                desired_shared=False,
+                desired_final=False,
+                base_shared=bool(current.get("shared")) if current else True,
+                base_final=bool(current.get("is_final")) if current else False,
+            )
+            try:
+                out = _proxy.proxy_json(
+                    "POST", f"/api/generations/{server_id}/unpublish"
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404 or not _is_remote_generation_missing(exc):
+                    _record_proxy_failure(ref, exc)
+                    raise
+                out = None  # 서버에 이미 없음 = desired shared=false 달성
+
+            if local_id is None:
+                local_id = _local_id_from_out(out)
+            if local_id is None and out is None:
+                # 서버·로컬 모두 없는 멱등 404는 적용할 미러 자체가 없다.
+                _transition_proxy_intent(
+                    ref,
+                    "converged",
+                    observed_state={"shared": False, "is_final": False},
+                )
+                raise HTTPException(status_code=404, detail="generation 없음")
+            mirrored = _mirror_proxy_success(
+                ref,
+                out,
+                local_id=local_id,
+                shared=False,
+                is_final=False,
+            )
+            if mirrored and local_id:
+                _touch_telemetry(local_id)
+                return repo.get_generation(local_id)
+            if out is not None:
+                return _mirror_pending_response(out)
             if local_id:
-                _ensure_not_final_before_unpublish(repo.get_generation(local_id))
-        if local_id:  # 내 로컬 카드도 미러 해제(tab=my·히스토리 즉시 반영)
-            repo.unpublish(local_id)
-            _touch_telemetry(local_id)
-            return repo.get_generation(local_id)
-        if out is not None:
-            return out  # 남의 항목(로컬 행 없음) — 서버 응답 그대로
-        raise HTTPException(status_code=404, detail="generation 없음")  # 서버·로컬 모두 없음
+                server_state = dict(current or {})
+                server_state.update({"shared": False, "is_final": False})
+                return _mirror_pending_response(server_state)
+            raise HTTPException(status_code=404, detail="generation 없음")
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -278,73 +388,84 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     최종은 곧 후보 확정이므로 공유(share)가 없으면 함께 발행한다(게이트 아님: 공유는 이미 자유).
     로컬 우선: 골드는 '공유된 항목의 서버 상태'다. 프록시 모드면 (필요시 번들 발행 후) 서버에
     finalize 를 위임하고 — 역할 검증·골드 상태는 서버가 가진다 — 내 로컬 카드에도 골드를 미러한다."""
+    requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
-        # 로컬 id ↔ 서버 id(번들 앵커=job_id)가 다르다 → 변환.
-        # 내 작업·히스토리(로컬 id)로 finalize 하면 서버는 job_id 로 알기에 그대로 위임 시 404 가 났다.
-        local_id, server_id = repo.finalize_id_map(gen_id)
-        # 내 비공개 로컬 항목이면 먼저 번들 발행(서버에 올라가야 팀이 보고 골드도 거기 남음).
-        newly_published = False
-        if gen is not None and not gen.get("shared"):
-            if gen["status"] != "done":
-                raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
-            from .publish import publish_bundle_to_server
+        local_id, server_id = repo.finalize_id_map(requested_id)
+        lock_kwargs = (
+            {"job_anchor": server_id}
+            if local_id
+            else {"server_generation_id": server_id}
+        )
+        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
+            local_id, server_id = repo.finalize_id_map(requested_id)
+            current = repo.get_generation(local_id) if local_id else None
+            finalizer_uid = _finalizer_uid(request)
+            composite = bool(current is not None and not current.get("shared"))
+            if composite:
+                if current["status"] != "done":
+                    raise HTTPException(status_code=409, detail="완료된 생성만 최종 지정할 수 있음")
+                from .publish import publish_bundle_to_server
 
-            pub = publish_bundle_to_server([local_id or gen_id])
-            # ★발행이 차단(blocked — 작성자 불일치 등)됐으면 골드 진행을 즉시 중단한다.
-            #  계속 가면 서버엔 없는 항목에 finalize 를 시도하고, 실패 보상이 원래부터
-            #  공유돼 있던 항목까지 unpublish 할 수 있다(코덱스 P1).
-            if not pub.get("published"):
-                raise HTTPException(
-                    status_code=409,
-                    detail=pub.get("message")
-                    or "서버가 발행을 반영하지 않아 최종 지정을 중단했습니다",
+                pub = publish_bundle_to_server(
+                    [local_id],
+                    operation_kind="composite_finalize",
+                    desired_final=True,
+                    expected_final_by=finalizer_uid,
+                    settle_intents=False,
                 )
-            newly_published = True
-        try:
-            out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/finalize")
-        except Exception:
-            # 부분 실패 보상: 이번 finalize 때문에 '새로' 공유한 거라면 되돌려 비공개를 유지한다
-            # (골드는 안 됐는데 공유만 새어 나가는 누수 방지). 원래 공유 상태였으면 건드리지 않음.
-            if newly_published:
-                try:
-                    _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
-                except Exception:  # noqa: BLE001
-                    pass
-                if local_id:
-                    repo.unpublish(local_id)
-            raise
-        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
-            local_id = _local_id_from_out(out)
-        if local_id:  # 내 로컬 카드에도 골드 미러(tab=my·히스토리 즉시 반영)
-            try:
-                repo.set_final(local_id, True, _finalizer_uid(request))
-            except Exception:
-                # 미러 실패 → "서버는 골드, 로컬은 아님" 어긋남(+ unpublish 가드 우회) 방지:
-                # 서버 골드를 되돌리고(필요시 새 공유도 해제) 에러를 알린다.
-                # 보상 자체가 실패하면 어긋남이 남는다 — 침묵하지 말고 운영 로그로 드러낸다.
-                try:
-                    _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
-                except Exception as compensation_error:  # noqa: BLE001
-                    logger.error(
-                        "finalize compensation(unfinalize) failed local_id=%s server_id=%s",
-                        local_id, server_id, exc_info=compensation_error,
+                ref = pub.intent_refs.get(server_id)
+                if not ref:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="합성 최종 원장을 찾지 못해 서버 finalize를 중단했습니다",
                     )
-                if newly_published:
-                    try:
-                        _proxy.proxy_json("POST", f"/api/generations/{server_id}/unpublish")
-                    except Exception as compensation_error:  # noqa: BLE001
-                        logger.error(
-                            "finalize compensation(unpublish) failed local_id=%s server_id=%s",
-                            local_id, server_id, exc_info=compensation_error,
-                        )
-                    repo.unpublish(local_id)
+                # 서버 발행 승인 여부로 판정한다. 로컬 미러 실패는 원장 대기일 뿐 finalize를
+                # 되돌리거나 중단할 이유가 아니다.
+                if not pub.remote_accepted:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=pub.get("message")
+                        or "서버가 발행을 반영하지 않아 최종 지정을 중단했습니다",
+                    )
+            else:
+                ref = _prepare_proxy_intent(
+                    local_id=local_id,
+                    server_id=server_id,
+                    operation_kind="finalize",
+                    desired_shared=True,
+                    desired_final=True,
+                    base_shared=bool(current.get("shared")) if current else True,
+                    base_final=bool(current.get("is_final")) if current else False,
+                    expected_final_by=finalizer_uid,
+                )
+
+            try:
+                out = _proxy.proxy_json(
+                    "POST", f"/api/generations/{server_id}/finalize"
+                )
+            except HTTPException as exc:
+                _record_proxy_failure(ref, exc, composite_partial=composite)
                 raise
-        _touch_telemetry(local_id)
-        if local_id:
-            background.add_task(_preserve_final_media, local_id)  # 최종본 원본 로컬 보존
-        return out
+            if local_id is None:
+                local_id = _local_id_from_out(out)
+                current = repo.get_generation(local_id) if local_id else current
+            mirrored = _mirror_proxy_success(
+                ref,
+                out,
+                local_id=local_id,
+                shared=True,
+                is_final=True,
+                final_by=finalizer_uid,
+                shared_by=(current.get("worker_id") if current else DEFAULT_WORKER_ID),
+                preservation_reason="final",
+            )
+            if mirrored and local_id:
+                _touch_telemetry(local_id)
+                background.add_task(_preserve_final_media, local_id)
+                return out
+            return _mirror_pending_response(out)
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
@@ -378,21 +499,50 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
 @router.post("/generations/{gen_id}/unfinalize", response_model=GenerationOut)
 def unfinalize(gen_id: str, request: Request):
     """최종(골드) 해제 → 일반 공유 상태로 복귀(공유는 유지). Supervisor 만."""
+    requested_id = gen_id
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
-        local_id, server_id = repo.finalize_id_map(gen_id)
-        out = _proxy.proxy_json("POST", f"/api/generations/{server_id}/unfinalize")
-        if local_id is None:  # 팀 탭 카드(서버 UUID)면 서버 응답의 job_id 로 로컬 행을 되찾는다
-            local_id = _local_id_from_out(out)
-        if local_id:
-            _mirror_remote_unfinalize(
-                local_id,
-                server_id,
-                known_local=gen,
+        local_id, server_id = repo.finalize_id_map(requested_id)
+        lock_kwargs = (
+            {"job_anchor": server_id}
+            if local_id
+            else {"server_generation_id": server_id}
+        )
+        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
+            local_id, server_id = repo.finalize_id_map(requested_id)
+            current = repo.get_generation(local_id) if local_id else None
+            ref = _prepare_proxy_intent(
+                local_id=local_id,
+                server_id=server_id,
+                operation_kind="unfinalize",
+                desired_shared=True,
+                desired_final=False,
+                base_shared=bool(current.get("shared")) if current else True,
+                base_final=bool(current.get("is_final")) if current else True,
             )
-            _touch_telemetry(local_id)
-        return out
+            try:
+                out = _proxy.proxy_json(
+                    "POST", f"/api/generations/{server_id}/unfinalize"
+                )
+            except HTTPException as exc:
+                _record_proxy_failure(ref, exc)
+                raise
+            if local_id is None:
+                local_id = _local_id_from_out(out)
+                current = repo.get_generation(local_id) if local_id else current
+            mirrored = _mirror_proxy_success(
+                ref,
+                out,
+                local_id=local_id,
+                shared=True,
+                is_final=False,
+                shared_by=(current.get("worker_id") if current else DEFAULT_WORKER_ID),
+            )
+            if mirrored and local_id:
+                _touch_telemetry(local_id)
+                return out
+            return _mirror_pending_response(out)
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     if gen.get("project_id"):

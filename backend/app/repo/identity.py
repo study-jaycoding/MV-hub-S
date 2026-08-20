@@ -473,6 +473,9 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     # ignore_del 로 acct: 행을 그냥 버리면 acct: 쪽에만 있던 tombstone 이 사라져, add-only 병합
     # 규칙상 지웠던 생성물이 카드에 되살아난다(적대 리뷰 P1 — 제거 의도가 항상 이긴다).
     ("scene_card_generation", "owner_uid", "scenecard"),
+    # 공유 원장의 예정 최종 지정자 — 대기 중 intent 를 3b 가 final_by 로 적용하므로
+    # 전환 시 함께 정합해야 골드 지정자 신원이 안 끊긴다(키 아님 → plain).
+    ("share_state_intent", "expected_final_by", "plain"),
 )
 
 # 신원-의심 컬럼 중 remap 대상이 '아닌' 것 — registry 테스트(test_identity_registry)가 PLAN∪EXEMPT 로

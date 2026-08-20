@@ -396,9 +396,47 @@ class PublishToSharedIn(BaseModel):
     gen_ids: list[str]
 
 
-def publish_bundle_to_server(gen_ids: list[str]) -> dict:
+class PublishBundleResult(dict):
+    """API 응답 dict와 라우트 내부 원장 참조를 함께 운반한다.
+
+    ``intent_refs``는 dict 키가 아니므로 ``{**result}``로 프론트 응답에 새지 않는다.
+    """
+
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        intent_refs: dict[str, dict[str, Any]],
+        remote_accepted: int,
+    ):
+        super().__init__(payload)
+        self.intent_refs = intent_refs
+        self.remote_accepted = remote_accepted
+
+
+def _transition_publish_ref(
+    ref: dict[str, Any], status: str, **fields: Any
+) -> bool:
+    return repo.transition_share_state_intent(
+        ref["intent_id"],
+        ref["intent_seq"],
+        ref["claim_token"],
+        status,
+        **fields,
+    )
+
+
+def publish_bundle_to_server(
+    gen_ids: list[str],
+    *,
+    operation_kind: str = "publish",
+    desired_final: Optional[bool] = None,
+    expected_final_by: Optional[str] = None,
+    settle_intents: bool = True,
+) -> PublishBundleResult:
     """고른 로컬 생성물을 번들(export_bundle)로 공유 서버에 발행 + 로컬 share 표식.
     publish-to-shared 엔드포인트와 finalize(골드 동반 발행)가 공유한다.
+    서버 호출 전에 번들 대상 전체를 한 트랜잭션으로 prepared 한다. 합성 finalize는 발행
+    부분 상태를 같은 원장에 남긴 뒤 호출자가 서버 finalize 성공 후 종결한다.
     반환: {published, remote}. 토큰 없음=401, 서버 오류=502."""
     url = repo.get_setting(_K_URL) or _effective_url()
     token = repo.get_setting(_K_TOKEN)
@@ -409,48 +447,198 @@ def publish_bundle_to_server(gen_ids: list[str]) -> dict:
         raise HTTPException(status_code=400, detail="발행할 항목을 선택하세요")
     # 완료본만 발행 — 아래 로컬 share 표식과 같은 기준(done). 진행중/실패본이 번들에 실려
     # 서버에 미완성 fact 로 남지 않게 export 단계에서 거른다.
-    gen_ids = [g for g in gen_ids if (repo.get_generation(g) or {}).get("status") == "done"]
+    gen_ids = [
+        g for g in gen_ids if (repo.get_generation(g) or {}).get("status") == "done"
+    ]
     if not gen_ids:
         raise HTTPException(status_code=400, detail="발행할 완료본이 없습니다(진행중/실패 제외)")
-    bundle = repo.export_bundle(gen_ids=gen_ids)
-    if not (bundle.get("generations") or []):
-        raise HTTPException(status_code=400, detail="발행할 유효한 생성물이 없습니다")
-    status, resp = _http_json(
-        "POST", f"{url}/api/share/publish-bundle", token=token, body={"bundle": bundle}
-    )
-    if status == 401:
-        raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인).")
-    if status != 200 or not isinstance(resp, dict):
-        raise HTTPException(status_code=502, detail=f"발행 실패(status={status}): {resp}")
-    # ★서버가 거부(blocked)한 항목은 로컬 share 표식을 남기지 않는다 — 예전엔 200 하나로
-    #  전부 "공유됨" 처리해서, 작성자 불일치로 서버가 조용히 무시한 발행이 로컬 뱃지만
-    #  붙은 채 팀에는 영영 안 보였다. 앵커는 번들과 같은 규칙(job_id 우선, 없으면 id).
-    blocked_anchors = {str(a) for a in (resp.get("blocked_ids") or []) if a}
-    published = 0
-    blocked = 0
+
+    initial: list[tuple[str, str]] = []
     for gid in gen_ids:
         gen = repo.get_generation(gid)
-        if not (gen and gen.get("status") == "done"):
-            continue
-        anchor = str(gen.get("job_id") or gid)
-        if anchor in blocked_anchors:
-            blocked += 1
-            continue
-        repo.publish(gid, gen.get("worker_id") or DEFAULT_WORKER_ID, "team")
-        repo.request_media_preservation(gid, "shared")
-        _touch_telemetry(gid)
-        published += 1
-    out = {
-        "published": published,
-        "remote": {k: resp.get(k) for k in ("inserted", "updated", "unchanged", "skipped", "blocked")},
-    }
-    if blocked:
-        out["blocked"] = blocked
-        out["message"] = (
-            f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유 등) — "
-            "공유 표시를 남기지 않았습니다."
+        if gen and gen.get("status") == "done":
+            initial.append((gid, str(gen.get("job_id") or gid)))
+    lock_keys = [
+        repo.share_state_identity_key(url, job_anchor=anchor) for _, anchor in initial
+    ]
+    with repo.share_state_action_locks(lock_keys):
+        # 잠금을 기다리는 동안 상태가 바뀔 수 있으므로 번들과 base 상태를 잠금 안에서 다시 만든다.
+        targets: list[dict[str, Any]] = []
+        seen_anchors: set[str] = set()
+        for gid, _ in initial:
+            gen = repo.get_generation(gid)
+            if not (gen and gen.get("status") == "done"):
+                continue
+            anchor = str(gen.get("job_id") or gid)
+            if anchor in seen_anchors:
+                continue
+            seen_anchors.add(anchor)
+            targets.append({"local_id": gid, "anchor": anchor, "generation": gen})
+        if not targets:
+            raise HTTPException(status_code=400, detail="발행할 완료본이 없습니다(진행중/실패 제외)")
+        bundle = repo.export_bundle(gen_ids=[target["local_id"] for target in targets])
+        bundle_anchors = {
+            str((item.get("generation") or {}).get("id"))
+            for item in (bundle.get("generations") or [])
+            if isinstance(item, dict) and (item.get("generation") or {}).get("id")
+        }
+        targets = [target for target in targets if target["anchor"] in bundle_anchors]
+        if not targets:
+            raise HTTPException(status_code=400, detail="발행할 유효한 생성물이 없습니다")
+
+        try:
+            refs = repo.prepare_share_state_intents(
+                url,
+                [
+                    {
+                        "job_anchor": target["anchor"],
+                        "local_id": target["local_id"],
+                        "operation_kind": operation_kind,
+                        "desired_shared": True,
+                        "desired_final": (
+                            bool(desired_final)
+                            if desired_final is not None
+                            else bool(target["generation"].get("is_final"))
+                        ),
+                        "base_shared": bool(target["generation"].get("shared")),
+                        "base_final": bool(target["generation"].get("is_final")),
+                        "expected_final_by": expected_final_by,
+                    }
+                    for target in targets
+                ],
+            )
+        except Exception as exc:
+            # write-ahead가 없으면 원격을 절대 건드리지 않는다.
+            raise HTTPException(
+                status_code=503,
+                detail="공유 상태 원장을 기록하지 못해 서버 호출을 중단했습니다",
+            ) from exc
+        refs_by_anchor = {
+            target["anchor"]: ref for target, ref in zip(targets, refs, strict=True)
+        }
+
+        # 타임아웃·연결 실패·프로세스 중단은 아래 전이까지 오지 않으므로 prepared가 남고,
+        # 3b가 서버 현재 상태를 관측한다.
+        status, resp = _http_json(
+            "POST",
+            f"{url}/api/share/publish-bundle",
+            token=token,
+            body={"bundle": bundle},
         )
-    return out
+        if status == 401:
+            for ref in refs:
+                try:
+                    _transition_publish_ref(
+                        ref, "auth_required", last_error_code="remote_auth_required"
+                    )
+                except Exception:  # noqa: BLE001 — 원래 401을 가리지 않고 prepared도 안전하다
+                    pass
+            raise HTTPException(status_code=401, detail="공유 서버 로그인이 만료됐습니다(다시 로그인).")
+        if status != 200 or not isinstance(resp, dict):
+            if 400 <= status < 500:
+                for ref in refs:
+                    try:
+                        _transition_publish_ref(
+                            ref, "rejected", last_error_code=f"remote_{status}"
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            # 5xx는 결과 불명일 수 있어 prepared 유지.
+            raise HTTPException(status_code=502, detail=f"발행 실패(status={status}): {resp}")
+
+        # 서버가 명시한 blocked_ids만 CAS 취소한다. 응답 전체 성공을 이유로 다른 target까지
+        # 취소하지 않으며, 새 seq가 생겼다면 옛 claim CAS는 조용히 실패한다.
+        blocked_anchors = {str(a) for a in (resp.get("blocked_ids") or []) if a}
+        published = 0
+        blocked = 0
+        mirror_pending = False
+        remote_accepted = 0
+        for target in targets:
+            gid = target["local_id"]
+            anchor = target["anchor"]
+            gen = target["generation"]
+            ref = refs_by_anchor[anchor]
+            if anchor in blocked_anchors:
+                blocked += 1
+                try:
+                    _transition_publish_ref(
+                        ref, "rejected", last_error_code="remote_blocked"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            remote_accepted += 1
+            final_value = (
+                bool(desired_final)
+                if desired_final is not None
+                else bool(gen.get("is_final"))
+            )
+            observed = {
+                "shared": True,
+                "is_final": bool(gen.get("is_final")) if not settle_intents else final_value,
+            }
+            if not settle_intents:
+                observed["publish_confirmed"] = True
+            try:
+                transitioned = _transition_publish_ref(
+                    ref,
+                    "pending" if settle_intents else "prepared",
+                    observed_state=observed,
+                )
+                applied = bool(
+                    transitioned
+                    and repo.apply_share_state_intent_local(
+                        ref["intent_id"],
+                        ref["intent_seq"],
+                        ref["claim_token"],
+                        local_id=gid,
+                        shared=True,
+                        is_final=(final_value if settle_intents else bool(gen.get("is_final"))),
+                        final_by=(expected_final_by if settle_intents else gen.get("final_by")),
+                        shared_by=gen.get("worker_id") or DEFAULT_WORKER_ID,
+                        preservation_reason=("final" if final_value and settle_intents else "shared"),
+                        status=("converged" if settle_intents else "prepared"),
+                        observed_state=observed,
+                    )
+                )
+            except Exception:  # 로컬 SQLite 실패 — 서버 성공 응답은 유지하고 원장만 재시도 상태로 둔다.
+                applied = False
+            if not applied:
+                mirror_pending = True
+                try:
+                    if settle_intents:
+                        repo.mark_share_state_intent_waiting_local(
+                            ref["intent_id"], ref["intent_seq"], ref["claim_token"]
+                        )
+                    else:
+                        _transition_publish_ref(
+                            ref,
+                            "prepared",
+                            last_error_code="local_publish_mirror_failed",
+                            increment_fail_streak=True,
+                        )
+                except Exception:  # noqa: BLE001 — prepared/pending 잔존 자체가 안전망
+                    pass
+                continue
+            _touch_telemetry(gid)
+            published += 1
+
+        out: dict[str, Any] = {
+            "published": published,
+            "remote": {
+                key: resp.get(key)
+                for key in ("inserted", "updated", "unchanged", "skipped", "blocked")
+            },
+        }
+        if mirror_pending:
+            out["mirror_pending"] = True
+        if blocked:
+            out["blocked"] = blocked
+            out["message"] = (
+                f"{blocked}건은 서버가 반영하지 않았습니다(작성자가 다른 항목의 재공유 등) — "
+                "공유 표시를 남기지 않았습니다."
+            )
+        return PublishBundleResult(out, refs_by_anchor, remote_accepted)
 
 
 @router.post("/publish-to-shared")

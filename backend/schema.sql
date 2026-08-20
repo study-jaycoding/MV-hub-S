@@ -230,6 +230,45 @@ CREATE TABLE IF NOT EXISTS share (
     shared_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 프록시 공유/골드 권위 상태 → 로컬 미러 desired-state write-ahead 원장.
+CREATE TABLE IF NOT EXISTS share_state_intent (
+    intent_id            TEXT PRIMARY KEY,
+    server_origin        TEXT NOT NULL,
+    server_generation_id TEXT,
+    job_anchor           TEXT,
+    local_id             TEXT,
+    operation_kind       TEXT NOT NULL,
+    desired_shared       INTEGER NOT NULL CHECK(desired_shared IN (0,1)),
+    desired_final        INTEGER NOT NULL CHECK(desired_final IN (0,1)),
+    base_shared          INTEGER NOT NULL CHECK(base_shared IN (0,1)),
+    base_final           INTEGER NOT NULL CHECK(base_final IN (0,1)),
+    expected_final_by    TEXT,
+    intent_seq           INTEGER NOT NULL,
+    status               TEXT NOT NULL CHECK(status IN (
+        'prepared','pending','waiting_local','auth_required',
+        'converged','superseded','blocked','rejected')),
+    claim_token          TEXT,
+    lease_until          TEXT,
+    fail_streak          INTEGER NOT NULL DEFAULT 0,
+    next_retry_at        TEXT,
+    last_error_code      TEXT,
+    observed_state_json  TEXT,
+    observed_at          TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    last_attempt_at      TEXT,
+    CHECK (desired_final=0 OR desired_shared=1),
+    CHECK (server_generation_id IS NOT NULL OR job_anchor IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_uuid
+    ON share_state_intent(server_origin, server_generation_id)
+    WHERE server_generation_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssi_origin_anchor
+    ON share_state_intent(server_origin, job_anchor)
+    WHERE job_anchor IS NOT NULL AND server_generation_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ssi_due
+    ON share_state_intent(status, next_retry_at);
+
 -- 히스토리(parent_gen → child_gen). relation: 'derived'(재생성/가져오기) | 'reference'(@소스로 생성)
 -- ※ relation 컬럼·유니크 인덱스(idx_history_edge)는 _migrate 에서 생성한다(기존 DB ALTER 순서 때문).
 -- ※ 옛 이름 lineage → history 리네임은 db._pre_migrate 가 executescript 이전에 처리(빈 테이블 충돌 회피).
