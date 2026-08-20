@@ -1,12 +1,9 @@
 import type { AssetMeta, AssetNode } from "../../types";
 import { FolderTree } from "./FolderTree";
-import { INTERNAL_COMBINED_PROJECT, type AssetTypeFilter } from "./assetsViewModel";
+import type { AssetTypeFilter } from "./assetsViewModel";
 
 export function AssetsSidebar({
   project,
-  projects,
-  linkedProjects,
-  onProjectChange,
   typeFilter,
   dir,
   meta,
@@ -19,9 +16,6 @@ export function AssetsSidebar({
   onSelectDir,
 }: {
   project: string;
-  projects: string[];
-  linkedProjects: Set<string>;
-  onProjectChange: (project: string) => void;
   typeFilter: AssetTypeFilter;
   dir: string;
   meta: Record<string, AssetMeta>;
@@ -33,35 +27,10 @@ export function AssetsSidebar({
   onToggleDir: (path: string) => void;
   onSelectDir: (path: string) => void;
 }) {
-  // 타입 필터 행(All/Image/Video/Audio)은 하단 바의 4점 슬라이더로 대체됐다(Jay 요청) —
-  // 프로젝트 선택 드롭다운(헤더에서 이동)이 폴더 트리 위에 온다. typeFilter 는 트리 배지 계산용.
+  // 타입 필터 행(All/Image/Video/Audio)은 하단 바의 4점 슬라이더로 대체됐고(Jay 요청),
+  // 프로젝트 선택 드롭다운은 헤더 경로 첫 자리로 갔다. typeFilter 는 트리 배지 계산용.
   return (
     <aside className="assets-tree">
-      <select
-        className={
-          "assets-project"
-          + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
-          + (linkedProjects.has(project) ? " linked" : "")
-        }
-        value={project}
-        onChange={(e) => onProjectChange(e.target.value)}
-      >
-        {projects.map((p) => (
-          <option
-            key={p}
-            value={p}
-            className={
-              p === INTERNAL_COMBINED_PROJECT
-                ? "internal"
-                : linkedProjects.has(p)
-                  ? "linked"
-                  : undefined
-            }
-          >
-            {p}
-          </option>
-        ))}
-      </select>
       <button
         type="button"
         className={

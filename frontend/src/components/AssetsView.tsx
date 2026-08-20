@@ -718,6 +718,35 @@ export function AssetsView({ onInfo, onPreview }: Props) {
                 : "")
           }
         >
+          {/* 경로 첫 자리 = 프로젝트 선택 드롭다운(사이드바에서 이동, Jay 요청) */}
+          <select
+            className={
+              "assets-project"
+              + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
+              + (linkedProjects.has(project) ? " linked" : "")
+            }
+            value={project}
+            onChange={(e) => {
+              setProject(e.target.value);
+              setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
+            }}
+          >
+            {projects.map((p) => (
+              <option
+                key={p}
+                value={p}
+                className={
+                  p === INTERNAL_COMBINED_PROJECT
+                    ? "internal"
+                    : linkedProjects.has(p)
+                      ? "linked"
+                      : undefined
+                }
+              >
+                {p}
+              </option>
+            ))}
+          </select>
           {searchActive ? (
             <span className="crumb-search">
               {activeTags.size
@@ -732,17 +761,14 @@ export function AssetsView({ onInfo, onPreview }: Props) {
               필터{query.trim() && !query.trim().startsWith("#") ? `: ${query.trim()}` : ""}
             </span>
           ) : (
-            <>
-              <button onClick={() => setDir("")}>{project}</button>
-              {breadcrumb.map((segment, index) => (
-                <span key={index}>
-                  <span className="crumb-sep">/</span>
-                  <button onClick={() => setDir(breadcrumb.slice(0, index + 1).join("/"))}>
-                    {segment}
-                  </button>
-                </span>
-              ))}
-            </>
+            breadcrumb.map((segment, index) => (
+              <span key={index}>
+                <span className="crumb-sep">/</span>
+                <button onClick={() => setDir(breadcrumb.slice(0, index + 1).join("/"))}>
+                  {segment}
+                </button>
+              </span>
+            ))
           )}
         </div>
         {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
@@ -772,12 +798,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
       <div className="assets-body">
         <AssetsSidebar
           project={project}
-          projects={projects}
-          linkedProjects={linkedProjects}
-          onProjectChange={(p) => {
-            setProject(p);
-            setDir(""); // 사용자가 프로젝트를 바꾸면 루트로
-          }}
           typeFilter={typeFilter}
           dir={dir}
           meta={meta}
