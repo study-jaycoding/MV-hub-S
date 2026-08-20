@@ -7,11 +7,11 @@ export function timestampMs(s: string): number {
   return new Date(normalized).getTime();
 }
 
-export function fmtWhen(s: string): string {
+export function fmtWhen(s: string, locale = "ko-KR"): string {
   const d = new Date(timestampMs(s));
   if (isNaN(d.getTime())) return s;
-  return d.toLocaleString("ko-KR", {
-    month: "numeric",
+  return d.toLocaleString(locale, {
+    month: locale.startsWith("ko") ? "numeric" : "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",

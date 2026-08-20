@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { fmtWhen, timestampMs } from "../lib/format";
+import { getLang, useT } from "../lib/i18n";
 import { isRouteMissing } from "../lib/http";
 import { displayThumb, hideBrokenImg, showLoadedImg } from "../lib/media";
 import {
@@ -44,6 +45,9 @@ export function NotificationCenter({
   onOpenComment: (genId: string) => void;
   onChanged: () => void;
 }) {
+  const t = useT();
+  // 알림 본문(코멘트 내용)은 사용자 데이터라 그대로 두고, UI 문구·날짜만 언어를 따른다.
+  const dateLocale = getLang() === "en" ? "en-US" : "ko-KR";
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<NotificationTab>("all");
   const [category, setCategory] = useState<NotificationCategory>("all");
@@ -78,7 +82,7 @@ export function NotificationCenter({
 
   const loadComments = useCallback(async (showLoading = false) => {
     if (!commentsSupportedRef.current) {
-      if (showLoading) setError("알림 목록은 백엔드 업데이트 후 사용할 수 있습니다.");
+      if (showLoading) setError(t("알림 목록은 백엔드 업데이트 후 사용할 수 있습니다."));
       return;
     }
     const seq = ++commentsLoadSeqRef.current;
@@ -93,32 +97,33 @@ export function NotificationCenter({
     } catch (loadError) {
       if (seq !== commentsLoadSeqRef.current) return;
       if (isRouteMissing(loadError)) commentsSupportedRef.current = false;
-      if (showLoading) setError("코멘트 알림을 불러오지 못했습니다.");
+      if (showLoading) setError(t("코멘트 알림을 불러오지 못했습니다."));
     } finally {
       if (seq === commentsLoadSeqRef.current) setLoading(false);
     }
-  }, [commentUnreadCount]);
+  }, [commentUnreadCount, t]);
 
-  // 기존 stats 갱신 흐름의 안전망: 메인 창이 보일 때만 60초마다 작은 목록 API를 확인한다.
-  useEffect(() => {
-    void loadComments(false);
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") void loadComments(false);
-    }, 60_000);
-    return () => window.clearInterval(timer);
-  }, [loadComments]);
-
-  useEffect(() => {
-    let alive = true;
+  const loadReleaseItems = useCallback(() => {
     getReleaseUpdateStatus(true)
-      .then((status) => {
-        if (alive) setReleaseItems(syncReleaseNotifications(status, window.localStorage));
-      })
+      .then((status) => setReleaseItems(syncReleaseNotifications(status, window.localStorage)))
       .catch(() => {
         // 공유 서버 직결·개발 설치본처럼 로컬 업데이트 API를 쓸 수 없는 화면은 조용히 제외한다.
       });
-    return () => { alive = false; };
   }, []);
+
+  // 기존 stats 갱신 흐름의 안전망: 메인 창이 보일 때만 60초마다 코멘트·업데이트 소식을 확인한다.
+  // 업데이트 알림도 여기서 함께 갱신해야 시작 시 한 번 실패해도 벨 배지가 시스템 소식을 놓치지 않는다.
+  useEffect(() => {
+    void loadComments(false);
+    loadReleaseItems();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") {
+        void loadComments(false);
+        loadReleaseItems();
+      }
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadComments, loadReleaseItems]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -147,10 +152,20 @@ export function NotificationCenter({
 
   const openPanel = () => {
     setOpen((value) => {
-      if (!value) void loadComments(true);
+      if (!value) {
+        void loadComments(true);
+        loadReleaseItems();
+      }
       return !value;
     });
   };
+
+  // 업데이트 알림 본문은 저장된 한국어 원문 대신 표시 시점 언어로 조립한다(버전은 치환).
+  const releaseText = (item: ReleaseNotification) =>
+    (item.kind === "available"
+      ? t("새 버전 {v} 사용 가능")
+      : t("{v}로 업데이트되었습니다")
+    ).replace("{v}", `v${item.version}`);
 
   const openComment = (item: NotificationComment) => {
     const wasUnread = item.unread;
@@ -193,13 +208,13 @@ export function NotificationCenter({
 
   const runUpdate = async (item: ReleaseNotification) => {
     setConfirmUpdateId(null);
-    setUpdateRun({ active: true, message: "업데이트 실행기를 준비하는 중…" });
+    setUpdateRun({ active: true, message: t("업데이트 실행기를 준비하는 중…") });
     try {
       await startReleaseUpdate();
     } catch (startError) {
       setUpdateRun({
         active: false,
-        message: `업데이트를 시작하지 못했습니다: ${String((startError as Error)?.message || startError)}`,
+        message: `${t("업데이트를 시작하지 못했습니다")}: ${String((startError as Error)?.message || startError)}`,
       });
       return;
     }
@@ -208,7 +223,10 @@ export function NotificationCenter({
     updatePollRef.current = window.setInterval(() => {
       if (Date.now() - startedAt > 15 * 60_000) {
         stopUpdatePoll();
-        setUpdateRun({ active: false, message: "업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션에서 상태를 확인하세요." });
+        setUpdateRun({
+          active: false,
+          message: t("업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션에서 상태를 확인하세요."),
+        });
         return;
       }
       getReleaseUpdateStatus()
@@ -222,8 +240,11 @@ export function NotificationCenter({
             active: false,
             message:
               status.state === "complete"
-                ? `v${item.version} 업데이트가 완료됐습니다. 새 버전으로 다시 시작됩니다.`
-                : releaseUpdateMessage(status) || "업데이트 상태를 확인하세요.",
+                ? t("{v} 업데이트가 완료됐습니다. 새 버전으로 다시 시작됩니다.").replace(
+                    "{v}",
+                    `v${item.version}`,
+                  )
+                : releaseUpdateMessage(status) || t("업데이트 상태를 확인하세요."),
           });
         })
         .catch(() => {
@@ -249,7 +270,7 @@ export function NotificationCenter({
         setUnreadComments(0);
         onChanged();
       } catch {
-        setError("코멘트 알림을 모두 읽음 처리하지 못했습니다.");
+        setError(t("코멘트 알림을 모두 읽음 처리하지 못했습니다."));
       }
     }
     setBusy(false);
@@ -261,9 +282,9 @@ export function NotificationCenter({
         type="button"
         className={"notification-bell" + (open ? " on" : "")}
         onClick={openPanel}
-        aria-label={unreadTotal ? `알림 ${unreadTotal}개` : "알림"}
+        aria-label={unreadTotal ? `${t("알림 센터")} ${unreadTotal}` : t("알림 센터")}
         aria-expanded={open}
-        title="알림 센터"
+        title={t("알림 센터")}
       >
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
@@ -275,7 +296,7 @@ export function NotificationCenter({
       </button>
 
       {open && (
-        <section className="notification-panel" aria-label="알림 센터">
+        <section className="notification-panel" aria-label={t("알림 센터")}>
           <header className="notification-head">
             {/* 카테고리 드롭다운 — 전체 알림 / 코멘트 / 시스템(업데이트) */}
             <div className="notification-cat">
@@ -285,7 +306,7 @@ export function NotificationCenter({
                 aria-expanded={categoryOpen}
                 onClick={() => setCategoryOpen((value) => !value)}
               >
-                {NOTIFICATION_CATEGORY_LABELS[category]} <i aria-hidden="true">{categoryOpen ? "▴" : "▾"}</i>
+                {t(NOTIFICATION_CATEGORY_LABELS[category])} <i aria-hidden="true">{categoryOpen ? "▴" : "▾"}</i>
               </button>
               {categoryOpen && (
                 <div className="notification-cat-menu" role="menu">
@@ -300,7 +321,7 @@ export function NotificationCenter({
                         setCategoryOpen(false);
                       }}
                     >
-                      {NOTIFICATION_CATEGORY_LABELS[value]}
+                      {t(NOTIFICATION_CATEGORY_LABELS[value])}
                       {category === value && <span aria-hidden="true">✓</span>}
                     </button>
                   ))}
@@ -313,18 +334,20 @@ export function NotificationCenter({
               disabled={!unreadTotal || busy}
               onClick={() => void markAllRead()}
             >
-              {busy ? "처리 중…" : "모두 읽음"}
+              {busy ? t("처리 중…") : t("모두 읽음")}
             </button>
           </header>
           <div className="notification-tabs" role="tablist">
-            <button className={tab === "all" ? "on" : ""} onClick={() => setTab("all")}>전체</button>
+            <button className={tab === "all" ? "on" : ""} onClick={() => setTab("all")}>
+              {t("전체")}
+            </button>
             <button className={tab === "unread" ? "on" : ""} onClick={() => setTab("unread")}>
-              안읽음 {unreadTotal}
+              {t("안읽음")} {unreadTotal}
             </button>
           </div>
           <div className="notification-list">
             {loading && !allItems.length ? (
-              <div className="notification-empty">알림을 불러오는 중…</div>
+              <div className="notification-empty">{t("알림을 불러오는 중…")}</div>
             ) : visibleItems.length ? (
               visibleItems.map((item) => item.source === "comment" ? (
                 <button
@@ -346,7 +369,7 @@ export function NotificationCenter({
                   <span className="notification-copy">
                     <span className="notification-text">{item.text}</span>
                     <span className="notification-meta">
-                      {item.author_name || "팀원"} · {fmtWhen(item.created_at)}
+                      {item.author_name || t("팀원")} · {fmtWhen(item.created_at, dateLocale)}
                     </span>
                   </span>
                   {item.unread && <span className="notification-unread-dot" aria-label="안읽음" />}
@@ -360,19 +383,23 @@ export function NotificationCenter({
                   >
                     <span className="notification-thumb notification-update-icon" aria-hidden="true">↻</span>
                     <span className="notification-copy">
-                      <span className="notification-text">{item.text}</span>
-                      <span className="notification-meta">시스템 · {fmtWhen(item.created_at)}</span>
+                      <span className="notification-text">{releaseText(item)}</span>
+                      <span className="notification-meta">
+                        {t("시스템")} · {fmtWhen(item.created_at, dateLocale)}
+                      </span>
                     </span>
                     {item.unread && <span className="notification-unread-dot" aria-label="안읽음" />}
                   </button>
                   {confirmUpdateId === item.id && (
-                    <div className="notification-confirm" role="alertdialog" aria-label="업데이트 확인">
-                      <span>v{item.version}(으)로 업데이트하시겠습니까?</span>
+                    <div className="notification-confirm" role="alertdialog" aria-label={t("알림 센터")}>
+                      <span>{t("{v}(으)로 업데이트하시겠습니까?").replace("{v}", `v${item.version}`)}</span>
                       <span className="notification-confirm-actions">
                         <button type="button" className="yes" onClick={() => void runUpdate(item)}>
-                          예, 업데이트
+                          {t("예, 업데이트")}
                         </button>
-                        <button type="button" onClick={() => setConfirmUpdateId(null)}>나중에</button>
+                        <button type="button" onClick={() => setConfirmUpdateId(null)}>
+                          {t("나중에")}
+                        </button>
                       </span>
                     </div>
                   )}
@@ -380,13 +407,16 @@ export function NotificationCenter({
               ))
             ) : (
               <div className="notification-empty">
-                {tab === "unread" ? "새 알림이 없습니다." : "최근 알림이 없습니다."}
+                {tab === "unread" ? t("새 알림이 없습니다.") : t("최근 알림이 없습니다.")}
               </div>
             )}
           </div>
           {hiddenUnreadComments > 0 && (
             <div className="notification-range-hint">
-              목록 범위 밖 미확인 코멘트 {hiddenUnreadComments}개 · 모두 읽음으로 정리할 수 있습니다.
+              {t("목록 범위 밖 미확인 코멘트 {n}개 · 모두 읽음으로 정리할 수 있습니다.").replace(
+                "{n}",
+                String(hiddenUnreadComments),
+              )}
             </div>
           )}
           {updateRun && (

@@ -16,6 +16,36 @@ const EN: Record<string, string> = {
   "히스토리 보기": "History view",
   "관리자 — 멤버 등급·프로젝트 관리": "Admin — roles & projects",
   "Assets (구성) — 별도 창": "Assets — separate window",
+  // 알림 센터 — 알림 본문(코멘트 내용)은 사용자 데이터라 번역하지 않고, UI 문구만 치환한다.
+  "알림 센터": "Notifications",
+  "전체 알림": "All notifications",
+  "코멘트": "Comments",
+  "시스템": "System",
+  "안읽음": "Unread",
+  "모두 읽음": "Mark all as read",
+  "처리 중…": "Working…",
+  "알림을 불러오는 중…": "Loading notifications…",
+  "새 알림이 없습니다.": "No new notifications.",
+  "최근 알림이 없습니다.": "No recent notifications.",
+  "팀원": "Teammate",
+  "새 버전 {v} 사용 가능": "New version {v} available",
+  "{v}로 업데이트되었습니다": "Updated to {v}",
+  "{v}(으)로 업데이트하시겠습니까?": "Update to {v} now?",
+  "예, 업데이트": "Yes, update",
+  "나중에": "Later",
+  "업데이트 실행기를 준비하는 중…": "Preparing the updater…",
+  "업데이트를 시작하지 못했습니다": "Could not start the update",
+  "업데이트 확인이 오래 걸립니다 — 설정의 업데이트 섹션에서 상태를 확인하세요.":
+    "The update is taking long — check the update section in Settings.",
+  "{v} 업데이트가 완료됐습니다. 새 버전으로 다시 시작됩니다.":
+    "Updated to {v}. Restarting on the new version.",
+  "업데이트 상태를 확인하세요.": "Check the update status.",
+  "알림 목록은 백엔드 업데이트 후 사용할 수 있습니다.":
+    "The notification list needs a backend update.",
+  "코멘트 알림을 불러오지 못했습니다.": "Could not load comment notifications.",
+  "코멘트 알림을 모두 읽음 처리하지 못했습니다.": "Could not mark all comments as read.",
+  "목록 범위 밖 미확인 코멘트 {n}개 · 모두 읽음으로 정리할 수 있습니다.":
+    "{n} unread comments outside this list · use Mark all as read.",
   // 설정
   "설정": "Settings",
   "모션": "Motion",
