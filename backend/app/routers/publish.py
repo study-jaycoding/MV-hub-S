@@ -621,7 +621,7 @@ def publish_bundle_to_server(
                     "pending" if settle_intents else "prepared",
                     observed_state=observed,
                 )
-                applied = bool(
+                applied = (
                     transitioned
                     and repo.apply_share_state_intent_local(
                         ref["intent_id"],
@@ -636,6 +636,7 @@ def publish_bundle_to_server(
                         status=("converged" if settle_intents else "prepared"),
                         observed_state=observed,
                     )
+                    == repo.SHARE_STATE_APPLY_APPLIED
                 )
             except Exception:  # 로컬 SQLite 실패 — 서버 성공 응답은 유지하고 원장만 재시도 상태로 둔다.
                 applied = False

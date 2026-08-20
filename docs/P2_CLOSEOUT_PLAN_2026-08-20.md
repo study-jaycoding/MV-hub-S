@@ -29,10 +29,11 @@ A9 archived 구분(배치 8)· A13 이벤트 루프 동기 SQLite(배치 4).
 - ✅P1-4. **잠금 키 드리프트** (55a878bd): _stable_proxy_identity_lock — 잠금 후 재매핑이
   잠금 키와 다르면 원장 prepare 전 409 안전 실패(자동 재잠금 대신), 번들은 부분집합 검사.
   ※주: 55a878bd 는 apply --3way 스테이징 특성으로 P1-1~4 가 한 커밋에 합쳐짐(내역은 이 장부가 권위).
-- P1-5. **원장 위생 상태표** (B4, feat/share-reconciliation): "로컬 없음+서버 missing=종결"
-  단일 규칙 금지 — 원격 전용 카드(local 불필요)/로컬 소실(전환·유실 구분)/prepared+base 일치
-  (rejected)/서버 존재·로컬만 없음(materialize 기회 보존) 상태표 + 유한 유예 후
-  orphaned 터미널 + intent_seq CAS 유지. 설계 합의 후 구현.
+- ✅P1-5. **원장 위생 상태표** (2026-08-20 — 클로드 설계·코덱스 구현·클로드 검토):
+  apply 반환 3값화(applied/cas_lost/no_target). 원격 전용 행=서버 관측 즉시 종결
+  (일치 converged·prepared+base rejected·불일치 superseded), 기존 local_id 유실=5회
+  유예 후 rejected(코덱스 이의 채택 — 서버 공유 상태 상시 sync 부재로 행 부활 기회 보존),
+  CAS 경합은 실패 카운트 없이 분리. 스키마 무변경·전 전이 CAS 유지. list_due 리터럴 정리.
 
 ### B-P2 배치 1 (백엔드 위생, 코덱스 → 클로드)
 - 영구 409 행별 dead-letter 경로(A2 잔여 — 일괄 격리 금지, 항목별 ACK/관리 격리)

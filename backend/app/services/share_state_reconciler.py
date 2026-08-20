@@ -44,6 +44,7 @@ _INTERVAL_SECONDS = max(
 _BATCH_LIMIT = 10
 _LEASE_SECONDS = 120
 _MAX_BACKOFF_SECONDS = 600
+_LOCAL_TARGET_LOST_RETRY_LIMIT = 5
 
 
 class _RemoteObservationError(RuntimeError):
@@ -256,8 +257,8 @@ def _apply_observed_local(
     observed: Mapping[str, Any],
     *,
     status: str,
-) -> bool:
-    applied = repo.apply_share_state_intent_local(
+) -> str:
+    result = repo.apply_share_state_intent_local(
         intent["intent_id"],
         intent["intent_seq"],
         claim_token,
@@ -274,10 +275,10 @@ def _apply_observed_local(
         status=status,
         observed_state=observed,
     )
-    if applied:
+    if result == repo.SHARE_STATE_APPLY_APPLIED:
         saved = repo.get_share_state_intent(str(intent["intent_id"])) or {}
         touch_generation_telemetry(saved.get("local_id"))
-    return applied
+    return result
 
 
 def _terminal_status(intent: Mapping[str, Any], observed: Mapping[str, Any]) -> str:
@@ -295,6 +296,51 @@ def _terminal_status(intent: Mapping[str, Any], observed: Mapping[str, Any]) -> 
     return "superseded"
 
 
+def _settle_missing_local_target(
+    intent: Mapping[str, Any],
+    claim_token: str,
+    observed: Mapping[str, Any],
+) -> str:
+    """대상 부재를 경합과 분리해 재시도하거나 관측값만 기록하고 종결한다."""
+    if intent.get("local_id"):
+        # 기존 로컬 행은 계정 DB 전환·일시 유실일 수 있어 정해진 횟수만 복구를 기다린다.
+        if int(intent.get("fail_streak") or 0) < _LOCAL_TARGET_LOST_RETRY_LIMIT:
+            transitioned = repo.transition_share_state_intent(
+                intent["intent_id"],
+                intent["intent_seq"],
+                claim_token,
+                "waiting_local",
+                observed_state=observed,
+                next_retry_at=_next_retry_at(int(intent.get("fail_streak") or 0)),
+                last_error_code="local_target_lost",
+                increment_fail_streak=True,
+            )
+            return (
+                "waiting_local"
+                if transitioned
+                else repo.SHARE_STATE_APPLY_CAS_LOST
+            )
+        terminal_status = "rejected"
+        error_code = "local_target_lost"
+    else:
+        terminal_status = _terminal_status(intent, observed)
+        error_code = (
+            "local_mirror_skipped_no_target"
+            if terminal_status == "converged"
+            else "local_target_missing"
+        )
+
+    transitioned = repo.transition_share_state_intent(
+        intent["intent_id"],
+        intent["intent_seq"],
+        claim_token,
+        terminal_status,
+        observed_state=observed,
+        last_error_code=error_code,
+    )
+    return terminal_status if transitioned else repo.SHARE_STATE_APPLY_CAS_LOST
+
+
 async def _apply_or_retry(
     intent: Mapping[str, Any],
     claim_token: str,
@@ -303,7 +349,7 @@ async def _apply_or_retry(
     status: str,
 ) -> str:
     try:
-        applied = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             _apply_observed_local,
             intent,
             claim_token,
@@ -313,9 +359,19 @@ async def _apply_or_retry(
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 — 로컬 장애는 원장을 남겨 다음 사이클에서 재시도한다.
-        applied = False
-    if applied:
+        result = None
+    if result == repo.SHARE_STATE_APPLY_APPLIED:
         return status
+    if result == repo.SHARE_STATE_APPLY_CAS_LOST:
+        # 새 의도나 다른 claim이 이긴 정상 경합이다. 낡은 워커가 실패 횟수를 올리지 않는다.
+        return repo.SHARE_STATE_APPLY_CAS_LOST
+    if result == repo.SHARE_STATE_APPLY_NO_TARGET:
+        return await asyncio.to_thread(
+            _settle_missing_local_target,
+            intent,
+            claim_token,
+            observed,
+        )
     await asyncio.to_thread(
         _mark_retry,
         intent,

@@ -189,6 +189,147 @@ def test_restart_cycle_converges_prepared_and_waiting_local_rows(
     assert repo.get_share_state_intent(waiting["intent_id"])["status"] == "converged"
 
 
+@pytest.mark.parametrize(
+    ("ledger_status", "observed", "expected_status", "expected_error"),
+    [
+        (
+            "prepared",
+            {"id": "remote-only", "shared": True, "is_final": False},
+            "converged",
+            "local_mirror_skipped_no_target",
+        ),
+        (
+            "prepared",
+            {"id": "remote-only", "shared": False, "is_final": False},
+            "rejected",
+            "local_target_missing",
+        ),
+        (
+            "pending",
+            {"id": "remote-only", "shared": False, "is_final": False},
+            "superseded",
+            "local_target_missing",
+        ),
+    ],
+    ids=["desired", "prepared-at-base", "other-observation"],
+)
+def test_remote_only_no_target_closes_from_server_observation(
+    isolated_content_db,
+    monkeypatch,
+    ledger_status,
+    observed,
+    expected_status,
+    expected_error,
+):
+    unrelated_id = _seed_generation(
+        "local-unrelated", "job-unrelated", shared=True, final=True
+    )
+    ref = repo.prepare_share_state_intent(
+        "http://share.example.test",
+        job_anchor="remote-only",
+        operation_kind="publish",
+        desired_shared=True,
+        desired_final=False,
+        base_shared=False,
+        base_final=False,
+    )
+    if ledger_status != "prepared":
+        assert repo.transition_share_state_intent(
+            ref["intent_id"],
+            ref["intent_seq"],
+            ref["claim_token"],
+            ledger_status,
+        )
+    _release(ref)
+    _patch_observer(monkeypatch, lambda *_args: dict(observed))
+
+    counts = asyncio.run(
+        reconciler.run_share_state_reconciliation_cycle("remote-only-worker")
+    )
+
+    assert counts[expected_status] == 1
+    row = repo.get_share_state_intent(ref["intent_id"])
+    assert row["status"] == expected_status
+    assert row["last_error_code"] == expected_error
+    assert json.loads(row["observed_state_json"]) == observed
+    unrelated = repo.get_generation(unrelated_id)
+    assert unrelated["shared"] is True
+    assert unrelated["is_final"] is True
+
+
+@pytest.mark.parametrize(
+    ("fail_streak", "expected_status", "expected_fail_streak"),
+    [(4, "waiting_local", 5), (5, "rejected", 5)],
+    ids=["retry-before-limit", "reject-at-limit"],
+)
+def test_lost_local_target_has_bounded_retry(
+    isolated_content_db,
+    monkeypatch,
+    fail_streak,
+    expected_status,
+    expected_fail_streak,
+):
+    ref = repo.prepare_share_state_intent(
+        "http://share.example.test",
+        job_anchor="remote-lost",
+        local_id="local-lost",
+        operation_kind="publish",
+        desired_shared=True,
+        desired_final=False,
+        base_shared=False,
+        base_final=False,
+    )
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE share_state_intent SET status='waiting_local', fail_streak=? "
+            "WHERE intent_id=?",
+            (fail_streak, ref["intent_id"]),
+        )
+    _release(ref)
+    observed = {
+        "id": "remote-lost",
+        "shared": True,
+        "is_final": False,
+    }
+    _patch_observer(monkeypatch, lambda *_args: dict(observed))
+
+    counts = asyncio.run(
+        reconciler.run_share_state_reconciliation_cycle("lost-local-worker")
+    )
+
+    assert counts[expected_status] == 1
+    row = repo.get_share_state_intent(ref["intent_id"])
+    assert row["status"] == expected_status
+    assert row["fail_streak"] == expected_fail_streak
+    assert row["last_error_code"] == "local_target_lost"
+    assert json.loads(row["observed_state_json"]) == observed
+    assert (row["next_retry_at"] is not None) is (expected_status == "waiting_local")
+
+
+def test_apply_cas_lost_does_not_schedule_local_retry():
+    intent = {"intent_id": "stale-intent", "intent_seq": 1, "fail_streak": 0}
+    observed = {"id": "remote", "shared": True, "is_final": False}
+    with (
+        mock.patch.object(
+            reconciler,
+            "_apply_observed_local",
+            return_value=repo.SHARE_STATE_APPLY_CAS_LOST,
+        ),
+        mock.patch.object(reconciler, "_mark_retry") as mark_retry,
+    ):
+        result = asyncio.run(
+            reconciler._apply_or_retry(
+                intent,
+                "stale-claim",
+                observed,
+                status="converged",
+            )
+        )
+
+    assert result == repo.SHARE_STATE_APPLY_CAS_LOST
+    mark_retry.assert_not_called()
+
+
 def test_remote_observation_supersedes_stale_finalize_without_blind_replay(
     isolated_content_db, monkeypatch
 ):

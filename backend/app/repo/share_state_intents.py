@@ -37,6 +37,9 @@ SHARE_STATE_STATUSES = frozenset(
 SHARE_STATE_TERMINAL_STATUSES = frozenset(
     {"converged", "superseded", "blocked", "rejected"}
 )
+SHARE_STATE_APPLY_APPLIED = "applied"
+SHARE_STATE_APPLY_CAS_LOST = "cas_lost"
+SHARE_STATE_APPLY_NO_TARGET = "no_target"
 _CLAIMABLE_STATUSES = ("prepared", "pending", "waiting_local", "auth_required")
 _UNSET = object()
 
@@ -475,8 +478,6 @@ def list_due_share_state_intents(
     *, limit: int = 10, now: Optional[str] = None
 ) -> list[dict[str, Any]]:
     """재시도 시각이 됐고 claim이 비었거나 만료된 비종결 행을 오래된 순으로 조회한다."""
-    due_at = now or "9999-12-31 23:59:59"
-    lease_at = now or "datetime('now')"
     with get_connection() as conn:
         if now is None:
             rows = conn.execute(
@@ -492,7 +493,7 @@ def list_due_share_state_intents(
                 "AND (next_retry_at IS NULL OR next_retry_at<=?) "
                 "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=?) "
                 "ORDER BY COALESCE(next_retry_at, created_at), intent_seq LIMIT ?",
-                (*_CLAIMABLE_STATUSES, due_at, lease_at, max(int(limit), 1)),
+                (*_CLAIMABLE_STATUSES, now, now, max(int(limit), 1)),
             ).fetchall()
     return [dict(row) for row in rows]
 
@@ -640,11 +641,12 @@ def apply_share_state_intent_local(
     preservation_reason: Optional[str] = None,
     status: str = "converged",
     observed_state: Optional[Mapping[str, Any]] = None,
-) -> bool:
+) -> str:
     """로컬 ``{shared, final}`` 적용과 원장 상태 전이를 한 트랜잭션 CAS로 수행한다.
 
     CAS가 먼저 확인된 뒤 BEGIN IMMEDIATE가 끝날 때까지 새 seq UPSERT가 들어올 수 없다. 따라서
     옛 워커는 로컬을 한 줄도 바꾸지 못하고, 적용 중 예외가 나면 원장 전이까지 함께 롤백된다.
+    반환값으로 정상 적용, CAS 경합 패배, 로컬 대상 부재를 구분한다.
     """
     if is_final and not shared:
         raise ValueError("최종 상태는 공유 상태여야 합니다")
@@ -662,7 +664,7 @@ def apply_share_state_intent_local(
             ).fetchone()
             if intent is None:
                 conn.execute("ROLLBACK")
-                return False
+                return SHARE_STATE_APPLY_CAS_LOST
             target = None
             requested_local_id = _clean_optional(local_id) or intent["local_id"]
             if requested_local_id:
@@ -686,7 +688,7 @@ def apply_share_state_intent_local(
                         break
             if target is None:
                 conn.execute("ROLLBACK")
-                return False
+                return SHARE_STATE_APPLY_NO_TARGET
 
             target_id = target["id"]
             if shared:
@@ -754,9 +756,9 @@ def apply_share_state_intent_local(
             )
             if cursor.rowcount != 1:
                 conn.execute("ROLLBACK")
-                return False
+                return SHARE_STATE_APPLY_CAS_LOST
             conn.execute("COMMIT")
-            return True
+            return SHARE_STATE_APPLY_APPLIED
         except Exception:
             conn.execute("ROLLBACK")
             raise

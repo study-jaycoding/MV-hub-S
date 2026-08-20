@@ -228,7 +228,7 @@ def _mirror_proxy_success(
             local_id=local_id,
             observed_state=observed,
         )
-        applied = bool(
+        applied = (
             transitioned
             and repo.apply_share_state_intent_local(
                 ref["intent_id"],
@@ -242,6 +242,7 @@ def _mirror_proxy_success(
                 preservation_reason=preservation_reason,
                 observed_state=observed,
             )
+            == repo.SHARE_STATE_APPLY_APPLIED
         )
     except Exception:
         applied = False

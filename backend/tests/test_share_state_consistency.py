@@ -232,7 +232,7 @@ def test_stale_seq_cannot_apply_local_state_or_close_new_intent(isolated_content
         local_id=gen_id,
         shared=True,
         is_final=False,
-    ) is False
+    ) == repo.SHARE_STATE_APPLY_CAS_LOST
     assert repo.get_generation(gen_id)["shared"] is False
     assert repo.apply_share_state_intent_local(
         current["intent_id"],
@@ -241,8 +241,44 @@ def test_stale_seq_cannot_apply_local_state_or_close_new_intent(isolated_content
         local_id=gen_id,
         shared=False,
         is_final=False,
-    ) is True
+    ) == repo.SHARE_STATE_APPLY_APPLIED
     assert repo.get_share_state_intent(current["intent_id"])["status"] == "converged"
+
+
+def test_apply_distinguishes_no_target_without_mutating_ledger_or_local(
+    isolated_content_db,
+):
+    unrelated_id = _seed_generation(
+        generation_id="local-unrelated",
+        job_id="job-unrelated",
+        shared=True,
+        final=True,
+    )
+    ref = repo.prepare_share_state_intent(
+        "http://share.example.test",
+        job_anchor="remote-only",
+        operation_kind="unpublish",
+        desired_shared=False,
+        desired_final=False,
+        base_shared=True,
+        base_final=False,
+    )
+
+    result = repo.apply_share_state_intent_local(
+        ref["intent_id"],
+        ref["intent_seq"],
+        ref["claim_token"],
+        shared=False,
+        is_final=False,
+    )
+
+    assert result == repo.SHARE_STATE_APPLY_NO_TARGET
+    saved = repo.get_share_state_intent(ref["intent_id"])
+    assert saved["status"] == "prepared"
+    assert saved["claim_token"] == ref["claim_token"]
+    unrelated = repo.get_generation(unrelated_id)
+    assert unrelated["shared"] is True
+    assert unrelated["is_final"] is True
 
 
 def test_generation_action_lock_serializes_cross_mutations():
@@ -423,6 +459,34 @@ def test_publish_local_failure_returns_mirror_pending_and_waiting_ledger(isolate
     assert repo.get_generation(gen_id)["shared"] is False
 
 
+def test_publish_no_target_returns_mirror_pending_and_waiting_ledger(isolated_content_db):
+    gen_id = _seed_generation()
+    remote_response = {
+        "inserted": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "skipped": 0,
+        "blocked": 0,
+        "blocked_ids": [],
+    }
+    with (
+        mock.patch.object(publish, "_http_json", return_value=(200, remote_response)),
+        mock.patch.object(
+            publish.repo,
+            "apply_share_state_intent_local",
+            return_value=repo.SHARE_STATE_APPLY_NO_TARGET,
+        ),
+    ):
+        result = publish.publish_bundle_to_server([gen_id])
+
+    assert result["mirror_pending"] is True
+    assert result["published"] == 0
+    row = _ledger_rows()[0]
+    assert row["status"] == "waiting_local"
+    assert row["fail_streak"] == 1
+    assert repo.get_generation(gen_id)["shared"] is False
+
+
 def test_blocked_bundle_id_only_cancels_matching_intent(isolated_content_db):
     first = _seed_generation(generation_id="local-1", job_id="job-1")
     second = _seed_generation(generation_id="local-2", job_id="job-2")
@@ -502,6 +566,35 @@ def test_unfinalize_local_failure_is_200_mirror_pending_without_backout(isolated
     assert response.status_code == 200
     assert json.loads(response.body)["mirror_pending"] is True
     assert remote_calls == ["/api/generations/server-1/unfinalize"]
+    assert repo.get_generation(gen_id)["is_final"] is True
+    assert _ledger_rows()[0]["status"] == "waiting_local"
+
+
+def test_unfinalize_no_target_is_200_mirror_pending_without_backout(isolated_content_db):
+    gen_id = _seed_generation(shared=True, final=True)
+    with (
+        mock.patch.object(share._proxy, "proxying", return_value=True),
+        mock.patch.object(
+            share._proxy,
+            "proxy_json",
+            return_value={
+                "id": "server-1",
+                "job_id": "server-1",
+                "shared": True,
+                "is_final": False,
+            },
+        ),
+        mock.patch.object(
+            share.repo,
+            "apply_share_state_intent_local",
+            return_value=repo.SHARE_STATE_APPLY_NO_TARGET,
+        ),
+    ):
+        response = share.unfinalize(gen_id, _request())
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 200
+    assert json.loads(response.body)["mirror_pending"] is True
     assert repo.get_generation(gen_id)["is_final"] is True
     assert _ledger_rows()[0]["status"] == "waiting_local"
 
