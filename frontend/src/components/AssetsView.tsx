@@ -702,7 +702,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
           title={t("폴더 등록")}
           onClick={() => setMountOpen(true)}
         >
-          <FolderIcon size={16} /> Assets
+          <FolderIcon width={20} height={16} /> Assets
         </button>
         <select
           className={

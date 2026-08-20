@@ -95,7 +95,7 @@ export function TopBar({
 
       {/* Assets(구성) 버튼 — 분리된 브라우저 창으로 연다 */}
       <button className="assets-btn" onClick={onOpenAssets} title={t("Assets (구성) — 별도 창")}>
-        <FolderIcon size={20} />
+        <FolderIcon />
         <span className="assets-label">Assets</span>
       </button>
 
