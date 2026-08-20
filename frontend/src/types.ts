@@ -393,6 +393,7 @@ export interface ProjectsInfo {
   projects: string[];
   default: string;
   root: string;
+  linked?: string[]; // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운 라임색 구분
 }
 
 // 등록된 외부 폴더(마운트) — 임의 경로 폴더에 이름을 붙여 프로젝트처럼 추가

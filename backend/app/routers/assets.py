@@ -399,6 +399,7 @@ class ProjectsOut(BaseModel):
     projects: list[str]
     default: str
     root: str
+    linked: list[str] = []  # PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운 색 구분용
 
 
 @router.get(
@@ -413,9 +414,10 @@ def list_projects(
     디스크 폴더 자동 인식은 하지 않는다 — 사용자가 '폴더 등록'에서 직접 등록한 것만 보인다.
     workspace_id 가 오면 프로젝트 유래 폴더만 그 팀으로 좁힌다(수동 등록은 항상 노출)."""
     projects = [m["name"] for m in _owner_mounts(actor_id(request))]
-    for m in _auto_project_mounts(request, workspace_id):
-        if m["name"] not in projects:
-            projects.append(m["name"])
+    auto_names = [m["name"] for m in _auto_project_mounts(request, workspace_id)]
+    for name in auto_names:
+        if name not in projects:
+            projects.append(name)
     # 내장 스크래치 폴더(captures/imports)는 하나로 합쳐 'imp/cap' 한 항목으로 노출(둘 중 하나라도 파일 있으면).
     #  → 사이드바에서 두 폴더로 갈라 보여준다(asset_tree.read_combined_tree).
     if _COMBINED_INTERNAL not in projects:
@@ -428,7 +430,13 @@ def list_projects(
     # 현재 프로젝트에서만 수행한다(등록된 모든 네트워크 폴더를 미리 훑던 지연 제거).
     # 기본 프로젝트가 목록에 있으면 그것, 아니면 첫 항목
     default = DEFAULT_PROJECT if DEFAULT_PROJECT in projects else (projects[0] if projects else "")
-    return ProjectsOut(projects=projects, default=default, root=str(ASSETS_ROOT))
+    linked_set = set(auto_names)
+    return ProjectsOut(
+        projects=projects,
+        default=default,
+        root=str(ASSETS_ROOT),
+        linked=[p for p in projects if p in linked_set],
+    )
 
 
 # ── 외부 폴더 등록(마운트) 관리 ──────────────────────────────────────────────

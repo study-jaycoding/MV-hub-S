@@ -78,6 +78,11 @@
 .assets-project option.internal {
   color: var(--muted);
 }
+/* PM 프로젝트에 연결된(자동 마운트) 폴더 — 라임으로 구분(일반 등록 폴더=흰색과 대비). */
+.assets-project.linked,
+.assets-project option.linked {
+  color: var(--accent);
+}
 .assets-x {
   width: 28px; height: 28px; padding: 0; border-radius: 8px;
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);

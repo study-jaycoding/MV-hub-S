@@ -30,6 +30,8 @@ export function useAssetProjectData({
   workspaceId?: string;
 }) {
   const [projects, setProjects] = useState<string[]>([]);
+  // PM 프로젝트에 연결된(자동 마운트) 이름 — 드롭다운에서 라임색으로 구분 표시.
+  const [linkedProjects, setLinkedProjects] = useState<Set<string>>(new Set());
   const [project, setProject] = useState("");
   const [tree, setTree] = useState<AssetNode[]>([]);
   const [meta, setMeta] = useState<Record<string, AssetMeta>>({});
@@ -90,6 +92,7 @@ export function useAssetProjectData({
       .assetProjects(workspaceId)
       .then((info) => {
         setProjects((prev) => reconcileArrayState(prev, info.projects));
+        setLinkedProjects(new Set(info.linked || []));
         setProject((current) => {
           // 워크스페이스를 옮기면 이전 팀 폴더는 목록에서 빠진다 — 그때는 저장된 선택도
           // 되살리지 않고 새 목록의 기본값으로 내려간다(남의 팀 폴더에 머무르지 않게).
@@ -198,6 +201,7 @@ export function useAssetProjectData({
     meta,
     project,
     projects,
+    linkedProjects,
     refreshProjectData,
     reloadMeta,
     reloadProjects,

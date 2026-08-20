@@ -95,6 +95,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     meta,
     project,
     projects,
+    linkedProjects,
     refreshProjectData,
     reloadMeta,
     reloadProjects,
@@ -706,7 +707,9 @@ export function AssetsView({ onInfo, onPreview }: Props) {
         </button>
         <select
           className={
-            "assets-project" + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
+            "assets-project"
+            + (project === INTERNAL_COMBINED_PROJECT ? " internal" : "")
+            + (linkedProjects.has(project) ? " linked" : "")
           }
           value={project}
           onChange={(e) => {
@@ -718,13 +721,18 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             <option
               key={p}
               value={p}
-              className={p === INTERNAL_COMBINED_PROJECT ? "internal" : undefined}
+              className={
+                p === INTERNAL_COMBINED_PROJECT
+                  ? "internal"
+                  : linkedProjects.has(p)
+                    ? "linked"
+                    : undefined
+              }
             >
               {p}
             </option>
           ))}
         </select>
-        <span className="muted">{t("MV 라이브러리")}</span>
         {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
         <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
           <span className="as-icon">⌕</span>
