@@ -155,8 +155,9 @@
   font-size: 12px; color: var(--text); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 .assets-crumb {
-  display: flex; align-items: center; gap: 2px;
-  padding: 9px 14px; border-bottom: 1px solid var(--border);
+  /* 생성탭 .lib-toolbar 와 동일 수치(gap 14·padding 10/18/8) — 슬라이더·건수 간격을 맞춘다(Jay). */
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 18px 8px; border-bottom: 1px solid var(--border);
   font-size: 12px; color: var(--muted);
 }
 .assets-crumb button {
@@ -179,8 +180,11 @@
 .assets-crumb .lib-hist-tick { padding: 0; background: var(--muted2); }
 .assets-crumb .lib-hist-tick:hover { text-decoration: none; }
 .assets-crumb .lib-hist-tick.on { background: var(--hist-c, var(--accent)); }
-/* 헤더로 올린 경로·건수 정보 — 하단 crumb 바에 있던 것과 같은 외형(자리 교환). */
+/* 헤더로 올린 경로 정보 — 메인 창 상단 탭(작업 공간·공유&리뷰·캔버스)처럼
+   필터 사이드바 끝선(200px+경계 1px)에서 시작하게 절대 배치(Jay). */
+.assets-view-head { position: relative; }
 .assets-head-crumb {
+  position: absolute; left: 201px; top: 50%; transform: translateY(-50%);
   display: flex; align-items: center; gap: 2px; min-width: 0;
   font-size: 12px; color: var(--muted);
 }
