@@ -1,6 +1,6 @@
 // PM 대시보드 독립 창 (embed 모드) — `/?embed=manage` 분리 브라우저 창.
 // 대시보드(요약+팀전체 통합) / 작업(칸반) / 완료 탭. AssetsWindow 와 동일한 분리형 모듈 패턴.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { loadString, saveString } from "../lib/storage";
 import { STORAGE_KEYS } from "../lib/storageKeys";
@@ -30,6 +30,9 @@ export function ManageWindow() {
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(
     () => loadManageWorkspaceScope().workspaceId,
   );
+  // A안(독립 선택): 관리 창에서 워크스페이스를 직접 고르면 true — 이후 메인 창의 필터
+  // 저장(워크스페이스 외 검색·색상 변경도 같은 키를 재저장한다)이 이 창의 선택을 덮지 않는다.
+  const workspacePinnedRef = useRef(false);
   const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({});
   const reloadSignal = useManageRealtime(enabled === true);
   // 대시보드 탭은 모두에게 연다. read_all 보유자는 워크스페이스 전체 통계까지,
@@ -41,10 +44,12 @@ export function ManageWindow() {
     document.title = "Millionvolt Hub — 프로젝트 관리";
   }, []);
 
-  // 메인 창에서 개인/워크스페이스를 바꾸면 별도 관리 창도 같은 범위를 즉시 따른다.
+  // 메인 창에서 개인/워크스페이스를 바꾸면 별도 관리 창도 같은 범위를 따른다 — 단, 이 창에서
+  // 직접 고른 뒤에는 따르지 않는다(A안). 셀렉터가 없는 일반 멤버는 계속 메인 창을 따른다.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      if (workspacePinnedRef.current) return;
       setWorkspaceId(loadManageWorkspaceScope().workspaceId);
     };
     window.addEventListener("storage", onStorage);
@@ -116,7 +121,10 @@ export function ManageWindow() {
           reloadSignal={reloadSignal}
           caps={caps}
           workspaceId={workspaceId}
-          onWorkspaceIdChange={(value) => setWorkspaceId(value || undefined)}
+          onWorkspaceIdChange={(value) => {
+            workspacePinnedRef.current = true;
+            setWorkspaceId(value || undefined);
+          }}
         />
       )}
       {tab === "tasks" && !caps.loaded && (

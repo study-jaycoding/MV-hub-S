@@ -847,14 +847,22 @@ _WS_GHOST_SECONDS = 90.0  # 하트비트 3주기 이상 무수신 = FIN 없는 �
 _WS_AUTH_RECHECK_SECONDS = 45.0
 
 
-async def _reject_websocket_policy(ws: WebSocket) -> None:
+# WS 1008 사유 토큰 — 프론트(progressSocket)가 이 문자열로 분기하므로 바꾸면 계약 위반.
+# "authentication required" = 진짜 인증 실패(토큰 무효·미승인·비번 변경) → 재로그인 유도.
+# "auth-off-local-only"   = AUTH off 서버에 원격(비-loopback) 접속 — 인증 실패가 아니라
+#                            HTTP 403 "AUTH off 모드는 로컬 전용"과 같은 정책 거부.
+_WS_REASON_AUTH_REQUIRED = "authentication required"
+_WS_REASON_AUTH_OFF_LOCAL_ONLY = "auth-off-local-only"
+
+
+async def _reject_websocket_policy(ws: WebSocket, reason: str = _WS_REASON_AUTH_REQUIRED) -> None:
     """핸드셰이크를 완료한 뒤 1008로 닫아 브라우저의 무한 재접속을 막는다.
 
     accept 전에 close 하면 Uvicorn은 HTTP 403으로 거절하고 브라우저에는 1006만 보여준다.
-    클라이언트는 1008만 영구 인증 실패로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
+    클라이언트는 1008만 영구 정책 거부로 구분하므로, 데이터는 보내지 않고 연결 직후 닫는다.
     """
     await ws.accept()
-    await ws.close(code=1008, reason="authentication required")
+    await ws.close(code=1008, reason=reason)
 
 
 def _log_browser_presence(event: str, counts: dict[str, int]) -> None:
@@ -880,7 +888,9 @@ async def websocket_endpoint(ws: WebSocket):
     if not AUTH_ENABLED and not ALLOW_REMOTE_AUTH_OFF:
         host = (ws.client.host if ws.client else "") or ""
         if not is_loopback_host(host):
-            await _reject_websocket_policy(ws)
+            # 인증 실패가 아니라 "로컬 전용" 정책 거부 — 프론트가 토큰을 지우거나
+            # 로그인 화면으로 보내지 않도록 사유를 구분해 보낸다.
+            await _reject_websocket_policy(ws, reason=_WS_REASON_AUTH_OFF_LOCAL_ONLY)
             return
     if AUTH_ENABLED:
         from .deps import SESSION_COOKIE, realtime_scope
@@ -936,7 +946,9 @@ async def websocket_endpoint(ws: WebSocket):
                     or acc2["status"] != "approved"
                     or (pcat2 and auth_svc.token_password_stamp(token) != pcat2)
                 ):
-                    await ws.close(code=1008)
+                    # 주기 재검증 실패 = 진짜 인증 실패 — 최초 거부와 같은 사유를 붙여
+                    # 프론트가 reason 없는 1008을 추측하지 않게 한다.
+                    await ws.close(code=1008, reason=_WS_REASON_AUTH_REQUIRED)
                     return
     except WebSocketDisconnect:
         pass

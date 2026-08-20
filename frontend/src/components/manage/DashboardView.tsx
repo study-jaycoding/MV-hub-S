@@ -401,6 +401,8 @@ export function DashboardView({
       <div className="hd">
         <div className="dash-detail-title">
           <h2>프로젝트 요약</h2>
+          {/* 위 워크스페이스 사용 현황(텔레메트리)과 집계 원천이 달라 숫자가 어긋날 수 있다. */}
+          <span className="work-source-label">출처 · 라이브러리 생성물 집계</span>
         </div>
         <span className="meta">전체 {rows.length}개</span>
       </div>

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APP_EVENTS } from "../src/lib/appEvents";
+import { setAuthToken } from "../src/lib/http";
 import { connectProgress, progressReconnectDelayMs } from "../src/lib/progressSocket";
+
+// 1008 분기에서 토큰을 지우는지/지키는지를 관찰하기 위해 http 모듈만 목으로 대체한다.
+vi.mock("../src/lib/http", () => ({ setAuthToken: vi.fn() }));
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -21,6 +25,7 @@ class FakeWebSocket {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
   FakeWebSocket.instances = [];
 });
 
@@ -87,6 +92,68 @@ describe("connectProgress", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(authRequired).toHaveBeenCalledTimes(1);
     expect(flash).toHaveBeenCalledTimes(1);
+    expect(setAuthToken).toHaveBeenCalledWith(null);
+
+    off();
+    window.removeEventListener(APP_EVENTS.authRequired, authRequired);
+    window.removeEventListener(APP_EVENTS.flash, flash);
+  });
+
+  it("구서버의 reason 없는 1008은 기존 인증 실패 처리로 폴백한다(하위호환)", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { protocol: "http:", host: "192.168.1.199:8010" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    class TestCustomEvent<T> extends Event {
+      detail: T | undefined;
+      constructor(type: string, init?: { detail?: T }) {
+        super(type);
+        this.detail = init?.detail;
+      }
+    }
+    const eventTarget = new EventTarget();
+    vi.stubGlobal("window", eventTarget);
+    vi.stubGlobal("CustomEvent", TestCustomEvent);
+    const authRequired = vi.fn();
+    window.addEventListener(APP_EVENTS.authRequired, authRequired);
+    const off = connectProgress(() => {});
+
+    FakeWebSocket.instances[0].onclose?.({ code: 1008, reason: "" });
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(authRequired).toHaveBeenCalledTimes(1);
+    expect(setAuthToken).toHaveBeenCalledWith(null);
+
+    off();
+    window.removeEventListener(APP_EVENTS.authRequired, authRequired);
+  });
+
+  it("AUTH-off 로컬 전용 거부(1008)는 토큰을 지키고 로그인 화면 대신 정책 안내만 띄운다", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { protocol: "http:", host: "192.168.1.199:8010" });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    class TestCustomEvent<T> extends Event {
+      detail: T | undefined;
+      constructor(type: string, init?: { detail?: T }) {
+        super(type);
+        this.detail = init?.detail;
+      }
+    }
+    const eventTarget = new EventTarget();
+    vi.stubGlobal("window", eventTarget);
+    vi.stubGlobal("CustomEvent", TestCustomEvent);
+    const authRequired = vi.fn();
+    const flash = vi.fn();
+    window.addEventListener(APP_EVENTS.authRequired, authRequired);
+    window.addEventListener(APP_EVENTS.flash, flash);
+    const off = connectProgress(() => {});
+
+    FakeWebSocket.instances[0].onclose?.({ code: 1008, reason: "auth-off-local-only" });
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1); // 재연결도 멈춘다(재시도해도 같은 거부)
+    expect(authRequired).not.toHaveBeenCalled();
+    expect(setAuthToken).not.toHaveBeenCalled();
+    expect(flash).toHaveBeenCalledTimes(1);
+    expect((flash.mock.calls[0][0] as CustomEvent<string>).detail).toContain("로컬에서만");
 
     off();
     window.removeEventListener(APP_EVENTS.authRequired, authRequired);

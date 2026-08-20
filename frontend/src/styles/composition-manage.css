@@ -417,6 +417,14 @@
   background: rgba(255, 190, 70, .09); color: #e9bc62; font-size: 9px; font-weight: 700;
 }
 .work-card.read-only { opacity: .78; cursor: default; }
+/* 과거 기록 뷰에서 보관(archived) 행·카드를 활성 기록과 구분 — 회색 톤 배지 + 흐림 */
+.work-archived-badge {
+  border-color: color-mix(in srgb, var(--muted) 34%, transparent);
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  color: var(--muted);
+}
+tr.work-row-archived td { opacity: .62; }
+.work-card.work-row-archived { opacity: .62; }
 
 /* ── 노션식 필터 바(칩 좌측 · 검색은 남는 폭 채움 · +필터 우측) ── */
 .work-filterbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; }
