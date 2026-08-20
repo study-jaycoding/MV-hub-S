@@ -205,7 +205,7 @@ export default function App() {
     boardStats, setBoardStats, boardControl, lastBoardFocusRef,
   } = useHistoryBoardState(LS);
   const [info, setInfo] = useState<InfoTarget | null>(null); // 휠클릭 정보 팝업
-  // 씬(캔버스) 툴바 카운트 — SceneBoard 가 타입 필터 통과 생성카드 수를 보고(딤 판정과 동일 규칙).
+  // 씬(캔버스) 툴바 카운트 — SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고.
   const [sceneTypeCount, setSceneTypeCount] = useState(0);
   const [commentGenId, setCommentGenId] = useState<string | null>(null); // 공유 코멘트 스레드 패널 대상
   const [syncTick, setSyncTick] = useState(0); // WS 'synced' 수신 카운터 — 열린 코멘트 패널 실시간 갱신용
@@ -1323,7 +1323,7 @@ export default function App() {
               filtersOpen={showFilters}
               onToggleFilters={() => setShowFilters((v) => !v)}
               // 씬(캔버스) 활성 시 boardStats 는 히스토리 보드 것(0으로 방치)이라 못 쓴다 —
-              // SceneBoard 가 타입 필터를 통과한 생성카드 수를 보고한다(딤 판정과 동일 규칙).
+              // SceneBoard 가 생성카드 안 생성물(변형 전부) 중 타입 필터 통과 수를 보고한다.
               count={activeScene ? sceneTypeCount : boardStats.count}
               grayOn={grayOn}
               onToggleGray={() => setGrayOn((v) => !v)}
