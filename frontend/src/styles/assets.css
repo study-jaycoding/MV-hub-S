@@ -197,6 +197,21 @@
 .crumb-sep { color: var(--muted2); }
 .crumb-count { margin-left: 6px; color: var(--muted2); }
 .assets-tools { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+/* ⚠️ '.assets-crumb button' 포괄 규칙(투명 배경·accent색·hover 밑줄)이 타입 슬라이더 점의
+   배경을 지우던 것 복구 — 생성 툴바와 동일 외형 유지. */
+.assets-crumb .lib-hist-tick { padding: 0; background: var(--muted2); }
+.assets-crumb .lib-hist-tick:hover { text-decoration: none; }
+.assets-crumb .lib-hist-tick.on { background: var(--hist-c, var(--accent)); }
+/* 헤더로 올린 경로·건수 정보 — 하단 crumb 바에 있던 것과 같은 외형(자리 교환). */
+.assets-head-crumb {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  font-size: 12px; color: var(--muted);
+}
+.assets-head-crumb button {
+  background: transparent; border: none; color: var(--accent);
+  padding: 2px 4px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.assets-head-crumb button:hover { text-decoration: underline; }
 
 /* 좌측 필터(컬러 dot · S · T) */
 .assets-filters { position: relative; display: flex; align-items: center; gap: 7px; margin-right: 10px; }

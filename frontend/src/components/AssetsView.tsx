@@ -9,7 +9,6 @@ import { DRAG_TYPES } from "../lib/dragTypes";
 import { computeGridColumns, navigateGrid } from "../lib/gridVirtualRows";
 import { buildAssetRows, type AssetVirtualRow } from "../lib/assetVirtualRows";
 import { useT } from "../lib/i18n";
-import { MEDIA_FILTER_OPTIONS } from "../lib/mediaTypes";
 import { computeMarquee, marqueeHits } from "../lib/marquee";
 import { makeStore, saveString } from "../lib/storage";
 import { loadManageWorkspaceScope } from "../lib/manageWorkspaceScope";
@@ -696,17 +695,6 @@ export function AssetsView({ onInfo, onPreview }: Props) {
     return rowIdx == null ? undefined : [rowIdx];
   }, [tagEditPath, files, rowModel]);
 
-  // 헤더 미디어 타입 4점 슬라이더 — 메인 라이브러리 툴바와 같은 UI. 사이드바 타입 필터와
-  // 한 상태(typeFilter)를 조작하므로 어느 쪽으로 바꿔도 함께 움직인다(null=전체).
-  const typeIndex = Math.max(
-    0,
-    MEDIA_FILTER_OPTIONS.findIndex((o) => o.v === (typeFilter ?? "all")),
-  );
-  const typeLabel = MEDIA_FILTER_OPTIONS[typeIndex].label;
-  const typeCount = typeFilter
-    ? typeCounts[typeFilter]
-    : typeCounts.image + typeCounts.video + typeCounts.audio;
-
   return (
     <div className="assets-view">
       <div className="assets-view-head">
@@ -745,42 +733,46 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             </option>
           ))}
         </select>
-        {/* 미디어 타입 — 메인 라이브러리와 동일한 4점 슬라이더(전체·이미지·영상·오디오). */}
-        <div
-          className="lib-hist-slider"
-          data-type={typeFilter ?? "all"}
-          title="미디어 타입 — 슬라이드로 전환"
-        >
-          <span className="lib-hist-label">{t(typeLabel)}</span>
-          <div className="lib-hist-range">
-            <div className="lib-hist-ticks">
-              {MEDIA_FILTER_OPTIONS.map((o, i) => (
-                <button
-                  key={o.v}
-                  type="button"
-                  className={"lib-hist-tick" + (i === typeIndex ? " on" : "")}
-                  title={t(o.label)}
-                  onClick={() => setTypeFilter(o.v === "all" ? null : o.v)}
-                />
+        {/* 하단 crumb 바에서 올라온 경로·건수 정보 — 타입 슬라이더와 자리 교환(Jay 요청). */}
+        <div className="assets-head-crumb">
+          {searchActive ? (
+            <span className="crumb-search">
+              {activeTags.size
+                ? [...activeTags].map((tag) => `#${tag}`).join(" ")
+                : sourceOnly
+                  ? "소스"
+                  : activeColors.size
+                    ? "컬러"
+                    : query.trim().startsWith("#")
+                      ? "태그"
+                      : "이름"}{" "}
+              필터{query.trim() && !query.trim().startsWith("#") ? `: ${query.trim()}` : ""}
+            </span>
+          ) : (
+            <>
+              <button onClick={() => setDir("")}>{project}</button>
+              {breadcrumb.map((segment, index) => (
+                <span key={index}>
+                  <span className="crumb-sep">/</span>
+                  <button onClick={() => setDir(breadcrumb.slice(0, index + 1).join("/"))}>
+                    {segment}
+                  </button>
+                </span>
               ))}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={MEDIA_FILTER_OPTIONS.length - 1}
-              step={1}
-              value={typeIndex}
-              onChange={(e) => {
-                const next = MEDIA_FILTER_OPTIONS[Number(e.target.value)].v;
-                setTypeFilter(next === "all" ? null : next);
-              }}
-            />
-          </div>
+            </>
+          )}
+          <span className="crumb-count">
+            {typeFilter === "image"
+              ? t("이미지")
+              : typeFilter === "video"
+                ? t("영상")
+                : typeFilter === "audio"
+                  ? t("오디오")
+                  : t("전체")}{" "}
+            · {files.length}
+            {t("개")}
+          </span>
         </div>
-        <span className="lib-count">
-          {t(typeLabel)} · {typeCount}
-          {t("건")}
-        </span>
         {/* 현재 선택 폴더(및 하위) 안에서 파일명 검색 — 폴더 미선택이면 프로젝트 전체. 우측 상단 배치 */}
         <div className="assets-search" title="선택한 폴더 안에서 파일명 검색 (#로 시작하면 태그)">
           <span className="as-icon">⌕</span>
@@ -856,16 +848,10 @@ export function AssetsView({ onInfo, onPreview }: Props) {
             onClearTags={() => setActiveTags(new Set())}
             onSelectTag={selectActiveTag}
             onDeleteTag={deleteTag}
-            searchActive={searchActive}
             sourceOnly={sourceOnly}
             activeColors={activeColors}
-            query={query}
-            project={project}
-            breadcrumb={breadcrumb}
-            onProjectRoot={() => setDir("")}
-            onBreadcrumb={setDir}
             typeFilter={typeFilter}
-            fileCount={files.length}
+            onTypeFilterChange={setTypeFilter}
             onToggleColor={toggleColor}
             grayOn={grayOn}
             onToggleGray={() => setGrayOn((v) => !v)}
