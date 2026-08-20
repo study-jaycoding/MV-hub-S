@@ -445,8 +445,11 @@ export function ReleaseUpdateSettingsSection({
   // 실행기(bat)가 기록하는 전체 진행률 — 버튼·문구에 함께 보여 멈춘 건지 진행 중인지 구분되게.
   const pct = typeof status?.percent === "number" ? Math.min(100, status.percent) : null;
   const pctText = running && pct !== null ? ` ${pct}%` : "";
+  const updateAvailable = Boolean(
+    status?.latest_version && status.latest_version !== status.current_version,
+  );
   const versionText = status
-    ? status.latest_version && status.latest_version !== status.current_version
+    ? updateAvailable
       ? `현재 ${status.current_version || "미확인"} → 새 버전 ${status.latest_version}`
       : `현재 버전 ${status.current_version || "미확인"}`
     : "버전을 확인하는 중…";
@@ -481,8 +484,11 @@ export function ReleaseUpdateSettingsSection({
           다시 확인
         </button>
       </div>
-      <SettingsDescription summary="새 버전을 확인하고 안전하게 업데이트합니다.">
-        <p>{versionText}</p>
+      {/* 새 버전이 있으면 접기 안이 아니라 항상 보이는 캡션 자리에 버전 이동을 보여준다. */}
+      <SettingsDescription
+        summary={updateAvailable ? versionText : "새 버전을 확인하고 안전하게 업데이트합니다."}
+      >
+        {!updateAvailable && <p>{versionText}</p>}
         <p>{msg || releaseUpdateMessage(status) || "릴리스 서버를 확인하고 있습니다."}</p>
         {releaseInstall && active > 0 && (
           <p style={{ color: "#f5a623" }}>
