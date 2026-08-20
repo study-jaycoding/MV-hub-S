@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
@@ -164,3 +165,90 @@ def test_capacity_failure_is_visible_and_existing_cache_is_not_deleted(isolated_
     state = repo.get_media_preservation(gen_id)
     assert state["cached_count"] == 1
     assert state["next_retry_at"] is not None
+
+
+def test_async_preservation_repo_calls_do_not_block_event_loop(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    call_threads: list[int] = []
+
+    def claim(gen_id):
+        call_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"generation_id": gen_id, "attempts": 1}
+
+    def get_generation(gen_id):
+        call_threads.append(threading.get_ident())
+        return {"id": gen_id}
+
+    def finish(*_args, **_kwargs):
+        call_threads.append(threading.get_ident())
+
+    monkeypatch.setattr(media_preservation.repo, "claim_media_preservation", claim)
+    monkeypatch.setattr(media_preservation.repo, "get_generation", get_generation)
+    monkeypatch.setattr(media_preservation.repo, "finish_media_preservation", finish)
+    monkeypatch.setattr(
+        media_preservation.generation_media_cache,
+        "cache_generation_media",
+        mock.AsyncMock(
+            return_value={
+                "cached": 0,
+                "already": 1,
+                "failed": 0,
+                "skipped": 0,
+                "bytes_cached": 0,
+            }
+        ),
+    )
+
+    async def exercise():
+        loop_thread = threading.get_ident()
+        task = asyncio.create_task(media_preservation.preserve_generation_now("preserve-thread"))
+        for _ in range(200):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert entered.is_set()
+        # 동기 claim이 대기 중이어도 이 지점까지 이벤트 루프가 진행돼야 한다.
+        await asyncio.sleep(0)
+        release.set()
+        result = await asyncio.wait_for(task, timeout=2)
+        return loop_thread, result
+
+    loop_thread, result = asyncio.run(exercise())
+
+    assert result["status"] == "complete"
+    assert len(call_threads) == 3
+    assert all(thread_id != loop_thread for thread_id in call_threads)
+
+
+def test_periodic_startup_repo_calls_run_off_event_loop(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(media_preservation, "_STARTUP_DELAY_SECONDS", 60)
+    monkeypatch.setattr(
+        media_preservation.repo,
+        "recover_stale_media_preservations",
+        lambda: calls.append(("recover", threading.get_ident())),
+    )
+    monkeypatch.setattr(
+        media_preservation.repo,
+        "backfill_required_media_preservations",
+        lambda: calls.append(("backfill", threading.get_ident())),
+    )
+
+    async def exercise():
+        loop_thread = threading.get_ident()
+        worker = media_preservation.PeriodicMediaPreservation()
+        worker.start()
+        for _ in range(200):
+            if len(calls) == 2:
+                break
+            await asyncio.sleep(0.005)
+        await worker.stop()
+        return loop_thread
+
+    loop_thread = asyncio.run(exercise())
+
+    assert [name for name, _thread in calls] == ["recover", "backfill"]
+    assert all(thread_id != loop_thread for _name, thread_id in calls)

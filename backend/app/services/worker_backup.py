@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -122,6 +123,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             last_backup_set_id TEXT,
             last_error_code   TEXT
         );
+        CREATE TABLE IF NOT EXISTS worker_backup_source_state (
+            account_slug         TEXT PRIMARY KEY,
+            local_stamp          TEXT NOT NULL,
+            source_signature_json TEXT NOT NULL,
+            backup_set_id        TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -174,6 +181,102 @@ def _app_version() -> str:
         return (BACKEND_DIR.parent / "VERSION.txt").read_text("utf-8-sig").strip()
     except OSError:
         return ""
+
+
+def _source_signature(content: Path, trash: Path) -> str | None:
+    """불변 로컬 백업 세트를 복사 없이 재식별하는 보수적 저비용 지문."""
+    paths = {"content": content}
+    try:
+        trash_stat = trash.stat()
+    except FileNotFoundError:
+        trash_stat = None
+    except OSError:
+        return None
+    if trash_stat is not None:
+        if not stat.S_ISREG(trash_stat.st_mode):
+            return None
+        paths["trash"] = trash
+
+    files: dict[str, dict[str, Any]] = {}
+    try:
+        for role, path in sorted(paths.items()):
+            value = path.stat()
+            if not stat.S_ISREG(value.st_mode):
+                return None
+            with path.open("rb") as stream:
+                header = stream.read(100)
+            if len(header) != 100 or not header.startswith(b"SQLite format 3\x00"):
+                return None
+            files[role] = {
+                "path": str(path),
+                "device": int(value.st_dev),
+                "inode": int(value.st_ino),
+                "size": int(value.st_size),
+                "mtime_ns": int(value.st_mtime_ns),
+                "ctime_ns": int(value.st_ctime_ns),
+                # 24~27바이트 변경 카운터를 포함해 크기·mtime을 보존한 SQLite 쓰기도 잡는다.
+                "sqlite_header": header.hex(),
+            }
+    except OSError:
+        return None
+    return json.dumps(
+        {
+            "app_version": _app_version(),
+            "format_version": _FORMAT_VERSION,
+            "strip_keys": sorted(SESSION_KEYS),
+            "files": files,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _prechecked_duplicate(
+    account_slug: str,
+    stamp: str,
+    source_signature: str | None,
+) -> str | None:
+    """직전 전체 판정과 같은 불변 원본일 때만 활성 세트를 재사용한다."""
+    if source_signature is None:
+        return None
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT source.backup_set_id FROM worker_backup_source_state source "
+                "JOIN worker_backup_outbox outbox ON outbox.backup_set_id=source.backup_set_id "
+                "WHERE source.account_slug=? AND source.local_stamp=? "
+                "AND source.source_signature_json=? "
+                "AND outbox.status IN ('pending','running','done')",
+                (account_slug, stamp, source_signature),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return None
+    return str(row[0]) if row is not None else None
+
+
+def _remember_source_state(
+    account_slug: str,
+    stamp: str,
+    source_signature: str | None,
+    backup_set_id: str,
+) -> None:
+    """전체 내용 판정을 통과한 원본만 다음 부팅의 값싼 선판정에 기록한다."""
+    if source_signature is None:
+        return
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO worker_backup_source_state"
+                "(account_slug,local_stamp,source_signature_json,backup_set_id) VALUES(?,?,?,?) "
+                "ON CONFLICT(account_slug) DO UPDATE SET "
+                "local_stamp=excluded.local_stamp,"
+                "source_signature_json=excluded.source_signature_json,"
+                "backup_set_id=excluded.backup_set_id",
+                (account_slug, stamp, source_signature, backup_set_id),
+            )
+    except (OSError, sqlite3.Error):
+        # 성능용 보조 상태다. 기록 실패는 다음 호출의 기존 전체 판정으로 안전하게 폴백한다.
+        return
 
 
 def _stamp_from_content(path: Path) -> str:
@@ -338,6 +441,12 @@ def queue_backup_set(
         raise FileNotFoundError(content_backup)
     stamp = _stamp_from_content(content_backup)
     account_slug = active_account.slug(email)
+    trash_source = content_backup.parent / f"{_TRASH_PREFIX}{stamp}.db"
+    source_signature = _source_signature(content_backup, trash_source)
+    duplicate = _prechecked_duplicate(account_slug, stamp, source_signature)
+    if duplicate is not None:
+        return duplicate
+
     account_root = OUTBOX_DIR / account_slug
     account_root.mkdir(parents=True, exist_ok=True)
     temp = account_root / f".stage-{secrets.token_hex(8)}"
@@ -350,7 +459,6 @@ def queue_backup_set(
         validate_hub_db(content, require_integrity=True)
 
         role_paths: dict[str, Path] = {"content": content}
-        trash_source = content_backup.parent / f"{_TRASH_PREFIX}{stamp}.db"
         if trash_source.is_file():
             trash = temp / "trash.db"
             shutil.copyfile(trash_source, trash)
@@ -375,6 +483,11 @@ def queue_backup_set(
             log_event(_log, "worker_backup_empty_skipped")
             return None
 
+        stable_source_signature = (
+            source_signature
+            if source_signature == _source_signature(content_backup, trash_source)
+            else None
+        )
         device = _device_identity()
         parent_backup_set_id = _lineage_parent(account_slug)
         roles_json = json.dumps(roles, sort_keys=True, separators=(",", ":"))
@@ -391,7 +504,14 @@ def queue_backup_set(
             ).fetchone()
         if unchanged is not None:
             shutil.rmtree(temp)
-            return str(unchanged[0])
+            backup_set_id = str(unchanged[0])
+            _remember_source_state(
+                account_slug,
+                stamp,
+                stable_source_signature,
+                backup_set_id,
+            )
+            return backup_set_id
         identity = json.dumps(
             {
                 "account_slug": account_slug,
@@ -428,6 +548,12 @@ def queue_backup_set(
             ).fetchone()
         if existing is not None and str(existing[0]) in {"pending", "running", "done"}:
             shutil.rmtree(temp)
+            _remember_source_state(
+                account_slug,
+                stamp,
+                stable_source_signature,
+                backup_set_id,
+            )
             return backup_set_id
         if final.exists():
             shutil.rmtree(final)
@@ -470,6 +596,12 @@ def queue_backup_set(
         for old_id in superseded:
             with contextlib.suppress(OSError):
                 shutil.rmtree(_stage_dir(account_slug, old_id))
+        _remember_source_state(
+            account_slug,
+            stamp,
+            stable_source_signature,
+            backup_set_id,
+        )
         log_event(
             _log,
             "worker_backup_queued",
@@ -958,8 +1090,6 @@ class PeriodicWorkerBackupUpload:
 
     def start(self) -> None:
         if self._task is None or self._task.done():
-            recover_in_progress()
-            cleanup_stale_state()
             self._task = asyncio.create_task(self._run(), name="periodic-worker-backup")
 
     async def stop(self) -> None:
@@ -970,19 +1100,21 @@ class PeriodicWorkerBackupUpload:
             self._task = None
         if self._process and self._process.returncode is None:
             await _terminate_process(self._process)
-            recover_in_progress()
+            await asyncio.to_thread(recover_in_progress)
         self._process = None
 
     async def _run(self) -> None:
+        await asyncio.to_thread(recover_in_progress)
+        await asyncio.to_thread(cleanup_stale_state)
         await asyncio.sleep(3)
         while True:
-            if has_due_backup():
+            if await asyncio.to_thread(has_due_backup):
                 await self.run_now()
             await asyncio.sleep(self._interval)
 
     async def run_now(self) -> dict[str, Any]:
         async with self._run_lock:
-            if not has_due_backup():
+            if not await asyncio.to_thread(has_due_backup):
                 return {"state": "idle"}
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             process = await asyncio.create_subprocess_exec(
@@ -1003,11 +1135,11 @@ class PeriodicWorkerBackupUpload:
                 )
             except asyncio.CancelledError:
                 await _terminate_process(process)
-                recover_in_progress()
+                await asyncio.to_thread(recover_in_progress)
                 raise
             except asyncio.TimeoutError:
                 await _terminate_process(process)
-                recover_in_progress()
+                await asyncio.to_thread(recover_in_progress)
                 return {"state": "failed", "error_code": "timeout"}
             finally:
                 if self._process is process:
@@ -1015,19 +1147,19 @@ class PeriodicWorkerBackupUpload:
             # ACK 뒤 로컬 done 기록에서 자식이 죽은 경우를 포함한다. 서버의 backup_set_id
             # 저장은 멱등이므로 다음 전송이 가능하도록 남은 running claim을 즉시 되돌린다.
             if process.returncode != 0:
-                recover_in_progress()
+                await asyncio.to_thread(recover_in_progress)
             try:
                 # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
                 output = (stdout or b"{}").decode("utf-8").splitlines()
                 parsed = json.loads(output[-1] if output else "{}")
                 if not isinstance(parsed, dict):
-                    recover_in_progress()
+                    await asyncio.to_thread(recover_in_progress)
                     return {"state": "failed", "error_code": "worker_failed"}
                 if process.returncode != 0 and parsed.get("state") != "failed":
                     return {"state": "failed", "error_code": "worker_failed"}
                 return parsed
             except (UnicodeDecodeError, ValueError):
-                recover_in_progress()
+                await asyncio.to_thread(recover_in_progress)
                 return {"state": "failed", "error_code": "worker_failed"}
 
 

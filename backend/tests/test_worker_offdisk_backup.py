@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import threading
 import urllib.error
@@ -81,6 +82,69 @@ def test_queue_is_atomic_deduplicated_and_strips_secrets(worker_store: Path):
     with worker_backup._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM worker_backup_outbox").fetchone()[0] == 1
     assert not list(stage.parent.glob(".stage-*"))
+
+
+def test_prechecked_duplicate_skips_copy_and_hash(
+    worker_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    backup_set_id, stage, _manifest = _queued(worker_store)
+    source = worker_store / "local" / "content_hub_20260817_120000_000001.db"
+
+    monkeypatch.setattr(
+        worker_backup.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("copy called")),
+    )
+    monkeypatch.setattr(
+        worker_backup,
+        "_sha256",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("hash called")),
+    )
+
+    assert worker_backup.queue_backup_set(source) == backup_set_id
+    assert stage.is_dir()
+    assert not list(stage.parent.glob(".stage-*"))
+
+
+def test_same_stamp_with_changed_content_falls_back_to_full_check(
+    worker_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first_id, _stage, _manifest = _queued(worker_store)
+    source = worker_store / "local" / "content_hub_20260817_120000_000001.db"
+    source_stat = source.stat()
+    with sqlite3.connect(source) as conn:
+        conn.execute("UPDATE generation SET id='generation-2' WHERE id='generation-1'")
+    os.utime(
+        source,
+        ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+    )
+    assert source.stat().st_size == source_stat.st_size
+
+    copy_calls = 0
+    hash_calls = 0
+    real_copyfile = worker_backup.shutil.copyfile
+    real_sha256 = worker_backup._sha256
+
+    def tracked_copyfile(*args, **kwargs):
+        nonlocal copy_calls
+        copy_calls += 1
+        return real_copyfile(*args, **kwargs)
+
+    def tracked_sha256(*args, **kwargs):
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_sha256(*args, **kwargs)
+
+    monkeypatch.setattr(worker_backup.shutil, "copyfile", tracked_copyfile)
+    monkeypatch.setattr(worker_backup, "_sha256", tracked_sha256)
+
+    second_id = worker_backup.queue_backup_set(source)
+
+    assert second_id and second_id != first_id
+    assert copy_calls == 2
+    assert hash_calls == 2
+    with worker_backup._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM worker_backup_outbox").fetchone()[0] == 2
 
 
 def test_explicit_ack_is_required_before_staging_is_removed(
@@ -261,16 +325,90 @@ def test_child_failure_or_invalid_result_recovers_running_claim(
         return child
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_child)
+    loop_thread = threading.get_ident()
+    recovery_threads: list[int] = []
+    real_recover = worker_backup.recover_in_progress
+
+    def tracked_recover():
+        recovery_threads.append(threading.get_ident())
+        return real_recover()
+
+    monkeypatch.setattr(worker_backup, "recover_in_progress", tracked_recover)
 
     result = asyncio.run(worker_backup.PeriodicWorkerBackupUpload().run_now())
 
     assert result == {"state": "failed", "error_code": "worker_failed"}
+    assert recovery_threads
+    assert all(thread_id != loop_thread for thread_id in recovery_threads)
     with worker_backup._connect() as conn:
         row = conn.execute(
             "SELECT status,last_error_code FROM worker_backup_outbox WHERE backup_set_id=?",
             (backup_set_id,),
         ).fetchone()
     assert tuple(row) == ("pending", "interrupted")
+
+
+def test_periodic_due_check_does_not_block_event_loop(monkeypatch: pytest.MonkeyPatch):
+    entered = threading.Event()
+    release = threading.Event()
+    call_threads: list[int] = []
+
+    def blocking_due():
+        call_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(worker_backup, "has_due_backup", blocking_due)
+
+    async def exercise():
+        loop_thread = threading.get_ident()
+        task = asyncio.create_task(worker_backup.PeriodicWorkerBackupUpload().run_now())
+        for _ in range(200):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert entered.is_set()
+        # 동기 due 조회가 대기 중이어도 이벤트 루프 coroutine은 계속 실행된다.
+        await asyncio.sleep(0)
+        release.set()
+        result = await asyncio.wait_for(task, timeout=2)
+        return loop_thread, result
+
+    loop_thread, result = asyncio.run(exercise())
+
+    assert result == {"state": "idle"}
+    assert call_threads and all(thread_id != loop_thread for thread_id in call_threads)
+
+
+def test_periodic_startup_state_calls_run_off_event_loop(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        worker_backup,
+        "recover_in_progress",
+        lambda: calls.append(("recover", threading.get_ident())),
+    )
+    monkeypatch.setattr(
+        worker_backup,
+        "cleanup_stale_state",
+        lambda: calls.append(("cleanup", threading.get_ident())),
+    )
+
+    async def exercise():
+        loop_thread = threading.get_ident()
+        worker = worker_backup.PeriodicWorkerBackupUpload()
+        worker.start()
+        for _ in range(200):
+            if len(calls) == 2:
+                break
+            await asyncio.sleep(0.005)
+        await worker.stop()
+        return loop_thread
+
+    loop_thread = asyncio.run(exercise())
+
+    assert [name for name, _thread in calls] == ["recover", "cleanup"]
+    assert all(thread_id != loop_thread for _name, thread_id in calls)
 
 
 def test_restart_cleanup_keeps_pending_set_and_removes_only_stale_staging(

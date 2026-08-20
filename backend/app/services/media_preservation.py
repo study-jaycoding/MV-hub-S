@@ -43,9 +43,10 @@ def _dominant_error(result: dict[str, Any]) -> Optional[str]:
 
 async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
     gen_id = claim["generation_id"]
-    generation = repo.get_generation(gen_id)
+    generation = await asyncio.to_thread(repo.get_generation, gen_id)
     if not generation:
-        repo.finish_media_preservation(
+        await asyncio.to_thread(
+            repo.finish_media_preservation,
             gen_id,
             status="failed",
             cached_count=0,
@@ -76,7 +77,8 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "partial" if saved else "failed"
 
-    repo.finish_media_preservation(
+    await asyncio.to_thread(
+        repo.finish_media_preservation,
         gen_id,
         status=status,
         cached_count=saved,
@@ -91,7 +93,7 @@ async def _process_claim(claim: dict[str, Any]) -> dict[str, Any]:
 
 async def preserve_generation_now(gen_id: str) -> Optional[dict[str, Any]]:
     """등록된 특정 작업을 즉시 한 번 처리한다. 이미 실행 중/완료면 None."""
-    claim = repo.claim_media_preservation(gen_id)
+    claim = await asyncio.to_thread(repo.claim_media_preservation, gen_id)
     if not claim:
         return None
     return await _process_claim_safely(claim)
@@ -104,7 +106,8 @@ async def _process_claim_safely(claim: dict[str, Any]) -> dict[str, Any]:
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
-        repo.finish_media_preservation(
+        await asyncio.to_thread(
+            repo.finish_media_preservation,
             claim["generation_id"],
             status="partial" if int(claim.get("cached_count") or 0) else "failed",
             cached_count=int(claim.get("cached_count") or 0),
@@ -123,8 +126,6 @@ class PeriodicMediaPreservation:
         self._task: Optional[asyncio.Task] = None
 
     def start(self) -> None:
-        repo.recover_stale_media_preservations()
-        repo.backfill_required_media_preservations()
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name="media-preservation")
 
@@ -136,13 +137,15 @@ class PeriodicMediaPreservation:
             self._task = None
 
     async def _run(self) -> None:
+        await asyncio.to_thread(repo.recover_stale_media_preservations)
+        await asyncio.to_thread(repo.backfill_required_media_preservations)
         await asyncio.sleep(_STARTUP_DELAY_SECONDS)
         while True:
             processed = 0
             try:
                 # 한 주기에 두 건만 처리해 저사양 서버의 네트워크·디스크 폭주를 막는다.
                 for _ in range(2):
-                    claim = repo.claim_media_preservation()
+                    claim = await asyncio.to_thread(repo.claim_media_preservation)
                     if not claim:
                         break
                     await _process_claim_safely(claim)
