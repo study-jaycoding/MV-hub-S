@@ -22,6 +22,9 @@
 .proj-row.sel-target { background: rgba(255,79,138,0.2); color: #fff; font-weight: 700; }
 .proj-row.sel-target:hover { background: rgba(255,79,138,0.28); }
 .proj-row.sel-target .proj-count { color: #ffd6e5; }
+/* 선택(생성 목적지) 행 확대 강조 — 폴더 선택 행과 같은 언어(라이브러리/미분류/휴지통/프로젝트 공통). */
+.proj-row { transition: font-size 0.12s ease, padding 0.12s ease; }
+.proj-row.sel-target { font-size: 14px; padding-top: 9px; padding-bottom: 9px; }
 /* 프로젝트 접기 토글(▾/▸) — 폴더 캐럿과 같은 14px 열. 트리 없는 프로젝트는 ghost 로 자리만.
    ghost 는 span(inline)이라 width 가 무시되던 함정 → inline-flex 로 강제해 두 경우 폭이 같다. */
 .proj-fold {
@@ -31,9 +34,12 @@
 }
 .proj-fold:hover { opacity: 1; }
 .proj-fold.ghost { cursor: default; }
-/* 순서 드래그 손잡이(⠿) — 폴더 아이콘(15px) 자리에 상시 폭 확보(이름 열 정렬), hover 에만 보임. */
+/* 순서 드래그 손잡이(⠿) — 폴더 아이콘(15px) 자리에 상시 폭 확보(이름 열 정렬), hover 에만 보임.
+   ★margin/letter-spacing 명시: 관리자 테이블용 전역 .proj-drag-handle(admin-auth-compare.css 의
+   margin-right 8px)이 새어 들어와 이름 열을 밀던 실측 원인 — 여기서 차단한다. */
 .proj-row .proj-drag-handle {
-  opacity: 0; width: 15px; text-align: center; font-size: 11px; flex: none; cursor: grab;
+  opacity: 0; width: 15px; margin: 0; letter-spacing: normal;
+  text-align: center; font-size: 11px; flex: none; cursor: grab;
 }
 .proj-row:hover .proj-drag-handle { opacity: 0.5; }
 .proj-row .proj-drag-handle:hover { opacity: 1; }
