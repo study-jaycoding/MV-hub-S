@@ -209,6 +209,34 @@ class AccountReportDeliveryTests(unittest.TestCase):
         self.assertEqual(status["account_report_failed"], 1)
         self.assertEqual(status["account_report_dead"], 0)
 
+    def test_repeated_http_409_dead_letters_only_that_row(self):
+        manage.queue_account_reports(self._status(), [self._transaction()])
+
+        def push(payload):
+            if payload["account_transactions"]:
+                raise HTTPException(status_code=409, detail="transaction conflict")
+            return {"accepted": True}
+
+        for attempt in range(3):
+            result = drain_remote_account_reports(push, creator_uid="user_artist")
+            self.assertEqual(result["failed"], 1)
+            if attempt < 2:
+                self._allow_retry_now()
+
+        status = manage.account_report_outbox_status()
+        self.assertEqual(status["account_report_pending"], 0)
+        self.assertEqual(status["account_report_dead"], 1)
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT report_type, pushed_at, dead_lettered_at, fail_streak "
+                "FROM account_report_outbox ORDER BY report_type"
+            ).fetchall()
+        by_type = {row["report_type"]: row for row in rows}
+        self.assertIsNotNone(by_type["status"]["pushed_at"])
+        self.assertIsNone(by_type["status"]["dead_lettered_at"])
+        self.assertEqual(by_type["transaction"]["fail_streak"], 3)
+        self.assertIsNotNone(by_type["transaction"]["dead_lettered_at"])
+
     def test_missing_status_email_never_sends_transactions_under_guessed_identity(self):
         manage.queue_account_reports(None, [self._transaction()])
         push = mock.Mock(return_value={"accepted": True})

@@ -93,6 +93,25 @@ def _agent_acc(request: Request) -> dict:
     return require_agent_account(request)
 
 
+def _mcp_backfill_jobs(
+    items: list[dict[str, Any]], fallback_workspace: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """MCP 잡별 workspace를 보존하고 메타가 없는 잡에만 요청 컨텍스트를 채운다."""
+    jobs: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        job = mcp_item_to_cli(item)
+        has_job_workspace = job.get("workspace") is not None or any(
+            job.get(key) is not None
+            for key in ("workspace_scope", "workspace_id", "workspace_name")
+        )
+        if not has_job_workspace:
+            job["workspace"] = dict(fallback_workspace)
+        jobs.append(job)
+    return jobs
+
+
 def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> IngestOut:
     """CLI list 형태 잡들을 적재 + 계정↔힉스필드 uid 연결 + 크레딧 보고. push/mcp 공통 코어.
     각 잡은 자기 고유 creator_uid(URL의 user_<id>)를 유지하고, 이미 실제 uid 에 연결된 계정은
@@ -370,13 +389,12 @@ def ingest_mcp(body: IngestMcpIn, request: Request):
     """과거 전체 백필 — MCP `show_generations` 원시 아이템(100개 밖)을 내 로컬 DB 에 적재. 멱등.
     흐름: Claude 가 그 사용자 세션으로 show_generations 를 next_cursor 끝까지 순회하며 각 페이지를
     이 엔드포인트로 POST. mcp_item_to_cli 로 CLI 형태 변환 후 push 와 동일 코어로 처리."""
-    jobs = [mcp_item_to_cli(it) for it in body.items if isinstance(it, dict)]
+    jobs = _mcp_backfill_jobs(body.items, body.workspace.model_dump())
     out = _ingest_core(
         _agent_acc(request),
         jobs,
         None,
         body.account_status,
-        workspace=body.workspace.model_dump(),
     )
     # 팀 매니징: 백필도 일반 ingest 와 동일하게 dirty 텔레메트리를 flush 한다. MCP 백필은 페이지를
     # 여러 번 POST 하고 '마지막 페이지' 신호가 없어, 매 페이지 drain 해야 백필만 한 사용자도 대시보드가

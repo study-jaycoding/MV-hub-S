@@ -102,7 +102,7 @@ def list_due_account_reports(limit: int = 100) -> list[dict[str, Any]]:
     with get_connection() as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT report_key, report_type, payload_json, dirty_at, dirty_rev "
+            "SELECT report_key, report_type, payload_json, dirty_at, dirty_rev, fail_streak "
             "FROM account_report_outbox WHERE pushed_at IS NULL "
             "AND dead_lettered_at IS NULL "
             "AND (next_retry_at IS NULL OR "
@@ -177,6 +177,35 @@ def mark_account_reports_failed(items: list[dict[str, Any]], error: str) -> int:
                 "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL "
                 "AND dead_lettered_at IS NULL",
                 (str(error)[:500], report_key, dirty_rev),
+            )
+            updated_count += max(0, int(cursor.rowcount or 0))
+    return updated_count
+
+
+def mark_account_reports_conflicted(
+    items: list[dict[str, Any]], error: str, *, dead_letter_after: int
+) -> int:
+    """같은 revision의 반복 409를 행별로 세고 임계치에 닿은 행만 격리한다."""
+    updated_count = 0
+    threshold = max(1, int(dead_letter_after))
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        for item in items or []:
+            report_key = item.get("report_key")
+            dirty_rev = item.get("dirty_rev")
+            if not report_key or dirty_rev is None:
+                continue
+            cursor = conn.execute(
+                "UPDATE account_report_outbox SET attempts=attempts+1, last_error=?, "
+                "fail_streak=fail_streak+1, "
+                "next_retry_at=CASE WHEN fail_streak+1>=? THEN NULL ELSE "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now', "
+                "printf('+%d seconds', MIN(3600, 60*(fail_streak+1)*(fail_streak+1)))) END, "
+                "dead_lettered_at=CASE WHEN fail_streak+1>=? "
+                "THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END "
+                "WHERE report_key=? AND dirty_rev=? AND pushed_at IS NULL "
+                "AND dead_lettered_at IS NULL",
+                (str(error)[:500], threshold, threshold, report_key, dirty_rev),
             )
             updated_count += max(0, int(cursor.rowcount or 0))
     return updated_count

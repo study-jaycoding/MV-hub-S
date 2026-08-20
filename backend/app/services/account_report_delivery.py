@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from ..repo import manage as repo_manage
 
 
+_HTTP_409_DEAD_LETTER_STREAK = 3
+
+
 def _error_text(exc: BaseException) -> str:
     if isinstance(exc, HTTPException):
         detail = exc.detail
@@ -99,7 +102,14 @@ def drain_remote_account_reports(
             pushed += repo_manage.mark_account_reports_pushed([row])
         except Exception as exc:  # noqa: BLE001 - 실패한 행만 다음 주기에 재시도
             last_error = _error_text(exc)
-            repo_manage.mark_account_reports_failed([row], last_error)
+            if isinstance(exc, HTTPException) and exc.status_code == 409:
+                repo_manage.mark_account_reports_conflicted(
+                    [row],
+                    last_error,
+                    dead_letter_after=_HTTP_409_DEAD_LETTER_STREAK,
+                )
+            else:
+                repo_manage.mark_account_reports_failed([row], last_error)
             failed += 1
 
     result = {"target": "remote", "pushed": pushed, "failed": failed}

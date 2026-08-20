@@ -367,6 +367,7 @@ async def _application_lifespan(app: FastAPI):
     from .services import asset_watcher
 
     runtime_loop = asyncio.get_running_loop()
+    agent_signals.bind_loop(runtime_loop)
     asset_watcher.start(runtime_loop)
     # 동기 ingest 라우터(anyio 워커)가 텔레메트리 네트워크 전송을 기다리지 않고 이 루프의
     # 단일 백그라운드 drain에 예약할 수 있게 한다.
@@ -429,6 +430,7 @@ async def _application_lifespan(app: FastAPI):
             await history_audit_task
     await stop_history_imports()
     unbind_history_loop(runtime_loop)
+    agent_signals.unbind_loop(runtime_loop)
     if AUTH_ENABLED:
         await periodic_sync.stop()
     asset_watcher.stop()

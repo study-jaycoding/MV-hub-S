@@ -58,7 +58,8 @@ def get_my_uid() -> Optional[str]:
         with get_connection() as conn:
             row = conn.execute(
                 "SELECT creator_uid FROM generation "
-                "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL LIMIT 1"
+                "WHERE id<>job_id AND job_id IS NOT NULL AND creator_uid IS NOT NULL "
+                "ORDER BY sort_ts DESC, created_at DESC, id DESC LIMIT 1"
             ).fetchone()
         uid = row["creator_uid"] if row else None
     _MY_UID_CACHE[0] = uid  # None 이면 캐시 안 됨(위 가드에서 매번 재시도)

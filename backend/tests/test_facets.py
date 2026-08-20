@@ -65,6 +65,26 @@ class GetFacetsTests(unittest.TestCase):
         f = repo.get_facets("u_me")
         self.assertEqual(f["auto_tags"], ["mytag"])
 
+    def test_colors_and_tags_exclude_archived_projects_like_default_listing(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived) "
+                "VALUES('p_archived','Archived','personal',1)"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, color, project_id) VALUES("
+                "'g_archived','me','p','done','2026-06-30',2,'u_me','#gray','p_archived')"
+            )
+            conn.execute("INSERT INTO tag(id, name) VALUES('t_wolf','wolf')")
+            conn.execute(
+                "INSERT INTO gen_tag(generation_id, tag_id) VALUES('g_archived','t_wolf')"
+            )
+
+        facets = repo.get_facets("u_me")
+        self.assertEqual(facets["colors"], ["#red"])
+        self.assertEqual(facets["tags"], ["cat"])
+
     def test_workers_scoped_to_visible_generations(self):
         # 계정 스코프면 '내 생성물 ∪ 공유된 생성물'의 생성자만 — 남의 비공유 작업자는 안 보인다.
         f = repo.get_facets("u_me")

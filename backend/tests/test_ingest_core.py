@@ -148,6 +148,60 @@ class IngestCoreTests(unittest.TestCase):
         self.assertIs(result, expected)
         schedule.assert_called_once_with()
 
+    def test_mcp_backfill_preserves_job_workspace_and_falls_back_only_when_missing(self):
+        items = [
+            {
+                "id": "job-own",
+                "workspace": {"scope": "team", "id": "ws-old", "name": "OLD"},
+            },
+            {"id": "job-missing"},
+            {
+                "id": "job-broken",
+                "workspace": {"scope": "team", "id": "", "name": "BROKEN"},
+            },
+        ]
+        body = IngestMcpIn(
+            items=items,
+            workspace={"scope": "team", "id": "ws-current", "name": "CURRENT"},
+        )
+        expected = IngestOut(linked_uid="u_me")
+        with (
+            mock.patch.object(ingest, "MANAGE_ENABLED", False),
+            mock.patch.object(
+                ingest, "_agent_acc", return_value={"email": "me@example.com"}
+            ),
+            mock.patch.object(ingest, "_ingest_core", return_value=expected) as core,
+        ):
+            result = ingest.ingest_mcp(body, SimpleNamespace())
+
+        self.assertIs(result, expected)
+        jobs = core.call_args.args[1]
+        workspaces = [ingest.cli_bridge.parse_job(job)["generation"] for job in jobs]
+        self.assertEqual(
+            (
+                workspaces[0]["workspace_scope"],
+                workspaces[0]["workspace_id"],
+                workspaces[0]["workspace_name"],
+            ),
+            ("team", "ws-old", "OLD"),
+        )
+        self.assertEqual(
+            (
+                workspaces[1]["workspace_scope"],
+                workspaces[1]["workspace_id"],
+                workspaces[1]["workspace_name"],
+            ),
+            ("team", "ws-current", "CURRENT"),
+        )
+        self.assertEqual(
+            (
+                workspaces[2]["workspace_scope"],
+                workspaces[2]["workspace_id"],
+                workspaces[2]["workspace_name"],
+            ),
+            ("unknown", None, None),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

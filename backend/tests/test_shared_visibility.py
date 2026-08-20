@@ -180,6 +180,15 @@ class SharedVisibilityTests(unittest.TestCase):
         self.assertEqual(counts["p_member"], {"member-folder": 1})
         self.assertEqual(counts["p_other"], {"own-folder": 1})
 
+    def test_folder_counts_fail_closed_for_unknown_account_sentinel(self):
+        self.assertEqual(repo.folder_counts("p_member", account_uid="\x00"), {})
+        self.assertEqual(
+            repo.folder_counts_batch(
+                ["p_member", "p_other"], account_uid="\x00"
+            ),
+            {"p_member": {}, "p_other": {}},
+        )
+
     def test_team_fresh_items_match_visible_team_scope(self):
         items = repo.team_fresh_items(
             "2000-01-01 00:00:00",

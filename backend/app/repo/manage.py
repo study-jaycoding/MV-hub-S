@@ -64,6 +64,7 @@ from .manage_account_reports import (
     account_report_outbox_status,
     latest_account_status_payload,
     list_due_account_reports,
+    mark_account_reports_conflicted,
     mark_account_reports_dead_lettered,
     mark_account_reports_failed,
     mark_account_reports_pushed,

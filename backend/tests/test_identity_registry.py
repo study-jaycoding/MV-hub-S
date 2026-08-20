@@ -91,6 +91,22 @@ class IdentityRegistryTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row[0], "user_A")
 
+    def test_get_my_uid_uses_latest_local_generation_deterministically(self):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO generation(id, job_id, worker_id, prompt, status, created_at, "
+                "sort_ts, creator_uid) VALUES('local-old','job-old','me','p','done',"
+                "'2026-01-01',1,'user_old')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, job_id, worker_id, prompt, status, created_at, "
+                "sort_ts, creator_uid) VALUES('local-new','job-new','me','p','done',"
+                "'2026-01-02',2,'user_new')"
+            )
+        identity._MY_UID_CACHE[0] = None
+
+        self.assertEqual(identity.get_my_uid(), "user_new")
+
 
 if __name__ == "__main__":
     unittest.main()

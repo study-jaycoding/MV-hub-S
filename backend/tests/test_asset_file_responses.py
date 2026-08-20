@@ -53,6 +53,27 @@ class AssetFileResponseTests(unittest.TestCase):
         self.assertTrue(response.headers["content-disposition"].startswith("inline;"))
         self.assertNotIn("text/html", response.headers["content-type"])
 
+    def test_combined_project_serves_only_captures_and_imports(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            captures = root / "captures"
+            captures.mkdir()
+            allowed = captures / "frame.png"
+            allowed.write_bytes(b"image")
+            outside = root / "private.png"
+            outside.write_bytes(b"private")
+            with patch.object(assets, "ASSETS_ROOT", root):
+                response = assets.get_file(
+                    SimpleNamespace(), assets._COMBINED_INTERNAL, "captures/frame.png"
+                )
+                with self.assertRaises(HTTPException) as denied:
+                    assets.get_file(
+                        SimpleNamespace(), assets._COMBINED_INTERNAL, "private.png"
+                    )
+
+        self.assertEqual(Path(response.path), allowed)
+        self.assertEqual(denied.exception.status_code, 404)
+
     def test_unsupported_or_double_extension_is_rejected(self) -> None:
         for filename in ("page.html", "vector.svg", "frame.png.html", "script.js"):
             with self.subTest(filename=filename):

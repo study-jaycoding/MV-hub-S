@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -511,13 +511,13 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
     - http(s) URL           → 공유받은(team) 항목은 file_path 가 원격 URL(Higgsfield)이라
                               그대로면 썸네일을 못 거쳐 풀해상도 원본을 디코딩 → 표시 지연.
                               media_cache 로 바이트를 로컬화한 뒤 동일 썸네일을 만든다.
-    다운로드 실패·비이미지(비디오 등)는 원본 URL 로 리다이렉트해 깨짐을 막는다."""
+    원격 다운로드·썸네일 생성 실패는 같은 오리진 오류로 끝내 외부 리다이렉트를 만들지 않는다."""
     is_remote = src.startswith(("http://", "https://"))
     if is_remote:
         # 썸네일 생성만을 위한 원격 원본은 bounded 전용 캐시 — 영구 MEDIA_DIR에 무한 누적 금지.
         rel = await media_cache.cache_thumb_source(src)
         if not rel:
-            return RedirectResponse(src)  # 캐시 실패 → 원본 그대로(최소 깨짐 방지)
+            raise HTTPException(status_code=502, detail="원격 미디어를 가져오지 못했습니다")
         target = thumbs._media_target(rel)
     else:
         target = thumbs._media_target(src)
@@ -534,7 +534,7 @@ async def media_thumb(src: str = Query(...), w: int = Query(512, ge=64, le=1024)
         cache = await asyncio.to_thread(thumbs.ensure_thumb, target, w)
     if not cache:
         if is_remote:
-            return RedirectResponse(src)  # 생성 실패(손상 등) → 원본으로 폴백
+            raise HTTPException(status_code=502, detail="원격 미디어 썸네일 생성 실패")
         raise HTTPException(status_code=415, detail="썸네일 생성 불가")
     thumbs.mark_thumb_used(cache)  # 실서빙 히트만 LRU 갱신(프리워밍 스윕은 제외)
     return FileResponse(

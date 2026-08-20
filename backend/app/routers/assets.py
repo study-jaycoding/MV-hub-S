@@ -321,6 +321,20 @@ def _safe_resolve(project_dir: Path, rel: str) -> Optional[Path]:
     return safe_join(project_dir, rel)  # 경로 이탈 차단은 공용 path_safety.safe_join 으로 단일화
 
 
+def _safe_project_resolve(project: str, project_dir: Path, rel: str) -> Optional[Path]:
+    """합본 뷰는 ASSETS_ROOT 전체가 아니라 captures/imports 아래만 파일 경계로 쓴다."""
+    target = _safe_resolve(project_dir, rel)
+    if target is None or project != _COMBINED_INTERNAL:
+        return target
+    for folder in _INTERNAL_FOLDERS:
+        try:
+            target.relative_to((project_dir / folder).resolve())
+            return target
+        except ValueError:
+            continue
+    return None
+
+
 def _index_by_sha(
     project_dir: Path, wanted: set[str], limit: int = 100000
 ) -> tuple[dict[str, str], bool]:
@@ -647,7 +661,7 @@ def get_file(request: Request, project: str = Query(...), path: str = Query(...)
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _safe_project_resolve(project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     content_type = asset_content_type(target.name)
@@ -685,7 +699,7 @@ def get_thumb(
     proj_dir = _safe_project_dir(project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {project}")
-    target = _safe_resolve(proj_dir, path)
+    target = _safe_project_resolve(project, proj_dir, path)
     if not target or not target.is_file():
         raise HTTPException(status_code=404, detail="파일 없음")
     # 썸네일 생성·캐시키는 thumbs 서비스로 단일화 — 엔드포인트와 pre-warm 이 같은 키를 써야
@@ -737,7 +751,7 @@ async def upload_assets(
     #  최상위에 저장돼 합본 트리에 안 보이고 루트를 오염시킨다 → imports 폴더로 보낸다(외부 파일 버킷).
     if project == _COMBINED_INTERNAL and not dir:
         dir = _PROMPT_IMPORT_PROJECT
-    dest = _safe_resolve(proj_dir, dir) if dir else proj_dir
+    dest = _safe_project_resolve(project, proj_dir, dir) if dir else proj_dir
     if not dest or not dest.is_dir():
         raise HTTPException(status_code=400, detail="대상 폴더 없음")
     _validate_upload_batch(files)
@@ -917,7 +931,7 @@ def export_zip(
     try:
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for rel in paths:
-                target = _safe_resolve(proj_dir, rel)
+                target = _safe_project_resolve(project, proj_dir, rel)
                 if not target or not target.is_file():
                     continue
                 key = str(target).lower()
@@ -964,7 +978,7 @@ def reveal_file(body: RevealIn, request: Request):
     proj_dir = _safe_project_dir(body.project, request)
     if not proj_dir:
         raise HTTPException(status_code=404, detail=f"프로젝트 없음: {body.project}")
-    target = _safe_resolve(proj_dir, body.path)
+    target = _safe_project_resolve(body.project, proj_dir, body.path)
     if not target or not target.exists():
         raise HTTPException(status_code=404, detail="파일 없음")
     try:
@@ -1016,7 +1030,7 @@ def clipboard_copy_files(body: ClipboardCopyIn, request: Request):
     seen: set[str] = set()
     skipped = 0
     for rel in body.paths:
-        target = _safe_resolve(proj_dir, rel)  # 경로 이탈 차단(safe_join)
+        target = _safe_project_resolve(body.project, proj_dir, rel)
         # is_file() 로 폴더 배제 + 허용 미디어(이미지·영상·오디오) 확장자만.
         if not target or not target.is_file() or target.suffix.lower() not in _CLIPBOARD_MEDIA_EXT:
             skipped += 1
