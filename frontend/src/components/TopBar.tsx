@@ -8,6 +8,7 @@ import type { ProviderIdentity } from "../lib/accountIdentity";
 import { useT } from "../lib/i18n";
 import { AccountMenu } from "./AccountMenu";
 import { FolderIcon } from "./FolderIcon";
+import { NotificationCenter } from "./NotificationCenter";
 import { SearchBox } from "./SearchBox";
 
 interface Props {
@@ -24,6 +25,10 @@ interface Props {
   account?: import("../types").Account | null; // 로그인 계정(AUTH 모드)
   onLogout?: () => void;
   localHub?: boolean; // 로컬 허브(AUTH off) — 워크스페이스 클릭 전환 허용 신호(AccountMenu 로 전달)
+  hasUnreadComments: boolean;
+  notificationUnreadCount?: number;
+  onOpenNotificationComment: (genId: string) => void;
+  onNotificationsChanged: () => void;
 }
 
 export function TopBar({
@@ -40,8 +45,13 @@ export function TopBar({
   account,
   onLogout,
   localHub,
+  hasUnreadComments,
+  notificationUnreadCount,
+  onOpenNotificationComment,
+  onNotificationsChanged,
 }: Props) {
   const t = useT();
+  const [settingsOpenSignal, setSettingsOpenSignal] = useState(0);
   // 제공자 신원 — CLI account status 이메일에서 잡힌 표시이름(계정 메뉴 표시용).
   const [provider, setProvider] = useState<ProviderIdentity | null>(null);
   useEffect(() => {
@@ -114,6 +124,14 @@ export function TopBar({
         </button>
       )}
 
+      <NotificationCenter
+        commentUnreadCount={notificationUnreadCount}
+        hasUnreadComments={hasUnreadComments}
+        onOpenComment={onOpenNotificationComment}
+        onOpenUpdateSettings={() => setSettingsOpenSignal((value) => value + 1)}
+        onChanged={onNotificationsChanged}
+      />
+
       {/* 계정·워크스페이스 통합 메뉴 */}
       <AccountMenu
         provider={provider}
@@ -125,6 +143,7 @@ export function TopBar({
         onWorkspaceContextChange={onWorkspaceContextChange}
         onImported={onImported}
         localHub={localHub}
+        openUpdateSettingsSignal={settingsOpenSignal}
       />
     </header>
   );

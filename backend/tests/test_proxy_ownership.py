@@ -70,6 +70,8 @@ EXPECTED_SERVER_ROUTES = frozenset(
         "/api/manage/workspaces",
         "/api/members",
         "/api/members/{uid}/global-roles",
+        "/api/notifications/comments",
+        "/api/notifications/comments/seen-all",
         "/api/provider",
         "/api/ready",
         "/api/share/publish-bundle",

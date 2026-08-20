@@ -322,13 +322,17 @@ def generation_stats(
             f"SELECT COUNT(*) FROM generation WHERE {failed_where}",
             failed_args,
         ).fetchone()[0]
-        unread = conn.execute(
-            f"SELECT EXISTS (SELECT 1 FROM generation_comment c "
+        unread_count = conn.execute(
+            f"SELECT COUNT(*) FROM generation_comment c "
             f"{ALERT_COMMENT_JOINS} "
-            f"WHERE {ALERT_COMMENT_PREDICATE})",
+            f"WHERE {ALERT_COMMENT_PREDICATE}",
             (viewer_id, viewer_id, viewer_id, viewer_id),
         ).fetchone()[0]
-    return {"failed_count": int(failed), "has_unread": bool(unread)}
+    return {
+        "failed_count": int(failed),
+        "has_unread": bool(unread_count),
+        "unread_count": int(unread_count),
+    }
 
 
 def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[dict[str, Any]]:

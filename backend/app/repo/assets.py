@@ -7,7 +7,12 @@ import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
-from ._common import ALERT_COMMENT_JOINS, ALERT_COMMENT_PREDICATE, new_id
+from ._common import (
+    ALERT_COMMENT_JOINS,
+    ALERT_COMMENT_PREDICATE,
+    ALERT_COMMENT_TARGET_PREDICATE,
+    new_id,
+)
 from .identity import resolve_display_names
 
 
@@ -272,6 +277,63 @@ def list_generation_comments(gen_id: str, viewer_uid: str = "") -> list[dict[str
             c["unread"] = bool(c.get("unread"))
             c["private"] = bool(c.get("private"))
         return out
+
+
+def list_comment_notifications(
+    viewer_uid: str, limit: int = 50
+) -> list[dict[str, Any]]:
+    """최근 30일 생성본 코멘트 알림(최신순).
+
+    읽은 항목도 ``ALERT_COMMENT_TARGET_PREDICATE``로 목록에 남기고, ``unread``만 기존
+    ``ALERT_COMMENT_PREDICATE``로 판정한다. 따라서 카드 C 뱃지·전역 stats·스레드 NEW와
+    알림 센터가 같은 단일 규칙을 사용한다.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT c.id, c.author, w.name AS worker_name, c.text, c.created_at, "
+            f"c.gen_id, g.project_id, "
+            f"(SELECT COALESCE(a.thumbnail_path, CASE WHEN a.type <> 'video' THEN a.file_path END) "
+            f" FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS thumbnail_url, "
+            f"CASE WHEN {ALERT_COMMENT_PREDICATE} THEN 1 ELSE 0 END AS unread "
+            f"FROM generation_comment c "
+            f"{ALERT_COMMENT_JOINS} "
+            f"LEFT JOIN worker w ON w.id=c.author "
+            f"WHERE c.created_at >= datetime('now', '-30 days') "
+            f"AND {ALERT_COMMENT_TARGET_PREDICATE} "
+            f"ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
+            (
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                viewer_uid,
+                limit,
+            ),
+        ).fetchall()
+        out = _name_comments(conn, rows)
+        for comment in out:
+            comment["unread"] = bool(comment.get("unread"))
+        return out
+
+
+def mark_all_comment_notifications_seen(worker_id: str) -> int:
+    """현재 뷰어의 알림 대상 코멘트만 모두 seen 처리한다.
+
+    목록의 30일 표시 범위와 달리 전체 기간을 처리한다. 오래된 미확인 항목 때문에 전역 C 뱃지와
+    벨이 남는 일을 막기 위한 의도적인 차이다.
+    """
+    with get_connection() as conn:
+        before = conn.total_changes
+        conn.execute(
+            f"INSERT OR IGNORE INTO generation_comment_seen(worker_id, comment_id) "
+            f"SELECT ?, c.id FROM generation_comment c "
+            f"{ALERT_COMMENT_JOINS} "
+            f"WHERE {ALERT_COMMENT_PREDICATE}",
+            (worker_id, worker_id, worker_id, worker_id, worker_id),
+        )
+        return conn.total_changes - before
 
 
 def list_private_generation_comments(gen_id: str, author: str) -> list[dict[str, Any]]:

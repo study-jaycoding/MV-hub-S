@@ -35,7 +35,8 @@ def clean_folder_path(path: Optional[str]) -> Optional[str]:
 # 똑같은 알림 규칙을 쓰도록 한곳에서 관리한다. 규칙을 바꾸면 세 경로가 자동으로 일치한다.
 # 별칭 전제: c=generation_comment, g=generation, p=부모 코멘트, s=seen.
 #   ALERT_COMMENT_JOINS     : c 뒤에 붙이는 JOIN 3종. ? 1개(s.worker_id=뷰어).
-#   ALERT_COMMENT_PREDICATE : 알림 대상 판정. ? 3개(c.author<>뷰어, g.creator_uid=뷰어, p.author=뷰어).
+#   ALERT_COMMENT_TARGET_PREDICATE : 읽음과 무관한 알림 대상 판정. ? 3개.
+#   ALERT_COMMENT_PREDICATE : 위 대상 중 아직 안 읽은 것 판정. ? 3개.
 # 바인딩은 위치식(?)이라 최종 SQL 에서 ? 가 나타나는 텍스트 순서대로 인자를 넘겨야 한다
 # (예: WHERE 경로는 JOIN ? → 예측부 3?, SELECT-CASE 경로는 예측부 3? → JOIN ?).
 # 뷰어에게 안 보이는 코멘트는 알림도 못 울린다 — 휴지통 생성물(g.deleted_at)·남의 비공개
@@ -46,9 +47,12 @@ ALERT_COMMENT_JOINS = (
     "LEFT JOIN generation_comment p ON p.id = c.parent_id "
     "LEFT JOIN generation_comment_seen s ON s.worker_id=? AND s.comment_id=c.id"
 )
-ALERT_COMMENT_PREDICATE = (
-    "s.comment_id IS NULL AND c.is_private=0 AND g.deleted_at IS NULL "
+ALERT_COMMENT_TARGET_PREDICATE = (
+    "c.is_private=0 AND g.deleted_at IS NULL "
     "AND c.author <> ? AND (g.creator_uid = ? OR p.author = ?)"
+)
+ALERT_COMMENT_PREDICATE = (
+    "s.comment_id IS NULL AND " + ALERT_COMMENT_TARGET_PREDICATE
 )
 
 # ── 생성물 조회 공통 FROM/JOIN 조각 ────────────────────────────────────────

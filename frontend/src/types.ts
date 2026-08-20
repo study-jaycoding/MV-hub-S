@@ -358,6 +358,19 @@ export interface GenQuery extends Filters {
 export interface GenStats {
   failed_count: number;
   has_unread: boolean;
+  unread_count?: number; // 신백엔드: 알림 대상 미확인 코멘트 수(구백엔드는 필드 없음)
+}
+
+export interface NotificationComment {
+  id: string;
+  text: string;
+  author: string;
+  author_name: string | null;
+  created_at: string;
+  gen_id: string;
+  thumbnail_url: string | null;
+  project_id: string | null;
+  unread: boolean;
 }
 
 // Assets(구성) 패널 — PV 구성탭(폴더 트리)

@@ -20,6 +20,9 @@ export const STORAGE_KEYS = {
   manageTab: "ch.manage.tab",
   manageWorkFilters: "ch.manage.workFilters",
   manageWorkView: "ch.manage.workView",
+  notificationCurrentVersion: "ch.notifications.currentVersion",
+  notificationCompletedUpdate: "ch.notifications.completedUpdate",
+  notificationSeenAvailableVersion: "ch.notifications.seenAvailableVersion",
   projectFolderExpanded: "ch.projects.folderExpanded",
   promptHistory: "ch.promptHistory",
   scenes: "ch.scenes", // Canvas 씬(빈 캔버스) — 카드·연결·카메라, 프로젝트별

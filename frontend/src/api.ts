@@ -312,6 +312,16 @@ export const api = {
   // 패널 파생값(내 실패 수·미확인 코멘트) — 클라이언트 전량 집계 대체.
   generationStats: () => jsonFetch<GenStats>("/api/generations-stats"),
 
+  notificationComments: (limit = 50) =>
+    jsonFetch<import("./types").NotificationComment[]>(
+      `/api/notifications/comments?limit=${limit}`,
+    ),
+  markAllNotificationCommentsSeen: () =>
+    jsonFetch<{ ok: boolean; seen: number }>("/api/notifications/comments/seen-all", {
+      method: "POST",
+      body: jsonBody({}),
+    }),
+
   // ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ────────────────────────
   // 지운 항목 목록(최근 삭제순, prompt·source_name 부분일치). 그리드가 그대로 그림(deleted=true).
   listTrash: (search?: string, offset = 0, limit = GEN_PAGE) => {

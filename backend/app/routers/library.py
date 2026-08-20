@@ -672,11 +672,30 @@ def generation_stats(request: Request):
     실패 수는 실패 정리 API와 동일한 계정 범위, 미확인 여부는 패널 seen 기록과 동일 신원을 쓴다.
     """
     uid = _account_uid(request)
-    return (
+    local = (
         repo.generation_stats(viewer_id=uid, account_uid=uid)
         if uid
         else repo.generation_stats()
     )
+    if not _proxy.proxying():
+        return local
+    try:
+        remote = _proxy.proxy_json("GET", "/api/generations-stats", timeout=5)
+    except HTTPException as exc:
+        # 인증 오류는 숨기지 않는다. 일시적인 서버 장애만 로컬 실패 수/코멘트 상태로 폴백한다.
+        if exc.status_code in (401, 403):
+            raise
+        return local
+    if not isinstance(remote, dict):
+        return local
+    has_unread = bool(remote.get("has_unread"))
+    unread_count = remote.get("unread_count")
+    return {
+        **local,
+        "has_unread": has_unread,
+        # 구팀서버는 has_unread만 준다. 롤링 업데이트 동안 최소 1로 안전하게 폴백한다.
+        "unread_count": int(unread_count) if unread_count is not None else int(has_unread),
+    }
 
 
 # ── 휴지통(별도 DB) — 지운 것 검색·복원·영구삭제 ───────────────────────────

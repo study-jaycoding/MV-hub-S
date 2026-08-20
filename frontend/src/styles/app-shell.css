@@ -85,6 +85,76 @@
 .topbar .topbar-search input { font-size: 12.5px; }
 .topbar .topbar-search .as-icon { font-size: 14px; }
 
+/* 알림 센터 — 계정 왼쪽 벨 + 기존 계정 팝업 톤의 드롭다운 */
+.notification-center { position: relative; display: inline-flex; align-items: center; flex: none; }
+.notification-bell {
+  position: relative; width: 36px; height: 36px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+}
+.notification-bell:hover,
+.notification-bell.on { color: var(--text); background: rgba(255,255,255,0.07); }
+.notification-bell svg { width: 19px; height: 19px; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.notification-badge {
+  position: absolute; top: 1px; right: -2px; min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 2px solid var(--bg); border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 900;
+  line-height: 1; font-variant-numeric: tabular-nums;
+}
+.notification-panel {
+  position: absolute; top: calc(100% + 9px); right: 0; z-index: 75;
+  width: min(380px, calc(100vw - 24px)); overflow: hidden;
+  background: var(--panel, #1c1c22); border: 1px solid var(--border2); border-radius: 13px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.62);
+}
+.notification-head {
+  min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+.notification-head strong { font-size: 14px; }
+.notification-read-all {
+  padding: 5px 7px; border: 0; background: transparent; color: var(--accent);
+  font-size: 11px; font-weight: 700;
+}
+.notification-read-all:hover:not(:disabled) { background: var(--grad-soft); }
+.notification-tabs { display: flex; gap: 16px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+.notification-tabs button {
+  padding: 10px 1px 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: transparent; color: var(--muted); font-size: 11.5px; font-weight: 700;
+}
+.notification-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.notification-list { max-height: min(440px, calc(100vh - 160px)); overflow-y: auto; }
+.notification-item {
+  position: relative; width: 100%; padding: 11px 14px; display: flex; align-items: center; gap: 11px;
+  border: 0; border-bottom: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--text); text-align: left;
+}
+.notification-item:last-child { border-bottom: 0; }
+.notification-item:hover { background: rgba(255,255,255,0.055); }
+.notification-item.unread { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.notification-item.unread:hover { background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.notification-thumb {
+  width: 48px; height: 48px; flex: none; overflow: hidden; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted2); font-size: 19px;
+}
+.notification-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.notification-update-icon { color: var(--accent); font-size: 22px; font-weight: 700; }
+.notification-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.notification-text {
+  overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  color: var(--text); font-size: 12.5px; line-height: 1.38; overflow-wrap: anywhere;
+}
+.notification-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10.5px; }
+.notification-unread-dot {
+  width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+.notification-empty { padding: 34px 16px; text-align: center; color: var(--muted); font-size: 12px; }
+.notification-range-hint { padding: 8px 14px; border-top: 1px solid var(--border); color: var(--muted2); font-size: 10.5px; line-height: 1.4; }
+.notification-error { padding: 8px 14px; border-top: 1px solid var(--border); color: #f5a623; font-size: 10.5px; line-height: 1.4; }
+
 /* 계정·워크스페이스 통합 메뉴(Assets 옆) */
 .acct-menu { position: relative; display: inline-flex; align-items: center; }
 /* 아바타 버튼(투명 래퍼) — 링을 감싼다 */

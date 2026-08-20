@@ -455,7 +455,10 @@ export default function App() {
   useCommentBadgePoll({
     generations: gens,
     setGens,
-    onNewUnread: () => setSyncTick((t) => t + 1),
+    onNewUnread: () => {
+      setSyncTick((t) => t + 1);
+      void reload(true, true); // 공유 카드 폴링이 새 코멘트를 잡으면 전역 벨 stats도 같은 값으로 갱신
+    },
   });
 
   const {
@@ -1276,6 +1279,10 @@ export default function App() {
         account={hubAccount}
         onLogout={onLogout}
         localHub={!authConfig?.auth_enabled}
+        hasUnreadComments={stats.has_unread}
+        notificationUnreadCount={stats.unread_count}
+        onOpenNotificationComment={openComment}
+        onNotificationsChanged={() => void reload(true, true)}
       />
       <div className="body">
         {filters.tab === "compose" ? (

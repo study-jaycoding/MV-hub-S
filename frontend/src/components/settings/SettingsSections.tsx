@@ -463,7 +463,7 @@ export function ReleaseUpdateSettingsSection({
         : "최신 버전";
 
   return (
-    <section className="settings-section">
+    <section className="settings-section" id="settings-release-update">
       <h4>프로그램 업데이트</h4>
       <div className="settings-row">
         <button

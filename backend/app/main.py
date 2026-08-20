@@ -73,6 +73,7 @@ from .routers import (
     ingest,
     library,
     members,
+    notifications,
     projects,
     publish,
     release_update,
@@ -462,6 +463,7 @@ app.include_router(sync.router)
 app.include_router(assets.router)
 app.include_router(projects.router)
 app.include_router(members.router)
+app.include_router(notifications.router)
 app.include_router(ingest.router)
 app.include_router(gen_requests.router)
 app.include_router(publish.router)
