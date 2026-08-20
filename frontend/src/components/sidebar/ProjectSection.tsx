@@ -463,7 +463,7 @@ export function ProjectSection({
             onClick={onViewDeleted}
             title="지운 것만 보기 — 힉스필드 원본엔 영향 없음(우리 카탈로그 휴지통)"
           >
-            <span className="proj-name">{tr("휴지통 보기")}</span>
+            <span className="proj-name">{tr("휴지통")}</span>
           </button>
         </div>
       </section>
