@@ -136,36 +136,6 @@ describe("구서버 폴백 (404/405 한정)", () => {
     expect(res).toEqual({ ok: true, count: 1 });
   });
 
-  it("담당 해제: 구서버 400(mode 미지원)이면 단건 DELETE 로 폴백한다", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(errorResponse(400))
-      .mockResolvedValue(okResponse({ removed: true }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const res = await manageApi.bulkSetAssignments(
-      [{ task_id: "t1", assignee_uids: ["u1", "u2"] }],
-      "remove",
-    );
-
-    expect(res).toEqual({ ok: true, count: 1 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "/api/manage/tasks/t1/assignees/u1",
-      expect.objectContaining({ method: "DELETE" }),
-    );
-  });
-
-  it("담당 교체(replace)는 구서버 폴백 불가 — 명시 오류", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(errorResponse(404));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(
-      manageApi.bulkSetAssignments([{ task_id: "t1", assignee_uids: ["u1"] }], "replace"),
-    ).rejects.toThrow("구버전");
-  });
-
   it("501개 삭제는 500 단위 두 청크로 나눠 보낸다", async () => {
     const fetchMock = vi
       .fn()

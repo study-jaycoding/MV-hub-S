@@ -1,6 +1,6 @@
 // 테이블 뷰 — Notion 데이터베이스식. 시퀀스·마감·설명만 인라인 편집, 컷 셀은 생성물 드롭 타깃.
 // 행 체크박스로 다중선택(하단 선택바에서 삭제), 드래그 핸들(⠿)로 순서 변경. 격자선으로 표 가독성.
-// 담당(배정)은 대시보드에서 관리 — 작업탭엔 표시하지 않는다. 생성자는 실제 생성자(연결 컷 파생)만.
+// 생성자는 실제 생성자(연결 컷 파생)만 — 수동 담당 배정 개념은 폐기됨(2026-08-21).
 import { Fragment, useState } from "react";
 import { useT } from "../../lib/i18n";
 import { ColorTag } from "./ColorTag";
@@ -214,7 +214,7 @@ export function TableView(props: WorkViewProps) {
                   />
                 </td>
                 <td className="work-creators">
-                  {/* 실제 생성자(연결 컷 파생)만. 담당(배정)은 대시보드에서 관리. */}
+                  {/* 실제 생성자(연결 컷 파생)만. */}
                   {t.creators?.length
                     ? t.creators.map((c, i) => (
                         <span key={c}>

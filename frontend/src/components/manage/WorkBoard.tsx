@@ -648,7 +648,7 @@ export function WorkBoard({
     }
     return s;
   }, [tasks, disabled, disabledFolders]);
-  // '내 작업'은 수동 배정뿐 아니라 실제 생성물 creator_uid도 포함한다. 개인 모드에서는
+  // '내 작업'은 실제 생성물 creator_uid 기준 자동 파생만 사용한다(수동 배정 폐기). 개인 모드에서는
   // 각 행의 생성물·크레딧·시간·기간도 본인 컷만으로 다시 계산해 팀 전체 수치가 섞이지 않게 한다.
   const visibleScope = useMemo(
     () => (mineOnly && myUid ? scopeTasksToCreator(effective, myUid) : effective),
@@ -659,7 +659,7 @@ export function WorkBoard({
     [filters, visibleScope],
   );
 
-  // 필터·검색·내 배정 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
+  // 필터·검색·내 작업 보기 중에는 드래그 정렬을 막는다 — 숨겨진 작업과의 상대 순서를 알 수 없어
   // 부분 목록 재정렬이 전역 순서를 임의로 바꾸게 된다(합의 설계: 전체 스냅샷일 때만 저장).
   const filterActive = useMemo(
     () =>
@@ -781,12 +781,12 @@ export function WorkBoard({
           >
             과거 기록
           </button>
-          {/* 실제로 만든 생성물 + 수동 배정 작업을 현재 작업자 기준으로 표시한다. */}
+          {/* 실제로 만든 생성물을 현재 작업자 기준으로 표시한다. */}
           {myUid ? (
             <button
               className={"work-mine-toggle" + (mineOnly ? " on" : "")}
               onClick={() => setMineOnly((v) => !v)}
-              title="내가 만들었거나 배정받은 작업만 보기"
+              title="내가 만든 작업만 보기"
             >
               내 작업만
             </button>

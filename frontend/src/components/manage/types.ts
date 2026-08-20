@@ -271,7 +271,6 @@ export interface Task {
   derived_due?: string | null; // 연결 컷 최종 생성일(YYYY-MM-DD) — PM 미설정 시 마감일 파생
   cuts?: Cut[];
   creators?: string[]; // 실제 생성자(연결 컷 파생)
-  assigned_creators?: { uid: string; name?: string | null }[]; // 담당(배정, 복수) — 대시보드에서 지정
   credits?: number;
   elapsed?: number;
   comment_count?: number;

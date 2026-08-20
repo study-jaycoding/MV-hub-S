@@ -1,5 +1,5 @@
 // 팀 작업(Task) 한 행을 현재 생성자 기준 개인 작업으로 좁힌다.
-// 수동 배정만 기다리지 않고, 실제로 만든 컷의 creator_uid를 기준으로 작업량을 자동 계산한다.
+// 실제로 만든 컷의 creator_uid 기준 자동 파생만 사용한다(수동 담당 배정 개념은 2026-08-21 폐기).
 import type { Cut, Task } from "./types";
 
 export interface TaskModelUsage {
@@ -23,8 +23,7 @@ function personalStatus(task: Task, cuts: Cut[]): string {
 export function scopeTaskToCreator(task: Task, creatorUid: string): Task | null {
   const allCuts = task.cuts || [];
   const cuts = allCuts.filter((cut) => cut.creator_uid === creatorUid);
-  const assigned = (task.assigned_creators || []).some((member) => member.uid === creatorUid);
-  if (!cuts.length && !assigned) return null;
+  if (!cuts.length) return null;
 
   const dates = cuts
     .map((cut) => cut.created_at?.slice(0, 10))

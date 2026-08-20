@@ -136,52 +136,6 @@ export const manageApi = {
       `/api/manage/tasks/${pathPart(tid)}/generations/${pathPart(genId)}`,
       { method: "DELETE" },
     ),
-  // 담당(배정) — 대시보드에서 PM 이 작업자를 배정(=컷 분배). 모두 PM(manage) 권한.
-  addAssignee: (tid: string, uid: string) =>
-    jsonFetch<{ ok: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
-      { method: "POST" },
-    ),
-  removeAssignee: (tid: string, uid: string) =>
-    jsonFetch<{ removed: boolean }>(
-      `/api/manage/tasks/${pathPart(tid)}/assignees/${pathPart(uid)}`,
-      { method: "DELETE" },
-    ),
-  // 여러 작업의 담당을 일괄 설정. mode: replace(교체) | add(추가) | remove(지정 담당 해제)
-  bulkSetAssignments: async (
-    items: { task_id: string; assignee_uids: string[] }[],
-    mode: "replace" | "add" | "remove",
-  ) => {
-    let count = 0;
-    for (const chunk of chunked(items)) {
-      try {
-        const res = await jsonFetch<{ ok: boolean; count: number }>(
-          "/api/manage/tasks/assignees/bulk",
-          { method: "PATCH", body: jsonBody({ mode, items: chunk }) },
-        );
-        count += res.count;
-        continue;
-      } catch (error) {
-        // 구서버 판별: 라우트 자체가 없으면 404/405, mode="remove" 미지원 구서버는 400을 낸다.
-        // remove 만 400 도 폴백 사유로 인정(다른 mode 의 400 은 진짜 입력 오류라 전파).
-        const legacy = isLegacyServer(error) || (mode === "remove" && isHttpStatus(error, 400));
-        if (!legacy) throw error;
-      }
-      warnLegacyBatchOnce();
-      if (mode === "replace") {
-        // 구 단건 API(add/remove)로는 '교체'를 원자적으로 재현할 수 없다 — 명시 오류.
-        throw new Error("공유 서버가 구버전이라 담당 일괄 교체를 지원하지 않습니다. 서버를 업데이트해 주세요.");
-      }
-      for (const item of chunk) {
-        for (const uid of item.assignee_uids) {
-          if (mode === "add") await manageApi.addAssignee(item.task_id, uid);
-          else await manageApi.removeAssignee(item.task_id, uid);
-        }
-        count += 1;
-      }
-    }
-    return { ok: true, count };
-  },
   // 팀 전체 집계(manage-T4) — 서버 manage_hub.db 를 읽어 매니저 대시보드에 낸다.
   teamOverview: (f: TeamFilters = {}) =>
     jsonFetch<TeamOverview>(
