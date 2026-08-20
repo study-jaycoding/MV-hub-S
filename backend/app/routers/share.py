@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -39,6 +40,27 @@ _FINAL_UNPUBLISH_DETAIL = (
 
 # 단일 정의로 통합(_telemetry.touch_generation_telemetry) — publish.py 와 복붙돼 있던 것.
 _touch_telemetry = touch_generation_telemetry
+
+
+@contextmanager
+def _stable_proxy_identity_lock(requested_id: str):
+    """잠금 전후 id 매핑이 같은 identity를 가리킬 때만 프록시 변경을 허용한다.
+
+    로컬 행 물질화 등으로 기다리는 사이 server_id가 바뀌면 실제 대상 키를 잡지 않은 상태다.
+    원장 prepare 전에 409로 닫아 다음 요청이 새 매핑으로 다시 잠그게 한다.
+    """
+    server_origin = _proxy.base_url()
+    local_id, server_id = repo.finalize_id_map(requested_id)
+    locked_key = repo.share_state_identity_key(server_origin, job_anchor=server_id)
+    with repo.share_state_action_locks([locked_key]):
+        local_id, server_id = repo.finalize_id_map(requested_id)
+        actual_key = repo.share_state_identity_key(server_origin, job_anchor=server_id)
+        if actual_key != locked_key:
+            raise HTTPException(
+                status_code=409,
+                detail="generation 식별자가 갱신되었습니다. 요청을 다시 시도하세요",
+            )
+        yield local_id, server_id
 
 
 def _local_id_from_out(out) -> str | None:
@@ -299,15 +321,8 @@ def unpublish(gen_id: str, request: Request):
     # 성공해야 로컬도 해제한다 — 실패(서버 다운/권한/만료)를 삼키면 "로컬은 해제됨, 팀엔 그대로
     # 노출"이라는 프라이버시 누수가 무음으로 생긴다. 단 404(서버에 이미 없음)는 목표 달성으로 간주.
     if _proxy.proxying():
-        local_id, server_id = repo.finalize_id_map(requested_id)
-        lock_kwargs = (
-            {"job_anchor": server_id}
-            if local_id
-            else {"server_generation_id": server_id}
-        )
-        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
-            # 잠금을 기다린 뒤 로컬 final 가드와 identity를 다시 읽어 finalize 교차 실행을 직렬화한다.
-            local_id, server_id = repo.finalize_id_map(requested_id)
+        with _stable_proxy_identity_lock(requested_id) as (local_id, server_id):
+            # 잠금을 기다린 뒤 로컬 final 가드도 다시 읽어 finalize 교차 실행을 직렬화한다.
             current = repo.get_generation(local_id) if local_id else None
             _ensure_not_final_before_unpublish(current)
             ref = _prepare_proxy_intent(
@@ -404,14 +419,7 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
-        local_id, server_id = repo.finalize_id_map(requested_id)
-        lock_kwargs = (
-            {"job_anchor": server_id}
-            if local_id
-            else {"server_generation_id": server_id}
-        )
-        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
-            local_id, server_id = repo.finalize_id_map(requested_id)
+        with _stable_proxy_identity_lock(requested_id) as (local_id, server_id):
             current = repo.get_generation(local_id) if local_id else None
             finalizer_uid = _finalizer_uid(request)
             composite = bool(current is not None and not current.get("shared"))
@@ -515,14 +523,7 @@ def unfinalize(gen_id: str, request: Request):
     gen_id = repo.resolve_local_id(gen_id)  # 서버 핸들러가 job_id 로 와도 자기 행을 찾게(내작업탭→서버 방향)
     gen = repo.get_generation(gen_id)
     if _proxy.proxying():
-        local_id, server_id = repo.finalize_id_map(requested_id)
-        lock_kwargs = (
-            {"job_anchor": server_id}
-            if local_id
-            else {"server_generation_id": server_id}
-        )
-        with repo.share_state_action_lock(_proxy.base_url(), **lock_kwargs):
-            local_id, server_id = repo.finalize_id_map(requested_id)
+        with _stable_proxy_identity_lock(requested_id) as (local_id, server_id):
             current = repo.get_generation(local_id) if local_id else None
             ref = _prepare_proxy_intent(
                 local_id=local_id,

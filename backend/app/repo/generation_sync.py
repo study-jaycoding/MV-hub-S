@@ -26,6 +26,7 @@ def _upsert_synced(
     worker_id: str,
     tombstoned: Optional[set[str]] = None,
     workspace: Optional[dict[str, Any]] = None,
+    adopt_owner_uid: Optional[str] = None,
 ) -> str:
     """업서트 본체 — 주어진 커넥션에서 실행(트랜잭션 제어는 호출측). apply_synced_jobs 가
     한 트랜잭션에 묶어 호출하고, 단건 wrapper(upsert_synced_generation)는 자체 커넥션을 연다.
@@ -73,16 +74,22 @@ def _upsert_synced(
             "ORDER BY CASE WHEN origin='synced' THEN 0 ELSE 1 END LIMIT 1",
             (job_id, job_id),
         ).fetchone()
-        # URL 매칭 — id/job_id 로 못 찾았고 결과 URL 이 있으면, 같은 결과물을 가진 로컬 생성본을
-        # 찾는다(create 가 job_id 를 못 받았거나 list id 와 다른 경우의 안전망). job_id 를 덮어쓴다.
+        # URL 매칭 — id/job_id 로 못 찾았고 결과 URL 이 있으면, 같은 결과물을 가진 **같은 소유자**의
+        # 로컬 생성본만 찾는다(create 가 job_id 를 못 받았거나 list id 와 다른 경우의 안전망).
+        # URL은 계정 간에도 재사용될 수 있으므로 creator_uid 없는 행이나 다른 사람 행은 adopt하지 않는다.
+        # adopt_owner_uid는 인증 ingest에서 acct: 임시 uid→실제 user_* 전환 중인 내 행만 살리는 좁은
+        # 별칭이다. 주기 sync·공유 import는 이 계정 증거가 없어 incoming creator 정확 일치만 허용한다.
         adopt = False
         if not existing and result_url:
+            incoming_creator_uid = str(g.get("creator_uid") or "").strip() or None
+            scoped_owner_uid = str(adopt_owner_uid or "").strip() or None
             existing = conn.execute(
                 "SELECT g.id, g.status, g.error, g.workspace_scope, g.creator_uid, g.model, g.origin "
                 "FROM generation g "
                 "JOIN asset a ON a.generation_id=g.id "
-                "WHERE a.file_path=? OR a.source_url=? LIMIT 1",
-                (result_url, result_url),
+                "WHERE (a.file_path=? OR a.source_url=?) "
+                "AND g.creator_uid IN (?, ?) LIMIT 1",
+                (result_url, result_url, incoming_creator_uid, scoped_owner_uid),
             ).fetchone()
             adopt = existing is not None
 
@@ -375,6 +382,7 @@ def apply_synced_jobs(
     *,
     changed_job_ids: Optional[set[str]] = None,
     track_telemetry: bool = False,
+    adopt_owner_uid: Optional[str] = None,
 ) -> dict[str, int]:
     """동기화 잡 묶음을 **한 커넥션·한 트랜잭션**으로 업서트 + hf_missing 해제. 카운트 반환.
 
@@ -412,7 +420,12 @@ def apply_synced_jobs(
                     conn.execute("SAVEPOINT j")
                     try:
                         result = _upsert_synced(
-                            conn, parsed, worker_id, tombstoned, workspace
+                            conn,
+                            parsed,
+                            worker_id,
+                            tombstoned,
+                            workspace,
+                            adopt_owner_uid,
                         )
                         counts[result] += 1
                         if result in {"inserted", "updated"}:

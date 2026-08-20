@@ -23,6 +23,7 @@ from ..deps import (
     account_actor_uid,
     actor_id,
     realtime_scope,
+    require_admin,
     require_agent_account,
     require_project_role,
     require_view_generation,
@@ -32,6 +33,7 @@ from ..models import (
     CanvasLinkRepairIn,
     CanvasManualClaimIn,
     FulfillIn,
+    GenerationDeploymentPauseIn,
     GenerationOut,
     GenRequestIn,
     PendingRequestOut,
@@ -74,11 +76,31 @@ _generation_log = logging.getLogger("mvhub.generation")
 _AGENT_UPDATE_REQUIRED_MESSAGE = (
     "에이전트 업데이트가 필요합니다. 최신 에이전트로 업데이트한 후 다시 이용해 주세요."
 )
+_GENERATION_DEPLOYMENT_PAUSE_KEY = "generation_deployment_paused"
+_GENERATION_DEPLOYMENT_PAUSE_MESSAGE = (
+    "배포 준비로 새 생성 요청과 에이전트 실행 접수를 잠시 중지했습니다. 잠시 후 다시 시도해 주세요."
+)
+_TRUE_SETTING_VALUES = frozenset({"1", "true", "yes", "on"})
 # 구 에이전트는 idle마다 폴링하므로 계정별 안내·운영 로그를 짧게 합친다. 영구 1회성으로
 # 만들면 안내 순간 브라우저가 닫혀 있던 사용자가 이후에도 원인을 못 보므로 5분 뒤 재안내한다.
 _AGENT_UPDATE_NOTICE_THROTTLE_SECONDS = 300.0
 _AGENT_UPDATE_NOTICE_MAX_ACCOUNTS = 4096
 _agent_update_notice_at: dict[str, float] = {}
+
+
+def _generation_deployment_paused() -> bool:
+    """DB에 영속된 배포 창 스위치. 키가 없으면 기존 동작(open)을 유지한다."""
+    value = repo.get_setting(_GENERATION_DEPLOYMENT_PAUSE_KEY, "0")
+    return str(value or "").strip().lower() in _TRUE_SETTING_VALUES
+
+
+async def _require_generation_deployment_open() -> None:
+    if await asyncio.to_thread(_generation_deployment_paused):
+        raise HTTPException(
+            status_code=503,
+            detail=_GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+            headers={"Retry-After": "60"},
+        )
 
 
 def _submission_stage_capable(caps: set[str], agent_id: str | None) -> bool:
@@ -220,6 +242,7 @@ async def create_gen_request(body: GenRequestIn, request: Request):
             detail="프로그램 업데이트가 진행 중이라 새 생성을 시작할 수 없습니다",
         )
     acc = _require_account(request)
+    await _require_generation_deployment_open()
     workspace = await asyncio.to_thread(
         _validated_generation_workspace, body.workspace, acc["email"]
     )
@@ -345,6 +368,30 @@ async def create_gen_request(body: GenRequestIn, request: Request):
     return gen
 
 
+@router.get("/gen-requests/deployment-pause")
+def generation_deployment_pause(request: Request):
+    """현재 배포 창 생성 일시중지 상태(관리자 전용)."""
+    require_admin(request)
+    return {
+        "paused": _generation_deployment_paused(),
+        "message": _GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+    }
+
+
+@router.put("/gen-requests/deployment-pause")
+def set_generation_deployment_pause(
+    body: GenerationDeploymentPauseIn,
+    request: Request,
+):
+    """배포 창 생성 접수·claim 일시중지를 DB에 영속한다(관리자 전용)."""
+    require_admin(request)
+    repo.set_setting(_GENERATION_DEPLOYMENT_PAUSE_KEY, "1" if body.paused else "0")
+    return {
+        "paused": body.paused,
+        "message": _GENERATION_DEPLOYMENT_PAUSE_MESSAGE,
+    }
+
+
 @router.post("/gen-requests/canvas-links/resolve")
 def resolve_canvas_generation_links(body: CanvasLinkResolveIn, request: Request):
     """재시작한 캔버스가 요청 전 저장한 attempt와 실제 generation 연결을 복구한다."""
@@ -421,6 +468,7 @@ async def pending_gen_requests_exist(
 ):
     """idle 에이전트가 큐를 선점하지 않고 값싼 읽기로 깨움 신호 유실을 복구한다."""
     acc = _require_account(request)
+    await _require_generation_deployment_open()
     agent_signals.touch(acc["email"])
     caps = {c.strip() for c in capability.split(",") if c.strip()}
     if await _paid_claim_blocked(
@@ -455,6 +503,7 @@ async def pending_gen_requests(
     내리지 않는다. limit는 에이전트가 지금 제출할 수 있는 요청 수다.
     """
     acc = _require_account(request)
+    await _require_generation_deployment_open()
     # capability: 에이전트가 지원 기능을 콤마 목록으로 밝힌다.
     # 'workspace' 가 없으면(구 에이전트) 워크스페이스 지정 요청은 내려주지 않는다 — 지정을
     # 무시하고 현재 CLI 공간에서 실행·과금되는 사고 방지. 구 서버는 이 파라미터를 무시한다(하위호환).

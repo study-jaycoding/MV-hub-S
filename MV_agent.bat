@@ -175,11 +175,18 @@ echo [4/5] Starting local hub ^(background; log: backend\hub.log^)  %HUB%
 REM Stop any hub left running on this port from a previous launch. Without this, an old
 REM backend process keeps the port and the freshly-updated code never takes effect
 REM (symptom: code updates do not apply until the machine reboots).
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr "LISTENING" ^| findstr ":%PORT%"') do taskkill /f /pid %%p >nul 2>nul
+REM The helper verifies an exact absolute backend\serve.py command-line token and
+REM rechecks process identity immediately before stopping it. Foreign owners fail closed.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
+if errorlevel 1 (
+  echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
+  echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
+  goto :err
+)
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.
 cd /d "%ROOT%backend"
-start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% serve.py > hub.log 2>&1"
+start "" /b cmd /c ""%PY_EXE%" %PY_ARGS% "%ROOT%backend\serve.py" > hub.log 2>&1"
 cd /d "%ROOT%"
 
 echo     Waiting for the hub to come up...

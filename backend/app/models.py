@@ -251,6 +251,12 @@ class CanvasManualClaimIn(BaseModel):
 
 
 # ── 로컬 실행 생성요청(gen-request) — 버튼은 요청만, 실행은 각자 로컬 에이전트 ──────
+class GenerationDeploymentPauseIn(BaseModel):
+    """혼합 배포 창 동안 생성 접수·claim을 멈추는 관리자 스위치."""
+
+    paused: bool
+
+
 class GenRequestIn(BaseModel):
     """허브의 생성/재생성 버튼이 서버에 남기는 '로컬 실행 요청'. 서버는 placeholder 카드만
     즉시 만들고, 요청자의 PC 에이전트가 가져가 자기 로컬 CLI 로 실행한다."""

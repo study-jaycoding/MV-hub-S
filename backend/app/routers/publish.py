@@ -464,6 +464,7 @@ def publish_bundle_to_server(
     lock_keys = [
         repo.share_state_identity_key(url, job_anchor=anchor) for _, anchor in initial
     ]
+    held_lock_keys = set(lock_keys)
     with repo.share_state_action_locks(lock_keys):
         # 잠금을 기다리는 동안 상태가 바뀔 수 있으므로 번들과 base 상태를 잠금 안에서 다시 만든다.
         targets: list[dict[str, Any]] = []
@@ -479,6 +480,17 @@ def publish_bundle_to_server(
             targets.append({"local_id": gid, "anchor": anchor, "generation": gen})
         if not targets:
             raise HTTPException(status_code=400, detail="발행할 완료본이 없습니다(진행중/실패 제외)")
+        # 기다리는 사이 job_id가 생기거나 바뀌면 잠금 전 앵커와 실제 발행 앵커가 달라질 수 있다.
+        # 실제 키를 잡지 않았다면 원장 prepare·원격 호출 전에 안전 실패시켜 재시도 때 새 키를 잡는다.
+        actual_lock_keys = {
+            repo.share_state_identity_key(url, job_anchor=target["anchor"])
+            for target in targets
+        }
+        if not actual_lock_keys.issubset(held_lock_keys):
+            raise HTTPException(
+                status_code=409,
+                detail="발행 대상 식별자가 갱신되었습니다. 요청을 다시 시도하세요",
+            )
         bundle = repo.export_bundle(gen_ids=[target["local_id"] for target in targets])
         bundle_anchors = {
             str((item.get("generation") or {}).get("id"))

@@ -353,6 +353,33 @@ def test_publish_ledger_failure_returns_503_without_server_call(isolated_content
     assert repo.get_generation(gen_id)["shared"] is False
 
 
+def test_publish_identity_drift_fails_before_ledger_or_server(isolated_content_db):
+    gen_id = _seed_generation(job_id="old-anchor")
+    original = repo.get_generation(gen_id)
+    materialized = dict(original, job_id="new-anchor")
+    reads = 0
+
+    def drifting_generation(_gen_id):
+        nonlocal reads
+        reads += 1
+        return original if reads <= 2 else materialized
+
+    with (
+        mock.patch.object(publish.repo, "get_generation", side_effect=drifting_generation),
+        mock.patch.object(publish.repo, "prepare_share_state_intents") as prepare,
+        mock.patch.object(publish.repo, "export_bundle") as export,
+        mock.patch.object(publish, "_http_json") as remote,
+        pytest.raises(HTTPException) as raised,
+    ):
+        publish.publish_bundle_to_server([gen_id])
+
+    assert raised.value.status_code == 409
+    prepare.assert_not_called()
+    export.assert_not_called()
+    remote.assert_not_called()
+    assert _ledger_rows() == []
+
+
 def test_crash_after_write_ahead_keeps_prepared_and_local_unchanged(isolated_content_db):
     gen_id = _seed_generation()
     with mock.patch.object(
@@ -417,6 +444,39 @@ def test_blocked_bundle_id_only_cancels_matching_intent(isolated_content_db):
     assert repo.get_generation(second)["shared"] is True
     assert result["blocked"] == 1
     assert result["published"] == 1
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        lambda gen_id: share.unpublish(gen_id, _request()),
+        lambda gen_id: share.finalize(gen_id, _request(), BackgroundTasks()),
+        lambda gen_id: share.unfinalize(gen_id, _request()),
+    ],
+    ids=["unpublish", "finalize", "unfinalize"],
+)
+def test_proxy_identity_drift_fails_before_ledger_or_server(isolated_content_db, action):
+    gen_id = _seed_generation(shared=True, final=False)
+    with (
+        mock.patch.object(share._proxy, "proxying", return_value=True),
+        mock.patch.object(
+            share.repo,
+            "finalize_id_map",
+            side_effect=[
+                (gen_id, "old-anchor"),
+                (gen_id, "new-anchor"),
+            ],
+        ),
+        mock.patch.object(share.repo, "prepare_share_state_intent") as prepare,
+        mock.patch.object(share._proxy, "proxy_json") as remote,
+        pytest.raises(HTTPException) as raised,
+    ):
+        action(gen_id)
+
+    assert raised.value.status_code == 409
+    prepare.assert_not_called()
+    remote.assert_not_called()
+    assert _ledger_rows() == []
 
 
 def test_unfinalize_local_failure_is_200_mirror_pending_without_backout(isolated_content_db):

@@ -108,6 +108,104 @@ class GenerationSyncTests(unittest.TestCase):
                 1,
             )
 
+    def test_url_adopt_requires_the_same_creator(self) -> None:
+        owner_id = repo.create_local_generation(
+            {"prompt": "owner prompt", "model": "image-model", "params": {}},
+            "me",
+            creator_uid="u_owner",
+        )
+        shared_url = "https://cdn.example/shared-result.png"
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE generation SET status='done', job_id='owner-job' WHERE id=?",
+                (owner_id,),
+            )
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, source_url) "
+                "VALUES('owner-asset', ?, 'image', ?, ?)",
+                (owner_id, shared_url, shared_url),
+            )
+
+        incoming = self.parsed("other-job", creator_uid="u_other")
+        incoming["asset"]["file_path"] = shared_url
+        self.assertEqual(repo.upsert_synced_generation(incoming, "me"), "inserted")
+
+        with db.get_connection() as conn:
+            owner = conn.execute(
+                "SELECT status, job_id, creator_uid FROM generation WHERE id=?", (owner_id,)
+            ).fetchone()
+            other = conn.execute(
+                "SELECT id, creator_uid FROM generation WHERE job_id='other-job'"
+            ).fetchone()
+        self.assertEqual(
+            dict(owner),
+            {
+                "status": "done",
+                "job_id": "owner-job",
+                "creator_uid": "u_owner",
+            },
+        )
+        self.assertIsNotNone(other)
+        self.assertNotEqual(other["id"], owner_id)
+        self.assertEqual(other["creator_uid"], "u_other")
+
+    def test_url_adopt_still_recovers_same_creator_local_row(self) -> None:
+        local_id = repo.create_local_generation(
+            {"prompt": "local prompt", "model": "image-model", "params": {}},
+            "me",
+            creator_uid="u_one",
+        )
+        result_url = "https://cdn.example/recovered-result.png"
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, source_url) "
+                "VALUES('local-asset', ?, 'image', ?, ?)",
+                (local_id, result_url, result_url),
+            )
+
+        parsed = self.parsed("recovered-job")
+        parsed["asset"]["file_path"] = result_url
+        self.assertEqual(repo.upsert_synced_generation(parsed, "me"), "updated")
+
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, job_id, creator_uid FROM generation"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], local_id)
+        self.assertEqual(rows[0]["job_id"], "recovered-job")
+        self.assertEqual(rows[0]["creator_uid"], "u_one")
+
+    def test_url_adopt_accepts_verified_account_transition_alias(self) -> None:
+        local_id = repo.create_local_generation(
+            {"prompt": "local prompt", "model": "image-model", "params": {}},
+            "me",
+            creator_uid="acct:artist@example.com",
+        )
+        result_url = "https://cdn.example/account-transition.png"
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, source_url) "
+                "VALUES('transition-asset', ?, 'image', ?, ?)",
+                (local_id, result_url, result_url),
+            )
+
+        parsed = self.parsed("transition-job", creator_uid="user_artist")
+        parsed["asset"]["file_path"] = result_url
+        counts = repo.apply_synced_jobs(
+            [parsed], "me", adopt_owner_uid="acct:artist@example.com"
+        )
+
+        self.assertEqual(counts["updated"], 1)
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, job_id, creator_uid FROM generation"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], local_id)
+        self.assertEqual(rows[0]["job_id"], "transition-job")
+        self.assertEqual(rows[0]["creator_uid"], "user_artist")
+
     def test_bad_item_rolls_back_only_its_savepoint(self) -> None:
         broken = self.parsed("job-bad")
         del broken["generation"]["prompt"]

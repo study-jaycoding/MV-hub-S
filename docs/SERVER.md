@@ -21,18 +21,54 @@
                        └─ /media/*      → 로컬 미디어
 ```
 
-## 업데이트(롤아웃) 순서 — ★공유 서버 먼저
+## 업데이트(롤아웃) 순서 — ★생성 fence 후 공유 서버 먼저
 
 경로가 둘이다: **서버 = git 클론에서 `update_git.bat`**, **작업자 = 릴리스 ZIP 배포 후
 앱 안 "설정 → 프로그램 업데이트" 버튼**(수동은 `update_release.bat`). 릴리스 제작·게시는
 `release/README.md` 참고.
 
-새 버전을 배포할 때는 **공유 서버를 먼저(또는 동시에) 업데이트**하고, 그 다음 워커 PC
-로컬 허브를 올린다. 새 허브의 배치 쓰기(작업 순서/삭제/담당해제·팀 카드 색/태그)는 구서버
-상대로 404/400 폴백 안전망이 있지만, 폴백은 과도기용이지 정상 운영 경로가 아니다 —
-순서를 지키면 폴백 자체가 발동하지 않는다. (반대 순서 = 구 허브 + 신 서버는 항상 안전.)
+혼합 버전에서 구 에이전트가 이미 받은 유료 생성 요청을 나중에 실행하는 창을 닫기 위해 다음 순서를
+반드시 지킨다. 관리자 API 호출에는 로그인으로 받은 관리자 Bearer 토큰을
+`$env:MVHUB_ADMIN_TOKEN`에 넣어 둔다(토큰을 문서나 명령 기록에 직접 붙여 넣지 않는다).
 
-예외 — 워크스페이스 지정 생성요청: 신 서버는 워크스페이스가 지정된 대기 요청을
+1. 생성 접수·claim 일시중지:
+
+   ```powershell
+   Invoke-RestMethod -Method Put -Uri "http://localhost:8010/api/gen-requests/deployment-pause" -Headers @{Authorization="Bearer $env:MVHUB_ADMIN_TOKEN"} -ContentType "application/json" -Body '{"paused":true}'
+   ```
+
+2. 서버 PC의 저장소 루트에서 아래 **한 줄**을 한 번 실행하고 종료 코드 `0`과 `[통과]`를 확인:
+
+   ```powershell
+   py -3 tools\deploy_fence_check.py
+   ```
+
+   기본 위치가 아닌 DB는 `--db "D:\실제경로\content_hub.db"`를 붙인다. 검사는 DB를 읽기 전용으로
+   열며, 다음 중 하나라도 만족하지 않으면 배포를 막는 종료 코드 `2`를 반환한다.
+
+   - DB의 `generation_deployment_paused` 스위치가 ON
+   - `gen_request.status`가 `done/failed/canceled`가 아닌 행이 0건. 알려지지 않은 새 상태도 안전하게 미종결로 센다.
+   - `generation.status`가 `pending/running`인 행이 0건. 요청표와 연결되지 않은 placeholder,
+     동기화본, provider 진행 흔적도 빠뜨리지 않고 보수적으로 센다.
+
+   DB 파일·스키마를 읽지 못하면 종료 코드 `3`이다. `2`나 `3`을 무시하고 업데이트하지 않는다.
+   일시중지 전에 이미 시작된 `anchor/fulfill/reconcile/fail` 보고는 계속 받아 자연히 종결되지만,
+   남은 `pending/blocked/recovery_required`는 자동으로 숨기지 않으므로 원인을 확인해 명시적으로
+   종결한 뒤 fence를 다시 실행한다.
+
+3. `update_git.bat`으로 **공유 서버를 먼저** 배포하고 `/api/ready` 200을 확인한다.
+4. `release/README.md` 절차로 모든 작업자 PC의 허브·에이전트를 새 릴리스로 전환한다.
+5. 생성 접수 재개:
+
+   ```powershell
+   Invoke-RestMethod -Method Put -Uri "http://localhost:8010/api/gen-requests/deployment-pause" -Headers @{Authorization="Bearer $env:MVHUB_ADMIN_TOKEN"} -ContentType "application/json" -Body '{"paused":false}'
+   ```
+
+스위치는 `app_setting`에 영속되므로 서버 재시작·롤백 뒤에도 자동으로 풀리지 않는다. 에이전트 전환과
+준비 상태 확인이 끝난 뒤 반드시 5단계를 실행한다. 새 허브의 배치 쓰기(작업 순서/삭제/담당해제·팀
+카드 색/태그)는 구서버 상대로 404/400 폴백 안전망이 있지만, 폴백은 과도기용이지 정상 운영 경로다.
+
+워크스페이스 지정 생성요청: 신 서버는 워크스페이스가 지정된 대기 요청을
 capability 를 밝힌 신 에이전트에게만 내려준다. 구 에이전트는 그 요청을 집지 못하고
 pending 으로 남으므로, 서버 업데이트 후 **워커 PC(에이전트)도 곧 업데이트**해야
 지정 요청이 처리된다(잘못된 워크스페이스에서 실행·과금되는 것을 막기 위한 게이트).

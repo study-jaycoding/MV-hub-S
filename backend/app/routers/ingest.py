@@ -198,10 +198,17 @@ def _ingest_core(acc, jobs, creator_uid, account_status, workspace=None) -> Inge
     # 나머지는 반영되고, 실패분은 skipped 와 구분해 errors 로 응답(코덱스: 계약 명시).
     errors = 0
     if staged:
-        if workspace is None:
-            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID)
-        else:
-            bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID, workspace=workspace)
+        # 계정의 실제 user_* uid와 다른 incoming creator를 같은 사람으로 추측하지 않는다.
+        # 최초 연결 전 합성 acct: uid만, 위에서 이메일이 검증된 계정의 전환 별칭으로 허용한다.
+        adopt_owner_uid = (
+            str(cur_uid) if cur_uid and str(cur_uid).startswith("acct:") else None
+        )
+        sync_kwargs = {}
+        if workspace is not None:
+            sync_kwargs["workspace"] = workspace
+        if adopt_owner_uid is not None:
+            sync_kwargs["adopt_owner_uid"] = adopt_owner_uid
+        bcounts = repo.apply_synced_jobs(staged, DEFAULT_WORKER_ID, **sync_kwargs)
         for k in ("inserted", "updated", "unchanged"):
             counts[k] += bcounts.get(k, 0)
         errors = bcounts.get("errors", 0)
