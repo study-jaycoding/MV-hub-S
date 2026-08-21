@@ -548,10 +548,19 @@ def claim_due_share_state_intents(
     limit: int = 10,
     lease_seconds: int = 120,
     now: Optional[str] = None,
+    server_origin: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """due 조회와 여러 행 claim을 한 BEGIN IMMEDIATE 트랜잭션에서 수행한다."""
+    """due 조회와 여러 행 claim을 한 BEGIN IMMEDIATE 트랜잭션에서 수행한다.
+
+    server_origin 을 주면 그 권위 서버의 행만 claim 한다(R5 2-A) — 종전엔 다른 서버의
+    오래된 due 행이 batch 창(limit)을 채워 현재 서버 행이 굶고, 사이클마다 무의미한
+    claim/release 가 반복됐다. 다른 서버 행은 건드리지 않으므로 서버를 다시 전환하면
+    그대로 재개된다."""
     due_at = now or "9999-12-31 23:59:59"
     modifier = f"+{max(int(lease_seconds), 1)} seconds"
+    origin = normalize_share_server_origin(server_origin) if server_origin else None
+    origin_clause = "AND server_origin=? " if origin is not None else ""
+    origin_params = (origin,) if origin is not None else ()
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -559,19 +568,21 @@ def claim_due_share_state_intents(
                 rows = conn.execute(
                     "SELECT intent_id, intent_seq FROM share_state_intent "
                     "WHERE status IN (?,?,?,?) "
+                    f"{origin_clause}"
                     "AND (next_retry_at IS NULL OR next_retry_at<=datetime('now')) "
                     "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=datetime('now')) "
                     "ORDER BY COALESCE(next_retry_at, created_at), intent_seq LIMIT ?",
-                    (*_CLAIMABLE_STATUSES, max(int(limit), 1)),
+                    (*_CLAIMABLE_STATUSES, *origin_params, max(int(limit), 1)),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT intent_id, intent_seq FROM share_state_intent "
                     "WHERE status IN (?,?,?,?) "
+                    f"{origin_clause}"
                     "AND (next_retry_at IS NULL OR next_retry_at<=?) "
                     "AND (claim_token IS NULL OR lease_until IS NULL OR lease_until<=?) "
                     "ORDER BY COALESCE(next_retry_at, created_at), intent_seq LIMIT ?",
-                    (*_CLAIMABLE_STATUSES, due_at, due_at, max(int(limit), 1)),
+                    (*_CLAIMABLE_STATUSES, *origin_params, due_at, due_at, max(int(limit), 1)),
                 ).fetchall()
             for row in rows:
                 if now is None:
@@ -588,10 +599,13 @@ def claim_due_share_state_intents(
                         "WHERE intent_id=? AND intent_seq=?",
                         (claim_token, now, modifier, row["intent_id"], row["intent_seq"]),
                     )
+            # 최종 SELECT 에도 origin 조건(코덱스) — 같은 claim_token 을 재사용하는
+            # worker 가 과거에 잡아둔 다른 origin 행이 섞여 나오지 않게 한다.
             claimed = conn.execute(
                 "SELECT * FROM share_state_intent WHERE claim_token=? "
+                f"{origin_clause}"
                 "ORDER BY COALESCE(next_retry_at, created_at), intent_seq",
-                (claim_token,),
+                (claim_token, *origin_params),
             ).fetchall()
             conn.execute("COMMIT")
         except Exception:

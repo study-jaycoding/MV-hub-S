@@ -423,6 +423,53 @@ def test_composite_partial_unpublishes_only_when_base_was_unshared(
     assert repo.get_share_state_intent(existing_share["intent_id"])["status"] == "rejected"
 
 
+def test_claim_scopes_to_server_origin_and_avoids_starvation(isolated_content_db):
+    """R5 2-A — 다른 권위 서버의 오래된 due 행이 limit 을 다 채워도 현재 origin 행이
+    claim 된다(starvation 방지). 다른 서버 행은 건드리지 않는다(전환 시 재개)."""
+    other_origin = "http://other.example.test"
+    for index in range(4):  # limit(아래 2)보다 많은 외부 origin 행을 먼저(=더 오래된 due) 준비
+        ref = repo.prepare_share_state_intent(
+            other_origin,
+            job_anchor=f"job-other-{index}",
+            local_id=f"local-other-{index}",
+            operation_kind="publish",
+            desired_shared=True,
+            desired_final=False,
+            base_shared=False,
+            base_final=False,
+        )
+        _release(ref)
+    mine = repo.prepare_share_state_intent(
+        "http://share.example.test",
+        job_anchor="job-mine",
+        local_id="local-mine",
+        operation_kind="publish",
+        desired_shared=True,
+        desired_final=False,
+        base_shared=False,
+        base_final=False,
+    )
+    _release(mine)
+
+    claimed = repo.claim_due_share_state_intents(
+        "origin-worker",
+        limit=2,
+        server_origin="http://share.example.test/",  # 정규화 전 형태도 수용
+    )
+    assert [row["job_anchor"] for row in claimed] == ["job-mine"]
+    # 외부 origin 행은 계약대로 무접촉(claim_token NULL 유지)
+    with db.get_connection() as conn:
+        untouched = conn.execute(
+            "SELECT COUNT(*) FROM share_state_intent "
+            "WHERE server_origin=? AND claim_token IS NULL",
+            (repo.normalize_share_server_origin(other_origin),),
+        ).fetchone()[0]
+    assert untouched == 4
+    # origin 미지정 호출(기존 호출자 계약)은 종전대로 전 origin due 를 본다
+    legacy = repo.claim_due_share_state_intents("legacy-worker", limit=10)
+    assert len(legacy) == 4
+
+
 def test_lost_lease_renewal_blocks_stale_remote_cleanup(
     isolated_content_db, monkeypatch
 ):

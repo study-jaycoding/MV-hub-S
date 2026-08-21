@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -499,10 +500,16 @@ async def run_share_state_reconciliation_cycle(
         server_origin, token = proxy_context
         worker_token = claim_token or f"share-state-{uuid.uuid4().hex}"
         claimed = await asyncio.to_thread(
-            repo.claim_due_share_state_intents,
-            worker_token,
-            limit=_BATCH_LIMIT,
-            lease_seconds=_LEASE_SECONDS,
+            functools.partial(
+                repo.claim_due_share_state_intents,
+                worker_token,
+                limit=_BATCH_LIMIT,
+                lease_seconds=_LEASE_SECONDS,
+                # 현 권위 서버 행만 claim(R5 2-A) — 다른 서버의 오래된 due 가 batch 창을
+                # 채워 현재 서버 행이 굶던 starvation 제거. 아래 origin-mismatch 분기는
+                # 최후 방어선으로 유지한다.
+                server_origin=server_origin,
+            )
         )
         counts["claimed"] = len(claimed)
         processable: list[dict[str, Any]] = []
