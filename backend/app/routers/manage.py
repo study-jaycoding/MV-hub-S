@@ -577,7 +577,9 @@ async def summary(request: Request, workspace_id: Optional[str] = None):
                 type_map[jt] = t
     except Exception:  # noqa: BLE001 — 모델목록 실패해도 요약은 폴백으로 동작
         type_map = {}
-    return repo_manage.dashboard_summary(type_map, workspace_id)
+    # async 라우트라 SQLite 집계를 이벤트 루프에서 직접 돌리면 busy 대기(최대 5초)가
+    # 서버 전체 응답을 막는다 — 집계는 스레드로 격리한다.
+    return await asyncio.to_thread(repo_manage.dashboard_summary, type_map, workspace_id)
 
 
 @router.get("/project-summary")
