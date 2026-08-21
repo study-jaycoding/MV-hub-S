@@ -165,10 +165,15 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
                 )
             )
 
+            # R5 2-D: 저장은 debounce 백그라운드로 미뤄진다 — 종료 flush 가 잔여를 담는다.
+            await cli_bridge.flush_cost_cache()
+
         self.assertEqual(results, [{"credits": 7}] * 100)
         self.assertLessEqual(peak, cli_bridge._ESTIMATE_CONCURRENCY)
         self.assertEqual(peak, min(100, cli_bridge._ESTIMATE_CONCURRENCY))
-        self.assertEqual(len(cache_snapshots[-1]), 100)
+        self.assertEqual(len(cache_snapshots[-1]), 100)  # 모든 키가 결국 저장된다
+        # 쓰기 증폭 제거 — 종전엔 신규 키마다 전체 저장(100회), 이제 burst 당 소수.
+        self.assertLess(len(cache_snapshots), 10)
 
     async def test_estimate_cache_hit_returns_without_waiting_for_gate(self):
         """R5 2-C2 — '스키마가 CLI 없이 확정된' fresh 캐시 히트는 세마포어에 줄서지
@@ -228,6 +233,47 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         self.assertEqual(run.await_count, 1)
         cli_bridge._COST_CACHE.clear()
         cli_bridge._PARAM_NAMES_CACHE.pop("join-model", None)
+
+    async def test_cost_cache_write_failure_keeps_dirty_until_next_success(self):
+        """R5 2-D — 쓰기 실패는 saved revision 을 올리지 않아 dirty 가 유지되고,
+        다음 성공 저장(flush 포함)이 담아낸다."""
+        from app.services import cli_bridge
+
+        cli_bridge._cost_loaded = True
+        cli_bridge._cost_write_locks.clear()
+        baseline = cli_bridge._cost_saved_revision
+        cli_bridge._mark_cost_cache_dirty()
+        with patch.object(cli_bridge, "_COST_DEBOUNCE_SECONDS", 0.0), patch.object(
+            cli_bridge, "_write_cost_cache", new=lambda payload: False
+        ):
+            await cli_bridge._save_cost_cache()
+        self.assertEqual(cli_bridge._cost_saved_revision, baseline)  # dirty 유지
+        writes: list[str] = []
+        with patch.object(
+            cli_bridge, "_write_cost_cache", new=lambda payload: writes.append(payload) or True
+        ):
+            await cli_bridge.flush_cost_cache()
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(
+            cli_bridge._cost_saved_revision, cli_bridge._cost_dirty_revision
+        )
+
+    async def test_cost_cache_burst_writes_collapse_to_last_snapshot(self):
+        """R5 2-D — 같은 burst 의 writer K명은 마지막 스냅샷 1회만 기록한다."""
+        from app.services import cli_bridge
+
+        cli_bridge._cost_loaded = True
+        cli_bridge._cost_write_locks.clear()
+        writes: list[str] = []
+        with patch.object(cli_bridge, "_COST_DEBOUNCE_SECONDS", 0.02), patch.object(
+            cli_bridge, "_write_cost_cache", new=lambda payload: writes.append(payload) or True
+        ):
+            tasks = []
+            for _ in range(8):
+                cli_bridge._mark_cost_cache_dirty()
+                tasks.append(asyncio.ensure_future(cli_bridge._save_cost_cache()))
+            await asyncio.gather(*tasks)
+        self.assertEqual(len(writes), 1)  # burst 합류 — 전체 재직렬화 8회→1회
 
     async def test_estimate_cost_uses_stale_cache_when_cli_refresh_fails(self):
         from app.services import cli_bridge

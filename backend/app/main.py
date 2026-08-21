@@ -436,6 +436,10 @@ async def _application_lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
         await shutdown_request_estimates()
+        # debounce 로 미뤄진 비용 캐시 스냅샷을 상한 시간 안에 저장(R5 2-D).
+        from .services import cli_bridge as _cli_bridge_module
+
+        await _cli_bridge_module.flush_cost_cache(timeout=3.0)
         # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
         await periodic_backup.stop()
         if worker_backup_bootstrap_task:
