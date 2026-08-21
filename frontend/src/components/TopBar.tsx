@@ -25,6 +25,7 @@ interface Props {
   account?: import("../types").Account | null; // 로그인 계정(AUTH 모드)
   onLogout?: () => void;
   localHub?: boolean; // 로컬 허브(AUTH off) — 워크스페이스 클릭 전환 허용 신호(AccountMenu 로 전달)
+  manageEnabled?: boolean; // PM 관리 기능 on — AccountMenu 예산 조회 게이트로 전달
   hasUnreadComments: boolean;
   notificationUnreadCount?: number;
   onOpenNotificationComment: (genId: string) => void;
@@ -45,6 +46,7 @@ export function TopBar({
   account,
   onLogout,
   localHub,
+  manageEnabled,
   hasUnreadComments,
   notificationUnreadCount,
   onOpenNotificationComment,
@@ -141,6 +143,7 @@ export function TopBar({
         onWorkspaceContextChange={onWorkspaceContextChange}
         onImported={onImported}
         localHub={localHub}
+        manageEnabled={manageEnabled}
       />
     </header>
   );

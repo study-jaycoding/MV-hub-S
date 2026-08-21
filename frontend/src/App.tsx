@@ -1318,6 +1318,7 @@ export default function App() {
         account={hubAccount}
         onLogout={onLogout}
         localHub={!authConfig?.auth_enabled}
+        manageEnabled={authConfig ? !!authConfig.manage_enabled : undefined}
         hasUnreadComments={stats.has_unread}
         notificationUnreadCount={stats.unread_count}
         onOpenNotificationComment={openComment}

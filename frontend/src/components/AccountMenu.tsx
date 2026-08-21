@@ -49,6 +49,7 @@ export function AccountMenu({
   onWorkspaceContextChange,
   onImported,
   localHub,
+  manageEnabled,
 }: {
   provider: ProviderIdentity | null;
   account?: Account | null;
@@ -59,6 +60,7 @@ export function AccountMenu({
   onWorkspaceContextChange: (context: WorkspaceContext) => void;
   onImported?: (msg: string) => void; // 라이브러리 변경 후 리로드+안내(휴지통 이동 등)
   localHub?: boolean; // 로컬 허브(MV_agent, AUTH off) = 내 CLI 가 이 PC 에 있음 → 워크스페이스 전환 가능
+  manageEnabled?: boolean; // PM 관리 기능 on — 꺼진 서버엔 예산(planning) 조회를 아예 안 보낸다
 }) {
   const [list, setList] = useState<Workspace[]>([]);
   const [reported, setReported] = useState<ReportedHfStatus | null>(null);
@@ -163,11 +165,18 @@ export function AccountMenu({
   const [budgetMax, setBudgetMax] = useState<number | null>(null);
   const activeWsId = activeWs?.id || null;
   const fixedMaxWs = activeWs?.name === FIXED_MAX_WORKSPACE;
+  // 예산 재조회 시점: 마운트·워크스페이스 변경·메뉴가 '열리는' 순간만. 닫히는 전이(true→false)
+  // 에서 같은 워크스페이스를 다시 조회하던 것 제거. 관리창에서 바뀐 예산은 다음 열기 때 갱신.
+  const budgetFetchedWsRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeWsId || fixedMaxWs) {
+    if (!activeWsId || fixedMaxWs || manageEnabled === false) {
+      // 관리 기능이 꺼진 서버엔 planning 라우트가 없다 — 프로젝트 수만큼 404 를 만들지 않는다.
       setBudgetMax(null);
+      budgetFetchedWsRef.current = null;
       return;
     }
+    if (!open && budgetFetchedWsRef.current === activeWsId) return; // 닫힘 전이 — 재조회 없음
+    budgetFetchedWsRef.current = activeWsId;
     let alive = true;
     (async () => {
       try {
@@ -184,7 +193,7 @@ export function AccountMenu({
     return () => {
       alive = false;
     };
-  }, [activeWsId, fixedMaxWs, open]);
+  }, [activeWsId, fixedMaxWs, open, manageEnabled]);
   const gaugeMax = budgetMax ?? MONTHLY_CREDIT_MAX;
 
   // 크레딧 — 하우스는 활성 워크스페이스 잔액, 비-하우스는 에이전트가 보고한 내 잔액.
