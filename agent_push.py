@@ -1474,12 +1474,13 @@ def _tracked_remove(server: str, account_email: str | None, job_id: str) -> None
         )
 
 
-def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
-    """placeholder 에 job_id 를 박고 running 유지 — create-first(verifying=False)는 '생성중'으로,
-    모호한 결말·재시작 복구(verifying=True)는 '확인중'으로 표시.
+def _anchor_once(
+    server: str, token: str, rid: str, job_id: str, verifying: bool = False
+) -> "tuple[bool, bool]":
+    """앵커 1회 전송 → (settled, retryable).
 
-    True = 서버가 앵커를 반영했거나 재전송이 무의미(요청 종결/소멸) → outbox 에서 제거해도 됨.
-    False = 실패 또는 서버가 거부했는데 요청이 아직 살아 있음 → outbox 에 남겨 재전송.
+    settled=True = 서버가 앵커를 반영했거나 재전송이 무의미(요청 종결/소멸) → outbox 제거 가능.
+    retryable=False = 명시적 4xx 거부 — 같은 입력 즉시 재시도는 무의미(즉시 중단, R2 3-B).
     (예전엔 HTTP 200 만 보고 성공 처리해서, 서버가 조용히 거부한 앵커가 outbox 에서
     지워져 유료 잡이 카드에 영영 안 붙었다.)"""
     st, body = _http(
@@ -1493,13 +1494,19 @@ def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = Fa
         token=token,
     )
     if st != 200:
-        return False
+        return False, not (400 <= st < 500)
     if not isinstance(body, dict) or "applied" not in body:
-        return True  # 구서버(빈 200) 호환 — 기존 동작 유지
+        return True, True  # 구서버(빈 200) 호환 — 기존 동작 유지
     if body.get("applied"):
-        return True
+        return True, True
     # 서버가 거부 — 요청이 이미 종결/소멸이면 같은 앵커를 다시 보내도 똑같이 거부된다.
-    return str(body.get("request_status") or "") in ("done", "canceled", "failed", "missing")
+    settled = str(body.get("request_status") or "") in ("done", "canceled", "failed", "missing")
+    return settled, True  # 200 거부의 재시도 여부는 종전 동작 유지(호출부 판단)
+
+
+def _anchor(server: str, token: str, rid: str, job_id: str, verifying: bool = False) -> bool:
+    """placeholder 에 job_id 를 박고 running 유지 — 단일 시도 호출부(replay 등) 호환 래퍼."""
+    return _anchor_once(server, token, rid, job_id, verifying=verifying)[0]
 
 
 def _anchor_with_retry(
@@ -1514,9 +1521,12 @@ def _anchor_with_retry(
     이후 크래시는 재조정 백스톱이 덮는다). 끝내 실패하면 outbox 에 남겨 다음 사이클/재시작에 재전송."""
     total = max(1, attempts)
     for attempt in range(total):
-        if _anchor(server, token, rid, job_id, verifying=False):
+        settled, retryable = _anchor_once(server, token, rid, job_id, verifying=False)
+        if settled:
             _outbox_remove(server, account_email, rid)
             return True
+        if not retryable:
+            return False  # 명시적 4xx — 즉시 중단(outbox 유지, 다음 사이클/재시작 재전송)
         if attempt < total - 1:
             _retry_pause(attempt)
     return False
@@ -1886,6 +1896,8 @@ def _finalize_tracked_job(
             }:
                 ok = True
                 break
+            if 400 <= status < 500:
+                break  # 명시적 거부 — 즉시 중단(다음 재조정 사이클이 재평가)
             if attempt < 2:
                 _retry_pause(attempt)
         print(

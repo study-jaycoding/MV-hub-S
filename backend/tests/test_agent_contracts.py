@@ -552,6 +552,45 @@ def test_idempotent_reports_back_off_on_transient_but_stop_on_4xx() -> None:
     assert http.call_count == 3
     assert sleep.call_count == 2
 
+    # anchor 재시도: 503 은 지연 재시도, 409 는 즉시 1회 중단(outbox 유지).
+    with (
+        patch.object(agent, "_http", return_value=(503, {})) as http,
+        patch.object(agent.time, "sleep") as sleep,
+        patch.object(agent, "_outbox_remove") as outbox_remove,
+    ):
+        assert agent._anchor_with_retry("http://hub", "t", "me@x", "r1", "job-1") is False
+    assert http.call_count == 3
+    assert sleep.call_count == 2
+    outbox_remove.assert_not_called()
+    with (
+        patch.object(agent, "_http", return_value=(409, {})) as http,
+        patch.object(agent.time, "sleep") as sleep,
+        patch.object(agent, "_outbox_remove") as outbox_remove,
+    ):
+        assert agent._anchor_with_retry("http://hub", "t", "me@x", "r1", "job-1") is False
+    assert http.call_count == 1
+    sleep.assert_not_called()
+    outbox_remove.assert_not_called()
+
+
+def test_missing_reference_reconcile_report_stops_immediately_on_4xx() -> None:
+    """미부착 실패 보고도 4xx 는 지연 없이 즉시 중단(다음 재조정 사이클이 재평가)."""
+    agent = _load_agent()
+    tracked = {"rid": "r1", "job_id": "job-1", "expected_image_inputs": 1}
+    with (
+        patch.object(agent, "_provider_status_kind", return_value="success"),
+        patch.object(agent, "_job_image_input_count", return_value=0),
+        patch.object(agent, "_suppress_job"),
+        patch.object(agent, "_report_reconcile", return_value=(409, {})) as report,
+        patch.object(agent.time, "sleep") as sleep,
+    ):
+        ok = agent._finalize_tracked_job(
+            "http://hub", "t", "cli", tracked, {"id": "job-1"}, detailed=True
+        )
+    assert ok is False
+    assert report.call_count == 1
+    sleep.assert_not_called()
+
 
 def test_push_once_holds_cycle_without_ingest_when_sync_undetermined() -> None:
     """판별 보류(None)면 이번 사이클의 /api/ingest 전송을 하지 않는다(전량 재전송 방지)."""
