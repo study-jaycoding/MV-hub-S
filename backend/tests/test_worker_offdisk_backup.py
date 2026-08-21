@@ -41,6 +41,31 @@ def _trash_db(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def test_state_schema_ensured_once_per_path_and_reensured_on_replacement(
+    worker_store, monkeypatch: pytest.MonkeyPatch
+):
+    """R4 A-1: 스키마 보장은 (프로세스, 경로)당 1회 — 경로 교체·파일 재생성 때만 다시 돈다."""
+    worker_backup._STATE_SCHEMA_READY.clear()
+    calls: list[int] = []
+    original = worker_backup._ensure_schema
+
+    def counting_ensure(conn):
+        calls.append(1)
+        return original(conn)
+
+    monkeypatch.setattr(worker_backup, "_ensure_schema", counting_ensure)
+    worker_backup._connect().close()
+    worker_backup._connect().close()
+    assert len(calls) == 1  # 두 번째 연결은 DDL 생략
+    worker_backup.STATE_DB.unlink()  # 같은 경로 삭제-재생성 → 재보장
+    worker_backup._connect().close()
+    assert len(calls) == 2
+    monkeypatch.setattr(worker_backup, "STATE_DB", worker_store / "other-state.db")
+    worker_backup._connect().close()  # 경로 교체 → 재보장
+    assert len(calls) == 3
+    worker_backup._STATE_SCHEMA_READY.clear()
+
+
 @pytest.fixture
 def worker_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(worker_backup, "STATE_DB", tmp_path / "worker-state.db")

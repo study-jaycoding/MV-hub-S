@@ -138,10 +138,10 @@ export function NotificationCenter({
   }, [loadReleaseItems]);
 
   // 코멘트 '상세 목록'(본문·썸네일 payload)은 패널이 열려 있을 때만 조회한다(R4 A-4).
-  // 닫힌 동안의 벨 숫자는 stats(unread_count/has_unread) props 가 담당 — 라이브러리
-  // 리로드(15초 자동+폴링 스로틀)로 자체 갱신되므로 WS 없는 구서버에서도 따라온다.
-  // 열리는 순간의 최초 로드는 openPanel 의 loadComments(true)가 담당하고,
-  // 이 효과는 '열린 동안'의 60초 재갱신만 맡는다.
+  // 닫힌 동안의 벨 숫자는 ①stats props(라이브러리 리로드 — 단 compose·유휴 my 탭에선 안 돎)
+  // ②위의 탭 무관 경량 stats 60초 폴링이 함께 담당한다(최장 60초 지연은 허용 계약 —
+  // 숨은 탭 복귀 시엔 다음 주기에 갱신). 열리는 순간의 최초 로드는 openPanel 의
+  // loadComments(true)가 담당하고, 이 효과는 '열린 동안'의 60초 재갱신만 맡는다.
   useEffect(() => {
     if (!open) return;
     const timer = window.setInterval(() => {

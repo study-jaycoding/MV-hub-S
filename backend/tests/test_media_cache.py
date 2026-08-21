@@ -115,6 +115,12 @@ class MediaCacheTests(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(fresh.exists())
                 self.assertTrue(persistent.exists())
+                # R4 C-3: 생존자 상태는 2차 스캔의 크기를 그대로 합산한다(추가 stat 없이 정확).
+                total, known = media_cache._THUMB_SOURCE_STATE[
+                    str(media_cache._thumb_source_dir())
+                ]
+                self.assertEqual(total, 100)
+                self.assertEqual(known, {str(fresh)})
 
     def test_account_thumb_source_updates_known_set_in_place(self):
         """R4 C-4: 새 원본 계상은 set 제자리 갱신(삽입마다 전체 복사 금지) + 중복 미계상."""

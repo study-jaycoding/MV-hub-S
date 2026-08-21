@@ -22,6 +22,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -89,13 +90,27 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 상태 DB 스키마/WAL 보장은 (프로세스, 경로)당 1회 — 종전엔 매 연결(유휴 60초 due 조회 포함)
+# 마다 전체 DDL 스크립트를 실행했다(R4 A-1). WAL 은 파일 영속 설정이라 1회로 충분하고,
+# synchronous=FULL 은 커넥션별 설정이라 매 연결 유지한다. 존재 프로브(stat 1회)로 테스트의
+# 경로 교체·같은 경로 삭제-재생성도 재보장한다. 동시 최초 진입은 DDL 이 IF NOT EXISTS 라 무해.
+_STATE_SCHEMA_READY: set[str] = set()
+_STATE_SCHEMA_READY_LOCK = threading.Lock()
+
+
 def _connect() -> sqlite3.Connection:
+    key = str(STATE_DB)
+    with _STATE_SCHEMA_READY_LOCK:
+        needs_ensure = key not in _STATE_SCHEMA_READY or not STATE_DB.exists()
     STATE_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(STATE_DB), timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")
-    _ensure_schema(conn)
+    if needs_ensure:
+        conn.execute("PRAGMA journal_mode=WAL")
+        _ensure_schema(conn)  # 실패 시 ready 미기록 — 다음 연결이 재시도
+        with _STATE_SCHEMA_READY_LOCK:
+            _STATE_SCHEMA_READY.add(key)
     return conn
 
 

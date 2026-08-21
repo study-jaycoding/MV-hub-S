@@ -448,13 +448,11 @@ def _evict_thumb_sources_locked(root: Path, max_bytes: int) -> int:
                 removed += 1
             except OSError:
                 continue
-    existing = {str(path) for _mtime, _size, path in _thumb_source_entries(root)}
-    actual_total = 0
-    for path_text in existing:
-        try:
-            actual_total += Path(path_text).stat().st_size
-        except OSError:
-            pass
+    # 2차 스캔(외부 생성 반영 계약 유지)의 결과에 이미 크기가 있다 — 파일당 3번째 stat 을
+    # 다시 돌리지 않고 그대로 합산한다(R4 C-3 최소형).
+    survivors = _thumb_source_entries(root)
+    existing = {str(path) for _mtime, _size, path in survivors}
+    actual_total = sum(size for _mtime, size, _path in survivors)
     _THUMB_SOURCE_STATE[str(root)] = (actual_total, existing)
     return removed
 
