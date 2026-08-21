@@ -111,12 +111,28 @@ export function NotificationCenter({
       });
   }, []);
 
-  // 릴리스(시스템) 소식은 닫혀 있어도 60초마다 확인 — 로컬 API 라 가볍고, 시작 시 한 번
-  // 실패해도 벨 배지가 업데이트 소식을 놓치지 않는다.
+  // 릴리스(시스템) 소식 + 경량 코멘트 배지(stats)는 닫혀 있어도 60초마다 확인한다.
+  // ★배지 폴링 보강(코덱스): 라이브러리 자동 리로드는 compose 탭·유휴 my 탭에선 돌지 않아
+  // stats props 만으로는 벨 숫자가 무기한 낡을 수 있다. 탭과 무관한 stats 전용 API
+  // (/generations-stats — 본문·썸네일 없는 집계만)로 가볍게 보강한다. 실패는 조용히 무시
+  // (props·다음 주기가 폴백). 상세 목록(notificationComments)은 여전히 열림 동안만.
   useEffect(() => {
-    loadReleaseItems();
+    const refreshBadge = () => {
+      loadReleaseItems();
+      api
+        .generationStats()
+        .then((stats) => {
+          setUnreadComments((previous) => {
+            if (typeof stats.unread_count === "number") return stats.unread_count; // 신백엔드: 정확 수
+            if (stats.has_unread) return Math.max(previous, 1); // 구백엔드: 존재만 표시
+            return 0;
+          });
+        })
+        .catch(() => {});
+    };
+    refreshBadge();
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") loadReleaseItems();
+      if (document.visibilityState !== "hidden") refreshBadge();
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [loadReleaseItems]);

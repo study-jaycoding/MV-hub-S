@@ -116,6 +116,37 @@ class MediaCacheTests(unittest.TestCase):
                 self.assertTrue(fresh.exists())
                 self.assertTrue(persistent.exists())
 
+    def test_account_thumb_source_updates_known_set_in_place(self):
+        """R4 C-4: 새 원본 계상은 set 제자리 갱신(삽입마다 전체 복사 금지) + 중복 미계상."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_dir = root / ".thumb-sources"
+            source_dir.mkdir(parents=True)
+            f1 = source_dir / "a.png"
+            f2 = source_dir / "b.png"
+            f1.write_bytes(b"a" * 100)
+            f2.write_bytes(b"b" * 250)
+            with mock.patch.object(media_cache, "MEDIA_DIR", root):
+                media_cache._THUMB_SOURCE_STATE.clear()
+                key = str(media_cache._thumb_source_dir())
+                original_known: set = set()
+                media_cache._THUMB_SOURCE_STATE[key] = (0, original_known)
+                media_cache._account_thumb_source(f1)
+                media_cache._account_thumb_source(f2)
+                total, known = media_cache._THUMB_SOURCE_STATE[key]
+                self.assertIs(known, original_known)  # 제자리 갱신 — 복사본 교체 아님
+                self.assertEqual(known, {str(f1), str(f2)})
+                self.assertEqual(total, 350)
+                media_cache._account_thumb_source(f1)  # 중복 — 총량·집합 불변
+                total_after, known_after = media_cache._THUMB_SOURCE_STATE[key]
+                self.assertEqual(total_after, 350)
+                self.assertIs(known_after, original_known)
+                # stat 실패(소실 파일)는 계상하지 않고 상태를 깨뜨리지 않는다.
+                missing = source_dir / "gone.png"
+                media_cache._account_thumb_source(missing)
+                self.assertEqual(media_cache._THUMB_SOURCE_STATE[key][0], 350)
+            media_cache._THUMB_SOURCE_STATE.clear()
+
     def test_thumb_source_url_uses_dedicated_directory(self):
         rel = media_cache.thumb_source_rel_for("https://cdn.example.com/image.png?sig=x")
         self.assertTrue(rel.startswith("/media/.thumb-sources/"))
