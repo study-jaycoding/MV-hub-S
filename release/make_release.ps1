@@ -188,6 +188,7 @@ function Assert-ReleaseArchive {
             "backend",
             "frontend",
             "runtime",
+            "tools",
             "MV_agent.bat",
             "update_release.bat",
             "run_release_update.ps1",
@@ -227,7 +228,8 @@ function Assert-ReleaseArchive {
             $_ -match "^backend/(backfill_import|cleanup_orphan_creators|reset_db|requirements-dev\.txt)$" -or
             $_ -match "^frontend/(src|tests|node_modules)(/|$)" -or
             $_ -match "^frontend/.*\.(map|tsbuildinfo)$" -or
-            $_ -match "^(docs|tools|deploy|release|predeploy-reports)(/|$)" -or
+            $_ -match "^(docs|deploy|release|predeploy-reports)(/|$)" -or
+            ($_ -match "^tools(/|$)" -and $_ -ne "tools/stop_local_hub_on_port.ps1") -or
             $_ -match "^(test_.*\.bat|setup_clone_git\.bat|update_git\.bat)$" -or
             $_ -match "(^|/)\.env($|\.)" -or
             $_ -match "(^|/)(publish_target|INSTALL_SOURCE)\.txt$"
