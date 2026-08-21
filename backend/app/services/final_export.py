@@ -24,7 +24,9 @@ def is_exportable(task: dict[str, Any], cut: dict[str, Any]) -> bool:
     """
     if not cut.get("is_final") or cut.get("status") != "done":
         return False
-    if (task.get("folder_path") or "").strip():
+    # 레거시 파생 규칙과 같은 truthiness 판정 — 공백뿐인 folder_path(" ")도 레거시처럼
+    # 폴더 작업으로 본다(strip 하면 레거시 데이터에서 판정이 갈린다 — 코덱스 P3).
+    if task.get("folder_path"):
         return (task.get("status") or "") != "omit"
     return (task.get("status") or "") == "done"
 

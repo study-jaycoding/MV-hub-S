@@ -1,8 +1,9 @@
-"""repo 모듈 import 순서 안전성 스모크 — trash leaf 의존 전환(구조-05) 회귀 방지.
+"""repo 모듈 import 스모크 — trash leaf 의존 전환(구조-05) 회귀 방지.
 
-trash 가 전체 manage facade 를 지연 import 하던 시절엔 import 순서가 바뀌면
-텔레메트리 표식이 조용히 빠질 수 있었다. leaf(manage_telemetry) 직접 의존으로
-바꾼 뒤, 새 프로세스에서 여러 진입 순서로 import 가 깨지지 않는지 고정한다.
+주의(코덱스 P3): `import app.repo.trash` 도 파이썬 규칙상 facade(__init__)를 먼저
+실행하므로, 아래 문장들이 '다른 import 순서'를 실제로 만드는 것은 아니다. 이 테스트가
+고정하는 것은 ①facade 어느 진입에서도 import 가 깨지지 않고 ②trash 가 leaf
+(manage_telemetry) 심볼을 모듈 시점에 직접 보유한다는 계약이다.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class RepoImportOrderTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_facade_then_trash_and_reverse_orders_agree(self):
+    def test_every_entry_point_imports_cleanly(self):
         for statement in (
             "from app import repo; import app.repo.trash",
             "import app.repo.trash; from app import repo; "

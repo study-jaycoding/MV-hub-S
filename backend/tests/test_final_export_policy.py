@@ -142,6 +142,86 @@ class FinalExportPolicyTests(unittest.TestCase):
             result = final_export.final_to_export("p1", "fg1")
         self.assertIsNotNone(result)
 
+    def test_single_judgment_pushes_restriction_into_lane_sql(self):
+        """단건 판정의 레인 조회가 SQL 수준에서 그 생성물로 제한되는지(전수 행 스캔 금지 — 코덱스 P2)."""
+        statements: list[str] = []
+        original_connect = db._connect
+
+        def tracing_connect(path):
+            conn = original_connect(path)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        db.flush_pool()
+        try:
+            with mock.patch.object(db, "_connect", side_effect=tracing_connect):
+                result = final_export.final_to_export("p1", "fg1")
+        finally:
+            db.flush_pool()
+        self.assertIsNotNone(result)
+        lane_sql = "\n".join(statements)
+        self.assertIn("AND gen_id IN", lane_sql)  # 수동 링크 레인 제한
+        self.assertIn("AND id IN", lane_sql)      # 폴더 레인 제한
+        # 전체 폴더 GROUP BY(프로젝트 전수)가 아니라 대상 폴더 제한 sync 만 돈다.
+        group_by_stmts = [s for s in statements if "GROUP BY g.project_id, g.folder_path" in s]
+        self.assertTrue(all("g.folder_path IN (" in s for s in group_by_stmts))
+
+    def test_workspace_moved_project_excludes_old_workspace_finals(self):
+        """코덱스 P1: 프로젝트가 ws 이동하면 과거 공간 작업의 완료본은 전체·단건 모두 제외."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project(id, name, kind, archived, workspace_scope, workspace_id, "
+                "workspace_name) VALUES('p3','P3','team',0,'team','ws-a','A')"
+            )
+            conn.execute(
+                "INSERT INTO project_planning(project_id, archive_after_days) VALUES('p3', 3650)"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id, "
+                "workspace_scope, workspace_id, workspace_name) "
+                "VALUES('tg1','me','p','done','2026-06-30T00:00:00Z',1.0,'u_me','p3','tp/c1',1,"
+                "'job-tg1','team','ws-a','A')"
+            )
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path) "
+                "VALUES('a_tg1','tg1','image','/media/tg1.png')"
+            )
+        # ws-a 스냅샷으로 작업 물질화 → 저장 대상 확인.
+        self.assertEqual(
+            {f["gen_id"] for f in final_export.finals_to_export("p3")}, {"tg1"}
+        )
+        # 프로젝트를 ws-b 로 이동 — 레거시(list_tasks 스냅샷 필터)와 동일하게 제외돼야 한다.
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE project SET workspace_id='ws-b', workspace_name='B' WHERE id='p3'"
+            )
+        self.assertEqual(self._legacy_finals("p3"), set())
+        self.assertEqual(final_export.finals_to_export("p3"), [])
+        self.assertIsNone(final_export.final_to_export("p3", "tg1"))
+
+    def test_blank_folder_path_task_matches_legacy_truthiness(self):
+        """코덱스 P3: folder_path=' '(공백) 작업은 레거시처럼 폴더 작업으로 취급 — omit 아니면 포함."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO project_task(id, project_id, name, status, folder_path) "
+                "VALUES('tblank','p1','공백폴더','in_progress',' ')"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id) "
+                "VALUES('wg1','me','p','done','2026-06-30T00:00:00Z',1.0,'u_me','p1',NULL,1,'job-wg1')"
+            )
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path) "
+                "VALUES('a_wg1','wg1','image','/media/wg1.png')"
+            )
+            conn.execute("INSERT INTO task_generation(task_id, gen_id) VALUES('tblank','wg1')")
+        self.assertIn("wg1", self._legacy_finals("p1"))  # 레거시: truthiness → 파생 done
+        self.assertIn("wg1", {f["gen_id"] for f in final_export.finals_to_export("p1")})
+        single = final_export.final_to_export("p1", "wg1")
+        self.assertIsNotNone(single)
+
 
 if __name__ == "__main__":
     unittest.main()

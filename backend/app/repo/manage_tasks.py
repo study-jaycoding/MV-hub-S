@@ -346,12 +346,22 @@ def _batch_task_gen_rows(
     membership: dict[str, set[str]] = {tid: set() for tid in task_ids}
     linked: dict[str, set[str]] = {tid: set() for tid in task_ids}
 
+    # generation_ids 제한(완료본 단건 판정용)은 레인 SQL 에 직접 밀어 넣는다 — 교집합만으로는
+    # 결과는 같아도 프로젝트 전수 행을 읽은 뒤 버리는 스캔이 남는다(코덱스 P2). 아래 교집합은
+    # 정확성의 권위로 유지한다. IN 목록이 SQLite 변수 상한을 위협하면 SQL 제한은 생략한다.
+    gen_ids_sql: Optional[list[str]] = None
+    if generation_ids is not None and 0 < len(generation_ids) <= _SQLITE_IN_BATCH:
+        gen_ids_sql = sorted(generation_ids)
+    gen_ph = ",".join("?" * len(gen_ids_sql)) if gen_ids_sql else ""
+
     # ① 수동 링크 — 항상 포함 + linked 표시.
+    manual_gen_filter = f" AND gen_id IN ({gen_ph})" if gen_ids_sql else ""
     for task_batch in _batched(task_ids):
         ph_t = ",".join("?" * len(task_batch))
         for r in conn.execute(
-            f"SELECT task_id, gen_id FROM task_generation WHERE task_id IN ({ph_t})",
-            task_batch,
+            f"SELECT task_id, gen_id FROM task_generation WHERE task_id IN ({ph_t})"
+            + manual_gen_filter,
+            [*task_batch, *(gen_ids_sql or [])],
         ):
             tid, gid = r["task_id"], r["gen_id"]
             if tid in membership:
@@ -377,8 +387,9 @@ def _batch_task_gen_rows(
                     f"SELECT id, project_id, folder_path, workspace_scope, workspace_id "
                     f"FROM generation "
                     f"WHERE project_id IN ({ph_p}) AND deleted_at IS NULL "
-                    f"AND folder_path IN ({ph_f})",
-                    [*project_batch, *fpath_batch],
+                    f"AND folder_path IN ({ph_f})"
+                    + (f" AND id IN ({gen_ph})" if gen_ids_sql else ""),
+                    [*project_batch, *fpath_batch, *(gen_ids_sql or [])],
                 ):
                     for tid in fpath_to_tasks.get((r["project_id"], r["folder_path"]), []):
                         scope, workspace_id = task_scopes[tid]
@@ -406,8 +417,9 @@ def _batch_task_gen_rows(
                     f"JOIN gen_auto_tag gat ON gat.generation_id=g.id "
                     f"JOIN auto_tag at ON at.id=gat.auto_tag_id "
                     f"WHERE g.project_id IN ({ph_p}) AND g.deleted_at IS NULL "
-                    f"AND at.name IN ({ph_s})",
-                    [*project_batch, *seq_batch],
+                    f"AND at.name IN ({ph_s})"
+                    + (f" AND g.id IN ({gen_ph})" if gen_ids_sql else ""),
+                    [*project_batch, *seq_batch, *(gen_ids_sql or [])],
                 ):
                     for tid in seq_to_tasks.get((r["project_id"], r["seqname"]), []):
                         scope, workspace_id = task_scopes[tid]
@@ -487,22 +499,37 @@ def sync_folder_tasks(conn, project_id: str) -> None:
     sync_folder_tasks_batch(conn, [project_id])
 
 
-def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
+def sync_folder_tasks_batch(
+    conn, project_ids: list[str], folder_paths: Optional[list[str]] = None
+) -> None:
     """여러 프로젝트의 폴더 작업을 한 조회로 동기화하고 수명주기를 갱신한다.
 
     팀 프로젝트는 프로젝트와 같은 workspace의 생성물만 작업으로 인정한다. 기존 행은 삭제하지
     않고 마지막 관측 시각을 갱신하며, 새 생성물이 다시 보이면 과거 기록에서 자동 복원한다.
+
+    folder_paths 를 주면 그 폴더의 자동 작업 보장만 수행한다(완료본 단건 판정용 —
+    프로젝트 전체 GROUP BY 를 피한다). 이때 백필·보관 수명주기 갱신은 건너뛴다:
+    판정에 영향이 없고(archived 는 제외 조건이 아님), 목록 GET 경로가 늘 수행한다.
     """
     project_ids = list(dict.fromkeys(pid for pid in project_ids if pid))
     if not project_ids:
         return
+    if folder_paths is not None:
+        folder_paths = list(dict.fromkeys(fp for fp in folder_paths if fp))
+        if not folder_paths:
+            return
     # task_projects_for_workspace는 워크스페이스 전체 프로젝트를 넘길 수 있다. SQLite
     # 변수 상한보다 큰 IN 절을 만들지 않도록 같은 연결 안에서 안전한 크기로 나눈다.
     if len(project_ids) > _SQLITE_IN_BATCH:
         for batch in _batched(project_ids):
-            sync_folder_tasks_batch(conn, batch)
+            sync_folder_tasks_batch(conn, batch, folder_paths)
         return
     placeholders = ",".join("?" * len(project_ids))
+    folder_filter = ""
+    folder_args: list[str] = []
+    if folder_paths is not None:
+        folder_filter = " AND g.folder_path IN (" + ",".join("?" * len(folder_paths)) + ")"
+        folder_args = folder_paths
     source_rows = conn.execute(
         "SELECT g.project_id, g.folder_path, g.workspace_scope, g.workspace_id, "
         "MAX(g.workspace_name) AS workspace_name, "
@@ -510,9 +537,9 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
         "AS source_last_seen_at FROM generation g "
         "WHERE g.project_id IN (" + placeholders + ") "
         "  AND g.folder_path IS NOT NULL AND g.folder_path<>'' "
-        "  AND g.deleted_at IS NULL "
+        "  AND g.deleted_at IS NULL" + folder_filter + " "
         "GROUP BY g.project_id, g.folder_path, g.workspace_scope, g.workspace_id",
-        project_ids,
+        [*project_ids, *folder_args],
     ).fetchall()
     fps: dict[tuple[str, str, str, Optional[str]], dict[str, Any]] = {}
     for raw in source_rows:
@@ -533,12 +560,13 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
     # 여러 클라이언트가 30초 폴링하는 공유 서버에서 GET 이 SQLite 쓰기락을 다투지 않는다.
     # (같은 값 UPDATE 도 행 재기록 = WAL 증가이므로, 기존 값을 먼저 읽어 달라진 행만 쓴다.)
     existing: dict[tuple[str, str, str, Optional[str]], Any] = {}
+    existing_folder_filter = folder_filter.replace("g.folder_path", "folder_path")
     for r in conn.execute(
             "SELECT id, project_id, folder_path, source_kind, source_last_seen_at, archived, "
             "workspace_scope, workspace_id, workspace_name "
             "FROM project_task WHERE project_id IN (" + placeholders + ") "
-            "AND folder_path IS NOT NULL AND folder_path<>''",
-            project_ids,
+            "AND folder_path IS NOT NULL AND folder_path<>''" + existing_folder_filter,
+            [*project_ids, *folder_args],
         ):
         scope, workspace_id, _workspace_name = _task_workspace(r)
         # 불완전한 구행도 source 쪽과 같은 정규화 키로 찾는다. 그렇지 않으면 같은 폴더의
@@ -578,6 +606,10 @@ def sync_folder_tasks_batch(conn, project_ids: list[str]) -> None:
                 "WHERE id=?",
                 (row["source_last_seen_at"], cur["id"]),
             )
+
+    if folder_paths is not None:
+        # targeted 모드: 이 폴더의 작업 보장까지만 — 수명주기(백필·보관)는 목록 GET 몫.
+        return
 
     # 구 DB에서 생성 기반 작업으로 분류됐지만 마지막 관측 시각이 없는 행은
     # 작업 생성 시각을 최초 기준으로 삼는다. 이값조차 추측하지 않고 남겨두지 않게 한다.

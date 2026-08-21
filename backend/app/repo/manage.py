@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from ..db import get_connection
 from .identity import resolve_display_names
-from .manage_schema import _SCHEMA_ENSURED, _ensure_schema
+from .manage_schema import _SCHEMA_ENSURED, _ensure_schema, unresolved_workspace_sql
 from .manage_tasks import (
     TaskMissingError,
     TaskProjectMissingError,
@@ -768,17 +768,38 @@ def final_export_task_facts(
     반환: [{task_id, status(raw), folder_path, archived, cuts:[{id,status,is_final}]}].
     · 작업 status 는 파생 전 raw 값이다 — 폴더 자동 작업의 '완료' 파생(최종 컷 존재)은
       정책 계층이 cuts.is_final 로 동일하게 재현한다(list_tasks 파생 규칙에서 유도).
-    · gen_id 를 주면 cuts 를 그 생성물로만 제한한다(레인·워크스페이스 귀속 규칙은
-      _batch_task_gen_rows 그대로) — 프로젝트 전수 판정 없이 단건 판정용.
-    · list_tasks 와 같은 읽기 경로 계약: 조회 전 폴더 자동 작업을 멱등 동기화한다.
+    · gen_id 를 주면 cuts 를 그 생성물로만 제한하고(레인 SQL 수준), 폴더 자동 작업
+      동기화도 그 생성물의 폴더만 보장한다 — 프로젝트 전수 스캔 없이 단건 판정용.
+    · ★작업 선택은 list_tasks 와 같은 워크스페이스 스냅샷 predicate 를 쓴다 — 프로젝트가
+      다른 워크스페이스로 이동하면 과거 공간 작업(과거 완료본)은 제외된다(코덱스 P1).
     """
+    unresolved_task = unresolved_workspace_sql("t")
     with get_connection() as conn:
         _ensure_schema(conn)
-        sync_folder_tasks_batch(conn, [project_id])
+        if gen_id:
+            target = conn.execute(
+                "SELECT folder_path FROM generation "
+                "WHERE id=? AND project_id=? AND deleted_at IS NULL",
+                (gen_id, project_id),
+            ).fetchone()
+            if not target:
+                return []
+            folder = (target["folder_path"] or "").strip()
+            if folder:
+                # 이 폴더의 자동 작업만 보장 — 전체 GROUP BY·수명주기 갱신은 목록 GET 경로 몫.
+                sync_folder_tasks_batch(conn, [project_id], folder_paths=[folder])
+        else:
+            sync_folder_tasks_batch(conn, [project_id])
         tasks = conn.execute(
-            "SELECT id, project_id, folder_path, sequence, status, archived, "
-            "workspace_scope, workspace_id, workspace_name "
-            "FROM project_task WHERE project_id=?",
+            "SELECT t.id, t.project_id, t.folder_path, t.sequence, t.status, t.archived, "
+            "t.workspace_scope, t.workspace_id, t.workspace_name "
+            "FROM project_task t LEFT JOIN project p ON p.id=t.project_id "
+            "WHERE t.project_id=? AND (" + unresolved_task + " OR "
+            "(LOWER(TRIM(COALESCE(t.workspace_scope, '')))='team' "
+            " AND p.workspace_scope='team' "
+            " AND TRIM(COALESCE(t.workspace_id, ''))=p.workspace_id) OR "
+            "(LOWER(TRIM(COALESCE(t.workspace_scope, '')))='personal' "
+            " AND p.workspace_scope='personal'))",
             (project_id,),
         ).fetchall()
         rows_by_task = _batch_task_gen_rows(
