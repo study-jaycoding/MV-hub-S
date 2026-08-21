@@ -107,10 +107,14 @@ export function useGenerationWorkspaceActions({
       }
 
       const verb = operation === "assign" ? "적용" : "제거";
+      // changed=0 이유를 연산별로 구분 — assign 은 '이미 그 공간', remove 는 '그 공간 소속이 아님'.
+      // (같은 문구로 뭉뚱그리면 #+/#- 혼동을 사용자가 알아챌 수 없다.)
       flash(
         result.changed.length
           ? `워크스페이스 ${result.workspace.name} ${verb}: ${result.changed.length}개`
-          : `워크스페이스 ${result.workspace.name}: 변경할 카드가 없습니다`,
+          : operation === "assign"
+            ? `이미 ${result.workspace.name} 워크스페이스로 지정된 카드입니다 — 변경 없음`
+            : `${result.workspace.name} 소속 카드가 아니라서 제거(#-)할 것이 없습니다`,
       );
       try {
         await reload(false, false);

@@ -241,15 +241,21 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
             {"prompt": "a unassigned", "model": "m", "params": {}},
             "me", creator_uid="user-me", workspace=team_a,
         )
+        repo.create_local_generation(
+            {"prompt": "b unassigned", "model": "m", "params": {}},
+            "me", creator_uid="user-me", workspace=team_b,
+        )
 
         generations = repo.list_generations(workspace_id="ws-millionvolt")
-        # 기본 list_generations는 한 페이지 반환이며 미분류도 포함한다.
+        # workspace_id(옵트인 침 필터)는 생성물 목록을 그 공간 도장으로 좁힌다(미분류 포함).
         self.assertEqual({item["prompt"] for item in generations}, {"a", "a unassigned"})
         self.assertIn(gen_a, {item["id"] for item in generations})
         projects = repo.list_projects(workspace_id="ws-millionvolt")
+        # 프로젝트 '행'만 워크스페이스로 선별한다. 카운트(프로젝트·미분류)는 워크스페이스 무관 —
+        # 그리드 가시성이 워크스페이스와 분리(전부 보임)라 숫자도 전체 기준이어야 화면과 맞는다.
         self.assertEqual([item["id"] for item in projects["projects"]], [project_a["id"]])
         self.assertEqual(projects["projects"][0]["count"], 1)
-        self.assertEqual(projects["unassigned"], 1)
+        self.assertEqual(projects["unassigned"], 2)
 
     def test_project_assignment_backfills_legacy_unknown_and_rejects_other_workspace(self):
         team_a = self._team()

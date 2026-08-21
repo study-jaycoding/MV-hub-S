@@ -176,10 +176,10 @@ def list_projects(
     gen_cond = "g.project_id = p.id AND g.deleted_at IS NULL"
     if shared_only:  # 팀 공유 탭: 공유물만(그리드와 동일 모집단)
         gen_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = g.id)"
+    # workspace_id 는 '프로젝트 행 선별'에만 쓴다(위 conds). 생성물 카운트에는 적용하지 않는다 —
+    # 그리드 가시성이 워크스페이스와 분리(전부 보임)됐으므로, 도장 없는 기존 생성물(unknown)도
+    # 프로젝트/미분류 수에 그대로 잡혀야 화면과 숫자가 일치한다.
     count_args: list[Any] = []
-    if workspace_id:
-        gen_cond += " AND g.workspace_scope = 'team' AND g.workspace_id = ?"
-        count_args.append(workspace_id)
     if shared_only and member_uid is not None and own_uid:
         gen_cond += (
             " AND (g.creator_uid = ? OR p.id IN "
@@ -195,8 +195,7 @@ def list_projects(
         "p.workspace_scope, p.workspace_id, p.workspace_name, "
         f"(SELECT COUNT(*) FROM generation g WHERE {gen_cond}) AS count, "
         "(SELECT COUNT(*) FROM generation gt WHERE gt.project_id=p.id AND gt.deleted_at IS NULL"
-        + (" AND gt.workspace_scope='team' AND gt.workspace_id=?" if workspace_id else "")
-        + ") AS total "
+        ") AS total "
         "FROM project p"
     )
     # 정렬: 관리자가 수동 지정한 순서(sort_order) 우선, 미지정은 뒤로 가서 생성물 많은 순 → 이름.
@@ -209,9 +208,6 @@ def list_projects(
     if shared_only:
         un_cond += " AND EXISTS (SELECT 1 FROM share s WHERE s.generation_id = generation.id)"
     un_args: list[Any] = []
-    if workspace_id:
-        un_cond += " AND workspace_scope='team' AND workspace_id=?"
-        un_args.append(workspace_id)
     if shared_only and member_uid is not None and own_uid:
         un_cond += " AND creator_uid = ?"
         un_args.append(own_uid)
@@ -219,8 +215,7 @@ def list_projects(
         un_cond += " AND creator_uid = ?"
         un_args.append(viewer_uid)
     with get_connection() as conn:
-        total_args = [workspace_id] if workspace_id else []
-        projects = [dict(r) for r in conn.execute(sql, count_args + total_args + args).fetchall()]
+        projects = [dict(r) for r in conn.execute(sql, count_args + args).fetchall()]
         unassigned = conn.execute(
             f"SELECT COUNT(*) AS c FROM generation WHERE {un_cond}", un_args
         ).fetchone()["c"]
@@ -375,34 +370,26 @@ def set_render_root(pid: str, path: Optional[str]) -> None:
         conn.execute("UPDATE project SET render_root_path=? WHERE id=?", (p or None, pid))
 
 
-def local_project_counts(workspace_id: Optional[str] = None) -> dict[str, int]:
+def local_project_counts() -> dict[str, int]:
     """로컬 DB 의 프로젝트별 생성물 수(휴지통 제외). 로컬 우선에서 사이드바 카운트는 '내 로컬 작업'
-    기준이어야 하므로(서버 발행분이 아니라) — 로컬은 전부 내 작업이라 creator 필터 없이 센다."""
+    기준이어야 하므로(서버 발행분이 아니라) — 로컬은 전부 내 작업이라 creator 필터 없이 센다.
+    워크스페이스 필터는 걸지 않는다 — 그리드 가시성이 워크스페이스와 분리돼 숫자도 전체 기준."""
     with get_connection() as conn:
-        where = "project_id IS NOT NULL AND deleted_at IS NULL"
-        args: list[Any] = []
-        if workspace_id:
-            where += " AND workspace_scope='team' AND workspace_id=?"
-            args.append(workspace_id)
         return {
             r["pid"]: r["c"]
             for r in conn.execute(
                 "SELECT project_id pid, COUNT(*) c FROM generation "
-                f"WHERE {where} GROUP BY project_id",
-                args,
+                "WHERE project_id IS NOT NULL AND deleted_at IS NULL GROUP BY project_id",
             ).fetchall()
         }
 
 
-def local_unassigned_count(workspace_id: Optional[str] = None) -> int:
+def local_unassigned_count() -> int:
     """로컬 미분류(프로젝트 없음) 생성물 수 — 사이드바 '미분류' 카운트(로컬 기준)."""
     with get_connection() as conn:
-        where = "project_id IS NULL AND deleted_at IS NULL"
-        args: list[Any] = []
-        if workspace_id:
-            where += " AND workspace_scope='team' AND workspace_id=?"
-            args.append(workspace_id)
-        return conn.execute(f"SELECT COUNT(*) FROM generation WHERE {where}", args).fetchone()[0]
+        return conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE project_id IS NULL AND deleted_at IS NULL"
+        ).fetchone()[0]
 
 
 def reorder_projects(ordered_ids: list[str]) -> None:

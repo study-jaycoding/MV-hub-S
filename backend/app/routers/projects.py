@@ -75,11 +75,11 @@ def list_projects(
         if isinstance(data, dict):
             repo.cache_projects(data.get("projects") or [])  # 정의 미러(assign 검증·project_name 해석)
             if tab != "team":  # 내 작업 탭만 로컬 카운트로 덮어씀
-                counts = repo.local_project_counts(workspace_id)
+                counts = repo.local_project_counts()
                 for p in data.get("projects") or []:
                     if isinstance(p, dict):
                         p["count"] = counts.get(p.get("id"), 0)
-                data["unassigned"] = repo.local_unassigned_count(workspace_id)
+                data["unassigned"] = repo.local_unassigned_count()
         return data
     # 가시성(§5-3): 전역 read_all(admin·PM·PD)은 전체 프로젝트, 그 외(일반 멤버)는 배정된 것만.
     # AUTH off 면 enforcement 없이 전체(기존 동작).
