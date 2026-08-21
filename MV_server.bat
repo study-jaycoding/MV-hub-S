@@ -25,6 +25,9 @@ REM Shared server: login required (each member signs in / publishes). Set 0 to d
 if "%CONTENT_HUB_AUTH%"=="" set "CONTENT_HUB_AUTH=1"
 REM Enable the PM / manage dashboard (board icon in the top bar). Set 0 to disable.
 if "%CONTENT_HUB_MANAGE%"=="" set "CONTENT_HUB_MANAGE=1"
+REM Shared server ingests via push agents only - it has no CLI login of its own, so
+REM periodic CLI sync would just fail every cycle (CLIError noise). Set 1 to re-enable.
+if "%CONTENT_HUB_SERVER_SYNC%"=="" set "CONTENT_HUB_SERVER_SYNC=0"
 
 if "%PYEXE%"=="" (
   if exist "%ROOT%runtime\python\python.exe" set "PYEXE=%ROOT%runtime\python\python.exe"
