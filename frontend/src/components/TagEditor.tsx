@@ -16,6 +16,30 @@ import {
   workspaceCommandLabels,
 } from "../lib/workspaceCommand";
 
+// ── #+ 워크스페이스 목록 캐시(모듈 수준) ─────────────────────────────────────
+// 피커 목록은 서버 왕복(위임 모드)이라 열 때마다 기다리면 지연이 그대로 체감되고, 기다리다
+// 다른 곳을 클릭하면 입력창이 blur 로 닫혀 "작동 안 함"처럼 보인다. 한 번 받은 목록은 세션
+// 동안 기억해 즉시 표시하고, 열 때마다 뒤에서 조용히 최신으로 갱신한다(stale-while-revalidate).
+// ## 전역 모드 진입 시 미리 받아 '+' 입력 전에 준비되게 한다. 계정 전환 직후엔 이전 목록이
+// 한 왕복 동안 보일 수 있으나, 잘못 고르면 서버 resolve 가 거절하므로 안전하다.
+let workspaceOptionsCache: WorkspaceCommandTarget[] | null = null;
+let workspaceOptionsInflight: Promise<WorkspaceCommandTarget[]> | null = null;
+
+function fetchWorkspaceOptions(): Promise<WorkspaceCommandTarget[]> {
+  if (!workspaceOptionsInflight) {
+    workspaceOptionsInflight = api
+      .workspaceCommandOptions()
+      .then((result) => {
+        workspaceOptionsCache = result.workspaces || [];
+        return workspaceOptionsCache;
+      })
+      .finally(() => {
+        workspaceOptionsInflight = null;
+      });
+  }
+  return workspaceOptionsInflight;
+}
+
 export interface TagEditorGlobal {
   all: string[]; // 내 전역(auto) 태그 목록(사이드바에서 만든 것)
   assigned: string[]; // 이 카드에 부여된 전역 태그
@@ -78,18 +102,31 @@ export function TagEditor({
   const workspacePicker = parseWorkspacePickerCommand(draft, globalMode);
   const workspacePickerOpen = Boolean(showInput && onWorkspaceCommand && workspacePicker);
 
+  // ## 전역 모드 진입 즉시 프리페치 — '+'를 누르기 전에 목록이 준비된다(실패는 피커가 다시 시도).
+  useEffect(() => {
+    if (globalMode && onWorkspaceCommand) fetchWorkspaceOptions().catch(() => {});
+  }, [globalMode, onWorkspaceCommand]);
+
   useEffect(() => {
     if (!workspacePickerOpen) return;
     let active = true;
-    setWorkspaceOptionsLoading(true);
-    api.workspaceCommandOptions()
-      .then((result) => {
+    if (workspaceOptionsCache) {
+      // 캐시 즉시 표시(대기 없음) — 아래 요청이 끝나면 최신으로 조용히 교체된다.
+      setWorkspaceOptions(workspaceOptionsCache);
+      setWorkspaceOptionsLoading(false);
+    } else {
+      setWorkspaceOptionsLoading(true);
+    }
+    fetchWorkspaceOptions()
+      .then((items) => {
         if (!active) return;
-        setWorkspaceOptions(result.workspaces || []);
+        setWorkspaceOptions(items);
         setWorkspaceError(null);
       })
       .catch((error: unknown) => {
         if (!active) return;
+        // 캐시가 이미 떠 있으면 갱신 실패는 조용히 무시(다음 열기에서 재시도).
+        if (workspaceOptionsCache) return;
         const message = error instanceof Error ? error.message : String(error);
         setWorkspaceOptions([]);
         setWorkspaceError(message.replace(/^\d+:\s*/, "") || "워크스페이스 목록을 불러오지 못했습니다");
