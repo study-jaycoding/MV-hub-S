@@ -521,6 +521,38 @@ def test_job_ids_to_sync_status_matrix_limits_get_fallback_to_route_missing() ->
         assert http.call_count == 2
 
 
+def test_idempotent_reports_back_off_on_transient_but_stop_on_4xx() -> None:
+    """R2 3-B 계약: 0/5xx 는 짧은 지연 후 재시도(최대 3회), 4xx 는 지연 없이 즉시 중단."""
+    agent = _load_agent()
+
+    for transient in (0, 503):
+        with (
+            patch.object(agent, "_http", return_value=(transient, {})) as http,
+            patch.object(agent.time, "sleep") as sleep,
+        ):
+            assert agent._begin_submission("http://hub", "t", "r1", "agent-1") is False
+        assert http.call_count == 3
+        assert sleep.call_count == 2  # 마지막 시도 뒤에는 안 쉰다
+        assert all(0 < call.args[0] <= 2.0 for call in sleep.call_args_list)  # 상한 소
+
+    with (
+        patch.object(agent, "_http", return_value=(409, {})) as http,
+        patch.object(agent.time, "sleep") as sleep,
+    ):
+        assert agent._begin_submission("http://hub", "t", "r1", "agent-1") is False
+    assert http.call_count == 1  # 4xx 즉시 중단
+    sleep.assert_not_called()
+
+    # recovery-required 도 같은 계약.
+    with (
+        patch.object(agent, "_http", return_value=(500, {})) as http,
+        patch.object(agent.time, "sleep") as sleep,
+    ):
+        assert agent._require_submission_recovery("http://hub", "t", "r1") is False
+    assert http.call_count == 3
+    assert sleep.call_count == 2
+
+
 def test_push_once_holds_cycle_without_ingest_when_sync_undetermined() -> None:
     """판별 보류(None)면 이번 사이클의 /api/ingest 전송을 하지 않는다(전량 재전송 방지)."""
     agent = _load_agent()

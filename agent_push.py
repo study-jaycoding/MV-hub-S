@@ -25,6 +25,7 @@ import getpass
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -583,6 +584,16 @@ def _pending_exists(server: str, token: str) -> bool:
     return status == 200 and isinstance(body, dict) and body.get("pending") is True
 
 
+def _retry_pause(attempt: int, base: float = 0.5, cap: float = 2.0) -> None:
+    """멱등 HTTP 보고 재시도 사이의 짧은 지연(지수+jitter, 상한 소).
+
+    종전엔 일시 장애(0/5xx)에 쉼 없이 3연속 호출했다 — 순단 중 같은 실패를 즉시 반복할 뿐이다.
+    총 지연 상한을 작게 유지해(3회 기준 최대 ≈3.5초) claim lease 안에서 끝난다. 4xx 는 각
+    호출부가 종전대로 즉시 중단한다. 첫 시도 전에는 부르지 않는다."""
+    delay = min(cap, base * (2 ** attempt)) * (0.5 + random.random() / 2)
+    time.sleep(delay)
+
+
 def _begin_submission(
     server: str,
     token: str,
@@ -601,7 +612,7 @@ def _begin_submission(
         "begin-submission",
         {"agent_id": agent_id},
     )
-    for _ in range(3):
+    for attempt in range(3):
         kwargs = {"token": token, "timeout": 15}
         if submission_fingerprint is not None:
             kwargs["body"] = submission_fingerprint
@@ -610,6 +621,8 @@ def _begin_submission(
             return not isinstance(body, dict) or body.get("applied", True) is not False
         if 400 <= status < 500:
             return False
+        if attempt < 2:
+            _retry_pause(attempt)
     return False
 
 
@@ -631,12 +644,14 @@ def _release_claim(
 def _require_submission_recovery(server: str, token: str, rid: str) -> bool:
     """CLI 호출 뒤 job_id가 없는 모호한 결말을 자동 재생성 금지 상태로 보고한다."""
     url = _gen_request_url(server, rid, "recovery-required")
-    for _ in range(3):
+    for attempt in range(3):
         status, body = _http("POST", url, token=token, timeout=15)
         if status == 200:
             return not isinstance(body, dict) or body.get("applied", True) is not False
         if 400 <= status < 500:
             return False
+        if attempt < 2:
+            _retry_pause(attempt)
     return False
 
 
@@ -1497,10 +1512,13 @@ def _anchor_with_retry(
 ) -> bool:
     """앵커 ACK(200)를 받을 때까지 몇 번 재시도. 성공하면 outbox 에서 제거(서버가 job_id 를 가졌으니
     이후 크래시는 재조정 백스톱이 덮는다). 끝내 실패하면 outbox 에 남겨 다음 사이클/재시작에 재전송."""
-    for _ in range(max(1, attempts)):
+    total = max(1, attempts)
+    for attempt in range(total):
         if _anchor(server, token, rid, job_id, verifying=False):
             _outbox_remove(server, account_email, rid)
             return True
+        if attempt < total - 1:
+            _retry_pause(attempt)
     return False
 
 
@@ -1861,13 +1879,15 @@ def _finalize_tracked_job(
         _suppress_job(job_id)
         reason = "레퍼런스가 적용되지 않았습니다(생성물에 입력 이미지 미부착) — 다시 시도하세요"
         ok = False
-        for _ in range(3):
+        for attempt in range(3):
             status, body = _report_reconcile(server, token, rid, job, force_fail_reason=reason)
             if status == 200 and isinstance(body, dict) and body.get("outcome") in {
                 "applied", "already_final_same_job"
             }:
                 ok = True
                 break
+            if attempt < 2:
+                _retry_pause(attempt)
         print(
             f"  ✗ 레퍼런스 미부착 — 실패 확정(되살림 금지): {job_id[:8]}"
             if ok else f"  ⚠ 레퍼런스 미부착 실패 보고 안착 실패(다음 사이클 재시도): {job_id[:8]}"
