@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import ssl
 import urllib.parse
 import urllib.request
 
@@ -64,7 +65,23 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise BlockedURLError("리다이렉트 미디어는 받을 수 없습니다")
 
 
+def download_ssl_context() -> ssl.SSLContext:
+    """인증서 검증(체인·호스트네임)은 유지하되 Python 3.13+ 기본의 VERIFY_X509_STRICT 만 해제.
+    strict 는 RFC 5280 엄격 검사라 TLS 검사 장비/백신이 끼워넣는 사설 CA(Basic Constraints
+    비-critical)를 거부한다 — 운영 서버에서 CloudFront 미디어 캐시 다운로드가 이걸로 전멸했다
+    (CERTIFICATE_VERIFY_FAILED: Basic Constraints of CA cert not marked critical). 해제해도
+    Python 3.12 이하의 기존 검증 수준과 동일하다."""
+    ctx = ssl.create_default_context()
+    strict = getattr(ssl, "VERIFY_X509_STRICT", None)
+    if strict is not None:
+        ctx.verify_flags &= ~strict
+    return ctx
+
+
 def guarded_opener() -> urllib.request.OpenerDirector:
     """리다이렉트를 차단하는 opener(3xx 로 내부망 우회 방지). 호출 전 assert_public_http_url 로
     최초 URL 을 검증하고, 이 opener 로 열어 3xx 우회까지 막는다."""
-    return urllib.request.build_opener(_NoRedirect)
+    return urllib.request.build_opener(
+        _NoRedirect,
+        urllib.request.HTTPSHandler(context=download_ssl_context()),
+    )

@@ -336,5 +336,22 @@ class MediaCacheTests(unittest.TestCase):
             self.assertNotIn("secret", repr(result))
 
 
+class DownloadSslContextTest(unittest.TestCase):
+    """Python 3.13+ 기본 VERIFY_X509_STRICT 가 TLS 검사장비 사설 CA 를 거부해 운영 서버의
+    미디어 캐시 다운로드가 전멸했던 회귀 — 검증은 유지하고 strict 만 해제하는 계약을 고정한다."""
+
+    def test_keeps_verification_but_clears_strict_flag(self):
+        import ssl
+
+        from app.services.net_guard import download_ssl_context
+
+        ctx = download_ssl_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+        strict = getattr(ssl, "VERIFY_X509_STRICT", None)
+        if strict is not None:
+            self.assertFalse(ctx.verify_flags & strict)
+
+
 if __name__ == "__main__":
     unittest.main()
