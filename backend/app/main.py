@@ -572,6 +572,12 @@ async def auth_enforcement(request: Request, call_next):
         and path not in _SNAPSHOT_SERVER_PATHS
     ):
         return JSONResponse({"detail": "테스트 스냅샷 다운로드 전용 서버입니다"}, status_code=404)
+    # 정적 SPA·해시 자산 요청은 세션을 읽지 않는다 — 동적 경계(/api/*, /media*)만 계정을
+    # 소비한다. 종전엔 로그인 쿠키가 있으면 JS/CSS/index 요청마다 토큰 검증+계정 DB 조회가
+    # 반복됐다(첫 화면=자산 수만큼). ★반드시 스냅샷 전용 가드 '뒤'에 둔다(그 가드는 정적
+    # UI 까지 닫는 계약). /api/auth/me 처럼 공개지만 계정을 읽는 API 는 그대로 아래를 탄다.
+    if not (path.startswith("/api/") or path.startswith("/media")):
+        return await call_next(request)
     # 토큰(헤더 또는 쿠키)이 있으면 모드와 무관하게 계정을 실어둔다(/me·관리자 검증·표시에).
     token = session_token(request)
     if token:
