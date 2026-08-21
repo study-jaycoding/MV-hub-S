@@ -47,6 +47,69 @@ def test_generation_queue_snapshot_reports_stalled_work_without_identity():
             db.flush_pool()
 
 
+def test_generation_queue_snapshot_merged_query_matches_per_status_semantics():
+    """R5 ops-2 — SQL 6→2 통합 후에도 종전 의미 유지: overdue·check_failures 는 active
+    상태만 집계하고(done 의 next_check_at 잔재 미포함), recovery 는 phase_counts 파생."""
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.environ.get("CONTENT_HUB_DB")
+        os.environ["CONTENT_HUB_DB"] = str(Path(tmp) / "content_hub.db")
+        db.flush_pool()
+        try:
+            db.init_db()
+            repo.ensure_default_worker()
+            empty = operational_health.generation_queue_snapshot()
+            assert empty["phase_counts"] == {}
+            assert empty["active_total"] == 0
+            assert empty["overdue_checks"] == 0
+            assert empty["check_failures_total"] == 0
+            assert empty["oldest_active_age_seconds"] == 0
+            assert empty["recovery_required_total"] == 0
+            rows = []
+            for _ in range(3):
+                gen_id = repo.create_local_generation(
+                    {"model": "test-model", "prompt": "p"}, "me"
+                )
+                rows.append(
+                    repo.create_gen_request(
+                        "worker@example.com", None, gen_id, "create", {"model": "m"}
+                    )
+                )
+            with db.get_connection() as conn:
+                # active + overdue + 실패 2회
+                conn.execute(
+                    "UPDATE gen_request SET status='running', "
+                    "next_check_at=datetime('now','-1 minutes'), check_failures=2 "
+                    "WHERE id=?",
+                    (rows[0],),
+                )
+                # done 인데 next_check_at 잔재 — overdue 에 포함되면 안 된다
+                conn.execute(
+                    "UPDATE gen_request SET status='done', "
+                    "next_check_at=datetime('now','-1 minutes'), check_failures=5 "
+                    "WHERE id=?",
+                    (rows[1],),
+                )
+                conn.execute(
+                    "UPDATE gen_request SET status='recovery_required' WHERE id=?",
+                    (rows[2],),
+                )
+
+            snapshot = operational_health.generation_queue_snapshot()
+            assert snapshot["phase_counts"]["running"] == 1
+            assert snapshot["phase_counts"]["done"] == 1
+            assert snapshot["overdue_checks"] == 1  # done 잔재 미포함
+            assert snapshot["check_failures_total"] == 2  # active 만
+            assert snapshot["recovery_required_total"] == 1
+            assert snapshot["active_total"] == 2  # running + recovery_required
+        finally:
+            db.flush_pool()
+            if old is None:
+                os.environ.pop("CONTENT_HUB_DB", None)
+            else:
+                os.environ["CONTENT_HUB_DB"] = old
+            db.flush_pool()
+
+
 def test_database_readiness_checks_core_tables(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         old = os.environ.get("CONTENT_HUB_DB")

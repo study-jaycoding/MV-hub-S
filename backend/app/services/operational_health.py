@@ -141,35 +141,25 @@ def generation_queue_snapshot() -> dict[str, Any]:
             "recovery_required_total": 0,
             "applicable": False,
         }
-    placeholders = ",".join("?" for _ in _ACTIVE_PHASES)
     with get_connection() as conn:
+        # 상태별 GROUP BY 한 번에 count·최고령·overdue·check_failures 를 조건 집계한다
+        # (R5 ops-2). 종전엔 active_total/overdue/failures/recovery 를 각각 다시 조회해
+        # status 단독 인덱스가 없는 gen_request 를 6번 전수 스캔했다. active 필터는
+        # 파이썬에서 건다(같은 결과, 스캔 2회).
         rows = conn.execute(
             "SELECT status, COUNT(*) count, "
             "MAX(0, CAST((julianday('now')-julianday(MIN(created_at)))*86400 AS INTEGER)) "
-            "oldest_age_seconds FROM gen_request GROUP BY status ORDER BY status"
+            "oldest_age_seconds, "
+            "SUM(CASE WHEN next_check_at IS NOT NULL AND next_check_at < datetime('now') "
+            "THEN 1 ELSE 0 END) overdue_count, "
+            "COALESCE(SUM(check_failures),0) check_failure_sum "
+            "FROM gen_request GROUP BY status ORDER BY status"
         ).fetchall()
-        active_total = conn.execute(
-            f"SELECT COUNT(*) FROM gen_request WHERE status IN ({placeholders})",
-            _ACTIVE_PHASES,
-        ).fetchone()[0]
-        overdue_checks = conn.execute(
-            f"SELECT COUNT(*) FROM gen_request WHERE status IN ({placeholders}) "
-            "AND next_check_at IS NOT NULL AND next_check_at < datetime('now')",
-            _ACTIVE_PHASES,
-        ).fetchone()[0]
-        check_failures = conn.execute(
-            f"SELECT COALESCE(SUM(check_failures),0) FROM gen_request "
-            f"WHERE status IN ({placeholders})",
-            _ACTIVE_PHASES,
-        ).fetchone()[0]
         unanchored_stale = conn.execute(
             "SELECT COUNT(*) FROM gen_request r JOIN generation g ON g.id=r.gen_id "
             "WHERE r.status IN ('preparing','claimed','submitting','running','recovery_required') "
             "AND (g.job_id IS NULL OR g.job_id='') "
             "AND r.updated_at < datetime('now','-10 minutes')"
-        ).fetchone()[0]
-        recovery_required = conn.execute(
-            "SELECT COUNT(*) FROM gen_request WHERE status='recovery_required'"
         ).fetchone()[0]
 
     phase_counts = {row["status"]: int(row["count"]) for row in rows}
@@ -179,12 +169,14 @@ def generation_queue_snapshot() -> dict[str, Any]:
     )
     return {
         "phase_counts": phase_counts,
-        "active_total": int(active_total),
+        "active_total": sum(int(row["count"]) for row in active_rows),
         "oldest_active_age_seconds": oldest,
-        "overdue_checks": int(overdue_checks),
-        "check_failures_total": int(check_failures),
+        "overdue_checks": sum(int(row["overdue_count"] or 0) for row in active_rows),
+        "check_failures_total": sum(
+            int(row["check_failure_sum"] or 0) for row in active_rows
+        ),
         "unanchored_over_10m": int(unanchored_stale),
-        "recovery_required_total": int(recovery_required),
+        "recovery_required_total": phase_counts.get("recovery_required", 0),
         "applicable": True,
     }
 

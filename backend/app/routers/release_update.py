@@ -55,7 +55,9 @@ def _with_activity(status: dict) -> dict:
 async def release_update_status(request: Request, refresh: bool = False):
     _require_local(request)
     status = await asyncio.to_thread(get_status, refresh=refresh)
-    return _with_activity(status)
+    # _with_activity 는 generation_queue_snapshot(SQLite 집계)을 부른다 — async 라우트
+    # 위에서 직접 돌리면 이벤트 루프가 멈춘다(R5 ops-1) → 스레드로 내린다.
+    return await asyncio.to_thread(_with_activity, status)
 
 
 @router.post("/start", status_code=202)
@@ -82,4 +84,4 @@ async def release_update_start(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ReleaseUpdateError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _with_activity(result)
+    return await asyncio.to_thread(_with_activity, result)  # SQL 집계 — 루프 밖(R5 ops-1)
