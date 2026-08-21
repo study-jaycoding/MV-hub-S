@@ -437,6 +437,9 @@ CREATE TABLE IF NOT EXISTS asset_comment (
     is_private INTEGER NOT NULL DEFAULT 0            -- 1=비공개(작성자 로컬 DB 에만 존재, 서버·번들로 안 나감)
 );
 CREATE INDEX IF NOT EXISTS idx_asset_comment_pp ON asset_comment(project, path);
+-- 스레드 조회(필터+정렬 동시): (project,path) 로 거른 뒤 created_at,id 정렬을 한 인덱스로.
+CREATE INDEX IF NOT EXISTS idx_asset_comment_thread
+    ON asset_comment(project, path, created_at, id);
 
 -- 사용자별 코멘트 마지막 확인 시각(미확인 C 뱃지 계산용)
 CREATE TABLE IF NOT EXISTS asset_comment_read (
@@ -461,6 +464,9 @@ CREATE TABLE IF NOT EXISTS generation_comment (
 );
 CREATE INDEX IF NOT EXISTS idx_generation_comment_gen ON generation_comment(gen_id);
 CREATE INDEX IF NOT EXISTS idx_generation_comment_created ON generation_comment(created_at DESC, id DESC);
+-- 스레드 조회(필터+정렬 동시): gen_id 로 거른 뒤 created_at,id 정렬을 한 인덱스로.
+CREATE INDEX IF NOT EXISTS idx_generation_comment_thread
+    ON generation_comment(gen_id, created_at, id);
 
 -- 사용자별 생성본 코멘트 마지막 확인 시각(미확인 C 뱃지 계산용 — 레거시 gen 단위)
 CREATE TABLE IF NOT EXISTS generation_comment_read (
