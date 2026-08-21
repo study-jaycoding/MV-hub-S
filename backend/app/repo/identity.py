@@ -667,6 +667,20 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
     return n
 
 
+def _creator_uid_account_map(conn) -> dict[str, str]:
+    """acct:<email> → 실제 creator_uid(user_) 매핑 — plan(dry-run)과 migrate 가 공유하는
+    단일 소스. account.creator_uid 가 이미 user_ 인 계정만(acct: 인 계정은 매핑 소스가 못 됨)."""
+    amap: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT email, creator_uid FROM account "
+        "WHERE creator_uid IS NOT NULL AND creator_uid <> ''"
+    ).fetchall():
+        cuid = str(r["creator_uid"])
+        if not cuid.startswith("acct:"):
+            amap["acct:" + norm_email(r["email"])] = cuid
+    return amap
+
+
 def creator_uid_remap_plan() -> dict[str, Any]:
     """DRY-RUN(읽기 전용·변경 없음): acct:<email> 식별자가 남아있는 전 테이블/컬럼을 스캔해
     '무엇을 어디로 바꿀지' 계획만 만든다. 실제 리맵 전, 서버에서 한번 돌려 오염 규모와
@@ -676,15 +690,8 @@ def creator_uid_remap_plan() -> dict[str, Any]:
       이미 user_ 인 계정만(acct: 인 계정은 매핑 소스가 못 됨).
     - changes: (table, col, old=acct:, count, new=user_ 또는 None). new=None 이면 매핑 불가(고아).
     - unmapped: account 에 대응 없는 acct: — ★자동 리맵 대상에서 제외(손대면 안 됨)."""
-    amap: dict[str, str] = {}
     with get_connection() as conn:
-        for r in conn.execute(
-            "SELECT email, creator_uid FROM account "
-            "WHERE creator_uid IS NOT NULL AND creator_uid <> ''"
-        ).fetchall():
-            cuid = str(r["creator_uid"])
-            if not cuid.startswith("acct:"):
-                amap["acct:" + norm_email(r["email"])] = cuid
+        amap = _creator_uid_account_map(conn)
         changes: list[dict[str, Any]] = []
         unmapped: dict[str, int] = {}
         total = 0
@@ -718,12 +725,14 @@ def migrate_all_acct_to_creator_uid() -> int:
 
     앞으로의 전환은 set_account_hf_creator 가 push 시점에 자동 정합하므로, 이 배치는 '과거에 쌓인'
     잔재(전환 자동화 이전 데이터)를 청소하는 용도다. account 에 대응 없는 고아 acct: 는 account_map 에
-    없어 자동 제외(plan 의 unmapped) — 손대지 않는다. 통합한 행 수 반환."""
-    amap = creator_uid_remap_plan()["account_map"]
-    if not amap:
-        return 0
+    없어 자동 제외(plan 의 unmapped) — 손대지 않는다. 통합한 행 수 반환.
+    ★account_map 만 필요하므로 전 테이블 스캔(plan)은 다시 돌리지 않는다 — 기동 로그용
+    dry-run 이 이미 한 번 수행한다(이중 스캔 제거)."""
     total = 0
     with get_connection() as conn:
+        amap = _creator_uid_account_map(conn)
+        if not amap:
+            return 0
         for old, new in amap.items():
             total += remap_creator_uid(conn, old, new)
     return total

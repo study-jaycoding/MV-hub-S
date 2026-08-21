@@ -38,6 +38,42 @@ class IdentityRemapTests(unittest.TestCase):
         db.flush_pool()
         self.tmp.cleanup()
 
+    def test_migrate_batch_does_not_rerun_full_plan_scan(self):
+        """기동 배치는 account_map 만 새로 만들고 전 테이블 dry-run 스캔을 반복하지 않는다.
+        결과는 종전(plan 의 account_map 사용)과 동일해야 한다: 매핑 있음=정합, 고아 acct:=불변."""
+        from unittest import mock
+
+        with db.get_connection() as conn:
+            _seed_account(conn, "a@x.com", "user_A")          # 매핑 소스
+            _seed_account(conn, "b@x.com", "acct:b@x.com")    # acct: 계정 — 매핑 소스 아님
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, creator_uid, prompt, status, created_at, sort_ts) "
+                "VALUES('g-map','me','acct:a@x.com','p','done','2026-01-01',1)"
+            )
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, creator_uid, prompt, status, created_at, sort_ts) "
+                "VALUES('g-orphan','me','acct:ghost@x.com','p','done','2026-01-01',2)"
+            )
+        with mock.patch.object(
+            identity, "creator_uid_remap_plan", side_effect=AssertionError("전 테이블 재스캔 금지")
+        ):
+            changed = identity.migrate_all_acct_to_creator_uid()
+        self.assertGreaterEqual(changed, 1)
+        with db.get_connection() as conn:
+            self.assertEqual(
+                conn.execute("SELECT creator_uid FROM generation WHERE id='g-map'").fetchone()[0],
+                "user_A",
+            )
+            # account 에 대응 없는 고아 acct: 는 손대지 않는다(종전 계약 유지).
+            self.assertEqual(
+                conn.execute("SELECT creator_uid FROM generation WHERE id='g-orphan'").fetchone()[0],
+                "acct:ghost@x.com",
+            )
+        # dry-run(plan)은 여전히 독립 동작하며 같은 account_map 을 보고한다(단일 소스 공유).
+        plan = identity.creator_uid_remap_plan()
+        self.assertEqual(plan["account_map"], {"acct:a@x.com": "user_A"})
+        self.assertIn("acct:ghost@x.com", plan["unmapped"])  # 고아는 여전히 unmapped 로 보고
+
     def test_remap_updates_core_identity_columns(self):
         # acct:a → user_A 전환 시 핵심 신원 컬럼이 모두 정합돼야(remap 누락=신원 단절).
         with db.get_connection() as conn:
