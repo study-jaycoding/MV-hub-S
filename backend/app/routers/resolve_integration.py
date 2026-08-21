@@ -13,10 +13,10 @@ from pydantic import BaseModel, Field
 from . import _proxy
 from .. import repo
 from ..deps import account_scope_uid, require_view_generation
-from ..services.resolve_bridge import (
-    import_manifest_to_current_project,
+from ..services.resolve_status_runner import (
+    resolve_connection_status_bounded,
+    run_resolve_import_isolated,
 )
-from ..services.resolve_status_runner import resolve_connection_status_bounded
 from ..services.resolve_diagnostics import resolve_environment_diagnostics
 from ..services.request_guards import require_local_machine_request
 from ..services.resolve_script_installer import (
@@ -140,8 +140,10 @@ async def create_resolve_transfer(body: ResolveTransferIn, request: Request):
             }
             # Resolve 연결이 바로 끊겨도 재가져오기가 같은 프로젝트를 검증할 수 있게 먼저 기록한다.
             await save_manifest(manifest)
+        # fusionscript 는 비호환 시 프로세스를 즉시 죽일 수 있어 백엔드 안에서 직접
+        # 부르지 않고, 호환 인터프리터를 고른 자식 프로세스로 실행한다.
         manifest["resolve_import"] = await asyncio.to_thread(
-            import_manifest_to_current_project, manifest
+            run_resolve_import_isolated, manifest
         )
         await save_manifest(manifest)
         return manifest
@@ -156,7 +158,7 @@ async def retry_resolve_transfer(body: ResolveRetryIn, request: Request):
     try:
         manifest = await load_manifest(body.project_id.strip(), body.transfer_id.strip())
         manifest["resolve_import"] = await asyncio.to_thread(
-            import_manifest_to_current_project, manifest
+            run_resolve_import_isolated, manifest
         )
         await save_manifest(manifest)
         return manifest

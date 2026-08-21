@@ -387,8 +387,41 @@ class ResolveBridgeTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "python_incompatible")
         self.assertIn("파이썬", str(raised.exception))
         self.assertIn("fusionscript", str(raised.exception))
-        self.assertIn("Python 3.14 x64", str(raised.exception))
-        self.assertNotIn("3.11 권장", str(raised.exception))
+        self.assertIn("자동 재시도", str(raised.exception))
+
+    def test_fusionscript_dll_load_failure_is_python_incompatibility_not_missing_module(self):
+        # 비호환 조합은 SystemError 대신 "DLL load failed while importing fusionscript"
+        # ImportError로도 나타난다. 이걸 모듈 부재(복구 설치 안내)로 오진하면 안 된다.
+        def raise_dll_import_error(_name):
+            error = ImportError(
+                "DLL load failed while importing fusionscript: "
+                "지정된 모듈을 찾을 수 없습니다."
+            )
+            error.name = "fusionscript"
+            raise error
+
+        with mock.patch.object(
+            resolve_bridge.importlib, "import_module", side_effect=raise_dll_import_error
+        ):
+            with self.assertRaises(resolve_bridge.ResolveBridgeError) as raised:
+                resolve_bridge._connect_resolve()
+
+        self.assertEqual(raised.exception.code, "python_incompatible")
+
+    def test_missing_script_module_still_reports_repair_install(self):
+        def raise_missing_module(_name):
+            raise ModuleNotFoundError(
+                "No module named 'DaVinciResolveScript'", name="DaVinciResolveScript"
+            )
+
+        with mock.patch.object(
+            resolve_bridge.importlib, "import_module", side_effect=raise_missing_module
+        ):
+            with self.assertRaises(resolve_bridge.ResolveBridgeError) as raised:
+                resolve_bridge._connect_resolve()
+
+        self.assertEqual(raised.exception.code, "module_unavailable")
+        self.assertIn("복구 설치", str(raised.exception))
 
     def test_new_bins_are_created_in_natural_folder_name_order(self):
         manifest = self._manifest()

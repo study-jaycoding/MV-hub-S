@@ -173,12 +173,32 @@ def resolve_process_running() -> bool | None:
     return _resolve_process_running()
 
 
+def _python_incompatible_error(exc: Exception) -> ResolveBridgeError:
+    """fusionscript(C 확장)가 현재 인터프리터와 비호환일 때의 사용자 안내."""
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    bits = 64 if sys.maxsize > 2**32 else 32
+    return ResolveBridgeError(
+        "DaVinci Resolve 연결 부품(fusionscript)을 현재 파이썬에서 불러오지 못했습니다. "
+        f"현재 실행 파이썬은 {py_version} ({bits}비트)입니다. Resolve 버전에 따라 호환되는 "
+        "Python이 다르며, MV Hub는 PC에 설치된 다른 64비트 Python으로 자동 재시도합니다. "
+        "공식 최소조건은 Resolve의 Developer\\Scripting\\README.txt에서 확인할 수 있습니다. "
+        f"(원인: {exc})",
+        code="python_incompatible",
+    )
+
+
 def _connect_resolve() -> Any:
     """설치된 공식 Resolve 스크립팅 모듈로 실행 중인 앱에 연결한다."""
     module_dirs, library = _prepare_resolve_api()
     try:
         module = importlib.import_module("DaVinciResolveScript")
     except (ImportError, OSError) as exc:
+        # 모듈 파일 부재(복구 설치 대상)와 fusionscript DLL 로드 실패(파이썬 버전
+        # 비호환, "DLL load failed while importing fusionscript")를 구분한다.
+        if isinstance(exc, ImportError) and (
+            getattr(exc, "name", "") == "fusionscript" or "fusionscript" in str(exc)
+        ):
+            raise _python_incompatible_error(exc) from exc
         searched = ", ".join(str(path) for path in _script_module_candidates())
         raise ResolveBridgeError(
             "DaVinci Resolve 스크립팅 API를 찾을 수 없습니다. "
@@ -189,20 +209,8 @@ def _connect_resolve() -> Any:
     except SystemError as exc:
         # fusionscript.dll(C 확장) 초기화 실패 — CPython 은 이 경우 SystemError
         # ("initialization of fusionscript failed without raising an exception")를 낸다.
-        # Python C 확장 초기화 실패다. 공식 문서에 없는 버전 상한을 단정하지 않고,
-        # 실제 Resolve 연결까지 검증한 제품 런타임과 현재 런타임을 비교해 안내한다.
         # 좁게 SystemError만 잡아 실제 코드 버그를 오진하지 않게 한다.
-        py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-        bits = 64 if sys.maxsize > 2**32 else 32
-        raise ResolveBridgeError(
-            "DaVinci Resolve 연결 부품(fusionscript)을 현재 파이썬에서 불러오지 못했습니다. "
-            f"현재 MV Hub 파이썬은 {py_version} ({bits}비트)이며, 검증된 정식 릴리스 "
-            "런타임은 Python 3.14 x64입니다. 먼저 최신 정식 릴리스로 복구 업데이트하고, "
-            "이미 3.14 x64라면 Resolve와 MV Hub를 완전히 종료한 뒤 다시 실행하세요. "
-            "공식 최소조건은 Resolve의 Developer\\Scripting\\README.txt에서 확인할 수 있습니다. "
-            f"(원인: {exc})",
-            code="python_incompatible",
-        ) from exc
+        raise _python_incompatible_error(exc) from exc
     last_error: Exception | None = None
     for attempt in range(_CONNECT_ATTEMPTS):
         try:

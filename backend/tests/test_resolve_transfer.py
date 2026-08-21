@@ -213,7 +213,7 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
             ) as load,
             mock.patch.object(
                 resolve_integration,
-                "import_manifest_to_current_project",
+                "run_resolve_import_isolated",
                 return_value=imported,
             ) as import_prepared,
             mock.patch.object(
