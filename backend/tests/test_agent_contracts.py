@@ -485,6 +485,61 @@ def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> 
     )
 
 
+def test_job_ids_to_sync_status_matrix_limits_get_fallback_to_route_missing() -> None:
+    """R2 2-A 계약: GET 폴백은 구서버(404/405)만, 그 외 실패=None(보류) — 빈 set 과 구분."""
+    agent = _load_agent()
+
+    # 빈 입력: 서버 호출 자체가 없다(전량 목록 강요 금지).
+    with patch.object(agent, "_http") as http:
+        assert agent._job_ids_to_sync("http://hub", "t", []) == set()
+    http.assert_not_called()
+
+    # malformed 200(POST): 보류.
+    with patch.object(agent, "_http", return_value=(200, {"unknown": "oops"})) as http:
+        assert agent._job_ids_to_sync("http://hub", "t", ["j1"]) is None
+    assert http.call_count == 1  # GET 확대 없음
+
+    # 일시 장애(0·401·500·429): 전부 보류, GET 확대 없음.
+    for status in (0, 401, 429, 500):
+        with patch.object(agent, "_http", return_value=(status, {})) as http:
+            assert agent._job_ids_to_sync("http://hub", "t", ["j1"]) is None
+        assert http.call_count == 1
+
+    # 구서버(404) → 정상 GET 폴백: 차집합 계산.
+    with patch.object(
+        agent,
+        "_http",
+        side_effect=[(404, {}), (200, {"job_ids": ["j1"]})],
+    ) as http:
+        assert agent._job_ids_to_sync("http://hub", "t", ["j1", "j2"]) == {"j2"}
+    assert http.call_count == 2
+
+    # 구서버(405) → GET 실패/깨진 응답: 전량 선택이 아니라 보류.
+    for fallback in [(500, {}), (200, {"nope": 1}), (200, {"job_ids": "broken"})]:
+        with patch.object(agent, "_http", side_effect=[(405, {}), fallback]) as http:
+            assert agent._job_ids_to_sync("http://hub", "t", ["j1", "j2"]) is None
+        assert http.call_count == 2
+
+
+def test_push_once_holds_cycle_without_ingest_when_sync_undetermined() -> None:
+    """판별 보류(None)면 이번 사이클의 /api/ingest 전송을 하지 않는다(전량 재전송 방지)."""
+    agent = _load_agent()
+    calls: list[str] = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append(url)
+        return (0, {})  # known-jobs POST 실패 → 보류
+
+    with (
+        patch.object(agent, "_cli_json", return_value=[{"id": "j1"}]),
+        patch.object(agent, "_http", side_effect=fake_http),
+    ):
+        agent.push_once("http://hub", "t", "cli", 100)
+
+    assert [u for u in calls if u.endswith("/api/ingest")] == []  # ingest 미전송
+    assert any(u.endswith("/api/ingest/known-jobs") for u in calls)
+
+
 def test_agent_only_gets_terminal_job_detail_when_reference_validation_needs_it():
     agent = _load_agent()
     active = {

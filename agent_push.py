@@ -2169,23 +2169,31 @@ def _signout_and_relogin(cli: str) -> str | None:
     return _cli_account_email(cli)
 
 
-def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> set[str]:
+def _job_ids_to_sync(server: str, token: str, local_ids: list[str]) -> "set[str] | None":
     """서버에 없거나 서버에서 아직 진행중인 로컬 job id만 고른다.
 
-    신버전 서버의 ``refresh`` 를 합치고, 구버전 서버는 기존 ``unknown`` 또는 GET 계약으로 폴백한다.
-    """
-    if local_ids:
-        status, diff = _http(
-            "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
-        )
-        if status == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
-            selected = {str(job_id) for job_id in diff["unknown"] if job_id}
-            refresh = diff.get("refresh")
-            if isinstance(refresh, list):
-                selected.update(str(job_id) for job_id in refresh if job_id)
-            return selected
+    신버전 서버의 ``refresh`` 를 합치고, 구버전 서버(POST 라우트 없음 404/405)만 GET 전량
+    계약으로 폴백한다. 반환 ``None`` = 판별 실패(네트워크·5xx·malformed) — 빈 차집합과
+    구분되는 명시적 '이번 사이클 보류' 신호다. ★종전엔 어떤 실패든 GET 폴백으로 확대되고,
+    GET 까지 실패하면 known=빈 것으로 오인해 전량을 다시 보냈다(서버 멱등이라 무해하지만
+    장애 때 전량 재전송 낭비 + 서버 전체 목록 응답 강요)."""
+    if not local_ids:
+        return set()  # 보낼 후보 자체가 없음 — 서버 전량 목록을 받을 이유가 없다
+    status, diff = _http(
+        "POST", f"{server}/api/ingest/known-jobs", token=token, body={"job_ids": local_ids}
+    )
+    if status == 200 and isinstance(diff, dict) and isinstance(diff.get("unknown"), list):
+        selected = {str(job_id) for job_id in diff["unknown"] if job_id}
+        refresh = diff.get("refresh")
+        if isinstance(refresh, list):
+            selected.update(str(job_id) for job_id in refresh if job_id)
+        return selected
+    if status not in (404, 405):
+        return None  # 일시 장애·malformed 200 — 판별 보류(다음 사이클 재시도)
     status, known = _http("GET", f"{server}/api/ingest/known-jobs", token=token)
-    known_ids = set(known.get("job_ids") or []) if status == 200 and isinstance(known, dict) else set()
+    if status != 200 or not isinstance(known, dict) or not isinstance(known.get("job_ids"), list):
+        return None  # 구서버 GET 도 실패 — 전량 재전송 대신 보류
+    known_ids = {str(job_id) for job_id in known["job_ids"]}
     return {job_id for job_id in local_ids if job_id not in known_ids}
 
 
@@ -2201,7 +2209,13 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     # ★reinspect(재점검): 차집합을 건너뛰고 최신 전량을 다시 보낸다 → 서버 upsert 가 힉스필드 상태와
     #   로컬을 재대조해 어긋난 것(로컬만 실패 등)을 정정. (fresh_ids=None → 아래서 전량 채택)
     local_ids = [j["id"] for j in jobs if isinstance(j, dict) and j.get("id")]
-    fresh_ids: set[str] | None = None if reinspect else _job_ids_to_sync(server, token, local_ids)
+    fresh_ids: set[str] | None = None  # None=전량 채택(reinspect 전용)
+    if not reinspect:
+        fresh_ids = _job_ids_to_sync(server, token, local_ids)
+        if fresh_ids is None:
+            # 판별 실패(빈 차집합과 다름) — 전량 재전송 대신 이번 사이클을 건너뛴다.
+            print("[보류] 서버 known-jobs 판별 실패 — 이번 push 사이클을 건너뜁니다(다음 사이클 재시도).")
+            return
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
     acct, workspace = _collect_account_status(cli)
