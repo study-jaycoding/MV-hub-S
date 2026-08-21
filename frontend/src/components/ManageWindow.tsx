@@ -48,7 +48,7 @@ export function ManageWindow() {
   // 직접 고른 뒤에는 따르지 않는다(A안). 셀렉터가 없는 일반 멤버는 계속 메인 창을 따른다.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      if (event.key !== STORAGE_KEYS.workspaceContext && event.key !== null) return;
       if (workspacePinnedRef.current) return;
       setWorkspaceId(loadManageWorkspaceScope().workspaceId);
     };

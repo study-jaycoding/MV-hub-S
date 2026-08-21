@@ -65,7 +65,7 @@ export function AssetsView({ onInfo, onPreview }: Props) {
   );
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEYS.libraryFilters && event.key !== null) return;
+      if (event.key !== STORAGE_KEYS.workspaceContext && event.key !== null) return;
       setWorkspaceId(loadManageWorkspaceScope().workspaceId);
     };
     window.addEventListener("storage", onStorage);

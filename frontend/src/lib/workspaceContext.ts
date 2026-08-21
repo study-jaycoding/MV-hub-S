@@ -1,10 +1,32 @@
 import type { Workspace, WorkspaceContext } from "../types";
+import { loadJSON, saveJSON } from "./storage";
+import { STORAGE_KEYS } from "./storageKeys";
 
 export const UNKNOWN_WORKSPACE: WorkspaceContext = {
   scope: "unknown",
   id: null,
   name: null,
 };
+
+/**
+ * 선택 워크스페이스(크레딧 컨텍스트) 영속화.
+ *
+ * 예전에는 라이브러리 필터(workspace_id)가 이 역할을 겸했지만, 워크스페이스 전환이
+ * 생성물 가시성을 바꾸지 않게 분리되면서 별도 키로 저장한다. 관리/에셋 창도 이 키를 따라간다.
+ */
+export function loadStoredWorkspaceContext(): WorkspaceContext | null {
+  const value = loadJSON<Partial<WorkspaceContext>>(STORAGE_KEYS.workspaceContext);
+  if (!value || typeof value !== "object") return null;
+  if (value.scope === "team" && typeof value.id === "string" && value.id.trim()) {
+    return { scope: "team", id: value.id, name: typeof value.name === "string" ? value.name : null };
+  }
+  if (value.scope === "personal") return { scope: "personal", id: null, name: null };
+  return null;
+}
+
+export function saveStoredWorkspaceContext(context: WorkspaceContext): void {
+  saveJSON(STORAGE_KEYS.workspaceContext, context);
+}
 
 export function workspaceContextOf(item: Workspace | null | undefined): WorkspaceContext {
   if (!item) return UNKNOWN_WORKSPACE;

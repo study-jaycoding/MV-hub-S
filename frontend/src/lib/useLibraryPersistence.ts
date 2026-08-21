@@ -7,6 +7,7 @@ interface UseLibraryPersistenceArgs {
   armedAutoTags: Set<string>;
   armedFolder: { projectId: string; path: string } | null;
   colorFilter: Set<string>;
+  workspaceChips: { id: string; name: string }[];
   commentOnly: boolean;
   fill: boolean;
   filters: Filters;
@@ -26,6 +27,7 @@ export function useLibraryPersistence({
   armedAutoTags,
   armedFolder,
   colorFilter,
+  workspaceChips,
   commentOnly,
   fill,
   filters,
@@ -56,4 +58,5 @@ export function useLibraryPersistence({
   useEffect(() => store.setSet("armedAutoTags", armedAutoTags), [armedAutoTags, store]);
   // null 도 저장 → loadJSON 이 그대로 null 로 복원(해제 상태 영속).
   useEffect(() => store.setJSON("armedFolder", armedFolder), [armedFolder, store]);
+  useEffect(() => store.setJSON("workspaceChips", workspaceChips), [store, workspaceChips]);
 }

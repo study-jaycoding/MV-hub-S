@@ -10,9 +10,27 @@ import type { MediaFilter } from "./mediaTypes";
 import { buildGenerationQuery } from "./appGenerationQuery";
 import { useLibraryPersistence } from "./useLibraryPersistence";
 
+export interface WorkspaceChip {
+  id: string;
+  name: string;
+}
+
 export function useLibraryFilters(LS: Store) {
+  // 워크스페이스 침(옵트인 필터) 등록 목록 — 전역태그 블록에 표시, 클릭하면 workspace_id 필터 무장.
+  const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[]>(
+    () => LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [],
+  );
   const [filters, setFilters] = useState<Filters>(() => {
-    return LS.loadJSON<Filters>("filters") ?? { tab: "my" };
+    const stored = LS.loadJSON<Filters>("filters") ?? { tab: "my" };
+    // 가시성 분리 마이그레이션: 예전엔 워크스페이스 전환이 workspace_id 필터를 자동 주입했다.
+    // 등록된 침이 없는 workspace_id 는 그 잔재이므로 버린다(기본 = 전부 보기).
+    if (stored.workspace_id) {
+      const chips = LS.loadJSON<WorkspaceChip[]>("workspaceChips") ?? [];
+      if (!chips.some((chip) => chip && chip.id === stored.workspace_id)) {
+        delete stored.workspace_id;
+      }
+    }
+    return stored;
   });
   const [typeFilter, setTypeFilter] = useState<MediaFilter>(
     () => (LS.get("typeFilter", "all") as MediaFilter) || "all",
@@ -88,6 +106,7 @@ export function useLibraryFilters(LS: Store) {
     armedAutoTags,
     armedFolder,
     colorFilter,
+    workspaceChips,
     commentOnly,
     fill,
     filters,
@@ -120,6 +139,7 @@ export function useLibraryFilters(LS: Store) {
     grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags,
     armedFolder, setArmedFolder,
+    workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey,
   };
 }

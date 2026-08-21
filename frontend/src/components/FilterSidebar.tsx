@@ -30,6 +30,10 @@ interface Props {
   onToggleAutoTag: (t: string) => void;
   onAddAutoTag: () => void;
   onDeleteAutoTag: (t: string) => void;
+  // 워크스페이스 침(옵트인 필터) — 클릭하면 그 워크스페이스에서 생성한 것만(filters.workspace_id)
+  workspaceChips: { id: string; name: string }[];
+  onToggleWorkspaceChip: (id: string) => void;
+  onRemoveWorkspaceChip: (id: string) => void;
   onCreatorChanged: () => void; // 생성자 '나 지정'/이름변경 후 라이브러리 새로고침
   armedFolder?: { projectId: string; path: string } | null; // 무장 폴더 = 폴더 트리 빨간 하이라이트
   onArmFolder?: (projectId: string, path: string) => void; // 폴더 선택 시 무장(생성 시 folder_path)
@@ -52,6 +56,9 @@ export function FilterSidebar({
   onToggleAutoTag,
   onAddAutoTag,
   onDeleteAutoTag,
+  workspaceChips,
+  onToggleWorkspaceChip,
+  onRemoveWorkspaceChip,
   onCreatorChanged,
   armedFolder,
   onArmFolder,
@@ -133,7 +140,36 @@ export function FilterSidebar({
             </button>
           </h4>
           <div className="chips">
-            {facets.auto_tags.length === 0 && <span className="muted">{tr("없음")}</span>}
+            {facets.auto_tags.length === 0 && workspaceChips.length === 0 && (
+              <span className="muted">{tr("없음")}</span>
+            )}
+            {/* 워크스페이스 침 — 켜면 그 워크스페이스에서 생성한 것만. 등록은 + 모달에서 `#+` */}
+            {workspaceChips.map((c) => (
+              <span
+                key={"ws:" + c.id}
+                className={"auto-tag-chip ws" + (filters.workspace_id === c.id ? " on" : "")}
+              >
+                <button
+                  className="auto-tag-name"
+                  title={
+                    filters.workspace_id === c.id
+                      ? "해제 — 전체 보기로 복귀"
+                      : `"${c.name}" 워크스페이스에서 생성한 것만 보기`
+                  }
+                  onClick={() => onToggleWorkspaceChip(c.id)}
+                >
+                  <span className="ws-mark">W</span>
+                  {c.name}
+                </button>
+                <button
+                  className="auto-tag-x"
+                  title="워크스페이스 필터 등록 해제"
+                  onClick={() => onRemoveWorkspaceChip(c.id)}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
             {facets.auto_tags.map((t) => (
               <span key={t} className={"auto-tag-chip" + (armedAutoTags.has(t) ? " on" : "")}>
                 <button

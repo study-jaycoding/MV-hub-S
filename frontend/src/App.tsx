@@ -115,6 +115,8 @@ import { buildSpotlightCreateBody } from "./lib/spotlightSubmit";
 import { resolveAutoAspectRatio } from "./lib/aspectAuto";
 import {
   isGenerationWorkspaceReady,
+  loadStoredWorkspaceContext,
+  saveStoredWorkspaceContext,
   UNKNOWN_WORKSPACE,
   sameWorkspace,
 } from "./lib/workspaceContext";
@@ -138,24 +140,23 @@ export default function App() {
     sharedOnly, setSharedOnly, tagFilter, setTagFilter, tagPanelOpen, setTagPanelOpen,
     commentOnly, setCommentOnly, finalOnly, setFinalOnly, grayOn, setGrayOn,
     armedAutoTags, setArmedAutoTags, armedFolder, setArmedFolder,
+    workspaceChips, setWorkspaceChips,
     genQuery, selectionResetKey,
   } = useLibraryFilters(LS);
-  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(() =>
-    filters.workspace_id
-      ? { scope: "team", id: filters.workspace_id, name: null }
-      : UNKNOWN_WORKSPACE,
+  // 워크스페이스 전환 = 크레딧 컨텍스트(생성 스탬프·차감 풀)만 바꾼다 — 라이브러리 가시성과 분리.
+  // 가시성은 사이드바 전역태그 옆 워크스페이스 침(옵트인 필터, filters.workspace_id)이 담당한다.
+  const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>(
+    () => loadStoredWorkspaceContext() ?? UNKNOWN_WORKSPACE,
   );
   const changeWorkspaceContext = useCallback((next: WorkspaceContext) => {
     setWorkspaceContext((previous) =>
       sameWorkspace(previous, next) && previous.name === next.name ? previous : next,
     );
-    const workspaceId = next.scope === "team" ? next.id || undefined : undefined;
-    setFilters((previous) => {
-      if (previous.workspace_id === workspaceId) return previous;
-      // 공간이 바뀌면 이전 공간의 프로젝트·폴더·생성자 필터를 들고 가지 않는다.
-      return { tab: previous.tab, workspace_id: workspaceId };
-    });
-  }, [setFilters]);
+  }, []);
+  // 별도 키로 영속화 — 관리/에셋 창이 이 키(storage 이벤트)로 같은 범위를 따라간다.
+  useEffect(() => {
+    saveStoredWorkspaceContext(workspaceContext);
+  }, [workspaceContext]);
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
@@ -524,7 +525,16 @@ export default function App() {
     flash,
     reload,
     setArmedAutoTags,
+    workspaceContext,
+    setWorkspaceChips,
   });
+  // 워크스페이스 침(옵트인 필터) — 단일 선택 토글. 등록 해제 시 무장 중이면 필터도 푼다.
+  const toggleWorkspaceChip = (id: string) =>
+    patch({ workspace_id: filters.workspace_id === id ? undefined : id });
+  const removeWorkspaceChip = (id: string) => {
+    setWorkspaceChips((prev) => prev.filter((chip) => chip.id !== id));
+    if (filters.workspace_id === id) patch({ workspace_id: undefined });
+  };
 
   // comfy 노드 실행 중 목록(SceneBoard 통지) — '내 작업'에 임시 생성중 카드(Comfy 로고)를 프론트 전용으로 띄운다.
   const [comfyRunning, setComfyRunning] = useState<{ id: string; name: string }[]>([]);
@@ -1267,17 +1277,14 @@ export default function App() {
         filters={filters}
         onTab={(tab) => {
           navTab(tab); // 브라우저 히스토리 엔트리 추가(뒤로/앞으로 연동)
-          setFilters({
-            tab,
-            workspace_id:
-              workspaceContext.scope === "team" ? workspaceContext.id || undefined : undefined,
-          }); // 직접 탭 클릭은 다른 필터를 초기화하되 선택 공간은 유지
+          // 직접 탭 클릭은 다른 필터를 초기화하되 무장된 워크스페이스 침 필터는 유지
+          setFilters((previous) => ({ tab, workspace_id: previous.workspace_id }));
           clearSelect();
         }}
         onSearch={(q) => patch({ search: q || undefined })}
         onWorkspaceSwitched={async () => {
           await reload();
-          flash("워크스페이스 전환 — 라이브러리를 갱신했습니다.");
+          flash("워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다. (보이는 목록은 그대로)");
         }}
         workspaceContext={workspaceContext}
         onWorkspaceContextChange={changeWorkspaceContext}
@@ -1489,6 +1496,9 @@ export default function App() {
                 onToggleAutoTag={toggleArmedAutoTag}
                 onAddAutoTag={addAutoTag}
                 onDeleteAutoTag={removeAutoTag}
+                workspaceChips={workspaceChips}
+                onToggleWorkspaceChip={toggleWorkspaceChip}
+                onRemoveWorkspaceChip={removeWorkspaceChip}
                 armedFolder={armedFolder}
                 onArmFolder={(projectId, path) => {
                   // 폴더 선택 = ① 생성 라벨 무장 ② 그 폴더(하위 포함)로 라이브러리 필터

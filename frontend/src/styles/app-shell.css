@@ -713,6 +713,14 @@
   background: rgba(255,255,255,0.05); border: 1px solid var(--border);
 }
 .auto-tag-chip.on { background: var(--grad-soft); border-color: var(--accent); }
+/* 워크스페이스 침(옵트인 필터) — 태그와 구분되게 점선 테두리 + W 마크 */
+.auto-tag-chip.ws { border-style: dashed; }
+.auto-tag-chip.ws.on { border-style: solid; }
+.auto-tag-chip .ws-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: 4px; border-radius: 4px;
+  font-size: 9px; font-weight: 900; color: #101114; background: #4da3ff;
+}
 .auto-tag-name {
   padding: 4px 4px 4px 10px; color: inherit;
   /* 전역 button 리셋(배경·테두리·라운드)을 무효화 — 칩 안에 박스가 보이던 문제 수정 */

@@ -14,7 +14,8 @@ export const STORAGE_KEYS = {
   historyPos: "ch.history.pos",
   historyPosLegacy: "ch.lineage.pos",
   historyView: "ch.history.view",
-  libraryFilters: "ch.lib.filters", // 메인 라이브러리의 선택 워크스페이스(관리 창 범위와 동기)
+  libraryFilters: "ch.lib.filters",
+  workspaceContext: "ch.workspaceContext", // 선택 워크스페이스(크레딧 컨텍스트) — 관리/에셋 창 범위와 동기
   manageColorTags: "ch.manage.colorTags",
   manageFolderTrees: "ch.manage.folderTrees", // 프로젝트관리에서 렌더폴더 트리를 펼친 프로젝트 id 목록
   manageTab: "ch.manage.tab",

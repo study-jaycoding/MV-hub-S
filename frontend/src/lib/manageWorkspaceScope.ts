@@ -5,15 +5,16 @@ export interface ManageWorkspaceScope {
   workspaceId?: string;
 }
 
-/** 메인 라이브러리 필터에서 관리 창이 따라갈 workspace ID만 안전하게 읽는다. */
-export function workspaceScopeFromLibraryFilters(value: unknown): ManageWorkspaceScope {
+/** 저장된 워크스페이스 컨텍스트에서 관리/에셋 창이 따라갈 팀 workspace ID만 안전하게 읽는다. */
+export function workspaceScopeFromContext(value: unknown): ManageWorkspaceScope {
   if (!value || typeof value !== "object") return {};
-  const workspaceId = (value as { workspace_id?: unknown }).workspace_id;
-  return typeof workspaceId === "string" && workspaceId.trim()
-    ? { workspaceId: workspaceId.trim() }
+  const scope = (value as { scope?: unknown }).scope;
+  const id = (value as { id?: unknown }).id;
+  return scope === "team" && typeof id === "string" && id.trim()
+    ? { workspaceId: id.trim() }
     : {};
 }
 
 export function loadManageWorkspaceScope(): ManageWorkspaceScope {
-  return workspaceScopeFromLibraryFilters(loadJSON<unknown>(STORAGE_KEYS.libraryFilters));
+  return workspaceScopeFromContext(loadJSON<unknown>(STORAGE_KEYS.workspaceContext));
 }
