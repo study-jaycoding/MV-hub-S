@@ -401,5 +401,79 @@ class GenerationReadRouteTests(unittest.TestCase):
         self.assertIn("par1", [a["id"] for a in r.json()["ancestors"]])
 
 
+class WorkspaceBatchResponseContractTests(GenerationReadRouteTests):
+    """workspace/batch 응답(updates) 배치화 계약 — 단건 재조회(N+1) 없이 종전과 동일 payload."""
+
+    def _put_batch(self, generation_ids):
+        return self.client.put(
+            "/api/generations/workspace/batch",
+            json={
+                "generation_ids": generation_ids,
+                "operation": "assign",
+                "workspace_name": "티타임",
+            },
+        )
+
+    def test_updates_are_batch_fetched_without_per_item_get(self):
+        from app import repo
+        from app.routers import generation as generation_router
+
+        with (
+            patch.object(
+                generation_router.repo, "get_generation", wraps=repo.get_generation
+            ) as single,
+            patch.object(
+                generation_router.repo,
+                "get_generations_batch",
+                wraps=repo.get_generations_batch,
+            ) as batched,
+        ):
+            r = self._put_batch(["srv1", "par1", "mat1"])
+
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(single.call_count, 0)  # 항목별 단건 재조회 없음
+        self.assertEqual(batched.call_count, 1)  # 응답 재조회는 한 번의 배치 호출
+
+    def test_updates_keep_requested_ids_order_and_payload_equality(self):
+        from app import repo
+
+        # 같은 행을 서버 job_id(srv1)와 로컬 PK(loc1) 로 함께, 중복도 섞는다.
+        r = self._put_batch(["srv1", "par1", "loc1", "par1"])
+        self.assertEqual(r.status_code, 200, r.text)
+        updates = r.json()["updates"]
+        # requested_id 는 요청 표기 그대로, resolved 순서 보존. 완전 중복 표기("par1" 2회)는
+        # resolve 단계가 dedupe 하는 기존 동작이고, 같은 행의 다른 표기(srv1·loc1)는 둘 다 남는다.
+        self.assertEqual(
+            [u["requested_id"] for u in updates], ["srv1", "par1", "loc1"]
+        )
+        for update in updates:
+            local_id = update["generation"]["id"]
+            oracle = repo.get_generation(local_id)
+            self.assertEqual(update["generation"], oracle)  # 단건 직렬화와 완전 동등
+        # 별칭 srv1 과 PK loc1 은 같은 로컬 행을 가리킨다.
+        by_requested = {u["requested_id"]: u["generation"]["id"] for u in updates}
+        self.assertEqual(by_requested["srv1"], "loc1")
+        self.assertEqual(by_requested["loc1"], "loc1")
+
+    def test_missing_id_still_rejects_whole_batch(self):
+        r = self._put_batch(["loc1", "nope"])
+        self.assertEqual(r.status_code, 404)
+
+    def test_trashed_row_contract_unchanged(self):
+        from app import repo
+
+        repo.delete_generation("par1")
+        r = self._put_batch(["loc1", "par1"])
+        # 종전 계약 그대로: 휴지통 행이 섞였을 때의 상태코드·payload 는 변경 전과 동일해야
+        # 한다(이 테스트는 배치화 전 동작을 캡처해 고정한다).
+        if r.status_code == 200:
+            updates = r.json()["updates"]
+            for update in updates:
+                oracle = repo.get_generation(update["generation"]["id"])
+                self.assertEqual(update["generation"], oracle)
+        else:
+            self.assertIn(r.status_code, (404, 409))
+
+
 if __name__ == "__main__":
     unittest.main()

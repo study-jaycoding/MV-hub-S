@@ -567,9 +567,12 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
     except Exception:  # noqa: BLE001
         pass
 
+    # 항목마다 단건 재조회(N+1) 대신 로컬 id 를 한 번에 배치 직렬화한다.
+    # 응답 항목·순서는 resolved 순서 그대로, 없는 행 스킵 규칙도 종전과 같다.
+    refetched = repo.get_generations_batch([str(row["id"]) for row in result["resolved"]])
     updates = []
     for row in result["resolved"]:
-        generation = repo.get_generation(str(row["id"]))
+        generation = refetched.get(str(row["id"]))
         if generation:
             updates.append(
                 {"requested_id": str(row["requested_id"]), "generation": generation}

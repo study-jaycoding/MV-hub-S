@@ -341,6 +341,21 @@ def get_generation(gen_id: str, account_uid: Optional[str] = None) -> Optional[d
         return _fetch_generation(conn, gen_id, account_uid)
 
 
+def get_generations_batch(
+    gen_ids: list[str], account_uid: Optional[str] = None
+) -> dict[str, dict[str, Any]]:
+    """로컬 PK 목록을 한 커넥션에서 일괄 직렬화한다({id: generation dict}).
+
+    단건 get_generation 과 같은 컬럼셋·첨부 규칙(_fetch_gens)이라 결과가 동일하다.
+    배치 응답을 만들며 항목마다 단건 조회를 반복(N+1)하지 않기 위한 경로다.
+    """
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    if not ids:
+        return {}
+    with get_connection() as conn:
+        return _fetch_gens(conn, ids, viewer_uid=account_uid)
+
+
 def get_generations_with_materials(
     gen_ids: list[str], account_uid: Optional[str] = None
 ) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
