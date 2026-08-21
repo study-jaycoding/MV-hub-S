@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -212,7 +213,9 @@ def _pending_manifest(
     manifest_root: Path,
     source_root: Path,
 ) -> dict[str, Any] | None:
-    """수동 Resolve 메뉴에 노출해도 안전한 준비 완료 manifest인지 검증한다."""
+    """수동 Resolve 메뉴에 노출해도 안전한 준비 완료 manifest인지 검증한다.
+    ★manifest_root·source_root 는 호출자가 resolve 를 마친 경로여야 한다(R5 transfer-3 —
+    manifest 마다 같은 root 를 재-resolve 하지 않는다)."""
     try:
         manifest = _read_manifest(path)
         recorded_path = Path(str(manifest.get("manifest_path") or "")).resolve()
@@ -226,8 +229,8 @@ def _pending_manifest(
         return None
     if (
         recorded_path != path.resolve()
-        or recorded_root != manifest_root.resolve()
-        or recorded_source != source_root.resolve()
+        or recorded_root != manifest_root
+        or recorded_source != source_root
     ):
         return None
     if manifest.get("status") not in {"complete", "partial"}:
@@ -278,11 +281,18 @@ def list_pending_manifests(
             )
             if transfer_dir is None or not transfer_dir.is_dir():
                 continue
-            paths = sorted(
-                (path for path in transfer_dir.glob("*.json") if path.is_file()),
-                key=lambda item: item.stat().st_mtime,
-                reverse=True,
-            )
+            # stat 1회로 파일 여부·mtime 을 함께 얻는다(R5 transfer-3) — 종전 is_file+
+            # 정렬키 stat 은 manifest 당 메타데이터 조회 2회였다(NAS 왕복 비용).
+            stats = [(path, path.stat()) for path in transfer_dir.glob("*.json")]
+            paths = [
+                path
+                for path, stat_result in sorted(
+                    stats, key=lambda entry: entry[1].st_mtime, reverse=True
+                )
+                if stat.S_ISREG(stat_result.st_mode)
+            ]
+            # 검증에 쓰는 root 도 프로젝트당 1회만 resolve 해 manifest 마다 반복하지 않는다.
+            manifest_root_resolved = manifest_root.resolve()
         except OSError:
             continue
         # 완료 manifest가 최신 창을 차지해 더 오래된 실제 pending을 가리지 않도록 먼저
@@ -290,7 +300,7 @@ def list_pending_manifests(
         project_pending = 0
         for path in paths:
             manifest = _pending_manifest(
-                project_id, path, manifest_root, source_root
+                project_id, path, manifest_root_resolved, source_root
             )
             if manifest is not None:
                 pending.append(manifest)
@@ -518,10 +528,12 @@ async def transfer_generations(
         except Exception as exc:  # noqa: BLE001 - 파일 1건 실패를 격리해 나머지는 계속 처리
             item["status"] = "error"
             item["error"] = str(exc)
-        _refresh_summary(manifest)
         # NAS의 작은 JSON 파일을 항목마다 다시 쓰면 대량 전송이 크게 느려진다. 최대
         # N건까지만 메모리에 두고 체크포인트하며, 원본 복사 자체는 항상 원자적으로 끝난다.
+        # 요약 재집계도 저장 직전에만 한다(R5 transfer-1) — 항목마다 전체 items 3회
+        # 순회(O(N²))였지만 저장은 checkpoint 뿐이라 중간 집계는 쓰이지 않았다.
         if index % _MANIFEST_CHECKPOINT_ITEMS == 0:
+            _refresh_summary(manifest)
             await asyncio.to_thread(_write_manifest, manifest_path, manifest)
 
     _refresh_summary(manifest, finished=True)
