@@ -42,7 +42,7 @@ from ..deps import (
 )
 from ..repo import manage as repo_manage
 from ..repo import manage_tasks as repo_manage_tasks
-from ..services import cli_bridge, file_stamp, media_cache, project_folders
+from ..services import cli_bridge, file_stamp, final_export, media_cache, project_folders
 from ..services.event_journal import journal_audit_event
 from ..services.telemetry_drain import drain_isolated_telemetry
 from ..services.net_guard import BlockedURLError, assert_public_http_url, guarded_opener
@@ -1128,7 +1128,7 @@ def _save_finals_targets_facts(project_id: str) -> list[dict]:
     """저장 대상 '사실'만 — render_path/saved 등 디스크 판정 절대 미포함(그건 저장하는 PC 의 몫).
     filename 은 원본 확장자가 필요해 여기(사실 보유측)서 계산한다."""
     out: list[dict] = []
-    for f in repo_manage.finals_to_export(project_id):
+    for f in final_export.finals_to_export(project_id):
         fp = f.get("folder_path")
         file_path = f.get("file_path")
         reason: Optional[str] = None
@@ -1172,10 +1172,9 @@ def save_finals_content(gen_id: str, request: Request):
     if not gen or not gen.get("project_id"):
         raise HTTPException(status_code=404, detail="없는 생성물(또는 프로젝트 미배정)")
     _require_project_manage(request, gen["project_id"])
-    fin = next(
-        (f for f in repo_manage.finals_to_export(gen["project_id"]) if f["gen_id"] == gen_id),
-        None,
-    )
+    # 단건 판정 — 종전엔 content 요청마다 프로젝트 전수 판정(finals_to_export)을 다시
+    # 계산했다(위임 저장 N건 × 전수 판정). 같은 정책 함수의 단건 경로로 대체(성능-08).
+    fin = final_export.final_to_export(gen["project_id"], gen_id)
     if not fin:
         raise HTTPException(status_code=404, detail="저장 대상이 아닙니다")
     file_path = fin.get("file_path") or ""
@@ -1352,7 +1351,7 @@ async def save_finals(project_id: str, request: Request):
                 errors.append({"gen_id": gen_id, "reason": str(e)})
         return {"saved": saved, "skipped": skipped, "errors": errors}
 
-    finals = repo_manage.finals_to_export(project_id)
+    finals = final_export.finals_to_export(project_id)
     saved, skipped = 0, 0
     errors: list[dict[str, str]] = []
     for f in finals:

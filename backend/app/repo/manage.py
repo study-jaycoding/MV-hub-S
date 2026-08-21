@@ -805,7 +805,7 @@ def final_export_task_facts(
 def final_export_sources(
     project_id: str, gen_ids: "list[str] | set[str]"
 ) -> list[dict[str, Any]]:
-    """판정 통과한 gen_id 들의 저장 원자료(폴더·첫 asset). finals_to_export 의 후반부와
+    """판정 통과한 gen_id 들의 저장 원자료(폴더·첫 asset). 종전 finals_to_export 후반부와
     동일 SQL — ★project_id 재제한·deleted 제외로 타 프로젝트 수동 링크 유출을 막는다."""
     ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
     if not ids:
@@ -824,38 +824,6 @@ def final_export_sources(
             ).fetchall()
             result.extend(dict(r) for r in rows)
         return result
-
-
-def finals_to_export(project_id: str) -> list[dict[str, Any]]:
-    """저장 대상 = 완료(done) 작업의 최종본(is_final)이면서 생성 잡도 완료(status=done)인 컷.
-    과거 기록으로 전환된 완료 작업도 내보내기 대상에서 사라지면 안 되므로 보관 행까지
-    조회한다. list_tasks 의 파생 상태를 그대로 재사용해 '생략(omit)' 수동 종결은 자동
-    제외된다.
-    반환: [{gen_id, folder_path, file_path, media_type}] — folder_path 로 저장 위치를 정한다."""
-    tasks = list_tasks(project_id, include_archived=True)
-    gen_ids: set[str] = set()
-    for t in tasks:
-        if t.get("status") != "done":
-            continue
-        for c in t.get("cuts", []):
-            if c.get("is_final") and c.get("status") == "done":
-                gen_ids.add(c["id"])
-    if not gen_ids:
-        return []
-    ids = list(gen_ids)
-    with get_connection() as conn:
-        _ensure_schema(conn)
-        ph = ",".join("?" * len(ids))
-        # ★project_id 재제한 — 타 프로젝트 컷이 수동 링크로 done 작업에 끼어도
-        #   이 프로젝트 렌더 루트로 새어 저장되지 않게(코덱스 지적 #6).
-        rows = conn.execute(
-            f"SELECT g.id AS gen_id, g.folder_path AS folder_path, "
-            f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path, "
-            f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type "
-            f"FROM generation g WHERE g.id IN ({ph}) AND g.project_id=? AND g.deleted_at IS NULL",
-            ids + [project_id],
-        ).fetchall()
-        return [dict(r) for r in rows]
 
 
 def record_export(gen_id: str, dest_path: str, project_id: Optional[str] = None) -> None:

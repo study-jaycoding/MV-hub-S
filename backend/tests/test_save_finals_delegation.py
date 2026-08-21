@@ -117,9 +117,9 @@ class SaveFinalsDelegationTests(unittest.TestCase):
             mock.patch.object(mroute.repo, "get_generation", return_value={"project_id": "p1"}),
             mock.patch.object(mroute, "_require_project_manage"),
             mock.patch.object(
-                mroute.repo_manage,
-                "finals_to_export",
-                return_value=[{"gen_id": "g1", "file_path": "http://127.0.0.1/private"}],
+                mroute.final_export,
+                "final_to_export",
+                return_value={"gen_id": "g1", "file_path": "http://127.0.0.1/private"},
             ),
             mock.patch.object(mroute, "guarded_opener") as opener,
         ):
