@@ -89,6 +89,10 @@ class ConnectionManager:
     def __init__(self) -> None:
         # 소켓 → 연결 상태(스코프·큐·sender). AUTH off 면 account_uid=None.
         self._clients: dict[WebSocket, _Client] = {}
+        # account_uid → 그 스코프의 소켓 집합(보조 인덱스, R4 B-1) — 계정 스코프 broadcast 가
+        # 전체 연결을 선형 탐색하지 않게 한다. ★None 키는 'AUTH off 스코프'라는 정확한 스코프다
+        # (전체 아님 — broadcast 의 None 격리 계약 유지). 갱신은 _track/_untrack 단일 경로로만.
+        self._by_account: dict[Optional[str], set[WebSocket]] = {}
         self._send_timeouts = 0
         self._send_failures = 0
         self._send_overflows = 0
@@ -124,21 +128,39 @@ class ConnectionManager:
             "send_overflows": self._send_overflows,
         }
 
+    def _track_unlocked(self, client: _Client) -> None:
+        """_clients 와 _by_account 를 함께 갱신하는 유일한 등록 경로(lock 아래에서만)."""
+        previous = self._clients.get(client.ws)
+        if previous is not None:
+            self._untrack_unlocked(previous)  # 같은 소켓 재등록 — 옛 스코프 인덱스 잔재 제거
+        self._clients[client.ws] = client
+        self._by_account.setdefault(client.account_uid, set()).add(client.ws)
+
+    def _untrack_unlocked(self, client: _Client) -> None:
+        """_clients 와 _by_account 를 함께 정리하는 유일한 해제 경로(lock 아래에서만)."""
+        self._clients.pop(client.ws, None)
+        bucket = self._by_account.get(client.account_uid)
+        if bucket is not None:
+            bucket.discard(client.ws)
+            if not bucket:
+                self._by_account.pop(client.account_uid, None)  # 빈 버킷 미보존
+
     async def connect(
         self, ws: WebSocket, account_uid: Optional[str] = None
     ) -> dict[str, int]:
         await ws.accept()
         client = _Client(ws, account_uid)
         async with self._lock:
-            self._clients[ws] = client
+            self._track_unlocked(client)
             client.sender = asyncio.create_task(self._sender_loop(client))
             return self._stats_unlocked()
 
     async def disconnect(self, ws: WebSocket) -> dict[str, int] | None:
         async with self._lock:
-            client = self._clients.pop(ws, None)
+            client = self._clients.get(ws)
             if client is None:
                 return None
+            self._untrack_unlocked(client)
             stats = self._stats_unlocked()
         await self._stop_sender(client)
         return stats
@@ -181,8 +203,30 @@ class ConnectionManager:
         된다(현 호출처는 모두 호출마다 새 literal 을 만든다)."""
         overflowed: list[_Client] = []
         async with self._lock:
-            for client in self._clients.values():
+            if scope_all:
+                targets = list(self._clients.values())
+            else:
+                # 계정 스코프는 보조 인덱스 버킷만 본다(R4 B-1) — 전체 선형 탐색 제거.
+                # 스코프 일치 필터는 아래에서 그대로 한 번 더 건다(최후 방어선): 인덱스가
+                # 어긋나도 남의 스코프로 새는 일은 없고, 불일치는 로그로만 드러난다.
+                targets = []
+                for sock in self._by_account.get(account_uid, ()):
+                    found = self._clients.get(sock)
+                    if found is None:
+                        log_event(
+                            _log,
+                            "websocket_account_index_stale",
+                            level=logging.ERROR,
+                        )
+                        continue
+                    targets.append(found)
+            for client in targets:
                 if not scope_all and client.account_uid != account_uid:
+                    log_event(
+                        _log,
+                        "websocket_account_index_mismatch",
+                        level=logging.ERROR,
+                    )
                     continue
                 if not self._enqueue(client, message):
                     overflowed.append(client)
@@ -246,7 +290,7 @@ class ConnectionManager:
         async with self._lock:
             if self._clients.get(client.ws) is not client:
                 return  # 이미 수거됐거나 같은 소켓으로 재등록된 새 연결이다
-            self._clients.pop(client.ws, None)
+            self._untrack_unlocked(client)
             if reason == "timeout":
                 self._send_timeouts += 1
             elif reason == "overflow":

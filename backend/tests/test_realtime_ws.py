@@ -580,5 +580,145 @@ class WsBroadcastScopeTests(unittest.TestCase):
         self.assertEqual(len(self._run(scenario())), 2)
 
 
+class WsAccountIndexInvariantTests(unittest.TestCase):
+    """R4 B-1 — 계정별 보조 인덱스(_by_account) 불변식.
+
+    인덱스가 _clients 와 어긋나면 개인 데이터가 남의 스코프로 새거나(버킷 오염)
+    알림이 조용히 유실된다(버킷 누락) — 모든 등록/해제 경로에서 두 구조의 일치를 고정한다.
+    """
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+    def _assert_index_matches_clients(self, mgr: ConnectionManager) -> None:
+        """_by_account 를 _clients 로부터 재구성한 기대값과 비교 + 빈 버킷 부재 확인."""
+        expected: dict = {}
+        for ws, client in mgr._clients.items():
+            expected.setdefault(client.account_uid, set()).add(ws)
+        self.assertEqual(mgr._by_account, expected)
+        for bucket in mgr._by_account.values():
+            self.assertTrue(bucket)  # 빈 버킷은 즉시 제거돼야 한다
+
+    def test_scoped_broadcast_uses_index_and_isolates_among_decoys(self):
+        """다계정 decoy·같은 계정 다탭·AUTH-off None 사이에서 스코프 정확 격리."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            a1, a2 = FakeWS(), FakeWS()  # 같은 계정 두 탭
+            decoy_b, decoy_c, none_sock = FakeWS(), FakeWS(), FakeWS()
+            await mgr.connect(a1, "acct:a")
+            await mgr.connect(a2, "acct:a")
+            await mgr.connect(decoy_b, "acct:b")
+            await mgr.connect(decoy_c, "acct:c")
+            await mgr.connect(none_sock, None)
+            self._assert_index_matches_clients(mgr)
+
+            await mgr.broadcast({"type": "progress", "url": "secretA"}, account_uid="acct:a")
+            await mgr.broadcast({"type": "progress", "url": "localOnly"}, account_uid=None)
+            await drain(mgr)
+            return a1.received, a2.received, decoy_b.received, decoy_c.received, none_sock.received
+
+        a1_msgs, a2_msgs, b_msgs, c_msgs, none_msgs = self._run(scenario())
+        # 같은 계정 두 탭 모두 수신
+        self.assertEqual([m["url"] for m in a1_msgs], ["secretA"])
+        self.assertEqual([m["url"] for m in a2_msgs], ["secretA"])
+        # decoy 들은 아무것도 못 받음(누출 없음)
+        self.assertEqual(b_msgs, [])
+        self.assertEqual(c_msgs, [])
+        # None 스코프는 None broadcast 만(전체 아님)
+        self.assertEqual([m["url"] for m in none_msgs], ["localOnly"])
+
+    def test_disconnect_removes_index_entry_and_empty_bucket(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            a1, a2, b = FakeWS(), FakeWS(), FakeWS()
+            await mgr.connect(a1, "acct:a")
+            await mgr.connect(a2, "acct:a")
+            await mgr.connect(b, "acct:b")
+
+            await mgr.disconnect(a1)
+            self._assert_index_matches_clients(mgr)
+            self.assertEqual(mgr._by_account.get("acct:a"), {a2})
+
+            await mgr.disconnect(a2)  # 계정 a 마지막 연결 → 버킷 자체가 사라져야 한다
+            self._assert_index_matches_clients(mgr)
+            self.assertNotIn("acct:a", mgr._by_account)
+
+            # 사라진 계정으로 broadcast 해도 조용히 무시(오류·누출 없음)
+            await mgr.broadcast({"type": "progress"}, account_uid="acct:a")
+            await drain(mgr)
+            return b.received
+
+        b_msgs = self._run(scenario())
+        self.assertEqual(b_msgs, [])
+
+    def test_same_socket_reregistration_moves_index_to_new_scope(self):
+        """같은 소켓 재등록 — 옛 스코프 버킷에 유령이 남으면 새 주인에게 옛 계정 데이터가 샌다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = FakeWS()
+            await mgr.connect(ws, "acct:old")
+            await mgr.connect(ws, "acct:new")  # 재등록(스코프 변경)
+            self._assert_index_matches_clients(mgr)
+            self.assertNotIn("acct:old", mgr._by_account)
+            self.assertEqual(mgr._by_account.get("acct:new"), {ws})
+
+            await mgr.broadcast({"type": "progress", "url": "oldSecret"}, account_uid="acct:old")
+            await mgr.broadcast({"type": "progress", "url": "newData"}, account_uid="acct:new")
+            await drain(mgr)
+            return ws.received
+
+        received = self._run(scenario())
+        self.assertEqual([m["url"] for m in received], ["newData"])
+
+    def test_timeout_collection_cleans_index(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            slow, healthy = SlowWS(), FakeWS()
+            await mgr.connect(slow, "acct:a")
+            await mgr.connect(healthy, "acct:a")
+            with mock.patch("app.ws._WS_SEND_TIMEOUT_SECONDS", 0.05):
+                await mgr.broadcast({"type": "progress"}, account_uid="acct:a")
+                await drain(mgr)
+                await wait_until(lambda: slow.closed is not None)
+            self._assert_index_matches_clients(mgr)
+            self.assertEqual(mgr._by_account.get("acct:a"), {healthy})
+            return await mgr.stats()
+
+        stats = self._run(scenario())
+        self.assertEqual(stats["send_timeouts"], 1)
+        self.assertEqual(stats["connections"], 1)
+
+    def test_overflow_collection_cleans_index_and_removes_empty_bucket(self):
+        async def scenario():
+            mgr = ConnectionManager()
+            stuck, other = SlowWS(), FakeWS()
+            await mgr.connect(stuck, "acct:a")
+            await mgr.connect(other, "acct:b")
+            with mock.patch("app.ws._WS_QUEUE_MAX", 4):
+                for n in range(6):
+                    await mgr.broadcast({"type": "progress", "n": n}, account_uid="acct:a")
+                await drain(mgr)
+                await wait_until(lambda: stuck.closed is not None)
+            self._assert_index_matches_clients(mgr)
+            self.assertNotIn("acct:a", mgr._by_account)  # 계정 a 마지막 연결 수거 → 버킷 제거
+            self.assertEqual(mgr._by_account.get("acct:b"), {other})
+            return await mgr.stats()
+
+        stats = self._run(scenario())
+        self.assertEqual(stats["send_overflows"], 1)
+        self.assertEqual(stats["connections"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
