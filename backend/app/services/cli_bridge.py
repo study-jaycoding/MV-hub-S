@@ -629,24 +629,31 @@ def _cost_key(model: str, param_args: list[str]) -> str:
     return model + "|" + ";".join(f"{k}={v}" for k, v in pairs)
 
 
+_cost_load_lock = threading.Lock()
+
+
 def _load_cost_cache() -> None:
-    """부팅 후 최초 조회 때 파일에서 캐시를 1회 로드한다(멱등)."""
+    """부팅 후 최초 조회 때 파일에서 캐시를 1회 로드한다(멱등). 게이트 밖에서 불리므로
+    (R5 2-C2) load-once 를 lock 으로 동기화한다 — 종전 의미(실패해도 재시도 없음) 유지."""
     global _cost_loaded
     if _cost_loaded:
         return
-    _cost_loaded = True
-    try:
-        raw = json.loads(_COST_CACHE_FILE.read_text("utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(raw, dict):
-        return
-    for k, v in raw.items():
-        if isinstance(v, list) and len(v) == 2:
-            try:
-                _COST_CACHE[k] = (int(v[0]), float(v[1]))
-            except (TypeError, ValueError):
-                pass
+    with _cost_load_lock:
+        if _cost_loaded:
+            return
+        _cost_loaded = True
+        try:
+            raw = json.loads(_COST_CACHE_FILE.read_text("utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        for k, v in raw.items():
+            if isinstance(v, list) and len(v) == 2:
+                try:
+                    _COST_CACHE[k] = (int(v[0]), float(v[1]))
+                except (TypeError, ValueError):
+                    pass
 
 
 def _serialize_cost_cache() -> str:
@@ -690,15 +697,39 @@ async def estimate_cost(
     """잡 생성 없이 크레딧만 추정 — generate cost <model> [--param value] --json.
     레퍼런스(미디어)는 비용 추정에 불필요+업로드 비용 → 제외(PV 와 동일).
     동일 (모델·옵션) 결과는 캐시(CLI 재호출 없이 즉시) — 비용은 결정적이라 안전."""
-    async with _estimate_gate():
-        _load_cost_cache()
-        # 실제 CLI 인자를 먼저 만든다(스키마 필터·타입 정규화 반영). 캐시 키를 이것으로 만들어야
-        # 키↔호출이 일치한다. _param_args→_allowed_param_names 는 프로세스 캐시라 히트 시 subprocess 없음.
+    # 게이트 경계(R5 2-C2, 코덱스 확정): '스키마가 CLI 없이 확정된 비용 캐시 히트'만
+    # semaphore-free 로 즉시 반환한다 — 종전엔 캐시 응답도 동시 2개 게이트 뒤에 줄서
+    # 느린 CLI 견적이 즉시 응답을 막았다. 스키마 miss 가능 경로는 게이트 안에서만 CLI 를
+    # 부른다(게이트 밖 무제한 model get 방지).
+    _load_cost_cache()
+    if model in _PARAM_NAMES_CACHE:
+        # 스키마 확정 — _param_args 는 subprocess 없는 순수 계산
         param_args = await _param_args(model, params)
-        key = _cost_key(model, param_args)
+    else:
+        async with _estimate_gate():
+            param_args = await _param_args(model, params)
+    key = _cost_key(model, param_args)
+    entry = _COST_CACHE.get(key)
+    if entry is not None and (time.time() - entry[1]) < _COST_TTL:
+        return {"credits": entry[0]}  # fresh 캐시는 게이트 전 즉시(CLI 호출 없음)
+    # 같은 (모델·옵션) 동시 miss 는 leader 1명의 CLI 실행에 합류(비용은 프롬프트 무관 계약)
+    return await _single_flight(
+        f"cost:{key}",
+        lambda: _estimate_cost_miss(key, model, param_args, prompt, timeout),
+    )
+
+
+async def _estimate_cost_miss(
+    key: str,
+    model: str,
+    param_args: list[str],
+    prompt: str,
+    timeout: float,
+) -> dict[str, int]:
+    async with _estimate_gate():  # leader 만 세마포어 취득
         entry = _COST_CACHE.get(key)
         if entry is not None and (time.time() - entry[1]) < _COST_TTL:
-            return {"credits": entry[0]}  # TTL 안 → 캐시 즉시(CLI 호출 없음)
+            return {"credits": entry[0]}  # 게이트 대기 동안 채워졌으면 재사용(double-check)
         args: list[str] = [
             "generate",
             "cost",

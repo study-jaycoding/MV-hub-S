@@ -170,6 +170,65 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         self.assertEqual(peak, min(100, cli_bridge._ESTIMATE_CONCURRENCY))
         self.assertEqual(len(cache_snapshots[-1]), 100)
 
+    async def test_estimate_cache_hit_returns_without_waiting_for_gate(self):
+        """R5 2-C2 — '스키마가 CLI 없이 확정된' fresh 캐시 히트는 세마포어에 줄서지
+        않는다. 종전엔 캐시 응답도 느린 CLI 견적 2건 뒤에서 대기했다."""
+        import time as time_module
+
+        from app.services import cli_bridge
+
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._cost_loaded = True
+        cli_bridge._estimate_gates.clear()
+        cli_bridge._PARAM_NAMES_CACHE["fast-model"] = {"variant"}
+        key = cli_bridge._cost_key("fast-model", ["--variant", "x"])
+        cli_bridge._COST_CACHE[key] = (11, time_module.time())
+
+        gate = cli_bridge._estimate_gate()
+        for _ in range(cli_bridge._ESTIMATE_CONCURRENCY):
+            await gate.acquire()  # 게이트 만석 — 줄서면 아래 wait_for 가 시간초과
+        try:
+            result = await asyncio.wait_for(
+                cli_bridge.estimate_cost("fast-model", {"variant": "x"}), timeout=0.5
+            )
+        finally:
+            for _ in range(cli_bridge._ESTIMATE_CONCURRENCY):
+                gate.release()
+        self.assertEqual(result, {"credits": 11})
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._PARAM_NAMES_CACHE.pop("fast-model", None)
+
+    async def test_same_cost_key_concurrent_misses_join_one_cli_run(self):
+        """R5 2-C2 — 같은 (모델·옵션) 동시 miss 는 프롬프트가 달라도 CLI 1회에 합류
+        (비용은 프롬프트 무관 계약)."""
+        from app.services import cli_bridge
+
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._cost_loaded = True
+        cli_bridge._estimate_gates.clear()
+        cli_bridge._cost_write_locks.clear()
+        cli_bridge._PARAM_NAMES_CACHE["join-model"] = {"variant"}
+
+        async def slow_run_json(*_args, **_kwargs):
+            await asyncio.sleep(0.03)
+            return {"credits_exact": 5}
+
+        with patch.object(
+            cli_bridge, "_run_json", new=AsyncMock(side_effect=slow_run_json)
+        ) as run, patch.object(cli_bridge, "_write_cost_cache", new=lambda payload: None):
+            results = await asyncio.gather(
+                *(
+                    cli_bridge.estimate_cost(
+                        "join-model", {"variant": "x"}, prompt=f"p{index}"
+                    )
+                    for index in range(6)
+                )
+            )
+        self.assertEqual(results, [{"credits": 5}] * 6)
+        self.assertEqual(run.await_count, 1)
+        cli_bridge._COST_CACHE.clear()
+        cli_bridge._PARAM_NAMES_CACHE.pop("join-model", None)
+
     async def test_estimate_cost_uses_stale_cache_when_cli_refresh_fails(self):
         from app.services import cli_bridge
 
