@@ -124,6 +124,8 @@ interface Props {
   // 단축키가 글자로 새지 않게). 프롬프트는 직접 클릭해야 타이핑. sceneMode(카드 바인딩)보다 넓게 —
   // 카드를 아직 안 골랐어도 캔버스에선 자동 포커스 금지.
   inCompose?: boolean;
+  // Ctrl+K 로 숨겨진(display:none) 동안 에이전트 상태 폴링을 멈추기 위한 표시 여부.
+  visible?: boolean;
   // ── 캔버스 카드 아래 Generate 버튼 연동 ── 배치수를 App 이 보유(카드 툴바와 공유).
   count?: number; // 배치 장수(컨트롤드). 없으면 내부 상태 사용.
   onCountChange?: (n: number) => void;
@@ -160,6 +162,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   onToggleExpand,
   trayBinding,
   inCompose = false,
+  visible = true,
   onTrayBindingRefsChange,
   onTrayBindingPromptChange,
   onPreview,
@@ -203,7 +206,7 @@ export const SpotlightPrompt = forwardRef<SpotlightPromptHandle, Props>(function
   }, [open]);
   // 계정·CLI 연결 상태(크레딧·이메일 부차 정보) — 데이터 도메인 훅으로 분리(IME·에디터 무관).
   const { account, checkAccount } = useAccountStatus(workspace);
-  const agentOn = useSpotlightAgentStatus();
+  const agentOn = useSpotlightAgentStatus(visible);
   // @/# 피커
   const [mention, setMention] = useState<SpotlightMention>(null);
   // 알약을 클릭해 텍스트로 풀어 이름 편집 중인 노드 — 그 안에서는 @가 멘션으로 재감지되지 않게 한다.

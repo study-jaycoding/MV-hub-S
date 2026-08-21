@@ -1640,6 +1640,7 @@ export default function App() {
       <div style={promptVisible ? undefined : { display: "none" }}>
         <SpotlightPrompt
           ref={spotlightPromptRef}
+          visible={promptVisible}
           expanded={composerExpanded || sceneMode}
           onToggleExpand={toggleComposerExpanded}
           onPreview={openPreview}
