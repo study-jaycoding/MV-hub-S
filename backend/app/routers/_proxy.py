@@ -39,9 +39,15 @@ from ..mutation_notify import (
     parse_mutation_origin,
 )
 
-_K_URL = "shared_server_url"
-_K_TOKEN = "shared_server_token"
-_K_ELEV_TOKEN = "shared_server_elev_token"  # 임시 관리자 권한 토큰(계정관리 호출에만)
+# 연결 정보(키·기본 주소·조회)는 services/shared_connection 단일 출처 — 여기 별칭은
+# 기존 내부 사용명 유지용이고, base_url/token 은 테스트가 이 모듈 속성으로 패치한다.
+from ..services.shared_connection import (  # noqa: E402
+    K_ELEV_TOKEN as _K_ELEV_TOKEN,
+    K_TOKEN as _K_TOKEN,
+    base_url,
+    elevation_token,
+    token,
+)
 
 # 401의 의미를 브라우저까지 보존한다. `invalid`만 실제 세션 만료이며 `preserved`는
 # 요청 자체가 거부됐을 뿐 저장된 로그인은 유지됐다는 뜻이다.
@@ -62,22 +68,6 @@ _AUTH_PROBE_IN_FLIGHT: set[tuple[str, str]] = set()
 _REQUEST_MUTATION_ORIGIN: ContextVar[Optional[tuple[str, str]]] = ContextVar(
     "proxy_request_mutation_origin", default=None
 )
-
-# publish.py 와 동일한 기본값(한 곳에서 바꾸면 양쪽 반영되도록 env 우선).
-_DEFAULT_URL = (os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
-
-
-def base_url() -> str:
-    return (repo.get_setting(_K_URL) or _DEFAULT_URL).rstrip("/")
-
-
-def token() -> Optional[str]:
-    return repo.get_setting(_K_TOKEN)
-
-
-def elevation_token() -> Optional[str]:
-    return repo.get_setting(_K_ELEV_TOKEN)
-
 
 def is_worker_hub() -> bool:
     """이 프로세스가 워커의 로컬 허브인가 — proxying() 과 달리 **토큰을 요구하지 않는다**.

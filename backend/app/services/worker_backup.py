@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 from .. import active_account, repo
 from ..config import BACKEND_DIR, DATA_DIR
+from . import shared_connection
 from .atomic_io import atomic_write_text
 from .db_scrub import SESSION_KEYS, strip_transfer_secrets
 from .operational_logging import log_event
@@ -957,11 +958,12 @@ def drain_one() -> dict[str, Any]:
         _mark_failure(row, "staging_invalid")
         return {"state": "failed", "error_code": "staging_invalid"}
 
-    token = repo.get_setting("shared_server_token")
+    # 연결 정보는 shared_connection 단일 출처(키·기본 주소·후행 슬래시 규칙 공유).
+    token = shared_connection.token()
     if not token:
         _mark_failure(row, "login_required")
         return {"state": "login_required", "error_code": "login_required"}
-    server = (repo.get_setting("shared_server_url") or os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
+    server = shared_connection.base_url()
     try:
         status, response = _multipart_set_upload(
             f"{server}/api/db-backup/sets",

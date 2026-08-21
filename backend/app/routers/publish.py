@@ -54,16 +54,21 @@ def _switch_account_db(email: str, uid: Optional[str]) -> None:
     except Exception:  # noqa: BLE001 — 에이전트 미가동이어도 로그인은 진행
         pass
 
-# app_setting 키 — 로컬 허브가 기억하는 공유 서버 연결 정보(이 PC 로컬 DB 에만 저장).
-_K_URL = "shared_server_url"
-_K_TOKEN = "shared_server_token"
+# 연결 정보(URL·토큰 키·기본 주소·조회 규칙)는 services/shared_connection 단일 출처.
+# 이메일/이름/역할 등 로그인 표시용 키만 이 라우터 소유로 남긴다.
+from ..services.shared_connection import (  # noqa: E402
+    K_ELEV_TOKEN as _K_ELEV_TOKEN,
+    K_TOKEN as _K_TOKEN,
+    K_URL as _K_URL,
+    base_url as _effective_url,
+)
+
 _K_EMAIL = "shared_server_email"
 _K_NAME = "shared_server_name"      # 로그인한 계정 표시이름(상태 표시용)
 _K_ROLES = "shared_server_roles"    # 로그인한 계정 전역역할(JSON) — admin UI 게이트용
 
 # 임시 관리자 권한(elevation) — 본인 계정은 유지한 채 admin 비번을 입력해 '승인 절차' 권한만
 # 일시 획득. 이 토큰은 _proxy 가 계정관리(/api/auth/accounts*) 호출에만 쓴다. 로그아웃·계정전환 시 해제.
-_K_ELEV_TOKEN = "shared_server_elev_token"
 _K_ELEV_EMAIL = "shared_server_elev_email"
 _K_ELEV_NAME = "shared_server_elev_name"
 
@@ -72,16 +77,8 @@ def _clear_elevation() -> None:
     for k in (_K_ELEV_TOKEN, _K_ELEV_EMAIL, _K_ELEV_NAME):
         repo.set_setting(k, None)
 
-# 공유 서버 기본 주소 — 팀이 한 번 정해 배포(env 로 덮어쓰기). 로그인창은 이 값을 쓰고 주소칸을
-# 숨긴다(작업자가 매번 안 적게). admin 은 관리자 창 '공유 서버' 탭에서 이 값을 바꿀 수 있다.
-_DEFAULT_URL = (os.environ.get("CONTENT_HUB_SHARED_URL") or "http://192.168.1.199:8010").rstrip("/")
-
 # 임시 관리자 권한(elevation) 기본 관리자 계정 — 모달이 짧은 id "admin" 을 받으면 이 이메일로 매핑.
 _ADMIN_EMAIL = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
-
-
-def _effective_url() -> str:
-    return (repo.get_setting(_K_URL) or _DEFAULT_URL).rstrip("/")
 
 
 def _roles() -> list[str]:
