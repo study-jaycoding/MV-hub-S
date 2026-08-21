@@ -116,19 +116,42 @@ def _directory_identity(dir_key: str) -> tuple[int, int] | None:
         return None  # NAS 일시 단절·권한 오류도 우선 '의심'으로만 처리한다.
 
 
-def _watch_handle_alive(observer, handle: object | None) -> bool | None:
-    """watchdog 공개 emitters에서 핸들 담당 스레드 생존 여부를 읽는다.
+def _emitter_map(observer) -> dict[object, list[object]] | None:
+    """health cycle 시작 시 emitters 를 1회 snapshot 해 watch(핸들)별 조회 맵으로 만든다
+    (R5 watcher-2) — 감시 폴더 W개마다 전체 emitter 를 재조회·재검색하면 한 사이클이
+    O(W²)라 Timer 스레드를 오래 점유한다. dict 조회는 종전 == 비교와 같은 의미
+    (ObservedWatch 는 __eq__/__hash__ 일관). 조회·해시 실패는 종전처럼 None(경로 확인만
+    사용). snapshot 이후 변경은 다음 1초 사이클에서 회복한다."""
+    try:
+        emitters = tuple(observer.emitters)
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+    grouped: dict[object, list[object]] = {}
+    for emitter in emitters:
+        watch = getattr(emitter, "watch", None)
+        try:
+            grouped.setdefault(watch, []).append(emitter)
+        except TypeError:  # unhashable watch 대역 — 보수적으로 경로 확인 폴백
+            return None
+    return grouped
+
+
+def _watch_handle_alive(
+    handle: object | None, emitter_map: dict[object, list[object]] | None
+) -> bool | None:
+    """snapshot 맵에서 핸들 담당 스레드 생존 여부를 읽는다.
 
     테스트 대역이나 다른 Observer 구현처럼 emitters를 제공하지 않으면 경로 확인만 쓰도록
     None을 반환한다. Windows Observer에서는 루트 삭제 후 멈춘 emitter를 즉시 찾을 수 있다.
     """
     if handle is None:
         return False
-    try:
-        emitters = tuple(observer.emitters)
-    except (AttributeError, RuntimeError, TypeError):
+    if emitter_map is None:
         return None
-    matching = [emitter for emitter in emitters if getattr(emitter, "watch", None) == handle]
+    try:
+        matching = emitter_map.get(handle)
+    except TypeError:  # unhashable handle 대역
+        return None
     if not matching:
         return False
     try:
@@ -500,10 +523,11 @@ class _Watcher:
                 ]
 
             # NAS의 is_dir가 느려도 이벤트/등록 락을 막지 않도록 파일시스템 확인은 락 밖에서 한다.
+            emitter_map = _emitter_map(observer) if candidates else None
             for dir_key, generation, handle, watched_identity in candidates:
                 current_identity = _directory_identity(dir_key)
                 available = current_identity is not None
-                alive = _watch_handle_alive(observer, handle)
+                alive = _watch_handle_alive(handle, emitter_map)
                 old_handle = None
                 schedule_generation = None
                 with self._lock:
