@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -246,6 +247,7 @@ def evict_thumb_cache(
             return 0
         entries.sort(key=lambda e: e[0])  # 오래된 것(작은 mtime) 먼저
         removed = 0
+        removed_paths: set[str] = set()
         for _mtime, size, p in entries:
             if total <= max_bytes:
                 break
@@ -253,8 +255,11 @@ def evict_thumb_cache(
                 p.unlink()
                 total -= size
                 removed += 1
+                removed_paths.add(str(p))
             except OSError:
                 continue  # 다른 스레드가 방금 지웠거나 잠김 — 건너뜀
+        # 실제 지워진 JPG 의 warm-메모만 무효화 — 다음 prewarm 이 그 항목만 다시 굽는다.
+        _warm_invalidate_paths(removed_paths)
         if removed:
             # 상한 발동 가시화 — 이 로그가 자주 보이면 상한(CONTENT_HUB_THUMB_CACHE_MAX_BYTES) 상향 신호.
             print(f"[thumbs] 캐시 상한({max_bytes // (1024 * 1024)}MB) 도달 — 오래 안 본 썸네일 {removed}개 삭제")
@@ -268,6 +273,66 @@ def evict_thumb_cache(
 # 즉시 생성되므로, 백그라운드 워밍이 몇 분 늦어도 무해하다.
 _PREWARM_RECENT: dict[str, float] = {}
 _PREWARM_RECENT_GUARD = threading.Lock()
+
+# ── 원격 prewarm warm-메모 (R2 2-D) ────────────────────────────────────────
+# 목록 폴링(15초/3초)마다 prewarm 이 같은 URL 전량을 재검사(원본 캐시 확인+폭당 stat)하던 것을
+# (url, width) 단위 "최근 warm" 메모로 생략한다. 계약(코덱스 설계 검토 확정):
+# · 성공한 ensure_thumb 만 warm 기록 — 실패·취소는 in-flight 해제만(다음 기회에 재시도).
+# · 값에 확인된 cache_path 를 저장 — evict_thumb_cache 가 지운 JPG 만 targeted 무효화
+#   (전체 클리어 금지: 캐시가 빡빡한 환경에서 최적화가 무력화되지 않게).
+# · 원본 LRU(cache_thumb_source) eviction 은 무효화 사유 아님(리사이즈 JPG 독립 유효).
+# · 한계: 단일 uvicorn worker 전제(멀티프로세스는 중복 검사·교차 eviction 미감지 —
+#   on-demand /media-thumb 가 회복). 원본·JPG 모두 소실 시 TTL 동안 prewarm 생략 →
+#   on-demand 만 복구(성능 저하일 뿐 정확성 무해).
+# · warm 대상 폭은 THUMB_WIDTHS(256/512)만 — 임의 폭 요청이 메모 LRU 를 밀지 않게.
+_WARM_TTL_SECONDS = 300.0
+_WARM_MAX_KEYS = 20000
+_WARM_GUARD = threading.Lock()
+_warm_memo: "OrderedDict[tuple[str, int], tuple[float, str]]" = OrderedDict()
+_warm_inflight: set[tuple[str, int]] = set()
+
+
+def _warm_claim(url: str, width: int) -> bool:
+    """True=이 (url,width)는 지금 처리해야 함(in-flight 선점). False=최근 warm/남이 처리 중.
+    확인과 선점을 한 lock 안에서 처리해 동시 목록 요청의 중복 검사를 막는다."""
+    key = (url, width)
+    now = time.monotonic()
+    with _WARM_GUARD:
+        hit = _warm_memo.get(key)
+        if hit is not None:
+            if now - hit[0] < _WARM_TTL_SECONDS:
+                _warm_memo.move_to_end(key)
+                return False
+            del _warm_memo[key]  # TTL 만료 — 재검사
+        if key in _warm_inflight:
+            return False
+        _warm_inflight.add(key)
+        return True
+
+
+def _warm_settle(url: str, width: int, cache: "Optional[Path]") -> None:
+    """선점 해제 + 성공(cache 경로 확인)일 때만 warm 기록."""
+    key = (url, width)
+    with _WARM_GUARD:
+        _warm_inflight.discard(key)
+        if cache is None:
+            return
+        _warm_memo[key] = (time.monotonic(), str(cache))
+        _warm_memo.move_to_end(key)
+        while len(_warm_memo) > _WARM_MAX_KEYS:
+            _warm_memo.popitem(last=False)
+
+
+def _warm_invalidate_paths(removed_paths: "set[str]") -> None:
+    """evict 가 실제 지운 JPG 경로의 메모만 무효화(targeted)."""
+    if not removed_paths:
+        return
+    with _WARM_GUARD:
+        stale = [
+            key for key, (_ts, cache_str) in _warm_memo.items() if cache_str in removed_paths
+        ]
+        for key in stale:
+            del _warm_memo[key]
 PREWARM_RECENT_TTL = 300.0
 
 
@@ -333,20 +398,34 @@ async def prewarm_remote_thumbs(
 
     async def _one(url: str) -> None:
         nonlocal made
-        async with _REMOTE_PREWARM_SEM:
-            # 썸네일 최적화용 원본은 영구 MEDIA와 분리된 bounded LRU 캐시에 둔다. 목록만 본 원격
-            # 이미지가 실제 작업 원본처럼 무기한 쌓여 디스크를 채우지 않게 한다.
-            rel = await media_cache.cache_thumb_source(url)  # 이미 캐시면 즉시 반환
-            if not rel:
-                return
-            target = _media_target(rel)
-            if not target:
-                return
-            for width in widths:  # 그리드가 쓰는 두 버킷 모두 — 어느 배율에서도 캐시 히트
-                existed = cache_path(target, width).exists()  # 이미 있으면 새로 만든 게 아님
-                cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
-                if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
-                    made += 1
+        # warm-메모: 최근(TTL 안) 성공 확인된 (url,width)는 원본 확인·stat·워커를 통째로 생략.
+        # 목록 폴링마다 같은 페이지 URL 전량을 재검사하던 반복 비용의 핵심 제거 지점.
+        claimed = [w for w in widths if w in THUMB_WIDTHS and _warm_claim(url, w)]
+        passthrough = [w for w in widths if w not in THUMB_WIDTHS]  # 메모 비대상 폭은 종전대로
+        if not claimed and not passthrough:
+            return
+        settled: set[int] = set()
+        try:
+            async with _REMOTE_PREWARM_SEM:
+                # 썸네일 최적화용 원본은 영구 MEDIA와 분리된 bounded LRU 캐시에 둔다. 목록만 본 원격
+                # 이미지가 실제 작업 원본처럼 무기한 쌓여 디스크를 채우지 않게 한다.
+                rel = await media_cache.cache_thumb_source(url)  # 이미 캐시면 즉시 반환
+                target = _media_target(rel) if rel else None
+                if not target:
+                    return
+                for width in [*claimed, *passthrough]:  # 그리드가 쓰는 두 버킷 모두 — 어느 배율에서도 캐시 히트
+                    existed = cache_path(target, width).exists()  # 이미 있으면 새로 만든 게 아님
+                    cache = await asyncio.to_thread(ensure_thumb, target, width)  # PIL=동기 → 스레드로
+                    if width in claimed:
+                        _warm_settle(url, width, cache)  # 성공만 warm 기록(실패는 선점 해제만)
+                        settled.add(width)
+                    if cache and not existed:  # 실제로 새로 구운 경우만 카운트(멱등 재호출로 매번 evict 도는 것 방지)
+                        made += 1
+        finally:
+            # 원본 실패·예외·취소로 _warm_settle 에 못 간 선점은 반드시 해제(실패 미기록 계약).
+            for width in claimed:
+                if width not in settled:
+                    _warm_settle(url, width, None)
 
     # URL마다 대기 Task를 만들면 100명×페이지 2,000건에서 실행은 4개뿐이어도 Task가 20만 개
     # 생길 수 있다. 고정 수 worker가 iterator를 나눠 소비해 실제 실행과 대기 객체를 모두 제한한다.

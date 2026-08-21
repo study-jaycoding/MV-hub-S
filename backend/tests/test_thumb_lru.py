@@ -115,5 +115,91 @@ class ThumbLruTests(unittest.TestCase):
         self.assertEqual(peak, 2)
 
 
+class WarmMemoTests(unittest.TestCase):
+    """R2 2-D warm-메모 계약 — 재검사 생략·실패 미기록·targeted 무효화·TTL·LRU 상한."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        thumbs._warm_memo.clear()
+        thumbs._warm_inflight.clear()
+        self.source_calls: list[str] = []
+        self.ensure_calls: list[tuple[str, int]] = []
+
+    def tearDown(self):
+        thumbs._warm_memo.clear()
+        thumbs._warm_inflight.clear()
+        self.tmp.cleanup()
+
+    def _run(self, urls, *, ensure_ok=True):
+        from app.services import media_cache
+
+        async def fake_source(url: str):
+            self.source_calls.append(url)
+            rel = "/media/" + url.rsplit("/", 1)[-1]
+            # cache_path 가 대상 파일을 stat 하므로 실제 파일을 만들어 둔다(원본 캐시 재현).
+            source_file = self.dir / rel.rsplit("/", 1)[-1]
+            if not source_file.exists():
+                source_file.write_bytes(b"img")
+            return rel
+
+        def fake_ensure(target: Path, w: int):
+            self.ensure_calls.append((target.name, w))
+            return Path(str(target) + f".{w}.jpg") if ensure_ok else None
+
+        with (
+            mock.patch.object(media_cache, "cache_thumb_source", side_effect=fake_source),
+            mock.patch.object(
+                thumbs, "_media_target", side_effect=lambda rel: self.dir / rel.rsplit("/", 1)[-1]
+            ),
+            mock.patch.object(thumbs, "ensure_thumb", side_effect=fake_ensure),
+            mock.patch.object(thumbs, "evict_thumb_cache", return_value=0),
+        ):
+            asyncio.run(thumbs.prewarm_remote_thumbs(urls))
+
+    def test_second_prewarm_skips_source_check_and_workers(self):
+        self._run(["https://cdn/u1.png"])
+        self.assertEqual(len(self.source_calls), 1)
+        self.assertEqual(len(self.ensure_calls), 2)  # 폭 2개(256/512)
+        self._run(["https://cdn/u1.png"])  # 목록 폴링 재요청 재현
+        self.assertEqual(len(self.source_calls), 1)  # 원본 확인 생략
+        self.assertEqual(len(self.ensure_calls), 2)  # 워커·stat 생략
+
+    def test_failed_ensure_is_not_recorded_and_retries(self):
+        self._run(["https://cdn/u1.png"], ensure_ok=False)
+        self._run(["https://cdn/u1.png"], ensure_ok=True)
+        self.assertEqual(len(self.source_calls), 2)  # 실패는 warm 미기록 → 재시도
+        self.assertEqual(len(self.ensure_calls), 4)
+        self.assertEqual(thumbs._warm_inflight, set())  # 선점 누수 없음
+
+    def test_targeted_eviction_invalidates_only_removed_width(self):
+        self._run(["https://cdn/u1.png", "https://cdn/u2.png"])
+        evicted = str(self.dir / "u1.png") + ".256.jpg"
+        thumbs._warm_invalidate_paths({evicted})
+        self.source_calls.clear()
+        self.ensure_calls.clear()
+        self._run(["https://cdn/u1.png", "https://cdn/u2.png"])
+        self.assertEqual(self.source_calls, ["https://cdn/u1.png"])  # u2 는 전 폭 warm → 생략
+        self.assertEqual(self.ensure_calls, [("u1.png", 256)])  # 지워진 폭만 재생성
+
+    def test_ttl_expiry_rechecks(self):
+        self._run(["https://cdn/u1.png"])
+        base = thumbs.time.monotonic()
+        with mock.patch.object(
+            thumbs.time, "monotonic", return_value=base + thumbs._WARM_TTL_SECONDS + 1
+        ):
+            self._run(["https://cdn/u1.png"])
+        self.assertEqual(len(self.source_calls), 2)  # TTL 만료 → 재검사
+
+    def test_lru_cap_drops_oldest_key(self):
+        with mock.patch.object(thumbs, "_WARM_MAX_KEYS", 2):
+            self._run(["https://cdn/u1.png"])  # u1 의 (256,512) 중 오래된 키부터 밀림
+            self._run(["https://cdn/u2.png"])
+        self.assertLessEqual(len(thumbs._warm_memo), 2)
+        self.source_calls.clear()
+        self._run(["https://cdn/u1.png"])  # 밀려난 u1 은 재검사돼야 한다
+        self.assertEqual(self.source_calls, ["https://cdn/u1.png"])
+
+
 if __name__ == "__main__":
     unittest.main()
