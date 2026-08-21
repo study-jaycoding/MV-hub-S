@@ -120,6 +120,7 @@ import {
   UNKNOWN_WORKSPACE,
   sameWorkspace,
 } from "./lib/workspaceContext";
+import { STORAGE_KEYS } from "./lib/storageKeys";
 
 // 마지막으로 보던 라이브러리 상태 영속화(탭·서브탭·필터·크기·레이아웃 등)
 const LS = makeStore("ch.lib.");
@@ -157,6 +158,19 @@ export default function App() {
   useEffect(() => {
     saveStoredWorkspaceContext(workspaceContext);
   }, [workspaceContext]);
+  // 다른 메인 탭이 전환하면 이 탭도 따라간다 — 안 따라가면 이 탭의 생성이 옛 컨텍스트로 스탬프된다.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEYS.workspaceContext) return;
+      const stored = loadStoredWorkspaceContext();
+      if (stored) changeWorkspaceContext(stored);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [changeWorkspaceContext]);
+  // 사이드바 프로젝트 목록 스코프 — 실제 선택된 워크스페이스의 프로젝트만 보인다(생성물 가시성과 별개).
+  const projectWorkspaceId =
+    workspaceContext.scope === "team" ? workspaceContext.id || undefined : undefined;
   const [compareGens, setCompareGens] = useState<Generation[] | null>(null); // DAM 버전 비교
   // 단순 미디어 비교(레퍼런스 포함) — 열림 대상 + 씬 선택이 미디어비교 가능한지(상단 선택바가 비교버튼 표시).
   type CompareMedia = { url: string; name: string; type: "image" | "video"; fallback?: string; full?: string };
@@ -250,7 +264,13 @@ export default function App() {
     setGens,
     stats,
     unassignedCount,
-  } = useGenerationLibraryData({ authReady, filters, flash, genQuery });
+  } = useGenerationLibraryData({ authReady, filters, flash, genQuery, projectWorkspaceId });
+  // 워크스페이스 전환(자동 동기화 포함) 시 사이드바 프로젝트 목록을 새 스코프로 재조회.
+  // 첫 마운트는 초기 로드가 담당 — 목록이 한 번 로드된 뒤의 변경에만 반응한다.
+  useEffect(() => {
+    if (projectsLoadedRef.current) void reload(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectWorkspaceId]);
   // 캔버스(compose 탭)에서 태그하면 scheduleTagReload 가 compose·light 라 facets 를 안 불러와
   // '등록된 태그' 패널이 탭을 나갔다 와야 갱신되던 문제 → 새 태그 이름을 facets.tags 에 낙관적 병합해 즉시 반영.
   const mergeFacetTags = useCallback(

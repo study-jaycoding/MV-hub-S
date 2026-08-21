@@ -10,6 +10,9 @@ interface UseGenerationLibraryDataArgs {
   filters: Filters;
   flash: (message: string) => void;
   genQuery: GenQuery;
+  // 사이드바 프로젝트 목록 스코프 — 실제 선택된 워크스페이스(크레딧 컨텍스트)를 따른다.
+  // 생성물 목록(genQuery.workspace_id = 옵트인 침 필터)과는 별개.
+  projectWorkspaceId?: string;
 }
 
 export function useGenerationLibraryData({
@@ -17,6 +20,7 @@ export function useGenerationLibraryData({
   filters,
   flash,
   genQuery,
+  projectWorkspaceId,
 }: UseGenerationLibraryDataArgs) {
   const [gens, setGens] = useState<Generation[]>([]);
   const [facets, setFacets] = useState<Facets>(EMPTY_FACETS);
@@ -35,6 +39,8 @@ export function useGenerationLibraryData({
   filtersRef.current = filters;
   const genQueryRef = useRef(genQuery);
   genQueryRef.current = genQuery;
+  const projectWorkspaceIdRef = useRef(projectWorkspaceId);
+  projectWorkspaceIdRef.current = projectWorkspaceId;
   const gensRef = useRef(gens);
   gensRef.current = gens;
   const loadingMoreRef = useRef(false);
@@ -101,7 +107,7 @@ export function useGenerationLibraryData({
         // 반드시 await해야 reload 코얼레싱이 이 요청이 끝날 때까지 실행 중으로 본다. 각 요청 실패는
         // 서로 격리해 프로젝트가 잠시 실패해도 태그는 갱신되고, 반대도 동일하게 한다.
         const [pr, f] = await Promise.all([
-          api.projects("my", false, filtersRef.current.workspace_id).catch(() => null),
+          api.projects("my", false, projectWorkspaceIdRef.current).catch(() => null),
           light ? Promise.resolve(null) : api.facets("my").catch(() => null),
         ]);
         if (seq !== reloadSeqRef.current) return;
@@ -155,7 +161,7 @@ export function useGenerationLibraryData({
         light ? Promise.resolve(null) : api.facets(scope).catch(() => null),
         light
           ? Promise.resolve(null)
-          : api.projects(scope, false, query.workspace_id).catch(() => null),
+          : api.projects(scope, false, projectWorkspaceIdRef.current).catch(() => null),
       ]);
       if (seq !== reloadSeqRef.current) return;
       if (st) {

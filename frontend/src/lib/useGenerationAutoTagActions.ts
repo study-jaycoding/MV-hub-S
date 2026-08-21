@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { api } from "../api";
+import { cachedWorkspaceOptions, fetchWorkspaceOptions } from "./workspaceOptionsCache";
 import { toggleSetValue, withoutSetValue } from "./setUtils";
 import type { WorkspaceChip } from "./useLibraryFilters";
 import type { WorkspaceContext } from "../types";
@@ -8,6 +9,7 @@ type AskPrompt = (
   title: string,
   initial?: string,
   placeholder?: string,
+  opts?: { workspaceSuggest?: boolean },
 ) => Promise<string | null>;
 
 interface UseGenerationAutoTagActionsArgs {
@@ -32,19 +34,29 @@ export function useGenerationAutoTagActions({
     setArmedAutoTags((prev) => toggleSetValue(prev, tag));
   };
 
-  // `#+` = 현재 선택 워크스페이스, `#+이름` = 이름으로 찾기(정확 일치 우선, 없으면 유일 부분일치).
+  // `#+@id` = 피커 버튼 선택(유일), `#+` = 현재 선택 워크스페이스,
+  // `#+이름` = 이름으로 찾기(정확 일치 우선, 없으면 유일 부분일치).
   const addWorkspaceChip = async (query: string) => {
     try {
       let target: WorkspaceChip | null = null;
-      if (!query) {
+      if (query.startsWith("@")) {
+        const id = query.slice(1).trim();
+        const options = cachedWorkspaceOptions() ?? (await fetchWorkspaceOptions());
+        const found = options.find((w) => w.id === id);
+        if (!found) {
+          flash("워크스페이스를 찾지 못했습니다 — 목록을 다시 열어 선택하세요");
+          return;
+        }
+        target = found;
+      } else if (!query) {
         if (workspaceContext.scope === "team" && workspaceContext.id) {
           target = { id: workspaceContext.id, name: workspaceContext.name || workspaceContext.id };
         } else {
-          flash("#+ 단독 등록은 팀 워크스페이스 선택 중일 때만 — #+이름 으로 지정하세요");
+          flash("#+ 단독 등록은 팀 워크스페이스 선택 중일 때만 — 아래 목록에서 고르세요");
           return;
         }
       } else {
-        const { workspaces } = await api.workspaceCommandOptions();
+        const workspaces = await fetchWorkspaceOptions();
         const exact = workspaces.filter((w) => w.name === query);
         const matches = exact.length
           ? exact
@@ -70,7 +82,9 @@ export function useGenerationAutoTagActions({
 
   const addAutoTag = async () => {
     const name = (
-      await askPrompt("전역 태그 이름", "", "태그 이름 입력 후 Enter · #+ = 워크스페이스 필터 등록")
+      await askPrompt("전역 태그 이름", "", "태그 이름 입력 후 Enter · #+ = 워크스페이스 필터 등록", {
+        workspaceSuggest: true,
+      })
     )?.trim();
     if (!name) return;
     if (name.startsWith("#+")) {

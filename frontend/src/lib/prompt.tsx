@@ -8,6 +8,7 @@ type AskFn = (
   title: string,
   initial?: string,
   placeholder?: string,
+  opts?: { workspaceSuggest?: boolean },
 ) => Promise<string | null>;
 
 const PromptCtx = createContext<AskFn>(async () => null);
@@ -19,13 +20,20 @@ export function PromptProvider({ children }: { children: ReactNode }) {
     title: string;
     initial: string;
     placeholder: string;
+    workspaceSuggest: boolean;
     resolve: (v: string | null) => void;
   } | null>(null);
 
   const ask = useCallback<AskFn>(
-    (title, initial = "", placeholder = "") =>
+    (title, initial = "", placeholder = "", opts) =>
       new Promise<string | null>((resolve) =>
-        setState({ title, initial, placeholder, resolve }),
+        setState({
+          title,
+          initial,
+          placeholder,
+          workspaceSuggest: !!opts?.workspaceSuggest,
+          resolve,
+        }),
       ),
     [],
   );
@@ -38,6 +46,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
           title={state.title}
           initial={state.initial}
           placeholder={state.placeholder}
+          workspaceSuggest={state.workspaceSuggest}
           onSubmit={(v) => {
             state.resolve(v);
             setState(null);
