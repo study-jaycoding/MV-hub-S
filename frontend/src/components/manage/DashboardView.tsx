@@ -1,6 +1,7 @@
 // 통합 대시보드 — 상단 프로젝트 전체 요약, 하단 실제 폴더 기준 에피소드·시퀀스 사용량 구조.
 // 프로젝트 클릭 → 에피소드 합계와 하위 시퀀스의 생성·최종·크레딧·시간·기간을 표시한다.
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { isHttpStatus } from "../../lib/http";
 import { manageApi } from "../../lib/manageApi";
 import { projectApi } from "../../lib/projectApi";
 import { budgetPeriodLabel } from "../../lib/projectPlanning";
@@ -326,8 +327,12 @@ export function DashboardView({
     const inScope = () => scopeRef.current === scopeAtStart;
     // 성공한 응답만 반영하고 실패는 이전 데이터를 유지한다 — 일시 장애 폴링 1회가
     // 잘 보이던 대시보드를 "프로젝트 없음"으로 초기화하지 않게(null 덮어쓰기 금지).
+    // read_all 판정이 서버와 어긋나도(스테일 캐시 등) 대시보드가 통째로 죽지 않게 —
+    // 403 이면 일반 멤버용 API(자기 프로젝트만)로 폴백한다.
     const summaryP = (canViewWorkspaceUsage
-      ? manageApi.summary(workspaceId)
+      ? manageApi.summary(workspaceId).catch((e) =>
+          isHttpStatus(e, 403) ? manageApi.projectSummary(workspaceId) : Promise.reject(e),
+        )
       : manageApi.projectSummary(workspaceId)
     )
       .then((d) => {
@@ -336,7 +341,9 @@ export function DashboardView({
       })
       .catch((e) => String(e?.message || e) || "요약 조회 실패");
     const membersP = (canViewWorkspaceUsage
-      ? projectApi.allProjectMembers()
+      ? projectApi.allProjectMembers().catch((e) =>
+          isHttpStatus(e, 403) ? projectApi.visibleProjectMembers() : Promise.reject(e),
+        )
       : projectApi.visibleProjectMembers())
       .then((membersByPid) => {
         if (inScope()) {
