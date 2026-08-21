@@ -321,7 +321,13 @@ def test_interrupted_running_row_is_recovered(worker_store: Path):
 
 @pytest.mark.parametrize(
     ("returncode", "stdout"),
-    [(1, b""), (0, b"not-json")],
+    [
+        (1, b""),
+        (0, b"not-json"),
+        (1, b"not-json"),          # R4 A-5: non-zero+깨진 JSON — 종전엔 복구가 2회 돌던 조합
+        (1, b"\xff\xfebroken"),    # non-zero+디코드 불가
+        (0, b"[]"),                # zero+비-dict JSON
+    ],
 )
 def test_child_failure_or_invalid_result_recovers_running_claim(
     worker_store: Path,
@@ -363,7 +369,7 @@ def test_child_failure_or_invalid_result_recovers_running_claim(
     result = asyncio.run(worker_backup.PeriodicWorkerBackupUpload().run_now())
 
     assert result == {"state": "failed", "error_code": "worker_failed"}
-    assert recovery_threads
+    assert len(recovery_threads) == 1  # R4 A-5: 어떤 실패 조합에서도 복구는 정확히 1회
     assert all(thread_id != loop_thread for thread_id in recovery_threads)
     with worker_backup._connect() as conn:
         row = conn.execute(

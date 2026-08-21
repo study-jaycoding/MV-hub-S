@@ -1106,6 +1106,10 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
             if killer and killer.returncode is None:
                 with contextlib.suppress(OSError):
                     killer.kill()
+                # kill 만 하고 회수하지 않으면 helper transport/프로세스가 남는다(R4 A-6) —
+                # cli_bridge 의 동등 경로처럼 bounded wait 로 회수한다.
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await asyncio.wait_for(killer.wait(), timeout=5)
     if process.returncode is None:
         with contextlib.suppress(OSError):
             process.kill()
@@ -1181,20 +1185,26 @@ class PeriodicWorkerBackupUpload:
                     self._process = None
             # ACK 뒤 로컬 done 기록에서 자식이 죽은 경우를 포함한다. 서버의 backup_set_id
             # 저장은 멱등이므로 다음 전송이 가능하도록 남은 running claim을 즉시 되돌린다.
+            # ★복구는 결과 처리 전체에서 정확히 1회 — 종전엔 non-zero+깨진 stdout 조합에서
+            # recover_in_progress 가 두 번 실행됐다(R4 A-5).
+            recovered = False
             if process.returncode != 0:
                 await asyncio.to_thread(recover_in_progress)
+                recovered = True
             try:
                 # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
                 output = (stdout or b"{}").decode("utf-8").splitlines()
                 parsed = json.loads(output[-1] if output else "{}")
                 if not isinstance(parsed, dict):
-                    await asyncio.to_thread(recover_in_progress)
+                    if not recovered:
+                        await asyncio.to_thread(recover_in_progress)
                     return {"state": "failed", "error_code": "worker_failed"}
                 if process.returncode != 0 and parsed.get("state") != "failed":
                     return {"state": "failed", "error_code": "worker_failed"}
                 return parsed
             except (UnicodeDecodeError, ValueError):
-                await asyncio.to_thread(recover_in_progress)
+                if not recovered:
+                    await asyncio.to_thread(recover_in_progress)
                 return {"state": "failed", "error_code": "worker_failed"}
 
 
