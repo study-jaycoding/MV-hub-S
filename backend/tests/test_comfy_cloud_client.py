@@ -9,6 +9,7 @@
 
 import json
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -216,6 +217,82 @@ class UnsupportedNodeMessageTests(unittest.TestCase):
         self.assertIsNone(comfy_client._unsupported_node_message(
             '{"error":{"message":"insufficient credits"}}'))
         self.assertIsNone(comfy_client._unsupported_node_message("some random 500 error"))
+
+
+class ObjectInfoSingleFlightTests(unittest.TestCase):
+    """R5 2-E — 수 MB object_info 의 동시 miss 는 leader 1명만 내려받는다."""
+
+    def setUp(self):
+        comfy_client._OBJECT_INFO_CACHE.clear()
+        comfy_client._object_info_waits.clear()
+
+    tearDown = setUp
+
+    def test_concurrent_misses_download_once(self):
+        target = _cloud_target()
+        calls: list[float] = []
+
+        def slow_get(_target, path, timeout=30):
+            calls.append(time.time())
+            time.sleep(0.05)  # 합류 창 — 직렬화 없으면 스레드 전부 진입
+            return {"NodeA": {"input": {}}}
+
+        results = []
+        with mock.patch.object(comfy_client, "_get_json", side_effect=slow_get):
+            threads = [
+                threading.Thread(
+                    target=lambda: results.append(comfy_client.get_object_info(target))
+                )
+                for _ in range(5)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(len(calls), 1)  # 대형 다운로드 정확히 1회
+        self.assertEqual(len(results), 5)
+        self.assertTrue(all(r == {"NodeA": {"input": {}}} for r in results))
+        self.assertEqual(comfy_client._object_info_waits, {})  # in-flight 회수
+
+    def test_leader_failure_releases_waiters_and_is_not_cached(self):
+        target = _cloud_target()
+        attempts: list[int] = []
+
+        def flaky_get(_target, path, timeout=30):
+            attempts.append(1)
+            if len(attempts) == 1:
+                time.sleep(0.03)
+                raise comfy_client.ComfyError("일시 장애")
+            return {"NodeA": {}}
+
+        outcomes: list[object] = []
+
+        def run():
+            try:
+                outcomes.append(comfy_client.get_object_info(target))
+            except comfy_client.ComfyError as exc:
+                outcomes.append(exc)
+
+        with mock.patch.object(comfy_client, "_get_json", side_effect=flaky_get):
+            threads = [threading.Thread(target=run) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        # leader 1명은 실패(예외), waiter 는 해제 후 재시도로 성공 — 고아 대기 없음
+        errors = [o for o in outcomes if isinstance(o, comfy_client.ComfyError)]
+        successes = [o for o in outcomes if o == {"NodeA": {}}]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(len(successes), 2)
+        self.assertEqual(comfy_client._object_info_waits, {})
+
+    def test_force_refresh_bypasses_join_and_empty_dict_is_not_cached(self):
+        target = _cloud_target()
+        with mock.patch.object(comfy_client, "_get_json", return_value={}):
+            self.assertEqual(comfy_client.get_object_info(target, use_cache=False), {})
+        self.assertEqual(comfy_client._OBJECT_INFO_CACHE, {})  # 빈 dict 비캐시
 
 
 class SubscriptionTierCacheTests(unittest.TestCase):

@@ -10,6 +10,7 @@ import json
 import logging
 import mimetypes
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -143,20 +144,52 @@ def _cache_key(target: dict) -> tuple:
             (target.get("headers") or {}).get("X-API-Key", ""))
 
 
+# object_info miss 합류(R5 2-E) — 동기 FastAPI threadpool 의 여러 parse 요청이 같은
+# miss 를 동시에 보면 모두 수 MB 전체 다운로드를 했다. use_cache=True 경로만 key 별
+# threading single-flight 로 leader 1명이 받아오고, leader 실패·완료 시 waiter 전원
+# 해제+in-flight 삭제를 finally 로 보장한다(use_cache=False 강제 갱신은 항상 독립 호출).
+_object_info_guard = threading.Lock()
+_object_info_waits: dict[tuple, threading.Event] = {}
+
+
 def get_object_info(target: dict, *, use_cache: bool = True) -> dict:
     """ComfyUI 전체 /object_info (노드별 입력 위젯 스펙 = COMBO 드롭다운 후보 등).
     ★Comfy Cloud 는 개별 /object_info/{class} 를 지원하지 않고 전체 /object_info 만 지원하므로
     항상 전체를 받는다. 응답이 크므로(수 MB) target(base+prefix+api_key)별 TTL 캐시로 재다운로드를 줄인다.
     실패(서버 꺼짐·비2xx)는 ComfyError 로 올린다(호출부가 best-effort 폴백)."""
     key = _cache_key(target)
-    now = time.time()
-    if use_cache:
+    if not use_cache:
+        data = _get_json(target, "/object_info", timeout=30)
+        if data:  # 빈 dict 비캐시(코덱스) — 깨진 응답이 5분 굳지 않게
+            _OBJECT_INFO_CACHE[key] = (time.time(), data)
+        return data
+    while True:
         hit = _OBJECT_INFO_CACHE.get(key)
-        if hit and now - hit[0] < _OBJECT_INFO_TTL:
+        if hit and time.time() - hit[0] < _OBJECT_INFO_TTL:
             return hit[1]
-    data = _get_json(target, "/object_info", timeout=30)
-    _OBJECT_INFO_CACHE[key] = (now, data)
-    return data
+        with _object_info_guard:
+            hit = _OBJECT_INFO_CACHE.get(key)  # double-check — leader 가 방금 채웠으면 즉시
+            if hit and time.time() - hit[0] < _OBJECT_INFO_TTL:
+                return hit[1]
+            event = _object_info_waits.get(key)
+            leader = event is None
+            if leader:
+                event = threading.Event()
+                _object_info_waits[key] = event
+        if leader:
+            try:
+                data = _get_json(target, "/object_info", timeout=30)
+                if data:
+                    _OBJECT_INFO_CACHE[key] = (time.time(), data)
+                return data
+            finally:
+                with _object_info_guard:
+                    _object_info_waits.pop(key, None)
+                event.set()  # 성공·실패 모두 waiter 전원 해제(고아 대기 방지)
+        # waiter — leader 완료를 기다렸다 캐시 재확인. leader 가 실패했으면 루프에서
+        # 새 leader 로 승격해 재시도한다(실패 비전파·비캐시). 상한은 leader 의 HTTP
+        # timeout(30s)보다 약간 길게 — leader 가 죽어도 영구 대기하지 않는다.
+        event.wait(timeout=35.0)
 
 
 _SUBSCRIPTION_CACHE: dict[tuple, tuple[float, "str | None"]] = {}
