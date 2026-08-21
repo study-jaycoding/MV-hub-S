@@ -70,7 +70,11 @@ A11 rollout fence(55a878bd)· A12 부팅 백업 백그라운드화(W2 868d6a89).
 - 고아 파일 분류 — **✅종결**: 로컬 교집합 246 중 **242가 서버 참조로 구제**, 최종 진짜 고아
   **4개/0.3MiB** → 배치 11 고아 삭제는 실익 소멸로 폐기(쿼터 자동관리로 충분)
 - preparing+placeholder 유령 — **✅측정**: 0건
-- **reducer hotspot 실측** — 유일 잔여(측정 없이 적용 금지, BACKLOG 원칙)
+- **reducer hotspot 실측** — ✅종결(2026-08-21, 코덱스 Profiler 실측): BACKLOG 후보
+  ProjectManagerPanel·MountManager 는 주기 재조회 없음(hotspot 불가), DashboardView 요약부는 기적용.
+  **WorkspaceUsageDashboard 만 hotspot 확정**(fresh-ref 5커밋/170렌더/14.4ms vs reconcile
+  4/102/8.0ms) → workspaces·overview·trend 3상태에 reconcile 적용, 재실측으로 4/102/8.3ms 수렴 검증.
+  **이로써 C(측정 선행) 전체 소진.**
 
 ## D. 조건부 보류 — ✅조건 문서화로 종결 (이 장부의 아래 조건 목록이 종결 기록이다)
 - 외부 보존 tier (조건 보강: 용량 압박·팀 확대 + **단일 디스크 고장 허용 손실량·복구 목표**)
