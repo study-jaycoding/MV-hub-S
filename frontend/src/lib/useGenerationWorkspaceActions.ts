@@ -122,6 +122,10 @@ export function useGenerationWorkspaceActions({
             ? `이미 ${result.workspace.name} 워크스페이스로 지정된 카드입니다 — 변경 없음`
             : `${result.workspace.name} 소속 카드가 아니라서 제거(#-)할 것이 없습니다`,
       );
+      // 재클릭 가드는 명령 확정(위 flash) 시점에 푼다 — 프록시 모드에선 아래 전체 reload 가
+      // 수 초라, 그동안 클릭이 전부 무시되면 '여러 번 눌러야 되는' 것처럼 보인다(팀원 실측).
+      // reload 중 재클릭이 와도 서버는 unchanged 로 응답하므로 안전하다.
+      runningRef.current = false;
       try {
         await reload(false, false);
       } catch {

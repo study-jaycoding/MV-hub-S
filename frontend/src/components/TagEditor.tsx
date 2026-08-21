@@ -268,31 +268,40 @@ export function TagEditor({
           ) : workspaceOptions.length === 0 ? (
             <span className="te-empty">등록된 워크스페이스가 없습니다</span>
           ) : (
-            workspaceOptions.map((workspace) => {
-              const current = currentWorkspaceId
-                ? workspace.id === currentWorkspaceId
-                : currentWorkspaceNameMatches.length === 1
-                  && workspace.name === currentWorkspaceName;
-              const sign = workspacePicker.operation === "assign" ? "+" : "−";
-              const label = workspaceLabels.get(workspace.id) ?? workspace.name;
-              return (
-                <button
-                  key={workspace.id}
-                  className={"te-gchip te-wchip" + (current ? " on" : "")}
-                  onMouseDown={keepFocus}
-                  onClick={() => {
-                    void applyWorkspaceCommand(workspacePicker.operation, workspace);
-                  }}
-                  disabled={workspaceBusy}
-                  role="option"
-                  aria-selected={current}
-                  title={`${label} 워크스페이스 ${workspacePicker.operation === "assign" ? "적용" : "제거"}`}
-                >
-                  <span className="te-wsign">{sign}</span>
-                  {label}
-                </button>
-              );
-            })
+            <>
+              {/* 처리 중 안내 — 프록시(위임) 모드는 서버 왕복이라 수 초 걸릴 수 있다. 표시가 없으면
+                  연타가 나오고, 연타는 아래 가드가 무시하지만 사용자는 '안 눌린다'로 체감한다. */}
+              {workspaceBusy && <span className="te-empty">적용 중… (완료 알림이 뜰 때까지 잠시)</span>}
+              {workspaceOptions.map((workspace) => {
+                const current = currentWorkspaceId
+                  ? workspace.id === currentWorkspaceId
+                  : currentWorkspaceNameMatches.length === 1
+                    && workspace.name === currentWorkspaceName;
+                const sign = workspacePicker.operation === "assign" ? "+" : "−";
+                const label = workspaceLabels.get(workspace.id) ?? workspace.name;
+                return (
+                  <button
+                    key={workspace.id}
+                    // ★disabled 금지 — disabled 버튼은 mousedown 을 못 받아 keepFocus(blur 방지)가
+                    //  무력화되고, 처리 중 재클릭 한 번에 입력이 blur 로 닫혀버린다(팀원 로컬에서
+                    //  '여러 번 눌러야 적용'으로 실측). 이벤트는 받되 busy 면 클릭만 무시한다.
+                    className={"te-gchip te-wchip" + (current ? " on" : "") + (workspaceBusy ? " busy" : "")}
+                    onMouseDown={keepFocus}
+                    onClick={() => {
+                      if (workspaceBusy) return;
+                      void applyWorkspaceCommand(workspacePicker.operation, workspace);
+                    }}
+                    aria-disabled={workspaceBusy}
+                    role="option"
+                    aria-selected={current}
+                    title={`${label} 워크스페이스 ${workspacePicker.operation === "assign" ? "적용" : "제거"}`}
+                  >
+                    <span className="te-wsign">{sign}</span>
+                    {label}
+                  </button>
+                );
+              })}
+            </>
           )}
         </div>
       ) : globalMode && global ? (

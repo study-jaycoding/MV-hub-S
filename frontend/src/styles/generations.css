@@ -404,7 +404,8 @@
 .te-gchip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .te-gx { font-size: 13px; line-height: 1; }
 .te-wchip { min-width: 0; }
-.te-wchip:disabled { opacity: 0.55; cursor: wait; }
+/* 처리 중 — disabled 속성 대신 클래스(disabled 는 mousedown 을 삼켜 blur 방지가 깨짐) */
+.te-wchip.busy { opacity: 0.55; cursor: wait; }
 .te-wsign { font-size: 15px; font-weight: 900; line-height: 1; }
 .te-workspaces.assign .te-wchip {
   color: var(--accent-ink); background: var(--accent); border-color: var(--accent);
