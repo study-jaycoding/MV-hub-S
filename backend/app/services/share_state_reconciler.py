@@ -592,13 +592,20 @@ async def run_share_state_reconciliation_cycle(
             if observed is None:
                 continue
             try:
-                await asyncio.to_thread(
+                renewed = await asyncio.to_thread(
                     repo.renew_share_state_intent_lease,
                     intent["intent_id"],
                     intent["intent_seq"],
                     worker_token,
                     lease_seconds=_LEASE_SECONDS,
                 )
+                if not renewed:
+                    # 관측 락 해제 후 새 intent_seq 가 이긴 행(R5 reconciler-2) — 종전엔
+                    # 여기서도 진행해 stale worker 가 composite partial 의 원격 unpublish
+                    # 까지 실행한 뒤에야 로컬 CAS 에서 졌다. 낡은 관측으로 원격을 만지지
+                    # 않도록 즉시 중단한다.
+                    counts["cas_lost"] = counts.get("cas_lost", 0) + 1
+                    continue
                 result = await _process_claimed_intent(
                     intent, worker_token, server_origin, token, observed
                 )

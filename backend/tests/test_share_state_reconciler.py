@@ -423,6 +423,42 @@ def test_composite_partial_unpublishes_only_when_base_was_unshared(
     assert repo.get_share_state_intent(existing_share["intent_id"])["status"] == "rejected"
 
 
+def test_lost_lease_renewal_blocks_stale_remote_cleanup(
+    isolated_content_db, monkeypatch
+):
+    """R5 reconciler-2 — 관측 락 해제 후 lease 갱신에 진(새 intent_seq 가 이긴) stale
+    worker 는 그 행을 만지지 않는다. 종전엔 낡은 관측으로 composite partial 의 원격
+    unpublish 까지 실행한 뒤에야 로컬 CAS 에서 졌다."""
+    gen_id = _seed_generation("local-stale", "job-stale", shared=True)
+    _pending_composite(gen_id, "job-stale", base_shared=False)
+
+    _patch_observer(
+        monkeypatch,
+        lambda _origin, _token, intent: {
+            "id": intent["job_anchor"],
+            "job_id": intent["job_anchor"],
+            "shared": True,
+            "is_final": False,
+        },
+    )
+    cleanup = mock.Mock()
+    monkeypatch.setattr(reconciler, "_unpublish_remote", cleanup)
+    monkeypatch.setattr(
+        reconciler.repo,
+        "renew_share_state_intent_lease",
+        lambda *args, **kwargs: False,
+    )
+
+    counts = asyncio.run(
+        reconciler.run_share_state_reconciliation_cycle("stale-worker")
+    )
+
+    assert counts["claimed"] == 1
+    assert counts.get("cas_lost") == 1
+    cleanup.assert_not_called()  # stale worker 의 원격 정리 차단이 핵심 계약
+    assert repo.get_generation(gen_id)["shared"] is True  # 로컬 상태도 불변
+
+
 def test_auth_required_row_resumes_after_relogin_kick(
     isolated_content_db, monkeypatch
 ):
