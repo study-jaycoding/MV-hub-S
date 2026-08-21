@@ -725,10 +725,11 @@ app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 def _pinned_cli_version() -> str | None:
     """이 코드가 핀한 Higgsfield CLI 버전(hf_cli_version.txt 첫 줄). 없거나 못 읽으면 None.
-    utf-8-sig: Windows 편집기가 붙인 BOM(\\ufeff)이 버전 문자열에 섞여 false mismatch 나는 것 방지(코덱스)."""
+    읽기 규칙(BOM 허용·첫 줄)은 read_first_line 이 단일 출처다 — 경로별 재구현 금지."""
+    from .services.read_utf8_sig_first_line import read_first_line
+
     try:
-        txt = (BACKEND_DIR.parent / "hf_cli_version.txt").read_text("utf-8-sig")
-        return txt.strip().splitlines()[0].strip() or None
+        return read_first_line(BACKEND_DIR.parent / "hf_cli_version.txt") or None
     except Exception:  # noqa: BLE001
         return None
 

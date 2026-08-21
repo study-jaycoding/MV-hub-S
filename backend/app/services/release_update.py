@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from ..config import AUTH_ENABLED, BACKEND_DIR, PORT
 from .atomic_io import atomic_write_text
+from .read_utf8_sig_first_line import read_first_line
 
 APP_ROOT = BACKEND_DIR.parent
 UPDATE_STATE_BASE = Path(
@@ -139,7 +140,8 @@ def _installation_health(root: Path, expected_cli_version: str = "") -> tuple[bo
     if not all(path.is_file() for path in (pin_path, manifest_path, node_exe, cli_entry)):
         return False, "내장 Higgsfield CLI 파일 누락"
     try:
-        pin = pin_path.read_text("utf-8-sig").strip()
+        # pin 계약=첫 줄(BOM 허용) — 읽기 규칙은 read_first_line 단일 출처.
+        pin = read_first_line(pin_path)
         package_version = str(json.loads(manifest_path.read_text("utf-8-sig")).get("version") or "").strip()
     except (OSError, ValueError, TypeError) as exc:
         return False, f"내장 Higgsfield CLI 정보 손상: {exc}"

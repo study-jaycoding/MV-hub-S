@@ -469,8 +469,12 @@ def run_agent_bat(request: Request):
     email = acc["email"]
     # CLI 버전 고정(pin): 서버 저장소 루트의 hf_cli_version.txt 를 읽어 그 버전으로 설치·교정한다.
     # @latest 금지(힉스필드가 파괴적 변경을 자주 냄). 파일이 없으면 unpinned 폴백.
+    # 읽기 규칙은 read_first_line 단일 출처 — 종전 utf-8 직접 읽기는 BOM 이 버전 문자열에
+    # 섞여 bat 의 npm install @higgsfield/cli@<BOM>x.y.z 를 깨뜨릴 수 있었다.
+    from ..services.read_utf8_sig_first_line import read_first_line
+
     try:
-        _pin = (BACKEND_DIR.parent / "hf_cli_version.txt").read_text("utf-8").strip().splitlines()[0].strip()
+        _pin = read_first_line(BACKEND_DIR.parent / "hf_cli_version.txt")
     except Exception:  # noqa: BLE001
         _pin = ""
     if _pin:
