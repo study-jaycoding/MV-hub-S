@@ -616,6 +616,54 @@ def test_account_cycle_snapshot_shares_cli_calls_within_one_cycle() -> None:
         assert [c for c in calls if c[:2] == ("account", "status")]
 
 
+def test_account_cycle_does_not_cache_transient_cli_failure() -> None:
+    """코덱스 P2: 일시 CLI 실패(None)를 사이클에 고정하지 않는다 — 다음 호출이 재시도·복구."""
+    agent = _load_agent()
+    responses = [None, {"email": "me@x.com", "plan": "team"}]
+
+    def flaky_cli_json(_cli, *args, **_kw):
+        if args[:2] == ("account", "status"):
+            return responses.pop(0) if responses else {"email": "me@x.com"}
+        if args[:2] == ("workspace", "list"):
+            return []
+        return None
+
+    with (
+        patch.object(agent, "_cli_json", side_effect=flaky_cli_json),
+        patch.object(agent, "_cached_cli_version", return_value="1.1.23"),
+    ):
+        agent._begin_account_cycle()
+        assert agent._cycle_account_email("cli") is None  # 첫 시도 실패
+        assert "email" not in agent._ACCT_CYCLE  # 실패는 미캐시
+        assert agent._cycle_account_email("cli") == "me@x.com"  # 재시도로 복구
+        assert agent._ACCT_CYCLE["email"] == "me@x.com"
+
+    # collect 실패(acct 비-dict)도 캐시하지 않는다.
+    with patch.object(agent, "_collect_account_status", return_value=(None, {"scope": "unknown"})):
+        agent._begin_account_cycle()
+        acct, _ws = agent._cycle_collect_account_status("cli")
+        assert acct is None
+        assert "acct" not in agent._ACCT_CYCLE
+
+
+def test_periodic_account_report_always_collects_fresh_status() -> None:
+    """코덱스 P2: 600초 주기 보고는 사이클 캐시를 쓰지 않는다 — 허브 UI 의 워크스페이스 전환
+    (별도 프로세스)이 늦어도 다음 주기 보고에 반드시 반영되도록."""
+    agent = _load_agent()
+    agent._begin_account_cycle()
+    agent._ACCT_CYCLE["acct"] = {"email": "stale@x.com"}
+    agent._ACCT_CYCLE["workspace"] = {"scope": "unknown", "id": None, "name": None}
+    with (
+        patch.object(
+            agent, "_collect_account_status", return_value=({"email": "fresh@x.com"}, {})
+        ) as collect,
+        patch.object(agent, "_http", return_value=(200, {})) as http,
+    ):
+        assert agent._report_account_status("http://hub", "t", "cli") is True
+    collect.assert_called_once()  # 캐시 무시하고 fresh 수집
+    assert http.call_count == 1
+
+
 def test_agent_bat_checks_account_status_with_single_cli_call() -> None:
     """R3 3-A: MV_agent.bat 은 account status 를 검사·표시용으로 두 번 부르지 않는다(1회 캡처)."""
     bat = (AGENT_PATH.parent / "MV_agent.bat").read_text(encoding="ascii")
@@ -625,7 +673,54 @@ def test_agent_bat_checks_account_status_with_single_cli_call() -> None:
     ]
     assert len(status_calls) == 1
     assert ">" in status_calls[0]  # 출력 캡처(표시용 재호출 없이 type 로 재사용)
+    assert "2>&1" in status_calls[0]  # stderr 경고도 종전 표시 호출처럼 보존(코덱스 P3)
     assert 'type "%TEMP%\\mvhub_acct_status.tmp"' in bat
+
+
+def test_agent_bat_capture_line_preserves_output_and_errorlevel_in_real_cmd() -> None:
+    """코덱스 P3: 캡처 라인을 실제 cmd 로 실행 — stdout+stderr 보존과 errorlevel 판정을 함께 검증."""
+    import os as os_module
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    if os_module.name != "nt":
+        return  # Windows cmd 전용 계약
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        tmp_path = Path(tmp)
+        stub = tmp_path / "hf.cmd"
+        stub.write_text(
+            "@echo off\r\necho ACCOUNT-LINE\r\n>&2 echo WARN-LINE\r\nexit /b %HF_RC%\r\n",
+            encoding="ascii",
+        )
+        capture = tmp_path / "mvhub_acct_status.tmp"
+        probe = tmp_path / "probe.bat"
+        probe.write_text(
+            "\r\n".join(
+                [
+                    "@echo off",
+                    "setlocal",
+                    f'set "HF={stub}"',
+                    f'call "%HF%" account status > "{capture}" 2>&1',
+                    "if errorlevel 1 (echo BRANCH-FAIL) else (type \"" + str(capture) + "\")",
+                ]
+            ),
+            encoding="ascii",
+        )
+        env = {**os_module.environ, "HF_RC": "0"}
+        ok = subprocess.run(
+            [os_module.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(probe)],
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+        assert "ACCOUNT-LINE" in ok.stdout
+        assert "WARN-LINE" in ok.stdout  # 2>&1 — stderr 경고 보존
+        assert "BRANCH-FAIL" not in ok.stdout
+        env["HF_RC"] = "1"
+        fail = subprocess.run(
+            [os_module.environ.get("ComSpec", "cmd.exe"), "/d", "/c", "call", str(probe)],
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+        assert "BRANCH-FAIL" in fail.stdout  # errorlevel 보존 → 실패 분기
 
 
 def test_file_fingerprint_coalesces_concurrent_hashing() -> None:
@@ -682,6 +777,35 @@ def test_file_fingerprint_coalesces_concurrent_hashing() -> None:
         missing = str(Path(tmp) / "no-such.png")
         assert agent._file_fingerprint(missing) is None
         assert agent._fp_cache == {}
+
+
+def test_file_fingerprint_mid_hash_change_returns_but_never_caches() -> None:
+    """코덱스 P3: 해시 '도중' 파일이 바뀌면(stat 변화) 결과는 종전처럼 반환하되 재사용 캐시는 금지."""
+    import os as os_module
+    import tempfile
+    import time as time_module
+    from pathlib import Path
+
+    agent = _load_agent()
+    agent._fp_cache.clear()
+    agent._fp_inflight.clear()
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        target = Path(tmp) / "ref.png"
+        target.write_bytes(b"before" * 500)
+        original = agent._compute_file_fingerprint
+
+        def mutating_compute(path: str):
+            result = original(path)
+            # 계산이 끝난 직후(반환 전) 파일이 바뀐 상황 재현 — mtime_ns 를 강제로 이동.
+            stale = time_module.time() - 3600
+            os_module.utime(path, (stale, stale))
+            return result
+
+        with patch.object(agent, "_compute_file_fingerprint", side_effect=mutating_compute):
+            fp = agent._file_fingerprint(str(target))
+        assert fp is not None  # 그 호출에는 종전 동작대로 반환
+        assert agent._fp_cache == {}  # 변경 감지 → 재사용 금지
+        assert agent._fp_inflight == {}
 
 
 def test_missing_reference_reconcile_report_stops_immediately_on_4xx() -> None:

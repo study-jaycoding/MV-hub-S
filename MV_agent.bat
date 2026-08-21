@@ -258,7 +258,7 @@ REM Falls back to the single workspace. Multiple shared candidates -> ask below 
 "%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); shared=[w for w in ws if str(w.get('plan_type') or '').lower() not in ('', 'free', 'private', 'personal')]; pick=(shared[0] if len(shared)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
 REM One CLI call only - keep both the exit code (health check) and the output (display).
 REM The old flow ran 'account status' twice back to back (check, then show) = 2 CLI startups.
-call "%HF%" account status > "%TEMP%\mvhub_acct_status.tmp" 2>nul
+call "%HF%" account status > "%TEMP%\mvhub_acct_status.tmp" 2>&1
 if errorlevel 1 (
   echo.
   echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one:

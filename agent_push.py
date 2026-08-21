@@ -2196,18 +2196,29 @@ def _invalidate_account_cycle() -> None:
 
 
 def _cycle_account_email(cli: str) -> str | None:
-    if "email" not in _ACCT_CYCLE:
-        _ACCT_CYCLE["email"] = _cli_account_email(cli)
-    return _ACCT_CYCLE["email"]
+    # ★실패(None)는 캐시하지 않는다(코덱스 P2) — 일시 CLI 실패가 사이클 전체의 계정 스코프를
+    # unknown 으로 고정해 유료 제출·outbox 가 잘못된 스코프에 기록되는 것을 막는다.
+    # 실패 시 각 호출부가 종전처럼 그때그때 재시도한다.
+    cached = _ACCT_CYCLE.get("email")
+    if cached:
+        return cached
+    email = _cli_account_email(cli)
+    if email:
+        _ACCT_CYCLE["email"] = email
+    return email
 
 
 def _cycle_collect_account_status(cli: str):
+    # 성공한 수집만 캐시(실패는 다음 호출이 재시도). 성공 email 은 덮어써 이전의 미확인
+    # 상태를 복구한다.
     if "acct" not in _ACCT_CYCLE:
         acct, workspace = _collect_account_status(cli)
+        if not isinstance(acct, dict):
+            return acct, workspace
         _ACCT_CYCLE["acct"] = acct
         _ACCT_CYCLE["workspace"] = workspace
-        if isinstance(acct, dict) and acct.get("email"):
-            _ACCT_CYCLE.setdefault("email", acct.get("email"))
+        if acct.get("email"):
+            _ACCT_CYCLE["email"] = acct.get("email")
     return _ACCT_CYCLE["acct"], _ACCT_CYCLE["workspace"]
 
 
@@ -2515,7 +2526,10 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
     generate list·transactions 를 생략해 CLI 왕복 2회로 끝난다. 어떤 실패도 삼키고 False
     (호출자가 짧은 백오프로 재시도) — 상주 루프를 죽이지 않는다."""
     try:
-        acct, _workspace = _cycle_collect_account_status(cli)
+        # ★주기 보고는 사이클 캐시를 쓰지 않는다(코덱스 P2) — 이 보고의 존재 이유가 '지금'
+        # 상태의 최신성이고, 허브 UI 의 워크스페이스 전환은 별도 프로세스라 에이전트 캐시가
+        # 감지할 수 없다. fresh 수집이면 600초 주기마다 반드시 실제 상태가 올라간다.
+        acct, _workspace = _collect_account_status(cli)
         if not isinstance(acct, dict):
             return False
         status, body = _http(
