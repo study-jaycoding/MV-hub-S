@@ -96,12 +96,20 @@ def should_notify_manage(method: str, path: str, status_code: int) -> bool:
 
 
 def notification_domains(method: str, path: str, status_code: int) -> tuple[str, ...]:
+    # 모든 HTTP 응답이 이 판정을 지나므로, 공통 성공 게이트(_is_successful_write)는 한 번만
+    # 평가하고 경로 분류만 이어간다(종전엔 helper 3개가 각각 재평가 — R4 B-3). 공개 helper
+    # (should_notify_*)의 단독 호출 계약은 그대로 유지된다.
+    if not _is_successful_write(method, path, status_code):
+        return ()
     domains: list[str] = []
-    if should_notify_mutation(method, path, status_code):
+    if path in _MANAGE_ALSO_LIBRARY_PATHS or (
+        path not in _NOTIFY_NO_LIBRARY_CHANGE_PATHS
+        and not path.startswith(_NOTIFY_NO_LIBRARY_CHANGE_PREFIXES)
+    ):
         domains.append(DOMAIN_LIBRARY)
-    if should_notify_assets(method, path, status_code):
+    if path.startswith("/api/assets/") and path not in _ASSET_NO_CHANGE_PATHS:
         domains.append(DOMAIN_ASSETS)
-    if should_notify_manage(method, path, status_code):
+    if path.startswith("/api/manage/"):
         domains.append(DOMAIN_MANAGE)
     return tuple(domains)
 

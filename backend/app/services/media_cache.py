@@ -16,6 +16,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import threading
 import time
 import urllib.error
@@ -149,10 +150,13 @@ def is_cached(url: str) -> bool:
 
 
 def _is_complete_file(path: Path) -> bool:
+    # stat 1회로 정규 파일 여부와 크기를 함께 판정(종전 is_file+stat = 2회 — R4 C-1).
+    # Path.is_file() 과 동일하게 symlink 를 따라간다(stat 기본 follow).
     try:
-        return path.is_file() and path.stat().st_size > 0
+        st = path.stat()
     except OSError:
         return False
+    return stat.S_ISREG(st.st_mode) and st.st_size > 0
 
 
 def _safe_url_for_log(url: str) -> str:

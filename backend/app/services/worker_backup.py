@@ -327,12 +327,26 @@ def _device_identity() -> dict[str, str]:
     return normal
 
 
-def _table_count(conn: sqlite3.Connection, table: str) -> int:
-    if conn.execute(
+def _table_count(
+    conn: sqlite3.Connection, table: str, existing_tables: "set[str] | None" = None
+) -> int:
+    """행 수 집계 — existing_tables 를 주면(요약 경로) 테이블별 sqlite_master 재조회를 생략한다.
+    (같은 read-only 연결 안에서 테이블 목록은 불변 — R4 A-3.)"""
+    if existing_tables is not None:
+        if table not in existing_tables:
+            return 0
+    elif conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ).fetchone() is None:
         return 0
     return max(0, int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] or 0))
+
+
+def _existing_table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
 
 
 def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]:
@@ -342,8 +356,11 @@ def metadata_summary(content: Path, trash: Path | None = None) -> dict[str, int]
         sqlite3.connect(f"file:{Path(content).as_posix()}?mode=ro", uri=True)
     ) as conn:
         conn.execute("PRAGMA query_only=ON")
+        existing = _existing_table_names(conn)
         for label, tables in _SUMMARY_TABLES.items():
-            summary[label] = sum(_table_count(conn, table) for table in tables)
+            summary[label] = sum(
+                _table_count(conn, table, existing_tables=existing) for table in tables
+            )
     summary["trash"] = 0
     if trash is not None and Path(trash).is_file():
         with contextlib.closing(
@@ -1110,8 +1127,9 @@ class PeriodicWorkerBackupUpload:
         await asyncio.to_thread(cleanup_stale_state)
         await asyncio.sleep(3)
         while True:
-            if await asyncio.to_thread(has_due_backup):
-                await self.run_now()
+            # due 판정은 run_now() 안(락 아래)에서 한 번만 — 종전엔 여기서 확인하고 run_now 가
+            # 즉시 재확인해 상태 DB 조회(스키마 보장 포함)가 두 배로 돌았다(R4 A-2).
+            await self.run_now()
             await asyncio.sleep(self._interval)
 
     async def run_now(self) -> dict[str, Any]:
