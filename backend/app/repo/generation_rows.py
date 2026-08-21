@@ -226,7 +226,6 @@ _GEN_SELECT_COLS = (
     "g.params, g.color, g.status, g.created_at, g.sort_ts, g.is_source, g.source_name, "
     "g.comment, g.error, gr.status AS execution_phase, gr.provider_status, "
     "gr.recovery_probe_status, "  # 모호 제출 자동조사 결론 — 복구 UI 문구(외부 작업 없음 확인)용
-
     "gr.last_checked_at, gr.next_check_at, COALESCE(gr.check_failures,0) AS check_failures, "
     "g.creator_uid, g.workspace_scope, g.workspace_id, g.workspace_name, "
     "g.project_id, g.folder_path, g.deleted_at, g.is_final, g.final_by, "
