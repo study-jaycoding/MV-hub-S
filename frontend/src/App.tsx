@@ -1304,7 +1304,7 @@ export default function App() {
         onSearch={(q) => patch({ search: q || undefined })}
         onWorkspaceSwitched={async () => {
           await reload();
-          flash("워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다. (보이는 목록은 그대로)");
+          flash("워크스페이스 전환 — 이후 생성 크레딧은 이 공간에서 차감됩니다.");
         }}
         workspaceContext={workspaceContext}
         onWorkspaceContextChange={changeWorkspaceContext}
