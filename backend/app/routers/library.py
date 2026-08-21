@@ -25,10 +25,10 @@ from . import _proxy
 from .. import rbac, repo
 from ..config import AUTH_ENABLED, MEDIA_DIR
 from ..deps import (
-    account_actor_uid,
     account_global_roles,
     account_scope_uid,
     actor_id,
+    batch_view_member_projects,
     can_view_generation_with_member_projects,
     require_view_generation,
 )
@@ -765,20 +765,9 @@ def get_generations_batch(body: GenerationBatchIn, request: Request):
 
     account_uid = _account_uid(request)
     local_items, local_materials = repo.get_generations_with_materials(ids, account_uid=account_uid)
-    # 공유물 권한은 프로젝트 멤버십에만 의존한다. 이전에는 아래 카드 루프의
-    # require_view_generation이 shared 카드마다 my_member_projects를 다시 조회했다.
-    # 요청 안에서는 멤버십이 변하지 않으므로 필요한 경우 한 번만 집합으로 고정한다.
-    member_project_ids: set[str] | None = None
-    viewer_uid = account_actor_uid(request) if AUTH_ENABLED else None
-    if (
-        viewer_uid
-        and not rbac.has_global_cap(account_global_roles(request), "read_all")
-        and any(
-            gen.get("shared") and gen.get("creator_uid") != viewer_uid
-            for gen in local_items.values()
-        )
-    ):
-        member_project_ids = set(repo.my_member_projects(viewer_uid))
+    # 공유물 권한은 프로젝트 멤버십에만 의존한다. 요청 안에서는 멤버십이 변하지 않으므로
+    # 필요한 경우 한 번만 집합으로 고정한다 — 규칙은 deps.batch_view_member_projects 단일 출처.
+    member_project_ids = batch_view_member_projects(request, local_items.values())
     visible_items: dict[str, dict] = {}
     visible_materials: dict[str, list[str]] = {}
     for gen_id, gen in local_items.items():

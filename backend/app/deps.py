@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from fastapi import HTTPException, Request
 
@@ -215,6 +215,31 @@ def can_view_generation_with_member_projects(
             return pid in set(repo.my_member_projects(uid))
         return False  # 미분류(프로젝트 없음) 공유물은 비멤버에게 안 보임(list 와 동일)
     return False
+
+
+def batch_view_member_projects(
+    request: Request, gens: Iterable[dict[str, Any]]
+) -> Optional[set[str]]:
+    """배치 가시성 판정용 멤버십 집합 — 필요한 경우에만 1회 조회하는 규칙의 단일 출처.
+
+    로그인 사용자이고 read_all 이 아니며 남의 공유물이 하나라도 있으면
+    my_member_projects 를 한 번 읽어 집합으로 반환한다. 그 외에는 None —
+    can_view_generation_with_member_projects 가 기존 단건 규칙대로 동작하므로
+    판정 결과는 단건 경로와 항상 같다. 여러 생성물을 다루는 라우터가 항목마다
+    멤버십을 재조회(N+1)하지 않기 위한 공용 계층이다.
+    """
+    if not AUTH_ENABLED:
+        return None
+    uid = account_actor_uid(request)
+    if not uid:
+        return None
+    if rbac.has_global_cap(account_global_roles(request), "read_all"):
+        return None
+    if not any(gen.get("shared") and gen.get("creator_uid") != uid for gen in gens):
+        return None
+    from . import repo  # 지역 import(순환 회피)
+
+    return set(repo.my_member_projects(uid))
 
 
 def require_view_generation(request: Request, gen: dict[str, Any]) -> None:
