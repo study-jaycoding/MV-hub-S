@@ -2185,16 +2185,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
     fresh_ids: set[str] | None = None if reinspect else _job_ids_to_sync(server, token, local_ids)
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
-    acct = _cli_json(cli, "account", "status")
-    workspace = {"scope": "unknown", "id": None, "name": None}
-    if isinstance(acct, dict):
-        ws = _cli_json(cli, "workspace", "list")
-        # CLI 실패(비-list)면 workspaces 키 자체를 보내지 않는다 — 빈 배열 []는 서버의
-        # "불완전 보고 보존" 가드를 통과해 그 계정 멤버십 전체를 unavailable 로 밀어버린다.
-        if isinstance(ws, list):
-            acct["workspaces"] = ws
-        workspace = _workspace_context_from_list(ws)
-        acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
+    acct, workspace = _collect_account_status(cli)
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
@@ -2340,6 +2331,52 @@ def _execute_pending_for_watch_cycle(
         execute_pending(server, token, cli)
 
 
+def _collect_account_status(cli: str):
+    """CLI 계정 상태 + 워크스페이스 목록 수집 — (acct dict|None, workspace 컨텍스트) 반환.
+
+    CLI 실패(비-list)면 workspaces 키 자체를 넣지 않는다 — 빈 배열 []는 서버의
+    "불완전 보고 보존" 가드를 통과해 그 계정 멤버십 전체를 unavailable 로 밀어버린다.
+    push_once(전체 push)와 주기 상태 재보고가 같은 규칙을 쓰도록 공용화."""
+    acct = _cli_json(cli, "account", "status", timeout=60)
+    workspace = {"scope": "unknown", "id": None, "name": None}
+    if isinstance(acct, dict):
+        ws = _cli_json(cli, "workspace", "list", timeout=60)
+        if isinstance(ws, list):
+            acct["workspaces"] = ws
+        workspace = _workspace_context_from_list(ws)
+        acct["cli_version"] = _cached_cli_version(cli)  # 팀 CLI 버전 현황(버전 skew 진단)
+    return acct, workspace
+
+
+# 상주(watch) 중 계정 상태 재보고 주기 — 힉스필드 쪽 워크스페이스 멤버 추가/제거가 이벤트 없이도
+# 이 주기 안에 허브에 반영된다(서버가 이 보고로 멤버 명단·프로젝트 자동 편입을 갱신).
+# push 와 독립 일정으로 돈다(push 실패를 성공으로 오인해 보고가 밀리는 결합 제거). 실패는 짧게 재시도.
+_STATUS_REPORT_INTERVAL_SECONDS = 600.0
+_STATUS_REPORT_RETRY_SECONDS = 60.0
+
+
+def _report_account_status(server: str, token: str, cli: str) -> bool:
+    """경량 상태 보고 — 생성물 없이 account_status 만 서버에 올린다(jobs=[]).
+    generate list·transactions 를 생략해 CLI 왕복 2회로 끝난다. 어떤 실패도 삼키고 False
+    (호출자가 짧은 백오프로 재시도) — 상주 루프를 죽이지 않는다."""
+    try:
+        acct, _workspace = _collect_account_status(cli)
+        if not isinstance(acct, dict):
+            return False
+        status, body = _http(
+            "POST", f"{server}/api/ingest", token=token,
+            body={"jobs": [], "account_status": acct},
+        )
+    except Exception as e:  # noqa: BLE001 — 주기 보고 실패가 이벤트 루프를 멈추면 안 된다
+        print(f"[상태보고] 실패(재시도 예정): {e}")
+        return False
+    if status != 200:
+        detail = body.get("detail") if isinstance(body, dict) else body
+        print(f"[상태보고] 보류(status={status}): {str(detail)[:200]}")
+        return False
+    return True
+
+
 def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
     """에이전트 시작 시 요청 복구와 최신 상태 재대조를 한 번 수행한다."""
     # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
@@ -2413,6 +2450,7 @@ def main() -> None:
             _initial_cycle(server, token, cli, args.size, args.no_push)
         except Exception as e:  # noqa: BLE001
             print(f"[경고] 초기 처리 오류(무시): {e}")
+        next_status_report = time.monotonic() + _STATUS_REPORT_INTERVAL_SECONDS
         while True:
             reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
             if args.pair_secret:
@@ -2473,6 +2511,15 @@ def main() -> None:
                         elif "sync" in reasons and "gen-request" not in reasons:
                             print("[이벤트] 내 작업 올리기 요청")
                         push_once(server, token, cli, args.size, reinspect=reinspect)
+                # 힉스필드 쪽 워크스페이스 멤버 추가/제거를 상주 중에도 반영 — 이벤트가 없으면 계정
+                # 상태가 시작 시점에 박제되므로 주기마다 가볍게 재보고한다(생성물 아님, 메타만).
+                # push 와 무관한 독립 일정(성공=600s, 실패=60s 재시도). no_push(생성 전용)는 기존
+                # 계약대로 서버에 아무것도 올리지 않는다.
+                if not args.no_push and time.monotonic() >= next_status_report:
+                    ok = _report_account_status(server, token, cli)
+                    next_status_report = time.monotonic() + (
+                        _STATUS_REPORT_INTERVAL_SECONDS if ok else _STATUS_REPORT_RETRY_SECONDS
+                    )
             except SystemExit:
                 raise
             except Exception as e:  # noqa: BLE001 — 한 번 실패해도 루프 유지

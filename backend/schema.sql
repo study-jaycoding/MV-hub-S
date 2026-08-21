@@ -182,6 +182,16 @@ CREATE TABLE IF NOT EXISTS project_member (
     PRIMARY KEY (project_id, creator_uid)
 );
 
+-- 프로젝트 멤버 수동 제외(tombstone) — PM 이 ✕ 로 뺀 멤버를 워크스페이스 자동 편입이 되살리지
+-- 않게 한다. 수동 재추가(역할 지정)가 이 기록을 지워 재투입을 허용한다. 멤버 행과 이 기록은
+-- 같은 (project_id, creator_uid) 에 공존하지 않는 것이 불변식(remap 병합 시 tombstone 이 이긴다).
+CREATE TABLE IF NOT EXISTS project_member_removed (
+    project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    creator_uid TEXT NOT NULL,
+    removed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (project_id, creator_uid)
+);
+
 -- 로그인 계정(보안) — 로드맵 §4-1/§4-2. 멤버(creator)와 별개로 '로그인하는 사람'.
 -- 자동 등록(status=pending) → 관리자 승인(approved). 첫 계정은 부트스트랩 관리자(C0/approved).
 -- ⚠️ CONTENT_HUB_AUTH=1 일 때만 enforcement 작동(기본 off — 식별 먼저, 차단은 켤 때).

@@ -659,6 +659,133 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         self.assertEqual(tuple(generation), ("team", "ws-a"))
 
 
+class WorkspaceMemberAutoEnrollTests(unittest.TestCase):
+    """계정 상태 보고 → 기존 프로젝트 자동 편입 + 수동 제외(✕ tombstone) 계약."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.old_db = os.environ.get("CONTENT_HUB_DB")
+        os.environ["CONTENT_HUB_DB"] = str(Path(self.tmp.name) / "content_hub.db")
+        db.flush_pool()
+        db.init_db()
+        repo.ensure_default_worker()
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO account(email,name,password_hash,status,creator_uid) "
+                "VALUES('artist@example.com','Artist','hash','approved','user-artist')"
+            )
+            # 프로젝트는 등록부 검증 없는 저수준 INSERT 로 만든다(정책 아님, 편입 규칙만 검증).
+            conn.execute(
+                "INSERT INTO project(id,name,kind,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('p-active','Active','team','team','ws-team','TEAM')"
+            )
+            conn.execute(
+                "INSERT INTO project(id,name,kind,archived,workspace_scope,workspace_id,workspace_name) "
+                "VALUES('p-archived','Archived','team',1,'team','ws-team','TEAM')"
+            )
+
+    def tearDown(self):
+        db.flush_pool()
+        if self.old_db is None:
+            os.environ.pop("CONTENT_HUB_DB", None)
+        else:
+            os.environ["CONTENT_HUB_DB"] = self.old_db
+        db.flush_pool()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _report():
+        repo.record_account_status(
+            "artist@example.com",
+            {"workspaces": [{"id": "ws-team", "name": "TEAM", "user_role": "member"}]},
+        )
+
+    def _member_row(self, pid: str):
+        with db.get_connection() as conn:
+            return conn.execute(
+                "SELECT project_role FROM project_member "
+                "WHERE project_id=? AND creator_uid='user-artist'",
+                (pid,),
+            ).fetchone()
+
+    def test_report_auto_enrolls_into_existing_active_projects_only(self):
+        self._report()
+        self.assertIsNotNone(self._member_row("p-active"))  # 활성 프로젝트에 기본 역할 편입
+        self.assertIsNone(self._member_row("p-archived"))  # 보관 프로젝트는 제외
+
+    def test_report_preserves_manually_adjusted_roles(self):
+        repo.set_project_roles("p-active", "user-artist", ["project_manager"])
+        self._report()
+        self.assertEqual(self._member_row("p-active")["project_role"], "project_manager")
+
+    def test_manual_removal_blocks_auto_enroll_until_manual_re_add(self):
+        self._report()
+        repo.remove_project_member("p-active", "user-artist")
+        self._report()  # ✕ 이후의 보고는 되살리지 못한다
+        self.assertIsNone(self._member_row("p-active"))
+        repo.set_project_roles("p-active", "user-artist", ["creator"])  # 수동 재추가=제외 해제
+        repo.remove_project_member("p-active", "user-artist")
+        repo.set_project_roles("p-active", "user-artist", ["creator"])
+        self._report()
+        self.assertIsNotNone(self._member_row("p-active"))
+
+    def test_workspace_change_bulk_add_respects_manual_removal(self):
+        self._report()
+        repo.remove_project_member("p-active", "user-artist")
+        with db.get_connection() as conn:
+            added = repo.projects._add_workspace_members_to_project(conn, "p-active", "ws-team")
+        self.assertEqual(added, 0)
+        self.assertIsNone(self._member_row("p-active"))
+
+    def test_legacy_manual_removal_audit_backfills_tombstone(self):
+        """tombstone 도입 전(✕=행 삭제만) 제거가 업그레이드 후 자동 편입으로 되살아나지 않는다."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO audit_event(id,action,actor_uid,target_type,target_id,project_id) "
+                "VALUES('ev-rm','project.member_removed','user-pm','project_member',"
+                "'user-artist','p-active')"
+            )
+            db_migrations._migrate(conn)
+        self._report()
+        self.assertIsNone(self._member_row("p-active"))
+
+    def test_backfill_skips_removal_followed_by_manual_re_add(self):
+        """제거 후 더 최신의 수동 재추가(역할 지정) 감사가 있으면 tombstone 을 만들지 않는다."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO audit_event(id,action,actor_uid,target_type,target_id,project_id,"
+                "created_at) VALUES('ev-rm2','project.member_removed','user-pm','project_member',"
+                "'user-artist','p-active','2026-01-01T00:00:00.000Z')"
+            )
+            conn.execute(
+                "INSERT INTO audit_event(id,action,actor_uid,target_type,target_id,project_id,"
+                "created_at) VALUES('ev-add','project.member_roles_changed','user-pm',"
+                "'project_member','user-artist','p-active','2026-01-02T00:00:00.000Z')"
+            )
+            db_migrations._migrate(conn)
+        self._report()
+        self.assertIsNotNone(self._member_row("p-active"))
+
+    def test_uid_remap_moves_tombstone_and_tombstone_wins_over_member(self):
+        with db.get_connection() as conn:
+            # acct: 시절 PM 이 ✕ 로 뺐고, user_ 신원으로는 자동 편입 행이 이미 생긴 상황
+            conn.execute(
+                "INSERT INTO project_member_removed(project_id,creator_uid) "
+                "VALUES('p-active','acct:artist@example.com')"
+            )
+            conn.execute(
+                "INSERT INTO project_member(project_id,creator_uid,project_role) "
+                "VALUES('p-active','user-artist','creator')"
+            )
+            repo.remap_creator_uid(conn, "acct:artist@example.com", "user-artist")
+            tombstone = conn.execute(
+                "SELECT 1 FROM project_member_removed "
+                "WHERE project_id='p-active' AND creator_uid='user-artist'"
+            ).fetchone()
+        self.assertIsNotNone(tombstone)  # tombstone 이 새 신원으로 이관되고
+        self.assertIsNone(self._member_row("p-active"))  # 제거 의도가 멤버 행을 이긴다
+
+
 class WorkspaceManageDatabaseMigrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)

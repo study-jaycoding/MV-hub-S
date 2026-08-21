@@ -114,6 +114,43 @@ def _backfill_workspace_registry(conn: sqlite3.Connection) -> None:
             )
 
 
+def _backfill_member_removal_tombstones(conn: sqlite3.Connection) -> int:
+    """과거 수동 제거(✕ 감사 이벤트)를 수동 제외 tombstone 으로 이관(멱등).
+
+    tombstone 도입 이전의 remove_project_member 는 멤버 행만 지웠다 — 그대로 두면 워크스페이스
+    자동 편입이 첫 계정 보고 때 그 사람을 되살린다. 감사 이벤트 중 '그 제거보다 더 최신의
+    재추가(역할 지정)가 없는' 제거만 이관하고, 지금 멤버로 있는 사람은 건드리지 않는다.
+    acct: 시절 target 은 감사에 지문화(account:…)돼 복구 불가 — user_ 원문 uid 만 대상.
+    매 부팅 실행해도 안전: 업그레이드 후의 수동 재추가는 더 최신 감사 이벤트가 남아 제외된다."""
+    try:
+        return _insert_member_removal_tombstones(conn)
+    except sqlite3.OperationalError as e:
+        # 극구버전 재구성 잔재(project 가 PK 없는 CREATE AS 테이블) 위에서 _migrate 만 단독
+        # 실행되면 FK 자식 테이블 쓰기가 mismatch 로 컴파일 실패한다. 실제 부팅 경로는
+        # executescript(schema.sql)가 먼저 project 정형을 보장하므로 도달하지 않고,
+        # 다음 정상 부팅에서 멱등 재시도된다. 다른 오류는 그대로 올린다.
+        if "foreign key mismatch" not in str(e):
+            raise
+        return 0
+
+
+def _insert_member_removal_tombstones(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "INSERT OR IGNORE INTO project_member_removed(project_id, creator_uid, removed_at) "
+        "SELECT e.project_id, e.target_id, e.created_at FROM audit_event e "
+        "WHERE e.action='project.member_removed' "
+        "AND e.project_id IS NOT NULL AND e.target_id IS NOT NULL "
+        "AND e.target_id NOT LIKE 'account:%' "
+        "AND EXISTS(SELECT 1 FROM project p WHERE p.id=e.project_id) "
+        "AND NOT EXISTS(SELECT 1 FROM project_member m "
+        "WHERE m.project_id=e.project_id AND m.creator_uid=e.target_id) "
+        "AND NOT EXISTS(SELECT 1 FROM audit_event r "
+        "WHERE r.action='project.member_roles_changed' "
+        "AND r.project_id=e.project_id AND r.target_id=e.target_id "
+        "AND (r.created_at > e.created_at OR (r.created_at=e.created_at AND r.id>e.id)))"
+    ).rowcount
+
+
 def _backfill_generation_workspace_names(conn: sqlite3.Connection) -> int:
     """등록부 ID와 정확히 일치하는 옛 팀 생성물의 비어 있는 이름만 보강한다.
 
@@ -583,6 +620,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     )
     _backfill_workspace_registry(conn)
     _backfill_generation_workspace_names(conn)
+    _backfill_member_removal_tombstones(conn)
     # 폴더 자동 파생(관리탭)·완료본 저장이 project_id+folder_path 로 조회 → 그 순서 인덱스.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_generation_folder ON generation(project_id, folder_path)"

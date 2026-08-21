@@ -1438,3 +1438,48 @@ def test_agent_sqlite_state_is_isolated_by_server_and_account(tmp_path):
         agent._tracked_save("http://server-a", "a@example.com", tracked)
         assert set(agent._tracked_load("http://server-a", "a@example.com")) == {"job-a"}
         assert agent._tracked_load("http://server-a", "b@example.com") == {}
+
+
+def test_collect_account_status_omits_workspaces_key_on_cli_failure():
+    """workspace list 실패(비-list)면 workspaces 키 자체를 넣지 않는다 — 빈 배열 []는 서버의
+    '불완전 보고 보존' 가드를 통과해 그 계정 멤버십 전체를 unavailable 로 밀어버린다."""
+    agent = _load_agent()
+
+    def fake_cli_json(cli, *args, **kwargs):
+        if args[:2] == ("account", "status"):
+            return {"email": "a@example.com"}
+        return None  # workspace list 실패
+
+    with patch.object(agent, "_cli_json", side_effect=fake_cli_json), patch.object(
+        agent, "_cached_cli_version", return_value="1.1.23"
+    ):
+        acct, workspace = agent._collect_account_status("hf")
+    assert "workspaces" not in acct
+    assert workspace == {"scope": "unknown", "id": None, "name": None}
+
+
+def test_report_account_status_posts_empty_jobs_and_survives_failures():
+    """경량 상태 보고: jobs=[] 로 account_status 만 올리고, 409·예외 모두 False 로 삼킨다
+    (상주 루프가 짧은 백오프로 재시도 — 이벤트 처리를 죽이지 않는 계약)."""
+    agent = _load_agent()
+    calls = {}
+
+    def fake_http(method, url, token=None, body=None, **kwargs):
+        calls["url"], calls["body"] = url, body
+        return 200, {}
+
+    ok_status = ({"email": "a@example.com", "workspaces": []}, None)
+    with patch.object(agent, "_collect_account_status", return_value=ok_status), patch.object(
+        agent, "_http", side_effect=fake_http
+    ):
+        assert agent._report_account_status("http://hub", "tok", "hf") is True
+    assert calls["url"].endswith("/api/ingest")
+    assert calls["body"]["jobs"] == []
+    assert calls["body"]["account_status"] == ok_status[0]
+
+    with patch.object(agent, "_collect_account_status", return_value=ok_status), patch.object(
+        agent, "_http", return_value=(409, {"detail": "mismatch"})
+    ):
+        assert agent._report_account_status("http://hub", "tok", "hf") is False
+    with patch.object(agent, "_collect_account_status", side_effect=OSError("boom")):
+        assert agent._report_account_status("http://hub", "tok", "hf") is False

@@ -446,6 +446,9 @@ _REMAP_PLAN: tuple[tuple[str, str, str], ...] = (
     ("generation", "creator_uid", "plain"),
     ("generation", "final_by", "plain"),
     ("project_member", "creator_uid", "member"),
+    # 수동 제외 tombstone(PK project_id,creator_uid) — 양 신원에 있으면 한쪽만 남기면 된다(상태).
+    # remap 후 멤버 행과 공존하게 되면 remap_creator_uid 말미의 정합이 tombstone 을 이기게 한다.
+    ("project_member_removed", "creator_uid", "ignore_del"),
     ("auto_tag", "owner_uid", "autotag"),
     ("asset_meta", "owner_uid", "assetmeta"),
     ("asset_comment", "author", "plain"),
@@ -652,6 +655,15 @@ def remap_creator_uid(conn, old_uid: Optional[str], new_uid: Optional[str]) -> i
         else:
             # 전략 문자열 오타(예: "plian")가 조용히 no-op 되어 신원이 안 옮겨지는 걸 막는다(런타임 방어).
             raise ValueError(f"_REMAP_PLAN 알 수 없는 전략: {table}.{col} = {strat!r}")
+    # tombstone 우선 정합 — 병합으로 같은 (project, uid)에 멤버 행과 수동 제외가 공존하게 되면
+    # 제외가 이긴다(acct: 시절 PM 이 ✕ 로 뺀 사람이 user_ 자동 편입 행 때문에 되살아나는 것 방지).
+    if _col_exists(conn, "project_member_removed", "creator_uid"):
+        n += conn.execute(
+            "DELETE FROM project_member WHERE creator_uid=? AND EXISTS("
+            "SELECT 1 FROM project_member_removed r "
+            "WHERE r.project_id=project_member.project_id AND r.creator_uid=?)",
+            (new_uid, new_uid),
+        ).rowcount
     return n
 
 
@@ -730,7 +742,12 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
     workspaces = status.get("workspaces")
     if not isinstance(workspaces, list):
         return  # 옛/불완전 보고가 기존 멤버십을 전부 unavailable로 만들지 않게 한다.
+    from .project_membership import enroll_uid_into_workspace_projects
+
     with get_connection() as conn:
+        # autocommit 커넥션이라, 가용성 리셋~멤버 upsert~프로젝트 자동 편입을 한 트랜잭션으로 묶어
+        # 중간 상태(전부 unavailable)가 다른 요청에 보이지 않게 한다(종료는 컨텍스트가 COMMIT/ROLLBACK).
+        conn.execute("BEGIN IMMEDIATE")
         account = conn.execute(
             "SELECT creator_uid FROM account WHERE email=?", (email,)
         ).fetchone()
@@ -778,6 +795,10 @@ def record_account_status(email: str, status: dict[str, Any]) -> None:
                     1 if workspace.get("is_selected") else 0,
                 ),
             )
+            # 확인된 멤버를 이 워크스페이스의 기존 활성 프로젝트에 자동 편입 — 매 보고 멱등이라
+            # 놓친 편입을 다음 보고가 자가치유한다. PM 의 수동 제외(✕)는 leaf 규칙이 존중한다.
+            if creator_uid:
+                enroll_uid_into_workspace_projects(conn, workspace_id, creator_uid)
 
 
 def list_workspace_registry(

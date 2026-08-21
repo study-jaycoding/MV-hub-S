@@ -62,36 +62,13 @@ def _add_workspace_members_to_project(
 ) -> int:
     """워크스페이스의 현재 사용 가능 멤버를 프로젝트에 누락분만 추가한다.
 
-    이미 프로젝트에 있는 멤버와 수동으로 조정한 역할은 건드리지 않는다.
-    같은 creator가 복수 계정으로 보고돼도 전역 역할은 합쳐서 한 번만 계산한다.
+    이미 프로젝트에 있는 멤버와 수동으로 조정한 역할은 건드리지 않고, PM 이 ✕ 로 뺀
+    수동 제외(project_member_removed)도 되살리지 않는다. 규칙 본체는 계정 상태 보고의
+    자동 편입(identity.record_account_status)과 공용 — project_membership leaf 에 있다.
     """
-    from .. import rbac
+    from .project_membership import enroll_workspace_members_into_project
 
-    rows = conn.execute(
-        "SELECT COALESCE(m.creator_uid, a.creator_uid) creator_uid, a.global_role "
-        "FROM workspace_member m "
-        "LEFT JOIN account a ON a.email=m.account_email "
-        "WHERE m.workspace_id=? AND m.is_available=1 "
-        "AND COALESCE(m.creator_uid, a.creator_uid) IS NOT NULL",
-        (workspace_id,),
-    ).fetchall()
-    roles_by_uid: dict[str, set[str]] = {}
-    for row in rows:
-        uid = (row["creator_uid"] or "").strip()
-        if not uid:
-            continue
-        roles_by_uid.setdefault(uid, set()).update(rbac.effective_roles(row["global_role"]))
-
-    added = 0
-    for uid, global_roles in roles_by_uid.items():
-        project_roles = rbac.default_project_roles(global_roles)
-        cur = conn.execute(
-            "INSERT INTO project_member(project_id, creator_uid, project_role) VALUES(?,?,?) "
-            "ON CONFLICT(project_id, creator_uid) DO NOTHING",
-            (pid, uid, rbac.project_roles_to_str(project_roles) or rbac.CREATOR),
-        )
-        added += cur.rowcount
-    return added
+    return enroll_workspace_members_into_project(conn, pid, workspace_id)
 
 
 def create_project(
@@ -665,11 +642,16 @@ def team_fresh_items(
 
 def set_project_roles(pid: str, creator_uid: str, project_roles) -> bool:
     """그 프로젝트에서 멤버의 역할(복수)을 지정 — 리스트/CSV → CSV 저장. 빈값이면 역할만 비움.
-    멤버 행이 없으면 만든다(부여가 곧 멤버 추가)."""
+    멤버 행이 없으면 만든다(부여가 곧 멤버 추가). 수동 추가는 자동 편입 제외(tombstone)도 해제한다."""
     from .. import rbac
+    from .project_membership import clear_manual_removal
 
     csv = rbac.project_roles_to_str(project_roles)
     with get_connection() as conn:
+        # 커넥션이 autocommit(isolation_level=None)이라, 존재 확인~멤버 upsert~제외 해제 사이에
+        # 계정 보고의 자동 편입/프로젝트 삭제가 끼어들지 못하게 명시적 트랜잭션으로 묶는다
+        # (종료는 컨텍스트가 COMMIT/ROLLBACK).
+        conn.execute("BEGIN IMMEDIATE")
         if not conn.execute("SELECT 1 FROM project WHERE id = ?", (pid,)).fetchone():
             raise ValueError(f"없는 프로젝트: {pid}")
         conn.execute(
@@ -677,16 +659,27 @@ def set_project_roles(pid: str, creator_uid: str, project_roles) -> bool:
             "ON CONFLICT(project_id, creator_uid) DO UPDATE SET project_role=excluded.project_role",
             (pid, creator_uid, csv or None),
         )
+        clear_manual_removal(conn, pid, creator_uid)
         return True
 
 
 def remove_project_member(pid: str, creator_uid: str) -> bool:
-    """프로젝트에서 멤버를 제거(project_member 행 삭제). 멱등."""
+    """프로젝트에서 멤버를 제거(project_member 행 삭제)하고 수동 제외(tombstone)를 기록한다.
+    기록 덕에 워크스페이스 자동 편입이 이 멤버를 되살리지 않는다(해제=수동 재추가). 멱등."""
+    from .project_membership import record_manual_removal
+
     with get_connection() as conn:
+        # 삭제와 제외 기록 사이에 자동 편입이 끼어들지 못하게 한 트랜잭션으로 묶는다.
+        conn.execute("BEGIN IMMEDIATE")
+        # 없는 프로젝트는 기존 계약대로 False(예외 없음) — tombstone FK 오류도 방지.
+        if not conn.execute("SELECT 1 FROM project WHERE id=?", (pid,)).fetchone():
+            return False
         cur = conn.execute(
             "DELETE FROM project_member WHERE project_id=? AND creator_uid=?",
             (pid, creator_uid),
         )
+        # 멤버 행이 없어도 기록한다 — ✕ 의도(이 프로젝트에 이 사람 제외)는 행 유무와 무관.
+        record_manual_removal(conn, pid, creator_uid)
         return cur.rowcount > 0
 
 
