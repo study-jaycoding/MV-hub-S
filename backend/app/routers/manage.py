@@ -32,12 +32,13 @@ from ..deps import (
     account_global_roles,
     account_scope_uid,
     actor_id,
+    batch_view_member_projects,
+    can_view_generation_with_member_projects,
     current_account,
     project_roles_of,
     require_agent_account,
     require_global_cap,
     require_project_role,
-    require_view_generation,
 )
 from ..repo import manage as repo_manage
 from ..repo import manage_tasks as repo_manage_tasks
@@ -1024,10 +1025,15 @@ def link_generations(tid: str, body: TaskLinkIn, request: Request):
     _require_task_manage_current(tid, request)
     if len(body.gen_ids) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 연결할 수 있습니다")
+    # 종전과 같은 PK 전용 조회·입력 순서 판정을 유지하되, 항목별 단건 직렬화+멤버십
+    # 재조회(N+1) 대신 배치 1회 조회 + 멤버십 1회 고정으로 바꾼다. 실패 계약 불변:
+    # 숨김 생성물=404(존재 은닉), 부재·휴지통은 아래 연결 단계에서 종전대로 처리.
+    gens = repo.get_generations_batch(body.gen_ids)
+    member_projects = batch_view_member_projects(request, gens.values())
     for gid in body.gen_ids:
-        gen = repo.get_generation(gid)
-        if gen:
-            require_view_generation(request, gen)
+        gen = gens.get(gid)
+        if gen and not can_view_generation_with_member_projects(request, gen, member_projects):
+            raise HTTPException(status_code=404, detail="generation 없음")
     try:
         return {"linked": repo_manage.link_generations(tid, body.gen_ids)}
     except repo_manage.TaskMissingError as exc:
