@@ -305,18 +305,67 @@ class WorkspaceContentDatabaseTests(unittest.TestCase):
         dirty = manage_telemetry.list_dirty_telemetry()
         self.assertIn(mine, {row["local_gen_id"] for row in dirty})
 
-    def test_manual_workspace_removal_rejects_team_project(self):
+    def test_manual_workspace_removal_clears_team_project_too(self):
+        # #- 새 계약(Jay): 워크스페이스 제거는 팀 프로젝트 소속도 함께 해제(미분류) — 예전 거부 폐기.
         project = repo.create_project("Team project", workspace=self._team())
         gen_id = repo.create_local_generation(
             {"prompt": "p", "model": "m", "params": {}, "project_id": project["id"]},
             "me", creator_uid="user-me", workspace=self._team(),
         )
-        with self.assertRaisesRegex(repo.WorkspaceProjectConflict, "프로젝트"):
-            repo.set_generation_workspace_batch(
-                [gen_id], "remove", {"id": "ws-millionvolt", "name": "MILLIONVOLT"},
-                owner_uid="user-me",
-            )
-        self.assertEqual(repo.get_generation(gen_id)["workspace_id"], "ws-millionvolt")
+        repo.set_generation_workspace_batch(
+            [gen_id], "remove", {"id": "ws-millionvolt", "name": "MILLIONVOLT"},
+            owner_uid="user-me",
+        )
+        after = repo.get_generation(gen_id)
+        self.assertEqual(after["workspace_scope"], "personal")
+        self.assertIsNone(after["workspace_id"])
+        self.assertIsNone(after["project_id"])
+
+    def test_manual_workspace_assign_moves_project_with_unique_target(self):
+        # #+ 새 계약(Jay): 대상 워크스페이스에 프로젝트가 정확히 1개면 프로젝트도 그리로 배정/이동.
+        team_a = self._team()
+        team_b = {"scope": "team", "id": "ws-other", "name": "OTHER"}
+        project_a = repo.create_project("A의 유일 프로젝트", workspace=team_a)
+        project_b = repo.create_project("B의 프로젝트", workspace=team_b)
+        unassigned = repo.create_local_generation(
+            {"prompt": "u", "model": "m", "params": {}}, "me", creator_uid="user-me",
+        )
+        in_b = repo.create_local_generation(
+            {"prompt": "b", "model": "m", "params": {}, "project_id": project_b["id"]},
+            "me", creator_uid="user-me", workspace=team_b,
+        )
+
+        result = repo.set_generation_workspace_batch(
+            [unassigned, in_b], "assign", {"id": "ws-millionvolt", "name": "MILLIONVOLT"},
+            owner_uid="user-me",
+        )
+        self.assertEqual(result["assigned_project"]["id"], project_a["id"])
+        for gen_id in (unassigned, in_b):
+            after = repo.get_generation(gen_id)
+            self.assertEqual(after["workspace_id"], "ws-millionvolt")
+            self.assertEqual(after["project_id"], project_a["id"])
+
+    def test_manual_workspace_assign_leaves_unassigned_when_target_ambiguous(self):
+        # 대상 워크스페이스에 프로젝트가 여러 개면 어느 것인지 정할 수 없다 — 다른 워크스페이스
+        # 프로젝트 소속만 해제(불일치 방지)하고 미분류로 둔다.
+        team_a = self._team()
+        team_b = {"scope": "team", "id": "ws-other", "name": "OTHER"}
+        repo.create_project("A 프로젝트 1", workspace=team_a)
+        repo.create_project("A 프로젝트 2", workspace=team_a)
+        project_b = repo.create_project("B의 프로젝트", workspace=team_b)
+        in_b = repo.create_local_generation(
+            {"prompt": "b", "model": "m", "params": {}, "project_id": project_b["id"]},
+            "me", creator_uid="user-me", workspace=team_b,
+        )
+
+        result = repo.set_generation_workspace_batch(
+            [in_b], "assign", {"id": "ws-millionvolt", "name": "MILLIONVOLT"},
+            owner_uid="user-me",
+        )
+        self.assertIsNone(result["assigned_project"])
+        after = repo.get_generation(in_b)
+        self.assertEqual(after["workspace_id"], "ws-millionvolt")
+        self.assertIsNone(after["project_id"])
 
     def test_manual_removal_stays_personal_after_later_cli_sync(self):
         parsed = {

@@ -222,6 +222,8 @@ export interface GenerationWorkspaceBatchResponse {
   operation: "assign" | "remove";
   changed: string[];
   unchanged: string[];
+  // #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트). 구서버 응답엔 없을 수 있음.
+  project?: { id: string; name: string } | null;
   updates: { requested_id: string; generation: Generation }[];
 }
 

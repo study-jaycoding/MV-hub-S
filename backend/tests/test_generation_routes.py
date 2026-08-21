@@ -316,7 +316,9 @@ class GenerationReadRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
 
-    def test_workspace_command_rejects_project_workspace_conflict(self):
+    def test_workspace_command_rehomes_project_on_conflict(self):
+        # 새 계약(Jay): #+ 는 프로젝트도 함께 옮긴다. 대상 워크스페이스에 프로젝트가 없으면
+        # 다른 워크스페이스 프로젝트 소속만 해제(미분류)하고 도장을 적용한다 — 예전 409 거부 폐기.
         from app import db, repo
 
         with db.get_connection() as conn:
@@ -333,9 +335,11 @@ class GenerationReadRouteTests(unittest.TestCase):
                 "workspace_name": "티타임",
             },
         )
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("프로젝트", response.json()["detail"])
-        self.assertIsNone(repo.get_generation("loc1")["workspace_id"])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["project"])  # 티타임엔 프로젝트가 없어 자동 배정 없음
+        after = repo.get_generation("loc1")
+        self.assertEqual(after["workspace_id"], "ws-teatime")
+        self.assertIsNone(after["project_id"])
 
     def test_shared_workspace_command_does_not_change_local_when_server_fails(self):
         from fastapi import HTTPException

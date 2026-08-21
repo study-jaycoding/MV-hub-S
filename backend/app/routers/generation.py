@@ -579,6 +579,8 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
         "operation": body.operation,
         "changed": [str(row["requested_id"]) for row in result["changed"]],
         "unchanged": [str(row["requested_id"]) for row in result["unchanged"]],
+        # #+ 가 함께 배정한 프로젝트(대상 워크스페이스의 유일 프로젝트) — 없으면 null.
+        "project": result.get("assigned_project"),
         "updates": updates,
     }
 

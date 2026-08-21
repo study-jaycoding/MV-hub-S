@@ -33,10 +33,6 @@ class WorkspaceOwnershipError(WorkspaceAssignmentError):
     pass
 
 
-class WorkspaceProjectConflict(WorkspaceAssignmentError):
-    pass
-
-
 def _normalized_workspace_name(value: str) -> str:
     return unicodedata.normalize("NFC", str(value or "").strip()).casefold()
 
@@ -183,31 +179,50 @@ def _build_plan(
             raise WorkspaceOwnershipError("내 생성카드만 워크스페이스를 변경할 수 있습니다")
 
     target_id = workspace["id"]
+    # #+ 는 프로젝트도 함께 옮긴다(Jay 결정: 워크스페이스를 바꾸면 프로젝트도 그걸로).
+    # 대상 워크스페이스의 활성 프로젝트가 정확히 1개일 때만 자동 배정(워크스페이스당 프로젝트
+    # 1개 운영 전제). 0개/여러 개면 어느 프로젝트인지 정할 수 없어 미분류로 둔다.
+    assigned_project: Optional[dict[str, Any]] = None
+    if operation == "assign":
+        target_projects = conn.execute(
+            "SELECT id, name FROM project "
+            "WHERE workspace_scope='team' AND workspace_id=? AND archived=0",
+            (target_id,),
+        ).fetchall()
+        if len(target_projects) == 1:
+            assigned_project = dict(target_projects[0])
+
     changed: list[dict[str, Any]] = []
     unchanged: list[dict[str, Any]] = []
     for row in resolved:
         project_id = row.get("project_id")
+        in_team_project = bool(project_id) and row.get("project_workspace_scope") == "team"
         current_matches = (
             row.get("workspace_scope") == "team" and row.get("workspace_id") == target_id
         )
         if operation == "assign":
-            if project_id:
-                project_matches = (
-                    row.get("project_workspace_scope") == "team"
-                    and row.get("project_workspace_id") == target_id
-                )
-                if not project_matches:
-                    raise WorkspaceProjectConflict(
-                        "프로젝트에 속한 카드는 프로젝트와 같은 워크스페이스만 적용할 수 있습니다"
-                    )
-            needs_change = not current_matches or row.get("workspace_name") != workspace["name"]
+            # 프로젝트 연동: 이미 대상 워크스페이스의 프로젝트면 유지, 대상에 유일 프로젝트가
+            # 있으면 그리로 이동/배정, 없으면(0개·다중) 다른 워크스페이스 프로젝트만 해제.
+            # 개인(비팀) 프로젝트 소속은 워크스페이스와 무관하므로 건드리지 않는다.
+            if in_team_project and row.get("project_workspace_id") == target_id:
+                project_action = "keep"
+            elif assigned_project:
+                project_action = "keep" if project_id == assigned_project["id"] else "set"
+            elif in_team_project:
+                project_action = "clear"
+            else:
+                project_action = "keep"
+            needs_change = (
+                not current_matches
+                or row.get("workspace_name") != workspace["name"]
+                or project_action != "keep"
+            )
         else:
+            # 제거는 도장이 그 워크스페이스인 카드만 대상 — 팀 프로젝트 소속이면 프로젝트도
+            # 함께 해제한다(예전엔 거부했지만, #- 가 프로젝트까지 되돌리는 게 새 계약).
             needs_change = current_matches
-            if needs_change and project_id and row.get("project_workspace_scope") == "team":
-                raise WorkspaceProjectConflict(
-                    "팀 프로젝트에 속한 카드는 워크스페이스를 제거할 수 없습니다. "
-                    "먼저 프로젝트에서 카드를 빼세요"
-                )
+            project_action = "clear" if needs_change and in_team_project else "keep"
+        row["project_action"] = project_action
         (changed if needs_change else unchanged).append(row)
 
     return {
@@ -216,6 +231,7 @@ def _build_plan(
         "resolved": resolved,
         "changed": changed,
         "unchanged": unchanged,
+        "assigned_project": assigned_project,
     }
 
 
@@ -240,21 +256,45 @@ def set_generation_workspace_batch(
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         plan = _build_plan(conn, generation_ids, operation, workspace, owner_uid)
+        assigned_project = plan.get("assigned_project")
         for row in plan["changed"]:
+            action = row.get("project_action", "keep")
             if operation == "assign":
-                conn.execute(
-                    "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
-                    "WHERE id=?",
-                    (workspace["id"], workspace["name"], row["id"]),
-                )
+                # 프로젝트 이동/해제 시 folder_path 도 초기화 — 옛 프로젝트의 폴더 경로는
+                # 새 소속에서 유령 폴더가 된다(미분류 해제와 동일 규칙, assign_to_project 참조).
+                if action == "set" and assigned_project:
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='team', workspace_id=?, "
+                        "workspace_name=?, project_id=?, folder_path=NULL WHERE id=?",
+                        (workspace["id"], workspace["name"], assigned_project["id"], row["id"]),
+                    )
+                elif action == "clear":
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='team', workspace_id=?, "
+                        "workspace_name=?, project_id=NULL, folder_path=NULL WHERE id=?",
+                        (workspace["id"], workspace["name"], row["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
+                        "WHERE id=?",
+                        (workspace["id"], workspace["name"], row["id"]),
+                    )
             else:
-                conn.execute(
-                    # unknown은 과거 미확인 데이터라 다음 CLI 동기화가 현재 팀 컨텍스트로 보강할 수 있다.
-                    # 사용자가 명시적으로 제거한 결과는 personal로 저장해야 다시 팀 귀속이 살아나지 않는다.
-                    "UPDATE generation SET workspace_scope='personal', workspace_id=NULL, "
-                    "workspace_name=NULL WHERE id=?",
-                    (row["id"],),
-                )
+                # unknown은 과거 미확인 데이터라 다음 CLI 동기화가 현재 팀 컨텍스트로 보강할 수 있다.
+                # 사용자가 명시적으로 제거한 결과는 personal로 저장해야 다시 팀 귀속이 살아나지 않는다.
+                if action == "clear":
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='personal', workspace_id=NULL, "
+                        "workspace_name=NULL, project_id=NULL, folder_path=NULL WHERE id=?",
+                        (row["id"],),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE generation SET workspace_scope='personal', workspace_id=NULL, "
+                        "workspace_name=NULL WHERE id=?",
+                        (row["id"],),
+                    )
 
     changed_local_ids = [str(row["id"]) for row in plan["changed"]]
     if changed_local_ids:
