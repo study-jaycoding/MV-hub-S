@@ -27,6 +27,9 @@ from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
 from . import tags
 from .generation_delete import delete_generation_rows as _delete_generation
+# 텔레메트리 표식은 전체 manage facade 가 아니라 leaf 에 직접 의존한다 — 지연 import 로
+# 순환을 피하던 시절의 잔재를 없애 import 순서 변화가 기능 누락으로 이어질 여지를 줄인다.
+from .manage_telemetry import mark_telemetry_dirty, mark_telemetry_tombstone
 
 # 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
@@ -220,9 +223,7 @@ def move_to_trash(gen_id: str) -> bool:
     # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort.
     if tomb is not None:
         try:
-            from . import manage as _m
-
-            _m.mark_telemetry_tombstone(gen_id, tomb)
+            mark_telemetry_tombstone(gen_id, tomb)
         except Exception:  # noqa: BLE001 — 삭제 자체는 성공, 텔레메트리는 사이드카(별 DB)
             # 단, 여기 실패는 스냅샷이 사라져(본체 이미 삭제) 서버 팩트가 is_deleted 로 영영 안 넘어가는
             # 영구 왜곡이 될 수 있어 silent 로 두지 않고 남긴다(진단용). 삭제 흐름은 계속 진행.
@@ -397,9 +398,7 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         from ..config import MANAGE_ENABLED
 
         if MANAGE_ENABLED:
-            from . import manage as _m
-
-            _m.mark_telemetry_dirty([gen_id])
+            mark_telemetry_dirty([gen_id])
     except Exception:  # noqa: BLE001
         pass
     return True
