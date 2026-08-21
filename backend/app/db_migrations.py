@@ -692,6 +692,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_genref_ref "
         "ON gen_reference(reference_id, generation_id)"
     )
+    # 답글(parent_id) 역조회 — 수정·삭제 잠금/비공개 자식 확인/부모·자식 동시 삭제가 parent_id=?
+    # 를 쓰지만 인덱스가 없었다. ★schema.sql 이 아니라 여기(_migrate)에 두는 이유: 구 DB 의
+    # asset_comment.parent_id 는 위 ALTER 로 나중에 생기므로 스키마 시점엔 컬럼이 없을 수 있다.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_asset_comment_parent "
+        "ON asset_comment(parent_id) WHERE parent_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_comment_parent "
+        "ON generation_comment(parent_id) WHERE parent_id IS NOT NULL"
+    )
+    # 스레드 조회 복합 인덱스(schema.sql 과 동일 정의) — 필터와 정렬을 한 인덱스로.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_asset_comment_thread "
+        "ON asset_comment(project, path, created_at, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_comment_thread "
+        "ON generation_comment(gen_id, created_at, id)"
+    )
     # ── 생성본 코멘트 '개별 확인(seen)' 시드(1회) ─────────────────────────────
     # 기존 gen 단위 read_at 을 코멘트 단위 seen 으로 승격: 과거에 패널을 열어 read_at 이 박힌
     # 코멘트(created_at <= read_at)는 이미 본 것이므로 seen 으로 채운다. seen 이 비고 read 가
