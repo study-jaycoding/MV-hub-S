@@ -184,26 +184,122 @@ class GenerationMediaCacheTests(IsolatedAsyncioTestCase):
         with (
             patch.object(deps, "require_admin") as require_admin,
             patch.object(
-                repo,
-                "all_generation_ids",
-                return_value=["gen-ok", "gen-gone", "gen-failed"],
-            ),
-            patch.object(
-                repo,
-                "get_generation",
-                side_effect=lambda gen_id: None if gen_id == "gen-gone" else {"status": "done"},
-            ),
-            patch.object(
-                repo, "request_media_preservation",
-                side_effect=lambda gen_id, _reason, force=False: gen_id != "gen-gone",
-            ) as request_preservation,
+                repo, "request_media_preservation_for_all_done", return_value=2
+            ) as batch,
         ):
             request = SimpleNamespace()
             result = await generation.cache_all(request)
 
         require_admin.assert_called_once_with(request)
-        self.assertEqual(request_preservation.call_count, 2)
+        batch.assert_called_once_with()
         self.assertEqual(result["queued"], 2)
+
+
+class CacheAllBatchEquivalenceTests(IsolatedAsyncioTestCase):
+    """배치 등록이 종전 항목별 루프와 같은 최종 상태를 만드는지 — 실제 DB 오라클 비교."""
+
+    # 타임스탬프(now 기록)는 실행 시각에 따라 달라 등가 비교에서 제외하고 의미만 별도 검증.
+    _STABLE_COLS = "generation_id, reason, status, error_code, next_retry_at"
+
+    def _seed(self, tmp_dir: str) -> None:
+        import os
+
+        from app import db, repo
+
+        os.environ["CONTENT_HUB_DB"] = os.path.join(tmp_dir, "content_hub.db")
+        db.flush_pool()
+        db.init_db()
+        repo.ensure_default_worker()
+        with db.get_connection() as conn:
+            rows = [
+                ("g-new", "done", None),          # 보존 행 없음 → 신규 pending
+                ("g-pending", "done", "pending"),
+                ("g-running", "done", "running"),  # force 여도 건드리지 않음
+                ("g-complete", "done", "complete"),
+                ("g-failed", "done", "failed"),
+                ("g-notdone", "pending", "pending"),  # done 아님 → 제외
+            ]
+            for gid, status, _mp in rows:
+                conn.execute(
+                    "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts) "
+                    "VALUES(?, 'me', 'p', ?, '2026-01-01', 1)",
+                    (gid, status),
+                )
+            # 휴지통(soft delete) done 행 — 종전 루프도 포함했으므로 배치도 포함해야 한다.
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, deleted_at) "
+                "VALUES('g-trashed', 'me', 'p', 'done', '2026-01-01', 1, '2026-02-01')"
+            )
+            seeds = [
+                ("g-pending", "shared", "pending", None, None),      # admin 으로 승격
+                ("g-running", "final", "running", "err", "2020-01-01 00:00:00"),
+                ("g-complete", "final", "complete", None, None),     # final 유지(우선순위 높음)
+                ("g-failed", "manual", "failed", "boom", "2020-01-01 00:00:00"),
+                ("g-notdone", "shared", "failed", "keep", "2020-01-01 00:00:00"),
+            ]
+            for gid, reason, status, error, retry in seeds:
+                conn.execute(
+                    "INSERT INTO media_preservation(generation_id, reason, status, error_code, "
+                    "next_retry_at, requested_at, updated_at) "
+                    "VALUES(?,?,?,?,?, '2020-01-01 00:00:00', '2020-01-01 00:00:00')",
+                    (gid, reason, status, error, retry),
+                )
+
+    def _dump(self):
+        from app import db
+
+        with db.get_connection() as conn:
+            stable = conn.execute(
+                f"SELECT {self._STABLE_COLS} FROM media_preservation ORDER BY generation_id"
+            ).fetchall()
+            stamps = conn.execute(
+                "SELECT generation_id, requested_at='2020-01-01 00:00:00' AS requested_kept "
+                "FROM media_preservation ORDER BY generation_id"
+            ).fetchall()
+        return [tuple(row) for row in stable], {r[0]: bool(r[1]) for r in stamps}
+
+    async def test_batch_matches_legacy_per_item_loop(self):
+        import os
+        import tempfile
+
+        from app import db, repo
+
+        old_db = os.environ.get("CONTENT_HUB_DB")
+        results = {}
+        try:
+            for mode in ("legacy", "batch"):
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                    self._seed(tmp)
+                    if mode == "legacy":
+                        queued = 0  # 종전 /cache-all 루프 그대로 재현(오라클)
+                        for gen_id in repo.all_generation_ids():
+                            generation = repo.get_generation(gen_id)
+                            if not generation or generation.get("status") != "done":
+                                continue
+                            if repo.request_media_preservation(gen_id, "admin", force=True):
+                                queued += 1
+                    else:
+                        queued = repo.request_media_preservation_for_all_done()
+                    results[mode] = (queued, *self._dump())
+                    db.flush_pool()
+        finally:
+            if old_db is None:
+                os.environ.pop("CONTENT_HUB_DB", None)
+            else:
+                os.environ["CONTENT_HUB_DB"] = old_db
+            db.flush_pool()
+
+        legacy_queued, legacy_rows, legacy_stamps = results["legacy"]
+        batch_queued, batch_rows, batch_stamps = results["batch"]
+        self.assertEqual(batch_queued, legacy_queued)
+        self.assertEqual(batch_rows, legacy_rows)
+        self.assertEqual(batch_stamps, legacy_stamps)
+        # 의미 검증: running 은 requested_at 유지, force 재장전 대상은 갱신됐다.
+        self.assertTrue(batch_stamps["g-running"])
+        self.assertFalse(batch_stamps["g-complete"])
+        self.assertFalse(batch_stamps["g-failed"])
+        # done 아님 행은 건드리지 않았다(기존 값 유지).
+        self.assertTrue(batch_stamps["g-notdone"])
 
 
 if __name__ == "__main__":

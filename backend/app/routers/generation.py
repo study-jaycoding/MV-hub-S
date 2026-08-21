@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -1077,11 +1078,7 @@ async def cache_all(request: Request):
     from ..deps import require_admin
 
     require_admin(request)  # 전 계정 미디어 일괄 캐시 — AUTH on 이면 admin 만(AUTH off 면 통과)
-    queued = 0
-    for gen_id in repo.all_generation_ids():
-        generation = repo.get_generation(gen_id)
-        if not generation or generation.get("status") != "done":
-            continue
-        if repo.request_media_preservation(gen_id, "admin", force=True):
-            queued += 1
+    # 전체 DB 규모에 비례하는 항목별 직렬화·개별 커넥션(N+1)을 배치 한 번으로 바꾸고,
+    # async 라우트의 이벤트 루프가 SQLite busy 대기(최대 5초)에 막히지 않게 스레드로 격리한다.
+    queued = await asyncio.to_thread(repo.request_media_preservation_for_all_done)
     return {"queued": queued, "message": "용량 한도 안에서 백그라운드 보존을 시작했습니다"}

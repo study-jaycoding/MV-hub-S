@@ -21,6 +21,34 @@ def _utc_text(after_seconds: int = 0) -> str:
     )
 
 
+# 사유 선택까지 UPSERT 한 문장 안에서 처리해야 동시 공유/최종 요청이
+# 서로의 최신 값을 덮어쓰지 않는다. Python에서 SELECT 후 UPDATE하면
+# 각 연결이 읽은 과거 값으로 되돌리는 경쟁 상태가 생길 수 있다.
+# 단건·일괄(cache-all) 등록이 같은 문장을 써야 규칙이 드리프트하지 않는다.
+_REQUEST_UPSERT_SQL = (
+    "INSERT INTO media_preservation(generation_id,reason,status) "
+    "VALUES(?,?,'pending') "
+    "ON CONFLICT(generation_id) DO UPDATE SET "
+    "reason=CASE "
+    "WHEN (CASE excluded.reason "
+    "WHEN 'shared' THEN 1 WHEN 'admin' THEN 2 WHEN 'manual' THEN 3 WHEN 'final' THEN 4 "
+    "ELSE 0 END) > "
+    "(CASE media_preservation.reason "
+    "WHEN 'shared' THEN 1 WHEN 'admin' THEN 2 WHEN 'manual' THEN 3 WHEN 'final' THEN 4 "
+    "ELSE 0 END) "
+    "THEN excluded.reason ELSE media_preservation.reason END, "
+    "status=CASE WHEN ?=1 AND media_preservation.status!='running' "
+    "THEN 'pending' ELSE media_preservation.status END, "
+    "error_code=CASE WHEN ?=1 AND media_preservation.status!='running' "
+    "THEN NULL ELSE media_preservation.error_code END, "
+    "next_retry_at=CASE WHEN ?=1 AND media_preservation.status!='running' "
+    "THEN NULL ELSE media_preservation.next_retry_at END, "
+    "requested_at=CASE WHEN ?=1 AND media_preservation.status!='running' "
+    "THEN datetime('now') ELSE media_preservation.requested_at END, "
+    "updated_at=datetime('now')"
+)
+
+
 def request_media_preservation(gen_id: str, reason: str, *, force: bool = False) -> bool:
     """보존 작업을 멱등 등록한다. force는 완료/실패 작업도 다시 pending으로 돌린다."""
     if reason not in _REASONS:
@@ -28,33 +56,36 @@ def request_media_preservation(gen_id: str, reason: str, *, force: bool = False)
     with get_connection() as conn:
         if not conn.execute("SELECT 1 FROM generation WHERE id=?", (gen_id,)).fetchone():
             return False
-        # 사유 선택까지 UPSERT 한 문장 안에서 처리해야 동시 공유/최종 요청이
-        # 서로의 최신 값을 덮어쓰지 않는다. Python에서 SELECT 후 UPDATE하면
-        # 각 연결이 읽은 과거 값으로 되돌리는 경쟁 상태가 생길 수 있다.
         conn.execute(
-            "INSERT INTO media_preservation(generation_id,reason,status) "
-            "VALUES(?,?,'pending') "
-            "ON CONFLICT(generation_id) DO UPDATE SET "
-            "reason=CASE "
-            "WHEN (CASE excluded.reason "
-            "WHEN 'shared' THEN 1 WHEN 'admin' THEN 2 WHEN 'manual' THEN 3 WHEN 'final' THEN 4 "
-            "ELSE 0 END) > "
-            "(CASE media_preservation.reason "
-            "WHEN 'shared' THEN 1 WHEN 'admin' THEN 2 WHEN 'manual' THEN 3 WHEN 'final' THEN 4 "
-            "ELSE 0 END) "
-            "THEN excluded.reason ELSE media_preservation.reason END, "
-            "status=CASE WHEN ?=1 AND media_preservation.status!='running' "
-            "THEN 'pending' ELSE media_preservation.status END, "
-            "error_code=CASE WHEN ?=1 AND media_preservation.status!='running' "
-            "THEN NULL ELSE media_preservation.error_code END, "
-            "next_retry_at=CASE WHEN ?=1 AND media_preservation.status!='running' "
-            "THEN NULL ELSE media_preservation.next_retry_at END, "
-            "requested_at=CASE WHEN ?=1 AND media_preservation.status!='running' "
-            "THEN datetime('now') ELSE media_preservation.requested_at END, "
-            "updated_at=datetime('now')",
+            _REQUEST_UPSERT_SQL,
             (gen_id, reason, int(force), int(force), int(force), int(force)),
         )
         return True
+
+
+def request_media_preservation_for_all_done(reason: str = "admin") -> int:
+    """모든 완료(done) 생성물을 한 커넥션에서 보존 큐에 강제(force) 재등록한다.
+
+    /cache-all 전용 배치 경로 — 종전에는 항목마다 완전 직렬화 조회(get_generation)와
+    개별 커넥션 UPSERT 를 반복해 전체 DB 규모에 비례하는 N+1 이었다. 대상 선정
+    (status='done', 휴지통 포함)과 UPSERT 규칙(사유 우선순위·running 보호·force 재장전)은
+    종전 루프와 동일하다. 반환은 종전 queued 와 같은 '등록 시도한 done 생성물 수'.
+    단일 트랜잭션이므로 도중 실패 시 부분 등록이 남지 않는다(종전엔 항목별 커밋 —
+    성공 시 최종 상태는 동일)."""
+    if reason not in _REASONS:
+        raise ValueError(f"unsupported media preservation reason: {reason}")
+    with get_connection() as conn:
+        ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM generation WHERE status='done' ORDER BY created_at DESC"
+            ).fetchall()
+        ]
+        conn.executemany(
+            _REQUEST_UPSERT_SQL,
+            [(gen_id, reason, 1, 1, 1, 1) for gen_id in ids],
+        )
+        return len(ids)
 
 
 def backfill_required_media_preservations() -> int:
