@@ -792,6 +792,16 @@ def recovery_probe_pass(server: str, token: str, cli: str) -> int:
     if not isinstance(jobs, list):
         return anchored
     list_saturated = len(jobs) >= 100
+    # 창(최신 100건)의 가장 오래된 생성 시각 — 창이 제출 시점까지 거슬러 올라가면, 포화여도
+    # 제출 구간 전체를 본 것이라 '없음'을 확정할 수 있다.
+    listed_epochs = [
+        epoch
+        for job in jobs
+        if isinstance(job, dict)
+        for epoch in (_probe_epoch(job.get("created_at")),)
+        if epoch is not None
+    ]
+    oldest_listed = min(listed_epochs) if listed_epochs else None
     for request in pending_requests:
         matches_by_id = {
             str(job["id"]): job
@@ -804,9 +814,18 @@ def recovery_probe_pass(server: str, token: str, cli: str) -> int:
         elif matches:
             outcome = "multiple"
         else:
-            # 최신 창이 꽉 찼으면 후보가 100건 밖으로 밀렸을 수 있다. CLI list에는 cursor 계약이
-            # 없으므로 '없음'으로 확정해 재큐 문을 열지 않고, 다음 주기/수동 확인까지 보류한다.
-            if list_saturated:
+            # 최신 창이 꽉 찼어도, 창의 가장 오래된 잡이 제출 시각(시계 오차 2분 포함)보다
+            # 앞서면 제출 구간 전체를 본 것이므로 '없음'을 확정한다 — 이력이 늘 100건 이상인
+            # 계정에서 no_match 가 영구 보류돼 복구 카드가 안 풀리던 문제의 수정. 제출 이후
+            # 100건 이상이 새로 쌓여 후보가 창 밖으로 밀렸을 수 있는 경우만 보류한다
+            # (CLI list 에는 cursor 계약이 없어 더 과거는 못 본다).
+            submitted_at = _probe_epoch(request.get("submission_started_at"))
+            window_covers_submission = (
+                submitted_at is not None
+                and oldest_listed is not None
+                and oldest_listed <= submitted_at - 120
+            )
+            if list_saturated and not window_covers_submission:
                 print("  ⚠ 모호한 제출 조사 보류 — 최신 100건 창이 가득 참")
                 continue
             outcome = "no_match"

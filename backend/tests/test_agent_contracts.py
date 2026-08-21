@@ -1483,3 +1483,40 @@ def test_report_account_status_posts_empty_jobs_and_survives_failures():
         assert agent._report_account_status("http://hub", "tok", "hf") is False
     with patch.object(agent, "_collect_account_status", side_effect=OSError("boom")):
         assert agent._report_account_status("http://hub", "tok", "hf") is False
+
+
+def test_recovery_probe_confirms_absence_when_full_window_covers_submission():
+    """창이 포화(100건)여도 창의 가장 오래된 잡이 제출 시각 이전이면 '없음'을 확정한다 —
+    이력이 늘 100건 이상인 계정에서 no_match 가 영구 보류돼 복구 카드가 안 풀리던 회귀 방지."""
+    agent = _load_agent()
+    fingerprint = agent._submission_fingerprint(
+        "nano-banana", "missing prompt", {}, set(), []
+    )
+    request = {
+        "id": "request-1",
+        "fingerprint": fingerprint,
+        "submission_started_at": "2026-08-20 12:00:00",
+        "recovery_required_at": "2026-08-20 12:05:00",
+    }
+    jobs = [
+        {
+            "id": f"other-{index}",
+            "job_type": "nano-banana",
+            "created_at": "2026-08-19T00:00:00Z",  # 전부 제출 이전 → 창이 제출 구간을 포함
+            "params": {"prompt": f"other prompt {index}"},
+        }
+        for index in range(100)
+    ]
+    with patch.object(
+        agent, "_list_recovery_probes", return_value=(200, {"requests": [request]})
+    ), patch.object(agent, "_read_generate_json", return_value=jobs), patch.object(
+        agent,
+        "_report_recovery_probe",
+        return_value={"applied": True, "outcome": "no_match", "candidate_count": 0},
+    ) as report, patch.object(agent, "_anchor") as anchor:
+        assert agent.recovery_probe_pass("http://hub", "token-1", "higgsfield") == 0
+
+    report.assert_called_once_with(
+        "http://hub", "token-1", "request-1", "no_match", 0, None
+    )
+    anchor.assert_not_called()

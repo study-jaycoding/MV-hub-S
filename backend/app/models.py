@@ -103,6 +103,7 @@ class GenerationOut(BaseModel):
     error: Optional[str] = None  # 실패 사유(status=failed 일 때)
     execution_phase: Optional[str] = None  # preparing|pending|claimed|submitting|tracking|verifying|blocked|recovery_required|done|failed
     provider_status: Optional[str] = None  # Higgsfield 원시 상태(진단용)
+    recovery_probe_status: Optional[str] = None  # 모호 제출 자동조사 결론(no_match|unique|multiple) — 복구 안내 문구용
     last_checked_at: Optional[str] = None
     next_check_at: Optional[str] = None
     check_failures: int = 0

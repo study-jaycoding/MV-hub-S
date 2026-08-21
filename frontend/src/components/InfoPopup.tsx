@@ -157,8 +157,9 @@ export function InfoPopup({
           <div className="info-recovery">
             <span className="info-recovery-label">⚠ 복구 확인 필요</span>
             <span className="info-recovery-text">
-              외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의
-              Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요.
+              {g.recovery_probe_status === "no_match"
+                ? "자동 조사 결과 이 제출로 만들어진 외부 작업이 발견되지 않았습니다. 아래 버튼으로 다시 실행하면 됩니다."
+                : "외부 작업이 이미 만들어졌을 수 있어 자동 재생성을 멈췄습니다. 먼저 같은 계정의 Higgsfield 생성 목록에서 해당 작업이 없는지 확인하세요."}
             </span>
             {onRecoveryRequeue && (
               <button
@@ -174,7 +175,11 @@ export function InfoPopup({
                   }
                 }}
               >
-                {recoveryBusy ? "처리 중…" : "미제출 확인 후 다시 실행"}
+                {recoveryBusy
+                  ? "처리 중…"
+                  : g.recovery_probe_status === "no_match"
+                    ? "다시 실행"
+                    : "미제출 확인 후 다시 실행"}
               </button>
             )}
           </div>
