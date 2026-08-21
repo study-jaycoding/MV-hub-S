@@ -107,6 +107,7 @@ import { flashMsg } from "../../lib/flash";
 import { useSceneHistory } from "../../lib/useSceneHistory";
 import { useSceneKeyboardShortcuts } from "../../lib/useSceneKeyboardShortcuts";
 import { isSceneTextEntryTarget, sceneEscapeTarget } from "../../lib/sceneKeyboard";
+import { SCENE_NODE_CATALOG } from "../../lib/sceneNodeCatalog";
 import { useSceneDragSession } from "../../lib/useSceneDragSession";
 import { useSceneViewport } from "../../lib/useSceneViewport";
 import { useSceneClipboardDrop } from "../../lib/useSceneClipboardDrop";
@@ -2079,7 +2080,8 @@ export function SceneBoard({
 
     const canvasPoint = toCanvas(mouse.x, mouse.y);
     const menuWidth = 150;
-    const menuHeight = 9 * 29 + 10;
+    // 피커 높이 = 실제 항목 수 파생 — 9행 하드코딩이 실제 11종과 어긋나 하단에서 넘치던 버그 수정.
+    const menuHeight = SCENE_NODE_CATALOG.length * 29 + 10;
     let screenX = mouse.x - rect.left;
     let screenY = mouse.y - rect.top;
     if (screenX + menuWidth > rect.width) {
@@ -3583,22 +3585,7 @@ export function SceneBoard({
         <>
           <div className="scene-nodepick-backdrop" onMouseDown={() => setNodePicker(null)} />
           <div className="scene-nodepick" style={{ left: nodePicker.sx, top: nodePicker.sy }}>
-            {(
-              [
-                // 역할별 묶음: 생성(New·Model·Text) → 모음/흐름(List·Render·View) → 무선(Input·Output) → 주석(Head)
-                ["New", "N", "generation"],
-                ["Model", "M", "model"],
-                ["Text", "T", "text"],
-                ["Set", "S", "set"],
-                ["List", "L", "list"],
-                ["Render", "R", "render"],
-                ["View", "V", "view"],
-                ["Input", "I", "input"],
-                ["Output", "O", "output"],
-                ["Head", "H", "head"],
-                ["Comfy", "C", "comfy"],
-              ] as [string, string, SceneCardKind][]
-            ).map(([label, key, kind]) => (
+            {SCENE_NODE_CATALOG.map(({ label, key, kind }) => (
               <button
                 key={kind}
                 className="scene-nodepick-item"

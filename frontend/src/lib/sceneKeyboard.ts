@@ -1,4 +1,5 @@
 import type { SceneCardKind } from "./scenes";
+import { SCENE_NODE_KEYS } from "./sceneNodeCatalog";
 
 export interface SceneKeyLike {
   key: string;
@@ -76,19 +77,8 @@ const NON_TEXT_INPUT = new Set([
   "image",
 ]);
 
-const NODE_KEYS: Record<string, SceneCardKind> = {
-  n: "generation",
-  m: "model",
-  l: "list",
-  t: "text",
-  s: "set",
-  v: "view",
-  o: "output",
-  i: "input",
-  h: "head",
-  r: "render",
-  c: "comfy",
-};
+// 생성 가능 노드의 단축키 매핑 — 카탈로그(sceneNodeCatalog)에서 파생(3중 선언 어긋남 방지).
+const NODE_KEYS: Record<string, SceneCardKind> = SCENE_NODE_KEYS;
 
 export function isSceneTextEntryTarget(target: SceneKeyboardTarget | null | undefined): boolean {
   if (!target) return false;
