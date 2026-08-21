@@ -66,6 +66,33 @@ def test_state_schema_ensured_once_per_path_and_reensured_on_replacement(
     worker_backup._STATE_SCHEMA_READY.clear()
 
 
+def test_state_schema_concurrent_first_entry_ensures_once(
+    worker_store, monkeypatch: pytest.MonkeyPatch
+):
+    """R4 A-1(코덱스 P1): 최초 '동시' 진입에도 스키마 보장은 정확히 1회 — check 와 ready
+    등록이 별도 lock 구간이면 스레드마다 WAL+DDL 이 돌아 계약 위반·잠금 오류가 가능했다."""
+    worker_backup._STATE_SCHEMA_READY.clear()
+    calls: list[int] = []
+    original = worker_backup._ensure_schema
+
+    def counting_ensure(conn):
+        calls.append(1)
+        return original(conn)
+
+    monkeypatch.setattr(worker_backup, "_ensure_schema", counting_ensure)
+    barrier = threading.Barrier(4)
+
+    def first_entry():
+        barrier.wait()  # 4스레드가 동시에 최초 진입하도록 정렬
+        worker_backup._connect().close()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for future in [pool.submit(first_entry) for _ in range(4)]:
+            future.result()
+    assert len(calls) == 1
+    worker_backup._STATE_SCHEMA_READY.clear()
+
+
 @pytest.fixture
 def worker_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(worker_backup, "STATE_DB", tmp_path / "worker-state.db")
@@ -327,6 +354,8 @@ def test_interrupted_running_row_is_recovered(worker_store: Path):
         (1, b"not-json"),          # R4 A-5: non-zero+깨진 JSON — 종전엔 복구가 2회 돌던 조합
         (1, b"\xff\xfebroken"),    # non-zero+디코드 불가
         (0, b"[]"),                # zero+비-dict JSON
+        (0, b""),                  # 코덱스 P1: zero+빈 출력 — 종전 b"{}" 폴백에서 복구 0회
+        (0, b"{}"),                # 코덱스 P1: zero+state 누락 dict — 같은 문제
     ],
 )
 def test_child_failure_or_invalid_result_recovers_running_claim(

@@ -93,23 +93,26 @@ def _utc_now() -> str:
 # 상태 DB 스키마/WAL 보장은 (프로세스, 경로)당 1회 — 종전엔 매 연결(유휴 60초 due 조회 포함)
 # 마다 전체 DDL 스크립트를 실행했다(R4 A-1). WAL 은 파일 영속 설정이라 1회로 충분하고,
 # synchronous=FULL 은 커넥션별 설정이라 매 연결 유지한다. 존재 프로브(stat 1회)로 테스트의
-# 경로 교체·같은 경로 삭제-재생성도 재보장한다. 동시 최초 진입은 DDL 이 IF NOT EXISTS 라 무해.
+# 경로 교체·같은 경로 삭제-재생성도 재보장한다.
 _STATE_SCHEMA_READY: set[str] = set()
 _STATE_SCHEMA_READY_LOCK = threading.Lock()
 
 
 def _connect() -> sqlite3.Connection:
     key = str(STATE_DB)
+    # 프로브→connect→ensure→ready 등록을 한 lock 구간으로(코덱스 P1) — check 와 등록이
+    # 갈라져 있으면 최초 동시 진입이 각자 WAL+DDL 을 돌려 1회 계약이 깨지고 잠금 오류까지
+    # 가능하다. 프로브는 connect 가 빈 파일을 만들기 전에 봐야 하므로 connect 도 lock 안.
+    # 호출 빈도가 낮아(60초 due 조회 수준) 직렬화 비용은 무시 가능.
     with _STATE_SCHEMA_READY_LOCK:
         needs_ensure = key not in _STATE_SCHEMA_READY or not STATE_DB.exists()
-    STATE_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(STATE_DB), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA synchronous=FULL")
-    if needs_ensure:
-        conn.execute("PRAGMA journal_mode=WAL")
-        _ensure_schema(conn)  # 실패 시 ready 미기록 — 다음 연결이 재시도
-        with _STATE_SCHEMA_READY_LOCK:
+        STATE_DB.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(STATE_DB), timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA synchronous=FULL")
+        if needs_ensure:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _ensure_schema(conn)  # 실패 시 ready 미기록 — 다음 연결이 재시도
             _STATE_SCHEMA_READY.add(key)
     return conn
 
@@ -1193,9 +1196,13 @@ class PeriodicWorkerBackupUpload:
                 recovered = True
             try:
                 # 운영 로깅 설정이 stdout 한 줄을 먼저 남기더라도 마지막 JSON 결과는 읽는다.
-                output = (stdout or b"{}").decode("utf-8").splitlines()
-                parsed = json.loads(output[-1] if output else "{}")
-                if not isinstance(parsed, dict):
+                # ★유효 결과는 항상 "state" 를 가진 dict(_main 이 state 로 종료코드를 정한다).
+                # 빈 출력·state 누락은 자식이 claim 후 결과를 못 남기고 죽은 것일 수 있어
+                # returncode=0 이어도 invalid 로 보고 복구한다(코덱스 P1 — 종전 b"{}" 폴백은
+                # 이 조합에서 복구 0회였다).
+                output = stdout.decode("utf-8").splitlines() if stdout else []
+                parsed = json.loads(output[-1]) if output else None
+                if not isinstance(parsed, dict) or "state" not in parsed:
                     if not recovered:
                         await asyncio.to_thread(recover_in_progress)
                     return {"state": "failed", "error_code": "worker_failed"}

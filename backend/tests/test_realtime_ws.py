@@ -681,6 +681,60 @@ class WsAccountIndexInvariantTests(unittest.TestCase):
         received = self._run(scenario())
         self.assertEqual([m["url"] for m in received], ["newData"])
 
+    def test_stale_collect_after_reregistration_keeps_new_registration(self):
+        """코덱스 P2 — 재등록 뒤 도착한 '옛 client'의 지연 수거는 identity 방어로 무시돼야
+        한다. 옛 수거가 새 등록을 지우면 새 주인은 유령 연결이 되고 인덱스도 어긋난다."""
+
+        async def scenario():
+            mgr = ConnectionManager()
+            ws = FakeWS()
+            await mgr.connect(ws, "acct:old")
+            stale = mgr._clients[ws]
+            await mgr.connect(ws, "acct:new")  # 같은 소켓 재등록(새 client 인스턴스)
+            await mgr._collect(stale, "timeout")  # 옛 client 의 지연 수거 도착
+            self._assert_index_matches_clients(mgr)
+            self.assertEqual(mgr._by_account.get("acct:new"), {ws})
+            self.assertNotIn("acct:old", mgr._by_account)
+            return await mgr.stats()
+
+        stats = self._run(scenario())
+        self.assertEqual(stats["connections"], 1)  # 새 등록 생존
+        self.assertEqual(stats["send_timeouts"], 0)  # 무시된 수거는 집계도 안 된다
+
+    def test_scoped_broadcast_does_not_scan_all_clients(self):
+        """코덱스 P2 — 계정 스코프 broadcast 가 _clients.values() 전체 순회로 회귀하면
+        전달 결과는 같아도 성능 계약(B-1)이 깨진다. 계측으로 직접 고정한다."""
+
+        class ValuesSpyDict(dict):
+            def __init__(self):
+                super().__init__()
+                self.values_calls = 0
+
+            def values(self):
+                self.values_calls += 1
+                return super().values()
+
+        async def scenario():
+            mgr = ConnectionManager()
+            spy = ValuesSpyDict()
+            mgr._clients = spy
+            a, b = FakeWS(), FakeWS()
+            await mgr.connect(a, "acct:a")
+            await mgr.connect(b, "acct:b")
+            spy.values_calls = 0
+            await mgr.broadcast({"type": "progress"}, account_uid="acct:a")
+            scoped_calls = spy.values_calls
+            await mgr.broadcast_all({"type": "synced"})
+            all_calls = spy.values_calls - scoped_calls
+            await drain(mgr)
+            return scoped_calls, all_calls, a.received, b.received
+
+        scoped_calls, all_calls, a_msgs, b_msgs = self._run(scenario())
+        self.assertEqual(scoped_calls, 0)  # 스코프 경로는 버킷만 본다
+        self.assertEqual(all_calls, 1)  # broadcast_all 만 전체 순회
+        self.assertEqual([m["type"] for m in a_msgs], ["progress", "synced"])
+        self.assertEqual([m["type"] for m in b_msgs], ["synced"])
+
     def test_timeout_collection_cleans_index(self):
         async def scenario():
             mgr = ConnectionManager()
