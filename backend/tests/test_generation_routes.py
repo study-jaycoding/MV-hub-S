@@ -459,20 +459,27 @@ class WorkspaceBatchResponseContractTests(GenerationReadRouteTests):
         r = self._put_batch(["loc1", "nope"])
         self.assertEqual(r.status_code, 404)
 
-    def test_trashed_row_contract_unchanged(self):
+    def test_trashed_row_rejects_whole_batch_with_404(self):
         from app import repo
 
         repo.delete_generation("par1")
         r = self._put_batch(["loc1", "par1"])
-        # 종전 계약 그대로: 휴지통 행이 섞였을 때의 상태코드·payload 는 변경 전과 동일해야
-        # 한다(이 테스트는 배치화 전 동작을 캡처해 고정한다).
-        if r.status_code == 200:
-            updates = r.json()["updates"]
-            for update in updates:
-                oracle = repo.get_generation(update["generation"]["id"])
-                self.assertEqual(update["generation"], oracle)
-        else:
-            self.assertIn(r.status_code, (404, 409))
+        # 배치화 전후 동일 실측 계약: 휴지통 행이 섞이면 resolve 단계가 부재로 취급해
+        # 전체 404("생성물을 찾을 수 없습니다"), 부분 적용 없음.
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("par1", r.json()["detail"])
+        self.assertIsNone(repo.get_generation("loc1").get("workspace_id"))
+
+    def test_changed_and_unchanged_mix_reports_both_with_full_updates(self):
+        # 같은 값 재적용(unchanged)과 실제 변경(changed)이 섞여도 updates 는 둘 다 담는다.
+        first = self._put_batch(["loc1"])
+        self.assertEqual(first.status_code, 200)
+        second = self._put_batch(["loc1", "par1"])
+        self.assertEqual(second.status_code, 200)
+        data = second.json()
+        self.assertEqual(data["unchanged"], ["loc1"])
+        self.assertEqual(data["changed"], ["par1"])
+        self.assertEqual([u["requested_id"] for u in data["updates"]], ["loc1", "par1"])
 
 
 if __name__ == "__main__":

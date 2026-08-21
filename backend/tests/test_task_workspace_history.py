@@ -434,6 +434,21 @@ class TaskWorkspaceHistoryTests(unittest.TestCase):
         self.assertEqual(manage.link_generations(task_a["id"], ["g-a", "g-a"]), 1)
         self.assertEqual(manage.link_generations(task_a["id"], ["g-a"]), 0)
 
+    def test_link_rejects_missing_or_trashed_generation_without_partial(self) -> None:
+        # 라우트 409 의 원천 계약: 부재·휴지통 생성물은 ValueError 로 전체 취소(부분 연결 없음).
+        task_a = self._task("ws-a")
+        with self.assertRaisesRegex(ValueError, "연결할 수 없는 생성물"):
+            manage.link_generations(task_a["id"], ["g-a", "no-such-gen"])
+        with db.get_connection() as conn:
+            conn.execute("UPDATE generation SET deleted_at='2026-02-02' WHERE id='g-a'")
+        with self.assertRaisesRegex(ValueError, "연결할 수 없는 생성물"):
+            manage.link_generations(task_a["id"], ["g-a"])
+        with db.get_connection() as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) AS c FROM task_generation").fetchone()["c"],
+                0,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
