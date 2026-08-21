@@ -257,6 +257,10 @@ export function TagEditor({
       {showInput && workspaceError && (
         <span className="te-empty" role="alert">{workspaceError}</span>
       )}
+      {/* 처리 중 안내 — 리스트 밖(버튼 위치 불변)에 표시. 프록시(위임) 모드는 서버 왕복이라 수 초. */}
+      {showInput && workspaceBusy && (
+        <span className="te-empty">적용 중… 완료 알림이 뜰 때까지 잠시 기다려 주세요</span>
+      )}
       {workspacePickerOpen && workspacePicker ? (
         <div
           className={`te-global te-workspaces ${workspacePicker.operation}`}
@@ -269,9 +273,6 @@ export function TagEditor({
             <span className="te-empty">등록된 워크스페이스가 없습니다</span>
           ) : (
             <>
-              {/* 처리 중 안내 — 프록시(위임) 모드는 서버 왕복이라 수 초 걸릴 수 있다. 표시가 없으면
-                  연타가 나오고, 연타는 아래 가드가 무시하지만 사용자는 '안 눌린다'로 체감한다. */}
-              {workspaceBusy && <span className="te-empty">적용 중… (완료 알림이 뜰 때까지 잠시)</span>}
               {workspaceOptions.map((workspace) => {
                 const current = currentWorkspaceId
                   ? workspace.id === currentWorkspaceId
@@ -283,11 +284,13 @@ export function TagEditor({
                   <button
                     key={workspace.id}
                     // ★disabled 금지 — disabled 버튼은 mousedown 을 못 받아 keepFocus(blur 방지)가
-                    //  무력화되고, 처리 중 재클릭 한 번에 입력이 blur 로 닫혀버린다(팀원 로컬에서
-                    //  '여러 번 눌러야 적용'으로 실측). 이벤트는 받되 busy 면 클릭만 무시한다.
+                    //  무력화되고, 처리 중 재클릭 한 번에 입력이 blur 로 닫혀버린다.
+                    // ★click 아닌 mousedown 에서 실행 — click 은 누름과 뗌 사이에 리렌더·요소 이동이
+                    //  끼면 통째로 유실된다(실측: '여러 번 눌러야 적용'). 누르는 순간 확정해
+                    //  어떤 환경에서도 1클릭 = 1적용을 보장한다. preventDefault 로 blur 도 함께 방지.
                     className={"te-gchip te-wchip" + (current ? " on" : "") + (workspaceBusy ? " busy" : "")}
-                    onMouseDown={keepFocus}
-                    onClick={() => {
+                    onMouseDown={(e) => {
+                      keepFocus(e);
                       if (workspaceBusy) return;
                       void applyWorkspaceCommand(workspacePicker.operation, workspace);
                     }}
