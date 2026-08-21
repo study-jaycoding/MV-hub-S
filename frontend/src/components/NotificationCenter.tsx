@@ -111,19 +111,28 @@ export function NotificationCenter({
       });
   }, []);
 
-  // 기존 stats 갱신 흐름의 안전망: 메인 창이 보일 때만 60초마다 코멘트·업데이트 소식을 확인한다.
-  // 업데이트 알림도 여기서 함께 갱신해야 시작 시 한 번 실패해도 벨 배지가 시스템 소식을 놓치지 않는다.
+  // 릴리스(시스템) 소식은 닫혀 있어도 60초마다 확인 — 로컬 API 라 가볍고, 시작 시 한 번
+  // 실패해도 벨 배지가 업데이트 소식을 놓치지 않는다.
   useEffect(() => {
-    void loadComments(false);
     loadReleaseItems();
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden") {
-        void loadComments(false);
-        loadReleaseItems();
-      }
+      if (document.visibilityState !== "hidden") loadReleaseItems();
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [loadComments, loadReleaseItems]);
+  }, [loadReleaseItems]);
+
+  // 코멘트 '상세 목록'(본문·썸네일 payload)은 패널이 열려 있을 때만 조회한다(R4 A-4).
+  // 닫힌 동안의 벨 숫자는 stats(unread_count/has_unread) props 가 담당 — 라이브러리
+  // 리로드(15초 자동+폴링 스로틀)로 자체 갱신되므로 WS 없는 구서버에서도 따라온다.
+  // 열리는 순간의 최초 로드는 openPanel 의 loadComments(true)가 담당하고,
+  // 이 효과는 '열린 동안'의 60초 재갱신만 맡는다.
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") void loadComments(false);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [open, loadComments]);
 
   const close = useCallback(() => {
     setOpen(false);
