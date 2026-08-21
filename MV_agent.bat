@@ -180,11 +180,17 @@ REM backend process keeps the port and the freshly-updated code never takes effe
 REM (symptom: code updates do not apply until the machine reboots).
 REM The helper verifies an exact absolute backend\serve.py command-line token and
 REM rechecks process identity immediately before stopping it. Foreign owners fail closed.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
-if errorlevel 1 (
-  echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
-  echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
-  goto :err
+REM Guard: older release bundles shipped without tools\ - skip quietly instead of a red
+REM PowerShell "-File does not exist" error on worker PCs.
+if exist "%ROOT%tools\stop_local_hub_on_port.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\stop_local_hub_on_port.ps1" -Port %PORT%
+  if errorlevel 1 (
+    echo [ERROR] Port %PORT% could not be cleared safely - another process owns it.
+    echo         Close any old MV Hub / MV agent windows ^(or reboot^), then run this launcher again.
+    goto :err
+  )
+) else (
+  echo [warn] tools\stop_local_hub_on_port.ps1 missing - skipping port cleanup.
 )
 REM Run the hub in the background of THIS window (no separate window). Its log goes to a
 REM file so this one window stays clean and shows the agent. Closing this window stops both.

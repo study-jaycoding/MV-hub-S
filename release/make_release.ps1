@@ -468,6 +468,15 @@ foreach ($Name in $RootFiles) {
     }
 }
 
+# Port-cleanup helper - MV_agent.bat runs it before starting the hub. tools\ as a whole is
+# excluded from bundles, so ship just this file; without it worker PCs printed a red
+# PowerShell "-File does not exist" error and skipped stale-hub cleanup entirely.
+$PortHelper = Join-Path $ProjectRoot "tools\stop_local_hub_on_port.ps1"
+if (Test-Path -LiteralPath $PortHelper) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Stage "tools") | Out-Null
+    Copy-Item -LiteralPath $PortHelper -Destination (Join-Path $Stage "tools\stop_local_hub_on_port.ps1") -Force
+}
+
 Set-Content -LiteralPath (Join-Path $Stage "VERSION.txt") -Value $Version -Encoding ASCII
 
 if (-not $SkipPythonRuntime) {
