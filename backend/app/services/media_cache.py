@@ -149,14 +149,20 @@ def is_cached(url: str) -> bool:
     return _is_complete_file(_local_path(local_rel_for(url)))
 
 
-def _is_complete_file(path: Path) -> bool:
-    # stat 1회로 정규 파일 여부와 크기를 함께 판정(종전 is_file+stat = 2회 — R4 C-1).
-    # Path.is_file() 과 동일하게 symlink 를 따라간다(stat 기본 follow).
+def _complete_file_size(path: Path) -> "int | None":
+    """완성 파일이면 크기, 아니면 None — stat 1회로 판정과 크기를 함께 얻는다(R4 C-1·C-5).
+    Path.is_file() 과 동일하게 symlink 를 따라간다(stat 기본 follow)."""
     try:
         st = path.stat()
     except OSError:
-        return False
-    return stat.S_ISREG(st.st_mode) and st.st_size > 0
+        return None
+    if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+        return st.st_size
+    return None
+
+
+def _is_complete_file(path: Path) -> bool:
+    return _complete_file_size(path) is not None
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -231,14 +237,20 @@ def recalculate_preserved_media_usage() -> int:
         return _recalculate_preserved_media_usage_locked(state)
 
 
-def _enforce_preserved_quota(target: Path, *, newly_created: bool) -> int:
-    """새 다운로드를 원장에 반영한다. 초과 시 새 파일만 되돌리고 기존 파일은 보존한다."""
+def _enforce_preserved_quota(
+    target: Path, *, newly_created: bool, known_size: "int | None" = None
+) -> int:
+    """새 다운로드를 원장에 반영한다. 초과 시 새 파일만 되돌리고 기존 파일은 보존한다.
+    known_size: 직전 완료 판정이 이미 얻은 크기 — 같은 파일을 곧바로 다시 stat 하지 않는다(R4 C-5)."""
     if not newly_created:
         return 0
-    try:
-        size = target.stat().st_size
-    except OSError:
-        return 0
+    if known_size is not None:
+        size = known_size
+    else:
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return 0
 
     state = _PRESERVED_QUOTA_STATE
     with state.lock:
@@ -561,7 +573,8 @@ async def _cache_http_url_result(
                     await asyncio.to_thread(_download, url, target)
                 else:
                     await asyncio.to_thread(_download, url, target, max_bytes)
-                if not _is_complete_file(target):
+                downloaded_size = _complete_file_size(target)
+                if downloaded_size is None:
                     return MediaCacheResult(None, "transient", error_code="incomplete_download")
                 bytes_added = 0
                 if enforce_preserved_quota:
@@ -569,6 +582,7 @@ async def _cache_http_url_result(
                         _enforce_preserved_quota,
                         target,
                         newly_created=not existed_before,
+                        known_size=downloaded_size,  # 완료 판정 stat 재사용(R4 C-5)
                     )
                 if negative_thumb_cache:
                     _clear_thumb_failure(rel)
