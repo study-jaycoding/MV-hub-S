@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..config import DATA_DIR
+from ..workspace_context import normalize_workspace_context  # leaf 모듈(순환 없음 확인)
 from .atomic_io import atomic_write_text
 from .media_types import media_type_from_url
 
@@ -58,6 +59,39 @@ def _cache_get(key: str, ttl: float) -> Any:
 
 def _cache_put(key: str, value: Any) -> None:
     _CALL_CACHE[key] = (time.monotonic(), value)
+
+
+# ── 동시 miss 합류(single-flight, R5 2-C1) ────────────────────────────────
+# TTL 캐시는 조회 후에만 채워지므로 동시 요청이 같은 miss 를 보면 모두 subprocess 를
+# 띄웠다(콜드스타트 수백 ms~초 × M). 이벤트 루프별·키별 in-flight task 를 공유해 CLI
+# 실행을 1회로 합친다. 결과 캐시는 각 함수의 기존 성공 조건이 그대로 담당 — 여기서는
+# '동시' 합류만 하고 완료 즉시 등록을 지운다(실패는 그 순간의 대기자에게만 전파,
+# 이후 호출은 새로 시도 → 실패·빈 결과 비캐시 계약 유지).
+_inflight_guard = threading.Lock()
+_inflight_calls: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, "asyncio.Task[Any]"]
+] = weakref.WeakKeyDictionary()
+
+
+async def _single_flight(key: str, factory) -> Any:
+    loop = asyncio.get_running_loop()
+    with _inflight_guard:
+        calls = _inflight_calls.get(loop)
+        if calls is None:
+            calls = {}
+            _inflight_calls[loop] = calls
+        task = calls.get(key)
+        if task is None:
+            task = loop.create_task(factory())
+
+            def _cleanup(done: "asyncio.Task[Any]", key=key, calls=calls) -> None:
+                calls.pop(key, None)
+                if not done.cancelled():
+                    done.exception()  # 대기자 전원 취소 시 '미회수 예외' 경고 방지
+
+            task.add_done_callback(_cleanup)
+            calls[key] = task
+    return await task
 
 
 class CLIError(RuntimeError):
@@ -320,8 +354,6 @@ def parse_job(job: dict[str, Any]) -> dict[str, Any]:
     # CLI 1.1.23 목록에는 현재 workspace 필드가 없지만, MCP/향후 CLI 응답 또는 오프라인
     # 백필에는 개별 잡 컨텍스트가 포함될 수 있다. 변환 중 버리지 않고 내부 평면 규격으로 보존한다.
     # 명시된 ``workspace`` 객체가 있으면 그것만 읽는다(불완전하면 unknown, 평면값 추측 금지).
-    from ..workspace_context import normalize_workspace_context
-
     # 값이 None(JSON null)인 키는 "잡 자체 워크스페이스 명시"로 치지 않는다 — MCP/덤프가
     # 관행적으로 `workspace: null` 을 실어 보내면 검증된 배치 컨텍스트까지 잃고 전부
     # unknown 이 되는 것을 막는다. 빈 문자열 등 깨진 명시값은 종전대로 unknown(fail-closed).
@@ -414,10 +446,15 @@ async def list_jobs(timeout: float = 60.0, size: int = 100) -> list[dict[str, An
 
 
 async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
-    """생성 모달용 모델 목록 [{display_name, job_set_type, type}]. 5분 TTL 캐시(거의 불변)."""
+    """생성 모달용 모델 목록 [{display_name, job_set_type, type}]. 5분 TTL 캐시(거의 불변).
+    동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
     cached = _cache_get("models", 300.0)
     if cached is not None:
         return cached
+    return await _single_flight("models", lambda: _list_models_uncached(timeout))
+
+
+async def _list_models_uncached(timeout: float) -> list[dict[str, Any]]:
     data = await _run_json("model", "list", timeout=timeout)
     if not isinstance(data, list):
         return []
@@ -440,11 +477,20 @@ async def list_models(timeout: float = 60.0) -> list[dict[str, Any]]:
 
 
 async def get_model_params(job_set_type: str, timeout: float = 60.0) -> dict[str, Any]:
-    """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json. 1시간 TTL 캐시(불변)."""
+    """모델의 CLI 조절 가능 파라미터 스키마 — model get <job_set_type> --json. 1시간 TTL 캐시(불변).
+    동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
     ckey = f"params:{job_set_type}"
     cached = _cache_get(ckey, 3600.0)
     if cached is not None:
         return cached
+    return await _single_flight(
+        ckey, lambda: _get_model_params_uncached(ckey, job_set_type, timeout)
+    )
+
+
+async def _get_model_params_uncached(
+    ckey: str, job_set_type: str, timeout: float
+) -> dict[str, Any]:
     data = await _run_json("model", "get", job_set_type, timeout=timeout)
     if not isinstance(data, dict):
         return {"job_set_type": job_set_type, "type": "image", "params": []}
@@ -486,7 +532,13 @@ async def _allowed_param_names(model: str) -> set[str]:
         return set()
     _PARAM_NAMES_RETRY_AT.pop(model, None)
     names = {p.get("name") for p in data.get("params", []) if p.get("name")}
-    _PARAM_NAMES_CACHE[model] = names
+    if names:
+        _PARAM_NAMES_CACHE[model] = names
+    else:
+        # 빈 폴백 스키마를 프로세스 수명 캐시로 박제하지 않는다(R5 2-C1, 코덱스 적발) —
+        # get_model_params 가 비-dict 응답에 빈 params 를 돌려준 경우 종전엔 set() 이
+        # 영구 캐시돼 '필터 없음'이 굳었다. 실패 백오프와 같은 TTL 로 재조회한다.
+        _PARAM_NAMES_RETRY_AT[model] = time.monotonic() + _PARAM_NAMES_FAIL_TTL
     return names
 
 
@@ -686,10 +738,17 @@ async def estimate_cost(
 
 async def get_account_status(timeout: float = 30.0) -> dict[str, Any]:
     """계정 상태(연결·크레딧·이메일·플랜) — account status --json. 하단 상태줄 수동 확인용.
-    10초 TTL 캐시 — 연타·여러 탭에서 동시 조회해도 subprocess 폭주를 막는다(크레딧은 약간 지연 OK)."""
+    10초 TTL 캐시 — 연타·여러 탭에서 동시 조회해도 subprocess 폭주를 막는다(크레딧은 약간 지연 OK).
+    동시 miss 는 single-flight 로 CLI 1회에 합류(R5 2-C1)."""
     cached = _cache_get("account_status", 10.0)
     if cached is not None:
         return cached
+    return await _single_flight(
+        "account_status", lambda: _get_account_status_uncached(timeout)
+    )
+
+
+async def _get_account_status_uncached(timeout: float) -> dict[str, Any]:
     try:
         data = await _run_json("account", "status", timeout=timeout)
     except CLIError:

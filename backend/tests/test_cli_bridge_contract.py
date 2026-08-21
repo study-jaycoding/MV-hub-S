@@ -61,6 +61,57 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         cli_bridge._PARAM_NAMES_CACHE.clear()
         cli_bridge._PARAM_NAMES_RETRY_AT.clear()
 
+    async def test_empty_fallback_schema_is_not_pinned_forever(self):
+        """R5 2-C1(코덱스 적발) — 비-dict 응답의 빈 폴백 스키마가 _PARAM_NAMES_CACHE 에
+        set() 으로 영구 박제되면 그 모델은 영영 '필터 없음'으로 굳는다. 실패와 같은
+        백오프 TTL 후 재조회돼야 한다."""
+        from app.services import cli_bridge
+
+        cli_bridge._PARAM_NAMES_CACHE.clear()
+        cli_bridge._PARAM_NAMES_RETRY_AT.clear()
+        empty = {"job_set_type": "m2", "type": "image", "params": []}
+        ok = {"params": [{"name": "seed"}]}
+        calls = AsyncMock(side_effect=[empty, ok])
+        with patch.object(cli_bridge, "get_model_params", new=calls):
+            self.assertEqual(await cli_bridge._allowed_param_names("m2"), set())
+            self.assertNotIn("m2", cli_bridge._PARAM_NAMES_CACHE)  # 박제 금지
+            self.assertIn("m2", cli_bridge._PARAM_NAMES_RETRY_AT)  # 백오프로만 관리
+            cli_bridge._PARAM_NAMES_RETRY_AT.clear()  # TTL 경과 시뮬레이션
+            self.assertEqual(await cli_bridge._allowed_param_names("m2"), {"seed"})
+        cli_bridge._PARAM_NAMES_CACHE.clear()
+        cli_bridge._PARAM_NAMES_RETRY_AT.clear()
+
+    async def test_concurrent_model_list_misses_join_single_cli_run(self):
+        """R5 2-C1 — 동시 같은 miss M개는 CLI 1회에 합류하고, 실패는 그 대기자에게만
+        전파(비캐시)돼 다음 호출이 새로 시도한다."""
+        from app.services import cli_bridge
+
+        cli_bridge._CALL_CACHE.clear()
+        payload = json.dumps([{"display_name": "M", "job_type": "m", "type": "image"}])
+
+        async def slow_run(*args, timeout=60.0):
+            await asyncio.sleep(0.02)  # 합류 창 확보
+            return payload
+
+        with patch.object(cli_bridge, "_run", new=AsyncMock(side_effect=slow_run)) as run:
+            results = await asyncio.gather(*(cli_bridge.list_models() for _ in range(5)))
+            self.assertEqual(run.await_count, 1)  # CLI 실행 정확히 1회
+            self.assertTrue(all(r == results[0] for r in results))
+            self.assertEqual(results[0][0]["job_set_type"], "m")
+
+        cli_bridge._CALL_CACHE.clear()
+        failing = AsyncMock(side_effect=cli_bridge.CLIError("cli 죽음"))
+        with patch.object(cli_bridge, "_run", new=failing):
+            outcomes = await asyncio.gather(
+                *(cli_bridge.list_models() for _ in range(3)), return_exceptions=True
+            )
+            self.assertTrue(all(isinstance(o, cli_bridge.CLIError) for o in outcomes))
+            self.assertEqual(failing.await_count, 1)  # 실패도 합류는 1회
+            with self.assertRaises(cli_bridge.CLIError):
+                await cli_bridge.list_models()  # 실패 비캐시 — 다음 호출은 새로 시도
+            self.assertEqual(failing.await_count, 2)
+        cli_bridge._CALL_CACHE.clear()
+
     async def test_parse_job_null_workspace_key_keeps_batch_fallback(self):
         """`workspace: null` 처럼 값 없는 키만 실린 잡은 '잡 자체 명시'가 아니다 —
         검증된 배치 컨텍스트 폴백을 잃고 전부 unknown 이 되면 안 된다(RL-01 보강).
