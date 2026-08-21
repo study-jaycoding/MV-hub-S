@@ -19,6 +19,7 @@ import {
   type OutputModelUsage,
 } from "../../lib/usageReport";
 import { paginateUsageItems, USAGE_PAGE_SIZES } from "../../lib/usagePagination";
+import { groupModelRows } from "../../lib/usageModelIndex";
 import { reconcileArrayState, reconcileValueState } from "../../lib/stateReconciliation";
 import { workspaceCommandLabels } from "../../lib/workspaceCommand";
 import {
@@ -518,10 +519,16 @@ export function WorkspaceUsageDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSignal, trendDisplayKey]);
 
-  const workerModels = (uid: string | null) =>
-    (overview?.worker_models || []).filter((row) => row.creator_uid === uid);
-  const projectModels = (pid: string | null) =>
-    (overview?.project_models || []).filter((row) => row.project_id === pid);
+  const workerModelIndex = useMemo(
+    () => groupModelRows(overview?.worker_models, (row) => row.creator_uid),
+    [overview?.worker_models],
+  );
+  const projectModelIndex = useMemo(
+    () => groupModelRows(overview?.project_models, (row) => row.project_id),
+    [overview?.project_models],
+  );
+  const workerModels = (uid: string | null) => workerModelIndex.get(uid) || [];
+  const projectModels = (pid: string | null) => projectModelIndex.get(pid) || [];
   const displayedTrend = useMemo(
     () => fillUsageTrendBuckets(trend, chartRange),
     [chartRange, trend],
