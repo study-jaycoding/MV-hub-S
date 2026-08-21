@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timezone
 from threading import Event, Lock
@@ -1094,7 +1094,8 @@ def _suppress_job(job_id: "str | None") -> None:
         print(f"[경고] 억제목록 저장 실패: {e}")
 
 
-def _file_fingerprint(path: str) -> tuple[str, int] | None:
+def _compute_file_fingerprint(path: str) -> tuple[str, int] | None:
+    """전체 읽기 SHA256 — 합치기 계층 없이 실제 계산만 한다(아래 _file_fingerprint 가 감싼다)."""
     try:
         size = os.path.getsize(path)
         h = hashlib.sha256()
@@ -1105,6 +1106,60 @@ def _file_fingerprint(path: str) -> tuple[str, int] | None:
     except OSError as e:
         print(f"[경고] 레퍼런스 해시 계산 실패({path}): {e}")
         return None
+
+
+# 해시 계산 in-flight 합치기(R2 이월 3-C): 업로드 자체는 digest 키 in-flight 로 합쳐지지만,
+# 그 digest 를 만들 '전체 읽기 해시'는 각 제출 스레드가 락 진입 전에 따로 수행했다 — 같은
+# 대형 레퍼런스(캐릭터 시트·스토리보드)를 동시 4제출하면 4번 읽는다. (정규경로·크기·mtime_ns)
+# 키로 계산을 1회로 합치고, 해시 도중 파일이 바뀌었으면(stat 변화) 결과를 캐시하지 않는다
+# (그 호출엔 종전과 동일하게 반환 — 재사용만 금지). 캐시는 배치 범위의 작은 상한을 둔다.
+_FP_GUARD = Lock()
+_FP_CACHE_MAX = 512
+_fp_cache: "OrderedDict[tuple[str, int, int], tuple[str, int]]" = OrderedDict()
+_fp_inflight: dict[tuple[str, int, int], Event] = {}
+
+
+def _file_fingerprint(path: str) -> tuple[str, int] | None:
+    while True:
+        try:
+            st = os.stat(path)
+        except OSError as e:
+            print(f"[경고] 레퍼런스 해시 계산 실패({path}): {e}")
+            return None
+        key = (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
+        wait_ev = None
+        with _FP_GUARD:
+            hit = _fp_cache.get(key)
+            if hit is not None:
+                _fp_cache.move_to_end(key)
+                return hit
+            ev = _fp_inflight.get(key)
+            if ev is None:
+                my_ev = Event()
+                _fp_inflight[key] = my_ev
+                break  # 내가 계산 담당
+            wait_ev = ev
+        wait_ev.wait(timeout=300)  # 계산 완료(또는 실패) 대기 후 재확인 — 성공이면 캐시 히트
+    try:
+        fp = _compute_file_fingerprint(path)
+        if fp is None:
+            return None
+        try:
+            st_after = os.stat(path)
+        except OSError:
+            return fp  # 직후 소실 — 결과는 종전처럼 반환하되 캐시(재사용)는 하지 않음
+        if (st_after.st_size, st_after.st_mtime_ns) == (st.st_size, st.st_mtime_ns):
+            with _FP_GUARD:
+                _fp_cache[key] = fp
+                _fp_cache.move_to_end(key)
+                while len(_fp_cache) > _FP_CACHE_MAX:
+                    _fp_cache.popitem(last=False)
+        return fp
+    finally:
+        with _FP_GUARD:
+            if _fp_inflight.get(key) is my_ev:
+                _fp_inflight.pop(key, None)
+        my_ev.set()
 
 
 def _upload_cache_key(upload_cache: dict, digest: str) -> str:

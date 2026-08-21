@@ -573,6 +573,62 @@ def test_idempotent_reports_back_off_on_transient_but_stop_on_4xx() -> None:
     outbox_remove.assert_not_called()
 
 
+def test_file_fingerprint_coalesces_concurrent_hashing() -> None:
+    """R3 3-C 계약: 같은 파일 동시 해시는 1회 계산으로 합치고, 파일이 바뀌면 재계산한다."""
+    import tempfile
+    import threading
+    from pathlib import Path
+
+    agent = _load_agent()
+    agent._fp_cache.clear()
+    agent._fp_inflight.clear()
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        target = Path(tmp) / "ref.png"
+        target.write_bytes(b"payload-1" * 1000)
+        compute_calls: list[str] = []
+        started = threading.Event()
+        release = threading.Event()
+        original = agent._compute_file_fingerprint
+
+        def slow_compute(path: str):
+            compute_calls.append(path)
+            started.set()
+            release.wait(5)
+            return original(path)
+
+        results: list = []
+        with patch.object(agent, "_compute_file_fingerprint", side_effect=slow_compute):
+            threads = [
+                threading.Thread(target=lambda: results.append(agent._file_fingerprint(str(target))))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            assert started.wait(5)
+            release.set()
+            for t in threads:
+                t.join(10)
+
+        assert len(results) == 4 and len({fp for fp in results}) == 1  # 동일 결과 공유
+        assert len(compute_calls) == 1  # 전체 읽기 해시는 1회
+        assert agent._fp_inflight == {}  # 선점 누수 없음
+
+        # 파일 변경(mtime/size) → 키가 달라져 재계산.
+        target.write_bytes(b"payload-2" * 2000)
+        with patch.object(
+            agent, "_compute_file_fingerprint", side_effect=original
+        ) as recompute:
+            fresh = agent._file_fingerprint(str(target))
+        assert fresh is not None and fresh != results[0]
+        assert recompute.call_count == 1
+
+        # 실패(파일 소실)는 캐시되지 않는다.
+        agent._fp_cache.clear()
+        missing = str(Path(tmp) / "no-such.png")
+        assert agent._file_fingerprint(missing) is None
+        assert agent._fp_cache == {}
+
+
 def test_missing_reference_reconcile_report_stops_immediately_on_4xx() -> None:
     """미부착 실패 보고도 4xx 는 지연 없이 즉시 중단(다음 재조정 사이클이 재평가)."""
     agent = _load_agent()
