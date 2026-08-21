@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -372,8 +373,45 @@ async def _cached_source(asset: dict[str, Any]) -> Path:
     raise ResolveTransferError("원본을 내려받을 수 없습니다")
 
 
+# 목적지별 복사 직렬화(R5 2-B) — 같은 목적지를 두 요청이 동시에 처리하면 둘 다
+# exists()==False 를 보고 각자 대용량 복사를 한 뒤 마지막 os.replace 가 앞선 결과를
+# 덮어쓴다. 존재 확인→전체 byte 비교→.part→replace 를 목적지 단위 임계구역으로 묶는다
+# (다른 목적지끼리는 병렬 유지). ★프로세스 내부 동시성만 막는다 — 프로세스 밖 경합은
+# 종전처럼 os.replace 원자성과 byte 비교(멱등 skipped)가 방어선이다. 레지스트리는
+# refcount 로 마지막 사용자가 회수해 경로 수만큼 영구 누적되지 않는다.
+_DEST_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
+_DEST_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _dest_lock(dest: Path):
+    key = os.path.normcase(str(dest))
+    with _DEST_LOCKS_GUARD:
+        entry = _DEST_LOCKS.get(key)
+        lock = entry[0] if entry else threading.Lock()
+        users = entry[1] if entry else 0
+        _DEST_LOCKS[key] = (lock, users + 1)
+    try:
+        with lock:
+            yield
+    finally:
+        with _DEST_LOCKS_GUARD:
+            current, users = _DEST_LOCKS[key]
+            if users <= 1:
+                _DEST_LOCKS.pop(key, None)
+            else:
+                _DEST_LOCKS[key] = (current, users - 1)
+
+
 def _copy_atomic(source: Path, dest: Path) -> str:
-    """원본을 덮어쓰지 않고 원자적으로 복사한다. 반환값은 downloaded/skipped."""
+    """원본을 덮어쓰지 않고 원자적으로 복사한다. 반환값은 downloaded/skipped.
+    같은 목적지 동시 요청은 _dest_lock 으로 직렬화 — 후발이 같은 원본이면 skipped,
+    다른 원본이면 기존 오류 그대로."""
+    with _dest_lock(dest):
+        return _copy_atomic_locked(source, dest)
+
+
+def _copy_atomic_locked(source: Path, dest: Path) -> str:
     source_size = source.stat().st_size
     if source_size <= 0:
         raise ResolveTransferError("원본 파일이 비어 있습니다")

@@ -389,6 +389,83 @@ class ResolveTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dest.read_bytes(), different_same_size)
         self.assertEqual(list(dest.parent.glob("*.part")), [])
 
+    async def test_concurrent_same_destination_copies_serialize_to_one_write(self):
+        """R5 2-B — 같은 목적지 동시 복사는 목적지 락으로 직렬화: 한쪽 downloaded·
+        한쪽 skipped(같은 원본), last-writer 덮어쓰기·이중 대용량 복사 없음."""
+        import threading as threading_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "src.mp4"
+            source.write_bytes(b"payload-bytes")
+            dest = Path(tmp) / "out" / "final.mp4"
+            copy2 = resolve_transfer.shutil.copy2
+            copy_calls: list[str] = []
+            barrier = threading_module.Barrier(2)
+
+            def slow_copy(src, dst):
+                copy_calls.append(str(dst))
+                time.sleep(0.05)  # 경합 창 확대 — 직렬화 없으면 둘 다 여기 진입한다
+                return copy2(src, dst)
+
+            results: list[str] = []
+            errors: list[Exception] = []
+
+            def run():
+                barrier.wait()
+                try:
+                    with mock.patch.object(resolve_transfer.shutil, "copy2", slow_copy):
+                        results.append(resolve_transfer._copy_atomic(source, dest))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading_module.Thread(target=run) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            self.assertEqual(sorted(results), ["downloaded", "skipped"])
+            self.assertEqual(len(copy_calls), 1)  # 대용량 복사는 정확히 1회
+            self.assertEqual(dest.read_bytes(), b"payload-bytes")
+            self.assertEqual(resolve_transfer._DEST_LOCKS, {})  # 레지스트리 회수 계약
+
+    async def test_concurrent_different_source_same_destination_conflicts(self):
+        """같은 목적지·다른 원본 동시 요청 — 하나만 성공, 다른 하나는 종전 오류."""
+        import threading as threading_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_a = Path(tmp) / "a.mp4"
+            source_a.write_bytes(b"content-a")
+            source_b = Path(tmp) / "b.mp4"
+            source_b.write_bytes(b"content-b")
+            dest = Path(tmp) / "out" / "final.mp4"
+            barrier = threading_module.Barrier(2)
+            results: list[str] = []
+            errors: list[Exception] = []
+
+            def run(src):
+                barrier.wait()
+                try:
+                    results.append(resolve_transfer._copy_atomic(src, dest))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [
+                threading_module.Thread(target=run, args=(src,))
+                for src in (source_a, source_b)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(results, ["downloaded"])
+            self.assertEqual(len(errors), 1)
+            self.assertIn("다른 파일", str(errors[0]))
+            self.assertIn(dest.read_bytes(), {b"content-a", b"content-b"})
+            self.assertEqual(resolve_transfer._DEST_LOCKS, {})
+
     async def test_unsafe_transfer_id_is_rejected_before_manifest_write(self):
         with self.assertRaises(resolve_transfer.ResolveTransferError):
             await self._transfer([self._generation(1, "ep001/c0010")], "../escape")
