@@ -11,7 +11,6 @@ interface Account {
 }
 
 export function useAccountStatus(workspace?: WorkspaceContext) {
-  const [cli, setCli] = useState<boolean | null>(null);
   // 계정(크레딧·이메일) — 하단 상태줄 클릭 시 수동 조회(PV 스타일)
   const [account, setAccount] = useState<Account | null>(null);
   const [acctLoading, setAcctLoading] = useState(false);
@@ -31,21 +30,15 @@ export function useAccountStatus(workspace?: WorkspaceContext) {
     Promise.all([api.account(), teamCredits])
       .then(([a, wsCredits]) => {
         setAccount({ ...a, credits: wsCredits ?? a.credits });
-        setCli(a.connected);
       })
       .catch(() => setAccount({ connected: false, credits: null, email: "" }))
       .finally(() => setAcctLoading(false));
   };
-  // 마운트 시 CLI 연결 상태 1회 확인(상태줄 점).
-  useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((d) => setCli(!!d.cli_available))
-      .catch(() => setCli(false));
-  }, []);
+  // (마운트 시 /api/health 로 cli 상태를 받아오던 effect 는 제거 — 결과를 쓰는 곳이 없었고,
+  //  화면의 연결 점은 useSpotlightAgentStatus 가 담당한다.)
   // 공간을 바꾸면 이전 공간의 잔액이 남지 않게 지운다(다시 클릭하면 새 공간 기준으로 조회).
   useEffect(() => {
     setAccount((previous) => (previous ? { ...previous, credits: null } : previous));
   }, [workspace?.scope, workspace?.id]);
-  return { cli, account, acctLoading, checkAccount };
+  return { account, acctLoading, checkAccount };
 }
