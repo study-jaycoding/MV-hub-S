@@ -218,6 +218,48 @@ class UnsupportedNodeMessageTests(unittest.TestCase):
         self.assertIsNone(comfy_client._unsupported_node_message("some random 500 error"))
 
 
+class SubscriptionTierCacheTests(unittest.TestCase):
+    """R5 comfy-1 — 일시 실패로 만든 None 은 캐시하지 않는다(회복 즉시 자기치유)."""
+
+    def setUp(self):
+        comfy_client._SUBSCRIPTION_CACHE.clear()
+
+    def tearDown(self):
+        comfy_client._SUBSCRIPTION_CACHE.clear()
+
+    def test_transient_error_is_not_cached_and_recovers_immediately(self):
+        target = _cloud_target()
+        with mock.patch.object(
+            comfy_client, "_get_json", side_effect=comfy_client.ComfyError("탈락")
+        ):
+            self.assertIsNone(comfy_client.get_subscription_tier(target))
+        self.assertEqual(comfy_client._SUBSCRIPTION_CACHE, {})  # 실패값 미캐시
+        with mock.patch.object(
+            comfy_client,
+            "_get_json",
+            return_value={"workspaces": [{"subscription_tier": "PRO"}]},
+        ) as get_json:
+            self.assertEqual(comfy_client.get_subscription_tier(target), "PRO")
+            # 정상 응답은 캐시 — 같은 target 재조회는 네트워크 없이 즉시
+            self.assertEqual(comfy_client.get_subscription_tier(target), "PRO")
+            get_json.assert_called_once()
+
+    def test_normal_response_without_tier_is_cached_none(self):
+        target = _cloud_target()
+        with mock.patch.object(
+            comfy_client, "_get_json", return_value={"workspaces": []}
+        ) as get_json:
+            self.assertIsNone(comfy_client.get_subscription_tier(target))
+            self.assertIsNone(comfy_client.get_subscription_tier(target))
+            get_json.assert_called_once()  # '정말 등급 없음'은 종전대로 캐시
+
+    def test_malformed_response_is_not_cached(self):
+        target = _cloud_target()
+        with mock.patch.object(comfy_client, "_get_json", return_value="broken"):
+            self.assertIsNone(comfy_client.get_subscription_tier(target))
+        self.assertEqual(comfy_client._SUBSCRIPTION_CACHE, {})  # 형식 깨짐도 미캐시
+
+
 class StatusRouteTests(unittest.TestCase):
     def test_status_and_detail_routes(self):
         seen = []

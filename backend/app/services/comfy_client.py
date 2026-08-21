@@ -172,16 +172,20 @@ def get_subscription_tier(target: dict, *, use_cache: bool = True) -> "str | Non
         hit = _SUBSCRIPTION_CACHE.get(key)
         if hit and now - hit[0] < _SUBSCRIPTION_TTL:
             return hit[1]
-    tier: "str | None" = None
     try:
         data = _get_json(target, "/workspaces", timeout=10)
-        wss = data.get("workspaces") if isinstance(data, dict) else None
-        if isinstance(wss, list) and wss and isinstance(wss[0], dict):
-            t = wss[0].get("subscription_tier")
-            tier = str(t) if t else None
     except ComfyError:
-        tier = None
-    _SUBSCRIPTION_CACHE[key] = (now, tier)
+        # 일시 실패로 만든 None 은 캐시하지 않는다(R5 comfy-1) — 종전엔 네트워크가 바로
+        # 회복돼도 5분간 구독 등급이 사라진 채 굳었다. 다음 조회가 즉시 재시도한다.
+        return None
+    wss = data.get("workspaces") if isinstance(data, dict) else None
+    if not isinstance(wss, list):
+        return None  # 형식 깨진 응답도 미캐시(코덱스) — 정상 workspaces 응답만 캐시 대상
+    tier: "str | None" = None
+    if wss and isinstance(wss[0], dict):
+        t = wss[0].get("subscription_tier")
+        tier = str(t) if t else None
+    _SUBSCRIPTION_CACHE[key] = (now, tier)  # 정상 응답의 tier 부재(None)만 캐시
     return tier
 
 
