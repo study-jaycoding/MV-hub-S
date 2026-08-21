@@ -395,13 +395,17 @@ def test_publish_identity_drift_fails_before_ledger_or_server(isolated_content_d
     materialized = dict(original, job_id="new-anchor")
     reads = 0
 
-    def drifting_generation(_gen_id):
+    # 발행 경로는 잠금 전/잠금 안 각 1회의 배치 스냅샷을 읽는다 — 잠금을 기다리는 사이
+    # job_id 가 물질화된 상황을 재현(1번째=잠금 전 원본, 2번째=잠금 안 새 앵커).
+    def drifting_snapshot(_gen_ids, account_uid=None):
         nonlocal reads
         reads += 1
-        return original if reads <= 2 else materialized
+        return {gen_id: (original if reads <= 1 else materialized)}
 
     with (
-        mock.patch.object(publish.repo, "get_generation", side_effect=drifting_generation),
+        mock.patch.object(
+            publish.repo, "get_generations_batch", side_effect=drifting_snapshot
+        ),
         mock.patch.object(publish.repo, "prepare_share_state_intents") as prepare,
         mock.patch.object(publish.repo, "export_bundle") as export,
         mock.patch.object(publish, "_http_json") as remote,

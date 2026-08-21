@@ -447,15 +447,18 @@ def publish_bundle_to_server(
         raise HTTPException(status_code=400, detail="발행할 항목을 선택하세요")
     # 완료본만 발행 — 아래 로컬 share 표식과 같은 기준(done). 진행중/실패본이 번들에 실려
     # 서버에 미완성 fact 로 남지 않게 export 단계에서 거른다.
+    # 잠금 전 스냅샷 1회 배치 조회 — 종전엔 필터와 anchor 수집이 항목마다 단건 직렬화를
+    # 두 번씩 반복했다(N+1). 직렬화 경로는 단건과 동일(_fetch_gens).
+    pre_lock = repo.get_generations_batch(gen_ids)
     gen_ids = [
-        g for g in gen_ids if (repo.get_generation(g) or {}).get("status") == "done"
+        g for g in gen_ids if (pre_lock.get(g) or {}).get("status") == "done"
     ]
     if not gen_ids:
         raise HTTPException(status_code=400, detail="발행할 완료본이 없습니다(진행중/실패 제외)")
 
     initial: list[tuple[str, str]] = []
     for gid in gen_ids:
-        gen = repo.get_generation(gid)
+        gen = pre_lock.get(gid)
         if gen and gen.get("status") == "done":
             initial.append((gid, str(gen.get("job_id") or gid)))
     lock_keys = [
@@ -464,10 +467,12 @@ def publish_bundle_to_server(
     held_lock_keys = set(lock_keys)
     with repo.share_state_action_locks(lock_keys):
         # 잠금을 기다리는 동안 상태가 바뀔 수 있으므로 번들과 base 상태를 잠금 안에서 다시 만든다.
+        # ★잠금 안 재조회는 경합 방어라 반드시 유지 — 단건 반복 대신 스냅샷 1회 배치로만 바꾼다.
+        in_lock = repo.get_generations_batch([gid for gid, _ in initial])
         targets: list[dict[str, Any]] = []
         seen_anchors: set[str] = set()
         for gid, _ in initial:
-            gen = repo.get_generation(gid)
+            gen = in_lock.get(gid)
             if not (gen and gen.get("status") == "done"):
                 continue
             anchor = str(gen.get("job_id") or gid)
