@@ -464,7 +464,9 @@ def _account_thumb_source(target: Path) -> None:
         if target_key not in known:
             try:
                 total += target.stat().st_size
-                known = {*known, target_key}
+                # 락 안에서만 다루는 set — 매 삽입마다 전체 복사({*known, key})하면 콜드
+                # prewarm N개 추가가 O(N²)로 커진다(코덱스 R4 C-4). 제자리 갱신으로 충분.
+                known.add(target_key)
             except OSError:
                 return
         _THUMB_SOURCE_STATE[key] = (total, known)
