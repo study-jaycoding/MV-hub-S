@@ -342,6 +342,7 @@ def _ensure_request_workspace(cli: str, value) -> tuple[bool, str | None]:
         error = _run_cli_command(cli, "workspace", "set", str(candidate["id"]), timeout=60)
         if error:
             return False, f"워크스페이스 전환 실패: {error}"
+        _invalidate_account_cycle()  # 전환 성공 — 사이클 snapshot(크레딧·선택 공간) 폐기(3-A)
         workspaces, error = _run_cli_json(cli, "workspace", "list", timeout=60)
         if error or not isinstance(workspaces, list):
             return False, error or "전환 결과를 확인할 수 없습니다"
@@ -2071,7 +2072,7 @@ def execute_pending(server: str, token: str, cli: str) -> int:
     """제출 워커와 원격 진행 작업 추적을 분리해 대기 요청을 처리한다.
     실행은 유료(내 크레딧). 반환: 이번에 claim한 요청 수."""
     submitting: dict = {}
-    account_email = _cli_account_email(cli)
+    account_email = _cycle_account_email(cli)
     agent_id = _agent_instance_id()
     active = _runtime_active(server, account_email)
     ref_cache: dict = {}
@@ -2177,6 +2178,39 @@ def _cli_account_email(cli: str) -> str | None:
     return acct.get("email") if isinstance(acct, dict) else None
 
 
+# ── 사이클 범위 계정 snapshot (R2 이월 3-A) ─────────────────────────────────
+# 한 연속 사이클(_initial_cycle 1회, 또는 롱폴 복귀 후 한 반복) 안에서 execute/tracking/
+# push/보고가 같은 CLI `account status`/`workspace list` 를 각각 다시 부르지 않게 한다.
+# ★긴 TTL 캐시가 아니다: 사이클 시작(_begin_account_cycle)마다 폐기(35초 대기 경계 넘김 금지),
+# CLI 재로그인·workspace set 성공 즉시 폐기 — 계정 전환 오작동 방지(코덱스 계약).
+_ACCT_CYCLE: dict = {}
+
+
+def _begin_account_cycle() -> None:
+    _ACCT_CYCLE.clear()
+
+
+def _invalidate_account_cycle() -> None:
+    """계정·워크스페이스가 실제로 바뀌었을 수 있는 지점(재로그인·workspace set) 직후 호출."""
+    _ACCT_CYCLE.clear()
+
+
+def _cycle_account_email(cli: str) -> str | None:
+    if "email" not in _ACCT_CYCLE:
+        _ACCT_CYCLE["email"] = _cli_account_email(cli)
+    return _ACCT_CYCLE["email"]
+
+
+def _cycle_collect_account_status(cli: str):
+    if "acct" not in _ACCT_CYCLE:
+        acct, workspace = _collect_account_status(cli)
+        _ACCT_CYCLE["acct"] = acct
+        _ACCT_CYCLE["workspace"] = workspace
+        if isinstance(acct, dict) and acct.get("email"):
+            _ACCT_CYCLE.setdefault("email", acct.get("email"))
+    return _ACCT_CYCLE["acct"], _ACCT_CYCLE["workspace"]
+
+
 def offer_cli_relogin(cli: str, detail: str) -> bool:
     """계정 불일치(409)일 때, 이 PC 의 CLI 를 허브와 '같은 계정'으로 다시 로그인하도록 즉석 제안한다.
     별도 배치 파일 없이 MV_agent(에이전트) 창에서 바로 CLI 계정을 바꾼다.
@@ -2253,6 +2287,7 @@ def _signout_and_relogin(cli: str) -> str | None:
     except Exception as e:  # noqa: BLE001
         print(f"  [오류] CLI 로그인 실행 실패: {e}")
         return None
+    _invalidate_account_cycle()  # 재로그인 — 이전 계정 snapshot 즉시 폐기(3-A)
     return _cli_account_email(cli)
 
 
@@ -2305,7 +2340,7 @@ def push_once(server: str, token: str, cli: str, size: int, _allow_relogin: bool
             return
     # account status(크레딧·플랜) + workspace list(내 워크스페이스)를 함께 보고 → 서버가 계정 메뉴에
     # '내 것'으로 표시(브라우저는 내 CLI에 직접 접근 못 하므로 이 보고값이 유일한 내 데이터).
-    acct, workspace = _collect_account_status(cli)
+    acct, workspace = _cycle_collect_account_status(cli)
 
     # PM: 실제 차감액(account transactions) — 사이클당 1회만(잡마다 호출하지 않음). 서버가
     # (소유자+시각) 매칭으로 생성물 실제 크레딧을 채운다. best-effort(실패해도 push 진행).
@@ -2397,7 +2432,7 @@ def reconcile_pass(
     실제 상태로 보정 push 한다 — 우리 앱은 '실패/생성중'인데 힉스필드엔 실제로 완료된 카드를 자동 교정.
     조회(get)만 → 재생성·과금 없음. 실패는 조용히 넘겨 다음 사이클에 재시도(루프 유지)."""
     # 지난번 크래시/순단으로 서버에 못 닿은 job_id 앵커를 먼저 재전송 — 앵커돼야 아래 후보에 잡힌다.
-    account_email = account_email or _cli_account_email(cli)
+    account_email = account_email or _cycle_account_email(cli)
     replay_outbox(server, token, account_email)
     st, data = _list_reconcile_candidates(server, token)
     if st != 200 or not isinstance(data, dict):
@@ -2425,7 +2460,7 @@ def reconcile_pass(
 
 def tracking_pass(server: str, token: str, cli: str) -> int:
     """메모리/SQLite 추적 작업을 먼저 확인하고, 나머지 서버 복구 후보를 뒤이어 보정한다."""
-    account_email = _cli_account_email(cli)
+    account_email = _cycle_account_email(cli)
     active = _runtime_active(server, account_email)
     finished = _poll_active_jobs(server, token, cli, active, account_email) if active else 0
     # job_id를 잃은 제출은 create를 다시 부르지 않고 최신 list 지문 대조만 수행한다.
@@ -2480,7 +2515,7 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
     generate list·transactions 를 생략해 CLI 왕복 2회로 끝난다. 어떤 실패도 삼키고 False
     (호출자가 짧은 백오프로 재시도) — 상주 루프를 죽이지 않는다."""
     try:
-        acct, _workspace = _collect_account_status(cli)
+        acct, _workspace = _cycle_collect_account_status(cli)
         if not isinstance(acct, dict):
             return False
         status, body = _http(
@@ -2499,6 +2534,7 @@ def _report_account_status(server: str, token: str, cli: str) -> bool:
 
 def _initial_cycle(server: str, token: str, cli: str, size: int, no_push: bool) -> None:
     """에이전트 시작 시 요청 복구와 최신 상태 재대조를 한 번 수행한다."""
+    _begin_account_cycle()  # 이 연속 사이클 안에서만 계정 snapshot 공유(3-A)
     # ① 허브에서 요청한 생성/재생성을 내 로컬 CLI로 실행 → 결과 보고(연속 풀로 자체 소진)
     execute_pending(server, token, cli)
     # ② '실제 상태 미확정'(확인중/유실된 running) 카드를 generate get 으로 보정 — 조회만(과금 없음).
@@ -2573,6 +2609,7 @@ def main() -> None:
         next_status_report = time.monotonic() + _STATUS_REPORT_INTERVAL_SECONDS
         while True:
             reason = _wait_event(server, token)  # 이벤트 올 때까지 대기(폴링 없음)
+            _begin_account_cycle()  # 대기 경계를 넘긴 snapshot 재사용 금지(3-A) — 반복마다 새로 시작
             if args.pair_secret:
                 pair_status, pair_body = _request_local_pair(server, args.pair_secret)
                 if pair_status == 200 and isinstance(pair_body, dict):

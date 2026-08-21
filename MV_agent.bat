@@ -256,7 +256,9 @@ REM 'team' AND 'enterprise' plans both count as shared (enterprise upgrade broke
 REM plan_type=='team' filter and new installs fell through to the manual prompt).
 REM Falls back to the single workspace. Multiple shared candidates -> ask below (avoid wrong billing).
 "%PY_EXE%" %PY_ARGS% -c "import subprocess,sys,json; hf=sys.argv[1]; r=subprocess.run([hf,'workspace','list','--json'],capture_output=True,text=True); ws=json.loads(r.stdout or '[]') if r.returncode==0 else []; ws=ws if isinstance(ws,list) else []; sel=any(w.get('is_selected') for w in ws); shared=[w for w in ws if str(w.get('plan_type') or '').lower() not in ('', 'free', 'private', 'personal')]; pick=(shared[0] if len(shared)==1 else (ws[0] if len(ws)==1 else None)); (not sel and pick) and subprocess.run([hf,'workspace','set',pick['id']])" "%HF%" >nul 2>nul
-call "%HF%" account status >nul 2>nul
+REM One CLI call only - keep both the exit code (health check) and the output (display).
+REM The old flow ran 'account status' twice back to back (check, then show) = 2 CLI startups.
+call "%HF%" account status > "%TEMP%\mvhub_acct_status.tmp" 2>nul
 if errorlevel 1 (
   echo.
   echo  [action needed] No Higgsfield workspace selected - generation is OFF until you set one:
@@ -273,10 +275,11 @@ if errorlevel 1 (
   echo   If they differ, the running agent will OFFER to switch the CLI account
   echo   for you ^(answer y^) - no separate login script needed.
   echo  ===========================================================================
-  call "%HF%" account status
+  type "%TEMP%\mvhub_acct_status.tmp"
   echo  ===========================================================================
   echo.
 )
+if exist "%TEMP%\mvhub_acct_status.tmp" del "%TEMP%\mvhub_acct_status.tmp" >nul 2>nul
 
 :agent_stage
 echo [5/5] Opening the app + keeping the generation agent running ^(closing this window stops it^)

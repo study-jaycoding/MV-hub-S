@@ -573,6 +573,61 @@ def test_idempotent_reports_back_off_on_transient_but_stop_on_4xx() -> None:
     outbox_remove.assert_not_called()
 
 
+def test_account_cycle_snapshot_shares_cli_calls_within_one_cycle() -> None:
+    """R3 3-A 계약: 한 연속 사이클 안에서 account status/workspace list 를 재조회하지 않고,
+    사이클 경계·workspace set·재로그인에서 즉시 폐기한다."""
+    agent = _load_agent()
+    calls: list[tuple] = []
+
+    def fake_cli_json(_cli, *args, **_kw):
+        calls.append(args)
+        if args[:2] == ("account", "status"):
+            return {"email": "me@x.com", "plan": "team"}
+        if args[:2] == ("workspace", "list"):
+            return []
+        return None
+
+    with (
+        patch.object(agent, "_cli_json", side_effect=fake_cli_json),
+        patch.object(agent, "_cached_cli_version", return_value="1.1.23"),
+    ):
+        agent._begin_account_cycle()
+        # 같은 사이클: email 3회 요청 → CLI 1회, full collect 2회 요청 → status+workspace 각 1회.
+        assert agent._cycle_account_email("cli") == "me@x.com"
+        assert agent._cycle_account_email("cli") == "me@x.com"
+        agent._cycle_collect_account_status("cli")
+        agent._cycle_collect_account_status("cli")
+        assert agent._cycle_account_email("cli") == "me@x.com"
+        status_calls = [c for c in calls if c[:2] == ("account", "status")]
+        ws_calls = [c for c in calls if c[:2] == ("workspace", "list")]
+        assert len(status_calls) == 2  # email 1 + collect 1 (그 이상 재조회 없음)
+        assert len(ws_calls) == 1
+
+        # 사이클 경계: 새 사이클은 새로 조회한다(35초 대기 경계 넘김 금지).
+        calls.clear()
+        agent._begin_account_cycle()
+        agent._cycle_account_email("cli")
+        assert [c for c in calls if c[:2] == ("account", "status")]
+
+        # workspace set/재로그인 상당의 무효화: 다음 조회는 즉시 새로 나간다.
+        calls.clear()
+        agent._invalidate_account_cycle()
+        agent._cycle_collect_account_status("cli")
+        assert [c for c in calls if c[:2] == ("account", "status")]
+
+
+def test_agent_bat_checks_account_status_with_single_cli_call() -> None:
+    """R3 3-A: MV_agent.bat 은 account status 를 검사·표시용으로 두 번 부르지 않는다(1회 캡처)."""
+    bat = (AGENT_PATH.parent / "MV_agent.bat").read_text(encoding="ascii")
+    status_calls = [
+        line for line in bat.splitlines()
+        if 'call "%HF%" account status' in line and not line.strip().startswith("REM")
+    ]
+    assert len(status_calls) == 1
+    assert ">" in status_calls[0]  # 출력 캡처(표시용 재호출 없이 type 로 재사용)
+    assert 'type "%TEMP%\\mvhub_acct_status.tmp"' in bat
+
+
 def test_file_fingerprint_coalesces_concurrent_hashing() -> None:
     """R3 3-C 계약: 같은 파일 동시 해시는 1회 계산으로 합치고, 파일이 바뀌면 재계산한다."""
     import tempfile
@@ -761,10 +816,13 @@ def test_agent_idle_rechecks_db_pending_without_signal() -> None:
 
 
 def test_agent_has_no_removed_cycle_callback_references() -> None:
-    """계정 전환/재로그인 분기도 현재 초기화 함수를 호출해야 한다."""
+    """계정 전환/재로그인 분기도 현재 초기화 함수(_initial_cycle(server, ...))를 호출해야 한다.
+    (종전 가드는 임의의 "cycle()" 부분 문자열 금지였는데, R3 3-A 의 _begin_account_cycle() 같은
+    정당한 무인자 함수까지 오탐해 레거시 무인자 초기화 호출만 정확히 금지한다.)"""
     source = AGENT_PATH.read_text(encoding="utf-8")
 
-    assert "cycle()" not in source
+    assert "_initial_cycle()" not in source
+    assert "initial_cycle(server" in source  # 현재 시그니처 호출이 실제로 존재
 
 
 def test_agent_syncs_unknown_and_refresh_job_ids_without_completed_history() -> None:
