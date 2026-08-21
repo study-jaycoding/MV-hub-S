@@ -244,6 +244,49 @@ class TaskGenBatchParityTests(unittest.TestCase):
         for i in range(count):
             self.assertEqual([cut["id"] for cut in result[f"bulk_t{i}"]], [f"bulk_g{i}"])
 
+    def test_generation_ids_filter_equals_unrestricted_subset(self):
+        """generation_ids 제한 = 무제한 결과에서 그 id 만 남긴 것과 완전 동일(완료본 단건 판정 계약)."""
+        with db.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM project_task WHERE project_id='p1'").fetchall()
+            full = _m._batch_task_gen_rows(conn, "p1", rows)
+            for target in ("g1", "g2", "g3", "g4", "g5", "g_del", "no-such"):
+                restricted = _m._batch_task_gen_rows(
+                    conn, "p1", rows, generation_ids={target}
+                )
+                for r in rows:
+                    expected = [g for g in full[r["id"]] if g["id"] == target]
+                    self.assertEqual(
+                        restricted[r["id"]], expected,
+                        f"target={target} task={r['id']}",
+                    )
+
+    def test_final_export_task_facts_full_and_single(self):
+        facts = _m.final_export_task_facts("p1")
+        by = {f["task_id"]: f for f in facts}
+        self.assertEqual({c["id"] for c in by["t_folder"]["cuts"]}, {"g1", "g2", "g5", "g6"})
+        self.assertTrue(next(c for c in by["t_folder"]["cuts"] if c["id"] == "g2")["is_final"])
+        self.assertEqual(by["t_folder"]["status"], "not_started")  # raw 상태 그대로(파생 안 함)
+        # 단건 제한: 귀속 작업(폴더+수동 링크)만 g5 를 담고 나머지는 빈 cuts.
+        single = _m.final_export_task_facts("p1", gen_id="g5")
+        sby = {f["task_id"]: {c["id"] for c in f["cuts"]} for f in single}
+        self.assertEqual(sby["t_folder"], {"g5"})
+        self.assertEqual(sby["t_manual"], {"g5"})
+        self.assertEqual(sby["t_seq"], set())
+
+    def test_final_export_sources_restricts_project_and_deleted(self):
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO project(id, name, kind, archived) VALUES('p9','P9','team',0)")
+            conn.execute(
+                "INSERT INTO generation(id, worker_id, prompt, status, created_at, sort_ts, "
+                "creator_uid, project_id, folder_path, is_final, job_id) "
+                "VALUES('g_other_proj','me','p','done','2026-06-30T00:00:00Z',1,'u_me','p9','x/y',1,'job-x')"
+            )
+        sources = _m.final_export_sources("p1", ["g2", "g_del", "g_other_proj", "no-such"])
+        self.assertEqual([s["gen_id"] for s in sources], ["g2"])  # 타 프로젝트·삭제·부재 전부 제외
+        self.assertEqual(sources[0]["folder_path"], "ep001/c0010")
+        self.assertEqual(sources[0]["file_path"], "/media/g2.png")
+        self.assertEqual(sources[0]["media_type"], "image")
+
 
 if __name__ == "__main__":
     unittest.main()

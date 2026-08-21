@@ -34,6 +34,7 @@ from .manage_tasks import (
     list_tasks_batch,
     remove_assignment,
     sync_folder_tasks,
+    sync_folder_tasks_batch,
     task_context,
     task_contexts,
     task_projects,
@@ -759,6 +760,72 @@ def set_planning(
 
 
 # ── 완료본 렌더폴더 저장(Phase 3) ─────────────────────────────────────────────
+def final_export_task_facts(
+    project_id: str, *, gen_id: Optional[str] = None
+) -> list[dict[str, Any]]:
+    """완료본 내보내기 판정용 '원자료'만 반환 — 판정(정책)은 하지 않는다.
+
+    반환: [{task_id, status(raw), folder_path, archived, cuts:[{id,status,is_final}]}].
+    · 작업 status 는 파생 전 raw 값이다 — 폴더 자동 작업의 '완료' 파생(최종 컷 존재)은
+      정책 계층이 cuts.is_final 로 동일하게 재현한다(list_tasks 파생 규칙에서 유도).
+    · gen_id 를 주면 cuts 를 그 생성물로만 제한한다(레인·워크스페이스 귀속 규칙은
+      _batch_task_gen_rows 그대로) — 프로젝트 전수 판정 없이 단건 판정용.
+    · list_tasks 와 같은 읽기 경로 계약: 조회 전 폴더 자동 작업을 멱등 동기화한다.
+    """
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        sync_folder_tasks_batch(conn, [project_id])
+        tasks = conn.execute(
+            "SELECT id, project_id, folder_path, sequence, status, archived, "
+            "workspace_scope, workspace_id, workspace_name "
+            "FROM project_task WHERE project_id=?",
+            (project_id,),
+        ).fetchall()
+        rows_by_task = _batch_task_gen_rows(
+            conn,
+            project_id,
+            tasks,
+            generation_ids={gen_id} if gen_id else None,
+        )
+    return [
+        {
+            "task_id": t["id"],
+            "status": t["status"],
+            "folder_path": t["folder_path"],
+            "archived": t["archived"],
+            "cuts": [
+                {"id": g["id"], "status": g["status"], "is_final": bool(g["is_final"])}
+                for g in rows_by_task.get(t["id"], [])
+            ],
+        }
+        for t in tasks
+    ]
+
+
+def final_export_sources(
+    project_id: str, gen_ids: "list[str] | set[str]"
+) -> list[dict[str, Any]]:
+    """판정 통과한 gen_id 들의 저장 원자료(폴더·첫 asset). finals_to_export 의 후반부와
+    동일 SQL — ★project_id 재제한·deleted 제외로 타 프로젝트 수동 링크 유출을 막는다."""
+    ids = list(dict.fromkeys(g for g in (gen_ids or []) if g))
+    if not ids:
+        return []
+    with get_connection() as conn:
+        _ensure_schema(conn)
+        result: list[dict[str, Any]] = []
+        for id_batch in _batched(ids):
+            ph = ",".join("?" * len(id_batch))
+            rows = conn.execute(
+                f"SELECT g.id AS gen_id, g.folder_path AS folder_path, "
+                f"  (SELECT a.file_path FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS file_path, "
+                f"  (SELECT a.type FROM asset a WHERE a.generation_id=g.id ORDER BY a.rowid LIMIT 1) AS media_type "
+                f"FROM generation g WHERE g.id IN ({ph}) AND g.project_id=? AND g.deleted_at IS NULL",
+                [*id_batch, project_id],
+            ).fetchall()
+            result.extend(dict(r) for r in rows)
+        return result
+
+
 def finals_to_export(project_id: str) -> list[dict[str, Any]]:
     """저장 대상 = 완료(done) 작업의 최종본(is_final)이면서 생성 잡도 완료(status=done)인 컷.
     과거 기록으로 전환된 완료 작업도 내보내기 대상에서 사라지면 안 되므로 보관 행까지

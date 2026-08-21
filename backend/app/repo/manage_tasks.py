@@ -313,6 +313,7 @@ def _batch_task_gen_rows(
     conn,
     project_id: Optional[str],
     tasks,
+    generation_ids: Optional[set[str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """모든 작업의 귀속 컷을 '한 번에' 조회 — 작업당 1쿼리(N+1)를 레인별 배치 쿼리로 대체.
     각 작업별 결과는 _task_gen_rows 와 완전히 동일(행·순서·필드) 해야 한다(비교 테스트로 고정).
@@ -412,6 +413,12 @@ def _batch_task_gen_rows(
                         scope, workspace_id = task_scopes[tid]
                         if _same_workspace(scope, workspace_id, r):
                             membership[tid].add(r["id"])
+
+    # generation_ids 제한(완료본 단건 판정용) — 레인 산출 뒤 교집합이라 무제한 결과에서
+    # 해당 id 만 남긴 것과 정확히 같다(레인·워크스페이스·정렬 규칙 무변).
+    if generation_ids is not None:
+        for tid in membership:
+            membership[tid] &= generation_ids
 
     # 등장한 모든 gen_id 상세를 1회 조회(원 함수의 컬럼·서브쿼리 그대로).
     all_ids: set[str] = set()
