@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -571,7 +572,13 @@ def _import_media_batch(
 
         try:
             _refresh_folders(media_pool)
-            current_paths = _existing_paths(target) | returned_paths
+            if returned_all:
+                # 전량 반환 성공 계약을 믿는 경우 Bin 전체 재스캔 결과는 판정에 안 쓰인다
+                # (R5 bridge-1) — 기존 클립 C개의 GetClipProperty 왕복을 생략한다.
+                # RefreshFolders(화면 갱신)는 유지. 부분·불명확 반환은 종전대로 재스캔.
+                current_paths = returned_paths
+            else:
+                current_paths = _existing_paths(target) | returned_paths
         except Exception as exc:  # noqa: BLE001 - 확인 불가 항목은 재시도 후 개별 실패로 남긴다.
             current_paths = set()
             last_error = str(exc)
@@ -903,7 +910,10 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
         for source_item in source_items:
             source = Path(str(source_item.get("local_path") or ""))
             try:
-                if not source.is_file() or source.stat().st_size <= 0:
+                # stat 1회로 파일 여부·크기를 함께 판정(R5 bridge-2). is_file 과 같은
+                # symlink 추종 의미(Path.stat 기본), OSError 는 종전처럼 건너뜀.
+                stat_result = source.stat()
+                if not stat_module.S_ISREG(stat_result.st_mode) or stat_result.st_size <= 0:
                     continue
             except OSError:
                 continue
@@ -954,7 +964,15 @@ def _import_manifest_locked(manifest: dict[str, Any], resolve: Any) -> dict[str,
             result["total"] += 1
             try:
                 source = Path(item["local_path"])
-                if not source.is_file() or source.stat().st_size <= 0:
+                try:
+                    stat_result = source.stat()  # stat 1회(R5 bridge-2) — 2단계 재검증 자체는 유지
+                except OSError:
+                    stat_result = None
+                if (
+                    stat_result is None
+                    or not stat_module.S_ISREG(stat_result.st_mode)
+                    or stat_result.st_size <= 0
+                ):
                     raise ResolveBridgeError("Resolve로 가져올 원본 파일이 없습니다")
                 parts = _folder_parts(str(source_item.get("folder_path") or ""))
                 parts_key = tuple(parts)
