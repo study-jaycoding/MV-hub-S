@@ -170,7 +170,19 @@ class WarmMemoTests(unittest.TestCase):
         self._run(["https://cdn/u1.png"], ensure_ok=True)
         self.assertEqual(len(self.source_calls), 2)  # 실패는 warm 미기록 → 재시도
         self.assertEqual(len(self.ensure_calls), 4)
-        self.assertEqual(thumbs._warm_inflight, set())  # 선점 누수 없음
+        self.assertEqual(thumbs._warm_inflight, {})  # 선점 누수 없음
+
+    def test_eviction_between_claim_and_settle_discards_stale_record(self):
+        """코덱스 P3: 선점~기록 사이 evict 무효화가 끼면 그 성공을 warm 으로 남기지 않는다."""
+        self.assertTrue(thumbs._warm_claim("https://cdn/u1.png", 256))
+        thumbs._warm_invalidate_paths({"anything.jpg"})  # 세대 격상(대상 무관)
+        thumbs._warm_settle("https://cdn/u1.png", 256, Path(self.dir / "u1.256.jpg"))
+        self.assertNotIn(("https://cdn/u1.png", 256), thumbs._warm_memo)  # 기록 포기
+        self.assertEqual(thumbs._warm_inflight, {})  # 선점은 해제
+        # 다음 claim 은 정상 재검사 경로.
+        self.assertTrue(thumbs._warm_claim("https://cdn/u1.png", 256))
+        thumbs._warm_settle("https://cdn/u1.png", 256, Path(self.dir / "u1.256.jpg"))
+        self.assertIn(("https://cdn/u1.png", 256), thumbs._warm_memo)
 
     def test_targeted_eviction_invalidates_only_removed_width(self):
         self._run(["https://cdn/u1.png", "https://cdn/u2.png"])

@@ -289,7 +289,10 @@ _WARM_TTL_SECONDS = 300.0
 _WARM_MAX_KEYS = 20000
 _WARM_GUARD = threading.Lock()
 _warm_memo: "OrderedDict[tuple[str, int], tuple[float, str]]" = OrderedDict()
-_warm_inflight: set[tuple[str, int]] = set()
+# key → 선점 시점의 세대(_warm_epoch). evict 무효화가 선점~기록 사이에 끼면 세대가 달라져
+# 그 성공은 기록하지 않는다(삭제된 JPG 경로가 warm 으로 남는 경합 차단 — 코덱스 P3).
+_warm_inflight: dict[tuple[str, int], int] = {}
+_warm_epoch = 0
 
 
 def _warm_claim(url: str, width: int) -> bool:
@@ -306,16 +309,20 @@ def _warm_claim(url: str, width: int) -> bool:
             del _warm_memo[key]  # TTL 만료 — 재검사
         if key in _warm_inflight:
             return False
-        _warm_inflight.add(key)
+        _warm_inflight[key] = _warm_epoch
         return True
 
 
 def _warm_settle(url: str, width: int, cache: "Optional[Path]") -> None:
-    """선점 해제 + 성공(cache 경로 확인)일 때만 warm 기록."""
+    """선점 해제 + 성공(cache 경로 확인)일 때만 warm 기록.
+    선점 이후 evict 무효화가 있었으면(세대 변경) 기록을 포기한다 — 보수적이지만 무해
+    (다음 prewarm 이 재검사). 삭제 직후 경로가 warm 으로 남는 경합을 막는다."""
     key = (url, width)
     with _WARM_GUARD:
-        _warm_inflight.discard(key)
+        claim_epoch = _warm_inflight.pop(key, None)
         if cache is None:
+            return
+        if claim_epoch is None or claim_epoch != _warm_epoch:
             return
         _warm_memo[key] = (time.monotonic(), str(cache))
         _warm_memo.move_to_end(key)
@@ -324,10 +331,12 @@ def _warm_settle(url: str, width: int, cache: "Optional[Path]") -> None:
 
 
 def _warm_invalidate_paths(removed_paths: "set[str]") -> None:
-    """evict 가 실제 지운 JPG 경로의 메모만 무효화(targeted)."""
+    """evict 가 실제 지운 JPG 경로의 메모만 무효화(targeted) + 진행 중 선점 세대 격상."""
     if not removed_paths:
         return
+    global _warm_epoch
     with _WARM_GUARD:
+        _warm_epoch += 1
         stale = [
             key for key, (_ts, cache_str) in _warm_memo.items() if cache_str in removed_paths
         ]
