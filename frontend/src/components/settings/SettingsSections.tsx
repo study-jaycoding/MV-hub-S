@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { ACCENT_PRESETS, type Lang } from "../../lib/theme";
 import { fsaSupported } from "../../lib/downloadDir";
 import { useT } from "../../lib/i18n";
 import type { BackupContinuityStatus, ServerBackupVersion } from "../../lib/assetsApi";
-import type {
-  ResolveConnectionStatus,
-  ResolveEnvironmentDiagnostics,
-  ResolveScriptStatus,
+import {
+  startResolvePythonInstall,
+  type ResolveConnectionStatus,
+  type ResolveEnvironmentDiagnostics,
+  type ResolveScriptStatus,
 } from "../../lib/resolveTransfer";
 import {
   isReleaseUpdateRunning,
@@ -325,6 +327,21 @@ export function ResolveScriptSettingsSection({
   onInstall: () => void;
   onRefreshConnection: () => void;
 }) {
+  const [pythonInstallBusy, setPythonInstallBusy] = useState(false);
+  const [pythonInstallMsg, setPythonInstallMsg] = useState("");
+  const handlePythonInstall = async () => {
+    setPythonInstallBusy(true);
+    setPythonInstallMsg("공식 설치 파일을 준비하는 중… (최초 1회 약 25MB 다운로드)");
+    try {
+      const result = await startResolvePythonInstall();
+      setPythonInstallMsg(result.message);
+    } catch (error) {
+      const known = error as { detail?: string; message?: string };
+      setPythonInstallMsg(known.detail || known.message || "Python 설치를 시작하지 못했습니다.");
+    } finally {
+      setPythonInstallBusy(false);
+    }
+  };
   const activeInstallation = status?.installations?.find((installation) => installation.installed);
   const exporterCurrent = activeInstallation?.installed_version || status?.installed_version;
   const importerCurrent = activeInstallation?.importer_version;
@@ -405,6 +422,20 @@ export function ResolveScriptSettingsSection({
                   <li key={recommendation}>{recommendation}</li>
                 ))}
               </ul>
+            )}
+            {diagnostics.connection.status === "python_incompatible" && (
+              <div className="resolve-python-install">
+                <button
+                  className="settings-action"
+                  onClick={handlePythonInstall}
+                  disabled={pythonInstallBusy}
+                >
+                  ◆ {pythonInstallBusy ? "설치 준비 중…" : "Python 자동 설치"}
+                </button>
+                {pythonInstallMsg && (
+                  <p className="resolve-python-install-msg">{pythonInstallMsg}</p>
+                )}
+              </div>
             )}
             <details className="resolve-diagnostics-details">
               <summary>진단 상세 경로</summary>

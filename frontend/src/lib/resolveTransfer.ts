@@ -233,6 +233,20 @@ export function getResolveEnvironmentDiagnostics(): Promise<ResolveEnvironmentDi
   });
 }
 
+export interface ResolvePythonInstallResult {
+  ok: boolean;
+  version: string;
+  installer_path: string;
+  message: string;
+}
+
+/** 호환 Python이 없는 PC에서 공식 Python 반자동 설치(UAC 승인만 필요)를 시작한다. */
+export function startResolvePythonInstall(): Promise<ResolvePythonInstallResult> {
+  return jsonFetch<ResolvePythonInstallResult>("/api/resolve/python-install", {
+    method: "POST",
+  });
+}
+
 export function retryResolveTransfer(
   projectId: string,
   transferId: string,

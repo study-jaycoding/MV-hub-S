@@ -18,6 +18,10 @@ from ..services.resolve_status_runner import (
     run_resolve_import_isolated,
 )
 from ..services.resolve_diagnostics import resolve_environment_diagnostics
+from ..services.resolve_python_installer import (
+    ResolvePythonInstallError,
+    start_python_installer,
+)
 from ..services.request_guards import require_local_machine_request
 from ..services.resolve_script_installer import (
     ResolveScriptInstallError,
@@ -96,6 +100,16 @@ async def get_resolve_environment_diagnostics(request: Request):
     """설치·Python·API·실제 연결을 분리해 현재 PC의 Resolve 환경을 진단한다."""
     _require_local_resolve(request)
     return await asyncio.to_thread(resolve_environment_diagnostics)
+
+
+@router.post("/python-install")
+async def post_resolve_python_install(request: Request):
+    """호환 Python이 없는 PC에서 공식 Python 설치를 반자동으로 시작한다."""
+    _require_local_resolve(request)
+    try:
+        return await asyncio.to_thread(start_python_installer)
+    except ResolvePythonInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _generation_for_transfer(gen_id: str, request: Request) -> dict:

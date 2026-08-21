@@ -461,6 +461,8 @@
 .resolve-diagnostics-actions {
   margin: 8px 0 0; padding-left: 18px; color: var(--text); font-size: 10.5px; line-height: 1.45;
 }
+.resolve-python-install { margin-top: 8px; }
+.resolve-python-install-msg { margin: 6px 0 0; color: var(--text); font-size: 10.5px; line-height: 1.45; }
 .resolve-diagnostics-details { margin-top: 8px; color: var(--muted2); font-size: 10.5px; }
 .resolve-diagnostics-details > summary { cursor: pointer; color: var(--muted); font-weight: 700; }
 .resolve-diagnostics-details p { margin: 6px 0 0; overflow-wrap: anywhere; user-select: text; }
