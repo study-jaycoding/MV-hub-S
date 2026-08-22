@@ -20,7 +20,7 @@ import os
 import time
 from typing import Optional
 
-from .. import repo
+from .. import active_account, repo
 from ..config import AUTH_ENABLED, DEFAULT_WORKER_ID, LOCAL_AGENT_PAIR_SECRET, MANAGE_ENABLED
 from ..generation_result import normalize_job_result
 from ..ws import manager
@@ -53,6 +53,12 @@ STUCK_SYNCED_AGE = float(os.environ.get("CONTENT_HUB_STUCK_SYNCED_AGE", "300"))
 _duplicate_reconcile_pending = False
 
 
+def _capture_account_scope() -> str:
+    """CLI 대기 전에 계정 DB 키만 전환 락 아래 짧게 캡처한다. 느린 작업은 락 밖에서 돈다."""
+    with active_account.transition_lock:
+        return active_account.account_key() or ""
+
+
 async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     """CLI 에서 최근 생성 이력을 끌어와 업서트. 카운트 반환.
     신규가 워터마크 이상이면 gap_warning=1 을 함께 반환(누락 위험 알림).
@@ -62,66 +68,75 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체)."""
     global _duplicate_reconcile_pending
 
+    # ★계정 범위를 CLI 대기 '전에' 못 박는다 — 주기가 20초라 로그인/계정 전환과 겹치기 쉽고,
+    # 그러면 A 계정 CLI 로 받은 잡이 전환된 B 계정 DB 에 적재됐다. 캡처는 워커 스레드에서
+    # (transition_lock 은 로그인 마이그레이션·DB 복원 동안 통째로 잡혀 있다).
+    # override 는 DB 라우팅만 바꾼다 — CLI 호출 횟수·순서·캐시 정책은 그대로다.
+    account_scope = await asyncio.to_thread(_capture_account_scope)
     jobs = await cli_bridge.list_jobs()
-    wid = worker_id or DEFAULT_WORKER_ID
-    changed_job_ids: set[str] = set()
-    counts = await asyncio.to_thread(
-        repo.apply_synced_jobs,
-        jobs,
-        wid,
-        changed_job_ids=changed_job_ids,
-        track_telemetry=MANAGE_ENABLED,
-    )
-    counts["fetched"] = len(jobs)
-    counts["telemetry_pending"] = 0
-    if MANAGE_ENABLED:
-        # 실제 outbox 표시는 generation 업서트와 같은 트랜잭션에서 끝났다. 여기서는 전송 실패로
-        # 남아 있는 과거 대기열까지 포함해 다음 드레인 여부만 읽는다.
-        from ..repo import manage as manage_repo
-        try:
-            status = await asyncio.to_thread(manage_repo.telemetry_outbox_status)
-            counts["telemetry_pending"] = int(status.get("pending") or 0)
-        except Exception as exc:  # noqa: BLE001 — 데이터는 원자적으로 보존됐고 다음 주기에 재조회
-            counts["telemetry_pending"] = int(counts.get("telemetry_dirty") or 0) + int(
-                counts.get("telemetry_backfilled") or 0
-            )
-            log_event(
-                _log,
-                "sync_telemetry_status_failed",
-                level=logging.WARNING,
-                error_type=type(exc).__name__,
-            )
-    # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
-    # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
-    # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
-    if counts.get("inserted") or _duplicate_reconcile_pending:
-        try:
-            counts["reconciled"] = await asyncio.to_thread(repo.reconcile_duplicates)
-        except Exception as exc:  # noqa: BLE001 — 동기화 결과는 보존하고 다음 주기에 다시 시도
-            _duplicate_reconcile_pending = True
-            # 예외 원문에는 DB 값이 섞일 수 있어 기록하지 않는다. 타입과 고정된 영향 요약만 남긴다.
-            log_event(
-                _log,
-                "sync_duplicate_reconcile_failed",
-                level=logging.WARNING,
-                error_type=type(exc).__name__,
-                error_summary="duplicate reconcile deferred until next sync",
-            )
-        else:
-            _duplicate_reconcile_pending = False
-    # 워터마크 초과 = 누락 위험. 100개를 꽉 채워 가져왔는데 대부분이 신규면 더 의심.
-    counts["gap_warning"] = 1 if (
-        counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100
-    ) else 0
-    if counts["gap_warning"]:
-        email = await _house_account_email()
-        if email:
-            await asyncio.to_thread(repo.mark_history_gap, email)
-            # 공유 팀 서버는 계정별 CLI 자격을 갖지 않으므로 기록·경보만 남긴다. 로컬 허브와
-            # test_dev pairing 모드만 history 자동 보충(서비스 계층)을 시작한다.
-            if not AUTH_ENABLED or LOCAL_AGENT_PAIR_SECRET:
-                await history_autofill.auto_start_history_import(email, reason="gap")
-    return counts
+    account_token = active_account.set_override(account_scope)
+    try:
+        wid = worker_id or DEFAULT_WORKER_ID
+        changed_job_ids: set[str] = set()
+        counts = await asyncio.to_thread(
+            repo.apply_synced_jobs,
+            jobs,
+            wid,
+            changed_job_ids=changed_job_ids,
+            track_telemetry=MANAGE_ENABLED,
+        )
+        counts["fetched"] = len(jobs)
+        counts["telemetry_pending"] = 0
+        if MANAGE_ENABLED:
+            # 실제 outbox 표시는 generation 업서트와 같은 트랜잭션에서 끝났다. 여기서는 전송 실패로
+            # 남아 있는 과거 대기열까지 포함해 다음 드레인 여부만 읽는다.
+            from ..repo import manage as manage_repo
+            try:
+                status = await asyncio.to_thread(manage_repo.telemetry_outbox_status)
+                counts["telemetry_pending"] = int(status.get("pending") or 0)
+            except Exception as exc:  # noqa: BLE001 — 데이터는 원자적으로 보존됐고 다음 주기에 재조회
+                counts["telemetry_pending"] = int(counts.get("telemetry_dirty") or 0) + int(
+                    counts.get("telemetry_backfilled") or 0
+                )
+                log_event(
+                    _log,
+                    "sync_telemetry_status_failed",
+                    level=logging.WARNING,
+                    error_type=type(exc).__name__,
+                )
+        # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
+        # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
+        # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
+        if counts.get("inserted") or _duplicate_reconcile_pending:
+            try:
+                counts["reconciled"] = await asyncio.to_thread(repo.reconcile_duplicates)
+            except Exception as exc:  # noqa: BLE001 — 동기화 결과는 보존하고 다음 주기에 다시 시도
+                _duplicate_reconcile_pending = True
+                # 예외 원문에는 DB 값이 섞일 수 있어 기록하지 않는다. 타입과 고정된 영향 요약만 남긴다.
+                log_event(
+                    _log,
+                    "sync_duplicate_reconcile_failed",
+                    level=logging.WARNING,
+                    error_type=type(exc).__name__,
+                    error_summary="duplicate reconcile deferred until next sync",
+                )
+            else:
+                _duplicate_reconcile_pending = False
+        # 워터마크 초과 = 누락 위험. 100개를 꽉 채워 가져왔는데 대부분이 신규면 더 의심.
+        counts["gap_warning"] = 1 if (
+            counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100
+        ) else 0
+        if counts["gap_warning"]:
+            email = await _house_account_email()
+            if email:
+                await asyncio.to_thread(repo.mark_history_gap, email)
+                # 공유 팀 서버는 계정별 CLI 자격을 갖지 않으므로 기록·경보만 남긴다. 로컬 허브와
+                # test_dev pairing 모드만 history 자동 보충(서비스 계층)을 시작한다.
+                if not AUTH_ENABLED or LOCAL_AGENT_PAIR_SECRET:
+                    await history_autofill.auto_start_history_import(email, reason="gap")
+        return counts
+    finally:
+        active_account.reset_override(account_token)
 
 
 async def reconcile_stuck_synced() -> int:

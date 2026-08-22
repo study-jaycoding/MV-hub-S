@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 from collections import Counter
@@ -425,8 +426,14 @@ async def start_history_import(request: Request):
         )
     acc = _agent_acc(request)
     key = _history_route_key(acc)
-    history_autofill._start_history_task(key, dict(acc), automatic=False)
-    return history_autofill._history_snapshot(key)
+    # 전환 락 캡처·감사 조회는 워커 스레드에서. 이 락은 로그인(init_db 전체 마이그레이션)·
+    # DB 복원 동안 통째로 잡혀 있어, 이벤트 루프에서 기다리면 그동안 서버 전체가 멈춘다.
+    # ★라우트는 async 유지 — _start_history_task 가 asyncio.create_task 를 쓴다.
+    account_scope = await asyncio.to_thread(history_autofill._capture_history_scope)
+    history_autofill._start_history_task(
+        key, dict(acc), automatic=False, account_scope=account_scope
+    )
+    return await asyncio.to_thread(history_autofill._history_snapshot, key)
 
 
 @router.get("/ingest/history/status")
@@ -438,7 +445,10 @@ async def history_import_status(request: Request):
             detail="과거 전체 가져오기는 각 작업자 PC의 MV Hub에서 실행해야 합니다",
         )
     acc = _agent_acc(request)
-    return history_autofill._history_snapshot(_history_route_key(acc))
+    # 상태 폴링 한 번이 루프에서 동기 SQLite 를 돌리지 않게 워커 스레드로 뺀다.
+    return await asyncio.to_thread(
+        history_autofill._history_snapshot, _history_route_key(acc)
+    )
 
 
 @router.get("/credits")

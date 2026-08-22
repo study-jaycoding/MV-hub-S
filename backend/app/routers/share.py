@@ -14,7 +14,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from . import _proxy
-from .. import rbac, repo
+from .. import active_account, rbac, repo
 from ..config import DEFAULT_WORKER_ID
 from ._telemetry import touch_generation_telemetry
 from ..db import get_connection
@@ -27,6 +27,7 @@ from ..deps import (
     require_view_generation,
 )
 from ..models import GenerationOut, ImportIn, PublishIn
+from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 from ..services.media_preservation import preserve_generation_now
 from ..services.share_state_reconciler import kick_share_state_reconciler
@@ -398,16 +399,30 @@ def _finalizer_uid(request: Request) -> str | None:
         return None
 
 
-async def _preserve_final_media(local_id: str) -> None:
+def _capture_account_scope() -> str:
+    """finalize 응답 직전의 계정 DB 키만 전환 락 아래 짧게 캡처한다(느린 보존은 락 밖)."""
+    with active_account.transition_lock:
+        return active_account.account_key() or ""
+
+
+async def _preserve_final_media(local_id: str, account_scope: str) -> None:
     """최종(골드) 지정 시 그 생성물의 원본을 로컬로 byte-cache 한다 — 힉스필드 CDN URL 이 나중에 죽어도
     최종본은 로컬 보존본으로 남는다(선택 보존). best-effort: 실패해도 finalize 결과엔 영향 없음.
-    ★썸네일 LRU 삭제는 .thumbs 만 대상이라, 여기서 MEDIA_DIR 에 받은 원본 보존본은 지워지지 않는다."""
-    # 요청을 먼저 영속화하므로 프로세스가 여기서 중단돼도 다음 시작의 주기 워커가 이어간다.
-    gen = repo.get_generation(local_id)
-    if not gen or not gen.get("is_final"):
-        return
-    repo.request_media_preservation(local_id, "final")
-    await preserve_generation_now(local_id)
+    ★썸네일 LRU 삭제는 .thumbs 만 대상이라, 여기서 MEDIA_DIR 에 받은 원본 보존본은 지워지지 않는다.
+
+    ★응답 이후(BackgroundTask)에 도는 코드다. ① 동기 DB 는 워커 스레드로 — 여기서 루프를 잡으면
+    유지보수 게이트 대기가 서버 전체를 세운다. ② 계정 범위는 라우트에서 캡처한 키로 고정 — 응답
+    뒤에 계정 전환이 끼면 B DB 를 읽어 gen 이 None 이 되고 골드 원본 보존이 조용히 유실됐다."""
+    account_token = active_account.set_override(account_scope or "")
+    try:
+        # 요청을 먼저 영속화하므로 프로세스가 여기서 중단돼도 다음 시작의 주기 워커가 이어간다.
+        gen = await to_thread_non_abandon(repo.get_generation, local_id)
+        if not gen or not gen.get("is_final"):
+            return
+        await to_thread_non_abandon(repo.request_media_preservation, local_id, "final")
+        await preserve_generation_now(local_id)
+    finally:
+        active_account.reset_override(account_token)
 
 
 @router.post("/generations/{gen_id}/finalize", response_model=GenerationOut)
@@ -484,7 +499,9 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
             )
             if mirrored and local_id:
                 _touch_telemetry(local_id)
-                background.add_task(_preserve_final_media, local_id)
+                background.add_task(
+                    _preserve_final_media, local_id, _capture_account_scope()
+                )
                 return out
             return _mirror_pending_response(out)
     # 비프록시(서버 본체/단독 모드): 로컬에서 직접 처리.
@@ -513,7 +530,8 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
         fields=["is_final", "final_by", "final_at"],
         details={"is_final": True},
     )
-    background.add_task(_preserve_final_media, gen_id)  # 최종본 원본 로컬 보존
+    # 최종본 원본 로컬 보존 — 응답 뒤에 도는 태스크라 지금의 계정 DB 키를 같이 넘긴다.
+    background.add_task(_preserve_final_media, gen_id, _capture_account_scope())
     return repo.get_generation(gen_id)
 
 

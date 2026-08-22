@@ -34,6 +34,15 @@ _HISTORY_STATES: dict[str, dict[str, Any]] = {}
 _HISTORY_TASKS: dict[str, asyncio.Task] = {}
 _HISTORY_LOOP: asyncio.AbstractEventLoop | None = None
 
+# 자동 시작 '예약' task(gap 감지 → auto_start_history_import). import task 와 달리
+# _HISTORY_TASKS 에 들어가기 전 단계라 어디에도 안 잡혀 있었다 — 종료가 취소하지 못해
+# teardown 뒤에 claim DB 쓰기·전체 순회가 시작될 수 있었다. 여기 등록해 먼저 취소한다.
+_HISTORY_STARTERS: set[asyncio.Task] = set()
+
+# 종료 개시 플래그. 동기 ingest 워커가 이미 call_soon_threadsafe 로 예약해 둔 spawn 이
+# stop 이후에 실행되는 '늦은 예약'을 막는다(취소할 대상이 아직 없던 창).
+_HISTORY_STOPPING = False
+
 # 자동 보충 실패가 재시작 때마다 외부 MCP를 두드리지 않게 DB 쿨다운을 둔다. 성공 audit은
 # 하루 한 번이면 충분하며 둘 다 운영 환경에서 초 단위로 조정할 수 있다.
 HISTORY_AUTO_COOLDOWN_SECONDS = float(
@@ -119,8 +128,9 @@ def _capture_history_scope() -> str:
 
 
 def bind_history_loop(loop: asyncio.AbstractEventLoop) -> None:
-    global _HISTORY_LOOP
+    global _HISTORY_LOOP, _HISTORY_STOPPING
     _HISTORY_LOOP = loop
+    _HISTORY_STOPPING = False  # 새 부팅 — 지난 종료의 차단 플래그를 푼다.
 
 
 def unbind_history_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -132,14 +142,19 @@ def unbind_history_loop(loop: asyncio.AbstractEventLoop) -> None:
 def schedule_history_auto_start(account_email: str) -> None:
     """동기 ingest 워커에서 메인 루프의 자동 보충 task 생성만 예약한다."""
     loop = _HISTORY_LOOP
-    if loop is None or loop.is_closed():
+    if loop is None or loop.is_closed() or _HISTORY_STOPPING:
         return
 
     def _spawn() -> None:
-        asyncio.create_task(
+        # 예약과 실행 사이에 종료가 시작됐으면 새 작업을 만들지 않는다.
+        if _HISTORY_STOPPING:
+            return
+        task = asyncio.create_task(
             auto_start_history_import(account_email, reason="gap"),
             name="history-gap-auto-start",
         )
+        _HISTORY_STARTERS.add(task)
+        task.add_done_callback(_HISTORY_STARTERS.discard)
 
     loop.call_soon_threadsafe(_spawn)
 
@@ -150,12 +165,20 @@ def _history_account(account_email: str) -> dict:
     return {"email": "local", "creator_uid": repo.get_my_uid()}
 
 
-def _start_history_task(key: str, acc: dict, *, automatic: bool) -> bool:
+def _start_history_task(
+    key: str,
+    acc: dict,
+    *,
+    automatic: bool,
+    account_scope: str | None = None,
+) -> bool:
     # 한 CLI 자격으로 계정 둘을 동시에 순회하지 않는다. 키별 dict는 상태 조회용으로 유지하되
     # 실제 실행 잠금은 프로세스 전체에서 하나다.
     if any(task and not task.done() for task in _HISTORY_TASKS.values()):
         return False
-    captured_scope = _capture_history_scope()
+    # 이미 스코프를 캡처한 호출자(라우트는 워커 스레드에서 캡처)는 그 키를 넘긴다 —
+    # 이 함수는 create_task 때문에 이벤트 루프에서 돌아야 해 여기서 락을 잡으면 안 된다.
+    captured_scope = _capture_history_scope() if account_scope is None else account_scope
     _HISTORY_STATES[key] = {
         **_history_idle(),
         "state": "running",
@@ -247,7 +270,21 @@ async def startup_history_audit() -> bool:
 
 
 async def stop_history_imports() -> None:
-    """종료 중 자동 audit/history task가 계정 DB를 다시 여는 경합을 막는다."""
+    """종료 중 자동 audit/history task가 계정 DB를 다시 여는 경합을 막는다.
+
+    ★순서: starter(자동 시작 예약) → import task. 반대로 하면 import 를 정리하는 사이
+    살아 있던 starter 가 새 import task 를 만들어, teardown 뒤에 claim DB 쓰기와
+    최대 10,000페이지 순회가 시작된다.
+    ※취소 시점에 이미 기록된 6시간 claim 은 그대로 남는다(현행과 동일 — 다음 쿨다운
+      만료 전까지 자동 재시도가 없을 뿐, 수동 시작·다음 startup audit 은 가능).
+    """
+    global _HISTORY_STOPPING
+    _HISTORY_STOPPING = True
+    starters = [task for task in list(_HISTORY_STARTERS) if task and not task.done()]
+    for task in starters:
+        task.cancel()
+    if starters:
+        await asyncio.gather(*starters, return_exceptions=True)
     tasks = [task for task in _HISTORY_TASKS.values() if task and not task.done()]
     for task in tasks:
         task.cancel()
