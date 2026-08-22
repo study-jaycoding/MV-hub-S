@@ -9,7 +9,9 @@ urllib 로 이식한 것. 로컬/Cloud 를 target 기술자로 통일한다.
 import json
 import logging
 import mimetypes
+import os
 import re
+import shutil
 import threading
 import time
 import urllib.error
@@ -17,6 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .net_guard import assert_public_http_url, guarded_opener, BlockedURLError
@@ -516,8 +519,9 @@ def outputs_debug(entry: dict, wf: dict | None = None) -> str:
     return " | ".join(parts) or "출력 노드 없음"
 
 
-def view_bytes(target: dict, params: dict) -> bytes:
-    """/view 로 파일 바이트를 받아 반환(출력물·저장된 텍스트 파일 등).
+@contextmanager
+def _open_view_stream(target: dict, params: dict):
+    """/view 응답 스트림을 연다 — redirect·SSRF 방어는 종전 view_bytes 와 동일 계약.
     Cloud 는 서명된 스토리지 URL 로 302 redirect — 그 두 번째 요청엔 인증 헤더를 붙이지 않는다
     (X-API-Key 가 외부 스토리지 호스트로 새는 것 방지)."""
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -526,8 +530,7 @@ def view_bytes(target: dict, params: dict) -> bytes:
     for k, v in (target["headers"] or {}).items():
         req.add_header(k, v)
     try:
-        with _NO_REDIRECT_OPENER.open(req, timeout=600) as r:
-            body, status = r.read(), r.status
+        response = _NO_REDIRECT_OPENER.open(req, timeout=600)
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308):
             loc = e.headers.get("Location")
@@ -540,24 +543,52 @@ def view_bytes(target: dict, params: dict) -> bytes:
             #  no-redirect opener 로 열어 체인 리다이렉트 우회까지 막는다(헤더 미첨부 → X-API-Key 미유출).
             try:
                 assert_public_http_url(loc)
-                with guarded_opener().open(loc, timeout=600) as r2:
-                    return r2.read()
+                redirected = guarded_opener().open(loc, timeout=600)
             except BlockedURLError as e2:
                 raise ComfyError(f"출력물 리다이렉트가 차단되었습니다(SSRF 방어): {e2}")
             except (urllib.error.URLError, TimeoutError, OSError) as e2:
                 raise ComfyError(f"출력물 다운로드 실패: {e2}")
+            try:
+                yield redirected
+            finally:
+                redirected.close()
+            return
         raise _classify(e.code, e.read().decode("utf-8", "replace")[:200])
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise ComfyError(f"ComfyUI에 연결할 수 없습니다: {e}")
-    if status != 200:
-        raise _classify(status, body.decode("utf-8", "replace")[:200])
-    return body
+    try:
+        if response.status != 200:
+            raise _classify(
+                response.status, response.read().decode("utf-8", "replace")[:200]
+            )
+        yield response
+    finally:
+        response.close()
+
+
+def view_bytes(target: dict, params: dict) -> bytes:
+    """/view 로 파일 바이트를 받아 반환 — SaveText 등 소형 사용처 전용(전체 메모리 적재).
+    대형 출력 파일 저장은 download_view(스트리밍)를 쓴다."""
+    with _open_view_stream(target, params) as stream:
+        return stream.read()
 
 
 def download_view(target: dict, item: dict, dst: Path) -> None:
-    """/view 로 출력 파일 바이트를 받아 dst 에 저장."""
+    """/view 출력 파일을 chunk 스트리밍으로 dst 에 저장(R5 2-F) — 종전엔 전체 바이트를
+    메모리에 올려 대형 영상 1건당 peak RAM 이 파일 크기만큼 커졌다. 같은 폴더의 고유
+    .part 에 쓰고 성공 시에만 os.replace — 실패해도 기존 dst 는 보존되고 .part 는
+    모든 예외 경로에서 정리된다."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(view_bytes(target, item))
+    tmp = dst.with_name(dst.name + f".{uuid.uuid4().hex}.part")
+    try:
+        with _open_view_stream(target, item) as stream, open(tmp, "wb") as out:
+            shutil.copyfileobj(stream, out, length=1024 * 1024)
+        os.replace(tmp, dst)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def interrupt(target: dict) -> None:

@@ -219,6 +219,78 @@ class UnsupportedNodeMessageTests(unittest.TestCase):
         self.assertIsNone(comfy_client._unsupported_node_message("some random 500 error"))
 
 
+class DownloadViewStreamingTests(unittest.TestCase):
+    """R5 2-F — 출력 파일 저장은 chunk 스트리밍 + .part→os.replace(실패 시 기존 dst 보존)."""
+
+    def _local_target(self, port: int) -> dict:
+        return {
+            "cloud": False,
+            "base": f"http://127.0.0.1:{port}",
+            "prefix": "",
+            "headers": {},
+        }
+
+    def test_streams_to_part_then_replaces_atomically(self):
+        payload = b"v" * (3 * 1024 * 1024 + 5)  # 청크(1MB) 경계 비배수
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.handle_request, daemon=True)
+        worker.start()
+        try:
+            with TemporaryDirectory() as d:
+                dst = Path(d) / "out" / "clip.mp4"
+                comfy_client.download_view(
+                    self._local_target(server.server_port),
+                    {"filename": "clip.mp4", "type": "output"},
+                    dst,
+                )
+                self.assertEqual(dst.read_bytes(), payload)
+                self.assertEqual(list(dst.parent.glob("*.part")), [])  # 임시파일 정리
+        finally:
+            worker.join(timeout=5)
+            server.server_close()
+
+    def test_failure_preserves_existing_destination_and_cleans_part(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(500)
+                self.send_header("Content-Length", "4")
+                self.end_headers()
+                self.wfile.write(b"boom")
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.handle_request, daemon=True)
+        worker.start()
+        try:
+            with TemporaryDirectory() as d:
+                dst = Path(d) / "clip.mp4"
+                dst.write_bytes(b"previous-good")  # 이전 성공본
+                with self.assertRaises(comfy_client.ComfyError):
+                    comfy_client.download_view(
+                        self._local_target(server.server_port),
+                        {"filename": "clip.mp4", "type": "output"},
+                        dst,
+                    )
+                self.assertEqual(dst.read_bytes(), b"previous-good")  # dst 보존
+                self.assertEqual(list(dst.parent.glob("*.part")), [])
+        finally:
+            worker.join(timeout=5)
+            server.server_close()
+
+
 class ObjectInfoSingleFlightTests(unittest.TestCase):
     """R5 2-E — 수 MB object_info 의 동시 miss 는 leader 1명만 내려받는다."""
 
