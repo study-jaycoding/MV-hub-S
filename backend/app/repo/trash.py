@@ -208,23 +208,30 @@ def move_to_trash_if_stuck_synced(
     gen_id: str,
     expected_job_id: str,
     cutoff: float,
+    creator_uid: Optional[str] = None,
 ) -> bool:
     """유령 synced 카드 정리 전용 이동(SY-1).
 
     원격 ``job_exists=False`` 확인 중 카드가 정상 상태로 수렴하거나 요청에 다시 연결될 수
-    있으므로, BEGIN IMMEDIATE 뒤 후보 선별 조건 전부를 같은 연결에서 다시 확인한다.
+    있으므로, BEGIN IMMEDIATE 뒤 후보 선별 조건 전부(지정 시 creator_uid 포함)를 같은 연결에서
+    다시 확인한다.
     조건이 하나라도 달라졌으면 이동하지 않는다.
     """
     tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        creator_scope = " AND g.creator_uid=?" if creator_uid is not None else ""
+        args: list[Any] = [gen_id, expected_job_id, cutoff]
+        if creator_uid is not None:
+            args.append(creator_uid)
         gen = conn.execute(
             "SELECT * FROM generation g WHERE g.id=? "
             "AND g.origin='synced' AND g.status IN ('pending','running') "
             "AND g.job_id=? AND g.deleted_at IS NULL "
             "AND COALESCE(g.sort_ts, g.created_at) < ? "
-            "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id)",
-            (gen_id, expected_job_id, cutoff),
+            "AND NOT EXISTS (SELECT 1 FROM gen_request r WHERE r.gen_id=g.id)"
+            + creator_scope,
+            args,
         ).fetchone()
         if not gen:
             return False

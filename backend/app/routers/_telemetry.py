@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 
-from .. import repo
+from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..services.operational_logging import log_event
 from ..services.account_report_delivery import drain_remote_account_reports
@@ -49,24 +49,36 @@ def touch_generation_telemetry(gen_id: str | None) -> None:
 def _drain_once() -> None:
     """현재 outbox 스냅샷을 한 번 반영한다. 상태 락 밖에서만 호출한다."""
     if _proxy.proxying():
-        my_uid = repo.get_my_uid()
         if MANAGE_ENABLED:
-            drain_remote_telemetry(
-                lambda items: _proxy.proxy_json(
-                    "POST", "/api/manage/telemetry/push", body={"items": items}
-                ),
-                my_uid=my_uid,
-            )
-            # 계정 보고 outbox 도 MANAGE 사이드카다 — off 설치본에서 이 드레인이 돌면
-            # list_due_account_reports 의 _ensure_schema 가 "사이드카 테이블을 만들지 않는다"는
-            # 계약(ingest.py 의 레거시 인라인 경로 주석)을 깨고 테이블을 몰래 생성한다.
-            # off 는 예전처럼 ingest 인라인 best-effort 만 쓴다.
-            drain_remote_account_reports(
-                lambda payload: _proxy.proxy_json(
-                    "POST", "/api/ingest/account-report", body=payload
-                ),
-                creator_uid=my_uid,
-            )
+            # 계정 키와 uid를 같은 DB에서 원자 캡처한다. override는 두 outbox 드레인이 모두
+            # 끝날 때까지 유지하되 transition_lock은 네트워크 전에 놓아 계정 전환을 막지 않는다.
+            with active_account.transition_lock:
+                account_key = active_account.account_key()
+                token = active_account.set_override(account_key or "")
+                try:
+                    my_uid = repo.get_my_uid()
+                except BaseException:
+                    active_account.reset_override(token)
+                    raise
+            try:
+                drain_remote_telemetry(
+                    lambda items: _proxy.proxy_json(
+                        "POST", "/api/manage/telemetry/push", body={"items": items}
+                    ),
+                    my_uid=my_uid,
+                )
+                # 계정 보고 outbox 도 MANAGE 사이드카다 — off 설치본에서 이 드레인이 돌면
+                # list_due_account_reports 의 _ensure_schema 가 "사이드카 테이블을 만들지 않는다"는
+                # 계약(ingest.py 의 레거시 인라인 경로 주석)을 깨고 테이블을 몰래 생성한다.
+                # off 는 예전처럼 ingest 인라인 best-effort 만 쓴다.
+                drain_remote_account_reports(
+                    lambda payload: _proxy.proxy_json(
+                        "POST", "/api/ingest/account-report", body=payload
+                    ),
+                    creator_uid=my_uid,
+                )
+            finally:
+                active_account.reset_override(token)
         return
     # test_dev는 운영 서버로 보내지 않고 복사된 테스트 폴더 안에서만 집계한다.
     drain_isolated_telemetry()

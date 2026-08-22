@@ -130,19 +130,44 @@ async def reconcile_stuck_synced() -> int:
     확인불가(None)·존재(True)는 절대 안 건드린다 → 진짜 진행중 잡 오살 방지. 반환: 정리 건수.
     정상 시 후보 0건이라 CLI 호출도 0(사실상 무비용)."""
     cutoff = time.time() - STUCK_SYNCED_AGE
-    cands = await asyncio.to_thread(repo.list_stuck_synced_active, STUCK_SYNCED_AGE)
+    house_uid: Optional[str] = None
+    if AUTH_ENABLED:
+        email = await _house_account_email()
+        if not email:
+            return 0
+        account = await asyncio.to_thread(repo.get_account, email)
+        house_uid = str((account or {}).get("creator_uid") or "").strip() or None
+        if not house_uid:
+            return 0
+        cands = await asyncio.to_thread(
+            repo.list_stuck_synced_active,
+            STUCK_SYNCED_AGE,
+            house_uid,
+        )
+    else:
+        cands = await asyncio.to_thread(repo.list_stuck_synced_active, STUCK_SYNCED_AGE)
     if not cands:
         return 0
     trashed = 0
     for gen_id, job_id in cands:
         exists = await cli_bridge.job_exists(job_id)
         if exists is False:  # 힉스필드에서 사라짐 확정 → 유령 카드 휴지통행(soft delete, 복구 가능)
-            if await asyncio.to_thread(
-                repo.move_to_trash_if_stuck_synced,
-                gen_id,
-                job_id,
-                cutoff,
-            ):
+            if house_uid is not None:
+                moved = await asyncio.to_thread(
+                    repo.move_to_trash_if_stuck_synced,
+                    gen_id,
+                    job_id,
+                    cutoff,
+                    house_uid,
+                )
+            else:
+                moved = await asyncio.to_thread(
+                    repo.move_to_trash_if_stuck_synced,
+                    gen_id,
+                    job_id,
+                    cutoff,
+                )
+            if moved:
                 trashed += 1
     return trashed
 

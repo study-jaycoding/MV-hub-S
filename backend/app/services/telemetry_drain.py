@@ -152,6 +152,8 @@ def drain_remote_telemetry(
 ) -> dict[str, Any]:
     """기존 운영 계약대로 현재 로컬 사용자의 팩트를 공유 서버로 전송한다."""
     with active_account.transition_lock:
+        # account_key()는 호출자가 이미 건 ContextVar override를 우선하므로 바깥에서
+        # 고정한 계정 범위를 다시 머신 포인터로 덮어쓰지 않는다.
         account_key = active_account.account_key()
         captured_uid = my_uid
     return _drain_remote_telemetry(
@@ -248,7 +250,11 @@ def drain_isolated_telemetry() -> dict[str, Any]:
     """격리 test_dev의 텔레메트리를 최초 계정 범위에 고정해 로컬 반영한다."""
     with active_account.transition_lock:
         account_key = active_account.account_key()
-        captured_uid = active_account.active_uid() if account_key else None
+        token = active_account.set_override(account_key or "")
+        try:
+            captured_uid = repo.get_my_uid()
+        finally:
+            active_account.reset_override(token)
     return _drain_isolated_telemetry(
         account_key=account_key,
         my_uid=captured_uid,
