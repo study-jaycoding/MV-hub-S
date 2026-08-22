@@ -234,6 +234,65 @@ def test_account_status_raw_and_registry_commit_atomically(pooled_db, monkeypatc
         ).fetchone()[0] == 1
 
 
+def _seed_dup(url: str, *, origin: str, job_id=None, extra_asset=None) -> str:
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE generation SET origin=?, job_id=? WHERE id=?",
+            (origin, job_id, gen_id),
+        )
+        conn.execute(
+            "INSERT INTO asset(id, generation_id, type, file_path, source_url) "
+            "VALUES(?,?,?,?,?)",
+            (f"a-{gen_id}", gen_id, "image", url, url),
+        )
+        if extra_asset:
+            conn.execute(
+                "INSERT INTO asset(id, generation_id, type, file_path, source_url) "
+                "VALUES(?,?,?,?,?)",
+                (f"a2-{gen_id}", gen_id, "image", extra_asset, extra_asset),
+            )
+    return gen_id
+
+
+def test_reconcile_duplicates_merges_only_well_formed_groups(pooled_db):
+    """R6 2-H(코덱스 확정 skip 조건) — 정상 그룹만 병합, 비정형은 무접촉."""
+    # 정상: local 1 + synced 2(같은 anchor) → 병합
+    ok_local = _seed_dup("http://x/ok.png", origin="local")
+    _seed_dup("http://x/ok.png", origin="synced", job_id="job-ok")
+    _seed_dup("http://x/ok.png", origin="synced", job_id="job-ok")
+    # 비정형 ①: synced 의 job_id 불수렴(종전엔 synced[0] 임의 선택)
+    amb_local = _seed_dup("http://x/amb.png", origin="local")
+    _seed_dup("http://x/amb.png", origin="synced", job_id="job-a")
+    amb_synced2 = _seed_dup("http://x/amb.png", origin="synced", job_id="job-b")
+    # 비정형 ②: local 이 이미 다른 잡에 앵커됨
+    anchored_local = _seed_dup("http://x/anc.png", origin="local", job_id="job-else")
+    anc_synced = _seed_dup("http://x/anc.png", origin="synced", job_id="job-anc")
+    # 비정형 ③: 삭제될 synced 만 가진 추가 원격 asset(지우면 유실)
+    extra_local = _seed_dup("http://x/ext.png", origin="local")
+    ext_synced = _seed_dup(
+        "http://x/ext.png", origin="synced", job_id="job-ext",
+        extra_asset="http://x/ext-only-on-synced.mp4",
+    )
+
+    merged = repo.reconcile_duplicates()
+    _assert_pool_connection_clean()
+
+    assert merged == 2  # 정상 그룹의 synced 2건만
+    with db.get_connection() as conn:
+        def alive(gid):
+            return conn.execute(
+                "SELECT job_id FROM generation WHERE id=?", (gid,)
+            ).fetchone()
+
+        assert alive(ok_local)["job_id"] == "job-ok"  # 권위 anchor 이식
+        assert alive(amb_local)["job_id"] is None  # 불수렴 그룹 무접촉
+        assert alive(amb_synced2) is not None
+        assert alive(anchored_local)["job_id"] == "job-else"  # 기존 앵커 보존
+        assert alive(anc_synced) is not None
+        assert alive(extra_local) is not None and alive(ext_synced) is not None  # 유실 방지
+
+
 def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
     """1-G/1-K/1-L — 신규 DB(schema)와 기존 DB(_migrate 재실행) 양쪽에서 인덱스 보장."""
     expected = {

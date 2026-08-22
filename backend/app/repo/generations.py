@@ -778,37 +778,82 @@ def set_hf_missing_batch(items: list[tuple[str, bool]]) -> int:
 
 def reconcile_duplicates() -> int:
     """create/sync 레이스로 생긴 중복(같은 결과 URL 을 가진 로컬+동기화 행) 정리.
-    로컬(id<>job_id, 사용자 메타 보존)을 남기고 동기화본(id==job_id)의 권위 job_id 를
-    로컬에 보장한 뒤 동기화 중복본을 삭제. 예상 모양(로컬 1개)이 아니면 건너뜀(안전)."""
+    로컬(id<>job_id, 사용자 메타 보존)을 남기고 동기화본의 권위 job_id 를 로컬에 보장한
+    뒤 동기화 중복본을 삭제. 그룹별 BEGIN IMMEDIATE 안에서 재검증(R6 2-H) — 종전
+    autocommit 다문장은 중간 실패·동시 sync 에서 반쪽 병합이 가능했고,
+    synced[0].job_id 임의 선택이 비정형 그룹에서 잘못된 anchor 를 쓸 수 있었다.
+    ★transaction-root 전용(중첩 호출 금지)."""
+    merged = 0
     with get_connection() as conn:
-        groups = conn.execute(
-            "SELECT GROUP_CONCAT(DISTINCT g.id) ids "
-            "FROM generation g JOIN asset a ON a.generation_id=g.id "
-            "WHERE COALESCE(a.source_url, a.file_path) LIKE 'http%' "
-            "GROUP BY COALESCE(a.source_url, a.file_path) HAVING COUNT(DISTINCT g.id) > 1"
-        ).fetchall()
-        merged = 0
-        for grp in groups:
-            ids = [x for x in (grp["ids"] or "").split(",") if x]
-            if not ids:
-                continue
-            ph = ",".join("?" * len(ids))
-            rows = conn.execute(
-                f"SELECT id, job_id, origin FROM generation WHERE id IN ({ph})", ids
+        url_keys = [
+            r["url_key"]
+            for r in conn.execute(
+                "SELECT COALESCE(a.source_url, a.file_path) AS url_key "
+                "FROM generation g JOIN asset a ON a.generation_id=g.id "
+                "WHERE COALESCE(a.source_url, a.file_path) LIKE 'http%' "
+                "GROUP BY COALESCE(a.source_url, a.file_path) HAVING COUNT(DISTINCT g.id) > 1"
             ).fetchall()
-            # 동기화본 vs 로컬: id==job_id 좌표가 아니라 명시 마커(origin)로 판별(0a). NULL=레거시→local.
-            synced = [r for r in rows if (r["origin"] or "local") == "synced"]
-            local = [r for r in rows if (r["origin"] or "local") != "synced"]
-            if len(local) != 1 or not synced:
-                continue  # 예상 모양(로컬 1 + 동기화 N) 아님 → 안전하게 건너뜀
-            keep = local[0]
-            conn.execute(
-                "UPDATE generation SET job_id=? WHERE id=?", (synced[0]["job_id"], keep["id"])
-            )
-            for s in synced:
-                _delete_generation(conn, s["id"])
-                merged += 1
-        return merged
+        ]
+        for url_key in url_keys:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                merged += _reconcile_duplicate_group_locked(conn, url_key)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+    return merged
+
+
+def _reconcile_duplicate_group_locked(conn, url_key: str) -> int:
+    """한 URL 그룹을 잠금 안에서 재검증 후 병합. 비정형이면 0(전부 skip — 코덱스 확정 조건)."""
+    rows = conn.execute(
+        "SELECT DISTINCT g.id, g.job_id, g.origin FROM generation g "
+        "JOIN asset a ON a.generation_id=g.id "
+        "WHERE COALESCE(a.source_url, a.file_path)=?",
+        (url_key,),
+    ).fetchall()
+    if len(rows) < 2:
+        return 0  # 재검증 — 그 사이 중복이 해소됨
+    # 동기화본 vs 로컬: id==job_id 좌표가 아니라 명시 마커(origin)로 판별(0a). NULL=레거시→local.
+    synced = [r for r in rows if (r["origin"] or "local") == "synced"]
+    local = [r for r in rows if (r["origin"] or "local") != "synced"]
+    if len(local) != 1 or not synced:
+        return 0  # 예상 모양(로컬 1 + 동기화 N) 아님
+    anchors = {r["job_id"] for r in synced if r["job_id"]}
+    if len(anchors) != 1:
+        return 0  # 권위 anchor 가 하나로 수렴하지 않음(임의 선택 금지)
+    anchor = next(iter(anchors))
+    keep = local[0]
+    if keep["job_id"] and keep["job_id"] != anchor:
+        return 0  # 로컬이 이미 다른 잡에 앵커됨 — 덮어쓰지 않는다
+    synced_ids = [r["id"] for r in synced]
+    ph = ",".join("?" * len(synced_ids))
+    synced_assets = {
+        row["url"]
+        for row in conn.execute(
+            f"SELECT DISTINCT COALESCE(source_url, file_path) AS url FROM asset "
+            f"WHERE generation_id IN ({ph}) "
+            f"AND COALESCE(source_url, file_path) LIKE 'http%'",
+            synced_ids,
+        )
+    }
+    local_assets = {
+        row["url"]
+        for row in conn.execute(
+            "SELECT DISTINCT COALESCE(source_url, file_path) AS url FROM asset "
+            "WHERE generation_id=? AND COALESCE(source_url, file_path) LIKE 'http%'",
+            (keep["id"],),
+        )
+    }
+    if synced_assets - local_assets:
+        return 0  # 삭제될 동기화본만 가진 원격 asset 존재 — 지우면 유실
+    conn.execute("UPDATE generation SET job_id=? WHERE id=?", (anchor, keep["id"]))
+    merged = 0
+    for s in synced:
+        _delete_generation(conn, s["id"])
+        merged += 1
+    return merged
 
 
 def delete_failed_orphans(account_uid: Optional[str] = None) -> int:
