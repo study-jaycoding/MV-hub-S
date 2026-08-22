@@ -39,13 +39,17 @@ _touch_telemetry = touch_generation_telemetry
 
 
 def _switch_account_db(email: str, uid: Optional[str]) -> None:
-    """로컬 프록시 로그인/전환 — 활성 계정 포인터를 이 계정으로 바꾸고 그 계정 전용 DB 를 준비한다.
+    """로컬 프록시 로그인/전환 — 계정 전용 DB 를 준비한 뒤 활성 계정 포인터를 바꾼다.
     이후 모든 set_setting/get_setting·읽기쓰기가 그 계정 DB 로 향해 다른 계정과 데이터가 섞이지 않는다.
     공유 서버(AUTH on)에선 계정별 DB 를 쓰지 않으므로 아무것도 하지 않는다(이 메커니즘은 로컬 전용)."""
     if AUTH_ENABLED:
         return
-    active_account.set_active(email, uid)
-    db.ensure_account_db(email, uid)
+    # 일반 요청은 transition_lock 을 잡지 않고 포인터를 읽으므로, 미완료 DB 를 먼저 공개하지 않는다.
+    # 실제 로그인/가입 호출자는 설정 저장까지 바깥에서 같은 RLock 을 보유하며, 여기서도 잠금 규율을
+    # 보장해 미래의 직접 호출이 생겨도 준비→공개 순서가 깨지지 않게 한다.
+    with active_account.transition_lock:
+        db.ensure_account_db(email, uid)
+        active_account.set_active(email, uid)  # RLock 재진입 — 마이그레이션 완료 뒤에만 공개
     identity._MY_UID_CACHE[0] = None  # 새 DB 기준으로 is_mine 재계산
     # 에이전트를 깨워 이 계정 DB 로 재동기화·계정상태 재보고 — 로그인 전(레거시 DB)에 보고된 워크스페이스
     # 상태가 새 계정 DB 엔 없어 '미연결'로 보이던 것을 곧 채운다(+ 로컬 생성물도 이 DB 로 다시 적재).
@@ -305,10 +309,10 @@ def shared_server_login(body: SharedLoginIn, request: Request):
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
         raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
-    # ★전환 '전체'(포인터→계정 DB 준비→세션 설정 저장)를 transition_lock 으로(코덱스
-    # 최종 P1) — 포인터 쓰기만 보호하면 그 직후 DB 복원이 끼어 계정 DB 준비와 설정
-    # 저장이 서로 다른 DB 로 갈렸다. lock 보유 중 열리는 커넥션은 컨텍스트 단위로 바로
-    # 닫혀 복원 게이트와 교착하지 않는다(복원은 이 lock 을 게이트보다 먼저 잡는다).
+    # ★전환 '전체'(계정 DB 준비→포인터 공개→세션 설정 저장)를 transition_lock 으로(코덱스
+    # 최종 P1) — 포인터 쓰기만 보호하면 DB 준비와 설정 저장 사이 복원이 끼어 서로 다른 DB 로
+    # 갈릴 수 있다. lock 보유 중 열리는 커넥션은 컨텍스트 단위로 바로 닫혀 복원 게이트와
+    # 교착하지 않는다(복원은 이 lock 을 게이트보다 먼저 잡는다).
     with active_account.transition_lock:
         # 계정별 DB 로 전환 — 이후 set_setting 들이 이 계정 DB 에 기록된다(다른 계정과 격리).
         _switch_account_db(body.email, acc.get("creator_uid"))

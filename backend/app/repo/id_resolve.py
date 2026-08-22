@@ -158,8 +158,8 @@ def personal_meta_by_anchor(
 # generation.color 에 못 넣으므로 이 계정별 전용 테이블에 anchor(job_id 우선, 없으면 서버 id)로 담는다.
 # 내 카드 색은 지금처럼 generation.color 가 진실 — 여긴 남의 카드 전용(overlay 가 내 카드는 건너뜀).
 def _ensure_color_overlay(conn) -> None:
-    # 자가치유 — 비활성 계정DB 로 전환 시 ensure_account_db 가 init_db 를 건너뛰어(경로 존재하면)
-    # 마이그레이션이 빠질 수 있어, 접근 시점에 테이블을 보장한다(schema.sql 에도 있음).
+    # 수동 생성·부분 복원처럼 전환 마이그레이션 바깥에서 불완전 DB가 들어온 경우도 접근 시 자가치유한다.
+    # 정상 계정 전환은 ensure_account_db 가 전체 스키마를 먼저 보장한다(schema.sql 에도 있음).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS gen_color_overlay (anchor TEXT PRIMARY KEY, color TEXT)"
     )

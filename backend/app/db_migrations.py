@@ -346,10 +346,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "OR (workspace_scope='team' AND (workspace_id IS NULL OR TRIM(workspace_id)=''))"
     )
     conn.execute(
-        "UPDATE generation SET workspace_id=NULL WHERE workspace_scope IN ('personal','unknown')"
+        "UPDATE generation SET workspace_id=NULL "
+        "WHERE workspace_scope IN ('personal','unknown') AND workspace_id IS NOT NULL"
     )
     conn.execute(
-        "UPDATE generation SET workspace_name=NULL WHERE workspace_scope='unknown'"
+        "UPDATE generation SET workspace_name=NULL "
+        "WHERE workspace_scope='unknown' AND workspace_name IS NOT NULL"
     )
     # 백필은 컬럼 추가와 별개로 **매 부팅 멱등 보강**(WHERE origin IS NULL) — ALTER 후 백필 전 중단돼도
     # 다음 부팅이 채운다(sort_ts 와 동일 패턴). if 안에 두면 컬럼 생성 후 재실행이 안 돼 NULL 영구 잔존,
@@ -416,9 +418,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "OR (workspace_scope='team' AND (workspace_id IS NULL OR TRIM(workspace_id)=''))"
         )
         conn.execute(
-            "UPDATE project SET workspace_id=NULL WHERE workspace_scope IN ('personal','unknown')"
+            "UPDATE project SET workspace_id=NULL "
+            "WHERE workspace_scope IN ('personal','unknown') AND workspace_id IS NOT NULL"
         )
-        conn.execute("UPDATE project SET workspace_name=NULL WHERE workspace_scope='unknown'")
+        conn.execute(
+            "UPDATE project SET workspace_name=NULL "
+            "WHERE workspace_scope='unknown' AND workspace_name IS NOT NULL"
+        )
     # Assets 코멘트 권한은 mount 의 프로젝트 이름을 서버 project.id 로 되돌린다. 활성 이름이
     # 모호해지지 않도록 DB에서도 차단하되, 레거시 중복 데이터는 임의 변경하지 않는다.
     _ensure_project_active_name_index(conn)

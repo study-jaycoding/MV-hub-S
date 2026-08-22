@@ -57,13 +57,14 @@ def _assert_supported_backend() -> None:
 
 
 def ensure_account_db(email: str, owner_uid: Optional[str] = None) -> Path:
-    """그 계정(email) 전용 DB 가 없으면 만든다(현재 스키마로 init). 레거시 단일 DB 의 주인
-    (my_creator_uid == owner_uid)이면 1회 통째 이관(휴지통·마운트 동반) — 기존 단독 사용자의
-    데이터가 첫 계정 전환 때 그 계정 DB 로 자연스럽게 옮겨가게 한다. 멱등."""
+    """그 계정(email) 전용 DB 를 만들거나 기존 파일을 현재 스키마로 보강한다. 레거시 단일
+    DB 의 주인(my_creator_uid == owner_uid)이면 1회 통째 이관(휴지통·마운트 동반) — 기존 단독
+    사용자의 데이터가 첫 계정 전환 때 그 계정 DB 로 자연스럽게 옮겨가게 한다. 멱등."""
     from .active_account import account_db_path
 
     path = account_db_path(email)
     if path.exists():
+        init_db(path)  # 비활성 중 업그레이드를 놓친 기존 계정 DB 도 현재 스키마로 보강(멱등)
         _seed_default_worker(path)  # 이전 버전이 안 넣은 기존 계정 DB 도 로그인 때 보강(멱등)
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
