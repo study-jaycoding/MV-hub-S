@@ -212,6 +212,44 @@ async def _application_lifespan(app: FastAPI):
     runtime_report_task: asyncio.Task | None = None
     history_audit_task: asyncio.Task | None = None
     worker_backup_bootstrap_task: asyncio.Task | None = None
+    runtime_loop: asyncio.AbstractEventLoop | None = None
+    startup_complete = False
+    periodic_sync_started = False
+    backup_callback_configured = False
+    periodic_backup_started = False
+    periodic_sweeper_started = False
+    media_preservation_started = False
+    share_state_reconciler_started = False
+    agent_loop_bound = False
+    asset_watcher_started = False
+    telemetry_loop_bound = False
+    history_loop_bound = False
+    remote_realtime_started = False
+    telemetry_drain_scheduled = False
+    primary_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
+
+    async def _attempt_async_cleanup(operation) -> None:
+        nonlocal cleanup_error
+        try:
+            await operation()
+        except BaseException as exc:  # noqa: BLE001 — 취소도 기록한 뒤 나머지 정리를 계속한다.
+            if cleanup_error is None:
+                cleanup_error = exc
+
+    def _attempt_sync_cleanup(operation) -> None:
+        nonlocal cleanup_error
+        try:
+            operation()
+        except BaseException as exc:  # noqa: BLE001 — SystemExit 등도 뒤 cleanup을 생략하지 않는다.
+            if cleanup_error is None:
+                cleanup_error = exc
+
+    async def _cancel_background_task(task: asyncio.Task) -> None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
     # 시작: DB 스키마 적용(멱등) + 기본 작업자 + 미디어 디렉터리 + 잡 큐 워커
     init_db()
     ensure_dirs()
@@ -358,114 +396,170 @@ async def _application_lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             print(f"[startup] 썸네일 사전 생성 건너뜀: {e}")
 
-    threading.Thread(target=_prewarm, daemon=True, name="thumb-prewarm").start()
-    # 주기 동기화는 서버 직결 로컬 허브(AUTH off)에선 끈다 — 데이터는 서버가 정답이고 적재는
-    # 에이전트(push)가 한다. 로컬에서 20초마다 CLI 동기화+broadcast 하면 라이브러리가 계속
-    # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
-    if AUTH_ENABLED:
-        periodic_sync.start()
-    if _proxy.is_worker_hub():
-        # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
-        # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
-        periodic_backup.set_completed_callback(queue_backup_set)
-        worker_backup_bootstrap_task = _start_worker_backup_bootstrap()
-    else:
-        periodic_backup.set_completed_callback(None)
-    periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
-    periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
-    periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
-    # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
-    from .routers import _proxy as _share_proxy
-    from .routers._telemetry import touch_generation_telemetry
-
-    configure_share_state_router_deps(
-        proxy=_share_proxy, touch_telemetry=touch_generation_telemetry
-    )
-    periodic_share_state_reconciler.start()  # 공유 서버 권위 상태 → 로컬 공유/골드 미러 수렴
-    # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
-    # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
-    # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
-    from .services import asset_watcher
-
-    runtime_loop = asyncio.get_running_loop()
-    agent_signals.bind_loop(runtime_loop)
-    asset_watcher.start(runtime_loop)
-    # 동기 ingest 라우터(anyio 워커)가 텔레메트리 네트워크 전송을 기다리지 않고 이 루프의
-    # 단일 백그라운드 drain에 예약할 수 있게 한다.
-    from .routers._telemetry import bind_telemetry_loop
-
-    bind_telemetry_loop(runtime_loop)
-    from .services.history_autofill import bind_history_loop, startup_history_audit
-
-    bind_history_loop(runtime_loop)
-    # 공유 팀 서버는 계정별 CLI 자격이 없으므로 절대 실행하지 않는다. 로컬 허브만 최근 성공
-    # audit을 백그라운드로 시작하며, 미로그인은 경고만 남기고 다음 시작·gap 기회로 넘긴다.
-    history_audit_task = asyncio.create_task(
-        startup_history_audit(), name="history-startup-audit"
-    )
-    # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
-    # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
-    if _proxy.is_worker_hub():
-        remote_realtime_bridge.start()
-        # 업데이트/재시작 전에 남은 생성정보 전송 대기열도 자동으로 한 번 정리한다.
-        # 로그인 토큰이 없는 PC에서는 drain_telemetry가 조용히 건너뛴다.
-        from .routers._telemetry import schedule_telemetry_drain
-
-        schedule_telemetry_drain()
-    if _METRICS_LOG_INTERVAL > 0:
-        runtime_report_task = asyncio.create_task(
-            _runtime_report_loop(_METRICS_LOG_INTERVAL),
-            name="runtime-metrics-log",
-        )
-    log_event(_runtime_log, "startup_ready")
     try:
+        threading.Thread(target=_prewarm, daemon=True, name="thumb-prewarm").start()
+        # 주기 동기화는 서버 직결 로컬 허브(AUTH off)에선 끈다 — 데이터는 서버가 정답이고 적재는
+        # 에이전트(push)가 한다. 로컬에서 20초마다 CLI 동기화+broadcast 하면 라이브러리가 계속
+        # 새로고침돼(로딩 깜빡임) 불필요. 서버(AUTH on)에서만 동작(거기도 CLI 없으면 무해 no-op).
+        if AUTH_ENABLED:
+            periodic_sync.start()
+            periodic_sync_started = True
+        if _proxy.is_worker_hub():
+            # 로컬 스냅샷 성공 뒤에만 전송 세트를 만들고, 네트워크 전송은 별도 자식 프로세스가
+            # 영속 outbox에서 수행한다. 서버 본체·격리 테스트에는 이 부수효과를 붙이지 않는다.
+            periodic_backup.set_completed_callback(queue_backup_set)
+            backup_callback_configured = True
+            worker_backup_bootstrap_task = _start_worker_backup_bootstrap()
+        else:
+            periodic_backup.set_completed_callback(None)
+            backup_callback_configured = True
+        periodic_backup.start()  # DB 자동 백업(서버 운영) — 시작 1회 + 주기, 회전 보관
+        periodic_backup_started = True
+        periodic_sweeper.start()  # 묵은 임시파일(.part/.tmp/comfy 입력/%TEMP%) 청소 + 캐시 eviction
+        periodic_sweeper_started = True
+        periodic_media_preservation.start()  # 공유·최종 원본 보존(영속 큐·재시작 복구·용량 상한)
+        media_preservation_started = True
+        # 계층 경계(services→routers 금지) 때문에 reconciler 의 라우터 의존은 여기서 주입한다.
+        from .routers import _proxy as _share_proxy
+        from .routers._telemetry import touch_generation_telemetry
+
+        configure_share_state_router_deps(
+            proxy=_share_proxy, touch_telemetry=touch_generation_telemetry
+        )
+        periodic_share_state_reconciler.start()  # 공유 서버 권위 상태 → 로컬 공유/골드 미러 수렴
+        share_state_reconciler_started = True
+        # 어셋 폴더 실시간 감시(watchdog) — 파일 추가/변경 시 WS 로 알려 프론트가 새로고침 없이 갱신.
+        # 인증 여부와 분리한다. AUTH on 개발 모드도 로컬 브라우저가 /api/assets/tree 로 조회한 폴더는
+        # 외부 편집기로 바뀔 수 있다. 접근 권한은 라우터가 강제하고, 감시기는 조회된 폴더만 lazy 등록한다.
+        from .services import asset_watcher
+
+        runtime_loop = asyncio.get_running_loop()
+        agent_signals.bind_loop(runtime_loop)
+        agent_loop_bound = True
+        asset_watcher.start(runtime_loop)
+        asset_watcher_started = True
+        # 동기 ingest 라우터(anyio 워커)가 텔레메트리 네트워크 전송을 기다리지 않고 이 루프의
+        # 단일 백그라운드 drain에 예약할 수 있게 한다.
+        from .routers._telemetry import bind_telemetry_loop
+
+        bind_telemetry_loop(runtime_loop)
+        telemetry_loop_bound = True
+        from .services.history_autofill import bind_history_loop, startup_history_audit
+
+        bind_history_loop(runtime_loop)
+        history_loop_bound = True
+        # 공유 팀 서버는 계정별 CLI 자격이 없으므로 절대 실행하지 않는다. 로컬 허브만 최근 성공
+        # audit을 백그라운드로 시작하며, 미로그인은 경고만 남기고 다음 시작·gap 기회로 넘긴다.
+        history_audit_task = asyncio.create_task(
+            startup_history_audit(), name="history-startup-audit"
+        )
+        # 위임 모드의 브라우저는 로컬 /ws만 본다. 프로세스당 원격 연결 하나가 다른 PC의 공유 서버
+        # 변경 신호를 받아 로컬 소켓 전체에 중계한다(미로그인 상태면 task는 연결 없이 대기).
+        if _proxy.is_worker_hub():
+            remote_realtime_bridge.start()
+            remote_realtime_started = True
+            # 업데이트/재시작 전에 남은 생성정보 전송 대기열도 자동으로 한 번 정리한다.
+            # 로그인 토큰이 없는 PC에서는 drain_telemetry가 조용히 건너뛴다.
+            from .routers._telemetry import schedule_telemetry_drain
+
+            schedule_telemetry_drain()
+            telemetry_drain_scheduled = True
+        if _METRICS_LOG_INTERVAL > 0:
+            runtime_report_task = asyncio.create_task(
+                _runtime_report_loop(_METRICS_LOG_INTERVAL),
+                name="runtime-metrics-log",
+            )
+        log_event(_runtime_log, "startup_ready")
+        startup_complete = True
         yield
+    except BaseException as exc:  # noqa: BLE001 — startup/running 원인을 cleanup 오류보다 우선한다.
+        primary_error = exc
+        raise
     finally:
         # 종료: 주기 백업 + 주기 동기화 + 어셋 감시 정리
+        # 부분 부팅이면 성공 플래그가 있는 항목만, 정상 부팅이면 기존 cleanup 호출 순서를 그대로 따른다.
         if runtime_report_task:
-            runtime_report_task.cancel()
-            try:
-                await runtime_report_task
-            except asyncio.CancelledError:
-                pass
-        await shutdown_request_estimates()
+            await _attempt_async_cleanup(
+                lambda: _cancel_background_task(runtime_report_task)
+            )
+        if startup_complete:
+            await _attempt_async_cleanup(shutdown_request_estimates)
         # debounce 로 미뤄진 비용 캐시 스냅샷을 상한 시간 안에 저장(R5 2-D).
-        from .services import cli_bridge as _cli_bridge_module
+        if startup_complete:
 
-        await _cli_bridge_module.flush_cost_cache(timeout=3.0)
+            async def _flush_cost_cache() -> None:
+                from .services import cli_bridge as _cli_bridge_module
+
+                await _cli_bridge_module.flush_cost_cache(timeout=3.0)
+
+            await _attempt_async_cleanup(_flush_cost_cache)
         # 새 로컬 백업·outbox 등록을 먼저 멈춘 뒤 전송 자식 프로세스를 정리한다.
-        await periodic_backup.stop()
+        if startup_complete or periodic_backup_started:
+            await _attempt_async_cleanup(periodic_backup.stop)
         if worker_backup_bootstrap_task:
-            worker_backup_bootstrap_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await worker_backup_bootstrap_task
-        await periodic_worker_backup.stop()
-        periodic_backup.set_completed_callback(None)
-        await periodic_sweeper.stop()
-        await periodic_share_state_reconciler.stop()
-        await periodic_media_preservation.stop()
-        await remote_realtime_bridge.stop()
-        if MANAGE_ENABLED or _proxy.is_worker_hub():
+            await _attempt_async_cleanup(
+                lambda: _cancel_background_task(worker_backup_bootstrap_task)
+            )
+        if startup_complete or getattr(periodic_worker_backup, "_task", None) is not None:
+            await _attempt_async_cleanup(periodic_worker_backup.stop)
+        if startup_complete or backup_callback_configured:
+            _attempt_sync_cleanup(lambda: periodic_backup.set_completed_callback(None))
+        if startup_complete or periodic_sweeper_started:
+            await _attempt_async_cleanup(periodic_sweeper.stop)
+        if startup_complete or share_state_reconciler_started:
+            await _attempt_async_cleanup(periodic_share_state_reconciler.stop)
+        if startup_complete or media_preservation_started:
+            await _attempt_async_cleanup(periodic_media_preservation.stop)
+        if startup_complete or remote_realtime_started:
+            await _attempt_async_cleanup(remote_realtime_bridge.stop)
+        if telemetry_drain_scheduled or (
+            startup_complete and (MANAGE_ENABLED or _proxy.is_worker_hub())
+        ):
             # 백그라운드 전송이 동적 계정 DB를 쓰는 도중 프로세스 종료/테스트 정리가 겹치지 않게 한다.
-            from .routers._telemetry import wait_for_telemetry_drain
+            async def _wait_for_telemetry_drain() -> None:
+                from .routers._telemetry import wait_for_telemetry_drain
 
-            await wait_for_telemetry_drain()
-        from .routers._telemetry import unbind_telemetry_loop
+                await wait_for_telemetry_drain()
 
-        unbind_telemetry_loop(runtime_loop)
-        from .services.history_autofill import stop_history_imports, unbind_history_loop
+            await _attempt_async_cleanup(_wait_for_telemetry_drain)
+        if (startup_complete or telemetry_loop_bound) and runtime_loop is not None:
 
+            def _unbind_telemetry_loop() -> None:
+                from .routers._telemetry import unbind_telemetry_loop
+
+                unbind_telemetry_loop(runtime_loop)
+
+            _attempt_sync_cleanup(_unbind_telemetry_loop)
         if history_audit_task and not history_audit_task.done():
-            history_audit_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await history_audit_task
-        await stop_history_imports()
-        unbind_history_loop(runtime_loop)
-        agent_signals.unbind_loop(runtime_loop)
-        if AUTH_ENABLED:
-            await periodic_sync.stop()
-        asset_watcher.stop()
-        log_event(_runtime_log, "shutdown_complete")
+            await _attempt_async_cleanup(
+                lambda: _cancel_background_task(history_audit_task)
+            )
+        if startup_complete or history_audit_task is not None:
+
+            async def _stop_history_imports() -> None:
+                from .services.history_autofill import stop_history_imports
+
+                await stop_history_imports()
+
+            await _attempt_async_cleanup(_stop_history_imports)
+        if (startup_complete or history_loop_bound) and runtime_loop is not None:
+
+            def _unbind_history_loop() -> None:
+                from .services.history_autofill import unbind_history_loop
+
+                unbind_history_loop(runtime_loop)
+
+            _attempt_sync_cleanup(_unbind_history_loop)
+        if (startup_complete or agent_loop_bound) and runtime_loop is not None:
+            _attempt_sync_cleanup(lambda: agent_signals.unbind_loop(runtime_loop))
+        if startup_complete or periodic_sync_started:
+            await _attempt_async_cleanup(periodic_sync.stop)
+        if (startup_complete or asset_watcher_started) and runtime_loop is not None:
+            _attempt_sync_cleanup(asset_watcher.stop)
+        if startup_complete and cleanup_error is None:
+            _attempt_sync_cleanup(lambda: log_event(_runtime_log, "shutdown_complete"))
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 @asynccontextmanager
