@@ -7,6 +7,7 @@ import json
 from unittest import mock
 
 import pytest
+from fastapi import Request
 
 from app import db, repo
 from app.routers import _proxy, publish
@@ -571,7 +572,9 @@ def test_auth_required_row_resumes_after_relogin_kick(
                 url="http://share.example.test",
                 email="artist@example.com",
                 password="password",
-            )
+            ),
+            # R7 0-A loopback 가드 — 로그인 라우트는 이 PC 브라우저 전용
+            Request({"type": "http", "client": ("127.0.0.1", 40000), "headers": []}),
         )
     kick.assert_called_once_with()
     _patch_observer(

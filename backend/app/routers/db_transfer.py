@@ -135,6 +135,51 @@ def _require_local_when_open(request: Request) -> None:
 # 프로파일과 정책을 한곳에서 관리). 이 모듈의 _SESSION_KEYS/_strip_session 이름은 유지.
 
 
+def _post_install_security_init(path: Path) -> None:
+    """교체된 새 DB 의 보안 초기화(R7 0-B, 코덱스 P1) — 비밀 키 제거·auth_secret 재생성·
+    전 계정 password_changed_at 회전을 '한 SQLite 트랜잭션'으로. 실패는 그대로 올려
+    호출부의 파일 보상 롤백이 돌게 한다 — 종전 best-effort 는 가져온 사람의 토큰·서명키가
+    남아도 relogin_required=True 성공을 반환했다.
+    ★유지보수 게이트 안이므로 repo.set_setting 금지(게이트 대기/다른 DB 위험) — 명시
+    경로 직접 연결만. ★CONTENT_HUB_AUTH_SECRET 환경변수 배포에선 DB auth_secret 교체가
+    토큰을 무효화하지 못하므로 password_changed_at 회전이 필수 방어선.
+    역할 제거=로컬 캐시(shared_server_roles)만 — account.global_role 은 복원 데이터라 불가침."""
+    conn = sqlite3.connect(str(path), timeout=10)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for key in _SESSION_KEYS:
+            conn.execute("DELETE FROM app_setting WHERE key=?", (key,))
+        conn.execute(
+            "INSERT INTO app_setting(key, value) VALUES('auth_secret', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (secrets.token_hex(32),),
+        )
+        # 전 계정 세션 스탬프 회전 — 이전 발급 토큰 전부 무효(account 는 직전 init_db 가 보장).
+        conn.execute(
+            "UPDATE account SET password_changed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+def _strict_clear_active() -> None:
+    """활성 계정 포인터를 '확실히' 제거(R7 0-B) — 종전 clear_active 는 OSError 를 삼켜
+    실패해도 성공 응답이 나갔다. 실패는 올려서 파일 보상 롤백이 돌게 한다."""
+    try:
+        active_account._POINTER.unlink(missing_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"가져오기 후 활성 계정 해제에 실패했습니다(교차 계정 보호를 위해 중단): {exc}",
+        ) from exc
+    active_account._cache[0], active_account._cache[1] = True, None
+
+
 def _install_db(
     tmp: Path,
     *,
@@ -154,6 +199,13 @@ def _install_db(
         f".{trash_path.name}.restore-{secrets.token_hex(8)}.tmp"
     )
     originals: list[tuple[Path, Path | None, bool]] = []
+    # active.json 원상 복구용 스냅샷(R7 0-B) — clear_active 이후 실패 시 파일 세트와 함께
+    # 포인터도 되돌린다(AUTH on 은 미사용이라 무관).
+    active_pointer_backup: bytes | None = None
+    if not AUTH_ENABLED:
+        with contextlib.suppress(OSError):
+            if active_account._POINTER.is_file():
+                active_pointer_backup = active_account._POINTER.read_bytes()
     try:
         with db.maintenance_gate():
             # 게이트가 새 요청을 막고 기존 컨텍스트가 모두 끝난 뒤라, 여기서만 전 스레드 풀을
@@ -215,6 +267,11 @@ def _install_db(
                     else:
                         os.replace(staged_trash, trash_path)
                 db.init_db()
+                # ★보안 초기화·활성 계정 해제도 이 보상 롤백 경계 안(R7 0-B, 코덱스 P1)
+                # — 하나라도 실패하면 성공 응답 없이 기존 파일 세트로 되돌린다.
+                _post_install_security_init(path)
+                if not AUTH_ENABLED:
+                    _strict_clear_active()
             except BaseException as original_error:
                 # init_db가 풀 핸들을 만들었을 수 있으므로 원본 되돌리기 전에 다시 모두 닫는다.
                 db.flush_pool()
@@ -233,6 +290,14 @@ def _install_db(
                                 rollback_stage.unlink(missing_ok=True)
                         else:
                             current.unlink(missing_ok=True)
+                    if not AUTH_ENABLED:
+                        # 포인터 원상 복구 — clear_active 가 지운 뒤의 실패에서도 원래
+                        # 로그인 상태로 돌아간다(없었으면 없던 상태 유지).
+                        if active_pointer_backup is not None:
+                            active_account._POINTER.write_bytes(active_pointer_backup)
+                        else:
+                            active_account._POINTER.unlink(missing_ok=True)
+                        active_account._cache[0] = False  # 다음 조회가 파일에서 재로드
                 except Exception as rollback_error:  # noqa: BLE001
                     raise HTTPException(
                         status_code=500,
@@ -262,26 +327,7 @@ def _install_db(
 
     _gens._FTS_READY = None
     _gens._FTS_READY_PATH = None
-    # 활성 계정 포인터 해제 — 가져온 DB 의 실제 소유자를 신뢰할 수 없으므로(다른 계정 export 본일 수
-    # 있음), 옛 계정으로 '로그인된 것처럼' 그 데이터를 보는 교차계정 오염을 막는다. 재로그인이 올바른
-    # 계정→DB 매핑을 다시 세운다(_switch_account_db). 공유 서버(AUTH on)는 active.json 미사용이라 무관.
-    if not AUTH_ENABLED:
-        try:
-            from ..active_account import clear_active
-
-            clear_active()
-        except Exception:  # noqa: BLE001
-            pass
-    # 보안: 가져온 DB 의 세션·서명키 제거 → 재로그인 강제(proxying()=False).
-    for k in _SESSION_KEYS:
-        try:
-            repo.set_setting(k, None)
-        except Exception:  # noqa: BLE001
-            pass
-    try:
-        repo.set_setting("auth_secret", secrets.token_hex(32))
-    except Exception:  # noqa: BLE001
-        pass
+    # (보안 초기화·활성 계정 해제는 게이트 안 보상 롤백 경계에서 이미 완료 — R7 0-B)
     return {"ok": True, "relogin_required": True}
 
 

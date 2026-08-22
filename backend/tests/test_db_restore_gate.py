@@ -216,3 +216,57 @@ class DbRestoreGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DbInstallSecurityInitTests(DbRestoreGateTests):
+    """R7 0-B(코덱스 P1) — 교체 후 보안 초기화가 보상 롤백 경계 안에서 원자적으로."""
+
+    def _seed_secrets(self, path: Path) -> None:
+        with closing(sqlite3.connect(str(path))) as conn:
+            with conn:
+                for key in db_transfer._SESSION_KEYS:
+                    conn.execute(
+                        "INSERT INTO app_setting(key, value) VALUES(?, 'leaked') "
+                        "ON CONFLICT(key) DO UPDATE SET value='leaked'",
+                        (key,),
+                    )
+                conn.execute(
+                    "INSERT INTO account(email, password_hash, status, global_role, password_changed_at) "
+                    "VALUES('imported@example.com','h','approved','member','2000-01-01T00:00:00Z')"
+                )
+
+    def test_success_wipes_secrets_and_rotates_sessions_inside_gate(self):
+        self._set_marker(self.path, "old")
+        incoming = self.root / "incoming.db"
+        self._make_db(incoming, "new")
+        self._seed_secrets(incoming)  # 가져온 DB 에 남의 토큰·서명키·계정이 있는 시나리오
+        with mock.patch.object(db_transfer, "AUTH_ENABLED", True):
+            result = db_transfer._install_db(incoming)
+        self.assertEqual(result, {"ok": True, "relogin_required": True})
+        with closing(sqlite3.connect(str(self.path))) as conn:
+            leaked = conn.execute(
+                "SELECT COUNT(*) FROM app_setting WHERE value='leaked'"
+            ).fetchone()[0]
+            self.assertEqual(leaked, 0)  # 비밀 키 전부 제거(auth_secret 포함 교체)
+            secret = conn.execute(
+                "SELECT value FROM app_setting WHERE key='auth_secret'"
+            ).fetchone()
+            self.assertTrue(secret and secret[0] and secret[0] != "leaked")
+            stamp = conn.execute(
+                "SELECT password_changed_at FROM account WHERE email='imported@example.com'"
+            ).fetchone()[0]
+            self.assertNotEqual(stamp, "2000-01-01T00:00:00Z")  # 전 계정 세션 회전
+
+    def test_security_init_failure_rolls_back_files(self):
+        self._set_marker(self.path, "old")
+        incoming = self.root / "incoming.db"
+        self._make_db(incoming, "new")
+        with mock.patch.object(db_transfer, "AUTH_ENABLED", True), mock.patch.object(
+            db_transfer,
+            "_post_install_security_init",
+            side_effect=RuntimeError("보안 초기화 실패"),
+        ):
+            with self.assertRaises(RuntimeError):
+                db_transfer._install_db(incoming)
+        with db.get_connection() as conn:
+            self.assertEqual(self._marker(conn), "old")  # 성공 응답 없이 기존 파일로 롤백
