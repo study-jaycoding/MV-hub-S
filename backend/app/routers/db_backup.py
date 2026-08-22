@@ -38,6 +38,7 @@ from ..config import DATA_DIR
 from ..deps import current_account
 from ..services.sqlite_db import HubDbValidationError, hub_db_validation_detail, validate_hub_db
 from ..services import upload_limits
+from ..services.async_tools import to_thread_non_abandon
 from ..services.atomic_io import atomic_write_text
 
 router = APIRouter(prefix="/api/db-backup", tags=["db-backup"])
@@ -142,16 +143,13 @@ async def _store_backup_limited(
     ``asyncio.to_thread``는 HTTP 요청 task가 취소돼도 실행 중인 스레드를 중단하지 못한다. shield 없이
     바로 await하면 클라이언트 연결 취소 때 semaphore만 먼저 풀려, 취소 요청을 반복해 동시 검증 상한을
     우회할 수 있다.
+
+    ★대기는 to_thread_non_abandon 에 맡긴다(R11 A4) — 여기 있던 수제 판(``suppress(Exception)``
+    + 맨 await)은 BaseException 인 CancelledError 를 못 잡아, 취소를 두 번 보내면 스레드가
+    _dir_lock 과 .tmp 를 쥔 채로 슬롯이 먼저 풀렸다.
     """
     async with _store_slots:
-        worker = asyncio.create_task(asyncio.to_thread(_store_backup, d, name, source))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # 응답 task 취소는 보존하되, 백그라운드 스레드가 끝날 때까지 슬롯은 넘겨주지 않는다.
-            with contextlib.suppress(Exception):
-                await worker
-            raise
+        return await to_thread_non_abandon(_store_backup, d, name, source)
 
 
 def _sha256(path: Path) -> str:
@@ -445,13 +443,8 @@ async def _store_backup_set_limited(
     sources: dict[str, BinaryIO],
 ) -> dict:
     async with _store_slots:
-        worker = asyncio.create_task(asyncio.to_thread(_store_backup_set, d, manifest, sources))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
-                await worker
-            raise
+        # 반복 취소에도 staging 폴더·슬롯을 스레드보다 먼저 놓지 않는다(R11 A4).
+        return await to_thread_non_abandon(_store_backup_set, d, manifest, sources)
 
 
 @router.post("")

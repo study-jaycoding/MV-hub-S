@@ -12,10 +12,13 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import threading
 import time
 from typing import Optional
 
+from .. import db
 from ..db import get_connection
 
 _PBKDF2_ITERS = 200_000
@@ -23,33 +26,80 @@ _TOKEN_TTL = 14 * 24 * 3600  # 2주
 
 
 # ── 서버 시크릿(app_setting 'auth_secret') ───────────────────────────────────
-def _get_setting(key: str) -> Optional[str]:
-    with get_connection() as conn:
-        row = conn.execute("SELECT value FROM app_setting WHERE key=?", (key,)).fetchone()
-    return row["value"] if row and row["value"] is not None else None
+# 서명 경로(_sign)는 토큰이 달린 '모든' 요청에서 이벤트 루프 위에 돈다. 여기서 SQLite 를 열면
+# 요청마다 DB 왕복이 생길 뿐 아니라, DB 파일 교체(복원) 게이트에 무제한으로 걸려 이벤트 루프
+# 전체(HTTP·WS)가 멈춘다. 그래서 시크릿은 프로세스 캐시에 한 번만 읽어 둔다(R11 A1).
+#
+# ★캐시 키 = (현재 DB 경로, db.pool_epoch()).
+#   - 경로: 계정 전환(active.json)으로 다른 DB 를 보게 되면 시크릿도 그 DB 것이어야 한다.
+#   - 에폭: 같은 경로에 파일을 통째 교체하는 복원은 경로가 안 바뀐다. db_transfer._install_db 가
+#     유지보수 게이트 안에서 flush_pool()(=에폭 +1)을 먼저 하고, 그 뒤에야 파일 교체와
+#     _post_install_security_init(auth_secret 회전)을 한다 — 즉 '에폭 변화가 회전보다 항상
+#     먼저'라 옛 시크릿이 캐시에 살아남을 수 없다(R7 0-B: 복원 후 옛 토큰은 반드시 거부).
+#     실패 롤백 경로도 flush_pool 을 한 번 더 하므로 같은 규칙으로 무효화된다.
+#   - 키 스냅샷은 반드시 DB 를 읽기 '전'에 뜬다. 읽는 도중 회전이 끼면 옛 값이 옛 키로만 박히고,
+#     현재 에폭으로 조회하는 다음 요청은 미스가 나 새 시크릿을 읽는다.
+_secret_lock = threading.Lock()
+_secret_cache: tuple[tuple[str, int], str] | None = None
 
 
-def _set_setting(key: str, value: str) -> None:
+class AuthSecretUnavailable(RuntimeError):
+    """DB 교체(유지보수) 중이라 서명 시크릿을 읽을 수 없다 — 서명 경로는 닫는다."""
+
+
+def _secret_cache_key() -> tuple[str, int]:
+    return (str(db.get_db_path()), db.pool_epoch())
+
+
+_SECRET_SELECT = "SELECT value FROM app_setting WHERE key='auth_secret'"
+
+
+def _load_secret() -> str:
+    """auth_secret 을 읽고, 없으면 만든다(멱등).
+
+    ★생성은 INSERT ... ON CONFLICT DO NOTHING + 재-SELECT 다. 종전 read-generate-write 는
+    동시 진입 시 '나중 쓰기'가 이겨, 앞선 시크릿으로 방금 발급된 토큰이 즉시 401 이 됐다(A2).
+    커넥션은 autocommit(isolation_level=None)이라 세 문장이 각각 독립 트랜잭션 —
+    먼저 넣은 쪽 값이 남고 모두가 그 값을 돌려받는다.
+    """
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO app_setting(key, value) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value),
-        )
+        row = conn.execute(_SECRET_SELECT).fetchone()
+        if not (row and row["value"]):
+            conn.execute(
+                "INSERT INTO app_setting(key, value) VALUES('auth_secret', ?) "
+                "ON CONFLICT(key) DO NOTHING",
+                (secrets.token_hex(32),),
+            )
+            row = conn.execute(_SECRET_SELECT).fetchone()
+    if not (row and row["value"]):
+        raise AuthSecretUnavailable("auth_secret 을 읽지 못했습니다")
+    return row["value"]
 
 
 def get_secret() -> str:
-    """서명용 서버 시크릿. 없으면 생성·영속(멱등). env CONTENT_HUB_AUTH_SECRET 우선."""
-    import os
+    """서명용 서버 시크릿. env CONTENT_HUB_AUTH_SECRET 우선, 그 외엔 프로세스 캐시(DB 1회)."""
+    global _secret_cache
 
     env = os.environ.get("CONTENT_HUB_AUTH_SECRET")
     if env:
         return env
-    sec = _get_setting("auth_secret")
-    if not sec:
-        sec = secrets.token_hex(32)
-        _set_setting("auth_secret", sec)
-    return sec
+    cached = _secret_cache
+    if cached is not None and cached[0] == _secret_cache_key():
+        return cached[1]
+    with _secret_lock:
+        # 락을 기다리는 사이 에폭이 바뀌었을 수 있으니 키를 다시 뜬다(항상 DB 읽기 직전).
+        key = _secret_cache_key()
+        cached = _secret_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        if db.maintenance_active():
+            # DB 파일 교체 중 — 여기서 커넥션을 열면 게이트가 풀릴 때까지 무제한 대기이고,
+            # 그 대기가 이벤트 루프에서 일어난다. 교체가 끝나면 시크릿·비번 스탬프가 모두
+            # 회전해 어차피 전 토큰이 무효이므로, 열지 않고 실패로 닫는다(fail-closed).
+            raise AuthSecretUnavailable("DB 유지보수 중에는 세션을 검증할 수 없습니다")
+        secret = _load_secret()
+        _secret_cache = (key, secret)
+        return secret
 
 
 # ── 비밀번호 해시 ────────────────────────────────────────────────────────────
@@ -100,7 +150,11 @@ def _decode_verified(token: Optional[str]) -> Optional[dict]:
     if not token or "." not in token:
         return None
     payload_b64, sig = token.rsplit(".", 1)
-    if not hmac.compare_digest(sig, _sign(payload_b64)):
+    try:
+        expected = _sign(payload_b64)
+    except AuthSecretUnavailable:
+        return None  # 유지보수 중 = 검증 불가 → 미인증으로 닫는다(루프를 막고 기다리지 않는다)
+    if not hmac.compare_digest(sig, expected):
         return None
     try:
         data = json.loads(_b64d(payload_b64))

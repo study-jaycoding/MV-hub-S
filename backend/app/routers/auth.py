@@ -24,6 +24,7 @@ from ..deps import SESSION_COOKIE, actor_id, require_admin, require_global_cap, 
 from ..services import auth
 from ..services import local_agent_pair
 from ..services.agent_signals import agent_signals
+from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_audit_event
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -74,18 +75,12 @@ def _login_limiter() -> asyncio.Semaphore:
 
 
 async def _run_login_work(action: Callable[..., _T], *args: Any) -> _T:
+    # to_thread의 실제 PBKDF2/DB 작업은 요청 취소로 멈추지 않는다. permit을 먼저 돌려주면
+    # 취소 폭주 때 설정값보다 많은 해시가 겹친다. ★대기는 to_thread_non_abandon 에 맡긴다
+    # (R11 A4) — 여기 있던 수제 판은 맨 await 라, 취소를 두 번 보내면 worker 가 취소되며
+    # 스레드보다 먼저 반환했다(비인증 공개 경로라 외부에서 반복 취소가 가능하다).
     async with _login_limiter():
-        worker = asyncio.create_task(asyncio.to_thread(action, *args))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # to_thread의 실제 PBKDF2/DB 작업은 요청 취소로 멈추지 않는다. 여기서
-            # permit을 먼저 돌려주면 취소 폭주 때 설정값보다 많은 해시가 겹친다.
-            try:
-                await worker
-            except BaseException:
-                pass
-            raise
+        return await to_thread_non_abandon(action, *args)
 
 
 def _rl_key(request: Request, email: str) -> str:
