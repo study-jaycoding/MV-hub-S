@@ -271,49 +271,80 @@ def cache_projects(projects: list[dict[str, Any]]) -> None:
     (2) 생성 카드의 project_name 해석이 로컬에서 되게 한다. 멱등 upsert(없으면 추가, 있으면 갱신)."""
     if not projects:
         return
+    # 프로젝트별 UPSERT+SELECT+UPDATE 반복(최대 3N 호출)을 소수 배치로(R6 2-G).
+    # 중복 project ID 입력의 현행 순차 의미 보존: UPSERT 최종 상태=마지막 입력
+    # (executemany 순서), unknown backfill 값=첫 team 입력(setdefault — 순차 실행에서
+    # 첫 team 입력이 backfill 을 소진하던 것과 동일).
+    upsert_args: list[tuple] = []
+    team_targets: dict[str, tuple[str, Optional[str]]] = {}
+    for p in projects:
+        pid = p.get("id") if isinstance(p, dict) else None
+        if not pid:
+            continue
+        workspace_scope, workspace_id, workspace_name = workspace_columns(p)
+        upsert_args.append(
+            (
+                pid,
+                p.get("name") or "",
+                p.get("kind") or "team",
+                p.get("created_by"),
+                1 if p.get("archived") else 0,
+                (p.get("render_root_path") or None),
+                workspace_scope,
+                workspace_id,
+                workspace_name,
+            )
+        )
+        if workspace_scope == "team" and workspace_id:
+            team_targets.setdefault(pid, (workspace_id, workspace_name))
+    if not upsert_args:
+        return
     backfilled_ids: list[str] = []
     with get_connection() as conn:
-        for p in projects:
-            pid = p.get("id") if isinstance(p, dict) else None
-            if not pid:
-                continue
-            workspace_scope, workspace_id, workspace_name = workspace_columns(p)
-            conn.execute(
-                "INSERT INTO project(id, name, kind, created_by, archived, render_root_path, "
-                "workspace_scope, workspace_id, workspace_name) "
-                "VALUES(?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived, "
-                "render_root_path=excluded.render_root_path, "
-                "workspace_scope=CASE WHEN excluded.workspace_scope='unknown' "
-                "THEN project.workspace_scope ELSE excluded.workspace_scope END, "
-                "workspace_id=CASE WHEN excluded.workspace_scope='unknown' "
-                "THEN project.workspace_id ELSE excluded.workspace_id END, "
-                "workspace_name=CASE WHEN excluded.workspace_scope='unknown' "
-                "THEN project.workspace_name ELSE excluded.workspace_name END",
-                (
-                    pid,
-                    p.get("name") or "",
-                    p.get("kind") or "team",
-                    p.get("created_by"),
-                    1 if p.get("archived") else 0,
-                    (p.get("render_root_path") or None),
-                    workspace_scope,
-                    workspace_id,
-                    workspace_name,
-                ),
-            )
-            if workspace_scope == "team" and workspace_id:
-                rows = conn.execute(
-                    "SELECT id FROM generation WHERE project_id=? AND workspace_scope='unknown'",
-                    (pid,),
-                ).fetchall()
-                if rows:
-                    conn.execute(
-                        "UPDATE generation SET workspace_scope='team', workspace_id=?, workspace_name=? "
-                        "WHERE project_id=? AND workspace_scope='unknown'",
-                        (workspace_id, workspace_name, pid),
-                    )
-                    backfilled_ids.extend(row["id"] for row in rows)
+        conn.executemany(
+            "INSERT INTO project(id, name, kind, created_by, archived, render_root_path, "
+            "workspace_scope, workspace_id, workspace_name) "
+            "VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, archived=excluded.archived, "
+            "render_root_path=excluded.render_root_path, "
+            "workspace_scope=CASE WHEN excluded.workspace_scope='unknown' "
+            "THEN project.workspace_scope ELSE excluded.workspace_scope END, "
+            "workspace_id=CASE WHEN excluded.workspace_scope='unknown' "
+            "THEN project.workspace_id ELSE excluded.workspace_id END, "
+            "workspace_name=CASE WHEN excluded.workspace_scope='unknown' "
+            "THEN project.workspace_name ELSE excluded.workspace_name END",
+            upsert_args,
+        )
+        if team_targets:
+            # 실제 unknown→team 으로 바뀌는 행만 수집(telemetry 대상 계약) 후 배치 UPDATE.
+            pids = list(team_targets)
+            unknown_by_pid: dict[str, list[str]] = {}
+            for offset in range(0, len(pids), 900):
+                batch = pids[offset:offset + 900]
+                ph = ",".join("?" * len(batch))
+                for row in conn.execute(
+                    f"SELECT id, project_id FROM generation "
+                    f"WHERE project_id IN ({ph}) AND workspace_scope='unknown'",
+                    batch,
+                ).fetchall():
+                    unknown_by_pid.setdefault(row["project_id"], []).append(row["id"])
+            update_args = [
+                (ws_id, ws_name, pid)
+                for pid, (ws_id, ws_name) in team_targets.items()
+                if pid in unknown_by_pid
+            ]
+            if update_args:
+                conn.executemany(
+                    "UPDATE generation SET workspace_scope='team', workspace_id=?, "
+                    "workspace_name=? WHERE project_id=? AND workspace_scope='unknown'",
+                    update_args,
+                )
+                backfilled_ids = [
+                    gen_id
+                    for pid, gen_ids in unknown_by_pid.items()
+                    if pid in team_targets
+                    for gen_id in gen_ids
+                ]
     if backfilled_ids:
         try:
             from .manage_telemetry import mark_telemetry_dirty
