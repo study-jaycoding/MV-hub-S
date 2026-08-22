@@ -174,7 +174,11 @@ class PrivateCommentTests(unittest.TestCase):
                 "proxy_json",
                 return_value={"server-g1": {"comment_count": 2, "has_unread": True}},
             ),
-            mock.patch.object(generation.repo, "finalize_id_map", return_value=("g1", "server-g1")),
+            mock.patch.object(
+                generation.repo,
+                "resolve_generation_meta_batch",  # R7 1-D: 배치 해석으로 교체됨
+                return_value={"g1": {"id": "g1", "job_id": "server-g1"}},
+            ),
             mock.patch.object(
                 generation.repo,
                 "private_generation_comment_counts",

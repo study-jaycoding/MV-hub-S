@@ -523,7 +523,9 @@ def set_generation_workspace_batch(body: GenerationWorkspaceBatchIn, request: Re
     if _proxy.proxying():
         for row in preview["resolved"]:
             if row.get("shared"):
-                _local_id, server_id = repo.finalize_id_map(str(row["id"]))
+                # plan 결과 행에 job_id 가 이미 있다(R7 1-D) — 행마다 finalize_id_map
+                # 재조회(최대 500 커넥션)를 돌 이유가 없다. 서버 id=job_id(없으면 로컬 id).
+                server_id = row.get("job_id") or str(row["id"])
                 if server_id and server_id not in shared_server_ids:
                     shared_server_ids.append(server_id)
         if shared_server_ids:
@@ -898,7 +900,17 @@ def gen_comment_counts(body: CommentCountsIn, request: Request):
         # 로컬 id ↔ 서버 id(job_id) 변환: 요청은 서버 id 로 보내고 응답 키를 로컬 id 로 되돌린다
         # (로컬 카드 id 로 그대로 위임하면 서버가 못 찾아 공유본 C 뱃지가 0 으로 떴다).
         requested = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
-        srv_of = {gid: repo.finalize_id_map(gid)[1] for gid in requested}
+        # id 마다 finalize_id_map(커넥션 최대 500회) → 배치 1회 해석(R7 1-D).
+        # 미해결 id 는 단건 계약과 동일하게 원 id 폴백(서버 위임은 받은 id 그대로).
+        meta = repo.resolve_generation_meta_batch(requested)
+        srv_of = {
+            gid: (
+                (meta[gid].get("job_id") or meta[gid].get("id") or gid)
+                if gid in meta
+                else gid
+            )
+            for gid in requested
+        }
         resp = _proxy.proxy_json(
             "POST", "/api/generations/comment-counts", body={"gen_ids": list(srv_of.values())}
         )
@@ -963,9 +975,19 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
         text = (body.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="빈 코멘트")
-        cid = repo.add_generation_comment(
-            anchor, actor_id(request), text, body.parent_id, body.muted, is_private=True
-        )
+        try:
+            cid = repo.add_generation_comment(
+                anchor,
+                actor_id(request),
+                text,
+                body.parent_id,
+                body.muted,
+                is_private=True,
+                # 서버 공개 부모 → 로컬 비공개 답글(프록시)은 부모가 로컬에 없는 게 정상.
+                allow_external_parent=_proxy.proxying(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"id": cid}
     if _comments_on_server(gen):
         _, server_id = repo.finalize_id_map(gen_id)
@@ -980,9 +1002,12 @@ def add_gen_comment(gen_id: str, body: GenCommentAddIn, request: Request):
         raise HTTPException(status_code=400, detail="빈 코멘트")
     # 작성자는 로그인 신원(creator_uid)으로 귀속 — body.author 는 무시(클라가 'me' 로 보내던
     # 값을 더는 신뢰하지 않는다). AUTH off 면 actor_id 가 'me' 로 떨어져 기존 단독 동작 유지.
-    cid = repo.add_generation_comment(
-        gen_id, actor_id(request), text, body.parent_id, body.muted
-    )
+    try:
+        cid = repo.add_generation_comment(
+            gen_id, actor_id(request), text, body.parent_id, body.muted
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": cid}
 
 

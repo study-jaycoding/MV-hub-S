@@ -159,22 +159,25 @@ def add_asset_comment(
     parent_id: Optional[str] = None,
     muted: bool = False,
     is_private: bool = False,
+    allow_external_parent: bool = False,
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
         # 답글이면 부모 존재·같은 스레드(project/path)를 잠금 안에서 확인(코덱스 P1) —
         # 삭제와 경합하면 삭제된 부모를 가리키는 고아 답글이 만들어졌다(parent_id FK 없음).
+        # ★allow_external_parent(재확인 회귀 수정): 프록시 모드의 '서버 공개 부모 → 내
+        # 로컬 비공개 답글'은 부모가 로컬에 없는 게 정상 — 라우터가 그 경로에서만 명시
+        # 허용한다. 부모가 '로컬에 있는데' 다른 스레드면 허용 여부와 무관하게 오류.
         conn.execute("BEGIN IMMEDIATE")
         try:
             if parent_id:
                 parent = conn.execute(
                     "SELECT project, path FROM asset_comment WHERE id=?", (parent_id,)
                 ).fetchone()
-                if (
-                    not parent
-                    or parent["project"] != project
-                    or parent["path"] != path
-                ):
+                if parent is None:
+                    if not allow_external_parent:
+                        raise ValueError("답글 대상 코멘트가 없습니다")
+                elif parent["project"] != project or parent["path"] != path:
                     raise ValueError("답글 대상 코멘트가 없습니다")
             conn.execute(
                 "INSERT INTO asset_comment(id, project, path, author, text, parent_id, muted, is_private) "
@@ -414,17 +417,22 @@ def add_generation_comment(
     parent_id: Optional[str] = None,
     muted: bool = False,
     is_private: bool = False,
+    allow_external_parent: bool = False,
 ) -> str:
     cid = new_id()
     with get_connection() as conn:
         # 답글이면 부모 존재·같은 스레드(gen_id)를 잠금 안에서 확인(코덱스 P1 — 고아 답글 방지).
+        # allow_external_parent: 서버 공개 부모 → 로컬 비공개 답글(프록시)만 라우터가 명시 허용.
         conn.execute("BEGIN IMMEDIATE")
         try:
             if parent_id:
                 parent = conn.execute(
                     "SELECT gen_id FROM generation_comment WHERE id=?", (parent_id,)
                 ).fetchone()
-                if not parent or parent["gen_id"] != gen_id:
+                if parent is None:
+                    if not allow_external_parent:
+                        raise ValueError("답글 대상 코멘트가 없습니다")
+                elif parent["gen_id"] != gen_id:
                     raise ValueError("답글 대상 코멘트가 없습니다")
             conn.execute(
                 "INSERT INTO generation_comment(id, gen_id, author, text, parent_id, muted, is_private) "

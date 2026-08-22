@@ -439,6 +439,32 @@ def test_reply_to_deleted_parent_is_rejected(pooled_db):
     assert orphans == 0
 
 
+def test_private_reply_to_server_parent_is_allowed_when_flagged(pooled_db):
+    """코덱스 재확인 회귀 — 프록시 모드의 '서버 공개 부모 → 로컬 비공개 답글'은 부모가
+    로컬에 없는 게 정상: allow_external_parent 로만 허용, 로컬 부모의 스레드 불일치는
+    허용 여부와 무관하게 거부."""
+    # 부모가 로컬에 없음 + 허용 플래그 → 저장된다(서버 부모 시나리오)
+    cid = repo.add_asset_comment(
+        "proj", "a.png", "me", "비공개 답글",
+        parent_id="server-only-parent", is_private=True, allow_external_parent=True,
+    )
+    assert cid
+    gen_id = repo.create_local_generation({"model": "m", "prompt": "p"}, "me")
+    gcid = repo.add_generation_comment(
+        gen_id, "me", "비공개 답글",
+        parent_id="server-only-parent", is_private=True, allow_external_parent=True,
+    )
+    assert gcid
+    # 허용 플래그여도 '로컬에 있는 다른 스레드' 부모는 거부(오배선 차단)
+    other = repo.add_asset_comment("proj", "other.png", "me", "다른 스레드 부모")
+    with pytest.raises(ValueError):
+        repo.add_asset_comment(
+            "proj", "a.png", "me", "오배선",
+            parent_id=other, is_private=True, allow_external_parent=True,
+        )
+    _assert_pool_connection_clean()
+
+
 def test_restore_after_purge_returns_false_and_purge_after_restore_keeps_sidecar(pooled_db):
     """코덱스 P1 — restore 는 휴지통 SELECT 전에 잠금: purge 가 먼저면 False(뒤늦은 부활
     없음), restore 가 먼저면 살아난 본체 때문에 sidecar purge 가 정리를 건너뛴다."""

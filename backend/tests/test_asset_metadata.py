@@ -143,6 +143,7 @@ class AssetMetadataTests(unittest.TestCase):
             None,
             False,
             False,  # private — 기본은 공유
+            allow_external_parent=False,  # 비공개 아님 → 외부 부모 비허용(R7 회귀 수정)
         )
 
     def test_batch_tags_map_combined_paths_before_one_repo_call(self) -> None:

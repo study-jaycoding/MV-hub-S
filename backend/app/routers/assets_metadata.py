@@ -175,15 +175,21 @@ def add_comment(body: CommentAddIn, request: Request):
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="빈 코멘트")
-    comment_id = repo.add_asset_comment(
-        project,
-        path,
-        actor_id(request),
-        text,
-        body.parent_id,
-        body.muted,
-        body.private,
-    )
+    try:
+        comment_id = repo.add_asset_comment(
+            project,
+            path,
+            actor_id(request),
+            text,
+            body.parent_id,
+            body.muted,
+            body.private,
+            # 프록시 모드의 비공개 답글은 부모가 '서버 공개 코멘트'라 로컬에 없는 게
+            # 정상(코덱스 재확인 회귀) — 그 경로만 외부 부모 허용.
+            allow_external_parent=bool(body.private and _proxy.proxying()),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": comment_id}
 
 
