@@ -260,6 +260,40 @@ class DownloadViewStreamingTests(unittest.TestCase):
             worker.join(timeout=5)
             server.server_close()
 
+    def test_truncated_body_does_not_replace_existing_destination(self):
+        """코덱스 P1 — Content-Length 미달 절단 본문은 예외 없이 짧게 읽히므로,
+        길이 검증으로 실패 판정해 정상 dst 를 부분 파일로 덮지 않아야 한다."""
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "10")
+                self.end_headers()
+                self.wfile.write(b"abc")  # 선언 10 중 3바이트만 보내고 종료
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.handle_request, daemon=True)
+        worker.start()
+        try:
+            with TemporaryDirectory() as d:
+                dst = Path(d) / "clip.mp4"
+                dst.write_bytes(b"previous-good")
+                with self.assertRaises(comfy_client.ComfyError) as caught:
+                    comfy_client.download_view(
+                        self._local_target(server.server_port),
+                        {"filename": "clip.mp4", "type": "output"},
+                        dst,
+                    )
+                self.assertIn("끊겼", str(caught.exception))
+                self.assertEqual(dst.read_bytes(), b"previous-good")  # 원자 교체 안 됨
+                self.assertEqual(list(dst.parent.glob("*.part")), [])
+        finally:
+            worker.join(timeout=5)
+            server.server_close()
+
     def test_failure_preserves_existing_destination_and_cleans_part(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -407,6 +441,15 @@ class SubscriptionTierCacheTests(unittest.TestCase):
         with mock.patch.object(comfy_client, "_get_json", return_value="broken"):
             self.assertIsNone(comfy_client.get_subscription_tier(target))
         self.assertEqual(comfy_client._SUBSCRIPTION_CACHE, {})  # 형식 깨짐도 미캐시
+
+    def test_nested_malformed_workspace_entry_is_not_cached(self):
+        """코덱스 P2 — {"workspaces":[null]} 같은 중첩 형식 오류도 미캐시."""
+        target = _cloud_target()
+        with mock.patch.object(
+            comfy_client, "_get_json", return_value={"workspaces": [None]}
+        ):
+            self.assertIsNone(comfy_client.get_subscription_tier(target))
+        self.assertEqual(comfy_client._SUBSCRIPTION_CACHE, {})
 
 
 class StatusRouteTests(unittest.TestCase):

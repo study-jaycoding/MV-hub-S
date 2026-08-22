@@ -469,6 +469,21 @@ def test_claim_scopes_to_server_origin_and_avoids_starvation(isolated_content_db
     legacy = repo.claim_due_share_state_intents("legacy-worker", limit=10)
     assert len(legacy) == 4
 
+    # 코덱스 P2 — 최종 SELECT 의 origin 조건 고정: 같은 token 으로 이미 잡혀 있던 외부
+    # origin 행이 있어도 origin 스코프 claim 결과에 섞여 나오면 안 된다.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE share_state_intent SET claim_token='mixed-worker', "
+            "lease_until=datetime('now','+120 seconds') "
+            "WHERE server_origin=? AND job_anchor='job-other-0'",
+            (repo.normalize_share_server_origin(other_origin),),
+        )
+    repo.release_share_state_intent_claim(mine["intent_id"], mine["intent_seq"], "origin-worker")
+    mixed = repo.claim_due_share_state_intents(
+        "mixed-worker", limit=10, server_origin="http://share.example.test"
+    )
+    assert [row["job_anchor"] for row in mixed] == ["job-mine"]  # 외부 행 미혼입
+
 
 def test_lost_lease_renewal_blocks_stale_remote_cleanup(
     isolated_content_db, monkeypatch

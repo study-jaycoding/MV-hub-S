@@ -215,10 +215,11 @@ def get_subscription_tier(target: dict, *, use_cache: bool = True) -> "str | Non
         # 회복돼도 5분간 구독 등급이 사라진 채 굳었다. 다음 조회가 즉시 재시도한다.
         return None
     wss = data.get("workspaces") if isinstance(data, dict) else None
-    if not isinstance(wss, list):
-        return None  # 형식 깨진 응답도 미캐시(코덱스) — 정상 workspaces 응답만 캐시 대상
+    if not isinstance(wss, list) or (wss and not isinstance(wss[0], dict)):
+        # 형식 깨진 응답(중첩 포함 — 예: workspaces:[null])도 미캐시(코덱스 P2).
+        return None
     tier: "str | None" = None
-    if wss and isinstance(wss[0], dict):
+    if wss:
         t = wss[0].get("subscription_tier")
         tier = str(t) if t else None
     _SUBSCRIPTION_CACHE[key] = (now, tier)  # 정상 응답의 tier 부재(None)만 캐시
@@ -570,19 +571,44 @@ def view_bytes(target: dict, params: dict) -> bytes:
     """/view 로 파일 바이트를 받아 반환 — SaveText 등 소형 사용처 전용(전체 메모리 적재).
     대형 출력 파일 저장은 download_view(스트리밍)를 쓴다."""
     with _open_view_stream(target, params) as stream:
-        return stream.read()
+        try:
+            return stream.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # helper 추출 전과 동일하게 읽기 오류도 ComfyError 로 변환(호출부 계약).
+            raise ComfyError(f"출력물 다운로드 실패: {e}")
+
+
+def _content_length(stream) -> int | None:
+    """응답의 Content-Length(없거나 깨졌으면 None) — 절단 본문 검증용."""
+    try:
+        raw = stream.headers.get("Content-Length")
+        return int(raw) if raw is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def download_view(target: dict, item: dict, dst: Path) -> None:
     """/view 출력 파일을 chunk 스트리밍으로 dst 에 저장(R5 2-F) — 종전엔 전체 바이트를
     메모리에 올려 대형 영상 1건당 peak RAM 이 파일 크기만큼 커졌다. 같은 폴더의 고유
     .part 에 쓰고 성공 시에만 os.replace — 실패해도 기존 dst 는 보존되고 .part 는
-    모든 예외 경로에서 정리된다."""
+    모든 예외 경로에서 정리된다.
+    ★Content-Length 검증(코덱스 P1): 길이 지정 HTTPResponse.read 는 본문이 중간에
+    끊겨도 예외 없이 짧게 반환한다 — 받은 바이트가 선언 길이에 못 미치면 실패로 판정해
+    부분 파일이 정상 dst 를 원자 교체하는 것을 막는다."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + f".{uuid.uuid4().hex}.part")
     try:
         with _open_view_stream(target, item) as stream, open(tmp, "wb") as out:
-            shutil.copyfileobj(stream, out, length=1024 * 1024)
+            expected = _content_length(stream)
+            try:
+                shutil.copyfileobj(stream, out, length=1024 * 1024)
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                raise ComfyError(f"출력물 다운로드 실패: {e}")
+            copied = out.tell()
+        if expected is not None and copied != expected:
+            raise ComfyError(
+                f"출력물 다운로드가 중간에 끊겼습니다(수신 {copied}/{expected} bytes)"
+            )
         os.replace(tmp, dst)
     finally:
         try:

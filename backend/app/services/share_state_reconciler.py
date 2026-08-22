@@ -609,8 +609,9 @@ async def run_share_state_reconciliation_cycle(
                 if not renewed:
                     # 관측 락 해제 후 새 intent_seq 가 이긴 행(R5 reconciler-2) — 종전엔
                     # 여기서도 진행해 stale worker 가 composite partial 의 원격 unpublish
-                    # 까지 실행한 뒤에야 로컬 CAS 에서 졌다. 낡은 관측으로 원격을 만지지
-                    # 않도록 즉시 중단한다.
+                    # 까지 실행한 뒤에야 로컬 CAS 에서 졌다. ★계약의 정확한 범위: batch
+                    # '관측'(read-only GET)은 renew 이전 단계라 이미 수행됐고, 여기서
+                    # 차단하는 것은 원격 '변경'(unpublish)·로컬 전이·이후 처리 전부다.
                     counts["cas_lost"] = counts.get("cas_lost", 0) + 1
                     continue
                 result = await _process_claimed_intent(

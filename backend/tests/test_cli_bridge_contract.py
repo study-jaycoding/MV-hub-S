@@ -246,7 +246,9 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         with patch.object(cli_bridge, "_COST_DEBOUNCE_SECONDS", 0.0), patch.object(
             cli_bridge, "_write_cost_cache", new=lambda payload: False
         ):
-            await cli_bridge._save_cost_cache()
+            cli_bridge._ensure_cost_writer()
+            task = cli_bridge._cost_writer_tasks.get(asyncio.get_running_loop())
+            await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(cli_bridge._cost_saved_revision, baseline)  # dirty 유지
         writes: list[str] = []
         with patch.object(
@@ -258,6 +260,42 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
             cli_bridge._cost_saved_revision, cli_bridge._cost_dirty_revision
         )
 
+    async def test_flush_serializes_with_inflight_writer_no_stale_overwrite(self):
+        """코덱스 P1 — 진행 중 writer 의 과거 스냅샷이 종료 flush 의 최신 저장을 되덮는
+        역전이 없어야 한다(flush 는 같은 write lock 으로 직렬화)."""
+        import time as time_module
+
+        from app.services import cli_bridge
+
+        cli_bridge._cost_loaded = True
+        cli_bridge._cost_write_locks.clear()
+        writes: list[str] = []
+
+        def slow_write(payload):
+            time_module.sleep(0.05)  # rev1 쓰기를 느리게 — 그 사이 flush 진입 시도
+            writes.append(payload)
+            return True
+
+        with patch.object(cli_bridge, "_COST_DEBOUNCE_SECONDS", 0.01), patch.object(
+            cli_bridge, "_write_cost_cache", new=slow_write
+        ):
+            cli_bridge._COST_CACHE["k1"] = (1, 111.0)
+            cli_bridge._mark_cost_cache_dirty()
+            cli_bridge._ensure_cost_writer()
+            await asyncio.sleep(0.03)  # writer 가 debounce 를 지나 쓰기에 들어가도록
+            cli_bridge._COST_CACHE["k2"] = (2, 222.0)
+            cli_bridge._mark_cost_cache_dirty()
+            await cli_bridge.flush_cost_cache()
+            task = cli_bridge._cost_writer_tasks.get(asyncio.get_running_loop())
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(writes)
+        self.assertIn("k2", writes[-1])  # 마지막 기록이 최신 스냅샷(역전 없음)
+        self.assertEqual(
+            cli_bridge._cost_saved_revision, cli_bridge._cost_dirty_revision
+        )
+        cli_bridge._COST_CACHE.clear()
+
     async def test_cost_cache_burst_writes_collapse_to_last_snapshot(self):
         """R5 2-D — 같은 burst 의 writer K명은 마지막 스냅샷 1회만 기록한다."""
         from app.services import cli_bridge
@@ -268,11 +306,11 @@ class CliBridgeContractTests(IsolatedAsyncioTestCase):
         with patch.object(cli_bridge, "_COST_DEBOUNCE_SECONDS", 0.02), patch.object(
             cli_bridge, "_write_cost_cache", new=lambda payload: writes.append(payload) or True
         ):
-            tasks = []
             for _ in range(8):
                 cli_bridge._mark_cost_cache_dirty()
-                tasks.append(asyncio.ensure_future(cli_bridge._save_cost_cache()))
-            await asyncio.gather(*tasks)
+                cli_bridge._ensure_cost_writer()  # 루프당 writer 1개만 유지된다
+            task = cli_bridge._cost_writer_tasks.get(asyncio.get_running_loop())
+            await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(len(writes), 1)  # burst 합류 — 전체 재직렬화 8회→1회
 
     async def test_estimate_cost_uses_stale_cache_when_cli_refresh_fails(self):

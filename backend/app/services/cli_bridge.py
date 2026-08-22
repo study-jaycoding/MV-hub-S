@@ -91,7 +91,9 @@ async def _single_flight(key: str, factory) -> Any:
 
             task.add_done_callback(_cleanup)
             calls[key] = task
-    return await task
+    # shield: waiter 개별 취소가 공유 leader·다른 waiter 까지 취소시키지 않게 격리
+    # (코덱스 P2). 전원 취소돼도 task 는 완주해 결과를 캐시한다(성공 조건 시).
+    return await asyncio.shield(task)
 
 
 class CLIError(RuntimeError):
@@ -674,14 +676,18 @@ def _write_cost_cache(payload: str) -> bool:
 
 # ── 비용 캐시 저장 debounce(R5 2-D) ──────────────────────────────────────
 # 종전엔 새 키 성공마다 전체 dict 를 직렬화·원자 저장해 K개 신규 키 burst 가 O(K²)
-# 쓰기 증폭을 만들었다. write lock 안 짧은 debounce + revision 으로 같은 burst 의
-# 마지막 스냅샷만 기록한다. 지속 burst 의 최대 미저장 시간 ≈ debounce(1s)+쓰기 시간
-# (각 성공 조회가 writer 를 세우므로 마지막 변경도 반드시 저장 시도된다). 쓰기 실패는
-# saved revision 미갱신 = dirty 유지 → 다음 성공 조회의 writer 가 재시도. 종료 시
-# flush_cost_cache 가 상한 시간 안에 잔여 dirty 를 저장한다(main lifespan shutdown).
+# 쓰기 증폭을 만들었다. 이벤트 루프당 '추적되는 writer 태스크 1개'만 두고(코덱스 P1 —
+# 미추적 다중 writer 는 종료 flush 와 경합해 과거 스냅샷이 최신 파일을 되덮었다),
+# writer 는 write lock 안에서 debounce 후 최신 revision 스냅샷을 기록한다. 지속 burst
+# 최대 미저장 시간 ≈ debounce(1s)+쓰기 시간. 쓰기 실패는 saved 미갱신 = dirty 유지 →
+# 재시도는 다음 변경 또는 종료 flush(실패 무한 루프 방지). flush 는 같은 write lock
+# 으로 진행 중 writer 와 직렬화되고, revision 단조 증가 가드로 역순 덮어쓰기가 없다.
 _COST_DEBOUNCE_SECONDS = 1.0
 _cost_dirty_revision = 0
 _cost_saved_revision = 0
+_cost_writer_tasks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, "asyncio.Task[None]"
+] = weakref.WeakKeyDictionary()
 
 
 def _mark_cost_cache_dirty() -> None:
@@ -689,33 +695,52 @@ def _mark_cost_cache_dirty() -> None:
     _cost_dirty_revision += 1
 
 
-async def _save_cost_cache() -> None:
-    """dirty 스냅샷을 debounce 후 저장. 같은 burst 의 후행 writer 는 스킵된다."""
+def _ensure_cost_writer() -> None:
+    """루프당 writer 태스크를 1개만 유지한다(무제한 태스크 누적 방지). 이벤트 루프
+    스레드에서만 호출되므로 확인-생성 사이 경합이 없다. writer 종료 직전의 새 dirty 는
+    다음 변경의 재호출 또는 종료 flush 가 담는다."""
+    loop = asyncio.get_running_loop()
+    task = _cost_writer_tasks.get(loop)
+    if task is not None and not task.done():
+        return
+    task = loop.create_task(_cost_writer())
+    task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+    _cost_writer_tasks[loop] = task
+
+
+async def _cost_writer() -> None:
+    """단일 writer — dirty 가 남는 한 debounce 주기로 최신 스냅샷을 기록한다.
+    쓰기 실패면 1회로 중단(dirty 유지 — 다음 변경/flush 가 재시도)."""
     global _cost_saved_revision
-    my_revision = _cost_dirty_revision
-    async with _cost_write_lock():
-        if _cost_saved_revision >= my_revision:
-            return  # 내 변경분은 이미 앞선 writer 의 스냅샷에 담겨 저장됐다
-        await asyncio.sleep(_COST_DEBOUNCE_SECONDS)  # burst 합류 창
-        snapshot_revision = _cost_dirty_revision
-        payload = _serialize_cost_cache()
-        if await asyncio.to_thread(_write_cost_cache, payload):
+    while True:
+        async with _cost_write_lock():
+            if _cost_saved_revision >= _cost_dirty_revision:
+                return
+            await asyncio.sleep(_COST_DEBOUNCE_SECONDS)  # burst 합류 창(lock 안 — flush 와 직렬)
+            snapshot_revision = _cost_dirty_revision
+            payload = _serialize_cost_cache()
+            if not await asyncio.to_thread(_write_cost_cache, payload):
+                return
             _cost_saved_revision = snapshot_revision
 
 
 async def flush_cost_cache(timeout: float = 3.0) -> None:
-    """종료 훅 — 미저장 비용 캐시를 상한 시간 안에 즉시 저장(debounce 없음).
-    실패·시간초과는 무시한다(견적 캐시는 다음 부팅에 파일 기준으로 재구성되는 보조 정보)."""
-    global _cost_saved_revision
-    my_revision = _cost_dirty_revision
-    if _cost_saved_revision >= my_revision:
-        return
-    payload = _serialize_cost_cache()
+    """종료 훅 — 미저장 비용 캐시를 상한 시간 안에 저장. write lock 을 잡아 진행 중
+    writer 의 쓰기와 직렬화한다(과거 스냅샷이 flush 결과를 되덮는 역전 방지).
+    실패·시간초과는 무시한다(견적 캐시는 보조 정보)."""
+
+    async def _flush_locked() -> None:
+        global _cost_saved_revision
+        async with _cost_write_lock():
+            if _cost_saved_revision >= _cost_dirty_revision:
+                return
+            snapshot_revision = _cost_dirty_revision
+            payload = _serialize_cost_cache()
+            if await asyncio.to_thread(_write_cost_cache, payload):
+                _cost_saved_revision = snapshot_revision
+
     try:
-        if await asyncio.wait_for(
-            asyncio.to_thread(_write_cost_cache, payload), timeout=timeout
-        ):
-            _cost_saved_revision = my_revision
+        await asyncio.wait_for(_flush_locked(), timeout=timeout)
     except (asyncio.TimeoutError, OSError):
         pass
 
@@ -811,12 +836,9 @@ async def _estimate_cost_miss(
             _COST_CACHE.clear()  # 소프트 캡(드묾)
         _COST_CACHE[key] = (credits_int, time.time())  # TTL 만료분 재확인 시 최신값·시각으로 갱신
         _mark_cost_cache_dirty()
-        # debounce 저장은 백그라운드로(R5 2-D) — 응답·게이트 슬롯을 debounce 만큼 잡지
-        # 않는다. 같은 burst 는 마지막 스냅샷 1회만 기록되고, 종료 시 flush 가 잔여를 담당.
-        save_task = asyncio.get_running_loop().create_task(_save_cost_cache())
-        save_task.add_done_callback(
-            lambda t: None if t.cancelled() else t.exception()
-        )
+        # 저장은 루프당 단일 writer 태스크가 백그라운드로(R5 2-D) — 응답·게이트를
+        # debounce 만큼 잡지 않고, 태스크 누적·flush 역전도 없다(코덱스 P1 반영).
+        _ensure_cost_writer()
         return {"credits": credits_int}
 
 
