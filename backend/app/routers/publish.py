@@ -203,15 +203,13 @@ def receive_published_bundle(body: PublishBundleIn, request: Request):
         )
     # 공유 서버도 받은 원본을 보존한다. 번들에는 원격 URL만 오므로 서버 측 byte-cache가
     # 없으면 CDN 만료 뒤 팀 공유본 전체가 깨진다. ID/job_id 양쪽을 해석해 멱등 등록한다.
-    for item in bundle.get("generations") or []:
-        if not isinstance(item, dict):
-            continue
-        anchor = str((item.get("generation") or {}).get("id") or "").strip()
-        if not anchor:
-            continue
-        local_id = repo.resolve_local_id(anchor)
-        if repo.get_generation(local_id):
-            repo.request_media_preservation(local_id, "shared")
+    # 항목별 resolve+get(3N DB 진입)을 앞서 만든 anchors 의 배치 해석 1회로(R7 2-F) —
+    # 보존 큐 등록(쓰기)만 항목별 유지.
+    resolved_meta = repo.resolve_generation_meta_batch(anchors)
+    for anchor in anchors:
+        meta = resolved_meta.get(anchor)
+        if meta and meta.get("id"):
+            repo.request_media_preservation(meta["id"], "shared")
     return {"ok": True, **counts}
 
 
@@ -741,8 +739,13 @@ def publish_to_shared(body: PublishToSharedIn, request: Request):
     성공 시 로컬에도 share 표식을 남겨(공유됨 뱃지) 어떤 걸 올렸는지 보이게 한다."""
     if not _proxy.proxying():
         published = 0
-        for gid in body.gen_ids or []:
-            gen = repo.get_generation(gid)
+        # 상한 없는 gen_ids 의 단건 get_generation N회 → snapshot 배치 1회(R7 2-F).
+        # 권한 검사·항목별 repo.publish 순서·published 집계는 종전 그대로(중복 id 는
+        # dedupe 로 1회만 집계 — 종전에도 두 번째는 shared=True 로 걸러졌다).
+        unique_ids = list(dict.fromkeys(gid for gid in (body.gen_ids or []) if gid))
+        gens = repo.get_generations_batch(unique_ids)
+        for gid in unique_ids:
+            gen = gens.get(gid)
             if not (gen and gen.get("status") == "done" and not gen.get("shared")):
                 continue
             try:
