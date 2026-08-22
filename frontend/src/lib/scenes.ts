@@ -1,6 +1,6 @@
 // Canvas 씬(빈 캔버스) 데이터 레이어 — 카드·연결·카메라를 localStorage 에 프로젝트별로 보관.
 // 생성 결과물 자체는 실제 generation(서버)이고, 여기 저장하는 건 "캔버스 편집물"(개인 로컬)뿐이다.
-import { loadJSON, saveJSON } from "./storage";
+import { loadJSON, saveJSON, trySaveJSON } from "./storage";
 import { STORAGE_KEYS } from "./storageKeys";
 import { getAccountNamespace } from "./accountScope";
 
@@ -243,9 +243,13 @@ export function subscribeScenesPersisted(fn: () => void): () => void {
   return () => scenesPersistedSubs.delete(fn);
 }
 
-function saveAll(all: ScenesByProject) {
-  saveJSON(STORAGE_KEYS.scenes, all);
+// 씬 저장의 단일 쓰기 관문. 반환 = 실제로 persist 됐는지(localStorage 용량 초과·접근 차단이면 false).
+// ★실패했으면 DB 미러 구독자를 부르지 않는다 — 저장소 내용이 그대로라 올릴 것도 없고, 미저장 편집을
+//  '저장됨'으로 알리면 안 된다. (구독자는 각자 부팅·주기 트리거가 있어 한 번 건너뛰어도 안전.)
+function saveAll(all: ScenesByProject): boolean {
+  if (!trySaveJSON(STORAGE_KEYS.scenes, all)) return false;
   scenesPersistedSubs.forEach((fn) => fn());
+  return true;
 }
 
 // 이 계정의 씬 버킷 '키'가 존재하는가 — DB 복구 허용 판정(코덱스 P1: 빈 배열 버킷은 정상 삭제의
@@ -282,17 +286,18 @@ export function createScene(projectId: string | null, name?: string): Scene {
 
 // 대상 씬을 갱신하고 '갱신된 목록'을 반환한다. 호출부가 결과를 다시 읽으려고 listScenes 를 부르면
 // 씬 편집 1회에 저장소 파싱이 3회로 늘어나므로(loadAll×2 + 재조회) 여기서 한 번만 읽고 넘겨준다.
+// ★저장에 실패하면 null. 반환 목록은 '저장된 내용'이라는 계약이라, 저장 못 한 next 를 넘겨주면
+//  호출부가 그걸 화면에 채택해 사용자는 저장된 줄 알고 새로고침에서 잃는다(적대 리뷰 P1).
 export function updateScene(
   projectId: string | null,
   sceneId: string,
   patch: Partial<Scene>,
-): Scene[] {
+): Scene[] | null {
   const all = loadAll();
   migrateLegacyBucket(all, projectId); // 옛 씬을 현재 계정으로 1회 이관(아래 saveAll 로 함께 확정)
   const next = (all[keyOf(projectId)] || []).map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
   all[keyOf(projectId)] = next;
-  saveAll(all);
-  return next;
+  return saveAll(all) ? next : null;
 }
 
 export function deleteScene(projectId: string | null, sceneId: string) {

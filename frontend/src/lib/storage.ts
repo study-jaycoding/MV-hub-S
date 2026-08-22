@@ -9,12 +9,19 @@ export function loadJSON<T>(key: string): T | null {
   }
 }
 
-export function saveJSON(key: string, value: unknown): void {
+// 저장 성공 여부가 필요한 호출부(씬 데이터 계층)용 — 용량 초과·접근 차단이면 false.
+// 실패를 삼키는 saveJSON 은 이 함수를 감싼 버전이라, 기존 호출부의 시그니처·동작은 그대로다.
+export function trySaveJSON(key: string, value: unknown): boolean {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
-    /* ignore */
+    return false;
   }
+}
+
+export function saveJSON(key: string, value: unknown): void {
+  trySaveJSON(key, value);
 }
 
 export function loadString(key: string, fallback = ""): string {
