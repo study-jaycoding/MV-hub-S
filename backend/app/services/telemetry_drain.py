@@ -13,7 +13,7 @@ import threading
 from collections import defaultdict
 from typing import Any, Callable
 
-from .. import repo
+from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..emailnorm import norm_email
 from ..manage_db import init_manage_db, upsert_facts
@@ -97,112 +97,159 @@ def _settle(batch: dict[str, Any], skipped_ids: set[str], error: str) -> tuple[i
     return len(pushed), len(failed)
 
 
+def _drain_remote_telemetry(
+    push: Callable[[list[dict[str, Any]]], Any],
+    *,
+    account_key: str | None,
+    my_uid: str | None,
+) -> dict[str, Any]:
+    """명시된 계정 범위 안에서 prepare·push·settle을 모두 끝낸다."""
+    token = active_account.set_override(account_key or "")
+    try:
+        batch = _prepare_batch(filter_uid=my_uid, include_all_creators=False)
+        # 현재 계정 소유가 아니거나 로컬 원본이 없어 큐에서만 치우는 행이다. 서버 반영 성공으로
+        # 기록하면 마지막 성공 시각이 거짓으로 갱신되므로 관측값에서는 제외한다.
+        repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
+        facts = batch["facts"]
+        if not facts:
+            return {"target": "remote", "upserted": 0, "failed": 0}
+        try:
+            response = push(facts)
+            response = response if isinstance(response, dict) else {}
+            if "skipped" in response:
+                skipped_ids = set(response.get("skipped") or [])
+            else:
+                upserted = int(response.get("upserted") or 0)
+                skipped_ids = (
+                    set() if upserted >= len(facts)
+                    else {row["local_gen_id"] for row in batch["sent"]}
+                )
+            pushed, failed = _settle(
+                batch,
+                skipped_ids,
+                "server skipped (unlinked/foreign)"
+                if "skipped" in response
+                else f"server upserted {response.get('upserted', 0)}/{len(facts)}",
+            )
+            return {"target": "remote", "upserted": pushed, "failed": failed}
+        except Exception as exc:  # noqa: BLE001 - 오프라인 큐로 남겨 다음 동기화 때 재시도
+            rows = list(batch["sent"])
+            repo_manage.mark_telemetry_failed(rows, str(exc))
+            return {
+                "target": "remote",
+                "upserted": 0,
+                "failed": len(rows),
+                "error": str(exc),
+            }
+    finally:
+        active_account.reset_override(token)
+
+
 def drain_remote_telemetry(
     push: Callable[[list[dict[str, Any]]], Any],
     *,
     my_uid: str | None,
 ) -> dict[str, Any]:
     """기존 운영 계약대로 현재 로컬 사용자의 팩트를 공유 서버로 전송한다."""
-    batch = _prepare_batch(filter_uid=my_uid, include_all_creators=False)
-    # 현재 계정 소유가 아니거나 로컬 원본이 없어 큐에서만 치우는 행이다. 서버 반영 성공으로
-    # 기록하면 마지막 성공 시각이 거짓으로 갱신되므로 관측값에서는 제외한다.
-    repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
-    facts = batch["facts"]
-    if not facts:
-        return {"target": "remote", "upserted": 0, "failed": 0}
-    try:
-        response = push(facts)
-        response = response if isinstance(response, dict) else {}
-        if "skipped" in response:
-            skipped_ids = set(response.get("skipped") or [])
-        else:
-            upserted = int(response.get("upserted") or 0)
-            skipped_ids = (
-                set() if upserted >= len(facts)
-                else {row["local_gen_id"] for row in batch["sent"]}
-            )
-        pushed, failed = _settle(
-            batch,
-            skipped_ids,
-            "server skipped (unlinked/foreign)"
-            if "skipped" in response
-            else f"server upserted {response.get('upserted', 0)}/{len(facts)}",
-        )
-        return {"target": "remote", "upserted": pushed, "failed": failed}
-    except Exception as exc:  # noqa: BLE001 - 오프라인 큐로 남겨 다음 동기화 때 재시도
-        rows = list(batch["sent"])
-        repo_manage.mark_telemetry_failed(rows, str(exc))
-        return {"target": "remote", "upserted": 0, "failed": len(rows), "error": str(exc)}
+    with active_account.transition_lock:
+        account_key = active_account.account_key()
+        captured_uid = my_uid
+    return _drain_remote_telemetry(
+        push,
+        account_key=account_key,
+        my_uid=captured_uid,
+    )
 
 
-def drain_isolated_telemetry() -> dict[str, Any]:
-    """격리 test_dev의 대기열을 같은 테스트 폴더 manage_hub.db에만 반영한다.
+def _drain_isolated_telemetry(
+    *,
+    account_key: str | None,
+    my_uid: str | None,
+) -> dict[str, Any]:
+    """캡처한 격리 계정 범위에서 로컬 관리 DB 반영을 끝낸다.
 
     스냅샷에는 여러 작성자가 함께 있을 수 있으므로 account 테이블의 검증된 uid↔email 연결로
     팩트를 나눠 저장한다. 연결이 없거나 중복된 작성자는 임의 귀속하지 않고 대기열에 남긴다.
     """
-    if not isolated_local_telemetry_enabled():
-        return {"target": "disabled", "upserted": 0, "failed": 0}
+    token = active_account.set_override(account_key or "")
+    try:
+        if not isolated_local_telemetry_enabled():
+            return {"target": "disabled", "upserted": 0, "failed": 0}
 
-    with _LOCAL_DRAIN_LOCK:
-        batch = _prepare_batch(filter_uid=None, include_all_creators=True)
-        repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
-        facts: list[dict[str, Any]] = batch["facts"]
-        if not facts:
-            return {"target": "local", "upserted": 0, "failed": 0}
+        with _LOCAL_DRAIN_LOCK:
+            batch = _prepare_batch(filter_uid=None, include_all_creators=True)
+            repo_manage.mark_telemetry_pushed(batch["non_sent"], record_success=False)
+            facts: list[dict[str, Any]] = batch["facts"]
+            if not facts:
+                return {"target": "local", "upserted": 0, "failed": 0}
 
-        init_manage_db()
-        uids = sorted({str(fact.get("creator_uid") or "").strip() for fact in facts} - {""})
-        email_by_uid = repo_manage.account_emails_by_creator_uids(uids)
-        provider = repo.get_provider()
-        provider_uid = (repo.get_my_uid() or provider.get("uid") or "").strip()
-        provider_email = norm_email(provider.get("email"))
-        if provider_uid and provider_email and provider_uid not in email_by_uid:
-            email_by_uid[provider_uid] = provider_email
+            init_manage_db()
+            uids = sorted({str(fact.get("creator_uid") or "").strip() for fact in facts} - {""})
+            email_by_uid = repo_manage.account_emails_by_creator_uids(uids)
+            provider = repo.get_provider()
+            provider_uid = (
+                repo.get_my_uid() or my_uid or provider.get("uid") or ""
+            ).strip()
+            provider_email = norm_email(provider.get("email"))
+            if provider_uid and provider_email and provider_uid not in email_by_uid:
+                email_by_uid[provider_uid] = provider_email
 
-        groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-        unresolved: set[str] = set()
-        for fact in facts:
-            uid = str(fact.get("creator_uid") or "").strip()
-            email = email_by_uid.get(uid)
-            local_id = str(fact.get("local_gen_id") or "")
-            if not uid or not email:
-                if local_id:
-                    unresolved.add(local_id)
-                continue
-            groups[(email, uid)].append(fact)
+            groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+            unresolved: set[str] = set()
+            for fact in facts:
+                uid = str(fact.get("creator_uid") or "").strip()
+                email = email_by_uid.get(uid)
+                local_id = str(fact.get("local_gen_id") or "")
+                if not uid or not email:
+                    if local_id:
+                        unresolved.add(local_id)
+                    continue
+                groups[(email, uid)].append(fact)
 
-        success_ids: set[str] = set()
-        failed_ids = set(unresolved)
-        errors: list[str] = []
-        for (email, uid), items in groups.items():
-            try:
-                _count, skipped = upsert_facts(email, uid, items)
-                skipped_set = set(skipped)
-                failed_ids.update(skipped_set)
-                success_ids.update(
-                    str(item["local_gen_id"])
-                    for item in items
-                    if item.get("local_gen_id") and item["local_gen_id"] not in skipped_set
-                )
-            except Exception as exc:  # noqa: BLE001 - 성공 그룹은 보존하고 실패 그룹만 재시도
-                errors.append(str(exc))
-                failed_ids.update(
-                    str(item["local_gen_id"])
-                    for item in items
-                    if item.get("local_gen_id")
-                )
+            success_ids: set[str] = set()
+            failed_ids = set(unresolved)
+            errors: list[str] = []
+            for (email, uid), items in groups.items():
+                try:
+                    _count, skipped = upsert_facts(email, uid, items)
+                    skipped_set = set(skipped)
+                    failed_ids.update(skipped_set)
+                    success_ids.update(
+                        str(item["local_gen_id"])
+                        for item in items
+                        if item.get("local_gen_id") and item["local_gen_id"] not in skipped_set
+                    )
+                except Exception as exc:  # noqa: BLE001 - 성공 그룹은 보존하고 실패 그룹만 재시도
+                    errors.append(str(exc))
+                    failed_ids.update(
+                        str(item["local_gen_id"])
+                        for item in items
+                        if item.get("local_gen_id")
+                    )
 
-        sent_by_id = {row["local_gen_id"]: row for row in batch["sent"]}
-        pushed_rows = [sent_by_id[gid] for gid in success_ids if gid in sent_by_id]
-        if pushed_rows:
-            repo_manage.mark_telemetry_pushed(pushed_rows)
-        if failed_ids:
-            error = "; ".join(errors) or "local telemetry identity unavailable"
-            failed_rows = [sent_by_id.get(gid) or gid for gid in sorted(failed_ids)]
-            repo_manage.mark_telemetry_failed(failed_rows, error)
-        return {
-            "target": "local",
-            "upserted": len(pushed_rows),
-            "failed": len(failed_ids),
-        }
+            sent_by_id = {row["local_gen_id"]: row for row in batch["sent"]}
+            pushed_rows = [sent_by_id[gid] for gid in success_ids if gid in sent_by_id]
+            if pushed_rows:
+                repo_manage.mark_telemetry_pushed(pushed_rows)
+            if failed_ids:
+                error = "; ".join(errors) or "local telemetry identity unavailable"
+                failed_rows = [sent_by_id.get(gid) or gid for gid in sorted(failed_ids)]
+                repo_manage.mark_telemetry_failed(failed_rows, error)
+            return {
+                "target": "local",
+                "upserted": len(pushed_rows),
+                "failed": len(failed_ids),
+            }
+    finally:
+        active_account.reset_override(token)
+
+
+def drain_isolated_telemetry() -> dict[str, Any]:
+    """격리 test_dev의 텔레메트리를 최초 계정 범위에 고정해 로컬 반영한다."""
+    with active_account.transition_lock:
+        account_key = active_account.account_key()
+        captured_uid = active_account.active_uid() if account_key else None
+    return _drain_isolated_telemetry(
+        account_key=account_key,
+        my_uid=captured_uid,
+    )

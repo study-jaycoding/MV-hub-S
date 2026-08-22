@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import functools
+import inspect
 import json
 import re
 import sqlite3
@@ -16,12 +18,13 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .. import repo
+from .. import active_account, repo
 from ..config import MANAGE_ENABLED
 from ..generation_result import ACTIVE_STATUSES, normalize_job_result
 from ..models import RegenerateIn
 from ..services import cli_bridge
 from ..services.agent_signals import agent_signals
+from ..services.async_tools import to_thread_non_abandon
 from ..services.event_journal import journal_generation_event
 from ..services.operational_logging import log_event
 from ..ws import manager
@@ -51,7 +54,55 @@ async def _sync_io(action, /, *args, **kwargs):
     repo 함수 하나가 여는 get_connection 컨텍스트를 한 번의 to_thread 호출 안에서 완료한다.
     따라서 트랜잭션/스레드-로컬 커넥션이 이벤트 루프와 워커 스레드 사이를 넘지 않는다.
     """
-    return await asyncio.to_thread(action, *args, **kwargs)
+    return await to_thread_non_abandon(action, *args, **kwargs)
+
+
+def _account_scoped(email_parameter: str, *, from_request_row: bool = False):
+    """공개 usecase 전체를 인증 요청의 계정 DB에 고정한다.
+
+    transition_lock은 문자열 캡처까지만 잡는다. 이후 await·네트워크·DB 트랜잭션은
+    ContextVar override만 사용하므로 로그인 전환을 막지 않는다.
+    """
+
+    def decorate(action):
+        signature = inspect.signature(action)
+
+        def account_email(args, kwargs) -> str:
+            bound = signature.bind(*args, **kwargs)
+            value = bound.arguments[email_parameter]
+            if from_request_row:
+                value = value.get("account_email") if isinstance(value, dict) else None
+            elif not isinstance(value, str):
+                value = getattr(value, "email", None)
+            with active_account.transition_lock:
+                if not value:
+                    value = active_account.account_key() or ""
+                return str(value or "").strip()
+
+        if inspect.iscoroutinefunction(action):
+            @functools.wraps(action)
+            async def async_scoped(*args, **kwargs):
+                captured_email = account_email(args, kwargs)
+                token = active_account.set_override(captured_email)
+                try:
+                    return await action(*args, **kwargs)
+                finally:
+                    active_account.reset_override(token)
+
+            return async_scoped
+
+        @functools.wraps(action)
+        def sync_scoped(*args, **kwargs):
+            captured_email = account_email(args, kwargs)
+            token = active_account.set_override(captured_email)
+            try:
+                return action(*args, **kwargs)
+            finally:
+                active_account.reset_override(token)
+
+        return sync_scoped
+
+    return decorate
 
 
 def _has_usable_asset_path(value: object) -> bool:
@@ -108,30 +159,38 @@ def pm_best_effort(
         _log_pm_failure(operation, exc)
 
 
-async def _record_request_estimate(gen_id: str, payload: dict) -> None:
+async def _record_request_estimate(
+    gen_id: str,
+    account_email: str,
+    payload: dict,
+) -> None:
     """부가 견적은 생성 응답과 분리한다. 느린 CLI 조회가 카드 연결을 늦추면 안 된다."""
-    est = None
+    token = active_account.set_override(account_email)
     try:
-        if cli_bridge.cli_available():
-            cc = await cli_bridge.estimate_cost(
-                payload.get("model"), payload.get("params"), payload.get("prompt") or ""
-            )
-            value = (cc or {}).get("credits")
-            est = int(value) if value else None
-    except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
-        _log_pm_failure("estimate_cost", exc)
-    await _sync_io(
-        pm_best_effort,
-        lambda _m: _m.record_request(gen_id, est_credits=est),
-        operation="record_request_estimate",
-        dirty_gen_id=gen_id,
-    )
+        est = None
+        try:
+            if cli_bridge.cli_available():
+                cc = await cli_bridge.estimate_cost(
+                    payload.get("model"), payload.get("params"), payload.get("prompt") or ""
+                )
+                value = (cc or {}).get("credits")
+                est = int(value) if value else None
+        except Exception as exc:  # noqa: BLE001 — 부가 견적 실패는 생성에 영향 없음
+            _log_pm_failure("estimate_cost", exc)
+        await _sync_io(
+            pm_best_effort,
+            lambda _m: _m.record_request(gen_id, est_credits=est),
+            operation="record_request_estimate",
+            dirty_gen_id=gen_id,
+        )
+    finally:
+        active_account.reset_override(token)
 
 
-def _schedule_request_estimate(gen_id: str, payload: dict) -> None:
+def _schedule_request_estimate(gen_id: str, account_email: str, payload: dict) -> None:
     if not MANAGE_ENABLED:
         return
-    task = asyncio.create_task(_record_request_estimate(gen_id, payload))
+    task = asyncio.create_task(_record_request_estimate(gen_id, account_email, payload))
     _estimate_tasks.add(task)
     task.add_done_callback(_estimate_tasks.discard)
 
@@ -354,6 +413,7 @@ async def _resolve_idempotent_placeholder_collision(
     return None
 
 
+@_account_scoped("email")
 def repair_canvas_generation_links(
     email: str,
     creator_uid: str | None,
@@ -388,6 +448,7 @@ def repair_canvas_generation_links(
     )
 
 
+@_account_scoped("email")
 async def claim_gen_requests(
     email: str,
     account_uid: str | None,
@@ -480,6 +541,7 @@ async def claim_gen_requests(
     return claimed
 
 
+@_account_scoped("email")
 async def begin_submission(
     email: str,
     account_uid: str | None,
@@ -528,6 +590,7 @@ async def begin_submission(
     return True
 
 
+@_account_scoped("email")
 async def release_claim(
     email: str,
     account_uid: str | None,
@@ -554,6 +617,7 @@ async def release_claim(
     return True
 
 
+@_account_scoped("email")
 async def require_submission_recovery(
     email: str,
     account_uid: str | None,
@@ -587,6 +651,7 @@ async def require_submission_recovery(
     return True
 
 
+@_account_scoped("email")
 async def confirm_not_submitted_and_requeue(
     email: str,
     account_uid: str | None,
@@ -631,6 +696,7 @@ async def confirm_not_submitted_and_requeue(
     return True
 
 
+@_account_scoped("email")
 async def confirm_generation_not_submitted_and_requeue(
     email: str,
     account_uid: str | None,
@@ -651,6 +717,7 @@ async def confirm_generation_not_submitted_and_requeue(
     )
 
 
+@_account_scoped("request_row", from_request_row=True)
 async def fulfill_request(
     request_row: dict,
     request_id: str,
@@ -748,6 +815,7 @@ async def fulfill_request(
     return await _sync_io(repo.get_generation, gen_id)
 
 
+@_account_scoped("request_row", from_request_row=True)
 async def anchor_request(
     request_row: dict,
     request_id: str,
@@ -791,6 +859,7 @@ async def anchor_request(
     return applied
 
 
+@_account_scoped("request_row", from_request_row=True)
 async def reconcile_request(
     request_row: dict,
     job: dict,
@@ -1120,6 +1189,7 @@ def _failure_anchor_from_reason(reason: str) -> tuple[str | None, str | None]:
     return match.group(1), status
 
 
+@_account_scoped("request_row", from_request_row=True)
 async def fail_request(
     request_row: dict,
     request_id: str,
@@ -1203,6 +1273,7 @@ async def fail_request(
     return True
 
 
+@_account_scoped("cmd")
 async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
     """placeholder 생성 + 요청 큐잉 + 에이전트 깨우기 + PM 견적. placeholder gen 반환(없으면 None).
 
@@ -1471,6 +1542,6 @@ async def submit_gen_request(cmd: GenRequestCommand) -> dict | None:
 
     # 요청 시점 견적은 부가 통계다. 느린 CLI 응답 때문에 브라우저가 닫히기 전 generation id를
     # 못 받는 일이 없도록 응답 경로에서 분리한다.
-    _schedule_request_estimate(gen_id, payload)
+    _schedule_request_estimate(gen_id, cmd.email, payload)
 
     return await _sync_io(repo.get_generation, gen_id)

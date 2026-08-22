@@ -27,11 +27,13 @@ from pathlib import Path
 from typing import Callable, Optional
 from uuid import uuid4
 
+from .. import active_account
 from ..config import DATA_DIR
 from ..db import get_db_path
 from ..manage_db import MANAGE_DB_PATH
-from .sqlite_db import validate_hub_db
+from .async_tools import to_thread_non_abandon
 from .operational_logging import log_event
+from .sqlite_db import validate_hub_db
 
 _backup_log = logging.getLogger("mvhub.backup")
 
@@ -72,14 +74,19 @@ _MANAGE_PREFIX = "manage_hub_"
 def _backup_dir() -> Path:
     """백업 폴더 — **활성 계정별**로 분리(계정 전환 시 서로의 백업을 회전-삭제하지 않게).
     로그인하면 backups/<email-slug>/, 미로그인/단독·공유서버면 레거시 평면 폴더(기존 그대로)."""
-    from ..active_account import account_key, slug
-
-    key = account_key()
-    return (BACKUP_DIR / slug(key)) if key else BACKUP_DIR
+    key = active_account.account_key()
+    return (BACKUP_DIR / active_account.slug(key)) if key else BACKUP_DIR
 
 
-def _list_backups() -> list[Path]:
-    d = _backup_dir()
+def _capture_backup_scope() -> tuple[Path, Path, str]:
+    """계정 전환과 엇갈리지 않게 원본 DB와 백업 폴더를 한 순간에 캡처한다."""
+    with active_account.transition_lock:
+        account_key = active_account.account_key() or ""
+        return get_db_path(), _backup_dir(), account_key
+
+
+def _list_backups(backup_dir: Path | None = None) -> list[Path]:
+    d = backup_dir or _backup_dir()
     if not d.is_dir():
         return []
     return sorted(d.glob(f"{_PREFIX}*.db"))
@@ -87,17 +94,19 @@ def _list_backups() -> list[Path]:
 
 def latest_backup_path() -> Optional[Path]:
     """활성 계정의 최신 완성 콘텐츠 백업. 업데이트 뒤 outbox 보강 등에 사용한다."""
-    backups = _list_backups()
+    with active_account.transition_lock:
+        backup_dir = _backup_dir()
+    backups = _list_backups(backup_dir)
     return backups[-1] if backups else None
 
 
-def _newest_age_seconds() -> Optional[float]:
+def _newest_age_seconds(backup_dir: Path | None = None) -> Optional[float]:
     """가장 최근 백업의 나이(초). 백업이 없으면 None.
 
     stat 는 NAS 순단·수동 정리와 경합할 수 있다 — 여기서 예외가 새면 주기 백업 루프
     자체가 죽으므로(코덱스 리뷰), 읽기 실패한 파일은 건너뛴다."""
     mtimes: list[float] = []
-    for p in _list_backups():
+    for p in _list_backups(backup_dir):
         with contextlib.suppress(OSError):
             mtimes.append(p.stat().st_mtime)
     if not mtimes:
@@ -164,14 +173,19 @@ def _read_poll_state(
 
 
 def _db_is_newer_than_backup() -> bool:
-    latest = latest_backup_path()
+    src, backup_dir, _account_key = _capture_backup_scope()
+    backups = _list_backups(backup_dir)
+    latest = backups[-1] if backups else None
     if latest is None:
-        return bool(_db_change_signature())
+        return bool(_db_change_signature(src))
     try:
         backup_mtime = latest.stat().st_mtime_ns
     except OSError:
         return True
-    return any(mtime_ns > backup_mtime for _label, mtime_ns, _size in _db_change_signature())
+    return any(
+        mtime_ns > backup_mtime
+        for _label, mtime_ns, _size in _db_change_signature(src)
+    )
 
 
 def _change_backup_due(
@@ -188,10 +202,13 @@ def _change_backup_due(
     )
 
 
-def list_backups_info() -> list[dict]:
+def list_backups_info(backup_dir: Path | None = None) -> list[dict]:
     """보관 중인 백업 세트(최신순). 콘텐츠 파일은 기존 API의 대표 파일로 유지한다."""
+    if backup_dir is None:
+        with active_account.transition_lock:
+            backup_dir = _backup_dir()
     out: list[dict] = []
-    for p in reversed(_list_backups()):
+    for p in reversed(_list_backups(backup_dir)):
         st = p.stat()
         stamp = p.name[len(_PREFIX):-3]
         related = [p]
@@ -210,9 +227,9 @@ def list_backups_info() -> list[dict]:
     return out
 
 
-def _rotate() -> None:
+def _rotate(backup_dir: Path) -> None:
     """오래된 백업 삭제 — 최근 BACKUP_KEEP 개만 남긴다."""
-    backups = _list_backups()  # 이름이 타임스탬프라 사전순 = 시간순
+    backups = _list_backups(backup_dir)  # 이름이 타임스탬프라 사전순 = 시간순
     excess = len(backups) - BACKUP_KEEP
     for old in backups[: max(0, excess)]:
         stamp = old.name[len(_PREFIX):-3]
@@ -223,7 +240,7 @@ def _rotate() -> None:
     # 사이드카가 무기한 쌓였다(실측: 0바이트 -wal, 32KB -shm 다수). 짝 .db 가 없는 것과
     # 회전으로 방금 .db 가 사라진 것 모두 여기서 정리된다. 열려 있으면 unlink 가 거부되므로
     # 사용 중 파일을 지울 위험은 없다(suppress).
-    d = _backup_dir()
+    d = backup_dir
     if d.is_dir():
         for side in (*d.glob("*.db-wal"), *d.glob("*.db-shm")):
             base = d / side.name.rsplit("-", 1)[0]
@@ -304,18 +321,16 @@ def _snapshot_database_set(
         src_conn.close()
 
 
-def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
-    """검증 가능한 DB 백업 세트를 생성하고 대표 콘텐츠 경로를 반환(블로킹).
-    DB 파일이 아직 없으면 None. 회전까지 수행.
-
-    ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤
-    quick_check 무결성 검증을 통과해야만 최종 이름으로 os.replace 한다. 중간 크래시/디스크풀이면
-    tmp 쓰레기만 남고, 백업 목록·회전은 검증 통과한 완성본만 본다."""
-    src = get_db_path()
+def _backup_now_for_scope(
+    src: Path,
+    backup_dir: Path,
+    stamp: Optional[str] = None,
+) -> Optional[Path]:
+    """이미 캡처한 한 계정의 경로만 사용해 백업과 회전을 끝낸다."""
     if not src.exists():
         return None
     with _BACKUP_LOCK:
-        d = _backup_dir()
+        d = backup_dir
         d.mkdir(parents=True, exist_ok=True)
         _cleanup_stale_tmp(d)
         # 마이크로초 포함 — 같은 초의 연속 백업(수동+주기)이 같은 최종 이름을 덮지 않게.
@@ -357,8 +372,71 @@ def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
                 with contextlib.suppress(OSError):
                     tmp.unlink()
             raise
-        _rotate()  # 교체 성공 후에만 — 실패 시 기존 정상 백업은 손대지 않는다
+        _rotate(d)  # 교체 성공 후에만 — 실패 시 기존 정상 백업은 손대지 않는다
         return d / f"{_PREFIX}{stamp}.db"
+
+
+def backup_now(stamp: Optional[str] = None) -> Optional[Path]:
+    """검증 가능한 DB 백업 세트를 생성하고 대표 콘텐츠 경로를 반환(블로킹).
+    DB 파일이 아직 없으면 None. 회전까지 수행.
+
+    ★원자성: 임시 파일(선행 점 + .tmp — _list_backups 의 glob 에 절대 안 걸림)에 스냅샷을 뜬 뒤
+    quick_check 무결성 검증을 통과해야만 최종 이름으로 os.replace 한다. 중간 크래시/디스크풀이면
+    tmp 쓰레기만 남고, 백업 목록·회전은 검증 통과한 완성본만 본다."""
+    src, backup_dir, account_key = _capture_backup_scope()
+    token = active_account.set_override(account_key)
+    try:
+        return _backup_now_for_scope(src, backup_dir, stamp)
+    finally:
+        active_account.reset_override(token)
+
+
+def _completed_backup_info(path: Path) -> tuple[int, int | None]:
+    """방금 반환된 대표 경로를 기준으로 완료 로그용 파일 수와 크기를 읽는다."""
+    try:
+        # 최신 목록 재탐색 대신 반환 경로의 stat을 먼저 읽어 다른 계정/동시 백업 혼입을 막는다.
+        size = path.stat().st_size
+    except OSError:
+        return 1, None
+    stamp = path.name[len(_PREFIX):-3]
+    related = [path]
+    for prefix in (_TRASH_PREFIX, _MANAGE_PREFIX):
+        candidate = path.parent / f"{prefix}{stamp}.db"
+        if candidate.is_file():
+            related.append(candidate)
+            with contextlib.suppress(OSError):
+                size += candidate.stat().st_size
+    return len(related), size
+
+
+def _run_backup_cycle(
+    src: Path,
+    backup_dir: Path,
+    completed_callback: Callable[[Path], object] | None,
+) -> Optional[Path]:
+    """백업·성공 콜백·완료 기록을 취소로 중간 유기할 수 없는 한 동기 단위로 실행한다."""
+    path = _backup_now_for_scope(src, backup_dir)
+    if path is None:
+        return None
+    if completed_callback is not None:
+        try:
+            completed_callback(path)
+        except Exception:  # noqa: BLE001 — 성공한 로컬 백업과 콜백 실패는 별개다
+            log_event(
+                _backup_log,
+                "backup_callback_failed",
+                level=logging.ERROR,
+                exc_info=True,
+            )
+    file_count, total_size = _completed_backup_info(path)
+    log_event(
+        _backup_log,
+        "backup_completed",
+        backup_set_files=file_count,
+        backup_set_bytes=total_size,
+    )
+    print(f"[backup] DB 세트 백업 생성 → {path.name}")
+    return path
 
 
 class PeriodicBackup:
@@ -388,27 +466,30 @@ class PeriodicBackup:
 
     async def _run(self) -> None:
         # NAS 파일 조회는 한 동기 helper로 묶어 poll당 to_thread 한 번만 사용한다.
+        src, backup_dir, _account_key = _capture_backup_scope()
         age, signature, backup_needed = await asyncio.to_thread(
             _read_poll_state,
-            get_db_path(),
-            _backup_dir(),
+            src,
+            backup_dir,
         )
         # 시작 백업: 최근 백업이 충분히 새것이면 생략(재기동 난립 방지).
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once()
             # 성공·실패 뒤의 최신 백업 시각을 다시 읽어 기존 시작 시점 판단을 보존한다.
+            src, backup_dir, _account_key = _capture_backup_scope()
             age, signature, backup_needed = await asyncio.to_thread(
                 _read_poll_state,
-                get_db_path(),
-                _backup_dir(),
+                src,
+                backup_dir,
             )
         changed_at = time.monotonic() if backup_needed else None
         while True:
             await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
+            src, backup_dir, _account_key = _capture_backup_scope()
             age, current_signature, _backup_needed = await asyncio.to_thread(
                 _read_poll_state,
-                get_db_path(),
-                _backup_dir(),
+                src,
+                backup_dir,
             )
             if current_signature != signature:
                 signature = current_signature
@@ -427,27 +508,18 @@ class PeriodicBackup:
 
     async def _backup_once(self) -> None:
         try:
-            # sqlite backup 은 블로킹 → 스레드로 빼 이벤트 루프를 막지 않는다.
-            path = await asyncio.to_thread(backup_now)
-            if path:
-                if self._completed_callback is not None:
-                    try:
-                        await asyncio.to_thread(self._completed_callback, path)
-                    except Exception:  # noqa: BLE001 — 로컬 백업 성공과 외부 전달 실패를 분리
-                        log_event(
-                            _backup_log,
-                            "backup_offdisk_queue_failed",
-                            level=logging.ERROR,
-                            exc_info=True,
-                        )
-                latest = list_backups_info()[0]
-                log_event(
-                    _backup_log,
-                    "backup_completed",
-                    backup_set_files=len(latest.get("files") or [path.name]),
-                    backup_set_bytes=latest.get("size"),
+            src, backup_dir, account_key = _capture_backup_scope()
+            account_token = active_account.set_override(account_key)
+            try:
+                # 스레드가 백업 파일·콜백을 소유하는 동안 요청 취소가 와도 완료까지 기다린다.
+                await to_thread_non_abandon(
+                    _run_backup_cycle,
+                    src,
+                    backup_dir,
+                    self._completed_callback,
                 )
-                print(f"[backup] DB 세트 백업 생성 → {path.name}")
+            finally:
+                active_account.reset_override(account_token)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — 워커가 죽지 않도록 격리
