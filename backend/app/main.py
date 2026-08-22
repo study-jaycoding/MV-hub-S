@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import repo
+from . import active_account, repo
 from .config import (
     ALLOW_REMOTE_AUTH_OFF,
     AUTH_ENABLED,
@@ -130,10 +130,18 @@ def _remote_realtime_config() -> tuple[str, str] | None:
     """현재 활성 로컬 계정의 공유 서버 연결값. 로그인·계정전환 때 자동으로 달라진다."""
     if not _proxy.is_worker_hub():
         return None
-    token = _proxy.token()
-    if not token:
+
+    # 이 함수는 브리지의 이벤트 루프에서 동기로 호출된다. 계정 전환을 기다리면 loop 전체를
+    # 막으므로 즉시 획득할 때만 URL·token을 같은 계정 DB에서 짧게 읽고, 연결 전에는 놓는다.
+    if not active_account.transition_lock.acquire(blocking=False):
         return None
-    return _proxy.base_url(), token
+    try:
+        token = _proxy.token()
+        if not token:
+            return None
+        return _proxy.base_url(), token
+    finally:
+        active_account.transition_lock.release()
 
 
 remote_realtime_bridge = RemoteRealtimeBridge(
