@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import uuid
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import Optional, Protocol
 
 from . import media_cache
+from .async_tools import to_thread_non_abandon
 from .media_types import asset_media_type
 from .path_safety import safe_join
 
@@ -98,7 +98,7 @@ async def stream_upload_tmp(
                 if written > max_bytes:
                     raise UploadTooLarge()
                 digest.update(chunk)
-                await asyncio.to_thread(target.write, chunk)
+                await to_thread_non_abandon(target.write, chunk)
         return tmp, written, digest.hexdigest()
     except BaseException:
         tmp.unlink(missing_ok=True)

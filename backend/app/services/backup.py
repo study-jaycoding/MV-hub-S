@@ -105,9 +105,9 @@ def _newest_age_seconds() -> Optional[float]:
     return max(0.0, time.time() - max(mtimes))
 
 
-def _db_change_signature() -> tuple[tuple[str, int, int], ...]:
+def _db_change_signature(src: Path | None = None) -> tuple[tuple[str, int, int], ...]:
     """개인 콘텐츠·휴지통의 파일/WAL 변화를 값싼 stat으로 감지한다."""
-    content = get_db_path()
+    content = src or get_db_path()
     trash = content.parent / "content_hub_trash.db"
     result: list[tuple[str, int, int]] = []
     for label, path in (
@@ -122,6 +122,45 @@ def _db_change_signature() -> tuple[tuple[str, int, int], ...]:
             continue
         result.append((label, int(stat.st_mtime_ns), int(stat.st_size)))
     return tuple(result)
+
+
+def _read_poll_state(
+    src: Path,
+    backup_dir: Path,
+) -> tuple[Optional[float], tuple[tuple[str, int, int], ...], bool]:
+    """한 번의 백업 목록 스캔으로 최근 나이·DB 서명·변경 필요 여부를 읽는다.
+
+    NAS의 glob/stat은 느리거나 일시 실패할 수 있으므로 이 동기 helper 전체를 이벤트 루프 밖에서
+    실행한다. 읽기 실패한 백업은 기존 계약처럼 건너뛰며, 정상 백업이 하나도 없으면 DB가 존재하는
+    것 자체를 백업 필요 상태로 본다.
+    """
+    newest_mtime_ns: int | None = None
+    if backup_dir.is_dir():
+        try:
+            # 목록은 poll당 정확히 한 번만 순회한다. 최신 시각은 파일명보다 실제 mtime을 따른다.
+            for path in backup_dir.glob(f"{_PREFIX}*.db"):
+                try:
+                    mtime_ns = path.stat().st_mtime_ns
+                except OSError:
+                    continue
+                if newest_mtime_ns is None or mtime_ns > newest_mtime_ns:
+                    newest_mtime_ns = mtime_ns
+        except OSError:
+            # NAS 순단은 '백업 없음'으로 처리해 주기 워커가 다음 poll에서 다시 확인하게 한다.
+            newest_mtime_ns = None
+
+    signature = _db_change_signature(src)
+    backup_age = (
+        None
+        if newest_mtime_ns is None
+        else max(0.0, time.time() - newest_mtime_ns / 1_000_000_000)
+    )
+    backup_needed = (
+        bool(signature)
+        if newest_mtime_ns is None
+        else any(mtime_ns > newest_mtime_ns for _label, mtime_ns, _size in signature)
+    )
+    return backup_age, signature, backup_needed
 
 
 def _db_is_newer_than_backup() -> bool:
@@ -348,19 +387,32 @@ class PeriodicBackup:
             self._task = None
 
     async def _run(self) -> None:
+        # NAS 파일 조회는 한 동기 helper로 묶어 poll당 to_thread 한 번만 사용한다.
+        age, signature, backup_needed = await asyncio.to_thread(
+            _read_poll_state,
+            get_db_path(),
+            _backup_dir(),
+        )
         # 시작 백업: 최근 백업이 충분히 새것이면 생략(재기동 난립 방지).
-        age = _newest_age_seconds()
         if age is None or age >= _STARTUP_SKIP_IF_YOUNGER:
             await self._backup_once()
-        signature = _db_change_signature()
-        changed_at = time.monotonic() if _db_is_newer_than_backup() else None
+            # 성공·실패 뒤의 최신 백업 시각을 다시 읽어 기존 시작 시점 판단을 보존한다.
+            age, signature, backup_needed = await asyncio.to_thread(
+                _read_poll_state,
+                get_db_path(),
+                _backup_dir(),
+            )
+        changed_at = time.monotonic() if backup_needed else None
         while True:
             await asyncio.sleep(min(60.0, BACKUP_POLL_INTERVAL))
-            current_signature = _db_change_signature()
+            age, current_signature, _backup_needed = await asyncio.to_thread(
+                _read_poll_state,
+                get_db_path(),
+                _backup_dir(),
+            )
             if current_signature != signature:
                 signature = current_signature
                 changed_at = time.monotonic()
-            age = _newest_age_seconds()
             daily_due = age is None or age >= self._interval
             quiet_dirty_due = _change_backup_due(
                 changed_at,
@@ -369,7 +421,8 @@ class PeriodicBackup:
             )
             if daily_due or quiet_dirty_due:
                 await self._backup_once()
-                signature = _db_change_signature()
+                # 백업 중 원본 DB를 쓰지 않으므로 방금 읽은 서명을 다음 비교 기준으로 재사용한다.
+                signature = current_signature
                 changed_at = None
 
     async def _backup_once(self) -> None:

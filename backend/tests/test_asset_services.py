@@ -58,6 +58,51 @@ class AssetIoTests(unittest.TestCase):
 
             self.assertEqual(list(root.glob(".upload-*.part")), [])
 
+    def test_stream_upload_uses_non_abandon_writes_in_chunk_order(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            chunks: list[bytes] = []
+
+            async def non_abandon(write, chunk):
+                chunks.append(chunk)
+                return write(chunk)
+
+            with patch.object(
+                asset_io,
+                "to_thread_non_abandon",
+                side_effect=non_abandon,
+            ) as offload:
+                tmp, size, digest = asyncio.run(
+                    asset_io.stream_upload_tmp(
+                        _ChunkUpload(b"first", b"second"),
+                        root,
+                        max_bytes=100,
+                    )
+                )
+
+            self.assertEqual(chunks, [b"first", b"second"])
+            self.assertEqual(offload.await_count, 2)
+            self.assertEqual(tmp.read_bytes(), b"firstsecond")
+            self.assertEqual(size, len(b"firstsecond"))
+            self.assertEqual(digest, hashlib.sha256(b"firstsecond").hexdigest())
+
+    def test_stream_upload_removes_partial_file_on_base_exception(self) -> None:
+        class CancelledUpload:
+            calls = 0
+
+            async def read(inner_self, _size: int = -1) -> bytes:
+                inner_self.calls += 1
+                if inner_self.calls == 1:
+                    return b"partial"
+                raise asyncio.CancelledError()
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            root = Path(tmp_dir)
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(asset_io.stream_upload_tmp(CancelledUpload(), root))
+
+            self.assertEqual(list(root.glob(".upload-*.part")), [])
+
     def test_commit_unique_never_overwrites_existing_file(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
             root = Path(tmp_dir)

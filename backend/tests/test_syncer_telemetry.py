@@ -103,6 +103,47 @@ class SyncerTelemetryTests(unittest.TestCase):
             error_type="CLIError",
         )
 
+    def test_duplicate_reconcile_failure_logs_safe_summary_and_retries_next_sync(self):
+        secret_message = "row contained token=do-not-log"
+        sync_calls = 0
+
+        def counts(*_args, **_kwargs):
+            nonlocal sync_calls
+            sync_calls += 1
+            return {
+                "inserted": 1 if sync_calls == 1 else 0,
+                "updated": 0,
+                "unchanged": 1 if sync_calls == 2 else 0,
+                "errors": 0,
+            }
+
+        with (
+            patch.object(syncer, "MANAGE_ENABLED", False),
+            patch.object(syncer, "_duplicate_reconcile_pending", False),
+            patch.object(syncer.cli_bridge, "list_jobs", AsyncMock(return_value=[{"id": "job-1"}])),
+            patch.object(syncer.repo, "apply_synced_jobs", side_effect=counts),
+            patch.object(
+                syncer.repo,
+                "reconcile_duplicates",
+                side_effect=[RuntimeError(secret_message), 2],
+            ) as reconcile,
+            patch.object(syncer, "log_event") as log_event,
+        ):
+            first = asyncio.run(syncer.sync_now())
+            second = asyncio.run(syncer.sync_now())
+
+        self.assertNotIn("reconciled", first)
+        self.assertEqual(second["reconciled"], 2)
+        self.assertEqual(reconcile.call_count, 2)
+        log_event.assert_called_once_with(
+            syncer._log,
+            "sync_duplicate_reconcile_failed",
+            level=syncer.logging.WARNING,
+            error_type="RuntimeError",
+            error_summary="duplicate reconcile deferred until next sync",
+        )
+        self.assertNotIn(secret_message, repr(log_event.call_args))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 """주기 백업 원자성 테스트 — 잘린/미검증 파일이 정상 백업 이름으로 남지 않는 불변식."""
 
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -88,6 +89,62 @@ class BackupAtomicityTests(unittest.TestCase):
             self.assertTrue(backup._change_backup_due(100.0, 900.0, now=400.0))
             self.assertTrue(backup._change_backup_due(100.0, None, now=400.0))
             self.assertFalse(backup._change_backup_due(None, 1_000.0, now=400.0))
+
+    def test_poll_state_scans_backup_list_once_and_returns_dirty_signature(self):
+        src = self.root / "poll-source.db"
+        src.write_bytes(b"source")
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        latest = self.backup_dir / "content_hub_20260822_120000_000001.db"
+        latest.write_bytes(b"backup")
+        backup_mtime_ns = latest.stat().st_mtime_ns
+        source_mtime_ns = backup_mtime_ns + 10_000_000_000
+        os.utime(src, ns=(source_mtime_ns, source_mtime_ns))
+
+        class OneScanDir:
+            scans = 0
+
+            def is_dir(inner_self):
+                return True
+
+            def glob(inner_self, pattern):
+                self.assertEqual(pattern, "content_hub_*.db")
+                inner_self.scans += 1
+                return [latest]
+
+        one_scan_dir = OneScanDir()
+        now = backup_mtime_ns / 1_000_000_000 + 120.0
+        with mock.patch.object(backup.time, "time", return_value=now):
+            age, signature, needed = backup._read_poll_state(src, one_scan_dir)  # type: ignore[arg-type]
+
+        self.assertEqual(one_scan_dir.scans, 1)
+        self.assertAlmostEqual(age, 120.0)
+        self.assertEqual(signature, (("content", source_mtime_ns, len(b"source")),))
+        self.assertTrue(needed)
+
+    def test_periodic_run_offloads_one_combined_state_read_per_poll(self):
+        worker = backup.PeriodicBackup(interval=3600.0)
+        state = (0.0, (("content", 1, 1),), False)
+        with (
+            mock.patch.object(
+                backup.asyncio,
+                "sleep",
+                mock.AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+            ),
+            mock.patch.object(
+                backup.asyncio,
+                "to_thread",
+                mock.AsyncMock(return_value=state),
+            ) as to_thread,
+            mock.patch.object(worker, "_backup_once", mock.AsyncMock()) as backup_once,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(worker._run())
+
+        self.assertEqual(to_thread.await_count, 2)  # 시작 1회 + 실제 poll 1회
+        self.assertTrue(
+            all(call.args[0] is backup._read_poll_state for call in to_thread.await_args_list)
+        )
+        backup_once.assert_not_awaited()
 
     def test_content_trash_and_manage_are_published_as_one_backup_set(self):
         trash = self.root / "content_hub_trash.db"

@@ -47,6 +47,10 @@ SYNC_WATERMARK = int(os.environ.get("CONTENT_HUB_SYNC_WATERMARK", "85"))
 # 검증·정리 대상으로 삼는다. 실제 삭제는 generate get 이 '없음' 확정한 것만.
 STUCK_SYNCED_AGE = float(os.environ.get("CONTENT_HUB_STUCK_SYNCED_AGE", "300"))
 
+# 중복 정리가 실패한 경우 신규 insert가 없는 다음 주기에도 한 번 더 시도한다. 성공하면 즉시 해제해
+# 평상시의 "insert가 있을 때만 정리" 비용 계약은 그대로 유지한다.
+_duplicate_reconcile_pending = False
+
 
 async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     """CLI 에서 최근 생성 이력을 끌어와 업서트. 카운트 반환.
@@ -55,6 +59,8 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     DB 업서트는 ① 한 트랜잭션 배치(repo.apply_synced_jobs, fsync 1회) + ② to_thread 워커
     스레드에서 수행한다 — 이전엔 잡마다 커넥션·fsync 를 메인 이벤트 루프에서 돌려, 20초 주기마다
     들어오는 HTTP 요청(관리자 창 등)을 그 사이 통째로 밀리게 했다(체감 딜레이의 정체)."""
+    global _duplicate_reconcile_pending
+
     jobs = await cli_bridge.list_jobs()
     wid = worker_id or DEFAULT_WORKER_ID
     changed_job_ids: set[str] = set()
@@ -87,9 +93,21 @@ async def sync_now(worker_id: Optional[str] = None) -> dict[str, int]:
     # 신규 적재가 있으면 그 자리에서 중복 정리 — create/sync 레이스로 생긴 중복 2행(로컬 placeholder +
     # 동기화본)이 다음 재시작까지 남지 않게 한다(예전엔 reconcile 가 부팅 때 1회뿐이라 런타임 내내
     # 그리드·카운트에 중복 노출). 중복 없으면 GROUP BY HAVING>1 이 빈 결과라 사실상 무비용.
-    if counts.get("inserted"):
-        with contextlib.suppress(Exception):
+    if counts.get("inserted") or _duplicate_reconcile_pending:
+        try:
             counts["reconciled"] = await asyncio.to_thread(repo.reconcile_duplicates)
+        except Exception as exc:  # noqa: BLE001 — 동기화 결과는 보존하고 다음 주기에 다시 시도
+            _duplicate_reconcile_pending = True
+            # 예외 원문에는 DB 값이 섞일 수 있어 기록하지 않는다. 타입과 고정된 영향 요약만 남긴다.
+            log_event(
+                _log,
+                "sync_duplicate_reconcile_failed",
+                level=logging.WARNING,
+                error_type=type(exc).__name__,
+                error_summary="duplicate reconcile deferred until next sync",
+            )
+        else:
+            _duplicate_reconcile_pending = False
     # 워터마크 초과 = 누락 위험. 100개를 꽉 채워 가져왔는데 대부분이 신규면 더 의심.
     counts["gap_warning"] = 1 if (
         counts["inserted"] >= SYNC_WATERMARK and len(jobs) >= 100

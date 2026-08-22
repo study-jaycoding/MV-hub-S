@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest import mock
 
 from PIL import Image
 
@@ -108,6 +112,85 @@ class StampFailureIsHarmlessTests(unittest.TestCase):
             self.assertFalse(file_stamp.stamp_file(path, TAGS))
             self.assertEqual(path.read_bytes(), b"hello")  # 원본 그대로
             self.assertEqual(list(Path(tmp).iterdir()), [path])  # 임시 찌꺼기 없음
+
+    def test_png_temp_is_unique_same_directory_and_fd_is_closed(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frame.png"
+            path.write_bytes(_png_bytes())
+            real_mkstemp = tempfile.mkstemp
+            real_close = os.close
+            created: list[tuple[int, Path, dict]] = []
+
+            def tracked_mkstemp(*args, **kwargs):
+                fd, raw_path = real_mkstemp(*args, **kwargs)
+                created.append((fd, Path(raw_path), kwargs))
+                return fd, raw_path
+
+            with (
+                mock.patch.object(
+                    file_stamp.tempfile,
+                    "mkstemp",
+                    side_effect=tracked_mkstemp,
+                ),
+                mock.patch.object(file_stamp.os, "close", wraps=real_close) as close,
+            ):
+                self.assertTrue(file_stamp.stamp_file(path, TAGS))
+
+            fd, temp_path, kwargs = created[0]
+            close.assert_called_once_with(fd)
+            self.assertEqual(Path(kwargs["dir"]), path.parent)
+            self.assertNotEqual(temp_path, path)
+            self.assertFalse(temp_path.exists())
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_png_replace_failure_removes_only_unreplaced_temp(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frame.png"
+            original = _png_bytes()
+            path.write_bytes(original)
+
+            with mock.patch.object(
+                file_stamp.os,
+                "replace",
+                side_effect=OSError("replace failed"),
+            ):
+                self.assertFalse(file_stamp.stamp_file(path, TAGS))
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_video_replace_failure_cleans_temp_and_keeps_copy_codec(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            original = b"original-video-container"
+            path.write_bytes(original)
+            seen_args: list[str] = []
+
+            def fake_run(args, **_kwargs):
+                seen_args.extend(args)
+                Path(args[-1]).write_bytes(b"stamped-video-container")
+                return SimpleNamespace(returncode=0, stderr=b"")
+
+            with (
+                mock.patch.object(file_stamp, "_ffmpeg", return_value="ffmpeg"),
+                mock.patch.object(file_stamp.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(
+                    file_stamp.os,
+                    "replace",
+                    side_effect=OSError("replace failed"),
+                ),
+            ):
+                self.assertFalse(file_stamp.stamp_file(path, TAGS))
+
+            self.assertEqual(seen_args[seen_args.index("-c") + 1], "copy")
+            metadata = {
+                seen_args[index + 1]
+                for index, value in enumerate(seen_args)
+                if value == "-metadata"
+            }
+            self.assertEqual(metadata, {f"{key}={value}" for key, value in TAGS.items()})
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg 가 없는 PC 는 영상 각인을 건너뛴다")

@@ -18,6 +18,7 @@ import os
 import shutil
 import struct
 import subprocess
+import tempfile
 import zlib
 from pathlib import Path
 from typing import Optional
@@ -47,6 +48,24 @@ def _ffmpeg() -> Optional[str]:
         _FFMPEG_BIN = shutil.which("ffmpeg")
         _FFMPEG_LOOKED = True
     return _FFMPEG_BIN
+
+
+def _new_stamp_tmp(path: Path, suffix: str = ".stamp") -> Path:
+    """원본과 같은 폴더에 충돌 없는 임시 파일을 만들고 Windows용 fd를 즉시 닫는다."""
+    fd, raw_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=suffix,
+    )
+    try:
+        os.close(fd)
+    except BaseException:
+        try:
+            Path(raw_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return Path(raw_path)
 
 
 def build_tags(gen_id: str, job_id: Optional[str] = None) -> dict[str, str]:
@@ -158,6 +177,8 @@ def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -
     """
     if not tags:
         return False
+    tmp: Path | None = None
+    replaced = False
     try:
         suffix = (suffix or path.suffix).lower()
         if suffix in _FFMPEG_EXTS:
@@ -166,13 +187,21 @@ def stamp_file(path: Path, tags: dict[str, str], suffix: Optional[str] = None) -
         stamped = stamp_bytes(data, tags)
         if stamped is data or len(stamped) == len(data):
             return False
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.stamp")
+        tmp = _new_stamp_tmp(path)
         tmp.write_bytes(stamped)
         os.replace(tmp, path)
+        replaced = True
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("각인 생략(%s) — %s", path.name, e)
         return False
+    finally:
+        # 교체 전에 실패·취소된 경우에만 이 호출이 소유한 고유 임시 파일을 정리한다.
+        if tmp is not None and not replaced:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
@@ -182,29 +211,34 @@ def _stamp_video_file(path: Path, tags: dict[str, str], suffix: str) -> bool:
         return False
     # 출력 확장자로 컨테이너를 정하므로 임시 파일도 진짜 확장자로 끝나야 한다(`.part` 면 ffmpeg 가
     # 형식을 몰라 실패한다).
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.stamp{suffix}")
+    tmp: Path | None = None
+    replaced = False
     # -map 은 주지 않는다. Resolve 출력처럼 타임코드(tmcd) 트랙이 있는 파일은 그걸 그대로
     # 복사하려다 mp4 재기록에 실패한다(실측 2026-08-18). 기본 매핑이면 영상·음성만 복사된다.
     args = [ffmpeg, "-y", "-v", "error", "-i", str(path), "-c", "copy",
             "-movflags", "use_metadata_tags"]
     for key, value in tags.items():
         args += ["-metadata", f"{key}={value}"]
-    args.append(str(tmp))
     try:
+        tmp = _new_stamp_tmp(path, suffix=f".stamp{suffix}")
+        args.append(str(tmp))
         done = subprocess.run(args, capture_output=True, timeout=300)
         if done.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
             log.warning("각인 생략(영상) — ffmpeg 실패: %s", done.stderr[-300:].decode("utf-8", "replace"))
-            tmp.unlink(missing_ok=True)
             return False
         os.replace(tmp, path)
+        replaced = True
         return True
     except Exception as e:  # noqa: BLE001
         log.warning("각인 생략(영상) — %s", e)
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
         return False
+    finally:
+        # ffmpeg 실패뿐 아니라 교체 실패·취소에도 미교체 출력만 남지 않게 한다.
+        if tmp is not None and not replaced:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_stamp(path: Path) -> dict[str, str]:
