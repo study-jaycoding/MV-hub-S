@@ -124,8 +124,12 @@ def set_tags_batch(
     if auto:
         repo.set_generation_auto_tags_batch(local_items)
     else:
-        repo.set_generation_tags_batch(local_items)
-        repo.set_tag_overlays_batch(shadow_items)
+        repo.apply_generation_personal_meta_writes(
+            local_items,
+            shadow_items,
+            local_writer=repo.set_generation_tags_batch,
+            shadow_writer=repo.set_tag_overlays_batch,
+        )
     return BatchMutationResult(succeeded, failed)
 
 
@@ -162,6 +166,10 @@ def set_colors_batch(
         else:
             failed.append(requested_id)
 
-    repo.set_generation_colors_batch(local_items)
-    repo.set_color_overlays_batch(shadow_items)
+    repo.apply_generation_personal_meta_writes(
+        local_items,
+        shadow_items,
+        local_writer=repo.set_generation_colors_batch,
+        shadow_writer=repo.set_color_overlays_batch,
+    )
     return BatchMutationResult(succeeded, failed)

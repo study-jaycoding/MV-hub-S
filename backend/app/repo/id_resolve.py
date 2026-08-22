@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Optional
 
 from ..db import get_connection
 from .generation_rows import _fetch_generation, _fetch_gens  # 단방향 import (id_resolve → generation_rows)
+from .personal_meta_transactions import _current_personal_meta_batch_connection
 
 
 _SQLITE_PAIRED_IN_BATCH = 400  # id/job_id 두 IN 목록을 합쳐도 오래된 SQLite 변수 상한(999) 미만.
@@ -176,8 +178,8 @@ def set_color_overlays_batch(items: list[tuple[str, Optional[str]]]) -> int:
             final_by_anchor[anchor] = color
     if not final_by_anchor:
         return 0
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+
+    def apply(conn: sqlite3.Connection) -> None:
         _ensure_color_overlay(conn)
         clear = [(anchor,) for anchor, color in final_by_anchor.items() if color is None]
         if clear:
@@ -193,6 +195,14 @@ def set_color_overlays_batch(items: list[tuple[str, Optional[str]]]) -> int:
                 "ON CONFLICT(anchor) DO UPDATE SET color=excluded.color",
                 colors,
             )
+
+    batch_conn = _current_personal_meta_batch_connection()
+    if batch_conn is not None:
+        apply(batch_conn)
+    else:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            apply(conn)
     return len(final_by_anchor)
 
 
@@ -234,8 +244,8 @@ def set_tag_overlays_batch(items: list[tuple[str, list[str]]]) -> int:
             ]
     if not final_by_anchor:
         return 0
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+
+    def apply(conn: sqlite3.Connection) -> None:
         _ensure_tag_overlay(conn)
         conn.executemany(
             "DELETE FROM gen_tag_overlay WHERE anchor=?",
@@ -251,6 +261,14 @@ def set_tag_overlays_batch(items: list[tuple[str, list[str]]]) -> int:
                 "INSERT OR IGNORE INTO gen_tag_overlay(anchor, tag) VALUES(?,?)",
                 links,
             )
+
+    batch_conn = _current_personal_meta_batch_connection()
+    if batch_conn is not None:
+        apply(batch_conn)
+    else:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            apply(conn)
     return len(final_by_anchor)
 
 

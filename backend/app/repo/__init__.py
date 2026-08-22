@@ -16,6 +16,7 @@ from ._common import (
     _remote_url,
     new_id,
 )
+from .personal_meta_transactions import *  # noqa: F401,F403
 
 # ── 각 모듈 전량 re-export ────────────────────────────────────────────────
 from .identity import *  # noqa: F401,F403

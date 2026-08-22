@@ -19,6 +19,7 @@ from .generation_references import _link_reference, _upsert_reference
 from .generation_delete import delete_generation_rows as _delete_generation
 from .generation_sync import NO_REVIVE_ERROR
 from .lineage import _record_history  # generations 가 쓰는 lineage private helper (단방향: generations → lineage)
+from .personal_meta_transactions import _current_personal_meta_batch_connection
 from ._common import (
     clean_folder_path as _clean_folder_path,
     new_id,
@@ -705,12 +706,20 @@ def set_generation_colors_batch(items: list[tuple[str, Optional[str]]]) -> int:
             final_by_id[gen_id] = color
     if not final_by_id:
         return 0
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+
+    def apply(conn: sqlite3.Connection) -> None:
         conn.executemany(
             "UPDATE generation SET color=? WHERE id=?",
             [(color, gen_id) for gen_id, color in final_by_id.items()],
         )
+
+    batch_conn = _current_personal_meta_batch_connection()
+    if batch_conn is not None:
+        apply(batch_conn)
+    else:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            apply(conn)
     return len(final_by_id)
 
 

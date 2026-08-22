@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 
 from ..db import get_connection
 from ._common import new_id
+from .personal_meta_transactions import _current_personal_meta_batch_connection
 
 
 # ── 태그 / 레퍼런스 get-or-create ────────────────────────────────────────
@@ -205,8 +206,7 @@ def set_generation_tags_batch(items: list[tuple[str, list[str]]]) -> int:
     if not final_by_id:
         return 0
 
-    with get_connection() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    def apply(conn: sqlite3.Connection) -> None:
         tag_ids: dict[str, str] = {}
         all_names = {
             name.strip()
@@ -231,6 +231,14 @@ def set_generation_tags_batch(items: list[tuple[str, list[str]]]) -> int:
                 "INSERT OR IGNORE INTO gen_tag(generation_id, tag_id) VALUES(?,?)",
                 links,
             )
+
+    batch_conn = _current_personal_meta_batch_connection()
+    if batch_conn is not None:
+        apply(batch_conn)
+    else:
+        with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            apply(conn)
     return len(final_by_id)
 
 

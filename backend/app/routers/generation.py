@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -660,15 +661,16 @@ def set_tags_batch(body: GenerationTagsBatchIn, request: Request):
     """다중 태그를 로컬/팀 shadow별 한 트랜잭션으로 저장한다. 항목별 부분 성공은 유지한다."""
     if len(body.items) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
-    can_edit, fetch_server_cards = _batch_meta_callbacks(request)
-    result = generation_personal_meta.set_tags_batch(
-        [(item.id, item.tags) for item in body.items],
-        auto=body.auto,
-        proxying=_proxy.proxying(),
-        my_uid=_my_uid(request),
-        can_edit=can_edit,
-        fetch_server_cards=fetch_server_cards,
-    )
+    with _personal_meta_account_scope(request) as my_uid:
+        can_edit, fetch_server_cards = _batch_meta_callbacks(request)
+        result = generation_personal_meta.set_tags_batch(
+            [(item.id, item.tags) for item in body.items],
+            auto=body.auto,
+            proxying=_proxy.proxying(),
+            my_uid=my_uid,
+            can_edit=can_edit,
+            fetch_server_cards=fetch_server_cards,
+        )
     return {"succeeded": result.succeeded, "failed": result.failed}
 
 
@@ -758,6 +760,21 @@ def _my_uid(request: Request) -> Optional[str]:
     return uid
 
 
+@contextmanager
+def _personal_meta_account_scope(request: Request):
+    """배치 판정·저장을 같은 계정에 고정하되 전환 lock은 캡처 중에만 보유한다."""
+    from .. import active_account
+
+    with active_account.transition_lock:
+        account_key = active_account.account_key() or ""
+        my_uid = _my_uid(request)
+    token = active_account.set_override(account_key)
+    try:
+        yield my_uid
+    finally:
+        active_account.reset_override(token)
+
+
 def _set_personal_shadow(gen_id, request, *, local_apply, shadow_apply, result_key, result_value):
     """개인메타(색/태그) setter 공통 — 서버 미러 안 함.
     · 내 카드(로컬 행 + 내 것, 또는 단독/local-only)이면 로컬 행에 저장(local_apply).
@@ -809,14 +826,15 @@ def set_colors_batch(body: GenerationColorsBatchIn, request: Request):
     """다중 색상을 로컬/팀 shadow별 한 트랜잭션으로 저장한다. 권한·존재 실패는 항목별 반환한다."""
     if len(body.items) > 500:
         raise HTTPException(status_code=400, detail="한 번에 최대 500개 생성물까지 변경할 수 있습니다")
-    can_edit, fetch_server_cards = _batch_meta_callbacks(request)
-    result = generation_personal_meta.set_colors_batch(
-        [(item.id, item.color) for item in body.items],
-        proxying=_proxy.proxying(),
-        my_uid=_my_uid(request),
-        can_edit=can_edit,
-        fetch_server_cards=fetch_server_cards,
-    )
+    with _personal_meta_account_scope(request) as my_uid:
+        can_edit, fetch_server_cards = _batch_meta_callbacks(request)
+        result = generation_personal_meta.set_colors_batch(
+            [(item.id, item.color) for item in body.items],
+            proxying=_proxy.proxying(),
+            my_uid=my_uid,
+            can_edit=can_edit,
+            fetch_server_cards=fetch_server_cards,
+        )
     return {"succeeded": result.succeeded, "failed": result.failed}
 
 
