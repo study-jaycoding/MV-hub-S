@@ -10,6 +10,26 @@ from ..emailnorm import norm_email
 from .manage_schema import _ensure_schema
 
 
+def mark_telemetry_dirty_in_connection(conn, gen_ids: list[str]) -> None:
+    """호출자가 연 트랜잭션에서 생성물을 일반 dirty로 표시한다.
+
+    스키마는 호출자가 BEGIN 전에 보장해야 하며 이 함수는 COMMIT/ROLLBACK을 소유하지 않는다.
+    """
+    ids = [gen_id for gen_id in (gen_ids or []) if gen_id]
+    if not ids:
+        return
+    for gen_id in ids:
+        conn.execute(
+            "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, dirty_rev) "
+            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1) "
+            "ON CONFLICT(local_gen_id) DO UPDATE SET "
+            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "dirty_rev=telemetry_outbox.dirty_rev+1, "
+            "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
+            (gen_id,),
+        )
+
+
 def mark_telemetry_dirty(gen_ids: list[str]) -> None:
     """변경된 내 생성물을 outbox에 다시 전송할 항목으로 표시한다."""
     ids = [gen_id for gen_id in (gen_ids or []) if gen_id]
@@ -17,16 +37,35 @@ def mark_telemetry_dirty(gen_ids: list[str]) -> None:
         return
     with get_connection() as conn:
         _ensure_schema(conn)
-        for gen_id in ids:
-            conn.execute(
-                "INSERT INTO telemetry_outbox(local_gen_id, dirty_at, dirty_rev) "
-                "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1) "
-                "ON CONFLICT(local_gen_id) DO UPDATE SET "
-                "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-                "dirty_rev=telemetry_outbox.dirty_rev+1, "
-                "pushed_at=NULL, is_tombstone=0, fail_streak=0, next_retry_at=NULL",
-                (gen_id,),
-            )
+        mark_telemetry_dirty_in_connection(conn, ids)
+
+
+def mark_telemetry_tombstone_in_connection(
+    conn, gen_id: str, snapshot: dict[str, Any]
+) -> None:
+    """호출자가 연 트랜잭션에서 삭제 직전 팩트를 tombstone으로 표시한다.
+
+    스키마는 호출자가 BEGIN 전에 보장해야 하며 이 함수는 COMMIT/ROLLBACK을 소유하지 않는다.
+    """
+    if not gen_id:
+        return
+    conn.execute(
+        "INSERT INTO telemetry_outbox"
+        "(local_gen_id, dirty_at, dirty_rev, is_tombstone, tomb_job_id, "
+        "tomb_creator_uid, tomb_snapshot) "
+        "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, 1, ?, ?, ?) "
+        "ON CONFLICT(local_gen_id) DO UPDATE SET "
+        "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+        "dirty_rev=telemetry_outbox.dirty_rev+1, pushed_at=NULL, is_tombstone=1, "
+        "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
+        "tomb_snapshot=excluded.tomb_snapshot, fail_streak=0, next_retry_at=NULL",
+        (
+            gen_id,
+            snapshot.get("job_id"),
+            snapshot.get("creator_uid"),
+            json.dumps(snapshot, ensure_ascii=False),
+        ),
+    )
 
 
 def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
@@ -35,23 +74,7 @@ def mark_telemetry_tombstone(gen_id: str, snapshot: dict[str, Any]) -> None:
         return
     with get_connection() as conn:
         _ensure_schema(conn)
-        conn.execute(
-            "INSERT INTO telemetry_outbox"
-            "(local_gen_id, dirty_at, dirty_rev, is_tombstone, tomb_job_id, "
-            "tomb_creator_uid, tomb_snapshot) "
-            "VALUES(?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 1, 1, ?, ?, ?) "
-            "ON CONFLICT(local_gen_id) DO UPDATE SET "
-            "dirty_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
-            "dirty_rev=telemetry_outbox.dirty_rev+1, pushed_at=NULL, is_tombstone=1, "
-            "tomb_job_id=excluded.tomb_job_id, tomb_creator_uid=excluded.tomb_creator_uid, "
-            "tomb_snapshot=excluded.tomb_snapshot, fail_streak=0, next_retry_at=NULL",
-            (
-                gen_id,
-                snapshot.get("job_id"),
-                snapshot.get("creator_uid"),
-                json.dumps(snapshot, ensure_ascii=False),
-            ),
-        )
+        mark_telemetry_tombstone_in_connection(conn, gen_id, snapshot)
 
 
 def _ingested_local_rows(

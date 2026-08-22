@@ -25,11 +25,16 @@ from typing import Any, Iterator, Optional
 
 from ..db import get_connection, get_db_path
 from ..emailnorm import norm_email
+from . import manage_telemetry as _manage_telemetry
 from . import tags
 from .generation_delete import delete_generation_rows as _delete_generation
 # 텔레메트리 표식은 전체 manage facade 가 아니라 leaf 에 직접 의존한다 — 지연 import 로
 # 순환을 피하던 시절의 잔재를 없애 import 순서 변화가 기능 누락으로 이어질 여지를 줄인다.
-from .manage_telemetry import mark_telemetry_dirty, mark_telemetry_tombstone
+from .manage_schema import ensure_manage_schema
+from .manage_telemetry import (  # noqa: F401 — leaf 직접 의존 계약(test_repo_import_order)
+    mark_telemetry_dirty,
+    mark_telemetry_tombstone,
+)
 
 # 휴지통은 별도 DB 파일(content_hub_trash.db)을 ATTACH 해서 `trash.trashed` 로 참조한다.
 _TRASHED_DDL = (
@@ -136,6 +141,16 @@ def _row(r: sqlite3.Row) -> dict[str, Any]:
     return {k: r[k] for k in r.keys()}
 
 
+def _prepare_telemetry_outbox(conn: sqlite3.Connection) -> bool:
+    """MANAGE on일 때만, 트랜잭션 시작 전에 outbox 스키마를 보장한다."""
+    from ..config import MANAGE_ENABLED
+
+    if not MANAGE_ENABLED:
+        return False
+    ensure_manage_schema(conn)
+    return True
+
+
 # ── 이동(삭제) ───────────────────────────────────────────────────────────
 def _gather(conn: sqlite3.Connection, gen_id: str, gen: sqlite3.Row) -> dict[str, Any]:
     """generation + 모든 자식 행을 복원 가능한 페이로드로 수집(태그·자동태그는 이름으로)."""
@@ -217,8 +232,8 @@ def move_to_trash_if_stuck_synced(
     다시 확인한다.
     조건이 하나라도 달라졌으면 이동하지 않는다.
     """
-    tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
+        telemetry_enabled = _prepare_telemetry_outbox(conn)
         conn.execute("BEGIN IMMEDIATE")
         creator_scope = " AND g.creator_uid=?" if creator_uid is not None else ""
         args: list[Any] = [gen_id, expected_job_id, cutoff]
@@ -235,9 +250,8 @@ def move_to_trash_if_stuck_synced(
         ).fetchone()
         if not gen:
             return False
-        tomb = _move_to_trash_on_conn(conn, gen_id, gen)
+        _move_to_trash_on_conn(conn, gen_id, gen, telemetry_enabled=telemetry_enabled)
         conn.execute("COMMIT")
-    _record_telemetry_tombstone(gen_id, tomb)
     return True
 
 
@@ -247,8 +261,8 @@ def _move_to_trash_guarded(
     excluded_statuses: Optional[tuple[str, ...]],
     account_uid: Optional[str],
 ) -> bool:
-    tomb: Optional[dict[str, Any]] = None
     with _with_trash() as conn:
+        telemetry_enabled = _prepare_telemetry_outbox(conn)
         # ★스냅샷(_gather)과 삭제를 같은 트랜잭션으로 — BEGIN 을 스냅샷 뒤에 열면
         # 그 사이 끼어든 변경(태그·코멘트 등)이 스냅샷에 빠진 채 삭제돼 복구 시 유실된다.
         conn.execute("BEGIN IMMEDIATE")
@@ -260,9 +274,8 @@ def _move_to_trash_guarded(
             return False
         if account_uid is not None and gen["creator_uid"] != account_uid:
             return False
-        tomb = _move_to_trash_on_conn(conn, gen_id, gen)
+        _move_to_trash_on_conn(conn, gen_id, gen, telemetry_enabled=telemetry_enabled)
         conn.execute("COMMIT")
-    _record_telemetry_tombstone(gen_id, tomb)
     return True
 
 
@@ -270,12 +283,12 @@ def _move_to_trash_on_conn(
     conn: sqlite3.Connection,
     gen_id: str,
     gen: sqlite3.Row,
-) -> Optional[dict[str, Any]]:
-    """이미 열린 쓰기 트랜잭션에서 스냅샷·휴지통 INSERT·본체 삭제를 수행한다."""
-    from ..config import MANAGE_ENABLED
-
+    *,
+    telemetry_enabled: bool,
+) -> None:
+    """열린 쓰기 트랜잭션에서 스냅샷·휴지통 INSERT·본체 삭제·outbox를 갱신한다."""
     payload = _gather(conn, gen_id, gen)
-    tomb = _telemetry_snapshot(conn, gen_id, gen) if MANAGE_ENABLED else None
+    tomb = _telemetry_snapshot(conn, gen_id, gen) if telemetry_enabled else None
     conn.execute(
         "INSERT OR REPLACE INTO trash.trashed"
         "(id, trashed_at, project_id, creator_uid, status, prompt, source_name, job_id, payload) "
@@ -292,24 +305,17 @@ def _move_to_trash_on_conn(
         ),
     )
     _delete_generation(conn, gen_id)  # 메인에서 본체+자식 제거
-    return tomb
+    _record_telemetry_tombstone(conn, gen_id, tomb)
 
 
-def _record_telemetry_tombstone(gen_id: str, tomb: Optional[dict[str, Any]]) -> None:
-    """성공한 휴지통 이동을 매니징 텔레메트리에 별도 커넥션으로 알린다."""
-    # T5: 팀 매니징 텔레메트리에 삭제 tombstone 을 남긴다 — 서버 집계에서 이 생성물을 is_deleted 로
-    # 넘겨(완료/공유 상태·건수가 어긋나지 않게). with 밖에서 별 커넥션으로, best-effort.
+def _record_telemetry_tombstone(
+    conn: sqlite3.Connection,
+    gen_id: str,
+    tomb: Optional[dict[str, Any]],
+) -> None:
+    """같은 transaction-root에 삭제 tombstone을 기록한다(MANAGE off면 tomb=None)."""
     if tomb is not None:
-        try:
-            mark_telemetry_tombstone(gen_id, tomb)
-        except Exception:  # noqa: BLE001 — 삭제 자체는 성공, 텔레메트리는 사이드카(별 DB)
-            # 단, 여기 실패는 스냅샷이 사라져(본체 이미 삭제) 서버 팩트가 is_deleted 로 영영 안 넘어가는
-            # 영구 왜곡이 될 수 있어 silent 로 두지 않고 남긴다(진단용). 삭제 흐름은 계속 진행.
-            logging.getLogger(__name__).warning(
-                "텔레메트리 tombstone 기록 실패(gen_id=%s) — 팀 집계에서 삭제 반영 누락 가능",
-                gen_id,
-                exc_info=True,
-            )
+        _manage_telemetry.mark_telemetry_tombstone_in_connection(conn, gen_id, tomb)
 
 
 def _telemetry_snapshot(conn, gen_id: str, gen) -> dict[str, Any]:
@@ -419,6 +425,7 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
     """휴지통 항목을 메인 DB 에 그대로 재생성 + 휴지통에서 제거(원자). 없으면 False.
     account_uid 가 주어지면(AUTH on) 본인 것만 복구 — 남의 삭제물 복구·재노출 차단."""
     with _with_trash() as conn:
+        telemetry_enabled = _prepare_telemetry_outbox(conn)
         # ★잠금을 휴지통 SELECT '전'에 연다(코덱스 P1) — payload 를 읽은 뒤 purge 가
         # 행을 지우면 restore 는 뒤늦게 본체를 복원하고 purge 는 sidecar 를 지워, 둘 다
         # 성공하면서 metrics/task/export 가 유실됐다. IMMEDIATE 는 attach 된 휴지통 DB
@@ -494,16 +501,9 @@ def restore_from_trash(gen_id: str, account_uid: Optional[str] = None) -> bool:
         for s in p.get("shares", []):
             _insert_row(conn, "share", s, or_ignore=True)
         conn.execute("DELETE FROM trash.trashed WHERE id=?", (gen_id,))
+        if telemetry_enabled:
+            _manage_telemetry.mark_telemetry_dirty_in_connection(conn, [gen_id])
         conn.execute("COMMIT")
-    # T5: 복원되면 삭제가 취소된 것 — 텔레메트리를 일반 dirty 로 다시 찍어 tombstone 을 해제(is_tombstone=0)
-    # 하고 살아있는 팩트로 재전송되게 한다. with 밖에서 별 커넥션으로, best-effort·플래그 게이트.
-    try:
-        from ..config import MANAGE_ENABLED
-
-        if MANAGE_ENABLED:
-            mark_telemetry_dirty([gen_id])
-    except Exception:  # noqa: BLE001
-        pass
     return True
 
 
