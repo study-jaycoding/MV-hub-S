@@ -41,7 +41,15 @@ export function AdminWindow({
   } | null>(null);
   const [urlDraft, setUrlDraft] = useState("");
   const [urlMsg, setUrlMsg] = useState("");
-  const refreshShared = () =>
+  // 공유 서버(로그인 계정 존재=auth on)에서는 서버 연결 설정·elevation 이 '로컬 PC 전용'
+  // API(R7 0-A loopback 가드)라 LAN 접속 브라우저에선 403 이다 — 호출 자체를 생략하고
+  // 관련 UI(공유 서버 탭·열쇠)를 숨긴다. 로컬 허브(auth off, account 없음)만 기존 동작.
+  const localOnlyServerControls = !account;
+  const refreshShared = () => {
+    if (!localOnlyServerControls) {
+      setShared({ url: null, is_admin: false, elevated: false, elevated_as: null });
+      return;
+    }
     api
       .sharedServerStatus()
       .then((s) => {
@@ -49,6 +57,7 @@ export function AdminWindow({
         setUrlDraft(s.url || "");
       })
       .catch(() => setShared({ url: null, is_admin: false, elevated: false, elevated_as: null }));
+  };
   useEffect(() => {
     refreshShared();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,6 +199,7 @@ export function AdminWindow({
       <div className="admin-window" role="dialog" aria-label="관리자">
         <header className="admin-head">
           <span className="admin-title">⬡ 관리자</span>
+          {localOnlyServerControls && (
           <button
             className={"admin-key" + (elevated ? " on" : "")}
             onClick={() => (elevated ? deElevate() : setElevOpen(true))}
@@ -201,6 +211,7 @@ export function AdminWindow({
           >
             🔑
           </button>
+          )}
           <button className="assets-x" onClick={onClose} title="닫기">
             ✕
           </button>

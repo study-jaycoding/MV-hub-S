@@ -27,6 +27,7 @@ from ._telemetry import touch_generation_telemetry
 from ..deps import actor_id, require_edit_generation
 from ..repo import identity
 from ..services import agent_signals
+from ..services.request_guards import require_loopback_request
 from ..services.event_journal import journal_audit_event
 from ..services.share_state_reconciler import kick_share_state_reconciler
 
@@ -241,16 +242,61 @@ def _shared_status() -> dict[str, Any]:
     }
 
 
+def _require_local_shared_connection(request: Request) -> None:
+    """공유 서버 '연결 설정'(상태·로그인·토큰·elevation·주소)은 이 PC 브라우저 전용
+    (R7 0-A, 코덱스 P1) — 원격 계정이 서버 공용 설정·토큰을 읽거나 바꾸는 간섭과
+    login body.url SSRF 를 차단한다. 발행 '데이터' 경로(/share/publish-bundle·
+    /publish-to-shared)는 대상이 아니다. ★호환성: LAN 직결·역프록시에선 이 7개가 403."""
+    require_loopback_request(
+        request, "공유 서버 연결 설정은 해당 PC 브라우저에서만 사용할 수 있습니다"
+    )
+
+
+def _normalize_shared_url(raw: str) -> str:
+    """공유 서버 주소 정규화(R7 0-A) — http/https+호스트 필수, 사설 IP·localhost 허용
+    (팀 서버는 LAN 이 정상). userinfo·query·fragment 는 거부(토큰이 이상 주소로 새는 것
+    방지). 실패는 외부 요청 '전에' 400."""
+    from urllib.parse import urlsplit
+
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        raise HTTPException(status_code=400, detail="주소를 입력하세요")
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="주소 형식이 올바르지 않습니다") from exc
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(
+            status_code=400, detail="http(s)://호스트 형식의 주소가 필요합니다"
+        )
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise HTTPException(
+            status_code=400, detail="주소에 계정 정보·쿼리를 포함할 수 없습니다"
+        )
+    return url
+
+
+def _validated_effective_url() -> str:
+    """저장된 공유 서버 주소도 같은 정규화를 통과시켜 사용(register/elevate 재사용 경로)."""
+    return _normalize_shared_url(_effective_url())
+
+
 @router.get("/shared-server/status")
-def shared_server_status():
+def shared_server_status(request: Request):
+    _require_local_shared_connection(request)
     return _shared_status()
 
 
 @router.post("/shared-server/login")
-def shared_server_login(body: SharedLoginIn):
+def shared_server_login(body: SharedLoginIn, request: Request):
     """공유 서버(팀 계정)에 로그인 → 세션 토큰을 이 PC 로컬 DB 에 저장(발행에 사용).
     로컬 신원을 이 계정으로 맞춰 작업·표기가 내 이름으로 뜨고 단일 신원이 된다."""
-    url = (body.url or "").strip().rstrip("/") or _effective_url()
+    _require_local_shared_connection(request)
+    url = (
+        _normalize_shared_url(body.url)
+        if (body.url or "").strip()
+        else _validated_effective_url()
+    )
     status, resp = _http_json(
         "POST", f"{url}/api/auth/login", body={"email": body.email, "password": body.password}
     )
@@ -280,11 +326,12 @@ class SharedRegisterIn(BaseModel):
 
 
 @router.post("/shared-server/register")
-def shared_server_register(body: SharedRegisterIn):
+def shared_server_register(body: SharedRegisterIn, request: Request):
     """공유 서버에 새 팀 계정 가입 — 작업자가 로컬 허브 로그인창에서 직접. 서버 규칙: 첫 계정은
     자동 admin 승인(토큰 발급) → 즉시 사용, 그 외는 승인대기(pending) → 관리자 승인 후 로그인.
     토큰이 오면(=첫 계정) 이 PC 로컬에 저장해 바로 로그인 상태가 된다."""
-    url = _effective_url()
+    _require_local_shared_connection(request)
+    url = _validated_effective_url()
     status, resp = _http_json(
         "POST", f"{url}/api/auth/register",
         body={"email": body.email, "password": body.password, "name": body.name},
@@ -318,8 +365,9 @@ def shared_server_register(body: SharedRegisterIn):
 
 
 @router.post("/shared-server/logout")
-def shared_server_logout():
+def shared_server_logout(request: Request):
     """로그아웃 — 토큰·신원·임시권한을 지운다. 서버 주소(_K_URL)는 유지(다음 로그인창이 그대로 쓰게)."""
+    _require_local_shared_connection(request)
     for k in (_K_TOKEN, _K_EMAIL, _K_NAME, _K_ROLES):
         repo.set_setting(k, None)
     _clear_elevation()  # 로그아웃 → 임시 관리자 권한도 해제
@@ -349,16 +397,17 @@ class ElevateIn(BaseModel):
 
 
 @router.post("/shared-server/elevate")
-def shared_server_elevate(body: ElevateIn):
+def shared_server_elevate(body: ElevateIn, request: Request):
     """임시 관리자 권한 — 본인 로그인은 유지한 채 admin 계정 비번을 검증해 '승인 절차' 권한만
     일시 획득한다. 검증된 admin 토큰을 elev 슬롯에 저장하고, _proxy 가 계정관리(/api/auth/accounts*)
     호출에만 그 토큰을 쓴다. 로그아웃·계정전환 시 해제(다른 사람이 로그인하면 권한도 넘어감)."""
     # 짧은 관리자 id("admin")는 설정된 관리자 이메일로 매핑(기본 admin@millionvolt.com,
     # env CONTENT_HUB_ADMIN_EMAIL 로 변경). 작업자가 매번 전체 이메일을 안 적어도 되게.
+    _require_local_shared_connection(request)
     email = (body.email or "").strip()
     if "@" not in email:
         email = _ADMIN_EMAIL
-    url = _effective_url()
+    url = _validated_effective_url()
     status, resp = _http_json(
         "POST", f"{url}/api/auth/login", body={"email": email, "password": body.password}
     )
@@ -375,18 +424,18 @@ def shared_server_elevate(body: ElevateIn):
 
 
 @router.post("/shared-server/de-elevate")
-def shared_server_de_elevate():
+def shared_server_de_elevate(request: Request):
     """임시 관리자 권한 해제(수동)."""
+    _require_local_shared_connection(request)
     _clear_elevation()
     return {"ok": True, **_shared_status()}
 
 
 @router.post("/shared-server/url")
-def set_shared_url(body: SetUrlIn):
+def set_shared_url(body: SetUrlIn, request: Request):
     """공유 서버 주소 변경 — 관리자 창 '공유 서버' 탭(admin 전용 UI). 이 PC 로컬 허브 설정값."""
-    url = body.url.strip().rstrip("/")
-    if not url:
-        raise HTTPException(status_code=400, detail="주소를 입력하세요")
+    _require_local_shared_connection(request)
+    url = _normalize_shared_url(body.url)
     repo.set_setting(_K_URL, url)
     return _shared_status()
 
