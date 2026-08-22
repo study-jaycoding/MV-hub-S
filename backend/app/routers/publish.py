@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -38,24 +38,37 @@ router = APIRouter(prefix="/api", tags=["publish"])
 _touch_telemetry = touch_generation_telemetry
 
 
-def _switch_account_db(email: str, uid: Optional[str]) -> None:
+def _switch_account_db(
+    email: str,
+    uid: Optional[str],
+    *,
+    before_publish: Optional[Callable[[], None]] = None,
+) -> None:
     """로컬 프록시 로그인/전환 — 계정 전용 DB 를 준비한 뒤 활성 계정 포인터를 바꾼다.
     이후 모든 set_setting/get_setting·읽기쓰기가 그 계정 DB 로 향해 다른 계정과 데이터가 섞이지 않는다.
-    공유 서버(AUTH on)에선 계정별 DB 를 쓰지 않으므로 아무것도 하지 않는다(이 메커니즘은 로컬 전용)."""
-    if AUTH_ENABLED:
-        return
+    before_publish 가 있으면 대상 DB override 아래에서 실행을 마친 뒤 포인터를 공개한다.
+    공유 서버(AUTH on)에선 계정별 DB 전환 없이 before_publish 만 현재 DB 에 적용한다."""
     # 일반 요청은 transition_lock 을 잡지 않고 포인터를 읽으므로, 미완료 DB 를 먼저 공개하지 않는다.
-    # 실제 로그인/가입 호출자는 설정 저장까지 바깥에서 같은 RLock 을 보유하며, 여기서도 잠금 규율을
-    # 보장해 미래의 직접 호출이 생겨도 준비→공개 순서가 깨지지 않게 한다.
+    # 로그인/가입의 세션 설정도 이 lock 아래 대상 DB 에 모두 저장한 뒤 포인터를 마지막에 공개한다.
     with active_account.transition_lock:
+        if AUTH_ENABLED:
+            if before_publish is not None:
+                before_publish()
+            return
         db.ensure_account_db(email, uid)
+        if before_publish is not None:
+            override_token = active_account.set_override(email)
+            try:
+                before_publish()
+            finally:
+                active_account.reset_override(override_token)
         active_account.set_active(email, uid)  # RLock 재진입 — 마이그레이션 완료 뒤에만 공개
     identity._MY_UID_CACHE[0] = None  # 새 DB 기준으로 is_mine 재계산
     # 에이전트를 깨워 이 계정 DB 로 재동기화·계정상태 재보고 — 로그인 전(레거시 DB)에 보고된 워크스페이스
     # 상태가 새 계정 DB 엔 없어 '미연결'로 보이던 것을 곧 채운다(+ 로컬 생성물도 이 DB 로 다시 적재).
     # 로컬 에이전트는 AUTH-off 라 'local' 신원으로 대기한다(_agent_acc 폴백과 동일).
     try:
-        agent_signals.signal("local", "sync")
+        agent_signals.agent_signals.signal("local", "sync")
     except Exception:  # noqa: BLE001 — 에이전트 미가동이어도 로그인은 진행
         pass
 
@@ -81,6 +94,34 @@ _K_ELEV_NAME = "shared_server_elev_name"
 def _clear_elevation() -> None:
     for k in (_K_ELEV_TOKEN, _K_ELEV_EMAIL, _K_ELEV_NAME):
         repo.set_setting(k, None)
+
+
+def _save_shared_session(
+    *,
+    url: str,
+    email: str,
+    token: str,
+    account: dict[str, Any],
+    clear_elevation: bool,
+) -> None:
+    """공유 서버 세션을 현재 DB scope에 저장한다.
+
+    로컬 로그인/가입에서는 ``_switch_account_db``가 B 계정 override를 건 상태로 호출한다.
+    필수 설정 중 하나라도 실패하면 예외를 그대로 전파해 활성 포인터 공개를 막는다.
+    """
+    name = account.get("name") or email
+    repo.set_setting(_K_URL, url)
+    repo.set_setting(_K_EMAIL, email)
+    repo.set_setting(_K_TOKEN, token)
+    repo.set_setting(_K_NAME, name)
+    repo.set_setting(_K_ROLES, json.dumps(account.get("global_roles") or []))
+    if clear_elevation:
+        _clear_elevation()  # 계정 전환 → 이전 사람의 임시 관리자 권한 해제
+    try:
+        repo.set_provider_name(name)
+    except Exception:  # noqa: BLE001 — 표시이름 미러 실패가 로그인 자체를 막지는 않음
+        pass
+
 
 # 임시 관리자 권한(elevation) 기본 관리자 계정 — 모달이 짧은 id "admin" 을 받으면 이 이메일로 매핑.
 _ADMIN_EMAIL = (os.environ.get("CONTENT_HUB_ADMIN_EMAIL") or "admin@millionvolt.com").strip()
@@ -309,23 +350,19 @@ def shared_server_login(body: SharedLoginIn, request: Request):
     if status != 200 or not isinstance(resp, dict) or not resp.get("token"):
         raise HTTPException(status_code=400, detail=f"공유 서버 로그인 실패: {_flatten_detail(resp)}")
     acc = resp.get("account") or {}
-    # ★전환 '전체'(계정 DB 준비→포인터 공개→세션 설정 저장)를 transition_lock 으로(코덱스
-    # 최종 P1) — 포인터 쓰기만 보호하면 DB 준비와 설정 저장 사이 복원이 끼어 서로 다른 DB 로
-    # 갈릴 수 있다. lock 보유 중 열리는 커넥션은 컨텍스트 단위로 바로 닫혀 복원 게이트와
-    # 교착하지 않는다(복원은 이 lock 을 게이트보다 먼저 잡는다).
-    with active_account.transition_lock:
-        # 계정별 DB 로 전환 — 이후 set_setting 들이 이 계정 DB 에 기록된다(다른 계정과 격리).
-        _switch_account_db(body.email, acc.get("creator_uid"))
-        repo.set_setting(_K_URL, url)
-        repo.set_setting(_K_EMAIL, body.email)
-        repo.set_setting(_K_TOKEN, resp["token"])
-        repo.set_setting(_K_NAME, acc.get("name") or body.email)
-        repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
-        _clear_elevation()  # 계정 전환 → 이전 사람의 임시 관리자 권한 해제(권한은 새로 로그인한 사람에게)
-        try:
-            repo.set_provider_name(acc.get("name") or body.email)
-        except Exception:  # noqa: BLE001
-            pass
+    # 공유 서버 API 호출은 lock 밖에서 끝낸 뒤, B 준비→B override 설정 저장→포인터 공개를
+    # transition_lock 아래 한 임계구역으로 처리한다. 필수 설정 실패 시 포인터는 기존 A 에 남는다.
+    _switch_account_db(
+        body.email,
+        acc.get("creator_uid"),
+        before_publish=lambda: _save_shared_session(
+            url=url,
+            email=body.email,
+            token=resp["token"],
+            account=acc,
+            clear_elevation=True,
+        ),
+    )
     kick_share_state_reconciler()  # auth_required 원장을 새 토큰으로 즉시 재개
     return {"ok": True, "account": acc, **_shared_status()}
 
@@ -355,17 +392,17 @@ def shared_server_register(body: SharedRegisterIn, request: Request):
     acc = resp.get("account") or {}
     token = resp.get("token")
     if token:  # 첫 계정=admin 자동승인 → 바로 로그인 상태로 저장
-        with active_account.transition_lock:  # 전환 전체 원자화(코덱스 최종 P1)
-            _switch_account_db(body.email, acc.get("creator_uid"))  # 계정별 DB 로 전환
-            repo.set_setting(_K_URL, url)
-            repo.set_setting(_K_EMAIL, body.email)
-            repo.set_setting(_K_TOKEN, token)
-            repo.set_setting(_K_NAME, acc.get("name") or body.email)
-            repo.set_setting(_K_ROLES, json.dumps(acc.get("global_roles") or []))
-            try:
-                repo.set_provider_name(acc.get("name") or body.email)
-            except Exception:  # noqa: BLE001
-                pass
+        _switch_account_db(
+            body.email,
+            acc.get("creator_uid"),
+            before_publish=lambda: _save_shared_session(
+                url=url,
+                email=body.email,
+                token=token,
+                account=acc,
+                clear_elevation=False,
+            ),
+        )
         kick_share_state_reconciler()  # 첫 계정 자동 로그인도 대기 원장을 즉시 재개
     return {
         "ok": True,
