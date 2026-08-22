@@ -377,9 +377,10 @@ def unpublish(gen_id: str, request: Request):
     if not gen:
         raise HTTPException(status_code=404, detail="generation 없음")
     _require_unpublish(request, gen)  # 공유 해제 = 본인/admin, 또는 그 프로젝트 슈퍼바이저(B안)
-    _ensure_not_final_before_unpublish(gen)
-    was_shared = bool(gen.get("shared"))
-    repo.unpublish(gen_id)
+    try:
+        was_shared = repo.unpublish_generation_if_not_final(gen_id)
+    except repo.FinalGenerationUnpublishError as exc:
+        raise HTTPException(status_code=409, detail=_FINAL_UNPUBLISH_DETAIL) from exc
     _touch_telemetry(gen_id)
     out = repo.get_generation(gen_id)
     if out and was_shared and not out.get("shared"):
@@ -517,9 +518,11 @@ def finalize(gen_id: str, request: Request, background: BackgroundTasks):
     else:
         # 프로젝트 미배정 → 검수자(Supervisor) 개념이 없다. 본인/admin 만(남의 비공개 강제 공유 차단).
         require_edit_generation(request, gen)
-    if not gen.get("shared"):  # 최종 = 후보 확정 → 공유 동반(잠금은 unpublish 가드)
-        repo.publish(gen_id, actor_id(request), "team")
-    repo.set_final(gen_id, True, _finalizer_uid(request))
+    # 최종 = 후보 확정 → 공유 동반. 공유 확인부터 final 기록까지 한 쓰기락으로 묶어
+    # 로컬 unpublish가 둘 사이에 끼어드는 모순(is_final=1, share 없음)을 차단한다.
+    repo.finalize_generation_with_share(
+        gen_id, actor_id(request), _finalizer_uid(request), "team"
+    )
     _touch_telemetry(gen_id)
     journal_audit_event(
         "generation.finalized",

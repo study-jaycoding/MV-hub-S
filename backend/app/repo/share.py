@@ -43,6 +43,85 @@ def unpublish(gen_id: str) -> int:
         return cur.rowcount
 
 
+class FinalGenerationUnpublishError(RuntimeError):
+    """최종(골드) generation 의 공유 해제 시도를 나타낸다."""
+
+
+def finalize_generation_with_share(
+    gen_id: str,
+    shared_by: str,
+    final_by: Optional[str] = None,
+    visibility: str = "team",
+) -> bool:
+    """공유를 보장하고 최종 지정까지 한 트랜잭션으로 반영한다.
+
+    반환값은 잠금 안에서 확인한 기존 공유 여부다. ★transaction-root 전용(바깥
+    트랜잭션 안 호출 금지): 공유 SELECT 전에 ``BEGIN IMMEDIATE``를 열어
+    unpublish의 검사·삭제 루트와 직렬화한다.
+    """
+    sid = new_id()
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            was_shared = bool(
+                conn.execute(
+                    "SELECT 1 FROM share WHERE generation_id=?", (gen_id,)
+                ).fetchone()
+            )
+            if not was_shared:
+                conn.execute(
+                    "INSERT INTO share(id, generation_id, shared_by, visibility) "
+                    "VALUES(?,?,?,?) ON CONFLICT(generation_id) DO NOTHING",
+                    (sid, gen_id, shared_by, visibility),
+                )
+            conn.execute(
+                "UPDATE generation "
+                "SET is_final=1, final_by=?, final_at=datetime('now') WHERE id=?",
+                (final_by, gen_id),
+            )
+            conn.execute("COMMIT")
+            return was_shared
+        except BaseException:
+            # COMMIT 자체 실패나 취소 계열 예외에서도 원래 예외를 가리지 않고 정리한다.
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+
+def unpublish_generation_if_not_final(gen_id: str) -> bool:
+    """최종이 아닐 때만 공유를 해제하고, 잠금 안의 기존 공유 여부를 반환한다.
+
+    최종이면 ``FinalGenerationUnpublishError``를 발생시킨다. ★transaction-root
+    전용(바깥 트랜잭션 안 호출 금지): final SELECT 전에 ``BEGIN IMMEDIATE``를
+    열어 finalize의 공유 확인·최종 지정 루트와 직렬화한다.
+    """
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = conn.execute(
+                "SELECT g.is_final, "
+                "EXISTS(SELECT 1 FROM share s WHERE s.generation_id=g.id) AS shared "
+                "FROM generation g WHERE g.id=?",
+                (gen_id,),
+            ).fetchone()
+            if state and state["is_final"]:
+                raise FinalGenerationUnpublishError(gen_id)
+            was_shared = bool(state and state["shared"])
+            conn.execute("DELETE FROM share WHERE generation_id=?", (gen_id,))
+            conn.execute("COMMIT")
+            return was_shared
+        except BaseException:
+            try:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+
 def _bridge_derived_edges(
     conn: sqlite3.Connection, shared_ids: list[str], shared_set: set[str], limit: int = 60
 ) -> list[tuple[str, str]]:

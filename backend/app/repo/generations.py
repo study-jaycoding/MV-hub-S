@@ -751,7 +751,8 @@ def set_comment(gen_id: str, comment: Optional[str]) -> None:
 # ── v02 CMS — Supervisor 최종(골드) 선별 ───────────────────────────────────
 def set_final(gen_id: str, is_final: bool, by_uid: Optional[str] = None) -> None:
     """Supervisor 가 생성본을 최종(골드)으로 지정/해제. 지정 시 누가/언제 기록.
-    공유 잠금('최종인데 공유 안 됨' 모순 차단)은 라우터의 unpublish 가드가 담당한다."""
+    저수준 단건 함수이며 공유 불변식은 보장하지 않는다. 서버 본체의 최종 지정은
+    ``finalize_generation_with_share`` transaction-root를 사용해야 한다."""
     with get_connection() as conn:
         if is_final:
             conn.execute(
