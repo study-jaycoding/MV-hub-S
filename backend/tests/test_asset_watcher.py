@@ -181,6 +181,43 @@ class AssetWatcherTests(unittest.TestCase):
         self.assertGreater(watcher._watches[key].generation, old_generation)
         self.assertEqual(watcher._pending, {key})
 
+    def test_watch_path_probe_runs_outside_watcher_lock(self):
+        """R5 2-G — 신규 등록의 경로 확인(NAS stat)이 전역 락을 잡은 채 돌면 그 지연
+        동안 이벤트·unwatch·복구가 전부 멈춘다. 확인 중에도 락은 자유로워야 한다."""
+        import threading
+
+        watcher = asset_watcher._Watcher()
+        watcher._observer = _FakeObserver()
+        watcher._loop = None
+        probing = threading.Event()
+        release = threading.Event()
+
+        def slow_identity(_dir_key):
+            probing.set()
+            release.wait(timeout=2)
+            return (1, 2)
+
+        lock_free_during_probe = []
+        with patch.object(asset_watcher, "_directory_identity", side_effect=slow_identity):
+            worker = threading.Thread(
+                target=lambda: watcher.watch(Path("X:\\slow-nas\\proj"), "p")
+            )
+            worker.start()
+            try:
+                self.assertTrue(probing.wait(timeout=2))
+                acquired = watcher._lock.acquire(timeout=0.5)  # 확인 중 락 획득 시도
+                lock_free_during_probe.append(acquired)
+                if acquired:
+                    watcher._lock.release()
+            finally:
+                release.set()
+                worker.join(timeout=2)
+        self.assertEqual(lock_free_during_probe, [True])
+        # 확인 성공 → 정상 schedule 완료(재검증 경로가 등록을 잃지 않는다)
+        key = str(Path("X:\\slow-nas\\proj"))
+        self.assertIsNotNone(watcher._watches[key].handle)
+        self.assertEqual(watcher._watches[key].identity, (1, 2))
+
     def test_nas_transient_missing_waits_for_grace_then_recovers(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)

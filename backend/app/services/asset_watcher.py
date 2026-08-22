@@ -394,7 +394,13 @@ class _Watcher:
             )
         return recovery
 
-    def _schedule_reserved(self, observer, dir_key: str, generation: int) -> None:
+    def _schedule_reserved(
+        self,
+        observer,
+        dir_key: str,
+        generation: int,
+        identity: tuple[int, int] | None = None,
+    ) -> None:
         # Observer는 handler 호출 중 자체 락을 잡는다. watcher 락을 잡은 채 schedule하면
         # handler(Observer→watcher)와 역순이 되어 교착할 수 있으므로 실제 등록은 락 밖에서 한다.
         with self._lock:
@@ -421,7 +427,8 @@ class _Watcher:
                 lambda key, gen=generation: self._on_root_lost(key, gen),
             )
 
-        identity = _directory_identity(dir_key)
+        if identity is None:
+            identity = _directory_identity(dir_key)  # 호출자가 확인 못 넘긴 경우만 stat
         try:
             handle = observer.schedule(handler, dir_key, recursive=True)
         except Exception as exc:  # noqa: BLE001 — 감시 등록 실패는 백오프로 재시도
@@ -597,6 +604,7 @@ class _Watcher:
                             observer,
                             dir_key,
                             schedule_generation,
+                            identity=current_identity,  # 이번 사이클 확인분 재사용(중복 stat 회피)
                         )
         except Exception as exc:  # noqa: BLE001 — 점검 스레드 한 번의 실패로 복구가 영구 정지하지 않게
             print(f"[asset-watcher] 감시 상태 점검 실패: {exc}")
@@ -638,22 +646,36 @@ class _Watcher:
             registrations[registration_id] = _Registration(project, hide_render, targets)
             self._registration_dirs[registration_id] = key
             self._refresh_dir_views_locked(key)
-            if key in self._watches:
-                pass
-            else:
-                generation = self._reserve_generation_locked(key)
-                if proj_dir.is_dir():
-                    schedule_generation = generation
-                else:
-                    self._mark_recovery_locked(
-                        key,
-                        generation,
-                        time.monotonic(),
-                        lost_signal=False,
-                    )
+            if key not in self._watches:
+                # placeholder 세대만 예약하고 경로 확인(NAS I/O)은 락 밖에서 한다(R5 2-G)
+                # — 종전엔 is_dir 이 락 안이라 NAS 지연이 이벤트·unwatch·복구·다른 등록까지
+                # 전부 세웠다. 재진입 시 아래에서 observer·등록·세대·handle 을 재검증한다.
+                schedule_generation = self._reserve_generation_locked(key)
             self._ensure_health_timer_locked()
         if schedule_generation is not None:
-            self._schedule_reserved(observer, key, schedule_generation)
+            identity = _directory_identity(key)  # NAS stat — 락 밖
+            if identity is not None:
+                # 확인한 identity 를 그대로 전달해 schedule 의 중복 stat 을 피한다.
+                self._schedule_reserved(
+                    observer, key, schedule_generation, identity=identity
+                )
+            else:
+                with self._lock:
+                    state = self._watches.get(key)
+                    if (
+                        observer is self._observer
+                        and key in self._registrations_by_dir
+                        and state is not None
+                        and state.generation == schedule_generation
+                        and state.handle is None
+                        and not state.scheduling
+                    ):
+                        self._mark_recovery_locked(
+                            key,
+                            schedule_generation,
+                            time.monotonic(),
+                            lost_signal=False,
+                        )
         # 같은 등록자가 경로를 옮긴 경우 새 등록을 잠근 뒤 옛 핸들을 해제한다. 다른 등록자가
         # 옛 폴더를 계속 사용하면 _remove_registration_locked가 핸들을 반환하지 않는다.
         self._unschedule(observer, old_handle)
