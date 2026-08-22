@@ -91,6 +91,40 @@ def test_relink_asset_path_transaction_root_safe_with_pool(pooled_db):
     assert "old.png" not in meta  # 옛 행이 병합·이관됨(COMMIT 반영)
 
 
+def test_move_to_trash_if_failed_revalidates_inside_lock(pooled_db):
+    """R6 2-0(코덱스 승격) — 선별 뒤 done 으로 수렴한 생성물·남의 생성물은 이동하지
+    않는다(완료본 오삭제 TOCTOU 차단). 실패 상태만 실제 이동."""
+    from app.repo import trash
+
+    failed_id = repo.create_local_generation({"model": "m", "prompt": "f"}, "me")
+    repo.set_status(failed_id, "failed")
+    done_id = repo.create_local_generation({"model": "m", "prompt": "d"}, "me")
+    repo.set_status(done_id, "done")
+    with db.get_connection() as conn:
+        owner = conn.execute(
+            "SELECT creator_uid FROM generation WHERE id=?", (failed_id,)
+        ).fetchone()["creator_uid"]
+
+    assert trash.move_to_trash_if_failed(done_id, owner) is False  # 상태 재검증
+    assert trash.move_to_trash_if_failed(failed_id, "다른사람") is False  # 소유자 재검증
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id IN (?,?)", (failed_id, done_id)
+        ).fetchone()[0] == 2  # 아무것도 안 옮겨짐
+
+    assert trash.move_to_trash_if_failed(failed_id, owner) is True  # 정상 이동
+    _assert_pool_connection_clean()
+    with db.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (failed_id,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM generation WHERE id=?", (done_id,)
+        ).fetchone()[0] == 1  # 완료본 보존
+    assert [item["id"] for item in trash.list_trash()] == [failed_id]
+
+
 def test_new_indexes_exist_on_fresh_and_migrated_db(pooled_db):
     """1-G/1-K/1-L — 신규 DB(schema)와 기존 DB(_migrate 재실행) 양쪽에서 인덱스 보장."""
     expected = {

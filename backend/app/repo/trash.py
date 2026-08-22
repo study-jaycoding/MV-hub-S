@@ -189,6 +189,27 @@ def _gather_comment_seen(conn: sqlite3.Connection, gen_id: str) -> list[dict[str
 
 def move_to_trash(gen_id: str) -> bool:
     """generation 1건을 휴지통 DB 로 원자 이동(메인에서 제거). 없으면 False."""
+    return _move_to_trash_guarded(gen_id, excluded_statuses=None, account_uid=None)
+
+
+def move_to_trash_if_failed(gen_id: str, account_uid: Optional[str] = None) -> bool:
+    """실패 정리 전용 이동(R6 2-0, 코덱스 승격) — BEGIN 안에서 '여전히 성공/진행중이
+    아님'과 소유자를 재검증한 뒤에만 이동한다. 종전 delete_failed_orphans 는 실패 ID
+    목록을 읽고 재검증 없이 이동해, 그 사이 failed→done 으로 수렴한 완료본이 휴지통에
+    들어갈 수 있었다(TOCTOU)."""
+    return _move_to_trash_guarded(
+        gen_id,
+        excluded_statuses=("done", "pending", "running"),
+        account_uid=account_uid,
+    )
+
+
+def _move_to_trash_guarded(
+    gen_id: str,
+    *,
+    excluded_statuses: Optional[tuple[str, ...]],
+    account_uid: Optional[str],
+) -> bool:
     from ..config import MANAGE_ENABLED
 
     tomb: Optional[dict[str, Any]] = None
@@ -198,6 +219,11 @@ def move_to_trash(gen_id: str) -> bool:
         conn.execute("BEGIN IMMEDIATE")
         gen = conn.execute("SELECT * FROM generation WHERE id=?", (gen_id,)).fetchone()
         if not gen:
+            return False
+        # 잠금 안 재검증(2-0) — 선별 시점과 상태·소유자가 달라졌으면 이동하지 않는다.
+        if excluded_statuses is not None and gen["status"] in excluded_statuses:
+            return False
+        if account_uid is not None and gen["creator_uid"] != account_uid:
             return False
         payload = _gather(conn, gen_id, gen)
         if MANAGE_ENABLED:  # 삭제 전 매니징 스냅샷 캡처(비용·프로젝트 등) — 자식 삭제 전이라야 조회 가능

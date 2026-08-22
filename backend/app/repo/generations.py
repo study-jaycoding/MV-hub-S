@@ -830,7 +830,9 @@ def delete_failed_orphans(account_uid: Optional[str] = None) -> int:
                 f"SELECT id FROM generation WHERE {where}", args
             ).fetchall()
         ]
-    return sum(1 for gid in ids if trash.move_to_trash(gid))
+    # 이동 직전 잠금 안 재검증 경로(R6 2-0, 코덱스 승격) — 목록을 읽은 뒤 done 으로
+    # 수렴한 완료본이 휴지통에 들어가던 TOCTOU 를 막는다.
+    return sum(1 for gid in ids if trash.move_to_trash_if_failed(gid, account_uid))
 
 
 def migrate_legacy_soft_deleted() -> int:
